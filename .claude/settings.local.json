@@ -11,7 +11,10 @@
       "Bash(git worktree list)",
       "Bash(git worktree:*)",
       "Bash(ssh -p 32768 -o StrictHostKeyChecking=no -o ConnectTimeout=5 dev@localhost \"echo ''Workspace is accessible!'' && uname -a\")",
-      "Bash(docker exec:*)"
+      "Bash(docker exec:*)",
+      "WebSearch",
+      "WebFetch(domain:linear.app)",
+      "Bash(gofmt:*)"
     ]
   }
 }
