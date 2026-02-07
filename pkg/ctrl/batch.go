@@ -361,7 +361,9 @@ func (c *BaseController) WorkspaceListAll(ctx context.Context) error {
 		var status string
 		running := false
 		for _, s := range sessions {
-			if s.ID == ws || strings.Contains(s.ID, ws) {
+			// Check both ID and Labels for the workspace name
+			if s.ID == ws || strings.Contains(s.ID, ws) ||
+			   s.Labels["nexus.session.id"] == ws || strings.Contains(s.Labels["nexus.session.id"], ws) {
 				status = fmt.Sprintf("🟢 running (port %d)", s.SSHPort)
 				running = true
 				break
@@ -408,7 +410,9 @@ func (c *BaseController) WorkspaceStatus(ctx context.Context, name string) error
 	var session provider.Session
 	found := false
 	for _, s := range sessions {
-		if s.ID == name || strings.Contains(s.ID, name) {
+		// Check both ID and Labels for the workspace name
+		if s.ID == name || strings.Contains(s.ID, name) ||
+		   s.Labels["nexus.session.id"] == name || strings.Contains(s.Labels["nexus.session.id"], name) {
 			session = s
 			found = true
 			break

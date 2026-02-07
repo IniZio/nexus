@@ -1,0 +1,24 @@
+name: nexus-ops
+description: nexus workspace management operations
+capabilities:
+  - workspace_create: Create new isolated workspaces
+  - workspace_up: Start workspace environment
+  - workspace_down: Stop workspace environment
+  - workspace_list: List active workspaces
+  - workspace_rm: Remove workspace
+  - plugin_update: Update plugins to latest versions
+  - plugin_list: List loaded plugins
+  - apply: Apply configuration to agent configs
+tools:
+  - bash: Execute shell commands in workspace
+  - git: Version control operations
+  - docker: Container management
+parameters:
+  workspace_name:
+    type: string
+    description: Name of the workspace to operate on
+    required: true
+  branch:
+    type: string
+    description: Git branch for workspace creation
+    required: false

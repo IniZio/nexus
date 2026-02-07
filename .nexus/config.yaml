@@ -1,29 +1,13 @@
-name: nexus
+name: my-project
 provider: docker
-description: Isolated dev environments with SSH + Services
-
+plugins:
+  - golang
+  - node
 services:
-  coordination-server:
-    command: ./bin/nexus coordination start
-    port: 3001
-    healthcheck:
-      url: http://localhost:3001/health
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
+  web:
+    port: 3000
 docker:
   image: ubuntu:22.04
-  dind: false
-
-agents:
-  - name: cursor
-    enabled: true
-    plugins: ["core", "golang"]
-  - name: claude-code
-    enabled: true
-    plugins: ["core", "golang"]
-
+  dind: true
 hooks:
-  setup: make build
-  dev: make test
+  setup: .nexus/hooks/up.sh

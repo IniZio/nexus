@@ -923,7 +923,7 @@ func createController() ctrl.Controller {
 	providers := []provider.Provider{dockerProv, lxcProv}
 
 	// Create worktree manager
-	wtManager := worktree.NewManager(".", ".nexus/worktrees")
+	wtManager := worktree.NewManager(".", paths.GetWorktreesDir("."))
 
 	// Create controller
 	return ctrl.NewBaseController(providers, wtManager)
