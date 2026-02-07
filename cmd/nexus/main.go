@@ -15,7 +15,6 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/nexus/nexus/cmd/internal"
-	"github.com/nexus/nexus/pkg/agent"
 	"github.com/nexus/nexus/pkg/config"
 	"github.com/nexus/nexus/pkg/coordination"
 	"github.com/nexus/nexus/pkg/ctrl"
@@ -382,40 +381,6 @@ Stops any running server, then starts a new instance with the same configuration
 	},
 }
 
-var agentCmd = &cobra.Command{
-	Use:   "agent",
-	Short: "Manage node agent",
-	Long:  `Start and manage the node agent for remote branch execution.`,
-}
-
-var agentStartCmd = &cobra.Command{
-	Use:   "start",
-	Short: "Start the node agent",
-	Long: `Start the node agent to connect to a coordination server.
-The node agent provides branch execution capabilities on this machine.`,
-	RunE: func(_ *cobra.Command, _ []string) error {
-		fmt.Println("Starting node agent...")
-		// Get coordination URL from environment or config
-		coordURL := os.Getenv("LOOM_COORD_URL")
-		if coordURL == "" {
-			coordURL = "http://localhost:3001"
-		}
-		cfg := agent.NodeConfig{
-			CoordinationURL: coordURL,
-			Heartbeat: agent.HeartbeatConfig{
-				Interval: 30 * time.Second,
-				Timeout:  10 * time.Second,
-				Retries:  3,
-			},
-		}
-		agnt, err := agent.NewAgent(cfg)
-		if err != nil {
-			return fmt.Errorf("failed to create agent: %w", err)
-		}
-		return agnt.Start(context.Background())
-	},
-}
-
 var nodeCmd = &cobra.Command{
 	Use:   "node",
 	Short: "Manage remote nodes",
@@ -734,7 +699,6 @@ func init() {
 	rootCmd.AddCommand(branchCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(coordinationCmd)
-	rootCmd.AddCommand(agentCmd)
 	rootCmd.AddCommand(nodeCmd)
 
 	// Plugin subcommands
@@ -767,9 +731,6 @@ func init() {
 	// Coordination subcommands
 	coordinationCmd.AddCommand(coordinationStartCmd)
 	coordinationCmd.AddCommand(coordinationRestartCmd)
-
-	// Agent subcommands
-	agentCmd.AddCommand(agentStartCmd)
 
 	// Node subcommands
 	nodeCmd.AddCommand(nodeAddCmd)

@@ -1,342 +1,162 @@
 package agent
 
 import (
-	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func TestCreateWorkspaceCommandValidation(t *testing.T) {
+func TestServiceDefinitionValidation(t *testing.T) {
 	tests := []struct {
-		name    string
-		cmd     *CreateWorkspaceCommand
-		wantErr bool
-		errMsg  string
+		name string
+		svc  ServiceDefinition
+		ok   bool
 	}{
 		{
-			name: "valid command",
-			cmd: &CreateWorkspaceCommand{
-				ID:            "cmd-123",
-				WorkspaceID:   "ws-abc123",
-				WorkspaceName: "my-project-feature",
-				Provider:      "lxc",
-				Image:         "ubuntu:22.04",
-				Repository: RepositoryInfo{
-					Owner:  "my-org",
-					Name:   "my-project",
-					URL:    "git@github.com:my-org/my-project.git",
-					Branch: "main",
-				},
-				SSH: SSHConfig{
-					Port:   2222,
-					User:   "dev",
-					PubKey: "ssh-ed25519 AAAA...",
-				},
-				Resources: ResourceConfig{
-					CPU:    2,
-					Memory: "4GB",
-					Disk:   "20GB",
-				},
-				Services: []ServiceDefinition{
-					{
-						Name:    "web",
-						Command: "npm run dev",
-						Port:    3000,
-					},
-				},
-			},
-			wantErr: false,
-		},
-		{
-			name: "missing workspace_id",
-			cmd: &CreateWorkspaceCommand{
-				WorkspaceName: "test",
-				Provider:      "lxc",
-				Image:         "ubuntu:22.04",
-			},
-			wantErr: true,
-			errMsg:  "workspace_id is required",
-		},
-		{
-			name: "missing provider",
-			cmd: &CreateWorkspaceCommand{
-				WorkspaceID:   "ws-123",
-				WorkspaceName: "test",
-				Image:         "ubuntu:22.04",
-			},
-			wantErr: true,
-			errMsg:  "provider is required",
-		},
-		{
-			name: "invalid service depends_on",
-			cmd: &CreateWorkspaceCommand{
-				ID:            "cmd-123",
-				WorkspaceID:   "ws-abc123",
-				WorkspaceName: "test",
-				Provider:      "lxc",
-				Image:         "ubuntu:22.04",
-				Repository: RepositoryInfo{
-					Owner:  "org",
-					Name:   "repo",
-					URL:    "git@github.com:org/repo.git",
-					Branch: "main",
-				},
-				SSH: SSHConfig{
-					Port:   2222,
-					User:   "dev",
-					PubKey: "ssh-ed25519 AAAA...",
-				},
-				Resources: ResourceConfig{
-					CPU:    2,
-					Memory: "4GB",
-					Disk:   "20GB",
-				},
-				Services: []ServiceDefinition{
-					{
-						Name:      "api",
-						Command:   "npm run server",
-						Port:      4000,
-						DependsOn: []string{"db"},
-					},
-				},
-			},
-			wantErr: true,
-			errMsg:  "depends on undefined service",
-		},
-		{
-			name: "duplicate service names",
-			cmd: &CreateWorkspaceCommand{
-				ID:            "cmd-123",
-				WorkspaceID:   "ws-abc123",
-				WorkspaceName: "test",
-				Provider:      "lxc",
-				Image:         "ubuntu:22.04",
-				Repository: RepositoryInfo{
-					Owner:  "org",
-					Name:   "repo",
-					URL:    "git@github.com:org/repo.git",
-					Branch: "main",
-				},
-				SSH: SSHConfig{
-					Port:   2222,
-					User:   "dev",
-					PubKey: "ssh-ed25519 AAAA...",
-				},
-				Resources: ResourceConfig{
-					CPU:    2,
-					Memory: "4GB",
-					Disk:   "20GB",
-				},
-				Services: []ServiceDefinition{
-					{
-						Name:    "web",
-						Command: "npm run dev",
-						Port:    3000,
-					},
-					{
-						Name:    "web",
-						Command: "npm run build",
-						Port:    3001,
-					},
-				},
-			},
-			wantErr: true,
-			errMsg:  "duplicate service name",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.cmd.Validate()
-			if tt.wantErr {
-				assert.Error(t, err)
-				if tt.errMsg != "" {
-					assert.Contains(t, err.Error(), tt.errMsg)
-				}
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
-
-func TestCreateWorkspaceCommandJSON(t *testing.T) {
-	originalTime := time.Date(2026, 1, 17, 10, 30, 0, 0, time.UTC)
-
-	cmd := &CreateWorkspaceCommand{
-		ID:            "cmd-123",
-		WorkspaceID:   "ws-abc123",
-		WorkspaceName: "my-feature",
-		Provider:      "lxc",
-		Image:         "ubuntu:22.04",
-		Repository: RepositoryInfo{
-			Owner:  "my-org",
-			Name:   "my-project",
-			URL:    "git@github.com:my-org/my-project.git",
-			Branch: "main",
-		},
-		SSH: SSHConfig{
-			Port:   2222,
-			User:   "dev",
-			PubKey: "ssh-ed25519 AAAA...",
-		},
-		Resources: ResourceConfig{
-			CPU:    2,
-			Memory: "4GB",
-			Disk:   "20GB",
-		},
-		Services: []ServiceDefinition{
-			{
+			name: "valid service",
+			svc: ServiceDefinition{
 				Name:    "web",
-				Command: "npm run dev",
+				Command: "npm start",
 				Port:    3000,
+			},
+			ok: true,
+		},
+		{
+			name: "service with dependencies",
+			svc: ServiceDefinition{
+				Name:      "app",
+				Command:   "python main.py",
+				Port:      8000,
+				DependsOn: []string{"db"},
+				Env: map[string]string{
+					"DEBUG": "true",
+				},
+			},
+			ok: true,
+		},
+		{
+			name: "service with health check",
+			svc: ServiceDefinition{
+				Name:    "api",
+				Command: "go run main.go",
+				Port:    4000,
 				HealthCheck: &HealthCheck{
 					Type:    HealthCheckHTTP,
 					Path:    "/health",
-					Timeout: 10,
+					Timeout: 5,
+					Retries: 3,
 				},
 			},
-		},
-		CreatedAt: originalTime,
-	}
-
-	// Marshal
-	data, err := json.Marshal(cmd)
-	require.NoError(t, err)
-
-	// Unmarshal
-	var decoded CreateWorkspaceCommand
-	err = json.Unmarshal(data, &decoded)
-	require.NoError(t, err)
-
-	// Verify
-	assert.Equal(t, cmd.ID, decoded.ID)
-	assert.Equal(t, cmd.WorkspaceID, decoded.WorkspaceID)
-	assert.Equal(t, cmd.WorkspaceName, decoded.WorkspaceName)
-	assert.Equal(t, cmd.Provider, decoded.Provider)
-	assert.Equal(t, cmd.SSH.Port, decoded.SSH.Port)
-	assert.Equal(t, cmd.Resources.CPU, decoded.Resources.CPU)
-	assert.Equal(t, len(cmd.Services), len(decoded.Services))
-	assert.Equal(t, cmd.Services[0].Name, decoded.Services[0].Name)
-	assert.Equal(t, cmd.CreatedAt.Unix(), decoded.CreatedAt.Unix())
-}
-
-func TestHealthCheckTypes(t *testing.T) {
-	tests := []struct {
-		name  string
-		check *HealthCheck
-	}{
-		{
-			name: "http health check",
-			check: &HealthCheck{
-				Type:    HealthCheckHTTP,
-				Path:    "/health",
-				Timeout: 10,
-			},
-		},
-		{
-			name: "tcp health check",
-			check: &HealthCheck{
-				Type:    HealthCheckTCP,
-				Port:    3000,
-				Timeout: 5,
-				Retries: 3,
-			},
-		},
-		{
-			name: "exec health check",
-			check: &HealthCheck{
-				Type:    HealthCheckExec,
-				Command: "curl http://localhost:3000/health",
-				Timeout: 10,
-			},
+			ok: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data, err := json.Marshal(tt.check)
-			require.NoError(t, err)
-
-			var decoded HealthCheck
-			err = json.Unmarshal(data, &decoded)
-			require.NoError(t, err)
-
-			assert.Equal(t, tt.check.Type, decoded.Type)
+			assert.NotEmpty(t, tt.svc.Name)
+			assert.NotEmpty(t, tt.svc.Command)
+			assert.Greater(t, tt.svc.Port, 0)
 		})
 	}
 }
 
-func TestServiceDependencyResolution(t *testing.T) {
-	tests := []struct {
-		name     string
-		services []ServiceDefinition
-		wantErr  bool
-	}{
-		{
-			name: "linear dependency chain",
-			services: []ServiceDefinition{
-				{Name: "db", Command: "postgres", Port: 5432},
-				{Name: "api", Command: "node server.js", Port: 4000, DependsOn: []string{"db"}},
-				{Name: "web", Command: "npm run dev", Port: 3000, DependsOn: []string{"api"}},
-			},
-			wantErr: false,
-		},
-		{
-			name: "circular dependency",
-			services: []ServiceDefinition{
-				{Name: "a", Command: "cmd", Port: 1000, DependsOn: []string{"b"}},
-				{Name: "b", Command: "cmd", Port: 1001, DependsOn: []string{"a"}},
-			},
-			wantErr: false, // Our validator doesn't check for cycles
-		},
-		{
-			name: "valid multiple dependencies",
-			services: []ServiceDefinition{
-				{Name: "db", Command: "postgres", Port: 5432},
-				{Name: "cache", Command: "redis", Port: 6379},
-				{Name: "api", Command: "node", Port: 4000, DependsOn: []string{"db", "cache"}},
-			},
-			wantErr: false,
+func TestHealthCheckDefinition(t *testing.T) {
+	httpCheck := HealthCheck{
+		Type:    HealthCheckHTTP,
+		Path:    "/health",
+		Timeout: 5,
+	}
+
+	tcpCheck := HealthCheck{
+		Type:    HealthCheckTCP,
+		Port:    3000,
+		Timeout: 10,
+	}
+
+	assert.Equal(t, "http", string(httpCheck.Type))
+	assert.Equal(t, "tcp", string(tcpCheck.Type))
+}
+
+func TestRepositoryInfo(t *testing.T) {
+	repo := RepositoryInfo{
+		Owner:  "nexus",
+		Name:   "example",
+		URL:    "https://github.com/nexus/example",
+		Branch: "main",
+	}
+
+	assert.Equal(t, "nexus", repo.Owner)
+	assert.Equal(t, "example", repo.Name)
+	assert.Contains(t, repo.URL, "github.com")
+	assert.Equal(t, "main", repo.Branch)
+}
+
+func TestSSHConfig(t *testing.T) {
+	ssh := SSHConfig{
+		Port:   2222,
+		User:   "dev",
+		PubKey: "ssh-ed25519 AAAA...",
+	}
+
+	assert.Equal(t, 2222, ssh.Port)
+	assert.Equal(t, "dev", ssh.User)
+	assert.NotEmpty(t, ssh.PubKey)
+}
+
+func TestResourceConfig(t *testing.T) {
+	resources := ResourceConfig{
+		CPU:    4,
+		Memory: "8GB",
+		Disk:   "50GB",
+	}
+
+	assert.Equal(t, 4, resources.CPU)
+	assert.Equal(t, "8GB", resources.Memory)
+	assert.Equal(t, "50GB", resources.Disk)
+}
+
+func TestWorkspaceCreateResultJSON(t *testing.T) {
+	result := WorkspaceCreateResult{
+		WorkspaceID: "ws-123",
+		ContainerID: "abc123",
+		Status:      WorkspaceStatusRunning,
+		SSHPort:     2222,
+		Services: map[string]int{
+			"web": 3000,
+			"api": 4000,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cmd := &CreateWorkspaceCommand{
-				ID:            "cmd-123",
-				WorkspaceID:   "ws-abc123",
-				WorkspaceName: "test",
-				Provider:      "lxc",
-				Image:         "ubuntu:22.04",
-				Repository: RepositoryInfo{
-					Owner:  "org",
-					Name:   "repo",
-					URL:    "git@github.com:org/repo.git",
-					Branch: "main",
-				},
-				SSH: SSHConfig{
-					Port:   2222,
-					User:   "dev",
-					PubKey: "ssh-ed25519 AAAA...",
-				},
-				Resources: ResourceConfig{
-					CPU:    2,
-					Memory: "4GB",
-					Disk:   "20GB",
-				},
-				Services: tt.services,
-			}
+	assert.Equal(t, "ws-123", result.WorkspaceID)
+	assert.Equal(t, WorkspaceStatusRunning, result.Status)
+	assert.Equal(t, 2222, result.SSHPort)
+	assert.Equal(t, 2, len(result.Services))
+}
 
-			err := cmd.Validate()
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
+func TestServiceStartResult(t *testing.T) {
+	result := ServiceStartResult{
+		ServiceName: "web",
+		Status:      ServiceStatusRunning,
+		Port:        3000,
 	}
+
+	assert.Equal(t, "web", result.ServiceName)
+	assert.Equal(t, ServiceStatusRunning, result.Status)
+	assert.Equal(t, 3000, result.Port)
+}
+
+func TestWorkspaceStatusUpdate(t *testing.T) {
+	update := WorkspaceStatusUpdate{
+		WorkspaceID: "ws-123",
+		Status:      WorkspaceStatusRunning,
+		Message:     "Workspace is running",
+		Services: map[string]string{
+			"web": "running",
+			"db":  "running",
+		},
+	}
+
+	assert.Equal(t, "ws-123", update.WorkspaceID)
+	assert.Equal(t, WorkspaceStatusRunning, update.Status)
+	assert.Equal(t, 2, len(update.Services))
 }

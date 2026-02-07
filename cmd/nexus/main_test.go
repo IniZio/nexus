@@ -62,16 +62,6 @@ func TestCoordinationStartCmdExists(t *testing.T) {
 	assert.Equal(t, "start", coordinationStartCmd.Use)
 }
 
-func TestAgentCmdExists(t *testing.T) {
-	assert.NotNil(t, agentCmd)
-	assert.Equal(t, "agent", agentCmd.Use)
-}
-
-func TestAgentStartCmdExists(t *testing.T) {
-	assert.NotNil(t, agentStartCmd)
-	assert.Equal(t, "start", agentStartCmd.Use)
-}
-
 func TestNodeCmdExists(t *testing.T) {
 	assert.NotNil(t, nodeCmd)
 	assert.Equal(t, "node", nodeCmd.Use)

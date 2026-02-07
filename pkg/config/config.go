@@ -68,6 +68,9 @@ type Config struct {
 	Extends  []interface{}      `yaml:"extends,omitempty"`
 	Plugins  []interface{}      `yaml:"plugins,omitempty"`
 
+	// Sync defines local-to-workspace config synchronization
+	Sync *SyncConfig `yaml:"sync,omitempty"`
+
 	Docker struct {
 		Image string   `yaml:"image"`
 		Ports []string `yaml:"ports,omitempty"`
@@ -95,6 +98,30 @@ type Config struct {
 		Teardown string `yaml:"teardown,omitempty"`
 	} `yaml:"hooks,omitempty"`
 }
+
+// SyncConfig defines local-to-workspace config synchronization
+type SyncConfig struct {
+	Paths   []SyncPath   `yaml:"paths"`
+	Strategy SyncStrategy `yaml:"strategy,omitempty"`
+}
+
+// SyncPath defines a single sync operation
+type SyncPath struct {
+	Source  string `yaml:"source"`
+	Target  string `yaml:"target"`
+	Pattern string `yaml:"pattern,omitempty"`
+	Exclude string `yaml:"exclude,omitempty"`
+}
+
+// SyncStrategy defines how to perform synchronization
+type SyncStrategy string
+
+const (
+	// StrategyVolume mounts local paths as volumes (best for containers)
+	StrategyVolume SyncStrategy = "volume"
+	// StrategyCopy copies files on workspace start
+	StrategyCopy SyncStrategy = "copy"
+)
 
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)

@@ -12,13 +12,9 @@ import (
 )
 
 func createTestWorkspaceManager() *WorkspaceManager {
-	agent := &Agent{
-		node:      &Node{ID: "test-node"},
-		providers: make(map[string]provider.Provider),
-		sessions:  make(map[string]*provider.Session),
-		services:  make(map[string]Service),
-	}
-	return NewWorkspaceManager(agent)
+	// Create workspace manager with empty providers map for testing
+	// The tests that need providers should provide mock providers
+	return NewWorkspaceManager(make(map[string]provider.Provider))
 }
 
 func TestPortAllocation(t *testing.T) {

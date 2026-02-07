@@ -11,7 +11,6 @@ import (
 )
 
 type WorkspaceManager struct {
-	agent              *Agent
 	providers          map[string]provider.Provider
 	workspaces         map[string]*ManagedWorkspace
 	portAllocationLock sync.Mutex
@@ -51,10 +50,9 @@ type ManagedService struct {
 	ErrorMessage string
 }
 
-func NewWorkspaceManager(agent *Agent) *WorkspaceManager {
+func NewWorkspaceManager(providers map[string]provider.Provider) *WorkspaceManager {
 	return &WorkspaceManager{
-		agent:      agent,
-		providers:  agent.providers,
+		providers: providers,
 		workspaces: make(map[string]*ManagedWorkspace),
 		portRange: PortAllocationRange{
 			SSHStart:       2222,

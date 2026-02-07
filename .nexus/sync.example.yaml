@@ -1,0 +1,44 @@
+# Local-to-Workspace Configuration Sync
+# This file shows how to configure syncing local agent configs to workspaces.
+#
+# Save as .nexus/sync.yaml to enable sync.
+
+# Sync configuration
+sync:
+  # Strategy: "volume" (mount local paths - recommended for containers)
+  #           "copy" (copy files on workspace start)
+  strategy: volume
+
+  # Paths to sync from local machine to workspace
+  paths:
+    # Claude Desktop configuration
+    - source: ~/.config/claude_desktop_config.json
+      target: /home/dev/.config/claude_desktop_config.json
+
+    # Cursor rules
+    - source: ~/.cursor/rules
+      target: /home/dev/.cursor/rules
+
+    # OpenCode configuration
+    - source: ~/opencode.json
+      target: /home/dev/opencode.json
+
+    # VSCode settings (optional)
+    - source: ~/.config/Code/User/settings.json
+      target: /home/dev/.vscode/settings.json
+      # Pattern to include only specific settings
+      # pattern: "*.json"
+
+    # Custom rules directory
+    - source: ~/dev/rules
+      target: /home/dev/.nexus/rules
+      # Exclude patterns (comma-separated)
+      # exclude: "*.tmp,*.bak"
+
+# Alternative: Include sync config directly in config.yaml
+# Example in config.yaml:
+# sync:
+#   strategy: volume
+#   paths:
+#     - source: ~/.config/claude_desktop_config.json
+#       target: /home/dev/.config/claude_desktop_config.json
