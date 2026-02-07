@@ -14,7 +14,12 @@
       "Bash(docker exec:*)",
       "WebSearch",
       "WebFetch(domain:linear.app)",
-      "Bash(gofmt:*)"
+      "Bash(gofmt:*)",
+      "Bash(./bin/pulse version:*)",
+      "Bash(go get:*)",
+      "Bash(go mod tidy)",
+      "Bash(./pulse version)",
+      "Bash(curl:*)"
     ]
   }
 }

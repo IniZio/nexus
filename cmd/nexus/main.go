@@ -23,6 +23,7 @@ import (
 	"github.com/nexus/nexus/pkg/provider"
 	dockerProvider "github.com/nexus/nexus/pkg/provider/docker"
 	lxcProvider "github.com/nexus/nexus/pkg/provider/lxc"
+	"github.com/nexus/nexus/pkg/pulse"
 	"github.com/nexus/nexus/pkg/templates"
 	"github.com/nexus/nexus/pkg/worktree"
 	"github.com/spf13/cobra"
@@ -806,6 +807,236 @@ This is the primary command to get everything you need to access your branch.`,
 	},
 }
 
+// Pulse integration commands
+var pulseCmd = &cobra.Command{
+	Use:   "pulse",
+	Short: "Manage Pulse issue tracking",
+	Long: `Integrate with Pulse issue tracking. Create, list, and update issues
+directly from the Nexus CLI.`,
+}
+
+var pulseURL string
+
+var pulseIssuesCmd = &cobra.Command{
+	Use:   "issues",
+	Short: "Manage Pulse issues",
+	Long:  `List, create, and update issues in Pulse.`,
+}
+
+var pulseIssuesListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List issues in workspace",
+	Long: `List all issues in the specified workspace.
+Defaults to the current or 'default' workspace.`,
+	RunE: func(_ *cobra.Command, args []string) error {
+		client := pulse.NewClient(pulseURL)
+
+		workspaceID := "default"
+		if len(args) > 0 {
+			workspaceID = args[0]
+		}
+
+		// Check health
+		if err := client.Health(); err != nil {
+			fmt.Printf("⚠️  Pulse is not running. Start it with: ./bin/pulse start\n")
+			return err
+		}
+
+		issues, err := client.ListIssues(workspaceID)
+		if err != nil {
+			return fmt.Errorf("failed to list issues: %w", err)
+		}
+
+		fmt.Printf("📋 Issues in workspace '%s'\n", workspaceID)
+		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+		if len(issues) == 0 {
+			fmt.Println("  No issues found.")
+			fmt.Println("")
+			fmt.Println("  Create one with: nexus pulse issues create \"Issue title\"")
+			return nil
+		}
+
+		for _, issue := range issues {
+			statusIcon := map[string]string{
+				"backlog":     "○",
+				"todo":        "◐",
+				"in_progress": "◉",
+				"done":        "●",
+			}[issue.Status]
+			if statusIcon == "" {
+				statusIcon = "○"
+			}
+
+			priorityIcon := ""
+			switch issue.Priority {
+			case 1:
+				priorityIcon = "🔴"
+			case 2:
+				priorityIcon = "🟠"
+			case 3:
+				priorityIcon = "🟡"
+			case 4:
+				priorityIcon = "🟢"
+			}
+
+			labelsStr := ""
+			if len(issue.Labels) > 0 {
+				labelsStr = " [" + joinStrings(issue.Labels, ", ") + "]"
+			}
+
+			fmt.Printf("  %s %s %s\n", statusIcon, issue.Title, labelsStr)
+			fmt.Printf("     %s Priority: %d | Estimate: %d pts | ID: %s\n", priorityIcon, issue.Priority, issue.Estimate, shortID(issue.ID))
+		}
+		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		fmt.Printf("  Total: %d issues\n", len(issues))
+		return nil
+	},
+}
+
+var pulseIssuesCreateCmd = &cobra.Command{
+	Use:   "create <title>",
+	Short: "Create a new issue",
+	Long: `Create a new issue in Pulse.
+The issue is created in the default workspace unless specified.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(c *cobra.Command, args []string) error {
+		client := pulse.NewClient(pulseURL)
+
+		workspaceID, _ := c.Flags().GetString("workspace")
+		if workspaceID == "" {
+			workspaceID = "default"
+		}
+
+		description, _ := c.Flags().GetString("description")
+		priority, _ := c.Flags().GetInt("priority")
+		estimate, _ := c.Flags().GetInt("estimate")
+		labelsStr, _ := c.Flags().GetString("labels")
+
+		// Check health
+		if err := client.Health(); err != nil {
+			fmt.Printf("⚠️  Pulse is not running. Start it with: ./bin/pulse start\n")
+			return err
+		}
+
+		// Parse labels
+		var labels []string
+		if labelsStr != "" {
+			labels = splitString(labelsStr, ",")
+		}
+
+		issue, err := client.CreateIssue(workspaceID, args[0], description, priority, estimate, labels)
+		if err != nil {
+			return fmt.Errorf("failed to create issue: %w", err)
+		}
+
+		fmt.Printf("✅ Created issue: %s\n", issue.Title)
+		fmt.Printf("   ID: %s\n", shortID(issue.ID))
+		fmt.Printf("   Status: %s | Priority: %d | Estimate: %d pts\n", issue.Status, issue.Priority, issue.Estimate)
+
+		return nil
+	},
+}
+
+var pulseIssuesMoveCmd = &cobra.Command{
+	Use:   "move <issue-id> <status>",
+	Short: "Move issue to different status",
+	Long: `Move an issue to a different status.
+Valid statuses: backlog, todo, in_progress, done`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(_ *cobra.Command, args []string) error {
+		client := pulse.NewClient(pulseURL)
+
+		issueID := args[0]
+		status := args[1]
+
+		validStatuses := map[string]bool{
+			"backlog":     true,
+			"todo":        true,
+			"in_progress": true,
+			"done":        true,
+		}
+		if !validStatuses[status] {
+			return fmt.Errorf("invalid status: %s. Valid: backlog, todo, in_progress, done", status)
+		}
+
+		// Check health
+		if err := client.Health(); err != nil {
+			fmt.Printf("⚠️  Pulse is not running. Start it with: ./bin/pulse start\n")
+			return err
+		}
+
+		if err := client.UpdateIssueStatus(issueID, status); err != nil {
+			return fmt.Errorf("failed to update issue: %w", err)
+		}
+
+		fmt.Printf("✅ Moved issue %s to '%s'\n", shortID(issueID), status)
+		return nil
+	},
+}
+
+var pulseWebCmd = &cobra.Command{
+	Use:   "web",
+	Short: "Open Pulse web UI",
+	Long:  `Open the Pulse web interface in your default browser.`,
+	RunE: func(_ *cobra.Command, args []string) error {
+		url := pulseURL
+		if url == "" {
+			url = "http://localhost:3002"
+		}
+
+		fmt.Printf("🌐 Opening %s\n", url)
+
+		// Try to open in browser
+		cmd := exec.Command("xdg-open", url)
+		if err := cmd.Start(); err != nil {
+			fmt.Printf("⚠️  Could not open browser automatically\n")
+			fmt.Printf("   Open this URL manually: %s\n", url)
+		}
+
+		return nil
+	},
+}
+
+// Helper functions
+func shortID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+func joinStrings(strs []string, sep string) string {
+	if len(strs) == 0 {
+		return ""
+	}
+	result := strs[0]
+	for i := 1; i < len(strs); i++ {
+		result += sep + strs[i]
+	}
+	return result
+}
+
+func splitString(s, sep string) []string {
+	if s == "" {
+		return nil
+	}
+	var result []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == sep[0] {
+			if i > start {
+				result = append(result, s[start:i])
+			}
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		result = append(result, s[start:])
+	}
+	return result
+}
+
 // ensureSSHKey generates an SSH key for nexus if one doesn't exist
 func ensureSSHKey() (string, string, error) {
 	sshDir := filepath.Join(os.Getenv("HOME"), ".ssh")
@@ -904,6 +1135,21 @@ func init() {
 	// Workspace connection commands
 	branchCmd.AddCommand(branchConnectCmd)
 	branchCmd.AddCommand(branchServicesCmd)
+
+	// Pulse integration commands
+	rootCmd.AddCommand(pulseCmd)
+	pulseCmd.AddCommand(pulseIssuesCmd)
+	pulseCmd.AddCommand(pulseWebCmd)
+	pulseIssuesCmd.AddCommand(pulseIssuesListCmd)
+	pulseIssuesCmd.AddCommand(pulseIssuesCreateCmd)
+	pulseIssuesCmd.AddCommand(pulseIssuesMoveCmd)
+
+	// Flags for pulse commands
+	pulseIssuesCreateCmd.Flags().StringP("workspace", "w", "", "Workspace ID (default: default)")
+	pulseIssuesCreateCmd.Flags().StringP("description", "d", "", "Issue description")
+	pulseIssuesCreateCmd.Flags().IntP("priority", "p", 3, "Priority (1=Urgent, 2=High, 3=Medium, 4=Low)")
+	pulseIssuesCreateCmd.Flags().IntP("estimate", "e", 0, "Estimate in story points")
+	pulseIssuesCreateCmd.Flags().StringP("labels", "l", "", "Labels (comma-separated)")
 }
 
 func createController() ctrl.Controller {
