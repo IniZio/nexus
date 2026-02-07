@@ -159,6 +159,152 @@ var branchRmCmd = &cobra.Command{
 	},
 }
 
+var batchCmd = &cobra.Command{
+	Use:   "batch",
+	Short: "Batch operations on multiple workspaces",
+	Long:  `Perform operations on multiple workspaces in parallel.
+Useful for managing multiple feature branches simultaneously.`,
+}
+
+// Batch commands for parallel workspace operations
+var batchUpCmd = &cobra.Command{
+	Use:   "up [workspace1] [workspace2] ...",
+	Short: "Start multiple workspaces in parallel",
+	Long:  `Start multiple workspaces in parallel for feature development.
+Useful when working on multiple features simultaneously.`,
+	RunE: func(_ *cobra.Command, args []string) error {
+		ctx := context.Background()
+		controller := createController()
+		return controller.WorkspaceBatchUp(ctx, args)
+	},
+}
+
+var batchDownCmd = &cobra.Command{
+	Use:   "down [workspace1] [workspace2] ...",
+	Short: "Stop multiple workspaces in parallel",
+	Long:  `Stop multiple workspaces in parallel.`,
+	RunE: func(_ *cobra.Command, args []string) error {
+		ctx := context.Background()
+		controller := createController()
+		return controller.WorkspaceBatchDown(ctx, args)
+	},
+}
+
+var batchExecCmd = &cobra.Command{
+	Use:   "exec [workspace1] [workspace2] -- <command>",
+	Short: "Execute command in multiple workspaces",
+	Long:  `Execute a command in multiple workspaces.
+Use -- to separate workspace names from the command.`,
+	RunE: func(_ *cobra.Command, args []string) error {
+		ctx := context.Background()
+		controller := createController()
+
+		// Find -- separator
+		sepIdx := -1
+		for i, arg := range args {
+			if arg == "--" {
+				sepIdx = i
+				break
+			}
+		}
+
+		if sepIdx == -1 {
+			return fmt.Errorf("missing -- separator. Usage: nexus batch exec ws1 ws2 -- <command>")
+		}
+
+		workspaces := args[:sepIdx]
+		cmd := args[sepIdx+1:]
+
+		if len(workspaces) == 0 {
+			return fmt.Errorf("no workspaces specified")
+		}
+		if len(cmd) == 0 {
+			return fmt.Errorf("no command specified")
+		}
+
+		return controller.WorkspaceExecAll(ctx, workspaces, cmd, true)
+	},
+}
+
+var batchStatusCmd = &cobra.Command{
+	Use:   "status [workspace]",
+	Short: "Show status of workspace(s)",
+	Long:  `Show detailed status of one or all workspaces.`,
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(_ *cobra.Command, args []string) error {
+		ctx := context.Background()
+		controller := createController()
+
+		if len(args) == 1 {
+			return controller.WorkspaceStatus(ctx, args[0])
+		}
+		return controller.WorkspaceListAll(ctx)
+	},
+}
+
+// Workspace group commands
+var groupCmd = &cobra.Command{
+	Use:   "group",
+	Short: "Manage workspace groups",
+	Long:  `Manage workspace groups for organizing related workspaces.
+Groups simplify batch operations on related features.`,
+}
+
+var groupAddCmd = &cobra.Command{
+	Use:   "add <name> <workspace1> [workspace2] ...",
+	Short: "Add a new workspace group",
+	Args:  cobra.MinimumNArgs(2),
+	RunE: func(_ *cobra.Command, args []string) error {
+		name := args[0]
+		workspaces := args[1:]
+		groupMgr := ctrl.NewWorkspaceGroupManager()
+		if err := groupMgr.Load(); err != nil {
+			return err
+		}
+		return groupMgr.AddGroup(name, "", workspaces)
+	},
+}
+
+var groupListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List all workspace groups",
+	RunE: func(_ *cobra.Command, _ []string) error {
+		groupMgr := ctrl.NewWorkspaceGroupManager()
+		if err := groupMgr.Load(); err != nil {
+			return err
+		}
+		groups := groupMgr.ListGroups()
+		if len(groups) == 0 {
+			fmt.Println("No workspace groups configured.")
+			fmt.Println("Create one with: nexus group add <name> <workspace1> <workspace2> ...")
+			return nil
+		}
+		fmt.Println("📦 Workspace Groups")
+		fmt.Println(strings.Repeat("─", 50))
+		for _, g := range groups {
+			fmt.Printf("  %-20s %d workspaces\n", g.Name, len(g.Workspaces))
+			if g.Description != "" {
+				fmt.Printf("    %s\n", g.Description)
+			}
+		}
+		return nil
+	},
+}
+
+var groupAliasCmd = &cobra.Command{
+	Use:   "alias <alias> <workspace>",
+	Short: "Create a quick-access alias for a workspace",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(_ *cobra.Command, args []string) error {
+		alias, workspace := args[0], args[1]
+		groupMgr := ctrl.NewWorkspaceGroupManager()
+		if err := groupMgr.Load(); err != nil {
+			return err
+		}
+		return groupMgr.SetAlias(alias, workspace)
+	},
+}
+
 var applyCmd = &cobra.Command{
 	Use:   "apply",
 	Short: "Apply latest configuration to agent configs",
@@ -721,6 +867,19 @@ func init() {
 	branchCmd.AddCommand(branchListCmd)
 	branchCmd.AddCommand(branchRmCmd)
 	branchCmd.AddCommand(branchShellCmd)
+
+	// Batch commands for parallel operations
+	rootCmd.AddCommand(batchCmd)
+	batchCmd.AddCommand(batchUpCmd)
+	batchCmd.AddCommand(batchDownCmd)
+	batchCmd.AddCommand(batchExecCmd)
+	batchCmd.AddCommand(batchStatusCmd)
+
+	// Workspace group commands
+	rootCmd.AddCommand(groupCmd)
+	groupCmd.AddCommand(groupAddCmd)
+	groupCmd.AddCommand(groupListCmd)
+	groupCmd.AddCommand(groupAliasCmd)
 
 	// Add --node flag to branch commands
 	branchCreateCmd.Flags().StringVarP(&branchNode, "node", "n", "", "Remote node to create branch on")

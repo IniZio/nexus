@@ -41,6 +41,11 @@ type Controller interface {
 	WorkspaceRm(ctx context.Context, name string) error
 	WorkspaceServices(ctx context.Context, name string) ([]PortMapping, error)
 	WorkspaceConnect(ctx context.Context, name string) error
+	WorkspaceStatus(ctx context.Context, name string) error
+	WorkspaceListAll(ctx context.Context) error
+	WorkspaceBatchUp(ctx context.Context, workspaces []string) error
+	WorkspaceBatchDown(ctx context.Context, workspaces []string) error
+	WorkspaceExecAll(ctx context.Context, workspaces []string, cmd []string, parallel bool) error
 	Apply(ctx context.Context) error
 	PluginUpdate(ctx context.Context) error
 	PluginList(ctx context.Context) error

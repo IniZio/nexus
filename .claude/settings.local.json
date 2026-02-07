@@ -4,7 +4,10 @@
       "Bash(go build:*)",
       "Bash(go test ./...:*)",
       "Bash(go test:*)",
-      "Bash(make:*)"
+      "Bash(make:*)",
+      "Bash(./bin/nexus:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }
