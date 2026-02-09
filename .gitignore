@@ -1,0 +1,54 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.# Build outputs
+dylib
+
+coverage.html
+coverage.out
+*.coverprofile
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+*.test
+*.out
+
+# Go
+go.work
+go.work.sum
+
+# Local configs
+.env
+.env.local
+*.local.yaml
+
+# Temporary
+tmp/
+temp/
+*.tmp
+
+# Pulse data
+.pulse/
+
+# OMC state (oh-my-claude-code)
+.omc/
+.claude/
+
+# Editor configs
+*.sublime-*
+
+# Backup files
+*~
+*.bak

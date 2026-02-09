@@ -1,0 +1,144 @@
+package transport
+
+import (
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestIntegration(t *testing.T) {
+	// Test complete transport layer workflow
+	manager := NewManager()
+
+	// Register configurations
+	sshConfig := &Config{
+		Protocol: "ssh",
+		Target:   "localhost:22",
+		Auth: AuthConfig{
+			Type:     "ssh_key",
+			Username: "test",
+			KeyData:  []byte("test-key-data"),
+		},
+		Timeout: 10 * time.Second,
+	}
+
+	err := manager.RegisterConfig("ssh-test", sshConfig)
+	// Expect error due to invalid key data
+	assert.Error(t, err)
+
+	// Test HTTP config which should work
+	httpConfig := &Config{
+		Protocol: "http",
+		Target:   "http://localhost:8080",
+		Auth: AuthConfig{
+			Type:  "token",
+			Token: "test-token",
+		},
+		Timeout: 10 * time.Second,
+	}
+
+	err = manager.RegisterConfig("http-test", httpConfig)
+	require.NoError(t, err)
+
+	// Test pool creation
+	pool, err := manager.CreatePool("http-test")
+	require.NoError(t, err)
+	require.NotNil(t, pool)
+
+	// Test pool metrics
+	metrics := pool.GetMetrics()
+	assert.NotNil(t, metrics)
+	assert.Equal(t, 0, metrics.Created)
+	assert.Equal(t, 0, metrics.Active)
+
+	// Test cleanup
+	err = manager.CloseAll()
+	require.NoError(t, err)
+}
+
+func TestTransportFactories(t *testing.T) {
+	factory := &DefaultTransportFactory{}
+
+	// Test SSH factory (will fail with invalid config but that's expected)
+	sshConfig := &Config{
+		Protocol: "ssh",
+		Target:   "localhost:22",
+		Auth: AuthConfig{
+			Type:     "password",
+			Username: "test",
+			Password: "test",
+		},
+	}
+	transport, err := factory.CreateTransport(sshConfig)
+	// Will fail to connect but transport should be created
+	assert.NoError(t, err)
+	assert.NotNil(t, transport)
+
+	// Test HTTP factory
+	httpConfig := &Config{
+		Protocol: "http",
+		Target:   "http://localhost:8080",
+		Auth: AuthConfig{
+			Type:  "token",
+			Token: "test-token",
+		},
+	}
+	transport, err = factory.CreateTransport(httpConfig)
+	assert.NoError(t, err)
+	assert.NotNil(t, transport)
+
+	// Test unsupported protocol
+	invalidConfig := &Config{
+		Protocol: "invalid",
+		Target:   "test://example.com",
+	}
+	transport, err = factory.CreateTransport(invalidConfig)
+	assert.Nil(t, transport)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported transport protocol")
+}
+
+func TestConfigurationDefaults(t *testing.T) {
+	// Test SSH defaults
+	sshConfig := CreateDefaultSSHConfig("server.example.com:22", "admin", "/home/admin/.ssh/id_rsa")
+	assert.Equal(t, "ssh", sshConfig.Protocol)
+	assert.Equal(t, "server.example.com:22", sshConfig.Target)
+	assert.Equal(t, "ssh_key", sshConfig.Auth.Type)
+	assert.Equal(t, "admin", sshConfig.Auth.Username)
+	assert.Equal(t, "/home/admin/.ssh/id_rsa", sshConfig.Auth.KeyPath)
+	assert.Equal(t, 30*time.Second, sshConfig.Timeout)
+
+	// Test HTTP defaults
+	httpConfig := CreateDefaultHTTPConfig("https://api.example.com:3000", "api-token-123")
+	assert.Equal(t, "http", httpConfig.Protocol)
+	assert.Equal(t, "https://api.example.com:3000", httpConfig.Target)
+	assert.Equal(t, "token", httpConfig.Auth.Type)
+	assert.Equal(t, "api-token-123", httpConfig.Auth.Token)
+	assert.Equal(t, 30*time.Second, httpConfig.Timeout)
+}
+
+func TestErrorHandling(t *testing.T) {
+	// Test transport errors
+	err := ErrNotConnected
+	require.IsType(t, &TransportError{}, err)
+	transportErr := err.(*TransportError)
+	assert.Equal(t, "connection", transportErr.Type)
+	assert.False(t, transportErr.Retryable)
+
+	err = ErrTimeout
+	require.IsType(t, &TransportError{}, err)
+	transportErr = err.(*TransportError)
+	assert.Equal(t, "timeout", transportErr.Type)
+	assert.True(t, transportErr.Retryable)
+
+	// Test wrapping errors
+	sshTransport := &SSHTransport{}
+	wrappedErr := sshTransport.wrapError(assert.AnError, "connection_failed")
+	require.NotNil(t, wrappedErr)
+	transportErr, ok := wrappedErr.(*TransportError)
+	require.True(t, ok)
+	assert.Equal(t, "connection_failed", transportErr.Type)
+	assert.True(t, transportErr.Retryable)
+}

@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main, monorepo]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false
+
+      - name: Install dependencies (Nexus)
+        run: go mod download
+
+      - name: Build Nexus
+        run: go build -o bin/nexus ./cmd/nexus
+
+      - name: Build Pulse
+        working-directory: ./pulse
+        run: go build -o ../bin/pulse ./cmd
+
+      - name: Upload Nexus Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus
+          path: bin/nexus
+
+      - name: Upload Pulse Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: pulse
+          path: bin/pulse
+
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Download dependencies (Nexus)
+        run: go mod download
+
+      - name: Run Unit Tests (Nexus)
+        run: go test ./pkg/... -short -count=1
+
+      - name: Run Unit Tests (Pulse)
+        working-directory: ./pulse
+        run: go test ./... -short -count=1
+
+  lint:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Install golangci-lint
+        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.64.0
+
+      - name: Run linter (Nexus)
+        run: $(go env GOPATH)/bin/golangci-lint run ./...
+
+      - name: Run linter (Pulse)
+        working-directory: ./pulse
+        run: $(go env GOPATH)/bin/golangci-lint run ./...
+
+  slack-integration:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Test Slack Integration
+        run: go test ./pkg/slack/... -v -count=1
+
+      - name: Test GitHub Release
+        run: go test ./pkg/github/release/... -v -count=1
