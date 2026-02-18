@@ -1,7 +1,5 @@
 {
-  "plugin": [
-    "./packages/opencode"
-  ],
+  "plugin": [],
   "nexus": {
     "enabled": true,
     "enforceWorkspace": true,
