@@ -1,13 +1,4 @@
-name: my-project
-provider: docker
-plugins:
-  - golang
-  - node
-services:
-  web:
-    port: 3000
+name: nexus-project
 docker:
   image: ubuntu:22.04
-  dind: true
-hooks:
-  setup: .nexus/hooks/up.sh
+  dind: false
