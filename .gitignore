@@ -1,11 +1,28 @@
 # Binaries
 nexus
+nexus-*
 *.exe
-docker.test
 
-# Test artifacts
-*.test
+# Build artifacts
+build/
+dist/
 *.out
+
+# Test binaries
+docker.test
+*.test
+
+# Go build artifacts
+*.o
+*.a
+*.so
+*.dylib
+
+# GitHub Actions
+*.zip
+*.tar.gz
+
+# Coverage
 coverage.html
 
 # IDE

@@ -1,0 +1,76 @@
+#!/bin/bash
+# Enforce Conventional Commits format and no binaries
+# Place in .nexus/git-hooks/commit-msg and symlink to .git/hooks/
+
+commit_msg_file=$1
+commit_msg=$(cat "$commit_msg_file")
+
+echo "🐕 Nexus Commit Quality Check"
+echo "=============================="
+
+# Check Conventional Commits format
+if ! echo "$commit_msg" | grep -qE '^(feat|fix|docs|style|refactor|test|chore|ci|build|perf|revert)(\([^)]+\))?!?: .+'; then
+    echo ""
+    echo "❌ Invalid commit message format!"
+    echo ""
+    echo "Expected: <type>[(<scope>)]: <description>"
+    echo ""
+    echo "Valid types:"
+    echo "  feat     - New feature"
+    echo "  fix      - Bug fix"
+    echo "  docs     - Documentation changes"
+    echo "  style    - Code style (formatting)"
+    echo "  refactor - Code refactoring"
+    echo "  test     - Adding/updating tests"
+    echo "  chore    - Maintenance tasks"
+    echo "  ci       - CI/CD changes"
+    echo "  build    - Build system changes"
+    echo "  perf     - Performance improvements"
+    echo "  revert   - Revert previous commit"
+    echo ""
+    echo "Examples:"
+    echo "  ✅ feat(workspace): add container support"
+    echo "  ✅ fix(telemetry): handle null values"
+    echo "  ✅ docs: update README"
+    echo ""
+    echo "❌ bad: added stuff"
+    echo "❌ bad: WIP"
+    echo "❌ bad: fix"
+    echo ""
+    exit 1
+fi
+
+# Check for binaries in staging area
+binary_patterns='\.(exe|dll|so|dylib|bin|o|a|class|jar)$'
+staged_files=$(git diff --cached --name-only)
+
+if echo "$staged_files" | grep -iE "$binary_patterns" > /dev/null; then
+    echo ""
+    echo "❌ Binary files detected in commit!"
+    echo ""
+    echo "Never commit binaries. They bloat the repository."
+    echo ""
+    echo "The nexus binary is built by GitHub Actions and distributed via releases."
+    echo ""
+    echo "To install nexus:"
+    echo "  curl -fsSL https://inizio.github.io/nexus/install.sh | bash"
+    echo ""
+    echo "Binaries detected:"
+    echo "$staged_files" | grep -iE "$binary_patterns"
+    echo ""
+    exit 1
+fi
+
+# Check for large commits
+file_count=$(echo "$staged_files" | wc -l)
+if [ "$file_count" -gt 10 ]; then
+    echo ""
+    echo "⚠️  Large commit detected ($file_count files)"
+    echo "Consider splitting into smaller, atomic commits."
+    echo ""
+fi
+
+echo "✅ Commit message valid"
+echo "✅ No binaries detected"
+echo ""
+exit 0
