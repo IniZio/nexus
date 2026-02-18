@@ -1,11 +1,3 @@
 {
-  "plugin": [],
-  "nexus": {
-    "enabled": true,
-    "enforceWorkspace": true,
-    "enforceDogfooding": true,
-    "blockStopWithTodos": true,
-    "adaptive": true,
-    "idlePromptThresholdMs": 30000
-  }
+  "$schema": "https://opencode.ai/config.json"
 }

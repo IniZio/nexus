@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "enforceWorkspace": true,
+  "enforceDogfooding": true,
+  "blockStopWithTodos": true,
+  "adaptive": true,
+  "idlePromptThresholdMs": 30000
+}
