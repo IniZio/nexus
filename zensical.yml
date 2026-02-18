@@ -1,0 +1,27 @@
+site_name: Nexus Documentation
+site_url: https://inizio.github.io/nexus
+site_author: IniZio
+
+repo_name: inizio/nexus
+repo_url: https://github.com/inizio/nexus
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: tutorials/installation.md
+    - Quick Start: tutorials/first-workspace.md
+  - User Guide:
+    - CLI Reference: reference/cli.md
+    - Workspaces: how-to/workspaces.md
+    - Tasks: how-to/tasks.md
+  - Development:
+    - Architecture: explanation/architecture.md
+    - Contributing: dev/contributing.md
+    - Roadmap: dev/roadmap.md
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
