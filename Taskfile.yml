@@ -1,0 +1,126 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build all packages
+    cmds:
+      - task: build:enforcer
+      - task: build:opencode
+      - task: build:claude
+      - task: build:cursor
+
+  build:enforcer:
+    dir: packages/enforcer
+    cmds:
+      - pnpm install
+      - pnpm build
+
+  build:opencode:
+    dir: packages/opencode
+    cmds:
+      - pnpm install
+      - pnpm build
+
+  build:claude:
+    dir: packages/claude
+    cmds:
+      - pnpm install
+      - pnpm build
+
+  build:cursor:
+    dir: packages/cursor
+    cmds:
+      - pnpm install
+      - pnpm build
+
+  test:
+    desc: Run all tests
+    cmds:
+      - task: test:enforcer
+      - task: test:opencode
+      - task: test:claude
+      - task: test:cursor
+
+  test:enforcer:
+    dir: packages/enforcer
+    cmds:
+      - pnpm test
+
+  test:opencode:
+    dir: packages/opencode
+    cmds:
+      - pnpm test
+
+  test:claude:
+    dir: packages/claude
+    cmds:
+      - pnpm test
+
+  test:cursor:
+    dir: packages/cursor
+    cmds:
+      - pnpm test
+
+  lint:
+    desc: Run all linters
+    cmds:
+      - task: lint:enforcer
+      - task: lint:opencode
+      - task: lint:claude
+      - task: lint:cursor
+
+  lint:enforcer:
+    dir: packages/enforcer
+    cmds:
+      - pnpm lint
+
+  lint:opencode:
+    dir: packages/opencode
+    cmds:
+      - pnpm lint
+
+  lint:claude:
+    dir: packages/claude
+    cmds:
+      - pnpm lint
+
+  lint:cursor:
+    dir: packages/cursor
+    cmds:
+      - pnpm lint
+
+  publish:
+    desc: Publish all packages to npm
+    cmds:
+      - task: publish:enforcer
+      - task: publish:opencode
+      - task: publish:claude
+      - task: publish:cursor
+
+  publish:enforcer:
+    dir: packages/enforcer
+    cmds:
+      - pnpm publish
+
+  publish:opencode:
+    dir: packages/opencode
+    cmds:
+      - pnpm publish
+
+  publish:claude:
+    dir: packages/claude
+    cmds:
+      - pnpm publish
+
+  publish:cursor:
+    dir: packages/cursor
+    cmds:
+      - pnpm publish
+
+  clean:
+    desc: Clean all build artifacts
+    cmds:
+      - rm -rf packages/enforcer/dist
+      - rm -rf packages/opencode/dist
+      - rm -rf packages/claude/dist
+      - rm -rf packages/cursor/dist

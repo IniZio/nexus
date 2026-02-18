@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "outDir": "./dist",
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "baseUrl": ".",
+    "paths": {
+      "@nexus-enforcer/*": ["packages/enforcer/src/*"],
+      "@nexus-opencode/*": ["packages/opencode/src/*"],
+      "@nexus-claude/*": ["packages/claude/src/*"],
+      "@nexus-cursor/*": ["packages/cursor/src/*"]
+    }
+  },
+  "include": [
+    "packages/enforcer/src/**/*",
+    "packages/opencode/src/**/*",
+    "packages/claude/src/**/*",
+    "packages/cursor/src/**/*"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

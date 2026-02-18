@@ -1,0 +1,79 @@
+{
+  "name": "nexus-claude",
+  "displayName": "Nexus Enforcer",
+  "version": "1.0.0",
+  "description": "Self-evolving enforcement rules for Claude AI agents",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "hooks": {
+    "Task": {
+      "handler": "./dist/hooks.js",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "workspacePath": {
+            "type": "string",
+            "description": "Path to the workspace"
+          },
+          "taskDescription": {
+            "type": "string",
+            "description": "Description of the task"
+          }
+        },
+        "required": ["workspacePath", "taskDescription"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "passed": {
+            "type": "boolean"
+          },
+          "overallScore": {
+            "type": "number"
+          },
+          "checks": {
+            "type": "array"
+          },
+          "recommendations": {
+            "type": "array"
+          }
+        }
+      }
+    }
+  },
+  "configuration": {
+    "nexus": {
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "strictMode": {
+        "type": "boolean",
+        "default": false
+      },
+      "autoInstall": {
+        "type": "boolean",
+        "default": true
+      },
+      "verbose": {
+        "type": "boolean",
+        "default": false
+      }
+    }
+  },
+  "permissions": [
+    "read",
+    "write",
+    "exec"
+  ],
+  "author": "Nexus Team",
+  "bugs": {
+    "url": "https://github.com/nexus-team/enforcer/issues"
+  },
+  "homepage": "https://github.com/nexus-team/enforcer",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nexus-team/enforcer.git"
+  },
+  "license": "MIT"
+}
