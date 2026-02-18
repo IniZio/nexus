@@ -41,13 +41,14 @@ jobs:
           go-version: '1.21'
 
       - name: Build binary
+        shell: bash
         run: |
           if [[ "${{ matrix.target }}" == windows* ]]; then
-            GOOS=windows GOARCH=amd64 go build -o ${{ matrix.artifact }}.exe
+            GOOS=windows GOARCH=amd64 go build -o ${{ matrix.artifact }}.exe ./cmd/nexus
           else
             GOOS=$(echo ${{ matrix.target }} | cut -d'-' -f1) \
             GOARCH=$(echo ${{ matrix.target }} | cut -d'-' -f2) \
-            go build -o ${{ matrix.artifact }}
+            go build -o ${{ matrix.artifact }} ./cmd/nexus
           fi
 
       - name: Upload artifact
