@@ -576,3 +576,16 @@ func (p *Provider) List(ctx context.Context) ([]workspace.WorkspaceInfo, error) 
 func (p *Provider) Close() error {
 	return p.cli.Close()
 }
+
+// ContainerExists checks if a workspace container exists
+func (p *Provider) ContainerExists(ctx context.Context, name string) (bool, error) {
+	containerName := fmt.Sprintf("nexus-%s", name)
+	_, err := p.cli.ContainerInspect(ctx, containerName)
+	if err != nil {
+		if client.IsErrNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to inspect container: %w", err)
+	}
+	return true, nil
+}

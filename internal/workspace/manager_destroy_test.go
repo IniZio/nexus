@@ -76,6 +76,13 @@ func (m *mockProvider) Close() error {
 	return nil
 }
 
+func (m *mockProvider) ContainerExists(ctx context.Context, name string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, exists := m.containers[name]
+	return exists, nil
+}
+
 func TestManagerDestroy_WithName(t *testing.T) {
 	provider := newMockProvider()
 	manager := NewManager(provider)
@@ -308,4 +315,8 @@ func (e *errorMockProvider) List(ctx context.Context) ([]WorkspaceInfo, error) {
 
 func (e *errorMockProvider) Close() error {
 	return e.base.Close()
+}
+
+func (e *errorMockProvider) ContainerExists(ctx context.Context, name string) (bool, error) {
+	return e.base.ContainerExists(ctx, name)
 }

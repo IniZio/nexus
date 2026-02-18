@@ -15,7 +15,7 @@ import (
 
 func setupTestRepo(t *testing.T) string {
 	tmpDir := t.TempDir()
-	
+
 	cmd := exec.Command("git", "init")
 	cmd.Dir = tmpDir
 	if err := cmd.Run(); err != nil {
@@ -25,7 +25,7 @@ func setupTestRepo(t *testing.T) string {
 	cmd = exec.Command("git", "config", "user.email", "test@example.com")
 	cmd.Dir = tmpDir
 	cmd.Run()
-	
+
 	cmd = exec.Command("git", "config", "user.name", "Test User")
 	cmd.Dir = tmpDir
 	cmd.Run()
@@ -100,8 +100,8 @@ func (p *testProvider) List(ctx context.Context) ([]WorkspaceInfo, error) {
 	var result []WorkspaceInfo
 	for name := range p.containers {
 		result = append(result, WorkspaceInfo{
-			Name:        name,
-			Status:      "running",
+			Name:         name,
+			Status:       "running",
 			WorktreePath: p.worktrees[name],
 		})
 	}
@@ -112,9 +112,14 @@ func (p *testProvider) Close() error {
 	return nil
 }
 
+func (p *testProvider) ContainerExists(ctx context.Context, name string) (bool, error) {
+	_, exists := p.containers[name]
+	return exists, nil
+}
+
 func TestWorktreeIntegration_CreateWorktree(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
-	
+
 	repoDir := setupTestRepo(t)
 	gitManager := git.NewManagerWithRepoRoot(repoDir)
 	provider := newTestProvider()
@@ -147,7 +152,7 @@ func TestWorktreeIntegration_CreateWorktree(t *testing.T) {
 
 func TestWorktreeIntegration_ContainerMountsWorktree(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
-	
+
 	repoDir := setupTestRepo(t)
 	gitManager := git.NewManagerWithRepoRoot(repoDir)
 	provider := newTestProvider()
@@ -171,7 +176,7 @@ func TestWorktreeIntegration_ContainerMountsWorktree(t *testing.T) {
 
 func TestWorktreeIntegration_DestroyRemovesWorktree(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
-	
+
 	repoDir := setupTestRepo(t)
 	gitManager := git.NewManagerWithRepoRoot(repoDir)
 	provider := newTestProvider()
@@ -202,7 +207,7 @@ func TestWorktreeIntegration_DestroyRemovesWorktree(t *testing.T) {
 
 func TestWorktreeIntegration_ListWorktrees(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
-	
+
 	repoDir := setupTestRepo(t)
 	gitManager := git.NewManagerWithRepoRoot(repoDir)
 	provider := newTestProvider()
@@ -249,7 +254,7 @@ func TestWorktreeIntegration_ListWorktrees(t *testing.T) {
 
 func TestWorktreeIntegration_DuplicateWorktreeError(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
-	
+
 	repoDir := setupTestRepo(t)
 	gitManager := git.NewManagerWithRepoRoot(repoDir)
 	provider := newTestProvider()
@@ -270,7 +275,7 @@ func TestWorktreeIntegration_DuplicateWorktreeError(t *testing.T) {
 
 func TestWorktreeIntegration_WorktreeIsolation(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
-	
+
 	repoDir := setupTestRepo(t)
 	gitManager := git.NewManagerWithRepoRoot(repoDir)
 	provider := newTestProvider()
@@ -310,7 +315,7 @@ func TestWorktreeIntegration_WorktreeIsolation(t *testing.T) {
 
 func TestWorktreeIntegration_WorktreePathInLabels(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
-	
+
 	repoDir := setupTestRepo(t)
 	gitManager := git.NewManagerWithRepoRoot(repoDir)
 	provider := newTestProvider()
@@ -327,7 +332,7 @@ func TestWorktreeIntegration_WorktreePathInLabels(t *testing.T) {
 
 func TestWorktreeIntegration_ConcurrentCreates(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
-	
+
 	repoDir := setupTestRepo(t)
 	gitManager := git.NewManagerWithRepoRoot(repoDir)
 	provider := newTestProvider()
@@ -359,7 +364,7 @@ func TestWorktreeIntegration_ConcurrentCreates(t *testing.T) {
 
 func TestWorktreeIntegration_SyncMethod(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
-	
+
 	repoDir := setupTestRepo(t)
 	gitManager := git.NewManagerWithRepoRoot(repoDir)
 	provider := newTestProvider()
@@ -380,7 +385,7 @@ func TestWorktreeIntegration_SyncMethod(t *testing.T) {
 
 func TestWorktreeIntegration_SyncNonexistentError(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
-	
+
 	repoDir := setupTestRepo(t)
 	gitManager := git.NewManagerWithRepoRoot(repoDir)
 	provider := newTestProvider()
@@ -394,7 +399,7 @@ func TestWorktreeIntegration_SyncNonexistentError(t *testing.T) {
 
 func TestWorktreeIntegration_ZeroNameAutoGenerates(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
-	
+
 	repoDir := setupTestRepo(t)
 	gitManager := git.NewManagerWithRepoRoot(repoDir)
 	provider := newTestProvider()
@@ -417,7 +422,7 @@ func TestWorktreeIntegration_ZeroNameAutoGenerates(t *testing.T) {
 
 func TestWorktreeIntegration_FileChangesInWorktree(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
-	
+
 	repoDir := setupTestRepo(t)
 	gitManager := git.NewManagerWithRepoRoot(repoDir)
 	provider := newTestProvider()
@@ -431,7 +436,7 @@ func TestWorktreeIntegration_FileChangesInWorktree(t *testing.T) {
 	worktreePath := gitManager.GetWorktreePath(name)
 	testFile := filepath.Join(worktreePath, "test-file.txt")
 	testContent := []byte("test content " + time.Now().String())
-	
+
 	if err := os.WriteFile(testFile, testContent, 0644); err != nil {
 		t.Fatalf("Failed to write test file: %v", err)
 	}
@@ -445,7 +450,7 @@ func TestWorktreeIntegration_FileChangesInWorktree(t *testing.T) {
 
 func TestWorktreeIntegration_GitBranchCreated(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
-	
+
 	repoDir := setupTestRepo(t)
 	gitManager := git.NewManagerWithRepoRoot(repoDir)
 	provider := newTestProvider()
@@ -457,7 +462,7 @@ func TestWorktreeIntegration_GitBranchCreated(t *testing.T) {
 	}
 
 	worktreePath := gitManager.GetWorktreePath(name)
-	
+
 	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
 	cmd.Dir = worktreePath
 	output, err := cmd.Output()
@@ -476,7 +481,7 @@ func TestWorktreeIntegration_GitBranchCreated(t *testing.T) {
 
 func TestWorktreeIntegration_DestroyIdempotent(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
-	
+
 	repoDir := setupTestRepo(t)
 	gitManager := git.NewManagerWithRepoRoot(repoDir)
 	provider := newTestProvider()
@@ -505,7 +510,7 @@ func TestWorktreeIntegration_DestroyIdempotent(t *testing.T) {
 
 func TestWorktreeIntegration_MultipleWorkspacesNoConflicts(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
-	
+
 	repoDir := setupTestRepo(t)
 	gitManager := git.NewManagerWithRepoRoot(repoDir)
 	provider := newTestProvider()

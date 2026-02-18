@@ -1,3 +1,35 @@
-AGENTS.md
-claude_desktop_config.json
-claude_code_config.json
+# Binaries
+nexus
+*.exe
+docker.test
+
+# Test artifacts
+*.test
+*.out
+coverage.html
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dependencies (if vendoring)
+vendor/
+
+# Local config
+.nexus/pulse.db
+.nexus/telemetry.db
+
+# Nexus worktrees
+.nexus/worktrees/
+.nexus/dogfooding/
+
+# Go
+*.o
+*.a
+*.so

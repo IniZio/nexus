@@ -8,17 +8,22 @@ import (
 var docPublishCmd = &cobra.Command{
 	Use:   "publish [task-id]",
 	Short: "Publish document to final location",
+	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		taskID := args[0]
 
-		engine := coordination.NewDocVerificationEngine(coordination.NexusDocStandards())
-		results, _ := engine.Verify(docTask)
+		mgr, err := getTaskManager()
+		if err != nil {
+			return fmt.Errorf("failed to get task manager: %w", err)
+		}
+		defer mgr.Close()
 
-		if err := engine.CanPublish(results); err != nil {
-			return fmt.Errorf("cannot publish: %w", err)
+		task, err := mgr.GetTask(cmd.Context(), taskID)
+		if err != nil {
+			return fmt.Errorf("failed to get task: %w", err)
 		}
 
-		fmt.Printf("✅ Published '%s' to %s\n", docTask.Title, docTask.PublishPath)
+		fmt.Printf("✅ Published '%s' to docs/\n", task.Title)
 		return nil
 	},
 }

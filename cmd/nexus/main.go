@@ -720,6 +720,7 @@ func main() {
 	rootCmd.AddCommand(taskCmd)
 	rootCmd.AddCommand(agentCmd)
 	rootCmd.AddCommand(templateCmd)
+	rootCmd.AddCommand(docCmd)
 
 	templateCmd.AddCommand(templateListCmd)
 

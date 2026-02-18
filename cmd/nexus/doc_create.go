@@ -16,35 +16,24 @@ var docCreateCmd = &cobra.Command{
 		title := args[0]
 		docType, _ := cmd.Flags().GetString("type")
 
-		docTask := coordination.DocTask{
-			Task: coordination.Task{
-				Title:  title,
-				Type:   "documentation",
-				Status: "pending",
-			},
-			DocType: coordination.DocType(docType),
+		mgr, err := getTaskManager()
+		if err != nil {
+			return fmt.Errorf("failed to get task manager: %w", err)
 		}
+		defer mgr.Close()
 
-		if docTask.DocType == coordination.DocTypeADR {
-			adrMgr := coordination.NewADRManager(db)
-			number, err := adrMgr.GetNextADRNumber()
-			if err != nil {
-				return err
-			}
-			docTask.ADRNumber = number
-			fmt.Printf("Creating ADR-%03d...\n", number)
+		task, err := mgr.CreateTask(cmd.Context(), coordination.CreateTaskRequest{
+			Title:       fmt.Sprintf("[%s] %s", docType, title),
+			Description: fmt.Sprintf("Documentation task of type: %s", docType),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create task: %w", err)
 		}
-
-		registry := coordination.NewDocTemplateRegistry()
-		variant := registry.SelectVariant(docTask.DocType)
-		docTask.TemplateVariant = variant
 
 		wsName := fmt.Sprintf("doc-%s", slugify(title))
-		fmt.Printf("Creating workspace '%s'...\n", wsName)
-
-		fmt.Printf("✅ Created doc task: %s\n", docTask.ID)
+		fmt.Printf("✅ Created doc task: %s\n", task.ID)
+		fmt.Printf("   Title: %s\n", title)
 		fmt.Printf("   Type: %s\n", docType)
-		fmt.Printf("   Template: %s\n", variant)
 		fmt.Printf("   Workspace: %s\n", wsName)
 
 		return nil

@@ -1,9 +1,12 @@
 package git
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 
 	"nexus/pkg/testutil"
@@ -241,10 +244,10 @@ func TestManager_DuplicateWorktreeError(t *testing.T) {
 
 func TestWorktreeInfo_Struct(t *testing.T) {
 	info := WorktreeInfo{
-		Name:    "test-workspace",
-		Path:    "/path/to/worktree",
-		Branch:  "nexus/test-workspace",
-		Exists:  true,
+		Name:   "test-workspace",
+		Path:   "/path/to/worktree",
+		Branch: "nexus/test-workspace",
+		Exists: true,
 	}
 
 	if info.Name != "test-workspace" {
@@ -279,4 +282,270 @@ func TestManager_WorktreeWithSpecialChars(t *testing.T) {
 	}
 
 	mgr.RemoveWorktree(name)
+}
+
+func TestManager_ValidateWorktreeCreation(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	mgr := NewManagerWithRepoRoot(repoDir)
+
+	validName := testutil.RandomWorkspaceName()
+	err := mgr.ValidateWorktreeCreation(validName)
+	if err != nil {
+		t.Errorf("Expected no error for valid name '%s': %v", validName, err)
+	}
+}
+
+func TestManager_ValidateWorktreeCreation_EmptyName(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	mgr := NewManagerWithRepoRoot(repoDir)
+
+	err := mgr.ValidateWorktreeCreation("")
+	if err == nil {
+		t.Error("Expected error for empty worktree name")
+	}
+}
+
+func TestManager_ValidateWorktreeCreation_InvalidChars(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	mgr := NewManagerWithRepoRoot(repoDir)
+
+	invalidNames := []string{"test@workspace", "test workspace", "test/workspace", "test\\workspace"}
+	for _, name := range invalidNames {
+		err := mgr.ValidateWorktreeCreation(name)
+		if err == nil {
+			t.Errorf("Expected error for invalid name '%s'", name)
+		}
+	}
+}
+
+func TestManager_ValidateWorktreeCreation_AlreadyExists(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	mgr := NewManagerWithRepoRoot(repoDir)
+
+	name := testutil.RandomWorkspaceName()
+	_, err := mgr.CreateWorktree(name)
+	if err != nil {
+		t.Fatalf("CreateWorktree failed: %v", err)
+	}
+	defer mgr.RemoveWorktree(name)
+
+	err = mgr.ValidateWorktreeCreation(name)
+	if err == nil {
+		t.Error("Expected error for duplicate worktree")
+	}
+}
+
+func TestManager_ValidateWorktreeCreation_BranchExists(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	mgr := NewManagerWithRepoRoot(repoDir)
+
+	name := testutil.RandomWorkspaceName()
+	err := mgr.CreateBranch(name)
+	if err != nil {
+		t.Fatalf("CreateBranch failed: %v", err)
+	}
+
+	err = mgr.ValidateWorktreeCreation(name)
+	if err == nil {
+		t.Error("Expected error when branch already exists")
+	}
+}
+
+func TestManager_CreateOrRecreateWorktree(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	mgr := NewManagerWithRepoRoot(repoDir)
+
+	name := testutil.RandomWorkspaceName()
+	path1, err := mgr.CreateOrRecreateWorktree(name)
+	if err != nil {
+		t.Fatalf("First CreateOrRecreateWorktree failed: %v", err)
+	}
+
+	path2, err := mgr.CreateOrRecreateWorktree(name)
+	if err != nil {
+		t.Fatalf("Second CreateOrRecreateWorktree (idempotent) failed: %v", err)
+	}
+
+	if path1 != path2 {
+		t.Errorf("Expected same path for idempotent operation: %s != %s", path1, path2)
+	}
+
+	mgr.RemoveWorktree(name)
+}
+
+func TestManager_CreateOrRecreateWorktree_BrokenWorktree(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	mgr := NewManagerWithRepoRoot(repoDir)
+
+	name := testutil.RandomWorkspaceName()
+
+	path, err := mgr.CreateWorktree(name)
+	if err != nil {
+		t.Fatalf("CreateWorktree failed: %v", err)
+	}
+
+	t.Logf("Created worktree at: %s", path)
+	t.Logf("Worktree exists: %v", mgr.WorktreeExists(name))
+	t.Logf("Is valid worktree: %v", mgr.isValidWorktree(name))
+
+	gitFile := filepath.Join(path, ".git")
+	if err := os.RemoveAll(gitFile); err != nil {
+		t.Fatalf("Failed to corrupt worktree: %v", err)
+	}
+
+	t.Logf("After corruption:")
+	t.Logf("Worktree exists: %v", mgr.WorktreeExists(name))
+	t.Logf("Is valid worktree: %v", mgr.isValidWorktree(name))
+
+	newPath, err := mgr.CreateOrRecreateWorktree(name)
+	if err != nil {
+		t.Fatalf("CreateOrRecreateWorktree should recreate broken worktree: %v", err)
+	}
+
+	if newPath != path {
+		t.Errorf("Expected same path after recreation: %s != %s", newPath, path)
+	}
+
+	if !mgr.isValidWorktree(name) {
+		t.Error("Worktree should be valid after recreation")
+	}
+
+	mgr.RemoveWorktree(name)
+}
+
+func TestManager_DuplicateWorktreeError_Message(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	mgr := NewManagerWithRepoRoot(repoDir)
+
+	name := testutil.RandomWorkspaceName()
+	_, err := mgr.CreateWorktree(name)
+	if err != nil {
+		t.Fatalf("First CreateWorktree failed: %v", err)
+	}
+	defer mgr.RemoveWorktree(name)
+
+	_, err = mgr.CreateWorktree(name)
+	if err == nil {
+		t.Error("Expected error for duplicate worktree")
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "already exists") {
+		t.Errorf("Expected error message to contain 'already exists', got: %s", errMsg)
+	}
+}
+
+func TestManager_BranchConflictError(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	mgr := NewManagerWithRepoRoot(repoDir)
+
+	name := testutil.RandomWorkspaceName()
+
+	err := mgr.CreateBranch(name)
+	if err != nil {
+		t.Fatalf("CreateBranch failed: %v", err)
+	}
+
+	_, err = mgr.CreateWorktree(name)
+	if err == nil {
+		t.Error("Expected error when branch already exists")
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "branch") && !strings.Contains(errMsg, "already exists") {
+		t.Errorf("Expected error message about branch conflict, got: %s", errMsg)
+	}
+}
+
+func TestManager_IsValidWorktree(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	mgr := NewManagerWithRepoRoot(repoDir)
+
+	name := testutil.RandomWorkspaceName()
+
+	if mgr.isValidWorktree(name) {
+		t.Error("Non-existent worktree should not be valid")
+	}
+
+	path, err := mgr.CreateWorktree(name)
+	if err != nil {
+		t.Fatalf("CreateWorktree failed: %v", err)
+	}
+	defer mgr.RemoveWorktree(name)
+
+	if !mgr.isValidWorktree(name) {
+		t.Error("Valid worktree should be valid")
+	}
+
+	gitFile := filepath.Join(path, ".git")
+	if err := os.RemoveAll(gitFile); err != nil {
+		t.Fatalf("Failed to corrupt worktree: %v", err)
+	}
+
+	if mgr.isValidWorktree(name) {
+		t.Error("Corrupted worktree should not be valid")
+	}
+}
+
+func TestManager_checkGitVersion(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	mgr := NewManagerWithRepoRoot(repoDir)
+
+	err := mgr.checkGitVersion()
+	if err != nil {
+		t.Errorf("Expected no error for git version check: %v", err)
+	}
+}
+
+func TestManager_validateWorktreeName(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr bool
+	}{
+		{"valid-name", false},
+		{"valid123", false},
+		{"valid_name", false},
+		{"valid-name-123", false},
+		{"", true},
+		{"a", false},
+		{"ab", false},
+		{"test@workspace", true},
+		{"test workspace", true},
+		{"test/workspace", true},
+		{"test\\workspace", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateWorktreeNameForTest(tt.name)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateWorktreeName(%q) error = %v, wantErr %v", tt.name, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func validateWorktreeNameForTest(name string) error {
+	if len(name) == 0 {
+		return fmt.Errorf("worktree name cannot be empty")
+	}
+
+	if len(name) > 255 {
+		return fmt.Errorf("worktree name too long (max 255 characters)")
+	}
+
+	validName := regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+	if !validName.MatchString(name) {
+		return fmt.Errorf("worktree name must contain only alphanumeric characters, hyphens, and underscores")
+	}
+
+	reservedNames := []string{"con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"}
+	lowerName := strings.ToLower(name)
+	for _, reserved := range reservedNames {
+		if lowerName == reserved {
+			return fmt.Errorf("worktree name '%s' is reserved", name)
+		}
+	}
+
+	return nil
 }
