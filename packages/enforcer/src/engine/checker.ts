@@ -38,6 +38,8 @@ export class ValidationEngine {
         quality: [],
       },
       adaptive: true,
+      agentSpecificPrompts: true,
+      strictMode: false,
     };
   }
 

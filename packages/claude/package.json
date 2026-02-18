@@ -21,10 +21,10 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "nexus-enforcer": "^1.0.0"
+    "nexus-enforcer": "workspace:*"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^0.0.0",
+    "@anthropic-ai/sdk": "^0.76.0",
     "@types/jest": "^29.5.0",
     "jest": "^29.7.0",
     "typescript": "^5.0.0"

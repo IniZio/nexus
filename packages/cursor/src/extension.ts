@@ -105,5 +105,4 @@ export function deactivate(): void {
   console.log('[NEXUS] Extension deactivated');
 }
 
-export { types };
-export type { ExecutionContext, ValidationResult, EnforcerConfig, CursorExtension };
+export type { ExecutionContext, ValidationResult, EnforcerConfig };
