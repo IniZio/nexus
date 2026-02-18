@@ -1,0 +1,32 @@
+{
+  "name": "nexus-enforcer-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Nexus Enforcer - Self-evolving enforcement rules for AI agents",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "task build",
+    "test": "task test",
+    "lint": "task lint",
+    "publish": "task publish",
+    "clean": "task clean"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "keywords": [
+    "enforcement",
+    "ai-agents",
+    "monorepo",
+    "self-evolving"
+  ],
+  "author": "Nexus Team",
+  "license": "MIT"
+}

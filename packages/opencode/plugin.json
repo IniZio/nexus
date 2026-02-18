@@ -1,0 +1,63 @@
+{
+  "name": "nexus-enforcer",
+  "version": "1.0.0",
+  "displayName": "Nexus Enforcer",
+  "description": "Self-evolving enforcement rules for OpenCode AI agents",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "nexus.validateBefore",
+        "title": "Nexus: Validate Before Task"
+      },
+      {
+        "command": "nexus.validateAfter",
+        "title": "Nexus: Validate After Task"
+      },
+      {
+        "command": "nexus.showStatus",
+        "title": "Nexus: Show Status"
+      }
+    ],
+    "configuration": {
+      "title": "Nexus Enforcer",
+      "properties": {
+        "nexus.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable or disable nexus enforcement"
+        },
+        "nexus.strictMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable strict mode for enforcement"
+        },
+        "nexus.autoValidate": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically validate before/after tasks"
+        }
+      }
+    }
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "bugs": {
+    "url": "https://github.com/nexus-team/enforcer/issues"
+  },
+  "homepage": "https://github.com/nexus-team/enforcer",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nexus-team/enforcer.git"
+  },
+  "license": "MIT"
+}
