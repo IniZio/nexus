@@ -1,0 +1,46 @@
+{
+  "extensions": [
+    {
+      "name": "nexus-claude",
+      "displayName": "Nexus Enforcer",
+      "description": "Self-evolving enforcement rules for Claude AI agents",
+      "version": "1.0.0",
+      "installations": [],
+      "averageRating": 5.0,
+      "reviewCount": 0,
+      "categories": [
+        "AI & Machine Learning",
+        "Developer Tools"
+      ],
+      "tags": [
+        "enforcement",
+        "ai",
+        "rules",
+        "productivity",
+        "development"
+      ],
+      "pricing": "free",
+      "publisher": {
+        "name": "Nexus Team",
+        "uuid": "nexus-team"
+      },
+      "links": {
+        "support": "https://github.com/nexus-team/enforcer/issues",
+        "repository": "https://github.com/nexus-team/enforcer",
+        "changelog": "https://github.com/nexus-team/enforcer/releases"
+      },
+      "manifest": {
+        "assets": [
+          {
+            "assetType": "icon",
+            "path": "icon.png"
+          }
+        ]
+      },
+      "autoUpdate": {
+        "enabled": true,
+        "frequency": "daily"
+      }
+    }
+  ]
+}

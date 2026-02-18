@@ -1,0 +1,26 @@
+{
+  "version": "1.0.0",
+  "rules": {
+    "workspace": {
+      "required": true,
+      "enforceWorkspace": true,
+      "enforceIsolation": true
+    },
+    "dogfooding": {
+      "required": true,
+      "logFriction": true,
+      "testChanges": true
+    },
+    "completion": {
+      "required": true,
+      "verifyTests": true,
+      "verifyBuild": true,
+      "verifyLint": true,
+      "verifyTypecheck": true
+    },
+    "quality": []
+  },
+  "adaptive": true,
+  "agentSpecificPrompts": true,
+  "strictMode": false
+}

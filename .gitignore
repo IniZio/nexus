@@ -41,6 +41,7 @@ vendor/
 # Local config
 .nexus/pulse.db
 .nexus/telemetry.db
+.nexus/enforcer-rules.local.json
 
 # Nexus worktrees
 .nexus/worktrees/
