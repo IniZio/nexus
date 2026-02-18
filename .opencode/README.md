@@ -1,13 +1,19 @@
 # OpenCode Configuration
 
-This directory contains project-specific OpenCode configuration.
+This directory contains project-specific OpenCode extensions.
 
-## Plugins
+## Configuration Location
+
+**Main config is at:** `../opencode.json` (project root)
+
+## Contents
+
+- **plugins/**: OpenCode plugins (loaded from opencode.json)
+- **skills/**: Agent skills for various AI assistants
+
+## Current Plugins
 
 - **nexus-opencode**: Local enforcement plugin for nexus workflows
-  - Located at: `./packages/opencode`
+  - Configured in: `../opencode.json`
+  - Location: `../packages/opencode`
   - Enforces workspace usage, dogfooding, and task completion
-
-## Activation
-
-OpenCode automatically loads this configuration when running in the nexus directory.
