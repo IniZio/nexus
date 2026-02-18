@@ -18,9 +18,9 @@ type Manager struct {
 }
 
 type WorkspaceInfo struct {
-	Name        string
-	Status      string
-	Port        string
+	Name         string
+	Status       string
+	Port         string
 	WorktreePath string
 }
 
@@ -33,6 +33,7 @@ type Provider interface {
 	Exec(ctx context.Context, name string, command []string) error
 	List(ctx context.Context) ([]WorkspaceInfo, error)
 	Close() error
+	ContainerExists(ctx context.Context, name string) (bool, error)
 }
 
 func NewManager(provider Provider) *Manager {
@@ -41,6 +42,63 @@ func NewManager(provider Provider) *Manager {
 
 func NewManagerWithGitManager(provider Provider, gitManager *git.Manager) *Manager {
 	return &Manager{provider: provider, gitManager: gitManager}
+}
+
+func (m *Manager) validateCreate(name string) error {
+	if name == "" {
+		return fmt.Errorf("workspace name cannot be empty")
+	}
+
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return fmt.Errorf("workspace name contains invalid characters: only alphanumeric, hyphens, and underscores allowed")
+		}
+	}
+
+	if m.gitManager.WorktreeExists(name) {
+		return fmt.Errorf("workspace '%s' already exists as a worktree", name)
+	}
+
+	return nil
+}
+
+func (m *Manager) Repair(name string) error {
+	ctx := context.Background()
+	defer m.provider.Close()
+
+	if name == "" {
+		return fmt.Errorf("workspace name required")
+	}
+
+	worktreeExists := m.gitManager.WorktreeExists(name)
+	containerExists, err := m.provider.ContainerExists(ctx, name)
+	if err != nil {
+		return fmt.Errorf("failed to check container: %w", err)
+	}
+
+	if worktreeExists && containerExists {
+		return fmt.Errorf("workspace '%s' is already healthy (worktree and container exist)", name)
+	}
+
+	if !worktreeExists && !containerExists {
+		return fmt.Errorf("workspace '%s' does not exist - nothing to repair", name)
+	}
+
+	if worktreeExists && !containerExists {
+		fmt.Printf("🔧 Worktree exists but container missing. Recreating container...\n")
+		worktreePath := m.gitManager.GetWorktreePath(name)
+		if err := m.provider.Create(ctx, name, worktreePath); err != nil {
+			return fmt.Errorf("failed to create container: %w", err)
+		}
+		fmt.Printf("✅ Container recreated for workspace '%s'\n", name)
+		return nil
+	}
+
+	if !worktreeExists && containerExists {
+		return fmt.Errorf("container exists but worktree is missing - cannot repair automatically. Destroy and recreate the workspace.")
+	}
+
+	return nil
 }
 
 func (m *Manager) Create(name string) error {
@@ -106,6 +164,19 @@ func (m *Manager) Up(name string) error {
 			return fmt.Errorf("no workspace specified and could not auto-detect")
 		}
 		fmt.Printf("Auto-detected workspace: %s\n", name)
+	}
+
+	exists, err := m.provider.ContainerExists(ctx, name)
+	if err != nil {
+		return fmt.Errorf("failed to check container: %w", err)
+	}
+
+	if !exists {
+		worktreeExists := m.gitManager.WorktreeExists(name)
+		if worktreeExists {
+			return fmt.Errorf("container not found for workspace '%s'. Run 'nexus workspace repair %s' to fix.", name, name)
+		}
+		return fmt.Errorf("workspace '%s' not found. Run 'nexus workspace create %s' first.", name, name)
 	}
 
 	fmt.Printf("🚀 Starting workspace '%s'...\n", name)

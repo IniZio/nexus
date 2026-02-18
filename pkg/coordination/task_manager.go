@@ -87,6 +87,10 @@ func NewSQLiteStorage(dbPath string, workspaceID string, workspacesRoot string) 
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
+	if err := storage.migrateSchema(); err != nil {
+		return nil, fmt.Errorf("failed to migrate schema: %w", err)
+	}
+
 	return storage, nil
 }
 
@@ -207,7 +211,8 @@ func (s *SQLiteStorage) GetTask(ctx context.Context, id string) (*Task, error) {
 	FROM tasks WHERE id = ? AND workspace_id = ?
 	`
 	var task Task
-	var createdAtStr, updatedAtStr, dependsOnStr, verificationByStr, rejectionHistoryStr string
+	var createdAtStr, updatedAtStr string
+	var dependsOnStr, verificationByStr, rejectionHistoryStr sql.NullString
 	var completedAt, assignee, verificationAt, verificationCriteria sql.NullString
 
 	err := s.db.QueryRowContext(ctx, query, id, s.workspaceID).Scan(
@@ -229,11 +234,11 @@ func (s *SQLiteStorage) GetTask(ctx context.Context, id string) (*Task, error) {
 	if assignee.Valid {
 		task.Assignee = assignee.String
 	}
-	if dependsOnStr != "" {
-		task.DependsOn = splitStrings(dependsOnStr)
+	if dependsOnStr.Valid && dependsOnStr.String != "" {
+		task.DependsOn = splitStrings(dependsOnStr.String)
 	}
-	if verificationByStr != "" {
-		task.VerificationBy = verificationByStr
+	if verificationByStr.Valid {
+		task.VerificationBy = verificationByStr.String
 	}
 	if verificationAt.Valid {
 		t, _ := time.Parse(time.RFC3339, verificationAt.String)
@@ -245,8 +250,8 @@ func (s *SQLiteStorage) GetTask(ctx context.Context, id string) (*Task, error) {
 			task.Verification = &criteria
 		}
 	}
-	if rejectionHistoryStr != "" && rejectionHistoryStr != "null" {
-		json.Unmarshal([]byte(rejectionHistoryStr), &task.RejectionHistory)
+	if rejectionHistoryStr.Valid && rejectionHistoryStr.String != "" && rejectionHistoryStr.String != "null" {
+		json.Unmarshal([]byte(rejectionHistoryStr.String), &task.RejectionHistory)
 	}
 	if completedAt.Valid {
 		t, _ := time.Parse(time.RFC3339, completedAt.String)
@@ -315,7 +320,8 @@ func (s *SQLiteStorage) ListTasks(ctx context.Context, workspaceID string, statu
 	var tasks []*Task
 	for rows.Next() {
 		var task Task
-		var createdAtStr, updatedAtStr, dependsOnStr, verificationByStr, rejectionHistoryStr string
+		var createdAtStr, updatedAtStr string
+		var dependsOnStr, verificationByStr, rejectionHistoryStr sql.NullString
 		var completedAt, assignee, verificationAt, verificationCriteria sql.NullString
 
 		err := rows.Scan(
@@ -334,11 +340,11 @@ func (s *SQLiteStorage) ListTasks(ctx context.Context, workspaceID string, statu
 		if assignee.Valid {
 			task.Assignee = assignee.String
 		}
-		if dependsOnStr != "" {
-			task.DependsOn = splitStrings(dependsOnStr)
+		if dependsOnStr.Valid && dependsOnStr.String != "" {
+			task.DependsOn = splitStrings(dependsOnStr.String)
 		}
-		if verificationByStr != "" {
-			task.VerificationBy = verificationByStr
+		if verificationByStr.Valid {
+			task.VerificationBy = verificationByStr.String
 		}
 		if verificationAt.Valid {
 			t, _ := time.Parse(time.RFC3339, verificationAt.String)
@@ -350,8 +356,8 @@ func (s *SQLiteStorage) ListTasks(ctx context.Context, workspaceID string, statu
 				task.Verification = &criteria
 			}
 		}
-		if rejectionHistoryStr != "" && rejectionHistoryStr != "null" {
-			json.Unmarshal([]byte(rejectionHistoryStr), &task.RejectionHistory)
+		if rejectionHistoryStr.Valid && rejectionHistoryStr.String != "" && rejectionHistoryStr.String != "null" {
+			json.Unmarshal([]byte(rejectionHistoryStr.String), &task.RejectionHistory)
 		}
 		if completedAt.Valid {
 			t, _ := time.Parse(time.RFC3339, completedAt.String)
@@ -659,6 +665,68 @@ func (s *SQLiteStorage) ListAllPortMappings(ctx context.Context) (map[string][]P
 	}
 
 	return result, rows.Err()
+}
+
+func (s *SQLiteStorage) migrateSchema() error {
+	columns, err := s.getTableColumns("tasks")
+	if err != nil {
+		return err
+	}
+
+	migrations := []struct {
+		column string
+		def    string
+	}{
+		{"verification_by", "TEXT"},
+		{"verification_at", "TEXT"},
+		{"verification_criteria", "TEXT"},
+		{"rejection_count", "INTEGER DEFAULT 0"},
+		{"rejection_history", "TEXT"},
+	}
+
+	for _, m := range migrations {
+		if !stringSliceContains(columns, m.column) {
+			_, err = s.db.Exec(fmt.Sprintf("ALTER TABLE tasks ADD COLUMN %s %s", m.column, m.def))
+			if err != nil {
+				return fmt.Errorf("failed to add column %s: %w", m.column, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s *SQLiteStorage) getTableColumns(tableName string) ([]string, error) {
+	query := fmt.Sprintf("PRAGMA table_info(%s)", tableName)
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var columns []string
+	for rows.Next() {
+		var cid int
+		var name string
+		var dtype string
+		var notnull int
+		var dfltValue interface{}
+		var pk int
+		if err := rows.Scan(&cid, &name, &dtype, &notnull, &dfltValue, &pk); err != nil {
+			return nil, err
+		}
+		columns = append(columns, name)
+	}
+	return columns, rows.Err()
+}
+
+func stringSliceContains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *SQLiteStorage) Close() error {

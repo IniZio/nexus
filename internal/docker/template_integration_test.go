@@ -306,6 +306,11 @@ func (m *mockTemplateProvider) Close() error {
 	return nil
 }
 
+func (m *mockTemplateProvider) ContainerExists(ctx context.Context, name string) (bool, error) {
+	_, exists := m.containers[name]
+	return exists, nil
+}
+
 func TestTemplateIntegration_PortAccessibility(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 
