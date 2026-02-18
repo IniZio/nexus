@@ -1,0 +1,81 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types: [created]
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-amd64
+            artifact: nexus-linux-amd64
+          - os: ubuntu-latest
+            target: linux-arm64
+            artifact: nexus-linux-arm64
+          - os: macos-latest
+            target: darwin-amd64
+            artifact: nexus-darwin-amd64
+          - os: macos-latest
+            target: darwin-arm64
+            artifact: nexus-darwin-arm64
+          - os: windows-latest
+            target: windows-amd64
+            artifact: nexus-windows-amd64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build binary
+        run: |
+          if [[ "${{ matrix.target }}" == windows* ]]; then
+            GOOS=windows GOARCH=amd64 go build -o ${{ matrix.artifact }}.exe
+          else
+            GOOS=$(echo ${{ matrix.target }} | cut -d'-' -f1) \
+            GOARCH=$(echo ${{ matrix.target }} | cut -d'-' -f2) \
+            go build -o ${{ matrix.artifact }}
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}${{ matrix.target == 'windows*' && '.exe' || '' }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/nexus-linux-amd64
+            artifacts/nexus-linux-arm64
+            artifacts/nexus-darwin-amd64
+            artifacts/nexus-darwin-arm64
+            artifacts/nexus-windows-amd64.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

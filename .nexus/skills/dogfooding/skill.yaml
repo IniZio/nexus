@@ -1,0 +1,94 @@
+name: nexus-dogfooding
+description: Enforces commit quality and continuous dogfooding practices
+
+rules:
+  - name: conventional-commits
+    description: All commits must follow Conventional Commits format
+    pattern: '^(feat|fix|docs|style|refactor|test|chore|ci|build|perf|revert)(\([^)]+\))?!?: .+'
+    severity: error
+    message: |
+      Commit message must follow Conventional Commits format:
+      
+      <type>[(scope)]: <description>
+      
+      Valid types: feat, fix, docs, style, refactor, test, chore, ci, build, perf, revert
+      
+      Examples:
+        feat(workspace): add container support
+        fix(telemetry): handle null values
+        docs: update README
+
+  - name: no-binaries
+    description: Never commit binary files
+    forbidden_patterns:
+      - '\\.exe$'
+      - '\\.dll$'
+      - '\\.so$'
+      - '\\.dylib$'
+      - '^nexus$'  # The binary
+    severity: error
+    message: |
+      ❌ Binary files detected!
+      
+      Never commit binaries to git. They bloat the repository.
+      
+      The nexus binary is built by GitHub Actions and distributed via releases.
+      
+      To install: curl -fsSL https://inizio.github.io/nexus/install.sh | bash
+
+  - name: atomic-commits
+    description: Keep commits small and focused
+    max_files: 10
+    max_lines: 500
+    severity: warning
+    message: |
+      ⚠️  Large commit detected!
+      
+      Consider splitting into smaller, atomic commits:
+      - Max 10 files per commit
+      - Max 500 lines changed
+      
+      Benefits:
+      - Easier to review
+      - Easier to revert
+      - Clearer history
+
+  - name: dogfooding-check
+    description: Verify changes were dogfooded
+    prompt_before: |
+      🐕 Dogfooding Check:
+      
+      Before committing, verify:
+      
+      [ ] I tested this change myself
+      [ ] I used a nexus workspace for this work  
+      [ ] Any friction points have been logged to .nexus/dogfooding/friction-log.md
+      [ ] Tests pass locally
+      
+      If any unchecked, pause and complete before committing.
+
+reminders:
+  frequency: every_commit
+  message: |
+    🐕 **Nexus Dogfooding Reminder**
+    
+    Quality Checklist:
+    ✅ Conventional Commits format?
+    ✅ No binaries staged?
+    ✅ Dogfooded the change?
+    ✅ Friction logged?
+    ✅ Tests pass?
+    
+    Remember: The boulder never stops rolling.
+
+hooks:
+  pre-commit: .nexus/git-hooks/commit-msg
+  
+automation:
+  on_commit:
+    - validate_conventional_commits
+    - check_no_binaries
+    - run_tests
+    - log_metrics
+  on_push:
+    - trigger_github_actions_build
