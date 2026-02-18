@@ -127,5 +127,4 @@ export function createClaudeHooks(
   };
 }
 
-export { types };
-export type { ExecutionContext, ValidationResult, EnforcerConfig, ClaudeHooks };
+export type { ExecutionContext, ValidationResult, EnforcerConfig };
