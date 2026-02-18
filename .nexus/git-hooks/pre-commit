@@ -1,0 +1,31 @@
+#!/bin/bash
+# Pre-commit hook to enforce nexus protocols
+
+echo "🐕 Nexus Pre-Commit Check"
+echo "=========================="
+
+# Check if in nexus workspace
+if [ -f ".nexus/workspace.json" ]; then
+    echo "✅ In nexus workspace"
+else
+    echo "⚠️  Not in nexus workspace"
+    echo "   Working in: $(pwd)"
+    echo ""
+    read -p "Continue anyway? (y/N) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "❌ Commit aborted. Use 'nexus workspace create' to work in isolation."
+        exit 1
+    fi
+fi
+
+# Check for friction log if recent changes
+if git diff --cached --name-only | grep -qE '\.(go|ts|js|tsx|jsx|py|rs)$'; then
+    if [ ! -f ".nexus/dogfooding/friction-log.md" ]; then
+        echo "⚠️  No friction log found"
+        echo "   Create: .nexus/dogfooding/friction-log.md"
+    fi
+fi
+
+echo "✅ Pre-commit checks passed"
+exit 0
