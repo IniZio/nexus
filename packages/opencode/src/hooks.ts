@@ -1,4 +1,5 @@
 import { OpenCodePlugin, createOpenCodePlugin } from './index.js';
+import * as types from 'nexus-enforcer/types';
 
 let plugin: OpenCodePlugin | null = null;
 
