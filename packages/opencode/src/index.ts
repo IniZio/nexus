@@ -15,6 +15,24 @@ export interface OpenCodePlugin {
   setStrictMode: (strict: boolean) => void;
 }
 
+function createEmptyValidationResult(): ValidationResult {
+  return {
+    passed: true,
+    checks: [],
+    overallScore: 100,
+    recommendations: [],
+    improvementTasks: [],
+    executionTime: 0,
+    isValid: true,
+    errors: [],
+    iteration: 0,
+    boulderStatus: 'CONTINUOUS',
+    currentTask: null,
+    queueStats: { total: 0, pending: 0, active: 0, done: 0 },
+    timestamp: new Date(),
+  };
+}
+
 export function createOpenCodePlugin(
   configPath?: string,
   overridesPath?: string
@@ -28,13 +46,7 @@ export function createOpenCodePlugin(
   return {
     async validateBefore(context: Partial<ExecutionContext>): Promise<ValidationResult> {
       if (!enabled) {
-        return {
-          passed: true,
-          checks: [],
-          overallScore: 100,
-          recommendations: [],
-          executionTime: 0,
-        };
+        return createEmptyValidationResult();
       }
 
       const fullContext: ExecutionContext = {
@@ -61,13 +73,7 @@ export function createOpenCodePlugin(
 
     async validateAfter(context: Partial<ExecutionContext>): Promise<ValidationResult> {
       if (!enabled) {
-        return {
-          passed: true,
-          checks: [],
-          overallScore: 100,
-          recommendations: [],
-          executionTime: 0,
-        };
+        return createEmptyValidationResult();
       }
 
       const fullContext: ExecutionContext = {

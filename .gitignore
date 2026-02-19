@@ -80,3 +80,4 @@ ENDOFFILE
 .nexus/pulse.db-wal
 .nexus/dogfooding/*.sh
 .nexus/dogfooding/NON-STOP-README.md
+.opencode/oh-my-opencode-study/

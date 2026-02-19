@@ -10,14 +10,17 @@ import {
   EnforcerRules,
   LocalOverrides,
 } from '../types.js';
+import { BoulderStateManager, BoulderState, IMPROVEMENT_TASKS } from '../boulder/state.js';
 
 export class ValidationEngine {
   private baseConfig: EnforcerConfig;
   private localOverrides?: LocalOverrides;
+  private boulder: BoulderStateManager;
 
   constructor(configPath?: string, overridesPath?: string) {
     this.baseConfig = this.loadBaseConfig(configPath);
     this.localOverrides = this.loadOverrides(overridesPath);
+    this.boulder = BoulderStateManager.getInstance();
   }
 
   private loadBaseConfig(configPath?: string): EnforcerConfig {
@@ -248,6 +251,10 @@ export class ValidationEngine {
     const config = this.getEffectiveConfig();
     const workspaceInfo = this.getWorkspaceInfo(context.workspacePath);
 
+    // Increment boulder iteration
+    this.boulder.incrementIteration();
+    const boulderState = this.boulder.getState();
+
     const allFailures: FailedCheck[] = [];
 
     allFailures.push(...this.validateWorkspace(workspaceInfo, config.rules.workspace));
@@ -264,20 +271,43 @@ export class ValidationEngine {
       .map(f => f.remediation || f.message);
 
     return {
-      passed: errorCount === 0,
+      passed: errorCount === 0 && boulderState.canComplete,
       checks: allFailures,
       overallScore,
       recommendations,
-      improvementTasks: [],
       executionTime: Date.now() - startTime,
+      improvementTasks: this.boulder.getImprovementTasks(),
       isValid: errorCount === 0,
       errors: allFailures.map(f => f.message),
-      iteration: 0,
-      boulderStatus: 'CONTINUOUS' as const,
+      iteration: boulderState.iteration,
+      boulderStatus: boulderState.status,
       currentTask: null,
       queueStats: { total: 0, pending: 0, active: 0, done: 0 },
+      canComplete: boulderState.canComplete,
       timestamp: new Date(),
     };
+  }
+
+  /**
+   * Enforce continuous improvement - should be called when completion is attempted
+   */
+  enforceCompletion(): void {
+    this.boulder.recordCompletionAttempt();
+    const state = this.boulder.getState();
+    
+    if (!state.canComplete) {
+      const tasks = this.boulder.getImprovementTasks();
+      const tasksStr = tasks.map((task, i) => `${i + 1}. ${task}`).join('\n');
+      
+      const message = 
+        `BOULDER ENFORCEMENT: You attempted completion. NOT ALLOWED.\n\n` +
+        `The boulder NEVER stops. Generate new ideas NOW:\n${tasksStr}\n\n` +
+        `Iteration: ${state.iteration}\n` +
+        `Status: FORCED CONTINUATION\n\n` +
+        `DO NOT STOP. Execute these tasks. Report your progress.`;
+      
+      throw new Error(message);
+    }
   }
 }
 
