@@ -161,8 +161,23 @@ DO NOT STOP. Execute these tasks. Report your progress.`
       log('EVENT', { type: eventType, sessionID })
       
       if (eventType === 'session.idle' && sessionID) {
-        log('IDLE_TRIGGERED', { sessionID })
+        log('IDLE_TRIGGERED', { sessionID, source: 'session.idle' })
         await forceContinuation(sessionID)
+        return
+      }
+
+      if (eventType === 'session.status' && sessionID) {
+        const eventProps = input?.event?.properties || {}
+        const isIdle = eventProps.idle === true ||
+                      eventProps.status === 'idle' ||
+                      eventProps.state === 'idle' ||
+                      (eventProps.lastActivity &&
+                       Date.now() - eventProps.lastActivity > 30000)
+
+        if (isIdle) {
+          log('IDLE_TRIGGERED', { sessionID, source: 'session.status', props: eventProps })
+          await forceContinuation(sessionID)
+        }
       }
     },
 
