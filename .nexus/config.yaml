@@ -1,4 +1,0 @@
-name: nexus-project
-docker:
-  image: ubuntu:22.04
-  dind: false
