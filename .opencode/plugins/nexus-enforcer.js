@@ -1,15 +1,26 @@
-// Nexus Enforcer - Fixed Logging
+// Nexus Enforcer - Infinite Boulder Mode
+// Forces continuous improvement by rejecting completion and injecting new tasks
+// Config: infiniteBoulder=true for nexus internal (never complete)
+// Config: infiniteBoulder=false for end users (require friction log + research)
+
 import { appendFileSync } from 'fs'
 import { join } from 'path'
 
 const NexusEnforcer = async ({ project, client, $, directory, worktree }) => {
   const logFile = join(directory, '.nexus', 'enforcer-debug.log')
   
-  // Ensure log file exists
+  // Ensure log file exists with error handling
   try { 
     appendFileSync(logFile, '') 
-  } catch {}
+  } catch (e) {
+    console.error('[enforcer] Failed to create log file:', e.message)
+  }
   
+  /**
+   * Log message to debug file
+   * @param {string} msg - Message to log
+   * @param {object} data - Optional data to include
+   */
   const log = (msg, data) => {
     const line = `[${new Date().toISOString()}] ${msg} ${data ? JSON.stringify(data) : ''}\n`
     try {
