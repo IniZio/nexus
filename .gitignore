@@ -71,3 +71,12 @@ ENDOFFILE
 .nexus/boulder-loop.state.json
 .nexus/CONTINUATION_REQUIRED.txt
 *.log
+
+# Unused nexus files
+.nexus/CLAUDE.md
+.nexus/config.yaml
+.nexus/pulse.db
+.nexus/pulse.db-shm
+.nexus/pulse.db-wal
+.nexus/dogfooding/*.sh
+.nexus/dogfooding/NON-STOP-README.md
