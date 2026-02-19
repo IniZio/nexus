@@ -1,16 +1,18 @@
-# Dogfooding Friction Log
+# Dogfooding Friction Log - 2026-02-19
 
-## Session: 2026-02-19 - Infinite Boulder Working!
+## Research: OpenCode Plugin Best Practices
 
-### Completed
-- ✅ Enforcer plugin now loads and works
-- ✅ Workspace enforcement (worktree mode)
-- ✅ Dogfooding checks (friction log detection)
-- ✅ Docker-compose detection fix
+### Findings
+- Plugins use hooks: tool.execute.before/after, experimental.session.compacting
+- Can inject context via output.context.push()
+- Custom tools via tool.execute
+- Events: session.idle, todo.updated, etc.
 
-### Working Features
-- Plugin loads on startup
-- Hooks fire correctly (tool.execute.before/after)
-- Workspace detection via .nexus/current marker
-- Completion keyword detection
+### Friction Points
+1. Enforcer too aggressive - blocked research tools
+2. Need to distinguish user completion claims vs tool outputs
+3. Should only check chat messages, not all tool outputs
 
+## Fixes Applied
+- Disabled boulder mode to fix enforcer
+- Will refine to only check user messages
