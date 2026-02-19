@@ -110,10 +110,15 @@ Iteration: ${iteration}`
       }
     },
 
-    'event': async ({ event }) => {
-      if (event?.type === 'session.idle' && event?.sessionID) {
-        log('IDLE_DETECTED', { sessionID: event.sessionID })
-        await forceContinuation(event.sessionID)
+    'event': async (input, output) => {
+      const eventType = input?.event?.type
+      const sessionID = output?.sessionID || input?.event?.sessionID
+      
+      log('EVENT', { type: eventType, sessionID })
+      
+      if (eventType === 'session.idle' && sessionID) {
+        log('IDLE_TRIGGERED', { sessionID })
+        await forceContinuation(sessionID)
       }
     },
 
