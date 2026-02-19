@@ -1,4 +1,4 @@
-// Nexus Enforcer - Session Start + Interval Enforcement
+// Nexus Enforcer - Non-blocking Session Start + Interval Enforcement
 import { appendFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
@@ -23,64 +23,48 @@ const NexusEnforcer = async ({ project, client, $, directory, worktree }) => {
   const isSelfEdit = (path) => path?.includes('.opencode/plugins') || path?.includes('enforcer-config')
   let iteration = 0
 
-  // FORCE CONTINUATION
-  const forceContinuation = async (reason) => {
-    iteration++
-    const tasks = []
-    
-    if (reason.includes('Friction')) {
-      tasks.push('1. Create .nexus/dogfooding/friction-log.md')
-      tasks.push('2. Document what you tested, what failed, what you learned')
-    }
-    
-    if (reason.includes('Research')) {
-      tasks.push('1. Search for best practices on current topic')
-      tasks.push('2. Read at least 2 documentation sources')
-    }
-    
-    if (reason.includes('Session')) {
-      tasks.push('1. Review current code for improvement opportunities')
-      tasks.push('2. Identify technical debt to refactor')
-      tasks.push('3. Plan next iteration of enhancements')
-    }
-    
-    const continuationFile = `${directory}/.nexus/CONTINUATION_REQUIRED.txt`
-    const content = `BOULDER ${reason}: SESSION START
-
-ITERATION: ${iteration}
-YOU MUST COMPLETE BEFORE PROCEEDING:
-${tasks.join('\n')}
-
-STATUS: INCOMPLETE
-The boulder never stops. Complete these tasks or explain why you cannot.`
-
-    try { writeFileSync(continuationFile, content) } catch {}
-    return { iteration, tasks, reason }
-  }
-
-  // SESSION START - FORCE IMMEDIATE ACTION
+  // NON-BLOCKING session start - just show toast and create file
   const sessionStart = async () => {
     iteration++
     log('SESSION_START', { iteration })
     
-    // Show immediate toast
+    // Show toast (non-blocking)
     try {
       await client.tui.showToast({
         body: {
-          title: 'BOULDER SESSION START',
-          message: `Session ${iteration} started. The boulder demands immediate action. Generate ideas now.`,
-          variant: 'error',
-          duration: 15000
+          title: 'BOULDER ACTIVE',
+          message: `Session ${iteration}. The boulder demands continuous improvement. Generate ideas now.`,
+          variant: 'info',
+          duration: 8000
         }
       })
     } catch {}
     
-    // Force continuation immediately
-    await forceContinuation('Session Start Enforcement')
+    // Create continuation file (non-blocking)
+    const ideas = [
+      'Review current code for improvements',
+      'Refactor technical debt',
+      'Add error handling',
+      'Write tests',
+      'Optimize performance',
+      'Update documentation'
+    ]
+    const randomIdeas = ideas.sort(() => 0.5 - Math.random()).slice(0, 3)
+    
+    const content = `BOULDER SESSION ${iteration}
+
+STATUS: ACTIVE ENFORCEMENT
+
+GENERATE IDEAS NOW:
+${randomIdeas.map((idea, i) => `${i + 1}. ${idea}`).join('\n')}
+
+Complete before claiming done.`
+
+    try { writeFileSync(`${directory}/.nexus/CONTINUATION_REQUIRED.txt`, content) } catch {}
   }
   
-  // Trigger session start immediately
-  await sessionStart()
+  // Run session start in background (don't block)
+  sessionStart().catch(() => {})
 
   const checkBlock = async (text) => {
     if (!config.boulderMode || !/done|complete|finished/i.test(text)) return null
@@ -109,41 +93,41 @@ The boulder never stops. Complete these tasks or explain why you cannot.`
       if (!config.enabled || !config.boulderMode) return
       
       const idleTime = Date.now() - lastActiveTime
-      const IDLE_THRESHOLD = 30000
+      const IDLE_THRESHOLD = 30000 // 30 seconds
       
       if (idleTime > IDLE_THRESHOLD) {
         iteration++
         log('IDLE_CHECK', { idleTime, iteration })
         
+        // Show toast
         try {
           await client.tui.showToast({
             body: {
               title: 'BOULDER ALERT',
-              message: `Idle ${Math.round(idleTime/1000)}s. Generate new ideas. Refine code. Research.`,
+              message: `Idle ${Math.round(idleTime/1000)}s. Generate ideas. Refine. Research. Iteration ${iteration}.`,
               variant: 'warning',
               duration: 10000
             }
           })
         } catch {}
         
+        // Update continuation file with new ideas
         const ideas = [
-          'Refactor for better performance',
-          'Research alternative implementations',
+          'Refactor for performance',
+          'Research alternatives',
           'Add error handling',
-          'Improve documentation',
-          'Write tests',
-          'Optimize edge cases'
+          'Improve docs',
+          'Write tests'
         ]
         const randomIdeas = ideas.sort(() => 0.5 - Math.random()).slice(0, 3)
         
-        const content = `BOULDER INTERVAL ENFORCEMENT
+        const content = `BOULDER IDLE ENFORCEMENT
 
-IDLE: ${Math.round(idleTime / 1000)}s | ITERATION: ${iteration}
+IDLE: ${Math.round(idleTime/1000)}s | ITERATION: ${iteration}
 
-YOU ARE IDLE. GENERATE NEW IDEAS:
+GENERATE IDEAS:
 ${randomIdeas.map((idea, i) => `${i + 1}. ${idea}`).join('\n')}
 
-STATUS: MUST IMPLEMENT
 The boulder never stops.`
 
         try { writeFileSync(`${directory}/.nexus/CONTINUATION_REQUIRED.txt`, content) } catch {}
@@ -176,8 +160,8 @@ The boulder never stops.`
       
       const check = await checkBlock(JSON.stringify(output.output || ''))
       if (check?.block) {
-        const force = await forceContinuation(check.reason)
-        throw new Error(`BOULDER[${force.iteration}] BLOCKED: ${check.reason}`)
+        const force = await checkBlock('')
+        throw new Error(`BOULDER BLOCKED: ${check.reason}`)
       }
     },
 
@@ -192,9 +176,9 @@ The boulder never stops.`
       
       let reminder = `BOULDER[${iteration}]: `
       if (hasContinuation.trim() === '1') {
-        reminder += 'COMPLETION BLOCKED. Check CONTINUATION_REQUIRED.txt'
+        reminder += 'Action required. Check CONTINUATION_REQUIRED.txt'
       } else {
-        reminder += 'Session start forces action. Idle 30s triggers ideas.'
+        reminder += 'Session active. Idle 30s triggers ideas.'
       }
       
       last.parts.splice(idx, 0, {
