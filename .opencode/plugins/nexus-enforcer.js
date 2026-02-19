@@ -1,4 +1,4 @@
-// Nexus Enforcer - INTERNAL PROJECT: Never Accept Completion
+// Nexus Enforcer - Configurable Boulder Mode
 import { appendFileSync } from 'fs'
 import { join } from 'path'
 
@@ -10,85 +10,114 @@ const NexusEnforcer = async ({ project, client, $, directory, worktree }) => {
     } catch {}
   }
 
-  log('INIT', { project: 'nexus-internal', mode: 'infinite-boulder' })
+  // Config with defaults - infiniteBoulder enabled by default for nexus internal
+  let config = {
+    enabled: true,
+    infiniteBoulder: true,  // DEFAULT: true for nexus internal, false for end-users
+    enforceWorkspace: true,
+    cooldownSeconds: 30
+  }
   
-  // NEXUS INTERNAL: Always enforce, never accept completion
-  const IS_NEXUS_INTERNAL = true
+  try { Object.assign(config, await $`cat ${directory}/.nexus/enforcer-config.json`.json()) } catch {}
+  try { Object.assign(config, await $`cat ${directory}/.nexus/enforcer-config.local.json`.json()) } catch {}
+
+  log('INIT', { infiniteBoulder: config.infiniteBoulder, enabled: config.enabled })
+  
+  if (!config.enabled) return {}
+
   let iteration = 0
   let lastForcedTime = 0
-  
-  // FORCE CONTINUATION - Always inject on idle
+  const cooldownMs = (config.cooldownSeconds || 30) * 1000
+
+  // FORCE CONTINUATION
   const forceContinuation = async (sessionID) => {
     const now = Date.now()
-    if (now - lastForcedTime < 30000) { // 30s cooldown
-      return
-    }
+    if (now - lastForcedTime < cooldownMs) return
     
     iteration++
     lastForcedTime = now
     
-    // Generate infinite improvement tasks
     const tasks = [
       'Research next feature to implement',
-      'Refactor existing code for better performance', 
+      'Refactor existing code for better performance',
       'Add comprehensive error handling',
       'Write additional tests',
       'Optimize for edge cases',
       'Improve documentation',
       'Review security considerations',
-      'Add monitoring and logging',
-      'Research competitor implementations',
-      'Plan next architecture iteration'
+      'Add monitoring and logging'
     ]
     const randomTasks = tasks.sort(() => 0.5 - Math.random()).slice(0, 3)
     
-    const forceText = `BOULDER ENFORCEMENT: CONTINUATION REQUIRED
+    let forceText
+    if (config.infiniteBoulder) {
+      // NEXUS INTERNAL: Never complete
+      forceText = `BOULDER ENFORCEMENT: CONTINUATION REQUIRED
 
 The boulder NEVER stops. You are NOT done.
 
-NEXUS INTERNAL PROJECT - INFINITE IMPROVEMENT MANDATE:
+NEXUS INTERNAL - INFINITE IMPROVEMENT MANDATE:
 ${randomTasks.map((t, i) => `${i + 1}. ${t}`).join('\n')}
 
 Iteration: ${iteration}
-Status: INCOMPLETE
+Status: INCOMPLETE - NEVER COMPLETE
 
-DO NOT CLAIM COMPLETION. 
+DO NOT CLAIM COMPLETION.
 DO NOT SAY "DONE".
-CONTINUE IMPROVING INDEFINITELY.
+CONTINUE IMPROVING FOREVER.
 
-The boulder demands: Research, Refactor, Perfect, Repeat.`
+Research. Refactor. Perfect. Repeat.`
+    } else {
+      // END USER: Complete with requirements
+      forceText = `BOULDER ENFORCEMENT: Requirements not met
+
+Complete before proceeding:
+${randomTasks.map((t, i) => `${i + 1}. ${t}`).join('\n')}
+
+Iteration: ${iteration}
+
+The boulder demands continuous improvement.`
+    }
 
     try {
       await client.session.promptAsync({
         path: { id: sessionID },
-        body: {
-          parts: [{ type: 'text', text: forceText }]
-        }
+        body: { parts: [{ type: 'text', text: forceText }] }
       })
-      log('FORCE_SUCCESS', { iteration })
+      log('FORCE_SUCCESS', { iteration, mode: config.infiniteBoulder ? 'infinite' : 'conditional' })
     } catch (e) {
       log('FORCE_ERROR', { error: e.message })
     }
   }
 
   return {
-    // Block ALL completion attempts
+    // Block completion based on mode
     'tool.execute.after': async (input, output) => {
       const text = JSON.stringify(output.output || '')
-      if (/done|complete|finished|implemented/i.test(text)) {
+      if (!/done|complete|finished/i.test(text)) return
+      
+      if (config.infiniteBoulder) {
+        // NEXUS INTERNAL: Never accept completion
         throw new Error('BOULDER: Completion rejected. Nexus internal requires infinite improvement.')
+      } else {
+        // END USER: Check requirements
+        const friction = await $`test -f ${directory}/.nexus/dogfooding/friction-log.md 2>/dev/null && echo 1 || echo 0`.text()
+        const research = await $`git log --oneline -3 2>/dev/null | grep -i research || echo ""`.text()
+        
+        if (friction.trim() !== '1' || !research.trim()) {
+          throw new Error('BOULDER: Complete friction log and research before claiming done.')
+        }
       }
     },
 
-    // Force continuation on EVERY idle
+    // Force continuation on idle
     'event': async ({ event }) => {
       if (event?.type === 'session.idle' && event?.sessionID) {
-        log('IDLE_FORCE', { iteration: iteration + 1 })
         await forceContinuation(event.sessionID)
       }
     },
 
-    // Constant reminder
+    // Reminder in context
     'experimental.chat.messages.transform': async (input, output) => {
       if (!output.messages?.length) return
       
@@ -96,12 +125,16 @@ The boulder demands: Research, Refactor, Perfect, Repeat.`
       const idx = last.parts?.findIndex(p => p.type === 'text' && p.text)
       if (idx === -1) return
       
+      const reminder = config.infiniteBoulder
+        ? `BOULDER[${iteration}]: NEXUS INTERNAL - Never complete. Always improve.`
+        : `BOULDER[${iteration}]: Continuous improvement required.`
+      
       last.parts.splice(idx, 0, {
         id: `bldr_${Date.now()}`,
         messageID: last.info?.id || 'x',
         sessionID: last.info?.sessionID || '',
         type: 'text',
-        text: `BOULDER[${iteration}]: NEXUS INTERNAL - Never complete. Always improve.`,
+        text: reminder,
         synthetic: true
       })
     }
