@@ -1,12 +1,1 @@
-{
-  "enabled": true,
-  "enforceWorkspace": true,
-  "enforceDogfooding": true,
-  "blockStopWithTodos": true,
-  "adaptive": true,
-  "idlePromptThresholdMs": 30000,
-  "boulderMode": true,
-  "requireResearch": true,
-  "requireRefactoring": true,
-  "requireRoadmapEvolution": true
-}
+{"enabled":true,"infiniteBoulder":true}
