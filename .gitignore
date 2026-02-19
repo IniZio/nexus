@@ -57,3 +57,10 @@ node_modules/
 
 # Nested nexus folder
 nexus/nexus/
+
+# Temporary files
+/tmp/
+*.tmp
+ENDFILE
+EOF
+ENDOFFILE
