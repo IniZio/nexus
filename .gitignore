@@ -64,3 +64,10 @@ nexus/nexus/
 ENDFILE
 EOF
 ENDOFFILE
+
+# Enforcer generated files
+.nexus/enforcer-debug.log
+.nexus/enforcer-config.local.json
+.nexus/boulder-loop.state.json
+.nexus/CONTINUATION_REQUIRED.txt
+*.log
