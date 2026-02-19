@@ -1,20 +1,26 @@
+export interface BoulderContinuousState {
+  isActive: boolean;
+  iteration: number;
+  startTime: Date;
+  lastActivity: Date;
+}
+
+export interface QueueStats {
+  total: number;
+  pending: number;
+  active: number;
+  done: number;
+}
+
 export interface ExecutionContext {
   workspacePath: string;
   workingDirectory: string;
   currentFile?: string;
   currentFunction?: string;
-  agentType: 'opencode' | 'claude' | 'cursor' | 'custom';
+  agentType: string;
   taskDescription: string;
   timestamp: Date;
-  environment: Record<string, string>;
-}
-
-export interface ValidationResult {
-  passed: boolean;
-  checks: FailedCheck[];
-  overallScore: number;
-  recommendations: string[];
-  executionTime: number;
+  environment: Record<string, unknown>;
 }
 
 export interface FailedCheck {
@@ -42,10 +48,35 @@ export interface WorkspaceInfo {
 export interface Todo {
   id: string;
   content: string;
-  status: 'pending' | 'in_progress' | 'completed';
-  priority: 'high' | 'medium' | 'low';
-  createdAt: Date;
-  completedAt?: Date;
+  status: 'pending' | 'in-progress' | 'done';
+  priority: number;
+}
+
+export interface EnforcerRulesWorkspace {
+  required: boolean;
+  enforceWorkspace: boolean;
+  enforceIsolation: boolean;
+}
+
+export interface EnforcerRulesDogfooding {
+  required: boolean;
+  logFriction: boolean;
+  testChanges: boolean;
+}
+
+export interface EnforcerRulesCompletion {
+  required: boolean;
+  verifyTests: boolean;
+  verifyBuild: boolean;
+  verifyLint: boolean;
+  verifyTypecheck: boolean;
+}
+
+export interface EnforcerRules {
+  workspace: EnforcerRulesWorkspace;
+  dogfooding: EnforcerRulesDogfooding;
+  completion: EnforcerRulesCompletion;
+  quality: unknown[];
 }
 
 export interface EnforcerConfig {
@@ -56,44 +87,8 @@ export interface EnforcerConfig {
   strictMode: boolean;
 }
 
-export interface EnforcerRules {
-  workspace: WorkspaceRule;
-  dogfooding: DogfoodingRule;
-  completion: CompletionRule;
-  quality: QualityRule[];
-}
-
-export interface WorkspaceRule {
-  required: boolean;
-  enforceWorkspace: boolean;
-  enforceIsolation: boolean;
-}
-
-export interface DogfoodingRule {
-  required: boolean;
-  logFriction: boolean;
-  testChanges: boolean;
-}
-
-export interface CompletionRule {
-  required: boolean;
-  verifyTests: boolean;
-  verifyBuild: boolean;
-  verifyLint: boolean;
-  verifyTypecheck: boolean;
-}
-
-export interface QualityRule {
-  id: string;
-  name: string;
-  description: string;
-  enabled: boolean;
-  severity: 'error' | 'warning' | 'info';
-  category: string;
-}
-
 export interface LocalOverrides {
-  overrides: Record<string, Partial<EnforcerRules>>;
+  overrides: Partial<EnforcerRules>;
 }
 
 export interface AgentPromptConfig {
@@ -107,9 +102,52 @@ export interface AgentPromptConfig {
   sections: string[];
 }
 
-export interface AdaptiveConfig {
-  enabled: boolean;
-  learningRate: number;
-  decayFactor: number;
-  minConfidence: number;
+export interface DualLayerConfig {
+  idleThresholdMs: number;
+  checkIntervalMs: number;
+  completionKeywords: string[];
+  workIndicators: string[];
 }
+
+export interface ValidationResult {
+  passed: boolean;
+  checks: FailedCheck[];
+  overallScore: number;
+  recommendations: string[];
+  improvementTasks: string[];
+  executionTime: number;
+  isValid: boolean;
+  errors: string[];
+  iteration: number;
+  boulderStatus: BoulderStatus;
+  currentTask: string | null;
+  queueStats: QueueStats;
+  canComplete?: boolean;
+  timestamp: Date;
+}
+
+export type BoulderStatus = 'CONTINUOUS' | 'FORCED_CONTINUATION' | 'ALLOWED' | 'BLOCKED';
+
+export interface InfiniteValidationResult {
+  passed: boolean;
+  improvementTasks: string[];
+  currentTask: string | null;
+  iteration: number;
+  queueStats: QueueStats;
+  isWorking: boolean;
+  completionAttempted: boolean;
+}
+
+export class BoulderEnforcementError extends Error {
+  constructor(
+    message: string,
+    public readonly iteration: number,
+    public readonly currentTask: string | null,
+    public readonly queueStats: QueueStats
+  ) {
+    super(message);
+    this.name = 'BoulderEnforcementError';
+  }
+}
+
+export type LegacyValidationResult = Omit<ValidationResult, 'canComplete'>;

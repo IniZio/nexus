@@ -2,8 +2,12 @@
   "name": "nexus-enforcer",
   "version": "1.0.0",
   "description": "Core validation and prompt generation for nexus enforcement rules",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "boulder": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -24,6 +28,16 @@
       "types": "./dist/prompts/generator.d.ts",
       "import": "./dist/prompts/generator.js",
       "require": "./dist/prompts/generator.js"
+    },
+    "./boulder": {
+      "types": "./dist/boulder/index.d.ts",
+      "import": "./dist/boulder/index.js",
+      "require": "./dist/boulder/index.js"
+    },
+    "./boulder/dual-layer": {
+      "types": "./dist/boulder/dual-layer-enforcer.d.ts",
+      "import": "./dist/boulder/dual-layer-enforcer.js",
+      "require": "./dist/boulder/dual-layer-enforcer.js"
     }
   },
   "files": [
