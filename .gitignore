@@ -51,3 +51,9 @@ vendor/
 *.o
 *.a
 *.so
+
+# Node modules
+node_modules/
+
+# Nested nexus folder
+nexus/nexus/
