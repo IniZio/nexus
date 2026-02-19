@@ -1,4 +1,4 @@
-// Nexus Enforcer - Non-blocking Session Start + Interval Enforcement
+// Nexus Enforcer - Debug Version
 import { appendFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
@@ -18,130 +18,88 @@ const NexusEnforcer = async ({ project, client, $, directory, worktree }) => {
   }
 
   await loadConfig()
-  if (!config.enabled) return {}
+  log('INIT', { enabled: config.enabled, boulder: config.boulderMode })
+  
+  if (!config.enabled) {
+    log('DISABLED', {})
+    return {}
+  }
 
   const isSelfEdit = (path) => path?.includes('.opencode/plugins') || path?.includes('enforcer-config')
   let iteration = 0
 
-  // NON-BLOCKING session start - just show toast and create file
+  // Session start notification
   const sessionStart = async () => {
     iteration++
     log('SESSION_START', { iteration })
     
-    // Show toast (non-blocking)
     try {
       await client.tui.showToast({
         body: {
           title: 'BOULDER ACTIVE',
-          message: `Session ${iteration}. The boulder demands continuous improvement. Generate ideas now.`,
+          message: `Session ${iteration}. Continuous improvement required.`,
           variant: 'info',
-          duration: 8000
+          duration: 5000
         }
       })
-    } catch {}
+    } catch (e) {
+      log('TOAST_ERROR', { error: e.message })
+    }
     
-    // Create continuation file (non-blocking)
     const ideas = [
-      'Review current code for improvements',
+      'Review code for improvements',
       'Refactor technical debt',
-      'Add error handling',
-      'Write tests',
-      'Optimize performance',
-      'Update documentation'
+      'Add error handling'
     ]
-    const randomIdeas = ideas.sort(() => 0.5 - Math.random()).slice(0, 3)
     
-    const content = `BOULDER SESSION ${iteration}
-
-STATUS: ACTIVE ENFORCEMENT
-
-GENERATE IDEAS NOW:
-${randomIdeas.map((idea, i) => `${i + 1}. ${idea}`).join('\n')}
-
-Complete before claiming done.`
-
-    try { writeFileSync(`${directory}/.nexus/CONTINUATION_REQUIRED.txt`, content) } catch {}
+    try {
+      writeFileSync(`${directory}/.nexus/CONTINUATION_REQUIRED.txt`, 
+        `BOULDER SESSION ${iteration}\n\nTASKS:\n${ideas.map((i, x) => `${x+1}. ${i}`).join('\n')}\n\nComplete before done.`)
+    } catch {}
   }
   
-  // Run session start in background (don't block)
   sessionStart().catch(() => {})
 
-  const checkBlock = async (text) => {
-    if (!config.boulderMode || !/done|complete|finished/i.test(text)) return null
-    
-    const friction = await $`test -f ${directory}/.nexus/dogfooding/friction-log.md 2>/dev/null && echo 1 || echo 0`.text()
-    if (friction.trim() !== '1') {
-      return { block: true, reason: 'Friction log required' }
-    }
-    
-    const research = await $`git log --oneline -3 2>/dev/null | grep -i research || echo ""`.text()
-    if (!research.trim()) {
-      return { block: true, reason: 'Research required' }
-    }
-    
-    return { block: false }
-  }
-
-  // INTERVAL ENFORCEMENT
+  // Interval checking
   let lastActiveTime = Date.now()
-  let idleCheckInterval = null
+  let idleInterval = null
   
-  const startIdleChecker = () => {
-    if (idleCheckInterval) return
+  const startIdleCheck = () => {
+    if (idleInterval) return
     
-    idleCheckInterval = setInterval(async () => {
+    idleInterval = setInterval(async () => {
       if (!config.enabled || !config.boulderMode) return
       
       const idleTime = Date.now() - lastActiveTime
-      const IDLE_THRESHOLD = 30000 // 30 seconds
       
-      if (idleTime > IDLE_THRESHOLD) {
+      if (idleTime > 30000) { // 30 seconds
         iteration++
-        log('IDLE_CHECK', { idleTime, iteration })
+        log('IDLE_ALERT', { idleTime, iteration })
         
-        // Show toast
+        // Show toast to user
         try {
           await client.tui.showToast({
             body: {
               title: 'BOULDER ALERT',
-              message: `Idle ${Math.round(idleTime/1000)}s. Generate ideas. Refine. Research. Iteration ${iteration}.`,
+              message: `Idle ${Math.round(idleTime/1000)}s. Generate new ideas now.`,
               variant: 'warning',
-              duration: 10000
+              duration: 8000
             }
           })
         } catch {}
         
-        // Update continuation file with new ideas
-        const ideas = [
-          'Refactor for performance',
-          'Research alternatives',
-          'Add error handling',
-          'Improve docs',
-          'Write tests'
-        ]
-        const randomIdeas = ideas.sort(() => 0.5 - Math.random()).slice(0, 3)
-        
-        const content = `BOULDER IDLE ENFORCEMENT
-
-IDLE: ${Math.round(idleTime/1000)}s | ITERATION: ${iteration}
-
-GENERATE IDEAS:
-${randomIdeas.map((idea, i) => `${i + 1}. ${idea}`).join('\n')}
-
-The boulder never stops.`
-
-        try { writeFileSync(`${directory}/.nexus/CONTINUATION_REQUIRED.txt`, content) } catch {}
         lastActiveTime = Date.now()
       }
     }, 10000)
   }
   
-  startIdleChecker()
+  startIdleCheck()
 
   return {
     'tool.execute.before': async (input, output) => {
       await loadConfig()
       lastActiveTime = Date.now()
+      
       if (!config.enabled || isSelfEdit(output?.args?.filePath)) return
       
       if (config.enforceWorkspace && ['write', 'edit', 'bash'].includes(input.tool)) {
@@ -156,39 +114,68 @@ The boulder never stops.`
     'tool.execute.after': async (input, output) => {
       await loadConfig()
       lastActiveTime = Date.now()
+      
       if (!config.enabled || !config.enforceDogfooding) return
       
-      const check = await checkBlock(JSON.stringify(output.output || ''))
-      if (check?.block) {
-        const force = await checkBlock('')
-        throw new Error(`BOULDER BLOCKED: ${check.reason}`)
+      const text = JSON.stringify(output.output || '')
+      if (!/done|complete|finished/i.test(text)) return
+      
+      const friction = await $`test -f ${directory}/.nexus/dogfooding/friction-log.md 2>/dev/null && echo 1 || echo 0`.text()
+      if (friction.trim() !== '1') {
+        throw new Error('BLOCK: Friction log required')
+      }
+      
+      const research = await $`git log --oneline -3 2>/dev/null | grep -i research || echo ""`.text()
+      if (!research.trim()) {
+        throw new Error('BLOCK: Research required')
       }
     },
 
     'experimental.chat.messages.transform': async (input, output) => {
-      if (!config.enabled || !output.messages?.length) return
+      log('TRANSFORM_HOOK', { hasMessages: !!output.messages, count: output.messages?.length })
       
-      const hasContinuation = await $`test -f ${directory}/.nexus/CONTINUATION_REQUIRED.txt 2>/dev/null && echo 1 || echo 0`.text()
-      
-      const last = output.messages[output.messages.length - 1]
-      const idx = last.parts?.findIndex(p => p.type === 'text' && p.text)
-      if (idx === -1) return
-      
-      let reminder = `BOULDER[${iteration}]: `
-      if (hasContinuation.trim() === '1') {
-        reminder += 'Action required. Check CONTINUATION_REQUIRED.txt'
-      } else {
-        reminder += 'Session active. Idle 30s triggers ideas.'
+      if (!config.enabled || !output.messages?.length) {
+        log('TRANSFORM_SKIP', { reason: 'no messages' })
+        return
       }
       
-      last.parts.splice(idx, 0, {
-        id: `b${Date.now()}`,
-        messageID: last.info?.id || 'x',
-        sessionID: last.info?.sessionID || '',
-        type: 'text',
-        text: reminder,
-        synthetic: true
-      })
+      const last = output.messages[output.messages.length - 1]
+      log('TRANSFORM_LAST', { hasParts: !!last.parts, partsCount: last.parts?.length })
+      
+      if (!last.parts?.length) {
+        log('TRANSFORM_SKIP', { reason: 'no parts' })
+        return
+      }
+      
+      const idx = last.parts.findIndex(p => p.type === 'text' && p.text)
+      log('TRANSFORM_IDX', { idx })
+      
+      if (idx === -1) {
+        log('TRANSFORM_SKIP', { reason: 'no text part' })
+        return
+      }
+      
+      const hasCont = await $`test -f ${directory}/.nexus/CONTINUATION_REQUIRED.txt 2>/dev/null && echo 1 || echo 0`.text()
+      
+      const reminder = hasCont.trim() === '1' 
+        ? `BOULDER[${iteration}]: Tasks pending. Check CONTINUATION_REQUIRED.txt`
+        : `BOULDER[${iteration}]: Active. Idle 30s triggers new ideas.`
+      
+      log('TRANSFORM_INSERT', { reminder })
+      
+      try {
+        last.parts.splice(idx, 0, {
+          id: `bldr_${Date.now()}`,
+          messageID: last.info?.id || 'x',
+          sessionID: last.info?.sessionID || '',
+          type: 'text',
+          text: reminder,
+          synthetic: true
+        })
+        log('TRANSFORM_SUCCESS', { inserted: true })
+      } catch (e) {
+        log('TRANSFORM_ERROR', { error: e.message })
+      }
     }
   }
 }
