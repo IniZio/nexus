@@ -102,11 +102,46 @@ Iteration: ${iteration}`
     'tool.execute.after': async (input, output) => {
       const text = JSON.stringify(output.output || '')
       if (!/done|complete|finished/i.test(text)) return
-      
+
       log('COMPLETION_ATTEMPT', { infiniteBoulder: config.infiniteBoulder })
-      
+
       if (config.infiniteBoulder) {
-        throw new Error('BOULDER: Completion rejected. Nexus internal requires infinite improvement.')
+        const sessionID = output.sessionID || input.sessionID || 'current'
+        iteration++
+        
+        const tasks = [
+          'Research best practices for current implementation',
+          'Refactor code for better performance',
+          'Add comprehensive error handling',
+          'Write additional test cases',
+          'Optimize for edge cases',
+          'Improve documentation',
+          'Review security considerations'
+        ]
+        const randomTasks = tasks.sort(() => 0.5 - Math.random()).slice(0, 3)
+        
+        const forceText = `BOULDER ENFORCEMENT: You attempted completion. NOT ALLOWED.
+
+The boulder NEVER stops. Generate new ideas NOW:
+${randomTasks.map((t, i) => `${i + 1}. ${t}`).join('\n')}
+
+Iteration: ${iteration}
+Status: FORCED CONTINUATION
+
+DO NOT STOP. Execute these tasks. Report your progress.`
+
+        try {
+          log('FORCE_INJECT_START', { sessionID, iteration })
+          await client.session.promptAsync({
+            path: { id: sessionID },
+            body: { parts: [{ type: 'text', text: forceText }] }
+          })
+          log('FORCE_INJECT_SUCCESS', { iteration })
+        } catch (e) {
+          log('FORCE_INJECT_ERROR', { error: e.message })
+        }
+        
+        throw new Error('BOULDER: Completion rejected. Forced continuation injected.')
       }
     },
 
