@@ -17,6 +17,14 @@ type Manager struct {
 	gitManager *git.Manager
 }
 
+func getDockerComposeCommand() []string {
+	cmd := exec.Command("docker", "compose", "version")
+	if err := cmd.Run(); err == nil {
+		return []string{"docker", "compose"}
+	}
+	return []string{"docker-compose"}
+}
+
 type WorkspaceInfo struct {
 	Name         string
 	Status       string
@@ -415,7 +423,9 @@ func (m *Manager) CreateWithTemplate(name, templateName string, vars map[string]
 	composeFile := filepath.Join(worktreePath, "docker-compose.yml")
 	if _, err := os.Stat(composeFile); err == nil {
 		fmt.Println("🐳 Starting services with docker-compose...")
-		cmd := exec.Command("docker-compose", "-f", composeFile, "up", "-d")
+		composeCmd := getDockerComposeCommand()
+		args := append(composeCmd[1:], "-f", composeFile, "up", "-d")
+		cmd := exec.Command(composeCmd[0], args...)
 		cmd.Dir = worktreePath
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
