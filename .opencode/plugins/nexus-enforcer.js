@@ -32,9 +32,22 @@ export const NexusEnforcer = async ({ project, client, $, directory, worktree })
       const isWrite = ['write', 'edit', 'bash'].includes(input.tool);
       if (isWrite && config.enforceWorkspace) {
         const workspaceFile = `${directory}/.nexus/workspace.json`;
-        const exists = await $`test -f ${workspaceFile} 2>/dev/null && echo yes || echo no`.text();
-        
-        if (exists.trim() !== 'yes') {
+        const workspaceExists = await $`test -f ${workspaceFile} 2>/dev/null && echo yes || echo no`.text();
+
+        let inValidWorkspace = workspaceExists.trim() === 'yes';
+
+        if (!inValidWorkspace) {
+          const worktreesDir = `${directory}/.nexus/worktrees`;
+          const worktreesExist = await $`test -d ${worktreesDir} 2>/dev/null && echo yes || echo no`.text();
+
+          if (worktreesExist.trim() === 'yes') {
+            const currentFile = `${directory}/.nexus/current`;
+            const currentExists = await $`test -f ${currentFile} 2>/dev/null && echo yes || echo no`.text();
+            inValidWorkspace = currentExists.trim() === 'yes';
+          }
+        }
+
+        if (!inValidWorkspace) {
           throw new Error('[NEXUS ENFORCEMENT] Not in workspace. Run: nexus workspace create <name>');
         }
       }
