@@ -4,5 +4,9 @@
   "enforceDogfooding": true,
   "blockStopWithTodos": true,
   "adaptive": true,
-  "idlePromptThresholdMs": 30000
+  "idlePromptThresholdMs": 30000,
+  "boulderMode": true,
+  "requireResearch": true,
+  "requireRefactoring": true,
+  "requireRoadmapEvolution": true
 }
