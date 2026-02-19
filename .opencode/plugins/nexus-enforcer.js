@@ -1,4 +1,4 @@
-// Nexus Enforcer - Force Continuation Mode
+// Nexus Enforcer - Active Interval Enforcement
 import { appendFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
@@ -23,11 +23,9 @@ const NexusEnforcer = async ({ project, client, $, directory, worktree }) => {
   const isSelfEdit = (path) => path?.includes('.opencode/plugins') || path?.includes('enforcer-config')
   let iteration = 0
 
-  // FORCE CONTINUATION - Auto-generate required tasks
+  // FORCE CONTINUATION
   const forceContinuation = async (reason) => {
     iteration++
-    
-    // Create continuation instructions
     const tasks = []
     
     if (reason.includes('Friction')) {
@@ -42,7 +40,6 @@ const NexusEnforcer = async ({ project, client, $, directory, worktree }) => {
       tasks.push('3. Document findings in commit or notes')
     }
     
-    // Write forced continuation to file
     const continuationFile = `${directory}/.nexus/CONTINUATION_REQUIRED.txt`
     const content = `BOULDER BLOCKED: ${reason}
 
@@ -54,10 +51,7 @@ ITERATION: ${iteration}
 
 The boulder never stops. Complete these tasks or explain why you cannot.`
 
-    try {
-      writeFileSync(continuationFile, content)
-    } catch {}
-    
+    try { writeFileSync(continuationFile, content) } catch {}
     return { iteration, tasks, reason }
   }
 
@@ -77,9 +71,76 @@ The boulder never stops. Complete these tasks or explain why you cannot.`
     return { block: false }
   }
 
+  // INTERVAL ENFORCEMENT
+  let lastActiveTime = Date.now()
+  let idleCheckInterval = null
+  
+  const startIdleChecker = () => {
+    if (idleCheckInterval) return
+    
+    idleCheckInterval = setInterval(async () => {
+      if (!config.enabled || !config.boulderMode) return
+      
+      const idleTime = Date.now() - lastActiveTime
+      const IDLE_THRESHOLD = 30000 // 30 seconds
+      
+      if (idleTime > IDLE_THRESHOLD) {
+        iteration++
+        log('IDLE_CHECK', { idleTime, iteration })
+        
+        // Show toast notification
+        try {
+          await client.tui.showToast({
+            body: {
+              title: 'BOULDER ALERT',
+              message: `Idle for ${Math.round(idleTime/1000)}s. Generate new ideas. Refine code. Research improvements.`,
+              variant: 'warning',
+              duration: 10000
+            }
+          })
+        } catch {}
+        
+        // Create forced continuation with NEW IDEAS
+        const ideas = [
+          'Refactor existing code for better performance',
+          'Research alternative implementations',
+          'Add comprehensive error handling',
+          'Improve documentation',
+          'Write additional tests',
+          'Optimize for edge cases',
+          'Add monitoring/logging',
+          'Review security considerations'
+        ]
+        const randomIdeas = ideas.sort(() => 0.5 - Math.random()).slice(0, 3)
+        
+        const continuationFile = `${directory}/.nexus/CONTINUATION_REQUIRED.txt`
+        const content = `BOULDER INTERVAL ENFORCEMENT
+
+IDLE TIME: ${Math.round(idleTime / 1000)}s
+ITERATION: ${iteration}
+
+YOU ARE IDLE. THE BOULDER DEMANDS CONTINUOUS IMPROVEMENT.
+
+GENERATE NEW IDEAS NOW:
+${randomIdeas.map((idea, i) => `${i + 1}. ${idea}`).join('\n')}
+
+STATUS: MUST IMPLEMENT BEFORE PROCEEDING
+
+The boulder never stops. Complete these or explain why you cannot.`
+
+        try { writeFileSync(continuationFile, content) } catch {}
+        
+        lastActiveTime = Date.now()
+      }
+    }, 10000)
+  }
+  
+  startIdleChecker()
+
   return {
     'tool.execute.before': async (input, output) => {
       await loadConfig()
+      lastActiveTime = Date.now() // Reset idle timer on activity
       if (!config.enabled || isSelfEdit(output?.args?.filePath)) return
       
       if (config.enforceWorkspace && ['write', 'edit', 'bash'].includes(input.tool)) {
@@ -93,6 +154,7 @@ The boulder never stops. Complete these tasks or explain why you cannot.`
 
     'tool.execute.after': async (input, output) => {
       await loadConfig()
+      lastActiveTime = Date.now() // Reset idle timer on activity
       if (!config.enabled || !config.enforceDogfooding) return
       
       const check = await checkBlock(JSON.stringify(output.output || ''))
@@ -103,8 +165,7 @@ The boulder never stops. Complete these tasks or explain why you cannot.`
         throw new Error(
           `BOULDER[${force.iteration}] BLOCKED: ${check.reason}\n\n` +
           `AUTO-GENERATED TASKS:\n${force.tasks.join('\n')}\n\n` +
-          `Complete these tasks before claiming completion. ` +
-          `The boulder demands continuous improvement.`
+          `Complete these tasks before claiming completion.`
         )
       }
     },
@@ -112,7 +173,6 @@ The boulder never stops. Complete these tasks or explain why you cannot.`
     'experimental.chat.messages.transform': async (input, output) => {
       if (!config.enabled || !output.messages?.length) return
       
-      // Check if continuation file exists
       const hasContinuation = await $`test -f ${directory}/.nexus/CONTINUATION_REQUIRED.txt 2>/dev/null && echo 1 || echo 0`.text()
       
       const last = output.messages[output.messages.length - 1]
@@ -121,9 +181,9 @@ The boulder never stops. Complete these tasks or explain why you cannot.`
       
       let reminder = `BOULDER[${iteration}]: `
       if (hasContinuation.trim() === '1') {
-        reminder += 'COMPLETION BLOCKED. Check .nexus/CONTINUATION_REQUIRED.txt for required tasks. Execute them now.'
+        reminder += 'COMPLETION BLOCKED. Check .nexus/CONTINUATION_REQUIRED.txt'
       } else {
-        reminder += 'Friction log + Research required'
+        reminder += 'Idle 30s triggers new ideas. Keep iterating.'
       }
       
       last.parts.splice(idx, 0, {
