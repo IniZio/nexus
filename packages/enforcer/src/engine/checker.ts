@@ -268,7 +268,15 @@ export class ValidationEngine {
       checks: allFailures,
       overallScore,
       recommendations,
+      improvementTasks: [],
       executionTime: Date.now() - startTime,
+      isValid: errorCount === 0,
+      errors: allFailures.map(f => f.message),
+      iteration: 0,
+      boulderStatus: 'CONTINUOUS' as const,
+      currentTask: null,
+      queueStats: { total: 0, pending: 0, active: 0, done: 0 },
+      timestamp: new Date(),
     };
   }
 }

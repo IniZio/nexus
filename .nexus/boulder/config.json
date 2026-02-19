@@ -1,0 +1,5 @@
+{
+  "minTasksInQueue": 1,
+  "idleThresholdMs": 10000,
+  "nextTasksCount": 3
+}
