@@ -1,5 +1,5 @@
-import { PluginContext, Plugin } from '@opencode-ai/sdk';
-import { WorkspaceClient } from '@nexus/workspace-sdk';
+import type { PluginContext, Plugin } from './types/opencode-sdk';
+import { WorkspaceClient } from './types/workspace-sdk';
 import { loadConfig, validateConfig, NexusConfig } from './config';
 import { initToolIntercept, registerToolHooks } from './hooks/tool-intercept';
 import { initActivityTracking, stopActivityTracking } from './hooks/activity';

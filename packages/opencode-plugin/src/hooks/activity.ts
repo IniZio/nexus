@@ -1,8 +1,8 @@
-import { WorkspaceClient } from '@nexus/workspace-sdk';
+import type { WorkspaceClient } from '../types/workspace-sdk';
 
 interface ActivityTracker {
   lastActivity: number;
-  pingInterval: NodeJS.Timeout | null;
+  pingInterval: ReturnType<typeof setInterval> | null;
   client: WorkspaceClient | null;
   config: {
     idleTimeout: number;
