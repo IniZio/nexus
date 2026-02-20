@@ -229,6 +229,13 @@ class BoulderEnforcer {
   }
 
   async triggerEnforcement(client, log, reason = 'idle') {
+    // Failsafe: Check minimum time since last enforcement (30 seconds)
+    const timeSinceLastEnforcement = Date.now() - this.state.lastEnforcement;
+    if (timeSinceLastEnforcement < 30000) {
+      await log?.('debug', `BLOCKED: Only ${timeSinceLastEnforcement}ms since last enforcement (need 30000ms)`);
+      return false;
+    }
+
     if (this.state.status === 'ENFORCING') {
       await log?.('debug', 'Enforcement already in progress');
       return false;
