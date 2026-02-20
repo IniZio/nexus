@@ -19,11 +19,11 @@ fi
 
 # Function to read state
 get_iteration() {
-  cat "$STATE_FILE" | grep -o '"iteration":[0-9]*' | cut -d: -f2
+  python3 -c "import json; print(json.load(open('$STATE_FILE')).get('iteration', 0))"
 }
 
 get_last_enforcement() {
-  cat "$STATE_FILE" | grep -o '"lastEnforcement":[0-9]*' | cut -d: -f2
+  python3 -c "import json; print(json.load(open('$STATE_FILE')).get('lastEnforcement', 0))"
 }
 
 # Test 1: Check state is valid
@@ -70,19 +70,20 @@ ITERATION_START=$(get_iteration)
 echo "Starting iteration: $ITERATION_START"
 echo "Waiting 35 seconds..."
 
+CURRENT_ITERATION="$ITERATION_START"
 for i in {35..1}; do
   printf "\r⏱️  %2d seconds remaining... " "$i"
   sleep 1
   
   # Check if enforcement happened
   CURRENT_ITERATION=$(get_iteration)
-  if [ "$CURRENT_ITERATION" -gt "$ITERATION_START" ]; then
+  if [ -n "$CURRENT_ITERATION" ] && [ -n "$ITERATION_START" ] && [ "$CURRENT_ITERATION" -gt "$ITERATION_START" ]; then
     printf "\r✅ Enforcement triggered! Iteration: $CURRENT_ITERATION          \n"
     break
   fi
 done
 
-if [ "$CURRENT_ITERATION" -eq "$ITERATION_START" ]; then
+if [ -z "$CURRENT_ITERATION" ] || [ "$CURRENT_ITERATION" -eq "$ITERATION_START" ]; then
   printf "\r⚠️  No enforcement in 35 seconds                              \n"
   echo "This might be normal if cooldown is active."
 fi
