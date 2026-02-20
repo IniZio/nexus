@@ -301,7 +301,7 @@ let enforcer = null;
 let pollInterval = null;
 let activityDetectedSinceLastPoll = false;
 
-async function triggerEnforcementWithCountdown(client, enforcerInstance, log, reason = 'idle') {
+async function triggerEnforcementWithCountdown(client, enforcerInstance, log, reason = 'idle', sessionID = null) {
   await log('info', `Polling detected ${reason} - triggering enforcement`);
 
   await enforcerInstance.showCountdown(client, log, enforcerInstance.state.iteration + 1);
@@ -353,7 +353,7 @@ function startPolling(client, log) {
 
     if (await enforcer.shouldEnforce(log) && !enforcer.enforcementTriggeredForThisIdlePeriod) {
       await log?.('debug', 'Polling detected idle - triggering enforcement');
-      await triggerEnforcementWithCountdown(client, enforcer, log, 'idle');
+      await triggerEnforcementWithCountdown(client, enforcer, log, 'idle', enforcer.state.sessionID);
     }
   }, 5000);
 
@@ -561,10 +561,11 @@ export default async function NexusEnforcerPlugin(context) {
         || input?.event?.session 
         || context?.session;
 
-      // Store sessionID in state if available
-      if (sessionID && !enforcer.state.sessionID) {
+      // Always update sessionID to the most recent
+      if (sessionID) {
         enforcer.state.sessionID = sessionID;
         writeState(enforcer.state);
+        await log('debug', `Updated sessionID to: ${sessionID}`);
       }
 
       await log('debug', `Session ID extracted: ${sessionID || 'undefined'}`);
@@ -598,18 +599,20 @@ export default async function NexusEnforcerPlugin(context) {
           await log('debug', 'Toast call completed');
         }
 
-        // Send system reminder message to conversation
-        if (!sessionID) {
-          await log('warn', 'Cannot send system message: sessionID is undefined');
+        // Use state.sessionID which is always the most recent
+        const sessionIDForMessage = sessionID || enforcer.state.sessionID;
+
+        if (!sessionIDForMessage) {
+          await log('warn', 'Cannot send system message: no sessionID available');
         } else if (client?.session?.promptAsync) {
           await log('debug', 'About to send system message', { 
-            hasSessionID: !!sessionID, 
+            hasSessionID: !!sessionIDForMessage, 
             hasPromptAsync: !!client?.session?.promptAsync 
           });
 
           try {
             await client.session.promptAsync({
-              path: { id: sessionID },
+              path: { id: sessionIDForMessage },
               body: {
                 agent: 'nexus-enforcer',
                 model: {
