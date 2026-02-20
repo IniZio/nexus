@@ -1,0 +1,29 @@
+# Nexus Collection Data
+# This directory contains sensitive testing data and should not be committed
+
+# Collected friction reports and trace sessions
+*.json
+*.md
+!templates/*.md
+!README.md
+
+# Generated test data
+generated/
+*.log
+*.tmp
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Do not ignore schemas and templates
+!schemas/
+!templates/
+!README.md

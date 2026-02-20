@@ -47,6 +47,14 @@ vendor/
 .nexus/worktrees/
 .nexus/dogfooding/
 
+# Nexus collection data (may contain credentials)
+.nexus/collection/data/
+.nexus/collection/sessions/
+.nexus/worktrees/*/friction-log.md
+**/friction-log.md
+**/*.local.md
+**/.local/
+
 # Go
 *.o
 *.a
