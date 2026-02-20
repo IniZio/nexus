@@ -92,6 +92,82 @@ Visual task board and workspace management.
 ### Plugin System
 Extend Nexus with custom providers and templates.
 
+## Boulder Enforcement
+
+The Nexus Enforcer is a multi-agent enforcement system that ensures AI agents complete tasks fully, use workspaces, and dogfood their changes.
+
+### Core Features
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| Workspace Enforcement | ✅ Active | Blocks writes outside nexus workspaces |
+| Dogfooding Checks | ✅ Active | Requires friction logs before completion |
+| Boulder Continuation | ✅ Active | Reminds about incomplete todos |
+| Self-Evolving Rules | ✅ Active | Loads config from `.nexus/enforcer-config.json` |
+
+### Roadmap
+
+#### Phase 1: Core Enforcement (In Progress)
+
+**Goal:** Make the boulder roll for OpenCode
+
+- [x] Create plugin structure
+- [x] Implement workspace enforcement
+- [x] Implement dogfooding checks
+- [x] Implement todo continuation
+- [ ] Test all enforcement scenarios
+- [ ] Refine prompts based on usage
+- [ ] Add statistics tracking
+
+**Success Criteria:**
+- Agent cannot write files outside workspace
+- Agent cannot claim completion without friction log
+- Agent cannot stop with incomplete todos
+
+#### Phase 2: Multi-Agent Support
+
+**Goal:** Boulder rolls in Claude, Cursor, etc.
+
+- [ ] Build Claude plugin (uses Claude SDK)
+- [ ] Build Cursor extension (VSCode extension format)
+- [ ] Build Copilot integration (if possible)
+- [ ] Test cross-agent consistency
+
+**Success Criteria:**
+- Same enforcement regardless of AI assistant
+- Consistent prompt formatting per agent
+- Shared core library (nexus-enforcer)
+
+#### Phase 3: Self-Evolving Rules
+
+**Goal:** Enforcement learns from friction
+
+- [ ] Implement consolidation step in nexus CLI
+- [ ] Analyze friction logs for patterns
+- [ ] Auto-update `.nexus/enforcer-rules.json`
+- [ ] Support per-project custom rules
+- [ ] Support per-user local overrides
+
+**Success Criteria:**
+- Rules adapt based on project history
+- Common issues get automatic checks
+- Users can customize without breaking base rules
+
+#### Phase 4: Advanced Features
+
+**Goal:** Deep integration and insights
+
+- [ ] Telemetry on enforcement effectiveness
+- [ ] Dashboard for team dogfooding metrics
+- [ ] Integration with nexus pulse (existing telemetry)
+- [ ] MCP server for external tool integration
+- [ ] Auto-fix suggestions (not just blocks)
+
+**Success Criteria:**
+- Teams can see dogfooding compliance
+- Enforcement is measurable and improvable
+- Integration with existing nexus workflows
+
 ## Related Documentation
 
 - [Architecture](explanation/architecture.md)
