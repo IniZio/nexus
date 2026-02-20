@@ -36,7 +36,25 @@ jobs:
           zensical --version
 
       - name: Build documentation
-        run: zensical build --clean
+        run: |
+          set -e
+          zensical build --clean
+          echo "Build completed"
+          ls -la site/ || echo "site directory not found"
+          ls -la || echo "listing current directory"
+
+      - name: Verify build output
+        run: |
+          if [ ! -d "site" ]; then
+            echo "Error: site directory not found!"
+            exit 1
+          fi
+          if [ ! -f "site/index.html" ]; then
+            echo "Error: index.html not found in site directory!"
+            ls -la site/
+            exit 1
+          fi
+          echo "Build output verified"
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
