@@ -1,0 +1,12 @@
+{
+  "iteration": 138,
+  "lastActivity": 1771570794967,
+  "lastEnforcement": 1771570729660,
+  "failureCount": 0,
+  "stopRequested": false,
+  "status": "CONTINUOUS",
+  "abortDetectedAt": null,
+  "isRecovering": false,
+  "sessionID": "ses_3862750ccffeJZe7wdlqiy6qSF",
+  "enforcementTriggeredForThisIdlePeriod": false
+}
