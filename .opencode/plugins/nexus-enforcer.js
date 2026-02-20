@@ -329,6 +329,7 @@ async function triggerEnforcementWithCountdown(client, enforcerInstance, log, re
       }
 
       // Send system reminder message via promptAsync
+      // Following oh-my-opencode pattern: use minimal body with just parts
       const sessionIDForMessage = sessionID || enforcerInstance.state.sessionID;
       if (client?.session?.promptAsync && sessionIDForMessage) {
         await log('debug', `Sending system message to session: ${sessionIDForMessage}`);
@@ -336,11 +337,7 @@ async function triggerEnforcementWithCountdown(client, enforcerInstance, log, re
           await client.session.promptAsync({
             path: { id: sessionIDForMessage },
             body: {
-              agent: 'nexus-enforcer',
-              model: {
-                providerID: 'anthropic',
-                modelID: 'claude-sonnet-4-20250514'
-              },
+              // Minimal body - let OpenCode use session's current agent/model
               parts: [{
                 type: "text",
                 text: `## [BOULDER ENFORCEMENT] Iteration ${enforcerInstance.state.iteration}
