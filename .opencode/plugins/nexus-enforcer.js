@@ -83,11 +83,12 @@ class BoulderEnforcer {
     this.config = DEFAULT_CONFIG;
     this.state = readState();
     this.cooldownActive = false;
+    this.enforcementTriggeredForThisIdlePeriod = false;
   }
 
   recordActivity() {
     this.state.lastActivity = Date.now();
-    // Clear enforcement flag on activity
+    this.enforcementTriggeredForThisIdlePeriod = false;
     if (this.state.status === 'ENFORCING') {
       this.state.status = 'CONTINUOUS';
       writeState(this.state);
@@ -177,6 +178,12 @@ class BoulderEnforcer {
     console.log(`[nexus-enforcer] iteration: ${this.state.iteration}`);
     console.log(`[nexus-enforcer] failureCount: ${this.state.failureCount}/${CONFIG.MAX_FAILURES}`);
     console.log(`[nexus-enforcer] stopRequested: ${this.state.stopRequested}`);
+    console.log(`[nexus-enforcer] enforcementTriggeredForThisIdlePeriod: ${this.enforcementTriggeredForThisIdlePeriod}`);
+
+    if (this.enforcementTriggeredForThisIdlePeriod) {
+      console.log('[nexus-enforcer] GATE FAILED: Enforcement already triggered for this idle period');
+      return false;
+    }
 
     if (!this.checkIdle()) {
       console.log('[nexus-enforcer] GATE FAILED: Not idle');
@@ -224,12 +231,18 @@ class BoulderEnforcer {
       return false;
     }
 
+    if (this.enforcementTriggeredForThisIdlePeriod) {
+      console.log('[nexus-enforcer] Enforcement already triggered for this idle period');
+      return false;
+    }
+
     console.log(`[nexus-enforcer] Starting enforcement sequence - reason: ${reason}`);
     await this.showCountdown(client, this.state.iteration + 1);
 
     this.state.iteration++;
     this.state.status = 'ENFORCING';
     this.state.lastEnforcement = Date.now();
+    this.enforcementTriggeredForThisIdlePeriod = true;
     writeState(this.state);
 
     console.log(`[nexus-enforcer] Enforcement triggered - iteration ${this.state.iteration}`);
@@ -347,7 +360,7 @@ function startPolling(client) {
       return;
     }
 
-    if (enforcer.shouldEnforce()) {
+    if (enforcer.shouldEnforce() && !enforcer.enforcementTriggeredForThisIdlePeriod) {
       console.log('[nexus-enforcer] Polling detected idle - triggering enforcement');
       await triggerEnforcementWithCountdown(client, enforcer, 'idle');
     }
@@ -510,8 +523,11 @@ export const NexusEnforcerPlugin = async (context) => {
 
       await log('debug', `Event received: type=${eventType}, sessionID=${sessionID}`);
 
-      // Activity detected via event - mark for poll
+      // Activity detected via event - mark for poll and reset enforcement flag
       markActivityForPoll();
+      if (enforcer) {
+        enforcer.recordActivity();
+      }
 
       // Handle abort events
       if (eventType === 'agent.abort' || eventType === 'agent.stop') {
