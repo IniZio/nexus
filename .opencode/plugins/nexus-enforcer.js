@@ -145,10 +145,10 @@ class BoulderEnforcer {
           title: 'BOULDER ENFORCEMENT',
           message: `Boulder enforcement in ${i}...`,
           variant: 'warning',
-          duration: 1500
+        duration: 1500
         }
-      }).catch((error) => {
-        console.error('[nexus-enforcer] Countdown toast error:', error.message);
+      }).catch(async (error) => {
+        await log('error', 'Countdown toast error', { error: error.message });
       });
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
@@ -331,8 +331,8 @@ async function triggerEnforcementWithCountdown(client, enforcerInstance, reason 
           variant: 'warning',
           duration: 15000
         }
-      }).catch((error) => {
-        console.error('[nexus-enforcer] Failed to show toast:', error.message);
+      }).catch(async (error) => {
+        await log('error', 'Failed to show toast', { error: error.message });
       });
       await log('debug', 'Toast call completed');
     }
@@ -502,14 +502,13 @@ export const NexusEnforcerPlugin = async (context) => {
               title: `BOULDER ENFORCEMENT - Iteration ${enforcer.state.iteration}`,
               message: 'The boulder never stops. Completion detected. Continue improving.',
               variant: 'warning',
-              duration: 15000
-            }
-          }).catch((error) => {
-            console.error('[nexus-enforcer] Failed to show toast:', error.message);
-          });
+        duration: 15000
         }
-      }
-    },
+      }).catch(async (error) => {
+        await log('error', 'Failed to show toast', { error: error.message });
+      });
+    }
+  },
 
     // Main idle detection - using 'event' hook (oh-my-opencode pattern)
     "event": async (input, output) => {
@@ -582,13 +581,13 @@ export const NexusEnforcerPlugin = async (context) => {
               title: `BOULDER ENFORCEMENT - Iteration ${enforcer.state.iteration}`,
               message: 'The boulder never stops. You have been idle for 30+ seconds. Generate new ideas. Refine code. Research.',
               variant: 'error',
-              duration: 15000
-            }
-          }).catch((error) => {
-            console.error('[nexus-enforcer] Failed to show toast:', error.message);
-          });
-          await log('debug', 'Toast call completed');
+        duration: 15000
         }
+      }).catch(async (error) => {
+        await log('error', 'Failed to show toast', { error: error.message });
+      });
+      await log('debug', 'Toast call completed');
+    }
         
         // Send system reminder message to conversation
         if (client?.session?.promptAsync && sessionID) {
@@ -614,8 +613,8 @@ The boulder never stops. You have been idle for 30+ seconds.
               }]
             },
             query: { directory }
-          }).catch((error) => {
-            console.error('[nexus-enforcer] Failed to send system message:', error.message);
+          }).catch(async (error) => {
+            await log('error', 'Failed to send system message', { error: error.message });
           });
           await log('debug', 'System message sent');
         } else {
