@@ -12,6 +12,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/handlers"
+	"github.com/nexus/nexus/packages/workspace-daemon/pkg/lifecycle"
 	rpckit "github.com/nexus/nexus/packages/workspace-daemon/pkg/rpcerrors"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/workspace"
 )
@@ -23,6 +24,7 @@ type Server struct {
 	upgrader     websocket.Upgrader
 	connections  map[string]*Connection
 	ws           *workspace.Workspace
+	lifecycle    *lifecycle.Manager
 	mu           sync.RWMutex
 	shutdownCh   chan struct{}
 }
@@ -54,6 +56,15 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		return nil, fmt.Errorf("failed to create workspace: %w", err)
 	}
 
+	lifecycleMgr, err := lifecycle.NewManager(workspaceDir)
+	if err != nil {
+		log.Printf("[lifecycle] Warning: failed to initialize lifecycle manager: %v", err)
+	}
+
+	if err := lifecycleMgr.RunPreStart(); err != nil {
+		return nil, fmt.Errorf("pre-start hook failed: %w", err)
+	}
+
 	return &Server{
 		port:         port,
 		workspaceDir: workspaceDir,
@@ -67,17 +78,30 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		},
 		connections: make(map[string]*Connection),
 		ws:          ws,
+		lifecycle:   lifecycleMgr,
 		shutdownCh:  make(chan struct{}),
 	}, nil
 }
 
 func (s *Server) Start() error {
+	if s.lifecycle != nil {
+		if err := s.lifecycle.RunPostStart(); err != nil {
+			log.Printf("[lifecycle] Post-start hook error: %v", err)
+		}
+	}
+
 	http.HandleFunc("/", s.handleWebSocket)
 	addr := fmt.Sprintf(":%d", s.port)
 	return http.ListenAndServe(addr, nil)
 }
 
 func (s *Server) Shutdown() {
+	if s.lifecycle != nil {
+		if err := s.lifecycle.RunPreStop(); err != nil {
+			log.Printf("[lifecycle] Pre-stop hook error: %v", err)
+		}
+	}
+
 	close(s.shutdownCh)
 	s.mu.Lock()
 	for _, conn := range s.connections {
@@ -85,6 +109,12 @@ func (s *Server) Shutdown() {
 		conn.conn.Close()
 	}
 	s.mu.Unlock()
+
+	if s.lifecycle != nil {
+		if err := s.lifecycle.RunPostStop(); err != nil {
+			log.Printf("[lifecycle] Post-stop hook error: %v", err)
+		}
+	}
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
