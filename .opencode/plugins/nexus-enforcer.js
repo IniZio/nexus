@@ -391,6 +391,13 @@ function startPolling(client, log) {
       return;
     }
 
+    const timeSinceEnforcement = Date.now() - enforcer.state.lastEnforcement;
+    const cooldownPeriod = CONFIG.COOLDOWN_MS * Math.pow(CONFIG.BACKOFF_MULTIPLIER, enforcer.state.failureCount);
+    if (timeSinceEnforcement < cooldownPeriod) {
+      await log?.('debug', `Skipping: in cooldown (${timeSinceEnforcement}ms < ${cooldownPeriod}ms), lastEnforcement=${enforcer.state.lastEnforcement}`);
+      return;
+    }
+
     if (await enforcer.shouldEnforce(log) && !enforcer.enforcementTriggeredForThisIdlePeriod) {
       await log?.('debug', 'Polling detected idle - triggering enforcement');
       await triggerEnforcementWithCountdown(client, enforcer, log, 'idle', enforcer.state.sessionID);
