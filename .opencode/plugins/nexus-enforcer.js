@@ -27,7 +27,7 @@ function readState() {
       return JSON.parse(fs.readFileSync(BOULDER_STATE_PATH, 'utf8'));
     }
   } catch (e) {
-    console.error('[nexus-enforcer] Error reading state:', e.message);
+    log?.('error', 'Error reading state', { error: e.message });
   }
   return { 
     iteration: 0, 
@@ -45,7 +45,7 @@ function writeState(state) {
   try {
     fs.writeFileSync(BOULDER_STATE_PATH, JSON.stringify(state, null, 2));
   } catch (e) {
-    console.error('[nexus-enforcer] Error writing state:', e.message);
+    log?.('error', 'Error writing state', { error: e.message });
   }
 }
 
@@ -95,51 +95,51 @@ class BoulderEnforcer {
     }
   }
 
-  checkIdle() {
+  async checkIdle(log) {
     const idleTime = Date.now() - this.state.lastActivity;
     const isIdle = idleTime >= CONFIG.IDLE_THRESHOLD_MS;
-    console.log(`[nexus-enforcer] checkIdle: idleTime=${idleTime}ms, threshold=${CONFIG.IDLE_THRESHOLD_MS}ms, isIdle=${isIdle}`);
+    await log?.('debug', `checkIdle: idleTime=${idleTime}ms, threshold=${CONFIG.IDLE_THRESHOLD_MS}ms, isIdle=${isIdle}`);
     return isIdle;
   }
 
-  checkCooldown() {
+  async checkCooldown(log) {
     const timeSinceEnforcement = Date.now() - this.state.lastEnforcement;
     const cooldownPeriod = CONFIG.COOLDOWN_MS * Math.pow(CONFIG.BACKOFF_MULTIPLIER, this.state.failureCount);
     const remaining = Math.max(0, cooldownPeriod - timeSinceEnforcement);
     const isCooldown = timeSinceEnforcement >= cooldownPeriod;
-    console.log(`[nexus-enforcer] checkCooldown: timeSince=${timeSinceEnforcement}ms, period=${cooldownPeriod}ms, remaining=${remaining}ms, isCooldown=${isCooldown}`);
+    await log?.('debug', `checkCooldown: timeSince=${timeSinceEnforcement}ms, period=${cooldownPeriod}ms, remaining=${remaining}ms, isCooldown=${isCooldown}`);
     return isCooldown;
   }
 
-  checkAbort() {
+  async checkAbort(log) {
     if (!this.state.abortDetectedAt) {
-      console.log('[nexus-enforcer] checkAbort: no abort detected');
+      await log?.('debug', 'checkAbort: no abort detected');
       return false;
     }
     const abortAge = Date.now() - this.state.abortDetectedAt;
     const withinWindow = abortAge <= CONFIG.ABORT_WINDOW_MS;
-    console.log(`[nexus-enforcer] checkAbort: abortAge=${abortAge}ms, window=${CONFIG.ABORT_WINDOW_MS}ms, withinWindow=${withinWindow}`);
+    await log?.('debug', `checkAbort: abortAge=${abortAge}ms, window=${CONFIG.ABORT_WINDOW_MS}ms, withinWindow=${withinWindow}`);
     if (withinWindow) {
-      console.log('[nexus-enforcer] Abort detected within window - skipping enforcement');
+      await log?.('debug', 'Abort detected within window - skipping enforcement');
       this.state.abortDetectedAt = null;
       writeState(this.state);
     }
     return withinWindow;
   }
 
-  checkRecovery() {
+  async checkRecovery(log) {
     const isRecovering = this.state.isRecovering;
-    console.log(`[nexus-enforcer] checkRecovery: isRecovering=${isRecovering}`);
+    await log?.('debug', `checkRecovery: isRecovering=${isRecovering}`);
     return isRecovering;
   }
 
-  async showCountdown(client, iteration) {
+  async showCountdown(client, log, iteration) {
     if (!client?.tui) {
-      console.log('[nexus-enforcer] No tui available for countdown');
+      await log?.('debug', 'No tui available for countdown');
       return;
     }
     for (let i = CONFIG.COUNTDOWN_SECONDS; i > 0; i--) {
-      console.log(`[nexus-enforcer] Countdown: ${i}...`);
+      await log?.('debug', `Countdown: ${i}...`);
       await client.tui.showToast({
         body: {
           title: 'BOULDER ENFORCEMENT',
@@ -148,11 +148,11 @@ class BoulderEnforcer {
         duration: 1500
         }
       }).catch(async (error) => {
-        await log('error', 'Countdown toast error', { error: error.message });
+        await log?.('error', 'Countdown toast error', { error: error.message });
       });
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    console.log(`[nexus-enforcer] Countdown complete - triggering enforcement`);
+    await log?.('debug', 'Countdown complete - triggering enforcement');
   }
 
   checkText(text) {
@@ -173,71 +173,71 @@ class BoulderEnforcer {
     return hasCompletion && !hasWorkIndicators;
   }
 
-  shouldEnforce() {
-    console.log('[nexus-enforcer] === DECISION GATE CHECKS ===');
-    console.log(`[nexus-enforcer] iteration: ${this.state.iteration}`);
-    console.log(`[nexus-enforcer] failureCount: ${this.state.failureCount}/${CONFIG.MAX_FAILURES}`);
-    console.log(`[nexus-enforcer] stopRequested: ${this.state.stopRequested}`);
-    console.log(`[nexus-enforcer] enforcementTriggeredForThisIdlePeriod: ${this.enforcementTriggeredForThisIdlePeriod}`);
+  async shouldEnforce(log) {
+    await log?.('debug', '=== DECISION GATE CHECKS ===');
+    await log?.('debug', `iteration: ${this.state.iteration}`);
+    await log?.('debug', `failureCount: ${this.state.failureCount}/${CONFIG.MAX_FAILURES}`);
+    await log?.('debug', `stopRequested: ${this.state.stopRequested}`);
+    await log?.('debug', `enforcementTriggeredForThisIdlePeriod: ${this.enforcementTriggeredForThisIdlePeriod}`);
 
     if (this.enforcementTriggeredForThisIdlePeriod) {
-      console.log('[nexus-enforcer] GATE FAILED: Enforcement already triggered for this idle period');
+      await log?.('debug', 'GATE FAILED: Enforcement already triggered for this idle period');
       return false;
     }
 
-    if (!this.checkIdle()) {
-      console.log('[nexus-enforcer] GATE FAILED: Not idle');
+    if (!await this.checkIdle(log)) {
+      await log?.('debug', 'GATE FAILED: Not idle');
       return false;
     }
-    console.log('[nexus-enforcer] GATE PASSED: Idle threshold met');
+    await log?.('debug', 'GATE PASSED: Idle threshold met');
 
-    if (!this.checkCooldown()) {
-      console.log('[nexus-enforcer] GATE FAILED: Cooldown active');
+    if (!await this.checkCooldown(log)) {
+      await log?.('debug', 'GATE FAILED: Cooldown active');
       return false;
     }
-    console.log('[nexus-enforcer] GATE PASSED: Cooldown ready');
+    await log?.('debug', 'GATE PASSED: Cooldown ready');
 
     if (this.state.failureCount >= CONFIG.MAX_FAILURES) {
-      console.log('[nexus-enforcer] GATE FAILED: Max failures reached');
+      await log?.('debug', 'GATE FAILED: Max failures reached');
       return false;
     }
-    console.log('[nexus-enforcer] GATE PASSED: Under max failures');
+    await log?.('debug', 'GATE PASSED: Under max failures');
 
     if (this.state.stopRequested) {
-      console.log('[nexus-enforcer] GATE FAILED: Stop requested');
+      await log?.('debug', 'GATE FAILED: Stop requested');
       return false;
     }
-    console.log('[nexus-enforcer] GATE PASSED: Not stopped');
+    await log?.('debug', 'GATE PASSED: Not stopped');
 
-    if (this.checkAbort()) {
-      console.log('[nexus-enforcer] GATE FAILED: Abort detected');
+    if (await this.checkAbort(log)) {
+      await log?.('debug', 'GATE FAILED: Abort detected');
       return false;
     }
-    console.log('[nexus-enforcer] GATE PASSED: No abort');
+    await log?.('debug', 'GATE PASSED: No abort');
 
-    if (this.checkRecovery()) {
-      console.log('[nexus-enforcer] GATE FAILED: Session recovering');
+    if (await this.checkRecovery(log)) {
+      await log?.('debug', 'GATE FAILED: Session recovering');
       return false;
     }
-    console.log('[nexus-enforcer] GATE PASSED: Not recovering');
+    await log?.('debug', 'GATE PASSED: Not recovering');
 
-    console.log('[nexus-enforcer] === ALL GATES PASSED ===');
+    await log?.('debug', '=== ALL GATES PASSED ===');
     return true;
   }
 
-  async triggerEnforcement(client, reason = 'idle') {
+  async triggerEnforcement(client, log, reason = 'idle') {
     if (this.state.status === 'ENFORCING') {
-      console.log('[nexus-enforcer] Enforcement already in progress');
+      await log?.('debug', 'Enforcement already in progress');
       return false;
     }
 
     if (this.enforcementTriggeredForThisIdlePeriod) {
-      console.log('[nexus-enforcer] Enforcement already triggered for this idle period');
+      await log?.('debug', 'Enforcement already triggered for this idle period');
       return false;
     }
 
-    console.log(`[nexus-enforcer] Starting enforcement sequence - reason: ${reason}`);
-    await this.showCountdown(client, this.state.iteration + 1);
+    await log?.('info', `Starting enforcement sequence - reason: ${reason}`);
+    await this.showCountdown(client, log, this.state.iteration + 1);
 
     this.state.iteration++;
     this.state.status = 'ENFORCING';
@@ -245,20 +245,20 @@ class BoulderEnforcer {
     this.enforcementTriggeredForThisIdlePeriod = true;
     writeState(this.state);
 
-    console.log(`[nexus-enforcer] Enforcement triggered - iteration ${this.state.iteration}`);
+    await log?.('info', `Enforcement triggered - iteration ${this.state.iteration}`);
     return true;
   }
 
-  recordAbort() {
+  async recordAbort(log) {
     this.state.abortDetectedAt = Date.now();
     writeState(this.state);
-    console.log('[nexus-enforcer] Abort recorded');
+    await log?.('debug', 'Abort recorded');
   }
 
-  setRecovering(recovering) {
+  async setRecovering(recovering, log) {
     this.state.isRecovering = recovering;
     writeState(this.state);
-    console.log(`[nexus-enforcer] Recovery state set: ${recovering}`);
+    await log?.('debug', `Recovery state set: ${recovering}`);
   }
 
   recordFailure() {
@@ -297,25 +297,12 @@ let enforcer = null;
 let pollInterval = null;
 let activityDetectedSinceLastPoll = false;
 
-async function triggerEnforcementWithCountdown(client, enforcerInstance, reason = 'idle') {
-  const log = async (level, message, extra = {}) => {
-    if (client?.app?.log) {
-      await client.app.log({
-        body: {
-          service: 'nexus-enforcer',
-          level,
-          message,
-          extra
-        }
-      }).catch(() => {});
-    }
-  };
-
+async function triggerEnforcementWithCountdown(client, enforcerInstance, log, reason = 'idle') {
   await log('info', `Polling detected ${reason} - triggering enforcement`);
 
-  await enforcerInstance.showCountdown(client, enforcerInstance.state.iteration + 1);
+  await enforcerInstance.showCountdown(client, log, enforcerInstance.state.iteration + 1);
 
-  const triggered = await enforcerInstance.triggerEnforcement(client, reason);
+  const triggered = await enforcerInstance.triggerEnforcement(client, log, reason);
 
   if (triggered) {
     await log('info', `Enforcement triggered - iteration ${enforcerInstance.state.iteration} (${reason})`);
@@ -344,7 +331,7 @@ async function triggerEnforcementWithCountdown(client, enforcerInstance, reason 
   return { triggered: false, message: null };
 }
 
-function startPolling(client) {
+function startPolling(client, log) {
   if (pollInterval) {
     clearInterval(pollInterval);
   }
@@ -356,24 +343,24 @@ function startPolling(client) {
 
     if (activityDetectedSinceLastPoll) {
       activityDetectedSinceLastPoll = false;
-      console.log('[nexus-enforcer] Polling: activity detected, skipping this cycle');
+      await log?.('debug', 'Polling: activity detected, skipping this cycle');
       return;
     }
 
-    if (enforcer.shouldEnforce() && !enforcer.enforcementTriggeredForThisIdlePeriod) {
-      console.log('[nexus-enforcer] Polling detected idle - triggering enforcement');
-      await triggerEnforcementWithCountdown(client, enforcer, 'idle');
+    if (await enforcer.shouldEnforce(log) && !enforcer.enforcementTriggeredForThisIdlePeriod) {
+      await log?.('debug', 'Polling detected idle - triggering enforcement');
+      await triggerEnforcementWithCountdown(client, enforcer, log, 'idle');
     }
   }, 5000);
 
-  console.log('[nexus-enforcer] Polling started - checking every 5 seconds');
+  log?.('info', 'Polling started - checking every 5 seconds');
 }
 
-function stopPolling() {
+function stopPolling(log) {
   if (pollInterval) {
     clearInterval(pollInterval);
     pollInterval = null;
-    console.log('[nexus-enforcer] Polling stopped');
+    log?.('info', 'Polling stopped');
   }
 }
 
@@ -444,7 +431,7 @@ export const NexusEnforcerPlugin = async (context) => {
 
   // Delay polling start to prevent initialization issues
   setTimeout(() => {
-    startPolling(client);
+    startPolling(client, log);
   }, 5000);
 
   // process.on('exit', () => {
@@ -490,7 +477,7 @@ export const NexusEnforcerPlugin = async (context) => {
       if (enforcer.checkText(text)) {
         await log('info', 'Completion keywords detected');
         await log('debug', 'About to call triggerEnforcement with countdown');
-        const triggered = await enforcer.triggerEnforcement(client, 'completion');
+        const triggered = await enforcer.triggerEnforcement(client, log, 'completion');
         await log('info', `Enforcement triggered - iteration ${enforcer.state.iteration} (completion)`);
         
         const enforcementMsg = buildEnforcementMessage(enforcer.state.iteration);
@@ -521,9 +508,9 @@ export const NexusEnforcerPlugin = async (context) => {
       }
 
       const eventType = input?.event?.type;
-      const sessionID = input?.event?.properties?.sessionID;
 
-      await log('debug', `Event received: type=${eventType}, sessionID=${sessionID}`);
+      await log('debug', `Event received: type=${eventType}, keys=${Object.keys(input || {}).join(',')}`);
+      await log('debug', `Event properties: ${JSON.stringify(input?.event?.properties || {})}`);
 
       // Activity detected via event - mark for poll and reset enforcement flag
       markActivityForPoll();
@@ -534,21 +521,21 @@ export const NexusEnforcerPlugin = async (context) => {
       // Handle abort events
       if (eventType === 'agent.abort' || eventType === 'agent.stop') {
         await log('info', 'Abort/stop event detected - recording abort');
-        enforcer.recordAbort();
+        await enforcer.recordAbort(log);
         return;
       }
 
       // Handle recovery events
       if (eventType === 'session.recovering' || eventType === 'session.recover') {
         await log('info', 'Session recovery event detected');
-        enforcer.setRecovering(true);
+        await enforcer.setRecovering(true, log);
         return;
       }
 
       // Handle recovery complete
       if (eventType === 'session.recovered' || eventType === 'session.recovery.complete') {
         await log('info', 'Session recovery complete');
-        enforcer.setRecovering(false);
+        await enforcer.setRecovering(false, log);
         return;
       }
 
@@ -564,18 +551,27 @@ export const NexusEnforcerPlugin = async (context) => {
         return;
       }
 
+      // Try multiple sources for sessionID
+      const sessionID = input?.event?.properties?.sessionID 
+        || input?.session 
+        || input?.event?.session 
+        || context?.session;
+
+      await log('debug', `Session ID extracted: ${sessionID || 'undefined'}`);
+
       // Check if enforcement should trigger
-      if (!enforcer.shouldEnforce()) {
+      if (!await enforcer.shouldEnforce(log)) {
         await log('debug', 'Enforcement gates not passed');
         return;
       }
 
       // All gates passed - trigger enforcement
       await log('info', 'All gates passed - triggering enforcement');
-      const triggered = await enforcer.triggerEnforcement(client, 'idle');
+      const triggered = await enforcer.triggerEnforcement(client, log, 'idle');
 
       if (triggered) {
-      await log('info', `Enforcement triggered - iteration ${enforcer.state.iteration} (idle)`);
+        await log('info', `Enforcement triggered - iteration ${enforcer.state.iteration} (idle)`);
+
         // Show toast notification
         if (client?.tui) {
           await log('debug', 'Attempting to show toast');
@@ -584,23 +580,30 @@ export const NexusEnforcerPlugin = async (context) => {
               title: `BOULDER ENFORCEMENT - Iteration ${enforcer.state.iteration}`,
               message: 'The boulder never stops. You have been idle for 30+ seconds. Generate new ideas. Refine code. Research.',
               variant: 'error',
-        duration: 15000
+              duration: 15000
+            }
+          }).catch(async (error) => {
+            await log('error', 'Failed to show toast', { error: error.message });
+          });
+          await log('debug', 'Toast call completed');
         }
-      }).catch(async (error) => {
-        await log('error', 'Failed to show toast', { error: error.message });
-      });
-      await log('debug', 'Toast call completed');
-    }
-        
+
         // Send system reminder message to conversation
-        if (client?.session?.promptAsync && sessionID) {
-          await log('debug', 'Sending system reminder message');
-          await client.session.promptAsync({
-            path: { id: sessionID },
-            body: {
-              parts: [{ 
-                type: "text", 
-                text: `## [BOULDER ENFORCEMENT] Iteration ${enforcer.state.iteration}
+        if (!sessionID) {
+          await log('warn', 'Cannot send system message: sessionID is undefined');
+        } else if (client?.session?.promptAsync) {
+          await log('debug', 'About to send system message', { 
+            hasSessionID: !!sessionID, 
+            hasPromptAsync: !!client?.session?.promptAsync 
+          });
+
+          try {
+            await client.session.promptAsync({
+              path: { id: sessionID },
+              body: {
+                parts: [{ 
+                  type: "text", 
+                  text: `## [BOULDER ENFORCEMENT] Iteration ${enforcer.state.iteration}
 
 The boulder never stops. You have been idle for 30+ seconds.
 
@@ -613,12 +616,17 @@ The boulder never stops. You have been idle for 30+ seconds.
 - Evidence of success must be provided
 
 **DO NOT STOP.** The boulder never stops rolling.` 
-              }]
-            },
-            query: { directory }
-          }).catch(async (error) => {
-            await log('error', 'Failed to send system message', { error: error.message });
-          });
+                }]
+              },
+              query: { directory }
+            });
+            await log('info', 'System message sent successfully');
+          } catch (error) {
+            await log('error', 'Failed to send system message', { 
+              error: error.message,
+              stack: error.stack 
+            });
+          }
           await log('debug', 'System message sent');
         } else {
           await log('debug', `Cannot send message: hasPrompt=${!!client?.session?.promptAsync}, hasSessionID=${!!sessionID}`);
