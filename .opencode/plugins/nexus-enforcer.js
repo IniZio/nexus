@@ -37,7 +37,8 @@ function readState() {
     stopRequested: false,
     status: 'CONTINUOUS',
     abortDetectedAt: null,
-    isRecovering: false
+    isRecovering: false,
+    sessionID: null
   };
 }
 
@@ -404,7 +405,7 @@ Resume work immediately.`
   };
 }
 
-export const NexusEnforcerPlugin = async (context) => {
+export default async function NexusEnforcerPlugin(context) {
   const { directory, client } = context;
 
   const log = async (level, message, extra = {}) => {
@@ -557,6 +558,12 @@ export const NexusEnforcerPlugin = async (context) => {
         || input?.event?.session 
         || context?.session;
 
+      // Store sessionID in state if available
+      if (sessionID && !enforcer.state.sessionID) {
+        enforcer.state.sessionID = sessionID;
+        writeState(enforcer.state);
+      }
+
       await log('debug', `Session ID extracted: ${sessionID || 'undefined'}`);
 
       // Check if enforcement should trigger
@@ -601,6 +608,11 @@ export const NexusEnforcerPlugin = async (context) => {
             await client.session.promptAsync({
               path: { id: sessionID },
               body: {
+                agent: 'nexus-enforcer',
+                model: {
+                  providerID: 'anthropic',
+                  modelID: 'claude-sonnet-4-20250514'
+                },
                 parts: [{ 
                   type: "text", 
                   text: `## [BOULDER ENFORCEMENT] Iteration ${enforcer.state.iteration}
