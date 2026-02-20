@@ -91,6 +91,13 @@ nexus agent list
 | Test Functions | 153 |
 | Test Files | 10 |
 
+## Resources
+
+- **OpenCode Plugin Docs:** https://opencode.ai/docs/plugins/
+- **Config Docs:** https://opencode.ai/docs/config/
+- **Nexus Repo:** https://github.com/IniZio/nexus
+- **Testing Plan:** `docs/testing/ENFORCER_TESTING.md`
+
 ## Next Steps
 
 - Browse [tutorials](tutorials/) to get started

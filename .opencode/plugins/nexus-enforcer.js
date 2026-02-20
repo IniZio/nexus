@@ -10,6 +10,15 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const BOULDER_STATE_PATH = path.join(process.cwd(), '.nexus/boulder/state.json');
+const PAUSE_FLAG_PATH = path.join(process.cwd(), '.nexus/boulder/pause.flag');
+
+function isPaused() {
+  try {
+    return fs.existsSync(PAUSE_FLAG_PATH);
+  } catch (e) {
+    return false;
+  }
+}
 
 // Configuration - matching oh-my-opencode patterns
 const CONFIG = {
@@ -71,9 +80,10 @@ The boulder never stops. You have indicated completion, but:
 
 - Task must be fully verified (tests pass, build succeeds)
 - Zero type/lint errors required
-- Dogfooding must complete
 - All requirements explicitly addressed
 - Evidence of success must be provided
+- If you were asking to proceed with what is not destructive and not multi-choice, just proceed.
+- If you claimed new change "should work" or "should be fine", that means critical issue in your testing since it's probably mocked. Step back and verify with real tests and real environment.
 
 **DO NOT claim completion without verification.**
 
@@ -88,6 +98,20 @@ class BoulderEnforcer {
     this.enforcementTriggeredForThisIdlePeriod = this.state.enforcementTriggeredForThisIdlePeriod || false;
   }
 
+  reloadState() {
+    const diskState = readState();
+    // Only update specific fields that can change externally
+    if (diskState.status !== undefined) {
+      this.state.status = diskState.status;
+    }
+    if (diskState.stopRequested !== undefined) {
+      this.state.stopRequested = diskState.stopRequested;
+    }
+    if (diskState.failureCount !== undefined) {
+      this.state.failureCount = diskState.failureCount;
+    }
+  }
+
   recordActivity() {
     this.state.lastActivity = Date.now();
     this.state.enforcementTriggeredForThisIdlePeriod = false;
@@ -96,6 +120,39 @@ class BoulderEnforcer {
       this.state.status = 'CONTINUOUS';
       writeState(this.state);
     }
+  }
+
+  pause() {
+    this.state.status = 'PAUSED';
+    this.state.lastActivity = Date.now();
+    writeState(this.state);
+    // Create pause flag file
+    try {
+      fs.writeFileSync(PAUSE_FLAG_PATH, 'PAUSED');
+    } catch (e) {
+      // Ignore errors
+    }
+    return 'Boulder paused. Will auto-resume on your next message.';
+  }
+
+  resume() {
+    this.state.status = 'CONTINUOUS';
+    this.state.lastActivity = Date.now();
+    this.state.iteration += 1;
+    writeState(this.state);
+    // Remove pause flag file
+    try {
+      if (fs.existsSync(PAUSE_FLAG_PATH)) {
+        fs.unlinkSync(PAUSE_FLAG_PATH);
+      }
+    } catch (e) {
+      // Ignore errors
+    }
+    return `Boulder resumed at iteration ${this.state.iteration}. The boulder never stops!`;
+  }
+
+  isPaused() {
+    return this.state.status === 'PAUSED' || isPaused();
   }
 
   async checkIdle(log) {
@@ -177,11 +234,27 @@ class BoulderEnforcer {
   }
 
   async shouldEnforce(log) {
+    // Reload state from disk to get latest pause/resume status
+    this.reloadState();
+
+    // Check pause flag FIRST - before anything else
+    if (isPaused()) {
+      await log?.('debug', 'GATE FAILED: Pause flag file exists');
+      return false;
+    }
+
     await log?.('debug', '=== DECISION GATE CHECKS ===');
     await log?.('debug', `iteration: ${this.state.iteration}`);
     await log?.('debug', `failureCount: ${this.state.failureCount}/${CONFIG.MAX_FAILURES}`);
     await log?.('debug', `stopRequested: ${this.state.stopRequested}`);
+    await log?.('debug', `status: ${this.state.status}`);
     await log?.('debug', `enforcementTriggeredForThisIdlePeriod: ${this.enforcementTriggeredForThisIdlePeriod}`);
+
+    // Check if boulder is paused (backup check)
+    if (this.state.status === 'PAUSED') {
+      await log?.('debug', 'GATE FAILED: Boulder is paused');
+      return false;
+    }
 
     if (this.enforcementTriggeredForThisIdlePeriod) {
       await log?.('debug', 'GATE FAILED: Enforcement already triggered for this idle period');
@@ -645,6 +718,19 @@ export default async function NexusEnforcerPlugin(context) {
         return;
       }
 
+      // CRITICAL: Check pause flag first
+      if (isPaused()) {
+        await log('info', 'Boulder is PAUSED (flag file) - skipping enforcement');
+        return;
+      }
+
+      // CRITICAL: Direct state check to respect PAUSED status
+      const currentState = readState();
+      if (currentState.status === 'PAUSED') {
+        await log('info', 'Boulder is PAUSED - skipping enforcement');
+        return;
+      }
+
       // Check if enforcement should trigger
       if (!await enforcer.shouldEnforce(log)) {
         await log('debug', 'Enforcement gates not passed');
@@ -696,8 +782,8 @@ export default async function NexusEnforcerPlugin(context) {
               body: {
                 agent: 'nexus-enforcer',
                 model: {
-                  providerID: 'anthropic',
-                  modelID: 'claude-sonnet-4-20250514'
+                  providerID: 'kimi-for-coding',
+                  modelID: 'k2p5'
                 },
                 parts: [{ 
                   type: "text", 
@@ -736,6 +822,82 @@ The boulder never stops. You have been idle for 30+ seconds.
         // Release lock
         enforcementLock = false;
       }
+    },
+
+    // Handle user messages - auto-resume if paused
+    "chat.input": async (input, output) => {
+      if (!enforcer) return;
+      
+      const text = input?.text || '';
+      
+      // Debug: Log what we received
+      await log('debug', `chat.input received: text="${text?.substring(0, 50)}...", input keys=${Object.keys(input || {}).join(',')}`);
+      await log('debug', `chat.input input.source=${input?.source}, input.role=${input?.role}, input.actor=${input?.actor}`);
+      
+      // Check for pause/resume commands
+      if (text.startsWith('/boulder-pause')) {
+        const message = enforcer.pause();
+        output.response = {
+          content: [{
+            type: 'text',
+            text: `✅ **Boulder Paused**\n\n${message}\n\nYou can continue when ready. The boulder will auto-resume when you send your next message.`
+          }]
+        };
+        await log('info', 'Boulder paused via command');
+        return;
+      }
+      
+      if (text.startsWith('/boulder-resume')) {
+        const message = enforcer.resume();
+        output.response = {
+          content: [{
+            type: 'text',
+            text: `▶️ **Boulder Resumed**\n\n${message}`
+          }]
+        };
+        await log('info', 'Boulder resumed via command');
+        return;
+      }
+      
+      // Auto-resume on user message if paused
+      // Only resume if message is NOT from the agent (check for agent indicators)
+      const isAgentMessage = text.includes('[BOULDER ENFORCEMENT]') || 
+                            text.includes('The boulder never stops') ||
+                            text.includes('✅ **Boulder Paused**') ||
+                            text.includes('▶️ **Boulder Resumed**');
+      
+      if (isAgentMessage) {
+        await log('debug', 'chat.input: Detected agent message, NOT auto-resuming');
+      } else if (enforcer.isPaused()) {
+        const message = enforcer.resume();
+        await log('info', `Boulder auto-resumed on user message: ${message}`);
+        
+        // Remove pause flag file
+        try {
+          if (fs.existsSync(PAUSE_FLAG_PATH)) {
+            fs.unlinkSync(PAUSE_FLAG_PATH);
+            await log('debug', 'Pause flag file removed');
+          }
+        } catch (e) {
+          await log('error', 'Failed to remove pause flag file', { error: e.message });
+        }
+        
+        // Show toast notification
+        if (client?.tui) {
+          await client.tui.showToast({
+            body: {
+              title: 'Boulder Auto-Resumed',
+              message: `The boulder never stops. Now at iteration ${enforcer.state.iteration}.`,
+              variant: 'info',
+              duration: 5000
+            }
+          }).catch(() => {});
+        }
+      }
+      
+      // Record activity
+      enforcer.recordActivity();
+      enforcer.clearStopFlag();
     }
   };
 };
