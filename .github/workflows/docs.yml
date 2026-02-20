@@ -4,7 +4,7 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
-      - 'zensical.yml'
+      - 'mkdocs.yml'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
