@@ -308,29 +308,72 @@ async function triggerEnforcementWithCountdown(client, enforcerInstance, log, re
 
   const triggered = await enforcerInstance.triggerEnforcement(client, log, reason);
 
-  if (triggered) {
-    await log('info', `Enforcement triggered - iteration ${enforcerInstance.state.iteration} (${reason})`);
+    if (triggered) {
+      await log('info', `Enforcement triggered - iteration ${enforcerInstance.state.iteration} (${reason})`);
 
-    if (client?.tui) {
-      await log('debug', 'Attempting to show toast');
-      await client.tui.showToast({
-        body: {
-          title: `BOULDER ENFORCEMENT - Iteration ${enforcerInstance.state.iteration}`,
-          message: reason === 'idle'
-            ? 'The boulder never stops. You have been idle for 30+ seconds. Generate new ideas. Refine code. Research.'
-            : 'The boulder never stops. Completion detected. Continue improving.',
-          variant: 'warning',
-          duration: 15000
+      if (client?.tui) {
+        await log('debug', 'Attempting to show toast');
+        await client.tui.showToast({
+          body: {
+            title: `BOULDER ENFORCEMENT - Iteration ${enforcerInstance.state.iteration}`,
+            message: reason === 'idle'
+              ? 'The boulder never stops. You have been idle for 30+ seconds. Generate new ideas. Refine code. Research.'
+              : 'The boulder never stops. Completion detected. Continue improving.',
+            variant: 'warning',
+            duration: 15000
+          }
+        }).catch(async (error) => {
+          await log('error', 'Failed to show toast', { error: error.message });
+        });
+        await log('debug', 'Toast call completed');
+      }
+
+      // Send system reminder message via promptAsync
+      const sessionIDForMessage = sessionID || enforcerInstance.state.sessionID;
+      if (client?.session?.promptAsync && sessionIDForMessage) {
+        await log('debug', `Sending system message to session: ${sessionIDForMessage}`);
+        try {
+          await client.session.promptAsync({
+            path: { id: sessionIDForMessage },
+            body: {
+              agent: 'nexus-enforcer',
+              model: {
+                providerID: 'anthropic',
+                modelID: 'claude-sonnet-4-20250514'
+              },
+              parts: [{
+                type: "text",
+                text: `## [BOULDER ENFORCEMENT] Iteration ${enforcerInstance.state.iteration}
+
+The boulder never stops. You have been idle for 30+ seconds.
+
+**CONTINUE WORKING.**
+
+- Task must be fully verified (tests pass, build succeeds)
+- Zero type/lint errors required
+- Dogfooding must complete
+- All requirements explicitly addressed
+- Evidence of success must be provided
+
+**DO NOT STOP.** The boulder never stops rolling.`
+              }]
+            },
+            query: { directory: enforcerInstance.state.directory || process.cwd() }
+          });
+          await log('info', 'System message sent successfully');
+        } catch (error) {
+          await log('error', 'Failed to send system message', { error: error.message });
         }
-      }).catch(async (error) => {
-        await log('error', 'Failed to show toast', { error: error.message });
-      });
-      await log('debug', 'Toast call completed');
-    }
+      } else {
+        await log('warn', 'Cannot send system message', { 
+          hasPromptAsync: !!client?.session?.promptAsync, 
+          sessionID: sessionIDForMessage 
+        });
+      }
 
-    const enforcementMsg = buildEnforcementMessage(enforcerInstance.state.iteration);
-    return { triggered: true, message: enforcementMsg };
-  }
+      const enforcementMsg = buildEnforcementMessage(enforcerInstance.state.iteration);
+      return { triggered: true, message: enforcementMsg };
+    }
 
   return { triggered: false, message: null };
 }
