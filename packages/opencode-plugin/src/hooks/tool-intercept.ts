@@ -1,5 +1,5 @@
-import { PluginContext, ToolHookData } from '@opencode-ai/sdk';
-import { WorkspaceClient } from '@nexus/workspace-sdk';
+import type { PluginContext, ToolHookData } from '../types/opencode-sdk';
+import { WorkspaceClient } from '../types/workspace-sdk';
 import * as path from 'path';
 import * as fs from 'fs';
 import { loadConfig, validateConfig } from '../config';

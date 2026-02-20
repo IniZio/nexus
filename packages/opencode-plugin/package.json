@@ -17,10 +17,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@nexus/workspace-sdk": "*",
-    "@opencode-ai/sdk": "*"
+    "@opencode-ai/plugin": "^1.2.10",
+    "@opencode-ai/sdk": "^1.2.10",
+    "ws": "^8.16.0"
   },
   "devDependencies": {
+    "@types/node": "^20.0.0",
     "typescript": "^5.3.0"
   },
   "engines": {
