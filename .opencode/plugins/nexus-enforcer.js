@@ -16,6 +16,7 @@ const CONFIG = {
   IDLE_THRESHOLD_MS: 30000,        // 30s idle before enforcement
   COOLDOWN_MS: 30000,              // 30s between enforcements
   COUNTDOWN_SECONDS: 2,            // 2s warning before injection
+  ABORT_WINDOW_MS: 3000,           // 3s window to detect aborts
   MAX_FAILURES: 5,                 // Max failures before giving up
   BACKOFF_MULTIPLIER: 2,           // Exponential backoff
 };
@@ -34,7 +35,9 @@ function readState() {
     lastEnforcement: 0,
     failureCount: 0,
     stopRequested: false,
-    status: 'CONTINUOUS'
+    status: 'CONTINUOUS',
+    abortDetectedAt: null,
+    isRecovering: false
   };
 }
 
@@ -93,14 +96,62 @@ class BoulderEnforcer {
 
   checkIdle() {
     const idleTime = Date.now() - this.state.lastActivity;
-    return idleTime >= CONFIG.IDLE_THRESHOLD_MS;
+    const isIdle = idleTime >= CONFIG.IDLE_THRESHOLD_MS;
+    console.log(`[nexus-enforcer] checkIdle: idleTime=${idleTime}ms, threshold=${CONFIG.IDLE_THRESHOLD_MS}ms, isIdle=${isIdle}`);
+    return isIdle;
   }
 
   checkCooldown() {
     const timeSinceEnforcement = Date.now() - this.state.lastEnforcement;
-    // Apply exponential backoff: 30s × 2^failures
     const cooldownPeriod = CONFIG.COOLDOWN_MS * Math.pow(CONFIG.BACKOFF_MULTIPLIER, this.state.failureCount);
-    return timeSinceEnforcement >= cooldownPeriod;
+    const remaining = Math.max(0, cooldownPeriod - timeSinceEnforcement);
+    const isCooldown = timeSinceEnforcement >= cooldownPeriod;
+    console.log(`[nexus-enforcer] checkCooldown: timeSince=${timeSinceEnforcement}ms, period=${cooldownPeriod}ms, remaining=${remaining}ms, isCooldown=${isCooldown}`);
+    return isCooldown;
+  }
+
+  checkAbort() {
+    if (!this.state.abortDetectedAt) {
+      console.log('[nexus-enforcer] checkAbort: no abort detected');
+      return false;
+    }
+    const abortAge = Date.now() - this.state.abortDetectedAt;
+    const withinWindow = abortAge <= CONFIG.ABORT_WINDOW_MS;
+    console.log(`[nexus-enforcer] checkAbort: abortAge=${abortAge}ms, window=${CONFIG.ABORT_WINDOW_MS}ms, withinWindow=${withinWindow}`);
+    if (withinWindow) {
+      console.log('[nexus-enforcer] Abort detected within window - skipping enforcement');
+      this.state.abortDetectedAt = null;
+      writeState(this.state);
+    }
+    return withinWindow;
+  }
+
+  checkRecovery() {
+    const isRecovering = this.state.isRecovering;
+    console.log(`[nexus-enforcer] checkRecovery: isRecovering=${isRecovering}`);
+    return isRecovering;
+  }
+
+  async showCountdown(client, iteration) {
+    if (!client?.tui) {
+      console.log('[nexus-enforcer] No tui available for countdown');
+      return;
+    }
+    for (let i = CONFIG.COUNTDOWN_SECONDS; i > 0; i--) {
+      console.log(`[nexus-enforcer] Countdown: ${i}...`);
+      await client.tui.showToast({
+        body: {
+          title: 'BOULDER ENFORCEMENT',
+          message: `Boulder enforcement in ${i}...`,
+          variant: 'warning',
+          duration: 1500
+        }
+      }).catch((error) => {
+        console.error('[nexus-enforcer] Countdown toast error:', error.message);
+      });
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    console.log(`[nexus-enforcer] Countdown complete - triggering enforcement`);
   }
 
   checkText(text) {
@@ -122,24 +173,79 @@ class BoulderEnforcer {
   }
 
   shouldEnforce() {
-    // Decision gates (from oh-my-opencode pattern)
-    if (!this.checkIdle()) return false;
-    if (!this.checkCooldown()) return false;
-    if (this.state.failureCount >= CONFIG.MAX_FAILURES) return false;
-    if (this.state.stopRequested) return false;
-    
+    console.log('[nexus-enforcer] === DECISION GATE CHECKS ===');
+    console.log(`[nexus-enforcer] iteration: ${this.state.iteration}`);
+    console.log(`[nexus-enforcer] failureCount: ${this.state.failureCount}/${CONFIG.MAX_FAILURES}`);
+    console.log(`[nexus-enforcer] stopRequested: ${this.state.stopRequested}`);
+
+    if (!this.checkIdle()) {
+      console.log('[nexus-enforcer] GATE FAILED: Not idle');
+      return false;
+    }
+    console.log('[nexus-enforcer] GATE PASSED: Idle threshold met');
+
+    if (!this.checkCooldown()) {
+      console.log('[nexus-enforcer] GATE FAILED: Cooldown active');
+      return false;
+    }
+    console.log('[nexus-enforcer] GATE PASSED: Cooldown ready');
+
+    if (this.state.failureCount >= CONFIG.MAX_FAILURES) {
+      console.log('[nexus-enforcer] GATE FAILED: Max failures reached');
+      return false;
+    }
+    console.log('[nexus-enforcer] GATE PASSED: Under max failures');
+
+    if (this.state.stopRequested) {
+      console.log('[nexus-enforcer] GATE FAILED: Stop requested');
+      return false;
+    }
+    console.log('[nexus-enforcer] GATE PASSED: Not stopped');
+
+    if (this.checkAbort()) {
+      console.log('[nexus-enforcer] GATE FAILED: Abort detected');
+      return false;
+    }
+    console.log('[nexus-enforcer] GATE PASSED: No abort');
+
+    if (this.checkRecovery()) {
+      console.log('[nexus-enforcer] GATE FAILED: Session recovering');
+      return false;
+    }
+    console.log('[nexus-enforcer] GATE PASSED: Not recovering');
+
+    console.log('[nexus-enforcer] === ALL GATES PASSED ===');
     return true;
   }
 
-  async triggerEnforcement(reason = 'idle') {
-    if (this.state.status === 'ENFORCING') return false;
-    
+  async triggerEnforcement(client, reason = 'idle') {
+    if (this.state.status === 'ENFORCING') {
+      console.log('[nexus-enforcer] Enforcement already in progress');
+      return false;
+    }
+
+    console.log(`[nexus-enforcer] Starting enforcement sequence - reason: ${reason}`);
+    await this.showCountdown(client, this.state.iteration + 1);
+
     this.state.iteration++;
     this.state.status = 'ENFORCING';
     this.state.lastEnforcement = Date.now();
     writeState(this.state);
-    
+
+    console.log(`[nexus-enforcer] Enforcement triggered - iteration ${this.state.iteration}`);
     return true;
+  }
+
+  recordAbort() {
+    this.state.abortDetectedAt = Date.now();
+    writeState(this.state);
+    console.log('[nexus-enforcer] Abort recorded');
+  }
+
+  setRecovering(recovering) {
+    this.state.isRecovering = recovering;
+    writeState(this.state);
+    console.log(`[nexus-enforcer] Recovery state set: ${recovering}`);
   }
 
   recordFailure() {
@@ -155,13 +261,21 @@ class BoulderEnforcer {
   }
 
   getStatus() {
+    const idleTime = Date.now() - this.state.lastActivity;
+    const cooldownPeriod = CONFIG.COOLDOWN_MS * Math.pow(CONFIG.BACKOFF_MULTIPLIER, this.state.failureCount);
+    const cooldownRemaining = Math.max(0, cooldownPeriod - (Date.now() - this.state.lastEnforcement));
+
     return {
       iteration: this.state.iteration,
       lastActivity: this.state.lastActivity,
-      timeSinceActivity: Date.now() - this.state.lastActivity,
+      timeSinceActivity: idleTime,
       isEnforcing: this.state.status === 'ENFORCING',
       failureCount: this.state.failureCount,
-      stopRequested: this.state.stopRequested
+      stopRequested: this.state.stopRequested,
+      abortDetectedAt: this.state.abortDetectedAt,
+      isRecovering: this.state.isRecovering,
+      idleTimeMs: idleTime,
+      cooldownRemainingMs: cooldownRemaining
     };
   }
 }
@@ -265,7 +379,8 @@ export const NexusEnforcerPlugin = async (context) => {
 
       if (enforcer.checkText(text)) {
         await log('info', 'Completion keywords detected');
-        await enforcer.triggerEnforcement('completion');
+        await log('debug', 'About to call triggerEnforcement with countdown');
+        const triggered = await enforcer.triggerEnforcement(client, 'completion');
         await log('info', `Enforcement triggered - iteration ${enforcer.state.iteration} (completion)`);
         
         const enforcementMsg = buildEnforcementMessage(enforcer.state.iteration);
@@ -295,47 +410,56 @@ export const NexusEnforcerPlugin = async (context) => {
         await log('debug', 'Missing enforcer or client');
         return;
       }
-      
-      // Check if this is a session.idle event
-      // oh-my-opencode pattern: input.event.type
+
       const eventType = input?.event?.type;
       const sessionID = input?.event?.properties?.sessionID;
-      
+
       await log('debug', `Event received: type=${eventType}, sessionID=${sessionID}`);
-      
+
+      // Handle abort events
+      if (eventType === 'agent.abort' || eventType === 'agent.stop') {
+        await log('info', 'Abort/stop event detected - recording abort');
+        enforcer.recordAbort();
+        return;
+      }
+
+      // Handle recovery events
+      if (eventType === 'session.recovering' || eventType === 'session.recover') {
+        await log('info', 'Session recovery event detected');
+        enforcer.setRecovering(true);
+        return;
+      }
+
+      // Handle recovery complete
+      if (eventType === 'session.recovered' || eventType === 'session.recovery.complete') {
+        await log('info', 'Session recovery complete');
+        enforcer.setRecovering(false);
+        return;
+      }
+
       if (eventType !== 'session.idle') {
         await log('debug', `Not session.idle event (${eventType}), skipping`);
         return;
       }
-      
+
       await log('info', 'Session idle event received - processing');
-      
+
       if (!isMainAgent(input)) {
         await log('debug', 'Not main agent, skipping');
         return;
       }
-      
-      // Decision gates
-      if (!enforcer.checkIdle()) {
-        await log('debug', 'Not idle enough yet');
+
+      // Check if enforcement should trigger
+      if (!enforcer.shouldEnforce()) {
+        await log('debug', 'Enforcement gates not passed');
         return;
       }
-      
-      if (!enforcer.checkCooldown()) {
-        await log('debug', 'Cooldown active');
-        return;
-      }
-      
-      if (enforcer.state.failureCount >= CONFIG.MAX_FAILURES) {
-        await log('debug', 'Max failures reached');
-        return;
-      }
-      
+
       // All gates passed - trigger enforcement
       await log('info', 'All gates passed - triggering enforcement');
-      const triggered = await enforcer.triggerEnforcement('idle');
-    
-    if (triggered) {
+      const triggered = await enforcer.triggerEnforcement(client, 'idle');
+
+      if (triggered) {
       await log('info', `Enforcement triggered - iteration ${enforcer.state.iteration} (idle)`);
         // Show toast notification
         if (client?.tui) {
