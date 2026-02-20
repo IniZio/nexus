@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  workspace-daemon:
+    build:
+      context: ../packages/workspace-daemon
+      dockerfile: Dockerfile
+    image: nexus-workspace-daemon:test
+    container_name: nexus-workspace-daemon-test
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - WORKSPACE_DIR=/workspace
+      - TOKEN=test-token
+    volumes:
+      - test-workspace:/workspace
+    networks:
+      - nexus-test-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  test-runner:
+    image: node:20-alpine
+    container_name: nexus-test-runner
+    working_dir: /app
+    volumes:
+      - .:/app
+      - ../packages/workspace-sdk:/workspace-sdk
+    networks:
+      - nexus-test-network
+    depends_on:
+      - workspace-daemon
+    environment:
+      - DAEMON_HOST=workspace-daemon
+      - DAEMON_PORT=8080
+    command: ["sleep", "infinity"]
+
+volumes:
+  test-workspace:
+
+networks:
+  nexus-test-network:
+    driver: bridge

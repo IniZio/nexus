@@ -1,0 +1,14 @@
+{
+  "name": "test-workspace-fixture",
+  "version": "1.0.0",
+  "description": "Test workspace fixture for E2E tests",
+  "main": "dist/index.js",
+  "scripts": {
+    "test": "echo \"No tests specified\""
+  },
+  "keywords": ["test", "fixture"],
+  "author": "Nexus Team",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {}
+}
