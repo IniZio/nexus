@@ -1,0 +1,12 @@
+{
+  "idleThresholdMs": 30000,
+  "cooldownMs": 30000,
+  "testTimeoutMs": 120000,
+  "serverPort": 8080,
+  "verboseLogging": true,
+  "tests": [
+    "idle-detection",
+    "cooldown",
+    "activity-reset"
+  ]
+}
