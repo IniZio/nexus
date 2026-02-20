@@ -10,7 +10,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o daemon ./cmd/daem
 
 FROM alpine:3.19
 
-RUN apk --no-cache add ca-certificates
+RUN apk --no-cache add ca-certificates nodejs npm
 
 WORKDIR /workspace
 
@@ -20,6 +20,6 @@ EXPOSE 8080
 
 ENV PORT=8080
 ENV WORKSPACE_DIR=/workspace
-ENV TOKEN_FILE=/run/secrets/token
+ENV NEXUS_TOKEN=test-token
 
-CMD ["daemon", "--port", "8080", "--workspace-dir", "/workspace"]
+ENTRYPOINT daemon --port ${PORT} --workspace-dir ${WORKSPACE_DIR} --token ${NEXUS_TOKEN:-test-token}

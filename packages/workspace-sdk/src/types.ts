@@ -168,7 +168,7 @@ export interface ExecParams {
 export interface ExecResultData {
   stdout: string;
   stderr: string;
-  exitCode: number;
+  exit_code: number;
 }
 
 export type RequestHandler = (params?: Record<string, unknown>) => Promise<unknown>;

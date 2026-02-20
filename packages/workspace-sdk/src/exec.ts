@@ -15,12 +15,12 @@ export class ExecOperations {
       options,
     };
 
-    const result = await this.client.request<ExecResultData>('exec.run', params);
+    const result = await this.client.request<ExecResultData>('exec', params);
 
     return {
       stdout: result.stdout,
       stderr: result.stderr,
-      exitCode: result.exitCode,
+      exitCode: result.exit_code,
     };
   }
 }

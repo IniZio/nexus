@@ -13,6 +13,7 @@ services:
       - PORT=8080
       - WORKSPACE_DIR=/workspace
       - TOKEN=test-token
+    command: ["daemon", "--port", "8080", "--workspace-dir", "/workspace", "--token", "test-token"]
     volumes:
       - test-workspace:/workspace
     networks:

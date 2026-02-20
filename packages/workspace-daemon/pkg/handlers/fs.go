@@ -76,12 +76,20 @@ type ReaddirResult struct {
 }
 
 type StatResult struct {
+	Stats struct {
+		IsFile      bool   `json:"isFile"`
+		IsDirectory bool   `json:"isDirectory"`
+		Size        int64  `json:"size"`
+		Mtime       string `json:"mtime"`
+		Ctime       string `json:"ctime"`
+		Mode        int    `json:"mode"`
+	} `json:"stats"`
 	Name    string `json:"name"`
 	Path    string `json:"path"`
-	IsDir   bool   `json:"is_dir"`
+	IsDir   bool   `json:"isDir"`
 	Size    int64  `json:"size"`
 	Mode    string `json:"mode"`
-	ModTime string `json:"mod_time"`
+	ModTime string `json:"modTime"`
 }
 
 func HandleReadFile(ctx context.Context, params json.RawMessage, ws *workspace.Workspace) (*ReadFileResult, *rpckit.RPCError) {
@@ -317,6 +325,21 @@ func HandleStat(ctx context.Context, params json.RawMessage, ws *workspace.Works
 		Size:    info.Size(),
 		Mode:    info.Mode().String(),
 		ModTime: info.ModTime().Format("2006-01-02T15:04:05Z07:00"),
+		Stats: struct {
+			IsFile      bool   `json:"isFile"`
+			IsDirectory bool   `json:"isDirectory"`
+			Size        int64  `json:"size"`
+			Mtime       string `json:"mtime"`
+			Ctime       string `json:"ctime"`
+			Mode        int    `json:"mode"`
+		}{
+			IsFile:      !info.IsDir(),
+			IsDirectory: info.IsDir(),
+			Size:        info.Size(),
+			Mtime:       info.ModTime().Format("2006-01-02T15:04:05Z07:00"),
+			Ctime:       info.ModTime().Format("2006-01-02T15:04:05Z07:00"),
+			Mode:        int(info.Mode()),
+		},
 	}, nil
 }
 

@@ -134,3 +134,53 @@ nexus/
 - `spf13/cobra` - CLI framework
 - `mattn/go-sqlite3` - Persistence
 - `stretchr/testify` - Testing
+
+## Lifecycle Scripts
+
+Nexus workspaces support lifecycle scripts for automation:
+
+### Available Hooks
+
+| Hook | Location | Trigger |
+|------|----------|---------|
+| Pre-create | `.nexus/hooks/pre-create.sh` | Before workspace creation |
+| Post-create | `.nexus/hooks/post-create.sh` | After workspace creation |
+| Pre-up | `.nexus/hooks/pre-up.sh` | Before workspace starts |
+| Post-up | `.nexus/hooks/post-up.sh` | After workspace starts |
+| Pre-down | `.nexus/hooks/pre-down.sh` | Before workspace stops |
+| Post-down | `.nexus/hooks/post-down.sh` | After workspace stops |
+
+### Example Hook
+
+```bash
+#!/bin/bash
+# .nexus/hooks/post-up.sh
+
+echo "Workspace is ready!"
+echo "Starting dev server..."
+
+# Start your development server
+cd /workspace
+npm run dev &
+```
+
+### Service Port Awareness
+
+Workspaces automatically detect and manage service ports:
+
+- **Port Detection:** Scans for common services (Node, Python, Go, PostgreSQL)
+- **Port Registry:** Tracks all exposed ports in `.nexus/ports.json`
+- **Port Forwarding:** SSH tunnel setup for remote debugging
+- **Port Cleanup:** Automatically releases ports on workspace shutdown
+
+```bash
+# View active ports
+nexus workspace ports <workspace-name>
+
+# Example output:
+# Workspace: my-feature
+# SSH: 32768
+# Web Server: 32769 (3000 internal)
+# API: 32770 (5000 internal)
+# Database: 32771 (5432 internal)
+```

@@ -1,10 +1,4 @@
 {
-  "plugin": ["@nexus/opencode-plugin"],
-  "nexus": {
-    "workspace": {
-      "endpoint": "ws://localhost:8080",
-      "workspaceId": "test-workspace",
-      "token": "test-token"
-    }
-  }
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["/home/newman/magic/nexus/packages/opencode-plugin/dist/index.js"]
 }

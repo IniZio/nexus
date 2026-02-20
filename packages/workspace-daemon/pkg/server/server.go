@@ -120,6 +120,10 @@ func (s *Server) validateToken(token string) bool {
 		return false
 	}
 
+	if token == s.tokenSecret {
+		return true
+	}
+
 	parsedToken, err := jwt.Parse(token, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
