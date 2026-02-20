@@ -281,6 +281,92 @@ class BoulderEnforcer {
 }
 
 let enforcer = null;
+let pollInterval = null;
+let activityDetectedSinceLastPoll = false;
+
+async function triggerEnforcementWithCountdown(client, enforcerInstance, reason = 'idle') {
+  const log = async (level, message, extra = {}) => {
+    if (client?.app?.log) {
+      await client.app.log({
+        body: {
+          service: 'nexus-enforcer',
+          level,
+          message,
+          extra
+        }
+      }).catch(() => {});
+    }
+  };
+
+  await log('info', `Polling detected ${reason} - triggering enforcement`);
+
+  await enforcerInstance.showCountdown(client, enforcerInstance.state.iteration + 1);
+
+  const triggered = await enforcerInstance.triggerEnforcement(client, reason);
+
+  if (triggered) {
+    await log('info', `Enforcement triggered - iteration ${enforcerInstance.state.iteration} (${reason})`);
+
+    if (client?.tui) {
+      await log('debug', 'Attempting to show toast');
+      await client.tui.showToast({
+        body: {
+          title: `BOULDER ENFORCEMENT - Iteration ${enforcerInstance.state.iteration}`,
+          message: reason === 'idle'
+            ? 'The boulder never stops. You have been idle for 30+ seconds. Generate new ideas. Refine code. Research.'
+            : 'The boulder never stops. Completion detected. Continue improving.',
+          variant: 'warning',
+          duration: 15000
+        }
+      }).catch((error) => {
+        console.error('[nexus-enforcer] Failed to show toast:', error.message);
+      });
+      await log('debug', 'Toast call completed');
+    }
+
+    const enforcementMsg = buildEnforcementMessage(enforcerInstance.state.iteration);
+    return { triggered: true, message: enforcementMsg };
+  }
+
+  return { triggered: false, message: null };
+}
+
+function startPolling(client) {
+  if (pollInterval) {
+    clearInterval(pollInterval);
+  }
+
+  activityDetectedSinceLastPoll = false;
+
+  pollInterval = setInterval(async () => {
+    if (!enforcer || !client) return;
+
+    if (activityDetectedSinceLastPoll) {
+      activityDetectedSinceLastPoll = false;
+      console.log('[nexus-enforcer] Polling: activity detected, skipping this cycle');
+      return;
+    }
+
+    if (enforcer.shouldEnforce()) {
+      console.log('[nexus-enforcer] Polling detected idle - triggering enforcement');
+      await triggerEnforcementWithCountdown(client, enforcer, 'idle');
+    }
+  }, 5000);
+
+  console.log('[nexus-enforcer] Polling started - checking every 5 seconds');
+}
+
+function stopPolling() {
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
+    console.log('[nexus-enforcer] Polling stopped');
+  }
+}
+
+function markActivityForPoll() {
+  activityDetectedSinceLastPoll = true;
+}
 
 function isMainAgent(input) {
   if (!input) return true;
@@ -343,12 +429,19 @@ export const NexusEnforcerPlugin = async (context) => {
 
   await log('info', `Boulder initialized - iteration ${enforcer.state.iteration}`);
 
+  startPolling(client);
+
+  process.on('exit', () => {
+    stopPolling();
+  });
+
   return {
     // Track all tool activity
     "tool.execute.before": async (input, output) => {
       if (!enforcer) return;
       enforcer.recordActivity();
       enforcer.clearStopFlag();
+      markActivityForPoll();
     },
 
     // Check for completion keywords and inject enforcement
@@ -356,6 +449,7 @@ export const NexusEnforcerPlugin = async (context) => {
       if (!enforcer || !isMainAgent(input)) return;
       
       enforcer.recordActivity();
+      markActivityForPoll();
 
       const messages = output?.messages;
       if (!messages || !Array.isArray(messages)) return;
@@ -415,6 +509,9 @@ export const NexusEnforcerPlugin = async (context) => {
       const sessionID = input?.event?.properties?.sessionID;
 
       await log('debug', `Event received: type=${eventType}, sessionID=${sessionID}`);
+
+      // Activity detected via event - mark for poll
+      markActivityForPoll();
 
       // Handle abort events
       if (eventType === 'agent.abort' || eventType === 'agent.stop') {
