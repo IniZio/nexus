@@ -90,6 +90,25 @@ nexus agent list
 | Test Code | ~5,598 lines |
 | Test Functions | 153 |
 | Test Files | 10 |
+| E2E Tests | 19 |
+
+## E2E Testing
+
+Comprehensive end-to-end testing with Testcontainers:
+
+```bash
+cd e2e
+npm install
+npm test
+```
+
+**Features:**
+- Testcontainers-based containerized tests
+- SDK-Daemon integration tests
+- OpenCode workflow E2E tests
+- GitHub Actions CI pipeline
+
+See [Phase 4 Completion Report](implementation/phase4-e2e-completion-report.md)
 
 ## Resources
 

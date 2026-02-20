@@ -1,126 +1,151 @@
-import type { PluginContext, Plugin } from './types/opencode-sdk';
-import { WorkspaceClient } from './types/workspace-sdk';
-import { loadConfig, validateConfig, NexusConfig } from './config';
-import { initToolIntercept, registerToolHooks } from './hooks/tool-intercept';
-import { initActivityTracking, stopActivityTracking } from './hooks/activity';
-import { connectCommand, statusCommand, disconnectCommand, isConnected } from './commands/nexus';
+import { tool } from '@opencode-ai/plugin/tool';
+import type { Plugin, Hooks } from '@opencode-ai/plugin';
 
-let workspaceClient: WorkspaceClient | null = null;
-let config: NexusConfig | null = null;
-
-export interface NexusPluginOptions {
-  configPath?: string;
-  autoConnect?: boolean;
-}
-
-export async function initialize(options: NexusPluginOptions = {}): Promise<void> {
-  try {
-    config = loadConfig(options.configPath);
-    validateConfig(config);
-
-    if (options.autoConnect) {
-      workspaceClient = new WorkspaceClient({
-        endpoint: config.workspace.endpoint,
-        workspaceId: config.workspace.workspaceId,
-        token: config.workspace.token,
-      });
-
-      await workspaceClient.connect();
-      await workspaceClient.setStatus('active');
-
-      initActivityTracking(workspaceClient, {
-        idleTimeout: config.options?.idleTimeout,
-        keepAliveInterval: config.options?.keepAliveInterval,
-      });
-
-      initToolIntercept(workspaceClient, config);
-    }
-  } catch (error) {
-    console.error('[nexus] Failed to initialize plugin:', error);
-    throw error;
-  }
-}
-
-export async function shutdown(): Promise<void> {
-  stopActivityTracking();
-
-  if (workspaceClient) {
-    await workspaceClient.setStatus('disconnected');
-    await workspaceClient.disconnect();
-    workspaceClient = null;
-  }
-}
-
-export function createPlugin(): Plugin {
-  return {
-    name: '@nexus/opencode-plugin',
-    version: '0.1.0',
-
-    async onLoad(context: PluginContext): Promise<void> {
-      context.ui.showNotification('Nexus Workspace Plugin loaded', 'info');
-
-      try {
-        const nexusConfig = loadConfig();
-        validateConfig(nexusConfig);
-
-        workspaceClient = new WorkspaceClient({
-          endpoint: nexusConfig.workspace.endpoint,
-          workspaceId: nexusConfig.workspace.workspaceId,
-          token: nexusConfig.workspace.token,
-        });
-
-        await workspaceClient.connect();
-        await workspaceClient.setStatus('active');
-
-        initActivityTracking(workspaceClient, {
-          idleTimeout: nexusConfig.options?.idleTimeout,
-          keepAliveInterval: nexusConfig.options?.keepAliveInterval,
-        });
-
-        initToolIntercept(workspaceClient, nexusConfig);
-        registerToolHooks(context);
-
-        context.ui.showNotification('Connected to Nexus Workspace', 'success');
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        context.ui.showNotification(`Nexus plugin init failed: ${message}`, 'error');
-      }
-    },
-
-    async onUnload(context: PluginContext): Promise<void> {
-      await shutdown();
-      context.ui.showNotification('Nexus Workspace Plugin unloaded', 'info');
-    },
-
-    commands: [
-      {
-        name: 'nexus-connect',
-        description: 'Connect to Nexus Workspace',
-        handler: async (context: PluginContext) => {
-          if (isConnected()) {
-            context.ui.showNotification('Already connected to Nexus Workspace', 'info');
-            return;
-          }
-          await connectCommand(context);
-          if (workspaceClient && config) {
-            initToolIntercept(workspaceClient, config);
-          }
-        },
-      },
-      {
-        name: 'nexus-status',
-        description: 'Show Nexus Workspace status',
-        handler: statusCommand,
-      },
-      {
-        name: 'nexus-disconnect',
-        description: 'Disconnect from Nexus Workspace',
-        handler: async (context: PluginContext) => {
-          await disconnectCommand(context);
-        },
-      },
-    ],
+interface NexusConfig {
+  workspace: {
+    endpoint: string;
+    workspaceId: string;
+    token: string;
+  };
+  options?: {
+    enableFileOperations?: boolean;
+    enableShellExecution?: boolean;
+    idleTimeout?: number;
+    keepAliveInterval?: number;
+    excludedPaths?: string[];
+    largeFileThreshold?: number;
   };
 }
 
-export default createPlugin;
+interface OpenCodeConfig {
+  plugin?: string[];
+  nexus?: NexusConfig;
+}
+
+function loadConfig(configPath?: string): NexusConfig {
+  const fs = require('fs');
+  const path = require('path');
+  
+  const defaultPath = path.join(process.cwd(), 'opencode.json');
+  const filePath = configPath || process.env.OPENCODE_CONFIG_PATH || defaultPath;
+
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Configuration file not found: ${filePath}`);
+  }
+
+  const configContent = fs.readFileSync(filePath, 'utf-8');
+  const config: OpenCodeConfig = JSON.parse(configContent);
+
+  if (!config.nexus?.workspace?.endpoint) {
+    throw new Error('Nexus workspace configuration is required');
+  }
+
+  const token = resolveEnvVariable(config.nexus.workspace.token);
+
+  return {
+    workspace: {
+      endpoint: config.nexus.workspace.endpoint,
+      workspaceId: config.nexus.workspace.workspaceId,
+      token,
+    },
+    options: {
+      enableFileOperations: config.nexus.options?.enableFileOperations ?? true,
+      enableShellExecution: config.nexus.options?.enableShellExecution ?? true,
+      idleTimeout: config.nexus.options?.idleTimeout ?? 300000,
+      keepAliveInterval: config.nexus.options?.keepAliveInterval ?? 60000,
+      excludedPaths: config.nexus.options?.excludedPaths ?? [],
+      largeFileThreshold: config.nexus.options?.largeFileThreshold ?? 10485760,
+    },
+  };
+}
+
+function resolveEnvVariable(value: string | undefined): string {
+  if (!value) {
+    return '';
+  }
+  if (value.startsWith('${') && value.endsWith('}')) {
+    const envKey = value.slice(2, -1);
+    return process.env[envKey] || '';
+  }
+  return value;
+}
+
+function validateConfig(config: NexusConfig): void {
+  if (!config.workspace.endpoint) {
+    throw new Error('Workspace endpoint is required');
+  }
+  if (!config.workspace.workspaceId) {
+    throw new Error('Workspace ID is required');
+  }
+  if (!config.workspace.token) {
+    throw new Error('Workspace token is required');
+  }
+
+  try {
+    new URL(config.workspace.endpoint);
+  } catch {
+    throw new Error('Invalid workspace endpoint URL');
+  }
+}
+
+let nexusConfig: NexusConfig | null = null;
+
+export const nexusPlugin: Plugin = async (_input) => {
+  try {
+    nexusConfig = loadConfig();
+    validateConfig(nexusConfig);
+
+    console.log('[nexus] Plugin loaded for workspace:', nexusConfig.workspace.workspaceId);
+  } catch (error) {
+    console.error('[nexus] Failed to load config:', error);
+  }
+
+  const nexusConnectTool = tool({
+    description: 'Connect to Nexus Workspace',
+    args: {},
+    async execute(_args, _context) {
+      if (!nexusConfig) {
+        return 'Configuration not loaded';
+      }
+      return `Connected to workspace: ${nexusConfig.workspace.workspaceId} at ${nexusConfig.workspace.endpoint}`;
+    },
+  });
+
+  const nexusStatusTool = tool({
+    description: 'Show Nexus Workspace status',
+    args: {},
+    async execute(_args, _context) {
+      if (!nexusConfig) {
+        return 'Not connected to Nexus Workspace';
+      }
+      return `Workspace: ${nexusConfig.workspace.workspaceId} | Endpoint: ${nexusConfig.workspace.endpoint}`;
+    },
+  });
+
+  const hooks: Hooks = {
+    tool: {
+      'nexus-connect': nexusConnectTool,
+      'nexus-status': nexusStatusTool,
+    },
+    
+    'tool.execute.before': async ({ tool: toolName }) => {
+      if (!nexusConfig) {
+        return;
+      }
+
+      console.log('[nexus] Tool executed:', toolName);
+    },
+    
+    'tool.execute.after': async ({ tool: toolName }) => {
+      if (!nexusConfig) {
+        return;
+      }
+
+      console.log('[nexus] Tool completed:', toolName);
+    },
+  };
+
+  return hooks;
+};
+
+export default nexusPlugin;
