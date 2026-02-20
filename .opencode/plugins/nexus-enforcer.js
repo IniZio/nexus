@@ -307,11 +307,22 @@ class BoulderEnforcer {
 let enforcer = null;
 let pollInterval = null;
 let activityDetectedSinceLastPoll = false;
+let enforcementLock = false; // Global lock to prevent concurrent enforcements
 
 async function triggerEnforcementWithCountdown(client, enforcerInstance, log, reason = 'idle', sessionID = null) {
-  await log('info', `Polling detected ${reason} - triggering enforcement`);
+  // Check global lock to prevent concurrent enforcements
+  if (enforcementLock) {
+    await log('debug', 'Enforcement already in progress (lock active), skipping');
+    return;
+  }
+  
+  // Acquire lock
+  enforcementLock = true;
+  
+  try {
+    await log('info', `Polling detected ${reason} - triggering enforcement`);
 
-  await enforcerInstance.showCountdown(client, log, enforcerInstance.state.iteration + 1);
+    await enforcerInstance.showCountdown(client, log, enforcerInstance.state.iteration + 1);
 
   const triggered = await enforcerInstance.triggerEnforcement(client, log, reason);
 
@@ -379,7 +390,11 @@ The boulder never stops. You have been idle for 30+ seconds.
       return { triggered: true, message: enforcementMsg };
     }
 
-  return { triggered: false, message: null };
+    return { triggered: false, message: null };
+  } finally {
+    // Release lock regardless of success or failure
+    enforcementLock = false;
+  }
 }
 
 function startPolling(client, log) {
@@ -624,6 +639,12 @@ export default async function NexusEnforcerPlugin(context) {
 
       await log('debug', `Session ID extracted: ${sessionID || 'undefined'}`);
 
+      // Check global lock to prevent concurrent enforcements from event + polling
+      if (enforcementLock) {
+        await log('debug', 'Enforcement lock active (another enforcement in progress), skipping event-based enforcement');
+        return;
+      }
+
       // Check if enforcement should trigger
       if (!await enforcer.shouldEnforce(log)) {
         await log('debug', 'Enforcement gates not passed');
@@ -632,7 +653,12 @@ export default async function NexusEnforcerPlugin(context) {
 
       // All gates passed - trigger enforcement
       await log('info', 'All gates passed - triggering enforcement');
-      const triggered = await enforcer.triggerEnforcement(client, log, 'idle');
+      
+      // Acquire lock before triggering
+      enforcementLock = true;
+      
+      try {
+        const triggered = await enforcer.triggerEnforcement(client, log, 'idle');
 
       if (triggered) {
         await log('info', `Enforcement triggered - iteration ${enforcer.state.iteration} (idle)`);
@@ -705,6 +731,10 @@ The boulder never stops. You have been idle for 30+ seconds.
         }
       } else {
         await log('debug', `Not triggered: triggered=${triggered}`);
+      }
+      } finally {
+        // Release lock
+        enforcementLock = false;
       }
     }
   };
