@@ -8,6 +8,12 @@ importers:
 
   .:
     dependencies:
+      '@opencode-ai/plugin':
+        specifier: ^1.2.10
+        version: 1.2.10
+      '@opencode-ai/sdk':
+        specifier: ^1.2.10
+        version: 1.2.10
       ws:
         specifier: ^8.16.0
         version: 8.19.0
@@ -20,6 +26,12 @@ importers:
         version: 5.9.3
 
 packages:
+
+  '@opencode-ai/plugin@1.2.10':
+    resolution: {integrity: sha512-Z1BMqNHnD8AGAEb+kUz0b2SOuiODwdQLdCA4aVGTXqkGzhiD44OVxr85MeoJ5AMTnnea9SnJ3jp9GAQ5riXA5g==}
+
+  '@opencode-ai/sdk@1.2.10':
+    resolution: {integrity: sha512-SyXcVqry2hitPVvQtvXOhqsWyFhSycG/+LTLYXrcq8AFmd9FR7dyBSDB3f5Ol6IPkYOegk8P2Eg2kKPNSNiKGw==}
 
   '@types/node@20.19.33':
     resolution: {integrity: sha512-Rs1bVAIdBs5gbTIKza/tgpMuG1k3U/UMJLWecIMxNdJFDMzcM5LOiLVRYh3PilWEYDIeUDv7bpiHPLPsbydGcw==}
@@ -44,7 +56,17 @@ packages:
       utf-8-validate:
         optional: true
 
+  zod@4.1.8:
+    resolution: {integrity: sha512-5R1P+WwQqmmMIEACyzSvo4JXHY5WiAFHRMg+zBZKgKS+Q1viRa0C1hmUKtHltoIFKtIdki3pRxkmpP74jnNYHQ==}
+
 snapshots:
+
+  '@opencode-ai/plugin@1.2.10':
+    dependencies:
+      '@opencode-ai/sdk': 1.2.10
+      zod: 4.1.8
+
+  '@opencode-ai/sdk@1.2.10': {}
 
   '@types/node@20.19.33':
     dependencies:
@@ -55,3 +77,5 @@ snapshots:
   undici-types@6.21.0: {}
 
   ws@8.19.0: {}
+
+  zod@4.1.8: {}
