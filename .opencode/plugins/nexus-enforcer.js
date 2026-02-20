@@ -442,11 +442,14 @@ export const NexusEnforcerPlugin = async (context) => {
 
   await log('info', `Boulder initialized - iteration ${enforcer.state.iteration}`);
 
-  startPolling(client);
+  // Delay polling start to prevent initialization issues
+  setTimeout(() => {
+    startPolling(client);
+  }, 5000);
 
-  process.on('exit', () => {
-    stopPolling();
-  });
+  // process.on('exit', () => {
+  //   stopPolling();
+  // });
 
   return {
     // Track all tool activity
@@ -494,7 +497,6 @@ export const NexusEnforcerPlugin = async (context) => {
         messages.push(enforcementMsg);
         output.messages = messages;
         
-        // Show toast notification using oh-my-opencode pattern with .catch()
         if (client?.tui) {
           await log('debug', 'Showing completion toast');
           await client.tui.showToast({
@@ -502,13 +504,14 @@ export const NexusEnforcerPlugin = async (context) => {
               title: `BOULDER ENFORCEMENT - Iteration ${enforcer.state.iteration}`,
               message: 'The boulder never stops. Completion detected. Continue improving.',
               variant: 'warning',
-        duration: 15000
+              duration: 15000
+            }
+          }).catch(async (error) => {
+            await log('error', 'Failed to show toast', { error: error.message });
+          });
         }
-      }).catch(async (error) => {
-        await log('error', 'Failed to show toast', { error: error.message });
-      });
-    }
-  },
+      }
+    },
 
     // Main idle detection - using 'event' hook (oh-my-opencode pattern)
     "event": async (input, output) => {
