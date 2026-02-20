@@ -38,7 +38,8 @@ function readState() {
     status: 'CONTINUOUS',
     abortDetectedAt: null,
     isRecovering: false,
-    sessionID: null
+    sessionID: null,
+    enforcementTriggeredForThisIdlePeriod: false
   };
 }
 
@@ -84,11 +85,12 @@ class BoulderEnforcer {
     this.config = DEFAULT_CONFIG;
     this.state = readState();
     this.cooldownActive = false;
-    this.enforcementTriggeredForThisIdlePeriod = false;
+    this.enforcementTriggeredForThisIdlePeriod = this.state.enforcementTriggeredForThisIdlePeriod || false;
   }
 
   recordActivity() {
     this.state.lastActivity = Date.now();
+    this.state.enforcementTriggeredForThisIdlePeriod = false;
     this.enforcementTriggeredForThisIdlePeriod = false;
     if (this.state.status === 'ENFORCING') {
       this.state.status = 'CONTINUOUS';
@@ -243,6 +245,7 @@ class BoulderEnforcer {
     this.state.iteration++;
     this.state.status = 'ENFORCING';
     this.state.lastEnforcement = Date.now();
+    this.state.enforcementTriggeredForThisIdlePeriod = true;
     this.enforcementTriggeredForThisIdlePeriod = true;
     writeState(this.state);
 
