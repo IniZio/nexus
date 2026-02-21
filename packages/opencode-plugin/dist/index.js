@@ -68,18 +68,37 @@ function validateConfig(config) {
     }
 }
 let nexusConfig = null;
-export const nexusPlugin = async (_input) => {
+export const nexusPlugin = async (input) => {
+    const client = input.client;
     nexusConfig = loadConfig();
     if (!nexusConfig) {
-        console.log('[nexus] Config not found, plugin tools will be unavailable');
+        await client.app.log({
+            body: {
+                service: 'nexus-plugin',
+                level: 'info',
+                message: 'Config not found, plugin tools will be unavailable',
+            },
+        });
     }
     else {
         try {
             validateConfig(nexusConfig);
-            console.log('[nexus] Plugin loaded for workspace:', nexusConfig.workspace.workspaceId);
+            await client.app.log({
+                body: {
+                    service: 'nexus-plugin',
+                    level: 'info',
+                    message: `Plugin loaded for workspace: ${nexusConfig.workspace.workspaceId}`,
+                },
+            });
         }
         catch (error) {
-            console.error('[nexus] Config validation failed:', error);
+            await client.app.log({
+                body: {
+                    service: 'nexus-plugin',
+                    level: 'error',
+                    message: `Config validation failed: ${error}`,
+                },
+            });
             nexusConfig = null;
         }
     }
@@ -166,13 +185,25 @@ export const nexusPlugin = async (_input) => {
             if (!nexusConfig) {
                 return;
             }
-            console.log('[nexus] Tool executed:', toolName);
+            await client.app.log({
+                body: {
+                    service: 'nexus-plugin',
+                    level: 'debug',
+                    message: `Tool executed: ${toolName}`,
+                },
+            });
         },
         'tool.execute.after': async ({ tool: toolName }) => {
             if (!nexusConfig) {
                 return;
             }
-            console.log('[nexus] Tool completed:', toolName);
+            await client.app.log({
+                body: {
+                    service: 'nexus-plugin',
+                    level: 'debug',
+                    message: `Tool completed: ${toolName}`,
+                },
+            });
         },
     };
     return hooks;

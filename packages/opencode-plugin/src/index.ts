@@ -1,5 +1,6 @@
 import { tool } from '@opencode-ai/plugin/tool';
-import type { Plugin, Hooks } from '@opencode-ai/plugin';
+import type { Plugin, Hooks, PluginInput } from '@opencode-ai/plugin';
+import type { OpencodeClient } from '@opencode-ai/sdk';
 import * as path from 'path';
 
 const BOULDER_STATE_PATH = process.env.NEXUS_BOULDER_STATE_PATH || 
@@ -103,17 +104,36 @@ function validateConfig(config: NexusConfig): void {
 
 let nexusConfig: NexusConfig | null = null;
 
-export const nexusPlugin: Plugin = async (_input) => {
+export const nexusPlugin: Plugin = async (input) => {
+  const client = input.client as unknown as OpencodeClient;
   nexusConfig = loadConfig();
   
   if (!nexusConfig) {
-    console.log('[nexus] Config not found, plugin tools will be unavailable');
+    await client.app.log({
+      body: {
+        service: 'nexus-plugin',
+        level: 'info',
+        message: 'Config not found, plugin tools will be unavailable',
+      },
+    });
   } else {
     try {
       validateConfig(nexusConfig);
-      console.log('[nexus] Plugin loaded for workspace:', nexusConfig.workspace.workspaceId);
+      await client.app.log({
+        body: {
+          service: 'nexus-plugin',
+          level: 'info',
+          message: `Plugin loaded for workspace: ${nexusConfig.workspace.workspaceId}`,
+        },
+      });
     } catch (error) {
-      console.error('[nexus] Config validation failed:', error);
+      await client.app.log({
+        body: {
+          service: 'nexus-plugin',
+          level: 'error',
+          message: `Config validation failed: ${error}`,
+        },
+      });
       nexusConfig = null;
     }
   }
@@ -205,7 +225,13 @@ export const nexusPlugin: Plugin = async (_input) => {
         return;
       }
 
-      console.log('[nexus] Tool executed:', toolName);
+      await client.app.log({
+        body: {
+          service: 'nexus-plugin',
+          level: 'debug',
+          message: `Tool executed: ${toolName}`,
+        },
+      });
     },
     
     'tool.execute.after': async ({ tool: toolName }) => {
@@ -213,7 +239,13 @@ export const nexusPlugin: Plugin = async (_input) => {
         return;
       }
 
-      console.log('[nexus] Tool completed:', toolName);
+      await client.app.log({
+        body: {
+          service: 'nexus-plugin',
+          level: 'debug',
+          message: `Tool completed: ${toolName}`,
+        },
+      });
     },
   };
 
