@@ -128,9 +128,9 @@ See [Cursor integration docs](tutorials/plugin-setup.md#cursor)
 | OpenCode Plugin | ✅ Implemented | High | [Setup](tutorials/plugin-setup.md) |
 | Claude Integration | ✅ Implemented | High | [Setup](tutorials/plugin-setup.md) |
 | Cursor Extension | 🚧 In Progress | Medium | [Setup](tutorials/plugin-setup.md) |
-| Workspace SDK | 🚧 In Development | High | [Internal Plans](dev/internal/plans/) |
-| Workspace Daemon | 🚧 In Development | High | [Reference](reference/workspace-daemon.md) |
-| Telemetry (Agent Trace) | 📋 Planned | Medium | [ADR-003](dev/decisions/003-telemetry-design.md) |
+| Workspace SDK | 🚧 In Progress | Partial (WebSocket file/exec only) |
+| Workspace Daemon | 🚧 In Progress | Go server, Docker NOT implemented |
+| Telemetry (Agent Trace) | 📋 Planned | Not started |
 | Web Dashboard | 📋 Planned | Low | - |
 | Multi-Agent Coordination | 📋 Planned | Low | - |
 

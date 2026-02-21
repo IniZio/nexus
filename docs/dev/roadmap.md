@@ -12,8 +12,8 @@
 | **OpenCode Plugin** | ✅ Implemented | OpenCode IDE integration |
 | **Claude Integration** | ✅ Implemented | Claude Code plugin |
 | **Cursor Extension** | 🚧 In Progress | Cursor IDE extension |
-| **Workspace SDK** | 🚧 In Development | Remote workspace WebSocket SDK |
-| **Workspace Daemon** | 🚧 In Development | Go-based workspace server |
+| **Workspace SDK** | 🚧 In Progress | Remote workspace WebSocket SDK (partial: file/exec only) |
+| **Workspace Daemon** | 🚧 In Progress | Go-based workspace server (Docker NOT implemented) |
 | **Telemetry** | 📋 Planned | Agent Trace specification implementation |
 | **Web Dashboard** | 📋 Planned | Web UI for monitoring and management |
 
@@ -148,7 +148,7 @@ Track AI contributions with full provenance:
 | 4 | Query interface | 📋 Not started |
 | 5 | Dashboard | 📋 Not started |
 
-See [ADR-003: Telemetry Design](decisions/003-telemetry-design.md) for technical details.
+See [ADR-003: Telemetry Design](internal/ARCHIVE/004-telemetry-system-design.md) for technical details.
 
 ---
 
@@ -185,7 +185,7 @@ Model Context Protocol integration:
 - [Boulder System](../explanation/boulder-system.md)
 - [Internal Plans](internal/plans/) - Workspace architecture
 - [Internal Implementation](internal/implementation/) - Workspace SDK plans
-- [Architecture Decisions](decisions/) - ADRs
+- [Architecture Decisions](internal/ARCHIVE/) - ADRs
 
 ---
 
