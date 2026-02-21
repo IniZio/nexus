@@ -1,6 +1,7 @@
 // Nexus Enforcer Plugin - OpenCode Integration
 // Based on oh-my-opencode's proven idle detection pattern
 // Study source: .opencode/oh-my-opencode-study/src/hooks/
+// VERSION: 2.0 - Fixed tool-in-progress tracking
 
 import fs from 'fs';
 import path from 'path';
@@ -96,6 +97,8 @@ class BoulderEnforcer {
     this.state = readState();
     this.cooldownActive = false;
     this.enforcementTriggeredForThisIdlePeriod = this.state.enforcementTriggeredForThisIdlePeriod || false;
+    this.toolInProgress = false;
+    this.permissionPending = false;
   }
 
   reloadState() {
@@ -119,6 +122,23 @@ class BoulderEnforcer {
     if (this.state.status === 'ENFORCING') {
       this.state.status = 'CONTINUOUS';
       writeState(this.state);
+    }
+  }
+
+  startToolExecution(toolName) {
+    this.toolInProgress = true;
+    this.recordActivity();
+  }
+
+  endToolExecution(toolName) {
+    this.toolInProgress = false;
+    this.recordActivity();
+  }
+
+  setPermissionPending(pending) {
+    this.permissionPending = pending;
+    if (!pending) {
+      this.recordActivity();
     }
   }
 
@@ -156,6 +176,10 @@ class BoulderEnforcer {
   }
 
   async checkIdle(log) {
+    if (this.toolInProgress || this.permissionPending) {
+      await log?.('debug', `checkIdle: BLOCKED - toolInProgress=${this.toolInProgress}, permissionPending=${this.permissionPending}`);
+      return false;
+    }
     const idleTime = Date.now() - this.state.lastActivity;
     const isIdle = idleTime >= CONFIG.IDLE_THRESHOLD_MS;
     await log?.('debug', `checkIdle: idleTime=${idleTime}ms, threshold=${CONFIG.IDLE_THRESHOLD_MS}ms, isIdle=${isIdle}`);
@@ -372,7 +396,9 @@ class BoulderEnforcer {
       abortDetectedAt: this.state.abortDetectedAt,
       isRecovering: this.state.isRecovering,
       idleTimeMs: idleTime,
-      cooldownRemainingMs: cooldownRemaining
+      cooldownRemainingMs: cooldownRemaining,
+      toolInProgress: this.toolInProgress,
+      permissionPending: this.permissionPending
     };
   }
 }
@@ -585,11 +611,28 @@ export default async function NexusEnforcerPlugin(context) {
   // });
 
   return {
-    // Track all tool activity
+    // Track tool execution start
     "tool.execute.before": async (input, output) => {
       if (!enforcer) return;
-      enforcer.recordActivity();
+      const toolName = input?.tool || 'unknown';
+      enforcer.startToolExecution(toolName);
       enforcer.clearStopFlag();
+      markActivityForPoll();
+    },
+
+    // Track tool execution completion
+    "tool.execute.after": async (input, output) => {
+      if (!enforcer) return;
+      const toolName = input?.tool || 'unknown';
+      enforcer.endToolExecution(toolName);
+      enforcer.recordActivity();
+      markActivityForPoll();
+    },
+
+    // Track AI message generation as activity
+    "message": async (input, output) => {
+      if (!enforcer) return;
+      enforcer.recordActivity();
       markActivityForPoll();
     },
 

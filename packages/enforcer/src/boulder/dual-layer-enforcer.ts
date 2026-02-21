@@ -57,6 +57,8 @@ export class DualLayerBoulderEnforcer {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private isEnforcing: boolean = false;
   private onEnforcement: ((message: string) => void) | null = null;
+  private toolInProgress: boolean = false;
+  private permissionPending: boolean = false;
 
   constructor(
     config: Partial<DualLayerConfig> = {},
@@ -72,6 +74,32 @@ export class DualLayerBoulderEnforcer {
    */
   recordToolCall(toolName: string): void {
     this.lastActivity = Date.now();
+  }
+
+  /**
+   * Start tool execution - pauses idle checking
+   */
+  startToolExecution(toolName: string): void {
+    this.toolInProgress = true;
+    this.lastActivity = Date.now();
+  }
+
+  /**
+   * End tool execution - resumes idle checking
+   */
+  endToolExecution(toolName: string): void {
+    this.toolInProgress = false;
+    this.lastActivity = Date.now();
+  }
+
+  /**
+   * Set permission pending state - pauses idle checking
+   */
+  setPermissionPending(pending: boolean): void {
+    this.permissionPending = pending;
+    if (!pending) {
+      this.lastActivity = Date.now();
+    }
   }
 
   /**
@@ -112,6 +140,10 @@ export class DualLayerBoulderEnforcer {
    * LAYER 2: Check if idle and enforce
    */
   private checkIdleAndEnforce(): void {
+    if (this.toolInProgress || this.permissionPending) {
+      return;
+    }
+
     const timeSinceActivity = Date.now() - this.lastActivity;
     
     if (timeSinceActivity > this.config.idleThresholdMs && !this.isEnforcing) {
@@ -181,6 +213,8 @@ export class DualLayerBoulderEnforcer {
     timeSinceActivity: number;
     isEnforcing: boolean;
     intervalActive: boolean;
+    toolInProgress: boolean;
+    permissionPending: boolean;
   } {
     return {
       iteration: this.iteration,
@@ -188,6 +222,8 @@ export class DualLayerBoulderEnforcer {
       timeSinceActivity: Date.now() - this.lastActivity,
       isEnforcing: this.isEnforcing,
       intervalActive: this.intervalId !== null,
+      toolInProgress: this.toolInProgress,
+      permissionPending: this.permissionPending,
     };
   }
 }

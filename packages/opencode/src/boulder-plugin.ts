@@ -101,6 +101,8 @@ class DualLayerBoulderEnforcer {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private isEnforcing: boolean = false;
   private onEnforcement: ((message: string) => void) | null = null;
+  private toolInProgress: boolean = false;
+  private permissionPending: boolean = false;
 
   constructor(
     config: Partial<DualLayerConfig> = {},
@@ -113,6 +115,23 @@ class DualLayerBoulderEnforcer {
 
   recordToolCall(toolName: string): void {
     this.lastActivity = Date.now();
+  }
+
+  startToolExecution(toolName: string): void {
+    this.toolInProgress = true;
+    this.lastActivity = Date.now();
+  }
+
+  endToolExecution(toolName: string): void {
+    this.toolInProgress = false;
+    this.lastActivity = Date.now();
+  }
+
+  setPermissionPending(pending: boolean): void {
+    this.permissionPending = pending;
+    if (!pending) {
+      this.lastActivity = Date.now();
+    }
   }
 
   checkText(text: string): boolean {
@@ -140,6 +159,10 @@ class DualLayerBoulderEnforcer {
   }
 
   private checkIdleAndEnforce(): void {
+    if (this.toolInProgress || this.permissionPending) {
+      return;
+    }
+
     const timeSinceActivity = Date.now() - this.lastActivity;
     
     if (timeSinceActivity > this.config.idleThresholdMs && !this.isEnforcing) {
@@ -196,6 +219,8 @@ class DualLayerBoulderEnforcer {
     timeSinceActivity: number;
     isEnforcing: boolean;
     intervalActive: boolean;
+    toolInProgress: boolean;
+    permissionPending: boolean;
   } {
     return {
       iteration: this.iteration,
@@ -203,6 +228,8 @@ class DualLayerBoulderEnforcer {
       timeSinceActivity: Date.now() - this.lastActivity,
       isEnforcing: this.isEnforcing,
       intervalActive: this.intervalId !== null,
+      toolInProgress: this.toolInProgress,
+      permissionPending: this.permissionPending,
     };
   }
 }

@@ -90,9 +90,11 @@ describe('DualLayerBoulderEnforcer', () => {
       expect(enforcer.getStatus().iteration).toBe(1);
     });
 
-    it('should track multiple enforcements', () => {
+    it('should track multiple enforcements', async () => {
       enforcer.triggerEnforcement();
+      await new Promise(resolve => setTimeout(resolve, 1100));
       enforcer.triggerEnforcement();
+      await new Promise(resolve => setTimeout(resolve, 1100));
       enforcer.triggerEnforcement();
       
       expect(enforcer.getStatus().iteration).toBe(3);
@@ -172,6 +174,110 @@ describe('DualLayerBoulderEnforcer', () => {
       texts.forEach(text => {
         expect(enforcer.checkText(text)).toBe(false);
       });
+    });
+  });
+
+  describe('Tool In Progress', () => {
+    it('should NOT trigger enforcement while tool is in progress', async () => {
+      enforcer.startToolExecution('read');
+      
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      expect(enforcementMessages.length).toBe(0);
+      
+      enforcer.endToolExecution('read');
+      
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      expect(enforcementMessages.length).toBe(0);
+    });
+
+    it('should track toolInProgress status', () => {
+      expect(enforcer.getStatus().toolInProgress).toBe(false);
+      
+      enforcer.startToolExecution('read');
+      
+      expect(enforcer.getStatus().toolInProgress).toBe(true);
+      
+      enforcer.endToolExecution('read');
+      
+      expect(enforcer.getStatus().toolInProgress).toBe(false);
+    });
+
+    it('should resume idle check after tool ends', async () => {
+      enforcer.startToolExecution('read');
+      
+      await new Promise(resolve => setTimeout(resolve, 700));
+      
+      enforcer.endToolExecution('read');
+      
+      await new Promise(resolve => setTimeout(resolve, 700));
+      
+      expect(enforcementMessages.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Permission Pending', () => {
+    it('should NOT trigger enforcement while permission is pending', async () => {
+      enforcer.setPermissionPending(true);
+      
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      expect(enforcementMessages.length).toBe(0);
+      
+      enforcer.setPermissionPending(false);
+      
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      expect(enforcementMessages.length).toBe(0);
+    });
+
+    it('should track permissionPending status', () => {
+      expect(enforcer.getStatus().permissionPending).toBe(false);
+      
+      enforcer.setPermissionPending(true);
+      
+      expect(enforcer.getStatus().permissionPending).toBe(true);
+      
+      enforcer.setPermissionPending(false);
+      
+      expect(enforcer.getStatus().permissionPending).toBe(false);
+    });
+
+    it('should resume idle check after permission resolved', async () => {
+      enforcer.setPermissionPending(true);
+      
+      await new Promise(resolve => setTimeout(resolve, 700));
+      
+      enforcer.setPermissionPending(false);
+      
+      await new Promise(resolve => setTimeout(resolve, 700));
+      
+      expect(enforcementMessages.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Combined States', () => {
+    it('should NOT enforce when tool in progress even with permission pending', async () => {
+      enforcer.startToolExecution('read');
+      enforcer.setPermissionPending(true);
+      
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      expect(enforcementMessages.length).toBe(0);
+    });
+
+    it('should track both toolInProgress and permissionPending', () => {
+      const status = enforcer.getStatus();
+      expect(status.toolInProgress).toBe(false);
+      expect(status.permissionPending).toBe(false);
+      
+      enforcer.startToolExecution('read');
+      enforcer.setPermissionPending(true);
+      
+      const newStatus = enforcer.getStatus();
+      expect(newStatus.toolInProgress).toBe(true);
+      expect(newStatus.permissionPending).toBe(true);
     });
   });
 });
