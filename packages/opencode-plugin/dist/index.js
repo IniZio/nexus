@@ -2,35 +2,43 @@ import { tool } from '@opencode-ai/plugin/tool';
 import * as path from 'path';
 const BOULDER_STATE_PATH = process.env.NEXUS_BOULDER_STATE_PATH ||
     path.join(process.cwd(), '.nexus', 'boulder', 'state.json');
+const NEXUS_CONFIG_PATH = process.env.NEXUS_CONFIG_PATH ||
+    path.join(process.cwd(), '.nexus', 'plugin-config.json');
 function loadConfig(configPath) {
     const fs = require('fs');
     const path = require('path');
-    const defaultPath = path.join(process.cwd(), 'opencode.json');
-    const filePath = configPath || process.env.OPENCODE_CONFIG_PATH || defaultPath;
+    const filePath = configPath || NEXUS_CONFIG_PATH;
     if (!fs.existsSync(filePath)) {
         return null;
     }
-    const configContent = fs.readFileSync(filePath, 'utf-8');
-    const config = JSON.parse(configContent);
-    if (!config.nexus?.workspace?.endpoint) {
+    try {
+        const configContent = fs.readFileSync(filePath, 'utf-8');
+        const config = JSON.parse(configContent);
+        // Support both direct nexus config and nested "nexus" key
+        const nexusCfg = config.nexus?.workspace?.endpoint ? config.nexus : config;
+        if (!nexusCfg?.workspace?.endpoint) {
+            return null;
+        }
+        const token = resolveEnvVariable(nexusCfg.workspace.token);
+        return {
+            workspace: {
+                endpoint: nexusCfg.workspace.endpoint,
+                workspaceId: nexusCfg.workspace.workspaceId,
+                token,
+            },
+            options: {
+                enableFileOperations: nexusCfg.options?.enableFileOperations ?? true,
+                enableShellExecution: nexusCfg.options?.enableShellExecution ?? true,
+                idleTimeout: nexusCfg.options?.idleTimeout ?? 300000,
+                keepAliveInterval: nexusCfg.options?.keepAliveInterval ?? 60000,
+                excludedPaths: nexusCfg.options?.excludedPaths ?? [],
+                largeFileThreshold: nexusCfg.options?.largeFileThreshold ?? 10485760,
+            },
+        };
+    }
+    catch (error) {
         return null;
     }
-    const token = resolveEnvVariable(config.nexus.workspace.token);
-    return {
-        workspace: {
-            endpoint: config.nexus.workspace.endpoint,
-            workspaceId: config.nexus.workspace.workspaceId,
-            token,
-        },
-        options: {
-            enableFileOperations: config.nexus.options?.enableFileOperations ?? true,
-            enableShellExecution: config.nexus.options?.enableShellExecution ?? true,
-            idleTimeout: config.nexus.options?.idleTimeout ?? 300000,
-            keepAliveInterval: config.nexus.options?.keepAliveInterval ?? 60000,
-            excludedPaths: config.nexus.options?.excludedPaths ?? [],
-            largeFileThreshold: config.nexus.options?.largeFileThreshold ?? 10485760,
-        },
-    };
 }
 function resolveEnvVariable(value) {
     if (!value) {
