@@ -1,86 +1,189 @@
-# Nexus Workspace System
+# Nexus
 
-Nexus is a containerized workspace management system that provides isolated development environments for multi-agent software development.
+Nexus is an AI-native development environment that makes agent collaboration deterministic, traceable, and production-ready. It combines enforcement mechanisms, isolated workspaces, and telemetry to ensure AI agents deliver consistent, high-quality results.
 
-## Features
+## Vision
 
-### Container Workspaces
-Each workspace runs in an isolated Docker container with its own git branch, file system, and network. Create multiple workspaces for different features without code conflicts.
+As AI agents write more code, we need systems that ensure:
 
-**Commands:**
+1. **Deterministic Outcomes** - Agents complete tasks fully and don't stop early
+2. **Quality Standards** - Work follows project conventions and passes CI checks
+3. **Traceability** - All AI contributions are tracked and attributable
+4. **Isolation** - Agents work in clean, reproducible environments
+
+## Components
+
+### 1. Enforcer (Implemented)
+
+The Enforcer ensures agents complete tasks to standard. It prevents early stopping and enforces project conventions through mini-workflows.
+
+**Key Features:**
+- **Idle Detection** - Monitors agent activity and prevents premature completion
+- **Workflow Enforcement** - Mini-workflows ensure work meets standards:
+  - Documentation structure validation
+  - Git commit organization
+  - CI check verification
+- **Boulder System** - Continuous iteration that never stops until user intervention
+- **IDE Integrations** - Works with OpenCode, Claude Code, and Cursor
+
 ```bash
-nexus workspace create <name>
-nexus workspace up <name>
-nexus workspace down <name>
-nexus workspace destroy <name>
+# The Boulder never stops
+boulder status     # Check enforcement status
+boulder pause      # Temporarily pause (with reason)
+boulder resume     # Resume enforcement
 ```
 
-### Multi-Service Templates
-Pre-configured development environments for common stacks:
+[Learn more about the Enforcer](explanation/boulder-system.md)
 
-- **node-postgres** - React/Vue + Node.js + PostgreSQL
-- **python-postgres** - Flask/Django + PostgreSQL
-- **go-postgres** - Go API + PostgreSQL
+### 2. Workspace (In Development)
 
-### Task Verification System
-Mandatory verification workflow ensures quality before completion:
+Inspired by [opencode-devcontainer](https://github.com/athal7/opencode-devcontainer) and [Sprites](https://github.com/peterj/sprites), Workspace provides isolated, reproducible development environments for AI agents.
 
-```bash
-nexus task create "Title" -d "Description"
-nexus task assign <task-id> <agent-id>
-nexus task verify <task-id>
-nexus task approve <task-id>
-```
+**Goals:**
+- Isolated environments per task/feature
+- Remote workspace support via WebSocket
+- Git worktree integration
+- Service port awareness
+- Lifecycle hooks for automation
 
-### Ralph Loop
-Auto-improvement system that collects feedback, detects patterns, and updates skills automatically.
+**Status:** Architecture defined, SDK in development. See [internal plans](dev/internal/plans/).
 
-### Agent Management
-Register agents with capabilities and assign tasks:
+### 3. Telemetry (Planned)
 
-```bash
-nexus agent register <name> -c <capabilities>
-nexus agent list
+Following the [Agent Trace](https://agent-trace.dev/) specification, Nexus will track AI contributions with full provenance.
+
+**Vision:**
+- Line-level attribution of AI-generated code
+- Conversation tracking and linking
+- Integration with version control
+- Vendor-neutral format
+- Queryable contribution history
+
+```typescript
+// Example trace record
+{
+  "version": "0.1.0",
+  "files": [{
+    "path": "src/utils.ts",
+    "conversations": [{
+      "url": "https://nexus.dev/conversations/abc123",
+      "contributor": {
+        "type": "ai",
+        "model_id": "anthropic/claude-opus-4-5-20251101"
+      },
+      "ranges": [{ "start_line": 10, "end_line": 25 }]
+    }]
+  }]
+}
 ```
 
 ## Quick Start
 
-1. **Initialize Nexus:**
-   ```bash
-   cd your-project
-   nexus init
-   ```
+### Installation
 
-2. **Create a Workspace:**
-   ```bash
-   nexus workspace create feature-x --template node-postgres
-   ```
+```bash
+# Clone the repository
+git clone https://github.com/inizio/nexus
+cd nexus
 
-3. **Start Coding:**
-   ```bash
-   nexus workspace up feature-x
-   nexus workspace ports feature-x
-   ```
+# Install dependencies
+pnpm install
+
+# Build all packages
+pnpm run build
+```
+
+### Using the Enforcer
+
+```bash
+# Link the Boulder CLI
+cd packages/enforcer
+npm link
+
+# Check status
+boulder status
+
+# Add to your project
+boulder init  # Creates .nexus/enforcer-config.json
+```
+
+### IDE Integration
+
+**OpenCode:**
+```bash
+cp packages/opencode/dist/index.js ~/.opencode/plugins/nexus-enforcer.js
+```
+
+**Claude Code:**
+See [Claude integration docs](tutorials/plugin-setup.md#claude)
+
+**Cursor:**
+See [Cursor integration docs](tutorials/plugin-setup.md#cursor)
+
+## Project Board
+
+| Component | Status | Priority | Documentation |
+|-----------|--------|----------|---------------|
+| Enforcer Core | ✅ Implemented | High | [Architecture](explanation/architecture.md) |
+| OpenCode Plugin | ✅ Implemented | High | [Setup](tutorials/plugin-setup.md) |
+| Claude Integration | ✅ Implemented | High | [Setup](tutorials/plugin-setup.md) |
+| Cursor Extension | 🚧 In Progress | Medium | [Setup](tutorials/plugin-setup.md) |
+| Workspace SDK | 🚧 In Development | High | [Internal Plans](dev/internal/plans/) |
+| Workspace Daemon | 🚧 In Development | High | [Reference](reference/workspace-daemon.md) |
+| Telemetry (Agent Trace) | 📋 Planned | Medium | [ADR-003](dev/decisions/003-telemetry-design.md) |
+| Web Dashboard | 📋 Planned | Low | - |
+| Multi-Agent Coordination | 📋 Planned | Low | - |
+
+Legend:
+- ✅ Implemented - Ready for use
+- 🚧 In Progress - Under active development
+- 📋 Planned - Defined but not started
+
+## Philosophy
+
+### Mini-Workflows
+
+Rather than relying on agents to "do the right thing," Nexus provides deterministic mini-workflows:
+
+1. **Pre-completion Checklist**
+   - Documentation structure validated?
+   - Tests passing?
+   - CI checks green?
+   - Git commits organized?
+
+2. **Idle Detection**
+   - No progress for N minutes?
+   - Trigger enforcement
+   - Prompt agent to continue
+
+3. **Quality Gates**
+   - Project-specific conventions
+   - Automated validation
+   - Block completion until met
+
+### Deterministic > Smart
+
+We believe deterministic enforcement beats "smarter" agents:
+
+- **Predictable** - Same input, same enforcement
+- **Auditable** - Clear rules, clear violations
+- **Composable** - Mix and match workflows
+- **Extensible** - Add custom rules per project
 
 ## Documentation
 
-### Tutorials
-- [Installation](tutorials/installation.md)
-- [Your First Workspace](tutorials/first-workspace.md)
+### For Users
+- [Installation](tutorials/installation.md) - Get started with Nexus
+- [Plugin Setup](tutorials/plugin-setup.md) - Configure IDE integrations
+- [Boulder CLI](reference/boulder-cli.md) - Command reference
+- [Enforcer Configuration](reference/enforcer-config.md) - Configuration options
 
-### How-To Guides
-- [Debugging Ports](how-to/debug-ports.md)
-
-### Explanation
-- [Architecture](explanation/architecture.md)
-
-### Reference
-- [CLI Reference](reference/cli.md)
-
-### Development
-- [Contributing](dev/contributing.md)
-- [Roadmap](dev/roadmap.md)
-- [Architecture Decisions](dev/decisions/)
+### For Developers
+- [Architecture](explanation/architecture.md) - System design
+- [Boulder System](explanation/boulder-system.md) - How enforcement works
+- [Contributing](dev/contributing.md) - Development guide
+- [Roadmap](dev/roadmap.md) - Future plans
+- [Internal Docs](dev/internal/) - Research, plans, and ADRs
 
 ## Statistics
 
@@ -89,36 +192,28 @@ nexus agent list
 | Source Code | ~4,273 lines |
 | Test Code | ~5,598 lines |
 | Test Functions | 153 |
-| Test Files | 10 |
-| E2E Tests | 19 |
+| Test Coverage | 1.3:1 ratio |
 
-## E2E Testing
+## Contributing
 
-Comprehensive end-to-end testing with Testcontainers:
+We welcome contributions! See [Contributing Guide](dev/contributing.md) for details.
 
-```bash
-cd e2e
-npm install
-npm test
-```
-
-**Features:**
-- Testcontainers-based containerized tests
-- SDK-Daemon integration tests
-- OpenCode workflow E2E tests
-- GitHub Actions CI pipeline
-
-See [Phase 4 Completion Report](implementation/phase4-e2e-completion-report.md)
+Key areas where help is needed:
+- Workspace SDK development
+- Telemetry implementation (Agent Trace spec)
+- Additional IDE integrations
+- Documentation improvements
 
 ## Resources
 
-- **OpenCode Plugin Docs:** https://opencode.ai/docs/plugins/
-- **Config Docs:** https://opencode.ai/docs/config/
-- **Nexus Repo:** https://github.com/IniZio/nexus
-- **Testing Plan:** `docs/testing/ENFORCER_TESTING.md`
+- **GitHub:** https://github.com/IniZio/nexus
+- **Agent Trace Spec:** https://agent-trace.dev/
+- **OpenCode:** https://opencode.ai/
 
-## Next Steps
+## License
 
-- Browse [tutorials](tutorials/) to get started
-- Read the [architecture](explanation/architecture.md) to understand how it works
-- Check the [roadmap](dev/roadmap.md) for upcoming features
+MIT License - see LICENSE file for details.
+
+---
+
+**Nexus:** Making AI agents deterministic, traceable, and production-ready.

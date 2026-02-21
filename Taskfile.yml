@@ -8,6 +8,7 @@ tasks:
       - task: build:opencode
       - task: build:claude
       - task: build:cursor
+      - task: build:workspace-sdk
 
   build:enforcer:
     dir: packages/enforcer
@@ -33,6 +34,12 @@ tasks:
       - pnpm install
       - pnpm build
 
+  build:workspace-sdk:
+    dir: packages/workspace-sdk
+    cmds:
+      - pnpm install
+      - pnpm build
+
   test:
     desc: Run all tests
     cmds:
@@ -40,6 +47,7 @@ tasks:
       - task: test:opencode
       - task: test:claude
       - task: test:cursor
+      - task: test:workspace-sdk
 
   test:enforcer:
     dir: packages/enforcer
@@ -61,6 +69,11 @@ tasks:
     cmds:
       - pnpm test
 
+  test:workspace-sdk:
+    dir: packages/workspace-sdk
+    cmds:
+      - pnpm test
+
   lint:
     desc: Run all linters
     cmds:
@@ -68,6 +81,7 @@ tasks:
       - task: lint:opencode
       - task: lint:claude
       - task: lint:cursor
+      - task: lint:workspace-sdk
 
   lint:enforcer:
     dir: packages/enforcer
@@ -88,6 +102,19 @@ tasks:
     dir: packages/cursor
     cmds:
       - pnpm lint
+
+  lint:workspace-sdk:
+    dir: packages/workspace-sdk
+    cmds:
+      - pnpm lint
+
+  ci:
+    desc: Run CI pipeline - install, build, lint, test
+    cmds:
+      - pnpm install
+      - task: build
+      - task: lint
+      - task: test
 
   publish:
     desc: Publish all packages to npm
@@ -124,3 +151,4 @@ tasks:
       - rm -rf packages/opencode/dist
       - rm -rf packages/claude/dist
       - rm -rf packages/cursor/dist
+      - rm -rf packages/workspace-sdk/dist

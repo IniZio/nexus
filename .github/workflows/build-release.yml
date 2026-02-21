@@ -8,8 +8,36 @@ on:
     types: [created]
 
 jobs:
+  test:
+    name: Run CI Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+
+      - name: Run CI pipeline
+        run: task ci
+        env:
+          CI: true
+
   build:
     name: Build for ${{ matrix.os }}
+    needs: test
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

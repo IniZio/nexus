@@ -2,173 +2,191 @@
 
 ## Current Status
 
-**MVP Complete** - All critical features implemented and tested.
+**Active Development:** Nexus is a multi-component project with varying levels of completion.
 
-## Completed Milestones
+## Component Overview
 
-### ✅ MVP Features (Complete)
+| Component | Status | Description |
+|-----------|--------|-------------|
+| **Enforcer** | ✅ Implemented | Task enforcement with idle detection and mini-workflows |
+| **OpenCode Plugin** | ✅ Implemented | OpenCode IDE integration |
+| **Claude Integration** | ✅ Implemented | Claude Code plugin |
+| **Cursor Extension** | 🚧 In Progress | Cursor IDE extension |
+| **Workspace SDK** | 🚧 In Development | Remote workspace WebSocket SDK |
+| **Workspace Daemon** | 🚧 In Development | Go-based workspace server |
+| **Telemetry** | 📋 Planned | Agent Trace specification implementation |
+| **Web Dashboard** | 📋 Planned | Web UI for monitoring and management |
 
-| Feature | Status | Tests |
-|---------|--------|-------|
-| Container Workspaces | Complete | 26 tests |
-| Multi-Service Templates | Complete | 29 tests |
-| Task Verification | Complete | 56 tests |
-| Ralph Loop | Complete | 22 tests |
-| Agent Management | Complete | 20 tests |
+Legend:
+- ✅ Implemented - Production ready
+- 🚧 In Progress - Under active development  
+- 📋 Planned - Designed but not yet started
 
-### ✅ Statistics
+---
 
-- **Source Code:** ~4,273 lines
-- **Test Code:** ~5,598 lines
-- **Test Ratio:** 1.3:1
-- **Test Functions:** 153
+## Enforcer (Implemented)
 
-## Upcoming Features
-
-### Phase 1: Git Worktree Integration
-
-**Goal:** Each workspace has an isolated git branch.
-
-**Status:** Implemented
-
-- Auto-create git worktree on `workspace create`
-- Mount worktree to container (not project root)
-- Branch naming: `nexus/<workspace-name>`
-- Sync changes between workspace and main
-
-**Related ADRs:**
-- [001 - Worktree Isolation](decisions/001-worktree-isolation.md)
-
-### Phase 2: Essential Multi-Service Templates
-
-**Goal:** One-command full dev environment.
-
-**Status:** Implemented
-
-**Templates Available:**
-1. **node-postgres** - React/Vue + Node API + PostgreSQL
-2. **python-postgres** - Flask/Django + PostgreSQL
-3. **go-postgres** - Go API + PostgreSQL
-
-### Phase 3: Simple Parallel Execution
-
-**Goal:** Run 2-3 agents simultaneously.
-
-**Status:** Implemented (simplified scope)
-
-- Assign independent tasks to multiple agents
-- Basic conflict detection
-- No complex dependency resolution
-
-### Phase 4: Polish & Documentation
-
-**Goal:** Usable by others.
-
-**Status:** In Progress
-
-- README with quickstart ✓
-- Example projects
-- Troubleshooting guide
-- Performance optimization
-
-## Post-MVP Features
-
-The following are planned for future releases:
-
-### Remote Workspaces
-SSH to other Docker hosts for distributed development.
-
-### Web UI
-Visual task board and workspace management.
-
-### Advanced Parallel Coordination
-5+ agents with complex dependency resolution.
-
-### Additional Templates
-- rust-postgres
-- java-postgres
-- .NET postgresql
-
-### Plugin System
-Extend Nexus with custom providers and templates.
-
-## Boulder Enforcement
-
-The Nexus Enforcer is a multi-agent enforcement system that ensures AI agents complete tasks fully, use workspaces, and dogfood their changes.
+The Enforcer component is production-ready and actively used.
 
 ### Core Features
 
 | Feature | Status | Description |
 |---------|--------|-------------|
-| Workspace Enforcement | ✅ Active | Blocks writes outside nexus workspaces |
-| Dogfooding Checks | ✅ Active | Requires friction logs before completion |
-| Boulder Continuation | ✅ Active | Reminds about incomplete todos |
-| Self-Evolving Rules | ✅ Active | Loads config from `.nexus/enforcer-config.json` |
+| Idle Detection | ✅ | Prevents agents from stopping prematurely |
+| Mini-Workflows | ✅ | Enforces documentation, git, CI standards |
+| Boulder System | ✅ | Never-stop iteration enforcement |
+| Multi-Agent Support | ✅ | OpenCode, Claude (Cursor in progress) |
 
-### Roadmap
+### Mini-Workflows
 
-#### Phase 1: Core Enforcement (In Progress)
+Implemented enforcement workflows:
 
-**Goal:** Make the boulder roll for OpenCode
+1. **Documentation Validation**
+   - Checks docs follow project structure
+   - Ensures new features are documented
+   - Validates AGENTS.md compliance
 
-- [x] Create plugin structure
-- [x] Implement workspace enforcement
-- [x] Implement dogfooding checks
-- [x] Implement todo continuation
-- [ ] Test all enforcement scenarios
-- [ ] Refine prompts based on usage
-- [ ] Add statistics tracking
+2. **Git Commit Standards**
+   - Enforces conventional commits
+   - Validates commit organization
+   - Prevents messy git history
 
-**Success Criteria:**
-- Agent cannot write files outside workspace
-- Agent cannot claim completion without friction log
-- Agent cannot stop with incomplete todos
+3. **CI Verification**
+   - Blocks completion until CI passes
+   - Runs `task ci` before allowing completion
+   - Ensures no type/lint errors
 
-#### Phase 2: Multi-Agent Support
+### Statistics
 
-**Goal:** Boulder rolls in Claude, Cursor, etc.
+- **Source:** ~4,273 lines
+- **Tests:** ~5,598 lines  
+- **Coverage:** 1.3:1 ratio
+- **Packages:** enforcer, opencode, claude, cursor
 
-- [ ] Build Claude plugin (uses Claude SDK)
-- [ ] Build Cursor extension (VSCode extension format)
-- [ ] Build Copilot integration (if possible)
-- [ ] Test cross-agent consistency
+---
 
-**Success Criteria:**
-- Same enforcement regardless of AI assistant
-- Consistent prompt formatting per agent
-- Shared core library (nexus-enforcer)
+## Workspace (In Development)
 
-#### Phase 3: Self-Evolving Rules
+Inspired by [opencode-devcontainer](https://github.com/athal7/opencode-devcontainer) and [Sprites](https://github.com/peterj/sprites).
 
-**Goal:** Enforcement learns from friction
+### Goals
 
-- [ ] Implement consolidation step in nexus CLI
-- [ ] Analyze friction logs for patterns
-- [ ] Auto-update `.nexus/enforcer-rules.json`
-- [ ] Support per-project custom rules
-- [ ] Support per-user local overrides
+Provide isolated, reproducible development environments for AI agents:
 
-**Success Criteria:**
-- Rules adapt based on project history
-- Common issues get automatic checks
-- Users can customize without breaking base rules
+- **Isolation** - Each task in its own environment
+- **Reproducibility** - Same setup every time
+- **Remote Execution** - Run agents anywhere
+- **Git Integration** - Worktree-based isolation
 
-#### Phase 4: Advanced Features
+### Current Progress
 
-**Goal:** Deep integration and insights
+| Milestone | Status | Notes |
+|-----------|--------|-------|
+| Architecture Design | ✅ Complete | See [internal plans](internal/plans/) |
+| SDK Protocol | ✅ Complete | WebSocket + JSON-RPC |
+| SDK Implementation | 🚧 80% | File ops, exec working |
+| Daemon Prototype | 🚧 60% | Go server in development |
+| Docker Integration | 📋 Planned | Container environments |
+| Remote Workspaces | 📋 Planned | SSH-based remote execution |
 
-- [ ] Telemetry on enforcement effectiveness
-- [ ] Dashboard for team dogfooding metrics
-- [ ] Integration with nexus pulse (existing telemetry)
-- [ ] MCP server for external tool integration
-- [ ] Auto-fix suggestions (not just blocks)
+### Open Questions
 
-**Success Criteria:**
-- Teams can see dogfooding compliance
-- Enforcement is measurable and improvable
-- Integration with existing nexus workflows
+1. **Auth Forwarding** - How to securely forward API keys to remote workspaces?
+2. **State Persistence** - How to persist workspace state across restarts?
+3. **Multi-User** - How to handle multiple agents on same workspace?
+
+See [internal implementation plans](internal/implementation/) for details.
+
+---
+
+## Telemetry (Planned)
+
+Following the [Agent Trace](https://agent-trace.dev/) specification.
+
+### Vision
+
+Track AI contributions with full provenance:
+
+```typescript
+// Example trace record
+{
+  "version": "0.1.0",
+  "vcs": {
+    "type": "git",
+    "revision": "abc123..."
+  },
+  "files": [{
+    "path": "src/app.ts",
+    "conversations": [{
+      "url": "https://nexus.dev/conv/123",
+      "contributor": {
+        "type": "ai",
+        "model_id": "anthropic/claude-opus-4-5-20251101"
+      },
+      "ranges": [
+        { "start_line": 10, "end_line": 25 }
+      ]
+    }]
+  }]
+}
+```
+
+### Use Cases
+
+- **Attribution** - Know what code came from AI vs humans
+- **Auditing** - Track which model/conversation produced changes
+- **Analytics** - Measure agent effectiveness
+- **Compliance** - Document AI involvement for legal/regulatory
+
+### Implementation Plan
+
+| Phase | Feature | Status |
+|-------|---------|--------|
+| 1 | Trace record storage | 📋 Not started |
+| 2 | Git integration | 📋 Not started |
+| 3 | IDE plugin hooks | 📋 Not started |
+| 4 | Query interface | 📋 Not started |
+| 5 | Dashboard | 📋 Not started |
+
+See [ADR-003: Telemetry Design](decisions/003-telemetry-design.md) for technical details.
+
+---
+
+## Future Ideas
+
+### Web Dashboard
+
+A web interface for:
+- Monitoring active agents
+- Viewing enforcement history
+- Managing workspace fleet
+- Analytics and insights
+
+### Multi-Agent Coordination
+
+Enable multiple agents to work together:
+- Task distribution
+- Dependency management
+- Conflict resolution
+- Shared context
+
+### MCP Server
+
+Model Context Protocol integration:
+- External tool integration
+- Custom enforcement rules
+- Third-party extensions
+
+---
 
 ## Related Documentation
 
-- [Architecture](explanation/architecture.md)
-- [Architecture Decisions](dev/decisions/)
+- [Architecture Overview](../explanation/architecture.md)
+- [Boulder System](../explanation/boulder-system.md)
+- [Internal Plans](internal/plans/) - Workspace architecture
+- [Internal Implementation](internal/implementation/) - Workspace SDK plans
+- [Architecture Decisions](decisions/) - ADRs
+
+---
+
+**Last Updated:** February 2026
