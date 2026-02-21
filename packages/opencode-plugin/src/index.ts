@@ -22,7 +22,7 @@ interface OpenCodeConfig {
   nexus?: NexusConfig;
 }
 
-function loadConfig(configPath?: string): NexusConfig {
+function loadConfig(configPath?: string): NexusConfig | null {
   const fs = require('fs');
   const path = require('path');
   
@@ -30,14 +30,14 @@ function loadConfig(configPath?: string): NexusConfig {
   const filePath = configPath || process.env.OPENCODE_CONFIG_PATH || defaultPath;
 
   if (!fs.existsSync(filePath)) {
-    throw new Error(`Configuration file not found: ${filePath}`);
+    return null;
   }
 
   const configContent = fs.readFileSync(filePath, 'utf-8');
   const config: OpenCodeConfig = JSON.parse(configContent);
 
   if (!config.nexus?.workspace?.endpoint) {
-    throw new Error('Nexus workspace configuration is required');
+    return null;
   }
 
   const token = resolveEnvVariable(config.nexus.workspace.token);
@@ -91,13 +91,18 @@ function validateConfig(config: NexusConfig): void {
 let nexusConfig: NexusConfig | null = null;
 
 export const nexusPlugin: Plugin = async (_input) => {
-  try {
-    nexusConfig = loadConfig();
-    validateConfig(nexusConfig);
-
-    console.log('[nexus] Plugin loaded for workspace:', nexusConfig.workspace.workspaceId);
-  } catch (error) {
-    console.error('[nexus] Failed to load config:', error);
+  nexusConfig = loadConfig();
+  
+  if (!nexusConfig) {
+    console.log('[nexus] Config not found, plugin tools will be unavailable');
+  } else {
+    try {
+      validateConfig(nexusConfig);
+      console.log('[nexus] Plugin loaded for workspace:', nexusConfig.workspace.workspaceId);
+    } catch (error) {
+      console.error('[nexus] Config validation failed:', error);
+      nexusConfig = null;
+    }
   }
 
   const nexusConnectTool = tool({
@@ -105,7 +110,7 @@ export const nexusPlugin: Plugin = async (_input) => {
     args: {},
     async execute(_args, _context) {
       if (!nexusConfig) {
-        return 'Configuration not loaded';
+        return 'Not configured';
       }
       return `Connected to workspace: ${nexusConfig.workspace.workspaceId} at ${nexusConfig.workspace.endpoint}`;
     },
@@ -116,9 +121,60 @@ export const nexusPlugin: Plugin = async (_input) => {
     args: {},
     async execute(_args, _context) {
       if (!nexusConfig) {
-        return 'Not connected to Nexus Workspace';
+        return 'Not configured';
       }
       return `Workspace: ${nexusConfig.workspace.workspaceId} | Endpoint: ${nexusConfig.workspace.endpoint}`;
+    },
+  });
+
+  const boulderPauseTool = tool({
+    description: 'Pause the boulder enforcement system',
+    args: {},
+    async execute(_args, _context) {
+      const fs = require('fs');
+      const statePath = '/home/newman/magic/nexus/.nexus/boulder/state.json';
+      try {
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+        state.status = 'PAUSED';
+        state.stopRequested = true;
+        fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+        return '✅ Boulder paused: status=PAUSED, stopRequested=true';
+      } catch (error) {
+        return `❌ Failed to pause boulder: ${error.message}`;
+      }
+    },
+  });
+
+  const boulderResumeTool = tool({
+    description: 'Resume the boulder enforcement system',
+    args: {},
+    async execute(_args, _context) {
+      const fs = require('fs');
+      const statePath = '/home/newman/magic/nexus/.nexus/boulder/state.json';
+      try {
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+        state.status = 'CONTINUOUS';
+        state.stopRequested = false;
+        fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+        return '✅ Boulder resumed: status=CONTINUOUS, stopRequested=false';
+      } catch (error) {
+        return `❌ Failed to resume boulder: ${error.message}`;
+      }
+    },
+  });
+
+  const boulderStatusTool = tool({
+    description: 'Check boulder enforcement status',
+    args: {},
+    async execute(_args, _context) {
+      const fs = require('fs');
+      const statePath = '/home/newman/magic/nexus/.nexus/boulder/state.json';
+      try {
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+        return `Status: ${state.status} | stopRequested: ${state.stopRequested} | iteration: ${state.iteration}`;
+      } catch (error) {
+        return `❌ Failed to get boulder status: ${error.message}`;
+      }
     },
   });
 
@@ -126,6 +182,9 @@ export const nexusPlugin: Plugin = async (_input) => {
     tool: {
       'nexus-connect': nexusConnectTool,
       'nexus-status': nexusStatusTool,
+      'boulder-pause': boulderPauseTool,
+      'boulder-resume': boulderResumeTool,
+      'boulder-status': boulderStatusTool,
     },
     
     'tool.execute.before': async ({ tool: toolName }) => {
