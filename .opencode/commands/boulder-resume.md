@@ -4,11 +4,9 @@ agent: build
 subtask: true
 ---
 
-Use the boulder-resume tool to resume the boulder enforcement system.
+Resume the boulder enforcement system.
 
-The tool will:
-- Set status to "CONTINUOUS" in .nexus/boulder/state.json
-- Set stopRequested to false
-- Report the new status
+Execute this shell command:
+!`node -e "const fs=require('fs'),p='.nexus/boulder/state.json',s=JSON.parse(fs.readFileSync(p)); s.status='CONTINUOUS'; s.stopRequested=false; fs.writeFileSync(p,JSON.stringify(s,null,2)); console.log('✅ Boulder resumed')"`
 
-Execute the boulder-resume tool and return the result.
+Report the result.

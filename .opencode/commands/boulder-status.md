@@ -4,12 +4,9 @@ agent: build
 subtask: true
 ---
 
-Use the boulder-status tool to check the current boulder enforcement status.
+Check the current boulder enforcement status.
 
-The tool will read .nexus/boulder/state.json and report:
-- Current status (PAUSED or CONTINUOUS)
-- stopRequested value
-- Current iteration
-- Session ID
+Execute this shell command:
+!`node -e "const fs=require('fs'),p='.nexus/boulder/state.json',s=JSON.parse(fs.readFileSync(p)); console.log('Status:',s.status); console.log('Stop requested:',s.stopRequested); console.log('Iteration:',s.iteration);"`
 
-Execute the boulder-status tool and return the result.
+Report the status.

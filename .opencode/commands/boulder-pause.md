@@ -4,11 +4,9 @@ agent: build
 subtask: true
 ---
 
-Use the boulder-pause tool to pause the boulder enforcement system.
+Pause the boulder enforcement system.
 
-The tool will:
-- Set status to "PAUSED" in .nexus/boulder/state.json
-- Set stopRequested to true
-- Report the new status
+Execute this shell command:
+!`node -e "const fs=require('fs'),p='.nexus/boulder/state.json',s=JSON.parse(fs.readFileSync(p)); s.status='PAUSED'; s.stopRequested=true; fs.writeFileSync(p,JSON.stringify(s,null,2)); console.log('✅ Boulder paused')"`
 
-Execute the boulder-pause tool and return the result.
+Report the result.
