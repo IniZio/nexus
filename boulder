@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Boulder control wrapper
+exec "$(dirname "$0")/.nexus/boulder/boulder-control.sh" "$@"

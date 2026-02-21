@@ -25,6 +25,7 @@ nav:
     - Overview: reference/workspace-sdk.md
     - Lifecycle Scripts: how-to/lifecycle-scripts.md
     - Service Ports: how-to/service-port-awareness.md
+    - Boulder Control: reference/boulder-control.md
 
 theme:
   name: material
