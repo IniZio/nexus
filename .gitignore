@@ -62,6 +62,14 @@ vendor/
 
 # Node modules
 node_modules/
+**/node_modules/
+
+# Build artifacts
+dist/
+**/dist/
+
+# Workspace daemon binary
+packages/workspace-daemon/workspace-daemon
 
 # Nested nexus folder
 nexus/nexus/
@@ -88,4 +96,5 @@ ENDOFFILE
 .nexus/pulse.db-wal
 .nexus/dogfooding/*.sh
 .nexus/dogfooding/NON-STOP-README.md
+.nexus/boulder/state.json
 .opencode/oh-my-opencode-study/
