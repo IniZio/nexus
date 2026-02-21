@@ -97,4 +97,5 @@ ENDOFFILE
 .nexus/dogfooding/*.sh
 .nexus/dogfooding/NON-STOP-README.md
 .nexus/boulder/state.json
-.opencode/oh-my-opencode-study/
+.nexus/boulder/*.sh
+packages/enforcer/src/boulder/*.sh
