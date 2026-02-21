@@ -1,4 +1,4 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["/home/newman/magic/nexus/packages/opencode-plugin/dist/index.js"]
+  "plugin": ["../packages/opencode-plugin/dist/index.js"]
 }

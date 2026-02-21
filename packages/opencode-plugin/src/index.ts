@@ -1,5 +1,9 @@
 import { tool } from '@opencode-ai/plugin/tool';
 import type { Plugin, Hooks } from '@opencode-ai/plugin';
+import * as path from 'path';
+
+const BOULDER_STATE_PATH = process.env.NEXUS_BOULDER_STATE_PATH || 
+  path.join(process.cwd(), '.nexus', 'boulder', 'state.json');
 
 interface NexusConfig {
   workspace: {
@@ -132,7 +136,7 @@ export const nexusPlugin: Plugin = async (_input) => {
     args: {},
     async execute(_args, _context) {
       const fs = require('fs');
-      const statePath = '/home/newman/magic/nexus/.nexus/boulder/state.json';
+      const statePath = BOULDER_STATE_PATH;
       try {
         const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
         state.status = 'PAUSED';
@@ -150,7 +154,7 @@ export const nexusPlugin: Plugin = async (_input) => {
     args: {},
     async execute(_args, _context) {
       const fs = require('fs');
-      const statePath = '/home/newman/magic/nexus/.nexus/boulder/state.json';
+      const statePath = BOULDER_STATE_PATH;
       try {
         const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
         state.status = 'CONTINUOUS';
@@ -168,7 +172,7 @@ export const nexusPlugin: Plugin = async (_input) => {
     args: {},
     async execute(_args, _context) {
       const fs = require('fs');
-      const statePath = '/home/newman/magic/nexus/.nexus/boulder/state.json';
+      const statePath = BOULDER_STATE_PATH;
       try {
         const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
         return `Status: ${state.status} | stopRequested: ${state.stopRequested} | iteration: ${state.iteration}`;
