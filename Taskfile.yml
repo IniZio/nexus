@@ -4,14 +4,13 @@ tasks:
   build:
     desc: Build all packages
     cmds:
-      - task: build:enforcer
+      - task: build:core
       - task: build:opencode
-      - task: build:claude
-      - task: build:cursor
-      - task: build:workspace-sdk
+      # - task: build:claude
+      # - task: build:cursor
 
-  build:enforcer:
-    dir: packages/enforcer
+  build:core:
+    dir: packages/core
     cmds:
       - pnpm install
       - pnpm build
@@ -34,23 +33,16 @@ tasks:
       - pnpm install
       - pnpm build
 
-  build:workspace-sdk:
-    dir: packages/workspace-sdk
-    cmds:
-      - pnpm install
-      - pnpm build
-
   test:
     desc: Run all tests
     cmds:
-      - task: test:enforcer
+      - task: test:core
       - task: test:opencode
       - task: test:claude
       - task: test:cursor
-      - task: test:workspace-sdk
 
-  test:enforcer:
-    dir: packages/enforcer
+  test:core:
+    dir: packages/core
     cmds:
       - pnpm test
 
@@ -69,22 +61,16 @@ tasks:
     cmds:
       - pnpm test
 
-  test:workspace-sdk:
-    dir: packages/workspace-sdk
-    cmds:
-      - pnpm test
-
   lint:
     desc: Run all linters
     cmds:
-      - task: lint:enforcer
+      - task: lint:core
       - task: lint:opencode
       - task: lint:claude
       - task: lint:cursor
-      - task: lint:workspace-sdk
 
-  lint:enforcer:
-    dir: packages/enforcer
+  lint:core:
+    dir: packages/core
     cmds:
       - pnpm lint
 
@@ -103,11 +89,6 @@ tasks:
     cmds:
       - pnpm lint
 
-  lint:workspace-sdk:
-    dir: packages/workspace-sdk
-    cmds:
-      - pnpm lint
-
   ci:
     desc: Run CI pipeline - install, build, lint, test
     cmds:
@@ -119,13 +100,13 @@ tasks:
   publish:
     desc: Publish all packages to npm
     cmds:
-      - task: publish:enforcer
+      - task: publish:core
       - task: publish:opencode
       - task: publish:claude
       - task: publish:cursor
 
-  publish:enforcer:
-    dir: packages/enforcer
+  publish:core:
+    dir: packages/core
     cmds:
       - pnpm publish
 
@@ -147,8 +128,7 @@ tasks:
   clean:
     desc: Clean all build artifacts
     cmds:
-      - rm -rf packages/enforcer/dist
+      - rm -rf packages/core/dist
       - rm -rf packages/opencode/dist
       - rm -rf packages/claude/dist
       - rm -rf packages/cursor/dist
-      - rm -rf packages/workspace-sdk/dist

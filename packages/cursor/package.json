@@ -21,7 +21,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "nexus-enforcer": "workspace:*"
+    "@nexus/core": "workspace:*"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",

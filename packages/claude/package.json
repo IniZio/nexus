@@ -21,7 +21,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "nexus-enforcer": "workspace:*"
+    "@nexus/core": "workspace:*"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.76.0",

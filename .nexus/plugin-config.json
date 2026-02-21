@@ -1,9 +1,0 @@
-{
-  "nexus": {
-    "workspace": {
-      "endpoint": "ws://localhost:8080",
-      "workspaceId": "test-workspace",
-      "token": "test-token"
-    }
-  }
-}
