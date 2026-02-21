@@ -1,0 +1,20 @@
+{
+  "rules": {
+    "no-unused-vars": "error",
+    "no-console": "off",
+    "no-debugger": "error",
+    "no-empty-file": "error",
+    "no-unreachable": "error"
+  },
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/node_modules/**",
+    "**/*.d.ts",
+    "**/*.config.js",
+    "**/*.config.ts",
+    "**/e2e/**",
+    "**/__tests__/**",
+    "**/examples/**",
+    "**/docs/**"
+  ]
+}
