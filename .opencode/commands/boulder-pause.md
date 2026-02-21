@@ -1,9 +1,14 @@
 ---
 description: Pause the boulder enforcement system
+agent: build
+subtask: true
 ---
 
-Pause the boulder enforcement system by updating the state file at .nexus/boulder/state.json.
+Use the boulder-pause tool to pause the boulder enforcement system.
 
-Set status to "PAUSED" and stopRequested to true.
+The tool will:
+- Set status to "PAUSED" in .nexus/boulder/state.json
+- Set stopRequested to true
+- Report the new status
 
-Report the new status after pausing.
+Execute the boulder-pause tool and return the result.

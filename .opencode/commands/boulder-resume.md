@@ -1,9 +1,14 @@
 ---
 description: Resume the boulder enforcement system
+agent: build
+subtask: true
 ---
 
-Resume the boulder enforcement system by updating the state file at .nexus/boulder/state.json.
+Use the boulder-resume tool to resume the boulder enforcement system.
 
-Set status to "CONTINUOUS" and stopRequested to false.
+The tool will:
+- Set status to "CONTINUOUS" in .nexus/boulder/state.json
+- Set stopRequested to false
+- Report the new status
 
-Report the new status after resuming.
+Execute the boulder-resume tool and return the result.

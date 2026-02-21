@@ -1,11 +1,15 @@
 ---
 description: Check boulder enforcement status
+agent: build
+subtask: true
 ---
 
-Check the current boulder enforcement status by reading .nexus/boulder/state.json.
+Use the boulder-status tool to check the current boulder enforcement status.
 
-Report:
+The tool will read .nexus/boulder/state.json and report:
 - Current status (PAUSED or CONTINUOUS)
 - stopRequested value
 - Current iteration
-- Session ID if available
+- Session ID
+
+Execute the boulder-status tool and return the result.
