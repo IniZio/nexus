@@ -21,6 +21,10 @@ nav:
     - Architecture: explanation/architecture.md
     - Contributing: dev/contributing.md
     - Roadmap: dev/roadmap.md
+  - Workspace SDK:
+    - Overview: reference/workspace-sdk.md
+    - Lifecycle Scripts: how-to/lifecycle-scripts.md
+    - Service Ports: how-to/service-port-awareness.md
 
 theme:
   name: material
