@@ -1,4 +1,4 @@
-import { BoulderContinuousEnforcement, getGlobalEnforcement } from 'nexus-enforcer/boulder';
+import { BoulderContinuousEnforcement, getGlobalEnforcement } from '@nexus/core/boulder';
 
 let globalEnforcement: BoulderContinuousEnforcement | null = null;
 

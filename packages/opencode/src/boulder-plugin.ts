@@ -9,7 +9,7 @@ export interface BoulderPluginConfig {
 const DEFAULT_PLUGIN_CONFIG: BoulderPluginConfig = {
   enabled: true,
   idleThresholdMs: 30000,
-  checkIntervalMs: 15000,
+  checkIntervalMs: 5000,
   completionKeywords: [
     'done',
     'complete',
@@ -59,7 +59,7 @@ interface DualLayerConfig {
 
 const DEFAULT_CONFIG: DualLayerConfig = {
   idleThresholdMs: 30000,
-  checkIntervalMs: 15000,
+  checkIntervalMs: 5000,
   completionKeywords: [
     'done',
     'complete',
@@ -113,16 +113,16 @@ class DualLayerBoulderEnforcer {
     this.startIntervalCheck();
   }
 
-  recordToolCall(toolName: string): void {
+  recordToolCall(_toolName: string): void {
     this.lastActivity = Date.now();
   }
 
-  startToolExecution(toolName: string): void {
+  startToolExecution(_toolName: string): void {
     this.toolInProgress = true;
     this.lastActivity = Date.now();
   }
 
-  endToolExecution(toolName: string): void {
+  endToolExecution(_toolName: string): void {
     this.toolInProgress = false;
     this.lastActivity = Date.now();
   }

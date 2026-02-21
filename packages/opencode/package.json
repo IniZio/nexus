@@ -2,6 +2,7 @@
   "name": "nexus-opencode",
   "version": "1.0.0",
   "description": "OpenCode plugin adapter for nexus enforcer",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -21,7 +22,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "nexus-enforcer": "workspace:*"
+    "@nexus/core": "workspace:*",
+    "@opencode-ai/plugin": "^1.2.10"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
