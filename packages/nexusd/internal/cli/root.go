@@ -45,6 +45,7 @@ func init() {
 	rootCmd.AddCommand(boulderCmd)
 	rootCmd.AddCommand(workspaceCmd)
 	rootCmd.AddCommand(traceCmd)
+	rootCmd.AddCommand(syncCmd)
 
 	configCmd.AddCommand(configGetCmd, configSetCmd)
 	boulderCmd.AddCommand(boulderStatusCmd, boulderPauseCmd, boulderResumeCmd, boulderConfigCmd)
