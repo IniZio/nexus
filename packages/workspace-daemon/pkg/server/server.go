@@ -149,6 +149,10 @@ func NewServerWithDeps(
 			log.Printf("[state] Warning: failed to load workspaces: %v", err)
 		}
 
+		if err := srv.LoadCheckpoints(); err != nil {
+			log.Printf("[state] Warning: failed to load checkpoints: %v", err)
+		}
+
 		if backend != nil {
 			if err := srv.cleanupDanglingWorkspaces(); err != nil {
 				log.Printf("[state] Warning: failed to cleanup dangling workspaces: %v", err)
@@ -235,6 +239,51 @@ func (s *Server) LoadWorkspaces() error {
 	}
 
 	log.Printf("[state] Loaded %d workspaces from state", len(workspaces))
+	return nil
+}
+
+func (s *Server) LoadCheckpoints() error {
+	if s.stateStore == nil {
+		return nil
+	}
+
+	workspaces, err := s.stateStore.ListWorkspaces()
+	if err != nil {
+		return fmt.Errorf("listing workspaces: %w", err)
+	}
+
+	if s.checkpointStore == nil {
+		s.checkpointStore = &CheckpointStore{
+			checkpoints: make(map[string][]*Checkpoint),
+		}
+	}
+
+	for _, ws := range workspaces {
+		cpDir := filepath.Join(s.stateStore.BaseDir(), ws.ID, "checkpoints")
+		entries, err := os.ReadDir(cpDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+				continue
+			}
+			cpPath := filepath.Join(cpDir, entry.Name())
+			data, err := os.ReadFile(cpPath)
+			if err != nil {
+				log.Printf("[checkpoint] failed to read %s: %v", cpPath, err)
+				continue
+			}
+			var cp Checkpoint
+			if err := json.Unmarshal(data, &cp); err != nil {
+				log.Printf("[checkpoint] failed to unmarshal %s: %v", cpPath, err)
+				continue
+			}
+			s.checkpointStore.checkpoints[ws.ID] = append(s.checkpointStore.checkpoints[ws.ID], &cp)
+		}
+	}
+
+	log.Printf("[state] Loaded checkpoints for %d workspaces", len(workspaces))
 	return nil
 }
 

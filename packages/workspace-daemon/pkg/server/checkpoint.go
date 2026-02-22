@@ -295,6 +295,23 @@ func (s *Server) saveCheckpoint(cp *Checkpoint) {
 		s.checkpointStore.checkpoints[cp.WorkspaceID],
 		cp,
 	)
+
+	if s.stateStore != nil {
+		cpDir := filepath.Join(s.stateStore.BaseDir(), cp.WorkspaceID, "checkpoints")
+		if err := os.MkdirAll(cpDir, 0755); err != nil {
+			log.Printf("[checkpoint] failed to create checkpoint dir: %v", err)
+			return
+		}
+		cpPath := filepath.Join(cpDir, cp.ID+".json")
+		data, err := json.Marshal(cp)
+		if err != nil {
+			log.Printf("[checkpoint] failed to marshal checkpoint: %v", err)
+			return
+		}
+		if err := os.WriteFile(cpPath, data, 0644); err != nil {
+			log.Printf("[checkpoint] failed to write checkpoint: %v", err)
+		}
+	}
 }
 
 func (s *Server) getCheckpoints(workspaceID string) []*Checkpoint {
