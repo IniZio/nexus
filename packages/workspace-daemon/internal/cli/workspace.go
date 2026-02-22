@@ -253,3 +253,67 @@ func colorStatus(status string) string {
 		return status
 	}
 }
+
+var syncCmd = &cobra.Command{
+	Use:   "sync",
+	Short: "Manage file sync",
+}
+
+var syncStatusCmd = &cobra.Command{
+	Use:   "status <id>",
+	Short: "Show sync status for a workspace",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		client := getClient()
+		status, err := client.GetSyncStatus(args[0])
+		exitOnError(err)
+
+		fmt.Printf("Sync Status for workspace %s:\n", args[0])
+		fmt.Printf("  State: %s\n", status.State)
+		if !status.LastSync.IsZero() {
+			fmt.Printf("  Last Sync: %s\n", status.LastSync.Format("2006-01-02 15:04:05"))
+		}
+		if len(status.Conflicts) > 0 {
+			fmt.Printf("  Conflicts (%d):\n", len(status.Conflicts))
+			for _, c := range status.Conflicts {
+				fmt.Printf("    - %s\n", c.Path)
+			}
+		}
+	},
+}
+
+var syncPauseCmd = &cobra.Command{
+	Use:   "pause <id>",
+	Short: "Pause sync for a workspace",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		client := getClient()
+		err := client.PauseSync(args[0])
+		exitOnError(err)
+		fmt.Printf("Sync paused for workspace %s\n", args[0])
+	},
+}
+
+var syncResumeCmd = &cobra.Command{
+	Use:   "resume <id>",
+	Short: "Resume sync for a workspace",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		client := getClient()
+		err := client.ResumeSync(args[0])
+		exitOnError(err)
+		fmt.Printf("Sync resumed for workspace %s\n", args[0])
+	},
+}
+
+var syncFlushCmd = &cobra.Command{
+	Use:   "flush <id>",
+	Short: "Flush sync for a workspace",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		client := getClient()
+		err := client.FlushSync(args[0])
+		exitOnError(err)
+		fmt.Printf("Sync flushed for workspace %s\n", args[0])
+	},
+}

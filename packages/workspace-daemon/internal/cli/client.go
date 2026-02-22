@@ -432,3 +432,122 @@ func (c *Client) parseWorkspaceResponse(resp *http.Response) (*Workspace, error)
 
 	return &ws, nil
 }
+
+type SyncStatus struct {
+	State     string    `json:"state"`
+	SessionID string    `json:"session_id,omitempty"`
+	LastSync  time.Time `json:"last_sync"`
+	Conflicts []Conflict `json:"conflicts"`
+}
+
+type Conflict struct {
+	Path         string `json:"path"`
+	AlphaContent string `json:"alpha_content"`
+	BetaContent  string `json:"beta_content"`
+}
+
+func (c *Client) GetSyncStatus(workspaceID string) (*SyncStatus, error) {
+	httpReq, err := http.NewRequest("GET", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/sync/status", nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var apiResp APIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return nil, err
+	}
+
+	if !apiResp.Success {
+		return nil, fmt.Errorf("API error: %s", apiResp.Error)
+	}
+
+	data, err := json.Marshal(apiResp.Data)
+	if err != nil {
+		return nil, err
+	}
+
+	var status SyncStatus
+	if err := json.Unmarshal(data, &status); err != nil {
+		return nil, err
+	}
+
+	return &status, nil
+}
+
+func (c *Client) PauseSync(workspaceID string) error {
+	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/sync/pause", nil)
+	if err != nil {
+		return err
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+func (c *Client) ResumeSync(workspaceID string) error {
+	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/sync/resume", nil)
+	if err != nil {
+		return err
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+func (c *Client) FlushSync(workspaceID string) error {
+	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/sync/flush", nil)
+	if err != nil {
+		return err
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}

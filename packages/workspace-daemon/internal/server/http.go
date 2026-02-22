@@ -125,6 +125,16 @@ func (s *HTTPServer) handleWorkspaceByID(w http.ResponseWriter, r *http.Request)
 			s.stopWorkspace(w, r, ws)
 		case "/exec":
 			s.execWorkspace(w, r, ws)
+		case "/sync":
+			s.handleSync(w, r, ws)
+		case "/sync/status":
+			s.getSyncStatus(w, r, ws)
+		case "/sync/pause":
+			s.pauseSync(w, r, ws)
+		case "/sync/resume":
+			s.resumeSync(w, r, ws)
+		case "/sync/flush":
+			s.flushSync(w, r, ws)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -374,5 +384,113 @@ func CORSMiddleware(next http.Handler) http.Handler {
 		}
 
 		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *HTTPServer) handleSync(w http.ResponseWriter, r *http.Request, ws *types.Workspace) {
+	switch r.Method {
+	case http.MethodPost:
+		s.startSync(w, r, ws)
+	case http.MethodDelete:
+		s.stopSync(w, r, ws)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *HTTPServer) startSync(w http.ResponseWriter, r *http.Request, ws *types.Workspace) {
+	if s.backend == nil {
+		WriteError(w, http.StatusNotImplemented, fmt.Errorf("backend not available"))
+		return
+	}
+
+	sessionID, err := s.backend.StartSync(r.Context(), ws.ID)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, fmt.Errorf("starting sync: %w", err))
+		return
+	}
+
+	WriteSuccess(w, map[string]string{
+		"session_id": sessionID,
+		"state":      "started",
+	})
+}
+
+func (s *HTTPServer) stopSync(w http.ResponseWriter, r *http.Request, ws *types.Workspace) {
+	if s.backend == nil {
+		WriteError(w, http.StatusNotImplemented, fmt.Errorf("backend not available"))
+		return
+	}
+
+	if err := s.backend.StopSync(r.Context(), ws.ID); err != nil {
+		WriteError(w, http.StatusInternalServerError, fmt.Errorf("stopping sync: %w", err))
+		return
+	}
+
+	WriteSuccess(w, map[string]string{
+		"state": "stopped",
+	})
+}
+
+func (s *HTTPServer) getSyncStatus(w http.ResponseWriter, r *http.Request, ws *types.Workspace) {
+	if s.backend == nil {
+		WriteError(w, http.StatusNotImplemented, fmt.Errorf("backend not available"))
+		return
+	}
+
+	status, err := s.backend.GetSyncStatus(r.Context(), ws.ID)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, fmt.Errorf("getting sync status: %w", err))
+		return
+	}
+
+	WriteSuccess(w, status)
+}
+
+func (s *HTTPServer) pauseSync(w http.ResponseWriter, r *http.Request, ws *types.Workspace) {
+	if s.backend == nil {
+		WriteError(w, http.StatusNotImplemented, fmt.Errorf("backend not available"))
+		return
+	}
+
+	if err := s.backend.PauseSync(r.Context(), ws.ID); err != nil {
+		WriteError(w, http.StatusInternalServerError, fmt.Errorf("pausing sync: %w", err))
+		return
+	}
+
+	WriteSuccess(w, map[string]string{
+		"state": "paused",
+	})
+}
+
+func (s *HTTPServer) resumeSync(w http.ResponseWriter, r *http.Request, ws *types.Workspace) {
+	if s.backend == nil {
+		WriteError(w, http.StatusNotImplemented, fmt.Errorf("backend not available"))
+		return
+	}
+
+	if err := s.backend.ResumeSync(r.Context(), ws.ID); err != nil {
+		WriteError(w, http.StatusInternalServerError, fmt.Errorf("resuming sync: %w", err))
+		return
+	}
+
+	WriteSuccess(w, map[string]string{
+		"state": "resumed",
+	})
+}
+
+func (s *HTTPServer) flushSync(w http.ResponseWriter, r *http.Request, ws *types.Workspace) {
+	if s.backend == nil {
+		WriteError(w, http.StatusNotImplemented, fmt.Errorf("backend not available"))
+		return
+	}
+
+	if err := s.backend.FlushSync(r.Context(), ws.ID); err != nil {
+		WriteError(w, http.StatusInternalServerError, fmt.Errorf("flushing sync: %w", err))
+		return
+	}
+
+	WriteSuccess(w, map[string]string{
+		"state": "flushed",
 	})
 }

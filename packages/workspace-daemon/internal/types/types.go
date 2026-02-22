@@ -269,3 +269,26 @@ type SwitchWorkspaceResponse struct {
 	SwitchDurationMS int64
 	ActiveWorkspace  *Workspace
 }
+
+type SyncStatus struct {
+	State     string    `json:"state"`
+	SessionID string    `json:"session_id"`
+	LastSync  time.Time `json:"last_sync"`
+	Conflicts []Conflict `json:"conflicts"`
+}
+
+type Conflict struct {
+	Path         string `json:"path"`
+	AlphaContent string `json:"alpha_content"`
+	BetaContent  string `json:"beta_content"`
+}
+
+type SyncRequest struct {
+	WorkspaceID string `json:"workspace_id"`
+}
+
+type SyncResponse struct {
+	Success  bool   `json:"success"`
+	State    string `json:"state,omitempty"`
+	Message  string `json:"message,omitempty"`
+}

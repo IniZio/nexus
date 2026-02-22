@@ -10,27 +10,39 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	wsTypes "github.com/nexus/nexus/packages/workspace-daemon/internal/types"
 	nat "github.com/docker/go-connections/nat"
+	"nexus/pkg/sync"
 )
 
 type DockerBackend struct {
-	client           *Client
-	docker           *client.Client
-	portManager      *PortManager
-	containerManager *ContainerManager
-	stateDir         string
+	client            *Client
+	docker            *client.Client
+	portManager       *PortManager
+	containerManager  *ContainerManager
+	stateDir          string
+	syncManager       *sync.Manager
+	worktreePathFunc func(workspaceID string) (string, error)
 }
 
 func NewDockerBackend(dockerClient *client.Client, stateDir string) *DockerBackend {
+	syncConfig := &sync.Config{
+		Mode:    "two-way-safe",
+		Exclude: []string{"node_modules", ".git", "*.log"},
+	}
+	syncStore := sync.NewFileStateStore(stateDir)
+	syncManager := sync.NewManager(syncConfig, syncStore)
+
 	return &DockerBackend{
 		docker:           dockerClient,
 		portManager:      NewPortManager(32800, 34999),
 		containerManager: NewContainerManager(),
 		stateDir:         stateDir,
+		syncManager:      syncManager,
 	}
 }
 
@@ -119,6 +131,14 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 	b.containerManager.mu.Unlock()
 
 	workspace.Status = wsTypes.StatusRunning
+
+	if req.WorktreePath != "" && b.syncManager != nil {
+		if _, err := b.syncManager.StartSync(ctx, workspace.ID, req.WorktreePath, "/workspace"); err != nil {
+			fmt.Printf("Warning: failed to start sync: %v\n", err)
+		} else {
+			fmt.Printf("Started sync for workspace %s\n", workspace.ID)
+		}
+	}
 
 	return workspace, nil
 }
@@ -219,12 +239,28 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 
 	workspace.Status = wsTypes.StatusRunning
 
+	if req.WorktreePath != "" && b.syncManager != nil {
+		if _, err := b.syncManager.StartSync(ctx, workspace.ID, req.WorktreePath, "/workspace"); err != nil {
+			fmt.Printf("Warning: failed to start sync: %v\n", err)
+		} else {
+			fmt.Printf("Started sync for workspace %s\n", workspace.ID)
+		}
+	}
+
 	return workspace, nil
 }
 
 func (b *DockerBackend) StartWorkspace(ctx context.Context, id string) (*wsTypes.Operation, error) {
 	if err := b.containerManager.Start(ctx, id); err != nil {
 		return nil, err
+	}
+
+	if b.syncManager != nil {
+		if err := b.syncManager.ResumeSync(ctx, id); err != nil {
+			fmt.Printf("Warning: failed to resume sync: %v\n", err)
+		} else {
+			fmt.Printf("Resumed sync for workspace %s\n", id)
+		}
 	}
 
 	return &wsTypes.Operation{
@@ -240,6 +276,14 @@ func (b *DockerBackend) StopWorkspace(ctx context.Context, id string, timeout in
 		timeoutDuration = 30 * time.Second
 	}
 
+	if b.syncManager != nil {
+		if err := b.syncManager.PauseSync(ctx, id); err != nil {
+			fmt.Printf("Warning: failed to pause sync: %v\n", err)
+		} else {
+			fmt.Printf("Paused sync for workspace %s\n", id)
+		}
+	}
+
 	if err := b.containerManager.Stop(ctx, id, timeoutDuration); err != nil {
 		return nil, err
 	}
@@ -253,6 +297,14 @@ func (b *DockerBackend) StopWorkspace(ctx context.Context, id string, timeout in
 }
 
 func (b *DockerBackend) DeleteWorkspace(ctx context.Context, id string) error {
+	if b.syncManager != nil {
+		if err := b.syncManager.StopSync(ctx, id); err != nil {
+			fmt.Printf("Warning: stopping sync: %v\n", err)
+		} else {
+			fmt.Printf("Stopped sync for workspace %s\n", id)
+		}
+	}
+
 	if err := b.containerManager.Stop(ctx, id, 10*time.Second); err != nil {
 		fmt.Printf("warning: stopping container: %v\n", err)
 	}
@@ -265,7 +317,7 @@ func (b *DockerBackend) DeleteWorkspace(ctx context.Context, id string) error {
 }
 
 func (b *DockerBackend) GetWorkspaceStatus(ctx context.Context, id string) (wsTypes.WorkspaceStatus, error) {
-	containers, err := b.docker.ContainerList(ctx, types.ContainerListOptions{
+	containers, err := b.docker.ContainerList(ctx, container.ListOptions{
 		All: true,
 	})
 	if err != nil {
@@ -319,7 +371,7 @@ func (b *DockerBackend) GetResourceStats(ctx context.Context, id string) (*wsTyp
 }
 
 func (b *DockerBackend) Exec(ctx context.Context, id string, cmd []string) (string, error) {
-	containers, err := b.docker.ContainerList(ctx, types.ContainerListOptions{
+	containers, err := b.docker.ContainerList(ctx, container.ListOptions{
 		All: true,
 	})
 	if err != nil {
@@ -368,9 +420,9 @@ func (b *DockerBackend) CopyFiles(ctx context.Context, id string, src io.Reader,
 	return b.copyToContainer(ctx, id, src, dst)
 }
 
-func (b *DockerBackend) pullImage(ctx context.Context, image string) error {
-	pullOptions := types.ImagePullOptions{}
-	reader, err := b.docker.ImagePull(ctx, image, pullOptions)
+func (b *DockerBackend) pullImage(ctx context.Context, img string) error {
+	pullOpts := image.PullOptions{}
+	reader, err := b.docker.ImagePull(ctx, img, pullOpts)
 	if err != nil {
 		return fmt.Errorf("pulling image: %w", err)
 	}
@@ -461,7 +513,7 @@ func (b *DockerBackend) createContainer(ctx context.Context, image string, confi
 }
 
 func (b *DockerBackend) startContainer(ctx context.Context, id string) error {
-	return b.docker.ContainerStart(ctx, id, types.ContainerStartOptions{})
+	return b.docker.ContainerStart(ctx, id, container.StartOptions{})
 }
 
 func (b *DockerBackend) stopContainer(ctx context.Context, id string, timeout time.Duration) error {
@@ -472,7 +524,7 @@ func (b *DockerBackend) stopContainer(ctx context.Context, id string, timeout ti
 }
 
 func (b *DockerBackend) removeContainer(ctx context.Context, id string, force bool) error {
-	return b.docker.ContainerRemove(ctx, id, types.ContainerRemoveOptions{
+	return b.docker.ContainerRemove(ctx, id, container.RemoveOptions{
 		Force: force,
 	})
 }
@@ -482,7 +534,7 @@ func (b *DockerBackend) inspectContainer(ctx context.Context, id string) (types.
 }
 
 func (b *DockerBackend) execInContainer(ctx context.Context, id string, cmd []string) (int, io.Reader, error) {
-	execConfig := types.ExecConfig{
+	execConfig := container.ExecOptions{
 		Cmd:          cmd,
 		AttachStdout: true,
 		AttachStderr: true,
@@ -495,7 +547,7 @@ func (b *DockerBackend) execInContainer(ctx context.Context, id string, cmd []st
 		return 0, nil, fmt.Errorf("creating exec: %w", err)
 	}
 
-	execStartCheck := types.ExecStartCheck{
+	execStartCheck := container.ExecStartOptions{
 		Detach: false,
 		Tty:    false,
 	}
@@ -547,7 +599,7 @@ func decodeDockerStream(data []byte) string {
 }
 
 func (b *DockerBackend) getContainerLogs(ctx context.Context, id string, tail int) (io.Reader, error) {
-	options := types.ContainerLogsOptions{
+	options := container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Tail:       fmt.Sprintf("%d", tail),
@@ -563,7 +615,7 @@ func (b *DockerBackend) copyToContainer(ctx context.Context, id string, src io.R
 }
 
 func (b *DockerBackend) execInContainerWithStdin(ctx context.Context, id string, cmd []string, stdin io.Reader) (int, error) {
-	execConfig := types.ExecConfig{
+	execConfig := container.ExecOptions{
 		Cmd:          cmd,
 		AttachStdout: true,
 		AttachStderr: true,
@@ -575,7 +627,7 @@ func (b *DockerBackend) execInContainerWithStdin(ctx context.Context, id string,
 		return 0, err
 	}
 
-	conn, err := b.docker.ContainerExecAttach(ctx, resp.ID, types.ExecStartCheck{
+	conn, err := b.docker.ContainerExecAttach(ctx, resp.ID, container.ExecStartOptions{
 		Detach: false,
 		Tty:    false,
 	})
@@ -643,4 +695,91 @@ func defaultCmd(cmd []string) []string {
 		return cmd
 	}
 	return []string{"sleep", "infinity"}
+}
+
+func (b *DockerBackend) SetWorktreePathFunc(f func(workspaceID string) (string, error)) {
+	b.worktreePathFunc = f
+}
+
+func (b *DockerBackend) StartSync(ctx context.Context, workspaceID string) (string, error) {
+	if b.syncManager == nil {
+		return "", fmt.Errorf("sync not initialized")
+	}
+
+	worktreePath := ""
+	if b.worktreePathFunc != nil {
+		var err error
+		worktreePath, err = b.worktreePathFunc(workspaceID)
+		if err != nil {
+			return "", fmt.Errorf("getting worktree path: %w", err)
+		}
+	}
+
+	if worktreePath == "" {
+		return "", fmt.Errorf("no worktree path configured for workspace %s", workspaceID)
+	}
+
+	sessionID, err := b.syncManager.StartSync(ctx, workspaceID, worktreePath, "/workspace")
+	if err != nil {
+		return "", fmt.Errorf("starting sync: %w", err)
+	}
+
+	return sessionID, nil
+}
+
+func (b *DockerBackend) PauseSync(ctx context.Context, workspaceID string) error {
+	if b.syncManager == nil {
+		return fmt.Errorf("sync not initialized")
+	}
+	return b.syncManager.PauseSync(ctx, workspaceID)
+}
+
+func (b *DockerBackend) ResumeSync(ctx context.Context, workspaceID string) error {
+	if b.syncManager == nil {
+		return fmt.Errorf("sync not initialized")
+	}
+	return b.syncManager.ResumeSync(ctx, workspaceID)
+}
+
+func (b *DockerBackend) StopSync(ctx context.Context, workspaceID string) error {
+	if b.syncManager == nil {
+		return nil
+	}
+	return b.syncManager.StopSync(ctx, workspaceID)
+}
+
+func (b *DockerBackend) GetSyncStatus(ctx context.Context, workspaceID string) (*wsTypes.SyncStatus, error) {
+	if b.syncManager == nil {
+		return nil, fmt.Errorf("sync not initialized")
+	}
+
+	status, err := b.syncManager.GetSyncStatus(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &wsTypes.SyncStatus{
+		State:     status.State,
+		LastSync:  status.LastSync,
+		Conflicts: convertConflicts(status.Conflicts),
+	}, nil
+}
+
+func (b *DockerBackend) FlushSync(ctx context.Context, workspaceID string) error {
+	if b.syncManager == nil {
+		return fmt.Errorf("sync not initialized")
+	}
+	return b.syncManager.FlushSync(ctx, workspaceID)
+}
+
+func convertConflicts(conflicts []sync.Conflict) []wsTypes.Conflict {
+	result := make([]wsTypes.Conflict, len(conflicts))
+	for i, c := range conflicts {
+		result[i] = wsTypes.Conflict{
+			Path:         c.Path,
+			AlphaContent: c.AlphaContent,
+			BetaContent:  c.BetaContent,
+		}
+	}
+	return result
 }

@@ -51,6 +51,14 @@ func init() {
 		workspaceExecCmd,
 		workspaceLogsCmd,
 		workspaceUseCmd,
+		syncCmd,
+	)
+
+	syncCmd.AddCommand(
+		syncStatusCmd,
+		syncPauseCmd,
+		syncResumeCmd,
+		syncFlushCmd,
 	)
 }
 
