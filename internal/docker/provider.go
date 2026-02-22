@@ -18,7 +18,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 
-	"nexus/internal/sync"
+	"nexus/pkg/sync"
 	"nexus/internal/workspace"
 	"nexus/pkg/coordination"
 )
