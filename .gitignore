@@ -100,3 +100,7 @@ ENDOFFILE
 .nexus/boulder/pause.flag
 .nexus/boulder/*.sh
 packages/enforcer/src/boulder/*.sh
+
+# Embedded Mutagen binaries
+packages/workspace-daemon/internal/sync/mutagen/bin/
+!packages/workspace-daemon/internal/sync/mutagen/bin/.gitkeep

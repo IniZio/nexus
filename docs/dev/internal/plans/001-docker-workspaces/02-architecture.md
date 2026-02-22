@@ -12,6 +12,7 @@
 │  │  • boulder ws up    │     │  • OpenCode         │     │  • TypeScript │ │
 │  │  • boulder ws down  │     │  • Claude Code      │     │  • Go         │ │
 │  │  • boulder ws list  │     │  • Cursor           │     │  • Python     │ │
+│  │  • boulder ssh      │     │                     │     │               │ │
 │  └──────────┬──────────┘     └──────────┬──────────┘     └───────┬───────┘ │
 │             │                           │                        │         │
 │             └───────────────────────────┼────────────────────────┘         │
@@ -21,7 +22,7 @@
 │  │                    Workspace Manager (Go)                          │   │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐  │   │
 │  │  │   Provider   │  │   Worktree   │  │   Port Allocator         │  │   │
-│  │  │   Registry   │  │   Manager    │  │   (Dynamic)              │  │   │
+│  │  │   Registry   │  │   Manager    │  │   (SSH + Services)       │  │   │
 │  │  └──────────────┘  └──────────────┘  └──────────────────────────┘  │   │
 │  └────────────────────────────────────────┬──────────────────────────┘   │
 │                                           │                                │
@@ -34,7 +35,8 @@
 │  │  │  Docker Engine    │  │  │  │  Sprite API   │  │  │               │   │
 │  │  │  • Containers     │  │  │  │  • Firecracker│  │  │               │   │
 │  │  │  • Volumes        │  │  │  │  • Checkpoints│  │  │               │   │
-│  │  │  • Networks       │  │  │  │  • Billing    │  │  │               │   │
+│  │  │  • SSH Server     │  │  │  │  • Billing    │  │  │               │   │
+│  │  │  • SSH Keys       │  │  │  │               │  │  │               │   │
 │  │  └───────────────────┘  │  │  └───────────────┘  │  │               │   │
 │  └─────────────────────────┘  └─────────────────────┘  └───────────────┘   │
 │                                                                             │
@@ -45,6 +47,39 @@
 │  │  │  (WebSocket)│  │  (Agent Trace)│  │   (Usage Analytics)      │  │   │
 │  │  └─────────────┘  └───────────────┘  └──────────────────────────┘  │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### SSH-Based Access Model
+
+Nexus uses **SSH as the primary access mechanism** to workspace containers, replacing `docker exec`. This enables:
+- Native SSH agent forwarding (works on macOS)
+- Standard IDE remote development support
+- Familiar command-line workflows
+- Native port forwarding and file transfer
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       SSH Access Architecture                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   User Machine                              Workspace Container             │
+│   ┌─────────────────┐                       ┌───────────────────────┐       │
+│   │  SSH Client     │◀──── SSH Protocol ───▶│  OpenSSH Server       │       │
+│   │  (any client)   │    (port 32801)       │  (sshd on port 22)    │       │
+│   └────────┬────────┘                       └───────────┬───────────┘       │
+│            │                                            │                    │
+│   ┌────────▼────────┐                       ┌───────────▼───────────┐       │
+│   │  SSH Agent      │◀─── ForwardAgent ────▶│  ~/.ssh/authorized    │       │
+│   │  (keys on host) │                       │  _keys (injected)     │       │
+│   └─────────────────┘                       └───────────────────────┘       │
+│                                                                             │
+│   Access Methods:                                                           │
+│   • boulder ssh <workspace>                                                 │
+│   • ssh -A nexus@localhost -p <port>                                        │
+│   • VS Code Remote-SSH                                                      │
+│   • Cursor IDE with SSH                                                     │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -462,7 +497,12 @@ func (m *Manager) SyncWorktree(name string) error  // git pull, etc.
 // pkg/ports/allocator.go
 type Allocator struct {
     basePort    int      // Starting port range
-    allocations map[string]int  // workspace -> ssh port
+    allocations map[string]PortAllocation  // workspace -> ports
+}
+
+type PortAllocation struct {
+    SSH      int            // SSH access port (primary)
+    Services map[string]int // Named service ports
 }
 
 func (a *Allocator) Allocate(workspace string, service string) (int, error) {
@@ -472,12 +512,20 @@ func (a *Allocator) Allocate(workspace string, service string) (int, error) {
     // 3. Check availability, increment if conflict
 }
 
+func (a *Allocator) AllocateSSHPort(workspace string) (int, error) {
+    // SSH port allocation:
+    // - Deterministic: hash(workspace) + base (32800)
+    // - Fallback: sequential scan if conflict
+    // - Range: 32800-34999 for Docker backend
+}
+
 // Port mapping example:
 // Workspace: feature-auth (base: 32800)
-//   SSH:      32768 (for exec access)
+//   SSH:      32800 (container:22, SSH access)  ← PRIMARY
 //   Web:      32801 (container:3000)
 //   API:      32802 (container:5000)
 //   Postgres: 32803 (container:5432)
+//   Redis:    32804 (container:6379)
 ```
 
 ### 2.2.6 File Sync Manager (Mutagen)
@@ -525,7 +573,7 @@ func (p *MutagenProvider) Monitor(sessionID string) (*SyncStatus, error)
 
 ## 2.3 Data Flow Diagrams
 
-### 2.3.1 Workspace Creation Flow
+### 2.3.1 Workspace Creation Flow (SSH-Enabled)
 
 ```
 User: boulder workspace create feature-auth
@@ -563,10 +611,26 @@ User: boulder workspace create feature-auth
             │
             ▼
 ┌─────────────────────────┐
+│   Allocate Ports        │
+│   - SSH: 32801          │
+│   - Web: 32802          │
+│   - Services: 32803+    │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
 │   Provider: Create      │
-│   - Allocate ports      │
 │   - Create container    │
+│   - Map SSH port 32801  │
 │   - Mount worktree      │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   Setup SSH Access      │
+│   - Generate host keys  │
+│   - Inject user keys    │
+│   - Start sshd          │
 └───────────┬─────────────┘
             │
             ▼
@@ -579,7 +643,10 @@ User: boulder workspace create feature-auth
 └───────────┬─────────────┘
             │
             ▼
-         Success!
+┌─────────────────────────┐
+│   Ready for SSH         │
+│   boulder ssh feature   │
+└─────────────────────────┘
 ```
 
 ### 2.3.2 Workspace Switch Flow (Sub-2s Target)
@@ -665,6 +732,101 @@ IDE Plugin (OpenCode)
          IDE Plugin
 ```
 
+### 2.3.4 SSH-Based Workspace Access Flow
+
+```
+User: boulder ssh feature-auth
+            │
+            ▼
+┌─────────────────────────┐
+│   CLI: Parse command    │
+│   - workspace: feature  │
+│   - args: [optional]    │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   Manager: Get Workspace│
+│   - Load workspace state│
+│   - Check if running    │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   Resolve SSH Endpoint  │
+│   - Get SSH port        │
+│   - Generate SSH config │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   Execute SSH Command   │
+│   ssh -A -p 32801       │
+│       -o StrictHost...  │
+│       nexus@localhost   │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   SSH Handshake         │
+│   - Host key verification│
+│   - Public key auth     │
+│   - Agent forwarding    │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   Interactive Shell     │
+│   - /work directory     │
+│   - SSH agent available │
+│   - git/ssh operations  │
+└─────────────────────────┘
+```
+
+### 2.3.5 SSH Key Injection Flow
+
+```
+Workspace Creation
+         │
+         ▼
+┌─────────────────────────┐
+│   Collect SSH Keys      │
+│   - ~/.ssh/*.pub        │
+│   - ssh-add -L          │
+│   - Configured keys     │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   Create Container      │
+│   - Base image          │
+│   - OpenSSH server      │
+│   - nexus user          │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   Generate Host Keys    │
+│   - ssh_host_ed25519    │
+│   - ssh_host_rsa        │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   Inject Keys           │
+│   - Write authorized_keys│
+│   - Set permissions 600 │
+│   - chown nexus:nexus   │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   Store Host Key        │
+│   - Add to known_hosts  │
+│   - ~/.nexus/known_hosts│
+└─────────────────────────┘
+```
+
 ## 2.4 State Management
 
 ### 2.4.1 Workspace States
@@ -725,9 +887,33 @@ type WorkspaceState struct {
     EnvVars       map[string]string      `json:"env_vars"`
     Volumes       []VolumeMount          `json:"volumes"`
     
+    // SSH Access
+    SSH           *SSHState              `json:"ssh,omitempty"`
+    
     // Runtime
     LastActive    time.Time              `json:"last_active"`
     ProcessState  *ProcessState          `json:"process_state,omitempty"`
+}
+
+// SSHState tracks SSH configuration and access info
+type SSHState struct {
+    Enabled       bool      `json:"enabled"`
+    HostPort      int       `json:"host_port"`       // Host SSH port
+    ContainerUser string    `json:"container_user"`  // SSH user (nexus)
+    HostKeyPath   string    `json:"host_key_path"`   // Path to host key
+    KnownHostsEntry string  `json:"known_hosts_entry"` // For ~/.ssh/known_hosts
+}
+
+// SyncState represents file sync status
+type SyncState struct {
+    SessionID       string    `json:"session_id"`
+    Provider        string    `json:"provider"`        // mutagen
+    Status          string    `json:"status"`          // syncing | paused | error
+    LastSyncAt      time.Time `json:"last_sync_at"`
+    FilesTotal      int       `json:"files_total"`
+    FilesSynced     int       `json:"files_synced"`
+    Conflicts       int       `json:"conflicts"`
+    Error           string    `json:"error,omitempty"`
 }
 
 // SyncState represents file sync status
@@ -753,9 +939,9 @@ Port Range Allocation:
 ┌─────────────────────────────────────────────────────────────┐
 │  32768 - 32799  │  Reserved (system)                         │
 ├─────────────────────────────────────────────────────────────┤
-│  32800 - 34999  │  Docker backend workspaces                 │
-│                 │  - Base: 32800                             │
-│                 │  - Per-workspace: 10 ports                 │
+│  32800 - 34999  │  Docker backend workspaces (SSH ports)     │
+│                 │  - SSH port: 32800 + hash(workspace)       │
+│                 │  - Per-workspace: SSH port + services      │
 │                 │  - Max workspaces: 220                     │
 ├─────────────────────────────────────────────────────────────┤
 │  35000 - 39999  │  Sprite backend workspaces                 │
@@ -765,37 +951,77 @@ Port Range Allocation:
 └─────────────────────────────────────────────────────────────┘
 
 Per-Workspace Port Assignment:
-  Offset 0: SSH access (if enabled)
+  Offset 0: SSH access (PRIMARY - container:22 → host:32xxx)
   Offset 1: Web/dashboard
   Offset 2: API server
   Offset 3: Database
   Offset 4: Cache (Redis)
   Offset 5-9: Additional services
+
+SSH Port Examples:
+  Workspace "feature-auth"  → port 32801
+  Workspace "feature-ui"    → port 32802
+  Workspace "hotfix-api"    → port 32803
 ```
 
 ### 2.5.2 Container Networking
 
 ```
-Docker Network Topology:
+Docker Network Topology with SSH:
 
 ┌─────────────────────────────────────────────────────────────┐
 │                    nexus-workspace-network                   │
 │  (Bridge network, isolated per workspace)                   │
 │                                                              │
-│  ┌─────────────────┐      ┌─────────────────┐               │
-│  │  Main Container │      │  DB Container   │               │
-│  │  (app server)   │◀────▶│  (Postgres)     │               │
-│  │  Port: 3000     │      │  Port: 5432     │               │
-│  │  IP: 172.20.0.2 │      │  IP: 172.20.0.3 │               │
-│  └────────┬────────┘      └─────────────────┘               │
-│           │                                                  │
-│           │ Port mapping: 32801:3000                         │
-│           ▼                                                  │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │                     Host Machine                         │ │
-│  │  localhost:32801 ──────▶ container:3000                 │ │
-│  └─────────────────────────────────────────────────────────┘ │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │            Main Container (Workspace)                  │  │
+│  │                                                        │  │
+│  │  ┌──────────────┐  ┌──────────────┐                   │  │
+│  │  │  SSH Server  │  │  App Server  │                   │  │
+│  │  │  (sshd)      │  │  (port 3000) │                   │  │
+│  │  │  Port: 22    │  │              │                   │  │
+│  │  └──────┬───────┘  └──────┬───────┘                   │  │
+│  │         │                  │                          │  │
+│  │         │                  │                          │  │
+│  │  IP: 172.20.0.2           │                          │  │
+│  └─────────┼──────────────────┼──────────────────────────┘  │
+│            │                  │                             │
+│            │ Port mapping     │ Port mapping                │
+│            ▼                  ▼                             │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │                     Host Machine                       │  │
+│  │                                                        │  │
+│  │  SSH Access:    localhost:32801 ──────▶ container:22  │  │
+│  │  Web Access:    localhost:32802 ──────▶ container:3000│  │
+│  │                                                        │  │
+│  │  User: ssh -A nexus@localhost -p 32801                │  │
+│  └───────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
+```
+
+### 2.5.3 SSH Network Architecture
+
+```
+SSH Connection Flow:
+
+User Machine                                        Container
+┌──────────────┐                                  ┌──────────────┐
+│ SSH Client   │────── SSH Protocol (port 32801) ─▶│  SSH Server  │
+│              │                                  │  (sshd:22)   │
+└──────────────┘                                  └──────┬───────┘
+     │                                                   │
+     │ ForwardAgent                                      │
+     ▼                                                   ▼
+┌──────────────┐                                  ┌──────────────┐
+│ SSH Agent    │◀──── Agent Forwarding Channel ────│ SSH Client   │
+│ (host keys)  │                                  │ (in container)│
+└──────────────┘                                  └──────────────┘
+                                                          │
+                                                          ▼
+                                                   ┌──────────────┐
+                                                   │ Git/SSH ops  │
+                                                   │ (uses agent) │
+                                                   └──────────────┘
 ```
 
 ## 2.6 Data Models
@@ -889,7 +1115,7 @@ const RESOURCE_CLASSES = {
 
 ```typescript
 interface PortMapping {
-  name: string;                  // Service name (web, api, db)
+  name: string;                  // Service name (ssh, web, api, db)
   protocol: 'tcp' | 'udp';
   
   // Container side
@@ -903,7 +1129,25 @@ interface PortMapping {
   
   // URL (if publicly accessible)
   url?: string;
+  
+  // SSH-specific configuration
+  sshConfig?: SSHPortConfig;
 }
+
+interface SSHPortConfig {
+  enabled: boolean;              // SSH access enabled
+  user: string;                  // SSH user (default: nexus)
+  hostKeyPath?: string;          // Path to host key
+  authorizedKeysPath?: string;   // Path to authorized_keys
+}
+
+// Example port mappings for a workspace:
+// [
+//   { name: 'ssh', containerPort: 22, hostPort: 32801, visibility: 'private', 
+//     sshConfig: { enabled: true, user: 'nexus' } },
+//   { name: 'web', containerPort: 3000, hostPort: 32802, visibility: 'public' },
+//   { name: 'api', containerPort: 5000, hostPort: 32803, visibility: 'private' }
+// ]
 ```
 
 ## 2.8 File Sync Architecture

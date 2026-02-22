@@ -66,7 +66,7 @@ func HandleExec(ctx context.Context, params json.RawMessage, ws *workspace.Works
 		cmd := []string{p.Command}
 		cmd = append(cmd, p.Args...)
 
-		output, err := backend.Exec(execCtx, workspaceID, cmd)
+		output, err := backend.ExecViaSSH(execCtx, workspaceID, cmd)
 		if err != nil {
 			return &ExecResult{
 				Stdout:   "",

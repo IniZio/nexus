@@ -77,16 +77,19 @@ Based on friction collection data (n=127 developers):
    - Independent file systems per workspace
    - Zero-conflict parallel development
 
-2. **Docker Backend**
+2. **Docker Backend with SSH Access**
    - Full Docker Compose support
    - Volume persistence across restarts
    - Port auto-allocation (no conflicts)
+   - **SSH-based workspace access (primary method)**
+   - Native SSH agent forwarding (works on macOS)
+   - OpenSSH server in each container
 
 3. **Bidirectional File Sync (Mutagen)**
    - Real-time sync between host worktree and container
    - Conflict resolution with configurable strategies
    - Automatic lifecycle integration (pause/resume with workspace)
-   - Git runs on host (SSH keys never in container)
+   - Git runs in container via SSH (agent forwarding)
 
 3. **Sub-2-Second Workspace Switch**
    - Container warm start < 2s
@@ -185,6 +188,7 @@ Based on friction collection data (n=127 developers):
 |------------|-------|
 | **Parallel Worktrees** | Work on 10+ features simultaneously with zero branch conflicts |
 | **Sub-2s Context Switch** | Switch between workspaces faster than switching browser tabs |
+| **SSH-Based Access** | Native SSH access with agent forwarding—works on all platforms |
 | **State Preservation** | Your dev server, terminal history, and file changes persist across sessions |
 | **Hybrid Backends** | Run locally with Docker or remotely with Sprite—seamlessly switch between them |
 | **Real-Time File Sync** | Edit files on host or in container—changes sync bidirectionally in <500ms |

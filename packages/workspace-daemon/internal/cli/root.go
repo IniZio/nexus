@@ -49,6 +49,7 @@ func init() {
 		workspaceStopCmd,
 		workspaceDeleteCmd,
 		workspaceExecCmd,
+		workspaceSSHCommand,
 		workspaceLogsCmd,
 		workspaceUseCmd,
 		syncCmd,

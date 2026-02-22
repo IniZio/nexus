@@ -146,3 +146,8 @@ tasks:
       - rm -rf packages/cursor/dist
       - rm -rf packages/workspace-core/dist
       - rm -rf packages/workspace-docker/dist
+
+  download-mutagen:
+    desc: Download Mutagen binaries for embedding
+    cmds:
+      - scripts/download-mutagen.sh

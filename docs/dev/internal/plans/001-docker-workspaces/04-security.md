@@ -1,181 +1,210 @@
 # 4. Security
 
-## 4.1 SSH Key and Secret Handling
+## 4.1 SSH-Based Workspace Security
 
-**Critical Design Issue:** Workspaces need SSH keys to clone private repositories, but containers don't have access to host SSH keys. Without proper handling, this creates a workflow downgrade from normal local development.
+Nexus workspaces use **SSH as the primary access mechanism**, providing secure, standard-based access to containers. This section covers the SSH security model, key injection, and agent forwarding.
 
-### 4.1.1 SSH Agent Forwarding (Automatic)
+### 4.1.1 SSH Access Architecture
 
-Nexus automatically detects and forwards your SSH agent to workspace containers. When you create a workspace, Nexus checks if `SSH_AUTH_SOCK` is set and automatically sets up SSH forwarding.
+Nexus workspaces run an OpenSSH server in each container, with user access via SSH protocol:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        SSH Security Architecture                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  User Machine:                                                              │
+│  ┌─────────────────┐                                                        │
+│  │  SSH Client     │────── SSH Protocol ──────▶ Workspace Container        │
+│  │  (any client)   │       (port 32801)                                     │
+│  └────────┬────────┘                                                        │
+│           │                                                                 │
+│  ┌────────▼────────┐                                                        │
+│  │  SSH Agent      │◀──── ForwardAgent ─────── Access to keys (via agent)  │
+│  │  (host keys)    │                                                        │
+│  └─────────────────┘                                                        │
+│                                                                             │
+│  Security Properties:                                                       │
+│  ✅ Private keys NEVER leave host machine                                   │
+│  ✅ Public keys injected into container authorized_keys                     │
+│  ✅ Agent forwarding provides secure key access                             │
+│  ✅ All SSH traffic encrypted                                               │
+│  ✅ Per-workspace host keys (isolation)                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.1.2 Key Injection (Primary Authentication)
+
+Nexus automatically injects user SSH **public keys** into workspace containers for authentication:
 
 **How it works:**
 
-1. When you create a workspace, Nexus checks for `SSH_AUTH_SOCK`
-2. If present, it automatically connects to your local SSH agent
-3. Forwards it to the workspace container via WebSocket
-4. Makes your SSH keys available for git operations
+1. **Key Collection** (on workspace create):
+   - Discover user's public keys (`~/.ssh/*.pub`)
+   - Collect keys from SSH agent (`ssh-add -L`)
+   - Use configured keys from `~/.nexus/config.yaml`
 
-**Usage - no flags needed:**
+2. **Key Injection** (into container):
+   - Write to `/home/nexus/.ssh/authorized_keys`
+   - Set permissions: `600`, owner: `nexus:nexus`
+   - Keys available immediately after container start
 
-```bash
-nexus workspace create myapp
-nexus workspace exec myapp -- git clone git@github.com:org/repo.git
-```
-
-**Security:**
-
-- Keys never leave your machine
-- Only SSH agent protocol forwarded (no private keys)
-- Per-workspace isolation
-- No keys stored on remote servers
-
-**Without SSH Agent:**
-
-If `SSH_AUTH_SOCK` is not set:
-- SSH forwarding is skipped (no error)
-- Use HTTPS with tokens instead:
-  ```bash
-  nexus config set git.github.token ghp_xxxx
-  ```
-
-**Important Limitation:** SSH agent forwarding only works when the workspace is running on the same machine as the host. It does NOT work across network boundaries (e.g., when connecting to a remote Docker host via TCP).
-
-The most secure approach leverages the host's SSH agent to provide key access without copying keys into the container.
-
-**Architecture:**
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         Host Machine                         │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │              SSH Agent (ssh-agent)                     │  │
-│  │  • Private keys stored in memory only                  │  │
-│  │  • Unix socket: /tmp/ssh-XXXXXX/agent.XXXXXX          │  │
-│  │  • Keys never written to disk in container            │  │
-│  └──────────────────────┬────────────────────────────────┘  │
-│                         │ SSH_AUTH_SOCK                      │
-│                         ▼                                    │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │           Docker Container (Workspace)                │  │
-│  │  ┌───────────────────────────────────────────────┐   │  │
-│  │  │  SSH Client (git, ssh)                         │   │  │
-│  │  │  • Connects via mounted SSH_AUTH_SOCK         │   │  │
-│  │  │  • No private keys in container               │   │  │
-│  │  └───────────────────────────────────────────────┘   │  │
-│  └───────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-```
+3. **SSH Access**:
+   - User connects with private key (on host)
+   - Container authenticates against authorized_keys
+   - Optional: Agent forwarding for git operations
 
 **Implementation:**
 
 ```go
-func (p *DockerProvider) configureSSHAgentForwarding(
-    ctx context.Context,
-    containerConfig *container.Config,
-    hostConfig *container.HostConfig,
-) error {
-    // 1. Detect SSH agent socket on host
-    socketPath := os.Getenv("SSH_AUTH_SOCK")
-    if socketPath == "" {
-        socketPath = p.findSSHAgentSocket()
-        if socketPath == "" {
-            return fmt.Errorf("SSH agent not running. Start with: eval $(ssh-agent -s)")
-        }
+// SSHKeyInjector manages key injection into containers
+type SSHKeyInjector struct {
+    keySources []string  // Paths to public keys
+}
+
+func (i *SSHKeyInjector) InjectKeys(workspaceID string) error {
+    // 1. Collect public keys
+    keys, err := i.collectPublicKeys()
+    if err != nil {
+        return err
     }
     
-    // 2. Mount socket into container
-    hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
-        Type:     mount.TypeBind,
-        Source:   socketPath,
-        Target:   "/tmp/ssh-agent.sock",
-        ReadOnly: false,
-    })
+    // 2. Format authorized_keys
+    authorizedKeys := formatAuthorizedKeys(keys)
     
-    // 3. Set environment variable in container
-    containerConfig.Env = append(containerConfig.Env,
-        "SSH_AUTH_SOCK=/tmp/ssh-agent.sock",
-    )
+    // 3. Write to container with secure permissions
+    return i.writeToContainer(workspaceID, 
+        "/home/nexus/.ssh/authorized_keys",
+        authorizedKeys, 
+        0600, 
+        "nexus:nexus")
+}
+
+func (i *SSHKeyInjector) collectPublicKeys() ([]string, error) {
+    var keys []string
     
-    return nil
+    // Source 1: Filesystem keys
+    pubKeyFiles, _ := filepath.Glob(filepath.Join(os.Getenv("HOME"), ".ssh/*.pub"))
+    for _, f := range pubKeyFiles {
+        content, _ := os.ReadFile(f)
+        keys = append(keys, string(content))
+    }
+    
+    // Source 2: SSH agent (public keys only)
+    if agentKeys, err := i.getAgentKeys(); err == nil {
+        keys = append(keys, agentKeys...)
+    }
+    
+    // Source 3: Configured keys
+    for _, path := range i.config.SSH.Injection.Sources {
+        content, _ := os.ReadFile(path)
+        keys = append(keys, string(content))
+    }
+    
+    return keys, nil
 }
 ```
 
-**Advantages:**
-- ✅ Keys never leave the host
-- ✅ No keys written to container layers or volumes
-- ✅ Works with all SSH key types (RSA, Ed25519, ECDSA, FIDO/U2F)
-- ✅ Supports passphrase-protected keys
-- ✅ Automatic key rotation on host propagates to containers
+**Security Properties:**
 
-**Requirements:**
-- SSH agent must be running on host (`ssh-agent`)
-- Keys must be added to agent (`ssh-add`)
-- For macOS: May need to grant keychain access
+| Aspect | Implementation | Security Level |
+|--------|---------------|----------------|
+| **Private Keys** | Never leave host machine | 🔒 **Maximum** |
+| **Public Keys** | Injected to authorized_keys | 🔒 **Maximum** |
+| **Key Storage** | In-memory only (tmpfs on macOS) | 🔒 **High** |
+| **Permissions** | 600, owned by nexus user | 🔒 **High** |
+| **Key Rotation** | Automatic on host key change | 🔒 **High** |
 
-### 4.1.2 SSH Key Mounting (Fallback Method)
+### 4.1.3 SSH Agent Forwarding
 
-When agent forwarding is not available, mount SSH keys as read-only volumes.
+For git operations requiring SSH authentication, Nexus supports agent forwarding:
 
-**Architecture:**
+**When to Use Agent Forwarding:**
+- ✅ Git clone/push to private repositories
+- ✅ SSH to other servers from within workspace
+- ✅ Using passphrase-protected keys
+- ✅ FIDO/U2F security keys (YubiKey, etc.)
+
+**How It Works:**
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                         Host Machine                         │
-│  ┌─────────────────┐                                       │
-│  │  ~/.ssh/        │                                       │
-│  │  ├── id_rsa     │                                       │
-│  │  ├── id_ed25519 │                                       │
-│  │  └── config     │                                       │
-│  └────────┬────────┘                                       │
-│           │ (read-only bind mount)                          │
-│           ▼                                                │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │           Docker Container (Workspace)                │  │
-│  │  ┌───────────────────────────────────────────────┐   │  │
-│  │  │  ~/.ssh/ (mounted read-only)                  │   │  │
-│  │  │  ├── id_rsa (mode 600)                        │   │  │
-│  │  │  ├── id_ed25519                               │   │  │
-│  │  │  └── config                                   │   │  │
-│  │  └───────────────────────────────────────────────┘   │  │
-│  └───────────────────────────────────────────────────────┘  │
+│                 SSH Agent Forwarding Flow                    │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Host Machine:                                              │
+│  ┌──────────────────┐                                      │
+│  │  SSH Agent       │                                      │
+│  │  (ssh-agent)     │                                      │
+│  │  • Keys in memory│                                      │
+│  │  • Signs requests│                                      │
+│  └────────┬─────────┘                                      │
+│           │ Unix socket (SSH_AUTH_SOCK)                    │
+│           │                                                 │
+│           │◀── 1. SSH connection with -A flag              │
+│           │                                                 │
+│           │── 2. Request: "Sign this challenge"            │
+│           │                                                 │
+│           │◀── 3. Response: Signed challenge                │
+│           │                                                 │
+│  ┌────────▼─────────┐                                      │
+│  │  SSH Client      │                                      │
+│  │  (in container)  │                                      │
+│  └────────┬─────────┘                                      │
+│           │ 4. Use signed challenge                         │
+│           ▼                                                 │
+│  ┌──────────────────┐                                      │
+│  │  Git/SSH Server  │                                      │
+│  │  (github.com)    │                                      │
+│  └──────────────────┘                                      │
+│                                                             │
+│  Note: Private keys NEVER leave the host. Only signed      │
+│  challenges flow through the agent forwarding channel.      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Implementation:**
+**Configuration:**
 
-```go
-func (p *DockerProvider) configureSSHKeyMount(
-    ctx context.Context,
-    containerConfig *container.Config,
-    hostConfig *container.HostConfig,
-) error {
-    home, _ := os.UserHomeDir()
-    hostSSHDir := filepath.Join(home, ".ssh")
+```yaml
+# ~/.nexus/config.yaml
+ssh:
+  connection:
+    forward_agent: true   # Enable by default
     
-    // Mount entire .ssh directory as read-only
-    hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
-        Type:     mount.TypeBind,
-        Source:   hostSSHDir,
-        Target:   "/home/user/.ssh",
-        ReadOnly: true,
-    })
-    
-    // Add init script to fix permissions
-    initScript := `#!/bin/sh
-chmod 700 ~/.ssh
-chmod 600 ~/.ssh/id_rsa ~/.ssh/id_ed25519 2>/dev/null || true
-chmod 644 ~/.ssh/*.pub ~/.ssh/config 2>/dev/null || true
-`
-    containerConfig.Entrypoint = []string{"/bin/sh", "-c"}
-    containerConfig.Cmd = []string{initScript + " && exec /bin/bash"}
-    
-    return nil
-}
+  # Additional SSH client options
+  client_options:
+    - "AddKeysToAgent=yes"
+    - "IdentitiesOnly=yes"
 ```
 
-### 4.1.3 Git Credential Handling
+**Agent Forwarding Security:**
 
-For HTTPS-based git operations, forward credentials securely.
+| Risk | Mitigation |
+|------|------------|
+| Agent hijacking | Unix socket permissions (user-only) |
+| Key extraction | Impossible - agent only signs, never exports |
+| Unauthorized signing | Agent confirms user presence for FIDO keys |
+| Session hijacking | Encrypted SSH channel |
+
+### 4.1.4 Comparison: Key Injection vs Agent Forwarding
+
+| Feature | Key Injection Only | Agent Forwarding |
+|---------|-------------------|------------------|
+| **Authentication** | Works without agent | Requires agent running |
+| **Git operations** | ✅ Yes (direct key) | ✅ Yes (via agent) |
+| **Passphrase keys** | ❌ No | ✅ Yes |
+| **FIDO/U2F keys** | ❌ No | ✅ Yes |
+| **Key rotation** | Requires recreation | Automatic |
+| **Security** | High | Very High |
+| **Startup time** | Slightly faster | Negligible |
+
+**Recommendation:** Enable agent forwarding for development workstations. Use key injection only for CI/CD environments without agents.
+
+
+
+### 4.1.5 Git Credential Handling
+
+For HTTPS-based git operations, forward credentials securely via environment variables or credential helpers.
 
 ```go
 // GitHub Token via Environment
@@ -191,28 +220,41 @@ func configureGitHubToken(containerConfig *container.Config, token string) {
 }
 ```
 
-### 4.1.4 Configuration
+### 4.1.6 SSH Configuration
 
 ```yaml
 # ~/.nexus/config.yaml
+ssh:
+  # Key injection configuration
+  injection:
+    enabled: true                 # Enable key injection
+    sources:                      # Additional public key files
+      - ~/.ssh/id_ed25519.pub
+      - ~/.ssh/id_rsa.pub
+      - ~/.ssh/custom_key.pub
+    include_agent_keys: true      # Include keys from ssh-add -L
+    
+  # Connection settings
+  connection:
+    user: nexus                   # SSH user in container
+    forward_agent: true           # Enable agent forwarding
+    server_alive_interval: 30     # Keepalive seconds
+    server_alive_count_max: 3     # Max missed keepalives
+    
+  # Security settings
+  security:
+    strict_host_key_checking: accept-new  # yes | no | accept-new | ask
+    user_known_hosts_file: ~/.nexus/known_hosts
+    identities_only: true         # Only use specified keys
+    
+  # SSH client options (passed to ssh command)
+  client_options:
+    - "AddKeysToAgent=yes"
+    - "IdentitiesOnly=yes"
+    - "BatchMode=no"
+
+# Secrets configuration (non-SSH)
 secrets:
-  # SSH authentication method
-  ssh:
-    mode: agent                   # agent | mount | auto
-    
-    # For mount mode: specific keys to mount (optional)
-    # If omitted, mounts entire ~/.ssh directory
-    paths:
-      - ~/.ssh/id_ed25519_github
-      - ~/.ssh/id_rsa_work
-    
-    # Include SSH config and known_hosts
-    include_config: true
-    include_known_hosts: true
-    
-    # Verify host keys
-    strict_host_key_checking: yes  # yes | no | ask
-    
   # Environment files to load
   env_files:
     - ~/.env
@@ -234,50 +276,206 @@ secrets:
       var: STRIPE_SECRET_KEY
 ```
 
-### 4.1.5 Security Model
+### 4.1.5 SSH Security Model
 
 **Core Principles:**
 
-1. **Default to Agent Forwarding**
-   - SSH agent forwarding is the default and preferred method
-   - Falls back to key mounting only when agent unavailable
-   - User can explicitly override in configuration
+1. **Public Key Injection Only**
+   - Only public keys are injected into containers (never private keys)
+   - Private keys remain exclusively on the host machine
+   - Keys injected at workspace creation, not during runtime
 
-2. **Keys Never Written to Container Layers**
-   - All secrets mounted at runtime via bind mounts
-   - Never baked into Docker images
-   - Never committed to workspace state
+2. **SSH Agent for Private Key Operations**
+   - Agent forwarding provides secure access to private keys
+   - Keys never leave the host (agent only signs challenges)
+   - Supports passphrase-protected and hardware keys (FIDO/U2F)
 
-3. **Read-Only Mounts Where Possible**
-   - SSH keys: Read-only (except agent socket which requires RW)
-   - Environment files: Read-only
-   - Configuration: Read-only
+3. **Per-Workspace Isolation**
+   - Each workspace has unique SSH host keys
+   - Separate port allocation prevents cross-workspace access
+   - authorized_keys scoped per workspace
 
-4. **Minimal Secret Exposure**
-   - Mount only required keys, not entire ~/.ssh directory when possible
-   - Use selective key mounting for high-security environments
-   - Support secret scoping (per-workspace secrets)
+4. **Defense in Depth**
+   - SSH server runs as non-root user (nexus)
+   - Password authentication disabled (keys only)
+   - Host keys generated per workspace
+   - Strict file permissions enforced
+
+5. **Standard SSH Security**
+   - All SSH traffic encrypted
+   - Host key verification prevents MITM attacks
+   - Standard SSH client/server hardening applied
 
 **Threat Model:**
 
 ```
 Threat: Malicious container process steals SSH keys
-├── Mitigation 1: Agent forwarding - keys never in container
-├── Mitigation 2: Read-only mounts - prevents key exfiltration
-├── Mitigation 3: Non-root container - limits access
-└── Mitigation 4: Short-lived keys - rotate frequently
+├── Mitigation 1: Public key injection only
+│   └── Container only has public keys (useless to attacker)
+├── Mitigation 2: Private keys never in container
+│   └── Agent forwarding keeps keys on host
+├── Mitigation 3: Authorized keys read-only
+│   └── Cannot add new keys without recreating workspace
+├── Mitigation 4: Non-root SSH user
+│   └── Limited container access even if authenticated
+└── Mitigation 5: Workspace isolation
+    └── Per-workspace keys and ports prevent lateral movement
 
 Threat: Container escape to host
 ├── Mitigation 1: User namespace remapping
 ├── Mitigation 2: Seccomp profiles
 ├── Mitigation 3: AppArmor/SELinux
-└── Mitigation 4: Keys still protected by host permissions
+├── Mitigation 4: Non-root container execution
+└── Mitigation 5: Keys still protected by host permissions
+
+Threat: SSH MITM attack
+├── Mitigation 1: Per-workspace host keys
+│   └── Each workspace has unique host key pair
+├── Mitigation 2: Host key verification
+│   └── Client verifies host key on first connect
+├── Mitigation 3: Known hosts management
+│   └── Workspace keys stored in ~/.nexus/known_hosts
+└── Mitigation 4: Strict key checking
+    └── Configurable: accept-new or strict verification
+
+Threat: Unauthorized SSH access
+├── Mitigation 1: Key-based auth only
+│   └── Password authentication completely disabled
+├── Mitigation 2: Authorized keys controlled by host
+│   └── Only host-injected keys accepted
+├── Mitigation 3: Localhost-only binding
+│   └── SSH ports only on 127.0.0.1 (no external access)
+└── Mitigation 4: Network isolation
+    └── Per-workspace ports prevent scanning
 
 Threat: Secrets in workspace snapshots
-├── Mitigation 1: Secrets excluded from snapshots
-├── Mitigation 2: Snapshots contain only references, not values
-└── Mitigation 3: Encrypted at-rest if stored remotely
+├── Mitigation 1: authorized_keys excluded from snapshots
+├── Mitigation 2: Snapshots contain only workspace state
+└── Mitigation 3: Host keys regenerated on restore
 ```
+
+**Security Comparison by Platform:**
+
+| Platform | Key Storage | Agent Support | Security Level |
+|----------|-------------|---------------|----------------|
+| Linux | Host only | Native | 🔒 **Maximum** |
+| macOS | Host only | Native | 🔒 **Maximum** |
+| Windows (WSL2) | Host only | Native | 🔒 **Maximum** |
+| All platforms | Container has only public keys | Optional | 🔒 **Maximum** |
+
+**Recommendations:**
+
+1. **Development workstations**: Enable agent forwarding for convenience
+2. **CI/CD environments**: Use key injection without agent (public keys only)
+3. **High-security environments**: Audit authorized_keys, rotate frequently
+4. **Shared machines**: Use agent forwarding with key confirmation (`ssh-add -c`)
+5. **All environments**: Never copy private keys into containers
+
+### 4.1.6 SSH Server Hardening
+
+Nexus workspaces apply comprehensive SSH server hardening by default:
+
+**sshd_config Settings:**
+
+```bash
+# Nexus Workspace SSH Hardening Configuration
+
+# === Authentication ===
+PermitRootLogin no                    # Disable root login
+PasswordAuthentication no             # Keys only, no passwords
+ChallengeResponseAuthentication no    # Disable PAM challenges
+UsePAM no                             # Disable PAM entirely
+AuthenticationMethods publickey       # Only public key auth
+
+# === User Access ===
+AllowUsers nexus                      # Only nexus user allowed
+DenyUsers root                        # Explicit root deny
+
+# === Agent Forwarding ===
+AllowAgentForwarding yes              # Enable for convenience
+
+# === Protocol Security ===
+X11Forwarding no                      # Disable X11
+PermitTunnel no                       # Disable tunneling
+GatewayPorts no                       # No remote port forwarding
+
+# === Timeouts ===
+ClientAliveInterval 300               # 5 minute keepalive
+ClientAliveCountMax 2                 # Disconnect after 2 missed
+LoginGraceTime 60                     # 1 minute to authenticate
+MaxAuthTries 3                        # Max 3 auth attempts
+MaxSessions 10                        # Limit concurrent sessions
+
+# === Cryptography ===
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+KexAlgorithms curve25519-sha256@libssh.org,ecdh-sha2-nistp521
+
+# === Host Keys ===
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+
+# === Logging ===
+SyslogFacility AUTH
+LogLevel VERBOSE
+
+# === Environment ===
+PermitUserEnvironment no              # Don't allow user env files
+```
+
+**Per-Workspace Host Keys:**
+
+```go
+// Host key generation on workspace creation
+func generateHostKeys(workspaceID string) (*HostKeys, error) {
+    keys := &HostKeys{
+        WorkspaceID: workspaceID,
+    }
+    
+    // Generate Ed25519 key (modern, secure)
+    ed25519Key, err := generateKey("ed25519")
+    if err != nil {
+        return nil, err
+    }
+    keys.Ed25519Private = ed25519Key.Private
+    keys.Ed25519Public = ed25519Key.Public
+    
+    // Generate RSA key (legacy compatibility)
+    rsaKey, err := generateKey("rsa", 4096)
+    if err != nil {
+        return nil, err
+    }
+    keys.RSAPrivate = rsaKey.Private
+    keys.RSAPublic = rsaKey.Public
+    
+    // Store securely
+    return keys, storeHostKeys(keys)
+}
+```
+
+**Host Key Storage:**
+
+```
+~/.nexus/workspaces/
+└── feature-auth/
+    └── ssh/
+        ├── ssh_host_ed25519_key       # Private (encrypted at rest)
+        ├── ssh_host_ed25519_key.pub   # Public
+        ├── ssh_host_rsa_key           # Private (encrypted at rest)
+        ├── ssh_host_rsa_key.pub       # Public
+        └── fingerprint                # SHA256 fingerprint for display
+```
+
+**Security Benefits:**
+
+| Setting | Purpose | Risk Mitigated |
+|---------|---------|----------------|
+| PermitRootLogin no | Disable root access | Privilege escalation |
+| PasswordAuthentication no | Force key auth | Brute force attacks |
+| Ciphers/MACs/Kex | Modern crypto | Downgrade attacks |
+| ClientAliveInterval | Connection monitoring | Abandoned sessions |
+| MaxAuthTries | Rate limiting | Brute force |
+| Per-workspace keys | Isolation | Key reuse attacks |
 
 ---
 
@@ -604,12 +802,24 @@ const RETENTION_POLICIES = {
 
 ## 4.7 Threat Model Summary
 
+### SSH-Based Workspace Threats
+
 | Threat | Likelihood | Impact | Mitigation |
 |--------|------------|--------|------------|
-| **SSH key theft** | Low | Critical | Agent forwarding, read-only mounts |
+| **SSH key theft** | Low | Critical | Public key injection only, agent forwarding |
+| **Private key exposure** | Very Low | Critical | Private keys NEVER leave host |
 | **Container escape** | Low | Critical | User namespaces, seccomp, AppArmor |
-| **Unauthorized access** | Medium | High | JWT tokens, permission system |
+| **SSH MITM attack** | Low | High | Per-workspace host keys, strict verification |
+| **Unauthorized SSH access** | Low | High | Key-only auth, localhost binding |
 | **Data exfiltration** | Low | High | Network isolation, audit logs |
-| **Secret exposure** | Low | Critical | Keychain integration, no secrets in state |
-| **Sync interception** | Low | Medium | Local-only sync (Mutagen over Unix socket) |
+| **Secret exposure** | Low | Critical | No secrets in container images |
+| **Host key compromise** | Low | Medium | Per-workspace keys, automatic rotation |
+
+### General Workspace Threats
+
+| Threat | Likelihood | Impact | Mitigation |
+|--------|------------|--------|------------|
+| **Unauthorized access** | Medium | High | JWT tokens, permission system |
+| **Sync interception** | Very Low | Medium | Local-only sync (Mutagen over Unix socket) |
 | **File traversal via sync** | Low | High | Path validation, chroot jail |
+| **Snapshot data leakage** | Low | Medium | No secrets in snapshots, encryption |

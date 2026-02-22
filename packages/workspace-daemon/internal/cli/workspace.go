@@ -194,6 +194,19 @@ var workspaceExecCmd = &cobra.Command{
 	},
 }
 
+var workspaceSSHCommand = &cobra.Command{
+	Use:   "ssh <id>",
+	Short: "SSH into a workspace",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		id := args[0]
+
+		client := getClient()
+		err := client.Shell(id)
+		exitOnError(err)
+	},
+}
+
 var workspaceLogsCmd = &cobra.Command{
 	Use:   "logs <id>",
 	Short: "Get workspace logs",
