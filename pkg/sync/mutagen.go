@@ -46,15 +46,17 @@ func (c *MutagenClient) CreateSession(alpha, beta string, config MutagenConfig) 
 	sessionName := fmt.Sprintf("nexus-%d", time.Now().UnixNano())
 
 	args := []string{
-		"create",
+		"sync", "create",
 		"--name", sessionName,
 		"--sync-mode", config.Mode,
-		"--watch-interval", fmt.Sprintf("%.0f", config.WatchInterval.Seconds()),
+		"--watch-polling-interval", fmt.Sprintf("%.0f", config.WatchInterval.Seconds()),
 	}
 
+	/* TODO: Re-add exclude support via configuration file
 	for _, exclude := range config.Exclude {
 		args = append(args, "--exclude", exclude)
 	}
+	*/
 
 	args = append(args, alpha, beta)
 
@@ -77,7 +79,7 @@ func (c *MutagenClient) CreateSession(alpha, beta string, config MutagenConfig) 
 }
 
 func (c *MutagenClient) PauseSession(id string) error {
-	cmd := exec.Command(c.binaryPath, "pause", id)
+	cmd := exec.Command(c.binaryPath, "sync", "pause", id)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -89,7 +91,7 @@ func (c *MutagenClient) PauseSession(id string) error {
 }
 
 func (c *MutagenClient) ResumeSession(id string) error {
-	cmd := exec.Command(c.binaryPath, "resume", id)
+	cmd := exec.Command(c.binaryPath, "sync", "resume", id)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -101,7 +103,7 @@ func (c *MutagenClient) ResumeSession(id string) error {
 }
 
 func (c *MutagenClient) TerminateSession(id string) error {
-	cmd := exec.Command(c.binaryPath, "terminate", id)
+	cmd := exec.Command(c.binaryPath, "sync", "terminate", id)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -113,7 +115,7 @@ func (c *MutagenClient) TerminateSession(id string) error {
 }
 
 func (c *MutagenClient) GetStatus(id string) (*SyncStatus, error) {
-	cmd := exec.Command(c.binaryPath, "list", "--json", id)
+	cmd := exec.Command(c.binaryPath, "sync", "list", "--json", id)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -159,7 +161,7 @@ func (c *MutagenClient) GetStatus(id string) (*SyncStatus, error) {
 }
 
 func (c *MutagenClient) Flush(id string) error {
-	cmd := exec.Command(c.binaryPath, "flush", id)
+	cmd := exec.Command(c.binaryPath, "sync", "flush", id)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -171,7 +173,7 @@ func (c *MutagenClient) Flush(id string) error {
 }
 
 func (c *MutagenClient) ListSessions() ([]MutagenSession, error) {
-	cmd := exec.Command(c.binaryPath, "list", "--json")
+	cmd := exec.Command(c.binaryPath, "sync", "list", "--json")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
