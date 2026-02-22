@@ -6,14 +6,35 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/server"
 )
 
+func getDefaultWorkspaceDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "/tmp/nexus-workspaces"
+	}
+	return filepath.Join(home, ".nexus", "workspaces")
+}
+
+func ensureWorkspaceDir(dir string) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create workspace directory %s: %w", dir, err)
+	}
+	testFile := filepath.Join(dir, ".write-test")
+	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+		return fmt.Errorf("workspace directory %s is not writable: %w", dir, err)
+	}
+	os.Remove(testFile)
+	return nil
+}
+
 func main() {
 	port := flag.Int("port", 8080, "Port to listen on")
-	workspaceDir := flag.String("workspace-dir", "/workspace", "Workspace directory path")
+	workspaceDir := flag.String("workspace-dir", getDefaultWorkspaceDir(), "Workspace directory path")
 	token := flag.String("token", "", "JWT secret token for authentication")
 	jwtSecretFile := flag.String("jwt-secret-file", "", "Path to file containing JWT secret")
 	flag.Parse()
@@ -33,6 +54,10 @@ func main() {
 
 	if tokenSecret == "" {
 		log.Fatal("Error: either --token or --jwt-secret-file is required")
+	}
+
+	if err := ensureWorkspaceDir(*workspaceDir); err != nil {
+		log.Fatalf("Error: %v", err)
 	}
 
 	if err := runServer(*port, *workspaceDir, tokenSecret); err != nil {
