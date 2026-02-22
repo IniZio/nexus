@@ -116,13 +116,20 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 
 	dindEntrypoint := entrypoint
 	dindPrivileged := req.DinD
+	var entrypointCmd []string
+	var cmd []string
 
 	if req.DinD && image == "docker:dind" {
 		dindEntrypoint = ""
+		cmd = []string{"dockerd"}
 		dindPrivileged = true
 	} else if req.DinD {
 		dindEntrypoint = generateDinDEntrypoint(publicKey)
 		dindPrivileged = true
+	}
+
+	if dindEntrypoint != "" {
+		entrypointCmd = []string{"bash", "-c", dindEntrypoint}
 	}
 
 	containerID, err := b.createContainer(ctx, image, &ContainerConfig{
@@ -133,7 +140,8 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 		AutoRemove:  false,
 		Volumes:     volumes,
 		Ports:       []PortBinding{{ContainerPort: 22, HostPort: sshPort, Protocol: "tcp"}},
-		Entrypoint:  []string{"bash", "-c", dindEntrypoint},
+		Entrypoint:  entrypointCmd,
+		Cmd:         cmd,
 		Privileged:  dindPrivileged,
 	})
 	if err != nil {
@@ -263,13 +271,20 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 
 	dindEntrypoint := entrypoint
 	dindPrivileged := req.DinD
+	var entrypointCmd []string
+	var cmd []string
 
 	if req.DinD && image == "docker:dind" {
 		dindEntrypoint = ""
+		cmd = []string{"dockerd"}
 		dindPrivileged = true
 	} else if req.DinD {
 		dindEntrypoint = generateDinDEntrypoint(publicKey)
 		dindPrivileged = true
+	}
+
+	if dindEntrypoint != "" {
+		entrypointCmd = []string{"bash", "-c", dindEntrypoint}
 	}
 
 	containerID, err := b.createContainer(ctx, image, &ContainerConfig{
@@ -280,7 +295,8 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 		AutoRemove:  false,
 		Volumes:     volumes,
 		Ports:       []PortBinding{{ContainerPort: 22, HostPort: sshPort, Protocol: "tcp"}},
-		Entrypoint:  []string{"bash", "-c", dindEntrypoint},
+		Entrypoint:  entrypointCmd,
+		Cmd:         cmd,
 		Privileged:  dindPrivileged,
 	})
 	if err != nil {
