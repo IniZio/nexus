@@ -75,10 +75,10 @@ describe('NexusEnforcer with Boulder Integration', () => {
       try {
         enforcer.enforceCompletion();
       } catch (error: any) {
-        expect(error.message).toContain('Generate new ideas NOW');
-        expect(error.message).toMatch(/1\./); // Should have numbered tasks
-        expect(error.message).toMatch(/2\./);
-        expect(error.message).toMatch(/3\./);
+        expect(error.message).toContain('BOULDER ENFORCEMENT');
+        expect(error.message).toContain('Cannot complete yet');
+        expect(error.message).toContain('Required:');
+        expect(error.message).toContain('Current:');
       }
     });
 
@@ -86,8 +86,9 @@ describe('NexusEnforcer with Boulder Integration', () => {
       try {
         enforcer.enforceCompletion();
       } catch (error: any) {
-        expect(error.message).toContain('Iteration:');
-        expect(error.message).toContain('Status: FORCED CONTINUATION');
+        expect(error.message).toContain('BOULDER ENFORCEMENT');
+        expect(error.message).toContain('Cannot complete yet');
+        expect(error.message).toContain('Current:');
       }
     });
   });

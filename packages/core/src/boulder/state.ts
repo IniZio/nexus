@@ -53,6 +53,7 @@ export class BoulderStateManager {
     this.state.iteration++;
     this.state.totalValidations++;
     this.state.lastValidationTime = Date.now();
+    this.state.consecutiveCompletionsAttempted = 0;
     
     if (this.state.iteration < MINIMUM_ITERATIONS) {
       this.state.canComplete = false;

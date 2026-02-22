@@ -1,4 +1,4 @@
-import { ValidationEngine, createValidationEngine } from './engine/checker.js';
+import { ValidationEngine, createValidationEngine } from './engine/checker-with-boulder.js';
 import { PromptGenerator, createPromptGenerator } from './prompts/generator.js';
 import {
   ExecutionContext,
