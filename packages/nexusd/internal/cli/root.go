@@ -4,17 +4,17 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/spf13/cobra"
 	"github.com/nexus/nexus/packages/nexusd/internal/config"
+	"github.com/spf13/cobra"
 )
 
 var (
-	version      = "0.1.0"
-	cfgFile      string
-	verbose      bool
-	jsonOutput   bool
-	quiet        bool
-	daemonToken  string
+	version     = "0.1.0"
+	cfgFile     string
+	verbose     bool
+	jsonOutput  bool
+	quiet       bool
+	daemonToken string
 )
 
 var rootCmd = &cobra.Command{
@@ -47,7 +47,8 @@ func init() {
 	rootCmd.AddCommand(traceCmd)
 
 	configCmd.AddCommand(configGetCmd, configSetCmd)
-	boulderCmd.AddCommand(boulderStatusCmd, boulderPauseCmd, boulderResumeCmd)
+	boulderCmd.AddCommand(boulderStatusCmd, boulderPauseCmd, boulderResumeCmd, boulderConfigCmd)
+	boulderConfigCmd.AddCommand(boulderConfigGetCmd, boulderConfigSetCmd)
 }
 
 var versionCmd = &cobra.Command{
@@ -216,6 +217,69 @@ var boulderResumeCmd = &cobra.Command{
 			fmt.Printf(`{"status":"%s"}`, state.Status)
 		} else {
 			fmt.Println("Boulder enforcement resumed")
+		}
+	},
+}
+
+var boulderConfigCmd = &cobra.Command{
+	Use:   "config",
+	Short: "Manage boulder configuration",
+}
+
+var boulderConfigGetCmd = &cobra.Command{
+	Use:   "get <key>",
+	Short: "Get boulder config value",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		cfg, err := loadBoulderConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		key := args[0]
+		value, err := cfg.Get(key)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		if jsonOutput {
+			fmt.Printf(`{"key":"%s","value":"%s"}`, key, value)
+		} else {
+			fmt.Println(value)
+		}
+	},
+}
+
+var boulderConfigSetCmd = &cobra.Command{
+	Use:   "set <key> <value>",
+	Short: "Set boulder config value",
+	Args:  cobra.ExactArgs(2),
+	Run: func(cmd *cobra.Command, args []string) {
+		cfg, err := loadBoulderConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		key := args[0]
+		value := args[1]
+
+		if err := cfg.Set(key, value); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		if err := saveBoulderConfig(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+			os.Exit(1)
+		}
+
+		if jsonOutput {
+			fmt.Printf(`{"key":"%s","value":"%s"}`, key, value)
+		} else {
+			fmt.Printf("Set %s = %s\n", key, value)
 		}
 	},
 }
