@@ -99,6 +99,8 @@ type Workspace struct {
 	UpdatedAt    time.Time
 	LastActiveAt time.Time
 	ExpiresAt    time.Time
+	Health       *HealthStatus
+	WorktreePath string
 }
 
 type Repository struct {
@@ -292,4 +294,25 @@ type SyncResponse struct {
 	Success  bool   `json:"success"`
 	State    string `json:"state,omitempty"`
 	Message  string `json:"message,omitempty"`
+}
+
+type HealthStatus struct {
+	Healthy   bool          `json:"healthy"`
+	Checks    []CheckResult `json:"checks"`
+	LastCheck time.Time     `json:"last_check"`
+}
+
+type CheckResult struct {
+	Name    string        `json:"name"`
+	Healthy bool          `json:"healthy"`
+	Error   string        `json:"error,omitempty"`
+	Latency time.Duration `json:"latency"`
+}
+
+type HealthCheck struct {
+	Name     string        `json:"name"`
+	Type     string        `json:"type"`
+	Target   string        `json:"target"`
+	Interval time.Duration `json:"interval"`
+	Timeout  time.Duration `json:"timeout"`
 }

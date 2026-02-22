@@ -42,6 +42,7 @@ type Workspace struct {
 	CreatedAt    time.Time         `json:"created_at"`
 	UpdatedAt    time.Time         `json:"updated_at"`
 	WorktreePath string            `json:"worktree_path,omitempty"`
+	Health       *HealthStatus     `json:"health,omitempty"`
 }
 
 type Repository struct {
@@ -868,4 +869,53 @@ func (c *Client) GetServiceLogs(workspaceID, serviceName string, tail int) (stri
 
 func (c *Client) ForwardPort(workspaceID, port string) error {
 	return fmt.Errorf("not implemented: port forwarding")
+}
+
+type HealthStatus struct {
+	Healthy   bool          `json:"healthy"`
+	Checks    []CheckResult `json:"checks"`
+	LastCheck time.Time     `json:"last_check"`
+}
+
+type CheckResult struct {
+	Name    string        `json:"name"`
+	Healthy bool          `json:"healthy"`
+	Error   string        `json:"error,omitempty"`
+	Latency time.Duration `json:"latency"`
+}
+
+func (c *Client) GetHealth(workspaceID, serviceName string) (*HealthStatus, error) {
+	url := c.baseURL + "/api/v1/workspaces/" + workspaceID + "/health"
+	if serviceName != "" {
+		url += "?service=" + serviceName
+	}
+
+	httpReq, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var apiResp APIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return nil, err
+	}
+
+	if !apiResp.Success {
+		return nil, fmt.Errorf("API error: %s", apiResp.Error)
+	}
+
+	data, _ := json.Marshal(apiResp.Data)
+	var health HealthStatus
+	json.Unmarshal(data, &health)
+
+	return &health, nil
 }

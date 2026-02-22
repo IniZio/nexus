@@ -7,32 +7,36 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/nexus/nexus/packages/workspace-daemon/internal/docker"
+	"github.com/nexus/nexus/packages/workspace-daemon/internal/health"
 	"github.com/nexus/nexus/packages/workspace-daemon/internal/ssh"
 	"github.com/nexus/nexus/packages/workspace-daemon/internal/types"
 )
 
 type HTTPServer struct {
-	addr       string
-	mux        *http.ServeMux
-	backend    *docker.DockerBackend
-	workspaces map[string]*types.Workspace
-	mu         sync.RWMutex
-	server     *http.Server
-	sshBridges map[string]*ssh.SSHBridge
+	addr         string
+	mux          *http.ServeMux
+	backend      *docker.DockerBackend
+	workspaces   map[string]*types.Workspace
+	mu           sync.RWMutex
+	server       *http.Server
+	sshBridges   map[string]*ssh.SSHBridge
+	healthChecks map[string]*health.HealthChecker
 }
 
 func NewHTTPServer(addr string, backend *docker.DockerBackend) *HTTPServer {
 	mux := http.NewServeMux()
 	s := &HTTPServer{
-		addr:       addr,
-		mux:        mux,
-		backend:    backend,
-		workspaces: make(map[string]*types.Workspace),
-		sshBridges: make(map[string]*ssh.SSHBridge),
+		addr:         addr,
+		mux:          mux,
+		backend:      backend,
+		workspaces:   make(map[string]*types.Workspace),
+		sshBridges:   make(map[string]*ssh.SSHBridge),
+		healthChecks: make(map[string]*health.HealthChecker),
 	}
 	s.registerRoutes()
 	return s
@@ -117,28 +121,30 @@ func (s *HTTPServer) handleWorkspaceByID(w http.ResponseWriter, r *http.Request)
 	case http.MethodDelete:
 		s.deleteWorkspace(w, r, ws)
 	default:
-		subPath := r.URL.Path[len("/api/v1/workspaces/"+id):]
-		switch subPath {
-		case "/start":
-			s.startWorkspace(w, r, ws)
-		case "/stop":
-			s.stopWorkspace(w, r, ws)
-		case "/exec":
-			s.execWorkspace(w, r, ws)
-		case "/sync":
-			s.handleSync(w, r, ws)
-		case "/sync/status":
-			s.getSyncStatus(w, r, ws)
-		case "/sync/pause":
-			s.pauseSync(w, r, ws)
-		case "/sync/resume":
-			s.resumeSync(w, r, ws)
-		case "/sync/flush":
-			s.flushSync(w, r, ws)
-		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			subPath := r.URL.Path[len("/api/v1/workspaces/"+id):]
+			switch {
+			case strings.HasPrefix(subPath, "/start"):
+				s.startWorkspace(w, r, ws)
+			case strings.HasPrefix(subPath, "/stop"):
+				s.stopWorkspace(w, r, ws)
+			case strings.HasPrefix(subPath, "/exec"):
+				s.execWorkspace(w, r, ws)
+			case strings.HasPrefix(subPath, "/health"):
+				s.getWorkspaceHealth(w, r, ws)
+			case strings.HasPrefix(subPath, "/sync"):
+				s.handleSync(w, r, ws)
+			case strings.HasPrefix(subPath, "/sync/status"):
+				s.getSyncStatus(w, r, ws)
+			case strings.HasPrefix(subPath, "/sync/pause"):
+				s.pauseSync(w, r, ws)
+			case strings.HasPrefix(subPath, "/sync/resume"):
+				s.resumeSync(w, r, ws)
+			case strings.HasPrefix(subPath, "/sync/flush"):
+				s.flushSync(w, r, ws)
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
 		}
-	}
 }
 
 func (s *HTTPServer) listWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -493,4 +499,72 @@ func (s *HTTPServer) flushSync(w http.ResponseWriter, r *http.Request, ws *types
 	WriteSuccess(w, map[string]string{
 		"state": "flushed",
 	})
+}
+
+func (s *HTTPServer) getWorkspaceHealth(w http.ResponseWriter, r *http.Request, ws *types.Workspace) {
+	s.mu.RLock()
+	checker, exists := s.healthChecks[ws.ID]
+	s.mu.RUnlock()
+
+	if !exists {
+		checker = health.NewHealthChecker(ws.ID)
+
+		for _, port := range ws.Ports {
+			if port.Name == "http" || port.Name == "web" {
+				checker.AddCheck(health.HealthCheck{
+					Name:    port.Name,
+					Type:    "http",
+					Target:  fmt.Sprintf("localhost:%d", port.HostPort),
+					Timeout: 10 * time.Second,
+				})
+			}
+		}
+
+		s.mu.Lock()
+		s.healthChecks[ws.ID] = checker
+		s.mu.Unlock()
+	}
+
+	serviceName := r.URL.Query().Get("service")
+	if serviceName != "" {
+		for _, check := range checker.Check().Checks {
+			if check.Name == serviceName {
+				WriteSuccess(w, types.HealthStatus{
+					Healthy: check.Healthy,
+					Checks: []types.CheckResult{
+						{
+							Name:    check.Name,
+							Healthy: check.Healthy,
+							Error:   check.Error,
+							Latency: check.Latency,
+						},
+					},
+					LastCheck: time.Now(),
+				})
+				return
+			}
+		}
+		WriteError(w, http.StatusNotFound, fmt.Errorf("service %s not found", serviceName))
+		return
+	}
+
+	status := checker.Check()
+
+	typeChecks := make([]types.CheckResult, len(status.Checks))
+	for i, c := range status.Checks {
+		typeChecks[i] = types.CheckResult{
+			Name:    c.Name,
+			Healthy: c.Healthy,
+			Error:   c.Error,
+			Latency: c.Latency,
+		}
+	}
+
+	ws.Health = &types.HealthStatus{
+		Healthy:   status.Healthy,
+		Checks:    typeChecks,
+		LastCheck: status.LastCheck,
+	}
+
+	WriteSuccess(w, ws.Health)
 }

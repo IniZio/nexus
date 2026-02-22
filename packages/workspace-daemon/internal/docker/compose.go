@@ -13,8 +13,16 @@ type ComposeFile struct {
 }
 
 type ComposeService struct {
-	Image string   `yaml:"image"`
-	Ports []string `yaml:"ports"`
+	Image       string                 `yaml:"image"`
+	Ports       []string               `yaml:"ports"`
+	HealthCheck *ComposeHealthCheck    `yaml:"healthcheck"`
+}
+
+type ComposeHealthCheck struct {
+	Test     interface{} `yaml:"test"`
+	Interval string      `yaml:"interval"`
+	Timeout  string      `yaml:"timeout"`
+	Retries  int         `yaml:"retries"`
 }
 
 func ParseComposeFile(path string) ([]int, error) {
@@ -39,6 +47,27 @@ func ParseComposeFile(path string) ([]int, error) {
 	}
 
 	return ports, nil
+}
+
+func ParseComposeHealthChecks(path string) (map[string]ComposeHealthCheck, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var compose ComposeFile
+	if err := yaml.Unmarshal(data, &compose); err != nil {
+		return nil, err
+	}
+
+	healthChecks := make(map[string]ComposeHealthCheck)
+	for name, service := range compose.Services {
+		if service.HealthCheck != nil {
+			healthChecks[name] = *service.HealthCheck
+		}
+	}
+
+	return healthChecks, nil
 }
 
 func parsePort(portSpec string) int {

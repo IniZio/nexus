@@ -345,6 +345,47 @@ var servicesLogsCmd = &cobra.Command{
 	},
 }
 
+var healthCmd = &cobra.Command{
+	Use:   "health <workspace> [service]",
+	Short: "Check workspace health",
+	Args:  cobra.RangeArgs(1, 2),
+	Run: func(cmd *cobra.Command, args []string) {
+		workspace := args[0]
+		var service string
+		if len(args) > 1 {
+			service = args[1]
+		}
+
+		client := getClient()
+		health, err := client.GetHealth(workspace, service)
+		exitOnError(err)
+
+		if health.Healthy {
+			fmt.Printf("✓ Workspace %s is healthy\n", workspace)
+		} else {
+			fmt.Printf("✗ Workspace %s is unhealthy\n", workspace)
+		}
+
+		if len(health.Checks) > 0 {
+			fmt.Println("\nHealth Checks:")
+			for _, check := range health.Checks {
+				status := "✓"
+				if !check.Healthy {
+					status = "✗"
+				}
+				fmt.Printf("  %s %s (%v)\n", status, check.Name, check.Latency)
+				if check.Error != "" {
+					fmt.Printf("    Error: %s\n", check.Error)
+				}
+			}
+		}
+
+		if !health.LastCheck.IsZero() {
+			fmt.Printf("\nLast check: %s\n", health.LastCheck.Format("2006-01-02 15:04:05"))
+		}
+	},
+}
+
 var sessionsCmd = &cobra.Command{
 	Use:   "sessions",
 	Short: "Session management",

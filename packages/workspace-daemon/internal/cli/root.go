@@ -59,6 +59,7 @@ func init() {
 	rootCmd.AddCommand(servicesCmd)
 	rootCmd.AddCommand(proxyCmd)
 	rootCmd.AddCommand(syncCmd)
+	rootCmd.AddCommand(healthCmd)
 
 	sessionsCmd.AddCommand(
 		sessionsListCmd,
