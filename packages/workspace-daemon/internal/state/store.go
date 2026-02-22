@@ -84,8 +84,31 @@ func (s *StateStore) SaveWorkspace(w *types.Workspace) error {
 		return fmt.Errorf("failed to create workspace directory: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := s.writeFileAtomic(path, data); err != nil {
 		return fmt.Errorf("failed to write workspace: %w", err)
+	}
+
+	return nil
+}
+
+func (s *StateStore) writeFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	tmpFile, err := os.CreateTemp(dir, ".workspace-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+	tmpFile.Close()
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 
 	return nil

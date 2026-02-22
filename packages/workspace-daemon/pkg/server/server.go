@@ -161,6 +161,12 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		if err := srv.LoadWorkspaces(); err != nil {
 			log.Printf("[state] Warning: failed to load workspaces: %v", err)
 		}
+
+		if dockerBackend != nil {
+			if err := srv.cleanupDanglingWorkspaces(); err != nil {
+				log.Printf("[state] Warning: failed to cleanup dangling workspaces: %v", err)
+			}
+		}
 	}
 
 	return srv, nil
@@ -188,6 +194,55 @@ func (s *Server) LoadWorkspaces() error {
 	}
 
 	log.Printf("[state] Loaded %d workspaces from state", len(workspaces))
+	return nil
+}
+
+func (s *Server) cleanupDanglingWorkspaces() error {
+	if s.dockerBackend == nil {
+		return nil
+	}
+
+	knownWorkspaceIDs := make(map[string]bool)
+	for id := range s.workspaces {
+		knownWorkspaceIDs[id] = true
+	}
+
+	containers, err := s.dockerBackend.ListContainersByLabel(context.Background(), "nexus.workspace")
+	if err != nil {
+		return fmt.Errorf("listing containers: %w", err)
+	}
+
+	log.Printf("[cleanup] Found %d containers with nexus label", len(containers))
+
+	for _, container := range containers {
+		wsID := container.Labels["nexus.workspace.id"]
+		if wsID == "" {
+			continue
+		}
+
+		if knownWorkspaceIDs[wsID] {
+			log.Printf("[cleanup] Container %s matches known workspace %s, resuming...", container.ID[:12], wsID)
+			s.mu.Lock()
+			if ws, exists := s.workspaces[wsID]; exists {
+				ws.Status = "running"
+				ws.UpdatedAt = time.Now()
+			}
+			s.mu.Unlock()
+			continue
+		}
+
+		log.Printf("[cleanup] Found orphaned container %s for unknown workspace %s, removing...", container.ID[:12], wsID)
+		if err := s.dockerBackend.RemoveContainer(context.Background(), container.ID); err != nil {
+			log.Printf("[cleanup] Warning: failed to remove orphaned container %s: %v", container.ID[:12], err)
+			continue
+		}
+		log.Printf("[cleanup] Removed orphaned container %s", container.ID[:12])
+	}
+
+	if err := s.saveWorkspaces(); err != nil {
+		log.Printf("[cleanup] Warning: failed to save state after cleanup: %v", err)
+	}
+
 	return nil
 }
 
@@ -790,15 +845,27 @@ func (s *Server) execWorkspace(w http.ResponseWriter, r *http.Request, id string
 }
 
 func (s *Server) Shutdown() {
+	log.Printf("[shutdown] Starting graceful shutdown...")
+
 	if s.lifecycle != nil {
 		if err := s.lifecycle.RunPreStop(); err != nil {
 			log.Printf("[lifecycle] Pre-stop hook error: %v", err)
 		}
 	}
 
+	log.Printf("[state] Saving workspace state before shutdown...")
 	if err := s.saveWorkspaces(); err != nil {
 		log.Printf("[state] Error saving workspaces on shutdown: %v", err)
 	}
+
+	log.Printf("[shutdown] Stopping running workspaces...")
+	s.stopAllWorkspaces()
+
+	log.Printf("[shutdown] Stopping Mutagen sessions...")
+	s.stopAllMutagenSessions()
+
+	log.Printf("[shutdown] Closing SSH bridges...")
+	s.closeAllSSHBridges()
 
 	close(s.shutdownCh)
 	s.mu.Lock()
@@ -809,11 +876,21 @@ func (s *Server) Shutdown() {
 	s.mu.Unlock()
 
 	if s.httpServer != nil {
+		log.Printf("[http] Starting HTTP server shutdown...")
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := s.httpServer.Shutdown(ctx); err != nil {
 			log.Printf("[http] Error during graceful shutdown: %v", err)
 		}
+		log.Printf("[http] HTTP server shutdown complete")
+	}
+
+	if s.mutagenDaemon != nil {
+		log.Printf("[mutagen] Stopping embedded daemon...")
+		if err := s.mutagenDaemon.Stop(context.Background()); err != nil {
+			log.Printf("[mutagen] Error stopping embedded daemon: %v", err)
+		}
+		log.Printf("[mutagen] Embedded daemon stopped")
 	}
 
 	if s.lifecycle != nil {
@@ -822,11 +899,90 @@ func (s *Server) Shutdown() {
 		}
 	}
 
-	if s.mutagenDaemon != nil {
-		if err := s.mutagenDaemon.Stop(context.Background()); err != nil {
-			log.Printf("[mutagen] Error stopping embedded daemon: %v", err)
-		}
+	log.Printf("[shutdown] Graceful shutdown complete")
+}
+
+func (s *Server) stopAllWorkspaces() {
+	s.mu.RLock()
+	workspaces := make([]*WorkspaceState, 0, len(s.workspaces))
+	for _, ws := range s.workspaces {
+		workspaces = append(workspaces, ws)
 	}
+	s.mu.RUnlock()
+
+	for _, ws := range workspaces {
+		if ws.Status != "running" {
+			continue
+		}
+
+		if s.dockerBackend != nil && ws.Backend == "docker" {
+			log.Printf("[shutdown] Stopping workspace %s...", ws.ID)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if _, err := s.dockerBackend.StopWorkspace(ctx, ws.ID, 30); err != nil {
+				log.Printf("[shutdown] Error stopping workspace %s: %v", ws.ID, err)
+				cancel()
+				continue
+			}
+			cancel()
+			log.Printf("[shutdown] Workspace %s stopped", ws.ID)
+		}
+
+		s.mu.Lock()
+		if w, exists := s.workspaces[ws.ID]; exists {
+			w.Status = "stopped"
+			w.UpdatedAt = time.Now()
+		}
+		s.mu.Unlock()
+	}
+}
+
+func (s *Server) stopAllMutagenSessions() {
+	s.mu.RLock()
+	workspaceIDs := make([]string, 0, len(s.sessionManagers))
+	for id := range s.sessionManagers {
+		workspaceIDs = append(workspaceIDs, id)
+	}
+	s.mu.RUnlock()
+
+	for _, id := range workspaceIDs {
+		s.mu.RLock()
+		mgr, exists := s.sessionManagers[id]
+		s.mu.RUnlock()
+
+		if !exists || mgr == nil {
+			continue
+		}
+
+		sessions, err := mgr.ListSessions()
+		if err != nil {
+			log.Printf("[mutagen] Warning: failed to list sessions for workspace %s: %v", id, err)
+			continue
+		}
+
+		for _, sess := range sessions {
+			log.Printf("[mutagen] Pausing session %s...", sess.ID)
+			if err := mgr.PauseSession(context.Background(), sess.ID); err != nil {
+				log.Printf("[mutagen] Warning: failed to pause session %s: %v", sess.ID, err)
+			}
+
+			log.Printf("[mutagen] Terminating session %s...", sess.ID)
+			if err := mgr.TerminateSession(context.Background(), sess.ID); err != nil {
+				log.Printf("[mutagen] Warning: failed to terminate session %s: %v", sess.ID, err)
+			}
+		}
+		log.Printf("[mutagen] Sessions for workspace %s terminated", id)
+	}
+}
+
+func (s *Server) closeAllSSHBridges() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for id, bridge := range s.sshBridges {
+		log.Printf("[ssh] Closing bridge for workspace %s...", id)
+		bridge.Close()
+	}
+	s.sshBridges = make(map[string]*ssh.SSHBridge)
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
