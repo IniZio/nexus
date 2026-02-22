@@ -1,0 +1,8 @@
+go 1.21
+
+use (
+	./services/api-gateway
+	./services/auth-service
+	./services/user-service
+	./shared
+)

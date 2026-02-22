@@ -1,6 +1,18 @@
 # Boulder CLI Reference
 
-The Boulder CLI (`boulder`) manages the enforcement system. It provides commands for controlling the Boulder, viewing statistics, and configuring enforcement behavior.
+> **Important:** The boulder CLI is part of the `@nexus/core` package, not a standalone global command. Use `npx @nexus/core boulder <command>` to run boulder commands.
+
+The Boulder CLI manages the enforcement system. It provides commands for controlling the Boulder, viewing statistics, and configuring enforcement behavior.
+
+## Installation
+
+The Boulder CLI is included in the `@nexus/core` package. Run commands using npx:
+
+```bash
+npx @nexus/core boulder status
+npx @nexus/core boulder pause "Taking a break"
+npx @nexus/core boulder resume
+```
 
 ## Commands
 
@@ -9,7 +21,7 @@ The Boulder CLI (`boulder`) manages the enforcement system. It provides commands
 Show current Boulder status including iteration, tasks, and idle time.
 
 ```bash
-boulder status
+npx @nexus/core boulder status
 ```
 
 Output includes:
@@ -24,7 +36,7 @@ Output includes:
 Reset Boulder state for testing or starting fresh.
 
 ```bash
-boulder reset
+npx @nexus/core boulder reset
 ```
 
 This will:
@@ -37,7 +49,8 @@ This will:
 
 Manually trigger enforcement. This adds new tasks to the queue and increments the iteration counter.
 
-```boulder enforce
+```bash
+npx @nexus/core boulder enforce
 ```
 
 This will:
@@ -51,10 +64,10 @@ Show or configure Boulder settings.
 
 ```bash
 # Show all settings
-boulder config
+npx @nexus/core boulder config
 
 # Set a specific value
-boulder config <key> <value>
+npx @nexus/core boulder config <key> <value>
 ```
 
 #### Configuration Keys
@@ -69,13 +82,13 @@ boulder config <key> <value>
 
 ```bash
 # Increase minimum queue size
-boulder config minTasksInQueue 10
+npx @nexus/core boulder config minTasksInQueue 10
 
 # Increase idle threshold to 2 minutes
-boulder config idleThresholdMs 120000
+npx @nexus/core boulder config idleThresholdMs 120000
 
 # Show more next tasks
-boulder config nextTasksCount 5
+npx @nexus/core boulder config nextTasksCount 5
 ```
 
 ### boulder help
@@ -83,7 +96,7 @@ boulder config nextTasksCount 5
 Show help message.
 
 ```bash
-boulder help
+npx @nexus/core boulder help
 ```
 
 ## Files
@@ -102,10 +115,10 @@ The Boulder CLI can be used alongside IDE plugins:
 
 ```bash
 # Check status from terminal
-boulder status
+npx @nexus/core boulder status
 
 # Trigger enforcement manually
-boulder enforce
+npx @nexus/core boulder enforce
 ```
 
 ## Exit Codes

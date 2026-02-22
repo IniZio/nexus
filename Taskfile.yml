@@ -6,7 +6,7 @@ tasks:
     cmds:
       - task: build:core
       - task: build:opencode
-      - task: build:workspace-daemon
+      - task: build:nexusd
       # - task: build:claude
       # - task: build:cursor
 
@@ -41,7 +41,7 @@ tasks:
       - task: test:opencode
       # - task: test:claude
       # - task: test:cursor
-      - task: test:workspace-daemon
+      - task: test:nexusd
 
   test:core:
     dir: packages/core
@@ -89,13 +89,13 @@ tasks:
     cmds:
       - pnpm lint
 
-  build:workspace-daemon:
-    dir: packages/workspace-daemon
+  build:nexusd:
+    dir: packages/nexusd
     cmds:
       - go build -o nexusd ./cmd/daemon
 
-  test:workspace-daemon:
-    dir: packages/workspace-daemon
+  test:nexusd:
+    dir: packages/nexusd
     cmds:
       - go test ./...
 
@@ -142,7 +142,7 @@ tasks:
       - rm -rf packages/opencode/dist
       - rm -rf packages/claude/dist
       - rm -rf packages/cursor/dist
-      - rm -rf packages/workspace-daemon/nexusd
+      - rm -rf packages/nexusd/nexusd
 
   download-mutagen:
     desc: Download Mutagen binaries for embedding

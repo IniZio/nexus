@@ -11,7 +11,7 @@
     "test": "task test",
     "lint": "pnpm run lint:ts && pnpm run lint:go",
     "lint:ts": "oxlint . --config .oxlintrc.json",
-    "lint:go": "cd packages/workspace-daemon && golangci-lint run",
+    "lint:go": "cd packages/nexusd && golangci-lint run",
     "lint:fix": "oxlint . --config .oxlintrc.json --fix",
     "publish": "task publish",
     "clean": "task clean"

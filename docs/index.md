@@ -28,9 +28,9 @@ The Enforcer ensures agents complete tasks to standard. It prevents early stoppi
 
 ```bash
 # The Boulder never stops
-boulder status     # Check enforcement status
-boulder pause      # Temporarily pause (with reason)
-boulder resume     # Resume enforcement
+npx @nexus/core boulder status     # Check enforcement status
+npx @nexus/core boulder pause      # Temporarily pause (with reason)
+npx @nexus/core boulder resume     # Resume enforcement
 ```
 
 [Learn more about the Enforcer](explanation/boulder-system.md)
@@ -97,13 +97,13 @@ pnpm run build
 
 ```bash
 # Check boulder status
-boulder status
+npx @nexus/core boulder status
 
 # Pause with reason
-boulder pause "Taking a break"
+npx @nexus/core boulder pause "Taking a break"
 
 # Resume enforcement
-boulder resume
+npx @nexus/core boulder resume
 ```
 
 ### IDE Integration

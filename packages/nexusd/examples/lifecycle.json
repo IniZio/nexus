@@ -1,0 +1,37 @@
+{
+  "version": "1.0",
+  "hooks": {
+    "pre-start": [
+      {
+        "name": "validate-environment",
+        "command": "echo",
+        "args": ["Starting workspace with lifecycle hooks"],
+        "timeout": 10
+      }
+    ],
+    "post-start": [
+      {
+        "name": "start-services",
+        "command": "docker",
+        "args": ["compose", "up", "-d"],
+        "timeout": 60
+      }
+    ],
+    "pre-stop": [
+      {
+        "name": "backup-data",
+        "command": "echo",
+        "args": ["Stopping workspace, backing up data"],
+        "timeout": 30
+      }
+    ],
+    "post-stop": [
+      {
+        "name": "cleanup-services",
+        "command": "docker",
+        "args": ["compose", "down"],
+        "timeout": 60
+      }
+    ]
+  }
+}

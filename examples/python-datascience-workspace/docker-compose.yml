@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: ds-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: datascience
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ds-network
+
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ds-jupyter
+    environment:
+      JUPYTER_ENABLE_LAB: "yes"
+      JUPYTER_TOKEN: "datascience-demo"
+    ports:
+      - "8888:8888"
+    volumes:
+      - jupyter_data:/home/jovyan/work
+      - ./notebooks:/home/jovyan/work/notebooks:rw
+      - ./data:/home/jovyan/work/data:rw
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ds-network
+    command: start-notebook.sh --NotebookApp.token='datascience-demo' --NotebookApp.password=''
+
+volumes:
+  jupyter_data:
+    driver: local
+  postgres_data:
+    driver: local
+
+networks:
+  ds-network:
+    driver: bridge
