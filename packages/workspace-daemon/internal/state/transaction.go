@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/nexus/nexus/packages/workspace-daemon/internal/types"
 )
 
 var (

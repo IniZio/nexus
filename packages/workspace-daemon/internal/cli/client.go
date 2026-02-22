@@ -5,8 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"os"
+	"strings"
+	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 type Client struct {
@@ -57,6 +63,8 @@ type CreateWorkspaceRequest struct {
 	Branch        string            `json:"branch,omitempty"`
 	Backend       string            `json:"backend,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
+	ForwardSSH    bool              `json:"forward_ssh,omitempty"`
+	ID            string            `json:"id,omitempty"`
 }
 
 type ListWorkspacesResponse struct {
@@ -320,6 +328,79 @@ func (c *Client) GetLogs(id string, tail int) (string, error) {
 	}
 
 	return result.Logs, nil
+}
+
+func (c *Client) ForwardSSHAgent(workspaceID string) error {
+	sshAuthSock := os.Getenv("SSH_AUTH_SOCK")
+	if sshAuthSock == "" {
+		return fmt.Errorf("SSH_AUTH_SOCK not set")
+	}
+
+	agentConn, err := net.Dial("unix", sshAuthSock)
+	if err != nil {
+		return fmt.Errorf("connecting to SSH agent: %w", err)
+	}
+	defer agentConn.Close()
+
+	wsURL := strings.Replace(c.baseURL, "http://", "ws://", 1)
+	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
+	wsURL += "/ws/ssh-agent?workspace=" + workspaceID
+
+	headers := http.Header{}
+	if c.token != "" {
+		headers.Add("Authorization", "Bearer "+c.token)
+	}
+
+	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		return fmt.Errorf("connecting to WebSocket: %w", err)
+	}
+	defer wsConn.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, err := agentConn.Read(buf)
+			if err != nil {
+				break
+			}
+			wsConn.WriteMessage(websocket.BinaryMessage, buf[:n])
+		}
+		wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(1000, ""))
+	}()
+
+	go func() {
+		defer wg.Done()
+		for {
+			msgType, reader, err := wsConn.NextReader()
+			if err != nil {
+				break
+			}
+			if msgType == websocket.CloseMessage {
+				break
+			}
+			if msgType != websocket.BinaryMessage {
+				continue
+			}
+			buf := make([]byte, 4096)
+			n, err := reader.Read(buf)
+			if err != nil {
+				break
+			}
+			agentConn.Write(buf[:n])
+		}
+		agentConn.Close()
+	}()
+
+	fmt.Printf("SSH agent forwarded to workspace %s\n", workspaceID)
+	fmt.Printf("Press Ctrl+C to stop forwarding\n")
+
+	wg.Wait()
+	return nil
 }
 
 func (c *Client) parseWorkspaceResponse(resp *http.Response) (*Workspace, error) {

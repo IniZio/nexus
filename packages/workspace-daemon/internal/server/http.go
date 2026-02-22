@@ -20,6 +20,7 @@ type HTTPServer struct {
 	backend   *docker.DockerBackend
 	workspaces map[string]*types.Workspace
 	mu        sync.RWMutex
+	server    *http.Server
 }
 
 func NewHTTPServer(addr string, backend *docker.DockerBackend) *HTTPServer {
@@ -45,15 +46,28 @@ func (s *HTTPServer) HandleFunc(pattern string, handler func(http.ResponseWriter
 }
 
 func (s *HTTPServer) Start() error {
-	return http.ListenAndServe(s.addr, s.mux)
+	s.server = &http.Server{
+		Addr:    s.addr,
+		Handler: s.mux,
+	}
+	return s.server.ListenAndServe()
 }
 
 func (s *HTTPServer) StartTLS(certFile, keyFile string) error {
-	return http.ListenAndServeTLS(s.addr, certFile, keyFile, s.mux)
+	s.server = &http.Server{
+		Addr:    s.addr,
+		Handler: s.mux,
+	}
+	return s.server.ListenAndServeTLS(certFile, keyFile)
 }
 
-func (s *HTTPServer) Stop(ctx context.Context) error {
-	return nil
+func (s *HTTPServer) Stop() error {
+	if s.server == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return s.server.Shutdown(ctx)
 }
 
 func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {

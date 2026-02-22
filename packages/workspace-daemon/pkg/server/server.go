@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -14,27 +15,32 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
+	"github.com/nexus/nexus/packages/workspace-daemon/internal/state"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/handlers"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/lifecycle"
 	rpckit "github.com/nexus/nexus/packages/workspace-daemon/pkg/rpcerrors"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/workspace"
 	"github.com/nexus/nexus/packages/workspace-daemon/internal/docker"
 	wsTypes "github.com/nexus/nexus/packages/workspace-daemon/internal/types"
+	"github.com/nexus/nexus/packages/workspace-daemon/internal/ssh"
 )
 
 type Server struct {
 	port          int
-	workspaceDir string
-	tokenSecret  string
-	upgrader     websocket.Upgrader
-	connections  map[string]*Connection
-	ws           *workspace.Workspace
-	lifecycle    *lifecycle.Manager
-	mu           sync.RWMutex
-	shutdownCh   chan struct{}
-	mux          *http.ServeMux
-	workspaces   map[string]*WorkspaceState
+	workspaceDir  string
+	tokenSecret   string
+	upgrader      websocket.Upgrader
+	connections   map[string]*Connection
+	ws            *workspace.Workspace
+	lifecycle     *lifecycle.Manager
+	mu            sync.RWMutex
+	shutdownCh    chan struct{}
+	mux           *http.ServeMux
+	workspaces    map[string]*WorkspaceState
 	dockerBackend *docker.DockerBackend
+	sshBridges    map[string]*ssh.SSHBridge
+	stateStore    *state.StateStore
+	httpServer    *http.Server
 }
 
 type WorkspaceState struct {
@@ -100,10 +106,16 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		dockerBackend = docker.NewDockerBackend(dockerClient, workspaceDir)
 	}
 
-	return &Server{
+	stateDir := filepath.Join(workspaceDir, ".nexus", "state")
+	stateStore, err := state.NewStateStore(stateDir)
+	if err != nil {
+		log.Printf("[state] Warning: failed to create state store: %v", err)
+	}
+
+	srv := &Server{
 		port:          port,
-		workspaceDir: workspaceDir,
-		tokenSecret:  tokenSecret,
+		workspaceDir:  workspaceDir,
+		tokenSecret:   tokenSecret,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
@@ -118,7 +130,68 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		mux:           http.NewServeMux(),
 		workspaces:    make(map[string]*WorkspaceState),
 		dockerBackend: dockerBackend,
-	}, nil
+		sshBridges:    make(map[string]*ssh.SSHBridge),
+		stateStore:    stateStore,
+	}
+
+	if stateStore != nil {
+		if err := srv.LoadWorkspaces(); err != nil {
+			log.Printf("[state] Warning: failed to load workspaces: %v", err)
+		}
+	}
+
+	return srv, nil
+}
+
+func (s *Server) LoadWorkspaces() error {
+	if s.stateStore == nil {
+		return nil
+	}
+
+	workspaces, err := s.stateStore.ListWorkspaces()
+	if err != nil {
+		return fmt.Errorf("listing workspaces: %w", err)
+	}
+
+	for _, ws := range workspaces {
+		s.workspaces[ws.ID] = &WorkspaceState{
+			ID:        ws.ID,
+			Name:      ws.Name,
+			Status:    ws.Status.String(),
+			Backend:   ws.Backend.String(),
+			CreatedAt: ws.CreatedAt,
+			UpdatedAt: ws.UpdatedAt,
+		}
+	}
+
+	log.Printf("[state] Loaded %d workspaces from state", len(workspaces))
+	return nil
+}
+
+func (s *Server) saveWorkspaces() error {
+	if s.stateStore == nil {
+		return nil
+	}
+
+	for _, ws := range s.workspaces {
+		wsType := wsTypes.WorkspaceStatusFromString(ws.Status)
+		backendType := wsTypes.BackendTypeFromString(ws.Backend)
+
+		ws := &wsTypes.Workspace{
+			ID:        ws.ID,
+			Name:      ws.Name,
+			Status:    wsType,
+			Backend:   backendType,
+			CreatedAt: ws.CreatedAt,
+			UpdatedAt: time.Now(),
+		}
+
+		if err := s.stateStore.SaveWorkspace(ws); err != nil {
+			log.Printf("[state] Failed to save workspace %s: %v", ws.ID, err)
+		}
+	}
+
+	return nil
 }
 
 func (s *Server) Start() error {
@@ -130,14 +203,14 @@ func (s *Server) Start() error {
 
 	s.registerHTTPRoutes()
 
-	httpServer := &http.Server{
+	s.httpServer = &http.Server{
 		Addr:    fmt.Sprintf(":%d", s.port),
 		Handler: s.mux,
 	}
 
 	go func() {
 		log.Printf("HTTP server listening on port %d", s.port)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("HTTP server error: %v", err)
 		}
 	}()
@@ -150,6 +223,7 @@ func (s *Server) registerHTTPRoutes() {
 	s.mux.HandleFunc("/api/v1/workspaces", s.handleWorkspaces)
 	s.mux.HandleFunc("/api/v1/workspaces/", s.handleWorkspaceByID)
 	s.mux.HandleFunc("/ws", s.handleWebSocket)
+	s.mux.HandleFunc("/ws/ssh-agent", s.handleSSHAgent)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -192,6 +266,8 @@ type CreateWorkspaceRequest struct {
 	Branch        string            `json:"branch,omitempty"`
 	Backend       string            `json:"backend,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
+	ForwardSSH    bool              `json:"forward_ssh,omitempty"`
+	ID            string            `json:"id,omitempty"`
 }
 
 func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -333,6 +409,29 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	wsID := fmt.Sprintf("ws-%d", time.Now().UnixNano())
 
+	var bridgeSocketPath string
+
+	if s.dockerBackend != nil && backend == "docker" && req.ForwardSSH {
+		bridge, err := ssh.NewBridge(wsID)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, fmt.Errorf("creating SSH bridge: %w", err))
+			return
+		}
+
+		socketPath, err := bridge.Start()
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, fmt.Errorf("starting SSH bridge: %w", err))
+			return
+		}
+
+		bridgeSocketPath = socketPath
+		s.mu.Lock()
+		s.sshBridges[wsID] = bridge
+		s.mu.Unlock()
+
+		log.Printf("SSH bridge created for workspace %s at %s", wsID, socketPath)
+	}
+
 	if s.dockerBackend != nil && backend == "docker" {
 		dockerReq := &wsTypes.CreateWorkspaceRequest{
 			Name:          req.Name,
@@ -340,8 +439,17 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 			RepositoryURL: req.RepositoryURL,
 			Branch:        req.Branch,
 			Labels:        req.Labels,
+			ID:            wsID,
+			Config: &wsTypes.WorkspaceConfig{
+				Env: map[string]string{},
+			},
 		}
-		createdWS, err := s.dockerBackend.CreateWorkspace(r.Context(), dockerReq)
+
+		if bridgeSocketPath != "" {
+			dockerReq.Config.Env["SSH_AUTH_SOCK"] = "/ssh-agent"
+		}
+
+		createdWS, err := s.dockerBackend.CreateWorkspaceWithBridge(r.Context(), dockerReq, bridgeSocketPath)
 		if err != nil {
 			WriteError(w, http.StatusInternalServerError, fmt.Errorf("creating docker workspace: %w", err))
 			return
@@ -361,6 +469,10 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.workspaces[ws.ID] = ws
 	s.mu.Unlock()
+
+	if err := s.saveWorkspaces(); err != nil {
+		log.Printf("[state] Failed to save workspace: %v", err)
+	}
 
 	WriteSuccess(w, ws)
 }
@@ -382,9 +494,15 @@ func (s *Server) deleteWorkspace(w http.ResponseWriter, r *http.Request, id stri
 		}
 	}
 
+	s.cleanupSSHBridge(id)
+
 	s.mu.Lock()
 	delete(s.workspaces, id)
 	s.mu.Unlock()
+
+	if err := s.saveWorkspaces(); err != nil {
+		log.Printf("[state] Failed to save after delete: %v", err)
+	}
 
 	WriteSuccess(w, map[string]bool{"success": true})
 }
@@ -413,6 +531,10 @@ func (s *Server) startWorkspace(w http.ResponseWriter, r *http.Request, id strin
 		ws.UpdatedAt = time.Now()
 	}
 	s.mu.Unlock()
+
+	if err := s.saveWorkspaces(); err != nil {
+		log.Printf("[state] Failed to save after start: %v", err)
+	}
 
 	WriteSuccess(w, map[string]string{"status": "running"})
 }
@@ -457,6 +579,10 @@ func (s *Server) stopWorkspace(w http.ResponseWriter, r *http.Request, id string
 		ws.UpdatedAt = time.Now()
 	}
 	s.mu.Unlock()
+
+	if err := s.saveWorkspaces(); err != nil {
+		log.Printf("[state] Failed to save after stop: %v", err)
+	}
 
 	WriteSuccess(w, map[string]string{"status": "stopped"})
 }
@@ -527,6 +653,10 @@ func (s *Server) Shutdown() {
 		}
 	}
 
+	if err := s.saveWorkspaces(); err != nil {
+		log.Printf("[state] Error saving workspaces on shutdown: %v", err)
+	}
+
 	close(s.shutdownCh)
 	s.mu.Lock()
 	for _, conn := range s.connections {
@@ -534,6 +664,14 @@ func (s *Server) Shutdown() {
 		conn.conn.Close()
 	}
 	s.mu.Unlock()
+
+	if s.httpServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := s.httpServer.Shutdown(ctx); err != nil {
+			log.Printf("[http] Error during graceful shutdown: %v", err)
+		}
+	}
 
 	if s.lifecycle != nil {
 		if err := s.lifecycle.RunPostStop(); err != nil {
@@ -731,5 +869,84 @@ func (s *Server) handleWorkspaceInfo() map[string]interface{} {
 	return map[string]interface{}{
 		"workspace_id":   s.ws.ID(),
 		"workspace_path": s.ws.Path(),
+	}
+}
+
+func (s *Server) handleSSHAgent(w http.ResponseWriter, r *http.Request) {
+	workspaceID := r.URL.Query().Get("workspace")
+	if workspaceID == "" {
+		http.Error(w, "workspace ID required", http.StatusBadRequest)
+		return
+	}
+
+	token := r.URL.Query().Get("token")
+	if !s.validateToken(token) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	conn, err := s.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("Failed to upgrade SSH agent connection: %v", err)
+		return
+	}
+
+	s.mu.Lock()
+	bridge, exists := s.sshBridges[workspaceID]
+	s.mu.Unlock()
+
+	if !exists {
+		bridge, err = ssh.NewBridge(workspaceID)
+		if err != nil {
+			log.Printf("Failed to create SSH bridge: %v", err)
+			conn.Close()
+			return
+		}
+
+		socketPath, err := bridge.Start()
+		if err != nil {
+			log.Printf("Failed to start SSH bridge: %v", err)
+			conn.Close()
+			return
+		}
+
+		log.Printf("SSH bridge started for workspace %s at %s", workspaceID, socketPath)
+
+		s.mu.Lock()
+		s.sshBridges[workspaceID] = bridge
+		s.mu.Unlock()
+	}
+
+	bridge.SetWebSocket(conn)
+
+	go func() {
+		bridge.HandleConnections()
+
+		s.mu.Lock()
+		delete(s.sshBridges, workspaceID)
+		s.mu.Unlock()
+
+		bridge.Close()
+		log.Printf("SSH bridge closed for workspace %s", workspaceID)
+	}()
+}
+
+func (s *Server) GetBridgeSocket(workspaceID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if bridge, ok := s.sshBridges[workspaceID]; ok {
+		return bridge.GetSocketPath()
+	}
+	return ""
+}
+
+func (s *Server) cleanupSSHBridge(workspaceID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if bridge, ok := s.sshBridges[workspaceID]; ok {
+		bridge.Close()
+		delete(s.sshBridges, workspaceID)
 	}
 }

@@ -52,6 +52,36 @@ func (b BackendType) String() string {
 	}
 }
 
+func BackendTypeFromString(s string) BackendType {
+	switch s {
+	case "docker":
+		return BackendDocker
+	case "sprite":
+		return BackendSprite
+	case "kubernetes":
+		return BackendKubernetes
+	default:
+		return BackendDocker
+	}
+}
+
+func WorkspaceStatusFromString(s string) WorkspaceStatus {
+	switch s {
+	case "creating":
+		return StatusCreating
+	case "running":
+		return StatusRunning
+	case "sleeping":
+		return StatusSleeping
+	case "stopped":
+		return StatusStopped
+	case "error":
+		return StatusError
+	default:
+		return StatusStopped
+	}
+}
+
 type Workspace struct {
 	ID           string
 	Name         string
@@ -181,6 +211,8 @@ type CreateWorkspaceRequest struct {
 	ResourceClass  string
 	Config         *WorkspaceConfig
 	Labels         map[string]string
+	ForwardSSH     bool
+	ID             string
 }
 
 type GetWorkspaceRequest struct {

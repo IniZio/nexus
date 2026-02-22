@@ -15,13 +15,27 @@ func main() {
 	port := flag.Int("port", 8080, "Port to listen on")
 	workspaceDir := flag.String("workspace-dir", "/workspace", "Workspace directory path")
 	token := flag.String("token", "", "JWT secret token for authentication")
+	jwtSecretFile := flag.String("jwt-secret-file", "", "Path to file containing JWT secret")
 	flag.Parse()
 
-	if *token == "" {
-		log.Fatal("Error: --token is required")
+	var tokenSecret string
+
+	if *jwtSecretFile != "" {
+		data, err := os.ReadFile(*jwtSecretFile)
+		if err != nil {
+			log.Fatalf("Error reading JWT secret file: %v", err)
+		}
+		tokenSecret = string(data)
+		tokenSecret = fmt.Sprintf("\n%s", tokenSecret)
+	} else if *token != "" {
+		tokenSecret = *token
 	}
 
-	if err := runServer(*port, *workspaceDir, *token); err != nil {
+	if tokenSecret == "" {
+		log.Fatal("Error: either --token or --jwt-secret-file is required")
+	}
+
+	if err := runServer(*port, *workspaceDir, tokenSecret); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
 }
