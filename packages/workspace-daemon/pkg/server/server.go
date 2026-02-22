@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -23,24 +24,27 @@ import (
 	"github.com/nexus/nexus/packages/workspace-daemon/internal/docker"
 	wsTypes "github.com/nexus/nexus/packages/workspace-daemon/internal/types"
 	"github.com/nexus/nexus/packages/workspace-daemon/internal/ssh"
+	"github.com/nexus/nexus/packages/workspace-daemon/internal/sync/mutagen"
 )
 
 type Server struct {
-	port          int
-	workspaceDir  string
-	tokenSecret   string
-	upgrader      websocket.Upgrader
-	connections   map[string]*Connection
-	ws            *workspace.Workspace
-	lifecycle     *lifecycle.Manager
-	mu            sync.RWMutex
-	shutdownCh    chan struct{}
-	mux           *http.ServeMux
-	workspaces    map[string]*WorkspaceState
-	dockerBackend *docker.DockerBackend
-	sshBridges    map[string]*ssh.SSHBridge
-	stateStore    *state.StateStore
-	httpServer    *http.Server
+	port            int
+	workspaceDir    string
+	tokenSecret     string
+	upgrader        websocket.Upgrader
+	connections     map[string]*Connection
+	ws              *workspace.Workspace
+	lifecycle       *lifecycle.Manager
+	mu              sync.RWMutex
+	shutdownCh      chan struct{}
+	mux             *http.ServeMux
+	workspaces      map[string]*WorkspaceState
+	dockerBackend   *docker.DockerBackend
+	sshBridges      map[string]*ssh.SSHBridge
+	stateStore      *state.StateStore
+	httpServer      *http.Server
+	mutagenDaemon   *mutagen.EmbeddedDaemon
+	sessionManagers map[string]*mutagen.SessionManager
 }
 
 type WorkspaceState struct {
@@ -112,10 +116,23 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		log.Printf("[state] Warning: failed to create state store: %v", err)
 	}
 
+	mutagenDataDir := filepath.Join(os.Getenv("HOME"), ".nexus", "mutagen")
+	embeddedDaemon := mutagen.NewEmbeddedDaemon(mutagenDataDir)
+	if err := embeddedDaemon.Start(context.Background()); err != nil {
+		log.Printf("[mutagen] Warning: failed to start embedded daemon: %v", err)
+	} else {
+		log.Printf("[mutagen] Embedded daemon started at %s", mutagenDataDir)
+	}
+
+	sessionManager, err := mutagen.NewSessionManager(embeddedDaemon)
+	if err != nil {
+		log.Printf("[mutagen] Warning: failed to create session manager: %v", err)
+	}
+
 	srv := &Server{
-		port:          port,
-		workspaceDir:  workspaceDir,
-		tokenSecret:   tokenSecret,
+		port:            port,
+		workspaceDir:    workspaceDir,
+		tokenSecret:     tokenSecret,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
@@ -123,15 +140,21 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 				return true
 			},
 		},
-		connections:   make(map[string]*Connection),
-		ws:            ws,
-		lifecycle:     lifecycleMgr,
-		shutdownCh:    make(chan struct{}),
-		mux:           http.NewServeMux(),
-		workspaces:    make(map[string]*WorkspaceState),
-		dockerBackend: dockerBackend,
-		sshBridges:    make(map[string]*ssh.SSHBridge),
-		stateStore:    stateStore,
+		connections:     make(map[string]*Connection),
+		ws:              ws,
+		lifecycle:       lifecycleMgr,
+		shutdownCh:      make(chan struct{}),
+		mux:             http.NewServeMux(),
+		workspaces:      make(map[string]*WorkspaceState),
+		dockerBackend:   dockerBackend,
+		sshBridges:      make(map[string]*ssh.SSHBridge),
+		stateStore:      stateStore,
+		mutagenDaemon:   embeddedDaemon,
+		sessionManagers: map[string]*mutagen.SessionManager{},
+	}
+
+	if sessionManager != nil {
+		srv.sessionManagers["default"] = sessionManager
 	}
 
 	if stateStore != nil {
@@ -524,6 +547,28 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		wsID = createdWS.ID
 	}
 
+	if req.WorktreePath != "" && s.sessionManagers["default"] != nil {
+		worktreeAbs, err := filepath.Abs(req.WorktreePath)
+		if err == nil {
+			containerPath := "/workspace"
+			sessionID, err := s.sessionManagers["default"].CreateSession(
+				r.Context(),
+				wsID,
+				worktreeAbs,
+				containerPath,
+				nil,
+			)
+			if err != nil {
+				log.Printf("[mutagen] Warning: failed to create sync session: %v", err)
+			} else {
+				log.Printf("[mutagen] Created sync session %s for workspace %s", sessionID, wsID)
+				s.mu.Lock()
+				s.sessionManagers[wsID] = s.sessionManagers["default"]
+				s.mu.Unlock()
+			}
+		}
+	}
+
 	ws := &WorkspaceState{
 		ID:        wsID,
 		Name:      req.Name,
@@ -564,6 +609,17 @@ func (s *Server) deleteWorkspace(w http.ResponseWriter, r *http.Request, id stri
 	s.cleanupSSHBridge(id)
 
 	s.mu.Lock()
+	if mgr, ok := s.sessionManagers[id]; ok {
+		sessions, err := mgr.ListSessions()
+		if err == nil {
+			for _, sess := range sessions {
+				if err := mgr.TerminateSession(r.Context(), sess.ID); err != nil {
+					log.Printf("[mutagen] Warning: failed to terminate session %s: %v", sess.ID, err)
+				}
+			}
+		}
+		delete(s.sessionManagers, id)
+	}
 	delete(s.workspaces, id)
 	s.mu.Unlock()
 
@@ -593,6 +649,16 @@ func (s *Server) startWorkspace(w http.ResponseWriter, r *http.Request, id strin
 	}
 
 	s.mu.Lock()
+	if mgr, ok := s.sessionManagers[id]; ok {
+		sessions, err := mgr.ListSessions()
+		if err == nil {
+			for _, sess := range sessions {
+				if err := mgr.ResumeSession(r.Context(), sess.ID); err != nil {
+					log.Printf("[mutagen] Warning: failed to resume session %s: %v", sess.ID, err)
+				}
+			}
+		}
+	}
 	if ws, exists := s.workspaces[id]; exists {
 		ws.Status = "running"
 		ws.UpdatedAt = time.Now()
@@ -641,6 +707,16 @@ func (s *Server) stopWorkspace(w http.ResponseWriter, r *http.Request, id string
 	}
 
 	s.mu.Lock()
+	if mgr, ok := s.sessionManagers[id]; ok {
+		sessions, err := mgr.ListSessions()
+		if err == nil {
+			for _, sess := range sessions {
+				if err := mgr.PauseSession(r.Context(), sess.ID); err != nil {
+					log.Printf("[mutagen] Warning: failed to pause session %s: %v", sess.ID, err)
+				}
+			}
+		}
+	}
 	if ws, exists := s.workspaces[id]; exists {
 		ws.Status = "stopped"
 		ws.UpdatedAt = time.Now()
@@ -743,6 +819,12 @@ func (s *Server) Shutdown() {
 	if s.lifecycle != nil {
 		if err := s.lifecycle.RunPostStop(); err != nil {
 			log.Printf("[lifecycle] Post-stop hook error: %v", err)
+		}
+	}
+
+	if s.mutagenDaemon != nil {
+		if err := s.mutagenDaemon.Stop(context.Background()); err != nil {
+			log.Printf("[mutagen] Error stopping embedded daemon: %v", err)
 		}
 	}
 }
