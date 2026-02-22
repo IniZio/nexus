@@ -1,6 +1,6 @@
 # Binaries
-nexus
-nexus-*
+/nexus
+/nexus-*
 *.exe
 
 # Build artifacts
@@ -71,6 +71,15 @@ dist/
 
 # Workspace daemon binary
 packages/workspace-daemon/workspace-daemon
+
+# Nexus daemon binaries
+packages/nexusd/nexusd
+packages/nexusd/nexus
+packages/nexusd/cli
+packages/nexusd/daemon
+packages/nexusd/nexus-cli
+packages/nexusd/workspaces/
+packages/nexusd/.worktree/
 
 # Nested nexus folder
 nexus/nexus/
