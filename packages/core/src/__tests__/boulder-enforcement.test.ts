@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { ValidationEngine, createValidationEngine } from '../engine/checker.js';
-import { PromptGenerator, createPromptGenerator } from '../prompts/generator.js';
+import { ValidationEngine, createValidationEngine } from '../engine/checker-with-boulder.js';
+import { PromptGenerator, createPromptGenerator } from '../prompts/generator-with-boulder.js';
 import { ExecutionContext, EnforcerConfig } from '../types.js';
+import { BoulderStateManager } from '../boulder/state.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
@@ -38,6 +39,9 @@ describe('Boulder Continuous Enforcement', () => {
     
     engine = createValidationEngine(path.join(nexusPath, 'enforcer-rules.json'));
     generator = createPromptGenerator();
+    
+    // Reset boulder state to ensure test isolation
+    BoulderStateManager.getInstance().reset();
   });
 
   afterEach(() => {
@@ -124,8 +128,8 @@ describe('Boulder Continuous Enforcement', () => {
       const prompt = generator.generatePrompt('after', context, { result });
 
       expect(prompt).toContain('BOULDER ENFORCEMENT');
-      expect(prompt).toContain('NOT ALLOWED');
-      expect(prompt).toContain('The boulder NEVER stops');
+      expect(prompt).toContain('not allowed');
+      expect(prompt).toContain('The boulder never stops');
     });
 
     it('should suggest continuous improvement tasks', () => {
@@ -141,9 +145,18 @@ describe('Boulder Continuous Enforcement', () => {
       const result = engine.validate(context);
       expect(result.improvementTasks).toBeDefined();
       expect(result.improvementTasks!.length).toBeGreaterThan(0);
-      expect(result.improvementTasks).toContain('Write additional test cases');
-      expect(result.improvementTasks).toContain('Refactor code for better performance');
-      expect(result.improvementTasks).toContain('Research best practices for current implementation');
+      // Tasks are randomized, just check that we get some valid tasks
+      const allKnownTasks = [
+        'Write additional test cases',
+        'Refactor code for better performance',
+        'Research best practices for current implementation',
+        'Optimize for edge cases',
+        'Add comprehensive error handling',
+        'Improve documentation',
+        'Review code for security issues',
+        'Add monitoring and observability',
+      ];
+      expect(result.improvementTasks!.every(t => allKnownTasks.includes(t))).toBe(true);
     });
   });
 

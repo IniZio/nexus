@@ -37,7 +37,7 @@ export class NexusEnforcer {
     };
 
     const result = this.engine.validate(fullContext);
-    const prompt = this.generator.generatePrompt('before', fullContext, { result });
+    const prompt = this.generator.generatePrompt('before', fullContext, { result, rules: this.config.rules });
 
     console.log(prompt);
 
@@ -69,6 +69,10 @@ export class NexusEnforcer {
    * Throws error if completion is not allowed yet
    */
   enforceCompletion(): void {
+    if (!this.boulder.canComplete()) {
+      const state = this.boulder.getState();
+      throw new Error(`BOULDER ENFORCEMENT: Cannot complete yet. Required: ${5} iterations, Current: ${state.iteration}. Keep improving!`);
+    }
     this.boulder.recordCompletionAttempt();
   }
 
@@ -84,6 +88,13 @@ export class NexusEnforcer {
    */
   getBoulderState() {
     return this.boulder.getState();
+  }
+
+  /**
+   * Reset boulder state
+   */
+  resetBoulder(): void {
+    this.boulder.reset();
   }
 
   generatePrompt(phase: 'before' | 'after', context: ExecutionContext): string {

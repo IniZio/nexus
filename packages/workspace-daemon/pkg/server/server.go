@@ -25,6 +25,8 @@ import (
 	wsTypes "github.com/nexus/nexus/packages/workspace-daemon/internal/types"
 	"github.com/nexus/nexus/packages/workspace-daemon/internal/ssh"
 	"github.com/nexus/nexus/packages/workspace-daemon/internal/sync/mutagen"
+
+	"github.com/nexus/nexus/packages/workspace-daemon/internal/interfaces"
 )
 
 type Server struct {
@@ -34,16 +36,16 @@ type Server struct {
 	upgrader        websocket.Upgrader
 	connections     map[string]*Connection
 	ws              *workspace.Workspace
-	lifecycle       *lifecycle.Manager
+	lifecycle       interfaces.LifecycleManager
 	mu              sync.RWMutex
 	shutdownCh      chan struct{}
 	mux             *http.ServeMux
 	workspaces      map[string]*WorkspaceState
-	dockerBackend   *docker.DockerBackend
+	dockerBackend   interfaces.Backend
 	sshBridges      map[string]*ssh.SSHBridge
-	stateStore      *state.StateStore
+	stateStore      interfaces.StateStore
 	httpServer      *http.Server
-	mutagenDaemon   *mutagen.EmbeddedDaemon
+	mutagenDaemon   interfaces.MutagenClient
 	sessionManagers map[string]*mutagen.SessionManager
 }
 
@@ -87,46 +89,18 @@ type RPCResponse struct {
 	Error   *rpckit.RPCError `json:"error,omitempty"`
 }
 
-func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, error) {
+func NewServerWithDeps(
+	port int,
+	workspaceDir string,
+	tokenSecret string,
+	stateStore interfaces.StateStore,
+	backend interfaces.Backend,
+	lifecycleMgr interfaces.LifecycleManager,
+	mutagenClient interfaces.MutagenClient,
+) (*Server, error) {
 	ws, err := workspace.NewWorkspace(workspaceDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workspace: %w", err)
-	}
-
-	lifecycleMgr, err := lifecycle.NewManager(workspaceDir)
-	if err != nil {
-		log.Printf("[lifecycle] Warning: failed to initialize lifecycle manager: %v", err)
-	}
-
-	if err := lifecycleMgr.RunPreStart(); err != nil {
-		return nil, fmt.Errorf("pre-start hook failed: %w", err)
-	}
-
-	var dockerBackend *docker.DockerBackend
-	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		log.Printf("[docker] Warning: failed to create docker client: %v", err)
-	} else {
-		dockerBackend = docker.NewDockerBackend(dockerClient, workspaceDir)
-	}
-
-	stateDir := filepath.Join(workspaceDir, ".nexus", "state")
-	stateStore, err := state.NewStateStore(stateDir)
-	if err != nil {
-		log.Printf("[state] Warning: failed to create state store: %v", err)
-	}
-
-	mutagenDataDir := filepath.Join(os.Getenv("HOME"), ".nexus", "mutagen")
-	embeddedDaemon := mutagen.NewEmbeddedDaemon(mutagenDataDir)
-	if err := embeddedDaemon.Start(context.Background()); err != nil {
-		log.Printf("[mutagen] Warning: failed to start embedded daemon: %v", err)
-	} else {
-		log.Printf("[mutagen] Embedded daemon started at %s", mutagenDataDir)
-	}
-
-	sessionManager, err := mutagen.NewSessionManager(embeddedDaemon)
-	if err != nil {
-		log.Printf("[mutagen] Warning: failed to create session manager: %v", err)
 	}
 
 	srv := &Server{
@@ -146,15 +120,11 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		shutdownCh:      make(chan struct{}),
 		mux:             http.NewServeMux(),
 		workspaces:      make(map[string]*WorkspaceState),
-		dockerBackend:   dockerBackend,
+		dockerBackend:   backend,
 		sshBridges:      make(map[string]*ssh.SSHBridge),
 		stateStore:      stateStore,
-		mutagenDaemon:   embeddedDaemon,
-		sessionManagers: map[string]*mutagen.SessionManager{},
-	}
-
-	if sessionManager != nil {
-		srv.sessionManagers["default"] = sessionManager
+		mutagenDaemon:   mutagenClient,
+		sessionManagers: make(map[string]*mutagen.SessionManager),
 	}
 
 	if stateStore != nil {
@@ -162,7 +132,7 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 			log.Printf("[state] Warning: failed to load workspaces: %v", err)
 		}
 
-		if dockerBackend != nil {
+		if backend != nil {
 			if err := srv.cleanupDanglingWorkspaces(); err != nil {
 				log.Printf("[state] Warning: failed to cleanup dangling workspaces: %v", err)
 			}
@@ -170,6 +140,59 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 	}
 
 	return srv, nil
+}
+
+func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, error) {
+	lifecycleMgr, err := lifecycle.NewManager(workspaceDir)
+	if err != nil {
+		log.Printf("[lifecycle] Warning: failed to initialize lifecycle manager: %v", err)
+	}
+
+	if lifecycleMgr != nil {
+		if err := lifecycleMgr.RunPreStart(); err != nil {
+			return nil, fmt.Errorf("pre-start hook failed: %w", err)
+		}
+	}
+
+	var stateStore interfaces.StateStore
+	stateDir := filepath.Join(workspaceDir, ".nexus", "state")
+	store, err := state.NewStateStore(stateDir)
+	if err != nil {
+		log.Printf("[state] Warning: failed to create state store: %v", err)
+	} else {
+		stateStore = store
+	}
+
+	var backend interfaces.Backend
+	var dockerBackend *docker.DockerBackend
+
+	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		log.Printf("[docker] Warning: failed to create docker client: %v", err)
+	} else {
+		dockerBackend = docker.NewDockerBackend(dockerClient, workspaceDir)
+		backend = dockerBackend
+	}
+
+	var mutagenClient interfaces.MutagenClient
+	mutagenDataDir := filepath.Join(os.Getenv("HOME"), ".nexus", "mutagen")
+	embeddedDaemon := mutagen.NewEmbeddedDaemon(mutagenDataDir)
+	if err := embeddedDaemon.Start(context.Background()); err != nil {
+		log.Printf("[mutagen] Warning: failed to start embedded daemon: %v", err)
+	} else {
+		log.Printf("[mutagen] Embedded daemon started at %s", mutagenDataDir)
+		mutagenClient = embeddedDaemon
+	}
+
+	return NewServerWithDeps(
+		port,
+		workspaceDir,
+		tokenSecret,
+		stateStore,
+		backend,
+		lifecycleMgr,
+		mutagenClient,
+	)
 }
 
 func (s *Server) LoadWorkspaces() error {
@@ -207,14 +230,34 @@ func (s *Server) cleanupDanglingWorkspaces() error {
 		knownWorkspaceIDs[id] = true
 	}
 
-	containers, err := s.dockerBackend.ListContainersByLabel(context.Background(), "nexus.workspace")
+	type dockerContainerLister interface {
+		ListContainersByLabel(ctx context.Context, label string) ([]interface{}, error)
+		RemoveContainer(ctx context.Context, containerID string) error
+	}
+
+	dockerBackend, ok := s.dockerBackend.(dockerContainerLister)
+	if !ok {
+		log.Printf("[cleanup] Backend does not support docker-specific operations")
+		return nil
+	}
+
+	containers, err := dockerBackend.ListContainersByLabel(context.Background(), "nexus.workspace")
 	if err != nil {
 		return fmt.Errorf("listing containers: %w", err)
 	}
 
 	log.Printf("[cleanup] Found %d containers with nexus label", len(containers))
 
-	for _, container := range containers {
+	type containerInfo struct {
+		Labels map[string]string
+		ID     string
+	}
+
+	for _, c := range containers {
+		container, ok := c.(containerInfo)
+		if !ok {
+			continue
+		}
 		wsID := container.Labels["nexus.workspace.id"]
 		if wsID == "" {
 			continue
@@ -232,7 +275,7 @@ func (s *Server) cleanupDanglingWorkspaces() error {
 		}
 
 		log.Printf("[cleanup] Found orphaned container %s for unknown workspace %s, removing...", container.ID[:12], wsID)
-		if err := s.dockerBackend.RemoveContainer(context.Background(), container.ID); err != nil {
+		if err := dockerBackend.RemoveContainer(context.Background(), container.ID); err != nil {
 			log.Printf("[cleanup] Warning: failed to remove orphaned container %s: %v", container.ID[:12], err)
 			continue
 		}

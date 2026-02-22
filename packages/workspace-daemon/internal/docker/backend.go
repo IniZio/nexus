@@ -519,6 +519,10 @@ func (b *DockerBackend) GetWorkspaceStatus(ctx context.Context, id string) (wsTy
 	return wsTypes.StatusStopped, nil
 }
 
+func (b *DockerBackend) GetStatus(ctx context.Context, id string) (wsTypes.WorkspaceStatus, error) {
+	return b.GetWorkspaceStatus(ctx, id)
+}
+
 func (b *DockerBackend) GetResourceStats(ctx context.Context, id string) (*wsTypes.ResourceStats, error) {
 	info, err := b.containerManager.Inspect(ctx, id)
 	if err != nil {

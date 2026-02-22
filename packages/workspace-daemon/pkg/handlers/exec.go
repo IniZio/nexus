@@ -11,7 +11,7 @@ import (
 
 	rpckit "github.com/nexus/nexus/packages/workspace-daemon/pkg/rpcerrors"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/workspace"
-	"github.com/nexus/nexus/packages/workspace-daemon/internal/docker"
+	"github.com/nexus/nexus/packages/workspace-daemon/internal/interfaces"
 )
 
 const (
@@ -38,7 +38,7 @@ type ExecResult struct {
 	Command  string `json:"command"`
 }
 
-func HandleExec(ctx context.Context, params json.RawMessage, ws *workspace.Workspace, backend *docker.DockerBackend) (*ExecResult, *rpckit.RPCError) {
+func HandleExec(ctx context.Context, params json.RawMessage, ws *workspace.Workspace, backend interfaces.Backend) (*ExecResult, *rpckit.RPCError) {
 	var p ExecParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, rpckit.ErrInvalidParams

@@ -35,7 +35,7 @@ describe('NexusEnforcer with Boulder Integration', () => {
     enforcer = createNexusEnforcer(path.join(nexusPath, 'enforcer-rules.json'));
     
     // Reset boulder state
-    enforcer.getBoulderState();
+    enforcer.resetBoulder();
   });
 
   afterEach(() => {
