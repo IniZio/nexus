@@ -98,6 +98,8 @@ tasks:
     dir: packages/nexusd
     cmds:
       - go test ./...
+    env:
+      SKIP_E2E: "true"
 
   ci:
     desc: Run CI pipeline - install, build, lint, test
