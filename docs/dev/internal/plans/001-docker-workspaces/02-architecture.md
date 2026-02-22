@@ -1092,45 +1092,740 @@ func (m *SyncManager) HandleConflicts(conflicts []Conflict) error {
 }
 ```
 
-### 2.8.6 Deployment Options
+### 2.8.6 Embedded Mutagen Daemon
 
-**Option A: Embedded Mutagen**
+Nexus embeds the Mutagen daemon directly within the workspace daemon process, eliminating the need for users to install Mutagen CLI separately.
 
-Bundle `mutagen` and `mutagen-agent` binaries with the Nexus daemon.
+#### Architecture
 
-- ✅ Zero user setup
-- ✅ Version controlled
-- ❌ Larger binary size (+50MB per platform)
-- ❌ Update lag (bundled with Nexus releases)
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        Embedded Mutagen Architecture                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                      Nexus Daemon (Go)                               │   │
+│  │                                                                      │   │
+│  │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐   │   │
+│  │  │   Workspace      │  │  Embedded        │  │   gRPC API       │   │   │
+│  │  │   Manager        │──│  Mutagen Daemon  │──│   Clients        │   │   │
+│  │  │                  │  │  (in-process)    │  │                  │   │   │
+│  │  └──────────────────┘  └────────┬─────────┘  └──────────────────┘   │   │
+│  │                                 │                                    │   │
+│  └─────────────────────────────────┼────────────────────────────────────┘   │
+│                                    │                                        │
+│                                    │ Unix Socket                            │
+│                                    ▼                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                   Mutagen gRPC Services                              │   │
+│  │                                                                      │   │
+│  │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐   │   │
+│  │  │  Synchronization │  │   Forwarding     │  │   Daemon         │   │   │
+│  │  │   Service        │  │   Service        │  │   Service        │   │   │
+│  │  └──────────────────┘  └──────────────────┘  └──────────────────┘   │   │
+│  └─────────────────────────────────┬────────────────────────────────────┘   │
+│                                    │                                        │
+│                                    │ sync sessions                          │
+│                    ┌───────────────┼───────────────┐                        │
+│                    │               │               │                        │
+│                    ▼               ▼               ▼                        │
+│  ┌─────────────────────┐   ┌─────────────────────┐   ┌─────────────────┐   │
+│  │  Host Worktree      │   │  Docker Volume      │   │  mutagen-agent  │   │
+│  │  (.worktrees/<name>)│──▶│  (nexus-sync-<id>)  │──▶│  (in container) │   │
+│  │                     │   │                     │   │                 │   │
+│  │  • Source files     │   │  • Staging area     │   │  • Applies to   │   │
+│  │  • Git repository   │   │  • Persistent       │   │    /workspace   │   │
+│  └─────────────────────┘   └─────────────────────┘   └─────────────────┘   │
+│                                                                             │
+│  Data Directory: ~/.nexus/mutagen/                                          │
+│  Socket Path:    ~/.nexus/mutagen/daemon/daemon.sock                        │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
-**Option B: External Mutagen**
+#### Key Design Decisions
 
-Require users to install Mutagen separately (`brew install mutagen-io/mutagen/mutagen`).
+| Aspect | Approach | Rationale |
+|--------|----------|-----------|
+| **Isolation** | Separate data directory (`~/.nexus/mutagen/`) | Avoids conflicts with standalone Mutagen installations |
+| **Socket** | Unix domain socket in data directory | Fast, secure, no network exposure |
+| **Lifecycle** | Managed by Nexus daemon | Auto-start on first sync, graceful shutdown on exit |
+| **Agents** | Bundled `mutagen-agents.tar.gz` | Required for container-side sync endpoints |
+| **Version** | Pinned Mutagen version | Ensures compatibility, tested combination |
 
-- ✅ Smaller Nexus binary
-- ✅ User can update Mutagen independently
-- ❌ Additional setup step
-- ❌ Version compatibility issues
+#### Implementation
 
-**Option C: Hybrid (Recommended)**
-
-Try embedded first, fallback to external if not available.
+**1. Starting the Embedded Daemon**
 
 ```go
-func NewSyncManager(config *Config) (*SyncManager, error) {
-    // Try embedded
-    if path, err := findEmbeddedMutagen(); err == nil {
-        return &SyncManager{provider: NewMutagenProvider(path)}, nil
+// internal/sync/mutagen/daemon.go
+package mutagen
+
+import (
+    "context"
+    "fmt"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "runtime"
+    "sync"
+    "time"
+
+    "google.golang.org/grpc"
+    "github.com/mutagen-io/mutagen/pkg/daemon"
+    "github.com/mutagen-io/mutagen/pkg/filesystem"
+    "github.com/mutagen-io/mutagen/pkg/grpcutil"
+    "github.com/mutagen-io/mutagen/pkg/ipc"
+    daemonsvc "github.com/mutagen-io/mutagen/pkg/service/daemon"
+)
+
+// EmbeddedDaemon manages an embedded Mutagen daemon instance.
+type EmbeddedDaemon struct {
+    dataDir      string
+    socketPath   string
+    cmd          *exec.Cmd
+    conn         *grpc.ClientConn
+    mu           sync.RWMutex
+    started      bool
+    stopCh       chan struct{}
+}
+
+// NewEmbeddedDaemon creates a new embedded daemon configuration.
+// The daemon is not started until Start() is called.
+func NewEmbeddedDaemon(dataDir string) *EmbeddedDaemon {
+    return &EmbeddedDaemon{
+        dataDir:    dataDir,
+        socketPath: filepath.Join(dataDir, "daemon", "daemon.sock"),
+        stopCh:     make(chan struct{}),
     }
-    
-    // Fallback to external
-    if path, err := exec.LookPath("mutagen"); err == nil {
-        return &SyncManager{provider: NewMutagenProvider(path)}, nil
+}
+
+// Start launches the embedded Mutagen daemon.
+// It sets up the custom data directory and starts the daemon process.
+func (d *EmbeddedDaemon) Start(ctx context.Context) error {
+    d.mu.Lock()
+    defer d.mu.Unlock()
+
+    if d.started {
+        return nil
     }
+
+    // Ensure data directory exists
+    if err := os.MkdirAll(d.dataDir, 0700); err != nil {
+        return fmt.Errorf("failed to create mutagen data directory: %w", err)
+    }
+
+    // Set MUTAGEN_DATA_DIRECTORY to isolate from system Mutagen
+    env := os.Environ()
+    env = append(env, fmt.Sprintf("MUTAGEN_DATA_DIRECTORY=%s", d.dataDir))
+
+    // Find the mutagen binary (bundled or external)
+    mutagenPath, err := d.findMutagenBinary()
+    if err != nil {
+        return fmt.Errorf("mutagen binary not found: %w", err)
+    }
+
+    // Start daemon: mutagen daemon run
+    d.cmd = &exec.Cmd{
+        Path:   mutagenPath,
+        Args:   []string{"mutagen", "daemon", "run"},
+        Env:    env,
+        Stdout: os.Stdout, // Optional: redirect to structured logging
+        Stderr: os.Stderr,
+    }
+
+    if err := d.cmd.Start(); err != nil {
+        return fmt.Errorf("failed to start mutagen daemon: %w", err)
+    }
+
+    // Wait for daemon to be ready
+    if err := d.waitForReady(ctx); err != nil {
+        d.cmd.Process.Kill()
+        return fmt.Errorf("daemon failed to become ready: %w", err)
+    }
+
+    // Connect to daemon
+    conn, err := d.connect()
+    if err != nil {
+        d.cmd.Process.Kill()
+        return fmt.Errorf("failed to connect to daemon: %w", err)
+    }
+    d.conn = conn
+
+    d.started = true
+
+    // Start monitoring goroutine
+    go d.monitor()
+
+    return nil
+}
+
+// findMutagenBinary locates the mutagen binary, preferring bundled version.
+func (d *EmbeddedDaemon) findMutagenBinary() (string, error) {
+    // 1. Check for bundled binary next to nexus daemon
+    if exe, err := os.Executable(); err == nil {
+        exeDir := filepath.Dir(exe)
+        bundled := filepath.Join(exeDir, "mutagen")
+        if runtime.GOOS == "windows" {
+            bundled += ".exe"
+        }
+        if _, err := os.Stat(bundled); err == nil {
+            return bundled, nil
+        }
+        
+        // Check libexec directory (FHS layout)
+        libexec := filepath.Join(exeDir, "..", "libexec", "mutagen")
+        if runtime.GOOS == "windows" {
+            libexec += ".exe"
+        }
+        if _, err := os.Stat(libexec); err == nil {
+            return libexec, nil
+        }
+    }
+
+    // 2. Fallback to PATH
+    return exec.LookPath("mutagen")
+}
+
+// waitForReady waits for the daemon socket to become available.
+func (d *EmbeddedDaemon) waitForReady(ctx context.Context) error {
+    ticker := time.NewTicker(100 * time.Millisecond)
+    defer ticker.Stop()
+
+    timeout := time.AfterFunc(10*time.Second, func() {})
+    defer timeout.Stop()
+
+    for {
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        case <-timeout.C:
+            return fmt.Errorf("timeout waiting for daemon")
+        case <-ticker.C:
+            if _, err := os.Stat(d.socketPath); err == nil {
+                return nil
+            }
+        }
+    }
+}
+
+// connect establishes a gRPC connection to the daemon.
+func (d *EmbeddedDaemon) connect() (*grpc.ClientConn, error) {
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+
+    return grpc.DialContext(
+        ctx,
+        d.socketPath,
+        grpc.WithInsecure(),
+        grpc.WithContextDialer(ipc.DialContext),
+        grpc.WithBlock(),
+        grpc.WithDefaultCallOptions(
+            grpc.MaxCallSendMsgSize(grpcutil.MaximumMessageSize),
+            grpc.MaxCallRecvMsgSize(grpcutil.MaximumMessageSize),
+        ),
+    )
+}
+
+// Connection returns the gRPC connection to the daemon.
+func (d *EmbeddedDaemon) Connection() *grpc.ClientConn {
+    d.mu.RLock()
+    defer d.mu.RUnlock()
+    return d.conn
+}
+
+// IsRunning returns true if the daemon is running.
+func (d *EmbeddedDaemon) IsRunning() bool {
+    d.mu.RLock()
+    defer d.mu.RUnlock()
+    return d.started && d.conn != nil
+}
+
+// Stop gracefully shuts down the daemon.
+func (d *EmbeddedDaemon) Stop(ctx context.Context) error {
+    d.mu.Lock()
+    defer d.mu.Unlock()
+
+    if !d.started {
+        return nil
+    }
+
+    // Signal stop
+    close(d.stopCh)
+
+    // Close gRPC connection
+    if d.conn != nil {
+        d.conn.Close()
+        d.conn = nil
+    }
+
+    // Request daemon shutdown via API
+    if d.cmd != nil && d.cmd.Process != nil {
+        // Send terminate signal to daemon
+        daemonClient := daemonsvc.NewDaemonClient(d.conn)
+        shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+        defer cancel()
+        
+        _, _ = daemonClient.Terminate(shutdownCtx, &daemonsvc.TerminateRequest{})
+        
+        // Wait for process to exit
+        done := make(chan error, 1)
+        go func() {
+            done <- d.cmd.Wait()
+        }()
+
+        select {
+        case <-ctx.Done():
+            d.cmd.Process.Kill()
+            return ctx.Err()
+        case <-done:
+            // Process exited
+        }
+    }
+
+    d.started = false
+    return nil
+}
+
+// monitor watches the daemon process and restarts if necessary.
+func (d *EmbeddedDaemon) monitor() {
+    if d.cmd == nil {
+        return
+    }
+
+    err := d.cmd.Wait()
     
-    return nil, fmt.Errorf("mutagen not found: install with 'brew install mutagen-io/mutagen/mutagen'")
+    d.mu.Lock()
+    defer d.mu.Unlock()
+
+    if !d.started {
+        // Intentionally stopped
+        return
+    }
+
+    // Daemon exited unexpectedly - could trigger restart or alert
+    // For now, just mark as stopped
+    d.started = false
+    d.conn = nil
+    
+    // TODO: Implement restart policy with backoff
+    _ = err
 }
 ```
+
+**2. Creating Sync Sessions**
+
+```go
+// internal/sync/mutagen/session.go
+package mutagen
+
+import (
+    "context"
+    "fmt"
+
+    "github.com/mutagen-io/mutagen/pkg/service/synchronization"
+    "github.com/mutagen-io/mutagen/pkg/synchronization"
+    "github.com/mutagen-io/mutagen/pkg/url"
+)
+
+// SessionManager handles Mutagen synchronization sessions.
+type SessionManager struct {
+    daemon      *EmbeddedDaemon
+    syncClient  synchronization.SynchronizationClient
+}
+
+// NewSessionManager creates a session manager for the given daemon.
+func NewSessionManager(daemon *EmbeddedDaemon) *SessionManager {
+    return &SessionManager{
+        daemon:     daemon,
+        syncClient: synchronization.NewSynchronizationClient(daemon.Connection()),
+    }
+}
+
+// CreateSession creates a new synchronization session between host and container.
+func (sm *SessionManager) CreateSession(
+    ctx context.Context,
+    name string,
+    hostPath string,
+    containerID string,
+    containerPath string,
+) (*SessionInfo, error) {
+    // Parse alpha URL (host worktree)
+    alpha, err := url.Parse(hostPath, url.Kind_Synchronization, true)
+    if err != nil {
+        return nil, fmt.Errorf("invalid host path: %w", err)
+    }
+
+    // Parse beta URL (Docker container)
+    // Format: docker://<container_id>/<path>
+    betaURL := fmt.Sprintf("docker://%s%s", containerID, containerPath)
+    beta, err := url.Parse(betaURL, url.Kind_Synchronization, false)
+    if err != nil {
+        return nil, fmt.Errorf("invalid container path: %w", err)
+    }
+
+    // Create session specification
+    spec := &synchronization.CreationSpecification{
+        Alpha: alpha,
+        Beta:  beta,
+        Configuration: &synchronization.Configuration{
+            SynchronizationMode: synchronization.SynchronizationMode_TwoWaySafe,
+            IgnoreVCS:           true,
+            DefaultFileMode:     0644,
+            DefaultDirectoryMode: 0755,
+        },
+        ConfigurationAlpha: &synchronization.Configuration{
+            // Host-specific settings
+            WatchMode: synchronization.WatchMode_WatchModePortable,
+        },
+        ConfigurationBeta: &synchronization.Configuration{
+            // Container-specific settings
+            WatchMode: synchronization.WatchMode_WatchModePortable,
+        },
+        Name: name,
+        Labels: map[string]string{
+            "nexus/workspace": name,
+            "nexus/managed":   "true",
+        },
+    }
+
+    // Create the session
+    resp, err := sm.syncClient.Create(ctx, &synchronization.CreateRequest{
+        Specification: spec,
+    })
+    if err != nil {
+        return nil, fmt.Errorf("failed to create sync session: %w", err)
+    }
+
+    return &SessionInfo{
+        ID:   resp.Session,
+        Name: name,
+    }, nil
+}
+
+// SessionInfo holds information about a sync session.
+type SessionInfo struct {
+    ID   string
+    Name string
+}
+
+// PauseSession pauses a synchronization session.
+func (sm *SessionManager) PauseSession(ctx context.Context, sessionID string) error {
+    _, err := sm.syncClient.Pause(ctx, &synchronization.PauseRequest{
+        Selection: &selection.Selection{
+            Specifications: []string{sessionID},
+        },
+    })
+    return err
+}
+
+// ResumeSession resumes a paused synchronization session.
+func (sm *SessionManager) ResumeSession(ctx context.Context, sessionID string) error {
+    _, err := sm.syncClient.Resume(ctx, &synchronization.ResumeRequest{
+        Selection: &selection.Selection{
+            Specifications: []string{sessionID},
+        },
+    })
+    return err
+}
+
+// TerminateSession terminates a synchronization session.
+func (sm *SessionManager) TerminateSession(ctx context.Context, sessionID string) error {
+    _, err := sm.syncClient.Terminate(ctx, &synchronization.TerminateRequest{
+        Selection: &selection.Selection{
+            Specifications: []string{sessionID},
+        },
+        SkipWaitForDestinations: false,
+    })
+    return err
+}
+
+// GetSessionStatus retrieves the current status of a session.
+func (sm *SessionManager) GetSessionStatus(ctx context.Context, sessionID string) (*SyncStatus, error) {
+    resp, err := sm.syncClient.List(ctx, &synchronization.ListRequest{
+        Selection: &selection.Selection{
+            Specifications: []string{sessionID},
+        },
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    if len(resp.SessionStates) == 0 {
+        return nil, fmt.Errorf("session not found: %s", sessionID)
+    }
+
+    state := resp.SessionStates[0]
+    return &SyncStatus{
+        SessionID:       state.Session.Identifier,
+        Name:            state.Session.Name,
+        Status:          state.Status.String(),
+        AlphaPath:       state.Session.Alpha.Path,
+        BetaPath:        state.Session.Beta.Path,
+        LastError:       state.LastError,
+        Conflicts:       len(state.Conflicts),
+    }, nil
+}
+
+// SyncStatus represents the status of a sync session.
+type SyncStatus struct {
+    SessionID  string
+    Name       string
+    Status     string
+    AlphaPath  string
+    BetaPath   string
+    LastError  string
+    Conflicts  int
+}
+```
+
+**3. Workspace Integration**
+
+```go
+// internal/sync/manager.go
+package sync
+
+import (
+    "context"
+    "fmt"
+    "os"
+    "path/filepath"
+)
+
+// Manager coordinates file synchronization for all workspaces.
+type Manager struct {
+    dataDir        string
+    daemon         *mutagen.EmbeddedDaemon
+    sessionManager *mutagen.SessionManager
+    sessions       map[string]*WorkspaceSync // workspace -> sync info
+}
+
+// Config holds sync manager configuration.
+type Config struct {
+    // DataDirectory is where Mutagen stores its data.
+    // Default: ~/.nexus/mutagen/
+    DataDirectory string
+}
+
+// NewManager creates a new sync manager with embedded Mutagen.
+func NewManager(cfg *Config) (*Manager, error) {
+    dataDir := cfg.DataDirectory
+    if dataDir == "" {
+        home, err := os.UserHomeDir()
+        if err != nil {
+            return nil, fmt.Errorf("failed to get home directory: %w", err)
+        }
+        dataDir = filepath.Join(home, ".nexus", "mutagen")
+    }
+
+    daemon := mutagen.NewEmbeddedDaemon(dataDir)
+
+    return &Manager{
+        dataDir:        dataDir,
+        daemon:         daemon,
+        sessionManager: mutagen.NewSessionManager(daemon),
+        sessions:       make(map[string]*WorkspaceSync),
+    }, nil
+}
+
+// Start initializes the sync manager and starts the embedded daemon.
+func (m *Manager) Start(ctx context.Context) error {
+    if err := m.daemon.Start(ctx); err != nil {
+        return fmt.Errorf("failed to start mutagen daemon: %w", err)
+    }
+    return nil
+}
+
+// Stop gracefully shuts down the sync manager.
+func (m *Manager) Stop(ctx context.Context) error {
+    // Terminate all active sessions
+    for workspaceID, sync := range m.sessions {
+        if err := m.sessionManager.TerminateSession(ctx, sync.SessionID); err != nil {
+            // Log but continue
+            fmt.Printf("Failed to terminate session for %s: %v\n", workspaceID, err)
+        }
+    }
+
+    // Stop the daemon
+    return m.daemon.Stop(ctx)
+}
+
+// CreateWorkspaceSync establishes file sync for a new workspace.
+func (m *Manager) CreateWorkspaceSync(
+    ctx context.Context,
+    workspaceID string,
+    worktreePath string,
+    containerID string,
+) error {
+    sessionName := fmt.Sprintf("nexus-%s", workspaceID)
+    
+    session, err := m.sessionManager.CreateSession(
+        ctx,
+        sessionName,
+        worktreePath,
+        containerID,
+        "/workspace",
+    )
+    if err != nil {
+        return fmt.Errorf("failed to create sync session: %w", err)
+    }
+
+    m.sessions[workspaceID] = &WorkspaceSync{
+        WorkspaceID: workspaceID,
+        SessionID:   session.ID,
+        SessionName: session.Name,
+    }
+
+    return nil
+}
+
+// PauseWorkspaceSync pauses sync for a workspace (e.g., when stopping).
+func (m *Manager) PauseWorkspaceSync(ctx context.Context, workspaceID string) error {
+    sync, ok := m.sessions[workspaceID]
+    if !ok {
+        return fmt.Errorf("no sync session for workspace: %s", workspaceID)
+    }
+
+    return m.sessionManager.PauseSession(ctx, sync.SessionID)
+}
+
+// ResumeWorkspaceSync resumes sync for a workspace (e.g., when starting).
+func (m *Manager) ResumeWorkspaceSync(ctx context.Context, workspaceID string) error {
+    sync, ok := m.sessions[workspaceID]
+    if !ok {
+        return fmt.Errorf("no sync session for workspace: %s", workspaceID)
+    }
+
+    return m.sessionManager.ResumeSession(ctx, sync.SessionID)
+}
+
+// DestroyWorkspaceSync terminates sync for a workspace.
+func (m *Manager) DestroyWorkspaceSync(ctx context.Context, workspaceID string) error {
+    sync, ok := m.sessions[workspaceID]
+    if !ok {
+        return nil // Already destroyed or never existed
+    }
+
+    if err := m.sessionManager.TerminateSession(ctx, sync.SessionID); err != nil {
+        return fmt.Errorf("failed to terminate session: %w", err)
+    }
+
+    delete(m.sessions, workspaceID)
+    return nil
+}
+
+// WorkspaceSync tracks sync state for a workspace.
+type WorkspaceSync struct {
+    WorkspaceID string
+    SessionID   string
+    SessionName string
+}
+```
+
+#### Bundling Mutagen Binary
+
+The Mutagen CLI binary and agent bundle must be distributed with Nexus:
+
+```
+nexus/
+├── bin/
+│   ├── nexus-daemon       # Main daemon executable
+│   ├── mutagen            # Mutagen CLI (bundled)
+│   └── mutagen-agents.tar.gz  # Agent binaries for various platforms
+└── lib/
+    └── ...
+```
+
+**Build Process:**
+
+```makefile
+# Makefile
+MUTAGEN_VERSION := 0.18.0
+
+# Download Mutagen release
+download-mutagen:
+    mkdir -p build/mutagen
+    curl -L -o build/mutagen/mutagen.tar.gz \
+        https://github.com/mutagen-io/mutagen/releases/download/v$(MUTAGEN_VERSION)/mutagen_linux_amd64_v$(MUTAGEN_VERSION).tar.gz
+    tar -xzf build/mutagen/mutagen.tar.gz -C build/mutagen/
+    
+    # Download agent bundle
+    curl -L -o build/mutagen/mutagen-agents.tar.gz \
+        https://github.com/mutagen-io/mutagen/releases/download/v$(MUTAGEN_VERSION)/mutagen-agents.tar.gz
+
+# Bundle into nexus distribution
+bundle: download-mutagen
+    mkdir -p dist/bin dist/lib
+    cp build/mutagen/mutagen dist/bin/
+    cp build/mutagen/mutagen-agents.tar.gz dist/bin/
+    cp build/nexus-daemon dist/bin/
+    # Create platform-specific packages...
+```
+
+#### Configuration
+
+```yaml
+# ~/.nexus/config.yaml
+sync:
+  provider: mutagen
+  
+  # Mutagen-specific settings
+  mutagen:
+    # Data directory (default: ~/.nexus/mutagen/)
+    data_directory: "~/.nexus/mutagen/"
+    
+    # Sync mode: two-way-safe, two-way-resolved, one-way-replica
+    mode: two-way-safe
+    
+    # Conflict resolution strategy
+    conflict:
+      strategy: host-wins
+    
+    # Paths to exclude from sync
+    exclude:
+      - node_modules
+      - .git
+      - build
+      - dist
+      - "*.log"
+      - ".DS_Store"
+      - ".nexus/"
+    
+    # Watch settings
+    watch:
+      mode: auto
+      polling_interval: 500ms
+    
+    # Performance limits
+    performance:
+      max_entry_count: 50000
+      max_staging_size: 10GB
+```
+
+#### Error Handling
+
+Common error scenarios and recovery:
+
+| Error | Cause | Recovery |
+|-------|-------|----------|
+| `daemon.Start() fails` | Binary not found, permissions | Check bundled binary exists, check executable permissions |
+| `waitForReady timeout` | Daemon crashed, socket issue | Check logs, retry with backoff, alert user |
+| `CreateSession fails` | Container not running, path invalid | Verify container state, check path exists |
+| `session paused` | Container stopped | Auto-resume when container starts |
+| `conflicts detected` | Simultaneous edits | Use configured resolution strategy |
+
+#### Comparison: Embedded vs External Mutagen
+
+| Aspect | Embedded (Recommended) | External |
+|--------|----------------------|----------|
+| **User Setup** | Zero setup required | Must install Mutagen CLI |
+| **Version Control** | Pinned, tested version | User-managed, may mismatch |
+| **Binary Size** | +50MB (mutagen + agents) | No additional size |
+| **Updates** | With Nexus releases | Independent updates |
+| **Isolation** | Separate data directory | Shared with other Mutagen usage |
+| **Reliability** | Full lifecycle control | Depends on external daemon state |
+
+**Recommendation:** Use embedded Mutagen as the default for the best user experience. Consider adding a hybrid fallback to external Mutagen for advanced users who want independent updates.
 
 ### 2.8.7 Monitoring & Observability
 
