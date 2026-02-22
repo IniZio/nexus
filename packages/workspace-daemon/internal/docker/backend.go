@@ -925,6 +925,77 @@ func (b *DockerBackend) ReleasePort(port int32) error {
 	return b.portManager.Release(port)
 }
 
+func (b *DockerBackend) AddPortBinding(ctx context.Context, workspaceID string, containerPort, hostPort int32) error {
+	containers, err := b.docker.ContainerList(ctx, container.ListOptions{
+		All: true,
+	})
+	if err != nil {
+		return fmt.Errorf("listing containers: %w", err)
+	}
+
+	var containerID string
+	for _, c := range containers {
+		for _, name := range c.Names {
+			if name == "/"+workspaceID || name == workspaceID {
+				containerID = c.ID
+				break
+			}
+		}
+		if containerID != "" {
+			break
+		}
+	}
+
+	if containerID == "" {
+		return fmt.Errorf("container %s not found", workspaceID)
+	}
+
+	inspect, err := b.docker.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return fmt.Errorf("inspecting container: %w", err)
+	}
+
+	if !inspect.State.Running {
+		return fmt.Errorf("container is not running")
+	}
+
+	log.Printf("[port] Container %s is running, adding port binding via exec", workspaceID)
+	return b.addPortBindingViaExec(ctx, containerID, containerPort, hostPort)
+}
+
+func (b *DockerBackend) addPortBindingViaExec(ctx context.Context, containerID string, containerPort, hostPort int32) error {
+	socatCmd := fmt.Sprintf("socat TCP-LISTEN:%d,bind=127.0.0.1,reuseaddr,fork TCP:127.0.0.1:%d &", hostPort, containerPort)
+	
+	execResp, err := b.docker.ContainerExecCreate(ctx, containerID, container.ExecOptions{
+		Cmd:          []string{"sh", "-c", socatCmd},
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		log.Printf("[port] Failed to create exec for socat: %v", err)
+		return fmt.Errorf("adding port binding: %w", err)
+	}
+
+	execStartResp, err := b.docker.ContainerExecAttach(ctx, execResp.ID, container.ExecStartOptions{})
+	if err != nil {
+		log.Printf("[port] Failed to start socat exec: %v", err)
+		return fmt.Errorf("adding port binding: %w", err)
+	}
+	defer execStartResp.Close()
+
+	output, err := io.ReadAll(execStartResp.Reader)
+	if err != nil {
+		log.Printf("[port] Failed to read socat output: %v", err)
+	}
+
+	if len(output) > 0 {
+		log.Printf("[port] socat output: %s", string(output))
+	}
+
+	log.Printf("[port] Added port forwarding: host %d -> container %d", hostPort, containerPort)
+	return nil
+}
+
 func (b *DockerBackend) GetPortManager() *PortManager {
 	return b.portManager
 }

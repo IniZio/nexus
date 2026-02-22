@@ -907,6 +907,117 @@ func (c *Client) ForwardPort(workspaceID, port string) error {
 	return fmt.Errorf("not implemented: port forwarding")
 }
 
+func (c *Client) AddPortForward(workspaceID string, containerPort int) (int, error) {
+	ws, err := c.GetWorkspace(workspaceID)
+	if err != nil {
+		return 0, fmt.Errorf("getting workspace: %w", err)
+	}
+	workspaceID = ws.ID
+
+	body, err := json.Marshal(map[string]int{"container_port": containerPort})
+	if err != nil {
+		return 0, err
+	}
+
+	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/ports", bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	var apiResp APIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return 0, err
+	}
+
+	if !apiResp.Success {
+		return 0, fmt.Errorf("API error: %s", apiResp.Error)
+	}
+
+	data, _ := json.Marshal(apiResp.Data)
+	var result struct {
+		HostPort int `json:"host_port"`
+	}
+	json.Unmarshal(data, &result)
+
+	return result.HostPort, nil
+}
+
+func (c *Client) ListPortForwards(workspaceID string) ([]PortMapping, error) {
+	ws, err := c.GetWorkspace(workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("getting workspace: %w", err)
+	}
+	workspaceID = ws.ID
+
+	httpReq, err := http.NewRequest("GET", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/ports", nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var apiResp APIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return nil, err
+	}
+
+	if !apiResp.Success {
+		return nil, fmt.Errorf("API error: %s", apiResp.Error)
+	}
+
+	data, _ := json.Marshal(apiResp.Data)
+	var ports []PortMapping
+	json.Unmarshal(data, &ports)
+
+	return ports, nil
+}
+
+func (c *Client) RemovePortForward(workspaceID string, hostPort int) error {
+	ws, err := c.GetWorkspace(workspaceID)
+	if err != nil {
+		return fmt.Errorf("getting workspace: %w", err)
+	}
+	workspaceID = ws.ID
+
+	httpReq, err := http.NewRequest("DELETE", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/ports/"+fmt.Sprint(hostPort), nil)
+	if err != nil {
+		return err
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
 type HealthStatus struct {
 	Healthy   bool          `json:"healthy"`
 	Checks    []CheckResult `json:"checks"`

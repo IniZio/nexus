@@ -59,8 +59,15 @@ func init() {
 	rootCmd.AddCommand(checkpointCmd)
 	rootCmd.AddCommand(servicesCmd)
 	rootCmd.AddCommand(proxyCmd)
+	rootCmd.AddCommand(portCmd)
 	rootCmd.AddCommand(syncCmd)
 	rootCmd.AddCommand(healthCmd)
+
+	portCmd.AddCommand(
+		portAddCmd,
+		portListCmd,
+		portRemoveCmd,
+	)
 
 	sessionsCmd.AddCommand(
 		sessionsListCmd,

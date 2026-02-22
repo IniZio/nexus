@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -404,6 +405,7 @@ func (s *Server) registerHTTPRoutes() {
 	s.mux.HandleFunc("/ws", s.handleWebSocket)
 	s.mux.HandleFunc("/ws/ssh-agent", s.handleSSHAgent)
 	s.setupCheckpointRoutes()
+	s.setupPortRoutes()
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -1592,4 +1594,182 @@ func (s *Server) resumeWorkspace(workspaceID string) {
 	s.mu.Unlock()
 
 	log.Printf("[idle] Workspace %s resumed", workspaceID)
+}
+
+func (s *Server) setupPortRoutes() {
+	s.mux.HandleFunc("/api/v1/workspaces/", func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path[len("/api/v1/workspaces/"):]
+		parts := strings.SplitN(path, "/", 2)
+		if len(parts) < 2 {
+			http.Error(w, "workspace ID and path required", http.StatusBadRequest)
+			return
+		}
+		workspaceID := parts[0]
+		subPath := parts[1]
+
+		switch subPath {
+		case "ports":
+			s.handleWorkspacePorts(w, r, workspaceID)
+		case "":
+			s.handleWorkspaceByID(w, r)
+		default:
+			if strings.HasPrefix(subPath, "ports/") {
+				s.handleWorkspacePortByID(w, r, workspaceID)
+			} else {
+				s.handleWorkspaceByID(w, r)
+			}
+		}
+	})
+}
+
+func (s *Server) handleWorkspacePorts(w http.ResponseWriter, r *http.Request, workspaceID string) {
+	switch r.Method {
+	case http.MethodGet:
+		s.listPorts(w, r, workspaceID)
+	case http.MethodPost:
+		s.addPort(w, r, workspaceID)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleWorkspacePortByID(w http.ResponseWriter, r *http.Request, workspaceID string) {
+	path := r.URL.Path
+	parts := strings.Split(path, "/")
+	if len(parts) < 1 {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	hostPortStr := parts[len(parts)-1]
+	hostPort, err := strconv.Atoi(hostPortStr)
+	if err != nil {
+		http.Error(w, "invalid host port", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodDelete:
+		s.removePort(w, r, workspaceID, hostPort)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) addPort(w http.ResponseWriter, r *http.Request, workspaceID string) {
+	s.mu.RLock()
+	ws, exists := s.workspaces[workspaceID]
+	s.mu.RUnlock()
+
+	if !exists {
+		WriteError(w, http.StatusNotFound, fmt.Errorf("workspace not found"))
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, fmt.Errorf("reading request body: %w", err))
+		return
+	}
+	defer r.Body.Close()
+
+	var req struct {
+		ContainerPort int `json:"container_port"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		WriteError(w, http.StatusBadRequest, fmt.Errorf("parsing request: %w", err))
+		return
+	}
+
+	if req.ContainerPort <= 0 || req.ContainerPort > 65535 {
+		WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid container port"))
+		return
+	}
+
+	var hostPort int
+	if s.dockerBackend != nil && ws.Backend == "docker" {
+		allocatedPort, err := s.dockerBackend.AllocatePort()
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, fmt.Errorf("allocating port: %w", err))
+			return
+		}
+		hostPort = int(allocatedPort)
+
+		ctx := context.Background()
+		err = s.dockerBackend.AddPortBinding(ctx, workspaceID, int32(req.ContainerPort), int32(hostPort))
+		if err != nil {
+			log.Printf("[port] Failed to add port binding: %v", err)
+		}
+	} else {
+		hostPort = 32800 + len(ws.Ports)
+	}
+
+	s.mu.Lock()
+	ws.Ports = append(ws.Ports, PortMapping{
+		Name:          fmt.Sprintf("port-%d", req.ContainerPort),
+		Protocol:      "tcp",
+		ContainerPort: req.ContainerPort,
+		HostPort:      hostPort,
+		Visibility:    "public",
+	})
+	s.mu.Unlock()
+
+	if err := s.saveWorkspaces(); err != nil {
+		log.Printf("[state] Failed to save workspace: %v", err)
+	}
+
+	WriteSuccess(w, map[string]int{"host_port": hostPort})
+}
+
+func (s *Server) listPorts(w http.ResponseWriter, r *http.Request, workspaceID string) {
+	s.mu.RLock()
+	ws, exists := s.workspaces[workspaceID]
+	s.mu.RUnlock()
+
+	if !exists {
+		WriteError(w, http.StatusNotFound, fmt.Errorf("workspace not found"))
+		return
+	}
+
+	WriteSuccess(w, ws.Ports)
+}
+
+func (s *Server) removePort(w http.ResponseWriter, r *http.Request, workspaceID string, hostPort int) {
+	s.mu.RLock()
+	ws, exists := s.workspaces[workspaceID]
+	s.mu.RUnlock()
+
+	if !exists {
+		WriteError(w, http.StatusNotFound, fmt.Errorf("workspace not found"))
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	found := false
+	newPorts := make([]PortMapping, 0)
+	for _, p := range ws.Ports {
+		if p.HostPort == hostPort {
+			found = true
+			continue
+		}
+		newPorts = append(newPorts, p)
+	}
+
+	if !found {
+		WriteError(w, http.StatusNotFound, fmt.Errorf("port not found"))
+		return
+	}
+
+	ws.Ports = newPorts
+
+	if s.dockerBackend != nil && ws.Backend == "docker" {
+		s.dockerBackend.ReleasePort(int32(hostPort))
+	}
+
+	if err := s.saveWorkspaces(); err != nil {
+		log.Printf("[state] Failed to save workspace: %v", err)
+	}
+
+	WriteSuccess(w, map[string]string{"status": "removed"})
 }

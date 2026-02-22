@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -290,6 +291,76 @@ var proxyCmd = &cobra.Command{
 		fmt.Printf("Forwarding port %s for workspace %s\n", port, workspace)
 		fmt.Println("Press Ctrl+C to stop")
 		select {}
+	},
+}
+
+var portCmd = &cobra.Command{
+	Use:   "port",
+	Short: "Manage port forwarding",
+}
+
+var portAddCmd = &cobra.Command{
+	Use:   "add <workspace> <container-port>",
+	Short: "Add port forwarding",
+	Args:  cobra.ExactArgs(2),
+	Run: func(cmd *cobra.Command, args []string) {
+		workspace := args[0]
+		containerPort, err := strconv.Atoi(args[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid port number: %v\n", err)
+			os.Exit(1)
+		}
+
+		client := getClient()
+		hostPort, err := client.AddPortForward(workspace, containerPort)
+		exitOnError(err)
+
+		fmt.Printf("Port %d forwarded to localhost:%d\n", containerPort, hostPort)
+	},
+}
+
+var portListCmd = &cobra.Command{
+	Use:   "list <workspace>",
+	Short: "List forwarded ports",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		workspace := args[0]
+
+		client := getClient()
+		ports, err := client.ListPortForwards(workspace)
+		exitOnError(err)
+
+		if len(ports) == 0 {
+			fmt.Printf("No forwarded ports for workspace %s\n", workspace)
+			return
+		}
+
+		fmt.Printf("Port forwards for workspace %s:\n\n", workspace)
+		fmt.Printf("  %-10s  %-15s  %-10s\n", "Container", "Host", "Protocol")
+		fmt.Printf("  %-10s  %-15s  %-10s\n", "----------", "---------------", "---------")
+		for _, p := range ports {
+			fmt.Printf("  :%-9d  localhost:%-9d  %s\n", p.ContainerPort, p.HostPort, p.Protocol)
+		}
+	},
+}
+
+var portRemoveCmd = &cobra.Command{
+	Use:   "remove <workspace> <host-port>",
+	Short: "Remove port forwarding",
+	Args:  cobra.ExactArgs(2),
+	Run: func(cmd *cobra.Command, args []string) {
+		workspace := args[0]
+		hostPort, err := strconv.Atoi(args[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid port number: %v\n", err)
+			os.Exit(1)
+		}
+
+		client := getClient()
+		err = client.RemovePortForward(workspace, hostPort)
+		exitOnError(err)
+
+		fmt.Printf("Port forwarding removed (host port %d)\n", hostPort)
 	},
 }
 
