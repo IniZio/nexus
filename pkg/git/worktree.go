@@ -31,7 +31,7 @@ func NewManagerWithRepoRoot(repoRoot string) *Manager {
 }
 
 func (m *Manager) worktreesPath() string {
-	return filepath.Join(m.repoRoot, ".nexus", "worktrees")
+	return filepath.Join(m.repoRoot, ".worktree")
 }
 
 func (m *Manager) ValidateWorktreeCreation(name string) error {

@@ -521,7 +521,7 @@ func validateSyncPath(hostPath, containerPath string) error {
     }
     
     // Ensure host path is within allowed directory
-    worktreeRoot := "/Users/user/.nexus/worktrees"
+    worktreeRoot := "/Users/user/project/.worktree"
     if !strings.HasPrefix(hostAbs, worktreeRoot) {
         return fmt.Errorf("host path outside worktree root: %s", hostAbs)
     }

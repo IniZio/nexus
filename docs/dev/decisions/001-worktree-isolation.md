@@ -14,7 +14,7 @@ Use git worktrees to create isolated branches for each workspace, mounted to sep
 
 ### Workspace = Git Branch
 - Each workspace creates a branch `nexus/<workspace-name>`
-- Worktree mounted at `.nexus/worktrees/<workspace-name>/`
+- Worktree mounted at `.worktree/<workspace-name>/`
 - No code conflicts between workspaces
 
 ### Commands
@@ -22,7 +22,7 @@ Use git worktrees to create isolated branches for each workspace, mounted to sep
 # Create workspace with branch
 nexus workspace create feature-auth
 # → Creates branch nexus/feature-auth
-# → Creates worktree at .nexus/worktrees/feature-auth/
+# → Creates worktree at .worktree/feature-auth/
 
 # Switch between workspaces
 git checkout nexus/feature-auth
@@ -52,7 +52,7 @@ git checkout nexus/feature-payment
 // internal/workspace/manager.go
 func (m *Manager) Create(name, template string) error {
     // 1. Create git worktree
-    worktreePath := filepath.Join(".nexus/worktrees", name)
+    worktreePath := filepath.Join(".worktree", name)
     if err := m.git.Worktree(name, worktreePath); err != nil {
         return err
     }

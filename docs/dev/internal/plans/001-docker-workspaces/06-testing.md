@@ -537,7 +537,7 @@ describe('File Sync E2E', () => {
     // Create file in worktree
     const testFile = path.join(
       process.env.HOME,
-      '.nexus/worktrees',
+      'projects/myapp/.worktree',
       testWorkspace,
       'sync-test.txt'
     );
@@ -602,7 +602,7 @@ boulder workspace create bob-api --template=node-postgres
 
 # 2. Both workspaces should have:
 #    - Isolated git branches (nexus/alice-dashboard, nexus/bob-api)
-#    - Isolated directories (.nexus/worktrees/)
+#    - Isolated directories (.worktree/)
 #    - Isolated containers
 #    - Isolated ports (32800-32809 for alice, 32810-32819 for bob)
 

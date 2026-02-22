@@ -37,7 +37,6 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&daemonToken, "daemon-token", "", "Daemon token for serve command")
 
 	rootCmd.AddCommand(workspaceCmd)
-	rootCmd.AddCommand(boulderCmd)
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(doctorCmd)
 	rootCmd.AddCommand(versionCmd)
@@ -52,12 +51,6 @@ func init() {
 		workspaceExecCmd,
 		workspaceLogsCmd,
 		workspaceUseCmd,
-	)
-
-	boulderCmd.AddCommand(
-		boulderStatusCmd,
-		boulderPauseCmd,
-		boulderResumeCmd,
 	)
 }
 

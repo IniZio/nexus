@@ -44,14 +44,13 @@ vendor/
 .nexus/enforcer-rules.local.json
 
 # Nexus worktrees
-.nexus/worktrees/
-.worktrees/
+.worktree/
 .nexus/dogfooding/
 
 # Nexus collection data (may contain credentials)
 .nexus/collection/data/
 .nexus/collection/sessions/
-.nexus/worktrees/*/friction-log.md
+.worktree/*/friction-log.md
 **/friction-log.md
 **/*.local.md
 **/.local/

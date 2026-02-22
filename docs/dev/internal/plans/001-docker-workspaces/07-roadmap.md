@@ -148,7 +148,7 @@ boulder workspace list
 
 ```bash
 # For each existing worktree
-for worktree in .nexus/worktrees/*; do
+for worktree in .worktree/*; do
   name=$(basename $worktree)
   boulder workspace create $name --from-worktree=$worktree
 done
