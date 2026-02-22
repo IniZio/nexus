@@ -1,0 +1,18 @@
+{
+  "ID": "ws-1771735073703474000",
+  "Name": "dev-alice",
+  "DisplayName": "",
+  "Status": 1,
+  "Backend": 0,
+  "Repository": null,
+  "Branch": "",
+  "Resources": null,
+  "Ports": null,
+  "Config": null,
+  "Labels": null,
+  "Annotations": null,
+  "CreatedAt": "2026-02-22T12:37:55.975014+08:00",
+  "UpdatedAt": "2026-02-22T12:43:37.68564+08:00",
+  "LastActiveAt": "0001-01-01T00:00:00Z",
+  "ExpiresAt": "0001-01-01T00:00:00Z"
+}

@@ -112,6 +112,94 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 	return workspace, nil
 }
 
+func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTypes.CreateWorkspaceRequest, bridgeSocket string) (*wsTypes.Workspace, error) {
+	wsID := req.ID
+	if wsID == "" {
+		wsID = fmt.Sprintf("ws-%d", time.Now().UnixNano())
+	}
+
+	workspace := &wsTypes.Workspace{
+		ID:          wsID,
+		Name:        req.Name,
+		DisplayName: req.DisplayName,
+		Status:      wsTypes.StatusCreating,
+		Backend:     wsTypes.BackendDocker,
+		Repository: &wsTypes.Repository{
+			URL: req.RepositoryURL,
+		},
+		Branch:  req.Branch,
+		Config:  req.Config,
+		Labels:  req.Labels,
+	}
+
+	if workspace.Config == nil {
+		workspace.Config = &wsTypes.WorkspaceConfig{}
+	}
+
+	image := workspace.Config.Image
+	if image == "" {
+		image = "ubuntu:22.04"
+	}
+
+	if err := b.pullImage(ctx, image); err != nil {
+		return nil, fmt.Errorf("pulling image: %w", err)
+	}
+
+	sshVolumes, sshEnv := GetSSHAgentMounts()
+	bridgeVolumes, bridgeEnv := GetBridgeSocketMount(bridgeSocket)
+
+	configEnv := make(map[string]string)
+	if workspace.Config != nil && workspace.Config.Env != nil {
+		configEnv = workspace.Config.Env
+	}
+
+	volumes := append([]VolumeMount{}, sshVolumes...)
+	volumes = append(volumes, bridgeVolumes...)
+
+	allEnv := sshEnv
+	allEnv = append(allEnv, bridgeEnv...)
+
+	containerID, err := b.createContainer(ctx, image, &ContainerConfig{
+		Name:      workspace.ID,
+		Image:     image,
+		Env:       mergeEnv(configEnv, allEnv),
+		WorkingDir: "/workspace",
+		AutoRemove: false,
+		Volumes:    volumes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating container: %w", err)
+	}
+
+	b.containerManager.mu.Lock()
+	b.containerManager.containers[containerID] = &ContainerInfo{
+		ID:     containerID,
+		Image:  image,
+		Status: "created",
+		State: ContainerState{
+			Status:  "created",
+			Running: false,
+		},
+	}
+	b.containerManager.mu.Unlock()
+
+	if err := b.startContainer(ctx, containerID); err != nil {
+		return nil, fmt.Errorf("starting container: %w", err)
+	}
+
+	b.containerManager.mu.Lock()
+	if info, ok := b.containerManager.containers[containerID]; ok {
+		info.Status = "running"
+		info.State.Status = "running"
+		info.State.Running = true
+	}
+	b.containerManager.mu.Unlock()
+
+	workspace.Status = wsTypes.StatusRunning
+
+	return workspace, nil
+}
+
 func (b *DockerBackend) StartWorkspace(ctx context.Context, id string) (*wsTypes.Operation, error) {
 	if err := b.containerManager.Start(ctx, id); err != nil {
 		return nil, err
@@ -513,6 +601,19 @@ func mergeEnv(configEnv map[string]string, sshEnv []string) []string {
 	}
 	env = append(env, sshEnv...)
 	return env
+}
+
+func GetBridgeSocketMount(bridgeSocket string) ([]VolumeMount, []string) {
+	if bridgeSocket == "" {
+		return nil, nil
+	}
+
+	volumes := []VolumeMount{
+		{Type: "bind", Source: bridgeSocket, Target: "/ssh-agent", ReadOnly: true},
+	}
+	env := []string{"SSH_AUTH_SOCK=/ssh-agent"}
+
+	return volumes, env
 }
 
 func defaultCmd(cmd []string) []string {

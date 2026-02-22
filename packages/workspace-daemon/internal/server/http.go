@@ -11,16 +11,18 @@ import (
 	"time"
 
 	"github.com/nexus/nexus/packages/workspace-daemon/internal/docker"
+	"github.com/nexus/nexus/packages/workspace-daemon/internal/ssh"
 	"github.com/nexus/nexus/packages/workspace-daemon/internal/types"
 )
 
 type HTTPServer struct {
-	addr      string
-	mux       *http.ServeMux
-	backend   *docker.DockerBackend
+	addr       string
+	mux        *http.ServeMux
+	backend    *docker.DockerBackend
 	workspaces map[string]*types.Workspace
-	mu        sync.RWMutex
-	server    *http.Server
+	mu         sync.RWMutex
+	server     *http.Server
+	sshBridges map[string]*ssh.SSHBridge
 }
 
 func NewHTTPServer(addr string, backend *docker.DockerBackend) *HTTPServer {
@@ -30,6 +32,7 @@ func NewHTTPServer(addr string, backend *docker.DockerBackend) *HTTPServer {
 		mux:        mux,
 		backend:    backend,
 		workspaces: make(map[string]*types.Workspace),
+		sshBridges: make(map[string]*ssh.SSHBridge),
 	}
 	s.registerRoutes()
 	return s
@@ -157,10 +160,47 @@ func (s *HTTPServer) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	workspace, err := s.backend.CreateWorkspace(r.Context(), &req)
-	if err != nil {
-		WriteError(w, http.StatusInternalServerError, fmt.Errorf("creating workspace: %w", err))
-		return
+	wsID := req.ID
+	if wsID == "" {
+		wsID = fmt.Sprintf("ws-%d", time.Now().UnixNano())
+	}
+	req.ID = wsID
+
+	var bridgeSocketPath string
+	if s.backend != nil && req.ForwardSSH {
+		bridge, err := ssh.NewBridge(wsID)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, fmt.Errorf("creating SSH bridge: %w", err))
+			return
+		}
+
+		socketPath, err := bridge.Start()
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, fmt.Errorf("starting SSH bridge: %w", err))
+			return
+		}
+
+		bridgeSocketPath = socketPath
+		s.mu.Lock()
+		s.sshBridges[wsID] = bridge
+		s.mu.Unlock()
+
+		fmt.Printf("SSH bridge created for workspace %s at %s\n", wsID, socketPath)
+	}
+
+	var workspace *types.Workspace
+	if s.backend != nil && bridgeSocketPath != "" {
+		workspace, err = s.backend.CreateWorkspaceWithBridge(r.Context(), &req, bridgeSocketPath)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, fmt.Errorf("creating workspace: %w", err))
+			return
+		}
+	} else {
+		workspace, err = s.backend.CreateWorkspace(r.Context(), &req)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, fmt.Errorf("creating workspace: %w", err))
+			return
+		}
 	}
 
 	s.mu.Lock()
