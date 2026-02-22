@@ -10,7 +10,7 @@ This is the **Nexus** project - an AI-native development environment with multip
 |-----------|--------|-------------|
 | **Enforcer** | ✅ Implemented | Task enforcement with idle detection and mini-workflows |
 | **Workspace** | ✅ Implemented | Isolated dev environments (inspired by opencode-devcontainer, sprite) |
-| **Telemetry** | 🚧 In Progress | Agent Trace specification implementation for attribution tracking |
+| **Telemetry** | ✅ Implemented | Agent Trace specification implementation for attribution tracking |
 
 ### Packages
 
@@ -44,7 +44,6 @@ This is the **Nexus** project - an AI-native development environment with multip
 ### What Is NOT Yet Implemented
 
 - Complete remote workspace lifecycle
-- Telemetry/Agent Trace tracking
 
 ---
 

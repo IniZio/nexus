@@ -13,18 +13,18 @@ import (
 )
 
 var (
-	templateFlag    string
-	fromFlag        string
-	cpuFlag         int
-	memoryFlag      int
-	forceFlag       bool
-	formatFlag      string
-	allFlag         bool
-	clearFlag       bool
+	templateFlag string
+	fromFlag     string
+	cpuFlag      int
+	memoryFlag   int
+	forceFlag    bool
+	formatFlag   string
+	allFlag      bool
+	clearFlag    bool
 )
 
 const (
-	sessionDirName     = ".nexus/session"
+	sessionDirName      = ".nexus/session"
 	activeWorkspaceFile = "active-workspace"
 )
 
@@ -72,7 +72,10 @@ var workspaceCreateCmd = &cobra.Command{
 	Use:   "create <name>",
 	Short: "Create a new workspace",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		name := args[0]
 		cfg := getConfig()
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
@@ -95,10 +98,15 @@ var workspaceCreateCmd = &cobra.Command{
 		}
 
 		ws, err := client.CreateWorkspace(req)
+		duration := time.Since(start)
+
 		if err != nil {
+			recordCommand("workspace create", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error creating workspace: %v\n", err)
 			os.Exit(4)
 		}
+
+		recordCommand("workspace create", args, duration, true, nil)
 
 		if jsonOutput {
 			printJSON(ws)
@@ -109,6 +117,7 @@ var workspaceCreateCmd = &cobra.Command{
 				fmt.Printf("Worktree: %s\n", ws.WorktreePath)
 			}
 		}
+		return nil
 	},
 }
 
@@ -116,13 +125,19 @@ var workspaceStartCmd = &cobra.Command{
 	Use:   "start <name>",
 	Short: "Start a stopped workspace",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		name := args[0]
 		cfg := getConfig()
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
 
 		ws, err := client.StartWorkspace(name)
+		duration := time.Since(start)
+
 		if err != nil {
+			recordCommand("workspace start", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error starting workspace: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
 				os.Exit(3)
@@ -130,12 +145,15 @@ var workspaceStartCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
+		recordCommand("workspace start", args, duration, true, nil)
+
 		if jsonOutput {
 			printJSON(ws)
 		} else {
 			fmt.Printf("Started workspace %s\n", ws.Name)
 			fmt.Printf("Status: %s\n", ws.Status)
 		}
+		return nil
 	},
 }
 
@@ -143,7 +161,10 @@ var workspaceStopCmd = &cobra.Command{
 	Use:   "stop <name>",
 	Short: "Stop a running workspace",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		name := args[0]
 		cfg := getConfig()
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
@@ -154,7 +175,10 @@ var workspaceStopCmd = &cobra.Command{
 		}
 
 		ws, err := client.StopWorkspace(name, timeout)
+		duration := time.Since(start)
+
 		if err != nil {
+			recordCommand("workspace stop", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error stopping workspace: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
 				os.Exit(3)
@@ -162,12 +186,15 @@ var workspaceStopCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
+		recordCommand("workspace stop", args, duration, true, nil)
+
 		if jsonOutput {
 			printJSON(ws)
 		} else {
 			fmt.Printf("Stopped workspace %s\n", ws.Name)
 			fmt.Printf("Status: %s\n", ws.Status)
 		}
+		return nil
 	},
 }
 
@@ -175,7 +202,10 @@ var workspaceDeleteCmd = &cobra.Command{
 	Use:   "delete <name>",
 	Short: "Delete a workspace permanently",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		name := args[0]
 		cfg := getConfig()
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
@@ -191,7 +221,10 @@ var workspaceDeleteCmd = &cobra.Command{
 		}
 
 		err := client.DeleteWorkspace(name)
+		duration := time.Since(start)
+
 		if err != nil {
+			recordCommand("workspace delete", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error deleting workspace: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
 				os.Exit(3)
@@ -199,35 +232,46 @@ var workspaceDeleteCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
+		recordCommand("workspace delete", args, duration, true, nil)
+
 		if jsonOutput {
 			printJSON(map[string]string{"name": name, "status": "deleted"})
 		} else {
 			fmt.Printf("Deleted workspace %s\n", name)
 		}
+		return nil
 	},
 }
 
 var workspaceListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all workspaces",
+	Use:     "list",
+	Short:   "List all workspaces",
 	Aliases: []string{"ls"},
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		cfg := getConfig()
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
 		result, err := client.ListWorkspaces()
+		duration := time.Since(start)
+
 		if err != nil {
+			recordCommand("workspace list", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
+		recordCommand("workspace list", args, duration, true, nil)
+
 		if len(result.Workspaces) == 0 {
 			fmt.Println("No workspaces found")
-			return
+			return nil
 		}
 
 		if jsonOutput || formatFlag == "json" {
 			printJSON(result)
-			return
+			return nil
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -258,6 +302,7 @@ var workspaceListCmd = &cobra.Command{
 		}
 		w.Flush()
 		fmt.Fprintf(os.Stderr, "\nTotal: %d workspace(s)\n", result.Total)
+		return nil
 	},
 }
 
@@ -265,19 +310,28 @@ var workspaceSSHCmd = &cobra.Command{
 	Use:   "ssh <name>",
 	Short: "SSH into workspace interactively",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		name := args[0]
 		cfg := getConfig()
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
 
 		err := client.Shell(name)
+		duration := time.Since(start)
+
 		if err != nil {
+			recordCommand("workspace ssh", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
 				os.Exit(3)
 			}
 			os.Exit(1)
 		}
+
+		recordCommand("workspace ssh", args, duration, true, nil)
+		return nil
 	},
 }
 
@@ -285,7 +339,10 @@ var workspaceExecCmd = &cobra.Command{
 	Use:   "exec <name> -- <command>",
 	Short: "Execute command in workspace",
 	Args:  cobra.MinimumNArgs(2),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		name := args[0]
 
 		command := args[1:]
@@ -298,7 +355,10 @@ var workspaceExecCmd = &cobra.Command{
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
 
 		output, err := client.Exec(name, command)
+		duration := time.Since(start)
+
 		if err != nil {
+			recordCommand("workspace exec", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
 				os.Exit(3)
@@ -306,7 +366,9 @@ var workspaceExecCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
+		recordCommand("workspace exec", args, duration, true, nil)
 		fmt.Print(output)
+		return nil
 	},
 }
 
@@ -314,13 +376,19 @@ var workspaceStatusCmd = &cobra.Command{
 	Use:   "status <name>",
 	Short: "Show detailed workspace status",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		name := args[0]
 		cfg := getConfig()
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
 
 		ws, err := client.GetWorkspace(name)
+		duration := time.Since(start)
+
 		if err != nil {
+			recordCommand("workspace status", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
 				os.Exit(3)
@@ -328,9 +396,11 @@ var workspaceStatusCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
+		recordCommand("workspace status", args, duration, true, nil)
+
 		if jsonOutput {
 			printJSON(ws)
-			return
+			return nil
 		}
 
 		fmt.Printf("Workspace: %s\n", ws.Name)
@@ -381,6 +451,7 @@ var workspaceStatusCmd = &cobra.Command{
 				fmt.Printf("  %s: %s\n", k, v)
 			}
 		}
+		return nil
 	},
 }
 
@@ -388,13 +459,19 @@ var workspaceLogsCmd = &cobra.Command{
 	Use:   "logs <name>",
 	Short: "Show workspace logs",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		name := args[0]
 		cfg := getConfig()
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
 
 		logs, err := client.GetLogs(name, 100)
+		duration := time.Since(start)
+
 		if err != nil {
+			recordCommand("workspace logs", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
 				os.Exit(3)
@@ -402,7 +479,9 @@ var workspaceLogsCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
+		recordCommand("workspace logs", args, duration, true, nil)
 		fmt.Print(logs)
+		return nil
 	},
 }
 
@@ -413,15 +492,21 @@ var workspaceUseCmd = &cobra.Command{
 	  
 Use 'nexus workspace use -' or 'nexus workspace use --clear' to deactivate and run on host.`,
 	Args: cobra.RangeArgs(0, 1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		if clearFlag {
 			err := clearActiveWorkspace()
+			duration := time.Since(start)
 			if err != nil {
+				recordCommand("workspace use", args, duration, false, err)
 				fmt.Fprintf(os.Stderr, "Error clearing active workspace: %v\n", err)
 				os.Exit(1)
 			}
+			recordCommand("workspace use", args, duration, true, nil)
 			fmt.Println("Cleared active workspace. Commands will run on host.")
-			return
+			return nil
 		}
 
 		var name string
@@ -431,12 +516,15 @@ Use 'nexus workspace use -' or 'nexus workspace use --clear' to deactivate and r
 
 		if name == "-" {
 			err := clearActiveWorkspace()
+			duration := time.Since(start)
 			if err != nil {
+				recordCommand("workspace use", args, duration, false, err)
 				fmt.Fprintf(os.Stderr, "Error clearing active workspace: %v\n", err)
 				os.Exit(1)
 			}
+			recordCommand("workspace use", args, duration, true, nil)
 			fmt.Println("Cleared active workspace. Commands will run on host.")
-			return
+			return nil
 		}
 
 		if name == "" {
@@ -448,7 +536,10 @@ Use 'nexus workspace use -' or 'nexus workspace use --clear' to deactivate and r
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
 
 		ws, err := client.GetWorkspace(name)
+		duration := time.Since(start)
+
 		if err != nil {
+			recordCommand("workspace use", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
 				fmt.Fprintf(os.Stderr, "Workspace '%s' not found. Run 'nexus workspace list' to see available workspaces.\n", name)
@@ -459,13 +550,16 @@ Use 'nexus workspace use -' or 'nexus workspace use --clear' to deactivate and r
 
 		err = setActiveWorkspace(name)
 		if err != nil {
+			recordCommand("workspace use", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error saving active workspace: %v\n", err)
 			os.Exit(1)
 		}
 
+		recordCommand("workspace use", args, duration, true, nil)
 		fmt.Printf("Switched to workspace '%s'. Subsequent commands will run in this workspace.\n", ws.Name)
 		fmt.Printf("Workspaces commands will auto-intercept: docker, docker-compose, npm, ./scripts/*.sh, etc.\n")
 		fmt.Printf("\nTo run on host: 'nexus workspace use --clear' or 'HOST: <command>'\n")
+		return nil
 	},
 }
 

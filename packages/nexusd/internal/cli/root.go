@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/nexus/nexus/packages/nexusd/internal/config"
 	"github.com/spf13/cobra"
@@ -152,9 +153,15 @@ var boulderCmd = &cobra.Command{
 var boulderStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show enforcement status",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		state, err := loadBoulderState()
+		duration := time.Since(start)
+
 		if err != nil {
+			recordCommand("boulder status", args, duration, false, err)
 			if jsonOutput {
 				fmt.Printf(`{"error":"%v"}`, err)
 			} else {
@@ -162,6 +169,8 @@ var boulderStatusCmd = &cobra.Command{
 			}
 			os.Exit(1)
 		}
+
+		recordCommand("boulder status", args, duration, true, nil)
 
 		if jsonOutput {
 			fmt.Printf(`{"status":"%s","iteration":%d}`, state.Status, state.Iteration)
@@ -171,54 +180,71 @@ var boulderStatusCmd = &cobra.Command{
 			fmt.Printf("Status: %s\n", state.Status)
 			fmt.Printf("Iteration: %d\n", state.Iteration)
 		}
+		return nil
 	},
 }
 
 var boulderPauseCmd = &cobra.Command{
 	Use:   "pause",
 	Short: "Pause enforcement",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		state, err := loadBoulderState()
 		if err != nil {
+			recordCommand("boulder pause", args, time.Since(start), false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
 		state.Status = "PAUSED"
 		if err := saveBoulderState(state); err != nil {
+			recordCommand("boulder pause", args, time.Since(start), false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+
+		recordCommand("boulder pause", args, time.Since(start), true, nil)
 
 		if jsonOutput {
 			fmt.Printf(`{"status":"%s"}`, state.Status)
 		} else {
 			fmt.Println("Boulder enforcement paused")
 		}
+		return nil
 	},
 }
 
 var boulderResumeCmd = &cobra.Command{
 	Use:   "resume",
 	Short: "Resume enforcement",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		state, err := loadBoulderState()
 		if err != nil {
+			recordCommand("boulder resume", args, time.Since(start), false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
 		state.Status = "ENFORCING"
 		if err := saveBoulderState(state); err != nil {
+			recordCommand("boulder resume", args, time.Since(start), false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+
+		recordCommand("boulder resume", args, time.Since(start), true, nil)
 
 		if jsonOutput {
 			fmt.Printf(`{"status":"%s"}`, state.Status)
 		} else {
 			fmt.Println("Boulder enforcement resumed")
 		}
+		return nil
 	},
 }
 

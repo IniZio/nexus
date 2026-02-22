@@ -19,20 +19,28 @@ var syncStatusCmd = &cobra.Command{
 	Use:   "status [workspace]",
 	Short: "Show sync status for workspace or all workspaces",
 	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		cfg := getConfig()
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
 
 		if len(args) == 1 {
 			workspace := args[0]
 			status, err := client.GetSyncStatus(workspace)
+			duration := time.Since(start)
+
 			if err != nil {
+				recordCommand("sync status", args, duration, false, err)
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
 					os.Exit(3)
 				}
 				os.Exit(1)
 			}
+
+			recordCommand("sync status", args, duration, true, nil)
 
 			if jsonOutput {
 				printJSON(status)
@@ -52,18 +60,22 @@ var syncStatusCmd = &cobra.Command{
 					}
 				}
 			}
-			return
+			return nil
 		}
 
 		result, err := client.ListWorkspaces()
+		duration := time.Since(start)
+
 		if err != nil {
+			recordCommand("sync status", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
 		if len(result.Workspaces) == 0 {
+			recordCommand("sync status", args, duration, true, nil)
 			fmt.Println("No workspaces found")
-			return
+			return nil
 		}
 
 		if jsonOutput {
@@ -85,7 +97,7 @@ var syncStatusCmd = &cobra.Command{
 				})
 			}
 			printJSON(infos)
-			return
+			return nil
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -102,6 +114,7 @@ var syncStatusCmd = &cobra.Command{
 			fmt.Fprintf(w, "%s\t%s\t%s\n", ws.Name, status.State, lastSync)
 		}
 		w.Flush()
+		return nil
 	},
 }
 
@@ -109,13 +122,19 @@ var syncPauseCmd = &cobra.Command{
 	Use:   "pause <workspace>",
 	Short: "Pause file sync for workspace",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		workspace := args[0]
 		cfg := getConfig()
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
 
 		err := client.PauseSync(workspace)
+		duration := time.Since(start)
+
 		if err != nil {
+			recordCommand("sync pause", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
 				os.Exit(3)
@@ -123,11 +142,14 @@ var syncPauseCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
+		recordCommand("sync pause", args, duration, true, nil)
+
 		if jsonOutput {
 			fmt.Printf(`{"workspace":"%s","state":"paused"}`, workspace)
 		} else {
 			fmt.Printf("Paused sync for workspace %s\n", workspace)
 		}
+		return nil
 	},
 }
 
@@ -135,13 +157,19 @@ var syncResumeCmd = &cobra.Command{
 	Use:   "resume <workspace>",
 	Short: "Resume file sync for workspace",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		workspace := args[0]
 		cfg := getConfig()
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
 
 		err := client.ResumeSync(workspace)
+		duration := time.Since(start)
+
 		if err != nil {
+			recordCommand("sync resume", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
 				os.Exit(3)
@@ -149,11 +177,14 @@ var syncResumeCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
+		recordCommand("sync resume", args, duration, true, nil)
+
 		if jsonOutput {
 			fmt.Printf(`{"workspace":"%s","state":"resumed"}`, workspace)
 		} else {
 			fmt.Printf("Resumed sync for workspace %s\n", workspace)
 		}
+		return nil
 	},
 }
 
@@ -161,13 +192,19 @@ var syncFlushCmd = &cobra.Command{
 	Use:   "flush <workspace>",
 	Short: "Force sync (flush changes immediately)",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		workspace := args[0]
 		cfg := getConfig()
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
 
 		err := client.FlushSync(workspace)
+		duration := time.Since(start)
+
 		if err != nil {
+			recordCommand("sync flush", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
 				os.Exit(3)
@@ -175,30 +212,40 @@ var syncFlushCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
+		recordCommand("sync flush", args, duration, true, nil)
+
 		if jsonOutput {
 			fmt.Printf(`{"workspace":"%s","state":"flushed"}`, workspace)
 		} else {
 			fmt.Printf("Flushed sync for workspace %s\n", workspace)
 		}
+		return nil
 	},
 }
 
 var syncListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all sync sessions",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
 		cfg := getConfig()
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
 
 		result, err := client.ListWorkspaces()
+		duration := time.Since(start)
+
 		if err != nil {
+			recordCommand("sync list", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
 		if len(result.Workspaces) == 0 {
+			recordCommand("sync list", args, duration, true, nil)
 			fmt.Println("No workspaces found")
-			return
+			return nil
 		}
 
 		type syncInfo struct {
@@ -222,9 +269,11 @@ var syncListCmd = &cobra.Command{
 			})
 		}
 
+		recordCommand("sync list", args, duration, true, nil)
+
 		if jsonOutput {
 			printJSON(infos)
-			return
+			return nil
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -234,6 +283,7 @@ var syncListCmd = &cobra.Command{
 		}
 		w.Flush()
 		fmt.Fprintf(os.Stderr, "\nTotal: %d sync session(s)\n", len(infos))
+		return nil
 	},
 }
 
