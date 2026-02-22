@@ -294,15 +294,16 @@ func generateID() string {
 }
 
 type ContainerConfig struct {
-	Name      string
-	Image      string
-	Env        []string
-	Volumes    []VolumeMount
-	Ports      []PortBinding
-	WorkingDir string
-	Entrypoint []string
-	Cmd        []string
-	AutoRemove bool
+	Name        string
+	Image       string
+	Env         []string
+	Volumes     []VolumeMount
+	Ports       []PortBinding
+	WorkingDir  string
+	Entrypoint  []string
+	Cmd         []string
+	AutoRemove  bool
+	Privileged  bool
 }
 
 type VolumeMount struct {

@@ -25,6 +25,7 @@ var createCmd = &cobra.Command{
 		fromBranch, _ := cmd.Flags().GetString("from-branch")
 		backend, _ := cmd.Flags().GetString("backend")
 		noWorktree, _ := cmd.Flags().GetBool("no-worktree")
+		dind, _ := cmd.Flags().GetBool("dind")
 		forwardSSH := os.Getenv("SSH_AUTH_SOCK") != ""
 
 		var worktreePath string
@@ -55,6 +56,7 @@ var createCmd = &cobra.Command{
 			Backend:       backend,
 			ForwardSSH:    forwardSSH,
 			WorktreePath:  worktreePath,
+			DinD:          dind,
 		})
 		exitOnError(err)
 
@@ -523,6 +525,7 @@ func init() {
 	createCmd.Flags().StringP("from-branch", "", "", "Base branch to create worktree from (default: main)")
 	createCmd.Flags().StringP("backend", "", "docker", "Backend (docker, sprite, kubernetes)")
 	createCmd.Flags().BoolP("no-worktree", "", false, "Skip git worktree creation")
+	createCmd.Flags().Bool("dind", false, "Enable Docker-in-Docker support")
 
 	stopCmd.Flags().Int("timeout", 30, "Timeout in seconds")
 

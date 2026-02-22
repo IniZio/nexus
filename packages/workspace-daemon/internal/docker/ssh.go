@@ -142,7 +142,7 @@ set -e
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq openssh-server sudo git curl wget vim nano > /dev/null 2>&1
+apt-get install -y -qq openssh-server sudo git curl wget vim nano docker.io docker-compose > /dev/null 2>&1
 
 mkdir -p /var/run/sshd
 mkdir -p /workspace
@@ -152,6 +152,67 @@ mkdir -p /workspace
 sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
 sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
 sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+
+/usr/sbin/sshd
+
+tail -f /dev/null
+`, keyEnv)
+}
+
+func generateDinDEntrypoint(publicKey string) string {
+	keyEnv := ""
+	if publicKey != "" {
+		keyEnv = fmt.Sprintf(`
+useradd -m -s /bin/bash nexus || true
+echo 'nexus ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers.d/nexus
+mkdir -p /home/nexus/.ssh
+chmod 700 /home/nexus/.ssh
+echo '%s' > /home/nexus/.ssh/authorized_keys
+chmod 600 /home/nexus/.ssh/authorized_keys
+chown -R nexus:nexus /home/nexus/.ssh
+chown -R nexus:nexus /workspace
+usermod -aG docker nexus || true
+`, publicKey)
+	}
+
+	return fmt.Sprintf(`#!/bin/bash
+set -e
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq openssh-server sudo git curl wget vim nano docker.io docker-compose ca-certificates curl gnupg lsb-release > /dev/null 2>&1
+
+mkdir -p /var/run/sshd
+mkdir -p /workspace
+
+%s
+
+sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json << 'EOF'
+{
+  "storage-driver": "overlay2"
+}
+EOF
+
+dockerd --host=unix:///var/run/docker.sock --host=tcp://0.0.0.0:2375 &
+
+DOCKERD_PID=$!
+sleep 3
+
+for i in $(seq 1 30); do
+    if docker ps &> /dev/null; then
+        break
+    fi
+    sleep 1
+done
+
+if ! docker ps &> /dev/null; then
+    echo "Warning: Docker daemon failed to start within 30 seconds"
+fi
 
 /usr/sbin/sshd
 

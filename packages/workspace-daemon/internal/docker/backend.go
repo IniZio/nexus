@@ -70,7 +70,11 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 
 	image := workspace.Config.Image
 	if image == "" {
-		image = "ubuntu:22.04"
+		if req.DinD {
+			image = "docker:dind"
+		} else {
+			image = "ubuntu:22.04"
+		}
 	}
 
 	sshPort, err := b.portManager.Allocate()
@@ -110,6 +114,17 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 		workspace.Repository.LocalPath = req.WorktreePath
 	}
 
+	dindEntrypoint := entrypoint
+	dindPrivileged := req.DinD
+
+	if req.DinD && image == "docker:dind" {
+		dindEntrypoint = ""
+		dindPrivileged = true
+	} else if req.DinD {
+		dindEntrypoint = generateDinDEntrypoint(publicKey)
+		dindPrivileged = true
+	}
+
 	containerID, err := b.createContainer(ctx, image, &ContainerConfig{
 		Name:        workspace.ID,
 		Image:       image,
@@ -118,7 +133,8 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 		AutoRemove:  false,
 		Volumes:     volumes,
 		Ports:       []PortBinding{{ContainerPort: 22, HostPort: sshPort, Protocol: "tcp"}},
-		Entrypoint:  []string{"bash", "-c", entrypoint},
+		Entrypoint:  []string{"bash", "-c", dindEntrypoint},
+		Privileged:  dindPrivileged,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating container: %w", err)
@@ -196,7 +212,11 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 
 	image := workspace.Config.Image
 	if image == "" {
-		image = "ubuntu:22.04"
+		if req.DinD {
+			image = "docker:dind"
+		} else {
+			image = "ubuntu:22.04"
+		}
 	}
 
 	sshPort, err := b.portManager.Allocate()
@@ -241,6 +261,17 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 	allEnv := sshEnv
 	allEnv = append(allEnv, bridgeEnv...)
 
+	dindEntrypoint := entrypoint
+	dindPrivileged := req.DinD
+
+	if req.DinD && image == "docker:dind" {
+		dindEntrypoint = ""
+		dindPrivileged = true
+	} else if req.DinD {
+		dindEntrypoint = generateDinDEntrypoint(publicKey)
+		dindPrivileged = true
+	}
+
 	containerID, err := b.createContainer(ctx, image, &ContainerConfig{
 		Name:        workspace.ID,
 		Image:       image,
@@ -249,7 +280,8 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 		AutoRemove:  false,
 		Volumes:     volumes,
 		Ports:       []PortBinding{{ContainerPort: 22, HostPort: sshPort, Protocol: "tcp"}},
-		Entrypoint:  []string{"bash", "-c", entrypoint},
+		Entrypoint:  []string{"bash", "-c", dindEntrypoint},
+		Privileged:  dindPrivileged,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating container: %w", err)
@@ -603,6 +635,7 @@ func (b *DockerBackend) createContainer(ctx context.Context, image string, confi
 
 	hostConfig := &container.HostConfig{
 		AutoRemove: config.AutoRemove,
+		Privileged: config.Privileged,
 	}
 
 	if len(config.Ports) > 0 {

@@ -69,6 +69,7 @@ type CreateWorkspaceRequest struct {
 	ForwardSSH    bool              `json:"forward_ssh,omitempty"`
 	ID            string            `json:"id,omitempty"`
 	WorktreePath  string            `json:"worktree_path,omitempty"`
+	DinD          bool              `json:"dind,omitempty"`
 }
 
 type ListWorkspacesResponse struct {

@@ -214,6 +214,7 @@ type CreateWorkspaceRequest struct {
 	ForwardSSH     bool
 	ID             string
 	WorktreePath   string
+	DinD           bool
 }
 
 type GetWorkspaceRequest struct {
