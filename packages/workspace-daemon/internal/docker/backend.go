@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -782,4 +783,43 @@ func convertConflicts(conflicts []sync.Conflict) []wsTypes.Conflict {
 		}
 	}
 	return result
+}
+
+func (b *DockerBackend) ListContainersByLabel(ctx context.Context, label string) ([]types.Container, error) {
+	if b.docker == nil {
+		return nil, fmt.Errorf("docker client not initialized")
+	}
+
+	containers, err := b.docker.ContainerList(ctx, container.ListOptions{
+		All: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing containers: %w", err)
+	}
+
+	var result []types.Container
+	for _, c := range containers {
+		for k := range c.Labels {
+			if k == label || strings.HasPrefix(k, label) {
+				result = append(result, c)
+				break
+			}
+		}
+	}
+
+	return result, nil
+}
+
+func (b *DockerBackend) RemoveContainer(ctx context.Context, containerID string) error {
+	if b.docker == nil {
+		return fmt.Errorf("docker client not initialized")
+	}
+
+	if err := b.docker.ContainerRemove(ctx, containerID, container.RemoveOptions{
+		Force: true,
+	}); err != nil {
+		return fmt.Errorf("removing container: %w", err)
+	}
+
+	return nil
 }
