@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -71,6 +73,19 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 		image = "ubuntu:22.04"
 	}
 
+	sshPort, err := b.portManager.Allocate()
+	if err != nil {
+		return nil, fmt.Errorf("allocating SSH port: %w", err)
+	}
+
+	publicKeys, _ := GetUserPublicKeys()
+	var publicKey string
+	if len(publicKeys) > 0 {
+		publicKey = publicKeys[0]
+	}
+
+	entrypoint := generateSSHEntrypoint(publicKey)
+
 	if err := b.pullImage(ctx, image); err != nil {
 		return nil, fmt.Errorf("pulling image: %w", err)
 	}
@@ -96,12 +111,14 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 	}
 
 	containerID, err := b.createContainer(ctx, image, &ContainerConfig{
-		Name:      workspace.ID,
-		Image:      image,
-		Env:        mergeEnv(configEnv, sshEnv),
-		WorkingDir: workingDir,
-		AutoRemove: false,
-		Volumes:    volumes,
+		Name:        workspace.ID,
+		Image:       image,
+		Env:         mergeEnv(configEnv, sshEnv),
+		WorkingDir:  workingDir,
+		AutoRemove:  false,
+		Volumes:     volumes,
+		Ports:       []PortBinding{{ContainerPort: 22, HostPort: sshPort, Protocol: "tcp"}},
+		Entrypoint:  []string{"bash", "-c", entrypoint},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating container: %w", err)
@@ -132,6 +149,15 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 	b.containerManager.mu.Unlock()
 
 	workspace.Status = wsTypes.StatusRunning
+	workspace.Ports = []wsTypes.PortMapping{
+		{
+			Name:          "ssh",
+			Protocol:      "tcp",
+			ContainerPort: 22,
+			HostPort:      sshPort,
+			Visibility:    "public",
+		},
+	}
 
 	if req.WorktreePath != "" && b.syncManager != nil {
 		if _, err := b.syncManager.StartSync(ctx, workspace.ID, req.WorktreePath, "/workspace"); err != nil {
@@ -311,6 +337,11 @@ func (b *DockerBackend) DeleteWorkspace(ctx context.Context, id string) error {
 	}
 
 	if err := b.containerManager.Remove(ctx, id, true); err != nil {
+		if strings.Contains(err.Error(), "No such container") ||
+			strings.Contains(err.Error(), "container not found") {
+			fmt.Printf("Container %s already deleted, skipping\n", id)
+			return nil
+		}
 		return fmt.Errorf("removing container: %w", err)
 	}
 
@@ -411,6 +442,104 @@ func (b *DockerBackend) Exec(ctx context.Context, id string, cmd []string) (stri
 	}
 
 	return string(output), nil
+}
+
+func (b *DockerBackend) GetSSHPort(ctx context.Context, id string) (int32, error) {
+	containers, err := b.docker.ContainerList(ctx, container.ListOptions{
+		All: true,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("listing containers: %w", err)
+	}
+
+	var containerID string
+	for _, c := range containers {
+		for _, name := range c.Names {
+			if name == "/"+id || name == id {
+				containerID = c.ID
+				break
+			}
+		}
+		if containerID != "" {
+			break
+		}
+	}
+
+	if containerID == "" {
+		return 0, fmt.Errorf("container %s not found", id)
+	}
+
+	inspect, err := b.docker.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return 0, fmt.Errorf("inspecting container: %w", err)
+	}
+
+	for port, bindings := range inspect.NetworkSettings.Ports {
+		if port.Port() == "22" && len(bindings) > 0 {
+			var port int32
+			fmt.Sscanf(bindings[0].HostPort, "%d", &port)
+			return port, nil
+		}
+	}
+
+	return 0, fmt.Errorf("SSH port not found for container %s", id)
+}
+
+func (b *DockerBackend) ExecViaSSH(ctx context.Context, id string, cmd []string) (string, error) {
+	port, err := b.GetSSHPort(ctx, id)
+	if err != nil {
+		return "", err
+	}
+
+	keyPair, err := GetUserSSHKey()
+	if err != nil {
+		return "", fmt.Errorf("getting SSH key: %w", err)
+	}
+
+	args := []string{
+		"-p", fmt.Sprintf("%d", port),
+		"-i", keyPair.PrivateKeyPath,
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
+		"root@localhost",
+	}
+	args = append(args, cmd...)
+
+	sshCmd := exec.Command("ssh", args...)
+	output, err := sshCmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("SSH exec failed: %w", err)
+	}
+
+	return string(output), nil
+}
+
+func (b *DockerBackend) Shell(ctx context.Context, id string) error {
+	port, err := b.GetSSHPort(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	keyPair, err := GetUserSSHKey()
+	if err != nil {
+		return fmt.Errorf("getting SSH key: %w", err)
+	}
+
+	sshCmd := exec.Command("ssh",
+		"-p", fmt.Sprintf("%d", port),
+		"-i", keyPair.PrivateKeyPath,
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
+		"-o", "RequestTTY=force",
+		"root@localhost",
+	)
+	sshCmd.Stdin = os.Stdin
+	sshCmd.Stdout = os.Stdout
+	sshCmd.Stderr = os.Stderr
+
+	return sshCmd.Run()
 }
 
 func (b *DockerBackend) GetLogs(ctx context.Context, id string, tail int) (string, error) {

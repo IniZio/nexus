@@ -16,9 +16,17 @@ This PRD describes the Docker Workspace Management system for Nexus - a solution
 | [02-architecture.md](./02-architecture.md) | System design, components, data flow |
 | [03-api.md](./03-api.md) | REST API, gRPC, WebSocket, CLI specifications |
 | [04-security.md](./04-security.md) | SSH handling, secrets, threat model |
-| [05-operations.md](./05-operations.md) | Deployment, monitoring, troubleshooting |
-| [06-testing.md](./06-testing.md) | Testing strategy and benchmarks |
-| [07-roadmap.md](./07-roadmap.md) | Implementation phases and migration |
+| [05-ssh-workspaces.md](./05-ssh-workspaces.md) | **SSH-based workspace access** (primary method) |
+| [06-migration.md](./06-migration.md) | Migration guide: docker exec → SSH |
+| [07-operations.md](./07-operations.md) | Deployment, monitoring, troubleshooting |
+| [08-testing.md](./08-testing.md) | Testing strategy and benchmarks |
+| [09-roadmap.md](./09-roadmap.md) | Implementation phases |
+
+### Architecture Change Notice
+
+**⚠️ Major Change:** This PRD has been updated to use **SSH-based workspace access** instead of `docker exec`. See:
+- [05-ssh-workspaces.md](./05-ssh-workspaces.md) - Full SSH architecture
+- [06-migration.md](./06-migration.md) - Migration guide
 
 ## Quick Reference
 
@@ -60,6 +68,11 @@ boulder workspace down <name>
 
 # Switch (<2s)
 boulder workspace switch <name>
+
+# SSH into workspace (primary access method)
+boulder ssh <name>
+boulder ssh <name> -- npm test  # Execute command
+boulder ssh <name> -L 3000:localhost:3000  # Port forwarding
 
 # List all
 boulder workspace list

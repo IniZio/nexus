@@ -650,14 +650,13 @@ func (s *Server) deleteWorkspace(w http.ResponseWriter, r *http.Request, id stri
 	s.mu.Unlock()
 
 	if !exists {
-		WriteError(w, http.StatusNotFound, fmt.Errorf("workspace not found"))
+		WriteSuccess(w, map[string]string{"status": "deleted"})
 		return
 	}
 
 	if s.dockerBackend != nil && ws.Backend == "docker" {
 		if err := s.dockerBackend.DeleteWorkspace(r.Context(), id); err != nil {
-			WriteError(w, http.StatusInternalServerError, fmt.Errorf("deleting docker workspace: %w", err))
-			return
+			log.Printf("[workspace] Warning: failed to delete docker workspace %s: %v", id, err)
 		}
 	}
 
@@ -682,7 +681,7 @@ func (s *Server) deleteWorkspace(w http.ResponseWriter, r *http.Request, id stri
 		log.Printf("[state] Failed to save after delete: %v", err)
 	}
 
-	WriteSuccess(w, map[string]bool{"success": true})
+	WriteSuccess(w, map[string]string{"status": "deleted"})
 }
 
 func (s *Server) startWorkspace(w http.ResponseWriter, r *http.Request, id string) {

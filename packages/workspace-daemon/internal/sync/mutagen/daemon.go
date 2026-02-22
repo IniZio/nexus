@@ -85,13 +85,21 @@ func (d *EmbeddedDaemon) Start(ctx context.Context) error {
 }
 
 func (d *EmbeddedDaemon) ensureMutagenBinary() error {
-	if _, err := os.Stat(d.mutagenBin); err == nil {
+	binPath, err := ExtractMutagen(d.dataDir)
+	if err == nil {
+		d.mutagenBin = binPath
 		return nil
 	}
 
-	log.Printf("[mutagen] Mutagen binary not found at %s, using system 'mutagen' command", d.mutagenBin)
-	d.mutagenBin = "mutagen"
-	return nil
+	log.Printf("[mutagen] Embedded extraction failed: %v, trying system mutagen", err)
+
+	if path, err := exec.LookPath("mutagen"); err == nil {
+		d.mutagenBin = path
+		log.Printf("[mutagen] Using system mutagen at: %s", path)
+		return nil
+	}
+
+	return fmt.Errorf("mutagen not available (embedded or system)")
 }
 
 func (d *EmbeddedDaemon) waitForSocket(timeout time.Duration) error {

@@ -28,11 +28,18 @@ This is the **Nexus** project - an AI-native development environment with multip
 
 - **Boulder/Enforcer System**: Idle detection, mini-workflows (docs, git, CI enforcement)
 - **IDE Plugins**: OpenCode, Claude Code (Cursor in progress)
+- **Docker Workspaces**: SSH-based workspace containers with:
+  - OpenSSH server in each container
+  - Auto-allocated SSH ports (32800-34999)
+  - User SSH key injection for passwordless auth
+  - `nexus workspace ssh` command for interactive access
+  - SSH-based exec (replaces docker exec)
+  - SSH agent forwarding support
 - **Workspace SDK**: Partial implementation for remote file/exec operations
 
 ### What Is NOT Yet Implemented
 
-- Full Docker container workspace management
+- Workspace lifecycle management (stop/start/pause)
 - Complete remote workspace lifecycle
 - Telemetry/Agent Trace tracking
 - `nexus` CLI (use `boulder` CLI instead)

@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -291,6 +293,47 @@ func (c *Client) Exec(id string, command []string) (string, error) {
 	}
 
 	return result.Output, nil
+}
+
+func (c *Client) Shell(id string) error {
+	ws, err := c.GetWorkspace(id)
+	if err != nil {
+		return fmt.Errorf("getting workspace: %w", err)
+	}
+
+	var sshPort int
+	for _, port := range ws.Ports {
+		if port.Name == "ssh" {
+			sshPort = port.HostPort
+			break
+		}
+	}
+
+	if sshPort == 0 {
+		return fmt.Errorf("SSH port not found for workspace %s", id)
+	}
+
+	homeDir, _ := os.UserHomeDir()
+	keyPath := filepath.Join(homeDir, ".ssh", "id_ed25519_nexus")
+
+	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+		return fmt.Errorf("SSH key not found at %s (run: ssh-keygen -t ed25519 -f %s)", keyPath, keyPath)
+	}
+
+	sshCmd := exec.Command("ssh",
+		"-p", fmt.Sprintf("%d", sshPort),
+		"-i", keyPath,
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
+		"-o", "RequestTTY=force",
+		"root@localhost",
+	)
+	sshCmd.Stdin = os.Stdin
+	sshCmd.Stdout = os.Stdout
+	sshCmd.Stderr = os.Stderr
+
+	return sshCmd.Run()
 }
 
 func (c *Client) GetLogs(id string, tail int) (string, error) {

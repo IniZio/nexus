@@ -101,7 +101,7 @@ POST /api/v1/workspaces/{id}/switch
 
 Response: `200 OK`
 
-#### Execute Command
+#### Execute Command (via SSH)
 ```http
 POST /api/v1/workspaces/{id}/exec
 Content-Type: application/json
@@ -113,6 +113,59 @@ Content-Type: application/json
   "env": {"CI": "true"}
 }
 ```
+
+**Implementation Note:** Commands are executed via SSH connection to the workspace container, not `docker exec`. This ensures SSH agent forwarding is available for git operations.
+
+#### SSH Connection Info
+```http
+GET /api/v1/workspaces/{id}/ssh
+```
+
+Response:
+```json
+{
+  "workspaceId": "ws-123",
+  "enabled": true,
+  "host": "localhost",
+  "port": 32801,
+  "user": "nexus",
+  "forwardAgent": true,
+  "hostKeyFingerprint": "SHA256:abc123...",
+  "connectionCommand": "ssh -A nexus@localhost -p 32801",
+  "configured": true
+}
+```
+
+#### Generate SSH Config
+```http
+POST /api/v1/workspaces/{id}/ssh/config
+Content-Type: application/json
+
+{
+  "includeHostKey": true
+}
+```
+
+Response:
+```text
+Host nexus-feature-auth
+  HostName localhost
+  Port 32801
+  User nexus
+  ForwardAgent yes
+  StrictHostKeyChecking accept-new
+  UserKnownHostsFile ~/.nexus/known_hosts
+  IdentityFile ~/.ssh/id_ed25519
+```
+
+#### Regenerate SSH Host Keys
+```http
+POST /api/v1/workspaces/{id}/ssh/rotate-keys
+```
+
+Response: `202 Accepted`
+
+Rotates the SSH host keys for the workspace. Requires workspace restart to take effect.
 
 ### Snapshots
 
@@ -276,6 +329,41 @@ service WorkspaceService {
   rpc FlushSync(FlushSyncRequest) returns (FlushSyncResponse);
   rpc ListConflicts(ListConflictsRequest) returns (ListConflictsResponse);
   rpc ResolveConflict(ResolveConflictRequest) returns (ResolveConflictResponse);
+  
+  // SSH Access
+  rpc GetSSHInfo(GetSSHInfoRequest) returns (SSHInfo);
+  rpc GenerateSSHConfig(GenerateSSHConfigRequest) returns (SSHConfigResponse);
+  rpc RotateSSHKeys(RotateSSHKeysRequest) returns (Operation);
+}
+
+message GetSSHInfoRequest {
+  string workspace_id = 1;
+}
+
+message SSHInfo {
+  string workspace_id = 1;
+  bool enabled = 2;
+  string host = 3;
+  int32 port = 4;
+  string user = 5;
+  bool forward_agent = 6;
+  string host_key_fingerprint = 7;
+  string connection_command = 8;
+  bool configured = 9;
+}
+
+message GenerateSSHConfigRequest {
+  string workspace_id = 1;
+  bool include_host_key = 2;
+}
+
+message SSHConfigResponse {
+  string config_content = 1;
+  string host_entry_name = 2;
+}
+
+message RotateSSHKeysRequest {
+  string workspace_id = 1;
 }
 
 message SyncStatus {
@@ -462,21 +550,52 @@ boulder workspace show <name>     # Show workspace details
 boulder workspace destroy <name>  # Delete workspace
 ```
 
-### Workspace Operations
+### Workspace Operations (SSH-Based)
 
 ```bash
-# Execute command
+# SSH into workspace
+boulder ssh <name>
+  --command, -c <cmd>      # Execute command (non-interactive)
+  --port-forward, -L <spec>  # Forward ports (e.g., -L 3000:localhost:3000)
+  --no-agent               # Disable agent forwarding
+  --verbose, -v            # Verbose SSH output
+  --dry-run                # Print SSH command without executing
+
+# Execute command via SSH
 boulder workspace exec <name> <command> [args...]
   --interactive, -i        # Interactive mode
   --tty, -t                # Allocate TTY
+  Note: Executes via SSH, not docker exec (agent forwarding available)
 
-# Open shell
+# Open shell via SSH
 boulder workspace shell <name>   # Open shell in workspace
+  Alias for: boulder ssh <name>
 
 # View logs
 boulder workspace logs <name>
   --follow, -f             # Stream logs
   --tail=<n>               # Last N lines
+  --service=<svc>          # View specific service logs (sshd, app, etc.)
+```
+
+### SSH Configuration
+
+```bash
+# Generate SSH config for all workspaces
+boulder ssh-config generate
+  --output=<file>          # Write to specific file (default: ~/.nexus/ssh_config)
+  --append                 # Append instead of overwrite
+
+# Show SSH connection info
+boulder ssh-config show <name>
+
+# Add SSH config to ~/.ssh/config
+boulder ssh-config install
+  --backup                 # Backup existing config
+
+# Test SSH connectivity
+boulder ssh-test <name>
+  --verbose, -v            # Verbose output
 ```
 
 ### Snapshots
@@ -609,7 +728,35 @@ sync:
 telemetry:
   enabled: true
   endpoint: https://telemetry.nexus.dev
-  
+
+# SSH Configuration
+ssh:
+  # Key injection
+  injection:
+    enabled: true
+    sources:
+      - ~/.ssh/id_ed25519.pub
+      - ~/.ssh/id_rsa.pub
+    include_agent_keys: true
+
+  # Port allocation
+  port_range:
+    start: 32800
+    end: 34999
+
+  # Connection settings
+  connection:
+    user: nexus
+    forward_agent: true
+    server_alive_interval: 30
+    strict_host_key_checking: accept-new
+    user_known_hosts_file: ~/.nexus/known_hosts
+
+  # SSH client options
+  client_options:
+    - "IdentitiesOnly=yes"
+    - "AddKeysToAgent=yes"
+
 # IDE integration
 ide:
   default: vscode
