@@ -21,7 +21,8 @@ This is the **Nexus** project - an AI-native development environment with multip
 | `packages/opencode` | Enforcer | ✅ OpenCode CLI tool |
 | `packages/claude` | Enforcer | ✅ Claude Code integration |
 | `packages/cursor` | Enforcer | ✅ Cursor IDE extension |
-| `packages/workspace-sdk` | Workspace | 🚧 WebSocket SDK |
+| `packages/workspace-core` | Workspace | 🚧 WebSocket SDK |
+| `packages/workspace-docker` | Workspace | 🚧 Docker SDK |
 | `packages/nexusd` | Workspace | ✅ Go server (nexus CLI + daemon) |
 
 ### What IS Implemented
@@ -99,17 +100,6 @@ ADRs go in `docs/dev/decisions/`:
 - `docs/dev/decisions/001-worktree-isolation.md`
 - `docs/dev/decisions/002-port-allocation.md`
 - `docs/dev/decisions/003-telemetry-design.md`
-
-### What NOT to Reference
-
-Never reference in documentation:
-
-- `nexus` CLI commands (they don't exist)
-- Docker container workspaces (not implemented)
-- Workspace lifecycle management (not implemented)
-- Remote workspaces via SSH (not implemented)
-
-If a feature doesn't exist, don't document it as if it does. Instead, note it as planned/future.
 
 ### Documentation Structure
 
