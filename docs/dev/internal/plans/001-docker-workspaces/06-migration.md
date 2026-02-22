@@ -25,10 +25,10 @@ Nexus is transitioning from `docker exec` to **SSH-based workspace access**. Thi
 
 | Old Command | New Command | Notes |
 |-------------|-------------|-------|
-| `boulder workspace exec ws cmd` | `boulder ssh ws -- cmd` | SSH-based execution |
-| `boulder workspace shell ws` | `boulder ssh ws` | Interactive SSH shell |
-| `boulder workspace logs ws` | `boulder ssh ws -- docker logs` | Via SSH |
-| N/A | `boulder ssh ws -L 3000:localhost:3000` | Port forwarding |
+| `nexus workspace exec ws cmd` | `nexus workspace ssh ws -- cmd` | SSH-based execution |
+| `nexus workspace shell ws` | `nexus workspace ssh ws` | Interactive SSH shell |
+| `nexus workspace logs ws` | `nexus workspace ssh ws -- docker logs` | Via SSH |
+| N/A | `nexus workspace ssh ws -L 3000:localhost:3000` | Port forwarding |
 
 ### Configuration
 
@@ -54,8 +54,8 @@ ssh:
 ### 1. Update CLI Tool
 
 ```bash
-# Install or update to latest boulder CLI
-brew upgrade boulder  # macOS
+# Install or update to latest nexus CLI
+brew upgrade nexus  # macOS
 # or
 curl -fsSL https://nexus.dev/install.sh | sh
 ```
@@ -66,17 +66,17 @@ curl -fsSL https://nexus.dev/install.sh | sh
 
 ```bash
 # 1. Note current workspace state
-boulder workspace list
-boulder workspace show myworkspace
+nexus workspace list
+nexus workspace show myworkspace
 
 # 2. Stop and destroy old workspace
-boulder workspace destroy myworkspace
+nexus workspace destroy myworkspace
 
 # 3. Create new SSH-enabled workspace
-boulder workspace create myworkspace
+nexus workspace create myworkspace
 
 # 4. SSH into new workspace
-boulder ssh myworkspace
+nexus workspace ssh myworkspace
 ```
 
 **Option B: In-Place Migration**
@@ -88,7 +88,7 @@ boulder ssh myworkspace
 # 3. Inject your public keys
 # 4. Configure SSH port
 
-boulder workspace migrate myworkspace
+nexus workspace migrate myworkspace
 
 # This command will:
 # - Stop the workspace
@@ -101,7 +101,7 @@ boulder workspace migrate myworkspace
 
 ```bash
 # Generate SSH config for all workspaces
-boulder ssh-config generate
+nexus ssh-config generate
 
 # This creates ~/.nexus/ssh_config with entries like:
 # Host nexus-feature-auth
@@ -140,15 +140,15 @@ cursor --remote ssh-remote+nexus-feature-auth /work
 **Before:**
 ```bash
 # Old docker exec scripts
-boulder workspace exec myworkspace -- npm test
-boulder workspace exec myworkspace -- git status
+nexus workspace exec myworkspace -- npm test
+nexus workspace exec myworkspace -- git status
 ```
 
 **After:**
 ```bash
 # New SSH-based scripts
-boulder ssh myworkspace -- npm test
-boulder ssh myworkspace -- git status
+nexus workspace ssh myworkspace -- npm test
+nexus workspace ssh myworkspace -- git status
 
 # Or use SSH config directly:
 ssh nexus-myworkspace -- npm test
@@ -198,8 +198,8 @@ Nexus provides a compatibility layer for existing workspaces during the migratio
 
 ```bash
 # Old commands still work with deprecation warning
-boulder workspace exec myworkspace -- npm test
-# ⚠️  Deprecation: Use 'boulder ssh myworkspace -- npm test' instead
+nexus workspace exec myworkspace -- npm test
+# ⚠️  Deprecation: Use 'nexus workspace ssh myworkspace -- npm test' instead
 
 # Old commands are translated to SSH equivalents
 ```
@@ -219,26 +219,26 @@ boulder workspace exec myworkspace -- npm test
 
 ```bash
 # Check workspace is running
-boulder workspace up myworkspace
+nexus workspace up myworkspace
 
 # Verify SSH port
-boulder workspace show myworkspace | grep ssh
+nexus workspace show myworkspace | grep ssh
 
 # Test connectivity
-boulder ssh myworkspace -- -v
+nexus workspace ssh myworkspace -- -v
 ```
 
 ### Permission Denied (Authentication)
 
 ```bash
 # Verify keys are injected
-boulder ssh myworkspace -- "cat ~/.ssh/authorized_keys"
+nexus workspace ssh myworkspace -- "cat ~/.ssh/authorized_keys"
 
 # Check your public keys exist
 ls -la ~/.ssh/*.pub
 
 # Regenerate SSH config
-boulder workspace restart myworkspace
+nexus workspace restart myworkspace
 ```
 
 ### Agent Forwarding Not Working
@@ -248,20 +248,20 @@ boulder workspace restart myworkspace
 ssh-add -l
 
 # Check ForwardAgent is enabled
-boulder ssh-config show myworkspace | grep ForwardAgent
+nexus ssh-config show myworkspace | grep ForwardAgent
 
 # Test from within workspace
-boulder ssh myworkspace -- "ssh-add -l"
+nexus workspace ssh myworkspace -- "ssh-add -l"
 ```
 
 ### Port Conflicts
 
 ```bash
 # List all allocated ports
-boulder workspace list --ports
+nexus workspace list --ports
 
 # Change SSH port for workspace
-boulder workspace config myworkspace --ssh-port 32900
+nexus workspace config myworkspace --ssh-port 32900
 ```
 
 ## Best Practices
@@ -289,19 +289,19 @@ ssh:
 
 ```bash
 # ✅ Good
-boulder ssh myworkspace -- npm test
-boulder ssh myworkspace -- git push
+nexus workspace ssh myworkspace -- npm test
+nexus workspace ssh myworkspace -- git push
 
 # ⚠️ Deprecated
-boulder workspace exec myworkspace -- npm test
+nexus workspace exec myworkspace -- npm test
 ```
 
 ### 4. Configure IDE Integration
 
 ```bash
 # Generate IDE-specific configs
-boulder ide-config generate vscode
-boulder ide-config generate cursor
+nexus ide-config generate vscode
+nexus ide-config generate cursor
 ```
 
 ## FAQ
@@ -312,11 +312,11 @@ A: SSH provides native agent forwarding (works on macOS), standard IDE support, 
 
 **Q: Do I need to recreate all my workspaces?**
 
-A: No, existing workspaces can be migrated in-place with `boulder workspace migrate`.
+A: No, existing workspaces can be migrated in-place with `nexus workspace migrate`.
 
 **Q: Will old scripts break?**
 
-A: Old `workspace exec` commands will work during the deprecation period with warnings. Update to `boulder ssh` for long-term compatibility.
+A: Old `workspace exec` commands will work during the deprecation period with warnings. Update to `nexus workspace ssh` for long-term compatibility.
 
 **Q: Is SSH less secure than docker exec?**
 
@@ -324,7 +324,7 @@ A: No, SSH is more secure. It uses key-based authentication, encrypted connectio
 
 **Q: Can I still use docker commands directly?**
 
-A: Yes, you can still use `docker exec` if needed, but `boulder ssh` is recommended for consistent behavior and agent forwarding.
+A: Yes, you can still use `docker exec` if needed, but `nexus workspace ssh` is recommended for consistent behavior and agent forwarding.
 
 **Q: What about Windows/WSL2?**
 

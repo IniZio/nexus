@@ -42,7 +42,7 @@ This is the **Nexus** project - an AI-native development environment with multip
 - Workspace lifecycle management (stop/start/pause)
 - Complete remote workspace lifecycle
 - Telemetry/Agent Trace tracking
-- `nexus` CLI (use `boulder` CLI instead)
+- `nexus` CLI (unified CLI for workspaces - boulder is internal enforcement only)
 
 ---
 

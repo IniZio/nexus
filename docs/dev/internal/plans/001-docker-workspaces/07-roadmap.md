@@ -133,15 +133,15 @@ defaults:
 EOF
 
 # 3. Initialize workspace system
-boulder workspace init
+nexus workspace init
 # - Migrates existing containers
 # - Preserves configurations
 
 # 4. Import existing worktrees
-boulder workspace import --detect
+nexus workspace import --detect
 
 # 5. Verify
-boulder workspace list
+nexus workspace list
 ```
 
 ### From Git Worktrees (No Containers)
@@ -150,7 +150,7 @@ boulder workspace list
 # For each existing worktree
 for worktree in .worktree/*; do
   name=$(basename $worktree)
-  boulder workspace create $name --from-worktree=$worktree
+  nexus workspace create $name --from-worktree=$worktree
 done
 
 # Worktrees now have containers
@@ -160,7 +160,7 @@ done
 
 ```bash
 # Import devcontainer.json
-boulder workspace create my-project \
+nexus workspace create my-project \
   --devcontainer=.devcontainer/devcontainer.json \
   --dotfiles=https://github.com/user/dotfiles
 ```
@@ -225,17 +225,17 @@ workspaces:
 # If migration fails:
 
 # 1. Stop all workspaces
-boulder workspace list --running | xargs -I {} boulder workspace down {}
+nexus workspace list --running | xargs -I {} nexus workspace down {}
 
 # 2. Restore backup
 rm -rf .nexus
 mv .nexus.backup.YYYYMMDD .nexus
 
 # 3. Verify old state
-boulder workspace list
+nexus workspace list
 
 # 4. Report issue
-boulder admin support-bundle --submit
+nexus admin support-bundle --submit
 ```
 
 ---

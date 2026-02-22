@@ -9,13 +9,13 @@ Severity: P2
 Runbook:
 
 1. Check system resources
-   $ boulder admin stats
+   $ nexus admin stats
    
 2. Check Docker daemon status
    $ docker system info
    
 3. Check recent errors
-   $ boulder admin logs --errors --last=1h
+   $ nexus admin logs --errors --last=1h
    
 4. Common causes:
    a. Disk full → Cleanup old workspaces
@@ -35,7 +35,7 @@ Severity: P3
 Runbook:
 
 1. Identify top memory consumers
-   $ boulder admin top --sort=memory
+   $ nexus admin top --sort=memory
    
 2. Options:
    a. Contact users to stop unused workspaces
@@ -55,50 +55,50 @@ Runbook:
 
 ```bash
 # Inspect workspace details
-boulder admin workspace inspect <name>
+nexus admin workspace inspect <name>
 # Shows: state, resources, ports, recent events
 
 # View system logs
-boulder admin workspace logs <name> --system
+nexus admin workspace logs <name> --system
 # Shows: daemon logs, not just app logs
 
 # Execute with debug logging
-boulder admin workspace exec <name> --debug
+nexus admin workspace exec <name> --debug
 
 # Check workspace health
-boulder admin workspace health <name>
+nexus admin workspace health <name>
 
 # Check file sync status
-boulder admin workspace sync-status <name>
+nexus admin workspace sync-status <name>
 # Shows: sync provider, status, last sync, conflicts
 
 # List sync conflicts
-boulder admin workspace sync-conflicts <name>
+nexus admin workspace sync-conflicts <name>
 
 # Force sync flush
-boulder admin workspace sync-flush <name>
+nexus admin workspace sync-flush <name>
 ```
 
 ### System Debugging
 
 ```bash
 # System stats
-boulder admin stats
+nexus admin stats
 # CPU, memory, disk, network usage
 
 # Port allocation
-boulder admin ports
+nexus admin ports
 # List all allocated ports
 
 # Networks
-boulder admin networks
+nexus admin networks
 # List Docker networks
 
 # Full request trace
-boulder admin trace <request-id>
+nexus admin trace <request-id>
 
 # Diagnostic bundle
-boulder admin support-bundle
+nexus admin support-bundle
 # Collects logs, config, stats for support
 ```
 
@@ -128,17 +128,17 @@ boulder admin support-bundle
 
 ```bash
 # Create backup
-boulder admin backup create
+nexus admin backup create
 # Creates:
 # - State store dump
 # - Workspace metadata
 # - User configurations
 
 # List backups
-boulder admin backup list
+nexus admin backup list
 
 # Restore from backup
-boulder admin backup restore <backup-id>
+nexus admin backup restore <backup-id>
 # Restores state, recreates workspaces
 ```
 
@@ -146,16 +146,16 @@ boulder admin backup restore <backup-id>
 
 ```bash
 # 1. Restore state from backup
-boulder admin backup restore latest
+nexus admin backup restore latest
 
 # 2. Verify worktrees exist
-boulder admin worktree verify --repair
+nexus admin worktree verify --repair
 
 # 3. Recreate missing containers
-boulder admin workspace repair --all
+nexus admin workspace repair --all
 
 # 4. Validate
-boulder admin health-check
+nexus admin health-check
 ```
 
 ---
@@ -239,18 +239,18 @@ const PERFORMANCE_SLIs = {
 
 | Error Code | User Message | Retry Strategy | Recovery Action |
 |------------|--------------|----------------|-----------------|
-| `WORKSPACE_NOT_FOUND` | "Workspace doesn't exist" | No retry | Suggest: `boulder workspace list` |
-| `WORKSPACE_ALREADY_EXISTS` | "Workspace already exists" | No retry | Suggest: `boulder workspace switch` |
+| `WORKSPACE_NOT_FOUND` | "Workspace doesn't exist" | No retry | Suggest: `nexus workspace list` |
+| `WORKSPACE_ALREADY_EXISTS` | "Workspace already exists" | No retry | Suggest: `nexus workspace switch` |
 | `WORKSPACE_START_FAILED` | "Failed to start" | 3 retries, exponential backoff | Auto-retry or manual repair |
 | `PORT_CONFLICT` | "Port X already in use" | 1 retry with new port | Auto-retry with different port |
 | `RESOURCE_EXHAUSTED` | "Not enough resources" | Retry in 30s | Suggest: destroy unused workspaces |
 | `BACKEND_UNAVAILABLE` | "Docker daemon not responding" | Retry in 5s | Auto-retry, escalate if persists |
-| `CONTAINER_ERROR` | "Container crashed" | No retry | Suggest: `boulder workspace repair` |
+| `CONTAINER_ERROR` | "Container crashed" | No retry | Suggest: `nexus workspace repair` |
 | `PERMISSION_DENIED` | "You don't have permission" | No retry | Suggest: contact admin |
 | `AUTHENTICATION_FAILED` | "Session expired" | No retry | Prompt: re-authenticate |
 | `TIMEOUT` | "Operation timed out" | 1 retry | Auto-retry with increased timeout |
 | `NETWORK_ERROR` | "Network connection failed" | 5 retries, exponential backoff | Auto-retry |
-| `DISK_FULL` | "Not enough disk space" | No retry | Suggest: `boulder workspace cleanup` |
+| `DISK_FULL` | "Not enough disk space" | No retry | Suggest: `nexus workspace cleanup` |
 | `SYNC_SESSION_FAILED` | "File sync failed to start" | 3 retries | Check Mutagen installation, retry |
 | `SYNC_CONFLICT` | "File sync conflict detected" | No retry | Run `sync-conflicts` to view and resolve |
 | `SYNC_PAUSED` | "File sync is paused" | Auto-resume on workspace start | Resume sync with `sync-resume` |
@@ -264,38 +264,38 @@ const PERFORMANCE_SLIs = {
 
 ```bash
 # System status
-boulder admin status
-boulder admin stats
-boulder admin health-check
+nexus admin status
+nexus admin stats
+nexus admin health-check
 
 # Workspace management
-boulder admin workspace list
-boulder admin workspace inspect <name>
-boulder admin workspace logs <name>
-boulder admin workspace repair <name>
-boulder admin workspace cleanup
+nexus admin workspace list
+nexus admin workspace inspect <name>
+nexus admin workspace logs <name>
+nexus admin workspace repair <name>
+nexus admin workspace cleanup
 
 # Network and ports
-boulder admin ports
-boulder admin networks
+nexus admin ports
+nexus admin networks
 
 # Debugging
-boulder admin trace <request-id>
-boulder admin support-bundle
+nexus admin trace <request-id>
+nexus admin support-bundle
 ```
 
 ### Configuration Management
 
 ```bash
 # View current config
-boulder config show
+nexus config show
 
 # Edit config
-boulder config edit
+nexus config edit
 
 # Validate config
-boulder config validate
+nexus config validate
 
 # Reload config
-boulder config reload
+nexus config reload
 ```
