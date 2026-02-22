@@ -7,19 +7,22 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/docker/docker/client"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/handlers"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/lifecycle"
 	rpckit "github.com/nexus/nexus/packages/workspace-daemon/pkg/rpcerrors"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/workspace"
+	"github.com/nexus/nexus/packages/workspace-daemon/internal/docker"
 )
 
 type Server struct {
-	port         int
+	port          int
 	workspaceDir string
 	tokenSecret  string
 	upgrader     websocket.Upgrader
@@ -30,6 +33,7 @@ type Server struct {
 	shutdownCh   chan struct{}
 	mux          *http.ServeMux
 	workspaces   map[string]*WorkspaceState
+	dockerBackend *docker.DockerBackend
 }
 
 type WorkspaceState struct {
@@ -87,8 +91,16 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		return nil, fmt.Errorf("pre-start hook failed: %w", err)
 	}
 
+	var dockerBackend *docker.DockerBackend
+	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		log.Printf("[docker] Warning: failed to create docker client: %v", err)
+	} else {
+		dockerBackend = docker.NewDockerBackend(dockerClient, workspaceDir)
+	}
+
 	return &Server{
-		port:         port,
+		port:          port,
 		workspaceDir: workspaceDir,
 		tokenSecret:  tokenSecret,
 		upgrader: websocket.Upgrader{
@@ -98,12 +110,13 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 				return true
 			},
 		},
-		connections: make(map[string]*Connection),
-		ws:          ws,
-		lifecycle:   lifecycleMgr,
-		shutdownCh:  make(chan struct{}),
-		mux:          http.NewServeMux(),
-		workspaces:   make(map[string]*WorkspaceState),
+		connections:   make(map[string]*Connection),
+		ws:            ws,
+		lifecycle:     lifecycleMgr,
+		shutdownCh:    make(chan struct{}),
+		mux:           http.NewServeMux(),
+		workspaces:    make(map[string]*WorkspaceState),
+		dockerBackend: dockerBackend,
 	}, nil
 }
 
@@ -192,7 +205,9 @@ func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWorkspaceByID(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Path[len("/api/v1/workspaces/"):]
+	path := r.URL.Path[len("/api/v1/workspaces/"):]
+	parts := strings.SplitN(path, "/", 2)
+	id := parts[0]
 	if id == "" {
 		http.Error(w, "workspace ID required", http.StatusBadRequest)
 		return
@@ -207,7 +222,10 @@ func (s *Server) handleWorkspaceByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	subPath := r.URL.Path[len("/api/v1/workspaces/"+id):]
+	subPath := ""
+	if len(parts) > 1 {
+		subPath = "/" + parts[1]
+	}
 
 	switch r.Method {
 	case http.MethodGet:
@@ -365,22 +383,18 @@ func (s *Server) execWorkspace(w http.ResponseWriter, r *http.Request, id string
 	}
 
 	ctx := context.Background()
-	result, err := handlers.HandleExec(ctx, map[string]interface{}{
-		"command": req.Command,
-	}, s.ws)
-	if err != nil {
-		WriteError(w, http.StatusInternalServerError, fmt.Errorf("executing command: %w", err))
+	params := map[string]interface{}{
+		"command": req.Command[0],
+		"args":    req.Command[1:],
+	}
+	jsonParams, _ := json.Marshal(params)
+	result, rpcErr := handlers.HandleExec(ctx, jsonParams, s.ws, s.dockerBackend)
+	if rpcErr != nil {
+		WriteError(w, http.StatusInternalServerError, fmt.Errorf("executing command: %v", rpcErr))
 		return
 	}
 
-	output := ""
-	if m, ok := result.(map[string]interface{}); ok {
-		if o, ok := m["output"].(string); ok {
-			output = o
-		}
-	}
-
-	WriteSuccess(w, map[string]string{"output": output})
+	WriteSuccess(w, map[string]string{"output": result.Stdout})
 }
 
 func (s *Server) Shutdown() {
@@ -560,7 +574,7 @@ func (s *Server) processRPC(msg *RPCMessage) *RPCResponse {
 	case "fs.stat":
 		result, err = handlers.HandleStat(ctx, msg.Params, s.ws)
 	case "exec":
-		result, err = handlers.HandleExec(ctx, msg.Params, s.ws)
+		result, err = handlers.HandleExec(ctx, msg.Params, s.ws, s.dockerBackend)
 	case "workspace.info":
 		result = s.handleWorkspaceInfo()
 	default:

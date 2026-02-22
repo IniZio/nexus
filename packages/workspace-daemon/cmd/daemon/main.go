@@ -32,13 +32,21 @@ func runServer(port int, workspaceDir string, token string) error {
 		return fmt.Errorf("failed to create server: %w", err)
 	}
 
+	shutdownCh := make(chan struct{})
+
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		<-sigChan
 		srv.Shutdown()
+		close(shutdownCh)
 	}()
 
 	log.Printf("Workspace daemon started on port %d", port)
-	return srv.Start()
+	if err := srv.Start(); err != nil {
+		return err
+	}
+
+	<-shutdownCh
+	return nil
 }

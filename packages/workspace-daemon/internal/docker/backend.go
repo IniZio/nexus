@@ -1,7 +1,6 @@
 package docker
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,10 +11,10 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
-	"github.com/nexus/nexus/packages/workspace-daemon/internal/types"
-	"github.com/pkg/errors"
+	wsTypes "github.com/nexus/nexus/packages/workspace-daemon/internal/types"
 	nat "github.com/docker/go-connections/nat"
 )
 
@@ -36,14 +35,14 @@ func NewDockerBackend(dockerClient *client.Client, stateDir string) *DockerBacke
 	}
 }
 
-func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *types.CreateWorkspaceRequest) (*types.Workspace, error) {
-	workspace := &types.Workspace{
+func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.CreateWorkspaceRequest) (*wsTypes.Workspace, error) {
+	workspace := &wsTypes.Workspace{
 		ID:          fmt.Sprintf("ws-%d", time.Now().UnixNano()),
 		Name:        req.Name,
 		DisplayName: req.DisplayName,
-		Status:      types.StatusCreating,
-		Backend:     types.BackendDocker,
-		Repository: &types.Repository{
+		Status:      wsTypes.StatusCreating,
+		Backend:     wsTypes.BackendDocker,
+		Repository: &wsTypes.Repository{
 			URL: req.RepositoryURL,
 		},
 		Branch:  req.Branch,
@@ -52,7 +51,7 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *types.CreateWo
 	}
 
 	if workspace.Config == nil {
-		workspace.Config = &types.WorkspaceConfig{}
+		workspace.Config = &wsTypes.WorkspaceConfig{}
 	}
 
 	image := workspace.Config.Image
@@ -118,24 +117,24 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *types.CreateWo
 	}
 	b.containerManager.mu.Unlock()
 
-	workspace.Status = types.StatusRunning
+	workspace.Status = wsTypes.StatusRunning
 
 	return workspace, nil
 }
 
-func (b *DockerBackend) StartWorkspace(ctx context.Context, id string) (*types.Operation, error) {
+func (b *DockerBackend) StartWorkspace(ctx context.Context, id string) (*wsTypes.Operation, error) {
 	if err := b.containerManager.Start(ctx, id); err != nil {
 		return nil, err
 	}
 
-	return &types.Operation{
+	return &wsTypes.Operation{
 		ID:        fmt.Sprintf("op-%d", time.Now().UnixNano()),
 		Status:    "running",
 		CreatedAt: time.Now(),
 	}, nil
 }
 
-func (b *DockerBackend) StopWorkspace(ctx context.Context, id string, timeout int32) (*types.Operation, error) {
+func (b *DockerBackend) StopWorkspace(ctx context.Context, id string, timeout int32) (*wsTypes.Operation, error) {
 	timeoutDuration := time.Duration(timeout) * time.Second
 	if timeoutDuration == 0 {
 		timeoutDuration = 30 * time.Second
@@ -145,7 +144,7 @@ func (b *DockerBackend) StopWorkspace(ctx context.Context, id string, timeout in
 		return nil, err
 	}
 
-	return &types.Operation{
+	return &wsTypes.Operation{
 		ID:         fmt.Sprintf("op-%d", time.Now().UnixNano()),
 		Status:     "stopped",
 		CreatedAt:  time.Now(),
@@ -165,42 +164,42 @@ func (b *DockerBackend) DeleteWorkspace(ctx context.Context, id string) error {
 	return nil
 }
 
-func (b *DockerBackend) GetWorkspaceStatus(ctx context.Context, id string) (types.WorkspaceStatus, error) {
+func (b *DockerBackend) GetWorkspaceStatus(ctx context.Context, id string) (wsTypes.WorkspaceStatus, error) {
 	info, err := b.containerManager.Inspect(ctx, id)
 	if err != nil {
-		return types.StatusError, err
+		return wsTypes.StatusError, err
 	}
 
 	if info == nil {
-		return types.StatusStopped, nil
+		return wsTypes.StatusStopped, nil
 	}
 
 	switch info.State.Status {
 	case "running":
-		return types.StatusRunning, nil
+		return wsTypes.StatusRunning, nil
 	case "exited", "dead":
-		return types.StatusStopped, nil
+		return wsTypes.StatusStopped, nil
 	case "paused":
-		return types.StatusSleeping, nil
+		return wsTypes.StatusSleeping, nil
 	default:
-		return types.StatusCreating, nil
+		return wsTypes.StatusCreating, nil
 	}
 }
 
-func (b *DockerBackend) GetResourceStats(ctx context.Context, id string) (*types.ResourceStats, error) {
+func (b *DockerBackend) GetResourceStats(ctx context.Context, id string) (*wsTypes.ResourceStats, error) {
 	info, err := b.containerManager.Inspect(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
 	if info == nil {
-		return &types.ResourceStats{
+		return &wsTypes.ResourceStats{
 			WorkspaceID: id,
 			Timestamp:   time.Now(),
 		}, nil
 	}
 
-	stats := &types.ResourceStats{
+	stats := &wsTypes.ResourceStats{
 		WorkspaceID: id,
 		Timestamp:   time.Now(),
 	}
@@ -214,7 +213,29 @@ func (b *DockerBackend) GetResourceStats(ctx context.Context, id string) (*types
 }
 
 func (b *DockerBackend) Exec(ctx context.Context, id string, cmd []string) (string, error) {
-	return b.containerManager.Exec(ctx, id, cmd)
+	b.containerManager.mu.RLock()
+	info, ok := b.containerManager.containers[id]
+	b.containerManager.mu.RUnlock()
+
+	if !ok {
+		return "", fmt.Errorf("container %s not found", id)
+	}
+
+	_, reader, err := b.execInContainer(ctx, info.ID, cmd)
+	if err != nil {
+		return "", err
+	}
+
+	if reader == nil {
+		return "", nil
+	}
+
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		return "", err
+	}
+
+	return string(output), nil
 }
 
 func (b *DockerBackend) GetLogs(ctx context.Context, id string, tail int) (string, error) {
@@ -281,13 +302,13 @@ func (b *DockerBackend) createContainer(ctx context.Context, image string, confi
 
 	if len(config.Volumes) > 0 {
 		binds := []string{}
-		mounts := []container.Mount{}
+		mounts := []mount.Mount{}
 		for _, v := range config.Volumes {
 			if v.Type == "bind" {
 				binds = append(binds, fmt.Sprintf("%s:%s:%t", v.Source, v.Target, v.ReadOnly))
 			} else {
-				mounts = append(mounts, container.Mount{
-					Type:   container.MountType(v.Type),
+				mounts = append(mounts, mount.Mount{
+					Type:   mount.Type(v.Type),
 					Source: v.Source,
 					Target: v.Target,
 				})
@@ -321,7 +342,10 @@ func (b *DockerBackend) startContainer(ctx context.Context, id string) error {
 }
 
 func (b *DockerBackend) stopContainer(ctx context.Context, id string, timeout time.Duration) error {
-	return b.docker.ContainerStop(ctx, id, &timeout)
+	timeoutSec := int(timeout.Seconds())
+	return b.docker.ContainerStop(ctx, id, container.StopOptions{
+		Timeout: &timeoutSec,
+	})
 }
 
 func (b *DockerBackend) removeContainer(ctx context.Context, id string, force bool) error {
@@ -330,7 +354,7 @@ func (b *DockerBackend) removeContainer(ctx context.Context, id string, force bo
 	})
 }
 
-func (b *DockerBackend) inspectContainer(ctx context.Context, id string) (*types.ContainerJSON, error) {
+func (b *DockerBackend) inspectContainer(ctx context.Context, id string) (types.ContainerJSON, error) {
 	return b.docker.ContainerInspect(ctx, id)
 }
 

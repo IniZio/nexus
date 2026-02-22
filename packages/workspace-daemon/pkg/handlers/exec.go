@@ -11,6 +11,7 @@ import (
 
 	rpckit "github.com/nexus/nexus/packages/workspace-daemon/pkg/rpcerrors"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/workspace"
+	"github.com/nexus/nexus/packages/workspace-daemon/internal/docker"
 )
 
 const (
@@ -37,7 +38,7 @@ type ExecResult struct {
 	Command  string `json:"command"`
 }
 
-func HandleExec(ctx context.Context, params json.RawMessage, ws *workspace.Workspace) (*ExecResult, *rpckit.RPCError) {
+func HandleExec(ctx context.Context, params json.RawMessage, ws *workspace.Workspace, backend *docker.DockerBackend) (*ExecResult, *rpckit.RPCError) {
 	var p ExecParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, rpckit.ErrInvalidParams
@@ -58,6 +59,29 @@ func HandleExec(ctx context.Context, params json.RawMessage, ws *workspace.Works
 		var cancelFn context.CancelFunc
 		execCtx, cancelFn = context.WithTimeout(execCtx, timeout)
 		defer cancelFn()
+	}
+
+	if backend != nil {
+		workspaceID := ws.ID()
+		cmd := []string{p.Command}
+		cmd = append(cmd, p.Args...)
+
+		output, err := backend.Exec(execCtx, workspaceID, cmd)
+		if err != nil {
+			return &ExecResult{
+				Stdout:   "",
+				Stderr:   fmt.Sprintf("exec in container failed: %v", err),
+				ExitCode: 1,
+				Command:  strings.Join(cmd, " "),
+			}, nil
+		}
+
+		return &ExecResult{
+			Stdout:   strings.TrimSuffix(output, "\n"),
+			Stderr:   "",
+			ExitCode: 0,
+			Command:  strings.Join(cmd, " "),
+		}, nil
 	}
 
 	workDir := ws.Path()

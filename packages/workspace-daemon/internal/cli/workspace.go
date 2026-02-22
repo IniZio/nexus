@@ -191,11 +191,11 @@ func init() {
 	workspaceCreateCmd.Flags().StringP("branch", "b", "", "Branch name")
 	workspaceCreateCmd.Flags().StringP("backend", "", "docker", "Backend (docker, sprite, kubernetes)")
 
-	workspaceStopCmd.Flags().IntP("timeout", "t", 30, "Timeout in seconds")
+	workspaceStopCmd.Flags().Int("timeout", 30, "Timeout in seconds")
 
 	workspaceDeleteCmd.Flags().BoolP("force", "f", false, "Force delete without confirmation")
 
-	workspaceLogsCmd.Flags().IntP("tail", "t", 100, "Number of lines to show")
+	workspaceLogsCmd.Flags().Int("tail", 100, "Number of lines to show")
 }
 
 func colorStatus(status string) string {

@@ -74,7 +74,7 @@ func checkDaemonBinary() error {
 		}
 	}
 
-	output, err := exec.Command("which", "nexusd").Output()
+	_, err := exec.Command("which", "nexusd").Output()
 	if err == nil {
 		return nil
 	}

@@ -2,10 +2,6 @@ package docker
 
 import (
 	"context"
-	"fmt"
-	"time"
-
-	"github.com/nexus/nexus/packages/workspace-daemon/internal/types"
 )
 
 type Client struct {

@@ -305,9 +305,10 @@ type ContainerConfig struct {
 }
 
 type VolumeMount struct {
-	Source      string
-	Target      string
-	ReadOnly    bool
+	Type      string
+	Source    string
+	Target    string
+	ReadOnly  bool
 }
 
 type PortBinding struct {
