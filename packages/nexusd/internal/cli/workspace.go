@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -18,7 +20,53 @@ var (
 	forceFlag       bool
 	formatFlag      string
 	allFlag         bool
+	clearFlag       bool
 )
+
+const (
+	sessionDirName     = ".nexus/session"
+	activeWorkspaceFile = "active-workspace"
+)
+
+func getSessionDir() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(homeDir, sessionDirName)
+}
+
+func getActiveWorkspacePath() string {
+	return filepath.Join(getSessionDir(), activeWorkspaceFile)
+}
+
+func getActiveWorkspace() (string, error) {
+	activePath := getActiveWorkspacePath()
+	data, err := os.ReadFile(activePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func setActiveWorkspace(name string) error {
+	sessionDir := getSessionDir()
+	if err := os.MkdirAll(sessionDir, 0755); err != nil {
+		return err
+	}
+	activePath := getActiveWorkspacePath()
+	if name == "" {
+		return os.Remove(activePath)
+	}
+	return os.WriteFile(activePath, []byte(name+"\n"), 0644)
+}
+
+func clearActiveWorkspace() error {
+	return setActiveWorkspace("")
+}
 
 var workspaceCreateCmd = &cobra.Command{
 	Use:   "create <name>",
@@ -240,18 +288,7 @@ var workspaceExecCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
 
-		var command []string
-		foundDashDash := false
-		for _, arg := range args[1:] {
-			if arg == "--" {
-				foundDashDash = true
-				continue
-			}
-			if foundDashDash {
-				command = append(command, arg)
-			}
-		}
-
+		command := args[1:]
 		if len(command) == 0 {
 			fmt.Fprintf(os.Stderr, "Error: specify command after --\n")
 			os.Exit(1)
@@ -369,6 +406,69 @@ var workspaceLogsCmd = &cobra.Command{
 	},
 }
 
+var workspaceUseCmd = &cobra.Command{
+	Use:   "use [name]",
+	Short: "Set active workspace for current session",
+	Long: `Set the active workspace so subsequent commands run in that workspace context.
+	  
+Use 'nexus workspace use -' or 'nexus workspace use --clear' to deactivate and run on host.`,
+	Args: cobra.RangeArgs(0, 1),
+	Run: func(cmd *cobra.Command, args []string) {
+		if clearFlag {
+			err := clearActiveWorkspace()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error clearing active workspace: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Cleared active workspace. Commands will run on host.")
+			return
+		}
+
+		var name string
+		if len(args) > 0 {
+			name = args[0]
+		}
+
+		if name == "-" {
+			err := clearActiveWorkspace()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error clearing active workspace: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Cleared active workspace. Commands will run on host.")
+			return
+		}
+
+		if name == "" {
+			fmt.Fprintf(os.Stderr, "Error: specify a workspace name or use --clear\n")
+			os.Exit(1)
+		}
+
+		cfg := getConfig()
+		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
+
+		ws, err := client.GetWorkspace(name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
+				fmt.Fprintf(os.Stderr, "Workspace '%s' not found. Run 'nexus workspace list' to see available workspaces.\n", name)
+				os.Exit(3)
+			}
+			os.Exit(1)
+		}
+
+		err = setActiveWorkspace(name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving active workspace: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Switched to workspace '%s'. Subsequent commands will run in this workspace.\n", ws.Name)
+		fmt.Printf("Workspaces commands will auto-intercept: docker, docker-compose, npm, ./scripts/*.sh, etc.\n")
+		fmt.Printf("\nTo run on host: 'nexus workspace use --clear' or 'HOST: <command>'\n")
+	},
+}
+
 func init() {
 	workspaceCmd.AddCommand(workspaceCreateCmd)
 	workspaceCmd.AddCommand(workspaceStartCmd)
@@ -379,6 +479,7 @@ func init() {
 	workspaceCmd.AddCommand(workspaceExecCmd)
 	workspaceCmd.AddCommand(workspaceStatusCmd)
 	workspaceCmd.AddCommand(workspaceLogsCmd)
+	workspaceCmd.AddCommand(workspaceUseCmd)
 
 	workspaceCreateCmd.Flags().StringVarP(&templateFlag, "template", "t", "", "Template (node, python, go, rust, blank)")
 	workspaceCreateCmd.Flags().StringVar(&fromFlag, "from", "", "Import from existing project path")
@@ -390,6 +491,8 @@ func init() {
 
 	workspaceListCmd.Flags().BoolVar(&allFlag, "all", false, "Show all workspaces including stopped")
 	workspaceListCmd.Flags().StringVar(&formatFlag, "format", "table", "Output format (table, json)")
+
+	workspaceUseCmd.Flags().BoolVarP(&clearFlag, "clear", "c", false, "Clear active workspace")
 }
 
 func colorStatus(status string) string {

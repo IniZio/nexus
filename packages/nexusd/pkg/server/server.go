@@ -400,11 +400,11 @@ func (s *Server) Start() error {
 
 func (s *Server) registerHTTPRoutes() {
 	s.mux.HandleFunc("/health", s.handleHealth)
+	s.mux.HandleFunc("/api/v1/workspaces/", s.handleWorkspaceByID)
 	s.mux.HandleFunc("/api/v1/workspaces", s.handleWorkspaces)
 	s.mux.HandleFunc("/api/v1/config", s.handleConfig)
 	s.mux.HandleFunc("/ws", s.handleWebSocket)
 	s.mux.HandleFunc("/ws/ssh-agent", s.handleSSHAgent)
-	s.setupCheckpointRoutes()
 	s.setupPortRoutes()
 }
 
@@ -561,6 +561,10 @@ func (s *Server) handleWorkspaceByID(w http.ResponseWriter, r *http.Request) {
 			s.getWorkspaceStatus(w, r, id)
 		case "/sync/status":
 			s.getSyncStatus(w, r, id)
+		case "/checkpoints":
+			s.listCheckpoints(w, r, id)
+		case "/ports":
+			s.listPorts(w, r, id)
 		default:
 			if s.dockerBackend != nil && ws.Backend == "docker" {
 				dockerStatus, err := s.dockerBackend.GetWorkspaceStatus(r.Context(), id)
@@ -590,8 +594,6 @@ func (s *Server) handleWorkspaceByID(w http.ResponseWriter, r *http.Request) {
 			}
 			WriteSuccess(w, ws)
 		}
-	case http.MethodDelete:
-		s.deleteWorkspace(w, r, id)
 	case http.MethodPost:
 		switch subPath {
 		case "/start":
@@ -606,8 +608,27 @@ func (s *Server) handleWorkspaceByID(w http.ResponseWriter, r *http.Request) {
 			s.resumeSync(w, r, id)
 		case "/sync/flush":
 			s.flushSync(w, r, id)
+		case "/checkpoints":
+			s.createCheckpoint(w, r, id)
+		case "/ports":
+			s.addPort(w, r, id)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	case http.MethodDelete:
+		switch subPath {
+		case "/checkpoints":
+			path := r.URL.Path[len("/api/v1/workspaces/"):]
+			parts := strings.SplitN(path, "/", 4)
+			if len(parts) >= 3 && parts[2] == "checkpoints" && len(parts) >= 4 {
+				s.deleteCheckpoint(w, r, id, parts[3])
+				return
+			}
+			http.Error(w, "checkpoint ID required", http.StatusBadRequest)
+		case "/ports":
+			s.handleWorkspacePortByID(w, r, id)
+		default:
+			s.deleteWorkspace(w, r, id)
 		}
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1597,29 +1618,6 @@ func (s *Server) resumeWorkspace(workspaceID string) {
 }
 
 func (s *Server) setupPortRoutes() {
-	s.mux.HandleFunc("/api/v1/workspaces/", func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path[len("/api/v1/workspaces/"):]
-		parts := strings.SplitN(path, "/", 2)
-		if len(parts) < 2 {
-			http.Error(w, "workspace ID and path required", http.StatusBadRequest)
-			return
-		}
-		workspaceID := parts[0]
-		subPath := parts[1]
-
-		switch subPath {
-		case "ports":
-			s.handleWorkspacePorts(w, r, workspaceID)
-		case "":
-			s.handleWorkspaceByID(w, r)
-		default:
-			if strings.HasPrefix(subPath, "ports/") {
-				s.handleWorkspacePortByID(w, r, workspaceID)
-			} else {
-				s.handleWorkspaceByID(w, r)
-			}
-		}
-	})
 }
 
 func (s *Server) handleWorkspacePorts(w http.ResponseWriter, r *http.Request, workspaceID string) {
