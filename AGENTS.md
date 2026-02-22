@@ -9,7 +9,7 @@ This is the **Nexus** project - an AI-native development environment with multip
 | Component | Status | Description |
 |-----------|--------|-------------|
 | **Enforcer** | ✅ Implemented | Task enforcement with idle detection and mini-workflows |
-| **Workspace** | 🚧 In Development | Isolated dev environments (inspired by opencode-devcontainer, sprite) |
+| **Workspace** | ✅ Implemented | Isolated dev environments (inspired by opencode-devcontainer, sprite) |
 | **Telemetry** | 📋 Planned | Agent Trace specification implementation for attribution tracking |
 
 ### Packages
@@ -20,14 +20,14 @@ This is the **Nexus** project - an AI-native development environment with multip
 | `packages/opencode-plugin` | Enforcer | ✅ OpenCode integration |
 | `packages/opencode` | Enforcer | ✅ OpenCode CLI tool |
 | `packages/claude` | Enforcer | ✅ Claude Code integration |
-| `packages/cursor` | Enforcer | 🚧 Cursor IDE extension |
+| `packages/cursor` | Enforcer | ✅ Cursor IDE extension |
 | `packages/workspace-sdk` | Workspace | 🚧 WebSocket SDK |
-| `packages/workspace-daemon` | Workspace | 🚧 Go server |
+| `packages/nexusd` | Workspace | ✅ Go server (nexus CLI + daemon) |
 
 ### What IS Implemented
 
 - **Boulder/Enforcer System**: Idle detection, mini-workflows (docs, git, CI enforcement)
-- **IDE Plugins**: OpenCode, Claude Code (Cursor in progress)
+- **IDE Plugins**: OpenCode, Claude Code, Cursor
 - **Docker Workspaces**: SSH-based workspace containers with:
   - OpenSSH server in each container
   - Auto-allocated SSH ports (32800-34999)
@@ -36,13 +36,16 @@ This is the **Nexus** project - an AI-native development environment with multip
   - SSH-based exec (replaces docker exec)
   - SSH agent forwarding support
 - **Workspace SDK**: Partial implementation for remote file/exec operations
+- **Nexus CLI**: Unified CLI for workspace management:
+  - `nexus workspace` commands (create, start, stop, delete, exec, ssh)
+  - `nexus sync` commands for file synchronization
+  - `nexus boulder` commands for enforcement
+  - Shell completions and seamless workflow
 
 ### What Is NOT Yet Implemented
 
-- Workspace lifecycle management (stop/start/pause)
 - Complete remote workspace lifecycle
 - Telemetry/Agent Trace tracking
-- `nexus` CLI (unified CLI for workspaces - boulder is internal enforcement only)
 
 ---
 
