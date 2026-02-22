@@ -293,14 +293,6 @@ var workspaceCmd = &cobra.Command{
 	},
 }
 
-var traceCmd = &cobra.Command{
-	Use:   "trace",
-	Short: "Trace/attribution commands (Phase 2)",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Trace commands are not yet implemented (Phase 2)")
-	},
-}
-
 func getConfig() *config.Config {
 	if cfgFile != "" {
 		cfg := config.DefaultConfig()
