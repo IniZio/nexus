@@ -254,10 +254,12 @@ nexus config init [--force]
 - [x] Implement `nexus boulder config`
 
 ### Phase 4: Telemetry Commands (Week 6)
-- [ ] Implement `nexus trace list`
-- [ ] Implement `nexus trace show`
-- [ ] Implement `nexus trace export`
-- [ ] BLOCKED: Requires telemetry system (backlog)
+- [x] Implement `nexus trace list`
+- [x] Implement `nexus trace show`
+- [x] Implement `nexus trace export`
+- [x] Implement `nexus trace stats`
+- [x] Implement `nexus trace prune`
+- [x] Status: ✅ COMPLETE - All trace commands implemented
 
 ### Phase 5: Polish & Release (Week 7-8)
 - [x] Completion scripts (bash, zsh, fish) - via `nexus completion`
