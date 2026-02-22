@@ -399,6 +399,26 @@ func (s *Server) handleWorkspaceByID(w http.ResponseWriter, r *http.Request) {
 				if err == nil {
 					ws.Status = dockerStatus.String()
 				}
+				sshPort, err := s.dockerBackend.GetSSHPort(r.Context(), id)
+				if err == nil {
+					found := false
+					for i, p := range ws.Ports {
+						if p.Name == "ssh" {
+							ws.Ports[i].HostPort = int(sshPort)
+							found = true
+							break
+						}
+					}
+					if !found {
+						ws.Ports = append(ws.Ports, PortMapping{
+							Name:          "ssh",
+							Protocol:      "tcp",
+							ContainerPort: 22,
+							HostPort:      int(sshPort),
+							Visibility:    "public",
+						})
+					}
+				}
 			}
 			WriteSuccess(w, ws)
 		}
@@ -577,6 +597,7 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		log.Printf("SSH bridge created for workspace %s at %s", wsID, socketPath)
 	}
 
+	var createdDockerWS *wsTypes.Workspace
 	if s.dockerBackend != nil && backend == "docker" {
 		dockerReq := &wsTypes.CreateWorkspaceRequest{
 			Name:          req.Name,
@@ -602,28 +623,7 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		wsID = createdWS.ID
-	}
-
-	if req.WorktreePath != "" && s.sessionManagers["default"] != nil {
-		worktreeAbs, err := filepath.Abs(req.WorktreePath)
-		if err == nil {
-			containerPath := "/workspace"
-			sessionID, err := s.sessionManagers["default"].CreateSession(
-				r.Context(),
-				wsID,
-				worktreeAbs,
-				containerPath,
-				nil,
-			)
-			if err != nil {
-				log.Printf("[mutagen] Warning: failed to create sync session: %v", err)
-			} else {
-				log.Printf("[mutagen] Created sync session %s for workspace %s", sessionID, wsID)
-				s.mu.Lock()
-				s.sessionManagers[wsID] = s.sessionManagers["default"]
-				s.mu.Unlock()
-			}
-		}
+		createdDockerWS = createdWS
 	}
 
 	ws := &WorkspaceState{
@@ -633,6 +633,20 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		Backend:   backend,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
+	}
+
+	if createdDockerWS != nil && len(createdDockerWS.Ports) > 0 {
+		ws.Ports = make([]PortMapping, len(createdDockerWS.Ports))
+		for i, p := range createdDockerWS.Ports {
+			ws.Ports[i] = PortMapping{
+				Name:          p.Name,
+				Protocol:      p.Protocol,
+				ContainerPort: int(p.ContainerPort),
+				HostPort:      int(p.HostPort),
+				Visibility:    p.Visibility,
+				URL:           p.URL,
+			}
+		}
 	}
 
 	s.mu.Lock()

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -114,6 +115,31 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 		workspace.Repository.LocalPath = req.WorktreePath
 	}
 
+	extraPorts := []PortBinding{}
+	if req.DinD && req.WorktreePath != "" {
+		composePath := filepath.Join(req.WorktreePath, "docker-compose.yml")
+		if _, err := os.Stat(composePath); err == nil {
+			ports, err := ParseComposeFile(composePath)
+			if err != nil {
+				fmt.Printf("Warning: failed to parse compose file: %v\n", err)
+			} else {
+				fmt.Printf("Found %d ports in docker-compose.yml\n", len(ports))
+				for _, port := range ports {
+					hostPort, err := b.portManager.Allocate()
+					if err != nil {
+						fmt.Printf("Warning: failed to allocate port %d: %v\n", port, err)
+						continue
+					}
+					extraPorts = append(extraPorts, PortBinding{
+						ContainerPort: int32(port),
+						HostPort:      hostPort,
+						Protocol:      "tcp",
+					})
+				}
+			}
+		}
+	}
+
 	dindEntrypoint := entrypoint
 	dindPrivileged := req.DinD
 	var entrypointCmd []string
@@ -139,7 +165,7 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 		WorkingDir:  workingDir,
 		AutoRemove:  false,
 		Volumes:     volumes,
-		Ports:       []PortBinding{{ContainerPort: 22, HostPort: sshPort, Protocol: "tcp"}},
+		Ports:       append([]PortBinding{{ContainerPort: 22, HostPort: sshPort, Protocol: "tcp"}}, extraPorts...),
 		Entrypoint:  entrypointCmd,
 		Cmd:         cmd,
 		Privileged:  dindPrivileged,
@@ -181,6 +207,16 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 			HostPort:      sshPort,
 			Visibility:    "public",
 		},
+	}
+	for _, p := range extraPorts {
+		workspace.Ports = append(workspace.Ports, wsTypes.PortMapping{
+			Name:          fmt.Sprintf("port-%d", p.ContainerPort),
+			Protocol:      p.Protocol,
+			ContainerPort: p.ContainerPort,
+			HostPort:      p.HostPort,
+			Visibility:    "public",
+			URL:           fmt.Sprintf("http://localhost:%d", p.HostPort),
+		})
 	}
 
 	if req.WorktreePath != "" && b.syncManager != nil {
@@ -266,6 +302,31 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 		workspace.Repository.LocalPath = req.WorktreePath
 	}
 
+	extraPortsBridge := []PortBinding{}
+	if req.DinD && req.WorktreePath != "" {
+		composePath := filepath.Join(req.WorktreePath, "docker-compose.yml")
+		if _, err := os.Stat(composePath); err == nil {
+			ports, err := ParseComposeFile(composePath)
+			if err != nil {
+				fmt.Printf("Warning: failed to parse compose file: %v\n", err)
+			} else {
+				fmt.Printf("Found %d ports in docker-compose.yml\n", len(ports))
+				for _, port := range ports {
+					hostPort, err := b.portManager.Allocate()
+					if err != nil {
+						fmt.Printf("Warning: failed to allocate port %d: %v\n", port, err)
+						continue
+					}
+					extraPortsBridge = append(extraPortsBridge, PortBinding{
+						ContainerPort: int32(port),
+						HostPort:      hostPort,
+						Protocol:      "tcp",
+					})
+				}
+			}
+		}
+	}
+
 	allEnv := sshEnv
 	allEnv = append(allEnv, bridgeEnv...)
 
@@ -294,7 +355,7 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 		WorkingDir:  workingDir,
 		AutoRemove:  false,
 		Volumes:     volumes,
-		Ports:       []PortBinding{{ContainerPort: 22, HostPort: sshPort, Protocol: "tcp"}},
+		Ports:       append([]PortBinding{{ContainerPort: 22, HostPort: sshPort, Protocol: "tcp"}}, extraPortsBridge...),
 		Entrypoint:  entrypointCmd,
 		Cmd:         cmd,
 		Privileged:  dindPrivileged,
@@ -336,6 +397,16 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 			HostPort:      sshPort,
 			Visibility:    "public",
 		},
+	}
+	for _, p := range extraPortsBridge {
+		workspace.Ports = append(workspace.Ports, wsTypes.PortMapping{
+			Name:          fmt.Sprintf("port-%d", p.ContainerPort),
+			Protocol:      p.Protocol,
+			ContainerPort: p.ContainerPort,
+			HostPort:      p.HostPort,
+			Visibility:    "public",
+			URL:           fmt.Sprintf("http://localhost:%d", p.HostPort),
+		})
 	}
 
 	if req.WorktreePath != "" && b.syncManager != nil {
