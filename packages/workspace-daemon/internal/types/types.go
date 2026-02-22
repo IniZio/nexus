@@ -213,6 +213,7 @@ type CreateWorkspaceRequest struct {
 	Labels         map[string]string
 	ForwardSSH     bool
 	ID             string
+	WorktreePath   string
 }
 
 type GetWorkspaceRequest struct {

@@ -42,6 +42,12 @@ type Provider interface {
 	List(ctx context.Context) ([]WorkspaceInfo, error)
 	Close() error
 	ContainerExists(ctx context.Context, name string) (bool, error)
+	StartSync(ctx context.Context, workspaceName, worktreePath string) (string, error)
+	PauseSync(ctx context.Context, workspaceName string) error
+	ResumeSync(ctx context.Context, workspaceName string) error
+	StopSync(ctx context.Context, workspaceName string) error
+	GetSyncStatus(ctx context.Context, workspaceName string) (interface{}, error)
+	FlushSync(ctx context.Context, workspaceName string) error
 }
 
 func NewManager(provider Provider) *Manager {
@@ -143,6 +149,10 @@ func (m *Manager) CreateWithWorktree(name, worktreePath string) error {
 		return err
 	}
 
+	if err := m.startSync(name, worktreePath); err != nil {
+		fmt.Printf("⚠️  Warning: failed to start sync: %v\n", err)
+	}
+
 	nexusDir := filepath.Join(worktreePath, ".nexus")
 	if err := os.MkdirAll(nexusDir, 0755); err != nil {
 		return fmt.Errorf("failed to create .nexus directory: %w", err)
@@ -159,6 +169,16 @@ func (m *Manager) CreateWithWorktree(name, worktreePath string) error {
 	fmt.Println("\nNext steps:")
 	fmt.Printf("  nexus workspace up %s\n", name)
 	fmt.Printf("  nexus workspace shell %s\n", name)
+	return nil
+}
+
+func (m *Manager) startSync(name, worktreePath string) error {
+	ctx := context.Background()
+	_, err := m.provider.StartSync(ctx, name, worktreePath)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("🔄 Started file sync for workspace '%s'\n", name)
 	return nil
 }
 
@@ -192,6 +212,10 @@ func (m *Manager) Up(name string) error {
 		return err
 	}
 
+	if err := m.provider.ResumeSync(ctx, name); err != nil {
+		fmt.Printf("⚠️  Warning: failed to resume sync: %v\n", err)
+	}
+
 	hookPath := filepath.Join(".nexus", "hooks", "up.sh")
 	if _, err := os.Stat(hookPath); err == nil {
 		fmt.Println("🔧 Running up hook...")
@@ -214,6 +238,11 @@ func (m *Manager) Down(name string) error {
 	}
 
 	fmt.Printf("🛑 Stopping workspace '%s'...\n", name)
+
+	if err := m.provider.PauseSync(ctx, name); err != nil {
+		fmt.Printf("⚠️  Warning: failed to pause sync: %v\n", err)
+	}
+
 	return m.provider.Stop(ctx, name)
 }
 
@@ -257,6 +286,10 @@ func (m *Manager) Destroy(name string) error {
 	}
 
 	fmt.Printf("🗑️  Destroying workspace '%s'...\n", name)
+
+	if err := m.provider.StopSync(ctx, name); err != nil {
+		fmt.Printf("⚠️  Warning: failed to stop sync: %v\n", err)
+	}
 
 	if err := m.provider.Destroy(ctx, name); err != nil {
 		return fmt.Errorf("failed to destroy workspace: %w", err)

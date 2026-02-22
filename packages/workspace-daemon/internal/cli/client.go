@@ -39,6 +39,7 @@ type Workspace struct {
 	Labels      map[string]string `json:"labels,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`
+	WorktreePath string           `json:"worktree_path,omitempty"`
 }
 
 type Repository struct {
@@ -65,6 +66,7 @@ type CreateWorkspaceRequest struct {
 	Labels        map[string]string `json:"labels,omitempty"`
 	ForwardSSH    bool              `json:"forward_ssh,omitempty"`
 	ID            string            `json:"id,omitempty"`
+	WorktreePath  string            `json:"worktree_path,omitempty"`
 }
 
 type ListWorkspacesResponse struct {

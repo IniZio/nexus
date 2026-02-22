@@ -268,6 +268,7 @@ type CreateWorkspaceRequest struct {
 	Labels        map[string]string `json:"labels,omitempty"`
 	ForwardSSH    bool              `json:"forward_ssh,omitempty"`
 	ID            string            `json:"id,omitempty"`
+	WorktreePath  string            `json:"worktree_path,omitempty"`
 }
 
 func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -440,6 +441,7 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 			Branch:        req.Branch,
 			Labels:        req.Labels,
 			ID:            wsID,
+			WorktreePath:  req.WorktreePath,
 			Config: &wsTypes.WorkspaceConfig{
 				Env: map[string]string{},
 			},

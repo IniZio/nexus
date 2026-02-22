@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/nexus/nexus/packages/workspace-daemon/internal/git"
 )
 
 var workspaceCmd = &cobra.Command{
@@ -27,8 +28,29 @@ var workspaceCreateCmd = &cobra.Command{
 		displayName, _ := cmd.Flags().GetString("display-name")
 		repoURL, _ := cmd.Flags().GetString("repo")
 		branch, _ := cmd.Flags().GetString("branch")
+		fromBranch, _ := cmd.Flags().GetString("from-branch")
 		backend, _ := cmd.Flags().GetString("backend")
+		noWorktree, _ := cmd.Flags().GetBool("no-worktree")
 		forwardSSH := os.Getenv("SSH_AUTH_SOCK") != ""
+
+		var worktreePath string
+
+		if !noWorktree {
+			projectRoot, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Could not determine project root: %v\n", err)
+			} else {
+				worktreeManager := git.NewWorktreeManager(projectRoot)
+				worktreePath, err = worktreeManager.CreateWorktree(name, fromBranch)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error creating worktree: %v\n", err)
+					fmt.Println("Creating workspace without worktree...")
+					worktreePath = ""
+				} else {
+					fmt.Printf("Created worktree: %s\n", worktreePath)
+				}
+			}
+		}
 
 		client := getClient()
 		ws, err := client.CreateWorkspace(CreateWorkspaceRequest{
@@ -38,11 +60,16 @@ var workspaceCreateCmd = &cobra.Command{
 			Branch:        branch,
 			Backend:       backend,
 			ForwardSSH:    forwardSSH,
+			WorktreePath:  worktreePath,
 		})
 		exitOnError(err)
 
 		fmt.Printf("Workspace created: %s (%s)\n", ws.Name, ws.ID)
 		fmt.Printf("Status: %s\n", ws.Status)
+
+		if worktreePath != "" {
+			fmt.Printf("Worktree: %s\n", worktreePath)
+		}
 
 		if forwardSSH {
 			err = client.ForwardSSHAgent(ws.ID)
@@ -90,6 +117,9 @@ var workspaceStatusCmd = &cobra.Command{
 		}
 		if ws.Branch != "" {
 			fmt.Printf("Branch: %s\n", ws.Branch)
+		}
+		if ws.WorktreePath != "" {
+			fmt.Printf("Worktree: %s\n", ws.WorktreePath)
 		}
 		fmt.Printf("Created: %s\n", ws.CreatedAt.Format("2006-01-02 15:04:05"))
 		fmt.Printf("Updated: %s\n", ws.UpdatedAt.Format("2006-01-02 15:04:05"))
@@ -196,7 +226,9 @@ func init() {
 	workspaceCreateCmd.Flags().StringP("display-name", "d", "", "Display name")
 	workspaceCreateCmd.Flags().StringP("repo", "r", "", "Repository URL")
 	workspaceCreateCmd.Flags().StringP("branch", "b", "", "Branch name")
+	workspaceCreateCmd.Flags().StringP("from-branch", "", "", "Base branch to create worktree from (default: main)")
 	workspaceCreateCmd.Flags().StringP("backend", "", "docker", "Backend (docker, sprite, kubernetes)")
+	workspaceCreateCmd.Flags().BoolP("no-worktree", "", false, "Skip git worktree creation")
 
 	workspaceStopCmd.Flags().Int("timeout", 30, "Timeout in seconds")
 
