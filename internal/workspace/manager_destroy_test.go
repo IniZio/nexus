@@ -29,6 +29,13 @@ func (m *mockProvider) Create(ctx context.Context, name string, worktreePath str
 	return nil
 }
 
+func (m *mockProvider) CreateWithDinD(ctx context.Context, name string, worktreePath string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.containers[name] = true
+	return nil
+}
+
 func (m *mockProvider) Start(ctx context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

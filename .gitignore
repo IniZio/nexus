@@ -101,6 +101,10 @@ ENDOFFILE
 .nexus/boulder/*.sh
 packages/enforcer/src/boulder/*.sh
 
+# Experiments
+experiments/
+!experiments/.gitkeep
+
 # Embedded Mutagen binaries
 packages/workspace-daemon/internal/sync/mutagen/bin/
 !packages/workspace-daemon/internal/sync/mutagen/bin/.gitkeep

@@ -290,6 +290,122 @@ tail -f /dev/null
 	return fmt.Errorf("timeout waiting for workspace to be ready")
 }
 
+// CreateWithDinD creates a workspace with Docker-in-Docker support
+func (p *Provider) CreateWithDinD(ctx context.Context, name string, worktreePath string) error {
+	containers, err := p.cli.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	for _, c := range containers {
+		if c.Labels["nexus.workspace.name"] == name {
+			return fmt.Errorf("workspace %s already exists", name)
+		}
+	}
+
+	fmt.Println("📦 Pulling Ubuntu image...")
+	reader, err := p.cli.ImagePull(ctx, "ubuntu:22.04", image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to pull image: %w", err)
+	}
+	io.Copy(io.Discard, reader)
+	reader.Close()
+
+	homeDir, _ := os.UserHomeDir()
+	sshKeyPath := filepath.Join(homeDir, ".ssh", "id_ed25519_nexus.pub")
+	sshKey, _ := os.ReadFile(sshKeyPath)
+
+	entrypoint := `#!/bin/bash
+set -e
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq openssh-server sudo git curl wget vim nano docker.io docker-compose-plugin > /dev/null 2>&1
+
+useradd -m -s /bin/bash dev 2>/dev/null || true
+echo "dev:dev" | chpasswd
+usermod -aG sudo dev
+usermod -aG docker dev
+
+mkdir -p /var/run/sshd
+mkdir -p /home/dev/.ssh
+chmod 700 /home/dev/.ssh
+
+if [ -n "$SSH_PUB_KEY" ]; then
+    echo "$SSH_PUB_KEY" > /home/dev/.ssh/authorized_keys
+    chmod 600 /home/dev/.ssh/authorized_keys
+    chown -R dev:dev /home/dev/.ssh
+fi
+
+echo "dev ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev
+
+/usr/sbin/sshd
+
+dockerd &
+sleep 2
+
+tail -f /dev/null
+`
+
+	fmt.Println("🐳 Creating DinD container...")
+	resp, err := p.cli.ContainerCreate(ctx,
+		&container.Config{
+			Image: "ubuntu:22.04",
+			Labels: map[string]string{
+				"nexus.workspace.name": name,
+				"nexus.workspace":      "true",
+				"nexus.workspace.path": worktreePath,
+				"nexus.workspace.dind": "true",
+			},
+			Env:          []string{fmt.Sprintf("SSH_PUB_KEY=%s", string(sshKey))},
+			Cmd:          []string{"bash", "-c", entrypoint},
+			ExposedPorts: nat.PortSet{"22/tcp": {}},
+		},
+		&container.HostConfig{
+			Privileged: true,
+			Mounts: []mount.Mount{
+				{
+					Type:   mount.TypeBind,
+					Source: worktreePath,
+					Target: "/workspace",
+				},
+			},
+			PortBindings: nat.PortMap{
+				"22/tcp": {{HostIP: "0.0.0.0", HostPort: "0"}},
+			},
+		},
+		nil,
+		nil,
+		fmt.Sprintf("nexus-%s", name),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create container: %w", err)
+	}
+
+	if err := p.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		return fmt.Errorf("failed to start container: %w", err)
+	}
+
+	fmt.Println("⏳ Waiting for SSH and Docker to be ready...")
+	for i := 0; i < 30; i++ {
+		containerInfo, err := p.cli.ContainerInspect(ctx, resp.ID)
+		if err != nil {
+			continue
+		}
+		if containerInfo.State.Running {
+			for port, bindings := range containerInfo.NetworkSettings.Ports {
+				if string(port) == "22/tcp" && len(bindings) > 0 {
+					fmt.Printf("✅ DinD workspace %s created (SSH port: %s)\n", name, bindings[0].HostPort)
+					return nil
+				}
+			}
+		}
+		fmt.Printf(".")
+	}
+
+	return fmt.Errorf("timeout waiting for workspace to be ready")
+}
+
 // Start starts a workspace container
 func (p *Provider) Start(ctx context.Context, name string) error {
 	containerName := fmt.Sprintf("nexus-%s", name)

@@ -277,6 +277,11 @@ func (m *mockTemplateProvider) Create(ctx context.Context, name string, worktree
 	return nil
 }
 
+func (m *mockTemplateProvider) CreateWithDinD(ctx context.Context, name string, worktreePath string) error {
+	m.containers[name] = true
+	return nil
+}
+
 func (m *mockTemplateProvider) Start(ctx context.Context, name string) error {
 	return nil
 }

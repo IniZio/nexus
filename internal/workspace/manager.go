@@ -34,6 +34,7 @@ type WorkspaceInfo struct {
 
 type Provider interface {
 	Create(ctx context.Context, name string, worktreePath string) error
+	CreateWithDinD(ctx context.Context, name string, worktreePath string) error
 	Start(ctx context.Context, name string) error
 	Stop(ctx context.Context, name string) error
 	Destroy(ctx context.Context, name string) error
@@ -117,6 +118,50 @@ func (m *Manager) Repair(name string) error {
 
 func (m *Manager) Create(name string) error {
 	return m.CreateWithWorktree(name, "")
+}
+
+func (m *Manager) CreateDinD(name string) error {
+	return m.CreateDinDWithWorktree(name, "")
+}
+
+func (m *Manager) CreateDinDWithWorktree(name, worktreePath string) error {
+	ctx := context.Background()
+	defer m.provider.Close()
+
+	if name == "" {
+		name = generateWorkspaceName()
+	}
+
+	if m.gitManager.WorktreeExists(name) {
+		return fmt.Errorf("workspace '%s' already exists as a worktree", name)
+	}
+
+	if worktreePath == "" {
+		var err error
+		worktreePath, err = m.gitManager.CreateWorktree(name)
+		if err != nil {
+			return fmt.Errorf("failed to create worktree: %w", err)
+		}
+	} else {
+		if err := m.gitManager.CreateBranch(name); err != nil {
+			return fmt.Errorf("failed to create branch: %w", err)
+		}
+	}
+
+	fmt.Printf("🚀 Creating DinD workspace '%s'...\n", name)
+	if err := m.provider.CreateWithDinD(ctx, name, worktreePath); err != nil {
+		m.gitManager.RemoveWorktree(name)
+		return err
+	}
+
+	if err := m.startSync(name, worktreePath); err != nil {
+		fmt.Printf("⚠️  Warning: failed to start sync: %v\n", err)
+	}
+
+	nexusDir := filepath.Join(worktreePath, ".nexus")
+	os.MkdirAll(nexusDir, 0755)
+
+	return nil
 }
 
 func (m *Manager) CreateWithWorktree(name, worktreePath string) error {
