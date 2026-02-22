@@ -76,6 +76,7 @@ packages/workspace-daemon/workspace-daemon
 packages/nexusd/nexusd
 packages/nexusd/nexus
 packages/nexusd/cli
+packages/nexusd/cmd/cli/nexus
 packages/nexusd/daemon
 packages/nexusd/nexus-cli
 packages/nexusd/workspaces/
