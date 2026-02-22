@@ -311,6 +311,30 @@ func (m *mockTemplateProvider) ContainerExists(ctx context.Context, name string)
 	return exists, nil
 }
 
+func (m *mockTemplateProvider) StartSync(ctx context.Context, workspaceName, worktreePath string) (string, error) {
+	return "", nil
+}
+
+func (m *mockTemplateProvider) PauseSync(ctx context.Context, workspaceName string) error {
+	return nil
+}
+
+func (m *mockTemplateProvider) ResumeSync(ctx context.Context, workspaceName string) error {
+	return nil
+}
+
+func (m *mockTemplateProvider) StopSync(ctx context.Context, workspaceName string) error {
+	return nil
+}
+
+func (m *mockTemplateProvider) GetSyncStatus(ctx context.Context, workspaceName string) (interface{}, error) {
+	return nil, nil
+}
+
+func (m *mockTemplateProvider) FlushSync(ctx context.Context, workspaceName string) error {
+	return nil
+}
+
 func TestTemplateIntegration_PortAccessibility(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 
