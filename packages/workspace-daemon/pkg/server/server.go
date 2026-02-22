@@ -22,6 +22,7 @@ import (
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/lifecycle"
 	rpckit "github.com/nexus/nexus/packages/workspace-daemon/pkg/rpcerrors"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/workspace"
+	"github.com/nexus/nexus/packages/workspace-daemon/internal/checkpoint"
 	"github.com/nexus/nexus/packages/workspace-daemon/internal/docker"
 	wsTypes "github.com/nexus/nexus/packages/workspace-daemon/internal/types"
 	"github.com/nexus/nexus/packages/workspace-daemon/internal/ssh"
@@ -45,12 +46,12 @@ type Server struct {
 	dockerBackend   interfaces.Backend
 	sshBridges      map[string]*ssh.SSHBridge
 	stateStore      interfaces.StateStore
+	checkpointStore *checkpoint.FileCheckpointStore
 	httpServer      *http.Server
 	mutagenDaemon   interfaces.MutagenClient
 	sessionManagers map[string]*mutagen.SessionManager
 	idleDetectors  map[string]*idle.IdleDetector
 	idleConfig      *IdleConfig
-	checkpointStore *CheckpointStore
 }
 
 type WorkspaceState struct {
@@ -108,6 +109,7 @@ func NewServerWithDeps(
 	backend interfaces.Backend,
 	lifecycleMgr interfaces.LifecycleManager,
 	mutagenClient interfaces.MutagenClient,
+	checkpointStore *checkpoint.FileCheckpointStore,
 ) (*Server, error) {
 	ws, err := workspace.NewWorkspace(workspaceDir)
 	if err != nil {
@@ -131,9 +133,8 @@ func NewServerWithDeps(
 		shutdownCh:      make(chan struct{}),
 		mux:             http.NewServeMux(),
 		workspaces:      make(map[string]*WorkspaceState),
-		dockerBackend:   backend,
-		sshBridges:      make(map[string]*ssh.SSHBridge),
 		stateStore:      stateStore,
+		checkpointStore: checkpointStore,
 		mutagenDaemon:   mutagenClient,
 		sessionManagers: make(map[string]*mutagen.SessionManager),
 		idleDetectors:  make(map[string]*idle.IdleDetector),
@@ -142,6 +143,18 @@ func NewServerWithDeps(
 			AutoPause:      true,
 			AutoResume:     true,
 		},
+	}
+
+	var dockerBackend interfaces.Backend
+	if backend != nil {
+		dockerBackend = backend
+		srv.dockerBackend = dockerBackend
+	}
+
+	if checkpointStore != nil {
+		if err := srv.LoadCheckpoints(); err != nil {
+			log.Printf("[checkpoint] Warning: failed to load checkpoints: %v", err)
+		}
 	}
 
 	if stateStore != nil {
@@ -184,6 +197,15 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		stateStore = store
 	}
 
+	var checkpointStore *checkpoint.FileCheckpointStore
+	checkpointDir := filepath.Join(workspaceDir, ".nexus", "checkpoints")
+	cpStore, err := checkpoint.NewFileCheckpointStore(checkpointDir)
+	if err != nil {
+		log.Printf("[checkpoint] Warning: failed to create checkpoint store: %v", err)
+	} else {
+		checkpointStore = cpStore
+	}
+
 	var backend interfaces.Backend
 	var dockerBackend *docker.DockerBackend
 
@@ -214,6 +236,7 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		backend,
 		lifecycleMgr,
 		mutagenClient,
+		checkpointStore,
 	)
 }
 
@@ -243,47 +266,15 @@ func (s *Server) LoadWorkspaces() error {
 }
 
 func (s *Server) LoadCheckpoints() error {
-	if s.stateStore == nil {
+	if s.checkpointStore == nil {
 		return nil
 	}
 
-	workspaces, err := s.stateStore.ListWorkspaces()
-	if err != nil {
-		return fmt.Errorf("listing workspaces: %w", err)
+	if err := s.checkpointStore.LoadAll(); err != nil {
+		return fmt.Errorf("loading checkpoints: %w", err)
 	}
 
-	if s.checkpointStore == nil {
-		s.checkpointStore = &CheckpointStore{
-			checkpoints: make(map[string][]*Checkpoint),
-		}
-	}
-
-	for _, ws := range workspaces {
-		cpDir := filepath.Join(s.stateStore.BaseDir(), ws.ID, "checkpoints")
-		entries, err := os.ReadDir(cpDir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-				continue
-			}
-			cpPath := filepath.Join(cpDir, entry.Name())
-			data, err := os.ReadFile(cpPath)
-			if err != nil {
-				log.Printf("[checkpoint] failed to read %s: %v", cpPath, err)
-				continue
-			}
-			var cp Checkpoint
-			if err := json.Unmarshal(data, &cp); err != nil {
-				log.Printf("[checkpoint] failed to unmarshal %s: %v", cpPath, err)
-				continue
-			}
-			s.checkpointStore.checkpoints[ws.ID] = append(s.checkpointStore.checkpoints[ws.ID], &cp)
-		}
-	}
-
-	log.Printf("[state] Loaded checkpoints for %d workspaces", len(workspaces))
+	log.Printf("[checkpoint] Loaded checkpoints from disk")
 	return nil
 }
 

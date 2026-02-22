@@ -7,35 +7,12 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/nexus/nexus/packages/workspace-daemon/internal/checkpoint"
 	wsTypes "github.com/nexus/nexus/packages/workspace-daemon/internal/types"
 )
-
-type Checkpoint struct {
-	ID        string    `json:"id"`
-	WorkspaceID string  `json:"workspace_id"`
-	Name      string    `json:"name"`
-	ImageName string   `json:"image_name"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-type CheckpointStore struct {
-	checkpoints map[string][]*Checkpoint
-	mu          sync.RWMutex
-	stateDir    string
-}
-
-func NewCheckpointStore(stateDir string) *CheckpointStore {
-	return &CheckpointStore{
-		checkpoints: make(map[string][]*Checkpoint),
-		stateDir:    stateDir,
-	}
-}
 
 func (s *Server) setupCheckpointRoutes() {
 	s.mux.HandleFunc("/api/v1/workspaces/", s.handleCheckpointByWorkspaceID)
@@ -129,7 +106,8 @@ func (s *Server) createCheckpoint(w http.ResponseWriter, r *http.Request, worksp
 	defer r.Body.Close()
 
 	var req struct {
-		Name string `json:"name"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		WriteError(w, http.StatusBadRequest, fmt.Errorf("parsing request: %w", err))
@@ -140,7 +118,7 @@ func (s *Server) createCheckpoint(w http.ResponseWriter, r *http.Request, worksp
 		req.Name = fmt.Sprintf("checkpoint-%d", time.Now().Unix())
 	}
 
-	checkpoint, err := s.doCreateCheckpoint(workspaceID, req.Name)
+	checkpoint, err := s.doCreateCheckpoint(workspaceID, req.Name, req.Description)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, fmt.Errorf("creating checkpoint: %w", err))
 		return
@@ -149,7 +127,7 @@ func (s *Server) createCheckpoint(w http.ResponseWriter, r *http.Request, worksp
 	WriteSuccess(w, checkpoint)
 }
 
-func (s *Server) doCreateCheckpoint(workspaceID, name string) (*Checkpoint, error) {
+func (s *Server) doCreateCheckpoint(workspaceID, name, description string) (*checkpoint.Checkpoint, error) {
 	s.mu.RLock()
 	ws, exists := s.workspaces[workspaceID]
 	s.mu.RUnlock()
@@ -195,15 +173,18 @@ func (s *Server) doCreateCheckpoint(workspaceID, name string) (*Checkpoint, erro
 		return nil, fmt.Errorf("committing container: %w", err)
 	}
 
-	checkpoint := &Checkpoint{
+	cp := &checkpoint.Checkpoint{
 		ID:          fmt.Sprintf("%s-%d", name, time.Now().Unix()),
 		WorkspaceID: workspaceID,
 		Name:        name,
 		ImageName:   imageName,
 		CreatedAt:   time.Now(),
+		Description: description,
 	}
 
-	s.saveCheckpoint(checkpoint)
+	if err := s.checkpointStore.SaveCheckpoint(cp); err != nil {
+		log.Printf("[checkpoint] Warning: failed to persist checkpoint: %v", err)
+	}
 
 	if wasRunning {
 		log.Printf("[checkpoint] Resuming workspace %s after checkpoint", workspaceID)
@@ -212,8 +193,8 @@ func (s *Server) doCreateCheckpoint(workspaceID, name string) (*Checkpoint, erro
 		}
 	}
 
-	log.Printf("[checkpoint] Created checkpoint %s for workspace %s", checkpoint.ID, workspaceID)
-	return checkpoint, nil
+	log.Printf("[checkpoint] Created checkpoint %s for workspace %s", cp.ID, workspaceID)
+	return cp, nil
 }
 
 func (s *Server) listCheckpoints(w http.ResponseWriter, r *http.Request, workspaceID string) {
@@ -226,117 +207,48 @@ func (s *Server) listCheckpoints(w http.ResponseWriter, r *http.Request, workspa
 		return
 	}
 
-	checkpoints := s.getCheckpoints(workspaceID)
+	checkpoints, err := s.checkpointStore.ListCheckpoints(workspaceID)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, fmt.Errorf("listing checkpoints: %w", err))
+		return
+	}
+
 	WriteSuccess(w, checkpoints)
 }
 
 func (s *Server) getCheckpoint(w http.ResponseWriter, r *http.Request, workspaceID, checkpointID string) {
-	checkpoints := s.getCheckpoints(workspaceID)
-	
-	for _, cp := range checkpoints {
-		if cp.ID == checkpointID {
-			WriteSuccess(w, cp)
-			return
-		}
+	cp, err := s.checkpointStore.GetCheckpoint(workspaceID, checkpointID)
+	if err != nil {
+		WriteError(w, http.StatusNotFound, fmt.Errorf("checkpoint not found"))
+		return
 	}
 	
-	WriteError(w, http.StatusNotFound, fmt.Errorf("checkpoint not found"))
+	WriteSuccess(w, cp)
 }
 
 func (s *Server) deleteCheckpoint(w http.ResponseWriter, r *http.Request, workspaceID, checkpointID string) {
-	checkpoints := s.getCheckpoints(workspaceID)
-	
-	var target *Checkpoint
-	var targetIdx int
-	for i, cp := range checkpoints {
-		if cp.ID == checkpointID {
-			target = cp
-			targetIdx = i
-			break
-		}
-	}
-	
-	if target == nil {
+	cp, err := s.checkpointStore.GetCheckpoint(workspaceID, checkpointID)
+	if err != nil {
 		WriteError(w, http.StatusNotFound, fmt.Errorf("checkpoint not found"))
 		return
 	}
 
 	ctx := context.Background()
-	if err := s.dockerBackend.RemoveImage(ctx, target.ImageName); err != nil {
-		log.Printf("[checkpoint] Warning: failed to remove image %s: %v", target.ImageName, err)
+	if err := s.dockerBackend.RemoveImage(ctx, cp.ImageName); err != nil {
+		log.Printf("[checkpoint] Warning: failed to remove image %s: %v", cp.ImageName, err)
 	}
 
-	s.mu.Lock()
-	s.checkpointStore.checkpoints[workspaceID] = append(
-		checkpoints[:targetIdx],
-		checkpoints[targetIdx+1:]...,
-	)
-	s.mu.Unlock()
-
-	if s.stateStore != nil {
-		checkpointPath := filepath.Join(s.stateStore.BaseDir(), workspaceID, "checkpoints", checkpointID+".json")
-		os.Remove(checkpointPath)
+	if err := s.checkpointStore.DeleteCheckpoint(workspaceID, checkpointID); err != nil {
+		WriteError(w, http.StatusInternalServerError, fmt.Errorf("deleting checkpoint: %w", err))
+		return
 	}
 
 	WriteSuccess(w, map[string]string{"status": "deleted"})
 }
 
-func (s *Server) saveCheckpoint(cp *Checkpoint) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.checkpointStore == nil {
-		s.checkpointStore = &CheckpointStore{
-			checkpoints: make(map[string][]*Checkpoint),
-		}
-	}
-
-	s.checkpointStore.checkpoints[cp.WorkspaceID] = append(
-		s.checkpointStore.checkpoints[cp.WorkspaceID],
-		cp,
-	)
-
-	if s.stateStore != nil {
-		cpDir := filepath.Join(s.stateStore.BaseDir(), cp.WorkspaceID, "checkpoints")
-		if err := os.MkdirAll(cpDir, 0755); err != nil {
-			log.Printf("[checkpoint] failed to create checkpoint dir: %v", err)
-			return
-		}
-		cpPath := filepath.Join(cpDir, cp.ID+".json")
-		data, err := json.Marshal(cp)
-		if err != nil {
-			log.Printf("[checkpoint] failed to marshal checkpoint: %v", err)
-			return
-		}
-		if err := os.WriteFile(cpPath, data, 0644); err != nil {
-			log.Printf("[checkpoint] failed to write checkpoint: %v", err)
-		}
-	}
-}
-
-func (s *Server) getCheckpoints(workspaceID string) []*Checkpoint {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.checkpointStore == nil {
-		return nil
-	}
-
-	return s.checkpointStore.checkpoints[workspaceID]
-}
-
 func (s *Server) handleRestoreCheckpoint(w http.ResponseWriter, r *http.Request, workspaceID, checkpointID string) {
-	checkpoints := s.getCheckpoints(workspaceID)
-	
-	var target *Checkpoint
-	for _, cp := range checkpoints {
-		if cp.ID == checkpointID {
-			target = cp
-			break
-		}
-	}
-	
-	if target == nil {
+	cp, err := s.checkpointStore.GetCheckpoint(workspaceID, checkpointID)
+	if err != nil {
 		WriteError(w, http.StatusNotFound, fmt.Errorf("checkpoint not found"))
 		return
 	}
@@ -356,7 +268,7 @@ func (s *Server) handleRestoreCheckpoint(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	if err := s.dockerBackend.RestoreFromImage(ctx, workspaceID, target.ImageName); err != nil {
+	if err := s.dockerBackend.RestoreFromImage(ctx, workspaceID, cp.ImageName); err != nil {
 		WriteError(w, http.StatusInternalServerError, fmt.Errorf("restoring from image: %w", err))
 		return
 	}

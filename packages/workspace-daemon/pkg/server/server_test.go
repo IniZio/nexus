@@ -24,6 +24,7 @@ func TestNewServerWithDeps(t *testing.T) {
 		mockBackend,
 		mockLifecycle,
 		mockMutagen,
+		nil,
 	)
 
 	require.NoError(t, err)
@@ -49,6 +50,7 @@ func TestServerWithMockBackend(t *testing.T) {
 		mockBackend,
 		nil,
 		nil,
+		nil,
 	)
 
 	require.NoError(t, err)
@@ -69,6 +71,7 @@ func TestServerCreateAndListWorkspaces(t *testing.T) {
 		"test-token",
 		mockStore,
 		mockBackend,
+		nil,
 		nil,
 		nil,
 	)
