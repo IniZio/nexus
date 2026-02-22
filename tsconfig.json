@@ -21,9 +21,7 @@
     "packages/core/src/**/*",
     "packages/opencode/src/**/*",
     "packages/claude/src/**/*",
-    "packages/cursor/src/**/*",
-    "packages/workspace-core/src/**/*",
-    "packages/workspace-docker/src/**/*"
+    "packages/cursor/src/**/*"
   ],
   "exclude": ["node_modules", "dist"]
 }

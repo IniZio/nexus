@@ -21,8 +21,6 @@ This is the **Nexus** project - an AI-native development environment with multip
 | `packages/opencode` | Enforcer | ✅ OpenCode CLI tool |
 | `packages/claude` | Enforcer | ✅ Claude Code integration |
 | `packages/cursor` | Enforcer | ✅ Cursor IDE extension |
-| `packages/workspace-core` | Workspace | 🚧 WebSocket SDK |
-| `packages/workspace-docker` | Workspace | 🚧 Docker SDK |
 | `packages/nexusd` | Workspace | ✅ Go server (nexus CLI + daemon) |
 
 ### What IS Implemented
