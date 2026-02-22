@@ -6,10 +6,19 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/spf13/cobra"
 )
+
+func getDefaultWorkspaceDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "/tmp/nexus-workspaces"
+	}
+	return filepath.Join(home, ".nexus", "workspaces")
+}
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
@@ -59,7 +68,7 @@ var serveCmd = &cobra.Command{
 
 func init() {
 	serveCmd.Flags().IntP("port", "p", 8080, "Port to listen on")
-	serveCmd.Flags().StringP("workspace-dir", "w", "/workspace", "Workspace directory path")
+	serveCmd.Flags().StringP("workspace-dir", "w", getDefaultWorkspaceDir(), "Workspace directory path")
 }
 
 func findDaemonBinary() string {
