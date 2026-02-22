@@ -4,20 +4,21 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 )
 
-//go:embed bin/mutagen-darwin-amd64
+//go:embed bin/mutagen-darwin_amd64
 var mutagenDarwinAMD64 []byte
 
-//go:embed bin/mutagen-darwin-arm64
+//go:embed bin/mutagen-darwin_arm64
 var mutagenDarwinARM64 []byte
 
-//go:embed bin/mutagen-linux-amd64
+//go:embed bin/mutagen-linux_amd64
 var mutagenLinuxAMD64 []byte
 
-//go:embed bin/mutagen-linux-arm64
+//go:embed bin/mutagen-linux_arm64
 var mutagenLinuxARM64 []byte
 
 func getEmbeddedBinary() []byte {
@@ -37,14 +38,14 @@ func getEmbeddedBinary() []byte {
 
 func ExtractMutagen(dataDir string) (string, error) {
 	binData := getEmbeddedBinary()
-	if binData == nil {
-		return "", fmt.Errorf("unsupported platform: %s-%s", runtime.GOOS, runtime.GOARCH)
+	if binData == nil || len(binData) == 0 {
+		return findSystemMutagen()
 	}
 
 	binPath := filepath.Join(dataDir, "bin", "mutagen")
 
 	if info, err := os.Stat(binPath); err == nil {
-		if info.Size() == int64(len(binData)) {
+		if info.Size() == int64(len(binData)) && info.Size() > 0 {
 			return binPath, nil
 		}
 	}
@@ -58,4 +59,12 @@ func ExtractMutagen(dataDir string) (string, error) {
 	}
 
 	return binPath, nil
+}
+
+func findSystemMutagen() (string, error) {
+	path, err := exec.LookPath("mutagen")
+	if err != nil {
+		return "", fmt.Errorf("mutagen not found: embedded binary empty and system mutagen not available")
+	}
+	return path, nil
 }

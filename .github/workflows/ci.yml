@@ -36,6 +36,9 @@ jobs:
       - name: Install Task
         uses: arduino/setup-task@v2
 
+      - name: Download Mutagen binaries
+        run: task download-mutagen
+
       - name: Run CI pipeline
         run: task ci
         env:
