@@ -117,6 +117,12 @@ var statusCmd = &cobra.Command{
 		if ws.WorktreePath != "" {
 			fmt.Printf("Worktree: %s\n", ws.WorktreePath)
 		}
+		if ws.IdleTime > 0 {
+			fmt.Printf("Idle Time: %v\n", ws.IdleTime)
+		}
+		if ws.AutoPause {
+			fmt.Printf("Auto Pause: enabled\n")
+		}
 		fmt.Printf("Created: %s\n", ws.CreatedAt.Format("2006-01-02 15:04:05"))
 		fmt.Printf("Updated: %s\n", ws.UpdatedAt.Format("2006-01-02 15:04:05"))
 	},

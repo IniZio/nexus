@@ -6,90 +6,133 @@ import (
 	"time"
 )
 
-type Detector struct {
-	mu                sync.RWMutex
-	workspaceActivity map[string]time.Time
-	checkInterval     time.Duration
-	idleTimeout       time.Duration
-	stopCh            chan struct{}
+type ActivityType string
+
+const (
+	ActivitySSH       ActivityType = "ssh"
+	ActivityFile      ActivityType = "file"
+	ActivityHTTP      ActivityType = "http"
+	ActivityResume    ActivityType = "resume"
+)
+
+type IdleDetector struct {
+	mu               sync.RWMutex
+	workspaceID      string
+	threshold        time.Duration
+	lastActivity    time.Time
+	activityChan    chan ActivityType
+	stopChan         chan struct{}
+	isRunning        bool
+	onIdle           func()
+	onActive         func()
 }
 
-func NewDetector(checkInterval, idleTimeout time.Duration) *Detector {
-	return &Detector{
-		workspaceActivity: make(map[string]time.Time),
-		checkInterval:     checkInterval,
-		idleTimeout:       idleTimeout,
-		stopCh:            make(chan struct{}),
+func NewIdleDetector(workspaceID string, threshold time.Duration) *IdleDetector {
+	return &IdleDetector{
+		workspaceID:   workspaceID,
+		threshold:     threshold,
+		lastActivity:  time.Now(),
+		activityChan:  make(chan ActivityType, 10),
+		stopChan:      make(chan struct{}),
+		isRunning:     false,
 	}
 }
 
-func (d *Detector) Start(ctx context.Context) {
-	ticker := time.NewTicker(d.checkInterval)
+func (d *IdleDetector) Start() {
+	d.mu.Lock()
+	if d.isRunning {
+		d.mu.Unlock()
+		return
+	}
+	d.isRunning = true
+	d.mu.Unlock()
+
+	go d.monitorLoop()
+}
+
+func (d *IdleDetector) Stop() {
+	select {
+	case <-d.stopChan:
+		return
+	default:
+		close(d.stopChan)
+	}
+
+	d.mu.Lock()
+	d.isRunning = false
+	d.mu.Unlock()
+}
+
+func (d *IdleDetector) monitorLoop() {
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-ctx.Done():
-			return
-		case <-d.stopCh:
-			return
 		case <-ticker.C:
-			d.checkIdle(ctx)
+			d.mu.RLock()
+			isIdle := time.Since(d.lastActivity) >= d.threshold
+			onIdle := d.onIdle
+			d.mu.RUnlock()
+
+			if isIdle && onIdle != nil {
+				onIdle()
+			}
+		case activity := <-d.activityChan:
+			d.mu.Lock()
+			d.lastActivity = time.Now()
+			onActive := d.onActive
+			d.mu.Unlock()
+
+			if activity == ActivityResume && onActive != nil {
+				onActive()
+			}
+		case <-d.stopChan:
+			return
 		}
 	}
 }
 
-func (d *Detector) Stop() {
-	close(d.stopCh)
+func (d *IdleDetector) RecordActivity(activity ActivityType) {
+	select {
+	case d.activityChan <- activity:
+	default:
+	}
 }
 
-func (d *Detector) RecordActivity(workspaceID string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	d.workspaceActivity[workspaceID] = time.Now()
-}
-
-func (d *Detector) GetIdleDuration(workspaceID string) time.Duration {
+func (d *IdleDetector) IsIdle() bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	lastActivity, ok := d.workspaceActivity[workspaceID]
-	if !ok {
-		return d.idleTimeout
-	}
-
-	return time.Since(lastActivity)
+	return time.Since(d.lastActivity) >= d.threshold
 }
 
-func (d *Detector) IsIdle(workspaceID string) bool {
-	return d.GetIdleDuration(workspaceID) >= d.idleTimeout
+func (d *IdleDetector) GetIdleDuration() time.Duration {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return time.Since(d.lastActivity)
 }
 
-func (d *Detector) SetIdleTimeout(timeout time.Duration) {
+func (d *IdleDetector) SetThreshold(threshold time.Duration) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	d.idleTimeout = timeout
+	d.threshold = threshold
 }
 
-func (d *Detector) checkIdle(ctx context.Context) {
-	d.mu.RLock()
-	workspaces := make([]string, 0, len(d.workspaceActivity))
-	for id := range d.workspaceActivity {
-		workspaces = append(workspaces, id)
-	}
-	d.mu.RUnlock()
+func (d *IdleDetector) SetOnIdle(callback func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
-	for _, id := range workspaces {
-		if d.IsIdle(id) {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-		}
-	}
+	d.onIdle = callback
+}
+
+func (d *IdleDetector) SetOnActive(callback func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.onActive = callback
 }
 
 type ActivityTracker struct {

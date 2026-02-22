@@ -16,6 +16,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
+	"github.com/nexus/nexus/packages/workspace-daemon/internal/idle"
 	"github.com/nexus/nexus/packages/workspace-daemon/internal/state"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/handlers"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/lifecycle"
@@ -47,6 +48,8 @@ type Server struct {
 	httpServer      *http.Server
 	mutagenDaemon   interfaces.MutagenClient
 	sessionManagers map[string]*mutagen.SessionManager
+	idleDetectors  map[string]*idle.IdleDetector
+	idleConfig      *IdleConfig
 }
 
 type WorkspaceState struct {
@@ -57,6 +60,14 @@ type WorkspaceState struct {
 	Ports       []PortMapping
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	IdleTime    time.Duration `json:"idle_time,omitempty"`
+	AutoPause   bool          `json:"auto_pause,omitempty"`
+}
+
+type IdleConfig struct {
+	DefaultTimeout time.Duration
+	AutoPause      bool
+	AutoResume     bool
 }
 
 type PortMapping struct {
@@ -124,6 +135,12 @@ func NewServerWithDeps(
 		stateStore:      stateStore,
 		mutagenDaemon:   mutagenClient,
 		sessionManagers: make(map[string]*mutagen.SessionManager),
+		idleDetectors:  make(map[string]*idle.IdleDetector),
+		idleConfig: &IdleConfig{
+			DefaultTimeout: 30 * time.Minute,
+			AutoPause:      true,
+			AutoResume:     true,
+		},
 	}
 
 	if stateStore != nil {
@@ -342,6 +359,7 @@ func (s *Server) registerHTTPRoutes() {
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/api/v1/workspaces", s.handleWorkspaces)
 	s.mux.HandleFunc("/api/v1/workspaces/", s.handleWorkspaceByID)
+	s.mux.HandleFunc("/api/v1/config", s.handleConfig)
 	s.mux.HandleFunc("/ws", s.handleWebSocket)
 	s.mux.HandleFunc("/ws/ssh-agent", s.handleSSHAgent)
 }
@@ -351,6 +369,59 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status": "healthy",
 		"time":   time.Now().Format(time.RFC3339),
 	})
+}
+
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.getConfig(w, r)
+	case http.MethodPost:
+		s.setConfig(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
+	cfg := s.GetIdleConfig()
+	WriteSuccess(w, map[string]interface{}{
+		"idle_timeout": cfg.DefaultTimeout.String(),
+		"auto_pause":   cfg.AutoPause,
+		"auto_resume":  cfg.AutoResume,
+	})
+}
+
+func (s *Server) setConfig(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, fmt.Errorf("reading request body: %w", err))
+		return
+	}
+	defer r.Body.Close()
+
+	var configMap map[string]string
+	if err := json.Unmarshal(body, &configMap); err != nil {
+		WriteError(w, http.StatusBadRequest, fmt.Errorf("parsing request: %w", err))
+		return
+	}
+
+	cfg := s.GetIdleConfig()
+
+	if val, ok := configMap["idle_timeout"]; ok {
+		if duration, err := time.ParseDuration(val); err == nil {
+			cfg.DefaultTimeout = duration
+		}
+	}
+	if val, ok := configMap["auto_pause"]; ok {
+		cfg.AutoPause = val == "true" || val == "1"
+	}
+	if val, ok := configMap["auto_resume"]; ok {
+		cfg.AutoResume = val == "true" || val == "1"
+	}
+
+	s.SetIdleConfig(cfg)
+
+	WriteSuccess(w, map[string]string{"status": "updated"})
 }
 
 type APIResponse struct {
@@ -520,6 +591,10 @@ func (s *Server) getWorkspaceStatus(w http.ResponseWriter, r *http.Request, id s
 		ws.Status = dockerStatus.String()
 	}
 
+	if idleTime, ok := s.GetIdleInfo(id); ok {
+		ws.IdleTime = idleTime
+	}
+
 	WriteSuccess(w, ws)
 }
 
@@ -625,6 +700,10 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		bridge.SetActivityCallback(func() {
+			s.RecordActivity(wsID, idle.ActivitySSH)
+		})
+
 		socketPath, err := bridge.Start()
 		if err != nil {
 			WriteError(w, http.StatusInternalServerError, fmt.Errorf("starting SSH bridge: %w", err))
@@ -699,6 +778,8 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[state] Failed to save workspace: %v", err)
 	}
 
+	s.startIdleDetection(ws.ID)
+
 	WriteSuccess(w, ws)
 }
 
@@ -719,6 +800,8 @@ func (s *Server) deleteWorkspace(w http.ResponseWriter, r *http.Request, id stri
 	}
 
 	s.cleanupSSHBridge(id)
+
+	s.stopIdleDetection(id)
 
 	s.mu.Lock()
 	if mgr, ok := s.sessionManagers[id]; ok {
@@ -897,6 +980,8 @@ func (s *Server) execWorkspace(w http.ResponseWriter, r *http.Request, id string
 		}
 		output = result.Stdout
 	}
+
+	s.RecordActivity(id, idle.ActivitySSH)
 
 	WriteSuccess(w, map[string]string{"output": output})
 }
@@ -1265,6 +1350,10 @@ func (s *Server) handleSSHAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		bridge.SetActivityCallback(func() {
+			s.RecordActivity(workspaceID, idle.ActivitySSH)
+		})
+
 		socketPath, err := bridge.Start()
 		if err != nil {
 			log.Printf("Failed to start SSH bridge: %v", err)
@@ -1311,4 +1400,138 @@ func (s *Server) cleanupSSHBridge(workspaceID string) {
 		bridge.Close()
 		delete(s.sshBridges, workspaceID)
 	}
+}
+
+func (s *Server) startIdleDetection(workspaceID string) {
+	if s.idleConfig == nil || !s.idleConfig.AutoPause {
+		return
+	}
+
+	timeout := s.idleConfig.DefaultTimeout
+	if ws, ok := s.workspaces[workspaceID]; ok {
+		if ws.AutoPause {
+			timeout = s.idleConfig.DefaultTimeout
+		}
+	}
+
+	detector := idle.NewIdleDetector(workspaceID, timeout)
+	detector.SetOnIdle(func() {
+		log.Printf("[idle] Workspace %s is idle, pausing...", workspaceID)
+		s.pauseWorkspace(workspaceID)
+	})
+	detector.SetOnActive(func() {
+		log.Printf("[idle] Workspace %s is active, resuming...", workspaceID)
+		s.resumeWorkspace(workspaceID)
+	})
+
+	detector.Start()
+
+	s.mu.Lock()
+	s.idleDetectors[workspaceID] = detector
+	s.mu.Unlock()
+
+	log.Printf("[idle] Started idle detection for workspace %s with timeout %v", workspaceID, timeout)
+}
+
+func (s *Server) stopIdleDetection(workspaceID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if detector, ok := s.idleDetectors[workspaceID]; ok {
+		detector.Stop()
+		delete(s.idleDetectors, workspaceID)
+		log.Printf("[idle] Stopped idle detection for workspace %s", workspaceID)
+	}
+}
+
+func (s *Server) RecordActivity(workspaceID string, activity idle.ActivityType) {
+	s.mu.RLock()
+	detector, ok := s.idleDetectors[workspaceID]
+	s.mu.RUnlock()
+
+	if ok {
+		detector.RecordActivity(activity)
+	}
+}
+
+func (s *Server) GetIdleInfo(workspaceID string) (time.Duration, bool) {
+	s.mu.RLock()
+	detector, ok := s.idleDetectors[workspaceID]
+	s.mu.RUnlock()
+
+	if !ok {
+		return 0, false
+	}
+
+	return detector.GetIdleDuration(), detector.IsIdle()
+}
+
+func (s *Server) SetIdleConfig(config *IdleConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.idleConfig = config
+}
+
+func (s *Server) GetIdleConfig() *IdleConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.idleConfig
+}
+
+func (s *Server) pauseWorkspace(workspaceID string) {
+	s.mu.RLock()
+	ws, exists := s.workspaces[workspaceID]
+	s.mu.RUnlock()
+
+	if !exists || ws.Status == "stopped" || ws.Status == "sleeping" {
+		return
+	}
+
+	if s.dockerBackend != nil && ws.Backend == "docker" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if _, err := s.dockerBackend.StopWorkspace(ctx, workspaceID, 30); err != nil {
+			log.Printf("[idle] Failed to pause workspace %s: %v", workspaceID, err)
+			return
+		}
+	}
+
+	s.mu.Lock()
+	if ws, exists := s.workspaces[workspaceID]; exists {
+		ws.Status = "sleeping"
+		ws.UpdatedAt = time.Now()
+	}
+	s.mu.Unlock()
+
+	log.Printf("[idle] Workspace %s paused (sleeping)", workspaceID)
+}
+
+func (s *Server) resumeWorkspace(workspaceID string) {
+	s.mu.RLock()
+	ws, exists := s.workspaces[workspaceID]
+	s.mu.RUnlock()
+
+	if !exists || ws.Status == "running" {
+		return
+	}
+
+	if s.dockerBackend != nil && ws.Backend == "docker" {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if _, err := s.dockerBackend.StartWorkspace(ctx, workspaceID); err != nil {
+			log.Printf("[idle] Failed to resume workspace %s: %v", workspaceID, err)
+			return
+		}
+	}
+
+	s.mu.Lock()
+	if ws, exists := s.workspaces[workspaceID]; exists {
+		ws.Status = "running"
+		ws.UpdatedAt = time.Now()
+	}
+	s.mu.Unlock()
+
+	log.Printf("[idle] Workspace %s resumed", workspaceID)
 }

@@ -40,6 +40,7 @@ func init() {
 	rootCmd.AddCommand(doctorCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(configCmd)
+	configCmd.AddCommand(configSetCmd)
 
 	rootCmd.AddCommand(execCmd)
 	rootCmd.AddCommand(consoleCmd)
@@ -96,10 +97,32 @@ var versionCmd = &cobra.Command{
 
 var configCmd = &cobra.Command{
 	Use:   "config",
-	Short: "Show configuration",
+	Short: "Manage configuration",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("API URL: %s\n", apiURL)
-		fmt.Printf("Token: %s\n", token)
+		client := getClient()
+		cfg, err := client.GetConfig()
+		exitOnError(err)
+
+		fmt.Printf("Configuration:\n")
+		fmt.Printf("  idle_timeout: %v\n", cfg.IdleTimeout)
+		fmt.Printf("  auto_pause: %v\n", cfg.AutoPause)
+		fmt.Printf("  auto_resume: %v\n", cfg.AutoResume)
+	},
+}
+
+var configSetCmd = &cobra.Command{
+	Use:   "set <key> <value>",
+	Short: "Set configuration value",
+	Args:  cobra.ExactArgs(2),
+	Run: func(cmd *cobra.Command, args []string) {
+		key := args[0]
+		value := args[1]
+
+		client := getClient()
+		err := client.SetConfig(key, value)
+		exitOnError(err)
+
+		fmt.Printf("Set %s = %s\n", key, value)
 	},
 }
 

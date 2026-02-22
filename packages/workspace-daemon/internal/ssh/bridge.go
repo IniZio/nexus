@@ -11,11 +11,12 @@ import (
 )
 
 type SSHBridge struct {
-	workspaceID string
-	listener    net.Listener
-	socketPath  string
-	wsConn      *websocket.Conn
-	mu          sync.Mutex
+	workspaceID   string
+	listener       net.Listener
+	socketPath     string
+	wsConn         *websocket.Conn
+	mu             sync.Mutex
+	onActivity     func()
 }
 
 func NewBridge(workspaceID string) (*SSHBridge, error) {
@@ -31,6 +32,22 @@ func NewBridge(workspaceID string) (*SSHBridge, error) {
 		workspaceID: workspaceID,
 		socketPath:  socketPath,
 	}, nil
+}
+
+func (b *SSHBridge) SetActivityCallback(callback func()) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.onActivity = callback
+}
+
+func (b *SSHBridge) notifyActivity() {
+	b.mu.Lock()
+	callback := b.onActivity
+	b.mu.Unlock()
+
+	if callback != nil {
+		callback()
+	}
 }
 
 func (b *SSHBridge) Start() (string, error) {
@@ -71,6 +88,8 @@ func (b *SSHBridge) HandleConnections() {
 
 func (b *SSHBridge) handleConnection(agentConn net.Conn) {
 	defer agentConn.Close()
+
+	b.notifyActivity()
 
 	b.mu.Lock()
 	wsConn := b.wsConn

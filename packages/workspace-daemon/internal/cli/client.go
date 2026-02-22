@@ -43,6 +43,8 @@ type Workspace struct {
 	UpdatedAt    time.Time         `json:"updated_at"`
 	WorktreePath string            `json:"worktree_path,omitempty"`
 	Health       *HealthStatus     `json:"health,omitempty"`
+	IdleTime     time.Duration     `json:"idle_time,omitempty"`
+	AutoPause    bool              `json:"auto_pause,omitempty"`
 }
 
 type Repository struct {
@@ -76,6 +78,12 @@ type CreateWorkspaceRequest struct {
 type ListWorkspacesResponse struct {
 	Workspaces []Workspace `json:"workspaces"`
 	Total      int         `json:"total"`
+}
+
+type Config struct {
+	IdleTimeout time.Duration `json:"idle_timeout"`
+	AutoPause   bool         `json:"auto_pause"`
+	AutoResume  bool         `json:"auto_resume"`
 }
 
 func NewClient(baseURL, token string) *Client {
@@ -918,4 +926,66 @@ func (c *Client) GetHealth(workspaceID, serviceName string) (*HealthStatus, erro
 	json.Unmarshal(data, &health)
 
 	return &health, nil
+}
+
+func (c *Client) GetConfig() (*Config, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/config", nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var apiResp APIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return nil, err
+	}
+
+	if !apiResp.Success {
+		return nil, fmt.Errorf("API error: %s", apiResp.Error)
+	}
+
+	data, _ := json.Marshal(apiResp.Data)
+	var cfg Config
+	json.Unmarshal(data, &cfg)
+
+	return &cfg, nil
+}
+
+func (c *Client) SetConfig(key, value string) error {
+	configMap := map[string]string{key: value}
+	body, _ := json.Marshal(configMap)
+
+	req, err := http.NewRequest("POST", c.baseURL+"/api/v1/config", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var apiResp APIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return err
+	}
+
+	if !apiResp.Success {
+		return fmt.Errorf("API error: %s", apiResp.Error)
+	}
+
+	return nil
 }
