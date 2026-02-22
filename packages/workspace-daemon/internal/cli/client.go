@@ -30,24 +30,24 @@ type APIResponse struct {
 }
 
 type Workspace struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	DisplayName string            `json:"display_name"`
-	Status      string            `json:"status"`
-	Backend     string            `json:"backend"`
-	Repository  *Repository       `json:"repository,omitempty"`
-	Branch      string            `json:"branch,omitempty"`
-	Ports       []PortMapping     `json:"ports,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
-	WorktreePath string           `json:"worktree_path,omitempty"`
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	DisplayName  string            `json:"display_name"`
+	Status       string            `json:"status"`
+	Backend      string            `json:"backend"`
+	Repository   *Repository       `json:"repository,omitempty"`
+	Branch       string            `json:"branch,omitempty"`
+	Ports        []PortMapping     `json:"ports,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
+	WorktreePath string            `json:"worktree_path,omitempty"`
 }
 
 type Repository struct {
-	URL        string `json:"url"`
-	Provider   string `json:"provider,omitempty"`
-	LocalPath  string `json:"local_path,omitempty"`
+	URL       string `json:"url"`
+	Provider  string `json:"provider,omitempty"`
+	LocalPath string `json:"local_path,omitempty"`
 }
 
 type PortMapping struct {
@@ -477,9 +477,9 @@ func (c *Client) parseWorkspaceResponse(resp *http.Response) (*Workspace, error)
 }
 
 type SyncStatus struct {
-	State     string    `json:"state"`
-	SessionID string    `json:"session_id,omitempty"`
-	LastSync  time.Time `json:"last_sync"`
+	State     string     `json:"state"`
+	SessionID string     `json:"session_id,omitempty"`
+	LastSync  time.Time  `json:"last_sync"`
 	Conflicts []Conflict `json:"conflicts"`
 }
 
@@ -593,4 +593,278 @@ func (c *Client) FlushSync(workspaceID string) error {
 	}
 
 	return nil
+}
+
+func (c *Client) PauseWorkspace(workspaceID string) error {
+	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/pause", nil)
+	if err != nil {
+		return err
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+func (c *Client) ResumeWorkspace(workspaceID string) (*Workspace, error) {
+	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/resume", nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return c.parseWorkspaceResponse(resp)
+}
+
+type Checkpoint struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (c *Client) CreateCheckpoint(workspaceID, name string) (*Checkpoint, error) {
+	body, err := json.Marshal(map[string]string{"name": name})
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/checkpoints", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var apiResp APIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return nil, err
+	}
+
+	if !apiResp.Success {
+		return nil, fmt.Errorf("API error: %s", apiResp.Error)
+	}
+
+	data, _ := json.Marshal(apiResp.Data)
+	var cp Checkpoint
+	json.Unmarshal(data, &cp)
+
+	return &cp, nil
+}
+
+func (c *Client) ListCheckpoints(workspaceID string) ([]Checkpoint, error) {
+	httpReq, err := http.NewRequest("GET", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/checkpoints", nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var apiResp APIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return nil, err
+	}
+
+	if !apiResp.Success {
+		return nil, fmt.Errorf("API error: %s", apiResp.Error)
+	}
+
+	data, _ := json.Marshal(apiResp.Data)
+	var checkpoints []Checkpoint
+	json.Unmarshal(data, &checkpoints)
+
+	return checkpoints, nil
+}
+
+func (c *Client) RestoreCheckpoint(workspaceID, checkpointID string) (*Workspace, error) {
+	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/checkpoints/"+checkpointID+"/restore", nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return c.parseWorkspaceResponse(resp)
+}
+
+type Session struct {
+	ID          string    `json:"id"`
+	WorkspaceID string    `json:"workspace_id"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (c *Client) ListSessions() ([]Session, error) {
+	httpReq, err := http.NewRequest("GET", c.baseURL+"/api/v1/sessions", nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var apiResp APIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return nil, err
+	}
+
+	if !apiResp.Success {
+		return nil, fmt.Errorf("API error: %s", apiResp.Error)
+	}
+
+	data, _ := json.Marshal(apiResp.Data)
+	var sessions []Session
+	json.Unmarshal(data, &sessions)
+
+	return sessions, nil
+}
+
+func (c *Client) AttachSession(sessionID string) error {
+	return fmt.Errorf("not implemented: session attach")
+}
+
+func (c *Client) KillSession(sessionID string) error {
+	httpReq, err := http.NewRequest("DELETE", c.baseURL+"/api/v1/sessions/"+sessionID, nil)
+	if err != nil {
+		return err
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+type Service struct {
+	Name          string `json:"name"`
+	ContainerPort int    `json:"container_port"`
+	HostPort      int    `json:"host_port"`
+	Status        string `json:"status"`
+	URL           string `json:"url,omitempty"`
+}
+
+func (c *Client) ListServices(workspaceID string) ([]Service, error) {
+	httpReq, err := http.NewRequest("GET", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/services", nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var apiResp APIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return nil, err
+	}
+
+	if !apiResp.Success {
+		return nil, fmt.Errorf("API error: %s", apiResp.Error)
+	}
+
+	data, _ := json.Marshal(apiResp.Data)
+	var services []Service
+	json.Unmarshal(data, &services)
+
+	return services, nil
+}
+
+func (c *Client) GetServiceLogs(workspaceID, serviceName string, tail int) (string, error) {
+	httpReq, err := http.NewRequest("GET", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/services/"+serviceName+"/logs?tail="+fmt.Sprint(tail), nil)
+	if err != nil {
+		return "", err
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var apiResp APIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return "", err
+	}
+
+	if !apiResp.Success {
+		return "", fmt.Errorf("API error: %s", apiResp.Error)
+	}
+
+	data, _ := json.Marshal(apiResp.Data)
+	var result struct {
+		Logs string `json:"logs"`
+	}
+	json.Unmarshal(data, &result)
+
+	return result.Logs, nil
+}
+
+func (c *Client) ForwardPort(workspaceID, port string) error {
+	return fmt.Errorf("not implemented: port forwarding")
 }
