@@ -312,6 +312,8 @@ func (s *Server) handleWorkspaceByID(w http.ResponseWriter, r *http.Request) {
 			s.getWorkspaceLogs(w, r, id)
 		case "/status":
 			s.getWorkspaceStatus(w, r, id)
+		case "/sync/status":
+			s.getSyncStatus(w, r, id)
 		default:
 			if s.dockerBackend != nil && ws.Backend == "docker" {
 				dockerStatus, err := s.dockerBackend.GetWorkspaceStatus(r.Context(), id)
@@ -331,6 +333,12 @@ func (s *Server) handleWorkspaceByID(w http.ResponseWriter, r *http.Request) {
 			s.stopWorkspace(w, r, id)
 		case "/exec":
 			s.execWorkspace(w, r, id)
+		case "/sync/pause":
+			s.pauseSync(w, r, id)
+		case "/sync/resume":
+			s.resumeSync(w, r, id)
+		case "/sync/flush":
+			s.flushSync(w, r, id)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -372,6 +380,63 @@ func (s *Server) getWorkspaceStatus(w http.ResponseWriter, r *http.Request, id s
 	}
 
 	WriteSuccess(w, ws)
+}
+
+func (s *Server) getSyncStatus(w http.ResponseWriter, r *http.Request, id string) {
+	if s.dockerBackend == nil {
+		WriteError(w, http.StatusNotImplemented, fmt.Errorf("docker backend not available"))
+		return
+	}
+
+	status, err := s.dockerBackend.GetSyncStatus(r.Context(), id)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, fmt.Errorf("getting sync status: %w", err))
+		return
+	}
+
+	WriteSuccess(w, status)
+}
+
+func (s *Server) pauseSync(w http.ResponseWriter, r *http.Request, id string) {
+	if s.dockerBackend == nil {
+		WriteError(w, http.StatusNotImplemented, fmt.Errorf("docker backend not available"))
+		return
+	}
+
+	if err := s.dockerBackend.PauseSync(r.Context(), id); err != nil {
+		WriteError(w, http.StatusInternalServerError, fmt.Errorf("pausing sync: %w", err))
+		return
+	}
+
+	WriteSuccess(w, map[string]string{"state": "paused"})
+}
+
+func (s *Server) resumeSync(w http.ResponseWriter, r *http.Request, id string) {
+	if s.dockerBackend == nil {
+		WriteError(w, http.StatusNotImplemented, fmt.Errorf("docker backend not available"))
+		return
+	}
+
+	if err := s.dockerBackend.ResumeSync(r.Context(), id); err != nil {
+		WriteError(w, http.StatusInternalServerError, fmt.Errorf("resuming sync: %w", err))
+		return
+	}
+
+	WriteSuccess(w, map[string]string{"state": "resumed"})
+}
+
+func (s *Server) flushSync(w http.ResponseWriter, r *http.Request, id string) {
+	if s.dockerBackend == nil {
+		WriteError(w, http.StatusNotImplemented, fmt.Errorf("docker backend not available"))
+		return
+	}
+
+	if err := s.dockerBackend.FlushSync(r.Context(), id); err != nil {
+		WriteError(w, http.StatusInternalServerError, fmt.Errorf("flushing sync: %w", err))
+		return
+	}
+
+	WriteSuccess(w, map[string]string{"state": "flushed"})
 }
 
 func (s *Server) listWorkspaces(w http.ResponseWriter, r *http.Request) {
