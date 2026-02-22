@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -63,26 +62,17 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 		return nil, fmt.Errorf("pulling image: %w", err)
 	}
 
-	sshBinds, sshEnv := GetSSHAgentMounts()
+	sshVolumes, sshEnv := GetSSHAgentMounts()
 
 	configEnv := make(map[string]string)
 	if workspace.Config != nil && workspace.Config.Env != nil {
 		configEnv = workspace.Config.Env
 	}
 
-	volumes := []VolumeMount{}
-	for _, bind := range sshBinds {
-		parts := strings.Split(bind, ":")
-		if len(parts) >= 2 {
-			volumes = append(volumes, VolumeMount{
-				Source:   parts[0],
-				Target:   parts[1],
-				ReadOnly: true,
-			})
-		}
-	}
+	volumes := append([]VolumeMount{}, sshVolumes...)
 
 	containerID, err := b.createContainer(ctx, image, &ContainerConfig{
+		Name:      workspace.ID,
 		Image:      image,
 		Env:        mergeEnv(configEnv, sshEnv),
 		WorkingDir: "/workspace",
@@ -165,25 +155,31 @@ func (b *DockerBackend) DeleteWorkspace(ctx context.Context, id string) error {
 }
 
 func (b *DockerBackend) GetWorkspaceStatus(ctx context.Context, id string) (wsTypes.WorkspaceStatus, error) {
-	info, err := b.containerManager.Inspect(ctx, id)
+	containers, err := b.docker.ContainerList(ctx, types.ContainerListOptions{
+		All: true,
+	})
 	if err != nil {
-		return wsTypes.StatusError, err
+		return wsTypes.StatusError, fmt.Errorf("listing containers: %w", err)
 	}
 
-	if info == nil {
-		return wsTypes.StatusStopped, nil
+	for _, c := range containers {
+		for _, name := range c.Names {
+			if name == "/"+id || name == id {
+				switch c.State {
+				case "running":
+					return wsTypes.StatusRunning, nil
+				case "exited", "dead":
+					return wsTypes.StatusStopped, nil
+				case "paused":
+					return wsTypes.StatusSleeping, nil
+				default:
+					return wsTypes.StatusCreating, nil
+				}
+			}
+		}
 	}
 
-	switch info.State.Status {
-	case "running":
-		return wsTypes.StatusRunning, nil
-	case "exited", "dead":
-		return wsTypes.StatusStopped, nil
-	case "paused":
-		return wsTypes.StatusSleeping, nil
-	default:
-		return wsTypes.StatusCreating, nil
-	}
+	return wsTypes.StatusStopped, nil
 }
 
 func (b *DockerBackend) GetResourceStats(ctx context.Context, id string) (*wsTypes.ResourceStats, error) {
@@ -213,15 +209,31 @@ func (b *DockerBackend) GetResourceStats(ctx context.Context, id string) (*wsTyp
 }
 
 func (b *DockerBackend) Exec(ctx context.Context, id string, cmd []string) (string, error) {
-	b.containerManager.mu.RLock()
-	info, ok := b.containerManager.containers[id]
-	b.containerManager.mu.RUnlock()
+	containers, err := b.docker.ContainerList(ctx, types.ContainerListOptions{
+		All: true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("listing containers: %w", err)
+	}
 
-	if !ok {
+	var containerID string
+	for _, c := range containers {
+		for _, name := range c.Names {
+			if name == "/"+id || name == id {
+				containerID = c.ID
+				break
+			}
+		}
+		if containerID != "" {
+			break
+		}
+	}
+
+	if containerID == "" {
 		return "", fmt.Errorf("container %s not found", id)
 	}
 
-	_, reader, err := b.execInContainer(ctx, info.ID, cmd)
+	_, reader, err := b.execInContainer(ctx, containerID, cmd)
 	if err != nil {
 		return "", err
 	}
@@ -271,10 +283,7 @@ func (b *DockerBackend) pullImage(ctx context.Context, image string) error {
 }
 
 func (b *DockerBackend) createContainer(ctx context.Context, image string, config *ContainerConfig) (string, error) {
-	env := []string{}
-	for k, v := range config.Env {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
-	}
+	env := config.Env
 
 	hostConfig := &container.HostConfig{
 		AutoRemove: config.AutoRemove,
@@ -300,12 +309,16 @@ func (b *DockerBackend) createContainer(ctx context.Context, image string, confi
 		}
 	}
 
-	if len(config.Volumes) > 0 {
+		if len(config.Volumes) > 0 {
 		binds := []string{}
 		mounts := []mount.Mount{}
 		for _, v := range config.Volumes {
 			if v.Type == "bind" {
-				binds = append(binds, fmt.Sprintf("%s:%s:%t", v.Source, v.Target, v.ReadOnly))
+				mode := "rw"
+				if v.ReadOnly {
+					mode = "ro"
+				}
+				binds = append(binds, fmt.Sprintf("%s:%s:%s", v.Source, v.Target, mode))
 			} else {
 				mounts = append(mounts, mount.Mount{
 					Type:   mount.Type(v.Type),
@@ -327,9 +340,9 @@ func (b *DockerBackend) createContainer(ctx context.Context, image string, confi
 		Env:          env,
 		WorkingDir:   config.WorkingDir,
 		Entrypoint:   config.Entrypoint,
-		Cmd:          config.Cmd,
+		Cmd:          defaultCmd(config.Cmd),
 		ExposedPorts: map[nat.Port]struct{}{},
-	}, hostConfig, networkingConfig, nil, "")
+	}, hostConfig, networkingConfig, nil, config.Name)
 	if err != nil {
 		return "", fmt.Errorf("creating container: %w", err)
 	}
@@ -363,31 +376,64 @@ func (b *DockerBackend) execInContainer(ctx context.Context, id string, cmd []st
 		Cmd:          cmd,
 		AttachStdout: true,
 		AttachStderr: true,
+		Detach:       false,
+		Tty:          false,
 	}
 
 	resp, err := b.docker.ContainerExecCreate(ctx, id, execConfig)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, fmt.Errorf("creating exec: %w", err)
 	}
 
-	execStartCheck := types.ExecStartCheck{}
+	execStartCheck := types.ExecStartCheck{
+		Detach: false,
+		Tty:    false,
+	}
 	conn, err := b.docker.ContainerExecAttach(ctx, resp.ID, execStartCheck)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, fmt.Errorf("attaching to exec: %w", err)
 	}
 	defer conn.Close()
 
 	var outBuf bytes.Buffer
-	if _, err := io.Copy(&outBuf, conn.Reader); err != nil {
-		return 0, nil, err
+	_, err = io.Copy(&outBuf, conn.Reader)
+	if err != nil {
+		return 0, nil, fmt.Errorf("reading exec output: %w", err)
 	}
 
 	info, err := b.docker.ContainerExecInspect(ctx, resp.ID)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, fmt.Errorf("inspecting exec: %w", err)
 	}
 
-	return info.ExitCode, &outBuf, nil
+	output := decodeDockerStream(outBuf.Bytes())
+	return info.ExitCode, bytes.NewReader([]byte(output)), nil
+}
+
+func decodeDockerStream(data []byte) string {
+	if len(data) < 8 {
+		return string(data)
+	}
+
+	var result []byte
+	i := 0
+	for i < len(data) {
+		if i+8 > len(data) {
+			result = append(result, data[i:]...)
+			break
+		}
+		streamType := data[i]
+		size := int(data[i+4])<<24 | int(data[i+5])<<16 | int(data[i+6])<<8 | int(data[i+7])
+		if i+8+size > len(data) {
+			result = append(result, data[i+8:]...)
+			break
+		}
+		if streamType == 1 || streamType == 2 {
+			result = append(result, data[i+8:i+8+size]...)
+		}
+		i += 8 + size
+	}
+	return string(result)
 }
 
 func (b *DockerBackend) getContainerLogs(ctx context.Context, id string, tail int) (io.Reader, error) {
@@ -467,4 +513,11 @@ func mergeEnv(configEnv map[string]string, sshEnv []string) []string {
 	}
 	env = append(env, sshEnv...)
 	return env
+}
+
+func defaultCmd(cmd []string) []string {
+	if len(cmd) > 0 {
+		return cmd
+	}
+	return []string{"sleep", "infinity"}
 }

@@ -19,6 +19,7 @@ import (
 	rpckit "github.com/nexus/nexus/packages/workspace-daemon/pkg/rpcerrors"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/workspace"
 	"github.com/nexus/nexus/packages/workspace-daemon/internal/docker"
+	wsTypes "github.com/nexus/nexus/packages/workspace-daemon/internal/types"
 )
 
 type Server struct {
@@ -232,7 +233,15 @@ func (s *Server) handleWorkspaceByID(w http.ResponseWriter, r *http.Request) {
 		switch subPath {
 		case "/logs":
 			s.getWorkspaceLogs(w, r, id)
+		case "/status":
+			s.getWorkspaceStatus(w, r, id)
 		default:
+			if s.dockerBackend != nil && ws.Backend == "docker" {
+				dockerStatus, err := s.dockerBackend.GetWorkspaceStatus(r.Context(), id)
+				if err == nil {
+					ws.Status = dockerStatus.String()
+				}
+			}
 			WriteSuccess(w, ws)
 		}
 	case http.MethodDelete:
@@ -266,6 +275,28 @@ func (s *Server) getWorkspaceLogs(w http.ResponseWriter, r *http.Request, id str
 	WriteSuccess(w, map[string]string{"logs": logs})
 }
 
+func (s *Server) getWorkspaceStatus(w http.ResponseWriter, r *http.Request, id string) {
+	s.mu.RLock()
+	ws, exists := s.workspaces[id]
+	s.mu.RUnlock()
+
+	if !exists {
+		WriteError(w, http.StatusNotFound, fmt.Errorf("workspace not found"))
+		return
+	}
+
+	if s.dockerBackend != nil && ws.Backend == "docker" {
+		dockerStatus, err := s.dockerBackend.GetWorkspaceStatus(r.Context(), id)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, fmt.Errorf("getting docker status: %w", err))
+			return
+		}
+		ws.Status = dockerStatus.String()
+	}
+
+	WriteSuccess(w, ws)
+}
+
 func (s *Server) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -295,11 +326,34 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	backend := req.Backend
+	if backend == "" {
+		backend = "docker"
+	}
+
+	wsID := fmt.Sprintf("ws-%d", time.Now().UnixNano())
+
+	if s.dockerBackend != nil && backend == "docker" {
+		dockerReq := &wsTypes.CreateWorkspaceRequest{
+			Name:          req.Name,
+			DisplayName:   req.DisplayName,
+			RepositoryURL: req.RepositoryURL,
+			Branch:        req.Branch,
+			Labels:        req.Labels,
+		}
+		createdWS, err := s.dockerBackend.CreateWorkspace(r.Context(), dockerReq)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, fmt.Errorf("creating docker workspace: %w", err))
+			return
+		}
+		wsID = createdWS.ID
+	}
+
 	ws := &WorkspaceState{
-		ID:        fmt.Sprintf("ws-%d", time.Now().UnixNano()),
+		ID:        wsID,
 		Name:      req.Name,
 		Status:    "running",
-		Backend:   req.Backend,
+		Backend:   backend,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -313,6 +367,22 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteWorkspace(w http.ResponseWriter, r *http.Request, id string) {
 	s.mu.Lock()
+	ws, exists := s.workspaces[id]
+	s.mu.Unlock()
+
+	if !exists {
+		WriteError(w, http.StatusNotFound, fmt.Errorf("workspace not found"))
+		return
+	}
+
+	if s.dockerBackend != nil && ws.Backend == "docker" {
+		if err := s.dockerBackend.DeleteWorkspace(r.Context(), id); err != nil {
+			WriteError(w, http.StatusInternalServerError, fmt.Errorf("deleting docker workspace: %w", err))
+			return
+		}
+	}
+
+	s.mu.Lock()
 	delete(s.workspaces, id)
 	s.mu.Unlock()
 
@@ -321,15 +391,30 @@ func (s *Server) deleteWorkspace(w http.ResponseWriter, r *http.Request, id stri
 
 func (s *Server) startWorkspace(w http.ResponseWriter, r *http.Request, id string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	ws, exists := s.workspaces[id]
+	s.mu.Unlock()
 
+	if !exists {
+		WriteError(w, http.StatusNotFound, fmt.Errorf("workspace not found"))
+		return
+	}
+
+	if s.dockerBackend != nil && ws.Backend == "docker" {
+		_, err := s.dockerBackend.StartWorkspace(r.Context(), id)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, fmt.Errorf("starting docker workspace: %w", err))
+			return
+		}
+	}
+
+	s.mu.Lock()
 	if ws, exists := s.workspaces[id]; exists {
 		ws.Status = "running"
 		ws.UpdatedAt = time.Now()
-		WriteSuccess(w, ws)
-		return
 	}
-	WriteError(w, http.StatusNotFound, fmt.Errorf("workspace not found"))
+	s.mu.Unlock()
+
+	WriteSuccess(w, map[string]string{"status": "running"})
 }
 
 func (s *Server) stopWorkspace(w http.ResponseWriter, r *http.Request, id string) {
@@ -349,15 +434,31 @@ func (s *Server) stopWorkspace(w http.ResponseWriter, r *http.Request, id string
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	ws, exists := s.workspaces[id]
+	s.mu.Unlock()
 
+	if !exists {
+		WriteError(w, http.StatusNotFound, fmt.Errorf("workspace not found"))
+		return
+	}
+
+	if s.dockerBackend != nil && ws.Backend == "docker" {
+		timeout := int32(req.TimeoutSeconds)
+		_, err := s.dockerBackend.StopWorkspace(r.Context(), id, timeout)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, fmt.Errorf("stopping docker workspace: %w", err))
+			return
+		}
+	}
+
+	s.mu.Lock()
 	if ws, exists := s.workspaces[id]; exists {
 		ws.Status = "stopped"
 		ws.UpdatedAt = time.Now()
-		WriteSuccess(w, ws)
-		return
 	}
-	WriteError(w, http.StatusNotFound, fmt.Errorf("workspace not found"))
+	s.mu.Unlock()
+
+	WriteSuccess(w, map[string]string{"status": "stopped"})
 }
 
 func (s *Server) execWorkspace(w http.ResponseWriter, r *http.Request, id string) {
@@ -388,13 +489,35 @@ func (s *Server) execWorkspace(w http.ResponseWriter, r *http.Request, id string
 		"args":    req.Command[1:],
 	}
 	jsonParams, _ := json.Marshal(params)
-	result, rpcErr := handlers.HandleExec(ctx, jsonParams, s.ws, s.dockerBackend)
-	if rpcErr != nil {
-		WriteError(w, http.StatusInternalServerError, fmt.Errorf("executing command: %v", rpcErr))
+
+	s.mu.RLock()
+	ws, exists := s.workspaces[id]
+	s.mu.RUnlock()
+
+	if !exists {
+		WriteError(w, http.StatusNotFound, fmt.Errorf("workspace not found"))
 		return
 	}
 
-	WriteSuccess(w, map[string]string{"output": result.Stdout})
+	var output string
+	if s.dockerBackend != nil && ws.Backend == "docker" {
+		cmd := []string{req.Command[0]}
+		cmd = append(cmd, req.Command[1:]...)
+		output, err = s.dockerBackend.Exec(ctx, id, cmd)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, fmt.Errorf("executing command: %w", err))
+			return
+		}
+	} else {
+		result, rpcErr := handlers.HandleExec(ctx, jsonParams, s.ws, s.dockerBackend)
+		if rpcErr != nil {
+			WriteError(w, http.StatusInternalServerError, fmt.Errorf("executing command: %v", rpcErr))
+			return
+		}
+		output = result.Stdout
+	}
+
+	WriteSuccess(w, map[string]string{"output": output})
 }
 
 func (s *Server) Shutdown() {

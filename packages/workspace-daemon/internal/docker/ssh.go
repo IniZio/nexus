@@ -25,24 +25,26 @@ func DetectSSHAuthSock() (string, error) {
 	return sshAuthSock, nil
 }
 
-func GetSSHAgentMounts() ([]string, []string) {
+func GetSSHAgentMounts() ([]VolumeMount, []string) {
 	sshAuthSock, err := DetectSSHAuthSock()
 	if err != nil {
 		return nil, nil
 	}
 
-	binds := []string{fmt.Sprintf("%s:/ssh-agent:ro", sshAuthSock)}
+	volumes := []VolumeMount{
+		{Type: "bind", Source: sshAuthSock, Target: "/ssh-agent", ReadOnly: true},
+	}
 	env := []string{"SSH_AUTH_SOCK=/ssh-agent"}
 
 	usr, err := user.Current()
 	if err == nil {
 		sshDir := filepath.Join(usr.HomeDir, ".ssh")
 		if _, err := os.Stat(sshDir); err == nil {
-			binds = append(binds, fmt.Sprintf("%s:/root/.ssh:ro", sshDir))
+			volumes = append(volumes, VolumeMount{Type: "bind", Source: sshDir, Target: "/root/.ssh", ReadOnly: true})
 		}
 	}
 
-	return binds, env
+	return volumes, env
 }
 
 func GetSSHKeyMounts(keys []string) ([]string, error) {

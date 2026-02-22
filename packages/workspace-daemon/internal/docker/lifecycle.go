@@ -294,6 +294,7 @@ func generateID() string {
 }
 
 type ContainerConfig struct {
+	Name      string
 	Image      string
 	Env        []string
 	Volumes    []VolumeMount
