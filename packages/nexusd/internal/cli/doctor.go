@@ -8,6 +8,7 @@ import (
 	"os/exec"
 
 	"github.com/spf13/cobra"
+	"github.com/nexus/nexus/packages/nexusd/internal/config"
 )
 
 var doctorCmd = &cobra.Command{
@@ -19,8 +20,7 @@ var doctorCmd = &cobra.Command{
 			check   func() error
 		}{
 			{"CLI version", checkVersion},
-			{"Go installation", checkGo},
-			{"Daemon binary", checkDaemonBinary},
+			{"Config directory", checkConfigDir},
 			{"Docker availability", checkDocker},
 			{"Daemon connectivity", checkDaemon},
 		}
@@ -52,34 +52,12 @@ func checkVersion() error {
 	return nil
 }
 
-func checkGo() error {
-	output, err := exec.Command("go", "version").Output()
-	if err != nil {
-		return fmt.Errorf("go not installed")
+func checkConfigDir() error {
+	dir := config.DirPath()
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return fmt.Errorf("config directory does not exist: %s", dir)
 	}
-	fmt.Printf("(%s) ", string(output[:len(output)-1]))
 	return nil
-}
-
-func checkDaemonBinary() error {
-	paths := []string{
-		"./nexusd",
-		"/usr/local/bin/nexusd",
-		"/usr/bin/nexusd",
-	}
-
-	for _, path := range paths {
-		if _, err := os.Stat(path); err == nil {
-			return nil
-		}
-	}
-
-	_, err := exec.Command("which", "nexusd").Output()
-	if err == nil {
-		return nil
-	}
-
-	return fmt.Errorf("nexusd binary not found")
 }
 
 func checkDocker() error {
@@ -106,14 +84,18 @@ func checkDocker() error {
 }
 
 func checkDaemon() error {
-	client := getClient()
-	if err := client.Health(); err != nil {
-		return fmt.Errorf("daemon not running at %s", apiURL)
+	cfg := getConfig()
+	addr := fmt.Sprintf("%s:%d", cfg.Daemon.Host, cfg.Daemon.Port)
+	
+	conn, err := net.Dial("tcp", addr)
+	if err == nil {
+		conn.Close()
+		return nil
 	}
 
-	resp, err := http.Get(apiURL + "/health")
+	resp, err := http.Get(fmt.Sprintf("http://%s/health", addr))
 	if err != nil {
-		return err
+		return fmt.Errorf("daemon not running at %s", addr)
 	}
 	defer resp.Body.Close()
 
