@@ -5,25 +5,15 @@
     "moduleResolution": "NodeNext",
     "lib": ["ES2022"],
     "outDir": "./dist",
-    "rootDir": ".",
+    "rootDir": "./src",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true,
-    "resolveJsonModule": true,
-    "allowSyntheticDefaultImports": true,
-    "baseUrl": "."
+    "sourceMap": true
   },
-  "include": [
-    "packages/core/src/**/*",
-    "packages/opencode/src/**/*",
-    "packages/claude/src/**/*",
-    "packages/cursor/src/**/*",
-    "packages/workspace-core/src/**/*",
-    "packages/workspace-docker/src/**/*"
-  ],
+  "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
 }
