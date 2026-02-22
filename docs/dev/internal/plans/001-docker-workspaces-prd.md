@@ -1,6 +1,6 @@
 # Docker Workspace Management PRD
 
-**Version:** 1.0.0  
+**Version:** 1.1.0  
 **Status:** Production-Ready for Implementation  
 **Last Updated:** 2026-02-22  
 **Document Owner:** Nexus Architecture Team  
@@ -12,6 +12,7 @@
 1. [Executive Summary](#1-executive-summary)
 2. [Problem Statement](#2-problem-statement)
 3. [Goals and Non-Goals](#3-goals-and-non-goals)
+   - [3.15 SSH Key and Secret Handling](#315-ssh-key-and-secret-handling)
 4. [Reference Research](#4-reference-research)
 5. [Architecture](#5-architecture)
 6. [Data Models](#6-data-models)
@@ -236,22 +237,1157 @@ Based on friction collection data (n=127 developers):
    - Integrate with external CI (GitHub Actions, etc.)
 
 6. **Fine-Grained RBAC**
-   - Simple token-based auth
-   - Enterprise SSO in V2
+    - Simple token-based auth
+    - Enterprise SSO in V2
 
 #### 3.2.2 Never in Scope
 
 1. **Production Hosting**
-   - Not a PaaS like Heroku
-   - Development environments only
+    - Not a PaaS like Heroku
+    - Development environments only
 
 2. **Code Review System**
-   - Use GitHub/GitLab PRs
-   - Not reinventing version control
+    - Use GitHub/GitLab PRs
+    - Not reinventing version control
 
 3. **Package Registry**
-   - Use npm/pypi/docker hub
-   - Not a build artifact store
+    - Use npm/pypi/docker hub
+    - Not a build artifact store
+
+### 3.15 SSH Key and Secret Handling
+
+**Critical Design Issue:** Workspaces need SSH keys to clone private repositories (e.g., `git@github.com:oursky/hanlun-lms.git`), but containers don't have access to host SSH keys. Without proper handling, this creates a workflow downgrade from normal local development where SSH keys are readily available.
+
+#### 3.15.1 SSH Agent Forwarding (Preferred Method)
+
+The most secure approach leverages the host's SSH agent to provide key access without copying keys into the container.
+
+**Architecture:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         Host Machine                         │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │              SSH Agent (ssh-agent)                     │  │
+│  │  • Private keys stored in memory only                  │  │
+│  │  • Unix socket: /tmp/ssh-XXXXXX/agent.XXXXXX          │  │
+│  │  • Keys never written to disk in container            │  │
+│  └──────────────────────┬────────────────────────────────┘  │
+│                         │ SSH_AUTH_SOCK                      │
+│                         ▼                                    │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │           Docker Container (Workspace)                │  │
+│  │  ┌───────────────────────────────────────────────┐   │  │
+│  │  │  SSH Client (git, ssh)                         │   │  │
+│  │  │  • Connects via mounted SSH_AUTH_SOCK         │   │  │
+│  │  │  • No private keys in container               │   │  │
+│  │  └───────────────────────────────────────────────┘   │  │
+│  │                         │                             │  │
+│  │                         ▼                             │  │
+│  │              ┌──────────────────┐                    │  │
+│  │              │  SSH_AUTH_SOCK   │  (bind mount)      │  │
+│  │              │  (socket file)   │                    │  │
+│  │              └──────────────────┘                    │  │
+│  └───────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Implementation:**
+
+```go
+// pkg/workspace/ssh/agent_forwarding.go
+
+type SSHAgentConfig struct {
+    // Path to SSH agent socket on host
+    HostSocketPath string
+    
+    // Path where socket will be mounted in container
+    ContainerSocketPath string
+    
+    // Environment variable name
+    EnvVarName string
+}
+
+func (p *DockerProvider) configureSSHAgentForwarding(
+    ctx context.Context,
+    containerConfig *container.Config,
+    hostConfig *container.HostConfig,
+) error {
+    // 1. Detect SSH agent socket on host
+    socketPath := os.Getenv("SSH_AUTH_SOCK")
+    if socketPath == "" {
+        // Try to find socket automatically
+        socketPath = p.findSSHAgentSocket()
+        if socketPath == "" {
+            return fmt.Errorf("SSH agent not running. Start with: eval $(ssh-agent -s)")
+        }
+    }
+    
+    // 2. Verify socket exists and is accessible
+    if _, err := os.Stat(socketPath); err != nil {
+        return fmt.Errorf("SSH agent socket not accessible: %w", err)
+    }
+    
+    // 3. Mount socket into container (read-write required for agent protocol)
+    hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
+        Type:     mount.TypeBind,
+        Source:   socketPath,
+        Target:   "/tmp/ssh-agent.sock",
+        ReadOnly: false,  // Agent needs write for protocol
+    })
+    
+    // 4. Set environment variable in container
+    containerConfig.Env = append(containerConfig.Env,
+        "SSH_AUTH_SOCK=/tmp/ssh-agent.sock",
+    )
+    
+    // 5. Ensure SSH client is installed in container
+    // (handled by base image or init script)
+    
+    return nil
+}
+
+// Platform-specific socket detection
+func (p *DockerProvider) findSSHAgentSocket() string {
+    switch runtime.GOOS {
+    case "darwin":
+        // macOS: Check common socket locations
+        patterns := []string{
+            os.ExpandEnv("$HOME/Library/Containers/com.openssh.ssh-agent/Data/Agents/*/Listeners"),
+            "/tmp/ssh-*/agent.*",
+            os.ExpandEnv("$TMPDIR/ssh-*/agent.*"),
+        }
+        for _, pattern := range patterns {
+            if matches, _ := filepath.Glob(pattern); len(matches) > 0 {
+                return matches[0]
+            }
+        }
+        
+    case "linux":
+        // Linux: Standard /tmp location or systemd
+        patterns := []string{
+            os.Getenv("XDG_RUNTIME_DIR") + "/ssh-agent.socket",
+            os.Getenv("XDG_RUNTIME_DIR") + "/keyring/ssh",
+            "/tmp/ssh-*/agent.*",
+        }
+        for _, pattern := range patterns {
+            if matches, _ := filepath.Glob(pattern); len(matches) > 0 {
+                return matches[0]
+            }
+        }
+        
+    case "windows":
+        // Windows: WSL2 or native OpenSSH
+        // Typically handled via WSL2 integration
+        return os.Getenv("SSH_AUTH_SOCK")
+    }
+    
+    return ""
+}
+```
+
+**Advantages:**
+- ✅ Keys never leave the host
+- ✅ No keys written to container layers or volumes
+- ✅ Works with all SSH key types (RSA, Ed25519, ECDSA, FIDO/U2F)
+- ✅ Supports passphrase-protected keys (unlocked in agent)
+- ✅ Automatic key rotation on host propagates to containers
+- ✅ Compatible with hardware security keys (YubiKey) via agent
+
+**Requirements:**
+- SSH agent must be running on host (`ssh-agent`)
+- Keys must be added to agent (`ssh-add`)
+- For macOS: May need to grant keychain access
+- For hardware keys: Agent forwarding works with gpg-agent or yubikey-agent
+
+**macOS Keychain Integration:**
+
+```bash
+# macOS users typically use Keychain for SSH keys
+# Configure to use keychain-enabled agent:
+
+# In ~/.ssh/config
+Host *
+    UseKeychain yes
+    AddKeysToAgent yes
+    IdentityFile ~/.ssh/id_ed25519
+
+# Ensure SSH agent is started with keychain support
+# (handled automatically by macOS when using standard SSH)
+```
+
+#### 3.15.2 SSH Key Mounting (Fallback Method)
+
+When agent forwarding is not available, mount SSH keys as read-only volumes.
+
+**Architecture:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         Host Machine                         │
+│  ┌─────────────────┐  ┌───────────────────────────────────┐ │
+│  │  ~/.ssh/        │  │  Keys stored on host filesystem   │ │
+│  │  ├── id_rsa     │  │  • Private keys (permission 600)  │ │
+│  │  ├── id_ed25519 │  │  ├── config                       │ │
+│  │  ├── config     │  │  ├── known_hosts                  │ │
+│  │  └── known_hosts│  │  └── *.pub (public keys)          │ │
+│  └────────┬────────┘  └───────────────────────────────────┘ │
+│           │ (read-only bind mount)                           │
+│           ▼                                                  │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │           Docker Container (Workspace)                │  │
+│  │  ┌───────────────────────────────────────────────┐   │  │
+│  │  │  ~/.ssh/ (mounted read-only)                  │   │  │
+│  │  │  ├── id_rsa (mode 600 in container)           │   │  │
+│  │  │  ├── id_ed25519                               │   │  │
+│  │  │  ├── config                                   │   │  │
+│  │  │  └── known_hosts                              │   │  │
+│  │  └───────────────────────────────────────────────┘   │  │
+│  └───────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Implementation:**
+
+```go
+// pkg/workspace/ssh/key_mounting.go
+
+type SSHKeyMountConfig struct {
+    // Paths to mount from host
+    HostSSHDir string
+    
+    // Specific key files to mount (optional, defaults to all)
+    KeyFiles []string
+    
+    // Mount read-only (strongly recommended)
+    ReadOnly bool
+}
+
+func (p *DockerProvider) configureSSHKeyMount(
+    ctx context.Context,
+    containerConfig *container.Config,
+    hostConfig *container.HostConfig,
+    opts SSHKeyMountConfig,
+) error {
+    hostSSHDir := opts.HostSSHDir
+    if hostSSHDir == "" {
+        home, _ := os.UserHomeDir()
+        hostSSHDir = filepath.Join(home, ".ssh")
+    }
+    
+    // Verify SSH directory exists
+    if _, err := os.Stat(hostSSHDir); err != nil {
+        return fmt.Errorf("SSH directory not found: %w", err)
+    }
+    
+    // Mount entire .ssh directory as read-only
+    hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
+        Type:     mount.TypeBind,
+        Source:   hostSSHDir,
+        Target:   "/home/user/.ssh",
+        ReadOnly: true,
+    })
+    
+    // Add init script to fix permissions in container
+    // (SSH requires strict permissions on private keys)
+    initScript := `#!/bin/sh
+# Fix SSH permissions for mounted keys
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+
+# Set correct permissions on private keys
+for key in ~/.ssh/id_rsa ~/.ssh/id_ed25519 ~/.ssh/id_ecdsa ~/.ssh/id_dsa; do
+    if [ -f "$key" ]; then
+        chmod 600 "$key"
+    fi
+done
+
+# Set correct permissions on public keys
+for pub in ~/.ssh/*.pub; do
+    if [ -f "$pub" ]; then
+        chmod 644 "$pub"
+    fi
+done
+
+# Ensure config and known_hosts are readable
+[ -f ~/.ssh/config ] && chmod 644 ~/.ssh/config
+[ -f ~/.ssh/known_hosts ] && chmod 644 ~/.ssh/known_hosts
+`
+    
+    // Write init script to container's entrypoint directory
+    // This runs before user shell
+    containerConfig.Entrypoint = []string{"/bin/sh", "-c"}
+    containerConfig.Cmd = []string{
+        initScript + " && exec /bin/bash",
+    }
+    
+    return nil
+}
+
+// Alternative: Mount specific keys only (more secure)
+func (p *DockerProvider) configureSelectiveSSHKeyMount(
+    ctx context.Context,
+    containerConfig *container.Config,
+    hostConfig *container.HostConfig,
+    keyFiles []string,
+) error {
+    // Create temp directory to stage keys
+    tempDir, err := os.MkdirTemp("", "nexus-ssh-keys-*")
+    if err != nil {
+        return err
+    }
+    
+    // Copy only specified keys to temp directory
+    for _, keyFile := range keyFiles {
+        srcPath, err := p.resolveSSHKeyPath(keyFile)
+        if err != nil {
+            return fmt.Errorf("cannot resolve key %s: %w", keyFile, err)
+        }
+        
+        dstPath := filepath.Join(tempDir, filepath.Base(srcPath))
+        if err := p.copyFileWithPerms(srcPath, dstPath, 0600); err != nil {
+            return err
+        }
+        
+        // Also copy public key if exists
+        pubPath := srcPath + ".pub"
+        if _, err := os.Stat(pubPath); err == nil {
+            pubDst := dstPath + ".pub"
+            p.copyFileWithPerms(pubPath, pubDst, 0644)
+        }
+    }
+    
+    // Copy known_hosts and config (sanitized)
+    p.copySSHConfig(tempDir)
+    
+    // Mount the staged directory
+    hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
+        Type:     mount.TypeBind,
+        Source:   tempDir,
+        Target:   "/home/user/.ssh",
+        ReadOnly: true,
+    })
+    
+    // Cleanup temp directory on container destroy
+    // (handled by workspace lifecycle)
+    
+    return nil
+}
+```
+
+**Security Considerations:**
+
+| Concern | Mitigation |
+|---------|------------|
+| Keys visible in container | Mount read-only, use minimal key set |
+| Keys in container layers | Mount at runtime, not in image build |
+| Key exfiltration | Read-only prevents modification, container isolation |
+| Passphrase protection | Prompt forwarded to host (if TTY available) |
+| Key permissions | Init script sets correct mode (600) on startup |
+
+**When to Use:**
+- SSH agent not available or not configured
+- Hardware security keys not supported by agent
+- Legacy systems without agent support
+- CI/CD automated environments
+
+#### 3.15.3 Git Credential Handling
+
+For HTTPS-based git operations, forward credentials securely.
+
+**Git Credential Helper Forwarding:**
+
+```go
+// pkg/workspace/git/credentials.go
+
+type GitCredentialConfig struct {
+    // Method: helper, store, or env
+    Method string
+    
+    // For helper method: forward host's credential helper
+    Helper string
+    
+    // For store method: temporary credential file
+    Credentials map[string]GitCredential
+}
+
+type GitCredential struct {
+    Host     string
+    Username string
+    Password string  // Token or password
+    Protocol string  // https or http
+}
+
+func (p *DockerProvider) configureGitCredentials(
+    ctx context.Context,
+    containerConfig *container.Config,
+    hostConfig *container.HostConfig,
+    opts GitCredentialConfig,
+) error {
+    switch opts.Method {
+    case "helper":
+        return p.configureCredentialHelperForwarding(ctx, containerConfig, hostConfig, opts.Helper)
+    case "store":
+        return p.configureCredentialStore(ctx, containerConfig, opts.Credentials)
+    case "env":
+        return p.configureCredentialEnv(ctx, containerConfig, opts.Credentials)
+    default:
+        return fmt.Errorf("unknown credential method: %s", opts.Method)
+    }
+}
+
+// Method 1: Forward credential helper via Unix socket
+func (p *DockerProvider) configureCredentialHelperForwarding(
+    ctx context.Context,
+    containerConfig *container.Config,
+    hostConfig *container.HostConfig,
+    helper string,
+) error {
+    // Common helpers: osxkeychain (macOS), libsecret (Linux), wincred (Windows)
+    
+    // For macOS keychain, we can use a proxy
+    if helper == "osxkeychain" {
+        // Start credential proxy on host
+        proxySocket, err := p.startCredentialProxy()
+        if err != nil {
+            return err
+        }
+        
+        // Mount proxy socket into container
+        hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
+            Type:   mount.TypeBind,
+            Source: proxySocket,
+            Target: "/tmp/git-credential.sock",
+        })
+        
+        // Configure git to use proxy helper
+        containerConfig.Env = append(containerConfig.Env,
+            "GIT_ASKPASS=/usr/bin/nexus-credential-helper",
+            "NEXUS_CREDENTIAL_SOCKET=/tmp/git-credential.sock",
+        )
+    }
+    
+    return nil
+}
+
+// Method 2: Use git credential-store with temporary file
+func (p *DockerProvider) configureCredentialStore(
+    ctx context.Context,
+    containerConfig *container.Config,
+    credentials map[string]GitCredential,
+) error {
+    // Create temporary credential file
+    credContent := p.buildCredentialStoreContent(credentials)
+    
+    // Store in workspace-specific temp (encrypted at rest if possible)
+    credFile := filepath.Join(p.workspaceTempDir, ".git-credentials")
+    if err := os.WriteFile(credFile, []byte(credContent), 0600); err != nil {
+        return err
+    }
+    
+    // Mount into container
+    hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
+        Type:     mount.TypeBind,
+        Source:   credFile,
+        Target:   "/home/user/.git-credentials",
+        ReadOnly: true,
+    })
+    
+    // Configure git to use store helper
+    containerConfig.Env = append(containerConfig.Env,
+        "GIT_CONFIG_GLOBAL=/tmp/gitconfig",
+    )
+    
+    // Create git config that uses credential store
+    gitConfig := `[credential]
+    helper = store --file /home/user/.git-credentials
+`
+    gitConfigPath := filepath.Join(p.workspaceTempDir, ".gitconfig-credentials")
+    os.WriteFile(gitConfigPath, []byte(gitConfig), 0644)
+    
+    hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
+        Type:     mount.TypeBind,
+        Source:   gitConfigPath,
+        Target:   "/tmp/gitconfig",
+        ReadOnly: true,
+    })
+    
+    return nil
+}
+```
+
+**GitHub Token via Environment:**
+
+```go
+// For GitHub, use GITHUB_TOKEN env var (preferred for CI/automation)
+func configureGitHubToken(containerConfig *container.Config, token string) {
+    containerConfig.Env = append(containerConfig.Env,
+        fmt.Sprintf("GITHUB_TOKEN=%s", token),
+    )
+    
+    // Configure git to use token for https://github.com
+    // This avoids embedding token in URLs
+    containerConfig.Cmd = append(containerConfig.Cmd,
+        "git config --global url.\"https://oauth2:${GITHUB_TOKEN}@github.com/\".insteadOf \"https://github.com/\"",
+    )
+}
+```
+
+#### 3.15.4 Other Secrets Handling
+
+Handle additional secrets commonly needed in development environments.
+
+**.env Files:**
+
+```go
+// pkg/workspace/secrets/env_files.go
+
+type EnvFileConfig struct {
+    // List of env files to mount
+    Files []string
+    
+    // Expand variables (e.g., $HOME)
+    ExpandVars bool
+    
+    // Merge strategy: overlay or replace
+    MergeStrategy string
+}
+
+func (p *DockerProvider) configureEnvFiles(
+    ctx context.Context,
+    containerConfig *container.Config,
+    hostConfig *container.HostConfig,
+    opts EnvFileConfig,
+) error {
+    for _, envFile := range opts.Files {
+        // Resolve path (support ~ expansion)
+        resolvedPath := resolvePath(envFile)
+        
+        // Verify file exists
+        if _, err := os.Stat(resolvedPath); err != nil {
+            if !os.IsNotExist(err) {
+                return err
+            }
+            // Log warning but continue (env files may not exist)
+            log.Warn("Env file not found, skipping: %s", envFile)
+            continue
+        }
+        
+        // Mount as read-only
+        targetPath := filepath.Join("/home/user/.secrets", filepath.Base(envFile))
+        hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
+            Type:     mount.TypeBind,
+            Source:   resolvedPath,
+            Target:   targetPath,
+            ReadOnly: true,
+        })
+        
+        // Load env vars into container (Docker does this automatically)
+        // Or manually parse and set:
+        envVars, err := godotenv.Read(resolvedPath)
+        if err != nil {
+            return fmt.Errorf("failed to read %s: %w", envFile, err)
+        }
+        
+        for key, value := range envVars {
+            // Check if already set (respect existing)
+            if !isEnvSet(containerConfig.Env, key) {
+                containerConfig.Env = append(containerConfig.Env,
+                    fmt.Sprintf("%s=%s", key, value),
+                )
+            }
+        }
+    }
+    
+    return nil
+}
+```
+
+**API Keys and Service Credentials:**
+
+```yaml
+# .nexus/workspace.yaml
+secrets:
+  # SSH configuration
+  ssh:
+    mode: agent  # agent | mount | auto
+    paths:       # For mount mode only
+      - ~/.ssh/id_ed25519
+      - ~/.ssh/id_rsa
+    
+  # Environment files
+  env_files:
+    - .env
+    - .env.local
+    - ~/.secrets/api-keys.env
+    
+  # Named secrets (stored in system keychain)
+  named:
+    DATABASE_URL:
+      source: keychain
+      service: nexus-workspace
+      account: database-url
+      
+    STRIPE_API_KEY:
+      source: keychain
+      service: nexus-workspace
+      account: stripe-key
+      
+    AWS_CREDENTIALS:
+      source: file
+      path: ~/.aws/credentials
+      profile: default
+      
+  # Docker registry authentication
+  registry:
+    - registry: ghcr.io
+      source: docker-credential-desktop  # Use Docker's credential store
+      
+    - registry: registry.mycompany.com
+      username: ${REGISTRY_USER}  # From env or prompt
+      password: ${REGISTRY_PASS}
+```
+
+**Kubernetes Config:**
+
+```go
+// Mount kubectl config for k8s development
+func (p *DockerProvider) configureKubernetes(
+    ctx context.Context,
+    containerConfig *container.Config,
+    hostConfig *container.HostConfig,
+    configPath string,
+) error {
+    if configPath == "" {
+        home, _ := os.UserHomeDir()
+        configPath = filepath.Join(home, ".kube", "config")
+    }
+    
+    // Check if config exists
+    if _, err := os.Stat(configPath); err != nil {
+        return nil  // K8s not configured, skip silently
+    }
+    
+    // Mount kubeconfig
+    hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
+        Type:     mount.TypeBind,
+        Source:   configPath,
+        Target:   "/home/user/.kube/config",
+        ReadOnly: true,
+    })
+    
+    // Set KUBECONFIG env var
+    containerConfig.Env = append(containerConfig.Env,
+        "KUBECONFIG=/home/user/.kube/config",
+    )
+    
+    return nil
+}
+```
+
+#### 3.15.5 Security Model
+
+**Core Principles:**
+
+1. **Default to Agent Forwarding**
+   - SSH agent forwarding is the default and preferred method
+   - Falls back to key mounting only when agent unavailable
+   - User can explicitly override in configuration
+
+2. **Keys Never Written to Container Layers**
+   - All secrets mounted at runtime via bind mounts
+   - Never baked into Docker images
+   - Never committed to workspace state
+
+3. **Read-Only Mounts Where Possible**
+   - SSH keys: Read-only (except agent socket which requires RW)
+   - Environment files: Read-only
+   - Configuration: Read-only
+   - Writable only for temporary generated files
+
+4. **Minimal Secret Exposure**
+   - Mount only required keys, not entire ~/.ssh directory when possible
+   - Use selective key mounting for high-security environments
+   - Support secret scoping (per-workspace secrets)
+
+**Threat Model:**
+
+```
+Threat: Malicious container process steals SSH keys
+├── Mitigation 1: Agent forwarding - keys never in container
+├── Mitigation 2: Read-only mounts - prevents key exfiltration to container FS
+├── Mitigation 3: Non-root container - limits access to mounted secrets
+└── Mitigation 4: Short-lived keys - rotate frequently
+
+Threat: Container escape to host
+├── Mitigation 1: User namespace remapping
+├── Mitigation 2: Seccomp profiles
+├── Mitigation 3: AppArmor/SELinux
+└── Mitigation 4: Keys still protected by host permissions
+
+Threat: Secrets in workspace snapshots
+├── Mitigation 1: Secrets excluded from snapshots
+├── Mitigation 2: Snapshots contain only references, not values
+└── Mitigation 3: Encrypted at-rest if stored remotely
+
+Threat: Secrets visible to other users on host
+├── Mitigation 1: Docker group membership required
+├── Mitigation 2: Unix socket permissions on SSH agent
+└── Mitigation 3: Workspace state files have restricted permissions (600)
+```
+
+**Secret Lifecycle:**
+
+```
+1. Configuration (User defines secrets in .nexus/workspace.yaml)
+          │
+          ▼
+2. Resolution (System resolves secret references)
+   - Keychain lookup
+   - File path resolution
+   - Environment variable expansion
+          │
+          ▼
+3. Validation (Verify secrets exist and are accessible)
+          │
+          ▼
+4. Mount Preparation (Stage secrets for container)
+   - Create bind mount specs
+   - Set permissions
+   - Prepare init scripts
+          │
+          ▼
+5. Container Mount (Mount at container start)
+   - Read-only mounts for keys
+   - Environment injection
+          │
+          ▼
+6. Runtime Access (Container uses secrets)
+          │
+          ▼
+7. Cleanup (On container stop/destroy)
+   - Unmount secrets
+   - Remove temporary files
+   - Clear environment
+```
+
+#### 3.15.6 Configuration Schema
+
+**Full Configuration Example:**
+
+```yaml
+# .nexus/workspace.yaml
+# SSH and Secret Handling Configuration
+
+secrets:
+  # SSH authentication method
+  ssh:
+    # Mode: agent (preferred), mount, or auto (try agent, fallback to mount)
+    mode: agent
+    
+    # For mount mode: specific keys to mount
+    # If omitted, mounts entire ~/.ssh directory
+    paths:
+      - ~/.ssh/id_ed25519_github
+      - ~/.ssh/id_rsa_work
+    
+    # SSH agent socket path (auto-detected if not specified)
+    # agent_socket: /tmp/ssh-XXXX/agent.XXXX
+    
+    # Include SSH config and known_hosts
+    include_config: true
+    include_known_hosts: true
+    
+    # Verify host keys
+    strict_host_key_checking: yes  # yes | no | ask
+    
+  # Git credential handling
+  git:
+    # Credential helper: auto-detect, osxkeychain, libsecret, store, or none
+    credential_helper: auto
+    
+    # HTTPS credentials (alternative to SSH)
+    https:
+      # Use environment variable for token
+      token_env: GITHUB_TOKEN
+      
+      # Or specify username/password (not recommended)
+      # username: myuser
+      # password_env: GIT_PASSWORD
+      
+  # Environment files to load
+  env_files:
+    # Relative to workspace root
+    - .env
+    - .env.local
+    
+    # Absolute paths expanded
+    - ~/.env/work-defaults
+    
+  # Named secrets from various sources
+  named:
+    # From macOS keychain
+    NPM_TOKEN:
+      source: keychain
+      service: npm
+      account: auth-token
+      
+    # From file (one-line file containing secret)
+    DATABASE_PASSWORD:
+      source: file
+      path: ~/.secrets/db-password.txt
+      
+    # From environment variable on host
+    STRIPE_SECRET_KEY:
+      source: env
+      var: STRIPE_SECRET_KEY
+      
+    # From command output (runs on host)
+    AWS_SESSION_TOKEN:
+      source: command
+      command: aws sts get-session-token --duration-seconds 3600
+      json_path: .Credentials.SessionToken
+      cache: 300  # Cache for 5 minutes
+      
+  # Docker registry authentication
+  registries:
+    ghcr.io:
+      source: docker-config  # Use credentials from Docker config
+      
+    registry.company.com:
+      username_env: REGISTRY_USER
+      password_env: REGISTRY_PASSWORD
+      
+  # Cloud provider credentials
+  cloud:
+    aws:
+      source: shared-credentials-file
+      path: ~/.aws/credentials
+      profile: default
+      
+    gcp:
+      source: application-default
+      path: ~/.config/gcloud/application_default_credentials.json
+      
+    azure:
+      source: cli
+      # Uses az CLI's token cache
+
+  # Kubernetes configuration
+  kubernetes:
+    config_path: ~/.kube/config
+    context: minikube  # Leave empty for current context
+```
+
+#### 3.15.7 Implementation Details
+
+**Platform-Specific Handling:**
+
+```go
+// pkg/workspace/secrets/platform.go
+
+type PlatformSecrets struct {
+    OS string
+}
+
+func (p *PlatformSecrets) GetDefaultSSHAgentSocket() (string, error) {
+    switch p.OS {
+    case "darwin":
+        return p.getMacOSSSHAgentSocket()
+    case "linux":
+        return p.getLinuxSSHAgentSocket()
+    case "windows":
+        return p.getWindowsSSHAgentSocket()
+    default:
+        return "", fmt.Errorf("unsupported platform: %s", p.OS)
+    }
+}
+
+func (p *PlatformSecrets) getMacOSSSHAgentSocket() (string, error) {
+    // macOS has multiple possibilities:
+    
+    // 1. Environment variable (if set)
+    if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
+        return sock, nil
+    }
+    
+    // 2. LaunchAgent socket (macOS 10.12+)
+    // Located in ~/Library/Containers/com.openssh.ssh-agent/...
+    home, _ := os.UserHomeDir()
+    launchAgentPattern := filepath.Join(home, 
+        "Library/Containers/com.openssh.ssh-agent/Data/Agents/*/Listeners")
+    if matches, _ := filepath.Glob(launchAgentPattern); len(matches) > 0 {
+        return matches[0], nil
+    }
+    
+    // 3. Standard /tmp location
+    tmpPattern := filepath.Join(os.TempDir(), "ssh-*/agent.*")
+    if matches, _ := filepath.Glob(tmpPattern); len(matches) > 0 {
+        return matches[0], nil
+    }
+    
+    return "", fmt.Errorf("SSH agent socket not found on macOS")
+}
+
+func (p *PlatformSecrets) getLinuxSSHAgentSocket() (string, error) {
+    // 1. Environment variable
+    if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
+        return sock, nil
+    }
+    
+    // 2. systemd user service
+    runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+    if runtimeDir != "" {
+        systemdSocket := filepath.Join(runtimeDir, "ssh-agent.socket")
+        if _, err := os.Stat(systemdSocket); err == nil {
+            return systemdSocket, nil
+        }
+        
+        // GNOME Keyring SSH agent
+        keyringSocket := filepath.Join(runtimeDir, "keyring/ssh")
+        if _, err := os.Stat(keyringSocket); err == nil {
+            return keyringSocket, nil
+        }
+    }
+    
+    // 3. Standard /tmp location
+    tmpPattern := "/tmp/ssh-*/agent.*"
+    if matches, _ := filepath.Glob(tmpPattern); len(matches) > 0 {
+        return matches[0], nil
+    }
+    
+    return "", fmt.Errorf("SSH agent socket not found on Linux")
+}
+
+func (p *PlatformSecrets) getWindowsSSHAgentSocket() (string, error) {
+    // Windows has two common scenarios:
+    
+    // 1. Native OpenSSH (Windows 10+ / Server 2019+)
+    // Uses named pipes, not Unix sockets
+    // Requires special handling or WSL2
+    
+    // 2. WSL2 environment
+    // SSH agent socket is in WSL2 filesystem
+    if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
+        return sock, nil
+    }
+    
+    // 3. Pageant (PuTTY agent)
+    // Requires pageant-bridge or similar
+    
+    return "", fmt.Errorf("Windows SSH agent requires WSL2 or manual configuration")
+}
+```
+
+**Docker Volume Mount Permissions:**
+
+```go
+// pkg/workspace/secrets/permissions.go
+
+// fixSSHPermissions ensures correct permissions on mounted SSH keys
+func fixSSHPermissions(containerID string, exec ExecFn) error {
+    commands := []string{
+        // Ensure .ssh directory exists with correct permissions
+        "mkdir -p /home/user/.ssh",
+        "chmod 700 /home/user/.ssh",
+        
+        // Fix private key permissions (must be 600)
+        "find /home/user/.ssh -type f ! -name '*.pub' ! -name 'config' ! -name 'known_hosts' -exec chmod 600 {} \\;",
+        
+        // Fix public key permissions (644)
+        "find /home/user/.ssh -name '*.pub' -exec chmod 644 {} \\;",
+        
+        // Fix config and known_hosts (644)
+        "chmod 644 /home/user/.ssh/config 2>/dev/null || true",
+        "chmod 644 /home/user/.ssh/known_hosts 2>/dev/null || true",
+        
+        // Set correct ownership
+        "chown -R user:user /home/user/.ssh",
+    }
+    
+    for _, cmd := range commands {
+        if err := exec(containerID, []string{"/bin/sh", "-c", cmd}); err != nil {
+            return fmt.Errorf("failed to fix permissions: %w", err)
+        }
+    }
+    
+    return nil
+}
+```
+
+**Secret Store Abstraction:**
+
+```go
+// pkg/workspace/secrets/store.go
+
+// SecretStore provides a unified interface for different secret backends
+type SecretStore interface {
+    // Get retrieves a secret by reference
+    Get(ctx context.Context, ref SecretReference) (string, error)
+    
+    // List lists available secrets
+    List(ctx context.Context, filter SecretFilter) ([]SecretReference, error)
+    
+    // Supports checks if this store can handle a reference type
+    Supports(refType string) bool
+}
+
+// Supported secret backends
+const (
+    SecretSourceKeychain    = "keychain"     // macOS Keychain, Windows Credential, Linux Keyring
+    SecretSourceEnv         = "env"          // Environment variable
+    SecretSourceFile        = "file"         // File on disk
+    SecretSourceCommand     = "command"      // Command output
+    SecretSourceDocker      = "docker"       // Docker credential store
+    SecretSource1Password   = "1password"    // 1Password CLI
+    SecretSourceBitwarden   = "bitwarden"    // Bitwarden CLI
+    SecretSourceLastPass    = "lastpass"     // LastPass CLI
+    SecretSourceVault       = "vault"        // HashiCorp Vault
+)
+
+// SecretReference identifies a secret
+type SecretReference struct {
+    Source   string            // backend type
+    Path     string            // identifier
+    Metadata map[string]string // backend-specific
+}
+
+// KeychainSecretStore implements SecretStore for OS keychain
+type KeychainSecretStore struct {
+    service string
+}
+
+func (s *KeychainSecretStore) Get(ctx context.Context, ref SecretReference) (string, error) {
+    switch runtime.GOOS {
+    case "darwin":
+        return s.getMacOSKeychain(ref)
+    case "linux":
+        return s.getLinuxKeyring(ref)
+    case "windows":
+        return s.getWindowsCredential(ref)
+    default:
+        return "", fmt.Errorf("keychain not supported on %s", runtime.GOOS)
+    }
+}
+
+func (s *KeychainSecretStore) getMacOSKeychain(ref SecretReference) (string, error) {
+    // Use security command-line tool
+    account := ref.Metadata["account"]
+    service := ref.Metadata["service"]
+    
+    cmd := exec.Command("security", "find-generic-password",
+        "-s", service,
+        "-a", account,
+        "-w")  // -w outputs password only
+    
+    output, err := cmd.Output()
+    if err != nil {
+        return "", fmt.Errorf("failed to get keychain item: %w", err)
+    }
+    
+    return strings.TrimSpace(string(output)), nil
+}
+```
+
+**Auto-Detection Logic:**
+
+```go
+// pkg/workspace/secrets/detection.go
+
+// DetectSSHConfig automatically determines the best SSH method
+func DetectSSHConfig() (*SSHConfig, error) {
+    config := &SSHConfig{
+        Mode: "auto",
+    }
+    
+    // Step 1: Check for SSH agent
+    if hasSSHAgent() {
+        config.Mode = "agent"
+        socket, _ := getSSHAgentSocket()
+        config.AgentSocket = socket
+        return config, nil
+    }
+    
+    // Step 2: Check for SSH keys in standard location
+    home, _ := os.UserHomeDir()
+    sshDir := filepath.Join(home, ".ssh")
+    
+    keys := findSSHKeys(sshDir)
+    if len(keys) > 0 {
+        config.Mode = "mount"
+        config.Paths = keys
+        return config, nil
+    }
+    
+    // Step 3: No SSH keys found
+    return nil, fmt.Errorf("no SSH authentication method available. " +
+        "Please start ssh-agent or add keys to ~/.ssh/")
+}
+
+func hasSSHAgent() bool {
+    // Check SSH_AUTH_SOCK
+    if os.Getenv("SSH_AUTH_SOCK") != "" {
+        return true
+    }
+    
+    // Try to detect running agent
+    _, err := getSSHAgentSocket()
+    return err == nil
+}
+
+func findSSHKeys(sshDir string) []string {
+    var keys []string
+    
+    // Standard private key filenames
+    candidates := []string{
+        "id_rsa",
+        "id_ed25519",
+        "id_ecdsa",
+        "id_dsa",
+    }
+    
+    for _, name := range candidates {
+        path := filepath.Join(sshDir, name)
+        if info, err := os.Stat(path); err == nil && !info.IsDir() {
+            // Verify it's a private key (not public)
+            if !strings.HasSuffix(path, ".pub") {
+                keys = append(keys, path)
+            }
+        }
+    }
+    
+    return keys
+}
+```
+
+**CLI Commands for SSH Management:**
+
+```bash
+# Check SSH status for workspace
+boulder workspace ssh status <workspace-name>
+# Output:
+# SSH Mode: agent
+# Agent Socket: /tmp/ssh-XXX/agent.XXX
+# Forwarded Keys: id_ed25519, id_rsa
+# Status: Connected ✓
+
+# Test SSH connection from within workspace
+boulder workspace ssh test <workspace-name> git@github.com
+
+# Switch SSH mode
+boulder workspace ssh mode <workspace-name> --mode=mount
+boulder workspace ssh mode <workspace-name> --mode=agent
+
+# Add keys to SSH agent
+boulder workspace ssh add-key ~/.ssh/new_key
+
+# List forwarded keys
+boulder workspace ssh list-keys <workspace-name>
+
+# Troubleshoot SSH issues
+boulder workspace ssh debug <workspace-name>
+# Provides verbose output of SSH configuration
+```
 
 ---
 
@@ -3596,6 +4732,7 @@ describe('hanlun-lms Real-World Test', () => {
 | 0.2.0 | 2026-02-21 | Architecture Team | Added hanlun-lms testing |
 | 0.3.0 | 2026-02-22 | Architecture Team | Added edge cases, risk assessment |
 | 1.0.0 | 2026-02-22 | Architecture Team | Production-ready PRD |
+| 1.1.0 | 2026-02-22 | Architecture Team | Added SSH key and secret handling (Section 3.15) |
 
 ### 18.4 Approval
 
