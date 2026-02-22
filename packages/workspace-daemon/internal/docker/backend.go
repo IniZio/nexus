@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1072,5 +1073,137 @@ func (b *DockerBackend) RemoveContainer(ctx context.Context, containerID string)
 		return fmt.Errorf("removing container: %w", err)
 	}
 
+	return nil
+}
+
+func (b *DockerBackend) CommitContainer(ctx context.Context, workspaceID string, req *wsTypes.CommitContainerRequest) error {
+	containers, err := b.docker.ContainerList(ctx, container.ListOptions{
+		All: true,
+	})
+	if err != nil {
+		return fmt.Errorf("listing containers: %w", err)
+	}
+
+	var containerID string
+	for _, c := range containers {
+		for _, name := range c.Names {
+			if name == "/"+workspaceID || name == workspaceID {
+				containerID = c.ID
+				break
+			}
+		}
+		if containerID != "" {
+			break
+		}
+	}
+
+	if containerID == "" {
+		return fmt.Errorf("container %s not found", workspaceID)
+	}
+
+	_, err = b.docker.ContainerCommit(ctx, containerID, container.CommitOptions{
+		Reference: req.ImageName + ":latest",
+		Pause:     false,
+	})
+	if err != nil {
+		return fmt.Errorf("committing container: %w", err)
+	}
+
+	log.Printf("[checkpoint] Committed container %s to image %s", containerID[:12], req.ImageName)
+	return nil
+}
+
+func (b *DockerBackend) RemoveImage(ctx context.Context, imageName string) error {
+	images, err := b.docker.ImageList(ctx, image.ListOptions{
+		All: true,
+	})
+	if err != nil {
+		return fmt.Errorf("listing images: %w", err)
+	}
+
+	var imageID string
+	for _, img := range images {
+		for _, tag := range img.RepoTags {
+			if tag == imageName || tag == imageName+":latest" {
+				imageID = img.ID
+				break
+			}
+		}
+		if imageID != "" {
+			break
+		}
+	}
+
+	if imageID == "" {
+		log.Printf("[checkpoint] Image %s not found, skipping removal", imageName)
+		return nil
+	}
+
+	_, err = b.docker.ImageRemove(ctx, imageID, image.RemoveOptions{
+		Force: true,
+	})
+	if err != nil {
+		return fmt.Errorf("removing image: %w", err)
+	}
+
+	log.Printf("[checkpoint] Removed image %s", imageName)
+	return nil
+}
+
+func (b *DockerBackend) RestoreFromImage(ctx context.Context, workspaceID, imageName string) error {
+	containers, err := b.docker.ContainerList(ctx, container.ListOptions{
+		All: true,
+	})
+	if err != nil {
+		return fmt.Errorf("listing containers: %w", err)
+	}
+
+	var containerID string
+	for _, c := range containers {
+		for _, name := range c.Names {
+			if name == "/"+workspaceID || name == workspaceID {
+				containerID = c.ID
+				break
+			}
+		}
+		if containerID != "" {
+			break
+		}
+	}
+
+	if containerID == "" {
+		return fmt.Errorf("container %s not found", workspaceID)
+	}
+
+	inspect, err := b.docker.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return fmt.Errorf("inspecting container: %w", err)
+	}
+
+	env := inspect.Config.Env
+	workingDir := inspect.Config.WorkingDir
+
+	b.docker.ContainerRemove(ctx, containerID, container.RemoveOptions{
+		Force: true,
+	})
+
+	pullOpts := image.PullOptions{}
+	reader, err := b.docker.ImagePull(ctx, imageName, pullOpts)
+	if err != nil {
+		return fmt.Errorf("pulling image: %w", err)
+	}
+	reader.Close()
+
+	resp, err := b.docker.ContainerCreate(ctx, &container.Config{
+		Image:        imageName,
+		Env:          env,
+		WorkingDir:   workingDir,
+		ExposedPorts: inspect.Config.ExposedPorts,
+	}, inspect.HostConfig, nil, nil, workspaceID)
+	if err != nil {
+		return fmt.Errorf("creating container from image: %w", err)
+	}
+
+	log.Printf("[checkpoint] Restored workspace %s from image %s (new container: %s)", workspaceID, imageName, resp.ID[:12])
 	return nil
 }

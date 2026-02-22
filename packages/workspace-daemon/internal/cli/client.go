@@ -721,7 +721,7 @@ func (c *Client) ListCheckpoints(workspaceID string) ([]Checkpoint, error) {
 }
 
 func (c *Client) RestoreCheckpoint(workspaceID, checkpointID string) (*Workspace, error) {
-	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/checkpoints/"+checkpointID+"/restore", nil)
+	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/checkpoints/"+checkpointID+"/restore", nil)
 	if err != nil {
 		return nil, err
 	}

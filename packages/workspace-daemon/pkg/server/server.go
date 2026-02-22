@@ -50,6 +50,7 @@ type Server struct {
 	sessionManagers map[string]*mutagen.SessionManager
 	idleDetectors  map[string]*idle.IdleDetector
 	idleConfig      *IdleConfig
+	checkpointStore *CheckpointStore
 }
 
 type WorkspaceState struct {
@@ -362,6 +363,7 @@ func (s *Server) registerHTTPRoutes() {
 	s.mux.HandleFunc("/api/v1/config", s.handleConfig)
 	s.mux.HandleFunc("/ws", s.handleWebSocket)
 	s.mux.HandleFunc("/ws/ssh-agent", s.handleSSHAgent)
+	s.setupCheckpointRoutes()
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -961,6 +963,11 @@ func (s *Server) execWorkspace(w http.ResponseWriter, r *http.Request, id string
 	if !exists {
 		WriteError(w, http.StatusNotFound, fmt.Errorf("workspace not found"))
 		return
+	}
+
+	if s.idleConfig != nil && s.idleConfig.AutoResume && ws.Status == "sleeping" {
+		log.Printf("[auto-resume] Resuming workspace %s on exec access", id)
+		s.resumeWorkspace(id)
 	}
 
 	var output string

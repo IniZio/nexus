@@ -28,6 +28,9 @@ type Backend interface {
 	GetSyncStatus(ctx context.Context, workspaceID string) (*types.SyncStatus, error)
 	AllocatePort() (int32, error)
 	ReleasePort(port int32) error
+	CommitContainer(ctx context.Context, workspaceID string, req *types.CommitContainerRequest) error
+	RemoveImage(ctx context.Context, imageName string) error
+	RestoreFromImage(ctx context.Context, workspaceID, imageName string) error
 }
 
 type DockerSpecificBackend interface {

@@ -155,3 +155,15 @@ func (m *MockBackend) ReleasePort(port int32) error {
 	delete(m.AllocatedIPs, port)
 	return nil
 }
+
+func (m *MockBackend) CommitContainer(ctx context.Context, workspaceID string, req *types.CommitContainerRequest) error {
+	return nil
+}
+
+func (m *MockBackend) RemoveImage(ctx context.Context, imageName string) error {
+	return nil
+}
+
+func (m *MockBackend) RestoreFromImage(ctx context.Context, workspaceID, imageName string) error {
+	return nil
+}

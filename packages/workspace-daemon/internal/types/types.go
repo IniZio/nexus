@@ -316,3 +316,8 @@ type HealthCheck struct {
 	Interval time.Duration `json:"interval"`
 	Timeout  time.Duration `json:"timeout"`
 }
+
+type CommitContainerRequest struct {
+	WorkspaceID string
+	ImageName   string
+}
