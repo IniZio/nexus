@@ -94,6 +94,45 @@ Content-Type: application/json
 }
 ```
 
+#### Pause Workspace
+```http
+POST /api/v1/workspaces/{id}/pause
+Content-Type: application/json
+
+{
+  "timeout": 60
+}
+```
+
+Response: `202 Accepted`
+
+Pauses the workspace, checkpointing process state for fast resume.
+
+#### Resume Workspace
+```http
+POST /api/v1/workspaces/{id}/resume
+Content-Type: application/json
+
+{
+  "blocking": true,
+  "timeout": 120
+}
+```
+
+Response: `200 OK`
+
+```json
+{
+  "workspaceId": "ws-123",
+  "status": "running",
+  "durationMs": 1800,
+  "services": [
+    {"name": "web", "status": "healthy", "url": "http://localhost:32901"},
+    {"name": "api", "status": "healthy", "url": "http://localhost:32902"}
+  ]
+}
+```
+
 #### Switch Workspace
 ```http
 POST /api/v1/workspaces/{id}/switch
@@ -167,11 +206,11 @@ Response: `202 Accepted`
 
 Rotates the SSH host keys for the workspace. Requires workspace restart to take effect.
 
-### Snapshots
+### Checkpoints
 
-#### Create Snapshot
+#### Create Checkpoint
 ```http
-POST /api/v1/workspaces/{id}/snapshots
+POST /api/v1/workspaces/{id}/checkpoints
 Content-Type: application/json
 
 {
@@ -180,14 +219,121 @@ Content-Type: application/json
 }
 ```
 
-#### List Snapshots
+#### List Checkpoints
 ```http
-GET /api/v1/workspaces/{id}/snapshots
+GET /api/v1/workspaces/{id}/checkpoints
 ```
 
-#### Restore Snapshot
+#### Restore Checkpoint
 ```http
-POST /api/v1/snapshots/{snapshot_id}/restore
+POST /api/v1/checkpoints/{checkpoint_id}/restore
+```
+
+### Sessions
+
+#### List Sessions
+```http
+GET /api/v1/sessions
+```
+
+Response:
+```json
+{
+  "sessions": [
+    {
+      "id": "sess-123",
+      "workspace_id": "ws-123",
+      "status": "active",
+      "created_at": "2026-02-22T10:00:00Z"
+    }
+  ]
+}
+```
+
+#### Attach to Session
+```http
+POST /api/v1/sessions/{id}/attach
+```
+
+#### Kill Session
+```http
+DELETE /api/v1/sessions/{id}
+```
+
+### Lifecycle Management
+
+#### Get Workspace Status
+```http
+GET /api/v1/workspaces/{id}/status
+```
+
+Response:
+```json
+{
+  "workspaceId": "ws-123",
+  "name": "hanlun-dev",
+  "status": "running",
+  "backend": "docker",
+  "containerId": "abc123",
+  "ports": {
+    "ssh": 32801,
+    "services": [
+      {"name": "web", "containerPort": 3000, "hostPort": 32901, "status": "healthy"},
+      {"name": "api", "containerPort": 3001, "hostPort": 32902, "status": "healthy"}
+    ]
+  },
+  "sync": {
+    "status": "syncing",
+    "lastSyncAt": "2026-02-22T10:30:00Z"
+  },
+  "createdAt": "2026-02-20T08:00:00Z",
+  "lastActiveAt": "2026-02-22T10:30:00Z"
+}
+```
+
+#### Run Hook
+```http
+POST /api/v1/workspaces/{id}/hooks/{hook}
+Content-Type: application/json
+
+{
+  "timeout": 300
+}
+```
+
+Hooks: `pre-start`, `post-start`, `pre-stop`, `post-stop`, `health-check`
+
+### Services
+
+#### List Services
+```http
+GET /api/v1/workspaces/{id}/services
+```
+
+Response:
+```json
+{
+  "services": [
+    {
+      "name": "web",
+      "containerPort": 3000,
+      "hostPort": 32901,
+      "status": "healthCheck": "/api/health",
+      "url": "healthy",
+      "http://localhost:32901"
+    }
+  ]
+}
+```
+
+#### Get Service Logs
+```http
+GET /api/v1/workspaces/{id}/services/{service}/logs?follow=true&tail=100
+```
+
+#### Restart Service
+```http
+POST /api/v1/workspaces/{id}/services/{service}/restart
 ```
 
 ### Port Forwarding
@@ -303,9 +449,19 @@ service WorkspaceService {
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
   
   // Lifecycle operations
-  rpc StartWorkspace(StartWorkspaceRequest) returns (Operation);
+  rpc StartWorkspace(StartWorkspaceRequest) returns (StartWorkspaceResponse);
   rpc StopWorkspace(StopWorkspaceRequest) returns (Operation);
   rpc SwitchWorkspace(SwitchWorkspaceRequest) returns (SwitchWorkspaceResponse);
+  rpc PauseWorkspace(PauseWorkspaceRequest) returns (Operation);
+  rpc ResumeWorkspace(ResumeWorkspaceRequest) returns (ResumeWorkspaceResponse);
+  rpc RestartWorkspace(RestartWorkspaceRequest) returns (Operation);
+  rpc GetWorkspaceStatus(GetWorkspaceStatusRequest) returns (WorkspaceStatus);
+  rpc WaitForWorkspace(WaitForWorkspaceRequest) returns (WaitForWorkspaceResponse);
+  
+  // Services
+  rpc ListServices(ListServicesRequest) returns (ListServicesResponse);
+  rpc GetServiceLogs(GetServiceLogsRequest) returns (stream LogEntry);
+  rpc RestartService(RestartServiceRequest) returns (Operation);
   
   // File operations (streaming)
   rpc StreamFile(StreamFileRequest) returns (stream FileChunk);
@@ -314,9 +470,14 @@ service WorkspaceService {
   // Execution
   rpc ExecStream(ExecRequest) returns (stream ExecOutput);
   
-  // Snapshots
-  rpc CreateSnapshot(CreateSnapshotRequest) returns (Snapshot);
-  rpc RestoreSnapshot(RestoreSnapshotRequest) returns (Operation);
+  // Checkpoints
+  rpc CreateCheckpoint(CreateCheckpointRequest) returns (Checkpoint);
+  rpc RestoreCheckpoint(RestoreCheckpointRequest) returns (Operation);
+  
+  // Sessions
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc AttachSession(AttachSessionRequest) returns (stream SessionOutput);
+  rpc KillSession(KillSessionRequest) returns (Operation);
   
   // Monitoring
   rpc GetStats(GetStatsRequest) returns (ResourceStats);
@@ -422,6 +583,162 @@ enum BackendType {
   BACKEND_TYPE_DOCKER = 1;
   BACKEND_TYPE_SPRITE = 2;
 }
+
+// Lifecycle Management Messages
+
+message StartWorkspaceRequest {
+  string workspace_id = 1;
+  bool skip_hooks = 2;
+  bool skip_services = 3;
+  bool blocking = 4;
+  int32 timeout_seconds = 5;
+}
+
+message StartWorkspaceResponse {
+  string workspace_id = 1;
+  WorkspaceStatus status = 2;
+  repeated ServiceHealth services = 3;
+  int32 duration_ms = 4;
+}
+
+message ServiceHealth {
+  string service_name = 1;
+  string status = 2;  // healthy | unhealthy | starting
+  int32 port = 3;
+  string url = 4;
+}
+
+message PauseWorkspaceRequest {
+  string workspace_id = 1;
+  int32 timeout_seconds = 2;
+}
+
+message ResumeWorkspaceRequest {
+  string workspace_id = 1;
+  bool blocking = 2;
+  int32 timeout_seconds = 3;
+}
+
+message ResumeWorkspaceResponse {
+  string workspace_id = 1;
+  WorkspaceStatus status = 2;
+  repeated ServiceHealth services = 3;
+  int32 duration_ms = 4;
+}
+
+message RestartWorkspaceRequest {
+  string workspace_id = 1;
+  bool force = 2;
+}
+
+message GetWorkspaceStatusRequest {
+  string workspace_id = 1;
+}
+
+message WaitForWorkspaceRequest {
+  string workspace_id = 1;
+  string condition = 2;  // running | healthy | stopped
+  int32 timeout_seconds = 3;
+}
+
+message WaitForWorkspaceResponse {
+  string workspace_id = 1;
+  WorkspaceStatus status = 2;
+  bool condition_met = 3;
+  int32 duration_ms = 4;
+}
+
+// Checkpoint Messages
+
+message Checkpoint {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message CreateCheckpointRequest {
+  string workspace_id = 1;
+  string name = 2;
+  string description = 3;
+}
+
+message RestoreCheckpointRequest {
+  string checkpoint_id = 1;
+  string workspace_id = 2;
+}
+
+// Session Messages
+
+message Session {
+  string id = 1;
+  string workspace_id = 2;
+  string status = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message ListSessionsRequest {
+  string workspace_id = 1;
+}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+}
+
+message AttachSessionRequest {
+  string session_id = 1;
+}
+
+message SessionOutput {
+  oneof content {
+    string stdout = 1;
+    string stderr = 2;
+    int32 exit_code = 3;
+  }
+}
+
+message KillSessionRequest {
+  string session_id = 1;
+}
+
+// Service Management Messages
+
+message ListServicesRequest {
+  string workspace_id = 1;
+}
+
+message ListServicesResponse {
+  repeated Service services = 1;
+}
+
+message Service {
+  string name = 1;
+  int32 container_port = 2;
+  int32 host_port = 3;
+  string status = 4;  // running | stopped | healthy | unhealthy
+  string health_check_path = 5;
+  string url = 6;
+}
+
+message GetServiceLogsRequest {
+  string workspace_id = 1;
+  string service_name = 2;
+  bool follow = 3;
+  int32 tail = 4;
+  string since = 5;
+}
+
+message LogEntry {
+  string service_name = 1;
+  string timestamp = 2;
+  string level = 3;  // info | warn | error | debug
+  string message = 4;
+}
+
+message RestartServiceRequest {
+  string workspace_id = 1;
+  string service_name = 2;
+}
 ```
 
 ---
@@ -524,125 +841,160 @@ interface WorkspaceEvent {
 
 ## 3.4 CLI Interface
 
+The Nexus CLI is designed to match Sprite's interface for a familiar user experience.
+
 ### Workspace Management
 
 ```bash
 # Create workspace
-boulder workspace create <name> [options]
-  --template=<name>        # Use predefined template
-  --image=<image>          # Custom Docker image
-  --backend=<backend>      # docker (default) | sprite
-  --resources=<class>      # small | medium | large | xlarge
-  --from=<snapshot>        # Restore from snapshot
+nexus create [name] [flags]
+  -d, --display-name string   Display name
+  -r, --repo string          Repository URL
+  -b, --branch string        Branch name
+  --from-branch string       Base branch for worktree
+  --backend string           Backend (docker, sprite) [default: docker]
+  --no-worktree              Skip git worktree creation
 
-# Start/stop workspace
-boulder workspace up <name>       # Start/create workspace
-boulder workspace down <name>     # Stop workspace
+# List all workspaces
+nexus list (or nexus ls)
 
-# Switch workspace (<2s)
-boulder workspace switch <name>   # Fast context switch
+# Show workspace status
+nexus status <workspace>
 
-# List and info
-boulder workspace list             # List all workspaces
-boulder workspace show <name>     # Show workspace details
+# Start a stopped workspace
+nexus start <workspace>
 
-# Delete
-boulder workspace destroy <name>  # Delete workspace
+# Stop a running workspace
+nexus stop <workspace> [flags]
+  --timeout int   Timeout in seconds [default: 30]
+
+# Delete a workspace
+nexus destroy <workspace> [flags]
+  -f, --force   Force delete without confirmation
+
+# Get workspace URL
+nexus url <workspace>
+
+# Set active workspace
+nexus use <workspace>
 ```
 
-### Workspace Operations (SSH-Based)
+### Lifecycle Management
 
 ```bash
-# SSH into workspace
-boulder ssh <name>
-  --command, -c <cmd>      # Execute command (non-interactive)
-  --port-forward, -L <spec>  # Forward ports (e.g., -L 3000:localhost:3000)
-  --no-agent               # Disable agent forwarding
-  --verbose, -v            # Verbose SSH output
-  --dry-run                # Print SSH command without executing
+# Pause workspace (checkpoint state)
+nexus pause <workspace>
 
-# Execute command via SSH
-boulder workspace exec <name> <command> [args...]
-  --interactive, -i        # Interactive mode
-  --tty, -t                # Allocate TTY
-  Note: Executes via SSH, not docker exec (agent forwarding available)
-
-# Open shell via SSH
-boulder workspace shell <name>   # Open shell in workspace
-  Alias for: boulder ssh <name>
-
-# View logs
-boulder workspace logs <name>
-  --follow, -f             # Stream logs
-  --tail=<n>               # Last N lines
-  --service=<svc>          # View specific service logs (sshd, app, etc.)
+# Resume paused workspace
+nexus resume <workspace>
 ```
 
-### SSH Configuration
+### Interactive Shell
 
 ```bash
-# Generate SSH config for all workspaces
-boulder ssh-config generate
-  --output=<file>          # Write to specific file (default: ~/.nexus/ssh_config)
-  --append                 # Append instead of overwrite
-
-# Show SSH connection info
-boulder ssh-config show <name>
-
-# Add SSH config to ~/.ssh/config
-boulder ssh-config install
-  --backup                 # Backup existing config
-
-# Test SSH connectivity
-boulder ssh-test <name>
-  --verbose, -v            # Verbose output
+# Interactive SSH shell
+nexus console <workspace>
 ```
 
-### Snapshots
+### Execute Commands
 
 ```bash
-boulder workspace snapshot create <name> <snapshot-name>
-  --description=<desc>
-  
-boulder workspace snapshot list <name>
-boulder workspace snapshot restore <name> <snapshot-name>
-boulder workspace snapshot delete <name> <snapshot-name>
+# Execute command in workspace
+nexus exec <workspace> -- <command> [args...]
+
+# Example
+nexus exec myworkspace -- npm test
+```
+
+### Sessions
+
+```bash
+# List active sessions
+nexus sessions list
+
+# Attach to a session
+nexus sessions attach <id>
+
+# Kill a session
+nexus sessions kill <id>
+```
+
+### Checkpoints
+
+```bash
+# Create checkpoint
+nexus checkpoint create <workspace> [flags]
+  -n, --name string   Checkpoint name
+
+# List checkpoints
+nexus checkpoint list <workspace>
+
+# Restore from checkpoint
+nexus restore <workspace> <checkpoint-id>
+```
+
+### Services
+
+```bash
+# List services in workspace
+nexus services <workspace>
+
+# Get service logs
+nexus services logs <workspace> <service> [flags]
+  --tail int   Number of lines [default: 100]
 ```
 
 ### Port Forwarding
 
 ```bash
-boulder workspace port add <name> <container-port>
-  --visibility=<vis>       # private | public | org
-  
-boulder workspace port list <name>
-boulder workspace port remove <name> <port-id>
+# Port forwarding
+nexus proxy <workspace> <port>
 ```
 
 ### File Sync
 
 ```bash
-# View sync status
-boulder workspace sync-status <name>
-  --watch, -w              # Continuously monitor
+# Show sync status
+nexus sync status <workspace>
 
-# Control sync
-boulder workspace sync-pause <name>
-boulder workspace sync-resume <name>
-boulder workspace sync-flush <name>      # Force immediate sync
+# Pause sync
+nexus sync pause <workspace>
 
-# Conflict resolution
-boulder workspace sync-conflicts <name>
-boulder workspace sync-resolve <name> <path> --winner=host
+# Resume sync
+nexus sync resume <workspace>
+
+# Force sync
+nexus sync flush <workspace>
+```
+
+### Configuration & Diagnostics
+
+```bash
+# Show configuration
+nexus config
+
+# Check setup
+nexus doctor
+
+# Print version
+nexus version
+```
+
+### Daemon
+
+```bash
+# Start daemon
+nexus daemon [flags]
+  -p, --port int          Port to listen on [default: 8080]
+  -w, --workspace-dir     Workspace directory path
 ```
 
 ### Global Flags
 
 ```bash
---backend=<backend>      # Default backend
---debug                  # Enable debug logging
---json                   # JSON output format
---config=<path>         # Config file path (default: ~/.nexus/config.yaml)
+-u, --url string       API server URL [default: http://localhost:8080]
+-t, --token string    Authentication token
+--daemon-token string Daemon token for serve command
 ```
 
 ---
@@ -806,7 +1158,7 @@ const ERROR_CODES = {
   "error": {
     "code": "WORKSPACE_NOT_FOUND",
     "message": "Workspace 'xyz' doesn't exist",
-    "suggestion": "Run 'boulder workspace list' to see available workspaces",
+    "suggestion": "Run 'nexus list' to see available workspaces",
     "retryable": false,
     "details": {
       "workspaceName": "xyz"
@@ -824,6 +1176,6 @@ const ERROR_CODES = {
 # - Backend unavailable (retry with timeout)
 
 # Manual recovery:
-boulder workspace repair <name>    # Repair broken workspace
-boulder workspace cleanup           # Free up disk space
+nexus doctor    # Diagnose issues
+nexus daemon    # Restart daemon
 ```

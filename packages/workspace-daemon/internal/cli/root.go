@@ -36,23 +36,45 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&token, "token", "t", "", "Authentication token")
 	rootCmd.PersistentFlags().StringVar(&daemonToken, "daemon-token", "", "Daemon token for serve command")
 
-	rootCmd.AddCommand(workspaceCmd)
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(doctorCmd)
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(configCmd)
 
-	workspaceCmd.AddCommand(
-		workspaceCreateCmd,
-		workspaceListCmd,
-		workspaceStatusCmd,
-		workspaceStartCmd,
-		workspaceStopCmd,
-		workspaceDeleteCmd,
-		workspaceExecCmd,
-		workspaceSSHCommand,
-		workspaceLogsCmd,
-		workspaceUseCmd,
-		syncCmd,
+	rootCmd.AddCommand(execCmd)
+	rootCmd.AddCommand(consoleCmd)
+	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(destroyCmd)
+	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(urlCmd)
+	rootCmd.AddCommand(useCmd)
+	rootCmd.AddCommand(startCmd)
+	rootCmd.AddCommand(stopCmd)
+	rootCmd.AddCommand(pauseCmd)
+	rootCmd.AddCommand(resumeCmd)
+	rootCmd.AddCommand(createCmd)
+
+	rootCmd.AddCommand(sessionsCmd)
+	rootCmd.AddCommand(checkpointCmd)
+	rootCmd.AddCommand(servicesCmd)
+	rootCmd.AddCommand(proxyCmd)
+	rootCmd.AddCommand(syncCmd)
+
+	sessionsCmd.AddCommand(
+		sessionsListCmd,
+		sessionsAttachCmd,
+		sessionsKillCmd,
+	)
+
+	checkpointCmd.AddCommand(
+		checkpointCreateCmd,
+		checkpointListCmd,
+		restoreCmd,
+	)
+
+	servicesCmd.AddCommand(
+		servicesListCmd,
+		servicesLogsCmd,
 	)
 
 	syncCmd.AddCommand(
@@ -68,6 +90,15 @@ var versionCmd = &cobra.Command{
 	Short: "Print version information",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Printf("nexus version %s\n", version)
+	},
+}
+
+var configCmd = &cobra.Command{
+	Use:   "config",
+	Short: "Show configuration",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Printf("API URL: %s\n", apiURL)
+		fmt.Printf("Token: %s\n", token)
 	},
 }
 

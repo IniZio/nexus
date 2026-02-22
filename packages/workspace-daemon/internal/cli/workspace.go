@@ -9,13 +9,7 @@ import (
 	"github.com/nexus/nexus/packages/workspace-daemon/internal/git"
 )
 
-var workspaceCmd = &cobra.Command{
-	Use:   "workspace",
-	Short: "Manage workspaces",
-	Aliases: []string{"ws"},
-}
-
-var workspaceCreateCmd = &cobra.Command{
+var createCmd = &cobra.Command{
 	Use:   "create [name]",
 	Short: "Create a new workspace",
 	Args:  cobra.RangeArgs(0, 1),
@@ -78,7 +72,7 @@ var workspaceCreateCmd = &cobra.Command{
 	},
 }
 
-var workspaceListCmd = &cobra.Command{
+var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all workspaces",
 	Aliases: []string{"ls"},
@@ -99,9 +93,9 @@ var workspaceListCmd = &cobra.Command{
 	},
 }
 
-var workspaceStatusCmd = &cobra.Command{
-	Use:   "status <id>",
-	Short: "Get workspace status",
+var statusCmd = &cobra.Command{
+	Use:   "status <workspace>",
+	Short: "Show workspace status",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		client := getClient()
@@ -126,8 +120,8 @@ var workspaceStatusCmd = &cobra.Command{
 	},
 }
 
-var workspaceStartCmd = &cobra.Command{
-	Use:   "start <id>",
+var startCmd = &cobra.Command{
+	Use:   "start <workspace>",
 	Short: "Start a workspace",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -139,8 +133,8 @@ var workspaceStartCmd = &cobra.Command{
 	},
 }
 
-var workspaceStopCmd = &cobra.Command{
-	Use:   "stop <id>",
+var stopCmd = &cobra.Command{
+	Use:   "stop <workspace>",
 	Short: "Stop a workspace",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -154,8 +148,34 @@ var workspaceStopCmd = &cobra.Command{
 	},
 }
 
-var workspaceDeleteCmd = &cobra.Command{
-	Use:   "delete <id>",
+var pauseCmd = &cobra.Command{
+	Use:   "pause <workspace>",
+	Short: "Pause a workspace",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		client := getClient()
+		err := client.PauseWorkspace(args[0])
+		exitOnError(err)
+
+		fmt.Printf("Workspace paused: %s\n", args[0])
+	},
+}
+
+var resumeCmd = &cobra.Command{
+	Use:   "resume <workspace>",
+	Short: "Resume a paused workspace",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		client := getClient()
+		ws, err := client.ResumeWorkspace(args[0])
+		exitOnError(err)
+
+		fmt.Printf("Workspace resumed: %s (%s)\n", ws.Name, ws.Status)
+	},
+}
+
+var destroyCmd = &cobra.Command{
+	Use:   "destroy <workspace>",
 	Short: "Delete a workspace",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -178,52 +198,64 @@ var workspaceDeleteCmd = &cobra.Command{
 	},
 }
 
-var workspaceExecCmd = &cobra.Command{
-	Use:   "exec <id> <command...>",
+var execCmd = &cobra.Command{
+	Use:   "exec <workspace> -- <command>",
 	Short: "Execute a command in a workspace",
 	Args:  cobra.MinimumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
-		id := args[0]
-		command := args[1:]
+		workspace := args[0]
+		var command []string
+
+		if len(args) > 2 && args[1] == "--" {
+			command = args[2:]
+		} else {
+			command = args[1:]
+		}
 
 		client := getClient()
-		output, err := client.Exec(id, command)
+		output, err := client.Exec(workspace, command)
 		exitOnError(err)
 
 		fmt.Print(output)
 	},
 }
 
-var workspaceSSHCommand = &cobra.Command{
-	Use:   "ssh <id>",
-	Short: "SSH into a workspace",
+var consoleCmd = &cobra.Command{
+	Use:   "console <workspace>",
+	Short: "Interactive shell (SSH)",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		id := args[0]
+		workspace := args[0]
 
 		client := getClient()
-		err := client.Shell(id)
+		err := client.Shell(workspace)
 		exitOnError(err)
 	},
 }
 
-var workspaceLogsCmd = &cobra.Command{
-	Use:   "logs <id>",
-	Short: "Get workspace logs",
+var urlCmd = &cobra.Command{
+	Use:   "url <workspace>",
+	Short: "Get workspace URL",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		tail, _ := cmd.Flags().GetInt("tail")
-
 		client := getClient()
-		logs, err := client.GetLogs(args[0], tail)
+		ws, err := client.GetWorkspace(args[0])
 		exitOnError(err)
 
-		fmt.Print(logs)
+		if len(ws.Ports) > 0 {
+			for _, port := range ws.Ports {
+				if port.URL != "" {
+					fmt.Printf("%s: %s\n", port.Name, port.URL)
+				}
+			}
+		} else {
+			fmt.Printf("No services running for workspace %s\n", args[0])
+		}
 	},
 }
 
-var workspaceUseCmd = &cobra.Command{
-	Use:   "use <id>",
+var useCmd = &cobra.Command{
+	Use:   "use <workspace>",
 	Short: "Set active workspace",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -235,36 +267,189 @@ var workspaceUseCmd = &cobra.Command{
 	},
 }
 
-func init() {
-	workspaceCreateCmd.Flags().StringP("display-name", "d", "", "Display name")
-	workspaceCreateCmd.Flags().StringP("repo", "r", "", "Repository URL")
-	workspaceCreateCmd.Flags().StringP("branch", "b", "", "Branch name")
-	workspaceCreateCmd.Flags().StringP("from-branch", "", "", "Base branch to create worktree from (default: main)")
-	workspaceCreateCmd.Flags().StringP("backend", "", "docker", "Backend (docker, sprite, kubernetes)")
-	workspaceCreateCmd.Flags().BoolP("no-worktree", "", false, "Skip git worktree creation")
+var proxyCmd = &cobra.Command{
+	Use:   "proxy <workspace> <port>",
+	Short: "Port forwarding",
+	Args:  cobra.ExactArgs(2),
+	Run: func(cmd *cobra.Command, args []string) {
+		workspace := args[0]
+		port := args[1]
 
-	workspaceStopCmd.Flags().Int("timeout", 30, "Timeout in seconds")
+		client := getClient()
+		err := client.ForwardPort(workspace, port)
+		exitOnError(err)
 
-	workspaceDeleteCmd.Flags().BoolP("force", "f", false, "Force delete without confirmation")
-
-	workspaceLogsCmd.Flags().Int("tail", 100, "Number of lines to show")
+		fmt.Printf("Forwarding port %s for workspace %s\n", port, workspace)
+		fmt.Println("Press Ctrl+C to stop")
+		select {}
+	},
 }
 
-func colorStatus(status string) string {
-	switch status {
-	case "running":
-		return "\033[32m" + status + "\033[0m"
-	case "stopped":
-		return "\033[31m" + status + "\033[0m"
-	case "creating":
-		return "\033[33m" + status + "\033[0m"
-	case "sleeping":
-		return "\033[34m" + status + "\033[0m"
-	case "error":
-		return "\033[31;1m" + status + "\033[0m"
-	default:
-		return status
-	}
+var servicesCmd = &cobra.Command{
+	Use:   "services <workspace>",
+	Short: "List services",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		client := getClient()
+		services, err := client.ListServices(args[0])
+		exitOnError(err)
+
+		if len(services) == 0 {
+			fmt.Println("No services found")
+			return
+		}
+
+		fmt.Printf("Services for workspace %s:\n\n", args[0])
+		for _, svc := range services {
+			fmt.Printf("  %s  %s  :%d -> %d\n", svc.Name, svc.Status, svc.ContainerPort, svc.HostPort)
+		}
+	},
+}
+
+var servicesListCmd = &cobra.Command{
+	Use:   "list <workspace>",
+	Short: "List services in workspace",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		client := getClient()
+		services, err := client.ListServices(args[0])
+		exitOnError(err)
+
+		if len(services) == 0 {
+			fmt.Println("No services found")
+			return
+		}
+
+		for _, svc := range services {
+			fmt.Printf("  %s  %s  :%d -> %d\n", svc.Name, svc.Status, svc.ContainerPort, svc.HostPort)
+		}
+	},
+}
+
+var servicesLogsCmd = &cobra.Command{
+	Use:   "logs <workspace> <service>",
+	Short: "Get service logs",
+	Args:  cobra.ExactArgs(2),
+	Run: func(cmd *cobra.Command, args []string) {
+		workspace := args[0]
+		service := args[1]
+		tail, _ := cmd.Flags().GetInt("tail")
+
+		client := getClient()
+		logs, err := client.GetServiceLogs(workspace, service, tail)
+		exitOnError(err)
+
+		fmt.Print(logs)
+	},
+}
+
+var sessionsCmd = &cobra.Command{
+	Use:   "sessions",
+	Short: "Session management",
+}
+
+var sessionsListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List active sessions",
+	Run: func(cmd *cobra.Command, args []string) {
+		client := getClient()
+		sessions, err := client.ListSessions()
+		exitOnError(err)
+
+		if len(sessions) == 0 {
+			fmt.Println("No active sessions")
+			return
+		}
+
+		fmt.Println("Active sessions:")
+		for _, sess := range sessions {
+			fmt.Printf("  %s  %s  %s\n", sess.ID, sess.WorkspaceID, sess.Status)
+		}
+	},
+}
+
+var sessionsAttachCmd = &cobra.Command{
+	Use:   "attach <id>",
+	Short: "Attach to a session",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		client := getClient()
+		err := client.AttachSession(args[0])
+		exitOnError(err)
+	},
+}
+
+var sessionsKillCmd = &cobra.Command{
+	Use:   "kill <id>",
+	Short: "Kill a session",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		client := getClient()
+		err := client.KillSession(args[0])
+		exitOnError(err)
+
+		fmt.Printf("Session %s killed\n", args[0])
+	},
+}
+
+var checkpointCmd = &cobra.Command{
+	Use:   "checkpoint",
+	Short: "Snapshot management",
+}
+
+var checkpointCreateCmd = &cobra.Command{
+	Use:   "create <workspace>",
+	Short: "Create a checkpoint",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		name, _ := cmd.Flags().GetString("name")
+		if name == "" {
+			name = fmt.Sprintf("checkpoint-%d", os.Getpid())
+		}
+
+		client := getClient()
+		cp, err := client.CreateCheckpoint(args[0], name)
+		exitOnError(err)
+
+		fmt.Printf("Checkpoint created: %s\n", cp.ID)
+	},
+}
+
+var checkpointListCmd = &cobra.Command{
+	Use:   "list <workspace>",
+	Short: "List checkpoints",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		client := getClient()
+		checkpoints, err := client.ListCheckpoints(args[0])
+		exitOnError(err)
+
+		if len(checkpoints) == 0 {
+			fmt.Println("No checkpoints found")
+			return
+		}
+
+		fmt.Printf("Checkpoints for workspace %s:\n\n", args[0])
+		for _, cp := range checkpoints {
+			fmt.Printf("  %s  %s  %s\n", cp.ID, cp.Name, cp.CreatedAt.Format("2006-01-02 15:04"))
+		}
+	},
+}
+
+var restoreCmd = &cobra.Command{
+	Use:   "restore <workspace> <checkpoint-id>",
+	Short: "Restore from checkpoint",
+	Args:  cobra.ExactArgs(2),
+	Run: func(cmd *cobra.Command, args []string) {
+		workspace := args[0]
+		checkpointID := args[1]
+
+		client := getClient()
+		ws, err := client.RestoreCheckpoint(workspace, checkpointID)
+		exitOnError(err)
+
+		fmt.Printf("Workspace restored: %s (%s)\n", ws.Name, ws.Status)
+	},
 }
 
 var syncCmd = &cobra.Command{
@@ -273,7 +458,7 @@ var syncCmd = &cobra.Command{
 }
 
 var syncStatusCmd = &cobra.Command{
-	Use:   "status <id>",
+	Use:   "status <workspace>",
 	Short: "Show sync status for a workspace",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -296,7 +481,7 @@ var syncStatusCmd = &cobra.Command{
 }
 
 var syncPauseCmd = &cobra.Command{
-	Use:   "pause <id>",
+	Use:   "pause <workspace>",
 	Short: "Pause sync for a workspace",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -308,7 +493,7 @@ var syncPauseCmd = &cobra.Command{
 }
 
 var syncResumeCmd = &cobra.Command{
-	Use:   "resume <id>",
+	Use:   "resume <workspace>",
 	Short: "Resume sync for a workspace",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -320,7 +505,7 @@ var syncResumeCmd = &cobra.Command{
 }
 
 var syncFlushCmd = &cobra.Command{
-	Use:   "flush <id>",
+	Use:   "flush <workspace>",
 	Short: "Flush sync for a workspace",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -329,4 +514,40 @@ var syncFlushCmd = &cobra.Command{
 		exitOnError(err)
 		fmt.Printf("Sync flushed for workspace %s\n", args[0])
 	},
+}
+
+func init() {
+	createCmd.Flags().StringP("display-name", "d", "", "Display name")
+	createCmd.Flags().StringP("repo", "r", "", "Repository URL")
+	createCmd.Flags().StringP("branch", "b", "", "Branch name")
+	createCmd.Flags().StringP("from-branch", "", "", "Base branch to create worktree from (default: main)")
+	createCmd.Flags().StringP("backend", "", "docker", "Backend (docker, sprite, kubernetes)")
+	createCmd.Flags().BoolP("no-worktree", "", false, "Skip git worktree creation")
+
+	stopCmd.Flags().Int("timeout", 30, "Timeout in seconds")
+
+	destroyCmd.Flags().BoolP("force", "f", false, "Force delete without confirmation")
+
+	servicesLogsCmd.Flags().Int("tail", 100, "Number of lines to show")
+
+	checkpointCreateCmd.Flags().StringP("name", "n", "", "Checkpoint name")
+}
+
+func colorStatus(status string) string {
+	switch status {
+	case "running":
+		return "\033[32m" + status + "\033[0m"
+	case "stopped":
+		return "\033[31m" + status + "\033[0m"
+	case "creating":
+		return "\033[33m" + status + "\033[0m"
+	case "sleeping":
+		return "\033[34m" + status + "\033[0m"
+	case "paused":
+		return "\033[35m" + status + "\033[0m"
+	case "error":
+		return "\033[31;1m" + status + "\033[0m"
+	default:
+		return status
+	}
 }
