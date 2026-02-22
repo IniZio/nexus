@@ -31,25 +31,7 @@ func DetectSSHAuthSock() (string, error) {
 }
 
 func GetSSHAgentMounts() ([]VolumeMount, []string) {
-	sshAuthSock, err := DetectSSHAuthSock()
-	if err != nil {
-		return nil, nil
-	}
-
-	volumes := []VolumeMount{
-		{Type: "bind", Source: sshAuthSock, Target: "/ssh-agent", ReadOnly: true},
-	}
-	env := []string{"SSH_AUTH_SOCK=/ssh-agent"}
-
-	usr, err := user.Current()
-	if err == nil {
-		sshDir := filepath.Join(usr.HomeDir, ".ssh")
-		if _, err := os.Stat(sshDir); err == nil {
-			volumes = append(volumes, VolumeMount{Type: "bind", Source: sshDir, Target: "/root/.ssh", ReadOnly: true})
-		}
-	}
-
-	return volumes, env
+	return nil, nil
 }
 
 func GetSSHKeyMounts(keys []string) ([]string, error) {
@@ -143,7 +125,16 @@ func GetUserPublicKeys() ([]string, error) {
 func generateSSHEntrypoint(publicKey string) string {
 	keyEnv := ""
 	if publicKey != "" {
-		keyEnv = fmt.Sprintf("echo '%s' > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys", publicKey)
+		keyEnv = fmt.Sprintf(`
+useradd -m -s /bin/bash nexus || true
+echo 'nexus ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers.d/nexus
+mkdir -p /home/nexus/.ssh
+chmod 700 /home/nexus/.ssh
+echo '%s' > /home/nexus/.ssh/authorized_keys
+chmod 600 /home/nexus/.ssh/authorized_keys
+chown -R nexus:nexus /home/nexus/.ssh
+chown -R nexus:nexus /workspace
+`, publicKey)
 	}
 
 	return fmt.Sprintf(`#!/bin/bash
@@ -154,16 +145,13 @@ apt-get update -qq
 apt-get install -y -qq openssh-server sudo git curl wget vim nano > /dev/null 2>&1
 
 mkdir -p /var/run/sshd
-mkdir -p /root/.ssh
-chmod 700 /root/.ssh
+mkdir -p /workspace
 
 %s
 
-sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config
+sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
 sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
 sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config
-
-echo "nexus ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/nexus
 
 /usr/sbin/sshd
 
