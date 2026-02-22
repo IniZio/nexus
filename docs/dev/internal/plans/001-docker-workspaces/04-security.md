@@ -4,7 +4,41 @@
 
 **Critical Design Issue:** Workspaces need SSH keys to clone private repositories, but containers don't have access to host SSH keys. Without proper handling, this creates a workflow downgrade from normal local development.
 
-### 4.1.1 SSH Agent Forwarding (Preferred Method)
+### 4.1.1 SSH Agent Forwarding (Automatic)
+
+Nexus automatically detects and forwards your SSH agent to workspace containers. When you create a workspace, Nexus checks if `SSH_AUTH_SOCK` is set and automatically sets up SSH forwarding.
+
+**How it works:**
+
+1. When you create a workspace, Nexus checks for `SSH_AUTH_SOCK`
+2. If present, it automatically connects to your local SSH agent
+3. Forwards it to the workspace container via WebSocket
+4. Makes your SSH keys available for git operations
+
+**Usage - no flags needed:**
+
+```bash
+nexus workspace create myapp
+nexus workspace exec myapp -- git clone git@github.com:org/repo.git
+```
+
+**Security:**
+
+- Keys never leave your machine
+- Only SSH agent protocol forwarded (no private keys)
+- Per-workspace isolation
+- No keys stored on remote servers
+
+**Without SSH Agent:**
+
+If `SSH_AUTH_SOCK` is not set:
+- SSH forwarding is skipped (no error)
+- Use HTTPS with tokens instead:
+  ```bash
+  nexus config set git.github.token ghp_xxxx
+  ```
+
+**Important Limitation:** SSH agent forwarding only works when the workspace is running on the same machine as the host. It does NOT work across network boundaries (e.g., when connecting to a remote Docker host via TCP).
 
 The most secure approach leverages the host's SSH agent to provide key access without copying keys into the container.
 

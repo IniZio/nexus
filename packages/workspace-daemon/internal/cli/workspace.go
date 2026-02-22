@@ -28,6 +28,7 @@ var workspaceCreateCmd = &cobra.Command{
 		repoURL, _ := cmd.Flags().GetString("repo")
 		branch, _ := cmd.Flags().GetString("branch")
 		backend, _ := cmd.Flags().GetString("backend")
+		forwardSSH := os.Getenv("SSH_AUTH_SOCK") != ""
 
 		client := getClient()
 		ws, err := client.CreateWorkspace(CreateWorkspaceRequest{
@@ -36,11 +37,17 @@ var workspaceCreateCmd = &cobra.Command{
 			RepositoryURL: repoURL,
 			Branch:        branch,
 			Backend:       backend,
+			ForwardSSH:    forwardSSH,
 		})
 		exitOnError(err)
 
 		fmt.Printf("Workspace created: %s (%s)\n", ws.Name, ws.ID)
 		fmt.Printf("Status: %s\n", ws.Status)
+
+		if forwardSSH {
+			err = client.ForwardSSHAgent(ws.ID)
+			exitOnError(err)
+		}
 	},
 }
 
