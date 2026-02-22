@@ -45,14 +45,34 @@ func (s *Server) handleCheckpointByWorkspaceID(w http.ResponseWriter, r *http.Re
 	path := r.URL.Path[len("/api/v1/workspaces/"):]
 	parts := strings.SplitN(path, "/", 4)
 	
-	if len(parts) < 2 {
+	workspaceID := parts[0]
+	if workspaceID == "" {
 		http.Error(w, "workspace ID required", http.StatusBadRequest)
 		return
 	}
 	
-	workspaceID := parts[0]
-	if workspaceID == "" {
-		http.Error(w, "workspace ID required", http.StatusBadRequest)
+	s.mu.RLock()
+	ws, exists := s.workspaces[workspaceID]
+	s.mu.RUnlock()
+	if !exists {
+		s.mu.RLock()
+		for _, w := range s.workspaces {
+			if w.Name == workspaceID {
+				ws = w
+				workspaceID = w.ID
+				break
+			}
+		}
+		s.mu.RUnlock()
+	}
+	
+	if ws == nil {
+		http.Error(w, "workspace not found", http.StatusNotFound)
+		return
+	}
+	
+	if len(parts) < 2 || parts[1] == "" {
+		s.handleWorkspaceByID(w, r)
 		return
 	}
 	
@@ -96,10 +116,6 @@ func (s *Server) handleCheckpointByWorkspaceID(w http.ResponseWriter, r *http.Re
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	default:
-		if subPath != "" {
-			http.Error(w, "invalid path", http.StatusBadRequest)
-			return
-		}
 		s.handleWorkspaceByID(w, r)
 	}
 }

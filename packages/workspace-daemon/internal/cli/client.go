@@ -257,6 +257,12 @@ func (c *Client) DeleteWorkspace(id string) error {
 }
 
 func (c *Client) Exec(id string, command []string) (string, error) {
+	ws, err := c.GetWorkspace(id)
+	if err != nil {
+		return "", fmt.Errorf("getting workspace: %w", err)
+	}
+	id = ws.ID
+	
 	req := struct {
 		Command []string `json:"command"`
 	}{Command: command}
@@ -266,7 +272,9 @@ func (c *Client) Exec(id string, command []string) (string, error) {
 		return "", err
 	}
 
-	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/workspaces/"+id+"/exec", bytes.NewReader(body))
+	url := c.baseURL + "/api/v1/workspaces/" + id + "/exec"
+	
+	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -281,9 +289,11 @@ func (c *Client) Exec(id string, command []string) (string, error) {
 	}
 	defer resp.Body.Close()
 
+	respBody, _ := io.ReadAll(resp.Body)
+	
 	var apiResp APIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return "", err
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return "", fmt.Errorf("decode error: %v, body: %s", err, string(respBody))
 	}
 
 	if !apiResp.Success {
@@ -653,6 +663,12 @@ type Checkpoint struct {
 }
 
 func (c *Client) CreateCheckpoint(workspaceID, name string) (*Checkpoint, error) {
+	ws, err := c.GetWorkspace(workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("getting workspace: %w", err)
+	}
+	workspaceID = ws.ID
+
 	body, err := json.Marshal(map[string]string{"name": name})
 	if err != nil {
 		return nil, err
@@ -690,6 +706,12 @@ func (c *Client) CreateCheckpoint(workspaceID, name string) (*Checkpoint, error)
 }
 
 func (c *Client) ListCheckpoints(workspaceID string) ([]Checkpoint, error) {
+	ws, err := c.GetWorkspace(workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("getting workspace: %w", err)
+	}
+	workspaceID = ws.ID
+
 	httpReq, err := http.NewRequest("GET", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/checkpoints", nil)
 	if err != nil {
 		return nil, err
@@ -721,6 +743,12 @@ func (c *Client) ListCheckpoints(workspaceID string) ([]Checkpoint, error) {
 }
 
 func (c *Client) RestoreCheckpoint(workspaceID, checkpointID string) (*Workspace, error) {
+	ws, err := c.GetWorkspace(workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("getting workspace: %w", err)
+	}
+	workspaceID = ws.ID
+
 	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/checkpoints/"+checkpointID+"/restore", nil)
 	if err != nil {
 		return nil, err

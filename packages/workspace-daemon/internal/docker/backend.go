@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
@@ -421,7 +422,10 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 
 func (b *DockerBackend) StartWorkspace(ctx context.Context, id string) (*wsTypes.Operation, error) {
 	if err := b.containerManager.Start(ctx, id); err != nil {
-		return nil, err
+		log.Printf("[docker] Container not in local registry, using docker API directly: %v", err)
+		if err := b.docker.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+			return nil, fmt.Errorf("starting container: %w", err)
+		}
 	}
 
 	if b.syncManager != nil {
@@ -454,7 +458,11 @@ func (b *DockerBackend) StopWorkspace(ctx context.Context, id string, timeout in
 	}
 
 	if err := b.containerManager.Stop(ctx, id, timeoutDuration); err != nil {
-		return nil, err
+		log.Printf("[docker] Container not in local registry, using docker API directly: %v", err)
+		timeoutSec := int(timeout)
+		if err := b.docker.ContainerStop(ctx, id, container.StopOptions{Timeout: &timeoutSec}); err != nil {
+			return nil, fmt.Errorf("stopping container: %w", err)
+		}
 	}
 
 	return &wsTypes.Operation{
@@ -1187,12 +1195,25 @@ func (b *DockerBackend) RestoreFromImage(ctx context.Context, workspaceID, image
 		Force: true,
 	})
 
-	pullOpts := image.PullOptions{}
-	reader, err := b.docker.ImagePull(ctx, imageName, pullOpts)
+	imageFilters := filters.NewArgs()
+	imageFilters.Add("reference", imageName)
+
+	images, err := b.docker.ImageList(ctx, image.ListOptions{
+		Filters: imageFilters,
+	})
 	if err != nil {
-		return fmt.Errorf("pulling image: %w", err)
+		return fmt.Errorf("checking for image: %w", err)
 	}
-	reader.Close()
+
+	if len(images) == 0 {
+		log.Printf("[checkpoint] Image %s not found locally, pulling...", imageName)
+		pullOpts := image.PullOptions{}
+		reader, err := b.docker.ImagePull(ctx, imageName, pullOpts)
+		if err != nil {
+			return fmt.Errorf("pulling image: %w", err)
+		}
+		reader.Close()
+	}
 
 	resp, err := b.docker.ContainerCreate(ctx, &container.Config{
 		Image:        imageName,

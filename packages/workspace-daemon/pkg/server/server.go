@@ -183,12 +183,13 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 	var backend interfaces.Backend
 	var dockerBackend *docker.DockerBackend
 
-	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation(), client.WithHost("unix:///var/run/docker.sock"))
 	if err != nil {
 		log.Printf("[docker] Warning: failed to create docker client: %v", err)
 	} else {
 		dockerBackend = docker.NewDockerBackend(dockerClient, workspaceDir)
 		backend = dockerBackend
+		log.Printf("[docker] Docker backend initialized successfully")
 	}
 
 	var mutagenClient interfaces.MutagenClient
@@ -359,7 +360,6 @@ func (s *Server) Start() error {
 func (s *Server) registerHTTPRoutes() {
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/api/v1/workspaces", s.handleWorkspaces)
-	s.mux.HandleFunc("/api/v1/workspaces/", s.handleWorkspaceByID)
 	s.mux.HandleFunc("/api/v1/config", s.handleConfig)
 	s.mux.HandleFunc("/ws", s.handleWebSocket)
 	s.mux.HandleFunc("/ws/ssh-agent", s.handleSSHAgent)
@@ -490,8 +490,19 @@ func (s *Server) handleWorkspaceByID(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 
 	if !exists {
-		http.Error(w, "workspace not found", http.StatusNotFound)
-		return
+		s.mu.RLock()
+		for _, w := range s.workspaces {
+			if w.Name == id {
+				ws = w
+				id = w.ID
+				break
+			}
+		}
+		s.mu.RUnlock()
+		if ws == nil {
+			http.Error(w, "workspace not found", http.StatusNotFound)
+			return
+		}
 	}
 
 	subPath := ""
