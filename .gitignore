@@ -81,6 +81,10 @@ packages/nexusd/nexus-cli
 packages/nexusd/workspaces/
 packages/nexusd/.worktree/
 
+# Nexus packages database files
+packages/nexus/internal/*/.nexus/
+packages/nexus/.nexus/
+
 # Nested nexus folder
 nexus/nexus/
 
