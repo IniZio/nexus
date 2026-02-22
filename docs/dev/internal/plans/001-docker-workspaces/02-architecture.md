@@ -8,11 +8,11 @@
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌─────────────────────┐     ┌─────────────────────┐     ┌───────────────┐ │
-│  │     CLI (boulder)   │     │    IDE Plugins      │     │    SDK        │ │
-│  │  • boulder ws up    │     │  • OpenCode         │     │  • TypeScript │ │
-│  │  • boulder ws down  │     │  • Claude Code      │     │  • Go         │ │
-│  │  • boulder ws list  │     │  • Cursor           │     │  • Python     │ │
-│  │  • boulder ssh      │     │                     │     │               │ │
+│  │     CLI (nexus)     │     │    IDE Plugins      │     │    SDK        │ │
+│  │  • nexus ws up      │     │  • OpenCode         │     │  • TypeScript │ │
+│  │  • nexus ws down    │     │  • Claude Code      │     │  • Go         │ │
+│  │  • nexus ws list    │     │  • Cursor           │     │  • Python     │ │
+│  │  • nexus ws ssh     │     │                     │     │  • Python     │ │
 │  └──────────┬──────────┘     └──────────┬──────────┘     └───────┬───────┘ │
 │             │                           │                        │         │
 │             └───────────────────────────┼────────────────────────┘         │
@@ -76,7 +76,7 @@ Nexus uses **SSH as the primary access mechanism** to workspace containers, repl
 │   └─────────────────┘                       └───────────────────────┘       │
 │                                                                             │
 │   Access Methods:                                                           │
-│   • boulder ssh <workspace>                                                 │
+│   • nexus workspace ssh <workspace>                                         │
 │   • ssh -A nexus@localhost -p <port>                                        │
 │   • VS Code Remote-SSH                                                      │
 │   • Cursor IDE with SSH                                                     │
@@ -576,7 +576,7 @@ func (p *MutagenProvider) Monitor(sessionID string) (*SyncStatus, error)
 ### 2.3.1 Workspace Creation Flow (SSH-Enabled)
 
 ```
-User: boulder workspace create feature-auth
+User: nexus workspace create feature-auth
             │
             ▼
 ┌─────────────────────────┐
@@ -645,14 +645,14 @@ User: boulder workspace create feature-auth
             ▼
 ┌─────────────────────────┐
 │   Ready for SSH         │
-│   boulder ssh feature   │
+│   nexus workspace ssh feature   │
 └─────────────────────────┘
 ```
 
 ### 2.3.2 Workspace Switch Flow (Sub-2s Target)
 
 ```
-User: boulder workspace switch feature-auth
+User: nexus workspace switch feature-auth
             │
             ▼
 ┌─────────────────────────┐
@@ -735,7 +735,7 @@ IDE Plugin (OpenCode)
 ### 2.3.4 SSH-Based Workspace Access Flow
 
 ```
-User: boulder ssh feature-auth
+User: nexus workspace ssh feature-auth
             │
             ▼
 ┌─────────────────────────┐
@@ -2099,14 +2099,14 @@ type SyncMetrics struct {
 
 ```bash
 # Check sync status
-boulder workspace sync-status <name>
+nexus workspace sync-status <name>
 
 # Force sync (flush pending changes)
-boulder workspace sync-flush <name>
+nexus workspace sync-flush <name>
 
 # Pause/resume sync
-boulder workspace sync-pause <name>
-boulder workspace sync-resume <name>
+nexus workspace sync-pause <name>
+nexus workspace sync-resume <name>
 ```
 
 ### 2.8.8 Failure Handling
@@ -2175,3 +2175,707 @@ Host:                                    Container:
 - Provider interface pattern
 - IDE agnostic (VS Code, JetBrains, SSH)
 - Same UX for local and remote
+
+---
+
+## 2.9 Service Port Forwarding Architecture
+
+### 2.9.1 Overview
+
+Nexus automatically detects and forwards ports from docker-compose services, providing user-friendly URLs for accessing web applications and APIs running in workspaces.
+
+**Key Features:**
+- **Automatic Detection**: Parse `docker-compose.yml` to discover services
+- **Dynamic Allocation**: Assign host ports without conflicts
+- **User-Friendly URLs**: `http://{service}.{workspace}.localhost:{port}`
+- **Health Integration**: Wait for services to be healthy before marking workspace ready
+
+### 2.9.2 Port Detection Strategy
+
+**Source Priority:**
+
+```
+1. Project config (.nexus/config.yaml)     - Explicit user configuration
+2. docker-compose.yml                      - Auto-detected services
+3. Container exposed ports (Dockerfile)    - Fallback
+4. Default common ports                     - 3000, 8080, 5000, etc.
+```
+
+**docker-compose.yml Parsing:**
+
+```yaml
+# docker-compose.yml (in workspace)
+services:
+  web:
+    image: node:20
+    ports:
+      - "3000:3000"  # Auto-detected, forwarded to host
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+  
+  api:
+    image: node:20
+    ports:
+      - "3001"  # Dynamic host port assignment
+  
+  postgres:
+    image: postgres:15
+    ports:
+      - "5432:5432"  # Optionally exposed for local tools
+```
+
+```go
+// internal/ports/detector.go
+package ports
+
+// ComposeParser extracts port mappings from docker-compose.yml
+type ComposeParser struct {
+    projectPath string
+}
+
+// ServicePort represents a detected service port
+type ServicePort struct {
+    ServiceName   string          // "web", "api", "postgres"
+    ContainerPort int             // Port inside container
+    HostPort      int             // Assigned host port (0 = auto)
+    Protocol      string          // "tcp" or "udp"
+    Visibility    PortVisibility  // public | private | org
+    URL           string          // Generated URL
+    HealthCheck   *HealthCheckConfig
+}
+
+func (p *ComposeParser) DetectPorts() ([]ServicePort, error) {
+    // 1. Read docker-compose.yml
+    compose, err := p.loadComposeFile()
+    if err != nil {
+        return nil, err
+    }
+    
+    // 2. Extract services with port mappings
+    var ports []ServicePort
+    for svcName, svc := range compose.Services {
+        for _, portMapping := range svc.Ports {
+            // Parse "3000:3000" or just "3000"
+            hostPort, containerPort := p.parsePortMapping(portMapping)
+            
+            ports = append(ports, ServicePort{
+                ServiceName:   svcName,
+                ContainerPort: containerPort,
+                HostPort:      hostPort, // 0 means auto-assign
+                Protocol:      "tcp",
+                Visibility:    p.inferVisibility(svcName, containerPort),
+                HealthCheck:   p.extractHealthCheck(svc),
+            })
+        }
+    }
+    
+    return ports, nil
+}
+
+func (p *ComposeParser) inferVisibility(serviceName string, port int) PortVisibility {
+    // Common database ports are private by default
+    switch port {
+    case 5432, 3306, 6379, 27017, 9200: // postgres, mysql, redis, mongo, elasticsearch
+        return PortVisibilityPrivate
+    }
+    
+    // Named services often indicate web apps
+    switch serviceName {
+    case "web", "frontend", "app", "ui":
+        return PortVisibilityPublic
+    case "api", "backend", "server":
+        return PortVisibilityPublic
+    case "db", "database", "postgres", "mysql", "redis":
+        return PortVisibilityPrivate
+    default:
+        return PortVisibilityPrivate
+    }
+}
+```
+
+### 2.9.3 Port Allocation Strategy
+
+**Port Ranges:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Port Range Allocation                         │
+├─────────────────────────────────────────────────────────────────┤
+│  32800 - 32899  │  SSH access ports (one per workspace)          │
+│  32900 - 34999  │  Service ports (Docker backend)                │
+│  35000 - 39999  │  Reserved for future use                       │
+│  40000 - 65535  │  Dynamic allocation overflow                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Per-Workspace Allocation:**
+
+```
+Workspace: hanlun-dev
+├── SSH:        32801 (primary access)
+├── Web:        32901 → container:3000 (Next.js frontend)
+├── API:        32902 → container:3001 (Node.js backend)
+├── Postgres:   32903 → container:5432 (optional expose)
+├── Redis:      32904 → container:6379 (optional expose)
+└── Nginx:      32905 → container:8080 (reverse proxy)
+```
+
+```go
+// internal/ports/allocator.go
+package ports
+
+type ServiceAllocator struct {
+    basePort    int           // 32900
+    maxPort     int           // 34999
+    allocations map[string]WorkspacePorts // workspace -> ports
+}
+
+type WorkspacePorts struct {
+    WorkspaceID    string
+    SSHPort        int                    // Primary SSH access
+    ServicePorts   map[string]ServicePort // service name -> port
+    AllocatedRange [2]int                 // [start, end]
+}
+
+func (a *ServiceAllocator) AllocateServices(workspace string, services []ServicePort) (*WorkspacePorts, error) {
+    // Determine base port for this workspace (deterministic hash)
+    workspaceHash := hashWorkspaceName(workspace)
+    base := a.basePort + (workspaceHash % (a.maxPort - a.basePort - 100))
+    
+    // Ensure base doesn't overlap with existing allocations
+    base = a.findAvailableRange(base, len(services))
+    
+    wp := &WorkspacePorts{
+        WorkspaceID:  workspace,
+        SSHPort:      base, // First port is always SSH
+        ServicePorts: make(map[string]ServicePort),
+        AllocatedRange: [2]int{base, base + len(services)},
+    }
+    
+    // Assign ports for each service
+    for i, svc := range services {
+        hostPort := base + i + 1 // +1 because base is SSH
+        
+        // If service requested specific host port, try to honor it
+        if svc.HostPort > 0 {
+            if a.isPortAvailable(svc.HostPort) {
+                hostPort = svc.HostPort
+            }
+            // Otherwise use allocated port
+        }
+        
+        svc.HostPort = hostPort
+        svc.URL = a.generateURL(workspace, svc)
+        wp.ServicePorts[svc.ServiceName] = svc
+    }
+    
+    // Reserve ports
+    a.allocations[workspace] = *wp
+    
+    return wp, nil
+}
+
+func (a *ServiceAllocator) generateURL(workspace string, svc ServicePort) string {
+    if svc.Visibility == PortVisibilityPrivate {
+        return "" // No URL for private ports
+    }
+    
+    // Generate localhost URL
+    return fmt.Sprintf("http://localhost:%d", svc.HostPort)
+}
+```
+
+### 2.9.4 URL Generation
+
+**Localhost URLs (Default):**
+
+```
+http://localhost:32901          → Web service
+http://localhost:32902          → API service
+http://localhost:15432          → Postgres (fixed port for tools)
+```
+
+**Custom Domain Support:**
+
+```yaml
+# ~/.nexus/config.yaml
+workspaces:
+  hanlun:
+    services:
+      web:
+        port: 3000
+        url_format: "{workspace}.{service}.localhost"
+        # Results in: http://hanlun.web.localhost:3000
+      api:
+        port: 3001
+        url_format: "{service}.{workspace}.dev"
+        # Results in: http://api.hanlun.dev:3001
+```
+
+**Implementation with dnsmasq (macOS/Linux):**
+
+```bash
+# /etc/resolver/localhost
+nameserver 127.0.0.1
+port 53535
+
+# dnsmasq configuration
+dnsmasq --address=/.localhost/127.0.0.1 --port=53535
+```
+
+### 2.9.5 Port Configuration Schema
+
+```yaml
+# ~/.nexus/config.yaml
+workspaces:
+  hanlun:
+    path: ~/projects/hanlun-lms
+    
+    # Service port configuration
+    services:
+      # Auto-detected from docker-compose, but can override
+      web:
+        port: 3000
+        auto_forward: true
+        visibility: public
+        url_format: "{workspace}.localhost"
+        health_check:
+          path: /api/health
+          interval: 10s
+          timeout: 5s
+          retries: 3
+      
+      api:
+        port: 3001
+        auto_forward: true
+        visibility: public
+      
+      # Database - not publicly accessible
+      postgres:
+        port: 5432
+        auto_forward: false
+        # But expose on fixed host port for local DB tools
+        host_port: 15432
+        visibility: private
+      
+      redis:
+        port: 6379
+        auto_forward: false
+        visibility: private
+
+# Global port settings
+ports:
+  # Port range for service allocation
+  range:
+    start: 32900
+    end: 34999
+  
+  # Default behavior
+  defaults:
+    auto_forward: true
+    visibility: private
+    url_format: "localhost:{port}"
+  
+  # Fixed ports for common services (used when auto_forward: false)
+  fixed:
+    postgres: 15432
+    mysql: 13306
+    redis: 16379
+    mongo: 27018
+```
+
+### 2.9.6 Health Check Integration
+
+Services with health checks block workspace startup until healthy:
+
+```go
+// internal/services/health.go
+package services
+
+// HealthChecker monitors service health
+type HealthChecker struct {
+    checks map[string]*HealthCheck
+}
+
+func (h *HealthChecker) WaitForHealthy(ctx context.Context, services []ServicePort, timeout time.Duration) error {
+    ctx, cancel := context.WithTimeout(ctx, timeout)
+    defer cancel()
+    
+    var wg sync.WaitGroup
+    errChan := make(chan error, len(services))
+    
+    for _, svc := range services {
+        if svc.HealthCheck == nil {
+            continue // No health check required
+        }
+        
+        wg.Add(1)
+        go func(s ServicePort) {
+            defer wg.Done()
+            
+            if err := h.checkService(ctx, s); err != nil {
+                errChan <- fmt.Errorf("service %s unhealthy: %w", s.ServiceName, err)
+            }
+        }(svc)
+    }
+    
+    // Wait for all checks or timeout
+    done := make(chan struct{})
+    go func() {
+        wg.Wait()
+        close(done)
+    }()
+    
+    select {
+    case <-done:
+        close(errChan)
+        // Check if any errors
+        for err := range errChan {
+            return err
+        }
+        return nil
+    case <-ctx.Done():
+        return fmt.Errorf("health check timeout after %v", timeout)
+    }
+}
+
+func (h *HealthChecker) checkService(ctx context.Context, svc ServicePort) error {
+    if svc.HealthCheck == nil {
+        return nil
+    }
+    
+    url := fmt.Sprintf("http://localhost:%d%s", svc.HostPort, svc.HealthCheck.Path)
+    
+    ticker := time.NewTicker(svc.HealthCheck.Interval)
+    defer ticker.Stop()
+    
+    retries := 0
+    for {
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        case <-ticker.C:
+            resp, err := http.Get(url)
+            if err == nil && resp.StatusCode == 200 {
+                return nil
+            }
+            if resp != nil {
+                resp.Body.Close()
+            }
+            
+            retries++
+            if retries >= svc.HealthCheck.Retries {
+                return fmt.Errorf("health check failed after %d retries", retries)
+            }
+        }
+    }
+}
+```
+
+### 2.9.7 CLI Integration
+
+```bash
+# List forwarded ports
+nexus workspace port list hanlun
+# Output:
+# SERVICE   CONTAINER  HOST      URL                          STATUS
+# web       3000       32901     http://localhost:32901       healthy
+# api       3001       32902     http://localhost:32902       healthy
+# postgres  5432       -         (not exposed)                running
+# redis     6379       -         (not exposed)                running
+
+# Add manual port forward
+nexus workspace port add hanlun 8080 --visibility=public
+
+# Open service URL in browser
+nexus workspace open hanlun web
+```
+
+---
+
+## 2.10 Workspace Lifecycle Management
+
+### 2.10.1 State Machine
+
+```
+                    ┌──────────────┐
+                    │   PENDING    │
+                    │  (creating)  │
+                    └──────┬───────┘
+                           │
+           ┌───────────────┼───────────────┐
+           │               │               │
+           ▼               ▼               ▼
+    ┌────────────┐   ┌────────────┐   ┌───────────┐
+    │   ERROR    │   │   STOPPED  │   │  PAUSED   │
+    │  (failed)  │◀──│  (ready)   │◀──│(checkpoint)│
+    └──────┬─────┘   └─────┬──────┘   └─────┬─────┘
+           │               │                │
+           │    start      │      resume    │
+           │               │                │
+           ▼               ▼                ▼
+              ┌──────────────────────────────┐
+              │         RUNNING              │
+              │     (services active)        │
+              └──────────────────────────────┘
+```
+
+**State Definitions:**
+
+| State | Description | Transitions |
+|-------|-------------|-------------|
+| **PENDING** | Workspace being created | → STOPPED (success), → ERROR (failure) |
+| **STOPPED** | Workspace exists but not running | → RUNNING (start), → ERROR (failure) |
+| **RUNNING** | Container active, services may be starting | → STOPPED (stop), → PAUSED (pause), → ERROR (crash) |
+| **PAUSED** | Checkpoint saved, container stopped | → RUNNING (resume), → STOPPED (full stop) |
+| **ERROR** | Failed state, manual intervention needed | → STOPPED (repair), → PENDING (recreate) |
+
+### 2.10.2 Lifecycle Hooks
+
+**Hook Execution Order:**
+
+```
+nexus workspace up:
+  1. Pre-start hooks
+  2. Start container
+  3. Start services (docker-compose up)
+  4. Wait for health checks
+  5. Resume file sync
+  6. Post-start hooks
+
+nexus workspace down:
+  1. Pre-stop hooks
+  2. Pause file sync
+  3. Stop services (docker-compose down)
+  4. Post-stop hooks
+  5. Stop container
+
+nexus workspace pause:
+  1. Pre-pause hooks
+  2. Checkpoint running processes
+  3. Pause file sync
+  4. Stop container (preserve state)
+  5. Post-pause hooks
+
+nexus workspace resume:
+  1. Pre-resume hooks
+  2. Start container from checkpoint
+  3. Resume file sync
+  4. Wait for health checks
+  5. Post-resume hooks
+```
+
+**Configuration:**
+
+```yaml
+# ~/projects/myapp/.nexus/config.yaml
+hooks:
+  # Run before workspace starts
+  pre-start: |
+    #!/bin/bash
+    echo "Setting up workspace..."
+    npm install
+    npx prisma migrate dev
+    
+  # Run after workspace is fully started and healthy
+  post-start: |
+    #!/bin/bash
+    echo "Starting development server..."
+    npm run dev &
+    
+  # Run before stopping
+  pre-stop: |
+    #!/bin/bash
+    echo "Saving state..."
+    npm run db:backup || true
+    
+  # Run after workspace stopped
+  post-stop: |
+    #!/bin/bash
+    echo "Workspace stopped, cleaning up..."
+    
+  # Health check - must exit 0 for workspace to be "ready"
+  health-check: |
+    #!/bin/bash
+    curl -f http://localhost:3000/api/health || exit 1
+```
+
+### 2.10.3 Service Lifecycle
+
+**Service Dependencies:**
+
+```yaml
+# docker-compose.yml
+services:
+  postgres:
+    image: postgres:15
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+  
+  redis:
+    image: redis:7
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+  
+  api:
+    build: ./api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+  
+  web:
+    build: ./web
+    depends_on:
+      api:
+        condition: service_healthy
+```
+
+**Startup Sequence:**
+
+```
+1. Start infrastructure (postgres, redis)
+2. Wait for infrastructure health
+3. Start API server
+4. Wait for API health
+5. Start Web server
+6. Wait for Web health
+7. Workspace marked as RUNNING
+```
+
+**Shutdown Sequence:**
+
+```
+1. Stop Web server (graceful, wait for requests)
+2. Stop API server (graceful)
+3. Stop Redis
+4. Stop Postgres (ensure data flushed)
+5. Workspace marked as STOPPED
+```
+
+### 2.10.4 Resource Cleanup
+
+**Automatic Cleanup:**
+
+| Resource | Cleanup Trigger | Action |
+|----------|-----------------|--------|
+| Containers | `destroy` command | Remove container and volumes |
+| Images | Weekly or `cleanup` command | Remove unused images |
+| Networks | All workspaces stopped | Prune unused networks |
+| Sync sessions | `destroy` command | Terminate Mutagen session |
+| Worktrees | `destroy` command | Remove git worktree |
+| State files | `destroy --purge` | Remove workspace metadata |
+
+**Garbage Collection:**
+
+```bash
+# Manual cleanup
+nexus workspace cleanup
+
+# What it does:
+# 1. Stop idle workspaces (>24h inactive)
+# 2. Remove unused images
+# 3. Prune dangling volumes
+# 4. Clean up old logs
+# 5. Compact state database
+```
+
+### 2.10.5 Lifecycle API
+
+```protobuf
+// Lifecycle operations
+rpc StartWorkspace(StartWorkspaceRequest) returns (StartWorkspaceResponse);
+rpc StopWorkspace(StopWorkspaceRequest) returns (StopWorkspaceResponse);
+rpc PauseWorkspace(PauseWorkspaceRequest) returns (PauseWorkspaceResponse);
+rpc ResumeWorkspace(ResumeWorkspaceRequest) returns (ResumeWorkspaceResponse);
+
+message StartWorkspaceRequest {
+  string workspace_id = 1;
+  bool skip_hooks = 2;        // Skip pre/post hooks
+  bool skip_services = 3;     // Don't start docker-compose services
+  bool blocking = 4;          // Wait for health checks
+  int32 timeout_seconds = 5;  // Max wait time
+}
+
+message StartWorkspaceResponse {
+  string workspace_id = 1;
+  WorkspaceStatus status = 2;
+  repeated ServiceHealth services = 3;
+  int32 duration_ms = 4;      // Time to ready
+}
+
+message ServiceHealth {
+  string service_name = 1;
+  string status = 2;          // healthy | unhealthy | starting
+  int32 port = 3;
+  string url = 4;
+}
+```
+
+### 2.10.6 hanlun-lms Lifecycle Example
+
+```bash
+# Create workspace
+nexus workspace create hanlun-dev --from=git@github.com:oursky/hanlun-lms.git
+
+# Start (triggers full lifecycle)
+nexus workspace up hanlun-dev
+
+# Output:
+# [pre-start] Running npm install...
+# [pre-start] Running prisma migrate...
+# [docker] Starting postgres... ✓
+# [docker] Starting redis... ✓
+# [docker] Starting api... ✓
+# [docker] Starting web... ✓
+# [health] Checking postgres... ✓ healthy
+# [health] Checking redis... ✓ healthy
+# [health] Checking api... ✓ healthy (1.2s)
+# [health] Checking web... ✓ healthy (2.1s)
+# [post-start] Starting development server...
+# 
+# ✓ Workspace hanlun-dev is running
+# 
+# Services:
+#   Web:  http://localhost:32901
+#   API:  http://localhost:32902
+
+# View logs
+nexus workspace logs hanlun-dev --service=web --follow
+
+# Pause (preserve state)
+nexus workspace pause hanlun-dev
+# Output:
+# [pre-pause] Saving state...
+# [checkpoint] Process state saved
+# [sync] File sync paused
+# ✓ Workspace paused
+
+# Resume (fast restore)
+nexus workspace resume hanlun-dev
+# Output:
+# [pre-resume] Restoring state...
+# [docker] Container started from checkpoint
+# [sync] File sync resumed
+# [health] All services healthy
+# ✓ Workspace resumed (1.8s)
+
+# Switch to another workspace
+nexus workspace switch feature-auth
+# Current workspace paused automatically, new one resumed
+
+# Stop gracefully
+nexus workspace down hanlun-dev
+# Output:
+# [pre-stop] Saving state...
+# [docker] Stopping web... ✓
+# [docker] Stopping api... ✓
+# [docker] Stopping redis... ✓
+# [docker] Stopping postgres... ✓
+# [post-stop] Cleanup complete
+```

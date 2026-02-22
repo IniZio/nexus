@@ -26,9 +26,9 @@ Nexus workspaces use **SSH as the primary access mechanism**, replacing `docker 
 │  │                           User Machine                                 │  │
 │  │                                                                        │  │
 │  │  ┌─────────────────┐  ┌─────────────────┐  ┌───────────────────────┐  │  │
-│  │  │  CLI (boulder)  │  │  IDE (VS Code)  │  │  ssh -A -p 32801 ...  │  │  │
+│  │  │  CLI (nexus)    │  │  IDE (VS Code)  │  │  ssh -A -p 32801 ...  │  │  │
 │  │  │                 │  │                 │  │                       │  │  │
-│  │  │  nexus ssh ws1  │  │  Remote-SSH     │  │  (native SSH client)  │  │  │
+│  │  │  nexus ws ssh   │  │  Remote-SSH     │  │  (native SSH client)  │  │  │
 │  │  └────────┬────────┘  └────────┬────────┘  └───────────┬───────────┘  │  │
 │  │           │                    │                       │               │  │
 │  │           └────────────────────┼───────────────────────┘               │  │
@@ -71,27 +71,11 @@ Nexus workspaces use **SSH as the primary access mechanism**, replacing `docker 
 
 ```bash
 # Create a workspace
-boulder workspace create feature-auth
-
-# SSH into workspace (automatic port allocation)
-boulder ssh feature-auth
-
-# Or use standard SSH with allocated port
-ssh -A nexus@localhost -p 32801
-
-# Execute single command
-boulder ssh feature-auth -- npm test
-
-# Port forwarding (automatic)
-boulder ssh feature-auth -- -L 3000:localhost:3000
-```
-
-### IDE Integration
-
-**VS Code:**
-```bash
-# VS Code automatically detects Nexus workspaces
-boulder workspace up feature-auth
+nexus workspace create feature-auth
+nexus workspace ssh feature-auth
+nexus workspace ssh feature-auth -- npm test
+nexus workspace ssh feature-auth -L 3000:localhost:3000
+nexus workspace up feature-auth
 code --remote ssh-remote+nexus@localhost:32801 /work
 
 # Or use Remote-SSH extension
@@ -307,7 +291,7 @@ func (p *SSHProxy) Resolve(workspace string) (host string, port int, error) {
 
 ```bash
 # Auto-generate SSH config for all workspaces
-boulder ssh-config generate >> ~/.ssh/config
+nexus ssh-config generate >> ~/.ssh/config
 
 # Generated config:
 Host nexus-feature-auth
@@ -331,7 +315,7 @@ Host nexus-feature-ui
 ### Startup Sequence
 
 ```
-User: boulder workspace create feature-auth
+User: nexus workspace create feature-auth
             │
             ▼
 ┌─────────────────────────┐
@@ -367,7 +351,7 @@ User: boulder workspace create feature-auth
             ▼
 ┌─────────────────────────┐
 │   Ready for SSH         │
-│   boulder ssh feature   │
+│   nexus workspace ssh   │
 └─────────────────────────┘
 ```
 
@@ -375,7 +359,7 @@ User: boulder workspace create feature-auth
 
 ```bash
 # 1. User initiates connection
-$ boulder ssh feature-auth
+$ nexus workspace ssh feature-auth
 
 # 2. CLI resolves workspace
 #    - Looks up workspace state
@@ -420,7 +404,7 @@ File sync continues to operate independently via Mutagen:
 │                                                via SSH      │
 │                                                             │
 │   SSH Access: ───────────────────────────────────────┐      │
-│   $ boulder ssh feature                              │      │
+│   $ nexus workspace ssh feature                      │      │
 │                                                      │      │
 │   # Edit files via SSH (changes sync back to host)   │      │
 │   $ echo "test" >> /work/README.md                   │      │
@@ -454,24 +438,18 @@ File sync continues to operate independently via Mutagen:
 
 ```bash
 # Test SSH connectivity
-boulder ssh feature-auth -- -v
-
-# Check workspace status
-boulder workspace show feature-auth
-
-# Verify SSH port allocation
-boulder workspace ports feature-auth
-
-# View SSH logs
-boulder workspace logs feature-auth --service=sshd
+nexus workspace ssh feature-auth -v
+nexus workspace show feature-auth
+nexus workspace port list feature-auth
+nexus workspace logs feature-auth --service=sshd
 ```
 
 ### Common Problems
 
 | Problem | Cause | Solution |
 |---------|-------|----------|
-| Connection refused | Workspace not running | `boulder workspace up feature-auth` |
-| Permission denied | Keys not injected | `boulder workspace restart feature-auth` |
+| Connection refused | Workspace not running | `nexus workspace up feature-auth` |
+| Permission denied | Keys not injected | `nexus workspace restart feature-auth` |
 | Agent not available | Forwarding disabled | Check `ForwardAgent yes` in config |
 | Unknown host key | First connection | Accept new host key (stored in ~/.nexus/known_hosts) |
 
@@ -479,13 +457,9 @@ boulder workspace logs feature-auth --service=sshd
 
 ```bash
 # Enable verbose SSH logging
-NEXUS_SSH_DEBUG=1 boulder ssh feature-auth
-
-# Check injected keys
-boulder ssh feature-auth -- "cat ~/.ssh/authorized_keys"
-
-# Verify agent forwarding
-boulder ssh feature-auth -- "ssh-add -l"
+NEXUS_SSH_DEBUG=1 nexus workspace ssh feature-auth
+nexus workspace ssh feature-auth -- "cat ~/.ssh/authorized_keys"
+nexus workspace ssh feature-auth -- "ssh-add -l"
 ```
 
 ## 5.10 Security Considerations

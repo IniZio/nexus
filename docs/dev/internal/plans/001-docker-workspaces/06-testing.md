@@ -597,8 +597,8 @@ Complexity:
 # === Test Procedure ===
 
 # 1. Create two workspaces
-boulder workspace create alice-dashboard --template=node-postgres
-boulder workspace create bob-api --template=node-postgres
+nexus workspace create alice-dashboard --template=node-postgres
+nexus workspace create bob-api --template=node-postgres
 
 # 2. Both workspaces should have:
 #    - Isolated git branches (nexus/alice-dashboard, nexus/bob-api)
@@ -607,14 +607,14 @@ boulder workspace create bob-api --template=node-postgres
 #    - Isolated ports (32800-32809 for alice, 32810-32819 for bob)
 
 # 3. Start both workspaces
-boulder workspace switch alice-dashboard
+nexus workspace switch alice-dashboard
 npm run dev  # Accessible on localhost:32801
 
-boulder workspace switch bob-api
+nexus workspace switch bob-api
 npm run dev  # Accessible on localhost:32811
 
 # 4. Context switch test
-time boulder workspace switch alice-dashboard
+time nexus workspace switch alice-dashboard
 # Should complete in <2 seconds
 ```
 
@@ -624,7 +624,7 @@ time boulder workspace switch alice-dashboard
 |-----------|-------------|-------------|
 | **Parallel operation** | Both workspaces run simultaneously | Verify 6 containers each |
 | **No port conflicts** | All services accessible | curl all endpoints |
-| **Sub-2s switch** | Context switch < 2 seconds | `time boulder workspace switch` |
+| **Sub-2s switch** | Context switch < 2 seconds | `time nexus workspace switch` |
 | **State preservation** | Dev server continues after switch | Verify hot reload works |
 | **Git isolation** | No merge conflicts on switch | `git status` shows clean |
 | **Data persistence** | Database survives restart | Write data, restart, verify |
@@ -740,7 +740,7 @@ func TestSyncRecovery_FromInterruption(t *testing.T) {
 | **File read (1MB)** | <100ms | <500ms | fs.readFile latency |
 | **File write (1MB)** | <200ms | <1s | fs.writeFile latency |
 | **Exec command** | <500ms | <2s | Simple command execution |
-| **List workspaces** | <100ms | <500ms | boulder workspace list |
+| **List workspaces** | <100ms | <500ms | nexus workspace list |
 | **Port allocation** | <50ms | <200ms | Assign new port |
 | **Snapshot create** | <5s | <15s | Checkpoint workspace |
 | **Snapshot restore** | <10s | <30s | Restore from checkpoint |
