@@ -50,6 +50,10 @@ type Storage interface {
 	GetFeedbackByTimeRange(ctx context.Context, start, end time.Time) ([]*SessionFeedback, error)
 	GetPatterns(ctx context.Context, threshold int) ([]*Pattern, error)
 
+	SaveSyncSession(ctx context.Context, workspaceName, sessionID string) error
+	GetSyncSession(ctx context.Context, workspaceName string) (string, error)
+	DeleteSyncSession(ctx context.Context, workspaceName string) error
+
 	RunAutomatedChecks(ctx context.Context, taskID, workspaceName string) (VerificationCriteria, error)
 	ValidateCriteria(criteria VerificationCriteria) error
 	CompleteManualChecklist(ctx context.Context, taskID string, items []string) error
@@ -170,6 +174,13 @@ func (s *SQLiteStorage) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_feedback_session ON feedback(session_id);
 	CREATE INDEX IF NOT EXISTS idx_feedback_timestamp ON feedback(timestamp DESC);
 	CREATE INDEX IF NOT EXISTS idx_feedback_workspace ON feedback(workspace_name);
+
+	CREATE TABLE IF NOT EXISTS sync_sessions (
+		workspace_name TEXT PRIMARY KEY,
+		session_id TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);
 	`
 	_, err := s.db.Exec(query)
 	if err != nil {
@@ -924,6 +935,35 @@ func (s *SQLiteStorage) GetManualChecklist(ctx context.Context, taskID string) (
 
 func (s *SQLiteStorage) SetCustomCheck(ctx context.Context, taskID, checkName string, passed bool) error {
 	return nil
+}
+
+func (s *SQLiteStorage) SaveSyncSession(ctx context.Context, workspaceName, sessionID string) error {
+	now := time.Now()
+	query := `
+	INSERT OR REPLACE INTO sync_sessions (workspace_name, session_id, created_at, updated_at)
+	VALUES (?, ?, ?, ?)
+	`
+	_, err := s.db.ExecContext(ctx, query, workspaceName, sessionID, now.Format(time.RFC3339), now.Format(time.RFC3339))
+	return err
+}
+
+func (s *SQLiteStorage) GetSyncSession(ctx context.Context, workspaceName string) (string, error) {
+	query := `SELECT session_id FROM sync_sessions WHERE workspace_name = ?`
+	var sessionID string
+	err := s.db.QueryRowContext(ctx, query, workspaceName).Scan(&sessionID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return sessionID, nil
+}
+
+func (s *SQLiteStorage) DeleteSyncSession(ctx context.Context, workspaceName string) error {
+	query := `DELETE FROM sync_sessions WHERE workspace_name = ?`
+	_, err := s.db.ExecContext(ctx, query, workspaceName)
+	return err
 }
 
 func appendUnique(slice []string, items ...string) []string {

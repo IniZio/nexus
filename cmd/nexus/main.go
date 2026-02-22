@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 	"nexus/internal/docker"
@@ -231,6 +232,138 @@ Examples:
 
 		mgr := workspace.NewManager(provider)
 		return mgr.Sync(name)
+	},
+}
+
+var workspaceFileSyncCmd = &cobra.Command{
+	Use:   "fsync",
+	Short: "File sync management for workspaces",
+	Long: `File sync management for workspaces using Mutagen.
+
+Commands:
+  status    Get sync status for a workspace
+  pause     Pause sync for a workspace
+  resume    Resume sync for a workspace
+  flush     Flush pending changes for a workspace
+
+Examples:
+  nexus workspace fsync status myws
+  nexus workspace fsync pause myws
+  nexus workspace fsync resume myws
+  nexus workspace fsync flush myws`,
+}
+
+var workspaceFileSyncStatusCmd = &cobra.Command{
+	Use:   "status <name>",
+	Short: "Get file sync status for a workspace",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+
+		provider, err := docker.NewProvider()
+		if err != nil {
+			return fmt.Errorf("failed to create docker provider: %w", err)
+		}
+
+		status, err := provider.GetSyncStatus(context.Background(), name)
+		if err != nil {
+			return fmt.Errorf("failed to get sync status: %w", err)
+		}
+
+		if status == nil {
+			fmt.Printf("No sync session found for workspace '%s'\n", name)
+			return nil
+		}
+
+		syncStatus, ok := status.(*struct {
+			State     string
+			Conflicts []struct {
+				Path         string
+				AlphaContent string
+				BetaContent  string
+			}
+			LastSync time.Time
+		})
+		if !ok {
+			fmt.Printf("Sync state: %v\n", status)
+			return nil
+		}
+
+		fmt.Printf("Workspace: %s\n", name)
+		fmt.Printf("Sync State: %s\n", syncStatus.State)
+		if !syncStatus.LastSync.IsZero() {
+			fmt.Printf("Last Sync: %s\n", syncStatus.LastSync.Format("2006-01-02 15:04:05"))
+		}
+		if len(syncStatus.Conflicts) > 0 {
+			fmt.Printf("Conflicts: %d\n", len(syncStatus.Conflicts))
+			for _, c := range syncStatus.Conflicts {
+				fmt.Printf("  - %s\n", c.Path)
+			}
+		}
+		return nil
+	},
+}
+
+var workspaceFileSyncPauseCmd = &cobra.Command{
+	Use:   "pause <name>",
+	Short: "Pause file sync for a workspace",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+
+		provider, err := docker.NewProvider()
+		if err != nil {
+			return fmt.Errorf("failed to create docker provider: %w", err)
+		}
+
+		if err := provider.PauseSync(context.Background(), name); err != nil {
+			return fmt.Errorf("failed to pause sync: %w", err)
+		}
+
+		fmt.Printf("Paused sync for workspace '%s'\n", name)
+		return nil
+	},
+}
+
+var workspaceFileSyncResumeCmd = &cobra.Command{
+	Use:   "resume <name>",
+	Short: "Resume file sync for a workspace",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+
+		provider, err := docker.NewProvider()
+		if err != nil {
+			return fmt.Errorf("failed to create docker provider: %w", err)
+		}
+
+		if err := provider.ResumeSync(context.Background(), name); err != nil {
+			return fmt.Errorf("failed to resume sync: %w", err)
+		}
+
+		fmt.Printf("Resumed sync for workspace '%s'\n", name)
+		return nil
+	},
+}
+
+var workspaceFileSyncFlushCmd = &cobra.Command{
+	Use:   "flush <name>",
+	Short: "Flush file sync for a workspace",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+
+		provider, err := docker.NewProvider()
+		if err != nil {
+			return fmt.Errorf("failed to create docker provider: %w", err)
+		}
+
+		if err := provider.FlushSync(context.Background(), name); err != nil {
+			return fmt.Errorf("failed to flush sync: %w", err)
+		}
+
+		fmt.Printf("Flushed sync for workspace '%s'\n", name)
+		return nil
 	},
 }
 
@@ -693,7 +826,13 @@ func main() {
 	workspaceCmd.AddCommand(workspaceListCmd)
 	workspaceCmd.AddCommand(workspaceDestroyCmd)
 	workspaceCmd.AddCommand(workspaceSyncCmd)
+	workspaceCmd.AddCommand(workspaceFileSyncCmd)
 	workspaceCmd.AddCommand(workspacePortsCmd)
+
+	workspaceFileSyncCmd.AddCommand(workspaceFileSyncStatusCmd)
+	workspaceFileSyncCmd.AddCommand(workspaceFileSyncPauseCmd)
+	workspaceFileSyncCmd.AddCommand(workspaceFileSyncResumeCmd)
+	workspaceFileSyncCmd.AddCommand(workspaceFileSyncFlushCmd)
 
 	taskCmd.AddCommand(taskCreateCmd)
 	taskCmd.AddCommand(taskListCmd)

@@ -330,6 +330,18 @@ func (m *TaskManager) ListAllPortMappings(ctx context.Context) (map[string][]Por
 	return m.storage.ListAllPortMappings(ctx)
 }
 
+func (m *TaskManager) SaveSyncSession(ctx context.Context, workspaceName, sessionID string) error {
+	return m.storage.SaveSyncSession(ctx, workspaceName, sessionID)
+}
+
+func (m *TaskManager) GetSyncSession(ctx context.Context, workspaceName string) (string, error) {
+	return m.storage.GetSyncSession(ctx, workspaceName)
+}
+
+func (m *TaskManager) DeleteSyncSession(ctx context.Context, workspaceName string) error {
+	return m.storage.DeleteSyncSession(ctx, workspaceName)
+}
+
 func (m *TaskManager) validateDependencies(ctx context.Context, deps []string) error {
 	for _, depID := range deps {
 		task, err := m.storage.GetTask(ctx, depID)

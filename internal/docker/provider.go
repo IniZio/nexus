@@ -18,6 +18,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 
+	"nexus/internal/sync"
 	"nexus/internal/workspace"
 	"nexus/pkg/coordination"
 )
@@ -33,8 +34,9 @@ var defaultServicePorts = map[string]int{
 }
 
 type Provider struct {
-	cli     *client.Client
-	storage *coordination.TaskManager
+	cli         *client.Client
+	storage     *coordination.TaskManager
+	syncManager *sync.Manager
 }
 
 // NewProvider creates a new Docker provider
@@ -53,12 +55,24 @@ func NewProvider() (*Provider, error) {
 		return nil, fmt.Errorf("failed to create task manager: %w", err)
 	}
 
-	return &Provider{cli: cli, storage: storage}, nil
+	syncStore := sync.NewCoordinationStore(storage)
+	syncManager := sync.NewManager(nil, syncStore)
+
+	return &Provider{cli: cli, storage: storage, syncManager: syncManager}, nil
 }
 
 // NewProviderWithStorage creates a new Docker provider with custom storage
 func NewProviderWithStorage(cli *client.Client, storage *coordination.TaskManager) *Provider {
-	return &Provider{cli: cli, storage: storage}
+	syncStore := sync.NewCoordinationStore(storage)
+	syncManager := sync.NewManager(nil, syncStore)
+	return &Provider{cli: cli, storage: storage, syncManager: syncManager}
+}
+
+// NewProviderWithSync creates a new Docker provider with custom storage and sync config
+func NewProviderWithSync(cli *client.Client, storage *coordination.TaskManager, syncConfig *sync.Config) *Provider {
+	syncStore := sync.NewCoordinationStore(storage)
+	syncManager := sync.NewManager(syncConfig, syncStore)
+	return &Provider{cli: cli, storage: storage, syncManager: syncManager}
 }
 
 // NewProviderWithoutStorage creates a new Docker provider without storage (for testing)
@@ -588,4 +602,61 @@ func (p *Provider) ContainerExists(ctx context.Context, name string) (bool, erro
 		return false, fmt.Errorf("failed to inspect container: %w", err)
 	}
 	return true, nil
+}
+
+// StartSync starts the Mutagen sync for a workspace
+func (p *Provider) StartSync(ctx context.Context, workspaceName, worktreePath string) (string, error) {
+	if p.syncManager == nil {
+		return "", fmt.Errorf("sync not initialized")
+	}
+
+	containerPath := "/workspace"
+	return p.syncManager.StartSync(ctx, workspaceName, worktreePath, containerPath)
+}
+
+// PauseSync pauses the Mutagen sync for a workspace
+func (p *Provider) PauseSync(ctx context.Context, workspaceName string) error {
+	if p.syncManager == nil {
+		return fmt.Errorf("sync not initialized")
+	}
+	return p.syncManager.PauseSync(ctx, workspaceName)
+}
+
+// ResumeSync resumes the Mutagen sync for a workspace
+func (p *Provider) ResumeSync(ctx context.Context, workspaceName string) error {
+	if p.syncManager == nil {
+		return fmt.Errorf("sync not initialized")
+	}
+	return p.syncManager.ResumeSync(ctx, workspaceName)
+}
+
+// StopSync stops and terminates the Mutagen sync for a workspace
+func (p *Provider) StopSync(ctx context.Context, workspaceName string) error {
+	if p.syncManager == nil {
+		return fmt.Errorf("sync not initialized")
+	}
+	return p.syncManager.StopSync(ctx, workspaceName)
+}
+
+// GetSyncStatus gets the sync status for a workspace
+func (p *Provider) GetSyncStatus(ctx context.Context, workspaceName string) (interface{}, error) {
+	if p.syncManager == nil {
+		return nil, fmt.Errorf("sync not initialized")
+	}
+	return p.syncManager.GetSyncStatus(ctx, workspaceName)
+}
+
+// FlushSync flushes the sync for a workspace
+func (p *Provider) FlushSync(ctx context.Context, workspaceName string) error {
+	if p.syncManager == nil {
+		return fmt.Errorf("sync not initialized")
+	}
+	return p.syncManager.FlushSync(ctx, workspaceName)
+}
+
+// SetSyncConfig sets the sync configuration for the provider
+func (p *Provider) SetSyncConfig(config *sync.Config) {
+	if p.storage != nil {
+		p.syncManager = sync.NewManager(config, sync.NewCoordinationStore(p.storage))
+	}
 }

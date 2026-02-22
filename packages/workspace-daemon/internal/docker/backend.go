@@ -71,11 +71,22 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 
 	volumes := append([]VolumeMount{}, sshVolumes...)
 
+	workingDir := "/workspace"
+	if req.WorktreePath != "" {
+		volumes = append(volumes, VolumeMount{
+			Type:     "bind",
+			Source:   req.WorktreePath,
+			Target:   "/workspace",
+			ReadOnly: false,
+		})
+		workspace.Repository.LocalPath = req.WorktreePath
+	}
+
 	containerID, err := b.createContainer(ctx, image, &ContainerConfig{
 		Name:      workspace.ID,
 		Image:      image,
 		Env:        mergeEnv(configEnv, sshEnv),
-		WorkingDir: "/workspace",
+		WorkingDir: workingDir,
 		AutoRemove: false,
 		Volumes:    volumes,
 	})
@@ -156,6 +167,17 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 	volumes := append([]VolumeMount{}, sshVolumes...)
 	volumes = append(volumes, bridgeVolumes...)
 
+	workingDir := "/workspace"
+	if req.WorktreePath != "" {
+		volumes = append(volumes, VolumeMount{
+			Type:     "bind",
+			Source:   req.WorktreePath,
+			Target:   "/workspace",
+			ReadOnly: false,
+		})
+		workspace.Repository.LocalPath = req.WorktreePath
+	}
+
 	allEnv := sshEnv
 	allEnv = append(allEnv, bridgeEnv...)
 
@@ -163,7 +185,7 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 		Name:      workspace.ID,
 		Image:     image,
 		Env:       mergeEnv(configEnv, allEnv),
-		WorkingDir: "/workspace",
+		WorkingDir: workingDir,
 		AutoRemove: false,
 		Volumes:    volumes,
 	})
