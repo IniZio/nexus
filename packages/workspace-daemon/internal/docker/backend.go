@@ -199,6 +199,19 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 		image = "ubuntu:22.04"
 	}
 
+	sshPort, err := b.portManager.Allocate()
+	if err != nil {
+		return nil, fmt.Errorf("allocating SSH port: %w", err)
+	}
+
+	publicKeys, _ := GetUserPublicKeys()
+	var publicKey string
+	if len(publicKeys) > 0 {
+		publicKey = publicKeys[0]
+	}
+
+	entrypoint := generateSSHEntrypoint(publicKey)
+
 	if err := b.pullImage(ctx, image); err != nil {
 		return nil, fmt.Errorf("pulling image: %w", err)
 	}
@@ -229,12 +242,14 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 	allEnv = append(allEnv, bridgeEnv...)
 
 	containerID, err := b.createContainer(ctx, image, &ContainerConfig{
-		Name:      workspace.ID,
-		Image:     image,
-		Env:       mergeEnv(configEnv, allEnv),
-		WorkingDir: workingDir,
-		AutoRemove: false,
-		Volumes:    volumes,
+		Name:        workspace.ID,
+		Image:       image,
+		Env:         mergeEnv(configEnv, allEnv),
+		WorkingDir:  workingDir,
+		AutoRemove:  false,
+		Volumes:     volumes,
+		Ports:       []PortBinding{{ContainerPort: 22, HostPort: sshPort, Protocol: "tcp"}},
+		Entrypoint:  []string{"bash", "-c", entrypoint},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating container: %w", err)
@@ -265,6 +280,15 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 	b.containerManager.mu.Unlock()
 
 	workspace.Status = wsTypes.StatusRunning
+	workspace.Ports = []wsTypes.PortMapping{
+		{
+			Name:          "ssh",
+			Protocol:      "tcp",
+			ContainerPort: 22,
+			HostPort:      sshPort,
+			Visibility:    "public",
+		},
+	}
 
 	if req.WorktreePath != "" && b.syncManager != nil {
 		if _, err := b.syncManager.StartSync(ctx, workspace.ID, req.WorktreePath, "/workspace"); err != nil {
@@ -582,7 +606,7 @@ func (b *DockerBackend) createContainer(ctx context.Context, image string, confi
 	}
 
 	if len(config.Ports) > 0 {
-		portBindings := []nat.PortBinding{}
+		portBindings := nat.PortMap{}
 		for _, p := range config.Ports {
 			hostPort := p.HostPort
 			if hostPort == 0 {
@@ -592,13 +616,11 @@ func (b *DockerBackend) createContainer(ctx context.Context, image string, confi
 				}
 				hostPort = allocatedPort
 			}
-			portBindings = append(portBindings, nat.PortBinding{
-				HostPort: fmt.Sprintf("%d", hostPort),
-			})
+			portBindings[nat.Port(fmt.Sprintf("%d/tcp", p.ContainerPort))] = []nat.PortBinding{
+				{HostPort: fmt.Sprintf("%d", hostPort)},
+			}
 		}
-		hostConfig.PortBindings = nat.PortMap{
-			nat.Port(fmt.Sprintf("%d/tcp", config.Ports[0].ContainerPort)): portBindings,
-		}
+		hostConfig.PortBindings = portBindings
 	}
 
 		if len(config.Volumes) > 0 {
@@ -623,6 +645,11 @@ func (b *DockerBackend) createContainer(ctx context.Context, image string, confi
 		hostConfig.Mounts = mounts
 	}
 
+	exposedPorts := map[nat.Port]struct{}{}
+	for _, p := range config.Ports {
+		exposedPorts[nat.Port(fmt.Sprintf("%d/tcp", p.ContainerPort))] = struct{}{}
+	}
+
 	networkingConfig := &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{},
 	}
@@ -633,7 +660,7 @@ func (b *DockerBackend) createContainer(ctx context.Context, image string, confi
 		WorkingDir:   config.WorkingDir,
 		Entrypoint:   config.Entrypoint,
 		Cmd:          defaultCmd(config.Cmd),
-		ExposedPorts: map[nat.Port]struct{}{},
+		ExposedPorts: exposedPorts,
 	}, hostConfig, networkingConfig, nil, config.Name)
 	if err != nil {
 		return "", fmt.Errorf("creating container: %w", err)
