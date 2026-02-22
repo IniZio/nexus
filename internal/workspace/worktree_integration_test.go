@@ -117,6 +117,30 @@ func (p *testProvider) ContainerExists(ctx context.Context, name string) (bool, 
 	return exists, nil
 }
 
+func (p *testProvider) StartSync(ctx context.Context, workspaceName, worktreePath string) (string, error) {
+	return "", nil
+}
+
+func (p *testProvider) PauseSync(ctx context.Context, workspaceName string) error {
+	return nil
+}
+
+func (p *testProvider) ResumeSync(ctx context.Context, workspaceName string) error {
+	return nil
+}
+
+func (p *testProvider) StopSync(ctx context.Context, workspaceName string) error {
+	return nil
+}
+
+func (p *testProvider) GetSyncStatus(ctx context.Context, workspaceName string) (interface{}, error) {
+	return nil, nil
+}
+
+func (p *testProvider) FlushSync(ctx context.Context, workspaceName string) error {
+	return nil
+}
+
 func TestWorktreeIntegration_CreateWorktree(t *testing.T) {
 	testutil.SkipIfNoDocker(t)
 

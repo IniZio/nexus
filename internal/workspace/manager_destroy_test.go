@@ -83,6 +83,30 @@ func (m *mockProvider) ContainerExists(ctx context.Context, name string) (bool, 
 	return exists, nil
 }
 
+func (m *mockProvider) StartSync(ctx context.Context, workspaceName, worktreePath string) (string, error) {
+	return "", nil
+}
+
+func (m *mockProvider) PauseSync(ctx context.Context, workspaceName string) error {
+	return nil
+}
+
+func (m *mockProvider) ResumeSync(ctx context.Context, workspaceName string) error {
+	return nil
+}
+
+func (m *mockProvider) StopSync(ctx context.Context, workspaceName string) error {
+	return nil
+}
+
+func (m *mockProvider) GetSyncStatus(ctx context.Context, workspaceName string) (interface{}, error) {
+	return nil, nil
+}
+
+func (m *mockProvider) FlushSync(ctx context.Context, workspaceName string) error {
+	return nil
+}
+
 func TestManagerDestroy_WithName(t *testing.T) {
 	provider := newMockProvider()
 	manager := NewManager(provider)
@@ -319,4 +343,28 @@ func (e *errorMockProvider) Close() error {
 
 func (e *errorMockProvider) ContainerExists(ctx context.Context, name string) (bool, error) {
 	return e.base.ContainerExists(ctx, name)
+}
+
+func (e *errorMockProvider) StartSync(ctx context.Context, workspaceName, worktreePath string) (string, error) {
+	return e.base.StartSync(ctx, workspaceName, worktreePath)
+}
+
+func (e *errorMockProvider) PauseSync(ctx context.Context, workspaceName string) error {
+	return e.base.PauseSync(ctx, workspaceName)
+}
+
+func (e *errorMockProvider) ResumeSync(ctx context.Context, workspaceName string) error {
+	return e.base.ResumeSync(ctx, workspaceName)
+}
+
+func (e *errorMockProvider) StopSync(ctx context.Context, workspaceName string) error {
+	return e.base.StopSync(ctx, workspaceName)
+}
+
+func (e *errorMockProvider) GetSyncStatus(ctx context.Context, workspaceName string) (interface{}, error) {
+	return e.base.GetSyncStatus(ctx, workspaceName)
+}
+
+func (e *errorMockProvider) FlushSync(ctx context.Context, workspaceName string) error {
+	return e.base.FlushSync(ctx, workspaceName)
 }
