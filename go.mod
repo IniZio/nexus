@@ -1,8 +1,8 @@
 module nexus
 
-go 1.24.0
+go 1.23
 
-toolchain go1.24.11
+toolchain go1.23
 
 require (
 	github.com/creack/pty v1.1.24
