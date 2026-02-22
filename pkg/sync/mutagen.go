@@ -3,7 +3,6 @@ package sync
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -115,46 +114,33 @@ func (c *MutagenClient) TerminateSession(id string) error {
 }
 
 func (c *MutagenClient) GetStatus(id string) (*SyncStatus, error) {
-	cmd := exec.Command(c.binaryPath, "sync", "list", "--json", id)
+	cmd := exec.Command(c.binaryPath, "sync", "list", id)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		if strings.Contains(stderr.String(), "no sessions found") {
+		if strings.Contains(stderr.String(), "no sessions found") || strings.Contains(stderr.String(), "unknown") {
 			return nil, fmt.Errorf("session not found: %s", id)
 		}
 		return nil, fmt.Errorf("failed to get mutagen status: %w: %s", err, stderr.String())
 	}
 
-	var sessions []mutagenSessionJSON
-	if err := json.Unmarshal(stdout.Bytes(), &sessions); err != nil {
-		return nil, fmt.Errorf("failed to parse mutagen output: %w", err)
-	}
-
-	if len(sessions) == 0 {
-		return nil, fmt.Errorf("session not found: %s", id)
-	}
-
-	session := sessions[0]
-
+	output := stdout.String()
 	status := &SyncStatus{
-		State:     session.SyncState,
+		State:     "unknown",
 		Conflicts: []Conflict{},
 	}
 
-	if session.LastSync != "" {
-		if t, err := time.Parse(time.RFC3339, session.LastSync); err == nil {
-			status.LastSync = t
-		}
+	if strings.Contains(output, "Connected: Yes") {
+		status.State = "connected"
 	}
-
-	for _, conflict := range session.Conflicts {
-		status.Conflicts = append(status.Conflicts, Conflict{
-			Path:         conflict.Path,
-			AlphaContent: conflict.AlphaContent,
-			BetaContent:  conflict.BetaContent,
-		})
+	if strings.Contains(output, "Staging files") {
+		status.State = "staging"
+	} else if strings.Contains(output, "Watching for changes") {
+		status.State = "watching"
+	} else if strings.Contains(output, "Transition problems") {
+		status.State = "error"
 	}
 
 	return status, nil
@@ -173,7 +159,7 @@ func (c *MutagenClient) Flush(id string) error {
 }
 
 func (c *MutagenClient) ListSessions() ([]MutagenSession, error) {
-	cmd := exec.Command(c.binaryPath, "sync", "list", "--json")
+	cmd := exec.Command(c.binaryPath, "sync", "list")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -185,31 +171,34 @@ func (c *MutagenClient) ListSessions() ([]MutagenSession, error) {
 		return nil, fmt.Errorf("failed to list mutagen sessions: %w: %s", err, stderr.String())
 	}
 
-	var sessions []mutagenSessionJSON
-	if err := json.Unmarshal(stdout.Bytes(), &sessions); err != nil {
-		return nil, fmt.Errorf("failed to parse mutagen output: %w", err)
+	output := stdout.String()
+	if output == "No synchronization sessions found" {
+		return nil, nil
 	}
 
 	var result []MutagenSession
-	for _, s := range sessions {
-		result = append(result, MutagenSession{
-			ID:        s.Identifier,
-			AlphaPath: s.Alpha.Path,
-			BetaPath:  s.Beta.Path,
-		})
+	lines := strings.Split(output, "\n")
+	var currentSession *MutagenSession
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Name:") {
+			currentSession = &MutagenSession{}
+			result = append(result, *currentSession)
+		} else if strings.HasPrefix(line, "Identifier:") && currentSession != nil {
+			id := strings.TrimSpace(strings.TrimPrefix(line, "Identifier:"))
+			currentSession.ID = id
+		} else if strings.HasPrefix(line, "Alpha:") && currentSession != nil {
+			currentSession.AlphaPath = ""
+		} else if strings.HasPrefix(line, "\tURL:") && currentSession != nil && currentSession.AlphaPath == "" {
+			currentSession.AlphaPath = strings.TrimSpace(strings.TrimPrefix(line, "\tURL:"))
+		} else if strings.HasPrefix(line, "Beta:") && currentSession != nil {
+			currentSession.BetaPath = ""
+		} else if strings.HasPrefix(line, "\tURL:") && currentSession != nil && currentSession.BetaPath == "" {
+			currentSession.BetaPath = strings.TrimSpace(strings.TrimPrefix(line, "\tURL:"))
+		}
 	}
 
 	return result, nil
-}
-
-type mutagenSessionJSON struct {
-	Identifier string         `json:"identifier"`
-	Name       string         `json:"name"`
-	SyncState  string         `json:"syncState"`
-	Alpha      mutagenEndpoint `json:"alpha"`
-	Beta       mutagenEndpoint `json:"beta"`
-	LastSync   string         `json:"lastSync"`
-	Conflicts  []mutagenConflict `json:"conflicts"`
 }
 
 type mutagenEndpoint struct {
