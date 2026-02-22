@@ -35,6 +35,7 @@
 | WebSocket Daemon | ✅ | ✅ | ✅ | 80% |
 | SDK (TypeScript) | ✅ | ✅ | ✅ | 85% |
 | CLI | ✅ | ✅ | ✅ | 75% |
+| File Sync (Mutagen) | ✅ | ✅ | ✅ | 85% |
 
 ## 6.3 Unit Testing
 
@@ -302,7 +303,275 @@ describe('Performance Requirements', () => {
 });
 ```
 
-## 6.6 Real-World Testing
+## 6.6 File Sync Testing
+
+### Unit Tests (Mock Mutagen)
+
+```go
+func TestSyncManager_CreateSession(t *testing.T) {
+    tests := []struct {
+        name      string
+        workspace string
+        hostPath  string
+        wantErr   bool
+    }{
+        {
+            name:      "valid session",
+            workspace: "test-ws",
+            hostPath:  "/tmp/test-worktree",
+            wantErr:   false,
+        },
+        {
+            name:      "duplicate session",
+            workspace: "existing-ws",
+            hostPath:  "/tmp/existing",
+            wantErr:   true,
+        },
+    }
+    
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            mockProvider := &MockSyncProvider{}
+            sm := NewSyncManager(mockProvider)
+            
+            session, err := sm.CreateSession(tt.workspace, tt.hostPath, "/workspace")
+            
+            if tt.wantErr {
+                assert.Error(t, err)
+                return
+            }
+            
+            assert.NoError(t, err)
+            assert.NotNil(t, session)
+            assert.Equal(t, tt.workspace, session.WorkspaceID)
+        })
+    }
+}
+
+func TestSyncManager_Lifecycle(t *testing.T) {
+    mockProvider := &MockSyncProvider{}
+    sm := NewSyncManager(mockProvider)
+    
+    // Create
+    session, err := sm.CreateSession("test", "/host", "/container")
+    require.NoError(t, err)
+    
+    // Pause
+    err = sm.PauseSession("test")
+    require.NoError(t, err)
+    assert.Equal(t, SyncStatePaused, session.Status)
+    
+    // Resume
+    err = sm.ResumeSession("test")
+    require.NoError(t, err)
+    assert.Equal(t, SyncStateSyncing, session.Status)
+    
+    // Terminate
+    err = sm.TerminateSession("test")
+    require.NoError(t, err)
+    
+    _, err = sm.GetStatus("test")
+    assert.Error(t, err) // Session should not exist
+}
+```
+
+### Integration Tests (Real Mutagen)
+
+```go
+func TestMutagenIntegration_BidirectionalSync(t *testing.T) {
+    if testing.Short() {
+        t.Skip("Skipping integration test")
+    }
+    
+    // Setup temp directories
+    hostDir := t.TempDir()
+    containerDir := t.TempDir()
+    
+    // Create Mutagen provider
+    provider, err := mutagen.NewProvider()
+    require.NoError(t, err)
+    
+    // Create sync session
+    session, err := provider.CreateSession(hostDir, containerDir, SyncConfig{
+        Mode: "two-way-safe",
+        Exclude: []string{".git", "node_modules"},
+    })
+    require.NoError(t, err)
+    defer provider.Terminate(session.ID)
+    
+    // Test: Host → Container sync
+    hostFile := filepath.Join(hostDir, "test.txt")
+    err = os.WriteFile(hostFile, []byte("from host"), 0644)
+    require.NoError(t, err)
+    
+    // Wait for sync
+    time.Sleep(500 * time.Millisecond)
+    
+    // Verify container received file
+    containerFile := filepath.Join(containerDir, "test.txt")
+    content, err := os.ReadFile(containerFile)
+    require.NoError(t, err)
+    assert.Equal(t, "from host", string(content))
+    
+    // Test: Container → Host sync
+    err = os.WriteFile(containerFile, []byte("from container"), 0644)
+    require.NoError(t, err)
+    
+    // Wait for sync
+    time.Sleep(500 * time.Millisecond)
+    
+    // Verify host received update
+    content, err = os.ReadFile(hostFile)
+    require.NoError(t, err)
+    assert.Equal(t, "from container", string(content))
+}
+
+func TestMutagenIntegration_ConflictResolution(t *testing.T) {
+    if testing.Short() {
+        t.Skip("Skipping integration test")
+    }
+    
+    hostDir := t.TempDir()
+    containerDir := t.TempDir()
+    
+    provider, err := mutagen.NewProvider()
+    require.NoError(t, err)
+    
+    session, err := provider.CreateSession(hostDir, containerDir, SyncConfig{
+        Mode:     "two-way-safe",
+        Conflict: ConflictConfig{Strategy: "host-wins"},
+    })
+    require.NoError(t, err)
+    defer provider.Terminate(session.ID)
+    
+    // Create initial file
+    testFile := filepath.Join(hostDir, "conflict.txt")
+    err = os.WriteFile(testFile, []byte("initial"), 0644)
+    require.NoError(t, err)
+    time.Sleep(200 * time.Millisecond)
+    
+    // Pause sync
+    provider.Pause(session.ID)
+    
+    // Modify both sides while paused
+    err = os.WriteFile(testFile, []byte("host version"), 0644)
+    require.NoError(t, err)
+    
+    containerFile := filepath.Join(containerDir, "conflict.txt")
+    err = os.WriteFile(containerFile, []byte("container version"), 0644)
+    require.NoError(t, err)
+    
+    // Resume sync - should resolve with host winning
+    provider.Resume(session.ID)
+    time.Sleep(500 * time.Millisecond)
+    
+    // Verify host won
+    content, err := os.ReadFile(containerFile)
+    require.NoError(t, err)
+    assert.Equal(t, "host version", string(content))
+}
+```
+
+### Performance Tests
+
+```go
+func BenchmarkSync_LargeRepository(b *testing.B) {
+    // Create large directory structure
+    hostDir := createLargeRepo(b, 50000) // 50k files
+    containerDir := b.TempDir()
+    
+    provider, _ := mutagen.NewProvider()
+    
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        session, _ := provider.CreateSession(hostDir, containerDir, SyncConfig{})
+        provider.Terminate(session.ID)
+    }
+}
+
+func TestSyncPerformance_LatencyRequirements(t *testing.T) {
+    hostDir := t.TempDir()
+    containerDir := t.TempDir()
+    
+    provider, _ := mutagen.NewProvider()
+    session, _ := provider.CreateSession(hostDir, containerDir, SyncConfig{})
+    defer provider.Terminate(session.ID)
+    
+    // Measure sync latency for small file
+    start := time.Now()
+    os.WriteFile(filepath.Join(hostDir, "latency-test.txt"), []byte("test"), 0644)
+    
+    // Poll until file appears
+    for time.Since(start) < 5*time.Second {
+        if _, err := os.Stat(filepath.Join(containerDir, "latency-test.txt")); err == nil {
+            break
+        }
+        time.Sleep(10 * time.Millisecond)
+    }
+    
+    latency := time.Since(start)
+    assert.Less(t, latency, 500*time.Millisecond, "Sync latency should be <500ms")
+}
+```
+
+### E2E File Sync Tests
+
+```typescript
+describe('File Sync E2E', () => {
+  const testWorkspace = `sync-test-${Date.now()}`;
+  
+  afterAll(async () => {
+    await cli.run(`workspace destroy ${testWorkspace} --force`);
+  });
+  
+  test('create workspace with sync', async () => {
+    const result = await cli.run(`workspace create ${testWorkspace}`);
+    expect(result.exitCode).toBe(0);
+    
+    // Verify sync is active
+    const status = await cli.run(`workspace sync-status ${testWorkspace}`);
+    expect(status.stdout).toContain('syncing');
+  });
+  
+  test('file changes propagate to container', async () => {
+    // Create file in worktree
+    const testFile = path.join(
+      process.env.HOME,
+      '.nexus/worktrees',
+      testWorkspace,
+      'sync-test.txt'
+    );
+    fs.writeFileSync(testFile, 'hello from host');
+    
+    // Wait for sync
+    await new Promise(r => setTimeout(r, 1000));
+    
+    // Verify in container
+    const result = await cli.run(
+      `workspace exec ${testWorkspace} cat /workspace/sync-test.txt`
+    );
+    expect(result.stdout).toContain('hello from host');
+  });
+  
+  test('sync pause and resume', async () => {
+    // Pause
+    let result = await cli.run(`workspace sync-pause ${testWorkspace}`);
+    expect(result.exitCode).toBe(0);
+    
+    let status = await cli.run(`workspace sync-status ${testWorkspace}`);
+    expect(status.stdout).toContain('paused');
+    
+    // Resume
+    result = await cli.run(`workspace sync-resume ${testWorkspace}`);
+    expect(result.exitCode).toBe(0);
+    
+    status = await cli.run(`workspace sync-status ${testWorkspace}`);
+    expect(status.stdout).toContain('syncing');
+  });
+});
+```
+
+## 6.7 Real-World Testing
 
 ### hanlun-lms Test Scenario
 
@@ -360,7 +629,7 @@ time boulder workspace switch alice-dashboard
 | **Git isolation** | No merge conflicts on switch | `git status` shows clean |
 | **Data persistence** | Database survives restart | Write data, restart, verify |
 
-## 6.7 Chaos Testing
+## 6.8 Chaos Testing
 
 ```go
 func TestChaos_RandomFailures(t *testing.T) {
@@ -374,6 +643,8 @@ func TestChaos_RandomFailures(t *testing.T) {
             chaos.DiskFull,
             chaos.ContainerCrash,
             chaos.PortConflict,
+            chaos.SyncInterruption,
+            chaos.DiskCorruption,
         })
         
         // Run operation
@@ -384,6 +655,30 @@ func TestChaos_RandomFailures(t *testing.T) {
         
         fi.Reset()
     }
+}
+
+func TestChaos_SyncFailureRecovery(t *testing.T) {
+    ctx := context.Background()
+    
+    // Create workspace with sync
+    ws, err := manager.Create("sync-chaos-test")
+    require.NoError(t, err)
+    
+    // Simulate sync daemon crash
+    chaos.KillProcess("mutagen-daemon")
+    
+    // Wait for detection
+    time.Sleep(2 * time.Second)
+    
+    // Verify workspace still functional
+    ws, err = manager.Get("sync-chaos-test")
+    require.NoError(t, err)
+    assert.Equal(t, StatusRunning, ws.Status)
+    
+    // Verify sync recovered
+    status, err := manager.GetSyncStatus("sync-chaos-test")
+    require.NoError(t, err)
+    assert.Equal(t, SyncStateSyncing, status.State)
 }
 
 func TestRecovery_FromCrash(t *testing.T) {
@@ -407,9 +702,33 @@ func TestRecovery_FromCrash(t *testing.T) {
     err = manager2.Start("recovery-test")
     require.NoError(t, err)
 }
-```
 
-## 6.8 Performance Benchmarks
+func TestSyncRecovery_FromInterruption(t *testing.T) {
+    // Create workspace
+    ws, _ := manager.Create("sync-recovery-test")
+    require.NoError(t, err)
+    
+    // Pause sync
+    err = manager.PauseSync("sync-recovery-test")
+    require.NoError(t, err)
+    
+    // Simulate crash
+    simulateCrash()
+    
+    // Restart manager
+    manager2 := NewManager()
+    
+    // Should detect paused sync and offer to resume
+    status, err := manager2.GetSyncStatus("sync-recovery-test")
+    require.NoError(t, err)
+    assert.Equal(t, SyncStatePaused, status.State)
+    
+    // Resume should work
+    err = manager2.ResumeSync("sync-recovery-test")
+    require.NoError(t, err)
+}
+
+## 6.9 Performance Benchmarks
 
 ### Target Metrics
 
@@ -425,6 +744,9 @@ func TestRecovery_FromCrash(t *testing.T) {
 | **Port allocation** | <50ms | <200ms | Assign new port |
 | **Snapshot create** | <5s | <15s | Checkpoint workspace |
 | **Snapshot restore** | <10s | <30s | Restore from checkpoint |
+| **Sync latency** | <500ms | <2s | File change propagation |
+| **Initial sync (10k files)** | <10s | <30s | First-time sync duration |
+| **Sync throughput** | >10MB/s | >5MB/s | Large file transfer rate |
 
 ### Benchmark Implementation
 
@@ -468,10 +790,31 @@ func BenchmarkWorkspaceLifecycle(b *testing.B) {
             }
         }
     })
+    
+    b.Run("SyncLatency", func(b *testing.B) {
+        ws, _ := provider.Create(ctx, WorkspaceSpec{Name: "bench-sync"})
+        worktreePath := ws.WorktreePath
+        
+        b.ResetTimer()
+        for i := 0; i < b.N; i++ {
+            // Write file in worktree
+            testFile := filepath.Join(worktreePath, fmt.Sprintf("test-%d.txt", i))
+            os.WriteFile(testFile, []byte("test content"), 0644)
+            
+            // Wait for sync (poll with timeout)
+            deadline := time.Now().Add(5 * time.Second)
+            for time.Now().Before(deadline) {
+                status, _ := provider.GetSyncStatus(ws.ID)
+                if status.LastSyncAt.After(time.Now().Add(-time.Second)) {
+                    break
+                }
+                time.Sleep(10 * time.Millisecond)
+            }
+        }
+    })
 }
-```
 
-## 6.9 Test Infrastructure
+## 6.10 Test Infrastructure
 
 ```yaml
 # Test configuration

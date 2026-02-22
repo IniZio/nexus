@@ -82,6 +82,12 @@ Based on friction collection data (n=127 developers):
    - Volume persistence across restarts
    - Port auto-allocation (no conflicts)
 
+3. **Bidirectional File Sync (Mutagen)**
+   - Real-time sync between host worktree and container
+   - Conflict resolution with configurable strategies
+   - Automatic lifecycle integration (pause/resume with workspace)
+   - Git runs on host (SSH keys never in container)
+
 3. **Sub-2-Second Workspace Switch**
    - Container warm start < 2s
    - State restoration (terminal, running processes)
@@ -181,4 +187,5 @@ Based on friction collection data (n=127 developers):
 | **Sub-2s Context Switch** | Switch between workspaces faster than switching browser tabs |
 | **State Preservation** | Your dev server, terminal history, and file changes persist across sessions |
 | **Hybrid Backends** | Run locally with Docker or remotely with Sprite—seamlessly switch between them |
+| **Real-Time File Sync** | Edit files on host or in container—changes sync bidirectionally in <500ms |
 | **AI-Native** | Designed for human-AI collaboration with attribution tracking |

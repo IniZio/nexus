@@ -63,6 +63,9 @@ boulder workspace switch <name>
 
 # List all
 boulder workspace list
+
+# File sync status
+boulder workspace sync-status <name>
 ```
 
 ### Success Criteria

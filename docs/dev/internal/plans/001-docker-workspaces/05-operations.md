@@ -67,6 +67,16 @@ boulder admin workspace exec <name> --debug
 
 # Check workspace health
 boulder admin workspace health <name>
+
+# Check file sync status
+boulder admin workspace sync-status <name>
+# Shows: sync provider, status, last sync, conflicts
+
+# List sync conflicts
+boulder admin workspace sync-conflicts <name>
+
+# Force sync flush
+boulder admin workspace sync-flush <name>
 ```
 
 ### System Debugging
@@ -106,6 +116,9 @@ boulder admin support-bundle
 | **Out of disk** | Operations fail | `df -h` | Cleanup, increase disk |
 | **Network timeouts** | External requests fail | Check proxy, DNS | Verify network config |
 | **High CPU** | System slow | `top` / `htop` | Identify and throttle workspace |
+| **Sync not working** | File changes not propagating | Check `sync-status` | Pause/resume sync, restart daemon |
+| **Sync conflicts** | Conflicting file versions | Check `sync-conflicts` | Resolve with `sync-resolve` |
+| **High sync latency** | Slow file propagation | Check network, file count | Exclude large directories, use polling |
 
 ---
 
@@ -196,6 +209,16 @@ const PERFORMANCE_SLIs = {
     p95: '< 2s',
     p99: '< 5s',
   },
+  syncLatency: {
+    p50: '< 200ms',
+    p95: '< 500ms',
+    p99: '< 2s',
+  },
+  initialSync: {
+    p50: '< 5s',
+    p95: '< 10s',
+    p99: '< 30s',
+  },
 };
 ```
 
@@ -228,6 +251,10 @@ const PERFORMANCE_SLIs = {
 | `TIMEOUT` | "Operation timed out" | 1 retry | Auto-retry with increased timeout |
 | `NETWORK_ERROR` | "Network connection failed" | 5 retries, exponential backoff | Auto-retry |
 | `DISK_FULL` | "Not enough disk space" | No retry | Suggest: `boulder workspace cleanup` |
+| `SYNC_SESSION_FAILED` | "File sync failed to start" | 3 retries | Check Mutagen installation, retry |
+| `SYNC_CONFLICT` | "File sync conflict detected" | No retry | Run `sync-conflicts` to view and resolve |
+| `SYNC_PAUSED` | "File sync is paused" | Auto-resume on workspace start | Resume sync with `sync-resume` |
+| `SYNC_PROVIDER_NOT_FOUND` | "Mutagen not installed" | No retry | Install Mutagen or use embedded mode |
 
 ---
 

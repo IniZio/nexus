@@ -473,7 +473,96 @@ const config = {
 
 ---
 
-## 4.5 Audit Logging
+## 4.5 File Sync Security
+
+### 4.5.1 Sync Architecture Security
+
+Mutagen file sync operates entirely over local Unix sockets or named pipes—**never over the network** for local Docker deployments.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         Host                                 │
+│  ┌─────────────────┐         ┌───────────────────────┐     │
+│  │  Worktree       │         │  Mutagen Daemon       │     │
+│  │  (.nexus/)      │◀───────▶│  (local socket only)  │     │
+│  └─────────────────┘   Sync  └───────────┬───────────┘     │
+│                                          │ Unix socket     │
+│                                          ▼                  │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │              Docker Volume (nexus-sync)               │  │
+│  │         (Kernel-level isolation)                      │  │
+│  └───────────────────────────┬───────────────────────────┘  │
+│                              │ Bind mount                   │
+│                              ▼                              │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │              Workspace Container                      │  │
+│  │              (files accessible)                       │  │
+│  └───────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Security Properties:**
+- ✅ No network exposure (Unix sockets only)
+- ✅ Kernel-enforced isolation (Docker volumes)
+- ✅ No elevated privileges required
+- ✅ No SSH keys or secrets in sync path
+- ✅ Read-only sync to container is not supported (prevents container-initiated attacks)
+
+### 4.5.2 Path Traversal Protection
+
+Sync paths are validated to prevent directory traversal attacks:
+
+```go
+func validateSyncPath(hostPath, containerPath string) error {
+    // Resolve to absolute paths
+    hostAbs, err := filepath.Abs(hostPath)
+    if err != nil {
+        return err
+    }
+    
+    // Ensure host path is within allowed directory
+    worktreeRoot := "/Users/user/.nexus/worktrees"
+    if !strings.HasPrefix(hostAbs, worktreeRoot) {
+        return fmt.Errorf("host path outside worktree root: %s", hostAbs)
+    }
+    
+    // Container path is always /workspace (controlled)
+    if containerPath != "/workspace" && !strings.HasPrefix(containerPath, "/workspace/") {
+        return fmt.Errorf("invalid container path: %s", containerPath)
+    }
+    
+    return nil
+}
+```
+
+### 4.5.3 Excluded Sensitive Paths
+
+By default, the following are excluded from sync:
+- `.git/` - Prevents accidental git repo corruption
+- `.ssh/` - Never sync SSH keys
+- `.env*` - Environment files with secrets
+- `.nexus/secrets/` - Nexus secrets directory
+- `*.key`, `*.pem` - Key files
+
+### 4.5.4 Sync Session Isolation
+
+Each workspace has an isolated sync session:
+
+```go
+type SyncSession struct {
+    ID        string    // UUID, not guessable
+    Workspace string    // Associated workspace
+    
+    // Paths strictly controlled
+    HostPath       string   // Verified within worktree
+    ContainerPath  string   // Always /workspace
+    
+    // No cross-worktree access
+    Isolated  bool      // true for all sessions
+}
+```
+
+## 4.6 Audit Logging
 
 ```typescript
 interface AuditEvent {
@@ -513,7 +602,7 @@ const RETENTION_POLICIES = {
 
 ---
 
-## 4.6 Threat Model Summary
+## 4.7 Threat Model Summary
 
 | Threat | Likelihood | Impact | Mitigation |
 |--------|------------|--------|------------|
@@ -522,3 +611,5 @@ const RETENTION_POLICIES = {
 | **Unauthorized access** | Medium | High | JWT tokens, permission system |
 | **Data exfiltration** | Low | High | Network isolation, audit logs |
 | **Secret exposure** | Low | Critical | Keychain integration, no secrets in state |
+| **Sync interception** | Low | Medium | Local-only sync (Mutagen over Unix socket) |
+| **File traversal via sync** | Low | High | Path validation, chroot jail |

@@ -480,6 +480,49 @@ func (a *Allocator) Allocate(workspace string, service string) (int, error) {
 //   Postgres: 32803 (container:5432)
 ```
 
+### 2.2.6 File Sync Manager (Mutagen)
+
+```go
+// internal/sync/manager.go
+type SyncManager struct {
+    provider      SyncProvider       // Mutagen implementation
+    sessions      map[string]*Session // workspace -> sync session
+    config        *SyncConfig
+}
+
+// Core operations
+func (m *SyncManager) CreateSession(workspaceID string, hostPath, containerPath string) (*Session, error)
+func (m *SyncManager) PauseSession(workspaceID string) error
+func (m *SyncManager) ResumeSession(workspaceID string) error
+func (m *SyncManager) TerminateSession(workspaceID string) error
+func (m *SyncManager) GetStatus(workspaceID string) (*SyncStatus, error)
+```
+
+**Mutagen Provider Implementation:**
+
+```go
+// internal/sync/mutagen.go
+type MutagenProvider struct {
+    daemonPath    string             // Path to mutagen daemon
+    mode          SyncMode           // two-way-safe, two-way-resolved, one-way-replica
+}
+
+type Session struct {
+    ID        string                 // Mutagen session identifier
+    Alpha     string                 // Host worktree path
+    Beta      string                 // Container path (via Docker volume)
+    Config    MutagenConfig
+    Status    SyncStatus
+}
+
+func (p *MutagenProvider) CreateSession(alpha, beta string, config SyncConfig) (*Session, error)
+func (p *MutagenProvider) Pause(sessionID string) error
+func (p *MutagenProvider) Resume(sessionID string) error
+func (p *MutagenProvider) Terminate(sessionID string) error
+func (p *MutagenProvider) Flush(sessionID string) error
+func (p *MutagenProvider) Monitor(sessionID string) (*SyncStatus, error)
+```
+
 ## 2.3 Data Flow Diagrams
 
 ### 2.3.1 Workspace Creation Flow
@@ -673,6 +716,10 @@ type WorkspaceState struct {
     Ports         map[string]int         `json:"ports"`  // service -> host port
     ContainerID   string                 `json:"container_id"`
     
+    // File Sync
+    SyncSessionID string                 `json:"sync_session_id,omitempty"`
+    SyncStatus    SyncState              `json:"sync_status,omitempty"`
+    
     // Configuration
     Image         string                 `json:"image"`
     EnvVars       map[string]string      `json:"env_vars"`
@@ -681,6 +728,18 @@ type WorkspaceState struct {
     // Runtime
     LastActive    time.Time              `json:"last_active"`
     ProcessState  *ProcessState          `json:"process_state,omitempty"`
+}
+
+// SyncState represents file sync status
+type SyncState struct {
+    SessionID       string    `json:"session_id"`
+    Provider        string    `json:"provider"`        // mutagen
+    Status          string    `json:"status"`          // syncing | paused | error
+    LastSyncAt      time.Time `json:"last_sync_at"`
+    FilesTotal      int       `json:"files_total"`
+    FilesSynced     int       `json:"files_synced"`
+    Conflicts       int       `json:"conflicts"`
+    Error           string    `json:"error,omitempty"`
 }
 ```
 
@@ -846,6 +905,307 @@ interface PortMapping {
   url?: string;
 }
 ```
+
+## 2.8 File Sync Architecture
+
+### 2.8.1 Overview
+
+Nexus uses **Mutagen** for bidirectional file synchronization between host git worktrees and remote containers. This provides real-time sync with conflict resolution, enabling seamless development where edits on either side are automatically propagated.
+
+**Why Mutagen:**
+- **Real-time sync**: File system watching with sub-second propagation
+- **Bidirectional**: Changes flow both ways (host ↔ container)
+- **Conflict resolution**: Automatic conflict handling with configurable winners
+- **Docker Desktop**: Powers Docker Desktop's file sync (battle-tested)
+- **Cross-platform**: Works on macOS, Linux, Windows
+
+### 2.8.2 Sync Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           File Sync Layer                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────┐         ┌─────────────────────┐                   │
+│  │   Host Worktree     │  ←────  │   Mutagen Session   │                   │
+│  │  (.nexus/worktrees) │   Sync  │   (two-way-safe)    │                   │
+│  │                     │  ────→  │                     │                   │
+│  │  • Source files     │         │  • Watch both sides │                   │
+│  │  • Git repository   │         │  • Detect changes   │                   │
+│  │  • User edits       │         │  • Resolve conflicts│                   │
+│  └──────────┬──────────┘         └──────────┬──────────┘                   │
+│             │                               │                               │
+│             │      ┌─────────────────┐      │                               │
+│             └──────┤   Mutagen Daemon├──────┘                               │
+│                    │   (mutagen-io)  │                                      │
+│                    └─────────────────┘                                      │
+│                               │                                             │
+│                               │ Unix socket / TCP                           │
+│                               ▼                                             │
+│  ┌─────────────────────┐         ┌─────────────────────┐                   │
+│  │   Docker Volume     │  ←────  │  Container Agent    │                   │
+│  │  (nexus-sync-<id>)  │   Sync  │  (mutagen-agent)    │                   │
+│  │                     │  ────→  │                     │                   │
+│  │  • Staging area     │         │  • Receives changes │                   │
+│  │  • Persistent       │         │  • Applies to /work │                   │
+│  └──────────┬──────────┘         └──────────┬──────────┘                   │
+│             │                               │                               │
+│             │                               │ Bind mount                    │
+│             │                               ▼                               │
+│             │                    ┌─────────────────────┐                    │
+│             │                    │  Workspace          │                    │
+│             │                    │  Container          │                    │
+│             │                    │                     │                    │
+│             │                    │  /workspace         │                    │
+│             │                    │  (project files)    │                    │
+│             │                    └─────────────────────┘                    │
+│             │                                                               │
+│             └───────────────────────────────────────────────────────────────┘
+│                              Git Operations                                  │
+│                              (host-side only)                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 2.8.3 Sync Configuration
+
+**Default Configuration:**
+
+```yaml
+# ~/.nexus/config.yaml
+sync:
+  provider: mutagen
+  mode: two-way-safe
+  
+  # Paths to exclude from sync
+  exclude:
+    - node_modules
+    - .git
+    - build
+    - dist
+    - "*.log"
+    - ".DS_Store"
+    - ".nexus/"
+  
+  # Conflict resolution
+  conflict:
+    strategy: host-wins          # host-wins | container-wins | manual
+    default-winner: host
+  
+  # Watch settings
+  watch:
+    mode: auto                   # auto | force-poll | no-watch
+    pollingInterval: 500ms       # For force-poll mode
+  
+  # Performance tuning
+  performance:
+    maxEntryCount: 50000         # Max files to sync
+    maxStagingSize: 10GB         # Max staging space
+    scanMode: accelerated        # accelerated | full
+  
+  # Deployment mode
+  deployment: hybrid             # embedded | external | hybrid
+```
+
+**Sync Modes:**
+
+| Mode | Direction | Conflict Handling | Use Case |
+|------|-----------|-------------------|----------|
+| `two-way-safe` | Bidirectional | Safe (divergent files paused) | Default, safest |
+| `two-way-resolved` | Bidirectional | Host wins | Known-good workflows |
+| `one-way-replica` | Host → Container | N/A (read-only container) | Build containers |
+
+### 2.8.4 Lifecycle Integration
+
+**Workspace Creation Flow:**
+
+```
+1. Create git worktree on host
+        ↓
+2. Create Docker volume (nexus-sync-<id>)
+        ↓
+3. Start Mutagen session (host ↔ volume)
+        ↓
+4. Wait for initial sync (blocks until complete)
+        ↓
+5. Create container with volume bind mount
+        ↓
+6. Start container
+```
+
+**Workspace State Transitions:**
+
+```
+┌─────────────┐     pause      ┌─────────────┐
+│   RUNNING   │───────────────▶│   PAUSED    │
+│  (sync on)  │◀───────────────│  (sync off) │
+└──────┬──────┘    resume      └─────────────┘
+       │
+       │ delete
+       ▼
+┌─────────────┐
+│ TERMINATED  │
+│ (sync ended)│
+└─────────────┘
+```
+
+**Lifecycle Actions:**
+
+| Workspace Event | Sync Action | Rationale |
+|-----------------|-------------|-----------|
+| `create` | Create + initial sync | Establish sync before container starts |
+| `start` | Resume sync | Begin propagating changes |
+| `stop` | Pause sync | Reduce resource usage while stopped |
+| `switch-from` | Pause current | Stop syncing from old workspace |
+| `switch-to` | Resume target | Begin syncing to new workspace |
+| `destroy` | Terminate + cleanup | Remove sync session and volume |
+
+### 2.8.5 Conflict Resolution
+
+**Conflict Scenarios:**
+
+1. **Simultaneous edit** (host and container): Host wins by default
+2. **File deleted on one side, modified on other**: Container wins (preserves work)
+3. **Directory structure conflict**: Manual resolution required
+
+**Conflict Detection:**
+
+```go
+type Conflict struct {
+    Path        string
+    AlphaState  FileState      // Host state
+    BetaState   FileState      // Container state
+    Type        ConflictType   // edit-edit | delete-edit | permission
+    DetectedAt  time.Time
+}
+
+func (m *SyncManager) HandleConflicts(conflicts []Conflict) error {
+    for _, c := range conflicts {
+        switch m.config.Conflict.Strategy {
+        case "host-wins":
+            return m.ResolveWithHostWins(c)
+        case "container-wins":
+            return m.ResolveWithContainerWins(c)
+        case "manual":
+            return m.QueueForManualResolution(c)
+        }
+    }
+}
+```
+
+### 2.8.6 Deployment Options
+
+**Option A: Embedded Mutagen**
+
+Bundle `mutagen` and `mutagen-agent` binaries with the Nexus daemon.
+
+- ✅ Zero user setup
+- ✅ Version controlled
+- ❌ Larger binary size (+50MB per platform)
+- ❌ Update lag (bundled with Nexus releases)
+
+**Option B: External Mutagen**
+
+Require users to install Mutagen separately (`brew install mutagen-io/mutagen/mutagen`).
+
+- ✅ Smaller Nexus binary
+- ✅ User can update Mutagen independently
+- ❌ Additional setup step
+- ❌ Version compatibility issues
+
+**Option C: Hybrid (Recommended)**
+
+Try embedded first, fallback to external if not available.
+
+```go
+func NewSyncManager(config *Config) (*SyncManager, error) {
+    // Try embedded
+    if path, err := findEmbeddedMutagen(); err == nil {
+        return &SyncManager{provider: NewMutagenProvider(path)}, nil
+    }
+    
+    // Fallback to external
+    if path, err := exec.LookPath("mutagen"); err == nil {
+        return &SyncManager{provider: NewMutagenProvider(path)}, nil
+    }
+    
+    return nil, fmt.Errorf("mutagen not found: install with 'brew install mutagen-io/mutagen/mutagen'")
+}
+```
+
+### 2.8.7 Monitoring & Observability
+
+**Sync Metrics:**
+
+```go
+type SyncMetrics struct {
+    SessionID       string
+    Status          string        // syncing | paused | error
+    
+    // Sync stats
+    FilesTotal      int
+    FilesSynced     int
+    FilesConflicting int
+    
+    // Performance
+    LastSyncLatency time.Duration
+    BytesTransferred int64
+    
+    // Health
+    LastError       error
+    ErrorCount      int
+}
+```
+
+**Health Checks:**
+
+```bash
+# Check sync status
+boulder workspace sync-status <name>
+
+# Force sync (flush pending changes)
+boulder workspace sync-flush <name>
+
+# Pause/resume sync
+boulder workspace sync-pause <name>
+boulder workspace sync-resume <name>
+```
+
+### 2.8.8 Failure Handling
+
+**Common Failures:**
+
+| Failure | Detection | Recovery |
+|---------|-----------|----------|
+| Mutagen daemon crash | Health check | Auto-restart, re-sync |
+| Disk full | Sync error | Pause sync, alert user |
+| Too many files | Entry count exceeded | Exclude patterns, warn |
+| Network partition | Beta unreachable | Pause, retry with backoff |
+| Conflict storm | High conflict rate | Pause, manual intervention |
+
+### 2.8.9 Integration with Git Worktrees
+
+**Key Principle:** Git operations happen on the host, not in the container.
+
+```
+Host:                                    Container:
+┌─────────────────┐                      ┌─────────────────┐
+│ Git repository  │                      │ Project files   │
+│ (source of truth)│                     │ (synced copy)   │
+└────────┬────────┘                      └────────┬────────┘
+         │                                        │
+         │ git checkout, commit, push            │ read-only git
+         │ (native SSH keys)                     │ (via sync)
+         ▼                                        ▼
+┌─────────────────┐                      ┌─────────────────┐
+│ Worktree dir    │ ═══════════════════▶ │ /workspace      │
+│ (.nexus/worktrees)│   Mutagen sync     │                 │
+└─────────────────┘                      └─────────────────┘
+```
+
+**Benefits:**
+- SSH keys stay on host (security)
+- Git UI/IDE integration works natively
+- Container remains simple (no SSH agent)
 
 ## 2.7 Reference Research
 

@@ -155,6 +155,83 @@ Content-Type: application/json
 POST /api/v1/workspaces/{id}/ports/{port_id}/public
 ```
 
+### File Sync
+
+#### Get Sync Status
+```http
+GET /api/v1/workspaces/{id}/sync
+```
+
+Response:
+```json
+{
+  "workspaceId": "ws-123",
+  "provider": "mutagen",
+  "status": "syncing",
+  "sessionId": "mutagen-abc123",
+  "stats": {
+    "filesTotal": 15234,
+    "filesSynced": 15234,
+    "conflicts": 0,
+    "bytesTransferred": 104857600
+  },
+  "lastSyncAt": "2026-02-22T10:30:00Z",
+  "error": null
+}
+```
+
+#### Pause Sync
+```http
+POST /api/v1/workspaces/{id}/sync/pause
+```
+
+Response: `200 OK`
+
+#### Resume Sync
+```http
+POST /api/v1/workspaces/{id}/sync/resume
+```
+
+Response: `200 OK`
+
+#### Force Sync (Flush)
+```http
+POST /api/v1/workspaces/{id}/sync/flush
+```
+
+Response: `200 OK`
+
+#### List Conflicts
+```http
+GET /api/v1/workspaces/{id}/sync/conflicts
+```
+
+Response:
+```json
+{
+  "conflicts": [
+    {
+      "path": "src/config.ts",
+      "type": "edit-edit",
+      "alphaState": "modified",
+      "betaState": "modified",
+      "detectedAt": "2026-02-22T10:25:00Z"
+    }
+  ]
+}
+```
+
+#### Resolve Conflict
+```http
+POST /api/v1/workspaces/{id}/sync/conflicts/resolve
+Content-Type: application/json
+
+{
+  "path": "src/config.ts",
+  "winner": "host"
+}
+```
+
 ---
 
 ## 3.2 gRPC API (Internal)
@@ -191,6 +268,37 @@ service WorkspaceService {
   // Monitoring
   rpc GetStats(GetStatsRequest) returns (ResourceStats);
   rpc StreamStats(StreamStatsRequest) returns (stream ResourceStats);
+  
+  // File Sync
+  rpc GetSyncStatus(GetSyncStatusRequest) returns (SyncStatus);
+  rpc PauseSync(PauseSyncRequest) returns (SyncStatus);
+  rpc ResumeSync(ResumeSyncRequest) returns (SyncStatus);
+  rpc FlushSync(FlushSyncRequest) returns (FlushSyncResponse);
+  rpc ListConflicts(ListConflictsRequest) returns (ListConflictsResponse);
+  rpc ResolveConflict(ResolveConflictRequest) returns (ResolveConflictResponse);
+}
+
+message SyncStatus {
+  string session_id = 1;
+  string provider = 2;
+  SyncState state = 3;
+  SyncStats stats = 4;
+  google.protobuf.Timestamp last_sync_at = 5;
+  string error_message = 6;
+}
+
+enum SyncState {
+  SYNC_STATE_UNSPECIFIED = 0;
+  SYNC_STATE_SYNCING = 1;
+  SYNC_STATE_PAUSED = 2;
+  SYNC_STATE_ERROR = 3;
+}
+
+message SyncStats {
+  int32 files_total = 1;
+  int32 files_synced = 2;
+  int32 conflicts = 3;
+  int64 bytes_transferred = 4;
 }
 
 message Workspace {
@@ -392,6 +500,23 @@ boulder workspace port list <name>
 boulder workspace port remove <name> <port-id>
 ```
 
+### File Sync
+
+```bash
+# View sync status
+boulder workspace sync-status <name>
+  --watch, -w              # Continuously monitor
+
+# Control sync
+boulder workspace sync-pause <name>
+boulder workspace sync-resume <name>
+boulder workspace sync-flush <name>      # Force immediate sync
+
+# Conflict resolution
+boulder workspace sync-conflicts <name>
+boulder workspace sync-resolve <name> <path> --winner=host
+```
+
 ### Global Flags
 
 ```bash
@@ -459,6 +584,27 @@ secrets:
       source: file
       path: ~/.secrets/db-password.txt
 
+# File Sync Configuration
+sync:
+  provider: mutagen
+  mode: two-way-safe
+  exclude:
+    - node_modules
+    - .git
+    - build
+    - dist
+    - "*.log"
+    - ".DS_Store"
+  conflict:
+    strategy: host-wins
+  watch:
+    mode: auto
+    pollingInterval: 500ms
+  performance:
+    maxEntryCount: 50000
+    maxStagingSize: 10GB
+  deployment: hybrid
+
 # Telemetry
 telemetry:
   enabled: true
@@ -497,6 +643,12 @@ const ERROR_CODES = {
   // Backend errors
   BACKEND_UNAVAILABLE: { status: 503, retryable: true },
   CONTAINER_ERROR: { status: 500, retryable: true },
+  
+  // Sync errors
+  SYNC_SESSION_FAILED: { status: 500, retryable: true },
+  SYNC_CONFLICT: { status: 409, retryable: false },
+  SYNC_PAUSED: { status: 503, retryable: true },
+  SYNC_PROVIDER_NOT_FOUND: { status: 503, retryable: false },
 };
 ```
 
