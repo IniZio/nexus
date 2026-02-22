@@ -1,4 +1,4 @@
-# Nexus Plugin Testing Infrastructure
+# Nexus Plugin Testing Guide
 
 ## Overview
 
@@ -116,3 +116,7 @@ await plugin.event({ event: 'session.idle', data: { idleTime: 60000 } }, {});
 // Test chat.input
 await plugin['chat.input']({ message: 'test' }, {});
 ```
+
+---
+
+**Last Updated:** February 2026
