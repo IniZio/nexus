@@ -1,13 +1,7 @@
-version: "2"
-
 run:
   timeout: 5m
-  modules-download-mode: readonly
 
 linters:
   default: none
   enable:
     - govet
-
-issues:
-  exclude-use-default: false

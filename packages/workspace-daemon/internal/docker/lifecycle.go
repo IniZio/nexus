@@ -344,7 +344,6 @@ type LifecycleManager struct {
 	lifecycles   map[string]*Lifecycle
 	backend      *DockerBackend
 	shutdownChan chan struct{}
-	wg           sync.WaitGroup
 }
 
 func NewLifecycleManager(backend *DockerBackend) *LifecycleManager {

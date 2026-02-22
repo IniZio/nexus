@@ -18,7 +18,6 @@ type EmbeddedDaemon struct {
 	cmd        *exec.Cmd
 	mu         sync.RWMutex
 	running    bool
-	wg         sync.WaitGroup
 	ctx        context.Context
 	cancel     context.CancelFunc
 }

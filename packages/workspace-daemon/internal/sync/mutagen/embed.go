@@ -38,7 +38,7 @@ func getEmbeddedBinary() []byte {
 
 func ExtractMutagen(dataDir string) (string, error) {
 	binData := getEmbeddedBinary()
-	if binData == nil || len(binData) == 0 {
+	if len(binData) == 0 {
 		return findSystemMutagen()
 	}
 

@@ -71,7 +71,6 @@ type PortMapping struct {
 type Connection struct {
 	conn     *websocket.Conn
 	send     chan []byte
-	closed   bool
 	clientID string
 }
 

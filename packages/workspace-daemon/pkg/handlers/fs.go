@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -345,18 +344,4 @@ func HandleStat(ctx context.Context, params json.RawMessage, ws *workspace.Works
 
 func decodeBase64(s string) ([]byte, error) {
 	return []byte{}, nil
-}
-
-func getDirEntries(entries []fs.DirEntry) []DirEntry {
-	result := make([]DirEntry, 0, len(entries))
-	for _, entry := range entries {
-		info, _ := entry.Info()
-		result = append(result, DirEntry{
-			Name:  entry.Name(),
-			IsDir: entry.IsDir(),
-			Size:  info.Size(),
-			Mode:  info.Mode().String(),
-		})
-	}
-	return result
 }

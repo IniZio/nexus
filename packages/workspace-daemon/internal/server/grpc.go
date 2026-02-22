@@ -38,6 +38,7 @@ func (s *GRPCServer) Start() error {
 
 	go func() {
 		if err := s.server.Serve(lis); err != nil {
+			_ = err // Server stopped
 		}
 	}()
 

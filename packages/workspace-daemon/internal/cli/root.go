@@ -107,14 +107,6 @@ func getClient() *Client {
 	return NewClient(apiURL, token)
 }
 
-func ensureDaemonRunning() error {
-	client := getClient()
-	if err := client.Health(); err != nil {
-		return ErrDaemonNotRunning
-	}
-	return nil
-}
-
 func exitOnError(err error) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

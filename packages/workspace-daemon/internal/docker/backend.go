@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
@@ -24,13 +23,12 @@ import (
 )
 
 type DockerBackend struct {
-	client            *Client
 	docker            *client.Client
 	portManager       *PortManager
 	containerManager  *ContainerManager
 	stateDir          string
 	syncManager       *sync.Manager
-	worktreePathFunc func(workspaceID string) (string, error)
+	worktreePathFunc  func(workspaceID string) (string, error)
 }
 
 func NewDockerBackend(dockerClient *client.Client, stateDir string) *DockerBackend {
@@ -797,23 +795,6 @@ func (b *DockerBackend) startContainer(ctx context.Context, id string) error {
 	return b.docker.ContainerStart(ctx, id, container.StartOptions{})
 }
 
-func (b *DockerBackend) stopContainer(ctx context.Context, id string, timeout time.Duration) error {
-	timeoutSec := int(timeout.Seconds())
-	return b.docker.ContainerStop(ctx, id, container.StopOptions{
-		Timeout: &timeoutSec,
-	})
-}
-
-func (b *DockerBackend) removeContainer(ctx context.Context, id string, force bool) error {
-	return b.docker.ContainerRemove(ctx, id, container.RemoveOptions{
-		Force: force,
-	})
-}
-
-func (b *DockerBackend) inspectContainer(ctx context.Context, id string) (types.ContainerJSON, error) {
-	return b.docker.ContainerInspect(ctx, id)
-}
-
 func (b *DockerBackend) execInContainer(ctx context.Context, id string, cmd []string) (int, io.Reader, error) {
 	execConfig := container.ExecOptions{
 		Cmd:          cmd,
@@ -877,16 +858,6 @@ func decodeDockerStream(data []byte) string {
 		i += 8 + size
 	}
 	return string(result)
-}
-
-func (b *DockerBackend) getContainerLogs(ctx context.Context, id string, tail int) (io.Reader, error) {
-	options := container.LogsOptions{
-		ShowStdout: true,
-		ShowStderr: true,
-		Tail:       fmt.Sprintf("%d", tail),
-	}
-
-	return b.docker.ContainerLogs(ctx, id, options)
 }
 
 func (b *DockerBackend) copyToContainer(ctx context.Context, id string, src io.Reader, dst string) error {
@@ -1065,7 +1036,7 @@ func convertConflicts(conflicts []sync.Conflict) []wsTypes.Conflict {
 	return result
 }
 
-func (b *DockerBackend) ListContainersByLabel(ctx context.Context, label string) ([]types.Container, error) {
+func (b *DockerBackend) ListContainersByLabel(ctx context.Context, label string) ([]container.Summary, error) {
 	if b.docker == nil {
 		return nil, fmt.Errorf("docker client not initialized")
 	}
@@ -1077,7 +1048,7 @@ func (b *DockerBackend) ListContainersByLabel(ctx context.Context, label string)
 		return nil, fmt.Errorf("listing containers: %w", err)
 	}
 
-	var result []types.Container
+	var result []container.Summary
 	for _, c := range containers {
 		for k := range c.Labels {
 			if k == label || strings.HasPrefix(k, label) {
