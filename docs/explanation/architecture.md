@@ -44,7 +44,7 @@ func (p *Provider) Create(name, worktreePath string) error {
 
 Integrates git worktrees with Docker containers:
 
-- Creates git worktree at `.nexus/worktrees/<name>/`
+- Creates git worktree at `.worktree/<name>/`
 - Creates branch `nexus/<workspace-name>`
 - Mounts worktree to container (not project root)
 - Syncs changes between workspace and main branch

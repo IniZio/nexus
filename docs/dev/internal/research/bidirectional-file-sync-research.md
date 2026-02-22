@@ -1,7 +1,7 @@
 # Bidirectional File Sync Research
 
 ## Context
-- Local host: git worktree at `.nexus/worktrees/<name>/`
+- Local host: git worktree at `<project>/.worktree/<name>/`
 - Remote daemon runs workspace containers
 - Need bidirectional sync (host ↔ container)
 - Must handle: code edits, git operations, build artifacts, node_modules

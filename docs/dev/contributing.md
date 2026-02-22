@@ -100,7 +100,7 @@ cd /home/newman/magic/nexus-dev/nexus
 
 # Test in workspace (should allow)
 nexus workspace create test
-cd .nexus/worktrees/test
+cd .worktree/test
 # Try: "Create a file test.txt" → Should work
 ```
 

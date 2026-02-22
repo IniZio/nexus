@@ -447,7 +447,7 @@ type Manager struct {
 }
 
 func (m *Manager) CreateWorktree(name string) (string, error) {
-    // Creates: .nexus/worktrees/<name>/
+    // Creates: .worktree/<name>/
     // Branch: nexus/<name>
 }
 
@@ -558,7 +558,7 @@ User: boulder workspace create feature-auth
             ▼
 ┌─────────────────────────┐     ┌─────────────────────┐
 │   Git: Create Worktree  │────▶│  git worktree add   │
-│   - Branch: nexus/feat  │     │  .nexus/worktrees/  │
+│   - Branch: nexus/feat  │     │  .worktree/  │
 └───────────┬─────────────┘     └─────────────────────┘
             │
             ▼
@@ -928,7 +928,7 @@ Nexus uses **Mutagen** for bidirectional file synchronization between host git w
 │                                                                             │
 │  ┌─────────────────────┐         ┌─────────────────────┐                   │
 │  │   Host Worktree     │  ←────  │   Mutagen Session   │                   │
-│  │  (.nexus/worktrees) │   Sync  │   (two-way-safe)    │                   │
+│  │  (.worktree)        │   Sync  │   (two-way-safe)    │                   │
 │  │                     │  ────→  │                     │                   │
 │  │  • Source files     │         │  • Watch both sides │                   │
 │  │  • Git repository   │         │  • Detect changes   │                   │
@@ -1198,7 +1198,7 @@ Host:                                    Container:
          ▼                                        ▼
 ┌─────────────────┐                      ┌─────────────────┐
 │ Worktree dir    │ ═══════════════════▶ │ /workspace      │
-│ (.nexus/worktrees)│   Mutagen sync     │                 │
+│ (.worktree)     │   Mutagen sync     │                 │
 └─────────────────┘                      └─────────────────┘
 ```
 

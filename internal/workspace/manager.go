@@ -436,7 +436,7 @@ func (m *Manager) CreateWithTemplate(name, templateName string, vars map[string]
 
 	fmt.Printf("\n✅ Workspace '%s' created successfully with template '%s'!\n", name, templateName)
 	fmt.Println("\nNext steps:")
-	fmt.Printf("  cd .nexus/worktrees/%s\n", name)
+	fmt.Printf("  cd .worktree/%s\n", name)
 	fmt.Printf("  nexus workspace shell %s\n", name)
 	return nil
 }

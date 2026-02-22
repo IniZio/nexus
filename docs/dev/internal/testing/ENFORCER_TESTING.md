@@ -46,7 +46,7 @@ Before testing, ensure:
 
 **Steps:**
 1. Create a workspace: `nexus workspace create dogfood-test`
-2. Enter workspace: `cd .nexus/worktrees/dogfood-test`
+2. Enter workspace: `cd .worktree/dogfood-test`
 3. Start OpenCode in workspace
 4. Complete a small task (e.g., "Add a comment to README")
 5. Try to mark task as complete
