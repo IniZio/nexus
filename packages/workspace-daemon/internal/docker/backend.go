@@ -64,19 +64,59 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *types.CreateWo
 		return nil, fmt.Errorf("pulling image: %w", err)
 	}
 
-	containerID, err := b.containerManager.Create(ctx, image, &ContainerConfig{
+	sshBinds, sshEnv := GetSSHAgentMounts()
+
+	configEnv := make(map[string]string)
+	if workspace.Config != nil && workspace.Config.Env != nil {
+		configEnv = workspace.Config.Env
+	}
+
+	volumes := []VolumeMount{}
+	for _, bind := range sshBinds {
+		parts := strings.Split(bind, ":")
+		if len(parts) >= 2 {
+			volumes = append(volumes, VolumeMount{
+				Source:   parts[0],
+				Target:   parts[1],
+				ReadOnly: true,
+			})
+		}
+	}
+
+	containerID, err := b.createContainer(ctx, image, &ContainerConfig{
 		Image:      image,
-		Env:        workspace.Config.Env,
+		Env:        mergeEnv(configEnv, sshEnv),
 		WorkingDir: "/workspace",
 		AutoRemove: false,
+		Volumes:    volumes,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating container: %w", err)
 	}
 
-	if err := b.containerManager.Start(ctx, containerID); err != nil {
+	b.containerManager.mu.Lock()
+	b.containerManager.containers[containerID] = &ContainerInfo{
+		ID:     containerID,
+		Image:  image,
+		Status: "created",
+		State: ContainerState{
+			Status:  "created",
+			Running: false,
+		},
+	}
+	b.containerManager.mu.Unlock()
+
+	if err := b.startContainer(ctx, containerID); err != nil {
 		return nil, fmt.Errorf("starting container: %w", err)
 	}
+
+	b.containerManager.mu.Lock()
+	if info, ok := b.containerManager.containers[containerID]; ok {
+		info.Status = "running"
+		info.State.Status = "running"
+		info.State.Running = true
+	}
+	b.containerManager.mu.Unlock()
 
 	workspace.Status = types.StatusRunning
 
@@ -394,4 +434,13 @@ func (b *DockerBackend) ReleasePort(port int32) error {
 
 func (b *DockerBackend) GetPortManager() *PortManager {
 	return b.portManager
+}
+
+func mergeEnv(configEnv map[string]string, sshEnv []string) []string {
+	var env []string
+	for k, v := range configEnv {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+	env = append(env, sshEnv...)
+	return env
 }
