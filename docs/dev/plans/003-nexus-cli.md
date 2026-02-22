@@ -234,34 +234,35 @@ nexus config init [--force]
 ## 7. Implementation Plan
 
 ### Phase 1: Core CLI (Week 1-2)
-- [ ] Set up Oclif project structure
-- [ ] Implement basic command framework
-- [ ] Add global flags (--json, --verbose, --config)
-- [ ] Implement `nexus config` commands
-- [ ] Implement `nexus version` and `nexus status`
+- [x] Set up project structure
+- [x] Implement basic command framework
+- [x] Add global flags (--json, --verbose, --config)
+- [x] Implement `nexus config` commands
+- [x] Implement `nexus version` and `nexus status`
 
 ### Phase 2: Workspace Commands (Week 3-4)
-- [ ] Implement `nexus workspace create`
-- [ ] Implement `nexus workspace list`
-- [ ] Implement `nexus workspace start/stop`
-- [ ] Implement `nexus workspace ssh`
-- [ ] Implement `nexus workspace exec`
+- [x] Implement `nexus workspace create`
+- [x] Implement `nexus workspace list`
+- [x] Implement `nexus workspace start/stop/delete`
+- [x] Implement `nexus workspace ssh`
+- [x] Implement `nexus workspace exec`
+- [x] BONUS: `nexus workspace use` for seamless workflow
 
 ### Phase 3: Boulder Commands (Week 5)
-- [ ] Implement `nexus boulder status`
-- [ ] Implement `nexus boulder pause/resume`
-- [ ] Implement `nexus boulder config`
+- [x] Implement `nexus boulder status`
+- [x] Implement `nexus boulder pause/resume`
+- [x] Implement `nexus boulder config`
 
 ### Phase 4: Telemetry Commands (Week 6)
 - [ ] Implement `nexus trace list`
 - [ ] Implement `nexus trace show`
 - [ ] Implement `nexus trace export`
+- [ ] BLOCKED: Requires telemetry system (backlog)
 
 ### Phase 5: Polish & Release (Week 7-8)
-- [ ] Auto-update integration
-- [ ] Completion scripts (bash, zsh, fish)
-- [ ] Migration documentation
-- [ ] Deprecation warnings for boulder CLI
+- [x] Completion scripts (bash, zsh, fish) - via `nexus completion`
+- [ ] Auto-update integration - Deferred
+- [ ] Migration documentation - Done
 
 ---
 
