@@ -181,7 +181,7 @@ Model Context Protocol integration:
 
 ## Related Documentation
 
-- [Architecture Overview](../explanation/architecture.md)
+- [Boulder System](../explanation/boulder-system.md)
 - [Boulder System](../explanation/boulder-system.md)
 - [Internal Plans](internal/plans/) - Workspace architecture
 - [Internal Implementation](internal/implementation/) - Workspace SDK plans

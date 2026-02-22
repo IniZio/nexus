@@ -96,15 +96,14 @@ pnpm run build
 ### Using the Enforcer
 
 ```bash
-# Link the Boulder CLI
-cd packages/enforcer
-npm link
-
-# Check status
+# Check boulder status
 boulder status
 
-# Add to your project
-boulder init  # Creates .nexus/enforcer-config.json
+# Pause with reason
+boulder pause "Taking a break"
+
+# Resume enforcement
+boulder resume
 ```
 
 ### IDE Integration
@@ -124,7 +123,7 @@ See [Cursor integration docs](tutorials/plugin-setup.md#cursor)
 
 | Component | Status | Priority | Documentation |
 |-----------|--------|----------|---------------|
-| Enforcer Core | ✅ Implemented | High | [Architecture](explanation/architecture.md) |
+| Enforcer Core | ✅ Implemented | High | [Boulder System](explanation/boulder-system.md) |
 | OpenCode Plugin | ✅ Implemented | High | [Setup](tutorials/plugin-setup.md) |
 | Claude Integration | ✅ Implemented | High | [Setup](tutorials/plugin-setup.md) |
 | Cursor Extension | 🚧 In Progress | Medium | [Setup](tutorials/plugin-setup.md) |
@@ -173,13 +172,11 @@ We believe deterministic enforcement beats "smarter" agents:
 ## Documentation
 
 ### For Users
-- [Installation](tutorials/installation.md) - Get started with Nexus
-- [Plugin Setup](tutorials/plugin-setup.md) - Configure IDE integrations
+- [Plugin Setup](tutorials/plugin-setup.md) - Configure IDE integrations (OpenCode, Claude Code)
 - [Boulder CLI](reference/boulder-cli.md) - Command reference
 - [Enforcer Configuration](reference/enforcer-config.md) - Configuration options
 
 ### For Developers
-- [Architecture](explanation/architecture.md) - System design
 - [Boulder System](explanation/boulder-system.md) - How enforcement works
 - [Contributing](dev/contributing.md) - Development guide
 - [Roadmap](dev/roadmap.md) - Future plans

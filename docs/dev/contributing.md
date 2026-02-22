@@ -6,28 +6,26 @@
 2. Clone your fork:
    ```bash
    git clone https://github.com/YOUR-USERNAME/nexus
-   ```
-3. Create a workspace for development:
-   ```bash
    cd nexus
-   nexus init
-   nexus workspace create dev --template go-postgres
-   nexus workspace up dev
+   ```
+3. Install dependencies:
+   ```bash
+   pnpm install
    ```
 
 ## Development Workflow
 
-### Using Nexus for Nexus Development
-
-The recommended workflow is to use Nexus to develop Nexus:
+### Local Development
 
 ```bash
-# SSH into dev workspace
-ssh -p <port> -i ~/.ssh/id_ed25519_nexus dev@localhost
+# Build all packages
+pnpm run build
 
-# Make changes inside the workspace
-cd /workspace
-# Edit code...
+# Run tests
+pnpm test
+
+# Start development mode
+pnpm run dev
 ```
 
 ### Code Standards
@@ -39,18 +37,26 @@ cd /workspace
 ### Running Tests
 
 ```bash
-go test ./...
+# Run all tests
+pnpm test
+
+# Run tests for specific package
+cd packages/enforcer && pnpm test
 ```
 
 ### Building
 
 ```bash
-go build -o nexus ./cmd/nexus/
+# Build all packages
+pnpm run build
+
+# Build specific package
+cd packages/opencode && pnpm run build
 ```
 
 ## Architecture
 
-See [Architecture](../explanation/architecture.md) for component details.
+See [Boulder System](../explanation/boulder-system.md) for enforcement details.
 
 ## Design Decisions
 
@@ -95,13 +101,11 @@ cp packages/opencode/dist/index.js .opencode/plugins/nexus-enforcer.js
 
 ```bash
 # Quick test in main worktree (should block)
-cd /home/newman/magic/nexus-dev/nexus
+cd /path/to/nexus
 # Try: "Create a file test.txt" → Should fail
 
-# Test in workspace (should allow)
-nexus workspace create test
-cd .worktree/test
-# Try: "Create a file test.txt" → Should work
+# Check boulder status
+boulder status
 ```
 
 ### Committing Changes

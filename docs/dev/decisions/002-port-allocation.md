@@ -78,4 +78,4 @@ func (p *Provider) AllocatePort(service string) (int, error) {
 
 ## Related
 - [ADR-001: Worktree Isolation](001-worktree-isolation.md)
-- [How-To: Debug Ports](../how-to/debug-ports.md)
+- Port range: 32768-34999 for SSH and services

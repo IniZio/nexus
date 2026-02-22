@@ -25,11 +25,9 @@ This guide covers how to set up Nexus Enforcer plugins for various IDEs and edit
 ```json
 {
   "enabled": true,
-  "plugin":": "opencode"
-  },
+  "plugin": "opencode",
   "rules": {
- {
-    "type    "noDirectFileCreation": {
+    "noDirectFileCreation": {
       "enabled": true
     }
   }
