@@ -80,8 +80,7 @@ Add to your Claude settings:
 ```json
 {
   "nexusEnforcer": {
-    "enabled": true,
-    "boulderEnabled": true
+    "enabled": true
   }
 }
 ```
@@ -96,14 +95,6 @@ Add to your Claude settings:
 ```
 
 You should see `nexus-enforcer` in the loaded plugins list.
-
-### Check Boulder CLI
-
-```bash
-boulder status
-```
-
-Should show current Boulder state.
 
 ## Troubleshooting
 

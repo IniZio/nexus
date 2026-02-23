@@ -119,7 +119,3 @@ HOST:npm install -g typescript
 HOST:docker ps
 HOST:git status
 ```
-
-## Boulder Commands
-
-See [Boulder CLI](boulder-cli.md) for enforcement commands.

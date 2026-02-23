@@ -13,31 +13,7 @@ As AI agents write more code, we need systems that ensure:
 
 ## Components
 
-### 1. Enforcer ⚠️ Experimental
-
-> ⚠️ **Experimental** - This component is for testing/development only and not production-ready.
-
-The Enforcer ensures agents complete tasks to standard. It prevents early stopping and enforces project conventions through mini-workflows.
-
-**Key Features:**
-- **Idle Detection** - Monitors agent activity and prevents premature completion
-- **Workflow Enforcement** - Mini-workflows ensure work meets standards:
-  - Documentation structure validation
-  - Git commit organization
-  - CI check verification
-- **Boulder System** - Continuous iteration that never stops until user intervention
-- **IDE Integrations** - Works with OpenCode, Claude Code, and Cursor
-
-```bash
-# The Boulder never stops
-npx @nexus/core boulder status     # Check enforcement status
-npx @nexus/core boulder pause      # Temporarily pause (with reason)
-npx @nexus/core boulder resume     # Resume enforcement
-```
-
-[Learn more about the Enforcer](explanation/boulder-system.md)
-
-### 2. Workspace (Implemented)
+### 1. Workspace (Implemented)
 
 Inspired by [opencode-devcontainer](https://github.com/athal7/opencode-devcontainer) and [Sprites](https://github.com/peterj/sprites), Workspace provides isolated, reproducible development environments for AI agents.
 
@@ -50,7 +26,7 @@ Inspired by [opencode-devcontainer](https://github.com/athal7/opencode-devcontai
 
 **Status:** Fully implemented. See [workspace quickstart](tutorials/workspace-quickstart.md).
 
-### 3. Telemetry (Planned)
+### 2. Telemetry (Planned)
 
 Following the [Agent Trace](https://agent-trace.dev/) specification, Nexus will track AI contributions with full provenance.
 
@@ -95,19 +71,6 @@ pnpm install
 pnpm run build
 ```
 
-### Using the Enforcer
-
-```bash
-# Check boulder status
-npx @nexus/core boulder status
-
-# Pause with reason
-npx @nexus/core boulder pause "Taking a break"
-
-# Resume enforcement
-npx @nexus/core boulder resume
-```
-
 ### IDE Integration
 
 **OpenCode:**
@@ -130,7 +93,6 @@ See [Cursor integration docs](tutorials/plugin-setup.md#cursor)
 | OpenCode Plugin | ✅ Implemented | High | [Setup](tutorials/plugin-setup.md) |
 | Claude Integration | ✅ Implemented | High | [Setup](tutorials/plugin-setup.md) |
 | Cursor Extension | 🚧 In Progress | Medium | [Setup](tutorials/plugin-setup.md) |
-| Enforcer (Boulder) | ⚠️ Experimental | Low | [Boulder System](explanation/boulder-system.md) |
 | Telemetry (Agent Trace) | 📋 Planned | Low | - |
 | Web Dashboard | 📋 Planned | Low | - |
 | Multi-Agent Coordination | 📋 Planned | Low | - |
@@ -142,26 +104,6 @@ Legend:
 - 📋 Planned - Defined but not started
 
 ## Philosophy
-
-### Mini-Workflows
-
-Rather than relying on agents to "do the right thing," Nexus provides deterministic mini-workflows:
-
-1. **Pre-completion Checklist**
-   - Documentation structure validated?
-   - Tests passing?
-   - CI checks green?
-   - Git commits organized?
-
-2. **Idle Detection**
-   - No progress for N minutes?
-   - Trigger enforcement
-   - Prompt agent to continue
-
-3. **Quality Gates**
-   - Project-specific conventions
-   - Automated validation
-   - Block completion until met
 
 ### Deterministic > Smart
 
@@ -176,14 +118,12 @@ We believe deterministic enforcement beats "smarter" agents:
 
 ### For Users
 - [Plugin Setup](tutorials/plugin-setup.md) - Configure IDE integrations (OpenCode, Claude Code)
-- [Boulder CLI](reference/boulder-cli.md) - Command reference
-- [Enforcer Configuration](reference/enforcer-config.md) - Configuration options
+- [CLI Reference](reference/nexus-cli.md) - Command reference
 
 ### For Developers
-- [Boulder System](explanation/boulder-system.md) - How enforcement works
 - [Contributing](dev/contributing.md) - Development guide
 - [Roadmap](dev/roadmap.md) - Future plans
-- [Internal Docs](dev/internal/) - Research, plans, and ADRs
+- [Internal Docs](dev/) - Research, plans, and ADRs
 
 ## Statistics
 

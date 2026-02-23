@@ -38,11 +38,6 @@ Docker-based dev environments with automatic worktree integration. Each task get
 ### 📊 Telemetry & Traces
 Following the [Agent Trace](https://agent-trace.dev/) spec for line-level attribution of AI contributions (planned).
 
-### 🎯 Boulder Enforcement ⚠️ Experimental
-*For testing/development only - not production-ready*
-
-> ⚠️ **Boulder enforcement is experimental and subject to change**
-
 ---
 
 ## Quick Start
@@ -63,19 +58,6 @@ task build
 # Install the CLI
 cd packages/nexusd && go build -o nexus ./cmd/cli
 sudo mv nexus /usr/local/bin/
-```
-
-### Check Boulder Status
-
-```bash
-# Check enforcement status
-npx @nexus/core boulder status
-
-# Pause with reason
-npx @nexus/core boulder pause "Taking a break"
-
-# Resume enforcement
-npx @nexus/core boulder resume
 ```
 
 ### Create a Workspace
@@ -136,16 +118,6 @@ nexus workspace use --clear
 - **Universal** - Works across editors
 
 </td>
-<td width="50%">
-
-### 🎯 Boulder Enforcement ⚠️ Experimental
-> ⚠️ **Experimental - For testing/development only**
-- **Idle Detection** - Prevents agents from stopping prematurely
-- **Completion Blocking** - Never stops until work is truly done
-- **Mini-Workflows** - Enforces docs, git, and CI standards
-- **IDE Integration** - Works with OpenCode, Claude Code, Cursor
-
-</td>
 </tr>
 </table>
 
@@ -193,51 +165,12 @@ nexus workspace status
 nexus workspace use --clear
 ```
 
-### Example 3: Boulder Enforcement
-
-```bash
-# Check current status
-npx @nexus/core boulder status
-
-# Configure enforcement
-npx @nexus/core boulder config minTasksInQueue 10
-npx @nexus/core boulder config idleThresholdMs 120000
-
-# View statistics
-npx @nexus/core boulder status
-# Output:
-# Iteration: 15 | Tasks completed: 42 | In queue: 8
-# Status: ACTIVE | Idle: 0s
-```
-
-### Example 4: Configuration
-
-```json
-// .nexus/enforcer-config.json
-{
-  "enabled": true,
-  "boulder": {
-    "enabled": true,
-    "idleThresholdMs": 60000,
-    "minTasksInQueue": 5
-  },
-  "rules": {
-    "noDirectFileCreation": {
-      "enabled": true
-    }
-  }
-}
-```
-
 ---
 
 ## Project Status
 
-> ⚠️ **Note:** The Boulder Enforcement system is **experimental** and intended for testing/development. It may not be stable for production use.
-
 | Component | Status | Description |
 |-----------|--------|-------------|
-| **Boulder/Enforcer** | ⚠️ Experimental | Task enforcement with idle detection (testing/development only) |
 | **Enforcer Core** | ✅ Implemented | Task enforcement with idle detection |
 | **OpenCode Plugin** | ✅ Implemented | Full IDE integration |
 | **Claude Code** | ✅ Implemented | Full IDE integration |
@@ -255,10 +188,8 @@ npx @nexus/core boulder status
 - 🚀 [Quick Start Guide](./docs/tutorials/workspace-quickstart.md)
 - 🔧 [Installation Guide](./docs/tutorials/installation.md)
 - 📚 [CLI Reference](./docs/reference/nexus-cli.md)
-- ⚙️ [Enforcer Configuration](./docs/reference/enforcer-config.md)
 
 ### For Developers
-- 🏛️ [Boulder System](./docs/explanation/boulder-system.md) - How enforcement works
 - 🤝 [Contributing Guide](./docs/dev/contributing.md)
 - 🗺️ [Roadmap](./docs/dev/roadmap.md)
 - 📋 [Architecture Decisions](./docs/dev/decisions/)
@@ -275,14 +206,6 @@ We believe deterministic enforcement beats "smarter" agents:
 - **Auditable** - Clear rules, clear violations  
 - **Composable** - Mix and match workflows
 - **Extensible** - Add custom rules per project
-
-### Mini-Workflows
-
-Rather than relying on agents to "do the right thing," Nexus provides deterministic mini-workflows:
-
-1. **Pre-completion Checklist** - Documentation, tests, CI all passing?
-2. **Idle Detection** - No progress? Trigger enforcement.
-3. **Quality Gates** - Project-specific conventions enforced automatically
 
 ---
 

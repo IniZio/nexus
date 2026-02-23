@@ -56,7 +56,7 @@ cd packages/opencode && pnpm run build
 
 ## Architecture
 
-See [Boulder System](../explanation/boulder-system.md) for enforcement architecture details.
+See [Boulder System](./boulder-system.md) for enforcement architecture details.
 
 ## Design Decisions
 

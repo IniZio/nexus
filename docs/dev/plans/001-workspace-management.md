@@ -288,7 +288,7 @@ ports:
 
 - [ADR-001: Worktree Isolation](decisions/001-worktree-isolation.md)
 - [ADR-002: Port Allocation](decisions/002-port-allocation.md)
-- [Boulder System](../explanation/boulder-system.md)
+- [Boulder System](../boulder-system.md)
 
 ---
 

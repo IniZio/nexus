@@ -89,8 +89,8 @@ If a feature doesn't exist:
 Use **relative links** only:
 
 ```markdown
-Good:  [Boulder System](../explanation/boulder-system.md)
-Bad:   [Boulder System](/docs/explanation/boulder-system.md)
+Good:  [Boulder System](../dev/boulder-system.md)
+Bad:   [Boulder System](/docs/dev/boulder-system.md)
 ```
 
 Before committing doc changes:

@@ -317,7 +317,7 @@ See [Phase 2 Feature Research](./internal/research/phase2-features.md) for detai
 
 ## Related Documentation
 
-- [Boulder System](../explanation/boulder-system.md) - Enforcement system details
+- [Boulder System](./boulder-system.md) - Enforcement system details
 - [Architecture Decisions](./decisions/) - ADRs
 - [Implementation Plans](./plans/) - PRDs for all features
 - [Research Findings](./internal/research/) - Technical research

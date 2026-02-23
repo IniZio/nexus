@@ -64,9 +64,6 @@ Check that everything is installed correctly:
 # Check CLI is available
 nexus --version
 
-# Check boulder status
-npx @nexus/core boulder status
-
 # Check workspace commands
 nexus workspace list
 ```
@@ -115,7 +112,6 @@ pnpm build
 
 - [Plugin Setup](plugin-setup.md) - Configure IDE integrations
 - [Workspace Quickstart](workspace-quickstart.md) - Create your first workspace
-- [Boulder CLI Reference](../reference/boulder-cli.md) - Enforcement commands
 
 ## Troubleshooting
 
