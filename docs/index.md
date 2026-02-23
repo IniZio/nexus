@@ -125,18 +125,19 @@ See [Cursor integration docs](tutorials/plugin-setup.md#cursor)
 
 | Component | Status | Priority | Documentation |
 |-----------|--------|----------|---------------|
-| Enforcer (Boulder) | ⚠️ Experimental | High | [Boulder System](explanation/boulder-system.md) |
+| Workspace (nexusd) | ✅ Implemented | High | [Quickstart](tutorials/workspace-quickstart.md) |
+| Workspace CLI | ✅ Implemented | High | [CLI](reference/nexus-cli.md) |
 | OpenCode Plugin | ✅ Implemented | High | [Setup](tutorials/plugin-setup.md) |
 | Claude Integration | ✅ Implemented | High | [Setup](tutorials/plugin-setup.md) |
 | Cursor Extension | 🚧 In Progress | Medium | [Setup](tutorials/plugin-setup.md) |
-| Workspace (nexusd) | ✅ Implemented | Go-based workspace server with Docker, SSH, port forwarding |
-| Workspace CLI | ✅ Implemented | `nexus workspace` commands for managing workspaces |
-| Telemetry (Agent Trace) | 📋 Planned | Not started |
+| Enforcer (Boulder) | ⚠️ Experimental | Low | [Boulder System](explanation/boulder-system.md) |
+| Telemetry (Agent Trace) | 📋 Planned | Low | - |
 | Web Dashboard | 📋 Planned | Low | - |
 | Multi-Agent Coordination | 📋 Planned | Low | - |
 
 Legend:
 - ✅ Implemented - Ready for use
+- ⚠️ Experimental - For testing/development only
 - 🚧 In Progress - Under active development
 - 📋 Planned - Defined but not started
 

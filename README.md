@@ -41,6 +41,8 @@ Following the [Agent Trace](https://agent-trace.dev/) spec for line-level attrib
 ### 🎯 Boulder Enforcement ⚠️ Experimental
 *For testing/development only - not production-ready*
 
+> ⚠️ **Boulder enforcement is experimental and subject to change**
+
 ---
 
 ## Quick Start
@@ -107,20 +109,20 @@ nexus workspace use --clear
 <tr>
 <td width="50%">
 
-### 🎯 Boulder Enforcement
-- **Idle Detection** - Prevents agents from stopping prematurely
-- **Completion Blocking** - Never stops until work is truly done
-- **Mini-Workflows** - Enforces docs, git, and CI standards
-- **IDE Integration** - Works with OpenCode, Claude Code, Cursor
-
-</td>
-<td width="50%">
-
 ### 🏗️ Isolated Workspaces
 - **Docker-based** - Clean, reproducible environments
 - **SSH Access** - Full SSH with agent forwarding
 - **Git Worktrees** - Automatic branch isolation
 - **Port Management** - Auto-allocated ports (32800-34999)
+
+</td>
+<td width="50%">
+
+### 📊 Telemetry & Traces
+- **Agent Trace Spec** - Vendor-neutral format
+- **Line-Level Attribution** - Know what code came from AI
+- **Conversation Tracking** - Link changes to conversations
+- **Query Interface** - Searchable contribution history
 
 </td>
 </tr>
@@ -136,11 +138,12 @@ nexus workspace use --clear
 </td>
 <td width="50%">
 
-### 📊 Telemetry & Traces
-- **Agent Trace Spec** - Vendor-neutral format
-- **Line-Level Attribution** - Know what code came from AI
-- **Conversation Tracking** - Link changes to conversations
-- **Query Interface** - Searchable contribution history
+### 🎯 Boulder Enforcement ⚠️ Experimental
+> ⚠️ **Experimental - For testing/development only**
+- **Idle Detection** - Prevents agents from stopping prematurely
+- **Completion Blocking** - Never stops until work is truly done
+- **Mini-Workflows** - Enforces docs, git, and CI standards
+- **IDE Integration** - Works with OpenCode, Claude Code, Cursor
 
 </td>
 </tr>

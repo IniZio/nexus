@@ -1,5 +1,7 @@
 # Boulder System
 
+> ⚠️ **Experimental** - This component is for testing/development only and is not production-ready. The Boulder enforcement system is subject to change without notice.
+
 The Boulder is an infinite continuous enforcement system that ensures AI agents never stop improving. It's the core mechanism that drives Nexus Enforcer.
 
 ## Core Concept

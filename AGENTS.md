@@ -8,7 +8,7 @@ This is the **Nexus** project - an AI-native development environment with multip
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| **Enforcer** | ✅ Implemented | Task enforcement with idle detection and mini-workflows |
+| **Enforcer** | ⚠️ Experimental | Task enforcement with idle detection and mini-workflows (testing/development only) |
 | **Workspace** | ✅ Implemented | Isolated dev environments (inspired by opencode-devcontainer, sprite) |
 | **Telemetry** | ✅ Implemented | Agent Trace specification implementation for attribution tracking |
 
@@ -16,7 +16,7 @@ This is the **Nexus** project - an AI-native development environment with multip
 
 | Package | Component | Status |
 |---------|-----------|--------|
-| `packages/enforcer` | Enforcer | ✅ Core enforcement library |
+| `packages/enforcer` | Enforcer | ⚠️ Core enforcement library (Experimental) |
 | `packages/opencode-plugin` | Enforcer | ✅ OpenCode integration |
 | `packages/opencode` | Enforcer | ✅ OpenCode CLI tool |
 | `packages/claude` | Enforcer | ✅ Claude Code integration |
