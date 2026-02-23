@@ -92,7 +92,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}${{ matrix.target == 'windows*' && '.exe' || '' }}
+          path: packages/nexusd/${{ matrix.artifact }}${{ matrix.target == 'windows*' && '.exe' || '' }}
 
   release:
     name: Create Release
