@@ -14,6 +14,14 @@ nav:
     - Installation: tutorials/installation.md
     - Workspace Quickstart: tutorials/workspace-quickstart.md
     - Plugin Setup: tutorials/plugin-setup.md
+  - Examples:
+    - Overview: examples/README.md
+    - Quickstart: examples/quickstart/README.md
+    - Node + React: examples/node-react/README.md
+    - Python + Django: examples/python-django/README.md
+    - Go Microservices: examples/go-microservices/README.md
+    - Fullstack + Postgres: examples/fullstack-postgres/README.md
+    - Remote Server: examples/remote-server/README.md
   - How-To:
     - Lifecycle Scripts: how-to/lifecycle-scripts.md
   - Reference:

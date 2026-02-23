@@ -1,0 +1,8 @@
+django>=5.0,<5.1
+psycopg2-binary
+redis
+celery
+django-debug-toolbar
+pytest-django
+black
+flake8

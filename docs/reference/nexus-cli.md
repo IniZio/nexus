@@ -11,13 +11,25 @@ nexus workspace create <name> [options]
 ```
 
 **Options:**
-- `--display-name <name>` - Human-readable display name
 - `--dind` - Enable Docker-in-Docker support
+- `--from <path>` - Import from existing project path
+- `--cpu <cores>` - CPU limit (default: 2)
+- `--memory <gb>` - Memory limit in GB (default: 4)
+
+**How it works:**
+Nexus creates a container using your project's `Dockerfile`. If no Dockerfile exists,
+it uses a default Ubuntu base image. You have full control over your environment.
 
 **Example:**
 ```bash
+# Create a basic workspace
 nexus workspace create myproject
+
+# Create with Docker-in-Docker for running containers inside
 nexus workspace create fullstack-demo --dind
+
+# Create from existing project
+nexus workspace create myproject --from ./existing-project
 ```
 
 ### nexus workspace use

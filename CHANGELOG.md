@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-02-24
+
+### Breaking Changes
+
+- **Removed `--template` flag** from `nexus workspace create`. Users now provide Dockerfile directly, giving full control over their environment.
+
+### Added
+
+- **Comprehensive Examples Section** with 6 complete examples:
+  - [Quickstart](docs/examples/quickstart/) - 5-minute getting started guide
+  - [Node + React](docs/examples/node-react/) - Modern frontend development with HMR
+  - [Python + Django](docs/examples/python-django/) - Python web applications with PostgreSQL
+  - [Go Microservices](docs/examples/go-microservices/) - Multi-service architecture
+  - [Fullstack + PostgreSQL](docs/examples/fullstack-postgres/) - Three-tier application
+  - [Remote Server](docs/examples/remote-server/) - Cloud development environments
+- Each example includes README, Dockerfile, docker-compose.yml (where applicable), and demo.sh
+
+### Changed
+
+- **Simplified CLI** by removing template system - users now provide their own Dockerfile
+- **Documentation restructured** with examples focus and TanStack Router-style examples section
+- Updated navigation in MkDocs to include examples
+
 ## [0.2.0] - 2026-02-18
 
 ### Added

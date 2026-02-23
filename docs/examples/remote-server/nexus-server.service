@@ -1,0 +1,15 @@
+[Unit]
+Description=Nexus Daemon
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/nexusd
+Restart=always
+RestartSec=5
+User=%USER%
+Environment="HOME=%HOME%"
+
+[Install]
+WantedBy=multi-user.target

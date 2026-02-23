@@ -13,14 +13,14 @@ import (
 )
 
 var (
-	templateFlag string
-	fromFlag     string
-	cpuFlag      int
-	memoryFlag   int
-	forceFlag    bool
-	formatFlag   string
-	allFlag      bool
-	clearFlag    bool
+	// Template support removed - users provide Dockerfile directly
+	fromFlag   string
+	cpuFlag    int
+	memoryFlag int
+	forceFlag  bool
+	formatFlag string
+	allFlag    bool
+	clearFlag  bool
 )
 
 const (
@@ -84,9 +84,7 @@ var workspaceCreateCmd = &cobra.Command{
 			Name: name,
 		}
 
-		if templateFlag != "" {
-			req.Labels = map[string]string{"template": templateFlag}
-		}
+		// Template support removed - users provide Dockerfile directly
 		if fromFlag != "" {
 			req.WorktreePath = fromFlag
 		}
@@ -372,6 +370,37 @@ var workspaceExecCmd = &cobra.Command{
 	},
 }
 
+var workspaceInjectKeyCmd = &cobra.Command{
+	Use:   "inject-key <name>",
+	Short: "Inject SSH key into workspace",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
+		name := args[0]
+
+		cfg := getConfig()
+		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
+
+		output, err := client.InjectSSHKey(name)
+		duration := time.Since(start)
+
+		if err != nil {
+			recordCommand("workspace inject-key", args, duration, false, err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
+				os.Exit(3)
+			}
+			os.Exit(1)
+		}
+
+		recordCommand("workspace inject-key", args, duration, true, nil)
+		fmt.Print(output)
+		return nil
+	},
+}
+
 var workspaceStatusCmd = &cobra.Command{
 	Use:   "status <name>",
 	Short: "Show detailed workspace status",
@@ -571,11 +600,17 @@ func init() {
 	workspaceCmd.AddCommand(workspaceListCmd)
 	workspaceCmd.AddCommand(workspaceSSHCmd)
 	workspaceCmd.AddCommand(workspaceExecCmd)
+	workspaceCmd.AddCommand(workspaceInjectKeyCmd)
 	workspaceCmd.AddCommand(workspaceStatusCmd)
 	workspaceCmd.AddCommand(workspaceLogsCmd)
 	workspaceCmd.AddCommand(workspaceUseCmd)
+	workspaceCmd.AddCommand(workspaceCheckpointCmd)
+	workspaceCheckpointCmd.AddCommand(workspaceCheckpointCreateCmd)
+	workspaceCheckpointCmd.AddCommand(workspaceCheckpointListCmd)
+	workspaceCheckpointCmd.AddCommand(workspaceCheckpointRestoreCmd)
+	workspaceCheckpointCmd.AddCommand(workspaceCheckpointDeleteCmd)
 
-	workspaceCreateCmd.Flags().StringVarP(&templateFlag, "template", "t", "", "Template (node, python, go, rust, blank)")
+	// Template support removed - users provide Dockerfile directly
 	workspaceCreateCmd.Flags().StringVar(&fromFlag, "from", "", "Import from existing project path")
 	workspaceCreateCmd.Flags().IntVar(&cpuFlag, "cpu", 2, "CPU limit")
 	workspaceCreateCmd.Flags().IntVar(&memoryFlag, "memory", 4, "Memory limit (GB)")
@@ -606,6 +641,163 @@ func colorStatus(status string) string {
 	default:
 		return status
 	}
+}
+
+var (
+	checkpointNameFlag string
+	checkpointDescFlag string
+)
+
+var workspaceCheckpointCmd = &cobra.Command{
+	Use:   "checkpoint",
+	Short: "Manage workspace checkpoints",
+}
+
+var workspaceCheckpointCreateCmd = &cobra.Command{
+	Use:   "create <workspace>",
+	Short: "Create a checkpoint of a workspace",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
+		workspaceName := args[0]
+		cfg := getConfig()
+		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
+
+		ws, err := client.GetWorkspace(workspaceName)
+		if err != nil {
+			recordCommand("workspace checkpoint create", args, time.Since(start), false, err)
+			fmt.Fprintf(os.Stderr, "Error: workspace %q not found\n", workspaceName)
+			os.Exit(3)
+		}
+
+		cp, err := client.CreateCheckpoint(ws.ID, checkpointNameFlag)
+
+		if err != nil {
+			recordCommand("workspace checkpoint create", args, time.Since(start), false, err)
+			fmt.Fprintf(os.Stderr, "Error creating checkpoint: %v\n", err)
+			os.Exit(1)
+		}
+
+		recordCommand("workspace checkpoint create", args, time.Since(start), true, nil)
+
+		fmt.Printf("Created checkpoint %s for workspace %s\n", cp.ID, workspaceName)
+		return nil
+	},
+}
+
+var workspaceCheckpointListCmd = &cobra.Command{
+	Use:   "list <workspace>",
+	Short: "List checkpoints for a workspace",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
+		workspaceName := args[0]
+		cfg := getConfig()
+		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
+
+		ws, err := client.GetWorkspace(workspaceName)
+		if err != nil {
+			recordCommand("workspace checkpoint list", args, time.Since(start), false, err)
+			fmt.Fprintf(os.Stderr, "Error: workspace %q not found\n", workspaceName)
+			os.Exit(3)
+		}
+
+		checkpoints, err := client.ListCheckpoints(ws.ID)
+
+		if err != nil {
+			recordCommand("workspace checkpoint list", args, time.Since(start), false, err)
+			fmt.Fprintf(os.Stderr, "Error listing checkpoints: %v\n", err)
+			os.Exit(1)
+		}
+
+		recordCommand("workspace checkpoint list", args, time.Since(start), true, nil)
+
+		if len(checkpoints) == 0 {
+			fmt.Printf("No checkpoints found for workspace %s\n", workspaceName)
+			return nil
+		}
+
+		fmt.Printf("Checkpoints for workspace %s:\n", workspaceName)
+		fmt.Println("────────────────────────────────────────────────")
+		for _, cp := range checkpoints {
+			fmt.Printf("  %s - %s (created: %s)\n", cp.ID, cp.Name, cp.CreatedAt.Format("2006-01-02 15:04"))
+		}
+		return nil
+	},
+}
+
+var workspaceCheckpointRestoreCmd = &cobra.Command{
+	Use:   "restore <workspace> <checkpoint-id>",
+	Short: "Restore a workspace from a checkpoint",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
+		workspaceName := args[0]
+		checkpointID := args[1]
+		cfg := getConfig()
+		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
+
+		ws, err := client.GetWorkspace(workspaceName)
+		if err != nil {
+			recordCommand("workspace checkpoint restore", args, time.Since(start), false, err)
+			fmt.Fprintf(os.Stderr, "Error: workspace %q not found\n", workspaceName)
+			os.Exit(3)
+		}
+
+		_, err = client.RestoreCheckpoint(ws.ID, checkpointID)
+
+		if err != nil {
+			recordCommand("workspace checkpoint restore", args, time.Since(start), false, err)
+			fmt.Fprintf(os.Stderr, "Error restoring checkpoint: %v\n", err)
+			os.Exit(1)
+		}
+
+		recordCommand("workspace checkpoint restore", args, time.Since(start), true, nil)
+
+		fmt.Printf("Restored workspace %s from checkpoint %s\n", workspaceName, checkpointID)
+		return nil
+	},
+}
+
+var workspaceCheckpointDeleteCmd = &cobra.Command{
+	Use:   "delete <workspace> <checkpoint-id>",
+	Short: "Delete a checkpoint",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+		initTelemetry()
+
+		workspaceName := args[0]
+		checkpointID := args[1]
+		cfg := getConfig()
+		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
+
+		ws, err := client.GetWorkspace(workspaceName)
+		if err != nil {
+			recordCommand("workspace checkpoint delete", args, time.Since(start), false, err)
+			fmt.Fprintf(os.Stderr, "Error: workspace %q not found\n", workspaceName)
+			os.Exit(3)
+		}
+
+		err = client.DeleteCheckpoint(ws.ID, checkpointID)
+
+		if err != nil {
+			recordCommand("workspace checkpoint delete", args, time.Since(start), false, err)
+			fmt.Fprintf(os.Stderr, "Error deleting checkpoint: %v\n", err)
+			os.Exit(1)
+		}
+
+		recordCommand("workspace checkpoint delete", args, time.Since(start), true, nil)
+
+		fmt.Printf("Deleted checkpoint %s from workspace %s\n", checkpointID, workspaceName)
+		return nil
+	},
 }
 
 func printJSON(v interface{}) {

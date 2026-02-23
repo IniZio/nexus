@@ -60,16 +60,39 @@ Following the [Agent Trace](https://agent-trace.dev/) specification, Nexus will 
 ### Installation
 
 ```bash
-# Clone the repository
+# macOS
+brew install nexus
+
+# Linux
+curl -fsSL https://nexus.dev/install.sh | bash
+
+# Or build from source
 git clone https://github.com/inizio/nexus
 cd nexus
-
-# Install dependencies
 pnpm install
-
-# Build all packages
 pnpm run build
 ```
+
+### Quick Start (5 minutes)
+
+```bash
+# Create your first workspace
+nexus workspace create my-project
+
+# Enter it
+nexus workspace ssh my-project
+
+# Start developing!
+```
+
+### Examples
+
+- **[Quickstart](examples/quickstart/)** - Your first Nexus workspace (5 min)
+- **[Node + React](examples/node-react/)** - Modern frontend development
+- **[Python + Django](examples/python-django/)** - Python web applications
+- **[Go Microservices](examples/go-microservices/)** - Multi-service architecture
+- **[Fullstack + PostgreSQL](examples/fullstack-postgres/)** - Three-tier application
+- **[Remote Server](examples/remote-server/)** - Cloud development environments
 
 ### IDE Integration
 

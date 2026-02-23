@@ -1,0 +1,42 @@
+version: '3.8'
+services:
+  frontend:
+    build: .
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/workspace/frontend
+      - /workspace/frontend/node_modules
+    environment:
+      - VITE_API_URL=http://localhost:3000
+    working_dir: /workspace/frontend
+    command: npm run dev
+  
+  backend:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./backend:/workspace/backend
+      - /workspace/backend/node_modules
+    environment:
+      - DATABASE_URL=postgres://app:app@postgres:5432/app
+      - PORT=3000
+    working_dir: /workspace/backend
+    command: npm run dev
+    depends_on:
+      - postgres
+  
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+volumes:
+  postgres_data:
