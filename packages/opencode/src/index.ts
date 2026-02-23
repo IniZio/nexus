@@ -95,12 +95,18 @@ export interface OutputMessages {
 
 type LogFunction = ((level: string, message: string, extra?: Record<string, unknown>) => Promise<void>) | null;
 
+function normalizeBoulderDirectory(directory: string): string {
+  return directory.replace(/[\\/]?\.nexus[\\/]boulder[\\/]?$/, '');
+}
+
 function getBoulderStatePath(directory: string): string {
-  return path.join(directory, '.nexus/boulder/state.json');
+  const baseDir = normalizeBoulderDirectory(directory);
+  return path.join(baseDir, '.nexus/boulder/state.json');
 }
 
 function getPauseFlagPath(directory: string): string {
-  return path.join(directory, '.nexus/boulder/pause.flag');
+  const baseDir = normalizeBoulderDirectory(directory);
+  return path.join(baseDir, '.nexus/boulder/pause.flag');
 }
 
 function isPaused(directory: string): boolean {
@@ -737,6 +743,29 @@ export default async function NexusOpenCodePlugin(context: PluginContext): Promi
 
   enforcer = new BoulderEnforcer(directory);
 
+  const initialPauseFlagPath = getPauseFlagPath(directory);
+  try {
+    if (fs.existsSync(initialPauseFlagPath)) {
+      fs.unlinkSync(initialPauseFlagPath);
+      await log?.('info', 'Cleaned up stale pause.flag from previous session');
+    }
+  } catch (e: unknown) {
+    const error = e as Error;
+    await log?.('debug', `Could not clean up pause.flag: ${error.message}`);
+  }
+
+  const cleanupPauseFlag = () => {
+    try {
+      if (fs.existsSync(initialPauseFlagPath)) {
+        fs.unlinkSync(initialPauseFlagPath);
+      }
+    } catch {}
+  };
+  process.on('exit', cleanupPauseFlag);
+  process.on('SIGINT', cleanupPauseFlag);
+  process.on('SIGTERM', cleanupPauseFlag);
+  process.on('SIGHUP', cleanupPauseFlag);
+
   await log?.('info', `Boulder initialized - iteration ${enforcer.state.iteration}`);
 
   setTimeout(() => {
@@ -749,11 +778,11 @@ export default async function NexusOpenCodePlugin(context: PluginContext): Promi
         description: 'Pause the boulder enforcement system',
         args: {},
         async execute(_args, ctx) {
+          const pauseFlagPath = getPauseFlagPath(ctx.directory);
           let state = readState(ctx.directory);
           state.status = 'PAUSED';
           state.stopRequested = true;
           writeState(ctx.directory, state);
-          const pauseFlagPath = path.join(ctx.directory, '.nexus/boulder/pause.flag');
           const flagDir = path.dirname(pauseFlagPath);
           if (!fs.existsSync(flagDir)) {
             fs.mkdirSync(flagDir, { recursive: true });
@@ -767,12 +796,12 @@ export default async function NexusOpenCodePlugin(context: PluginContext): Promi
         description: 'Resume the boulder enforcement system',
         args: {},
         async execute(_args, ctx) {
+          const pauseFlagPath = getPauseFlagPath(ctx.directory);
           let state = readState(ctx.directory);
           state.status = 'CONTINUOUS';
           state.stopRequested = false;
           state.iteration += 1;
           writeState(ctx.directory, state);
-          const pauseFlagPath = path.join(ctx.directory, '.nexus/boulder/pause.flag');
           if (fs.existsSync(pauseFlagPath)) {
             fs.unlinkSync(pauseFlagPath);
           }

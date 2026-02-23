@@ -1,7 +1,0 @@
-This is a sample text file for testing the workspace SDK.
-It contains some basic text content that can be used to verify
-file read/write operations are working correctly.
-
-Line 5: Testing file content verification
-Line 6: Another line of content
-Line 7: Final line
