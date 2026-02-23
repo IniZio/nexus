@@ -11,11 +11,13 @@
 | **Enforcer** | ✅ Implemented | Task enforcement with idle detection and mini-workflows |
 | **OpenCode Plugin** | ✅ Implemented | OpenCode IDE integration |
 | **Claude Integration** | ✅ Implemented | Claude Code plugin |
-| **Cursor Extension** | 🚧 In Progress | Cursor IDE extension |
+| **Cursor Extension** | ✅ Implemented | Cursor IDE extension |
 | **Workspace (nexusd)** | ✅ Implemented | Go-based workspace server with Docker, SSH, port forwarding, DinD, checkpoints |
 | **Workspace CLI** | ✅ Implemented | `nexus workspace` commands for managing Docker-based workspaces |
-| **Telemetry** | 📋 Planned | Agent Trace specification implementation |
+| **Telemetry** | ✅ Implemented | Agent Trace specification implementation for attribution tracking |
+| **Multi-User Support** | 📋 Planned | Organization and team management with workspace sharing |
 | **Web Dashboard** | 📋 Planned | Web UI for monitoring and management |
+| **Auto-Update** | 📋 Planned | Self-updating CLI with secure distribution |
 
 Legend:
 - ✅ Implemented - Production ready
@@ -35,7 +37,7 @@ The Enforcer component is production-ready and actively used.
 | Idle Detection | ✅ | Prevents agents from stopping prematurely |
 | Mini-Workflows | ✅ | Enforces documentation, git, CI standards |
 | Boulder System | ✅ | Never-stop iteration enforcement |
-| Multi-Agent Support | ✅ | OpenCode, Claude (Cursor in progress) |
+| Multi-Agent Support | ✅ | OpenCode, Claude, Cursor |
 
 ### Mini-Workflows
 
@@ -113,15 +115,89 @@ Provide isolated, reproducible development environments for AI agents:
 - Service ports auto-assigned sequentially
 - Conflict detection and resolution
 
-### Open Questions
+---
 
-1. **File Sync Completion** - Finish Mutagen bidirectional sync implementation
-2. **State Persistence** - Complete checkpoint/restore functionality
-3. **Multi-User** - How to handle multiple agents on same workspace?
+## Phase 2: Next Features (Q2 2026)
+
+### Multi-User Support
+
+Enable team collaboration with workspace sharing and resource governance.
+
+**Status:** 📋 Planned - PRD Ready  
+**Effort:** Medium (6-8 weeks)  
+**Dependencies:** None  
+
+**Features:**
+- Organization management (multi-tenant)
+- Team collaboration with workspace sharing
+- Resource quotas (per org/user)
+- Permission levels (owner/editor/viewer)
+- Audit logging
+
+**CLI Commands:**
+```bash
+nexus auth login
+nexus org create "Acme Corp"
+nexus org invite teammate@acme.com
+nexus workspace share feature-auth teammate@acme.com --permission editor
+```
+
+See: [004-multi-user.md](./plans/004-multi-user.md)
 
 ---
 
-## Telemetry (Planned)
+### Web Dashboard
+
+Visual interface for workspace management with real-time monitoring.
+
+**Status:** 📋 Planned - PRD Ready  
+**Effort:** Medium (8-10 weeks)  
+**Dependencies:** None (can be built in parallel)
+
+**Features:**
+- Workspace list with status overview
+- Real-time resource charts (CPU, memory, disk)
+- In-browser terminal (xterm.js)
+- One-click workspace actions
+- Responsive design (mobile support)
+
+**Tech Stack:**
+- React 18 + TypeScript + Tailwind CSS
+- WebSocket for real-time updates
+- Vite for build
+- Recharts for metrics
+
+See: [005-web-dashboard.md](./plans/005-web-dashboard.md)
+
+---
+
+### Auto-Update System
+
+Self-updating CLI with secure distribution.
+
+**Status:** 📋 Planned - PRD Ready  
+**Effort:** Short (4-5 weeks)  
+**Dependencies:** None  
+
+**Features:**
+- Automatic update checks on startup
+- One-command update installation
+- Signed binary verification (Minisign)
+- Atomic replacement with rollback
+- Multiple channels (stable/beta/nightly)
+
+**CLI Commands:**
+```bash
+nexus update check
+nexus update install
+nexus update status
+```
+
+See: [006-auto-update.md](./plans/006-auto-update.md)
+
+---
+
+## Telemetry (Implemented)
 
 Following the [Agent Trace](https://agent-trace.dev/) specification.
 
@@ -160,60 +236,82 @@ Track AI contributions with full provenance:
 - **Analytics** - Measure agent effectiveness
 - **Compliance** - Document AI involvement for legal/regulatory
 
-### Implementation Plan
+### Implementation Status
 
 | Phase | Feature | Status |
 |-------|---------|--------|
-| 1 | Trace record storage | 📋 Not started |
-| 2 | Git integration | 📋 Not started |
-| 3 | IDE plugin hooks | 📋 Not started |
-| 4 | Query interface | 📋 Not started |
-| 5 | Dashboard | 📋 Not started |
+| 1 | Core telemetry collector | ✅ Complete |
+| 2 | Git integration | ✅ Complete |
+| 3 | CLI trace commands | ✅ Complete |
+| 4 | Query interface | ✅ Complete |
+| 5 | Dashboard integration | 📋 Planned (Phase 3) |
 
 ---
 
+## Phase 3: Future Ideas (2026+)
+
+### Advanced Workspace Backends
+
+Expand beyond Docker:
+
+| Backend | Use Case | Status |
+|---------|----------|--------|
+| **Firecracker** | MicroVMs for stronger isolation | Research |
+| **Kubernetes** | Enterprise orchestration | Research |
+| **LXD** | System containers | Research |
+| **Remote SSH** | Existing servers as workspaces | Planned |
+
+### Workspace Templates Marketplace
+
+- Pre-configured environments for popular stacks
+- Team template sharing
+- Versioned templates
+- Template builder UI
+
+### CI/CD Integration
+
+- GitHub Actions integration
+- Pre-commit hooks
+- Workspace snapshots for CI
+- Test parallelization
+
+### Advanced Networking
+
+- VPN access to workspaces
+- Service mesh integration
+- Custom domains
+- TLS certificate management
+
 ---
 
-## Future Ideas
+## Implementation Timeline
 
-### Web Dashboard
+```
+2026 Q1:
+├── ✅ Complete Telemetry implementation
+├── ✅ Cursor extension polish
+└── 🚧 File sync (Mutagen) improvements
 
-A web interface for:
-- Monitoring active agents
-- Viewing enforcement history
-- Managing workspace fleet
-- Analytics and insights
+2026 Q2 (Phase 2):
+├── 📋 Multi-User Support (6-8 weeks)
+├── 📋 Web Dashboard (8-10 weeks)
+└── 📋 Auto-Update System (4-5 weeks)
 
-**Status:** Not planned for Q1 2026
+2026 Q3+ (Phase 3):
+├── 📋 Additional backends (Firecracker, k8s)
+├── 📋 Template marketplace
+└── 📋 Advanced networking
+```
 
-### Multi-Agent Coordination
+---
 
-Enable multiple agents to work together:
-- Task distribution
-- Dependency management
-- Conflict resolution
-- Shared context
+## Research Summary
 
-**Status:** Research phase
-
-### Nexus CLI
-
-Unified CLI to replace scattered entry points:
-- `nexus workspace` commands
-- `nexus boulder` commands  
-- `nexus trace` commands
-- Single configuration file
-
-**Status:** Planned - not yet implemented
-
-### MCP Server
-
-Model Context Protocol integration:
-- External tool integration
-- Custom enforcement rules
-- Third-party extensions
-
-**Status:** Under consideration
+See [Phase 2 Feature Research](./internal/research/phase2-features.md) for detailed analysis of:
+- Multi-tenancy patterns
+- Dashboard design patterns
+- Auto-update security models
+- Resource quota strategies
 
 ---
 
@@ -221,17 +319,18 @@ Model Context Protocol integration:
 
 - [Boulder System](../explanation/boulder-system.md) - Enforcement system details
 - [Architecture Decisions](./decisions/) - ADRs
-- [Internal Plans](./internal/plans/) - PRDs for upcoming features
+- [Implementation Plans](./plans/) - PRDs for all features
+- [Research Findings](./internal/research/) - Technical research
 
 ---
 
 ## Changelog
 
 ### February 2026
-- Updated Workspace Daemon status to "Implemented"
-- Added SSH workspace access documentation
-- Updated port allocation (32800-34999 range)
-- Removed "Docker NOT implemented" references
+- Added Phase 2 features (Multi-User, Web Dashboard, Auto-Update)
+- Updated component statuses
+- Created detailed PRDs for next features
+- Added implementation timeline
 
 ### January 2026
 - Added Cursor extension to roadmap
