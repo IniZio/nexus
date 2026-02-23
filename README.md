@@ -171,7 +171,6 @@ nexus workspace use --clear
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| **Enforcer Core** | ✅ Implemented | Task enforcement with idle detection |
 | **OpenCode Plugin** | ✅ Implemented | Full IDE integration |
 | **Claude Code** | ✅ Implemented | Full IDE integration |
 | **Cursor Extension** | 🚧 In Progress | Extension support |

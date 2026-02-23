@@ -20,7 +20,6 @@ nav:
     - Nexus CLI: reference/nexus-cli.md
   - Testing:
     - Overview: testing/README.md
-    - Enforcer Testing: testing/enforcer-testing.md
     - Plugin Testing: testing/plugin-testing.md
     - Workspace Testing: testing/workspace-testing.md
   - Development:
