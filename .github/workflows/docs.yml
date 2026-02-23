@@ -1,4 +1,5 @@
-name: Documentation
+name: Deploy Documentation
+
 on:
   push:
     branches: [main]
@@ -18,7 +19,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -29,47 +33,18 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install zensical
+      - name: Install dependencies
         run: |
-          pip install zensical
-          zensical --version
+          pip install mkdocs-material
 
       - name: Build documentation
-        run: |
-          set -e
-          zensical build --clean
-          echo "Build completed"
-          ls -la site/ || echo "site directory not found"
-          ls -la || echo "listing current directory"
-
-      - name: Verify build output
-        run: |
-          if [ ! -d "site" ]; then
-            echo "Error: site directory not found!"
-            exit 1
-          fi
-          if [ ! -f "site/index.html" ]; then
-            echo "Error: index.html not found in site directory!"
-            ls -la site/
-            exit 1
-          fi
-          echo "Build output verified"
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
+        run: mkdocs build
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: ./site
 
-  deploy:
-    needs: build
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    steps:
       - name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@v4
         id: deployment
+        uses: actions/deploy-pages@v4

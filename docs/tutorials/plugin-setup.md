@@ -34,7 +34,7 @@ This guide covers how to set up Nexus Enforcer plugins for various IDEs and edit
 }
 ```
 
-## Claude/Claude Code Plugin
+## Claude/Claude Code Plugin {#claude}
 
 ### Installation
 
@@ -59,7 +59,7 @@ Add to your Claude settings:
 }
 ```
 
-## Cursor Extension
+## Cursor Extension {#cursor}
 
 ### Installation
 

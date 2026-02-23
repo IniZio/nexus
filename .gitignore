@@ -117,6 +117,9 @@ packages/enforcer/src/boulder/*.sh
 experiments/
 !experiments/.gitkeep
 
+# Documentation build output
+site/
+
 # Embedded Mutagen binaries (nexusd)
 packages/nexusd/internal/sync/mutagen/bin/
 !packages/nexusd/internal/sync/mutagen/bin/.gitkeep

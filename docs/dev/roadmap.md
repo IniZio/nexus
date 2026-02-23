@@ -82,7 +82,7 @@ Provide isolated, reproducible development environments for AI agents:
 
 | Milestone | Status | Notes |
 |-----------|--------|-------|
-| Architecture Design | ✅ Complete | See [internal plans](./internal/plans/) |
+| Architecture Design | ✅ Complete | Go-based workspace server |
 | SDK Protocol | ✅ Complete | WebSocket + JSON-RPC |
 | SDK Implementation | 🚧 80% | File ops, exec working |
 | Daemon | ✅ Implemented | Go server with Docker backend |
@@ -118,8 +118,6 @@ Provide isolated, reproducible development environments for AI agents:
 1. **File Sync Completion** - Finish Mutagen bidirectional sync implementation
 2. **State Persistence** - Complete checkpoint/restore functionality
 3. **Multi-User** - How to handle multiple agents on same workspace?
-
-See [internal plans](./internal/plans/001-workspace-management.md) for technical details.
 
 ---
 
@@ -172,7 +170,7 @@ Track AI contributions with full provenance:
 | 4 | Query interface | 📋 Not started |
 | 5 | Dashboard | 📋 Not started |
 
-See [internal plans](./internal/plans/002-telemetry.md) for PRD details.
+---
 
 ---
 
@@ -205,8 +203,6 @@ Unified CLI to replace scattered entry points:
 - `nexus boulder` commands  
 - `nexus trace` commands
 - Single configuration file
-
-See [internal plans](./internal/plans/003-nexus-cli.md) for PRD details.
 
 **Status:** Planned - not yet implemented
 
