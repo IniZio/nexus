@@ -40,7 +40,7 @@ docs/
 |------|---------|---------|
 | ADRs | `###-descriptive-name.md` | `001-worktree-isolation.md` |
 | Plans | `###-descriptive-name.md` or folder | `001-docker-workspaces/` |
-| Reference | `kebab-case.md` | `boulder-cli.md` |
+| Reference | `kebab-case.md` | `nexus-cli.md` |
 | Tutorials | `kebab-case.md` | `plugin-setup.md` |
 
 **NO dates in filenames** (e.g., NOT `2026-02-20-something.md`)

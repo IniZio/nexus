@@ -3,7 +3,7 @@
 **Status:** Draft  
 **Created:** 2026-02-22  
 **Component:** CLI  
-**Prerequisites:** Boulder CLI, Workspace Daemon, Telemetry System
+**Prerequisites:** Workspace Daemon, Telemetry System
 
 ---
 
@@ -13,7 +13,6 @@
 
 Currently, Nexus functionality is scattered across multiple entry points:
 
-- `boulder` CLI for enforcement operations
 - IDE plugins (OpenCode, Claude Code, Cursor) for IDE integration
 - Workspace operations require direct daemon interaction
 - No unified command interface for users
@@ -56,7 +55,6 @@ graph TD
 
     subgraph "Core Services"
         WS[Workspace Manager]
-        EN[Boulder Enforcer]
         TM[Telemetry Collector]
     end
 
@@ -93,7 +91,6 @@ packages/nexus-cli/
 │   ├── index.ts              # Main CLI entry
 │   ├── commands/             # Command implementations
 │   │   ├── workspace/
-│   │   ├── boulder/
 │   │   ├── trace/
 │   │   ├── plugin/
 │   │   └── config/
@@ -128,13 +125,6 @@ nexus
 │   ├── exec <name> -- <command>
 │   ├── logs <name>
 │   └── proxy <name> <port>
-├── boulder
-│   ├── status
-│   ├── pause
-│   ├── resume
-│   ├── config get <key>
-│   ├── config set <key> <value>
-│   └── logs
 ├── trace
 │   ├── list
 │   ├── show <id>
@@ -445,110 +435,7 @@ nexus workspace proxy myproject 3000 --local-port 8080
 
 ---
 
-## 5. Boulder Integration
-
-### 5.1 Status
-
-```bash
-nexus boulder status [options]
-```
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--workspace` | Show status for specific workspace | (all) |
-| `--verbose, -v` | Show detailed status | false |
-
-**Output:**
-
-```
-Boulder Enforcer Status
-───────────────────────
-Global Status: active
-Active Workspaces: 3
-Idle Detection: enabled
-Workflow Enforcement: enabled
-
-Per-Workspace Status:
-  myproject:      active (idle: 2m 30s)
-  api-service:    paused
-  test-env:       active (idle: 0s)
-```
-
-### 5.2 Pause/Resume
-
-```bash
-# Pause global enforcement
-nexus boulder pause
-
-# Pause specific workspace
-nexus boulder pause --workspace myproject
-
-# Resume global enforcement
-nexus boulder resume
-
-# Resume specific workspace
-nexus boulder resume --workspace myproject
-```
-
-### 5.3 Configuration
-
-```bash
-# Get configuration value
-nexus boulder config get <key>
-
-# Set configuration value
-nexus boulder config set <key> <value>
-
-# Get all configuration
-nexus boulder config get
-```
-
-**Configuration Keys:**
-
-| Key | Type | Description | Default |
-|-----|------|-------------|---------|
-| `idle_threshold` | number | Idle threshold in seconds | 30 |
-| `enforcement_level` | string | (strict, normal, lenient) | normal |
-| `workflows.enabled` | boolean | Enable workflow enforcement | true |
-| `workflows.require_tests` | boolean | Require tests for commits | false |
-| `notifications.enabled` | boolean | Enable notifications | true |
-| `notifications.webhooks` | string[] | Webhook URLs | [] |
-
-**Examples:**
-
-```bash
-# Get idle threshold
-nexus boulder config get idle_threshold
-
-# Set idle threshold to 60 seconds
-nexus boulder config set idle_threshold 60
-
-# Enable strict enforcement
-nexus boulder config set enforcement_level strict
-
-# Get all config
-nexus boulder config get
-```
-
-### 5.4 Logs
-
-```bash
-nexus boulder logs [options]
-```
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--follow, -f` | Follow log output | false |
-| `--level` | Filter by level (debug, info, warn, error) | all |
-| `--workspace` | Filter by workspace | all |
-
----
-
-## 6. Trace Commands
+## 5. Trace Commands
 
 ### 6.1 List Traces
 
@@ -709,8 +596,6 @@ nexus config set <key> <value>
 |-----|------|-------------|---------|
 | `workspace.default` | string | Default workspace name | (none) |
 | `workspace.auto_start` | boolean | Auto-start workspace on use | true |
-| `boulder.enforcement_level` | string | Global enforcement level | normal |
-| `boulder.idle_threshold` | number | Global idle threshold (seconds) | 30 |
 | `telemetry.enabled` | boolean | Enable telemetry | true |
 | `telemetry.sampling` | number | Sampling rate (1-100) | 100 |
 | `telemetry.retention_days` | number | Trace retention days | 30 |
@@ -764,7 +649,6 @@ Nexus CLI: 0.1.0
 ├── CLI Version: 0.1.0
 ├── Config: /Users/user/.nexus/config.yaml
 ├── Workspaces: 3 (2 running, 1 stopped)
-├── Boulder: active (idle detection enabled)
 ├── Telemetry: enabled (100% sampling)
 └── Daemon: running (localhost:9847)
 ```
@@ -832,10 +716,6 @@ nexus
 │  │ ● test-env       running   CPU: 1  MEM: 2GB  IDLE: 0s │  │
 │  └────────────────────────────────────────────────────────┘  │
 │                                                             │
-│  ┌─ Boulder ──────────────────────────────────────────────┐  │
-│  │ Status: active  │  Idle: enabled  │  Workflows: strict  │  │
-│  └────────────────────────────────────────────────────────┘  │
-│                                                             │
 │  ┌─ Quick Actions ───────────────────────────────────────┐  │
 │  │ [c] Create workspace  │  [s] Start  │  [x] Stop        │  │
 │  │ [d] Delete           │  [l] Logs   │  [q] Quit        │  │
@@ -858,7 +738,6 @@ nexus
 | `d` | Delete workspace |
 | `l` | View logs |
 | `p` | Port proxy |
-| `b` | Boulder status |
 | `t` | Trace list |
 | `?` | Help |
 | `q` | Quit |
@@ -883,9 +762,6 @@ All commands support `--json` flag for scriptable output:
 ```bash
 # Get workspace list as JSON
 nexus workspace list --json
-
-# Get boulder status as JSON
-nexus boulder status --json
 
 # Get config as JSON
 nexus config get --json
@@ -965,17 +841,6 @@ workspace:
   auto_start: true
   storage_path: ~/.nexus/workspaces
 
-# Boulder enforcement settings
-boulder:
-  enforcement_level: normal
-  idle_threshold: 30
-  workflows:
-    enabled: true
-    require_tests: false
-  notifications:
-    enabled: true
-    webhooks: []
-
 # Telemetry settings
 telemetry:
   enabled: true
@@ -1000,59 +865,7 @@ cli:
 
 ---
 
-## 13. Migration from Boulder CLI
-
-### 13.1 Command Mapping
-
-| Boulder Command | Nexus Command |
-|----------------|---------------|
-| `boulder status` | `nexus boulder status` |
-| `boulder pause` | `nexus boulder pause` |
-| `boulder resume` | `nexus boulder resume` |
-| `boulder config get <key>` | `nexus boulder config get <key>` |
-| `boulder config set <key> <value>` | `nexus boulder config set <key> <value>` |
-| `boulder logs` | `nexus boulder logs` |
-
-### 13.2 Deprecation Timeline
-
-| Phase | Date | Action |
-|-------|------|--------|
-| 1 | Launch | `nexus` CLI available, `boulder` still works |
-| 2 | +3 months | Deprecation warning when using `boulder` |
-| 3 | +6 months | `boulder` shows migration message |
-| 4 | +12 months | `boulder` removed |
-
-### 13.3 Migration Guide
-
-**Step 1: Install Nexus CLI**
-
-```bash
-npm install -g @nexus/cli
-```
-
-**Step 2: Verify Installation**
-
-```bash
-nexus version
-```
-
-**Step 3: Migrate Configuration**
-
-```bash
-# Export boulder config
-boulder config export > ~/.nexus/config.yaml
-
-# Or initialize new config
-nexus config init
-```
-
-**Step 4: Update Scripts**
-
-Replace `boulder` with `nexus boulder` in scripts.
-
----
-
-## 14. Implementation
+## 13. Implementation
 
 ### 14.1 Framework Selection
 
@@ -1521,13 +1334,6 @@ describe('CLI Integration', () => {
 - [ ] Implement `nexus workspace logs`
 - [ ] Implement `nexus workspace proxy`
 
-### 16.3 Phase 3: Boulder Commands (Week 5)
-
-- [ ] Implement `nexus boulder status`
-- [ ] Implement `nexus boulder pause/resume`
-- [ ] Implement `nexus boulder config`
-- [ ] Implement `nexus boulder logs`
-
 ### 16.4 Phase 4: Telemetry Commands (Week 6)
 
 - [ ] Implement `nexus trace list`
@@ -1549,7 +1355,6 @@ describe('CLI Integration', () => {
 - [ ] Implement TUI framework
 - [ ] Add real-time workspace monitoring
 - [ ] Add quick action shortcuts
-- [ ] Add Boulder status display
 - [ ] Add keyboard navigation
 
 ### 16.7 Phase 7: Polish & Release (Week 9)
@@ -1558,7 +1363,6 @@ describe('CLI Integration', () => {
 - [ ] Completion scripts (bash, zsh, fish)
 - [ ] Package and publish to npm
 - [ ] Migration documentation
-- [ ] Deprecation warnings for boulder CLI
 
 ---
 
@@ -1604,13 +1408,6 @@ nexus workspace exec <name> -- <command>
 nexus workspace logs <name> [--follow]
 nexus workspace proxy <name> <port>
 
-nexus boulder status
-nexus boulder pause [--workspace <name>]
-nexus boulder resume [--workspace <name>]
-nexus boulder config get <key>
-nexus boulder config set <key> <value>
-nexus boulder logs
-
 nexus trace list [--limit N] [--from DATE] [--to DATE]
 nexus trace show <id> [--spans] [--attribution]
 nexus trace export <id> --format <format> --output <file>
@@ -1642,18 +1439,6 @@ interface NexusConfig {
     default?: string;
     auto_start: boolean;
     storage_path: string;
-  };
-  boulder: {
-    enforcement_level: 'strict' | 'normal' | 'lenient';
-    idle_threshold: number;
-    workflows: {
-      enabled: boolean;
-      require_tests: boolean;
-    };
-    notifications: {
-      enabled: boolean;
-      webhooks: string[];
-    };
   };
   telemetry: {
     enabled: boolean;
