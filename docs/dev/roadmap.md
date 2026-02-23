@@ -12,8 +12,8 @@
 | **OpenCode Plugin** | ✅ Implemented | OpenCode IDE integration |
 | **Claude Integration** | ✅ Implemented | Claude Code plugin |
 | **Cursor Extension** | 🚧 In Progress | Cursor IDE extension |
-| **Workspace SDK** | 🚧 In Progress | Remote workspace WebSocket SDK (partial: file/exec only) |
-| **Workspace Daemon** | ✅ Implemented | Go-based workspace server with Docker, SSH, port forwarding, DinD, checkpoints |
+| **Workspace (nexusd)** | ✅ Implemented | Go-based workspace server with Docker, SSH, port forwarding, DinD, checkpoints |
+| **Workspace CLI** | ✅ Implemented | `nexus workspace` commands for managing Docker-based workspaces |
 | **Telemetry** | 📋 Planned | Agent Trace specification implementation |
 | **Web Dashboard** | 📋 Planned | Web UI for monitoring and management |
 

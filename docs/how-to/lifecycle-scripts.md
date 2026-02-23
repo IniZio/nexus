@@ -143,5 +143,5 @@ If a hook fails:
 
 Check logs for hook execution details:
 ```bash
-docker logs nexus-workspace-daemon
+docker logs nexus-<workspace-name>
 ```

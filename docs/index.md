@@ -127,8 +127,8 @@ See [Cursor integration docs](tutorials/plugin-setup.md#cursor)
 | OpenCode Plugin | ✅ Implemented | High | [Setup](tutorials/plugin-setup.md) |
 | Claude Integration | ✅ Implemented | High | [Setup](tutorials/plugin-setup.md) |
 | Cursor Extension | 🚧 In Progress | Medium | [Setup](tutorials/plugin-setup.md) |
-| Workspace SDK | 🚧 In Progress | Partial (WebSocket file/exec only) |
-| Workspace Daemon | 🚧 In Progress | Go server, Docker NOT implemented |
+| Workspace (nexusd) | ✅ Implemented | Go-based workspace server with Docker, SSH, port forwarding |
+| Workspace CLI | ✅ Implemented | `nexus workspace` commands for managing workspaces |
 | Telemetry (Agent Trace) | 📋 Planned | Not started |
 | Web Dashboard | 📋 Planned | Low | - |
 | Multi-Agent Coordination | 📋 Planned | Low | - |
@@ -196,7 +196,7 @@ We believe deterministic enforcement beats "smarter" agents:
 We welcome contributions! See [Contributing Guide](dev/contributing.md) for details.
 
 Key areas where help is needed:
-- Workspace SDK development
+- Additional IDE integrations
 - Telemetry implementation (Agent Trace spec)
 - Additional IDE integrations
 - Documentation improvements

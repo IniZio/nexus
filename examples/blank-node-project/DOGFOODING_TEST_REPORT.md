@@ -1,8 +1,15 @@
 # Nexus Workspace SDK Dogfooding Test Report
 
+> **⚠️ HISTORICAL DOCUMENT - workspace-sdk package deleted**
+> 
+> This report documents a test of the workspace-sdk package which has been removed.
+> The workspace functionality is now provided by nexusd. See the [Workspace Quickstart](../../docs/tutorials/workspace-quickstart.md)
+> for current usage instructions.
+
 **Date:** February 20, 2026
 **Test Location:** `/home/newman/magic/nexus/examples/blank-node-project/`
 **Test Duration:** ~15 minutes
+**Status:** HISTORICAL - SDK no longer exists
 
 ---
 

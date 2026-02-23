@@ -1,323 +1,179 @@
-# Workspace Daemon
+# Nexus Daemon (nexusd)
 
-Server-side component that receives SDK calls from `@nexus/workspace-sdk`.
+The Nexus daemon (`nexusd`) provides Docker-based workspace management with SSH access, lifecycle hooks, and the `nexus` CLI.
 
 ## Overview
 
-The workspace daemon is a Go-based WebSocket server that provides secure file system operations and command execution for remote workspaces. It implements the JSON-RPC 2.0 protocol for communication with the SDK.
+`nexusd` is a Go-based daemon that manages isolated development workspaces using Docker containers. It provides:
 
-## Features
+- **Docker-based workspaces** - Each workspace runs in its own container
+- **SSH access** - Direct SSH into workspaces with agent forwarding
+- **Port allocation** - Automatic port mapping (SSH: 32800-34999)
+- **Git worktree integration** - Workspaces are linked to git worktrees
+- **Lifecycle hooks** - Automated setup and teardown scripts
+- **Checkpoint/restore** - Save and restore workspace state
 
-- WebSocket-based communication
-- JWT token authentication
-- Secure file operations (read, write, mkdir, rm, stat, readdir)
-- Command execution with timeout support
-- Directory traversal protection
-- Docker container support
+## Architecture
 
-## Building
-
-```bash
-# Build the binary
-go build -o daemon ./cmd/daemon
-
-# Build Docker image
-docker build -t nexus/workspace-daemon .
+```
+┌─────────────┐      HTTP/gRPC      ┌─────────────────┐
+│   nexus     │ ◄─────────────────► │    nexusd       │
+│    CLI      │                     │    daemon       │
+└─────────────┘                     └────────┬────────┘
+                                             │
+                                     ┌───────▼────────┐
+                                     │ Docker Backend │
+                                     │   (provider)   │
+                                     └───────┬────────┘
+                                             │
+                                     ┌───────▼────────┐
+                                     │   Workspace    │
+                                     │   Containers   │
+                                     └────────────────┘
 ```
 
-## Running
+## Quick Start
+
+### Build
 
 ```bash
-# Basic usage
-./daemon --port 8080 --workspace-dir /path/to/workspace --token YOUR_JWT_TOKEN
+# Build the daemon
+go build -o nexusd ./cmd/daemon
 
-# With custom timeout
-./daemon --port 8080 --workspace-dir /workspace --token my-secret-token
+# Build the CLI
+go build -o nexus ./cmd/cli
 ```
 
-## Docker
+### Run the Daemon
 
 ```bash
-# Build and run
-docker build -t nexus/workspace-daemon .
-docker run -d \
-  -p 8080:8080 \
-  -v /path/to/workspace:/workspace \
-  -e TOKEN=your-jwt-token \
-  nexus/workspace-daemon
+# Start the daemon
+./nexusd daemon
+
+# Or with custom port
+./nexusd daemon --port 8080
 ```
+
+### Use the CLI
+
+```bash
+# Create a workspace
+nexus workspace create myproject
+
+# List workspaces
+nexus workspace list
+
+# SSH into workspace
+nexus workspace ssh myproject
+
+# Execute command in workspace
+nexus workspace exec myproject -- ls -la
+
+# Stop workspace
+nexus workspace stop myproject
+
+# Delete workspace
+nexus workspace delete myproject
+```
+
+## Commands
+
+### Workspace Management
+
+| Command | Description |
+|---------|-------------|
+| `nexus workspace create <name>` | Create a new workspace |
+| `nexus workspace start <name>` | Start a stopped workspace |
+| `nexus workspace stop <name>` | Stop a running workspace |
+| `nexus workspace delete <name>` | Delete a workspace |
+| `nexus workspace list` | List all workspaces |
+| `nexus workspace status <name>` | Show workspace details |
+| `nexus workspace ssh <name>` | SSH into workspace interactively |
+| `nexus workspace exec <name> -- <cmd>` | Execute command in workspace |
+| `nexus workspace use <name>` | Set active workspace |
+| `nexus workspace use --clear` | Clear active workspace |
+
+### Daemon Management
+
+| Command | Description |
+|---------|-------------|
+| `nexus daemon start` | Start the nexusd daemon |
+| `nexus daemon stop` | Stop the daemon |
+| `nexus daemon status` | Check daemon status |
+
+### Other Commands
+
+| Command | Description |
+|---------|-------------|
+| `nexus boulder status` | Check boulder enforcement status |
+| `nexus sync` | File synchronization commands |
+| `nexus doctor` | Diagnose issues |
 
 ## Configuration
 
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--port` | `PORT` | 8080 | Port to listen on |
-| `--workspace-dir` | `WORKSPACE_DIR` | /workspace | Workspace directory path |
-| `--token` | `TOKEN` | - | JWT secret token (required) |
+The daemon stores state in `~/.nexus/`:
 
-## API Reference
+- `~/.nexus/daemon.sock` - Unix socket for local communication
+- `~/.nexus/workspaces/` - Workspace metadata
+- `~/.nexus/session/` - Active session tracking
 
-### JSON-RPC 2.0 Protocol
+## Workspace Structure
 
-All requests follow the JSON-RPC 2.0 format:
+Each workspace has:
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "method": "fs.readFile",
-  "params": {
-    "path": "/workspace/src/index.ts"
-  }
-}
+- **Container** - Docker container with isolated filesystem
+- **Worktree** - Git worktree in `.worktree/<name>/`
+- **SSH Access** - Auto-allocated SSH port (32800-34999)
+- **Branch** - Associated git branch (`nexus/<name>`)
+
+## Docker Integration
+
+Workspaces use Docker containers with:
+
+- OpenSSH server for SSH access
+- User SSH key injection
+- SSH agent forwarding support
+- Volume persistence
+- Port auto-allocation
+
+## Development
+
+### Running Tests
+
+```bash
+# Run all tests
+go test ./...
+
+# Skip integration tests
+go test ./... -short
+
+# Run specific package tests
+go test ./internal/docker/...
 ```
 
-### File System Methods
+### Project Structure
 
-#### fs.readFile
-
-Read file contents.
-
-**Params:**
-```json
-{
-  "path": "relative/path/to/file",
-  "encoding": "utf8"  // optional, default: utf8
-}
+```
+packages/nexusd/
+├── cmd/
+│   ├── daemon/          # Daemon entry point
+│   └── cli/             # CLI entry point
+├── internal/
+│   ├── cli/             # CLI commands
+│   ├── docker/          # Docker backend
+│   ├── checkpoint/      # State management
+│   ├── git/             # Git operations
+│   ├── sync/            # File sync (mutagen)
+│   └── ...
+├── pkg/
+│   ├── handlers/        # HTTP/gRPC handlers
+│   ├── server/          # Server implementation
+│   └── workspace/       # Workspace types
+└── test/                # Test utilities
 ```
 
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "result": {
-    "content": "file contents...",
-    "encoding": "utf8",
-    "size": 1234
-  }
-}
-```
+## See Also
 
-#### fs.writeFile
-
-Write file contents.
-
-**Params:**
-```json
-{
-  "path": "relative/path/to/file",
-  "content": "file contents...",
-  "encoding": "utf8"  // optional
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "result": {
-    "ok": true,
-    "path": "relative/path/to/file",
-    "size": 1234
-  }
-}
-```
-
-#### fs.exists
-
-Check if a file or directory exists.
-
-**Params:**
-```json
-{
-  "path": "relative/path"
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "result": {
-    "exists": true,
-    "path": "relative/path"
-  }
-}
-```
-
-#### fs.readdir
-
-List directory contents.
-
-**Params:**
-```json
-{
-  "path": "relative/path"  // optional, default: "."
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "result": {
-    "entries": [
-      {"name": "file.txt", "path": "file.txt", "is_dir": false, "size": 123},
-      {"name": "subdir", "path": "subdir", "is_dir": true, "size": 0}
-    ],
-    "path": "."
-  }
-}
-```
-
-#### fs.mkdir
-
-Create a directory.
-
-**Params:**
-```json
-{
-  "path": "relative/path/to/dir",
-  "recursive": true  // optional, default: false
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "result": {
-    "ok": true,
-    "path": "relative/path/to/dir"
-  }
-}
-```
-
-#### fs.rm
-
-Remove a file or directory.
-
-**Params:**
-```json
-{
-  "path": "relative/path",
-  "recursive": true  // optional, default: false
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "result": {
-    "ok": true,
-    "path": "relative/path"
-  }
-}
-```
-
-#### fs.stat
-
-Get file/directory metadata.
-
-**Params:**
-```json
-{
-  "path": "relative/path"
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "result": {
-    "name": "filename",
-    "path": "relative/path",
-    "is_dir": false,
-    "size": 1234,
-    "mode": "-rw-r--r--",
-    "mod_time": "2026-02-20T10:00:00Z"
-  }
-}
-```
-
-### Execution Methods
-
-#### exec
-
-Execute a command.
-
-**Params:**
-```json
-{
-  "command": "ls",
-  "args": ["-la", "/workspace"],
-  "options": {
-    "timeout": 30,  // seconds, default: 30, max: 300
-    "work_dir": "/workspace",  // optional
-    "env": ["VAR=value"]  // optional
-  }
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "result": {
-    "stdout": "total 16\ndrwxr-xr-x    2 root root     4096 Feb 20 10:00 .\n...",
-    "stderr": "",
-    "exit_code": 0,
-    "command": "ls -la /workspace"
-  }
-}
-```
-
-### Workspace Methods
-
-#### workspace.info
-
-Get workspace information.
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "result": {
-    "workspace_id": "ws-1234567890",
-    "workspace_path": "/workspace"
-  }
-}
-```
-
-## Error Codes
-
-| Code | Message | Description |
-|------|---------|-------------|
-| -32000 | Server Error | Generic server error |
-| -32001 | Invalid Token | JWT token validation failed |
-| -32002 | Unauthorized | Not authenticated |
-| -32003 | File Not Found | Requested file/directory doesn't exist |
-| -32004 | Permission Denied | Insufficient permissions |
-| -32005 | Command Timeout | Command execution timed out |
-| -32600 | Invalid Request | Malformed JSON-RPC request |
-| -32601 | Method Not Found | Unknown method |
-| -32602 | Invalid Params | Invalid method parameters |
-| -32603 | Internal Error | Internal server error |
-
-## Security
-
-- All paths are validated to prevent directory traversal attacks
-- JWT tokens are required for all connections
-- Commands have configurable timeouts (default 30s, max 5min)
-- File operations are restricted to the workspace directory
+- [Workspace Quickstart](../../docs/tutorials/workspace-quickstart.md)
+- [Nexus CLI Reference](../../docs/reference/nexus-cli.md)
+- [Installation Guide](../../docs/tutorials/installation.md)

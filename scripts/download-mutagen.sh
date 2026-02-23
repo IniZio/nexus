@@ -2,7 +2,7 @@
 set -e
 
 VERSION="0.18.0"
-OUT_DIR="packages/workspace-daemon/internal/sync/mutagen/bin"
+OUT_DIR="packages/nexusd/internal/sync/mutagen/bin"
 
 mkdir -p $OUT_DIR
 

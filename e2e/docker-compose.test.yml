@@ -1,48 +1,23 @@
+# DEPRECATED: This docker-compose configuration is no longer valid
+# The workspace-sdk and workspace-daemon packages have been removed.
+# 
+# Workspace functionality is now provided by nexusd.
+# See e2e/README.md for information on re-enabling E2E tests.
+#
+# To start nexusd for testing:
+#   cd packages/nexusd
+#   go run ./cmd/daemon
+
 version: '3.8'
 
+# This file is kept for historical reference only
+# Do not use - references deleted packages
+
 services:
-  workspace-daemon:
-    build:
-      context: ../packages/workspace-daemon
-      dockerfile: Dockerfile
-    image: nexus-workspace-daemon:test
-    container_name: nexus-workspace-daemon-test
-    ports:
-      - "8080:8080"
-    environment:
-      - PORT=8080
-      - WORKSPACE_DIR=/workspace
-      - TOKEN=test-token
-    command: ["daemon", "--port", "8080", "--workspace-dir", "/workspace", "--token", "test-token"]
-    volumes:
-      - test-workspace:/workspace
-    networks:
-      - nexus-test-network
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+  # NOTE: workspace-daemon service removed - package deleted
+  # Use nexusd daemon instead:
+  #   cd packages/nexusd && go run ./cmd/daemon
+  
+  # NOTE: test-runner service disabled - depends on deleted workspace-sdk
+  # Tests need to be rewritten to use nexus CLI
 
-  test-runner:
-    image: node:20-alpine
-    container_name: nexus-test-runner
-    working_dir: /app
-    volumes:
-      - .:/app
-      - ../packages/workspace-sdk:/workspace-sdk
-    networks:
-      - nexus-test-network
-    depends_on:
-      - workspace-daemon
-    environment:
-      - DAEMON_HOST=workspace-daemon
-      - DAEMON_PORT=8080
-    command: ["sleep", "infinity"]
-
-volumes:
-  test-workspace:
-
-networks:
-  nexus-test-network:
-    driver: bridge

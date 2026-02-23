@@ -1,152 +1,94 @@
 # Nexus E2E Tests
 
-End-to-end tests for the Nexus Workspace SDK, Daemon, and OpenCode Plugin integration.
+> **⚠️ STATUS: E2E tests are currently disabled**
+> 
+> The E2E tests depended on the `workspace-sdk` and `workspace-daemon` packages which have been removed.
+> The workspace functionality has been consolidated into the `nexusd` package with a different architecture.
+>
+> To re-enable E2E tests, they need to be rewritten to use the `nexus` CLI instead of the workspace SDK.
 
 ## Overview
 
-This directory contains E2E and integration tests that verify the complete Nexus workspace workflow:
+This directory previously contained E2E and integration tests for the Nexus Workspace SDK, Daemon, and OpenCode Plugin integration.
 
-- **Integration Tests**: Test SDK + Daemon communication
-- **E2E Tests**: Test full OpenCode workflow with plugin interception
+The tests were designed to verify:
+- SDK + Daemon communication
+- Full OpenCode workflow with plugin interception
 
-## Prerequisites
+## Current Status
 
-- Node.js 20+
-- Docker and Docker Compose
-- Workspace daemon built and available
-
-## Quick Start
-
-### Install Dependencies
+The workspace functionality is now provided by the `nexusd` package with the following commands:
 
 ```bash
-cd e2e
-npm install
-
-# Also build the workspace-sdk
-cd ../packages/workspace-sdk
-npm install
-npm run build
+# Workspace management
+nexus workspace create <name>
+nexus workspace start <name>
+nexus workspace stop <name>
+nexus workspace delete <name>
+nexus workspace list
+nexus workspace status <name>
+nexus workspace ssh <name>
+nexus workspace exec <name> -- <command>
+nexus workspace use <name>
+nexus workspace use --clear
 ```
 
-### Run Integration Tests
-
-```bash
-npm run test:integration
-```
-
-### Run E2E Tests
-
-```bash
-npm run test:e2e
-```
-
-### Run All Tests
-
-```bash
-npm test
-```
-
-## Docker-Based Testing
-
-### Start Environment
-
-```bash
-npm run docker:up
-```
-
-### Stop Environment
-
-```bash
-npm run docker:down
-```
-
-### Build Images
-
-```bash
-npm run docker:build
-```
-
-## Test Structure
+## Historical Test Structure
 
 ```
 e2e/
 ├── tests/
 │   ├── integration/
-│   │   └── sdk-daemon.test.ts    # SDK + Daemon integration tests
+│   │   └── sdk-daemon.test.ts    # SDK + Daemon integration tests (DISABLED)
 │   ├── e2e/
-│   │   └── opencode-workflow.test.ts  # Full OpenCode workflow tests
+│   │   └── opencode-workflow.test.ts  # Full OpenCode workflow tests (DISABLED)
 │   ├── fixtures/
 │   │   └── test-workspace/       # Test fixture files
 │   └── setup.ts                  # Test setup and utilities
-├── docker-compose.test.yml        # Docker Compose configuration
+├── docker-compose.test.yml        # Docker Compose configuration (DEPRECATED)
 ├── jest.config.js                # Jest configuration
 └── package.json                  # Dependencies
 ```
 
-## Test Scenarios
-
-### Integration Tests
-
-- File write/read operations
-- File existence checks
-- Directory creation and listing
-- File deletion
-- Command execution (echo, pwd, failing commands)
-- Connection management
-
-### E2E Tests
-
-- File interception (workspace vs local)
-- Command interception
-- Development workflow simulation
-- Workspace isolation
-
 ## CI/CD
 
-GitHub Actions workflow is defined in `.github/workflows/e2e.yml`.
+The GitHub Actions workflow (`.github/workflows/e2e.yml`) has been updated to:
+1. Verify nexusd builds correctly
+2. Run unit tests from the nexusd package
+3. Skip the disabled E2E tests with an explanatory message
 
-### Running in CI
+## Re-enabling E2E Tests
 
-The CI pipeline:
-1. Builds the workspace-daemon Docker image
-2. Sets up Node.js
-3. Installs dependencies
-4. Runs integration tests
-5. Runs E2E tests
-6. Uploads test results
+To re-enable E2E tests:
 
-## Troubleshooting
+1. **Rewrite tests to use nexus CLI:**
+   - Replace `WorkspaceClient` SDK calls with CLI exec calls
+   - Use `nexus workspace create`, `nexus workspace exec`, etc.
 
-### Container fails to start
+2. **Update docker-compose.test.yml:**
+   - Remove references to `nexus-workspace-daemon:test` image
+   - Use the nexusd daemon instead
 
-Check Docker is running:
-```bash
-docker ps
-```
+3. **Remove @nexus/workspace-sdk dependency:**
+   - Update `e2e/package.json`
+   - Remove Jest path mappings for workspace-sdk
 
-Check daemon logs:
-```bash
-docker logs nexus-workspace-daemon-test
-```
+4. **Update test scenarios:**
+   - File operations via `nexus workspace exec`
+   - Command execution via `nexus workspace exec`
+   - Workspace lifecycle via `nexus workspace` commands
 
-### Tests timeout
+## Current Testing Strategy
 
-Increase timeout in `jest.config.js`:
-```javascript
-testTimeout: 120000, // 2 minutes
-```
+Until E2E tests are rewritten:
 
-### Port already in use
+1. **Unit tests** in `packages/nexusd/` cover core functionality
+2. **Integration tests** in `packages/nexusd/test/integration/` test component interactions
+3. **Manual testing** using the `nexus` CLI
+4. **Dogfooding** - using Nexus for its own development
 
-Stop any existing containers:
-```bash
-docker-compose -f docker-compose.test.yml down
-```
+## See Also
 
-## Notes
-
-- Tests use Testcontainers for isolated Docker-based testing
-- Each test suite starts its own daemon container
-- Containers are cleaned up after each test suite
-- Tests are designed to be parallelizable where possible
+- [Workspace Quickstart](../../docs/tutorials/workspace-quickstart.md)
+- [Nexus CLI Reference](../../docs/reference/nexus-cli.md)
+- [packages/nexusd/README.md](../../packages/nexusd/README.md)

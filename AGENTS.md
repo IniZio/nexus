@@ -34,7 +34,7 @@ This is the **Nexus** project - an AI-native development environment with multip
   - `nexus workspace ssh` command for interactive access
   - SSH-based exec (replaces docker exec)
   - SSH agent forwarding support
-- **Workspace SDK**: Partial implementation for remote file/exec operations
+- **Workspace Daemon (nexusd)**: Docker-based workspace management with SSH access
 - **Nexus CLI**: Unified CLI for workspace management:
   - `nexus workspace` commands (create, start, stop, delete, exec, ssh)
   - `nexus sync` commands for file synchronization
@@ -107,9 +107,9 @@ docs/
 │   ├── installation.md
 │   └── plugin-setup.md
 ├── reference/              # API/CLI reference
+│   ├── nexus-cli.md
 │   ├── boulder-cli.md
-│   ├── enforcer-config.md
-│   └── workspace-sdk.md   # Note: workspace SDK not fully implemented
+│   └── enforcer-config.md
 ├── explanation/           # Concepts
 │   ├── architecture.md
 │   └── boulder-system.md

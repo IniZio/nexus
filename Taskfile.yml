@@ -89,6 +89,11 @@ tasks:
     cmds:
       - pnpm lint
 
+  build:nexus:
+    dir: packages/nexus
+    cmds:
+      - go build -o nexus ./cmd/daemon
+
   build:nexusd:
     dir: packages/nexusd
     cmds:
