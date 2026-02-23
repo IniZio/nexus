@@ -54,7 +54,7 @@ Links to other ADRs
 
 ### Plans / PRDs
 
-**Location:** `docs/dev/internal/plans/`
+**Location:** `docs/dev/plans/`
 
 **When to create:**
 - Before implementing major features
@@ -103,14 +103,14 @@ Links to other ADRs
 
 ## Research Documents
 
-**Location:** `docs/dev/research/` (optional)
-
 For deep-dive research that informs decisions but isn't part of the main documentation flow.
 
 **When to use:**
 - Technology comparisons
 - Proof-of-concept results
 - Investigation findings
+
+**Note:** Research documents can be placed in `docs/dev/internal/implementation/` or create a `research/` subfolder if needed.
 
 ## What NOT to Document
 

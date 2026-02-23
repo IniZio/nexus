@@ -12,6 +12,10 @@ import (
 )
 
 func TestHanlunLMS(t *testing.T) {
+	if _, err := exec.LookPath("nexus"); err != nil {
+		t.Skip("nexus binary not in PATH, skipping E2E test")
+	}
+
 	if os.Getenv("SKIP_E2E") != "" {
 		t.Skip("Skipping E2E test")
 	}
@@ -54,6 +58,10 @@ func TestHanlunLMS(t *testing.T) {
 }
 
 func TestWorkspaceCreateAndDestroy(t *testing.T) {
+	if _, err := exec.LookPath("nexus"); err != nil {
+		t.Skip("nexus binary not in PATH, skipping E2E test")
+	}
+
 	if os.Getenv("SKIP_E2E") != "" {
 		t.Skip("Skipping E2E test")
 	}
@@ -74,6 +82,10 @@ func TestWorkspaceCreateAndDestroy(t *testing.T) {
 }
 
 func TestWorkspaceExec(t *testing.T) {
+	if _, err := exec.LookPath("nexus"); err != nil {
+		t.Skip("nexus binary not in PATH, skipping E2E test")
+	}
+
 	if os.Getenv("SKIP_E2E") != "" {
 		t.Skip("Skipping E2E test")
 	}

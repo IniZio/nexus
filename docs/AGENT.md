@@ -12,7 +12,7 @@ docs/
 │   ├── AGENT.md               # Dev docs standards
 │   ├── roadmap.md             # Current project status
 │   ├── decisions/             # ADRs (Architecture Decision Records)
-│   └── internal/plans/        # PRDs and implementation plans
+│   └── plans/        # PRDs and implementation plans
 ├── explanation/               # Concepts and architecture
 ├── reference/                 # API/CLI reference
 ├── tutorials/                 # Step-by-step guides
@@ -54,7 +54,7 @@ If a feature doesn't exist:
 - Don't create reference docs for it
 - Don't add CLI commands that don't work
 - Note it as "Planned" or "Not implemented" in roadmap
-- Put plans in `docs/dev/internal/plans/`
+- Put plans in `docs/dev/plans/`
 
 **Never document:**
 - `nexus` CLI (doesn't exist yet)
@@ -104,7 +104,7 @@ Before committing doc changes:
 - Create documentation for unimplemented features as if they exist
 - Mix dates in filenames (use sequence numbers instead)
 - Have both folder AND flat file for same topic
-- Put user-facing docs in `docs/dev/internal/`
+- Put user-facing docs in appropriate top-level folders (`tutorials/`, `reference/`, etc.)
 - Reference external systems that aren't integrated
 
 ## Verification Checklist

@@ -14,6 +14,8 @@ nav:
     - Installation: tutorials/installation.md
     - Workspace Quickstart: tutorials/workspace-quickstart.md
     - Plugin Setup: tutorials/plugin-setup.md
+  - How-To:
+    - Lifecycle Scripts: how-to/lifecycle-scripts.md
   - Explanation:
     - Boulder System: explanation/boulder-system.md
   - Reference:
