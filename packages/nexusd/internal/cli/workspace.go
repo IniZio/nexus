@@ -14,13 +14,15 @@ import (
 
 var (
 	// Template support removed - users provide Dockerfile directly
-	fromFlag   string
-	cpuFlag    int
-	memoryFlag int
-	forceFlag  bool
-	formatFlag string
-	allFlag    bool
-	clearFlag  bool
+	fromFlag    string
+	cpuFlag     int
+	memoryFlag  int
+	diskFlag    int
+	forceFlag   bool
+	formatFlag  string
+	allFlag     bool
+	clearFlag   bool
+	backendFlag string
 )
 
 const (
@@ -81,7 +83,8 @@ var workspaceCreateCmd = &cobra.Command{
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
 
 		req := CreateWorkspaceRequest{
-			Name: name,
+			Name:    name,
+			Backend: backendFlag,
 		}
 
 		// Template support removed - users provide Dockerfile directly
@@ -93,6 +96,9 @@ var workspaceCreateCmd = &cobra.Command{
 		}
 		if memoryFlag > 0 {
 			req.Labels = mergeLabels(req.Labels, "memory", fmt.Sprintf("%d", memoryFlag))
+		}
+		if diskFlag > 0 {
+			req.Labels = mergeLabels(req.Labels, "disk", fmt.Sprintf("%d", diskFlag))
 		}
 
 		ws, err := client.CreateWorkspace(req)
@@ -111,6 +117,7 @@ var workspaceCreateCmd = &cobra.Command{
 		} else {
 			fmt.Printf("Created workspace %s (ID: %s)\n", ws.Name, ws.ID)
 			fmt.Printf("Status: %s\n", ws.Status)
+			fmt.Printf("Backend: %s\n", ws.Backend)
 			if ws.WorktreePath != "" {
 				fmt.Printf("Worktree: %s\n", ws.WorktreePath)
 			}
@@ -273,28 +280,16 @@ var workspaceListCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintf(w, "NAME\tSTATUS\tCPU\tMEM\tDISK\tCREATED\n")
+		fmt.Fprintf(w, "NAME\tSTATUS\tBACKEND\tCREATED\n")
 		for _, ws := range result.Workspaces {
 			created := ws.CreatedAt.Format("2006-01-02 15:04")
 			if ws.CreatedAt.IsZero() {
 				created = "-"
 			}
-			cpu := "-"
-			mem := "-"
-			if ws.Labels != nil {
-				if c, ok := ws.Labels["cpu"]; ok {
-					cpu = c + " CPU"
-				}
-				if m, ok := ws.Labels["memory"]; ok {
-					mem = m + "GB"
-				}
-			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
 				ws.Name,
 				colorStatus(ws.Status),
-				cpu,
-				mem,
-				"-",
+				ws.Backend,
 				created,
 			)
 		}
@@ -612,8 +607,10 @@ func init() {
 
 	// Template support removed - users provide Dockerfile directly
 	workspaceCreateCmd.Flags().StringVar(&fromFlag, "from", "", "Import from existing project path")
+	workspaceCreateCmd.Flags().StringVar(&backendFlag, "backend", "", "Backend to use (docker, daytona)")
 	workspaceCreateCmd.Flags().IntVar(&cpuFlag, "cpu", 2, "CPU limit")
 	workspaceCreateCmd.Flags().IntVar(&memoryFlag, "memory", 4, "Memory limit (GB)")
+	workspaceCreateCmd.Flags().IntVar(&diskFlag, "disk", 20, "Disk space (GB)")
 
 	workspaceStopCmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "Force stop")
 	workspaceDeleteCmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "Force delete without confirmation")

@@ -30,9 +30,10 @@ type DockerConfig struct {
 }
 
 type WorkspaceConfig struct {
-	Default     string `yaml:"default"`
-	AutoStart   bool   `yaml:"auto_start"`
-	StoragePath string `yaml:"storage_path"`
+	DefaultBackend types.BackendType `yaml:"default_backend"`
+	Default        string            `yaml:"default"`
+	AutoStart      bool              `yaml:"auto_start"`
+	StoragePath    string            `yaml:"storage_path"`
 }
 
 type BoulderConfig struct {
@@ -65,9 +66,10 @@ func DefaultConfig() *Config {
 	return &Config{
 		Version: "1",
 		Workspace: WorkspaceConfig{
-			Default:     "",
-			AutoStart:   true,
-			StoragePath: filepath.Join(homeDir, ".nexus", "workspaces"),
+			DefaultBackend: types.BackendDocker,
+			Default:        "",
+			AutoStart:      true,
+			StoragePath:    filepath.Join(homeDir, ".nexus", "workspaces"),
 		},
 		Boulder: BoulderConfig{
 			EnforcementLevel: "normal",
@@ -157,6 +159,8 @@ func (c *Config) Get(key string) (string, error) {
 		return c.Version, nil
 	case "workspace.default":
 		return c.Workspace.Default, nil
+	case "workspace.default_backend":
+		return c.Workspace.DefaultBackend.String(), nil
 	case "workspace.auto_start":
 		return fmt.Sprintf("%t", c.Workspace.AutoStart), nil
 	case "workspace.storage_path":
@@ -190,6 +194,8 @@ func (c *Config) Set(key, value string) error {
 		c.Version = value
 	case "workspace.default":
 		c.Workspace.Default = value
+	case "workspace.default_backend":
+		c.Workspace.DefaultBackend = types.BackendTypeFromString(value)
 	case "workspace.auto_start":
 		c.Workspace.AutoStart = value == "true"
 	case "workspace.storage_path":

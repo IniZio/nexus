@@ -37,7 +37,8 @@ func (s WorkspaceStatus) String() string {
 type BackendType int
 
 const (
-	BackendDocker BackendType = iota
+	BackendUnknown BackendType = iota
+	BackendDocker
 	BackendSprite
 	BackendKubernetes
 	BackendDaytona
@@ -45,6 +46,8 @@ const (
 
 func (b BackendType) String() string {
 	switch b {
+	case BackendUnknown:
+		return "unknown"
 	case BackendDocker:
 		return "docker"
 	case BackendSprite:
@@ -60,6 +63,8 @@ func (b BackendType) String() string {
 
 func BackendTypeFromString(s string) BackendType {
 	switch s {
+	case "unknown":
+		return BackendUnknown
 	case "docker":
 		return BackendDocker
 	case "sprite":
@@ -69,7 +74,7 @@ func BackendTypeFromString(s string) BackendType {
 	case "daytona":
 		return BackendDaytona
 	default:
-		return BackendDocker
+		return BackendUnknown
 	}
 }
 
@@ -342,4 +347,11 @@ type HealthCheck struct {
 type CommitContainerRequest struct {
 	WorkspaceID string
 	ImageName   string
+}
+
+type SSHConnection struct {
+	Host       string
+	Port       int32
+	Username   string
+	PrivateKey string
 }

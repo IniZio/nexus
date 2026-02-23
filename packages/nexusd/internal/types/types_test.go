@@ -33,8 +33,8 @@ func TestBackendTypeFromString(t *testing.T) {
 		{"sprite", BackendSprite},
 		{"kubernetes", BackendKubernetes},
 		{"daytona", BackendDaytona},
-		{"unknown", BackendDocker},
-		{"", BackendDocker},
+		{"unknown", BackendUnknown},
+		{"", BackendUnknown},
 	}
 
 	for _, tt := range tests {

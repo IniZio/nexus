@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/nexus/nexus/packages/nexusd/internal/config"
+	"github.com/nexus/nexus/packages/nexusd/internal/types"
 	"github.com/spf13/cobra"
 )
 
@@ -48,7 +49,7 @@ func init() {
 	rootCmd.AddCommand(traceCmd)
 	rootCmd.AddCommand(syncCmd)
 
-	configCmd.AddCommand(configGetCmd, configSetCmd)
+	configCmd.AddCommand(configGetCmd, configSetCmd, configSetDefaultBackendCmd)
 	boulderCmd.AddCommand(boulderStatusCmd, boulderPauseCmd, boulderResumeCmd, boulderConfigCmd)
 	boulderConfigCmd.AddCommand(boulderConfigGetCmd, boulderConfigSetCmd)
 }
@@ -68,6 +69,40 @@ var versionCmd = &cobra.Command{
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage configuration",
+}
+
+var configSetDefaultBackendCmd = &cobra.Command{
+	Use:   "set-default-backend [backend]",
+	Short: "Set the default workspace backend",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		backend := args[0]
+
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+			os.Exit(1)
+		}
+
+		backendType := types.BackendTypeFromString(backend)
+		if backendType == types.BackendUnknown {
+			fmt.Fprintf(os.Stderr, "Error: unknown backend: %s (valid: docker, daytona)\n", backend)
+			os.Exit(1)
+		}
+
+		cfg.Workspace.DefaultBackend = backendType
+
+		if err := cfg.Save(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+			os.Exit(1)
+		}
+
+		if jsonOutput {
+			fmt.Printf(`{"key":"workspace.default_backend","value":"%s"}`, backend)
+		} else {
+			fmt.Printf("Default backend set to: %s\n", backend)
+		}
+	},
 }
 
 var configGetCmd = &cobra.Command{
