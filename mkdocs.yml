@@ -12,18 +12,26 @@ nav:
   - Home: index.md
   - Tutorials:
     - Installation: tutorials/installation.md
+    - Workspace Quickstart: tutorials/workspace-quickstart.md
     - Plugin Setup: tutorials/plugin-setup.md
   - Explanation:
-    - Architecture: explanation/architecture.md
     - Boulder System: explanation/boulder-system.md
   - Reference:
     - Nexus CLI: reference/nexus-cli.md
     - Boulder CLI: reference/boulder-cli.md
     - Enforcer Configuration: reference/enforcer-config.md
+  - Testing:
+    - Overview: testing/README.md
+    - Enforcer Testing: testing/enforcer-testing.md
+    - Plugin Testing: testing/plugin-testing.md
+    - Workspace Testing: testing/workspace-testing.md
   - Development:
     - Contributing: dev/contributing.md
     - Roadmap: dev/roadmap.md
-    - Architecture Decisions: dev/decisions/
+    - Architecture Decisions:
+      - Worktree Isolation: dev/decisions/001-worktree-isolation.md
+      - Port Allocation: dev/decisions/002-port-allocation.md
+      - Telemetry Design: dev/decisions/003-telemetry-design.md
 
 theme:
   name: material

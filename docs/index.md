@@ -35,18 +35,18 @@ npx @nexus/core boulder resume     # Resume enforcement
 
 [Learn more about the Enforcer](explanation/boulder-system.md)
 
-### 2. Workspace (In Development)
+### 2. Workspace (Implemented)
 
 Inspired by [opencode-devcontainer](https://github.com/athal7/opencode-devcontainer) and [Sprites](https://github.com/peterj/sprites), Workspace provides isolated, reproducible development environments for AI agents.
 
-**Goals:**
-- Isolated environments per task/feature
-- Remote workspace support via WebSocket
+**Features:**
+- Docker-based isolated environments per task/feature
+- SSH-based access with agent forwarding
 - Git worktree integration
-- Service port awareness
-- Lifecycle hooks for automation
+- Port auto-allocation (32800-34999 range)
+- `nexus workspace` CLI for management
 
-**Status:** Architecture defined, SDK in development. See [internal plans](dev/internal/plans/).
+**Status:** Fully implemented. See [workspace quickstart](tutorials/workspace-quickstart.md).
 
 ### 3. Telemetry (Planned)
 

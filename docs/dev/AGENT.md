@@ -54,7 +54,7 @@ Links to other ADRs
 
 ### Plans / PRDs
 
-**Location:** `docs/dev/plans/`
+**Location:** `docs/dev/internal/plans/`
 
 **When to create:**
 - Before implementing major features
@@ -160,7 +160,7 @@ Before submitting doc changes:
 ```bash
 # Check naming conventions
 ls docs/dev/decisions/  # Should be ###-name.md
-ls docs/dev/plans/      # Should be ###-name.md
+ls docs/dev/internal/plans/      # Should be ###-name.md
 
 # Check for broken links
 # (Manual: search for .md references and verify they exist)

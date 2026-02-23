@@ -12,7 +12,7 @@ docs/
 │   ├── AGENT.md               # Dev docs standards
 │   ├── roadmap.md             # Current project status
 │   ├── decisions/             # ADRs (Architecture Decision Records)
-│   └── plans/                 # PRDs and implementation plans
+│   └── internal/plans/        # PRDs and implementation plans
 ├── explanation/               # Concepts and architecture
 ├── reference/                 # API/CLI reference
 ├── tutorials/                 # Step-by-step guides
@@ -54,7 +54,7 @@ If a feature doesn't exist:
 - Don't create reference docs for it
 - Don't add CLI commands that don't work
 - Note it as "Planned" or "Not implemented" in roadmap
-- Put plans in `docs/dev/plans/`
+- Put plans in `docs/dev/internal/plans/`
 
 **Never document:**
 - `nexus` CLI (doesn't exist yet)

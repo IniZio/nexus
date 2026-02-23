@@ -90,5 +90,5 @@ nexus workspace use --clear
 
 ## Next Steps
 
-- [CLI Reference](reference/nexus-cli.md) - Full command documentation
-- [Docker Compose Example](../examples/docker-compose-workspace/nexus-workspace.md) - Full-stack example
+- [CLI Reference](../reference/nexus-cli.md) - Full command documentation
+- [Installation Guide](./installation.md) - Detailed setup instructions
