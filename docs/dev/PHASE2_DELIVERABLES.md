@@ -159,9 +159,9 @@ docs/
 ├── dev/
 │   ├── roadmap.md (UPDATED)
 │   ├── plans/
-│   │   ├── 001-workspace-management.md
-│   │   ├── 002-telemetry.md
-│   │   ├── 003-nexus-cli.md
+│   │   ├── 001-docker-workspaces/
+│   │   ├── 002-telemetry-prd.md
+│   │   ├── 003-nexus-cli-prd.md
 │   │   ├── 004-multi-user.md (NEW)
 │   │   ├── 005-web-dashboard.md (NEW)
 │   │   └── 006-auto-update.md (NEW)

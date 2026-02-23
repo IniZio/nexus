@@ -13,9 +13,9 @@ docs/dev/
 │   ├── 002-port-allocation.md
 │   └── 003-telemetry-design.md
 ├── plans/                     # PRDs and implementation plans
-│   ├── 001-workspace-management.md
-│   ├── 002-telemetry.md
-│   └── 003-nexus-cli.md
+│   ├── 001-docker-workspaces/
+│   ├── 002-telemetry-prd.md
+│   └── 003-nexus-cli-prd.md
 └── research/                  # Research findings (optional)
 ```
 
@@ -144,7 +144,7 @@ Every 3 months, review:
 | Document Type | Pattern | Example |
 |--------------|---------|---------|
 | ADR | `###-kebab-case.md` | `001-worktree-isolation.md` |
-| Plan | `###-kebab-case.md` | `002-telemetry.md` |
+| Plan | `###-kebab-case.md` or folder | `002-telemetry-prd.md` |
 | Research | `kebab-case.md` | `ssh-bridge-guide.md` |
 
 **Rules:**

@@ -39,7 +39,7 @@ docs/
 | Type | Pattern | Example |
 |------|---------|---------|
 | ADRs | `###-descriptive-name.md` | `001-worktree-isolation.md` |
-| Plans | `###-descriptive-name.md` | `001-workspace-management.md` |
+| Plans | `###-descriptive-name.md` or folder | `001-docker-workspaces/` |
 | Reference | `kebab-case.md` | `boulder-cli.md` |
 | Tutorials | `kebab-case.md` | `plugin-setup.md` |
 
