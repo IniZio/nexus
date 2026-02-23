@@ -1,6 +1,8 @@
 package idle
 
 import (
+	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -187,4 +189,108 @@ func TestIdleDetector_ResumeActivity(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	assert.True(t, activeCalled)
+}
+
+func TestIdleDetector_StopTwice(t *testing.T) {
+	d := NewIdleDetector("test-ws", 50*time.Millisecond)
+
+	d.Start()
+	d.Stop()
+	d.Stop()
+}
+
+func TestActivityTracker_StartCancel(t *testing.T) {
+	tracker := NewActivityTracker(10 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go tracker.Start(ctx)
+
+	tracker.RegisterWorkspace("ws-1")
+
+	time.Sleep(20 * time.Millisecond)
+
+	cancel()
+
+	time.Sleep(20 * time.Millisecond)
+}
+
+func TestActivityTracker_GetActivityNotFound(t *testing.T) {
+	tracker := NewActivityTracker(10 * time.Second)
+
+	activity := tracker.GetActivity("non-existent")
+
+	assert.Nil(t, activity)
+}
+
+func TestIdleDetector_ConcurrentActivity(t *testing.T) {
+	d := NewIdleDetector("test-ws", 100*time.Millisecond)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.RecordActivity(ActivitySSH)
+		}()
+	}
+
+	wg.Wait()
+
+	d.mu.RLock()
+	assert.True(t, d.lastActivity.After(time.Now().Add(-50*time.Millisecond)))
+	d.mu.RUnlock()
+}
+
+func TestIdleDetector_ConcurrentStartStop(t *testing.T) {
+	d := NewIdleDetector("test-ws", 50*time.Millisecond)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.Start()
+			time.Sleep(10 * time.Millisecond)
+		}()
+	}
+
+	wg.Wait()
+	d.Stop()
+}
+
+func TestIdleDetector_ActivityChannelFull(t *testing.T) {
+	d := NewIdleDetector("test-ws", 50*time.Millisecond)
+
+	for i := 0; i < 20; i++ {
+		d.RecordActivity(ActivitySSH)
+	}
+}
+
+func TestIdleDetector_IsIdleAtThreshold(t *testing.T) {
+	d := NewIdleDetector("test-ws", 100*time.Millisecond)
+
+	d.mu.Lock()
+	d.lastActivity = time.Now().Add(-100 * time.Millisecond)
+	d.mu.Unlock()
+
+	assert.True(t, d.IsIdle())
+}
+
+func TestIdleDetector_IsIdleJustBelowThreshold(t *testing.T) {
+	d := NewIdleDetector("test-ws", 100*time.Millisecond)
+
+	d.mu.Lock()
+	d.lastActivity = time.Now().Add(-99 * time.Millisecond)
+	d.mu.Unlock()
+
+	assert.False(t, d.IsIdle())
+}
+
+func TestActivityTracker_CollectMetrics(t *testing.T) {
+	tracker := NewActivityTracker(10 * time.Millisecond)
+
+	tracker.RegisterWorkspace("ws-1")
+
+	tracker.collectMetrics(context.Background())
 }

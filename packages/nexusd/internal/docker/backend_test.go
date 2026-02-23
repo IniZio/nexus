@@ -40,7 +40,7 @@ func TestPortAllocation(t *testing.T) {
 }
 
 func TestPortAllocationRange(t *testing.T) {
-	pm := NewPortManager(32800, 32802)
+	pm := NewPortManager(57800, 57802)
 
 	successCount := 0
 	failCount := 0

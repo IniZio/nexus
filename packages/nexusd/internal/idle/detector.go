@@ -9,32 +9,32 @@ import (
 type ActivityType string
 
 const (
-	ActivitySSH       ActivityType = "ssh"
-	ActivityFile      ActivityType = "file"
-	ActivityHTTP      ActivityType = "http"
-	ActivityResume    ActivityType = "resume"
+	ActivitySSH    ActivityType = "ssh"
+	ActivityFile   ActivityType = "file"
+	ActivityHTTP   ActivityType = "http"
+	ActivityResume ActivityType = "resume"
 )
 
 type IdleDetector struct {
-	mu               sync.RWMutex
-	workspaceID      string
-	threshold        time.Duration
-	lastActivity    time.Time
-	activityChan    chan ActivityType
-	stopChan         chan struct{}
-	isRunning        bool
-	onIdle           func()
-	onActive         func()
+	mu           sync.RWMutex
+	workspaceID  string
+	threshold    time.Duration
+	lastActivity time.Time
+	activityChan chan ActivityType
+	stopChan     chan struct{}
+	isRunning    bool
+	onIdle       func()
+	onActive     func()
 }
 
 func NewIdleDetector(workspaceID string, threshold time.Duration) *IdleDetector {
 	return &IdleDetector{
-		workspaceID:   workspaceID,
-		threshold:     threshold,
-		lastActivity:  time.Now(),
-		activityChan:  make(chan ActivityType, 10),
-		stopChan:      make(chan struct{}),
-		isRunning:     false,
+		workspaceID:  workspaceID,
+		threshold:    threshold,
+		lastActivity: time.Now(),
+		activityChan: make(chan ActivityType, 10),
+		stopChan:     make(chan struct{}),
+		isRunning:    false,
 	}
 }
 
@@ -142,11 +142,11 @@ type ActivityTracker struct {
 }
 
 type WorkspaceActivity struct {
-	LastActive   time.Time
-	CPUUsage     float64
-	MemoryUsage  int64
-	NetworkRx    int64
-	NetworkTx    int64
+	LastActive  time.Time
+	CPUUsage    float64
+	MemoryUsage int64
+	NetworkRx   int64
+	NetworkTx   int64
 }
 
 func NewActivityTracker(pollInterval time.Duration) *ActivityTracker {
@@ -196,6 +196,7 @@ func (t *ActivityTracker) RecordFileActivity(workspaceID string) {
 }
 
 func (t *ActivityTracker) collectMetrics(ctx context.Context) {
+	_ = ctx
 }
 
 func (t *ActivityTracker) GetActivity(workspaceID string) *WorkspaceActivity {
