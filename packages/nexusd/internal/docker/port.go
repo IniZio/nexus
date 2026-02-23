@@ -3,22 +3,23 @@ package docker
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"sync"
 )
 
 type PortManager struct {
-	mu           sync.RWMutex
-	allocated    map[int32]bool
-	nextPort     int32
-	minPort      int32
-	maxPort      int32
-	stateFile    string
+	mu        sync.RWMutex
+	allocated map[int32]bool
+	nextPort  int32
+	minPort   int32
+	maxPort   int32
+	stateFile string
 }
 
 type PortState struct {
 	Allocated map[int32]bool `json:"allocated"`
-	NextPort  int32         `json:"nextPort"`
+	NextPort  int32          `json:"nextPort"`
 }
 
 func NewPortManager(minPort, maxPort int32) *PortManager {
@@ -46,6 +47,15 @@ func NewPortManagerWithState(minPort, maxPort int32, stateFile string) *PortMana
 	return pm
 }
 
+func isPortInUse(port int32) bool {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return true
+	}
+	ln.Close()
+	return false
+}
+
 func (p *PortManager) Allocate() (int32, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -57,7 +67,7 @@ func (p *PortManager) Allocate() (int32, error) {
 			p.nextPort = p.minPort
 		}
 
-		if !p.allocated[port] {
+		if !p.allocated[port] && !isPortInUse(port) {
 			p.allocated[port] = true
 			p.saveState()
 			return port, nil

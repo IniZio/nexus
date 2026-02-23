@@ -3,6 +3,7 @@ package docker
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 )
@@ -74,11 +75,11 @@ func GetUserSSHKey() (*SSHKeyPair, error) {
 	keyPath := filepath.Join(homeDir, ".ssh", "id_ed25519_nexus")
 	pubKeyPath := keyPath + ".pub"
 
-	if _, err := os.Stat(keyPath); err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("SSH key not found at %s (run: ssh-keygen -t ed25519 -f %s)", keyPath, keyPath)
+	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+		cmd := exec.Command("ssh-keygen", "-t", "ed25519", "-f", keyPath, "-N", "", "-C", "nexus@localhost")
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("failed to generate SSH key: %w", err)
 		}
-		return nil, fmt.Errorf("checking SSH key: %w", err)
 	}
 
 	return &SSHKeyPair{
@@ -100,6 +101,8 @@ func GetUserPublicKeys() ([]string, error) {
 	}
 
 	var keys []string
+	nexusKey := ""
+
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -111,8 +114,16 @@ func GetUserPublicKeys() ([]string, error) {
 			if err != nil {
 				continue
 			}
-			keys = append(keys, string(content))
+			if name == "id_ed25519_nexus.pub" {
+				nexusKey = string(content)
+			} else {
+				keys = append(keys, string(content))
+			}
 		}
+	}
+
+	if nexusKey != "" {
+		keys = append([]string{nexusKey}, keys...)
 	}
 
 	if len(keys) == 0 {

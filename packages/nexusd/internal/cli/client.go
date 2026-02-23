@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/nexus/nexus/packages/nexusd/internal/docker"
 )
 
 type Client struct {
@@ -82,8 +84,8 @@ type ListWorkspacesResponse struct {
 
 type Config struct {
 	IdleTimeout time.Duration `json:"idle_timeout"`
-	AutoPause   bool         `json:"auto_pause"`
-	AutoResume  bool         `json:"auto_resume"`
+	AutoPause   bool          `json:"auto_pause"`
+	AutoResume  bool          `json:"auto_resume"`
 }
 
 func NewClient(baseURL, token string) *Client {
@@ -262,7 +264,7 @@ func (c *Client) Exec(id string, command []string) (string, error) {
 		return "", fmt.Errorf("getting workspace: %w", err)
 	}
 	id = ws.ID
-	
+
 	req := struct {
 		Command []string `json:"command"`
 	}{Command: command}
@@ -273,7 +275,7 @@ func (c *Client) Exec(id string, command []string) (string, error) {
 	}
 
 	url := c.baseURL + "/api/v1/workspaces/" + id + "/exec"
-	
+
 	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -290,7 +292,57 @@ func (c *Client) Exec(id string, command []string) (string, error) {
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	
+
+	var apiResp APIResponse
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return "", fmt.Errorf("decode error: %v, body: %s", err, string(respBody))
+	}
+
+	if !apiResp.Success {
+		return "", fmt.Errorf("API error: %s", apiResp.Error)
+	}
+
+	data, err := json.Marshal(apiResp.Data)
+	if err != nil {
+		return "", err
+	}
+
+	var result struct {
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return "", err
+	}
+
+	return result.Output, nil
+}
+
+func (c *Client) InjectSSHKey(id string) (string, error) {
+	ws, err := c.GetWorkspace(id)
+	if err != nil {
+		return "", fmt.Errorf("getting workspace: %w", err)
+	}
+	id = ws.ID
+
+	url := c.baseURL + "/api/v1/workspaces/" + id + "/inject-key"
+
+	httpReq, err := http.NewRequest("POST", url, nil)
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
 	var apiResp APIResponse
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
 		return "", fmt.Errorf("decode error: %v, body: %s", err, string(respBody))
@@ -337,7 +389,11 @@ func (c *Client) Shell(id string) error {
 	keyPath := filepath.Join(homeDir, ".ssh", "id_ed25519_nexus")
 
 	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
-		return fmt.Errorf("SSH key not found at %s (run: ssh-keygen -t ed25519 -f %s)", keyPath, keyPath)
+		keyPair, err := docker.GetUserSSHKey()
+		if err != nil {
+			return fmt.Errorf("failed to get SSH key: %w", err)
+		}
+		keyPath = keyPair.PrivateKeyPath
 	}
 
 	sshCmd := exec.Command("ssh",
@@ -764,6 +820,34 @@ func (c *Client) RestoreCheckpoint(workspaceID, checkpointID string) (*Workspace
 	defer resp.Body.Close()
 
 	return c.parseWorkspaceResponse(resp)
+}
+
+func (c *Client) DeleteCheckpoint(workspaceID, checkpointID string) error {
+	ws, err := c.GetWorkspace(workspaceID)
+	if err != nil {
+		return fmt.Errorf("getting workspace: %w", err)
+	}
+	workspaceID = ws.ID
+
+	httpReq, err := http.NewRequest("DELETE", c.baseURL+"/api/v1/workspaces/"+workspaceID+"/checkpoints/"+checkpointID, nil)
+	if err != nil {
+		return err
+	}
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("failed to delete checkpoint: %s", resp.Status)
+	}
+
+	return nil
 }
 
 type Session struct {

@@ -19,18 +19,18 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
-	wsTypes "github.com/nexus/nexus/packages/nexusd/internal/types"
 	nat "github.com/docker/go-connections/nat"
 	"github.com/inizio/nexus/packages/nexus/pkg/sync"
+	wsTypes "github.com/nexus/nexus/packages/nexusd/internal/types"
 )
 
 type DockerBackend struct {
-	docker            *client.Client
-	portManager       *PortManager
-	containerManager  *ContainerManager
-	stateDir          string
-	syncManager       *sync.Manager
-	worktreePathFunc  func(workspaceID string) (string, error)
+	docker           *client.Client
+	portManager      *PortManager
+	containerManager *ContainerManager
+	stateDir         string
+	syncManager      *sync.Manager
+	worktreePathFunc func(workspaceID string) (string, error)
 }
 
 func NewDockerBackend(dockerClient *client.Client, stateDir string) *DockerBackend {
@@ -60,9 +60,9 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 		Repository: &wsTypes.Repository{
 			URL: req.RepositoryURL,
 		},
-		Branch:  req.Branch,
-		Config:  req.Config,
-		Labels:  req.Labels,
+		Branch: req.Branch,
+		Config: req.Config,
+		Labels: req.Labels,
 	}
 
 	if workspace.Config == nil {
@@ -74,7 +74,7 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 		if req.DinD {
 			image = "docker:dind"
 		} else {
-			image = "ubuntu:22.04"
+			image = getImageForTemplate(req.Labels)
 		}
 	}
 
@@ -159,16 +159,16 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 	}
 
 	containerID, err := b.createContainer(ctx, image, &ContainerConfig{
-		Name:        workspace.ID,
-		Image:       image,
-		Env:         mergeEnv(configEnv, sshEnv),
-		WorkingDir:  workingDir,
-		AutoRemove:  false,
-		Volumes:     volumes,
-		Ports:       append([]PortBinding{{ContainerPort: 22, HostPort: sshPort, Protocol: "tcp"}}, extraPorts...),
-		Entrypoint:  entrypointCmd,
-		Cmd:         cmd,
-		Privileged:  dindPrivileged,
+		Name:       workspace.ID,
+		Image:      image,
+		Env:        mergeEnv(configEnv, sshEnv),
+		WorkingDir: workingDir,
+		AutoRemove: false,
+		Volumes:    volumes,
+		Ports:      append([]PortBinding{{ContainerPort: 22, HostPort: sshPort, Protocol: "tcp"}}, extraPorts...),
+		Entrypoint: entrypointCmd,
+		Cmd:        cmd,
+		Privileged: dindPrivileged,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating container: %w", err)
@@ -245,9 +245,9 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 		Repository: &wsTypes.Repository{
 			URL: req.RepositoryURL,
 		},
-		Branch:  req.Branch,
-		Config:  req.Config,
-		Labels:  req.Labels,
+		Branch: req.Branch,
+		Config: req.Config,
+		Labels: req.Labels,
 	}
 
 	if workspace.Config == nil {
@@ -349,16 +349,16 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 	}
 
 	containerID, err := b.createContainer(ctx, image, &ContainerConfig{
-		Name:        workspace.ID,
-		Image:       image,
-		Env:         mergeEnv(configEnv, allEnv),
-		WorkingDir:  workingDir,
-		AutoRemove:  false,
-		Volumes:     volumes,
-		Ports:       append([]PortBinding{{ContainerPort: 22, HostPort: sshPort, Protocol: "tcp"}}, extraPortsBridge...),
-		Entrypoint:  entrypointCmd,
-		Cmd:         cmd,
-		Privileged:  dindPrivileged,
+		Name:       workspace.ID,
+		Image:      image,
+		Env:        mergeEnv(configEnv, allEnv),
+		WorkingDir: workingDir,
+		AutoRemove: false,
+		Volumes:    volumes,
+		Ports:      append([]PortBinding{{ContainerPort: 22, HostPort: sshPort, Protocol: "tcp"}}, extraPortsBridge...),
+		Entrypoint: entrypointCmd,
+		Cmd:        cmd,
+		Privileged: dindPrivileged,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating container: %w", err)
@@ -466,9 +466,9 @@ func (b *DockerBackend) StopWorkspace(ctx context.Context, id string, timeout in
 	}
 
 	return &wsTypes.Operation{
-		ID:         fmt.Sprintf("op-%d", time.Now().UnixNano()),
-		Status:     "stopped",
-		CreatedAt:  time.Now(),
+		ID:          fmt.Sprintf("op-%d", time.Now().UnixNano()),
+		Status:      "stopped",
+		CreatedAt:   time.Now(),
 		CompletedAt: time.Now(),
 	}, nil
 }
@@ -596,6 +596,57 @@ func (b *DockerBackend) Exec(ctx context.Context, id string, cmd []string) (stri
 	}
 
 	return string(output), nil
+}
+
+func (b *DockerBackend) InjectSSHKey(ctx context.Context, id string) (string, error) {
+	keys, err := GetUserPublicKeys()
+	if err != nil {
+		return "", fmt.Errorf("getting public keys: %w", err)
+	}
+
+	if len(keys) == 0 {
+		return "", fmt.Errorf("no public keys found")
+	}
+
+	nexusKey := keys[0]
+
+	containers, err := b.docker.ContainerList(ctx, container.ListOptions{
+		All: true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("listing containers: %w", err)
+	}
+
+	var containerID string
+	for _, c := range containers {
+		for _, name := range c.Names {
+			if name == "/"+id || name == id {
+				containerID = c.ID
+				break
+			}
+		}
+		if containerID != "" {
+			break
+		}
+	}
+
+	if containerID == "" {
+		return "", fmt.Errorf("container %s not found", id)
+	}
+
+	mkdirCmd := []string{"sh", "-c", "mkdir -p /home/nexus/.ssh && chmod 700 /home/nexus/.ssh"}
+	_, _, err = b.execInContainer(ctx, containerID, mkdirCmd)
+	if err != nil {
+		return "", fmt.Errorf("creating .ssh directory: %w", err)
+	}
+
+	writeCmd := []string{"sh", "-c", fmt.Sprintf("echo '%s' > /home/nexus/.ssh/authorized_keys && chmod 600 /home/nexus/.ssh/authorized_keys && chown -R nexus:nexus /home/nexus/.ssh", nexusKey)}
+	_, _, err = b.execInContainer(ctx, containerID, writeCmd)
+	if err != nil {
+		return "", fmt.Errorf("writing authorized_keys: %w", err)
+	}
+
+	return "SSH key injected successfully\n", nil
 }
 
 func (b *DockerBackend) GetSSHPort(ctx context.Context, id string) (int32, error) {
@@ -754,7 +805,7 @@ func (b *DockerBackend) createContainer(ctx context.Context, image string, confi
 		hostConfig.PortBindings = portBindings
 	}
 
-		if len(config.Volumes) > 0 {
+	if len(config.Volumes) > 0 {
 		binds := []string{}
 		mounts := []mount.Mount{}
 		for _, v := range config.Volumes {
@@ -965,7 +1016,7 @@ func (b *DockerBackend) AddPortBinding(ctx context.Context, workspaceID string, 
 
 func (b *DockerBackend) addPortBindingViaExec(ctx context.Context, containerID string, containerPort, hostPort int32) error {
 	socatCmd := fmt.Sprintf("socat TCP-LISTEN:%d,bind=127.0.0.1,reuseaddr,fork TCP:127.0.0.1:%d &", hostPort, containerPort)
-	
+
 	execResp, err := b.docker.ContainerExecCreate(ctx, containerID, container.ExecOptions{
 		Cmd:          []string{"sh", "-c", socatCmd},
 		AttachStdout: true,
@@ -1298,4 +1349,24 @@ func (b *DockerBackend) RestoreFromImage(ctx context.Context, workspaceID, image
 
 	log.Printf("[checkpoint] Restored workspace %s from image %s (new container: %s)", workspaceID, imageName, resp.ID[:12])
 	return nil
+}
+
+func getImageForTemplate(labels map[string]string) string {
+	if template, ok := labels["template"]; ok {
+		switch template {
+		case "node", "nodejs", "node-postgres":
+			return "node:18-alpine"
+		case "python", "python-postgres":
+			return "python:3.11-slim"
+		case "go", "golang", "go-postgres":
+			return "golang:1.21-alpine"
+		case "rust", "rust-postgres":
+			return "rust:1.75-slim"
+		case "blank", "minimal", "":
+			return "ubuntu:22.04"
+		default:
+			return "ubuntu:22.04"
+		}
+	}
+	return "ubuntu:22.04"
 }

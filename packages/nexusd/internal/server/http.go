@@ -104,7 +104,27 @@ func (s *HTTPServer) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *HTTPServer) handleWorkspaceByID(w http.ResponseWriter, r *http.Request) {
-	id := filepath.Base(r.URL.Path)
+	path := r.URL.Path
+	prefix := "/api/v1/workspaces/"
+
+	id := ""
+	subPath := ""
+
+	if strings.HasPrefix(path, prefix) {
+		remaining := path[len(prefix):]
+		if idx := strings.Index(remaining, "/"); idx > 0 {
+			id = remaining[:idx]
+			subPath = remaining[idx:]
+		} else if idx == -1 {
+			id = remaining
+			subPath = ""
+		} else {
+			id = remaining
+			subPath = ""
+		}
+	} else {
+		id = filepath.Base(path)
+	}
 
 	s.mu.RLock()
 	ws, exists := s.workspaces[id]
@@ -120,31 +140,32 @@ func (s *HTTPServer) handleWorkspaceByID(w http.ResponseWriter, r *http.Request)
 		s.getWorkspace(w, r, ws)
 	case http.MethodDelete:
 		s.deleteWorkspace(w, r, ws)
-	default:
-			subPath := r.URL.Path[len("/api/v1/workspaces/"+id):]
-			switch {
-			case strings.HasPrefix(subPath, "/start"):
-				s.startWorkspace(w, r, ws)
-			case strings.HasPrefix(subPath, "/stop"):
-				s.stopWorkspace(w, r, ws)
-			case strings.HasPrefix(subPath, "/exec"):
-				s.execWorkspace(w, r, ws)
-			case strings.HasPrefix(subPath, "/health"):
-				s.getWorkspaceHealth(w, r, ws)
-			case strings.HasPrefix(subPath, "/sync"):
-				s.handleSync(w, r, ws)
-			case strings.HasPrefix(subPath, "/sync/status"):
-				s.getSyncStatus(w, r, ws)
-			case strings.HasPrefix(subPath, "/sync/pause"):
-				s.pauseSync(w, r, ws)
-			case strings.HasPrefix(subPath, "/sync/resume"):
-				s.resumeSync(w, r, ws)
-			case strings.HasPrefix(subPath, "/sync/flush"):
-				s.flushSync(w, r, ws)
-			default:
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			}
+	case http.MethodPost:
+		switch {
+		case subPath == "/start":
+			s.startWorkspace(w, r, ws)
+		case subPath == "/stop":
+			s.stopWorkspace(w, r, ws)
+		case subPath == "/exec":
+			s.execWorkspace(w, r, ws)
+		case subPath == "/inject-key":
+			s.injectSSHKey(w, r, ws)
+		case subPath == "/health":
+			s.getWorkspaceHealth(w, r, ws)
+		case strings.HasPrefix(subPath, "/sync"):
+			s.handleSync(w, r, ws)
+		case subPath == "/sync/status":
+			s.getSyncStatus(w, r, ws)
+		case subPath == "/sync/pause":
+			s.pauseSync(w, r, ws)
+		case subPath == "/sync/resume":
+			s.resumeSync(w, r, ws)
+		case subPath == "/sync/flush":
+			s.flushSync(w, r, ws)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
+	}
 }
 
 func (s *HTTPServer) listWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -324,6 +345,18 @@ func (s *HTTPServer) execWorkspace(w http.ResponseWriter, r *http.Request, ws *t
 	})
 }
 
+func (s *HTTPServer) injectSSHKey(w http.ResponseWriter, r *http.Request, ws *types.Workspace) {
+	output, err := s.backend.InjectSSHKey(r.Context(), ws.ID)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, fmt.Errorf("injecting SSH key: %w", err))
+		return
+	}
+
+	WriteSuccess(w, map[string]string{
+		"output": output,
+	})
+}
+
 type APIResponse struct {
 	Success bool        `json:"success"`
 	Data    interface{} `json:"data,omitempty"`
@@ -339,7 +372,7 @@ func WriteJSON(w http.ResponseWriter, status int, data interface{}) {
 func WriteError(w http.ResponseWriter, status int, err error) {
 	WriteJSON(w, status, APIResponse{
 		Success: false,
-		Error:    err.Error(),
+		Error:   err.Error(),
 	})
 }
 

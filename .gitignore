@@ -46,6 +46,9 @@ vendor/
 # Nexus worktrees
 .worktrees/
 .worktree/
+
+# Feature worktrees
+worktrees/
 .nexus/dogfooding/
 
 # Nexus collection data (may contain credentials)
