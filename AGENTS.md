@@ -43,7 +43,12 @@ This is the **Nexus** project - an AI-native development environment with multip
 
 ### What Is NOT Yet Implemented
 
-- Complete remote workspace lifecycle
+**Phase 2 Roadmap (Q2 2026):**
+- **Multi-User Support** - Organization management, team collaboration, resource quotas, permission levels, audit logging
+- **Web Dashboard** - Visual workspace management with real-time monitoring, in-browser terminal
+- **Auto-Update System** - Self-updating CLI with secure binary verification
+
+See: [Roadmap](./docs/dev/roadmap.md) | [PRD-004](./docs/dev/plans/004-multi-user.md) | [PRD-005](./docs/dev/plans/005-web-dashboard.md) | [PRD-006](./docs/dev/plans/006-auto-update.md)
 
 ---
 
