@@ -32,14 +32,14 @@ AI agents write code faster than ever, but they often:
 
 Nexus makes AI agents **deterministic, traceable, and production-ready** through three integrated components:
 
-### 🎯 Boulder Enforcement
-Never stops until work is done. Detects idle agents and completion attempts, forcing continuous iteration until standards are met.
-
 ### 🏗️ Isolated Workspaces  
 Docker-based dev environments with automatic worktree integration. Each task gets a clean, isolated space that won't pollute your main repo.
 
 ### 📊 Telemetry & Traces
 Following the [Agent Trace](https://agent-trace.dev/) spec for line-level attribution of AI contributions (planned).
+
+### 🎯 Boulder Enforcement ⚠️ Experimental
+*For testing/development only - not production-ready*
 
 ---
 
@@ -230,8 +230,11 @@ npx @nexus/core boulder status
 
 ## Project Status
 
+> ⚠️ **Note:** The Boulder Enforcement system is **experimental** and intended for testing/development. It may not be stable for production use.
+
 | Component | Status | Description |
 |-----------|--------|-------------|
+| **Boulder/Enforcer** | ⚠️ Experimental | Task enforcement with idle detection (testing/development only) |
 | **Enforcer Core** | ✅ Implemented | Task enforcement with idle detection |
 | **OpenCode Plugin** | ✅ Implemented | Full IDE integration |
 | **Claude Code** | ✅ Implemented | Full IDE integration |

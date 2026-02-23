@@ -110,7 +110,7 @@ For deep-dive research that informs decisions but isn't part of the main documen
 - Proof-of-concept results
 - Investigation findings
 
-**Note:** Research documents can be placed in `docs/dev/internal/implementation/` or create a `research/` subfolder if needed.
+**Note:** Research documents can be placed in `docs/dev/implementation/` or create a `research/` subfolder if needed.
 
 ## What NOT to Document
 
@@ -160,7 +160,7 @@ Before submitting doc changes:
 ```bash
 # Check naming conventions
 ls docs/dev/decisions/  # Should be ###-name.md
-ls docs/dev/internal/plans/      # Should be ###-name.md
+ls docs/dev/plans/           # Should be ###-name.md
 
 # Check for broken links
 # (Manual: search for .md references and verify they exist)

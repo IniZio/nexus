@@ -15,7 +15,7 @@ This document summarizes the research, design work, and PRDs created for the nex
 
 ### 1. Research Document
 
-**Location:** `/docs/dev/internal/research/phase2-features.md`
+**Location:** `/docs/dev/research/phase2-features.md`
 
 **Contents:**
 - Multi-user support research (industry patterns, RBAC model)

@@ -13,7 +13,9 @@ As AI agents write more code, we need systems that ensure:
 
 ## Components
 
-### 1. Enforcer (Implemented)
+### 1. Enforcer ⚠️ Experimental
+
+> ⚠️ **Experimental** - This component is for testing/development only and not production-ready.
 
 The Enforcer ensures agents complete tasks to standard. It prevents early stopping and enforces project conventions through mini-workflows.
 
@@ -123,7 +125,7 @@ See [Cursor integration docs](tutorials/plugin-setup.md#cursor)
 
 | Component | Status | Priority | Documentation |
 |-----------|--------|----------|---------------|
-| Enforcer Core | ✅ Implemented | High | [Boulder System](explanation/boulder-system.md) |
+| Enforcer (Boulder) | ⚠️ Experimental | High | [Boulder System](explanation/boulder-system.md) |
 | OpenCode Plugin | ✅ Implemented | High | [Setup](tutorials/plugin-setup.md) |
 | Claude Integration | ✅ Implemented | High | [Setup](tutorials/plugin-setup.md) |
 | Cursor Extension | 🚧 In Progress | Medium | [Setup](tutorials/plugin-setup.md) |

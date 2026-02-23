@@ -84,16 +84,14 @@ User-facing documentation goes in `docs/` and its subdirectories:
 
 **Only document ACTUALLY IMPLEMENTED features.**
 
-### Internal Docs (docs/dev/internal/)
+### Internal Docs (docs/dev/)
 
-Historical, planning, and research documents go in `docs/dev/internal/`:
+Historical, planning, and research documents go in `docs/dev/`:
 
-- `docs/dev/internal/implementation/` - Implementation plans (historical)
-- `docs/dev/internal/plans/` - Feature plans (some may not be implemented)
-- `docs/dev/internal/design/` - Design documents (historical)
-- `docs/dev/internal/research/` - Research findings
-- `docs/dev/internal/testing/` - Testing reports (some reference unimplemented features)
-- `docs/dev/internal/ARCHIVE/` - Archived documents
+- `docs/dev/implementation/` - Implementation plans (historical)
+- `docs/dev/plans/` - Feature plans (some may not be implemented)
+- `docs/dev/research/` - Research findings
+- `docs/dev/testing/` - Testing reports (some reference unimplemented features)
 
 ### Architecture Decision Records
 
