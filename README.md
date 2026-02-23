@@ -125,28 +125,7 @@ nexus workspace use --clear
 
 ## Usage Examples
 
-### Example 1: IDE Integration Setup
 
-```bash
-# OpenCode Plugin
-cd packages/opencode
-pnpm build
-mkdir -p ~/.opencode/plugins
-cp dist/index.js ~/.opencode/plugins/nexus-enforcer.js
-
-# Claude Code Plugin
-cd packages/claude
-pnpm build
-mkdir -p ~/.claude/plugins
-cp dist/index.js ~/.claude/plugins/nexus-enforcer.js
-
-# Cursor Extension
-cd packages/cursor
-pnpm build
-# Load unpacked extension in chrome://extensions/
-```
-
-### Example 2: Workspace Workflow
 
 ```bash
 # Create and activate workspace

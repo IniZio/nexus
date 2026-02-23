@@ -4,7 +4,7 @@ This guide covers how to install and set up Nexus.
 
 ## Prerequisites
 
-- **Node.js 20+** - Required for the Enforcer and IDE plugins
+- **Node.js 20+** - Required for building IDE plugins
 - **Go 1.24+** - Required for building the Nexus daemon and CLI
 - **Docker** - Required for workspace functionality
 - **pnpm** - Package manager (install via `npm install -g pnpm`)
@@ -31,9 +31,6 @@ task build
 ```
 
 This builds:
-- `@nexus/core` - Enforcer library
-- `@nexus/opencode` - OpenCode plugin
-- `nexusd` - Workspace daemon and CLI
 
 ### 4. Install the CLI
 
@@ -66,46 +63,6 @@ nexus --version
 
 # Check workspace commands
 nexus workspace list
-```
-
-## IDE Integration
-
-### OpenCode
-
-```bash
-# Build the plugin
-cd packages/opencode
-pnpm build
-
-# Copy to OpenCode plugins directory
-mkdir -p ~/.opencode/plugins
-cp dist/index.js ~/.opencode/plugins/nexus-enforcer.js
-```
-
-### Claude Code
-
-```bash
-# Build the plugin
-cd packages/claude
-pnpm build
-
-# Copy to Claude plugins directory  
-mkdir -p ~/.claude/plugins
-cp dist/index.js ~/.claude/plugins/nexus-enforcer.js
-```
-
-### Cursor
-
-```bash
-# Build the extension
-cd packages/cursor
-pnpm build
-
-# Load unpacked extension in Cursor/Chrome:
-# 1. Open chrome://extensions/
-# 2. Enable Developer mode
-# 3. Click "Load unpacked"
-# 4. Select packages/cursor/dist
 ```
 
 ## Next Steps

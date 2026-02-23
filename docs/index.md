@@ -73,26 +73,12 @@ pnpm run build
 
 ### IDE Integration
 
-**OpenCode:**
-```bash
-cp packages/opencode/dist/index.js ~/.opencode/plugins/nexus-enforcer.js
-```
-
-**Claude Code:**
-See [Claude integration docs](tutorials/plugin-setup.md#claude)
-
-**Cursor:**
-See [Cursor integration docs](tutorials/plugin-setup.md#cursor)
-
 ## Project Board
 
 | Component | Status | Priority | Documentation |
 |-----------|--------|----------|---------------|
 | Workspace (nexusd) | ✅ Implemented | High | [Quickstart](tutorials/workspace-quickstart.md) |
 | Workspace CLI | ✅ Implemented | High | [CLI](reference/nexus-cli.md) |
-| OpenCode Plugin | ✅ Implemented | High | [Setup](tutorials/plugin-setup.md) |
-| Claude Integration | ✅ Implemented | High | [Setup](tutorials/plugin-setup.md) |
-| Cursor Extension | 🚧 In Progress | Medium | [Setup](tutorials/plugin-setup.md) |
 | Telemetry (Agent Trace) | 📋 Planned | Low | - |
 | Web Dashboard | 📋 Planned | Low | - |
 | Multi-Agent Coordination | 📋 Planned | Low | - |
@@ -117,7 +103,6 @@ We believe deterministic enforcement beats "smarter" agents:
 ## Documentation
 
 ### For Users
-- [Plugin Setup](tutorials/plugin-setup.md) - Configure IDE integrations (OpenCode, Claude Code)
 - [CLI Reference](reference/nexus-cli.md) - Command reference
 
 ### For Developers
