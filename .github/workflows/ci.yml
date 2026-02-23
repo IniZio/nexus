@@ -53,3 +53,43 @@ jobs:
             **/test-results/
             **/coverage/
           retention-days: 7
+
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      
+      - name: Build nexus CLI
+        run: |
+          cd packages/nexusd
+          go build -o nexus ./cmd/cli
+          sudo mv nexus /usr/local/bin/
+      
+      - name: Test docker-compose-workspace example
+        run: |
+          cd examples/docker-compose-workspace
+          nexus workspace create test-workspace
+          nexus workspace exec test-workspace -- docker-compose ps
+          nexus workspace delete test-workspace --force
+      
+      - name: Test go-microservices-workspace example
+        run: |
+          cd examples/go-microservices-workspace
+          nexus workspace create test-go --dind
+          nexus workspace exec test-go -- go version
+          nexus workspace delete test-go --force
+      
+      - name: Test python-datascience-workspace example
+        run: |
+          cd examples/python-datascience-workspace
+          nexus workspace create test-python
+          nexus workspace exec test-python -- python3 --version
+          nexus workspace delete test-python --force
