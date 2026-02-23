@@ -6,20 +6,32 @@ import (
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/nexus/nexus/packages/nexusd/internal/types"
 )
 
 type Config struct {
-	Version    string         `yaml:"version"`
-	Workspace  WorkspaceConfig `yaml:"workspace"`
-	Boulder    BoulderConfig  `yaml:"boulder"`
-	Telemetry  TelemetryConfig `yaml:"telemetry"`
-	Daemon     DaemonConfig   `yaml:"daemon"`
-	CLI        CLIConfig      `yaml:"cli"`
+	Version   string          `yaml:"version"`
+	Workspace WorkspaceConfig `yaml:"workspace"`
+	Boulder   BoulderConfig   `yaml:"boulder"`
+	Telemetry TelemetryConfig `yaml:"telemetry"`
+	Daemon    DaemonConfig    `yaml:"daemon"`
+	CLI       CLIConfig       `yaml:"cli"`
+	Backends  BackendConfigs  `yaml:"backends"`
+}
+
+type BackendConfigs struct {
+	Docker  DockerConfig        `yaml:"docker"`
+	Daytona types.DaytonaConfig `yaml:"daytona"`
+}
+
+type DockerConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 type WorkspaceConfig struct {
-	Default    string `yaml:"default"`
-	AutoStart  bool   `yaml:"auto_start"`
+	Default     string `yaml:"default"`
+	AutoStart   bool   `yaml:"auto_start"`
 	StoragePath string `yaml:"storage_path"`
 }
 
@@ -76,6 +88,15 @@ func DefaultConfig() *Config {
 				Channel:     "stable",
 			},
 		},
+		Backends: BackendConfigs{
+			Docker: DockerConfig{
+				Enabled: true,
+			},
+			Daytona: types.DaytonaConfig{
+				Enabled: false,
+				APIURL:  "https://app.daytona.io/api",
+			},
+		},
 	}
 }
 
@@ -91,7 +112,7 @@ func DirPath() string {
 
 func Load() (*Config, error) {
 	path := ConfigPath()
-	
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

@@ -81,11 +81,11 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ matrix.target }}" == windows* ]]; then
-            GOOS=windows GOARCH=amd64 go build -o ${{ matrix.artifact }}.exe -C packages/nexusd ./cmd/cli
+            GOOS=windows GOARCH=amd64 go build -C packages/nexusd -o ${{ matrix.artifact }}.exe ./cmd/cli
           else
             GOOS=$(echo ${{ matrix.target }} | cut -d'-' -f1) \
             GOARCH=$(echo ${{ matrix.target }} | cut -d'-' -f2) \
-            go build -o ${{ matrix.artifact }} -C packages/nexusd ./cmd/cli
+            go build -C packages/nexusd -o ${{ matrix.artifact }} ./cmd/cli
           fi
 
       - name: Upload artifact

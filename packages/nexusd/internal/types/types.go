@@ -7,7 +7,8 @@ import (
 type WorkspaceStatus int
 
 const (
-	StatusCreating WorkspaceStatus = iota
+	StatusUnknown WorkspaceStatus = iota
+	StatusCreating
 	StatusRunning
 	StatusSleeping
 	StatusStopped
@@ -16,6 +17,8 @@ const (
 
 func (s WorkspaceStatus) String() string {
 	switch s {
+	case StatusUnknown:
+		return "unknown"
 	case StatusCreating:
 		return "creating"
 	case StatusRunning:
@@ -37,6 +40,7 @@ const (
 	BackendDocker BackendType = iota
 	BackendSprite
 	BackendKubernetes
+	BackendDaytona
 )
 
 func (b BackendType) String() string {
@@ -47,6 +51,8 @@ func (b BackendType) String() string {
 		return "sprite"
 	case BackendKubernetes:
 		return "kubernetes"
+	case BackendDaytona:
+		return "daytona"
 	default:
 		return "unknown"
 	}
@@ -60,6 +66,8 @@ func BackendTypeFromString(s string) BackendType {
 		return BackendSprite
 	case "kubernetes":
 		return BackendKubernetes
+	case "daytona":
+		return BackendDaytona
 	default:
 		return BackendDocker
 	}
@@ -83,39 +91,40 @@ func WorkspaceStatusFromString(s string) WorkspaceStatus {
 }
 
 type Workspace struct {
-	ID           string
-	Name         string
-	DisplayName  string
-	Status       WorkspaceStatus
-	Backend      BackendType
-	Repository   *Repository
-	Branch       string
-	Resources    *ResourceAllocation
-	Ports        []PortMapping
-	Config       *WorkspaceConfig
-	Labels       map[string]string
-	Annotations  map[string]string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	LastActiveAt time.Time
-	ExpiresAt    time.Time
-	Health       *HealthStatus
-	WorktreePath string
+	ID              string
+	Name            string
+	DisplayName     string
+	Status          WorkspaceStatus
+	Backend         BackendType
+	Repository      *Repository
+	Branch          string
+	Resources       *ResourceAllocation
+	Ports           []PortMapping
+	Config          *WorkspaceConfig
+	Labels          map[string]string
+	Annotations     map[string]string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	LastActiveAt    time.Time
+	ExpiresAt       time.Time
+	Health          *HealthStatus
+	WorktreePath    string
+	DaytonaMetadata *DaytonaMetadata
 }
 
 type Repository struct {
-	URL            string
-	Provider       string
-	LocalPath      string
-	DefaultBranch  string
-	CurrentCommit  string
+	URL           string
+	Provider      string
+	LocalPath     string
+	DefaultBranch string
+	CurrentCommit string
 }
 
 type ResourceAllocation struct {
 	CPUCores     float64
 	CPULimit     float64
-	MemoryBytes int64
-	MemoryLimit int64
+	MemoryBytes  int64
+	MemoryLimit  int64
 	StorageBytes int64
 }
 
@@ -173,15 +182,28 @@ type Operation struct {
 	CompletedAt  time.Time
 }
 
+type DaytonaConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	APIURL  string `yaml:"api_url"`
+}
+
+type DaytonaMetadata struct {
+	SandboxID     string `json:"sandbox_id"`
+	SSHHost       string `json:"ssh_host"`
+	SSHPort       int    `json:"ssh_port"`
+	SSHUsername   string `json:"ssh_username"`
+	SSHPrivateKey string `json:"ssh_private_key"`
+}
+
 type ResourceStats struct {
 	WorkspaceID      string
-	CPUUsagePercent   float64
-	MemoryUsedBytes   int64
-	MemoryLimitBytes  int64
-	DiskUsedBytes     int64
-	NetworkRxBytes    int64
-	NetworkTxBytes    int64
-	Timestamp         time.Time
+	CPUUsagePercent  float64
+	MemoryUsedBytes  int64
+	MemoryLimitBytes int64
+	DiskUsedBytes    int64
+	NetworkRxBytes   int64
+	NetworkTxBytes   int64
+	Timestamp        time.Time
 }
 
 type WorkspaceEvent struct {
@@ -205,18 +227,18 @@ type Snapshot struct {
 }
 
 type CreateWorkspaceRequest struct {
-	Name           string
-	DisplayName    string
-	Backend        BackendType
-	RepositoryURL  string
-	Branch         string
-	ResourceClass  string
-	Config         *WorkspaceConfig
-	Labels         map[string]string
-	ForwardSSH     bool
-	ID             string
-	WorktreePath   string
-	DinD           bool
+	Name          string
+	DisplayName   string
+	Backend       BackendType
+	RepositoryURL string
+	Branch        string
+	ResourceClass string
+	Config        *WorkspaceConfig
+	Labels        map[string]string
+	ForwardSSH    bool
+	ID            string
+	WorktreePath  string
+	DinD          bool
 }
 
 type GetWorkspaceRequest struct {
@@ -233,9 +255,9 @@ type ListWorkspacesRequest struct {
 }
 
 type ListWorkspacesResponse struct {
-	Workspaces     []*Workspace
-	NextPageToken  string
-	TotalCount     int32
+	Workspaces    []*Workspace
+	NextPageToken string
+	TotalCount    int32
 }
 
 type UpdateWorkspaceRequest struct {
@@ -274,9 +296,9 @@ type SwitchWorkspaceResponse struct {
 }
 
 type SyncStatus struct {
-	State     string    `json:"state"`
-	SessionID string    `json:"session_id"`
-	LastSync  time.Time `json:"last_sync"`
+	State     string     `json:"state"`
+	SessionID string     `json:"session_id"`
+	LastSync  time.Time  `json:"last_sync"`
 	Conflicts []Conflict `json:"conflicts"`
 }
 
@@ -291,9 +313,9 @@ type SyncRequest struct {
 }
 
 type SyncResponse struct {
-	Success  bool   `json:"success"`
-	State    string `json:"state,omitempty"`
-	Message  string `json:"message,omitempty"`
+	Success bool   `json:"success"`
+	State   string `json:"state,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 type HealthStatus struct {
