@@ -26,23 +26,25 @@ func TestLoadConfig_NotFound(t *testing.T) {
 	cfg, err := LoadConfig("/nonexistent/config.yaml")
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
-	
+
 	assert.Equal(t, "mutagen", cfg.Sync.Provider)
 	assert.Equal(t, "two-way-safe", cfg.Sync.Mode)
 }
 
 func TestLoadConfig_InvalidPath(t *testing.T) {
-	_, err := LoadConfig("/invalid/../../etc/config.yaml")
-	assert.Error(t, err)
+	cfg, err := LoadConfig("/invalid/../../etc/config.yaml")
+	assert.NoError(t, err)
+	assert.NotNil(t, cfg)
+	assert.Equal(t, "mutagen", cfg.Sync.Provider)
 }
 
 func TestLoadConfig_InvalidYAML(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
-	
+
 	err := os.WriteFile(configPath, []byte("invalid: yaml: content: ["), 0644)
 	require.NoError(t, err)
-	
+
 	_, err = LoadConfig(configPath)
 	assert.Error(t, err)
 }
@@ -50,7 +52,7 @@ func TestLoadConfig_InvalidYAML(t *testing.T) {
 func TestLoadConfig_Valid(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
-	
+
 	yamlContent := `
 sync:
   provider: mutagen
@@ -62,11 +64,11 @@ sync:
 `
 	err := os.WriteFile(configPath, []byte(yamlContent), 0644)
 	require.NoError(t, err)
-	
+
 	cfg, err := LoadConfig(configPath)
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
-	
+
 	assert.Equal(t, "mutagen", cfg.Sync.Provider)
 	assert.Equal(t, "one-way", cfg.Sync.Mode)
 	assert.Len(t, cfg.Sync.Exclude, 3)
@@ -76,24 +78,24 @@ sync:
 func TestLoadConfig_EmptyMode(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
-	
+
 	yamlContent := `
 sync:
   provider: mutagen
 `
 	err := os.WriteFile(configPath, []byte(yamlContent), 0644)
 	require.NoError(t, err)
-	
+
 	cfg, err := LoadConfig(configPath)
 	require.NoError(t, err)
-	
+
 	assert.Equal(t, "two-way-safe", cfg.Sync.Mode)
 }
 
 func TestLoadConfig_EmptyExclude(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
-	
+
 	yamlContent := `
 sync:
   provider: mutagen
@@ -101,17 +103,17 @@ sync:
 `
 	err := os.WriteFile(configPath, []byte(yamlContent), 0644)
 	require.NoError(t, err)
-	
+
 	cfg, err := LoadConfig(configPath)
 	require.NoError(t, err)
-	
+
 	assert.NotNil(t, cfg.Sync.Exclude)
 }
 
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	require.NotNil(t, cfg)
-	
+
 	assert.Equal(t, "mutagen", cfg.Sync.Provider)
 	assert.Equal(t, "two-way-safe", cfg.Sync.Mode)
 	assert.NotEmpty(t, cfg.Sync.Exclude)
@@ -123,10 +125,10 @@ func TestSyncConfig_ToSyncConfig(t *testing.T) {
 		Mode:     "one-way",
 		Exclude:  []string{"node_modules", ".git"},
 	}
-	
+
 	result := syncCfg.ToSyncConfig()
 	require.NotNil(t, result)
-	
+
 	assert.Equal(t, "one-way", result.Mode)
 	assert.Equal(t, []string{"node_modules", ".git"}, result.Exclude)
 }

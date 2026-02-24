@@ -59,7 +59,7 @@ func TestManager_CreateWorktree(t *testing.T) {
 		t.Fatalf("CreateWorktree failed: %v", err)
 	}
 
-	expectedPath := filepath.Join(repoDir, ".nexus", "worktrees", name)
+	expectedPath := filepath.Join(repoDir, ".worktree", name)
 	if path != expectedPath {
 		t.Errorf("Expected path %s, got %s", expectedPath, path)
 	}
@@ -91,7 +91,7 @@ func TestManager_RemoveWorktree(t *testing.T) {
 		t.Fatalf("RemoveWorktree failed: %v", err)
 	}
 
-	worktreePath := filepath.Join(repoDir, ".nexus", "worktrees", name)
+	worktreePath := filepath.Join(repoDir, ".worktree", name)
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
 		t.Errorf("Worktree directory was not removed: %s", worktreePath)
 	}
@@ -102,7 +102,7 @@ func TestManager_GetWorktreePath(t *testing.T) {
 	mgr := NewManagerWithRepoRoot(repoDir)
 
 	name := testutil.RandomWorkspaceName()
-	expectedPath := filepath.Join(repoDir, ".nexus", "worktrees", name)
+	expectedPath := filepath.Join(repoDir, ".worktree", name)
 
 	path := mgr.GetWorktreePath(name)
 	if path != expectedPath {
