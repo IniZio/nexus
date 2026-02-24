@@ -408,6 +408,7 @@ func (s *Server) registerHTTPRoutes() {
 	s.mux.HandleFunc("/ws", s.handleWebSocket)
 	s.mux.HandleFunc("/ws/ssh-agent", s.handleSSHAgent)
 	s.setupPortRoutes()
+	s.setupCheckpointRoutes()
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -1060,7 +1061,7 @@ func (s *Server) execWorkspace(w http.ResponseWriter, r *http.Request, id string
 	} else {
 		result, rpcErr := handlers.HandleExec(ctx, jsonParams, s.ws, s.dockerBackend)
 		if rpcErr != nil {
-			WriteError(w, http.StatusInternalServerError, fmt.Errorf("executing command: %v", rpcErr))
+			WriteError(w, http.StatusInternalServerError, fmt.Errorf("executing command: %w", rpcErr))
 			return
 		}
 		output = result.Stdout
@@ -1624,17 +1625,6 @@ func (s *Server) resumeWorkspace(workspaceID string) {
 }
 
 func (s *Server) setupPortRoutes() {
-}
-
-func (s *Server) handleWorkspacePorts(w http.ResponseWriter, r *http.Request, workspaceID string) {
-	switch r.Method {
-	case http.MethodGet:
-		s.listPorts(w, r, workspaceID)
-	case http.MethodPost:
-		s.addPort(w, r, workspaceID)
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
 }
 
 func (s *Server) handleWorkspacePortByID(w http.ResponseWriter, r *http.Request, workspaceID string) {

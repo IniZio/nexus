@@ -38,6 +38,7 @@ var ErrDaemonNotRunning = fmt.Errorf("daemon not running")
 
 // Execute runs the root command.
 func Execute() error {
+	defer closeTelemetry()
 	return rootCmd.Execute()
 }
 

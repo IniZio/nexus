@@ -132,16 +132,16 @@ func writeTempKey(key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
-	if _, err := tmpFile.WriteString(key); err != nil {
+	defer func() {
 		tmpFile.Close()
 		os.Remove(tmpFile.Name())
+	}()
+
+	if _, err := tmpFile.WriteString(key); err != nil {
 		return "", err
 	}
 
 	if err := tmpFile.Chmod(0600); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpFile.Name())
 		return "", err
 	}
 

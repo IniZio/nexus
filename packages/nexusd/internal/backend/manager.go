@@ -60,7 +60,7 @@ func (m *Manager) GetBackend(backendType types.BackendType) (interfaces.Backend,
 		}
 		return m.daytonaBackend, nil
 	default:
-		return nil, fmt.Errorf("unknown backend type: %v", backendType)
+		return nil, fmt.Errorf("unknown backend type: %w", backendType)
 	}
 }
 

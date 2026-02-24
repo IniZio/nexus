@@ -157,10 +157,10 @@ func (l *Lifecycle) SetAutoRestart(enabled bool) {
 	l.autoRestart = enabled
 }
 
-func (l *Lifecycle) SetMaxRestarts(max int) {
+func (l *Lifecycle) SetMaxRestarts(maxRestarts int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.maxRestarts = max
+	l.maxRestarts = maxRestarts
 }
 
 func (l *Lifecycle) SetHealthChecker(checker HealthChecker) {

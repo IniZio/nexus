@@ -676,7 +676,6 @@ func colorStatus(status string) string {
 
 var (
 	checkpointNameFlag string
-	checkpointDescFlag string
 )
 
 var workspaceCheckpointCmd = &cobra.Command{
