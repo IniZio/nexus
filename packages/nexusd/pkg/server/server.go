@@ -1061,7 +1061,7 @@ func (s *Server) execWorkspace(w http.ResponseWriter, r *http.Request, id string
 	} else {
 		result, rpcErr := handlers.HandleExec(ctx, jsonParams, s.ws, s.dockerBackend)
 		if rpcErr != nil {
-			WriteError(w, http.StatusInternalServerError, fmt.Errorf("executing command: %w", rpcErr))
+			WriteError(w, http.StatusInternalServerError, fmt.Errorf("executing command: %v", rpcErr))
 			return
 		}
 		output = result.Stdout
