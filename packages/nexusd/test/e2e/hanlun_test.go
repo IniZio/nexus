@@ -31,30 +31,30 @@ func TestHanlunLMS(t *testing.T) {
 		t.Skipf("Could not clone hanlun-lms: %v\n%s", err, output)
 	}
 
-	createCmd := exec.Command("nexus", "create", "hanlun-e2e", "--dind", "--token", "test")
+	createCmd := exec.Command("nexus", "workspace", "create", "hanlun-e2e")
 	createCmd.Dir = repoPath
 	require.NoError(t, createCmd.Run())
-	defer exec.Command("nexus", "destroy", "hanlun-e2e", "--token", "test").Run()
+	defer exec.Command("nexus", "workspace", "delete", "--force", "hanlun-e2e").Run()
 
 	time.Sleep(2 * time.Second)
-	urlCmd := exec.Command("nexus", "url", "hanlun-e2e", "--token", "test")
-	urlCmd.Dir = repoPath
-	urlOutput, err := urlCmd.CombinedOutput()
+	statusCmd := exec.Command("nexus", "workspace", "status", "hanlun-e2e")
+	statusCmd.Dir = repoPath
+	statusOutput, err := statusCmd.CombinedOutput()
 	require.NoError(t, err)
-	assert.Contains(t, string(urlOutput), "localhost")
+	assert.Contains(t, string(statusOutput), "ssh: ")
 
-	composeCmd := exec.Command("nexus", "exec", "hanlun-e2e", "--",
+	execCmd := exec.Command("nexus", "workspace", "exec", "hanlun-e2e", "--",
 		"docker-compose", "up", "-d")
-	composeCmd.Dir = repoPath
-	require.NoError(t, composeCmd.Run())
+	execCmd.Dir = repoPath
+	require.NoError(t, execCmd.Run())
 
 	time.Sleep(10 * time.Second)
 
-	healthCmd := exec.Command("nexus", "health", "hanlun-e2e", "--token", "test")
+	healthCmd := exec.Command("nexus", "workspace", "status", "hanlun-e2e")
 	healthCmd.Dir = repoPath
 	healthOutput, err := healthCmd.CombinedOutput()
 	require.NoError(t, err)
-	assert.Contains(t, string(healthOutput), "healthy")
+	assert.Contains(t, string(healthOutput), "running")
 }
 
 func TestWorkspaceCreateAndDestroy(t *testing.T) {
@@ -66,19 +66,19 @@ func TestWorkspaceCreateAndDestroy(t *testing.T) {
 		t.Skip("Skipping E2E test")
 	}
 
-	createCmd := exec.Command("nexus", "create", "e2e-test", "--token", "test")
+	createCmd := exec.Command("nexus", "workspace", "create", "e2e-test")
 	output, err := createCmd.CombinedOutput()
 	if err != nil {
 		t.Skipf("Could not create workspace: %v\n%s", err, output)
 	}
-	defer exec.Command("nexus", "destroy", "e2e-test", "--token", "test").Run()
+	defer exec.Command("nexus", "workspace", "delete", "--force", "e2e-test").Run()
 
 	time.Sleep(2 * time.Second)
 
-	urlCmd := exec.Command("nexus", "url", "e2e-test", "--token", "test")
-	urlOutput, err := urlCmd.CombinedOutput()
-	require.NoError(t, err, "url command should succeed")
-	assert.Contains(t, string(urlOutput), "localhost")
+	statusCmd := exec.Command("nexus", "workspace", "status", "e2e-test")
+	statusOutput, err := statusCmd.CombinedOutput()
+	require.NoError(t, err, "status command should succeed")
+	assert.Contains(t, string(statusOutput), "ssh: ")
 }
 
 func TestWorkspaceExec(t *testing.T) {
@@ -90,16 +90,16 @@ func TestWorkspaceExec(t *testing.T) {
 		t.Skip("Skipping E2E test")
 	}
 
-	createCmd := exec.Command("nexus", "create", "e2e-exec-test", "--token", "test")
+	createCmd := exec.Command("nexus", "workspace", "create", "e2e-exec-test")
 	output, err := createCmd.CombinedOutput()
 	if err != nil {
 		t.Skipf("Could not create workspace: %v\n%s", err, output)
 	}
-	defer exec.Command("nexus", "destroy", "e2e-exec-test", "--token", "test").Run()
+	defer exec.Command("nexus", "workspace", "delete", "--force", "e2e-exec-test").Run()
 
 	time.Sleep(3 * time.Second)
 
-	execCmd := exec.Command("nexus", "exec", "e2e-exec-test", "--", "echo", "hello world")
+	execCmd := exec.Command("nexus", "workspace", "exec", "e2e-exec-test", "--", "echo", "hello world")
 	execOutput, err := execCmd.CombinedOutput()
 	require.NoError(t, err, "exec command should succeed")
 	assert.Contains(t, string(execOutput), "hello world")
