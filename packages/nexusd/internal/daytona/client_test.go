@@ -228,7 +228,7 @@ func TestDeleteSandbox(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			assert.Equal(t, "DELETE", r.Method)
-			assert.Contains(t, r.URL.Path, "/workspace/sb-123")
+			assert.Contains(t, r.URL.Path, "/sandbox/sb-123")
 
 			w.WriteHeader(http.StatusNoContent)
 		}))

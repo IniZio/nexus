@@ -10,15 +10,17 @@ var ErrInvalidAPIKey = errors.New("invalid API key: key cannot be empty")
 type CreateSandboxRequest struct {
 	Name             string            `json:"name"`
 	Image            string            `json:"image,omitempty"`
+	Class            string            `json:"class,omitempty"`
 	Resources        *Resources        `json:"resources,omitempty"`
-	EnvVars          map[string]string `json:"env,omitempty"`
+	EnvVars          map[string]string `json:"env_vars,omitempty"`
 	AutoStopInterval int               `json:"autoStopInterval,omitempty"`
 }
 
 type Resources struct {
-	CPU    int `json:"cpu"`
-	Memory int `json:"memory"`
-	Disk   int `json:"disk"`
+	CPU    int    `json:"cpu"`
+	Memory int    `json:"memory"`
+	Disk   int    `json:"disk"`
+	Class  string `json:"class"`
 }
 
 type Sandbox struct {
@@ -26,7 +28,11 @@ type Sandbox struct {
 	Name             string            `json:"name"`
 	State            string            `json:"state"`
 	Image            string            `json:"image"`
-	Resources        Resources         `json:"resources"`
+	CPU              int               `json:"cpu"`
+	Memory           int               `json:"memory"`
+	Disk             int               `json:"disk"`
+	Class            string            `json:"class"`
+	Resources        Resources         `json:"resources,omitempty"`
 	EnvVars          map[string]string `json:"env"`
 	SSHInfo          SSHInfo           `json:"sshInfo"`
 	AutoStopInterval int               `json:"autoStopInterval"`
@@ -47,4 +53,10 @@ func (s *Sandbox) IsRunning() bool {
 
 func (s *Sandbox) IsStopped() bool {
 	return s.State == "stopped"
+}
+
+type SSHTokenResponse struct {
+	Token      string    `json:"token"`
+	ExpiresAt  time.Time `json:"expiresAt"`
+	SshCommand string    `json:"sshCommand"`
 }

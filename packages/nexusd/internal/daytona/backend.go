@@ -54,12 +54,8 @@ func (b *DaytonaBackend) CreateWorkspace(ctx context.Context, req *types.CreateW
 	resources := b.mapResources(req)
 
 	createReq := CreateSandboxRequest{
-		Name: req.Name,
-		Resources: &Resources{
-			CPU:    resources.CPU,
-			Memory: resources.Memory,
-			Disk:   resources.Disk,
-		},
+		Name:             req.Name,
+		Class:            resources.Class,
 		AutoStopInterval: b.mapIdleTimeout(req.Config),
 	}
 
@@ -214,7 +210,7 @@ func (b *DaytonaBackend) GetResourceStats(ctx context.Context, id string) (*type
 		WorkspaceID:      id,
 		CPUUsagePercent:  0,
 		MemoryUsedBytes:  0,
-		MemoryLimitBytes: int64(sandbox.Resources.Memory) * 1024 * 1024 * 1024,
+		MemoryLimitBytes: int64(sandbox.Memory) * 1024 * 1024 * 1024,
 		DiskUsedBytes:    0,
 	}, nil
 }
@@ -312,11 +308,16 @@ func (b *DaytonaBackend) GetSSHConnection(ctx context.Context, id string) (*type
 		return nil, fmt.Errorf("workspace is not running (state: %s)", sandbox.State)
 	}
 
+	sshAccess, err := b.client.CreateSSHAccess(ctx, daytonaID, 60)
+	if err != nil {
+		return nil, fmt.Errorf("creating SSH access: %w", err)
+	}
+
 	return &types.SSHConnection{
-		Host:       sandbox.SSHInfo.Host,
-		Port:       int32(sandbox.SSHInfo.Port),
-		Username:   sandbox.SSHInfo.Username,
-		PrivateKey: sandbox.SSHInfo.PrivateKey,
+		Host:       "ssh.app.daytona.io",
+		Port:       22,
+		Username:   sshAccess.Token,
+		PrivateKey: "",
 	}, nil
 }
 
@@ -392,13 +393,13 @@ func (b *DaytonaBackend) mapIdleTimeout(config *types.WorkspaceConfig) int {
 func getResourcesForClass(class string) Resources {
 	switch class {
 	case "small":
-		return Resources{CPU: 1, Memory: 2, Disk: 10}
+		return Resources{CPU: 1, Memory: 1, Disk: 3, Class: "small"}
 	case "medium":
-		return Resources{CPU: 2, Memory: 4, Disk: 20}
+		return Resources{CPU: 2, Memory: 4, Disk: 20, Class: "medium"}
 	case "large":
-		return Resources{CPU: 4, Memory: 8, Disk: 40}
+		return Resources{CPU: 4, Memory: 8, Disk: 40, Class: "large"}
 	default:
-		return Resources{CPU: 2, Memory: 4, Disk: 20}
+		return Resources{CPU: 1, Memory: 1, Disk: 3, Class: "small"}
 	}
 }
 
@@ -445,7 +446,7 @@ func (b *DaytonaBackend) GetWorkspaceInfo(ctx context.Context, id string) (*Work
 		Backend:          types.BackendDaytona,
 		SandboxID:        sandbox.ID,
 		Image:            sandbox.Image,
-		Resources:        sandbox.Resources,
+		Resources:        Resources{CPU: sandbox.CPU, Memory: sandbox.Memory, Disk: sandbox.Disk, Class: sandbox.Class},
 		AutoStopInterval: sandbox.AutoStopInterval,
 	}
 

@@ -150,11 +150,11 @@ func TestGetResourcesForClass(t *testing.T) {
 		wantMem  int
 		wantDisk int
 	}{
-		{"small", 1, 2, 10},
+		{"small", 1, 1, 3},
 		{"medium", 2, 4, 20},
 		{"large", 4, 8, 40},
-		{"unknown", 2, 4, 20},
-		{"", 2, 4, 20},
+		{"unknown", 1, 1, 3},
+		{"", 1, 1, 3},
 	}
 
 	for _, tt := range tests {
@@ -211,16 +211,16 @@ func TestMapResources(t *testing.T) {
 			ResourceClass: "",
 		}
 		r := backend.mapResources(req)
-		if r.CPU != 2 {
-			t.Errorf("expected default CPU 2, got %d", r.CPU)
+		if r.CPU != 1 {
+			t.Errorf("expected default CPU 1, got %d", r.CPU)
 		}
 	})
 
 	t.Run("with nil config", func(t *testing.T) {
 		req := &types.CreateWorkspaceRequest{}
 		r := backend.mapResources(req)
-		if r.CPU != 2 {
-			t.Errorf("expected default CPU 2, got %d", r.CPU)
+		if r.CPU != 1 {
+			t.Errorf("expected default CPU 1, got %d", r.CPU)
 		}
 	})
 }
