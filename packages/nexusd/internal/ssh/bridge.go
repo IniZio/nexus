@@ -11,12 +11,12 @@ import (
 )
 
 type SSHBridge struct {
-	workspaceID   string
-	listener       net.Listener
-	socketPath     string
-	wsConn         *websocket.Conn
-	mu             sync.Mutex
-	onActivity     func()
+	workspaceID string
+	listener    net.Listener
+	socketPath  string
+	wsConn      *websocket.Conn
+	mu          sync.Mutex
+	onActivity  func()
 }
 
 func NewBridge(workspaceID string) (*SSHBridge, error) {
@@ -57,7 +57,7 @@ func (b *SSHBridge) Start() (string, error) {
 	}
 
 	if err := os.Chmod(b.socketPath, 0700); err != nil {
-		ln.Close()
+		_ = ln.Close()
 		return "", fmt.Errorf("chmod socket: %w", err)
 	}
 
@@ -87,7 +87,7 @@ func (b *SSHBridge) HandleConnections() {
 }
 
 func (b *SSHBridge) handleConnection(agentConn net.Conn) {
-	defer agentConn.Close()
+	defer func() { _ = agentConn.Close() }()
 
 	b.notifyActivity()
 
@@ -127,17 +127,17 @@ func (b *SSHBridge) Close() {
 	defer b.mu.Unlock()
 
 	if b.listener != nil {
-		b.listener.Close()
+		_ = b.listener.Close()
 		b.listener = nil
 	}
 
 	if b.wsConn != nil {
-		b.wsConn.Close()
+		_ = b.wsConn.Close()
 		b.wsConn = nil
 	}
 
 	if b.socketPath != "" {
-		os.Remove(b.socketPath)
+		_ = os.Remove(b.socketPath)
 		b.socketPath = ""
 	}
 }

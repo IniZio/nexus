@@ -133,8 +133,8 @@ func writeTempKey(key string) (string, error) {
 		return "", err
 	}
 	defer func() {
-		tmpFile.Close()
-		os.Remove(tmpFile.Name())
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpFile.Name())
 	}()
 
 	if _, err := tmpFile.WriteString(key); err != nil {

@@ -134,7 +134,7 @@ func (c *Client) Health() error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to daemon: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("daemon returned status %d", resp.StatusCode)
@@ -492,7 +492,7 @@ func (c *Client) ForwardSSHAgent(workspaceID string) error {
 	if err != nil {
 		return fmt.Errorf("connecting to SSH agent: %w", err)
 	}
-	defer agentConn.Close()
+	defer func() { _ = agentConn.Close() }()
 
 	wsURL := strings.Replace(c.baseURL, "http://", "ws://", 1)
 	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
@@ -507,7 +507,7 @@ func (c *Client) ForwardSSHAgent(workspaceID string) error {
 	if err != nil {
 		return fmt.Errorf("connecting to WebSocket: %w", err)
 	}
-	defer wsConn.Close()
+	defer func() { _ = wsConn.Close() }()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -520,9 +520,9 @@ func (c *Client) ForwardSSHAgent(workspaceID string) error {
 			if err != nil {
 				break
 			}
-			wsConn.WriteMessage(websocket.BinaryMessage, buf[:n])
+			_ = wsConn.WriteMessage(websocket.BinaryMessage, buf[:n])
 		}
-		wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(1000, ""))
+		_ = wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(1000, ""))
 	}()
 
 	go func() {
@@ -543,7 +543,7 @@ func (c *Client) ForwardSSHAgent(workspaceID string) error {
 			if err != nil {
 				break
 			}
-			agentConn.Write(buf[:n])
+			_, _ = agentConn.Write(buf[:n])
 		}
 		agentConn.Close()
 	}()

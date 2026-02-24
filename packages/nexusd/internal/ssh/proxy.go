@@ -26,7 +26,7 @@ func ProxyAgentToWebSocket(agentConn net.Conn, wsConn *websocket.Conn) {
 		}
 	}
 
-	wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(1000, ""))
+	_ = wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(1000, ""))
 }
 
 func ProxyWebSocketToAgent(wsConn *websocket.Conn, agentConn net.Conn) {
@@ -60,5 +60,5 @@ func ProxyWebSocketToAgent(wsConn *websocket.Conn, agentConn net.Conn) {
 		}
 	}
 
-	agentConn.Close()
+	_ = agentConn.Close()
 }

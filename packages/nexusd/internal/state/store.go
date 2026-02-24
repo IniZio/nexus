@@ -14,8 +14,8 @@ import (
 
 var (
 	ErrWorkspaceNotFound = errors.New("workspace not found")
-	ErrWorkspaceExists  = errors.New("workspace already exists")
-	ErrInvalidState     = errors.New("invalid state")
+	ErrWorkspaceExists   = errors.New("workspace already exists")
+	ErrInvalidState      = errors.New("invalid state")
 )
 
 type StateStore struct {
@@ -101,13 +101,13 @@ func (s *StateStore) writeFileAtomic(path string, data []byte) error {
 
 	if _, err := tmpFile.Write(data); err != nil {
 		tmpFile.Close()
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 

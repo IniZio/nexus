@@ -190,7 +190,7 @@ func (s *HTTPServer) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, fmt.Errorf("reading request body: %w", err))
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req types.CreateWorkspaceRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -294,7 +294,7 @@ func (s *HTTPServer) stopWorkspace(w http.ResponseWriter, r *http.Request, ws *t
 		WriteError(w, http.StatusBadRequest, fmt.Errorf("reading request body: %w", err))
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -323,7 +323,7 @@ func (s *HTTPServer) execWorkspace(w http.ResponseWriter, r *http.Request, ws *t
 		WriteError(w, http.StatusBadRequest, fmt.Errorf("reading request body: %w", err))
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	if err := json.Unmarshal(body, &req); err != nil {
 		WriteError(w, http.StatusBadRequest, fmt.Errorf("parsing request: %w", err))
@@ -367,7 +367,7 @@ type APIResponse struct {
 func WriteJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(data)
 }
 
 func WriteError(w http.ResponseWriter, status int, err error) {

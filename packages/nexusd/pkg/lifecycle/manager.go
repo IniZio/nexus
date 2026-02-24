@@ -135,7 +135,7 @@ func (m *Manager) runHook(hook Hook) error {
 			return err
 		}
 	case <-time.After(time.Duration(timeout) * time.Second):
-		cmd.Process.Kill()
+		_ = cmd.Process.Kill()
 		return fmt.Errorf("hook timed out after %d seconds", timeout)
 	}
 
