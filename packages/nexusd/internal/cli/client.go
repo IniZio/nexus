@@ -19,6 +19,36 @@ import (
 	"github.com/nexus/nexus/packages/nexusd/internal/docker"
 )
 
+var (
+	encodeBufferPool = sync.Pool{
+		New: func() interface{} {
+			return new(bytes.Buffer)
+		},
+	}
+)
+
+func getEncodeBuffer() *bytes.Buffer {
+	return encodeBufferPool.Get().(*bytes.Buffer)
+}
+
+func putEncodeBuffer(buf *bytes.Buffer) {
+	buf.Reset()
+	encodeBufferPool.Put(buf)
+}
+
+func jsonMarshalToBuffer(v interface{}) ([]byte, error) {
+	buf := getEncodeBuffer()
+	defer putEncodeBuffer(buf)
+	enc := json.NewEncoder(buf)
+	err := enc.Encode(v)
+	if err != nil {
+		return nil, err
+	}
+	data := make([]byte, buf.Len())
+	copy(data, buf.Bytes())
+	return data, nil
+}
+
 type Client struct {
 	baseURL string
 	token   string
@@ -113,7 +143,7 @@ func (c *Client) Health() error {
 }
 
 func (c *Client) CreateWorkspace(req CreateWorkspaceRequest) (*Workspace, error) {
-	body, err := json.Marshal(req)
+	body, err := jsonMarshalToBuffer(req)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +190,7 @@ func (c *Client) ListWorkspaces() (*ListWorkspacesResponse, error) {
 		return nil, fmt.Errorf("API error: %s", apiResp.Error)
 	}
 
-	data, err := json.Marshal(apiResp.Data)
+	data, err := jsonMarshalToBuffer(apiResp.Data)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +244,7 @@ func (c *Client) StopWorkspace(id string, timeoutSeconds int) (*Workspace, error
 		TimeoutSeconds int `json:"timeout_seconds"`
 	}{TimeoutSeconds: timeoutSeconds}
 
-	body, err := json.Marshal(req)
+	body, err := jsonMarshalToBuffer(req)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +300,7 @@ func (c *Client) Exec(id string, command []string) (string, error) {
 		Command []string `json:"command"`
 	}{Command: command}
 
-	body, err := json.Marshal(req)
+	body, err := jsonMarshalToBuffer(req)
 	if err != nil {
 		return "", err
 	}
@@ -303,7 +333,7 @@ func (c *Client) Exec(id string, command []string) (string, error) {
 		return "", fmt.Errorf("API error: %s", apiResp.Error)
 	}
 
-	data, err := json.Marshal(apiResp.Data)
+	data, err := jsonMarshalToBuffer(apiResp.Data)
 	if err != nil {
 		return "", err
 	}
@@ -353,7 +383,7 @@ func (c *Client) InjectSSHKey(id string) (string, error) {
 		return "", fmt.Errorf("API error: %s", apiResp.Error)
 	}
 
-	data, err := json.Marshal(apiResp.Data)
+	data, err := jsonMarshalToBuffer(apiResp.Data)
 	if err != nil {
 		return "", err
 	}
@@ -437,7 +467,7 @@ func (c *Client) GetLogs(id string, tail int) (string, error) {
 		return "", fmt.Errorf("API error: %s", apiResp.Error)
 	}
 
-	data, err := json.Marshal(apiResp.Data)
+	data, err := jsonMarshalToBuffer(apiResp.Data)
 	if err != nil {
 		return "", err
 	}
@@ -540,7 +570,7 @@ func (c *Client) parseWorkspaceResponse(resp *http.Response) (*Workspace, error)
 		return nil, fmt.Errorf("API error: %s", apiResp.Error)
 	}
 
-	data, err := json.Marshal(apiResp.Data)
+	data, err := jsonMarshalToBuffer(apiResp.Data)
 	if err != nil {
 		return nil, err
 	}
@@ -590,7 +620,7 @@ func (c *Client) GetSyncStatus(workspaceID string) (*SyncStatus, error) {
 		return nil, fmt.Errorf("API error: %s", apiResp.Error)
 	}
 
-	data, err := json.Marshal(apiResp.Data)
+	data, err := jsonMarshalToBuffer(apiResp.Data)
 	if err != nil {
 		return nil, err
 	}
@@ -726,7 +756,7 @@ func (c *Client) CreateCheckpoint(workspaceID, name string) (*Checkpoint, error)
 	}
 	workspaceID = ws.ID
 
-	body, err := json.Marshal(map[string]string{"name": name})
+	body, err := jsonMarshalToBuffer(map[string]string{"name": name})
 	if err != nil {
 		return nil, err
 	}
@@ -755,7 +785,7 @@ func (c *Client) CreateCheckpoint(workspaceID, name string) (*Checkpoint, error)
 		return nil, fmt.Errorf("API error: %s", apiResp.Error)
 	}
 
-	data, _ := json.Marshal(apiResp.Data)
+	data, _ := jsonMarshalToBuffer(apiResp.Data)
 	var cp Checkpoint
 	json.Unmarshal(data, &cp)
 
@@ -792,7 +822,7 @@ func (c *Client) ListCheckpoints(workspaceID string) ([]Checkpoint, error) {
 		return nil, fmt.Errorf("API error: %s", apiResp.Error)
 	}
 
-	data, _ := json.Marshal(apiResp.Data)
+	data, _ := jsonMarshalToBuffer(apiResp.Data)
 	var checkpoints []Checkpoint
 	json.Unmarshal(data, &checkpoints)
 
@@ -882,7 +912,7 @@ func (c *Client) ListSessions() ([]Session, error) {
 		return nil, fmt.Errorf("API error: %s", apiResp.Error)
 	}
 
-	data, _ := json.Marshal(apiResp.Data)
+	data, _ := jsonMarshalToBuffer(apiResp.Data)
 	var sessions []Session
 	json.Unmarshal(data, &sessions)
 
@@ -948,7 +978,7 @@ func (c *Client) ListServices(workspaceID string) ([]Service, error) {
 		return nil, fmt.Errorf("API error: %s", apiResp.Error)
 	}
 
-	data, _ := json.Marshal(apiResp.Data)
+	data, _ := jsonMarshalToBuffer(apiResp.Data)
 	var services []Service
 	json.Unmarshal(data, &services)
 
@@ -979,7 +1009,7 @@ func (c *Client) GetServiceLogs(workspaceID, serviceName string, tail int) (stri
 		return "", fmt.Errorf("API error: %s", apiResp.Error)
 	}
 
-	data, _ := json.Marshal(apiResp.Data)
+	data, _ := jsonMarshalToBuffer(apiResp.Data)
 	var result struct {
 		Logs string `json:"logs"`
 	}
@@ -999,7 +1029,7 @@ func (c *Client) AddPortForward(workspaceID string, containerPort int) (int, err
 	}
 	workspaceID = ws.ID
 
-	body, err := json.Marshal(map[string]int{"container_port": containerPort})
+	body, err := jsonMarshalToBuffer(map[string]int{"container_port": containerPort})
 	if err != nil {
 		return 0, err
 	}
@@ -1028,7 +1058,7 @@ func (c *Client) AddPortForward(workspaceID string, containerPort int) (int, err
 		return 0, fmt.Errorf("API error: %s", apiResp.Error)
 	}
 
-	data, _ := json.Marshal(apiResp.Data)
+	data, _ := jsonMarshalToBuffer(apiResp.Data)
 	var result struct {
 		HostPort int `json:"host_port"`
 	}
@@ -1067,7 +1097,7 @@ func (c *Client) ListPortForwards(workspaceID string) ([]PortMapping, error) {
 		return nil, fmt.Errorf("API error: %s", apiResp.Error)
 	}
 
-	data, _ := json.Marshal(apiResp.Data)
+	data, _ := jsonMarshalToBuffer(apiResp.Data)
 	var ports []PortMapping
 	json.Unmarshal(data, &ports)
 
@@ -1145,7 +1175,7 @@ func (c *Client) GetHealth(workspaceID, serviceName string) (*HealthStatus, erro
 		return nil, fmt.Errorf("API error: %s", apiResp.Error)
 	}
 
-	data, _ := json.Marshal(apiResp.Data)
+	data, _ := jsonMarshalToBuffer(apiResp.Data)
 	var health HealthStatus
 	json.Unmarshal(data, &health)
 
@@ -1176,7 +1206,7 @@ func (c *Client) GetConfig() (*Config, error) {
 		return nil, fmt.Errorf("API error: %s", apiResp.Error)
 	}
 
-	data, _ := json.Marshal(apiResp.Data)
+	data, _ := jsonMarshalToBuffer(apiResp.Data)
 	var cfg Config
 	json.Unmarshal(data, &cfg)
 
@@ -1185,7 +1215,7 @@ func (c *Client) GetConfig() (*Config, error) {
 
 func (c *Client) SetConfig(key, value string) error {
 	configMap := map[string]string{key: value}
-	body, _ := json.Marshal(configMap)
+	body, _ := jsonMarshalToBuffer(configMap)
 
 	req, err := http.NewRequest("POST", c.baseURL+"/api/v1/config", bytes.NewReader(body))
 	if err != nil {
