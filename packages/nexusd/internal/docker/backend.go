@@ -642,8 +642,9 @@ func (b *DockerBackend) InjectSSHKey(ctx context.Context, id string) (string, er
 		return "", fmt.Errorf("creating .ssh directory: %w", err)
 	}
 
-	writeCmd := []string{"sh", "-c", fmt.Sprintf("echo '%s' > /home/nexus/.ssh/authorized_keys && chmod 600 /home/nexus/.ssh/authorized_keys && chown -R nexus:nexus /home/nexus/.ssh", nexusKey)}
-	_, _, err = b.execInContainer(ctx, containerID, writeCmd)
+	keyFile := "/home/nexus/.ssh/authorized_keys"
+	writeCmd := []string{"sh", "-c", fmt.Sprintf("cat > %s && chmod 600 %s && chown -R nexus:nexus /home/nexus/.ssh", keyFile, keyFile)}
+	_, err = b.execInContainerWithStdin(ctx, containerID, writeCmd, strings.NewReader(nexusKey+"\n"))
 	if err != nil {
 		return "", fmt.Errorf("writing authorized_keys: %w", err)
 	}

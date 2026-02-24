@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1212,7 +1213,8 @@ func (s *Server) closeAllSSHBridges() {
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
+	token := r.Header.Get("Authorization")
+	token = strings.TrimPrefix(token, "Bearer ")
 	if !s.validateToken(token) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -1244,7 +1246,7 @@ func (s *Server) validateToken(token string) bool {
 		return false
 	}
 
-	if token == s.tokenSecret {
+	if subtle.ConstantTimeCompare([]byte(token), []byte(s.tokenSecret)) == 1 {
 		return true
 	}
 
@@ -1410,7 +1412,8 @@ func (s *Server) handleSSHAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := r.URL.Query().Get("token")
+	token := r.Header.Get("Authorization")
+	token = strings.TrimPrefix(token, "Bearer ")
 	if !s.validateToken(token) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return

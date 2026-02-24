@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nexus/nexus/packages/nexusd/internal/interfaces"
 	rpckit "github.com/nexus/nexus/packages/nexusd/pkg/rpcerrors"
 	"github.com/nexus/nexus/packages/nexusd/pkg/workspace"
-	"github.com/nexus/nexus/packages/nexusd/internal/interfaces"
 )
 
 const (
@@ -100,6 +100,32 @@ func HandleExec(ctx context.Context, params json.RawMessage, ws *workspace.Works
 			p.Command = parts[0]
 			args = parts[1:]
 		}
+	}
+
+	allowedCommands := map[string]bool{
+		"sh": true, "bash": true, "zsh": true, "fish": true,
+		"node": true, "npm": true, "npx": true,
+		"python": true, "python3": true, "pip": true, "pip3": true,
+		"go": true, "cargo": true, "rustc": true,
+		"git": true, "curl": true, "wget": true,
+		"ls": true, "cat": true, "grep": true, "awk": true, "sed": true,
+		"find": true, "xargs": true, "sort": true, "uniq": true,
+		"tar": true, "gzip": true, "gunzip": true, "zip": true, "unzip": true,
+		"docker": true, "kubectl": true, "helm": true,
+		"make": true, "cmake": true,
+		"clang": true, "clang++": true,
+		"ruby": true, "gem": true, "bundle": true,
+		"java": true, "javac": true, "gradle": true, "maven": true,
+		"cc": true, "c++": true,
+		"pwsh": true, "powershell": true,
+		"echo": true, "pwd": true, "printf": true, "date": true, "sleep": true, "true": true, "false": true, "exit": true,
+	}
+	if !allowedCommands[p.Command] {
+		return &ExecResult{
+			Command:  p.Command,
+			Stderr:   fmt.Sprintf("command not allowed: %s", p.Command),
+			ExitCode: 1,
+		}, nil
 	}
 
 	cmd := exec.CommandContext(execCtx, p.Command, args...)
