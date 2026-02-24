@@ -71,6 +71,9 @@ func (w *Workspace) Exists() bool {
 }
 
 func (w *Workspace) IsValidSubPath(subPath string) bool {
+	if filepath.IsAbs(subPath) {
+		return false
+	}
 	fullPath := filepath.Join(w.path, subPath)
 	cleanPath := filepath.Clean(fullPath)
 	return strings.HasPrefix(cleanPath, w.path)

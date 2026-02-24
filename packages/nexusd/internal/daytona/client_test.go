@@ -143,7 +143,7 @@ func TestGetSandbox(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			assert.Equal(t, "GET", r.Method)
-			assert.Contains(t, r.URL.Path, "/workspace/sb-123")
+			assert.Contains(t, r.URL.Path, "/sandbox/sb-123")
 
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(sandbox)
@@ -179,7 +179,7 @@ func TestStartSandbox(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			assert.Equal(t, "POST", r.Method)
-			assert.Contains(t, r.URL.Path, "/workspace/sb-123/start")
+			assert.Contains(t, r.URL.Path, "/sandbox/sb-123/start")
 
 			w.WriteHeader(http.StatusOK)
 		}))
@@ -210,7 +210,7 @@ func TestStopSandbox(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			assert.Equal(t, "POST", r.Method)
-			assert.Contains(t, r.URL.Path, "/workspace/sb-123/stop")
+			assert.Contains(t, r.URL.Path, "/sandbox/sb-123/stop")
 
 			w.WriteHeader(http.StatusOK)
 		}))
