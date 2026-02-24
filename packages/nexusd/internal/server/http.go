@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -222,7 +223,7 @@ func (s *HTTPServer) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		s.sshBridges[wsID] = bridge
 		s.mu.Unlock()
 
-		fmt.Printf("SSH bridge created for workspace %s at %s\n", wsID, socketPath)
+		log.Printf("[INFO] SSH bridge created for workspace %s at %s", wsID, socketPath)
 	}
 
 	var workspace *types.Workspace
@@ -407,7 +408,7 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		fmt.Printf("%s %s %v\n", r.Method, r.URL.Path, time.Since(start))
+		log.Printf("[INFO] %s %s %v", r.Method, r.URL.Path, time.Since(start))
 	})
 }
 

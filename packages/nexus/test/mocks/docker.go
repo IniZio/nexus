@@ -3,6 +3,7 @@ package mocks
 import (
 	"context"
 	"io"
+	"strings"
 	"sync"
 
 	"github.com/docker/docker/api/types"
@@ -11,19 +12,19 @@ import (
 )
 
 type MockDockerClient struct {
-	Containers    map[string]*types.Container
-	Images        map[string]bool
-	Networks      map[string]bool
-	mu            sync.RWMutex
-	CreateCalls   []CreateCall
-	StartCalls    []string
-	StopCalls     []string
-	RemoveCalls   []string
-	ExecCalls     []ExecCall
+	Containers  map[string]*types.Container
+	Images      map[string]bool
+	Networks    map[string]bool
+	mu          sync.RWMutex
+	CreateCalls []CreateCall
+	StartCalls  []string
+	StopCalls   []string
+	RemoveCalls []string
+	ExecCalls   []ExecCall
 }
 
 type CreateCall struct {
-	Name  string
+	Name   string
 	Config *container.Config
 }
 
@@ -43,46 +44,46 @@ func NewMockDockerClient() *MockDockerClient {
 func (m *MockDockerClient) ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *string, containerName string) (container.CreateResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.CreateCalls = append(m.CreateCalls, CreateCall{
-		Name:  containerName,
+		Name:   containerName,
 		Config: config,
 	})
-	
+
 	return container.CreateResponse{
 		ID: "mock-container-" + containerName,
 	}, nil
 }
 
-func (m *MockDockerClient) ContainerStart(ctx context.Context, container string, options types.ContainerStartOptions) error {
+func (m *MockDockerClient) ContainerStart(ctx context.Context, container string, options interface{}) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.StartCalls = append(m.StartCalls, container)
 	return nil
 }
 
-func (m *MockDockerClient) ContainerStop(ctx context.Context, container string, options types.ContainerStopOptions) error {
+func (m *MockDockerClient) ContainerStop(ctx context.Context, container string, options interface{}) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.StopCalls = append(m.StopCalls, container)
 	return nil
 }
 
-func (m *MockDockerClient) ContainerRemove(ctx context.Context, container string, options types.ContainerRemoveOptions) error {
+func (m *MockDockerClient) ContainerRemove(ctx context.Context, container string, options interface{}) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.RemoveCalls = append(m.RemoveCalls, container)
 	delete(m.Containers, container)
 	return nil
 }
 
-func (m *MockDockerClient) ContainerList(ctx context.Context, options types.ContainerListOptions) ([]types.Container, error) {
+func (m *MockDockerClient) ContainerList(ctx context.Context, options interface{}) ([]types.Container, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	result := make([]types.Container, 0, len(m.Containers))
 	for _, c := range m.Containers {
 		result = append(result, *c)
@@ -93,12 +94,12 @@ func (m *MockDockerClient) ContainerList(ctx context.Context, options types.Cont
 func (m *MockDockerClient) ContainerInspect(ctx context.Context, container string) (types.ContainerJSON, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
-	exists := m.Containers[container]
-	if !exists {
+
+	exists, ok := m.Containers[container]
+	if !ok || exists == nil {
 		return types.ContainerJSON{}, nil
 	}
-	
+
 	return types.ContainerJSON{
 		ContainerJSONBase: &types.ContainerJSONBase{
 			ID:   container,
@@ -110,43 +111,43 @@ func (m *MockDockerClient) ContainerInspect(ctx context.Context, container strin
 	}, nil
 }
 
-func (m *MockDockerClient) ContainerExecCreate(ctx context.Context, container string, config types.ExecConfig) (types.IDResponse, error) {
+func (m *MockDockerClient) ContainerExecCreate(ctx context.Context, container string, config interface{}) (types.IDResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.ExecCalls = append(m.ExecCalls, ExecCall{
 		Container: container,
-		Cmd:       config.Cmd,
+		Cmd:       nil,
 	})
-	
+
 	return types.IDResponse{
 		ID: "mock-exec-" + container,
 	}, nil
 }
 
-func (m *MockDockerClient) ContainerExecStart(ctx context.Context, execID string, config types.ExecStartCheck) error {
+func (m *MockDockerClient) ContainerExecStart(ctx context.Context, execID string, config interface{}) error {
 	return nil
 }
 
-func (m *MockDockerClient) ContainerLogs(ctx context.Context, container string, options types.ContainerLogsOptions) (io.ReadCloser, error) {
-	return io.NopCloser(io.StringReader("mock logs")), nil
+func (m *MockDockerClient) ContainerLogs(ctx context.Context, container string, options interface{}) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("mock logs")), nil
 }
 
-func (m *MockDockerClient) ImagePull(ctx context.Context, ref string, options types.ImagePullOptions) (io.ReadCloser, error) {
+func (m *MockDockerClient) ImagePull(ctx context.Context, ref string, options interface{}) (io.ReadCloser, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.Images[ref] = true
-	return io.NopCloser(io.StringReader("pulling")), nil
+	return io.NopCloser(strings.NewReader("pulling")), nil
 }
 
-func (m *MockDockerClient) NetworkList(ctx context.Context, options types.NetworkListOptions) ([]types.NetworkResource, error) {
+func (m *MockDockerClient) NetworkList(ctx context.Context, options interface{}) ([]network.Summary, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
-	result := make([]types.NetworkResource, 0, len(m.Networks))
+
+	result := make([]network.Summary, 0, len(m.Networks))
 	for name := range m.Networks {
-		result = append(result, types.NetworkResource{
+		result = append(result, network.Summary{
 			Name: name,
 		})
 	}
@@ -166,7 +167,7 @@ func (m *MockDockerClient) Close() error {
 func (m *MockDockerClient) AddContainer(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.Containers[name] = &types.Container{
 		ID:    name,
 		Names: []string{"/" + name},

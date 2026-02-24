@@ -14,11 +14,19 @@ import (
 type mockProvider struct {
 	containers map[string]bool
 	mu         sync.Mutex
+	created    []string
+	started    []string
+	stopped    []string
+	destroyed  []string
+	executeds  [][]string
+	workspaces []WorkspaceInfo
+	exists     map[string]bool
 }
 
 func newMockProvider() *mockProvider {
 	return &mockProvider{
 		containers: make(map[string]bool),
+		exists:     make(map[string]bool),
 	}
 }
 
@@ -26,6 +34,8 @@ func (m *mockProvider) Create(ctx context.Context, name string, worktreePath str
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.containers[name] = true
+	m.created = append(m.created, name)
+	m.exists[name] = true
 	return nil
 }
 
@@ -33,6 +43,8 @@ func (m *mockProvider) CreateWithDinD(ctx context.Context, name string, worktree
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.containers[name] = true
+	m.created = append(m.created, name)
+	m.exists[name] = true
 	return nil
 }
 
@@ -42,6 +54,7 @@ func (m *mockProvider) Start(ctx context.Context, name string) error {
 	if !m.containers[name] {
 		return fmt.Errorf("workspace not found")
 	}
+	m.started = append(m.started, name)
 	return nil
 }
 
@@ -51,6 +64,7 @@ func (m *mockProvider) Stop(ctx context.Context, name string) error {
 	if !m.containers[name] {
 		return fmt.Errorf("workspace not found")
 	}
+	m.stopped = append(m.stopped, name)
 	return nil
 }
 
@@ -58,6 +72,8 @@ func (m *mockProvider) Destroy(ctx context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.containers, name)
+	m.destroyed = append(m.destroyed, name)
+	delete(m.exists, name)
 	return nil
 }
 
@@ -66,6 +82,9 @@ func (m *mockProvider) Shell(ctx context.Context, name string) error {
 }
 
 func (m *mockProvider) Exec(ctx context.Context, name string, command []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.executeds = append(m.executeds, command)
 	return nil
 }
 
@@ -315,6 +334,10 @@ type errorMockProvider struct {
 
 func (e *errorMockProvider) Create(ctx context.Context, name string, worktreePath string) error {
 	return e.base.Create(ctx, name, worktreePath)
+}
+
+func (e *errorMockProvider) CreateWithDinD(ctx context.Context, name string, worktreePath string) error {
+	return e.base.CreateWithDinD(ctx, name, worktreePath)
 }
 
 func (e *errorMockProvider) Start(ctx context.Context, name string) error {

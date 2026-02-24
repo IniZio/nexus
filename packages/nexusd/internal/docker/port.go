@@ -3,6 +3,7 @@ package docker
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"sync"
@@ -138,12 +139,12 @@ func (p *PortManager) saveState() {
 
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
-		fmt.Printf("Error marshaling port state: %v\n", err)
+		log.Printf("[ERROR] Failed to marshal port state: %v", err)
 		return
 	}
 
 	if err := os.WriteFile(p.stateFile, data, 0644); err != nil {
-		fmt.Printf("Error writing port state: %v\n", err)
+		log.Printf("[ERROR] Failed to write port state: %v", err)
 	}
 }
 
@@ -155,14 +156,14 @@ func (p *PortManager) loadState() {
 	data, err := os.ReadFile(p.stateFile)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			fmt.Printf("Error reading port state: %v\n", err)
+			log.Printf("[ERROR] Failed to read port state: %v", err)
 		}
 		return
 	}
 
 	var state PortState
 	if err := json.Unmarshal(data, &state); err != nil {
-		fmt.Printf("Error unmarshaling port state: %v\n", err)
+		log.Printf("[ERROR] Failed to unmarshal port state: %v", err)
 		return
 	}
 

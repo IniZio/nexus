@@ -75,6 +75,10 @@ func (p *testProvider) Create(ctx context.Context, name string, worktreePath str
 	return nil
 }
 
+func (p *testProvider) CreateWithDinD(ctx context.Context, name string, worktreePath string) error {
+	return p.Create(ctx, name, worktreePath)
+}
+
 func (p *testProvider) Start(ctx context.Context, name string) error {
 	return nil
 }

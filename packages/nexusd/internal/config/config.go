@@ -203,17 +203,25 @@ func (c *Config) Set(key, value string) error {
 	case "boulder.enforcement_level":
 		c.Boulder.EnforcementLevel = value
 	case "boulder.idle_threshold":
-		fmt.Sscanf(value, "%d", &c.Boulder.IdleThreshold)
+		if _, err := fmt.Sscanf(value, "%d", &c.Boulder.IdleThreshold); err != nil {
+			return fmt.Errorf("invalid idle_threshold value: %w", err)
+		}
 	case "telemetry.enabled":
 		c.Telemetry.Enabled = value == "true"
 	case "telemetry.sampling":
-		fmt.Sscanf(value, "%d", &c.Telemetry.Sampling)
+		if _, err := fmt.Sscanf(value, "%d", &c.Telemetry.Sampling); err != nil {
+			return fmt.Errorf("invalid sampling value: %w", err)
+		}
 	case "telemetry.retention_days":
-		fmt.Sscanf(value, "%d", &c.Telemetry.RetentionDays)
+		if _, err := fmt.Sscanf(value, "%d", &c.Telemetry.RetentionDays); err != nil {
+			return fmt.Errorf("invalid retention_days value: %w", err)
+		}
 	case "daemon.host":
 		c.Daemon.Host = value
 	case "daemon.port":
-		fmt.Sscanf(value, "%d", &c.Daemon.Port)
+		if _, err := fmt.Sscanf(value, "%d", &c.Daemon.Port); err != nil {
+			return fmt.Errorf("invalid port value: %w", err)
+		}
 	case "cli.update.auto_install":
 		c.CLI.Update.AutoInstall = value == "true"
 	case "cli.update.channel":
