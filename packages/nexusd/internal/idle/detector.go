@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/nexus/nexus/packages/nexusd/internal/config"
 )
 
 type ActivityType string
@@ -64,7 +66,7 @@ func (d *IdleDetector) Stop() {
 }
 
 func (d *IdleDetector) monitorLoop() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(config.DefaultIdleTimeout)
 	defer ticker.Stop()
 
 	for {

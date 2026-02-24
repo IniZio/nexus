@@ -22,6 +22,8 @@ import (
 	nat "github.com/docker/go-connections/nat"
 	"github.com/inizio/nexus/packages/nexus/pkg/sync"
 	wsTypes "github.com/nexus/nexus/packages/nexusd/internal/types"
+
+	"github.com/nexus/nexus/packages/nexusd/internal/config"
 )
 
 type DockerBackend struct {
@@ -43,7 +45,7 @@ func NewDockerBackend(dockerClient *client.Client, stateDir string) *DockerBacke
 
 	return &DockerBackend{
 		docker:           dockerClient,
-		portManager:      NewPortManager(32800, 34999),
+		portManager:      NewPortManager(config.DefaultPortRangeStart, config.DefaultPortRangeEnd),
 		containerManager: NewContainerManager(),
 		stateDir:         stateDir,
 		syncManager:      syncManager,
@@ -121,13 +123,13 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 		if _, err := os.Stat(composePath); err == nil {
 			ports, err := ParseComposeFile(composePath)
 			if err != nil {
-				fmt.Printf("Warning: failed to parse compose file: %v\n", err)
+				log.Printf("[WARN] Failed to parse compose file: %v", err)
 			} else {
-				fmt.Printf("Found %d ports in docker-compose.yml\n", len(ports))
+				log.Printf("[INFO] Found %d ports in docker-compose.yml", len(ports))
 				for _, port := range ports {
 					hostPort, err := b.portManager.Allocate()
 					if err != nil {
-						fmt.Printf("Warning: failed to allocate port %d: %v\n", port, err)
+						log.Printf("[WARN] Failed to allocate port %d: %v", port, err)
 						continue
 					}
 					extraPorts = append(extraPorts, PortBinding{
@@ -221,9 +223,9 @@ func (b *DockerBackend) CreateWorkspace(ctx context.Context, req *wsTypes.Create
 
 	if req.WorktreePath != "" && b.syncManager != nil {
 		if _, err := b.syncManager.StartSync(ctx, workspace.ID, req.WorktreePath, "/workspace"); err != nil {
-			fmt.Printf("Warning: failed to start sync: %v\n", err)
+			log.Printf("[WARN] Failed to start sync: %v", err)
 		} else {
-			fmt.Printf("Started sync for workspace %s\n", workspace.ID)
+			log.Printf("[INFO] Started sync for workspace %s", workspace.ID)
 		}
 	}
 
@@ -308,13 +310,13 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 		if _, err := os.Stat(composePath); err == nil {
 			ports, err := ParseComposeFile(composePath)
 			if err != nil {
-				fmt.Printf("Warning: failed to parse compose file: %v\n", err)
+				log.Printf("[WARN] Failed to parse compose file: %v", err)
 			} else {
-				fmt.Printf("Found %d ports in docker-compose.yml\n", len(ports))
+				log.Printf("[INFO] Found %d ports in docker-compose.yml", len(ports))
 				for _, port := range ports {
 					hostPort, err := b.portManager.Allocate()
 					if err != nil {
-						fmt.Printf("Warning: failed to allocate port %d: %v\n", port, err)
+						log.Printf("[WARN] Failed to allocate port %d: %v", port, err)
 						continue
 					}
 					extraPortsBridge = append(extraPortsBridge, PortBinding{
@@ -411,9 +413,9 @@ func (b *DockerBackend) CreateWorkspaceWithBridge(ctx context.Context, req *wsTy
 
 	if req.WorktreePath != "" && b.syncManager != nil {
 		if _, err := b.syncManager.StartSync(ctx, workspace.ID, req.WorktreePath, "/workspace"); err != nil {
-			fmt.Printf("Warning: failed to start sync: %v\n", err)
+			log.Printf("[WARN] Failed to start sync: %v", err)
 		} else {
-			fmt.Printf("Started sync for workspace %s\n", workspace.ID)
+			log.Printf("[INFO] Started sync for workspace %s", workspace.ID)
 		}
 	}
 
@@ -430,9 +432,9 @@ func (b *DockerBackend) StartWorkspace(ctx context.Context, id string) (*wsTypes
 
 	if b.syncManager != nil {
 		if err := b.syncManager.ResumeSync(ctx, id); err != nil {
-			fmt.Printf("Warning: failed to resume sync: %v\n", err)
+			log.Printf("[WARN] Failed to resume sync: %v", err)
 		} else {
-			fmt.Printf("Resumed sync for workspace %s\n", id)
+			log.Printf("[INFO] Resumed sync for workspace %s", id)
 		}
 	}
 
@@ -446,14 +448,14 @@ func (b *DockerBackend) StartWorkspace(ctx context.Context, id string) (*wsTypes
 func (b *DockerBackend) StopWorkspace(ctx context.Context, id string, timeout int32) (*wsTypes.Operation, error) {
 	timeoutDuration := time.Duration(timeout) * time.Second
 	if timeoutDuration == 0 {
-		timeoutDuration = 30 * time.Second
+		timeoutDuration = config.DefaultStopTimeout
 	}
 
 	if b.syncManager != nil {
 		if err := b.syncManager.PauseSync(ctx, id); err != nil {
-			fmt.Printf("Warning: failed to pause sync: %v\n", err)
+			log.Printf("[WARN] Failed to pause sync: %v", err)
 		} else {
-			fmt.Printf("Paused sync for workspace %s\n", id)
+			log.Printf("[INFO] Paused sync for workspace %s", id)
 		}
 	}
 
@@ -476,20 +478,20 @@ func (b *DockerBackend) StopWorkspace(ctx context.Context, id string, timeout in
 func (b *DockerBackend) DeleteWorkspace(ctx context.Context, id string) error {
 	if b.syncManager != nil {
 		if err := b.syncManager.StopSync(ctx, id); err != nil {
-			fmt.Printf("Warning: stopping sync: %v\n", err)
+			log.Printf("[WARN] Failed to stop sync: %v", err)
 		} else {
-			fmt.Printf("Stopped sync for workspace %s\n", id)
+			log.Printf("[INFO] Stopped sync for workspace %s", id)
 		}
 	}
 
 	if err := b.containerManager.Stop(ctx, id, 10*time.Second); err != nil {
-		fmt.Printf("warning: stopping container: %v\n", err)
+		log.Printf("[WARN] Failed to stop container: %v", err)
 	}
 
 	if err := b.containerManager.Remove(ctx, id, true); err != nil {
 		if strings.Contains(err.Error(), "No such container") ||
 			strings.Contains(err.Error(), "container not found") {
-			fmt.Printf("Container %s already deleted, skipping\n", id)
+			log.Printf("[INFO] Container %s already deleted, skipping", id)
 			return nil
 		}
 		return fmt.Errorf("removing container: %w", err)

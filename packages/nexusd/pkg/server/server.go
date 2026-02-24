@@ -17,17 +17,18 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
+	"github.com/nexus/nexus/packages/nexusd/internal/checkpoint"
+	"github.com/nexus/nexus/packages/nexusd/internal/config"
+	"github.com/nexus/nexus/packages/nexusd/internal/docker"
 	"github.com/nexus/nexus/packages/nexusd/internal/idle"
+	"github.com/nexus/nexus/packages/nexusd/internal/ssh"
 	"github.com/nexus/nexus/packages/nexusd/internal/state"
+	"github.com/nexus/nexus/packages/nexusd/internal/sync/mutagen"
+	wsTypes "github.com/nexus/nexus/packages/nexusd/internal/types"
 	"github.com/nexus/nexus/packages/nexusd/pkg/handlers"
 	"github.com/nexus/nexus/packages/nexusd/pkg/lifecycle"
 	rpckit "github.com/nexus/nexus/packages/nexusd/pkg/rpcerrors"
 	"github.com/nexus/nexus/packages/nexusd/pkg/workspace"
-	"github.com/nexus/nexus/packages/nexusd/internal/checkpoint"
-	"github.com/nexus/nexus/packages/nexusd/internal/docker"
-	wsTypes "github.com/nexus/nexus/packages/nexusd/internal/types"
-	"github.com/nexus/nexus/packages/nexusd/internal/ssh"
-	"github.com/nexus/nexus/packages/nexusd/internal/sync/mutagen"
 
 	"github.com/nexus/nexus/packages/nexusd/internal/interfaces"
 )
@@ -51,20 +52,20 @@ type Server struct {
 	httpServer      *http.Server
 	mutagenDaemon   interfaces.MutagenClient
 	sessionManagers map[string]*mutagen.SessionManager
-	idleDetectors  map[string]*idle.IdleDetector
+	idleDetectors   map[string]*idle.IdleDetector
 	idleConfig      *IdleConfig
 }
 
 type WorkspaceState struct {
-	ID          string
-	Name        string
-	Status      string
-	Backend     string
-	Ports       []PortMapping
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	IdleTime    time.Duration `json:"idle_time,omitempty"`
-	AutoPause   bool          `json:"auto_pause,omitempty"`
+	ID        string
+	Name      string
+	Status    string
+	Backend   string
+	Ports     []PortMapping
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	IdleTime  time.Duration `json:"idle_time,omitempty"`
+	AutoPause bool          `json:"auto_pause,omitempty"`
 }
 
 type IdleConfig struct {
@@ -118,9 +119,9 @@ func NewServerWithDeps(
 	}
 
 	srv := &Server{
-		port:            port,
-		workspaceDir:    workspaceDir,
-		tokenSecret:     tokenSecret,
+		port:         port,
+		workspaceDir: workspaceDir,
+		tokenSecret:  tokenSecret,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
@@ -138,7 +139,7 @@ func NewServerWithDeps(
 		checkpointStore: checkpointStore,
 		mutagenDaemon:   mutagenClient,
 		sessionManagers: make(map[string]*mutagen.SessionManager),
-		idleDetectors:  make(map[string]*idle.IdleDetector),
+		idleDetectors:   make(map[string]*idle.IdleDetector),
 		idleConfig: &IdleConfig{
 			DefaultTimeout: 30 * time.Minute,
 			AutoPause:      true,
@@ -1698,7 +1699,7 @@ func (s *Server) addPort(w http.ResponseWriter, r *http.Request, workspaceID str
 			log.Printf("[port] Failed to add port binding: %v", err)
 		}
 	} else {
-		hostPort = 32800 + len(ws.Ports)
+		hostPort = config.DefaultPortRangeStart + len(ws.Ports)
 	}
 
 	s.mu.Lock()
