@@ -4,11 +4,14 @@ all: build
 
 build: build-daemon build-cli
 
+LDFLAGS=-s -w
+GOFLAGS=
+
 build-daemon:
-	go build -o nexusd ./cmd/daemon
+	go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o nexusd ./cmd/daemon
 
 build-cli:
-	go build -o nexus ./cmd/cli
+	go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o nexus ./cmd/cli
 
 clean:
 	rm -f nexus nexusd

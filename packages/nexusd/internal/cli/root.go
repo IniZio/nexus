@@ -30,6 +30,7 @@ var rootCmd = &cobra.Command{
 
 var ErrDaemonNotRunning = fmt.Errorf("daemon not running")
 
+// Execute runs the root command.
 func Execute() error {
 	return rootCmd.Execute()
 }

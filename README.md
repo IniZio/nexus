@@ -1,7 +1,7 @@
 # Nexus
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
   <img src="https://img.shields.io/badge/Node.js-20+-orange.svg" alt="Node.js">
   <img src="https://img.shields.io/badge/Go-1.24+-00ADD8.svg" alt="Go">
@@ -152,7 +152,7 @@ nexus workspace use --clear
 |-----------|--------|-------------|
 | **OpenCode Plugin** | ✅ Implemented | Full IDE integration |
 | **Claude Code** | ✅ Implemented | Full IDE integration |
-| **Cursor Extension** | 🚧 In Progress | Extension support |
+| **Cursor Extension** | ✅ Implemented | Extension support |
 | **Workspace Daemon** | ✅ Implemented | Docker + SSH workspaces |
 | **Workspace CLI** | ✅ Implemented | `nexus workspace` commands |
 | **Telemetry** | 📋 Planned | Agent Trace implementation |

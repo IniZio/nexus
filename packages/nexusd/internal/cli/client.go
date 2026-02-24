@@ -88,6 +88,7 @@ type Config struct {
 	AutoResume  bool          `json:"auto_resume"`
 }
 
+// NewClient creates a new API client.
 func NewClient(baseURL, token string) *Client {
 	return &Client{
 		baseURL: baseURL,

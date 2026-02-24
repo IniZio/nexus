@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,6 +19,12 @@ func createTempGitRepo(t *testing.T) string {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("failed to init git repo: %v\nOutput: %s", err, string(out))
+	}
+
+	cmd = exec.Command("git", "config", "init.defaultBranch", "main")
+	cmd.Dir = tmpDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Logf("failed to set default branch: %v\nOutput: %s", err, string(out))
 	}
 
 	cmd = exec.Command("git", "config", "user.email", "test@example.com")
@@ -38,6 +45,14 @@ func createTempGitRepo(t *testing.T) string {
 	cmd = exec.Command("git", "commit", "-m", "initial commit")
 	cmd.Dir = tmpDir
 	require.NoError(t, cmd.Run())
+
+	cmd = exec.Command("git", "checkout", "-b", "main")
+	cmd.Dir = tmpDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if !strings.Contains(string(out), "already exists") {
+			t.Logf("failed to create main branch (may already exist): %v\nOutput: %s", err, string(out))
+		}
+	}
 
 	return tmpDir
 }

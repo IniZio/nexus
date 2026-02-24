@@ -51,12 +51,6 @@ func (c *MutagenClient) CreateSession(alpha, beta string, config MutagenConfig) 
 		"--watch-polling-interval", fmt.Sprintf("%.0f", config.WatchInterval.Seconds()),
 	}
 
-	/* TODO: Re-add exclude support via configuration file
-	for _, exclude := range config.Exclude {
-		args = append(args, "--exclude", exclude)
-	}
-	*/
-
 	args = append(args, alpha, beta)
 
 	cmd := exec.Command(c.binaryPath, args...)
