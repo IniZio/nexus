@@ -87,7 +87,7 @@ func (l *LifecycleScripts) runScript(name string) error {
 		}
 		return nil
 	case <-time.After(30 * time.Second):
-		proc.Kill()
+		_ = proc.Kill()
 		<-done
 		return fmt.Errorf("%s timed out after 30 seconds", name)
 	}
@@ -125,7 +125,7 @@ func (l *LifecycleScripts) runHealthCheckScript() (bool, error) {
 		}
 		return true, nil
 	case <-time.After(10 * time.Second):
-		proc.Kill()
+		_ = proc.Kill()
 		<-done
 		return false, fmt.Errorf("health-check timed out after 10 seconds")
 	}

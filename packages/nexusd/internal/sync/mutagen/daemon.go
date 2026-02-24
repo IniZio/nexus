@@ -73,7 +73,7 @@ func (d *EmbeddedDaemon) Start(ctx context.Context) error {
 	}
 
 	if err := d.waitForSocket(30 * time.Second); err != nil {
-		d.cmd.Process.Kill()
+		_ = d.cmd.Process.Kill()
 		return fmt.Errorf("daemon socket not ready: %w", err)
 	}
 
@@ -103,14 +103,14 @@ func (d *EmbeddedDaemon) ensureMutagenBinary() error {
 
 func (d *EmbeddedDaemon) waitForSocket(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	
+
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(d.socketPath); err == nil {
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	
+
 	return fmt.Errorf("socket not found after timeout: %s", d.socketPath)
 }
 
@@ -126,16 +126,16 @@ func (d *EmbeddedDaemon) Stop(ctx context.Context) error {
 
 	if d.cmd != nil && d.cmd.Process != nil {
 		log.Printf("[mutagen] Stopping embedded daemon (PID: %d)", d.cmd.Process.Pid)
-		
+
 		if err := d.cmd.Process.Kill(); err != nil {
 			log.Printf("[mutagen] Warning: failed to kill daemon process: %v", err)
 		}
-		
+
 		done := make(chan error, 1)
 		go func() {
 			done <- d.cmd.Wait()
 		}()
-		
+
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
@@ -145,18 +145,18 @@ func (d *EmbeddedDaemon) Stop(ctx context.Context) error {
 
 	d.running = false
 	log.Printf("[mutagen] Embedded daemon stopped")
-	
+
 	return nil
 }
 
 func (d *EmbeddedDaemon) IsRunning() bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	
+
 	if !d.running {
 		return false
 	}
-	
+
 	_, err := os.Stat(d.socketPath)
 	return err == nil
 }
