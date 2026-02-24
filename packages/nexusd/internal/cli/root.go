@@ -22,7 +22,13 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "nexus",
 	Short: "Nexus workspace management CLI",
-	Long:  `Nexus is an AI-native development environment with workspace management and tools.`,
+	Long: `Nexus is an AI-native development environment with workspace management and tools.
+
+Quick start:
+  nexus workspace create myproject    # Create a new workspace
+  nexus workspace list               # List all workspaces
+  nexus workspace ssh myproject      # SSH into a workspace
+  nexus doctor                      # Diagnose issues`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		return nil
 	},

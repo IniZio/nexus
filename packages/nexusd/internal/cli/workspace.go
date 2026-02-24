@@ -30,6 +30,21 @@ const (
 	activeWorkspaceFile = "active-workspace"
 )
 
+func validateWorkspaceName(name string) error {
+	if name == "" {
+		return fmt.Errorf("workspace name cannot be empty")
+	}
+	if len(name) > 63 {
+		return fmt.Errorf("workspace name too long (max 63 characters)")
+	}
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return fmt.Errorf("workspace name can only contain letters, numbers, hyphens, and underscores")
+		}
+	}
+	return nil
+}
+
 func getSessionDir() string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -73,12 +88,22 @@ func clearActiveWorkspace() error {
 var workspaceCreateCmd = &cobra.Command{
 	Use:   "create <name>",
 	Short: "Create a new workspace",
-	Args:  cobra.ExactArgs(1),
+	Long: `Create a new workspace for development.
+
+Examples:
+  nexus workspace create myproject
+  nexus workspace create myproject --backend docker
+  nexus workspace create myproject --from ./existing-project --cpu 4`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
 		initTelemetry()
 
 		name := args[0]
+		if err := validateWorkspaceName(name); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		cfg := getConfig()
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "")
 
@@ -145,6 +170,7 @@ var workspaceStartCmd = &cobra.Command{
 			recordCommand("workspace start", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error starting workspace: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
+				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus workspace list' to see available workspaces.\n")
 				os.Exit(3)
 			}
 			os.Exit(1)
@@ -186,6 +212,7 @@ var workspaceStopCmd = &cobra.Command{
 			recordCommand("workspace stop", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error stopping workspace: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
+				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus workspace list' to see available workspaces.\n")
 				os.Exit(3)
 			}
 			os.Exit(1)
@@ -232,6 +259,7 @@ var workspaceDeleteCmd = &cobra.Command{
 			recordCommand("workspace delete", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error deleting workspace: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
+				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus workspace list' to see available workspaces.\n")
 				os.Exit(3)
 			}
 			os.Exit(1)
@@ -251,6 +279,7 @@ var workspaceDeleteCmd = &cobra.Command{
 var workspaceListCmd = &cobra.Command{
 	Use:     "list",
 	Short:   "List all workspaces",
+	Long:    "List all workspaces with their status, backend, and creation time.",
 	Aliases: []string{"ls"},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
@@ -318,6 +347,7 @@ var workspaceSSHCmd = &cobra.Command{
 			recordCommand("workspace ssh", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
+				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus workspace list' to see available workspaces.\n")
 				os.Exit(3)
 			}
 			os.Exit(1)
@@ -354,6 +384,7 @@ var workspaceExecCmd = &cobra.Command{
 			recordCommand("workspace exec", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
+				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus workspace list' to see available workspaces.\n")
 				os.Exit(3)
 			}
 			os.Exit(1)
@@ -385,6 +416,7 @@ var workspaceInjectKeyCmd = &cobra.Command{
 			recordCommand("workspace inject-key", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
+				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus workspace list' to see available workspaces.\n")
 				os.Exit(3)
 			}
 			os.Exit(1)
@@ -415,6 +447,7 @@ var workspaceStatusCmd = &cobra.Command{
 			recordCommand("workspace status", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
+				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus workspace list' to see available workspaces.\n")
 				os.Exit(3)
 			}
 			os.Exit(1)
@@ -498,6 +531,7 @@ var workspaceLogsCmd = &cobra.Command{
 			recordCommand("workspace logs", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
+				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus workspace list' to see available workspaces.\n")
 				os.Exit(3)
 			}
 			os.Exit(1)

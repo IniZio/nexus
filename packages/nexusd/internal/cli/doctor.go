@@ -7,17 +7,27 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/spf13/cobra"
 	"github.com/nexus/nexus/packages/nexusd/internal/config"
+	"github.com/spf13/cobra"
 )
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Check nexus setup and diagnose issues",
+	Long: `Check nexus setup and diagnose common issues.
+
+This command verifies:
+  - CLI version is set
+  - Config directory exists
+  - Docker is available
+  - Daemon is running and reachable
+
+Example:
+  nexus doctor`,
 	Run: func(cmd *cobra.Command, args []string) {
 		checks := []struct {
-			name    string
-			check   func() error
+			name  string
+			check func() error
 		}{
 			{"CLI version", checkVersion},
 			{"Config directory", checkConfigDir},
@@ -86,7 +96,7 @@ func checkDocker() error {
 func checkDaemon() error {
 	cfg := getConfig()
 	addr := fmt.Sprintf("%s:%d", cfg.Daemon.Host, cfg.Daemon.Port)
-	
+
 	conn, err := net.Dial("tcp", addr)
 	if err == nil {
 		conn.Close()
