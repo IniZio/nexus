@@ -65,9 +65,19 @@ func (l *LifecycleScripts) runScript(name string) error {
 	cmd.Dir = l.ProjectPath
 	cmd.Env = os.Environ()
 
+	err := cmd.Start()
+	if err != nil {
+		return fmt.Errorf("failed to start %s: %w", name, err)
+	}
+
+	proc := cmd.Process
+	if proc == nil {
+		return fmt.Errorf("%s process is nil", name)
+	}
+
 	done := make(chan error, 1)
 	go func() {
-		done <- cmd.Run()
+		done <- cmd.Wait()
 	}()
 
 	select {
@@ -77,7 +87,8 @@ func (l *LifecycleScripts) runScript(name string) error {
 		}
 		return nil
 	case <-time.After(30 * time.Second):
-		cmd.Process.Kill()
+		proc.Kill()
+		<-done
 		return fmt.Errorf("%s timed out after 30 seconds", name)
 	}
 }
@@ -92,9 +103,19 @@ func (l *LifecycleScripts) runHealthCheckScript() (bool, error) {
 	cmd.Dir = l.ProjectPath
 	cmd.Env = os.Environ()
 
+	err := cmd.Start()
+	if err != nil {
+		return false, fmt.Errorf("failed to start health-check: %w", err)
+	}
+
+	proc := cmd.Process
+	if proc == nil {
+		return false, fmt.Errorf("health-check process is nil")
+	}
+
 	done := make(chan error, 1)
 	go func() {
-		done <- cmd.Run()
+		done <- cmd.Wait()
 	}()
 
 	select {
@@ -104,7 +125,8 @@ func (l *LifecycleScripts) runHealthCheckScript() (bool, error) {
 		}
 		return true, nil
 	case <-time.After(10 * time.Second):
-		cmd.Process.Kill()
+		proc.Kill()
+		<-done
 		return false, fmt.Errorf("health-check timed out after 10 seconds")
 	}
 }

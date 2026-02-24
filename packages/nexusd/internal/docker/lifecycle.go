@@ -113,28 +113,37 @@ func (l *Lifecycle) checkHealth(backend *DockerBackend) {
 
 	if status == types.StatusError {
 		log.Printf("Container %s in error state", l.containerID)
-		if l.autoRestart && l.restartCount < l.maxRestarts {
+		l.mu.Lock()
+		shouldRestart := l.autoRestart && l.restartCount < l.maxRestarts
+		l.mu.Unlock()
+		if shouldRestart {
 			l.restart(backend)
 		}
 	}
 }
 
 func (l *Lifecycle) restart(backend *DockerBackend) {
+	l.mu.Lock()
 	l.restartCount++
+	restartCount := l.restartCount
+	maxRestarts := l.maxRestarts
+	containerID := l.containerID
+	l.mu.Unlock()
+
 	log.Printf("Attempting restart %d/%d for container %s",
-		l.restartCount, l.maxRestarts, l.containerID)
+		restartCount, maxRestarts, containerID)
 
 	ctx, cancel := context.WithTimeout(l.ctx, 30*time.Second)
 	defer cancel()
 
-	if _, err := backend.StopWorkspace(ctx, l.containerID, 10); err != nil {
-		log.Printf("Failed to stop container %s: %v", l.containerID, err)
+	if _, err := backend.StopWorkspace(ctx, containerID, 10); err != nil {
+		log.Printf("Failed to stop container %s: %v", containerID, err)
 	}
 
 	time.Sleep(2 * time.Second)
 
-	if _, err := backend.StartWorkspace(ctx, l.containerID); err != nil {
-		log.Printf("Failed to start container %s: %v", l.containerID, err)
+	if _, err := backend.StartWorkspace(ctx, containerID); err != nil {
+		log.Printf("Failed to start container %s: %v", containerID, err)
 	}
 }
 

@@ -3,6 +3,7 @@ package idle
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -176,9 +177,9 @@ func TestIdleDetector_MultipleActivities(t *testing.T) {
 func TestIdleDetector_ResumeActivity(t *testing.T) {
 	d := NewIdleDetector("test-ws", 50*time.Millisecond)
 
-	activeCalled := false
+	activeCalled := atomic.Bool{}
 	d.SetOnActive(func() {
-		activeCalled = true
+		activeCalled.Store(true)
 	})
 
 	d.Start()
@@ -188,7 +189,7 @@ func TestIdleDetector_ResumeActivity(t *testing.T) {
 
 	time.Sleep(20 * time.Millisecond)
 
-	assert.True(t, activeCalled)
+	assert.True(t, activeCalled.Load())
 }
 
 func TestIdleDetector_StopTwice(t *testing.T) {

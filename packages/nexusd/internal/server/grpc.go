@@ -6,13 +6,14 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"log"
 )
 
 type GRPCServer struct {
-	address   string
-	listener  net.Listener
-	server    *grpc.Server
-	opts      []grpc.ServerOption
+	address  string
+	listener net.Listener
+	server   *grpc.Server
+	opts     []grpc.ServerOption
 }
 
 func NewGRPCServer(address string, opts ...grpc.ServerOption) *GRPCServer {
@@ -38,7 +39,7 @@ func (s *GRPCServer) Start() error {
 
 	go func() {
 		if err := s.server.Serve(lis); err != nil {
-			_ = err // Server stopped
+			log.Printf("gRPC server stopped: %v", err)
 		}
 	}()
 
@@ -71,14 +72,14 @@ type WorkspaceServiceServer interface {
 }
 
 type CreateWorkspaceRequest struct {
-	Name           string
-	DisplayName    string
-	Backend        int32
-	RepositoryURL  string
-	Branch         string
-	ResourceClass  string
-	Config         *WorkspaceConfig
-	Labels         map[string]string
+	Name          string
+	DisplayName   string
+	Backend       int32
+	RepositoryURL string
+	Branch        string
+	ResourceClass string
+	Config        *WorkspaceConfig
+	Labels        map[string]string
 }
 
 type GetWorkspaceRequest struct {
@@ -125,11 +126,11 @@ type StopWorkspaceRequest struct {
 }
 
 type Operation struct {
-	ID            string
-	Status        string
-	ErrorMessage  string
-	CreatedAt     int64
-	CompletedAt   int64
+	ID           string
+	Status       string
+	ErrorMessage string
+	CreatedAt    int64
+	CompletedAt  int64
 }
 
 type WorkspaceConfig struct {
