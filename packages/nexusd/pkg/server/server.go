@@ -639,7 +639,9 @@ func (s *Server) handleWorkspaceByID(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getWorkspaceLogs(w http.ResponseWriter, r *http.Request, id string) {
 	tail := 100
 	if t := r.URL.Query().Get("tail"); t != "" {
-		fmt.Sscanf(t, "%d", &tail)
+		if _, err := fmt.Sscanf(t, "%d", &tail); err != nil {
+			log.Printf("[WARN] Invalid tail parameter: %v", err)
+		}
 	}
 
 	logs := fmt.Sprintf("Logs for workspace %s (last %d lines)\n", id, tail)

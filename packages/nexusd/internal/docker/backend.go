@@ -684,7 +684,9 @@ func (b *DockerBackend) GetSSHPort(ctx context.Context, id string) (int32, error
 	for port, bindings := range inspect.NetworkSettings.Ports {
 		if port.Port() == "22" && len(bindings) > 0 {
 			var port int32
-			fmt.Sscanf(bindings[0].HostPort, "%d", &port)
+			if _, err := fmt.Sscanf(bindings[0].HostPort, "%d", &port); err != nil {
+				return 0, fmt.Errorf("parsing SSH port: %w", err)
+			}
 			return port, nil
 		}
 	}
