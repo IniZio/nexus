@@ -961,7 +961,10 @@ func (s *Server) stopWorkspace(w http.ResponseWriter, r *http.Request, id string
 	defer r.Body.Close()
 
 	if len(body) > 0 {
-		json.Unmarshal(body, &req)
+		if err := json.Unmarshal(body, &req); err != nil {
+			WriteError(w, http.StatusBadRequest, fmt.Errorf("parsing request: %w", err))
+			return
+		}
 	}
 
 	s.mu.Lock()
