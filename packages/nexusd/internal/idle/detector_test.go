@@ -293,5 +293,5 @@ func TestActivityTracker_CollectMetrics(t *testing.T) {
 
 	tracker.RegisterWorkspace("ws-1")
 
-	tracker.collectMetrics(context.Background())
+	tracker.collectMetrics()
 }

@@ -167,7 +167,7 @@ func (t *ActivityTracker) Start(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			t.collectMetrics(ctx)
+			t.collectMetrics()
 		}
 	}
 }
@@ -197,8 +197,7 @@ func (t *ActivityTracker) RecordFileActivity(workspaceID string) {
 	}
 }
 
-func (t *ActivityTracker) collectMetrics(ctx context.Context) {
-	_ = ctx
+func (t *ActivityTracker) collectMetrics() {
 }
 
 func (t *ActivityTracker) GetActivity(workspaceID string) *WorkspaceActivity {
