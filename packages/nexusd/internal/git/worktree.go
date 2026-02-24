@@ -83,7 +83,7 @@ func (m *WorktreeManager) DeleteWorktree(name string, deleteBranch bool) error {
 	if err := cmd.Run(); err != nil {
 		gitFile := filepath.Join(worktreePath, ".git")
 		if _, statErr := os.Stat(gitFile); os.IsNotExist(statErr) {
-			os.RemoveAll(worktreePath)
+			_ = os.RemoveAll(worktreePath)
 		} else {
 			return fmt.Errorf("failed to remove worktree: %w", err)
 		}
@@ -92,7 +92,7 @@ func (m *WorktreeManager) DeleteWorktree(name string, deleteBranch bool) error {
 	if deleteBranch {
 		deleteCmd := exec.Command("git", "branch", "-D", branchName)
 		deleteCmd.Dir = m.projectRoot
-		deleteCmd.Run()
+		_ = deleteCmd.Run()
 	}
 
 	return nil

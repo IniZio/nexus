@@ -20,16 +20,16 @@ type Checkpoint struct {
 }
 
 type CheckpointIndex struct {
-	Version     int         `json:"version"`
-	WorkspaceID string      `json:"workspace_id"`
-	UpdatedAt   time.Time   `json:"updated_at"`
+	Version     int           `json:"version"`
+	WorkspaceID string        `json:"workspace_id"`
+	UpdatedAt   time.Time     `json:"updated_at"`
 	Checkpoints []*Checkpoint `json:"checkpoints"`
 }
 
 type FileCheckpointStore struct {
-	baseDir    string
-	indexes    map[string]*CheckpointIndex
-	mu         sync.RWMutex
+	baseDir string
+	indexes map[string]*CheckpointIndex
+	mu      sync.RWMutex
 }
 
 func NewFileCheckpointStore(baseDir string) (*FileCheckpointStore, error) {
@@ -262,14 +262,14 @@ func (s *FileCheckpointStore) writeFileAtomic(path string, data []byte) error {
 	tmpPath := tmpFile.Name()
 
 	if _, err := tmpFile.Write(data); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 

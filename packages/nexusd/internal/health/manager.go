@@ -11,13 +11,13 @@ import (
 )
 
 type HealthChecker struct {
-	workspaceID  string
-	checks       []HealthCheck
-	mu           sync.RWMutex
-	ctx          context.Context
-	cancel       context.CancelFunc
-	status       HealthStatus
-	monitoring   bool
+	workspaceID string
+	checks      []HealthCheck
+	mu          sync.RWMutex
+	ctx         context.Context
+	cancel      context.CancelFunc
+	status      HealthStatus
+	monitoring  bool
 }
 
 type HealthCheck struct {
@@ -154,7 +154,7 @@ func (h *HealthChecker) checkHTTP(check HealthCheck) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	return resp.StatusCode >= 200 && resp.StatusCode < 400, nil
 }
@@ -164,7 +164,7 @@ func (h *HealthChecker) checkTCP(check HealthCheck) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	return true, nil
 }

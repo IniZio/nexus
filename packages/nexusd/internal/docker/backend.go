@@ -766,7 +766,7 @@ func (b *DockerBackend) pullImage(ctx context.Context, img string) error {
 	if err != nil {
 		return fmt.Errorf("pulling image: %w", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	dec := json.NewDecoder(reader)
 	for {
@@ -957,7 +957,7 @@ func (b *DockerBackend) execInContainerWithStdin(ctx context.Context, id string,
 		if _, err := io.Copy(conn.Conn, stdin); err != nil {
 			return 0, err
 		}
-		conn.CloseWrite()
+		_ = conn.CloseWrite()
 	}
 
 	var outBuf bytes.Buffer
@@ -1318,7 +1318,7 @@ func (b *DockerBackend) RestoreFromImage(ctx context.Context, workspaceID, image
 	env := inspect.Config.Env
 	workingDir := inspect.Config.WorkingDir
 
-	b.docker.ContainerRemove(ctx, containerID, container.RemoveOptions{
+	_ = b.docker.ContainerRemove(ctx, containerID, container.RemoveOptions{
 		Force: true,
 	})
 
@@ -1339,7 +1339,7 @@ func (b *DockerBackend) RestoreFromImage(ctx context.Context, workspaceID, image
 		if err != nil {
 			return fmt.Errorf("pulling image: %w", err)
 		}
-		reader.Close()
+		_ = reader.Close()
 	}
 
 	resp, err := b.docker.ContainerCreate(ctx, &container.Config{

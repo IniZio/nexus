@@ -52,7 +52,7 @@ func executeWithKey(ctx context.Context, conn *types.SSHConnection, cmd []string
 	if err != nil {
 		return "", fmt.Errorf("writing temp key: %w", err)
 	}
-	defer os.Remove(keyFile)
+	defer func() { _ = os.Remove(keyFile) }()
 
 	sshCmd := exec.CommandContext(ctx, "ssh",
 		"-o", "StrictHostKeyChecking=no",
@@ -108,7 +108,7 @@ func shellWithKey(ctx context.Context, conn *types.SSHConnection) error {
 	if err != nil {
 		return fmt.Errorf("writing temp key: %w", err)
 	}
-	defer os.Remove(keyFile)
+	defer func() { _ = os.Remove(keyFile) }()
 
 	sshCmd := exec.Command("ssh",
 		"-o", "StrictHostKeyChecking=no",
@@ -145,7 +145,7 @@ func writeTempKey(key string) (string, error) {
 		return "", err
 	}
 
-	tmpFile.Close()
+	_ = tmpFile.Close()
 	return tmpFile.Name(), nil
 }
 

@@ -372,7 +372,7 @@ func (b *DaytonaBackend) removeDaytonaID(nexusID string) {
 	b.mappingMu.Unlock()
 
 	if b.stateStore != nil {
-		b.stateStore.DeleteDaytonaMapping(nexusID)
+		_ = b.stateStore.DeleteDaytonaMapping(nexusID)
 	}
 }
 
