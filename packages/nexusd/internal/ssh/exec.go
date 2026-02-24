@@ -12,6 +12,40 @@ import (
 )
 
 func Execute(ctx context.Context, conn *types.SSHConnection, cmd []string) (string, error) {
+	if conn.PrivateKey == "" {
+		return executeWithToken(ctx, conn, cmd)
+	}
+	return executeWithKey(ctx, conn, cmd)
+}
+
+func executeWithToken(ctx context.Context, conn *types.SSHConnection, cmd []string) (string, error) {
+	cfg := GetDaytonaSSHConfig(conn)
+
+	sshCmd := exec.CommandContext(ctx, "ssh",
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", fmt.Sprintf("ConnectTimeout=%d", cfg.ConnectTimeout),
+		"-o", fmt.Sprintf("ServerAliveInterval=%d", cfg.ServerAliveInterval),
+		"-p", fmt.Sprintf("%d", conn.Port),
+		fmt.Sprintf("%s@%s", conn.Username, conn.Host),
+	)
+
+	if len(cmd) > 0 {
+		sshCmd.Args = append(sshCmd.Args, cmd...)
+	}
+
+	output, err := sshCmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return string(output), fmt.Errorf("command failed: %s", string(exitErr.Stderr))
+		}
+		return "", fmt.Errorf("ssh execution: %w", err)
+	}
+
+	return string(output), nil
+}
+
+func executeWithKey(ctx context.Context, conn *types.SSHConnection, cmd []string) (string, error) {
 	cfg := GetDaytonaSSHConfig(conn)
 
 	keyFile, err := writeTempKey(conn.PrivateKey)
@@ -46,6 +80,28 @@ func Execute(ctx context.Context, conn *types.SSHConnection, cmd []string) (stri
 }
 
 func Shell(ctx context.Context, conn *types.SSHConnection) error {
+	if conn.PrivateKey == "" {
+		return shellWithToken(ctx, conn)
+	}
+	return shellWithKey(ctx, conn)
+}
+
+func shellWithToken(ctx context.Context, conn *types.SSHConnection) error {
+	sshCmd := exec.Command("ssh",
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-p", fmt.Sprintf("%d", conn.Port),
+		fmt.Sprintf("%s@%s", conn.Username, conn.Host),
+	)
+
+	sshCmd.Stdin = os.Stdin
+	sshCmd.Stdout = os.Stdout
+	sshCmd.Stderr = os.Stderr
+
+	return sshCmd.Run()
+}
+
+func shellWithKey(ctx context.Context, conn *types.SSHConnection) error {
 	cfg := GetDaytonaSSHConfig(conn)
 
 	keyFile, err := writeTempKey(conn.PrivateKey)

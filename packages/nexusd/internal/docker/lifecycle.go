@@ -121,7 +121,7 @@ func (l *Lifecycle) checkHealth(backend *DockerBackend) {
 
 func (l *Lifecycle) restart(backend *DockerBackend) {
 	l.restartCount++
-	log.Printf("Attempting restart %d/%d for container %s", 
+	log.Printf("Attempting restart %d/%d for container %s",
 		l.restartCount, l.maxRestarts, l.containerID)
 
 	ctx, cancel := context.WithTimeout(l.ctx, 30*time.Second)
@@ -171,15 +171,17 @@ func (h *defaultHealthChecker) Check(ctx context.Context, containerID string) er
 }
 
 type ContainerManager struct {
-	mu              sync.RWMutex
+	mu               sync.RWMutex
 	containerTimeout time.Duration
-	containers      map[string]*ContainerInfo
+	containers       map[string]*ContainerInfo
+	RemoveFunc       func(ctx context.Context, id string, force bool) error
+	StopFunc         func(ctx context.Context, id string, timeout time.Duration) error
 }
 
 func NewContainerManager() *ContainerManager {
 	return &ContainerManager{
 		containerTimeout: 30 * time.Second,
-		containers:      make(map[string]*ContainerInfo),
+		containers:       make(map[string]*ContainerInfo),
 	}
 }
 
@@ -215,6 +217,10 @@ func (m *ContainerManager) Start(ctx context.Context, id string) error {
 }
 
 func (m *ContainerManager) Stop(ctx context.Context, id string, timeout time.Duration) error {
+	if m.StopFunc != nil {
+		return m.StopFunc(ctx, id, timeout)
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -231,6 +237,10 @@ func (m *ContainerManager) Stop(ctx context.Context, id string, timeout time.Dur
 }
 
 func (m *ContainerManager) Remove(ctx context.Context, id string, force bool) error {
+	if m.RemoveFunc != nil {
+		return m.RemoveFunc(ctx, id, force)
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -294,23 +304,23 @@ func generateID() string {
 }
 
 type ContainerConfig struct {
-	Name        string
-	Image       string
-	Env         []string
-	Volumes     []VolumeMount
-	Ports       []PortBinding
-	WorkingDir  string
-	Entrypoint  []string
-	Cmd         []string
-	AutoRemove  bool
-	Privileged  bool
+	Name       string
+	Image      string
+	Env        []string
+	Volumes    []VolumeMount
+	Ports      []PortBinding
+	WorkingDir string
+	Entrypoint []string
+	Cmd        []string
+	AutoRemove bool
+	Privileged bool
 }
 
 type VolumeMount struct {
-	Type      string
-	Source    string
-	Target    string
-	ReadOnly  bool
+	Type     string
+	Source   string
+	Target   string
+	ReadOnly bool
 }
 
 type PortBinding struct {
