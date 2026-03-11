@@ -2,6 +2,8 @@
 
 Nexus is an AI-native development environment that makes agent collaboration deterministic, traceable, and production-ready. It combines enforcement mechanisms, isolated workspaces, and telemetry to ensure AI agents deliver consistent, high-quality results.
 
+> Interface note: Nexus is standardizing future product terminology around org/project/branch/version/environment. Today, the shipped CLI remains workspace-first (`nexus workspace ...`).
+
 ## Vision
 
 As AI agents write more code, we need systems that ensure:
@@ -26,9 +28,9 @@ Inspired by [opencode-devcontainer](https://github.com/athal7/opencode-devcontai
 
 **Status:** Fully implemented. See [workspace quickstart](tutorials/workspace-quickstart.md).
 
-### 2. Telemetry (Planned)
+### 2. Telemetry (Implemented)
 
-Following the [Agent Trace](https://agent-trace.dev/) specification, Nexus will track AI contributions with full provenance.
+Following the [Agent Trace](https://agent-trace.dev/) specification, Nexus includes telemetry capture and trace commands.
 
 **Vision:**
 - Line-level attribution of AI-generated code
@@ -102,7 +104,7 @@ nexus workspace ssh my-project
 |-----------|--------|----------|---------------|
 | Workspace (nexusd) | ✅ Implemented | High | [Quickstart](tutorials/workspace-quickstart.md) |
 | Workspace CLI | ✅ Implemented | High | [CLI](reference/nexus-cli.md) |
-| Telemetry (Agent Trace) | 📋 Planned | Low | - |
+| Telemetry (Agent Trace) | ✅ Implemented | Low | - |
 | Web Dashboard | 📋 Planned | Low | - |
 | Multi-Agent Coordination | 📋 Planned | Low | - |
 

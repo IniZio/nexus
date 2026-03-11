@@ -118,6 +118,20 @@ Nexus is an AI-native development environment with three main components:
 | **Docker Backend** | Docker API | Container orchestration with SSH access |
 | **Telemetry** | Agent Trace | Usage tracking and analytics |
 
+## Current Interface (Implemented)
+
+- The user-facing CLI is workspace-first today.
+- Root command groups include `workspace`, `sync`, `status`, `trace`, `config`, `boulder`, `doctor`, and `version`.
+- Workspace lifecycle and access are handled through `nexus workspace ...` subcommands, including checkpoint operations.
+
+## Future Interface Direction (Internal Planning Note)
+
+Nexus has approved a future canonical product model:
+
+`Org -> Project -> Branch -> Version -> Environment`
+
+Current workspace internals are expected to map into that model over time, but the project-first command tree is not the shipped interface yet.
+
 ## Port Allocation
 
 - **Range**: 32800-34999 (Docker backend)

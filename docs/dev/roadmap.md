@@ -4,6 +4,16 @@
 
 **Active Development:** Nexus is a multi-component project with varying levels of completion.
 
+## Product Interface Migration
+
+The approved future product model is:
+
+`Org -> Project -> Branch -> Version -> Environment`
+
+This is internal direction for staged migration planning. The currently implemented user CLI remains workspace-first (`nexus workspace ...`) as defined in `packages/nexusd/internal/cli/root.go` and `packages/nexusd/internal/cli/workspace.go`.
+
+Do not treat project-first command groups as implemented until they are added to the shipped CLI.
+
 ## Component Overview
 
 | Component | Status | Description |
