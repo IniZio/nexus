@@ -52,11 +52,9 @@ SSH into your remote server:
 # SSH to remote server
 ssh user@your-server-ip
 
-# Install Nexus
-curl -fsSL https://nexus.dev/install.sh | bash
-
-# Verify installation
-nexus --version
+# Build/install the CLI and daemon from this repository
+# then verify:
+nexus version
 ```
 
 ### Step 3: Configure Nexus Daemon
@@ -103,8 +101,8 @@ export NEXUS_PORT=8080
 
 # Or use config file
 mkdir -p ~/.config/nexus
-cat > ~/.config/nexus/config.yaml << EOF
-server:
+cat > ~/.nexus/config.yaml << EOF
+daemon:
   host: your-server-ip
   port: 8080
 EOF
@@ -153,18 +151,6 @@ $ exit
 nexus workspace status remote-dev
 ```
 
-## Port Forwarding
-
-Access services running on remote workspace locally:
-
-```bash
-# Forward remote port 3000 to local port 3000
-nexus workspace port add remote-dev 3000
-
-# Now access http://localhost:3000 on your laptop
-# Requests go to remote workspace!
-```
-
 ## Multi-Device Workflow
 
 ```
@@ -186,17 +172,11 @@ Laptop at home:
    sudo ufw allow from YOUR_IP to any port 8080
    ```
 
-2. **Authentication**: Use API tokens
-   ```bash
-   nexus auth login
-   ```
+2. **Authentication**: start `nexusd` with `--token` or `--jwt-secret-file`
 
 3. **SSH**: Always use key-based auth
 
-4. **Updates**: Keep Nexus updated
-   ```bash
-   nexus update
-   ```
+4. **Updates**: pull latest source and rebuild CLI/daemon binaries
 
 ## Result
 

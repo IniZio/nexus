@@ -1,11 +1,11 @@
 # Workspace Quickstart
 
-Nexus Workspaces provide isolated, reproducible development environments that work seamlessly with your existing tools. Think of them as remote SSH VMs that automatically intercept your commands.
+Nexus workspaces provide isolated development environments managed through `nexus workspace` commands.
 
 ## Prerequisites
 
 - Docker installed and running
-- Nexus CLI built (`pnpm run build`)
+- Nexus CLI installed (see `installation.md`)
 
 ## Creating a Workspace
 
@@ -13,68 +13,70 @@ Nexus Workspaces provide isolated, reproducible development environments that wo
 nexus workspace create myproject
 ```
 
-This creates a Docker-based workspace with:
+This creates a workspace with:
 - Isolated filesystem
 - Git worktree integration
 - SSH agent forwarding
 
-## Activating a Workspace
+## Check Workspaces
 
-Once created, activate the workspace to enable auto-intercept:
+```bash
+# List all workspaces
+nexus workspace list
+
+# Show detailed status for one workspace
+nexus workspace status myproject
+```
+
+`nexus workspace status` requires a workspace name.
+
+## Connect to a Workspace
+
+Use SSH for an interactive shell:
+
+```bash
+nexus workspace ssh myproject
+```
+
+Or run a single command without opening a shell:
+
+```bash
+nexus workspace exec myproject -- pwd
+```
+
+## Optional Session Context
+
+You can set an active workspace context:
 
 ```bash
 nexus workspace use myproject
 ```
 
-When a workspace is active, all commands automatically run inside it. No prefix needed.
-
-## Working Seamlessly
-
-With the workspace activated, work exactly as you normally would:
+Clear it later:
 
 ```bash
-# Start services
-docker-compose up -d
-
-# Install dependencies
-npm install
-npm install lodash
-
-# Run development server
-npm run dev
-
-# Run tests
-npm test
-
-# Check processes
-ps aux
-```
-
-### Escaping to Host
-
-Need to run a command on your host machine instead Prefix with `HOST:`?:
-
-```bash
-HOST:npm install -g some-tool    # Install globally on host
-HOST:docker ps                   # Check host Docker
-HOST:git status                   # Check main repo status
-```
-
-## Checking Status
-
-```bash
-# See current workspace context
-nexus workspace status
-
-# List all workspaces
-nexus workspace list
-```
-
-## Deactivating Workspace
-
-```bash
-# Remove workspace context (commands run on host again)
 nexus workspace use --clear
+```
+
+`workspace use` stores session context and prints guidance about host escape (`HOST:`). For predictable execution, continue using `workspace ssh` and `workspace exec`.
+
+## Start/Stop Lifecycle
+
+```bash
+nexus workspace start myproject
+nexus workspace stop myproject
+```
+
+## Delete a Workspace
+
+```bash
+nexus workspace delete myproject
+```
+
+Use `-f` to skip confirmation:
+
+```bash
+nexus workspace delete myproject -f
 ```
 
 ## Quick Reference
@@ -82,11 +84,12 @@ nexus workspace use --clear
 | Command | Description |
 |---------|-------------|
 | `nexus workspace create <name>` | Create new workspace |
-| `nexus workspace use <name>` | Activate workspace (enable auto-intercept) |
-| `nexus workspace use --clear` | Deactivate workspace |
+| `nexus workspace ssh <name>` | Open interactive shell in workspace |
+| `nexus workspace exec <name> -- <command>` | Run one command in workspace |
 | `nexus workspace list` | List all workspaces |
-| `nexus workspace status` | Show current context |
-| `HOST:<command>` | Run command on host instead |
+| `nexus workspace status <name>` | Show detailed workspace status |
+| `nexus workspace use <name>` | Set active workspace context |
+| `nexus workspace use --clear` | Clear active workspace context |
 
 ## Next Steps
 

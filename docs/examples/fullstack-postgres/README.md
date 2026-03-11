@@ -41,7 +41,7 @@ Managing all three locally leads to version conflicts and setup headaches.
 ## Step 1: Create Workspace
 
 ```bash
-nexus workspace create fullstack-app --dind
+nexus workspace create fullstack-app
 ```
 
 ## Step 2: Project Structure
@@ -125,13 +125,11 @@ $ docker-compose logs -f
 ## Step 4: Access from Host
 
 ```bash
-# On host
-nexus workspace port add fullstack-app 5173  # Frontend
-nexus workspace port add fullstack-app 3000  # API
-nexus workspace port add fullstack-app 5432  # DB (optional)
+# On host, inspect mapped ports
+nexus workspace status fullstack-app
 ```
 
-Open http://localhost:5173 for frontend
+Open frontend/API using the reported host ports.
 
 Test API: curl http://localhost:3000/api/users
 

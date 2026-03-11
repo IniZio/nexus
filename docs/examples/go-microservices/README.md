@@ -43,7 +43,7 @@ Developing microservices locally is painful:
 ## Step 1: Create Workspace
 
 ```bash
-nexus workspace create go-microservices --dind
+nexus workspace create go-microservices
 ```
 
 ## Step 2: Project Structure
@@ -141,10 +141,10 @@ $ docker-compose logs -f
 ## Step 4: Test Services
 
 ```bash
-# On host
-nexus workspace port add go-microservices 8080
+# On host, inspect mapped ports first
+nexus workspace status go-microservices
 
-# Test health
+# Then test using the reported host port
 curl http://localhost:8080/health
 
 # Test auth endpoint

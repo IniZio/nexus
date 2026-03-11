@@ -16,17 +16,14 @@ Setting up a modern React development environment with:
 ### Prerequisites
 
 - Docker Desktop installed
-- Nexus CLI installed (`nexus --version`)
+- Nexus CLI installed (`nexus version`)
 - Git repository initialized
 
 ## Step 1: Create Workspace
 
 ```bash
-# Create workspace with Docker-in-Docker for running containers inside
-nexus workspace create react-app --dind
+nexus workspace create react-app
 ```
-
-The `--dind` flag enables Docker inside your workspace, so you can run `docker-compose` commands within it.
 
 ## Step 2: Configure Environment
 
@@ -100,14 +97,13 @@ $ npm run dev
 
 ## Step 4: Access from Host
 
-The dev server runs inside the workspace. To access it from your host browser:
+If your workspace exposes a mapped host port for the app, check it with:
 
 ```bash
-# On your HOST machine (new terminal)
-nexus workspace port add react-app 5173
+nexus workspace status react-app
 ```
 
-Now open http://localhost:5173 in your browser.
+Then open the reported host URL/port.
 
 ### Hot Reload
 

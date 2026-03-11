@@ -22,7 +22,7 @@ Python development environments are notoriously tricky:
 ## Step 1: Create Workspace
 
 ```bash
-nexus workspace create django-app --dind
+nexus workspace create django-app
 ```
 
 ## Step 2: Configure Environment
@@ -113,12 +113,13 @@ $ python manage.py runserver 0.0.0.0:8000
 
 ## Step 4: Access from Host
 
+Use workspace status to check mapped ports:
+
 ```bash
-# On host
-nexus workspace port add django-app 8000
+nexus workspace status django-app
 ```
 
-Open http://localhost:8000
+Open the reported host URL/port for the Django server.
 
 ## Result
 

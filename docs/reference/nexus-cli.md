@@ -1,133 +1,165 @@
 # Nexus CLI Reference
 
+This reference documents the currently implemented `nexus` CLI surface from `packages/nexusd/internal/cli` and live help output.
+
+## Global Usage
+
+```bash
+nexus [command]
+```
+
+Global flags:
+- `--config <path>`
+- `--json`
+- `-q, --quiet`
+- `-v, --verbose`
+
+Version check:
+
+```bash
+nexus version
+```
+
+## Top-Level Commands
+
+- `nexus boulder`
+- `nexus completion`
+- `nexus config`
+- `nexus doctor`
+- `nexus status`
+- `nexus sync`
+- `nexus trace`
+- `nexus version`
+- `nexus workspace`
+
 ## Workspace Commands
 
-### nexus workspace create
-
-Create a new Docker-based workspace.
-
 ```bash
-nexus workspace create <name> [options]
+nexus workspace [command]
 ```
 
-**Options:**
-- `--dind` - Enable Docker-in-Docker support
-- `--from <path>` - Import from existing project path
-- `--cpu <cores>` - CPU limit (default: 2)
-- `--memory <gb>` - Memory limit in GB (default: 4)
+Implemented subcommands:
+- `checkpoint`
+- `create`
+- `delete`
+- `exec`
+- `inject-key`
+- `list` (alias: `ls`)
+- `logs`
+- `ssh`
+- `start`
+- `status`
+- `stop`
+- `use`
 
-**How it works:**
-Nexus creates a container using your project's `Dockerfile`. If no Dockerfile exists,
-it uses a default Ubuntu base image. You have full control over your environment.
+### `nexus workspace create <name>`
 
-**Example:**
+Create a workspace.
+
 ```bash
-# Create a basic workspace
-nexus workspace create myproject
-
-# Create with Docker-in-Docker for running containers inside
-nexus workspace create fullstack-demo --dind
-
-# Create from existing project
-nexus workspace create myproject --from ./existing-project
+nexus workspace create <name> [flags]
 ```
 
-### nexus workspace use
+Flags:
+- `--backend <docker|daytona>`
+- `--cpu <int>` (default `2`)
+- `--disk <int>` (default `20`)
+- `--from <path>`
+- `--memory <int>` (default `4`)
 
-Activate a workspace, enabling auto-intercept for all commands.
+### `nexus workspace list`
+
+List workspaces.
+
+```bash
+nexus workspace list [flags]
+```
+
+Flags:
+- `--all`
+- `--format <table|json>` (default `table`)
+
+### `nexus workspace status <name>`
+
+Show detailed status for one workspace.
+
+```bash
+nexus workspace status <name>
+```
+
+### `nexus workspace use [name]`
+
+Set or clear active workspace for the current session metadata.
 
 ```bash
 nexus workspace use <name>
 nexus workspace use --clear
+nexus workspace use -
 ```
 
-**Behavior:**
-- When a workspace is active, commands automatically execute inside it
-- No need to prefix commands with `nexus exec`
-- The workspace context persists until cleared
+Flag:
+- `-c, --clear`
 
-**Examples:**
-```bash
-# Activate workspace
-nexus workspace use myproject
+Note: `use` records active workspace context and prints guidance about host escape (`HOST:`). For deterministic command execution in a workspace, prefer `nexus workspace ssh <name>` or `nexus workspace exec <name> -- <command>`.
 
-# Commands now auto-route to workspace
-docker-compose up -d
-npm install
-npm run dev
+### `nexus workspace exec <name> -- <command>`
 
-# Deactivate (return to host)
-nexus workspace use --clear
-```
-
-### nexus workspace use --clear
-
-Deactivate the current workspace context. Commands will run on the host machine.
+Execute a command in a workspace.
 
 ```bash
-nexus workspace use --clear
+nexus workspace exec <name> -- <command>
 ```
 
-### nexus workspace list
+### `nexus workspace ssh <name>`
 
-List all available workspaces.
+Open an interactive SSH session to a workspace.
 
 ```bash
-nexus workspace list
+nexus workspace ssh <name>
 ```
 
-### nexus workspace status
+### `nexus workspace inject-key <name>`
 
-Show the current workspace context.
+Inject your SSH key into a workspace.
 
 ```bash
-nexus workspace status
+nexus workspace inject-key <name>
 ```
 
-Output includes:
-- Active workspace name
-- Connection status
-- Available workspaces
+### `nexus workspace start <name>` / `stop <name>` / `delete <name>` / `logs <name>`
 
-## Auto-Intercept Behavior
-
-When a workspace is active via `nexus workspace use`:
-
-1. **Automatic Routing**: All commands execute inside the workspace
-2. **Transparent**: No changes needed to your workflow
-3. **Working Directory**: Commands run from the workspace's working directory
-
-**Example workflow:**
-```bash
-nexus workspace use myproject
-
-# These commands run IN the workspace
-docker-compose up -d    # Workspace Docker daemon
-npm install             # Workspace node_modules
-npm run dev             # Dev server in workspace
-
-# Need host instead? Use HOST: prefix
-HOST:npm install -g some-tool
-HOST:docker ps          # Host Docker
-```
-
-## HOST: Prefix
-
-Escape the workspace context to run commands on the host machine.
+Lifecycle and logs commands for an individual workspace.
 
 ```bash
-HOST:<command> [args...]
+nexus workspace start <name>
+nexus workspace stop <name> [--force]
+nexus workspace delete <name> [--force]
+nexus workspace logs <name>
 ```
 
-**Use cases:**
-- Install global tools on host
-- Check host Docker containers
-- Access the main repository
-- Run host-specific tools
+### `nexus workspace checkpoint`
 
-**Examples:**
+Manage workspace checkpoints.
+
 ```bash
-HOST:npm install -g typescript
-HOST:docker ps
-HOST:git status
+nexus workspace checkpoint [command]
 ```
+
+Subcommands:
+- `nexus workspace checkpoint create <workspace>`
+- `nexus workspace checkpoint list <workspace>`
+- `nexus workspace checkpoint restore <workspace> <checkpoint-id>`
+- `nexus workspace checkpoint delete <workspace> <checkpoint-id>`
+
+## Sync Commands
+
+```bash
+nexus sync [command]
+```
+
+Implemented subcommands:
+- `flush`
+- `list`
+- `pause`
+- `resume`
+- `status`

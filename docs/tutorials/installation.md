@@ -59,10 +59,13 @@ Check that everything is installed correctly:
 
 ```bash
 # Check CLI is available
-nexus --version
+nexus version
 
-# Check workspace commands
-nexus workspace list
+# Check top-level help
+nexus --help
+
+# Check workspace command tree
+nexus workspace --help
 ```
 
 ## Next Steps
@@ -139,3 +142,8 @@ cd packages/nexusd
 go build -o nexus ./cmd/cli
 cp nexus /usr/local/bin/
 ```
+
+## Notes
+
+- Current user-facing CLI is workspace-first (`nexus workspace ...`).
+- Command behavior should be validated with `nexus --help` and `nexus workspace --help` after upgrades.

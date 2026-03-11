@@ -12,14 +12,8 @@ You want to start a new project without polluting your local machine with depend
 ### 1. Install Nexus
 
 ```bash
-# macOS
-brew install nexus
-
-# Linux
-curl -fsSL https://nexus.dev/install.sh | bash
-
-# Verify
-nexus --version
+# Follow docs/tutorials/installation.md
+nexus version
 ```
 
 ### 2. Create Your First Workspace

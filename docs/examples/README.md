@@ -36,5 +36,5 @@ Each example includes:
 
 All examples assume you have:
 - Docker Desktop installed
-- Nexus CLI installed (`nexus --version`)
+- Nexus CLI installed (`nexus version`)
 - A git repository initialized
