@@ -1,4 +1,4 @@
-# Remote Server Workspace
+# Remote Server Environment
 
 **Time:** 30 minutes  
 **Use Case:** Run Nexus on cloud/remote infrastructure
@@ -54,7 +54,7 @@ ssh user@your-server-ip
 
 # Build/install the CLI and daemon from this repository
 # then verify:
-nexus version
+nexus cli-version
 ```
 
 ### Step 3: Configure Nexus Daemon
@@ -100,7 +100,7 @@ export NEXUS_HOST=your-server-ip
 export NEXUS_PORT=8080
 
 # Or use config file
-mkdir -p ~/.config/nexus
+mkdir -p ~/.nexus
 cat > ~/.nexus/config.yaml << EOF
 daemon:
   host: your-server-ip
@@ -111,13 +111,13 @@ EOF
 nexus status
 ```
 
-### Step 5: Create Remote Workspace
+### Step 5: Create Remote Environment
 
 ```bash
-# Create workspace on remote server
-nexus workspace create remote-dev
+# Create environment on remote server
+nexus environment create remote-dev
 
-# This creates the workspace on the REMOTE server
+# This creates the environment on the REMOTE server
 # Files are synced back to your local machine
 ```
 
@@ -130,37 +130,37 @@ For passwordless access:
 ssh-copy-id user@your-server-ip
 
 # Configure Nexus to use key
-nexus workspace inject-key remote-dev
+nexus environment inject-key remote-dev
 ```
 
 ## Development Workflow
 
 ```bash
-# 1. Connect to remote workspace
-nexus workspace ssh remote-dev
+# 1. Connect to remote environment
+nexus environment ssh remote-dev
 
 # 2. Work normally - all compute happens remotely
 $ npm install
 $ npm run build
 $ docker-compose up -d
 
-# 3. Exit - workspace keeps running
+# 3. Exit - environment keeps running
 $ exit
 
 # 4. Check status from anywhere
-nexus workspace status remote-dev
+nexus environment status remote-dev
 ```
 
 ## Multi-Device Workflow
 
 ```
 Laptop at office:
-  nexus workspace ssh remote-dev
+  nexus environment ssh remote-dev
   # do some work
   exit
 
 Laptop at home:
-  nexus workspace ssh remote-dev
+  nexus environment ssh remote-dev
   # continue where you left off
   # all state preserved on remote
 ```
@@ -212,8 +212,8 @@ nexus sync resume remote-dev
 ## Cleanup
 
 ```bash
-# Delete remote workspace
-nexus workspace delete remote-dev
+# Delete remote environment
+nexus environment delete remote-dev
 
 # Stop daemon on server
 ssh user@server "sudo systemctl stop nexusd"

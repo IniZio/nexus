@@ -1,4 +1,4 @@
-# Node + React Workspace
+# Node + React Environment
 
 **Time:** 15 minutes  
 **Stack:** Node.js 20, React 18, Vite, PostgreSQL (optional)
@@ -16,13 +16,13 @@ Setting up a modern React development environment with:
 ### Prerequisites
 
 - Docker Desktop installed
-- Nexus CLI installed (`nexus version`)
+- Nexus CLI installed (`nexus cli-version`)
 - Git repository initialized
 
-## Step 1: Create Workspace
+## Step 1: Create Environment
 
 ```bash
-nexus workspace create react-app
+nexus environment create react-app
 ```
 
 ## Step 2: Configure Environment
@@ -65,7 +65,7 @@ Create these files in `.worktrees/react-app/`:
 }
 ```
 
-**Dockerfile:** (Already in workspace root)
+**Dockerfile:** (Already in environment root)
 ```dockerfile
 FROM node:20-slim
 
@@ -85,10 +85,10 @@ CMD ["npm", "run", "dev"]
 ## Step 3: Start Developing
 
 ```bash
-# Enter workspace
-nexus workspace ssh react-app
+# Enter environment
+nexus environment ssh react-app
 
-# Inside workspace - install dependencies
+# Inside environment - install dependencies
 $ npm install
 
 # Start development server
@@ -97,17 +97,17 @@ $ npm run dev
 
 ## Step 4: Access from Host
 
-If your workspace exposes a mapped host port for the app, check it with:
+If your environment exposes a mapped host port for the app, check it with:
 
 ```bash
-nexus workspace status react-app
+nexus environment status react-app
 ```
 
 Then open the reported host URL/port.
 
 ### Hot Reload
 
-Changes you make in your editor (on host) automatically sync to the workspace and trigger HMR.
+Changes you make in your editor (on host) automatically sync to the environment and trigger HMR.
 
 ## Adding PostgreSQL (Optional)
 
@@ -139,7 +139,7 @@ volumes:
   postgres_data:
 ```
 
-Then run inside workspace:
+Then run inside environment:
 ```bash
 $ docker-compose up -d
 ```
@@ -148,7 +148,7 @@ $ docker-compose up -d
 
 ✅ **What you achieved:**
 - Isolated Node.js 20 environment
-- Hot reload working at localhost:5173
+- Hot reload working at the host URL/port from `nexus environment status react-app`
 - Optional PostgreSQL database
 - Team can replicate your exact environment
 - No local Node.js installation needed
@@ -156,7 +156,7 @@ $ docker-compose up -d
 ## Cleanup
 
 ```bash
-nexus workspace delete react-app
+nexus environment delete react-app
 ```
 
 This removes both the container and git worktree.

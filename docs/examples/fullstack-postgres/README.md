@@ -1,4 +1,4 @@
-# Fullstack + PostgreSQL Workspace
+# Fullstack + PostgreSQL Environment
 
 **Time:** 20 minutes  
 **Stack:** React frontend, Node.js API, PostgreSQL database
@@ -38,10 +38,10 @@ Managing all three locally leads to version conflicts and setup headaches.
 - Nexus CLI
 - Git repository
 
-## Step 1: Create Workspace
+## Step 1: Create Environment
 
 ```bash
-nexus workspace create fullstack-app
+nexus environment create fullstack-app
 ```
 
 ## Step 2: Project Structure
@@ -75,7 +75,7 @@ services:
       - ./frontend:/workspace/frontend
       - /workspace/frontend/node_modules
     environment:
-      - VITE_API_URL=http://localhost:3000
+      - VITE_API_URL=http://localhost:<BACKEND_HOST_PORT>
     working_dir: /workspace/frontend
     command: npm run dev
   
@@ -109,11 +109,19 @@ volumes:
   postgres_data:
 ```
 
+Replace `<BACKEND_HOST_PORT>` with the backend host port reported by:
+
+```bash
+nexus environment status fullstack-app
+```
+
+Do not hardcode `3000`; host ports are assigned dynamically.
+
 ## Step 3: Start All Services
 
 ```bash
-# Enter workspace
-nexus workspace ssh fullstack-app
+# Enter environment
+nexus environment ssh fullstack-app
 
 # Start everything
 $ docker-compose up -d
@@ -126,12 +134,16 @@ $ docker-compose logs -f
 
 ```bash
 # On host, inspect mapped ports
-nexus workspace status fullstack-app
+nexus environment status fullstack-app
 ```
 
 Open frontend/API using the reported host ports.
 
-Test API: curl http://localhost:3000/api/users
+For example, use the backend host port shown in status output:
+
+```bash
+curl "http://localhost:<BACKEND_PORT>/api/users"
+```
 
 ## Result
 
@@ -160,5 +172,5 @@ $ docker-compose logs -f backend
 ## Cleanup
 
 ```bash
-nexus workspace delete fullstack-app
+nexus environment delete fullstack-app
 ```

@@ -1,6 +1,6 @@
-# Workspace Daemon
+# Environment Daemon (`nexusd`)
 
-The Nexus workspace daemon is implemented in `packages/nexusd` and runs from `./cmd/daemon`.
+The Nexus daemon behind environment operations is implemented in `packages/nexusd` and runs from `./cmd/daemon`.
 
 ## Binary and Startup
 
@@ -33,7 +33,7 @@ Registered routes include:
 - `GET /ws`
 - `GET /ws/ssh-agent`
 
-Workspace subpaths implemented in server handlers include:
+Environment-related subpaths implemented in server handlers include:
 - `/start`, `/stop`, `/exec`, `/logs`, `/status`
 - `/sync/status`, `/sync/pause`, `/sync/resume`, `/sync/flush`
 - `/checkpoints`
@@ -57,4 +57,6 @@ Handlers live in `packages/nexusd/pkg/handlers/fs.go` and `packages/nexusd/pkg/h
 ## Scope Notes
 
 - This page documents the implemented daemon in `packages/nexusd` only.
+- User-facing commands are organized around `project`, `branch`, `version`, and `environment`.
+- Low-level daemon routes and RPC method names still use legacy `workspace` terminology in the current implementation.
 - Internal implementation details may change; rely on CLI docs for supported user workflows.

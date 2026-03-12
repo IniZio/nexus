@@ -47,11 +47,11 @@ Nexus is an AI-native development environment with three main components:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Workspace Lifecycle
+## Environment Lifecycle
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                          Workspace Lifecycle                                 │
+│                         Environment Lifecycle                                │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  create          start           stop           destroy                     │
@@ -63,15 +63,15 @@ Nexus is an AI-native development environment with three main components:
 │    │              │               │               │                         │
 │    │              │               │               │                         │
 │    ▼              ▼               ▼               ▼                         │
-│  git          container       container       cleanup                      │
-│  worktree     starts          stops           volumes                       │
-│  created      sshd runs       sshd stops      worktree                      │
+│  version      container       container       cleanup                      │
+│  snapshot     starts          stops           volumes                       │
+│  prepared     sshd runs       sshd stops      environment                   │
 │                           (state preserved)  removed                        │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## SSH Access Model
+## Environment Access Model
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -80,14 +80,14 @@ Nexus is an AI-native development environment with three main components:
 │                                                                             │
 │   User Command                                                               │
 │   ┌─────────────────────┐                                                   │
-│   │ nexus workspace ssh │                                                   │
-│   │ my-workspace        │                                                   │
+│   │ nexus environment ssh │                                                 │
+│   │ my-environment      │                                                   │
 │   └──────────┬──────────┘                                                   │
 │              │                                                              │
 │              ▼                                                              │
 │   ┌──────────────────────────────────────────────┐                          │
 │   │  Daemon resolves SSH port (e.g., 32801)     │                          │
-│   │  - Deterministic: hash(workspace) + 32800   │                          │
+│   │  - Deterministic: hash(environment) + 32800 │                          │
 │   └──────────────────────┬───────────────────────┘                          │
 │                          │                                                  │
 │                          ▼                                                  │
@@ -112,17 +112,18 @@ Nexus is an AI-native development environment with three main components:
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
-| **CLI** | Go | Command-line interface for workspace management |
-| **Daemon** | Go | Background service handling workspace operations |
+| **CLI** | Go | Command-line interface for project, branch, version, and environment workflows |
+| **Daemon** | Go | Background service handling environment operations |
 | **Plugins** | TypeScript | IDE integration (OpenCode, Claude Code, Cursor) |
 | **Docker Backend** | Docker API | Container orchestration with SSH access |
 | **Telemetry** | Agent Trace | Usage tracking and analytics |
 
 ## Current Interface (Implemented)
 
-- The user-facing CLI is workspace-first today.
-- Root command groups include `workspace`, `sync`, `status`, `trace`, `config`, `boulder`, `doctor`, and `version`.
-- Workspace lifecycle and access are handled through `nexus workspace ...` subcommands, including checkpoint operations.
+- The user-facing CLI is organized around `project`, `branch`, `version`, and `environment` command groups.
+- `project list` and `branch use` are scaffold stubs right now and return not-implemented errors.
+- Environment lifecycle and access are handled through `nexus environment ...` subcommands, including checkpoint operations.
+- Internal implementation still uses `workspace` naming in some APIs and storage paths while migration work continues.
 
 ## Future Interface Direction (Internal Planning Note)
 
@@ -130,7 +131,7 @@ Nexus has approved a future canonical product model:
 
 `Org -> Project -> Branch -> Version -> Environment`
 
-Current workspace internals are expected to map into that model over time, but the project-first command tree is not the shipped interface yet.
+Current environment internals are expected to keep converging on that model over time, and the project-first command tree is the shipped user-facing interface.
 
 ## Port Allocation
 

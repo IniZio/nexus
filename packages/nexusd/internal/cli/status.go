@@ -5,8 +5,8 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/spf13/cobra"
 	"github.com/nexus/nexus/packages/nexusd/internal/config"
+	"github.com/spf13/cobra"
 )
 
 var statusCmd = &cobra.Command{
@@ -15,7 +15,7 @@ var statusCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg := getConfig()
 		daemonRunning := checkDaemonRunning(cfg)
-		
+
 		workspaceCount := 0
 		var workspaceNames []string
 		if daemonRunning {
@@ -31,11 +31,11 @@ var statusCmd = &cobra.Command{
 
 		activeWorkspace, _ := getActiveWorkspace()
 
-		boulderState, _ := loadBoulderState()
+		boulderStatus := resolveBoulderStatus()
 
 		if jsonOutput {
 			fmt.Printf(`{"daemon_running":%t,"workspace_count":%d,"active_workspace":"%s","boulder_status":"%s"}`,
-				daemonRunning, workspaceCount, activeWorkspace, boulderState.Status)
+				daemonRunning, workspaceCount, activeWorkspace, boulderStatus)
 		} else {
 			fmt.Println("Nexus Status")
 			fmt.Println("───────────")
@@ -45,17 +45,25 @@ var statusCmd = &cobra.Command{
 			if len(workspaceNames) > 0 {
 				fmt.Printf("Available: %s\n", joinStrings(workspaceNames, ", "))
 			}
-			fmt.Printf("Boulder: %s\n", boulderState.Status)
+			fmt.Printf("Boulder: %s\n", boulderStatus)
 			if activeWorkspace == "" {
-				fmt.Printf("\nHint: Run 'nexus workspace use <name>' to switch to a workspace\n")
+				fmt.Printf("\nHint: Run 'nexus environment use <name>' to switch to a workspace\n")
 			}
 		}
 	},
 }
 
+func resolveBoulderStatus() string {
+	boulderState, err := loadBoulderState()
+	if err != nil || boulderState == nil || boulderState.Status == "" {
+		return "unknown"
+	}
+	return boulderState.Status
+}
+
 func checkDaemonRunning(cfg *config.Config) bool {
 	addr := fmt.Sprintf("%s:%d", cfg.Daemon.Host, cfg.Daemon.Port)
-	
+
 	conn, err := net.Dial("tcp", addr)
 	if err == nil {
 		conn.Close()

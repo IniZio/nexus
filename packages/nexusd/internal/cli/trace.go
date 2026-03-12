@@ -21,6 +21,11 @@ var (
 	traceOlderThanFlag int
 )
 
+const (
+	traceIDPrefixLen   = 16
+	sessionIDPrefixLen = 8
+)
+
 func init() {
 	traceListCmd.Flags().IntVarP(&traceLimitFlag, "limit", "n", 50, "Maximum number of traces to list")
 	traceListCmd.Flags().StringVar(&traceFromFlag, "from", "", "Filter traces from this date (YYYY-MM-DD)")
@@ -86,10 +91,10 @@ var traceListCmd = &cobra.Command{
 		fmt.Fprintf(w, "ID\tTIMESTAMP\tTYPE\tSESSION\tCOMMAND\tDURATION\tSUCCESS\n")
 		for _, e := range events {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%t\n",
-				e.ID[:16],
+				safeTruncate(e.ID, traceIDPrefixLen),
 				e.Timestamp.Format("2006-01-02 15:04"),
 				e.EventType,
-				e.SessionID[:8],
+				safeTruncate(e.SessionID, sessionIDPrefixLen),
 				e.Command,
 				e.Duration.Round(time.Millisecond),
 				e.Success,
@@ -122,7 +127,7 @@ var traceShowCmd = &cobra.Command{
 		var matchingEvent *telemetry.Event
 		var sessionEvents []telemetry.Event
 		for i := range events {
-			if events[i].ID == traceID || events[i].ID[:16] == traceID[:16] {
+			if traceIDMatches(events[i].ID, traceID) {
 				matchingEvent = &events[i]
 				break
 			}
@@ -173,7 +178,7 @@ var traceShowCmd = &cobra.Command{
 			fmt.Fprintf(w, "ID\tTIMESTAMP\tTYPE\tCOMMAND\tDURATION\n")
 			for _, e := range sessionEvents {
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-					e.ID[:16],
+					safeTruncate(e.ID, traceIDPrefixLen),
 					e.Timestamp.Format("15:04:05"),
 					e.EventType,
 					e.Command,
@@ -207,7 +212,7 @@ var traceExportCmd = &cobra.Command{
 
 		var matchingEvent *telemetry.Event
 		for i := range events {
-			if events[i].ID == traceID || events[i].ID[:16] == traceID[:16] {
+			if traceIDMatches(events[i].ID, traceID) {
 				matchingEvent = &events[i]
 				break
 			}
@@ -282,7 +287,11 @@ var traceStatsCmd = &cobra.Command{
 			fmt.Println("\nTop Commands:")
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintf(w, "COMMAND\tCOUNT\tAVG DURATION\tSUCCESS RATE\n")
-			for _, c := range stats.TopCommands[:5] {
+			topCommands := stats.TopCommands
+			if len(topCommands) > 5 {
+				topCommands = topCommands[:5]
+			}
+			for _, c := range topCommands {
 				fmt.Fprintf(w, "%s\t%d\t%s\t%.1f%%\n",
 					c.Command,
 					c.Count,
@@ -297,7 +306,11 @@ var traceStatsCmd = &cobra.Command{
 			fmt.Println("\nCommon Errors:")
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintf(w, "TYPE\tCOUNT\tFIRST SEEN\n")
-			for _, e := range stats.CommonErrors[:5] {
+			commonErrors := stats.CommonErrors
+			if len(commonErrors) > 5 {
+				commonErrors = commonErrors[:5]
+			}
+			for _, e := range commonErrors {
 				fmt.Fprintf(w, "%s\t%d\t%s\n",
 					e.ErrorType,
 					e.Count,
@@ -384,4 +397,21 @@ func yamlExport(event *telemetry.Event) ([]byte, error) {
 	}
 
 	return json.MarshalIndent(ye, "", "  ")
+}
+
+func safeTruncate(value string, max int) string {
+	if max <= 0 || len(value) <= max {
+		return value
+	}
+	return value[:max]
+}
+
+func traceIDMatches(eventID, queryID string) bool {
+	if eventID == queryID {
+		return true
+	}
+	if len(eventID) < traceIDPrefixLen || len(queryID) < traceIDPrefixLen {
+		return false
+	}
+	return safeTruncate(eventID, traceIDPrefixLen) == safeTruncate(queryID, traceIDPrefixLen)
 }

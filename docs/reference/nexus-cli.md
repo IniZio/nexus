@@ -1,6 +1,13 @@
 # Nexus CLI Reference
 
-This reference documents the currently implemented `nexus` CLI surface from `packages/nexusd/internal/cli` and live help output.
+This page documents the currently implemented `nexus` CLI commands from live help output in `packages/nexusd/cmd/cli`.
+
+## Mental Model
+
+- `project`: repository-level context
+- `branch`: active branch context
+- `version`: reserved command group for upcoming version workflows
+- `environment`: isolated runtime for development work
 
 ## Global Usage
 
@@ -9,33 +16,75 @@ nexus [command]
 ```
 
 Global flags:
-- `--config <path>`
+- `--config <path>` (default `~/.nexus/config.yaml`)
 - `--json`
 - `-q, --quiet`
 - `-v, --verbose`
 
-Version check:
-
-```bash
-nexus version
-```
-
 ## Top-Level Commands
 
+Implemented root commands (from `Available Commands`):
 - `nexus boulder`
+- `nexus branch`
+- `nexus cli-version`
 - `nexus completion`
 - `nexus config`
 - `nexus doctor`
+- `nexus environment`
+- `nexus project`
 - `nexus status`
 - `nexus sync`
-- `nexus trace`
-- `nexus version`
-- `nexus workspace`
 
-## Workspace Commands
+Built-in help command:
+- `nexus help`
+
+Additional help topics (from `Additional help topics`):
+- `nexus version`
+
+## Project Commands
 
 ```bash
-nexus workspace [command]
+nexus project [command]
+```
+
+Scaffold subcommands (present in help, currently return not-implemented errors):
+- `list`
+
+Scaffold preview:
+
+```bash
+nexus project list
+```
+
+## Branch Commands
+
+```bash
+nexus branch [command]
+```
+
+Scaffold subcommands (present in help, currently return not-implemented errors):
+- `use`
+
+Scaffold preview:
+
+```bash
+nexus branch use <name>
+```
+
+## Version Help Topic
+
+```bash
+nexus version [command]
+```
+
+Current state:
+- `version` is currently exposed as a help topic (reserved group), not an implemented root command
+- no user-facing subcommands are exposed yet
+
+## Environment Commands
+
+```bash
+nexus environment [command]
 ```
 
 Implemented subcommands:
@@ -44,7 +93,8 @@ Implemented subcommands:
 - `delete`
 - `exec`
 - `inject-key`
-- `list` (alias: `ls`)
+- `list`
+- `ls` (alias of `list`)
 - `logs`
 - `ssh`
 - `start`
@@ -52,104 +102,63 @@ Implemented subcommands:
 - `stop`
 - `use`
 
-### `nexus workspace create <name>`
+### `nexus environment create <name>`
 
-Create a workspace.
+Create a new environment.
 
 ```bash
-nexus workspace create <name> [flags]
+nexus environment create <name> [flags]
 ```
 
 Flags:
 - `--backend <docker|daytona>`
 - `--cpu <int>` (default `2`)
-- `--disk <int>` (default `20`)
+- `--disk <int>` (GB, default `20`)
 - `--from <path>`
-- `--memory <int>` (default `4`)
+- `--memory <int>` (GB, default `4`)
 
-### `nexus workspace list`
+### `nexus environment status <name>`
 
-List workspaces.
-
-```bash
-nexus workspace list [flags]
-```
-
-Flags:
-- `--all`
-- `--format <table|json>` (default `table`)
-
-### `nexus workspace status <name>`
-
-Show detailed status for one workspace.
+Show detailed status for one environment.
 
 ```bash
-nexus workspace status <name>
+nexus environment status <name>
 ```
 
-### `nexus workspace use [name]`
+### `nexus environment exec <name> -- <command>`
 
-Set or clear active workspace for the current session metadata.
+Execute a command in an environment.
 
 ```bash
-nexus workspace use <name>
-nexus workspace use --clear
-nexus workspace use -
+nexus environment exec <name> -- <command>
 ```
 
-Flag:
-- `-c, --clear`
+### `nexus environment use [name]`
 
-Note: `use` records active workspace context and prints guidance about host escape (`HOST:`). For deterministic command execution in a workspace, prefer `nexus workspace ssh <name>` or `nexus workspace exec <name> -- <command>`.
-
-### `nexus workspace exec <name> -- <command>`
-
-Execute a command in a workspace.
+Set active environment context for supported commands.
 
 ```bash
-nexus workspace exec <name> -- <command>
+nexus environment use <name>
+nexus environment use --clear
 ```
 
-### `nexus workspace ssh <name>`
-
-Open an interactive SSH session to a workspace.
+### Lifecycle and Logs
 
 ```bash
-nexus workspace ssh <name>
+nexus environment start <name>
+nexus environment stop <name>
+nexus environment delete <name>
+nexus environment logs <name>
 ```
 
-### `nexus workspace inject-key <name>`
-
-Inject your SSH key into a workspace.
+### Checkpoints
 
 ```bash
-nexus workspace inject-key <name>
+nexus environment checkpoint create <environment>
+nexus environment checkpoint list <environment>
+nexus environment checkpoint restore <environment> <checkpoint-id>
+nexus environment checkpoint delete <environment> <checkpoint-id>
 ```
-
-### `nexus workspace start <name>` / `stop <name>` / `delete <name>` / `logs <name>`
-
-Lifecycle and logs commands for an individual workspace.
-
-```bash
-nexus workspace start <name>
-nexus workspace stop <name> [--force]
-nexus workspace delete <name> [--force]
-nexus workspace logs <name>
-```
-
-### `nexus workspace checkpoint`
-
-Manage workspace checkpoints.
-
-```bash
-nexus workspace checkpoint [command]
-```
-
-Subcommands:
-- `nexus workspace checkpoint create <workspace>`
-- `nexus workspace checkpoint list <workspace>`
-- `nexus workspace checkpoint restore <workspace> <checkpoint-id>`
-- `nexus workspace checkpoint delete <workspace> <checkpoint-id>`
 
 ## Sync Commands
 
@@ -163,3 +172,10 @@ Implemented subcommands:
 - `pause`
 - `resume`
 - `status`
+
+Examples:
+
+```bash
+nexus sync list
+nexus sync status [environment]
+```
