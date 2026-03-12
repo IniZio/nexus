@@ -1,18 +1,18 @@
 #!/bin/bash
 set -e
 
-echo "🚀 Node + React Environment Demo"
+echo "🚀 Node + React Workspace Demo"
 echo "==============================="
 
-ENV_NAME="${1:-react-demo}"
+WORKSPACE_NAME="${1:-react-demo}"
 
-echo "Step 1: Creating environment..."
-nexus environment create "$ENV_NAME"
+echo "Step 1: Creating workspace with DinD..."
+nexus workspace create "$WORKSPACE_NAME" --dind
 
 echo -e "\nStep 2: Copying project files..."
 # In real usage, user would have their own files
 # This is just for the demo
-nexus environment exec "$ENV_NAME" -- mkdir -p /workspace/src
+nexus workspace exec "$WORKSPACE_NAME" -- mkdir -p /workspace/src
 
 cat > /tmp/package.json << 'EOF'
 {
@@ -35,10 +35,10 @@ cat > /tmp/package.json << 'EOF'
 EOF
 
 # Copy package.json to workspace
-nexus environment exec "$ENV_NAME" -- sh -c 'cat > /workspace/package.json' < /tmp/package.json
+nexus workspace exec "$WORKSPACE_NAME" -- sh -c 'cat > /workspace/package.json' < /tmp/package.json
 
 echo -e "\nStep 3: Installing dependencies..."
-nexus environment exec "$ENV_NAME" -- npm install
+nexus workspace exec "$WORKSPACE_NAME" -- npm install
 
 echo -e "\nStep 4: Creating sample App.jsx..."
 cat > /tmp/App.jsx << 'EOF'
@@ -53,7 +53,7 @@ function App() {
 export default App
 EOF
 
-nexus environment exec "$ENV_NAME" -- sh -c 'cat > /workspace/src/App.jsx' < /tmp/App.jsx
+nexus workspace exec "$WORKSPACE_NAME" -- sh -c 'cat > /workspace/src/App.jsx' < /tmp/App.jsx
 
 echo -e "\nStep 5: Creating main.jsx..."
 cat > /tmp/main.jsx << 'EOF'
@@ -68,7 +68,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 )
 EOF
 
-nexus environment exec "$ENV_NAME" -- sh -c 'cat > /workspace/src/main.jsx' < /tmp/main.jsx
+nexus workspace exec "$WORKSPACE_NAME" -- sh -c 'cat > /workspace/src/main.jsx' < /tmp/main.jsx
 
 echo -e "\nStep 6: Creating index.html..."
 cat > /tmp/index.html << 'EOF'
@@ -86,8 +86,9 @@ cat > /tmp/index.html << 'EOF'
 </html>
 EOF
 
-nexus environment exec "$ENV_NAME" -- sh -c 'cat > /workspace/index.html' < /tmp/index.html
+nexus workspace exec "$WORKSPACE_NAME" -- sh -c 'cat > /workspace/index.html' < /tmp/index.html
 
-echo -e "\n✅ Environment ready!"
-echo "Start dev server: nexus environment exec $ENV_NAME -- npm run dev"
-echo "Then connect with: nexus environment ssh $ENV_NAME"
+echo -e "\n✅ Workspace ready!"
+echo "Start dev server: nexus workspace exec $WORKSPACE_NAME -- npm run dev"
+echo "Add port forward: nexus workspace port add $WORKSPACE_NAME 5173"
+echo "Then open: http://localhost:5173"

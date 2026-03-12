@@ -1,62 +1,110 @@
-# Environment Daemon (`nexusd`)
+# Workspace Daemon
 
-The Nexus daemon behind environment operations is implemented in `packages/nexusd` and runs from `./cmd/daemon`.
+The workspace daemon (`workspace-daemon`) is a Go-based server that provides remote file system and execution capabilities to the Nexus Workspace SDK.
 
-## Binary and Startup
+## Overview
 
-Build and run from source:
-
-```bash
-cd packages/nexusd
-go run ./cmd/daemon --token <secret>
+```
+┌─────────────┐     WebSocket      ┌─────────────────┐
+│ OpenCode    │ ◄────────────────► │  Workspace      │
+│ + Plugin    │                    │  Daemon         │
+└─────────────┘                    └────────┬────────┘
+                                           │
+                                    ┌──────▼──────┐
+                                    │ File System │
+                                    │ & Execution │
+                                    └─────────────┘
 ```
 
-Supported daemon flags (from `packages/nexusd/cmd/daemon/main.go`):
-- `--port` (default: `8080`)
-- `--workspace-dir` (default: `$HOME/.nexus/workspaces`)
-- `--token` (required unless `--jwt-secret-file` is provided)
-- `--jwt-secret-file`
+## Components
 
-The daemon exits if neither `--token` nor `--jwt-secret-file` is provided.
+### Daemon (`packages/workspace-daemon/`)
 
-## Implemented Server Surfaces
+- **server.go**: WebSocket server handling RPC calls
+- **handlers/**: File system and execution handlers
+- **lifecycle/**: Lifecycle script management
 
-Core server implementation is in `packages/nexusd/pkg/server/server.go`.
+### Plugin (`packages/opencode-plugin/`)
 
-### HTTP endpoints
+OpenCode plugin that:
+- Loads workspace configuration from `opencode.json`
+- Provides `nexus-connect` and `nexus-status` tools
+- Hooks into tool execution for monitoring
 
-Registered routes include:
-- `GET /health`
-- `GET|POST /api/v1/workspaces`
-- `GET|POST|DELETE /api/v1/workspaces/{id-or-name}` and subpaths
-- `GET|POST /api/v1/config`
-- `GET /ws`
-- `GET /ws/ssh-agent`
+### SDK (`packages/workspace-sdk/`)
 
-Environment-related subpaths implemented in server handlers include:
-- `/start`, `/stop`, `/exec`, `/logs`, `/status`
-- `/sync/status`, `/sync/pause`, `/sync/resume`, `/sync/flush`
-- `/checkpoints`
-- `/ports`
+TypeScript SDK for interacting with the daemon:
+- WebSocket client
+- File operations (read, write, mkdir, etc.)
+- Command execution
 
-### WebSocket RPC methods
+## Configuration
 
-`packages/nexusd/pkg/server/server.go` dispatches:
-- `fs.readFile`
-- `fs.writeFile`
-- `fs.exists`
-- `fs.readdir`
-- `fs.mkdir`
-- `fs.rm`
-- `fs.stat`
-- `exec`
-- `workspace.info`
+### Daemon
 
-Handlers live in `packages/nexusd/pkg/handlers/fs.go` and `packages/nexusd/pkg/handlers/exec.go`.
+```bash
+workspace-daemon \
+  --port 8080 \
+  --token <jwt-secret> \
+  --workspace-dir /workspace
+```
 
-## Scope Notes
+### OpenCode Plugin
 
-- This page documents the implemented daemon in `packages/nexusd` only.
-- User-facing commands are organized around `project`, `branch`, `version`, and `environment`.
-- Low-level daemon routes and RPC method names still use legacy `workspace` terminology in the current implementation.
-- Internal implementation details may change; rely on CLI docs for supported user workflows.
+```json
+{
+  "plugin": ["@nexus/opencode-plugin"],
+  "nexus": {
+    "workspace": {
+      "endpoint": "ws://localhost:8080",
+      "workspaceId": "my-workspace",
+      "token": "${NEXUS_TOKEN}"
+    }
+  }
+}
+```
+
+## Lifecycle Scripts
+
+The daemon supports lifecycle hooks via `.nexus/lifecycle.json`:
+
+```json
+{
+  "version": "1.0",
+  "hooks": {
+    "pre-start": [{ "name": "check-deps", "command": "npm", "args": ["install"] }],
+    "post-start": [{ "name": "start-services", "command": "docker", "args": ["compose", "up", "-d"] }],
+    "pre-stop": [{ "name": "save-state", "command": "./scripts/save.sh" }],
+    "post-stop": [{ "name": "cleanup", "command": "docker", "args": ["compose", "down"] }]
+  }
+}
+```
+
+## RPC Methods
+
+| Method | Description |
+|--------|-------------|
+| `fs.readFile` | Read file contents |
+| `fs.writeFile` | Write file contents |
+| `fs.mkdir` | Create directory |
+| `fs.readdir` | List directory |
+| `fs.exists` | Check path exists |
+| `fs.stat` | Get file stats |
+| `fs.rm` | Remove file/directory |
+| `exec` | Execute command |
+| `workspace.info` | Get workspace info |
+
+## Docker
+
+```dockerfile
+FROM golang:1.21-alpine AS builder
+WORKDIR /app
+COPY . .
+RUN go build -o workspace-daemon ./cmd/daemon
+
+FROM alpine:latest
+RUN apk --no-cache add openssh-client
+COPY --from=builder /app/workspace-daemon /usr/local/bin/
+WORKDIR /workspace
+CMD ["workspace-daemon", "--port", "8080", "--token", "secret"]
+```

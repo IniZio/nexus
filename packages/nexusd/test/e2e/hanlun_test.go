@@ -33,10 +33,7 @@ func TestHanlunLMS(t *testing.T) {
 
 	createCmd := exec.Command("nexus", "workspace", "create", "hanlun-e2e")
 	createCmd.Dir = repoPath
-	createOutput, err := createCmd.CombinedOutput()
-	if err != nil {
-		t.Skipf("Could not create workspace: %v\n%s", err, createOutput)
-	}
+	require.NoError(t, createCmd.Run())
 	defer exec.Command("nexus", "workspace", "delete", "--force", "hanlun-e2e").Run()
 
 	time.Sleep(2 * time.Second)

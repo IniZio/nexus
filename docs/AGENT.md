@@ -33,12 +33,6 @@ docs/
 - Roadmap - current project status
 - Decisions - ADRs (accepted architectural decisions)
 - Plans - PRDs for upcoming features
-- Internal docs may describe approved canonical migration nouns and staged transitions as planned/proposed
-- `Box` is internal-only and must never be documented as a user primitive
-
-**Internal planning notes** (`docs/plans/`):
-- Treat as internal design/planning artifacts, not user-facing product reference
-- May describe target interface direction when clearly marked as future/proposed
 
 ### 2. Naming Conventions
 
@@ -62,15 +56,8 @@ If a feature doesn't exist:
 - Note it as "Planned" or "Not implemented" in roadmap
 - Put plans in `docs/dev/plans/`
 
-### 3.1 Product Interface Migration Wording Rules
-
-- User-facing docs may describe current `workspace` commands only when they exist in the shipped CLI.
-- Internal docs may describe the target `project/branch/dev session` model only as proposed/planned migration direction.
-- No user-facing examples may imply that current workspaces already equal branches or versions.
-- Do not present `nexus org`, `nexus project`, `nexus branch`, `nexus version`, `nexus env`, or `nexus deploy` as implemented commands until they ship.
-
 **Never document:**
-- Project-first CLI command groups as implemented when they are still planned
+- `nexus` CLI (doesn't exist yet)
 - Remote workspaces via SSH (not implemented)
 - Workspace lifecycle management (partial)
 

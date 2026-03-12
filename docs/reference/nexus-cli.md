@@ -1,181 +1,133 @@
 # Nexus CLI Reference
 
-This page documents the currently implemented `nexus` CLI commands from live help output in `packages/nexusd/cmd/cli`.
+## Workspace Commands
 
-## Mental Model
+### nexus workspace create
 
-- `project`: repository-level context
-- `branch`: active branch context
-- `version`: reserved command group for upcoming version workflows
-- `environment`: isolated runtime for development work
-
-## Global Usage
+Create a new Docker-based workspace.
 
 ```bash
-nexus [command]
+nexus workspace create <name> [options]
 ```
 
-Global flags:
-- `--config <path>` (default `~/.nexus/config.yaml`)
-- `--json`
-- `-q, --quiet`
-- `-v, --verbose`
+**Options:**
+- `--dind` - Enable Docker-in-Docker support
+- `--from <path>` - Import from existing project path
+- `--cpu <cores>` - CPU limit (default: 2)
+- `--memory <gb>` - Memory limit in GB (default: 4)
 
-## Top-Level Commands
+**How it works:**
+Nexus creates a container using your project's `Dockerfile`. If no Dockerfile exists,
+it uses a default Ubuntu base image. You have full control over your environment.
 
-Implemented root commands (from `Available Commands`):
-- `nexus boulder`
-- `nexus branch`
-- `nexus cli-version`
-- `nexus completion`
-- `nexus config`
-- `nexus doctor`
-- `nexus environment`
-- `nexus project`
-- `nexus status`
-- `nexus sync`
-
-Built-in help command:
-- `nexus help`
-
-Additional help topics (from `Additional help topics`):
-- `nexus version`
-
-## Project Commands
-
+**Example:**
 ```bash
-nexus project [command]
+# Create a basic workspace
+nexus workspace create myproject
+
+# Create with Docker-in-Docker for running containers inside
+nexus workspace create fullstack-demo --dind
+
+# Create from existing project
+nexus workspace create myproject --from ./existing-project
 ```
 
-Scaffold subcommands (present in help, currently return not-implemented errors):
-- `list`
+### nexus workspace use
 
-Scaffold preview:
+Activate a workspace, enabling auto-intercept for all commands.
 
 ```bash
-nexus project list
+nexus workspace use <name>
+nexus workspace use --clear
 ```
 
-## Branch Commands
+**Behavior:**
+- When a workspace is active, commands automatically execute inside it
+- No need to prefix commands with `nexus exec`
+- The workspace context persists until cleared
 
+**Examples:**
 ```bash
-nexus branch [command]
+# Activate workspace
+nexus workspace use myproject
+
+# Commands now auto-route to workspace
+docker-compose up -d
+npm install
+npm run dev
+
+# Deactivate (return to host)
+nexus workspace use --clear
 ```
 
-Scaffold subcommands (present in help, currently return not-implemented errors):
-- `use`
+### nexus workspace use --clear
 
-Scaffold preview:
+Deactivate the current workspace context. Commands will run on the host machine.
 
 ```bash
-nexus branch use <name>
+nexus workspace use --clear
 ```
 
-## Version Help Topic
+### nexus workspace list
+
+List all available workspaces.
 
 ```bash
-nexus version [command]
+nexus workspace list
 ```
 
-Current state:
-- `version` is currently exposed as a help topic (reserved group), not an implemented root command
-- no user-facing subcommands are exposed yet
+### nexus workspace status
 
-## Environment Commands
+Show the current workspace context.
 
 ```bash
-nexus environment [command]
+nexus workspace status
 ```
 
-Implemented subcommands:
-- `checkpoint`
-- `create`
-- `delete`
-- `exec`
-- `inject-key`
-- `list`
-- `ls` (alias of `list`)
-- `logs`
-- `ssh`
-- `start`
-- `status`
-- `stop`
-- `use`
+Output includes:
+- Active workspace name
+- Connection status
+- Available workspaces
 
-### `nexus environment create <name>`
+## Auto-Intercept Behavior
 
-Create a new environment.
+When a workspace is active via `nexus workspace use`:
 
+1. **Automatic Routing**: All commands execute inside the workspace
+2. **Transparent**: No changes needed to your workflow
+3. **Working Directory**: Commands run from the workspace's working directory
+
+**Example workflow:**
 ```bash
-nexus environment create <name> [flags]
+nexus workspace use myproject
+
+# These commands run IN the workspace
+docker-compose up -d    # Workspace Docker daemon
+npm install             # Workspace node_modules
+npm run dev             # Dev server in workspace
+
+# Need host instead? Use HOST: prefix
+HOST:npm install -g some-tool
+HOST:docker ps          # Host Docker
 ```
 
-Flags:
-- `--backend <docker|daytona>`
-- `--cpu <int>` (default `2`)
-- `--disk <int>` (GB, default `20`)
-- `--from <path>`
-- `--memory <int>` (GB, default `4`)
+## HOST: Prefix
 
-### `nexus environment status <name>`
-
-Show detailed status for one environment.
+Escape the workspace context to run commands on the host machine.
 
 ```bash
-nexus environment status <name>
+HOST:<command> [args...]
 ```
 
-### `nexus environment exec <name> -- <command>`
+**Use cases:**
+- Install global tools on host
+- Check host Docker containers
+- Access the main repository
+- Run host-specific tools
 
-Execute a command in an environment.
-
+**Examples:**
 ```bash
-nexus environment exec <name> -- <command>
-```
-
-### `nexus environment use [name]`
-
-Set active environment context for supported commands.
-
-```bash
-nexus environment use <name>
-nexus environment use --clear
-```
-
-### Lifecycle and Logs
-
-```bash
-nexus environment start <name>
-nexus environment stop <name>
-nexus environment delete <name>
-nexus environment logs <name>
-```
-
-### Checkpoints
-
-```bash
-nexus environment checkpoint create <environment>
-nexus environment checkpoint list <environment>
-nexus environment checkpoint restore <environment> <checkpoint-id>
-nexus environment checkpoint delete <environment> <checkpoint-id>
-```
-
-## Sync Commands
-
-```bash
-nexus sync [command]
-```
-
-Implemented subcommands:
-- `flush`
-- `list`
-- `pause`
-- `resume`
-- `status`
-
-Examples:
-
-```bash
-nexus sync list
-nexus sync status [environment]
+HOST:npm install -g typescript
+HOST:docker ps
+HOST:git status
 ```

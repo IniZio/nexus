@@ -1,25 +1,25 @@
 #!/bin/bash
 set -e
 
-echo "🚀 Fullstack + PostgreSQL Environment Demo"
+echo "🚀 Fullstack + PostgreSQL Workspace Demo"
 echo "========================================="
 
-ENV_NAME="${1:-fullstack-demo}"
+WORKSPACE_NAME="${1:-fullstack-demo}"
 
-echo "Step 1: Creating environment..."
-nexus environment create "$ENV_NAME"
+echo "Step 1: Creating workspace with DinD..."
+nexus workspace create "$WORKSPACE_NAME" --dind
 
 echo -e "\nStep 2: Setting up project structure..."
 
 # Copy Dockerfile
-nexus environment exec "$ENV_NAME" -- sh -c 'cat > /workspace/Dockerfile' < Dockerfile
+nexus workspace exec "$WORKSPACE_NAME" -- sh -c 'cat > /workspace/Dockerfile' < Dockerfile
 
 # Copy docker-compose
-nexus environment exec "$ENV_NAME" -- sh -c 'cat > /workspace/docker-compose.yml' < docker-compose.yml
+nexus workspace exec "$WORKSPACE_NAME" -- sh -c 'cat > /workspace/docker-compose.yml' < docker-compose.yml
 
 # Create directories
-nexus environment exec "$ENV_NAME" -- mkdir -p /workspace/frontend/src
-nexus environment exec "$ENV_NAME" -- mkdir -p /workspace/backend/src /workspace/backend/migrations
+nexus workspace exec "$WORKSPACE_NAME" -- mkdir -p /workspace/frontend/src
+nexus workspace exec "$WORKSPACE_NAME" -- mkdir -p /workspace/backend/src /workspace/backend/migrations
 
 echo -e "\nStep 3: Creating frontend..."
 
@@ -44,7 +44,7 @@ cat > /tmp/frontend-package.json << 'EOF'
 }
 EOF
 
-nexus environment exec "$ENV_NAME" -- sh -c 'cat > /workspace/frontend/package.json' < /tmp/frontend-package.json
+nexus workspace exec "$WORKSPACE_NAME" -- sh -c 'cat > /workspace/frontend/package.json' < /tmp/frontend-package.json
 
 # Frontend App.jsx
 cat > /tmp/App.jsx << 'EOF'
@@ -81,7 +81,7 @@ function App() {
 export default App
 EOF
 
-nexus environment exec "$ENV_NAME" -- sh -c 'cat > /workspace/frontend/src/App.jsx' < /tmp/App.jsx
+nexus workspace exec "$WORKSPACE_NAME" -- sh -c 'cat > /workspace/frontend/src/App.jsx' < /tmp/App.jsx
 
 # Frontend main.jsx
 cat > /tmp/main.jsx << 'EOF'
@@ -96,7 +96,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 )
 EOF
 
-nexus environment exec "$ENV_NAME" -- sh -c 'cat > /workspace/frontend/src/main.jsx' < /tmp/main.jsx
+nexus workspace exec "$WORKSPACE_NAME" -- sh -c 'cat > /workspace/frontend/src/main.jsx' < /tmp/main.jsx
 
 # Frontend index.html
 cat > /tmp/index.html << 'EOF'
@@ -114,7 +114,7 @@ cat > /tmp/index.html << 'EOF'
 </html>
 EOF
 
-nexus environment exec "$ENV_NAME" -- sh -c 'cat > /workspace/frontend/index.html' < /tmp/index.html
+nexus workspace exec "$WORKSPACE_NAME" -- sh -c 'cat > /workspace/frontend/index.html' < /tmp/index.html
 
 echo -e "\nStep 4: Creating backend..."
 
@@ -134,7 +134,7 @@ cat > /tmp/backend-package.json << 'EOF'
 }
 EOF
 
-nexus environment exec "$ENV_NAME" -- sh -c 'cat > /workspace/backend/package.json' < /tmp/backend-package.json
+nexus workspace exec "$WORKSPACE_NAME" -- sh -c 'cat > /workspace/backend/package.json' < /tmp/backend-package.json
 
 # Backend server.js
 cat > /tmp/server.js << 'EOF'
@@ -164,7 +164,7 @@ app.listen(PORT, '0.0.0.0', () => {
 })
 EOF
 
-nexus environment exec "$ENV_NAME" -- sh -c 'cat > /workspace/backend/src/server.js' < /tmp/server.js
+nexus workspace exec "$WORKSPACE_NAME" -- sh -c 'cat > /workspace/backend/src/server.js' < /tmp/server.js
 
 # Database init
 cat > /tmp/001_init.sql << 'EOF'
@@ -181,7 +181,13 @@ INSERT INTO users (name, email) VALUES
 ON CONFLICT DO NOTHING;
 EOF
 
-nexus environment exec "$ENV_NAME" -- sh -c 'cat > /workspace/backend/migrations/001_init.sql' < /tmp/001_init.sql
+nexus workspace exec "$WORKSPACE_NAME" -- sh -c 'cat > /workspace/backend/migrations/001_init.sql' < /tmp/001_init.sql
 
-echo -e "\n✅ Fullstack environment ready!"
-echo "Start services: nexus environment ssh $ENV_NAME && docker-compose up -d"
+echo -e "\n✅ Fullstack workspace ready!"
+echo "Start services: nexus workspace ssh $WORKSPACE_NAME && docker-compose up -d"
+echo "Add ports:"
+echo "  nexus workspace port add $WORKSPACE_NAME 5173  # Frontend"
+echo "  nexus workspace port add $WORKSPACE_NAME 3000  # API"
+echo "  nexus workspace port add $WORKSPACE_NAME 5432  # Database"
+echo ""
+echo "Open: http://localhost:5173"

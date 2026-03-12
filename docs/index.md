@@ -1,13 +1,59 @@
 # Nexus
 
-Nexus is an AI-native development environment organized around four user-facing concepts: `project`, `branch`, `version`, and `environment`.
+Nexus is an AI-native development environment that makes agent collaboration deterministic, traceable, and production-ready. It combines enforcement mechanisms, isolated workspaces, and telemetry to ensure AI agents deliver consistent, high-quality results.
 
-## Mental Model
+## Vision
 
-- `project`: list and select the repository-level context for your work.
-- `branch`: select the active development branch context.
-- `version`: reserved command group for upcoming product version workflows.
-- `environment`: create and operate isolated development environments.
+As AI agents write more code, we need systems that ensure:
+
+1. **Deterministic Outcomes** - Agents complete tasks fully and don't stop early
+2. **Quality Standards** - Work follows project conventions and passes CI checks
+3. **Traceability** - All AI contributions are tracked and attributable
+4. **Isolation** - Agents work in clean, reproducible environments
+
+## Components
+
+### 1. Workspace (Implemented)
+
+Inspired by [opencode-devcontainer](https://github.com/athal7/opencode-devcontainer) and [Sprites](https://github.com/peterj/sprites), Workspace provides isolated, reproducible development environments for AI agents.
+
+**Features:**
+- Docker-based isolated environments per task/feature
+- SSH-based access with agent forwarding
+- Git worktree integration
+- Port auto-allocation (32800-34999 range)
+- `nexus workspace` CLI for management
+
+**Status:** Fully implemented. See [workspace quickstart](tutorials/workspace-quickstart.md).
+
+### 2. Telemetry (Planned)
+
+Following the [Agent Trace](https://agent-trace.dev/) specification, Nexus will track AI contributions with full provenance.
+
+**Vision:**
+- Line-level attribution of AI-generated code
+- Conversation tracking and linking
+- Integration with version control
+- Vendor-neutral format
+- Queryable contribution history
+
+```typescript
+// Example trace record
+{
+  "version": "0.1.0",
+  "files": [{
+    "path": "src/utils.ts",
+    "conversations": [{
+      "url": "https://nexus.dev/conversations/abc123",
+      "contributor": {
+        "type": "ai",
+        "model_id": "anthropic/claude-opus-4-5-20251101"
+      },
+      "ranges": [{ "start_line": 10, "end_line": 25 }]
+    }]
+  }]
+}
+```
 
 ## Quick Start
 
@@ -19,35 +65,103 @@ brew install nexus
 
 # Linux
 curl -fsSL https://nexus.dev/install.sh | bash
+
+# Or build from source
+git clone https://github.com/inizio/nexus
+cd nexus
+pnpm install
+pnpm run build
 ```
 
-### First Workflow (5 minutes)
+### Quick Start (5 minutes)
 
 ```bash
-# Create and enter an environment
-nexus environment create demo-env
-nexus environment ssh demo-env
+# Create your first workspace
+nexus workspace create my-project
+
+# Enter it
+nexus workspace ssh my-project
+
+# Start developing!
 ```
 
-Project and branch command groups are present in the interface model, but `nexus project list` and `nexus branch use <name>` are currently scaffold stubs that return not-implemented errors.
+### Examples
 
-## User Guides
+- **[Quickstart](examples/quickstart/)** - Your first Nexus workspace (5 min)
+- **[Node + React](examples/node-react/)** - Modern frontend development
+- **[Python + Django](examples/python-django/)** - Python web applications
+- **[Go Microservices](examples/go-microservices/)** - Multi-service architecture
+- **[Fullstack + PostgreSQL](examples/fullstack-postgres/)** - Three-tier application
+- **[Remote Server](examples/remote-server/)** - Cloud development environments
 
-- [Environment Quickstart](tutorials/environment-quickstart.md)
-- [CLI Reference](reference/nexus-cli.md)
-- [Examples](examples/README.md)
+### IDE Integration
 
-## Examples
+## Project Board
 
-- [Quickstart](examples/quickstart/)
-- [Node + React](examples/node-react/)
-- [Python + Django](examples/python-django/)
-- [Go Microservices](examples/go-microservices/)
-- [Fullstack + PostgreSQL](examples/fullstack-postgres/)
-- [Remote Server](examples/remote-server/)
+| Component | Status | Priority | Documentation |
+|-----------|--------|----------|---------------|
+| Workspace (nexusd) | ✅ Implemented | High | [Quickstart](tutorials/workspace-quickstart.md) |
+| Workspace CLI | ✅ Implemented | High | [CLI](reference/nexus-cli.md) |
+| Telemetry (Agent Trace) | 📋 Planned | Low | - |
+| Web Dashboard | 📋 Planned | Low | - |
+| Multi-Agent Coordination | 📋 Planned | Low | - |
 
-## For Developers
+Legend:
+- ✅ Implemented - Ready for use
+- ⚠️ Experimental - For testing/development only
+- 🚧 In Progress - Under active development
+- 📋 Planned - Defined but not started
 
-- [Contributing](dev/contributing.md)
-- [Roadmap](dev/roadmap.md)
-- [Internal Docs](dev/)
+## Philosophy
+
+### Deterministic > Smart
+
+We believe deterministic enforcement beats "smarter" agents:
+
+- **Predictable** - Same input, same enforcement
+- **Auditable** - Clear rules, clear violations
+- **Composable** - Mix and match workflows
+- **Extensible** - Add custom rules per project
+
+## Documentation
+
+### For Users
+- [CLI Reference](reference/nexus-cli.md) - Command reference
+
+### For Developers
+- [Contributing](dev/contributing.md) - Development guide
+- [Roadmap](dev/roadmap.md) - Future plans
+- [Internal Docs](dev/) - Research, plans, and ADRs
+
+## Statistics
+
+| Metric | Value |
+|--------|-------|
+| Source Code | ~4,273 lines |
+| Test Code | ~5,598 lines |
+| Test Functions | 153 |
+| Test Coverage | 1.3:1 ratio |
+
+## Contributing
+
+We welcome contributions! See [Contributing Guide](dev/contributing.md) for details.
+
+Key areas where help is needed:
+- Additional IDE integrations
+- Telemetry implementation (Agent Trace spec)
+- Additional IDE integrations
+- Documentation improvements
+
+## Resources
+
+- **GitHub:** https://github.com/IniZio/nexus
+- **Agent Trace Spec:** https://agent-trace.dev/
+- **OpenCode:** https://opencode.ai/
+
+## License
+
+MIT License - see LICENSE file for details.
+
+---
+
+**Nexus:** Making AI agents deterministic, traceable, and production-ready.

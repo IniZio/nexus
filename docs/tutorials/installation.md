@@ -6,7 +6,7 @@ This guide covers how to install and set up Nexus.
 
 - **Node.js 20+** - Required for building IDE plugins
 - **Go 1.24+** - Required for building the Nexus daemon and CLI
-- **Docker** - Required for environment functionality
+- **Docker** - Required for workspace functionality
 - **pnpm** - Package manager (install via `npm install -g pnpm`)
 
 ## Quick Install
@@ -59,19 +59,16 @@ Check that everything is installed correctly:
 
 ```bash
 # Check CLI is available
-nexus cli-version
+nexus --version
 
-# Check top-level help
-nexus --help
-
-# Check environment command tree
-nexus environment --help
+# Check workspace commands
+nexus workspace list
 ```
 
 ## Next Steps
 
-- [CLI Reference](../reference/nexus-cli.md) - Explore all command groups
-- [Environment Quickstart](environment-quickstart.md) - Create your first environment
+- [Plugin Setup](plugin-setup.md) - Configure IDE integrations
+- [Workspace Quickstart](workspace-quickstart.md) - Create your first workspace
 
 ## Troubleshooting
 
@@ -142,9 +139,3 @@ cd packages/nexusd
 go build -o nexus ./cmd/cli
 cp nexus /usr/local/bin/
 ```
-
-## Notes
-
-- Current user-facing CLI is organized around `project`, `branch`, `version`, and `environment`.
-- Command behavior should be validated with `nexus --help` and `nexus environment --help` after upgrades.
-- Legacy `workspace` naming may still appear in internal package paths and low-level daemon routes while interface migration is in progress.

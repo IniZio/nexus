@@ -1,4 +1,4 @@
-# Go Microservices Environment
+# Go Microservices Workspace
 
 **Time:** 25 minutes  
 **Stack:** Go 1.21, Chi Router, PostgreSQL, gRPC, API Gateway
@@ -40,10 +40,10 @@ Developing microservices locally is painful:
 - Nexus CLI
 - Git repository
 
-## Step 1: Create Environment
+## Step 1: Create Workspace
 
 ```bash
-nexus environment create go-microservices
+nexus workspace create go-microservices --dind
 ```
 
 ## Step 2: Project Structure
@@ -128,8 +128,8 @@ volumes:
 ## Step 3: Start Services
 
 ```bash
-# Enter environment
-nexus environment ssh go-microservices
+# Enter workspace
+nexus workspace ssh go-microservices
 
 # Start all services
 $ docker-compose up -d --build
@@ -141,14 +141,14 @@ $ docker-compose logs -f
 ## Step 4: Test Services
 
 ```bash
-# On host, inspect mapped ports first
-nexus environment status go-microservices
+# On host
+nexus workspace port add go-microservices 8080
 
-# Then test using the reported host port for api-gateway
-curl "http://localhost:<API_GATEWAY_PORT>/health"
+# Test health
+curl http://localhost:8080/health
 
-# Test auth endpoint using the same reported host port
-curl -X POST "http://localhost:<API_GATEWAY_PORT>/auth/login" \
+# Test auth endpoint
+curl -X POST http://localhost:8080/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"test@example.com","password":"password"}'
 ```
@@ -156,7 +156,7 @@ curl -X POST "http://localhost:<API_GATEWAY_PORT>/auth/login" \
 ## Result
 
 ✅ **What you achieved:**
-- Multi-service architecture in one environment
+- Multi-service architecture in single workspace
 - API Gateway with reverse proxy
 - Individual service databases
 - Hot reload for Go development
@@ -178,5 +178,5 @@ $ docker-compose exec auth-service go run ./cmd/migrate
 ## Cleanup
 
 ```bash
-nexus environment delete go-microservices
+nexus workspace delete go-microservices
 ```

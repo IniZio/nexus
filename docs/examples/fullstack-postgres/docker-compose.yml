@@ -8,7 +8,7 @@ services:
       - ./frontend:/workspace/frontend
       - /workspace/frontend/node_modules
     environment:
-      - VITE_API_URL=http://backend:3000
+      - VITE_API_URL=http://localhost:3000
     working_dir: /workspace/frontend
     command: npm run dev
   

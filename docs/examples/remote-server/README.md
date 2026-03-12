@@ -1,4 +1,4 @@
-# Remote Server Environment
+# Remote Server Workspace
 
 **Time:** 30 minutes  
 **Use Case:** Run Nexus on cloud/remote infrastructure
@@ -52,9 +52,11 @@ SSH into your remote server:
 # SSH to remote server
 ssh user@your-server-ip
 
-# Build/install the CLI and daemon from this repository
-# then verify:
-nexus cli-version
+# Install Nexus
+curl -fsSL https://nexus.dev/install.sh | bash
+
+# Verify installation
+nexus --version
 ```
 
 ### Step 3: Configure Nexus Daemon
@@ -100,9 +102,9 @@ export NEXUS_HOST=your-server-ip
 export NEXUS_PORT=8080
 
 # Or use config file
-mkdir -p ~/.nexus
-cat > ~/.nexus/config.yaml << EOF
-daemon:
+mkdir -p ~/.config/nexus
+cat > ~/.config/nexus/config.yaml << EOF
+server:
   host: your-server-ip
   port: 8080
 EOF
@@ -111,13 +113,13 @@ EOF
 nexus status
 ```
 
-### Step 5: Create Remote Environment
+### Step 5: Create Remote Workspace
 
 ```bash
-# Create environment on remote server
-nexus environment create remote-dev
+# Create workspace on remote server
+nexus workspace create remote-dev
 
-# This creates the environment on the REMOTE server
+# This creates the workspace on the REMOTE server
 # Files are synced back to your local machine
 ```
 
@@ -130,37 +132,49 @@ For passwordless access:
 ssh-copy-id user@your-server-ip
 
 # Configure Nexus to use key
-nexus environment inject-key remote-dev
+nexus workspace inject-key remote-dev
 ```
 
 ## Development Workflow
 
 ```bash
-# 1. Connect to remote environment
-nexus environment ssh remote-dev
+# 1. Connect to remote workspace
+nexus workspace ssh remote-dev
 
 # 2. Work normally - all compute happens remotely
 $ npm install
 $ npm run build
 $ docker-compose up -d
 
-# 3. Exit - environment keeps running
+# 3. Exit - workspace keeps running
 $ exit
 
 # 4. Check status from anywhere
-nexus environment status remote-dev
+nexus workspace status remote-dev
+```
+
+## Port Forwarding
+
+Access services running on remote workspace locally:
+
+```bash
+# Forward remote port 3000 to local port 3000
+nexus workspace port add remote-dev 3000
+
+# Now access http://localhost:3000 on your laptop
+# Requests go to remote workspace!
 ```
 
 ## Multi-Device Workflow
 
 ```
 Laptop at office:
-  nexus environment ssh remote-dev
+  nexus workspace ssh remote-dev
   # do some work
   exit
 
 Laptop at home:
-  nexus environment ssh remote-dev
+  nexus workspace ssh remote-dev
   # continue where you left off
   # all state preserved on remote
 ```
@@ -172,11 +186,17 @@ Laptop at home:
    sudo ufw allow from YOUR_IP to any port 8080
    ```
 
-2. **Authentication**: start `nexusd` with `--token` or `--jwt-secret-file`
+2. **Authentication**: Use API tokens
+   ```bash
+   nexus auth login
+   ```
 
 3. **SSH**: Always use key-based auth
 
-4. **Updates**: pull latest source and rebuild CLI/daemon binaries
+4. **Updates**: Keep Nexus updated
+   ```bash
+   nexus update
+   ```
 
 ## Result
 
@@ -212,8 +232,8 @@ nexus sync resume remote-dev
 ## Cleanup
 
 ```bash
-# Delete remote environment
-nexus environment delete remote-dev
+# Delete remote workspace
+nexus workspace delete remote-dev
 
 # Stop daemon on server
 ssh user@server "sudo systemctl stop nexusd"

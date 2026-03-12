@@ -1,4 +1,4 @@
-# Quickstart: Your First Nexus Environment
+# Quickstart: Your First Nexus Workspace
 
 **Time:** 5 minutes  
 **Prerequisites:** Docker, Git
@@ -12,27 +12,33 @@ You want to start a new project without polluting your local machine with depend
 ### 1. Install Nexus
 
 ```bash
-# Follow docs/tutorials/installation.md
-nexus cli-version
+# macOS
+brew install nexus
+
+# Linux
+curl -fsSL https://nexus.dev/install.sh | bash
+
+# Verify
+nexus --version
 ```
 
-### 2. Create Your First Environment
+### 2. Create Your First Workspace
 
 ```bash
 # From any git repository
-nexus environment create my-first-environment
+nexus workspace create my-first-workspace
 ```
 
 This creates:
-- A git worktree at `.worktrees/my-first-environment/`
+- A git worktree at `.worktrees/my-first-workspace/`
 - A Docker container with your repository
 - File sync between host and container
 
 ### 3. Start Developing
 
 ```bash
-# Enter the environment
-nexus environment ssh my-first-environment
+# Enter the workspace
+nexus workspace ssh my-first-workspace
 
 # You're now inside the container!
 $ cat /etc/os-release
@@ -51,11 +57,11 @@ $ cd /workspace && ls
 # Exit SSH
 $ exit
 
-# Your environment keeps running
-nexus environment list
+# Your workspace keeps running
+nexus workspace list
 
 # Re-enter anytime
-nexus environment ssh my-first-environment
+nexus workspace ssh my-first-workspace
 ```
 
 ## Result
@@ -64,7 +70,7 @@ You now have:
 - ✅ Isolated development environment
 - ✅ Your code synced between host and container
 - ✅ Ability to install any tools without affecting your host
-- ✅ A clean environment you can destroy and recreate anytime
+- ✅ A clean workspace you can destroy and recreate anytime
 
 ## Next Steps
 

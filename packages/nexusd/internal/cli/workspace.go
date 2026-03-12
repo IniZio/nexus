@@ -76,11 +76,7 @@ func setActiveWorkspace(name string) error {
 	}
 	activePath := getActiveWorkspacePath()
 	if name == "" {
-		err := os.Remove(activePath)
-		if err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		return nil
+		return os.Remove(activePath)
 	}
 	return os.WriteFile(activePath, []byte(name+"\n"), 0644)
 }
@@ -91,13 +87,13 @@ func clearActiveWorkspace() error {
 
 var workspaceCreateCmd = &cobra.Command{
 	Use:   "create <name>",
-	Short: "Create a new environment",
-	Long: `Create a new development environment.
+	Short: "Create a new workspace",
+	Long: `Create a new workspace for development.
 
 Examples:
-  nexus environment create myproject
-  nexus environment create myproject --backend docker
-  nexus environment create myproject --from ./existing-project --cpu 4`,
+  nexus workspace create myproject
+  nexus workspace create myproject --backend docker
+  nexus workspace create myproject --from ./existing-project --cpu 4`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
@@ -157,7 +153,7 @@ Examples:
 
 var workspaceStartCmd = &cobra.Command{
 	Use:   "start <name>",
-	Short: "Start a stopped environment",
+	Short: "Start a stopped workspace",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
@@ -174,7 +170,7 @@ var workspaceStartCmd = &cobra.Command{
 			recordCommand("workspace start", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error starting workspace: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
-				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus environment list' to see available workspaces.\n")
+				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus workspace list' to see available workspaces.\n")
 				os.Exit(3)
 			}
 			os.Exit(1)
@@ -194,7 +190,7 @@ var workspaceStartCmd = &cobra.Command{
 
 var workspaceStopCmd = &cobra.Command{
 	Use:   "stop <name>",
-	Short: "Stop a running environment",
+	Short: "Stop a running workspace",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
@@ -216,7 +212,7 @@ var workspaceStopCmd = &cobra.Command{
 			recordCommand("workspace stop", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error stopping workspace: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
-				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus environment list' to see available workspaces.\n")
+				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus workspace list' to see available workspaces.\n")
 				os.Exit(3)
 			}
 			os.Exit(1)
@@ -236,7 +232,7 @@ var workspaceStopCmd = &cobra.Command{
 
 var workspaceDeleteCmd = &cobra.Command{
 	Use:   "delete <name>",
-	Short: "Delete an environment permanently",
+	Short: "Delete a workspace permanently",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
@@ -263,7 +259,7 @@ var workspaceDeleteCmd = &cobra.Command{
 			recordCommand("workspace delete", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error deleting workspace: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
-				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus environment list' to see available workspaces.\n")
+				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus workspace list' to see available workspaces.\n")
 				os.Exit(3)
 			}
 			os.Exit(1)
@@ -282,8 +278,8 @@ var workspaceDeleteCmd = &cobra.Command{
 
 var workspaceListCmd = &cobra.Command{
 	Use:     "list",
-	Short:   "List all environments",
-	Long:    "List all environments with their status, backend, and creation time.",
+	Short:   "List all workspaces",
+	Long:    "List all workspaces with their status, backend, and creation time.",
 	Aliases: []string{"ls"},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
@@ -334,7 +330,7 @@ var workspaceListCmd = &cobra.Command{
 
 var workspaceSSHCmd = &cobra.Command{
 	Use:   "ssh <name>",
-	Short: "Open an interactive SSH session in an environment",
+	Short: "SSH into workspace interactively",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
@@ -351,7 +347,7 @@ var workspaceSSHCmd = &cobra.Command{
 			recordCommand("workspace ssh", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
-				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus environment list' to see available workspaces.\n")
+				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus workspace list' to see available workspaces.\n")
 				os.Exit(3)
 			}
 			os.Exit(1)
@@ -364,7 +360,7 @@ var workspaceSSHCmd = &cobra.Command{
 
 var workspaceExecCmd = &cobra.Command{
 	Use:   "exec <name> -- <command>",
-	Short: "Execute a command in an environment",
+	Short: "Execute command in workspace",
 	Args:  cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
@@ -388,7 +384,7 @@ var workspaceExecCmd = &cobra.Command{
 			recordCommand("workspace exec", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
-				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus environment list' to see available workspaces.\n")
+				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus workspace list' to see available workspaces.\n")
 				os.Exit(3)
 			}
 			os.Exit(1)
@@ -402,7 +398,7 @@ var workspaceExecCmd = &cobra.Command{
 
 var workspaceInjectKeyCmd = &cobra.Command{
 	Use:   "inject-key <name>",
-	Short: "Inject an SSH key into an environment",
+	Short: "Inject SSH key into workspace",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
@@ -420,7 +416,7 @@ var workspaceInjectKeyCmd = &cobra.Command{
 			recordCommand("workspace inject-key", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
-				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus environment list' to see available workspaces.\n")
+				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus workspace list' to see available workspaces.\n")
 				os.Exit(3)
 			}
 			os.Exit(1)
@@ -434,7 +430,7 @@ var workspaceInjectKeyCmd = &cobra.Command{
 
 var workspaceStatusCmd = &cobra.Command{
 	Use:   "status <name>",
-	Short: "Show detailed environment status",
+	Short: "Show detailed workspace status",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
@@ -451,7 +447,7 @@ var workspaceStatusCmd = &cobra.Command{
 			recordCommand("workspace status", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
-				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus environment list' to see available workspaces.\n")
+				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus workspace list' to see available workspaces.\n")
 				os.Exit(3)
 			}
 			os.Exit(1)
@@ -518,7 +514,7 @@ var workspaceStatusCmd = &cobra.Command{
 
 var workspaceLogsCmd = &cobra.Command{
 	Use:   "logs <name>",
-	Short: "Show environment logs",
+	Short: "Show workspace logs",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
@@ -535,7 +531,7 @@ var workspaceLogsCmd = &cobra.Command{
 			recordCommand("workspace logs", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
-				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus environment list' to see available workspaces.\n")
+				fmt.Fprintf(os.Stderr, "\nTip: Run 'nexus workspace list' to see available workspaces.\n")
 				os.Exit(3)
 			}
 			os.Exit(1)
@@ -549,10 +545,10 @@ var workspaceLogsCmd = &cobra.Command{
 
 var workspaceUseCmd = &cobra.Command{
 	Use:   "use [name]",
-	Short: "Set active environment for current session",
-	Long: `Set the active environment so subsequent commands run in that environment context.
+	Short: "Set active workspace for current session",
+	Long: `Set the active workspace so subsequent commands run in that workspace context.
 	  
-Use 'nexus environment use -' or 'nexus environment use --clear' to deactivate and run on host.`,
+Use 'nexus workspace use -' or 'nexus workspace use --clear' to deactivate and run on host.`,
 	Args: cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
@@ -604,7 +600,7 @@ Use 'nexus environment use -' or 'nexus environment use --clear' to deactivate a
 			recordCommand("workspace use", args, duration, false, err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if containsString(err.Error(), "not found") || containsString(err.Error(), "404") {
-				fmt.Fprintf(os.Stderr, "Workspace '%s' not found. Run 'nexus environment list' to see available workspaces.\n", name)
+				fmt.Fprintf(os.Stderr, "Workspace '%s' not found. Run 'nexus workspace list' to see available workspaces.\n", name)
 				os.Exit(3)
 			}
 			os.Exit(1)
@@ -620,13 +616,24 @@ Use 'nexus environment use -' or 'nexus environment use --clear' to deactivate a
 		recordCommand("workspace use", args, duration, true, nil)
 		fmt.Printf("Switched to workspace '%s'. Subsequent commands will run in this workspace.\n", ws.Name)
 		fmt.Printf("Workspaces commands will auto-intercept: docker, docker-compose, npm, ./scripts/*.sh, etc.\n")
-		fmt.Printf("\nTo run on host: 'nexus environment use --clear' or 'HOST: <command>'\n")
+		fmt.Printf("\nTo run on host: 'nexus workspace use --clear' or 'HOST: <command>'\n")
 		return nil
 	},
 }
 
 func init() {
-	bindWorkspaceSurface(environmentCmd)
+	workspaceCmd.AddCommand(workspaceCreateCmd)
+	workspaceCmd.AddCommand(workspaceStartCmd)
+	workspaceCmd.AddCommand(workspaceStopCmd)
+	workspaceCmd.AddCommand(workspaceDeleteCmd)
+	workspaceCmd.AddCommand(workspaceListCmd)
+	workspaceCmd.AddCommand(workspaceSSHCmd)
+	workspaceCmd.AddCommand(workspaceExecCmd)
+	workspaceCmd.AddCommand(workspaceInjectKeyCmd)
+	workspaceCmd.AddCommand(workspaceStatusCmd)
+	workspaceCmd.AddCommand(workspaceLogsCmd)
+	workspaceCmd.AddCommand(workspaceUseCmd)
+	workspaceCmd.AddCommand(workspaceCheckpointCmd)
 	workspaceCheckpointCmd.AddCommand(workspaceCheckpointCreateCmd)
 	workspaceCheckpointCmd.AddCommand(workspaceCheckpointListCmd)
 	workspaceCheckpointCmd.AddCommand(workspaceCheckpointRestoreCmd)
@@ -642,10 +649,10 @@ func init() {
 	workspaceStopCmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "Force stop")
 	workspaceDeleteCmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "Force delete without confirmation")
 
-	workspaceListCmd.Flags().BoolVar(&allFlag, "all", false, "Show all environments including stopped")
+	workspaceListCmd.Flags().BoolVar(&allFlag, "all", false, "Show all workspaces including stopped")
 	workspaceListCmd.Flags().StringVar(&formatFlag, "format", "table", "Output format (table, json)")
 
-	workspaceUseCmd.Flags().BoolVarP(&clearFlag, "clear", "c", false, "Clear active environment")
+	workspaceUseCmd.Flags().BoolVarP(&clearFlag, "clear", "c", false, "Clear active workspace")
 }
 
 func colorStatus(status string) string {
@@ -673,12 +680,12 @@ var (
 
 var workspaceCheckpointCmd = &cobra.Command{
 	Use:   "checkpoint",
-	Short: "Manage environment checkpoints",
+	Short: "Manage workspace checkpoints",
 }
 
 var workspaceCheckpointCreateCmd = &cobra.Command{
 	Use:   "create <workspace>",
-	Short: "Create a checkpoint of an environment",
+	Short: "Create a checkpoint of a workspace",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
@@ -712,7 +719,7 @@ var workspaceCheckpointCreateCmd = &cobra.Command{
 
 var workspaceCheckpointListCmd = &cobra.Command{
 	Use:   "list <workspace>",
-	Short: "List checkpoints for an environment",
+	Short: "List checkpoints for a workspace",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
@@ -755,7 +762,7 @@ var workspaceCheckpointListCmd = &cobra.Command{
 
 var workspaceCheckpointRestoreCmd = &cobra.Command{
 	Use:   "restore <workspace> <checkpoint-id>",
-	Short: "Restore an environment from a checkpoint",
+	Short: "Restore a workspace from a checkpoint",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()

@@ -3,7 +3,7 @@
 Complete, production-ready examples for real-world projects.
 
 ## Quick Start (5 minutes)
-- **[Quickstart](./quickstart/)** - Your first Nexus environment
+- **[Quickstart](./quickstart/)** - Your first Nexus workspace
 
 ## By Language/Framework
 - **[Node + React](./node-react/)** - Modern frontend development  
@@ -22,7 +22,7 @@ Complete, production-ready examples for real-world projects.
 
 Each example includes:
 - **README.md** - Step-by-step guide with case study format
-- **Dockerfile** - Environment image configuration
+- **Dockerfile** - Workspace configuration
 - **docker-compose.yml** - Multi-service setup (if applicable)
 - **demo.sh** - Automated demo script
 - **Architecture diagram** - Visual overview
@@ -36,5 +36,5 @@ Each example includes:
 
 All examples assume you have:
 - Docker Desktop installed
-- Nexus CLI installed (`nexus cli-version`)
+- Nexus CLI installed (`nexus --version`)
 - A git repository initialized

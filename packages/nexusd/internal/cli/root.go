@@ -21,14 +21,14 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "nexus",
-	Short: "Nexus project interface CLI",
-	Long: `Nexus is an AI-native development environment organized around project, branch, version, and environment workflows.
+	Short: "Nexus workspace management CLI",
+	Long: `Nexus is an AI-native development environment with workspace management and tools.
 
 Quick start:
-  nexus project --help               # Project workflows
-  nexus branch --help                # Branch workflows
-  nexus version --help               # Version workflows
-  nexus environment --help           # Environment workflows`,
+  nexus workspace create myproject    # Create a new workspace
+  nexus workspace list               # List all workspaces
+  nexus workspace ssh myproject      # SSH into a workspace
+  nexus doctor                      # Diagnose issues`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		return nil
 	},
@@ -49,14 +49,12 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "Suppress non-essential output")
 
 	rootCmd.AddCommand(versionCmd)
-	rootCmd.AddCommand(cliVersionCmd)
-	rootCmd.AddCommand(projectCmd)
-	rootCmd.AddCommand(branchCmd)
-	rootCmd.AddCommand(environmentCmd)
 	rootCmd.AddCommand(doctorCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(boulderCmd)
+	rootCmd.AddCommand(workspaceCmd)
+	rootCmd.AddCommand(traceCmd)
 	rootCmd.AddCommand(syncCmd)
 
 	configCmd.AddCommand(configGetCmd, configSetCmd, configSetDefaultBackendCmd)
@@ -66,7 +64,14 @@ func init() {
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
-	Short: "Product version workflows",
+	Short: "Print version information",
+	Run: func(cmd *cobra.Command, args []string) {
+		if jsonOutput {
+			fmt.Printf(`{"cli_version":"%s"}`, version)
+		} else {
+			fmt.Printf("nexus version %s\n", version)
+		}
+	},
 }
 
 var configCmd = &cobra.Command{
@@ -349,19 +354,12 @@ var boulderConfigSetCmd = &cobra.Command{
 	},
 }
 
-var projectCmd = &cobra.Command{
-	Use:   "project",
-	Short: "Project commands",
-}
-
-var branchCmd = &cobra.Command{
-	Use:   "branch",
-	Short: "Branch commands",
-}
-
-var environmentCmd = &cobra.Command{
-	Use:   "environment",
-	Short: "Environment commands",
+var workspaceCmd = &cobra.Command{
+	Use:   "workspace",
+	Short: "Workspace management commands",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("Use 'nexus workspace --help' for available workspace commands")
+	},
 }
 
 func getConfig() *config.Config {

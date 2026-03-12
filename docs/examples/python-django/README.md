@@ -1,4 +1,4 @@
-# Python + Django Environment
+# Python + Django Workspace
 
 **Time:** 20 minutes  
 **Stack:** Python 3.11, Django 5, PostgreSQL, Redis
@@ -19,15 +19,15 @@ Python development environments are notoriously tricky:
 - Nexus CLI
 - Git repository
 
-## Step 1: Create Environment
+## Step 1: Create Workspace
 
 ```bash
-nexus environment create django-app
+nexus workspace create django-app --dind
 ```
 
 ## Step 2: Configure Environment
 
-Create these files in your environment worktree (for example, `.worktrees/django-app/`):
+Create these files in `.worktrees/django-app/`:
 
 **Dockerfile:**
 ```dockerfile
@@ -101,8 +101,8 @@ volumes:
 ## Step 3: Initialize Django Project
 
 ```bash
-# Enter environment
-nexus environment ssh django-app
+# Enter workspace
+nexus workspace ssh django-app
 
 # Create Django project
 $ django-admin startproject myproject .
@@ -113,13 +113,12 @@ $ python manage.py runserver 0.0.0.0:8000
 
 ## Step 4: Access from Host
 
-Use environment status to check mapped ports:
-
 ```bash
-nexus environment status django-app
+# On host
+nexus workspace port add django-app 8000
 ```
 
-Open the reported host URL/port for the Django server.
+Open http://localhost:8000
 
 ## Result
 
@@ -152,5 +151,5 @@ $ docker-compose logs -f
 ## Cleanup
 
 ```bash
-nexus environment delete django-app
+nexus workspace delete django-app
 ```

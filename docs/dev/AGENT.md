@@ -21,21 +21,6 @@ docs/dev/
 
 ## Document Types
 
-## Interface Migration Boundaries
-
-- `docs/` content is user-facing and must describe only implemented CLI behavior.
-- `docs/dev/` and `docs/plans/` are internal and may describe approved future interface direction when marked as proposed/planned.
-- For the current migration, the approved canonical model is `Org -> Project -> Branch -> Version -> Environment`.
-- The shipped CLI remains workspace-first (`nexus workspace ...`) until project-first commands are implemented.
-- `Box` is internal-only and must not be documented as a user-facing primitive.
-
-### Wording Rules
-
-- User-facing docs may use current workspace commands only when those commands exist today.
-- Internal docs may discuss the target `project/branch/dev session` model as future direction.
-- User-facing examples must not imply workspaces are already branches or versions.
-- Do not represent `nexus org`, `nexus project`, `nexus branch`, `nexus version`, `nexus env`, or `nexus deploy` as implemented commands unless shipped.
-
 ### Architecture Decision Records (ADRs)
 
 **Location:** `docs/dev/decisions/`
