@@ -8,6 +8,7 @@ import {
 } from './types';
 import { FSOperations } from './fs';
 import { ExecOperations } from './exec';
+import { WorkspaceManager } from './workspace-manager';
 
 export class WorkspaceClient {
   private ws: WebSocket | null = null;
@@ -23,6 +24,7 @@ export class WorkspaceClient {
 
   public readonly fs: FSOperations;
   public readonly exec: ExecOperations;
+  public readonly workspace: WorkspaceManager;
 
   constructor(config: WorkspaceClientConfig) {
     this.config = {
@@ -36,6 +38,7 @@ export class WorkspaceClient {
 
     this.fs = new FSOperations(this);
     this.exec = new ExecOperations(this);
+    this.workspace = new WorkspaceManager(this);
   }
 
   get isConnected(): boolean {

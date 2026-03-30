@@ -172,3 +172,111 @@ export interface ExecResultData {
 }
 
 export type RequestHandler = (params?: Record<string, unknown>) => Promise<unknown>;
+
+export type WorkspaceState = 'setup' | 'start' | 'ready' | 'active' | 'teardown';
+
+export type GitCredentialMode = 'host-helper' | 'ephemeral-helper' | 'none';
+
+export type AuthProfile = 'gitconfig';
+
+export interface WorkspacePolicy {
+  authProfiles?: AuthProfile[];
+  sshAgentForward?: boolean;
+  gitCredentialMode?: GitCredentialMode;
+}
+
+export interface WorkspaceCreateSpec {
+  repo: string;
+  ref?: string;
+  workspaceName: string;
+  agentProfile: string;
+  policy?: WorkspacePolicy;
+}
+
+export interface WorkspaceRecord {
+  id: string;
+  repo: string;
+  ref: string;
+  workspaceName: string;
+  agentProfile: string;
+  policy?: WorkspacePolicy;
+  state: WorkspaceState;
+  rootPath: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkspaceCreateResult {
+  workspace: WorkspaceRecord;
+}
+
+export interface WorkspaceOpenResult {
+  workspace: WorkspaceRecord;
+}
+
+export interface WorkspaceListResult {
+  workspaces: WorkspaceRecord[];
+}
+
+export interface WorkspaceRemoveResult {
+  removed: boolean;
+}
+
+export interface SpotlightExposeOptions {
+  service: string;
+  remotePort: number;
+  localPort: number;
+  host?: string;
+}
+
+export interface SpotlightForward {
+  id: string;
+  workspaceId: string;
+  service: string;
+  remotePort: number;
+  localPort: number;
+  host: string;
+  createdAt: string;
+}
+
+export interface SpotlightListResult {
+  forwards: SpotlightForward[];
+}
+
+export interface SpotlightApplyDefaultsResult {
+  forwards: SpotlightForward[];
+}
+
+export interface SpotlightApplyComposePortsError {
+  service: string;
+  hostPort: number;
+  targetPort: number;
+  message: string;
+}
+
+export interface SpotlightApplyComposePortsResult {
+  forwards: SpotlightForward[];
+  errors: SpotlightApplyComposePortsError[];
+}
+
+export interface WorkspaceInfo {
+  workspace_id: string;
+  workspace_path: string;
+  workspaces?: WorkspaceRecord[];
+  spotlight?: SpotlightForward[];
+}
+
+export interface WorkspaceReadyCheck {
+  name: string;
+  command: string;
+  args?: string[];
+}
+
+export interface WorkspaceReadyResult {
+  ready: boolean;
+  workspaceId: string;
+  profile?: string;
+  elapsedMs: number;
+  attempts: number;
+  lastResults: Record<string, number>;
+}

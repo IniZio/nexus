@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/IniZio/nexus/main/schemas/workspace.v1.schema.json",
+  "title": "Nexus Workspace Config v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "type": "integer", "minimum": 1 },
+    "readiness": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profiles": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "type": { "type": "string", "enum": ["service", "command"] },
+                "command": { "type": "string" },
+                "args": { "type": "array", "items": { "type": "string" } },
+                "serviceName": { "type": "string" },
+                "expectRunning": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "services": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defaults": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "stopTimeoutMs": { "type": "integer", "minimum": 1 },
+            "autoRestart": { "type": "boolean" },
+            "maxRestarts": { "type": "integer", "minimum": 0 },
+            "restartDelayMs": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "spotlight": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defaults": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["service", "remotePort", "localPort"],
+            "properties": {
+              "service": { "type": "string", "minLength": 1 },
+              "remotePort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+              "localPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+              "host": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defaults": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "authProfiles": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["gitconfig"] }
+            },
+            "sshAgentForward": { "type": "boolean" },
+            "gitCredentialMode": { "type": "string", "enum": ["host-helper", "ephemeral-helper", "none"] }
+          }
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "onSetup": { "type": "array", "items": { "type": "string" } },
+        "onStart": { "type": "array", "items": { "type": "string" } },
+        "onTeardown": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

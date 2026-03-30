@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -14,19 +15,26 @@ import (
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/handlers"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/lifecycle"
 	rpckit "github.com/nexus/nexus/packages/workspace-daemon/pkg/rpcerrors"
+	"github.com/nexus/nexus/packages/workspace-daemon/pkg/services"
+	"github.com/nexus/nexus/packages/workspace-daemon/pkg/spotlight"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/workspace"
+	"github.com/nexus/nexus/packages/workspace-daemon/pkg/workspacemgr"
 )
 
 type Server struct {
-	port         int
-	workspaceDir string
-	tokenSecret  string
-	upgrader     websocket.Upgrader
-	connections  map[string]*Connection
-	ws           *workspace.Workspace
-	lifecycle    *lifecycle.Manager
-	mu           sync.RWMutex
-	shutdownCh   chan struct{}
+	port                int
+	workspaceDir        string
+	tokenSecret         string
+	upgrader            websocket.Upgrader
+	connections         map[string]*Connection
+	ws                  *workspace.Workspace
+	workspaceMgr        *workspacemgr.Manager
+	serviceMgr          *services.Manager
+	spotlightMgr        *spotlight.Manager
+	lifecycle           *lifecycle.Manager
+	autoComposeForwards map[string]bool
+	mu                  sync.RWMutex
+	shutdownCh          chan struct{}
 }
 
 type Connection struct {
@@ -76,10 +84,14 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 				return true
 			},
 		},
-		connections: make(map[string]*Connection),
-		ws:          ws,
-		lifecycle:   lifecycleMgr,
-		shutdownCh:  make(chan struct{}),
+		connections:         make(map[string]*Connection),
+		ws:                  ws,
+		workspaceMgr:        workspacemgr.NewManager(workspaceDir),
+		serviceMgr:          services.NewManager(),
+		spotlightMgr:        spotlight.NewManager(),
+		lifecycle:           lifecycleMgr,
+		autoComposeForwards: make(map[string]bool),
+		shutdownCh:          make(chan struct{}),
 	}, nil
 }
 
@@ -91,8 +103,15 @@ func (s *Server) Start() error {
 	}
 
 	http.HandleFunc("/", s.handleWebSocket)
+	http.HandleFunc("/healthz", s.handleHealthz)
 	addr := fmt.Sprintf(":%d", s.port)
 	return http.ListenAndServe(addr, nil)
+}
+
+func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"ok":true,"service":"workspace-daemon"}`))
 }
 
 func (s *Server) Shutdown() {
@@ -255,26 +274,66 @@ func (s *Server) processRPC(msg *RPCMessage) *RPCResponse {
 
 	var result interface{}
 	var err *rpckit.RPCError
+	workspace := s.resolveWorkspace(msg.Params)
 
 	switch msg.Method {
 	case "fs.readFile":
-		result, err = handlers.HandleReadFile(ctx, msg.Params, s.ws)
+		result, err = handlers.HandleReadFile(ctx, msg.Params, workspace)
 	case "fs.writeFile":
-		result, err = handlers.HandleWriteFile(ctx, msg.Params, s.ws)
+		result, err = handlers.HandleWriteFile(ctx, msg.Params, workspace)
 	case "fs.exists":
-		result, err = handlers.HandleExists(ctx, msg.Params, s.ws)
+		result, err = handlers.HandleExists(ctx, msg.Params, workspace)
 	case "fs.readdir":
-		result, err = handlers.HandleReaddir(ctx, msg.Params, s.ws)
+		result, err = handlers.HandleReaddir(ctx, msg.Params, workspace)
 	case "fs.mkdir":
-		result, err = handlers.HandleMkdir(ctx, msg.Params, s.ws)
+		result, err = handlers.HandleMkdir(ctx, msg.Params, workspace)
 	case "fs.rm":
-		result, err = handlers.HandleRm(ctx, msg.Params, s.ws)
+		result, err = handlers.HandleRm(ctx, msg.Params, workspace)
 	case "fs.stat":
-		result, err = handlers.HandleStat(ctx, msg.Params, s.ws)
+		result, err = handlers.HandleStat(ctx, msg.Params, workspace)
 	case "exec":
-		result, err = handlers.HandleExec(ctx, msg.Params, s.ws)
+		result, err = handlers.HandleExec(ctx, msg.Params, workspace)
 	case "workspace.info":
-		result = s.handleWorkspaceInfo()
+		result = s.handleWorkspaceInfo(msg.Params)
+	case "workspace.create":
+		result, err = handlers.HandleWorkspaceCreate(ctx, msg.Params, s.workspaceMgr)
+	case "workspace.open":
+		result, err = handlers.HandleWorkspaceOpen(ctx, msg.Params, s.workspaceMgr)
+	case "workspace.list":
+		result, err = handlers.HandleWorkspaceList(ctx, msg.Params, s.workspaceMgr)
+	case "workspace.remove":
+		result, err = handlers.HandleWorkspaceRemove(ctx, msg.Params, s.workspaceMgr)
+	case "workspace.ready":
+		workspaceID := extractWorkspaceID(msg.Params)
+		if workspaceID == "" {
+			workspaceID = workspace.ID()
+		}
+		s.ensureComposeForwards(ctx, workspaceID, workspace.Path())
+		result, err = handlers.HandleWorkspaceReady(ctx, msg.Params, workspace, s.serviceMgr)
+	case "git.command":
+		result, err = handlers.HandleGitCommand(ctx, msg.Params, workspace)
+	case "service.command":
+		result, err = handlers.HandleServiceCommand(ctx, msg.Params, workspace, s.serviceMgr)
+	case "spotlight.expose":
+		result, err = handlers.HandleSpotlightExpose(ctx, msg.Params, s.spotlightMgr)
+	case "spotlight.list":
+		result, err = handlers.HandleSpotlightList(ctx, msg.Params, s.spotlightMgr)
+	case "spotlight.close":
+		result, err = handlers.HandleSpotlightClose(ctx, msg.Params, s.spotlightMgr)
+	case "spotlight.applyDefaults":
+		rootPath := workspace.Path()
+		paramsMap := map[string]any{}
+		_ = json.Unmarshal(msg.Params, &paramsMap)
+		paramsMap["rootPath"] = rootPath
+		updated, _ := json.Marshal(paramsMap)
+		result, err = handlers.HandleSpotlightApplyDefaults(ctx, updated, s.spotlightMgr)
+	case "spotlight.applyComposePorts":
+		rootPath := workspace.Path()
+		paramsMap := map[string]any{}
+		_ = json.Unmarshal(msg.Params, &paramsMap)
+		paramsMap["rootPath"] = rootPath
+		updated, _ := json.Marshal(paramsMap)
+		result, err = handlers.HandleSpotlightApplyComposePorts(ctx, updated, s.spotlightMgr)
 	default:
 		err = rpckit.ErrMethodNotFound
 	}
@@ -302,9 +361,95 @@ func (s *Server) createErrorResponse(id string, rpcErr *rpckit.RPCError) *RPCRes
 	}
 }
 
-func (s *Server) handleWorkspaceInfo() map[string]interface{} {
-	return map[string]interface{}{
+func (s *Server) resolveWorkspace(params json.RawMessage) *workspace.Workspace {
+	workspaceID := extractWorkspaceID(params)
+	if workspaceID == "" {
+		return s.ws
+	}
+
+	wsRecord, ok := s.workspaceMgr.Get(workspaceID)
+	if !ok {
+		return s.ws
+	}
+
+	resolved, err := workspace.NewWorkspace(wsRecord.RootPath)
+	if err != nil {
+		return s.ws
+	}
+
+	return resolved
+}
+
+func extractWorkspaceID(params json.RawMessage) string {
+	if len(params) == 0 {
+		return ""
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(params, &payload); err != nil {
+		return ""
+	}
+
+	if id, ok := payload["workspaceId"].(string); ok {
+		return id
+	}
+
+	if rawSpec, ok := payload["spec"].(map[string]any); ok {
+		if id, ok := rawSpec["workspaceId"].(string); ok {
+			return id
+		}
+	}
+
+	if id, ok := payload["id"].(string); ok {
+		return id
+	}
+
+	return ""
+}
+
+func (s *Server) ensureComposeForwards(ctx context.Context, workspaceID, rootPath string) {
+	if workspaceID == "" || rootPath == "" {
+		return
+	}
+
+	s.mu.Lock()
+	if s.autoComposeForwards[workspaceID] {
+		s.mu.Unlock()
+		return
+	}
+	s.autoComposeForwards[workspaceID] = true
+	s.mu.Unlock()
+
+	payload, _ := json.Marshal(map[string]any{
+		"workspaceId": workspaceID,
+		"rootPath":    rootPath,
+	})
+
+	if _, rpcErr := handlers.HandleSpotlightApplyComposePorts(ctx, payload, s.spotlightMgr); rpcErr != nil {
+		log.Printf("[spotlight] failed to auto-apply compose ports for %s: %+v", workspaceID, rpcErr)
+		s.mu.Lock()
+		s.autoComposeForwards[workspaceID] = false
+		s.mu.Unlock()
+	}
+}
+
+func (s *Server) handleWorkspaceInfo(params json.RawMessage) map[string]interface{} {
+	workspaceID := extractWorkspaceID(params)
+	result := map[string]interface{}{
 		"workspace_id":   s.ws.ID(),
 		"workspace_path": s.ws.Path(),
+		"workspaces":     s.workspaceMgr.List(),
+		"spotlight":      s.spotlightMgr.List(""),
 	}
+
+	if workspaceID != "" {
+		if ws, ok := s.workspaceMgr.Get(workspaceID); ok {
+			result["workspace"] = ws
+			result["workspace_id"] = ws.ID
+			result["workspace_path"] = filepath.Clean(ws.RootPath)
+			result["spotlight"] = s.spotlightMgr.List(workspaceID)
+		}
+	}
+
+	return result
 }

@@ -1,13 +1,15 @@
 package lifecycle
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/nexus/nexus/packages/workspace-daemon/pkg/config"
 )
 
 type LifecycleConfig struct {
@@ -35,14 +37,19 @@ type Manager struct {
 	config       *LifecycleConfig
 }
 
+var errNoLifecycleHooks = errors.New("no lifecycle hooks configured")
+
 func NewManager(workspaceDir string) (*Manager, error) {
 	m := &Manager{
 		workspaceDir: workspaceDir,
 	}
 
 	if err := m.loadConfig(); err != nil {
-		log.Printf("[lifecycle] No lifecycle config found, skipping hooks")
-		return m, nil
+		if errors.Is(err, errNoLifecycleHooks) {
+			log.Printf("[lifecycle] No lifecycle config found, skipping hooks")
+			return m, nil
+		}
+		return nil, err
 	}
 
 	log.Printf("[lifecycle] Loaded lifecycle config with %d hooks",
@@ -53,20 +60,116 @@ func NewManager(workspaceDir string) (*Manager, error) {
 }
 
 func (m *Manager) loadConfig() error {
-	configPath := filepath.Join(m.workspaceDir, ".nexus", "lifecycle.json")
+	workspaceCfg, warnings, err := config.LoadWorkspaceConfig(m.workspaceDir)
+	if err != nil {
+		return err
+	}
+	for _, w := range warnings {
+		log.Printf("[lifecycle] %s", w)
+	}
 
-	data, err := os.ReadFile(configPath)
+	autodetected, err := m.autodetectedHooks()
 	if err != nil {
 		return err
 	}
 
-	var config LifecycleConfig
-	if err := json.Unmarshal(data, &config); err != nil {
-		return fmt.Errorf("failed to parse lifecycle.json: %w", err)
+	configuredPreStart := commandsToHooks(workspaceCfg.Lifecycle.OnSetup)
+	configuredPostStart := commandsToHooks(workspaceCfg.Lifecycle.OnStart)
+	configuredPreStop := commandsToHooks(workspaceCfg.Lifecycle.OnTeardown)
+
+	preStart := configuredPreStart
+	if len(preStart) == 0 {
+		preStart = autodetected.PreStart
 	}
 
-	m.config = &config
+	postStart := configuredPostStart
+	if len(postStart) == 0 {
+		postStart = autodetected.PostStart
+	}
+
+	preStop := configuredPreStop
+	if len(preStop) == 0 {
+		preStop = autodetected.PreStop
+	}
+
+	if len(preStart) == 0 && len(postStart) == 0 && len(preStop) == 0 {
+		return errNoLifecycleHooks
+	}
+
+	m.config = &LifecycleConfig{
+		Version: "v1",
+		Hooks: Hooks{
+			PreStart:  preStart,
+			PostStart: postStart,
+			PreStop:   preStop,
+			PostStop:  nil,
+		},
+	}
 	return nil
+}
+
+func (m *Manager) autodetectedHooks() (Hooks, error) {
+	setupHook, err := m.autodetectedScriptHook("setup", "setup.sh")
+	if err != nil {
+		return Hooks{}, err
+	}
+
+	startHook, err := m.autodetectedScriptHook("start", "start.sh")
+	if err != nil {
+		return Hooks{}, err
+	}
+
+	teardownHook, err := m.autodetectedScriptHook("teardown", "teardown.sh")
+	if err != nil {
+		return Hooks{}, err
+	}
+
+	return Hooks{
+		PreStart:  setupHook,
+		PostStart: startHook,
+		PreStop:   teardownHook,
+		PostStop:  nil,
+	}, nil
+}
+
+func (m *Manager) autodetectedScriptHook(name, filename string) ([]Hook, error) {
+	scriptPath := filepath.Join(m.workspaceDir, ".nexus", "lifecycles", filename)
+	info, err := os.Stat(scriptPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("inspect lifecycle script %s: %w", scriptPath, err)
+	}
+
+	if info.IsDir() {
+		return nil, fmt.Errorf("lifecycle script path is a directory: %s", scriptPath)
+	}
+
+	if info.Mode().Perm()&0o111 == 0 {
+		return nil, fmt.Errorf("lifecycle script must be executable: %s", scriptPath)
+	}
+
+	return []Hook{{
+		Name:    fmt.Sprintf("autodetected-%s", name),
+		Command: "bash",
+		Args:    []string{"-euo", "pipefail", scriptPath},
+	}}, nil
+}
+
+func commandsToHooks(commands []string) []Hook {
+	out := make([]Hook, 0, len(commands))
+	for i, cmd := range commands {
+		if cmd == "" {
+			continue
+		}
+		out = append(out, Hook{
+			Name:    fmt.Sprintf("hook-%d", i+1),
+			Command: "sh",
+			Args:    []string{"-lc", cmd},
+		})
+	}
+	return out
 }
 
 func (m *Manager) RunPreStart() error {

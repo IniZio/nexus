@@ -65,6 +65,86 @@ const client = new WorkspaceClient(config);
 - `isConnected()` - Check connection status
 - `onDisconnect(callback)` - Register disconnect handler
 
+### Workspace Manager (`client.workspace`)
+
+- `create(spec)` - Create remote isolated workspace
+- `open(id)` - Open existing workspace handle
+- `list()` - List workspaces
+- `remove(id)` - Remove workspace
+
+```typescript
+const ws = await client.workspace.create({
+  repo: '<internal-repo-url>',
+  ref: 'main',
+  workspaceName: 'workspace-web-agent-1',
+  agentProfile: 'default',
+  policy: {
+    authProfiles: ['gitconfig'],
+    sshAgentForward: true,
+    gitCredentialMode: 'host-helper',
+  },
+});
+```
+
+### Spotlight (`WorkspaceHandle.spotlight`)
+
+- `expose({ service, remotePort, localPort, host? })`
+- `list()`
+- `close(id)`
+- `applyDefaults()`
+- `applyComposePorts()`
+
+```typescript
+await ws.spotlight.expose({ service: 'student-portal', remotePort: 5173, localPort: 5173 });
+await ws.spotlight.expose({ service: 'api', remotePort: 8000, localPort: 8000 });
+```
+
+### Git and service commands
+
+```typescript
+await ws.git('status');
+await ws.git('revParse', { ref: 'HEAD' });
+
+await ws.service('start', {
+  name: 'api',
+  command: 'pnpm',
+  args: ['--dir', 'web', 'dev'],
+  autoRestart: true,
+  maxRestarts: 2,
+  restartDelayMs: 250,
+  stopTimeoutMs: 1500,
+});
+
+await ws.service('status', { name: 'api' });
+await ws.service('logs', { name: 'api' });
+await ws.service('stop', { name: 'api', stopTimeoutMs: 1500 });
+
+const ready = await ws.ready(
+  [{ name: 'api-health', command: 'sh', args: ['-lc', 'curl -fsS http://localhost:8000/health || exit 1'] }],
+  { timeoutMs: 15000, intervalMs: 500 }
+);
+
+if (!ready.ready) throw new Error('workspace not ready');
+
+const profiled = await ws.readyProfile('default-services', { timeoutMs: 10000, intervalMs: 500 });
+if (!profiled.ready) throw new Error('workspace profile not ready');
+
+const defaults = await ws.spotlight.applyDefaults();
+console.log(defaults.forwards.length);
+
+const composeForwards = await ws.spotlight.applyComposePorts();
+console.log(composeForwards.forwards.length, composeForwards.errors.length);
+```
+
+Convention-over-configuration behavior:
+
+- Compose projects are auto-detected by daemon (`docker-compose.yml` / `docker-compose.yaml`).
+- All published compose ports are auto-forwarded on `workspace.ready`.
+- `applyComposePorts()` is available for explicit/manual triggering.
+- ACP integration is capability-aware: if `opencode` is not installed, ACP checks are skipped rather than failing readiness.
+
+Project config defaults and schema are documented in `docs/reference/workspace-config.md`.
+
 ### File System API (`client.fs`)
 
 - `readFile(path, encoding?)` - Read file contents

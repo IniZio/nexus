@@ -13,36 +13,43 @@ import (
 )
 
 type ReadFileParams struct {
-	Path     string `json:"path"`
-	Encoding string `json:"encoding"`
+	WorkspaceID string `json:"workspaceId,omitempty"`
+	Path        string `json:"path"`
+	Encoding    string `json:"encoding"`
 }
 
 type WriteFileParams struct {
-	Path     string `json:"path"`
-	Content  string `json:"content"`
-	Encoding string `json:"encoding"`
+	WorkspaceID string `json:"workspaceId,omitempty"`
+	Path        string `json:"path"`
+	Content     string `json:"content"`
+	Encoding    string `json:"encoding"`
 }
 
 type ExistsParams struct {
-	Path string `json:"path"`
+	WorkspaceID string `json:"workspaceId,omitempty"`
+	Path        string `json:"path"`
 }
 
 type ReaddirParams struct {
-	Path string `json:"path"`
+	WorkspaceID string `json:"workspaceId,omitempty"`
+	Path        string `json:"path"`
 }
 
 type MkdirParams struct {
-	Path      string `json:"path"`
-	Recursive bool   `json:"recursive"`
+	WorkspaceID string `json:"workspaceId,omitempty"`
+	Path        string `json:"path"`
+	Recursive   bool   `json:"recursive"`
 }
 
 type RmParams struct {
-	Path      string `json:"path"`
-	Recursive bool   `json:"recursive"`
+	WorkspaceID string `json:"workspaceId,omitempty"`
+	Path        string `json:"path"`
+	Recursive   bool   `json:"recursive"`
 }
 
 type StatParams struct {
-	Path string `json:"path"`
+	WorkspaceID string `json:"workspaceId,omitempty"`
+	Path        string `json:"path"`
 }
 
 type DirEntry struct {

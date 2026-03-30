@@ -19,9 +19,10 @@ const (
 )
 
 type ExecParams struct {
-	Command string      `json:"command"`
-	Args    []string    `json:"args"`
-	Options ExecOptions `json:"options"`
+	WorkspaceID string      `json:"workspaceId,omitempty"`
+	Command     string      `json:"command"`
+	Args        []string    `json:"args"`
+	Options     ExecOptions `json:"options"`
 }
 
 type ExecOptions struct {
