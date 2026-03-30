@@ -36,6 +36,14 @@ func TestMissingRequiredPorts(t *testing.T) {
 	}
 }
 
+func TestParseURLs(t *testing.T) {
+	urls := parseURLs("http://a,http://b , http://c")
+	expected := []string{"http://a", "http://b", "http://c"}
+	if !reflect.DeepEqual(urls, expected) {
+		t.Fatalf("expected %v, got %v", expected, urls)
+	}
+}
+
 func TestAssertNoManualACP(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "start.sh")

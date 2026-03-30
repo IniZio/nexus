@@ -1,6 +1,6 @@
 # Binaries
-nexus
-nexus-*
+/nexus
+/nexus-*
 *.exe
 
 # Build artifacts

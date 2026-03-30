@@ -5,7 +5,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,7 +20,10 @@ import (
 type options struct {
 	projectRoot       string
 	suite             string
+	composeFile       string
 	requiredHostPorts []int
+	probeRuntime      bool
+	probeURLs         []string
 }
 
 func main() {
@@ -43,8 +48,11 @@ func main() {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	projectRoot := fs.String("project-root", "", "absolute path to downstream project repository")
-	suite := fs.String("suite", "", "ecosystem suite name")
+	suite := fs.String("suite", "", "doctor suite name")
+	composeFile := fs.String("compose-file", "docker-compose.yml", "compose file path relative to project root")
 	requiredPorts := fs.String("required-host-ports", "5173,5174,8000", "comma-separated required published host ports")
+	probeRuntime := fs.Bool("probe-runtime", false, "start compose stack and probe key app/auth endpoints")
+	probeURLs := fs.String("probe-urls", "", "comma-separated URLs to probe when --probe-runtime is enabled")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -60,10 +68,15 @@ func main() {
 		os.Exit(2)
 	}
 
+	urls := parseURLs(*probeURLs)
+
 	if err := run(options{
 		projectRoot:       *projectRoot,
 		suite:             *suite,
+		composeFile:       *composeFile,
 		requiredHostPorts: ports,
+		probeRuntime:      *probeRuntime,
+		probeURLs:         urls,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -72,7 +85,7 @@ func main() {
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  ecosystem-ci doctor --project-root <abs-path> --suite <name> [--required-host-ports 5173,5174,8000]")
+	fmt.Fprintln(os.Stderr, "  nexus doctor --project-root <abs-path> --suite <name> [--compose-file docker-compose.yml] [--required-host-ports 5173,5174,8000] [--probe-runtime]")
 }
 
 func run(opts options) error {
@@ -89,7 +102,7 @@ func run(opts options) error {
 		filepath.Join(opts.projectRoot, ".nexus", "lifecycles", "setup.sh"),
 		filepath.Join(opts.projectRoot, ".nexus", "lifecycles", "start.sh"),
 		filepath.Join(opts.projectRoot, ".nexus", "lifecycles", "teardown.sh"),
-		filepath.Join(opts.projectRoot, "docker-compose.yml"),
+		filepath.Join(opts.projectRoot, opts.composeFile),
 	}
 
 	for _, p := range requiredFiles {
@@ -139,8 +152,111 @@ func run(opts options) error {
 		return fmt.Errorf("missing required host ports: %v", missing)
 	}
 
-	fmt.Printf("ecosystem suite passed: %s (discovered %d compose ports)\n", opts.suite, len(publishedPorts))
+	if opts.probeRuntime {
+		if len(opts.probeURLs) == 0 {
+			opts.probeURLs = defaultProbeURLs(opts.suite)
+		}
+		if err := runRuntimeProbes(opts); err != nil {
+			return err
+		}
+	}
+
+	fmt.Printf("doctor suite passed: %s (discovered %d compose ports)\n", opts.suite, len(publishedPorts))
 	return nil
+}
+
+func parseURLs(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	urls := make([]string, 0, len(parts))
+	for _, part := range parts {
+		u := strings.TrimSpace(part)
+		if u == "" {
+			continue
+		}
+		urls = append(urls, u)
+	}
+	return urls
+}
+
+func defaultProbeURLs(suite string) []string {
+	switch suite {
+	case "hanlun-root":
+		return []string{
+			"http://localhost:3001/oauth2/.well-known/openid-configuration",
+			"http://localhost:4001/oauth2/.well-known/openid-configuration",
+			"http://localhost:5173",
+			"http://localhost:5174",
+			"http://localhost:6006",
+			"http://localhost:6007",
+			"http://localhost:8001",
+		}
+	default:
+		return nil
+	}
+}
+
+func runRuntimeProbes(opts options) error {
+	composePath := filepath.Join(opts.projectRoot, opts.composeFile)
+	upCtx, upCancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	defer upCancel()
+
+	upCmd := exec.CommandContext(upCtx, "docker", "compose", "-f", composePath, "up", "-d")
+	upCmd.Dir = opts.projectRoot
+	upCmd.Env = os.Environ()
+	if os.Getenv("GLITCHTIP_DSN") == "" {
+		upCmd.Env = append(upCmd.Env, "GLITCHTIP_DSN=placeholder")
+	}
+	if out, err := upCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("docker compose up failed: %w: %s", err, string(out))
+	}
+
+	defer func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer downCancel()
+		downCmd := exec.CommandContext(downCtx, "docker", "compose", "-f", composePath, "down", "--remove-orphans")
+		downCmd.Dir = opts.projectRoot
+		downCmd.Env = os.Environ()
+		if os.Getenv("GLITCHTIP_DSN") == "" {
+			downCmd.Env = append(downCmd.Env, "GLITCHTIP_DSN=placeholder")
+		}
+		_, _ = downCmd.CombinedOutput()
+	}()
+
+	for _, u := range opts.probeURLs {
+		if err := waitForURL(u, 4*time.Minute); err != nil {
+			return fmt.Errorf("runtime probe failed for %s: %w", u, err)
+		}
+	}
+
+	return nil
+}
+
+func waitForURL(url string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	client := &http.Client{Timeout: 5 * time.Second}
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+				return nil
+			}
+			lastErr = fmt.Errorf("status %d", resp.StatusCode)
+		} else {
+			lastErr = err
+		}
+		time.Sleep(3 * time.Second)
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("timeout")
+	}
+	return lastErr
 }
 
 func parseRequiredPorts(raw string) ([]int, error) {
