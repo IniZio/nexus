@@ -44,6 +44,13 @@ func TestParseURLs(t *testing.T) {
 	}
 }
 
+func TestDefaultAuthTokenURL(t *testing.T) {
+	url := defaultAuthTokenURL("hanlun-root")
+	if url == "" {
+		t.Fatal("expected default auth token URL for hanlun-root")
+	}
+}
+
 func TestAssertNoManualACP(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "start.sh")

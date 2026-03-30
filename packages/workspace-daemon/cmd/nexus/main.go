@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +27,12 @@ type options struct {
 	requiredHostPorts []int
 	probeRuntime      bool
 	probeURLs         []string
+	probeAuth         bool
+	authTokenURL      string
+	authClientID      string
+	authUsername      string
+	authPassword      string
+	authScope         string
 }
 
 func main() {
@@ -53,6 +62,12 @@ func main() {
 	requiredPorts := fs.String("required-host-ports", "5173,5174,8000", "comma-separated required published host ports")
 	probeRuntime := fs.Bool("probe-runtime", false, "start compose stack and probe key app/auth endpoints")
 	probeURLs := fs.String("probe-urls", "", "comma-separated URLs to probe when --probe-runtime is enabled")
+	probeAuth := fs.Bool("probe-auth", false, "run credentialed auth token probe")
+	authTokenURL := fs.String("auth-token-url", "", "auth token endpoint URL")
+	authClientID := fs.String("auth-client-id", "", "auth client id")
+	authUsername := fs.String("auth-username", "", "auth username")
+	authPassword := fs.String("auth-password", "", "auth password")
+	authScope := fs.String("auth-scope", "openid profile email", "auth scope for credentialed probe")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -77,6 +92,12 @@ func main() {
 		requiredHostPorts: ports,
 		probeRuntime:      *probeRuntime,
 		probeURLs:         urls,
+		probeAuth:         *probeAuth,
+		authTokenURL:      *authTokenURL,
+		authClientID:      *authClientID,
+		authUsername:      *authUsername,
+		authPassword:      *authPassword,
+		authScope:         *authScope,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -85,7 +106,7 @@ func main() {
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  nexus doctor --project-root <abs-path> --suite <name> [--compose-file docker-compose.yml] [--required-host-ports 5173,5174,8000] [--probe-runtime]")
+	fmt.Fprintln(os.Stderr, "  nexus doctor --project-root <abs-path> --suite <name> [--compose-file docker-compose.yml] [--required-host-ports 5173,5174,8000] [--probe-runtime] [--probe-auth]")
 }
 
 func run(opts options) error {
@@ -169,8 +190,74 @@ func run(opts options) error {
 		}
 	}
 
+	if opts.probeAuth {
+		if err := runAuthProbe(opts); err != nil {
+			return err
+		}
+	}
+
 	fmt.Printf("doctor suite passed: %s (discovered %d compose ports)\n", opts.suite, len(publishedPorts))
 	return nil
+}
+
+func runAuthProbe(opts options) error {
+	tokenURL := strings.TrimSpace(opts.authTokenURL)
+	if tokenURL == "" {
+		tokenURL = defaultAuthTokenURL(opts.suite)
+	}
+	if tokenURL == "" {
+		return fmt.Errorf("auth probe enabled but token URL is not configured")
+	}
+	if strings.TrimSpace(opts.authClientID) == "" || strings.TrimSpace(opts.authUsername) == "" || strings.TrimSpace(opts.authPassword) == "" {
+		return fmt.Errorf("auth probe requires --auth-client-id, --auth-username, and --auth-password")
+	}
+
+	form := url.Values{}
+	form.Set("grant_type", "password")
+	form.Set("client_id", opts.authClientID)
+	form.Set("username", opts.authUsername)
+	form.Set("password", opts.authPassword)
+	if strings.TrimSpace(opts.authScope) != "" {
+		form.Set("scope", opts.authScope)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("create auth token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("auth token request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("auth token request returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return fmt.Errorf("parse auth token response: %w", err)
+	}
+	accessToken, _ := parsed["access_token"].(string)
+	if strings.TrimSpace(accessToken) == "" {
+		return fmt.Errorf("auth token response missing access_token")
+	}
+
+	return nil
+}
+
+func defaultAuthTokenURL(suite string) string {
+	switch suite {
+	case "hanlun-root":
+		return "http://localhost:3001/oauth2/token"
+	default:
+		return ""
+	}
 }
 
 func parseURLs(raw string) []string {
