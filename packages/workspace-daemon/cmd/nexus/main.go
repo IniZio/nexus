@@ -174,20 +174,19 @@ func run(opts options) error {
 	var allResults []checkResult
 	allResults = append(allResults, probeResults...)
 
-	if probeErr != nil {
-		testResults := markChecksNotRun(workspaceConfig.Doctor.Tests, "probes_failed")
-		allResults = append(allResults, testResults...)
-		if err := writeReport(opts.reportJSON, allResults); err != nil {
-			return err
-		}
-		return probeErr
-	}
-
 	testResults, testErr := runConfiguredTests(opts, workspaceConfig.Doctor.Tests)
 	allResults = append(allResults, testResults...)
 
 	if err := writeReport(opts.reportJSON, allResults); err != nil {
 		return err
+	}
+
+	if probeErr != nil && testErr != nil {
+		return fmt.Errorf("%v; %v", probeErr, testErr)
+	}
+
+	if probeErr != nil {
+		return probeErr
 	}
 
 	if testErr != nil {

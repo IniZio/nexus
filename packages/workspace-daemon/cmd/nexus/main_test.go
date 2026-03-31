@@ -166,13 +166,13 @@ func setupDoctorTestWorkspace(t *testing.T, doctorConfig config.DoctorConfig) st
 	return root
 }
 
-func TestDoctor_SkipsTestsWhenRequiredProbeFails(t *testing.T) {
+func TestDoctor_RunsTestsWhenRequiredProbeFails(t *testing.T) {
 	workspaceRoot := setupDoctorTestWorkspace(t, config.DoctorConfig{
 		Probes: []config.DoctorCommandProbe{
 			{Name: "failing-probe", Command: "bash", Args: []string{"-lc", "exit 1"}, Required: true},
 		},
 		Tests: []config.DoctorCommandCheck{
-			{Name: "should-not-run", Command: "bash", Args: []string{"-lc", "exit 0"}, Required: true},
+			{Name: "should-run", Command: "bash", Args: []string{"-lc", "exit 0"}, Required: true},
 		},
 	})
 
@@ -212,11 +212,59 @@ func TestDoctor_SkipsTestsWhenRequiredProbeFails(t *testing.T) {
 	if probeResult.Status != "failed_required" {
 		t.Fatalf("expected probe status 'failed_required', got %q", probeResult.Status)
 	}
-	if testResult.Status != "not_run" {
-		t.Fatalf("expected test status 'not_run', got %q", testResult.Status)
+	if testResult.Status != "passed" {
+		t.Fatalf("expected test status 'passed', got %q", testResult.Status)
 	}
-	if testResult.SkipReason != "probes_failed" {
-		t.Fatalf("expected test skipReason 'probes_failed', got %q", testResult.SkipReason)
+}
+
+func TestDoctor_ReportsRequiredProbeAndTestFailuresTogether(t *testing.T) {
+	workspaceRoot := setupDoctorTestWorkspace(t, config.DoctorConfig{
+		Probes: []config.DoctorCommandProbe{
+			{Name: "failing-probe", Command: "bash", Args: []string{"-lc", "exit 1"}, Required: true},
+		},
+		Tests: []config.DoctorCommandCheck{
+			{Name: "failing-test", Command: "bash", Args: []string{"-lc", "exit 1"}, Required: true},
+		},
+	})
+
+	reportPath := filepath.Join(t.TempDir(), "report.json")
+	err := run(options{
+		projectRoot: workspaceRoot,
+		suite:       "test-suite",
+		reportJSON:  reportPath,
+	})
+
+	if err == nil {
+		t.Fatal("expected error due to required probe and test failure")
+	}
+
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("unable to read report: %v", err)
+	}
+	var results []checkResult
+	if err := json.Unmarshal(data, &results); err != nil {
+		t.Fatalf("invalid report JSON: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results (1 probe + 1 test), got %d", len(results))
+	}
+
+	var probeResult, testResult checkResult
+	for _, r := range results {
+		if r.Phase == "probe" {
+			probeResult = r
+		} else if r.Phase == "test" {
+			testResult = r
+		}
+	}
+
+	if probeResult.Status != "failed_required" {
+		t.Fatalf("expected probe status 'failed_required', got %q", probeResult.Status)
+	}
+	if testResult.Status != "failed_required" {
+		t.Fatalf("expected test status 'failed_required', got %q", testResult.Status)
 	}
 }
 
