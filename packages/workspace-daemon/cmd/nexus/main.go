@@ -405,9 +405,6 @@ func runBuiltInOpencodeSessionCheck(projectRoot string) (checkResult, error) {
 	}
 
 	model := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_OPENCODE_MODEL"))
-	if model == "" {
-		model = "bigpickle"
-	}
 
 	prompt := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_OPENCODE_PROMPT"))
 	if prompt == "" {
@@ -426,9 +423,15 @@ func runBuiltInOpencodeSessionCheck(projectRoot string) (checkResult, error) {
 		}
 	}
 
+	runArgs := []string{"run"}
+	if model != "" {
+		runArgs = append(runArgs, "--model", model)
+	}
+	runArgs = append(runArgs, prompt)
+
 	opencodeCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	out, err := runCheckCommand(opencodeCtx, projectRoot, "test", checkName, 1, 1, timeout, "opencode", []string{"run", "--model", model, prompt})
+	out, err := runCheckCommand(opencodeCtx, projectRoot, "test", checkName, 1, 1, timeout, "opencode", runArgs)
 
 	result.Required = true
 	result.DurationMs = time.Since(start).Milliseconds()

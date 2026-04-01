@@ -573,7 +573,7 @@ func TestRunConfiguredProbesFailsWhenLXCExecContextMissing(t *testing.T) {
 	}
 }
 
-func TestBuiltInOpencodeSessionCheckFallbackWithoutModel(t *testing.T) {
+func TestBuiltInOpencodeSessionCheckRunsWithoutModelFlagWhenUnset(t *testing.T) {
 	fakeBinDir := t.TempDir()
 	fakeOpencodePath := filepath.Join(fakeBinDir, "opencode")
 	fakeScript := "#!/usr/bin/env bash\n" +
@@ -586,7 +586,7 @@ func TestBuiltInOpencodeSessionCheckFallbackWithoutModel(t *testing.T) {
 		"  echo 'help output'\n" +
 		"  exit 0\n" +
 		"fi\n" +
-		"if [ \"${1:-}\" = \"run\" ] && [ \"${2:-}\" = \"--model\" ] && [ \"${3:-}\" = \"bigpickle\" ]; then\n" +
+		"if [ \"${1:-}\" = \"run\" ] && [ \"${2:-}\" != \"--model\" ]; then\n" +
 		"  echo 'NEXUS_DOCTOR_OK'\n" +
 		"  exit 0\n" +
 		"fi\n" +
@@ -601,7 +601,7 @@ func TestBuiltInOpencodeSessionCheckFallbackWithoutModel(t *testing.T) {
 
 	result, err := runBuiltInOpencodeSessionCheck(t.TempDir())
 	if err != nil {
-		t.Fatalf("expected fallback model check to pass, got %v", err)
+		t.Fatalf("expected opencode check to pass without model, got %v", err)
 	}
 	if result.Name != "tooling-opencode-session" {
 		t.Fatalf("unexpected check name: %q", result.Name)
