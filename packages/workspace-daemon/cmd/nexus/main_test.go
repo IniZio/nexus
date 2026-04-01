@@ -369,7 +369,28 @@ func TestFormatCommand(t *testing.T) {
 }
 
 func TestRunCheckCommandCapturesOutput(t *testing.T) {
-	output, err := runCheckCommand(context.Background(), t.TempDir(), "probe", "example", 1, 1, 30*time.Second, "bash", []string{"-lc", "printf 'hello world'"})
+	output, err := runCheckCommandWithExecContext(context.Background(), t.TempDir(), "probe", "example", 1, 1, 30*time.Second, "bash", []string{"-lc", "printf 'hello world'"}, doctorExecContext{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output != "hello world" {
+		t.Fatalf("expected captured output, got %q", output)
+	}
+}
+
+func TestRunCheckCommandWithExecContextLXCNoSocketPermissionFallback(t *testing.T) {
+	output, err := runCheckCommandWithExecContext(
+		context.Background(),
+		t.TempDir(),
+		"probe",
+		"example",
+		1,
+		1,
+		30*time.Second,
+		"bash",
+		[]string{"-lc", "printf 'hello world'"},
+		doctorExecContext{backend: "lxc", lxcExec: "host"},
+	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -401,6 +422,51 @@ func TestResolveCheckCommandLXC(t *testing.T) {
 	}
 	if args[5] == "" || !strings.Contains(args[5], "cd") || !strings.Contains(args[5], "/tmp/project") {
 		t.Fatalf("unexpected wrapped shell command: %q", args[5])
+	}
+}
+
+func TestResolveCheckCommandLXCSudo(t *testing.T) {
+	cmd, args, env, label := resolveCheckCommand("/tmp/project", "bash", []string{"-lc", "echo ok"}, doctorExecContext{
+		backend: "lxc",
+		lxcName: "nexus-ws",
+		lxcExec: "sudo-lxc",
+	})
+
+	if cmd != "sudo" {
+		t.Fatalf("expected sudo command, got %q", cmd)
+	}
+	if label != "lxc-sudo" {
+		t.Fatalf("expected label lxc-sudo, got %q", label)
+	}
+	if len(env) != 0 {
+		t.Fatalf("expected no extra env, got %v", env)
+	}
+	if len(args) < 8 {
+		t.Fatalf("expected wrapped sudo lxc args, got %v", args)
+	}
+	if args[0] != "-n" || args[1] != "lxc" || args[2] != "exec" || args[3] != "nexus-ws" {
+		t.Fatalf("unexpected sudo lxc prefix args: %v", args)
+	}
+}
+
+func TestResolveCheckCommandLXCHost(t *testing.T) {
+	cmd, args, env, label := resolveCheckCommand("/tmp/project", "bash", []string{"-lc", "echo ok"}, doctorExecContext{
+		backend: "lxc",
+		lxcName: "nexus-ws",
+		lxcExec: "host",
+	})
+
+	if cmd != "bash" {
+		t.Fatalf("expected host command for lxc host mode, got %q", cmd)
+	}
+	if label != "host" {
+		t.Fatalf("expected host label, got %q", label)
+	}
+	if !reflect.DeepEqual(args, []string{"-lc", "echo ok"}) {
+		t.Fatalf("unexpected args: %v", args)
+	}
+	if len(env) != 0 {
+		t.Fatalf("expected no env in lxc host mode, got %v", env)
 	}
 }
 

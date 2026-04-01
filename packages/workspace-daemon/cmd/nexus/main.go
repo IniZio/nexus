@@ -227,6 +227,7 @@ type doctorExecContext struct {
 	backend    string
 	dockerHost string
 	lxcName    string
+	lxcExec    string
 }
 
 func runConfiguredProbes(opts options, probes []config.DoctorCommandProbe) ([]checkResult, error) {
@@ -492,12 +493,12 @@ func runBuiltInRuntimeBackendCheck() (checkResult, error) {
 		command := check[0]
 		args := check[1:]
 		cmdCtx, cancel := context.WithTimeout(context.Background(), timeout)
-		out, err := runCheckCommand(cmdCtx, ".", "probe", checkName, 1, 1, timeout, command, args)
+		out, err := runCheckCommandWithExecContext(cmdCtx, ".", "probe", checkName, 1, 1, timeout, command, args, doctorExecContext{})
 		cancel()
 		if err != nil {
 			if backend == "lxc" && command == "lxc" {
 				sudoCtx, sudoCancel := context.WithTimeout(context.Background(), timeout)
-				sudoOut, sudoErr := runCheckCommand(sudoCtx, ".", "probe", checkName, 1, 1, timeout, "sudo", []string{"-n", "lxc", "info"})
+				sudoOut, sudoErr := runCheckCommandWithExecContext(sudoCtx, ".", "probe", checkName, 1, 1, timeout, "sudo", []string{"-n", "lxc", "info"}, doctorExecContext{})
 				sudoCancel()
 				if sudoErr == nil {
 					continue
@@ -538,6 +539,10 @@ func markChecksNotRun(tests []config.DoctorCommandCheck, skipReason string) []ch
 
 func runCheckCommand(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string) (string, error) {
 	execCtx := loadDoctorExecContext()
+	return runCheckCommandWithExecContext(ctx, projectRoot, phase, name, attempt, attempts, timeout, command, args, execCtx)
+}
+
+func runCheckCommandWithExecContext(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
 	cmdName, cmdArgs, cmdEnv, contextLabel := resolveCheckCommand(projectRoot, command, args, execCtx)
 	fmt.Printf("%s exec: %s (attempt %d/%d, timeout=%s, context=%s): %s\n", phase, name, attempt, attempts, timeout, contextLabel, formatCommand(cmdName, cmdArgs))
 
@@ -568,10 +573,15 @@ func loadDoctorExecContext() doctorExecContext {
 		backend:    backend,
 		dockerHost: strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_DIND_DOCKER_HOST")),
 		lxcName:    strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_LXC_INSTANCE")),
+		lxcExec:    strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_LXC_EXEC_MODE")),
 	}
 }
 
 func resolveCheckCommand(projectRoot, command string, args []string, execCtx doctorExecContext) (string, []string, []string, string) {
+	if execCtx.backend == "lxc" && execCtx.lxcExec == "host" {
+		return command, args, nil, "host"
+	}
+
 	if execCtx.backend == "lxc" && execCtx.lxcName != "" {
 		innerParts := make([]string, 0, len(args)+2)
 		innerParts = append(innerParts, "cd", shellQuote(projectRoot), "&&", shellQuote(command))
@@ -579,6 +589,9 @@ func resolveCheckCommand(projectRoot, command string, args []string, execCtx doc
 			innerParts = append(innerParts, shellQuote(arg))
 		}
 		inner := strings.Join(innerParts, " ")
+		if execCtx.lxcExec == "sudo-lxc" {
+			return "sudo", []string{"-n", "lxc", "exec", execCtx.lxcName, "--", "bash", "-lc", inner}, nil, "lxc-sudo"
+		}
 		return "lxc", []string{"exec", execCtx.lxcName, "--", "bash", "-lc", inner}, nil, "lxc"
 	}
 
