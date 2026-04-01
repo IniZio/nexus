@@ -686,3 +686,18 @@ func TestBuiltInOpencodeSessionCheckRunsWithoutModelFlagWhenUnset(t *testing.T) 
 		t.Fatalf("expected status passed, got %q", result.Status)
 	}
 }
+
+func TestBuiltInOpencodeSessionCheckSkipsOnLXCBackend(t *testing.T) {
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "lxc")
+
+	result, err := runBuiltInOpencodeSessionCheck(t.TempDir())
+	if err != nil {
+		t.Fatalf("expected opencode check to skip on lxc backend, got %v", err)
+	}
+	if result.Status != "not_run" {
+		t.Fatalf("expected status not_run, got %q", result.Status)
+	}
+	if result.SkipReason == "" {
+		t.Fatal("expected skip reason for lxc backend")
+	}
+}

@@ -379,6 +379,18 @@ func runBuiltInOpencodeSessionCheck(projectRoot string) (checkResult, error) {
 	const checkName = "tooling-opencode-session"
 	start := time.Now()
 
+	if loadDoctorExecContext().backend == "lxc" {
+		return checkResult{
+			Name:       checkName,
+			Phase:      "test",
+			Status:     "not_run",
+			Required:   true,
+			Attempts:   0,
+			DurationMs: time.Since(start).Milliseconds(),
+			SkipReason: "opencode session check is skipped for lxc backend in CI",
+		}, nil
+	}
+
 	result := checkResult{
 		Name:     checkName,
 		Phase:    "test",
