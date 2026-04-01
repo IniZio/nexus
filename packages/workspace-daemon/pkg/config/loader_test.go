@@ -108,7 +108,7 @@ func TestLoadWorkspaceConfig_DoctorTestsAndRuntime(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, ".nexus"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	data := []byte(`{"version":1,"runtime":{"required":["dind"]},"doctor":{"tests":[{"name":"tooling","command":"bash"}]}}`)
+	data := []byte(`{"version":1,"runtime":{"required":["firecracker"]},"doctor":{"tests":[{"name":"tooling","command":"bash"}]}}`)
 	if err := os.WriteFile(filepath.Join(root, ".nexus", "workspace.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -117,8 +117,8 @@ func TestLoadWorkspaceConfig_DoctorTestsAndRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if len(cfg.Runtime.Required) != 1 || cfg.Runtime.Required[0] != "dind" {
-		t.Fatalf("expected runtime.required [dind], got %v", cfg.Runtime.Required)
+	if len(cfg.Runtime.Required) != 1 || cfg.Runtime.Required[0] != "firecracker" {
+		t.Fatalf("expected runtime.required [firecracker], got %v", cfg.Runtime.Required)
 	}
 	if len(cfg.Doctor.Tests) != 1 {
 		t.Fatalf("expected 1 doctor test, got %d", len(cfg.Doctor.Tests))

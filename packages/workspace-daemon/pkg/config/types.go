@@ -146,8 +146,8 @@ func (c WorkspaceConfig) ValidateBasic() error {
 	}
 
 	for _, allowed := range c.Runtime.Required {
-		if allowed != "dind" && allowed != "lxc" {
-			return fmt.Errorf("runtime.required values must be one of: dind, lxc")
+		if allowed != "firecracker" {
+			return fmt.Errorf("runtime.required values must be: firecracker")
 		}
 	}
 	if c.Runtime.Selection != "" && c.Runtime.Selection != "prefer-first" {

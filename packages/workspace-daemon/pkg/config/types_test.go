@@ -73,12 +73,36 @@ func TestWorkspaceConfig_DoctorProbeRetriesValidation(t *testing.T) {
 func TestWorkspaceConfig_RuntimeAndDoctorTestsValidation(t *testing.T) {
 	cfg := WorkspaceConfig{
 		Version:      1,
-		Runtime:      RuntimeConfig{Required: []string{"dind", "lxc"}, Selection: "prefer-first"},
+		Runtime:      RuntimeConfig{Required: []string{"firecracker"}, Selection: "prefer-first"},
 		Capabilities: CapabilityRequirements{Required: []string{"spotlight.tunnel"}},
 		Doctor:       DoctorConfig{Tests: []DoctorCommandCheck{{Name: "auth-flow", Command: "bash", Args: []string{".nexus/lifecycles/test-auth-flow.sh"}, Required: true}}},
 	}
 	if err := cfg.ValidateBasic(); err != nil {
 		t.Fatalf("expected valid config, got %v", err)
+	}
+}
+
+func TestRuntimeRequired_AllowsOnlyFirecracker(t *testing.T) {
+	cfg := WorkspaceConfig{
+		Version: 1,
+		Runtime: RuntimeConfig{Required: []string{"firecracker"}, Selection: "prefer-first"},
+	}
+
+	if err := cfg.ValidateBasic(); err != nil {
+		t.Fatalf("expected firecracker runtime to validate, got %v", err)
+	}
+}
+
+func TestRuntimeRequired_RejectsLegacyAndGenericBackends(t *testing.T) {
+	for _, backend := range []string{"dind", "lxc", "vm"} {
+		cfg := WorkspaceConfig{
+			Version: 1,
+			Runtime: RuntimeConfig{Required: []string{backend}, Selection: "prefer-first"},
+		}
+
+		if err := cfg.ValidateBasic(); err == nil {
+			t.Fatalf("expected %s to be rejected", backend)
+		}
 	}
 }
 
