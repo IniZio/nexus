@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/nexus/nexus/packages/workspace-daemon/pkg/authrelay"
 	rpckit "github.com/nexus/nexus/packages/workspace-daemon/pkg/rpcerrors"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/workspace"
 )
@@ -26,9 +28,10 @@ type ExecParams struct {
 }
 
 type ExecOptions struct {
-	Timeout int64    `json:"timeout"`
-	WorkDir string   `json:"work_dir"`
-	Env     []string `json:"env"`
+	Timeout        int64    `json:"timeout"`
+	WorkDir        string   `json:"work_dir"`
+	Env            []string `json:"env"`
+	AuthRelayToken string   `json:"authRelayToken,omitempty"`
 }
 
 type ExecResult struct {
@@ -39,6 +42,10 @@ type ExecResult struct {
 }
 
 func HandleExec(ctx context.Context, params json.RawMessage, ws *workspace.Workspace) (*ExecResult, *rpckit.RPCError) {
+	return HandleExecWithAuthRelay(ctx, params, ws, nil)
+}
+
+func HandleExecWithAuthRelay(ctx context.Context, params json.RawMessage, ws *workspace.Workspace, broker *authrelay.Broker) (*ExecResult, *rpckit.RPCError) {
 	var p ExecParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, rpckit.ErrInvalidParams
@@ -86,6 +93,20 @@ func HandleExec(ctx context.Context, params json.RawMessage, ws *workspace.Works
 		cmd.Env = append(cmd.Env, p.Options.Env...)
 	}
 
+	if p.Options.AuthRelayToken != "" {
+		if broker == nil {
+			return nil, rpckit.ErrAuthRelayInvalid
+		}
+		if p.WorkspaceID == "" {
+			return nil, rpckit.ErrInvalidParams
+		}
+		injected, ok := broker.Consume(p.Options.AuthRelayToken, p.WorkspaceID)
+		if !ok {
+			return nil, rpckit.ErrAuthRelayInvalid
+		}
+		cmd.Env = append(cmd.Env, toEnvPairs(injected)...)
+	}
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -116,4 +137,17 @@ func HandleExec(ctx context.Context, params json.RawMessage, ws *workspace.Works
 	}
 
 	return result, nil
+}
+
+func toEnvPairs(env map[string]string) []string {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	pairs := make([]string, 0, len(keys))
+	for _, k := range keys {
+		pairs = append(pairs, fmt.Sprintf("%s=%s", k, env[k]))
+	}
+	return pairs
 }

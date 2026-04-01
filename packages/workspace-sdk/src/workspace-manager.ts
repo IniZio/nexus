@@ -1,4 +1,7 @@
 import {
+  AuthRelayMintParams,
+  AuthRelayMintResult,
+  AuthRelayRevokeResult,
   CapabilitiesListResult,
   Capability,
   WorkspaceCreateResult,
@@ -7,6 +10,9 @@ import {
   WorkspaceOpenResult,
   WorkspaceRemoveResult,
   WorkspaceRestoreResult,
+  WorkspaceForkResult,
+  WorkspacePauseResult,
+  WorkspaceResumeResult,
   WorkspaceStopResult,
 } from './types';
 import { WorkspaceHandle, type RPCClient } from './workspace-handle';
@@ -46,6 +52,35 @@ export class WorkspaceManager {
   async restore(id: string): Promise<WorkspaceHandle> {
     const result = await this.client.request<WorkspaceRestoreResult>('workspace.restore', { id });
     return new WorkspaceHandle(this.client, result.workspace);
+  }
+
+  async pause(id: string): Promise<boolean> {
+    const result = await this.client.request<WorkspacePauseResult>('workspace.pause', { id });
+    return result.paused;
+  }
+
+  async resume(id: string): Promise<boolean> {
+    const result = await this.client.request<WorkspaceResumeResult>('workspace.resume', { id });
+    return result.resumed;
+  }
+
+  async fork(id: string, childWorkspaceName?: string): Promise<WorkspaceHandle> {
+    const result = await this.client.request<WorkspaceForkResult>('workspace.fork', { id, childWorkspaceName });
+    return new WorkspaceHandle(this.client, result.workspace);
+  }
+
+  async mintAuthRelay(params: AuthRelayMintParams): Promise<string> {
+    const result = await this.client.request<AuthRelayMintResult>('authrelay.mint', {
+      workspaceId: params.workspaceId,
+      binding: params.binding,
+      ttlSeconds: params.ttlSeconds,
+    });
+    return result.token;
+  }
+
+  async revokeAuthRelay(token: string): Promise<boolean> {
+    const result = await this.client.request<AuthRelayRevokeResult>('authrelay.revoke', { token });
+    return result.revoked;
   }
 
   async capabilities(): Promise<Capability[]> {

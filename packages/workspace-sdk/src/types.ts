@@ -20,6 +20,7 @@ export interface ExecOptions {
   cwd?: string;
   env?: Record<string, string>;
   timeout?: number;
+  authRelayToken?: string;
 }
 
 export interface ExecResult {
@@ -200,6 +201,7 @@ export interface WorkspaceRecord {
   workspaceName: string;
   agentProfile: string;
   backend: string;
+  parentWorkspaceId?: string;
   authBinding?: Record<string, string>;
   policy?: WorkspacePolicy;
   state: WorkspaceState;
@@ -300,4 +302,31 @@ export interface WorkspaceStopResult {
 export interface WorkspaceRestoreResult {
   restored: boolean;
   workspace: WorkspaceRecord;
+}
+
+export interface WorkspacePauseResult {
+  paused: boolean;
+}
+
+export interface WorkspaceResumeResult {
+  resumed: boolean;
+}
+
+export interface WorkspaceForkResult {
+  forked: boolean;
+  workspace: WorkspaceRecord;
+}
+
+export interface AuthRelayMintParams {
+  workspaceId: string;
+  binding: string;
+  ttlSeconds?: number;
+}
+
+export interface AuthRelayMintResult {
+  token: string;
+}
+
+export interface AuthRelayRevokeResult {
+  revoked: boolean;
 }

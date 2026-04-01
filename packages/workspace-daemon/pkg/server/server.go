@@ -12,6 +12,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
+	"github.com/nexus/nexus/packages/workspace-daemon/pkg/authrelay"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/handlers"
 	"github.com/nexus/nexus/packages/workspace-daemon/pkg/lifecycle"
 	rpckit "github.com/nexus/nexus/packages/workspace-daemon/pkg/rpcerrors"
@@ -34,6 +35,7 @@ type Server struct {
 	spotlightMgr        *spotlight.Manager
 	lifecycle           *lifecycle.Manager
 	runtimeFactory      *runtime.Factory
+	authRelayBroker     *authrelay.Broker
 	autoComposeForwards map[string]bool
 	mu                  sync.RWMutex
 	shutdownCh          chan struct{}
@@ -92,6 +94,7 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		serviceMgr:          services.NewManager(),
 		spotlightMgr:        spotlight.NewManager(),
 		lifecycle:           lifecycleMgr,
+		authRelayBroker:     authrelay.NewBroker(),
 		autoComposeForwards: make(map[string]bool),
 		shutdownCh:          make(chan struct{}),
 	}, nil
@@ -294,7 +297,11 @@ func (s *Server) processRPC(msg *RPCMessage) *RPCResponse {
 	case "fs.stat":
 		result, err = handlers.HandleStat(ctx, msg.Params, workspace)
 	case "exec":
-		result, err = handlers.HandleExec(ctx, msg.Params, workspace)
+		result, err = handlers.HandleExecWithAuthRelay(ctx, msg.Params, workspace, s.authRelayBroker)
+	case "authrelay.mint":
+		result, err = handlers.HandleAuthRelayMint(ctx, msg.Params, s.workspaceMgr, s.authRelayBroker)
+	case "authrelay.revoke":
+		result, err = handlers.HandleAuthRelayRevoke(ctx, msg.Params, s.authRelayBroker)
 	case "workspace.info":
 		result = s.handleWorkspaceInfo(msg.Params)
 	case "workspace.create":
@@ -309,6 +316,12 @@ func (s *Server) processRPC(msg *RPCMessage) *RPCResponse {
 		result, err = handlers.HandleWorkspaceStop(ctx, msg.Params, s.workspaceMgr)
 	case "workspace.restore":
 		result, err = handlers.HandleWorkspaceRestore(ctx, msg.Params, s.workspaceMgr, s.runtimeFactory)
+	case "workspace.pause":
+		result, err = handlers.HandleWorkspacePause(ctx, msg.Params, s.workspaceMgr, s.runtimeFactory)
+	case "workspace.resume":
+		result, err = handlers.HandleWorkspaceResume(ctx, msg.Params, s.workspaceMgr, s.runtimeFactory)
+	case "workspace.fork":
+		result, err = handlers.HandleWorkspaceFork(ctx, msg.Params, s.workspaceMgr, s.runtimeFactory)
 	case "capabilities.list":
 		result, err = handlers.HandleCapabilitiesList(ctx, msg.Params, s.runtimeFactory)
 	case "workspace.ready":

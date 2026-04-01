@@ -116,6 +116,35 @@ describe('ExecOperations', () => {
       expect(result.exitCode).toBe(0);
     });
 
+    it('should forward auth relay token in exec options', async () => {
+      await connectClient();
+
+      const promise = exec.exec('node', ['-e', 'console.log("ok")'], {
+        authRelayToken: 'relay-token-1',
+      });
+
+      const sentData = mockWsInstance.send.mock.calls[0][0] as string;
+      const request = JSON.parse(sentData);
+
+      expect(request.params.options).toEqual({
+        authRelayToken: 'relay-token-1',
+      });
+
+      emitEvent('message', Buffer.from(JSON.stringify({
+        jsonrpc: '2.0',
+        id: request.id,
+        result: {
+          stdout: 'ok',
+          stderr: '',
+          exit_code: 0,
+        },
+      })));
+
+      const result = await promise;
+      expect(result.stdout).toBe('ok');
+      expect(result.exitCode).toBe(0);
+    });
+
     it('should handle non-zero exit code', async () => {
       await connectClient();
 

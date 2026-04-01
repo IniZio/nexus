@@ -317,8 +317,7 @@ describe('WorkspaceManager', () => {
           id: request.id,
           result: {
             capabilities: [
-              { name: 'runtime.dind', available: true },
-              { name: 'runtime.lxc', available: false },
+              { name: 'runtime.firecracker', available: true },
             ],
           },
         })
@@ -326,8 +325,134 @@ describe('WorkspaceManager', () => {
     );
 
     const caps = await promise;
-    expect(caps).toHaveLength(2);
-    expect(caps[0]).toEqual({ name: 'runtime.dind', available: true });
-    expect(caps[1]).toEqual({ name: 'runtime.lxc', available: false });
+    expect(caps).toHaveLength(1);
+    expect(caps[0]).toEqual({ name: 'runtime.firecracker', available: true });
+  });
+
+  it('pauses and resumes workspace', async () => {
+    await connectClient();
+
+    const pausePromise = client.workspace.pause('ws-1');
+    const pauseSent = mockWsInstance.send.mock.calls[0][0] as string;
+    const pauseReq = JSON.parse(pauseSent);
+    expect(pauseReq.method).toBe('workspace.pause');
+    expect(pauseReq.params).toEqual({ id: 'ws-1' });
+
+    emitEvent(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: pauseReq.id,
+          result: { paused: true },
+        })
+      )
+    );
+    await expect(pausePromise).resolves.toBe(true);
+
+    const resumePromise = client.workspace.resume('ws-1');
+    const resumeSent = mockWsInstance.send.mock.calls[1][0] as string;
+    const resumeReq = JSON.parse(resumeSent);
+    expect(resumeReq.method).toBe('workspace.resume');
+    expect(resumeReq.params).toEqual({ id: 'ws-1' });
+
+    emitEvent(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: resumeReq.id,
+          result: { resumed: true },
+        })
+      )
+    );
+    await expect(resumePromise).resolves.toBe(true);
+  });
+
+  it('forks workspace and returns child handle', async () => {
+    await connectClient();
+
+    const forkPromise = client.workspace.fork('ws-1', 'alpha-child');
+    const sent = mockWsInstance.send.mock.calls[0][0] as string;
+    const req = JSON.parse(sent);
+    expect(req.method).toBe('workspace.fork');
+    expect(req.params).toEqual({ id: 'ws-1', childWorkspaceName: 'alpha-child' });
+
+    emitEvent(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: req.id,
+          result: {
+            forked: true,
+            workspace: {
+              id: 'ws-2',
+              repo: '<internal-repo-url>',
+              ref: 'main',
+              workspaceName: 'alpha-child',
+              agentProfile: 'default',
+              backend: 'firecracker',
+              parentWorkspaceId: 'ws-1',
+              state: 'created',
+              rootPath: '/remote/ws-2',
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+          },
+        })
+      )
+    );
+
+    const child = await forkPromise;
+    expect(child.id).toBe('ws-2');
+    expect(child.rootPath).toBe('/remote/ws-2');
+  });
+
+  it('mints and revokes auth relay token', async () => {
+    await connectClient();
+
+    const mintPromise = client.workspace.mintAuthRelay({
+      workspaceId: 'ws-1',
+      binding: 'claude',
+      ttlSeconds: 120,
+    });
+
+    const mintSent = mockWsInstance.send.mock.calls[0][0] as string;
+    const mintReq = JSON.parse(mintSent);
+    expect(mintReq.method).toBe('authrelay.mint');
+    expect(mintReq.params).toEqual({ workspaceId: 'ws-1', binding: 'claude', ttlSeconds: 120 });
+
+    emitEvent(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: mintReq.id,
+          result: { token: 'relay-token-1' },
+        })
+      )
+    );
+
+    await expect(mintPromise).resolves.toBe('relay-token-1');
+
+    const revokePromise = client.workspace.revokeAuthRelay('relay-token-1');
+    const revokeSent = mockWsInstance.send.mock.calls[1][0] as string;
+    const revokeReq = JSON.parse(revokeSent);
+    expect(revokeReq.method).toBe('authrelay.revoke');
+    expect(revokeReq.params).toEqual({ token: 'relay-token-1' });
+
+    emitEvent(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: revokeReq.id,
+          result: { revoked: true },
+        })
+      )
+    );
+
+    await expect(revokePromise).resolves.toBe(true);
   });
 });
