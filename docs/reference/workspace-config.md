@@ -92,7 +92,7 @@ The `runtime` block declares isolated workspace backend constraints:
 {
   "version": 1,
   "runtime": {
-    "required": ["dind", "lxc"],
+    "required": ["firecracker"],
     "selection": "prefer-first"
   }
 }
@@ -100,10 +100,36 @@ The `runtime` block declares isolated workspace backend constraints:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `required` | `string[]` | Allowed backends: `dind` (Docker-in-Docker), `lxc` (LXC container). Empty means any backend. |
+| `required` | `string[]` | Allowed backends: `firecracker`. Empty means daemon auto-selection from available capabilities. |
 | `selection` | `string` | Backend selection strategy. `"prefer-first"` selects the first available from `required`. |
 
 When no `runtime` block is present, Nexus selects a backend automatically.
+
+### Firecracker Host Setup
+
+Linux host prerequisites:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y firecracker
+vmctl-firecracker --version
+```
+
+macOS host prerequisites (Lima path):
+
+```bash
+brew install lima qemu
+limactl start --name=nexus-firecracker
+limactl shell nexus-firecracker -- sudo apt-get update
+limactl shell nexus-firecracker -- sudo apt-get install -y firecracker
+limactl shell nexus-firecracker -- vmctl-firecracker --version
+```
+
+Operational guardrails:
+
+- keep ballooning disabled by default (`--balloon off`)
+- enforce memory ceilings through `vmctl-firecracker` options
+- run lifecycle canary regularly: create -> pause -> fork -> resume -> destroy
 
 ## Capability Requirements
 

@@ -10,8 +10,8 @@ Nexus has been hard-pruned to a workspace-core scope.
 
 ## Current supported surfaces
 
-- `packages/workspace-daemon`
-- `packages/workspace-sdk`
+- `packages/nexus`
+- `packages/sdk/js`
 
 ## What to update in downstream usage
 

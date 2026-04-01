@@ -5,13 +5,13 @@ The Nexus Workspace SDK provides a TypeScript/JavaScript interface for connectin
 ## Installation
 
 ```bash
-npm install @nexus/workspace-sdk
+npm install @nexus/sdk
 ```
 
 ## Quick Start
 
 ```typescript
-import { WorkspaceClient } from '@nexus/workspace-sdk';
+import { WorkspaceClient } from '@nexus/sdk';
 
 const client = new WorkspaceClient({
   endpoint: 'wss://workspace.nexus.dev',

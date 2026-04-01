@@ -4,8 +4,8 @@
 
 Nexus currently accepts contributions focused on:
 
-- `packages/workspace-daemon`
-- `packages/workspace-sdk`
+- `packages/nexus`
+- `packages/sdk/js`
 
 ## Setup
 
@@ -25,8 +25,8 @@ task test
 Direct commands:
 
 ```bash
-cd packages/workspace-daemon && go test ./...
-cd packages/workspace-sdk && pnpm exec tsc --noEmit && pnpm exec jest --runInBand
+cd packages/nexus && go test ./...
+cd packages/sdk/js && pnpm exec tsc --noEmit && pnpm exec jest --runInBand
 ```
 
 ## Documentation

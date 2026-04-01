@@ -15,12 +15,12 @@ This repository is the Nexus remote workspace core.
 
 | Package | Status | Description |
 |---------|--------|-------------|
-| `packages/workspace-daemon` | ✅ Active | Go daemon runtime |
-| `packages/workspace-sdk` | ✅ Active | TypeScript SDK |
+| `packages/nexus` | ✅ Active | Go daemon runtime |
+| `packages/sdk/js` | ✅ Active | TypeScript SDK (`@nexus/sdk`) |
 
 ### Scope Notes
 
-- Keep repository changes centered on workspace-daemon and workspace-sdk.
+- Keep repository changes centered on `packages/nexus` and `packages/sdk/js`.
 - Do not reintroduce removed non-core package surfaces.
 
 ---

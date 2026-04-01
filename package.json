@@ -4,7 +4,8 @@
   "private": true,
   "description": "Nexus remote workspace daemon and SDK",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "packages/sdk/*"
   ],
   "scripts": {
     "build": "task build",

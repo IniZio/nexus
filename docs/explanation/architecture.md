@@ -4,13 +4,13 @@ Nexus currently ships a focused remote workspace core composed of two packages.
 
 ## Components
 
-- `packages/workspace-daemon` (Go)
+- `packages/nexus` (Go)
   - WebSocket JSON-RPC server
   - Workspace manager and lifecycle hooks
   - Service manager and readiness checks
   - Spotlight forwarding and compose port auto-detection
 
-- `packages/workspace-sdk` (TypeScript)
+- `packages/sdk/js` (TypeScript, published as `@nexus/sdk`)
   - Client connection and RPC transport
   - Workspace handle with scoped exec/fs/git/service operations
   - Spotlight and readiness APIs
