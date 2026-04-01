@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -100,9 +101,6 @@ func run(opts options) error {
 
 	requiredFiles := []string{
 		filepath.Join(opts.projectRoot, ".nexus", "workspace.json"),
-		filepath.Join(opts.projectRoot, ".nexus", "lifecycles", "setup.sh"),
-		filepath.Join(opts.projectRoot, ".nexus", "lifecycles", "start.sh"),
-		filepath.Join(opts.projectRoot, ".nexus", "lifecycles", "teardown.sh"),
 	}
 
 	for _, p := range requiredFiles {
@@ -114,18 +112,8 @@ func run(opts options) error {
 		}
 	}
 
-	for _, p := range []string{
-		filepath.Join(opts.projectRoot, ".nexus", "lifecycles", "setup.sh"),
-		filepath.Join(opts.projectRoot, ".nexus", "lifecycles", "start.sh"),
-		filepath.Join(opts.projectRoot, ".nexus", "lifecycles", "teardown.sh"),
-	} {
-		info, err := os.Stat(p)
-		if err != nil {
-			return fmt.Errorf("stat %s: %w", p, err)
-		}
-		if info.Mode().Perm()&0o111 == 0 {
-			return fmt.Errorf("lifecycle script is not executable: %s", p)
-		}
+	if err := validateLifecycleEntrypoints(opts.projectRoot); err != nil {
+		return err
 	}
 
 	if err := assertNoManualACP(filepath.Join(opts.projectRoot, ".nexus", "lifecycles")); err != nil {
@@ -143,6 +131,10 @@ func run(opts options) error {
 	workspaceConfig, _, err := config.LoadWorkspaceConfig(opts.projectRoot)
 	if err != nil {
 		return fmt.Errorf("invalid workspace config: %w", err)
+	}
+
+	if err := bootstrapDoctorExecContext(opts.projectRoot); err != nil {
+		return err
 	}
 
 	opts = applyDoctorConfigDefaults(opts, workspaceConfig.Doctor)
@@ -414,12 +406,7 @@ func runBuiltInOpencodeSessionCheck(projectRoot string) (checkResult, error) {
 
 	model := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_OPENCODE_MODEL"))
 	if model == "" {
-		result.Status = "passed"
-		result.Required = true
-		result.DurationMs = time.Since(start).Milliseconds()
-		result.Error = ""
-		fmt.Printf("test passed: %s (attempt 1/1) [model not configured; validated opencode binary and run command]\n", checkName)
-		return result, nil
+		model = "bigpickle"
 	}
 
 	prompt := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_OPENCODE_PROMPT"))
@@ -483,31 +470,34 @@ func runBuiltInRuntimeBackendCheck() (checkResult, error) {
 	if backend == "" {
 		backend = "dind"
 	}
+	execCtx := loadDoctorExecContext()
+
+	if backend == "lxc" {
+		lxcCtx, lxcCancel := context.WithTimeout(context.Background(), timeout)
+		lxcOut, lxcErr := runCheckCommandWithExecContext(lxcCtx, ".", "probe", checkName, 1, 1, timeout, "lxc", []string{"info"}, doctorExecContext{})
+		lxcCancel()
+		if lxcErr != nil {
+			sudoCtx, sudoCancel := context.WithTimeout(context.Background(), timeout)
+			sudoOut, sudoErr := runCheckCommandWithExecContext(sudoCtx, ".", "probe", checkName, 1, 1, timeout, "sudo", []string{"-n", "lxc", "info"}, doctorExecContext{})
+			sudoCancel()
+			if sudoErr != nil {
+				result.Status = "failed_required"
+				result.DurationMs = time.Since(start).Milliseconds()
+				result.Error = strings.TrimSpace(lxcOut + "\n" + sudoOut)
+				return result, fmt.Errorf("required probes failed: %s", checkName)
+			}
+		}
+	}
 
 	checks := [][]string{{"docker", "info"}, {"docker", "compose", "version"}}
-	if backend == "lxc" {
-		checks = append(checks, []string{"lxc", "info"})
-	}
 
 	for _, check := range checks {
 		command := check[0]
 		args := check[1:]
 		cmdCtx, cancel := context.WithTimeout(context.Background(), timeout)
-		out, err := runCheckCommandWithExecContext(cmdCtx, ".", "probe", checkName, 1, 1, timeout, command, args, doctorExecContext{})
+		out, err := runCheckCommandWithExecContext(cmdCtx, ".", "probe", checkName, 1, 1, timeout, command, args, execCtx)
 		cancel()
 		if err != nil {
-			if backend == "lxc" && command == "lxc" {
-				sudoCtx, sudoCancel := context.WithTimeout(context.Background(), timeout)
-				sudoOut, sudoErr := runCheckCommandWithExecContext(sudoCtx, ".", "probe", checkName, 1, 1, timeout, "sudo", []string{"-n", "lxc", "info"}, doctorExecContext{})
-				sudoCancel()
-				if sudoErr == nil {
-					continue
-				}
-				result.Status = "failed_required"
-				result.DurationMs = time.Since(start).Milliseconds()
-				result.Error = strings.TrimSpace(out + "\n" + sudoOut)
-				return result, fmt.Errorf("required probes failed: %s", checkName)
-			}
 			result.Status = "failed_required"
 			result.DurationMs = time.Since(start).Milliseconds()
 			result.Error = out
@@ -519,6 +509,54 @@ func runBuiltInRuntimeBackendCheck() (checkResult, error) {
 	result.DurationMs = time.Since(start).Milliseconds()
 	fmt.Printf("probe passed: %s (attempt 1/1)\n", checkName)
 	return result, nil
+}
+
+func bootstrapDoctorExecContext(projectRoot string) error {
+	execCtx := loadDoctorExecContext()
+	if execCtx.backend != "lxc" {
+		return nil
+	}
+	if execCtx.lxcExec == "host" {
+		return fmt.Errorf("backend \"lxc\" does not allow host execution mode; configure NEXUS_DOCTOR_LXC_INSTANCE")
+	}
+	if execCtx.lxcName == "" {
+		return fmt.Errorf("backend \"lxc\" requires explicit execution context (set NEXUS_DOCTOR_LXC_INSTANCE)")
+	}
+
+	timeout := 5 * time.Minute
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	checkOut, checkErr := runCheckCommandWithExecContext(ctx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "docker", []string{"compose", "version"}, execCtx)
+	cancel()
+	if checkErr == nil {
+		return nil
+	}
+
+	installCmd := "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-v2 curl make python3 git || DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-plugin curl make python3 git"
+	installCtx, installCancel := context.WithTimeout(context.Background(), timeout)
+	installOut, installErr := runCheckCommandWithExecContext(installCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "bash", []string{"-lc", installCmd}, execCtx)
+	installCancel()
+	if installErr != nil {
+		return fmt.Errorf("bootstrap lxc tooling failed: %s", strings.TrimSpace(checkOut+"\n"+installOut))
+	}
+
+	startDockerCmd := "if command -v systemctl >/dev/null 2>&1; then systemctl enable docker >/dev/null 2>&1 || true; systemctl start docker >/dev/null 2>&1 || true; fi; if ! docker info >/dev/null 2>&1; then nohup dockerd >/tmp/nexus-doctor-dockerd.log 2>&1 & sleep 3; fi"
+	startCtx, startCancel := context.WithTimeout(context.Background(), timeout)
+	startOut, startErr := runCheckCommandWithExecContext(startCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "bash", []string{"-lc", startDockerCmd}, execCtx)
+	startCancel()
+	if startErr != nil {
+		return fmt.Errorf("bootstrap lxc docker daemon startup failed: %s", strings.TrimSpace(startOut))
+	}
+
+	for _, verify := range [][]string{{"docker", "info"}, {"docker", "compose", "version"}} {
+		verifyCtx, verifyCancel := context.WithTimeout(context.Background(), timeout)
+		verifyOut, verifyErr := runCheckCommandWithExecContext(verifyCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, verify[0], verify[1:], execCtx)
+		verifyCancel()
+		if verifyErr != nil {
+			return fmt.Errorf("bootstrap lxc tooling verification failed: %s", strings.TrimSpace(verifyOut))
+		}
+	}
+
+	return nil
 }
 
 func markChecksNotRun(tests []config.DoctorCommandCheck, skipReason string) []checkResult {
@@ -543,6 +581,16 @@ func runCheckCommand(ctx context.Context, projectRoot, phase, name string, attem
 }
 
 func runCheckCommandWithExecContext(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
+	if execCtx.backend == "lxc" && execCtx.lxcExec == "host" {
+		msg := "backend \"lxc\" does not allow host execution mode; configure NEXUS_DOCTOR_LXC_INSTANCE"
+		return msg, errors.New(msg)
+	}
+
+	if execCtx.backend == "lxc" && execCtx.lxcName == "" {
+		msg := "backend \"lxc\" requires explicit execution context (set NEXUS_DOCTOR_LXC_INSTANCE)"
+		return msg, errors.New(msg)
+	}
+
 	cmdName, cmdArgs, cmdEnv, contextLabel := resolveCheckCommand(projectRoot, command, args, execCtx)
 	fmt.Printf("%s exec: %s (attempt %d/%d, timeout=%s, context=%s): %s\n", phase, name, attempt, attempts, timeout, contextLabel, formatCommand(cmdName, cmdArgs))
 
@@ -578,10 +626,6 @@ func loadDoctorExecContext() doctorExecContext {
 }
 
 func resolveCheckCommand(projectRoot, command string, args []string, execCtx doctorExecContext) (string, []string, []string, string) {
-	if execCtx.backend == "lxc" && execCtx.lxcExec == "host" {
-		return command, args, nil, "host"
-	}
-
 	if execCtx.backend == "lxc" && execCtx.lxcName != "" {
 		innerParts := make([]string, 0, len(args)+2)
 		innerParts = append(innerParts, "cd", shellQuote(projectRoot), "&&", shellQuote(command))
@@ -602,10 +646,6 @@ func resolveCheckCommand(projectRoot, command string, args []string, execCtx doc
 
 	if execCtx.backend == "dind" {
 		return command, args, nil, "dind"
-	}
-
-	if execCtx.backend == "lxc" && execCtx.lxcName == "" {
-		fmt.Printf("doctor warning: backend %q requested but no isolated execution context is configured; running on host\n", execCtx.backend)
 	}
 
 	return command, args, nil, "host"
@@ -707,6 +747,54 @@ func assertNoManualACP(lifecycleDir string) error {
 	}
 
 	return nil
+}
+
+func validateLifecycleEntrypoints(projectRoot string) error {
+	lifecycleDir := filepath.Join(projectRoot, ".nexus", "lifecycles")
+	startPath := filepath.Join(lifecycleDir, "start.sh")
+
+	startExists, err := isExecutableFile(startPath)
+	if err != nil {
+		return err
+	}
+	if !startExists && !hasMakeTarget(projectRoot, "start") {
+		return fmt.Errorf("missing startup entrypoint: expected executable %s or Makefile target 'start'", startPath)
+	}
+
+	for _, name := range []string{"setup.sh", "teardown.sh"} {
+		path := filepath.Join(lifecycleDir, name)
+		_, err := isExecutableFile(path)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func isExecutableFile(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		return false, fmt.Errorf("lifecycle script is not executable: %s", path)
+	}
+	return true, nil
+}
+
+func hasMakeTarget(projectRoot, target string) bool {
+	makefilePath := filepath.Join(projectRoot, "Makefile")
+	contents, err := os.ReadFile(makefilePath)
+	if err != nil {
+		return false
+	}
+	pattern := fmt.Sprintf("(?m)^%s\\s*:", regexp.QuoteMeta(target))
+	re := regexp.MustCompile(pattern)
+	return re.Match(contents)
 }
 
 func ensureDotEnv(projectRoot string) error {

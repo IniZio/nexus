@@ -143,6 +143,53 @@ func TestWriteReport(t *testing.T) {
 	}
 }
 
+func TestValidateLifecycleEntrypointsRequiresStartWhenNoMakeTarget(t *testing.T) {
+	root := t.TempDir()
+	lifecycleDir := filepath.Join(root, ".nexus", "lifecycles")
+	if err := os.MkdirAll(lifecycleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := validateLifecycleEntrypoints(root)
+	if err == nil {
+		t.Fatal("expected error when start entrypoint is missing")
+	}
+	if !strings.Contains(err.Error(), "missing startup entrypoint") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateLifecycleEntrypointsAllowsMakefileStartTarget(t *testing.T) {
+	root := t.TempDir()
+	lifecycleDir := filepath.Join(root, ".nexus", "lifecycles")
+	if err := os.MkdirAll(lifecycleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Makefile"), []byte("start:\n\t@echo start\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := validateLifecycleEntrypoints(root); err != nil {
+		t.Fatalf("expected make start target to satisfy startup entrypoint, got %v", err)
+	}
+}
+
+func TestValidateLifecycleEntrypointsAllowsMissingTeardownAndSetup(t *testing.T) {
+	root := t.TempDir()
+	lifecycleDir := filepath.Join(root, ".nexus", "lifecycles")
+	if err := os.MkdirAll(lifecycleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	startPath := filepath.Join(lifecycleDir, "start.sh")
+	if err := os.WriteFile(startPath, []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := validateLifecycleEntrypoints(root); err != nil {
+		t.Fatalf("expected optional setup/teardown to be allowed, got %v", err)
+	}
+}
+
 func setupDoctorTestWorkspace(t *testing.T, doctorConfig config.DoctorConfig) string {
 	root := t.TempDir()
 	nexusDir := filepath.Join(root, ".nexus")
@@ -171,6 +218,8 @@ func setupDoctorTestWorkspace(t *testing.T, doctorConfig config.DoctorConfig) st
 }
 
 func TestDoctor_StillRunsTestsWhenRequiredProbeFails(t *testing.T) {
+	t.Setenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS", "1")
+
 	workspaceRoot := setupDoctorTestWorkspace(t, config.DoctorConfig{
 		Probes: []config.DoctorCommandProbe{
 			{Name: "failing-probe", Command: "bash", Args: []string{"-lc", "exit 1"}, Required: true},
@@ -207,8 +256,8 @@ func TestDoctor_StillRunsTestsWhenRequiredProbeFails(t *testing.T) {
 		t.Fatalf("invalid report JSON: %v", err)
 	}
 
-	if len(results) < 4 {
-		t.Fatalf("expected at least 4 results (configured checks + built-ins), got %d", len(results))
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results (configured probe + tests), got %d", len(results))
 	}
 
 	var probeResult, requiredTestResult checkResult
@@ -230,24 +279,11 @@ func TestDoctor_StillRunsTestsWhenRequiredProbeFails(t *testing.T) {
 		t.Fatalf("expected test skipReason to be empty, got %q", requiredTestResult.SkipReason)
 	}
 
-	foundBuiltInSessionPass := false
-	for _, r := range results {
-		if r.Name == "tooling-opencode-session" {
-			if r.Status != "passed" {
-				t.Fatalf("expected built-in session check to pass in fallback mode, got %q", r.Status)
-			}
-			if r.SkipReason != "" {
-				t.Fatalf("expected built-in session check skipReason empty, got %q", r.SkipReason)
-			}
-			foundBuiltInSessionPass = true
-		}
-	}
-	if !foundBuiltInSessionPass {
-		t.Fatal("expected built-in tooling-opencode-session check result")
-	}
 }
 
 func TestDoctor_ProbesPassThenTestsRun(t *testing.T) {
+	t.Setenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS", "1")
+
 	workspaceRoot := setupDoctorTestWorkspace(t, config.DoctorConfig{
 		Probes: []config.DoctorCommandProbe{
 			{Name: "passing-probe", Command: "bash", Args: []string{"-lc", "exit 0"}, Required: true},
@@ -278,17 +314,11 @@ func TestDoctor_ProbesPassThenTestsRun(t *testing.T) {
 		t.Fatalf("invalid report JSON: %v", err)
 	}
 
-	if len(results) < 4 {
-		t.Fatalf("expected at least 4 results (configured checks + built-ins), got %d", len(results))
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results (configured probe + tests), got %d", len(results))
 	}
 
 	for _, r := range results {
-		if r.Name == "tooling-opencode-session" {
-			if r.Status != "passed" {
-				t.Fatalf("expected built-in session check to pass in fallback mode, got %q", r.Status)
-			}
-			continue
-		}
 		if r.Status != "passed" {
 			t.Fatalf("expected status 'passed', got %q for %s", r.Status, r.Name)
 		}
@@ -299,6 +329,8 @@ func TestDoctor_ProbesPassThenTestsRun(t *testing.T) {
 }
 
 func TestDoctor_RequiredTestFailureReturnsError(t *testing.T) {
+	t.Setenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS", "1")
+
 	workspaceRoot := setupDoctorTestWorkspace(t, config.DoctorConfig{
 		Probes: []config.DoctorCommandProbe{
 			{Name: "passing-probe", Command: "bash", Args: []string{"-lc", "exit 0"}, Required: true},
@@ -329,8 +361,8 @@ func TestDoctor_RequiredTestFailureReturnsError(t *testing.T) {
 		t.Fatalf("invalid report JSON: %v", err)
 	}
 
-	if len(results) < 4 {
-		t.Fatalf("expected at least 4 results (configured checks + built-ins), got %d", len(results))
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results (configured probe + tests), got %d", len(results))
 	}
 
 	var requiredTestResult checkResult
@@ -378,8 +410,8 @@ func TestRunCheckCommandCapturesOutput(t *testing.T) {
 	}
 }
 
-func TestRunCheckCommandWithExecContextLXCNoSocketPermissionFallback(t *testing.T) {
-	output, err := runCheckCommandWithExecContext(
+func TestRunCheckCommandWithExecContextLXCNoInstanceFails(t *testing.T) {
+	_, err := runCheckCommandWithExecContext(
 		context.Background(),
 		t.TempDir(),
 		"probe",
@@ -388,14 +420,11 @@ func TestRunCheckCommandWithExecContextLXCNoSocketPermissionFallback(t *testing.
 		1,
 		30*time.Second,
 		"bash",
-		[]string{"-lc", "printf 'hello world'"},
+		[]string{"-lc", "exit 0"},
 		doctorExecContext{backend: "lxc", lxcExec: "host"},
 	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if output != "hello world" {
-		t.Fatalf("expected captured output, got %q", output)
+	if err == nil {
+		t.Fatal("expected error when lxc backend has no instance")
 	}
 }
 
@@ -446,27 +475,6 @@ func TestResolveCheckCommandLXCSudo(t *testing.T) {
 	}
 	if args[0] != "-n" || args[1] != "lxc" || args[2] != "exec" || args[3] != "nexus-ws" {
 		t.Fatalf("unexpected sudo lxc prefix args: %v", args)
-	}
-}
-
-func TestResolveCheckCommandLXCHost(t *testing.T) {
-	cmd, args, env, label := resolveCheckCommand("/tmp/project", "bash", []string{"-lc", "echo ok"}, doctorExecContext{
-		backend: "lxc",
-		lxcName: "nexus-ws",
-		lxcExec: "host",
-	})
-
-	if cmd != "bash" {
-		t.Fatalf("expected host command for lxc host mode, got %q", cmd)
-	}
-	if label != "host" {
-		t.Fatalf("expected host label, got %q", label)
-	}
-	if !reflect.DeepEqual(args, []string{"-lc", "echo ok"}) {
-		t.Fatalf("unexpected args: %v", args)
-	}
-	if len(env) != 0 {
-		t.Fatalf("expected no env in lxc host mode, got %v", env)
 	}
 }
 
@@ -525,19 +533,80 @@ func TestResolveCheckCommandHostFallback(t *testing.T) {
 	}
 }
 
+func TestResolveCheckCommandLXCWithInstanceUsesLXCContext(t *testing.T) {
+	cmd, args, env, label := resolveCheckCommand("/tmp/project", "bash", []string{"-lc", "echo ok"}, doctorExecContext{
+		backend: "lxc",
+		lxcName: "nexus-ws",
+	})
+
+	if cmd != "lxc" {
+		t.Fatalf("expected lxc command, got %q", cmd)
+	}
+	if label != "lxc" {
+		t.Fatalf("expected lxc label, got %q", label)
+	}
+	if len(env) != 0 {
+		t.Fatalf("expected no env, got %v", env)
+	}
+	if len(args) < 6 {
+		t.Fatalf("expected wrapped lxc args, got %v", args)
+	}
+}
+
+func TestRunConfiguredProbesFailsWhenLXCExecContextMissing(t *testing.T) {
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "lxc")
+	t.Setenv("NEXUS_DOCTOR_LXC_INSTANCE", "")
+	t.Setenv("NEXUS_DOCTOR_LXC_EXEC_MODE", "")
+
+	opts := options{projectRoot: t.TempDir()}
+	_, err := runConfiguredProbes(opts, []config.DoctorCommandProbe{{
+		Name:     "probe-needs-lxc-context",
+		Command:  "bash",
+		Args:     []string{"-lc", "exit 0"},
+		Required: true,
+	}})
+	if err == nil {
+		t.Fatal("expected required probe failure when lxc execution context is missing")
+	}
+	if !strings.Contains(err.Error(), "required probes failed") {
+		t.Fatalf("expected required probes failed error, got %q", err.Error())
+	}
+}
+
 func TestBuiltInOpencodeSessionCheckFallbackWithoutModel(t *testing.T) {
+	fakeBinDir := t.TempDir()
+	fakeOpencodePath := filepath.Join(fakeBinDir, "opencode")
+	fakeScript := "#!/usr/bin/env bash\n" +
+		"set -euo pipefail\n" +
+		"if [ \"${1:-}\" = \"--version\" ]; then\n" +
+		"  echo 'fake-opencode 0.0.1'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"${1:-}\" = \"run\" ] && [ \"${2:-}\" = \"--help\" ]; then\n" +
+		"  echo 'help output'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"${1:-}\" = \"run\" ] && [ \"${2:-}\" = \"--model\" ] && [ \"${3:-}\" = \"bigpickle\" ]; then\n" +
+		"  echo 'NEXUS_DOCTOR_OK'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"echo 'unexpected args' >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(fakeOpencodePath, []byte(fakeScript), 0o755); err != nil {
+		t.Fatalf("failed to create fake opencode binary: %v", err)
+	}
+
+	t.Setenv("PATH", fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("NEXUS_DOCTOR_OPENCODE_MODEL", "")
+
 	result, err := runBuiltInOpencodeSessionCheck(t.TempDir())
 	if err != nil {
-		t.Fatalf("expected no error for fallback pass, got %v", err)
+		t.Fatalf("expected fallback model check to pass, got %v", err)
 	}
 	if result.Name != "tooling-opencode-session" {
 		t.Fatalf("unexpected check name: %q", result.Name)
 	}
 	if result.Status != "passed" {
 		t.Fatalf("expected status passed, got %q", result.Status)
-	}
-	if result.SkipReason != "" {
-		t.Fatalf("expected empty skip reason, got %q", result.SkipReason)
 	}
 }
