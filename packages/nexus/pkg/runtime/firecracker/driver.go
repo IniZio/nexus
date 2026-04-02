@@ -3,6 +3,7 @@ package firecracker
 import (
 	"context"
 	"errors"
+	"strconv"
 	goRuntime "runtime"
 	"sync"
 
@@ -15,6 +16,7 @@ type CommandRunner interface {
 
 type Driver struct {
 	runner       CommandRunner
+	manager      *Manager
 	projectRoots map[string]string
 	hostOS       string
 	bridge       *LimaBridge
@@ -32,6 +34,12 @@ func WithHostOS(hostOS string) Option {
 func WithLimaInstance(instance string) Option {
 	return func(d *Driver) {
 		d.bridge = NewLimaBridge(instance)
+	}
+}
+
+func WithManager(manager *Manager) Option {
+	return func(d *Driver) {
+		d.manager = manager
 	}
 }
 
@@ -65,9 +73,30 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	if req.ProjectRoot == "" {
 		return errors.New("project root is required")
 	}
+	
 	d.mu.Lock()
 	d.projectRoots[req.WorkspaceID] = req.ProjectRoot
 	d.mu.Unlock()
+	
+	if d.manager != nil {
+		memMiB := 1024
+		if req.Options != nil {
+			if memStr, ok := req.Options["mem_mib"]; ok && memStr != "" {
+				if val, err := strconv.Atoi(memStr); err == nil {
+					memMiB = val
+				}
+			}
+		}
+		spec := SpawnSpec{
+			WorkspaceID: req.WorkspaceID,
+			ProjectRoot: req.ProjectRoot,
+			MemoryMiB:   memMiB,
+			VCPUs:       1,
+		}
+		_, err := d.manager.Spawn(ctx, spec)
+		return err
+	}
+	
 	args := []string{"create", "--id", req.WorkspaceID}
 	if req.Options != nil {
 		if memMiB, ok := req.Options["mem_mib"]; ok && memMiB != "" {
@@ -83,6 +112,9 @@ func (d *Driver) Start(ctx context.Context, workspaceID string) error {
 }
 
 func (d *Driver) Stop(ctx context.Context, workspaceID string) error {
+	if d.manager != nil {
+		return d.manager.Stop(ctx, workspaceID)
+	}
 	return d.runWorkspaceCommand(ctx, workspaceID, "stop")
 }
 
