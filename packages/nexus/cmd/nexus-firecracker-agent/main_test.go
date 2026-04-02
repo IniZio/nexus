@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"net"
 	"strings"
 	"testing"
 )
@@ -30,4 +32,85 @@ func TestHandleExecCapturesStderr(t *testing.T) {
 	if !strings.Contains(resp.Stderr, "error") {
 		t.Fatalf("expected stderr to contain 'error', got: %q", resp.Stderr)
 	}
+}
+
+func TestServeConnSendsErrorOnDecodeFailure(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveConn(server)
+	}()
+
+	// Send invalid JSON
+	client.Write([]byte("not valid json\n"))
+
+	// Read response
+	decoder := json.NewDecoder(client)
+	var resp execResponse
+	if err := decoder.Decode(&resp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	if resp.ExitCode != 1 {
+		t.Fatalf("expected exit code 1 on decode error, got %d", resp.ExitCode)
+	}
+	if !strings.Contains(resp.Stderr, "decode error") {
+		t.Fatalf("expected stderr to contain 'decode error', got: %q", resp.Stderr)
+	}
+
+	// Connection should close after error
+	client.Close()
+	<-done
+}
+
+func TestServeConnRejectsMissingRequestID(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveConn(server)
+	}()
+
+	// Send request without ID
+	encoder := json.NewEncoder(client)
+	encoder.Encode(execRequest{ID: "", Command: "echo", Args: []string{"test"}})
+
+	// Read error response
+	decoder := json.NewDecoder(client)
+	var resp execResponse
+	if err := decoder.Decode(&resp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	if resp.ExitCode != 1 {
+		t.Fatalf("expected exit code 1 for missing ID, got %d", resp.ExitCode)
+	}
+	if !strings.Contains(resp.Stderr, "request ID is required") {
+		t.Fatalf("expected stderr to contain 'request ID is required', got: %q", resp.Stderr)
+	}
+
+	// Server should still be listening for more requests
+	encoder.Encode(execRequest{ID: "req-2", Command: "echo", Args: []string{"success"}})
+	
+	var successResp execResponse
+	if err := decoder.Decode(&successResp); err != nil {
+		t.Fatalf("failed to decode success response: %v", err)
+	}
+
+	if successResp.ID != "req-2" {
+		t.Fatalf("expected ID 'req-2', got %q", successResp.ID)
+	}
+	if strings.TrimSpace(successResp.Stdout) != "success" {
+		t.Fatalf("unexpected stdout: %q", successResp.Stdout)
+	}
+
+	client.Close()
+	<-done
 }
