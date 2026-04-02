@@ -106,24 +106,31 @@ func serveConn(conn net.Conn) {
 }
 
 func main() {
+	emitDiagnostic("agent boot pid=%d", os.Getpid())
+
 	if os.Getpid() == 1 {
 		mountKernelFilesystems()
+		emitDiagnostic("agent pid1 kernel filesystems mounted")
 	}
 
 	listener, transport, err := resolveListener()
 	if err != nil {
+		emitDiagnostic("agent listener setup failed: %v", err)
 		log.Fatalf("Failed to listen: %v", err)
 	}
 	defer listener.Close()
 
+	emitDiagnostic("agent listener ready transport=%s", transport)
 	log.Printf("Firecracker agent listening (%s)", transport)
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
+			emitDiagnostic("agent accept failed: %v", err)
 			log.Printf("Failed to accept connection: %v", err)
 			continue
 		}
+		emitDiagnostic("agent accepted connection")
 		go serveConn(conn)
 	}
 }
@@ -143,9 +150,13 @@ func resolveListener() (net.Listener, string, error) {
 		for attempt := 1; attempt <= 120; attempt++ {
 			listener, err := listenVsock()
 			if err == nil {
+				emitDiagnostic("agent vsock listener ready after %d attempt(s)", attempt)
 				return listener, "vsock", nil
 			}
 			lastErr = err
+			if attempt == 1 || attempt%20 == 0 {
+				emitDiagnostic("agent vsock listen attempt %d failed: %v", attempt, err)
+			}
 			time.Sleep(500 * time.Millisecond)
 		}
 		return nil, "", fmt.Errorf("listen vsock (required) failed: %w", lastErr)
@@ -210,4 +221,19 @@ func listenVsock() (net.Listener, error) {
 		return nil, err
 	}
 	return listener, nil
+}
+
+func emitDiagnostic(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	log.Print(msg)
+
+	if console, err := os.OpenFile("/dev/console", os.O_WRONLY|os.O_APPEND, 0); err == nil {
+		_, _ = fmt.Fprintln(console, msg)
+		_ = console.Close()
+	}
+
+	if kmsg, err := os.OpenFile("/dev/kmsg", os.O_WRONLY|os.O_APPEND, 0); err == nil {
+		_, _ = fmt.Fprintf(kmsg, "<6>nexus-firecracker-agent: %s\n", msg)
+		_ = kmsg.Close()
+	}
 }
