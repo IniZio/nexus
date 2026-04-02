@@ -418,7 +418,7 @@ func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExe
 
 	agentConn, err := waitForFirecrackerAgent(instance.VSockPath, 60*time.Second)
 	if err != nil {
-		logTail := readFileTail(instance.SerialLog, 65536)
+		logTail := readFileTail(instance.SerialLog, 262144)
 		_ = manager.Stop(context.Background(), workspaceID)
 		if logTail != "" {
 			return fmt.Errorf("bootstrap firecracker agent connection failed: %w\nfirecracker serial log tail:\n%s", err, logTail)
@@ -458,7 +458,7 @@ func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string
 
 	conn, err := waitForFirecrackerAgent(session.vsockPath, 10*time.Second)
 	if err != nil {
-		if logTail := readFileTail(session.serialLog, 65536); logTail != "" {
+		if logTail := readFileTail(session.serialLog, 262144); logTail != "" {
 			return "", fmt.Errorf("%w\nfirecracker serial log tail:\n%s", err, logTail)
 		}
 		return "", err
@@ -476,7 +476,7 @@ func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string
 	}
 	result, err := agentClient.Exec(ctx, request)
 	if err != nil {
-		if logTail := readFileTail(session.serialLog, 65536); logTail != "" {
+		if logTail := readFileTail(session.serialLog, 262144); logTail != "" {
 			return "", fmt.Errorf("%w\nfirecracker serial log tail:\n%s", err, logTail)
 		}
 		return "", err
