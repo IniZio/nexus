@@ -655,16 +655,36 @@ func TestBootstrapDoctorExecContextFirecrackerAcceptsExplicitMicroVMContext(t *t
 	originalRunner := doctorCheckCommandRunner
 	originalHostRunner := firecrackerHostCommandRunner
 	originalInstallRunner := bootstrapInstallCommandRunner
+	originalBinaryLookup := hostBinaryLookup
 	t.Cleanup(func() {
 		doctorCheckCommandRunner = originalRunner
 		firecrackerHostCommandRunner = originalHostRunner
 		bootstrapInstallCommandRunner = originalInstallRunner
+		hostBinaryLookup = originalBinaryLookup
 		setDoctorExecContextCleanup(nil)
 	})
 
 	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
 	t.Setenv("NEXUS_DOCTOR_FIRECRACKER_INSTANCE", "nexus-firecracker-ci")
 	t.Setenv("NEXUS_DOCTOR_FIRECRACKER_EXEC_MODE", "sudo-lxc")
+
+	hostToolDir := t.TempDir()
+	binDir := filepath.Join(hostToolDir, "bin")
+	mustMkdirAll(t, binDir)
+	mustWriteExec(t, filepath.Join(binDir, "docker"), "#!/usr/bin/env sh\nexit 0\n")
+	mustWriteExec(t, filepath.Join(binDir, "node"), "#!/usr/bin/env sh\nexit 0\n")
+	mustWriteExec(t, filepath.Join(binDir, "opencode"), "#!/usr/bin/env sh\nexit 0\n")
+	mustMkdirAll(t, filepath.Join(hostToolDir, "lib", "node_modules", "opencode-ai", "bin"))
+	mustWriteExec(t, filepath.Join(hostToolDir, "lib", "node_modules", "opencode-ai", "bin", "opencode"), "#!/usr/bin/env sh\nexit 0\n")
+
+	hostBinaryLookup = func(name string) (string, error) {
+		switch name {
+		case "docker", "node", "opencode":
+			return filepath.Join(binDir, name), nil
+		default:
+			return "", errors.New("not found")
+		}
+	}
 
 	firecrackerHostCommandRunner = func(ctx context.Context, execCtx doctorExecContext, args ...string) (string, error) {
 		if execCtx.backend != "firecracker" {
@@ -677,7 +697,7 @@ func TestBootstrapDoctorExecContextFirecrackerAcceptsExplicitMicroVMContext(t *t
 			return "", nil
 		}
 		switch args[0] {
-		case "info", "delete", "launch", "config", "exec":
+		case "info", "delete", "launch", "config", "exec", "file":
 			return "ok", nil
 		default:
 			return "", fmt.Errorf("unexpected host command: %v", args)
@@ -749,10 +769,12 @@ func TestBootstrapDoctorExecContextFirecrackerFailsOnRegistryReadiness(t *testin
 	originalRunner := doctorCheckCommandRunner
 	originalHostRunner := firecrackerHostCommandRunner
 	originalInstallRunner := bootstrapInstallCommandRunner
+	originalBinaryLookup := hostBinaryLookup
 	t.Cleanup(func() {
 		doctorCheckCommandRunner = originalRunner
 		firecrackerHostCommandRunner = originalHostRunner
 		bootstrapInstallCommandRunner = originalInstallRunner
+		hostBinaryLookup = originalBinaryLookup
 		setDoctorExecContextCleanup(nil)
 	})
 
@@ -760,12 +782,30 @@ func TestBootstrapDoctorExecContextFirecrackerFailsOnRegistryReadiness(t *testin
 	t.Setenv("NEXUS_DOCTOR_FIRECRACKER_INSTANCE", "nexus-firecracker-ci")
 	t.Setenv("NEXUS_DOCTOR_FIRECRACKER_EXEC_MODE", "sudo-lxc")
 
+	hostToolDir := t.TempDir()
+	binDir := filepath.Join(hostToolDir, "bin")
+	mustMkdirAll(t, binDir)
+	mustWriteExec(t, filepath.Join(binDir, "docker"), "#!/usr/bin/env sh\nexit 0\n")
+	mustWriteExec(t, filepath.Join(binDir, "node"), "#!/usr/bin/env sh\nexit 0\n")
+	mustWriteExec(t, filepath.Join(binDir, "opencode"), "#!/usr/bin/env sh\nexit 0\n")
+	mustMkdirAll(t, filepath.Join(hostToolDir, "lib", "node_modules", "opencode-ai", "bin"))
+	mustWriteExec(t, filepath.Join(hostToolDir, "lib", "node_modules", "opencode-ai", "bin", "opencode"), "#!/usr/bin/env sh\nexit 0\n")
+
+	hostBinaryLookup = func(name string) (string, error) {
+		switch name {
+		case "docker", "node", "opencode":
+			return filepath.Join(binDir, name), nil
+		default:
+			return "", errors.New("not found")
+		}
+	}
+
 	firecrackerHostCommandRunner = func(ctx context.Context, execCtx doctorExecContext, args ...string) (string, error) {
 		if len(args) == 0 {
 			return "", nil
 		}
 		switch args[0] {
-		case "info", "delete", "launch", "config", "exec":
+		case "info", "delete", "launch", "config", "exec", "file":
 			return "ok", nil
 		default:
 			return "", fmt.Errorf("unexpected host command: %v", args)

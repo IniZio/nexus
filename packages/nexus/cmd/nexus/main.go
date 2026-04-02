@@ -246,6 +246,8 @@ var doctorExecCleanup func() error
 
 var firecrackerHostCommandRunner = runFirecrackerHostCommand
 
+var hostBinaryLookup = exec.LookPath
+
 func runBootstrapInstallCommand(ctx context.Context, projectRoot string, timeout time.Duration, execCtx doctorExecContext) (string, error) {
 	installCmd := "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-v2 curl make python3 git nodejs npm || DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-plugin curl make python3 git nodejs npm"
 	return doctorCheckCommandRunner(ctx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "bash", []string{"-lc", installCmd}, execCtx)
@@ -279,6 +281,158 @@ func runFirecrackerHostCommand(ctx context.Context, execCtx doctorExecContext, a
 	cmd.Stderr = writer
 	err := cmd.Run()
 	return strings.TrimSpace(output.String()), err
+}
+
+func detectHostDockerSocket() string {
+	raw := strings.TrimSpace(os.Getenv("DOCKER_HOST"))
+	if strings.HasPrefix(raw, "unix://") {
+		candidate := strings.TrimPrefix(raw, "unix://")
+		if candidate != "" {
+			if info, err := os.Stat(candidate); err == nil && (info.Mode()&os.ModeSocket) != 0 {
+				return candidate
+			}
+		}
+	}
+
+	if info, err := os.Stat("/var/run/docker.sock"); err == nil && (info.Mode()&os.ModeSocket) != 0 {
+		return "/var/run/docker.sock"
+	}
+
+	return ""
+}
+
+func seedFirecrackerDockerTooling(projectRoot string, execCtx doctorExecContext) error {
+	dockerBin, err := hostBinaryLookup("docker")
+	if err != nil {
+		return fmt.Errorf("host docker binary not found in PATH")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	out, pushErr := firecrackerHostCommandRunner(ctx, execCtx, "file", "push", dockerBin, execCtx.fcName+dockerBin)
+	if pushErr != nil {
+		return fmt.Errorf("seed firecracker docker binary failed: %s", strings.TrimSpace(out))
+	}
+
+	composePluginCandidates := []string{
+		"/usr/libexec/docker/cli-plugins/docker-compose",
+		"/usr/lib/docker/cli-plugins/docker-compose",
+		"/usr/local/lib/docker/cli-plugins/docker-compose",
+	}
+	composePlugin := ""
+	for _, candidate := range composePluginCandidates {
+		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
+			composePlugin = candidate
+			break
+		}
+	}
+	if composePlugin != "" {
+		mkdirCtx, mkdirCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		_, _ = firecrackerHostCommandRunner(mkdirCtx, execCtx, "exec", execCtx.fcName, "--", "mkdir", "-p", "/usr/libexec/docker/cli-plugins")
+		mkdirCancel()
+
+		pluginCtx, pluginCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		pluginOut, pluginErr := firecrackerHostCommandRunner(pluginCtx, execCtx, "file", "push", composePlugin, execCtx.fcName+"/usr/libexec/docker/cli-plugins/docker-compose")
+		pluginCancel()
+		if pluginErr != nil {
+			return fmt.Errorf("seed firecracker docker compose plugin failed: %s", strings.TrimSpace(pluginOut))
+		}
+
+		chmodCtx, chmodCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		_, _ = firecrackerHostCommandRunner(chmodCtx, execCtx, "exec", execCtx.fcName, "--", "chmod", "+x", "/usr/libexec/docker/cli-plugins/docker-compose")
+		chmodCancel()
+	}
+
+	hostSocket := detectHostDockerSocket()
+	if hostSocket != "" {
+		rmCtx, rmCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		_, _ = firecrackerHostCommandRunner(rmCtx, execCtx, "config", "device", "remove", execCtx.fcName, "docker-sock")
+		rmCancel()
+
+		addCtx, addCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		addOut, addErr := firecrackerHostCommandRunner(addCtx, execCtx,
+			"config", "device", "add", execCtx.fcName, "docker-sock", "proxy",
+			"listen=unix:/tmp/nexus-host-docker.sock",
+			"connect=unix:"+hostSocket,
+			"bind=container",
+			"uid=0",
+			"gid=0",
+			"mode=0660",
+		)
+		addCancel()
+		if addErr != nil {
+			return fmt.Errorf("configure firecracker docker socket proxy failed: %s", strings.TrimSpace(addOut))
+		}
+
+		linkCtx, linkCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		linkCmd := "mkdir -p /var/run && ln -sf /tmp/nexus-host-docker.sock /var/run/docker.sock"
+		_, linkErr := doctorCheckCommandRunner(linkCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, 45*time.Second, "bash", []string{"-lc", linkCmd}, execCtx)
+		linkCancel()
+		if linkErr != nil {
+			return fmt.Errorf("configure firecracker docker socket link failed")
+		}
+	}
+
+	return nil
+}
+
+func seedFirecrackerOpencodeTooling(projectRoot string, execCtx doctorExecContext) error {
+	nodeBin, nodeErr := hostBinaryLookup("node")
+	if nodeErr != nil {
+		return fmt.Errorf("host node binary not found in PATH")
+	}
+	opencodeBin, opencodeErr := hostBinaryLookup("opencode")
+	if opencodeErr != nil {
+		return fmt.Errorf("host opencode binary not found in PATH")
+	}
+
+	moduleDir := filepath.Clean(filepath.Join(filepath.Dir(opencodeBin), "..", "lib", "node_modules", "opencode-ai"))
+	if info, err := os.Stat(moduleDir); err != nil || !info.IsDir() {
+		return fmt.Errorf("host opencode module directory not found: %s", moduleDir)
+	}
+
+	mkdirCtx, mkdirCancel := context.WithTimeout(context.Background(), 45*time.Second)
+	_, mkdirErr := firecrackerHostCommandRunner(mkdirCtx, execCtx, "exec", execCtx.fcName, "--", "mkdir", "-p", "/opt/nexus-node/bin", "/usr/local/lib/node_modules", "/usr/local/bin")
+	mkdirCancel()
+	if mkdirErr != nil {
+		return fmt.Errorf("create firecracker tooling directories failed")
+	}
+
+	nodeCtx, nodeCancel := context.WithTimeout(context.Background(), 45*time.Second)
+	nodeOut, pushNodeErr := firecrackerHostCommandRunner(nodeCtx, execCtx, "file", "push", nodeBin, execCtx.fcName+"/opt/nexus-node/bin/node")
+	nodeCancel()
+	if pushNodeErr != nil {
+		return fmt.Errorf("seed firecracker node binary failed: %s", strings.TrimSpace(nodeOut))
+	}
+
+	chmodCtx, chmodCancel := context.WithTimeout(context.Background(), 45*time.Second)
+	_, _ = firecrackerHostCommandRunner(chmodCtx, execCtx, "exec", execCtx.fcName, "--", "chmod", "+x", "/opt/nexus-node/bin/node")
+	chmodCancel()
+
+	moduleCtx, moduleCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	moduleOut, pushModuleErr := firecrackerHostCommandRunner(moduleCtx, execCtx, "file", "push", "-r", moduleDir, execCtx.fcName+"/usr/local/lib/node_modules/")
+	moduleCancel()
+	if pushModuleErr != nil {
+		return fmt.Errorf("seed firecracker opencode module failed: %s", strings.TrimSpace(moduleOut))
+	}
+
+	wrapperScript := strings.Join([]string{
+		"cat > /usr/local/bin/opencode <<'EOF'",
+		"#!/usr/bin/env sh",
+		"exec /opt/nexus-node/bin/node /usr/local/lib/node_modules/opencode-ai/bin/opencode \"$@\"",
+		"EOF",
+		"chmod +x /usr/local/bin/opencode",
+		"ln -sf /opt/nexus-node/bin/node /usr/local/bin/node",
+	}, "\n")
+
+	wrapCtx, wrapCancel := context.WithTimeout(context.Background(), 45*time.Second)
+	wrapOut, wrapErr := doctorCheckCommandRunner(wrapCtx, projectRoot, "probe", "firecracker-opencode-tooling", 1, 1, 45*time.Second, "bash", []string{"-lc", wrapperScript}, execCtx)
+	wrapCancel()
+	if wrapErr != nil {
+		return fmt.Errorf("configure firecracker opencode wrapper failed: %s", strings.TrimSpace(wrapOut))
+	}
+
+	return nil
 }
 
 func collectHostDNSServers() []string {
@@ -524,6 +678,14 @@ func bootstrapFirecrackerExecContext(projectRoot string, execCtx doctorExecConte
 
 	if err := configureFirecrackerDNS(projectRoot, execCtx); err != nil {
 		fmt.Printf("doctor warning: %v\n", err)
+	}
+
+	if err := seedFirecrackerDockerTooling(projectRoot, execCtx); err != nil {
+		return err
+	}
+
+	if err := seedFirecrackerOpencodeTooling(projectRoot, execCtx); err != nil {
+		return err
 	}
 
 	if err := bootstrapContainerExecContext(projectRoot, execCtx, "firecracker"); err != nil {
