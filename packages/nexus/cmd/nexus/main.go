@@ -403,8 +403,8 @@ func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExe
 
 	agentConn, err := waitForFirecrackerAgent(instance.VSockPath, 60*time.Second)
 	if err != nil {
-		_ = manager.Stop(context.Background(), workspaceID)
 		logTail := readFileTail(instance.SerialLog, 8192)
+		_ = manager.Stop(context.Background(), workspaceID)
 		if logTail != "" {
 			return fmt.Errorf("bootstrap firecracker agent connection failed: %w\nfirecracker serial log tail:\n%s", err, logTail)
 		}
