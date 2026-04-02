@@ -26,7 +26,7 @@ The Firecracker runtime has been migrated from LXC-based execution to native Fir
 
 ### Breaking changes
 
-The following environment variables have been **removed** and will cause validation errors if present:
+The following environment variables have been **removed** and will cause validation errors at daemon startup or when running `nexus doctor`:
 
 | Removed Variable | Migration Action |
 |------------------|------------------|
@@ -43,10 +43,29 @@ When using the `firecracker` runtime backend, you must now provide:
 | `NEXUS_FIRECRACKER_KERNEL` | Path to Firecracker kernel binary | `/var/lib/nexus/vmlinux.bin` |
 | `NEXUS_FIRECRACKER_ROOTFS` | Path to Firecracker rootfs image | `/var/lib/nexus/rootfs.ext4` |
 
+### Replacing vmctl-firecracker scripts
+
+Scripts that previously invoked `vmctl-firecracker` or `limactl shell nexus-firecracker` should be updated:
+
+- **Old**: `vmctl-firecracker create --name $WS`
+- **New**: Daemon manages VMs directly via Firecracker API; no CLI equivalent needed
+
+The daemon now handles VM lifecycle internally. Remove any script logic that manually manages Firecracker instances through `vmctl-firecracker` commands.
+
+### Guest agent verification
+
+The guest agent binary (`nexus-firecracker-agent`) must be present in the rootfs image at `/usr/local/bin/nexus-firecracker-agent`. Verify with:
+
+```bash
+# Inside a running workspace, or by mounting the rootfs
+ls -la /usr/local/bin/nexus-firecracker-agent
+# Expected: executable binary present
+```
+
 ### Migration checklist
 
 - [ ] Remove all `NEXUS_DOCTOR_FIRECRACKER_*` environment variables from CI workflows
 - [ ] Add `NEXUS_FIRECRACKER_KERNEL` and `NEXUS_FIRECRACKER_ROOTFS` to environment
 - [ ] Ensure Firecracker binary is available in PATH
-- [ ] Verify guest agent binary is embedded in rootfs image
+- [ ] Verify guest agent binary is embedded in rootfs image at `/usr/local/bin/nexus-firecracker-agent`
 - [ ] Update any scripts referencing `vmctl-firecracker` or `limactl` for Firecracker operations

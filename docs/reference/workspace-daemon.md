@@ -17,7 +17,7 @@ The workspace daemon is a Go-based server that provides remote file system and e
                                       └─────────────┘
 ```
 
-The daemon manages isolated Firecracker-backed workspaces using native Firecracker integration. The daemon communicates directly with Firecracker via Unix socket REST API and executes commands through a vsock guest agent. All ingress to the workspace is via Spotlight port forwards — there is no direct host port exposure.
+The daemon manages isolated Firecracker-backed workspaces using native Firecracker integration. The daemon communicates directly with Firecracker via Unix socket REST API and executes commands through a vsock guest agent (a binary running inside the VM that receives commands over the virtio-vsock interface and executes them on behalf of the daemon). All ingress to the workspace is via Spotlight port forwards — there is no direct host port exposure.
 
 ## Installation
 
