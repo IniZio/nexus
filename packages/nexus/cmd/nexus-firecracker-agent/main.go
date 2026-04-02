@@ -137,6 +137,19 @@ func mountKernelFilesystems() {
 }
 
 func resolveListener() (net.Listener, string, error) {
+	if os.Getpid() == 1 || os.Getenv("AGENT_REQUIRE_VSOCK") == "1" {
+		var lastErr error
+		for attempt := 1; attempt <= 120; attempt++ {
+			listener, err := listenVsock()
+			if err == nil {
+				return listener, "vsock", nil
+			}
+			lastErr = err
+			time.Sleep(500 * time.Millisecond)
+		}
+		return nil, "", fmt.Errorf("listen vsock (required) failed: %w", lastErr)
+	}
+
 	if os.Getenv("AGENT_FORCE_TCP") == "1" {
 		listener, err := listenTCP()
 		return listener, "tcp", err
