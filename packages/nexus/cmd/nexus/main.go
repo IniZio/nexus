@@ -346,6 +346,20 @@ func firecrackerRequestID() string {
 	return strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
+func readFileTail(path string, maxBytes int) string {
+	if maxBytes <= 0 {
+		maxBytes = 4096
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	if len(data) > maxBytes {
+		data = data[len(data)-maxBytes:]
+	}
+	return strings.TrimSpace(string(data))
+}
+
 func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExecContext) error {
 	if execCtx.backend != "firecracker" {
 		return fmt.Errorf("invalid backend for firecracker bootstrap: %s", execCtx.backend)
@@ -390,6 +404,10 @@ func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExe
 	agentConn, err := waitForFirecrackerAgent(instance.VSockPath, 60*time.Second)
 	if err != nil {
 		_ = manager.Stop(context.Background(), workspaceID)
+		logTail := readFileTail(instance.SerialLog, 8192)
+		if logTail != "" {
+			return fmt.Errorf("bootstrap firecracker agent connection failed: %w\nfirecracker serial log tail:\n%s", err, logTail)
+		}
 		return fmt.Errorf("bootstrap firecracker agent connection failed: %w", err)
 	}
 

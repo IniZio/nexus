@@ -28,6 +28,7 @@ type Instance struct {
 	WorkDir     string
 	APISocket   string
 	VSockPath   string
+	SerialLog   string
 	CID         uint32
 	Process     *os.Process
 }
@@ -101,6 +102,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	apiSocket := filepath.Join(workDir, "firecracker.sock")
 	vsockPath := filepath.Join(workDir, "vsock.sock")
+	serialLog := filepath.Join(workDir, "firecracker.log")
 
 	cid := m.nextCID
 	m.nextCID++
@@ -112,11 +114,20 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	cmd := exec.CommandContext(ctx, m.config.FirecrackerBin, args...)
 	cmd.Dir = workDir
+	logFile, err := os.OpenFile(serialLog, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		os.RemoveAll(workDir)
+		return nil, fmt.Errorf("failed to create firecracker log file: %w", err)
+	}
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 
 	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
 		os.RemoveAll(workDir)
 		return nil, fmt.Errorf("failed to start firecracker: %w", err)
 	}
+	_ = logFile.Close()
 
 	if err := m.waitForAPISocket(ctx, apiSocket); err != nil {
 		m.cleanup(workDir, cmd.Process)
@@ -179,6 +190,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		WorkDir:     workDir,
 		APISocket:   apiSocket,
 		VSockPath:   vsockPath,
+		SerialLog:   serialLog,
 		CID:         cid,
 		Process:     cmd.Process,
 	}
