@@ -198,7 +198,31 @@ func listenVsock() (net.Listener, error) {
 		port = uint32(parsed)
 	}
 
-	return vsock.Listen(port, nil)
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+
+	if err := unix.Listen(fd, 128); err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+
+	file := os.NewFile(uintptr(fd), "vsock-listener")
+	defer file.Close()
+
+	listener, err := vsock.FileListener(file)
+	if err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+
+	return listener, nil
 }
 
 func emitDiagnostic(format string, args ...any) {
