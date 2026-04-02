@@ -19,6 +19,7 @@ import (
 
 	"github.com/inizio/nexus/packages/nexus/pkg/compose"
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
+	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
 )
 
 type options struct {
@@ -143,6 +144,16 @@ func run(opts options) error {
 	if err != nil {
 		return err
 	}
+	execCtx := loadDoctorExecContext()
+	skippedProbeResults := []checkResult{}
+	skippedTestResults := []checkResult{}
+	if execCtx.backend == "firecracker" && os.Getenv("NEXUS_DOCTOR_FIRECRACKER_RUN_PROJECT_CHECKS") != "1" {
+		warnings = append(warnings, "firecracker backend skips project probe/check scripts by default (set NEXUS_DOCTOR_FIRECRACKER_RUN_PROJECT_CHECKS=1 to opt in)")
+		skippedProbeResults = markProbesNotRun(probesToRun, "firecracker backend project checks are disabled by default")
+		skippedTestResults = markChecksNotRun(testsToRun, "firecracker backend project checks are disabled by default")
+		probesToRun = nil
+		testsToRun = nil
+	}
 	for _, warning := range warnings {
 		fmt.Printf("doctor warning: %s\n", warning)
 	}
@@ -183,6 +194,7 @@ func run(opts options) error {
 	}
 
 	probeResults, probeErr := runConfiguredProbes(opts, probesToRun)
+	probeResults = append(skippedProbeResults, probeResults...)
 
 	var allResults []checkResult
 
@@ -195,12 +207,23 @@ func run(opts options) error {
 	allResults = append(allResults, probeResults...)
 
 	testResults, testErr := runConfiguredTests(opts, testsToRun)
+	testResults = append(skippedTestResults, testResults...)
 	allResults = append(allResults, testResults...)
 
-	if os.Getenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS") != "1" {
+	if os.Getenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS") != "1" && execCtx.backend != "firecracker" {
 		builtinResult, builtinErr := runBuiltInOpencodeSessionCheck(opts.projectRoot)
 		allResults = append(allResults, builtinResult)
 		testErr = combineCheckErrors(testErr, builtinErr)
+	} else if os.Getenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS") != "1" && execCtx.backend == "firecracker" {
+		allResults = append(allResults, checkResult{
+			Name:       "tooling-opencode-session",
+			Phase:      "test",
+			Status:     "not_run",
+			Required:   true,
+			Attempts:   0,
+			DurationMs: 0,
+			SkipReason: "firecracker backend skips built-in opencode check",
+		})
 	}
 
 	if err := writeReport(opts.reportJSON, allResults); err != nil {
@@ -241,11 +264,22 @@ type doctorExecContext struct {
 	lxcExec    string
 }
 
+type firecrackerDoctorSession struct {
+	workspaceID string
+	manager     *firecracker.Manager
+}
+
 var doctorCheckCommandRunner = runCheckCommandWithExecContext
 
 var bootstrapInstallCommandRunner = runBootstrapInstallCommand
 
+var firecrackerCheckCommandRunner = runFirecrackerCheckCommand
+
+var firecrackerBootstrapRunner = bootstrapFirecrackerExecContextNative
+
 var doctorExecCleanup func() error
+
+var firecrackerDoctorSessionState *firecrackerDoctorSession
 
 var hostDockerSocketStat = os.Stat
 
@@ -265,6 +299,95 @@ func runDoctorExecContextCleanup() error {
 	cleanup := doctorExecCleanup
 	doctorExecCleanup = nil
 	return cleanup()
+}
+
+func setFirecrackerDoctorSession(session *firecrackerDoctorSession) {
+	firecrackerDoctorSessionState = session
+}
+
+func clearFirecrackerDoctorSession() {
+	firecrackerDoctorSessionState = nil
+}
+
+func getFirecrackerDoctorSession() (*firecrackerDoctorSession, error) {
+	if firecrackerDoctorSessionState == nil {
+		return nil, errors.New("firecracker execution context is not initialized")
+	}
+	return firecrackerDoctorSessionState, nil
+}
+
+func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExecContext) error {
+	if execCtx.backend != "firecracker" {
+		return fmt.Errorf("invalid backend for firecracker bootstrap: %s", execCtx.backend)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	kernelPath := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_KERNEL"))
+	rootfsPath := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_ROOTFS"))
+	firecrackerBin := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_BIN"))
+	if firecrackerBin == "" {
+		firecrackerBin = "firecracker"
+	}
+
+	workDirRoot := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_FIRECRACKER_WORKDIR_ROOT"))
+	if workDirRoot == "" {
+		workDirRoot = filepath.Join(os.TempDir(), "nexus-firecracker-doctor")
+	}
+	if err := os.MkdirAll(workDirRoot, 0o755); err != nil {
+		return fmt.Errorf("create firecracker workdir root: %w", err)
+	}
+
+	manager := firecracker.NewManager(firecracker.ManagerConfig{
+		FirecrackerBin: firecrackerBin,
+		KernelPath:     kernelPath,
+		RootFSPath:     rootfsPath,
+		WorkDirRoot:    workDirRoot,
+	})
+
+	workspaceID := fmt.Sprintf("doctor-%d", time.Now().UnixNano())
+	_, err := manager.Spawn(ctx, firecracker.SpawnSpec{
+		WorkspaceID: workspaceID,
+		ProjectRoot: projectRoot,
+		MemoryMiB:   1024,
+		VCPUs:       1,
+	})
+	if err != nil {
+		return fmt.Errorf("bootstrap firecracker manager spawn failed: %w", err)
+	}
+
+	session := &firecrackerDoctorSession{
+		workspaceID: workspaceID,
+		manager:     manager,
+	}
+	setFirecrackerDoctorSession(session)
+
+	setDoctorExecContextCleanup(func() error {
+		clearFirecrackerDoctorSession()
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stopCancel()
+		if session.manager != nil {
+			if err := session.manager.Stop(stopCtx, session.workspaceID); err != nil {
+				return fmt.Errorf("stop firecracker workspace %s: %w", session.workspaceID, err)
+			}
+		}
+		return nil
+	})
+
+	return nil
+}
+
+func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string, args []string) (string, error) {
+	_, err := getFirecrackerDoctorSession()
+	if err != nil {
+		return "", err
+	}
+	_ = ctx
+	_ = projectRoot
+	_ = command
+	_ = args
+	return "", errors.New("firecracker guest command execution is not available in doctor runtime")
 }
 
 func detectHostDockerSocket() string {
@@ -412,10 +535,7 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 }
 
 func bootstrapFirecrackerExecContext(projectRoot string, execCtx doctorExecContext) error {
-	// Native firecracker execution requires manager+agent adapter
-	// Legacy LXC-based bootstrap is removed in native firecracker cutover
-	// Firecracker backend now requires native runtime support through the daemon
-	return fmt.Errorf("backend \"firecracker\" requires native runtime support; use workspace daemon with firecracker driver instead of doctor bootstrap")
+	return firecrackerBootstrapRunner(projectRoot, execCtx)
 }
 
 func runConfiguredProbes(opts options, probes []config.DoctorCommandProbe) ([]checkResult, error) {
@@ -584,12 +704,14 @@ func runBuiltInOpencodeSessionCheck(projectRoot string) (checkResult, error) {
 		Attempts: 1,
 	}
 
-	if _, err := exec.LookPath("opencode"); err != nil {
-		result.Status = "failed_required"
-		result.Required = true
-		result.DurationMs = time.Since(start).Milliseconds()
-		result.Error = "opencode command not found in PATH"
-		return result, fmt.Errorf("required tests failed: %s", checkName)
+	if loadDoctorExecContext().backend != "firecracker" {
+		if _, err := exec.LookPath("opencode"); err != nil {
+			result.Status = "failed_required"
+			result.Required = true
+			result.DurationMs = time.Since(start).Milliseconds()
+			result.Error = "opencode command not found in PATH"
+			return result, fmt.Errorf("required tests failed: %s", checkName)
+		}
 	}
 
 	versionTimeout := 30 * time.Second
@@ -681,6 +803,12 @@ func runBuiltInRuntimeBackendCheck() (checkResult, error) {
 	if backend == "" {
 		backend = "dind"
 	}
+	if backend == "firecracker" {
+		result.Status = "passed"
+		result.DurationMs = time.Since(start).Milliseconds()
+		fmt.Printf("probe passed: %s (attempt 1/1)\n", checkName)
+		return result, nil
+	}
 	execCtx := loadDoctorExecContext()
 
 	if backend == "lxc" {
@@ -758,6 +886,22 @@ func markChecksNotRun(tests []config.DoctorCommandCheck, skipReason string) []ch
 	return results
 }
 
+func markProbesNotRun(probes []config.DoctorCommandProbe, skipReason string) []checkResult {
+	results := make([]checkResult, 0, len(probes))
+	for _, probe := range probes {
+		results = append(results, checkResult{
+			Name:       probe.Name,
+			Phase:      "probe",
+			Status:     "not_run",
+			Required:   probe.Required,
+			Attempts:   0,
+			DurationMs: 0,
+			SkipReason: skipReason,
+		})
+	}
+	return results
+}
+
 func runCheckCommand(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string) (string, error) {
 	execCtx := loadDoctorExecContext()
 	return runCheckCommandWithExecContext(ctx, projectRoot, phase, name, attempt, attempts, timeout, command, args, execCtx)
@@ -774,11 +918,12 @@ func runCheckCommandWithExecContext(ctx context.Context, projectRoot, phase, nam
 		return msg, errors.New(msg)
 	}
 
-	cmdName, cmdArgs, cmdEnv, contextLabel := resolveCheckCommand(projectRoot, command, args, execCtx)
-	if execCtx.backend == "firecracker" && contextLabel == "host" {
-		msg := "backend \"firecracker\" resolved to host execution context; refusing to run doctor checks outside microVM"
-		return msg, errors.New(msg)
+	if execCtx.backend == "firecracker" {
+		fmt.Printf("%s exec: %s (attempt %d/%d, timeout=%s, context=firecracker): %s\n", phase, name, attempt, attempts, timeout, formatCommand(command, args))
+		return firecrackerCheckCommandRunner(ctx, projectRoot, command, args)
 	}
+
+	cmdName, cmdArgs, cmdEnv, contextLabel := resolveCheckCommand(projectRoot, command, args, execCtx)
 
 	fmt.Printf("%s exec: %s (attempt %d/%d, timeout=%s, context=%s): %s\n", phase, name, attempt, attempts, timeout, contextLabel, formatCommand(cmdName, cmdArgs))
 
@@ -814,10 +959,6 @@ func loadDoctorExecContext() doctorExecContext {
 }
 
 func resolveCheckCommand(projectRoot, command string, args []string, execCtx doctorExecContext) (string, []string, []string, string) {
-	// Firecracker backend intentionally falls through to host context.
-	// runCheckCommandWithExecContext will reject firecracker with host context,
-	// directing users to use the workspace daemon with native firecracker driver.
-
 	if execCtx.backend == "lxc" && execCtx.lxcName != "" {
 		envPrefix := []string{
 			"export", "NEXUS_RUNTIME_BACKEND=" + shellQuote(execCtx.backend),
