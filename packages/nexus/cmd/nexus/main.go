@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -283,6 +284,18 @@ func runFirecrackerHostCommand(ctx context.Context, execCtx doctorExecContext, a
 	return strings.TrimSpace(output.String()), err
 }
 
+func writeExecutableScriptInExecContext(projectRoot string, execCtx doctorExecContext, checkName, targetPath, scriptContent string) error {
+	encoded := base64.StdEncoding.EncodeToString([]byte(scriptContent))
+	cmd := "printf %s " + shellQuote(encoded) + " | base64 -d > " + shellQuote(targetPath) + " && chmod +x " + shellQuote(targetPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	out, err := doctorCheckCommandRunner(ctx, projectRoot, "probe", checkName, 1, 1, 45*time.Second, "bash", []string{"-lc", cmd}, execCtx)
+	if err != nil {
+		return fmt.Errorf("write executable %s failed: %s", targetPath, strings.TrimSpace(out))
+	}
+	return nil
+}
+
 func detectHostDockerSocket() string {
 	raw := strings.TrimSpace(os.Getenv("DOCKER_HOST"))
 	if strings.HasPrefix(raw, "unix://") {
@@ -364,12 +377,17 @@ func seedFirecrackerDockerTooling(projectRoot string, execCtx doctorExecContext)
 			return fmt.Errorf("configure firecracker docker socket proxy failed: %s", strings.TrimSpace(addOut))
 		}
 
-		wrapperCtx, wrapperCancel := context.WithTimeout(context.Background(), 45*time.Second)
-		wrapperCmd := "printf '%s\\n' '#!/usr/bin/env sh' 'if [ -z \"\\${DOCKER_HOST:-}\" ] && [ -S /tmp/nexus-host-docker.sock ]; then' '  if /usr/bin/docker --host unix:///tmp/nexus-host-docker.sock info >/dev/null 2>&1; then' '    export DOCKER_HOST=unix:///tmp/nexus-host-docker.sock' '  fi' 'fi' 'exec /usr/bin/docker \"\\$@\"' > /usr/local/bin/docker && chmod +x /usr/local/bin/docker"
-		wrapperOut, wrapperErr := doctorCheckCommandRunner(wrapperCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, 45*time.Second, "bash", []string{"-lc", wrapperCmd}, execCtx)
-		wrapperCancel()
-		if wrapperErr != nil {
-			return fmt.Errorf("configure firecracker docker wrapper failed: %s", strings.TrimSpace(wrapperOut))
+		dockerWrapper := strings.Join([]string{
+			"#!/usr/bin/env sh",
+			"if [ -z \"${DOCKER_HOST:-}\" ] && [ -S /tmp/nexus-host-docker.sock ]; then",
+			"  if /usr/bin/docker --host unix:///tmp/nexus-host-docker.sock info >/dev/null 2>&1; then",
+			"    export DOCKER_HOST=unix:///tmp/nexus-host-docker.sock",
+			"  fi",
+			"fi",
+			"exec /usr/bin/docker \"$@\"",
+		}, "\n") + "\n"
+		if err := writeExecutableScriptInExecContext(projectRoot, execCtx, "runtime-backend-capabilities", "/usr/local/bin/docker", dockerWrapper); err != nil {
+			return fmt.Errorf("configure firecracker docker wrapper failed: %w", err)
 		}
 	}
 
@@ -416,13 +434,19 @@ func seedFirecrackerOpencodeTooling(projectRoot string, execCtx doctorExecContex
 		return fmt.Errorf("seed firecracker opencode module failed: %s", strings.TrimSpace(moduleOut))
 	}
 
-	wrapperScript := "printf '%s\\n' '#!/usr/bin/env sh' 'exec /opt/nexus-node/bin/node /usr/local/lib/node_modules/opencode-ai/bin/opencode \"\\$@\"' > /usr/local/bin/opencode && chmod +x /usr/local/bin/opencode && ln -sf /opt/nexus-node/bin/node /usr/local/bin/node"
+	opencodeWrapper := strings.Join([]string{
+		"#!/usr/bin/env sh",
+		"exec /opt/nexus-node/bin/node /usr/local/lib/node_modules/opencode-ai/bin/opencode \"$@\"",
+	}, "\n") + "\n"
+	if err := writeExecutableScriptInExecContext(projectRoot, execCtx, "firecracker-opencode-tooling", "/usr/local/bin/opencode", opencodeWrapper); err != nil {
+		return fmt.Errorf("configure firecracker opencode wrapper failed: %w", err)
+	}
 
-	wrapCtx, wrapCancel := context.WithTimeout(context.Background(), 45*time.Second)
-	wrapOut, wrapErr := doctorCheckCommandRunner(wrapCtx, projectRoot, "probe", "firecracker-opencode-tooling", 1, 1, 45*time.Second, "bash", []string{"-lc", wrapperScript}, execCtx)
-	wrapCancel()
-	if wrapErr != nil {
-		return fmt.Errorf("configure firecracker opencode wrapper failed: %s", strings.TrimSpace(wrapOut))
+	linkCtx, linkCancel := context.WithTimeout(context.Background(), 45*time.Second)
+	linkOut, linkErr := doctorCheckCommandRunner(linkCtx, projectRoot, "probe", "firecracker-opencode-tooling", 1, 1, 45*time.Second, "bash", []string{"-lc", "ln -sf /opt/nexus-node/bin/node /usr/local/bin/node"}, execCtx)
+	linkCancel()
+	if linkErr != nil {
+		return fmt.Errorf("configure firecracker node symlink failed: %s", strings.TrimSpace(linkOut))
 	}
 
 	return nil
