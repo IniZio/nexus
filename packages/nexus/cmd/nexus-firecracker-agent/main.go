@@ -9,8 +9,11 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Request types
@@ -102,20 +105,17 @@ func serveConn(conn net.Conn) {
 }
 
 func main() {
-	// Listen on TCP for testing purposes
-	// In production, this would use vsock
-	port := os.Getenv("AGENT_PORT")
-	if port == "" {
-		port = "8080"
+	if os.Getpid() == 1 {
+		mountKernelFilesystems()
 	}
 
-	listener, err := net.Listen("tcp", ":"+port)
+	listener, transport, err := resolveListener()
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 	defer listener.Close()
 
-	log.Printf("Firecracker agent listening on port %s", port)
+	log.Printf("Firecracker agent listening (%s)", transport)
 
 	for {
 		conn, err := listener.Accept()
@@ -125,4 +125,75 @@ func main() {
 		}
 		go serveConn(conn)
 	}
+}
+
+func mountKernelFilesystems() {
+	_ = os.MkdirAll("/proc", 0o755)
+	_ = os.MkdirAll("/sys", 0o755)
+	_ = os.MkdirAll("/dev", 0o755)
+	_ = unix.Mount("proc", "/proc", "proc", 0, "")
+	_ = unix.Mount("sysfs", "/sys", "sysfs", 0, "")
+	_ = unix.Mount("devtmpfs", "/dev", "devtmpfs", 0, "")
+}
+
+func resolveListener() (net.Listener, string, error) {
+	if os.Getenv("AGENT_FORCE_TCP") == "1" {
+		listener, err := listenTCP()
+		return listener, "tcp", err
+	}
+
+	listener, err := listenVsock()
+	if err == nil {
+		return listener, "vsock", nil
+	}
+
+	tcpListener, tcpErr := listenTCP()
+	if tcpErr != nil {
+		return nil, "", fmt.Errorf("listen vsock: %w; listen tcp fallback: %v", err, tcpErr)
+	}
+	return tcpListener, "tcp-fallback", nil
+}
+
+func listenTCP() (net.Listener, error) {
+	port := os.Getenv("AGENT_PORT")
+	if port == "" {
+		port = "8080"
+	}
+	return net.Listen("tcp", ":"+port)
+}
+
+func listenVsock() (net.Listener, error) {
+	port := uint32(1024)
+	if raw := strings.TrimSpace(os.Getenv("AGENT_VSOCK_PORT")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			return nil, fmt.Errorf("invalid AGENT_VSOCK_PORT %q", raw)
+		}
+		port = uint32(parsed)
+	}
+
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+
+	if err := unix.Listen(fd, 128); err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+
+	file := os.NewFile(uintptr(fd), "vsock-listener")
+	defer file.Close()
+
+	listener, err := net.FileListener(file)
+	if err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+	return listener, nil
 }
