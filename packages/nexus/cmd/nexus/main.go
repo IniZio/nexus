@@ -247,8 +247,8 @@ type doctorExecContext struct {
 type firecrackerDoctorSession struct {
 	workspaceID string
 	manager     *firecracker.Manager
-	agentConn   net.Conn
-	agentClient *firecracker.AgentClient
+	vsockPath   string
+	serialLog   string
 }
 
 var doctorCheckCommandRunner = runCheckCommandWithExecContext
@@ -429,16 +429,14 @@ func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExe
 	session := &firecrackerDoctorSession{
 		workspaceID: workspaceID,
 		manager:     manager,
-		agentConn:   agentConn,
-		agentClient: firecracker.NewAgentClient(agentConn),
+		vsockPath:   instance.VSockPath,
+		serialLog:   instance.SerialLog,
 	}
 	setFirecrackerDoctorSession(session)
+	_ = agentConn.Close()
 
 	setDoctorExecContextCleanup(func() error {
 		clearFirecrackerDoctorSession()
-		if session.agentConn != nil {
-			_ = session.agentConn.Close()
-		}
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stopCancel()
 		if session.manager != nil {
@@ -458,6 +456,14 @@ func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string
 		return "", err
 	}
 
+	conn, err := waitForFirecrackerAgent(session.vsockPath, 10*time.Second)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+
+	agentClient := firecracker.NewAgentClient(conn)
+
 	request := firecracker.ExecRequest{
 		ID:      firecrackerRequestID(),
 		Command: command,
@@ -465,8 +471,11 @@ func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string
 		WorkDir: projectRoot,
 		Env:     nil,
 	}
-	result, err := session.agentClient.Exec(ctx, request)
+	result, err := agentClient.Exec(ctx, request)
 	if err != nil {
+		if logTail := readFileTail(session.serialLog, 65536); logTail != "" {
+			return "", fmt.Errorf("%w\nfirecracker serial log tail:\n%s", err, logTail)
+		}
 		return "", err
 	}
 
