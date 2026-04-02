@@ -2,7 +2,17 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
-source "$script_dir/lib.sh"
+if [[ -f "$script_dir/lib.sh" ]]; then
+  source "$script_dir/lib.sh"
+else
+  die() {
+    echo "$1" >&2
+    exit 1
+  }
+  section() {
+    echo "== $1 =="
+  }
+fi
 
 backend="${1:-}"
 [ -n "$backend" ] || die "usage: prepare-backend.sh <dind|lxc|firecracker>"

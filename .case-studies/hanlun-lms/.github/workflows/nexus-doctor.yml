@@ -22,6 +22,9 @@ on:
       - .env.example
       - .github/workflows/nexus-doctor.yml
 
+permissions:
+  contents: read
+
 jobs:
   doctor:
     timeout-minutes: 10
