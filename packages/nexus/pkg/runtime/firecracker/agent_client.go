@@ -8,6 +8,9 @@ import (
 	"sync"
 )
 
+// DefaultAgentVSockPort is the guest-agent vsock port used for host<->guest exec.
+const DefaultAgentVSockPort uint32 = 10789
+
 // ExecRequest represents a command execution request to the agent
 type ExecRequest struct {
 	ID      string   `json:"id"`

@@ -301,6 +301,7 @@ func getFirecrackerDoctorSession() (*firecrackerDoctorSession, error) {
 func waitForFirecrackerAgent(vsockSocketPath string, timeout time.Duration) (net.Conn, error) {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
+	port := firecrackerAgentVSockPort()
 
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("unix", vsockSocketPath, 1*time.Second)
@@ -310,7 +311,7 @@ func waitForFirecrackerAgent(vsockSocketPath string, timeout time.Duration) (net
 			continue
 		}
 
-		if _, err := fmt.Fprintf(conn, "CONNECT 1024\n"); err != nil {
+		if _, err := fmt.Fprintf(conn, "CONNECT %d\n", port); err != nil {
 			_ = conn.Close()
 			lastErr = err
 			time.Sleep(25 * time.Millisecond)
@@ -340,6 +341,20 @@ func waitForFirecrackerAgent(vsockSocketPath string, timeout time.Duration) (net
 		return nil, fmt.Errorf("agent was not ready after %s: %w", timeout, lastErr)
 	}
 	return nil, fmt.Errorf("agent was not ready after %s", timeout)
+}
+
+func firecrackerAgentVSockPort() uint32 {
+	raw := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_AGENT_VSOCK_PORT"))
+	if raw == "" {
+		return firecracker.DefaultAgentVSockPort
+	}
+
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed <= 0 {
+		return firecracker.DefaultAgentVSockPort
+	}
+
+	return uint32(parsed)
 }
 
 func firecrackerRequestID() string {
@@ -403,7 +418,7 @@ func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExe
 
 	agentConn, err := waitForFirecrackerAgent(instance.VSockPath, 60*time.Second)
 	if err != nil {
-		logTail := readFileTail(instance.SerialLog, 8192)
+		logTail := readFileTail(instance.SerialLog, 65536)
 		_ = manager.Stop(context.Background(), workspaceID)
 		if logTail != "" {
 			return fmt.Errorf("bootstrap firecracker agent connection failed: %w\nfirecracker serial log tail:\n%s", err, logTail)
