@@ -315,16 +315,28 @@ func detectHostDockerSocket() string {
 }
 
 func seedFirecrackerDockerTooling(projectRoot string, execCtx doctorExecContext) error {
-	dockerBin, err := hostBinaryLookup("docker")
-	if err != nil {
-		return fmt.Errorf("host docker binary not found in PATH")
+	binaryCandidates := []string{"docker", "dockerd", "containerd", "containerd-shim-runc-v2", "ctr", "runc"}
+	for _, binName := range binaryCandidates {
+		binPath, err := hostBinaryLookup(binName)
+		if err != nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		out, pushErr := firecrackerHostCommandRunner(ctx, execCtx, "file", "push", binPath, execCtx.fcName+binPath)
+		cancel()
+		if pushErr != nil {
+			return fmt.Errorf("seed firecracker %s binary failed: %s", binName, strings.TrimSpace(out))
+		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	out, pushErr := firecrackerHostCommandRunner(ctx, execCtx, "file", "push", dockerBin, execCtx.fcName+dockerBin)
-	if pushErr != nil {
-		return fmt.Errorf("seed firecracker docker binary failed: %s", strings.TrimSpace(out))
+	dockerInit := "/usr/bin/docker-init"
+	if info, err := os.Stat(dockerInit); err == nil && !info.IsDir() {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		out, pushErr := firecrackerHostCommandRunner(ctx, execCtx, "file", "push", dockerInit, execCtx.fcName+dockerInit)
+		cancel()
+		if pushErr != nil {
+			return fmt.Errorf("seed firecracker docker-init binary failed: %s", strings.TrimSpace(out))
+		}
 	}
 
 	composePluginCandidates := []string{
@@ -507,7 +519,7 @@ func configureFirecrackerDNS(projectRoot string, execCtx doctorExecContext) erro
 	return nil
 }
 
-func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext, backendLabel string) error {
+func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext, backendLabel string, allowInstall bool) error {
 	timeout := 5 * time.Minute
 	capabilityChecks := [][]string{{"docker", "info"}, {"docker", "compose", "version"}}
 	runCapabilityChecks := func() (bool, string) {
@@ -543,6 +555,13 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 		if ok, _ := runCapabilityChecks(); ok {
 			return nil
 		}
+	}
+
+	if !allowInstall {
+		if ok, verifyOut := runCapabilityChecks(); !ok {
+			return fmt.Errorf("bootstrap %s tooling verification failed: %s", backendLabel, strings.TrimSpace(verifyOut))
+		}
+		return nil
 	}
 
 	installCtx, installCancel := context.WithTimeout(context.Background(), timeout)
@@ -698,7 +717,7 @@ func bootstrapFirecrackerExecContext(projectRoot string, execCtx doctorExecConte
 		return err
 	}
 
-	if err := bootstrapContainerExecContext(projectRoot, execCtx, "firecracker"); err != nil {
+	if err := bootstrapContainerExecContext(projectRoot, execCtx, "firecracker", false); err != nil {
 		return err
 	}
 
@@ -1034,7 +1053,7 @@ func bootstrapDoctorExecContext(projectRoot string) error {
 		return fmt.Errorf("backend \"lxc\" requires explicit execution context (set NEXUS_DOCTOR_LXC_INSTANCE)")
 	}
 
-	return bootstrapContainerExecContext(projectRoot, execCtx, "lxc")
+	return bootstrapContainerExecContext(projectRoot, execCtx, "lxc", true)
 }
 
 func markChecksNotRun(tests []config.DoctorCommandCheck, skipReason string) []checkResult {
