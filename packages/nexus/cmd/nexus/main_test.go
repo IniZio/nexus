@@ -650,21 +650,3 @@ func TestRunCheckCommandWithExecContextFirecrackerRejectsHostContext(t *testing.
 	}
 }
 
-// TestBootstrapDoctorExecContextFirecrackerRequiresDaemon verifies that
-// firecracker backend returns error directing users to use workspace daemon.
-func TestBootstrapDoctorExecContextFirecrackerRequiresDaemon(t *testing.T) {
-	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
-	t.Setenv("NEXUS_DOCTOR_FIRECRACKER_INSTANCE", "ws-1")
-
-	err := bootstrapDoctorExecContext(t.TempDir())
-	if err == nil {
-		t.Fatal("expected error when firecracker backend is used")
-	}
-	if !strings.Contains(err.Error(), "requires native runtime support") {
-		t.Fatalf("expected native runtime support error, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "workspace daemon") {
-		t.Fatalf("expected workspace daemon mention, got: %v", err)
-	}
-}
-
