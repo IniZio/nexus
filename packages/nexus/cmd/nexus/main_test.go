@@ -672,32 +672,17 @@ func TestResolveCheckCommandFirecrackerUsesMicroVMContext(t *testing.T) {
 	}
 }
 
-func TestBootstrapDoctorExecContextFirecrackerGeneratesMicroVMContext(t *testing.T) {
-	originalHostRunner := firecrackerHostCommandRunner
-	t.Cleanup(func() {
-		firecrackerHostCommandRunner = originalHostRunner
-	})
-
-	firecrackerHostCommandRunner = func(ctx context.Context, execCtx doctorExecContext, args ...string) (string, error) {
-		if len(args) > 0 && args[0] == "info" {
-			return "sudo: a password is required", errors.New("host unavailable")
-		}
-		return "ok", nil
-	}
-
+func TestBootstrapDoctorExecContextFirecrackerRequiresExplicitMicroVMContext(t *testing.T) {
 	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
 	t.Setenv("NEXUS_DOCTOR_FIRECRACKER_INSTANCE", "")
 	t.Setenv("NEXUS_DOCTOR_FIRECRACKER_EXEC_MODE", "")
 
 	err := bootstrapDoctorExecContext(t.TempDir())
 	if err == nil {
-		t.Fatal("expected bootstrap error when firecracker host is unavailable")
+		t.Fatal("expected bootstrap error when firecracker microVM context is missing")
 	}
-	if !strings.Contains(err.Error(), "firecracker host bootstrap failed") {
+	if !strings.Contains(err.Error(), "requires explicit microVM execution context") {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_FIRECRACKER_INSTANCE")) == "" {
-		t.Fatal("expected bootstrap to generate firecracker instance when unset")
 	}
 }
 
