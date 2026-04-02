@@ -338,9 +338,9 @@ func waitForFirecrackerAgent(vsockSocketPath string, timeout time.Duration) (net
 	}
 
 	if lastErr != nil {
-		return nil, fmt.Errorf("agent was not ready after %s: %w", timeout, lastErr)
+		return nil, fmt.Errorf("agent was not ready after %s on vsock port %d: %w", timeout, port, lastErr)
 	}
-	return nil, fmt.Errorf("agent was not ready after %s", timeout)
+	return nil, fmt.Errorf("agent was not ready after %s on vsock port %d", timeout, port)
 }
 
 func firecrackerAgentVSockPort() uint32 {
