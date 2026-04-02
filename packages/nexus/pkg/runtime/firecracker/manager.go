@@ -128,7 +128,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	machineConfig := map[string]any{
 		"vcpu_count":        spec.VCPUs,
 		"mem_size_mib":      spec.MemoryMiB,
-		"ht_enabled":        false,
+		"smt":               false,
 		"track_dirty_pages": false,
 	}
 	if err := client.put(ctx, "/machine-config", machineConfig); err != nil {
