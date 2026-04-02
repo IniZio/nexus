@@ -56,6 +56,11 @@ type Manager struct {
 	apiClientFactory APIClientFactory
 }
 
+// NewManager creates a new Firecracker manager with the given configuration.
+func NewManager(cfg ManagerConfig) *Manager {
+	return newManager(cfg)
+}
+
 // newManager creates a new Firecracker manager with the given configuration.
 func newManager(cfg ManagerConfig) *Manager {
 	return &Manager{
