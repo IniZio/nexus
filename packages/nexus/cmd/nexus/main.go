@@ -364,12 +364,12 @@ func seedFirecrackerDockerTooling(projectRoot string, execCtx doctorExecContext)
 			return fmt.Errorf("configure firecracker docker socket proxy failed: %s", strings.TrimSpace(addOut))
 		}
 
-		linkCtx, linkCancel := context.WithTimeout(context.Background(), 45*time.Second)
-		linkCmd := "mkdir -p /var/run && ln -sf /tmp/nexus-host-docker.sock /var/run/docker.sock"
-		_, linkErr := doctorCheckCommandRunner(linkCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, 45*time.Second, "bash", []string{"-lc", linkCmd}, execCtx)
-		linkCancel()
-		if linkErr != nil {
-			return fmt.Errorf("configure firecracker docker socket link failed")
+		wrapperCtx, wrapperCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		wrapperCmd := "printf '%s\\n' '#!/usr/bin/env sh' 'if [ -z \"${DOCKER_HOST:-}\" ] && [ -S /tmp/nexus-host-docker.sock ]; then' '  if /usr/bin/docker --host unix:///tmp/nexus-host-docker.sock version >/dev/null 2>&1; then' '    export DOCKER_HOST=unix:///tmp/nexus-host-docker.sock' '  fi' 'fi' 'exec /usr/bin/docker \"$@\"' > /usr/local/bin/docker && chmod +x /usr/local/bin/docker"
+		wrapperOut, wrapperErr := doctorCheckCommandRunner(wrapperCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, 45*time.Second, "bash", []string{"-lc", wrapperCmd}, execCtx)
+		wrapperCancel()
+		if wrapperErr != nil {
+			return fmt.Errorf("configure firecracker docker wrapper failed: %s", strings.TrimSpace(wrapperOut))
 		}
 	}
 
@@ -466,20 +466,13 @@ func collectHostDNSServers() []string {
 
 func configureFirecrackerDNS(projectRoot string, execCtx doctorExecContext) error {
 	dnsServers := collectHostDNSServers()
-	var content strings.Builder
+	printfParts := make([]string, 0, len(dnsServers)+1)
 	for _, server := range dnsServers {
-		content.WriteString("nameserver ")
-		content.WriteString(server)
-		content.WriteString("\n")
+		printfParts = append(printfParts, "'nameserver "+server+"'")
 	}
-	content.WriteString("options timeout:2 attempts:5\n")
+	printfParts = append(printfParts, "'options timeout:2 attempts:5'")
 
-	script := strings.Join([]string{
-		"if [ -L /etc/resolv.conf ]; then rm -f /etc/resolv.conf || true; fi",
-		"cat > /etc/resolv.conf <<'EOF'",
-		content.String(),
-		"EOF",
-	}, "\n")
+	script := "if [ -L /etc/resolv.conf ]; then rm -f /etc/resolv.conf || true; fi; printf '%s\\n' " + strings.Join(printfParts, " ") + " > /etc/resolv.conf"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
