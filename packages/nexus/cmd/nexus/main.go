@@ -709,7 +709,12 @@ func ensureFirecrackerOpencodeTooling(projectRoot string, execCtx doctorExecCont
 
 func bootstrapFirecrackerExecContext(projectRoot string, execCtx doctorExecContext) error {
 	if execCtx.fcName == "" {
-		return fmt.Errorf("backend \"firecracker\" requires explicit microVM execution context (configure NEXUS_DOCTOR_FIRECRACKER_INSTANCE and NEXUS_DOCTOR_FIRECRACKER_EXEC_MODE)")
+		runID := strings.TrimSpace(os.Getenv("GITHUB_RUN_ID"))
+		if runID == "" {
+			runID = fmt.Sprintf("%d", time.Now().Unix())
+		}
+		execCtx.fcName = "nexus-firecracker-" + runID
+		_ = os.Setenv("NEXUS_DOCTOR_FIRECRACKER_INSTANCE", execCtx.fcName)
 	}
 	if execCtx.fcExec == "" {
 		execCtx.fcExec = "sudo-lxc"
