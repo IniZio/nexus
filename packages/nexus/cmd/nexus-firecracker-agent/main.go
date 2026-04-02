@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
+	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
 )
 
@@ -197,30 +198,7 @@ func listenVsock() (net.Listener, error) {
 		port = uint32(parsed)
 	}
 
-	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
-		_ = unix.Close(fd)
-		return nil, err
-	}
-
-	if err := unix.Listen(fd, 128); err != nil {
-		_ = unix.Close(fd)
-		return nil, err
-	}
-
-	file := os.NewFile(uintptr(fd), "vsock-listener")
-	defer file.Close()
-
-	listener, err := net.FileListener(file)
-	if err != nil {
-		_ = unix.Close(fd)
-		return nil, err
-	}
-	return listener, nil
+	return vsock.Listen(port, nil)
 }
 
 func emitDiagnostic(format string, args ...any) {
