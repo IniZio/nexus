@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
 	"golang.org/x/sys/unix"
 )
 
@@ -176,7 +177,7 @@ func listenTCP() (net.Listener, error) {
 }
 
 func listenVsock() (net.Listener, error) {
-	port := uint32(1024)
+	port := firecracker.DefaultAgentVSockPort
 	if raw := strings.TrimSpace(os.Getenv("AGENT_VSOCK_PORT")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed <= 0 {

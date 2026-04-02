@@ -14,6 +14,7 @@ import (
 
 	"github.com/inizio/nexus/packages/nexus/pkg/compose"
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
+	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
 )
 
 type fakeSocketFileInfo struct {
@@ -184,6 +185,27 @@ func TestRunBuiltInRuntimeBackendCheckFirecrackerPasses(t *testing.T) {
 	}
 	if result.Status != "passed" {
 		t.Fatalf("expected passed status, got %+v", result)
+	}
+}
+
+func TestFirecrackerAgentVSockPortDefaultsToRuntimeConstant(t *testing.T) {
+	t.Setenv("NEXUS_FIRECRACKER_AGENT_VSOCK_PORT", "")
+	if got := firecrackerAgentVSockPort(); got != firecracker.DefaultAgentVSockPort {
+		t.Fatalf("expected default agent vsock port %d, got %d", firecracker.DefaultAgentVSockPort, got)
+	}
+}
+
+func TestFirecrackerAgentVSockPortHonorsEnvOverride(t *testing.T) {
+	t.Setenv("NEXUS_FIRECRACKER_AGENT_VSOCK_PORT", "25000")
+	if got := firecrackerAgentVSockPort(); got != 25000 {
+		t.Fatalf("expected env override agent vsock port 25000, got %d", got)
+	}
+}
+
+func TestFirecrackerAgentVSockPortInvalidEnvFallsBackToDefault(t *testing.T) {
+	t.Setenv("NEXUS_FIRECRACKER_AGENT_VSOCK_PORT", "invalid")
+	if got := firecrackerAgentVSockPort(); got != firecracker.DefaultAgentVSockPort {
+		t.Fatalf("expected fallback agent vsock port %d, got %d", firecracker.DefaultAgentVSockPort, got)
 	}
 }
 
