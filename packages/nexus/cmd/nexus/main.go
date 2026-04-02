@@ -521,6 +521,13 @@ func configureFirecrackerDNS(projectRoot string, execCtx doctorExecContext) erro
 
 func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext, backendLabel string, allowInstall bool) error {
 	timeout := 5 * time.Minute
+	collectDockerDiagnostics := func() string {
+		diagCmd := "set +e; echo '--- docker binary ---'; command -v docker || true; echo '--- docker version ---'; docker version || true; echo '--- docker info ---'; docker info || true; echo '--- dockerd ps ---'; ps -ef | grep '[d]ockerd' || true; echo '--- dockerd log ---'; cat /tmp/nexus-doctor-dockerd.log || true; if command -v systemctl >/dev/null 2>&1; then echo '--- systemctl status docker ---'; systemctl status docker --no-pager || true; fi"
+		diagCtx, diagCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		diagOut, _ := doctorCheckCommandRunner(diagCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, 45*time.Second, "bash", []string{"-lc", diagCmd}, execCtx)
+		diagCancel()
+		return strings.TrimSpace(diagOut)
+	}
 	capabilityChecks := [][]string{{"docker", "info"}, {"docker", "compose", "version"}}
 	runCapabilityChecks := func() (bool, string) {
 		failures := make([]string, 0)
@@ -559,6 +566,10 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 
 	if !allowInstall {
 		if ok, verifyOut := runCapabilityChecks(); !ok {
+			diagnostics := collectDockerDiagnostics()
+			if diagnostics != "" {
+				return fmt.Errorf("bootstrap %s tooling verification failed: %s\n%s", backendLabel, strings.TrimSpace(verifyOut), diagnostics)
+			}
 			return fmt.Errorf("bootstrap %s tooling verification failed: %s", backendLabel, strings.TrimSpace(verifyOut))
 		}
 		return nil
@@ -583,10 +594,18 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 	startOut, startErr = doctorCheckCommandRunner(startCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "bash", []string{"-lc", startDockerCmd}, execCtx)
 	startCancel()
 	if startErr != nil {
+		diagnostics := collectDockerDiagnostics()
+		if diagnostics != "" {
+			return fmt.Errorf("bootstrap %s docker daemon startup failed: %s\n%s", backendLabel, strings.TrimSpace(startOut), diagnostics)
+		}
 		return fmt.Errorf("bootstrap %s docker daemon startup failed: %s", backendLabel, strings.TrimSpace(startOut))
 	}
 
 	if ok, verifyOut := runCapabilityChecks(); !ok {
+		diagnostics := collectDockerDiagnostics()
+		if diagnostics != "" {
+			return fmt.Errorf("bootstrap %s tooling verification failed: %s\n%s", backendLabel, strings.TrimSpace(verifyOut), diagnostics)
+		}
 		return fmt.Errorf("bootstrap %s tooling verification failed: %s", backendLabel, strings.TrimSpace(verifyOut))
 	}
 
