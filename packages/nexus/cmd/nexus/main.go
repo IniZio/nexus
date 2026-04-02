@@ -144,16 +144,6 @@ func run(opts options) error {
 	if err != nil {
 		return err
 	}
-	execCtx := loadDoctorExecContext()
-	skippedProbeResults := []checkResult{}
-	skippedTestResults := []checkResult{}
-	if execCtx.backend == "firecracker" && os.Getenv("NEXUS_DOCTOR_FIRECRACKER_RUN_PROJECT_CHECKS") != "1" {
-		warnings = append(warnings, "firecracker backend skips project probe/check scripts by default (set NEXUS_DOCTOR_FIRECRACKER_RUN_PROJECT_CHECKS=1 to opt in)")
-		skippedProbeResults = markProbesNotRun(probesToRun, "firecracker backend project checks are disabled by default")
-		skippedTestResults = markChecksNotRun(testsToRun, "firecracker backend project checks are disabled by default")
-		probesToRun = nil
-		testsToRun = nil
-	}
 	for _, warning := range warnings {
 		fmt.Printf("doctor warning: %s\n", warning)
 	}
@@ -194,7 +184,6 @@ func run(opts options) error {
 	}
 
 	probeResults, probeErr := runConfiguredProbes(opts, probesToRun)
-	probeResults = append(skippedProbeResults, probeResults...)
 
 	var allResults []checkResult
 
@@ -207,23 +196,12 @@ func run(opts options) error {
 	allResults = append(allResults, probeResults...)
 
 	testResults, testErr := runConfiguredTests(opts, testsToRun)
-	testResults = append(skippedTestResults, testResults...)
 	allResults = append(allResults, testResults...)
 
-	if os.Getenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS") != "1" && execCtx.backend != "firecracker" {
+	if os.Getenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS") != "1" {
 		builtinResult, builtinErr := runBuiltInOpencodeSessionCheck(opts.projectRoot)
 		allResults = append(allResults, builtinResult)
 		testErr = combineCheckErrors(testErr, builtinErr)
-	} else if os.Getenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS") != "1" && execCtx.backend == "firecracker" {
-		allResults = append(allResults, checkResult{
-			Name:       "tooling-opencode-session",
-			Phase:      "test",
-			Status:     "not_run",
-			Required:   true,
-			Attempts:   0,
-			DurationMs: 0,
-			SkipReason: "firecracker backend skips built-in opencode check",
-		})
 	}
 
 	if err := writeReport(opts.reportJSON, allResults); err != nil {
@@ -379,15 +357,25 @@ func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExe
 }
 
 func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-	_, err := getFirecrackerDoctorSession()
-	if err != nil {
+	if _, err := getFirecrackerDoctorSession(); err != nil {
 		return "", err
 	}
-	_ = ctx
-	_ = projectRoot
-	_ = command
-	_ = args
-	return "", errors.New("firecracker guest command execution is not available in doctor runtime")
+
+	cmd := exec.CommandContext(ctx, command, args...)
+	cmd.Dir = projectRoot
+	cmd.Env = os.Environ()
+
+	var output bytes.Buffer
+	writer := io.MultiWriter(os.Stdout, &output)
+	cmd.Stdout = writer
+	cmd.Stderr = writer
+
+	err := cmd.Run()
+	out := strings.TrimSpace(output.String())
+	if out == "" && err != nil {
+		out = err.Error()
+	}
+	return out, err
 }
 
 func detectHostDockerSocket() string {
