@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -245,6 +247,8 @@ type doctorExecContext struct {
 type firecrackerDoctorSession struct {
 	workspaceID string
 	manager     *firecracker.Manager
+	agentConn   net.Conn
+	agentClient *firecracker.AgentClient
 }
 
 var doctorCheckCommandRunner = runCheckCommandWithExecContext
@@ -294,6 +298,54 @@ func getFirecrackerDoctorSession() (*firecrackerDoctorSession, error) {
 	return firecrackerDoctorSessionState, nil
 }
 
+func waitForFirecrackerAgent(vsockSocketPath string, timeout time.Duration) (net.Conn, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("unix", vsockSocketPath, 1*time.Second)
+		if err != nil {
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+
+		if _, err := fmt.Fprintf(conn, "CONNECT 1024\n"); err != nil {
+			_ = conn.Close()
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+
+		resp, err := bufio.NewReader(conn).ReadString('\n')
+		if err != nil {
+			_ = conn.Close()
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+
+		resp = strings.TrimSpace(resp)
+		if !strings.HasPrefix(resp, "OK") {
+			_ = conn.Close()
+			lastErr = fmt.Errorf("vsock CONNECT failed: %s", resp)
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+
+		return conn, nil
+	}
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("agent was not ready after %s: %w", timeout, lastErr)
+	}
+	return nil, fmt.Errorf("agent was not ready after %s", timeout)
+}
+
+func firecrackerRequestID() string {
+	return strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
 func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExecContext) error {
 	if execCtx.backend != "firecracker" {
 		return fmt.Errorf("invalid backend for firecracker bootstrap: %s", execCtx.backend)
@@ -325,7 +377,7 @@ func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExe
 	})
 
 	workspaceID := fmt.Sprintf("doctor-%d", time.Now().UnixNano())
-	_, err := manager.Spawn(ctx, firecracker.SpawnSpec{
+	instance, err := manager.Spawn(ctx, firecracker.SpawnSpec{
 		WorkspaceID: workspaceID,
 		ProjectRoot: projectRoot,
 		MemoryMiB:   1024,
@@ -335,14 +387,25 @@ func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExe
 		return fmt.Errorf("bootstrap firecracker manager spawn failed: %w", err)
 	}
 
+	agentConn, err := waitForFirecrackerAgent(instance.VSockPath, 60*time.Second)
+	if err != nil {
+		_ = manager.Stop(context.Background(), workspaceID)
+		return fmt.Errorf("bootstrap firecracker agent connection failed: %w", err)
+	}
+
 	session := &firecrackerDoctorSession{
 		workspaceID: workspaceID,
 		manager:     manager,
+		agentConn:   agentConn,
+		agentClient: firecracker.NewAgentClient(agentConn),
 	}
 	setFirecrackerDoctorSession(session)
 
 	setDoctorExecContextCleanup(func() error {
 		clearFirecrackerDoctorSession()
+		if session.agentConn != nil {
+			_ = session.agentConn.Close()
+		}
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stopCancel()
 		if session.manager != nil {
@@ -357,25 +420,37 @@ func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExe
 }
 
 func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-	if _, err := getFirecrackerDoctorSession(); err != nil {
+	session, err := getFirecrackerDoctorSession()
+	if err != nil {
 		return "", err
 	}
 
-	cmd := exec.CommandContext(ctx, command, args...)
-	cmd.Dir = projectRoot
-	cmd.Env = os.Environ()
-
-	var output bytes.Buffer
-	writer := io.MultiWriter(os.Stdout, &output)
-	cmd.Stdout = writer
-	cmd.Stderr = writer
-
-	err := cmd.Run()
-	out := strings.TrimSpace(output.String())
-	if out == "" && err != nil {
-		out = err.Error()
+	request := firecracker.ExecRequest{
+		ID:      firecrackerRequestID(),
+		Command: command,
+		Args:    args,
+		WorkDir: projectRoot,
+		Env:     nil,
 	}
-	return out, err
+	result, err := session.agentClient.Exec(ctx, request)
+	if err != nil {
+		return "", err
+	}
+
+	out := strings.TrimSpace(result.Stdout + "\n" + result.Stderr)
+	if result.ID != "" && result.ID != request.ID {
+		if out == "" {
+			out = fmt.Sprintf("firecracker agent response id mismatch: got %q want %q", result.ID, request.ID)
+		}
+		return out, fmt.Errorf("firecracker agent response id mismatch: got %q want %q", result.ID, request.ID)
+	}
+	if result.ExitCode != 0 {
+		if out == "" {
+			out = fmt.Sprintf("exit code %d", result.ExitCode)
+		}
+		return out, fmt.Errorf("command failed with exit code %d", result.ExitCode)
+	}
+	return out, nil
 }
 
 func detectHostDockerSocket() string {
