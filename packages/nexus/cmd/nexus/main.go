@@ -708,89 +708,10 @@ func ensureFirecrackerOpencodeTooling(projectRoot string, execCtx doctorExecCont
 }
 
 func bootstrapFirecrackerExecContext(projectRoot string, execCtx doctorExecContext) error {
-	if execCtx.fcName == "" {
-		return fmt.Errorf("backend \"firecracker\" requires explicit microVM execution context (configure NEXUS_DOCTOR_FIRECRACKER_INSTANCE and NEXUS_DOCTOR_FIRECRACKER_EXEC_MODE)")
-	}
-	if execCtx.fcExec == "" {
-		execCtx.fcExec = "sudo-lxc"
-		_ = os.Setenv("NEXUS_DOCTOR_FIRECRACKER_EXEC_MODE", execCtx.fcExec)
-	}
-
-	hostCtx, hostCancel := context.WithTimeout(context.Background(), 45*time.Second)
-	_, hostErr := firecrackerHostCommandRunner(hostCtx, execCtx, "info")
-	hostCancel()
-	if hostErr != nil {
-		return fmt.Errorf("firecracker host bootstrap failed: lxc is not available (need %s command execution)", execCtx.fcExec)
-	}
-
-	deleteCtx, deleteCancel := context.WithTimeout(context.Background(), 45*time.Second)
-	_, _ = firecrackerHostCommandRunner(deleteCtx, execCtx, "delete", "--force", execCtx.fcName)
-	deleteCancel()
-
-	launchCtx, launchCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	launchOut, launchErr := firecrackerHostCommandRunner(launchCtx, execCtx, "launch", "ubuntu:24.04", execCtx.fcName)
-	launchCancel()
-	if launchErr != nil {
-		return fmt.Errorf("firecracker instance launch failed: %s", strings.TrimSpace(launchOut))
-	}
-
-	configCommands := [][]string{
-		{"config", "set", execCtx.fcName, "security.nesting", "true"},
-		{"config", "set", execCtx.fcName, "security.syscalls.intercept.mknod", "true"},
-		{"config", "set", execCtx.fcName, "security.syscalls.intercept.setxattr", "true"},
-		{"config", "device", "add", execCtx.fcName, "workspace", "disk", "source=" + projectRoot, "path=" + projectRoot},
-	}
-	for _, cmdArgs := range configCommands {
-		cfgCtx, cfgCancel := context.WithTimeout(context.Background(), 45*time.Second)
-		cfgOut, cfgErr := firecrackerHostCommandRunner(cfgCtx, execCtx, cmdArgs...)
-		cfgCancel()
-		if cfgErr != nil {
-			return fmt.Errorf("firecracker instance configure failed: %s", strings.TrimSpace(cfgOut))
-		}
-	}
-
-	setDoctorExecContextCleanup(func() error {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 45*time.Second)
-		_, cleanupErr := firecrackerHostCommandRunner(cleanupCtx, execCtx, "delete", "--force", execCtx.fcName)
-		cleanupCancel()
-		if cleanupErr != nil {
-			return fmt.Errorf("lxc delete --force %s failed", execCtx.fcName)
-		}
-		return nil
-	})
-
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	waitOut, waitErr := firecrackerHostCommandRunner(waitCtx, execCtx, "exec", execCtx.fcName, "--", "bash", "-lc", "echo firecracker-microvm-ready")
-	waitCancel()
-	if waitErr != nil {
-		return fmt.Errorf("firecracker instance readiness failed: %s", strings.TrimSpace(waitOut))
-	}
-
-	if err := configureFirecrackerDNS(projectRoot, execCtx); err != nil {
-		fmt.Printf("doctor warning: %v\n", err)
-	}
-
-	if err := seedFirecrackerDockerTooling(projectRoot, execCtx); err != nil {
-		return err
-	}
-
-	if err := seedFirecrackerOpencodeTooling(projectRoot, execCtx); err != nil {
-		return err
-	}
-
-	if err := bootstrapContainerExecContext(projectRoot, execCtx, "firecracker", false); err != nil {
-		return err
-	}
-
-	if err := ensureFirecrackerRegistryReadiness(projectRoot, execCtx); err != nil {
-		return err
-	}
-
-	if err := ensureFirecrackerOpencodeTooling(projectRoot, execCtx); err != nil {
-		return err
-	}
-
-	return nil
+	// Native firecracker execution requires manager+agent adapter
+	// Legacy LXC-based bootstrap is removed in native firecracker cutover
+	// Firecracker backend now requires native runtime support through the daemon
+	return fmt.Errorf("backend \"firecracker\" requires native runtime support; use workspace daemon with firecracker driver instead of doctor bootstrap")
 }
 
 func runConfiguredProbes(opts options, probes []config.DoctorCommandProbe) ([]checkResult, error) {
@@ -1191,39 +1112,9 @@ func loadDoctorExecContext() doctorExecContext {
 }
 
 func resolveCheckCommand(projectRoot, command string, args []string, execCtx doctorExecContext) (string, []string, []string, string) {
-	if execCtx.backend == "firecracker" && execCtx.fcName != "" {
-		execMode := execCtx.fcExec
-		if execMode == "" {
-			execMode = "lxc"
-		}
-		firecrackerDockerMode := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_FIRECRACKER_DOCKER_MODE"))
-
-		envPrefix := []string{
-			"export", "NEXUS_RUNTIME_BACKEND=" + shellQuote(execCtx.backend),
-			"NEXUS_DOCTOR_FIRECRACKER_INSTANCE=" + shellQuote(execCtx.fcName),
-			"NEXUS_DOCTOR_FIRECRACKER_EXEC_MODE=" + shellQuote(execMode),
-		}
-		if firecrackerDockerMode != "" {
-			envPrefix = append(envPrefix, "NEXUS_DOCTOR_FIRECRACKER_DOCKER_MODE="+shellQuote(firecrackerDockerMode))
-		}
-		if execCtx.dockerHost != "" {
-			envPrefix = append(envPrefix, "NEXUS_DOCTOR_DIND_DOCKER_HOST="+shellQuote(execCtx.dockerHost))
-		}
-		envPrefix = append(envPrefix, ";")
-
-		innerParts := make([]string, 0, len(args)+2)
-		innerParts = append(innerParts, envPrefix...)
-		innerParts = append(innerParts, "cd", shellQuote(projectRoot), "&&", shellQuote(command))
-		for _, arg := range args {
-			innerParts = append(innerParts, shellQuote(arg))
-		}
-		inner := strings.Join(innerParts, " ")
-
-		if execMode == "sudo-lxc" {
-			return "sudo", []string{"-n", "lxc", "exec", execCtx.fcName, "--", "bash", "-lc", inner}, nil, "firecracker-microvm"
-		}
-		return "lxc", []string{"exec", execCtx.fcName, "--", "bash", "-lc", inner}, nil, "firecracker-microvm"
-	}
+	// Firecracker backend no longer uses LXC execution - native manager+agent style
+	// When firecracker backend is set but native execution isn't wired, it falls through
+	// to host context which will be rejected by runCheckCommandWithExecContext
 
 	if execCtx.backend == "lxc" && execCtx.lxcName != "" {
 		envPrefix := []string{
