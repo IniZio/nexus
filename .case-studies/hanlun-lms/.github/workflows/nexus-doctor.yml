@@ -1,0 +1,48 @@
+name: nexus-doctor
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+  repository_dispatch:
+    types: [nexus-doctor]
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  push:
+    branches:
+      - main
+      - nexus
+    paths:
+      - .nexus/**
+      - docker-compose.yml
+      - .env.example
+      - .github/workflows/nexus-doctor.yml
+
+permissions:
+  contents: read
+
+jobs:
+  doctor:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    env:
+      NEXUS_RUNTIME_BACKEND: firecracker
+      NEXUS_FIRECRACKER_KERNEL: /var/lib/nexus/vmlinux.bin
+      NEXUS_FIRECRACKER_ROOTFS: /var/lib/nexus/rootfs.ext4
+      NEXUS_DOCTOR_OPENCODE_SESSION_TIMEOUT_SEC: "60"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run Nexus doctor via shared action
+        uses: oursky/action-nexus/.github/actions/nexus-doctor@feat/nexus-doctor-thin-action
+        with:
+          nexus-repo: IniZio/nexus
+          nexus-ref: feat/firecracker-runtime-pivot

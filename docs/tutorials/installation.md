@@ -25,8 +25,8 @@ task build
 
 ```bash
 # Run core verification
-cd packages/workspace-daemon && go test ./...
-cd ../workspace-sdk && pnpm exec tsc --noEmit && pnpm exec jest --runInBand
+cd packages/nexus && go test ./...
+cd ../sdk/js && pnpm exec tsc --noEmit && pnpm exec jest --runInBand
 ```
 
 ## Next Steps

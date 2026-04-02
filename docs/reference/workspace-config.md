@@ -92,7 +92,7 @@ The `runtime` block declares isolated workspace backend constraints:
 {
   "version": 1,
   "runtime": {
-    "required": ["dind", "lxc"],
+    "required": ["firecracker"],
     "selection": "prefer-first"
   }
 }
@@ -100,10 +100,61 @@ The `runtime` block declares isolated workspace backend constraints:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `required` | `string[]` | Allowed backends: `dind` (Docker-in-Docker), `lxc` (LXC container). Empty means any backend. |
+| `required` | `string[]` | Allowed backends: `firecracker`. Empty means daemon auto-selection from available capabilities. |
 | `selection` | `string` | Backend selection strategy. `"prefer-first"` selects the first available from `required`. |
 
 When no `runtime` block is present, Nexus selects a backend automatically.
+
+### Firecracker Host Setup
+
+Native Firecracker requires kernel and rootfs images, plus the Firecracker binary.
+
+**Install Firecracker:**
+
+Download the latest release from [github.com/firecracker-microvm/firecracker/releases](https://github.com/firecracker-microvm/firecracker/releases) or use your distribution's package manager if available:
+
+```bash
+# Example: download official release (check for latest version)
+curl -L https://github.com/firecracker-microvm/firecracker/releases/download/v1.7.0/firecracker-v1.7.0-x86_64.tgz | tar xz
+sudo mv firecracker-v1.7.0-x86_64/firecracker /usr/local/bin/
+```
+
+**Obtain kernel and rootfs:**
+
+Kernel and rootfs images are not provided by Nexus. You must build or obtain compatible images:
+
+- **Kernel**: Build from Linux source with Firecracker config, or use pre-built microvm kernels
+- **Rootfs**: Create an ext4 filesystem with your target environment and the `nexus-firecracker-agent` binary installed at `/usr/local/bin/nexus-firecracker-agent`
+
+See [Firecracker documentation](https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md) for building kernel and rootfs images.
+
+**Configure environment:**
+
+```bash
+export NEXUS_FIRECRACKER_KERNEL=/var/lib/nexus/vmlinux.bin
+export NEXUS_FIRECRACKER_ROOTFS=/var/lib/nexus/rootfs.ext4
+```
+
+**Required environment variables:**
+
+| Variable | Description |
+|----------|-------------|
+| `NEXUS_FIRECRACKER_KERNEL` | Path to Firecracker kernel image (required) |
+| `NEXUS_FIRECRACKER_ROOTFS` | Path to Firecracker rootfs image (required) |
+
+**Removed environment variables (no longer supported):**
+
+| Variable | Status |
+|----------|--------|
+| `NEXUS_DOCTOR_FIRECRACKER_EXEC_MODE` | Removed in native firecracker cutover |
+| `NEXUS_DOCTOR_FIRECRACKER_INSTANCE` | Removed in native firecracker cutover |
+| `NEXUS_DOCTOR_FIRECRACKER_DOCKER_MODE` | Removed in native firecracker cutover |
+
+Operational guardrails:
+
+- keep ballooning disabled by default
+- enforce memory ceilings through Firecracker machine configuration
+- run lifecycle canary regularly: create -> pause -> fork -> resume -> destroy
 
 ## Capability Requirements
 

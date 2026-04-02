@@ -8,17 +8,17 @@ tasks:
       - task: build:workspace-sdk
 
   build:workspace-daemon:
-    dir: packages/workspace-daemon
+    dir: packages/nexus
     cmds:
       - go build ./...
 
   test:workspace-daemon:
-    dir: packages/workspace-daemon
+    dir: packages/nexus
     cmds:
       - go test ./...
 
   build:workspace-sdk:
-    dir: packages/workspace-sdk
+    dir: packages/sdk/js
     cmds:
       - pnpm install
       - pnpm build
@@ -30,7 +30,7 @@ tasks:
       - task: test:workspace-sdk
 
   test:workspace-sdk:
-    dir: packages/workspace-sdk
+    dir: packages/sdk/js
     cmds:
       - pnpm test
 
@@ -41,12 +41,12 @@ tasks:
       - task: lint:workspace-sdk
 
   lint:workspace-daemon:
-    dir: packages/workspace-daemon
+    dir: packages/nexus
     cmds:
       - go test ./... -run TestDoesNotExist
 
   lint:workspace-sdk:
-    dir: packages/workspace-sdk
+    dir: packages/sdk/js
     cmds:
       - pnpm exec tsc --noEmit
 
@@ -61,5 +61,5 @@ tasks:
   clean:
     desc: Clean core build artifacts
     cmds:
-      - rm -rf packages/workspace-daemon/workspace-daemon
-      - rm -rf packages/workspace-sdk/dist
+      - rm -rf packages/nexus/nexus
+      - rm -rf packages/sdk/js/dist

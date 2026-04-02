@@ -44,6 +44,7 @@ vendor/
 .nexus/enforcer-rules.local.json
 
 # Nexus worktrees
+.worktrees/
 .nexus/worktrees/
 .nexus/dogfooding/
 .nexus/case-studies/
@@ -71,8 +72,10 @@ node_modules/
 dist/
 **/dist/
 
-# Workspace daemon binary
-packages/workspace-daemon/workspace-daemon
+# Workspace daemon binaries
+packages/nexus/workspace-daemon
+packages/nexus/daemon
+packages/nexus/nexus
 
 # Nested nexus folder
 nexus/nexus/
@@ -80,9 +83,6 @@ nexus/nexus/
 # Temporary files
 /tmp/
 *.tmp
-ENDFILE
-EOF
-ENDOFFILE
 
 # Enforcer generated files
 .nexus/enforcer-debug.log
@@ -102,3 +102,4 @@ ENDOFFILE
 .nexus/boulder/state.json
 .nexus/boulder/*.sh
 packages/enforcer/src/boulder/*.sh
+nexus-firecracker-agent

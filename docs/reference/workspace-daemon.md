@@ -13,17 +13,17 @@ The workspace daemon is a Go-based server that provides remote file system and e
                                       ┌──────▼──────┐
                                       │ Isolated    │
                                       │ Workspace   │
-                                      │ (dind/lxc)  │
+                                      │ (firecracker) │
                                       └─────────────┘
 ```
 
-The daemon manages isolated workspace containers (dind or lxc backends). All ingress to the workspace is via Spotlight port forwards — there is no direct host port exposure.
+The daemon manages isolated Firecracker-backed workspaces using native Firecracker integration. The daemon communicates directly with Firecracker via Unix socket REST API and executes commands through a vsock guest agent (a binary running inside the VM that receives commands over the virtio-vsock interface and executes them on behalf of the daemon). All ingress to the workspace is via Spotlight port forwards — there is no direct host port exposure.
 
 ## Installation
 
 ```bash
 # Build from source
-cd packages/workspace-daemon
+cd packages/nexus
 go build -o workspace-daemon ./cmd/daemon
 ```
 
@@ -75,8 +75,13 @@ workspace-daemon \
 | `workspace.list` | List workspace records |
 | `workspace.stop` | Stop compute, persist workspace state |
 | `workspace.restore` | Restore persisted workspace to running state |
+| `workspace.pause` | Pause a running workspace VM |
+| `workspace.resume` | Resume a paused workspace VM |
+| `workspace.fork` | Fork a workspace into a child workspace |
 | `workspace.remove` | Remove workspace by id |
 | `workspace.ready` | Poll readiness checks until success/timeout |
+| `authrelay.mint` | Mint one-time auth relay token for exec injection |
+| `authrelay.revoke` | Revoke auth relay token |
 | `capabilities.list` | List available runtime and toolchain capabilities |
 | `spotlight.expose` | Expose remote service port locally (Spotlight-only ingress) |
 | `spotlight.list` | List active Spotlight forwards |
@@ -161,6 +166,70 @@ Response:
 
 - `restored` — `true` if restored successfully
 
+### `workspace.pause`
+
+Pause compute for a workspace while keeping persisted workspace metadata.
+
+Params:
+
+- `id` - workspace ID
+
+Response:
+
+- `paused` - `true` if paused successfully
+
+### `workspace.resume`
+
+Resume a paused workspace.
+
+Params:
+
+- `id` - workspace ID
+
+Response:
+
+- `resumed` - `true` if resumed successfully
+
+### `workspace.fork`
+
+Fork an existing workspace into a child workspace that preserves repo/ref/profile/policy/auth binding lineage and stores `parentWorkspaceId`.
+
+Params:
+
+- `id` - parent workspace ID
+- `childWorkspaceName` (optional) - explicit child workspace name
+
+Response:
+
+- `forked` - `true` if fork succeeded
+- `workspace` - newly created child workspace record
+
+### `authrelay.mint`
+
+Mint a short-lived, one-time-use token that can inject auth binding env vars into a later `exec` call.
+
+Params:
+
+- `workspaceId` - workspace ID
+- `binding` - auth binding key in workspace metadata (for example `claude`)
+- `ttlSeconds` (optional) - token TTL in seconds (default 60)
+
+Response:
+
+- `token` - relay token consumed by `exec` via `options.authRelayToken`
+
+### `authrelay.revoke`
+
+Revoke an auth relay token before it is consumed.
+
+Params:
+
+- `token` - relay token to revoke
+
+Response:
+
+- `revoked` - `true` when token is removed
+
 ### `capabilities.list`
 
 List all available runtime backends and toolchain capabilities the daemon can provide.
@@ -176,8 +245,7 @@ Example response:
 ```json
 {
   "capabilities": [
-    { "name": "runtime.dind", "available": true },
-    { "name": "runtime.lxc", "available": true },
+    { "name": "runtime.firecracker", "available": true },
     { "name": "spotlight.tunnel", "available": true }
   ]
 }
@@ -203,7 +271,7 @@ CMD ["workspace-daemon", "--port", "8080", "--token", "secret"]
 Use the Workspace SDK to connect:
 
 ```typescript
-import { WorkspaceClient } from '@nexus/workspace-sdk';
+import { WorkspaceClient } from '@nexus/sdk';
 
 const client = new WorkspaceClient({
   endpoint: 'ws://localhost:8080',

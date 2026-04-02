@@ -22,6 +22,6 @@ Nexus roadmap is centered on remote workspace core quality and usability.
 
 ## Verification gates
 
-- `packages/workspace-daemon`: `go test ./...`
-- `packages/workspace-sdk`: `pnpm exec tsc --noEmit` and `pnpm exec jest --runInBand`
+- `packages/nexus`: `go test ./...`
+- `packages/sdk/js`: `pnpm exec tsc --noEmit` and `pnpm exec jest --runInBand`
 - root CI: core-only task pipeline
