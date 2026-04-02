@@ -392,7 +392,7 @@ func seedFirecrackerDockerTooling(projectRoot string, execCtx doctorExecContext)
 
 		dockerWrapper := strings.Join([]string{
 			"#!/usr/bin/env sh",
-			"if [ -z \"${DOCKER_HOST:-}\" ] && [ -S /tmp/nexus-host-docker.sock ]; then",
+			"if [ \"${NEXUS_DOCTOR_FIRECRACKER_DOCKER_MODE:-}\" = \"host-proxy\" ] && [ -z \"${DOCKER_HOST:-}\" ] && [ -S /tmp/nexus-host-docker.sock ]; then",
 			"  export DOCKER_HOST=unix:///tmp/nexus-host-docker.sock",
 			"fi",
 			"exec /usr/bin/docker \"$@\"",
@@ -563,14 +563,11 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 			}
 			time.Sleep(time.Duration(attempt*2) * time.Second)
 		}
-		diagnostics := collectDockerDiagnostics()
-		if diagnostics != "" {
-			return fmt.Errorf("bootstrap %s tooling verification failed in host-proxy mode\n%s", backendLabel, diagnostics)
-		}
-		return fmt.Errorf("bootstrap %s tooling verification failed in host-proxy mode", backendLabel)
+		fmt.Printf("bootstrap %s: host-proxy docker mode unavailable, falling back to in-guest dockerd startup\n", backendLabel)
+		_ = os.Setenv("NEXUS_DOCTOR_FIRECRACKER_DOCKER_MODE", "")
 	}
 
-	startDockerCmd := "if command -v systemctl >/dev/null 2>&1; then systemctl enable docker >/dev/null 2>&1 || true; systemctl start docker >/dev/null 2>&1 || true; fi; if ! docker info >/dev/null 2>&1; then nohup dockerd --host=unix:///var/run/docker.sock --storage-driver=vfs --iptables=false --bridge=none >/tmp/nexus-doctor-dockerd.log 2>&1 & sleep 5; fi"
+	startDockerCmd := "if command -v systemctl >/dev/null 2>&1; then systemctl enable docker >/dev/null 2>&1 || true; systemctl start docker >/dev/null 2>&1 || true; fi; if ! docker info >/dev/null 2>&1; then nohup dockerd --host=unix:///var/run/docker.sock --storage-driver=vfs --iptables=false --bridge=none --userland-proxy=false >/tmp/nexus-doctor-dockerd.log 2>&1 & sleep 5; fi"
 	startCtx, startCancel := context.WithTimeout(context.Background(), timeout)
 	startOut, startErr := doctorCheckCommandRunner(startCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "bash", []string{"-lc", startDockerCmd}, execCtx)
 	startCancel()
@@ -1171,11 +1168,15 @@ func resolveCheckCommand(projectRoot, command string, args []string, execCtx doc
 		if execMode == "" {
 			execMode = "lxc"
 		}
+		firecrackerDockerMode := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_FIRECRACKER_DOCKER_MODE"))
 
 		envPrefix := []string{
 			"export", "NEXUS_RUNTIME_BACKEND=" + shellQuote(execCtx.backend),
 			"NEXUS_DOCTOR_FIRECRACKER_INSTANCE=" + shellQuote(execCtx.fcName),
 			"NEXUS_DOCTOR_FIRECRACKER_EXEC_MODE=" + shellQuote(execMode),
+		}
+		if firecrackerDockerMode != "" {
+			envPrefix = append(envPrefix, "NEXUS_DOCTOR_FIRECRACKER_DOCKER_MODE="+shellQuote(firecrackerDockerMode))
 		}
 		if execCtx.dockerHost != "" {
 			envPrefix = append(envPrefix, "NEXUS_DOCTOR_DIND_DOCKER_HOST="+shellQuote(execCtx.dockerHost))
