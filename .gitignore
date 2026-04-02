@@ -102,3 +102,4 @@ nexus/nexus/
 .nexus/boulder/state.json
 .nexus/boulder/*.sh
 packages/enforcer/src/boulder/*.sh
+nexus-firecracker-agent
