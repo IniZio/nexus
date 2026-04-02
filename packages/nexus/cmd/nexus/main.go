@@ -96,6 +96,11 @@ func run(opts options) error {
 		return fmt.Errorf("project root must be absolute: %s", opts.projectRoot)
 	}
 
+	// Validate firecracker env contract before proceeding
+	if err := config.ValidateFirecrackerEnv(); err != nil {
+		return fmt.Errorf("firecracker configuration error: %w", err)
+	}
+
 	if opts.composeFile == "" {
 		opts.composeFile = "docker-compose.yml"
 	}
