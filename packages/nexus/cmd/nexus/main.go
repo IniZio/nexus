@@ -458,6 +458,9 @@ func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string
 
 	conn, err := waitForFirecrackerAgent(session.vsockPath, 10*time.Second)
 	if err != nil {
+		if logTail := readFileTail(session.serialLog, 65536); logTail != "" {
+			return "", fmt.Errorf("%w\nfirecracker serial log tail:\n%s", err, logTail)
+		}
 		return "", err
 	}
 	defer conn.Close()
