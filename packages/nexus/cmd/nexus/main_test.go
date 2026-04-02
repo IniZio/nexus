@@ -159,6 +159,34 @@ func TestRunConfiguredProbesRunsAllProbes(t *testing.T) {
 	}
 }
 
+func TestMarkProbesNotRun(t *testing.T) {
+	probes := []config.DoctorCommandProbe{
+		{Name: "probe-a", Required: true},
+		{Name: "probe-b", Required: false},
+	}
+	results := markProbesNotRun(probes, "skip reason")
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].Status != "not_run" || results[0].Phase != "probe" || results[0].SkipReason != "skip reason" {
+		t.Fatalf("unexpected first result: %+v", results[0])
+	}
+	if results[1].Status != "not_run" || results[1].Phase != "probe" || results[1].SkipReason != "skip reason" {
+		t.Fatalf("unexpected second result: %+v", results[1])
+	}
+}
+
+func TestRunBuiltInRuntimeBackendCheckFirecrackerPasses(t *testing.T) {
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
+	result, err := runBuiltInRuntimeBackendCheck()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if result.Status != "passed" {
+		t.Fatalf("expected passed status, got %+v", result)
+	}
+}
+
 func TestWriteReport(t *testing.T) {
 	reportPath := filepath.Join(t.TempDir(), "reports", "doctor.json")
 	results := []checkResult{{Name: "runtime", Phase: "probe", Status: "passed", Required: true, Attempts: 1}}
@@ -629,8 +657,28 @@ func TestResolveCheckCommandDindWithoutDockerHost(t *testing.T) {
 	}
 }
 
-func TestRunCheckCommandWithExecContextFirecrackerRejectsHostContext(t *testing.T) {
-	_, err := runCheckCommandWithExecContext(
+func TestRunCheckCommandWithExecContextFirecrackerUsesNativeRunner(t *testing.T) {
+	original := firecrackerCheckCommandRunner
+	t.Cleanup(func() {
+		firecrackerCheckCommandRunner = original
+	})
+
+	called := false
+	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
+		called = true
+		if projectRoot == "" {
+			t.Fatal("project root should not be empty")
+		}
+		if command != "bash" {
+			t.Fatalf("expected command bash, got %q", command)
+		}
+		if !reflect.DeepEqual(args, []string{"-lc", "echo ok"}) {
+			t.Fatalf("unexpected args: %v", args)
+		}
+		return "ok", nil
+	}
+
+	out, err := runCheckCommandWithExecContext(
 		context.Background(),
 		t.TempDir(),
 		"probe",
@@ -642,29 +690,41 @@ func TestRunCheckCommandWithExecContextFirecrackerRejectsHostContext(t *testing.
 		[]string{"-lc", "echo ok"},
 		doctorExecContext{backend: "firecracker"},
 	)
-	if err == nil {
-		t.Fatal("expected error when firecracker resolves to host context")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "resolved to host execution context") {
-		t.Fatalf("unexpected error: %v", err)
+	if !called {
+		t.Fatal("expected firecracker native runner to be called")
+	}
+	if out != "ok" {
+		t.Fatalf("expected output ok, got %q", out)
 	}
 }
 
-// TestBootstrapDoctorExecContextFirecrackerRequiresDaemon verifies that
-// firecracker backend returns error directing users to use workspace daemon.
-func TestBootstrapDoctorExecContextFirecrackerRequiresDaemon(t *testing.T) {
+func TestBootstrapDoctorExecContextFirecrackerUsesNativeBootstrap(t *testing.T) {
 	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
-	t.Setenv("NEXUS_DOCTOR_FIRECRACKER_INSTANCE", "ws-1")
 
-	err := bootstrapDoctorExecContext(t.TempDir())
-	if err == nil {
-		t.Fatal("expected error when firecracker backend is used")
+	original := firecrackerBootstrapRunner
+	t.Cleanup(func() {
+		firecrackerBootstrapRunner = original
+	})
+
+	called := false
+	firecrackerBootstrapRunner = func(projectRoot string, execCtx doctorExecContext) error {
+		called = true
+		if execCtx.backend != "firecracker" {
+			t.Fatalf("expected firecracker backend, got %q", execCtx.backend)
+		}
+		if projectRoot == "" {
+			t.Fatal("project root should not be empty")
+		}
+		return nil
 	}
-	if !strings.Contains(err.Error(), "requires native runtime support") {
-		t.Fatalf("expected native runtime support error, got: %v", err)
+
+	if err := bootstrapDoctorExecContext(t.TempDir()); err != nil {
+		t.Fatalf("expected no error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "workspace daemon") {
-		t.Fatalf("expected workspace daemon mention, got: %v", err)
+	if !called {
+		t.Fatal("expected firecracker bootstrap runner to be called")
 	}
 }
-

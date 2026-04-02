@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -137,7 +138,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	bootSource := map[string]any{
 		"kernel_image_path": m.config.KernelPath,
-		"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off",
+		"boot_args":         defaultFirecrackerBootArgs(),
 	}
 	if err := client.put(ctx, "/boot-source", bootSource); err != nil {
 		m.cleanup(workDir, cmd.Process)
@@ -160,7 +161,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		"guest_cid": cid,
 		"uds_path":  vsockPath,
 	}
-	if err := client.put(ctx, "/vsocks/agent", vsockConfig); err != nil {
+	if err := client.put(ctx, "/vsock", vsockConfig); err != nil {
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to configure vsock: %w", err)
 	}
@@ -184,6 +185,13 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	m.instances[spec.WorkspaceID] = inst
 	return inst, nil
+}
+
+func defaultFirecrackerBootArgs() string {
+	if raw := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_BOOT_ARGS")); raw != "" {
+		return raw
+	}
+	return "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw"
 }
 
 // waitForAPISocket polls for the API socket to exist with the given context.
