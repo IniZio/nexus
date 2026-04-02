@@ -249,6 +249,8 @@ var firecrackerHostCommandRunner = runFirecrackerHostCommand
 
 var hostBinaryLookup = exec.LookPath
 
+var hostDockerSocketStat = os.Stat
+
 func runBootstrapInstallCommand(ctx context.Context, projectRoot string, timeout time.Duration, execCtx doctorExecContext) (string, error) {
 	installCmd := "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-v2 curl make python3 git nodejs npm || DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-plugin curl make python3 git nodejs npm"
 	return doctorCheckCommandRunner(ctx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "bash", []string{"-lc", installCmd}, execCtx)
@@ -297,18 +299,33 @@ func writeExecutableScriptInExecContext(projectRoot string, execCtx doctorExecCo
 }
 
 func detectHostDockerSocket() string {
+	candidates := make([]string, 0, 4)
+
 	raw := strings.TrimSpace(os.Getenv("DOCKER_HOST"))
 	if strings.HasPrefix(raw, "unix://") {
 		candidate := strings.TrimPrefix(raw, "unix://")
 		if candidate != "" {
-			if info, err := os.Stat(candidate); err == nil && (info.Mode()&os.ModeSocket) != 0 {
-				return candidate
+			candidates = append(candidates, candidate)
+			if !strings.HasPrefix(candidate, "/var/lib/snapd/hostfs/") {
+				candidates = append(candidates, "/var/lib/snapd/hostfs"+candidate)
 			}
 		}
 	}
 
-	if info, err := os.Stat("/var/run/docker.sock"); err == nil && (info.Mode()&os.ModeSocket) != 0 {
-		return "/var/run/docker.sock"
+	candidates = append(candidates, "/var/lib/snapd/hostfs/var/run/docker.sock", "/var/run/docker.sock")
+
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		if info, err := hostDockerSocketStat(candidate); err == nil && (info.Mode()&os.ModeSocket) != 0 {
+			return candidate
+		}
 	}
 
 	return ""

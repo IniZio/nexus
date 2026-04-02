@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,17 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/compose"
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
 )
+
+type fakeSocketFileInfo struct {
+	name string
+}
+
+func (f fakeSocketFileInfo) Name() string       { return f.name }
+func (f fakeSocketFileInfo) Size() int64        { return 0 }
+func (f fakeSocketFileInfo) Mode() fs.FileMode  { return os.ModeSocket | 0o666 }
+func (f fakeSocketFileInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeSocketFileInfo) IsDir() bool        { return false }
+func (f fakeSocketFileInfo) Sys() any           { return nil }
 
 func TestParseRequiredPorts(t *testing.T) {
 	ports, err := parseRequiredPorts("5173, 5174,5173,8000")
@@ -30,6 +42,29 @@ func TestParseRequiredPorts(t *testing.T) {
 func TestParseRequiredPortsInvalid(t *testing.T) {
 	if _, err := parseRequiredPorts("abc"); err == nil {
 		t.Fatal("expected error for invalid port")
+	}
+}
+
+func TestDetectHostDockerSocketPrefersSnapHostfsSocket(t *testing.T) {
+	originalStat := hostDockerSocketStat
+	t.Cleanup(func() {
+		hostDockerSocketStat = originalStat
+	})
+
+	t.Setenv("DOCKER_HOST", "")
+
+	hostDockerSocketStat = func(path string) (os.FileInfo, error) {
+		switch path {
+		case "/var/lib/snapd/hostfs/var/run/docker.sock", "/var/run/docker.sock":
+			return fakeSocketFileInfo{name: filepath.Base(path)}, nil
+		default:
+			return nil, os.ErrNotExist
+		}
+	}
+
+	got := detectHostDockerSocket()
+	if got != "/var/lib/snapd/hostfs/var/run/docker.sock" {
+		t.Fatalf("expected hostfs docker socket, got %q", got)
 	}
 }
 
