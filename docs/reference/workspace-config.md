@@ -156,10 +156,6 @@ Operational guardrails:
 - enforce memory ceilings through Firecracker machine configuration
 - run lifecycle canary regularly: create -> pause -> fork -> resume -> destroy
 
-- keep ballooning disabled by default
-- enforce memory ceilings through Firecracker machine configuration
-- run lifecycle canary regularly: create -> pause -> fork -> resume -> destroy
-
 ## Capability Requirements
 
 The `capabilities` block declares toolchain and runtime capability requirements:
