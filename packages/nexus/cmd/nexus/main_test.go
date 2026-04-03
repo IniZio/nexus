@@ -188,6 +188,36 @@ func TestRunBuiltInRuntimeBackendCheckFirecrackerPasses(t *testing.T) {
 	}
 }
 
+func TestRunBootstrapInstallCommandDoesNotInstallOpencode(t *testing.T) {
+	originalRunner := doctorCheckCommandRunner
+	t.Cleanup(func() {
+		doctorCheckCommandRunner = originalRunner
+	})
+
+	var gotCommand string
+	var gotArgs []string
+	doctorCheckCommandRunner = func(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
+		gotCommand = command
+		gotArgs = append([]string(nil), args...)
+		return "", nil
+	}
+
+	_, err := runBootstrapInstallCommand(context.Background(), t.TempDir(), 30*time.Second, doctorExecContext{backend: "firecracker"})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if gotCommand != "sh" {
+		t.Fatalf("expected command sh, got %q", gotCommand)
+	}
+	if len(gotArgs) != 2 || gotArgs[0] != "-lc" {
+		t.Fatalf("expected args [-lc <script>], got %v", gotArgs)
+	}
+	if strings.Contains(gotArgs[1], "npm i -g opencode-ai") {
+		t.Fatalf("unexpected opencode install in bootstrap install command: %q", gotArgs[1])
+	}
+}
+
 func TestFirecrackerAgentVSockPortDefaultsToRuntimeConstant(t *testing.T) {
 	t.Setenv("NEXUS_FIRECRACKER_AGENT_VSOCK_PORT", "")
 	if got := firecrackerAgentVSockPort(); got != firecracker.DefaultAgentVSockPort {
