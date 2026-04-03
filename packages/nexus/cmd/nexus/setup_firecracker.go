@@ -393,6 +393,12 @@ func runSetupScript(mode privilegeMode, script string) error {
 func runSetupFirecracker(w io.Writer) error {
 	mode := resolvePrivilegeMode()
 	if mode == privilegeModeManual {
+		fmt.Fprintln(w, "==> Verifying setup...")
+		if err := setupVerifyFn(); err == nil {
+			fmt.Fprintln(w, "==> Firecracker host setup complete.")
+			return nil
+		}
+
 		cmdPath := setupCommandPath()
 		fmt.Fprintln(w, "")
 		fmt.Fprintln(w, "Run the following command to complete Firecracker setup (networking + VM assets + verification):")

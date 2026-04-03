@@ -1018,6 +1018,44 @@ func TestSetupFirecrackerMockedSucceeds(t *testing.T) {
 	}
 }
 
+func TestSetupFirecrackerManualModeReturnsSuccessWhenAlreadyVerified(t *testing.T) {
+	origMode := setupPrivilegeModeOverride
+	origEnabled := setupPrivilegeModeOverrideEnabled
+	t.Cleanup(func() {
+		setupPrivilegeModeOverride = origMode
+		setupPrivilegeModeOverrideEnabled = origEnabled
+	})
+	setupPrivilegeModeOverride = privilegeModeManual
+	setupPrivilegeModeOverrideEnabled = true
+
+	origVerify := setupVerifyFn
+	t.Cleanup(func() { setupVerifyFn = origVerify })
+	setupVerifyFn = func() error { return nil }
+
+	origBuild := setupBuildTapHelperFn
+	t.Cleanup(func() { setupBuildTapHelperFn = origBuild })
+	setupBuildTapHelperFn = func() (string, error) {
+		t.Fatal("did not expect tap-helper extraction when manual verify already passes")
+		return "", nil
+	}
+
+	origAgent := setupExtractAgentFn
+	t.Cleanup(func() { setupExtractAgentFn = origAgent })
+	setupExtractAgentFn = func() (string, error) {
+		t.Fatal("did not expect agent extraction when manual verify already passes")
+		return "", nil
+	}
+
+	var buf strings.Builder
+	if err := runSetupFirecracker(&buf); err != nil {
+		t.Fatalf("expected setup to report success when verify passes in manual mode, got: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Firecracker host setup complete") {
+		t.Fatalf("expected success output, got: %q", out)
+	}
+}
+
 func TestBootstrapDoctorExecContextFirecrackerUsesNativeBootstrap(t *testing.T) {
 	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
 
