@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -895,6 +896,17 @@ func TestBuildSetupScriptUsesLocalSquashfsCacheBeforeDownload(t *testing.T) {
 	}
 }
 
+func TestBuildSetupScriptEnsuresSudoUserInKVMGroup(t *testing.T) {
+	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
+
+	if !strings.Contains(script, "if [ -n \"${SUDO_USER:-}\" ]; then") {
+		t.Fatalf("expected setup script to check sudo user before kvm group update, got:\n%s", script)
+	}
+	if !strings.Contains(script, "usermod -aG kvm \"$SUDO_USER\"") {
+		t.Fatalf("expected setup script to add sudo user to kvm group, got:\n%s", script)
+	}
+}
+
 // ---- setup firecracker tests ----
 
 // TestDetectPrivilegeModeRoot verifies that detectPrivilegeMode returns
@@ -1056,6 +1068,54 @@ func TestSetupFirecrackerManualModeAutoSudoSuccess(t *testing.T) {
 	}
 	if !sudoCalled {
 		t.Fatal("expected manual mode to call auto-sudo function")
+	}
+}
+
+func TestSetupFirecrackerManualModeRefreshesKVMGroupViaSG(t *testing.T) {
+	origMode := setupPrivilegeModeOverride
+	origEnabled := setupPrivilegeModeOverrideEnabled
+	t.Cleanup(func() {
+		setupPrivilegeModeOverride = origMode
+		setupPrivilegeModeOverrideEnabled = origEnabled
+	})
+	setupPrivilegeModeOverride = privilegeModeManual
+	setupPrivilegeModeOverrideEnabled = true
+
+	origSudo := setupSudoReexecFn
+	t.Cleanup(func() { setupSudoReexecFn = origSudo })
+	setupSudoReexecFn = func(commandPath string) error { return nil }
+
+	origVerify := setupVerifyFn
+	t.Cleanup(func() { setupVerifyFn = origVerify })
+	verifyCalls := 0
+	setupVerifyFn = func() error {
+		verifyCalls++
+		if verifyCalls == 1 {
+			return errors.New("not setup yet")
+		}
+		return fmt.Errorf("%w: pending group refresh", errKVMGroupRefreshNeeded)
+	}
+
+	origKVMReexec := setupKVMGroupReexecFn
+	t.Cleanup(func() { setupKVMGroupReexecFn = origKVMReexec })
+	kvmReexecCalled := false
+	setupKVMGroupReexecFn = func(commandPath string) error {
+		kvmReexecCalled = true
+		if strings.TrimSpace(commandPath) == "" {
+			t.Fatal("expected non-empty setup command path for sg reexec")
+		}
+		return nil
+	}
+
+	var buf strings.Builder
+	if err := runSetupFirecracker(&buf); err != nil {
+		t.Fatalf("expected setup to succeed when sg kvm reexec succeeds, got: %v", err)
+	}
+	if !kvmReexecCalled {
+		t.Fatal("expected sg kvm reexec to be invoked")
+	}
+	if !strings.Contains(buf.String(), "Refreshing kvm group") {
+		t.Fatalf("expected output to mention kvm group refresh, got: %q", buf.String())
 	}
 }
 

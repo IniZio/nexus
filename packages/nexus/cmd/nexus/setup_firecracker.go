@@ -125,6 +125,23 @@ var setupSudoReexecFn = func(commandPath string) error {
 	return cmd.Run()
 }
 
+// errKVMGroupRefreshNeeded indicates setup is complete but current session
+// still lacks active /dev/kvm group access.
+var errKVMGroupRefreshNeeded = errors.New("kvm group refresh needed")
+
+const setupKVMGroupReexecEnv = "NEXUS_SETUP_KVM_GROUP_REEXEC"
+
+// setupKVMGroupReexecFn re-runs setup under `sg kvm` so group membership takes
+// effect without requiring a full logout/login cycle.
+var setupKVMGroupReexecFn = func(commandPath string) error {
+	cmd := exec.Command("sg", "kvm", "-c", fmt.Sprintf("%s setup firecracker", shellQuote(commandPath)))
+	cmd.Env = append(os.Environ(), setupKVMGroupReexecEnv+"=1")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // detectPrivilegeMode returns the appropriate privilege escalation strategy
 // based on the three boolean inputs.
 //
@@ -277,6 +294,16 @@ func buildSetupScript(tapHelperSrc, agentSrc string) string {
 	b.WriteString("sysctl -w net.ipv4.ip_forward=1\n")
 	b.WriteString("printf 'net.ipv4.ip_forward = 1\\n' > /etc/sysctl.d/99-nexus-ip-forward.conf\n\n")
 
+	// Ensure the invoking user has kvm group membership for /dev/kvm access.
+	b.WriteString("if getent group kvm >/dev/null 2>&1; then\n")
+	b.WriteString("  if [ -n \"${SUDO_USER:-}\" ]; then\n")
+	b.WriteString("    if ! id -nG \"$SUDO_USER\" | tr ' ' '\\n' | grep -qx kvm; then\n")
+	b.WriteString("      usermod -aG kvm \"$SUDO_USER\"\n")
+	b.WriteString("      echo \"==> Added $SUDO_USER to kvm group\"\n")
+	b.WriteString("    fi\n")
+	b.WriteString("  fi\n")
+	b.WriteString("fi\n\n")
+
 	// ------------------------------------------------------------------
 	// VM assets: kernel and rootfs
 	// ------------------------------------------------------------------
@@ -414,6 +441,18 @@ func runSetupFirecracker(w io.Writer) error {
 		if err := setupSudoReexecFn(cmdPath); err == nil {
 			fmt.Fprintln(w, "==> Verifying setup...")
 			if err := setupVerifyFn(); err != nil {
+				if errors.Is(err, errKVMGroupRefreshNeeded) && os.Getenv(setupKVMGroupReexecEnv) != "1" {
+					fmt.Fprintln(w, "==> Refreshing kvm group in current session...")
+					if rgErr := setupKVMGroupReexecFn(cmdPath); rgErr == nil {
+						return nil
+					}
+					fmt.Fprintln(w, "")
+					fmt.Fprintln(w, "To refresh /dev/kvm access without logging out, run:")
+					fmt.Fprintln(w, "")
+					fmt.Fprintln(w, "  newgrp kvm")
+					fmt.Fprintln(w, "  nexus setup firecracker")
+					fmt.Fprintln(w, "")
+				}
 				return fmt.Errorf("setup verification failed after sudo setup: %w", err)
 			}
 			fmt.Fprintln(w, "==> Firecracker host setup complete.")
@@ -465,6 +504,19 @@ func runSetupFirecracker(w io.Writer) error {
 	// ---------- step 5: verify ----------
 	fmt.Fprintln(w, "==> Verifying setup...")
 	if err := setupVerifyFn(); err != nil {
+		if errors.Is(err, errKVMGroupRefreshNeeded) && os.Getenv(setupKVMGroupReexecEnv) != "1" {
+			cmdPath := setupCommandPath()
+			fmt.Fprintln(w, "==> Refreshing kvm group in current session...")
+			if rgErr := setupKVMGroupReexecFn(cmdPath); rgErr == nil {
+				return nil
+			}
+			fmt.Fprintln(w, "")
+			fmt.Fprintln(w, "To refresh /dev/kvm access without logging out, run:")
+			fmt.Fprintln(w, "")
+			fmt.Fprintln(w, "  newgrp kvm")
+			fmt.Fprintln(w, "  nexus setup firecracker")
+			fmt.Fprintln(w, "")
+		}
 		return fmt.Errorf("setup verification failed: %w", err)
 	}
 
@@ -499,5 +551,14 @@ func verifyFirecrackerSetup() error {
 	if _, err := os.Stat(DefaultVMRootfsPath); err != nil {
 		return fmt.Errorf("VM rootfs not found at %s: %w", DefaultVMRootfsPath, err)
 	}
+
+	fd, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return fmt.Errorf("%w: current session lacks read/write access to /dev/kvm", errKVMGroupRefreshNeeded)
+		}
+		return fmt.Errorf("unable to open /dev/kvm: %w", err)
+	}
+	_ = fd.Close()
 	return nil
 }

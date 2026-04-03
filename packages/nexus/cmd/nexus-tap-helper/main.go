@@ -15,8 +15,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
-	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -54,9 +52,10 @@ func main() {
 }
 
 const (
-	tunsetiff = 0x400454ca
-	iffTAP    = 0x0002
-	iffNoPI   = 0x1000
+	tunsetiff   = 0x400454ca
+	iffTAP      = 0x0002
+	iffNoPI     = 0x1000
+	siocBrAddIf = 0x89a2
 )
 
 // ifreqFlags is the layout for TUNSETIFF / SIOCGIFFLAGS / SIOCSIFFLAGS.
@@ -64,6 +63,13 @@ type ifreqFlags struct {
 	Name  [unix.IFNAMSIZ]byte
 	Flags uint16
 	_     [22]byte
+}
+
+// ifreqIndex is the layout for bridge ioctls that pass an ifindex.
+type ifreqIndex struct {
+	Name  [unix.IFNAMSIZ]byte
+	Index int32
+	_     [20]byte
 }
 
 // createTAP creates a persistent TAP device and attaches it to the given bridge.
@@ -98,10 +104,8 @@ func createTAP(tapName, bridge string) error {
 		return fmt.Errorf("bring up %s: %w", tapName, err)
 	}
 
-	// Attach tap to bridge.
-	out, err := exec.Command("ip", "link", "set", tapName, "master", bridge).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("attach %s to bridge %s: %w: %s", tapName, bridge, err, strings.TrimSpace(string(out)))
+	if err := attachToBridge(tapName, bridge); err != nil {
+		return fmt.Errorf("attach %s to bridge %s: %w", tapName, bridge, err)
 	}
 
 	return nil
@@ -109,10 +113,54 @@ func createTAP(tapName, bridge string) error {
 
 // deleteTAP removes a TAP device.
 func deleteTAP(tapName string) error {
-	out, err := exec.Command("ip", "link", "del", tapName).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("ip link del %s: %w: %s", tapName, err, strings.TrimSpace(string(out)))
+	if len(tapName) >= unix.IFNAMSIZ {
+		return fmt.Errorf("tap name %q exceeds max length %d", tapName, unix.IFNAMSIZ-1)
 	}
+
+	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("open /dev/net/tun: %w", err)
+	}
+	defer unix.Close(fd)
+
+	var req ifreqFlags
+	copy(req.Name[:], tapName)
+	req.Flags = iffTAP | iffNoPI
+	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), tunsetiff, uintptr(unsafe.Pointer(&req))); errno != 0 {
+		return fmt.Errorf("TUNSETIFF %s: %w", tapName, errno)
+	}
+
+	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), unix.TUNSETPERSIST, 0); errno != 0 {
+		return fmt.Errorf("TUNSETPERSIST(0) %s: %w", tapName, errno)
+	}
+
+	return nil
+}
+
+func attachToBridge(tapName, bridge string) error {
+	if len(bridge) >= unix.IFNAMSIZ {
+		return fmt.Errorf("bridge name %q exceeds max length %d", bridge, unix.IFNAMSIZ-1)
+	}
+
+	tapIface, err := net.InterfaceByName(tapName)
+	if err != nil {
+		return fmt.Errorf("lookup tap %s: %w", tapName, err)
+	}
+
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		return fmt.Errorf("socket: %w", err)
+	}
+	defer unix.Close(fd)
+
+	var req ifreqIndex
+	copy(req.Name[:], bridge)
+	req.Index = int32(tapIface.Index)
+
+	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), siocBrAddIf, uintptr(unsafe.Pointer(&req))); errno != 0 {
+		return errno
+	}
+
 	return nil
 }
 
