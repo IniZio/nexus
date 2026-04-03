@@ -913,7 +913,7 @@ func TestDetectPrivilegeModeFallback(t *testing.T) {
 
 // TestSetupFirecrackerNonInteractivePrintsAndErrors verifies that
 // runSetupFirecracker in non-interactive mode (privilegeModeManual)
-// prints the manual commands and returns a non-nil error.
+// prints a single sudo bash command and returns a non-nil error.
 func TestSetupFirecrackerNonInteractivePrintsAndErrors(t *testing.T) {
 	origMode := setupPrivilegeModeOverride
 	origEnabled := setupPrivilegeModeOverrideEnabled
@@ -937,13 +937,13 @@ func TestSetupFirecrackerNonInteractivePrintsAndErrors(t *testing.T) {
 		t.Fatalf("expected error to mention manual steps, got: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "sudo") {
-		t.Fatalf("expected output to contain sudo commands, got: %q", out)
+	if !strings.Contains(out, "sudo bash") {
+		t.Fatalf("expected output to contain 'sudo bash <script>', got: %q", out)
 	}
 }
 
 // TestSetupFirecrackerMockedSucceeds verifies that runSetupFirecracker
-// succeeds when all privileged steps are mocked to pass.
+// succeeds when the script execution and verify steps are mocked to pass.
 func TestSetupFirecrackerMockedSucceeds(t *testing.T) {
 	origMode := setupPrivilegeModeOverride
 	origEnabled := setupPrivilegeModeOverrideEnabled
@@ -958,15 +958,11 @@ func TestSetupFirecrackerMockedSucceeds(t *testing.T) {
 	t.Cleanup(func() { setupBuildTapHelperFn = origBuild })
 	setupBuildTapHelperFn = func() (string, error) { return "/tmp/nexus-tap-helper", nil }
 
-	origPrivileged := setupRunPrivilegedFn
-	t.Cleanup(func() { setupRunPrivilegedFn = origPrivileged })
-	setupRunPrivilegedFn = func(w interface{ Write([]byte) (int, error) }, mode privilegeMode, args ...string) error {
+	origRunScript := setupRunScriptFn
+	t.Cleanup(func() { setupRunScriptFn = origRunScript })
+	setupRunScriptFn = func(w interface{ Write([]byte) (int, error) }, mode privilegeMode, scriptPath string) error {
 		return nil
 	}
-
-	origWriteFile := setupWriteFileFn
-	t.Cleanup(func() { setupWriteFileFn = origWriteFile })
-	setupWriteFileFn = func(mode privilegeMode, dest string, content []byte) error { return nil }
 
 	origVerify := setupVerifyFn
 	t.Cleanup(func() { setupVerifyFn = origVerify })
