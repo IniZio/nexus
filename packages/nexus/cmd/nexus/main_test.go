@@ -873,6 +873,111 @@ func TestRunCheckCommandWithExecContextFirecrackerUsesNativeRunner(t *testing.T)
 	}
 }
 
+// ---- setup firecracker tests ----
+
+// TestDetectPrivilegeModeRoot verifies that detectPrivilegeMode returns
+// privilegeModeRoot when EUID is 0.
+func TestDetectPrivilegeModeRoot(t *testing.T) {
+	mode := detectPrivilegeMode(true, false, false)
+	if mode != privilegeModeRoot {
+		t.Fatalf("expected privilegeModeRoot for EUID==0, got %v", mode)
+	}
+}
+
+// TestDetectPrivilegeModeSudoN verifies that detectPrivilegeMode returns
+// privilegeModeSudoN when sudo -n would succeed (CI passwordless sudo).
+func TestDetectPrivilegeModeSudoN(t *testing.T) {
+	mode := detectPrivilegeMode(false, true, false)
+	if mode != privilegeModeSudoN {
+		t.Fatalf("expected privilegeModeSudoN for passwordless sudo, got %v", mode)
+	}
+}
+
+// TestDetectPrivilegeModeInteractive verifies that detectPrivilegeMode returns
+// privilegeModeInteractive when stdin is a TTY.
+func TestDetectPrivilegeModeInteractive(t *testing.T) {
+	mode := detectPrivilegeMode(false, false, true)
+	if mode != privilegeModeInteractive {
+		t.Fatalf("expected privilegeModeInteractive for TTY stdin, got %v", mode)
+	}
+}
+
+// TestDetectPrivilegeModeFallback verifies that detectPrivilegeMode returns
+// privilegeModeManual when no privilege escalation path is available.
+func TestDetectPrivilegeModeFallback(t *testing.T) {
+	mode := detectPrivilegeMode(false, false, false)
+	if mode != privilegeModeManual {
+		t.Fatalf("expected privilegeModeManual for non-interactive no-sudo, got %v", mode)
+	}
+}
+
+// TestSetupFirecrackerNonInteractivePrintsAndErrors verifies that
+// runSetupFirecracker in non-interactive mode (privilegeModeManual)
+// prints the manual commands and returns a non-nil error.
+func TestSetupFirecrackerNonInteractivePrintsAndErrors(t *testing.T) {
+	origMode := setupPrivilegeModeOverride
+	origEnabled := setupPrivilegeModeOverrideEnabled
+	t.Cleanup(func() {
+		setupPrivilegeModeOverride = origMode
+		setupPrivilegeModeOverrideEnabled = origEnabled
+	})
+	setupPrivilegeModeOverride = privilegeModeManual
+	setupPrivilegeModeOverrideEnabled = true
+
+	origBuild := setupBuildTapHelperFn
+	t.Cleanup(func() { setupBuildTapHelperFn = origBuild })
+	setupBuildTapHelperFn = func() (string, error) { return "/tmp/nexus-tap-helper", nil }
+
+	var buf strings.Builder
+	err := runSetupFirecracker(&buf)
+	if err == nil {
+		t.Fatal("expected error in non-interactive / manual mode")
+	}
+	if !strings.Contains(err.Error(), "manual") {
+		t.Fatalf("expected error to mention manual steps, got: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "sudo") {
+		t.Fatalf("expected output to contain sudo commands, got: %q", out)
+	}
+}
+
+// TestSetupFirecrackerMockedSucceeds verifies that runSetupFirecracker
+// succeeds when all privileged steps are mocked to pass.
+func TestSetupFirecrackerMockedSucceeds(t *testing.T) {
+	origMode := setupPrivilegeModeOverride
+	origEnabled := setupPrivilegeModeOverrideEnabled
+	t.Cleanup(func() {
+		setupPrivilegeModeOverride = origMode
+		setupPrivilegeModeOverrideEnabled = origEnabled
+	})
+	setupPrivilegeModeOverride = privilegeModeRoot
+	setupPrivilegeModeOverrideEnabled = true
+
+	origBuild := setupBuildTapHelperFn
+	t.Cleanup(func() { setupBuildTapHelperFn = origBuild })
+	setupBuildTapHelperFn = func() (string, error) { return "/tmp/nexus-tap-helper", nil }
+
+	origPrivileged := setupRunPrivilegedFn
+	t.Cleanup(func() { setupRunPrivilegedFn = origPrivileged })
+	setupRunPrivilegedFn = func(w interface{ Write([]byte) (int, error) }, mode privilegeMode, args ...string) error {
+		return nil
+	}
+
+	origWriteFile := setupWriteFileFn
+	t.Cleanup(func() { setupWriteFileFn = origWriteFile })
+	setupWriteFileFn = func(mode privilegeMode, dest string, content []byte) error { return nil }
+
+	origVerify := setupVerifyFn
+	t.Cleanup(func() { setupVerifyFn = origVerify })
+	setupVerifyFn = func() error { return nil }
+
+	var buf strings.Builder
+	if err := runSetupFirecracker(&buf); err != nil {
+		t.Fatalf("expected setup to succeed with mocked steps, got: %v", err)
+	}
+}
+
 func TestBootstrapDoctorExecContextFirecrackerUsesNativeBootstrap(t *testing.T) {
 	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
 

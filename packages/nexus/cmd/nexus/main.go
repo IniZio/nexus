@@ -46,7 +46,13 @@ func main() {
 		args = os.Args[1:]
 	}
 
-	if command != "doctor" {
+	switch command {
+	case "setup":
+		runSetupCommand(args)
+		return
+	case "doctor":
+		// handled below
+	default:
 		printUsage()
 		fmt.Fprintf(os.Stderr, "\nunknown subcommand: %s\n", command)
 		os.Exit(2)
@@ -93,6 +99,25 @@ func main() {
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  nexus doctor --project-root <abs-path> --suite <name> [--compose-file docker-compose.yml] [--required-host-ports 5173,5174,8000] [--report-json path]")
+	fmt.Fprintln(os.Stderr, "  nexus setup firecracker")
+}
+
+// runSetupCommand dispatches the `nexus setup` subcommand.
+func runSetupCommand(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: nexus setup firecracker")
+		os.Exit(2)
+	}
+	sub := args[0]
+	if sub != "firecracker" {
+		fmt.Fprintf(os.Stderr, "unknown setup subcommand: %s\n", sub)
+		fmt.Fprintln(os.Stderr, "Usage: nexus setup firecracker")
+		os.Exit(2)
+	}
+	if err := runSetupFirecracker(os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }
 
 func run(opts options) error {
@@ -460,10 +485,7 @@ func validateFirecrackerTapHelper() error {
 	path, err := firecrackerHostBinaryLookup(tapHelper)
 	if err != nil {
 		return fmt.Errorf(
-			"%s not found in PATH\n\nOne-time setup required:\n"+
-				"  go build -o /tmp/nexus-tap-helper ./packages/nexus/cmd/nexus-tap-helper/\n"+
-				"  sudo cp /tmp/nexus-tap-helper /usr/local/bin/nexus-tap-helper\n"+
-				"  sudo setcap cap_net_admin=ep /usr/local/bin/nexus-tap-helper",
+			"%s not found in PATH\n\nRun the one-time host setup:\n  nexus setup firecracker",
 			tapHelper,
 		)
 	}
@@ -476,8 +498,8 @@ func validateFirecrackerTapHelper() error {
 	}
 	if !strings.Contains(string(out), "cap_net_admin") {
 		return fmt.Errorf(
-			"%s at %s lacks cap_net_admin\n\nRun:\n  sudo setcap cap_net_admin=ep %s",
-			tapHelper, path, path,
+			"%s at %s lacks cap_net_admin\n\nRun the one-time host setup:\n  nexus setup firecracker",
+			tapHelper, path,
 		)
 	}
 	return nil
@@ -490,22 +512,14 @@ func validateFirecrackerBridge() error {
 	out, err := exec.Command("ip", "link", "show", bridge).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf(
-			"bridge %s not found\n\nOne-time setup required:\n"+
-				"  sudo tee /etc/systemd/network/10-nexusbr0.netdev << 'EOF'\n"+
-				"[NetDev]\nName=nexusbr0\nKind=bridge\nEOF\n\n"+
-				"  sudo tee /etc/systemd/network/11-nexusbr0.network << 'EOF'\n"+
-				"[Match]\nName=nexusbr0\n[Network]\nAddress=172.26.0.1/16\nIPForward=yes\nIPMasquerade=ipv4\nEOF\n\n"+
-				"  sudo tee /etc/systemd/network/12-nexus-tap.network << 'EOF'\n"+
-				"[Match]\nName=nexus-*\n[Network]\nBridge=nexusbr0\nEOF\n\n"+
-				"  sudo systemctl enable --now systemd-networkd",
+			"bridge %s not found\n\nRun the one-time host setup:\n  nexus setup firecracker",
 			bridge,
 		)
 	}
 	if !strings.Contains(string(out), "UP") {
 		return fmt.Errorf(
-			"bridge %s exists but is not UP\n\nTry: sudo ip link set %s up\n"+
-				"Or re-run full bridge setup with systemd-networkd",
-			bridge, bridge,
+			"bridge %s exists but is not UP\n\nRun the one-time host setup:\n  nexus setup firecracker",
+			bridge,
 		)
 	}
 	return nil
