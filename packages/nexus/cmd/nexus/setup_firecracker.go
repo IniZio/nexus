@@ -115,6 +115,16 @@ var setupRunScriptFn = runSetupScript
 // tests.
 var setupVerifyFn = verifyFirecrackerSetup
 
+// setupSudoReexecFn reruns `nexus setup firecracker` under sudo so users can
+// complete setup with a single command invocation. Overridable in tests.
+var setupSudoReexecFn = func(commandPath string) error {
+	cmd := exec.Command("sudo", commandPath, "setup", "firecracker")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // detectPrivilegeMode returns the appropriate privilege escalation strategy
 // based on the three boolean inputs.
 //
@@ -400,6 +410,16 @@ func runSetupFirecracker(w io.Writer) error {
 		}
 
 		cmdPath := setupCommandPath()
+		fmt.Fprintln(w, "==> Requesting sudo to complete setup...")
+		if err := setupSudoReexecFn(cmdPath); err == nil {
+			fmt.Fprintln(w, "==> Verifying setup...")
+			if err := setupVerifyFn(); err != nil {
+				return fmt.Errorf("setup verification failed after sudo setup: %w", err)
+			}
+			fmt.Fprintln(w, "==> Firecracker host setup complete.")
+			return nil
+		}
+
 		fmt.Fprintln(w, "")
 		fmt.Fprintln(w, "Run the following command to complete Firecracker setup (networking + VM assets + verification):")
 		fmt.Fprintln(w, "")

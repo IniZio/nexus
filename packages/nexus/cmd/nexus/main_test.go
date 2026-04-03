@@ -935,7 +935,7 @@ func TestDetectPrivilegeModeFallback(t *testing.T) {
 
 // TestSetupFirecrackerNonInteractivePrintsAndErrors verifies that
 // runSetupFirecracker in non-interactive mode (privilegeModeManual)
-// prints a single sudo bash command and returns a non-nil error.
+// falls back to printing a sudo command when auto-sudo fails.
 func TestSetupFirecrackerNonInteractivePrintsAndErrors(t *testing.T) {
 	origMode := setupPrivilegeModeOverride
 	origEnabled := setupPrivilegeModeOverrideEnabled
@@ -962,6 +962,18 @@ func TestSetupFirecrackerNonInteractivePrintsAndErrors(t *testing.T) {
 		return "/tmp/nexus-firecracker-agent", nil
 	}
 
+	origSudo := setupSudoReexecFn
+	t.Cleanup(func() { setupSudoReexecFn = origSudo })
+	sudoCalled := false
+	setupSudoReexecFn = func(commandPath string) error {
+		sudoCalled = true
+		return errors.New("sudo unavailable")
+	}
+
+	origVerify := setupVerifyFn
+	t.Cleanup(func() { setupVerifyFn = origVerify })
+	setupVerifyFn = func() error { return errors.New("not setup") }
+
 	var buf strings.Builder
 	err := runSetupFirecracker(&buf)
 	if err == nil {
@@ -974,11 +986,76 @@ func TestSetupFirecrackerNonInteractivePrintsAndErrors(t *testing.T) {
 	if !strings.Contains(out, "sudo") || !strings.Contains(out, "setup firecracker") {
 		t.Fatalf("expected output to contain 'sudo <nexus> setup firecracker', got: %q", out)
 	}
+	if !sudoCalled {
+		t.Fatal("expected manual mode to attempt auto-sudo before fallback")
+	}
 	if buildCalled {
 		t.Fatal("expected manual mode to skip tap-helper extraction")
 	}
 	if agentCalled {
 		t.Fatal("expected manual mode to skip agent extraction")
+	}
+}
+
+func TestSetupFirecrackerManualModeAutoSudoSuccess(t *testing.T) {
+	origMode := setupPrivilegeModeOverride
+	origEnabled := setupPrivilegeModeOverrideEnabled
+	t.Cleanup(func() {
+		setupPrivilegeModeOverride = origMode
+		setupPrivilegeModeOverrideEnabled = origEnabled
+	})
+	setupPrivilegeModeOverride = privilegeModeManual
+	setupPrivilegeModeOverrideEnabled = true
+
+	origBuild := setupBuildTapHelperFn
+	t.Cleanup(func() { setupBuildTapHelperFn = origBuild })
+	setupBuildTapHelperFn = func() (string, error) {
+		t.Fatal("did not expect tap-helper extraction in parent process during manual auto-sudo")
+		return "", nil
+	}
+
+	origAgent := setupExtractAgentFn
+	t.Cleanup(func() { setupExtractAgentFn = origAgent })
+	setupExtractAgentFn = func() (string, error) {
+		t.Fatal("did not expect agent extraction in parent process during manual auto-sudo")
+		return "", nil
+	}
+
+	origSudo := setupSudoReexecFn
+	t.Cleanup(func() { setupSudoReexecFn = origSudo })
+	sudoCalled := false
+	setupSudoReexecFn = func(commandPath string) error {
+		sudoCalled = true
+		if strings.TrimSpace(commandPath) == "" {
+			t.Fatal("expected non-empty setup command path")
+		}
+		return nil
+	}
+
+	origVerify := setupVerifyFn
+	t.Cleanup(func() { setupVerifyFn = origVerify })
+	verifyCalls := 0
+	setupVerifyFn = func() error {
+		verifyCalls++
+		if verifyCalls == 1 {
+			return errors.New("not setup yet")
+		}
+		return nil
+	}
+
+	var buf strings.Builder
+	if err := runSetupFirecracker(&buf); err != nil {
+		t.Fatalf("expected setup to succeed when auto-sudo succeeds, got: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Requesting sudo") {
+		t.Fatalf("expected output to show auto-sudo attempt, got: %q", out)
+	}
+	if !strings.Contains(out, "Firecracker host setup complete") {
+		t.Fatalf("expected success output after auto-sudo, got: %q", out)
+	}
+	if !sudoCalled {
+		t.Fatal("expected manual mode to call auto-sudo function")
 	}
 }
 
