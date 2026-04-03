@@ -36,6 +36,16 @@ func TestHandleExecCapturesStderr(t *testing.T) {
 	}
 }
 
+func TestHandleExecIncludesStartErrorInStderr(t *testing.T) {
+	resp := handleExec(execRequest{Command: "command-that-does-not-exist-for-test"})
+	if resp.ExitCode == 0 {
+		t.Fatalf("expected non-zero exit code")
+	}
+	if !strings.Contains(resp.Stderr, "executable file not found") {
+		t.Fatalf("expected stderr to include start error, got: %q", resp.Stderr)
+	}
+}
+
 func TestServeConnSendsErrorOnDecodeFailure(t *testing.T) {
 	server, client := net.Pipe()
 	defer server.Close()
