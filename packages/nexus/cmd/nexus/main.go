@@ -259,6 +259,8 @@ var firecrackerCheckCommandRunner = runFirecrackerCheckCommand
 
 var firecrackerBootstrapRunner = bootstrapFirecrackerExecContextNative
 
+var containerBootstrapRunner = bootstrapContainerExecContext
+
 var doctorExecCleanup func() error
 
 var firecrackerDoctorSessionState *firecrackerDoctorSession
@@ -266,7 +268,7 @@ var firecrackerDoctorSessionState *firecrackerDoctorSession
 var hostDockerSocketStat = os.Stat
 
 func runBootstrapInstallCommand(ctx context.Context, projectRoot string, timeout time.Duration, execCtx doctorExecContext) (string, error) {
-	installCmd := "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-v2 curl make python3 git nodejs npm || DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-plugin curl make python3 git nodejs npm"
+	installCmd := "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-v2 curl make python3 git nodejs npm || DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-plugin curl make python3 git nodejs npm; npm i -g opencode-ai"
 	return doctorCheckCommandRunner(ctx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "bash", []string{"-lc", installCmd}, execCtx)
 }
 
@@ -962,7 +964,10 @@ func bootstrapDoctorExecContext(projectRoot string) error {
 	setDoctorExecContextCleanup(nil)
 	execCtx := loadDoctorExecContext()
 	if execCtx.backend == "firecracker" {
-		return bootstrapFirecrackerExecContext(projectRoot, execCtx)
+		if err := bootstrapFirecrackerExecContext(projectRoot, execCtx); err != nil {
+			return err
+		}
+		return containerBootstrapRunner(projectRoot, execCtx, "firecracker", true)
 	}
 
 	if execCtx.backend != "lxc" {
@@ -975,7 +980,7 @@ func bootstrapDoctorExecContext(projectRoot string) error {
 		return fmt.Errorf("backend \"lxc\" requires explicit execution context (set NEXUS_DOCTOR_LXC_INSTANCE)")
 	}
 
-	return bootstrapContainerExecContext(projectRoot, execCtx, "lxc", true)
+	return containerBootstrapRunner(projectRoot, execCtx, "lxc", true)
 }
 
 func markChecksNotRun(tests []config.DoctorCommandCheck, skipReason string) []checkResult {

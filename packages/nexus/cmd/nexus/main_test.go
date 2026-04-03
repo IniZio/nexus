@@ -727,11 +727,14 @@ func TestBootstrapDoctorExecContextFirecrackerUsesNativeBootstrap(t *testing.T) 
 	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
 
 	original := firecrackerBootstrapRunner
+	originalContainerBootstrap := containerBootstrapRunner
 	t.Cleanup(func() {
 		firecrackerBootstrapRunner = original
+		containerBootstrapRunner = originalContainerBootstrap
 	})
 
 	called := false
+	containerCalled := false
 	firecrackerBootstrapRunner = func(projectRoot string, execCtx doctorExecContext) error {
 		called = true
 		if execCtx.backend != "firecracker" {
@@ -743,10 +746,27 @@ func TestBootstrapDoctorExecContextFirecrackerUsesNativeBootstrap(t *testing.T) 
 		return nil
 	}
 
+	containerBootstrapRunner = func(projectRoot string, execCtx doctorExecContext, backendLabel string, allowInstall bool) error {
+		containerCalled = true
+		if execCtx.backend != "firecracker" {
+			t.Fatalf("expected container bootstrap firecracker backend, got %q", execCtx.backend)
+		}
+		if backendLabel != "firecracker" {
+			t.Fatalf("expected backend label firecracker, got %q", backendLabel)
+		}
+		if !allowInstall {
+			t.Fatal("expected allowInstall=true for firecracker bootstrap")
+		}
+		return nil
+	}
+
 	if err := bootstrapDoctorExecContext(t.TempDir()); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 	if !called {
 		t.Fatal("expected firecracker bootstrap runner to be called")
+	}
+	if !containerCalled {
+		t.Fatal("expected firecracker container bootstrap runner to be called")
 	}
 }
