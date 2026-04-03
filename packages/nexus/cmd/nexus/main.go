@@ -767,7 +767,10 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 		if strings.Contains(trimmedOut, "Temporary failure resolving") ||
 			strings.Contains(trimmedOut, "Failed to fetch") ||
 			strings.Contains(trimmedOut, "Unable to locate package") ||
-			strings.Contains(trimmedOut, "has no installation candidate") {
+			strings.Contains(trimmedOut, "has no installation candidate") ||
+			strings.Contains(trimmedOut, "Could not open lock file") ||
+			strings.Contains(trimmedOut, "are you root") ||
+			strings.Contains(trimmedOut, "Permission denied") {
 			fmt.Printf("bootstrap %s tooling: apt unavailable, continuing with existing runtime packages\n", backendLabel)
 		} else {
 			return fmt.Errorf("bootstrap %s tooling failed: %s", backendLabel, strings.TrimSpace(startOut+"\n"+installOut))
@@ -1185,16 +1188,52 @@ func runCheckCommandWithExecContext(ctx context.Context, projectRoot, phase, nam
 
 	if execCtx.backend == "firecracker" {
 		fmt.Printf("%s exec: %s (attempt %d/%d, timeout=%s, context=firecracker): %s\n", phase, name, attempt, attempts, timeout, formatCommand(command, args))
-		return firecrackerCheckCommandRunner(ctx, projectRoot, command, args)
+		out, err := firecrackerCheckCommandRunner(ctx, projectRoot, command, args)
+		if shouldFallbackFirecrackerToHostExec(out, err) {
+			fmt.Printf("%s warning: %s (context=firecracker) missing guest workdir; retrying on host context\n", phase, name)
+			return runHostCheckCommandWithExecContext(ctx, projectRoot, phase, name, attempt, attempts, timeout, command, args, doctorExecContext{backend: "host"}, "firecracker-host-fallback")
+		}
+		return out, err
 	}
 
+	return runHostCheckCommandWithExecContext(ctx, projectRoot, phase, name, attempt, attempts, timeout, command, args, execCtx, "")
+}
+
+func shouldFallbackFirecrackerToHostExec(out string, err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.TrimSpace(out)
+	if msg == "" {
+		msg = err.Error()
+	}
+	if strings.Contains(msg, "chdir ") && strings.Contains(msg, "no such file or directory") {
+		return true
+	}
+	if strings.Contains(msg, "executable file not found in $PATH") {
+		return true
+	}
+	return false
+}
+
+func runHostCheckCommandWithExecContext(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext, contextOverride string) (string, error) {
 	cmdName, cmdArgs, cmdEnv, contextLabel := resolveCheckCommand(projectRoot, command, args, execCtx)
+	if strings.TrimSpace(contextOverride) != "" {
+		contextLabel = contextOverride
+	}
 
 	fmt.Printf("%s exec: %s (attempt %d/%d, timeout=%s, context=%s): %s\n", phase, name, attempt, attempts, timeout, contextLabel, formatCommand(cmdName, cmdArgs))
 
 	cmd := exec.CommandContext(ctx, cmdName, cmdArgs...)
 	cmd.Dir = projectRoot
-	cmd.Env = append(os.Environ(), cmdEnv...)
+	env := append(os.Environ(), cmdEnv...)
+	if !hasEnvKey(env, "UID") {
+		env = append(env, fmt.Sprintf("UID=%d", os.Getuid()))
+	}
+	if !hasEnvKey(env, "GID") {
+		env = append(env, fmt.Sprintf("GID=%d", os.Getgid()))
+	}
+	cmd.Env = env
 
 	var output bytes.Buffer
 	writer := io.MultiWriter(os.Stdout, &output)
@@ -1208,6 +1247,16 @@ func runCheckCommandWithExecContext(ctx context.Context, projectRoot, phase, nam
 	}
 
 	return out, err
+}
+
+func hasEnvKey(env []string, key string) bool {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func loadDoctorExecContext() doctorExecContext {

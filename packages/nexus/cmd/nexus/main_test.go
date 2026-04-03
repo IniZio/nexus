@@ -219,6 +219,47 @@ func TestRunBootstrapInstallCommandDoesNotInstallOpencode(t *testing.T) {
 	}
 }
 
+func TestBootstrapContainerExecContextContinuesOnAptPermissionDenied(t *testing.T) {
+	originalRunner := doctorCheckCommandRunner
+	t.Cleanup(func() {
+		doctorCheckCommandRunner = originalRunner
+	})
+
+	capabilityChecksReady := false
+	startAttempts := 0
+
+	doctorCheckCommandRunner = func(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
+		if command == "docker" {
+			if capabilityChecksReady {
+				return "ok", nil
+			}
+			return "docker unavailable", errors.New("docker unavailable")
+		}
+
+		if command == "sh" && len(args) == 2 && args[0] == "-lc" {
+			script := args[1]
+			if strings.Contains(script, "apt-get update") {
+				return "E: Could not open lock file /var/lib/apt/lists/lock - open (13: Permission denied)\nE: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), are you root?", errors.New("apt permissions")
+			}
+			if strings.Contains(script, "systemctl enable docker") {
+				startAttempts++
+				if startAttempts == 1 {
+					return "start failed", errors.New("start failed")
+				}
+				capabilityChecksReady = true
+				return "started", nil
+			}
+		}
+
+		return "", nil
+	}
+
+	err := bootstrapContainerExecContext(t.TempDir(), doctorExecContext{backend: "dind"}, "dind", true)
+	if err != nil {
+		t.Fatalf("expected apt permission denied to be treated as non-fatal, got: %v", err)
+	}
+}
+
 func TestFirecrackerAgentVSockPortDefaultsToRuntimeConstant(t *testing.T) {
 	t.Setenv("NEXUS_FIRECRACKER_AGENT_VSOCK_PORT", "")
 	if got := firecrackerAgentVSockPort(); got != firecracker.DefaultAgentVSockPort {
@@ -830,6 +871,30 @@ func TestResolveCheckCommandDindWithoutDockerHost(t *testing.T) {
 	}
 }
 
+func TestRunCheckCommandWithExecContextHostExportsUIDAndGID(t *testing.T) {
+	out, err := runCheckCommandWithExecContext(
+		context.Background(),
+		t.TempDir(),
+		"probe",
+		"uid-gid-export",
+		1,
+		1,
+		30*time.Second,
+		"bash",
+		[]string{"-lc", "env | grep -E '^(UID|GID)=' | sort"},
+		doctorExecContext{backend: "host"},
+	)
+	if err != nil {
+		t.Fatalf("expected env probe to succeed, got: %v (out=%q)", err, out)
+	}
+	if !strings.Contains(out, fmt.Sprintf("UID=%d", os.Getuid())) {
+		t.Fatalf("expected UID export in command env, got %q", out)
+	}
+	if !strings.Contains(out, fmt.Sprintf("GID=%d", os.Getgid())) {
+		t.Fatalf("expected GID export in command env, got %q", out)
+	}
+}
+
 func TestRunCheckCommandWithExecContextFirecrackerUsesNativeRunner(t *testing.T) {
 	original := firecrackerCheckCommandRunner
 	t.Cleanup(func() {
@@ -871,6 +936,78 @@ func TestRunCheckCommandWithExecContextFirecrackerUsesNativeRunner(t *testing.T)
 	}
 	if out != "ok" {
 		t.Fatalf("expected output ok, got %q", out)
+	}
+}
+
+func TestRunCheckCommandWithExecContextFirecrackerFallsBackToHostOnMissingWorkdir(t *testing.T) {
+	original := firecrackerCheckCommandRunner
+	t.Cleanup(func() {
+		firecrackerCheckCommandRunner = original
+	})
+
+	called := false
+	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
+		called = true
+		return "chdir " + projectRoot + ": no such file or directory", errors.New("guest command failed")
+	}
+
+	root := t.TempDir()
+	out, err := runCheckCommandWithExecContext(
+		context.Background(),
+		root,
+		"probe",
+		"fallback-case",
+		1,
+		1,
+		30*time.Second,
+		"bash",
+		[]string{"-lc", "printf host-ok"},
+		doctorExecContext{backend: "firecracker"},
+	)
+	if err != nil {
+		t.Fatalf("expected host fallback to succeed, got error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected firecracker runner to be called before fallback")
+	}
+	if out != "host-ok" {
+		t.Fatalf("expected host fallback output host-ok, got %q", out)
+	}
+}
+
+func TestRunCheckCommandWithExecContextFirecrackerFallsBackToHostOnMissingBinary(t *testing.T) {
+	original := firecrackerCheckCommandRunner
+	t.Cleanup(func() {
+		firecrackerCheckCommandRunner = original
+	})
+
+	called := false
+	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
+		called = true
+		return "exec: \"docker\": executable file not found in $PATH", errors.New("guest command failed")
+	}
+
+	root := t.TempDir()
+	out, err := runCheckCommandWithExecContext(
+		context.Background(),
+		root,
+		"probe",
+		"fallback-binary-missing",
+		1,
+		1,
+		30*time.Second,
+		"bash",
+		[]string{"-lc", "printf host-ok"},
+		doctorExecContext{backend: "firecracker"},
+	)
+	if err != nil {
+		t.Fatalf("expected host fallback to succeed, got error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected firecracker runner to be called before fallback")
+	}
+	if out != "host-ok" {
+		t.Fatalf("expected host fallback output host-ok, got %q", out)
 	}
 }
 
