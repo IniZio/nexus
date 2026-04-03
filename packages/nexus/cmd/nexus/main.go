@@ -277,7 +277,7 @@ var firecrackerHostOpenFile = os.OpenFile
 var firecrackerHostGOOS = runtime.GOOS
 
 func runBootstrapInstallCommand(ctx context.Context, projectRoot string, timeout time.Duration, execCtx doctorExecContext) (string, error) {
-	installCmd := "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bash docker.io docker-compose-v2 curl make python3 git nodejs npm || DEBIAN_FRONTEND=noninteractive apt-get install -y bash docker.io docker-compose-plugin curl make python3 git nodejs npm; npm i -g opencode-ai"
+	installCmd := "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bash docker.io docker-compose-v2 curl make python3 git nodejs npm || DEBIAN_FRONTEND=noninteractive apt-get install -y bash docker.io docker-compose-plugin curl make python3 git nodejs npm"
 	return doctorCheckCommandRunner(ctx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "sh", []string{"-lc", installCmd}, execCtx)
 }
 
