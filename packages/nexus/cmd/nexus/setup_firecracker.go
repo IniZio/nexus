@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -327,26 +328,51 @@ func buildSetupScript(tapHelperSrc, agentSrc string) string {
 	return b.String()
 }
 
-// runSetupScript executes the given bash script file under the appropriate
+// setupCommandPath returns the command path users should run with sudo.
+func setupCommandPath() string {
+	if exe, err := os.Executable(); err == nil {
+		exe = strings.TrimSpace(exe)
+		if exe != "" {
+			return exe
+		}
+	}
+	if len(os.Args) > 0 {
+		arg0 := strings.TrimSpace(os.Args[0])
+		if arg0 != "" {
+			if filepath.IsAbs(arg0) {
+				return arg0
+			}
+			if lp, err := exec.LookPath(arg0); err == nil {
+				return lp
+			}
+			return arg0
+		}
+	}
+	return "nexus"
+}
+
+// runSetupScript executes the given bash script content under the appropriate
 // privilege mode.  For privilegeModeManual it returns errNeedsManual without
 // running anything.
-func runSetupScript(w interface{ Write([]byte) (int, error) }, mode privilegeMode, scriptPath string) error {
+func runSetupScript(mode privilegeMode, script string) error {
 	switch mode {
 	case privilegeModeRoot:
-		cmd := exec.Command("bash", scriptPath)
+		cmd := exec.Command("bash", "-s")
+		cmd.Stdin = strings.NewReader(script)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 
 	case privilegeModeSudoN:
-		cmd := exec.Command("sudo", "-n", "bash", scriptPath)
+		cmd := exec.Command("sudo", "-n", "bash", "-s")
+		cmd.Stdin = strings.NewReader(script)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 
 	case privilegeModeInteractive:
-		cmd := exec.Command("sudo", "bash", scriptPath)
-		cmd.Stdin = os.Stdin
+		cmd := exec.Command("sudo", "bash", "-s")
+		cmd.Stdin = strings.NewReader(script)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
@@ -366,6 +392,15 @@ func runSetupScript(w interface{ Write([]byte) (int, error) }, mode privilegeMod
 // passwordless sudo).
 func runSetupFirecracker(w io.Writer) error {
 	mode := resolvePrivilegeMode()
+	if mode == privilegeModeManual {
+		cmdPath := setupCommandPath()
+		fmt.Fprintln(w, "")
+		fmt.Fprintln(w, "Run the following command to complete Firecracker setup (networking + VM assets + verification):")
+		fmt.Fprintln(w, "")
+		fmt.Fprintf(w, "  sudo %s setup firecracker\n", shellQuote(cmdPath))
+		fmt.Fprintln(w, "")
+		return fmt.Errorf("manual privileged step required — run the sudo nexus setup command above")
+	}
 
 	// ---------- step 1: extract nexus-tap-helper (no privilege needed) ----------
 	fmt.Fprintln(w, "==> Extracting nexus-tap-helper...")
@@ -386,44 +421,20 @@ func runSetupFirecracker(w io.Writer) error {
 	// ---------- step 3: generate idempotent setup script ----------
 	script := buildSetupScript(tapHelperPath, agentPath)
 
-	f, err := os.CreateTemp("", "nexus-setup-*.sh")
-	if err != nil {
-		return fmt.Errorf("create setup script: %w", err)
-	}
-	scriptPath := f.Name()
-
-	if _, err := f.WriteString(script); err != nil {
-		_ = f.Close()
-		_ = os.Remove(scriptPath)
-		return fmt.Errorf("write setup script: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(scriptPath)
-		return fmt.Errorf("close setup script: %w", err)
-	}
-	if err := os.Chmod(scriptPath, 0o755); err != nil {
-		_ = os.Remove(scriptPath)
-		return fmt.Errorf("chmod setup script: %w", err)
-	}
-
 	// ---------- step 4: run (or print) the script ----------
 	fmt.Fprintln(w, "==> Running Firecracker host setup script...")
-	if err := setupRunScriptFn(w, mode, scriptPath); err != nil {
+	if err := setupRunScriptFn(mode, script); err != nil {
 		if errors.Is(err, errNeedsManual) {
-			// Leave the script in place so the user can run it.
+			cmdPath := setupCommandPath()
 			fmt.Fprintln(w, "")
-			fmt.Fprintln(w, "Run the following command to complete setup, then re-run `nexus setup firecracker` to verify:")
+			fmt.Fprintln(w, "Run the following command to complete Firecracker setup (networking + VM assets + verification):")
 			fmt.Fprintln(w, "")
-			fmt.Fprintf(w, "  sudo bash %s\n", scriptPath)
+			fmt.Fprintf(w, "  sudo %s setup firecracker\n", shellQuote(cmdPath))
 			fmt.Fprintln(w, "")
-			return fmt.Errorf("manual privileged step required — see command above")
+			return fmt.Errorf("manual privileged step required — run the sudo nexus setup command above")
 		}
-		_ = os.Remove(scriptPath)
 		return fmt.Errorf("setup script failed: %w", err)
 	}
-
-	// Clean up script on success.
-	_ = os.Remove(scriptPath)
 
 	// ---------- step 5: verify ----------
 	fmt.Fprintln(w, "==> Verifying setup...")

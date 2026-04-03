@@ -948,11 +948,19 @@ func TestSetupFirecrackerNonInteractivePrintsAndErrors(t *testing.T) {
 
 	origBuild := setupBuildTapHelperFn
 	t.Cleanup(func() { setupBuildTapHelperFn = origBuild })
-	setupBuildTapHelperFn = func() (string, error) { return "/tmp/nexus-tap-helper", nil }
+	buildCalled := false
+	setupBuildTapHelperFn = func() (string, error) {
+		buildCalled = true
+		return "/tmp/nexus-tap-helper", nil
+	}
 
 	origAgent := setupExtractAgentFn
 	t.Cleanup(func() { setupExtractAgentFn = origAgent })
-	setupExtractAgentFn = func() (string, error) { return "/tmp/nexus-firecracker-agent", nil }
+	agentCalled := false
+	setupExtractAgentFn = func() (string, error) {
+		agentCalled = true
+		return "/tmp/nexus-firecracker-agent", nil
+	}
 
 	var buf strings.Builder
 	err := runSetupFirecracker(&buf)
@@ -963,8 +971,14 @@ func TestSetupFirecrackerNonInteractivePrintsAndErrors(t *testing.T) {
 		t.Fatalf("expected error to mention manual steps, got: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "sudo bash") {
-		t.Fatalf("expected output to contain 'sudo bash <script>', got: %q", out)
+	if !strings.Contains(out, "sudo") || !strings.Contains(out, "setup firecracker") {
+		t.Fatalf("expected output to contain 'sudo <nexus> setup firecracker', got: %q", out)
+	}
+	if buildCalled {
+		t.Fatal("expected manual mode to skip tap-helper extraction")
+	}
+	if agentCalled {
+		t.Fatal("expected manual mode to skip agent extraction")
 	}
 }
 
@@ -990,7 +1004,7 @@ func TestSetupFirecrackerMockedSucceeds(t *testing.T) {
 
 	origRunScript := setupRunScriptFn
 	t.Cleanup(func() { setupRunScriptFn = origRunScript })
-	setupRunScriptFn = func(w interface{ Write([]byte) (int, error) }, mode privilegeMode, scriptPath string) error {
+	setupRunScriptFn = func(mode privilegeMode, script string) error {
 		return nil
 	}
 
