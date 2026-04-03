@@ -32,7 +32,7 @@ Linux:
 macOS:
 
 - Firecracker is not supported natively (KVM is Linux-only).
-- Run doctor in a Linux VM or Linux CI runner.
+- Use a Linux VM such as Lima and run doctor inside that VM.
 
 ## Building
 
