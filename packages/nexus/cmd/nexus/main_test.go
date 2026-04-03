@@ -209,6 +209,120 @@ func TestFirecrackerAgentVSockPortInvalidEnvFallsBackToDefault(t *testing.T) {
 	}
 }
 
+func TestValidateFirecrackerHostPrerequisitesSkipsNonFirecrackerBackend(t *testing.T) {
+	if err := validateFirecrackerHostPrerequisites(doctorExecContext{backend: "dind"}); err != nil {
+		t.Fatalf("expected non-firecracker backend to skip preflight, got %v", err)
+	}
+}
+
+func TestValidateFirecrackerHostPrerequisitesRequiresLinuxHost(t *testing.T) {
+	originalGOOS := firecrackerHostGOOS
+	t.Cleanup(func() {
+		firecrackerHostGOOS = originalGOOS
+	})
+
+	firecrackerHostGOOS = "darwin"
+	err := validateFirecrackerHostPrerequisites(doctorExecContext{backend: "firecracker"})
+	if err == nil {
+		t.Fatal("expected darwin host to fail firecracker preflight")
+	}
+	if !strings.Contains(err.Error(), "requires Linux with KVM") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateFirecrackerHostPrerequisitesFailsWhenBinaryMissing(t *testing.T) {
+	originalLookup := firecrackerHostBinaryLookup
+	originalGOOS := firecrackerHostGOOS
+	t.Cleanup(func() {
+		firecrackerHostBinaryLookup = originalLookup
+		firecrackerHostGOOS = originalGOOS
+	})
+
+	firecrackerHostGOOS = "linux"
+	firecrackerHostBinaryLookup = func(string) (string, error) {
+		return "", errors.New("not found")
+	}
+
+	err := validateFirecrackerHostPrerequisites(doctorExecContext{backend: "firecracker"})
+	if err == nil {
+		t.Fatal("expected missing firecracker binary error")
+	}
+	if !strings.Contains(err.Error(), "binary") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateFirecrackerHostPrerequisitesFailsWhenKVMInaccessible(t *testing.T) {
+	originalLookup := firecrackerHostBinaryLookup
+	originalStat := firecrackerHostStat
+	originalOpen := firecrackerHostOpenFile
+	originalGOOS := firecrackerHostGOOS
+	t.Cleanup(func() {
+		firecrackerHostBinaryLookup = originalLookup
+		firecrackerHostStat = originalStat
+		firecrackerHostOpenFile = originalOpen
+		firecrackerHostGOOS = originalGOOS
+	})
+
+	t.Setenv("NEXUS_FIRECRACKER_KERNEL", "/kernel")
+	t.Setenv("NEXUS_FIRECRACKER_ROOTFS", "/rootfs")
+
+	firecrackerHostGOOS = "linux"
+	firecrackerHostBinaryLookup = func(string) (string, error) {
+		return "/usr/bin/firecracker", nil
+	}
+	firecrackerHostStat = func(path string) (os.FileInfo, error) {
+		return fakeSocketFileInfo{name: filepath.Base(path)}, nil
+	}
+	firecrackerHostOpenFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		return nil, os.ErrPermission
+	}
+
+	err := validateFirecrackerHostPrerequisites(doctorExecContext{backend: "firecracker"})
+	if err == nil {
+		t.Fatal("expected /dev/kvm permission failure")
+	}
+	if !strings.Contains(err.Error(), "kvm group") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateFirecrackerHostPrerequisitesPassesWhenHostReady(t *testing.T) {
+	originalLookup := firecrackerHostBinaryLookup
+	originalStat := firecrackerHostStat
+	originalOpen := firecrackerHostOpenFile
+	originalGOOS := firecrackerHostGOOS
+	t.Cleanup(func() {
+		firecrackerHostBinaryLookup = originalLookup
+		firecrackerHostStat = originalStat
+		firecrackerHostOpenFile = originalOpen
+		firecrackerHostGOOS = originalGOOS
+	})
+
+	t.Setenv("NEXUS_FIRECRACKER_KERNEL", "/kernel")
+	t.Setenv("NEXUS_FIRECRACKER_ROOTFS", "/rootfs")
+
+	firecrackerHostGOOS = "linux"
+	firecrackerHostBinaryLookup = func(string) (string, error) {
+		return "/usr/bin/firecracker", nil
+	}
+	firecrackerHostStat = func(path string) (os.FileInfo, error) {
+		return fakeSocketFileInfo{name: filepath.Base(path)}, nil
+	}
+	firecrackerHostOpenFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		f, err := os.CreateTemp(t.TempDir(), "kvm-probe")
+		if err != nil {
+			t.Fatalf("create temp file: %v", err)
+		}
+		return f, nil
+	}
+
+	if err := validateFirecrackerHostPrerequisites(doctorExecContext{backend: "firecracker"}); err != nil {
+		t.Fatalf("expected firecracker preflight to pass, got %v", err)
+	}
+}
+
 func TestWriteReport(t *testing.T) {
 	reportPath := filepath.Join(t.TempDir(), "reports", "doctor.json")
 	results := []checkResult{{Name: "runtime", Phase: "probe", Status: "passed", Required: true, Attempts: 1}}

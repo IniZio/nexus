@@ -15,6 +15,25 @@ The workspace daemon is a Go-based WebSocket server that provides secure file sy
 - Directory traversal protection
 - Docker container support
 
+## Firecracker Doctor Prerequisites
+
+For `nexus doctor` with `NEXUS_RUNTIME_BACKEND=firecracker`, host preflight checks enforce:
+
+- `firecracker` binary available on `PATH` (or via `NEXUS_FIRECRACKER_BIN`)
+- `NEXUS_FIRECRACKER_KERNEL` and `NEXUS_FIRECRACKER_ROOTFS` point to readable files
+- `/dev/kvm` is readable/writable by the current user
+
+Linux:
+
+- Install Firecracker.
+- Add user to `kvm` group and re-login.
+- Export `NEXUS_FIRECRACKER_KERNEL` and `NEXUS_FIRECRACKER_ROOTFS`.
+
+macOS:
+
+- Firecracker is not supported natively (KVM is Linux-only).
+- Run doctor in a Linux VM or Linux CI runner.
+
 ## Building
 
 ```bash

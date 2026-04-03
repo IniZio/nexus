@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -267,6 +268,14 @@ var firecrackerDoctorSessionState *firecrackerDoctorSession
 
 var hostDockerSocketStat = os.Stat
 
+var firecrackerHostBinaryLookup = exec.LookPath
+
+var firecrackerHostStat = os.Stat
+
+var firecrackerHostOpenFile = os.OpenFile
+
+var firecrackerHostGOOS = runtime.GOOS
+
 func runBootstrapInstallCommand(ctx context.Context, projectRoot string, timeout time.Duration, execCtx doctorExecContext) (string, error) {
 	installCmd := "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bash docker.io docker-compose-v2 curl make python3 git nodejs npm || DEBIAN_FRONTEND=noninteractive apt-get install -y bash docker.io docker-compose-plugin curl make python3 git nodejs npm; npm i -g opencode-ai"
 	return doctorCheckCommandRunner(ctx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "sh", []string{"-lc", installCmd}, execCtx)
@@ -377,9 +386,64 @@ func readFileTail(path string, maxBytes int) string {
 	return strings.TrimSpace(string(data))
 }
 
+func validateFirecrackerHostPrerequisites(execCtx doctorExecContext) error {
+	if execCtx.backend != "firecracker" {
+		return nil
+	}
+
+	if firecrackerHostGOOS != "linux" {
+		return fmt.Errorf("firecracker backend requires Linux with KVM; current host OS is %s (run doctor inside a Linux VM or CI)", firecrackerHostGOOS)
+	}
+
+	firecrackerBin := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_BIN"))
+	if firecrackerBin == "" {
+		firecrackerBin = "firecracker"
+	}
+
+	if _, err := firecrackerHostBinaryLookup(firecrackerBin); err != nil {
+		return fmt.Errorf("firecracker binary %q not found in PATH; install Firecracker or set NEXUS_FIRECRACKER_BIN", firecrackerBin)
+	}
+
+	kernelPath := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_KERNEL"))
+	if kernelPath == "" {
+		return errors.New("missing NEXUS_FIRECRACKER_KERNEL for firecracker backend")
+	}
+	if _, err := firecrackerHostStat(kernelPath); err != nil {
+		return fmt.Errorf("firecracker kernel not accessible at %q: %w", kernelPath, err)
+	}
+
+	rootfsPath := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_ROOTFS"))
+	if rootfsPath == "" {
+		return errors.New("missing NEXUS_FIRECRACKER_ROOTFS for firecracker backend")
+	}
+	if _, err := firecrackerHostStat(rootfsPath); err != nil {
+		return fmt.Errorf("firecracker rootfs not accessible at %q: %w", rootfsPath, err)
+	}
+
+	kvmDevice := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_KVM_DEVICE"))
+	if kvmDevice == "" {
+		kvmDevice = "/dev/kvm"
+	}
+
+	fd, err := firecrackerHostOpenFile(kvmDevice, os.O_RDWR, 0)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return fmt.Errorf("firecracker requires read/write access to %s; add current user to kvm group and re-login", kvmDevice)
+		}
+		return fmt.Errorf("firecracker KVM device check failed for %s: %w", kvmDevice, err)
+	}
+	_ = fd.Close()
+
+	return nil
+}
+
 func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExecContext) error {
 	if execCtx.backend != "firecracker" {
 		return fmt.Errorf("invalid backend for firecracker bootstrap: %s", execCtx.backend)
+	}
+
+	if err := validateFirecrackerHostPrerequisites(execCtx); err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
