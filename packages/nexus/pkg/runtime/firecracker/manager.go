@@ -11,6 +11,15 @@ import (
 	"time"
 )
 
+// tapSetupFunc creates a TAP device and attaches it to the bridge.
+// Returns an opaque handle (unused in production, may be used in tests).
+// Overridable in tests.
+var tapSetupFunc func(tapName, hostIP, subnetCIDR string) (any, error) = realSetupTAP
+
+// tapTeardownFunc tears down a TAP device.
+// Overridable in tests.
+var tapTeardownFunc func(tapName, subnetCIDR string) = realTeardownTAP
+
 // initialCID is the starting CID for guest VMs.
 const initialCID uint32 = 1000
 
@@ -31,6 +40,9 @@ type Instance struct {
 	SerialLog   string
 	CID         uint32
 	Process     *os.Process
+	TAPName     string
+	GuestIP     string
+	HostIP      string
 }
 
 // ManagerConfig holds configuration for the Firecracker manager.
@@ -47,6 +59,19 @@ type APIClientFactory func(sockPath string) apiClientInterface
 // apiClientInterface defines the methods we need from the API client.
 type apiClientInterface interface {
 	put(ctx context.Context, path string, body any) error
+}
+
+// networkCommandRunner runs a network-related command.
+// Overridable in tests to avoid real network operations.
+var networkCommandRunner = runNetworkCommand
+
+func runNetworkCommand(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s %v: %w: %s", name, args, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // Manager handles Firecracker VM lifecycle operations.
@@ -75,6 +100,24 @@ func newManager(cfg ManagerConfig) *Manager {
 
 func defaultAPIClientFactory(sockPath string) apiClientInterface {
 	return newAPIClient(sockPath)
+}
+
+// guestMAC returns a deterministic MAC address for a given CID.
+func guestMAC(cid uint32) string {
+	b0 := byte((cid >> 8) & 0xFF)
+	b1 := byte(cid & 0xFF)
+	return fmt.Sprintf("AA:FC:00:00:%02X:%02X", b0, b1)
+}
+
+// setupTAP delegates to tapSetupFunc (real or mock in tests).
+func setupTAP(tapNameStr, hostIP, subnetCIDR string) error {
+	_, err := tapSetupFunc(tapNameStr, hostIP, subnetCIDR)
+	return err
+}
+
+// teardownTAP delegates to tapTeardownFunc (real or mock in tests).
+func teardownTAP(tapNameStr, subnetCIDR string) {
+	tapTeardownFunc(tapNameStr, subnetCIDR)
 }
 
 // cleanup removes the workdir and cleans up a partially started instance.
@@ -107,15 +150,29 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	cid := m.nextCID
 	m.nextCID++
 
-	args := []string{
-		"--api-sock", apiSocket,
-		"--id", spec.WorkspaceID,
+	// Derive a tap name for this workspace and create it on the host bridge.
+	tap := tapNameForWorkspace(spec.WorkspaceID)
+	mac := guestMAC(cid)
+	hostIP := bridgeGatewayIP
+	subnetCIDR := guestSubnetCIDR
+
+	if err := setupTAP(tap, hostIP, subnetCIDR); err != nil {
+		os.RemoveAll(workDir)
+		return nil, fmt.Errorf("failed to setup tap %s: %w", tap, err)
 	}
 
-	cmd := exec.Command(m.config.FirecrackerBin, args...)
+	// Launch Firecracker directly in the host network namespace.
+	// The tap device was created on the host, so Firecracker opens it by name
+	// without any namespace wrapper — no EBUSY.
+	cmd := exec.Command(
+		m.config.FirecrackerBin,
+		"--api-sock", apiSocket,
+		"--id", spec.WorkspaceID,
+	)
 	cmd.Dir = workDir
 	logFile, err := os.OpenFile(serialLog, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
+		teardownTAP(tap, subnetCIDR)
 		os.RemoveAll(workDir)
 		return nil, fmt.Errorf("failed to create firecracker log file: %w", err)
 	}
@@ -124,12 +181,14 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
+		teardownTAP(tap, subnetCIDR)
 		os.RemoveAll(workDir)
 		return nil, fmt.Errorf("failed to start firecracker: %w", err)
 	}
 	_ = logFile.Close()
 
 	if err := m.waitForAPISocket(ctx, apiSocket); err != nil {
+		teardownTAP(tap, subnetCIDR)
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to wait for API socket: %w", err)
 	}
@@ -143,6 +202,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		"track_dirty_pages": false,
 	}
 	if err := client.put(ctx, "/machine-config", machineConfig); err != nil {
+		teardownTAP(tap, subnetCIDR)
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to configure machine: %w", err)
 	}
@@ -152,6 +212,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		"boot_args":         defaultFirecrackerBootArgs(),
 	}
 	if err := client.put(ctx, "/boot-source", bootSource); err != nil {
+		teardownTAP(tap, subnetCIDR)
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to configure boot source: %w", err)
 	}
@@ -163,8 +224,21 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		"is_read_only":   false,
 	}
 	if err := client.put(ctx, "/drives/rootfs", driveConfig); err != nil {
+		teardownTAP(tap, subnetCIDR)
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to configure drive: %w", err)
+	}
+
+	// Configure network interface: Firecracker opens the host tap by name.
+	netIfaceConfig := map[string]any{
+		"iface_id":      "eth0",
+		"host_dev_name": tap,
+		"guest_mac":     mac,
+	}
+	if err := client.put(ctx, "/network-interfaces/eth0", netIfaceConfig); err != nil {
+		teardownTAP(tap, subnetCIDR)
+		m.cleanup(workDir, cmd.Process)
+		return nil, fmt.Errorf("failed to configure network interface: %w", err)
 	}
 
 	vsockConfig := map[string]any{
@@ -173,6 +247,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		"uds_path":  vsockPath,
 	}
 	if err := client.put(ctx, "/vsock", vsockConfig); err != nil {
+		teardownTAP(tap, subnetCIDR)
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to configure vsock: %w", err)
 	}
@@ -181,6 +256,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		"action_type": "InstanceStart",
 	}
 	if err := client.put(ctx, "/actions", action); err != nil {
+		teardownTAP(tap, subnetCIDR)
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to start instance: %w", err)
 	}
@@ -193,12 +269,19 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		SerialLog:   serialLog,
 		CID:         cid,
 		Process:     cmd.Process,
+		TAPName:     tap,
+		GuestIP:     "", // assigned by DHCP at boot
+		HostIP:      hostIP,
 	}
 
 	m.instances[spec.WorkspaceID] = inst
 	return inst, nil
 }
 
+// defaultFirecrackerBootArgs returns the kernel command line for a VM.
+// If NEXUS_FIRECRACKER_BOOT_ARGS is set, it is returned verbatim.
+// Otherwise a standard set is generated. Guest networking is configured
+// by udhcpc (DHCP) inside the VM — no static ip= kernel argument.
 func defaultFirecrackerBootArgs() string {
 	if raw := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_BOOT_ARGS")); raw != "" {
 		return raw
@@ -259,7 +342,13 @@ func (m *Manager) Stop(ctx context.Context, workspaceID string) error {
 		}
 	}
 
+	// Teardown the tap device after the VM exits.
+	if inst.TAPName != "" {
+		teardownTAP(inst.TAPName, guestSubnetCIDR)
+	}
+
 	os.RemoveAll(inst.WorkDir)
+
 	delete(m.instances, workspaceID)
 
 	return nil
