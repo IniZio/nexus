@@ -112,7 +112,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		"--id", spec.WorkspaceID,
 	}
 
-	cmd := exec.CommandContext(ctx, m.config.FirecrackerBin, args...)
+	cmd := exec.Command(m.config.FirecrackerBin, args...)
 	cmd.Dir = workDir
 	logFile, err := os.OpenFile(serialLog, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -245,7 +245,18 @@ func (m *Manager) Stop(ctx context.Context, workspaceID string) error {
 	}
 
 	if inst.Process != nil {
-		inst.Process.Wait()
+		waitDone := make(chan error, 1)
+		go func() {
+			_, err := inst.Process.Wait()
+			waitDone <- err
+		}()
+
+		select {
+		case <-ctx.Done():
+			_ = inst.Process.Kill()
+			<-waitDone
+		case <-waitDone:
+		}
 	}
 
 	os.RemoveAll(inst.WorkDir)

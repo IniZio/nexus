@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -98,7 +100,7 @@ func TestServeConnRejectsMissingRequestID(t *testing.T) {
 
 	// Server should still be listening for more requests
 	encoder.Encode(execRequest{ID: "req-2", Command: "echo", Args: []string{"success"}})
-	
+
 	var successResp execResponse
 	if err := decoder.Decode(&successResp); err != nil {
 		t.Fatalf("failed to decode success response: %v", err)
@@ -109,6 +111,50 @@ func TestServeConnRejectsMissingRequestID(t *testing.T) {
 	}
 	if strings.TrimSpace(successResp.Stdout) != "success" {
 		t.Fatalf("unexpected stdout: %q", successResp.Stdout)
+	}
+
+	client.Close()
+	<-done
+}
+
+func TestServeConnHonorsWorkDirField(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveConn(server)
+	}()
+
+	workDir := filepath.Join(t.TempDir(), "subdir")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+
+	encoder := json.NewEncoder(client)
+	request := map[string]any{
+		"id":      "req-workdir",
+		"command": "bash",
+		"args":    []string{"-lc", "pwd"},
+		"workdir": workDir,
+	}
+	if err := encoder.Encode(request); err != nil {
+		t.Fatalf("encode request: %v", err)
+	}
+
+	decoder := json.NewDecoder(client)
+	var resp execResponse
+	if err := decoder.Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if resp.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d with stderr %q", resp.ExitCode, resp.Stderr)
+	}
+	if strings.TrimSpace(resp.Stdout) != workDir {
+		t.Fatalf("expected stdout %q, got %q", workDir, strings.TrimSpace(resp.Stdout))
 	}
 
 	client.Close()

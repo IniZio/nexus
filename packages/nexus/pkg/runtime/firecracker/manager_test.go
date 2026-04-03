@@ -3,9 +3,11 @@ package firecracker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -146,12 +148,15 @@ func TestManagerStop(t *testing.T) {
 		t.Fatalf("spawn failed: %v", err)
 	}
 
-	err = mgr.Stop(ctx, inst.WorkspaceID)
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer stopCancel()
+
+	err = mgr.Stop(stopCtx, inst.WorkspaceID)
 	if err != nil {
 		t.Errorf("stop failed: %v", err)
 	}
 
-	err = mgr.Stop(ctx, "nonexistent")
+	err = mgr.Stop(stopCtx, "nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent workspace")
 	}
@@ -220,6 +225,63 @@ func TestManagerSpawnAPIError(t *testing.T) {
 	if !strings.Contains(err.Error(), "api error") {
 		t.Errorf("expected API error, got: %v", err)
 	}
+}
+
+func TestManagerSpawnProcessOutlivesSpawnContext(t *testing.T) {
+	cfg := testManagerConfig(t)
+	mgr := newManager(cfg)
+	mgr.apiClientFactory = func(sockPath string) apiClientInterface {
+		return &mockAPIClient{}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	spec := SpawnSpec{
+		WorkspaceID: "ws-context-lifetime",
+		ProjectRoot: t.TempDir(),
+		MemoryMiB:   512,
+		VCPUs:       1,
+	}
+
+	inst, err := mgr.Spawn(ctx, spec)
+	if err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+
+	t.Cleanup(func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer stopCancel()
+		_ = mgr.Stop(stopCtx, spec.WorkspaceID)
+	})
+
+	time.Sleep(350 * time.Millisecond)
+
+	if err := inst.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("expected firecracker process to outlive spawn context, but it exited: %v", err)
+	}
+
+	state, err := processState(inst.Process.Pid)
+	if err != nil {
+		t.Fatalf("failed to read firecracker process state: %v", err)
+	}
+	if state == 'Z' {
+		t.Fatal("expected firecracker process to outlive spawn context, but it became a zombie")
+	}
+}
+
+func processState(pid int) (byte, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, err
+	}
+
+	fields := strings.SplitN(string(data), ") ", 2)
+	if len(fields) != 2 || len(fields[1]) == 0 {
+		return 0, fmt.Errorf("unexpected /proc stat format")
+	}
+
+	return fields[1][0], nil
 }
 
 func TestManagerWaitForAPISocketTimeout(t *testing.T) {

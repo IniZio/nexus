@@ -23,7 +23,7 @@ type execRequest struct {
 	ID      string   `json:"id"`
 	Command string   `json:"command"`
 	Args    []string `json:"args"`
-	WorkDir string   `json:"work_dir,omitempty"`
+	WorkDir string   `json:"workdir,omitempty"`
 	Env     []string `json:"env,omitempty"`
 }
 
