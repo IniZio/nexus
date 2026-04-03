@@ -59,6 +59,9 @@ func handleExec(req execRequest) execResponse {
 			exitCode = exitError.ExitCode()
 		} else {
 			exitCode = 1
+			if stderrBuf.Len() == 0 {
+				stderrBuf.WriteString(err.Error())
+			}
 		}
 	}
 
