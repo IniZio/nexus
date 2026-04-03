@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -30,12 +31,36 @@ const (
 var setupPrivilegeModeOverride privilegeMode
 var setupPrivilegeModeOverrideEnabled bool
 
-// setupBuildTapHelperFn builds the nexus-tap-helper binary and returns its
-// path.  Overridable in tests.
+// setupBuildTapHelperFn builds or extracts the nexus-tap-helper binary and
+// returns its path.  Overridable in tests.
+//
+// Preference order:
+//  1. Extract from embeddedTapHelper (set at build time via //go:embed).
+//  2. Build from Go source if the module root can be located (dev fallback).
 var setupBuildTapHelperFn = func() (string, error) {
 	dest := "/tmp/nexus-tap-helper"
+
+	// Fast path: extract the binary that was embedded at build time.
+	if len(embeddedTapHelper) > 0 {
+		if err := os.WriteFile(dest, embeddedTapHelper, 0o755); err != nil {
+			return "", fmt.Errorf("extract embedded nexus-tap-helper: %w", err)
+		}
+		return dest, nil
+	}
+
+	// Fallback: build from source (works only when running from the module
+	// root, e.g. during `go run ./cmd/nexus` in a dev checkout).
+	root := moduleRoot()
+	localSrc := filepath.Join(root, "cmd", "nexus-tap-helper")
+	if _, err := os.Stat(localSrc); err != nil {
+		return "", fmt.Errorf(
+			"nexus-tap-helper not embedded and source not found at %s\n"+
+				"Rebuild nexus with: cd packages/nexus && go generate ./cmd/nexus && go build ./cmd/nexus",
+			localSrc,
+		)
+	}
 	cmd := exec.Command("go", "build", "-o", dest, "./cmd/nexus-tap-helper/")
-	cmd.Dir = moduleRoot()
+	cmd.Dir = root
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
