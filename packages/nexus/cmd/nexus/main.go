@@ -268,8 +268,8 @@ var firecrackerDoctorSessionState *firecrackerDoctorSession
 var hostDockerSocketStat = os.Stat
 
 func runBootstrapInstallCommand(ctx context.Context, projectRoot string, timeout time.Duration, execCtx doctorExecContext) (string, error) {
-	installCmd := "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-v2 curl make python3 git nodejs npm || DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-plugin curl make python3 git nodejs npm; npm i -g opencode-ai"
-	return doctorCheckCommandRunner(ctx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "bash", []string{"-lc", installCmd}, execCtx)
+	installCmd := "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bash docker.io docker-compose-v2 curl make python3 git nodejs npm || DEBIAN_FRONTEND=noninteractive apt-get install -y bash docker.io docker-compose-plugin curl make python3 git nodejs npm; npm i -g opencode-ai"
+	return doctorCheckCommandRunner(ctx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "sh", []string{"-lc", installCmd}, execCtx)
 }
 
 func setDoctorExecContextCleanup(cleanup func() error) {
@@ -539,7 +539,7 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 	collectDockerDiagnostics := func() string {
 		diagCmd := "set +e; echo '--- docker binary ---'; command -v docker || true; echo '--- docker version ---'; docker version || true; echo '--- docker info ---'; docker info || true; echo '--- dockerd ps ---'; ps -ef | grep '[d]ockerd' || true; echo '--- dockerd log ---'; cat /tmp/nexus-doctor-dockerd.log || true; if command -v systemctl >/dev/null 2>&1; then echo '--- systemctl status docker ---'; systemctl status docker --no-pager || true; fi"
 		diagCtx, diagCancel := context.WithTimeout(context.Background(), 45*time.Second)
-		diagOut, _ := doctorCheckCommandRunner(diagCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, 45*time.Second, "bash", []string{"-lc", diagCmd}, execCtx)
+		diagOut, _ := doctorCheckCommandRunner(diagCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, 45*time.Second, "sh", []string{"-lc", diagCmd}, execCtx)
 		diagCancel()
 		return strings.TrimSpace(diagOut)
 	}
@@ -587,7 +587,7 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 
 	startDockerCmd := "if command -v systemctl >/dev/null 2>&1; then systemctl enable docker >/dev/null 2>&1 || true; systemctl start docker >/dev/null 2>&1 || true; fi; if ! docker info >/dev/null 2>&1; then nohup dockerd --host=unix:///var/run/docker.sock --storage-driver=vfs --iptables=false --bridge=none --userland-proxy=false >/tmp/nexus-doctor-dockerd.log 2>&1 & sleep 5; fi"
 	startCtx, startCancel := context.WithTimeout(context.Background(), timeout)
-	startOut, startErr := doctorCheckCommandRunner(startCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "bash", []string{"-lc", startDockerCmd}, execCtx)
+	startOut, startErr := doctorCheckCommandRunner(startCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "sh", []string{"-lc", startDockerCmd}, execCtx)
 	startCancel()
 
 	if startErr == nil {
@@ -623,7 +623,7 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 	}
 
 	startCtx, startCancel = context.WithTimeout(context.Background(), timeout)
-	startOut, startErr = doctorCheckCommandRunner(startCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "bash", []string{"-lc", startDockerCmd}, execCtx)
+	startOut, startErr = doctorCheckCommandRunner(startCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "sh", []string{"-lc", startDockerCmd}, execCtx)
 	startCancel()
 	if startErr != nil {
 		diagnostics := collectDockerDiagnostics()
