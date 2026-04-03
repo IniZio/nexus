@@ -361,6 +361,20 @@ func buildSetupScript(tapHelperSrc, agentSrc string) string {
 	b.WriteString("  rm -rf \"$SQUASHFS_TMP\" \"$ROOTFS_MOUNT\"\n")
 	b.WriteString("  echo '  -> rootfs built successfully.'\n")
 	b.WriteString("fi\n")
+	b.WriteString("\n")
+
+	// Normalize ownership/permissions so non-root Firecracker runs can access
+	// VM assets after a sudo setup invocation.
+	b.WriteString("if [ -n \"${SUDO_USER:-}\" ]; then\n")
+	fmt.Fprintf(&b, "  if [ -f %s ]; then\n", DefaultVMKernelPath)
+	fmt.Fprintf(&b, "    chown \"$SUDO_USER\":\"$SUDO_USER\" %s\n", DefaultVMKernelPath)
+	fmt.Fprintf(&b, "    chmod 644 %s\n", DefaultVMKernelPath)
+	b.WriteString("  fi\n")
+	fmt.Fprintf(&b, "  if [ -f %s ]; then\n", DefaultVMRootfsPath)
+	fmt.Fprintf(&b, "    chown \"$SUDO_USER\":\"$SUDO_USER\" %s\n", DefaultVMRootfsPath)
+	fmt.Fprintf(&b, "    chmod 600 %s\n", DefaultVMRootfsPath)
+	b.WriteString("  fi\n")
+	b.WriteString("fi\n")
 
 	return b.String()
 }
@@ -548,9 +562,19 @@ func verifyFirecrackerSetup() error {
 	if _, err := os.Stat(DefaultVMKernelPath); err != nil {
 		return fmt.Errorf("VM kernel not found at %s: %w", DefaultVMKernelPath, err)
 	}
+	kernelFD, err := os.Open(DefaultVMKernelPath)
+	if err != nil {
+		return fmt.Errorf("VM kernel not readable at %s: %w", DefaultVMKernelPath, err)
+	}
+	_ = kernelFD.Close()
 	if _, err := os.Stat(DefaultVMRootfsPath); err != nil {
 		return fmt.Errorf("VM rootfs not found at %s: %w", DefaultVMRootfsPath, err)
 	}
+	rootfsFD, err := os.OpenFile(DefaultVMRootfsPath, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("VM rootfs not read/write accessible at %s: %w", DefaultVMRootfsPath, err)
+	}
+	_ = rootfsFD.Close()
 
 	fd, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
 	if err != nil {

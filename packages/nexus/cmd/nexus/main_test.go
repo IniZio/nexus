@@ -907,6 +907,20 @@ func TestBuildSetupScriptEnsuresSudoUserInKVMGroup(t *testing.T) {
 	}
 }
 
+func TestBuildSetupScriptNormalizesVMAssetOwnershipForSudoUser(t *testing.T) {
+	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
+
+	if !strings.Contains(script, "chown \"$SUDO_USER\":\"$SUDO_USER\" /var/lib/nexus/vmlinux.bin") {
+		t.Fatalf("expected setup script to chown kernel to sudo user, got:\n%s", script)
+	}
+	if !strings.Contains(script, "chown \"$SUDO_USER\":\"$SUDO_USER\" /var/lib/nexus/rootfs.ext4") {
+		t.Fatalf("expected setup script to chown rootfs to sudo user, got:\n%s", script)
+	}
+	if !strings.Contains(script, "chmod 600 /var/lib/nexus/rootfs.ext4") {
+		t.Fatalf("expected setup script to restrict rootfs mode for user-owned rw access, got:\n%s", script)
+	}
+}
+
 // ---- setup firecracker tests ----
 
 // TestDetectPrivilegeModeRoot verifies that detectPrivilegeMode returns
