@@ -276,6 +276,14 @@ var firecrackerHostOpenFile = os.OpenFile
 
 var firecrackerHostGOOS = runtime.GOOS
 
+// firecrackerTapHelperValidator validates the tap helper binary.
+// Overridable in tests.
+var firecrackerTapHelperValidator = func() error { return validateFirecrackerTapHelper() }
+
+// firecrackerBridgeValidator validates that nexusbr0 exists and is UP.
+// Overridable in tests.
+var firecrackerBridgeValidator = func() error { return validateFirecrackerBridge() }
+
 func runBootstrapInstallCommand(ctx context.Context, projectRoot string, timeout time.Duration, execCtx doctorExecContext) (string, error) {
 	installCmd := "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bash docker.io docker-compose-v2 curl make python3 git nodejs npm || DEBIAN_FRONTEND=noninteractive apt-get install -y bash docker.io docker-compose-plugin curl make python3 git nodejs npm"
 	return doctorCheckCommandRunner(ctx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "sh", []string{"-lc", installCmd}, execCtx)
@@ -434,6 +442,72 @@ func validateFirecrackerHostPrerequisites(execCtx doctorExecContext) error {
 	}
 	_ = fd.Close()
 
+	if err := firecrackerTapHelperValidator(); err != nil {
+		return err
+	}
+
+	if err := firecrackerBridgeValidator(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateFirecrackerTapHelper verifies that nexus-tap-helper is installed and
+// has cap_net_admin so Firecracker can create TAP devices without sudo.
+func validateFirecrackerTapHelper() error {
+	tapHelper := "nexus-tap-helper"
+	path, err := firecrackerHostBinaryLookup(tapHelper)
+	if err != nil {
+		return fmt.Errorf(
+			"%s not found in PATH\n\nOne-time setup required:\n"+
+				"  go build -o /tmp/nexus-tap-helper ./packages/nexus/cmd/nexus-tap-helper/\n"+
+				"  sudo cp /tmp/nexus-tap-helper /usr/local/bin/nexus-tap-helper\n"+
+				"  sudo setcap cap_net_admin=ep /usr/local/bin/nexus-tap-helper",
+			tapHelper,
+		)
+	}
+
+	// Best-effort: verify cap_net_admin via getcap (skip if getcap unavailable).
+	out, err := exec.Command("getcap", path).Output()
+	if err != nil {
+		// getcap not available — cannot verify, proceed and let runtime fail if needed.
+		return nil
+	}
+	if !strings.Contains(string(out), "cap_net_admin") {
+		return fmt.Errorf(
+			"%s at %s lacks cap_net_admin\n\nRun:\n  sudo setcap cap_net_admin=ep %s",
+			tapHelper, path, path,
+		)
+	}
+	return nil
+}
+
+// validateFirecrackerBridge verifies that the nexusbr0 bridge exists and is UP
+// so that TAP devices can be attached to it at VM spawn time.
+func validateFirecrackerBridge() error {
+	const bridge = "nexusbr0"
+	out, err := exec.Command("ip", "link", "show", bridge).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf(
+			"bridge %s not found\n\nOne-time setup required:\n"+
+				"  sudo tee /etc/systemd/network/10-nexusbr0.netdev << 'EOF'\n"+
+				"[NetDev]\nName=nexusbr0\nKind=bridge\nEOF\n\n"+
+				"  sudo tee /etc/systemd/network/11-nexusbr0.network << 'EOF'\n"+
+				"[Match]\nName=nexusbr0\n[Network]\nAddress=172.26.0.1/16\nIPForward=yes\nIPMasquerade=ipv4\nEOF\n\n"+
+				"  sudo tee /etc/systemd/network/12-nexus-tap.network << 'EOF'\n"+
+				"[Match]\nName=nexus-*\n[Network]\nBridge=nexusbr0\nEOF\n\n"+
+				"  sudo systemctl enable --now systemd-networkd",
+			bridge,
+		)
+	}
+	if !strings.Contains(string(out), "UP") {
+		return fmt.Errorf(
+			"bridge %s exists but is not UP\n\nTry: sudo ip link set %s up\n"+
+				"Or re-run full bridge setup with systemd-networkd",
+			bridge, bridge,
+		)
+	}
 	return nil
 }
 

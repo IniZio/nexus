@@ -323,11 +323,15 @@ func TestValidateFirecrackerHostPrerequisitesPassesWhenHostReady(t *testing.T) {
 	originalStat := firecrackerHostStat
 	originalOpen := firecrackerHostOpenFile
 	originalGOOS := firecrackerHostGOOS
+	originalTapHelper := firecrackerTapHelperValidator
+	originalBridge := firecrackerBridgeValidator
 	t.Cleanup(func() {
 		firecrackerHostBinaryLookup = originalLookup
 		firecrackerHostStat = originalStat
 		firecrackerHostOpenFile = originalOpen
 		firecrackerHostGOOS = originalGOOS
+		firecrackerTapHelperValidator = originalTapHelper
+		firecrackerBridgeValidator = originalBridge
 	})
 
 	t.Setenv("NEXUS_FIRECRACKER_KERNEL", "/kernel")
@@ -347,6 +351,8 @@ func TestValidateFirecrackerHostPrerequisitesPassesWhenHostReady(t *testing.T) {
 		}
 		return f, nil
 	}
+	firecrackerTapHelperValidator = func() error { return nil }
+	firecrackerBridgeValidator = func() error { return nil }
 
 	if err := validateFirecrackerHostPrerequisites(doctorExecContext{backend: "firecracker"}); err != nil {
 		t.Fatalf("expected firecracker preflight to pass, got %v", err)
