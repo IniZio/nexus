@@ -36,7 +36,7 @@ type execResponse struct {
 }
 
 func handleExec(req execRequest) execResponse {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), agentExecTimeout())
 	defer cancel()
 
 	env := append([]string{}, os.Environ()...)
@@ -81,6 +81,20 @@ func handleExec(req execRequest) execResponse {
 		Stdout:   stdoutBuf.String(),
 		Stderr:   stderrBuf.String(),
 	}
+}
+
+func agentExecTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("AGENT_EXEC_TIMEOUT_SEC"))
+	if raw == "" {
+		return 10 * time.Minute
+	}
+
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds <= 0 {
+		return 10 * time.Minute
+	}
+
+	return time.Duration(seconds) * time.Second
 }
 
 func ensurePathInEnv(env []string) []string {
@@ -169,6 +183,13 @@ func main() {
 	if os.Getpid() == 1 {
 		mountKernelFilesystems()
 		emitDiagnostic("agent pid1 kernel filesystems mounted")
+		if err := setupNetwork(); err != nil {
+			emitDiagnostic("agent pid1 network setup failed (non-fatal): %v", err)
+		} else {
+			emitDiagnostic("agent pid1 network configured via dhcp")
+		}
+		setupDNS()
+		emitDiagnostic("agent pid1 dns configured")
 	}
 
 	listener, transport, err := resolveListener()
@@ -200,6 +221,51 @@ func mountKernelFilesystems() {
 	_ = unix.Mount("proc", "/proc", "proc", 0, "")
 	_ = unix.Mount("sysfs", "/sys", "sysfs", 0, "")
 	_ = unix.Mount("devtmpfs", "/dev", "devtmpfs", 0, "")
+}
+
+// setupNetworkFunc is the function used to configure the guest network interface.
+// Overridable in tests.
+var setupNetworkFunc = realSetupNetwork
+
+// setupNetwork brings up eth0 via DHCP using udhcpc.
+// It is called at PID1 boot before setupDNS so that DNS resolution works.
+func setupNetwork() error {
+	return setupNetworkFunc()
+}
+
+func realSetupNetwork() error {
+	// Bring the interface up first so udhcpc can configure it.
+	if out, err := exec.Command("ip", "link", "set", "eth0", "up").CombinedOutput(); err != nil {
+		return fmt.Errorf("ip link set eth0 up: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	// Run udhcpc in one-shot mode: -n (exit on failure), -q (quit after obtaining
+	// lease), -t 10 (retry 10 times), -T 3 (3s between retries) → max ~30s wait.
+	out, err := exec.Command(
+		"udhcpc", "-i", "eth0", "-n", "-q", "-t", "10", "-T", "3",
+	).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("udhcpc -i eth0: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// setupDNSPath is the path to /etc/resolv.conf. Overridable in tests.
+var setupDNSPath = "/etc/resolv.conf"
+
+// setupDNS writes /etc/resolv.conf with public DNS servers if it is empty or
+// missing. This is needed because the kernel ip= cmdline arg configures the
+// network interface but does not create /etc/resolv.conf.
+func setupDNS() {
+	const content = "nameserver 8.8.8.8\nnameserver 1.1.1.1\n"
+
+	// Only write if missing or empty; respect pre-existing config from the rootfs.
+	if data, err := os.ReadFile(setupDNSPath); err == nil && len(strings.TrimSpace(string(data))) > 0 {
+		return
+	}
+
+	_ = os.MkdirAll("/etc", 0o755)
+	_ = os.WriteFile(setupDNSPath, []byte(content), 0o644)
 }
 
 func resolveListener() (net.Listener, string, error) {
