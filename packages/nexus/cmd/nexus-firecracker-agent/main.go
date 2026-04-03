@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -38,13 +39,22 @@ func handleExec(req execRequest) execResponse {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, req.Command, req.Args...)
+	env := append([]string{}, os.Environ()...)
+	if len(req.Env) > 0 {
+		env = append(env, req.Env...)
+	}
+	env = ensurePathInEnv(env)
+
+	commandPath := req.Command
+	if resolved, err := lookPathInEnv(req.Command, env); err == nil {
+		commandPath = resolved
+	}
+
+	cmd := exec.CommandContext(ctx, commandPath, req.Args...)
 	if req.WorkDir != "" {
 		cmd.Dir = req.WorkDir
 	}
-	if len(req.Env) > 0 {
-		cmd.Env = append(os.Environ(), req.Env...)
-	}
+	cmd.Env = env
 
 	// Capture both stdout and stderr separately
 	var stdoutBuf, stderrBuf strings.Builder
@@ -71,6 +81,50 @@ func handleExec(req execRequest) execResponse {
 		Stdout:   stdoutBuf.String(),
 		Stderr:   stderrBuf.String(),
 	}
+}
+
+func ensurePathInEnv(env []string) []string {
+	for i, entry := range env {
+		if !strings.HasPrefix(entry, "PATH=") {
+			continue
+		}
+		if strings.TrimSpace(strings.TrimPrefix(entry, "PATH=")) == "" {
+			env[i] = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+		}
+		return env
+	}
+
+	return append(env, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+}
+
+func lookPathInEnv(command string, env []string) (string, error) {
+	if strings.Contains(command, "/") {
+		return command, nil
+	}
+
+	pathValue := ""
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "PATH=") {
+			pathValue = strings.TrimPrefix(entry, "PATH=")
+			break
+		}
+	}
+
+	for _, dir := range filepath.SplitList(pathValue) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, command)
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if info.Mode()&0o111 != 0 {
+			return candidate, nil
+		}
+	}
+
+	return "", exec.ErrNotFound
 }
 
 func serveConn(conn net.Conn) {

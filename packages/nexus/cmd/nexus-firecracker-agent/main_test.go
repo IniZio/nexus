@@ -46,6 +46,17 @@ func TestHandleExecIncludesStartErrorInStderr(t *testing.T) {
 	}
 }
 
+func TestHandleExecSetsDefaultPathWhenPathMissing(t *testing.T) {
+	t.Setenv("PATH", "")
+	resp := handleExec(execRequest{Command: "sh", Args: []string{"-lc", "echo ok"}})
+	if resp.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d with stderr %q", resp.ExitCode, resp.Stderr)
+	}
+	if strings.TrimSpace(resp.Stdout) != "ok" {
+		t.Fatalf("unexpected stdout: %q", resp.Stdout)
+	}
+}
+
 func TestServeConnSendsErrorOnDecodeFailure(t *testing.T) {
 	server, client := net.Pipe()
 	defer server.Close()
