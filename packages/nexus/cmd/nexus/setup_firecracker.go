@@ -68,6 +68,44 @@ var setupBuildTapHelperFn = func() (string, error) {
 	return dest, nil
 }
 
+// setupExtractAgentFn extracts the nexus-firecracker-agent binary and returns
+// its path.  Overridable in tests.
+//
+// Preference order:
+//  1. Extract from embeddedAgent (set at build time via //go:embed).
+//  2. Build from Go source if the module root can be located (dev fallback).
+var setupExtractAgentFn = func() (string, error) {
+	dest := "/tmp/nexus-firecracker-agent"
+
+	// Fast path: extract the binary that was embedded at build time.
+	if len(embeddedAgent) > 0 {
+		if err := os.WriteFile(dest, embeddedAgent, 0o755); err != nil {
+			return "", fmt.Errorf("extract embedded nexus-firecracker-agent: %w", err)
+		}
+		return dest, nil
+	}
+
+	// Fallback: build from source (works only when running from the module
+	// root, e.g. during `go run ./cmd/nexus` in a dev checkout).
+	root := moduleRoot()
+	localSrc := root + "/cmd/nexus-firecracker-agent"
+	if _, err := os.Stat(localSrc); err != nil {
+		return "", fmt.Errorf(
+			"nexus-firecracker-agent not embedded and source not found at %s\n"+
+				"Rebuild nexus with: cd packages/nexus && go generate ./cmd/nexus && go build ./cmd/nexus",
+			localSrc,
+		)
+	}
+	cmd := exec.Command("go", "build", "-o", dest, "./cmd/nexus-firecracker-agent/")
+	cmd.Dir = root
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("build nexus-firecracker-agent: %w", err)
+	}
+	return dest, nil
+}
+
 // setupRunScriptFn runs the privileged setup bash script.  Overridable in
 // tests.
 var setupRunScriptFn = runSetupScript
@@ -156,10 +194,36 @@ Name=nexus-*
 Bridge=nexusbr0
 `
 
+// vmAssetsDir is the directory where VM assets (kernel, rootfs) are stored.
+const vmAssetsDir = "/var/lib/nexus"
+
+// vmKernelURL is the S3 URL for the Firecracker-compatible Linux kernel.
+const vmKernelURL = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/x86_64/vmlinux-5.10.239"
+
+// vmSquashfsURL is the S3 URL for the Ubuntu 24.04 squashfs rootfs.
+const vmSquashfsURL = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/x86_64/ubuntu-24.04.squashfs"
+
+// vmKernelLocalCachePath is the optional local kernel cache used to avoid
+// network downloads when the asset was pre-fetched.
+const vmKernelLocalCachePath = "/tmp/nexus-vmlinux.bin"
+
+// vmSquashfsLocalCachePath is the optional local squashfs cache used to avoid
+// network downloads when the asset was pre-fetched.
+const vmSquashfsLocalCachePath = "/tmp/nexus-ubuntu.squashfs"
+
+// DefaultVMKernelPath is the default kernel path used by nexus doctor / run.
+const DefaultVMKernelPath = vmAssetsDir + "/vmlinux.bin"
+
+// DefaultVMRootfsPath is the default rootfs path used by nexus doctor / run.
+const DefaultVMRootfsPath = vmAssetsDir + "/rootfs.ext4"
+
 // buildSetupScript returns an idempotent bash script that installs
-// nexus-tap-helper and configures systemd-networkd for Firecracker networking.
-// tapHelperSrc is the path to the pre-extracted binary (e.g. /tmp/nexus-tap-helper).
-func buildSetupScript(tapHelperSrc string) string {
+// nexus-tap-helper, configures systemd-networkd for Firecracker networking,
+// and provisions the VM kernel + rootfs (with the agent injected as PID1).
+//
+// tapHelperSrc is the path to the pre-extracted tap-helper binary.
+// agentSrc is the path to the pre-extracted nexus-firecracker-agent binary.
+func buildSetupScript(tapHelperSrc, agentSrc string) string {
 	var b strings.Builder
 	b.WriteString("#!/usr/bin/env bash\n")
 	b.WriteString("set -euo pipefail\n\n")
@@ -200,7 +264,65 @@ func buildSetupScript(tapHelperSrc string) string {
 
 	// Enable IP forwarding
 	b.WriteString("sysctl -w net.ipv4.ip_forward=1\n")
-	b.WriteString("printf 'net.ipv4.ip_forward = 1\\n' > /etc/sysctl.d/99-nexus-ip-forward.conf\n")
+	b.WriteString("printf 'net.ipv4.ip_forward = 1\\n' > /etc/sysctl.d/99-nexus-ip-forward.conf\n\n")
+
+	// ------------------------------------------------------------------
+	// VM assets: kernel and rootfs
+	// ------------------------------------------------------------------
+	fmt.Fprintf(&b, "mkdir -p %s\n\n", vmAssetsDir)
+
+	// Kernel: idempotent download
+	fmt.Fprintf(&b, "if [ ! -f %s ]; then\n", DefaultVMKernelPath)
+	fmt.Fprintf(&b, "  if [ -f %s ]; then\n", vmKernelLocalCachePath)
+	b.WriteString("    echo '==> Using local Firecracker kernel cache...'\n")
+	fmt.Fprintf(&b, "    cp %s %s\n", vmKernelLocalCachePath, DefaultVMKernelPath)
+	b.WriteString("  else\n")
+	b.WriteString("    echo '==> Downloading Firecracker kernel...'\n")
+	fmt.Fprintf(&b, "    wget -q -O %s %s\n", DefaultVMKernelPath, vmKernelURL)
+	b.WriteString("  fi\n")
+	b.WriteString("fi\n\n")
+
+	// Rootfs: idempotent build from squashfs
+	fmt.Fprintf(&b, "if [ ! -f %s ]; then\n", DefaultVMRootfsPath)
+	b.WriteString("  echo '==> Building Firecracker rootfs...'\n")
+	b.WriteString("  SQUASHFS_TMP=$(mktemp -d)\n")
+	b.WriteString("  ROOTFS_MOUNT=$(mktemp -d)\n")
+	b.WriteString("  trap 'umount \"$ROOTFS_MOUNT\" 2>/dev/null || true; rm -rf \"$SQUASHFS_TMP\" \"$ROOTFS_MOUNT\"' EXIT\n\n")
+
+	fmt.Fprintf(&b, "  if [ -f %s ]; then\n", vmSquashfsLocalCachePath)
+	b.WriteString("    echo '  -> Using local squashfs rootfs cache...'\n")
+	fmt.Fprintf(&b, "    cp %s \"$SQUASHFS_TMP/rootfs.squashfs\"\n", vmSquashfsLocalCachePath)
+	b.WriteString("  else\n")
+	b.WriteString("    echo '  -> Downloading squashfs rootfs...'\n")
+	b.WriteString("    wget -q -O \"$SQUASHFS_TMP/rootfs.squashfs\" \\\n")
+	fmt.Fprintf(&b, "      %s\n", vmSquashfsURL)
+	b.WriteString("  fi\n\n")
+
+	b.WriteString("  echo '  -> Extracting squashfs...'\n")
+	b.WriteString("  unsquashfs -d \"$SQUASHFS_TMP/rootfs\" \"$SQUASHFS_TMP/rootfs.squashfs\"\n\n")
+
+	fmt.Fprintf(&b, "  echo '  -> Creating ext4 image at %s...'\n", DefaultVMRootfsPath)
+	fmt.Fprintf(&b, "  dd if=/dev/zero of=%s bs=1M count=4096 status=none\n", DefaultVMRootfsPath)
+	fmt.Fprintf(&b, "  mkfs.ext4 -F -q %s\n\n", DefaultVMRootfsPath)
+
+	fmt.Fprintf(&b, "  mount -o loop %s \"$ROOTFS_MOUNT\"\n\n", DefaultVMRootfsPath)
+
+	b.WriteString("  echo '  -> Copying rootfs tree...'\n")
+	b.WriteString("  rsync -a \"$SQUASHFS_TMP/rootfs/\" \"$ROOTFS_MOUNT/\"\n\n")
+
+	b.WriteString("  echo '  -> Injecting nexus-firecracker-agent as PID1...'\n")
+	b.WriteString("  mkdir -p \"$ROOTFS_MOUNT/usr/local/bin\"\n")
+	fmt.Fprintf(&b, "  cp %s \"$ROOTFS_MOUNT/usr/local/bin/nexus-firecracker-agent\"\n", agentSrc)
+	b.WriteString("  chmod 755 \"$ROOTFS_MOUNT/usr/local/bin/nexus-firecracker-agent\"\n")
+	b.WriteString("  printf '#!/bin/sh\\nexec /usr/local/bin/nexus-firecracker-agent\\n' > \"$ROOTFS_MOUNT/sbin/init\"\n")
+	b.WriteString("  chmod 755 \"$ROOTFS_MOUNT/sbin/init\"\n")
+	b.WriteString("  ln -sf /sbin/init \"$ROOTFS_MOUNT/init\" 2>/dev/null || cp \"$ROOTFS_MOUNT/sbin/init\" \"$ROOTFS_MOUNT/init\"\n\n")
+
+	b.WriteString("  umount \"$ROOTFS_MOUNT\"\n")
+	b.WriteString("  trap - EXIT\n")
+	b.WriteString("  rm -rf \"$SQUASHFS_TMP\" \"$ROOTFS_MOUNT\"\n")
+	b.WriteString("  echo '  -> rootfs built successfully.'\n")
+	b.WriteString("fi\n")
 
 	return b.String()
 }
@@ -253,8 +375,16 @@ func runSetupFirecracker(w io.Writer) error {
 	}
 	fmt.Fprintf(w, "    extracted: %s\n", tapHelperPath)
 
-	// ---------- step 2: generate idempotent setup script ----------
-	script := buildSetupScript(tapHelperPath)
+	// ---------- step 2: extract nexus-firecracker-agent (no privilege needed) ----------
+	fmt.Fprintln(w, "==> Extracting nexus-firecracker-agent...")
+	agentPath, err := setupExtractAgentFn()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "    extracted: %s\n", agentPath)
+
+	// ---------- step 3: generate idempotent setup script ----------
+	script := buildSetupScript(tapHelperPath, agentPath)
 
 	f, err := os.CreateTemp("", "nexus-setup-*.sh")
 	if err != nil {
@@ -276,7 +406,7 @@ func runSetupFirecracker(w io.Writer) error {
 		return fmt.Errorf("chmod setup script: %w", err)
 	}
 
-	// ---------- step 3: run (or print) the script ----------
+	// ---------- step 4: run (or print) the script ----------
 	fmt.Fprintln(w, "==> Running Firecracker host setup script...")
 	if err := setupRunScriptFn(w, mode, scriptPath); err != nil {
 		if errors.Is(err, errNeedsManual) {
@@ -295,7 +425,7 @@ func runSetupFirecracker(w io.Writer) error {
 	// Clean up script on success.
 	_ = os.Remove(scriptPath)
 
-	// ---------- step 4: verify ----------
+	// ---------- step 5: verify ----------
 	fmt.Fprintln(w, "==> Verifying setup...")
 	if err := setupVerifyFn(); err != nil {
 		return fmt.Errorf("setup verification failed: %w", err)
@@ -324,6 +454,13 @@ func verifyFirecrackerSetup() error {
 	}
 	if !strings.Contains(string(ipOut), "UP") {
 		return fmt.Errorf("bridge nexusbr0 exists but is not UP")
+	}
+	// Verify VM assets
+	if _, err := os.Stat(DefaultVMKernelPath); err != nil {
+		return fmt.Errorf("VM kernel not found at %s: %w", DefaultVMKernelPath, err)
+	}
+	if _, err := os.Stat(DefaultVMRootfsPath); err != nil {
+		return fmt.Errorf("VM rootfs not found at %s: %w", DefaultVMRootfsPath, err)
 	}
 	return nil
 }

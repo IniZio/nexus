@@ -873,6 +873,28 @@ func TestRunCheckCommandWithExecContextFirecrackerUsesNativeRunner(t *testing.T)
 	}
 }
 
+func TestBuildSetupScriptUsesLocalKernelCacheBeforeDownload(t *testing.T) {
+	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
+
+	if !strings.Contains(script, "if [ -f /tmp/nexus-vmlinux.bin ]; then") {
+		t.Fatalf("expected setup script to check local kernel cache first, got:\n%s", script)
+	}
+	if !strings.Contains(script, "cp /tmp/nexus-vmlinux.bin /var/lib/nexus/vmlinux.bin") {
+		t.Fatalf("expected setup script to copy local kernel cache when present, got:\n%s", script)
+	}
+}
+
+func TestBuildSetupScriptUsesLocalSquashfsCacheBeforeDownload(t *testing.T) {
+	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
+
+	if !strings.Contains(script, "if [ -f /tmp/nexus-ubuntu.squashfs ]; then") {
+		t.Fatalf("expected setup script to check local squashfs cache first, got:\n%s", script)
+	}
+	if !strings.Contains(script, "cp /tmp/nexus-ubuntu.squashfs \"$SQUASHFS_TMP/rootfs.squashfs\"") {
+		t.Fatalf("expected setup script to copy local squashfs cache when present, got:\n%s", script)
+	}
+}
+
 // ---- setup firecracker tests ----
 
 // TestDetectPrivilegeModeRoot verifies that detectPrivilegeMode returns
@@ -928,6 +950,10 @@ func TestSetupFirecrackerNonInteractivePrintsAndErrors(t *testing.T) {
 	t.Cleanup(func() { setupBuildTapHelperFn = origBuild })
 	setupBuildTapHelperFn = func() (string, error) { return "/tmp/nexus-tap-helper", nil }
 
+	origAgent := setupExtractAgentFn
+	t.Cleanup(func() { setupExtractAgentFn = origAgent })
+	setupExtractAgentFn = func() (string, error) { return "/tmp/nexus-firecracker-agent", nil }
+
 	var buf strings.Builder
 	err := runSetupFirecracker(&buf)
 	if err == nil {
@@ -957,6 +983,10 @@ func TestSetupFirecrackerMockedSucceeds(t *testing.T) {
 	origBuild := setupBuildTapHelperFn
 	t.Cleanup(func() { setupBuildTapHelperFn = origBuild })
 	setupBuildTapHelperFn = func() (string, error) { return "/tmp/nexus-tap-helper", nil }
+
+	origAgent := setupExtractAgentFn
+	t.Cleanup(func() { setupExtractAgentFn = origAgent })
+	setupExtractAgentFn = func() (string, error) { return "/tmp/nexus-firecracker-agent", nil }
 
 	origRunScript := setupRunScriptFn
 	t.Cleanup(func() { setupRunScriptFn = origRunScript })
