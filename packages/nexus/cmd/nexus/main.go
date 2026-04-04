@@ -981,11 +981,27 @@ func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string
 	defer conn.Close()
 
 	agentClient := firecracker.NewAgentClient(conn)
+	hostUID := os.Getuid()
+	hostGID := os.Getgid()
+	if hostUID == 0 {
+		if raw := strings.TrimSpace(os.Getenv("SUDO_UID")); raw != "" {
+			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+				hostUID = parsed
+			}
+		}
+	}
+	if hostGID == 0 {
+		if raw := strings.TrimSpace(os.Getenv("SUDO_GID")); raw != "" {
+			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+				hostGID = parsed
+			}
+		}
+	}
 	env := []string{
-		fmt.Sprintf("UID=%d", os.Getuid()),
-		fmt.Sprintf("GID=%d", os.Getgid()),
-		fmt.Sprintf("HOST_UID=%d", os.Getuid()),
-		fmt.Sprintf("HOST_GID=%d", os.Getgid()),
+		fmt.Sprintf("UID=%d", hostUID),
+		fmt.Sprintf("GID=%d", hostGID),
+		fmt.Sprintf("HOST_UID=%d", hostUID),
+		fmt.Sprintf("HOST_GID=%d", hostGID),
 	}
 	if backend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND")); backend != "" {
 		env = append(env, "NEXUS_RUNTIME_BACKEND="+backend)
