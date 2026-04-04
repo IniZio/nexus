@@ -1417,7 +1417,7 @@ func runDoctorLifecycleSetup(projectRoot string, execCtx doctorExecContext) erro
 		contextLabel = "lifecycle-setup-script"
 	} else if hasMakeTarget(projectRoot, "setup") {
 		command = "sh"
-		args = []string{"-lc", "if [ -f .tool-versions ] && command -v mise >/dev/null 2>&1; then mise install >/dev/null 2>&1 || true; eval \"$(mise activate bash)\" || true; fi; if command -v corepack >/dev/null 2>&1; then corepack enable >/dev/null 2>&1 || true; corepack prepare pnpm@latest --activate >/dev/null 2>&1 || true; fi; if command -v pnpm >/dev/null 2>&1 && ! pnpm --version >/dev/null 2>&1; then rm -f \"$(command -v pnpm)\" || true; fi; if ! command -v pnpm >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then npm install -g pnpm >/dev/null 2>&1 || true; fi; make setup"}
+		args = []string{"-lc", "if [ -f .tool-versions ] && command -v mise >/dev/null 2>&1; then mise install >/dev/null 2>&1 || true; eval \"$(mise activate bash)\" || true; fi; if command -v corepack >/dev/null 2>&1; then corepack enable >/dev/null 2>&1 || true; corepack prepare pnpm@latest --activate >/dev/null 2>&1 || true; fi; if command -v pnpm >/dev/null 2>&1 && ! pnpm --version >/dev/null 2>&1; then rm -f \"$(command -v pnpm)\" || true; fi; if ! command -v pnpm >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then npm install -g pnpm >/dev/null 2>&1 || true; fi; if ! command -v pnpm >/dev/null 2>&1 && command -v corepack >/dev/null 2>&1; then mkdir -p /usr/local/bin; printf '#!/bin/sh\nexec corepack pnpm \"$@\"\n' > /usr/local/bin/pnpm; chmod 755 /usr/local/bin/pnpm; fi; make setup"}
 		contextLabel = "lifecycle-setup-make"
 	} else {
 		return nil
