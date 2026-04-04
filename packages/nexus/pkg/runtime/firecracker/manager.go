@@ -3,6 +3,7 @@ package firecracker
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,16 +34,17 @@ type SpawnSpec struct {
 
 // Instance represents a running Firecracker VM instance.
 type Instance struct {
-	WorkspaceID string
-	WorkDir     string
-	APISocket   string
-	VSockPath   string
-	SerialLog   string
-	CID         uint32
-	Process     *os.Process
-	TAPName     string
-	GuestIP     string
-	HostIP      string
+	WorkspaceID    string
+	WorkDir        string
+	WorkspaceImage string
+	APISocket      string
+	VSockPath      string
+	SerialLog      string
+	CID            uint32
+	Process        *os.Process
+	TAPName        string
+	GuestIP        string
+	HostIP         string
 }
 
 // ManagerConfig holds configuration for the Firecracker manager.
@@ -64,6 +66,10 @@ type apiClientInterface interface {
 // networkCommandRunner runs a network-related command.
 // Overridable in tests to avoid real network operations.
 var networkCommandRunner = runNetworkCommand
+
+// workspaceImageBuilderFunc creates a workspace image that is mounted at
+// /workspace inside the guest. Overridable in tests.
+var workspaceImageBuilderFunc = createWorkspaceImage
 
 func runNetworkCommand(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
@@ -146,6 +152,8 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	apiSocket := filepath.Join(workDir, "firecracker.sock")
 	vsockPath := filepath.Join(workDir, "vsock.sock")
 	serialLog := filepath.Join(workDir, "firecracker.log")
+	workspaceImagePath := filepath.Join(workDir, "workspace.ext4")
+	cleanupTap := true
 
 	cid := m.nextCID
 	m.nextCID++
@@ -159,6 +167,14 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	if err := setupTAP(tap, hostIP, subnetCIDR); err != nil {
 		os.RemoveAll(workDir)
 		return nil, fmt.Errorf("failed to setup tap %s: %w", tap, err)
+	}
+
+	if err := workspaceImageBuilderFunc(spec.ProjectRoot, workspaceImagePath); err != nil {
+		if cleanupTap {
+			teardownTAP(tap, subnetCIDR)
+		}
+		os.RemoveAll(workDir)
+		return nil, fmt.Errorf("failed to build workspace image: %w", err)
 	}
 
 	// Launch Firecracker directly in the host network namespace.
@@ -229,6 +245,18 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		return nil, fmt.Errorf("failed to configure drive: %w", err)
 	}
 
+	workspaceDriveConfig := map[string]any{
+		"drive_id":       "workspace",
+		"path_on_host":   workspaceImagePath,
+		"is_root_device": false,
+		"is_read_only":   false,
+	}
+	if err := client.put(ctx, "/drives/workspace", workspaceDriveConfig); err != nil {
+		teardownTAP(tap, subnetCIDR)
+		m.cleanup(workDir, cmd.Process)
+		return nil, fmt.Errorf("failed to configure workspace drive: %w", err)
+	}
+
 	// Configure network interface: Firecracker opens the host tap by name.
 	netIfaceConfig := map[string]any{
 		"iface_id":      "eth0",
@@ -262,19 +290,21 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	}
 
 	inst := &Instance{
-		WorkspaceID: spec.WorkspaceID,
-		WorkDir:     workDir,
-		APISocket:   apiSocket,
-		VSockPath:   vsockPath,
-		SerialLog:   serialLog,
-		CID:         cid,
-		Process:     cmd.Process,
-		TAPName:     tap,
-		GuestIP:     "", // assigned by DHCP at boot
-		HostIP:      hostIP,
+		WorkspaceID:    spec.WorkspaceID,
+		WorkDir:        workDir,
+		WorkspaceImage: workspaceImagePath,
+		APISocket:      apiSocket,
+		VSockPath:      vsockPath,
+		SerialLog:      serialLog,
+		CID:            cid,
+		Process:        cmd.Process,
+		TAPName:        tap,
+		GuestIP:        "", // assigned by DHCP at boot
+		HostIP:         hostIP,
 	}
 
 	m.instances[spec.WorkspaceID] = inst
+	cleanupTap = false
 	return inst, nil
 }
 
@@ -365,4 +395,76 @@ func (m *Manager) Get(workspaceID string) (*Instance, error) {
 	}
 
 	return inst, nil
+}
+
+func createWorkspaceImage(projectRoot, imagePath string) error {
+	if strings.TrimSpace(projectRoot) == "" {
+		return fmt.Errorf("project root is required for workspace image")
+	}
+
+	projectSizeBytes, err := directorySizeBytes(projectRoot)
+	if err != nil {
+		return fmt.Errorf("compute project size: %w", err)
+	}
+
+	fd, err := os.OpenFile(imagePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("create workspace image: %w", err)
+	}
+	if err := fd.Truncate(workspaceImageSizeBytes(projectSizeBytes)); err != nil {
+		_ = fd.Close()
+		return fmt.Errorf("truncate workspace image: %w", err)
+	}
+	if err := fd.Close(); err != nil {
+		return fmt.Errorf("close workspace image: %w", err)
+	}
+
+	cmd := exec.Command("mkfs.ext4", "-F", "-d", projectRoot, imagePath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("mkfs.ext4 workspace image: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	return nil
+}
+
+func directorySizeBytes(root string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, statErr := d.Info()
+		if statErr != nil {
+			return statErr
+		}
+		total += info.Size()
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func workspaceImageSizeBytes(projectSizeBytes int64) int64 {
+	const (
+		miB          = int64(1024 * 1024)
+		minImageSize = int64(32*1024) * miB
+		overhead     = int64(16*1024) * miB
+	)
+
+	target := projectSizeBytes + overhead
+	if target < minImageSize {
+		target = minImageSize
+	}
+
+	if rem := target % miB; rem != 0 {
+		target += miB - rem
+	}
+
+	return target
 }

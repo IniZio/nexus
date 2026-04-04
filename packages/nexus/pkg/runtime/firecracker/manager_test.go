@@ -70,8 +70,18 @@ func installTestNetworkRunner(t *testing.T) *testNetworkCommands {
 	return nc
 }
 
+func installWorkspaceImageBuilder(t *testing.T) {
+	t.Helper()
+	original := workspaceImageBuilderFunc
+	workspaceImageBuilderFunc = func(projectRoot, imagePath string) error {
+		return os.WriteFile(imagePath, []byte("workspace-image"), 0o600)
+	}
+	t.Cleanup(func() { workspaceImageBuilderFunc = original })
+}
+
 func TestManagerSpawnConfiguresAndStartsVM(t *testing.T) {
 	nc := installTestNetworkRunner(t)
+	installWorkspaceImageBuilder(t)
 	cfg := testManagerConfig(t)
 	mgr := newManager(cfg)
 	mock := &mockAPIClient{}
@@ -157,6 +167,7 @@ func TestManagerSpawnConfiguresAndStartsVM(t *testing.T) {
 
 func TestManagerSpawnNetworkInterfaceAPICallOrder(t *testing.T) {
 	installTestNetworkRunner(t)
+	installWorkspaceImageBuilder(t)
 	cfg := testManagerConfig(t)
 	mgr := newManager(cfg)
 	mock := &mockAPIClient{}
@@ -179,11 +190,13 @@ func TestManagerSpawnNetworkInterfaceAPICallOrder(t *testing.T) {
 		t.Fatalf("spawn failed: %v", err)
 	}
 
-	// Expected call order: machine-config, boot-source, drives/rootfs, network-interfaces/eth0, vsock, actions
+	// Expected call order: machine-config, boot-source, drives/rootfs,
+	// drives/workspace, network-interfaces/eth0, vsock, actions
 	wantPaths := []string{
 		"/machine-config",
 		"/boot-source",
 		"/drives/rootfs",
+		"/drives/workspace",
 		"/network-interfaces/eth0",
 		"/vsock",
 		"/actions",
@@ -203,6 +216,7 @@ func TestManagerSpawnNetworkInterfaceAPICallOrder(t *testing.T) {
 // a static ip= kernel argument — networking is configured by DHCP (udhcpc).
 func TestManagerSpawnBootArgsDHCP(t *testing.T) {
 	installTestNetworkRunner(t)
+	installWorkspaceImageBuilder(t)
 	cfg := testManagerConfig(t)
 	mgr := newManager(cfg)
 
@@ -249,6 +263,7 @@ func (c *captureBootArgsClient) put(ctx context.Context, path string, body any) 
 
 func TestManagerSpawnTAPCleanupOnAPIFailure(t *testing.T) {
 	nc := installTestNetworkRunner(t)
+	installWorkspaceImageBuilder(t)
 	cfg := testManagerConfig(t)
 	mgr := newManager(cfg)
 	mgr.apiClientFactory = func(sockPath string) apiClientInterface {
@@ -286,6 +301,7 @@ func TestManagerSpawnTAPCleanupOnAPIFailure(t *testing.T) {
 
 func TestManagerStopTeardownsTAP(t *testing.T) {
 	nc := installTestNetworkRunner(t)
+	installWorkspaceImageBuilder(t)
 	cfg := testManagerConfig(t)
 	mgr := newManager(cfg)
 	mgr.apiClientFactory = func(sockPath string) apiClientInterface {
@@ -360,6 +376,7 @@ func TestDefaultFirecrackerBootArgsEnvOverride(t *testing.T) {
 
 func TestManagerSpawnBinaryNotFound(t *testing.T) {
 	installTestNetworkRunner(t)
+	installWorkspaceImageBuilder(t)
 	cfg := testManagerConfig(t)
 	cfg.FirecrackerBin = "/nonexistent/firecracker"
 	mgr := newManager(cfg)
@@ -395,6 +412,7 @@ func TestManagerSpawnBinaryNotFound(t *testing.T) {
 
 func TestManagerSpawnDuplicateWorkspaceID(t *testing.T) {
 	installTestNetworkRunner(t)
+	installWorkspaceImageBuilder(t)
 	cfg := testManagerConfig(t)
 	mgr := newManager(cfg)
 	mgr.apiClientFactory = func(sockPath string) apiClientInterface {
@@ -426,6 +444,7 @@ func TestManagerSpawnDuplicateWorkspaceID(t *testing.T) {
 
 func TestManagerStop(t *testing.T) {
 	installTestNetworkRunner(t)
+	installWorkspaceImageBuilder(t)
 	cfg := testManagerConfig(t)
 	mgr := newManager(cfg)
 	mgr.apiClientFactory = func(sockPath string) apiClientInterface {
@@ -463,6 +482,7 @@ func TestManagerStop(t *testing.T) {
 
 func TestManagerGet(t *testing.T) {
 	installTestNetworkRunner(t)
+	installWorkspaceImageBuilder(t)
 	cfg := testManagerConfig(t)
 	mgr := newManager(cfg)
 	mgr.apiClientFactory = func(sockPath string) apiClientInterface {
@@ -501,6 +521,7 @@ func TestManagerGet(t *testing.T) {
 
 func TestManagerSpawnAPIError(t *testing.T) {
 	nc := installTestNetworkRunner(t)
+	installWorkspaceImageBuilder(t)
 	cfg := testManagerConfig(t)
 	mgr := newManager(cfg)
 	expectedErr := errors.New("api error")
@@ -532,6 +553,7 @@ func TestManagerSpawnAPIError(t *testing.T) {
 
 func TestManagerSpawnProcessOutlivesSpawnContext(t *testing.T) {
 	installTestNetworkRunner(t)
+	installWorkspaceImageBuilder(t)
 	cfg := testManagerConfig(t)
 	mgr := newManager(cfg)
 	mgr.apiClientFactory = func(sockPath string) apiClientInterface {
@@ -622,6 +644,26 @@ func TestManagerWaitForAPISocketCancellation(t *testing.T) {
 
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context canceled, got: %v", err)
+	}
+}
+
+func TestWorkspaceImageSizeBytes(t *testing.T) {
+	const miB = int64(1024 * 1024)
+
+	if got := workspaceImageSizeBytes(1); got != 32768*miB {
+		t.Fatalf("expected minimum image size 32768MiB, got %d", got)
+	}
+
+	if got := workspaceImageSizeBytes(1024 * miB); got != 32768*miB {
+		t.Fatalf("expected minimum size 32768MiB for 1GiB project, got %d", got)
+	}
+
+	if got := workspaceImageSizeBytes(20 * 1024 * miB); got != 36864*miB {
+		t.Fatalf("expected size 36864MiB for 20GiB project, got %d", got)
+	}
+
+	if got := workspaceImageSizeBytes(300*miB + 12345); got%miB != 0 {
+		t.Fatalf("expected result rounded to MiB boundary, got %d", got)
 	}
 }
 

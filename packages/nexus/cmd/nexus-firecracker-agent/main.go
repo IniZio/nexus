@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -17,6 +18,23 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
 	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
+)
+
+const (
+	defaultAgentPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
+
+var (
+	setupWorkspaceMountFunc = setupWorkspaceMount
+	workspaceMountPoint     = "/workspace"
+	workspaceDevicePath     = "/dev/vdb"
+	workspaceDeviceAttempts = 100
+	workspaceDeviceInterval = 100 * time.Millisecond
+	workspaceMkdirAll       = os.MkdirAll
+	workspaceStat           = os.Stat
+	workspaceMountFunc      = unix.Mount
+	kernelMkdirAll          = os.MkdirAll
+	kernelMountFunc         = unix.Mount
 )
 
 // Request types
@@ -180,17 +198,7 @@ func serveConn(conn net.Conn) {
 func main() {
 	emitDiagnostic("agent boot pid=%d", os.Getpid())
 
-	if os.Getpid() == 1 {
-		mountKernelFilesystems()
-		emitDiagnostic("agent pid1 kernel filesystems mounted")
-		if err := setupNetwork(); err != nil {
-			emitDiagnostic("agent pid1 network setup failed (non-fatal): %v", err)
-		} else {
-			emitDiagnostic("agent pid1 network configured via dhcp")
-		}
-		setupDNS()
-		emitDiagnostic("agent pid1 dns configured")
-	}
+	bootstrapGuestEnvironment(os.Getpid())
 
 	listener, transport, err := resolveListener()
 	if err != nil {
@@ -214,13 +222,120 @@ func main() {
 	}
 }
 
+// mountKernelFilesystemsFunc is overridable in tests.
+var mountKernelFilesystemsFunc = mountKernelFilesystems
+
+// setupDNSFunc is overridable in tests.
+var setupDNSFunc = setupDNS
+
+func bootstrapGuestEnvironment(pid int) {
+	ensureAgentProcessPath()
+
+	if pid == 1 {
+		mountKernelFilesystemsFunc()
+		emitDiagnostic("agent pid1 kernel filesystems mounted")
+	}
+
+	if err := setupWorkspaceMountFunc(); err != nil {
+		emitDiagnostic("agent workspace mount failed (non-fatal): %v", err)
+	} else {
+		emitDiagnostic("agent workspace mounted")
+	}
+
+	if err := setupNetwork(); err != nil {
+		emitDiagnostic("agent network setup failed (non-fatal): %v", err)
+	} else {
+		emitDiagnostic("agent network configured")
+	}
+
+	setupDNSFunc()
+	emitDiagnostic("agent dns configured")
+}
+
+func ensureAgentProcessPath() {
+	if strings.TrimSpace(os.Getenv("PATH")) == "" {
+		_ = os.Setenv("PATH", defaultAgentPath)
+	}
+}
+
+func setupWorkspaceMount() error {
+	if err := workspaceMkdirAll(workspaceMountPoint, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", workspaceMountPoint, err)
+	}
+
+	available, err := waitForWorkspaceDevice()
+	if err != nil {
+		return err
+	}
+	if !available {
+		return nil
+	}
+
+	if err := workspaceMountFunc(workspaceDevicePath, workspaceMountPoint, "ext4", 0, ""); err != nil {
+		if errors.Is(err, unix.EBUSY) {
+			return nil
+		}
+		return fmt.Errorf("mount %s at %s: %w", workspaceDevicePath, workspaceMountPoint, err)
+	}
+
+	return nil
+}
+
+func waitForWorkspaceDevice() (bool, error) {
+	attempts := workspaceDeviceAttempts
+	if attempts <= 0 {
+		attempts = 1
+	}
+
+	interval := workspaceDeviceInterval
+	if interval <= 0 {
+		interval = 100 * time.Millisecond
+	}
+
+	for attempt := 0; attempt < attempts; attempt++ {
+		if _, err := workspaceStat(workspaceDevicePath); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("stat %s: %w", workspaceDevicePath, err)
+		}
+
+		if attempt < attempts-1 {
+			time.Sleep(interval)
+		}
+	}
+
+	return false, nil
+}
+
 func mountKernelFilesystems() {
-	_ = os.MkdirAll("/proc", 0o755)
-	_ = os.MkdirAll("/sys", 0o755)
-	_ = os.MkdirAll("/dev", 0o755)
-	_ = unix.Mount("proc", "/proc", "proc", 0, "")
-	_ = unix.Mount("sysfs", "/sys", "sysfs", 0, "")
-	_ = unix.Mount("devtmpfs", "/dev", "devtmpfs", 0, "")
+	_ = kernelMkdirAll("/proc", 0o755)
+	_ = kernelMkdirAll("/sys", 0o755)
+	_ = kernelMkdirAll("/dev", 0o755)
+	_ = kernelMountFunc("proc", "/proc", "proc", 0, "")
+	_ = kernelMountFunc("sysfs", "/sys", "sysfs", 0, "")
+	_ = kernelMountFunc("devtmpfs", "/dev", "devtmpfs", 0, "")
+	mountCgroupFilesystems()
+}
+
+func mountCgroupFilesystems() {
+	_ = kernelMkdirAll("/sys/fs/cgroup", 0o755)
+	if err := kernelMountFunc("none", "/sys/fs/cgroup", "cgroup2", 0, ""); err == nil || errors.Is(err, unix.EBUSY) {
+		return
+	}
+
+	if err := kernelMountFunc("tmpfs", "/sys/fs/cgroup", "tmpfs", 0, "mode=755"); err != nil && !errors.Is(err, unix.EBUSY) {
+		return
+	}
+
+	controllers := []string{"cpuset", "cpu", "cpuacct", "blkio", "memory", "devices", "freezer", "net_cls", "perf_event", "net_prio", "hugetlb", "pids"}
+	for _, controller := range controllers {
+		path := "/sys/fs/cgroup/" + controller
+		_ = kernelMkdirAll(path, 0o755)
+		err := kernelMountFunc("cgroup", path, "cgroup", 0, controller)
+		if err != nil && !errors.Is(err, unix.EBUSY) {
+			continue
+		}
+	}
 }
 
 // setupNetworkFunc is the function used to configure the guest network interface.
@@ -234,20 +349,70 @@ func setupNetwork() error {
 }
 
 func realSetupNetwork() error {
+	if out, err := exec.Command("ip", "link", "set", "lo", "up").CombinedOutput(); err != nil {
+		return fmt.Errorf("ip link set lo up: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
 	// Bring the interface up first so udhcpc can configure it.
 	if out, err := exec.Command("ip", "link", "set", "eth0", "up").CombinedOutput(); err != nil {
 		return fmt.Errorf("ip link set eth0 up: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
-	// Run udhcpc in one-shot mode: -n (exit on failure), -q (quit after obtaining
-	// lease), -t 10 (retry 10 times), -T 3 (3s between retries) → max ~30s wait.
-	out, err := exec.Command(
-		"udhcpc", "-i", "eth0", "-n", "-q", "-t", "10", "-T", "3",
-	).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("udhcpc -i eth0: %w: %s", err, strings.TrimSpace(string(out)))
+	if _, err := exec.LookPath("udhcpc"); err == nil {
+		// Run udhcpc in one-shot mode: -n (exit on failure), -q (quit after obtaining
+		// lease), -t 10 (retry 10 times), -T 3 (3s between retries) -> max ~30s wait.
+		out, err := exec.Command(
+			"udhcpc", "-i", "eth0", "-n", "-q", "-t", "10", "-T", "3",
+		).CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		emitDiagnostic("udhcpc failed, falling back to static guest IP: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	if err := configureStaticGuestNetwork(); err != nil {
+		return fmt.Errorf("static network fallback failed: %w", err)
 	}
 	return nil
+}
+
+func configureStaticGuestNetwork() error {
+	macBytes, err := os.ReadFile("/sys/class/net/eth0/address")
+	if err != nil {
+		return fmt.Errorf("read eth0 mac address: %w", err)
+	}
+
+	ip, err := staticGuestIPForMAC(strings.TrimSpace(string(macBytes)))
+	if err != nil {
+		return err
+	}
+
+	if out, err := exec.Command("ip", "addr", "replace", ip+"/16", "dev", "eth0").CombinedOutput(); err != nil {
+		return fmt.Errorf("ip addr replace %s/16 dev eth0: %w: %s", ip, err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.Command("ip", "route", "replace", "default", "via", "172.26.0.1", "dev", "eth0").CombinedOutput(); err != nil {
+		return fmt.Errorf("ip route replace default via 172.26.0.1 dev eth0: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	return nil
+}
+
+func staticGuestIPForMAC(mac string) (string, error) {
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(mac)), ":")
+	if len(parts) != 6 {
+		return "", fmt.Errorf("invalid mac address format: %q", mac)
+	}
+
+	b4, err := strconv.ParseUint(parts[4], 16, 8)
+	if err != nil {
+		return "", fmt.Errorf("parse mac byte 5: %w", err)
+	}
+	b5, err := strconv.ParseUint(parts[5], 16, 8)
+	if err != nil {
+		return "", fmt.Errorf("parse mac byte 6: %w", err)
+	}
+
+	return fmt.Sprintf("172.26.%d.%d", b4, b5), nil
 }
 
 // setupDNSPath is the path to /etc/resolv.conf. Overridable in tests.
