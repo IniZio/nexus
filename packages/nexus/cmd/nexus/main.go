@@ -1415,6 +1415,10 @@ func runDoctorLifecycleSetup(projectRoot string, execCtx doctorExecContext) erro
 		command = "bash"
 		args = []string{".nexus/lifecycles/setup.sh"}
 		contextLabel = "lifecycle-setup-script"
+	} else if hasMakeTarget(projectRoot, "setup") {
+		command = "make"
+		args = []string{"setup"}
+		contextLabel = "lifecycle-setup-make"
 	} else {
 		return nil
 	}
