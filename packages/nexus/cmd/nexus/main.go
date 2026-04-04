@@ -1160,16 +1160,10 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 	installCancel()
 	if installErr != nil {
 		trimmedOut := strings.TrimSpace(installOut)
-		if strings.Contains(trimmedOut, "Temporary failure resolving") ||
-			strings.Contains(trimmedOut, "Failed to fetch") ||
-			strings.Contains(trimmedOut, "Unable to locate package") ||
-			strings.Contains(trimmedOut, "has no installation candidate") ||
-			strings.Contains(trimmedOut, "Could not open lock file") ||
-			strings.Contains(trimmedOut, "are you root") ||
-			strings.Contains(trimmedOut, "Permission denied") {
-			fmt.Printf("bootstrap %s tooling: apt unavailable, continuing with existing runtime packages\n", backendLabel)
+		if trimmedOut != "" {
+			fmt.Printf("bootstrap %s tooling: install command failed, continuing with existing runtime packages (%s)\n", backendLabel, trimmedOut)
 		} else {
-			return fmt.Errorf("bootstrap %s tooling failed: %s", backendLabel, strings.TrimSpace(startOut+"\n"+installOut))
+			fmt.Printf("bootstrap %s tooling: install command failed, continuing with existing runtime packages\n", backendLabel)
 		}
 	}
 
