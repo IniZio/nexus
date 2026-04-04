@@ -1416,8 +1416,8 @@ func runDoctorLifecycleSetup(projectRoot string, execCtx doctorExecContext) erro
 		args = []string{".nexus/lifecycles/setup.sh"}
 		contextLabel = "lifecycle-setup-script"
 	} else if hasMakeTarget(projectRoot, "setup") {
-		command = "make"
-		args = []string{"setup"}
+		command = "sh"
+		args = []string{"-lc", "if [ -f .tool-versions ] && command -v mise >/dev/null 2>&1; then mise install >/dev/null 2>&1 || true; eval \"$(mise activate bash)\" || true; fi; if command -v corepack >/dev/null 2>&1; then corepack enable >/dev/null 2>&1 || true; corepack prepare pnpm@latest --activate >/dev/null 2>&1 || true; fi; make setup"}
 		contextLabel = "lifecycle-setup-make"
 	} else {
 		return nil
