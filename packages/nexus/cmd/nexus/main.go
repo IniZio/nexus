@@ -988,6 +988,15 @@ func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string
 	if backend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND")); backend != "" {
 		env = append(env, "NEXUS_RUNTIME_BACKEND="+backend)
 	}
+	if mirror := strings.TrimSpace(os.Getenv("NEXUS_DOCKER_REGISTRY_MIRROR")); mirror != "" {
+		env = append(env, "NEXUS_DOCKER_REGISTRY_MIRROR="+mirror)
+	}
+	if username := strings.TrimSpace(os.Getenv("NEXUS_DOCKERHUB_USERNAME")); username != "" {
+		env = append(env, "NEXUS_DOCKERHUB_USERNAME="+username)
+	}
+	if token := strings.TrimSpace(os.Getenv("NEXUS_DOCKERHUB_TOKEN")); token != "" {
+		env = append(env, "NEXUS_DOCKERHUB_TOKEN="+token)
+	}
 	if value := strings.TrimSpace(os.Getenv("NEXUS_API_BASE_URL")); value != "" {
 		env = append(env, "NEXUS_API_BASE_URL="+value)
 	} else {
