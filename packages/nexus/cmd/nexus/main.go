@@ -984,6 +984,8 @@ func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string
 	env := []string{
 		fmt.Sprintf("UID=%d", os.Getuid()),
 		fmt.Sprintf("GID=%d", os.Getgid()),
+		fmt.Sprintf("HOST_UID=%d", os.Getuid()),
+		fmt.Sprintf("HOST_GID=%d", os.Getgid()),
 	}
 	if backend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND")); backend != "" {
 		env = append(env, "NEXUS_RUNTIME_BACKEND="+backend)
