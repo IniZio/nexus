@@ -446,6 +446,10 @@ func run(opts options) error {
 		}
 	}
 
+	if err := doctorLifecycleSetupRunner(opts.projectRoot, execCtx); err != nil {
+		return err
+	}
+
 	if err := doctorLifecycleStartRunner(opts.projectRoot, execCtx); err != nil {
 		return err
 	}
@@ -580,6 +584,8 @@ var execCommandBootstrapRunner = bootstrapExecCommandContext
 var doctorFirecrackerRuntimeVerifier = verifyFirecrackerGuestDockerRuntime
 
 var doctorLifecycleStartRunner = runDoctorLifecycleStart
+
+var doctorLifecycleSetupRunner = runDoctorLifecycleSetup
 
 var execKVMGroupReexecRunner = runExecWithKVMGroupReexec
 
@@ -1394,6 +1400,48 @@ func runDoctorLifecycleStart(projectRoot string, execCtx doctorExecContext) erro
 	}
 
 	fmt.Printf("doctor lifecycle started (%s)\n", contextLabel)
+	return nil
+}
+
+func runDoctorLifecycleSetup(projectRoot string, execCtx doctorExecContext) error {
+	setupPath := filepath.Join(projectRoot, ".nexus", "lifecycles", "setup.sh")
+	command := ""
+	args := []string(nil)
+	contextLabel := "lifecycle-setup"
+
+	if setupExists, err := isExecutableFile(setupPath); err != nil {
+		return err
+	} else if setupExists {
+		command = "bash"
+		args = []string{".nexus/lifecycles/setup.sh"}
+		contextLabel = "lifecycle-setup-script"
+	} else if hasMakeTarget(projectRoot, "setup") {
+		command = "make"
+		args = []string{"setup"}
+		contextLabel = "lifecycle-setup-make"
+	} else {
+		return nil
+	}
+
+	timeout := 10 * time.Minute
+	if rawTimeout := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_SETUP_TIMEOUT_MS")); rawTimeout != "" {
+		if ms, err := strconv.Atoi(rawTimeout); err == nil && ms > 0 {
+			timeout = time.Duration(ms) * time.Millisecond
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	out, err := doctorCheckCommandRunner(ctx, projectRoot, "probe", contextLabel, 1, 1, timeout, command, args, execCtx)
+	if err != nil {
+		detail := strings.TrimSpace(out)
+		if detail == "" {
+			detail = err.Error()
+		}
+		return fmt.Errorf("doctor lifecycle setup failed: %s", detail)
+	}
+
+	fmt.Printf("doctor lifecycle setup completed (%s)\n", contextLabel)
 	return nil
 }
 
