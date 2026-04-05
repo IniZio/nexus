@@ -76,6 +76,17 @@ Nexus will carry a template version marker and compare it against instance metad
 4. If privileged or manual steps are required, fail hard and print exact commands.
 5. On re-run, verify those steps succeeded before returning success.
 
+### Non-interactive / Read-only terminal safety
+
+`nexus init` must never hang waiting for privilege prompts in non-interactive contexts
+(for example OpenCode/CI/read-only terminals):
+
+1. Detect non-interactive terminal/session up front.
+2. Detect unavailable passwordless sudo (`sudo -n`).
+3. Fail fast with explicit status and manual next-step commands.
+4. Never block on interactive password prompts.
+5. Re-running after manual completion performs the same readiness verification and only succeeds when prerequisites are truly satisfied.
+
 `nexus setup firecracker` is removed/deprecated in favor of this init path.
 
 ### A) Normal Workspace Start (Darwin + Firecracker)
@@ -109,12 +120,14 @@ Nexus returns explicit errors for:
 - guest bootstrap failure
 - Firecracker setup failure in guest
 - required privileged/manual setup not yet completed during `nexus init`
+- non-interactive/read-only terminal where privileged setup cannot proceed automatically
 
 `nexus init` behavior:
 
 - fail hard when environment is not fully ready
 - print actionable manual next-step instructions
 - re-check readiness on every rerun and only pass once setup is truly complete
+- in non-interactive terminals, fail immediately (no prompt hangs) when passwordless privilege escalation is unavailable
 
 Persistent mode recovery:
 
@@ -145,6 +158,8 @@ The action invokes `nexus init` (idempotent) rather than relying on a separate s
    - platform dispatch by host OS
    - persistent vs ephemeral instance naming and policy
    - template-version mismatch recreation decision
+   - non-interactive privilege path fails fast without prompt attempts
+   - manual-instruction output is emitted for read-only/non-interactive sessions
 2. Build/compile checks:
    - Darwin compile succeeds (no unconditional references to Linux-only symbols)
    - Linux Firecracker tests remain green
@@ -160,6 +175,8 @@ The action invokes `nexus init` (idempotent) rather than relying on a separate s
    - Mitigation: lock + deterministic naming for persistent mode; unique naming for doctor
 3. Cleanup leaks in ephemeral doctor mode
    - Mitigation: mandatory teardown with warning path and diagnostics capture
+4. Stuck CI/terminal sessions due to interactive sudo prompts
+   - Mitigation: mandatory `sudo -n` gating in non-interactive sessions and immediate manual-instruction failure path
 
 ## Rollout Plan
 
@@ -180,3 +197,4 @@ The action invokes `nexus init` (idempotent) rather than relying on a separate s
 5. macOS Firecracker doctor path executes under Nexus-managed Lima orchestration.
 6. Workspace start uses persistent Lima, doctor uses ephemeral Lima.
 7. Linux Firecracker path remains functional and CI-stable.
+8. Non-interactive/read-only terminals never hang on privilege prompts; they fail fast with manual steps.
