@@ -454,7 +454,13 @@ func run(opts options) error {
 
 	publishedPorts := make([]compose.PublishedPort, 0)
 	composePath := filepath.Join(opts.projectRoot, opts.composeFile)
-	fmt.Printf("doctor info: skipping host compose port discovery in firecracker mode: %s\n", composePath)
+	discoverCtx, discoverCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer discoverCancel()
+	if ports, discoverErr := compose.DiscoverPublishedPorts(discoverCtx, opts.projectRoot); discoverErr != nil {
+		fmt.Printf("doctor warning: compose port discovery failed for %s: %v\n", composePath, discoverErr)
+	} else {
+		publishedPorts = ports
+	}
 
 	probeResults, probeErr := runConfiguredProbes(opts, probesToRun)
 
