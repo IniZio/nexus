@@ -1106,7 +1106,6 @@ func TestRunInitRuntimeBootstrapIgnoresKVMRefreshNeededWhenPrivileged(t *testing
 		t.Fatalf("expected nil error when privileged and only kvm refresh is needed, got: %v", err)
 	}
 }
-
 func mustMkdirAll(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o755); err != nil {
