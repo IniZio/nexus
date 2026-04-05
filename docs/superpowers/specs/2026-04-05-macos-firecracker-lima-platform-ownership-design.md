@@ -16,11 +16,12 @@ We also need to keep Linux Firecracker behavior stable and preserve CI reliabili
 
 1. Keep platform logic in Nexus, not in `action-nexus`.
 2. Use checked-in, versioned Lima template(s) in Nexus for Darwin Firecracker path.
-3. Use different lifecycle policy by command type:
+3. Make `nexus init` the single idempotent entrypoint that handles both scaffolding and platform readiness checks/setup.
+4. Use different lifecycle policy by command type:
    - normal workspace start: persistent Lima instance
    - doctor: ephemeral Lima instance
-4. Keep Linux Firecracker path unchanged.
-5. Make `action-nexus` self-contained for Go setup so consuming workflows do not need their own setup-go step.
+5. Keep Linux Firecracker path unchanged.
+6. Make `action-nexus` self-contained for Go setup so consuming workflows do not need their own setup-go step.
 
 ## Non-Goals
 
@@ -33,8 +34,10 @@ We also need to keep Linux Firecracker behavior stable and preserve CI reliabili
 1. Nexus introduces a platform adapter boundary for Firecracker runtime setup/execution.
 2. Darwin adapter uses a checked-in Lima template and executes Firecracker operations in guest Linux.
 3. Linux adapter keeps current native behavior.
-4. `nexus doctor` on Darwin uses ephemeral Lima instances (always torn down).
-5. Normal workspace start on Darwin uses persistent Lima instances (reused with health/version checks).
+4. `nexus init` performs scaffold + runtime readiness, fails hard when platform setup is incomplete, and prints manual next-step instructions.
+5. Re-running `nexus init` after manual steps re-validates readiness and only succeeds when environment/tooling are actually ready.
+6. `nexus doctor` on Darwin uses ephemeral Lima instances (always torn down).
+7. Normal workspace start on Darwin uses persistent Lima instances (reused with health/version checks).
 
 ## Architecture
 
@@ -62,6 +65,18 @@ Template responsibilities:
 Nexus will carry a template version marker and compare it against instance metadata. Mismatch triggers recreation for persistent instances.
 
 ## Control Flow
+
+### `nexus init` (single entrypoint)
+
+1. Scaffold `.nexus/*` metadata idempotently.
+2. Resolve runtime backend from workspace config/default.
+3. Run platform readiness/setup through adapter:
+   - Linux firecracker: host setup/readiness checks
+   - Darwin firecracker: limactl install/setup/readiness checks + template checks
+4. If privileged or manual steps are required, fail hard and print exact commands.
+5. On re-run, verify those steps succeeded before returning success.
+
+`nexus setup firecracker` is removed/deprecated in favor of this init path.
 
 ### A) Normal Workspace Start (Darwin + Firecracker)
 
@@ -93,6 +108,13 @@ Nexus returns explicit errors for:
 - nested virtualization unavailable/disabled
 - guest bootstrap failure
 - Firecracker setup failure in guest
+- required privileged/manual setup not yet completed during `nexus init`
+
+`nexus init` behavior:
+
+- fail hard when environment is not fully ready
+- print actionable manual next-step instructions
+- re-check readiness on every rerun and only pass once setup is truly complete
 
 Persistent mode recovery:
 
@@ -114,6 +136,8 @@ Doctor mode recovery:
 - do not add Lima orchestration logic
 
 Result: downstream workflows can omit manual setup-go, and platform orchestration remains Nexus-owned.
+
+The action invokes `nexus init` (idempotent) rather than relying on a separate setup command.
 
 ## Verification Strategy
 
@@ -139,15 +163,20 @@ Result: downstream workflows can omit manual setup-go, and platform orchestratio
 
 ## Rollout Plan
 
-1. Implement Nexus platform adapter and Darwin Lima path.
-2. Add checked-in template and versioning metadata checks.
-3. Add/adjust tests for dispatch and policy behavior.
-4. Update `action-nexus` to run setup-go internally.
-5. Validate Linux and macOS doctor paths in CI.
+1. Move Firecracker setup/readiness orchestration into `nexus init`.
+2. Implement Nexus platform adapter and Darwin Lima path.
+3. Add checked-in template and versioning metadata checks.
+4. Add/adjust tests for init idempotency, hard-fail semantics, and dispatch behavior.
+5. Deprecate/remove `nexus setup firecracker` command surface.
+6. Update `action-nexus` to run setup-go internally and rely on init path.
+7. Validate Linux and macOS doctor paths in CI.
 
 ## Success Criteria
 
 1. `action-nexus` users no longer need explicit setup-go.
-2. macOS Firecracker doctor path executes under Nexus-managed Lima orchestration.
-3. Workspace start uses persistent Lima, doctor uses ephemeral Lima.
-4. Linux Firecracker path remains functional and CI-stable.
+2. `nexus init` is idempotent and is the only required setup command.
+3. `nexus init` fails hard when not ready, with clear manual next steps.
+4. Re-running `nexus init` after manual steps verifies readiness and succeeds only when ready.
+5. macOS Firecracker doctor path executes under Nexus-managed Lima orchestration.
+6. Workspace start uses persistent Lima, doctor uses ephemeral Lima.
+7. Linux Firecracker path remains functional and CI-stable.
