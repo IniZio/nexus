@@ -23,6 +23,23 @@ type fakeSocketFileInfo struct {
 	name string
 }
 
+func requireLinux(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only test")
+	}
+}
+
+func addFakeSGToPath(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sg")
+	if err := os.WriteFile(path, []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake sg: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 func (f fakeSocketFileInfo) Name() string       { return f.name }
 func (f fakeSocketFileInfo) Size() int64        { return 0 }
 func (f fakeSocketFileInfo) Mode() fs.FileMode  { return os.ModeSocket | 0o666 }
@@ -472,6 +489,8 @@ func TestRunBootstrapInstallCommandVerifiesMakeIsInstalled(t *testing.T) {
 }
 
 func TestBuildSetupScriptSeedsMakeBinaryIntoRootfs(t *testing.T) {
+	requireLinux(t)
+
 	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
 	needle := "docker-init docker-proxy iptables ip6tables make; do"
 	if count := strings.Count(script, needle); count != 2 {
@@ -1120,6 +1139,15 @@ func setupDoctorTestWorkspace(t *testing.T, doctorConfig config.DoctorConfig) st
 
 func TestDoctor_StillRunsTestsWhenRequiredProbeFails(t *testing.T) {
 	t.Setenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS", "1")
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "lxc")
+	originalGOOS := firecrackerHostGOOS
+	originalBootstrap := doctorExecBootstrapRunner
+	t.Cleanup(func() {
+		firecrackerHostGOOS = originalGOOS
+		doctorExecBootstrapRunner = originalBootstrap
+	})
+	firecrackerHostGOOS = "linux"
+	doctorExecBootstrapRunner = func(projectRoot string) error { return nil }
 
 	workspaceRoot := setupDoctorTestWorkspace(t, config.DoctorConfig{
 		Probes: []config.DoctorCommandProbe{
@@ -1184,6 +1212,15 @@ func TestDoctor_StillRunsTestsWhenRequiredProbeFails(t *testing.T) {
 
 func TestDoctor_ProbesPassThenTestsRun(t *testing.T) {
 	t.Setenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS", "1")
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "lxc")
+	originalGOOS := firecrackerHostGOOS
+	originalBootstrap := doctorExecBootstrapRunner
+	t.Cleanup(func() {
+		firecrackerHostGOOS = originalGOOS
+		doctorExecBootstrapRunner = originalBootstrap
+	})
+	firecrackerHostGOOS = "linux"
+	doctorExecBootstrapRunner = func(projectRoot string) error { return nil }
 
 	workspaceRoot := setupDoctorTestWorkspace(t, config.DoctorConfig{
 		Probes: []config.DoctorCommandProbe{
@@ -1231,6 +1268,15 @@ func TestDoctor_ProbesPassThenTestsRun(t *testing.T) {
 
 func TestDoctor_RequiredTestFailureReturnsError(t *testing.T) {
 	t.Setenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS", "1")
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "lxc")
+	originalGOOS := firecrackerHostGOOS
+	originalBootstrap := doctorExecBootstrapRunner
+	t.Cleanup(func() {
+		firecrackerHostGOOS = originalGOOS
+		doctorExecBootstrapRunner = originalBootstrap
+	})
+	firecrackerHostGOOS = "linux"
+	doctorExecBootstrapRunner = func(projectRoot string) error { return nil }
 
 	workspaceRoot := setupDoctorTestWorkspace(t, config.DoctorConfig{
 		Probes: []config.DoctorCommandProbe{
@@ -1414,16 +1460,21 @@ func TestRunCheckCommandWithExecContextHostExportsUIDAndGID(t *testing.T) {
 }
 
 func TestRunCheckCommandWithExecContextFirecrackerUsesNativeRunner(t *testing.T) {
+	originalGOOS := firecrackerHostGOOS
 	original := firecrackerCheckCommandRunner
+	root := t.TempDir()
 	t.Cleanup(func() {
+		firecrackerHostGOOS = originalGOOS
 		firecrackerCheckCommandRunner = original
 	})
+
+	firecrackerHostGOOS = "linux"
 
 	called := false
 	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
 		called = true
-		if projectRoot != "/workspace" {
-			t.Fatalf("expected firecracker checks to run in /workspace, got %q", projectRoot)
+		if projectRoot != root {
+			t.Fatalf("expected firecracker checks to use project root %q, got %q", root, projectRoot)
 		}
 		if command != "bash" {
 			t.Fatalf("expected command bash, got %q", command)
@@ -1436,7 +1487,7 @@ func TestRunCheckCommandWithExecContextFirecrackerUsesNativeRunner(t *testing.T)
 
 	out, err := runCheckCommandWithExecContext(
 		context.Background(),
-		t.TempDir(),
+		root,
 		"probe",
 		"example",
 		1,
@@ -1458,10 +1509,14 @@ func TestRunCheckCommandWithExecContextFirecrackerUsesNativeRunner(t *testing.T)
 }
 
 func TestRunCheckCommandWithExecContextFirecrackerPropagatesMissingWorkdirError(t *testing.T) {
+	originalGOOS := firecrackerHostGOOS
 	original := firecrackerCheckCommandRunner
 	t.Cleanup(func() {
+		firecrackerHostGOOS = originalGOOS
 		firecrackerCheckCommandRunner = original
 	})
+
+	firecrackerHostGOOS = "linux"
 
 	called := false
 	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
@@ -1494,10 +1549,14 @@ func TestRunCheckCommandWithExecContextFirecrackerPropagatesMissingWorkdirError(
 }
 
 func TestRunCheckCommandWithExecContextFirecrackerPropagatesMissingBinaryError(t *testing.T) {
+	originalGOOS := firecrackerHostGOOS
 	original := firecrackerCheckCommandRunner
 	t.Cleanup(func() {
+		firecrackerHostGOOS = originalGOOS
 		firecrackerCheckCommandRunner = original
 	})
+
+	firecrackerHostGOOS = "linux"
 
 	called := false
 	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
@@ -1530,10 +1589,14 @@ func TestRunCheckCommandWithExecContextFirecrackerPropagatesMissingBinaryError(t
 }
 
 func TestRunCheckCommandWithExecContextFirecrackerExecReturnsGuestFailure(t *testing.T) {
+	originalGOOS := firecrackerHostGOOS
 	original := firecrackerCheckCommandRunner
 	t.Cleanup(func() {
+		firecrackerHostGOOS = originalGOOS
 		firecrackerCheckCommandRunner = original
 	})
+
+	firecrackerHostGOOS = "linux"
 
 	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
 		return "chdir " + projectRoot + ": no such file or directory", errors.New("guest command failed")
@@ -1628,13 +1691,18 @@ func TestRunExecHostBackendNoLongerSupported(t *testing.T) {
 
 func TestRunExecFirecrackerUsesGuestWorkspaceWorkdir(t *testing.T) {
 	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
+	originalGOOS := firecrackerHostGOOS
+	root := t.TempDir()
 
 	originalBootstrap := firecrackerBootstrapRunner
 	originalFirecrackerRunner := firecrackerCheckCommandRunner
 	t.Cleanup(func() {
+		firecrackerHostGOOS = originalGOOS
 		firecrackerBootstrapRunner = originalBootstrap
 		firecrackerCheckCommandRunner = originalFirecrackerRunner
 	})
+
+	firecrackerHostGOOS = "linux"
 
 	firecrackerBootstrapRunner = func(projectRoot string, execCtx doctorExecContext) error {
 		return nil
@@ -1643,8 +1711,8 @@ func TestRunExecFirecrackerUsesGuestWorkspaceWorkdir(t *testing.T) {
 	called := false
 	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
 		called = true
-		if projectRoot != "/workspace" {
-			t.Fatalf("expected firecracker exec to use guest workspace workdir '/workspace', got %q", projectRoot)
+		if projectRoot != root {
+			t.Fatalf("expected firecracker exec to use project root %q, got %q", root, projectRoot)
 		}
 		if command == "docker" {
 			return "", nil
@@ -1656,7 +1724,7 @@ func TestRunExecFirecrackerUsesGuestWorkspaceWorkdir(t *testing.T) {
 	}
 
 	err := runExec(execOptions{
-		projectRoot: t.TempDir(),
+		projectRoot: root,
 		timeout:     15 * time.Second,
 		command:     "pwd",
 		args:        nil,
@@ -1671,13 +1739,17 @@ func TestRunExecFirecrackerUsesGuestWorkspaceWorkdir(t *testing.T) {
 
 func TestRunExecSelectsBackendFromWorkspaceRuntimeWhenEnvUnset(t *testing.T) {
 	t.Setenv("NEXUS_RUNTIME_BACKEND", "")
+	originalGOOS := firecrackerHostGOOS
 
 	originalBootstrap := firecrackerBootstrapRunner
 	originalFirecrackerRunner := firecrackerCheckCommandRunner
 	t.Cleanup(func() {
+		firecrackerHostGOOS = originalGOOS
 		firecrackerBootstrapRunner = originalBootstrap
 		firecrackerCheckCommandRunner = originalFirecrackerRunner
 	})
+
+	firecrackerHostGOOS = "linux"
 
 	root := t.TempDir()
 	nexusDir := filepath.Join(root, ".nexus")
@@ -1697,8 +1769,8 @@ func TestRunExecSelectsBackendFromWorkspaceRuntimeWhenEnvUnset(t *testing.T) {
 		return nil
 	}
 	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-		if projectRoot != "/workspace" {
-			t.Fatalf("expected firecracker runExec workdir /workspace, got %q", projectRoot)
+		if projectRoot != root {
+			t.Fatalf("expected firecracker runExec to use project root %q, got %q", root, projectRoot)
 		}
 		return "/workspace\n", nil
 	}
@@ -1719,13 +1791,18 @@ func TestRunExecSelectsBackendFromWorkspaceRuntimeWhenEnvUnset(t *testing.T) {
 func TestRunExecReexecsWithSGKVMOnKVMPermissionError(t *testing.T) {
 	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
 	t.Setenv(execKVMGroupReexecEnv, "")
+	originalGOOS := firecrackerHostGOOS
+	addFakeSGToPath(t)
 
 	originalBootstrap := firecrackerBootstrapRunner
 	originalReexec := execKVMGroupReexecRunner
 	t.Cleanup(func() {
+		firecrackerHostGOOS = originalGOOS
 		firecrackerBootstrapRunner = originalBootstrap
 		execKVMGroupReexecRunner = originalReexec
 	})
+
+	firecrackerHostGOOS = "linux"
 
 	firecrackerBootstrapRunner = func(projectRoot string, execCtx doctorExecContext) error {
 		return errors.New("firecracker requires read/write access to /dev/kvm")
@@ -1791,6 +1868,7 @@ func TestRunDoctorReexecsWithSGKVMOnKVMPermissionError(t *testing.T) {
 	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
 	t.Setenv(execKVMGroupReexecEnv, "")
 	t.Setenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS", "1")
+	addFakeSGToPath(t)
 
 	workspaceRoot := setupDoctorTestWorkspace(t, config.DoctorConfig{})
 
@@ -2047,6 +2125,8 @@ func TestApplyFirecrackerAssetDefaultsDoesNotOverrideExistingEnv(t *testing.T) {
 }
 
 func TestBuildSetupScriptUsesLocalKernelCacheBeforeDownload(t *testing.T) {
+	requireLinux(t)
+
 	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
 
 	if !strings.Contains(script, "if [ -f /tmp/nexus-vmlinux.bin ]; then") {
@@ -2058,6 +2138,8 @@ func TestBuildSetupScriptUsesLocalKernelCacheBeforeDownload(t *testing.T) {
 }
 
 func TestBuildSetupScriptUsesLocalSquashfsCacheBeforeDownload(t *testing.T) {
+	requireLinux(t)
+
 	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
 
 	if !strings.Contains(script, "if [ -f /tmp/nexus-ubuntu.squashfs ]; then") {
@@ -2069,6 +2151,8 @@ func TestBuildSetupScriptUsesLocalSquashfsCacheBeforeDownload(t *testing.T) {
 }
 
 func TestBuildSetupScriptEnsuresSudoUserInKVMGroup(t *testing.T) {
+	requireLinux(t)
+
 	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
 
 	if !strings.Contains(script, "if [ -n \"${SUDO_USER:-}\" ]; then") {
@@ -2080,6 +2164,8 @@ func TestBuildSetupScriptEnsuresSudoUserInKVMGroup(t *testing.T) {
 }
 
 func TestBuildSetupScriptNormalizesVMAssetOwnershipForSudoUser(t *testing.T) {
+	requireLinux(t)
+
 	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
 
 	if !strings.Contains(script, "chown \"$SUDO_USER\":\"$SUDO_USER\" /var/lib/nexus/vmlinux.bin") {
@@ -2094,6 +2180,8 @@ func TestBuildSetupScriptNormalizesVMAssetOwnershipForSudoUser(t *testing.T) {
 }
 
 func TestBuildSetupScriptUpdatesExistingRootfsAgentPayload(t *testing.T) {
+	requireLinux(t)
+
 	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
 
 	if !strings.Contains(script, "if [ \"$ROOTFS_REBUILD\" -eq 0 ]; then") {
@@ -2117,6 +2205,8 @@ func TestBuildSetupScriptUpdatesExistingRootfsAgentPayload(t *testing.T) {
 }
 
 func TestBuildSetupScriptChecksBridgeRouteLinkdownNotLinkState(t *testing.T) {
+	requireLinux(t)
+
 	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
 
 	if !strings.Contains(script, "if ! ip route show dev nexusbr0 | grep -q 'linkdown'; then") {
@@ -2138,6 +2228,8 @@ func TestBuildSetupScriptChecksBridgeRouteLinkdownNotLinkState(t *testing.T) {
 // TestDetectPrivilegeModeRoot verifies that detectPrivilegeMode returns
 // privilegeModeRoot when EUID is 0.
 func TestDetectPrivilegeModeRoot(t *testing.T) {
+	requireLinux(t)
+
 	mode := detectPrivilegeMode(true, false, false)
 	if mode != privilegeModeRoot {
 		t.Fatalf("expected privilegeModeRoot for EUID==0, got %v", mode)
@@ -2147,6 +2239,8 @@ func TestDetectPrivilegeModeRoot(t *testing.T) {
 // TestDetectPrivilegeModeSudoN verifies that detectPrivilegeMode returns
 // privilegeModeSudoN when sudo -n would succeed (CI passwordless sudo).
 func TestDetectPrivilegeModeSudoN(t *testing.T) {
+	requireLinux(t)
+
 	mode := detectPrivilegeMode(false, true, false)
 	if mode != privilegeModeSudoN {
 		t.Fatalf("expected privilegeModeSudoN for passwordless sudo, got %v", mode)
@@ -2156,6 +2250,8 @@ func TestDetectPrivilegeModeSudoN(t *testing.T) {
 // TestDetectPrivilegeModeInteractive verifies that detectPrivilegeMode returns
 // privilegeModeInteractive when stdin is a TTY.
 func TestDetectPrivilegeModeInteractive(t *testing.T) {
+	requireLinux(t)
+
 	mode := detectPrivilegeMode(false, false, true)
 	if mode != privilegeModeInteractive {
 		t.Fatalf("expected privilegeModeInteractive for TTY stdin, got %v", mode)
@@ -2165,6 +2261,8 @@ func TestDetectPrivilegeModeInteractive(t *testing.T) {
 // TestDetectPrivilegeModeFallback verifies that detectPrivilegeMode returns
 // privilegeModeManual when no privilege escalation path is available.
 func TestDetectPrivilegeModeFallback(t *testing.T) {
+	requireLinux(t)
+
 	mode := detectPrivilegeMode(false, false, false)
 	if mode != privilegeModeManual {
 		t.Fatalf("expected privilegeModeManual for non-interactive no-sudo, got %v", mode)
@@ -2175,6 +2273,8 @@ func TestDetectPrivilegeModeFallback(t *testing.T) {
 // runSetupFirecracker in non-interactive mode (privilegeModeManual)
 // falls back to printing a sudo command when auto-sudo fails.
 func TestSetupFirecrackerNonInteractivePrintsAndErrors(t *testing.T) {
+	requireLinux(t)
+
 	origMode := setupPrivilegeModeOverride
 	origEnabled := setupPrivilegeModeOverrideEnabled
 	t.Cleanup(func() {
@@ -2236,6 +2336,8 @@ func TestSetupFirecrackerNonInteractivePrintsAndErrors(t *testing.T) {
 }
 
 func TestSetupFirecrackerManualModeAutoSudoSuccess(t *testing.T) {
+	requireLinux(t)
+
 	origMode := setupPrivilegeModeOverride
 	origEnabled := setupPrivilegeModeOverrideEnabled
 	t.Cleanup(func() {
@@ -2298,6 +2400,8 @@ func TestSetupFirecrackerManualModeAutoSudoSuccess(t *testing.T) {
 }
 
 func TestSetupFirecrackerManualModeRefreshesKVMGroupViaSG(t *testing.T) {
+	requireLinux(t)
+
 	origMode := setupPrivilegeModeOverride
 	origEnabled := setupPrivilegeModeOverrideEnabled
 	t.Cleanup(func() {
@@ -2348,6 +2452,8 @@ func TestSetupFirecrackerManualModeRefreshesKVMGroupViaSG(t *testing.T) {
 // TestSetupFirecrackerMockedSucceeds verifies that runSetupFirecracker
 // succeeds when the script execution and verify steps are mocked to pass.
 func TestSetupFirecrackerMockedSucceeds(t *testing.T) {
+	requireLinux(t)
+
 	origMode := setupPrivilegeModeOverride
 	origEnabled := setupPrivilegeModeOverrideEnabled
 	t.Cleanup(func() {
@@ -2382,6 +2488,8 @@ func TestSetupFirecrackerMockedSucceeds(t *testing.T) {
 }
 
 func TestSetupFirecrackerManualModeReturnsSuccessWhenAlreadyVerified(t *testing.T) {
+	requireLinux(t)
+
 	origMode := setupPrivilegeModeOverride
 	origEnabled := setupPrivilegeModeOverrideEnabled
 	t.Cleanup(func() {
@@ -2420,6 +2528,8 @@ func TestSetupFirecrackerManualModeReturnsSuccessWhenAlreadyVerified(t *testing.
 }
 
 func TestSetupFirecrackerInteractiveModeSkipsSudoWhenAlreadyVerified(t *testing.T) {
+	requireLinux(t)
+
 	origMode := setupPrivilegeModeOverride
 	origEnabled := setupPrivilegeModeOverrideEnabled
 	t.Cleanup(func() {
@@ -2465,6 +2575,8 @@ func TestSetupFirecrackerInteractiveModeSkipsSudoWhenAlreadyVerified(t *testing.
 }
 
 func TestSetupFirecrackerForceRefreshBypassesAlreadyConfiguredShortCircuit(t *testing.T) {
+	requireLinux(t)
+
 	t.Setenv("NEXUS_SETUP_FIRECRACKER_FORCE", "1")
 
 	origMode := setupPrivilegeModeOverride
@@ -2537,6 +2649,8 @@ func TestSetupFirecrackerForceRefreshBypassesAlreadyConfiguredShortCircuit(t *te
 }
 
 func TestSetupFirecrackerUsesUniqueTempAgentPath(t *testing.T) {
+	requireLinux(t)
+
 	origMode := setupPrivilegeModeOverride
 	origEnabled := setupPrivilegeModeOverrideEnabled
 	t.Cleanup(func() {
