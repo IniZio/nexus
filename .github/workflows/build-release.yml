@@ -2,6 +2,7 @@ name: Build and Release
 
 on:
   push:
+    branches: [main]
     tags:
       - 'v*'
   release:
@@ -35,9 +36,28 @@ jobs:
         env:
           CI: true
 
+  version:
+    name: Compute Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            short_sha="${GITHUB_SHA::7}"
+            echo "version=0.0.0-main.${GITHUB_RUN_NUMBER}+${short_sha}" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Build for ${{ matrix.os }}
-    needs: test
+    needs: [test, version]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -71,23 +91,55 @@ jobs:
       - name: Build binary
         shell: bash
         run: |
+          mkdir -p dist
           if [[ "${{ matrix.target }}" == windows* ]]; then
-            GOOS=windows GOARCH=amd64 go build -o ${{ matrix.artifact }}.exe ./cmd/nexus
+            GOOS=windows GOARCH=amd64 go build -o dist/${{ matrix.artifact }}.exe ./cmd/nexus
           else
             GOOS=$(echo ${{ matrix.target }} | cut -d'-' -f1) \
             GOARCH=$(echo ${{ matrix.target }} | cut -d'-' -f2) \
-            go build -o ${{ matrix.artifact }} ./cmd/nexus
+            go build -o dist/${{ matrix.artifact }} ./cmd/nexus
+          fi
+
+      - name: Package binary
+        shell: bash
+        run: |
+          mkdir -p release
+          version="${{ needs.version.outputs.version }}"
+          if [[ "${{ matrix.target }}" == windows* ]]; then
+            archive="nexus-${version}-${{ matrix.target }}.zip"
+            (cd dist && zip -q "../release/${archive}" "${{ matrix.artifact }}.exe")
+          else
+            archive="nexus-${version}-${{ matrix.target }}.tar.gz"
+            tar -C dist -czf "release/${archive}" "${{ matrix.artifact }}"
           fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}${{ matrix.target == 'windows*' && '.exe' || '' }}
+          path: release/*
+
+  publish-main-artifacts:
+    name: Publish Main Build Artifacts
+    if: github.ref == 'refs/heads/main'
+    needs: [build, version]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Upload consolidated main artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-main-build-${{ needs.version.outputs.version }}
+          path: artifacts/*
 
   release:
     name: Create Release
-    needs: build
+    needs: [build, version]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
 
@@ -101,11 +153,8 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            artifacts/nexus-linux-amd64
-            artifacts/nexus-linux-arm64
-            artifacts/nexus-darwin-amd64
-            artifacts/nexus-darwin-arm64
-            artifacts/nexus-windows-amd64.exe
+          files: artifacts/*
+          name: Nexus v${{ needs.version.outputs.version }}
+          tag_name: v${{ needs.version.outputs.version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

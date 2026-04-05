@@ -1,0 +1,48 @@
+{
+  "$schema": "https://raw.githubusercontent.com/IniZio/nexus/main/schemas/workspace.v1.schema.json",
+  "version": 1,
+  "runtime": {
+    "required": [
+      "firecracker"
+    ],
+    "selection": "prefer-first"
+  },
+  "doctor": {
+    "probes": [
+      {
+        "name": "runtime-backend",
+        "command": "bash",
+        "args": [
+          ".nexus/probe/01-runtime-backend.sh"
+        ],
+        "required": true
+      },
+      {
+        "name": "go-toolchain",
+        "command": "bash",
+        "args": [
+          ".nexus/probe/02-go-toolchain.sh"
+        ],
+        "required": true
+      }
+    ],
+    "tests": [
+      {
+        "name": "nexus-cli-subcommands",
+        "command": "bash",
+        "args": [
+          ".nexus/check/20-cli-subcommands.sh"
+        ],
+        "required": true
+      },
+      {
+        "name": "nexus-package-tests",
+        "command": "bash",
+        "args": [
+          ".nexus/check/30-package-tests.sh"
+        ],
+        "required": true
+      }
+    ]
+  }
+}

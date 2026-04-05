@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1013,6 +1014,10 @@ func TestRunInitFirecrackerReturnsManualStepsInNonInteractiveMode(t *testing.T) 
 }
 
 func TestRunInitRuntimeBootstrapReturnsFastErrorInNonInteractiveNoSudoNonRoot(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("fast-fail bootstrap path is Linux-specific")
+	}
+
 	origIsRoot := initRuntimeBootstrapIsRootFn
 	origSudoOK := initRuntimeBootstrapSudoOKFn
 	origIsTTY := initRuntimeBootstrapIsTTYFn
