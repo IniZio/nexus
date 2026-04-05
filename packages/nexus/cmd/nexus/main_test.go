@@ -1044,7 +1044,6 @@ func TestRunInitRuntimeBootstrapReturnsFastErrorInNonInteractiveNoSudoNonRoot(t 
 	if runtime.GOOS != "linux" {
 		t.Skip("fast-fail bootstrap path is Linux-specific")
 	}
-
 	origIsRoot := initRuntimeBootstrapIsRootFn
 	origSudoOK := initRuntimeBootstrapSudoOKFn
 	origIsTTY := initRuntimeBootstrapIsTTYFn
@@ -1072,7 +1071,6 @@ func TestRunInitRuntimeBootstrapReturnsFastErrorInNonInteractiveNoSudoNonRoot(t 
 		t.Fatalf("expected error to contain 'sudo -E nexus init' command, got: %v", err)
 	}
 }
-
 func TestRunInitRuntimeBootstrapIgnoresKVMRefreshNeededWhenPrivileged(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("kvm refresh bootstrap behavior is Linux-specific")
