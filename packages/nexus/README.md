@@ -1,264 +1,41 @@
 # Workspace Daemon
+# Nexus Daemon (`packages/nexus`)
 
-Server-side component that receives SDK calls from `@nexus/sdk`.
+Core Go runtime for Nexus workspace orchestration.
 
-## Overview
+## What this package provides
 
-The workspace daemon is a Go-based WebSocket server that provides secure file system operations and command execution for remote workspaces. It implements the JSON-RPC 2.0 protocol for communication with the SDK.
+- `nexus` CLI subcommands used in CI and project setup:
+  - `nexus init`
+  - `nexus doctor`
+  - `nexus exec`
+- Firecracker-first isolated runtime support.
+- Workspace lifecycle helpers (`.nexus` probes/checks/e2e scaffolding).
 
-## Features
-
-- WebSocket-based communication
-- JWT token authentication
-- Secure file operations (read, write, mkdir, rm, stat, readdir)
-- Command execution with timeout support
-- Directory traversal protection
-- Docker container support
-
-## Firecracker Doctor Prerequisites
-
-For `nexus doctor` with `NEXUS_RUNTIME_BACKEND=firecracker`, host preflight checks enforce:
-
-- `firecracker` binary available on `PATH` (or via `NEXUS_FIRECRACKER_BIN`)
-- `NEXUS_FIRECRACKER_KERNEL` and `NEXUS_FIRECRACKER_ROOTFS` point to readable files
-- `/dev/kvm` is readable/writable by the current user
-
-Linux:
-
-- Install Firecracker.
-- Add user to `kvm` group and re-login.
-- Export `NEXUS_FIRECRACKER_KERNEL` and `NEXUS_FIRECRACKER_ROOTFS`.
-
-macOS:
-
-- Firecracker is not supported natively (KVM is Linux-only).
-- Use a Linux VM such as Lima and run doctor inside that VM.
-
-## Building
+## Build
 
 ```bash
-# Build the binary
-go build -o daemon ./cmd/daemon
-
-# Build Docker image
-docker build -t nexus/workspace-daemon .
+cd packages/nexus
+go build ./cmd/nexus/...
 ```
 
-## Running
+## Test
 
 ```bash
-# Basic usage
-./daemon --port 8080 --workspace-dir /path/to/workspace --token YOUR_JWT_TOKEN
-
-# With custom timeout
-./daemon --port 8080 --workspace-dir /workspace --token my-secret-token
+cd packages/nexus
+go test ./cmd/nexus -count=1
+go test ./pkg/runtime/firecracker -count=1
 ```
 
-## Docker
+## Runtime notes
 
-```bash
-# Build and run
-docker build -t nexus/workspace-daemon .
-docker run -d \
-  -p 8080:8080 \
-  -v /path/to/workspace:/workspace \
-  -e TOKEN=your-jwt-token \
-  nexus/workspace-daemon
-```
+- Firecracker requires Linux/KVM.
+- On macOS, use a Linux VM path (for example Lima) for firecracker-backed checks.
 
-## Configuration
+## Docs
 
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--port` | `PORT` | 8080 | Port to listen on |
-| `--workspace-dir` | `WORKSPACE_DIR` | /workspace | Workspace directory path |
-| `--token` | `TOKEN` | - | JWT secret token (required) |
-
-## API Reference
-
-### JSON-RPC 2.0 Protocol
-
-All requests follow the JSON-RPC 2.0 format:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "method": "fs.readFile",
-  "params": {
-    "path": "/workspace/src/index.ts"
-  }
-}
-```
-
-### File System Methods
-
-#### fs.readFile
-
-Read file contents.
-
-**Params:**
-```json
-{
-  "path": "relative/path/to/file",
-  "encoding": "utf8"  // optional, default: utf8
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "result": {
-    "content": "file contents...",
-    "encoding": "utf8",
-    "size": 1234
-  }
-}
-```
-
-#### fs.writeFile
-
-Write file contents.
-
-**Params:**
-```json
-{
-  "path": "relative/path/to/file",
-  "content": "file contents...",
-  "encoding": "utf8"  // optional
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "result": {
-    "ok": true,
-    "path": "relative/path/to/file",
-    "size": 1234
-  }
-}
-```
-
-#### fs.exists
-
-Check if a file or directory exists.
-
-**Params:**
-```json
-{
-  "path": "relative/path"
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "result": {
-    "exists": true,
-    "path": "relative/path"
-  }
-}
-```
-
-#### fs.readdir
-
-List directory contents.
-
-**Params:**
-```json
-{
-  "path": "relative/path"  // optional, default: "."
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "result": {
-    "entries": [
-      {"name": "file.txt", "path": "file.txt", "is_dir": false, "size": 123},
-      {"name": "subdir", "path": "subdir", "is_dir": true, "size": 0}
-    ],
-    "path": "."
-  }
-}
-```
-
-#### fs.mkdir
-
-Create a directory.
-
-**Params:**
-```json
-{
-  "path": "relative/path/to/dir",
-  "recursive": true  // optional, default: false
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "result": {
-    "ok": true,
-    "path": "relative/path/to/dir"
-  }
-}
-```
-
-#### fs.rm
-
-Remove a file or directory.
-
-**Params:**
-```json
-{
-  "path": "relative/path",
-  "recursive": true  // optional, default: false
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "result": {
-    "ok": true,
-    "path": "relative/path"
-  }
-}
-```
-
-#### fs.stat
-
-Get file/directory metadata.
-
-**Params:**
-```json
-{
-  "path": "relative/path"
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-123",
-  "result": {
-    "name": "filename",
+- `docs/reference/workspace-daemon.md`
+- `docs/reference/workspace-config.md`
     "path": "relative/path",
     "is_dir": false,
     "size": 1234,
