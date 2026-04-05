@@ -62,9 +62,6 @@ func main() {
 	}
 
 	switch command {
-	case "setup":
-		runSetupCommand(args)
-		return
 	case "init":
 		runInitCommand(args)
 		return
@@ -122,7 +119,6 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  nexus doctor --project-root <abs-path> --suite <name> [--compose-file docker-compose.yml] [--required-host-ports 5173,5174,8000] [--report-json path]")
 	fmt.Fprintln(os.Stderr, "  nexus init --project-root <abs-path> [--runtime firecracker|local] [--force]")
 	fmt.Fprintln(os.Stderr, "  nexus exec --project-root <abs-path> [--timeout 10m] -- <command> [args...]")
-	fmt.Fprintln(os.Stderr, "  nexus setup firecracker")
 }
 
 func runInitCommand(args []string) {
@@ -254,6 +250,12 @@ func runInit(opts initOptions) error {
 		}
 	}
 
+	if runtimeName == "firecracker" {
+		if err := initRuntimeBootstrapRunner(opts.projectRoot, runtimeName); err != nil {
+			return err
+		}
+	}
+
 	fmt.Printf("initialized nexus workspace metadata at %s\n", nexusDir)
 	return nil
 }
@@ -299,7 +301,7 @@ func runExec(opts execOptions) error {
 	var out string
 	var err error
 	fmt.Printf("exec exec: %s (attempt %d/%d, timeout=%s, context=firecracker): %s\n", opts.command, 1, 1, opts.timeout, formatCommand(opts.command, opts.args))
-	out, err = firecrackerCheckCommandRunner(ctx, "/workspace", opts.command, opts.args)
+	out, err = runFirecrackerCheckCommandForHost(ctx, opts.projectRoot, opts.command, opts.args)
 
 	if strings.TrimSpace(out) != "" {
 		fmt.Println(strings.TrimSpace(out))
@@ -500,7 +502,15 @@ func verifyFirecrackerGuestDockerRuntime() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	out, err := firecrackerCheckCommandRunner(ctx, "/workspace", "sh", []string{"-lc", "command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1"})
+	commandProjectRoot := "/workspace"
+	if firecrackerHostGOOS == "darwin" {
+		if cwd, err := os.Getwd(); err == nil && strings.TrimSpace(cwd) != "" {
+			commandProjectRoot = cwd
+		}
+	}
+
+	verifyCmd := "if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then exit 0; fi; if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1 && sudo -n docker info >/dev/null 2>&1; then exit 0; fi; if command -v docker >/dev/null 2>&1; then docker info 2>&1 || true; else echo 'docker: not found'; fi; if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then sudo -n docker info 2>&1 || true; fi; exit 1"
+	out, err := runFirecrackerCheckCommandForHost(ctx, commandProjectRoot, "sh", []string{"-lc", verifyCmd})
 	if err == nil {
 		return nil
 	}
@@ -553,7 +563,7 @@ var firecrackerCheckCommandRunner = runFirecrackerCheckCommand
 
 var firecrackerWorkspaceVerifier = verifyFirecrackerWorkspaceReady
 
-var firecrackerBootstrapRunner = bootstrapFirecrackerExecContextNative
+var firecrackerBootstrapRunner = dispatchFirecrackerBootstrap
 
 var containerBootstrapRunner = bootstrapContainerExecContext
 
@@ -599,7 +609,7 @@ var firecrackerBridgeValidator = func() error { return validateFirecrackerBridge
 
 func runBootstrapInstallCommand(ctx context.Context, projectRoot string, timeout time.Duration, execCtx doctorExecContext) (string, error) {
 	aptOpts := "-o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
-	installCmd := "chmod 1777 /tmp; apt-get clean >/dev/null 2>&1 || true; rm -rf /var/lib/apt/lists/*; mkdir -p /var/cache/apt/archives/partial /var/lib/apt/lists/partial; apt-get " + aptOpts + " update && DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold " + aptOpts + " install -y bash docker.io curl make python3 git nodejs npm iptables docker-compose-v2 docker-buildx-plugin || DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold " + aptOpts + " install -y bash docker.io curl make python3 git nodejs npm iptables docker-compose-v2 || DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold " + aptOpts + " install -y bash docker.io curl make python3 git nodejs npm iptables && DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold " + aptOpts + " install -y docker-compose-v2 docker-buildx-plugin || DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold " + aptOpts + " install -y docker-compose-v2 || true"
+	installCmd := "chmod 1777 /tmp; apt-get clean >/dev/null 2>&1 || true; rm -rf /var/lib/apt/lists/*; mkdir -p /var/cache/apt/archives/partial /var/lib/apt/lists/partial; apt-get " + aptOpts + " update && DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold " + aptOpts + " install -y bash docker.io curl make python3 git nodejs npm iptables docker-compose-v2 docker-buildx-plugin || DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold " + aptOpts + " install -y bash docker.io curl make python3 git nodejs npm iptables docker-compose-v2 || DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold " + aptOpts + " install -y bash docker.io curl make python3 git nodejs npm iptables && DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold " + aptOpts + " install -y docker-compose-v2 docker-buildx-plugin || DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold " + aptOpts + " install -y docker-compose-v2 || true; command -v make >/dev/null 2>&1 || exit 1"
 	return doctorCheckCommandRunner(ctx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "sh", []string{"-lc", installCmd}, execCtx)
 }
 
@@ -934,7 +944,15 @@ func verifyFirecrackerWorkspaceReady() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	out, err := firecrackerCheckCommandRunner(ctx, "/workspace", "sh", []string{"-lc", "test -d /workspace"})
+	workspacePath := "/workspace"
+	if firecrackerHostGOOS == "darwin" {
+		if cwd, err := os.Getwd(); err == nil && strings.TrimSpace(cwd) != "" {
+			workspacePath = cwd
+		}
+	}
+
+	probeCmd := fmt.Sprintf("test -d %s", shellQuote(workspacePath))
+	out, err := runFirecrackerCheckCommandForHost(ctx, workspacePath, "sh", []string{"-lc", probeCmd})
 	if err == nil {
 		return nil
 	}
@@ -945,7 +963,7 @@ func verifyFirecrackerWorkspaceReady() error {
 	}
 
 	if strings.Contains(detail, "chdir /workspace: no such file or directory") {
-		return fmt.Errorf("firecracker guest is missing /workspace; run `nexus setup firecracker` (sudo) to refresh the VM rootfs and then retry")
+		return fmt.Errorf("firecracker guest is missing /workspace; re-run `nexus init --project-root <abs-path> --runtime firecracker --force` to refresh the runtime and then retry")
 	}
 
 	return fmt.Errorf("firecracker guest workspace verification failed: %s", detail)
@@ -1088,8 +1106,8 @@ func detectHostDockerSocket() string {
 }
 
 func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext, backendLabel string, allowInstall bool) error {
-	if execCtx.backend != "firecracker" {
-		return fmt.Errorf("unsupported runtime backend %q: only firecracker is supported", execCtx.backend)
+	if execCtx.backend != "firecracker" && execCtx.backend != "lxc" {
+		return fmt.Errorf("unsupported runtime backend %q: only firecracker and lxc are supported", execCtx.backend)
 	}
 
 	timeout := 90 * time.Second
@@ -1097,6 +1115,8 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 	if execCtx.backend == "firecracker" {
 		commandProjectRoot = "/"
 	}
+	// For lxc on darwin: commandProjectRoot = projectRoot (Lima mounts ~ from macOS, so
+	// /Users/runner/... is accessible inside Lima at the same path)
 	hostProxyMode := execCtx.backend == "firecracker" && strings.EqualFold(strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_FIRECRACKER_DOCKER_MODE")), "host-proxy")
 	collectDockerDiagnostics := func() string {
 		diagCmd := "set +e; echo '--- docker binary ---'; command -v docker || true; echo '--- docker version ---'; docker version || true; echo '--- docker info ---'; docker info || true; echo '--- dockerd ps ---'; ps -ef | grep '[d]ockerd' || true; echo '--- dockerd log ---'; cat /tmp/nexus-doctor-dockerd.log || true; if command -v systemctl >/dev/null 2>&1; then echo '--- systemctl status docker ---'; systemctl status docker --no-pager || true; fi"
@@ -1108,6 +1128,9 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 	capabilityChecks := [][]string{
 		{"docker", "info"},
 		{"docker", "compose", "version"},
+	}
+	if hasMakeTarget(projectRoot, "start") {
+		capabilityChecks = append(capabilityChecks, []string{"make", "--version"})
 	}
 	runCapabilityChecks := func() (bool, string) {
 		failures := make([]string, 0)
@@ -1206,8 +1229,22 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 	return nil
 }
 
+func dispatchFirecrackerBootstrap(projectRoot string, execCtx doctorExecContext) error {
+	if firecrackerHostGOOS == "darwin" {
+		return bootstrapFirecrackerExecContextDarwinFn(projectRoot, execCtx)
+	}
+	return bootstrapFirecrackerExecContextNative(projectRoot, execCtx)
+}
+
 func bootstrapFirecrackerExecContext(projectRoot string, execCtx doctorExecContext) error {
 	return firecrackerBootstrapRunner(projectRoot, execCtx)
+}
+
+func runFirecrackerCheckCommandForHost(ctx context.Context, projectRoot, command string, args []string) (string, error) {
+	if firecrackerHostGOOS == "darwin" {
+		return runLimaCheckCommandFn(ctx, projectRoot, command, args)
+	}
+	return firecrackerCheckCommandRunner(ctx, projectRoot, command, args)
 }
 
 func runConfiguredProbes(opts options, probes []config.DoctorCommandProbe) ([]checkResult, error) {
@@ -1355,28 +1392,15 @@ func runConfiguredTests(opts options, tests []config.DoctorCommandCheck) ([]chec
 }
 
 func runDoctorLifecycleStart(projectRoot string, execCtx doctorExecContext) error {
-	startPath := filepath.Join(projectRoot, ".nexus", "lifecycles", "start.sh")
-	command := ""
-	args := []string(nil)
-	contextLabel := "lifecycle"
-
-	if startExists, err := isExecutableFile(startPath); err != nil {
+	command, args, contextLabel, summary, found, err := resolveDoctorLifecycleStartCommand(projectRoot)
+	if err != nil {
 		return err
-	} else if startExists {
-		command = "bash"
-		args = []string{".nexus/lifecycles/start.sh"}
-		contextLabel = "lifecycle-start-script"
-	} else if hasComposeTarget(projectRoot) {
-		command = "sh"
-		args = []string{"-lc", "if [ -f Makefile ] && command -v make >/dev/null 2>&1; then if grep -q '^secret:' Makefile; then make secret; fi; fi; export BUILDKIT_PROGRESS=plain; docker compose build --progress=plain; docker compose up -d --no-build"}
-		contextLabel = "lifecycle-start-compose"
-	} else if hasMakeTarget(projectRoot, "start") {
-		command = "make"
-		args = []string{"start"}
-		contextLabel = "lifecycle-start-make"
-	} else {
+	}
+	if !found {
 		return nil
 	}
+
+	fmt.Printf("doctor lifecycle start selected command: %s\n", summary)
 
 	timeout := 10 * time.Minute
 	if rawTimeout := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_START_TIMEOUT_MS")); rawTimeout != "" {
@@ -1403,6 +1427,29 @@ func runDoctorLifecycleStart(projectRoot string, execCtx doctorExecContext) erro
 
 	fmt.Printf("doctor lifecycle started (%s)\n", contextLabel)
 	return nil
+}
+
+func resolveDoctorLifecycleStartCommand(projectRoot string) (command string, args []string, contextLabel string, summary string, found bool, err error) {
+	if hasMakeTarget(projectRoot, "start") {
+		makeStartCmd := "export UID=1000; export GID=1000; make start"
+		return "sh", []string{"-lc", makeStartCmd}, "lifecycle-start-make", "make start", true, nil
+	}
+
+	if hasComposeTarget(projectRoot) {
+		composeCmd := "if [ -f Makefile ] && command -v make >/dev/null 2>&1; then if grep -q '^secret:' Makefile; then make secret; fi; fi; export BUILDKIT_PROGRESS=plain; export UID=1000; export GID=1000; docker compose build --progress=plain; docker compose up -d --no-build"
+		return "sh", []string{"-lc", composeCmd}, "lifecycle-start-compose", "docker compose build --progress=plain && docker compose up -d --no-build", true, nil
+	}
+
+	startPath := filepath.Join(projectRoot, ".nexus", "lifecycles", "start.sh")
+	startExists, err := isExecutableFile(startPath)
+	if err != nil {
+		return "", nil, "", "", false, err
+	}
+	if startExists {
+		return "bash", []string{".nexus/lifecycles/start.sh"}, "lifecycle-start-script", "bash .nexus/lifecycles/start.sh", true, nil
+	}
+
+	return "", nil, "", "", false, nil
 }
 
 func hasComposeTarget(projectRoot string) bool {
@@ -1433,6 +1480,11 @@ func collectFirecrackerWorkspaceDiagnostics(projectRoot string, execCtx doctorEx
 }
 
 func runDoctorLifecycleSetup(projectRoot string, execCtx doctorExecContext) error {
+	if hasMakeTarget(projectRoot, "start") {
+		fmt.Println("doctor lifecycle setup skipped (startup handled by Makefile target: make start)")
+		return nil
+	}
+
 	setupPath := filepath.Join(projectRoot, ".nexus", "lifecycles", "setup.sh")
 	command := ""
 	args := []string(nil)
@@ -1496,10 +1548,10 @@ func runBuiltInRuntimeBackendCheck() (checkResult, error) {
 	}
 
 	backend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND"))
-	if backend != "firecracker" {
+	if backend != "firecracker" && backend != "lxc" {
 		result.Status = "failed_required"
 		result.DurationMs = time.Since(start).Milliseconds()
-		result.Error = fmt.Sprintf("unsupported runtime backend %q: doctor command only supports firecracker", backend)
+		result.Error = fmt.Sprintf("unsupported runtime backend %q: doctor command only supports firecracker or lxc", backend)
 		return result, fmt.Errorf("required probes failed: %s", checkName)
 	}
 
@@ -1512,20 +1564,27 @@ func runBuiltInRuntimeBackendCheck() (checkResult, error) {
 func bootstrapDoctorExecContext(projectRoot string) error {
 	setDoctorExecContextCleanup(nil)
 	execCtx := loadDoctorExecContext()
-	if execCtx.backend != "firecracker" {
-		return fmt.Errorf("unsupported runtime backend %q: doctor command only supports firecracker", execCtx.backend)
+	switch execCtx.backend {
+	case "firecracker":
+		if err := bootstrapFirecrackerExecContext(projectRoot, execCtx); err != nil {
+			return err
+		}
+		return containerBootstrapRunner(projectRoot, execCtx, "firecracker", true)
+	case "lxc":
+		if err := bootstrapFirecrackerExecContext(projectRoot, execCtx); err != nil {
+			return err
+		}
+		return containerBootstrapRunner(projectRoot, execCtx, "lxc", true)
+	default:
+		return fmt.Errorf("unsupported runtime backend %q: doctor command only supports firecracker or lxc", execCtx.backend)
 	}
-	if err := bootstrapFirecrackerExecContext(projectRoot, execCtx); err != nil {
-		return err
-	}
-	return containerBootstrapRunner(projectRoot, execCtx, "firecracker", true)
 }
 
 func bootstrapExecCommandContext(projectRoot string) error {
 	setDoctorExecContextCleanup(nil)
 	execCtx := loadDoctorExecContext()
-	if execCtx.backend != "firecracker" {
-		return fmt.Errorf("unsupported runtime backend %q: exec command only supports firecracker", execCtx.backend)
+	if execCtx.backend != "firecracker" && execCtx.backend != "lxc" {
+		return fmt.Errorf("unsupported runtime backend %q: exec command only supports firecracker or lxc", execCtx.backend)
 	}
 	return bootstrapFirecrackerExecContext(projectRoot, execCtx)
 }
@@ -1568,9 +1627,9 @@ func runCheckCommand(ctx context.Context, projectRoot, phase, name string, attem
 }
 
 func runCheckCommandWithExecContext(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
-	if execCtx.backend == "firecracker" {
-		fmt.Printf("%s exec: %s (attempt %d/%d, timeout=%s, context=firecracker): %s\n", phase, name, attempt, attempts, timeout, formatCommand(command, args))
-		return firecrackerCheckCommandRunner(ctx, "/workspace", command, args)
+	if execCtx.backend == "firecracker" || (execCtx.backend == "lxc" && firecrackerHostGOOS == "darwin") {
+		fmt.Printf("%s exec: %s (attempt %d/%d, timeout=%s, context=%s): %s\n", phase, name, attempt, attempts, timeout, execCtx.backend, formatCommand(command, args))
+		return runFirecrackerCheckCommandForHost(ctx, projectRoot, command, args)
 	}
 
 	return runHostCheckCommandWithExecContext(ctx, projectRoot, phase, name, attempt, attempts, timeout, command, args, execCtx, "")
@@ -1634,8 +1693,8 @@ func loadDoctorExecContext() doctorExecContext {
 
 func applyRuntimeBackendFromWorkspace(projectRoot string) error {
 	if rawBackend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND")); rawBackend != "" {
-		if rawBackend != "firecracker" {
-			return fmt.Errorf("unsupported runtime backend %q: doctor command only supports firecracker", rawBackend)
+		if rawBackend != "firecracker" && rawBackend != "lxc" {
+			return fmt.Errorf("unsupported runtime backend %q: doctor command only supports firecracker or lxc", rawBackend)
 		}
 		return nil
 	}
