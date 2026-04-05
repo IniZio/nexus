@@ -198,3 +198,21 @@ The action invokes `nexus init` (idempotent) rather than relying on a separate s
 6. Workspace start uses persistent Lima, doctor uses ephemeral Lima.
 7. Linux Firecracker path remains functional and CI-stable.
 8. Non-interactive/read-only terminals never hang on privilege prompts; they fail fast with manual steps.
+
+## Doctor Startup Acceptance Criteria (Strict)
+
+1. If project `Makefile` has a `start:` target, doctor startup must select and run `make start`.
+2. In that case, doctor logs must include an explicit selection line:
+   - `doctor lifecycle start selected command: make start`
+3. In that case, doctor must not invoke legacy lifecycle setup/start scripts:
+   - no `bash .nexus/lifecycles/setup.sh`
+   - no `bash .nexus/lifecycles/start.sh`
+4. If no Makefile `start` target exists, doctor may fall back to compose/lifecycle behavior per existing policy.
+5. Startup command output must remain streamed to CI logs (no hidden buffering of the selected startup path).
+
+## Compose Port Discovery Acceptance Criteria (Strict)
+
+1. Compose published-port discovery must parse only stdout JSON from `docker compose ... config --format json`.
+2. Stderr or non-JSON output must never be fed into JSON parsing.
+3. If stdout is non-JSON (or `--format json` unsupported), doctor must emit a clear compose-discovery warning and continue probe/test execution.
+4. The warning must be actionable and must not contain misleading JSON parse errors caused by mixed stdout/stderr streams.

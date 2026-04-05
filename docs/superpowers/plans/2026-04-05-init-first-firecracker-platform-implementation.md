@@ -458,3 +458,20 @@ git commit -m "test: cover init-first firecracker setup and cross-platform regre
 - No `TODO`/`TBD` placeholders remain.
 - Function names used consistently across tasks (`runInitRuntimeBootstrap`, `runDoctorViaLimaDarwin`, `doctorLimaInstanceName`).
 - Runtime ownership boundaries remain consistent (Nexus owns setup, action only prepares tooling + invokes Nexus commands).
+
+## Strict Acceptance Addendum (2026-04-05)
+
+1. `nexus doctor` startup selection must prefer Makefile discovery first:
+   - when `Makefile` has `start:`, selected command is exactly `make start`.
+2. Doctor logs must include explicit startup selection evidence:
+   - `doctor lifecycle start selected command: make start`
+3. When Makefile `start` is selected, legacy lifecycle script invocations are disallowed:
+   - no `bash .nexus/lifecycles/setup.sh`
+   - no `bash .nexus/lifecycles/start.sh`
+4. Compose discovery implementation must parse stdout-only JSON from compose config output and never parse combined stderr/stdout.
+5. Compose discovery failure behavior must be warning-only and actionable, without misleading parser noise from mixed streams.
+6. Unit coverage must include:
+   - startup precedence (`make start` wins over lifecycle script and compose fallback)
+   - lifecycle setup skip when `make start` exists
+   - non-JSON compose output handling path
+7. CI validation must capture visible evidence lines for startup command selection and startup command output streaming.

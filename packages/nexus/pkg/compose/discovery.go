@@ -1,6 +1,7 @@
 package compose
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,11 @@ var (
 	ErrComposeJSONUnsupported = errors.New("docker compose json output unsupported")
 )
 
+type composeCommandOutput struct {
+	stdout []byte
+	stderr []byte
+}
+
 type PublishedPort struct {
 	Service    string `json:"service"`
 	HostIP     string `json:"hostIP,omitempty"`
@@ -26,10 +32,13 @@ type PublishedPort struct {
 	Protocol   string `json:"protocol"`
 }
 
-var runComposeCommand = func(ctx context.Context, workspaceRoot string, args ...string) ([]byte, error) {
+var runComposeCommand = func(ctx context.Context, workspaceRoot string, args ...string) (composeCommandOutput, error) {
 	cmd := exec.CommandContext(ctx, "docker", append([]string{"compose"}, args...)...)
 	cmd.Dir = workspaceRoot
-	return cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.Output()
+	return composeCommandOutput{stdout: stdout, stderr: stderr.Bytes()}, err
 }
 
 func DiscoverPublishedPorts(ctx context.Context, workspaceRoot string) ([]PublishedPort, error) {
@@ -47,7 +56,22 @@ func DiscoverPublishedPorts(ctx context.Context, workspaceRoot string) ([]Publis
 		return nil, fmt.Errorf("%w: %v", ErrComposeJSONUnsupported, err)
 	}
 
-	ports, err := parsePublishedPortsFromConfigJSON(out)
+	trimmed := bytes.TrimSpace(out.stdout)
+	if !json.Valid(trimmed) {
+		snippet := strings.TrimSpace(string(trimmed))
+		if snippet == "" {
+			snippet = strings.TrimSpace(string(out.stderr))
+		}
+		if snippet == "" {
+			snippet = "empty output"
+		}
+		if len(snippet) > 160 {
+			snippet = snippet[:160]
+		}
+		return nil, fmt.Errorf("%w: non-json output from docker compose config --format json: %s", ErrComposeJSONUnsupported, snippet)
+	}
+
+	ports, err := parsePublishedPortsFromConfigJSON(trimmed)
 	if err != nil {
 		return nil, err
 	}
