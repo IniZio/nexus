@@ -1431,7 +1431,7 @@ func runDoctorLifecycleStart(projectRoot string, execCtx doctorExecContext) erro
 
 func resolveDoctorLifecycleStartCommand(projectRoot string) (command string, args []string, contextLabel string, summary string, found bool, err error) {
 	if hasMakeTarget(projectRoot, "start") {
-		return "make", []string{"start"}, "lifecycle-start-make", "make start", true, nil
+		return "sh", []string{"-lc", "make start"}, "lifecycle-start-make", "make start", true, nil
 	}
 
 	if hasComposeTarget(projectRoot) {
