@@ -1,19 +1,20 @@
 # Nexus
 
-Nexus focuses on a remote workspace core:
+Nexus is the remote workspace core for this repository:
 
-- `workspace-daemon` (Go): workspace orchestration and RPC server
-- `workspace-sdk` (TypeScript): client SDK for workspace operations
+- `packages/nexus` (Go): daemon runtime + `nexus` CLI (`init`, `doctor`, `exec`)
+- `packages/sdk/js` (TypeScript): `@nexus/sdk` client library
 
 ## Core capabilities
 
-- Remote workspace lifecycle and scoped operations
-- Compose-aware service readiness and Spotlight forwarding
-- Optional ACP capability detection (no hard dependency)
+- Firecracker-first isolated runtime workflow
+- Project-level workspace config via `.nexus/workspace.json`
+- Probe/test orchestration through `nexus doctor`
+- SDK + daemon RPC contract for workspace automation
 
 ## Start here
 
 - `docs/reference/workspace-daemon.md`
 - `docs/reference/workspace-sdk.md`
 - `docs/reference/workspace-config.md`
-- `docs/dev/migration-core-prune.md`
+- `docs/tutorials/installation.md`

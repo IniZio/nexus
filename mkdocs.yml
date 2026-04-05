@@ -20,12 +20,11 @@ nav:
     - Workspace Config: reference/workspace-config.md
   - Development:
     - Contributing: dev/contributing.md
-    - Core Prune Migration: dev/migration-core-prune.md
     - Architecture Decisions: dev/decisions/
 
 theme:
   name: material
   palette:
     - scheme: default
-      primary: indigo
-      accent: indigo
+      primary: blue grey
+      accent: teal
