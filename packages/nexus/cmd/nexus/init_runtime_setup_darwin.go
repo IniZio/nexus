@@ -15,6 +15,9 @@ import (
 //go:embed templates/lima/firecracker.yaml
 var embeddedLimaTemplate string
 
+//go:embed templates/lima/lxc.yaml
+var embeddedLimaLXCTemplate string
+
 var initRuntimeBootstrapRunner func(projectRoot, runtimeName string) error = runInitRuntimeBootstrapDarwin
 
 var (
@@ -55,15 +58,45 @@ func runInitRuntimeBootstrapDarwin(projectRoot, runtimeName string) error {
 		return initRuntimeBootstrapDarwinWrapError(projectRoot, fmt.Errorf("limactl not found; run: brew install lima"))
 	}
 
+	// Try Firecracker template (with nestedVirtualization) first
 	templatePath, cleanupTemplate, err := writeEmbeddedLimaTemplate()
 	if err != nil {
 		return initRuntimeBootstrapDarwinWrapError(projectRoot, err)
 	}
 	defer cleanupTemplate()
 
-	if err := ensurePersistentLimaInstance("nexus-firecracker", templatePath); err != nil {
+	startErr := ensurePersistentLimaInstance("nexus-firecracker", templatePath)
+	if startErr == nil {
+		// Firecracker Lima started successfully - write firecracker env
+		_ = writeNexusInitEnv(projectRoot, map[string]string{
+			"NEXUS_RUNTIME_BACKEND": "firecracker",
+		})
+		return nil
+	}
+
+	// Firecracker Lima failed (likely nestedVirtualization not supported on this hardware).
+	// Delete any partially-created instance and retry with LXC template (no nestedVirt).
+	fmt.Printf("nexus init: firecracker lima start failed (nestedVirt likely unsupported), falling back to lxc: %v\n", startErr)
+	_ = limactlRunFn("limactl", "delete", "-f", "nexus-firecracker")
+
+	lxcTemplatePath, cleanupLXCTemplate, err := writeEmbeddedLimaLXCTemplate()
+	if err != nil {
+		return initRuntimeBootstrapDarwinWrapError(projectRoot, fmt.Errorf("lxc fallback: %w", err))
+	}
+	defer cleanupLXCTemplate()
+
+	if err := ensurePersistentLimaInstance("nexus-firecracker", lxcTemplatePath); err != nil {
+		return initRuntimeBootstrapDarwinWrapError(projectRoot, fmt.Errorf("lxc fallback lima: %w", err))
+	}
+
+	// LXC fallback succeeded - write lxc env so the action picks it up
+	if err := writeNexusInitEnv(projectRoot, map[string]string{
+		"NEXUS_RUNTIME_BACKEND": "lxc",
+	}); err != nil {
 		return initRuntimeBootstrapDarwinWrapError(projectRoot, err)
 	}
+
+	fmt.Println("nexus init: lxc fallback active (lima without nestedVirtualization)")
 	return nil
 }
 
@@ -92,13 +125,13 @@ func initRuntimeBootstrapDarwinWrapError(projectRoot string, err error) error {
 	return fmt.Errorf("firecracker runtime setup failed on darwin: %w\n\nmanual next steps:\n  brew install lima\n  nexus init --project-root %s --runtime firecracker", err, projectRoot)
 }
 
-func writeEmbeddedLimaTemplate() (string, func(), error) {
-	content := strings.TrimSpace(embeddedLimaTemplate)
+func writeLimaTemplate(content string) (string, func(), error) {
+	content = strings.TrimSpace(content)
 	if content == "" {
-		return "", func() {}, fmt.Errorf("embedded lima template is empty")
+		return "", func() {}, fmt.Errorf("lima template content is empty")
 	}
 
-	tmp, err := os.CreateTemp("", "nexus-lima-firecracker-*.yaml")
+	tmp, err := os.CreateTemp("", "nexus-lima-*.yaml")
 	if err != nil {
 		return "", func() {}, fmt.Errorf("create temp lima template: %w", err)
 	}
@@ -107,14 +140,41 @@ func writeEmbeddedLimaTemplate() (string, func(), error) {
 	if _, err := tmp.WriteString(content + "\n"); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(path)
-		return "", func() {}, fmt.Errorf("write embedded lima template: %w", err)
+		return "", func() {}, fmt.Errorf("write lima template: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(path)
-		return "", func() {}, fmt.Errorf("close temp lima template: %w", err)
+		return "", func() {}, fmt.Errorf("close lima template: %w", err)
 	}
 
 	return path, func() { _ = os.Remove(path) }, nil
+}
+
+func writeEmbeddedLimaTemplate() (string, func(), error) {
+	return writeLimaTemplate(embeddedLimaTemplate)
+}
+
+func writeEmbeddedLimaLXCTemplate() (string, func(), error) {
+	return writeLimaTemplate(embeddedLimaLXCTemplate)
+}
+
+func writeNexusInitEnv(projectRoot string, kvPairs map[string]string) error {
+	runDir := filepath.Join(projectRoot, ".nexus", "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return fmt.Errorf("create nexus run dir: %w", err)
+	}
+	envPath := filepath.Join(runDir, "nexus-init-env")
+	var sb strings.Builder
+	for k, v := range kvPairs {
+		sb.WriteString(k)
+		sb.WriteString("=")
+		sb.WriteString(v)
+		sb.WriteString("\n")
+	}
+	if err := os.WriteFile(envPath, []byte(sb.String()), 0o644); err != nil {
+		return fmt.Errorf("write nexus-init-env: %w", err)
+	}
+	return nil
 }
 
 func isTerminalDarwin(f *os.File) bool {
