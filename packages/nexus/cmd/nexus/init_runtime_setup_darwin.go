@@ -24,7 +24,15 @@ var (
 
 	limactlLookPathFn = exec.LookPath
 	limactlRunFn      = func(name string, args ...string) error {
-		return exec.Command(name, args...).Run()
+		cmd := exec.Command(name, args...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			if len(bytes.TrimSpace(out)) > 0 {
+				return fmt.Errorf("%w\n%s", err, strings.TrimSpace(string(out)))
+			}
+			return err
+		}
+		return nil
 	}
 	limactlOutputFn = func(name string, args ...string) ([]byte, error) {
 		return exec.Command(name, args...).Output()
