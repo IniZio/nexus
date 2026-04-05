@@ -315,14 +315,11 @@ func TestRunDoctorLifecycleStartPrefersMakeStartOverLifecycleScript(t *testing.T
 	called := false
 	doctorCheckCommandRunner = func(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
 		called = true
-		if command != "sh" {
-			t.Fatalf("expected sh command, got %q", command)
+		if command != "make" {
+			t.Fatalf("expected make command, got %q", command)
 		}
-		if len(args) != 2 || args[0] != "-lc" {
-			t.Fatalf("expected sh -lc args, got %v", args)
-		}
-		if !strings.Contains(args[1], "export UID=1000; export GID=1000;") || !strings.Contains(args[1], "make start") {
-			t.Fatalf("expected make start command with UID/GID defaults, got %v", args)
+		if len(args) != 1 || args[0] != "start" {
+			t.Fatalf("expected make start args, got %v", args)
 		}
 		if name != "lifecycle-start-make" {
 			t.Fatalf("expected lifecycle-start-make context, got %q", name)
@@ -382,11 +379,8 @@ func TestResolveDoctorLifecycleStartCommandReturnsSummary(t *testing.T) {
 	if !found {
 		t.Fatal("expected startup command to be resolved")
 	}
-	if command != "sh" || len(args) != 2 || args[0] != "-lc" || !strings.Contains(args[1], "make start") {
+	if command != "make" || len(args) != 1 || args[0] != "start" {
 		t.Fatalf("unexpected command resolution: command=%q args=%v", command, args)
-	}
-	if !strings.Contains(args[1], "export UID=1000; export GID=1000;") {
-		t.Fatalf("expected make start command to export UID/GID defaults, got %v", args)
 	}
 	if contextLabel != "lifecycle-start-make" {
 		t.Fatalf("unexpected context label: %q", contextLabel)
