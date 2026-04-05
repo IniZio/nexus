@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -74,6 +75,10 @@ func ensurePersistentLimaInstance(instanceName, templatePath string) error {
 	}
 
 	if err := limactlRunFn("limactl", "start", "--name", instanceName, templatePath); err != nil {
+		limaLog := readLimaInstanceLog(instanceName)
+		if limaLog != "" {
+			return fmt.Errorf("failed to start lima instance %s: %w\nlima log:\n%s", instanceName, err, limaLog)
+		}
 		return fmt.Errorf("failed to start lima instance %s: %w", instanceName, err)
 	}
 
@@ -118,4 +123,25 @@ func isTerminalDarwin(f *os.File) bool {
 		return false
 	}
 	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+func readLimaInstanceLog(instanceName string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	logPath := filepath.Join(home, ".lima", instanceName, "ha.stderr.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return ""
+	}
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return ""
+	}
+	// Return last 2000 chars to keep errors manageable
+	if len(trimmed) > 2000 {
+		trimmed = "...(truncated)...\n" + trimmed[len(trimmed)-2000:]
+	}
+	return trimmed
 }
