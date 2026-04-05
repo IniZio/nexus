@@ -3,7 +3,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -24,22 +23,15 @@ func runInitRuntimeBootstrapLinux(projectRoot, runtimeName string) error {
 		return nil
 	}
 
+	if initRuntimeBootstrapSkipFastFailFn != nil && initRuntimeBootstrapSkipFastFailFn() {
+		return runSetupFirecracker(io.Discard)
+	}
+
 	if initRuntimeBootstrapManualSetupRequired() {
 		return initRuntimeBootstrapManualError(projectRoot)
 	}
 
-	if initRuntimeBootstrapSkipFastFailFn != nil && initRuntimeBootstrapSkipFastFailFn() {
-		err := runSetupFirecracker(io.Discard)
-		if errors.Is(err, errKVMGroupRefreshNeeded) && (initRuntimeBootstrapIsRootFn() || initRuntimeBootstrapSudoOKFn()) {
-			return nil
-		}
-		return err
-	}
-
 	if err := runSetupFirecracker(io.Discard); err != nil {
-		if errors.Is(err, errKVMGroupRefreshNeeded) && (initRuntimeBootstrapIsRootFn() || initRuntimeBootstrapSudoOKFn()) {
-			return nil
-		}
 		return initRuntimeBootstrapWrapError(projectRoot, err)
 	}
 

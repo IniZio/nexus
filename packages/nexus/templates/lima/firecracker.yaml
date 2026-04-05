@@ -1,0 +1,7 @@
+vmType: "vz"
+rosetta:
+  enabled: false
+nestedVirtualization: true
+mounts:
+  - location: "{{.Dir}}"
+    writable: true

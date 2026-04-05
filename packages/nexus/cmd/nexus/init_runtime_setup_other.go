@@ -13,13 +13,9 @@ var initRuntimeBootstrapRunner func(projectRoot, runtimeName string) error = run
 var (
 	initRuntimeBootstrapIsRootFn                   = func() bool { return false }
 	initRuntimeBootstrapSudoOKFn                   = func() bool { return false }
-	initRuntimeBootstrapIsTTYFn                    = isTerminalUnsupported
+	initRuntimeBootstrapIsTTYFn                    = func(f *os.File) bool { return false }
 	initRuntimeBootstrapSkipFastFailFn func() bool = nil
 )
-
-func isTerminalUnsupported(_ *os.File) bool {
-	return false
-}
 
 func runInitRuntimeBootstrapOther(projectRoot, runtimeName string) error {
 	if runtimeName != "firecracker" {
