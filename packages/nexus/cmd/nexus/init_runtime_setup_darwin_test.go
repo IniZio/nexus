@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -105,6 +106,41 @@ func TestEnsurePersistentLimaInstanceStartsWhenMissing(t *testing.T) {
 	}
 	if !runCalled {
 		t.Fatal("expected limactl start to be called when instance is missing")
+	}
+}
+
+func TestBootstrapFirecrackerExecContextDarwinFailsWhenWorkspaceNotReady(t *testing.T) {
+	originalLookPath := limactlLookPathFn
+	originalRun := limactlRunFn
+	originalCheck := runLimaCheckCommandFn
+	t.Cleanup(func() {
+		limactlLookPathFn = originalLookPath
+		limactlRunFn = originalRun
+		runLimaCheckCommandFn = originalCheck
+		doctorLimaInstanceName = ""
+	})
+
+	limactlLookPathFn = func(name string) (string, error) {
+		if name == "limactl" {
+			return "/usr/local/bin/limactl", nil
+		}
+		return "", &notFoundError{name: name}
+	}
+
+	limactlRunFn = func(name string, args ...string) error {
+		return nil
+	}
+
+	runLimaCheckCommandFn = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
+		return "", &notFoundError{name: "workspace"}
+	}
+
+	err := bootstrapFirecrackerExecContextDarwin(t.TempDir(), doctorExecContext{backend: "firecracker"})
+	if err == nil {
+		t.Fatal("expected workspace readiness failure")
+	}
+	if !strings.Contains(err.Error(), "workspace readiness") {
+		t.Fatalf("expected workspace readiness error, got: %v", err)
 	}
 }
 
