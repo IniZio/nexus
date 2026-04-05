@@ -33,6 +33,21 @@ type options struct {
 	reportJSON        string
 }
 
+type execOptions struct {
+	projectRoot string
+	timeout     time.Duration
+	command     string
+	args        []string
+}
+
+type initOptions struct {
+	projectRoot string
+	runtime     string
+	force       bool
+}
+
+const execKVMGroupReexecEnv = "NEXUS_EXEC_KVM_GROUP_REEXEC"
+
 func main() {
 	if len(os.Args) == 1 {
 		printUsage()
@@ -46,7 +61,19 @@ func main() {
 		args = os.Args[1:]
 	}
 
-	if command != "doctor" {
+	switch command {
+	case "setup":
+		runSetupCommand(args)
+		return
+	case "init":
+		runInitCommand(args)
+		return
+	case "exec":
+		runExecCommand(args)
+		return
+	case "doctor":
+		// handled below
+	default:
 		printUsage()
 		fmt.Fprintf(os.Stderr, "\nunknown subcommand: %s\n", command)
 		os.Exit(2)
@@ -93,11 +120,257 @@ func main() {
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  nexus doctor --project-root <abs-path> --suite <name> [--compose-file docker-compose.yml] [--required-host-ports 5173,5174,8000] [--report-json path]")
+	fmt.Fprintln(os.Stderr, "  nexus init --project-root <abs-path> [--runtime firecracker|local] [--force]")
+	fmt.Fprintln(os.Stderr, "  nexus exec --project-root <abs-path> [--timeout 10m] -- <command> [args...]")
+	fmt.Fprintln(os.Stderr, "  nexus setup firecracker")
+}
+
+func runInitCommand(args []string) {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	projectRoot := fs.String("project-root", "", "absolute path to project repository")
+	runtimeName := fs.String("runtime", "firecracker", "runtime backend requirement (firecracker or local)")
+	force := fs.Bool("force", false, "overwrite existing .nexus files")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+
+	if *projectRoot == "" {
+		fmt.Fprintln(os.Stderr, "--project-root is required")
+		os.Exit(2)
+	}
+
+	if err := runInit(initOptions{
+		projectRoot: *projectRoot,
+		runtime:     strings.TrimSpace(*runtimeName),
+		force:       *force,
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func runExecCommand(args []string) {
+	fs := flag.NewFlagSet("exec", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	projectRoot := fs.String("project-root", "", "absolute path to downstream project repository")
+	timeout := fs.Duration("timeout", 10*time.Minute, "command timeout")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+
+	rest := fs.Args()
+	if *projectRoot == "" || len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "--project-root and command are required")
+		os.Exit(2)
+	}
+
+	if err := runExec(execOptions{
+		projectRoot: *projectRoot,
+		timeout:     *timeout,
+		command:     rest[0],
+		args:        rest[1:],
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func runInit(opts initOptions) error {
+	if !filepath.IsAbs(opts.projectRoot) {
+		return fmt.Errorf("project root must be absolute: %s", opts.projectRoot)
+	}
+
+	runtimeName := strings.TrimSpace(opts.runtime)
+	if runtimeName == "" {
+		runtimeName = "firecracker"
+	}
+	if runtimeName != "firecracker" && runtimeName != "local" {
+		return fmt.Errorf("unsupported runtime %q (expected firecracker or local)", runtimeName)
+	}
+
+	nexusDir := filepath.Join(opts.projectRoot, ".nexus")
+	if err := os.MkdirAll(nexusDir, 0o755); err != nil {
+		return fmt.Errorf("create .nexus directory: %w", err)
+	}
+
+	for _, dir := range []string{"lifecycles", "probe", "check", "e2e"} {
+		if err := os.MkdirAll(filepath.Join(nexusDir, dir), 0o755); err != nil {
+			return fmt.Errorf("create .nexus/%s directory: %w", dir, err)
+		}
+	}
+
+	workspaceCfg := config.WorkspaceConfig{
+		Schema:  "https://raw.githubusercontent.com/IniZio/nexus/main/schemas/workspace.v1.schema.json",
+		Version: 1,
+		Runtime: config.RuntimeConfig{Required: []string{runtimeName}, Selection: "prefer-first"},
+		Doctor: config.DoctorConfig{
+			Probes: []config.DoctorCommandProbe{{
+				Name:     "runtime-backend",
+				Command:  "bash",
+				Args:     []string{".nexus/probe/01-runtime-backend.sh"},
+				Required: true,
+			}},
+			Tests: []config.DoctorCommandCheck{{
+				Name:     "tooling-runtime",
+				Command:  "bash",
+				Args:     []string{".nexus/check/20-tooling-runtime.sh"},
+				Required: true,
+			}},
+		},
+	}
+
+	workspaceJSON, err := json.MarshalIndent(workspaceCfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal workspace config: %w", err)
+	}
+	workspaceJSON = append(workspaceJSON, '\n')
+
+	files := map[string]string{
+		filepath.Join(nexusDir, "workspace.json"):                 string(workspaceJSON),
+		filepath.Join(nexusDir, "lifecycles", "setup.sh"):         "#!/usr/bin/env bash\nset -euo pipefail\necho 'setup: no-op'\n",
+		filepath.Join(nexusDir, "lifecycles", "start.sh"):         "#!/usr/bin/env bash\nset -euo pipefail\necho 'start: no-op'\n",
+		filepath.Join(nexusDir, "lifecycles", "teardown.sh"):      "#!/usr/bin/env bash\nset -euo pipefail\necho 'teardown: no-op'\n",
+		filepath.Join(nexusDir, "probe", "01-runtime-backend.sh"): "#!/usr/bin/env bash\nset -euo pipefail\necho \"runtime-backend probe: backend=${NEXUS_RUNTIME_BACKEND:-unknown}\"\n",
+		filepath.Join(nexusDir, "check", "20-tooling-runtime.sh"): "#!/usr/bin/env bash\nset -euo pipefail\ncommand -v bash >/dev/null 2>&1\ncommand -v curl >/dev/null 2>&1 || true\necho 'tooling-runtime check passed'\n",
+		filepath.Join(nexusDir, "e2e", "run.sh"):                  "#!/usr/bin/env bash\nset -euo pipefail\necho 'e2e: no-op'\n",
+	}
+
+	for path, content := range files {
+		if !opts.force {
+			if _, err := os.Stat(path); err == nil {
+				continue
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("stat %s: %w", path, err)
+			}
+		}
+
+		mode := os.FileMode(0o644)
+		if strings.HasSuffix(path, ".sh") {
+			mode = 0o755
+		}
+		if err := os.WriteFile(path, []byte(content), mode); err != nil {
+			return fmt.Errorf("write %s: %w", path, err)
+		}
+	}
+
+	fmt.Printf("initialized nexus workspace metadata at %s\n", nexusDir)
+	return nil
+}
+
+func runExec(opts execOptions) error {
+	if !filepath.IsAbs(opts.projectRoot) {
+		return fmt.Errorf("project root must be absolute: %s", opts.projectRoot)
+	}
+	if err := applyRuntimeBackendFromWorkspace(opts.projectRoot); err != nil {
+		return err
+	}
+	if opts.command == "" {
+		return errors.New("command is required")
+	}
+	if opts.timeout <= 0 {
+		return fmt.Errorf("timeout must be > 0: %s", opts.timeout)
+	}
+
+	defer func() {
+		if cleanupErr := runDoctorExecContextCleanup(); cleanupErr != nil {
+			fmt.Printf("exec warning: firecracker cleanup failed: %v\n", cleanupErr)
+		}
+	}()
+	execCtx := loadDoctorExecContext()
+	if err := execCommandBootstrapRunner(opts.projectRoot); err != nil {
+		if shouldReexecExecWithKVMGroup(execCtx.backend, err) {
+			cmdPath := setupCommandPath()
+			reexecArgs := make([]string, 0, len(opts.args)+8)
+			reexecArgs = append(reexecArgs, "exec", "--project-root", opts.projectRoot, "--timeout", opts.timeout.String(), "--", opts.command)
+			reexecArgs = append(reexecArgs, opts.args...)
+			if reexecErr := execKVMGroupReexecRunner(cmdPath, reexecArgs); reexecErr == nil {
+				return nil
+			} else {
+				return fmt.Errorf("%w; sg kvm reexec failed: %v", err, reexecErr)
+			}
+		}
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
+	defer cancel()
+
+	var out string
+	var err error
+	if execCtx.backend == "firecracker" {
+		fmt.Printf("exec exec: %s (attempt %d/%d, timeout=%s, context=firecracker): %s\n", opts.command, 1, 1, opts.timeout, formatCommand(opts.command, opts.args))
+		out, err = firecrackerCheckCommandRunner(ctx, "/workspace", opts.command, opts.args)
+	} else {
+		out, err = runCheckCommandWithExecContext(ctx, opts.projectRoot, "exec", opts.command, 1, 1, opts.timeout, opts.command, opts.args, execCtx)
+	}
+
+	if execCtx.backend == "firecracker" && strings.TrimSpace(out) != "" {
+		fmt.Println(strings.TrimSpace(out))
+	}
+	if err != nil {
+		return fmt.Errorf("exec failed: %w", err)
+	}
+
+	return nil
+}
+
+func shouldReexecExecWithKVMGroup(backend string, runErr error) bool {
+	if runErr == nil {
+		return false
+	}
+	if backend != "firecracker" {
+		return false
+	}
+	if os.Getenv(execKVMGroupReexecEnv) == "1" {
+		return false
+	}
+	if _, err := exec.LookPath("sg"); err != nil {
+		return false
+	}
+	return strings.Contains(runErr.Error(), "/dev/kvm")
+}
+
+func runExecWithKVMGroupReexec(commandPath string, args []string) error {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, shellQuote(commandPath))
+	for _, arg := range args {
+		parts = append(parts, shellQuote(arg))
+	}
+	inner := strings.Join(parts, " ")
+
+	cmd := exec.Command("sg", "kvm", "-c", inner)
+	cmd.Env = append(os.Environ(), execKVMGroupReexecEnv+"=1")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// runSetupCommand dispatches the `nexus setup` subcommand.
+func runSetupCommand(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: nexus setup firecracker")
+		os.Exit(2)
+	}
+	sub := args[0]
+	if sub != "firecracker" {
+		fmt.Fprintf(os.Stderr, "unknown setup subcommand: %s\n", sub)
+		fmt.Fprintln(os.Stderr, "Usage: nexus setup firecracker")
+		os.Exit(2)
+	}
+	if err := runSetupFirecracker(os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }
 
 func run(opts options) error {
 	if !filepath.IsAbs(opts.projectRoot) {
 		return fmt.Errorf("project root must be absolute: %s", opts.projectRoot)
+	}
+	if err := applyRuntimeBackendFromWorkspace(opts.projectRoot); err != nil {
+		return err
 	}
 
 	// Validate firecracker env contract before proceeding
@@ -134,10 +407,6 @@ func run(opts options) error {
 		return err
 	}
 
-	if os.Getenv("GLITCHTIP_DSN") == "" {
-		_ = os.Setenv("GLITCHTIP_DSN", "placeholder")
-	}
-
 	workspaceConfig, _, err := config.LoadWorkspaceConfig(opts.projectRoot)
 	if err != nil {
 		return fmt.Errorf("invalid workspace config: %w", err)
@@ -156,7 +425,32 @@ func run(opts options) error {
 			fmt.Printf("doctor warning: firecracker cleanup failed: %v\n", cleanupErr)
 		}
 	}()
-	if err := bootstrapDoctorExecContext(opts.projectRoot); err != nil {
+	if err := doctorExecBootstrapRunner(opts.projectRoot); err != nil {
+		execCtx := loadDoctorExecContext()
+		if shouldReexecExecWithKVMGroup(execCtx.backend, err) {
+			cmdPath := setupCommandPath()
+			reexecArgs := append([]string(nil), os.Args[1:]...)
+			if reexecErr := execKVMGroupReexecRunner(cmdPath, reexecArgs); reexecErr == nil {
+				return nil
+			} else {
+				return fmt.Errorf("%w; sg kvm reexec failed: %v", err, reexecErr)
+			}
+		}
+		return err
+	}
+
+	execCtx := loadDoctorExecContext()
+	if execCtx.backend == "firecracker" {
+		if err := doctorFirecrackerRuntimeVerifier(); err != nil {
+			return err
+		}
+	}
+
+	if err := doctorLifecycleSetupRunner(opts.projectRoot, execCtx); err != nil {
+		return err
+	}
+
+	if err := doctorLifecycleStartRunner(opts.projectRoot, execCtx); err != nil {
 		return err
 	}
 
@@ -164,7 +458,9 @@ func run(opts options) error {
 
 	publishedPorts := make([]compose.PublishedPort, 0)
 	composePath := filepath.Join(opts.projectRoot, opts.composeFile)
-	if _, err := os.Stat(composePath); err == nil {
+	if execCtx.backend == "firecracker" {
+		fmt.Printf("doctor info: skipping host compose port discovery in firecracker mode: %s\n", composePath)
+	} else if _, err := os.Stat(composePath); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		publishedPorts, err = compose.DiscoverPublishedPorts(ctx, opts.projectRoot)
@@ -220,6 +516,23 @@ func run(opts options) error {
 	return nil
 }
 
+func verifyFirecrackerGuestDockerRuntime() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	out, err := firecrackerCheckCommandRunner(ctx, "/workspace", "sh", []string{"-lc", "command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1"})
+	if err == nil {
+		return nil
+	}
+
+	detail := strings.TrimSpace(out)
+	if detail == "" {
+		detail = err.Error()
+	}
+
+	return fmt.Errorf("firecracker verification requires docker runtime inside guest workspace; host docker is not used. guest docker check failed: %s", detail)
+}
+
 func applyDoctorConfigDefaults(opts options, doctorCfg config.DoctorConfig) options {
 	if len(opts.requiredHostPorts) == 0 && len(doctorCfg.RequiredHostPorts) > 0 {
 		opts.requiredHostPorts = append([]int(nil), doctorCfg.RequiredHostPorts...)
@@ -258,9 +571,23 @@ var bootstrapInstallCommandRunner = runBootstrapInstallCommand
 
 var firecrackerCheckCommandRunner = runFirecrackerCheckCommand
 
+var firecrackerWorkspaceVerifier = verifyFirecrackerWorkspaceReady
+
 var firecrackerBootstrapRunner = bootstrapFirecrackerExecContextNative
 
 var containerBootstrapRunner = bootstrapContainerExecContext
+
+var doctorExecBootstrapRunner = bootstrapDoctorExecContext
+
+var execCommandBootstrapRunner = bootstrapExecCommandContext
+
+var doctorFirecrackerRuntimeVerifier = verifyFirecrackerGuestDockerRuntime
+
+var doctorLifecycleStartRunner = runDoctorLifecycleStart
+
+var doctorLifecycleSetupRunner = runDoctorLifecycleSetup
+
+var execKVMGroupReexecRunner = runExecWithKVMGroupReexec
 
 var doctorExecCleanup func() error
 
@@ -272,12 +599,27 @@ var firecrackerHostBinaryLookup = exec.LookPath
 
 var firecrackerHostStat = os.Stat
 
+var firecrackerDefaultAssetStat = os.Stat
+
+var firecrackerDefaultKernelPath = "/var/lib/nexus/vmlinux.bin"
+
+var firecrackerDefaultRootFSPath = "/var/lib/nexus/rootfs.ext4"
+
 var firecrackerHostOpenFile = os.OpenFile
 
 var firecrackerHostGOOS = runtime.GOOS
 
+// firecrackerTapHelperValidator validates the tap helper binary.
+// Overridable in tests.
+var firecrackerTapHelperValidator = func() error { return validateFirecrackerTapHelper() }
+
+// firecrackerBridgeValidator validates that nexusbr0 exists and is UP.
+// Overridable in tests.
+var firecrackerBridgeValidator = func() error { return validateFirecrackerBridge() }
+
 func runBootstrapInstallCommand(ctx context.Context, projectRoot string, timeout time.Duration, execCtx doctorExecContext) (string, error) {
-	installCmd := "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bash docker.io docker-compose-v2 curl make python3 git nodejs npm || DEBIAN_FRONTEND=noninteractive apt-get install -y bash docker.io docker-compose-plugin curl make python3 git nodejs npm"
+	aptOpts := "-o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
+	installCmd := "timeout 300s sh -lc 'chmod 1777 /tmp; apt-get clean >/dev/null 2>&1 || true; rm -rf /var/lib/apt/lists/*; mkdir -p /var/cache/apt/archives/partial /var/lib/apt/lists/partial; apt-get " + aptOpts + " update && DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold " + aptOpts + " install -y bash docker.io curl make python3 git nodejs npm iptables docker-compose-v2 docker-buildx-plugin || DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold " + aptOpts + " install -y bash docker.io curl make python3 git nodejs npm iptables docker-compose-v2 || DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold " + aptOpts + " install -y bash docker.io curl make python3 git nodejs npm iptables && DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold " + aptOpts + " install -y docker-compose-v2 docker-buildx-plugin || DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold " + aptOpts + " install -y docker-compose-v2 || true'"
 	return doctorCheckCommandRunner(ctx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "sh", []string{"-lc", installCmd}, execCtx)
 }
 
@@ -368,6 +710,25 @@ func firecrackerAgentVSockPort() uint32 {
 	return uint32(parsed)
 }
 
+func doctorFirecrackerMachineSpec() (int, int) {
+	memoryMiB := 4096
+	vcpus := 2
+
+	if raw := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_FIRECRACKER_MEMORY_MIB")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 512 {
+			memoryMiB = parsed
+		}
+	}
+
+	if raw := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_FIRECRACKER_VCPUS")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 1 {
+			vcpus = parsed
+		}
+	}
+
+	return memoryMiB, vcpus
+}
+
 func firecrackerRequestID() string {
 	return strconv.FormatInt(time.Now().UnixNano(), 36)
 }
@@ -434,6 +795,74 @@ func validateFirecrackerHostPrerequisites(execCtx doctorExecContext) error {
 	}
 	_ = fd.Close()
 
+	if err := firecrackerTapHelperValidator(); err != nil {
+		return err
+	}
+
+	if err := firecrackerBridgeValidator(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateFirecrackerTapHelper verifies that nexus-tap-helper is installed and
+// has cap_net_admin so Firecracker can create TAP devices without sudo.
+func validateFirecrackerTapHelper() error {
+	tapHelper := "nexus-tap-helper"
+	path, err := firecrackerHostBinaryLookup(tapHelper)
+	if err != nil {
+		return fmt.Errorf(
+			"%s not found in PATH\n\nRun the one-time host setup:\n  nexus setup firecracker",
+			tapHelper,
+		)
+	}
+
+	// Best-effort: verify cap_net_admin via getcap (skip if getcap unavailable).
+	out, err := exec.Command("getcap", path).Output()
+	if err != nil {
+		// getcap not available — cannot verify, proceed and let runtime fail if needed.
+		return nil
+	}
+	if !strings.Contains(string(out), "cap_net_admin") {
+		return fmt.Errorf(
+			"%s at %s lacks cap_net_admin\n\nRun the one-time host setup:\n  nexus setup firecracker",
+			tapHelper, path,
+		)
+	}
+	return nil
+}
+
+// validateFirecrackerBridge verifies that the nexusbr0 bridge exists and is UP
+// so that TAP devices can be attached to it at VM spawn time.
+func validateFirecrackerBridge() error {
+	const bridge = "nexusbr0"
+	const gatewayCIDR = "172.26.0.1/16"
+	out, err := exec.Command("ip", "link", "show", bridge).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf(
+			"bridge %s not found\n\nRun the one-time host setup:\n  nexus setup firecracker",
+			bridge,
+		)
+	}
+	if !strings.Contains(string(out), "UP") {
+		return fmt.Errorf(
+			"bridge %s exists but is not UP\n\nRun the one-time host setup:\n  nexus setup firecracker",
+			bridge,
+		)
+	}
+
+	addrOut, addrErr := exec.Command("ip", "-4", "addr", "show", "dev", bridge).CombinedOutput()
+	if addrErr != nil {
+		return fmt.Errorf("bridge %s IPv4 inspection failed: %w", bridge, addrErr)
+	}
+	if !strings.Contains(string(addrOut), "172.26.0.1/") {
+		return fmt.Errorf(
+			"bridge %s is missing gateway IP %s\n\nRun the one-time host setup:\n  nexus setup firecracker",
+			bridge, gatewayCIDR,
+		)
+	}
+
 	return nil
 }
 
@@ -470,13 +899,14 @@ func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExe
 		RootFSPath:     rootfsPath,
 		WorkDirRoot:    workDirRoot,
 	})
+	doctorMemoryMiB, doctorVCPUs := doctorFirecrackerMachineSpec()
 
 	workspaceID := fmt.Sprintf("doctor-%d", time.Now().UnixNano())
 	instance, err := manager.Spawn(ctx, firecracker.SpawnSpec{
 		WorkspaceID: workspaceID,
 		ProjectRoot: projectRoot,
-		MemoryMiB:   1024,
-		VCPUs:       1,
+		MemoryMiB:   doctorMemoryMiB,
+		VCPUs:       doctorVCPUs,
 	})
 	if err != nil {
 		return fmt.Errorf("bootstrap firecracker manager spawn failed: %w", err)
@@ -513,7 +943,32 @@ func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExe
 		return nil
 	})
 
+	if err := firecrackerWorkspaceVerifier(); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+func verifyFirecrackerWorkspaceReady() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	out, err := firecrackerCheckCommandRunner(ctx, "/workspace", "sh", []string{"-lc", "test -d /workspace"})
+	if err == nil {
+		return nil
+	}
+
+	detail := strings.TrimSpace(out)
+	if detail == "" {
+		detail = err.Error()
+	}
+
+	if strings.Contains(detail, "chdir /workspace: no such file or directory") {
+		return fmt.Errorf("firecracker guest is missing /workspace; run `nexus setup firecracker` (sudo) to refresh the VM rootfs and then retry")
+	}
+
+	return fmt.Errorf("firecracker guest workspace verification failed: %s", detail)
 }
 
 func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string, args []string) (string, error) {
@@ -532,13 +987,62 @@ func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string
 	defer conn.Close()
 
 	agentClient := firecracker.NewAgentClient(conn)
+	hostUID := os.Getuid()
+	hostGID := os.Getgid()
+	if hostUID == 0 {
+		if raw := strings.TrimSpace(os.Getenv("SUDO_UID")); raw != "" {
+			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+				hostUID = parsed
+			}
+		}
+	}
+	if hostGID == 0 {
+		if raw := strings.TrimSpace(os.Getenv("SUDO_GID")); raw != "" {
+			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+				hostGID = parsed
+			}
+		}
+	}
+	env := []string{
+		fmt.Sprintf("UID=%d", hostUID),
+		fmt.Sprintf("GID=%d", hostGID),
+		fmt.Sprintf("HOST_UID=%d", hostUID),
+		fmt.Sprintf("HOST_GID=%d", hostGID),
+	}
+	if backend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND")); backend != "" {
+		env = append(env, "NEXUS_RUNTIME_BACKEND="+backend)
+	}
+	if mirror := strings.TrimSpace(os.Getenv("NEXUS_DOCKER_REGISTRY_MIRROR")); mirror != "" {
+		env = append(env, "NEXUS_DOCKER_REGISTRY_MIRROR="+mirror)
+	}
+	if username := strings.TrimSpace(os.Getenv("NEXUS_DOCKERHUB_USERNAME")); username != "" {
+		env = append(env, "NEXUS_DOCKERHUB_USERNAME="+username)
+	}
+	if token := strings.TrimSpace(os.Getenv("NEXUS_DOCKERHUB_TOKEN")); token != "" {
+		env = append(env, "NEXUS_DOCKERHUB_TOKEN="+token)
+	}
+	if value := strings.TrimSpace(os.Getenv("NEXUS_API_BASE_URL")); value != "" {
+		env = append(env, "NEXUS_API_BASE_URL="+value)
+	} else {
+		env = append(env, "NEXUS_API_BASE_URL=http://127.0.0.1:8000")
+	}
+	if value := strings.TrimSpace(os.Getenv("NEXUS_AUTHGEAR_STUDENT_BASE_URL")); value != "" {
+		env = append(env, "NEXUS_AUTHGEAR_STUDENT_BASE_URL="+value)
+	} else {
+		env = append(env, "NEXUS_AUTHGEAR_STUDENT_BASE_URL=http://127.0.0.1:3001")
+	}
+	if value := strings.TrimSpace(os.Getenv("NEXUS_AUTHGEAR_ADMIN_BASE_URL")); value != "" {
+		env = append(env, "NEXUS_AUTHGEAR_ADMIN_BASE_URL="+value)
+	} else {
+		env = append(env, "NEXUS_AUTHGEAR_ADMIN_BASE_URL=http://127.0.0.1:4001")
+	}
 
 	request := firecracker.ExecRequest{
 		ID:      firecrackerRequestID(),
 		Command: command,
 		Args:    args,
-		WorkDir: projectRoot,
-		Env:     nil,
+		WorkDir: "/workspace",
+		Env:     env,
 	}
 	result, err := agentClient.Exec(ctx, request)
 	if err != nil {
@@ -598,12 +1102,16 @@ func detectHostDockerSocket() string {
 }
 
 func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext, backendLabel string, allowInstall bool) error {
-	timeout := 5 * time.Minute
+	timeout := 90 * time.Second
+	commandProjectRoot := projectRoot
+	if execCtx.backend == "firecracker" {
+		commandProjectRoot = "/"
+	}
 	hostProxyMode := execCtx.backend == "firecracker" && strings.EqualFold(strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_FIRECRACKER_DOCKER_MODE")), "host-proxy")
 	collectDockerDiagnostics := func() string {
 		diagCmd := "set +e; echo '--- docker binary ---'; command -v docker || true; echo '--- docker version ---'; docker version || true; echo '--- docker info ---'; docker info || true; echo '--- dockerd ps ---'; ps -ef | grep '[d]ockerd' || true; echo '--- dockerd log ---'; cat /tmp/nexus-doctor-dockerd.log || true; if command -v systemctl >/dev/null 2>&1; then echo '--- systemctl status docker ---'; systemctl status docker --no-pager || true; fi"
 		diagCtx, diagCancel := context.WithTimeout(context.Background(), 45*time.Second)
-		diagOut, _ := doctorCheckCommandRunner(diagCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, 45*time.Second, "sh", []string{"-lc", diagCmd}, execCtx)
+		diagOut, _ := doctorCheckCommandRunner(diagCtx, commandProjectRoot, "probe", "runtime-backend-capabilities", 1, 1, 45*time.Second, "sh", []string{"-lc", diagCmd}, execCtx)
 		diagCancel()
 		return strings.TrimSpace(diagOut)
 	}
@@ -612,7 +1120,7 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 		failures := make([]string, 0)
 		for _, check := range capabilityChecks {
 			checkCtx, checkCancel := context.WithTimeout(context.Background(), timeout)
-			out, err := doctorCheckCommandRunner(checkCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, check[0], check[1:], execCtx)
+			out, err := doctorCheckCommandRunner(checkCtx, commandProjectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, check[0], check[1:], execCtx)
 			checkCancel()
 			if err != nil {
 				if strings.TrimSpace(out) != "" {
@@ -649,9 +1157,9 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 		return fmt.Errorf("bootstrap %s host-proxy docker mode unavailable: %s", backendLabel, strings.TrimSpace(verifyOut))
 	}
 
-	startDockerCmd := "if command -v systemctl >/dev/null 2>&1; then systemctl enable docker >/dev/null 2>&1 || true; systemctl start docker >/dev/null 2>&1 || true; fi; if ! docker info >/dev/null 2>&1; then nohup dockerd --host=unix:///var/run/docker.sock --storage-driver=vfs --iptables=false --bridge=none --userland-proxy=false >/tmp/nexus-doctor-dockerd.log 2>&1 & sleep 5; fi"
+	startDockerCmd := `mkdir -p /sys/fs/cgroup; if ! grep -q ' /sys/fs/cgroup ' /proc/mounts; then mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || mount -t tmpfs tmpfs /sys/fs/cgroup || true; fi; if ! grep -q ' /sys/fs/cgroup cgroup2 ' /proc/mounts; then for s in cpuset cpu cpuacct blkio memory devices freezer net_cls perf_event net_prio hugetlb pids; do mkdir -p /sys/fs/cgroup/$s; mount -t cgroup -o $s cgroup /sys/fs/cgroup/$s 2>/dev/null || true; done; fi; ip link set lo up >/dev/null 2>&1 || true; chmod 1777 /tmp >/dev/null 2>&1 || true; if [ -x /usr/sbin/xtables-legacy-multi ]; then ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables-legacy >/dev/null 2>&1 || true; ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/ip6tables-legacy >/dev/null 2>&1 || true; fi; if [ -x /usr/bin/xtables-legacy-multi ]; then ln -sf /usr/bin/xtables-legacy-multi /usr/bin/iptables-legacy >/dev/null 2>&1 || true; ln -sf /usr/bin/xtables-legacy-multi /usr/bin/ip6tables-legacy >/dev/null 2>&1 || true; fi; if ! command -v iptables-legacy >/dev/null 2>&1; then apt-get clean >/dev/null 2>&1 || true; rm -rf /var/lib/apt/lists/*; mkdir -p /var/lib/apt/lists/partial /var/cache/apt/archives/partial; apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update >/tmp/nexus-iptables-apt.log 2>&1 || true; DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold -o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y iptables >>/tmp/nexus-iptables-apt.log 2>&1 || true; fi; for p in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin; do [ -x "$p/iptables-legacy" ] && ln -sf "$p/iptables-legacy" "$p/iptables" >/dev/null 2>&1 || true; [ -x "$p/ip6tables-legacy" ] && ln -sf "$p/ip6tables-legacy" "$p/ip6tables" >/dev/null 2>&1 || true; done; if command -v iptables-legacy >/dev/null 2>&1 && command -v update-alternatives >/dev/null 2>&1; then update-alternatives --set iptables /usr/sbin/iptables-legacy >/dev/null 2>&1 || true; update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy >/dev/null 2>&1 || true; fi; iptables_flag='--iptables=false'; if command -v iptables-legacy >/dev/null 2>&1; then iptables_flag='--iptables=true'; fi; if command -v sysctl >/dev/null 2>&1; then sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true; sysctl -w net.ipv4.conf.all.forwarding=1 >/dev/null 2>&1 || true; else echo 1 >/proc/sys/net/ipv4/ip_forward 2>/dev/null || true; echo 1 >/proc/sys/net/ipv4/conf/all/forwarding 2>/dev/null || true; fi; if command -v modprobe >/dev/null 2>&1; then modprobe iptable_raw >/dev/null 2>&1 || true; modprobe iptable_nat >/dev/null 2>&1 || true; modprobe xt_addrtype >/dev/null 2>&1 || true; fi; if command -v systemctl >/dev/null 2>&1; then systemctl enable docker >/dev/null 2>&1 || true; systemctl start docker >/dev/null 2>&1 || true; fi; mirror_flag=''; if [ -n "${NEXUS_DOCKER_REGISTRY_MIRROR:-}" ]; then mirror_flag="--registry-mirror=${NEXUS_DOCKER_REGISTRY_MIRROR}"; else mirror_flag='--registry-mirror=https://mirror.gcr.io'; fi; dns_flags=''; if [ -n "${NEXUS_DOCKER_DNS:-}" ]; then for dns in $(echo "${NEXUS_DOCKER_DNS}" | tr ',' ' '); do [ -n "$dns" ] && dns_flags="$dns_flags --dns=$dns"; done; else for dns in $(awk '/^nameserver[ \t]+/ { print $2 }' /etc/resolv.conf 2>/dev/null); do case "$dns" in 127.*|::1) continue ;; esac; dns_flags="$dns_flags --dns=$dns"; done; for dns in 1.1.1.1 8.8.8.8; do case " $dns_flags " in *" --dns=$dns "*) ;; *) dns_flags="$dns_flags --dns=$dns" ;; esac; done; fi; raw_optout_env=''; if [ "${NEXUS_DOCKER_DISABLE_IPTABLES_RAW:-1}" = "1" ]; then raw_optout_env='DOCKER_INSECURE_NO_IPTABLES_RAW=1'; fi; if ! docker info >/dev/null 2>&1; then mkdir -p /workspace/.nexus-docker; pkill dockerd >/dev/null 2>&1 || true; pkill containerd >/dev/null 2>&1 || true; rm -f /var/run/docker.pid /var/run/docker/containerd/containerd.pid 2>/dev/null || true; rm -rf /var/lib/docker/* /var/lib/containerd/* 2>/dev/null || true; nohup sh -lc "exec env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin ${raw_optout_env} dockerd --host=unix:///var/run/docker.sock --data-root=/workspace/.nexus-docker --exec-root=/workspace/.nexus-docker-exec --storage-driver=overlay2 ${iptables_flag} --allow-direct-routing ${dns_flags} ${mirror_flag}" >/tmp/nexus-doctor-dockerd.log 2>&1 & sleep 5; if ! docker info >/dev/null 2>&1 && grep -q 'unknown flag: --allow-direct-routing' /tmp/nexus-doctor-dockerd.log 2>/dev/null; then nohup sh -lc "exec env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin ${raw_optout_env} dockerd --host=unix:///var/run/docker.sock --data-root=/workspace/.nexus-docker --exec-root=/workspace/.nexus-docker-exec --storage-driver=overlay2 ${iptables_flag} ${dns_flags} ${mirror_flag}" >/tmp/nexus-doctor-dockerd.log 2>&1 & sleep 5; fi; fi; if [ -n "${NEXUS_DOCKERHUB_USERNAME:-}" ] && [ -n "${NEXUS_DOCKERHUB_TOKEN:-}" ]; then echo "$NEXUS_DOCKERHUB_TOKEN" | docker login -u "$NEXUS_DOCKERHUB_USERNAME" --password-stdin docker.io >/tmp/nexus-docker-login.log 2>&1 || true; fi`
 	startCtx, startCancel := context.WithTimeout(context.Background(), timeout)
-	startOut, startErr := doctorCheckCommandRunner(startCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "sh", []string{"-lc", startDockerCmd}, execCtx)
+	startOut, startErr := doctorCheckCommandRunner(startCtx, commandProjectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "sh", []string{"-lc", startDockerCmd}, execCtx)
 	startCancel()
 
 	if startErr == nil {
@@ -672,22 +1180,19 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 	}
 
 	installCtx, installCancel := context.WithTimeout(context.Background(), timeout)
-	installOut, installErr := bootstrapInstallCommandRunner(installCtx, projectRoot, timeout, execCtx)
+	installOut, installErr := bootstrapInstallCommandRunner(installCtx, commandProjectRoot, timeout, execCtx)
 	installCancel()
 	if installErr != nil {
 		trimmedOut := strings.TrimSpace(installOut)
-		if strings.Contains(trimmedOut, "Temporary failure resolving") ||
-			strings.Contains(trimmedOut, "Failed to fetch") ||
-			strings.Contains(trimmedOut, "Unable to locate package") ||
-			strings.Contains(trimmedOut, "has no installation candidate") {
-			fmt.Printf("bootstrap %s tooling: apt unavailable, continuing with existing runtime packages\n", backendLabel)
+		if trimmedOut != "" {
+			fmt.Printf("bootstrap %s tooling: install command failed, continuing with existing runtime packages (%s)\n", backendLabel, trimmedOut)
 		} else {
-			return fmt.Errorf("bootstrap %s tooling failed: %s", backendLabel, strings.TrimSpace(startOut+"\n"+installOut))
+			fmt.Printf("bootstrap %s tooling: install command failed, continuing with existing runtime packages\n", backendLabel)
 		}
 	}
 
 	startCtx, startCancel = context.WithTimeout(context.Background(), timeout)
-	startOut, startErr = doctorCheckCommandRunner(startCtx, projectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "sh", []string{"-lc", startDockerCmd}, execCtx)
+	startOut, startErr = doctorCheckCommandRunner(startCtx, commandProjectRoot, "probe", "runtime-backend-capabilities", 1, 1, timeout, "sh", []string{"-lc", startDockerCmd}, execCtx)
 	startCancel()
 	if startErr != nil {
 		diagnostics := collectDockerDiagnostics()
@@ -856,11 +1361,109 @@ func runConfiguredTests(opts options, tests []config.DoctorCommandCheck) ([]chec
 	return results, nil
 }
 
+func runDoctorLifecycleStart(projectRoot string, execCtx doctorExecContext) error {
+	startPath := filepath.Join(projectRoot, ".nexus", "lifecycles", "start.sh")
+	command := ""
+	args := []string(nil)
+	contextLabel := "lifecycle"
+
+	if startExists, err := isExecutableFile(startPath); err != nil {
+		return err
+	} else if startExists {
+		command = "bash"
+		args = []string{".nexus/lifecycles/start.sh"}
+		contextLabel = "lifecycle-start-script"
+	} else if hasMakeTarget(projectRoot, "start") {
+		command = "make"
+		args = []string{"start"}
+		contextLabel = "lifecycle-start-make"
+	} else {
+		return nil
+	}
+
+	timeout := 10 * time.Minute
+	if rawTimeout := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_START_TIMEOUT_MS")); rawTimeout != "" {
+		if ms, err := strconv.Atoi(rawTimeout); err == nil && ms > 0 {
+			timeout = time.Duration(ms) * time.Millisecond
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	out, err := doctorCheckCommandRunner(ctx, projectRoot, "probe", contextLabel, 1, 1, timeout, command, args, execCtx)
+	if err != nil {
+		detail := strings.TrimSpace(out)
+		if detail == "" {
+			detail = err.Error()
+		}
+		if execCtx.backend == "firecracker" {
+			if diag := collectFirecrackerWorkspaceDiagnostics(projectRoot, execCtx); diag != "" {
+				return fmt.Errorf("doctor lifecycle start failed: %s\nfirecracker workspace diagnostics:\n%s", detail, diag)
+			}
+		}
+		return fmt.Errorf("doctor lifecycle start failed: %s", detail)
+	}
+
+	fmt.Printf("doctor lifecycle started (%s)\n", contextLabel)
+	return nil
+}
+
+func collectFirecrackerWorkspaceDiagnostics(projectRoot string, execCtx doctorExecContext) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	diagCmd := "set +e; echo '--- pwd ---'; pwd; echo '--- ls /workspace ---'; ls -la /workspace 2>&1; echo '--- ls /workspace/.nexus ---'; ls -la /workspace/.nexus 2>&1; echo '--- ls /workspace/.nexus/lifecycles ---'; ls -la /workspace/.nexus/lifecycles 2>&1; echo '--- ls /dev/vd* ---'; ls -la /dev/vd* 2>&1; echo '--- mount output ---'; mount 2>&1; echo '--- mount /workspace ---'; mount | grep ' on /workspace ' || true; echo '--- blkid /dev/vdb ---'; blkid /dev/vdb 2>&1 || true; echo '--- guest resolv.conf ---'; cat /etc/resolv.conf 2>&1 || true; echo '--- ip forwarding ---'; cat /proc/sys/net/ipv4/ip_forward 2>&1 || true; cat /proc/sys/net/ipv4/conf/all/forwarding 2>&1 || true; echo '--- iptables command ---'; command -v iptables 2>&1 || true; readlink -f \"$(command -v iptables 2>/dev/null)\" 2>&1 || true; iptables --version 2>&1 || true; command -v iptables-legacy 2>&1 || true; iptables-legacy --version 2>&1 || true; echo '--- xtables binaries ---'; ls -la /usr/sbin/xtables* /usr/bin/xtables* 2>&1 || true; echo '--- iptables nat ---'; iptables -t nat -S 2>&1 || true; iptables-legacy -t nat -S 2>&1 || true; echo '--- iptables apt log ---'; tail -n 120 /tmp/nexus-iptables-apt.log 2>&1 || true; echo '--- docker info ---'; docker info 2>&1 || true; echo '--- docker network inspect bridge ---'; docker network inspect bridge 2>&1 || true; echo '--- dockerd log tail ---'; tail -n 200 /tmp/nexus-doctor-dockerd.log 2>&1 || true; echo '--- container dns test ---'; docker run --rm busybox sh -lc 'nslookup pypi.org; nslookup files.pythonhosted.org' 2>&1 || true; echo '--- container dns server reachability ---'; docker run --rm busybox sh -lc 'ping -c1 -W2 8.8.8.8; ping -c1 -W2 1.1.1.1' 2>&1 || true; echo '--- container https test ---'; docker run --rm curlimages/curl:8.8.0 -sS -I https://files.pythonhosted.org 2>&1 | head -n 20 || true"
+	out, err := doctorCheckCommandRunner(ctx, projectRoot, "probe", "lifecycle-start-workspace-diagnostics", 1, 1, 45*time.Second, "sh", []string{"-lc", diagCmd}, execCtx)
+	if err != nil && strings.TrimSpace(out) == "" {
+		return strings.TrimSpace(err.Error())
+	}
+	return strings.TrimSpace(out)
+}
+
+func runDoctorLifecycleSetup(projectRoot string, execCtx doctorExecContext) error {
+	setupPath := filepath.Join(projectRoot, ".nexus", "lifecycles", "setup.sh")
+	command := ""
+	args := []string(nil)
+	contextLabel := "lifecycle-setup"
+
+	if setupExists, err := isExecutableFile(setupPath); err != nil {
+		return err
+	} else if setupExists {
+		command = "bash"
+		args = []string{".nexus/lifecycles/setup.sh"}
+		contextLabel = "lifecycle-setup-script"
+	} else {
+		return nil
+	}
+
+	timeout := 10 * time.Minute
+	if rawTimeout := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_SETUP_TIMEOUT_MS")); rawTimeout != "" {
+		if ms, err := strconv.Atoi(rawTimeout); err == nil && ms > 0 {
+			timeout = time.Duration(ms) * time.Millisecond
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	out, err := doctorCheckCommandRunner(ctx, projectRoot, "probe", contextLabel, 1, 1, timeout, command, args, execCtx)
+	if err != nil {
+		detail := strings.TrimSpace(out)
+		if detail == "" {
+			detail = err.Error()
+		}
+		return fmt.Errorf("doctor lifecycle setup failed: %s", detail)
+	}
+
+	fmt.Printf("doctor lifecycle setup completed (%s)\n", contextLabel)
+	return nil
+}
+
 func runBuiltInOpencodeSessionCheck(projectRoot string) (checkResult, error) {
 	const checkName = "tooling-opencode-session"
 	start := time.Now()
+	backend := loadDoctorExecContext().backend
 
-	if loadDoctorExecContext().backend == "lxc" {
+	if backend == "lxc" {
 		return checkResult{
 			Name:       checkName,
 			Phase:      "test",
@@ -871,6 +1474,17 @@ func runBuiltInOpencodeSessionCheck(projectRoot string) (checkResult, error) {
 			SkipReason: "opencode session check is skipped for lxc backend in CI",
 		}, nil
 	}
+	if backend == "firecracker" {
+		return checkResult{
+			Name:       checkName,
+			Phase:      "test",
+			Status:     "not_run",
+			Required:   true,
+			Attempts:   0,
+			DurationMs: time.Since(start).Milliseconds(),
+			SkipReason: "opencode session check is skipped for firecracker backend",
+		}, nil
+	}
 
 	result := checkResult{
 		Name:     checkName,
@@ -878,7 +1492,7 @@ func runBuiltInOpencodeSessionCheck(projectRoot string) (checkResult, error) {
 		Attempts: 1,
 	}
 
-	if loadDoctorExecContext().backend != "firecracker" {
+	if backend != "firecracker" {
 		if _, err := exec.LookPath("opencode"); err != nil {
 			result.Status = "failed_required"
 			result.Required = true
@@ -1047,6 +1661,26 @@ func bootstrapDoctorExecContext(projectRoot string) error {
 	return containerBootstrapRunner(projectRoot, execCtx, "lxc", true)
 }
 
+func bootstrapExecCommandContext(projectRoot string) error {
+	setDoctorExecContextCleanup(nil)
+	execCtx := loadDoctorExecContext()
+	if execCtx.backend == "firecracker" {
+		return bootstrapFirecrackerExecContext(projectRoot, execCtx)
+	}
+
+	if execCtx.backend != "lxc" {
+		return nil
+	}
+	if execCtx.lxcExec == "host" {
+		return fmt.Errorf("backend \"lxc\" does not allow host execution mode; configure NEXUS_DOCTOR_LXC_INSTANCE")
+	}
+	if execCtx.lxcName == "" {
+		return fmt.Errorf("backend \"lxc\" requires explicit execution context (set NEXUS_DOCTOR_LXC_INSTANCE)")
+	}
+
+	return containerBootstrapRunner(projectRoot, execCtx, "lxc", true)
+}
+
 func markChecksNotRun(tests []config.DoctorCommandCheck, skipReason string) []checkResult {
 	results := make([]checkResult, 0, len(tests))
 	for _, test := range tests {
@@ -1097,16 +1731,30 @@ func runCheckCommandWithExecContext(ctx context.Context, projectRoot, phase, nam
 
 	if execCtx.backend == "firecracker" {
 		fmt.Printf("%s exec: %s (attempt %d/%d, timeout=%s, context=firecracker): %s\n", phase, name, attempt, attempts, timeout, formatCommand(command, args))
-		return firecrackerCheckCommandRunner(ctx, projectRoot, command, args)
+		return firecrackerCheckCommandRunner(ctx, "/workspace", command, args)
 	}
 
+	return runHostCheckCommandWithExecContext(ctx, projectRoot, phase, name, attempt, attempts, timeout, command, args, execCtx, "")
+}
+
+func runHostCheckCommandWithExecContext(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext, contextOverride string) (string, error) {
 	cmdName, cmdArgs, cmdEnv, contextLabel := resolveCheckCommand(projectRoot, command, args, execCtx)
+	if strings.TrimSpace(contextOverride) != "" {
+		contextLabel = contextOverride
+	}
 
 	fmt.Printf("%s exec: %s (attempt %d/%d, timeout=%s, context=%s): %s\n", phase, name, attempt, attempts, timeout, contextLabel, formatCommand(cmdName, cmdArgs))
 
 	cmd := exec.CommandContext(ctx, cmdName, cmdArgs...)
 	cmd.Dir = projectRoot
-	cmd.Env = append(os.Environ(), cmdEnv...)
+	env := append(os.Environ(), cmdEnv...)
+	if !hasEnvKey(env, "UID") {
+		env = append(env, fmt.Sprintf("UID=%d", os.Getuid()))
+	}
+	if !hasEnvKey(env, "GID") {
+		env = append(env, fmt.Sprintf("GID=%d", os.Getgid()))
+	}
+	cmd.Env = env
 
 	var output bytes.Buffer
 	writer := io.MultiWriter(os.Stdout, &output)
@@ -1122,6 +1770,16 @@ func runCheckCommandWithExecContext(ctx context.Context, projectRoot, phase, nam
 	return out, err
 }
 
+func hasEnvKey(env []string, key string) bool {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func loadDoctorExecContext() doctorExecContext {
 	backend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND"))
 	if backend == "" {
@@ -1132,6 +1790,65 @@ func loadDoctorExecContext() doctorExecContext {
 		dockerHost: strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_DIND_DOCKER_HOST")),
 		lxcName:    strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_LXC_INSTANCE")),
 		lxcExec:    strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_LXC_EXEC_MODE")),
+	}
+}
+
+func applyRuntimeBackendFromWorkspace(projectRoot string) error {
+	if strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND")) != "" {
+		return nil
+	}
+
+	workspaceConfig, _, err := config.LoadWorkspaceConfig(projectRoot)
+	if err != nil {
+		return fmt.Errorf("invalid workspace config: %w", err)
+	}
+
+	backend := selectRuntimeBackend(workspaceConfig.Runtime.Required)
+	if backend == "" {
+		return nil
+	}
+
+	if err := os.Setenv("NEXUS_RUNTIME_BACKEND", backend); err != nil {
+		return fmt.Errorf("set runtime backend env: %w", err)
+	}
+
+	if backend == "firecracker" {
+		applyFirecrackerAssetDefaults()
+	}
+
+	return nil
+}
+
+func selectRuntimeBackend(required []string) string {
+	if len(required) == 0 {
+		return ""
+	}
+
+	for _, candidate := range required {
+		switch strings.ToLower(strings.TrimSpace(candidate)) {
+		case "firecracker", "vm":
+			return "firecracker"
+		case "dind", "local":
+			return "dind"
+		case "lxc":
+			return "lxc"
+		}
+	}
+
+	return ""
+}
+
+func applyFirecrackerAssetDefaults() {
+	if strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_KERNEL")) == "" {
+		if _, err := firecrackerDefaultAssetStat(firecrackerDefaultKernelPath); err == nil {
+			_ = os.Setenv("NEXUS_FIRECRACKER_KERNEL", firecrackerDefaultKernelPath)
+		}
+	}
+
+	if strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_ROOTFS")) == "" {
+		if _, err := firecrackerDefaultAssetStat(firecrackerDefaultRootFSPath); err == nil {
+			_ = os.Setenv("NEXUS_FIRECRACKER_ROOTFS", firecrackerDefaultRootFSPath)
+		}
 	}
 }
 
