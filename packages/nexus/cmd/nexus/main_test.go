@@ -483,12 +483,10 @@ func TestRunBootstrapInstallCommandVerifiesMakeIsInstalled(t *testing.T) {
 }
 
 func TestBuildSetupScriptSeedsMakeBinaryIntoRootfs(t *testing.T) {
-	requireLinux(t)
-
 	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
-	needle := "docker-init docker-proxy iptables ip6tables; do"
+	needle := "docker-init docker-proxy iptables ip6tables make; do"
 	if count := strings.Count(script, needle); count != 2 {
-		t.Fatalf("expected setup script to seed runtime helpers in both binary copy loops, count=%d", count)
+		t.Fatalf("expected setup script to seed make in both binary copy loops, count=%d", count)
 	}
 }
 
