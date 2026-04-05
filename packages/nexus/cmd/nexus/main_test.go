@@ -924,6 +924,14 @@ func TestResolveDoctorChecksFallsBackToWorkspaceConfigWhenNoDiscoveredScripts(t 
 
 func TestRunInitCreatesNexusWorkspaceFiles(t *testing.T) {
 	root := t.TempDir()
+	orig := initRuntimeBootstrapRunner
+	t.Cleanup(func() { initRuntimeBootstrapRunner = orig })
+	initRuntimeBootstrapRunner = func(projectRoot, runtimeName string) error {
+		if runtimeName != "firecracker" {
+			t.Fatalf("expected firecracker runtime, got %q", runtimeName)
+		}
+		return nil
+	}
 
 	if err := runInit(initOptions{projectRoot: root, runtime: "firecracker"}); err != nil {
 		t.Fatalf("expected init success, got %v", err)
