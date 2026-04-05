@@ -1102,7 +1102,6 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 	capabilityChecks := [][]string{
 		{"docker", "info"},
 		{"docker", "compose", "version"},
-		{"sh", "-lc", "command -v make >/dev/null 2>&1"},
 	}
 	runCapabilityChecks := func() (bool, string) {
 		failures := make([]string, 0)
