@@ -298,14 +298,10 @@ func runExec(opts execOptions) error {
 
 	var out string
 	var err error
-	if execCtx.backend == "firecracker" {
-		fmt.Printf("exec exec: %s (attempt %d/%d, timeout=%s, context=firecracker): %s\n", opts.command, 1, 1, opts.timeout, formatCommand(opts.command, opts.args))
-		out, err = firecrackerCheckCommandRunner(ctx, "/workspace", opts.command, opts.args)
-	} else {
-		out, err = runCheckCommandWithExecContext(ctx, opts.projectRoot, "exec", opts.command, 1, 1, opts.timeout, opts.command, opts.args, execCtx)
-	}
+	fmt.Printf("exec exec: %s (attempt %d/%d, timeout=%s, context=firecracker): %s\n", opts.command, 1, 1, opts.timeout, formatCommand(opts.command, opts.args))
+	out, err = firecrackerCheckCommandRunner(ctx, "/workspace", opts.command, opts.args)
 
-	if execCtx.backend == "firecracker" && strings.TrimSpace(out) != "" {
+	if strings.TrimSpace(out) != "" {
 		fmt.Println(strings.TrimSpace(out))
 	}
 	if err != nil {
@@ -458,29 +454,7 @@ func run(opts options) error {
 
 	publishedPorts := make([]compose.PublishedPort, 0)
 	composePath := filepath.Join(opts.projectRoot, opts.composeFile)
-	if execCtx.backend == "firecracker" {
-		fmt.Printf("doctor info: skipping host compose port discovery in firecracker mode: %s\n", composePath)
-	} else if _, err := os.Stat(composePath); err == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		defer cancel()
-		publishedPorts, err = compose.DiscoverPublishedPorts(ctx, opts.projectRoot)
-		if err != nil {
-			return fmt.Errorf("compose discovery failed: %w", err)
-		}
-		if len(opts.requiredHostPorts) > 0 {
-			missing := missingRequiredPorts(opts.requiredHostPorts, publishedPorts)
-			if len(missing) > 0 {
-				return fmt.Errorf("missing required host ports: %v", missing)
-			}
-		}
-	} else if errors.Is(err, os.ErrNotExist) {
-		if len(opts.requiredHostPorts) > 0 {
-			return fmt.Errorf("compose file not found but required host ports are configured: %s", composePath)
-		}
-		fmt.Printf("compose file not found, skipping compose port checks: %s\n", composePath)
-	} else {
-		return fmt.Errorf("stat compose file %s: %w", composePath, err)
-	}
+	fmt.Printf("doctor info: skipping host compose port discovery in firecracker mode: %s\n", composePath)
 
 	probeResults, probeErr := runConfiguredProbes(opts, probesToRun)
 
@@ -1043,8 +1017,14 @@ func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string
 		Args:    args,
 		WorkDir: "/workspace",
 		Env:     env,
+		Stream:  true,
 	}
-	result, err := agentClient.Exec(ctx, request)
+	result, err := agentClient.ExecStreaming(ctx, request, func(_ string, data string) {
+		if data == "" {
+			return
+		}
+		fmt.Print(data)
+	})
 	if err != nil {
 		if logTail := readFileTail(session.serialLog, 262144); logTail != "" {
 			return "", fmt.Errorf("%w\nfirecracker serial log tail:\n%s", err, logTail)
@@ -1102,6 +1082,10 @@ func detectHostDockerSocket() string {
 }
 
 func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext, backendLabel string, allowInstall bool) error {
+	if execCtx.backend != "firecracker" {
+		return fmt.Errorf("unsupported runtime backend %q: only firecracker is supported", execCtx.backend)
+	}
+
 	timeout := 90 * time.Second
 	commandProjectRoot := projectRoot
 	if execCtx.backend == "firecracker" {
@@ -1115,7 +1099,11 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 		diagCancel()
 		return strings.TrimSpace(diagOut)
 	}
-	capabilityChecks := [][]string{{"docker", "info"}, {"docker", "compose", "version"}}
+	capabilityChecks := [][]string{
+		{"docker", "info"},
+		{"docker", "compose", "version"},
+		{"sh", "-lc", "command -v make >/dev/null 2>&1"},
+	}
 	runCapabilityChecks := func() (bool, string) {
 		failures := make([]string, 0)
 		for _, check := range capabilityChecks {
@@ -1373,6 +1361,10 @@ func runDoctorLifecycleStart(projectRoot string, execCtx doctorExecContext) erro
 		command = "bash"
 		args = []string{".nexus/lifecycles/start.sh"}
 		contextLabel = "lifecycle-start-script"
+	} else if hasComposeTarget(projectRoot) {
+		command = "docker"
+		args = []string{"compose", "up", "-d", "--build"}
+		contextLabel = "lifecycle-start-compose"
 	} else if hasMakeTarget(projectRoot, "start") {
 		command = "make"
 		args = []string{"start"}
@@ -1406,6 +1398,21 @@ func runDoctorLifecycleStart(projectRoot string, execCtx doctorExecContext) erro
 
 	fmt.Printf("doctor lifecycle started (%s)\n", contextLabel)
 	return nil
+}
+
+func hasComposeTarget(projectRoot string) bool {
+	candidates := []string{
+		"docker-compose.yml",
+		"docker-compose.yaml",
+		"compose.yml",
+		"compose.yaml",
+	}
+	for _, name := range candidates {
+		if stat, err := os.Stat(filepath.Join(projectRoot, name)); err == nil && !stat.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 func collectFirecrackerWorkspaceDiagnostics(projectRoot string, execCtx doctorExecContext) string {
@@ -1461,113 +1468,16 @@ func runDoctorLifecycleSetup(projectRoot string, execCtx doctorExecContext) erro
 func runBuiltInOpencodeSessionCheck(projectRoot string) (checkResult, error) {
 	const checkName = "tooling-opencode-session"
 	start := time.Now()
-	backend := loadDoctorExecContext().backend
 
-	if backend == "lxc" {
-		return checkResult{
-			Name:       checkName,
-			Phase:      "test",
-			Status:     "not_run",
-			Required:   true,
-			Attempts:   0,
-			DurationMs: time.Since(start).Milliseconds(),
-			SkipReason: "opencode session check is skipped for lxc backend in CI",
-		}, nil
-	}
-	if backend == "firecracker" {
-		return checkResult{
-			Name:       checkName,
-			Phase:      "test",
-			Status:     "not_run",
-			Required:   true,
-			Attempts:   0,
-			DurationMs: time.Since(start).Milliseconds(),
-			SkipReason: "opencode session check is skipped for firecracker backend",
-		}, nil
-	}
-
-	result := checkResult{
-		Name:     checkName,
-		Phase:    "test",
-		Attempts: 1,
-	}
-
-	if backend != "firecracker" {
-		if _, err := exec.LookPath("opencode"); err != nil {
-			result.Status = "failed_required"
-			result.Required = true
-			result.DurationMs = time.Since(start).Milliseconds()
-			result.Error = "opencode command not found in PATH"
-			return result, fmt.Errorf("required tests failed: %s", checkName)
-		}
-	}
-
-	versionTimeout := 30 * time.Second
-	versionOut, versionErr := runCheckCommand(context.Background(), projectRoot, "test", checkName, 1, 1, versionTimeout, "opencode", []string{"--version"})
-	if versionErr != nil {
-		result.Status = "failed_required"
-		result.Required = true
-		result.DurationMs = time.Since(start).Milliseconds()
-		result.Error = versionOut
-		return result, fmt.Errorf("required tests failed: %s", checkName)
-	}
-
-	runHelpTimeout := 30 * time.Second
-	runHelpOut, runHelpErr := runCheckCommand(context.Background(), projectRoot, "test", checkName, 1, 1, runHelpTimeout, "opencode", []string{"run", "--help"})
-	if runHelpErr != nil {
-		result.Status = "failed_required"
-		result.Required = true
-		result.DurationMs = time.Since(start).Milliseconds()
-		result.Error = runHelpOut
-		return result, fmt.Errorf("required tests failed: %s", checkName)
-	}
-
-	model := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_OPENCODE_MODEL"))
-
-	prompt := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_OPENCODE_PROMPT"))
-	if prompt == "" {
-		prompt = "Respond with exactly: NEXUS_DOCTOR_OK"
-	}
-
-	expectedMarker := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_OPENCODE_EXPECTED_MARKER"))
-	if expectedMarker == "" {
-		expectedMarker = "NEXUS_DOCTOR_OK"
-	}
-
-	timeout := 3 * time.Minute
-	if rawTimeout := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_OPENCODE_TIMEOUT_MS")); rawTimeout != "" {
-		if ms, err := strconv.Atoi(rawTimeout); err == nil && ms > 0 {
-			timeout = time.Duration(ms) * time.Millisecond
-		}
-	}
-
-	runArgs := []string{"run"}
-	if model != "" {
-		runArgs = append(runArgs, "--model", model)
-	}
-	runArgs = append(runArgs, prompt)
-
-	opencodeCtx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	out, err := runCheckCommand(opencodeCtx, projectRoot, "test", checkName, 1, 1, timeout, "opencode", runArgs)
-
-	result.Required = true
-	result.DurationMs = time.Since(start).Milliseconds()
-	if err != nil {
-		result.Status = "failed_required"
-		result.Error = out
-		return result, fmt.Errorf("required tests failed: %s", checkName)
-	}
-
-	if !strings.Contains(out, expectedMarker) {
-		result.Status = "failed_required"
-		result.Error = fmt.Sprintf("expected marker %q not found in opencode output", expectedMarker)
-		return result, fmt.Errorf("required tests failed: %s", checkName)
-	}
-
-	result.Status = "passed"
-	fmt.Printf("test passed: %s (attempt 1/1)\n", checkName)
-	return result, nil
+	return checkResult{
+		Name:       checkName,
+		Phase:      "test",
+		Status:     "not_run",
+		Required:   true,
+		Attempts:   0,
+		DurationMs: time.Since(start).Milliseconds(),
+		SkipReason: "opencode session check is skipped for firecracker backend",
+	}, nil
 }
 
 func runBuiltInRuntimeBackendCheck() (checkResult, error) {
@@ -1580,56 +1490,12 @@ func runBuiltInRuntimeBackendCheck() (checkResult, error) {
 		Attempts: 1,
 	}
 
-	timeout := 45 * time.Second
-	if rawTimeout := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_RUNTIME_TIMEOUT_MS")); rawTimeout != "" {
-		if ms, err := strconv.Atoi(rawTimeout); err == nil && ms > 0 {
-			timeout = time.Duration(ms) * time.Millisecond
-		}
-	}
-
 	backend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND"))
-	if backend == "" {
-		backend = "dind"
-	}
-	if backend == "firecracker" {
-		result.Status = "passed"
+	if backend != "firecracker" {
+		result.Status = "failed_required"
 		result.DurationMs = time.Since(start).Milliseconds()
-		fmt.Printf("probe passed: %s (attempt 1/1)\n", checkName)
-		return result, nil
-	}
-	execCtx := loadDoctorExecContext()
-
-	if backend == "lxc" {
-		lxcCtx, lxcCancel := context.WithTimeout(context.Background(), timeout)
-		lxcOut, lxcErr := doctorCheckCommandRunner(lxcCtx, ".", "probe", checkName, 1, 1, timeout, "lxc", []string{"info"}, doctorExecContext{})
-		lxcCancel()
-		if lxcErr != nil {
-			sudoCtx, sudoCancel := context.WithTimeout(context.Background(), timeout)
-			sudoOut, sudoErr := doctorCheckCommandRunner(sudoCtx, ".", "probe", checkName, 1, 1, timeout, "sudo", []string{"-n", "lxc", "info"}, doctorExecContext{})
-			sudoCancel()
-			if sudoErr != nil {
-				result.Status = "failed_required"
-				result.DurationMs = time.Since(start).Milliseconds()
-				result.Error = strings.TrimSpace(lxcOut + "\n" + sudoOut)
-				return result, fmt.Errorf("required probes failed: %s", checkName)
-			}
-		}
-	}
-
-	checks := [][]string{{"docker", "info"}, {"docker", "compose", "version"}}
-
-	for _, check := range checks {
-		command := check[0]
-		args := check[1:]
-		cmdCtx, cancel := context.WithTimeout(context.Background(), timeout)
-		out, err := doctorCheckCommandRunner(cmdCtx, ".", "probe", checkName, 1, 1, timeout, command, args, execCtx)
-		cancel()
-		if err != nil {
-			result.Status = "failed_required"
-			result.DurationMs = time.Since(start).Milliseconds()
-			result.Error = out
-			return result, fmt.Errorf("required probes failed: %s", checkName)
-		}
+		result.Error = fmt.Sprintf("unsupported runtime backend %q: doctor command only supports firecracker", backend)
+		return result, fmt.Errorf("required probes failed: %s", checkName)
 	}
 
 	result.Status = "passed"
@@ -1641,44 +1507,22 @@ func runBuiltInRuntimeBackendCheck() (checkResult, error) {
 func bootstrapDoctorExecContext(projectRoot string) error {
 	setDoctorExecContextCleanup(nil)
 	execCtx := loadDoctorExecContext()
-	if execCtx.backend == "firecracker" {
-		if err := bootstrapFirecrackerExecContext(projectRoot, execCtx); err != nil {
-			return err
-		}
-		return containerBootstrapRunner(projectRoot, execCtx, "firecracker", true)
+	if execCtx.backend != "firecracker" {
+		return fmt.Errorf("unsupported runtime backend %q: doctor command only supports firecracker", execCtx.backend)
 	}
-
-	if execCtx.backend != "lxc" {
-		return nil
+	if err := bootstrapFirecrackerExecContext(projectRoot, execCtx); err != nil {
+		return err
 	}
-	if execCtx.lxcExec == "host" {
-		return fmt.Errorf("backend \"lxc\" does not allow host execution mode; configure NEXUS_DOCTOR_LXC_INSTANCE")
-	}
-	if execCtx.lxcName == "" {
-		return fmt.Errorf("backend \"lxc\" requires explicit execution context (set NEXUS_DOCTOR_LXC_INSTANCE)")
-	}
-
-	return containerBootstrapRunner(projectRoot, execCtx, "lxc", true)
+	return containerBootstrapRunner(projectRoot, execCtx, "firecracker", true)
 }
 
 func bootstrapExecCommandContext(projectRoot string) error {
 	setDoctorExecContextCleanup(nil)
 	execCtx := loadDoctorExecContext()
-	if execCtx.backend == "firecracker" {
-		return bootstrapFirecrackerExecContext(projectRoot, execCtx)
+	if execCtx.backend != "firecracker" {
+		return fmt.Errorf("unsupported runtime backend %q: exec command only supports firecracker", execCtx.backend)
 	}
-
-	if execCtx.backend != "lxc" {
-		return nil
-	}
-	if execCtx.lxcExec == "host" {
-		return fmt.Errorf("backend \"lxc\" does not allow host execution mode; configure NEXUS_DOCTOR_LXC_INSTANCE")
-	}
-	if execCtx.lxcName == "" {
-		return fmt.Errorf("backend \"lxc\" requires explicit execution context (set NEXUS_DOCTOR_LXC_INSTANCE)")
-	}
-
-	return containerBootstrapRunner(projectRoot, execCtx, "lxc", true)
+	return bootstrapFirecrackerExecContext(projectRoot, execCtx)
 }
 
 func markChecksNotRun(tests []config.DoctorCommandCheck, skipReason string) []checkResult {
@@ -1719,16 +1563,6 @@ func runCheckCommand(ctx context.Context, projectRoot, phase, name string, attem
 }
 
 func runCheckCommandWithExecContext(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
-	if execCtx.backend == "lxc" && execCtx.lxcExec == "host" {
-		msg := "backend \"lxc\" does not allow host execution mode; configure NEXUS_DOCTOR_LXC_INSTANCE"
-		return msg, errors.New(msg)
-	}
-
-	if execCtx.backend == "lxc" && execCtx.lxcName == "" {
-		msg := "backend \"lxc\" requires explicit execution context (set NEXUS_DOCTOR_LXC_INSTANCE)"
-		return msg, errors.New(msg)
-	}
-
 	if execCtx.backend == "firecracker" {
 		fmt.Printf("%s exec: %s (attempt %d/%d, timeout=%s, context=firecracker): %s\n", phase, name, attempt, attempts, timeout, formatCommand(command, args))
 		return firecrackerCheckCommandRunner(ctx, "/workspace", command, args)
@@ -1783,7 +1617,7 @@ func hasEnvKey(env []string, key string) bool {
 func loadDoctorExecContext() doctorExecContext {
 	backend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND"))
 	if backend == "" {
-		backend = "dind"
+		backend = "firecracker"
 	}
 	return doctorExecContext{
 		backend:    backend,
@@ -1794,7 +1628,10 @@ func loadDoctorExecContext() doctorExecContext {
 }
 
 func applyRuntimeBackendFromWorkspace(projectRoot string) error {
-	if strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND")) != "" {
+	if rawBackend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND")); rawBackend != "" {
+		if rawBackend != "firecracker" {
+			return fmt.Errorf("unsupported runtime backend %q: doctor command only supports firecracker", rawBackend)
+		}
 		return nil
 	}
 
@@ -1805,7 +1642,7 @@ func applyRuntimeBackendFromWorkspace(projectRoot string) error {
 
 	backend := selectRuntimeBackend(workspaceConfig.Runtime.Required)
 	if backend == "" {
-		return nil
+		return fmt.Errorf("no firecracker runtime found in workspace config required runtimes; doctor command only supports firecracker")
 	}
 
 	if err := os.Setenv("NEXUS_RUNTIME_BACKEND", backend); err != nil {
@@ -1828,10 +1665,6 @@ func selectRuntimeBackend(required []string) string {
 		switch strings.ToLower(strings.TrimSpace(candidate)) {
 		case "firecracker", "vm":
 			return "firecracker"
-		case "dind", "local":
-			return "dind"
-		case "lxc":
-			return "lxc"
 		}
 	}
 
@@ -1853,39 +1686,9 @@ func applyFirecrackerAssetDefaults() {
 }
 
 func resolveCheckCommand(projectRoot, command string, args []string, execCtx doctorExecContext) (string, []string, []string, string) {
-	if execCtx.backend == "lxc" && execCtx.lxcName != "" {
-		envPrefix := []string{
-			"export", "NEXUS_RUNTIME_BACKEND=" + shellQuote(execCtx.backend),
-			"NEXUS_DOCTOR_LXC_INSTANCE=" + shellQuote(execCtx.lxcName),
-			"NEXUS_DOCTOR_LXC_EXEC_MODE=" + shellQuote(execCtx.lxcExec),
-		}
-		if execCtx.dockerHost != "" {
-			envPrefix = append(envPrefix, "NEXUS_DOCTOR_DIND_DOCKER_HOST="+shellQuote(execCtx.dockerHost))
-		}
-		envPrefix = append(envPrefix, ";")
-
-		innerParts := make([]string, 0, len(args)+2)
-		innerParts = append(innerParts, envPrefix...)
-		innerParts = append(innerParts, "cd", shellQuote(projectRoot), "&&", shellQuote(command))
-		for _, arg := range args {
-			innerParts = append(innerParts, shellQuote(arg))
-		}
-		inner := strings.Join(innerParts, " ")
-		if execCtx.lxcExec == "sudo-lxc" {
-			return "sudo", []string{"-n", "lxc", "exec", execCtx.lxcName, "--", "bash", "-lc", inner}, nil, "lxc-sudo"
-		}
-		return "lxc", []string{"exec", execCtx.lxcName, "--", "bash", "-lc", inner}, nil, "lxc"
+	if execCtx.backend == "firecracker" {
+		return command, args, nil, "firecracker"
 	}
-
-	if execCtx.backend == "dind" && execCtx.dockerHost != "" {
-		extraEnv := []string{"DOCKER_HOST=" + execCtx.dockerHost}
-		return command, args, extraEnv, "dind"
-	}
-
-	if execCtx.backend == "dind" {
-		return command, args, nil, "dind"
-	}
-
 	return command, args, nil, "host"
 }
 
@@ -1967,6 +1770,9 @@ func parseRequiredPorts(raw string) ([]int, error) {
 func assertNoManualACP(lifecycleDir string) error {
 	entries, err := os.ReadDir(lifecycleDir)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 		return fmt.Errorf("read lifecycle dir: %w", err)
 	}
 
@@ -1995,7 +1801,7 @@ func validateLifecycleEntrypoints(projectRoot string) error {
 	if err != nil {
 		return err
 	}
-	if !startExists && !hasMakeTarget(projectRoot, "start") {
+	if !startExists && !hasComposeTarget(projectRoot) && !hasMakeTarget(projectRoot, "start") {
 		return fmt.Errorf("missing startup entrypoint: expected executable %s or Makefile target 'start'", startPath)
 	}
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -47,10 +48,14 @@ type execRequest struct {
 	Args    []string `json:"args"`
 	WorkDir string   `json:"workdir,omitempty"`
 	Env     []string `json:"env,omitempty"`
+	Stream  bool     `json:"stream,omitempty"`
 }
 
 type execResponse struct {
 	ID       string `json:"id"`
+	Type     string `json:"type,omitempty"`
+	Stream   string `json:"stream,omitempty"`
+	Data     string `json:"data,omitempty"`
 	ExitCode int    `json:"exit_code"`
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr"`
@@ -103,10 +108,91 @@ func handleExec(req execRequest) execResponse {
 
 	return execResponse{
 		ID:       req.ID,
+		Type:     "result",
 		ExitCode: exitCode,
 		Stdout:   stdoutBuf.String(),
 		Stderr:   stderrBuf.String(),
 	}
+}
+
+func streamOutput(encoder *json.Encoder, id, stream string, r io.Reader) string {
+	var buf strings.Builder
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 4096), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text() + "\n"
+		buf.WriteString(line)
+		_ = encoder.Encode(execResponse{
+			ID:     id,
+			Type:   "chunk",
+			Stream: stream,
+			Data:   line,
+		})
+	}
+	return buf.String()
+}
+
+func handleExecStreaming(req execRequest, encoder *json.Encoder) execResponse {
+	ctx, cancel := context.WithTimeout(context.Background(), agentExecTimeout())
+	defer cancel()
+
+	env := append([]string{}, os.Environ()...)
+	if len(req.Env) > 0 {
+		env = append(env, req.Env...)
+	}
+	env = ensurePathInEnv(env)
+
+	commandPath := req.Command
+	if resolved, err := lookPathInEnv(req.Command, env); err == nil {
+		commandPath = resolved
+	}
+
+	cmd := exec.CommandContext(ctx, commandPath, req.Args...)
+	if req.WorkDir != "" {
+		if req.WorkDir == workspaceMountPoint || strings.HasPrefix(req.WorkDir, workspaceMountPoint+"/") {
+			if err := setupWorkspaceMountRequiredFunc(); err != nil {
+				return execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: fmt.Sprintf("workspace mount ensure failed: %v", err)}
+			}
+		}
+		cmd.Dir = req.WorkDir
+	}
+	cmd.Env = env
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: err.Error()}
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: err.Error()}
+	}
+
+	if err := cmd.Start(); err != nil {
+		return execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: err.Error()}
+	}
+
+	stdoutCh := make(chan string, 1)
+	stderrCh := make(chan string, 1)
+	go func() { stdoutCh <- streamOutput(encoder, req.ID, "stdout", stdoutPipe) }()
+	go func() { stderrCh <- streamOutput(encoder, req.ID, "stderr", stderrPipe) }()
+
+	err = cmd.Wait()
+	stdout := <-stdoutCh
+	stderr := <-stderrCh
+
+	exitCode := 0
+	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			exitCode = exitError.ExitCode()
+		} else {
+			exitCode = 1
+			if stderr == "" {
+				stderr = err.Error()
+			}
+		}
+	}
+
+	return execResponse{ID: req.ID, Type: "result", ExitCode: exitCode, Stdout: stdout, Stderr: stderr}
 }
 
 func agentExecTimeout() time.Duration {
@@ -193,7 +279,12 @@ func serveConn(conn net.Conn) {
 		}
 
 		// Handle request
-		resp := handleExec(req)
+		resp := execResponse{}
+		if req.Stream {
+			resp = handleExecStreaming(req, encoder)
+		} else {
+			resp = handleExec(req)
+		}
 
 		// Send response
 		if err := encoder.Encode(resp); err != nil {

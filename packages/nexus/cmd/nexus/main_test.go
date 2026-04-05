@@ -119,6 +119,7 @@ func TestEnsureDotEnvCopiesFromExample(t *testing.T) {
 }
 
 func TestRunConfiguredProbesRequiredFailure(t *testing.T) {
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "host")
 	opts := options{projectRoot: t.TempDir()}
 	_, err := runConfiguredProbes(opts, []config.DoctorCommandProbe{{
 		Name:     "failing-required",
@@ -132,6 +133,7 @@ func TestRunConfiguredProbesRequiredFailure(t *testing.T) {
 }
 
 func TestRunConfiguredProbesOptionalFailure(t *testing.T) {
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "host")
 	opts := options{projectRoot: t.TempDir()}
 	results, err := runConfiguredProbes(opts, []config.DoctorCommandProbe{{
 		Name:     "failing-optional",
@@ -148,6 +150,7 @@ func TestRunConfiguredProbesOptionalFailure(t *testing.T) {
 }
 
 func TestRunConfiguredProbesRunsAllProbes(t *testing.T) {
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "host")
 	opts := options{projectRoot: t.TempDir()}
 	results, err := runConfiguredProbes(opts, []config.DoctorCommandProbe{
 		{Name: "first", Command: "bash", Args: []string{"-lc", "exit 0"}, Required: true},
@@ -237,6 +240,38 @@ func TestRunDoctorLifecycleStartRunsLifecycleScript(t *testing.T) {
 	}
 }
 
+func TestRunDoctorLifecycleStartFallsBackToCompose(t *testing.T) {
+	originalRunner := doctorCheckCommandRunner
+	t.Cleanup(func() {
+		doctorCheckCommandRunner = originalRunner
+	})
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "docker-compose.yml"), []byte("services:\n  app:\n    image: busybox\n"), 0o644); err != nil {
+		t.Fatalf("write docker-compose.yml: %v", err)
+	}
+
+	called := false
+	doctorCheckCommandRunner = func(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
+		called = true
+		if command != "docker" {
+			t.Fatalf("expected docker command, got %q", command)
+		}
+		expected := []string{"compose", "up", "-d", "--build"}
+		if !reflect.DeepEqual(args, expected) {
+			t.Fatalf("unexpected args: %v", args)
+		}
+		return "ok", nil
+	}
+
+	if err := runDoctorLifecycleStart(root, doctorExecContext{backend: "firecracker"}); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !called {
+		t.Fatal("expected compose fallback to execute")
+	}
+}
+
 func TestRunDoctorLifecycleStartIncludesFirecrackerWorkspaceDiagnosticsOnFailure(t *testing.T) {
 	originalRunner := doctorCheckCommandRunner
 	t.Cleanup(func() {
@@ -302,44 +337,13 @@ func TestRunBootstrapInstallCommandDoesNotInstallOpencode(t *testing.T) {
 	}
 }
 
-func TestBootstrapContainerExecContextContinuesOnAptPermissionDenied(t *testing.T) {
-	originalRunner := doctorCheckCommandRunner
-	t.Cleanup(func() {
-		doctorCheckCommandRunner = originalRunner
-	})
-
-	capabilityChecksReady := false
-	startAttempts := 0
-
-	doctorCheckCommandRunner = func(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
-		if command == "docker" {
-			if capabilityChecksReady {
-				return "ok", nil
-			}
-			return "docker unavailable", errors.New("docker unavailable")
-		}
-
-		if command == "sh" && len(args) == 2 && args[0] == "-lc" {
-			script := args[1]
-			if strings.Contains(script, "apt-get update") {
-				return "E: Could not open lock file /var/lib/apt/lists/lock - open (13: Permission denied)\nE: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), are you root?", errors.New("apt permissions")
-			}
-			if strings.Contains(script, "systemctl enable docker") {
-				startAttempts++
-				if startAttempts == 1 {
-					return "start failed", errors.New("start failed")
-				}
-				capabilityChecksReady = true
-				return "started", nil
-			}
-		}
-
-		return "", nil
-	}
-
+func TestBootstrapContainerExecContextDindNoLongerSupported(t *testing.T) {
 	err := bootstrapContainerExecContext(t.TempDir(), doctorExecContext{backend: "dind"}, "dind", true)
-	if err != nil {
-		t.Fatalf("expected apt permission denied to be treated as non-fatal, got: %v", err)
+	if err == nil {
+		t.Fatal("expected error when using dind backend")
+	}
+	if !strings.Contains(err.Error(), "unsupported runtime backend") {
+		t.Fatalf("expected unsupported backend error, got: %v", err)
 	}
 }
 
@@ -612,6 +616,25 @@ func TestValidateLifecycleEntrypointsRequiresStartWhenNoMakeTarget(t *testing.T)
 	}
 }
 
+func TestValidateLifecycleEntrypointsAllowsComposeWithoutLifecycleDir(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "docker-compose.yml"), []byte("services:\n  app:\n    image: busybox\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := validateLifecycleEntrypoints(root); err != nil {
+		t.Fatalf("expected compose-only startup entrypoint to be allowed, got %v", err)
+	}
+}
+
+func TestAssertNoManualACPIgnoresMissingLifecycleDir(t *testing.T) {
+	root := t.TempDir()
+	missing := filepath.Join(root, ".nexus", "lifecycles")
+	if err := assertNoManualACP(missing); err != nil {
+		t.Fatalf("expected missing lifecycle directory to be ignored, got %v", err)
+	}
+}
+
 func TestValidateLifecycleEntrypointsAllowsMakefileStartTarget(t *testing.T) {
 	root := t.TempDir()
 	lifecycleDir := filepath.Join(root, ".nexus", "lifecycles")
@@ -789,7 +812,7 @@ func setupDoctorTestWorkspace(t *testing.T, doctorConfig config.DoctorConfig) st
 	}
 	wsCfg := config.WorkspaceConfig{
 		Version: 1,
-		Runtime: config.RuntimeConfig{Required: []string{"local"}},
+		Runtime: config.RuntimeConfig{Required: []string{"firecracker"}},
 		Doctor:  doctorConfig,
 	}
 	cfgData, err := json.Marshal(wsCfg)
@@ -995,104 +1018,75 @@ func TestRunCheckCommandCapturesOutput(t *testing.T) {
 	}
 }
 
-func TestRunCheckCommandWithExecContextLXCNoInstanceFails(t *testing.T) {
-	_, err := runCheckCommandWithExecContext(
-		context.Background(),
-		t.TempDir(),
-		"probe",
-		"example",
-		1,
-		1,
-		30*time.Second,
-		"bash",
-		[]string{"-lc", "exit 0"},
-		doctorExecContext{backend: "lxc", lxcExec: "host"},
-	)
-	if err == nil {
-		t.Fatal("expected error when lxc backend has no instance")
-	}
-}
-
-func TestResolveCheckCommandLXC(t *testing.T) {
+func TestResolveCheckCommandLXCNoLongerSupported(t *testing.T) {
 	cmd, args, env, label := resolveCheckCommand("/tmp/project", "bash", []string{"-lc", "echo ok"}, doctorExecContext{
 		backend: "lxc",
 		lxcName: "nexus-ws",
 	})
 
-	if cmd != "lxc" {
-		t.Fatalf("expected lxc command, got %q", cmd)
+	if cmd != "bash" {
+		t.Fatalf("expected bash command (lxc no longer supported), got %q", cmd)
 	}
-	if label != "lxc" {
-		t.Fatalf("expected label lxc, got %q", label)
+	if label != "host" {
+		t.Fatalf("expected label host, got %q", label)
 	}
 	if len(env) != 0 {
 		t.Fatalf("expected no extra env, got %v", env)
 	}
-	if len(args) != 6 {
-		t.Fatalf("expected wrapped lxc args, got %v", args)
-	}
-	if args[0] != "exec" || args[1] != "nexus-ws" {
-		t.Fatalf("unexpected lxc prefix args: %v", args)
-	}
-	if args[5] == "" || !strings.Contains(args[5], "cd") || !strings.Contains(args[5], "/tmp/project") {
-		t.Fatalf("unexpected wrapped shell command: %q", args[5])
+	if len(args) != 2 {
+		t.Fatalf("expected original args, got %v", args)
 	}
 }
 
-func TestResolveCheckCommandLXCSudo(t *testing.T) {
+func TestResolveCheckCommandFirecracker(t *testing.T) {
 	cmd, args, env, label := resolveCheckCommand("/tmp/project", "bash", []string{"-lc", "echo ok"}, doctorExecContext{
-		backend: "lxc",
-		lxcName: "nexus-ws",
-		lxcExec: "sudo-lxc",
+		backend: "firecracker",
 	})
 
-	if cmd != "sudo" {
-		t.Fatalf("expected sudo command, got %q", cmd)
+	if cmd != "bash" {
+		t.Fatalf("expected bash command, got %q", cmd)
 	}
-	if label != "lxc-sudo" {
-		t.Fatalf("expected label lxc-sudo, got %q", label)
+	if label != "firecracker" {
+		t.Fatalf("expected label firecracker, got %q", label)
 	}
 	if len(env) != 0 {
 		t.Fatalf("expected no extra env, got %v", env)
 	}
-	if len(args) < 8 {
-		t.Fatalf("expected wrapped sudo lxc args, got %v", args)
-	}
-	if args[0] != "-n" || args[1] != "lxc" || args[2] != "exec" || args[3] != "nexus-ws" {
-		t.Fatalf("unexpected sudo lxc prefix args: %v", args)
+	if len(args) != 2 {
+		t.Fatalf("expected original args, got %v", args)
 	}
 }
 
-func TestResolveCheckCommandDind(t *testing.T) {
+func TestResolveCheckCommandDindNoLongerSupported(t *testing.T) {
 	cmd, args, env, label := resolveCheckCommand("/tmp/project", "docker", []string{"compose", "ps"}, doctorExecContext{
 		backend:    "dind",
 		dockerHost: "unix:///var/run/docker.sock",
 	})
 
 	if cmd != "docker" {
-		t.Fatalf("expected docker command, got %q", cmd)
+		t.Fatalf("expected docker command (dind no longer supported), got %q", cmd)
 	}
-	if label != "dind" {
-		t.Fatalf("expected label dind, got %q", label)
+	if label != "host" {
+		t.Fatalf("expected label host, got %q", label)
 	}
 	if !reflect.DeepEqual(args, []string{"compose", "ps"}) {
 		t.Fatalf("unexpected args: %v", args)
 	}
-	if !reflect.DeepEqual(env, []string{"DOCKER_HOST=unix:///var/run/docker.sock"}) {
-		t.Fatalf("unexpected env: %v", env)
+	if len(env) != 0 {
+		t.Fatalf("expected empty env, got %v", env)
 	}
 }
 
-func TestResolveCheckCommandDindWithoutDockerHost(t *testing.T) {
+func TestResolveCheckCommandDindWithoutDockerHostNoLongerSupported(t *testing.T) {
 	cmd, args, env, label := resolveCheckCommand("/tmp/project", "docker", []string{"compose", "ps"}, doctorExecContext{
 		backend: "dind",
 	})
 
 	if cmd != "docker" {
-		t.Fatalf("expected docker command, got %q", cmd)
+		t.Fatalf("expected docker command (dind no longer supported), got %q", cmd)
 	}
-	if label != "dind" {
-		t.Fatalf("expected label dind, got %q", label)
+	if label != "host" {
+		t.Fatalf("expected label host, got %q", label)
 	}
 	if !reflect.DeepEqual(args, []string{"compose", "ps"}) {
 		t.Fatalf("unexpected args: %v", args)
@@ -1309,7 +1303,7 @@ func TestVerifyFirecrackerWorkspaceReadyProvidesSetupGuidanceOnMissingWorkspace(
 	}
 }
 
-func TestRunExecHostBackendRunsCommand(t *testing.T) {
+func TestRunExecHostBackendNoLongerSupported(t *testing.T) {
 	t.Setenv("NEXUS_RUNTIME_BACKEND", "host")
 
 	root := t.TempDir()
@@ -1319,8 +1313,11 @@ func TestRunExecHostBackendRunsCommand(t *testing.T) {
 		command:     "bash",
 		args:        []string{"-lc", "printf exec-ok"},
 	})
-	if err != nil {
-		t.Fatalf("expected runExec to succeed, got %v", err)
+	if err == nil {
+		t.Fatal("expected error when NEXUS_RUNTIME_BACKEND=host")
+	}
+	if !strings.Contains(err.Error(), "unsupported runtime backend") {
+		t.Fatalf("expected unsupported backend error, got: %v", err)
 	}
 }
 
@@ -1608,18 +1605,21 @@ func TestRunFirecrackerDoctorFailsFastWhenGuestDockerUnavailable(t *testing.T) {
 }
 
 func TestSelectRuntimeBackend(t *testing.T) {
-	if got := selectRuntimeBackend([]string{"local"}); got != "dind" {
-		t.Fatalf("expected local->dind, got %q", got)
+	if got := selectRuntimeBackend([]string{"local"}); got != "" {
+		t.Fatalf("expected local->empty (unsupported), got %q", got)
 	}
 	if got := selectRuntimeBackend([]string{"vm"}); got != "firecracker" {
 		t.Fatalf("expected vm->firecracker, got %q", got)
 	}
-	if got := selectRuntimeBackend([]string{"lxc"}); got != "lxc" {
-		t.Fatalf("expected lxc->lxc, got %q", got)
+	if got := selectRuntimeBackend([]string{"firecracker"}); got != "firecracker" {
+		t.Fatalf("expected firecracker->firecracker, got %q", got)
+	}
+	if got := selectRuntimeBackend([]string{"lxc"}); got != "" {
+		t.Fatalf("expected lxc->empty (unsupported), got %q", got)
 	}
 }
 
-func TestApplyRuntimeBackendFromWorkspaceDoesNotOverrideEnv(t *testing.T) {
+func TestApplyRuntimeBackendFromWorkspaceRejectsDind(t *testing.T) {
 	t.Setenv("NEXUS_RUNTIME_BACKEND", "dind")
 
 	root := t.TempDir()
@@ -1631,12 +1631,12 @@ func TestApplyRuntimeBackendFromWorkspaceDoesNotOverrideEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := applyRuntimeBackendFromWorkspace(root); err != nil {
-		t.Fatalf("expected no error, got %v", err)
+	applyErr := applyRuntimeBackendFromWorkspace(root)
+	if applyErr == nil {
+		t.Fatal("expected error when NEXUS_RUNTIME_BACKEND=dind")
 	}
-
-	if got := os.Getenv("NEXUS_RUNTIME_BACKEND"); got != "dind" {
-		t.Fatalf("expected env backend to remain dind, got %q", got)
+	if !strings.Contains(applyErr.Error(), "unsupported runtime backend") {
+		t.Fatalf("expected unsupported backend error, got: %v", applyErr)
 	}
 }
 
