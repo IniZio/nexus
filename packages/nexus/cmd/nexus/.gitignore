@@ -1,0 +1,4 @@
+# Pre-built tap-helper binaries embedded into nexus at build time.
+# Regenerate with: go generate ./cmd/nexus
+tap-helper-linux-amd64
+tap-helper-linux-arm64

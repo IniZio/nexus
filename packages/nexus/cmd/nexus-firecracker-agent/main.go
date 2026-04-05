@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -17,6 +18,26 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
 	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
+)
+
+const (
+	defaultAgentPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
+
+var (
+	setupWorkspaceMountFunc         = setupWorkspaceMount
+	setupWorkspaceMountRequiredFunc = setupWorkspaceMountRequired
+	workspaceMountPoint             = "/workspace"
+	workspaceDevicePath             = "/dev/vdb"
+	workspaceDeviceAttempts         = 300
+	workspaceDeviceInterval         = 100 * time.Millisecond
+	workspaceMkdirAll               = os.MkdirAll
+	workspaceStat                   = os.Stat
+	workspaceMountFunc              = unix.Mount
+	workspaceUnmountFunc            = unix.Unmount
+	workspaceReadProcMounts         = os.ReadFile
+	kernelMkdirAll                  = os.MkdirAll
+	kernelMountFunc                 = unix.Mount
 )
 
 // Request types
@@ -36,7 +57,7 @@ type execResponse struct {
 }
 
 func handleExec(req execRequest) execResponse {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), agentExecTimeout())
 	defer cancel()
 
 	env := append([]string{}, os.Environ()...)
@@ -52,6 +73,11 @@ func handleExec(req execRequest) execResponse {
 
 	cmd := exec.CommandContext(ctx, commandPath, req.Args...)
 	if req.WorkDir != "" {
+		if req.WorkDir == workspaceMountPoint || strings.HasPrefix(req.WorkDir, workspaceMountPoint+"/") {
+			if err := setupWorkspaceMountRequiredFunc(); err != nil {
+				return execResponse{ID: req.ID, ExitCode: 1, Stderr: fmt.Sprintf("workspace mount ensure failed: %v", err)}
+			}
+		}
 		cmd.Dir = req.WorkDir
 	}
 	cmd.Env = env
@@ -81,6 +107,20 @@ func handleExec(req execRequest) execResponse {
 		Stdout:   stdoutBuf.String(),
 		Stderr:   stderrBuf.String(),
 	}
+}
+
+func agentExecTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("AGENT_EXEC_TIMEOUT_SEC"))
+	if raw == "" {
+		return 10 * time.Minute
+	}
+
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds <= 0 {
+		return 10 * time.Minute
+	}
+
+	return time.Duration(seconds) * time.Second
 }
 
 func ensurePathInEnv(env []string) []string {
@@ -166,10 +206,7 @@ func serveConn(conn net.Conn) {
 func main() {
 	emitDiagnostic("agent boot pid=%d", os.Getpid())
 
-	if os.Getpid() == 1 {
-		mountKernelFilesystems()
-		emitDiagnostic("agent pid1 kernel filesystems mounted")
-	}
+	bootstrapGuestEnvironment(os.Getpid())
 
 	listener, transport, err := resolveListener()
 	if err != nil {
@@ -193,13 +230,287 @@ func main() {
 	}
 }
 
+// mountKernelFilesystemsFunc is overridable in tests.
+var mountKernelFilesystemsFunc = mountKernelFilesystems
+
+// setupDNSFunc is overridable in tests.
+var setupDNSFunc = setupDNS
+
+func bootstrapGuestEnvironment(pid int) {
+	ensureAgentProcessPath()
+
+	if pid == 1 {
+		mountKernelFilesystemsFunc()
+		emitDiagnostic("agent pid1 kernel filesystems mounted")
+	}
+
+	if err := setupWorkspaceMountFunc(); err != nil {
+		emitDiagnostic("agent workspace mount failed (non-fatal): %v", err)
+	} else {
+		emitDiagnostic("agent workspace mounted")
+	}
+
+	if err := setupNetwork(); err != nil {
+		emitDiagnostic("agent network setup failed (non-fatal): %v", err)
+	} else {
+		emitDiagnostic("agent network configured")
+	}
+
+	setupDNSFunc()
+	emitDiagnostic("agent dns configured")
+}
+
+func ensureAgentProcessPath() {
+	if strings.TrimSpace(os.Getenv("PATH")) == "" {
+		_ = os.Setenv("PATH", defaultAgentPath)
+	}
+}
+
+func setupWorkspaceMount() error {
+	return setupWorkspaceMountWithRequirement(false)
+}
+
+func setupWorkspaceMountRequired() error {
+	return setupWorkspaceMountWithRequirement(true)
+}
+
+func setupWorkspaceMountWithRequirement(required bool) error {
+	if err := workspaceMkdirAll(workspaceMountPoint, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", workspaceMountPoint, err)
+	}
+
+	available, err := waitForWorkspaceDevice()
+	if err != nil {
+		return err
+	}
+	if !available {
+		if required {
+			return fmt.Errorf("workspace device %s not available", workspaceDevicePath)
+		}
+		return nil
+	}
+
+	if err := workspaceMountFunc(workspaceDevicePath, workspaceMountPoint, "ext4", 0, ""); err != nil {
+		if errors.Is(err, unix.EBUSY) {
+			mounted, mErr := workspaceMountIsActive(workspaceDevicePath)
+			if mErr != nil {
+				return fmt.Errorf("verify workspace mount after EBUSY: %w", mErr)
+			}
+			if mounted {
+				return nil
+			}
+			if err := workspaceUnmountNonWorkspaceMounts(); err != nil {
+				return fmt.Errorf("clear conflicting workspace mounts after EBUSY: %w", err)
+			}
+			if retryErr := workspaceMountFunc(workspaceDevicePath, workspaceMountPoint, "ext4", 0, ""); retryErr == nil {
+				return nil
+			} else if !errors.Is(retryErr, unix.EBUSY) {
+				return fmt.Errorf("retry mount %s at %s after clearing conflicts: %w", workspaceDevicePath, workspaceMountPoint, retryErr)
+			}
+			mounted, mErr = workspaceMountIsActive(workspaceDevicePath)
+			if mErr != nil {
+				return fmt.Errorf("verify workspace mount after retry EBUSY: %w", mErr)
+			}
+			if mounted {
+				return nil
+			}
+			return fmt.Errorf("mount %s at %s returned EBUSY but workspace mount is not active", workspaceDevicePath, workspaceMountPoint)
+		}
+		return fmt.Errorf("mount %s at %s: %w", workspaceDevicePath, workspaceMountPoint, err)
+	}
+
+	return nil
+}
+
+func workspaceMountIsActive(devicePath string) (bool, error) {
+	raw, err := workspaceReadProcMounts("/proc/mounts")
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if fields[1] == workspaceMountPoint {
+			return fields[0] == devicePath, nil
+		}
+	}
+	return false, nil
+}
+
+func workspaceUnmountNonWorkspaceMounts() error {
+	raw, err := workspaceReadProcMounts("/proc/mounts")
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(raw), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		mountPoint := fields[1]
+		if mountPoint == workspaceMountPoint || !strings.HasPrefix(mountPoint, workspaceMountPoint+"/") {
+			continue
+		}
+		if err := workspaceUnmountFunc(mountPoint, 0); err != nil && !errors.Is(err, unix.EINVAL) && !errors.Is(err, unix.ENOENT) {
+			return err
+		}
+	}
+	return nil
+}
+
+func waitForWorkspaceDevice() (bool, error) {
+	attempts := workspaceDeviceAttempts
+	if attempts <= 0 {
+		attempts = 1
+	}
+
+	interval := workspaceDeviceInterval
+	if interval <= 0 {
+		interval = 100 * time.Millisecond
+	}
+
+	for attempt := 0; attempt < attempts; attempt++ {
+		if _, err := workspaceStat(workspaceDevicePath); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("stat %s: %w", workspaceDevicePath, err)
+		}
+
+		if attempt < attempts-1 {
+			time.Sleep(interval)
+		}
+	}
+
+	return false, nil
+}
+
 func mountKernelFilesystems() {
-	_ = os.MkdirAll("/proc", 0o755)
-	_ = os.MkdirAll("/sys", 0o755)
-	_ = os.MkdirAll("/dev", 0o755)
-	_ = unix.Mount("proc", "/proc", "proc", 0, "")
-	_ = unix.Mount("sysfs", "/sys", "sysfs", 0, "")
-	_ = unix.Mount("devtmpfs", "/dev", "devtmpfs", 0, "")
+	_ = kernelMkdirAll("/proc", 0o755)
+	_ = kernelMkdirAll("/sys", 0o755)
+	_ = kernelMkdirAll("/dev", 0o755)
+	_ = kernelMountFunc("proc", "/proc", "proc", 0, "")
+	_ = kernelMountFunc("sysfs", "/sys", "sysfs", 0, "")
+	_ = kernelMountFunc("devtmpfs", "/dev", "devtmpfs", 0, "")
+	mountCgroupFilesystems()
+}
+
+func mountCgroupFilesystems() {
+	_ = kernelMkdirAll("/sys/fs/cgroup", 0o755)
+	if err := kernelMountFunc("none", "/sys/fs/cgroup", "cgroup2", 0, ""); err == nil || errors.Is(err, unix.EBUSY) {
+		return
+	}
+
+	if err := kernelMountFunc("tmpfs", "/sys/fs/cgroup", "tmpfs", 0, "mode=755"); err != nil && !errors.Is(err, unix.EBUSY) {
+		return
+	}
+
+	controllers := []string{"cpuset", "cpu", "cpuacct", "blkio", "memory", "devices", "freezer", "net_cls", "perf_event", "net_prio", "hugetlb", "pids"}
+	for _, controller := range controllers {
+		path := "/sys/fs/cgroup/" + controller
+		_ = kernelMkdirAll(path, 0o755)
+		err := kernelMountFunc("cgroup", path, "cgroup", 0, controller)
+		if err != nil && !errors.Is(err, unix.EBUSY) {
+			continue
+		}
+	}
+}
+
+// setupNetworkFunc is the function used to configure the guest network interface.
+// Overridable in tests.
+var setupNetworkFunc = realSetupNetwork
+
+// setupNetwork brings up eth0 via DHCP using udhcpc.
+// It is called at PID1 boot before setupDNS so that DNS resolution works.
+func setupNetwork() error {
+	return setupNetworkFunc()
+}
+
+func realSetupNetwork() error {
+	if out, err := exec.Command("ip", "link", "set", "lo", "up").CombinedOutput(); err != nil {
+		return fmt.Errorf("ip link set lo up: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	// Bring the interface up first so udhcpc can configure it.
+	if out, err := exec.Command("ip", "link", "set", "eth0", "up").CombinedOutput(); err != nil {
+		return fmt.Errorf("ip link set eth0 up: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	if _, err := exec.LookPath("udhcpc"); err == nil {
+		// Run udhcpc in one-shot mode: -n (exit on failure), -q (quit after obtaining
+		// lease), -t 10 (retry 10 times), -T 3 (3s between retries) -> max ~30s wait.
+		out, err := exec.Command(
+			"udhcpc", "-i", "eth0", "-n", "-q", "-t", "10", "-T", "3",
+		).CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		emitDiagnostic("udhcpc failed, falling back to static guest IP: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	if err := configureStaticGuestNetwork(); err != nil {
+		return fmt.Errorf("static network fallback failed: %w", err)
+	}
+	return nil
+}
+
+func configureStaticGuestNetwork() error {
+	macBytes, err := os.ReadFile("/sys/class/net/eth0/address")
+	if err != nil {
+		return fmt.Errorf("read eth0 mac address: %w", err)
+	}
+
+	ip, err := staticGuestIPForMAC(strings.TrimSpace(string(macBytes)))
+	if err != nil {
+		return err
+	}
+
+	if out, err := exec.Command("ip", "addr", "replace", ip+"/16", "dev", "eth0").CombinedOutput(); err != nil {
+		return fmt.Errorf("ip addr replace %s/16 dev eth0: %w: %s", ip, err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.Command("ip", "route", "replace", "default", "via", "172.26.0.1", "dev", "eth0").CombinedOutput(); err != nil {
+		return fmt.Errorf("ip route replace default via 172.26.0.1 dev eth0: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	return nil
+}
+
+func staticGuestIPForMAC(mac string) (string, error) {
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(mac)), ":")
+	if len(parts) != 6 {
+		return "", fmt.Errorf("invalid mac address format: %q", mac)
+	}
+
+	b4, err := strconv.ParseUint(parts[4], 16, 8)
+	if err != nil {
+		return "", fmt.Errorf("parse mac byte 5: %w", err)
+	}
+	b5, err := strconv.ParseUint(parts[5], 16, 8)
+	if err != nil {
+		return "", fmt.Errorf("parse mac byte 6: %w", err)
+	}
+
+	return fmt.Sprintf("172.26.%d.%d", b4, b5), nil
+}
+
+// setupDNSPath is the path to /etc/resolv.conf. Overridable in tests.
+var setupDNSPath = "/etc/resolv.conf"
+
+// setupDNS writes /etc/resolv.conf with public DNS servers if it is empty or
+// missing. This is needed because the kernel ip= cmdline arg configures the
+// network interface but does not create /etc/resolv.conf.
+func setupDNS() {
+	const content = "nameserver 8.8.8.8\nnameserver 1.1.1.1\n"
+
+	// Only write if missing or empty; respect pre-existing config from the rootfs.
+	if data, err := os.ReadFile(setupDNSPath); err == nil && len(strings.TrimSpace(string(data))) > 0 {
+		return
+	}
+
+	_ = os.MkdirAll("/etc", 0o755)
+	_ = os.WriteFile(setupDNSPath, []byte(content), 0o644)
 }
 
 func resolveListener() (net.Listener, string, error) {
