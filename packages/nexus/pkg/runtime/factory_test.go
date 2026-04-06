@@ -25,36 +25,36 @@ func (m *mockDriver) Destroy(ctx context.Context, workspaceID string) error { re
 
 func TestSelectDriver_PreferFirst(t *testing.T) {
 	f := NewFactory(
-		[]Capability{{Name: "runtime.firecracker", Available: true}},
-		map[string]Driver{"firecracker": &mockDriver{backend: "firecracker"}},
+		[]Capability{{Name: "runtime.linux", Available: true}},
+		map[string]Driver{"linux": &mockDriver{backend: "linux"}},
 	)
-	driver, err := f.SelectDriver([]string{"firecracker"}, "prefer-first", nil)
+	driver, err := f.SelectDriver([]string{"linux"}, "prefer-first", nil)
 	if err != nil {
-		t.Fatalf("expected firecracker selection, got %v", err)
+		t.Fatalf("expected linux selection, got %v", err)
 	}
-	if driver.Backend() != "firecracker" {
-		t.Fatalf("expected backend firecracker, got %s", driver.Backend())
+	if driver.Backend() != "linux" {
+		t.Fatalf("expected backend linux, got %s", driver.Backend())
 	}
 }
 
 func TestSelectDriver_PreferFirst_FallsToSecond(t *testing.T) {
 	f := NewFactory(
-		[]Capability{{Name: "runtime.firecracker", Available: true}},
-		map[string]Driver{"firecracker": &mockDriver{backend: "firecracker"}},
+		[]Capability{{Name: "runtime.linux", Available: true}},
+		map[string]Driver{"linux": &mockDriver{backend: "linux"}},
 	)
-	driver, err := f.SelectDriver([]string{"dind", "firecracker"}, "prefer-first", nil)
+	driver, err := f.SelectDriver([]string{"dind", "linux"}, "prefer-first", nil)
 	if err != nil {
-		t.Fatalf("expected firecracker selection (dind not registered), got %v", err)
+		t.Fatalf("expected linux selection (dind not registered), got %v", err)
 	}
-	if driver.Backend() != "firecracker" {
-		t.Fatalf("expected backend firecracker, got %s", driver.Backend())
+	if driver.Backend() != "linux" {
+		t.Fatalf("expected backend linux, got %s", driver.Backend())
 	}
 }
 
 func TestSelectDriver_NoRequiredBackendAvailable(t *testing.T) {
 	f := NewFactory(
-		[]Capability{{Name: "runtime.firecracker", Available: true}},
-		map[string]Driver{"firecracker": &mockDriver{backend: "firecracker"}},
+		[]Capability{{Name: "runtime.linux", Available: true}},
+		map[string]Driver{"linux": &mockDriver{backend: "linux"}},
 	)
 	_, err := f.SelectDriver([]string{"dind"}, "prefer-first", nil)
 	if err == nil {
@@ -64,32 +64,32 @@ func TestSelectDriver_NoRequiredBackendAvailable(t *testing.T) {
 
 func TestSelectDriver_RequiredCapabilityMissing(t *testing.T) {
 	f := NewFactory(
-		[]Capability{{Name: "runtime.firecracker", Available: false}},
-		map[string]Driver{"firecracker": &mockDriver{backend: "firecracker"}},
+		[]Capability{{Name: "runtime.linux", Available: false}},
+		map[string]Driver{"linux": &mockDriver{backend: "linux"}},
 	)
-	_, err := f.SelectDriver([]string{"firecracker"}, "prefer-first", []string{"runtime.firecracker"})
+	_, err := f.SelectDriver([]string{"linux"}, "prefer-first", []string{"runtime.linux"})
 	if err == nil {
 		t.Fatal("expected error when required capability missing")
 	}
-	if err.Error() != `required capability "runtime.firecracker" is not available` {
+	if err.Error() != `required capability "runtime.linux" is not available` {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestSelectDriver_SelectsLocalWhenFirecrackerUnavailable(t *testing.T) {
+func TestSelectDriver_SelectsLocalWhenLinuxUnavailable(t *testing.T) {
 	f := NewFactory(
 		[]Capability{
-			{Name: "runtime.firecracker", Available: false},
+			{Name: "runtime.linux", Available: false},
 			{Name: "runtime.local", Available: true},
 		},
 		map[string]Driver{
-			"firecracker": &mockDriver{backend: "firecracker"},
-			"local":       &mockDriver{backend: "local"},
+			"linux": &mockDriver{backend: "linux"},
+			"local": &mockDriver{backend: "local"},
 		},
 	)
-	driver, err := f.SelectDriver([]string{"firecracker", "local"}, "prefer-first", nil)
+	driver, err := f.SelectDriver([]string{"linux", "local"}, "prefer-first", nil)
 	if err != nil {
-		t.Fatalf("expected local selection when firecracker unavailable, got %v", err)
+		t.Fatalf("expected local selection when linux unavailable, got %v", err)
 	}
 	if driver.Backend() != "local" {
 		t.Fatalf("expected backend local, got %s", driver.Backend())
@@ -123,16 +123,33 @@ func TestSelectDriver_LocalCapabilityUnavailable(t *testing.T) {
 
 func TestSelectDriver_RejectsLegacyBackends(t *testing.T) {
 	f := NewFactory(
-		[]Capability{{Name: "runtime.firecracker", Available: true}},
-		map[string]Driver{"firecracker": &mockDriver{backend: "firecracker"}},
+		[]Capability{{Name: "runtime.linux", Available: true}},
+		map[string]Driver{"linux": &mockDriver{backend: "linux"}},
 	)
 	_, err := f.SelectDriver([]string{"dind"}, "prefer-first", nil)
 	if err == nil {
 		t.Fatal("expected error for legacy dind backend")
 	}
 
-	_, err = f.SelectDriver([]string{"lxc"}, "prefer-first", nil)
+	_, err = f.SelectDriver([]string{"kubernetes"}, "prefer-first", nil)
 	if err == nil {
-		t.Fatal("expected error for legacy lxc backend")
+		t.Fatal("expected error for unsupported kubernetes backend")
+	}
+}
+
+func TestSelectDriver_AcceptsLegacyAliasesForLinux(t *testing.T) {
+	f := NewFactory(
+		[]Capability{{Name: "runtime.linux", Available: true}},
+		map[string]Driver{"linux": &mockDriver{backend: "linux"}},
+	)
+
+	for _, alias := range []string{"firecracker", "vm", "lxc", "sandbox"} {
+		driver, err := f.SelectDriver([]string{alias}, "prefer-first", nil)
+		if err != nil {
+			t.Fatalf("expected alias %q to resolve to linux, got error: %v", alias, err)
+		}
+		if driver.Backend() != "linux" {
+			t.Fatalf("expected alias %q to resolve backend linux, got %s", alias, driver.Backend())
+		}
 	}
 }

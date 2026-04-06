@@ -13,10 +13,10 @@ import (
 // It is stored at $XDG_CONFIG_HOME/nexus/node.json (default ~/.config/nexus/node.json) and is separate from workspace
 // config which only declares what a workspace requires.
 type NodeConfig struct {
-	Schema       string             `json:"$schema,omitempty"`
-	Version      int                `json:"version"`
-	Node         NodeIdentity       `json:"node,omitempty"`
-	Capabilities NodeCapabilities   `json:"capabilities,omitempty"`
+	Schema       string           `json:"$schema,omitempty"`
+	Version      int              `json:"version"`
+	Node         NodeIdentity     `json:"node,omitempty"`
+	Capabilities NodeCapabilities `json:"capabilities,omitempty"`
 }
 
 // NodeIdentity holds human-readable metadata about the node.
@@ -32,7 +32,7 @@ type NodeIdentity struct {
 type NodeCapabilities struct {
 	// Provide is the explicit list of capabilities this node advertises as available.
 	// Values should match the capability names used in workspace requirements
-	// (e.g. "runtime.firecracker", "toolchain.xcodebuild", "auth.profile.git").
+	// (e.g. "runtime.linux", "toolchain.xcodebuild", "auth.profile.git").
 	Provide []string `json:"provide,omitempty"`
 }
 

@@ -63,7 +63,7 @@ func TestRuntimeRequired_AllowsBothFirecrackerAndLocal(t *testing.T) {
 }
 
 func TestRuntimeRequired_RejectsUnknownBackends(t *testing.T) {
-	for _, backend := range []string{"dind", "lxc", "vm", "docker", "kubernetes"} {
+	for _, backend := range []string{"dind", "docker", "kubernetes"} {
 		cfg := WorkspaceConfig{
 			Version: 1,
 			Runtime: RuntimeConfig{
@@ -74,6 +74,22 @@ func TestRuntimeRequired_RejectsUnknownBackends(t *testing.T) {
 
 		if err := cfg.ValidateBasic(); err == nil {
 			t.Fatalf("expected %s to be rejected", backend)
+		}
+	}
+}
+
+func TestRuntimeRequired_AcceptsLegacyAliasesForCompatibility_RuntimeSuite(t *testing.T) {
+	for _, backend := range []string{"firecracker", "vm", "lxc"} {
+		cfg := WorkspaceConfig{
+			Version: 1,
+			Runtime: RuntimeConfig{
+				Required:  []string{backend},
+				Selection: "prefer-first",
+			},
+		}
+
+		if err := cfg.ValidateBasic(); err != nil {
+			t.Fatalf("expected %s to be accepted for compatibility, got %v", backend, err)
 		}
 	}
 }

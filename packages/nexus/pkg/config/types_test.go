@@ -96,8 +96,21 @@ func TestRuntimeRequired_AllowsOnlyFirecracker(t *testing.T) {
 	}
 }
 
-func TestRuntimeRequired_RejectsLegacyAndGenericBackends(t *testing.T) {
-	for _, backend := range []string{"dind", "lxc", "vm"} {
+func TestRuntimeRequired_AcceptsLegacyAliasesForCompatibility(t *testing.T) {
+	for _, backend := range []string{"firecracker", "vm", "lxc"} {
+		cfg := WorkspaceConfig{
+			Version: 1,
+			Runtime: RuntimeConfig{Required: []string{backend}, Selection: "prefer-first"},
+		}
+
+		if err := cfg.ValidateBasic(); err != nil {
+			t.Fatalf("expected %s to be accepted for compatibility, got %v", backend, err)
+		}
+	}
+}
+
+func TestRuntimeRequired_RejectsUnsupportedBackends(t *testing.T) {
+	for _, backend := range []string{"dind", "docker", "kubernetes"} {
 		cfg := WorkspaceConfig{
 			Version: 1,
 			Runtime: RuntimeConfig{Required: []string{backend}, Selection: "prefer-first"},

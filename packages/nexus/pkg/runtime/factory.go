@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"strings"
 )
 
 type Capability struct {
@@ -12,6 +13,16 @@ type Capability struct {
 type Factory struct {
 	capabilities []Capability
 	drivers      map[string]Driver
+}
+
+const linuxBackendName = "linux"
+
+var backendCapability = map[string]string{
+	linuxBackendName: "runtime.linux",
+	"sandbox":        "runtime.linux",
+	"firecracker":    "runtime.linux",
+	"vm":             "runtime.linux",
+	"lxc":            "runtime.linux",
 }
 
 func NewFactory(capabilities []Capability, drivers map[string]Driver) *Factory {
@@ -61,16 +72,66 @@ func (f *Factory) selectBackend(required []string, selection string) (string, er
 	}
 
 	for _, backend := range required {
-		if _, ok := f.drivers[backend]; !ok {
+		normalized := normalizeRuntimeToken(backend)
+		resolvedBackend := resolveBackendAlias(normalized)
+		driverKey := resolvedBackend
+		if _, ok := f.drivers[driverKey]; !ok {
+			// Backward compatibility: allow legacy driver map keys (firecracker/lxc/vm)
+			// when canonical linux backend is requested.
+			if resolvedBackend == linuxBackendName {
+				if _, ok := f.drivers[normalized]; ok {
+					driverKey = normalized
+				} else if _, ok := f.drivers["firecracker"]; ok {
+					driverKey = "firecracker"
+				} else {
+					continue
+				}
+			} else {
+				continue
+			}
+		}
+
+		capName := backendCapabilityName(normalized)
+		if !f.isCapabilityAvailable(capName) {
+			if resolvedBackend == linuxBackendName {
+				legacyCapName := "runtime." + normalized
+				if normalized != "" && f.isCapabilityAvailable(legacyCapName) {
+					return driverKey, nil
+				}
+				if f.isCapabilityAvailable("runtime.firecracker") {
+					return driverKey, nil
+				}
+			}
 			continue
 		}
-		if !f.isCapabilityAvailable("runtime." + backend) {
-			continue
-		}
-		return backend, nil
+		return driverKey, nil
 	}
 
 	return "", fmt.Errorf("no required backend available from: %v", required)
+}
+
+func resolveBackendAlias(backend string) string {
+	switch normalized := normalizeRuntimeToken(backend); normalized {
+	case "firecracker", "vm", "lxc", "sandbox":
+		return linuxBackendName
+	default:
+		return normalized
+	}
+}
+
+func backendCapabilityName(backend string) string {
+	normalized := normalizeRuntimeToken(backend)
+	if name, ok := backendCapability[normalized]; ok {
+		return name
+	}
+	return "runtime." + normalized
+}
+
+func normalizeRuntimeToken(backend string) string {
+	if backend == "" {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(backend))
 }
 
 func (f *Factory) isCapabilityAvailable(name string) bool {
