@@ -103,3 +103,6 @@ nexus/nexus/
 .nexus/boulder/*.sh
 packages/enforcer/src/boulder/*.sh
 nexus-firecracker-agent
+
+# CocoIndex Code (ccc)
+/.cocoindex_code/
