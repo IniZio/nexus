@@ -1,0 +1,18 @@
+{
+  "name": "@inizio/opencode-nexus",
+  "version": "0.1.0",
+  "description": "Thin OpenCode handoff plugin delegating workspace setup to Nexus",
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./plugin": "./.opencode/plugins/opencode-nexus.js"
+  },
+  "files": [
+    "index.js",
+    "src",
+    "test",
+    ".opencode"
+  ]
+}
