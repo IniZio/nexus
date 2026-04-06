@@ -16,9 +16,9 @@ jobs:
       issues: write
       pull-requests: write
     outputs:
-      released: ${{ steps.release.outputs.released }}
-      tag: ${{ steps.release.outputs.tag }}
-      version: ${{ steps.release.outputs.version }}
+      released: ${{ steps.semantic.outputs.new_release_published }}
+      version: ${{ steps.semantic.outputs.new_release_version }}
+      tag: ${{ steps.semantic.outputs.new_release_git_tag }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -38,22 +38,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run semantic-release
-        id: release
+        id: semantic
+        uses: cycjimmy/semantic-release-action@v4
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          output=$(pnpm exec semantic-release --json)
-          echo "$output"
-          if echo "$output" | jq -e '.nextRelease.version' >/dev/null; then
-            version=$(echo "$output" | jq -r '.nextRelease.version')
-            echo "released=true" >> "$GITHUB_OUTPUT"
-            echo "version=$version" >> "$GITHUB_OUTPUT"
-            echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          else
-            echo "released=false" >> "$GITHUB_OUTPUT"
-          fi
 
   test:
     name: Run CI Tests
