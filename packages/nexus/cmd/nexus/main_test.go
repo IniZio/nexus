@@ -492,9 +492,9 @@ func TestBuildSetupScriptSeedsMakeBinaryIntoRootfs(t *testing.T) {
 	requireLinux(t)
 
 	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
-	needle := "docker-init docker-proxy iptables ip6tables; do"
+	needle := "docker-init docker-proxy iptables ip6tables make; do"
 	if count := strings.Count(script, needle); count != 2 {
-		t.Fatalf("expected setup script to seed runtime helpers in both binary copy loops, count=%d", count)
+		t.Fatalf("expected setup script to seed runtime helpers (including make) in both binary copy loops, count=%d", count)
 	}
 }
 
@@ -2202,8 +2202,8 @@ func TestBuildSetupScriptUpdatesExistingRootfsAgentPayload(t *testing.T) {
 	if !strings.Contains(script, "mkdir -p \"$ROOTFS_MOUNT/workspace\"") {
 		t.Fatalf("expected setup script to ensure /workspace exists in rootfs, got:\n%s", script)
 	}
-	if !strings.Contains(script, "for candidate in docker dockerd containerd containerd-shim-runc-v2 ctr runc docker-init docker-proxy iptables ip6tables; do") {
-		t.Fatalf("expected setup script to seed docker runtime binaries into rootfs, got:\n%s", script)
+	if !strings.Contains(script, "for candidate in docker dockerd containerd containerd-shim-runc-v2 ctr runc docker-init docker-proxy iptables ip6tables make; do") {
+		t.Fatalf("expected setup script to seed docker runtime binaries (including make) into rootfs, got:\n%s", script)
 	}
 	if !strings.Contains(script, "copy_bin_with_libs") {
 		t.Fatalf("expected setup script to include copy_bin_with_libs helper, got:\n%s", script)
