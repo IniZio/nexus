@@ -233,6 +233,26 @@ func (m *Manager) SetBackend(id string, backend string) error {
 	return nil
 }
 
+// SetLocalWorktree stores the host-side worktree path and mutagen session ID
+// on the workspace record. Both fields are optional; pass empty strings to clear them.
+func (m *Manager) SetLocalWorktree(id, worktreePath, mutagenSessionID string) error {
+	m.mu.Lock()
+	ws, ok := m.workspaces[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("workspace not found: %s", id)
+	}
+	ws.LocalWorktreePath = worktreePath
+	ws.MutagenSessionID = mutagenSessionID
+	ws.UpdatedAt = time.Now().UTC()
+	m.mu.Unlock()
+
+	if err := m.persistWorkspace(ws); err != nil {
+		return fmt.Errorf("persist local worktree: %w", err)
+	}
+	return nil
+}
+
 func (m *Manager) Start(id string) error {
 	m.mu.Lock()
 	ws, ok := m.workspaces[id]

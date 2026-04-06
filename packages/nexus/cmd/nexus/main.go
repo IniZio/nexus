@@ -68,6 +68,9 @@ func main() {
 	case "exec":
 		runExecCommand(args)
 		return
+	case "workspace", "ws":
+		runWorkspaceCommand(args)
+		return
 	case "doctor":
 		// handled below
 	default:
@@ -119,6 +122,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  nexus doctor --project-root <abs-path> --suite <name> [--compose-file docker-compose.yml] [--required-host-ports 5173,5174,8000] [--report-json path]")
 	fmt.Fprintln(os.Stderr, "  nexus init --project-root <abs-path> [--runtime firecracker|local] [--force]")
 	fmt.Fprintln(os.Stderr, "  nexus exec --project-root <abs-path> [--timeout 10m] -- <command> [args...]")
+	fmt.Fprintln(os.Stderr, "  nexus workspace <list|create|stop|remove|fork|portal>")
 }
 
 func runInitCommand(args []string) {
@@ -181,8 +185,8 @@ func runInit(opts initOptions) error {
 	if runtimeName == "" {
 		runtimeName = "firecracker"
 	}
-	if runtimeName != "firecracker" && runtimeName != "local" {
-		return fmt.Errorf("unsupported runtime %q (expected firecracker or local)", runtimeName)
+	if runtimeName != "firecracker" && runtimeName != "sandbox" {
+		return fmt.Errorf("unsupported runtime %q (expected firecracker or sandbox)", runtimeName)
 	}
 
 	nexusDir := filepath.Join(opts.projectRoot, ".nexus")
@@ -343,24 +347,6 @@ func runExecWithKVMGroupReexec(commandPath string, args []string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
-}
-
-// runSetupCommand dispatches the `nexus setup` subcommand.
-func runSetupCommand(args []string) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: nexus setup firecracker")
-		os.Exit(2)
-	}
-	sub := args[0]
-	if sub != "firecracker" {
-		fmt.Fprintf(os.Stderr, "unknown setup subcommand: %s\n", sub)
-		fmt.Fprintln(os.Stderr, "Usage: nexus setup firecracker")
-		os.Exit(2)
-	}
-	if err := runSetupFirecracker(os.Stdout); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
 }
 
 func run(opts options) error {
@@ -803,7 +789,7 @@ func validateFirecrackerTapHelper() error {
 	path, err := firecrackerHostBinaryLookup(tapHelper)
 	if err != nil {
 		return fmt.Errorf(
-			"%s not found in PATH\n\nRun the one-time host setup:\n  nexus setup firecracker",
+			"%s not found in PATH\n\nRun `nexus init --project-root <abs-path> --runtime firecracker --force` to provision host prerequisites",
 			tapHelper,
 		)
 	}
@@ -816,7 +802,7 @@ func validateFirecrackerTapHelper() error {
 	}
 	if !strings.Contains(string(out), "cap_net_admin") {
 		return fmt.Errorf(
-			"%s at %s lacks cap_net_admin\n\nRun the one-time host setup:\n  nexus setup firecracker",
+			"%s at %s lacks cap_net_admin\n\nRun `nexus init --project-root <abs-path> --runtime firecracker --force` to refresh host prerequisites",
 			tapHelper, path,
 		)
 	}
@@ -831,13 +817,13 @@ func validateFirecrackerBridge() error {
 	out, err := exec.Command("ip", "link", "show", bridge).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf(
-			"bridge %s not found\n\nRun the one-time host setup:\n  nexus setup firecracker",
+			"bridge %s not found\n\nRun `nexus init --project-root <abs-path> --runtime firecracker --force` to provision host prerequisites",
 			bridge,
 		)
 	}
 	if !strings.Contains(string(out), "UP") {
 		return fmt.Errorf(
-			"bridge %s exists but is not UP\n\nRun the one-time host setup:\n  nexus setup firecracker",
+			"bridge %s exists but is not UP\n\nRun `nexus init --project-root <abs-path> --runtime firecracker --force` to refresh host prerequisites",
 			bridge,
 		)
 	}
@@ -848,7 +834,7 @@ func validateFirecrackerBridge() error {
 	}
 	if !strings.Contains(string(addrOut), "172.26.0.1/") {
 		return fmt.Errorf(
-			"bridge %s is missing gateway IP %s\n\nRun the one-time host setup:\n  nexus setup firecracker",
+			"bridge %s is missing gateway IP %s\n\nRun `nexus init --project-root <abs-path> --runtime firecracker --force` to refresh host prerequisites",
 			bridge, gatewayCIDR,
 		)
 	}

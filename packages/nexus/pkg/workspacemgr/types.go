@@ -35,6 +35,12 @@ type Workspace struct {
 	ParentWorkspaceID string            `json:"parentWorkspaceId,omitempty"`
 	Backend           string            `json:"backend,omitempty"`
 	AuthBinding       map[string]string `json:"authBinding,omitempty"`
-	CreatedAt         time.Time         `json:"createdAt"`
-	UpdatedAt         time.Time         `json:"updatedAt"`
+	// LocalWorktreePath is the path of the git worktree on the host machine
+	// that is synced with this workspace inside the sandbox.
+	LocalWorktreePath string `json:"localWorktreePath,omitempty"`
+	// MutagenSessionID is the mutagen sync session name for this workspace.
+	// Empty if no sync session has been established.
+	MutagenSessionID  string    `json:"mutagenSessionId,omitempty"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
 }

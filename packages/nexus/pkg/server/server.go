@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -13,10 +14,12 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 	"github.com/inizio/nexus/packages/nexus/pkg/authrelay"
+	"github.com/inizio/nexus/packages/nexus/pkg/config"
 	"github.com/inizio/nexus/packages/nexus/pkg/handlers"
 	"github.com/inizio/nexus/packages/nexus/pkg/lifecycle"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
+	"github.com/inizio/nexus/packages/nexus/pkg/server/portal"
 	"github.com/inizio/nexus/packages/nexus/pkg/services"
 	"github.com/inizio/nexus/packages/nexus/pkg/spotlight"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
@@ -35,6 +38,7 @@ type Server struct {
 	spotlightMgr        *spotlight.Manager
 	lifecycle           *lifecycle.Manager
 	runtimeFactory      *runtime.Factory
+	nodeCfg             *config.NodeConfig
 	authRelayBroker     *authrelay.Broker
 	autoComposeForwards map[string]bool
 	mu                  sync.RWMutex
@@ -107,16 +111,82 @@ func (s *Server) Start() error {
 		}
 	}
 
-	http.HandleFunc("/", s.handleWebSocket)
-	http.HandleFunc("/healthz", s.handleHealthz)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.handleHealthz)
+	mux.HandleFunc("/portal/api", s.handlePortal)
+	mux.Handle("/portal/static/", http.FileServer(http.FS(portal.FS)))
+	mux.HandleFunc("/portal/", s.handlePortalUI)
+	mux.HandleFunc("/portal", s.handlePortalUI)
+	mux.HandleFunc("/", s.handleWebSocket)
 	addr := fmt.Sprintf(":%d", s.port)
-	return http.ListenAndServe(addr, nil)
+	return http.ListenAndServe(addr, mux)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"ok":true,"service":"workspace-daemon"}`))
+}
+
+// handlePortalUI serves the embedded single-page admin portal.
+// The token is injected into the HTML via Go template so the JS can
+// establish an authenticated WebSocket connection without exposing the
+// token in a static asset.
+func (s *Server) handlePortalUI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	tmpl, err := template.ParseFS(portal.FS, "static/index.html")
+	if err != nil {
+		http.Error(w, "portal unavailable", http.StatusInternalServerError)
+		log.Printf("[portal] failed to parse template: %v", err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := tmpl.Execute(w, map[string]string{"Token": s.tokenSecret}); err != nil {
+		log.Printf("[portal] failed to render template: %v", err)
+	}
+}
+
+// handlePortal serves a JSON summary of this node's identity, capabilities,
+// and registered workspaces. It is intended as a lightweight management endpoint
+// that can be polled by orchestrators or used as a health/discovery surface.
+func (s *Server) handlePortal(w http.ResponseWriter, _ *http.Request) {
+	type portalCapability struct {
+		Name      string `json:"name"`
+		Available bool   `json:"available"`
+	}
+
+	var caps []portalCapability
+	if s.runtimeFactory != nil {
+		for _, c := range s.runtimeFactory.Capabilities() {
+			caps = append(caps, portalCapability{Name: c.Name, Available: c.Available})
+		}
+	}
+
+	var nodeName string
+	var nodeTags []string
+	if s.nodeCfg != nil {
+		nodeName = s.nodeCfg.Node.Name
+		nodeTags = s.nodeCfg.Node.Tags
+	}
+
+	workspaces := s.workspaceMgr.List()
+
+	resp := map[string]interface{}{
+		"node": map[string]interface{}{
+			"name": nodeName,
+			"tags": nodeTags,
+		},
+		"capabilities": caps,
+		"workspaces":   workspaces,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("[portal] failed to encode response: %v", err)
+	}
 }
 
 func (s *Server) Shutdown() {
@@ -322,8 +392,12 @@ func (s *Server) processRPC(msg *RPCMessage) *RPCResponse {
 		result, err = handlers.HandleWorkspaceResume(ctx, msg.Params, s.workspaceMgr, s.runtimeFactory)
 	case "workspace.fork":
 		result, err = handlers.HandleWorkspaceFork(ctx, msg.Params, s.workspaceMgr, s.runtimeFactory)
+	case "workspace.setLocalWorktree":
+		result, err = handlers.HandleWorkspaceSetLocalWorktree(ctx, msg.Params, s.workspaceMgr)
 	case "capabilities.list":
 		result, err = handlers.HandleCapabilitiesList(ctx, msg.Params, s.runtimeFactory)
+	case "node.info":
+		result, err = handlers.HandleNodeInfo(ctx, msg.Params, s.nodeCfg, s.runtimeFactory)
 	case "workspace.ready":
 		workspaceID := extractWorkspaceID(msg.Params)
 		if workspaceID == "" {
@@ -456,6 +530,10 @@ func (s *Server) ensureComposeForwards(ctx context.Context, workspaceID, rootPat
 
 func (s *Server) SetRuntimeFactory(factory *runtime.Factory) {
 	s.runtimeFactory = factory
+}
+
+func (s *Server) SetNodeConfig(cfg *config.NodeConfig) {
+	s.nodeCfg = cfg
 }
 
 func (s *Server) handleWorkspaceInfo(params json.RawMessage) map[string]interface{} {

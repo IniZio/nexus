@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nexus Portal</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #232634;
+      --border: #2e3147;
+      --accent: #6c8ef5;
+      --accent-dim: #3d4f99;
+      --text: #e2e4f0;
+      --text-dim: #8b90a8;
+      --green: #4ade80;
+      --yellow: #fbbf24;
+      --red: #f87171;
+      --radius: 8px;
+      --font: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    }
+    body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; min-height: 100vh; }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 24px; border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    header h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.04em; color: var(--accent); }
+    #node-badge { font-size: 11px; color: var(--text-dim); }
+    main { padding: 24px; max-width: 1100px; margin: 0 auto; }
+    section { margin-bottom: 32px; }
+    h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); margin-bottom: 12px; }
+
+    /* Capabilities */
+    #caps-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .cap-badge {
+      padding: 3px 10px; border-radius: 100px; font-size: 11px;
+      border: 1px solid var(--border);
+    }
+    .cap-badge.available { border-color: var(--accent-dim); color: var(--accent); }
+    .cap-badge.unavailable { color: var(--text-dim); }
+
+    /* Workspace table */
+    .ws-table { width: 100%; border-collapse: collapse; }
+    .ws-table th {
+      text-align: left; padding: 8px 12px; font-size: 11px; text-transform: uppercase;
+      letter-spacing: 0.07em; color: var(--text-dim); border-bottom: 1px solid var(--border);
+    }
+    .ws-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    .ws-table tr:last-child td { border-bottom: none; }
+    .ws-table tr:hover td { background: var(--surface2); }
+    .state-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; }
+    .state-running { background: var(--green); }
+    .state-stopped { background: var(--text-dim); }
+    .state-paused  { background: var(--yellow); }
+    .state-error   { background: var(--red); }
+    .monospace { font-family: var(--font); font-size: 12px; color: var(--text-dim); }
+    .ws-name { font-weight: 600; color: var(--text); }
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    button {
+      padding: 4px 10px; border-radius: var(--radius); border: 1px solid var(--border);
+      background: var(--surface2); color: var(--text); font-size: 11px; cursor: pointer;
+      font-family: var(--font); transition: border-color 0.15s, color 0.15s;
+    }
+    button:hover { border-color: var(--accent); color: var(--accent); }
+    button.danger:hover { border-color: var(--red); color: var(--red); }
+    button.primary { border-color: var(--accent-dim); color: var(--accent); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    #empty-msg { color: var(--text-dim); padding: 16px 12px; font-size: 12px; }
+
+    /* Create form */
+    form#create-form {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+    }
+    form#create-form .full { grid-column: 1 / -1; }
+    label { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
+    input, select {
+      width: 100%; padding: 7px 10px; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: var(--radius); color: var(--text); font-family: var(--font); font-size: 12px;
+    }
+    input:focus, select:focus { outline: none; border-color: var(--accent); }
+    .form-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+    #create-btn { padding: 7px 18px; font-size: 12px; }
+    #status-msg { font-size: 11px; color: var(--text-dim); }
+    #status-msg.ok { color: var(--green); }
+    #status-msg.err { color: var(--red); }
+
+    /* Worktree path */
+    .wt-path { font-size: 11px; color: var(--text-dim); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    #refresh-btn { float: right; margin-top: -28px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>&#9670; Nexus Portal</h1>
+    <span id="node-badge">loading...</span>
+  </header>
+  <main>
+    <section id="caps-section">
+      <h2>Node Capabilities</h2>
+      <div id="caps-list"><span class="monospace">loading…</span></div>
+    </section>
+
+    <section id="workspaces-section">
+      <h2>Workspaces <button id="refresh-btn" onclick="loadPortal()">&#8635; refresh</button></h2>
+      <div id="ws-container"><span class="monospace">loading…</span></div>
+    </section>
+
+    <section id="create-section">
+      <h2>Create Workspace</h2>
+      <form id="create-form" onsubmit="return createWorkspace(event)">
+        <div>
+          <label for="f-repo">Repository URL</label>
+          <input id="f-repo" type="text" placeholder="git@github.com:org/repo.git" required />
+        </div>
+        <div>
+          <label for="f-ref">Branch / Ref</label>
+          <input id="f-ref" type="text" placeholder="main" />
+        </div>
+        <div>
+          <label for="f-name">Workspace Name</label>
+          <input id="f-name" type="text" placeholder="my-feature" required />
+        </div>
+        <div>
+          <label for="f-profile">Agent Profile</label>
+          <input id="f-profile" type="text" placeholder="default" value="default" required />
+        </div>
+        <div class="form-actions full">
+          <button type="submit" class="primary" id="create-btn">Create</button>
+          <span id="status-msg"></span>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <script>
+    const TOKEN = "{{.Token}}";
+    const BASE  = location.origin;
+    let ws = null;
+    let pendingRPCs = {};
+    let rpcID = 1;
+
+    // ── WebSocket RPC ─────────────────────────────────────────────────────────
+    function openWS() {
+      return new Promise((resolve, reject) => {
+        if (ws && ws.readyState === WebSocket.OPEN) { resolve(); return; }
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(`${proto}//${location.host}/?token=${TOKEN}`);
+        ws.onopen = () => resolve();
+        ws.onerror = (e) => reject(e);
+        ws.onclose = () => { ws = null; };
+        ws.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data);
+            const cb = pendingRPCs[msg.id];
+            if (cb) { delete pendingRPCs[msg.id]; cb(msg); }
+          } catch (_) {}
+        };
+      });
+    }
+
+    async function rpc(method, params) {
+      await openWS();
+      return new Promise((resolve, reject) => {
+        const id = String(rpcID++);
+        pendingRPCs[id] = (msg) => {
+          if (msg.error) reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+          else resolve(msg.result);
+        };
+        ws.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
+      });
+    }
+
+    // ── Portal data ───────────────────────────────────────────────────────────
+    async function loadPortal() {
+      try {
+        const r = await fetch(`${BASE}/portal/api`);
+        const data = await r.json();
+        renderNode(data.node);
+        renderCaps(data.capabilities || []);
+        renderWorkspaces(data.workspaces || []);
+      } catch (e) {
+        document.getElementById('ws-container').innerHTML =
+          `<span class="monospace" style="color:var(--red)">Failed to load: ${e.message}</span>`;
+      }
+    }
+
+    function renderNode(node) {
+      const el = document.getElementById('node-badge');
+      if (!node || !node.name) { el.textContent = 'unknown node'; return; }
+      const tags = (node.tags || []).map(t => `<span class="cap-badge">${t}</span>`).join(' ');
+      el.innerHTML = `<strong>${node.name}</strong>&nbsp;&nbsp;${tags}`;
+    }
+
+    function renderCaps(caps) {
+      const el = document.getElementById('caps-list');
+      if (!caps.length) { el.innerHTML = '<span class="monospace">none</span>'; return; }
+      el.innerHTML = caps.map(c =>
+        `<span class="cap-badge ${c.available ? 'available' : 'unavailable'}">${c.name}</span>`
+      ).join('');
+    }
+
+    function stateClass(state) {
+      if (!state) return 'state-stopped';
+      const s = state.toLowerCase();
+      if (s === 'running') return 'state-running';
+      if (s === 'paused')  return 'state-paused';
+      if (s === 'error' || s === 'failed') return 'state-error';
+      return 'state-stopped';
+    }
+
+    function renderWorkspaces(workspaces) {
+      const el = document.getElementById('ws-container');
+      if (!workspaces.length) {
+        el.innerHTML = '<div id="empty-msg">No workspaces yet. Create one below.</div>';
+        return;
+      }
+      const rows = workspaces.map(ws => {
+        const sc = stateClass(ws.state);
+        const state = ws.state || 'unknown';
+        const wt = ws.localWorktreePath
+          ? `<div class="wt-path" title="${ws.localWorktreePath}">${ws.localWorktreePath}</div>` : '';
+        return `<tr>
+          <td><span class="ws-name">${esc(ws.workspaceName || ws.id)}</span></td>
+          <td><span class="state-dot ${sc}"></span>${state}</td>
+          <td class="monospace">${esc(ws.backend || '—')}</td>
+          <td class="monospace">${esc(ws.id.slice(0,8))}</td>
+          <td>${wt}</td>
+          <td>
+            <div class="actions">
+              ${ws.state === 'paused'
+                ? `<button onclick="wsAction('workspace.resume','${ws.id}')">Resume</button>`
+                : `<button onclick="wsAction('workspace.pause','${ws.id}')">Pause</button>`}
+              <button onclick="wsAction('workspace.stop','${ws.id}')">Stop</button>
+              <button onclick="forkWS('${ws.id}','${esc(ws.workspaceName || '')}')">Fork</button>
+              <button class="danger" onclick="wsAction('workspace.remove','${ws.id}')">Remove</button>
+            </div>
+          </td>
+        </tr>`;
+      }).join('');
+      el.innerHTML = `<table class="ws-table">
+        <thead><tr>
+          <th>Name</th><th>State</th><th>Backend</th><th>ID</th><th>Worktree</th><th>Actions</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
+
+    function esc(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // ── Actions ───────────────────────────────────────────────────────────────
+    async function wsAction(method, id) {
+      try {
+        await rpc(method, { id });
+        setTimeout(loadPortal, 300);
+      } catch (e) {
+        alert(`${method} failed: ${e.message}`);
+      }
+    }
+
+    async function forkWS(id, parentName) {
+      const name = prompt('Child workspace name:', `${parentName}-fork`);
+      if (!name) return;
+      try {
+        await rpc('workspace.fork', { id, childWorkspaceName: name });
+        setTimeout(loadPortal, 300);
+      } catch (e) {
+        alert(`Fork failed: ${e.message}`);
+      }
+    }
+
+    async function createWorkspace(ev) {
+      ev.preventDefault();
+      const btn = document.getElementById('create-btn');
+      const msg = document.getElementById('status-msg');
+      btn.disabled = true;
+      msg.className = '';
+      msg.textContent = 'creating…';
+      try {
+        const spec = {
+          repo:          document.getElementById('f-repo').value.trim(),
+          ref:           document.getElementById('f-ref').value.trim(),
+          workspaceName: document.getElementById('f-name').value.trim(),
+          agentProfile:  document.getElementById('f-profile').value.trim() || 'default',
+        };
+        await rpc('workspace.create', { spec });
+        msg.className = 'ok';
+        msg.textContent = 'created ✓';
+        document.getElementById('create-form').reset();
+        document.getElementById('f-profile').value = 'default';
+        setTimeout(loadPortal, 400);
+      } catch (e) {
+        msg.className = 'err';
+        msg.textContent = e.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // ── Init ──────────────────────────────────────────────────────────────────
+    loadPortal();
+    setInterval(loadPortal, 10000);
+  </script>
+</body>
+</html>
