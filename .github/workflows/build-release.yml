@@ -105,11 +105,10 @@ jobs:
         run: |
           mkdir -p release
           version="${{ needs.version.outputs.version }}"
+          archive="nexus-${version}-${{ matrix.target }}.tar.gz"
           if [[ "${{ matrix.target }}" == windows* ]]; then
-            archive="nexus-${version}-${{ matrix.target }}.zip"
-            (cd dist && zip -q "../release/${archive}" "${{ matrix.artifact }}.exe")
+            tar -C dist -czf "release/${archive}" "${{ matrix.artifact }}.exe"
           else
-            archive="nexus-${version}-${{ matrix.target }}.tar.gz"
             tar -C dist -czf "release/${archive}" "${{ matrix.artifact }}"
           fi
 
