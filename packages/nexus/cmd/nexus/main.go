@@ -185,8 +185,8 @@ func runInit(opts initOptions) error {
 	if runtimeName == "" {
 		runtimeName = "firecracker"
 	}
-	if runtimeName != "firecracker" && runtimeName != "local" {
-		return fmt.Errorf("unsupported runtime %q (expected firecracker or local)", runtimeName)
+	if runtimeName != "firecracker" && runtimeName != "sandbox" {
+		return fmt.Errorf("unsupported runtime %q (expected firecracker or sandbox)", runtimeName)
 	}
 
 	nexusDir := filepath.Join(opts.projectRoot, ".nexus")
