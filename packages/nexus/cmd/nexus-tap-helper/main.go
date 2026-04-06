@@ -1,3 +1,5 @@
+//go:build linux
+
 // nexus-tap-helper is a small privileged helper binary that creates and deletes
 // TAP network interfaces on behalf of the Firecracker VM manager.
 //

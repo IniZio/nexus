@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	goRuntime "runtime"
 	"syscall"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
@@ -48,7 +47,7 @@ func runServer(port int, workspaceDir string, token string) error {
 	}
 
 	runner := &CommandRunner{}
-	
+
 	// Create firecracker manager with default config
 	fcManager := firecracker.NewManager(firecracker.ManagerConfig{
 		FirecrackerBin: "firecracker",
@@ -56,7 +55,7 @@ func runServer(port int, workspaceDir string, token string) error {
 		RootFSPath:     os.Getenv("NEXUS_FIRECRACKER_ROOTFS"),
 		WorkDirRoot:    filepath.Join(workspaceDir, "firecracker-vms"),
 	})
-	
+
 	// Create firecracker driver with manager using the new constructor pattern
 	firecrackerDriver := firecracker.NewDriver(runner, firecracker.WithManager(fcManager))
 	localDriver := local.NewDriver()
@@ -99,17 +98,6 @@ func runServer(port int, workspaceDir string, token string) error {
 
 // probeFirecrackerTooling checks if native firecracker binary is available
 func probeFirecrackerTooling(lookPath func(string) (string, error)) bool {
-	// On macOS, check for lima/firecracker setup (for backward compatibility during transition)
-	if goRuntime.GOOS == "darwin" {
-		if _, err := lookPath("limactl"); err != nil {
-			return false
-		}
-		// For macOS with lima, we'd need to check inside the VM
-		// For now, return false as native firecracker is Linux-only
-		return false
-	}
-
-	// On Linux, check for native firecracker binary
 	_, err := lookPath("firecracker")
 	return err == nil
 }

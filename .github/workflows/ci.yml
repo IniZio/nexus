@@ -7,6 +7,64 @@ on:
     branches: [main, develop]
 
 jobs:
+  go-fix:
+    name: Go Fix Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+
+      - name: Verify go tool fix produces no diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t go_files < <(git ls-files '*.go')
+          if [ ${#go_files[@]} -eq 0 ]; then
+            echo "No Go files found; skipping go fix check"
+            exit 0
+          fi
+
+          tmp_diff="$(mktemp)"
+          go tool fix -go=go1.24 -diff "${go_files[@]}" >"$tmp_diff"
+          if [ -s "$tmp_diff" ]; then
+            echo "go tool fix reported changes. Please run: go tool fix -go=go1.24 <files>"
+            cat "$tmp_diff"
+            exit 1
+          fi
+
+  coverage:
+    name: Go Coverage (nexus)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+
+      - name: Run full Go test coverage
+        working-directory: packages/nexus
+        run: |
+          set -euo pipefail
+          go test ./... -covermode=atomic -coverprofile=coverage.out
+          go tool cover -func=coverage.out | tail -n 1
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-go-coverage
+          path: packages/nexus/coverage.out
+          retention-days: 7
+
   ci:
     name: Core CI (linux)
     runs-on: ubuntu-latest

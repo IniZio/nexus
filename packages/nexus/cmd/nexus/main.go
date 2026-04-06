@@ -185,8 +185,8 @@ func runInit(opts initOptions) error {
 	if runtimeName == "" {
 		runtimeName = "firecracker"
 	}
-	if runtimeName != "firecracker" && runtimeName != "sandbox" {
-		return fmt.Errorf("unsupported runtime %q (expected firecracker or sandbox)", runtimeName)
+	if runtimeName != "firecracker" && runtimeName != "local" {
+		return fmt.Errorf("unsupported runtime %q (expected firecracker or local)", runtimeName)
 	}
 
 	nexusDir := filepath.Join(opts.projectRoot, ".nexus")
@@ -1417,11 +1417,12 @@ func runDoctorLifecycleStart(projectRoot string, execCtx doctorExecContext) erro
 
 func resolveDoctorLifecycleStartCommand(projectRoot string) (command string, args []string, contextLabel string, summary string, found bool, err error) {
 	if hasMakeTarget(projectRoot, "start") {
-		return "sh", []string{"-lc", "make start"}, "lifecycle-start-make", "make start", true, nil
+		makeStartCmd := "export UID=1000; export GID=1000; make start"
+		return "sh", []string{"-lc", makeStartCmd}, "lifecycle-start-make", "make start", true, nil
 	}
 
 	if hasComposeTarget(projectRoot) {
-		composeCmd := "if [ -f Makefile ] && command -v make >/dev/null 2>&1; then if grep -q '^secret:' Makefile; then make secret; fi; fi; export BUILDKIT_PROGRESS=plain; docker compose build --progress=plain; docker compose up -d --no-build"
+		composeCmd := "if [ -f Makefile ] && command -v make >/dev/null 2>&1; then if grep -q '^secret:' Makefile; then make secret; fi; fi; export BUILDKIT_PROGRESS=plain; export UID=1000; export GID=1000; docker compose build --progress=plain; docker compose up -d --no-build"
 		return "sh", []string{"-lc", composeCmd}, "lifecycle-start-compose", "docker compose build --progress=plain && docker compose up -d --no-build", true, nil
 	}
 
