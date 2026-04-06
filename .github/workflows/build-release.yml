@@ -5,12 +5,153 @@ on:
     branches: [main]
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Semantic release bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: 'Compute only, do not create tag/release'
+        required: false
+        default: false
+        type: boolean
   release:
     types: [created]
 
 jobs:
+  compute-next-version:
+    name: Compute Next Semantic Version
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.semver.outputs.tag }}
+      version: ${{ steps.semver.outputs.version }}
+      release_type: ${{ steps.semver.outputs.release_type }}
+      should_release: ${{ steps.semver.outputs.should_release }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve semantic bump
+        id: semver
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          last_tag=$(git tag -l 'v*' --sort=-v:refname | head -n 1)
+          if [[ -z "${last_tag}" ]]; then
+            last_tag="v0.0.0"
+          fi
+
+          range="${last_tag}..HEAD"
+          if [[ "${last_tag}" == "v0.0.0" ]]; then
+            range="HEAD"
+          fi
+
+          release_type=""
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            release_type="${{ github.event.inputs.release_type }}"
+          else
+            messages=$(git log --format=%s ${range})
+            if [[ -z "${messages}" ]]; then
+              release_type=""
+            elif echo "${messages}" | grep -Eq '^[^:!]+\(.*\)!:|^[^:!]+!:'; then
+              release_type="major"
+            elif echo "${messages}" | grep -Eq '^feat(\(|:)' ; then
+              release_type="minor"
+            elif echo "${messages}" | grep -Eq '^fix(\(|:)' ; then
+              release_type="patch"
+            else
+              release_type=""
+            fi
+          fi
+
+          if [[ -z "${release_type}" ]]; then
+            echo "No semantic release type detected; skipping release"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          base="${last_tag#v}"
+          IFS='.' read -r major minor patch <<< "${base}"
+          major=${major:-0}
+          minor=${minor:-0}
+          patch=${patch:-0}
+
+          case "${release_type}" in
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            patch)
+              patch=$((patch + 1))
+              ;;
+          esac
+
+          version="${major}.${minor}.${patch}"
+          tag="v${version}"
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "Tag ${tag} already exists; skipping release"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "release_type=${release_type}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        if: steps.semver.outputs.should_release == 'true'
+        run: |
+          echo "Next release: ${{ steps.semver.outputs.tag }} (${{ steps.semver.outputs.release_type }})"
+
+  tag-release:
+    name: Tag Semantic Release
+    if: needs.compute-next-version.outputs.should_release == 'true' && (github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run != 'true')
+    needs: compute-next-version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ needs.compute-next-version.outputs.tag }}
+      version: ${{ needs.compute-next-version.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create and push tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ needs.compute-next-version.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "Tag ${tag} already exists"
+            exit 0
+          fi
+          git tag -a "${tag}" -m "${tag}"
+          git push origin "${tag}"
+
   test:
     name: Run CI Tests
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
 
     steps:
@@ -36,6 +177,7 @@ jobs:
 
   version:
     name: Compute Version
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -55,6 +197,7 @@ jobs:
 
   build:
     name: Build for ${{ matrix.os }}
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [test, version]
     runs-on: ${{ matrix.os }}
     strategy:
@@ -120,8 +263,8 @@ jobs:
 
   publish-main-artifacts:
     name: Publish Main Build Artifacts
-    if: github.ref == 'refs/heads/main'
-    needs: [build, version]
+    if: false
+    needs: [compute-next-version]
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
@@ -138,9 +281,9 @@ jobs:
 
   release:
     name: Create Release
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [build, version]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
 
     steps:
       - name: Download artifacts
