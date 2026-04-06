@@ -14,7 +14,11 @@
     "clean": "task clean"
   },
   "devDependencies": {
+    "@semantic-release/commit-analyzer": "^13.0.1",
+    "@semantic-release/github": "^11.0.6",
+    "@semantic-release/release-notes-generator": "^14.1.0",
     "@types/node": "^20.0.0",
+    "semantic-release": "^24.2.3",
     "typescript": "^5.9.3"
   },
   "engines": {
