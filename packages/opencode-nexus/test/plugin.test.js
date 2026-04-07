@@ -12,11 +12,13 @@ function textMessage(role, text, id) {
   };
 }
 
-function createMockContext(messagesBySession = {}) {
+function createMockContext(messagesBySession = {}, options = {}) {
   const promptCalls = [];
+  const toastCalls = [];
 
   return {
     promptCalls,
+    toastCalls,
     context: {
       directory: '/repo',
       client: {
@@ -29,6 +31,13 @@ function createMockContext(messagesBySession = {}) {
             return { data: messagesBySession[path.id] || [] };
           },
         },
+        tui: options.withTui
+          ? {
+              async showToast(payload) {
+                toastCalls.push(payload);
+              },
+            }
+          : undefined,
       },
     },
   };
@@ -232,6 +241,33 @@ test('session.idle supports top-level sessionID event shape', async () => {
   });
 
   assert.equal(promptCalls.length, 1);
+});
+
+test('session.idle uses toast suggestion channel when tui is available', async () => {
+  const sessionId = 'session-toast-id';
+  const { context, promptCalls, toastCalls } = createMockContext(
+    {
+      [sessionId]: [
+        textMessage('user', 'Keep moving.', 'user-1'),
+        textMessage('assistant', 'I can continue in a new workspace if helpful.', 'assistant-1'),
+      ],
+    },
+    { withTui: true },
+  );
+
+  const pluginFactory = createOpencodeNexusPlugin();
+  const plugin = await pluginFactory(context);
+
+  await plugin.event({
+    event: {
+      type: 'session.idle',
+      properties: { sessionID: sessionId },
+    },
+  });
+
+  assert.equal(promptCalls.length, 0);
+  assert.equal(toastCalls.length, 1);
+  assert.match(toastCalls[0].body.message, /\/handoff <goal>/);
 });
 
 test('event handling fails open when session APIs throw', async () => {

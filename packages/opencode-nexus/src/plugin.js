@@ -173,6 +173,27 @@ export function createOpencodeNexusPlugin(options = {}) {
       const assistantText = extractTextFromParts(lastAssistant?.parts);
       if (!isHandoffCandidate(assistantText)) return false;
 
+      const suggestionText =
+        'I can prepare a Nexus workspace and transfer this task. Run `/handoff <goal>` if you want me to hand off now.';
+
+      if (ctx?.client?.tui?.showToast) {
+        try {
+          await ctx.client.tui.showToast({
+            body: {
+              title: 'Nexus Handoff Available',
+              message: suggestionText,
+              variant: 'info',
+              duration: 4000,
+            },
+          });
+        } catch {
+          return false;
+        }
+
+        suggestedBySession.add(sessionId);
+        return true;
+      }
+
       if (!ctx?.client?.session?.prompt) return false;
       try {
         await ctx.client.session.prompt({
@@ -182,7 +203,7 @@ export function createOpencodeNexusPlugin(options = {}) {
             parts: [
               {
                 type: 'text',
-                text: 'I can prepare a Nexus workspace and transfer this task. Run `/handoff <goal>` if you want me to hand off now.',
+                text: suggestionText,
               },
             ],
           },
