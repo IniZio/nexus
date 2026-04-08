@@ -59,6 +59,9 @@ const runID = Date.now();
 let sessionId = "";
 let closeRequested = false;
 let sawMarker = false;
+let streamBuffer = "";
+const marker = "__NEXUS_PTY_SMOKE_OK__";
+const markerLine = new RegExp(`(?:^|\\r?\\n)${marker}(?:\\r?\\n|$)`);
 
 const deadline = setTimeout(() => {
   log("timeout", { timeoutMs });
@@ -94,6 +97,14 @@ ws.onmessage = (event) => {
   }
 
   if (msg.error) {
+    const message = String(msg.error.message || "");
+    if (closeRequested && message.includes("pty session not found")) {
+      log("rpc.error.after_close", msg.error);
+      clearTimeout(deadline);
+      writeTranscript();
+      process.exit(sawMarker ? 0 : 1);
+      return;
+    }
     log("rpc.error", msg.error);
     clearTimeout(deadline);
     writeTranscript();
@@ -106,7 +117,7 @@ ws.onmessage = (event) => {
     log("pty.open.ok", { sessionId });
     sendRPC(ws, `write-${runID}`, "pty.write", {
       sessionId,
-      data: "echo __NEXUS_PTY_SMOKE_OK__; pwd\n",
+      data: `echo ${marker}; pwd\n`,
     });
     return;
   }
@@ -126,10 +137,14 @@ ws.onmessage = (event) => {
 
   if (msg.method === "pty.data") {
     const raw = String(msg.params && msg.params.data ? msg.params.data : "");
+    streamBuffer += raw;
+    if (streamBuffer.length > 8192) {
+      streamBuffer = streamBuffer.slice(streamBuffer.length - 8192);
+    }
     const snippet = raw.slice(0, 120).replace(/\n/g, "\\n");
     log("pty.data", { snippet });
 
-    if (raw.includes("__NEXUS_PTY_SMOKE_OK__") && !closeRequested) {
+    if (markerLine.test(streamBuffer) && !closeRequested) {
       sawMarker = true;
       sendRPC(ws, `resize-${runID}`, "pty.resize", { sessionId, cols: 100, rows: 24 });
       sendRPC(ws, `close-${runID}`, "pty.close", { sessionId });
