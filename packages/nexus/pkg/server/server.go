@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/creack/pty"
@@ -86,7 +87,7 @@ type ptySession struct {
 	file    *os.File
 	conn    net.Conn
 	mu      sync.Mutex
-	closing bool
+	closing atomic.Bool
 	enc     *json.Encoder
 	dec     *json.Decoder
 	remote  bool
@@ -784,10 +785,7 @@ func (s *Server) streamRemoteShellOutput(conn *Connection, session *ptySession) 
 			continue
 		}
 		if typeStr == "result" {
-			session.mu.Lock()
-			closing := session.closing
-			session.mu.Unlock()
-			if !closing {
+			if !session.closing.Load() {
 				continue
 			}
 
@@ -985,8 +983,8 @@ func (c *Connection) closePTY(id string) bool {
 		return false
 	}
 	if session.conn != nil {
+		session.closing.Store(true)
 		session.mu.Lock()
-		session.closing = true
 		_ = session.enc.Encode(map[string]any{"id": session.id, "type": "shell.close"})
 		session.mu.Unlock()
 		_ = session.conn.Close()

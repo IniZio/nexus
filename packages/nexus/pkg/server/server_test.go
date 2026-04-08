@@ -40,6 +40,8 @@ type serverTestConnectorDriver struct {
 	openWorkdir  string
 	writeCalled  bool
 	resizeCalled bool
+	writeSignal  chan struct{}
+	resizeSignal chan struct{}
 }
 
 func (d *serverTestConnectorDriver) AgentConn(ctx context.Context, workspaceID string) (net.Conn, error) {
@@ -73,11 +75,23 @@ func (d *serverTestConnectorDriver) AgentConn(ctx context.Context, workspaceID s
 				if typ == "shell.write" {
 					d.mu.Lock()
 					d.writeCalled = true
+					if d.writeSignal != nil {
+						select {
+						case d.writeSignal <- struct{}{}:
+						default:
+						}
+					}
 					d.mu.Unlock()
 				}
 				if typ == "shell.resize" {
 					d.mu.Lock()
 					d.resizeCalled = true
+					if d.resizeSignal != nil {
+						select {
+						case d.resizeSignal <- struct{}{}:
+						default:
+						}
+					}
 					d.mu.Unlock()
 				}
 				if typ == "shell.close" {
@@ -143,7 +157,11 @@ func testPTYOpenUsesRemoteConnectorForBackend(t *testing.T, backend string) {
 		t.Fatalf("new server: %v", err)
 	}
 
-	driver := &serverTestConnectorDriver{serverTestDriver: serverTestDriver{backend: backend}}
+	driver := &serverTestConnectorDriver{
+		serverTestDriver: serverTestDriver{backend: backend},
+		writeSignal:      make(chan struct{}, 1),
+		resizeSignal:     make(chan struct{}, 1),
+	}
 	factory := runtime.NewFactory(
 		[]runtime.Capability{{Name: "runtime.firecracker", Available: true}, {Name: "runtime.lxc", Available: true}},
 		map[string]runtime.Driver{"firecracker": driver, "lxc": driver},
@@ -195,17 +213,20 @@ func testPTYOpenUsesRemoteConnectorForBackend(t *testing.T, backend string) {
 		}
 	}
 
-	deadline := time.Now().Add(800 * time.Millisecond)
-	var wrote, resized bool
-	for time.Now().Before(deadline) {
-		wrote, resized = driver.actionDetails()
-		if wrote && resized {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-driver.writeSignal:
+	case <-time.After(2 * time.Second):
+		wrote, resized := driver.actionDetails()
+		t.Fatalf("expected remote shell write call, got write=%v resize=%v", wrote, resized)
 	}
-	if !wrote || (backend == "firecracker" && !resized) {
-		t.Fatalf("expected remote shell write+resize calls, got write=%v resize=%v", wrote, resized)
+
+	if backend == "firecracker" {
+		select {
+		case <-driver.resizeSignal:
+		case <-time.After(2 * time.Second):
+			wrote, resized := driver.actionDetails()
+			t.Fatalf("expected remote shell resize call, got write=%v resize=%v", wrote, resized)
+		}
 	}
 
 	closeParams, _ := json.Marshal(map[string]any{"sessionId": open.SessionID})
