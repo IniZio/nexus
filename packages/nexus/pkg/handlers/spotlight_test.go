@@ -20,7 +20,7 @@ func TestHandleSpotlightApplyDefaults(t *testing.T) {
 	configJSON := `{
   "version": 1,
   "runtime": {
-    "required": ["local"]
+    "required": ["linux"]
   },
   "spotlight": {
     "defaults": [

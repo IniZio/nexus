@@ -34,7 +34,7 @@ go test ./pkg/runtime/firecracker -count=1
 
 ## Docs
 
-- `docs/reference/workspace-daemon.md`
+- `docs/reference/cli.md`
 - `docs/reference/workspace-config.md`
     "path": "relative/path",
     "is_dir": false,

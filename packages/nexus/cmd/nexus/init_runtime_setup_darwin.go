@@ -122,7 +122,7 @@ func initRuntimeBootstrapDarwinWrapError(projectRoot string, err error) error {
 	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("firecracker runtime setup failed on darwin: %w\n\nmanual next steps:\n  brew install lima\n  nexus init --project-root %s --runtime firecracker", err, projectRoot)
+	return fmt.Errorf("firecracker runtime setup failed on darwin: %w\n\nmanual next steps:\n  brew install lima\n  nexus init --project-root %s", err, projectRoot)
 }
 
 func writeLimaTemplate(content string) (string, func(), error) {

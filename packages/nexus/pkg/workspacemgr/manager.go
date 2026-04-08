@@ -2,9 +2,12 @@ package workspacemgr
 
 import (
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -57,6 +60,19 @@ func (m *Manager) loadAll() error {
 		if err := json.Unmarshal(data, &ws); err != nil {
 			continue
 		}
+		if ws.RepoID == "" {
+			ws.RepoID = deriveRepoID(ws.Repo)
+		}
+		if ws.RepoKind == "" {
+			ws.RepoKind = deriveRepoKind(ws.Repo)
+		}
+		if ws.LineageRootID == "" {
+			if ws.ParentWorkspaceID == "" {
+				ws.LineageRootID = ws.ID
+			} else {
+				ws.LineageRootID = ws.ParentWorkspaceID
+			}
+		}
 		m.workspaces[id] = &ws
 	}
 	return nil
@@ -98,24 +114,38 @@ func (m *Manager) Create(_ context.Context, spec CreateSpec) (*Workspace, error)
 		return nil, fmt.Errorf("create workspace root: %w", err)
 	}
 
+	localWorktreePath := ""
+	if isLikelyLocalPath(spec.Repo) {
+		worktreePath, wtErr := createWorktree(spec.Repo, spec.Ref, spec.WorkspaceName)
+		if wtErr != nil {
+			_ = os.RemoveAll(rootPath)
+			return nil, wtErr
+		}
+		localWorktreePath = worktreePath
+	}
+
 	authBinding := spec.AuthBinding
 	if authBinding == nil {
 		authBinding = make(map[string]string)
 	}
 	ws := &Workspace{
-		ID:            id,
-		Repo:          spec.Repo,
-		Ref:           spec.Ref,
-		WorkspaceName: spec.WorkspaceName,
-		AgentProfile:  spec.AgentProfile,
-		Policy:        spec.Policy,
-		State:         StateCreated,
-		RootPath:      rootPath,
-		Backend:       spec.Backend,
-		AuthBinding:   authBinding,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:                id,
+		RepoID:            deriveRepoID(spec.Repo),
+		RepoKind:          deriveRepoKind(spec.Repo),
+		Repo:              spec.Repo,
+		Ref:               spec.Ref,
+		WorkspaceName:     spec.WorkspaceName,
+		AgentProfile:      spec.AgentProfile,
+		Policy:            spec.Policy,
+		State:             StateCreated,
+		RootPath:          rootPath,
+		Backend:           spec.Backend,
+		AuthBinding:       authBinding,
+		LocalWorktreePath: localWorktreePath,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
+	ws.LineageRootID = ws.ID
 
 	m.mu.Lock()
 	m.workspaces[id] = ws
@@ -316,7 +346,7 @@ func (m *Manager) Resume(id string) error {
 	return nil
 }
 
-func (m *Manager) Fork(parentID string, childWorkspaceName string) (*Workspace, error) {
+func (m *Manager) Fork(parentID string, childWorkspaceName string, childRef string) (*Workspace, error) {
 	m.mu.RLock()
 	parent, ok := m.workspaces[parentID]
 	m.mu.RUnlock()
@@ -330,6 +360,9 @@ func (m *Manager) Fork(parentID string, childWorkspaceName string) (*Workspace, 
 	if strings.TrimSpace(childWorkspaceName) == "" {
 		childWorkspaceName = parent.WorkspaceName + "-fork"
 	}
+	if strings.TrimSpace(childRef) == "" {
+		return nil, fmt.Errorf("child ref is required")
+	}
 
 	now := time.Now().UTC()
 	childID := fmt.Sprintf("ws-%d", now.UnixNano())
@@ -338,20 +371,38 @@ func (m *Manager) Fork(parentID string, childWorkspaceName string) (*Workspace, 
 		return nil, fmt.Errorf("create child workspace root: %w", err)
 	}
 
+	childLocalWorktreePath := ""
+	if parent.LocalWorktreePath != "" {
+		worktreePath, wtErr := createForkWorktree(parent.LocalWorktreePath, childRef, childWorkspaceName)
+		if wtErr != nil {
+			_ = os.RemoveAll(childRootPath)
+			return nil, wtErr
+		}
+		childLocalWorktreePath = worktreePath
+	}
+
 	child := &Workspace{
 		ID:                childID,
+		RepoID:            parent.RepoID,
+		RepoKind:          parent.RepoKind,
 		Repo:              parent.Repo,
-		Ref:               parent.Ref,
+		Ref:               childRef,
 		WorkspaceName:     childWorkspaceName,
 		AgentProfile:      parent.AgentProfile,
 		Policy:            parent.Policy,
 		State:             StateCreated,
 		RootPath:          childRootPath,
 		ParentWorkspaceID: parent.ID,
+		LineageRootID:     parent.LineageRootID,
+		DerivedFromRef:    parent.Ref,
 		Backend:           parent.Backend,
 		AuthBinding:       make(map[string]string, len(parent.AuthBinding)),
+		LocalWorktreePath: childLocalWorktreePath,
 		CreatedAt:         now,
 		UpdatedAt:         now,
+	}
+	if child.LineageRootID == "" {
+		child.LineageRootID = parent.ID
 	}
 	for k, v := range parent.AuthBinding {
 		child.AuthBinding[k] = v
@@ -388,4 +439,169 @@ func cloneWorkspace(in *Workspace) *Workspace {
 		copy(out.Policy.AuthProfiles, in.Policy.AuthProfiles)
 	}
 	return &out
+}
+
+func deriveRepoKind(repo string) string {
+	repo = strings.TrimSpace(repo)
+	if repo == "" {
+		return "unknown"
+	}
+	if strings.HasPrefix(repo, "git@") || strings.HasPrefix(repo, "ssh://") {
+		return "hosted"
+	}
+	if u, err := url.Parse(repo); err == nil && u.Scheme != "" && u.Host != "" {
+		return "hosted"
+	}
+	if strings.HasPrefix(repo, "/") || strings.HasPrefix(repo, "./") || strings.HasPrefix(repo, "../") {
+		return "local"
+	}
+	return "unknown"
+}
+
+func deriveRepoID(repo string) string {
+	normalized := strings.ToLower(strings.TrimSpace(repo))
+	if normalized == "" {
+		return "repo-unknown"
+	}
+	sum := sha1.Sum([]byte(normalized))
+	return fmt.Sprintf("repo-%x", sum[:8])
+}
+
+func isLikelyLocalPath(repo string) bool {
+	repo = strings.TrimSpace(repo)
+	if repo == "" {
+		return false
+	}
+	if strings.HasPrefix(repo, "./repos/") {
+		return false
+	}
+	return strings.HasPrefix(repo, "/") || strings.HasPrefix(repo, "./") || strings.HasPrefix(repo, "../")
+}
+
+func createWorktree(repoPath, ref, workspaceName string) (string, error) {
+	base := filepath.Clean(repoPath)
+	if workspaceName == "" {
+		workspaceName = "workspace"
+	}
+	safeName := sanitizeWorktreeName(workspaceName)
+	worktreesDir := filepath.Join(base, ".worktrees")
+	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+		return "", fmt.Errorf("create .worktrees dir: %w", err)
+	}
+	worktreePath := filepath.Join(worktreesDir, safeName)
+	worktreePath = uniqueWorktreePath(worktreePath)
+
+	branch := strings.TrimSpace(ref)
+	if branch == "" {
+		branch = safeName
+	}
+	branch = uniqueBranchName(base, branch)
+
+	cmd := exec.Command("git", "-C", base, "worktree", "add", "-b", branch, worktreePath, "HEAD")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		for retry := 0; retry < 5 && err != nil; retry++ {
+			if strings.Contains(string(out), "already exists") {
+				worktreePath = uniqueWorktreePath(worktreePath)
+				branch = uniqueBranchName(base, branch)
+				cmd = exec.Command("git", "-C", base, "worktree", "add", "-b", branch, worktreePath, "HEAD")
+				out, err = cmd.CombinedOutput()
+				continue
+			}
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("git worktree add failed: %s", strings.TrimSpace(string(out)))
+		}
+	}
+	return worktreePath, nil
+}
+
+func createForkWorktree(parentWorktreePath, ref, childWorkspaceName string) (string, error) {
+	parentPath := filepath.Clean(parentWorktreePath)
+	worktreesDir := filepath.Join(parentPath, ".worktrees")
+	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+		return "", fmt.Errorf("create nested .worktrees dir: %w", err)
+	}
+	safeName := sanitizeWorktreeName(childWorkspaceName)
+	childPath := filepath.Join(worktreesDir, safeName)
+	childPath = uniqueWorktreePath(childPath)
+
+	branch := strings.TrimSpace(ref)
+	if branch == "" {
+		branch = safeName
+	}
+	branch = uniqueBranchName(parentPath, branch)
+
+	cmd := exec.Command("git", "-C", parentPath, "worktree", "add", "-b", branch, childPath, "HEAD")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		for retry := 0; retry < 5 && err != nil; retry++ {
+			if strings.Contains(string(out), "already exists") {
+				childPath = uniqueWorktreePath(childPath)
+				branch = uniqueBranchName(parentPath, branch)
+				cmd = exec.Command("git", "-C", parentPath, "worktree", "add", "-b", branch, childPath, "HEAD")
+				out, err = cmd.CombinedOutput()
+				continue
+			}
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("git nested worktree add failed: %s", strings.TrimSpace(string(out)))
+		}
+	}
+	return childPath, nil
+}
+
+func sanitizeWorktreeName(name string) string {
+	n := strings.TrimSpace(strings.ToLower(name))
+	if n == "" {
+		return "workspace"
+	}
+	n = strings.ReplaceAll(n, " ", "-")
+	var b strings.Builder
+	for _, r := range n {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-.")
+	if out == "" {
+		return "workspace"
+	}
+	return out
+}
+
+func uniqueBranchName(repoPath, desired string) string {
+	branch := desired
+	if !branchExists(repoPath, branch) {
+		return branch
+	}
+	for i := 2; i < 500; i++ {
+		candidate := fmt.Sprintf("%s-%d", desired, i)
+		if !branchExists(repoPath, candidate) {
+			return candidate
+		}
+	}
+	return fmt.Sprintf("%s-%d", desired, time.Now().Unix())
+}
+
+func branchExists(repoPath, branch string) bool {
+	cmd := exec.Command("git", "-C", repoPath, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	return cmd.Run() == nil
+}
+
+func uniqueWorktreePath(desired string) string {
+	if _, err := os.Stat(desired); os.IsNotExist(err) {
+		return desired
+	}
+	for i := 2; i < 500; i++ {
+		candidate := fmt.Sprintf("%s-%d", desired, i)
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
+	return fmt.Sprintf("%s-%d", desired, time.Now().Unix())
 }

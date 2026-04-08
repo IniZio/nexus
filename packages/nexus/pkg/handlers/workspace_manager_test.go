@@ -43,12 +43,13 @@ func TestHandleWorkspaceCreate_WithFactory(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(mgrRoot, ".nexus"), 0o755); err != nil {
 		t.Fatalf("create .nexus dir: %v", err)
 	}
-	configData := []byte(`{"version":1,"runtime":{"required":["firecracker"],"selection":"prefer-first"}}`)
+	configData := []byte(`{"version":1,"runtime":{"required":["linux"],"selection":"prefer-first"}}`)
 	if err := os.WriteFile(filepath.Join(mgrRoot, ".nexus", "workspace.json"), configData, 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
 	factory := runtime.NewFactory([]runtime.Capability{
+		{Name: "runtime.linux", Available: true},
 		{Name: "runtime.firecracker", Available: true},
 	}, map[string]runtime.Driver{
 		"firecracker": &mockDriver{backend: "firecracker"},
@@ -85,12 +86,13 @@ func TestHandleWorkspaceCreate_ConfigRequiredBackendHonored(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(mgrRoot, ".nexus"), 0o755); err != nil {
 		t.Fatalf("create .nexus dir: %v", err)
 	}
-	configData := []byte(`{"version":1,"runtime":{"required":["firecracker"],"selection":"prefer-first"}}`)
+	configData := []byte(`{"version":1,"runtime":{"required":["linux"],"selection":"prefer-first"}}`)
 	if err := os.WriteFile(filepath.Join(mgrRoot, ".nexus", "workspace.json"), configData, 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
 	factory := runtime.NewFactory([]runtime.Capability{
+		{Name: "runtime.linux", Available: true},
 		{Name: "runtime.firecracker", Available: true},
 	}, map[string]runtime.Driver{
 		"firecracker": &mockDriver{backend: "firecracker"},
@@ -124,6 +126,7 @@ func TestHandleWorkspaceCreate_FactoryWithUnavailableCapability(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
 
 	factory := runtime.NewFactory([]runtime.Capability{
+		{Name: "runtime.linux", Available: true},
 		{Name: "runtime.firecracker", Available: false},
 	}, map[string]runtime.Driver{
 		"firecracker": &mockDriver{backend: "firecracker"},
@@ -147,7 +150,7 @@ func TestHandleWorkspaceCreate_FactoryWithUnavailableCapability(t *testing.T) {
 	}
 }
 
-func TestHandleWorkspaceCreate_MissingRuntimeRequired(t *testing.T) {
+func TestHandleWorkspaceCreate_MissingRuntimeRequiredFallsBack(t *testing.T) {
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
 
@@ -161,6 +164,7 @@ func TestHandleWorkspaceCreate_MissingRuntimeRequired(t *testing.T) {
 	}
 
 	factory := runtime.NewFactory([]runtime.Capability{
+		{Name: "runtime.linux", Available: true},
 		{Name: "runtime.firecracker", Available: true},
 	}, map[string]runtime.Driver{
 		"firecracker": &mockDriver{backend: "firecracker"},
@@ -178,12 +182,57 @@ func TestHandleWorkspaceCreate_MissingRuntimeRequired(t *testing.T) {
 		t.Fatalf("marshal params: %v", err)
 	}
 
-	_, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
-	if rpcErr == nil {
-		t.Fatalf("expected rpc error for missing runtime.required, got nil")
+	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}
-	if rpcErr.Code != -32602 {
-		t.Fatalf("expected ErrInvalidParams (-32602), got %d", rpcErr.Code)
+	if result == nil || result.Workspace == nil {
+		t.Fatalf("expected workspace, got %#v", result)
+	}
+	if result.Workspace.Backend != "firecracker" {
+		t.Fatalf("expected backend 'firecracker' fallback, got %q", result.Workspace.Backend)
+	}
+}
+
+func TestHandleWorkspaceCreate_MissingRuntimeRequiredRespectsSpecBackend(t *testing.T) {
+	mgrRoot := t.TempDir()
+	mgr := workspacemgr.NewManager(mgrRoot)
+
+	if err := os.MkdirAll(filepath.Join(mgrRoot, ".nexus"), 0o755); err != nil {
+		t.Fatalf("create .nexus dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mgrRoot, ".nexus", "workspace.json"), []byte(`{"version":1}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	factory := runtime.NewFactory([]runtime.Capability{
+		{Name: "runtime.local", Available: true},
+	}, map[string]runtime.Driver{
+		"local": &mockDriver{backend: "local"},
+	})
+
+	params, err := json.Marshal(WorkspaceCreateParams{
+		Spec: workspacemgr.CreateSpec{
+			Repo:          "git@example/repo.git",
+			Ref:           "main",
+			WorkspaceName: "alpha",
+			AgentProfile:  "default",
+			Backend:       "local",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result == nil || result.Workspace == nil {
+		t.Fatalf("expected workspace, got %#v", result)
+	}
+	if result.Workspace.Backend != "local" {
+		t.Fatalf("expected backend 'local' from spec fallback priority, got %q", result.Workspace.Backend)
 	}
 }
 
@@ -279,6 +328,36 @@ func TestHandleWorkspaceStop_NotFound(t *testing.T) {
 	}
 }
 
+func TestHandleWorkspaceStart(t *testing.T) {
+	mgr := workspacemgr.NewManager(t.TempDir())
+	createParams, _ := json.Marshal(WorkspaceCreateParams{
+		Spec: workspacemgr.CreateSpec{
+			Repo:          "git@example/repo.git",
+			WorkspaceName: "alpha",
+			AgentProfile:  "default",
+		},
+	})
+	created, _ := HandleWorkspaceCreate(context.Background(), createParams, mgr, nil)
+
+	startParams, _ := json.Marshal(WorkspaceStartParams{ID: created.Workspace.ID})
+	result, rpcErr := HandleWorkspaceStart(context.Background(), startParams, mgr)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if !result.Started {
+		t.Fatal("expected started=true")
+	}
+}
+
+func TestHandleWorkspaceStart_NotFound(t *testing.T) {
+	mgr := workspacemgr.NewManager(t.TempDir())
+	startParams, _ := json.Marshal(WorkspaceStartParams{ID: "missing"})
+	_, rpcErr := HandleWorkspaceStart(context.Background(), startParams, mgr)
+	if rpcErr == nil {
+		t.Fatal("expected workspace not found error")
+	}
+}
+
 func TestHandleWorkspaceRestore(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
 	createParams, _ := json.Marshal(WorkspaceCreateParams{
@@ -323,12 +402,13 @@ func TestHandleWorkspaceRestore_WithFactory(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(mgrRoot, ".nexus"), 0o755); err != nil {
 		t.Fatalf("create .nexus dir: %v", err)
 	}
-	configData := []byte(`{"version":1,"runtime":{"required":["firecracker"],"selection":"prefer-first"}}`)
+	configData := []byte(`{"version":1,"runtime":{"required":["linux"],"selection":"prefer-first"}}`)
 	if err := os.WriteFile(filepath.Join(mgrRoot, ".nexus", "workspace.json"), configData, 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
 	factory := runtime.NewFactory([]runtime.Capability{
+		{Name: "runtime.linux", Available: true},
 		{Name: "runtime.firecracker", Available: true},
 	}, map[string]runtime.Driver{
 		"firecracker": &mockDriver{backend: "firecracker"},
@@ -370,12 +450,13 @@ func TestHandleWorkspaceRestore_WithFactory_PersistsBackendSelection(t *testing.
 	if err := os.MkdirAll(filepath.Join(mgrRoot, ".nexus"), 0o755); err != nil {
 		t.Fatalf("create .nexus dir: %v", err)
 	}
-	configData := []byte(`{"version":1,"runtime":{"required":["firecracker"],"selection":"prefer-first"}}`)
+	configData := []byte(`{"version":1,"runtime":{"required":["linux"],"selection":"prefer-first"}}`)
 	if err := os.WriteFile(filepath.Join(mgrRoot, ".nexus", "workspace.json"), configData, 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
 	factory := runtime.NewFactory([]runtime.Capability{
+		{Name: "runtime.linux", Available: true},
 		{Name: "runtime.firecracker", Available: true},
 	}, map[string]runtime.Driver{
 		"firecracker": &mockDriver{backend: "firecracker"},
@@ -424,6 +505,7 @@ func TestHandleWorkspaceRestore_FactoryWithUnavailableCapability(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
 
 	factory := runtime.NewFactory([]runtime.Capability{
+		{Name: "runtime.linux", Available: true},
 		{Name: "runtime.firecracker", Available: false},
 	}, map[string]runtime.Driver{
 		"firecracker": &mockDriver{backend: "firecracker"},
@@ -463,12 +545,13 @@ func TestHandleWorkspaceRestore_ConfigRequiredBackendHonored(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(mgrRoot, ".nexus"), 0o755); err != nil {
 		t.Fatalf("create .nexus dir: %v", err)
 	}
-	configData := []byte(`{"version":1,"runtime":{"required":["firecracker"],"selection":"prefer-first"}}`)
+	configData := []byte(`{"version":1,"runtime":{"required":["linux"],"selection":"prefer-first"}}`)
 	if err := os.WriteFile(filepath.Join(mgrRoot, ".nexus", "workspace.json"), configData, 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
 	factory := runtime.NewFactory([]runtime.Capability{
+		{Name: "runtime.linux", Available: true},
 		{Name: "runtime.firecracker", Available: true},
 	}, map[string]runtime.Driver{
 		"firecracker": &mockDriver{backend: "firecracker"},
@@ -557,7 +640,7 @@ func TestHandleWorkspaceFork(t *testing.T) {
 	})
 	created, _ := HandleWorkspaceCreate(context.Background(), createParams, mgr, nil)
 
-	forkParams, _ := json.Marshal(WorkspaceForkParams{ID: created.Workspace.ID, ChildWorkspaceName: "alpha-child"})
+	forkParams, _ := json.Marshal(WorkspaceForkParams{ID: created.Workspace.ID, ChildWorkspaceName: "alpha-child", ChildRef: "alpha-child"})
 	result, rpcErr := HandleWorkspaceFork(context.Background(), forkParams, mgr, nil)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
@@ -570,22 +653,23 @@ func TestHandleWorkspaceFork(t *testing.T) {
 	}
 }
 
-func TestHandleWorkspaceFork_WithFactoryLocalBackend(t *testing.T) {
+func TestHandleWorkspaceFork_WithFactoryLinuxFallbackBackend(t *testing.T) {
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
 
 	if err := os.MkdirAll(filepath.Join(mgrRoot, ".nexus"), 0o755); err != nil {
 		t.Fatalf("create .nexus dir: %v", err)
 	}
-	configData := []byte(`{"version":1,"runtime":{"required":["local"],"selection":"prefer-first"}}`)
+	configData := []byte(`{"version":1,"runtime":{"required":["linux"],"selection":"prefer-first"}}`)
 	if err := os.WriteFile(filepath.Join(mgrRoot, ".nexus", "workspace.json"), configData, 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
 	factory := runtime.NewFactory([]runtime.Capability{
-		{Name: "runtime.local", Available: true},
+		{Name: "runtime.linux", Available: true},
+		{Name: "runtime.lxc", Available: true},
 	}, map[string]runtime.Driver{
-		"local": &mockDriver{backend: "local"},
+		"lxc": &mockDriver{backend: "lxc"},
 	})
 
 	createParams, _ := json.Marshal(WorkspaceCreateParams{
@@ -600,7 +684,7 @@ func TestHandleWorkspaceFork_WithFactoryLocalBackend(t *testing.T) {
 		t.Fatalf("create failed: %+v", rpcErr)
 	}
 
-	forkParams, _ := json.Marshal(WorkspaceForkParams{ID: created.Workspace.ID, ChildWorkspaceName: "alpha-child"})
+	forkParams, _ := json.Marshal(WorkspaceForkParams{ID: created.Workspace.ID, ChildWorkspaceName: "alpha-child", ChildRef: "alpha-child"})
 	result, rpcErr := HandleWorkspaceFork(context.Background(), forkParams, mgr, factory)
 	if rpcErr != nil {
 		t.Fatalf("fork failed: %+v", rpcErr)
@@ -608,10 +692,95 @@ func TestHandleWorkspaceFork_WithFactoryLocalBackend(t *testing.T) {
 	if result == nil || result.Workspace == nil {
 		t.Fatalf("expected forked workspace, got %#v", result)
 	}
-	if result.Workspace.Backend != "local" {
-		t.Fatalf("expected child backend 'local', got %q", result.Workspace.Backend)
+	if result.Workspace.Backend != "lxc" {
+		t.Fatalf("expected child backend 'lxc', got %q", result.Workspace.Backend)
 	}
 	if result.Workspace.ParentWorkspaceID != created.Workspace.ID {
 		t.Fatalf("expected parent id %q, got %q", created.Workspace.ID, result.Workspace.ParentWorkspaceID)
+	}
+}
+
+func TestHandleWorkspaceFork_WithFactoryLinuxBackendAfterRestartLikeState(t *testing.T) {
+	mgrRoot := t.TempDir()
+	mgr := workspacemgr.NewManager(mgrRoot)
+
+	if err := os.MkdirAll(filepath.Join(mgrRoot, ".nexus"), 0o755); err != nil {
+		t.Fatalf("create .nexus dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mgrRoot, ".nexus", "workspace.json"), []byte(`{"version":1,"runtime":{"required":["linux"],"selection":"prefer-first"}}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	lxcDriver := &mockDriver{backend: "lxc"}
+	factory := runtime.NewFactory([]runtime.Capability{
+		{Name: "runtime.linux", Available: true},
+		{Name: "runtime.lxc", Available: true},
+	}, map[string]runtime.Driver{
+		"lxc": lxcDriver,
+	})
+
+	parent, err := mgr.Create(context.Background(), workspacemgr.CreateSpec{
+		Repo:          "git@example/repo.git",
+		Ref:           "main",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+		Backend:       "lxc",
+	})
+	if err != nil {
+		t.Fatalf("seed workspace failed: %v", err)
+	}
+
+	forkParams, _ := json.Marshal(WorkspaceForkParams{ID: parent.ID, ChildWorkspaceName: "alpha-child", ChildRef: "alpha-child"})
+	result, rpcErr := HandleWorkspaceFork(context.Background(), forkParams, mgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("fork failed: %+v", rpcErr)
+	}
+	if result == nil || result.Workspace == nil {
+		t.Fatalf("expected forked workspace, got %#v", result)
+	}
+	if result.Workspace.Backend != "lxc" {
+		t.Fatalf("expected child backend 'lxc', got %q", result.Workspace.Backend)
+	}
+}
+
+func TestHandleWorkspacePause_WithFactoryLinuxBackendAfterRestartLikeState(t *testing.T) {
+	mgrRoot := t.TempDir()
+	mgr := workspacemgr.NewManager(mgrRoot)
+
+	if err := os.MkdirAll(filepath.Join(mgrRoot, ".nexus"), 0o755); err != nil {
+		t.Fatalf("create .nexus dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mgrRoot, ".nexus", "workspace.json"), []byte(`{"version":1,"runtime":{"required":["linux"],"selection":"prefer-first"}}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	lxcDriver := &mockDriver{backend: "lxc"}
+	factory := runtime.NewFactory([]runtime.Capability{
+		{Name: "runtime.linux", Available: true},
+		{Name: "runtime.lxc", Available: true},
+	}, map[string]runtime.Driver{
+		"lxc": lxcDriver,
+	})
+
+	ws, err := mgr.Create(context.Background(), workspacemgr.CreateSpec{
+		Repo:          "git@example/repo.git",
+		Ref:           "main",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+		Backend:       "lxc",
+	})
+	if err != nil {
+		t.Fatalf("seed workspace failed: %v", err)
+	}
+
+	_ = mgr.Start(ws.ID)
+
+	pauseParams, _ := json.Marshal(WorkspacePauseParams{ID: ws.ID})
+	result, rpcErr := HandleWorkspacePause(context.Background(), pauseParams, mgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("pause failed: %+v", rpcErr)
+	}
+	if result == nil || !result.Paused {
+		t.Fatalf("expected paused=true, got %#v", result)
 	}
 }

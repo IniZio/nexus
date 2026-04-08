@@ -3,10 +3,13 @@ package firecracker
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"strconv"
 	"sync"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
+	"github.com/mdlayher/vsock"
 )
 
 var _ runtime.Driver = (*Driver)(nil)
@@ -28,6 +31,28 @@ type Driver struct {
 	projectRoots map[string]string
 	agents       map[string]*AgentClient
 	mu           sync.RWMutex
+}
+
+func (d *Driver) AgentConn(ctx context.Context, workspaceID string) (net.Conn, error) {
+	if d.manager == nil {
+		return nil, errors.New("manager is required for firecracker driver")
+	}
+
+	inst, err := d.manager.Get(workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("workspace instance lookup failed: %w", err)
+	}
+
+	if inst == nil || inst.CID == 0 {
+		return nil, errors.New("workspace instance has no guest CID")
+	}
+
+	conn, err := vsock.Dial(inst.CID, DefaultAgentVSockPort, nil)
+	if err != nil {
+		return nil, fmt.Errorf("vsock dial failed: %w", err)
+	}
+
+	return conn, nil
 }
 
 type Option func(*Driver)

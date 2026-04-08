@@ -90,7 +90,7 @@ func TestManager_ConfigLifecycleOverridesAutodetectedScript(t *testing.T) {
 
 	workspaceCfg := `{
   "version": 1,
-  "runtime": {"required": ["local"]},
+  "runtime": {"required": ["linux"]},
   "lifecycle": {
     "onSetup": ["touch ` + configMarker + `"]
   }

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
@@ -46,11 +47,13 @@ var (
 // Request types
 type execRequest struct {
 	ID      string   `json:"id"`
+	Type    string   `json:"type,omitempty"`
 	Command string   `json:"command"`
 	Args    []string `json:"args"`
 	WorkDir string   `json:"workdir,omitempty"`
 	Env     []string `json:"env,omitempty"`
 	Stream  bool     `json:"stream,omitempty"`
+	Data    string   `json:"data,omitempty"`
 }
 
 type execResponse struct {
@@ -62,6 +65,20 @@ type execResponse struct {
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr"`
 }
+
+type shellSession struct {
+	id   string
+	cmd  *exec.Cmd
+	in   io.WriteCloser
+	out  io.ReadCloser
+	err  io.ReadCloser
+	done chan int
+}
+
+var (
+	shellSessions   = map[string]*shellSession{}
+	shellSessionsMu sync.Mutex
+)
 
 func handleExec(req execRequest) execResponse {
 	ctx, cancel := context.WithTimeout(context.Background(), agentExecTimeout())
@@ -280,6 +297,11 @@ func serveConn(conn net.Conn) {
 			continue
 		}
 
+		if strings.TrimSpace(req.Type) != "" {
+			handleShellRequest(req, encoder)
+			continue
+		}
+
 		// Handle request
 		resp := execResponse{}
 		if req.Stream {
@@ -294,6 +316,149 @@ func serveConn(conn net.Conn) {
 			return
 		}
 	}
+}
+
+func handleShellRequest(req execRequest, encoder *json.Encoder) {
+	switch req.Type {
+	case "shell.open":
+		handleShellOpen(req, encoder)
+	case "shell.write":
+		handleShellWrite(req, encoder)
+	case "shell.resize":
+		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 0})
+	case "shell.close":
+		handleShellClose(req, encoder)
+	default:
+		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: "unknown shell request type"})
+	}
+}
+
+func handleShellOpen(req execRequest, encoder *json.Encoder) {
+	ctx, cancel := context.WithTimeout(context.Background(), agentExecTimeout())
+	defer cancel()
+
+	env := append([]string{}, os.Environ()...)
+	env = ensurePathInEnv(env)
+
+	workDir := workspaceMountPoint
+	if strings.TrimSpace(req.WorkDir) != "" {
+		workDir = req.WorkDir
+	}
+	if workDir == workspaceMountPoint || strings.HasPrefix(workDir, workspaceMountPoint+"/") {
+		if err := setupWorkspaceMountRequiredFunc(); err != nil {
+			_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: fmt.Sprintf("workspace mount ensure failed: %v", err)})
+			return
+		}
+	}
+
+	shell := req.Command
+	if strings.TrimSpace(shell) == "" {
+		shell = "bash"
+	}
+
+	cmd := exec.CommandContext(ctx, shell, "-l")
+	cmd.Dir = workDir
+	cmd.Env = env
+
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: err.Error()})
+		return
+	}
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: err.Error()})
+		return
+	}
+	errOut, err := cmd.StderrPipe()
+	if err != nil {
+		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: err.Error()})
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: err.Error()})
+		return
+	}
+
+	s := &shellSession{id: req.ID, cmd: cmd, in: in, out: out, err: errOut, done: make(chan int, 1)}
+
+	shellSessionsMu.Lock()
+	shellSessions[req.ID] = s
+	shellSessionsMu.Unlock()
+
+	_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 0})
+
+	go func() {
+		scan := bufio.NewScanner(out)
+		scan.Buffer(make([]byte, 0, 4096), 1024*1024)
+		for scan.Scan() {
+			line := scan.Text() + "\n"
+			_ = encoder.Encode(execResponse{ID: req.ID, Type: "chunk", Stream: "stdout", Data: line})
+		}
+	}()
+
+	go func() {
+		scan := bufio.NewScanner(errOut)
+		scan.Buffer(make([]byte, 0, 4096), 1024*1024)
+		for scan.Scan() {
+			line := scan.Text() + "\n"
+			_ = encoder.Encode(execResponse{ID: req.ID, Type: "chunk", Stream: "stderr", Data: line})
+		}
+	}()
+
+	go func() {
+		err := cmd.Wait()
+		exitCode := 0
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			} else {
+				exitCode = 1
+			}
+		}
+		s.done <- exitCode
+		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: exitCode})
+		shellSessionsMu.Lock()
+		delete(shellSessions, req.ID)
+		shellSessionsMu.Unlock()
+	}()
+}
+
+func handleShellWrite(req execRequest, encoder *json.Encoder) {
+	shellSessionsMu.Lock()
+	s, ok := shellSessions[req.ID]
+	shellSessionsMu.Unlock()
+	if !ok {
+		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: "shell session not found"})
+		return
+	}
+
+	if _, err := io.WriteString(s.in, req.Data); err != nil {
+		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: err.Error()})
+		return
+	}
+
+	_ = encoder.Encode(execResponse{ID: req.ID, Type: "ack", ExitCode: 0})
+}
+
+func handleShellClose(req execRequest, encoder *json.Encoder) {
+	shellSessionsMu.Lock()
+	s, ok := shellSessions[req.ID]
+	if ok {
+		delete(shellSessions, req.ID)
+	}
+	shellSessionsMu.Unlock()
+
+	if !ok {
+		_ = encoder.Encode(execResponse{ID: req.ID, Type: "ack", ExitCode: 0})
+		return
+	}
+
+	if s.cmd.Process != nil {
+		_ = s.cmd.Process.Kill()
+	}
+	_ = encoder.Encode(execResponse{ID: req.ID, Type: "ack", ExitCode: 0})
 }
 
 func main() {

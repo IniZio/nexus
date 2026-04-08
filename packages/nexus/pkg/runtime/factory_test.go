@@ -136,3 +136,45 @@ func TestSelectDriver_RejectsLegacyBackends(t *testing.T) {
 		t.Fatal("expected error for legacy lxc backend")
 	}
 }
+
+func TestSelectDriver_LinuxPrefersFirecrackerThenLXC(t *testing.T) {
+	f := NewFactory(
+		[]Capability{{Name: "runtime.linux", Available: true}, {Name: "runtime.firecracker", Available: true}, {Name: "runtime.lxc", Available: true}},
+		map[string]Driver{"firecracker": &mockDriver{backend: "firecracker"}, "lxc": &mockDriver{backend: "lxc"}},
+	)
+
+	driver, err := f.SelectDriver([]string{"linux"}, "prefer-first", nil)
+	if err != nil {
+		t.Fatalf("expected linux selection to succeed, got %v", err)
+	}
+	if driver.Backend() != "firecracker" {
+		t.Fatalf("expected firecracker backend preference, got %s", driver.Backend())
+	}
+}
+
+func TestSelectDriver_LinuxFallsBackToLXC(t *testing.T) {
+	f := NewFactory(
+		[]Capability{{Name: "runtime.linux", Available: true}, {Name: "runtime.firecracker", Available: false}, {Name: "runtime.lxc", Available: true}},
+		map[string]Driver{"firecracker": &mockDriver{backend: "firecracker"}, "lxc": &mockDriver{backend: "lxc"}},
+	)
+
+	driver, err := f.SelectDriver([]string{"linux"}, "prefer-first", nil)
+	if err != nil {
+		t.Fatalf("expected linux fallback selection to succeed, got %v", err)
+	}
+	if driver.Backend() != "lxc" {
+		t.Fatalf("expected lxc fallback backend, got %s", driver.Backend())
+	}
+}
+
+func TestSelectDriver_LinuxRequiresRuntimeLinuxCapability(t *testing.T) {
+	f := NewFactory(
+		[]Capability{{Name: "runtime.linux", Available: false}, {Name: "runtime.firecracker", Available: true}, {Name: "runtime.lxc", Available: true}},
+		map[string]Driver{"firecracker": &mockDriver{backend: "firecracker"}, "lxc": &mockDriver{backend: "lxc"}},
+	)
+
+	_, err := f.SelectDriver([]string{"linux"}, "prefer-first", nil)
+	if err == nil {
+		t.Fatal("expected linux requirement to fail when runtime.linux capability unavailable")
+	}
+}
