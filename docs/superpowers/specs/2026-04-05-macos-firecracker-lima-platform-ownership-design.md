@@ -88,7 +88,6 @@ Nexus will carry a template version marker and compare it against instance metad
 5. Re-running after manual completion performs the same readiness verification and only succeeds when prerequisites are truly satisfied.
 
 `nexus setup firecracker` is removed/deprecated in favor of this init path.
-
 ### A) Normal Workspace Start (Darwin + Firecracker)
 
 1. Resolve persistent instance name (stable per expected scope).
@@ -151,7 +150,6 @@ Doctor mode recovery:
 Result: downstream workflows can omit manual setup-go, and platform orchestration remains Nexus-owned.
 
 The action invokes `nexus init` (idempotent) rather than relying on a separate setup command.
-
 ## Verification Strategy
 
 1. Unit tests:

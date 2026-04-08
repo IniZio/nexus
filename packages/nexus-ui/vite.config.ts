@@ -1,0 +1,16 @@
+import { defineConfig } from "vite";
+import vue from "@vitejs/plugin-vue";
+
+export default defineConfig({
+  plugins: [vue()],
+  base: "/ui/static/",
+  build: {
+    outDir: "dist",
+    emptyOutDir: true,
+    sourcemap: false,
+  },
+  server: {
+    host: "127.0.0.1",
+    port: 5173,
+  },
+});

@@ -1,0 +1,124 @@
+/* ── Design tokens ─────────────────────────────────────────────────────── */
+:root {
+  color-scheme: light;
+
+  /* Surface */
+  --nx-bg:           #f8f9fb;
+  --nx-surface-1:    #ffffff;
+  --nx-surface-2:    #f1f4f8;
+  --nx-surface-3:    #e5eaf0;
+  --nx-border:       #dde3ec;
+  --nx-border-light: #c8d0dc;
+
+  /* Brand */
+  --nx-accent:       #2563eb;
+  --nx-accent-muted: #eff6ff;
+  --nx-accent-glow:  rgba(37,99,235,.12);
+
+  /* Text */
+  --nx-text-primary:   #111827;
+  --nx-text-secondary: #374151;
+  --nx-text-muted:     #6b7280;
+
+  /* State colours */
+  --nx-state-running:  #16a34a;
+  --nx-state-paused:   #d97706;
+  --nx-state-stopped:  #dc2626;
+  --nx-state-created:  #475569;
+  --nx-state-restored: #7c3aed;
+  --nx-state-removed:  #9ca3af;
+
+  /* Sidebar */
+  --nx-sidebar-w: 220px;
+
+  /* Spacing */
+  --nx-gap: 16px;
+  --nx-radius: 8px;
+  --nx-radius-sm: 5px;
+}
+
+/* ── Reset ─────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Inter", "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  background: var(--nx-bg);
+  color: var(--nx-text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app { min-height: 100vh; display: flex; flex-direction: column; }
+
+/* ── Scrollbars ────────────────────────────────────────────────────────── */
+::-webkit-scrollbar            { width: 6px; height: 6px; }
+::-webkit-scrollbar-track      { background: transparent; }
+::-webkit-scrollbar-thumb      { background: var(--nx-border-light); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover{ background: var(--nx-text-muted); }
+
+/* ── PrimeVue theme overrides ──────────────────────────────────────────── */
+.p-button {
+  font-size: 13px !important;
+  border-radius: var(--nx-radius-sm) !important;
+  font-weight: 500 !important;
+}
+.p-button.p-button-sm { padding: 4px 10px !important; font-size: 12px !important; }
+
+.p-inputtext {
+  background: var(--nx-surface-1) !important;
+  border-color: var(--nx-border) !important;
+  color: var(--nx-text-primary) !important;
+  border-radius: var(--nx-radius-sm) !important;
+  font-size: 13px !important;
+}
+.p-inputtext:focus {
+  border-color: var(--nx-accent) !important;
+  box-shadow: 0 0 0 2px var(--nx-accent-glow) !important;
+}
+
+/* Tag / badge */
+.nx-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 99px;
+  text-transform: capitalize;
+  letter-spacing: .02em;
+}
+.nx-badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.nx-badge--running  { color: var(--nx-state-running);  background: #dcfce7; }
+.nx-badge--paused   { color: var(--nx-state-paused);   background: #fef9c3; }
+.nx-badge--stopped  { color: var(--nx-state-stopped);  background: #fee2e2; }
+.nx-badge--created  { color: var(--nx-state-created);  background: #f1f5f9; }
+.nx-badge--restored { color: var(--nx-state-restored); background: #ede9fe; }
+.nx-badge--removed  { color: var(--nx-state-removed);  background: #f3f4f6; }
+.nx-badge--unknown  { color: var(--nx-text-muted);      background: #f3f4f6; }
+
+/* Section title */
+.nx-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--nx-text-muted);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  margin: 0 0 12px;
+}
+
+/* Mono text */
+.nx-mono {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 12px;
+  color: var(--nx-text-secondary);
+}

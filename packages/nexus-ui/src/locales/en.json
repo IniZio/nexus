@@ -1,0 +1,47 @@
+{
+  "nav": {
+    "workspaces": "Workspaces",
+    "terminal": "Terminal",
+    "activity": "Activity"
+  },
+  "action": {
+    "refresh": "Refresh",
+    "newWorkspace": "New Workspace",
+    "create": "Create",
+    "cancel": "Cancel",
+    "clearLogs": "Clear logs",
+    "start": "Start",
+    "stop": "Stop",
+    "pause": "Pause",
+    "resume": "Resume",
+    "fork": "Fork"
+  },
+  "create": {
+    "title": "New Workspace",
+    "repo": "Repository",
+    "repoPlaceholder": "https://github.com/org/repo or /local/path",
+    "ref": "Ref",
+    "name": "Workspace Name",
+    "namePlaceholder": "my-workspace",
+    "profile": "Agent Profile"
+  },
+  "empty": {
+    "workspaces": "No workspaces yet. Create one to get started."
+  },
+  "ws": {
+    "worktree": "Worktree",
+    "ref": "Ref",
+    "backend": "Backend",
+    "created": "Created",
+    "updated": "Updated",
+    "spotlight": "Ports",
+    "noSpotlight": "No ports exposed"
+  },
+  "log": {
+    "refreshed": "Refreshed",
+    "refreshFailed": "Refresh failed",
+    "createSkipped": "Create skipped: repo and name are required",
+    "created": "Created workspace",
+    "createFailed": "Create failed"
+  }
+}
