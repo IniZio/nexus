@@ -2,5 +2,5 @@ package portal
 
 import "embed"
 
-//go:embed static ui_dist
+//go:embed static
 var FS embed.FS

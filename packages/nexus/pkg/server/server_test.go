@@ -263,7 +263,7 @@ func TestUIServesEmbeddedHTML(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "Nexus Admin") {
+	if !strings.Contains(body, "Nexus Workspace Control") {
 		t.Fatalf("expected Vite UI index content, got: %s", body)
 	}
 }
@@ -282,7 +282,7 @@ func TestPortalSummaryEndpointRemoved(t *testing.T) {
 		t.Fatalf("expected 200 from portal UI fallback, got %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "Nexus Admin") {
+	if !strings.Contains(body, "Nexus Workspace Control") {
 		t.Fatalf("expected portal UI content fallback, got: %s", body)
 	}
 }

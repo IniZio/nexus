@@ -207,6 +207,8 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("/portal/static/", http.StripPrefix("/portal/", http.FileServer(http.FS(portal.FS))))
 	if uiDist, err := fs.Sub(portal.FS, "ui_dist"); err == nil {
 		mux.Handle("/ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(uiDist))))
+	} else if staticDist, staticErr := fs.Sub(portal.FS, "static"); staticErr == nil {
+		mux.Handle("/ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(staticDist))))
 	}
 	mux.HandleFunc("/portal/", s.handlePortalUI)
 	mux.HandleFunc("/portal", s.handlePortalUI)
@@ -234,6 +236,9 @@ func (s *Server) handlePortalUI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	f, err := portal.FS.Open("ui_dist/index.html")
+	if err != nil {
+		f, err = portal.FS.Open("static/index.html")
+	}
 	if err != nil {
 		http.Error(w, "portal unavailable", http.StatusInternalServerError)
 		log.Printf("[portal] failed to open ui_dist index: %v", err)
