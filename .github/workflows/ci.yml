@@ -166,3 +166,26 @@ jobs:
           else
             go test ./cmd/nexus -count=1 -run 'TestDoctor_|TestResolveCheckCommand|TestRunCheckCommandWithExecContextFirecracker|TestBootstrapFirecracker'
           fi
+
+  pty-runtime-e2e:
+    name: PTY Runtime E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+
+      - name: Run PTY remote routing verification suite
+        working-directory: packages/nexus
+        run: |
+          set -euo pipefail
+          go test ./pkg/server -count=1 -run 'TestPTYOpenUsesRemoteConnectorForFirecrackerAndLXC' -v
