@@ -81,15 +81,16 @@ type RPCResponse struct {
 }
 
 type ptySession struct {
-	id     string
-	cmd    *exec.Cmd
-	file   *os.File
-	conn   net.Conn
-	mu     sync.Mutex
-	enc    *json.Encoder
-	dec    *json.Decoder
-	remote bool
-	done   chan struct{}
+	id      string
+	cmd     *exec.Cmd
+	file    *os.File
+	conn    net.Conn
+	mu      sync.Mutex
+	closing bool
+	enc     *json.Encoder
+	dec     *json.Decoder
+	remote  bool
+	done    chan struct{}
 }
 
 type ptyOpenParams struct {
@@ -783,6 +784,13 @@ func (s *Server) streamRemoteShellOutput(conn *Connection, session *ptySession) 
 			continue
 		}
 		if typeStr == "result" {
+			session.mu.Lock()
+			closing := session.closing
+			session.mu.Unlock()
+			if !closing {
+				continue
+			}
+
 			exitCode := 0
 			if v, ok := msg["exit_code"].(float64); ok {
 				exitCode = int(v)
@@ -978,6 +986,7 @@ func (c *Connection) closePTY(id string) bool {
 	}
 	if session.conn != nil {
 		session.mu.Lock()
+		session.closing = true
 		_ = session.enc.Encode(map[string]any{"id": session.id, "type": "shell.close"})
 		session.mu.Unlock()
 		_ = session.conn.Close()
