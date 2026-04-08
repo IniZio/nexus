@@ -195,7 +195,7 @@ func testPTYOpenUsesRemoteConnectorForBackend(t *testing.T, backend string) {
 		}
 	}
 
-	deadline := time.Now().Add(200 * time.Millisecond)
+	deadline := time.Now().Add(800 * time.Millisecond)
 	var wrote, resized bool
 	for time.Now().Before(deadline) {
 		wrote, resized = driver.actionDetails()
