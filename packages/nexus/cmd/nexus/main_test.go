@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -1898,8 +1899,12 @@ func TestSelectRuntimeBackendLinuxRequirementPrefersFirecrackerOnDarwin(t *testi
 	t.Cleanup(func() { firecrackerHostGOOS = originalGOOS })
 	firecrackerHostGOOS = "darwin"
 
-	if got := selectRuntimeBackend([]string{"linux"}); got != "firecracker" {
-		t.Fatalf("expected linux->firecracker on darwin, got %q", got)
+	want := "seatbelt"
+	if _, err := exec.LookPath("limactl"); err == nil {
+		want = "firecracker"
+	}
+	if got := selectRuntimeBackend([]string{"linux"}); got != want {
+		t.Fatalf("expected linux->%s on darwin, got %q", want, got)
 	}
 }
 

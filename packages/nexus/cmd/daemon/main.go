@@ -135,7 +135,7 @@ func runServer(port int, workspaceDir string, token string) error {
 	seatbeltDriver := seatbelt.NewDriver()
 
 	firecrackerAvailable := probeFirecrackerTooling(exec.LookPath)
-	seatbeltAvailable := firecrackerProbeGOOS == "darwin"
+	seatbeltAvailable := firecrackerProbeGOOS == "darwin" || firecrackerProbeGOOS == "linux"
 
 	_, codexErr := exec.LookPath("codex")
 	codexAvailable := codexErr == nil
