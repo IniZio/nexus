@@ -11,7 +11,7 @@ func TestLoader_LoadsWorkspaceJSON(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, ".nexus"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	data := []byte(`{"version":1,"runtime":{"required":["local"]},"readiness":{"profiles":{"default-services":[{"name":"api","type":"service","serviceName":"api"}]}}}`)
+	data := []byte(`{"version":1,"runtime":{"required":["linux"]},"readiness":{"profiles":{"default-services":[{"name":"api","type":"service","serviceName":"api"}]}}}`)
 	if err := os.WriteFile(filepath.Join(root, ".nexus", "workspace.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestLoadWorkspaceConfig_DoctorTestsAndRuntime(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, ".nexus"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	data := []byte(`{"version":1,"runtime":{"required":["firecracker"]},"doctor":{"tests":[{"name":"tooling","command":"bash"}]}}`)
+	data := []byte(`{"version":1,"runtime":{"required":["linux"]},"doctor":{"tests":[{"name":"tooling","command":"bash"}]}}`)
 	if err := os.WriteFile(filepath.Join(root, ".nexus", "workspace.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -117,8 +117,8 @@ func TestLoadWorkspaceConfig_DoctorTestsAndRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if len(cfg.Runtime.Required) != 1 || cfg.Runtime.Required[0] != "firecracker" {
-		t.Fatalf("expected runtime.required [firecracker], got %v", cfg.Runtime.Required)
+	if len(cfg.Runtime.Required) != 1 || cfg.Runtime.Required[0] != "linux" {
+		t.Fatalf("expected runtime.required [linux], got %v", cfg.Runtime.Required)
 	}
 	if len(cfg.Doctor.Tests) != 1 {
 		t.Fatalf("expected 1 doctor test, got %d", len(cfg.Doctor.Tests))

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"strings"
 )
 
 type Capability struct {
@@ -60,17 +61,37 @@ func (f *Factory) selectBackend(required []string, selection string) (string, er
 		return "", fmt.Errorf("unsupported selection strategy: %q", selection)
 	}
 
-	for _, backend := range required {
-		if _, ok := f.drivers[backend]; !ok {
+	for _, req := range required {
+		candidates := f.expandRuntimeRequirement(req)
+		if len(candidates) == 0 {
 			continue
 		}
-		if !f.isCapabilityAvailable("runtime." + backend) {
-			continue
+		for _, backend := range candidates {
+			if _, ok := f.drivers[backend]; !ok {
+				continue
+			}
+			if !f.isCapabilityAvailable("runtime." + backend) {
+				continue
+			}
+			return backend, nil
 		}
-		return backend, nil
 	}
 
 	return "", fmt.Errorf("no required backend available from: %v", required)
+}
+
+func (f *Factory) expandRuntimeRequirement(raw string) []string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "linux":
+		if !f.isCapabilityAvailable("runtime.linux") {
+			return nil
+		}
+		return []string{"firecracker", "lxc"}
+	case "firecracker", "lxc", "local":
+		return []string{strings.ToLower(strings.TrimSpace(raw))}
+	default:
+		return nil
+	}
 }
 
 func (f *Factory) isCapabilityAvailable(name string) bool {
@@ -84,4 +105,9 @@ func (f *Factory) isCapabilityAvailable(name string) bool {
 
 func (f *Factory) Capabilities() []Capability {
 	return f.capabilities
+}
+
+func (f *Factory) DriverForBackend(backend string) (Driver, bool) {
+	d, ok := f.drivers[backend]
+	return d, ok
 }

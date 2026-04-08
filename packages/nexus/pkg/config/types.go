@@ -146,8 +146,8 @@ func (c WorkspaceConfig) ValidateBasic() error {
 	}
 
 	for _, allowed := range c.Runtime.Required {
-		if allowed != "firecracker" && allowed != "local" {
-			return fmt.Errorf("runtime.required values must be: firecracker or local")
+		if allowed != "linux" {
+			return fmt.Errorf("runtime.required values must be: linux")
 		}
 	}
 	if len(c.Runtime.Required) == 0 {

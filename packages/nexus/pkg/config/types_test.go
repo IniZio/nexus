@@ -29,7 +29,7 @@ func TestWorkspaceConfig_ReadinessCheckNameRequired(t *testing.T) {
 func TestWorkspaceConfig_ValidMinimal(t *testing.T) {
 	cfg := WorkspaceConfig{
 		Version: 1,
-		Runtime: RuntimeConfig{Required: []string{"local"}},
+		Runtime: RuntimeConfig{Required: []string{"linux"}},
 	}
 	err := cfg.ValidateBasic()
 	if err != nil {
@@ -76,7 +76,7 @@ func TestWorkspaceConfig_DoctorProbeRetriesValidation(t *testing.T) {
 func TestWorkspaceConfig_RuntimeAndDoctorTestsValidation(t *testing.T) {
 	cfg := WorkspaceConfig{
 		Version:      1,
-		Runtime:      RuntimeConfig{Required: []string{"firecracker"}, Selection: "prefer-first"},
+		Runtime:      RuntimeConfig{Required: []string{"linux"}, Selection: "prefer-first"},
 		Capabilities: CapabilityRequirements{Required: []string{"spotlight.tunnel"}},
 		Doctor:       DoctorConfig{Tests: []DoctorCommandCheck{{Name: "auth-flow", Command: "bash", Args: []string{".nexus/lifecycles/test-auth-flow.sh"}, Required: true}}},
 	}
@@ -85,19 +85,19 @@ func TestWorkspaceConfig_RuntimeAndDoctorTestsValidation(t *testing.T) {
 	}
 }
 
-func TestRuntimeRequired_AllowsOnlyFirecracker(t *testing.T) {
+func TestWorkspaceConfig_RuntimeRequired_AllowsLinux(t *testing.T) {
 	cfg := WorkspaceConfig{
 		Version: 1,
-		Runtime: RuntimeConfig{Required: []string{"firecracker"}, Selection: "prefer-first"},
+		Runtime: RuntimeConfig{Required: []string{"linux"}, Selection: "prefer-first"},
 	}
 
 	if err := cfg.ValidateBasic(); err != nil {
-		t.Fatalf("expected firecracker runtime to validate, got %v", err)
+		t.Fatalf("expected linux runtime to validate, got %v", err)
 	}
 }
 
 func TestRuntimeRequired_RejectsLegacyAndGenericBackends(t *testing.T) {
-	for _, backend := range []string{"dind", "lxc", "vm"} {
+	for _, backend := range []string{"dind", "vm", "firecracker", "lxc"} {
 		cfg := WorkspaceConfig{
 			Version: 1,
 			Runtime: RuntimeConfig{Required: []string{backend}, Selection: "prefer-first"},

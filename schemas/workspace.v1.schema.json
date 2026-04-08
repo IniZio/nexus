@@ -102,7 +102,7 @@
       "properties": {
         "required": {
           "type": "array",
-          "items": { "type": "string", "enum": ["firecracker", "local"] }
+          "items": { "type": "string", "enum": ["linux"] }
         },
         "selection": { "type": "string", "enum": ["prefer-first"] }
       }
