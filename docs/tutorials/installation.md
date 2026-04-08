@@ -51,6 +51,6 @@ bash .nexus/e2e/run.sh
 
 ## Next Steps
 
-- [Workspace Daemon Reference](../reference/workspace-daemon.md)
-- [Workspace SDK Reference](../reference/workspace-sdk.md)
+- [CLI and Daemon Reference](../reference/cli.md)
+- [SDK Reference](../reference/sdk.md)
 - [Workspace Config Reference](../reference/workspace-config.md)

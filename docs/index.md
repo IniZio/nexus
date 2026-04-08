@@ -14,7 +14,7 @@ Nexus is the remote workspace core for this repository:
 
 ## Start here
 
-- `docs/reference/workspace-daemon.md`
-- `docs/reference/workspace-sdk.md`
+- `docs/reference/cli.md`
+- `docs/reference/sdk.md`
 - `docs/reference/workspace-config.md`
 - `docs/tutorials/installation.md`

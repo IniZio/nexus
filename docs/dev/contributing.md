@@ -33,9 +33,13 @@ cd packages/sdk/js && pnpm exec tsc --noEmit && pnpm exec jest --runInBand
 
 Update docs when behavior changes:
 
-- `docs/reference/workspace-daemon.md`
-- `docs/reference/workspace-sdk.md`
+- `docs/reference/cli.md`
+- `docs/reference/sdk.md`
 - `docs/reference/workspace-config.md`
+
+Design/research references for API and UX decisions:
+
+- `docs/dev/internal/research/2026-04-07-sdk-cli-ergonomics-benchmark.md`
 
 ## Commit style
 

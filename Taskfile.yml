@@ -1,21 +1,45 @@
-version: '3'
+version: "3"
 
 tasks:
+  # ── Dev ─────────────────────────────────────────────────────────────────
+  dev:
+    desc: "Start daemon (air hot-reload) + Vite dev server concurrently"
+    deps: [dev:workspace-dir]
+    cmds:
+      - task --parallel dev:daemon dev:ui
+
+  dev:daemon:
+    desc: "Hot-reload daemon with air (proxies /ui to Vite on :5173)"
+    dir: packages/nexus
+    cmds:
+      - air
+    env:
+      NEXUS_DEV_UI: "http://localhost:5173"
+
+  dev:ui:
+    desc: "Vite dev server for the admin UI"
+    dir: packages/nexus-ui
+    cmds:
+      - pnpm dev
+
+  dev:workspace-dir:
+    desc: "Ensure dev workspace dir exists"
+    cmds:
+      - mkdir -p /tmp/nexus-dev-workspace
+    silent: true
+
+  # ── Build ────────────────────────────────────────────────────────────────
   build:
     desc: Build core packages
     cmds:
       - task: build:workspace-daemon
       - task: build:workspace-sdk
+      - task: build:nexus-ui
 
   build:workspace-daemon:
     dir: packages/nexus
     cmds:
       - go build ./...
-
-  test:workspace-daemon:
-    dir: packages/nexus
-    cmds:
-      - go test ./...
 
   build:workspace-sdk:
     dir: packages/sdk/js
@@ -23,17 +47,38 @@ tasks:
       - pnpm install
       - pnpm build
 
+  build:nexus-ui:
+    desc: "Build UI and copy clean dist into Go embed directory"
+    dir: packages/nexus-ui
+    cmds:
+      - pnpm install
+      - pnpm build
+      - bash -c 'rm -rf ../nexus/pkg/server/portal/ui_dist && mkdir -p ../nexus/pkg/server/portal/ui_dist && cp -r dist/. ../nexus/pkg/server/portal/ui_dist/'
+
+  # ── Test ─────────────────────────────────────────────────────────────────
   test:
     desc: Run core tests
     cmds:
       - task: test:workspace-daemon
       - task: test:workspace-sdk
+      - task: test:nexus-ui
+
+  test:workspace-daemon:
+    dir: packages/nexus
+    cmds:
+      - go test ./...
 
   test:workspace-sdk:
     dir: packages/sdk/js
     cmds:
       - pnpm test
 
+  test:nexus-ui:
+    dir: packages/nexus-ui
+    cmds:
+      - pnpm check
+
+  # ── Lint ─────────────────────────────────────────────────────────────────
   lint:
     desc: Run core lint checks
     cmds:
@@ -50,16 +95,76 @@ tasks:
     cmds:
       - pnpm exec tsc --noEmit
 
+  # ── CI ───────────────────────────────────────────────────────────────────
   ci:
-    desc: Run CI pipeline - install, build, lint, test
+    desc: Run local equivalent of CI jobs
     cmds:
-      - pnpm install
-      - task: build
-      - task: lint
-      - task: test
+      - task: ci:go-fix
+      - task: ci:coverage
+      - task: ci:core
+      - task: ci:nexus-subcommand-e2e
+      - task: ci:pty-runtime-e2e
+      - task: ci:pty-lxc-managed-e2e
+
+  ci:core:
+    desc: Run Core CI (linux) equivalent
+    cmds:
+      - ./scripts/ci/nexus-core.sh
+
+  ci:go-fix:
+    desc: Run Go Fix Check equivalent
+    cmds:
+      - ./scripts/ci/go-fix.sh
+
+  ci:coverage:
+    desc: Run Go Coverage (nexus) equivalent
+    cmds:
+      - ./scripts/ci/coverage.sh
+
+  ci:nexus-subcommand-e2e:
+    desc: Run Nexus Subcommand E2E equivalent for current OS
+    cmds:
+      - task: ci:nexus-subcommand-e2e:init-exec
+      - task: ci:nexus-subcommand-e2e:doctor-backends
+
+  ci:nexus-subcommand-e2e:init-exec:
+    desc: Run init/exec suite used by CI matrix on current OS
+    cmds:
+      - ./scripts/ci/nexus-subcommand-e2e-init-exec.sh
+
+  ci:nexus-subcommand-e2e:doctor-backends:
+    desc: Run doctor/backend suite used by CI matrix on current OS
+    cmds:
+      - ./scripts/ci/nexus-subcommand-e2e-doctor-backends.sh
+
+  ci:pty-runtime-e2e:
+    desc: Run PTY Runtime E2E equivalent for current OS
+    cmds:
+      - ./scripts/ci/pty-runtime-e2e.sh
+
+  ci:pty-lxc-managed-e2e:
+    desc: Run PTY LXC Managed E2E equivalent (macOS only)
+    cmds:
+      - ./scripts/ci/pty-lxc-managed-e2e.sh
+
+  # ── Smoke tests (quick local PTY validation) ─────────────────────────────
+  smoke:pty:lxc:
+    desc: Run PTY smoke test against an existing LXC workspace
+    dir: packages/nexus
+    cmds:
+      - ./scripts/ci/pty-lxc-managed-e2e.sh
+
+  smoke:pty:fc:
+    desc: Run PTY smoke test against a firecracker/default workspace
+    dir: packages/nexus
+    cmds:
+      - ./scripts/ci/pty-runtime-e2e.sh
 
   clean:
     desc: Clean core build artifacts
     cmds:
       - rm -rf packages/nexus/nexus
+      - rm -rf packages/nexus/.air-tmp
       - rm -rf packages/sdk/js/dist
+      - rm -rf packages/nexus-ui/dist
+      - rm -rf packages/nexus/pkg/server/portal/ui_dist

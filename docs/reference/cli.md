@@ -1,6 +1,15 @@
-# Workspace Daemon
+# CLI
 
-The workspace daemon is a Go-based server that provides remote file system and execution capabilities to the Nexus Workspace SDK via WebSocket.
+This reference is intentionally named `cli.md` because it covers Nexus control-plane interfaces, not only workspace internals.
+
+Semantic boundary:
+
+- `nexus` is the human/operator command interface.
+- `workspace-daemon` is the programmatic runtime/API interface consumed by SDK and automation.
+
+The sections below focus on daemon runtime behavior and RPC/HTTP APIs, which are the stable contract surface for remote control.
+
+The workspace daemon is a Go-based server that provides remote file system and execution capabilities to the Nexus SDK via WebSocket.
 
 ## Overview
 
@@ -36,6 +45,31 @@ workspace-daemon \
   --workspace-dir /workspace
 ```
 
+## Embedded Web UI
+
+The daemon serves an embedded web control plane for workspace operations.
+
+- UI path: `/ui` (legacy alias: `/portal`)
+- Summary API: `GET /ui/api/summary`
+- Workspace APIs (token-required):
+  - `GET /ui/api/workspaces` - list workspaces
+  - `POST /ui/api/workspaces` - create workspace
+  - `POST /ui/api/workspaces/{id}/actions/{action}` - lifecycle action (`start`, `stop`, `restore`, `pause`, `resume`)
+  - `POST /ui/api/workspaces/{id}/fork` - fork workspace
+  - `DELETE /ui/api/workspaces/{id}` - remove workspace
+
+Authentication for UI APIs supports:
+
+- `X-Nexus-Token: <daemon token>` header (used by embedded UI)
+- `Authorization: Bearer <token>` header
+- `?token=<token>` query parameter
+
+Open locally:
+
+```bash
+open "http://localhost:8080/ui"
+```
+
 ## Configuration
 
 | Flag | Description | Default |
@@ -44,6 +78,45 @@ workspace-daemon \
 | `--token` | Authentication token | - |
 | `--workspace-dir` | Workspace directory | /workspace |
 | `--host` | Host to bind to | localhost |
+
+## Intent Model
+
+Nexus CLI and daemon surfaces are organized by operator intent. This keeps command discovery and SDK mapping stable.
+
+### 1) Auth and Session
+
+- Authenticate and establish control-plane connectivity.
+- Typical surfaces: daemon token validation and client connection bootstrap.
+
+### 2) Workspace Lifecycle
+
+Canonical lifecycle verbs used across daemon APIs and SDK:
+
+- `create`
+- `list`
+- `open`
+- `start`
+- `pause`
+- `resume`
+- `stop`
+- `restore`
+- `fork`
+- `remove`
+
+### 3) Execution and Filesystem
+
+- Filesystem operations: read/write/stat/list/remove.
+- Command execution operations: execute process and collect output.
+
+### 4) Forwarding and Network Access
+
+- Spotlight operations for exposing workspace service ports.
+- Compose/default forward application flows.
+
+### 5) Diagnostics and Readiness
+
+- Capability checks and readiness polling.
+- Runtime state introspection and service health checks.
 
 ## Components
 
@@ -61,6 +134,17 @@ workspace-daemon \
 
 | Method | Description |
 |--------|-------------|
+| `workspace.create` | Create isolated remote workspace |
+| `workspace.list` | List workspace records |
+| `workspace.open` | Open workspace by id |
+| `workspace.start` | Start workspace compute and mark running |
+| `workspace.pause` | Pause a running workspace VM |
+| `workspace.resume` | Resume a paused workspace VM |
+| `workspace.stop` | Stop compute, persist workspace state |
+| `workspace.restore` | Restore persisted workspace to running state |
+| `workspace.fork` | Fork a workspace into a child workspace |
+| `workspace.remove` | Remove workspace by id |
+| `workspace.info` | Get workspace info |
 | `fs.readFile` | Read file contents |
 | `fs.writeFile` | Write file contents |
 | `fs.mkdir` | Create directory |
@@ -69,27 +153,46 @@ workspace-daemon \
 | `fs.stat` | Get file stats |
 | `fs.rm` | Remove file/directory |
 | `exec` | Execute command |
-| `workspace.info` | Get workspace info |
-| `workspace.create` | Create isolated remote workspace |
-| `workspace.open` | Open workspace by id |
-| `workspace.list` | List workspace records |
-| `workspace.stop` | Stop compute, persist workspace state |
-| `workspace.restore` | Restore persisted workspace to running state |
-| `workspace.pause` | Pause a running workspace VM |
-| `workspace.resume` | Resume a paused workspace VM |
-| `workspace.fork` | Fork a workspace into a child workspace |
-| `workspace.remove` | Remove workspace by id |
-| `workspace.ready` | Poll readiness checks until success/timeout |
-| `authrelay.mint` | Mint one-time auth relay token for exec injection |
-| `authrelay.revoke` | Revoke auth relay token |
-| `capabilities.list` | List available runtime and toolchain capabilities |
+| `git.command` | Run scoped git action in workspace |
+| `service.command` | Start/stop/restart/status/logs for workspace services |
 | `spotlight.expose` | Expose remote service port locally (Spotlight-only ingress) |
 | `spotlight.list` | List active Spotlight forwards |
 | `spotlight.close` | Close Spotlight forward |
 | `spotlight.applyDefaults` | Apply project spotlight defaults from `.nexus/workspace.json` |
 | `spotlight.applyComposePorts` | Auto-forward all docker-compose published ports |
-| `git.command` | Run scoped git action in workspace |
-| `service.command` | Start/stop/restart/status/logs for workspace services |
+| `workspace.ready` | Poll readiness checks until success/timeout |
+| `capabilities.list` | List available runtime and toolchain capabilities |
+| `authrelay.mint` | Mint one-time auth relay token for exec injection |
+| `authrelay.revoke` | Revoke auth relay token |
+
+## SDK/CLI Parity Flow
+
+The same conceptual lifecycle should read consistently across operator and SDK flows.
+
+CLI/operator-oriented flow:
+
+1. Start daemon (`workspace-daemon ...`).
+2. Create/list/open workspace via lifecycle methods.
+3. Run execution or file operations.
+4. Expose ports with Spotlight.
+5. Stop/restore/remove lifecycle actions as needed.
+
+SDK flow (equivalent intent):
+
+```typescript
+const client = new WorkspaceClient({ endpoint, workspaceId, token });
+await client.connect();
+
+const ws = await client.workspace.create({ repo, workspaceName, agentProfile: 'default' });
+await client.workspace.start(ws.id);
+
+await ws.exec.exec('npm', ['test']);
+await ws.spotlight.expose({ service: 'web', remotePort: 5173, localPort: 5173 });
+
+await client.workspace.stop(ws.id);
+await client.workspace.restore(ws.id);
+await client.workspace.remove(ws.id);
+```
 
 ### `service.command` options
 

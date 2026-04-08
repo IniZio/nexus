@@ -1,6 +1,13 @@
-# Workspace SDK
+# SDK
 
-The Nexus Workspace SDK provides a TypeScript/JavaScript interface for connecting to remote Nexus workspaces via WebSocket. It enables programmatic control over workspace file systems, process execution, and service management.
+The Nexus SDK provides a TypeScript/JavaScript interface for connecting to remote Nexus workspaces via WebSocket. It enables programmatic control over workspace file systems, process execution, Spotlight forwards, and workspace lifecycle/service actions.
+
+Semantic boundary:
+
+- `client.fs`, `client.exec`, and `client.spotlight` target the client's configured default workspace (`WorkspaceClientConfig.workspaceId`) by default.
+- `client.spotlight` also supports explicit workspace overrides for cross-workspace forwarding control.
+- `client.workspace` is lifecycle orchestration and workspace-handle acquisition.
+- `workspaceHandle.*` (`fs`, `exec`, `spotlight`, `git`, `service`) is explicitly scoped to one workspace id and is the preferred shape for multi-workspace flows.
 
 ## Installation
 
@@ -65,12 +72,54 @@ const client = new WorkspaceClient(config);
 - `isConnected()` - Check connection status
 - `onDisconnect(callback)` - Register disconnect handler
 
+### Top-level Operations
+
+The client exposes unified operation groups:
+
+- `client.fs` - file operations
+- `client.exec` - command execution
+- `client.spotlight` - explicit spotlight forwarding operations
+- `client.workspace` - workspace lifecycle and handles
+
+Scoping matrix:
+
+| Operation group | Default scope source | Explicit override | Recommended usage |
+|---|---|---|---|
+| `client.fs.*` | `WorkspaceClientConfig.workspaceId` | No | Fast path for single-workspace automation/UI flows |
+| `client.exec.*` | `WorkspaceClientConfig.workspaceId` | No | Fast path for single-workspace command execution |
+| `client.spotlight.*` | `WorkspaceClientConfig.workspaceId` | Yes (`workspaceId`) | Default for current workspace; override for cross-workspace control |
+| `client.workspace.*` | N/A (orchestration methods use ids/spec) | Yes (id/spec based) | Lifecycle management and handle acquisition |
+| `workspaceHandle.*` | Handle workspace id (fixed) | No | Preferred for multi-workspace flows and safety |
+
+`client.spotlight` defaults to the client workspace but accepts explicit `workspaceId` overrides, while `workspaceHandle.spotlight` is always scoped to that handle's workspace.
+
+```typescript
+await client.spotlight.expose({
+  service: 'student-portal',
+  remotePort: 5173,
+  localPort: 5173,
+});
+
+// Explicit cross-workspace override
+await client.spotlight.expose('ws-123', {
+  service: 'student-portal',
+  remotePort: 5173,
+  localPort: 5173,
+});
+
+const defaultForwards = await client.spotlight.list();
+const globalForwards = await client.spotlight.list('ws-123');
+await client.spotlight.applyDefaults();
+await client.spotlight.applyComposePorts();
+```
+
 ### Workspace Manager (`client.workspace`)
 
 - `create(spec)` - Create remote isolated workspace
 - `open(id)` - Open existing workspace handle
 - `list()` - List workspaces
 - `remove(id)` - Remove workspace
+- `start(id)` - Start workspace compute from `created`/`stopped`/`restored`
 
 ```typescript
 const ws = await client.workspace.create({
@@ -134,6 +183,11 @@ console.log(defaults.forwards.length);
 
 const composeForwards = await ws.spotlight.applyComposePorts();
 console.log(composeForwards.forwards.length, composeForwards.errors.length);
+
+const listed = await client.workspace.list();
+if (listed.length > 0) {
+  await client.workspace.start(listed[0].id);
+}
 ```
 
 Convention-over-configuration behavior:

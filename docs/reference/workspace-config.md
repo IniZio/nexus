@@ -84,26 +84,16 @@ Without any config file, Nexus will:
 
 Use `.nexus/workspace.json` only when you need overrides (custom readiness profiles, service defaults, explicit spotlight defaults, auth defaults).
 
-## Runtime Requirements
+## Runtime
 
-The `runtime` block declares isolated workspace backend constraints:
+Project-level runtime configuration is no longer used.
 
-```json
-{
-  "version": 1,
-  "runtime": {
-    "required": ["firecracker"],
-    "selection": "prefer-first"
-  }
-}
-```
+Nexus selects isolated runtime automatically:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `required` | `string[]` | Allowed backends: `firecracker`. Empty means daemon auto-selection from available capabilities. |
-| `selection` | `string` | Backend selection strategy. `"prefer-first"` selects the first available from `required`. |
+- macOS: tries Lima + `firecracker` first, then falls back to `seatbelt` when nested virtualization is unavailable
+- Linux: `firecracker`
 
-When no `runtime` block is present, Nexus selects a backend automatically.
+There is no `runtime` block in `.nexus/workspace.json`.
 
 ### Firecracker Host Setup
 

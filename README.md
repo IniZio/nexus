@@ -51,6 +51,8 @@ NEXUS_RUNTIME_BACKEND=firecracker nexus doctor
 - Documentation index: `docs/index.md`
 - Workspace daemon package docs: `packages/nexus/README.md`
 - JavaScript SDK docs: `packages/sdk/js/README.md`
+- CLI and daemon reference: `docs/reference/cli.md`
+- SDK reference: `docs/reference/sdk.md`
 
 ## Development
 

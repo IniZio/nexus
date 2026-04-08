@@ -30,13 +30,30 @@ await client.disconnect()
 
 - `client.fs.readFile`, `client.fs.writeFile`, `client.fs.readdir`
 - `client.exec(command, args, options)`
-- `client.workspace.create/open/list/remove`
-- `workspace.spotlight.expose/list/close`
+- `client.spotlight.expose/list/close/applyDefaults/applyComposePorts`
+- `client.workspace.create/open/list/start/stop/restore/pause/resume/fork/remove`
+
+## Workspace lifecycle example
+
+```ts
+const created = await client.workspace.create({
+  repo: 'git@github.com:org/repo.git',
+  ref: 'main',
+  workspaceName: 'feature-ui',
+  agentProfile: 'default',
+})
+
+await client.workspace.start(created.id)
+await client.workspace.pause(created.id)
+await client.workspace.resume(created.id)
+await client.workspace.stop(created.id)
+await client.workspace.restore(created.id)
+```
 
 ## Docs
 
-- `docs/reference/workspace-sdk.md`
-- `docs/reference/workspace-daemon.md`
+- `docs/reference/sdk.md`
+- `docs/reference/cli.md`
 
 ## License
 
