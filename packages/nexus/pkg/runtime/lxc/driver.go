@@ -322,10 +322,21 @@ func startLimaShell(ctx context.Context, instanceName, workdir, shell string) (*
 }
 
 func instanceCandidates(instanceName string) []string {
-	if strings.TrimSpace(instanceName) != "" {
-		return []string{strings.TrimSpace(instanceName)}
+	trimmed := strings.TrimSpace(instanceName)
+	base := []string{"nexus-lxc", "nexus-firecracker"}
+	if trimmed == "" {
+		return base
 	}
-	return []string{"nexus-lxc", "nexus-firecracker"}
+
+	out := make([]string, 0, len(base)+1)
+	out = append(out, trimmed)
+	for _, candidate := range base {
+		if candidate == trimmed {
+			continue
+		}
+		out = append(out, candidate)
+	}
+	return out
 }
 
 func shellQuote(v string) string {
