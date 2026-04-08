@@ -189,3 +189,14 @@ jobs:
         run: |
           set -euo pipefail
           go test ./pkg/server -count=1 -run 'TestPTYOpenUsesRemoteConnectorForFirecrackerAndLXC' -v
+
+      - name: Archive PTY runtime logs (if present)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-runtime-e2e-${{ matrix.os }}
+          path: |
+            packages/nexus/pty-remote-smoke.log
+            /tmp/nexus-daemon-*.log
+          if-no-files-found: ignore
+          retention-days: 7
