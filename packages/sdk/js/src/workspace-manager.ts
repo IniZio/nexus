@@ -10,9 +10,11 @@ import {
   WorkspaceOpenResult,
   WorkspaceRemoveResult,
   WorkspaceRestoreResult,
+  WorkspaceRelationsListResult,
   WorkspaceForkResult,
   WorkspacePauseResult,
   WorkspaceResumeResult,
+  WorkspaceStartResult,
   WorkspaceStopResult,
 } from './types';
 import { WorkspaceHandle, type RPCClient } from './workspace-handle';
@@ -39,6 +41,13 @@ export class WorkspaceManager {
     return result.workspaces;
   }
 
+  async relations(repoId?: string): Promise<WorkspaceRelationsListResult['relations']> {
+    const result = await this.client.request<WorkspaceRelationsListResult>('workspace.relations.list', {
+      repoId,
+    });
+    return result.relations;
+  }
+
   async remove(id: string): Promise<boolean> {
     const result = await this.client.request<WorkspaceRemoveResult>('workspace.remove', { id });
     return result.removed;
@@ -47,6 +56,11 @@ export class WorkspaceManager {
   async stop(id: string): Promise<boolean> {
     const result = await this.client.request<WorkspaceStopResult>('workspace.stop', { id });
     return result.stopped;
+  }
+
+  async start(id: string): Promise<boolean> {
+    const result = await this.client.request<WorkspaceStartResult>('workspace.start', { id });
+    return result.started;
   }
 
   async restore(id: string): Promise<WorkspaceHandle> {
@@ -64,8 +78,8 @@ export class WorkspaceManager {
     return result.resumed;
   }
 
-  async fork(id: string, childWorkspaceName?: string): Promise<WorkspaceHandle> {
-    const result = await this.client.request<WorkspaceForkResult>('workspace.fork', { id, childWorkspaceName });
+  async fork(id: string, childWorkspaceName?: string, childRef?: string): Promise<WorkspaceHandle> {
+    const result = await this.client.request<WorkspaceForkResult>('workspace.fork', { id, childWorkspaceName, childRef });
     return new WorkspaceHandle(this.client, result.workspace);
   }
 

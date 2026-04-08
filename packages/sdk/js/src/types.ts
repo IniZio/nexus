@@ -1,6 +1,6 @@
 export interface WorkspaceClientConfig {
   endpoint: string;
-  workspaceId: string;
+  workspaceId?: string;
   token: string;
   reconnect?: boolean;
   reconnectDelay?: number;
@@ -103,34 +103,6 @@ export interface ExecParams {
   [key: string]: unknown;
 }
 
-export interface FSWriteFileParams {
-  path: string;
-  content: string | Buffer;
-  encoding?: string;
-}
-
-export interface FSExistsParams {
-  path: string;
-}
-
-export interface FSReaddirParams {
-  path: string;
-}
-
-export interface FSMkdirParams {
-  path: string;
-  recursive?: boolean;
-}
-
-export interface FSRmParams {
-  path: string;
-  recursive?: boolean;
-}
-
-export interface FSStatParams {
-  path: string;
-}
-
 export interface FSReadFileResult {
   content: string | Buffer;
   encoding: string;
@@ -160,12 +132,6 @@ export interface FSStatResult {
   stats: FileStats;
 }
 
-export interface ExecParams {
-  command: string;
-  args?: string[];
-  options?: ExecOptions;
-}
-
 export interface ExecResultData {
   stdout: string;
   stderr: string;
@@ -174,7 +140,7 @@ export interface ExecResultData {
 
 export type RequestHandler = (params?: Record<string, unknown>) => Promise<unknown>;
 
-export type WorkspaceState = 'created' | 'running' | 'stopped' | 'restored' | 'removed';
+export type WorkspaceState = 'created' | 'running' | 'paused' | 'stopped' | 'restored' | 'removed';
 
 export type GitCredentialMode = 'host-helper' | 'ephemeral-helper' | 'none';
 
@@ -192,11 +158,14 @@ export interface WorkspaceCreateSpec {
   workspaceName: string;
   agentProfile: string;
   policy?: WorkspacePolicy;
+  /** Preferred backend (e.g. "local", "lxc", "firecracker"). Daemon resolves best available if omitted. */
+  backend?: string;
 }
 
 export interface WorkspaceRecord {
   id: string;
   repo: string;
+  repoKind?: string;
   ref: string;
   workspaceName: string;
   agentProfile: string;
@@ -206,6 +175,7 @@ export interface WorkspaceRecord {
   policy?: WorkspacePolicy;
   state: WorkspaceState;
   rootPath: string;
+  localWorktreePath?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -299,6 +269,10 @@ export interface WorkspaceStopResult {
   stopped: boolean;
 }
 
+export interface WorkspaceStartResult {
+  started: boolean;
+}
+
 export interface WorkspaceRestoreResult {
   restored: boolean;
   workspace: WorkspaceRecord;
@@ -315,6 +289,35 @@ export interface WorkspaceResumeResult {
 export interface WorkspaceForkResult {
   forked: boolean;
   workspace: WorkspaceRecord;
+}
+
+export interface WorkspaceRelationNode {
+  workspaceId: string;
+  parentWorkspaceId?: string;
+  lineageRootId?: string;
+  derivedFromRef?: string;
+  worktreeRef?: string;
+  state: WorkspaceState;
+  backend?: string;
+  workspaceName: string;
+  rootPath: string;
+  localWorktreePath?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkspaceRelationsGroup {
+  repoId: string;
+  repoKind?: string;
+  repo: string;
+  displayName: string;
+  remoteUrl?: string;
+  nodes: WorkspaceRelationNode[];
+  lineageRoots: string[];
+}
+
+export interface WorkspaceRelationsListResult {
+  relations: WorkspaceRelationsGroup[];
 }
 
 export interface AuthRelayMintParams {

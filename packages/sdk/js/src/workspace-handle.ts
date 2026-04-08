@@ -1,9 +1,10 @@
 import { ExecOperations } from './exec';
 import { FSOperations } from './fs';
+import { SpotlightOperations } from './spotlight';
 import {
-  SpotlightExposeOptions,
   SpotlightApplyDefaultsResult,
   SpotlightApplyComposePortsResult,
+  SpotlightExposeOptions,
   SpotlightForward,
   SpotlightListResult,
   WorkspaceInfo,
@@ -24,53 +25,6 @@ interface SpotlightClient {
   applyComposePorts(): Promise<SpotlightApplyComposePortsResult>;
 }
 
-class WorkspaceSpotlightClient implements SpotlightClient {
-  private client: RPCClient;
-  private workspaceId: string;
-
-  constructor(client: RPCClient, workspaceId: string) {
-    this.client = client;
-    this.workspaceId = workspaceId;
-  }
-
-  async expose(options: SpotlightExposeOptions): Promise<SpotlightForward> {
-    const result = await this.client.request<{ forward: SpotlightForward }>('spotlight.expose', {
-      spec: {
-        workspaceId: this.workspaceId,
-        service: options.service,
-        remotePort: options.remotePort,
-        localPort: options.localPort,
-        host: options.host,
-      },
-    });
-
-    return result.forward;
-  }
-
-  async list(): Promise<SpotlightListResult> {
-    return this.client.request<SpotlightListResult>('spotlight.list', {
-      workspaceId: this.workspaceId,
-    });
-  }
-
-  async close(id: string): Promise<boolean> {
-    const result = await this.client.request<{ closed: boolean }>('spotlight.close', { id });
-    return result.closed;
-  }
-
-  async applyDefaults(): Promise<SpotlightApplyDefaultsResult> {
-    return this.client.request<SpotlightApplyDefaultsResult>('spotlight.applyDefaults', {
-      workspaceId: this.workspaceId,
-    });
-  }
-
-  async applyComposePorts(): Promise<SpotlightApplyComposePortsResult> {
-    return this.client.request<SpotlightApplyComposePortsResult>('spotlight.applyComposePorts', {
-      workspaceId: this.workspaceId,
-    });
-  }
-}
-
 export class WorkspaceHandle {
   private client: RPCClient;
   private record: WorkspaceRecord;
@@ -85,7 +39,7 @@ export class WorkspaceHandle {
     const scopedParams = { workspaceId: record.id };
     this.exec = new ExecOperations(client as never, scopedParams);
     this.fs = new FSOperations(client as never, scopedParams);
-    this.spotlight = new WorkspaceSpotlightClient(client, record.id);
+    this.spotlight = new SpotlightOperations(client, scopedParams);
   }
 
   get id(): string {

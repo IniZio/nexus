@@ -7,20 +7,26 @@ interface RPCClient {
 
 export class ExecOperations {
   private client: RPCClient;
-  private defaultParams: Record<string, unknown>;
+  private workspaceId?: string;
 
   constructor(client: WorkspaceClient | RPCClient, defaultParams: Record<string, unknown> = {}) {
     this.client = client;
-    this.defaultParams = defaultParams;
+    this.workspaceId = typeof defaultParams.workspaceId === 'string' ? defaultParams.workspaceId : undefined;
+  }
+
+  private params<T extends Record<string, unknown>>(input: T): T {
+    if (!this.workspaceId) {
+      return input;
+    }
+    return { ...input, workspaceId: this.workspaceId };
   }
 
   async exec(command: string, args: string[] = [], options: ExecOptions = {}): Promise<ExecResult> {
-    const params: ExecParams = {
+    const params: ExecParams = this.params({
       command,
       args,
       options,
-      ...this.defaultParams,
-    };
+    });
 
     const result = await this.client.request<ExecResultData>('exec', params);
 

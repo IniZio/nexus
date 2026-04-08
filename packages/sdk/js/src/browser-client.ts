@@ -1,4 +1,3 @@
-import WebSocket from 'ws';
 import {
   WorkspaceClientConfig,
   ConnectionState,
@@ -11,8 +10,16 @@ import { ExecOperations } from './exec';
 import { SpotlightOperations } from './spotlight';
 import { WorkspaceManager } from './workspace-manager';
 
-export class WorkspaceClient {
-  private ws: WebSocket | null = null;
+type WSLike = {
+  readyState: number;
+  send: (data: string) => void;
+  close: (code?: number, reason?: string) => void;
+  addEventListener?: (event: string, handler: (...args: unknown[]) => void) => void;
+  on?: (event: string, handler: (...args: unknown[]) => void) => void;
+};
+
+export class BrowserWorkspaceClient {
+  private ws: WSLike | null = null;
   private config: {
     endpoint: string;
     workspaceId?: string;
@@ -25,8 +32,7 @@ export class WorkspaceClient {
   private reconnectAttempts = 0;
   private requestMap: Map<string, { resolve: (value: unknown) => void; reject: (reason: Error) => void }> = new Map();
   private disconnectCallbacks: Array<() => void> = [];
-  private reconnectTimeout: NodeJS.Timeout | null = null;
-  private messageQueue: RPCRequest[] = [];
+  private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private reconnectEnabled = true;
   private requestId = 0;
 
@@ -74,34 +80,43 @@ export class WorkspaceClient {
         }
         url.searchParams.set('token', this.config.token);
 
-        this.ws = new WebSocket(url.toString());
+        const WSCtor = (globalThis as { WebSocket?: new (url: string) => WSLike }).WebSocket;
+        if (!WSCtor) {
+          throw new Error('WebSocket is not available in this runtime');
+        }
+        this.ws = new WSCtor(url.toString());
 
-        this.ws.on('open', () => {
+        const onOpen = () => {
           this.state = 'connected';
           this.reconnectAttempts = 0;
-          this.processMessageQueue();
           resolve();
-        });
-
-        this.ws.on('message', (data: Buffer) => {
-          this.handleMessage(data.toString());
-        });
-
-        this.ws.on('close', (code: number, reason: Buffer) => {
-          const disconnectReason: DisconnectReason = {
-            code,
-            reason: reason.toString(),
-          };
-          this.handleDisconnect(disconnectReason);
-        });
-
-        this.ws.on('error', (error: Error) => {
+        };
+        const onMessage = (evt: { data?: unknown } | string) => {
+          const raw = typeof evt === 'string' ? evt : (evt as { data?: unknown }).data;
+          this.handleMessage(this.coerceMessage(raw));
+        };
+        const onClose = (evt: { code?: number; reason?: string } | number, reasonMaybe?: string) => {
+          const code = typeof evt === 'number' ? evt : evt.code ?? 1000;
+          const reason = typeof evt === 'number' ? reasonMaybe ?? '' : evt.reason ?? '';
+          this.handleDisconnect({ code, reason });
+        };
+        const onError = (error: unknown) => {
           if (this.state === 'connecting') {
-            reject(error);
-          } else {
-            console.error('WebSocket error:', error.message);
+            reject(error instanceof Error ? error : new Error('WebSocket connection error'));
           }
-        });
+        };
+
+        if (this.ws.addEventListener) {
+          this.ws.addEventListener('open', onOpen);
+          this.ws.addEventListener('message', onMessage as (...args: unknown[]) => void);
+          this.ws.addEventListener('close', onClose as (...args: unknown[]) => void);
+          this.ws.addEventListener('error', onError as (...args: unknown[]) => void);
+        } else if (this.ws.on) {
+          this.ws.on('open', onOpen);
+          this.ws.on('message', onMessage as (...args: unknown[]) => void);
+          this.ws.on('close', onClose as (...args: unknown[]) => void);
+          this.ws.on('error', onError);
+        }
       } catch (error) {
         this.state = 'disconnected';
         reject(error);
@@ -111,23 +126,17 @@ export class WorkspaceClient {
 
   async disconnect(): Promise<void> {
     this.reconnectEnabled = false;
-
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
       this.reconnectTimeout = null;
     }
-
     if (this.ws) {
       this.ws.close(1000, 'Client disconnect');
       this.ws = null;
     }
-
     this.state = 'disconnected';
-    this.requestMap.forEach(({ reject }) => {
-      reject(new Error('Connection closed'));
-    });
+    this.requestMap.forEach(({ reject }) => reject(new Error('Connection closed')));
     this.requestMap.clear();
-    this.messageQueue = [];
   }
 
   onDisconnect(callback: () => void): void {
@@ -135,7 +144,7 @@ export class WorkspaceClient {
   }
 
   async request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.ws || this.ws.readyState !== 1) {
       throw new Error('Not connected to workspace');
     }
 
@@ -149,14 +158,23 @@ export class WorkspaceClient {
 
     return new Promise<T>((resolve, reject) => {
       this.requestMap.set(id, { resolve: resolve as (value: unknown) => void, reject });
-
       try {
         this.ws!.send(JSON.stringify(request));
       } catch (error) {
         this.requestMap.delete(id);
-        reject(error);
+        reject(error instanceof Error ? error : new Error('failed to send request'));
       }
     });
+  }
+
+  private coerceMessage(raw: unknown): string {
+    if (typeof raw === 'string') {
+      return raw;
+    }
+    if (raw && typeof raw === 'object' && 'toString' in raw) {
+      return String(raw);
+    }
+    return '';
   }
 
   private generateRequestId(): string {
@@ -167,36 +185,30 @@ export class WorkspaceClient {
   private handleMessage(data: string): void {
     try {
       const response: RPCResponse = JSON.parse(data);
-
-      if (response.id) {
-        const pending = this.requestMap.get(response.id);
-
-        if (pending) {
-          this.requestMap.delete(response.id);
-
-          if (response.error) {
-            pending.reject(new Error(response.error.message));
-          } else {
-            pending.resolve(response.result);
-          }
-        }
+      if (!response.id) {
+        return;
       }
-    } catch (error) {
-      console.error('Failed to parse RPC response:', error);
+      const pending = this.requestMap.get(response.id);
+      if (!pending) {
+        return;
+      }
+      this.requestMap.delete(response.id);
+      if (response.error) {
+        pending.reject(new Error(response.error.message));
+      } else {
+        pending.resolve(response.result);
+      }
+    } catch {
+      // ignore malformed messages
     }
   }
 
   private handleDisconnect(reason: DisconnectReason): void {
     this.ws = null;
     this.state = 'disconnected';
-
-    this.requestMap.forEach(({ reject }) => {
-      reject(new Error(`Connection closed: ${reason.reason}`));
-    });
+    this.requestMap.forEach(({ reject }) => reject(new Error(`Connection closed: ${reason.reason}`)));
     this.requestMap.clear();
-
     this.disconnectCallbacks.forEach((callback) => callback());
-
     if (this.reconnectEnabled && this.config.reconnect) {
       this.attemptReconnect();
     }
@@ -204,46 +216,19 @@ export class WorkspaceClient {
 
   private attemptReconnect(): void {
     if (this.reconnectAttempts >= this.config.maxReconnectAttempts) {
-      console.error('Max reconnection attempts reached');
       return;
     }
-
     this.state = 'reconnecting';
     this.reconnectAttempts++;
-
-    const delay = this.calculateExponentialBackoff();
-    console.log(`Attempting to reconnect in ${delay}ms (attempt ${this.reconnectAttempts})`);
-
+    const delay = Math.min(this.config.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), 30000);
     this.reconnectTimeout = setTimeout(async () => {
       try {
         await this.connect();
-        console.log('Successfully reconnected');
-      } catch (error) {
-        console.error('Reconnection failed:', error);
+      } catch {
+        // handled by retry flow
       }
     }, delay);
   }
-
-  private calculateExponentialBackoff(): number {
-    return Math.min(
-      this.config.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1),
-      30000
-    );
-  }
-
-  private processMessageQueue(): void {
-    while (this.messageQueue.length > 0) {
-      const request = this.messageQueue.shift();
-
-      if (request && this.ws && this.ws.readyState === WebSocket.OPEN) {
-        try {
-          this.ws.send(JSON.stringify(request));
-        } catch (error) {
-          console.error('Failed to send queued message:', error);
-        }
-      }
-    }
-  }
 }
 
-export { WorkspaceClient as Client };
+export { BrowserWorkspaceClient as BrowserClient };
