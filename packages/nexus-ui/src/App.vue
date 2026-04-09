@@ -134,7 +134,33 @@ async function onCreate() {
   createBusy.value = true;
   createError.value = "";
   try {
-    await createWorkspace(createForm.value);
+    const repoInput = createForm.value.repo.trim();
+    const candidateRepos = [
+      repoInput,
+      createForm.value.workspaceName.trim(),
+      `.case-studies/${createForm.value.workspaceName.trim()}`,
+    ].filter(Boolean);
+
+    let lastError: Error | null = null;
+    for (const repo of candidateRepos) {
+      try {
+        await createWorkspace({
+          repo,
+          ref: createForm.value.ref,
+          workspaceName: createForm.value.workspaceName,
+          agentProfile: createForm.value.agentProfile,
+        });
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error as Error;
+      }
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+
     logLine(`registered ${createForm.value.workspaceName}`);
     createForm.value = { repo: "", ref: "main", workspaceName: "", agentProfile: "default" };
     showCreate.value = false;
