@@ -223,6 +223,38 @@ func TestStartLimaShellSkipsUnavailableCandidatesWhenPreparingWorkspaceMount(t *
 	}
 }
 
+func TestEnsureLimaInstanceRunningCreatesMissingInstance(t *testing.T) {
+	origOutput := limactlOutputFn
+	origCombined := limactlCombinedOutputFn
+	defer func() {
+		limactlOutputFn = origOutput
+		limactlCombinedOutputFn = origCombined
+	}()
+
+	calledStart := false
+	limactlOutputFn = func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) == 3 && args[0] == "list" && args[1] == "--json" && args[2] == "nexus-seatbelt" {
+			return []byte("[]"), nil
+		}
+		return nil, errors.New("unexpected limactl output args")
+	}
+	limactlCombinedOutputFn = func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) == 5 && args[0] == "start" && args[1] == "--yes" && args[2] == "--name" && args[3] == "nexus-seatbelt" && args[4] == "template:default" {
+			calledStart = true
+			return []byte(""), nil
+		}
+		return nil, errors.New("unexpected limactl start args")
+	}
+
+	err := ensureLimaInstanceRunning(context.Background(), "nexus-seatbelt")
+	if err != nil {
+		t.Fatalf("ensureLimaInstanceRunning: %v", err)
+	}
+	if !calledStart {
+		t.Fatal("expected limactl start --name nexus-seatbelt to be called")
+	}
+}
+
 func TestIsTransientLimaShellError(t *testing.T) {
 	tests := []struct {
 		name    string

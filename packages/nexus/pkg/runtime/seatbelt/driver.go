@@ -21,6 +21,18 @@ var ensureLimaInstanceRunningFn = ensureLimaInstanceRunning
 var prepareWorkspaceMountFn = prepareWorkspaceMount
 var listLimaInstancesFn = listLimaInstances
 var ptyStartWithSizeFn = pty.StartWithSize
+var limactlOutputFn = defaultLimactlOutput
+var limactlCombinedOutputFn = defaultLimactlCombinedOutput
+
+func defaultLimactlOutput(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "limactl", args...)
+	return cmd.Output()
+}
+
+func defaultLimactlCombinedOutput(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "limactl", args...)
+	return cmd.CombinedOutput()
+}
 
 type Driver struct {
 	mu                 sync.RWMutex
@@ -476,16 +488,14 @@ func ensureLimaInstanceRunning(ctx context.Context, instance string) error {
 		return fmt.Errorf("instance is required")
 	}
 
-	listCmd := exec.CommandContext(ctx, "limactl", "list", "--json", instance)
-	out, err := listCmd.Output()
+	out, err := limactlOutputFn(ctx, "list", "--json", instance)
 	if err != nil {
 		return fmt.Errorf("lima list failed for %s: %w", instance, err)
 	}
 	trimmed := strings.TrimSpace(string(out))
 
 	if trimmed == "" || trimmed == "[]" {
-		startCmd := exec.CommandContext(ctx, "limactl", "start", "--yes", "--name", instance, "template:default")
-		if startOut, startErr := startCmd.CombinedOutput(); startErr != nil {
+		if startOut, startErr := limactlCombinedOutputFn(ctx, "start", "--yes", "--name", instance, "template:default"); startErr != nil {
 			return fmt.Errorf("lima start failed for %s: %s", instance, strings.TrimSpace(string(startOut)))
 		}
 		return nil
@@ -496,8 +506,7 @@ func ensureLimaInstanceRunning(ctx context.Context, instance string) error {
 	}
 
 	if strings.Contains(trimmed, `"status":"Stopped"`) {
-		startCmd := exec.CommandContext(ctx, "limactl", "start", "--yes", instance)
-		if startOut, startErr := startCmd.CombinedOutput(); startErr != nil {
+		if startOut, startErr := limactlCombinedOutputFn(ctx, "start", "--yes", instance); startErr != nil {
 			return fmt.Errorf("lima start failed for %s: %s", instance, strings.TrimSpace(string(startOut)))
 		}
 		return nil
