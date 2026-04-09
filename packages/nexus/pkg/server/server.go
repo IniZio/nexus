@@ -126,9 +126,11 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		return nil, fmt.Errorf("failed to create workspace: %w", err)
 	}
 
-	spotlightMgr := spotlight.NewManager()
-	if err := spotlightMgr.Load(spotlightStatePath(workspaceDir)); err != nil {
-		log.Printf("[spotlight] warning: failed to load persisted forwards: %v", err)
+	workspaceMgr := workspacemgr.NewManager(workspaceDir)
+
+	spotlightMgr, err := spotlight.NewManagerWithRepository(workspaceMgr.SpotlightRepository())
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize spotlight manager: %w", err)
 	}
 
 	lifecycleMgr, err := lifecycle.NewManager(workspaceDir)
@@ -153,7 +155,7 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		},
 		connections:         make(map[string]*Connection),
 		ws:                  ws,
-		workspaceMgr:        workspacemgr.NewManager(workspaceDir),
+		workspaceMgr:        workspaceMgr,
 		serviceMgr:          services.NewManager(),
 		spotlightMgr:        spotlightMgr,
 		lifecycle:           lifecycleMgr,
@@ -161,10 +163,6 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		autoComposeForwards: make(map[string]bool),
 		shutdownCh:          make(chan struct{}),
 	}, nil
-}
-
-func spotlightStatePath(workspaceDir string) string {
-	return filepath.Join(workspaceDir, ".nexus", "state", "spotlight-forwards.json")
 }
 
 func (s *Server) Start() error {
@@ -278,12 +276,6 @@ func (s *Server) Shutdown() {
 	if s.lifecycle != nil {
 		if err := s.lifecycle.RunPreStop(); err != nil {
 			log.Printf("[lifecycle] Pre-stop hook error: %v", err)
-		}
-	}
-
-	if s.spotlightMgr != nil {
-		if err := s.spotlightMgr.Save(spotlightStatePath(s.workspaceDir)); err != nil {
-			log.Printf("[spotlight] warning: failed to persist forwards: %v", err)
 		}
 	}
 

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -552,7 +553,7 @@ func TestPortalSummaryEndpointRemoved(t *testing.T) {
 	}
 }
 
-func TestServerLoadsPersistedSpotlightForwardsOnStartup(t *testing.T) {
+func TestServer_IgnoresLegacySpotlightJSON(t *testing.T) {
 	workspaceDir := t.TempDir()
 	statePath := filepath.Join(workspaceDir, ".nexus", "state", "spotlight-forwards.json")
 	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
@@ -579,15 +580,12 @@ func TestServerLoadsPersistedSpotlightForwardsOnStartup(t *testing.T) {
 	}
 
 	forwards := srv.spotlightMgr.List("ws-seed-1")
-	if len(forwards) != 1 {
-		t.Fatalf("expected 1 persisted forward, got %d", len(forwards))
-	}
-	if forwards[0].LocalPort != 18000 {
-		t.Fatalf("expected local port 18000, got %d", forwards[0].LocalPort)
+	if len(forwards) != 0 {
+		t.Fatalf("expected legacy JSON spotlight file to be ignored, got %d forwards", len(forwards))
 	}
 }
 
-func TestServerShutdownPersistsSpotlightForwards(t *testing.T) {
+func TestServer_ShutdownDoesNotWriteSpotlightJSON(t *testing.T) {
 	workspaceDir := t.TempDir()
 	srv, err := NewServer(0, workspaceDir, "secret-token")
 	if err != nil {
@@ -607,16 +605,21 @@ func TestServerShutdownPersistsSpotlightForwards(t *testing.T) {
 	srv.Shutdown()
 
 	statePath := filepath.Join(workspaceDir, ".nexus", "state", "spotlight-forwards.json")
-	data, readErr := os.ReadFile(statePath)
-	if readErr != nil {
-		t.Fatalf("read persisted spotlight state: %v", readErr)
+	_, readErr := os.ReadFile(statePath)
+	if !errors.Is(readErr, os.ErrNotExist) {
+		t.Fatalf("expected spotlight json state file to not exist, got err=%v", readErr)
 	}
 
-	var persisted []map[string]any
-	if err := json.Unmarshal(data, &persisted); err != nil {
-		t.Fatalf("unmarshal persisted spotlight state: %v", err)
+	resumed, err := NewServer(0, workspaceDir, "secret-token")
+	if err != nil {
+		t.Fatalf("new resumed server: %v", err)
 	}
-	if len(persisted) != 1 {
-		t.Fatalf("expected 1 persisted forward, got %d", len(persisted))
+
+	forwards := resumed.spotlightMgr.List("ws-1")
+	if len(forwards) != 1 {
+		t.Fatalf("expected sqlite-backed spotlight persistence with 1 forward, got %d", len(forwards))
+	}
+	if forwards[0].LocalPort != 18000 {
+		t.Fatalf("expected persisted local port 18000, got %d", forwards[0].LocalPort)
 	}
 }

@@ -20,9 +20,14 @@ import (
 
 type Manager struct {
 	root          string
-	workspaceRepo store.WorkspaceRepository
+	workspaceRepo workspaceStore
 	mu            sync.RWMutex
 	workspaces    map[string]*Workspace
+}
+
+type workspaceStore interface {
+	store.WorkspaceRepository
+	store.SpotlightRepository
 }
 
 func NewManager(root string) *Manager {
@@ -439,6 +444,13 @@ func (m *Manager) Fork(parentID string, childWorkspaceName string, childRef stri
 
 func (m *Manager) Root() string {
 	return m.root
+}
+
+func (m *Manager) SpotlightRepository() store.SpotlightRepository {
+	if m == nil {
+		return nil
+	}
+	return m.workspaceRepo
 }
 
 func cloneWorkspace(in *Workspace) *Workspace {
