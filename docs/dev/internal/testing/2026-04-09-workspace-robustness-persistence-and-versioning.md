@@ -19,6 +19,120 @@ This report captures verification evidence for:
 
 ## Verification Commands and Results
 
+## Runtime Proof (Daemon Restart Persistence)
+
+### Environment
+
+- Runtime proof daemon binary: `/tmp/nexus-proof-daemon`
+- Runtime proof CLI binary: `/tmp/nexus-proof-cli`
+- RPC helper: `/tmp/nexus-proof-rpc/rpc_once.cjs`
+- Proof daemon endpoint: `ws://127.0.0.1:8101` / `http://127.0.0.1:8101/healthz`
+- Proof daemon workspace dir: `/tmp/nexus-proof-clean-8101`
+
+### Health check (before proof)
+
+Command:
+
+```bash
+curl -sSf http://127.0.0.1:8101/healthz
+```
+
+Observed:
+
+```json
+{"ok":true,"service":"workspace-daemon"}
+```
+
+### Workspace creation for proof
+
+Command:
+
+```bash
+NEXUS_DAEMON_PORT=8101 NEXUS_DAEMON_TOKEN=dev-token /tmp/nexus-proof-cli workspace create --repo /Users/newman/magic/nexus/.case-studies/hanlun-lms --name proof-spotlight-clean-8101
+```
+
+Observed key lines:
+
+```text
+created workspace proof-spotlight-clean-8101  (id: ws-1775739062134389000)
+local worktree:   /Users/newman/nexus-workspaces/proof-spotlight-clean-8101
+mutagen session:  nexus-ws-1775739062134389000
+```
+
+### Spotlight before apply
+
+Command:
+
+```bash
+node /tmp/nexus-proof-rpc/rpc_once.cjs ws://127.0.0.1:8101 dev-token spotlight.list '{"workspaceId":"ws-1775739062134389000"}'
+```
+
+Observed:
+
+```json
+{"jsonrpc":"2.0","id":"1","result":{"forwards":[]}}
+```
+
+### Apply compose ports
+
+Command:
+
+```bash
+node /tmp/nexus-proof-rpc/rpc_once.cjs ws://127.0.0.1:8101 dev-token spotlight.applyComposePorts '{"workspaceId":"ws-1775739062134389000","rootPath":"/Users/newman/magic/nexus/.case-studies/hanlun-lms"}'
+```
+
+Observed summary:
+
+```text
+forwards: 18
+errors:   []
+```
+
+Notes:
+
+- IDs include collision-safe suffixes where needed (for example `...-2`, `...-3`, `...-4`), confirming runtime behavior of ID-uniqueness hardening.
+
+### Spotlight after apply
+
+Command:
+
+```bash
+node /tmp/nexus-proof-rpc/rpc_once.cjs ws://127.0.0.1:8101 dev-token spotlight.list '{"workspaceId":"ws-1775739062134389000"}'
+```
+
+Observed summary:
+
+```text
+forwards: 18
+```
+
+### Restart daemon and verify persistence
+
+Commands:
+
+```bash
+kill $(cat /tmp/nexus-proof-clean-8101.pid)
+nohup /tmp/nexus-proof-daemon --port 8101 --token dev-token --workspace-dir /tmp/nexus-proof-clean-8101 > /tmp/nexus-proof-clean-8101.log 2>&1 &
+curl -sSf http://127.0.0.1:8101/healthz
+node /tmp/nexus-proof-rpc/rpc_once.cjs ws://127.0.0.1:8101 dev-token spotlight.list '{"workspaceId":"ws-1775739062134389000"}'
+```
+
+Observed:
+
+```json
+{"ok":true,"service":"workspace-daemon"}
+```
+
+Observed summary:
+
+```text
+forwards after restart: 18
+```
+
+Interpretation:
+
+- Spotlight forwards remained present after daemon restart with the same workspace dir, proving persistence load/save behavior works in live runtime conditions.
+
 ### 1) Targeted robustness tests (localws + workspacemgr)
 
 Command:
