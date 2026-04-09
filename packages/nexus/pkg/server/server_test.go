@@ -436,6 +436,53 @@ func TestPTYOpenAllowsStartedWorkspace(t *testing.T) {
 	}
 }
 
+func TestPTYOpenRejectsMissingWorkspaceID(t *testing.T) {
+	srv, err := NewServer(0, t.TempDir(), "secret-token")
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	conn := &Connection{send: make(chan []byte, 16), clientID: "test", pty: map[string]*ptySession{}}
+	payload, _ := json.Marshal(map[string]any{"shell": "sh", "rows": 12, "cols": 40})
+	_, rpcErr := srv.handlePTYOpen(payload, conn, srv.ws)
+	if rpcErr == nil {
+		t.Fatal("expected invalid params error")
+	}
+	if rpcErr.Code != rpckit.ErrInvalidParams.Code {
+		t.Fatalf("expected invalid params code %d, got %+v", rpckit.ErrInvalidParams.Code, rpcErr)
+	}
+}
+
+func TestWorkspaceReadyRejectsMissingWorkspaceID(t *testing.T) {
+	srv, err := NewServer(0, t.TempDir(), "secret-token")
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	msg := &RPCMessage{
+		JSONRPC: "2.0",
+		ID:      "1",
+		Method:  "workspace.ready",
+		Params: mustRawJSON(map[string]any{
+			"checks": []map[string]any{{
+				"name":    "compose",
+				"command": "docker-compose",
+				"args":    []string{"ps"},
+			}},
+			"timeoutMs":  500,
+			"intervalMs": 100,
+		}),
+	}
+
+	resp := srv.processRPC(msg, &Connection{send: make(chan []byte, 1), clientID: "test", pty: map[string]*ptySession{}})
+	if resp.Error == nil {
+		t.Fatal("expected invalid params error")
+	}
+	if resp.Error.Code != rpckit.ErrInvalidParams.Code {
+		t.Fatalf("expected invalid params code %d, got %+v", rpckit.ErrInvalidParams.Code, resp.Error)
+	}
+}
+
 func mustRawJSON(v any) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
