@@ -11,7 +11,13 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
+func TestNodeStore_ImplementsRepositories(t *testing.T) {
+	var _ store.WorkspaceRepository = (*store.NodeStore)(nil)
+	var _ store.SpotlightRepository = (*store.NodeStore)(nil)
+}
+
 func TestNodeStore_PersistAndLoadWorkspaceAndSpotlight(t *testing.T) {
+	now := time.Date(2026, time.April, 9, 12, 0, 0, 0, time.UTC)
 	path := filepath.Join(t.TempDir(), "node.db")
 
 	st, err := store.Open(path)
@@ -29,8 +35,8 @@ func TestNodeStore_PersistAndLoadWorkspaceAndSpotlight(t *testing.T) {
 		AgentProfile:  "default",
 		State:         workspacemgr.StateCreated,
 		RootPath:      "/tmp/root/ws-1",
-		CreatedAt:     time.Now().UTC().Round(0),
-		UpdatedAt:     time.Now().UTC().Round(0),
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	wsPayload, err := json.Marshal(ws)
@@ -53,20 +59,20 @@ func TestNodeStore_PersistAndLoadWorkspaceAndSpotlight(t *testing.T) {
 		RemotePort:  8000,
 		LocalPort:   18000,
 		Host:        "127.0.0.1",
-		CreatedAt:   time.Now().UTC().Round(0),
+		CreatedAt:   now,
 	}
 	fwdPayload, err := json.Marshal(fwd)
 	if err != nil {
 		t.Fatalf("marshal spotlight forward: %v", err)
 	}
-	if err := st.ReplaceSpotlightForwardRows([]store.SpotlightForwardRow{{
+	if err := st.UpsertSpotlightForwardRow(store.SpotlightForwardRow{
 		ID:          fwd.ID,
 		WorkspaceID: fwd.WorkspaceID,
 		LocalPort:   fwd.LocalPort,
 		Payload:     fwdPayload,
 		CreatedAt:   fwd.CreatedAt,
-	}}); err != nil {
-		t.Fatalf("replace spotlight forwards: %v", err)
+	}); err != nil {
+		t.Fatalf("upsert spotlight forward: %v", err)
 	}
 
 	allWS, err := st.ListWorkspaceRows()
@@ -83,5 +89,17 @@ func TestNodeStore_PersistAndLoadWorkspaceAndSpotlight(t *testing.T) {
 	}
 	if len(allFwd) != 1 || allFwd[0].ID != fwd.ID {
 		t.Fatalf("unexpected spotlight rows: %#v", allFwd)
+	}
+
+	if err := st.DeleteSpotlightForwardRow(fwd.ID); err != nil {
+		t.Fatalf("delete spotlight forward: %v", err)
+	}
+
+	allFwd, err = st.ListSpotlightForwardRows()
+	if err != nil {
+		t.Fatalf("list spotlight forwards after delete: %v", err)
+	}
+	if len(allFwd) != 0 {
+		t.Fatalf("unexpected spotlight rows after delete: %#v", allFwd)
 	}
 }

@@ -164,22 +164,52 @@ func (s *NodeStore) ReplaceSpotlightForwardRows(forwards []SpotlightForwardRow) 
 		return fmt.Errorf("begin replace spotlight forwards: %w", err)
 	}
 
-	if _, err := tx.Exec(`DELETE FROM spotlight_forwards`); err != nil {
+	rows, err := tx.Query(`SELECT id FROM spotlight_forwards`)
+	if err != nil {
 		_ = tx.Rollback()
-		return fmt.Errorf("truncate spotlight forwards: %w", err)
+		return fmt.Errorf("list spotlight forwards for replace: %w", err)
+	}
+	existing := make(map[string]struct{})
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			_ = tx.Rollback()
+			return fmt.Errorf("scan spotlight id for replace: %w", err)
+		}
+		existing[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		_ = tx.Rollback()
+		return fmt.Errorf("iterate spotlight ids for replace: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("close spotlight ids for replace: %w", err)
 	}
 
-	stmt, err := tx.Prepare(`INSERT INTO spotlight_forwards(id, workspace_id, local_port, payload_json, created_at) VALUES(?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(
+		`INSERT INTO spotlight_forwards(id, workspace_id, local_port, payload_json, created_at)
+		 VALUES(?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+			workspace_id=excluded.workspace_id,
+			local_port=excluded.local_port,
+			payload_json=excluded.payload_json,
+			created_at=excluded.created_at`,
+	)
 	if err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("prepare spotlight insert: %w", err)
 	}
 	defer stmt.Close()
 
+	desired := make(map[string]struct{})
 	for _, fwd := range forwards {
 		if fwd.ID == "" || fwd.WorkspaceID == "" || fwd.LocalPort <= 0 || len(fwd.Payload) == 0 {
 			continue
 		}
+		desired[fwd.ID] = struct{}{}
 		if _, err := stmt.Exec(
 			fwd.ID,
 			fwd.WorkspaceID,
@@ -188,12 +218,69 @@ func (s *NodeStore) ReplaceSpotlightForwardRows(forwards []SpotlightForwardRow) 
 			fwd.CreatedAt.UTC().Format(time.RFC3339Nano),
 		); err != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("insert spotlight forward: %w", err)
+			return fmt.Errorf("upsert spotlight forward in replace: %w", err)
+		}
+	}
+
+	for id := range existing {
+		if _, keep := desired[id]; keep {
+			continue
+		}
+		if _, err := tx.Exec(`DELETE FROM spotlight_forwards WHERE id = ?`, id); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("delete spotlight forward in replace: %w", err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit spotlight replace: %w", err)
+	}
+
+	return nil
+}
+
+func (s *NodeStore) UpsertSpotlightForwardRow(row SpotlightForwardRow) error {
+	if row.ID == "" {
+		return fmt.Errorf("spotlight id is required")
+	}
+	if row.WorkspaceID == "" {
+		return fmt.Errorf("spotlight workspace id is required")
+	}
+	if row.LocalPort <= 0 {
+		return fmt.Errorf("spotlight local port must be positive")
+	}
+	if len(row.Payload) == 0 {
+		return fmt.Errorf("spotlight payload is required")
+	}
+
+	_, err := s.db.Exec(
+		`INSERT INTO spotlight_forwards(id, workspace_id, local_port, payload_json, created_at)
+		 VALUES(?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+			workspace_id=excluded.workspace_id,
+			local_port=excluded.local_port,
+			payload_json=excluded.payload_json,
+			created_at=excluded.created_at`,
+		row.ID,
+		row.WorkspaceID,
+		row.LocalPort,
+		string(row.Payload),
+		row.CreatedAt.UTC().Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert spotlight forward: %w", err)
+	}
+
+	return nil
+}
+
+func (s *NodeStore) DeleteSpotlightForwardRow(id string) error {
+	if id == "" {
+		return nil
+	}
+
+	if _, err := s.db.Exec(`DELETE FROM spotlight_forwards WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete spotlight forward: %w", err)
 	}
 
 	return nil
