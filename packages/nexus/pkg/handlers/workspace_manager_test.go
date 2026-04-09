@@ -900,8 +900,8 @@ func TestLoadRuntimeSelectionFromRepoConfig_Succeeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
-	if len(required) != 1 || required[0] != "linux" {
-		t.Fatalf("expected runtime.required [linux], got %v", required)
+	if len(required) != 2 || required[0] != "darwin" || required[1] != "linux" {
+		t.Fatalf("expected runtime.required [darwin linux], got %v", required)
 	}
 	if len(caps) != 1 || caps[0] != "spotlight.tunnel" {
 		t.Fatalf("expected capabilities [spotlight.tunnel], got %v", caps)
@@ -915,8 +915,8 @@ func TestLoadRuntimeSelectionFromRepoConfig_MissingRuntimeRequiredDefaultsToLinu
 	if err != nil {
 		t.Fatalf("expected success when runtime.required is missing, got %v", err)
 	}
-	if len(required) != 1 || required[0] != "linux" {
-		t.Fatalf("expected default runtime.required [linux], got %v", required)
+	if len(required) != 2 || required[0] != "darwin" || required[1] != "linux" {
+		t.Fatalf("expected default runtime.required [darwin linux], got %v", required)
 	}
 	if len(caps) != 0 {
 		t.Fatalf("expected empty capabilities, got %v", caps)

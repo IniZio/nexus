@@ -400,7 +400,7 @@ func loadRuntimeSelectionFromRepoConfig(repo string) ([]string, []string, error)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load repo workspace config: %w", err)
 	}
-	return []string{"linux"}, cfg.Capabilities.Required, nil
+	return []string{"darwin", "linux"}, cfg.Capabilities.Required, nil
 }
 
 func ensureLocalRuntimeWorkspace(ctx context.Context, ws *workspacemgr.Workspace, factory *runtime.Factory, mgr *workspacemgr.Manager) *rpckit.RPCError {
