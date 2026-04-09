@@ -83,7 +83,7 @@ func (m *Manager) loadAll() error {
 
 func (m *Manager) persistWorkspace(ws *Workspace) error {
 	if m.workspaceRepo == nil {
-		return nil
+		return fmt.Errorf("sqlite workspace store unavailable")
 	}
 
 	payload, err := json.Marshal(ws)

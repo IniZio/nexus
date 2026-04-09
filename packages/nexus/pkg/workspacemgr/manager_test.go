@@ -183,6 +183,26 @@ func TestManager_LoadAll_IgnoresLegacyJSON(t *testing.T) {
 	}
 }
 
+func TestManager_CreateFailsWhenSQLiteStoreUnavailable(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "state-home"))
+
+	if err := os.WriteFile(filepath.Join(root, ".nexus"), []byte("block sqlite dir"), 0o644); err != nil {
+		t.Fatalf("write sqlite blocker file: %v", err)
+	}
+
+	m := NewManager(root)
+
+	_, err := m.Create(context.Background(), CreateSpec{
+		Repo:          "git@example/repo.git",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+	})
+	if err == nil {
+		t.Fatal("expected create to fail when sqlite store is unavailable")
+	}
+}
+
 func TestManager_ListWorkspaces_PersistedAcrossReload(t *testing.T) {
 	m := newTestManager(t)
 	_, err := m.Create(context.Background(), CreateSpec{
