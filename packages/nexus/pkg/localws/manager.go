@@ -168,9 +168,15 @@ func (m *Manager) createWorktree(ctx context.Context, cacheDir, name, ref string
 
 	worktreePath := filepath.Join(m.cfg.WorktreeRoot, name)
 
-	// Idempotent: if the worktree already exists just return its path.
+	// Idempotent only for valid git worktrees. If stale path exists but is not
+	// a git worktree, remove and recreate it.
 	if _, err := os.Stat(worktreePath); err == nil {
-		return worktreePath, nil
+		if gitErr := gitCmd(ctx, worktreePath, "rev-parse", "--is-inside-work-tree").Run(); gitErr == nil {
+			return worktreePath, nil
+		}
+		if rmErr := os.RemoveAll(worktreePath); rmErr != nil {
+			return "", fmt.Errorf("remove stale worktree path: %w", rmErr)
+		}
 	}
 
 	args := []string{"worktree", "add", worktreePath}

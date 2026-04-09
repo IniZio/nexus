@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +15,7 @@ import (
 
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
+	"github.com/inizio/nexus/packages/nexus/pkg/spotlight"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
@@ -546,5 +549,74 @@ func TestPortalSummaryEndpointRemoved(t *testing.T) {
 	body := rr.Body.String()
 	if !strings.Contains(body, "Nexus Admin") && !strings.Contains(body, "Nexus Workspace Control") {
 		t.Fatalf("expected portal UI content fallback, got: %s", body)
+	}
+}
+
+func TestServerLoadsPersistedSpotlightForwardsOnStartup(t *testing.T) {
+	workspaceDir := t.TempDir()
+	statePath := filepath.Join(workspaceDir, ".nexus", "state", "spotlight-forwards.json")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	seed := []map[string]any{{
+		"id":          "spot-seed-1",
+		"workspaceId": "ws-seed-1",
+		"service":     "api",
+		"remotePort":  8000,
+		"localPort":   18000,
+		"host":        "127.0.0.1",
+		"createdAt":   "2026-04-09T12:00:00Z",
+	}}
+	data, _ := json.Marshal(seed)
+	if err := os.WriteFile(statePath, data, 0o644); err != nil {
+		t.Fatalf("write spotlight state: %v", err)
+	}
+
+	srv, err := NewServer(0, workspaceDir, "secret-token")
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	forwards := srv.spotlightMgr.List("ws-seed-1")
+	if len(forwards) != 1 {
+		t.Fatalf("expected 1 persisted forward, got %d", len(forwards))
+	}
+	if forwards[0].LocalPort != 18000 {
+		t.Fatalf("expected local port 18000, got %d", forwards[0].LocalPort)
+	}
+}
+
+func TestServerShutdownPersistsSpotlightForwards(t *testing.T) {
+	workspaceDir := t.TempDir()
+	srv, err := NewServer(0, workspaceDir, "secret-token")
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	_, exposeErr := srv.spotlightMgr.Expose(context.Background(), spotlight.ExposeSpec{
+		WorkspaceID: "ws-1",
+		Service:     "api",
+		RemotePort:  8000,
+		LocalPort:   18000,
+	})
+	if exposeErr != nil {
+		t.Fatalf("expose spotlight forward: %v", exposeErr)
+	}
+
+	srv.Shutdown()
+
+	statePath := filepath.Join(workspaceDir, ".nexus", "state", "spotlight-forwards.json")
+	data, readErr := os.ReadFile(statePath)
+	if readErr != nil {
+		t.Fatalf("read persisted spotlight state: %v", readErr)
+	}
+
+	var persisted []map[string]any
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatalf("unmarshal persisted spotlight state: %v", err)
+	}
+	if len(persisted) != 1 {
+		t.Fatalf("expected 1 persisted forward, got %d", len(persisted))
 	}
 }

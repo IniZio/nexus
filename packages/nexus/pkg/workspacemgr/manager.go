@@ -612,13 +612,18 @@ func resolveForkBasePath(parent *Workspace) string {
 
 	if localPath := strings.TrimSpace(parent.LocalWorktreePath); localPath != "" {
 		candidate := filepath.Clean(localPath)
-		if looksLikeRepoRoot(candidate) {
-			nested := filepath.Join(candidate, ".worktrees", sanitizeWorktreeName(parent.WorkspaceName))
-			if pathExists(nested) {
-				return nested
-			}
+		if !looksLikeWorktree(candidate) {
+			candidate = ""
 		}
-		return candidate
+		if candidate != "" {
+			if looksLikeRepoRoot(candidate) {
+				nested := filepath.Join(candidate, ".worktrees", sanitizeWorktreeName(parent.WorkspaceName))
+				if pathExists(nested) {
+					return nested
+				}
+			}
+			return candidate
+		}
 	}
 
 	if isLikelyLocalPath(parent.Repo) {
@@ -629,6 +634,16 @@ func resolveForkBasePath(parent *Workspace) string {
 	}
 
 	return ""
+}
+
+func looksLikeWorktree(path string) bool {
+	if path == "" {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
+		return true
+	}
+	return false
 }
 
 func looksLikeRepoRoot(path string) bool {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -633,5 +634,69 @@ func TestDeriveRepoKind_DetectsExistingRelativeDirectoryAsLocal(t *testing.T) {
 
 	if got := deriveRepoKind("hanlun-lms"); got != "local" {
 		t.Fatalf("expected repo kind local, got %q", got)
+	}
+}
+
+func TestManager_ForkFallsBackWhenLocalWorktreePathIsStale(t *testing.T) {
+	m := newTestManager(t)
+	repoRoot := initGitRepoForWorktreeTests(t)
+
+	parent, err := m.Create(context.Background(), CreateSpec{
+		Repo:          repoRoot,
+		Ref:           "parent-base",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+		Backend:       "local",
+	})
+	if err != nil {
+		t.Fatalf("create parent returned error: %v", err)
+	}
+
+	stalePath := filepath.Join(t.TempDir(), "missing-worktree")
+	if err := m.SetLocalWorktree(parent.ID, stalePath, ""); err != nil {
+		t.Fatalf("set stale local worktree path: %v", err)
+	}
+
+	child, err := m.Fork(parent.ID, "alpha-child", "child-ref")
+	if err != nil {
+		t.Fatalf("fork should recover from stale local worktree path: %v", err)
+	}
+	if child.LocalWorktreePath == "" {
+		t.Fatal("expected child local worktree path to be set")
+	}
+	if _, statErr := os.Stat(child.LocalWorktreePath); statErr != nil {
+		t.Fatalf("expected child local worktree path to exist: %v", statErr)
+	}
+	if gotBase := filepath.Dir(child.LocalWorktreePath); gotBase != filepath.Join(repoRoot, ".worktrees") {
+		t.Fatalf("expected child worktree under %q, got %q", filepath.Join(repoRoot, ".worktrees"), child.LocalWorktreePath)
+	}
+}
+
+func initGitRepoForWorktreeTests(t *testing.T) string {
+	t.Helper()
+
+	repoRoot := t.TempDir()
+	runGitForWorktreeTests(t, repoRoot, "init")
+	runGitForWorktreeTests(t, repoRoot, "config", "user.email", "nexus-tests@example.com")
+	runGitForWorktreeTests(t, repoRoot, "config", "user.name", "Nexus Tests")
+
+	readmePath := filepath.Join(repoRoot, "README.md")
+	if err := os.WriteFile(readmePath, []byte("# test repo\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	runGitForWorktreeTests(t, repoRoot, "add", "README.md")
+	runGitForWorktreeTests(t, repoRoot, "commit", "-m", "initial commit")
+
+	return repoRoot
+}
+
+func runGitForWorktreeTests(t *testing.T, dir string, args ...string) {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
 	}
 }

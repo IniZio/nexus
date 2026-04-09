@@ -2,7 +2,10 @@ package spotlight
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -37,6 +40,78 @@ func NewManager() *Manager {
 		forwards:  make(map[string]*Forward),
 		localToID: make(map[int]string),
 	}
+}
+
+func (m *Manager) Save(path string) error {
+	if path == "" {
+		return nil
+	}
+
+	m.mu.RLock()
+	all := make([]*Forward, 0, len(m.forwards))
+	for _, fwd := range m.forwards {
+		copy := *fwd
+		all = append(all, &copy)
+	}
+	m.mu.RUnlock()
+
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].CreatedAt.Before(all[j].CreatedAt)
+	})
+
+	data, err := json.Marshal(all)
+	if err != nil {
+		return fmt.Errorf("marshal spotlight state: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create spotlight state dir: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write spotlight state: %w", err)
+	}
+
+	return nil
+}
+
+func (m *Manager) Load(path string) error {
+	if path == "" {
+		return nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read spotlight state: %w", err)
+	}
+
+	var saved []*Forward
+	if err := json.Unmarshal(data, &saved); err != nil {
+		return fmt.Errorf("unmarshal spotlight state: %w", err)
+	}
+
+	m.mu.Lock()
+	m.forwards = make(map[string]*Forward, len(saved))
+	m.localToID = make(map[int]string, len(saved))
+	for _, fwd := range saved {
+		if fwd == nil {
+			continue
+		}
+		if fwd.LocalPort <= 0 || fwd.RemotePort <= 0 || fwd.ID == "" {
+			continue
+		}
+		if _, dup := m.localToID[fwd.LocalPort]; dup {
+			continue
+		}
+		copy := *fwd
+		m.forwards[copy.ID] = &copy
+		m.localToID[copy.LocalPort] = copy.ID
+	}
+	m.mu.Unlock()
+
+	return nil
 }
 
 func (m *Manager) Expose(_ context.Context, spec ExposeSpec) (*Forward, error) {
