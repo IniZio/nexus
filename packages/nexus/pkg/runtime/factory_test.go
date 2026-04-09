@@ -31,7 +31,7 @@ func TestSelectDriverLinuxDoesNotFallbackToSeatbelt(t *testing.T) {
 	}
 }
 
-func TestSelectDriverDarwinPrefersSeatbeltOverFirecracker(t *testing.T) {
+func TestSelectDriverDarwinPrefersFirecrackerWhenPreflightPasses(t *testing.T) {
 	f := NewFactory([]Capability{
 		{Name: "runtime.darwin", Available: true},
 		{Name: "runtime.firecracker", Available: true},
@@ -45,7 +45,7 @@ func TestSelectDriverDarwinPrefersSeatbeltOverFirecracker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("select darwin driver: %v", err)
 	}
-	if d.Backend() != "seatbelt" {
-		t.Fatalf("expected seatbelt backend, got %q", d.Backend())
+	if d.Backend() != "firecracker" {
+		t.Fatalf("expected firecracker backend, got %q", d.Backend())
 	}
 }

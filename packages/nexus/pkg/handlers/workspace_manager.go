@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -99,6 +100,88 @@ type WorkspaceForkResult struct {
 	Workspace *workspacemgr.Workspace `json:"workspace,omitempty"`
 }
 
+var firecrackerPreflightRunner = func(repo string) runtime.FirecrackerPreflightResult {
+	_ = repo
+	return runtime.FirecrackerPreflightResult{Status: runtime.PreflightPass}
+}
+
+var runtimeSetupRunner = func(repo, backend string) error {
+	if strings.TrimSpace(backend) != "firecracker" {
+		return nil
+	}
+	if strings.TrimSpace(repo) == "" {
+		return fmt.Errorf("repo is required for runtime setup")
+	}
+
+	cmd := exec.Command("nexus", "init", "--project-root", repo)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			return fmt.Errorf("nexus init failed: %w", err)
+		}
+		return fmt.Errorf("nexus init failed: %w: %s", err, msg)
+	}
+	return nil
+}
+
+func setPreflightSequenceForTest(sequence []runtime.FirecrackerPreflightResult) {
+	seq := append([]runtime.FirecrackerPreflightResult(nil), sequence...)
+	idx := 0
+	firecrackerPreflightRunner = func(_ string) runtime.FirecrackerPreflightResult {
+		if len(seq) == 0 {
+			return runtime.FirecrackerPreflightResult{Status: runtime.PreflightPass}
+		}
+		if idx >= len(seq) {
+			return seq[len(seq)-1]
+		}
+		result := seq[idx]
+		idx++
+		return result
+	}
+}
+
+func resetPreflightRunnerForTest() {
+	firecrackerPreflightRunner = func(_ string) runtime.FirecrackerPreflightResult {
+		return runtime.FirecrackerPreflightResult{Status: runtime.PreflightPass}
+	}
+}
+
+func setRuntimeSetupRunnerForTest(runner func(repo, backend string) error) {
+	runtimeSetupRunner = runner
+}
+
+func resetRuntimeSetupRunnerForTest() {
+	runtimeSetupRunner = func(repo, backend string) error {
+		if strings.TrimSpace(backend) != "firecracker" {
+			return nil
+		}
+		if strings.TrimSpace(repo) == "" {
+			return fmt.Errorf("repo is required for runtime setup")
+		}
+
+		cmd := exec.Command("nexus", "init", "--project-root", repo)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			msg := strings.TrimSpace(string(out))
+			if msg == "" {
+				return fmt.Errorf("nexus init failed: %w", err)
+			}
+			return fmt.Errorf("nexus init failed: %w: %s", err, msg)
+		}
+		return nil
+	}
+}
+
+func runtimePreflightFailure(result runtime.FirecrackerPreflightResult, setupErr error) *rpckit.RPCError {
+	if setupErr != nil && strings.TrimSpace(result.SetupOutcome) == "" {
+		result.SetupOutcome = fmt.Sprintf("failed: %v", setupErr)
+	}
+	payload, err := json.Marshal(result)
+	if err != nil {
+		return &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("runtime preflight failed: status=%s", result.Status)}
+	}
+	return &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("runtime preflight failed: %s", string(payload))}
+}
+
 func HandleWorkspaceCreate(ctx context.Context, params json.RawMessage, mgr *workspacemgr.Manager, factory *runtime.Factory) (*WorkspaceCreateResult, *rpckit.RPCError) {
 	var p WorkspaceCreateParams
 	if err := json.Unmarshal(params, &p); err != nil {
@@ -113,9 +196,36 @@ func HandleWorkspaceCreate(ctx context.Context, params json.RawMessage, mgr *wor
 			return &WorkspaceCreateResult{}, &rpckit.RPCError{Code: rpckit.ErrInvalidParams.Code, Message: cfgErr.Error()}
 		}
 
-		driver, err := factory.SelectDriver(requiredBackends, requiredCaps)
+		preflight := firecrackerPreflightRunner(spec.Repo)
+		var setupErr error
+		var selectedBackend string
+
+		switch preflight.Status {
+		case runtime.PreflightPass:
+			selectedBackend = "firecracker"
+		case runtime.PreflightInstallableMissing:
+			preflight.SetupAttempted = true
+			setupErr = runtimeSetupRunner(spec.Repo, "firecracker")
+			postSetup := firecrackerPreflightRunner(spec.Repo)
+			postSetup.SetupAttempted = true
+			if setupErr != nil {
+				postSetup.SetupOutcome = fmt.Sprintf("failed: %v", setupErr)
+			} else {
+				postSetup.SetupOutcome = "succeeded"
+			}
+			if postSetup.Status != runtime.PreflightPass {
+				return nil, runtimePreflightFailure(postSetup, setupErr)
+			}
+			selectedBackend = "firecracker"
+		case runtime.PreflightUnsupportedNested:
+			selectedBackend = "seatbelt"
+		default:
+			return nil, runtimePreflightFailure(preflight, nil)
+		}
+
+		driver, err := factory.SelectDriver([]string{selectedBackend}, requiredCaps)
 		if err != nil {
-			return &WorkspaceCreateResult{}, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("backend selection failed: %v", err)}
+			return &WorkspaceCreateResult{}, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("backend selection failed: %v (required=%v)", err, requiredBackends)}
 		}
 		spec.Backend = driver.Backend()
 	}

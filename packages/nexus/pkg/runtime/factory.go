@@ -90,11 +90,11 @@ func (f *Factory) expandRuntimeRequirement(raw string) []string {
 		if !f.isCapabilityAvailable("runtime.seatbelt") && !f.isCapabilityAvailable("runtime.firecracker") {
 			return nil
 		}
-		if f.isCapabilityAvailable("runtime.seatbelt") {
-			return []string{"seatbelt"}
-		}
 		if f.isCapabilityAvailable("runtime.firecracker") {
 			return []string{"firecracker"}
+		}
+		if f.isCapabilityAvailable("runtime.seatbelt") {
+			return []string{"seatbelt"}
 		}
 		return nil
 	case "seatbelt":

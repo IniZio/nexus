@@ -893,6 +893,112 @@ func TestHandleWorkspaceCreate_WithFactoryFirecrackerBootstrapsRuntime(t *testin
 	}
 }
 
+func TestHandleWorkspaceCreate_InstallableMissingRetriesSetupOnce(t *testing.T) {
+	mgr := workspacemgr.NewManager(t.TempDir())
+	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
+
+	setPreflightSequenceForTest([]runtime.FirecrackerPreflightResult{
+		{Status: runtime.PreflightInstallableMissing, Checks: []runtime.PreflightCheck{{Name: "lima", OK: false, Installable: true}}},
+		{Status: runtime.PreflightPass},
+	})
+	setupCalls := 0
+	setRuntimeSetupRunnerForTest(func(_ string, _ string) error {
+		setupCalls++
+		return nil
+	})
+	t.Cleanup(func() {
+		resetRuntimeSetupRunnerForTest()
+		resetPreflightRunnerForTest()
+	})
+
+	factory := runtime.NewFactory(
+		[]runtime.Capability{{Name: "runtime.firecracker", Available: true}},
+		map[string]runtime.Driver{"firecracker": &mockDriver{backend: "firecracker"}},
+	)
+
+	params, _ := json.Marshal(WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}})
+	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result.Workspace.Backend != "firecracker" {
+		t.Fatalf("expected firecracker backend, got %q", result.Workspace.Backend)
+	}
+	if setupCalls != 1 {
+		t.Fatalf("expected one setup attempt, got %d", setupCalls)
+	}
+}
+
+func TestHandleWorkspaceCreate_UnsupportedNestedVirtFallsBackToSeatbelt(t *testing.T) {
+	mgr := workspacemgr.NewManager(t.TempDir())
+	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
+
+	setPreflightSequenceForTest([]runtime.FirecrackerPreflightResult{{Status: runtime.PreflightUnsupportedNested}})
+	setupCalls := 0
+	setRuntimeSetupRunnerForTest(func(_ string, _ string) error {
+		setupCalls++
+		return nil
+	})
+	t.Cleanup(func() {
+		resetRuntimeSetupRunnerForTest()
+		resetPreflightRunnerForTest()
+	})
+
+	factory := runtime.NewFactory(
+		[]runtime.Capability{
+			{Name: "runtime.seatbelt", Available: true},
+			{Name: "runtime.firecracker", Available: true},
+		},
+		map[string]runtime.Driver{
+			"seatbelt":    &mockDriver{backend: "seatbelt"},
+			"firecracker": &mockDriver{backend: "firecracker"},
+		},
+	)
+
+	params, _ := json.Marshal(WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}})
+	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result.Workspace.Backend != "seatbelt" {
+		t.Fatalf("expected seatbelt backend, got %q", result.Workspace.Backend)
+	}
+	if setupCalls != 0 {
+		t.Fatalf("expected zero setup attempts, got %d", setupCalls)
+	}
+}
+
+func TestHandleWorkspaceCreate_HardFailReturnsStructuredPreflightError(t *testing.T) {
+	mgr := workspacemgr.NewManager(t.TempDir())
+	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
+
+	setPreflightSequenceForTest([]runtime.FirecrackerPreflightResult{{
+		Status: runtime.PreflightHardFail,
+		Checks: []runtime.PreflightCheck{{Name: "kvm", OK: false, Message: "kvm unavailable"}},
+	}})
+	t.Cleanup(func() {
+		resetRuntimeSetupRunnerForTest()
+		resetPreflightRunnerForTest()
+	})
+
+	factory := runtime.NewFactory(
+		[]runtime.Capability{{Name: "runtime.firecracker", Available: true}},
+		map[string]runtime.Driver{"firecracker": &mockDriver{backend: "firecracker"}},
+	)
+
+	params, _ := json.Marshal(WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}})
+	_, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
+	if rpcErr == nil {
+		t.Fatal("expected rpc error")
+	}
+	if !strings.Contains(rpcErr.Message, "runtime preflight failed") {
+		t.Fatalf("expected preflight failure message, got %q", rpcErr.Message)
+	}
+	if !strings.Contains(rpcErr.Message, string(runtime.PreflightHardFail)) {
+		t.Fatalf("expected hard_fail status in message, got %q", rpcErr.Message)
+	}
+}
+
 func TestLoadRuntimeSelectionFromRepoConfig_Succeeds(t *testing.T) {
 	repo := setupRepoWithWorkspaceConfig(t, `{"version":1,"capabilities":{"required":["spotlight.tunnel"]}}`)
 

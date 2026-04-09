@@ -20,6 +20,68 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
+type preflightErrorEnvelope struct {
+	Status         string `json:"status"`
+	SetupAttempted bool   `json:"setupAttempted"`
+	SetupOutcome   string `json:"setupOutcome"`
+	Checks         []struct {
+		Name        string `json:"name"`
+		OK          bool   `json:"ok"`
+		Message     string `json:"message"`
+		Remediation string `json:"remediation"`
+		Installable bool   `json:"installable,omitempty"`
+	} `json:"checks"`
+}
+
+func renderPreflightCreateError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	idx := strings.Index(msg, "runtime preflight failed:")
+	if idx < 0 {
+		return false
+	}
+	jsonStart := strings.Index(msg[idx:], "{")
+	if jsonStart < 0 {
+		return false
+	}
+	jsonPayload := strings.TrimSpace(msg[idx+jsonStart:])
+
+	var payload preflightErrorEnvelope
+	if unmarshalErr := json.Unmarshal([]byte(jsonPayload), &payload); unmarshalErr != nil {
+		return false
+	}
+
+	fmt.Fprintln(os.Stderr, "nexus workspace create: runtime preflight failed")
+	fmt.Fprintf(os.Stderr, "status: %s\n", payload.Status)
+	if payload.SetupAttempted {
+		if strings.TrimSpace(payload.SetupOutcome) != "" {
+			fmt.Fprintf(os.Stderr, "setup: attempted (%s)\n", payload.SetupOutcome)
+		} else {
+			fmt.Fprintln(os.Stderr, "setup: attempted")
+		}
+	}
+	for _, check := range payload.Checks {
+		if check.OK {
+			continue
+		}
+		suffix := ""
+		if check.Installable {
+			suffix = " (installable)"
+		}
+		fmt.Fprintf(os.Stderr, "- %s%s", check.Name, suffix)
+		if strings.TrimSpace(check.Message) != "" {
+			fmt.Fprintf(os.Stderr, ": %s", check.Message)
+		}
+		fmt.Fprintln(os.Stderr)
+		if strings.TrimSpace(check.Remediation) != "" {
+			fmt.Fprintf(os.Stderr, "  remediation: %s\n", check.Remediation)
+		}
+	}
+	return true
+}
+
 // ── Daemon connection settings ────────────────────────────────────────────────
 
 const defaultDaemonPort = 7874
@@ -181,6 +243,9 @@ func runWorkspaceCreateCommand(args []string) {
 		Workspace workspacemgr.Workspace `json:"workspace"`
 	}
 	if err := daemonRPC(conn, "workspace.create", map[string]any{"spec": spec}, &result); err != nil {
+		if renderPreflightCreateError(err) {
+			os.Exit(1)
+		}
 		fmt.Fprintf(os.Stderr, "nexus workspace create: %v\n", err)
 		os.Exit(1)
 	}
