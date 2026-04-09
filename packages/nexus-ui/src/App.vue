@@ -50,6 +50,7 @@ const workspaceBackendById = ref<Record<string, string>>({});
 function backendLabel(backend: string) {
   const normalized = (backend || "local").trim().toLowerCase();
   if (normalized === "firecracker") return "Firecracker VM";
+  if (normalized === "seatbelt") return "Seatbelt runtime";
   if (normalized === "lxc") return "LXC runtime";
   return "Host local";
 }

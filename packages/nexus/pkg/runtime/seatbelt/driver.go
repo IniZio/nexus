@@ -7,43 +7,90 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/creack/pty"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 )
 
+var seatbeltLookPath = exec.LookPath
+
 type Driver struct {
-	mu         sync.RWMutex
-	workspaces map[string]*workspaceState
+	mu                 sync.RWMutex
+	workspaces         map[string]*workspaceState
+	spawnShell         func(ctx context.Context, instanceName, workdir, localPath, shell string) (*exec.Cmd, *os.File, error)
+	instanceEnv        string
+	hostHome           string
+	bootstrapMu        sync.Mutex
+	bootstrapped       map[string]bool
+	bootstrapInstance  func(ctx context.Context, instance, hostHome string) error
+	prepareWorkspaceFS func(ctx context.Context, instance, localPath string) error
 }
 
 type workspaceState struct {
 	projectRoot string
 	state       string
+	instance    string
 }
 
 func NewDriver() *Driver {
-	return &Driver{workspaces: make(map[string]*workspaceState)}
+	homeDir, _ := os.UserHomeDir()
+	return &Driver{
+		workspaces:         make(map[string]*workspaceState),
+		spawnShell:         startLimaShell,
+		instanceEnv:        strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_SEATBELT_INSTANCE")),
+		hostHome:           strings.TrimSpace(homeDir),
+		bootstrapped:       make(map[string]bool),
+		bootstrapInstance:  bootstrapSeatbeltTooling,
+		prepareWorkspaceFS: prepareWorkspaceMount,
+	}
 }
 
 func (d *Driver) Backend() string { return "seatbelt" }
 
 func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
-	_ = ctx
 	if strings.TrimSpace(req.WorkspaceID) == "" {
 		return fmt.Errorf("workspace id is required")
 	}
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if _, exists := d.workspaces[req.WorkspaceID]; exists {
-		return fmt.Errorf("workspace %s already exists", req.WorkspaceID)
+	if strings.TrimSpace(req.ProjectRoot) == "" {
+		return fmt.Errorf("project root is required")
+	}
+	if _, err := os.Stat(req.ProjectRoot); err != nil {
+		return fmt.Errorf("project root not accessible: %w", err)
+	}
+	if _, err := seatbeltLookPath("limactl"); err != nil {
+		return fmt.Errorf("seatbelt runtime requires limactl for isolated guest")
 	}
 
-	d.workspaces[req.WorkspaceID] = &workspaceState{projectRoot: req.ProjectRoot, state: "created"}
+	instance := d.instanceNameForOptions(req.Options)
+
+	d.mu.Lock()
+	if _, exists := d.workspaces[req.WorkspaceID]; exists {
+		d.mu.Unlock()
+		return fmt.Errorf("workspace %s already exists", req.WorkspaceID)
+	}
+	d.workspaces[req.WorkspaceID] = &workspaceState{projectRoot: req.ProjectRoot, state: "created", instance: instance}
+	d.mu.Unlock()
+
+	if err := d.ensureInstanceBootstrapped(ctx, instance); err != nil {
+		d.mu.Lock()
+		delete(d.workspaces, req.WorkspaceID)
+		d.mu.Unlock()
+		return err
+	}
+
+	if d.prepareWorkspaceFS != nil {
+		if err := d.prepareWorkspaceFS(ctx, instance, req.ProjectRoot); err != nil {
+			d.mu.Lock()
+			delete(d.workspaces, req.WorkspaceID)
+			d.mu.Unlock()
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -85,7 +132,7 @@ func (d *Driver) Fork(ctx context.Context, workspaceID, childWorkspaceID string)
 		return fmt.Errorf("workspace %s already exists", childWorkspaceID)
 	}
 
-	d.workspaces[childWorkspaceID] = &workspaceState{projectRoot: parent.projectRoot, state: "created"}
+	d.workspaces[childWorkspaceID] = &workspaceState{projectRoot: parent.projectRoot, state: "created", instance: parent.instance}
 	return nil
 }
 
@@ -103,10 +150,9 @@ func (d *Driver) Destroy(ctx context.Context, workspaceID string) error {
 func (d *Driver) setState(workspaceID, state string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-
 	ws, ok := d.workspaces[workspaceID]
 	if !ok {
-		ws = &workspaceState{state: state}
+		ws = &workspaceState{state: state, instance: d.defaultInstanceName()}
 		d.workspaces[workspaceID] = ws
 		return nil
 	}
@@ -121,11 +167,17 @@ func (d *Driver) AgentConn(ctx context.Context, workspaceID string) (net.Conn, e
 	return left, nil
 }
 
-func (d *Driver) serveShellProtocol(ctx context.Context, connWorkspaceID string, conn net.Conn) {
+func (d *Driver) serveShellProtocol(ctx context.Context, workspaceID string, conn net.Conn) {
 	defer conn.Close()
 
 	dec := json.NewDecoder(conn)
 	enc := json.NewEncoder(conn)
+	var writeMu sync.Mutex
+	writeJSON := func(msg map[string]any) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return enc.Encode(msg)
+	}
 
 	type shellSession struct {
 		id   string
@@ -159,39 +211,48 @@ func (d *Driver) serveShellProtocol(ctx context.Context, connWorkspaceID string,
 		switch typ {
 		case "shell.open":
 			closeSession()
-
-			shell := strings.TrimSpace(asString(req["command"]))
-			if shell == "" {
+			shell, _ := req["command"].(string)
+			if strings.TrimSpace(shell) == "" {
 				shell = "bash"
 			}
-
-			workdir := strings.TrimSpace(asString(req["workdir"]))
-			if workdir == "" || workdir == "/workspace" {
-				workdir = d.workspaceProjectRoot(connWorkspaceID)
-			}
-			if workdir == "" {
-				workdir = "."
+			workdir, _ := req["workdir"].(string)
+			localPath := ""
+			if strings.TrimSpace(workdir) == "" || strings.TrimSpace(workdir) == "/workspace" {
+				localPath = d.workspaceProjectRoot(workspaceID)
+				workdir = "/workspace"
 			}
 
-			cmd := exec.CommandContext(ctx, shell)
-			cmd.Dir = workdir
-			cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-
-			ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 30, Cols: 120})
+			instance := d.workspaceInstance(workspaceID)
+			cmd, ptmx, err := d.spawnShell(ctx, instance, workdir, localPath, shell)
 			if err != nil {
-				_ = enc.Encode(map[string]any{"id": id, "type": "result", "exit_code": 1, "stderr": err.Error()})
+				_ = writeJSON(map[string]any{"id": id, "type": "result", "exit_code": 1, "stderr": err.Error()})
 				continue
 			}
 
+			d.mu.Lock()
+			if ws, ok := d.workspaces[workspaceID]; ok {
+				ws.state = "running"
+				if strings.TrimSpace(localPath) != "" {
+					ws.projectRoot = localPath
+				}
+				if strings.TrimSpace(instance) != "" {
+					ws.instance = instance
+				}
+			}
+			d.mu.Unlock()
+
 			session = &shellSession{id: id, cmd: cmd, ptmx: ptmx}
-			_ = enc.Encode(map[string]any{"id": id, "type": "result", "exit_code": 0})
+			_ = writeJSON(map[string]any{"id": id, "type": "result", "exit_code": 0})
 
 			go func(s *shellSession) {
 				buf := make([]byte, 4096)
 				for {
 					n, err := s.ptmx.Read(buf)
 					if n > 0 {
-						_ = enc.Encode(map[string]any{"id": s.id, "type": "chunk", "stream": "stdout", "data": string(buf[:n])})
+						clean := sanitizeLimaShellChunk(string(buf[:n]))
+						if clean != "" {
+							_ = writeJSON(map[string]any{"id": s.id, "type": "chunk", "stream": "stdout", "data": clean})
+						}
 					}
 					if err != nil {
 						break
@@ -205,43 +266,281 @@ func (d *Driver) serveShellProtocol(ctx context.Context, connWorkspaceID string,
 				if s.cmd.ProcessState != nil {
 					exitCode = s.cmd.ProcessState.ExitCode()
 				}
-				_ = enc.Encode(map[string]any{"id": s.id, "type": "result", "exit_code": exitCode})
+				_ = writeJSON(map[string]any{"id": s.id, "type": "result", "exit_code": exitCode})
+				d.mu.Lock()
+				if ws, ok := d.workspaces[workspaceID]; ok {
+					ws.state = "stopped"
+				}
+				d.mu.Unlock()
 			}(session)
 
 		case "shell.write":
 			if session == nil {
-				_ = enc.Encode(map[string]any{"id": id, "type": "result", "exit_code": 1, "stderr": "no active shell session"})
+				_ = writeJSON(map[string]any{"id": id, "type": "result", "exit_code": 1, "stderr": "no active shell session"})
 				continue
 			}
-			data := asString(req["data"])
+			data, _ := req["data"].(string)
 			if _, err := session.ptmx.Write([]byte(data)); err != nil {
-				_ = enc.Encode(map[string]any{"id": id, "type": "result", "exit_code": 1, "stderr": err.Error()})
+				_ = writeJSON(map[string]any{"id": id, "type": "result", "exit_code": 1, "stderr": err.Error()})
 				continue
 			}
-			_ = enc.Encode(map[string]any{"id": id, "type": "result", "exit_code": 0})
+			_ = writeJSON(map[string]any{"id": id, "type": "result", "exit_code": 0})
 
 		case "shell.resize":
 			if session == nil {
-				_ = enc.Encode(map[string]any{"id": id, "type": "result", "exit_code": 1, "stderr": "no active shell session"})
+				_ = writeJSON(map[string]any{"id": id, "type": "result", "exit_code": 1, "stderr": "no active shell session"})
 				continue
 			}
 			cols := toInt(req["cols"], 120)
 			rows := toInt(req["rows"], 30)
 			if err := pty.Setsize(session.ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)}); err != nil {
-				_ = enc.Encode(map[string]any{"id": id, "type": "result", "exit_code": 1, "stderr": err.Error()})
+				_ = writeJSON(map[string]any{"id": id, "type": "result", "exit_code": 1, "stderr": err.Error()})
 				continue
 			}
-			_ = enc.Encode(map[string]any{"id": id, "type": "result", "exit_code": 0})
+			_ = writeJSON(map[string]any{"id": id, "type": "result", "exit_code": 0})
 
 		case "shell.close":
 			closeSession()
-			_ = enc.Encode(map[string]any{"id": id, "type": "result", "exit_code": 0})
+			_ = writeJSON(map[string]any{"id": id, "type": "result", "exit_code": 0})
 			return
 
 		default:
-			_ = enc.Encode(map[string]any{"id": id, "type": "result", "exit_code": 1, "stderr": fmt.Sprintf("unknown request type %q", typ)})
+			_ = writeJSON(map[string]any{"id": id, "type": "result", "exit_code": 1, "stderr": fmt.Sprintf("unknown request type %q", typ)})
 		}
 	}
+}
+
+func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell string) (*exec.Cmd, *os.File, error) {
+	launchShell := strings.TrimSpace(shell)
+	if launchShell == "" {
+		launchShell = "bash"
+	}
+
+	workdir = strings.TrimSpace(workdir)
+	localPath = strings.TrimSpace(localPath)
+
+	candidates := instanceCandidates(instanceName)
+	if discovered, err := listLimaInstances(ctx); err == nil && len(discovered) > 0 {
+		candidates = filterCandidatesByAvailability(candidates, discovered)
+	}
+
+	if localPath != "" && workdir == "/workspace" {
+		for _, candidate := range candidates {
+			if err := prepareWorkspaceMount(ctx, candidate, localPath); err == nil {
+				break
+			}
+		}
+	}
+
+	var lastErr error
+	for _, candidate := range candidates {
+		args := []string{"shell", "--reconnect", candidate}
+		if launchShell != "bash" && launchShell != "/bin/bash" {
+			args = append(args, "--", launchShell)
+		}
+		cmd := exec.CommandContext(ctx, "limactl", args...)
+		if ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 30, Cols: 120}); err == nil {
+			if workdir != "" {
+				go func() {
+					time.Sleep(500 * time.Millisecond)
+					_, _ = fmt.Fprintf(ptmx, "cd %s 2>/dev/null; clear\n", shellQuote(workdir))
+				}()
+			}
+			return cmd, ptmx, nil
+		} else {
+			lastErr = err
+		}
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no lima instance candidates available")
+	}
+	return nil, nil, fmt.Errorf("seatbelt lima shell start failed: %w", lastErr)
+}
+
+func prepareWorkspaceMount(ctx context.Context, instance, localPath string) error {
+	if strings.TrimSpace(instance) == "" {
+		return fmt.Errorf("instance is required")
+	}
+	if strings.TrimSpace(localPath) == "" {
+		return fmt.Errorf("workspace path is required")
+	}
+
+	script := fmt.Sprintf("set -e; sudo mkdir -p /workspace; sudo mount --bind %s /workspace || true; cd /workspace >/dev/null 2>&1", shellQuote(localPath))
+	cmd := exec.CommandContext(ctx, "limactl", "shell", instance, "--", "sh", "-lc", script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("prepare /workspace mount failed: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func bootstrapSeatbeltTooling(ctx context.Context, instance, hostHome string) error {
+	instance = strings.TrimSpace(instance)
+	if instance == "" {
+		instance = "nexus-firecracker"
+	}
+
+	candidates := instanceCandidates(instance)
+	if discovered, err := listLimaInstances(ctx); err == nil && len(discovered) > 0 {
+		candidates = filterCandidatesByAvailability(candidates, discovered)
+	}
+
+	script := buildSeatbeltBootstrapScript(hostHome)
+
+	var lastErr error
+	for _, candidate := range candidates {
+		cmd := exec.CommandContext(ctx, "limactl", "shell", candidate, "--", "sh", "-lc", script)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		lastErr = fmt.Errorf("bootstrap seatbelt tooling in %s failed: %s", candidate, strings.TrimSpace(string(out)))
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("bootstrap seatbelt tooling failed: no lima instance candidates")
+}
+
+func buildSeatbeltBootstrapScript(hostHome string) string {
+	parts := []string{
+		"set -e",
+		"unset DOCKER_HOST DOCKER_CONTEXT",
+		"if command -v docker >/dev/null 2>&1 && (docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1) && (docker compose version >/dev/null 2>&1 || docker-compose version >/dev/null 2>&1) && command -v make >/dev/null 2>&1; then exit 0; fi",
+		"sudo -n apt-get update",
+		"sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-v2 make curl ca-certificates gnupg nodejs npm || sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose make curl ca-certificates gnupg nodejs npm",
+		"sudo -n systemctl enable docker >/dev/null 2>&1 || true",
+		"sudo -n systemctl start docker >/dev/null 2>&1 || sudo -n service docker start >/dev/null 2>&1 || true",
+		"sudo -n usermod -aG docker $USER >/dev/null 2>&1 || true",
+		"(docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1)",
+		"(docker compose version >/dev/null 2>&1 || docker-compose version >/dev/null 2>&1)",
+		"command -v make >/dev/null 2>&1",
+		"if command -v npm >/dev/null 2>&1; then npm i -g opencode-ai @openai/codex @anthropic-ai/claude-code >/dev/null 2>&1 || true; fi",
+		"if command -v opencode >/dev/null 2>&1; then opencode --version >/dev/null 2>&1 || true; fi",
+		"if command -v codex >/dev/null 2>&1; then codex --version >/dev/null 2>&1 || true; fi",
+		"if command -v claude >/dev/null 2>&1; then claude --version >/dev/null 2>&1 || true; fi",
+	}
+
+	hostHome = strings.TrimSpace(hostHome)
+	if hostHome != "" {
+		host := shellQuote(hostHome)
+		parts = append(parts,
+			"mkdir -p ~/.config",
+			"if [ -d "+host+"/.config/opencode ]; then ln -sfn "+host+"/.config/opencode ~/.config/opencode; fi",
+			"if [ -d "+host+"/.config/codex ]; then ln -sfn "+host+"/.config/codex ~/.config/codex; fi",
+			"if [ -d "+host+"/.config/openai ]; then ln -sfn "+host+"/.config/openai ~/.config/openai; fi",
+			"if [ -d "+host+"/.claude ]; then ln -sfn "+host+"/.claude ~/.claude; fi",
+		)
+	}
+
+	return strings.Join(parts, "; ")
+}
+
+func listLimaInstances(ctx context.Context) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "limactl", "ls", "--format", "{{.Name}}")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(out), "\n")
+	names := make([]string, 0, len(lines))
+	for _, line := range lines {
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+func filterCandidatesByAvailability(candidates []string, available []string) []string {
+	if len(candidates) == 0 || len(available) == 0 {
+		return candidates
+	}
+
+	availableSet := make(map[string]struct{}, len(available))
+	for _, name := range available {
+		availableSet[strings.TrimSpace(name)] = struct{}{}
+	}
+
+	filtered := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if _, ok := availableSet[candidate]; ok {
+			filtered = append(filtered, candidate)
+		}
+	}
+	if len(filtered) > 0 {
+		return filtered
+	}
+
+	fallback := make([]string, 0, len(availableSet))
+	for name := range availableSet {
+		if name != "" {
+			fallback = append(fallback, name)
+		}
+	}
+	sort.Strings(fallback)
+	return fallback
+}
+
+func instanceCandidates(instanceName string) []string {
+	trimmed := strings.TrimSpace(instanceName)
+	base := []string{"nexus-seatbelt", "nexus-firecracker", "default"}
+	if trimmed == "" {
+		return base
+	}
+	out := make([]string, 0, len(base)+1)
+	out = append(out, trimmed)
+	for _, candidate := range base {
+		if candidate == trimmed {
+			continue
+		}
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func (d *Driver) instanceNameForOptions(opts map[string]string) string {
+	if opts != nil {
+		if v := strings.TrimSpace(opts["lima.instance"]); v != "" {
+			return v
+		}
+	}
+	return d.defaultInstanceName()
+}
+
+func (d *Driver) defaultInstanceName() string {
+	if strings.TrimSpace(d.instanceEnv) != "" {
+		return strings.TrimSpace(d.instanceEnv)
+	}
+	if fromDoctor := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_LXC_INSTANCE")); fromDoctor != "" {
+		return fromDoctor
+	}
+	return "nexus-seatbelt"
+}
+
+func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance string) error {
+	instance = strings.TrimSpace(instance)
+	if instance == "" {
+		instance = d.defaultInstanceName()
+	}
+
+	d.bootstrapMu.Lock()
+	defer d.bootstrapMu.Unlock()
+	if d.bootstrapped[instance] {
+		return nil
+	}
+	if d.bootstrapInstance == nil {
+		d.bootstrapped[instance] = true
+		return nil
+	}
+	if err := d.bootstrapInstance(ctx, instance, d.hostHome); err != nil {
+		return err
+	}
+	d.bootstrapped[instance] = true
+	return nil
 }
 
 func (d *Driver) workspaceProjectRoot(workspaceID string) string {
@@ -253,9 +552,13 @@ func (d *Driver) workspaceProjectRoot(workspaceID string) string {
 	return ""
 }
 
-func asString(v any) string {
-	s, _ := v.(string)
-	return s
+func (d *Driver) workspaceInstance(workspaceID string) string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if ws, ok := d.workspaces[workspaceID]; ok && strings.TrimSpace(ws.instance) != "" {
+		return ws.instance
+	}
+	return d.defaultInstanceName()
 }
 
 func toInt(value any, fallback int) int {
@@ -270,4 +573,28 @@ func toInt(value any, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func sanitizeLimaShellChunk(chunk string) string {
+	trimmed := strings.TrimSpace(chunk)
+	if trimmed == "" {
+		return chunk
+	}
+	for _, noise := range []string{
+		"mux_client_request_session: session request failed: Session open refused by peer",
+		"ux_client_request_session: session request failed: Session open refused by peer",
+		"ControlSocket ",
+		"already exists, disconnecting",
+		"disabling multiplexing",
+		"Exiting ssh session for the instance",
+	} {
+		if strings.Contains(trimmed, noise) {
+			return ""
+		}
+	}
+	return chunk
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }

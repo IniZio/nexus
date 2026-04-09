@@ -135,7 +135,7 @@ func runServer(port int, workspaceDir string, token string) error {
 	seatbeltDriver := seatbelt.NewDriver()
 
 	firecrackerAvailable := probeFirecrackerTooling(exec.LookPath)
-	seatbeltAvailable := firecrackerProbeGOOS == "darwin" || firecrackerProbeGOOS == "linux"
+	seatbeltAvailable := firecrackerProbeGOOS == "darwin"
 
 	_, codexErr := exec.LookPath("codex")
 	codexAvailable := codexErr == nil
@@ -146,7 +146,7 @@ func runServer(port int, workspaceDir string, token string) error {
 	capabilities := []runtime.Capability{
 		{Name: "runtime.firecracker", Available: firecrackerAvailable},
 		{Name: "runtime.seatbelt", Available: seatbeltAvailable},
-		{Name: "runtime.linux", Available: firecrackerAvailable || seatbeltAvailable},
+		{Name: "runtime.linux", Available: firecrackerAvailable},
 		{Name: "spotlight.tunnel", Available: true},
 		{Name: "auth.profile.git", Available: true},
 		{Name: "auth.profile.codex", Available: codexAvailable},
