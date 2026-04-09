@@ -17,6 +17,10 @@ import (
 )
 
 var seatbeltLookPath = exec.LookPath
+var ensureLimaInstanceRunningFn = ensureLimaInstanceRunning
+var prepareWorkspaceMountFn = prepareWorkspaceMount
+var listLimaInstancesFn = listLimaInstances
+var ptyStartWithSizeFn = pty.StartWithSize
 
 type Driver struct {
 	mu                 sync.RWMutex
@@ -326,14 +330,16 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 	localPath = strings.TrimSpace(localPath)
 
 	candidates := instanceCandidates(instanceName)
-	if discovered, err := listLimaInstances(ctx); err == nil && len(discovered) > 0 {
+	if discovered, err := listLimaInstancesFn(ctx); err == nil && len(discovered) > 0 {
 		candidates = filterCandidatesByAvailability(candidates, discovered)
 	}
 
 	if localPath != "" && workdir == "/workspace" {
 		for _, candidate := range candidates {
-			_ = ensureLimaInstanceRunning(ctx, candidate)
-			if err := prepareWorkspaceMount(ctx, candidate, localPath); err == nil {
+			if err := ensureLimaInstanceRunningFn(ctx, candidate); err != nil {
+				continue
+			}
+			if err := prepareWorkspaceMountFn(ctx, candidate, localPath); err == nil {
 				break
 			}
 		}
@@ -341,7 +347,7 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 
 	var lastErr error
 	for _, candidate := range candidates {
-		if err := ensureLimaInstanceRunning(ctx, candidate); err != nil {
+		if err := ensureLimaInstanceRunningFn(ctx, candidate); err != nil {
 			lastErr = err
 			continue
 		}
@@ -350,7 +356,7 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 			args = append(args, "--", launchShell)
 		}
 		cmd := exec.CommandContext(ctx, "limactl", args...)
-		if ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 30, Cols: 120}); err == nil {
+		if ptmx, err := ptyStartWithSizeFn(cmd, &pty.Winsize{Rows: 30, Cols: 120}); err == nil {
 			if workdir != "" {
 				go func() {
 					time.Sleep(500 * time.Millisecond)
@@ -393,7 +399,7 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, hostHome string) er
 	}
 
 	candidates := instanceCandidates(instance)
-	if discovered, err := listLimaInstances(ctx); err == nil && len(discovered) > 0 {
+	if discovered, err := listLimaInstancesFn(ctx); err == nil && len(discovered) > 0 {
 		candidates = filterCandidatesByAvailability(candidates, discovered)
 	}
 
@@ -402,7 +408,7 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, hostHome string) er
 
 	var lastErr error
 	for _, candidate := range candidates {
-		if err := ensureLimaInstanceRunning(ctx, candidate); err != nil {
+		if err := ensureLimaInstanceRunningFn(ctx, candidate); err != nil {
 			lastErr = err
 			continue
 		}

@@ -180,6 +180,49 @@ func TestShellOpenDefaultsToWorkspaceMountPath(t *testing.T) {
 	_ = enc.Encode(map[string]any{"id": "2", "type": "shell.close"})
 }
 
+func TestStartLimaShellSkipsUnavailableCandidatesWhenPreparingWorkspaceMount(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	t.Setenv("NEXUS_RUNTIME_SEATBELT_INSTANCE", "")
+
+	origEnsure := ensureLimaInstanceRunningFn
+	origPrepare := prepareWorkspaceMountFn
+	origList := listLimaInstancesFn
+	defer func() {
+		ensureLimaInstanceRunningFn = origEnsure
+		prepareWorkspaceMountFn = origPrepare
+		listLimaInstancesFn = origList
+	}()
+
+	listLimaInstancesFn = func(context.Context) ([]string, error) {
+		return []string{"default"}, nil
+	}
+	ensureLimaInstanceRunningFn = func(_ context.Context, instance string) error {
+		if instance != "default" {
+			return errors.New("instance does not exist")
+		}
+		return nil
+	}
+
+	called := make([]string, 0)
+	prepareWorkspaceMountFn = func(_ context.Context, instance, localPath string) error {
+		called = append(called, instance+":"+localPath)
+		return nil
+	}
+
+	origSpawn := ptyStartWithSizeFn
+	defer func() { ptyStartWithSizeFn = origSpawn }()
+	ptyStartWithSizeFn = func(*exec.Cmd, *pty.Winsize) (*os.File, error) {
+		return nil, errors.New("stop after observe")
+	}
+
+	_, _, _ = startLimaShell(ctx, "nexus-seatbelt", "/workspace", "/tmp/repo", "bash")
+	if len(called) != 1 || called[0] != "default:/tmp/repo" {
+		t.Fatalf("expected prepareWorkspaceMount called only for default candidate, got %v", called)
+	}
+}
+
 func TestIsTransientLimaShellError(t *testing.T) {
 	tests := []struct {
 		name    string

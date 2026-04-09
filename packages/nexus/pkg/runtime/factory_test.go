@@ -30,3 +30,22 @@ func TestSelectDriverLinuxDoesNotFallbackToSeatbelt(t *testing.T) {
 		t.Fatal("expected linux requirement to fail when firecracker is unavailable")
 	}
 }
+
+func TestSelectDriverDarwinPrefersSeatbeltOverFirecracker(t *testing.T) {
+	f := NewFactory([]Capability{
+		{Name: "runtime.darwin", Available: true},
+		{Name: "runtime.firecracker", Available: true},
+		{Name: "runtime.seatbelt", Available: true},
+	}, map[string]Driver{
+		"firecracker": &stubDriver{backend: "firecracker"},
+		"seatbelt":    &stubDriver{backend: "seatbelt"},
+	})
+
+	d, err := f.SelectDriver([]string{"darwin"}, nil)
+	if err != nil {
+		t.Fatalf("select darwin driver: %v", err)
+	}
+	if d.Backend() != "seatbelt" {
+		t.Fatalf("expected seatbelt backend, got %q", d.Backend())
+	}
+}
