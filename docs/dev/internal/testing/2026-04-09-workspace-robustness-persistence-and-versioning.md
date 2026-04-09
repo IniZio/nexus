@@ -30,7 +30,7 @@ Notes:
 
 ## Verification Commands and Results
 
-### 1) Full touched-package regression suite
+### 1) Core package regression suite
 
 Command:
 
@@ -43,6 +43,10 @@ Observed:
 ```text
 Go test: 242 passed in 7 packages
 ```
+
+Note:
+
+- `pkg/localws` robustness is validated separately in section 3.
 
 ### 2) Runtime proof (sqlite-backed spotlight persistence survives restart)
 
