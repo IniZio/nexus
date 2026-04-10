@@ -83,3 +83,24 @@ func TestClassifyFirecrackerPreflight_StatusPrecedence(t *testing.T) {
 		}
 	})
 }
+
+func TestRunFirecrackerPreflight_OverrideHardFail(t *testing.T) {
+	t.Setenv("NEXUS_INTERNAL_PREFLIGHT_OVERRIDE", "hard_fail")
+
+	res := RunFirecrackerPreflight(t.TempDir(), PreflightOptions{UseOverrides: true})
+	if res.Status != PreflightHardFail {
+		t.Fatalf("expected hard_fail, got %s", res.Status)
+	}
+	if res.Override != "hard_fail" {
+		t.Fatalf("expected override marker hard_fail, got %q", res.Override)
+	}
+}
+
+func TestRunFirecrackerPreflight_OverrideDisabledByOptions(t *testing.T) {
+	t.Setenv("NEXUS_INTERNAL_PREFLIGHT_OVERRIDE", "pass")
+
+	res := RunFirecrackerPreflight(t.TempDir())
+	if res.Override != "" {
+		t.Fatalf("expected no override marker when disabled, got %q", res.Override)
+	}
+}

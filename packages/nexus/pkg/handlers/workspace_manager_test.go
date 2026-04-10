@@ -902,7 +902,7 @@ func TestHandleWorkspaceCreate_InstallableMissingRetriesSetupOnce(t *testing.T) 
 		{Status: runtime.PreflightPass},
 	})
 	setupCalls := 0
-	setRuntimeSetupRunnerForTest(func(_ string, _ string) error {
+	setRuntimeSetupRunnerForTest(func(_ context.Context, _ string, _ string) error {
 		setupCalls++
 		return nil
 	})
@@ -929,13 +929,59 @@ func TestHandleWorkspaceCreate_InstallableMissingRetriesSetupOnce(t *testing.T) 
 	}
 }
 
+func TestHandleWorkspaceCreate_InstallableMissingSetupFailureReturnsPreflightError(t *testing.T) {
+	mgr := workspacemgr.NewManager(t.TempDir())
+	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
+
+	preflightCalls := 0
+	firecrackerPreflightRunner = func(_ string, _ runtime.PreflightOptions) runtime.FirecrackerPreflightResult {
+		preflightCalls++
+		return runtime.FirecrackerPreflightResult{
+			Status: runtime.PreflightInstallableMissing,
+			Checks: []runtime.PreflightCheck{{Name: "lima", OK: false, Installable: true}},
+		}
+	}
+	setupCalls := 0
+	setRuntimeSetupRunnerForTest(func(_ context.Context, _ string, _ string) error {
+		setupCalls++
+		return fmt.Errorf("bootstrap failed")
+	})
+	t.Cleanup(func() {
+		resetRuntimeSetupRunnerForTest()
+		resetPreflightRunnerForTest()
+	})
+
+	factory := runtime.NewFactory(
+		[]runtime.Capability{{Name: "runtime.firecracker", Available: true}},
+		map[string]runtime.Driver{"firecracker": &mockDriver{backend: "firecracker"}},
+	)
+
+	params, _ := json.Marshal(WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}})
+	_, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
+	if rpcErr == nil {
+		t.Fatal("expected rpc error")
+	}
+	if setupCalls != 1 {
+		t.Fatalf("expected one setup attempt, got %d", setupCalls)
+	}
+	if preflightCalls != 1 {
+		t.Fatalf("expected exactly one preflight call, got %d", preflightCalls)
+	}
+	if !strings.Contains(rpcErr.Message, string(runtime.PreflightInstallableMissing)) {
+		t.Fatalf("expected installable_missing status, got %q", rpcErr.Message)
+	}
+	if !strings.Contains(rpcErr.Message, "bootstrap failed") {
+		t.Fatalf("expected setup failure details, got %q", rpcErr.Message)
+	}
+}
+
 func TestHandleWorkspaceCreate_UnsupportedNestedVirtFallsBackToSeatbelt(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
 	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
 
 	setPreflightSequenceForTest([]runtime.FirecrackerPreflightResult{{Status: runtime.PreflightUnsupportedNested}})
 	setupCalls := 0
-	setRuntimeSetupRunnerForTest(func(_ string, _ string) error {
+	setRuntimeSetupRunnerForTest(func(_ context.Context, _ string, _ string) error {
 		setupCalls++
 		return nil
 	})
@@ -996,6 +1042,156 @@ func TestHandleWorkspaceCreate_HardFailReturnsStructuredPreflightError(t *testin
 	}
 	if !strings.Contains(rpcErr.Message, string(runtime.PreflightHardFail)) {
 		t.Fatalf("expected hard_fail status in message, got %q", rpcErr.Message)
+	}
+}
+
+func TestHandleWorkspaceCreate_UsesInternalPreflightOverrideWhenEnabled(t *testing.T) {
+	mgr := workspacemgr.NewManager(t.TempDir())
+	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
+
+	t.Setenv("NEXUS_INTERNAL_ENABLE_PREFLIGHT_OVERRIDE", "1")
+	t.Setenv("NEXUS_INTERNAL_PREFLIGHT_OVERRIDE", "unsupported_nested_virt")
+
+	factory := runtime.NewFactory(
+		[]runtime.Capability{
+			{Name: "runtime.seatbelt", Available: true},
+			{Name: "runtime.firecracker", Available: true},
+		},
+		map[string]runtime.Driver{
+			"seatbelt":    &mockDriver{backend: "seatbelt"},
+			"firecracker": &mockDriver{backend: "firecracker"},
+		},
+	)
+
+	params, _ := json.Marshal(WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}})
+	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result.Workspace.Backend != "seatbelt" {
+		t.Fatalf("expected seatbelt backend from override, got %q", result.Workspace.Backend)
+	}
+}
+
+func TestHandleWorkspaceCreate_IgnoresInternalPreflightOverrideWhenDisabled(t *testing.T) {
+	mgr := workspacemgr.NewManager(t.TempDir())
+	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
+
+	t.Setenv("NEXUS_INTERNAL_ENABLE_PREFLIGHT_OVERRIDE", "0")
+	t.Setenv("NEXUS_INTERNAL_PREFLIGHT_OVERRIDE", "hard_fail")
+
+	setPreflightSequenceForTest([]runtime.FirecrackerPreflightResult{{Status: runtime.PreflightPass}})
+	t.Cleanup(func() {
+		resetPreflightRunnerForTest()
+		resetRuntimeSetupRunnerForTest()
+	})
+
+	factory := runtime.NewFactory(
+		[]runtime.Capability{{Name: "runtime.firecracker", Available: true}},
+		map[string]runtime.Driver{"firecracker": &mockDriver{backend: "firecracker"}},
+	)
+
+	params, _ := json.Marshal(WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}})
+	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result.Workspace.Backend != "firecracker" {
+		t.Fatalf("expected firecracker backend when override disabled, got %q", result.Workspace.Backend)
+	}
+}
+
+func TestRuntimeSetupRunner_FailsFastInNonInteractiveWithoutPasswordlessSudo(t *testing.T) {
+	originalGOOS := runtimeSetupGOOS
+	originalIsRoot := runtimeSetupIsRootFn
+	originalSudoN := runtimeSetupSudoNOKFn
+	originalIsTTY := runtimeSetupIsTTYFn
+	originalResolveBinary := runtimeSetupResolveBinaryFn
+	originalRunCommand := runtimeSetupRunCommandFn
+	t.Cleanup(func() {
+		runtimeSetupGOOS = originalGOOS
+		runtimeSetupIsRootFn = originalIsRoot
+		runtimeSetupSudoNOKFn = originalSudoN
+		runtimeSetupIsTTYFn = originalIsTTY
+		runtimeSetupResolveBinaryFn = originalResolveBinary
+		runtimeSetupRunCommandFn = originalRunCommand
+	})
+
+	runtimeSetupGOOS = "linux"
+	runtimeSetupIsRootFn = func() bool { return false }
+	runtimeSetupSudoNOKFn = func() bool { return false }
+	runtimeSetupIsTTYFn = func(*os.File) bool { return false }
+
+	resolveCalls := 0
+	runtimeSetupResolveBinaryFn = func() (string, error) {
+		resolveCalls++
+		return "/tmp/nexus", nil
+	}
+
+	runCalls := 0
+	runtimeSetupRunCommandFn = func(context.Context, string, ...string) ([]byte, error) {
+		runCalls++
+		return nil, nil
+	}
+
+	err := runtimeSetupRunner(context.Background(), "/tmp/repo", "firecracker")
+	if err == nil {
+		t.Fatal("expected fail-fast error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "non-interactive") {
+		t.Fatalf("expected non-interactive fast-fail message, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "manual next steps") {
+		t.Fatalf("expected manual next steps in error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "sudo -E nexus init --project-root /tmp/repo") {
+		t.Fatalf("expected sudo manual command in error, got %q", err.Error())
+	}
+	if resolveCalls != 0 {
+		t.Fatalf("expected no binary resolution on fast-fail path, got %d", resolveCalls)
+	}
+	if runCalls != 0 {
+		t.Fatalf("expected no command execution on fast-fail path, got %d", runCalls)
+	}
+}
+
+func TestRuntimeSetupRunner_InteractiveSessionAttemptsSetup(t *testing.T) {
+	originalGOOS := runtimeSetupGOOS
+	originalIsRoot := runtimeSetupIsRootFn
+	originalSudoN := runtimeSetupSudoNOKFn
+	originalIsTTY := runtimeSetupIsTTYFn
+	originalResolveBinary := runtimeSetupResolveBinaryFn
+	originalRunCommand := runtimeSetupRunCommandFn
+	t.Cleanup(func() {
+		runtimeSetupGOOS = originalGOOS
+		runtimeSetupIsRootFn = originalIsRoot
+		runtimeSetupSudoNOKFn = originalSudoN
+		runtimeSetupIsTTYFn = originalIsTTY
+		runtimeSetupResolveBinaryFn = originalResolveBinary
+		runtimeSetupRunCommandFn = originalRunCommand
+	})
+
+	runtimeSetupGOOS = "linux"
+	runtimeSetupIsRootFn = func() bool { return false }
+	runtimeSetupSudoNOKFn = func() bool { return false }
+	runtimeSetupIsTTYFn = func(*os.File) bool { return true }
+
+	runtimeSetupResolveBinaryFn = func() (string, error) {
+		return "/tmp/nexus", nil
+	}
+
+	runCalls := 0
+	runtimeSetupRunCommandFn = func(context.Context, string, ...string) ([]byte, error) {
+		runCalls++
+		return nil, nil
+	}
+
+	err := runtimeSetupRunner(context.Background(), "/tmp/repo", "firecracker")
+	if err != nil {
+		t.Fatalf("expected setup attempt to proceed in interactive session, got %v", err)
+	}
+	if runCalls != 1 {
+		t.Fatalf("expected one setup command run, got %d", runCalls)
 	}
 }
 
