@@ -191,12 +191,26 @@ if [[ -n "$workspace_handoff_dir" ]]; then
 fi
 echo "suggested_prompt_file=$suggested_prompt_file"
 if [[ -n "$workspace_prompt_rel" && -n "$workspace_suggested_rel" ]]; then
+  suggested_prompt_b64="$(python3 - <<'PY' "$suggested_prompt_file"
+import base64
+import pathlib
+import sys
+print(base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode("ascii"))
+PY
+)"
+  handoff_prompt_b64="$(python3 - <<'PY' "$prompt_file"
+import base64
+import pathlib
+import sys
+print(base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode("ascii"))
+PY
+)"
   echo "workspace_prompt_path=/workspace/$workspace_prompt_rel"
   echo "workspace_suggested_prompt_path=/workspace/$workspace_suggested_rel"
-  echo "start_session_command=$nexus_cmd workspace ssh \"$workspace_id\" --command \"cd /workspace && opencode \\\"\\\$(cat /workspace/$workspace_suggested_rel)\\\"\""
+  echo "start_session_command=$nexus_cmd workspace ssh \"$workspace_id\" --command \"cd /workspace && PROMPT=\\\$(python3 -c \\\"import base64;print(base64.b64decode('$suggested_prompt_b64').decode())\\\") && opencode --prompt \\\$PROMPT\""
   echo "continue_last_session_command=$nexus_cmd workspace ssh \"$workspace_id\" --command \"cd /workspace && opencode --continue\""
   echo "continue_with_session_id_command=$nexus_cmd workspace ssh \"$workspace_id\" --command \"cd /workspace && opencode --session \\\"<session-id>\\\"\""
-  echo "manual_handoff_command=$nexus_cmd workspace ssh \"$workspace_id\" --command \"cd /workspace && opencode \\\"\\\$(cat /workspace/$workspace_prompt_rel)\\\"\""
+  echo "manual_handoff_command=$nexus_cmd workspace ssh \"$workspace_id\" --command \"cd /workspace && PROMPT=\\\$(python3 -c \\\"import base64;print(base64.b64decode('$handoff_prompt_b64').decode())\\\") && opencode --prompt \\\$PROMPT\""
 else
   echo "start_session_command=cd \"$worktree_path\" && opencode \"\$(cat \"$suggested_prompt_file\")\""
   echo "continue_last_session_command=cd \"$worktree_path\" && opencode --continue"
