@@ -1,4 +1,5 @@
 packages:
   - "packages/*"
   - "packages/sdk/*"
+  - "packages/e2e/*"
   - "packages/nexus-ui"

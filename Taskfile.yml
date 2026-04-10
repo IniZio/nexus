@@ -107,9 +107,7 @@ tasks:
       - task: ci:go-fix
       - task: ci:coverage
       - task: ci:core
-      - task: ci:nexus-subcommand-e2e
-      - task: ci:pty-runtime-e2e
-      - task: ci:pty-lxc-managed-e2e
+      - task: ci:sdk-runtime-e2e
 
   ci:core:
     desc: Run Core CI (linux) equivalent
@@ -126,44 +124,10 @@ tasks:
     cmds:
       - ./scripts/ci/coverage.sh
 
-  ci:nexus-subcommand-e2e:
-    desc: Run Nexus Subcommand E2E equivalent for current OS
+  ci:sdk-runtime-e2e:
+    desc: Run consolidated SDK runtime E2E package
     cmds:
-      - task: ci:nexus-subcommand-e2e:init-exec
-      - task: ci:nexus-subcommand-e2e:doctor-backends
-
-  ci:nexus-subcommand-e2e:init-exec:
-    desc: Run init/exec suite used by CI matrix on current OS
-    cmds:
-      - ./scripts/ci/nexus-subcommand-e2e-init-exec.sh
-
-  ci:nexus-subcommand-e2e:doctor-backends:
-    desc: Run doctor/backend suite used by CI matrix on current OS
-    cmds:
-      - ./scripts/ci/nexus-subcommand-e2e-doctor-backends.sh
-
-  ci:pty-runtime-e2e:
-    desc: Run PTY Runtime E2E equivalent for current OS
-    cmds:
-      - ./scripts/ci/pty-runtime-e2e.sh
-
-  ci:pty-lxc-managed-e2e:
-    desc: Run PTY LXC Managed E2E equivalent (macOS only)
-    cmds:
-      - ./scripts/ci/pty-lxc-managed-e2e.sh
-
-  # ── Smoke tests (quick local PTY validation) ─────────────────────────────
-  smoke:pty:lxc:
-    desc: Run PTY smoke test against an existing LXC workspace
-    dir: packages/nexus
-    cmds:
-      - ./scripts/ci/pty-lxc-managed-e2e.sh
-
-  smoke:pty:fc:
-    desc: Run PTY smoke test against a firecracker/default workspace
-    dir: packages/nexus
-    cmds:
-      - ./scripts/ci/pty-runtime-e2e.sh
+      - pnpm --filter @nexus/e2e-sdk-runtime test:ci
 
   clean:
     desc: Clean core build artifacts
