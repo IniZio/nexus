@@ -129,6 +129,10 @@ func (d *serverTestConnectorDriver) AgentConn(ctx context.Context, workspaceID s
 					_ = enc.Encode(map[string]any{"id": sessionID, "type": "result", "exit_code": 0})
 					return
 				}
+				if typ == "shell.write" || typ == "shell.resize" {
+					_ = enc.Encode(map[string]any{"id": sessionID, "type": "ack", "ok": true})
+					continue
+				}
 				_ = enc.Encode(map[string]any{"id": sessionID, "type": "result", "exit_code": 0})
 			default:
 				_ = enc.Encode(map[string]any{"id": sessionID, "type": "result", "exit_code": 1, "stderr": "unknown request"})
