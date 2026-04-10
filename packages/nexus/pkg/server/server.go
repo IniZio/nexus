@@ -97,6 +97,7 @@ type ptySession struct {
 type ptyOpenParams struct {
 	WorkspaceID string `json:"workspaceId,omitempty"`
 	Shell       string `json:"shell,omitempty"`
+	WorkDir     string `json:"workdir,omitempty"`
 	Cols        int    `json:"cols,omitempty"`
 	Rows        int    `json:"rows,omitempty"`
 }
@@ -706,6 +707,10 @@ func (s *Server) handlePTYOpen(params json.RawMessage, conn *Connection, ws *wor
 	if shell == "" {
 		shell = "bash"
 	}
+	workDirHint := strings.TrimSpace(p.WorkDir)
+	if workDirHint == "" {
+		workDirHint = "/workspace"
+	}
 
 	workDir := ws.Path()
 	workspaceID := strings.TrimSpace(p.WorkspaceID)
@@ -789,6 +794,10 @@ func (s *Server) handleFirecrackerPTYOpen(conn *Connection, p ptyOpenParams, wsR
 	if shell == "" {
 		shell = "bash"
 	}
+	workDirHint := strings.TrimSpace(p.WorkDir)
+	if workDirHint == "" {
+		workDirHint = "/workspace"
+	}
 
 	sessionID := fmt.Sprintf("pty-%d", time.Now().UnixNano())
 	enc := json.NewEncoder(agentConn)
@@ -798,7 +807,7 @@ func (s *Server) handleFirecrackerPTYOpen(conn *Connection, p ptyOpenParams, wsR
 		"id":      sessionID,
 		"type":    "shell.open",
 		"command": shell,
-		"workdir": "/workspace",
+		"workdir": workDirHint,
 	}
 
 	if err := enc.Encode(openReq); err != nil {

@@ -413,6 +413,7 @@ func runWorkspaceSSHCommand(args []string) {
 		Params: map[string]any{
 			"workspaceId": workspaceID,
 			"shell":       strings.TrimSpace(*shell),
+			"workdir":     "/workspace",
 			"cols":        120,
 			"rows":        40,
 		},
