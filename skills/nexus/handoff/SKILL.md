@@ -17,8 +17,9 @@ After a git worktree is created for implementation, immediately urge creation of
 1. Run `scripts/create_workspace_handoff.sh`.
 2. Confirm workspace ID and worktree path.
 3. Confirm prompt file and editor deep links are created.
-4. Confirm automatic handoff command execution.
-5. Confirm session continuation commands are printed (`opencode --continue` and `opencode --session` forms).
+4. Confirm PRD/plan files from current session are copied into the workspace worktree.
+5. Confirm suggested start prompt and session continuation commands are printed.
+6. Do not auto-launch the agent in the workspace.
 
 ## Command
 
@@ -26,7 +27,6 @@ After a git worktree is created for implementation, immediately urge creation of
 bash skills/nexus/handoff/scripts/create_workspace_handoff.sh \
   --path "<optional: local-repo-path, default .>" \
   --objective "<implementation-objective>" \
-  --backend "<optional: firecracker|seatbelt>" \
-  --handoff-command '<optional: custom command; defaults to opencode launch>'
+  --backend "<optional: firecracker|seatbelt>"
 ```
 

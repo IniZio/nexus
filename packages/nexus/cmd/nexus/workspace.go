@@ -214,35 +214,17 @@ func runWorkspaceListCommand(_ []string) {
 func runWorkspaceCreateCommand(args []string) {
 	fs := flag.NewFlagSet("workspace create", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	pathArg := fs.String("path", "", "local repository path (default: current directory)")
-	ref := fs.String("ref", "", "branch / ref (default: repo default branch)")
 	backend := fs.String("backend", "", "runtime backend override (firecracker)")
-	filteredArgs, positionalPath, err := splitWorkspaceCreateArgs(args)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus workspace create: %v\n", err)
-		fs.Usage()
+	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
-	if err := fs.Parse(filteredArgs); err != nil {
-		os.Exit(2)
-	}
-
-	if strings.TrimSpace(*pathArg) != "" && positionalPath != "" {
-		fmt.Fprintln(os.Stderr, "nexus workspace create: use either --path or positional path, not both")
+	if len(fs.Args()) > 0 {
+		fmt.Fprintln(os.Stderr, "nexus workspace create: this command does not take positional arguments")
 		fs.Usage()
 		os.Exit(2)
 	}
 
-	targetPath := strings.TrimSpace(*pathArg)
-	if targetPath == "" {
-		if positionalPath != "" {
-			targetPath = positionalPath
-		} else {
-			targetPath = "."
-		}
-	}
-
-	repoPath, err := normalizeLocalRepoPath(targetPath)
+	repoPath, err := normalizeLocalRepoPath(".")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nexus workspace create: %v\n", err)
 		os.Exit(2)
@@ -258,7 +240,7 @@ func runWorkspaceCreateCommand(args []string) {
 
 	spec := workspacemgr.CreateSpec{
 		Repo:          repoPath,
-		Ref:           *ref,
+		Ref:           "",
 		WorkspaceName: workspaceName,
 		AgentProfile:  "default",
 		Backend:       strings.TrimSpace(*backend),
@@ -311,38 +293,6 @@ func runWorkspaceCreateCommand(args []string) {
 			}
 		}
 	}
-}
-
-func splitWorkspaceCreateArgs(args []string) ([]string, string, error) {
-	filtered := make([]string, 0, len(args))
-	positionalPath := ""
-	expectFlagValue := false
-	for i := 0; i < len(args); i++ {
-		current := args[i]
-		if expectFlagValue {
-			filtered = append(filtered, current)
-			expectFlagValue = false
-			continue
-		}
-		if strings.HasPrefix(current, "-") {
-			filtered = append(filtered, current)
-			if strings.Contains(current, "=") {
-				continue
-			}
-			if current == "--path" || current == "--ref" || current == "--backend" {
-				expectFlagValue = true
-			}
-			continue
-		}
-		if positionalPath != "" {
-			return nil, "", fmt.Errorf("accepts at most one path argument")
-		}
-		positionalPath = current
-	}
-	if expectFlagValue {
-		return nil, "", fmt.Errorf("missing value for %s", filtered[len(filtered)-1])
-	}
-	return filtered, positionalPath, nil
 }
 
 func normalizeLocalRepoPath(pathValue string) (string, error) {
@@ -694,7 +644,7 @@ func printWorkspaceUsage() {
 
 subcommands:
   list                  list all workspaces
-  create [path] [--ref <ref>] [--backend <backend>]
+  create [--backend <backend>]
   start <id>            start a workspace and make it accessible
   ssh <id>              open interactive shell via daemon PTY
   stop <id>             stop a running workspace

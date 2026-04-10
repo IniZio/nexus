@@ -5,7 +5,6 @@ path="."
 objective=""
 context=""
 backend=""
-handoff_command=""
 nexus_bin=""
 
 while [[ $# -gt 0 ]]; do
@@ -14,7 +13,6 @@ while [[ $# -gt 0 ]]; do
     --objective) objective="$2"; shift 2 ;;
     --context) context="$2"; shift 2 ;;
     --backend) backend="$2"; shift 2 ;;
-    --handoff-command) handoff_command="$2"; shift 2 ;;
     --nexus-bin) nexus_bin="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -51,12 +49,16 @@ resolve_nexus_bin() {
 }
 
 nexus_cmd="$(resolve_nexus_bin)"
-create_args=(workspace create --path "$path")
+if [[ "$nexus_cmd" != /* ]]; then
+  nexus_cmd="$(pwd)/$nexus_cmd"
+fi
+repo_root="$(cd "$path" && pwd)"
+create_args=(workspace create)
 if [[ -n "$backend" ]]; then
   create_args+=(--backend "$backend")
 fi
 set +e
-create_output="$("$nexus_cmd" "${create_args[@]}" 2>&1)"
+create_output="$(cd "$repo_root" && "$nexus_cmd" "${create_args[@]}" 2>&1)"
 create_status=$?
 set -e
 printf "%s\n" "$create_output"
@@ -96,6 +98,36 @@ $objective
 $context
 EOF
 
+collect_plan_files() {
+  local source_root="$1"
+  if ! git -C "$source_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 0
+  fi
+  {
+    git -C "$source_root" diff --name-only
+    git -C "$source_root" diff --cached --name-only
+    git -C "$source_root" ls-files --others --exclude-standard
+  } | awk 'NF > 0' | sort -u | while IFS= read -r rel; do
+    lower="$(printf "%s" "$rel" | tr '[:upper:]' '[:lower:]')"
+    case "$lower" in
+      *prd*|*plan*|docs/superpowers/specs/*|docs/*/plans/*)
+        if [[ -f "$source_root/$rel" ]]; then
+          printf "%s\n" "$rel"
+        fi
+        ;;
+    esac
+  done
+}
+
+copied_file_list="$(mktemp -t "nexus-handoff-copied-${workspace_id}")"
+collect_plan_files "$repo_root" >"$copied_file_list"
+if [[ -s "$copied_file_list" && -n "$worktree_path" ]]; then
+  while IFS= read -r rel; do
+    mkdir -p "$(dirname "$worktree_path/$rel")"
+    cp "$repo_root/$rel" "$worktree_path/$rel"
+  done <"$copied_file_list"
+fi
+
 echo "workspace_id=$workspace_id"
 echo "worktree_path=$worktree_path"
 echo "workspace_path=/workspace"
@@ -112,18 +144,37 @@ PY
   echo "cursor_open_command=cursor \"$worktree_path\""
   echo "vscode_open_command=code \"$worktree_path\""
 fi
+if [[ -s "$copied_file_list" ]]; then
+  echo "copied_plan_files=1"
+  while IFS= read -r rel; do
+    echo "copied_file=$rel"
+  done <"$copied_file_list"
+else
+  echo "copied_plan_files=0"
+fi
+suggested_prompt_file="$(mktemp -t "nexus-handoff-suggested-${workspace_id}").md"
+{
+  echo "You are working inside /workspace for workspace $workspace_id."
+  echo ""
+  echo "Objective:"
+  echo "$objective"
+  echo ""
+  if [[ -n "$context" ]]; then
+    echo "Context:"
+    echo "$context"
+    echo ""
+  fi
+  if [[ -s "$copied_file_list" ]]; then
+    echo "Read these copied PRD/plan files first:"
+    while IFS= read -r rel; do
+      echo "- $rel"
+    done <"$copied_file_list"
+    echo ""
+  fi
+  echo "Then propose a short implementation plan and begin execution."
+} >"$suggested_prompt_file"
+echo "suggested_prompt_file=$suggested_prompt_file"
+echo "start_session_command=cd \"$worktree_path\" && opencode \"\$(cat \"$suggested_prompt_file\")\""
 echo "continue_last_session_command=cd \"$worktree_path\" && opencode --continue"
 echo "continue_with_session_id_command=cd \"$worktree_path\" && opencode --session \"<session-id>\""
-if [[ -z "$handoff_command" ]]; then
-  handoff_command='cd "__WORKTREE__" && opencode "$(cat "__PROMPT_FILE__")"'
-fi
-
-resolved_command="${handoff_command//__WORKTREE__/$worktree_path}"
-resolved_command="${resolved_command//__PROMPT_FILE__/$prompt_file}"
-resolved_command="${resolved_command//__WORKSPACE_ID__/$workspace_id}"
-echo "executing_handoff_command=$resolved_command"
-if ! eval "$resolved_command"; then
-  echo "handoff_command_failed=1"
-  echo "manual_handoff_command=cd \"$worktree_path\" && opencode \"\$(cat \"$prompt_file\")\""
-  exit 1
-fi
+echo "manual_handoff_command=cd \"$worktree_path\" && opencode \"\$(cat \"$prompt_file\")\""
