@@ -115,6 +115,8 @@ func resolveDefaultWorkspaceDir() string {
 }
 
 func runServer(port int, workspaceDir string, token string) error {
+	_ = runtime.MaybeAutoinstallPreflightHostTools()
+
 	srv, err := server.NewServer(port, workspaceDir, token)
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
