@@ -107,7 +107,7 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	if d.prepareWorkspaceFS != nil {
 		if err := d.prepareWorkspaceFS(ctx, instance, req.ProjectRoot); err != nil {
 			if strings.TrimSpace(instance) == "nexus-seatbelt" {
-				fallbackCandidates := []string{"mvm", "default", "nexus-firecracker"}
+				fallbackCandidates := []string{"mvm", "default"}
 				for _, fallback := range fallbackCandidates {
 					if fallbackErr := d.prepareWorkspaceFS(ctx, fallback, req.ProjectRoot); fallbackErr != nil {
 						continue
@@ -648,7 +648,7 @@ func filterCandidatesByAvailability(candidates []string, available []string) []s
 
 func instanceCandidates(instanceName string) []string {
 	trimmed := strings.TrimSpace(instanceName)
-	base := []string{"nexus-seatbelt", "nexus-firecracker", "default"}
+	base := []string{"nexus-seatbelt", "default"}
 	if trimmed == "" {
 		return base
 	}
