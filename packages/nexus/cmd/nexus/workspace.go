@@ -459,7 +459,7 @@ func runWorkspaceSSHCommand(args []string) {
 	}
 
 	if strings.TrimSpace(*command) != "" {
-		payload := *command + "\nexit\n"
+		payload := "cd /workspace >/dev/null 2>&1 || true\n" + *command + "\nexit\n"
 		if err := send("pty.write", map[string]any{"sessionId": sessionID, "data": payload}); err != nil {
 			fmt.Fprintf(os.Stderr, "nexus workspace ssh: command send failed: %v\n", err)
 			os.Exit(1)
