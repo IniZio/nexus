@@ -116,6 +116,7 @@ func resolveDefaultWorkspaceDir() string {
 
 func runServer(port int, workspaceDir string, token string) error {
 	_ = runtime.MaybeAutoinstallPreflightHostTools()
+	applyDaemonFirecrackerAssetDefaults()
 
 	srv, err := server.NewServer(port, workspaceDir, token)
 	if err != nil {
@@ -172,6 +173,21 @@ func runServer(port int, workspaceDir string, token string) error {
 
 	log.Printf("Workspace daemon started on port %d", port)
 	return srv.Start()
+}
+
+func applyDaemonFirecrackerAssetDefaults() {
+	const defK = "/var/lib/nexus/vmlinux.bin"
+	const defR = "/var/lib/nexus/rootfs.ext4"
+	if strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_KERNEL")) == "" {
+		if st, err := os.Stat(defK); err == nil && !st.IsDir() {
+			_ = os.Setenv("NEXUS_FIRECRACKER_KERNEL", defK)
+		}
+	}
+	if strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_ROOTFS")) == "" {
+		if st, err := os.Stat(defR); err == nil && !st.IsDir() {
+			_ = os.Setenv("NEXUS_FIRECRACKER_ROOTFS", defR)
+		}
+	}
 }
 
 // probeFirecrackerTooling checks if native firecracker binary is available

@@ -9,6 +9,10 @@ write_env_sh() {
   {
     printf 'export NEXUS_CLI_PATH=%q\n' "$NEXUS_CLI_PATH"
     printf 'export PATH=%q\n' "$PATH"
+    if [[ -f /var/lib/nexus/vmlinux.bin && -f /var/lib/nexus/rootfs.ext4 ]]; then
+      printf 'export NEXUS_FIRECRACKER_KERNEL=%q\n' "/var/lib/nexus/vmlinux.bin"
+      printf 'export NEXUS_FIRECRACKER_ROOTFS=%q\n' "/var/lib/nexus/rootfs.ext4"
+    fi
   } >"$f"
   echo "sdk-runtime e2e: wrote $f"
 }
@@ -39,7 +43,11 @@ run_seed_nexus_init() {
   local abs
   abs="$(cd "$seed/repo" && pwd)"
   echo "sdk-runtime e2e: nexus init --project-root $abs (runtime tools via preflight autoinstall when needed)"
-  "$NEXUS_CLI_PATH" init --project-root "$abs" --force
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    sudo -E env PATH="$PATH" "$NEXUS_CLI_PATH" init --project-root "$abs" --force
+  else
+    "$NEXUS_CLI_PATH" init --project-root "$abs" --force
+  fi
   rm -rf "$seed"
 }
 

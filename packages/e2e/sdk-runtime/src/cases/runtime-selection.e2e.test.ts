@@ -7,7 +7,7 @@ import { runtimeSelectionCaseIds } from './test-ids';
 export const CASE_TEST_IDS = runtimeSelectionCaseIds;
 
 describe('runtime selection e2e', () => {
-  it('pass -> firecracker when override is forced', async () => {
+  (process.platform === 'linux' ? it : it.skip)('pass -> firecracker when override is forced', async () => {
     const fixture = await createGitFixture('runtime-selection-pass');
     const session = await withTimeout(startSession({
       forceManaged: true,
