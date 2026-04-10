@@ -8,9 +8,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	nexusruntime "github.com/inizio/nexus/packages/nexus/pkg/runtime"
 )
 
 func TestDarwinBootstrapReturnsInstallInstructionsWhenLimactlMissing(t *testing.T) {
+	origPF := darwinInitPreflightRunner
+	darwinInitPreflightRunner = func(string) nexusruntime.FirecrackerPreflightResult {
+		return nexusruntime.FirecrackerPreflightResult{Status: nexusruntime.PreflightPass}
+	}
+	t.Cleanup(func() { darwinInitPreflightRunner = origPF })
+
 	originalLookPath := limactlLookPathFn
 	t.Cleanup(func() { limactlLookPathFn = originalLookPath })
 
@@ -147,6 +155,12 @@ func TestBootstrapFirecrackerExecContextDarwinFailsWhenWorkspaceNotReady(t *test
 }
 
 func TestDarwinBootstrapReturnsErrorWhenLimaStartFails(t *testing.T) {
+	origPF := darwinInitPreflightRunner
+	darwinInitPreflightRunner = func(string) nexusruntime.FirecrackerPreflightResult {
+		return nexusruntime.FirecrackerPreflightResult{Status: nexusruntime.PreflightPass}
+	}
+	t.Cleanup(func() { darwinInitPreflightRunner = origPF })
+
 	originalLookPath := limactlLookPathFn
 	originalRun := limactlRunFn
 	originalOutput := limactlOutputFn
@@ -190,6 +204,55 @@ func TestDarwinBootstrapReturnsErrorWhenLimaStartFails(t *testing.T) {
 	envPath := filepath.Join(projectRoot, ".nexus", "run", "nexus-init-env")
 	if _, statErr := os.Stat(envPath); !os.IsNotExist(statErr) {
 		t.Fatalf("did not expect nexus-init-env to be written on bootstrap failure")
+	}
+}
+
+func TestDarwinBootstrapUsesSeatbeltWhenNestedVirtUnsupported(t *testing.T) {
+	origPF := darwinInitPreflightRunner
+	darwinInitPreflightRunner = func(string) nexusruntime.FirecrackerPreflightResult {
+		return nexusruntime.FirecrackerPreflightResult{Status: nexusruntime.PreflightUnsupportedNested}
+	}
+	t.Cleanup(func() { darwinInitPreflightRunner = origPF })
+
+	originalLookPath := limactlLookPathFn
+	originalRun := limactlRunFn
+	t.Cleanup(func() {
+		limactlLookPathFn = originalLookPath
+		limactlRunFn = originalRun
+	})
+
+	limaStartCalled := false
+	limactlLookPathFn = func(name string) (string, error) {
+		if name == "limactl" {
+			return "/opt/homebrew/bin/limactl", nil
+		}
+		return "", &notFoundError{name: name}
+	}
+	limactlRunFn = func(name string, args ...string) error {
+		if name == "limactl" && len(args) >= 1 && args[0] == "start" {
+			limaStartCalled = true
+		}
+		return nil
+	}
+
+	projectRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".nexus"), 0o755); err != nil {
+		t.Fatalf("create .nexus: %v", err)
+	}
+
+	if err := runInitRuntimeBootstrapDarwin(projectRoot, "firecracker"); err != nil {
+		t.Fatalf("expected nil when nested virt unsupported (seatbelt path), got: %v", err)
+	}
+	if limaStartCalled {
+		t.Fatal("did not expect limactl start when nested virt unsupported")
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectRoot, ".nexus", "run", "nexus-init-env"))
+	if err != nil {
+		t.Fatalf("read nexus-init-env: %v", err)
+	}
+	if !strings.Contains(string(data), "NEXUS_RUNTIME_BACKEND=seatbelt") {
+		t.Fatalf("expected seatbelt backend hint, got: %q", string(data))
 	}
 }
 

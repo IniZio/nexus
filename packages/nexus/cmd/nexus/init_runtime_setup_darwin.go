@@ -19,6 +19,10 @@ var embeddedLimaTemplate string
 
 var initRuntimeBootstrapRunner func(projectRoot, runtimeName string) error = runInitRuntimeBootstrapDarwin
 
+var darwinInitPreflightRunner = func(projectRoot string) nexusruntime.FirecrackerPreflightResult {
+	return nexusruntime.RunFirecrackerPreflight(projectRoot, nexusruntime.PreflightOptions{})
+}
+
 var (
 	initRuntimeBootstrapIsRootFn                   = func() bool { return os.Geteuid() == 0 }
 	initRuntimeBootstrapSudoOKFn                   = func() bool { return exec.Command("sudo", "-n", "true").Run() == nil }
@@ -53,6 +57,14 @@ func runInitRuntimeBootstrapDarwin(projectRoot, runtimeName string) error {
 		if _, brewErr := limactlLookPathFn("brew"); brewErr == nil {
 			_ = limactlRunFn("brew", "install", "lima")
 		}
+	}
+
+	pf := darwinInitPreflightRunner(projectRoot)
+	if pf.Status == nexusruntime.PreflightUnsupportedNested {
+		_ = writeNexusInitEnv(projectRoot, map[string]string{
+			"NEXUS_RUNTIME_BACKEND": "seatbelt",
+		})
+		return nil
 	}
 
 	if _, err := limactlLookPathFn("limactl"); err != nil {
