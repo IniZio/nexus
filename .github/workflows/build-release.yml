@@ -68,6 +68,8 @@ jobs:
 
       - name: Install Task
         uses: arduino/setup-task@v2
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run CI pipeline
         run: task ci
