@@ -14,3 +14,12 @@ export function isLinuxTapUnsupported(error: unknown): boolean {
   const message = String((error as { message?: unknown })?.message ?? error ?? '');
   return message.includes('TAP devices are only supported on Linux');
 }
+
+export function isRuntimeUnavailable(error: unknown): boolean {
+  const message = String((error as { message?: unknown })?.message ?? error ?? '');
+  return (
+    isLinuxTapUnsupported(error) ||
+    message.includes('runtime preflight failed') ||
+    message.includes('seatbelt runtime requires limactl')
+  );
+}

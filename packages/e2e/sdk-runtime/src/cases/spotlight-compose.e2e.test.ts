@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createGitFixture, cleanupFixture } from '../harness/fixtures';
 import { startSession } from '../harness/session';
-import { isLinuxTapUnsupported, skipTest } from '../harness/assertions';
+import { isRuntimeUnavailable, skipTest } from '../harness/assertions';
 import { spotlightComposeCaseIds } from './test-ids';
 
 export const CASE_TEST_IDS = spotlightComposeCaseIds;
@@ -41,8 +41,8 @@ describe('spotlight compose e2e', () => {
           agentProfile: 'default',
         });
       } catch (error) {
-        if (isLinuxTapUnsupported(error)) {
-          skipTest('spotlight compose requires Linux TAP support in this environment');
+        if (isRuntimeUnavailable(error)) {
+          skipTest('spotlight compose runtime path unavailable in this environment');
           return;
         }
         throw error;

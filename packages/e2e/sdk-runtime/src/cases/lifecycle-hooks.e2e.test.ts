@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createGitFixture, cleanupFixture } from '../harness/fixtures';
 import { startSession } from '../harness/session';
-import { isLinuxTapUnsupported, skipTest } from '../harness/assertions';
+import { isRuntimeUnavailable, skipTest } from '../harness/assertions';
 import { lifecycleHooksCaseIds } from './test-ids';
 
 export const CASE_TEST_IDS = lifecycleHooksCaseIds;
@@ -44,8 +44,8 @@ describe('lifecycle hooks e2e', () => {
           });
           workspaceId = ws.id;
         } catch (error) {
-          if (isLinuxTapUnsupported(error)) {
-            skipTest('lifecycle hooks runtime path requires Linux TAP support in this environment');
+          if (isRuntimeUnavailable(error)) {
+            skipTest('lifecycle hooks runtime path unavailable in this environment');
             return;
           }
           throw error;

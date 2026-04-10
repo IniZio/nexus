@@ -1,7 +1,7 @@
 import { WorkspaceHandle, type Capability } from '@nexus/sdk';
 import { createGitFixture, cleanupFixture } from '../harness/fixtures';
 import { startSession } from '../harness/session';
-import { skipTest } from '../harness/assertions';
+import { isRuntimeUnavailable, skipTest } from '../harness/assertions';
 import { runtimeSelectionCaseIds } from './test-ids';
 
 export const CASE_TEST_IDS = runtimeSelectionCaseIds;
@@ -34,9 +34,8 @@ describe('runtime selection e2e', () => {
           agentProfile: 'default',
         }), 'workspace.create(pass)');
       } catch (error) {
-        const message = String((error as { message?: unknown })?.message ?? error);
-        if (message.includes('TAP devices are only supported on Linux')) {
-          skipTest('firecracker runtime path requires Linux TAP support in this environment');
+        if (isRuntimeUnavailable(error)) {
+          skipTest('firecracker runtime path unavailable in this environment');
           return;
         }
         throw error;
@@ -74,11 +73,19 @@ describe('runtime selection e2e', () => {
         return;
       }
 
-      ws = await withTimeout(session.client.workspace.create({
-        repo: fixture.repoDir,
-        workspaceName: 'runtime-nested',
-        agentProfile: 'default',
-      }), 'workspace.create(unsupported_nested_virt)');
+      try {
+        ws = await withTimeout(session.client.workspace.create({
+          repo: fixture.repoDir,
+          workspaceName: 'runtime-nested',
+          agentProfile: 'default',
+        }), 'workspace.create(unsupported_nested_virt)');
+      } catch (error) {
+        if (isRuntimeUnavailable(error)) {
+          skipTest('seatbelt runtime path unavailable in this environment');
+          return;
+        }
+        throw error;
+      }
 
       const rows = await session.client.workspace.list();
       const created = rows.find((row) => row.id === ws?.id);
