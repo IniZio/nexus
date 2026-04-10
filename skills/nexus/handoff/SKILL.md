@@ -20,6 +20,7 @@ After a git worktree is created for implementation, immediately urge creation of
 4. Confirm PRD/plan files from current session are copied into the workspace worktree.
 5. Confirm suggested start prompt and session continuation commands are printed.
 6. Do not auto-launch the agent in the workspace.
+7. Prefer `nexus workspace ssh` commands so execution happens inside `/workspace`.
 
 ## Command
 

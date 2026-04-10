@@ -98,6 +98,17 @@ $objective
 $context
 EOF
 
+workspace_handoff_dir=""
+workspace_prompt_rel=""
+workspace_suggested_rel=""
+if [[ -n "$worktree_path" ]]; then
+  workspace_handoff_dir="$worktree_path/.nexus/handoff"
+  mkdir -p "$workspace_handoff_dir"
+  workspace_prompt_name="handoff-${workspace_id}.md"
+  workspace_prompt_rel=".nexus/handoff/${workspace_prompt_name}"
+  cp "$prompt_file" "$workspace_handoff_dir/$workspace_prompt_name"
+fi
+
 collect_plan_files() {
   local source_root="$1"
   if ! git -C "$source_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -173,8 +184,22 @@ suggested_prompt_file="$(mktemp -t "nexus-handoff-suggested-${workspace_id}").md
   fi
   echo "Then propose a short implementation plan and begin execution."
 } >"$suggested_prompt_file"
+if [[ -n "$workspace_handoff_dir" ]]; then
+  workspace_suggested_name="suggested-${workspace_id}.md"
+  workspace_suggested_rel=".nexus/handoff/${workspace_suggested_name}"
+  cp "$suggested_prompt_file" "$workspace_handoff_dir/$workspace_suggested_name"
+fi
 echo "suggested_prompt_file=$suggested_prompt_file"
-echo "start_session_command=cd \"$worktree_path\" && opencode \"\$(cat \"$suggested_prompt_file\")\""
-echo "continue_last_session_command=cd \"$worktree_path\" && opencode --continue"
-echo "continue_with_session_id_command=cd \"$worktree_path\" && opencode --session \"<session-id>\""
-echo "manual_handoff_command=cd \"$worktree_path\" && opencode \"\$(cat \"$prompt_file\")\""
+if [[ -n "$workspace_prompt_rel" && -n "$workspace_suggested_rel" ]]; then
+  echo "workspace_prompt_path=/workspace/$workspace_prompt_rel"
+  echo "workspace_suggested_prompt_path=/workspace/$workspace_suggested_rel"
+  echo "start_session_command=$nexus_cmd workspace ssh \"$workspace_id\" --command \"cd /workspace && opencode \\\"\\\$(cat /workspace/$workspace_suggested_rel)\\\"\""
+  echo "continue_last_session_command=$nexus_cmd workspace ssh \"$workspace_id\" --command \"cd /workspace && opencode --continue\""
+  echo "continue_with_session_id_command=$nexus_cmd workspace ssh \"$workspace_id\" --command \"cd /workspace && opencode --session \\\"<session-id>\\\"\""
+  echo "manual_handoff_command=$nexus_cmd workspace ssh \"$workspace_id\" --command \"cd /workspace && opencode \\\"\\\$(cat /workspace/$workspace_prompt_rel)\\\"\""
+else
+  echo "start_session_command=cd \"$worktree_path\" && opencode \"\$(cat \"$suggested_prompt_file\")\""
+  echo "continue_last_session_command=cd \"$worktree_path\" && opencode --continue"
+  echo "continue_with_session_id_command=cd \"$worktree_path\" && opencode --session \"<session-id>\""
+  echo "manual_handoff_command=cd \"$worktree_path\" && opencode \"\$(cat \"$prompt_file\")\""
+fi
