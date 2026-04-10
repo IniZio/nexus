@@ -2378,7 +2378,7 @@ func TestBuildSetupScriptChecksBridgeRouteLinkdownNotLinkState(t *testing.T) {
 	}
 }
 
-// ---- setup firecracker tests ----
+// ---- firecracker setup/bootstrap tests ----
 
 // TestDetectPrivilegeModeRoot verifies that detectPrivilegeMode returns
 // privilegeModeRoot when EUID is 0.
@@ -2476,8 +2476,8 @@ func TestSetupFirecrackerNonInteractivePrintsAndErrors(t *testing.T) {
 		t.Fatalf("expected error to mention manual steps, got: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "sudo") || !strings.Contains(out, "setup firecracker") {
-		t.Fatalf("expected output to contain 'sudo <nexus> setup firecracker', got: %q", out)
+	if !strings.Contains(out, "sudo") || !strings.Contains(out, "nexus init --project-root") {
+		t.Fatalf("expected output to contain sudo nexus init guidance, got: %q", out)
 	}
 	if !sudoCalled {
 		t.Fatal("expected manual mode to attempt auto-sudo before fallback")

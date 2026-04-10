@@ -129,10 +129,11 @@ var setupRunScriptFn = runSetupScript
 // tests.
 var setupVerifyFn = verifyFirecrackerSetup
 
-// setupSudoReexecFn reruns `nexus setup firecracker` under sudo so users can
-// complete setup with a single command invocation. Overridable in tests.
+// setupSudoReexecFn reruns the current nexus command under sudo so users can
+// complete privileged setup steps in one command invocation. Overridable in tests.
 var setupSudoReexecFn = func(commandPath string) error {
-	cmd := exec.Command("sudo", commandPath, "setup", "firecracker")
+	args := append([]string{commandPath}, os.Args[1:]...)
+	cmd := exec.Command("sudo", args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -145,10 +146,15 @@ var errKVMGroupRefreshNeeded = errors.New("kvm group refresh needed")
 
 const setupKVMGroupReexecEnv = "NEXUS_SETUP_KVM_GROUP_REEXEC"
 
-// setupKVMGroupReexecFn re-runs setup under `sg kvm` so group membership takes
-// effect without requiring a full logout/login cycle.
+// setupKVMGroupReexecFn re-runs the current nexus command under `sg kvm` so
+// group membership takes effect without requiring a full logout/login cycle.
 var setupKVMGroupReexecFn = func(commandPath string) error {
-	cmd := exec.Command("sg", "kvm", "-c", fmt.Sprintf("%s setup firecracker", shellQuote(commandPath)))
+	parts := make([]string, 0, len(os.Args))
+	parts = append(parts, shellQuote(commandPath))
+	for _, arg := range os.Args[1:] {
+		parts = append(parts, shellQuote(arg))
+	}
+	cmd := exec.Command("sg", "kvm", "-c", strings.Join(parts, " "))
 	cmd.Env = append(os.Environ(), setupKVMGroupReexecEnv+"=1")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -567,7 +573,7 @@ func runSetupFirecracker(w io.Writer) error {
 		fmt.Fprintln(w, "To refresh /dev/kvm access without logging out, run:")
 		fmt.Fprintln(w, "")
 		fmt.Fprintln(w, "  newgrp kvm")
-		fmt.Fprintln(w, "  nexus setup firecracker")
+		fmt.Fprintln(w, "  rerun your previous nexus command")
 		fmt.Fprintln(w, "")
 		return fmt.Errorf("setup is configured but /dev/kvm group refresh is required: %w", err)
 	}
@@ -588,7 +594,7 @@ func runSetupFirecracker(w io.Writer) error {
 					fmt.Fprintln(w, "To refresh /dev/kvm access without logging out, run:")
 					fmt.Fprintln(w, "")
 					fmt.Fprintln(w, "  newgrp kvm")
-					fmt.Fprintln(w, "  nexus setup firecracker")
+					fmt.Fprintln(w, "  rerun your previous nexus command")
 					fmt.Fprintln(w, "")
 				}
 				return fmt.Errorf("setup verification failed after sudo setup: %w", err)
@@ -598,11 +604,11 @@ func runSetupFirecracker(w io.Writer) error {
 		}
 
 		fmt.Fprintln(w, "")
-		fmt.Fprintln(w, "Run the following command to complete Firecracker setup (networking + VM assets + verification):")
+		fmt.Fprintln(w, "Run the following command to prepare firecracker prerequisites:")
 		fmt.Fprintln(w, "")
-		fmt.Fprintf(w, "  sudo %s setup firecracker\n", shellQuote(cmdPath))
+		fmt.Fprintln(w, "  sudo -E nexus init --project-root <absolute-repo-path>")
 		fmt.Fprintln(w, "")
-		return fmt.Errorf("manual privileged step required — run the sudo nexus setup command above")
+		return fmt.Errorf("manual privileged step required — run the sudo nexus init command above")
 	}
 
 	// ---------- step 1: extract nexus-tap-helper (no privilege needed) ----------
@@ -628,13 +634,12 @@ func runSetupFirecracker(w io.Writer) error {
 	fmt.Fprintln(w, "==> Running Firecracker host setup script...")
 	if err := setupRunScriptFn(mode, script); err != nil {
 		if errors.Is(err, errNeedsManual) {
-			cmdPath := setupCommandPath()
 			fmt.Fprintln(w, "")
-			fmt.Fprintln(w, "Run the following command to complete Firecracker setup (networking + VM assets + verification):")
+			fmt.Fprintln(w, "Run the following command to prepare firecracker prerequisites:")
 			fmt.Fprintln(w, "")
-			fmt.Fprintf(w, "  sudo %s setup firecracker\n", shellQuote(cmdPath))
+			fmt.Fprintln(w, "  sudo -E nexus init --project-root <absolute-repo-path>")
 			fmt.Fprintln(w, "")
-			return fmt.Errorf("manual privileged step required — run the sudo nexus setup command above")
+			return fmt.Errorf("manual privileged step required — run the sudo nexus init command above")
 		}
 		return fmt.Errorf("setup script failed: %w", err)
 	}
@@ -652,7 +657,7 @@ func runSetupFirecracker(w io.Writer) error {
 			fmt.Fprintln(w, "To refresh /dev/kvm access without logging out, run:")
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "  newgrp kvm")
-			fmt.Fprintln(w, "  nexus setup firecracker")
+			fmt.Fprintln(w, "  rerun your previous nexus command")
 			fmt.Fprintln(w, "")
 		}
 		return fmt.Errorf("setup verification failed: %w", err)

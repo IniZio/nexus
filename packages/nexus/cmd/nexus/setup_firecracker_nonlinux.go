@@ -56,7 +56,7 @@ func moduleRoot() string {
 }
 
 func runSetupFirecracker(w io.Writer) error {
-	return fmt.Errorf("firecracker setup via 'nexus setup firecracker' is only supported on Linux; on macOS use 'limactl' directly")
+	return fmt.Errorf("firecracker host setup is only supported on Linux; on macOS use 'limactl' directly")
 }
 
 type privilegeMode int

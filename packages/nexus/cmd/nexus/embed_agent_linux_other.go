@@ -3,5 +3,5 @@
 package main
 
 // embeddedAgent is nil on uncommon Linux architectures.
-// nexus setup firecracker will build nexus-firecracker-agent from source in this case.
+// firecracker bootstrap will build nexus-firecracker-agent from source in this case.
 var embeddedAgent []byte
