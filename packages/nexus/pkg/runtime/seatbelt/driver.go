@@ -106,7 +106,7 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	if d.prepareWorkspaceFS != nil {
 		if err := d.prepareWorkspaceFS(ctx, instance, req.ProjectRoot); err != nil {
 			if strings.TrimSpace(instance) == "nexus-seatbelt" {
-				fallbackCandidates := []string{"mvm", "default"}
+				fallbackCandidates := []string{"nexus-firecracker", "mvm", "default"}
 				for _, fallback := range fallbackCandidates {
 					if fallbackErr := d.prepareWorkspaceFS(ctx, fallback, req.ProjectRoot); fallbackErr != nil {
 						continue
@@ -515,7 +515,13 @@ func ensureLimaInstanceRunning(ctx context.Context, instance string) error {
 
 	out, err := limactlOutputFn(ctx, "list", "--json", instance)
 	if err != nil {
-		return fmt.Errorf("lima list failed for %s: %w", instance, err)
+		if startOut, startErr := limactlCombinedOutputFn(ctx, "start", "--yes", "--name", instance, "template:default"); startErr != nil {
+			return fmt.Errorf(
+				"lima list failed for %s: %w; lima start failed for %s: %s",
+				instance, err, instance, strings.TrimSpace(string(startOut)),
+			)
+		}
+		return nil
 	}
 	trimmed := strings.TrimSpace(string(out))
 
@@ -639,7 +645,7 @@ func filterCandidatesByAvailability(candidates []string, available []string) []s
 
 func instanceCandidates(instanceName string) []string {
 	trimmed := strings.TrimSpace(instanceName)
-	base := []string{"nexus-seatbelt", "default"}
+	base := []string{"nexus-seatbelt", "nexus-firecracker", "default"}
 	if trimmed == "" {
 		return base
 	}
