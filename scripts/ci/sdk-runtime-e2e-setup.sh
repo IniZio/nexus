@@ -45,10 +45,11 @@ run_seed_nexus_init() {
   echo "sdk-runtime e2e: nexus init --project-root $abs (runtime tools via preflight autoinstall when needed)"
   if [[ "$(uname -s)" == "Linux" ]]; then
     sudo -E env PATH="$PATH" "$NEXUS_CLI_PATH" init --project-root "$abs" --force
+    sudo rm -rf "$seed"
   else
     "$NEXUS_CLI_PATH" init --project-root "$abs" --force
+    rm -rf "$seed"
   fi
-  rm -rf "$seed"
 }
 
 main() {
