@@ -121,7 +121,7 @@ collect_plan_files() {
   } | awk 'NF > 0' | sort -u | while IFS= read -r rel; do
     lower="$(printf "%s" "$rel" | tr '[:upper:]' '[:lower:]')"
     case "$lower" in
-      *prd*|*plan*|docs/superpowers/specs/*|docs/*/plans/*)
+      *prd*|*plan*)
         if [[ -f "$source_root/$rel" ]]; then
           printf "%s\n" "$rel"
         fi
