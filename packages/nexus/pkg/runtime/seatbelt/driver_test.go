@@ -13,6 +13,7 @@ import (
 
 	"github.com/creack/pty"
 
+	"github.com/inizio/nexus/packages/nexus/pkg/agentprofile"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 )
 
@@ -146,29 +147,35 @@ func TestCreateFailsWhenBootstrapFails(t *testing.T) {
 	}
 }
 
-func TestBuildSeatbeltBootstrapScriptIncludesIsolationAndForwarding(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("/Users/tester", hostCLIAvailability{Opencode: true, Codex: true, Claude: true}, "Zm9v")
+func TestBuildSeatbeltBootstrapScriptContainsSymlinks(t *testing.T) {
+	script := buildSeatbeltBootstrapScript("/Users/testhost")
 
-	for _, token := range []string{
-		"printf %s 'Zm9v' | base64 -d",
-		"unset DOCKER_HOST DOCKER_CONTEXT",
-		"docker.io",
-		"docker-compose-v2",
-		"npm i -g opencode-ai @openai/codex @anthropic-ai/claude-code",
-		"mkdir -p ~/.config ~/.config/codex ~/.config/github-copilot ~/.config/opencode ~/.config/openai",
-		"mkdir -p ~/.local/share/opencode",
-		"npm bin -g",
-	} {
-		if !strings.Contains(script, token) {
-			t.Fatalf("expected script to include %q", token)
+	if strings.Contains(script, "nexus-auth.tar.gz") {
+		t.Fatal("bootstrap script must not use tar bundle — use symlinks instead")
+	}
+	if !strings.Contains(script, "ln -sfn") {
+		t.Fatal("bootstrap script must create symlinks for credential files")
+	}
+	if !strings.Contains(script, "/Users/testhost") {
+		t.Fatal("bootstrap script must use host home as symlink target")
+	}
+}
+
+func TestBuildSeatbeltBootstrapScriptInstallsRegistryPackages(t *testing.T) {
+	script := buildSeatbeltBootstrapScript("/Users/testhost")
+	for _, pkg := range agentprofile.AllInstallPkgs() {
+		if !strings.Contains(script, pkg) {
+			t.Fatalf("bootstrap script missing install package %q", pkg)
 		}
 	}
 }
 
-func TestBuildSeatbeltBootstrapScriptInstallsAllManagedCLIs(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("/Users/tester", hostCLIAvailability{Opencode: true, Codex: false, Claude: true}, "")
-	if !strings.Contains(script, "npm i -g opencode-ai @openai/codex @anthropic-ai/claude-code") {
-		t.Fatalf("expected managed CLI install command, got %q", script)
+func TestBuildSeatbeltBootstrapScriptChecksRegistryBinaries(t *testing.T) {
+	script := buildSeatbeltBootstrapScript("/Users/testhost")
+	for _, bin := range agentprofile.AllBinaries() {
+		if !strings.Contains(script, bin) {
+			t.Fatalf("bootstrap script missing binary check for %q", bin)
+		}
 	}
 }
 

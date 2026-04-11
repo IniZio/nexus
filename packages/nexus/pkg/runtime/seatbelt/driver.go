@@ -1,14 +1,9 @@
 package seatbelt
 
 import (
-	"archive/tar"
-	"bytes"
-	"compress/gzip"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -18,6 +13,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/inizio/nexus/packages/nexus/pkg/agentprofile"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 )
 
@@ -49,12 +45,6 @@ type Driver struct {
 	bootstrapped       map[string]bool
 	bootstrapInstance  func(ctx context.Context, instance, hostHome string) error
 	prepareWorkspaceFS func(ctx context.Context, instance, localPath string) error
-}
-
-type hostCLIAvailability struct {
-	Opencode bool
-	Codex    bool
-	Claude   bool
 }
 
 type workspaceState struct {
@@ -450,12 +440,7 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, hostHome string) er
 		candidates = filterCandidatesByAvailability(candidates, discovered)
 	}
 
-	hostCLI := detectHostCLIAvailability(seatbeltLookPath)
-	authBundle, bundleErr := buildSeatbeltHostAuthBundle(hostHome)
-	if bundleErr != nil {
-		return fmt.Errorf("prepare host auth bundle: %w", bundleErr)
-	}
-	script := buildSeatbeltBootstrapScript(hostHome, hostCLI, authBundle)
+	script := buildSeatbeltBootstrapScript(hostHome)
 
 	var lastErr error
 	for _, candidate := range candidates {
@@ -484,21 +469,6 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, hostHome string) er
 		return lastErr
 	}
 	return fmt.Errorf("bootstrap seatbelt tooling failed: no lima instance candidates")
-}
-
-func detectHostCLIAvailability(lookPath func(string) (string, error)) hostCLIAvailability {
-	has := func(bin string) bool {
-		if lookPath == nil {
-			return false
-		}
-		_, err := lookPath(bin)
-		return err == nil
-	}
-	return hostCLIAvailability{
-		Opencode: has("opencode"),
-		Codex:    has("codex"),
-		Claude:   has("claude"),
-	}
 }
 
 func isTransientLimaShellError(message string) bool {
@@ -560,11 +530,10 @@ func ensureLimaInstanceRunning(ctx context.Context, instance string) error {
 	return nil
 }
 
-func buildSeatbeltBootstrapScript(hostHome string, hostCLI hostCLIAvailability, authBundle string) string {
-	_ = hostCLI
+func buildSeatbeltBootstrapScript(hostHome string) string {
 	parts := []string{
 		"set -e",
-		`for p in "$HOME/.codex" "$HOME/.config/opencode" "$HOME/.config/codex" "$HOME/.config/github-copilot" "$HOME/.config/openai" "$HOME/.claude"; do if [ -L "$p" ]; then rm -f "$p"; fi; done`,
+		buildCredentialSymlinkCleanup(),
 		"unset DOCKER_HOST DOCKER_CONTEXT",
 		"if ! (command -v docker >/dev/null 2>&1 && (docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1) && (docker compose version >/dev/null 2>&1 || docker-compose version >/dev/null 2>&1) && command -v make >/dev/null 2>&1); then sudo -n apt-get update; sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-v2 make curl ca-certificates gnupg nodejs npm || sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose make curl ca-certificates gnupg nodejs npm; sudo -n systemctl enable docker >/dev/null 2>&1 || true; sudo -n systemctl start docker >/dev/null 2>&1 || sudo -n service docker start >/dev/null 2>&1 || true; sudo -n usermod -aG docker $USER >/dev/null 2>&1 || true; fi",
 		"(docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1)",
@@ -572,135 +541,54 @@ func buildSeatbeltBootstrapScript(hostHome string, hostCLI hostCLIAvailability, 
 		"command -v make >/dev/null 2>&1",
 	}
 
-	pkgs := []string{"opencode-ai", "@openai/codex", "@anthropic-ai/claude-code"}
+	pkgs := agentprofile.AllInstallPkgs()
 	if len(pkgs) > 0 {
+		joined := strings.Join(pkgs, " ")
 		parts = append(parts,
-			"if command -v npm >/dev/null 2>&1; then cd /tmp >/dev/null 2>&1 || true; npm i -g "+strings.Join(pkgs, " ")+" >/dev/null 2>&1 || sudo -n npm i -g "+strings.Join(pkgs, " ")+" >/dev/null 2>&1 || true; fi",
+			"if command -v npm >/dev/null 2>&1; then cd /tmp >/dev/null 2>&1 || true; npm i -g "+joined+" >/dev/null 2>&1 || sudo -n npm i -g "+joined+" >/dev/null 2>&1 || true; fi",
 		)
 	}
-	parts = append(parts, "if command -v opencode >/dev/null 2>&1; then opencode --version >/dev/null 2>&1 || true; fi")
-	parts = append(parts, "if command -v codex >/dev/null 2>&1; then codex --version >/dev/null 2>&1 || true; fi")
-	parts = append(parts, "if command -v claude >/dev/null 2>&1; then claude --version >/dev/null 2>&1 || true; fi")
+
+	for _, bin := range agentprofile.AllBinaries() {
+		parts = append(parts, "if command -v "+bin+" >/dev/null 2>&1; then "+bin+" --version >/dev/null 2>&1 || true; fi")
+	}
 
 	hostHome = strings.TrimSpace(hostHome)
 	if hostHome != "" {
 		parts = append(parts,
-			"mkdir -p ~/.config ~/.config/codex ~/.config/github-copilot ~/.config/opencode ~/.config/openai",
-			"mkdir -p ~/.local/share/opencode",
+			"mkdir -p ~/.config ~/.local/share",
 			"if command -v npm >/dev/null 2>&1; then cd /tmp >/dev/null 2>&1 || true; NPM_BIN=$(npm bin -g 2>/dev/null || true); if [ -n \"$NPM_BIN\" ] && [ -d \"$NPM_BIN\" ]; then export PATH=\"$NPM_BIN:$PATH\"; fi; fi",
 		)
-	}
-	if strings.TrimSpace(authBundle) != "" {
-		parts = append(parts, "printf %s "+shellQuote(authBundle)+" | base64 -d >/tmp/nexus-auth.tar.gz 2>/dev/null || printf %s "+shellQuote(authBundle)+" | base64 -D >/tmp/nexus-auth.tar.gz 2>/dev/null || true")
-		parts = append(parts, `if [ -f /tmp/nexus-auth.tar.gz ]; then tar -xzf /tmp/nexus-auth.tar.gz -C "$HOME" >/dev/null 2>&1 || true; rm -f /tmp/nexus-auth.tar.gz >/dev/null 2>&1 || true; fi`)
+		parts = append(parts, buildCredentialSymlinks(hostHome))
 	}
 
 	return strings.Join(parts, "; ")
 }
 
-func buildSeatbeltHostAuthBundle(hostHome string) (string, error) {
-	home := strings.TrimSpace(hostHome)
-	if home == "" {
-		return "", nil
+func buildCredentialSymlinkCleanup() string {
+	dirs := make(map[string]struct{})
+	for _, cf := range agentprofile.AllCredFiles() {
+		dir := filepath.Dir(cf)
+		dirs[dir] = struct{}{}
 	}
-
-	paths := []string{
-		filepath.Join(home, ".config", "opencode", "opencode.json"),
-		filepath.Join(home, ".config", "opencode", "ocx.jsonc"),
-		filepath.Join(home, ".config", "opencode", "dcp.jsonc"),
-		filepath.Join(home, ".local", "share", "opencode", "auth.json"),
-		filepath.Join(home, ".config", "github-copilot", "hosts.json"),
-		filepath.Join(home, ".config", "github-copilot", "apps.json"),
-		filepath.Join(home, ".codex", "auth.json"),
-		filepath.Join(home, ".codex", "version.json"),
-		filepath.Join(home, ".codex", ".codex-global-state.json"),
-		filepath.Join(home, ".config", "openai", "auth.json"),
-		filepath.Join(home, ".claude", ".credentials.json"),
+	var checks []string
+	for dir := range dirs {
+		checks = append(checks, `if [ -L "$HOME/`+dir+`" ]; then rm -f "$HOME/`+dir+`"; fi`)
 	}
-
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gz)
-
-	added := 0
-	for _, path := range paths {
-		if err := addSeatbeltPathToTar(tw, home, path); err != nil {
-			_ = tw.Close()
-			_ = gz.Close()
-			return "", err
-		}
-		if _, statErr := os.Stat(path); statErr == nil {
-			added++
-		}
-	}
-
-	if err := tw.Close(); err != nil {
-		_ = gz.Close()
-		return "", err
-	}
-	if err := gz.Close(); err != nil {
-		return "", err
-	}
-	if added == 0 || buf.Len() == 0 {
-		return "", nil
-	}
-
-	const maxBundleBytes = 4 * 1024 * 1024
-	if buf.Len() > maxBundleBytes {
-		return "", nil
-	}
-
-	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+	return strings.Join(checks, "; ")
 }
 
-func addSeatbeltPathToTar(tw *tar.Writer, rootHome, src string) error {
-	_, err := os.Lstat(src)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
+func buildCredentialSymlinks(hostHome string) string {
+	var parts []string
+	for _, cf := range agentprofile.AllCredFiles() {
+		dir := filepath.Dir(cf)
+		hostPath := shellQuote(filepath.Join(hostHome, cf))
+		parts = append(parts,
+			`mkdir -p "$HOME/`+dir+`"`,
+			`if [ -e `+hostPath+` ]; then ln -sfn `+hostPath+` "$HOME/`+cf+`"; fi`,
+		)
 	}
-
-	return filepath.Walk(src, func(path string, fi os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if fi == nil {
-			return nil
-		}
-		rel, err := filepath.Rel(rootHome, path)
-		if err != nil {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
-
-		hdr, err := tar.FileInfoHeader(fi, "")
-		if err != nil {
-			return err
-		}
-		hdr.Name = rel
-		if fi.Mode()&os.ModeSymlink != 0 {
-			linkTarget, lerr := os.Readlink(path)
-			if lerr != nil {
-				return lerr
-			}
-			hdr.Linkname = linkTarget
-		}
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-		if !fi.Mode().IsRegular() {
-			return nil
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		_, err = io.Copy(tw, f)
-		return err
-	})
+	return strings.Join(parts, "; ")
 }
 
 func listLimaInstances(ctx context.Context) ([]string, error) {
