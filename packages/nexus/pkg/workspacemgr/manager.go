@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
@@ -233,7 +234,9 @@ func (m *Manager) Remove(id string) bool {
 	m.mu.Unlock()
 
 	if ok {
-		_ = os.RemoveAll(ws.RootPath)
+		if err := os.RemoveAll(ws.RootPath); err != nil {
+			log.Printf("workspace.remove: RemoveAll %s: %v", ws.RootPath, err)
+		}
 		m.deleteRecord(id)
 	}
 

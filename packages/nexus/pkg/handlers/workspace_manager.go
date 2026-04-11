@@ -316,7 +316,10 @@ func HandleWorkspaceCreate(ctx context.Context, params json.RawMessage, mgr *wor
 		return nil, rpckit.ErrInvalidParams
 	}
 
-	if rpcErr := ensureLocalRuntimeWorkspace(ctx, ws, factory, mgr); rpcErr != nil {
+	if rpcErr := EnsureLocalRuntimeWorkspace(ctx, ws, factory, mgr, EnsureRuntimeAuth{
+		HostAuthBundleBase64:    strings.TrimSpace(spec.HostAuthBundleBase64),
+		UseDaemonHostAuthBundle: spec.UseDaemonHostAuthBundle,
+	}); rpcErr != nil {
 		_ = mgr.Remove(ws.ID)
 		return nil, rpcErr
 	}
@@ -383,10 +386,23 @@ func HandleWorkspaceList(_ context.Context, _ json.RawMessage, mgr *workspacemgr
 	return &WorkspaceListResult{Workspaces: all}, nil
 }
 
-func HandleWorkspaceRemove(_ context.Context, params json.RawMessage, mgr *workspacemgr.Manager) (*WorkspaceRemoveResult, *rpckit.RPCError) {
+func HandleWorkspaceRemove(ctx context.Context, params json.RawMessage, mgr *workspacemgr.Manager, factory *runtime.Factory) (*WorkspaceRemoveResult, *rpckit.RPCError) {
 	var p WorkspaceRemoveParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, rpckit.ErrInvalidParams
+	}
+
+	ws, ok := mgr.Get(p.ID)
+	if !ok {
+		return nil, rpckit.ErrWorkspaceNotFound
+	}
+
+	if factory != nil && strings.TrimSpace(ws.Backend) != "" {
+		if driver, selErr := factory.SelectDriver([]string{ws.Backend}, nil); selErr == nil {
+			if destroyErr := driver.Destroy(ctx, p.ID); destroyErr != nil {
+				_ = destroyErr
+			}
+		}
 	}
 
 	removed := mgr.Remove(p.ID)
@@ -500,7 +516,7 @@ func HandleWorkspacePause(ctx context.Context, params json.RawMessage, mgr *work
 	}
 
 	if factory != nil {
-		if rpcErr := ensureLocalRuntimeWorkspace(ctx, ws, factory, mgr); rpcErr != nil {
+		if rpcErr := EnsureLocalRuntimeWorkspace(ctx, ws, factory, mgr, EnsureRuntimeAuth{UseDaemonHostAuthBundle: true}); rpcErr != nil {
 			return nil, rpcErr
 		}
 
@@ -533,7 +549,7 @@ func HandleWorkspaceResume(ctx context.Context, params json.RawMessage, mgr *wor
 	}
 
 	if factory != nil {
-		if rpcErr := ensureLocalRuntimeWorkspace(ctx, ws, factory, mgr); rpcErr != nil {
+		if rpcErr := EnsureLocalRuntimeWorkspace(ctx, ws, factory, mgr, EnsureRuntimeAuth{UseDaemonHostAuthBundle: true}); rpcErr != nil {
 			return nil, rpcErr
 		}
 
@@ -573,7 +589,7 @@ func HandleWorkspaceFork(ctx context.Context, params json.RawMessage, mgr *works
 		if !ok {
 			return nil, rpckit.ErrWorkspaceNotFound
 		}
-		if rpcErr := ensureLocalRuntimeWorkspace(ctx, parent, factory, mgr); rpcErr != nil {
+		if rpcErr := EnsureLocalRuntimeWorkspace(ctx, parent, factory, mgr, EnsureRuntimeAuth{UseDaemonHostAuthBundle: true}); rpcErr != nil {
 			return nil, rpcErr
 		}
 
@@ -609,7 +625,12 @@ func loadRuntimeSelectionFromRepoConfig(repo string) ([]string, []string, error)
 	return []string{"darwin", "linux"}, nil, nil
 }
 
-func ensureLocalRuntimeWorkspace(ctx context.Context, ws *workspacemgr.Workspace, factory *runtime.Factory, mgr *workspacemgr.Manager) *rpckit.RPCError {
+type EnsureRuntimeAuth struct {
+	HostAuthBundleBase64    string
+	UseDaemonHostAuthBundle bool
+}
+
+func EnsureLocalRuntimeWorkspace(ctx context.Context, ws *workspacemgr.Workspace, factory *runtime.Factory, mgr *workspacemgr.Manager, auth EnsureRuntimeAuth) *rpckit.RPCError {
 	if factory == nil || ws == nil || (ws.Backend != "firecracker" && ws.Backend != "seatbelt") {
 		return nil
 	}
@@ -619,13 +640,18 @@ func ensureLocalRuntimeWorkspace(ctx context.Context, ws *workspacemgr.Workspace
 		return &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("backend selection failed: %v", err)}
 	}
 
+	opts := map[string]string{"host_cli_sync": "true"}
+	if strings.TrimSpace(auth.HostAuthBundleBase64) != "" {
+		opts["host_auth_bundle"] = strings.TrimSpace(auth.HostAuthBundleBase64)
+	} else if auth.UseDaemonHostAuthBundle {
+		opts["use_daemon_host_auth_bundle"] = "true"
+	}
+
 	req := runtime.CreateRequest{
 		WorkspaceID:   ws.ID,
 		WorkspaceName: ws.WorkspaceName,
 		ProjectRoot:   ws.RootPath,
-		Options: map[string]string{
-			"host_cli_sync": "true",
-		},
+		Options:       opts,
 	}
 	err = driver.Create(ctx, req)
 	if err != nil && !strings.Contains(err.Error(), "already exists") {

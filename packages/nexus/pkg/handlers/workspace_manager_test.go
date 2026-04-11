@@ -365,7 +365,7 @@ func TestHandleWorkspaceListAndRemove(t *testing.T) {
 	}
 
 	removeParams, _ := json.Marshal(WorkspaceRemoveParams{ID: created.Workspace.ID})
-	removed, rpcErr := HandleWorkspaceRemove(context.Background(), removeParams, mgr)
+	removed, rpcErr := HandleWorkspaceRemove(context.Background(), removeParams, mgr, nil)
 	if rpcErr != nil {
 		t.Fatalf("remove failed: %+v", rpcErr)
 	}
@@ -898,6 +898,55 @@ func TestHandleWorkspaceCreate_WithFactoryFirecrackerBootstrapsRuntime(t *testin
 	}
 	if !calledCreate {
 		t.Fatal("expected runtime create to be called for firecracker backend")
+	}
+}
+
+func TestHandleWorkspaceCreate_PassesHostAuthBundleToRuntime(t *testing.T) {
+	t.Cleanup(resetRuntimeSetupRunnerForTest)
+
+	mgrRoot := t.TempDir()
+	mgr := workspacemgr.NewManager(mgrRoot)
+	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
+
+	var gotOpts map[string]string
+	factory := runtime.NewFactory([]runtime.Capability{{Name: "runtime.linux", Available: true}, {Name: "runtime.firecracker", Available: true}}, map[string]runtime.Driver{
+		"firecracker": &mockDriver{
+			backend: "firecracker",
+			createFn: func(ctx context.Context, req runtime.CreateRequest) error {
+				gotOpts = req.Options
+				return nil
+			},
+		},
+	})
+
+	params, err := json.Marshal(WorkspaceCreateParams{
+		Spec: workspacemgr.CreateSpec{
+			Repo:                 repo,
+			Ref:                  "main",
+			WorkspaceName:        "alpha",
+			AgentProfile:         "default",
+			HostAuthBundleBase64: "e30=",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result == nil || result.Workspace == nil {
+		t.Fatalf("expected workspace, got %#v", result)
+	}
+	if gotOpts == nil {
+		t.Fatal("expected runtime create options")
+	}
+	if gotOpts["host_auth_bundle"] != "e30=" {
+		t.Fatalf("expected host_auth_bundle in options, got %#v", gotOpts)
+	}
+	if gotOpts["use_daemon_host_auth_bundle"] != "" {
+		t.Fatalf("did not expect use_daemon_host_auth_bundle when bundle set, got %#v", gotOpts)
 	}
 }
 
