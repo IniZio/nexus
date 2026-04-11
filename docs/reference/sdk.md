@@ -52,7 +52,7 @@ await client.disconnect();
 |--------|------|
 | `repo`, `workspaceName`, `agentProfile` | Required for create |
 | `ref`, `policy`, `backend` | Optional |
-| `hostAuthBundle` | Optional. Base64-encoded **gzip-compressed tar** (paths relative to `$HOME` as in the CLI). **Max 4MiB decoded**; invalid base64 or over limit is rejected. The daemon does **not** re-filter contents—use [`host-auth-bundle.md`](host-auth-bundle.md) or run **`nexus auth-bundle`** on the machine that should own the configs for parity with `nexus create`. If omitted, **no** tarball is sent. |
+| `hostAuthBundle` | Optional. Base64-encoded **gzip-compressed tar** (paths relative to `$HOME` as in the CLI). **Max 4MiB decoded**; invalid base64 or over limit is rejected. The daemon does **not** re-filter contents—for parity with `nexus create`, follow [`host-auth-bundle.md`](host-auth-bundle.md) or call `authbundle.BuildFromHome()` from Go. If omitted, **no** tarball is sent. |
 
 For command execution and API keys, prefer **`AuthBinding`** on the workspace and **`mintAuthRelay` / `revokeAuthRelay`** instead of assuming files on the daemon host.
 

@@ -93,9 +93,6 @@ func main() {
 		return
 	case "doctor":
 		// handled below
-	case "auth-bundle":
-		runAuthBundleCommand(args)
-		return
 	default:
 		printUsage()
 		fmt.Fprintf(os.Stderr, "\nunknown subcommand: %s\n", command)
@@ -145,7 +142,6 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  nexus doctor --project-root <abs-path> --suite <name> [--compose-file docker-compose.yml] [--required-host-ports 5173,5174,8000] [--report-json path]")
 	fmt.Fprintln(os.Stderr, "  nexus init [project-root] [--force]")
 	fmt.Fprintln(os.Stderr, "  nexus exec --project-root <abs-path> [--timeout 10m] -- <command> [args...]")
-	fmt.Fprintln(os.Stderr, "  nexus auth-bundle [--output path]   (print base64 host auth bundle from $HOME, same rules as create)")
 	fmt.Fprintln(os.Stderr, "  nexus <list|create|start|stop|remove|fork|ssh|tunnel>")
 }
 

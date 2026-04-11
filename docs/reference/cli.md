@@ -12,13 +12,12 @@ nexus init && nexus create && nexus list && nexus start <workspace-id>
 
 `nexus create` prints the workspace id used by `start`, `ssh`, `tunnel`, `stop`, `remove`.
 
-**Create and host auth bundle:** `nexus create` runs `authbundle.BuildFromHome()` on **the machine running the CLI**, then sends it as `hostAuthBundle`. Same packing rules as **`nexus auth-bundle`** (print or `--output` for CI). Details: [`host-auth-bundle.md`](host-auth-bundle.md). SDK `workspace.create` without `hostAuthBundle` sends no tarball (see [`sdk.md`](sdk.md)).
+**Create and host auth bundle:** `nexus create` runs `authbundle.BuildFromHome()` on **the machine running the CLI**, then sends it as `hostAuthBundle`. End users do not invoke a separate bundle command. SDK `workspace.create` without `hostAuthBundle` sends no tarball; advanced packing rules are in [`host-auth-bundle.md`](host-auth-bundle.md) (see also [`sdk.md`](sdk.md)).
 
 ## Common commands
 
 ```bash
 nexus init [project-root] [--force]
-nexus auth-bundle [--output path]
 nexus create [--backend firecracker]
 nexus list
 nexus start|stop|remove|ssh|tunnel <workspace-id>

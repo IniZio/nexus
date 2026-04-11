@@ -57,7 +57,7 @@ Use the printed `<workspace-id>` with `ssh`, `tunnel`, `stop`, and `remove`.
 
 ### Host auth bundle (CLI vs SDK)
 
-- **`nexus create`** builds a tarball on **the machine running the CLI** and sends it as `hostAuthBundle`. **`nexus auth-bundle`** prints the same base64 (for CI) — see [`docs/reference/host-auth-bundle.md`](../../docs/reference/host-auth-bundle.md).
+- **`nexus create`** builds a tarball on **the machine running the CLI** and sends it as `hostAuthBundle`. There is no separate user-facing bundle subcommand; SDK/CI details are in [`docs/reference/host-auth-bundle.md`](../../docs/reference/host-auth-bundle.md).
 - **SDK `workspace.create`:** omitting `hostAuthBundle` sends nothing; the daemon does not invent a bundle. Custom bundles are not re-filtered server-side—match the CLI registry if you need the same contents.
 
 ## Worktrees (parallel local branches)
