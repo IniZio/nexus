@@ -34,8 +34,7 @@ type Driver struct {
 	workspaces         map[string]*workspaceState
 	spawnShell         func(ctx context.Context, instanceName, workdir, localPath, shell string) (*exec.Cmd, *os.File, error)
 	instanceEnv        string
-	bootstrapMu        sync.Mutex
-	bootstrapped       map[string]bool
+	bootstrapGuard     *shared.BootstrapOnceGuard
 	bootstrapInstance  func(ctx context.Context, instance, configBundle string) error
 	prepareWorkspaceFS func(ctx context.Context, instance, targetPath, localPath string) error
 }
@@ -51,7 +50,7 @@ func NewDriver() *Driver {
 		workspaces:         make(map[string]*workspaceState),
 		spawnShell:         startLimaShell,
 		instanceEnv:        strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_SEATBELT_INSTANCE")),
-		bootstrapped:       make(map[string]bool),
+		bootstrapGuard:     shared.NewBootstrapOnceGuard(),
 		bootstrapInstance:  bootstrapSeatbeltTooling,
 		prepareWorkspaceFS: prepareWorkspacePath,
 	}
@@ -349,17 +348,13 @@ func (d *Driver) serveShellProtocol(ctx context.Context, workspaceID string, con
 }
 
 func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell string) (*exec.Cmd, *os.File, error) {
-	launchShell := strings.TrimSpace(shell)
-	if launchShell == "" {
-		launchShell = "bash"
-	}
-
+	launchShell := shared.NormalizeLaunchShell(shell)
 	workdir = strings.TrimSpace(workdir)
 	localPath = strings.TrimSpace(localPath)
 
 	candidates := shared.InstanceCandidates(instanceName, seatbeltLimaInstanceBase)
 	if discovered, err := listLimaInstancesFn(ctx); err == nil && len(discovered) > 0 {
-		candidates = shared.FilterCandidatesStrict(candidates, discovered)
+		candidates = shared.ApplyLimaDiscovery(candidates, discovered, true)
 	}
 
 	if localPath != "" {
@@ -370,14 +365,13 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 				lastMountErr = err.Error()
 				continue
 			}
-			if err := prepareWorkspacePathFn(ctx, candidate, workdir, localPath); err == nil {
-				instanceName = candidate
+			prepErr := prepareWorkspacePathFn(ctx, candidate, workdir, localPath)
+			if prepErr == nil {
 				candidates = []string{candidate}
 				mounted = true
 				break
-			} else {
-				lastMountErr = err.Error()
 			}
+			lastMountErr = prepErr.Error()
 		}
 		if !mounted {
 			if strings.TrimSpace(lastMountErr) == "" {
@@ -387,34 +381,14 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 		}
 	}
 
-	var lastErr error
-	for _, candidate := range candidates {
-		if err := ensureLimaInstanceRunningFn(ctx, candidate); err != nil {
-			lastErr = err
-			continue
-		}
-		args := []string{"shell", "--reconnect", candidate}
-		if launchShell != "bash" && launchShell != "/bin/bash" {
-			args = append(args, "--", launchShell)
-		}
-		cmd := exec.CommandContext(ctx, "limactl", args...)
-		if ptmx, err := ptyStartWithSizeFn(cmd, &pty.Winsize{Rows: 30, Cols: 120}); err == nil {
-			if workdir != "" {
-				go func() {
-					time.Sleep(500 * time.Millisecond)
-					_, _ = fmt.Fprintf(ptmx, "cd %s 2>/dev/null; clear\n", shared.ShellQuote(workdir))
-				}()
-			}
-			return cmd, ptmx, nil
-		} else {
-			lastErr = err
-		}
-	}
-
-	if lastErr == nil {
-		lastErr = fmt.Errorf("no lima instance candidates available")
-	}
-	return nil, nil, fmt.Errorf("seatbelt lima shell start failed: %w", lastErr)
+	return shared.TryLimactlShellPTY(ctx, shared.TryLimactlPTYOptions{
+		Candidates:          candidates,
+		LaunchShell:         launchShell,
+		Workdir:             workdir,
+		BeforeEachCandidate: ensureLimaInstanceRunningFn,
+		PtyStart:            ptyStartWithSizeFn,
+		ErrPrefix:           "seatbelt lima shell start failed",
+	})
 }
 
 func guestWorkdirForID(workspaceID string) string {
@@ -472,7 +446,7 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, configBundle string
 
 	candidates := shared.InstanceCandidates(instance, seatbeltLimaInstanceBase)
 	if discovered, err := listLimaInstancesFn(ctx); err == nil && len(discovered) > 0 {
-		candidates = shared.FilterCandidatesStrict(candidates, discovered)
+		candidates = shared.ApplyLimaDiscovery(candidates, discovered, true)
 	}
 
 	bundleHostPath := ""
@@ -486,36 +460,17 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, configBundle string
 	}
 
 	script := buildSeatbeltBootstrapScript(bundleHostPath)
-
-	var lastErr error
-	for _, candidate := range candidates {
-		if err := ensureLimaInstanceRunningFn(ctx, candidate); err != nil {
-			lastErr = err
-			continue
-		}
-
-		const maxAttempts = 3
-		for attempt := 1; attempt <= maxAttempts; attempt++ {
-			out, err := shared.LimactlShellScript(ctx, candidate, script)
-			if err == nil {
-				return nil
-			}
-
-			trimmed := strings.TrimSpace(string(out))
-			lastErr = fmt.Errorf("bootstrap seatbelt tooling in %s failed: %s", candidate, trimmed)
-			if !shared.IsTransientLimaShellError(trimmed) || attempt == maxAttempts {
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-	}
-	if lastErr != nil {
-		return lastErr
-	}
-	return fmt.Errorf("bootstrap seatbelt tooling failed: no lima instance candidates")
+	return shared.RunLimactlBootstrapScript(ctx, candidates, script, shared.LimactlBootstrapOptions{
+		EnsureBeforeCandidate:   ensureLimaInstanceRunningFn,
+		MaxAttemptsPerCandidate: 3,
+		RetryDelay:              500 * time.Millisecond,
+		RetryIf:                 shared.IsTransientLimaShellError,
+		ErrNoCandidates:         "bootstrap seatbelt tooling failed: no lima instance candidates",
+		FormatFailure: func(candidate, trimmed string) error {
+			return fmt.Errorf("bootstrap seatbelt tooling in %s failed: %s", candidate, trimmed)
+		},
+	})
 }
-
-
 
 func ensureLimaInstanceRunning(ctx context.Context, instance string) error {
 	return shared.EnsureLimaInstanceRunning(ctx, instance, limactlOutputFn, limactlCombinedOutputFn)
@@ -577,7 +532,6 @@ func buildCredentialSymlinkCleanup() string {
 	return strings.Join(checks, "; ")
 }
 
-
 func (d *Driver) instanceNameForOptions(opts map[string]string) string {
 	if opts != nil {
 		if v := strings.TrimSpace(opts["lima.instance"]); v != "" {
@@ -602,21 +556,12 @@ func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance, confi
 	if instance == "" {
 		instance = d.defaultInstanceName()
 	}
-
-	d.bootstrapMu.Lock()
-	defer d.bootstrapMu.Unlock()
-	if d.bootstrapped[instance] {
-		return nil
-	}
-	if d.bootstrapInstance == nil {
-		d.bootstrapped[instance] = true
-		return nil
-	}
-	if err := d.bootstrapInstance(ctx, instance, configBundle); err != nil {
-		return err
-	}
-	d.bootstrapped[instance] = true
-	return nil
+	return d.bootstrapGuard.Ensure(instance, func() error {
+		if d.bootstrapInstance == nil {
+			return nil
+		}
+		return d.bootstrapInstance(ctx, instance, configBundle)
+	})
 }
 
 func (d *Driver) workspaceProjectRoot(workspaceID string) string {
@@ -650,4 +595,3 @@ func toInt(value any, fallback int) int {
 	}
 	return fallback
 }
-
