@@ -138,18 +138,28 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 		workspace := s.resolveWorkspace(params)
 		rootPath := workspace.Path()
 		paramsMap := map[string]any{}
-		_ = json.Unmarshal(params, &paramsMap)
+		if err := json.Unmarshal(params, &paramsMap); err != nil {
+			return nil, rpckit.ErrInvalidParams
+		}
 		paramsMap["rootPath"] = rootPath
-		updated, _ := json.Marshal(paramsMap)
+		updated, err := json.Marshal(paramsMap)
+		if err != nil {
+			return nil, rpckit.ErrInternalError
+		}
 		return handlers.HandleSpotlightApplyDefaults(ctx, updated, s.spotlightMgr)
 	})
 	r.Register("spotlight.applyComposePorts", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
 		workspace := s.resolveWorkspace(params)
 		rootPath := workspace.Path()
 		paramsMap := map[string]any{}
-		_ = json.Unmarshal(params, &paramsMap)
+		if err := json.Unmarshal(params, &paramsMap); err != nil {
+			return nil, rpckit.ErrInvalidParams
+		}
 		paramsMap["rootPath"] = rootPath
-		updated, _ := json.Marshal(paramsMap)
+		updated, err := json.Marshal(paramsMap)
+		if err != nil {
+			return nil, rpckit.ErrInternalError
+		}
 		return handlers.HandleSpotlightApplyComposePorts(ctx, updated, s.spotlightMgr)
 	})
 

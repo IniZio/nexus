@@ -25,10 +25,6 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
-type (
-	ptyOpenResult = pty.OpenResult
-	ptySession    = pty.Session
-)
 
 type Server struct {
 	port                int
@@ -274,18 +270,3 @@ func (s *Server) requireWorkspaceStarted(workspaceID string) *rpckit.RPCError {
 	return nil
 }
 
-func (s *Server) handlePTYOpen(params json.RawMessage, conn *Connection, ws *workspace.Workspace) (interface{}, *rpckit.RPCError) {
-	return pty.HandleOpen(s.ptyDeps(), conn, params, ws)
-}
-
-func (s *Server) handlePTYWrite(params json.RawMessage, conn *Connection) (interface{}, *rpckit.RPCError) {
-	return pty.HandleWrite(params, conn)
-}
-
-func (s *Server) handlePTYResize(params json.RawMessage, conn *Connection) (interface{}, *rpckit.RPCError) {
-	return pty.HandleResize(params, conn)
-}
-
-func (s *Server) handlePTYClose(params json.RawMessage, conn *Connection) (interface{}, *rpckit.RPCError) {
-	return pty.HandleClose(params, conn)
-}
