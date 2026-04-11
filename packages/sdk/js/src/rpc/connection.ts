@@ -37,8 +37,7 @@ export class RpcTransportCore {
             pending.resolve(response.result);
           }
         }
-      }
-      if (!response.id && response.method) {
+      } else if (response.method) {
         const callbacks = this.notificationCallbacks.get(response.method) ?? [];
         for (const cb of callbacks) {
           cb(response.params);
