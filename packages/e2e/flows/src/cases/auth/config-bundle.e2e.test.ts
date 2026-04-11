@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { buildConfigBundle } from '@nexus/sdk';
-import { createGitFixture, cleanupFixture } from '../../harness/fixtures';
+import { createGitFixture, cleanupFixture } from '../../harness/repo';
 import { startSession, type DaemonSession } from '../../harness/session';
 import { onDaemonStartError, onWorkspaceCreateRuntimeError } from '../../harness/assertions';
 import type { WorkspaceHandle } from '@nexus/sdk';

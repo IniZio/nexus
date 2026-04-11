@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createGitFixture, cleanupFixture } from '../../harness/fixtures';
+import { createGitFixture, cleanupFixture } from '../../harness/repo';
 import { startSession } from '../../harness/session';
 import {
   assertCapabilityOrSkip,

@@ -1,5 +1,5 @@
-import matrix from '../parity/matrix.json';
-import { implementedCaseIds } from './test-ids';
+import matrix from '../../parity/matrix.json';
+import { implementedCaseIds } from '../test-ids';
 
 type MatrixShape = {
   ids: string[];

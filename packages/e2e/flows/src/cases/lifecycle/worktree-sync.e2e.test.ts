@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createGitFixture, cleanupFixture, runCmd } from '../../harness/fixtures';
+import { createGitFixture, cleanupFixture, runCmd } from '../../harness/repo';
 import { startSession } from '../../harness/session';
 import { onWorkspaceCreateRuntimeError } from '../../harness/assertions';
 import { worktreeSyncCaseIds } from '../test-ids';

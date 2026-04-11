@@ -3,7 +3,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { createGitFixture, cleanupFixture } from '../../harness/fixtures';
+import { createGitFixture, cleanupFixture } from '../../harness/repo';
 import { findRepoRoot, startManagedDaemon } from '../../harness/daemon';
 import { cliRuntimeCaseIds } from '../test-ids';
 import { e2eStrictRuntime, isRuntimeUnavailable, skipTest } from '../../harness/assertions';

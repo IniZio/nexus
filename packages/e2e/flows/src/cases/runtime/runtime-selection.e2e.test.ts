@@ -1,5 +1,5 @@
 import { WorkspaceHandle } from '@nexus/sdk';
-import { createGitFixture, cleanupFixture } from '../../harness/fixtures';
+import { createGitFixture, cleanupFixture } from '../../harness/repo';
 import { startSession } from '../../harness/session';
 import { assertCapabilityOrSkip, onWorkspaceCreateRuntimeError } from '../../harness/assertions';
 import { runtimeSelectionCaseIds } from '../test-ids';
