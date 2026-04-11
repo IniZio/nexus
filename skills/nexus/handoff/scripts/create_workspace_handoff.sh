@@ -121,7 +121,7 @@ collect_plan_files() {
   } | awk 'NF > 0' | sort -u | while IFS= read -r rel; do
     lower="$(printf "%s" "$rel" | tr '[:upper:]' '[:lower:]')"
     case "$lower" in
-      *prd*|*plan*|docs/superpowers/specs/*|docs/*/plans/*)
+      *prd*|*plan*)
         if [[ -f "$source_root/$rel" ]]; then
           printf "%s\n" "$rel"
         fi
@@ -143,6 +143,8 @@ echo "workspace_id=$workspace_id"
 echo "worktree_path=$worktree_path"
 echo "workspace_path=/workspace"
 echo "prompt_file=$prompt_file"
+echo "suggested_doctor_command=$nexus_cmd doctor --project-root \"$repo_root\" --suite local"
+echo "suggested_exec_command=$nexus_cmd exec --project-root \"$repo_root\" --timeout 10m -- "
 if [[ -n "$worktree_path" ]]; then
   encoded_path="$(python3 - <<'PY' "$worktree_path"
 import sys

@@ -275,7 +275,7 @@ func runInit(opts initOptions) error {
 
 func runExec(opts execOptions) error {
 	if !filepath.IsAbs(opts.projectRoot) {
-		return fmt.Errorf("project root must be absolute: %s", opts.projectRoot)
+		return errNotAbsProjectRoot("project root", opts.projectRoot)
 	}
 	if err := applyRuntimeBackendFromWorkspace(opts.projectRoot); err != nil {
 		return err
@@ -358,13 +358,14 @@ func runExecWithKVMGroupReexec(commandPath string, args []string) error {
 
 func run(opts options) error {
 	if !filepath.IsAbs(opts.projectRoot) {
-		return fmt.Errorf("project root must be absolute: %s", opts.projectRoot)
+		return errNotAbsProjectRoot("project root", opts.projectRoot)
 	}
 	if err := applyRuntimeBackendFromWorkspace(opts.projectRoot); err != nil {
 		return err
 	}
 
 	execCtx := loadDoctorExecContext()
+	fmt.Printf("doctor: runtime backend=%s (cold firecracker: first run may take several minutes before suite probes)\n", execCtx.backend)
 	if execCtx.backend == "firecracker" {
 		if err := config.ValidateFirecrackerEnv(); err != nil {
 			return fmt.Errorf("firecracker configuration error: %w", err)

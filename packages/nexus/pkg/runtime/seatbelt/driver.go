@@ -19,7 +19,8 @@ import (
 
 var seatbeltLookPath = exec.LookPath
 var ensureLimaInstanceRunningFn = ensureLimaInstanceRunning
-var prepareWorkspaceMountFn = prepareWorkspaceMount
+var prepareWorkspacePathFn = prepareWorkspacePath
+var teardownWorkspacePathFn = teardownWorkspacePath
 var listLimaInstancesFn = listLimaInstances
 var ptyStartWithSizeFn = pty.StartWithSize
 var limactlOutputFn = defaultLimactlOutput
@@ -40,11 +41,10 @@ type Driver struct {
 	workspaces         map[string]*workspaceState
 	spawnShell         func(ctx context.Context, instanceName, workdir, localPath, shell string) (*exec.Cmd, *os.File, error)
 	instanceEnv        string
-	hostHome           string
 	bootstrapMu        sync.Mutex
 	bootstrapped       map[string]bool
-	bootstrapInstance  func(ctx context.Context, instance, hostHome, configBundle string) error
-	prepareWorkspaceFS func(ctx context.Context, instance, localPath string) error
+	bootstrapInstance  func(ctx context.Context, instance, configBundle string) error
+	prepareWorkspaceFS func(ctx context.Context, instance, targetPath, localPath string) error
 }
 
 type workspaceState struct {
@@ -54,15 +54,13 @@ type workspaceState struct {
 }
 
 func NewDriver() *Driver {
-	homeDir, _ := os.UserHomeDir()
 	return &Driver{
 		workspaces:         make(map[string]*workspaceState),
 		spawnShell:         startLimaShell,
 		instanceEnv:        strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_SEATBELT_INSTANCE")),
-		hostHome:           strings.TrimSpace(homeDir),
 		bootstrapped:       make(map[string]bool),
 		bootstrapInstance:  bootstrapSeatbeltTooling,
-		prepareWorkspaceFS: prepareWorkspaceMount,
+		prepareWorkspaceFS: prepareWorkspacePath,
 	}
 }
 
@@ -85,9 +83,15 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	instance := d.instanceNameForOptions(req.Options)
 
 	d.mu.Lock()
-	if _, exists := d.workspaces[req.WorkspaceID]; exists {
+	if existing, exists := d.workspaces[req.WorkspaceID]; exists {
+		if strings.TrimSpace(existing.projectRoot) != "" {
+			d.mu.Unlock()
+			return nil
+		}
+		existing.projectRoot = req.ProjectRoot
+		existing.instance = instance
 		d.mu.Unlock()
-		return fmt.Errorf("workspace %s already exists", req.WorkspaceID)
+		return nil
 	}
 	d.workspaces[req.WorkspaceID] = &workspaceState{projectRoot: req.ProjectRoot, state: "created", instance: instance}
 	d.mu.Unlock()
@@ -100,11 +104,12 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	}
 
 	if d.prepareWorkspaceFS != nil {
-		if err := d.prepareWorkspaceFS(ctx, instance, req.ProjectRoot); err != nil {
+		targetPath := guestWorkdirForID(req.WorkspaceID)
+		if err := d.prepareWorkspaceFS(ctx, instance, targetPath, req.ProjectRoot); err != nil {
 			if strings.TrimSpace(instance) == "nexus-seatbelt" {
 				fallbackCandidates := []string{"nexus-firecracker", "mvm", "default"}
 				for _, fallback := range fallbackCandidates {
-					if fallbackErr := d.prepareWorkspaceFS(ctx, fallback, req.ProjectRoot); fallbackErr != nil {
+					if fallbackErr := d.prepareWorkspaceFS(ctx, fallback, targetPath, req.ProjectRoot); fallbackErr != nil {
 						continue
 					}
 					if ws, ok := d.workspaces[req.WorkspaceID]; ok {
@@ -166,13 +171,20 @@ func (d *Driver) Fork(ctx context.Context, workspaceID, childWorkspaceID string)
 }
 
 func (d *Driver) Destroy(ctx context.Context, workspaceID string) error {
-	_ = ctx
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	if _, ok := d.workspaces[workspaceID]; !ok {
+	ws, ok := d.workspaces[workspaceID]
+	if !ok {
+		d.mu.Unlock()
 		return fmt.Errorf("workspace %s not found", workspaceID)
 	}
+	instance := ws.instance
+	if strings.TrimSpace(instance) == "" {
+		instance = d.defaultInstanceName()
+	}
 	delete(d.workspaces, workspaceID)
+	d.mu.Unlock()
+
+	_ = teardownWorkspacePathFn(ctx, instance, workspaceID)
 	return nil
 }
 
@@ -245,15 +257,11 @@ func (d *Driver) serveShellProtocol(ctx context.Context, workspaceID string, con
 				shell = "bash"
 			}
 			workdir, _ := req["workdir"].(string)
-			overrideLocalPath, _ := req["local_path"].(string)
+			perWsPath := guestWorkdirForID(workspaceID)
 			localPath := ""
-			if strings.TrimSpace(workdir) == "" || strings.TrimSpace(workdir) == "/workspace" {
-				if strings.TrimSpace(overrideLocalPath) != "" {
-					localPath = strings.TrimSpace(overrideLocalPath)
-				} else {
-					localPath = d.workspaceProjectRoot(workspaceID)
-				}
-				workdir = "/workspace"
+			if strings.TrimSpace(workdir) == "" || strings.TrimSpace(workdir) == "/workspace" || strings.TrimSpace(workdir) == perWsPath {
+				localPath = d.workspaceProjectRoot(workspaceID)
+				workdir = perWsPath
 			}
 
 			instance := d.workspaceInstance(workspaceID)
@@ -361,21 +369,28 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 		candidates = filterCandidatesByAvailability(candidates, discovered)
 	}
 
-	if localPath != "" && workdir == "/workspace" {
+	if localPath != "" {
 		mounted := false
+		var lastMountErr string
 		for _, candidate := range candidates {
 			if err := ensureLimaInstanceRunningFn(ctx, candidate); err != nil {
+				lastMountErr = err.Error()
 				continue
 			}
-			if err := prepareWorkspaceMountFn(ctx, candidate, localPath); err == nil {
+			if err := prepareWorkspacePathFn(ctx, candidate, workdir, localPath); err == nil {
 				instanceName = candidate
 				candidates = []string{candidate}
 				mounted = true
 				break
+			} else {
+				lastMountErr = err.Error()
 			}
 		}
 		if !mounted {
-			workdir = localPath
+			if strings.TrimSpace(lastMountErr) == "" {
+				lastMountErr = "no available lima candidates"
+			}
+			return nil, nil, fmt.Errorf("prepare workspace mount failed: %s", lastMountErr)
 		}
 	}
 
@@ -409,24 +424,56 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 	return nil, nil, fmt.Errorf("seatbelt lima shell start failed: %w", lastErr)
 }
 
-func prepareWorkspaceMount(ctx context.Context, instance, localPath string) error {
+func guestWorkdirForID(workspaceID string) string {
+	return "/nexus/ws/" + workspaceID
+}
+
+func (d *Driver) GuestWorkdir(workspaceID string) string {
+	return guestWorkdirForID(workspaceID)
+}
+
+func prepareWorkspacePath(ctx context.Context, instance, targetPath, localPath string) error {
 	if strings.TrimSpace(instance) == "" {
 		return fmt.Errorf("instance is required")
 	}
 	if strings.TrimSpace(localPath) == "" {
 		return fmt.Errorf("workspace path is required")
 	}
+	if strings.TrimSpace(targetPath) == "" {
+		return fmt.Errorf("target path is required")
+	}
 
-	script := fmt.Sprintf("set -e; sudo rm -rf /workspace; sudo ln -sfn %s /workspace; cd /workspace >/dev/null 2>&1", shellQuote(localPath))
+	script := fmt.Sprintf(
+		"set -e; MNTPT=%s; if mountpoint -q \"$MNTPT\" 2>/dev/null; then sudo umount \"$MNTPT\"; fi; sudo mkdir -p \"$MNTPT\"; sudo mount --bind %s \"$MNTPT\"",
+		shellQuote(targetPath),
+		shellQuote(localPath),
+	)
 	cmd := exec.CommandContext(ctx, "limactl", "shell", instance, "--", "sh", "-lc", script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("prepare /workspace mount failed: %s", strings.TrimSpace(string(out)))
+		return fmt.Errorf("prepare workspace path %s -> %s failed: %s", localPath, targetPath, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-func bootstrapSeatbeltTooling(ctx context.Context, instance, hostHome, configBundle string) error {
+func teardownWorkspacePath(ctx context.Context, instance, workspaceID string) error {
+	if strings.TrimSpace(instance) == "" || strings.TrimSpace(workspaceID) == "" {
+		return nil
+	}
+	targetPath := guestWorkdirForID(workspaceID)
+	script := fmt.Sprintf(
+		"MNTPT=%s; if mountpoint -q \"$MNTPT\" 2>/dev/null; then sudo umount -l \"$MNTPT\" 2>/dev/null || sudo umount \"$MNTPT\" 2>/dev/null || true; fi; sudo rmdir \"$MNTPT\" 2>/dev/null || true",
+		shellQuote(targetPath),
+	)
+	cmd := exec.CommandContext(ctx, "limactl", "shell", instance, "--", "sh", "-lc", script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("teardown workspace path for %s failed: %s", workspaceID, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func bootstrapSeatbeltTooling(ctx context.Context, instance, configBundle string) error {
 	instance = strings.TrimSpace(instance)
 	if instance == "" {
 		instance = "nexus-firecracker"
@@ -438,18 +485,16 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, hostHome, configBun
 	}
 
 	bundleHostPath := ""
-	if strings.TrimSpace(configBundle) != "" && strings.TrimSpace(hostHome) != "" {
-		cacheDir := filepath.Join(hostHome, ".cache", "nexus")
-		if mkErr := os.MkdirAll(cacheDir, 0o700); mkErr == nil {
-			bundleFile := filepath.Join(cacheDir, "bootstrap-"+instance+".tar.gz.b64")
-			if writeErr := os.WriteFile(bundleFile, []byte(configBundle), 0o600); writeErr == nil {
-				bundleHostPath = bundleFile
-				defer func() { _ = os.Remove(bundleFile) }()
-			}
+	if strings.TrimSpace(configBundle) != "" {
+		tmpDir := os.TempDir()
+		bundleFile := filepath.Join(tmpDir, "nexus-bootstrap-"+instance+".tar.gz.b64")
+		if writeErr := os.WriteFile(bundleFile, []byte(configBundle), 0o600); writeErr == nil {
+			bundleHostPath = bundleFile
+			defer func() { _ = os.Remove(bundleFile) }()
 		}
 	}
 
-	script := buildSeatbeltBootstrapScript(hostHome, bundleHostPath)
+	script := buildSeatbeltBootstrapScript(bundleHostPath)
 
 	var lastErr error
 	for _, candidate := range candidates {
@@ -479,6 +524,8 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, hostHome, configBun
 	}
 	return fmt.Errorf("bootstrap seatbelt tooling failed: no lima instance candidates")
 }
+
+
 
 func isTransientLimaShellError(message string) bool {
 	lower := strings.ToLower(strings.TrimSpace(message))
@@ -539,7 +586,7 @@ func ensureLimaInstanceRunning(ctx context.Context, instance string) error {
 	return nil
 }
 
-func buildSeatbeltBootstrapScript(hostHome, bundleHostPath string) string {
+func buildSeatbeltBootstrapScript(bundleHostPath string) string {
 	parts := []string{
 		"set -e",
 		buildCredentialSymlinkCleanup(),
@@ -575,15 +622,10 @@ func buildSeatbeltBootstrapScript(hostHome, bundleHostPath string) string {
 		parts = append(parts, "if command -v "+bin+" >/dev/null 2>&1; then "+bin+" --version >/dev/null 2>&1 || true; fi")
 	}
 
-	hostHome = strings.TrimSpace(hostHome)
-	if hostHome != "" {
-		parts = append(parts,
-			"mkdir -p ~/.config ~/.local/share",
-			"if command -v npm >/dev/null 2>&1; then cd /tmp >/dev/null 2>&1 || true; NPM_BIN=$(npm bin -g 2>/dev/null || true); if [ -n \"$NPM_BIN\" ] && [ -d \"$NPM_BIN\" ]; then export PATH=\"$NPM_BIN:$PATH\"; fi; fi",
-		)
-		parts = append(parts, buildCredentialSymlinks(hostHome))
-	}
-
+	parts = append(parts,
+		"mkdir -p ~/.config ~/.local/share",
+		"if command -v npm >/dev/null 2>&1; then cd /tmp >/dev/null 2>&1 || true; NPM_BIN=$(npm bin -g 2>/dev/null || true); if [ -n \"$NPM_BIN\" ] && [ -d \"$NPM_BIN\" ]; then export PATH=\"$NPM_BIN:$PATH\"; fi; fi",
+	)
 	return strings.Join(parts, "; ")
 }
 
@@ -600,18 +642,6 @@ func buildCredentialSymlinkCleanup() string {
 	return strings.Join(checks, "; ")
 }
 
-func buildCredentialSymlinks(hostHome string) string {
-	var parts []string
-	for _, cf := range agentprofile.AllCredFiles() {
-		dir := filepath.Dir(cf)
-		hostPath := shellQuote(filepath.Join(hostHome, cf))
-		parts = append(parts,
-			`mkdir -p "$HOME/`+dir+`"`,
-			`if [ -e `+hostPath+` ]; then ln -sfn `+hostPath+` "$HOME/`+cf+`"; fi`,
-		)
-	}
-	return strings.Join(parts, "; ")
-}
 
 func listLimaInstances(ctx context.Context) ([]string, error) {
 	cmd := exec.CommandContext(ctx, "limactl", "ls", "--format", "{{.Name}}")
@@ -704,7 +734,7 @@ func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance, confi
 		d.bootstrapped[instance] = true
 		return nil
 	}
-	if err := d.bootstrapInstance(ctx, instance, d.hostHome, configBundle); err != nil {
+	if err := d.bootstrapInstance(ctx, instance, configBundle); err != nil {
 		return err
 	}
 	d.bootstrapped[instance] = true

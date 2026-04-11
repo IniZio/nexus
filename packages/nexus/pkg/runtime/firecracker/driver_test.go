@@ -16,6 +16,7 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/agentprofile"
 	"github.com/inizio/nexus/packages/nexus/pkg/credsbundle"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
+	"github.com/inizio/nexus/packages/nexus/pkg/runtime/authbundle"
 )
 
 // fakeManager is a test double for the Manager
@@ -48,6 +49,10 @@ func (f *fakeManager) Get(workspaceID string) (*Instance, error) {
 		return f.instance, nil
 	}
 	return nil, errors.New("not found")
+}
+
+func (f *fakeManager) GrowWorkspace(_ context.Context, _ string, _ int64) error {
+	return f.err
 }
 
 func TestFirecrackerDriver_Backend(t *testing.T) {
@@ -321,6 +326,7 @@ func TestBuildHostAuthBundleIncludesKnownConfigPaths(t *testing.T) {
 	mkdir(filepath.Join(home, ".config", "github-copilot"))
 	mkdir(filepath.Join(home, ".local", "share", "opencode"))
 	mkdir(filepath.Join(home, ".codex"))
+	mkdir(filepath.Join(home, ".config", "openai"))
 	mkdir(filepath.Join(home, ".claude"))
 	if err := os.WriteFile(filepath.Join(home, ".config", "opencode", "session.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatalf("write opencode session: %v", err)
@@ -344,9 +350,9 @@ func TestBuildHostAuthBundleIncludesKnownConfigPaths(t *testing.T) {
 		t.Fatalf("write claude credentials: %v", err)
 	}
 
-	bundle, err := buildHostAuthBundle()
+	bundle, err := authbundle.BuildFromHome()
 	if err != nil {
-		t.Fatalf("buildHostAuthBundle: %v", err)
+		t.Fatalf("authbundle.BuildFromHome: %v", err)
 	}
 	if strings.TrimSpace(bundle) == "" {
 		t.Fatal("expected non-empty auth bundle")
@@ -452,4 +458,3 @@ func TestBuildGuestCLIBootstrapCommandIncludesRegistryPackages(t *testing.T) {
 		}
 	}
 }
-

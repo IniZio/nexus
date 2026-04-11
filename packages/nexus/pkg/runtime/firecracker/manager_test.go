@@ -23,6 +23,11 @@ func (m *mockAPIClient) put(ctx context.Context, path string, body any) error {
 	return m.putErr
 }
 
+func (m *mockAPIClient) patch(ctx context.Context, path string, body any) error {
+	m.putCalls = append(m.putCalls, "PATCH:"+path)
+	return m.putErr
+}
+
 // testNetworkCommands records calls made to network commands and suppresses
 // actual execution so tests run without real network permissions.
 type testNetworkCommands struct {
@@ -261,6 +266,8 @@ func (c *captureBootArgsClient) put(ctx context.Context, path string, body any) 
 	}
 	return nil
 }
+
+func (c *captureBootArgsClient) patch(_ context.Context, _ string, _ any) error { return nil }
 
 func TestManagerSpawnTAPCleanupOnAPIFailure(t *testing.T) {
 	nc := installTestNetworkRunner(t)
@@ -651,18 +658,26 @@ func TestManagerWaitForAPISocketCancellation(t *testing.T) {
 }
 
 func TestWorkspaceImageSizeBytes(t *testing.T) {
-	const miB = int64(1024 * 1024)
+	const (
+		miB        = int64(1024 * 1024)
+		giB        = 1024 * miB
+		minSize    = 2 * giB
+		maxInitial = 20 * giB
+	)
 
-	if got := workspaceImageSizeBytes(1); got != 32768*miB {
-		t.Fatalf("expected minimum image size 32768MiB, got %d", got)
+	tiny := workspaceImageSizeBytes(1)
+	if tiny < minSize || tiny > minSize+miB {
+		t.Fatalf("expected tiny project to produce ~2GiB image, got %dMiB", tiny>>20)
 	}
 
-	if got := workspaceImageSizeBytes(1024 * miB); got != 32768*miB {
-		t.Fatalf("expected minimum size 32768MiB for 1GiB project, got %d", got)
+	oneGiB := workspaceImageSizeBytes(1024 * miB)
+	if oneGiB != 4*giB {
+		t.Fatalf("expected 4GiB for 1GiB project (2*project+2GiB), got %dMiB", oneGiB>>20)
 	}
 
-	if got := workspaceImageSizeBytes(20 * 1024 * miB); got != 36864*miB {
-		t.Fatalf("expected size 36864MiB for 20GiB project, got %d", got)
+	largeProject := workspaceImageSizeBytes(20 * 1024 * miB)
+	if largeProject != maxInitial {
+		t.Fatalf("expected maxInitial %dGiB for large project (capped), got %dMiB", maxInitial>>30, largeProject>>20)
 	}
 
 	if got := workspaceImageSizeBytes(300*miB + 12345); got%miB != 0 {

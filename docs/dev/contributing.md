@@ -2,15 +2,12 @@
 
 ## Scope
 
-Nexus currently accepts contributions focused on:
-
-- `packages/nexus`
-- `packages/sdk/js`
+`packages/nexus`, `packages/sdk/js`.
 
 ## Setup
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/nexus
+git clone https://github.com/YOUR_USERNAME/nexus
 cd nexus
 pnpm install
 ```
@@ -22,31 +19,26 @@ task build
 task test
 ```
 
-Direct commands:
+Directly:
 
 ```bash
 cd packages/nexus && go test ./...
 cd packages/sdk/js && pnpm exec tsc --noEmit && pnpm exec jest --runInBand
 ```
 
-## Documentation
+## Docs
 
-Update docs when behavior changes:
+When behavior changes, update:
 
 - `docs/reference/cli.md`
 - `docs/reference/sdk.md`
 - `docs/reference/workspace-config.md`
 
-Design/research references for API and UX decisions:
+## Commits
 
-- `docs/dev/internal/research/2026-04-07-sdk-cli-ergonomics-benchmark.md`
-
-## Commit style
-
-Use Conventional Commits.
-
-Examples:
+Conventional Commits, for example:
 
 - `feat(workspace-daemon): add compose port auto-forward`
 - `fix(workspace-sdk): align spotlight response types`
 - `docs: update workspace config reference`
+

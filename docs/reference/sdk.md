@@ -1,9 +1,8 @@
 # SDK Reference
 
-Nexus SDK is the programmatic surface for remote workspaces.
-This page is the canonical SDK interface.
+Nexus SDK is the programmatic surface for remote workspaces. TypeScript client: [`@nexus/sdk`](https://www.npmjs.com/package/@nexus/sdk) (`packages/sdk/js`).
 
-## Install (one line)
+## Install
 
 ```bash
 npm install @nexus/sdk
@@ -11,13 +10,11 @@ npm install @nexus/sdk
 
 ## Mental Model
 
-- `WorkspaceClient`: one authenticated WebSocket connection.
-- `client.workspaces`: create/open/list/start/stop/remove/fork workspaces.
-- `WorkspaceHandle`: do work inside one workspace (`exec`, files, `tunnel`, `git`, `service`).
-- `client.ssh`: interactive terminal sessions.
-- `TunnelHandle`: returned by `ws.tunnel.start(...)`, includes `stop()` for explicit close.
-
-If you automate more than one workspace, use `WorkspaceHandle` for explicit scope.
+- `WorkspaceClient`: one authenticated WebSocket connection. Fields: `endpoint`, `token`, optional `workspaceId`.
+- `client.workspaces`: `create`, `open`, `list`, `start`, `stop`, `remove`, `fork`, `pause`, `resume`, `restore`, `mintAuthRelay`, `revokeAuthRelay`, `capabilities`.
+- `WorkspaceHandle` (from `create` / `open` / `restore` / `fork`): `id`, `state`, `rootPath`; **`exec`**, **`fs`**, **`spotlight`**, `git`, `service`.
+- `client.ssh`: PTY sessions — `open`, `write`, `resize`, `close`, `onData`, `onExit`.
+- There is no separate `tunnel` API; use **`ws.spotlight`** (`expose`, `list`, `close`, `applyDefaults`, `applyComposePorts`).
 
 ## Quick Start
 
@@ -32,90 +29,30 @@ const client = new WorkspaceClient({
 await client.connect();
 
 const ws = await client.workspaces.open('ws-123');
-const result = await ws.exec('node', ['-v']);
-console.log(result.stdout.trim());
 
-const pkg = await ws.readFile('/workspace/package.json', 'utf8');
-console.log(pkg.slice(0, 80));
+const out = await ws.exec.exec('node', ['-v']);
+console.log(out.stdout.trim());
 
-const tunnel = await ws.tunnel.start({
-  service: 'web',
-  remotePort: 5173,
-  localPort: 5173,
-});
-await tunnel.stop();
+const pkg = await ws.fs.readFile('/workspace/package.json', 'utf8');
 
-await ws.stop();
-await ws.remove();
+await ws.spotlight.expose({ service: 'web', remotePort: 5173, localPort: 5173 });
+
+await client.workspaces.stop(ws.id);
+await client.workspaces.remove(ws.id);
 
 await client.disconnect();
 ```
 
-## Minimal API Surface
+## Create spec
 
-`WorkspaceClient` config:
+`WorkspaceCreateSpec` fields: `repo`, `workspaceName`, optional `agentProfile`, `ref`, `policy` (`authProfiles`, `sshAgentForward`, `gitCredentialMode`), `backend`, `authBinding`, and `configBundle` (base64 gzip+tar, ≤4 MiB — see [host-auth-bundle.md](host-auth-bundle.md)). Full types: `packages/sdk/js/src/types.ts`.
 
-- `endpoint` (required)
-- `token` (required)
-- `workspaceId` (optional default workspace id in daemon connection)
+## Remote client vs remote daemon
 
-Most-used methods:
+Pass auth material via create-time `configBundle` and short-lived relay tokens (`mintAuthRelay` / `revokeAuthRelay`). Do not assume files on the daemon host. See [host-auth-bundle.md](host-auth-bundle.md) for packing rules.
 
-- `client.connect()`
-- `client.disconnect()`
-- `client.workspaces.create(spec)`
-- `client.workspaces.open(id)`
-- `client.workspaces.list()`
-- `client.workspaces.start(id)`
-- `client.workspaces.stop(id)`
-- `client.workspaces.remove(id)`
+## Related
 
-Workspace operations (`WorkspaceHandle`):
-
-- `ws.exec(command, args?, options?)`
-- `ws.readFile(path, encoding?)`
-- `ws.writeFile(path, content)`
-- `ws.readdir(path)`
-- `ws.exists(path)`
-- `ws.start()`, `ws.stop()`, `ws.remove()`
-- `ws.ready(checks, options?)` or `ws.readyProfile(profile, options?)`
-- `ws.tunnel.start({ service, remotePort, localPort })`
-
-## Advanced Operations
-
-- Git passthrough: `ws.git(action, params?)`
-- Service manager: `ws.service(action, params?)`
-- Lifecycle extras: `client.workspaces.pause(id)`, `client.workspaces.resume(id)`, `client.workspaces.restore(id)`, `client.workspaces.fork(id, name?, ref?)`
-- Capability checks: `client.workspaces.capabilities()`
-- Auth relay: `client.workspaces.mintAuthRelay(...)`, `client.workspaces.revokeAuthRelay(token)`
-- SSH sessions: `client.ssh.open(...)`, `client.ssh.write(...)`, `client.ssh.resize(...)`, `client.ssh.close(...)`
-
-## Client and Daemon on Different Machines
-
-Nexus supports a split deployment where the SDK client and daemon are on different hosts.
-
-- Credentials should originate from the client request (`workspace.create.spec.authBinding`) and be injected through one-time relay tokens (`mintAuthRelay`).
-- Do not depend on daemon host login state or daemon-local OAuth files for normal command execution.
-- Command execution uses a minimal baseline environment (`PATH`, `HOME`, shell/runtime essentials), then adds explicit relay variables. This avoids leaking daemon host secrets into workspace processes.
-- Host credential sync is always enabled for supported runtime bootstrapping paths.
-
-For remote usage, the recommended flow is:
-
-1. Client opens daemon connection.
-2. Client creates workspace with per-binding auth values.
-3. Client mints short-lived relay token for a specific binding.
-4. Client runs `exec`/`ssh` with `authRelayToken`.
-
-## Conventions and Defaults
-
-- Compose ports can be forwarded by convention through `ws.tunnel.applyComposePorts()`.
-- Default forwards can be applied with `ws.tunnel.applyDefaults()`.
-- Project config shape lives in `docs/reference/workspace-config.md`.
-
-## Related Docs
-
-- CLI: `docs/reference/cli.md`
-- Project structure: `docs/reference/project-structure.md`
-- Workspace config: `docs/reference/workspace-config.md`
-- Architecture: `docs/explanation/architecture.md`
-
+- CLI: [`cli.md`](cli.md)
+- Host auth bundle: [`host-auth-bundle.md`](host-auth-bundle.md)
+- Workspace config: [`workspace-config.md`](workspace-config.md)

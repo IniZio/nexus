@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+	"time"
 
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
@@ -384,10 +385,25 @@ func HandleWorkspaceList(_ context.Context, _ json.RawMessage, mgr *workspacemgr
 	return &WorkspaceListResult{Workspaces: all}, nil
 }
 
-func HandleWorkspaceRemove(_ context.Context, params json.RawMessage, mgr *workspacemgr.Manager) (*WorkspaceRemoveResult, *rpckit.RPCError) {
+func HandleWorkspaceRemove(ctx context.Context, params json.RawMessage, mgr *workspacemgr.Manager, factory *runtime.Factory) (*WorkspaceRemoveResult, *rpckit.RPCError) {
 	var p WorkspaceRemoveParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, rpckit.ErrInvalidParams
+	}
+
+	ws, ok := mgr.Get(p.ID)
+	if !ok {
+		return nil, rpckit.ErrWorkspaceNotFound
+	}
+
+	if factory != nil && strings.TrimSpace(ws.Backend) != "" {
+		if driver, selErr := factory.SelectDriver([]string{ws.Backend}, nil); selErr == nil {
+			destroyCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			if destroyErr := driver.Destroy(destroyCtx, p.ID); destroyErr != nil {
+				_ = destroyErr
+			}
+		}
 	}
 
 	removed := mgr.Remove(p.ID)

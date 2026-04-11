@@ -14,6 +14,7 @@ const DefaultAgentVSockPort uint32 = 10789
 // ExecRequest represents a command execution request to the agent
 type ExecRequest struct {
 	ID      string   `json:"id"`
+	Type    string   `json:"type,omitempty"`
 	Command string   `json:"command"`
 	Args    []string `json:"args,omitempty"`
 	WorkDir string   `json:"workdir,omitempty"`

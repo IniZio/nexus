@@ -1,46 +1,23 @@
 # Installation
 
-## Fast Path
-
-Install the CLI in one line:
+**CLI (recommended):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/inizio/nexus/main/install.sh | bash
-```
-
-Verify:
-
-```bash
 nexus --help
 ```
 
-## Binary Install
+**Release binaries:** [GitHub releases](https://github.com/IniZio/nexus/releases) — extract and put `nexus` on `PATH`.
 
-If you do not want to use `go install`, download a release archive from [GitHub releases](https://github.com/IniZio/nexus/releases), extract it, and place the `nexus` binary on your `PATH`.
-
-## First Run
+**First run:**
 
 ```bash
 cd /path/to/project
-nexus init
-nexus create
-nexus list
-nexus start <workspace-id>
+nexus init && nexus create && nexus list && nexus start <workspace-id>
 ```
 
-Use the workspace id printed by `nexus create` when running `start`, `ssh`, `tunnel`, `stop`, or `remove`.
+Use the id from `nexus create` for `start`, `ssh`, `tunnel`, `stop`, `remove`.
 
-## Install From Source (contributors)
+**From source (contributors):** `git clone … && cd nexus && pnpm install && task build`
 
-```bash
-git clone https://github.com/inizio/nexus
-cd nexus
-pnpm install
-task build
-```
-
-## Next
-
-- [CLI Reference](../reference/cli.md)
-- [SDK Reference](../reference/sdk.md)
-- [Workspace Config Reference](../reference/workspace-config.md)
+**Next:** [CLI](../reference/cli.md) · [SDK](../reference/sdk.md) · [Workspace config](../reference/workspace-config.md)

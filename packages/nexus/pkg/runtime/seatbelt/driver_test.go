@@ -26,7 +26,7 @@ func TestCreateRequiresLimaForIsolation(t *testing.T) {
 		seatbeltLookPath = oldLookPath
 	})
 	seatbeltLookPath = func(file string) (string, error) { return "", errors.New("not found") }
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome, configBundle string) error { return nil }
+	d.bootstrapInstance = func(ctx context.Context, instance, configBundle string) error { return nil }
 
 	err := d.Create(context.Background(), runtime.CreateRequest{
 		WorkspaceID:   "ws-1",
@@ -46,19 +46,15 @@ func TestCreateRunsBootstrapAndMount(t *testing.T) {
 
 	calledBootstrap := false
 	calledPrepare := false
-	d.hostHome = "/Users/tester"
 
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome, configBundle string) error {
+	d.bootstrapInstance = func(ctx context.Context, instance, configBundle string) error {
 		calledBootstrap = true
 		if instance == "" {
 			t.Fatal("expected non-empty instance")
 		}
-		if hostHome != "/Users/tester" {
-			t.Fatalf("expected host auth sync hostHome, got %q", hostHome)
-		}
 		return nil
 	}
-	d.prepareWorkspaceFS = func(ctx context.Context, instance, localPath string) error {
+	d.prepareWorkspaceFS = func(ctx context.Context, instance, targetPath, localPath string) error {
 		calledPrepare = true
 		if localPath == "" {
 			t.Fatal("expected localPath")
@@ -89,10 +85,10 @@ func TestCreateFallsBackToDefaultInstanceWhenSeatbeltMountPrepareFails(t *testin
 	seatbeltLookPath = func(file string) (string, error) { return "/usr/local/bin/limactl", nil }
 
 	d.instanceEnv = "nexus-seatbelt"
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome, configBundle string) error { return nil }
+	d.bootstrapInstance = func(ctx context.Context, instance, configBundle string) error { return nil }
 
 	seen := make([]string, 0)
-	d.prepareWorkspaceFS = func(ctx context.Context, instance, localPath string) error {
+	d.prepareWorkspaceFS = func(ctx context.Context, instance, targetPath, localPath string) error {
 		seen = append(seen, instance)
 		if instance == "nexus-seatbelt" {
 			return errors.New("instance does not exist")
@@ -133,7 +129,7 @@ func TestCreateFailsWhenBootstrapFails(t *testing.T) {
 	t.Cleanup(func() { seatbeltLookPath = oldLookPath })
 	seatbeltLookPath = func(file string) (string, error) { return "/usr/local/bin/limactl", nil }
 
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome, configBundle string) error {
+	d.bootstrapInstance = func(ctx context.Context, instance, configBundle string) error {
 		return errors.New("bootstrap failed")
 	}
 
@@ -147,22 +143,28 @@ func TestCreateFailsWhenBootstrapFails(t *testing.T) {
 	}
 }
 
-func TestBuildSeatbeltBootstrapScriptContainsSymlinks(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("/Users/testhost", "")
+func TestBuildSeatbeltBootstrapScriptIncludesIsolationAndForwarding(t *testing.T) {
+	script := buildSeatbeltBootstrapScript("")
 
-	if strings.Contains(script, "nexus-auth.tar.gz") {
-		t.Fatal("bootstrap script must not use tar bundle — use symlinks instead")
+	for _, token := range []string{
+		"unset DOCKER_HOST DOCKER_CONTEXT",
+		"docker.io",
+		"docker-compose-v2",
+	} {
+		if !strings.Contains(script, token) {
+			t.Fatalf("expected script to include %q", token)
+		}
 	}
-	if !strings.Contains(script, "ln -sfn") {
-		t.Fatal("bootstrap script must create symlinks for credential files")
-	}
-	if !strings.Contains(script, "/Users/testhost") {
-		t.Fatal("bootstrap script must use host home as symlink target")
+
+	for _, forbidden := range []string{"ln -sfn", "hostHome"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("script must not contain %q (symlinks removed for remote-first design)", forbidden)
+		}
 	}
 }
 
 func TestBuildSeatbeltBootstrapScriptInstallsRegistryPackages(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("/Users/testhost", "")
+	script := buildSeatbeltBootstrapScript("")
 	for _, pkg := range agentprofile.AllInstallPkgs() {
 		if !strings.Contains(script, pkg) {
 			t.Fatalf("bootstrap script missing install package %q", pkg)
@@ -171,7 +173,7 @@ func TestBuildSeatbeltBootstrapScriptInstallsRegistryPackages(t *testing.T) {
 }
 
 func TestBuildSeatbeltBootstrapScriptChecksRegistryBinaries(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("/Users/testhost", "")
+	script := buildSeatbeltBootstrapScript("")
 	for _, bin := range agentprofile.AllBinaries() {
 		if !strings.Contains(script, bin) {
 			t.Fatalf("bootstrap script missing binary check for %q", bin)
@@ -180,7 +182,7 @@ func TestBuildSeatbeltBootstrapScriptChecksRegistryBinaries(t *testing.T) {
 }
 
 func TestBuildSeatbeltBootstrapScriptExtractsBundleWhenProvided(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("", "/tmp/test-bundle.tar.gz.b64")
+	script := buildSeatbeltBootstrapScript("/tmp/test-bundle.tar.gz.b64")
 	if !strings.Contains(script, "/tmp/test-bundle.tar.gz.b64") {
 		t.Fatal("bootstrap script must reference the bundle file path")
 	}
@@ -193,7 +195,7 @@ func TestBuildSeatbeltBootstrapScriptExtractsBundleWhenProvided(t *testing.T) {
 }
 
 func TestBuildSeatbeltBootstrapScriptNoBundleWhenEmpty(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("/Users/testhost", "")
+	script := buildSeatbeltBootstrapScript("")
 	if strings.Contains(script, "nexus-auth.tar.gz") {
 		t.Fatal("bootstrap script must not contain tar extraction when bundle path is empty")
 	}
@@ -243,8 +245,8 @@ func TestShellOpenDefaultsToWorkspaceMountPath(t *testing.T) {
 		t.Fatal("spawnShell was not invoked")
 	}
 
-	if gotWorkdir != "/workspace" {
-		t.Fatalf("expected workdir /workspace, got %q", gotWorkdir)
+	if gotWorkdir != "/nexus/ws/ws-open" {
+		t.Fatalf("expected workdir /nexus/ws/ws-open, got %q", gotWorkdir)
 	}
 	if gotLocalPath != root {
 		t.Fatalf("expected localPath %q, got %q", root, gotLocalPath)
@@ -260,11 +262,11 @@ func TestStartLimaShellSkipsUnavailableCandidatesWhenPreparingWorkspaceMount(t *
 	t.Setenv("NEXUS_RUNTIME_SEATBELT_INSTANCE", "")
 
 	origEnsure := ensureLimaInstanceRunningFn
-	origPrepare := prepareWorkspaceMountFn
+	origPrepare := prepareWorkspacePathFn
 	origList := listLimaInstancesFn
 	defer func() {
 		ensureLimaInstanceRunningFn = origEnsure
-		prepareWorkspaceMountFn = origPrepare
+		prepareWorkspacePathFn = origPrepare
 		listLimaInstancesFn = origList
 	}()
 
@@ -279,7 +281,7 @@ func TestStartLimaShellSkipsUnavailableCandidatesWhenPreparingWorkspaceMount(t *
 	}
 
 	called := make([]string, 0)
-	prepareWorkspaceMountFn = func(_ context.Context, instance, localPath string) error {
+	prepareWorkspacePathFn = func(_ context.Context, instance, targetPath, localPath string) error {
 		called = append(called, instance+":"+localPath)
 		return nil
 	}
@@ -290,12 +292,12 @@ func TestStartLimaShellSkipsUnavailableCandidatesWhenPreparingWorkspaceMount(t *
 		return nil, errors.New("stop after observe")
 	}
 
-	_, _, err := startLimaShell(ctx, "nexus-seatbelt", "/workspace", "/tmp/repo", "bash")
+	_, _, err := startLimaShell(ctx, "nexus-seatbelt", "/nexus/ws/test-ws", "/tmp/repo", "bash")
 	if err == nil {
 		t.Fatal("expected startLimaShell to fail once pty start is stubbed")
 	}
 	if len(called) != 1 || called[0] != "default:/tmp/repo" {
-		t.Fatalf("expected prepareWorkspaceMount called only for default candidate, got %v", called)
+		t.Fatalf("expected prepareWorkspacePath called only for default candidate, got %v", called)
 	}
 }
 
@@ -337,8 +339,8 @@ func TestCreateReturnsErrWorkspaceMountFailedWhenAllMountsFail(t *testing.T) {
 	t.Cleanup(func() { seatbeltLookPath = oldLookPath })
 	seatbeltLookPath = func(file string) (string, error) { return "/usr/local/bin/limactl", nil }
 
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome, configBundle string) error { return nil }
-	d.prepareWorkspaceFS = func(ctx context.Context, instance, localPath string) error {
+	d.bootstrapInstance = func(ctx context.Context, instance, configBundle string) error { return nil }
+	d.prepareWorkspaceFS = func(ctx context.Context, instance, targetPath, localPath string) error {
 		return errors.New("prepare /workspace mount failed: instance unreachable")
 	}
 

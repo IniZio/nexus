@@ -51,7 +51,9 @@ vendor/
 .nexus/worktrees/
 .nexus/dogfooding/
 .nexus/case-studies/
-.case-studies/
+.case-studies/*
+!.case-studies/ledgerlens-demo/
+!.case-studies/ledgerlens-demo/**
 
 # Nexus collection data (may contain credentials)
 .nexus/collection/data/

@@ -1,161 +1,45 @@
 # CLI Reference
 
-Nexus CLI is a direct control surface for creating, starting, accessing, and testing isolated workspaces.
+Direct control for creating, starting, and accessing isolated workspaces.
 
-## Common Operations
-
-```bash
-nexus init
-nexus create
-nexus start <workspace-id>
-nexus tunnel <workspace-id>
-nexus ssh <workspace-id>
-nexus stop <workspace-id>
-nexus remove <workspace-id>
-```
-
-## Install
+## Install and first run
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/inizio/nexus/main/install.sh | bash
-```
-
-## Quick Start
-
-```bash
 cd /path/to/project
-nexus init
-nexus create
-nexus list
-nexus start <workspace-id>
+nexus init && nexus create && nexus list && nexus start <workspace-id>
 ```
 
-`nexus create` prints the workspace id used by `start`, `ssh`, `tunnel`, `stop`, and `remove`.
+`nexus create` prints the workspace id used by `start`, `ssh`, `tunnel`, `stop`, `remove`.
 
-## Usage
+**Create and host auth bundle:** `nexus create` runs `authbundle.BuildFromHome()` on **the machine running the CLI**, then sends it as `hostAuthBundle`. End users do not invoke a separate bundle command. SDK `workspace.create` without `hostAuthBundle` sends no tarball; advanced packing rules are in [`host-auth-bundle.md`](host-auth-bundle.md) (see also [`sdk.md`](sdk.md)).
+
+## Common commands
 
 ```bash
-nexus <list|create|start|stop|remove|fork|ssh|tunnel>
 nexus init [project-root] [--force]
-nexus exec --project-root <abs-path> [--timeout 10m] -- <command> [args...]
-nexus doctor --project-root <abs-path> --suite <name> [--compose-file docker-compose.yml] [--required-host-ports 5173,5174,8000] [--report-json path]
-```
-
-## Workspace Commands
-
-### `nexus create`
-
-Creates a workspace for the current repository path.
-
-```bash
-nexus create
-```
-
-Flags:
-
-- `--backend` (optional): runtime backend override (currently `firecracker`).
-
-### `nexus list`
-
-Lists all workspaces.
-
-```bash
+nexus create [--backend firecracker]
 nexus list
-```
-
-### `nexus start`
-
-Starts a workspace by id.
-
-```bash
-nexus start <workspace-id>
-```
-
-### `nexus stop`
-
-Stops a workspace by id.
-
-```bash
-nexus stop <workspace-id>
-```
-
-### `nexus remove`
-
-Removes a workspace by id.
-
-```bash
-nexus remove <workspace-id>
-```
-
-### `nexus fork`
-
-Forks an existing workspace.
-
-```bash
+nexus start|stop|remove|ssh|tunnel <workspace-id>
 nexus fork --id <workspace-id> --name <child-name> [--ref <child-ref>]
+nexus exec --project-root <abs-path> [--timeout 10m] -- <command> [args...]
+nexus doctor --project-root <abs-path> --suite <name> \
+  [--compose-file docker-compose.yml] [--required-host-ports 5173,5174] [--report-json path]
 ```
 
-### `nexus ssh`
+- **`nexus ssh`:** optional `--shell`, `--command` (non-interactive one shot).
+- **`nexus tunnel`:** applies compose port forwards; blocks until Ctrl-C.
+- **`nexus init`:** default path is cwd; `--force` overwrites `.nexus` scaffold. Host setup may escalate privileges (`sudo`); use `sudo -E nexus init --force` only where non-interactive sudo is unavailable.
 
-Opens an interactive shell for a workspace.
+## `nexus doctor` and backends
 
-```bash
-nexus ssh <workspace-id>
-```
+`--project-root` and `--suite` are required. There is no top-level `--timeout` on `doctor` (unlike `nexus exec`); individual probes use their own timeouts inside the implementation.
 
-Flags:
+On a **cold Firecracker** workspace, the first run can take **several minutes** while the guest and tooling bootstrap—silence on the terminal can mean runtime setup, not only your `.nexus/probe` scripts. **Seatbelt** (often selected on macOS when nested virtualization is unavailable) is usually much faster. Backend selection follows `nexus create` / host capabilities; see [`workspace-config.md`](workspace-config.md) for runtime notes.
 
-- `--shell` (optional): shell executable (default `bash`).
-- `--command` (optional): run one command and exit.
+## Related
 
-### `nexus tunnel`
-
-Applies compose port forwards and blocks until interrupted.
-
-```bash
-nexus tunnel <workspace-id>
-```
-
-`tunnel` is blocking; press Ctrl-C to close created tunnels.
-
-## Project Commands
-
-### `nexus init`
-
-Initializes `.nexus/` in the project root.
-
-```bash
-nexus init
-nexus init /absolute/path/to/project
-nexus init --force
-```
-
-Behavior:
-
-- `nexus init` with no path uses the current directory.
-- `--force` overwrites generated `.nexus` scaffold files.
-- Host setup preflight attempts privilege escalation automatically (root, `sudo -n`, or interactive sudo).
-- Manual `sudo -E nexus init --force` is only needed in non-interactive environments where automatic escalation is unavailable.
-
-### `nexus exec`
-
-Runs one command in the Nexus workspace execution context.
-
-```bash
-nexus exec --project-root "$(pwd)" -- pnpm test
-```
-
-### `nexus doctor`
-
-Runs configured probes and tests for workspace readiness and behavior.
-
-```bash
-nexus doctor --project-root "$(pwd)" --suite local
-```
-
-## Related Docs
-
-- SDK client usage: `docs/reference/sdk.md`
-- Project config schema: `docs/reference/workspace-config.md`
-- Architecture overview: `docs/explanation/architecture.md`
+- SDK: [`sdk.md`](sdk.md)
+- Host auth bundle: [`host-auth-bundle.md`](host-auth-bundle.md)
+- Workspace config: [`workspace-config.md`](workspace-config.md)
 

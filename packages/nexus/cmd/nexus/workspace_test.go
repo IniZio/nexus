@@ -143,4 +143,3 @@ func TestRunWorkspaceTunnelCommandCallsApplyComposeRPC(t *testing.T) {
 		t.Fatalf("expected closed tunnel id tun-123, got %q", closedTunnelID)
 	}
 }
-

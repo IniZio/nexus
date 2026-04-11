@@ -1,134 +1,32 @@
-# Contributing to Nexus
+# Contributing
 
-Thank you for your interest in contributing to Nexus! This document provides guidelines and instructions for contributing.
+Scope: `packages/nexus`, `packages/sdk/js`.
 
-## Getting Started
-
-### Prerequisites
-
-- Go 1.21+
-- Docker
-- Git
-- Make (optional)
-
-### Setting Up Development Environment
-
-1. Fork the repository on GitHub
-2. Clone your fork locally:
+## Setup
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/nexus.git
 cd nexus
+pnpm install
 ```
 
-3. Install dependencies:
+## Build and test
 
 ```bash
-go mod download
-make setup
+task build
+task test
 ```
 
-4. Create a feature branch:
+Or: `cd packages/nexus && go test ./...` and `cd packages/sdk/js && pnpm exec tsc --noEmit && pnpm exec jest --runInBand`.
 
-```bash
-git checkout -b feature/your-feature-name
-```
+## Docs
 
-## Development Workflow
+When behavior changes, update `docs/reference/cli.md`, `sdk.md`, and `workspace-config.md` as needed. Contributor notes: `docs/dev/contributing.md`.
 
-### Code Style
+## Commits
 
-- Follow Go conventions: https://go.dev/doc/effective_go
-- Run `go fmt` before committing
-- Use `go vet` and `staticcheck` to catch issues
-- Maximum line length: 120 characters
+[Conventional Commits](https://www.conventionalcommits.org/): `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, etc.
 
-### Testing Requirements
+## PRs
 
-All contributions must include appropriate tests:
-
-```bash
-# Run unit tests
-go test ./... -short
-
-# Run integration tests
-go test ./... -tags=integration
-
-# Run all tests with coverage
-go test ./... -coverprofile=coverage.html
-go cover -html=coverage.html
-```
-
-- Unit tests are required for new functions/methods
-- Integration tests required for new features
-- Maintain or improve code coverage
-
-### Commit Messages
-
-Follow the [Conventional Commits](https://www.conventionalcommits.org/) format:
-
-```
-<type>[optional scope]: <description>
-
-[optional body]
-
-[optional footer(s)]
-```
-
-Types:
-- `feat`: New feature
-- `fix`: Bug fix
-- `docs`: Documentation only
-- `style`: Formatting, no code change
-- `refactor`: Code restructuring
-- `test`: Adding/missing tests
-- `chore`: Maintenance
-
-Examples:
-
-```
-feat(telemetry): add local-first analytics collection
-fix(database): handle SQL NULL values in queries
-docs(readme): update installation instructions
-```
-
-### Pull Request Process
-
-1. **Before submitting:**
-   - Ensure all tests pass
-   - Update documentation as needed
-   - Add entry to CHANGELOG.md
-   - Squash commits into logical units
-
-2. **PR Requirements:**
-   - Clear title and description
-   - Link to related issues
-   - At least one approval required
-   - All CI checks must pass
-
-3. **Review Process:**
-   - Address all feedback
-   - Keep PR focused and small
-   - Force push only for reviewer requests
-
-### Branch Strategy
-
-- `main`: Stable release branch
-- `develop`: Development branch (if using GitFlow)
-- `feature/*`: New features
-- `fix/*`: Bug fixes
-- `release/*`: Release preparation
-
-## Architecture
-
-See [docs/architecture](/docs/architecture) for system design documentation.
-
-## Questions?
-
-- Open an issue for bugs
-- Start a discussion for feature ideas
-- Join our community chat
-
-## Code of Conduct
-
-Be respectful and inclusive. See [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md).
+Tests pass, docs updated if needed, focused changes. Address review feedback.

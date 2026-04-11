@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/agentprofile"
-	"github.com/inizio/nexus/packages/nexus/pkg/credsbundle"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 	"github.com/mdlayher/vsock"
 )
@@ -28,6 +27,7 @@ type ManagerInterface interface {
 	Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error)
 	Stop(ctx context.Context, workspaceID string) error
 	Get(workspaceID string) (*Instance, error)
+	GrowWorkspace(ctx context.Context, workspaceID string, newSizeBytes int64) error
 }
 
 type Driver struct {
@@ -128,18 +128,8 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	d.projectRoots[req.WorkspaceID] = req.ProjectRoot
 	d.mu.Unlock()
 
-	var authBundle string
-	if strings.TrimSpace(req.ConfigBundle) != "" {
-		authBundle = req.ConfigBundle
-	} else {
-		var bundleErr error
-		authBundle, bundleErr = buildHostAuthBundle()
-		if bundleErr != nil {
-			return fmt.Errorf("prepare host auth bundle: %w", bundleErr)
-		}
-	}
 	if shouldBootstrapGuestTooling(req.Options) {
-		if err := d.bootstrapGuestToolingAndAuth(ctx, req.WorkspaceID, authBundle); err != nil {
+		if err := d.bootstrapGuestToolingAndAuth(ctx, req.WorkspaceID, req.ConfigBundle); err != nil {
 			return err
 		}
 	}
@@ -258,8 +248,40 @@ func buildGuestCLIBootstrapCommand() string {
 	return strings.Join(parts, "; ")
 }
 
-func buildHostAuthBundle() (string, error) {
-	return credsbundle.Build()
+func (d *Driver) GrowWorkspace(ctx context.Context, workspaceID string, newSizeBytes int64) error {
+	if d.manager == nil {
+		return errors.New("manager is required for firecracker driver")
+	}
+
+	if err := d.manager.GrowWorkspace(ctx, workspaceID, newSizeBytes); err != nil {
+		return fmt.Errorf("host-side grow failed: %w", err)
+	}
+
+	conn, err := d.AgentConn(ctx, workspaceID)
+	if err != nil {
+		return fmt.Errorf("agent connect for disk.grow: %w", err)
+	}
+	defer conn.Close()
+
+	client := NewAgentClient(conn)
+	req := ExecRequest{
+		ID:      fmt.Sprintf("disk-grow-%d", time.Now().UnixNano()),
+		Type:    "disk.grow",
+		Command: "",
+	}
+	result, err := client.Exec(ctx, req)
+	if err != nil {
+		return fmt.Errorf("disk.grow exec failed: %w", err)
+	}
+	if result.ExitCode != 0 {
+		detail := strings.TrimSpace(result.Stderr)
+		if detail == "" {
+			detail = fmt.Sprintf("exit code %d", result.ExitCode)
+		}
+		return fmt.Errorf("resize2fs failed: %s", detail)
+	}
+
+	return nil
 }
 
 func (d *Driver) Start(ctx context.Context, workspaceID string) error {
