@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/creack/pty"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
@@ -19,14 +18,12 @@ import (
 var lxcLimaInstanceBase = []string{"nexus-lxc", "nexus-firecracker", "default"}
 
 type Driver struct {
-	mu          sync.RWMutex
-	workspaces  map[string]*workspaceState
-	spawnShell  func(ctx context.Context, instanceName, workdir, localPath, shell string) (*exec.Cmd, *os.File, error)
-	instanceEnv string
-
-	bootstrapMu          sync.Mutex
-	bootstrappedInstance map[string]bool
-	bootstrapInstance    func(ctx context.Context, instance string) error
+	mu                sync.RWMutex
+	workspaces        map[string]*workspaceState
+	spawnShell        func(ctx context.Context, instanceName, workdir, localPath, shell string) (*exec.Cmd, *os.File, error)
+	instanceEnv       string
+	bootstrapGuard    *shared.BootstrapOnceGuard
+	bootstrapInstance func(ctx context.Context, instance string) error
 }
 
 type workspaceState struct {
@@ -37,11 +34,11 @@ type workspaceState struct {
 
 func NewDriver(_ runtime.Driver) *Driver {
 	return &Driver{
-		workspaces:           make(map[string]*workspaceState),
-		spawnShell:           startLimaShell,
-		instanceEnv:          strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_LXC_INSTANCE")),
-		bootstrappedInstance: make(map[string]bool),
-		bootstrapInstance:    bootstrapLimaDockerTooling,
+		workspaces:        make(map[string]*workspaceState),
+		spawnShell:        startLimaShell,
+		instanceEnv:       strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_LXC_INSTANCE")),
+		bootstrapGuard:    shared.NewBootstrapOnceGuard(),
+		bootstrapInstance: bootstrapLimaDockerTooling,
 	}
 }
 
@@ -223,8 +220,6 @@ func (d *Driver) serveShellProtocol(ctx context.Context, workspaceID string, con
 			d.mu.Lock()
 			if ws, ok := d.workspaces[workspaceID]; ok {
 				ws.state = "running"
-				// Prefer localPath (macOS host path) for projectRoot so that
-				// workspaceProjectRoot always returns the real host path.
 				storeRoot := localPath
 				if storeRoot == "" {
 					storeRoot = workdir
@@ -311,24 +306,17 @@ func (d *Driver) serveShellProtocol(ctx context.Context, workspaceID string, con
 }
 
 func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell string) (*exec.Cmd, *os.File, error) {
-	launchShell := strings.TrimSpace(shell)
-	if launchShell == "" {
-		launchShell = "bash"
-	}
-
+	launchShell := shared.NormalizeLaunchShell(shell)
 	workdir = strings.TrimSpace(workdir)
 	localPath = strings.TrimSpace(localPath)
 
 	candidates := shared.InstanceCandidates(instanceName, lxcLimaInstanceBase)
 	if discovered, err := shared.ListLimaInstances(ctx); err == nil && len(discovered) > 0 {
 		fmt.Fprintf(os.Stderr, "[nexus-lxc] discovered instances=%v requested=%q candidates(before)=%v\n", discovered, instanceName, candidates)
-		candidates = shared.FilterCandidatesSortedFallback(candidates, discovered)
+		candidates = shared.ApplyLimaDiscovery(candidates, discovered, false)
 		fmt.Fprintf(os.Stderr, "[nexus-lxc] candidates(after)=%v\n", candidates)
 	}
 
-	// If a localPath is provided and workdir is /workspace, bind-mount the
-	// worktree into /workspace inside the Lima VM before opening the PTY.
-	// localPath is the macOS host path that virtiofs exposes inside the VM.
 	if localPath != "" && workdir == "/workspace" {
 		for _, candidate := range candidates {
 			setupArgs := []string{"shell", candidate, "--",
@@ -344,48 +332,35 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 			}
 		}
 	}
-	var lastErr error
-	for _, candidate := range candidates {
-		fmt.Fprintf(os.Stderr, "[nexus-lxc] trying instance=%s workdir=%q shell=%q\n", candidate, workdir, launchShell)
-		// Note: do NOT pass --shell to limactl. When --shell is set, limactl
-		// passes the shell path as a trailing SSH argument which becomes a
-		// "--" prefix flag (e.g. "-- /bin/bash"), causing bash to exit with
-		// "bash: --: invalid option". Lima defaults to the instance's login
-		// shell (bash), so omitting --shell is correct and safe.
-		args := []string{"shell", "--reconnect", candidate}
-		// Note: do NOT pass --workdir to limactl. When --workdir is set,
-		// limactl injects "-- /bin/bash" as the SSH remote command which causes
-		// bash to fail with "--: invalid option". Instead, we cd after the PTY
-		// starts by writing to stdin.
-		// If a non-default shell is explicitly requested, run it as a command
-		// via the default shell to avoid the --shell flag issue.
-		if launchShell != "bash" && launchShell != "/bin/bash" {
-			args = append(args, "--", launchShell)
-		}
-		cmd := exec.CommandContext(ctx, "limactl", args...)
-		if ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 30, Cols: 120}); err == nil {
-			fmt.Fprintf(os.Stderr, "[nexus-lxc] started shell with instance=%s\n", candidate)
-			// Set the working directory by writing to the PTY. We use a goroutine
-			// with a delay to allow bash to finish initialization (read .bashrc,
-			// print the first prompt) before we inject the cd command. 500ms is
-			// conservative; the shell prompt normally appears within ~300ms.
-			if workdir != "" {
-				go func() {
-					time.Sleep(500 * time.Millisecond)
-					_, _ = fmt.Fprintf(ptmx, "cd %s 2>/dev/null; clear\n", shared.ShellQuote(workdir))
-				}()
+
+	lxcPtyStart := func(cmd *exec.Cmd, ws *pty.Winsize) (*os.File, error) {
+		candidate := ""
+		for i, a := range cmd.Args {
+			if a == "--reconnect" && i+1 < len(cmd.Args) {
+				candidate = cmd.Args[i+1]
+				break
 			}
-			return cmd, ptmx, nil
-		} else {
-			lastErr = err
-			fmt.Fprintf(os.Stderr, "[nexus-lxc] start failed instance=%s err=%v\n", candidate, err)
 		}
+		ptmx, err := pty.StartWithSize(cmd, ws)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[nexus-lxc] start failed instance=%s err=%v\n", candidate, err)
+		} else {
+			fmt.Fprintf(os.Stderr, "[nexus-lxc] started shell with instance=%s\n", candidate)
+		}
+		return ptmx, err
 	}
 
-	if lastErr == nil {
-		lastErr = fmt.Errorf("no lima instance candidates available")
-	}
-	return nil, nil, fmt.Errorf("lima shell start failed: %w", lastErr)
+	return shared.TryLimactlShellPTY(ctx, shared.TryLimactlPTYOptions{
+		Candidates:  candidates,
+		LaunchShell: launchShell,
+		Workdir:     workdir,
+		BeforeEachCandidate: func(_ context.Context, candidate string) error {
+			fmt.Fprintf(os.Stderr, "[nexus-lxc] trying instance=%s workdir=%q shell=%q\n", candidate, workdir, launchShell)
+			return nil
+		},
+		PtyStart:  lxcPtyStart,
+		ErrPrefix: "",
+	})
 }
 
 func toInt(value any, fallback int) int {
@@ -438,21 +413,12 @@ func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance string
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_LXC_BOOTSTRAP_DOCKER")), "0") {
 		return nil
 	}
-
-	d.bootstrapMu.Lock()
-	defer d.bootstrapMu.Unlock()
-	if d.bootstrappedInstance[instance] {
-		return nil
-	}
-	if d.bootstrapInstance == nil {
-		d.bootstrappedInstance[instance] = true
-		return nil
-	}
-	if err := d.bootstrapInstance(ctx, instance); err != nil {
-		return err
-	}
-	d.bootstrappedInstance[instance] = true
-	return nil
+	return d.bootstrapGuard.Ensure(instance, func() error {
+		if d.bootstrapInstance == nil {
+			return nil
+		}
+		return d.bootstrapInstance(ctx, instance)
+	})
 }
 
 func bootstrapLimaDockerTooling(ctx context.Context, instance string) error {
@@ -462,7 +428,7 @@ func bootstrapLimaDockerTooling(ctx context.Context, instance string) error {
 	}
 	candidates := shared.InstanceCandidates(instance, lxcLimaInstanceBase)
 	if discovered, err := shared.ListLimaInstances(ctx); err == nil && len(discovered) > 0 {
-		candidates = shared.FilterCandidatesSortedFallback(candidates, discovered)
+		candidates = shared.ApplyLimaDiscovery(candidates, discovered, false)
 	}
 
 	script := strings.Join([]string{
@@ -477,18 +443,13 @@ func bootstrapLimaDockerTooling(ctx context.Context, instance string) error {
 		"(docker compose version >/dev/null 2>&1 || docker-compose version >/dev/null 2>&1)",
 	}, "; ")
 
-	var lastErr error
-	for _, candidate := range candidates {
-		out, err := shared.LimactlShellScript(ctx, candidate, script)
-		if err == nil {
-			return nil
-		}
-		lastErr = fmt.Errorf("bootstrap docker tooling in %s failed: %s", candidate, strings.TrimSpace(string(out)))
-	}
-	if lastErr != nil {
-		return lastErr
-	}
-	return fmt.Errorf("bootstrap docker tooling failed: no lima instance candidates")
+	return shared.RunLimactlBootstrapScript(ctx, candidates, script, shared.LimactlBootstrapOptions{
+		MaxAttemptsPerCandidate: 1,
+		ErrNoCandidates:         "bootstrap docker tooling failed: no lima instance candidates",
+		FormatFailure: func(candidate, trimmed string) error {
+			return fmt.Errorf("bootstrap docker tooling in %s failed: %s", candidate, trimmed)
+		},
+	})
 }
 
 func (d *Driver) instanceNameForOptions(opts map[string]string) string {
@@ -499,4 +460,3 @@ func (d *Driver) instanceNameForOptions(opts map[string]string) string {
 	}
 	return d.defaultInstanceName()
 }
-
