@@ -22,8 +22,9 @@ nexus create [--backend firecracker]
 nexus list
 nexus start|stop|remove|ssh|tunnel <workspace-id>
 nexus fork --id <workspace-id> --name <child-name> [--ref <child-ref>]
+nexus fork <id> <name> [--ref <ref>]
 nexus exec [path] [--timeout 10m] -- <command> [args...]
-nexus doctor [--compose-file docker-compose.yml] [--required-host-ports 5173,5174] [--report-json path]
+nexus doctor [--report-json path]
 ```
 
 - **`nexus ssh`:** optional `--shell`, `--command` (non-interactive one shot).

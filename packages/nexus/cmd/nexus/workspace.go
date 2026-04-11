@@ -601,19 +601,18 @@ func runWorkspaceRemoveCommand(args []string) {
 func runWorkspaceForkCommand(args []string) {
 	fs := flag.NewFlagSet("workspace fork", flag.ExitOnError)
 	fs.SetOutput(os.Stderr)
-	id := fs.String("id", "", "source workspace ID (required)")
-	childName := fs.String("name", "", "child workspace name (required)")
-	childRef := fs.String("ref", "", "child workspace git ref (defaults to --name)")
+	childRef := fs.String("ref", "", "child workspace git ref (defaults to child name)")
 	_ = fs.Parse(args)
 
-	if *id == "" || *childName == "" {
-		fmt.Fprintf(os.Stderr, "nexus fork: --id and --name are required\n")
-		fs.Usage()
+	if fs.NArg() < 2 {
+		fmt.Fprintf(os.Stderr, "usage: nexus fork <id> <name> [--ref <ref>]\n")
 		os.Exit(2)
 	}
+	id := strings.TrimSpace(fs.Arg(0))
+	childName := strings.TrimSpace(fs.Arg(1))
 	ref := strings.TrimSpace(*childRef)
 	if ref == "" {
-		ref = strings.TrimSpace(*childName)
+		ref = childName
 	}
 
 	conn, err := ensureDaemon()
@@ -627,7 +626,7 @@ func runWorkspaceForkCommand(args []string) {
 		Workspace workspacemgr.Workspace `json:"workspace"`
 	}
 	if err := daemonRPC(conn, "workspace.fork", map[string]any{
-		"id": *id, "childWorkspaceName": *childName, "childRef": ref,
+		"id": id, "childWorkspaceName": childName, "childRef": ref,
 	}, &result); err != nil {
 		fmt.Fprintf(os.Stderr, "nexus fork: %v\n", err)
 		os.Exit(1)

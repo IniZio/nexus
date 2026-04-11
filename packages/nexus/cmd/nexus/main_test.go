@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/compose"
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
 )
@@ -48,23 +47,6 @@ func (f fakeSocketFileInfo) ModTime() time.Time { return time.Time{} }
 func (f fakeSocketFileInfo) IsDir() bool        { return false }
 func (f fakeSocketFileInfo) Sys() any           { return nil }
 
-func TestParseRequiredPorts(t *testing.T) {
-	ports, err := parseRequiredPorts("5173, 5174,5173,8000")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	expected := []int{5173, 5174, 8000}
-	if !reflect.DeepEqual(ports, expected) {
-		t.Fatalf("expected %v, got %v", expected, ports)
-	}
-}
-
-func TestParseRequiredPortsInvalid(t *testing.T) {
-	if _, err := parseRequiredPorts("abc"); err == nil {
-		t.Fatal("expected error for invalid port")
-	}
-}
-
 func TestDetectHostDockerSocketPrefersSnapHostfsSocket(t *testing.T) {
 	originalStat := hostDockerSocketStat
 	t.Cleanup(func() {
@@ -85,16 +67,6 @@ func TestDetectHostDockerSocketPrefersSnapHostfsSocket(t *testing.T) {
 	got := detectHostDockerSocket()
 	if got != "/var/lib/snapd/hostfs/var/run/docker.sock" {
 		t.Fatalf("expected hostfs docker socket, got %q", got)
-	}
-}
-
-func TestMissingRequiredPorts(t *testing.T) {
-	required := []int{5173, 5174, 8000}
-	discovered := []compose.PublishedPort{{HostPort: 5173}, {HostPort: 8000}}
-	missing := missingRequiredPorts(required, discovered)
-	expected := []int{5174}
-	if !reflect.DeepEqual(missing, expected) {
-		t.Fatalf("expected %v, got %v", expected, missing)
 	}
 }
 

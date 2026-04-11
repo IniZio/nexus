@@ -26,10 +26,8 @@ import (
 )
 
 type options struct {
-	projectRoot       string
-	composeFile       string
-	requiredHostPorts []int
-	reportJSON        string
+	projectRoot string
+	reportJSON  string
 }
 
 type execOptions struct {
@@ -100,15 +98,13 @@ func main() {
 
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	composeFile := fs.String("compose-file", "docker-compose.yml", "compose file path relative to project root")
-	requiredPorts := fs.String("required-host-ports", "", "comma-separated required published host ports (defaults to workspace config doctor.requiredHostPorts)")
 	reportJSON := fs.String("report-json", "", "optional path to write doctor probe results as JSON")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
 
 	if fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: nexus doctor [--compose-file docker-compose.yml] [--required-host-ports 5173,5174,8000] [--report-json path]")
+		fmt.Fprintln(os.Stderr, "usage: nexus doctor [--report-json path]")
 		os.Exit(2)
 	}
 
@@ -119,21 +115,9 @@ func main() {
 		os.Exit(2)
 	}
 
-	var ports []int
-	if strings.TrimSpace(*requiredPorts) != "" {
-		parsedPorts, err := parseRequiredPorts(*requiredPorts)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
-		}
-		ports = parsedPorts
-	}
-
 	if err := run(options{
-		projectRoot:       absProjectRoot,
-		composeFile:       *composeFile,
-		requiredHostPorts: ports,
-		reportJSON:        strings.TrimSpace(*reportJSON),
+		projectRoot: absProjectRoot,
+		reportJSON:  strings.TrimSpace(*reportJSON),
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -142,10 +126,11 @@ func main() {
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  nexus doctor [--compose-file docker-compose.yml] [--required-host-ports 5173,5174,8000] [--report-json path]")
+	fmt.Fprintln(os.Stderr, "  nexus doctor [--report-json path]")
 	fmt.Fprintln(os.Stderr, "  nexus init [project-root] [--force]")
 	fmt.Fprintln(os.Stderr, "  nexus exec [path] [--timeout 10m] -- <command> [args...]")
-	fmt.Fprintln(os.Stderr, "  nexus <list|create|start|stop|remove|fork|ssh|tunnel>")
+	fmt.Fprintln(os.Stderr, "  nexus fork <id> <name> [--ref <ref>]")
+	fmt.Fprintln(os.Stderr, "  nexus <list|create|start|stop|remove|ssh|tunnel>")
 }
 
 func runInitCommand(args []string) {
@@ -396,10 +381,6 @@ func run(opts options) error {
 		}
 	}
 
-	if opts.composeFile == "" {
-		opts.composeFile = "docker-compose.yml"
-	}
-
 	requiredFiles := []string{
 		filepath.Join(opts.projectRoot, ".nexus", "workspace.json"),
 	}
@@ -467,11 +448,10 @@ func run(opts options) error {
 	}
 
 	publishedPorts := make([]compose.PublishedPort, 0)
-	composePath := filepath.Join(opts.projectRoot, opts.composeFile)
 	discoverCtx, discoverCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer discoverCancel()
 	if ports, discoverErr := compose.DiscoverPublishedPorts(discoverCtx, opts.projectRoot); discoverErr != nil {
-		fmt.Printf("doctor warning: compose port discovery failed for %s: %v\n", composePath, discoverErr)
+		fmt.Printf("doctor warning: compose port discovery failed: %v\n", discoverErr)
 	} else {
 		publishedPorts = ports
 	}
@@ -1885,34 +1865,6 @@ func writeReport(reportPath string, results []checkResult) error {
 	return nil
 }
 
-func parseRequiredPorts(raw string) ([]int, error) {
-	parts := strings.Split(raw, ",")
-	ports := make([]int, 0, len(parts))
-	seen := map[int]bool{}
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed == "" {
-			continue
-		}
-		port, err := strconv.Atoi(trimmed)
-		if err != nil {
-			return nil, fmt.Errorf("invalid required host port %q", trimmed)
-		}
-		if port <= 0 || port > 65535 {
-			return nil, fmt.Errorf("required host port out of range: %d", port)
-		}
-		if seen[port] {
-			continue
-		}
-		seen[port] = true
-		ports = append(ports, port)
-	}
-	if len(ports) == 0 {
-		return nil, fmt.Errorf("no required host ports provided")
-	}
-	return ports, nil
-}
-
 func assertNoManualACP(lifecycleDir string) error {
 	entries, err := os.ReadDir(lifecycleDir)
 	if err != nil {
@@ -2149,16 +2101,3 @@ func ensureDotEnv(projectRoot string) error {
 	return nil
 }
 
-func missingRequiredPorts(required []int, discovered []compose.PublishedPort) []int {
-	found := map[int]bool{}
-	for _, p := range discovered {
-		found[p.HostPort] = true
-	}
-	missing := make([]int, 0)
-	for _, p := range required {
-		if !found[p] {
-			missing = append(missing, p)
-		}
-	}
-	return missing
-}
