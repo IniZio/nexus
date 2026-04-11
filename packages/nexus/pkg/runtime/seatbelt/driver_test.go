@@ -15,6 +15,7 @@ import (
 
 	"github.com/inizio/nexus/packages/nexus/pkg/agentprofile"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
+	"github.com/inizio/nexus/packages/nexus/pkg/runtime/drivers/shared"
 )
 
 func TestCreateRequiresLimaForIsolation(t *testing.T) {
@@ -370,9 +371,9 @@ func TestIsTransientLimaShellError(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := isTransientLimaShellError(tc.message)
+			got := shared.IsTransientLimaShellError(tc.message)
 			if got != tc.want {
-				t.Fatalf("isTransientLimaShellError(%q)=%v, want %v", tc.message, got, tc.want)
+				t.Fatalf("IsTransientLimaShellError(%q)=%v, want %v", tc.message, got, tc.want)
 			}
 		})
 	}

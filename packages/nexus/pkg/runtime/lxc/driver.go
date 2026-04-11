@@ -7,23 +7,16 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/creack/pty"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
+	"github.com/inizio/nexus/packages/nexus/pkg/runtime/drivers/shared"
 )
 
-var limaNoiseFragments = []string{
-	"mux_client_request_session: session request failed: Session open refused by peer",
-	"ux_client_request_session: session request failed: Session open refused by peer",
-	"ControlSocket ",
-	"already exists, disconnecting",
-	"disabling multiplexing",
-	"Exiting ssh session for the instance",
-}
+var lxcLimaInstanceBase = []string{"nexus-lxc", "nexus-firecracker", "default"}
 
 type Driver struct {
 	mu          sync.RWMutex
@@ -256,7 +249,7 @@ func (d *Driver) serveShellProtocol(ctx context.Context, workspaceID string, con
 						continue
 					}
 					if n > 0 {
-						clean := sanitizeLimaShellChunk(string(buf[:n]))
+						clean := shared.SanitizeLimaShellChunk(string(buf[:n]))
 						if clean != "" {
 							_ = writeJSON(map[string]any{"id": s.id, "type": "chunk", "stream": "stdout", "data": clean})
 						}
@@ -326,10 +319,10 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 	workdir = strings.TrimSpace(workdir)
 	localPath = strings.TrimSpace(localPath)
 
-	candidates := instanceCandidates(instanceName)
-	if discovered, err := listLimaInstances(ctx); err == nil && len(discovered) > 0 {
+	candidates := shared.InstanceCandidates(instanceName, lxcLimaInstanceBase)
+	if discovered, err := shared.ListLimaInstances(ctx); err == nil && len(discovered) > 0 {
 		fmt.Fprintf(os.Stderr, "[nexus-lxc] discovered instances=%v requested=%q candidates(before)=%v\n", discovered, instanceName, candidates)
-		candidates = filterCandidatesByAvailability(candidates, discovered)
+		candidates = shared.FilterCandidatesSortedFallback(candidates, discovered)
 		fmt.Fprintf(os.Stderr, "[nexus-lxc] candidates(after)=%v\n", candidates)
 	}
 
@@ -379,7 +372,7 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 			if workdir != "" {
 				go func() {
 					time.Sleep(500 * time.Millisecond)
-					_, _ = fmt.Fprintf(ptmx, "cd %s 2>/dev/null; clear\n", shellQuote(workdir))
+					_, _ = fmt.Fprintf(ptmx, "cd %s 2>/dev/null; clear\n", shared.ShellQuote(workdir))
 				}()
 			}
 			return cmd, ptmx, nil
@@ -393,74 +386,6 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 		lastErr = fmt.Errorf("no lima instance candidates available")
 	}
 	return nil, nil, fmt.Errorf("lima shell start failed: %w", lastErr)
-}
-
-func listLimaInstances(ctx context.Context) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "limactl", "ls", "--format", "{{.Name}}")
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-	lines := strings.Split(string(out), "\n")
-	names := make([]string, 0, len(lines))
-	for _, line := range lines {
-		name := strings.TrimSpace(line)
-		if name == "" {
-			continue
-		}
-		names = append(names, name)
-	}
-	return names, nil
-}
-
-func filterCandidatesByAvailability(candidates []string, available []string) []string {
-	if len(candidates) == 0 || len(available) == 0 {
-		return candidates
-	}
-
-	availableSet := make(map[string]struct{}, len(available))
-	for _, name := range available {
-		availableSet[strings.TrimSpace(name)] = struct{}{}
-	}
-
-	filtered := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		if _, ok := availableSet[candidate]; ok {
-			filtered = append(filtered, candidate)
-		}
-	}
-	if len(filtered) > 0 {
-		return filtered
-	}
-
-	fallback := make([]string, 0, len(available))
-	for name := range availableSet {
-		if name != "" {
-			fallback = append(fallback, name)
-		}
-	}
-	sort.Strings(fallback)
-	return fallback
-}
-
-func instanceCandidates(instanceName string) []string {
-	trimmed := strings.TrimSpace(instanceName)
-	// Include common nexus-named Lima instances as fallbacks. nexus-firecracker
-	// is the primary Lima VM used on macOS dev machines.
-	base := []string{"nexus-lxc", "nexus-firecracker", "default"}
-	if trimmed == "" {
-		return base
-	}
-
-	out := make([]string, 0, len(base)+1)
-	out = append(out, trimmed)
-	for _, candidate := range base {
-		if candidate == trimmed {
-			continue
-		}
-		out = append(out, candidate)
-	}
-	return out
 }
 
 func toInt(value any, fallback int) int {
@@ -535,9 +460,9 @@ func bootstrapLimaDockerTooling(ctx context.Context, instance string) error {
 	if instance == "" {
 		instance = "nexus-firecracker"
 	}
-	candidates := instanceCandidates(instance)
-	if discovered, err := listLimaInstances(ctx); err == nil && len(discovered) > 0 {
-		candidates = filterCandidatesByAvailability(candidates, discovered)
+	candidates := shared.InstanceCandidates(instance, lxcLimaInstanceBase)
+	if discovered, err := shared.ListLimaInstances(ctx); err == nil && len(discovered) > 0 {
+		candidates = shared.FilterCandidatesSortedFallback(candidates, discovered)
 	}
 
 	script := strings.Join([]string{
@@ -554,8 +479,7 @@ func bootstrapLimaDockerTooling(ctx context.Context, instance string) error {
 
 	var lastErr error
 	for _, candidate := range candidates {
-		cmd := exec.CommandContext(ctx, "limactl", "shell", candidate, "--", "sh", "-lc", script)
-		out, err := cmd.CombinedOutput()
+		out, err := shared.LimactlShellScript(ctx, candidate, script)
 		if err == nil {
 			return nil
 		}
@@ -576,20 +500,3 @@ func (d *Driver) instanceNameForOptions(opts map[string]string) string {
 	return d.defaultInstanceName()
 }
 
-func sanitizeLimaShellChunk(chunk string) string {
-	trimmed := strings.TrimSpace(chunk)
-	if trimmed == "" {
-		return chunk
-	}
-	for _, noise := range limaNoiseFragments {
-		if strings.Contains(trimmed, noise) {
-			return ""
-		}
-	}
-	return chunk
-}
-
-// shellQuote wraps s in single quotes for safe use in a bash command string.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
-}

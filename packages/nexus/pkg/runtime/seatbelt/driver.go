@@ -15,26 +15,19 @@ import (
 	"github.com/creack/pty"
 	"github.com/inizio/nexus/packages/nexus/pkg/agentprofile"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
+	"github.com/inizio/nexus/packages/nexus/pkg/runtime/drivers/shared"
 )
 
 var seatbeltLookPath = exec.LookPath
 var ensureLimaInstanceRunningFn = ensureLimaInstanceRunning
 var prepareWorkspacePathFn = prepareWorkspacePath
 var teardownWorkspacePathFn = teardownWorkspacePath
-var listLimaInstancesFn = listLimaInstances
+var listLimaInstancesFn = shared.ListLimaInstances
 var ptyStartWithSizeFn = pty.StartWithSize
-var limactlOutputFn = defaultLimactlOutput
-var limactlCombinedOutputFn = defaultLimactlCombinedOutput
+var limactlOutputFn = shared.DefaultLimactlOutput
+var limactlCombinedOutputFn = shared.DefaultLimactlCombinedOutput
 
-func defaultLimactlOutput(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "limactl", args...)
-	return cmd.Output()
-}
-
-func defaultLimactlCombinedOutput(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "limactl", args...)
-	return cmd.CombinedOutput()
-}
+var seatbeltLimaInstanceBase = []string{"nexus-seatbelt", "nexus-firecracker", "default"}
 
 type Driver struct {
 	mu                 sync.RWMutex
@@ -294,7 +287,7 @@ func (d *Driver) serveShellProtocol(ctx context.Context, workspaceID string, con
 						continue
 					}
 					if n > 0 {
-						clean := sanitizeLimaShellChunk(string(buf[:n]))
+						clean := shared.SanitizeLimaShellChunk(string(buf[:n]))
 						if clean != "" {
 							_ = writeJSON(map[string]any{"id": s.id, "type": "chunk", "stream": "stdout", "data": clean})
 						}
@@ -364,9 +357,9 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 	workdir = strings.TrimSpace(workdir)
 	localPath = strings.TrimSpace(localPath)
 
-	candidates := instanceCandidates(instanceName)
+	candidates := shared.InstanceCandidates(instanceName, seatbeltLimaInstanceBase)
 	if discovered, err := listLimaInstancesFn(ctx); err == nil && len(discovered) > 0 {
-		candidates = filterCandidatesByAvailability(candidates, discovered)
+		candidates = shared.FilterCandidatesStrict(candidates, discovered)
 	}
 
 	if localPath != "" {
@@ -409,7 +402,7 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 			if workdir != "" {
 				go func() {
 					time.Sleep(500 * time.Millisecond)
-					_, _ = fmt.Fprintf(ptmx, "cd %s 2>/dev/null; clear\n", shellQuote(workdir))
+					_, _ = fmt.Fprintf(ptmx, "cd %s 2>/dev/null; clear\n", shared.ShellQuote(workdir))
 				}()
 			}
 			return cmd, ptmx, nil
@@ -445,11 +438,10 @@ func prepareWorkspacePath(ctx context.Context, instance, targetPath, localPath s
 
 	script := fmt.Sprintf(
 		"set -e; MNTPT=%s; if mountpoint -q \"$MNTPT\" 2>/dev/null; then sudo umount \"$MNTPT\"; fi; sudo mkdir -p \"$MNTPT\"; sudo mount --bind %s \"$MNTPT\"",
-		shellQuote(targetPath),
-		shellQuote(localPath),
+		shared.ShellQuote(targetPath),
+		shared.ShellQuote(localPath),
 	)
-	cmd := exec.CommandContext(ctx, "limactl", "shell", instance, "--", "sh", "-lc", script)
-	out, err := cmd.CombinedOutput()
+	out, err := shared.LimactlShellScript(ctx, instance, script)
 	if err != nil {
 		return fmt.Errorf("prepare workspace path %s -> %s failed: %s", localPath, targetPath, strings.TrimSpace(string(out)))
 	}
@@ -463,10 +455,9 @@ func teardownWorkspacePath(ctx context.Context, instance, workspaceID string) er
 	targetPath := guestWorkdirForID(workspaceID)
 	script := fmt.Sprintf(
 		"MNTPT=%s; if mountpoint -q \"$MNTPT\" 2>/dev/null; then sudo umount -l \"$MNTPT\" 2>/dev/null || sudo umount \"$MNTPT\" 2>/dev/null || true; fi; sudo rmdir \"$MNTPT\" 2>/dev/null || true",
-		shellQuote(targetPath),
+		shared.ShellQuote(targetPath),
 	)
-	cmd := exec.CommandContext(ctx, "limactl", "shell", instance, "--", "sh", "-lc", script)
-	out, err := cmd.CombinedOutput()
+	out, err := shared.LimactlShellScript(ctx, instance, script)
 	if err != nil {
 		return fmt.Errorf("teardown workspace path for %s failed: %s", workspaceID, strings.TrimSpace(string(out)))
 	}
@@ -479,9 +470,9 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, configBundle string
 		instance = "nexus-firecracker"
 	}
 
-	candidates := instanceCandidates(instance)
+	candidates := shared.InstanceCandidates(instance, seatbeltLimaInstanceBase)
 	if discovered, err := listLimaInstancesFn(ctx); err == nil && len(discovered) > 0 {
-		candidates = filterCandidatesByAvailability(candidates, discovered)
+		candidates = shared.FilterCandidatesStrict(candidates, discovered)
 	}
 
 	bundleHostPath := ""
@@ -505,15 +496,14 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, configBundle string
 
 		const maxAttempts = 3
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
-			cmd := exec.CommandContext(ctx, "limactl", "shell", candidate, "--", "sh", "-lc", script)
-			out, err := cmd.CombinedOutput()
+			out, err := shared.LimactlShellScript(ctx, candidate, script)
 			if err == nil {
 				return nil
 			}
 
 			trimmed := strings.TrimSpace(string(out))
 			lastErr = fmt.Errorf("bootstrap seatbelt tooling in %s failed: %s", candidate, trimmed)
-			if !isTransientLimaShellError(trimmed) || attempt == maxAttempts {
+			if !shared.IsTransientLimaShellError(trimmed) || attempt == maxAttempts {
 				break
 			}
 			time.Sleep(500 * time.Millisecond)
@@ -527,63 +517,8 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, configBundle string
 
 
 
-func isTransientLimaShellError(message string) bool {
-	lower := strings.ToLower(strings.TrimSpace(message))
-	if lower == "" {
-		return false
-	}
-	for _, marker := range []string{
-		"kex_exchange_identification",
-		"connection reset by peer",
-		"connection closed by remote host",
-		"broken pipe",
-		"mux_client_request_session",
-		"session open refused by peer",
-	} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
-}
-
 func ensureLimaInstanceRunning(ctx context.Context, instance string) error {
-	instance = strings.TrimSpace(instance)
-	if instance == "" {
-		return fmt.Errorf("instance is required")
-	}
-
-	out, err := limactlOutputFn(ctx, "list", "--json", instance)
-	if err != nil {
-		if startOut, startErr := limactlCombinedOutputFn(ctx, "start", "--yes", "--name", instance, "template:default"); startErr != nil {
-			return fmt.Errorf(
-				"lima list failed for %s: %w; lima start failed for %s: %s",
-				instance, err, instance, strings.TrimSpace(string(startOut)),
-			)
-		}
-		return nil
-	}
-	trimmed := strings.TrimSpace(string(out))
-
-	if trimmed == "" || trimmed == "[]" {
-		if startOut, startErr := limactlCombinedOutputFn(ctx, "start", "--yes", "--name", instance, "template:default"); startErr != nil {
-			return fmt.Errorf("lima start failed for %s: %s", instance, strings.TrimSpace(string(startOut)))
-		}
-		return nil
-	}
-
-	if strings.Contains(trimmed, `"status":"Running"`) {
-		return nil
-	}
-
-	if strings.Contains(trimmed, `"status":"Stopped"`) {
-		if startOut, startErr := limactlCombinedOutputFn(ctx, "start", "--yes", instance); startErr != nil {
-			return fmt.Errorf("lima start failed for %s: %s", instance, strings.TrimSpace(string(startOut)))
-		}
-		return nil
-	}
-
-	return nil
+	return shared.EnsureLimaInstanceRunning(ctx, instance, limactlOutputFn, limactlCombinedOutputFn)
 }
 
 func buildSeatbeltBootstrapScript(bundleHostPath string) string {
@@ -593,7 +528,7 @@ func buildSeatbeltBootstrapScript(bundleHostPath string) string {
 	}
 
 	if strings.TrimSpace(bundleHostPath) != "" {
-		quoted := shellQuote(bundleHostPath)
+		quoted := shared.ShellQuote(bundleHostPath)
 		parts = append(parts,
 			`if [ -f `+quoted+` ]; then `+
 				`(cat `+quoted+` | base64 -d 2>/dev/null || cat `+quoted+` | base64 -D 2>/dev/null) >/tmp/nexus-auth.tar.gz && `+
@@ -642,63 +577,6 @@ func buildCredentialSymlinkCleanup() string {
 	return strings.Join(checks, "; ")
 }
 
-
-func listLimaInstances(ctx context.Context) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "limactl", "ls", "--format", "{{.Name}}")
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-	lines := strings.Split(string(out), "\n")
-	names := make([]string, 0, len(lines))
-	for _, line := range lines {
-		name := strings.TrimSpace(line)
-		if name == "" {
-			continue
-		}
-		names = append(names, name)
-	}
-	return names, nil
-}
-
-func filterCandidatesByAvailability(candidates []string, available []string) []string {
-	if len(candidates) == 0 || len(available) == 0 {
-		return candidates
-	}
-
-	availableSet := make(map[string]struct{}, len(available))
-	for _, name := range available {
-		availableSet[strings.TrimSpace(name)] = struct{}{}
-	}
-
-	filtered := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		if _, ok := availableSet[candidate]; ok {
-			filtered = append(filtered, candidate)
-		}
-	}
-	if len(filtered) > 0 {
-		return filtered
-	}
-	return candidates
-}
-
-func instanceCandidates(instanceName string) []string {
-	trimmed := strings.TrimSpace(instanceName)
-	base := []string{"nexus-seatbelt", "nexus-firecracker", "default"}
-	if trimmed == "" {
-		return base
-	}
-	out := make([]string, 0, len(base)+1)
-	out = append(out, trimmed)
-	for _, candidate := range base {
-		if candidate == trimmed {
-			continue
-		}
-		out = append(out, candidate)
-	}
-	return out
-}
 
 func (d *Driver) instanceNameForOptions(opts map[string]string) string {
 	if opts != nil {
@@ -773,26 +651,3 @@ func toInt(value any, fallback int) int {
 	return fallback
 }
 
-func sanitizeLimaShellChunk(chunk string) string {
-	trimmed := strings.TrimSpace(chunk)
-	if trimmed == "" {
-		return chunk
-	}
-	for _, noise := range []string{
-		"mux_client_request_session: session request failed: Session open refused by peer",
-		"ux_client_request_session: session request failed: Session open refused by peer",
-		"ControlSocket ",
-		"already exists, disconnecting",
-		"disabling multiplexing",
-		"Exiting ssh session for the instance",
-	} {
-		if strings.Contains(trimmed, noise) {
-			return ""
-		}
-	}
-	return chunk
-}
-
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
-}
