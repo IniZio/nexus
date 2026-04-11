@@ -17,7 +17,11 @@ type WSLike = {
 
 export class BrowserWorkspaceClient {
   private ws: WSLike | null = null;
-  private core = new RpcTransportCore();
+  private core = new RpcTransportCore({
+    onParseError: (err) => console.warn('[nexus/browser] RPC parse error:', err),
+    onReconnectScheduled: (delay, attempt) =>
+      console.debug(`[nexus/browser] reconnect in ${delay}ms (attempt ${attempt})`),
+  });
   private config: {
     endpoint: string;
     workspaceId?: string;

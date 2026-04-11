@@ -1,16 +1,9 @@
 import { ExecOperations } from './exec';
 import { FSOperations } from './fs';
-import {
-  TunnelOperations,
-  type TunnelHandle,
-  type TunnelListResult,
-  type TunnelApplyDefaultsResult,
-  type TunnelApplyComposePortsResult,
-} from './spotlight';
+import { TunnelOperations } from './spotlight';
 import type { RPCClient } from './rpc/types';
 import {
   ExecOptions,
-  SpotlightExposeOptions,
   WorkspaceInfo,
   WorkspaceReadyCheck,
   WorkspaceReadyResult,
@@ -19,20 +12,12 @@ import {
 
 export type { RPCClient } from './rpc/types';
 
-interface TunnelClient {
-  start(options: SpotlightExposeOptions): Promise<TunnelHandle>;
-  list(): Promise<TunnelListResult>;
-  stop(id: string): Promise<boolean>;
-  applyDefaults(): Promise<TunnelApplyDefaultsResult>;
-  applyComposePorts(): Promise<TunnelApplyComposePortsResult>;
-}
-
 export class WorkspaceHandle {
   private client: RPCClient;
   private record: WorkspaceRecord;
   private readonly execOps: ExecOperations;
   private readonly fsOps: FSOperations;
-  public readonly tunnel: TunnelClient;
+  public readonly tunnel: TunnelOperations;
 
   constructor(client: RPCClient, record: WorkspaceRecord) {
     this.client = client;
