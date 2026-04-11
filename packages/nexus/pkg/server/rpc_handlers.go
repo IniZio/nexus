@@ -134,33 +134,15 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 	r.Register("spotlight.close", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
 		return handlers.HandleSpotlightClose(ctx, params, s.spotlightMgr)
 	})
-	r.Register("spotlight.applyDefaults", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
+	r.Register("spotlight.applyDefaults", func(ctx context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
 		workspace := s.resolveWorkspace(params)
 		rootPath := workspace.Path()
-		paramsMap := map[string]any{}
-		if err := json.Unmarshal(params, &paramsMap); err != nil {
-			return nil, rpckit.ErrInvalidParams
-		}
-		paramsMap["rootPath"] = rootPath
-		updated, err := json.Marshal(paramsMap)
-		if err != nil {
-			return nil, rpckit.ErrInternalError
-		}
-		return handlers.HandleSpotlightApplyDefaults(ctx, updated, s.spotlightMgr)
+		return handlers.HandleSpotlightApplyDefaults(ctx, params, rootPath, s.spotlightMgr)
 	})
-	r.Register("spotlight.applyComposePorts", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
+	r.Register("spotlight.applyComposePorts", func(ctx context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
 		workspace := s.resolveWorkspace(params)
 		rootPath := workspace.Path()
-		paramsMap := map[string]any{}
-		if err := json.Unmarshal(params, &paramsMap); err != nil {
-			return nil, rpckit.ErrInvalidParams
-		}
-		paramsMap["rootPath"] = rootPath
-		updated, err := json.Marshal(paramsMap)
-		if err != nil {
-			return nil, rpckit.ErrInternalError
-		}
-		return handlers.HandleSpotlightApplyComposePorts(ctx, updated, s.spotlightMgr)
+		return handlers.HandleSpotlightApplyComposePorts(ctx, params, rootPath, s.spotlightMgr)
 	})
 
 	deps := s.ptyDeps()

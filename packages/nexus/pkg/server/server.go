@@ -204,10 +204,9 @@ func (s *Server) ensureComposeForwards(ctx context.Context, workspaceID, rootPat
 
 	payload, _ := json.Marshal(map[string]any{
 		"workspaceId": workspaceID,
-		"rootPath":    rootPath,
 	})
 
-	if _, rpcErr := handlers.HandleSpotlightApplyComposePorts(ctx, payload, s.spotlightMgr); rpcErr != nil {
+	if _, rpcErr := handlers.HandleSpotlightApplyComposePorts(ctx, payload, rootPath, s.spotlightMgr); rpcErr != nil {
 		log.Printf("[spotlight] failed to auto-apply compose ports for %s: %+v", workspaceID, rpcErr)
 		s.mu.Lock()
 		s.autoComposeForwards[workspaceID] = false
