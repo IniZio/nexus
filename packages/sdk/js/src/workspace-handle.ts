@@ -7,6 +7,7 @@ import {
   type TunnelApplyDefaultsResult,
   type TunnelApplyComposePortsResult,
 } from './spotlight';
+import type { RPCClient } from './rpc/types';
 import {
   ExecOptions,
   SpotlightExposeOptions,
@@ -16,9 +17,7 @@ import {
   WorkspaceRecord,
 } from './types';
 
-export interface RPCClient {
-  request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
-}
+export type { RPCClient } from './rpc/types';
 
 interface TunnelClient {
   start(options: SpotlightExposeOptions): Promise<TunnelHandle>;
@@ -39,8 +38,8 @@ export class WorkspaceHandle {
     this.client = client;
     this.record = record;
     const scopedParams = { workspaceId: record.id };
-    this.execOps = new ExecOperations(client as never, scopedParams);
-    this.fsOps = new FSOperations(client as never, scopedParams);
+    this.execOps = new ExecOperations(client, scopedParams);
+    this.fsOps = new FSOperations(client, scopedParams);
     this.tunnel = new TunnelOperations(client, scopedParams);
   }
 

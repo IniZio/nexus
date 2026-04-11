@@ -1,15 +1,11 @@
-import { WorkspaceClient } from './client';
 import { ExecOptions, ExecResult, ExecParams, ExecResultData } from './types';
-
-interface RPCClient {
-  request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
-}
+import type { RPCClient } from './rpc/types';
 
 export class ExecOperations {
   private client: RPCClient;
   private workspaceId?: string;
 
-  constructor(client: WorkspaceClient | RPCClient, defaultParams: Record<string, unknown> = {}) {
+  constructor(client: RPCClient, defaultParams: Record<string, unknown> = {}) {
     this.client = client;
     this.workspaceId = typeof defaultParams.workspaceId === 'string' ? defaultParams.workspaceId : undefined;
   }

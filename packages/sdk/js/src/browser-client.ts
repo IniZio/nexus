@@ -1,8 +1,7 @@
+import { RpcTransportCore } from './rpc/connection';
 import {
   WorkspaceClientConfig,
   ConnectionState,
-  RPCRequest,
-  RPCResponse,
   DisconnectReason,
 } from './types';
 import { WorkspaceManager } from './workspace-manager';
@@ -18,6 +17,7 @@ type WSLike = {
 
 export class BrowserWorkspaceClient {
   private ws: WSLike | null = null;
+  private core = new RpcTransportCore();
   private config: {
     endpoint: string;
     workspaceId?: string;
@@ -27,13 +27,8 @@ export class BrowserWorkspaceClient {
     maxReconnectAttempts: number;
   };
   private state: ConnectionState = 'disconnected';
-  private reconnectAttempts = 0;
-  private requestMap: Map<string, { resolve: (value: unknown) => void; reject: (reason: Error) => void }> = new Map();
   private disconnectCallbacks: Array<() => void> = [];
-  private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private reconnectEnabled = true;
-  private requestId = 0;
-  private notificationCallbacks: Map<string, Array<(params: unknown) => void>> = new Map();
 
   public readonly ssh: PTYOperations;
   public readonly workspaces: WorkspaceManager;
@@ -83,12 +78,12 @@ export class BrowserWorkspaceClient {
 
         const onOpen = () => {
           this.state = 'connected';
-          this.reconnectAttempts = 0;
+          this.core.resetReconnectAttempts();
           resolve();
         };
         const onMessage = (evt: { data?: unknown } | string) => {
           const raw = typeof evt === 'string' ? evt : (evt as { data?: unknown }).data;
-          this.handleMessage(this.coerceMessage(raw));
+          this.core.handleMessage(this.coerceMessage(raw));
         };
         const onClose = (evt: { code?: number; reason?: string } | number, reasonMaybe?: string) => {
           const code = typeof evt === 'number' ? evt : evt.code ?? 1000;
@@ -121,17 +116,13 @@ export class BrowserWorkspaceClient {
 
   async disconnect(): Promise<void> {
     this.reconnectEnabled = false;
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout);
-      this.reconnectTimeout = null;
-    }
+    this.core.clearReconnectTimer();
     if (this.ws) {
       this.ws.close(1000, 'Client disconnect');
       this.ws = null;
     }
     this.state = 'disconnected';
-    this.requestMap.forEach(({ reject }) => reject(new Error('Connection closed')));
-    this.requestMap.clear();
+    this.core.rejectAllPending('Connection closed');
   }
 
   async [Symbol.asyncDispose](): Promise<void> {
@@ -143,42 +134,17 @@ export class BrowserWorkspaceClient {
   }
 
   onNotification(method: string, callback: (params: unknown) => void): () => void {
-    const existing = this.notificationCallbacks.get(method) ?? [];
-    existing.push(callback);
-    this.notificationCallbacks.set(method, existing);
-    return () => {
-      const callbacks = this.notificationCallbacks.get(method) ?? [];
-      const next = callbacks.filter((cb) => cb !== callback);
-      if (next.length === 0) {
-        this.notificationCallbacks.delete(method);
-        return;
-      }
-      this.notificationCallbacks.set(method, next);
-    };
+    return this.core.onNotification(method, callback);
   }
 
   async request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
-    if (!this.ws || this.ws.readyState !== 1) {
-      throw new Error('Not connected to workspace');
-    }
-
-    const id = this.generateRequestId();
-    const request: RPCRequest = {
-      jsonrpc: '2.0',
-      id,
+    return this.core.request<T>(
       method,
       params,
-    };
-
-    return new Promise<T>((resolve, reject) => {
-      this.requestMap.set(id, { resolve: resolve as (value: unknown) => void, reject });
-      try {
-        this.ws!.send(JSON.stringify(request));
-      } catch (error) {
-        this.requestMap.delete(id);
-        reject(error instanceof Error ? error : new Error('failed to send request'));
-      }
-    });
+      (data) => this.ws!.send(data),
+      () => this.ws !== null && this.ws.readyState === 1,
+      'Not connected to workspace'
+    );
   }
 
   private coerceMessage(raw: unknown): string {
@@ -191,62 +157,20 @@ export class BrowserWorkspaceClient {
     return '';
   }
 
-  private generateRequestId(): string {
-    this.requestId++;
-    return `req-${Date.now()}-${this.requestId}`;
-  }
-
-  private handleMessage(data: string): void {
-    try {
-      const response: RPCResponse = JSON.parse(data);
-      if (!response.id) {
-        if (response.method) {
-          const callbacks = this.notificationCallbacks.get(response.method) ?? [];
-          for (const cb of callbacks) {
-            cb(response.params);
-          }
-        }
-        return;
-      }
-      const pending = this.requestMap.get(response.id);
-      if (!pending) {
-        return;
-      }
-      this.requestMap.delete(response.id);
-      if (response.error) {
-        pending.reject(new Error(response.error.message));
-      } else {
-        pending.resolve(response.result);
-      }
-    } catch {
-      // ignore malformed messages
-    }
-  }
-
   private handleDisconnect(reason: DisconnectReason): void {
     this.ws = null;
     this.state = 'disconnected';
-    this.requestMap.forEach(({ reject }) => reject(new Error(`Connection closed: ${reason.reason}`)));
-    this.requestMap.clear();
+
+    this.core.handleDisconnect(reason);
+
     this.disconnectCallbacks.forEach((callback) => callback());
     if (this.reconnectEnabled && this.config.reconnect) {
-      this.attemptReconnect();
+      this.state = 'reconnecting';
+      this.core.scheduleReconnect(() => this.connect(), {
+        enabled: true,
+        maxAttempts: this.config.maxReconnectAttempts,
+        baseDelay: this.config.reconnectDelay,
+      });
     }
-  }
-
-  private attemptReconnect(): void {
-    if (this.reconnectAttempts >= this.config.maxReconnectAttempts) {
-      return;
-    }
-    this.state = 'reconnecting';
-    this.reconnectAttempts++;
-    const delay = Math.min(this.config.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), 30000);
-    this.reconnectTimeout = setTimeout(async () => {
-      try {
-        await this.connect();
-      } catch {
-        // handled by retry flow
-      }
-    }, delay);
   }
 }

@@ -17,7 +17,8 @@ import {
   WorkspaceStartResult,
   WorkspaceStopResult,
 } from './types';
-import { WorkspaceHandle, type RPCClient } from './workspace-handle';
+import { WorkspaceHandle } from './workspace-handle';
+import type { RPCClient } from './rpc/types';
 
 export class WorkspaceManager {
   private client: RPCClient;
