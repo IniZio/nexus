@@ -317,8 +317,7 @@ func HandleWorkspaceCreate(ctx context.Context, params json.RawMessage, mgr *wor
 	}
 
 	if rpcErr := EnsureLocalRuntimeWorkspace(ctx, ws, factory, mgr, EnsureRuntimeAuth{
-		HostAuthBundleBase64:    strings.TrimSpace(spec.HostAuthBundleBase64),
-		UseDaemonHostAuthBundle: spec.UseDaemonHostAuthBundle,
+		HostAuthBundleBase64: strings.TrimSpace(spec.HostAuthBundleBase64),
 	}); rpcErr != nil {
 		_ = mgr.Remove(ws.ID)
 		return nil, rpcErr
@@ -516,7 +515,7 @@ func HandleWorkspacePause(ctx context.Context, params json.RawMessage, mgr *work
 	}
 
 	if factory != nil {
-		if rpcErr := EnsureLocalRuntimeWorkspace(ctx, ws, factory, mgr, EnsureRuntimeAuth{UseDaemonHostAuthBundle: true}); rpcErr != nil {
+		if rpcErr := EnsureLocalRuntimeWorkspace(ctx, ws, factory, mgr, EnsureRuntimeAuth{}); rpcErr != nil {
 			return nil, rpcErr
 		}
 
@@ -549,7 +548,7 @@ func HandleWorkspaceResume(ctx context.Context, params json.RawMessage, mgr *wor
 	}
 
 	if factory != nil {
-		if rpcErr := EnsureLocalRuntimeWorkspace(ctx, ws, factory, mgr, EnsureRuntimeAuth{UseDaemonHostAuthBundle: true}); rpcErr != nil {
+		if rpcErr := EnsureLocalRuntimeWorkspace(ctx, ws, factory, mgr, EnsureRuntimeAuth{}); rpcErr != nil {
 			return nil, rpcErr
 		}
 
@@ -589,7 +588,7 @@ func HandleWorkspaceFork(ctx context.Context, params json.RawMessage, mgr *works
 		if !ok {
 			return nil, rpckit.ErrWorkspaceNotFound
 		}
-		if rpcErr := EnsureLocalRuntimeWorkspace(ctx, parent, factory, mgr, EnsureRuntimeAuth{UseDaemonHostAuthBundle: true}); rpcErr != nil {
+		if rpcErr := EnsureLocalRuntimeWorkspace(ctx, parent, factory, mgr, EnsureRuntimeAuth{}); rpcErr != nil {
 			return nil, rpcErr
 		}
 
@@ -626,8 +625,7 @@ func loadRuntimeSelectionFromRepoConfig(repo string) ([]string, []string, error)
 }
 
 type EnsureRuntimeAuth struct {
-	HostAuthBundleBase64    string
-	UseDaemonHostAuthBundle bool
+	HostAuthBundleBase64 string
 }
 
 func EnsureLocalRuntimeWorkspace(ctx context.Context, ws *workspacemgr.Workspace, factory *runtime.Factory, mgr *workspacemgr.Manager, auth EnsureRuntimeAuth) *rpckit.RPCError {
@@ -643,8 +641,6 @@ func EnsureLocalRuntimeWorkspace(ctx context.Context, ws *workspacemgr.Workspace
 	opts := map[string]string{"host_cli_sync": "true"}
 	if strings.TrimSpace(auth.HostAuthBundleBase64) != "" {
 		opts["host_auth_bundle"] = strings.TrimSpace(auth.HostAuthBundleBase64)
-	} else if auth.UseDaemonHostAuthBundle {
-		opts["use_daemon_host_auth_bundle"] = "true"
 	}
 
 	req := runtime.CreateRequest{

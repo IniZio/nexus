@@ -788,7 +788,7 @@ func (s *Server) handleFirecrackerPTYOpen(conn *Connection, p ptyOpenParams, wsR
 
 	if wsRecord.Backend == "seatbelt" {
 		if rpcErr := handlers.EnsureLocalRuntimeWorkspace(context.Background(), wsRecord, s.runtimeFactory, s.workspaceMgr,
-			handlers.EnsureRuntimeAuth{UseDaemonHostAuthBundle: false}); rpcErr != nil {
+			handlers.EnsureRuntimeAuth{}); rpcErr != nil {
 			return nil, rpcErr
 		}
 	}
