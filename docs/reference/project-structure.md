@@ -30,8 +30,10 @@ packages/
 
 ## Minimal Structure
 
+Canonical project scaffold lives at the **repository root** as `.nexus/` (used by `nexus init` and `nexus doctor`). Do not duplicate it under package directories.
+
 ```text
-.nexus/
+.nexus/                 # at repo root only
   workspace.json
   lifecycles/
     setup.sh

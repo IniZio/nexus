@@ -13,7 +13,7 @@ Nexus keeps architecture intentionally small: daemon + SDK + project conventions
   - Authenticated client transport
   - Workspace lifecycle APIs
   - Scoped workspace handles for `fs`, `exec`, `spotlight`, `git`, and `service`
-- Project conventions (`.nexus/` + compose files)
+- Project conventions (repository-root `.nexus/` + compose files)
   - Lifecycle scripts and doctor probes/checks
   - Minimal config and file-driven defaults
 
@@ -51,15 +51,15 @@ auth/               - relay, bundle, profile mapping
 **`packages/sdk/js`**
 
 ```
-rpc/                - connection core, request map, notifications
+rpc/                - connection core, request map, notifications (e.g. rpc/connection.ts)
 transport/          - node-websocket and browser-websocket adapters
 workspace/          - manager, handle, lifecycle
 operations/         - exec, fs, pty, spotlight
 auth/               - bundle
-types/              - domain-split type files
+types/              - domain-split type files (e.g. types/workspace.ts)
 ```
 
-**`packages/e2e/flows` **
+**`packages/e2e/flows/`**
 
 ```
 harness/            - daemon, repo, session, assertions, fixtures

@@ -534,8 +534,7 @@ git commit -m "refactor(e2e): split workspace contract harness and suite ownersh
 - Modify: `docs/explanation/architecture.md`
 - Modify: `docs/reference/project-structure.md`
 - Modify: `docs/dev/contributing.md`
-- Modify: `.nexus/**`
-- Modify: `packages/nexus/.nexus/**`
+- Modify: `.nexus/**` (repository root only)
 
 - [ ] **Step 1: Align docs with the actual repo structure**
 
@@ -550,15 +549,13 @@ packages/e2e/flows/
 
 - [ ] **Step 2: Make `.nexus/` ownership explicit**
 
-Pick one source of truth:
+Canonical scaffold is **only** at the repository root:
 
 ```text
-root .nexus/
-or
-packages/nexus/.nexus/
+.nexus/    # repo root
 ```
 
-Then either generate the second copy or add a CI equality check.
+The duplicate under `packages/nexus/` was removed to avoid drift; do not reintroduce it.
 
 - [ ] **Step 3: Document where new code belongs**
 
@@ -581,7 +578,7 @@ Expected: Docs match the real layout and new contributors can place code without
 - [ ] **Step 5: Commit**
 
 ```bash
-git add AGENTS.md docs .nexus packages/nexus/.nexus
+git add AGENTS.md docs .nexus
 git commit -m "docs: align architecture project structure and scaffold ownership"
 ```
 
