@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/inizio/nexus/packages/nexus/pkg/agentprofile"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 )
 
@@ -293,13 +294,12 @@ func TestFirecrackerDriver_DestroyWithoutManager(t *testing.T) {
 	}
 }
 
-func TestBuildGuestCLIBootstrapCommandInstallsOnlyHostAvailableCLIs(t *testing.T) {
-	cmd := buildGuestCLIBootstrapCommand(hostCLIAvailability{Opencode: true, Codex: false, Claude: true})
-	if !strings.Contains(cmd, "npm i -g opencode-ai @anthropic-ai/claude-code") {
-		t.Fatalf("expected selective install command, got %q", cmd)
-	}
-	if strings.Contains(cmd, "@openai/codex") {
-		t.Fatalf("did not expect codex package install when host codex unavailable, got %q", cmd)
+func TestBuildGuestCLIBootstrapCommandIncludesAllRegistryPackages(t *testing.T) {
+	cmd := buildGuestCLIBootstrapCommand()
+	for _, pkg := range agentprofile.AllInstallPkgs() {
+		if !strings.Contains(cmd, pkg) {
+			t.Fatalf("bootstrap command missing install package %q", pkg)
+		}
 	}
 }
 
@@ -393,6 +393,62 @@ func TestBuildHostAuthBundleIncludesKnownConfigPaths(t *testing.T) {
 	}
 	if !strings.Contains(joined, ".claude") {
 		t.Fatalf("expected claude path in archive, got %q", joined)
+	}
+}
+
+func TestBuildHostAuthBundleIncludesRegistryPaths(t *testing.T) {
+	home := t.TempDir()
+
+	credFile := filepath.Join(home, ".claude", ".credentials.json")
+	if err := os.MkdirAll(filepath.Dir(credFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credFile, []byte(`{"token":"test"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	encoded, err := buildHostAuthBundleFromHome(home)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if encoded == "" {
+		t.Fatal("expected non-empty bundle when cred files exist")
+	}
+
+	raw, decErr := base64.StdEncoding.DecodeString(encoded)
+	if decErr != nil {
+		t.Fatalf("bundle is not valid base64: %v", decErr)
+	}
+
+	gr, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("bundle is not gzip: %v", err)
+	}
+	tr := tar.NewReader(gr)
+	found := false
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar read error: %v", err)
+		}
+		if strings.HasSuffix(hdr.Name, ".credentials.json") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("bundle does not contain .credentials.json from registry")
+	}
+}
+
+func TestBuildGuestCLIBootstrapCommandIncludesRegistryPackages(t *testing.T) {
+	cmd := buildGuestCLIBootstrapCommand()
+	for _, pkg := range agentprofile.AllInstallPkgs() {
+		if !strings.Contains(cmd, pkg) {
+			t.Fatalf("bootstrap command missing install package %q", pkg)
+		}
 	}
 }
 
