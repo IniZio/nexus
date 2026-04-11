@@ -54,7 +54,6 @@ harness/      reusable e2e support code only
 packages/nexus/pkg/handlers/workspace_manager.go (~429 lines, over 400 limit)
 packages/sdk/js/src/browser-client.ts        (~181 lines, OK)
 packages/sdk/js/src/client.ts                (~159 lines, OK)
-packages/e2e/flows/src/harness/daemon.ts     (harness dirs not yet split)
 ```
 
 ## Enforcement

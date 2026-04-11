@@ -62,7 +62,7 @@ types/              - domain-split type files (e.g. types/workspace.ts)
 **`packages/e2e/flows/`**
 
 ```
-harness/            - daemon, repo, session, assertions, fixtures
+harness/            - daemon/, repo/, session/, assertions/
 cases/              - test suites organized by flow type
 parity/             - matrix and contracts
 ```

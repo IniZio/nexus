@@ -19,7 +19,12 @@ packages/
 │   └── flows/
 │       └── src/
 │           ├── cases/
+│           │   └── parity/
 │           ├── harness/
+│           │   ├── daemon/
+│           │   ├── repo/
+│           │   ├── session/
+│           │   └── assertions/
 │           └── parity/
 ├── nexus/          # Go daemon
 ├── nexus-ui/       # Web UI
