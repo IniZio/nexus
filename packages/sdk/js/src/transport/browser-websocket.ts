@@ -47,6 +47,6 @@ export class BrowserWebSocketTransport {
   }
 
   isOpen(): boolean {
-    return this.socket !== null && this.socket.readyState === WebSocket.OPEN;
+    return this.socket !== null && this.socket.readyState === 1;
   }
 }
