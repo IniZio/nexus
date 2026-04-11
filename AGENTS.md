@@ -51,9 +51,10 @@ harness/      reusable e2e support code only
 **Known debt (tracked, not instant failures):**
 
 ```
-packages/nexus/pkg/server/server.go          (~1209 lines)
-packages/nexus/pkg/handlers/workspace_manager.go (~660 lines)
-packages/sdk/js/src/types.ts                 (~376 lines)
+packages/nexus/pkg/handlers/workspace_manager.go (~429 lines, over 400 limit)
+packages/sdk/js/src/browser-client.ts        (~181 lines, OK)
+packages/sdk/js/src/client.ts                (~159 lines, OK)
+packages/e2e/flows/src/harness/daemon.ts     (harness dirs not yet split)
 ```
 
 ## Enforcement
