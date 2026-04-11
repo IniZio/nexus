@@ -1,23 +1,18 @@
 package firecracker
 
 import (
-	"archive/tar"
-	"bytes"
-	"compress/gzip"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"net"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/inizio/nexus/packages/nexus/pkg/agentprofile"
+	"github.com/inizio/nexus/packages/nexus/pkg/credsbundle"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 	"github.com/mdlayher/vsock"
 )
@@ -43,11 +38,6 @@ type Driver struct {
 	mu           sync.RWMutex
 }
 
-type hostCLIAvailability struct {
-	Opencode bool
-	Codex    bool
-	Claude   bool
-}
 
 func (d *Driver) AgentConn(ctx context.Context, workspaceID string) (net.Conn, error) {
 	if d.manager == nil {
@@ -138,13 +128,18 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	d.projectRoots[req.WorkspaceID] = req.ProjectRoot
 	d.mu.Unlock()
 
-	hostCLI := detectHostCLIAvailability()
-	authBundle, err := buildHostAuthBundle()
-	if err != nil {
-		return fmt.Errorf("prepare host auth bundle: %w", err)
+	var authBundle string
+	if strings.TrimSpace(req.ConfigBundle) != "" {
+		authBundle = req.ConfigBundle
+	} else {
+		var bundleErr error
+		authBundle, bundleErr = buildHostAuthBundle()
+		if bundleErr != nil {
+			return fmt.Errorf("prepare host auth bundle: %w", bundleErr)
+		}
 	}
 	if shouldBootstrapGuestTooling(req.Options) {
-		if err := d.bootstrapGuestToolingAndAuth(ctx, req.WorkspaceID, hostCLI, authBundle); err != nil {
+		if err := d.bootstrapGuestToolingAndAuth(ctx, req.WorkspaceID, authBundle); err != nil {
 			return err
 		}
 	}
@@ -167,8 +162,8 @@ func shouldBootstrapGuestTooling(options map[string]string) bool {
 	return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
 }
 
-func (d *Driver) bootstrapGuestToolingAndAuth(ctx context.Context, workspaceID string, hostCLI hostCLIAvailability, authBundle string) error {
-	if !hostCLI.Opencode && !hostCLI.Codex && !hostCLI.Claude && strings.TrimSpace(authBundle) == "" {
+func (d *Driver) bootstrapGuestToolingAndAuth(ctx context.Context, workspaceID string, authBundle string) error {
+	if strings.TrimSpace(authBundle) == "" {
 		return nil
 	}
 
@@ -187,7 +182,7 @@ func (d *Driver) bootstrapGuestToolingAndAuth(ctx context.Context, workspaceID s
 	request := ExecRequest{
 		ID:      fmt.Sprintf("bootstrap-%d", time.Now().UnixNano()),
 		Command: "sh",
-		Args:    []string{"-lc", buildGuestCLIBootstrapCommand(hostCLI)},
+		Args:    []string{"-lc", buildGuestCLIBootstrapCommand()},
 		WorkDir: "/workspace",
 		Env:     env,
 	}
@@ -230,159 +225,41 @@ func (d *Driver) waitForAgentConn(ctx context.Context, workspaceID string, timeo
 	return nil, errors.New("agent connection timed out")
 }
 
-func detectHostCLIAvailability() hostCLIAvailability {
-	has := func(name string) bool {
-		_, err := exec.LookPath(name)
-		return err == nil
+func detectHostCLIAvailability() map[string]bool {
+	out := make(map[string]bool)
+	for _, bin := range agentprofile.AllBinaries() {
+		_, err := exec.LookPath(bin)
+		out[bin] = err == nil
 	}
-	return hostCLIAvailability{
-		Opencode: has("opencode"),
-		Codex:    has("codex"),
-		Claude:   has("claude"),
-	}
+	return out
 }
 
-func buildGuestCLIBootstrapCommand(hostCLI hostCLIAvailability) string {
-	parts := []string{"set -e", "mkdir -p ~/.config"}
-	parts = append(parts,
-		`if [ -n "${NEXUS_HOST_AUTH_BUNDLE:-}" ]; then `+
-			`(printf '%s' "$NEXUS_HOST_AUTH_BUNDLE" | base64 -d 2>/dev/null || printf '%s' "$NEXUS_HOST_AUTH_BUNDLE" | base64 -D 2>/dev/null) >/tmp/nexus-auth.tar.gz && `+
-			`tar -xzf /tmp/nexus-auth.tar.gz -C "$HOME" >/dev/null 2>&1 || true; `+
+func buildGuestCLIBootstrapCommand() string {
+	parts := []string{
+		"set -e",
+		"mkdir -p ~/.config ~/.local/share",
+		`if [ -n "${NEXUS_HOST_AUTH_BUNDLE:-}" ]; then ` +
+			`(printf '%s' "$NEXUS_HOST_AUTH_BUNDLE" | base64 -d 2>/dev/null || printf '%s' "$NEXUS_HOST_AUTH_BUNDLE" | base64 -D 2>/dev/null) >/tmp/nexus-auth.tar.gz && ` +
+			`tar -xzf /tmp/nexus-auth.tar.gz -C "$HOME" >/dev/null 2>&1 || true; ` +
 			`rm -f /tmp/nexus-auth.tar.gz >/dev/null 2>&1 || true; fi`,
 		`if command -v npm >/dev/null 2>&1; then NPM_BIN=$(npm bin -g 2>/dev/null || true); if [ -n "$NPM_BIN" ] && [ -d "$NPM_BIN" ]; then export PATH="$NPM_BIN:$PATH"; fi; fi`,
-	)
+	}
 
-	pkg := make([]string, 0, 3)
-	if hostCLI.Opencode {
-		pkg = append(pkg, "opencode-ai")
+	pkgs := agentprofile.AllInstallPkgs()
+	if len(pkgs) > 0 {
+		joined := strings.Join(pkgs, " ")
+		parts = append(parts, "if command -v npm >/dev/null 2>&1; then npm i -g "+joined+" >/dev/null 2>&1 || true; fi")
 	}
-	if hostCLI.Codex {
-		pkg = append(pkg, "@openai/codex")
-	}
-	if hostCLI.Claude {
-		pkg = append(pkg, "@anthropic-ai/claude-code")
-	}
-	if len(pkg) > 0 {
-		parts = append(parts, "if command -v npm >/dev/null 2>&1; then npm i -g "+strings.Join(pkg, " ")+" >/dev/null 2>&1 || true; fi")
-	}
-	if hostCLI.Opencode {
-		parts = append(parts, "command -v opencode >/dev/null 2>&1")
-	}
-	if hostCLI.Codex {
-		parts = append(parts, "command -v codex >/dev/null 2>&1")
-	}
-	if hostCLI.Claude {
-		parts = append(parts, "command -v claude >/dev/null 2>&1")
+
+	for _, bin := range agentprofile.AllBinaries() {
+		parts = append(parts, "command -v "+bin+" >/dev/null 2>&1")
 	}
 
 	return strings.Join(parts, "; ")
 }
 
 func buildHostAuthBundle() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return "", nil
-	}
-
-	paths := []string{
-		filepath.Join(home, ".config", "opencode"),
-		filepath.Join(home, ".config", "codex"),
-		filepath.Join(home, ".codex"),
-		filepath.Join(home, ".config", "openai"),
-		filepath.Join(home, ".claude"),
-	}
-
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gz)
-
-	added := 0
-	for _, path := range paths {
-		if err := addPathToTar(tw, home, path); err != nil {
-			_ = tw.Close()
-			_ = gz.Close()
-			return "", err
-		}
-		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
-			added++
-		}
-	}
-
-	if err := tw.Close(); err != nil {
-		_ = gz.Close()
-		return "", err
-	}
-	if err := gz.Close(); err != nil {
-		return "", err
-	}
-
-	if added == 0 || buf.Len() == 0 {
-		return "", nil
-	}
-
-	const maxBundleBytes = 4 * 1024 * 1024
-	if buf.Len() > maxBundleBytes {
-		return "", nil
-	}
-
-	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
-}
-
-func addPathToTar(tw *tar.Writer, rootHome, src string) error {
-	_, err := os.Lstat(src)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-
-	return filepath.Walk(src, func(path string, fi os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-
-		if fi == nil {
-			return nil
-		}
-
-		rel, err := filepath.Rel(rootHome, path)
-		if err != nil {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
-
-		hdr, err := tar.FileInfoHeader(fi, "")
-		if err != nil {
-			return err
-		}
-		hdr.Name = rel
-
-		if fi.Mode()&os.ModeSymlink != 0 {
-			linkTarget, lerr := os.Readlink(path)
-			if lerr != nil {
-				return lerr
-			}
-			hdr.Linkname = linkTarget
-		}
-
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-
-		if !fi.Mode().IsRegular() {
-			return nil
-		}
-
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-
-		_, err = io.Copy(tw, f)
-		return err
-	})
+	return credsbundle.Build()
 }
 
 func (d *Driver) Start(ctx context.Context, workspaceID string) error {

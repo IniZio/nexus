@@ -37,7 +37,7 @@ describe('lifecycle hooks e2e', () => {
 
       try {
         try {
-          const ws = await session.client.workspace.create({
+          const ws = await session.client.workspaces.create({
             repo: fixture.repoDir,
             workspaceName: 'lifecycle-case',
             agentProfile: 'default',
@@ -51,7 +51,7 @@ describe('lifecycle hooks e2e', () => {
         }
 
         if (workspaceId !== '') {
-          await session.client.workspace.remove(workspaceId);
+          await session.client.workspaces.remove(workspaceId);
           workspaceId = '';
         }
 
@@ -59,7 +59,7 @@ describe('lifecycle hooks e2e', () => {
         expect(lines).toEqual(['1-setup', '2-start', '3-teardown']);
       } finally {
         if (workspaceId !== '') {
-          await session.client.workspace.remove(workspaceId);
+          await session.client.workspaces.remove(workspaceId);
         }
         await session.stop();
       }

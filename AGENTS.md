@@ -25,6 +25,22 @@ This repository is the Nexus remote workspace core.
 
 ---
 
+## Remote-First Architecture Constraint
+
+**The daemon will run on a machine different from the user's machine.** Every feature must be designed and verified under this assumption.
+
+Concretely this means:
+
+- **Filesystem paths on the daemon host are not the user's paths.** `os.UserHomeDir()` on the daemon returns the server's home, not the user's. Never read credential or config files from the daemon's own `$HOME` and assume they belong to the user.
+- **Host-path symlinks are local-only.** Lima's automount makes symlinks work today when daemon and VM share the same host, but this breaks the moment the daemon is remote. Any symlink-based credential forwarding is a temporary local shortcut, not a general solution.
+- **All user data must travel via RPC.** Credential files, config bundles, auth tokens — anything originating from the user's machine must be sent explicitly through the `workspace.create` spec or a dedicated upload RPC, not read opportunistically from the daemon host's filesystem.
+- **Auth relay tokens are the correct remote-safe pattern for API keys.** `mintAuthRelay` injects tokens at exec time over the existing RPC path and works regardless of where the daemon runs.
+- **Known gap (must fix before remote deployment):** `CreateSpec` currently has no `ConfigBundle` field. Both drivers read `os.UserHomeDir()` on the daemon host to build credential bundles. Before enabling a remote daemon, this must be replaced: the client constructs the bundle locally and passes it in `CreateSpec.ConfigBundle`; the daemon never reads user credentials from its own filesystem.
+
+An agent MUST flag any new feature that reads from the daemon's local filesystem for user-owned data as non-compliant with this constraint.
+
+---
+
 ## Enforcement Rules
 
 - An agent MUST complete tasks fully before claiming completion.

@@ -1,32 +1,38 @@
 # Workspace Core Architecture
 
-Nexus currently ships a focused remote workspace core composed of two packages.
+Nexus keeps architecture intentionally small: daemon + SDK + project conventions.
 
-## Components
+## Three Layers
 
-- `packages/nexus` (Go)
-  - WebSocket JSON-RPC server
-  - Workspace manager and lifecycle hooks
-  - Service manager and readiness checks
-  - Spotlight forwarding and compose port auto-detection
+- `packages/nexus` (Go daemon)
+  - JSON-RPC over WebSocket
+  - Workspace lifecycle and handlers
+  - Service and readiness control
+  - Spotlight forwards and compose discovery
+- `packages/sdk/js` (`@nexus/sdk`)
+  - Authenticated client transport
+  - Workspace lifecycle APIs
+  - Scoped workspace handles for `fs`, `exec`, `spotlight`, `git`, and `service`
+- Project conventions (`.nexus/` + compose files)
+  - Lifecycle scripts and doctor probes/checks
+  - Minimal config and file-driven defaults
 
-- `packages/sdk/js` (TypeScript, published as `@nexus/sdk`)
-  - Client connection and RPC transport
-  - Workspace handle with scoped exec/fs/git/service operations
-  - Spotlight and readiness APIs
-
-## Core data flow
+## Request Flow
 
 1. SDK connects to daemon over authenticated WebSocket.
-2. Client creates/opens workspace and runs scoped operations.
-3. Daemon resolves workspace path, executes handlers, and returns RPC results.
-4. On `workspace.ready`, daemon can apply compose-based Spotlight forwards by convention.
+2. Client creates or opens a workspace.
+3. Operations run through workspace-scoped handlers.
+4. Results return as JSON-RPC responses.
 
-## Configuration model
+## Why It Feels Minimal
 
-- Optional project config: `.nexus/workspace.json`
-- Convention-over-configuration behavior for compose projects:
-  - detect compose file
-  - forward published ports
+- Most projects run with `nexus init` and default conventions.
+- Runtime/backend selection is automatic.
+- Port forwarding can be convention-driven from compose files.
 
-See reference docs for API and schema details.
+## Related Docs
+
+- CLI: `docs/reference/cli.md`
+- SDK: `docs/reference/sdk.md`
+- Project structure: `docs/reference/project-structure.md`
+- Workspace config: `docs/reference/workspace-config.md`

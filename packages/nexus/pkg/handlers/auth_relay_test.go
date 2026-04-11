@@ -47,6 +47,9 @@ func TestHandleAuthRelayMint(t *testing.T) {
 	if env["NEXUS_AUTH_VALUE"] != "token-123" {
 		t.Fatalf("expected injected value token-123, got %q", env["NEXUS_AUTH_VALUE"])
 	}
+	if env["ANTHROPIC_API_KEY"] != "token-123" {
+		t.Fatalf("expected ANTHROPIC_API_KEY token-123, got %q", env["ANTHROPIC_API_KEY"])
+	}
 }
 
 func TestHandleAuthRelayRevoke(t *testing.T) {

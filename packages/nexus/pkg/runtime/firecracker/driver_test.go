@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/inizio/nexus/packages/nexus/pkg/agentprofile"
+	"github.com/inizio/nexus/packages/nexus/pkg/credsbundle"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 )
 
@@ -293,13 +295,12 @@ func TestFirecrackerDriver_DestroyWithoutManager(t *testing.T) {
 	}
 }
 
-func TestBuildGuestCLIBootstrapCommandInstallsOnlyHostAvailableCLIs(t *testing.T) {
-	cmd := buildGuestCLIBootstrapCommand(hostCLIAvailability{Opencode: true, Codex: false, Claude: true})
-	if !strings.Contains(cmd, "npm i -g opencode-ai @anthropic-ai/claude-code") {
-		t.Fatalf("expected selective install command, got %q", cmd)
-	}
-	if strings.Contains(cmd, "@openai/codex") {
-		t.Fatalf("did not expect codex package install when host codex unavailable, got %q", cmd)
+func TestBuildGuestCLIBootstrapCommandIncludesAllRegistryPackages(t *testing.T) {
+	cmd := buildGuestCLIBootstrapCommand()
+	for _, pkg := range agentprofile.AllInstallPkgs() {
+		if !strings.Contains(cmd, pkg) {
+			t.Fatalf("bootstrap command missing install package %q", pkg)
+		}
 	}
 }
 
@@ -317,10 +318,30 @@ func TestBuildHostAuthBundleIncludesKnownConfigPaths(t *testing.T) {
 	}
 	mkdir(filepath.Join(home, ".config", "opencode"))
 	mkdir(filepath.Join(home, ".config", "codex"))
+	mkdir(filepath.Join(home, ".config", "github-copilot"))
+	mkdir(filepath.Join(home, ".local", "share", "opencode"))
 	mkdir(filepath.Join(home, ".codex"))
 	mkdir(filepath.Join(home, ".claude"))
 	if err := os.WriteFile(filepath.Join(home, ".config", "opencode", "session.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatalf("write opencode session: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "opencode", "opencode.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write opencode config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".local", "share", "opencode", "auth.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write opencode auth: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "github-copilot", "hosts.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write github-copilot hosts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "auth.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write codex auth: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "version.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write codex version: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", ".credentials.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write claude credentials: %v", err)
 	}
 
 	bundle, err := buildHostAuthBundle()
@@ -356,16 +377,79 @@ func TestBuildHostAuthBundleIncludesKnownConfigPaths(t *testing.T) {
 	}
 
 	joined := strings.Join(names, "\n")
-	if !strings.Contains(joined, ".config/opencode") {
-		t.Fatalf("expected opencode path in archive, got %q", joined)
+	if !strings.Contains(joined, ".config/opencode/opencode.json") {
+		t.Fatalf("expected opencode config path in archive, got %q", joined)
 	}
-	if !strings.Contains(joined, ".config/codex") {
-		t.Fatalf("expected codex path in archive, got %q", joined)
+	if !strings.Contains(joined, ".local/share/opencode/auth.json") {
+		t.Fatalf("expected opencode auth path in archive, got %q", joined)
 	}
-	if !strings.Contains(joined, ".codex") {
-		t.Fatalf("expected .codex path in archive, got %q", joined)
+	if !strings.Contains(joined, ".config/github-copilot/hosts.json") {
+		t.Fatalf("expected github-copilot hosts in archive, got %q", joined)
+	}
+	if !strings.Contains(joined, ".codex/auth.json") {
+		t.Fatalf("expected .codex auth in archive, got %q", joined)
+	}
+	if !strings.Contains(joined, ".codex/version.json") {
+		t.Fatalf("expected .codex version in archive, got %q", joined)
 	}
 	if !strings.Contains(joined, ".claude") {
 		t.Fatalf("expected claude path in archive, got %q", joined)
 	}
 }
+
+func TestBuildHostAuthBundleIncludesRegistryPaths(t *testing.T) {
+	home := t.TempDir()
+
+	credFile := filepath.Join(home, ".claude", ".credentials.json")
+	if err := os.MkdirAll(filepath.Dir(credFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credFile, []byte(`{"token":"test"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	encoded, err := credsbundle.BuildFromHome(home)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if encoded == "" {
+		t.Fatal("expected non-empty bundle when cred files exist")
+	}
+
+	raw, decErr := base64.StdEncoding.DecodeString(encoded)
+	if decErr != nil {
+		t.Fatalf("bundle is not valid base64: %v", decErr)
+	}
+
+	gr, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("bundle is not gzip: %v", err)
+	}
+	tr := tar.NewReader(gr)
+	found := false
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar read error: %v", err)
+		}
+		if strings.HasSuffix(hdr.Name, ".credentials.json") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("bundle does not contain .credentials.json from registry")
+	}
+}
+
+func TestBuildGuestCLIBootstrapCommandIncludesRegistryPackages(t *testing.T) {
+	cmd := buildGuestCLIBootstrapCommand()
+	for _, pkg := range agentprofile.AllInstallPkgs() {
+		if !strings.Contains(cmd, pkg) {
+			t.Fatalf("bootstrap command missing install package %q", pkg)
+		}
+	}
+}
+

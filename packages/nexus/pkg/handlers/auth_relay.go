@@ -53,10 +53,7 @@ func HandleAuthRelayMint(_ context.Context, params json.RawMessage, mgr *workspa
 	}
 
 	ttl := time.Duration(p.TTLSeconds) * time.Second
-	token := broker.Mint(p.WorkspaceID, map[string]string{
-		"NEXUS_AUTH_BINDING": p.Binding,
-		"NEXUS_AUTH_VALUE":   bindingValue,
-	}, ttl)
+	token := broker.Mint(p.WorkspaceID, authrelay.RelayEnv(p.Binding, bindingValue), ttl)
 
 	return &AuthRelayMintResult{Token: token}, nil
 }

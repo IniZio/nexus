@@ -13,6 +13,7 @@ import (
 
 	"github.com/creack/pty"
 
+	"github.com/inizio/nexus/packages/nexus/pkg/agentprofile"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 )
 
@@ -25,7 +26,7 @@ func TestCreateRequiresLimaForIsolation(t *testing.T) {
 		seatbeltLookPath = oldLookPath
 	})
 	seatbeltLookPath = func(file string) (string, error) { return "", errors.New("not found") }
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome string) error { return nil }
+	d.bootstrapInstance = func(ctx context.Context, instance, hostHome, configBundle string) error { return nil }
 
 	err := d.Create(context.Background(), runtime.CreateRequest{
 		WorkspaceID:   "ws-1",
@@ -45,11 +46,15 @@ func TestCreateRunsBootstrapAndMount(t *testing.T) {
 
 	calledBootstrap := false
 	calledPrepare := false
+	d.hostHome = "/Users/tester"
 
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome string) error {
+	d.bootstrapInstance = func(ctx context.Context, instance, hostHome, configBundle string) error {
 		calledBootstrap = true
 		if instance == "" {
 			t.Fatal("expected non-empty instance")
+		}
+		if hostHome != "/Users/tester" {
+			t.Fatalf("expected host auth sync hostHome, got %q", hostHome)
 		}
 		return nil
 	}
@@ -84,7 +89,7 @@ func TestCreateFallsBackToDefaultInstanceWhenSeatbeltMountPrepareFails(t *testin
 	seatbeltLookPath = func(file string) (string, error) { return "/usr/local/bin/limactl", nil }
 
 	d.instanceEnv = "nexus-seatbelt"
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome string) error { return nil }
+	d.bootstrapInstance = func(ctx context.Context, instance, hostHome, configBundle string) error { return nil }
 
 	seen := make([]string, 0)
 	d.prepareWorkspaceFS = func(ctx context.Context, instance, localPath string) error {
@@ -128,7 +133,7 @@ func TestCreateFailsWhenBootstrapFails(t *testing.T) {
 	t.Cleanup(func() { seatbeltLookPath = oldLookPath })
 	seatbeltLookPath = func(file string) (string, error) { return "/usr/local/bin/limactl", nil }
 
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome string) error {
+	d.bootstrapInstance = func(ctx context.Context, instance, hostHome, configBundle string) error {
 		return errors.New("bootstrap failed")
 	}
 
@@ -142,29 +147,55 @@ func TestCreateFailsWhenBootstrapFails(t *testing.T) {
 	}
 }
 
-func TestBuildSeatbeltBootstrapScriptIncludesIsolationAndForwarding(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("/Users/tester", hostCLIAvailability{Opencode: true, Codex: true, Claude: true})
+func TestBuildSeatbeltBootstrapScriptContainsSymlinks(t *testing.T) {
+	script := buildSeatbeltBootstrapScript("/Users/testhost", "")
 
-	for _, token := range []string{
-		"unset DOCKER_HOST DOCKER_CONTEXT",
-		"docker.io",
-		"docker-compose-v2",
-		"npm i -g opencode-ai @openai/codex @anthropic-ai/claude-code",
-		"ln -sfn '/Users/tester'/.config/opencode ~/.config/opencode",
-		"ln -sfn '/Users/tester'/.codex ~/.codex",
-		"ln -sfn '/Users/tester'/.claude ~/.claude",
-		"npm bin -g",
-	} {
-		if !strings.Contains(script, token) {
-			t.Fatalf("expected script to include %q", token)
+	if strings.Contains(script, "nexus-auth.tar.gz") {
+		t.Fatal("bootstrap script must not use tar bundle — use symlinks instead")
+	}
+	if !strings.Contains(script, "ln -sfn") {
+		t.Fatal("bootstrap script must create symlinks for credential files")
+	}
+	if !strings.Contains(script, "/Users/testhost") {
+		t.Fatal("bootstrap script must use host home as symlink target")
+	}
+}
+
+func TestBuildSeatbeltBootstrapScriptInstallsRegistryPackages(t *testing.T) {
+	script := buildSeatbeltBootstrapScript("/Users/testhost", "")
+	for _, pkg := range agentprofile.AllInstallPkgs() {
+		if !strings.Contains(script, pkg) {
+			t.Fatalf("bootstrap script missing install package %q", pkg)
 		}
 	}
 }
 
-func TestBuildSeatbeltBootstrapScriptInstallsAllManagedCLIs(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("/Users/tester", hostCLIAvailability{Opencode: true, Codex: false, Claude: true})
-	if !strings.Contains(script, "npm i -g opencode-ai @openai/codex @anthropic-ai/claude-code") {
-		t.Fatalf("expected managed CLI install command, got %q", script)
+func TestBuildSeatbeltBootstrapScriptChecksRegistryBinaries(t *testing.T) {
+	script := buildSeatbeltBootstrapScript("/Users/testhost", "")
+	for _, bin := range agentprofile.AllBinaries() {
+		if !strings.Contains(script, bin) {
+			t.Fatalf("bootstrap script missing binary check for %q", bin)
+		}
+	}
+}
+
+func TestBuildSeatbeltBootstrapScriptExtractsBundleWhenProvided(t *testing.T) {
+	script := buildSeatbeltBootstrapScript("", "/tmp/test-bundle.tar.gz.b64")
+	if !strings.Contains(script, "/tmp/test-bundle.tar.gz.b64") {
+		t.Fatal("bootstrap script must reference the bundle file path")
+	}
+	if !strings.Contains(script, "base64") {
+		t.Fatal("bootstrap script must contain base64 decode step")
+	}
+	if !strings.Contains(script, "nexus-auth.tar.gz") {
+		t.Fatal("bootstrap script must contain tar extraction")
+	}
+}
+
+func TestBuildSeatbeltBootstrapScriptNoBundleWhenEmpty(t *testing.T) {
+	script := buildSeatbeltBootstrapScript("/Users/testhost", "")
+	if strings.Contains(script, "nexus-auth.tar.gz") {
+		t.Fatal("bootstrap script must not contain tar extraction when bundle path is empty")
 	}
 }
 
@@ -300,6 +331,29 @@ func TestEnsureLimaInstanceRunningCreatesMissingInstance(t *testing.T) {
 	}
 }
 
+func TestCreateReturnsErrWorkspaceMountFailedWhenAllMountsFail(t *testing.T) {
+	d := NewDriver()
+	oldLookPath := seatbeltLookPath
+	t.Cleanup(func() { seatbeltLookPath = oldLookPath })
+	seatbeltLookPath = func(file string) (string, error) { return "/usr/local/bin/limactl", nil }
+
+	d.bootstrapInstance = func(ctx context.Context, instance, hostHome, configBundle string) error { return nil }
+	d.prepareWorkspaceFS = func(ctx context.Context, instance, localPath string) error {
+		return errors.New("prepare /workspace mount failed: instance unreachable")
+	}
+
+	err := d.Create(context.Background(), runtime.CreateRequest{
+		WorkspaceID: "ws-mount-fail",
+		ProjectRoot: t.TempDir(),
+	})
+	if err == nil {
+		t.Fatal("expected error when all mount candidates fail")
+	}
+	if !errors.Is(err, runtime.ErrWorkspaceMountFailed) {
+		t.Fatalf("expected ErrWorkspaceMountFailed sentinel, got: %v", err)
+	}
+}
+
 func TestIsTransientLimaShellError(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -321,3 +375,4 @@ func TestIsTransientLimaShellError(t *testing.T) {
 		})
 	}
 }
+

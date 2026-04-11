@@ -1,12 +1,15 @@
 import { ExecOperations } from './exec';
 import { FSOperations } from './fs';
-import { SpotlightOperations } from './spotlight';
 import {
-  SpotlightApplyDefaultsResult,
-  SpotlightApplyComposePortsResult,
+  TunnelOperations,
+  type TunnelHandle,
+  type TunnelListResult,
+  type TunnelApplyDefaultsResult,
+  type TunnelApplyComposePortsResult,
+} from './spotlight';
+import {
+  ExecOptions,
   SpotlightExposeOptions,
-  SpotlightForward,
-  SpotlightListResult,
   WorkspaceInfo,
   WorkspaceReadyCheck,
   WorkspaceReadyResult,
@@ -17,29 +20,28 @@ export interface RPCClient {
   request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
 }
 
-interface SpotlightClient {
-  expose(options: SpotlightExposeOptions): Promise<SpotlightForward>;
-  list(): Promise<SpotlightListResult>;
-  close(id: string): Promise<boolean>;
-  applyDefaults(): Promise<SpotlightApplyDefaultsResult>;
-  applyComposePorts(): Promise<SpotlightApplyComposePortsResult>;
+interface TunnelClient {
+  start(options: SpotlightExposeOptions): Promise<TunnelHandle>;
+  list(): Promise<TunnelListResult>;
+  stop(id: string): Promise<boolean>;
+  applyDefaults(): Promise<TunnelApplyDefaultsResult>;
+  applyComposePorts(): Promise<TunnelApplyComposePortsResult>;
 }
 
 export class WorkspaceHandle {
   private client: RPCClient;
   private record: WorkspaceRecord;
-
-  public readonly exec: ExecOperations;
-  public readonly fs: FSOperations;
-  public readonly spotlight: SpotlightClient;
+  private readonly execOps: ExecOperations;
+  private readonly fsOps: FSOperations;
+  public readonly tunnel: TunnelClient;
 
   constructor(client: RPCClient, record: WorkspaceRecord) {
     this.client = client;
     this.record = record;
     const scopedParams = { workspaceId: record.id };
-    this.exec = new ExecOperations(client as never, scopedParams);
-    this.fs = new FSOperations(client as never, scopedParams);
-    this.spotlight = new SpotlightOperations(client, scopedParams);
+    this.execOps = new ExecOperations(client as never, scopedParams);
+    this.fsOps = new FSOperations(client as never, scopedParams);
+    this.tunnel = new TunnelOperations(client, scopedParams);
   }
 
   get id(): string {
@@ -91,4 +93,52 @@ export class WorkspaceHandle {
       params,
     });
   }
+
+  async start(): Promise<boolean> {
+    const result = await this.client.request<{ started: boolean }>('workspace.start', { id: this.record.id });
+    return result.started;
+  }
+
+  async stop(): Promise<boolean> {
+    const result = await this.client.request<{ stopped: boolean }>('workspace.stop', { id: this.record.id });
+    return result.stopped;
+  }
+
+  async remove(): Promise<boolean> {
+    const result = await this.client.request<{ removed: boolean }>('workspace.remove', { id: this.record.id });
+    return result.removed;
+  }
+
+  async exec(command: string, args: string[] = [], options: ExecOptions = {}) {
+    return this.execOps.exec(command, args, options);
+  }
+
+  async readFile(path: string, encoding: string = 'utf8') {
+    return this.fsOps.readFile(path, encoding);
+  }
+
+  async writeFile(path: string, content: string | Buffer) {
+    await this.fsOps.writeFile(path, content);
+  }
+
+  async exists(path: string) {
+    return this.fsOps.exists(path);
+  }
+
+  async readdir(path: string) {
+    return this.fsOps.readdir(path);
+  }
+
+  async mkdir(path: string, recursive: boolean = false) {
+    await this.fsOps.mkdir(path, recursive);
+  }
+
+  async rm(path: string, recursive: boolean = false) {
+    await this.fsOps.rm(path, recursive);
+  }
+
+  async stat(path: string) {
+    return this.fsOps.stat(path);
+  }
+
 }

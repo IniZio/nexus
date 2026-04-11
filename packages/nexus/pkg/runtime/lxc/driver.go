@@ -252,6 +252,9 @@ func (d *Driver) serveShellProtocol(ctx context.Context, workspaceID string, con
 				buf := make([]byte, 4096)
 				for {
 					n, err := s.ptmx.Read(buf)
+					if n == 0 && err == nil {
+						continue
+					}
 					if n > 0 {
 						clean := sanitizeLimaShellChunk(string(buf[:n]))
 						if clean != "" {

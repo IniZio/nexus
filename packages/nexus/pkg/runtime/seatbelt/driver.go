@@ -7,11 +7,13 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/inizio/nexus/packages/nexus/pkg/agentprofile"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 )
 
@@ -41,14 +43,8 @@ type Driver struct {
 	hostHome           string
 	bootstrapMu        sync.Mutex
 	bootstrapped       map[string]bool
-	bootstrapInstance  func(ctx context.Context, instance, hostHome string) error
+	bootstrapInstance  func(ctx context.Context, instance, hostHome, configBundle string) error
 	prepareWorkspaceFS func(ctx context.Context, instance, localPath string) error
-}
-
-type hostCLIAvailability struct {
-	Opencode bool
-	Codex    bool
-	Claude   bool
 }
 
 type workspaceState struct {
@@ -96,7 +92,7 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	d.workspaces[req.WorkspaceID] = &workspaceState{projectRoot: req.ProjectRoot, state: "created", instance: instance}
 	d.mu.Unlock()
 
-	if err := d.ensureInstanceBootstrapped(ctx, instance); err != nil {
+	if err := d.ensureInstanceBootstrapped(ctx, instance, req.ConfigBundle); err != nil {
 		d.mu.Lock()
 		delete(d.workspaces, req.WorkspaceID)
 		d.mu.Unlock()
@@ -120,7 +116,7 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 			d.mu.Lock()
 			delete(d.workspaces, req.WorkspaceID)
 			d.mu.Unlock()
-			return err
+			return fmt.Errorf("%w: %v", runtime.ErrWorkspaceMountFailed, err)
 		}
 	}
 
@@ -249,9 +245,14 @@ func (d *Driver) serveShellProtocol(ctx context.Context, workspaceID string, con
 				shell = "bash"
 			}
 			workdir, _ := req["workdir"].(string)
+			overrideLocalPath, _ := req["local_path"].(string)
 			localPath := ""
 			if strings.TrimSpace(workdir) == "" || strings.TrimSpace(workdir) == "/workspace" {
-				localPath = d.workspaceProjectRoot(workspaceID)
+				if strings.TrimSpace(overrideLocalPath) != "" {
+					localPath = strings.TrimSpace(overrideLocalPath)
+				} else {
+					localPath = d.workspaceProjectRoot(workspaceID)
+				}
 				workdir = "/workspace"
 			}
 
@@ -281,6 +282,9 @@ func (d *Driver) serveShellProtocol(ctx context.Context, workspaceID string, con
 				buf := make([]byte, 4096)
 				for {
 					n, err := s.ptmx.Read(buf)
+					if n == 0 && err == nil {
+						continue
+					}
 					if n > 0 {
 						clean := sanitizeLimaShellChunk(string(buf[:n]))
 						if clean != "" {
@@ -359,10 +363,8 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 
 	if localPath != "" && workdir == "/workspace" {
 		mounted := false
-		lastMountErr := ""
 		for _, candidate := range candidates {
 			if err := ensureLimaInstanceRunningFn(ctx, candidate); err != nil {
-				lastMountErr = err.Error()
 				continue
 			}
 			if err := prepareWorkspaceMountFn(ctx, candidate, localPath); err == nil {
@@ -370,15 +372,10 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 				candidates = []string{candidate}
 				mounted = true
 				break
-			} else {
-				lastMountErr = err.Error()
 			}
 		}
 		if !mounted {
-			if strings.TrimSpace(lastMountErr) == "" {
-				lastMountErr = "no available lima candidates"
-			}
-			return nil, nil, fmt.Errorf("prepare /workspace mount failed: %s", lastMountErr)
+			workdir = localPath
 		}
 	}
 
@@ -420,7 +417,7 @@ func prepareWorkspaceMount(ctx context.Context, instance, localPath string) erro
 		return fmt.Errorf("workspace path is required")
 	}
 
-	script := fmt.Sprintf("set -e; sudo mkdir -p /workspace; sudo mount --bind %s /workspace || true; cd /workspace >/dev/null 2>&1", shellQuote(localPath))
+	script := fmt.Sprintf("set -e; sudo rm -rf /workspace; sudo ln -sfn %s /workspace; cd /workspace >/dev/null 2>&1", shellQuote(localPath))
 	cmd := exec.CommandContext(ctx, "limactl", "shell", instance, "--", "sh", "-lc", script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -429,7 +426,7 @@ func prepareWorkspaceMount(ctx context.Context, instance, localPath string) erro
 	return nil
 }
 
-func bootstrapSeatbeltTooling(ctx context.Context, instance, hostHome string) error {
+func bootstrapSeatbeltTooling(ctx context.Context, instance, hostHome, configBundle string) error {
 	instance = strings.TrimSpace(instance)
 	if instance == "" {
 		instance = "nexus-firecracker"
@@ -440,8 +437,19 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, hostHome string) er
 		candidates = filterCandidatesByAvailability(candidates, discovered)
 	}
 
-	hostCLI := detectHostCLIAvailability(seatbeltLookPath)
-	script := buildSeatbeltBootstrapScript(hostHome, hostCLI)
+	bundleHostPath := ""
+	if strings.TrimSpace(configBundle) != "" && strings.TrimSpace(hostHome) != "" {
+		cacheDir := filepath.Join(hostHome, ".cache", "nexus")
+		if mkErr := os.MkdirAll(cacheDir, 0o700); mkErr == nil {
+			bundleFile := filepath.Join(cacheDir, "bootstrap-"+instance+".tar.gz.b64")
+			if writeErr := os.WriteFile(bundleFile, []byte(configBundle), 0o600); writeErr == nil {
+				bundleHostPath = bundleFile
+				defer func() { _ = os.Remove(bundleFile) }()
+			}
+		}
+	}
+
+	script := buildSeatbeltBootstrapScript(hostHome, bundleHostPath)
 
 	var lastErr error
 	for _, candidate := range candidates {
@@ -470,21 +478,6 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, hostHome string) er
 		return lastErr
 	}
 	return fmt.Errorf("bootstrap seatbelt tooling failed: no lima instance candidates")
-}
-
-func detectHostCLIAvailability(lookPath func(string) (string, error)) hostCLIAvailability {
-	has := func(bin string) bool {
-		if lookPath == nil {
-			return false
-		}
-		_, err := lookPath(bin)
-		return err == nil
-	}
-	return hostCLIAvailability{
-		Opencode: has("opencode"),
-		Codex:    has("codex"),
-		Claude:   has("claude"),
-	}
 }
 
 func isTransientLimaShellError(message string) bool {
@@ -546,41 +539,77 @@ func ensureLimaInstanceRunning(ctx context.Context, instance string) error {
 	return nil
 }
 
-func buildSeatbeltBootstrapScript(hostHome string, hostCLI hostCLIAvailability) string {
-	_ = hostCLI
+func buildSeatbeltBootstrapScript(hostHome, bundleHostPath string) string {
 	parts := []string{
 		"set -e",
+		buildCredentialSymlinkCleanup(),
+	}
+
+	if strings.TrimSpace(bundleHostPath) != "" {
+		quoted := shellQuote(bundleHostPath)
+		parts = append(parts,
+			`if [ -f `+quoted+` ]; then `+
+				`(cat `+quoted+` | base64 -d 2>/dev/null || cat `+quoted+` | base64 -D 2>/dev/null) >/tmp/nexus-auth.tar.gz && `+
+				`tar -xzf /tmp/nexus-auth.tar.gz -C "$HOME" >/dev/null 2>&1 || true; `+
+				`rm -f /tmp/nexus-auth.tar.gz >/dev/null 2>&1 || true; fi`,
+		)
+	}
+
+	parts = append(parts,
 		"unset DOCKER_HOST DOCKER_CONTEXT",
 		"if ! (command -v docker >/dev/null 2>&1 && (docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1) && (docker compose version >/dev/null 2>&1 || docker-compose version >/dev/null 2>&1) && command -v make >/dev/null 2>&1); then sudo -n apt-get update; sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-v2 make curl ca-certificates gnupg nodejs npm || sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose make curl ca-certificates gnupg nodejs npm; sudo -n systemctl enable docker >/dev/null 2>&1 || true; sudo -n systemctl start docker >/dev/null 2>&1 || sudo -n service docker start >/dev/null 2>&1 || true; sudo -n usermod -aG docker $USER >/dev/null 2>&1 || true; fi",
 		"(docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1)",
 		"(docker compose version >/dev/null 2>&1 || docker-compose version >/dev/null 2>&1)",
 		"command -v make >/dev/null 2>&1",
-	}
+	)
 
-	pkgs := []string{"opencode-ai", "@openai/codex", "@anthropic-ai/claude-code"}
+	pkgs := agentprofile.AllInstallPkgs()
 	if len(pkgs) > 0 {
+		joined := strings.Join(pkgs, " ")
 		parts = append(parts,
-			"if command -v npm >/dev/null 2>&1; then cd /tmp >/dev/null 2>&1 || true; npm i -g "+strings.Join(pkgs, " ")+" >/dev/null 2>&1 || sudo -n npm i -g "+strings.Join(pkgs, " ")+" >/dev/null 2>&1 || true; fi",
+			"if command -v npm >/dev/null 2>&1; then cd /tmp >/dev/null 2>&1 || true; npm i -g "+joined+" >/dev/null 2>&1 || sudo -n npm i -g "+joined+" >/dev/null 2>&1 || true; fi",
 		)
 	}
-	parts = append(parts, "if command -v opencode >/dev/null 2>&1; then opencode --version >/dev/null 2>&1 || true; fi")
-	parts = append(parts, "if command -v codex >/dev/null 2>&1; then codex --version >/dev/null 2>&1 || true; fi")
-	parts = append(parts, "if command -v claude >/dev/null 2>&1; then claude --version >/dev/null 2>&1 || true; fi")
+
+	for _, bin := range agentprofile.AllBinaries() {
+		parts = append(parts, "if command -v "+bin+" >/dev/null 2>&1; then "+bin+" --version >/dev/null 2>&1 || true; fi")
+	}
 
 	hostHome = strings.TrimSpace(hostHome)
 	if hostHome != "" {
-		host := shellQuote(hostHome)
 		parts = append(parts,
-			"mkdir -p ~/.config",
-			"if [ -d "+host+"/.config/opencode ]; then ln -sfn "+host+"/.config/opencode ~/.config/opencode; fi",
-			"if [ -d "+host+"/.config/codex ]; then ln -sfn "+host+"/.config/codex ~/.config/codex; fi",
-			"if [ -d "+host+"/.codex ]; then ln -sfn "+host+"/.codex ~/.codex; fi",
-			"if [ -d "+host+"/.config/openai ]; then ln -sfn "+host+"/.config/openai ~/.config/openai; fi",
-			"if [ -d "+host+"/.claude ]; then ln -sfn "+host+"/.claude ~/.claude; fi",
+			"mkdir -p ~/.config ~/.local/share",
 			"if command -v npm >/dev/null 2>&1; then cd /tmp >/dev/null 2>&1 || true; NPM_BIN=$(npm bin -g 2>/dev/null || true); if [ -n \"$NPM_BIN\" ] && [ -d \"$NPM_BIN\" ]; then export PATH=\"$NPM_BIN:$PATH\"; fi; fi",
 		)
+		parts = append(parts, buildCredentialSymlinks(hostHome))
 	}
 
+	return strings.Join(parts, "; ")
+}
+
+func buildCredentialSymlinkCleanup() string {
+	dirs := make(map[string]struct{})
+	for _, cf := range agentprofile.AllCredFiles() {
+		dir := filepath.Dir(cf)
+		dirs[dir] = struct{}{}
+	}
+	var checks []string
+	for dir := range dirs {
+		checks = append(checks, `if [ -L "$HOME/`+dir+`" ]; then rm -f "$HOME/`+dir+`"; fi`)
+	}
+	return strings.Join(checks, "; ")
+}
+
+func buildCredentialSymlinks(hostHome string) string {
+	var parts []string
+	for _, cf := range agentprofile.AllCredFiles() {
+		dir := filepath.Dir(cf)
+		hostPath := shellQuote(filepath.Join(hostHome, cf))
+		parts = append(parts,
+			`mkdir -p "$HOME/`+dir+`"`,
+			`if [ -e `+hostPath+` ]; then ln -sfn `+hostPath+` "$HOME/`+cf+`"; fi`,
+		)
+	}
 	return strings.Join(parts, "; ")
 }
 
@@ -660,7 +689,7 @@ func (d *Driver) defaultInstanceName() string {
 	return "nexus-seatbelt"
 }
 
-func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance string) error {
+func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance, configBundle string) error {
 	instance = strings.TrimSpace(instance)
 	if instance == "" {
 		instance = d.defaultInstanceName()
@@ -675,7 +704,7 @@ func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance string
 		d.bootstrapped[instance] = true
 		return nil
 	}
-	if err := d.bootstrapInstance(ctx, instance, d.hostHome); err != nil {
+	if err := d.bootstrapInstance(ctx, instance, d.hostHome, configBundle); err != nil {
 		return err
 	}
 	d.bootstrapped[instance] = true

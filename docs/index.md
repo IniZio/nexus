@@ -29,5 +29,6 @@ nexus start <workspace-id>
 - Install and verify: `docs/tutorials/installation.md`
 - Learn CLI quickly: `docs/reference/cli.md`
 - Automate with JS/TS: `docs/reference/sdk.md`
+- Understand project internals: `docs/reference/project-structure.md`
 - Customize project behavior: `docs/reference/workspace-config.md`
 - Understand architecture: `docs/explanation/architecture.md`

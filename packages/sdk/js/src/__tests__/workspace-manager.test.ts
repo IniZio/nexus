@@ -54,7 +54,7 @@ describe('WorkspaceManager', () => {
   it('creates workspace and returns handle', async () => {
     await connectClient();
 
-    const promise = client.workspace.create({
+    const promise = client.workspaces.create({
       repo: '<internal-repo-url>',
       ref: 'main',
       workspaceName: 'alpha',
@@ -92,11 +92,7 @@ describe('WorkspaceManager', () => {
 
     const ws = await promise;
     expect(ws.id).toBe('ws-1');
-    expect(ws.exec).toBeDefined();
-    expect(ws.fs).toBeDefined();
-    expect(ws.spotlight).toBeDefined();
-
-    const fsReadPromise = ws.fs.readFile('/workspace/README.md', 'utf8');
+    const fsReadPromise = ws.readFile('/workspace/README.md', 'utf8');
     let fsReadData = mockWsInstance.send.mock.calls[1][0] as string;
     let fsReadReq = JSON.parse(fsReadData);
     expect(fsReadReq.method).toBe('fs.readFile');
@@ -115,7 +111,7 @@ describe('WorkspaceManager', () => {
 
     await expect(fsReadPromise).resolves.toBe('hello');
 
-    const execPromise = ws.exec.exec('pwd');
+    const execPromise = ws.exec('pwd');
     let sentData2 = mockWsInstance.send.mock.calls[2][0] as string;
     let request2 = JSON.parse(sentData2);
     expect(request2.method).toBe('exec');
@@ -257,7 +253,7 @@ describe('WorkspaceManager', () => {
   it('stops workspace and returns boolean', async () => {
     await connectClient();
 
-    const promise = client.workspace.stop('ws-1');
+    const promise = client.workspaces.stop('ws-1');
 
     const sentData = mockWsInstance.send.mock.calls[0][0] as string;
     const request = JSON.parse(sentData);
@@ -279,10 +275,80 @@ describe('WorkspaceManager', () => {
     expect(result).toBe(true);
   });
 
+  it('supports lifecycle directly on workspace handle', async () => {
+    await connectClient();
+
+    const openPromise = client.workspaces.open('ws-1');
+    let sentData = mockWsInstance.send.mock.calls[0][0] as string;
+    let request = JSON.parse(sentData);
+    expect(request.method).toBe('workspace.open');
+    expect(request.params).toEqual({ id: 'ws-1' });
+
+    emitEvent(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: {
+            workspace: {
+              id: 'ws-1',
+              repo: '<internal-repo-url>',
+              ref: 'main',
+              workspaceName: 'alpha',
+              agentProfile: 'default',
+              backend: 'firecracker',
+              state: 'created',
+              rootPath: '/remote/ws-1',
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+          },
+        })
+      )
+    );
+
+    const ws = await openPromise;
+
+    const stopPromise = ws.stop();
+    sentData = mockWsInstance.send.mock.calls[1][0] as string;
+    request = JSON.parse(sentData);
+    expect(request.method).toBe('workspace.stop');
+    expect(request.params).toEqual({ id: 'ws-1' });
+    emitEvent(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: { stopped: true },
+        })
+      )
+    );
+    await expect(stopPromise).resolves.toBe(true);
+
+    const removePromise = ws.remove();
+    sentData = mockWsInstance.send.mock.calls[2][0] as string;
+    request = JSON.parse(sentData);
+    expect(request.method).toBe('workspace.remove');
+    expect(request.params).toEqual({ id: 'ws-1' });
+    emitEvent(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: { removed: true },
+        })
+      )
+    );
+    await expect(removePromise).resolves.toBe(true);
+  });
+
   it('restores workspace and returns handle', async () => {
     await connectClient();
 
-    const promise = client.workspace.restore('ws-1');
+    const promise = client.workspaces.restore('ws-1');
 
     const sentData = mockWsInstance.send.mock.calls[0][0] as string;
     const request = JSON.parse(sentData);
@@ -322,7 +388,7 @@ describe('WorkspaceManager', () => {
   it('lists capabilities', async () => {
     await connectClient();
 
-    const promise = client.workspace.capabilities();
+    const promise = client.workspaces.capabilities();
 
     const sentData = mockWsInstance.send.mock.calls[0][0] as string;
     const request = JSON.parse(sentData);
@@ -352,7 +418,7 @@ describe('WorkspaceManager', () => {
   it('pauses and resumes workspace', async () => {
     await connectClient();
 
-    const pausePromise = client.workspace.pause('ws-1');
+    const pausePromise = client.workspaces.pause('ws-1');
     const pauseSent = mockWsInstance.send.mock.calls[0][0] as string;
     const pauseReq = JSON.parse(pauseSent);
     expect(pauseReq.method).toBe('workspace.pause');
@@ -370,7 +436,7 @@ describe('WorkspaceManager', () => {
     );
     await expect(pausePromise).resolves.toBe(true);
 
-    const resumePromise = client.workspace.resume('ws-1');
+    const resumePromise = client.workspaces.resume('ws-1');
     const resumeSent = mockWsInstance.send.mock.calls[1][0] as string;
     const resumeReq = JSON.parse(resumeSent);
     expect(resumeReq.method).toBe('workspace.resume');
@@ -392,7 +458,7 @@ describe('WorkspaceManager', () => {
   it('forks workspace and returns child handle', async () => {
     await connectClient();
 
-    const forkPromise = client.workspace.fork('ws-1', 'alpha-child', 'alpha-child');
+    const forkPromise = client.workspaces.fork('ws-1', 'alpha-child', 'alpha-child');
     const sent = mockWsInstance.send.mock.calls[0][0] as string;
     const req = JSON.parse(sent);
     expect(req.method).toBe('workspace.fork');
@@ -432,7 +498,7 @@ describe('WorkspaceManager', () => {
   it('lists workspace relations', async () => {
     await connectClient();
 
-    const relationsPromise = client.workspace.relations('repo-abc');
+    const relationsPromise = client.workspaces.relations('repo-abc');
     const sent = mockWsInstance.send.mock.calls[0][0] as string;
     const req = JSON.parse(sent);
     expect(req.method).toBe('workspace.relations.list');
@@ -477,7 +543,7 @@ describe('WorkspaceManager', () => {
   it('mints and revokes auth relay token', async () => {
     await connectClient();
 
-    const mintPromise = client.workspace.mintAuthRelay({
+    const mintPromise = client.workspaces.mintAuthRelay({
       workspaceId: 'ws-1',
       binding: 'claude',
       ttlSeconds: 120,
@@ -501,7 +567,7 @@ describe('WorkspaceManager', () => {
 
     await expect(mintPromise).resolves.toBe('relay-token-1');
 
-    const revokePromise = client.workspace.revokeAuthRelay('relay-token-1');
+    const revokePromise = client.workspaces.revokeAuthRelay('relay-token-1');
     const revokeSent = mockWsInstance.send.mock.calls[1][0] as string;
     const revokeReq = JSON.parse(revokeSent);
     expect(revokeReq.method).toBe('authrelay.revoke');

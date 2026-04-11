@@ -62,5 +62,6 @@ nexus fork --id <workspace-id> --name <child-name>
 - Installation details: `docs/tutorials/installation.md`
 - CLI reference: `docs/reference/cli.md`
 - SDK reference: `docs/reference/sdk.md`
+- Project structure: `docs/reference/project-structure.md`
 - Workspace config: `docs/reference/workspace-config.md`
 

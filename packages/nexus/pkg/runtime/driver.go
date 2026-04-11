@@ -2,7 +2,10 @@ package runtime
 
 import (
 	"context"
+	"errors"
 )
+
+var ErrWorkspaceMountFailed = errors.New("workspace mount not available")
 
 type Driver interface {
 	Backend() string
@@ -20,6 +23,7 @@ type CreateRequest struct {
 	WorkspaceID   string
 	WorkspaceName string
 	ProjectRoot   string
+	ConfigBundle  string
 	Options       map[string]string
 }
 
