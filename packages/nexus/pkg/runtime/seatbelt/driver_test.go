@@ -25,7 +25,7 @@ func TestCreateRequiresLimaForIsolation(t *testing.T) {
 		seatbeltLookPath = oldLookPath
 	})
 	seatbeltLookPath = func(file string) (string, error) { return "", errors.New("not found") }
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome string) error { return nil }
+	d.bootstrapInstance = func(ctx context.Context, instance string) error { return nil }
 
 	err := d.Create(context.Background(), runtime.CreateRequest{
 		WorkspaceID:   "ws-1",
@@ -46,14 +46,14 @@ func TestCreateRunsBootstrapAndMount(t *testing.T) {
 	calledBootstrap := false
 	calledPrepare := false
 
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome string) error {
+	d.bootstrapInstance = func(ctx context.Context, instance string) error {
 		calledBootstrap = true
 		if instance == "" {
 			t.Fatal("expected non-empty instance")
 		}
 		return nil
 	}
-	d.prepareWorkspaceFS = func(ctx context.Context, instance, localPath string) error {
+	d.prepareWorkspaceFS = func(ctx context.Context, instance, targetPath, localPath string) error {
 		calledPrepare = true
 		if localPath == "" {
 			t.Fatal("expected localPath")
@@ -84,10 +84,10 @@ func TestCreateFallsBackToDefaultInstanceWhenSeatbeltMountPrepareFails(t *testin
 	seatbeltLookPath = func(file string) (string, error) { return "/usr/local/bin/limactl", nil }
 
 	d.instanceEnv = "nexus-seatbelt"
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome string) error { return nil }
+	d.bootstrapInstance = func(ctx context.Context, instance string) error { return nil }
 
 	seen := make([]string, 0)
-	d.prepareWorkspaceFS = func(ctx context.Context, instance, localPath string) error {
+	d.prepareWorkspaceFS = func(ctx context.Context, instance, targetPath, localPath string) error {
 		seen = append(seen, instance)
 		if instance == "nexus-seatbelt" {
 			return errors.New("instance does not exist")
@@ -128,7 +128,7 @@ func TestCreateFailsWhenBootstrapFails(t *testing.T) {
 	t.Cleanup(func() { seatbeltLookPath = oldLookPath })
 	seatbeltLookPath = func(file string) (string, error) { return "/usr/local/bin/limactl", nil }
 
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome string) error {
+	d.bootstrapInstance = func(ctx context.Context, instance string) error {
 		return errors.New("bootstrap failed")
 	}
 
@@ -143,26 +143,28 @@ func TestCreateFailsWhenBootstrapFails(t *testing.T) {
 }
 
 func TestBuildSeatbeltBootstrapScriptIncludesIsolationAndForwarding(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("/Users/tester", hostCLIAvailability{Opencode: true, Codex: true, Claude: true})
+	script := buildSeatbeltBootstrapScript(hostCLIAvailability{Opencode: true, Codex: true, Claude: true})
 
 	for _, token := range []string{
 		"unset DOCKER_HOST DOCKER_CONTEXT",
 		"docker.io",
 		"docker-compose-v2",
 		"npm i -g opencode-ai @openai/codex @anthropic-ai/claude-code",
-		"ln -sfn '/Users/tester'/.config/opencode ~/.config/opencode",
-		"ln -sfn '/Users/tester'/.codex ~/.codex",
-		"ln -sfn '/Users/tester'/.claude ~/.claude",
-		"npm bin -g",
 	} {
 		if !strings.Contains(script, token) {
 			t.Fatalf("expected script to include %q", token)
 		}
 	}
+
+	for _, forbidden := range []string{"ln -sfn", "hostHome", "/.codex", "/.claude"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("script must not contain %q (symlinks removed for remote-first design)", forbidden)
+		}
+	}
 }
 
 func TestBuildSeatbeltBootstrapScriptInstallsAllManagedCLIs(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("/Users/tester", hostCLIAvailability{Opencode: true, Codex: false, Claude: true})
+	script := buildSeatbeltBootstrapScript(hostCLIAvailability{Opencode: true, Codex: false, Claude: true})
 	if !strings.Contains(script, "npm i -g opencode-ai @openai/codex @anthropic-ai/claude-code") {
 		t.Fatalf("expected managed CLI install command, got %q", script)
 	}
@@ -212,8 +214,8 @@ func TestShellOpenDefaultsToWorkspaceMountPath(t *testing.T) {
 		t.Fatal("spawnShell was not invoked")
 	}
 
-	if gotWorkdir != "/workspace" {
-		t.Fatalf("expected workdir /workspace, got %q", gotWorkdir)
+	if gotWorkdir != "/nexus/ws/ws-open" {
+		t.Fatalf("expected workdir /nexus/ws/ws-open, got %q", gotWorkdir)
 	}
 	if gotLocalPath != root {
 		t.Fatalf("expected localPath %q, got %q", root, gotLocalPath)
@@ -229,11 +231,11 @@ func TestStartLimaShellSkipsUnavailableCandidatesWhenPreparingWorkspaceMount(t *
 	t.Setenv("NEXUS_RUNTIME_SEATBELT_INSTANCE", "")
 
 	origEnsure := ensureLimaInstanceRunningFn
-	origPrepare := prepareWorkspaceMountFn
+	origPrepare := prepareWorkspacePathFn
 	origList := listLimaInstancesFn
 	defer func() {
 		ensureLimaInstanceRunningFn = origEnsure
-		prepareWorkspaceMountFn = origPrepare
+		prepareWorkspacePathFn = origPrepare
 		listLimaInstancesFn = origList
 	}()
 
@@ -248,7 +250,7 @@ func TestStartLimaShellSkipsUnavailableCandidatesWhenPreparingWorkspaceMount(t *
 	}
 
 	called := make([]string, 0)
-	prepareWorkspaceMountFn = func(_ context.Context, instance, localPath string) error {
+	prepareWorkspacePathFn = func(_ context.Context, instance, targetPath, localPath string) error {
 		called = append(called, instance+":"+localPath)
 		return nil
 	}
@@ -259,12 +261,12 @@ func TestStartLimaShellSkipsUnavailableCandidatesWhenPreparingWorkspaceMount(t *
 		return nil, errors.New("stop after observe")
 	}
 
-	_, _, err := startLimaShell(ctx, "nexus-seatbelt", "/workspace", "/tmp/repo", "bash")
+	_, _, err := startLimaShell(ctx, "nexus-seatbelt", "/nexus/ws/test-ws", "/tmp/repo", "bash")
 	if err == nil {
 		t.Fatal("expected startLimaShell to fail once pty start is stubbed")
 	}
 	if len(called) != 1 || called[0] != "default:/tmp/repo" {
-		t.Fatalf("expected prepareWorkspaceMount called only for default candidate, got %v", called)
+		t.Fatalf("expected prepareWorkspacePath called only for default candidate, got %v", called)
 	}
 }
 
