@@ -397,41 +397,88 @@ func runWorkspaceStartCommand(args []string) {
 	fmt.Printf("started workspace %s\n", args[0])
 }
 
-func runWorkspaceSSHCommand(args []string) {
+func runWorkspaceShellCommand(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: nexus ssh <id> [--shell <shell>] [--relay-token <token>] [--timeout <dur>] [--command <cmd>]")
+		fmt.Fprintln(os.Stderr, "usage: nexus shell <id> [--timeout <dur>]")
 		os.Exit(2)
 	}
 	workspaceID := strings.TrimSpace(args[0])
-	fs := flag.NewFlagSet("workspace ssh", flag.ExitOnError)
+	fs := flag.NewFlagSet("workspace shell", flag.ExitOnError)
 	fs.SetOutput(os.Stderr)
-	shell := fs.String("shell", "bash", "shell to launch in workspace")
-	relayToken := fs.String("relay-token", "", "auth relay token (from SDK authrelay.mint); also $NEXUS_AUTH_RELAY_TOKEN")
 	ptyTimeout := fs.Duration("timeout", 0, "max wall time waiting for PTY output and exit (e.g. 90s); 0 = no limit")
-	command := fs.String("command", "", "command to run before exit")
-	_ = fs.Parse(args[1:])
+	if err := fs.Parse(args[1:]); err != nil {
+		os.Exit(2)
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus shell <id> [--timeout <dur>]")
+		os.Exit(2)
+	}
+	token := strings.TrimSpace(os.Getenv("NEXUS_AUTH_RELAY_TOKEN"))
+	runWorkspacePTYSession("nexus shell", workspaceID, token, "bash", "", *ptyTimeout, true)
+}
 
+func runWorkspaceExecCommand(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus exec <id> [--timeout <dur>] -- <command> [args...]")
+		os.Exit(2)
+	}
+	workspaceID := strings.TrimSpace(args[0])
+	rest := args[1:]
+	dash := -1
+	for i, a := range rest {
+		if a == "--" {
+			dash = i
+			break
+		}
+	}
+	if dash == -1 {
+		fmt.Fprintln(os.Stderr, "usage: nexus exec <id> [--timeout <dur>] -- <command> [args...]")
+		os.Exit(2)
+	}
+	preDash := rest[:dash]
+	postDash := rest[dash+1:]
+	if len(postDash) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus exec <id> [--timeout <dur>] -- <command> [args...]")
+		os.Exit(2)
+	}
+	ptyTimeout := time.Duration(0)
+	for i := 0; i < len(preDash); {
+		if preDash[i] == "--timeout" && i+1 < len(preDash) {
+			d, err := time.ParseDuration(preDash[i+1])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			ptyTimeout = d
+			i += 2
+			continue
+		}
+		fmt.Fprintln(os.Stderr, "usage: nexus exec <id> [--timeout <dur>] -- <command> [args...]")
+		os.Exit(2)
+	}
+	cmdLine := formatCommand(postDash[0], postDash[1:])
+	payload := "cd /workspace >/dev/null 2>&1 || true\n" + cmdLine + "\nexit\n"
+	token := strings.TrimSpace(os.Getenv("NEXUS_AUTH_RELAY_TOKEN"))
+	runWorkspacePTYSession("nexus exec", workspaceID, token, "bash", payload, ptyTimeout, false)
+}
+
+func runWorkspacePTYSession(label, workspaceID, relayToken, shell, commandPayload string, ptyTimeout time.Duration, interactiveStdin bool) {
 	conn, err := ensureDaemon()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus ssh: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s: %v\n", label, err)
 		os.Exit(1)
 	}
 	defer conn.Close()
 
-	token := strings.TrimSpace(*relayToken)
-	if token == "" {
-		token = strings.TrimSpace(os.Getenv("NEXUS_AUTH_RELAY_TOKEN"))
-	}
-
 	openParams := map[string]any{
 		"workspaceId": workspaceID,
-		"shell":       strings.TrimSpace(*shell),
+		"shell":       strings.TrimSpace(shell),
 		"workdir":     "/workspace",
 		"cols":        120,
 		"rows":        40,
 	}
-	if token != "" {
-		openParams["authRelayToken"] = token
+	if relayToken != "" {
+		openParams["authRelayToken"] = relayToken
 	}
 
 	openID := fmt.Sprintf("open-%d", time.Now().UnixNano())
@@ -441,7 +488,7 @@ func runWorkspaceSSHCommand(args []string) {
 		Method:  "pty.open",
 		Params:  openParams,
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "nexus ssh: pty.open send failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s: pty.open send failed: %v\n", label, err)
 		os.Exit(1)
 	}
 
@@ -449,21 +496,21 @@ func runWorkspaceSSHCommand(args []string) {
 	for {
 		var msg rpcResponse
 		if err := conn.ReadJSON(&msg); err != nil {
-			fmt.Fprintf(os.Stderr, "nexus ssh: pty.open recv failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "%s: pty.open recv failed: %v\n", label, err)
 			os.Exit(1)
 		}
 		if msg.ID != openID {
 			continue
 		}
 		if msg.Error != nil {
-			fmt.Fprintf(os.Stderr, "nexus ssh: pty.open rpc error %d: %s\n", msg.Error.Code, msg.Error.Message)
+			fmt.Fprintf(os.Stderr, "%s: pty.open rpc error %d: %s\n", label, msg.Error.Code, msg.Error.Message)
 			os.Exit(1)
 		}
 		var open struct {
 			SessionID string `json:"sessionId"`
 		}
 		if err := json.Unmarshal(msg.Result, &open); err != nil {
-			fmt.Fprintf(os.Stderr, "nexus ssh: invalid pty.open result: %v\n", err)
+			fmt.Fprintf(os.Stderr, "%s: invalid pty.open result: %v\n", label, err)
 			os.Exit(1)
 		}
 		sessionID = strings.TrimSpace(open.SessionID)
@@ -481,13 +528,12 @@ func runWorkspaceSSHCommand(args []string) {
 		})
 	}
 
-	if strings.TrimSpace(*command) != "" {
-		payload := "cd /workspace >/dev/null 2>&1 || true\n" + *command + "\nexit\n"
-		if err := send("pty.write", map[string]any{"sessionId": sessionID, "data": payload}); err != nil {
-			fmt.Fprintf(os.Stderr, "nexus ssh: command send failed: %v\n", err)
+	if strings.TrimSpace(commandPayload) != "" {
+		if err := send("pty.write", map[string]any{"sessionId": sessionID, "data": commandPayload}); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: command send failed: %v\n", label, err)
 			os.Exit(1)
 		}
-	} else {
+	} else if interactiveStdin {
 		go func() {
 			reader := bufio.NewReader(os.Stdin)
 			buf := make([]byte, 1024)
@@ -510,13 +556,13 @@ func runWorkspaceSSHCommand(args []string) {
 	}
 
 	var sessionDeadline time.Time
-	if *ptyTimeout > 0 {
-		sessionDeadline = time.Now().Add(*ptyTimeout)
+	if ptyTimeout > 0 {
+		sessionDeadline = time.Now().Add(ptyTimeout)
 	}
 
 	for {
 		if !sessionDeadline.IsZero() && time.Now().After(sessionDeadline) {
-			fmt.Fprintf(os.Stderr, "nexus ssh: timed out after %v (no pty.exit)\n", *ptyTimeout)
+			fmt.Fprintf(os.Stderr, "%s: timed out after %v (no pty.exit)\n", label, ptyTimeout)
 			_ = send("pty.close", map[string]any{"sessionId": sessionID})
 			os.Exit(124)
 		}
@@ -530,16 +576,16 @@ func runWorkspaceSSHCommand(args []string) {
 		if err := conn.ReadJSON(&msg); err != nil {
 			var netErr net.Error
 			if !sessionDeadline.IsZero() && errors.As(err, &netErr) && netErr.Timeout() {
-				fmt.Fprintf(os.Stderr, "nexus ssh: timed out after %v\n", *ptyTimeout)
+				fmt.Fprintf(os.Stderr, "%s: timed out after %v\n", label, ptyTimeout)
 				_ = send("pty.close", map[string]any{"sessionId": sessionID})
 				os.Exit(124)
 			}
 			if !sessionDeadline.IsZero() && time.Now().After(sessionDeadline) {
-				fmt.Fprintf(os.Stderr, "nexus ssh: timed out after %v\n", *ptyTimeout)
+				fmt.Fprintf(os.Stderr, "%s: timed out after %v\n", label, ptyTimeout)
 				_ = send("pty.close", map[string]any{"sessionId": sessionID})
 				os.Exit(124)
 			}
-			fmt.Fprintf(os.Stderr, "nexus ssh: read failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "%s: read failed: %v\n", label, err)
 			os.Exit(1)
 		}
 

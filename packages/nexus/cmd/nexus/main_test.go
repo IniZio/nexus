@@ -1930,7 +1930,7 @@ func TestRunExecReexecsWithSGKVMOnKVMPermissionError(t *testing.T) {
 	if !called {
 		t.Fatal("expected sg kvm reexec to be attempted")
 	}
-	if len(gotArgs) < 6 || gotArgs[0] != "exec" || gotArgs[2] != "--timeout" || gotArgs[4] != "--" {
+	if len(gotArgs) < 6 || gotArgs[0] != "run" || gotArgs[2] != "--timeout" || gotArgs[4] != "--" {
 		t.Fatalf("unexpected reexec args: %v", gotArgs)
 	}
 }

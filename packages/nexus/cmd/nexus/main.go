@@ -61,8 +61,11 @@ func main() {
 	case "init":
 		runInitCommand(args)
 		return
+	case "run":
+		runRunCommand(args)
+		return
 	case "exec":
-		runExecCommand(args)
+		runWorkspaceExecCommand(args)
 		return
 	case "list":
 		runWorkspaceListCommand(args)
@@ -82,8 +85,8 @@ func main() {
 	case "fork":
 		runWorkspaceForkCommand(args)
 		return
-	case "ssh":
-		runWorkspaceSSHCommand(args)
+	case "shell":
+		runWorkspaceShellCommand(args)
 		return
 	case "tunnel":
 		runWorkspaceTunnelCommand(args)
@@ -128,9 +131,11 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  nexus doctor [--report-json path]")
 	fmt.Fprintln(os.Stderr, "  nexus init [project-root] [--force]")
-	fmt.Fprintln(os.Stderr, "  nexus exec [path] [--timeout 10m] -- <command> [args...]")
+	fmt.Fprintln(os.Stderr, "  nexus run [path] [--timeout 10m] -- <command> [args...]")
 	fmt.Fprintln(os.Stderr, "  nexus fork <id> <name> [--ref <ref>]")
-	fmt.Fprintln(os.Stderr, "  nexus <list|create|start|stop|remove|ssh|tunnel>")
+	fmt.Fprintln(os.Stderr, "  nexus shell <id> [--timeout <dur>]")
+	fmt.Fprintln(os.Stderr, "  nexus exec <id> [--timeout <dur>] -- <command> [args...]")
+	fmt.Fprintln(os.Stderr, "  nexus <list|create|start|stop|remove|shell|exec|tunnel>")
 }
 
 func runInitCommand(args []string) {
@@ -165,7 +170,7 @@ func runInitCommand(args []string) {
 	}
 }
 
-func runExecCommand(args []string) {
+func runRunCommand(args []string) {
 	dash := -1
 	for i, a := range args {
 		if a == "--" {
@@ -201,7 +206,7 @@ func runExecCommand(args []string) {
 		i++
 	}
 	if len(pos) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: nexus exec [path] [--timeout 10m] -- <command> [args...]")
+		fmt.Fprintln(os.Stderr, "usage: nexus run [path] [--timeout 10m] -- <command> [args...]")
 		os.Exit(2)
 	}
 	projectRoot := "."
@@ -306,7 +311,7 @@ func runExec(opts execOptions) error {
 		if shouldReexecExecWithKVMGroup(execCtx.backend, err) {
 			cmdPath := setupCommandPath()
 			reexecArgs := make([]string, 0, len(opts.args)+8)
-			reexecArgs = append(reexecArgs, "exec", opts.projectRoot, "--timeout", opts.timeout.String(), "--", opts.command)
+			reexecArgs = append(reexecArgs, "run", opts.projectRoot, "--timeout", opts.timeout.String(), "--", opts.command)
 			reexecArgs = append(reexecArgs, opts.args...)
 			if reexecErr := execKVMGroupReexecRunner(cmdPath, reexecArgs); reexecErr == nil {
 				return nil
