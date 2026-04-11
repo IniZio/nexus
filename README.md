@@ -34,8 +34,8 @@ nexus start <workspace-id>
 
 | Topic | Path |
 |--------|------|
-| Hub | `docs/index.md` |
-| Install | `docs/tutorials/installation.md` |
+| Hub | `docs/README.md` |
+| Install | `docs/guides/installation.md` |
 | CLI | `docs/reference/cli.md` |
 | SDK | `docs/reference/sdk.md` |
 | Project structure | `docs/reference/project-structure.md` |

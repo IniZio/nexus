@@ -35,11 +35,11 @@ Implementation: `packages/nexus/pkg/runtime/authbundle/bundle.go`.
 
 1. Set `NEXUS_ENDPOINT` / `NEXUS_TOKEN` (or your auth).
 2. Prefer **`nexus create` from a runner that already has the right tool configs** in `$HOME`, or supply `hostAuthBundle` from automation that implements the rules above (e.g. `authbundle.BuildFromHome()` in Go).
-3. Size CI timeouts for **cold Firecracker** (first start can take several minutes)—see [Operations](../tutorials/operations.md).
+3. Size CI timeouts for **cold Firecracker** (first start can take several minutes)—see [Operations](../guides/operations.md).
 
 ## Related
 
 - [CLI](cli.md) — `nexus create`, `nexus doctor` and backends
 - [SDK](sdk.md) — `WorkspaceCreateSpec`
-- [Operations](../tutorials/operations.md) — doctor latency, backends, paths
+- [Operations](../guides/operations.md) — doctor latency, backends, paths
 - Repository [AGENTS.md](https://github.com/inizio/nexus/blob/main/AGENTS.md) — remote-first constraints

@@ -6,13 +6,12 @@ Nexus keeps project integration intentionally small: one directory, clear roles.
 
 ```text
 docs/
-├── index.md
-├── explanation/
+├── README.md
+├── guides/
 ├── superpowers/
 │   └── plans/
-├── tutorials/
 ├── reference/
-└── dev/
+└── roadmap.md
 
 packages/
 ├── e2e/
@@ -70,4 +69,4 @@ nexus tunnel <workspace-id>
 - Workspace config: `docs/reference/workspace-config.md`
 - CLI: `docs/reference/cli.md`
 - SDK: `docs/reference/sdk.md`
-- Architecture: `docs/explanation/architecture.md`
+- Architecture: `CONTRIBUTING.md` (repository root)

@@ -9,18 +9,16 @@ repo_name: inizio/nexus
 repo_url: https://github.com/inizio/nexus
 
 nav:
-  - Home: index.md
-  - Tutorials:
-    - Installation: tutorials/installation.md
-    - Operations: tutorials/operations.md
+  - Home: README.md
+  - Guides:
+    - Installation: guides/installation.md
+    - Operations: guides/operations.md
   - Reference:
     - CLI: reference/cli.md
     - SDK: reference/sdk.md
     - Host auth bundle: reference/host-auth-bundle.md
     - Workspace Config: reference/workspace-config.md
-  - Development:
-    - Contributing: dev/contributing.md
-    - Roadmap: dev/roadmap.md
+  - Roadmap: roadmap.md
 
 theme:
   name: material

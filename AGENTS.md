@@ -62,16 +62,14 @@ Complete work fully; verify builds, tests, types, and lint; provide evidence; us
 
 ## Documentation
 
-User-facing docs live under `docs/`: `explanation/`, `reference/`, `superpowers/`, `tutorials/`, and `dev/` (contributing, roadmap). Only document implemented behavior. Do not document removed module surfaces as current capabilities.
+User-facing docs live under `docs/`: `guides/`, `reference/`, `superpowers/`, and `roadmap.md`. Contributing guidance is in the repository root `CONTRIBUTING.md`. Only document implemented behavior. Do not document removed module surfaces as current capabilities.
 
 ```text
 docs/
-├── index.md
-├── explanation/
-├── reference/   (cli, sdk, workspace-config, host-auth-bundle)
-├── superpowers/
-├── tutorials/
-└── dev/         (contributing, roadmap)
+├── README.md
+├── guides/
+├── reference/
+└── roadmap.md
 ```
 
 ## Project scaffold
