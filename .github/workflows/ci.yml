@@ -110,7 +110,7 @@ jobs:
   # macOS: GitHub-hosted arm64 runners cannot use Apple Hypervisor Framework inside the VM (HV_UNSUPPORTED);
   # see https://github.com/abiosoft/colima/issues/970 — use the hosted Intel image (nested virt) or slower QEMU/lima
   # workarounds on arm64. We use macos-15-intel (x86_64) for Lima + Firecracker strict E2E without self-hosted runners.
-  sdk-runtime-e2e:
+  flows-e2e:
     name: SDK Runtime E2E (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -154,7 +154,7 @@ jobs:
           fi
 
       - name: Build nexus CLI, runtime tools, and seed nexus init
-        run: ./scripts/ci/sdk-runtime-e2e-setup.sh
+        run: ./scripts/ci/flows-e2e-setup.sh
 
       - name: Reset conflicting Lima instances on macOS
         if: runner.os == 'macOS'
@@ -174,5 +174,5 @@ jobs:
           if [[ "${RUNNER_OS}" == "macOS" ]]; then
             export NEXUS_RUNTIME_SEATBELT_INSTANCE=nexus-seatbelt
           fi
-                pnpm --filter @nexus/e2e-sdk-runtime run pretest:ci
-                pnpm --filter @nexus/e2e-sdk-runtime exec jest --runInBand --ci --forceExit -- src/cases/runtime-selection.e2e.test.ts
+                pnpm --filter @nexus/e2e-flows run pretest:ci
+                pnpm --filter @nexus/e2e-flows exec jest --runInBand --ci --forceExit -- src/cases/runtime-selection.e2e.test.ts

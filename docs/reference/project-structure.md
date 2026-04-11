@@ -16,7 +16,7 @@ docs/
 
 packages/
 ├── e2e/
-│   └── sdk-runtime/
+│   └── flows/
 │       └── src/
 │           ├── cases/
 │           ├── harness/
@@ -27,7 +27,6 @@ packages/
     └── js/         # TypeScript SDK (@nexus/sdk)
 ```
 
-The E2E package directory is `packages/e2e/sdk-runtime` today; layering docs refer to it as `flows` (see `docs/explanation/architecture.md`).
 
 ## Minimal Structure
 

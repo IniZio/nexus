@@ -59,7 +59,7 @@ auth/               - bundle
 types/              - domain-split type files
 ```
 
-**`packages/e2e/flows` (formerly `sdk-runtime`)**
+**`packages/e2e/flows` **
 
 ```
 harness/            - daemon, repo, session, assertions, fixtures

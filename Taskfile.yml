@@ -107,7 +107,7 @@ tasks:
       - task: ci:go-fix
       - task: ci:coverage
       - task: ci:core
-      - task: ci:sdk-runtime-e2e
+      - task: ci:flows-e2e
 
   ci:core:
     desc: Run Core CI (linux) equivalent
@@ -124,14 +124,14 @@ tasks:
     cmds:
       - ./scripts/ci/coverage.sh
 
-  ci:sdk-runtime-e2e:
+  ci:flows-e2e:
     desc: Run runtime backend selection E2E package (strict when CI=true; set NEXUS_E2E_STRICT_RUNTIME=0 to allow soft skips locally)
     env:
       CI: true
     cmds:
       - bash -lc 'set -euo pipefail; if [[ -e /dev/kvm ]]; then sudo chmod 666 /dev/kvm || true; fi'
-      - ./scripts/ci/sdk-runtime-e2e-setup.sh
-      - bash -lc 'set -euo pipefail; set -a; source "$(git rev-parse --show-toplevel)/.nexus-e2e-env.sh"; set +a; pnpm --filter @nexus/e2e-sdk-runtime test:ci -- src/cases/runtime-selection.e2e.test.ts'
+      - ./scripts/ci/flows-e2e-setup.sh
+      - bash -lc 'set -euo pipefail; set -a; source "$(git rev-parse --show-toplevel)/.nexus-e2e-env.sh"; set +a; pnpm --filter @nexus/e2e-flows test:ci -- src/cases/runtime-selection.e2e.test.ts'
 
   clean:
     desc: Clean core build artifacts

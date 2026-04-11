@@ -14,12 +14,12 @@ write_env_sh() {
       printf 'export NEXUS_FIRECRACKER_ROOTFS=%q\n' "/var/lib/nexus/rootfs.ext4"
     fi
   } >"$f"
-  echo "sdk-runtime e2e: wrote $f"
+  echo "flows e2e: wrote $f"
 }
 
 build_nexus_cli() {
   local out="${1:?}/nexus"
-  echo "sdk-runtime e2e: building nexus CLI -> $out"
+  echo "flows e2e: building nexus CLI -> $out"
   (cd "$NEXUS_MOD" && go build -o "$out" ./cmd/nexus)
   export NEXUS_CLI_PATH="$out"
   if [ -n "${GITHUB_ENV:-}" ]; then
@@ -42,7 +42,7 @@ run_seed_nexus_init() {
   )
   local abs
   abs="$(cd "$seed/repo" && pwd)"
-  echo "sdk-runtime e2e: nexus init --project-root $abs (runtime tools via preflight autoinstall when needed)"
+  echo "flows e2e: nexus init --project-root $abs (runtime tools via preflight autoinstall when needed)"
   if [[ "$(uname -s)" == "Linux" ]]; then
     sudo -E env PATH="$PATH" "$NEXUS_CLI_PATH" init --project-root "$abs" --force
     sudo rm -rf "$seed"
@@ -58,7 +58,7 @@ main() {
   build_nexus_cli "$e2e_root"
   run_seed_nexus_init
   write_env_sh "${GITHUB_WORKSPACE:-$ROOT}/.nexus-e2e-env.sh"
-  echo "sdk-runtime e2e: prereqs ready (NEXUS_CLI_PATH=$NEXUS_CLI_PATH)"
+  echo "flows e2e: prereqs ready (NEXUS_CLI_PATH=$NEXUS_CLI_PATH)"
 }
 
 main "$@"

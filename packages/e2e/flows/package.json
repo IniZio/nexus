@@ -1,5 +1,5 @@
 {
-  "name": "@nexus/e2e-sdk-runtime",
+  "name": "@nexus/e2e-flows",
   "version": "0.0.0",
   "private": true,
   "scripts": {

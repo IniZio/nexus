@@ -30,7 +30,7 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
-  packages/e2e/sdk-runtime:
+  packages/e2e/flows:
     dependencies:
       '@nexus/sdk':
         specifier: workspace:*

@@ -8,7 +8,7 @@ const runningInCI = (): boolean => process.env.CI === 'true';
 
 const harnessIt = hasDaemonEnv() || runningInCI() || e2eStrictRuntime() ? it : it.skip;
 
-describe('sdk-runtime e2e harness', () => {
+describe('flows e2e harness', () => {
   harnessIt('connects to daemon using @nexus/sdk', async () => {
     const env = getDaemonEnvConfig();
     if (env) {

@@ -6,7 +6,7 @@ type MatrixShape = {
 };
 
 describe('ui/cli parity map', () => {
-  it('all parity matrix test IDs are implemented by sdk-runtime cases', () => {
+  it('all parity matrix test IDs are implemented by flows cases', () => {
     const implemented = new Set<string>(implementedCaseIds);
 
     const parsed = matrix as MatrixShape;

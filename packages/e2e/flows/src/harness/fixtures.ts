@@ -18,7 +18,7 @@ async function fixtureRootBase(): Promise<string> {
   return baseDir;
 }
 
-export async function createTempFixture(prefix = 'nexus-e2e-sdk-runtime'): Promise<TempFixture> {
+export async function createTempFixture(prefix = 'nexus-e2e-flows'): Promise<TempFixture> {
   const baseDir = await fixtureRootBase();
   const rootDir = await fs.mkdtemp(path.join(baseDir, `${prefix}-`));
   return { rootDir };
