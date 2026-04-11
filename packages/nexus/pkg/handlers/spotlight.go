@@ -39,7 +39,6 @@ type SpotlightCloseResult struct {
 
 type SpotlightApplyDefaultsParams struct {
 	WorkspaceID string `json:"workspaceId"`
-	RootPath    string `json:"rootPath,omitempty"`
 }
 
 type SpotlightApplyDefaultsResult struct {
@@ -48,7 +47,6 @@ type SpotlightApplyDefaultsResult struct {
 
 type SpotlightApplyComposePortsParams struct {
 	WorkspaceID string `json:"workspaceId"`
-	RootPath    string `json:"rootPath,omitempty"`
 }
 
 type SpotlightApplyComposePortsError struct {
@@ -103,29 +101,29 @@ func HandleSpotlightClose(_ context.Context, params json.RawMessage, mgr *spotli
 	return &SpotlightCloseResult{Closed: true}, nil
 }
 
-func HandleSpotlightApplyDefaults(ctx context.Context, params json.RawMessage, mgr *spotlight.Manager) (*SpotlightApplyDefaultsResult, *rpckit.RPCError) {
+func HandleSpotlightApplyDefaults(ctx context.Context, params json.RawMessage, rootPath string, mgr *spotlight.Manager) (*SpotlightApplyDefaultsResult, *rpckit.RPCError) {
 	_ = ctx
 	_ = mgr
 	var p SpotlightApplyDefaultsParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, rpckit.ErrInvalidParams
 	}
-	if p.WorkspaceID == "" || p.RootPath == "" {
+	if p.WorkspaceID == "" || rootPath == "" {
 		return nil, rpckit.ErrInvalidParams
 	}
 	return &SpotlightApplyDefaultsResult{Forwards: []*spotlight.Forward{}}, nil
 }
 
-func HandleSpotlightApplyComposePorts(ctx context.Context, params json.RawMessage, mgr *spotlight.Manager) (*SpotlightApplyComposePortsResult, *rpckit.RPCError) {
+func HandleSpotlightApplyComposePorts(ctx context.Context, params json.RawMessage, rootPath string, mgr *spotlight.Manager) (*SpotlightApplyComposePortsResult, *rpckit.RPCError) {
 	var p SpotlightApplyComposePortsParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, rpckit.ErrInvalidParams
 	}
-	if p.WorkspaceID == "" || p.RootPath == "" {
+	if p.WorkspaceID == "" || rootPath == "" {
 		return nil, rpckit.ErrInvalidParams
 	}
 
-	published, err := discoverPublishedPorts(ctx, p.RootPath)
+	published, err := discoverPublishedPorts(ctx, rootPath)
 	if err != nil {
 		if errors.Is(err, compose.ErrComposeFileNotFound) {
 			return &SpotlightApplyComposePortsResult{

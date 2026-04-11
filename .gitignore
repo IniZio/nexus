@@ -1,4 +1,4 @@
-# E2E local env (scripts/ci/sdk-runtime-e2e-setup.sh)
+# E2E local env (scripts/ci/flows-e2e-setup.sh)
 .nexus-e2e-env.sh
 
 # Binaries

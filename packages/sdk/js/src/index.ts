@@ -5,3 +5,4 @@ export type { TunnelHandle, TunnelListResult, TunnelApplyDefaultsResult, TunnelA
 export { buildConfigBundle } from './bundle';
 
 export * from './types';
+export type { RPCClient } from './rpc/types';

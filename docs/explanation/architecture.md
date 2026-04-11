@@ -13,7 +13,7 @@ Nexus keeps architecture intentionally small: daemon + SDK + project conventions
   - Authenticated client transport
   - Workspace lifecycle APIs
   - Scoped workspace handles for `fs`, `exec`, `spotlight`, `git`, and `service`
-- Project conventions (`.nexus/` + compose files)
+- Project conventions (repository-root `.nexus/` + compose files)
   - Lifecycle scripts and doctor probes/checks
   - Minimal config and file-driven defaults
 
@@ -29,6 +29,43 @@ Nexus keeps architecture intentionally small: daemon + SDK + project conventions
 - Most projects run with `nexus init` and default conventions.
 - Runtime/backend selection is automatic.
 - Port forwarding can be convention-driven from compose files.
+
+## Layer Boundaries
+
+Target modular layout (incremental migration):
+
+**`packages/nexus`**
+
+```
+server/transport/   - websocket framing, sessions
+server/rpc/         - method registry, dispatch
+server/pty/         - PTY open/write/resize/close
+workspace/          - lifecycle, readiness, relations, create flows
+runtime/selection/  - single entrypoint for backend selection policy
+runtime/drivers/    - backend-specific drivers + shared helpers
+storage/            - persistence (SQLite) and record access
+git/                - worktree, fork, sync operations
+auth/               - relay, bundle, profile mapping
+```
+
+**`packages/sdk/js`**
+
+```
+rpc/                - connection core, request map, notifications (e.g. rpc/connection.ts)
+transport/          - node-websocket and browser-websocket adapters
+workspace/          - manager, handle, lifecycle
+operations/         - exec, fs, pty, spotlight
+auth/               - bundle
+types/              - domain-split type files (e.g. types/workspace.ts)
+```
+
+**`packages/e2e/flows/`**
+
+```
+harness/            - daemon/, repo/, session/, assertions/
+cases/              - test suites organized by flow type
+parity/             - matrix and contracts
+```
 
 ## Related Docs
 

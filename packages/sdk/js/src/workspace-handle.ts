@@ -1,46 +1,30 @@
 import { ExecOperations } from './exec';
 import { FSOperations } from './fs';
-import {
-  TunnelOperations,
-  type TunnelHandle,
-  type TunnelListResult,
-  type TunnelApplyDefaultsResult,
-  type TunnelApplyComposePortsResult,
-} from './spotlight';
+import { TunnelOperations } from './spotlight';
+import type { RPCClient } from './rpc/types';
 import {
   ExecOptions,
-  SpotlightExposeOptions,
   WorkspaceInfo,
   WorkspaceReadyCheck,
   WorkspaceReadyResult,
   WorkspaceRecord,
 } from './types';
 
-export interface RPCClient {
-  request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
-}
-
-interface TunnelClient {
-  start(options: SpotlightExposeOptions): Promise<TunnelHandle>;
-  list(): Promise<TunnelListResult>;
-  stop(id: string): Promise<boolean>;
-  applyDefaults(): Promise<TunnelApplyDefaultsResult>;
-  applyComposePorts(): Promise<TunnelApplyComposePortsResult>;
-}
+export type { RPCClient } from './rpc/types';
 
 export class WorkspaceHandle {
   private client: RPCClient;
   private record: WorkspaceRecord;
   private readonly execOps: ExecOperations;
   private readonly fsOps: FSOperations;
-  public readonly tunnel: TunnelClient;
+  public readonly tunnel: TunnelOperations;
 
   constructor(client: RPCClient, record: WorkspaceRecord) {
     this.client = client;
     this.record = record;
     const scopedParams = { workspaceId: record.id };
-    this.execOps = new ExecOperations(client as never, scopedParams);
-    this.fsOps = new FSOperations(client as never, scopedParams);
+    this.execOps = new ExecOperations(client, scopedParams);
+    this.fsOps = new FSOperations(client, scopedParams);
     this.tunnel = new TunnelOperations(client, scopedParams);
   }
 

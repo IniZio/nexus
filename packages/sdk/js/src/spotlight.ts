@@ -3,7 +3,7 @@ import {
   SpotlightExposeOptions,
   SpotlightForward,
 } from './types';
-import type { RPCClient } from './workspace-handle';
+import type { RPCClient } from './rpc/types';
 
 export type TunnelHandle = SpotlightForward & {
   stop: () => Promise<boolean>;

@@ -7,16 +7,12 @@ import {
   PTYResizeResult,
   PTYWriteResult,
 } from './types';
-
-type NotificationCapableClient = {
-  request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
-  onNotification(method: string, callback: (params: unknown) => void): () => void;
-};
+import type { RPCClient } from './rpc/types';
 
 export class PTYOperations {
-  private client: NotificationCapableClient;
+  private client: RPCClient;
 
-  constructor(client: NotificationCapableClient) {
+  constructor(client: RPCClient) {
     this.client = client;
   }
 

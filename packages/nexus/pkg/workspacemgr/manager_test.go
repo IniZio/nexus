@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/inizio/nexus/packages/nexus/pkg/git/worktree"
 )
 
 func TestNodeStorePathForRoot_UsesTempScopedDBForTmpSymlinkPath(t *testing.T) {
@@ -681,7 +683,7 @@ func TestManager_ForkParallelWorkspacesRemainIndependent(t *testing.T) {
 func TestResolveForkBasePath_PrefersNestedParentUnderRepoRoot(t *testing.T) {
 	repoRoot := t.TempDir()
 	parentName := "alpha"
-	nestedParent := filepath.Join(repoRoot, ".worktrees", sanitizeWorktreeName(parentName))
+	nestedParent := filepath.Join(repoRoot, ".worktrees", worktree.SanitizeWorktreeName(parentName))
 	if err := os.MkdirAll(nestedParent, 0o755); err != nil {
 		t.Fatalf("mkdir nested parent: %v", err)
 	}
@@ -695,7 +697,11 @@ func TestResolveForkBasePath_PrefersNestedParentUnderRepoRoot(t *testing.T) {
 		LocalWorktreePath: repoRoot,
 	}
 
-	got := resolveForkBasePath(parent)
+	got := worktree.ResolveForkBasePath(worktree.ForkParentInput{
+		Repo:              parent.Repo,
+		WorkspaceName:     parent.WorkspaceName,
+		LocalWorktreePath: parent.LocalWorktreePath,
+	})
 	if got != nestedParent {
 		t.Fatalf("expected nested parent %q, got %q", nestedParent, got)
 	}
@@ -704,7 +710,7 @@ func TestResolveForkBasePath_PrefersNestedParentUnderRepoRoot(t *testing.T) {
 func TestResolveForkBasePath_FallsBackToInferredPathWithoutLocalWorktree(t *testing.T) {
 	repoRoot := t.TempDir()
 	parentName := "alpha"
-	inferred := filepath.Join(repoRoot, ".worktrees", sanitizeWorktreeName(parentName))
+	inferred := filepath.Join(repoRoot, ".worktrees", worktree.SanitizeWorktreeName(parentName))
 	if err := os.MkdirAll(inferred, 0o755); err != nil {
 		t.Fatalf("mkdir inferred parent: %v", err)
 	}
@@ -714,7 +720,11 @@ func TestResolveForkBasePath_FallsBackToInferredPathWithoutLocalWorktree(t *test
 		WorkspaceName: parentName,
 	}
 
-	got := resolveForkBasePath(parent)
+	got := worktree.ResolveForkBasePath(worktree.ForkParentInput{
+		Repo:              parent.Repo,
+		WorkspaceName:     parent.WorkspaceName,
+		LocalWorktreePath: parent.LocalWorktreePath,
+	})
 	if got != inferred {
 		t.Fatalf("expected inferred path %q, got %q", inferred, got)
 	}
@@ -722,7 +732,7 @@ func TestResolveForkBasePath_FallsBackToInferredPathWithoutLocalWorktree(t *test
 
 func TestForkChildrenDir_UsesRepoRootForNestedParent(t *testing.T) {
 	parent := filepath.Join("/tmp/repo", ".worktrees", "alpha")
-	got := forkChildrenDir(parent)
+	got := worktree.ForkChildrenDir(parent)
 	want := filepath.Join("/tmp/repo", ".worktrees")
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)

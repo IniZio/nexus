@@ -13,4 +13,4 @@ echo "strict runtime=${NEXUS_E2E_STRICT_RUNTIME}"
 echo "relay override mode enabled when NEXUS_E2E_AUTH_* variables are provided"
 
 cd "$ROOT"
-pnpm --filter @nexus/e2e-sdk-runtime test -- --runTestsByPath src/cases/tools-auth-live.e2e.test.ts
+pnpm --filter @nexus/e2e-flows test -- --runTestsByPath src/cases/auth/tools-auth-live.e2e.test.ts

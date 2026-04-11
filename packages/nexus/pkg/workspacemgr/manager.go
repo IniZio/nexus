@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
+	"github.com/inizio/nexus/packages/nexus/pkg/git/worktree"
 	"github.com/inizio/nexus/packages/nexus/pkg/store"
 )
 
@@ -153,7 +153,7 @@ func (m *Manager) Create(_ context.Context, spec CreateSpec) (*Workspace, error)
 
 	localWorktreePath := ""
 	if isLikelyLocalPath(spec.Repo) {
-		worktreePath, wtErr := createWorktree(spec.Repo, spec.Ref, spec.WorkspaceName)
+		worktreePath, wtErr := worktree.Create(spec.Repo, spec.Ref, spec.WorkspaceName)
 		if wtErr != nil {
 			_ = os.RemoveAll(rootPath)
 			return nil, wtErr
@@ -193,7 +193,7 @@ func (m *Manager) Create(_ context.Context, spec CreateSpec) (*Workspace, error)
 		delete(m.workspaces, id)
 		m.mu.Unlock()
 		_ = os.RemoveAll(rootPath)
-		cleanupCreatedWorktree(spec.Repo, localWorktreePath)
+		worktree.CleanupCreatedWorktree(spec.Repo, localWorktreePath)
 		return nil, fmt.Errorf("persist workspace: %w", err)
 	}
 
@@ -416,9 +416,13 @@ func (m *Manager) Fork(parentID string, childWorkspaceName string, childRef stri
 	}
 
 	childLocalWorktreePath := ""
-	parentForkBase := resolveForkBasePath(parent)
+	parentForkBase := worktree.ResolveForkBasePath(worktree.ForkParentInput{
+		Repo:              parent.Repo,
+		WorkspaceName:     parent.WorkspaceName,
+		LocalWorktreePath: parent.LocalWorktreePath,
+	})
 	if parentForkBase != "" {
-		worktreePath, wtErr := createForkWorktree(parentForkBase, childRef, childWorkspaceName)
+		worktreePath, wtErr := worktree.CreateFork(parentForkBase, childRef, childWorkspaceName)
 		if wtErr != nil {
 			_ = os.RemoveAll(childRootPath)
 			return nil, wtErr
@@ -572,225 +576,3 @@ func isLikelyRemoteRepo(repo string) bool {
 	return false
 }
 
-func createWorktree(repoPath, ref, workspaceName string) (string, error) {
-	base := filepath.Clean(repoPath)
-	if workspaceName == "" {
-		workspaceName = "workspace"
-	}
-	safeName := sanitizeWorktreeName(workspaceName)
-	worktreesDir := filepath.Join(base, ".worktrees")
-	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
-		return "", fmt.Errorf("create .worktrees dir: %w", err)
-	}
-	worktreePath := filepath.Join(worktreesDir, safeName)
-	worktreePath = uniqueWorktreePath(worktreePath)
-
-	branch := strings.TrimSpace(ref)
-	if branch == "" {
-		branch = safeName
-	}
-	branch = uniqueBranchName(base, branch)
-
-	cmd := exec.Command("git", "-C", base, "worktree", "add", "-b", branch, worktreePath, "HEAD")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		for retry := 0; retry < 5 && err != nil; retry++ {
-			if strings.Contains(string(out), "already exists") {
-				worktreePath = uniqueWorktreePath(worktreePath)
-				branch = uniqueBranchName(base, branch)
-				cmd = exec.Command("git", "-C", base, "worktree", "add", "-b", branch, worktreePath, "HEAD")
-				out, err = cmd.CombinedOutput()
-				continue
-			}
-			break
-		}
-		if err != nil {
-			return "", fmt.Errorf("git worktree add failed: %s", strings.TrimSpace(string(out)))
-		}
-	}
-	return worktreePath, nil
-}
-
-func createForkWorktree(parentWorktreePath, ref, childWorkspaceName string) (string, error) {
-	parentPath := filepath.Clean(parentWorktreePath)
-	worktreesDir := forkChildrenDir(parentPath)
-	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
-		return "", fmt.Errorf("create nested .worktrees dir: %w", err)
-	}
-	safeName := sanitizeWorktreeName(childWorkspaceName)
-	childPath := filepath.Join(worktreesDir, safeName)
-	childPath = uniqueWorktreePath(childPath)
-
-	branch := strings.TrimSpace(ref)
-	if branch == "" {
-		branch = safeName
-	}
-	branch = uniqueBranchName(parentPath, branch)
-
-	cmd := exec.Command("git", "-C", parentPath, "worktree", "add", "-b", branch, childPath, "HEAD")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		for retry := 0; retry < 5 && err != nil; retry++ {
-			if strings.Contains(string(out), "already exists") {
-				childPath = uniqueWorktreePath(childPath)
-				branch = uniqueBranchName(parentPath, branch)
-				cmd = exec.Command("git", "-C", parentPath, "worktree", "add", "-b", branch, childPath, "HEAD")
-				out, err = cmd.CombinedOutput()
-				continue
-			}
-			break
-		}
-		if err != nil {
-			return "", fmt.Errorf("git nested worktree add failed: %s", strings.TrimSpace(string(out)))
-		}
-	}
-	return childPath, nil
-}
-
-func forkChildrenDir(parentPath string) string {
-	marker := string(filepath.Separator) + ".worktrees" + string(filepath.Separator)
-	if idx := strings.Index(parentPath, marker); idx >= 0 {
-		repoRoot := parentPath[:idx]
-		return filepath.Join(repoRoot, ".worktrees")
-	}
-	return filepath.Join(parentPath, ".worktrees")
-}
-
-func resolveForkBasePath(parent *Workspace) string {
-	if parent == nil {
-		return ""
-	}
-
-	if localPath := strings.TrimSpace(parent.LocalWorktreePath); localPath != "" {
-		candidate := filepath.Clean(localPath)
-		if !looksLikeWorktree(candidate) {
-			candidate = ""
-		}
-		if candidate != "" {
-			if looksLikeRepoRoot(candidate) {
-				nested := filepath.Join(candidate, ".worktrees", sanitizeWorktreeName(parent.WorkspaceName))
-				if pathExists(nested) {
-					return nested
-				}
-			}
-			return candidate
-		}
-	}
-
-	if isLikelyLocalPath(parent.Repo) {
-		inferred := filepath.Join(filepath.Clean(parent.Repo), ".worktrees", sanitizeWorktreeName(parent.WorkspaceName))
-		if pathExists(inferred) {
-			return inferred
-		}
-	}
-
-	return ""
-}
-
-func looksLikeWorktree(path string) bool {
-	if path == "" {
-		return false
-	}
-	if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
-		return true
-	}
-	return false
-}
-
-func looksLikeRepoRoot(path string) bool {
-	if path == "" {
-		return false
-	}
-	gitDir := filepath.Join(path, ".git")
-	if _, err := os.Stat(gitDir); err == nil {
-		return true
-	}
-	return false
-}
-
-func pathExists(path string) bool {
-	if path == "" {
-		return false
-	}
-	_, err := os.Stat(path)
-	return err == nil
-}
-
-func sanitizeWorktreeName(name string) string {
-	n := strings.TrimSpace(strings.ToLower(name))
-	if n == "" {
-		return "workspace"
-	}
-	n = strings.ReplaceAll(n, " ", "-")
-	var b strings.Builder
-	for _, r := range n {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
-			b.WriteRune(r)
-		} else {
-			b.WriteRune('-')
-		}
-	}
-	out := strings.Trim(b.String(), "-.")
-	if out == "" {
-		return "workspace"
-	}
-	return out
-}
-
-func uniqueBranchName(repoPath, desired string) string {
-	branch := desired
-	if !branchExists(repoPath, branch) {
-		return branch
-	}
-	for i := 2; i < 500; i++ {
-		candidate := fmt.Sprintf("%s-%d", desired, i)
-		if !branchExists(repoPath, candidate) {
-			return candidate
-		}
-	}
-	return fmt.Sprintf("%s-%d", desired, time.Now().Unix())
-}
-
-func branchExists(repoPath, branch string) bool {
-	cmd := exec.Command("git", "-C", repoPath, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
-	return cmd.Run() == nil
-}
-
-func uniqueWorktreePath(desired string) string {
-	if _, err := os.Stat(desired); os.IsNotExist(err) {
-		return desired
-	}
-	for i := 2; i < 500; i++ {
-		candidate := fmt.Sprintf("%s-%d", desired, i)
-		if _, err := os.Stat(candidate); os.IsNotExist(err) {
-			return candidate
-		}
-	}
-	return fmt.Sprintf("%s-%d", desired, time.Now().Unix())
-}
-
-func cleanupCreatedWorktree(repoPath, worktreePath string) {
-	if !isSafeWorktreeCleanupPath(repoPath, worktreePath) {
-		return
-	}
-
-	cleanRepo := filepath.Clean(repoPath)
-	cleanWorktree := filepath.Clean(worktreePath)
-	cmd := exec.Command("git", "-C", cleanRepo, "worktree", "remove", "--force", cleanWorktree)
-	_ = cmd.Run()
-	_ = os.RemoveAll(cleanWorktree)
-}
-
-func isSafeWorktreeCleanupPath(repoPath, worktreePath string) bool {
-	if strings.TrimSpace(repoPath) == "" || strings.TrimSpace(worktreePath) == "" {
-		return false
-	}
-	cleanRepo := filepath.Clean(repoPath)
-	cleanWorktree := filepath.Clean(worktreePath)
-	worktreesRoot := filepath.Join(cleanRepo, ".worktrees")
-	prefix := worktreesRoot + string(filepath.Separator)
-	if cleanWorktree == worktreesRoot || !strings.HasPrefix(cleanWorktree+string(filepath.Separator), prefix) {
-		return false
-	}
-	return true
-}

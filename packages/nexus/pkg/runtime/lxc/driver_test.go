@@ -1,6 +1,10 @@
 package lxc
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/inizio/nexus/packages/nexus/pkg/runtime/drivers/shared"
+)
 
 func TestSanitizeLimaShellChunk_FiltersKnownMuxNoise(t *testing.T) {
 	noiseLines := []string{
@@ -9,7 +13,7 @@ func TestSanitizeLimaShellChunk_FiltersKnownMuxNoise(t *testing.T) {
 	}
 
 	for _, line := range noiseLines {
-		if got := sanitizeLimaShellChunk(line); got != "" {
+		if got := shared.SanitizeLimaShellChunk(line); got != "" {
 			t.Fatalf("expected noise line to be dropped, got %q", got)
 		}
 	}
@@ -19,7 +23,7 @@ func TestFilterCandidatesByAvailability_PrefersConfiguredExistingOrder(t *testin
 	candidates := []string{"nexus-lxc", "default"}
 	available := []string{"default", "nexus-firecracker"}
 
-	got := filterCandidatesByAvailability(candidates, available)
+	got := shared.FilterCandidatesSortedFallback(candidates, available)
 	if len(got) != 1 || got[0] != "default" {
 		t.Fatalf("unexpected filtered candidates: %v", got)
 	}
@@ -29,7 +33,7 @@ func TestFilterCandidatesByAvailability_FallsBackToAvailableWhenNoConfiguredMatc
 	candidates := []string{"nexus-lxc"}
 	available := []string{"default", "nexus-firecracker"}
 
-	got := filterCandidatesByAvailability(candidates, available)
+	got := shared.FilterCandidatesSortedFallback(candidates, available)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 fallback candidates, got %v", got)
 	}

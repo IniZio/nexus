@@ -1,23 +1,20 @@
+import { RpcTransportCore } from './rpc/connection';
 import {
   WorkspaceClientConfig,
   ConnectionState,
-  RPCRequest,
-  RPCResponse,
   DisconnectReason,
 } from './types';
 import { WorkspaceManager } from './workspace-manager';
 import { PTYOperations } from './pty';
-
-type WSLike = {
-  readyState: number;
-  send: (data: string) => void;
-  close: (code?: number, reason?: string) => void;
-  addEventListener?: (event: string, handler: (...args: unknown[]) => void) => void;
-  on?: (event: string, handler: (...args: unknown[]) => void) => void;
-};
+import { BrowserWebSocketTransport } from './transport/browser-websocket';
 
 export class BrowserWorkspaceClient {
-  private ws: WSLike | null = null;
+  private transport: BrowserWebSocketTransport | null = null;
+  private core = new RpcTransportCore({
+    onParseError: (err) => console.warn('[nexus/browser] RPC parse error:', err),
+    onReconnectScheduled: ({ delay, attempt }) =>
+      console.debug(`[nexus/browser] reconnect in ${delay}ms (attempt ${attempt})`),
+  });
   private config: {
     endpoint: string;
     workspaceId?: string;
@@ -27,13 +24,8 @@ export class BrowserWorkspaceClient {
     maxReconnectAttempts: number;
   };
   private state: ConnectionState = 'disconnected';
-  private reconnectAttempts = 0;
-  private requestMap: Map<string, { resolve: (value: unknown) => void; reject: (reason: Error) => void }> = new Map();
   private disconnectCallbacks: Array<() => void> = [];
-  private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private reconnectEnabled = true;
-  private requestId = 0;
-  private notificationCallbacks: Map<string, Array<(params: unknown) => void>> = new Map();
 
   public readonly ssh: PTYOperations;
   public readonly workspaces: WorkspaceManager;
@@ -75,44 +67,27 @@ export class BrowserWorkspaceClient {
         }
         url.searchParams.set('token', this.config.token);
 
-        const WSCtor = (globalThis as { WebSocket?: new (url: string) => WSLike }).WebSocket;
-        if (!WSCtor) {
-          throw new Error('WebSocket is not available in this runtime');
-        }
-        this.ws = new WSCtor(url.toString());
-
-        const onOpen = () => {
+        const t = new BrowserWebSocketTransport();
+        t.onOpen = () => {
           this.state = 'connected';
-          this.reconnectAttempts = 0;
+          this.core.resetReconnectAttempts();
           resolve();
         };
-        const onMessage = (evt: { data?: unknown } | string) => {
-          const raw = typeof evt === 'string' ? evt : (evt as { data?: unknown }).data;
-          this.handleMessage(this.coerceMessage(raw));
+        t.onMessage = (data) => {
+          this.core.handleMessage(data);
         };
-        const onClose = (evt: { code?: number; reason?: string } | number, reasonMaybe?: string) => {
-          const code = typeof evt === 'number' ? evt : evt.code ?? 1000;
-          const reason = typeof evt === 'number' ? reasonMaybe ?? '' : evt.reason ?? '';
+        t.onClose = (code, reason) => {
           this.handleDisconnect({ code, reason });
         };
-        const onError = (error: unknown) => {
+        t.onError = (error) => {
           if (this.state === 'connecting') {
-            reject(error instanceof Error ? error : new Error('WebSocket connection error'));
+            reject(error);
           }
         };
-
-        if (this.ws.addEventListener) {
-          this.ws.addEventListener('open', onOpen);
-          this.ws.addEventListener('message', onMessage as (...args: unknown[]) => void);
-          this.ws.addEventListener('close', onClose as (...args: unknown[]) => void);
-          this.ws.addEventListener('error', onError as (...args: unknown[]) => void);
-        } else if (this.ws.on) {
-          this.ws.on('open', onOpen);
-          this.ws.on('message', onMessage as (...args: unknown[]) => void);
-          this.ws.on('close', onClose as (...args: unknown[]) => void);
-          this.ws.on('error', onError);
-        }
+        this.transport = t;
+        t.connect(url.toString());
       } catch (error) {
+        this.transport = null;
         this.state = 'disconnected';
         reject(error);
       }
@@ -121,17 +96,13 @@ export class BrowserWorkspaceClient {
 
   async disconnect(): Promise<void> {
     this.reconnectEnabled = false;
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout);
-      this.reconnectTimeout = null;
-    }
-    if (this.ws) {
-      this.ws.close(1000, 'Client disconnect');
-      this.ws = null;
+    this.core.clearReconnectTimer();
+    if (this.transport) {
+      this.transport.disconnect();
+      this.transport = null;
     }
     this.state = 'disconnected';
-    this.requestMap.forEach(({ reject }) => reject(new Error('Connection closed')));
-    this.requestMap.clear();
+    this.core.rejectAllPending('Connection closed');
   }
 
   async [Symbol.asyncDispose](): Promise<void> {
@@ -143,110 +114,33 @@ export class BrowserWorkspaceClient {
   }
 
   onNotification(method: string, callback: (params: unknown) => void): () => void {
-    const existing = this.notificationCallbacks.get(method) ?? [];
-    existing.push(callback);
-    this.notificationCallbacks.set(method, existing);
-    return () => {
-      const callbacks = this.notificationCallbacks.get(method) ?? [];
-      const next = callbacks.filter((cb) => cb !== callback);
-      if (next.length === 0) {
-        this.notificationCallbacks.delete(method);
-        return;
-      }
-      this.notificationCallbacks.set(method, next);
-    };
+    return this.core.onNotification(method, callback);
   }
 
   async request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
-    if (!this.ws || this.ws.readyState !== 1) {
-      throw new Error('Not connected to workspace');
-    }
-
-    const id = this.generateRequestId();
-    const request: RPCRequest = {
-      jsonrpc: '2.0',
-      id,
+    return this.core.request<T>(
       method,
       params,
-    };
-
-    return new Promise<T>((resolve, reject) => {
-      this.requestMap.set(id, { resolve: resolve as (value: unknown) => void, reject });
-      try {
-        this.ws!.send(JSON.stringify(request));
-      } catch (error) {
-        this.requestMap.delete(id);
-        reject(error instanceof Error ? error : new Error('failed to send request'));
-      }
-    });
-  }
-
-  private coerceMessage(raw: unknown): string {
-    if (typeof raw === 'string') {
-      return raw;
-    }
-    if (raw && typeof raw === 'object' && 'toString' in raw) {
-      return String(raw);
-    }
-    return '';
-  }
-
-  private generateRequestId(): string {
-    this.requestId++;
-    return `req-${Date.now()}-${this.requestId}`;
-  }
-
-  private handleMessage(data: string): void {
-    try {
-      const response: RPCResponse = JSON.parse(data);
-      if (!response.id) {
-        if (response.method) {
-          const callbacks = this.notificationCallbacks.get(response.method) ?? [];
-          for (const cb of callbacks) {
-            cb(response.params);
-          }
-        }
-        return;
-      }
-      const pending = this.requestMap.get(response.id);
-      if (!pending) {
-        return;
-      }
-      this.requestMap.delete(response.id);
-      if (response.error) {
-        pending.reject(new Error(response.error.message));
-      } else {
-        pending.resolve(response.result);
-      }
-    } catch {
-      // ignore malformed messages
-    }
+      (data) => this.transport!.send(data),
+      () => this.transport !== null && this.transport.isOpen(),
+      'Not connected to workspace'
+    );
   }
 
   private handleDisconnect(reason: DisconnectReason): void {
-    this.ws = null;
+    this.transport = null;
     this.state = 'disconnected';
-    this.requestMap.forEach(({ reject }) => reject(new Error(`Connection closed: ${reason.reason}`)));
-    this.requestMap.clear();
+
+    this.core.handleDisconnect(reason);
+
     this.disconnectCallbacks.forEach((callback) => callback());
     if (this.reconnectEnabled && this.config.reconnect) {
-      this.attemptReconnect();
+      this.state = 'reconnecting';
+      this.core.scheduleReconnect(() => this.connect(), {
+        enabled: true,
+        maxAttempts: this.config.maxReconnectAttempts,
+        baseDelay: this.config.reconnectDelay,
+      });
     }
-  }
-
-  private attemptReconnect(): void {
-    if (this.reconnectAttempts >= this.config.maxReconnectAttempts) {
-      return;
-    }
-    this.state = 'reconnecting';
-    this.reconnectAttempts++;
-    const delay = Math.min(this.config.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), 30000);
-    this.reconnectTimeout = setTimeout(async () => {
-      try {
-        await this.connect();
-      } catch {
-        // handled by retry flow
-      }
-    }, delay);
   }
 }

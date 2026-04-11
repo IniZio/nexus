@@ -2,10 +2,43 @@
 
 Nexus keeps project integration intentionally small: one directory, clear roles.
 
-## Minimal Structure
+## Repository layout (high level)
 
 ```text
-.nexus/
+docs/
+├── index.md
+├── explanation/
+├── superpowers/
+│   └── plans/
+├── tutorials/
+├── reference/
+└── dev/
+
+packages/
+├── e2e/
+│   └── flows/
+│       └── src/
+│           ├── cases/
+│           │   └── parity/
+│           ├── harness/
+│           │   ├── daemon/
+│           │   ├── repo/
+│           │   ├── session/
+│           │   └── assertions/
+│           └── parity/
+├── nexus/          # Go daemon
+├── nexus-ui/       # Web UI
+└── sdk/
+    └── js/         # TypeScript SDK (@nexus/sdk)
+```
+
+
+## Minimal Structure
+
+Canonical project scaffold lives at the **repository root** as `.nexus/` (used by `nexus init` and `nexus doctor`). Do not duplicate it under package directories.
+
+```text
+.nexus/                 # at repo root only
   workspace.json
   lifecycles/
     setup.sh
