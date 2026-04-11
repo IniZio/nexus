@@ -175,4 +175,4 @@ jobs:
             export NEXUS_RUNTIME_SEATBELT_INSTANCE=nexus-seatbelt
           fi
                 pnpm --filter @nexus/e2e-flows run pretest:ci
-                pnpm --filter @nexus/e2e-flows exec jest --runInBand --ci --forceExit -- src/cases/runtime-selection.e2e.test.ts
+                pnpm --filter @nexus/e2e-flows exec jest --runInBand --ci --forceExit -- src/cases/runtime/runtime-selection.e2e.test.ts

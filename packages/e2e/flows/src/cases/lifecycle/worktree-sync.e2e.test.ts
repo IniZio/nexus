@@ -1,9 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createGitFixture, cleanupFixture, runCmd } from '../harness/fixtures';
-import { startSession } from '../harness/session';
-import { onWorkspaceCreateRuntimeError } from '../harness/assertions';
-import { worktreeSyncCaseIds } from './test-ids';
+import { createGitFixture, cleanupFixture, runCmd } from '../../harness/fixtures';
+import { startSession } from '../../harness/session';
+import { onWorkspaceCreateRuntimeError } from '../../harness/assertions';
+import { worktreeSyncCaseIds } from '../test-ids';
 
 export const CASE_TEST_IDS = worktreeSyncCaseIds;
 

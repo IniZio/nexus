@@ -131,7 +131,7 @@ tasks:
     cmds:
       - bash -lc 'set -euo pipefail; if [[ -e /dev/kvm ]]; then sudo chmod 666 /dev/kvm || true; fi'
       - ./scripts/ci/flows-e2e-setup.sh
-      - bash -lc 'set -euo pipefail; set -a; source "$(git rev-parse --show-toplevel)/.nexus-e2e-env.sh"; set +a; pnpm --filter @nexus/e2e-flows test:ci -- src/cases/runtime-selection.e2e.test.ts'
+      - bash -lc 'set -euo pipefail; set -a; source "$(git rev-parse --show-toplevel)/.nexus-e2e-env.sh"; set +a; pnpm --filter @nexus/e2e-flows test:ci -- src/cases/runtime/runtime-selection.e2e.test.ts'
 
   clean:
     desc: Clean core build artifacts

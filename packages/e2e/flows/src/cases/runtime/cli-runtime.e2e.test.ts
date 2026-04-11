@@ -3,10 +3,10 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { createGitFixture, cleanupFixture } from '../harness/fixtures';
-import { startManagedDaemon } from '../harness/daemon';
-import { cliRuntimeCaseIds } from './test-ids';
-import { e2eStrictRuntime, isRuntimeUnavailable, skipTest } from '../harness/assertions';
+import { createGitFixture, cleanupFixture } from '../../harness/fixtures';
+import { findRepoRoot, startManagedDaemon } from '../../harness/daemon';
+import { cliRuntimeCaseIds } from '../test-ids';
+import { e2eStrictRuntime, isRuntimeUnavailable, skipTest } from '../../harness/assertions';
 
 export const CASE_TEST_IDS = cliRuntimeCaseIds;
 
@@ -277,24 +277,6 @@ async function freePort(): Promise<number> {
     });
     server.once('error', reject);
   });
-}
-
-async function findRepoRoot(): Promise<string> {
-  let current = path.resolve(process.cwd());
-  for (let i = 0; i < 12; i += 1) {
-    const marker = path.join(current, 'pnpm-workspace.yaml');
-    try {
-      await fs.access(marker);
-      return current;
-    } catch {
-    }
-    const parent = path.dirname(current);
-    if (parent === current) {
-      break;
-    }
-    current = parent;
-  }
-  throw new Error('unable to locate repo root (pnpm-workspace.yaml)');
 }
 
 function sleep(ms: number): Promise<void> {

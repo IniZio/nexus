@@ -1,8 +1,8 @@
 import { WorkspaceHandle } from '@nexus/sdk';
-import { createGitFixture, cleanupFixture } from '../harness/fixtures';
-import { startSession } from '../harness/session';
-import { assertCapabilityOrSkip, onWorkspaceCreateRuntimeError } from '../harness/assertions';
-import { runtimeSelectionCaseIds } from './test-ids';
+import { createGitFixture, cleanupFixture } from '../../harness/fixtures';
+import { startSession } from '../../harness/session';
+import { assertCapabilityOrSkip, onWorkspaceCreateRuntimeError } from '../../harness/assertions';
+import { runtimeSelectionCaseIds } from '../test-ids';
 
 export const CASE_TEST_IDS = runtimeSelectionCaseIds;
 

@@ -1,9 +1,9 @@
 import { WorkspaceHandle, buildConfigBundle } from '@nexus/sdk';
-import { createGitFixture, cleanupFixture } from '../harness/fixtures';
-import { rpcRequest } from '../harness/rpc';
-import { startSession, type DaemonSession } from '../harness/session';
-import { onDaemonStartError, onWorkspaceCreateRuntimeError } from '../harness/assertions';
-import { liveToolsAuthCaseIds } from './test-ids';
+import { createGitFixture, cleanupFixture } from '../../harness/fixtures';
+import { rpcRequest } from '../../harness/rpc';
+import { startSession, type DaemonSession } from '../../harness/session';
+import { onDaemonStartError, onWorkspaceCreateRuntimeError } from '../../harness/assertions';
+import { liveToolsAuthCaseIds } from '../test-ids';
 
 export const CASE_TEST_IDS = liveToolsAuthCaseIds;
 

@@ -1,14 +1,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createGitFixture, cleanupFixture } from '../harness/fixtures';
-import { startSession } from '../harness/session';
+import { createGitFixture, cleanupFixture } from '../../harness/fixtures';
+import { startSession } from '../../harness/session';
 import {
   assertCapabilityOrSkip,
   e2eStrictRuntime,
   onWorkspaceCreateRuntimeError,
   skipTest,
-} from '../harness/assertions';
-import { spotlightComposeCaseIds } from './test-ids';
+} from '../../harness/assertions';
+import { spotlightComposeCaseIds } from '../test-ids';
 
 export const CASE_TEST_IDS = spotlightComposeCaseIds;
 
