@@ -48,6 +48,10 @@ func (f *fakeManager) Get(workspaceID string) (*Instance, error) {
 	return nil, errors.New("not found")
 }
 
+func (f *fakeManager) GrowWorkspace(_ context.Context, _ string, _ int64) error {
+	return f.err
+}
+
 func TestFirecrackerDriver_Backend(t *testing.T) {
 	fakeMgr := &fakeManager{}
 	d := NewDriver(nil, WithManager(fakeMgr))
@@ -323,9 +327,9 @@ func TestBuildHostAuthBundleIncludesKnownConfigPaths(t *testing.T) {
 		t.Fatalf("write opencode session: %v", err)
 	}
 
-	bundle, err := buildHostAuthBundle()
+	bundle, err := BuildHostAuthBundleFromHome()
 	if err != nil {
-		t.Fatalf("buildHostAuthBundle: %v", err)
+		t.Fatalf("BuildHostAuthBundleFromHome: %v", err)
 	}
 	if strings.TrimSpace(bundle) == "" {
 		t.Fatal("expected non-empty auth bundle")
@@ -367,5 +371,113 @@ func TestBuildHostAuthBundleIncludesKnownConfigPaths(t *testing.T) {
 	}
 	if !strings.Contains(joined, ".claude") {
 		t.Fatalf("expected claude path in archive, got %q", joined)
+	}
+}
+
+func TestResolveHostAuthBundle_RejectsInvalidBase64(t *testing.T) {
+	_, err := resolveHostAuthBundle(map[string]string{"host_auth_bundle": "not-valid-base64!!!"})
+	if err == nil {
+		t.Fatal("expected error for invalid base64")
+	}
+}
+
+func TestResolveHostAuthBundle_ClientBundleContainsCodexConfig(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	payload := []byte(`{"codex":true}`)
+	hdr := &tar.Header{Name: ".config/codex/auth.json", Mode: 0o644, Size: int64(len(payload))}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatalf("header: %v", err)
+	}
+	if _, err := tw.Write(payload); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tw close: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gz close: %v", err)
+	}
+	b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
+
+	got, err := resolveHostAuthBundle(map[string]string{"host_auth_bundle": b64})
+	if err != nil {
+		t.Fatalf("resolveHostAuthBundle: %v", err)
+	}
+	if got != b64 {
+		t.Fatalf("expected bundle passthrough")
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(got)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	gzr, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("gzip: %v", err)
+	}
+	defer gzr.Close()
+	tr := tar.NewReader(gzr)
+	found := false
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatalf("tar: %v", err)
+		}
+		if h.Name == ".config/codex/auth.json" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected .config/codex/auth.json in client bundle")
+	}
+}
+
+func TestResolveHostAuthBundle_DaemonWhenFlag(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("set HOME: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Unsetenv("HOME") })
+
+	if err := os.MkdirAll(filepath.Join(home, ".config", "codex"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "codex", "x.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := resolveHostAuthBundle(map[string]string{"use_daemon_host_auth_bundle": "true"})
+	if err != nil {
+		t.Fatalf("resolveHostAuthBundle: %v", err)
+	}
+	if strings.TrimSpace(got) == "" {
+		t.Fatal("expected non-empty bundle from daemon home")
+	}
+}
+
+func TestResolveHostAuthBundle_EmptyWithoutClientOrDaemonFlag(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("set HOME: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Unsetenv("HOME") })
+	if err := os.MkdirAll(filepath.Join(home, ".config", "codex"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "codex", "x.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := resolveHostAuthBundle(map[string]string{})
+	if err != nil {
+		t.Fatalf("resolveHostAuthBundle: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("expected empty bundle without daemon flag, got len %d", len(got))
 	}
 }

@@ -1,24 +1,18 @@
 package firecracker
 
 import (
-	"archive/tar"
-	"bytes"
-	"compress/gzip"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"net"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
+	"github.com/inizio/nexus/packages/nexus/pkg/runtime/authbundle"
 	"github.com/mdlayher/vsock"
 )
 
@@ -33,6 +27,7 @@ type ManagerInterface interface {
 	Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error)
 	Stop(ctx context.Context, workspaceID string) error
 	Get(workspaceID string) (*Instance, error)
+	GrowWorkspace(ctx context.Context, workspaceID string, newSizeBytes int64) error
 }
 
 type Driver struct {
@@ -139,12 +134,12 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	d.mu.Unlock()
 
 	hostCLI := detectHostCLIAvailability()
-	authBundle, err := buildHostAuthBundle()
-	if err != nil {
-		return fmt.Errorf("prepare host auth bundle: %w", err)
-	}
 	if shouldBootstrapGuestTooling(req.Options) {
-		if err := d.bootstrapGuestToolingAndAuth(ctx, req.WorkspaceID, hostCLI, authBundle); err != nil {
+		bundle, err := authbundle.ResolveFromOptions(req.Options)
+		if err != nil {
+			return fmt.Errorf("prepare host auth bundle: %w", err)
+		}
+		if err := d.bootstrapGuestToolingAndAuth(ctx, req.WorkspaceID, hostCLI, bundle); err != nil {
 			return err
 		}
 	}
@@ -278,111 +273,53 @@ func buildGuestCLIBootstrapCommand(hostCLI hostCLIAvailability) string {
 	return strings.Join(parts, "; ")
 }
 
-func buildHostAuthBundle() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return "", nil
-	}
-
-	paths := []string{
-		filepath.Join(home, ".config", "opencode"),
-		filepath.Join(home, ".config", "codex"),
-		filepath.Join(home, ".codex"),
-		filepath.Join(home, ".config", "openai"),
-		filepath.Join(home, ".claude"),
-	}
-
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gz)
-
-	added := 0
-	for _, path := range paths {
-		if err := addPathToTar(tw, home, path); err != nil {
-			_ = tw.Close()
-			_ = gz.Close()
-			return "", err
-		}
-		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
-			added++
-		}
-	}
-
-	if err := tw.Close(); err != nil {
-		_ = gz.Close()
-		return "", err
-	}
-	if err := gz.Close(); err != nil {
-		return "", err
-	}
-
-	if added == 0 || buf.Len() == 0 {
-		return "", nil
-	}
-
-	const maxBundleBytes = 4 * 1024 * 1024
-	if buf.Len() > maxBundleBytes {
-		return "", nil
-	}
-
-	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+func resolveHostAuthBundle(opts map[string]string) (string, error) {
+	return authbundle.ResolveFromOptions(opts)
 }
 
-func addPathToTar(tw *tar.Writer, rootHome, src string) error {
-	_, err := os.Lstat(src)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
+func truthyOption(raw string) bool {
+	return authbundle.TruthyOption(raw)
+}
+
+func BuildHostAuthBundleFromHome() (string, error) {
+	return authbundle.BuildFromHome()
+}
+
+// GrowWorkspace expands the workspace disk image and runs resize2fs in the guest.
+func (d *Driver) GrowWorkspace(ctx context.Context, workspaceID string, newSizeBytes int64) error {
+	if d.manager == nil {
+		return errors.New("manager is required for firecracker driver")
 	}
 
-	return filepath.Walk(src, func(path string, fi os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
+	if err := d.manager.GrowWorkspace(ctx, workspaceID, newSizeBytes); err != nil {
+		return fmt.Errorf("host-side grow failed: %w", err)
+	}
 
-		if fi == nil {
-			return nil
-		}
+	conn, err := d.AgentConn(ctx, workspaceID)
+	if err != nil {
+		return fmt.Errorf("agent connect for disk.grow: %w", err)
+	}
+	defer conn.Close()
 
-		rel, err := filepath.Rel(rootHome, path)
-		if err != nil {
-			return err
+	client := NewAgentClient(conn)
+	req := ExecRequest{
+		ID:      fmt.Sprintf("disk-grow-%d", time.Now().UnixNano()),
+		Type:    "disk.grow",
+		Command: "",
+	}
+	result, err := client.Exec(ctx, req)
+	if err != nil {
+		return fmt.Errorf("disk.grow exec failed: %w", err)
+	}
+	if result.ExitCode != 0 {
+		detail := strings.TrimSpace(result.Stderr)
+		if detail == "" {
+			detail = fmt.Sprintf("exit code %d", result.ExitCode)
 		}
-		rel = filepath.ToSlash(rel)
+		return fmt.Errorf("resize2fs failed: %s", detail)
+	}
 
-		hdr, err := tar.FileInfoHeader(fi, "")
-		if err != nil {
-			return err
-		}
-		hdr.Name = rel
-
-		if fi.Mode()&os.ModeSymlink != 0 {
-			linkTarget, lerr := os.Readlink(path)
-			if lerr != nil {
-				return lerr
-			}
-			hdr.Linkname = linkTarget
-		}
-
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-
-		if !fi.Mode().IsRegular() {
-			return nil
-		}
-
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-
-		_, err = io.Copy(tw, f)
-		return err
-	})
+	return nil
 }
 
 func (d *Driver) Start(ctx context.Context, workspaceID string) error {
