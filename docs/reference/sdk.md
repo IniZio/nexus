@@ -1,6 +1,6 @@
 # SDK Reference
 
-TypeScript client for the Nexus workspace daemon: [`@nexus/sdk`](https://www.npmjs.com/package/@nexus/sdk) (`packages/sdk/js`).
+Nexus SDK is the programmatic surface for remote workspaces. TypeScript client: [`@nexus/sdk`](https://www.npmjs.com/package/@nexus/sdk) (`packages/sdk/js`).
 
 ## Install
 
@@ -8,16 +8,15 @@ TypeScript client for the Nexus workspace daemon: [`@nexus/sdk`](https://www.npm
 npm install @nexus/sdk
 ```
 
-## Overview
+## Mental Model
 
-- **`WorkspaceClient`**: WebSocket JSON-RPC to the daemon. Fields: `endpoint`, `token`, optional `workspaceId` (default workspace for methods that need it), reconnect options. Exposes `workspaces` and `ssh`.
-- **`client.workspaces`**: `create`, `open`, `list`, `relations`, `remove`, `stop`, `start`, `restore`, `pause`, `resume`, `fork`, `mintAuthRelay`, `revokeAuthRelay`, `capabilities`.
-- **`WorkspaceHandle`** (from `create` / `open` / `restore` / `fork`): `id`, `state`, `rootPath`; **`exec`**, **`fs`**, **`spotlight`** (port forwards); `info`, `ready`, `readyProfile`, `git`, `service`.
-- **`client.ssh`**: PTY sessions — `open`, `write`, `resize`, `close`, `onData`, `onExit` (see `pty.ts`).
+- `WorkspaceClient`: one authenticated WebSocket connection. Fields: `endpoint`, `token`, optional `workspaceId`.
+- `client.workspaces`: `create`, `open`, `list`, `start`, `stop`, `remove`, `fork`, `pause`, `resume`, `restore`, `mintAuthRelay`, `revokeAuthRelay`, `capabilities`.
+- `WorkspaceHandle` (from `create` / `open` / `restore` / `fork`): `id`, `state`, `rootPath`; **`exec`**, **`fs`**, **`spotlight`**, `git`, `service`.
+- `client.ssh`: PTY sessions — `open`, `write`, `resize`, `close`, `onData`, `onExit`.
+- There is no separate `tunnel` API; use **`ws.spotlight`** (`expose`, `list`, `close`, `applyDefaults`, `applyComposePorts`).
 
-There is no separate `tunnel` API in the SDK; host↔workspace port exposure uses **`workspaceHandle.spotlight`** (`expose`, `list`, `close`, `applyDefaults`, `applyComposePorts`).
-
-## Example
+## Quick Start
 
 ```typescript
 import { WorkspaceClient } from '@nexus/sdk';
@@ -44,22 +43,13 @@ await client.workspaces.remove(ws.id);
 await client.disconnect();
 ```
 
-## `workspace.create` spec
+## Create spec
 
-`WorkspaceCreateSpec` (`packages/sdk/js/src/types.ts`) includes:
+`WorkspaceCreateSpec` fields: `repo`, `workspaceName`, optional `agentProfile`, `ref`, `policy` (`authProfiles`, `sshAgentForward`, `gitCredentialMode`), `backend`, `authBinding`, and `configBundle` (base64 gzip+tar, ≤4 MiB — see [host-auth-bundle.md](host-auth-bundle.md)). Full types: `packages/sdk/js/src/types.ts`.
 
-| Field | Role |
-|--------|------|
-| `repo`, `workspaceName`, `agentProfile` | Required for create |
-| `ref`, `policy`, `backend` | Optional |
-| `hostAuthBundle` | Optional. Base64-encoded **gzip-compressed tar** (paths relative to `$HOME` as in the CLI). **Max 4MiB decoded**; invalid base64 or over limit is rejected. The daemon does **not** re-filter contents—for parity with `nexus create`, follow [`host-auth-bundle.md`](host-auth-bundle.md) or call `authbundle.BuildFromHome()` from Go. If omitted, **no** tarball is sent. |
+## Remote client vs remote daemon
 
-For command execution and API keys, prefer **`AuthBinding`** on the workspace and **`mintAuthRelay` / `revokeAuthRelay`** instead of assuming files on the daemon host.
-
-## Remote daemon
-
-- **Secrets and API keys:** Use `policy` / `AuthBinding` and auth relay tokens for `exec`/`ssh`, not daemon-local OAuth files.
-- **Tooling config tarball:** Supply `hostAuthBundle` from the **client** when you need guest copies of opencode/codex/claude-style configs. The CLI builds it via `BuildFromHome()` on the machine running `nexus create`, using the selective file registry above.
+Pass auth material via create-time `configBundle` and short-lived relay tokens (`mintAuthRelay` / `revokeAuthRelay`). Do not assume files on the daemon host. See [host-auth-bundle.md](host-auth-bundle.md) for packing rules.
 
 ## Related
 

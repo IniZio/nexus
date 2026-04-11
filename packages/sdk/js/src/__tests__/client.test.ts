@@ -56,11 +56,8 @@ describe('WorkspaceClient', () => {
 
       expect(client.isConnected).toBe(false);
       expect(client.connectionState).toBe('disconnected');
-      expect(client.fs).toBeDefined();
-      expect(client.exec).toBeDefined();
-      expect(client.spotlight).toBeDefined();
-      expect(client.pty).toBeDefined();
-      expect(client.workspace).toBeDefined();
+      expect(client.ssh).toBeDefined();
+      expect(client.workspaces).toBeDefined();
     });
 
     it('should create a client with custom reconnect config', () => {
@@ -83,7 +80,7 @@ describe('WorkspaceClient', () => {
       });
 
       expect(client.isConnected).toBe(false);
-      expect(client.workspace).toBeDefined();
+      expect(client.workspaces).toBeDefined();
     });
   });
 
@@ -258,71 +255,6 @@ describe('WorkspaceClient', () => {
     });
   });
 
-  describe('spotlight ergonomics', () => {
-    it('uses configured workspaceId by default for client.spotlight', async () => {
-      client = new WorkspaceClient({
-        endpoint: 'ws://localhost:8080',
-        workspaceId: 'default-ws',
-        token: 'test-token',
-        reconnect: false,
-      });
-
-      await connectClient();
-
-      const listPromise = client.spotlight.list();
-      let sentData = mockWsInstance.send.mock.calls[0][0] as string;
-      let request = JSON.parse(sentData);
-      expect(request.method).toBe('spotlight.list');
-      expect(request.params.workspaceId).toBe('default-ws');
-
-      emitEvent('message', Buffer.from(JSON.stringify({
-        jsonrpc: '2.0',
-        id: request.id,
-        result: { forwards: [] },
-      })));
-      await listPromise;
-
-      const exposePromise = client.spotlight.expose({
-        service: 'web',
-        remotePort: 5173,
-        localPort: 5173,
-      });
-      sentData = mockWsInstance.send.mock.calls[1][0] as string;
-      request = JSON.parse(sentData);
-      expect(request.method).toBe('spotlight.expose');
-      expect(request.params.spec.workspaceId).toBe('default-ws');
-
-      emitEvent('message', Buffer.from(JSON.stringify({
-        jsonrpc: '2.0',
-        id: request.id,
-        result: {
-          forward: {
-            id: 'spot-1',
-            workspaceId: 'default-ws',
-            service: 'web',
-            remotePort: 5173,
-            localPort: 5173,
-            host: '127.0.0.1',
-            createdAt: new Date().toISOString(),
-          },
-        },
-      })));
-      await exposePromise;
-
-      const explicitListPromise = client.spotlight.list('override-ws');
-      sentData = mockWsInstance.send.mock.calls[2][0] as string;
-      request = JSON.parse(sentData);
-      expect(request.params.workspaceId).toBe('override-ws');
-
-      emitEvent('message', Buffer.from(JSON.stringify({
-        jsonrpc: '2.0',
-        id: request.id,
-        result: { forwards: [] },
-      })));
-      await explicitListPromise;
-    });
-  });
-
   describe('onDisconnect', () => {
     it('should call disconnect callback', async () => {
       client = new WorkspaceClient({
@@ -341,4 +273,5 @@ describe('WorkspaceClient', () => {
       expect(disconnectCallback).toHaveBeenCalled();
     });
   });
+
 });

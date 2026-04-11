@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/inizio/nexus/packages/nexus/pkg/agentprofile"
+	"github.com/inizio/nexus/packages/nexus/pkg/credsbundle"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/authbundle"
 )
@@ -298,13 +300,12 @@ func TestFirecrackerDriver_DestroyWithoutManager(t *testing.T) {
 	}
 }
 
-func TestBuildGuestCLIBootstrapCommandInstallsOnlyHostAvailableCLIs(t *testing.T) {
-	cmd := buildGuestCLIBootstrapCommand(hostCLIAvailability{Opencode: true, Codex: false, Claude: true})
-	if !strings.Contains(cmd, "npm i -g opencode-ai @anthropic-ai/claude-code") {
-		t.Fatalf("expected selective install command, got %q", cmd)
-	}
-	if strings.Contains(cmd, "@openai/codex") {
-		t.Fatalf("did not expect codex package install when host codex unavailable, got %q", cmd)
+func TestBuildGuestCLIBootstrapCommandIncludesAllRegistryPackages(t *testing.T) {
+	cmd := buildGuestCLIBootstrapCommand()
+	for _, pkg := range agentprofile.AllInstallPkgs() {
+		if !strings.Contains(cmd, pkg) {
+			t.Fatalf("bootstrap command missing install package %q", pkg)
+		}
 	}
 }
 
@@ -322,21 +323,31 @@ func TestBuildHostAuthBundleIncludesKnownConfigPaths(t *testing.T) {
 	}
 	mkdir(filepath.Join(home, ".config", "opencode"))
 	mkdir(filepath.Join(home, ".config", "codex"))
+	mkdir(filepath.Join(home, ".config", "github-copilot"))
+	mkdir(filepath.Join(home, ".local", "share", "opencode"))
 	mkdir(filepath.Join(home, ".codex"))
 	mkdir(filepath.Join(home, ".config", "openai"))
 	mkdir(filepath.Join(home, ".claude"))
 	if err := os.WriteFile(filepath.Join(home, ".config", "opencode", "session.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatalf("write opencode session: %v", err)
 	}
-	for _, p := range []string{
-		filepath.Join(home, ".config", "codex", "auth.json"),
-		filepath.Join(home, ".codex", "config.json"),
-		filepath.Join(home, ".config", "openai", "settings.json"),
-		filepath.Join(home, ".claude", "settings.json"),
-	} {
-		if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
-			t.Fatalf("write %s: %v", p, err)
-		}
+	if err := os.WriteFile(filepath.Join(home, ".config", "opencode", "opencode.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write opencode config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".local", "share", "opencode", "auth.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write opencode auth: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "github-copilot", "hosts.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write github-copilot hosts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "auth.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write codex auth: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "version.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write codex version: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", ".credentials.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write claude credentials: %v", err)
 	}
 
 	bundle, err := authbundle.BuildFromHome()
@@ -372,113 +383,78 @@ func TestBuildHostAuthBundleIncludesKnownConfigPaths(t *testing.T) {
 	}
 
 	joined := strings.Join(names, "\n")
-	if !strings.Contains(joined, ".config/opencode") {
-		t.Fatalf("expected opencode path in archive, got %q", joined)
+	if !strings.Contains(joined, ".config/opencode/opencode.json") {
+		t.Fatalf("expected opencode config path in archive, got %q", joined)
 	}
-	if !strings.Contains(joined, ".config/codex") {
-		t.Fatalf("expected codex path in archive, got %q", joined)
+	if !strings.Contains(joined, ".local/share/opencode/auth.json") {
+		t.Fatalf("expected opencode auth path in archive, got %q", joined)
 	}
-	if !strings.Contains(joined, ".codex") {
-		t.Fatalf("expected .codex path in archive, got %q", joined)
+	if !strings.Contains(joined, ".config/github-copilot/hosts.json") {
+		t.Fatalf("expected github-copilot hosts in archive, got %q", joined)
+	}
+	if !strings.Contains(joined, ".codex/auth.json") {
+		t.Fatalf("expected .codex auth in archive, got %q", joined)
+	}
+	if !strings.Contains(joined, ".codex/version.json") {
+		t.Fatalf("expected .codex version in archive, got %q", joined)
 	}
 	if !strings.Contains(joined, ".claude") {
 		t.Fatalf("expected claude path in archive, got %q", joined)
 	}
 }
 
-func TestResolveHostAuthBundle_RejectsInvalidBase64(t *testing.T) {
-	_, err := resolveHostAuthBundle(map[string]string{"host_auth_bundle": "not-valid-base64!!!"})
-	if err == nil {
-		t.Fatal("expected error for invalid base64")
-	}
-}
+func TestBuildHostAuthBundleIncludesRegistryPaths(t *testing.T) {
+	home := t.TempDir()
 
-func TestResolveHostAuthBundle_ClientBundleContainsCodexConfig(t *testing.T) {
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gz)
-	payload := []byte(`{"codex":true}`)
-	hdr := &tar.Header{Name: ".config/codex/auth.json", Mode: 0o644, Size: int64(len(payload))}
-	if err := tw.WriteHeader(hdr); err != nil {
-		t.Fatalf("header: %v", err)
+	credFile := filepath.Join(home, ".claude", ".credentials.json")
+	if err := os.MkdirAll(filepath.Dir(credFile), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := tw.Write(payload); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatalf("tw close: %v", err)
-	}
-	if err := gz.Close(); err != nil {
-		t.Fatalf("gz close: %v", err)
-	}
-	b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
-
-	got, err := resolveHostAuthBundle(map[string]string{"host_auth_bundle": b64})
-	if err != nil {
-		t.Fatalf("resolveHostAuthBundle: %v", err)
-	}
-	if got != b64 {
-		t.Fatalf("expected bundle passthrough")
+	if err := os.WriteFile(credFile, []byte(`{"token":"test"}`), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
-	raw, err := base64.StdEncoding.DecodeString(got)
+	encoded, err := credsbundle.BuildFromHome(home)
 	if err != nil {
-		t.Fatalf("decode: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	gzr, err := gzip.NewReader(bytes.NewReader(raw))
+	if encoded == "" {
+		t.Fatal("expected non-empty bundle when cred files exist")
+	}
+
+	raw, decErr := base64.StdEncoding.DecodeString(encoded)
+	if decErr != nil {
+		t.Fatalf("bundle is not valid base64: %v", decErr)
+	}
+
+	gr, err := gzip.NewReader(bytes.NewReader(raw))
 	if err != nil {
-		t.Fatalf("gzip: %v", err)
+		t.Fatalf("bundle is not gzip: %v", err)
 	}
-	defer gzr.Close()
-	tr := tar.NewReader(gzr)
+	tr := tar.NewReader(gr)
 	found := false
 	for {
-		h, err := tr.Next()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			t.Fatalf("tar: %v", err)
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
 		}
-		if h.Name == ".config/codex/auth.json" {
+		if err != nil {
+			t.Fatalf("tar read error: %v", err)
+		}
+		if strings.HasSuffix(hdr.Name, ".credentials.json") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatal("expected .config/codex/auth.json in client bundle")
+		t.Fatal("bundle does not contain .credentials.json from registry")
 	}
 }
 
-func TestResolveHostAuthBundle_RejectsOversizedBundle(t *testing.T) {
-	oversized := strings.Repeat("A", 4*1024*1024+1)
-	encoded := base64.StdEncoding.EncodeToString([]byte(oversized))
-	_, err := resolveHostAuthBundle(map[string]string{"host_auth_bundle": encoded})
-	if err == nil {
-		t.Fatal("expected error for oversized bundle, got nil")
-	}
-	if !strings.Contains(err.Error(), "exceeds maximum size") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestResolveHostAuthBundle_EmptyWithoutClientOrDaemonFlag(t *testing.T) {
-	home := t.TempDir()
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("set HOME: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Unsetenv("HOME") })
-	if err := os.MkdirAll(filepath.Join(home, ".config", "codex"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".config", "codex", "x.json"), []byte("{}"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	got, err := resolveHostAuthBundle(map[string]string{})
-	if err != nil {
-		t.Fatalf("resolveHostAuthBundle: %v", err)
-	}
-	if got != "" {
-		t.Fatalf("expected empty bundle without daemon flag, got len %d", len(got))
+func TestBuildGuestCLIBootstrapCommandIncludesRegistryPackages(t *testing.T) {
+	cmd := buildGuestCLIBootstrapCommand()
+	for _, pkg := range agentprofile.AllInstallPkgs() {
+		if !strings.Contains(cmd, pkg) {
+			t.Fatalf("bootstrap command missing install package %q", pkg)
+		}
 	}
 }

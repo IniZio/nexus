@@ -38,4 +38,5 @@ nexus start <workspace-id>
 | Install | `docs/tutorials/installation.md` |
 | CLI | `docs/reference/cli.md` |
 | SDK | `docs/reference/sdk.md` |
+| Project structure | `docs/reference/project-structure.md` |
 | Config | `docs/reference/workspace-config.md` |

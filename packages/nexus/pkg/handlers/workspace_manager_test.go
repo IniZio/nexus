@@ -908,12 +908,12 @@ func TestHandleWorkspaceCreate_PassesHostAuthBundleToRuntime(t *testing.T) {
 	mgr := workspacemgr.NewManager(mgrRoot)
 	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
 
-	var gotOpts map[string]string
+	var gotConfigBundle string
 	factory := runtime.NewFactory([]runtime.Capability{{Name: "runtime.linux", Available: true}, {Name: "runtime.firecracker", Available: true}}, map[string]runtime.Driver{
 		"firecracker": &mockDriver{
 			backend: "firecracker",
 			createFn: func(ctx context.Context, req runtime.CreateRequest) error {
-				gotOpts = req.Options
+				gotConfigBundle = req.ConfigBundle
 				return nil
 			},
 		},
@@ -921,11 +921,11 @@ func TestHandleWorkspaceCreate_PassesHostAuthBundleToRuntime(t *testing.T) {
 
 	params, err := json.Marshal(WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
-			Repo:                 repo,
-			Ref:                  "main",
-			WorkspaceName:        "alpha",
-			AgentProfile:         "default",
-			HostAuthBundleBase64: "e30=",
+			Repo:          repo,
+			Ref:           "main",
+			WorkspaceName: "alpha",
+			AgentProfile:  "default",
+			ConfigBundle:  "e30=",
 		},
 	})
 	if err != nil {
@@ -939,11 +939,8 @@ func TestHandleWorkspaceCreate_PassesHostAuthBundleToRuntime(t *testing.T) {
 	if result == nil || result.Workspace == nil {
 		t.Fatalf("expected workspace, got %#v", result)
 	}
-	if gotOpts == nil {
-		t.Fatal("expected runtime create options")
-	}
-	if gotOpts["host_auth_bundle"] != "e30=" {
-		t.Fatalf("expected host_auth_bundle in options, got %#v", gotOpts)
+	if gotConfigBundle != "e30=" {
+		t.Fatalf("expected configBundle in create request, got %q", gotConfigBundle)
 	}
 }
 

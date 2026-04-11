@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/inizio/nexus/packages/nexus/pkg/agentprofile"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
-	"github.com/inizio/nexus/packages/nexus/pkg/runtime/authbundle"
 	"github.com/mdlayher/vsock"
 )
 
@@ -38,11 +38,6 @@ type Driver struct {
 	mu           sync.RWMutex
 }
 
-type hostCLIAvailability struct {
-	Opencode bool
-	Codex    bool
-	Claude   bool
-}
 
 func (d *Driver) AgentConn(ctx context.Context, workspaceID string) (net.Conn, error) {
 	if d.manager == nil {
@@ -134,12 +129,7 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	d.mu.Unlock()
 
 	if shouldBootstrapGuestTooling(req.Options) {
-		bundle, err := authbundle.ResolveFromOptions(req.Options)
-		if err != nil {
-			return fmt.Errorf("prepare host auth bundle: %w", err)
-		}
-		hostCLI := cliAvailabilityForBundle(bundle)
-		if err := d.bootstrapGuestToolingAndAuth(ctx, req.WorkspaceID, hostCLI, bundle); err != nil {
+		if err := d.bootstrapGuestToolingAndAuth(ctx, req.WorkspaceID, req.ConfigBundle); err != nil {
 			return err
 		}
 	}
@@ -162,8 +152,8 @@ func shouldBootstrapGuestTooling(options map[string]string) bool {
 	return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
 }
 
-func (d *Driver) bootstrapGuestToolingAndAuth(ctx context.Context, workspaceID string, hostCLI hostCLIAvailability, authBundle string) error {
-	if !hostCLI.Opencode && !hostCLI.Codex && !hostCLI.Claude && strings.TrimSpace(authBundle) == "" {
+func (d *Driver) bootstrapGuestToolingAndAuth(ctx context.Context, workspaceID string, authBundle string) error {
+	if strings.TrimSpace(authBundle) == "" {
 		return nil
 	}
 
@@ -182,7 +172,7 @@ func (d *Driver) bootstrapGuestToolingAndAuth(ctx context.Context, workspaceID s
 	request := ExecRequest{
 		ID:      fmt.Sprintf("bootstrap-%d", time.Now().UnixNano()),
 		Command: "sh",
-		Args:    []string{"-lc", buildGuestCLIBootstrapCommand(hostCLI)},
+		Args:    []string{"-lc", buildGuestCLIBootstrapCommand()},
 		WorkDir: "/workspace",
 		Env:     env,
 	}
@@ -225,66 +215,39 @@ func (d *Driver) waitForAgentConn(ctx context.Context, workspaceID string, timeo
 	return nil, errors.New("agent connection timed out")
 }
 
-func detectHostCLIAvailability() hostCLIAvailability {
-	has := func(name string) bool {
-		_, err := exec.LookPath(name)
-		return err == nil
+func detectHostCLIAvailability() map[string]bool {
+	out := make(map[string]bool)
+	for _, bin := range agentprofile.AllBinaries() {
+		_, err := exec.LookPath(bin)
+		out[bin] = err == nil
 	}
-	return hostCLIAvailability{
-		Opencode: has("opencode"),
-		Codex:    has("codex"),
-		Claude:   has("claude"),
-	}
+	return out
 }
 
-func cliAvailabilityForBundle(bundle string) hostCLIAvailability {
-	if strings.TrimSpace(bundle) != "" {
-		return hostCLIAvailability{Opencode: true, Codex: true, Claude: true}
-	}
-	return detectHostCLIAvailability()
-}
-
-func buildGuestCLIBootstrapCommand(hostCLI hostCLIAvailability) string {
-	parts := []string{"set -e", "mkdir -p ~/.config"}
-	parts = append(parts,
-		`if [ -n "${NEXUS_HOST_AUTH_BUNDLE:-}" ]; then `+
-			`(printf '%s' "$NEXUS_HOST_AUTH_BUNDLE" | base64 -d 2>/dev/null || printf '%s' "$NEXUS_HOST_AUTH_BUNDLE" | base64 -D 2>/dev/null) >/tmp/nexus-auth.tar.gz && `+
-			`tar -xzf /tmp/nexus-auth.tar.gz -C "$HOME" >/dev/null 2>&1 || true; `+
+func buildGuestCLIBootstrapCommand() string {
+	parts := []string{
+		"set -e",
+		"mkdir -p ~/.config ~/.local/share",
+		`if [ -n "${NEXUS_HOST_AUTH_BUNDLE:-}" ]; then ` +
+			`(printf '%s' "$NEXUS_HOST_AUTH_BUNDLE" | base64 -d 2>/dev/null || printf '%s' "$NEXUS_HOST_AUTH_BUNDLE" | base64 -D 2>/dev/null) >/tmp/nexus-auth.tar.gz && ` +
+			`tar -xzf /tmp/nexus-auth.tar.gz -C "$HOME" >/dev/null 2>&1 || true; ` +
 			`rm -f /tmp/nexus-auth.tar.gz >/dev/null 2>&1 || true; fi`,
 		`if command -v npm >/dev/null 2>&1; then NPM_BIN=$(npm bin -g 2>/dev/null || true); if [ -n "$NPM_BIN" ] && [ -d "$NPM_BIN" ]; then export PATH="$NPM_BIN:$PATH"; fi; fi`,
-	)
+	}
 
-	pkg := make([]string, 0, 3)
-	if hostCLI.Opencode {
-		pkg = append(pkg, "opencode-ai")
+	pkgs := agentprofile.AllInstallPkgs()
+	if len(pkgs) > 0 {
+		joined := strings.Join(pkgs, " ")
+		parts = append(parts, "if command -v npm >/dev/null 2>&1; then npm i -g "+joined+" >/dev/null 2>&1 || true; fi")
 	}
-	if hostCLI.Codex {
-		pkg = append(pkg, "@openai/codex")
-	}
-	if hostCLI.Claude {
-		pkg = append(pkg, "@anthropic-ai/claude-code")
-	}
-	if len(pkg) > 0 {
-		parts = append(parts, "if command -v npm >/dev/null 2>&1; then npm i -g "+strings.Join(pkg, " ")+" >/dev/null 2>&1 || true; fi")
-	}
-	if hostCLI.Opencode {
-		parts = append(parts, "command -v opencode >/dev/null 2>&1")
-	}
-	if hostCLI.Codex {
-		parts = append(parts, "command -v codex >/dev/null 2>&1")
-	}
-	if hostCLI.Claude {
-		parts = append(parts, "command -v claude >/dev/null 2>&1")
+
+	for _, bin := range agentprofile.AllBinaries() {
+		parts = append(parts, "command -v "+bin+" >/dev/null 2>&1")
 	}
 
 	return strings.Join(parts, "; ")
 }
 
-func resolveHostAuthBundle(opts map[string]string) (string, error) {
-	return authbundle.ResolveFromOptions(opts)
-}
-
-// GrowWorkspace expands the workspace disk image and runs resize2fs in the guest.
 func (d *Driver) GrowWorkspace(ctx context.Context, workspaceID string, newSizeBytes int64) error {
 	if d.manager == nil {
 		return errors.New("manager is required for firecracker driver")

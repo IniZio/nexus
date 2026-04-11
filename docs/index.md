@@ -22,6 +22,5 @@ nexus init && nexus create && nexus list && nexus start <workspace-id>
 | CLI | [`docs/reference/cli.md`](reference/cli.md) |
 | JS/TS SDK | [`docs/reference/sdk.md`](reference/sdk.md) |
 | Host auth bundle format (SDK / advanced) | [`docs/reference/host-auth-bundle.md`](reference/host-auth-bundle.md) |
+| Project structure | [`docs/reference/project-structure.md`](reference/project-structure.md) |
 | `.nexus` config | [`docs/reference/workspace-config.md`](reference/workspace-config.md) |
-
-

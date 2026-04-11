@@ -11,8 +11,16 @@ export type GitFixture = TempFixture & {
   repoDir: string;
 };
 
+async function fixtureRootBase(): Promise<string> {
+  const override = process.env.NEXUS_E2E_FIXTURE_ROOT?.trim();
+  const baseDir = override && override.length > 0 ? override : path.join(os.homedir(), 'nexus-workspaces', 'e2e-fixtures');
+  await fs.mkdir(baseDir, { recursive: true });
+  return baseDir;
+}
+
 export async function createTempFixture(prefix = 'nexus-e2e-sdk-runtime'): Promise<TempFixture> {
-  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), `${prefix}-`));
+  const baseDir = await fixtureRootBase();
+  const rootDir = await fs.mkdtemp(path.join(baseDir, `${prefix}-`));
   return { rootDir };
 }
 
@@ -21,7 +29,8 @@ export async function cleanupFixture(fixture: TempFixture): Promise<void> {
 }
 
 export async function createGitFixture(prefix = 'nexus-e2e-git-fixture'): Promise<GitFixture> {
-  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), `${prefix}-`));
+  const baseDir = await fixtureRootBase();
+  const rootDir = await fs.mkdtemp(path.join(baseDir, `${prefix}-`));
   const repoDir = path.join(rootDir, 'repo');
   await fs.mkdir(repoDir, { recursive: true });
 

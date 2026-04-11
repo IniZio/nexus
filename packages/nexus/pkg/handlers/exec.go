@@ -12,6 +12,7 @@ import (
 
 	"github.com/inizio/nexus/packages/nexus/pkg/authrelay"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
+	"github.com/inizio/nexus/packages/nexus/pkg/safeenv"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
 )
 
@@ -89,6 +90,7 @@ func HandleExecWithAuthRelay(ctx context.Context, params json.RawMessage, ws *wo
 	cmd := exec.CommandContext(execCtx, p.Command, args...)
 	cmd.Dir = workDir
 
+	cmd.Env = safeenv.Base()
 	if p.Options.Env != nil {
 		cmd.Env = append(cmd.Env, p.Options.Env...)
 	}

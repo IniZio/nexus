@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -316,9 +317,7 @@ func HandleWorkspaceCreate(ctx context.Context, params json.RawMessage, mgr *wor
 		return nil, rpckit.ErrInvalidParams
 	}
 
-	if rpcErr := EnsureLocalRuntimeWorkspace(ctx, ws, factory, mgr, EnsureRuntimeAuth{
-		HostAuthBundleBase64: strings.TrimSpace(spec.HostAuthBundleBase64),
-	}); rpcErr != nil {
+	if rpcErr := ensureLocalRuntimeWorkspace(ctx, ws, factory, mgr, spec.ConfigBundle); rpcErr != nil {
 		_ = mgr.Remove(ws.ID)
 		return nil, rpcErr
 	}
@@ -515,7 +514,7 @@ func HandleWorkspacePause(ctx context.Context, params json.RawMessage, mgr *work
 	}
 
 	if factory != nil {
-		if rpcErr := EnsureLocalRuntimeWorkspace(ctx, ws, factory, mgr, EnsureRuntimeAuth{}); rpcErr != nil {
+		if rpcErr := ensureLocalRuntimeWorkspace(ctx, ws, factory, mgr, ""); rpcErr != nil {
 			return nil, rpcErr
 		}
 
@@ -548,7 +547,7 @@ func HandleWorkspaceResume(ctx context.Context, params json.RawMessage, mgr *wor
 	}
 
 	if factory != nil {
-		if rpcErr := EnsureLocalRuntimeWorkspace(ctx, ws, factory, mgr, EnsureRuntimeAuth{}); rpcErr != nil {
+		if rpcErr := ensureLocalRuntimeWorkspace(ctx, ws, factory, mgr, ""); rpcErr != nil {
 			return nil, rpcErr
 		}
 
@@ -588,7 +587,7 @@ func HandleWorkspaceFork(ctx context.Context, params json.RawMessage, mgr *works
 		if !ok {
 			return nil, rpckit.ErrWorkspaceNotFound
 		}
-		if rpcErr := EnsureLocalRuntimeWorkspace(ctx, parent, factory, mgr, EnsureRuntimeAuth{}); rpcErr != nil {
+		if rpcErr := ensureLocalRuntimeWorkspace(ctx, parent, factory, mgr, ""); rpcErr != nil {
 			return nil, rpcErr
 		}
 
@@ -624,11 +623,7 @@ func loadRuntimeSelectionFromRepoConfig(repo string) ([]string, []string, error)
 	return []string{"darwin", "linux"}, nil, nil
 }
 
-type EnsureRuntimeAuth struct {
-	HostAuthBundleBase64 string
-}
-
-func EnsureLocalRuntimeWorkspace(ctx context.Context, ws *workspacemgr.Workspace, factory *runtime.Factory, mgr *workspacemgr.Manager, auth EnsureRuntimeAuth) *rpckit.RPCError {
+func ensureLocalRuntimeWorkspace(ctx context.Context, ws *workspacemgr.Workspace, factory *runtime.Factory, mgr *workspacemgr.Manager, configBundle string) *rpckit.RPCError {
 	if factory == nil || ws == nil || (ws.Backend != "firecracker" && ws.Backend != "seatbelt") {
 		return nil
 	}
@@ -638,19 +633,23 @@ func EnsureLocalRuntimeWorkspace(ctx context.Context, ws *workspacemgr.Workspace
 		return &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("backend selection failed: %v", err)}
 	}
 
-	opts := map[string]string{"host_cli_sync": "true"}
-	if strings.TrimSpace(auth.HostAuthBundleBase64) != "" {
-		opts["host_auth_bundle"] = strings.TrimSpace(auth.HostAuthBundleBase64)
-	}
-
 	req := runtime.CreateRequest{
 		WorkspaceID:   ws.ID,
 		WorkspaceName: ws.WorkspaceName,
 		ProjectRoot:   ws.RootPath,
-		Options:       opts,
+		ConfigBundle:  configBundle,
+		Options: map[string]string{
+			"host_cli_sync": "true",
+		},
 	}
 	err = driver.Create(ctx, req)
-	if err != nil && !strings.Contains(err.Error(), "already exists") {
+	if err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			return nil
+		}
+		if errors.Is(err, runtime.ErrWorkspaceMountFailed) {
+			return nil
+		}
 		return &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("runtime create failed: %v", err)}
 	}
 

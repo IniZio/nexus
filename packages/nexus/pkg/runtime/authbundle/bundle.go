@@ -41,9 +41,11 @@ func BuildFromHome() (string, error) {
 
 	paths := []string{
 		filepath.Join(home, ".config", "opencode"),
+		filepath.Join(home, ".local", "share", "opencode"),
 		filepath.Join(home, ".config", "codex"),
 		filepath.Join(home, ".codex"),
 		filepath.Join(home, ".config", "openai"),
+		filepath.Join(home, ".config", "github-copilot"),
 		filepath.Join(home, ".claude"),
 	}
 
@@ -93,11 +95,15 @@ func includeBundledFile(rel string) bool {
 	switch {
 	case strings.HasPrefix(rel, ".config/opencode/"):
 		return ext == ".json" || ext == ".yaml" || ext == ".yml"
+	case strings.HasPrefix(rel, ".local/share/opencode/"):
+		return ext == ".json" || ext == ".yaml" || ext == ".yml"
 	case strings.HasPrefix(rel, ".config/codex/"):
 		return ext == ".json" || ext == ".yaml" || ext == ".yml"
 	case strings.HasPrefix(rel, ".codex/"):
 		return ext == ".json" || ext == ".yaml" || ext == ".yml"
 	case strings.HasPrefix(rel, ".config/openai/"):
+		return ext == ".json" || ext == ".yaml" || ext == ".yml"
+	case strings.HasPrefix(rel, ".config/github-copilot/"):
 		return ext == ".json" || ext == ".yaml" || ext == ".yml"
 	case strings.HasPrefix(rel, ".claude/"):
 		if strings.Contains(rel, "/projects/") {

@@ -19,7 +19,7 @@ describe('worktree sync e2e', () => {
     try {
       let handle;
       try {
-        handle = await session.client.workspace.create({
+        handle = await session.client.workspaces.create({
           repo: fixture.repoDir,
           workspaceName: 'sync-case',
           agentProfile: 'default',
@@ -43,10 +43,10 @@ describe('worktree sync e2e', () => {
       await runCmd('git', ['commit', '-m', 'seed workspace repo'], workspaceRoot);
 
       await fs.writeFile(tracked, 'host-change\n', 'utf8');
-      const observedByWorkspace = await handle.fs.readFile('tracked.txt', 'utf8');
+      const observedByWorkspace = await handle.readFile('tracked.txt', 'utf8');
       expect(observedByWorkspace).toContain('host-change');
 
-      await handle.fs.writeFile('workspace-created.txt', 'workspace-change\n');
+      await handle.writeFile('workspace-created.txt', 'workspace-change\n');
       const observedByHost = await fs.readFile(path.join(workspaceRoot, 'workspace-created.txt'), 'utf8');
       expect(observedByHost).toContain('workspace-change');
 
@@ -60,7 +60,7 @@ describe('worktree sync e2e', () => {
       expect(statusStdout).toContain('?? workspace-created.txt');
     } finally {
       if (workspaceId !== '') {
-        await session.client.workspace.remove(workspaceId);
+        await session.client.workspaces.remove(workspaceId);
       }
       await session.stop();
       await cleanupFixture(fixture);

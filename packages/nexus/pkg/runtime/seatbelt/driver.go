@@ -7,13 +7,14 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/inizio/nexus/packages/nexus/pkg/agentprofile"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
-	"github.com/inizio/nexus/packages/nexus/pkg/runtime/authbundle"
 )
 
 var seatbeltLookPath = exec.LookPath
@@ -42,14 +43,8 @@ type Driver struct {
 	instanceEnv        string
 	bootstrapMu        sync.Mutex
 	bootstrapped       map[string]bool
-	bootstrapInstance  func(ctx context.Context, instance, bundle string) error
+	bootstrapInstance  func(ctx context.Context, instance, configBundle string) error
 	prepareWorkspaceFS func(ctx context.Context, instance, targetPath, localPath string) error
-}
-
-type hostCLIAvailability struct {
-	Opencode bool
-	Codex    bool
-	Claude   bool
 }
 
 type workspaceState struct {
@@ -101,15 +96,7 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	d.workspaces[req.WorkspaceID] = &workspaceState{projectRoot: req.ProjectRoot, state: "created", instance: instance}
 	d.mu.Unlock()
 
-	bundle, err := authbundle.ResolveFromOptions(req.Options)
-	if err != nil {
-		d.mu.Lock()
-		delete(d.workspaces, req.WorkspaceID)
-		d.mu.Unlock()
-		return fmt.Errorf("prepare host auth bundle: %w", err)
-	}
-
-	if err := d.ensureInstanceBootstrapped(ctx, instance, bundle); err != nil {
+	if err := d.ensureInstanceBootstrapped(ctx, instance, req.ConfigBundle); err != nil {
 		d.mu.Lock()
 		delete(d.workspaces, req.WorkspaceID)
 		d.mu.Unlock()
@@ -134,7 +121,7 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 			d.mu.Lock()
 			delete(d.workspaces, req.WorkspaceID)
 			d.mu.Unlock()
-			return err
+			return fmt.Errorf("%w: %v", runtime.ErrWorkspaceMountFailed, err)
 		}
 	}
 
@@ -303,6 +290,9 @@ func (d *Driver) serveShellProtocol(ctx context.Context, workspaceID string, con
 				buf := make([]byte, 4096)
 				for {
 					n, err := s.ptmx.Read(buf)
+					if n == 0 && err == nil {
+						continue
+					}
 					if n > 0 {
 						clean := sanitizeLimaShellChunk(string(buf[:n]))
 						if clean != "" {
@@ -381,7 +371,7 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 
 	if localPath != "" {
 		mounted := false
-		lastMountErr := ""
+		var lastMountErr string
 		for _, candidate := range candidates {
 			if err := ensureLimaInstanceRunningFn(ctx, candidate); err != nil {
 				lastMountErr = err.Error()
@@ -483,7 +473,7 @@ func teardownWorkspacePath(ctx context.Context, instance, workspaceID string) er
 	return nil
 }
 
-func bootstrapSeatbeltTooling(ctx context.Context, instance, bundle string) error {
+func bootstrapSeatbeltTooling(ctx context.Context, instance, configBundle string) error {
 	instance = strings.TrimSpace(instance)
 	if instance == "" {
 		instance = "nexus-firecracker"
@@ -494,8 +484,17 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, bundle string) erro
 		candidates = filterCandidatesByAvailability(candidates, discovered)
 	}
 
-	hostCLI := cliAvailabilityForBundle(bundle, seatbeltLookPath)
-	script := buildSeatbeltBootstrapScript(hostCLI)
+	bundleHostPath := ""
+	if strings.TrimSpace(configBundle) != "" {
+		tmpDir := os.TempDir()
+		bundleFile := filepath.Join(tmpDir, "nexus-bootstrap-"+instance+".tar.gz.b64")
+		if writeErr := os.WriteFile(bundleFile, []byte(configBundle), 0o600); writeErr == nil {
+			bundleHostPath = bundleFile
+			defer func() { _ = os.Remove(bundleFile) }()
+		}
+	}
+
+	script := buildSeatbeltBootstrapScript(bundleHostPath)
 
 	var lastErr error
 	for _, candidate := range candidates {
@@ -526,44 +525,7 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, bundle string) erro
 	return fmt.Errorf("bootstrap seatbelt tooling failed: no lima instance candidates")
 }
 
-func injectAuthBundle(ctx context.Context, instance, bundle string) error {
-	if strings.TrimSpace(instance) == "" || strings.TrimSpace(bundle) == "" {
-		return nil
-	}
-	script := `if [ -n "${NEXUS_HOST_AUTH_BUNDLE:-}" ]; then ` +
-		`(printf '%s' "$NEXUS_HOST_AUTH_BUNDLE" | base64 -d 2>/dev/null || printf '%s' "$NEXUS_HOST_AUTH_BUNDLE" | base64 -D 2>/dev/null) >/tmp/nexus-auth.tar.gz && ` +
-		`tar -xzf /tmp/nexus-auth.tar.gz -C "$HOME" >/dev/null 2>&1 || true; ` +
-		`rm -f /tmp/nexus-auth.tar.gz >/dev/null 2>&1 || true; fi`
-	cmd := exec.CommandContext(ctx, "limactl", "shell", instance, "--", "sh", "-lc", script)
-	cmd.Env = append(os.Environ(), "NEXUS_HOST_AUTH_BUNDLE="+bundle)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("inject auth bundle failed: %s", strings.TrimSpace(string(out)))
-	}
-	return nil
-}
 
-func detectHostCLIAvailability(lookPath func(string) (string, error)) hostCLIAvailability {
-	has := func(bin string) bool {
-		if lookPath == nil {
-			return false
-		}
-		_, err := lookPath(bin)
-		return err == nil
-	}
-	return hostCLIAvailability{
-		Opencode: has("opencode"),
-		Codex:    has("codex"),
-		Claude:   has("claude"),
-	}
-}
-
-func cliAvailabilityForBundle(bundle string, lookPath func(string) (string, error)) hostCLIAvailability {
-	if strings.TrimSpace(bundle) != "" {
-		return hostCLIAvailability{Opencode: true, Codex: true, Claude: true}
-	}
-	return detectHostCLIAvailability(lookPath)
-}
 
 func isTransientLimaShellError(message string) bool {
 	lower := strings.ToLower(strings.TrimSpace(message))
@@ -624,29 +586,62 @@ func ensureLimaInstanceRunning(ctx context.Context, instance string) error {
 	return nil
 }
 
-func buildSeatbeltBootstrapScript(hostCLI hostCLIAvailability) string {
-	_ = hostCLI
+func buildSeatbeltBootstrapScript(bundleHostPath string) string {
 	parts := []string{
 		"set -e",
+		buildCredentialSymlinkCleanup(),
+	}
+
+	if strings.TrimSpace(bundleHostPath) != "" {
+		quoted := shellQuote(bundleHostPath)
+		parts = append(parts,
+			`if [ -f `+quoted+` ]; then `+
+				`(cat `+quoted+` | base64 -d 2>/dev/null || cat `+quoted+` | base64 -D 2>/dev/null) >/tmp/nexus-auth.tar.gz && `+
+				`tar -xzf /tmp/nexus-auth.tar.gz -C "$HOME" >/dev/null 2>&1 || true; `+
+				`rm -f /tmp/nexus-auth.tar.gz >/dev/null 2>&1 || true; fi`,
+		)
+	}
+
+	parts = append(parts,
 		"unset DOCKER_HOST DOCKER_CONTEXT",
 		"if ! (command -v docker >/dev/null 2>&1 && (docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1) && (docker compose version >/dev/null 2>&1 || docker-compose version >/dev/null 2>&1) && command -v make >/dev/null 2>&1); then sudo -n apt-get update; sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-v2 make curl ca-certificates gnupg nodejs npm || sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose make curl ca-certificates gnupg nodejs npm; sudo -n systemctl enable docker >/dev/null 2>&1 || true; sudo -n systemctl start docker >/dev/null 2>&1 || sudo -n service docker start >/dev/null 2>&1 || true; sudo -n usermod -aG docker $USER >/dev/null 2>&1 || true; fi",
 		"(docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1)",
 		"(docker compose version >/dev/null 2>&1 || docker-compose version >/dev/null 2>&1)",
 		"command -v make >/dev/null 2>&1",
-	}
+	)
 
-	pkgs := []string{"opencode-ai", "@openai/codex", "@anthropic-ai/claude-code"}
+	pkgs := agentprofile.AllInstallPkgs()
 	if len(pkgs) > 0 {
+		joined := strings.Join(pkgs, " ")
 		parts = append(parts,
-			"if command -v npm >/dev/null 2>&1; then cd /tmp >/dev/null 2>&1 || true; npm i -g "+strings.Join(pkgs, " ")+" >/dev/null 2>&1 || sudo -n npm i -g "+strings.Join(pkgs, " ")+" >/dev/null 2>&1 || true; fi",
+			"if command -v npm >/dev/null 2>&1; then cd /tmp >/dev/null 2>&1 || true; npm i -g "+joined+" >/dev/null 2>&1 || sudo -n npm i -g "+joined+" >/dev/null 2>&1 || true; fi",
 		)
 	}
-	parts = append(parts, "if command -v opencode >/dev/null 2>&1; then opencode --version >/dev/null 2>&1 || true; fi")
-	parts = append(parts, "if command -v codex >/dev/null 2>&1; then codex --version >/dev/null 2>&1 || true; fi")
-	parts = append(parts, "if command -v claude >/dev/null 2>&1; then claude --version >/dev/null 2>&1 || true; fi")
 
+	for _, bin := range agentprofile.AllBinaries() {
+		parts = append(parts, "if command -v "+bin+" >/dev/null 2>&1; then "+bin+" --version >/dev/null 2>&1 || true; fi")
+	}
+
+	parts = append(parts,
+		"mkdir -p ~/.config ~/.local/share",
+		"if command -v npm >/dev/null 2>&1; then cd /tmp >/dev/null 2>&1 || true; NPM_BIN=$(npm bin -g 2>/dev/null || true); if [ -n \"$NPM_BIN\" ] && [ -d \"$NPM_BIN\" ]; then export PATH=\"$NPM_BIN:$PATH\"; fi; fi",
+	)
 	return strings.Join(parts, "; ")
 }
+
+func buildCredentialSymlinkCleanup() string {
+	dirs := make(map[string]struct{})
+	for _, cf := range agentprofile.AllCredFiles() {
+		dir := filepath.Dir(cf)
+		dirs[dir] = struct{}{}
+	}
+	var checks []string
+	for dir := range dirs {
+		checks = append(checks, `if [ -L "$HOME/`+dir+`" ]; then rm -f "$HOME/`+dir+`"; fi`)
+	}
+	return strings.Join(checks, "; ")
+}
+
 
 func listLimaInstances(ctx context.Context) ([]string, error) {
 	cmd := exec.CommandContext(ctx, "limactl", "ls", "--format", "{{.Name}}")
@@ -724,7 +719,7 @@ func (d *Driver) defaultInstanceName() string {
 	return "nexus-seatbelt"
 }
 
-func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance, bundle string) error {
+func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance, configBundle string) error {
 	instance = strings.TrimSpace(instance)
 	if instance == "" {
 		instance = d.defaultInstanceName()
@@ -739,13 +734,8 @@ func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance, bundl
 		d.bootstrapped[instance] = true
 		return nil
 	}
-	if err := d.bootstrapInstance(ctx, instance, bundle); err != nil {
+	if err := d.bootstrapInstance(ctx, instance, configBundle); err != nil {
 		return err
-	}
-	if bundle != "" {
-		if err := injectAuthBundle(ctx, instance, bundle); err != nil {
-			return fmt.Errorf("inject auth bundle into %s: %w", instance, err)
-		}
 	}
 	d.bootstrapped[instance] = true
 	return nil

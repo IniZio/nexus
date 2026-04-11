@@ -8,20 +8,12 @@ Nexus remote workspace core: **Workspace Daemon** (Go, `packages/nexus`) and **W
 
 **The daemon may run on a different machine than the user.** Design and verify under that assumption.
 
-- Daemon host paths are not user paths; do not read user credentials from the daemon’s `$HOME` and assume they belong to the user.
-- Symlink-based credential tricks break when the daemon is remote; user-owned secrets should travel via RPC (`workspace.create` fields, `AuthBinding`, auth relay at exec time, or explicit client-supplied payloads).
+- Daemon host paths are not user paths; do not read user credentials from the daemon's `$HOME` and assume they belong to the user.
+- Symlink-based credential tricks break when the daemon is remote; user-owned secrets must travel via RPC (`workspace.create` `configBundle`, auth relay at exec time, or explicit client-supplied payloads).
 
-**Host auth bundle (AI tool configs in the guest):** `packages/nexus/pkg/runtime/authbundle` → `ResolveFromOptions` accepts **only** a client-supplied `host_auth_bundle` (base64 gzip+tar), validated and capped at **4MiB decoded**; it never reads the daemon disk for that payload.
+**Host CLI sync:** `nexus create` calls `authbundle.BuildFromHome()` on the **client machine** and sends the result as `configBundle` in `workspace.create`. The daemon never reads the daemon host's `$HOME` for user credentials. Seatbelt delivers the bundle via a host-side temp file (no SSH arg-length limit), then unpacks it in the guest; it does **not** create live symlinks back to the daemon's filesystem.
 
-`BuildFromHome()` (used by `nexus workspace create` on the **CLI host**) walks fixed roots under `$HOME` (`.config/opencode`, `.config/codex`, `.codex`, `.config/openai`, `.claude`) but **includes only registry-allowed files**: regular files only (no symlinks), **≤512KiB each**, extensions `.json`/`.yaml`/`.yml` (plus `CLAUDE.md` at `.claude/` root), and **excludes** `.claude/projects/**`. Anything else (e.g. `.pem`, caches, binaries) is skipped so the archive stays small and predictable.
-
-SDK-supplied `hostAuthBundle` is **not** re-filtered by the daemon—only size/base64 checks apply; match the CLI rules when building your own tarball for parity.
-
-Programmatic clients that omit `hostAuthBundle` send no bundle (guest may still install CLIs based on daemon `PATH` during bootstrap).
-
-**Lifecycle handlers** (`pause`, `resume`, `fork`, …) call `EnsureLocalRuntimeWorkspace` with an **empty** auth struct so they never re-inject a daemon-side bundle.
-
-Flag any new feature that reads user-owned data from the daemon filesystem without an explicit client-supplied or relayed payload.
+Flag any feature that reads user-owned data from the daemon filesystem without an explicit client-supplied or relayed payload.
 
 ## Enforcement
 
@@ -34,10 +26,7 @@ User-facing docs live under `docs/`: `tutorials/`, `reference/`, `dev/` (contrib
 ```text
 docs/
 ├── index.md
-├── tutorials/   (installation, operations)
-├── reference/   (cli, sdk, host-auth-bundle, workspace-config)
+├── tutorials/
+├── reference/   (cli, sdk, workspace-config, host-auth-bundle)
 └── dev/         (contributing, roadmap)
 ```
-
-Canonical **host auth bundle** rules (roots, extensions, size): `docs/reference/host-auth-bundle.md`.
-

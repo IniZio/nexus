@@ -162,7 +162,10 @@ export interface WorkspaceCreateSpec {
   policy?: WorkspacePolicy;
   /** Preferred backend (e.g. "local", "lxc", "firecracker"). Daemon resolves best available if omitted. */
   backend?: string;
-  hostAuthBundle?: string;
+  /** Auth binding map (binding name → token value). */
+  authBinding?: Record<string, string>;
+  /** Base64-encoded gzipped tar of agent credential and config files from the user's home directory. Build with `credsbundle.Build()` on the client machine before creating the workspace. Required for remote daemon setups where the daemon cannot read the user's local filesystem. Max 4 MiB decoded. */
+  configBundle?: string;
 }
 
 export interface WorkspaceRecord {
@@ -279,8 +282,10 @@ export interface WorkspaceStartResult {
 export interface PTYOpenParams {
   workspaceId: string;
   shell?: string;
+  workdir?: string;
   cols?: number;
   rows?: number;
+  authRelayToken?: string;
 }
 
 export interface PTYOpenResult {
