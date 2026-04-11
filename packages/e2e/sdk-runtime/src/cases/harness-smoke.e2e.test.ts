@@ -14,7 +14,7 @@ describe('sdk-runtime e2e harness', () => {
     if (env) {
       const client = await connectSDKClient(env);
       try {
-        const caps = await client.workspace.capabilities();
+        const caps = await client.workspaces.capabilities();
         assertCapabilitiesArray(caps);
       } finally {
         await client.disconnect();
@@ -34,7 +34,7 @@ describe('sdk-runtime e2e harness', () => {
 
     const session = await startSession({ forceManaged: true });
     try {
-      const caps = await session.client.workspace.capabilities();
+      const caps = await session.client.workspaces.capabilities();
       assertCapabilitiesArray(caps);
     } finally {
       await session.stop();

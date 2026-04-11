@@ -1,16 +1,12 @@
 # Workspace Config
 
-Nexus uses file-driven defaults with a minimal config file.
-
-For most projects, `.nexus/workspace.json` can be omitted or kept minimal.
+Nexus uses convention-over-configuration. Most projects only need `nexus init`.
 
 ## File Location
 
 - `.nexus/workspace.json` in project root
 
-## Supported Fields
-
-Only these fields are supported:
+## Supported Shape
 
 ```json
 {
@@ -20,30 +16,30 @@ Only these fields are supported:
 ```
 
 - `$schema` is optional.
-- `version` is optional; if omitted, Nexus defaults it to `1`.
+- `version` is optional and defaults to `1`.
+- Additional keys are not supported.
 
-All other fields are hard-cut and ignored/rejected by strict parsing.
-
-## Convention Defaults
-
-Nexus behavior is driven by files and scripts:
+## What Is Configured by Convention
 
 - Lifecycle scripts:
   - `.nexus/lifecycles/setup.sh`
   - `.nexus/lifecycles/start.sh`
   - `.nexus/lifecycles/teardown.sh`
-- Doctor probes:
-  - executable scripts under `.nexus/probe/`
-- Doctor checks:
-  - executable scripts under `.nexus/check/`
-- Tunneling:
-  - compose ports discovered from `docker-compose.yml`/`docker-compose.yaml` when using `nexus tunnel <workspace-id>`
+- Doctor probes: executable scripts under `.nexus/probe/`
+- Doctor checks: executable scripts under `.nexus/check/`
+- Tunnel defaults: compose ports from `docker-compose.yml` or `docker-compose.yaml`
 
 ## Runtime Selection
 
-Runtime is selected automatically by Nexus:
+Runtime is selected automatically:
 
 - Linux: Firecracker-first
 - macOS: Firecracker via Lima when available, otherwise seatbelt fallback
 
-Project-level runtime selection fields in `workspace.json` are not supported.
+Project-level runtime overrides are intentionally not supported.
+
+## Related Docs
+
+- CLI: `docs/reference/cli.md`
+- SDK: `docs/reference/sdk.md`
+- Project structure: `docs/reference/project-structure.md`

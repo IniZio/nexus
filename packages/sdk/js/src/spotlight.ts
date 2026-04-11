@@ -1,13 +1,28 @@
 import {
-  SpotlightApplyComposePortsResult,
-  SpotlightApplyDefaultsResult,
+  SpotlightApplyComposePortsError,
   SpotlightExposeOptions,
   SpotlightForward,
-  SpotlightListResult,
 } from './types';
 import type { RPCClient } from './workspace-handle';
 
-export class SpotlightOperations {
+export type TunnelHandle = SpotlightForward & {
+  stop: () => Promise<boolean>;
+};
+
+export type TunnelListResult = {
+  forwards: TunnelHandle[];
+};
+
+export type TunnelApplyDefaultsResult = {
+  forwards: TunnelHandle[];
+};
+
+export type TunnelApplyComposePortsResult = {
+  forwards: TunnelHandle[];
+  errors: SpotlightApplyComposePortsError[];
+};
+
+export class TunnelOperations {
   private client: RPCClient;
   private workspaceId?: string;
 
@@ -16,9 +31,9 @@ export class SpotlightOperations {
     this.workspaceId = typeof defaultParams.workspaceId === 'string' ? defaultParams.workspaceId : undefined;
   }
 
-  async expose(workspaceId: string, options: SpotlightExposeOptions): Promise<SpotlightForward>;
-  async expose(options: SpotlightExposeOptions): Promise<SpotlightForward>;
-  async expose(workspaceOrOptions: string | SpotlightExposeOptions, maybeOptions?: SpotlightExposeOptions): Promise<SpotlightForward> {
+  async start(workspaceId: string, options: SpotlightExposeOptions): Promise<TunnelHandle>;
+  async start(options: SpotlightExposeOptions): Promise<TunnelHandle>;
+  async start(workspaceOrOptions: string | SpotlightExposeOptions, maybeOptions?: SpotlightExposeOptions): Promise<TunnelHandle> {
     const { workspaceId, options } = this.resolveWorkspaceAndOptions(workspaceOrOptions, maybeOptions);
     const result = await this.client.request<{ forward: SpotlightForward }>('spotlight.expose', {
       spec: {
@@ -30,27 +45,40 @@ export class SpotlightOperations {
       },
     });
 
-    return result.forward;
+    return this.attachStop(result.forward);
   }
 
-  async list(workspaceId?: string): Promise<SpotlightListResult> {
+  async list(workspaceId?: string): Promise<TunnelListResult> {
     const resolvedWorkspaceID = this.resolveWorkspaceID(workspaceId);
-    return this.client.request<SpotlightListResult>('spotlight.list', { workspaceId: resolvedWorkspaceID });
+    const result = await this.client.request<{ forwards: SpotlightForward[] }>('spotlight.list', { workspaceId: resolvedWorkspaceID });
+    return {
+      forwards: result.forwards.map((forward) => this.attachStop(forward)),
+    };
   }
 
-  async close(id: string): Promise<boolean> {
+  async stop(id: string): Promise<boolean> {
     const result = await this.client.request<{ closed: boolean }>('spotlight.close', { id });
     return result.closed;
   }
 
-  async applyDefaults(workspaceId?: string): Promise<SpotlightApplyDefaultsResult> {
+  async applyDefaults(workspaceId?: string): Promise<TunnelApplyDefaultsResult> {
     const resolvedWorkspaceID = this.resolveWorkspaceID(workspaceId);
-    return this.client.request<SpotlightApplyDefaultsResult>('spotlight.applyDefaults', { workspaceId: resolvedWorkspaceID });
+    const result = await this.client.request<{ forwards: SpotlightForward[] }>('spotlight.applyDefaults', { workspaceId: resolvedWorkspaceID });
+    return {
+      forwards: result.forwards.map((forward) => this.attachStop(forward)),
+    };
   }
 
-  async applyComposePorts(workspaceId?: string): Promise<SpotlightApplyComposePortsResult> {
+  async applyComposePorts(workspaceId?: string): Promise<TunnelApplyComposePortsResult> {
     const resolvedWorkspaceID = this.resolveWorkspaceID(workspaceId);
-    return this.client.request<SpotlightApplyComposePortsResult>('spotlight.applyComposePorts', { workspaceId: resolvedWorkspaceID });
+    const result = await this.client.request<{ forwards: SpotlightForward[]; errors: SpotlightApplyComposePortsError[] }>(
+      'spotlight.applyComposePorts',
+      { workspaceId: resolvedWorkspaceID }
+    );
+    return {
+      forwards: result.forwards.map((forward) => this.attachStop(forward)),
+      errors: result.errors,
+    };
   }
 
   private resolveWorkspaceAndOptions(workspaceOrOptions: string | SpotlightExposeOptions, maybeOptions?: SpotlightExposeOptions): {
@@ -66,7 +94,7 @@ export class SpotlightOperations {
 
     const scopedWorkspaceID = this.resolveWorkspaceID();
     if (!scopedWorkspaceID) {
-      throw new Error('workspaceId is required for spotlight.expose');
+      throw new Error('workspaceId is required for tunnel.expose');
     }
 
     return { workspaceId: scopedWorkspaceID, options: workspaceOrOptions };
@@ -81,6 +109,13 @@ export class SpotlightOperations {
       return this.workspaceId;
     }
 
-    throw new Error('workspaceId is required for spotlight operation');
+    throw new Error('workspaceId is required for tunnel operation');
+  }
+
+  private attachStop(forward: SpotlightForward): TunnelHandle {
+    return {
+      ...forward,
+      stop: async () => this.stop(forward.id),
+    };
   }
 }

@@ -31,14 +31,14 @@ describe('spotlight compose e2e', () => {
     const session = await startSession();
     let workspaceId = '';
     try {
-      const caps = await session.client.workspace.capabilities();
+      const caps = await session.client.workspaces.capabilities();
       if (!assertCapabilityOrSkip(caps, 'spotlight.tunnel', 'spotlight.tunnel capability unavailable on this daemon')) {
         return;
       }
 
       let handle;
       try {
-        handle = await session.client.workspace.create({
+        handle = await session.client.workspaces.create({
           repo: fixture.repoDir,
           workspaceName: 'spotlight-case',
           agentProfile: 'default',
@@ -51,7 +51,7 @@ describe('spotlight compose e2e', () => {
       }
       workspaceId = handle.id;
 
-      const applied = await handle.spotlight.applyComposePorts();
+      const applied = await handle.tunnel.applyComposePorts();
       if (applied.forwards.length === 0 && applied.errors.length > 0) {
         const detail = applied.errors[0].message;
         if (e2eStrictRuntime()) {
@@ -61,19 +61,19 @@ describe('spotlight compose e2e', () => {
         return;
       }
 
-      const list = await handle.spotlight.list();
+      const list = await handle.tunnel.list();
       expect(list.forwards.length).toBeGreaterThan(0);
       const webForward = list.forwards.find((fwd) => fwd.localPort === 18080);
       expect(webForward).toBeDefined();
 
-      const closed = await handle.spotlight.close(webForward!.id);
+      const closed = await webForward!.stop();
       expect(closed).toBe(true);
 
-      const afterClose = await handle.spotlight.list();
+      const afterClose = await handle.tunnel.list();
       expect(afterClose.forwards.some((fwd) => fwd.id === webForward!.id)).toBe(false);
     } finally {
       if (workspaceId !== '') {
-        await session.client.workspace.remove(workspaceId);
+        await session.client.workspaces.remove(workspaceId);
       }
       await session.stop();
       await cleanupFixture(fixture);

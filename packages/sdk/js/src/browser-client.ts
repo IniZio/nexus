@@ -5,9 +5,6 @@ import {
   RPCResponse,
   DisconnectReason,
 } from './types';
-import { FSOperations } from './fs';
-import { ExecOperations } from './exec';
-import { SpotlightOperations } from './spotlight';
 import { WorkspaceManager } from './workspace-manager';
 import { PTYOperations } from './pty';
 
@@ -38,11 +35,8 @@ export class BrowserWorkspaceClient {
   private requestId = 0;
   private notificationCallbacks: Map<string, Array<(params: unknown) => void>> = new Map();
 
-  public readonly fs: FSOperations;
-  public readonly exec: ExecOperations;
-  public readonly spotlight: SpotlightOperations;
-  public readonly pty: PTYOperations;
-  public readonly workspace: WorkspaceManager;
+  public readonly ssh: PTYOperations;
+  public readonly workspaces: WorkspaceManager;
 
   constructor(config: WorkspaceClientConfig) {
     this.config = {
@@ -54,11 +48,8 @@ export class BrowserWorkspaceClient {
       maxReconnectAttempts: config.maxReconnectAttempts ?? 10,
     };
 
-    this.fs = new FSOperations(this, this.config.workspaceId ? { workspaceId: this.config.workspaceId } : {});
-    this.exec = new ExecOperations(this, this.config.workspaceId ? { workspaceId: this.config.workspaceId } : {});
-    this.spotlight = new SpotlightOperations(this, this.config.workspaceId ? { workspaceId: this.config.workspaceId } : {});
-    this.pty = new PTYOperations(this);
-    this.workspace = new WorkspaceManager(this);
+    this.ssh = new PTYOperations(this);
+    this.workspaces = new WorkspaceManager(this);
   }
 
   get isConnected(): boolean {
@@ -141,6 +132,10 @@ export class BrowserWorkspaceClient {
     this.state = 'disconnected';
     this.requestMap.forEach(({ reject }) => reject(new Error('Connection closed')));
     this.requestMap.clear();
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.disconnect();
   }
 
   onDisconnect(callback: () => void): void {
@@ -255,5 +250,3 @@ export class BrowserWorkspaceClient {
     }, delay);
   }
 }
-
-export { BrowserWorkspaceClient as BrowserClient };

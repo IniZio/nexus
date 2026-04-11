@@ -22,13 +22,13 @@ describe('runtime selection e2e', () => {
 
     let ws: WorkspaceHandle | null = null;
     try {
-      const caps = await session.client.workspace.capabilities();
+      const caps = await session.client.workspaces.capabilities();
       if (!assertCapabilityOrSkip(caps, 'runtime.firecracker', 'runtime.firecracker capability unavailable on this host')) {
         return;
       }
 
       try {
-        ws = await withTimeout(session.client.workspace.create({
+        ws = await withTimeout(session.client.workspaces.create({
           repo: fixture.repoDir,
           workspaceName: 'runtime-pass',
           agentProfile: 'default',
@@ -40,12 +40,12 @@ describe('runtime selection e2e', () => {
         throw error;
       }
 
-      const rows = await session.client.workspace.list();
+      const rows = await session.client.workspaces.list();
       const created = rows.find((row) => row.id === ws?.id);
       expect(created?.backend).toBe('firecracker');
     } finally {
       if (ws) {
-        await session.client.workspace.remove(ws.id);
+        await session.client.workspaces.remove(ws.id);
       }
       await session.stop();
       await cleanupFixture(fixture);
@@ -66,13 +66,13 @@ describe('runtime selection e2e', () => {
 
     let ws: WorkspaceHandle | null = null;
     try {
-      const caps = await session.client.workspace.capabilities();
+      const caps = await session.client.workspaces.capabilities();
       if (!assertCapabilityOrSkip(caps, 'runtime.seatbelt', 'runtime.seatbelt capability unavailable on this host')) {
         return;
       }
 
       try {
-        ws = await withTimeout(session.client.workspace.create({
+        ws = await withTimeout(session.client.workspaces.create({
           repo: fixture.repoDir,
           workspaceName: 'runtime-nested',
           agentProfile: 'default',
@@ -84,12 +84,12 @@ describe('runtime selection e2e', () => {
         throw error;
       }
 
-      const rows = await session.client.workspace.list();
+      const rows = await session.client.workspaces.list();
       const created = rows.find((row) => row.id === ws?.id);
       expect(created?.backend).toBe('seatbelt');
     } finally {
       if (ws) {
-        await session.client.workspace.remove(ws.id);
+        await session.client.workspaces.remove(ws.id);
       }
       await session.stop();
       await cleanupFixture(fixture);
@@ -110,7 +110,7 @@ describe('runtime selection e2e', () => {
 
     try {
       await expect(
-        withTimeout(session.client.workspace.create({
+        withTimeout(session.client.workspaces.create({
           repo: fixture.repoDir,
           workspaceName: 'runtime-hard-fail',
           agentProfile: 'default',
@@ -136,7 +136,7 @@ describe('runtime selection e2e', () => {
 
     try {
       await expect(
-        withTimeout(session.client.workspace.create({
+        withTimeout(session.client.workspaces.create({
           repo: fixture.repoDir,
           workspaceName: 'runtime-installable',
           agentProfile: 'default',

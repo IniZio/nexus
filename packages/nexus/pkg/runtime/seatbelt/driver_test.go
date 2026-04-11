@@ -45,11 +45,15 @@ func TestCreateRunsBootstrapAndMount(t *testing.T) {
 
 	calledBootstrap := false
 	calledPrepare := false
+	d.hostHome = "/Users/tester"
 
 	d.bootstrapInstance = func(ctx context.Context, instance, hostHome string) error {
 		calledBootstrap = true
 		if instance == "" {
 			t.Fatal("expected non-empty instance")
+		}
+		if hostHome != "/Users/tester" {
+			t.Fatalf("expected host auth sync hostHome, got %q", hostHome)
 		}
 		return nil
 	}
@@ -143,16 +147,16 @@ func TestCreateFailsWhenBootstrapFails(t *testing.T) {
 }
 
 func TestBuildSeatbeltBootstrapScriptIncludesIsolationAndForwarding(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("/Users/tester", hostCLIAvailability{Opencode: true, Codex: true, Claude: true})
+	script := buildSeatbeltBootstrapScript("/Users/tester", hostCLIAvailability{Opencode: true, Codex: true, Claude: true}, "Zm9v")
 
 	for _, token := range []string{
+		"printf %s 'Zm9v' | base64 -d",
 		"unset DOCKER_HOST DOCKER_CONTEXT",
 		"docker.io",
 		"docker-compose-v2",
 		"npm i -g opencode-ai @openai/codex @anthropic-ai/claude-code",
-		"ln -sfn '/Users/tester'/.config/opencode ~/.config/opencode",
-		"ln -sfn '/Users/tester'/.codex ~/.codex",
-		"ln -sfn '/Users/tester'/.claude ~/.claude",
+		"mkdir -p ~/.config ~/.config/codex ~/.config/github-copilot ~/.config/opencode ~/.config/openai",
+		"mkdir -p ~/.local/share/opencode",
 		"npm bin -g",
 	} {
 		if !strings.Contains(script, token) {
@@ -162,7 +166,7 @@ func TestBuildSeatbeltBootstrapScriptIncludesIsolationAndForwarding(t *testing.T
 }
 
 func TestBuildSeatbeltBootstrapScriptInstallsAllManagedCLIs(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("/Users/tester", hostCLIAvailability{Opencode: true, Codex: false, Claude: true})
+	script := buildSeatbeltBootstrapScript("/Users/tester", hostCLIAvailability{Opencode: true, Codex: false, Claude: true}, "")
 	if !strings.Contains(script, "npm i -g opencode-ai @openai/codex @anthropic-ai/claude-code") {
 		t.Fatalf("expected managed CLI install command, got %q", script)
 	}
@@ -321,3 +325,4 @@ func TestIsTransientLimaShellError(t *testing.T) {
 		})
 	}
 }
+

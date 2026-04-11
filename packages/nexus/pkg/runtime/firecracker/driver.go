@@ -243,7 +243,7 @@ func detectHostCLIAvailability() hostCLIAvailability {
 }
 
 func buildGuestCLIBootstrapCommand(hostCLI hostCLIAvailability) string {
-	parts := []string{"set -e", "mkdir -p ~/.config"}
+	parts := []string{"set -e", "mkdir -p ~/.config ~/.config/codex ~/.config/github-copilot ~/.config/opencode ~/.config/openai ~/.local/share/opencode"}
 	parts = append(parts,
 		`if [ -n "${NEXUS_HOST_AUTH_BUNDLE:-}" ]; then `+
 			`(printf '%s' "$NEXUS_HOST_AUTH_BUNDLE" | base64 -d 2>/dev/null || printf '%s' "$NEXUS_HOST_AUTH_BUNDLE" | base64 -D 2>/dev/null) >/tmp/nexus-auth.tar.gz && `+
@@ -285,11 +285,17 @@ func buildHostAuthBundle() (string, error) {
 	}
 
 	paths := []string{
-		filepath.Join(home, ".config", "opencode"),
-		filepath.Join(home, ".config", "codex"),
-		filepath.Join(home, ".codex"),
-		filepath.Join(home, ".config", "openai"),
-		filepath.Join(home, ".claude"),
+		filepath.Join(home, ".config", "opencode", "opencode.json"),
+		filepath.Join(home, ".config", "opencode", "ocx.jsonc"),
+		filepath.Join(home, ".config", "opencode", "dcp.jsonc"),
+		filepath.Join(home, ".local", "share", "opencode", "auth.json"),
+		filepath.Join(home, ".config", "github-copilot", "hosts.json"),
+		filepath.Join(home, ".config", "github-copilot", "apps.json"),
+		filepath.Join(home, ".codex", "auth.json"),
+		filepath.Join(home, ".codex", "version.json"),
+		filepath.Join(home, ".codex", ".codex-global-state.json"),
+		filepath.Join(home, ".config", "openai", "auth.json"),
+		filepath.Join(home, ".claude", ".credentials.json"),
 	}
 
 	var buf bytes.Buffer
@@ -303,7 +309,7 @@ func buildHostAuthBundle() (string, error) {
 			_ = gz.Close()
 			return "", err
 		}
-		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+		if _, statErr := os.Stat(path); statErr == nil {
 			added++
 		}
 	}

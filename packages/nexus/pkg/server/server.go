@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +29,7 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/lifecycle"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
+	"github.com/inizio/nexus/packages/nexus/pkg/safeenv"
 	"github.com/inizio/nexus/packages/nexus/pkg/server/portal"
 	"github.com/inizio/nexus/packages/nexus/pkg/services"
 	"github.com/inizio/nexus/packages/nexus/pkg/spotlight"
@@ -95,11 +97,12 @@ type ptySession struct {
 }
 
 type ptyOpenParams struct {
-	WorkspaceID string `json:"workspaceId,omitempty"`
-	Shell       string `json:"shell,omitempty"`
-	WorkDir     string `json:"workdir,omitempty"`
-	Cols        int    `json:"cols,omitempty"`
-	Rows        int    `json:"rows,omitempty"`
+	WorkspaceID     string `json:"workspaceId,omitempty"`
+	Shell           string `json:"shell,omitempty"`
+	WorkDir         string `json:"workdir,omitempty"`
+	Cols            int    `json:"cols,omitempty"`
+	Rows            int    `json:"rows,omitempty"`
+	AuthRelayToken  string `json:"authRelayToken,omitempty"`
 }
 
 type ptyOpenResult struct {
@@ -119,6 +122,72 @@ type ptyResizeParams struct {
 
 type ptyCloseParams struct {
 	SessionID string `json:"sessionId"`
+}
+
+func shellQuoteUnixExport(val string) string {
+	return "'" + strings.ReplaceAll(val, "'", "'\\''") + "'"
+}
+
+func buildRelayExportLines(env map[string]string) string {
+	if len(env) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString("export ")
+		b.WriteString(k)
+		b.WriteString("=")
+		b.WriteString(shellQuoteUnixExport(env[k]))
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func (s *Server) consumePTYAuthRelay(p ptyOpenParams, workspaceID string) (map[string]string, *rpckit.RPCError) {
+	tok := strings.TrimSpace(p.AuthRelayToken)
+	if tok == "" {
+		return nil, nil
+	}
+	if s.authRelayBroker == nil {
+		return nil, rpckit.ErrAuthRelayInvalid
+	}
+	injected, ok := s.authRelayBroker.Consume(tok, workspaceID)
+	if !ok {
+		return nil, rpckit.ErrAuthRelayInvalid
+	}
+	return injected, nil
+}
+
+func (s *Server) forwardRelayChunksUntilShellWriteAck(dec *json.Decoder, conn *Connection, sessionID string) error {
+	for {
+		var msg map[string]any
+		if err := dec.Decode(&msg); err != nil {
+			return err
+		}
+		typeStr, _ := msg["type"].(string)
+		if typeStr == "ack" {
+			return nil
+		}
+		if typeStr == "chunk" {
+			if data, ok := msg["data"].(string); ok && data != "" {
+				s.sendPTYData(conn, sessionID, data)
+			}
+			continue
+		}
+		if typeStr == "result" {
+			exitCode := 0
+			if v, ok := msg["exit_code"].(float64); ok {
+				exitCode = int(v)
+			}
+			return fmt.Errorf("unexpected shell result during auth relay inject (exit %d)", exitCode)
+		}
+		return fmt.Errorf("unexpected agent message type %q during auth relay inject", typeStr)
+	}
 }
 
 var newSpotlightManagerForServer = func(workspaceMgr *workspacemgr.Manager) (*spotlight.Manager, error) {
@@ -721,10 +790,15 @@ func (s *Server) handlePTYOpen(params json.RawMessage, conn *Connection, ws *wor
 		return nil, accessErr
 	}
 
+	relayEnv, relayErr := s.consumePTYAuthRelay(p, workspaceID)
+	if relayErr != nil {
+		return nil, relayErr
+	}
+
 	if wsRecord, ok := s.workspaceMgr.Get(workspaceID); ok {
 		log.Printf("[pty.open] workspace=%s name=%s backend=%s localWorktree=%s root=%s", wsRecord.ID, wsRecord.WorkspaceName, wsRecord.Backend, wsRecord.LocalWorktreePath, wsRecord.RootPath)
 		if wsRecord.Backend == "firecracker" || wsRecord.Backend == "seatbelt" {
-			return s.handleFirecrackerPTYOpen(conn, p, wsRecord)
+			return s.handleFirecrackerPTYOpen(conn, p, wsRecord, relayEnv)
 		}
 		if strings.TrimSpace(wsRecord.LocalWorktreePath) != "" {
 			workDir = wsRecord.LocalWorktreePath
@@ -733,7 +807,13 @@ func (s *Server) handlePTYOpen(params json.RawMessage, conn *Connection, ws *wor
 
 	cmd := exec.Command(shell)
 	cmd.Dir = workDir
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmdEnv := append(safeenv.Base(), "TERM=xterm-256color")
+	if len(relayEnv) > 0 {
+		for k, v := range relayEnv {
+			cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%s", k, v))
+		}
+	}
+	cmd.Env = cmdEnv
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
 	if err != nil {
@@ -752,7 +832,7 @@ func (s *Server) handlePTYOpen(params json.RawMessage, conn *Connection, ws *wor
 	return &ptyOpenResult{SessionID: sessionID}, nil
 }
 
-func (s *Server) handleFirecrackerPTYOpen(conn *Connection, p ptyOpenParams, wsRecord *workspacemgr.Workspace) (interface{}, *rpckit.RPCError) {
+func (s *Server) handleFirecrackerPTYOpen(conn *Connection, p ptyOpenParams, wsRecord *workspacemgr.Workspace, relayEnv map[string]string) (interface{}, *rpckit.RPCError) {
 	if s.runtimeFactory == nil {
 		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: "runtime factory unavailable"}
 	}
@@ -809,6 +889,9 @@ func (s *Server) handleFirecrackerPTYOpen(conn *Connection, p ptyOpenParams, wsR
 		"command": shell,
 		"workdir": workDirHint,
 	}
+	if strings.TrimSpace(wsRecord.LocalWorktreePath) != "" {
+		openReq["local_path"] = strings.TrimSpace(wsRecord.LocalWorktreePath)
+	}
 
 	if err := enc.Encode(openReq); err != nil {
 		_ = agentConn.Close()
@@ -828,6 +911,26 @@ func (s *Server) handleFirecrackerPTYOpen(conn *Connection, p ptyOpenParams, wsR
 		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: stderr}
 	}
 
+	if len(relayEnv) > 0 {
+		data := buildRelayExportLines(relayEnv)
+		if data != "" {
+			writeID := fmt.Sprintf("relay-%d", time.Now().UnixNano())
+			writeReq := map[string]any{
+				"id":   writeID,
+				"type": "shell.write",
+				"data": data,
+			}
+			if err := enc.Encode(writeReq); err != nil {
+				_ = agentConn.Close()
+				return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("auth relay shell write failed: %v", err)}
+			}
+			if err := s.forwardRelayChunksUntilShellWriteAck(dec, conn, sessionID); err != nil {
+				_ = agentConn.Close()
+				return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("auth relay inject failed: %v", err)}
+			}
+		}
+	}
+
 	session := &ptySession{id: sessionID, conn: agentConn, enc: enc, dec: dec, remote: true, done: make(chan struct{})}
 
 	conn.ptyMu.Lock()
@@ -841,10 +944,15 @@ func (s *Server) handleFirecrackerPTYOpen(conn *Connection, p ptyOpenParams, wsR
 
 func (s *Server) streamRemoteShellOutput(conn *Connection, session *ptySession) {
 	defer close(session.done)
+	sentExit := false
 	for {
 		var msg map[string]any
 		err := session.dec.Decode(&msg)
 		if err != nil {
+			if !sentExit {
+				s.sendPTYExit(conn, session.id, -1)
+				sentExit = true
+			}
 			break
 		}
 
@@ -861,8 +969,10 @@ func (s *Server) streamRemoteShellOutput(conn *Connection, session *ptySession) 
 				exitCode = int(v)
 			}
 			s.sendPTYExit(conn, session.id, exitCode)
+			sentExit = true
 			break
 		}
+		continue
 	}
 
 	conn.removePTY(session.id)
@@ -882,10 +992,7 @@ func (s *Server) sendPTYData(conn *Connection, sessionID, data string) {
 	if err != nil {
 		return
 	}
-	select {
-	case conn.send <- encoded:
-	default:
-	}
+	conn.send <- encoded
 }
 
 func (s *Server) sendPTYExit(conn *Connection, sessionID string, exitCode int) {
@@ -901,10 +1008,7 @@ func (s *Server) sendPTYExit(conn *Connection, sessionID string, exitCode int) {
 	if err != nil {
 		return
 	}
-	select {
-	case conn.send <- encoded:
-	default:
-	}
+	conn.send <- encoded
 }
 
 func (s *Server) handlePTYWrite(params json.RawMessage, conn *Connection) (interface{}, *rpckit.RPCError) {
@@ -997,10 +1101,7 @@ func (s *Server) streamPTYOutput(conn *Connection, session *ptySession) {
 			}
 			encoded, marshalErr := json.Marshal(payload)
 			if marshalErr == nil {
-				select {
-				case conn.send <- encoded:
-				default:
-				}
+				conn.send <- encoded
 			}
 		}
 
@@ -1010,26 +1111,23 @@ func (s *Server) streamPTYOutput(conn *Connection, session *ptySession) {
 	}
 
 	conn.removePTY(session.id)
+	exitCode := -1
 	if session.cmd.Process != nil {
 		_, _ = session.cmd.Process.Wait()
 	}
 	if session.cmd.ProcessState != nil {
-		exitCode := session.cmd.ProcessState.ExitCode()
-		payload := map[string]any{
-			"jsonrpc": "2.0",
-			"method":  "pty.exit",
-			"params": map[string]any{
-				"sessionId": session.id,
-				"exitCode":  exitCode,
-			},
-		}
-		encoded, marshalErr := json.Marshal(payload)
-		if marshalErr == nil {
-			select {
-			case conn.send <- encoded:
-			default:
-			}
-		}
+		exitCode = session.cmd.ProcessState.ExitCode()
+	}
+	payload := map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "pty.exit",
+		"params": map[string]any{
+			"sessionId": session.id,
+			"exitCode":  exitCode,
+		},
+	}
+	if encoded, marshalErr := json.Marshal(payload); marshalErr == nil {
+		conn.send <- encoded
 	}
 }
 

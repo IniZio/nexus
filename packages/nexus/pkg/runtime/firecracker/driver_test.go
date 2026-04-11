@@ -317,10 +317,30 @@ func TestBuildHostAuthBundleIncludesKnownConfigPaths(t *testing.T) {
 	}
 	mkdir(filepath.Join(home, ".config", "opencode"))
 	mkdir(filepath.Join(home, ".config", "codex"))
+	mkdir(filepath.Join(home, ".config", "github-copilot"))
+	mkdir(filepath.Join(home, ".local", "share", "opencode"))
 	mkdir(filepath.Join(home, ".codex"))
 	mkdir(filepath.Join(home, ".claude"))
 	if err := os.WriteFile(filepath.Join(home, ".config", "opencode", "session.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatalf("write opencode session: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "opencode", "opencode.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write opencode config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".local", "share", "opencode", "auth.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write opencode auth: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "github-copilot", "hosts.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write github-copilot hosts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "auth.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write codex auth: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "version.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write codex version: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", ".credentials.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write claude credentials: %v", err)
 	}
 
 	bundle, err := buildHostAuthBundle()
@@ -356,16 +376,23 @@ func TestBuildHostAuthBundleIncludesKnownConfigPaths(t *testing.T) {
 	}
 
 	joined := strings.Join(names, "\n")
-	if !strings.Contains(joined, ".config/opencode") {
-		t.Fatalf("expected opencode path in archive, got %q", joined)
+	if !strings.Contains(joined, ".config/opencode/opencode.json") {
+		t.Fatalf("expected opencode config path in archive, got %q", joined)
 	}
-	if !strings.Contains(joined, ".config/codex") {
-		t.Fatalf("expected codex path in archive, got %q", joined)
+	if !strings.Contains(joined, ".local/share/opencode/auth.json") {
+		t.Fatalf("expected opencode auth path in archive, got %q", joined)
 	}
-	if !strings.Contains(joined, ".codex") {
-		t.Fatalf("expected .codex path in archive, got %q", joined)
+	if !strings.Contains(joined, ".config/github-copilot/hosts.json") {
+		t.Fatalf("expected github-copilot hosts in archive, got %q", joined)
+	}
+	if !strings.Contains(joined, ".codex/auth.json") {
+		t.Fatalf("expected .codex auth in archive, got %q", joined)
+	}
+	if !strings.Contains(joined, ".codex/version.json") {
+		t.Fatalf("expected .codex version in archive, got %q", joined)
 	}
 	if !strings.Contains(joined, ".claude") {
 		t.Fatalf("expected claude path in archive, got %q", joined)
 	}
 }
+

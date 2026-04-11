@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -389,13 +391,15 @@ func runWorkspaceStartCommand(args []string) {
 
 func runWorkspaceSSHCommand(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: nexus ssh <id> [--shell <shell>] [--command <cmd>]")
+		fmt.Fprintln(os.Stderr, "usage: nexus ssh <id> [--shell <shell>] [--relay-token <token>] [--timeout <dur>] [--command <cmd>]")
 		os.Exit(2)
 	}
 	workspaceID := strings.TrimSpace(args[0])
 	fs := flag.NewFlagSet("workspace ssh", flag.ExitOnError)
 	fs.SetOutput(os.Stderr)
 	shell := fs.String("shell", "bash", "shell to launch in workspace")
+	relayToken := fs.String("relay-token", "", "auth relay token (from SDK authrelay.mint); also $NEXUS_AUTH_RELAY_TOKEN")
+	ptyTimeout := fs.Duration("timeout", 0, "max wall time waiting for PTY output and exit (e.g. 90s); 0 = no limit")
 	command := fs.String("command", "", "command to run before exit")
 	_ = fs.Parse(args[1:])
 
@@ -406,18 +410,28 @@ func runWorkspaceSSHCommand(args []string) {
 	}
 	defer conn.Close()
 
+	token := strings.TrimSpace(*relayToken)
+	if token == "" {
+		token = strings.TrimSpace(os.Getenv("NEXUS_AUTH_RELAY_TOKEN"))
+	}
+
+	openParams := map[string]any{
+		"workspaceId": workspaceID,
+		"shell":       strings.TrimSpace(*shell),
+		"workdir":     "/workspace",
+		"cols":        120,
+		"rows":        40,
+	}
+	if token != "" {
+		openParams["authRelayToken"] = token
+	}
+
 	openID := fmt.Sprintf("open-%d", time.Now().UnixNano())
 	if err := conn.WriteJSON(rpcRequest{
 		JSONRPC: "2.0",
 		ID:      openID,
 		Method:  "pty.open",
-		Params: map[string]any{
-			"workspaceId": workspaceID,
-			"shell":       strings.TrimSpace(*shell),
-			"workdir":     "/workspace",
-			"cols":        120,
-			"rows":        40,
-		},
+		Params:  openParams,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "nexus ssh: pty.open send failed: %v\n", err)
 		os.Exit(1)
@@ -487,11 +501,42 @@ func runWorkspaceSSHCommand(args []string) {
 		}()
 	}
 
+	var sessionDeadline time.Time
+	if *ptyTimeout > 0 {
+		sessionDeadline = time.Now().Add(*ptyTimeout)
+	}
+
 	for {
+		if !sessionDeadline.IsZero() && time.Now().After(sessionDeadline) {
+			fmt.Fprintf(os.Stderr, "nexus ssh: timed out after %v (no pty.exit)\n", *ptyTimeout)
+			_ = send("pty.close", map[string]any{"sessionId": sessionID})
+			os.Exit(124)
+		}
+		if !sessionDeadline.IsZero() {
+			_ = conn.SetReadDeadline(sessionDeadline)
+		} else {
+			_ = conn.SetReadDeadline(time.Time{})
+		}
+
 		var msg rpcResponse
 		if err := conn.ReadJSON(&msg); err != nil {
+			var netErr net.Error
+			if !sessionDeadline.IsZero() && errors.As(err, &netErr) && netErr.Timeout() {
+				fmt.Fprintf(os.Stderr, "nexus ssh: timed out after %v\n", *ptyTimeout)
+				_ = send("pty.close", map[string]any{"sessionId": sessionID})
+				os.Exit(124)
+			}
+			if !sessionDeadline.IsZero() && time.Now().After(sessionDeadline) {
+				fmt.Fprintf(os.Stderr, "nexus ssh: timed out after %v\n", *ptyTimeout)
+				_ = send("pty.close", map[string]any{"sessionId": sessionID})
+				os.Exit(124)
+			}
 			fmt.Fprintf(os.Stderr, "nexus ssh: read failed: %v\n", err)
 			os.Exit(1)
+		}
+
+		if msg.Method == "" && (msg.ID != "" || msg.Result != nil) {
+			continue
 		}
 
 		if msg.Method == "pty.data" {
