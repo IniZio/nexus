@@ -1,4 +1,3 @@
-import WebSocket from 'ws';
 import { RpcTransportCore } from './rpc/connection';
 import {
   WorkspaceClientConfig,
@@ -7,9 +6,10 @@ import {
 } from './types';
 import { WorkspaceManager } from './workspace-manager';
 import { PTYOperations } from './pty';
+import { NodeWebSocketTransport } from './transport/node-websocket';
 
 export class WorkspaceClient {
-  private ws: WebSocket | null = null;
+  private transport: NodeWebSocketTransport | null = null;
   private core = new RpcTransportCore({
     onParseError: (error) => console.error('Failed to parse RPC response:', error),
     onReconnectScheduled: ({ attempt, delay }) =>
@@ -70,34 +70,33 @@ export class WorkspaceClient {
         }
         url.searchParams.set('token', this.config.token);
 
-        this.ws = new WebSocket(url.toString());
-
-        this.ws.on('open', () => {
+        const t = new NodeWebSocketTransport();
+        t.onOpen = () => {
           this.state = 'connected';
           this.core.resetReconnectAttempts();
           resolve();
-        });
-
-        this.ws.on('message', (data: Buffer) => {
-          this.core.handleMessage(data.toString());
-        });
-
-        this.ws.on('close', (code: number, reason: Buffer) => {
+        };
+        t.onMessage = (data) => {
+          this.core.handleMessage(data);
+        };
+        t.onClose = (code: number, reason: string) => {
           const disconnectReason: DisconnectReason = {
             code,
-            reason: reason.toString(),
+            reason,
           };
           this.handleDisconnect(disconnectReason);
-        });
-
-        this.ws.on('error', (error: Error) => {
+        };
+        t.onError = (error: Error) => {
           if (this.state === 'connecting') {
             reject(error);
           } else {
             console.error('WebSocket error:', error.message);
           }
-        });
+        };
+        this.transport = t;
+        t.connect(url.toString());
       } catch (error) {
+        this.transport = null;
         this.state = 'disconnected';
         reject(error);
       }
@@ -108,9 +107,9 @@ export class WorkspaceClient {
     this.reconnectEnabled = false;
     this.core.clearReconnectTimer();
 
-    if (this.ws) {
-      this.ws.close(1000, 'Client disconnect');
-      this.ws = null;
+    if (this.transport) {
+      this.transport.disconnect();
+      this.transport = null;
     }
 
     this.state = 'disconnected';
@@ -133,13 +132,13 @@ export class WorkspaceClient {
     return this.core.request<T>(
       method,
       params,
-      (data) => this.ws!.send(data),
-      () => this.ws !== null && this.ws.readyState === WebSocket.OPEN
+      (data) => this.transport!.send(data),
+      () => this.transport !== null && this.transport.isOpen()
     );
   }
 
   private handleDisconnect(reason: DisconnectReason): void {
-    this.ws = null;
+    this.transport = null;
     this.state = 'disconnected';
 
     this.core.handleDisconnect(reason);

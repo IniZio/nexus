@@ -6,17 +6,10 @@ import {
 } from './types';
 import { WorkspaceManager } from './workspace-manager';
 import { PTYOperations } from './pty';
-
-type WSLike = {
-  readyState: number;
-  send: (data: string) => void;
-  close: (code?: number, reason?: string) => void;
-  addEventListener?: (event: string, handler: (...args: unknown[]) => void) => void;
-  on?: (event: string, handler: (...args: unknown[]) => void) => void;
-};
+import { BrowserWebSocketTransport } from './transport/browser-websocket';
 
 export class BrowserWorkspaceClient {
-  private ws: WSLike | null = null;
+  private transport: BrowserWebSocketTransport | null = null;
   private core = new RpcTransportCore({
     onParseError: (err) => console.warn('[nexus/browser] RPC parse error:', err),
     onReconnectScheduled: ({ delay, attempt }) =>
@@ -74,44 +67,27 @@ export class BrowserWorkspaceClient {
         }
         url.searchParams.set('token', this.config.token);
 
-        const WSCtor = (globalThis as { WebSocket?: new (url: string) => WSLike }).WebSocket;
-        if (!WSCtor) {
-          throw new Error('WebSocket is not available in this runtime');
-        }
-        this.ws = new WSCtor(url.toString());
-
-        const onOpen = () => {
+        const t = new BrowserWebSocketTransport();
+        t.onOpen = () => {
           this.state = 'connected';
           this.core.resetReconnectAttempts();
           resolve();
         };
-        const onMessage = (evt: { data?: unknown } | string) => {
-          const raw = typeof evt === 'string' ? evt : (evt as { data?: unknown }).data;
-          this.core.handleMessage(this.coerceMessage(raw));
+        t.onMessage = (data) => {
+          this.core.handleMessage(data);
         };
-        const onClose = (evt: { code?: number; reason?: string } | number, reasonMaybe?: string) => {
-          const code = typeof evt === 'number' ? evt : evt.code ?? 1000;
-          const reason = typeof evt === 'number' ? reasonMaybe ?? '' : evt.reason ?? '';
+        t.onClose = (code, reason) => {
           this.handleDisconnect({ code, reason });
         };
-        const onError = (error: unknown) => {
+        t.onError = (error) => {
           if (this.state === 'connecting') {
-            reject(error instanceof Error ? error : new Error('WebSocket connection error'));
+            reject(error);
           }
         };
-
-        if (this.ws.addEventListener) {
-          this.ws.addEventListener('open', onOpen);
-          this.ws.addEventListener('message', onMessage as (...args: unknown[]) => void);
-          this.ws.addEventListener('close', onClose as (...args: unknown[]) => void);
-          this.ws.addEventListener('error', onError as (...args: unknown[]) => void);
-        } else if (this.ws.on) {
-          this.ws.on('open', onOpen);
-          this.ws.on('message', onMessage as (...args: unknown[]) => void);
-          this.ws.on('close', onClose as (...args: unknown[]) => void);
-          this.ws.on('error', onError);
-        }
+        this.transport = t;
+        t.connect(url.toString());
       } catch (error) {
+        this.transport = null;
         this.state = 'disconnected';
         reject(error);
       }
@@ -121,9 +97,9 @@ export class BrowserWorkspaceClient {
   async disconnect(): Promise<void> {
     this.reconnectEnabled = false;
     this.core.clearReconnectTimer();
-    if (this.ws) {
-      this.ws.close(1000, 'Client disconnect');
-      this.ws = null;
+    if (this.transport) {
+      this.transport.disconnect();
+      this.transport = null;
     }
     this.state = 'disconnected';
     this.core.rejectAllPending('Connection closed');
@@ -145,24 +121,14 @@ export class BrowserWorkspaceClient {
     return this.core.request<T>(
       method,
       params,
-      (data) => this.ws!.send(data),
-      () => this.ws !== null && this.ws.readyState === 1,
+      (data) => this.transport!.send(data),
+      () => this.transport !== null && this.transport.isOpen(),
       'Not connected to workspace'
     );
   }
 
-  private coerceMessage(raw: unknown): string {
-    if (typeof raw === 'string') {
-      return raw;
-    }
-    if (raw && typeof raw === 'object' && 'toString' in raw) {
-      return String(raw);
-    }
-    return '';
-  }
-
   private handleDisconnect(reason: DisconnectReason): void {
-    this.ws = null;
+    this.transport = null;
     this.state = 'disconnected';
 
     this.core.handleDisconnect(reason);
