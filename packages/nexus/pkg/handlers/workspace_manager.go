@@ -317,7 +317,7 @@ func HandleWorkspaceCreate(ctx context.Context, params json.RawMessage, mgr *wor
 		return nil, rpckit.ErrInvalidParams
 	}
 
-	if rpcErr := ensureLocalRuntimeWorkspace(ctx, ws, factory, mgr); rpcErr != nil {
+	if rpcErr := ensureLocalRuntimeWorkspace(ctx, ws, factory, mgr, spec.ConfigBundle); rpcErr != nil {
 		_ = mgr.Remove(ws.ID)
 		return nil, rpcErr
 	}
@@ -501,7 +501,7 @@ func HandleWorkspacePause(ctx context.Context, params json.RawMessage, mgr *work
 	}
 
 	if factory != nil {
-		if rpcErr := ensureLocalRuntimeWorkspace(ctx, ws, factory, mgr); rpcErr != nil {
+		if rpcErr := ensureLocalRuntimeWorkspace(ctx, ws, factory, mgr, ""); rpcErr != nil {
 			return nil, rpcErr
 		}
 
@@ -534,7 +534,7 @@ func HandleWorkspaceResume(ctx context.Context, params json.RawMessage, mgr *wor
 	}
 
 	if factory != nil {
-		if rpcErr := ensureLocalRuntimeWorkspace(ctx, ws, factory, mgr); rpcErr != nil {
+		if rpcErr := ensureLocalRuntimeWorkspace(ctx, ws, factory, mgr, ""); rpcErr != nil {
 			return nil, rpcErr
 		}
 
@@ -574,7 +574,7 @@ func HandleWorkspaceFork(ctx context.Context, params json.RawMessage, mgr *works
 		if !ok {
 			return nil, rpckit.ErrWorkspaceNotFound
 		}
-		if rpcErr := ensureLocalRuntimeWorkspace(ctx, parent, factory, mgr); rpcErr != nil {
+		if rpcErr := ensureLocalRuntimeWorkspace(ctx, parent, factory, mgr, ""); rpcErr != nil {
 			return nil, rpcErr
 		}
 
@@ -610,7 +610,7 @@ func loadRuntimeSelectionFromRepoConfig(repo string) ([]string, []string, error)
 	return []string{"darwin", "linux"}, nil, nil
 }
 
-func ensureLocalRuntimeWorkspace(ctx context.Context, ws *workspacemgr.Workspace, factory *runtime.Factory, mgr *workspacemgr.Manager) *rpckit.RPCError {
+func ensureLocalRuntimeWorkspace(ctx context.Context, ws *workspacemgr.Workspace, factory *runtime.Factory, mgr *workspacemgr.Manager, configBundle string) *rpckit.RPCError {
 	if factory == nil || ws == nil || (ws.Backend != "firecracker" && ws.Backend != "seatbelt") {
 		return nil
 	}
@@ -624,6 +624,7 @@ func ensureLocalRuntimeWorkspace(ctx context.Context, ws *workspacemgr.Workspace
 		WorkspaceID:   ws.ID,
 		WorkspaceName: ws.WorkspaceName,
 		ProjectRoot:   ws.RootPath,
+		ConfigBundle:  configBundle,
 		Options: map[string]string{
 			"host_cli_sync": "true",
 		},

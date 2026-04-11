@@ -26,7 +26,7 @@ func TestCreateRequiresLimaForIsolation(t *testing.T) {
 		seatbeltLookPath = oldLookPath
 	})
 	seatbeltLookPath = func(file string) (string, error) { return "", errors.New("not found") }
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome string) error { return nil }
+	d.bootstrapInstance = func(ctx context.Context, instance, hostHome, configBundle string) error { return nil }
 
 	err := d.Create(context.Background(), runtime.CreateRequest{
 		WorkspaceID:   "ws-1",
@@ -48,7 +48,7 @@ func TestCreateRunsBootstrapAndMount(t *testing.T) {
 	calledPrepare := false
 	d.hostHome = "/Users/tester"
 
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome string) error {
+	d.bootstrapInstance = func(ctx context.Context, instance, hostHome, configBundle string) error {
 		calledBootstrap = true
 		if instance == "" {
 			t.Fatal("expected non-empty instance")
@@ -89,7 +89,7 @@ func TestCreateFallsBackToDefaultInstanceWhenSeatbeltMountPrepareFails(t *testin
 	seatbeltLookPath = func(file string) (string, error) { return "/usr/local/bin/limactl", nil }
 
 	d.instanceEnv = "nexus-seatbelt"
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome string) error { return nil }
+	d.bootstrapInstance = func(ctx context.Context, instance, hostHome, configBundle string) error { return nil }
 
 	seen := make([]string, 0)
 	d.prepareWorkspaceFS = func(ctx context.Context, instance, localPath string) error {
@@ -133,7 +133,7 @@ func TestCreateFailsWhenBootstrapFails(t *testing.T) {
 	t.Cleanup(func() { seatbeltLookPath = oldLookPath })
 	seatbeltLookPath = func(file string) (string, error) { return "/usr/local/bin/limactl", nil }
 
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome string) error {
+	d.bootstrapInstance = func(ctx context.Context, instance, hostHome, configBundle string) error {
 		return errors.New("bootstrap failed")
 	}
 
@@ -148,7 +148,7 @@ func TestCreateFailsWhenBootstrapFails(t *testing.T) {
 }
 
 func TestBuildSeatbeltBootstrapScriptContainsSymlinks(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("/Users/testhost")
+	script := buildSeatbeltBootstrapScript("/Users/testhost", "")
 
 	if strings.Contains(script, "nexus-auth.tar.gz") {
 		t.Fatal("bootstrap script must not use tar bundle — use symlinks instead")
@@ -162,7 +162,7 @@ func TestBuildSeatbeltBootstrapScriptContainsSymlinks(t *testing.T) {
 }
 
 func TestBuildSeatbeltBootstrapScriptInstallsRegistryPackages(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("/Users/testhost")
+	script := buildSeatbeltBootstrapScript("/Users/testhost", "")
 	for _, pkg := range agentprofile.AllInstallPkgs() {
 		if !strings.Contains(script, pkg) {
 			t.Fatalf("bootstrap script missing install package %q", pkg)
@@ -171,11 +171,31 @@ func TestBuildSeatbeltBootstrapScriptInstallsRegistryPackages(t *testing.T) {
 }
 
 func TestBuildSeatbeltBootstrapScriptChecksRegistryBinaries(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("/Users/testhost")
+	script := buildSeatbeltBootstrapScript("/Users/testhost", "")
 	for _, bin := range agentprofile.AllBinaries() {
 		if !strings.Contains(script, bin) {
 			t.Fatalf("bootstrap script missing binary check for %q", bin)
 		}
+	}
+}
+
+func TestBuildSeatbeltBootstrapScriptExtractsBundleWhenProvided(t *testing.T) {
+	script := buildSeatbeltBootstrapScript("", "BASE64BUNDLE")
+	if !strings.Contains(script, "NEXUS_HOST_AUTH_BUNDLE") {
+		t.Fatal("bootstrap script must contain NEXUS_HOST_AUTH_BUNDLE when configBundle is provided")
+	}
+	if !strings.Contains(script, "base64") {
+		t.Fatal("bootstrap script must contain base64 decode step")
+	}
+	if !strings.Contains(script, "nexus-auth.tar.gz") {
+		t.Fatal("bootstrap script must contain tar extraction")
+	}
+}
+
+func TestBuildSeatbeltBootstrapScriptNoBundleWhenEmpty(t *testing.T) {
+	script := buildSeatbeltBootstrapScript("/Users/testhost", "")
+	if strings.Contains(script, "NEXUS_HOST_AUTH_BUNDLE") {
+		t.Fatal("bootstrap script must not set NEXUS_HOST_AUTH_BUNDLE when configBundle is empty")
 	}
 }
 
@@ -317,7 +337,7 @@ func TestCreateReturnsErrWorkspaceMountFailedWhenAllMountsFail(t *testing.T) {
 	t.Cleanup(func() { seatbeltLookPath = oldLookPath })
 	seatbeltLookPath = func(file string) (string, error) { return "/usr/local/bin/limactl", nil }
 
-	d.bootstrapInstance = func(ctx context.Context, instance, hostHome string) error { return nil }
+	d.bootstrapInstance = func(ctx context.Context, instance, hostHome, configBundle string) error { return nil }
 	d.prepareWorkspaceFS = func(ctx context.Context, instance, localPath string) error {
 		return errors.New("prepare /workspace mount failed: instance unreachable")
 	}

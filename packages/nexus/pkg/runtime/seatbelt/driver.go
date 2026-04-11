@@ -43,7 +43,7 @@ type Driver struct {
 	hostHome           string
 	bootstrapMu        sync.Mutex
 	bootstrapped       map[string]bool
-	bootstrapInstance  func(ctx context.Context, instance, hostHome string) error
+	bootstrapInstance  func(ctx context.Context, instance, hostHome, configBundle string) error
 	prepareWorkspaceFS func(ctx context.Context, instance, localPath string) error
 }
 
@@ -92,7 +92,7 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	d.workspaces[req.WorkspaceID] = &workspaceState{projectRoot: req.ProjectRoot, state: "created", instance: instance}
 	d.mu.Unlock()
 
-	if err := d.ensureInstanceBootstrapped(ctx, instance); err != nil {
+	if err := d.ensureInstanceBootstrapped(ctx, instance, req.ConfigBundle); err != nil {
 		d.mu.Lock()
 		delete(d.workspaces, req.WorkspaceID)
 		d.mu.Unlock()
@@ -426,7 +426,7 @@ func prepareWorkspaceMount(ctx context.Context, instance, localPath string) erro
 	return nil
 }
 
-func bootstrapSeatbeltTooling(ctx context.Context, instance, hostHome string) error {
+func bootstrapSeatbeltTooling(ctx context.Context, instance, hostHome, configBundle string) error {
 	instance = strings.TrimSpace(instance)
 	if instance == "" {
 		instance = "nexus-firecracker"
@@ -437,7 +437,7 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, hostHome string) er
 		candidates = filterCandidatesByAvailability(candidates, discovered)
 	}
 
-	script := buildSeatbeltBootstrapScript(hostHome)
+	script := buildSeatbeltBootstrapScript(hostHome, configBundle)
 
 	var lastErr error
 	for _, candidate := range candidates {
@@ -527,16 +527,30 @@ func ensureLimaInstanceRunning(ctx context.Context, instance string) error {
 	return nil
 }
 
-func buildSeatbeltBootstrapScript(hostHome string) string {
+func buildSeatbeltBootstrapScript(hostHome, configBundle string) string {
 	parts := []string{
 		"set -e",
 		buildCredentialSymlinkCleanup(),
+	}
+
+	if strings.TrimSpace(configBundle) != "" {
+		parts = append(parts,
+			`export NEXUS_HOST_AUTH_BUNDLE='`+configBundle+`'`,
+			`if [ -n "${NEXUS_HOST_AUTH_BUNDLE:-}" ]; then `+
+				`mkdir -p "$HOME"; `+
+				`(printf '%s' "$NEXUS_HOST_AUTH_BUNDLE" | base64 -d 2>/dev/null || printf '%s' "$NEXUS_HOST_AUTH_BUNDLE" | base64 -D 2>/dev/null) >/tmp/nexus-auth.tar.gz && `+
+				`tar -xzf /tmp/nexus-auth.tar.gz -C "$HOME" >/dev/null 2>&1 || true; `+
+				`rm -f /tmp/nexus-auth.tar.gz >/dev/null 2>&1 || true; fi`,
+		)
+	}
+
+	parts = append(parts,
 		"unset DOCKER_HOST DOCKER_CONTEXT",
 		"if ! (command -v docker >/dev/null 2>&1 && (docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1) && (docker compose version >/dev/null 2>&1 || docker-compose version >/dev/null 2>&1) && command -v make >/dev/null 2>&1); then sudo -n apt-get update; sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-v2 make curl ca-certificates gnupg nodejs npm || sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose make curl ca-certificates gnupg nodejs npm; sudo -n systemctl enable docker >/dev/null 2>&1 || true; sudo -n systemctl start docker >/dev/null 2>&1 || sudo -n service docker start >/dev/null 2>&1 || true; sudo -n usermod -aG docker $USER >/dev/null 2>&1 || true; fi",
 		"(docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1)",
 		"(docker compose version >/dev/null 2>&1 || docker-compose version >/dev/null 2>&1)",
 		"command -v make >/dev/null 2>&1",
-	}
+	)
 
 	pkgs := agentprofile.AllInstallPkgs()
 	if len(pkgs) > 0 {
@@ -664,7 +678,7 @@ func (d *Driver) defaultInstanceName() string {
 	return "nexus-seatbelt"
 }
 
-func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance string) error {
+func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance, configBundle string) error {
 	instance = strings.TrimSpace(instance)
 	if instance == "" {
 		instance = d.defaultInstanceName()
@@ -679,7 +693,7 @@ func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance string
 		d.bootstrapped[instance] = true
 		return nil
 	}
-	if err := d.bootstrapInstance(ctx, instance, d.hostHome); err != nil {
+	if err := d.bootstrapInstance(ctx, instance, d.hostHome, configBundle); err != nil {
 		return err
 	}
 	d.bootstrapped[instance] = true

@@ -21,6 +21,7 @@ type CreateSpec struct {
 	Policy        Policy            `json:"policy"`
 	Backend       string            `json:"backend,omitempty"`
 	AuthBinding   map[string]string `json:"authBinding,omitempty"`
+	ConfigBundle  string            `json:"configBundle,omitempty"`
 }
 
 type Workspace struct {

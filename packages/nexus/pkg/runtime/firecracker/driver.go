@@ -134,9 +134,15 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	d.projectRoots[req.WorkspaceID] = req.ProjectRoot
 	d.mu.Unlock()
 
-	authBundle, err := buildHostAuthBundle()
-	if err != nil {
-		return fmt.Errorf("prepare host auth bundle: %w", err)
+	var authBundle string
+	if strings.TrimSpace(req.ConfigBundle) != "" {
+		authBundle = req.ConfigBundle
+	} else {
+		var bundleErr error
+		authBundle, bundleErr = buildHostAuthBundle()
+		if bundleErr != nil {
+			return fmt.Errorf("prepare host auth bundle: %w", bundleErr)
+		}
 	}
 	if shouldBootstrapGuestTooling(req.Options) {
 		if err := d.bootstrapGuestToolingAndAuth(ctx, req.WorkspaceID, authBundle); err != nil {

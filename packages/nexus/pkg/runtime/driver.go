@@ -23,6 +23,7 @@ type CreateRequest struct {
 	WorkspaceID   string
 	WorkspaceName string
 	ProjectRoot   string
+	ConfigBundle  string
 	Options       map[string]string
 }
 
