@@ -19,6 +19,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/inizio/nexus/packages/nexus/pkg/daemonclient"
 	"github.com/inizio/nexus/packages/nexus/pkg/localws"
+	"github.com/inizio/nexus/packages/nexus/pkg/runtime/authbundle"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
@@ -239,12 +240,19 @@ func runWorkspaceCreateCommand(args []string) {
 	}
 	defer conn.Close()
 
+	hostAuthBundle, err := authbundle.BuildFromHome()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus create: %v\n", err)
+		os.Exit(1)
+	}
+
 	spec := workspacemgr.CreateSpec{
-		Repo:          repoPath,
-		Ref:           "",
-		WorkspaceName: workspaceName,
-		AgentProfile:  "default",
-		Backend:       strings.TrimSpace(*backend),
+		Repo:                 repoPath,
+		Ref:                  "",
+		WorkspaceName:        workspaceName,
+		AgentProfile:         "default",
+		Backend:              strings.TrimSpace(*backend),
+		HostAuthBundleBase64: hostAuthBundle,
 	}
 	var result struct {
 		Workspace workspacemgr.Workspace `json:"workspace"`

@@ -328,6 +328,13 @@ func handleShellRequest(req execRequest, encoder *json.Encoder) {
 		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 0})
 	case "shell.close":
 		handleShellClose(req, encoder)
+	case "disk.grow":
+		out, growErr := exec.Command("resize2fs", workspaceDevicePath).CombinedOutput()
+		if growErr != nil {
+			_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: string(out)})
+		} else {
+			_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 0})
+		}
 	default:
 		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: "unknown shell request type"})
 	}

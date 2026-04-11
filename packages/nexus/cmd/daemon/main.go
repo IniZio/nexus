@@ -116,6 +116,14 @@ func runServer(port int, workspaceDir string, token string) error {
 	factory := runtime.NewFactory(capabilities, drivers)
 	srv.SetRuntimeFactory(factory)
 
+	liveIDs := map[string]struct{}{}
+	for _, id := range srv.WorkspaceIDs() {
+		liveIDs[id] = struct{}{}
+	}
+	if err := fcManager.ReconcileOrphans(context.Background(), liveIDs); err != nil {
+		log.Printf("firecracker reconcile: %v", err)
+	}
+
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
