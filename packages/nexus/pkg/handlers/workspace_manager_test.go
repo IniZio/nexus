@@ -422,8 +422,8 @@ func TestHandleWorkspaceStart(t *testing.T) {
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}
-	if !result.Started {
-		t.Fatal("expected started=true")
+	if result.Workspace == nil || result.Workspace.ID != created.Workspace.ID {
+		t.Fatalf("expected workspace record for started id, got %+v", result.Workspace)
 	}
 }
 

@@ -59,9 +59,6 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 	r.Register("workspace.create", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
 		return handlers.HandleWorkspaceCreate(ctx, params, s.workspaceMgr, s.runtimeFactory)
 	})
-	r.Register("workspace.open", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceOpen(ctx, params, s.workspaceMgr)
-	})
 	r.Register("workspace.list", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
 		return handlers.HandleWorkspaceList(ctx, params, s.workspaceMgr)
 	})
@@ -133,11 +130,6 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 	})
 	r.Register("spotlight.close", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
 		return handlers.HandleSpotlightClose(ctx, params, s.spotlightMgr)
-	})
-	r.Register("spotlight.applyDefaults", func(ctx context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		workspace := s.resolveWorkspace(params)
-		rootPath := workspace.Path()
-		return handlers.HandleSpotlightApplyDefaults(ctx, params, rootPath, s.spotlightMgr)
 	})
 	r.Register("spotlight.applyComposePorts", func(ctx context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
 		workspace := s.resolveWorkspace(params)

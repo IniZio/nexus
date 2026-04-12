@@ -22,7 +22,9 @@ import (
 
 	"github.com/inizio/nexus/packages/nexus/pkg/compose"
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
+	"github.com/inizio/nexus/packages/nexus/pkg/runtime/authbundle"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
+	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
 type options struct {
@@ -91,6 +93,15 @@ func main() {
 	case "tunnel":
 		runWorkspaceTunnelCommand(args)
 		return
+	case "pause":
+		runWorkspacePauseCommand(args)
+		return
+	case "resume":
+		runWorkspaceResumeCommand(args)
+		return
+	case "restore":
+		runWorkspaceRestoreCommand(args)
+		return
 	case "doctor":
 		// handled below
 	default:
@@ -131,11 +142,11 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  nexus doctor [--report-json path]")
 	fmt.Fprintln(os.Stderr, "  nexus init [project-root] [--force]")
-	fmt.Fprintln(os.Stderr, "  nexus run [path] [--timeout 10m] -- <command> [args...]")
+	fmt.Fprintln(os.Stderr, "  nexus run [--backend <name>] [--timeout <dur>] -- <command> [args...]")
 	fmt.Fprintln(os.Stderr, "  nexus fork <id> <name> [--ref <ref>]")
 	fmt.Fprintln(os.Stderr, "  nexus shell <id> [--timeout <dur>]")
 	fmt.Fprintln(os.Stderr, "  nexus exec <id> [--timeout <dur>] -- <command> [args...]")
-	fmt.Fprintln(os.Stderr, "  nexus <list|create|start|stop|remove|shell|exec|tunnel>")
+	fmt.Fprintln(os.Stderr, "  nexus <list|create|start|stop|remove|pause|resume|restore|shell|exec|tunnel>")
 }
 
 func runInitCommand(args []string) {
@@ -178,56 +189,110 @@ func runRunCommand(args []string) {
 			break
 		}
 	}
-	if dash == -1 {
-		fmt.Fprintln(os.Stderr, "command is required")
+	if dash == -1 || len(args[dash+1:]) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus run [--backend <name>] [--timeout <dur>] -- <command> [args...]")
 		os.Exit(2)
 	}
 	preDash := args[:dash]
-	postDash := args[dash+1:]
-	if len(postDash) == 0 {
-		fmt.Fprintln(os.Stderr, "command is required")
-		os.Exit(2)
-	}
+	cmdArgs := args[dash+1:]
 
+	backend := ""
 	timeout := 10 * time.Minute
-	var pos []string
 	for i := 0; i < len(preDash); {
-		if preDash[i] == "--timeout" && i+1 < len(preDash) {
+		switch preDash[i] {
+		case "--backend":
+			if i+1 >= len(preDash) {
+				fmt.Fprintln(os.Stderr, "nexus run: --backend requires a value")
+				os.Exit(2)
+			}
+			backend = strings.TrimSpace(preDash[i+1])
+			i += 2
+		case "--timeout":
+			if i+1 >= len(preDash) {
+				fmt.Fprintln(os.Stderr, "nexus run: --timeout requires a value")
+				os.Exit(2)
+			}
 			d, err := time.ParseDuration(preDash[i+1])
 			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
+				fmt.Fprintf(os.Stderr, "nexus run: invalid timeout: %v\n", err)
 				os.Exit(2)
 			}
 			timeout = d
 			i += 2
-			continue
+		default:
+			fmt.Fprintf(os.Stderr, "usage: nexus run [--backend <name>] [--timeout <dur>] -- <command> [args...]\n")
+			os.Exit(2)
 		}
-		pos = append(pos, preDash[i])
-		i++
-	}
-	if len(pos) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: nexus run [path] [--timeout 10m] -- <command> [args...]")
-		os.Exit(2)
-	}
-	projectRoot := "."
-	if len(pos) == 1 {
-		projectRoot = pos[0]
-	}
-	absProjectRoot, err := filepath.Abs(projectRoot)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "resolve project root: %v\n", err)
-		os.Exit(2)
 	}
 
-	if err := runExec(execOptions{
-		projectRoot: absProjectRoot,
-		timeout:     timeout,
-		command:     postDash[0],
-		args:        postDash[1:],
-	}); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	repoPath, err := normalizeLocalRepoPath(".")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus run: %v\n", err)
+		os.Exit(2)
+	}
+	workspaceName := deriveWorkspaceName(repoPath)
+
+	conn, err := ensureDaemon()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus run: %v\n", err)
 		os.Exit(1)
 	}
+	defer conn.Close()
+
+	hostAuthBundle, err := authbundle.BuildFromHome()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus run: %v\n", err)
+		os.Exit(1)
+	}
+
+	spec := workspacemgr.CreateSpec{
+		Repo:          repoPath,
+		Ref:           "",
+		WorkspaceName: workspaceName,
+		AgentProfile:  "default",
+		Backend:       backend,
+		ConfigBundle:  hostAuthBundle,
+	}
+	var createResult struct {
+		Workspace workspacemgr.Workspace `json:"workspace"`
+	}
+	if err := daemonRPC(conn, "workspace.create", map[string]any{"spec": spec}, &createResult); err != nil {
+		if renderPreflightCreateError(err) {
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "nexus run: create failed: %v\n", err)
+		os.Exit(1)
+	}
+	wsID := createResult.Workspace.ID
+
+	defer func() {
+		if removeErr := daemonRPC(conn, "workspace.remove", map[string]any{"id": wsID}, nil); removeErr != nil {
+			fmt.Fprintf(os.Stderr, "nexus run: cleanup warning: %v\n", removeErr)
+		}
+	}()
+
+	deadline := time.Now().Add(timeout)
+	for {
+		if time.Now().After(deadline) {
+			fmt.Fprintln(os.Stderr, "nexus run: timed out waiting for workspace to become ready")
+			os.Exit(1)
+		}
+		var readyResult struct {
+			Ready bool `json:"ready"`
+		}
+		if readyErr := daemonRPC(conn, "workspace.ready", map[string]any{
+			"workspaceId": wsID,
+			"profile":     "default",
+		}, &readyResult); readyErr == nil && readyResult.Ready {
+			break
+		}
+		time.Sleep(3 * time.Second)
+	}
+
+	cmdLine := formatCommand(cmdArgs[0], cmdArgs[1:])
+	payload := "cd /workspace >/dev/null 2>&1 || true\n" + cmdLine + "\nexit\n"
+	token := strings.TrimSpace(os.Getenv("NEXUS_AUTH_RELAY_TOKEN"))
+	runWorkspacePTYSession("nexus run", wsID, token, "bash", payload, timeout, false)
 }
 
 func runInit(opts initOptions) error {

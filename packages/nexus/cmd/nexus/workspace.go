@@ -757,3 +757,60 @@ func waitForInterrupt() {
 	<-ch
 	signal.Stop(ch)
 }
+
+func runWorkspacePauseCommand(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus pause <id>")
+		os.Exit(2)
+	}
+	conn, err := ensureDaemon()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus pause: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+	if err := daemonRPC(conn, "workspace.pause", map[string]any{"id": args[0]}, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus pause: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("paused workspace %s\n", args[0])
+}
+
+func runWorkspaceResumeCommand(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus resume <id>")
+		os.Exit(2)
+	}
+	conn, err := ensureDaemon()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus resume: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+	if err := daemonRPC(conn, "workspace.resume", map[string]any{"id": args[0]}, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus resume: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("resumed workspace %s\n", args[0])
+}
+
+func runWorkspaceRestoreCommand(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus restore <id>")
+		os.Exit(2)
+	}
+	conn, err := ensureDaemon()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus restore: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+	var result struct {
+		Workspace workspacemgr.Workspace `json:"workspace"`
+	}
+	if err := daemonRPC(conn, "workspace.restore", map[string]any{"id": args[0]}, &result); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus restore: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("restored workspace %s  (id: %s)\n", result.Workspace.WorkspaceName, result.Workspace.ID)
+}

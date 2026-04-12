@@ -37,14 +37,6 @@ type SpotlightCloseResult struct {
 	Closed bool `json:"closed"`
 }
 
-type SpotlightApplyDefaultsParams struct {
-	WorkspaceID string `json:"workspaceId"`
-}
-
-type SpotlightApplyDefaultsResult struct {
-	Forwards []*spotlight.Forward `json:"forwards"`
-}
-
 type SpotlightApplyComposePortsParams struct {
 	WorkspaceID string `json:"workspaceId"`
 }
@@ -99,19 +91,6 @@ func HandleSpotlightClose(_ context.Context, params json.RawMessage, mgr *spotli
 	}
 
 	return &SpotlightCloseResult{Closed: true}, nil
-}
-
-func HandleSpotlightApplyDefaults(ctx context.Context, params json.RawMessage, rootPath string, mgr *spotlight.Manager) (*SpotlightApplyDefaultsResult, *rpckit.RPCError) {
-	_ = ctx
-	_ = mgr
-	var p SpotlightApplyDefaultsParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, rpckit.ErrInvalidParams
-	}
-	if p.WorkspaceID == "" || rootPath == "" {
-		return nil, rpckit.ErrInvalidParams
-	}
-	return &SpotlightApplyDefaultsResult{Forwards: []*spotlight.Forward{}}, nil
 }
 
 func HandleSpotlightApplyComposePorts(ctx context.Context, params json.RawMessage, rootPath string, mgr *spotlight.Manager) (*SpotlightApplyComposePortsResult, *rpckit.RPCError) {

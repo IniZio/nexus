@@ -28,7 +28,7 @@ func TestPrintUsageIncludesFlatWorkspaceCommands(t *testing.T) {
 	}
 
 	got := string(buf)
-	if !strings.Contains(got, "nexus <list|create|start|stop|remove|shell|exec|tunnel>") {
+	if !strings.Contains(got, "nexus <list|create|start|stop|remove|pause|resume|restore|shell|exec|tunnel>") {
 		t.Fatalf("expected usage to include flattened workspace command list, got %q", got)
 	}
 }

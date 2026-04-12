@@ -10,20 +10,6 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/spotlight"
 )
 
-func TestHandleSpotlightApplyDefaults(t *testing.T) {
-	root := t.TempDir()
-	mgr := spotlight.NewManager()
-	params, _ := json.Marshal(SpotlightApplyDefaultsParams{WorkspaceID: "ws-1"})
-
-	res, rpcErr := HandleSpotlightApplyDefaults(context.Background(), params, root, mgr)
-	if rpcErr != nil {
-		t.Fatalf("unexpected rpc error: %+v", rpcErr)
-	}
-	if len(res.Forwards) != 0 {
-		t.Fatalf("expected 0 forwards, got %d", len(res.Forwards))
-	}
-}
-
 func TestHandleSpotlightApplyComposePorts_ForwardsDiscoveredPorts(t *testing.T) {
 	mgr := spotlight.NewManager()
 	rootDir := t.TempDir()

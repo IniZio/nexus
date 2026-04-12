@@ -77,7 +77,7 @@ type WorkspaceStopResult struct {
 }
 
 type WorkspaceStartResult struct {
-	Started bool `json:"started"`
+	Workspace *workspacemgr.Workspace `json:"workspace"`
 }
 
 type WorkspaceRestoreResult struct {
@@ -191,12 +191,14 @@ func HandleWorkspaceStart(_ context.Context, params json.RawMessage, mgr *worksp
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, rpckit.ErrInvalidParams
 	}
-
 	if err := mgr.Start(p.ID); err != nil {
 		return nil, rpckit.ErrWorkspaceNotFound
 	}
-
-	return &WorkspaceStartResult{Started: true}, nil
+	ws, ok := mgr.Get(p.ID)
+	if !ok {
+		return nil, rpckit.ErrWorkspaceNotFound
+	}
+	return &WorkspaceStartResult{Workspace: ws}, nil
 }
 
 func HandleWorkspaceRestore(ctx context.Context, params json.RawMessage, mgr *workspacemgr.Manager, factory *runtime.Factory) (*WorkspaceRestoreResult, *rpckit.RPCError) {
