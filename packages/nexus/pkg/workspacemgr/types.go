@@ -45,7 +45,14 @@ type Workspace struct {
 	LocalWorktreePath string `json:"localWorktreePath,omitempty"`
 	// MutagenSessionID is the mutagen sync session name for this workspace.
 	// Empty if no sync session has been established.
-	MutagenSessionID string    `json:"mutagenSessionId,omitempty"`
-	CreatedAt        time.Time `json:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	MutagenSessionID string `json:"mutagenSessionId,omitempty"`
+
+	// NEW: Optional fields for future multi-user support
+	// In personal mode, OwnerUserID is "local" and TenantID is empty
+	OwnerUserID string `json:"owner_user_id,omitempty"`
+	TenantID    string `json:"tenant_id,omitempty"`
+	CreatedBy   string `json:"created_by,omitempty"`
+
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
