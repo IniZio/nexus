@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -96,14 +97,25 @@ func (s *NodeStore) UpsertWorkspaceRow(row WorkspaceRow) error {
 	created := row.CreatedAt.UTC().Format(time.RFC3339Nano)
 	updated := row.UpdatedAt.UTC().Format(time.RFC3339Nano)
 
+	type workspacePayload struct {
+		ProjectID string `json:"projectId"`
+	}
+	var payloadData workspacePayload
+	projectID := ""
+	if err := json.Unmarshal(row.Payload, &payloadData); err == nil {
+		projectID = payloadData.ProjectID
+	}
+
 	_, err := s.db.Exec(
-		`INSERT INTO workspaces(id, payload_json, created_at, updated_at)
-		 VALUES(?, ?, ?, ?)
+		`INSERT INTO workspaces(id, payload_json, project_id, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 			payload_json=excluded.payload_json,
+			project_id=excluded.project_id,
 			updated_at=excluded.updated_at`,
 		row.ID,
 		string(row.Payload),
+		projectID,
 		created,
 		updated,
 	)
@@ -156,6 +168,147 @@ func (s *NodeStore) ListWorkspaceRows() ([]WorkspaceRow, error) {
 	}
 
 	return all, nil
+}
+
+func (s *NodeStore) ListWorkspaceRowsByProject(projectID string) ([]WorkspaceRow, error) {
+	if projectID == "" {
+		return s.ListWorkspaceRows()
+	}
+	rows, err := s.db.Query(
+		`SELECT id, payload_json, created_at, updated_at FROM workspaces WHERE project_id = ? ORDER BY created_at ASC`,
+		projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list workspaces by project query: %w", err)
+	}
+	defer rows.Close()
+
+	all := make([]WorkspaceRow, 0)
+	for rows.Next() {
+		var (
+			id      string
+			payload string
+			created string
+			updated string
+		)
+		if err := rows.Scan(&id, &payload, &created, &updated); err != nil {
+			return nil, fmt.Errorf("scan workspace row: %w", err)
+		}
+		createdAt, _ := time.Parse(time.RFC3339Nano, created)
+		updatedAt, _ := time.Parse(time.RFC3339Nano, updated)
+		all = append(all, WorkspaceRow{
+			ID:        id,
+			Payload:   []byte(payload),
+			CreatedAt: createdAt,
+			UpdatedAt: updatedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate workspace rows: %w", err)
+	}
+
+	return all, nil
+}
+
+func (s *NodeStore) UpsertProjectRow(row ProjectRow) error {
+	if row.ID == "" {
+		return fmt.Errorf("project id is required")
+	}
+	if len(row.Payload) == 0 {
+		return fmt.Errorf("project payload is required")
+	}
+	created := row.CreatedAt.UTC().Format(time.RFC3339Nano)
+	updated := row.UpdatedAt.UTC().Format(time.RFC3339Nano)
+
+	_, err := s.db.Exec(
+		`INSERT INTO projects(id, payload_json, created_at, updated_at)
+		 VALUES(?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+			payload_json=excluded.payload_json,
+			updated_at=excluded.updated_at`,
+		row.ID,
+		string(row.Payload),
+		created,
+		updated,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert project: %w", err)
+	}
+
+	return nil
+}
+
+func (s *NodeStore) DeleteProject(id string) error {
+	if id == "" {
+		return nil
+	}
+	if _, err := s.db.Exec(`DELETE FROM projects WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete project: %w", err)
+	}
+	return nil
+}
+
+func (s *NodeStore) ListProjectRows() ([]ProjectRow, error) {
+	rows, err := s.db.Query(`SELECT id, payload_json, created_at, updated_at FROM projects ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list projects query: %w", err)
+	}
+	defer rows.Close()
+
+	all := make([]ProjectRow, 0)
+	for rows.Next() {
+		var (
+			id      string
+			payload string
+			created string
+			updated string
+		)
+		if err := rows.Scan(&id, &payload, &created, &updated); err != nil {
+			return nil, fmt.Errorf("scan project row: %w", err)
+		}
+		createdAt, _ := time.Parse(time.RFC3339Nano, created)
+		updatedAt, _ := time.Parse(time.RFC3339Nano, updated)
+		all = append(all, ProjectRow{
+			ID:        id,
+			Payload:   []byte(payload),
+			CreatedAt: createdAt,
+			UpdatedAt: updatedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate project rows: %w", err)
+	}
+
+	return all, nil
+}
+
+func (s *NodeStore) GetProjectRow(id string) (ProjectRow, bool, error) {
+	if id == "" {
+		return ProjectRow{}, false, nil
+	}
+	var (
+		payload string
+		created string
+		updated string
+	)
+	err := s.db.QueryRow(
+		`SELECT payload_json, created_at, updated_at FROM projects WHERE id = ?`,
+		id,
+	).Scan(&payload, &created, &updated)
+	if err == sql.ErrNoRows {
+		return ProjectRow{}, false, nil
+	}
+	if err != nil {
+		return ProjectRow{}, false, fmt.Errorf("get project: %w", err)
+	}
+	createdAt, _ := time.Parse(time.RFC3339Nano, created)
+	updatedAt, _ := time.Parse(time.RFC3339Nano, updated)
+	return ProjectRow{
+		ID:        id,
+		Payload:   []byte(payload),
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+	}, true, nil
 }
 
 func (s *NodeStore) ReplaceSpotlightForwardRows(forwards []SpotlightForwardRow) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -106,15 +107,21 @@ func HandleWorkspaceCreate(ctx context.Context, req WorkspaceCreateParams, mgr *
 		return nil, prepErr
 	}
 
+	log.Printf("[workspace.create] Creating workspace for repo: %s", spec.Repo)
+
 	ws, err := mgr.Create(ctx, spec)
 	if err != nil {
 		return nil, rpckit.ErrInvalidParams
 	}
 
+	log.Printf("[workspace.create] Workspace %s created, ensuring runtime...", ws.ID)
+
 	if rpcErr := ensureLocalRuntimeWorkspace(ctx, ws, factory, mgr, spec.ConfigBundle); rpcErr != nil {
 		_ = mgr.Remove(ws.ID)
 		return nil, rpcErr
 	}
+
+	log.Printf("[workspace.create] Runtime ready for workspace %s", ws.ID)
 
 	return &WorkspaceCreateResult{Workspace: ws}, nil
 }

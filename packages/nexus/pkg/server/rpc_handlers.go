@@ -134,6 +134,15 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 		rootPath := ws.Path()
 		return handlers.HandleSpotlightApplyComposePorts(ctx, req, rootPath, s.spotlightMgr)
 	})
+	rpc.TypedRegister(r, "project.list", func(ctx context.Context, req handlers.ProjectListParams) (*handlers.ProjectListResult, *rpckit.RPCError) {
+		return handlers.HandleProjectList(ctx, req, s.projectMgr)
+	})
+	rpc.TypedRegister(r, "project.get", func(ctx context.Context, req handlers.ProjectGetParams) (*handlers.ProjectGetResult, *rpckit.RPCError) {
+		return handlers.HandleProjectGet(ctx, req, s.projectMgr, s.workspaceMgr)
+	})
+	rpc.TypedRegister(r, "project.remove", func(ctx context.Context, req handlers.ProjectRemoveParams) (*handlers.ProjectRemoveResult, *rpckit.RPCError) {
+		return handlers.HandleProjectRemove(ctx, req, s.projectMgr, s.workspaceMgr)
+	})
 
 	r.Register("pty.open", func(_ context.Context, _ string, params json.RawMessage, conn any) (interface{}, *rpckit.RPCError) {
 		c := conn.(*Connection)

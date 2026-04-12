@@ -26,6 +26,7 @@ type CreateSpec struct {
 
 type Workspace struct {
 	ID                string            `json:"id"`
+	ProjectID         string            `json:"projectId,omitempty"`
 	RepoID            string            `json:"repoId,omitempty"`
 	RepoKind          string            `json:"repoKind,omitempty"`
 	Repo              string            `json:"repo"`

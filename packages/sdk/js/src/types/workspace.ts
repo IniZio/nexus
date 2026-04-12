@@ -25,6 +25,7 @@ export interface WorkspaceCreateSpec {
 
 export interface WorkspaceRecord {
   id: string;
+  projectId?: string;
   repo: string;
   repoKind?: string;
   ref: string;

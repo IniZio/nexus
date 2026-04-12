@@ -19,6 +19,11 @@ import type {
   SpotlightApplyComposePortsResult,
   SpotlightForward,
 } from '../types/spotlight';
+import type {
+  ProjectListResult,
+  ProjectGetResult,
+  ProjectRemoveResult,
+} from '../types/project';
 
 type WorkspaceCreateRPCParams = {
   spec: import('../types/workspace').WorkspaceCreateSpec & { configBundle?: string };
@@ -54,6 +59,9 @@ export interface RPCSchema {
     WorkspaceForkResult,
   ];
   'workspace.relations.list': [{ repoId?: string }, WorkspaceRelationsListResult];
+  'project.list': [Record<string, never>, ProjectListResult];
+  'project.get': [{ id: string }, ProjectGetResult];
+  'project.remove': [{ id: string }, ProjectRemoveResult];
   'workspace.setLocalWorktree': [
     { id: string; localWorktreePath: string; mutagenSessionId?: string },
     { ok: boolean; workspace?: WorkspaceRecord },

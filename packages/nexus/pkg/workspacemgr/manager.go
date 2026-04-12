@@ -17,6 +17,7 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/auth"
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
 	"github.com/inizio/nexus/packages/nexus/pkg/git/worktree"
+	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
 	"github.com/inizio/nexus/packages/nexus/pkg/store"
 )
 
@@ -25,6 +26,7 @@ type Manager struct {
 	workspaceRepo workspaceStore
 	mu            sync.RWMutex
 	workspaces    map[string]*Workspace
+	projectMgr    *projectmgr.Manager
 }
 
 type workspaceStore interface {
@@ -69,6 +71,10 @@ func nodeStorePathForRoot(root string, defaultPath string) string {
 	}
 
 	return defaultPath
+}
+
+func (m *Manager) SetProjectManager(pm *projectmgr.Manager) {
+	m.projectMgr = pm
 }
 
 func (m *Manager) loadAll() error {
@@ -148,6 +154,15 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*Workspace, erro
 	identity := auth.IdentityFromContext(ctx)
 	now := time.Now().UTC()
 	id := fmt.Sprintf("ws-%d", now.UnixNano())
+	repoID := deriveRepoID(spec.Repo)
+	projectID := ""
+	if m.projectMgr != nil {
+		project, err := m.projectMgr.GetOrCreateForRepo(spec.Repo, repoID)
+		if err != nil {
+			return nil, fmt.Errorf("get or create project: %w", err)
+		}
+		projectID = project.ID
+	}
 	rootPath := filepath.Join(m.root, "instances", id)
 	if err := os.MkdirAll(rootPath, 0o755); err != nil {
 		return nil, fmt.Errorf("create workspace root: %w", err)
@@ -169,7 +184,8 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*Workspace, erro
 	}
 	ws := &Workspace{
 		ID:                id,
-		RepoID:            deriveRepoID(spec.Repo),
+		ProjectID:         projectID,
+		RepoID:            repoID,
 		RepoKind:          deriveRepoKind(spec.Repo),
 		Repo:              spec.Repo,
 		Ref:               spec.Ref,
@@ -328,6 +344,23 @@ func (m *Manager) SetLocalWorktree(id, worktreePath, mutagenSessionID string) er
 
 	if err := m.persistWorkspace(ws); err != nil {
 		return fmt.Errorf("persist local worktree: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) UpdateProjectID(id string, projectID string) error {
+	m.mu.Lock()
+	ws, ok := m.workspaces[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("workspace not found: %s", id)
+	}
+	ws.ProjectID = projectID
+	ws.UpdatedAt = time.Now().UTC()
+	m.mu.Unlock()
+
+	if err := m.persistWorkspace(ws); err != nil {
+		return fmt.Errorf("persist project id update: %w", err)
 	}
 	return nil
 }

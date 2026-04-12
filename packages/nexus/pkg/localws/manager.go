@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,17 +78,24 @@ type SetupResult struct {
 //  3. Start a mutagen sync session between the worktree and RemotePath
 //     (gracefully skipped if mutagen is not installed or RemotePath is empty).
 func (m *Manager) Setup(ctx context.Context, spec SetupSpec) (*SetupResult, error) {
+	log.Printf("[localws] Setting up local worktree for %s...", spec.WorkspaceID)
+
 	// 1 ── Ensure the bare repo cache exists and is up to date.
 	cacheDir, err := m.ensureRepoCacheDir(ctx, spec.Repo)
 	if err != nil {
 		return nil, fmt.Errorf("localws: cache repo: %w", err)
 	}
 
+	plannedPath := filepath.Join(m.cfg.WorktreeRoot, spec.WorkspaceName)
+	log.Printf("[localws] Creating worktree at %s...", plannedPath)
+
 	// 2 ── Create the worktree.
 	worktreePath, err := m.createWorktree(ctx, cacheDir, spec.WorkspaceName, spec.Ref)
 	if err != nil {
 		return nil, fmt.Errorf("localws: create worktree: %w", err)
 	}
+
+	log.Printf("[localws] Worktree created, setting up mutagen...")
 
 	result := &SetupResult{WorktreePath: worktreePath}
 
