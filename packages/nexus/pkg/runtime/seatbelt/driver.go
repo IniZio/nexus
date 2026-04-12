@@ -341,6 +341,14 @@ func (d *Driver) serveShellProtocol(ctx context.Context, workspaceID string, con
 			_ = writeJSON(map[string]any{"id": id, "type": "ack", "ok": true})
 			return
 
+		case "ports.scan":
+			ports := d.scanPorts(ctx, workspaceID)
+			_ = writeJSON(map[string]any{
+				"id":   id,
+				"type": "ports.result",
+				"ports": ports,
+			})
+
 		default:
 			_ = writeJSON(map[string]any{"id": id, "type": "result", "exit_code": 1, "stderr": fmt.Sprintf("unknown request type %q", typ)})
 		}
@@ -576,6 +584,47 @@ func (d *Driver) workspaceInstance(workspaceID string) string {
 		return ws.instance
 	}
 	return d.defaultInstanceName()
+}
+
+func (d *Driver) scanPorts(ctx context.Context, workspaceID string) []map[string]any {
+	instance := d.workspaceInstance(workspaceID)
+
+	// Use ss to list listening TCP ports
+	script := `ss -tlnp 2>/dev/null | awk 'NR>1 {split($4, a, ":"); print a[length(a)], $NF}' | while read port process; do
+		if [ -n "$port" ] && [ "$port" != "0" ] && [ -n "$process" ]; then
+			echo "{\"port\": $port, \"process\": \"$process\"}"
+		fi
+	done`
+
+	out, err := shared.LimactlShellScript(ctx, instance, script)
+	if err != nil {
+		return nil
+	}
+
+	var ports []map[string]any
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.HasPrefix(line, "{") {
+			continue
+		}
+
+		var portInfo struct {
+			Port    int    `json:"port"`
+			Process string `json:"process"`
+		}
+		if err := json.Unmarshal([]byte(line), &portInfo); err != nil {
+			continue
+		}
+		if portInfo.Port > 0 {
+			port := map[string]any{
+				"address": fmt.Sprintf("0.0.0.0:%d", portInfo.Port),
+				"port":    portInfo.Port,
+				"process": portInfo.Process,
+			}
+			ports = append(ports, port)
+		}
+	}
+	return ports
 }
 
 func toInt(value any, fallback int) int {

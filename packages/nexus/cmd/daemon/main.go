@@ -15,6 +15,7 @@ import (
 	goruntime "runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/auth"
 	"github.com/inizio/nexus/packages/nexus/pkg/daemonclient"
@@ -23,6 +24,7 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/limafirecracker"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/seatbelt"
 	"github.com/inizio/nexus/packages/nexus/pkg/server"
+	"github.com/inizio/nexus/packages/nexus/pkg/spotlight"
 )
 
 var firecrackerProbeGOOS = goruntime.GOOS
@@ -162,6 +164,11 @@ func runServer(port int, workspaceDir string, token string) error {
 
 	factory := runtime.NewFactory(capabilities, drivers)
 	srv.SetRuntimeFactory(factory)
+
+	// Initialize live port monitoring
+	portScanner := spotlight.NewShellPortScanner(seatbeltDriver.AgentConn)
+	portMonitor := spotlight.NewPortMonitor(srv.SpotlightManager(), portScanner, 5*time.Second)
+	srv.SetPortMonitor(portMonitor)
 
 	liveIDs := map[string]struct{}{}
 	for _, id := range srv.WorkspaceIDs() {

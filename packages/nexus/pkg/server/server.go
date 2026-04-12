@@ -41,6 +41,7 @@ type Server struct {
 	projectMgr          *projectmgr.Manager
 	serviceMgr          *services.Manager
 	spotlightMgr        *spotlight.Manager
+	portMonitor         *spotlight.PortMonitor
 	lifecycle           *lifecycle.Manager
 	runtimeFactory      *runtime.Factory
 	nodeCfg             *config.NodeConfig
@@ -302,6 +303,32 @@ func (s *Server) WorkspaceIDs() []string {
 
 func (s *Server) SetNodeConfig(cfg *config.NodeConfig) {
 	s.nodeCfg = cfg
+}
+
+// SetPortMonitor sets the port monitor for live port detection.
+func (s *Server) SetPortMonitor(pm *spotlight.PortMonitor) {
+	s.portMonitor = pm
+}
+
+// SpotlightManager returns the spotlight manager.
+func (s *Server) SpotlightManager() *spotlight.Manager {
+	return s.spotlightMgr
+}
+
+// StartPortMonitoring begins live port monitoring for a workspace.
+func (s *Server) StartPortMonitoring(workspaceID string) error {
+	if s.portMonitor == nil {
+		return nil
+	}
+	return s.portMonitor.StartWorkspace(workspaceID)
+}
+
+// StopPortMonitoring stops live port monitoring for a workspace.
+func (s *Server) StopPortMonitoring(workspaceID string) {
+	if s.portMonitor == nil {
+		return
+	}
+	s.portMonitor.StopWorkspace(workspaceID)
 }
 
 func (s *Server) requireWorkspaceStarted(workspaceID string) *rpckit.RPCError {

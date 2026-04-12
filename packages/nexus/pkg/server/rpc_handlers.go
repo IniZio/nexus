@@ -69,19 +69,39 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 		return handlers.HandleWorkspaceRemove(ctx, req, s.workspaceMgr, s.runtimeFactory)
 	})
 	rpc.TypedRegister(r, "workspace.stop", func(ctx context.Context, req handlers.WorkspaceStopParams) (*handlers.WorkspaceStopResult, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceStop(ctx, req, s.workspaceMgr)
+		result, rpcErr := handlers.HandleWorkspaceStop(ctx, req, s.workspaceMgr)
+		if rpcErr == nil {
+			s.StopPortMonitoring(req.ID)
+		}
+		return result, rpcErr
 	})
 	rpc.TypedRegister(r, "workspace.start", func(ctx context.Context, req handlers.WorkspaceStartParams) (*handlers.WorkspaceStartResult, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceStart(ctx, req, s.workspaceMgr)
+		result, rpcErr := handlers.HandleWorkspaceStart(ctx, req, s.workspaceMgr)
+		if rpcErr == nil {
+			_ = s.StartPortMonitoring(req.ID)
+		}
+		return result, rpcErr
 	})
 	rpc.TypedRegister(r, "workspace.restore", func(ctx context.Context, req handlers.WorkspaceRestoreParams) (*handlers.WorkspaceRestoreResult, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceRestore(ctx, req, s.workspaceMgr, s.runtimeFactory)
+		result, rpcErr := handlers.HandleWorkspaceRestore(ctx, req, s.workspaceMgr, s.runtimeFactory)
+		if rpcErr == nil {
+			_ = s.StartPortMonitoring(req.ID)
+		}
+		return result, rpcErr
 	})
 	rpc.TypedRegister(r, "workspace.pause", func(ctx context.Context, req handlers.WorkspacePauseParams) (*handlers.WorkspacePauseResult, *rpckit.RPCError) {
-		return handlers.HandleWorkspacePause(ctx, req, s.workspaceMgr, s.runtimeFactory)
+		result, rpcErr := handlers.HandleWorkspacePause(ctx, req, s.workspaceMgr, s.runtimeFactory)
+		if rpcErr == nil {
+			s.StopPortMonitoring(req.ID)
+		}
+		return result, rpcErr
 	})
 	rpc.TypedRegister(r, "workspace.resume", func(ctx context.Context, req handlers.WorkspaceResumeParams) (*handlers.WorkspaceResumeResult, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceResume(ctx, req, s.workspaceMgr, s.runtimeFactory)
+		result, rpcErr := handlers.HandleWorkspaceResume(ctx, req, s.workspaceMgr, s.runtimeFactory)
+		if rpcErr == nil {
+			_ = s.StartPortMonitoring(req.ID)
+		}
+		return result, rpcErr
 	})
 	rpc.TypedRegister(r, "workspace.fork", func(ctx context.Context, req handlers.WorkspaceForkParams) (*handlers.WorkspaceForkResult, *rpckit.RPCError) {
 		return handlers.HandleWorkspaceFork(ctx, req, s.workspaceMgr, s.runtimeFactory)
