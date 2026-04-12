@@ -136,11 +136,10 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 		return handlers.HandleSpotlightApplyComposePorts(ctx, req, rootPath, s.spotlightMgr)
 	})
 
-	deps := s.ptyDeps()
 	r.Register("pty.open", func(_ context.Context, _ string, params json.RawMessage, conn any) (interface{}, *rpckit.RPCError) {
 		c := conn.(*Connection)
 		workspace := s.resolveWorkspace(params)
-		return pty.HandleOpen(deps, c, params, workspace)
+		return pty.HandleOpen(s.ptyDeps(), c, params, workspace)
 	})
 	r.Register("pty.write", func(_ context.Context, _ string, params json.RawMessage, conn any) (interface{}, *rpckit.RPCError) {
 		return pty.HandleWrite(params, conn.(*Connection))
