@@ -18,6 +18,7 @@ nav:
     - SDK: reference/sdk.md
     - Host auth bundle: reference/host-auth-bundle.md
     - Workspace Config: reference/workspace-config.md
+    - Roadmap Template: reference/roadmap-template.md
   - Roadmap: roadmap.md
 
 theme:
