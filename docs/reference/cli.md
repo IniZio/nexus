@@ -95,6 +95,8 @@ Checks latest release metadata and applies updates for both `nexus` and `nexus-d
 | `NEXUS_DAEMON_TOKEN` | Auth token override (auto-managed when unset) |
 | `NEXUS_AUTH_RELAY_TOKEN` | Relay token for `shell` / `exec` commands |
 | `NEXUS_RELEASE_BASE_URL` | Release asset base URL override for updater |
+| `NEXUS_RELEASE_CHANNEL` | Release channel (`stable` default, `prerelease` to track latest prerelease tag) |
+| `NEXUS_RELEASE_REPO` | GitHub repo slug for release lookup (default `inizio/nexus`) |
 
 ## Related
 

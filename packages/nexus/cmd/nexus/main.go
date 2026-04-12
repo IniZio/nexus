@@ -99,6 +99,7 @@ var updateForce bool
 var updateRollback bool
 var updateJSON bool
 var versionJSON bool
+var githubReleaseAPIBaseURL = "https://api.github.com"
 
 var runCmd = &cobra.Command{
 	Use:   "run [--backend name] [--timeout dur] -- <command> [args...]",
@@ -308,7 +309,52 @@ func releaseBaseURL() string {
 	if value := strings.TrimSpace(os.Getenv("NEXUS_RELEASE_BASE_URL")); value != "" {
 		return value
 	}
+	channel := strings.ToLower(strings.TrimSpace(os.Getenv("NEXUS_RELEASE_CHANNEL")))
+	repo := strings.TrimSpace(os.Getenv("NEXUS_RELEASE_REPO"))
+	if repo == "" {
+		repo = "inizio/nexus"
+	}
+	if channel == "prerelease" {
+		if prereleaseURL, err := latestPrereleaseBaseURL(repo); err == nil && prereleaseURL != "" {
+			return prereleaseURL
+		}
+	}
 	return "https://github.com/inizio/nexus/releases/latest/download"
+}
+
+func latestPrereleaseBaseURL(repo string) (string, error) {
+	url := strings.TrimRight(githubReleaseAPIBaseURL, "/") + "/repos/" + repo + "/releases"
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("github release lookup failed with status %d", resp.StatusCode)
+	}
+	var releases []struct {
+		TagName    string `json:"tag_name"`
+		Prerelease bool   `json:"prerelease"`
+		Draft      bool   `json:"draft"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return "", err
+	}
+	for _, release := range releases {
+		if release.Draft || !release.Prerelease {
+			continue
+		}
+		tag := strings.TrimSpace(release.TagName)
+		if tag == "" {
+			continue
+		}
+		return "https://github.com/" + repo + "/releases/download/" + tag, nil
+	}
+	return "", fmt.Errorf("no prerelease found")
 }
 
 func errString(err error) string {
