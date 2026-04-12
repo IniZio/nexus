@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/gorilla/websocket"
+	"github.com/inizio/nexus/packages/nexus/pkg/auth"
 	"github.com/inizio/nexus/packages/nexus/pkg/authrelay"
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
 	"github.com/inizio/nexus/packages/nexus/pkg/handlers"
@@ -28,7 +29,7 @@ import (
 type Server struct {
 	port                int
 	workspaceDir        string
-	tokenSecret         string
+	authProvider        auth.Provider
 	upgrader            websocket.Upgrader
 	connections         map[string]*Connection
 	ws                  *workspace.Workspace
@@ -50,6 +51,7 @@ type Connection struct {
 	send     chan []byte
 	closed   bool
 	clientID string
+	identity *auth.Identity
 	ptyMu    sync.Mutex
 	pty      map[string]*pty.Session
 }
@@ -96,9 +98,9 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 	}
 
 	srv := &Server{
-		port:         port,
-		workspaceDir: workspaceDir,
-		tokenSecret:  tokenSecret,
+		port:           port,
+		workspaceDir:   workspaceDir,
+		authProvider:   auth.NewLocalTokenProvider(tokenSecret),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
@@ -219,6 +221,10 @@ func (s *Server) ensureComposeForwards(ctx context.Context, workspaceID, rootPat
 
 func (s *Server) SetRuntimeFactory(factory *runtime.Factory) {
 	s.runtimeFactory = factory
+}
+
+func (s *Server) SetAuthProvider(provider auth.Provider) {
+	s.authProvider = provider
 }
 
 func (s *Server) WorkspaceIDs() []string {

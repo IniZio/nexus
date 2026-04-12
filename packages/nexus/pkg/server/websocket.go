@@ -8,16 +8,25 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
+	"github.com/inizio/nexus/packages/nexus/pkg/auth"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/server/pty"
 )
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
-	if !s.validateToken(token) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	if token == "" {
+		http.Error(w, "missing token", http.StatusUnauthorized)
+		return
+	}
+	if s.authProvider == nil {
+		http.Error(w, "auth not configured", http.StatusInternalServerError)
+		return
+	}
+	identity, err := s.authProvider.ValidateToken(r.Context(), token)
+	if err != nil {
+		http.Error(w, "invalid token", http.StatusUnauthorized)
 		return
 	}
 
@@ -32,6 +41,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		conn:     conn,
 		send:     make(chan []byte, 256),
 		clientID: clientID,
+		identity: identity,
 		pty:      make(map[string]*pty.Session),
 	}
 
@@ -41,25 +51,6 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	go clientConn.writePump()
 	clientConn.readPump(s)
-}
-
-func (s *Server) validateToken(token string) bool {
-	if token == "" {
-		return false
-	}
-
-	if token == s.tokenSecret {
-		return true
-	}
-
-	parsedToken, err := jwt.Parse(token, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(s.tokenSecret), nil
-	})
-
-	return err == nil && parsedToken.Valid
 }
 
 func (c *Connection) readPump(srv *Server) {
@@ -151,6 +142,9 @@ func (s *Server) handleMessage(msg *RPCMessage, conn *Connection) {
 
 func (s *Server) processRPC(msg *RPCMessage, conn *Connection) *RPCResponse {
 	ctx := context.Background()
+	if conn.identity != nil {
+		ctx = auth.WithIdentity(ctx, conn.identity)
+	}
 	result, err := s.rpcReg.Dispatch(ctx, msg.Method, msg.ID, msg.Params, conn)
 	if err != nil {
 		return &RPCResponse{

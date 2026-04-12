@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/inizio/nexus/packages/nexus/pkg/auth"
 	"github.com/inizio/nexus/packages/nexus/pkg/daemonclient"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
@@ -115,6 +116,7 @@ func runServer(port int, workspaceDir string, token string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
 	}
+	srv.SetAuthProvider(auth.NewLocalTokenProvider(token))
 
 	runner := &CommandRunner{}
 
