@@ -281,14 +281,197 @@ Optional future enhancements:
    - Verify no real credentials in guest filesystem
    - Verify placeholder substitution in HTTP traffic
 
+## OAuth and Dynamic Credentials
+
+The placeholder approach works for static tokens but fails for OAuth-based agents (Codex, Claude) that need to:
+1. Initiate device flow and display user_code
+2. Poll for tokens
+3. Store and refresh tokens automatically
+4. Handle single-use refresh token rotation (race conditions with multiple agents)
+
+### Solution: Credential Vending Service
+
+```go
+// pkg/secrets/vending/service.go
+type VendingService struct {
+    vault      *Vault
+    oauthBrokers map[string]OAuthBroker // provider -> broker
+}
+
+type OAuthBroker interface {
+    // InitiateDeviceFlow starts OAuth device flow, returns user_code and verification URL
+    InitiateDeviceFlow(ctx context.Context, scopes []string) (*DeviceFlowInit, error)
+    
+    // GetAccessToken returns short-lived access token (5-15 min TTL)
+    // Handles refresh internally, guest never sees refresh_token
+    GetAccessToken(ctx context.Context, workspaceID string) (*AccessToken, error)
+    
+    // Revoke invalidates all tokens for this workspace
+    Revoke(ctx context.Context, workspaceID string) error
+}
+
+type AccessToken struct {
+    Token     string    // Short-lived access token (ghu_..., gho_...)
+    ExpiresAt time.Time // 5-15 minutes from now
+    Scopes    []string  // Granted scopes
+}
+```
+
+### OAuth Broker Implementation (Codex Example)
+
+```go
+// pkg/secrets/vending/codex_broker.go
+type CodexBroker struct {
+    clientID     string
+    tokenStore   *TokenStore  // Encrypted storage for refresh tokens
+    mu           sync.RWMutex // Serializes refresh operations
+}
+
+func (b *CodexBroker) GetAccessToken(ctx context.Context, workspaceID string) (*AccessToken, error) {
+    // 1. Check if we have cached access token that's not expired
+    if cached := b.getCached(workspaceID); cached != nil && !cached.isExpired() {
+        return cached, nil
+    }
+    
+    // 2. Serialize refresh to avoid race conditions
+    // (Multiple agents sharing same OAuth session)
+    b.mu.Lock()
+    defer b.mu.Unlock()
+    
+    // 3. Double-check after acquiring lock
+    if cached := b.getCached(workspaceID); cached != nil && !cached.isExpired() {
+        return cached, nil
+    }
+    
+    // 4. Perform refresh with stored refresh_token
+    refreshToken, err := b.tokenStore.GetRefreshToken(workspaceID)
+    if err != nil {
+        return nil, fmt.Errorf("no refresh token available, need re-auth: %w", err)
+    }
+    
+    newToken, err := b.refresh(refreshToken)
+    if err != nil {
+        return nil, fmt.Errorf("token refresh failed: %w", err)
+    }
+    
+    // 5. Store new refresh_token (it's single-use, rotated)
+    b.tokenStore.StoreRefreshToken(workspaceID, newToken.RefreshToken)
+    
+    // 6. Cache short-lived access token
+    b.cacheToken(workspaceID, newToken.AccessToken, newToken.ExpiresIn)
+    
+    return &AccessToken{
+        Token:     newToken.AccessToken,
+        ExpiresAt: time.Now().Add(time.Duration(newToken.ExpiresIn) * time.Second),
+        Scopes:    newToken.Scopes,
+    }, nil
+}
+```
+
+### Guest Integration
+
+The guest doesn't run `codex login` directly. Instead:
+
+1. **Host runs device flow** when workspace is created with `--oauth codex`
+2. **Host displays user_code** to user via CLI/notification
+3. **User authenticates** in browser
+4. **Host stores refresh_token** securely (encrypted, outside sandbox)
+5. **Guest has "fake" Codex endpoint** at `localhost:8091` (vending client proxy)
+6. **Codex CLI configured** to talk to `localhost:8091` instead of real API
+
+```go
+// Guest agent runs local proxy that forwards to host via vsock
+type VendingClient struct {
+    vsockConn net.Conn
+}
+
+func (c *VendingClient) GetToken(ctx context.Context, provider string) (string, error) {
+    // gRPC/JSON-RPC over vsock to host
+    // Returns short-lived access token
+}
+```
+
+### Data Flow: Codex CLI in Workspace
+
+```
+1. Workspace creation with OAuth:
+   $ nexus workspace create --oauth codex
+   
+2. Host initiates device flow:
+   → POST https://github.com/login/device/code
+   ← {device_code: "...", user_code: "ABCD-1234", verification_uri: "https://github.com/login/device"}
+
+3. Host displays to user:
+   "Open https://github.com/login/device and enter code: ABCD-1234"
+
+4. User authenticates in browser
+
+5. Host polls and receives:
+   {access_token: "ghu_...", refresh_token: "ghr_...", expires_in: 28800}
+
+6. Host stores encrypted refresh_token, discards access_token
+
+7. Guest workspace starts with:
+   - CODEX_API_URL=http://localhost:8091 (vending proxy)
+   - No ~/.config/codex/auth.json file
+   
+8. Guest runs: codex "fix this bug"
+   → Codex CLI requests http://localhost:8091/token
+   → Vending proxy forwards over vsock to host
+   → Host returns fresh access_token (ghu_..., 10 min TTL)
+   → Codex CLI uses token, makes real API calls
+   
+9. Token expires mid-operation:
+   → Codex CLI requests new token from localhost:8091
+   → Host returns fresh token (no refresh in guest)
+   
+10. Race condition avoided:
+    → All refresh operations serialized on host
+    → Single source of truth for refresh_token
+```
+
+### Supported Providers
+
+Initial implementation targets:
+- **GitHub** (ghu_ tokens for Codespaces, Copilot, CLI)
+- **OpenAI** (Codex CLI)
+- **Anthropic** (Claude CLI)
+- **Generic OAuth 2.0** (configurable client_id/authorization_endpoint)
+
+### Security Properties for OAuth
+
+| Threat | Mitigation |
+|--------|------------|
+| Guest steals refresh_token | Never enters guest, stored encrypted on host |
+| Guest exfiltrates access_token | Short TTL (5-15 min), limited blast radius |
+| Multiple agents race on refresh | Host serializes all refresh operations |
+| Guest forges token requests | Vsock connection authenticated per-workspace |
+| User re-auth required | Only when refresh_token expires/revoked |
+
+## Component Summary
+
+| Component | Purpose | Location |
+|-----------|---------|----------|
+| `SecretVault` | Placeholder generation, static token storage | Host |
+| `HTTPInterceptor` | Header substitution, host allowlist enforcement | Host |
+| `SSHAgentForwarder` | SSH key signing over vsock | Host |
+| `VendingService` | gRPC service for dynamic credentials | Host |
+| `OAuthBroker` | Provider-specific OAuth flow handling | Host |
+| `VendingClient` | Guest-side proxy to request tokens | Guest |
+
 ## Open Questions
 
 1. Should we support the Gondolin-style `createHttpHooks` explicit API or transparent interception?
 2. How to handle non-HTTP protocols (raw TCP, gRPC without HTTP/2)?
 3. Should SSH agent support key filtering (only certain keys forwarded to certain guests)?
+4. Should OAuth brokers support "just-in-time" consent (user approval per token request)?
+5. How to handle token revocation across multiple workspaces (single user, multiple agents)?
 
 ## References
 
 - Gondolin secrets handling: https://earendil-works.github.io/gondolin/secrets/
 - Gondolin security design: https://earendil-works.github.io/gondolin/security/
 - SSH agent protocol: https://tools.ietf.org/html/draft-miller-ssh-agent-02
+- OAuth 2.0 Device Authorization Grant: https://tools.ietf.org/html/rfc8628
+- Sandbox0 credential injection: https://sandbox0.ai/blog/2026-03/keep-api-keys-out-of-ai-agents
+- Token broker pattern: https://github.com/openclaw/openclaw/issues/47908
