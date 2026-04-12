@@ -8,6 +8,24 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
+type WorkspaceInfoParams struct {
+	WorkspaceID string `json:"workspaceId,omitempty"`
+	ID          string `json:"id,omitempty"`
+	Spec        *struct {
+		WorkspaceID string `json:"workspaceId"`
+	} `json:"spec,omitempty"`
+}
+
+func WorkspaceInfoWorkspaceID(p WorkspaceInfoParams) string {
+	if p.WorkspaceID != "" {
+		return p.WorkspaceID
+	}
+	if p.Spec != nil && p.Spec.WorkspaceID != "" {
+		return p.Spec.WorkspaceID
+	}
+	return p.ID
+}
+
 func HandleWorkspaceInfo(
 	workspaceID string,
 	defaultWS *workspace.Workspace,

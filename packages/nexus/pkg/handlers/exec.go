@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -42,25 +41,20 @@ type ExecResult struct {
 	Command  string `json:"command"`
 }
 
-func HandleExec(ctx context.Context, params json.RawMessage, ws *workspace.Workspace) (*ExecResult, *rpckit.RPCError) {
-	return HandleExecWithAuthRelay(ctx, params, ws, nil)
+func HandleExec(ctx context.Context, req ExecParams, ws *workspace.Workspace) (*ExecResult, *rpckit.RPCError) {
+	return HandleExecWithAuthRelay(ctx, req, ws, nil)
 }
 
-func HandleExecWithAuthRelay(ctx context.Context, params json.RawMessage, ws *workspace.Workspace, broker *authrelay.Broker) (*ExecResult, *rpckit.RPCError) {
-	var p ExecParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, rpckit.ErrInvalidParams
-	}
-
-	if p.Command == "" {
+func HandleExecWithAuthRelay(ctx context.Context, req ExecParams, ws *workspace.Workspace, broker *authrelay.Broker) (*ExecResult, *rpckit.RPCError) {
+	if req.Command == "" {
 		return nil, rpckit.ErrInvalidParams
 	}
 
 	execCtx, cancel := context.WithTimeout(ctx, DefaultTimeout)
 	defer cancel()
 
-	if p.Options.Timeout > 0 {
-		timeout := time.Duration(p.Options.Timeout) * time.Second
+	if req.Options.Timeout > 0 {
+		timeout := time.Duration(req.Options.Timeout) * time.Second
 		if timeout > MaxTimeout {
 			timeout = MaxTimeout
 		}
@@ -70,39 +64,39 @@ func HandleExecWithAuthRelay(ctx context.Context, params json.RawMessage, ws *wo
 	}
 
 	workDir := ws.Path()
-	if p.Options.WorkDir != "" {
-		safePath, err := ws.SecurePath(p.Options.WorkDir)
+	if req.Options.WorkDir != "" {
+		safePath, err := ws.SecurePath(req.Options.WorkDir)
 		if err != nil {
 			return nil, rpckit.ErrInvalidPath
 		}
 		workDir = safePath
 	}
 
-	args := p.Args
+	args := req.Args
 	if args == nil {
-		parts := strings.Fields(p.Command)
+		parts := strings.Fields(req.Command)
 		if len(parts) > 0 {
-			p.Command = parts[0]
+			req.Command = parts[0]
 			args = parts[1:]
 		}
 	}
 
-	cmd := exec.CommandContext(execCtx, p.Command, args...)
+	cmd := exec.CommandContext(execCtx, req.Command, args...)
 	cmd.Dir = workDir
 
 	cmd.Env = safeenv.Base()
-	if p.Options.Env != nil {
-		cmd.Env = append(cmd.Env, p.Options.Env...)
+	if req.Options.Env != nil {
+		cmd.Env = append(cmd.Env, req.Options.Env...)
 	}
 
-	if p.Options.AuthRelayToken != "" {
+	if req.Options.AuthRelayToken != "" {
 		if broker == nil {
 			return nil, rpckit.ErrAuthRelayInvalid
 		}
-		if p.WorkspaceID == "" {
+		if req.WorkspaceID == "" {
 			return nil, rpckit.ErrInvalidParams
 		}
-		injected, ok := broker.Consume(p.Options.AuthRelayToken, p.WorkspaceID)
+		injected, ok := broker.Consume(req.Options.AuthRelayToken, req.WorkspaceID)
 		if !ok {
 			return nil, rpckit.ErrAuthRelayInvalid
 		}
@@ -133,9 +127,9 @@ func HandleExecWithAuthRelay(ctx context.Context, params json.RawMessage, ws *wo
 	}
 
 	if len(args) > 0 {
-		result.Command = fmt.Sprintf("%s %s", p.Command, strings.Join(args, " "))
+		result.Command = fmt.Sprintf("%s %s", req.Command, strings.Join(args, " "))
 	} else {
-		result.Command = p.Command
+		result.Command = req.Command
 	}
 
 	return result, nil

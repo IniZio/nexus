@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"testing"
 	"time"
@@ -20,14 +19,14 @@ func TestHandleExecWithAuthRelay_InjectsEnvAndConsumesTokenOnce(t *testing.T) {
 	broker := authrelay.NewBroker()
 	token := broker.Mint("ws-1", map[string]string{"NEXUS_AUTH_VALUE": "secret"}, time.Minute)
 
-	params, _ := json.Marshal(map[string]any{
-		"workspaceId": "ws-1",
-		"command":     "sh",
-		"args":        []string{"-lc", "printf \"%s\" \"$NEXUS_AUTH_VALUE\""},
-		"options": map[string]any{
-			"authRelayToken": token,
+	params := ExecParams{
+		WorkspaceID: "ws-1",
+		Command:     "sh",
+		Args:        []string{"-lc", `printf "%s" "$NEXUS_AUTH_VALUE"`},
+		Options: ExecOptions{
+			AuthRelayToken: token,
 		},
-	})
+	}
 
 	res, rpcErr := HandleExecWithAuthRelay(context.Background(), params, ws, broker)
 	if rpcErr != nil {
@@ -40,14 +39,14 @@ func TestHandleExecWithAuthRelay_InjectsEnvAndConsumesTokenOnce(t *testing.T) {
 		t.Fatalf("expected injected auth value, got %q", res.Stdout)
 	}
 
-	pathParams, _ := json.Marshal(map[string]any{
-		"workspaceId": "ws-1",
-		"command":     "sh",
-		"args":        []string{"-lc", "test -n \"$PATH\" && echo path-ok"},
-		"options": map[string]any{
-			"authRelayToken": broker.Mint("ws-1", map[string]string{"NEXUS_AUTH_VALUE": "x"}, time.Minute),
+	pathParams := ExecParams{
+		WorkspaceID: "ws-1",
+		Command:     "sh",
+		Args:        []string{"-lc", `test -n "$PATH" && echo path-ok`},
+		Options: ExecOptions{
+			AuthRelayToken: broker.Mint("ws-1", map[string]string{"NEXUS_AUTH_VALUE": "x"}, time.Minute),
 		},
-	})
+	}
 	pathRes, pathErr := HandleExecWithAuthRelay(context.Background(), pathParams, ws, broker)
 	if pathErr != nil {
 		t.Fatalf("path check rpc error: %+v", pathErr)
@@ -71,14 +70,14 @@ func TestHandleExecWithAuthRelay_RejectsWrongWorkspace(t *testing.T) {
 	broker := authrelay.NewBroker()
 	token := broker.Mint("ws-1", map[string]string{"NEXUS_AUTH_VALUE": "secret"}, time.Minute)
 
-	params, _ := json.Marshal(map[string]any{
-		"workspaceId": "ws-2",
-		"command":     "sh",
-		"args":        []string{"-lc", "printf \"%s\" \"$NEXUS_AUTH_VALUE\""},
-		"options": map[string]any{
-			"authRelayToken": token,
+	params := ExecParams{
+		WorkspaceID: "ws-2",
+		Command:     "sh",
+		Args:        []string{"-lc", `printf "%s" "$NEXUS_AUTH_VALUE"`},
+		Options: ExecOptions{
+			AuthRelayToken: token,
 		},
-	})
+	}
 
 	_, rpcErr := HandleExecWithAuthRelay(context.Background(), params, ws, broker)
 	if rpcErr == nil {
@@ -96,10 +95,10 @@ func TestHandleExecWithAuthRelay_DoesNotInheritDaemonSecretEnv(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Unsetenv("NEXUS_DAEMON_SIDE_SECRET_TEST") })
 
-	params, _ := json.Marshal(map[string]any{
-		"command": "sh",
-		"args":    []string{"-lc", "printf \"%s\" \"${NEXUS_DAEMON_SIDE_SECRET_TEST:-}\""},
-	})
+	params := ExecParams{
+		Command: "sh",
+		Args:    []string{"-lc", `printf "%s" "${NEXUS_DAEMON_SIDE_SECRET_TEST:-}"`},
+	}
 
 	res, rpcErr := HandleExecWithAuthRelay(context.Background(), params, ws, nil)
 	if rpcErr != nil {

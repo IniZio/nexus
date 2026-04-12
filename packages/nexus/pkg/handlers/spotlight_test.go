@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"net"
 	"testing"
 
@@ -13,7 +12,6 @@ import (
 func TestHandleSpotlightApplyComposePorts_ForwardsDiscoveredPorts(t *testing.T) {
 	mgr := spotlight.NewManager()
 	rootDir := t.TempDir()
-	params, _ := json.Marshal(SpotlightApplyComposePortsParams{WorkspaceID: "ws-1"})
 	studentPort := freeTCPPort(t)
 	apiPort := freeTCPPort(t)
 
@@ -26,7 +24,7 @@ func TestHandleSpotlightApplyComposePorts_ForwardsDiscoveredPorts(t *testing.T) 
 		}, nil
 	}
 
-	res, rpcErr := HandleSpotlightApplyComposePorts(context.Background(), params, rootDir, mgr)
+	res, rpcErr := HandleSpotlightApplyComposePorts(context.Background(), SpotlightApplyComposePortsParams{WorkspaceID: "ws-1"}, rootDir, mgr)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}
@@ -54,7 +52,6 @@ func TestHandleSpotlightApplyComposePorts_ReportsCollisionsPerPort(t *testing.T)
 	}
 
 	rootDir := t.TempDir()
-	params, _ := json.Marshal(SpotlightApplyComposePortsParams{WorkspaceID: "ws-1"})
 	orig := discoverPublishedPorts
 	t.Cleanup(func() { discoverPublishedPorts = orig })
 	discoverPublishedPorts = func(_ context.Context, _ string) ([]compose.PublishedPort, error) {
@@ -64,7 +61,7 @@ func TestHandleSpotlightApplyComposePorts_ReportsCollisionsPerPort(t *testing.T)
 		}, nil
 	}
 
-	res, rpcErr := HandleSpotlightApplyComposePorts(context.Background(), params, rootDir, mgr)
+	res, rpcErr := HandleSpotlightApplyComposePorts(context.Background(), SpotlightApplyComposePortsParams{WorkspaceID: "ws-1"}, rootDir, mgr)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}
@@ -82,7 +79,6 @@ func TestHandleSpotlightApplyComposePorts_ReportsCollisionsPerPort(t *testing.T)
 func TestHandleSpotlightApplyComposePorts_NoComposeFileReturnsEmpty(t *testing.T) {
 	mgr := spotlight.NewManager()
 	rootDir := t.TempDir()
-	params, _ := json.Marshal(SpotlightApplyComposePortsParams{WorkspaceID: "ws-1"})
 
 	orig := discoverPublishedPorts
 	t.Cleanup(func() { discoverPublishedPorts = orig })
@@ -90,7 +86,7 @@ func TestHandleSpotlightApplyComposePorts_NoComposeFileReturnsEmpty(t *testing.T
 		return nil, compose.ErrComposeFileNotFound
 	}
 
-	res, rpcErr := HandleSpotlightApplyComposePorts(context.Background(), params, rootDir, mgr)
+	res, rpcErr := HandleSpotlightApplyComposePorts(context.Background(), SpotlightApplyComposePortsParams{WorkspaceID: "ws-1"}, rootDir, mgr)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}

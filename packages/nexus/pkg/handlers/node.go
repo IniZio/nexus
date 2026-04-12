@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
@@ -15,7 +14,7 @@ type NodeInfoResult struct {
 	Compatibility config.NodeCompatibility `json:"compatibility"`
 }
 
-func HandleNodeInfo(_ context.Context, _ json.RawMessage, nodeCfg *config.NodeConfig, factory *runtime.Factory) (*NodeInfoResult, *rpckit.RPCError) {
+func HandleNodeInfo(_ context.Context, nodeCfg *config.NodeConfig, factory *runtime.Factory) (*NodeInfoResult, *rpckit.RPCError) {
 	result := &NodeInfoResult{
 		Capabilities: []runtime.Capability{},
 	}

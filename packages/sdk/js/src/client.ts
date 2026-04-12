@@ -8,6 +8,7 @@ import { WorkspaceManager } from './workspace-manager';
 import { PTYOperations } from './pty';
 import { NodeWebSocketTransport } from './transport/node-websocket';
 import type { BrowserWebSocketTransport } from './transport/browser-websocket';
+import type { RPCSchema } from './rpc/schema';
 
 type WsTransport = NodeWebSocketTransport | BrowserWebSocketTransport;
 
@@ -159,8 +160,13 @@ export class WorkspaceClient {
     return this.core.onNotification(method, callback);
   }
 
-  async request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
-    return this.core.request<T>(
+  async request<M extends keyof RPCSchema>(
+    method: M,
+    params: RPCSchema[M][0]
+  ): Promise<RPCSchema[M][1]>;
+  async request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
+  async request(method: string, params?: Record<string, unknown>): Promise<unknown> {
+    return this.core.request(
       method,
       params,
       (data) => this.transport!.send(data),

@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,16 +44,13 @@ func setupRepoWithWorkspaceConfig(t *testing.T, workspaceConfig string) string {
 func TestHandleWorkspaceCreate(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
 
-	params, err := json.Marshal(WorkspaceCreateParams{
+	params := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          "git@example/repo.git",
 			Ref:           "main",
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
 	}
 
 	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, nil)
@@ -89,16 +85,13 @@ func TestHandleWorkspaceCreate_WithFactory(t *testing.T) {
 		"firecracker": &mockDriver{backend: "firecracker"},
 	})
 
-	params, err := json.Marshal(WorkspaceCreateParams{
+	params := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          repo,
 			Ref:           "main",
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
 	}
 
 	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
@@ -135,16 +128,13 @@ func TestHandleWorkspaceCreate_ConfigRequiredBackendHonored(t *testing.T) {
 		"firecracker": &mockDriver{backend: "firecracker"},
 	})
 
-	params, err := json.Marshal(WorkspaceCreateParams{
+	params := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          repo,
 			Ref:           "main",
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
 	}
 
 	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
@@ -170,16 +160,13 @@ func TestHandleWorkspaceCreate_FactoryWithUnavailableCapability(t *testing.T) {
 		"firecracker": &mockDriver{backend: "firecracker"},
 	})
 
-	params, err := json.Marshal(WorkspaceCreateParams{
+	params := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          repo,
 			Ref:           "main",
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
 	}
 
 	_, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
@@ -211,16 +198,13 @@ func TestHandleWorkspaceCreate_MissingRuntimeRequiredUsesDefaultLinux(t *testing
 		"firecracker": &mockDriver{backend: "firecracker"},
 	})
 
-	params, err := json.Marshal(WorkspaceCreateParams{
+	params := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          repo,
 			Ref:           "main",
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
 	}
 
 	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
@@ -253,7 +237,7 @@ func TestHandleWorkspaceCreate_MissingRuntimeRequiredDoesNotUseSpecBackend(t *te
 		"local": &mockDriver{backend: "local"},
 	})
 
-	params, err := json.Marshal(WorkspaceCreateParams{
+	params := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          repo,
 			Ref:           "main",
@@ -261,9 +245,6 @@ func TestHandleWorkspaceCreate_MissingRuntimeRequiredDoesNotUseSpecBackend(t *te
 			AgentProfile:  "default",
 			Backend:       "local",
 		},
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
 	}
 
 	_, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
@@ -290,16 +271,13 @@ func TestHandleWorkspaceCreate_MissingRuntimeRequiredDoesNotFallbackToLocal(t *t
 		"local": &mockDriver{backend: "local"},
 	})
 
-	params, err := json.Marshal(WorkspaceCreateParams{
+	params := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          repo,
 			Ref:           "main",
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
 	}
 
 	_, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
@@ -332,7 +310,7 @@ func (d *mockDriver) Destroy(ctx context.Context, workspaceID string) error { re
 
 func TestHandleWorkspaceOpen_NotFound(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
-	params, _ := json.Marshal(WorkspaceOpenParams{ID: "missing"})
+	params := WorkspaceOpenParams{ID: "missing"}
 
 	result, rpcErr := HandleWorkspaceOpen(context.Background(), params, mgr)
 	if result != nil {
@@ -345,20 +323,20 @@ func TestHandleWorkspaceOpen_NotFound(t *testing.T) {
 
 func TestHandleWorkspaceListAndRemove(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
-	createParams, _ := json.Marshal(WorkspaceCreateParams{
+	createParams := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          "git@example/repo.git",
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
+	}
 
 	created, rpcErr := HandleWorkspaceCreate(context.Background(), createParams, mgr, nil)
 	if rpcErr != nil {
 		t.Fatalf("create failed: %+v", rpcErr)
 	}
 
-	list, rpcErr := HandleWorkspaceList(context.Background(), nil, mgr)
+	list, rpcErr := HandleWorkspaceList(context.Background(), WorkspaceListParams{}, mgr)
 	if rpcErr != nil {
 		t.Fatalf("list failed: %+v", rpcErr)
 	}
@@ -366,7 +344,7 @@ func TestHandleWorkspaceListAndRemove(t *testing.T) {
 		t.Fatalf("expected 1 workspace, got %d", len(list.Workspaces))
 	}
 
-	removeParams, _ := json.Marshal(WorkspaceRemoveParams{ID: created.Workspace.ID})
+	removeParams := WorkspaceRemoveParams{ID: created.Workspace.ID}
 	removed, rpcErr := HandleWorkspaceRemove(context.Background(), removeParams, mgr, nil)
 	if rpcErr != nil {
 		t.Fatalf("remove failed: %+v", rpcErr)
@@ -378,16 +356,16 @@ func TestHandleWorkspaceListAndRemove(t *testing.T) {
 
 func TestHandleWorkspaceStop(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
-	createParams, _ := json.Marshal(WorkspaceCreateParams{
+	createParams := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          "git@example/repo.git",
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
+	}
 	created, _ := HandleWorkspaceCreate(context.Background(), createParams, mgr, nil)
 
-	stopParams, _ := json.Marshal(WorkspaceStopParams{ID: created.Workspace.ID})
+	stopParams := WorkspaceStopParams{ID: created.Workspace.ID}
 	result, rpcErr := HandleWorkspaceStop(context.Background(), stopParams, mgr)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
@@ -399,7 +377,7 @@ func TestHandleWorkspaceStop(t *testing.T) {
 
 func TestHandleWorkspaceStop_NotFound(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
-	stopParams, _ := json.Marshal(WorkspaceStopParams{ID: "missing"})
+	stopParams := WorkspaceStopParams{ID: "missing"}
 	_, rpcErr := HandleWorkspaceStop(context.Background(), stopParams, mgr)
 	if rpcErr == nil {
 		t.Fatal("expected workspace not found error")
@@ -408,16 +386,16 @@ func TestHandleWorkspaceStop_NotFound(t *testing.T) {
 
 func TestHandleWorkspaceStart(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
-	createParams, _ := json.Marshal(WorkspaceCreateParams{
+	createParams := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          "git@example/repo.git",
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
+	}
 	created, _ := HandleWorkspaceCreate(context.Background(), createParams, mgr, nil)
 
-	startParams, _ := json.Marshal(WorkspaceStartParams{ID: created.Workspace.ID})
+	startParams := WorkspaceStartParams{ID: created.Workspace.ID}
 	result, rpcErr := HandleWorkspaceStart(context.Background(), startParams, mgr)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
@@ -429,7 +407,7 @@ func TestHandleWorkspaceStart(t *testing.T) {
 
 func TestHandleWorkspaceStart_NotFound(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
-	startParams, _ := json.Marshal(WorkspaceStartParams{ID: "missing"})
+	startParams := WorkspaceStartParams{ID: "missing"}
 	_, rpcErr := HandleWorkspaceStart(context.Background(), startParams, mgr)
 	if rpcErr == nil {
 		t.Fatal("expected workspace not found error")
@@ -438,19 +416,19 @@ func TestHandleWorkspaceStart_NotFound(t *testing.T) {
 
 func TestHandleWorkspaceRestore(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
-	createParams, _ := json.Marshal(WorkspaceCreateParams{
+	createParams := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          "git@example/repo.git",
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
+	}
 	created, _ := HandleWorkspaceCreate(context.Background(), createParams, mgr, nil)
 
-	stopParams, _ := json.Marshal(WorkspaceStopParams{ID: created.Workspace.ID})
+	stopParams := WorkspaceStopParams{ID: created.Workspace.ID}
 	HandleWorkspaceStop(context.Background(), stopParams, mgr)
 
-	restoreParams, _ := json.Marshal(WorkspaceRestoreParams{ID: created.Workspace.ID})
+	restoreParams := WorkspaceRestoreParams{ID: created.Workspace.ID}
 	result, rpcErr := HandleWorkspaceRestore(context.Background(), restoreParams, mgr, nil)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
@@ -465,7 +443,7 @@ func TestHandleWorkspaceRestore(t *testing.T) {
 
 func TestHandleWorkspaceRestore_NotFound(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
-	restoreParams, _ := json.Marshal(WorkspaceRestoreParams{ID: "missing"})
+	restoreParams := WorkspaceRestoreParams{ID: "missing"}
 	_, rpcErr := HandleWorkspaceRestore(context.Background(), restoreParams, mgr, nil)
 	if rpcErr == nil {
 		t.Fatal("expected workspace not found error")
@@ -493,19 +471,19 @@ func TestHandleWorkspaceRestore_WithFactory(t *testing.T) {
 		"firecracker": &mockDriver{backend: "firecracker"},
 	})
 
-	createParams, _ := json.Marshal(WorkspaceCreateParams{
+	createParams := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          repo,
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
+	}
 	created, _ := HandleWorkspaceCreate(context.Background(), createParams, mgr, nil)
 
-	stopParams, _ := json.Marshal(WorkspaceStopParams{ID: created.Workspace.ID})
+	stopParams := WorkspaceStopParams{ID: created.Workspace.ID}
 	HandleWorkspaceStop(context.Background(), stopParams, mgr)
 
-	restoreParams, _ := json.Marshal(WorkspaceRestoreParams{ID: created.Workspace.ID})
+	restoreParams := WorkspaceRestoreParams{ID: created.Workspace.ID}
 	result, rpcErr := HandleWorkspaceRestore(context.Background(), restoreParams, mgr, factory)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
@@ -542,19 +520,19 @@ func TestHandleWorkspaceRestore_WithFactory_PersistsBackendSelection(t *testing.
 		"firecracker": &mockDriver{backend: "firecracker"},
 	})
 
-	createParams, _ := json.Marshal(WorkspaceCreateParams{
+	createParams := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          repo,
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
+	}
 	created, _ := HandleWorkspaceCreate(context.Background(), createParams, mgr, nil)
 
-	stopParams, _ := json.Marshal(WorkspaceStopParams{ID: created.Workspace.ID})
+	stopParams := WorkspaceStopParams{ID: created.Workspace.ID}
 	HandleWorkspaceStop(context.Background(), stopParams, mgr)
 
-	restoreParams, _ := json.Marshal(WorkspaceRestoreParams{ID: created.Workspace.ID})
+	restoreParams := WorkspaceRestoreParams{ID: created.Workspace.ID}
 	result, rpcErr := HandleWorkspaceRestore(context.Background(), restoreParams, mgr, factory)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
@@ -592,19 +570,19 @@ func TestHandleWorkspaceRestore_FactoryWithUnavailableCapability(t *testing.T) {
 		"firecracker": &mockDriver{backend: "firecracker"},
 	})
 
-	createParams, _ := json.Marshal(WorkspaceCreateParams{
+	createParams := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          repo,
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
+	}
 	created, _ := HandleWorkspaceCreate(context.Background(), createParams, mgr, nil)
 
-	stopParams, _ := json.Marshal(WorkspaceStopParams{ID: created.Workspace.ID})
+	stopParams := WorkspaceStopParams{ID: created.Workspace.ID}
 	HandleWorkspaceStop(context.Background(), stopParams, mgr)
 
-	restoreParams, _ := json.Marshal(WorkspaceRestoreParams{ID: created.Workspace.ID})
+	restoreParams := WorkspaceRestoreParams{ID: created.Workspace.ID}
 	_, rpcErr := HandleWorkspaceRestore(context.Background(), restoreParams, mgr, factory)
 	if rpcErr == nil {
 		t.Fatal("expected rpc error for unavailable capability, got nil")
@@ -639,20 +617,20 @@ func TestHandleWorkspaceRestore_ConfigRequiredBackendHonored(t *testing.T) {
 		"firecracker": &mockDriver{backend: "firecracker"},
 	})
 
-	createParams, _ := json.Marshal(WorkspaceCreateParams{
+	createParams := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          repo,
 			Ref:           "main",
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
+	}
 	created, _ := HandleWorkspaceCreate(context.Background(), createParams, mgr, nil)
 
-	stopParams, _ := json.Marshal(WorkspaceStopParams{ID: created.Workspace.ID})
+	stopParams := WorkspaceStopParams{ID: created.Workspace.ID}
 	HandleWorkspaceStop(context.Background(), stopParams, mgr)
 
-	restoreParams, _ := json.Marshal(WorkspaceRestoreParams{ID: created.Workspace.ID})
+	restoreParams := WorkspaceRestoreParams{ID: created.Workspace.ID}
 	result, rpcErr := HandleWorkspaceRestore(context.Background(), restoreParams, mgr, factory)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
@@ -667,17 +645,17 @@ func TestHandleWorkspaceRestore_ConfigRequiredBackendHonored(t *testing.T) {
 
 func TestHandleWorkspacePause(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
-	createParams, _ := json.Marshal(WorkspaceCreateParams{
+	createParams := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          "git@example/repo.git",
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
+	}
 	created, _ := HandleWorkspaceCreate(context.Background(), createParams, mgr, nil)
 	_ = mgr.Start(created.Workspace.ID)
 
-	pauseParams, _ := json.Marshal(WorkspacePauseParams{ID: created.Workspace.ID})
+	pauseParams := WorkspacePauseParams{ID: created.Workspace.ID}
 	result, rpcErr := HandleWorkspacePause(context.Background(), pauseParams, mgr, nil)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
@@ -689,18 +667,18 @@ func TestHandleWorkspacePause(t *testing.T) {
 
 func TestHandleWorkspaceResume(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
-	createParams, _ := json.Marshal(WorkspaceCreateParams{
+	createParams := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          "git@example/repo.git",
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
+	}
 	created, _ := HandleWorkspaceCreate(context.Background(), createParams, mgr, nil)
 	_ = mgr.Start(created.Workspace.ID)
 	_ = mgr.Pause(created.Workspace.ID)
 
-	resumeParams, _ := json.Marshal(WorkspaceResumeParams{ID: created.Workspace.ID})
+	resumeParams := WorkspaceResumeParams{ID: created.Workspace.ID}
 	result, rpcErr := HandleWorkspaceResume(context.Background(), resumeParams, mgr, nil)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
@@ -712,17 +690,17 @@ func TestHandleWorkspaceResume(t *testing.T) {
 
 func TestHandleWorkspaceFork(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
-	createParams, _ := json.Marshal(WorkspaceCreateParams{
+	createParams := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          "git@example/repo.git",
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 			Backend:       "firecracker",
 		},
-	})
+	}
 	created, _ := HandleWorkspaceCreate(context.Background(), createParams, mgr, nil)
 
-	forkParams, _ := json.Marshal(WorkspaceForkParams{ID: created.Workspace.ID, ChildWorkspaceName: "alpha-child", ChildRef: "alpha-child"})
+	forkParams := WorkspaceForkParams{ID: created.Workspace.ID, ChildWorkspaceName: "alpha-child", ChildRef: "alpha-child"}
 	result, rpcErr := HandleWorkspaceFork(context.Background(), forkParams, mgr, nil)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
@@ -755,13 +733,13 @@ func TestHandleWorkspaceFork_WithFactoryLinuxRequiresFirecracker(t *testing.T) {
 		"firecracker": &mockDriver{backend: "firecracker"},
 	})
 
-	createParams, _ := json.Marshal(WorkspaceCreateParams{
+	createParams := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          repo,
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
+	}
 	_, rpcErr := HandleWorkspaceCreate(context.Background(), createParams, mgr, factory)
 	if rpcErr == nil {
 		t.Fatal("expected create failure when runtime.required=linux and firecracker unavailable")
@@ -799,7 +777,7 @@ func TestHandleWorkspaceFork_WithFactoryLinuxBackendAfterRestartLikeState(t *tes
 		t.Fatalf("seed workspace failed: %v", err)
 	}
 
-	forkParams, _ := json.Marshal(WorkspaceForkParams{ID: parent.ID, ChildWorkspaceName: "alpha-child", ChildRef: "alpha-child"})
+	forkParams := WorkspaceForkParams{ID: parent.ID, ChildWorkspaceName: "alpha-child", ChildRef: "alpha-child"}
 	result, rpcErr := HandleWorkspaceFork(context.Background(), forkParams, mgr, factory)
 	if rpcErr != nil {
 		t.Fatalf("fork failed: %+v", rpcErr)
@@ -845,7 +823,7 @@ func TestHandleWorkspacePause_WithFactoryLinuxBackendAfterRestartLikeState(t *te
 
 	_ = mgr.Start(ws.ID)
 
-	pauseParams, _ := json.Marshal(WorkspacePauseParams{ID: ws.ID})
+	pauseParams := WorkspacePauseParams{ID: ws.ID}
 	result, rpcErr := HandleWorkspacePause(context.Background(), pauseParams, mgr, factory)
 	if rpcErr != nil {
 		t.Fatalf("pause failed: %+v", rpcErr)
@@ -876,16 +854,13 @@ func TestHandleWorkspaceCreate_WithFactoryFirecrackerBootstrapsRuntime(t *testin
 		},
 	})
 
-	params, err := json.Marshal(WorkspaceCreateParams{
+	params := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          repo,
 			Ref:           "main",
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
 		},
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
 	}
 
 	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
@@ -921,7 +896,7 @@ func TestHandleWorkspaceCreate_PassesHostAuthBundleToRuntime(t *testing.T) {
 		},
 	})
 
-	params, err := json.Marshal(WorkspaceCreateParams{
+	params := WorkspaceCreateParams{
 		Spec: workspacemgr.CreateSpec{
 			Repo:          repo,
 			Ref:           "main",
@@ -929,9 +904,6 @@ func TestHandleWorkspaceCreate_PassesHostAuthBundleToRuntime(t *testing.T) {
 			AgentProfile:  "default",
 			ConfigBundle:  "e30=",
 		},
-	})
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
 	}
 
 	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
@@ -969,7 +941,7 @@ func TestHandleWorkspaceCreate_InstallableMissingRetriesSetupOnce(t *testing.T) 
 		map[string]runtime.Driver{"firecracker": &mockDriver{backend: "firecracker"}},
 	)
 
-	params, _ := json.Marshal(WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}})
+	params := WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}}
 	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
@@ -1009,7 +981,7 @@ func TestHandleWorkspaceCreate_InstallableMissingSetupFailureReturnsPreflightErr
 		map[string]runtime.Driver{"firecracker": &mockDriver{backend: "firecracker"}},
 	)
 
-	params, _ := json.Marshal(WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}})
+	params := WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}}
 	_, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
 	if rpcErr == nil {
 		t.Fatal("expected rpc error")
@@ -1054,7 +1026,7 @@ func TestHandleWorkspaceCreate_UnsupportedNestedVirtFallsBackToSeatbelt(t *testi
 		},
 	)
 
-	params, _ := json.Marshal(WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}})
+	params := WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}}
 	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
@@ -1085,7 +1057,7 @@ func TestHandleWorkspaceCreate_HardFailReturnsStructuredPreflightError(t *testin
 		map[string]runtime.Driver{"firecracker": &mockDriver{backend: "firecracker"}},
 	)
 
-	params, _ := json.Marshal(WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}})
+	params := WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}}
 	_, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
 	if rpcErr == nil {
 		t.Fatal("expected rpc error")
@@ -1116,7 +1088,7 @@ func TestHandleWorkspaceCreate_UsesInternalPreflightOverrideWhenEnabled(t *testi
 		},
 	)
 
-	params, _ := json.Marshal(WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}})
+	params := WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}}
 	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
@@ -1140,7 +1112,7 @@ func TestHandleWorkspaceCreate_IgnoresInternalPreflightOverrideWhenDisabled(t *t
 		map[string]runtime.Driver{"firecracker": &mockDriver{backend: "firecracker"}},
 	)
 
-	params, _ := json.Marshal(WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}})
+	params := WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}}
 	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)

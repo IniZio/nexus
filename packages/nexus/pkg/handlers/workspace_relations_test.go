@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
@@ -40,7 +39,7 @@ func TestHandleWorkspaceRelationsList_GroupsByRepoAndLineage(t *testing.T) {
 		t.Fatalf("create local-only: %v", err)
 	}
 
-	res, rpcErr := HandleWorkspaceRelationsList(context.Background(), nil, mgr)
+	res, rpcErr := HandleWorkspaceRelationsList(context.Background(), WorkspaceRelationsListParams{}, mgr)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}
@@ -91,8 +90,7 @@ func TestHandleWorkspaceRelationsList_FilterByRepoID(t *testing.T) {
 		t.Fatalf("create second: %v", err)
 	}
 
-	params, _ := json.Marshal(WorkspaceRelationsListParams{RepoID: first.RepoID})
-	res, rpcErr := HandleWorkspaceRelationsList(context.Background(), params, mgr)
+	res, rpcErr := HandleWorkspaceRelationsList(context.Background(), WorkspaceRelationsListParams{RepoID: first.RepoID}, mgr)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}

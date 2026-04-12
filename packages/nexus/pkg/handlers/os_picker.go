@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -19,14 +18,7 @@ type PickDirectoryResult struct {
 	Cancelled bool   `json:"cancelled"`
 }
 
-func HandlePickDirectory(_ context.Context, params json.RawMessage) (*PickDirectoryResult, *rpckit.RPCError) {
-	var p PickDirectoryParams
-	if len(params) > 0 {
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, rpckit.ErrInvalidParams
-		}
-	}
-
+func HandlePickDirectory(_ context.Context, p PickDirectoryParams) (*PickDirectoryResult, *rpckit.RPCError) {
 	if runtime.GOOS != "darwin" {
 		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: "native folder picker is only supported on macOS"}
 	}

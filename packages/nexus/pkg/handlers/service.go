@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
@@ -16,11 +15,7 @@ type ServiceCommandParams struct {
 	Params      map[string]interface{} `json:"params,omitempty"`
 }
 
-func HandleServiceCommand(ctx context.Context, params json.RawMessage, ws *workspace.Workspace, mgr *services.Manager) (map[string]interface{}, *rpckit.RPCError) {
-	var p ServiceCommandParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, rpckit.ErrInvalidParams
-	}
+func HandleServiceCommand(ctx context.Context, p ServiceCommandParams, ws *workspace.Workspace, mgr *services.Manager) (map[string]interface{}, *rpckit.RPCError) {
 	if p.Action == "" {
 		return nil, rpckit.ErrInvalidParams
 	}

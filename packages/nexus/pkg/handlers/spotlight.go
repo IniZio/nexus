@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/compose"
@@ -53,12 +52,7 @@ type SpotlightApplyComposePortsResult struct {
 	Errors   []SpotlightApplyComposePortsError `json:"errors"`
 }
 
-func HandleSpotlightExpose(ctx context.Context, params json.RawMessage, mgr *spotlight.Manager) (*SpotlightExposeResult, *rpckit.RPCError) {
-	var p SpotlightExposeParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, rpckit.ErrInvalidParams
-	}
-
+func HandleSpotlightExpose(ctx context.Context, p SpotlightExposeParams, mgr *spotlight.Manager) (*SpotlightExposeResult, *rpckit.RPCError) {
 	fwd, err := mgr.Expose(ctx, p.Spec)
 	if err != nil {
 		return nil, rpckit.ErrInvalidParams
@@ -67,24 +61,12 @@ func HandleSpotlightExpose(ctx context.Context, params json.RawMessage, mgr *spo
 	return &SpotlightExposeResult{Forward: fwd}, nil
 }
 
-func HandleSpotlightList(_ context.Context, params json.RawMessage, mgr *spotlight.Manager) (*SpotlightListResult, *rpckit.RPCError) {
-	var p SpotlightListParams
-	if len(params) > 0 {
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, rpckit.ErrInvalidParams
-		}
-	}
-
+func HandleSpotlightList(_ context.Context, p SpotlightListParams, mgr *spotlight.Manager) (*SpotlightListResult, *rpckit.RPCError) {
 	all := mgr.List(p.WorkspaceID)
 	return &SpotlightListResult{Forwards: all}, nil
 }
 
-func HandleSpotlightClose(_ context.Context, params json.RawMessage, mgr *spotlight.Manager) (*SpotlightCloseResult, *rpckit.RPCError) {
-	var p SpotlightCloseParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, rpckit.ErrInvalidParams
-	}
-
+func HandleSpotlightClose(_ context.Context, p SpotlightCloseParams, mgr *spotlight.Manager) (*SpotlightCloseResult, *rpckit.RPCError) {
 	closed := mgr.Close(p.ID)
 	if !closed {
 		return nil, rpckit.ErrInvalidParams
@@ -93,11 +75,7 @@ func HandleSpotlightClose(_ context.Context, params json.RawMessage, mgr *spotli
 	return &SpotlightCloseResult{Closed: true}, nil
 }
 
-func HandleSpotlightApplyComposePorts(ctx context.Context, params json.RawMessage, rootPath string, mgr *spotlight.Manager) (*SpotlightApplyComposePortsResult, *rpckit.RPCError) {
-	var p SpotlightApplyComposePortsParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, rpckit.ErrInvalidParams
-	}
+func HandleSpotlightApplyComposePorts(ctx context.Context, p SpotlightApplyComposePortsParams, rootPath string, mgr *spotlight.Manager) (*SpotlightApplyComposePortsResult, *rpckit.RPCError) {
 	if p.WorkspaceID == "" || rootPath == "" {
 		return nil, rpckit.ErrInvalidParams
 	}

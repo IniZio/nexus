@@ -1,35 +1,21 @@
 package main
 
 import (
-	"io"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/gorilla/websocket"
 )
 
-func TestPrintUsageIncludesFlatWorkspaceCommands(t *testing.T) {
-	oldStderr := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("stderr pipe: %v", err)
-	}
-	os.Stderr = w
-
-	printUsage()
-
-	_ = w.Close()
-	os.Stderr = oldStderr
-
-	buf, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read usage output: %v", err)
-	}
-
-	got := string(buf)
-	if !strings.Contains(got, "nexus <list|create|start|stop|remove|pause|resume|restore|shell|exec|tunnel>") {
-		t.Fatalf("expected usage to include flattened workspace command list, got %q", got)
+func TestRootCommandIncludesWorkspaceSubcommands(t *testing.T) {
+	usage := rootCmd.UsageString()
+	for _, name := range []string{
+		"create", "list", "start", "stop", "shell", "exec", "run", "fork",
+		"doctor", "init", "remove", "tunnel", "pause", "resume", "restore",
+	} {
+		if !strings.Contains(usage, name) {
+			t.Errorf("usage missing subcommand %q", name)
+		}
 	}
 }
 
@@ -57,7 +43,7 @@ func TestRunWorkspaceStartCommandCallsWorkspaceStartRPC(t *testing.T) {
 		return nil
 	}
 
-	runWorkspaceStartCommand([]string{"ws-123"})
+	startWorkspace("ws-123")
 
 	if calledMethod != "workspace.start" {
 		t.Fatalf("expected workspace.start method, got %q", calledMethod)
@@ -131,7 +117,7 @@ func TestRunWorkspaceTunnelCommandCallsApplyComposeRPC(t *testing.T) {
 		return nil
 	}
 
-	runWorkspaceTunnelCommand([]string{"ws-456"})
+	tunnelWorkspace("ws-456")
 
 	if len(calledMethods) != 2 {
 		t.Fatalf("expected 2 rpc calls, got %d (%v)", len(calledMethods), calledMethods)

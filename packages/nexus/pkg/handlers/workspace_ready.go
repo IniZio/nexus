@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"os/exec"
 	"time"
 
@@ -56,11 +55,7 @@ type WorkspaceReadyResult struct {
 	LastResults map[string]int `json:"lastResults"`
 }
 
-func HandleWorkspaceReady(ctx context.Context, params json.RawMessage, ws *workspace.Workspace, svcMgr *services.Manager) (*WorkspaceReadyResult, *rpckit.RPCError) {
-	var p WorkspaceReadyParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, rpckit.ErrInvalidParams
-	}
+func HandleWorkspaceReady(ctx context.Context, p WorkspaceReadyParams, ws *workspace.Workspace, svcMgr *services.Manager) (*WorkspaceReadyResult, *rpckit.RPCError) {
 	if p.Profile != "" {
 		checks, ok := readinessProfileForWorkspace(ws.Path(), p.Profile)
 		if !ok {
@@ -171,10 +166,10 @@ func runReadinessCheck(ctx context.Context, check WorkspaceReadyCheck, ws *works
 		if check.Command == "" {
 			return -1, false
 		}
-		res, rpcErr := HandleExec(ctx, mustJSON(map[string]any{
-			"command": check.Command,
-			"args":    check.Args,
-		}), ws)
+		res, rpcErr := HandleExec(ctx, ExecParams{
+			Command: check.Command,
+			Args:    check.Args,
+		}, ws)
 		if rpcErr != nil {
 			return -1, false
 		}
@@ -211,9 +206,4 @@ func readinessProfileForWorkspace(root, profile string) ([]WorkspaceReadyCheck, 
 	_ = root
 	checks, ok := readinessProfiles()[profile]
 	return checks, ok
-}
-
-func mustJSON(v any) json.RawMessage {
-	b, _ := json.Marshal(v)
-	return b
 }

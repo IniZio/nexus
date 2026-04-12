@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -98,13 +97,8 @@ type WorkspaceForkResult struct {
 	Workspace *workspacemgr.Workspace `json:"workspace,omitempty"`
 }
 
-func HandleWorkspaceCreate(ctx context.Context, params json.RawMessage, mgr *workspacemgr.Manager, factory *runtime.Factory) (*WorkspaceCreateResult, *rpckit.RPCError) {
-	var p WorkspaceCreateParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, rpckit.ErrInvalidParams
-	}
-
-	spec, prepErr, emptyResultOnErr := create.PrepareCreate(ctx, p.Spec, factory)
+func HandleWorkspaceCreate(ctx context.Context, req WorkspaceCreateParams, mgr *workspacemgr.Manager, factory *runtime.Factory) (*WorkspaceCreateResult, *rpckit.RPCError) {
+	spec, prepErr, emptyResultOnErr := create.PrepareCreate(ctx, req.Spec, factory)
 	if prepErr != nil {
 		if emptyResultOnErr {
 			return &WorkspaceCreateResult{}, prepErr
@@ -125,13 +119,8 @@ func HandleWorkspaceCreate(ctx context.Context, params json.RawMessage, mgr *wor
 	return &WorkspaceCreateResult{Workspace: ws}, nil
 }
 
-func HandleWorkspaceOpen(_ context.Context, params json.RawMessage, mgr *workspacemgr.Manager) (*WorkspaceOpenResult, *rpckit.RPCError) {
-	var p WorkspaceOpenParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, rpckit.ErrInvalidParams
-	}
-
-	ws, ok := mgr.Get(p.ID)
+func HandleWorkspaceOpen(_ context.Context, req WorkspaceOpenParams, mgr *workspacemgr.Manager) (*WorkspaceOpenResult, *rpckit.RPCError) {
+	ws, ok := mgr.Get(req.ID)
 	if !ok {
 		return nil, rpckit.ErrWorkspaceNotFound
 	}
@@ -139,18 +128,13 @@ func HandleWorkspaceOpen(_ context.Context, params json.RawMessage, mgr *workspa
 	return &WorkspaceOpenResult{Workspace: ws}, nil
 }
 
-func HandleWorkspaceList(_ context.Context, _ json.RawMessage, mgr *workspacemgr.Manager) (*WorkspaceListResult, *rpckit.RPCError) {
+func HandleWorkspaceList(_ context.Context, _ WorkspaceListParams, mgr *workspacemgr.Manager) (*WorkspaceListResult, *rpckit.RPCError) {
 	all := mgr.List()
 	return &WorkspaceListResult{Workspaces: all}, nil
 }
 
-func HandleWorkspaceRemove(ctx context.Context, params json.RawMessage, mgr *workspacemgr.Manager, factory *runtime.Factory) (*WorkspaceRemoveResult, *rpckit.RPCError) {
-	var p WorkspaceRemoveParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, rpckit.ErrInvalidParams
-	}
-
-	ws, ok := mgr.Get(p.ID)
+func HandleWorkspaceRemove(ctx context.Context, req WorkspaceRemoveParams, mgr *workspacemgr.Manager, factory *runtime.Factory) (*WorkspaceRemoveResult, *rpckit.RPCError) {
+	ws, ok := mgr.Get(req.ID)
 	if !ok {
 		return nil, rpckit.ErrWorkspaceNotFound
 	}
@@ -159,13 +143,13 @@ func HandleWorkspaceRemove(ctx context.Context, params json.RawMessage, mgr *wor
 		if driver, selErr := factory.SelectDriver([]string{ws.Backend}, nil); selErr == nil {
 			destroyCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
-			if destroyErr := driver.Destroy(destroyCtx, p.ID); destroyErr != nil {
+			if destroyErr := driver.Destroy(destroyCtx, req.ID); destroyErr != nil {
 				_ = destroyErr
 			}
 		}
 	}
 
-	removed := mgr.Remove(p.ID)
+	removed := mgr.Remove(req.ID)
 	if !removed {
 		return nil, rpckit.ErrWorkspaceNotFound
 	}
@@ -173,41 +157,27 @@ func HandleWorkspaceRemove(ctx context.Context, params json.RawMessage, mgr *wor
 	return &WorkspaceRemoveResult{Removed: true}, nil
 }
 
-func HandleWorkspaceStop(_ context.Context, params json.RawMessage, mgr *workspacemgr.Manager) (*WorkspaceStopResult, *rpckit.RPCError) {
-	var p WorkspaceStopParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, rpckit.ErrInvalidParams
-	}
-
-	if err := mgr.Stop(p.ID); err != nil {
+func HandleWorkspaceStop(_ context.Context, req WorkspaceStopParams, mgr *workspacemgr.Manager) (*WorkspaceStopResult, *rpckit.RPCError) {
+	if err := mgr.Stop(req.ID); err != nil {
 		return nil, rpckit.ErrWorkspaceNotFound
 	}
 
 	return &WorkspaceStopResult{Stopped: true}, nil
 }
 
-func HandleWorkspaceStart(_ context.Context, params json.RawMessage, mgr *workspacemgr.Manager) (*WorkspaceStartResult, *rpckit.RPCError) {
-	var p WorkspaceStartParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, rpckit.ErrInvalidParams
-	}
-	if err := mgr.Start(p.ID); err != nil {
+func HandleWorkspaceStart(_ context.Context, req WorkspaceStartParams, mgr *workspacemgr.Manager) (*WorkspaceStartResult, *rpckit.RPCError) {
+	if err := mgr.Start(req.ID); err != nil {
 		return nil, rpckit.ErrWorkspaceNotFound
 	}
-	ws, ok := mgr.Get(p.ID)
+	ws, ok := mgr.Get(req.ID)
 	if !ok {
 		return nil, rpckit.ErrWorkspaceNotFound
 	}
 	return &WorkspaceStartResult{Workspace: ws}, nil
 }
 
-func HandleWorkspaceRestore(ctx context.Context, params json.RawMessage, mgr *workspacemgr.Manager, factory *runtime.Factory) (*WorkspaceRestoreResult, *rpckit.RPCError) {
-	var p WorkspaceRestoreParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, rpckit.ErrInvalidParams
-	}
-
-	ws, ok := mgr.Get(p.ID)
+func HandleWorkspaceRestore(ctx context.Context, req WorkspaceRestoreParams, mgr *workspacemgr.Manager, factory *runtime.Factory) (*WorkspaceRestoreResult, *rpckit.RPCError) {
+	ws, ok := mgr.Get(req.ID)
 	if !ok {
 		return nil, rpckit.ErrWorkspaceNotFound
 	}
@@ -225,7 +195,7 @@ func HandleWorkspaceRestore(ctx context.Context, params json.RawMessage, mgr *wo
 		selectedDriver = driver
 	}
 
-	ws, ok = mgr.Restore(p.ID)
+	ws, ok = mgr.Restore(req.ID)
 	if !ok {
 		return nil, rpckit.ErrWorkspaceNotFound
 	}
@@ -249,10 +219,10 @@ func HandleWorkspaceRestore(ctx context.Context, params json.RawMessage, mgr *wo
 	}
 
 	if resolvedBackend != ws.Backend {
-		if err := mgr.SetBackend(p.ID, resolvedBackend); err != nil {
+		if err := mgr.SetBackend(req.ID, resolvedBackend); err != nil {
 			return &WorkspaceRestoreResult{}, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("backend persist failed: %v", err)}
 		}
-		updated, ok := mgr.Get(p.ID)
+		updated, ok := mgr.Get(req.ID)
 		if !ok {
 			return nil, rpckit.ErrWorkspaceNotFound
 		}
@@ -262,14 +232,9 @@ func HandleWorkspaceRestore(ctx context.Context, params json.RawMessage, mgr *wo
 	return &WorkspaceRestoreResult{Restored: true, Workspace: ws}, nil
 }
 
-func HandleWorkspacePause(ctx context.Context, params json.RawMessage, mgr *workspacemgr.Manager, factory *runtime.Factory) (*WorkspacePauseResult, *rpckit.RPCError) {
+func HandleWorkspacePause(ctx context.Context, req WorkspacePauseParams, mgr *workspacemgr.Manager, factory *runtime.Factory) (*WorkspacePauseResult, *rpckit.RPCError) {
 	_ = ctx
-	var p WorkspacePauseParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, rpckit.ErrInvalidParams
-	}
-
-	ws, ok := mgr.Get(p.ID)
+	ws, ok := mgr.Get(req.ID)
 	if !ok {
 		return nil, rpckit.ErrWorkspaceNotFound
 	}
@@ -288,21 +253,16 @@ func HandleWorkspacePause(ctx context.Context, params json.RawMessage, mgr *work
 		}
 	}
 
-	if err := mgr.Pause(p.ID); err != nil {
+	if err := mgr.Pause(req.ID); err != nil {
 		return nil, rpckit.ErrWorkspaceNotFound
 	}
 
 	return &WorkspacePauseResult{Paused: true}, nil
 }
 
-func HandleWorkspaceResume(ctx context.Context, params json.RawMessage, mgr *workspacemgr.Manager, factory *runtime.Factory) (*WorkspaceResumeResult, *rpckit.RPCError) {
+func HandleWorkspaceResume(ctx context.Context, req WorkspaceResumeParams, mgr *workspacemgr.Manager, factory *runtime.Factory) (*WorkspaceResumeResult, *rpckit.RPCError) {
 	_ = ctx
-	var p WorkspaceResumeParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, rpckit.ErrInvalidParams
-	}
-
-	ws, ok := mgr.Get(p.ID)
+	ws, ok := mgr.Get(req.ID)
 	if !ok {
 		return nil, rpckit.ErrWorkspaceNotFound
 	}
@@ -321,21 +281,16 @@ func HandleWorkspaceResume(ctx context.Context, params json.RawMessage, mgr *wor
 		}
 	}
 
-	if err := mgr.Resume(p.ID); err != nil {
+	if err := mgr.Resume(req.ID); err != nil {
 		return nil, rpckit.ErrWorkspaceNotFound
 	}
 
 	return &WorkspaceResumeResult{Resumed: true}, nil
 }
 
-func HandleWorkspaceFork(ctx context.Context, params json.RawMessage, mgr *workspacemgr.Manager, factory *runtime.Factory) (*WorkspaceForkResult, *rpckit.RPCError) {
+func HandleWorkspaceFork(ctx context.Context, req WorkspaceForkParams, mgr *workspacemgr.Manager, factory *runtime.Factory) (*WorkspaceForkResult, *rpckit.RPCError) {
 	_ = ctx
-	var p WorkspaceForkParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, rpckit.ErrInvalidParams
-	}
-
-	child, err := mgr.Fork(p.ID, p.ChildWorkspaceName, p.ChildRef)
+	child, err := mgr.Fork(req.ID, req.ChildWorkspaceName, req.ChildRef)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "workspace not found") {
 			return nil, rpckit.ErrWorkspaceNotFound
@@ -344,7 +299,7 @@ func HandleWorkspaceFork(ctx context.Context, params json.RawMessage, mgr *works
 	}
 
 	if factory != nil {
-		parent, ok := mgr.Get(p.ID)
+		parent, ok := mgr.Get(req.ID)
 		if !ok {
 			return nil, rpckit.ErrWorkspaceNotFound
 		}

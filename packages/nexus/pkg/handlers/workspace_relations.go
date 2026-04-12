@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"sort"
 
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
@@ -42,14 +41,7 @@ type WorkspaceRelationsListResult struct {
 	Relations []WorkspaceRelationsGroup `json:"relations"`
 }
 
-func HandleWorkspaceRelationsList(_ context.Context, params json.RawMessage, mgr *workspacemgr.Manager) (*WorkspaceRelationsListResult, *rpckit.RPCError) {
-	var p WorkspaceRelationsListParams
-	if len(params) > 0 {
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, rpckit.ErrInvalidParams
-		}
-	}
-
+func HandleWorkspaceRelationsList(_ context.Context, p WorkspaceRelationsListParams, mgr *workspacemgr.Manager) (*WorkspaceRelationsListResult, *rpckit.RPCError) {
 	all := mgr.List()
 	groups := make(map[string]*WorkspaceRelationsGroup)
 

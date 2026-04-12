@@ -161,6 +161,14 @@ func (s *Server) resolveWorkspace(params json.RawMessage) *workspace.Workspace {
 	return resolved
 }
 
+func (s *Server) resolveWorkspaceTyped(v any) *workspace.Workspace {
+	raw, err := json.Marshal(v)
+	if err != nil || len(raw) == 0 {
+		return s.ws
+	}
+	return s.resolveWorkspace(raw)
+}
+
 func extractWorkspaceID(params json.RawMessage) string {
 	if len(params) == 0 {
 		return ""
@@ -201,11 +209,7 @@ func (s *Server) ensureComposeForwards(ctx context.Context, workspaceID, rootPat
 	s.autoComposeForwards[workspaceID] = true
 	s.mu.Unlock()
 
-	payload, _ := json.Marshal(map[string]any{
-		"workspaceId": workspaceID,
-	})
-
-	if _, rpcErr := handlers.HandleSpotlightApplyComposePorts(ctx, payload, rootPath, s.spotlightMgr); rpcErr != nil {
+	if _, rpcErr := handlers.HandleSpotlightApplyComposePorts(ctx, handlers.SpotlightApplyComposePortsParams{WorkspaceID: workspaceID}, rootPath, s.spotlightMgr); rpcErr != nil {
 		log.Printf("[spotlight] failed to auto-apply compose ports for %s: %+v", workspaceID, rpcErr)
 		s.mu.Lock()
 		s.autoComposeForwards[workspaceID] = false

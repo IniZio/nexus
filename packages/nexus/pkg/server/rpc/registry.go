@@ -28,3 +28,17 @@ func (r *Registry) Dispatch(ctx context.Context, method, msgID string, params js
 	}
 	return h(ctx, msgID, params, conn)
 }
+
+func TypedRegister[Req any, Res any](r *Registry, method string, h func(ctx context.Context, req Req) (Res, *rpckit.RPCError)) {
+	r.Register(method, func(ctx context.Context, _ string, raw json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
+		var req Req
+		norm := raw
+		if len(norm) == 0 || string(norm) == "null" {
+			norm = []byte("{}")
+		}
+		if err := json.Unmarshal(norm, &req); err != nil {
+			return nil, rpckit.ErrInvalidParams
+		}
+		return h(ctx, req)
+	})
+}

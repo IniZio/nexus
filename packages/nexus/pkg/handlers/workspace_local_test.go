@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
@@ -32,13 +31,11 @@ func TestHandleWorkspaceSetLocalWorktree_ClearsDuplicateMutagenSessionID(t *test
 		t.Fatalf("seed first mutagen session: %v", err)
 	}
 
-	params, _ := json.Marshal(WorkspaceSetLocalWorktreeParams{
+	_, rpcErr := HandleWorkspaceSetLocalWorktree(context.Background(), WorkspaceSetLocalWorktreeParams{
 		ID:                second.ID,
 		LocalWorktreePath: "/tmp/worktree-two",
 		MutagenSessionID:  "mutagen-shared",
-	})
-
-	_, rpcErr := HandleWorkspaceSetLocalWorktree(context.Background(), params, mgr)
+	}, mgr)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}

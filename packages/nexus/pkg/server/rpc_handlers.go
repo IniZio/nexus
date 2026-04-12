@@ -15,126 +15,125 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 	r := rpc.NewRegistry()
 	ctx := context.Background()
 
-	r.Register("fs.readFile", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		workspace := s.resolveWorkspace(params)
-		return handlers.HandleReadFile(ctx, params, workspace)
+	rpc.TypedRegister(r, "fs.readFile", func(_ context.Context, req handlers.ReadFileParams) (*handlers.ReadFileResult, *rpckit.RPCError) {
+		ws := s.resolveWorkspaceTyped(req)
+		return handlers.HandleReadFile(ctx, req, ws)
 	})
-	r.Register("fs.writeFile", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		workspace := s.resolveWorkspace(params)
-		return handlers.HandleWriteFile(ctx, params, workspace)
+	rpc.TypedRegister(r, "fs.writeFile", func(_ context.Context, req handlers.WriteFileParams) (*handlers.WriteFileResult, *rpckit.RPCError) {
+		ws := s.resolveWorkspaceTyped(req)
+		return handlers.HandleWriteFile(ctx, req, ws)
 	})
-	r.Register("fs.exists", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		workspace := s.resolveWorkspace(params)
-		return handlers.HandleExists(ctx, params, workspace)
+	rpc.TypedRegister(r, "fs.exists", func(_ context.Context, req handlers.ExistsParams) (*handlers.ExistsResult, *rpckit.RPCError) {
+		ws := s.resolveWorkspaceTyped(req)
+		return handlers.HandleExists(ctx, req, ws)
 	})
-	r.Register("fs.readdir", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		workspace := s.resolveWorkspace(params)
-		return handlers.HandleReaddir(ctx, params, workspace)
+	rpc.TypedRegister(r, "fs.readdir", func(_ context.Context, req handlers.ReaddirParams) (*handlers.ReaddirResult, *rpckit.RPCError) {
+		ws := s.resolveWorkspaceTyped(req)
+		return handlers.HandleReaddir(ctx, req, ws)
 	})
-	r.Register("fs.mkdir", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		workspace := s.resolveWorkspace(params)
-		return handlers.HandleMkdir(ctx, params, workspace)
+	rpc.TypedRegister(r, "fs.mkdir", func(_ context.Context, req handlers.MkdirParams) (*handlers.WriteFileResult, *rpckit.RPCError) {
+		ws := s.resolveWorkspaceTyped(req)
+		return handlers.HandleMkdir(ctx, req, ws)
 	})
-	r.Register("fs.rm", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		workspace := s.resolveWorkspace(params)
-		return handlers.HandleRm(ctx, params, workspace)
+	rpc.TypedRegister(r, "fs.rm", func(_ context.Context, req handlers.RmParams) (*handlers.WriteFileResult, *rpckit.RPCError) {
+		ws := s.resolveWorkspaceTyped(req)
+		return handlers.HandleRm(ctx, req, ws)
 	})
-	r.Register("fs.stat", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		workspace := s.resolveWorkspace(params)
-		return handlers.HandleStat(ctx, params, workspace)
+	rpc.TypedRegister(r, "fs.stat", func(_ context.Context, req handlers.StatParams) (*handlers.StatResult, *rpckit.RPCError) {
+		ws := s.resolveWorkspaceTyped(req)
+		return handlers.HandleStat(ctx, req, ws)
 	})
-	r.Register("exec", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		workspace := s.resolveWorkspace(params)
-		return handlers.HandleExecWithAuthRelay(ctx, params, workspace, s.authRelayBroker)
+	rpc.TypedRegister(r, "exec", func(_ context.Context, req handlers.ExecParams) (*handlers.ExecResult, *rpckit.RPCError) {
+		ws := s.resolveWorkspaceTyped(req)
+		return handlers.HandleExecWithAuthRelay(ctx, req, ws, s.authRelayBroker)
 	})
-	r.Register("authrelay.mint", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleAuthRelayMint(ctx, params, s.workspaceMgr, s.authRelayBroker)
+	rpc.TypedRegister(r, "authrelay.mint", func(_ context.Context, req handlers.AuthRelayMintParams) (*handlers.AuthRelayMintResult, *rpckit.RPCError) {
+		return handlers.HandleAuthRelayMint(ctx, req, s.workspaceMgr, s.authRelayBroker)
 	})
-	r.Register("authrelay.revoke", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleAuthRelayRevoke(ctx, params, s.authRelayBroker)
+	rpc.TypedRegister(r, "authrelay.revoke", func(_ context.Context, req handlers.AuthRelayRevokeParams) (*handlers.AuthRelayRevokeResult, *rpckit.RPCError) {
+		return handlers.HandleAuthRelayRevoke(ctx, req, s.authRelayBroker)
 	})
-	r.Register("workspace.info", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceInfo(extractWorkspaceID(params), s.ws, s.workspaceMgr, s.spotlightMgr), nil
+	rpc.TypedRegister(r, "workspace.info", func(_ context.Context, req handlers.WorkspaceInfoParams) (map[string]interface{}, *rpckit.RPCError) {
+		wid := handlers.WorkspaceInfoWorkspaceID(req)
+		return handlers.HandleWorkspaceInfo(wid, s.ws, s.workspaceMgr, s.spotlightMgr), nil
 	})
-	r.Register("workspace.create", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceCreate(ctx, params, s.workspaceMgr, s.runtimeFactory)
+	rpc.TypedRegister(r, "workspace.create", func(_ context.Context, req handlers.WorkspaceCreateParams) (*handlers.WorkspaceCreateResult, *rpckit.RPCError) {
+		return handlers.HandleWorkspaceCreate(ctx, req, s.workspaceMgr, s.runtimeFactory)
 	})
-	r.Register("workspace.list", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceList(ctx, params, s.workspaceMgr)
+	rpc.TypedRegister(r, "workspace.list", func(_ context.Context, req handlers.WorkspaceListParams) (*handlers.WorkspaceListResult, *rpckit.RPCError) {
+		return handlers.HandleWorkspaceList(ctx, req, s.workspaceMgr)
 	})
-	r.Register("workspace.relations.list", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceRelationsList(ctx, params, s.workspaceMgr)
+	rpc.TypedRegister(r, "workspace.relations.list", func(_ context.Context, req handlers.WorkspaceRelationsListParams) (*handlers.WorkspaceRelationsListResult, *rpckit.RPCError) {
+		return handlers.HandleWorkspaceRelationsList(ctx, req, s.workspaceMgr)
 	})
-	r.Register("workspace.remove", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceRemove(ctx, params, s.workspaceMgr, s.runtimeFactory)
+	rpc.TypedRegister(r, "workspace.remove", func(_ context.Context, req handlers.WorkspaceRemoveParams) (*handlers.WorkspaceRemoveResult, *rpckit.RPCError) {
+		return handlers.HandleWorkspaceRemove(ctx, req, s.workspaceMgr, s.runtimeFactory)
 	})
-	r.Register("workspace.stop", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceStop(ctx, params, s.workspaceMgr)
+	rpc.TypedRegister(r, "workspace.stop", func(_ context.Context, req handlers.WorkspaceStopParams) (*handlers.WorkspaceStopResult, *rpckit.RPCError) {
+		return handlers.HandleWorkspaceStop(ctx, req, s.workspaceMgr)
 	})
-	r.Register("workspace.start", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceStart(ctx, params, s.workspaceMgr)
+	rpc.TypedRegister(r, "workspace.start", func(_ context.Context, req handlers.WorkspaceStartParams) (*handlers.WorkspaceStartResult, *rpckit.RPCError) {
+		return handlers.HandleWorkspaceStart(ctx, req, s.workspaceMgr)
 	})
-	r.Register("workspace.restore", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceRestore(ctx, params, s.workspaceMgr, s.runtimeFactory)
+	rpc.TypedRegister(r, "workspace.restore", func(_ context.Context, req handlers.WorkspaceRestoreParams) (*handlers.WorkspaceRestoreResult, *rpckit.RPCError) {
+		return handlers.HandleWorkspaceRestore(ctx, req, s.workspaceMgr, s.runtimeFactory)
 	})
-	r.Register("workspace.pause", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleWorkspacePause(ctx, params, s.workspaceMgr, s.runtimeFactory)
+	rpc.TypedRegister(r, "workspace.pause", func(_ context.Context, req handlers.WorkspacePauseParams) (*handlers.WorkspacePauseResult, *rpckit.RPCError) {
+		return handlers.HandleWorkspacePause(ctx, req, s.workspaceMgr, s.runtimeFactory)
 	})
-	r.Register("workspace.resume", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceResume(ctx, params, s.workspaceMgr, s.runtimeFactory)
+	rpc.TypedRegister(r, "workspace.resume", func(_ context.Context, req handlers.WorkspaceResumeParams) (*handlers.WorkspaceResumeResult, *rpckit.RPCError) {
+		return handlers.HandleWorkspaceResume(ctx, req, s.workspaceMgr, s.runtimeFactory)
 	})
-	r.Register("workspace.fork", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceFork(ctx, params, s.workspaceMgr, s.runtimeFactory)
+	rpc.TypedRegister(r, "workspace.fork", func(_ context.Context, req handlers.WorkspaceForkParams) (*handlers.WorkspaceForkResult, *rpckit.RPCError) {
+		return handlers.HandleWorkspaceFork(ctx, req, s.workspaceMgr, s.runtimeFactory)
 	})
-	r.Register("workspace.setLocalWorktree", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceSetLocalWorktree(ctx, params, s.workspaceMgr)
+	rpc.TypedRegister(r, "workspace.setLocalWorktree", func(_ context.Context, req handlers.WorkspaceSetLocalWorktreeParams) (interface{}, *rpckit.RPCError) {
+		return handlers.HandleWorkspaceSetLocalWorktree(ctx, req, s.workspaceMgr)
 	})
-	r.Register("capabilities.list", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleCapabilitiesList(ctx, params, s.runtimeFactory)
+	rpc.TypedRegister(r, "node.info", func(_ context.Context, _ struct{}) (*handlers.NodeInfoResult, *rpckit.RPCError) {
+		return handlers.HandleNodeInfo(ctx, s.nodeCfg, s.runtimeFactory)
 	})
-	r.Register("node.info", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleNodeInfo(ctx, params, s.nodeCfg, s.runtimeFactory)
+	rpc.TypedRegister(r, "os.pickDirectory", func(_ context.Context, req handlers.PickDirectoryParams) (*handlers.PickDirectoryResult, *rpckit.RPCError) {
+		return handlers.HandlePickDirectory(ctx, req)
 	})
-	r.Register("os.pickDirectory", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandlePickDirectory(ctx, params)
-	})
-	r.Register("workspace.ready", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		workspaceID := extractWorkspaceID(params)
+	rpc.TypedRegister(r, "workspace.ready", func(_ context.Context, req handlers.WorkspaceReadyParams) (*handlers.WorkspaceReadyResult, *rpckit.RPCError) {
+		raw, _ := json.Marshal(req)
+		workspaceID := extractWorkspaceID(raw)
 		if workspaceID == "" {
 			return nil, rpckit.ErrInvalidParams
 		}
 		if accessErr := s.requireWorkspaceStarted(workspaceID); accessErr != nil {
 			return nil, accessErr
 		}
-		workspace := s.resolveWorkspace(params)
+		workspace := s.resolveWorkspace(raw)
 		rootPath := workspace.Path()
 		if wsRecord, ok := s.workspaceMgr.Get(workspaceID); ok && strings.TrimSpace(wsRecord.RootPath) != "" {
 			rootPath = wsRecord.RootPath
 		}
 		s.ensureComposeForwards(ctx, workspaceID, rootPath)
-		return handlers.HandleWorkspaceReady(ctx, params, workspace, s.serviceMgr)
+		return handlers.HandleWorkspaceReady(ctx, req, workspace, s.serviceMgr)
 	})
-	r.Register("git.command", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		workspace := s.resolveWorkspace(params)
-		return handlers.HandleGitCommand(ctx, params, workspace)
+	rpc.TypedRegister(r, "git.command", func(_ context.Context, req handlers.GitCommandParams) (map[string]interface{}, *rpckit.RPCError) {
+		ws := s.resolveWorkspaceTyped(req)
+		return handlers.HandleGitCommand(ctx, req, ws)
 	})
-	r.Register("service.command", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		workspace := s.resolveWorkspace(params)
-		return handlers.HandleServiceCommand(ctx, params, workspace, s.serviceMgr)
+	rpc.TypedRegister(r, "service.command", func(_ context.Context, req handlers.ServiceCommandParams) (map[string]interface{}, *rpckit.RPCError) {
+		ws := s.resolveWorkspaceTyped(req)
+		return handlers.HandleServiceCommand(ctx, req, ws, s.serviceMgr)
 	})
-	r.Register("spotlight.expose", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleSpotlightExpose(ctx, params, s.spotlightMgr)
+	rpc.TypedRegister(r, "spotlight.expose", func(_ context.Context, req handlers.SpotlightExposeParams) (*handlers.SpotlightExposeResult, *rpckit.RPCError) {
+		return handlers.HandleSpotlightExpose(ctx, req, s.spotlightMgr)
 	})
-	r.Register("spotlight.list", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleSpotlightList(ctx, params, s.spotlightMgr)
+	rpc.TypedRegister(r, "spotlight.list", func(_ context.Context, req handlers.SpotlightListParams) (*handlers.SpotlightListResult, *rpckit.RPCError) {
+		return handlers.HandleSpotlightList(ctx, req, s.spotlightMgr)
 	})
-	r.Register("spotlight.close", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		return handlers.HandleSpotlightClose(ctx, params, s.spotlightMgr)
+	rpc.TypedRegister(r, "spotlight.close", func(_ context.Context, req handlers.SpotlightCloseParams) (*handlers.SpotlightCloseResult, *rpckit.RPCError) {
+		return handlers.HandleSpotlightClose(ctx, req, s.spotlightMgr)
 	})
-	r.Register("spotlight.applyComposePorts", func(ctx context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
-		workspace := s.resolveWorkspace(params)
-		rootPath := workspace.Path()
-		return handlers.HandleSpotlightApplyComposePorts(ctx, params, rootPath, s.spotlightMgr)
+	rpc.TypedRegister(r, "spotlight.applyComposePorts", func(ctx context.Context, req handlers.SpotlightApplyComposePortsParams) (*handlers.SpotlightApplyComposePortsResult, *rpckit.RPCError) {
+		ws := s.resolveWorkspaceTyped(req)
+		rootPath := ws.Path()
+		return handlers.HandleSpotlightApplyComposePorts(ctx, req, rootPath, s.spotlightMgr)
 	})
 
 	deps := s.ptyDeps()

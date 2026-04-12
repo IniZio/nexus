@@ -106,6 +106,12 @@ export interface Capability {
   available: boolean;
 }
 
+export interface NodeInfo {
+  node: Record<string, unknown>;
+  capabilities: Capability[];
+  compatibility: Record<string, unknown>;
+}
+
 export interface WorkspaceRelationNode {
   workspaceId: string;
   parentWorkspaceId?: string;
