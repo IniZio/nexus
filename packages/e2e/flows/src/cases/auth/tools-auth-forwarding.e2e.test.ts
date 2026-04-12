@@ -41,55 +41,81 @@ describe('tools auth forwarding e2e', () => {
         throw error;
       }
 
-      ws = await session.client.workspaces.open(created.workspace.id);
+      ws = await session.client.workspaces.start(created.workspace.id);
 
       expect(ws.id).toBe(created.workspace.id);
 
-      const token = await session.client.workspaces.mintAuthRelay({
-        workspaceId: ws.id,
-        binding: 'github',
-        ttlSeconds: 60,
-      });
+      const token = await session.client
+        .request<{ token: string }>('authrelay.mint', {
+          workspaceId: ws.id,
+          binding: 'github',
+          ttlSeconds: 60,
+        })
+        .then((r) => r.token);
       expect(token).not.toBe('');
 
-      const authExec = await ws.exec('sh', ['-lc', 'printf "%s|%s" "$NEXUS_AUTH_BINDING:$NEXUS_AUTH_VALUE" "$(test -n "$PATH" && echo path-ok || echo path-missing)"; test "$GITHUB_TOKEN" = "$NEXUS_AUTH_VALUE" && test "$GH_TOKEN" = "$NEXUS_AUTH_VALUE" && echo gh-env-ok'], {
-        authRelayToken: token,
+      const authResult = await session.client.request<{ stdout: string; stderr: string; exit_code: number }>('exec.exec', {
+        workspaceId: ws.id,
+        command: 'sh',
+        args: [
+          '-lc',
+          'printf "%s|%s" "$NEXUS_AUTH_BINDING:$NEXUS_AUTH_VALUE" "$(test -n "$PATH" && echo path-ok || echo path-missing)"; test "$GITHUB_TOKEN" = "$NEXUS_AUTH_VALUE" && test "$GH_TOKEN" = "$NEXUS_AUTH_VALUE" && echo gh-env-ok',
+        ],
+        options: { authRelayToken: token },
       });
+      const authExec = { stdout: authResult.stdout, stderr: authResult.stderr, exitCode: authResult.exit_code };
       expect(authExec.exitCode).toBe(0);
       expect(authExec.stdout).toContain('github:newman');
       expect(authExec.stdout).toContain('path-ok');
       expect(authExec.stdout).toContain('gh-env-ok');
 
-      const ocToken = await session.client.workspaces.mintAuthRelay({
+      const ocToken = await session.client
+        .request<{ token: string }>('authrelay.mint', {
+          workspaceId: ws.id,
+          binding: 'opencode',
+          ttlSeconds: 60,
+        })
+        .then((r) => r.token);
+      const ocResult = await session.client.request<{ stdout: string; stderr: string; exit_code: number }>('exec.exec', {
         workspaceId: ws.id,
-        binding: 'opencode',
-        ttlSeconds: 60,
+        command: 'sh',
+        args: ['-lc', 'printf "%s" "$NEXUS_AUTH_BINDING:$NEXUS_AUTH_VALUE"; test "$OPENCODE_API_KEY" = "$NEXUS_AUTH_VALUE" && echo oc-key-ok'],
+        options: { authRelayToken: ocToken },
       });
-      const ocExec = await ws.exec('sh', ['-lc', 'printf "%s" "$NEXUS_AUTH_BINDING:$NEXUS_AUTH_VALUE"; test "$OPENCODE_API_KEY" = "$NEXUS_AUTH_VALUE" && echo oc-key-ok'], {
-        authRelayToken: ocToken,
-      });
+      const ocExec = { stdout: ocResult.stdout, stderr: ocResult.stderr, exitCode: ocResult.exit_code };
       expect(ocExec.exitCode).toBe(0);
       expect(ocExec.stdout).toContain('opencode:relay-opencode-test');
       expect(ocExec.stdout).toContain('oc-key-ok');
 
-      const cxToken = await session.client.workspaces.mintAuthRelay({
+      const cxToken = await session.client
+        .request<{ token: string }>('authrelay.mint', {
+          workspaceId: ws.id,
+          binding: 'codex',
+          ttlSeconds: 60,
+        })
+        .then((r) => r.token);
+      const cxResult = await session.client.request<{ stdout: string; stderr: string; exit_code: number }>('exec.exec', {
         workspaceId: ws.id,
-        binding: 'codex',
-        ttlSeconds: 60,
+        command: 'sh',
+        args: ['-lc', 'printf "%s" "$NEXUS_AUTH_BINDING:$NEXUS_AUTH_VALUE"; test "$OPENAI_API_KEY" = "$NEXUS_AUTH_VALUE" && echo openai-env-ok'],
+        options: { authRelayToken: cxToken },
       });
-      const cxExec = await ws.exec('sh', ['-lc', 'printf "%s" "$NEXUS_AUTH_BINDING:$NEXUS_AUTH_VALUE"; test "$OPENAI_API_KEY" = "$NEXUS_AUTH_VALUE" && echo openai-env-ok'], {
-        authRelayToken: cxToken,
-      });
+      const cxExec = { stdout: cxResult.stdout, stderr: cxResult.stderr, exitCode: cxResult.exit_code };
       expect(cxExec.exitCode).toBe(0);
       expect(cxExec.stdout).toContain('codex:sk-e2e-relay-codex');
       expect(cxExec.stdout).toContain('openai-env-ok');
 
-      const revoked = await session.client.workspaces.revokeAuthRelay(token);
+      const revoked = await session.client.request<{ revoked: boolean }>('authrelay.revoke', { token }).then((r) => r.revoked);
       expect(revoked).toBe(true);
 
-      await expect(ws.exec('sh', ['-lc', 'echo should-not-run'], { authRelayToken: token })).rejects.toThrow(
-        /invalid auth relay token/i
-      );
+      await expect(
+        session.client.request<{ stdout: string; stderr: string; exit_code: number }>('exec.exec', {
+          workspaceId: ws.id,
+          command: 'sh',
+          args: ['-lc', 'echo should-not-run'],
+          options: { authRelayToken: token },
+        })
+      ).rejects.toThrow(/invalid auth relay token/i);
     } finally {
       if (ws) {
         await session.client.workspaces.remove(ws.id);

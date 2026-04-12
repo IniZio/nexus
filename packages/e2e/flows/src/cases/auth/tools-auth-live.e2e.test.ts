@@ -99,23 +99,31 @@ describe('tools auth live e2e', () => {
         throw error;
       }
 
-      ws = await session.client.workspaces.open(created.workspace.id);
+      ws = await session.client.workspaces.start(created.workspace.id);
       expect(ws.id).toBe(created.workspace.id);
 
       const copilotMarker = `NEXUS-COPILOT-${timestampTag()}`;
       const copilotPrompt = `Reply with exactly: ${copilotMarker}`;
       const copilotCmd = `opencode run --format json -m ${shellQuote(copilotModel)} ${shellQuote(copilotPrompt)} 2>&1`;
-      const copilotExecOptions = useRelay
-        ? {
-            authRelayToken: await session.client.workspaces.mintAuthRelay({
-              workspaceId: ws.id,
-              binding: 'github',
-              ttlSeconds: 180,
-            }),
-            timeout: 240,
-          }
-        : { timeout: 240 };
-      const copilotRun = await ws.exec('sh', ['-lc', copilotCmd], copilotExecOptions);
+      let copilotRun: { stdout: string; stderr: string; exitCode: number };
+      if (useRelay) {
+        const copilotToken = await session.client
+          .request<{ token: string }>('authrelay.mint', {
+            workspaceId: ws.id,
+            binding: 'github',
+            ttlSeconds: 180,
+          })
+          .then((r) => r.token);
+        const copilotResult = await session.client.request<{ stdout: string; stderr: string; exit_code: number }>('exec.exec', {
+          workspaceId: ws.id,
+          command: 'sh',
+          args: ['-lc', copilotCmd],
+          options: { authRelayToken: copilotToken, timeout: 240 },
+        });
+        copilotRun = { stdout: copilotResult.stdout, stderr: copilotResult.stderr, exitCode: copilotResult.exit_code };
+      } else {
+        copilotRun = await ws.exec('sh', ['-lc', copilotCmd], { timeout: 240 });
+      }
       const copilotOutput = `${copilotRun.stdout}\n${copilotRun.stderr}`.trim();
       expect(copilotRun.exitCode).toBe(0);
       expect(copilotOutput.length).toBeGreaterThan(0);
@@ -125,17 +133,25 @@ describe('tools auth live e2e', () => {
       const minimaxMarker = `NEXUS-MINIMAX-${timestampTag()}`;
       const minimaxPrompt = `Reply with exactly: ${minimaxMarker}`;
       const minimaxCmd = `opencode run --format json -m ${shellQuote(minimaxModel)} ${shellQuote(minimaxPrompt)} 2>&1`;
-      const minimaxExecOptions = useRelay
-        ? {
-            authRelayToken: await session.client.workspaces.mintAuthRelay({
-              workspaceId: ws.id,
-              binding: minimax!.binding,
-              ttlSeconds: 180,
-            }),
-            timeout: 240,
-          }
-        : { timeout: 240 };
-      const minimaxRun = await ws.exec('sh', ['-lc', minimaxCmd], minimaxExecOptions);
+      let minimaxRun: { stdout: string; stderr: string; exitCode: number };
+      if (useRelay) {
+        const minimaxToken = await session.client
+          .request<{ token: string }>('authrelay.mint', {
+            workspaceId: ws.id,
+            binding: minimax!.binding,
+            ttlSeconds: 180,
+          })
+          .then((r) => r.token);
+        const minimaxResult = await session.client.request<{ stdout: string; stderr: string; exit_code: number }>('exec.exec', {
+          workspaceId: ws.id,
+          command: 'sh',
+          args: ['-lc', minimaxCmd],
+          options: { authRelayToken: minimaxToken, timeout: 240 },
+        });
+        minimaxRun = { stdout: minimaxResult.stdout, stderr: minimaxResult.stderr, exitCode: minimaxResult.exit_code };
+      } else {
+        minimaxRun = await ws.exec('sh', ['-lc', minimaxCmd], { timeout: 240 });
+      }
       const minimaxOutput = `${minimaxRun.stdout}\n${minimaxRun.stderr}`.trim();
       expect(minimaxRun.exitCode).toBe(0);
       expect(minimaxOutput.length).toBeGreaterThan(0);
@@ -145,17 +161,25 @@ describe('tools auth live e2e', () => {
       const codexMarker = `NEXUS-CODEX-${timestampTag()}`;
       const codexPrompt = `Reply with exactly: ${codexMarker}`;
       const codexCmd = `codex exec --skip-git-repo-check ${shellQuote(codexPrompt)} 2>&1`;
-      const codexExecOptions = useRelay
-        ? {
-            authRelayToken: await session.client.workspaces.mintAuthRelay({
-              workspaceId: ws.id,
-              binding: 'openai',
-              ttlSeconds: 180,
-            }),
-            timeout: 240,
-          }
-        : { timeout: 240 };
-      const codexRun = await ws.exec('sh', ['-lc', codexCmd], codexExecOptions);
+      let codexRun: { stdout: string; stderr: string; exitCode: number };
+      if (useRelay) {
+        const codexToken = await session.client
+          .request<{ token: string }>('authrelay.mint', {
+            workspaceId: ws.id,
+            binding: 'openai',
+            ttlSeconds: 180,
+          })
+          .then((r) => r.token);
+        const codexResult = await session.client.request<{ stdout: string; stderr: string; exit_code: number }>('exec.exec', {
+          workspaceId: ws.id,
+          command: 'sh',
+          args: ['-lc', codexCmd],
+          options: { authRelayToken: codexToken, timeout: 240 },
+        });
+        codexRun = { stdout: codexResult.stdout, stderr: codexResult.stderr, exitCode: codexResult.exit_code };
+      } else {
+        codexRun = await ws.exec('sh', ['-lc', codexCmd], { timeout: 240 });
+      }
       const codexOutput = `${codexRun.stdout}\n${codexRun.stderr}`.trim();
       if (codexRun.exitCode !== 0) {
         throw new Error(`codex exec failed with exit ${codexRun.exitCode}: ${codexOutput}`);

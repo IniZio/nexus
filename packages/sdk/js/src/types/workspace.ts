@@ -20,6 +20,7 @@ export interface WorkspaceCreateSpec {
   policy?: WorkspacePolicy;
   backend?: string;
   authBinding?: Record<string, string>;
+  configBundle?: string;
 }
 
 export interface WorkspaceRecord {
@@ -98,4 +99,9 @@ export interface WorkspaceResumeResult {
 export interface WorkspaceForkResult {
   forked: boolean;
   workspace: WorkspaceRecord;
+}
+
+export interface Capability {
+  name: string;
+  available: boolean;
 }

@@ -61,17 +61,19 @@ In Node.js environments `WorkspaceClient` also auto-detects and forwards host cr
 
 Full lifecycle management. All methods return primitives or a `WorkspaceHandle`.
 
-| Method | Returns | Notes |
-|---|---|---|
-| `create(spec)` | `WorkspaceHandle` | Provisions a new workspace; auto-bundles host credentials in Node |
-| `start(id)` | `WorkspaceHandle` | Starts a stopped workspace and returns a handle; idempotent if already running |
-| `list()` | `WorkspaceRecord[]` | All workspaces |
-| `stop(id)` | `boolean` | |
-| `remove(id)` | `boolean` | Permanently deletes |
-| `pause(id)` | `boolean` | Snapshot and suspend |
-| `resume(id)` | `boolean` | Resume a paused workspace |
-| `restore(id)` | `WorkspaceHandle` | Restore from snapshot |
-| `fork(id, name?, ref?)` | `WorkspaceHandle` | Fork to a new branch |
+
+| Method                  | Returns             | Notes                                                                          |
+| ----------------------- | ------------------- | ------------------------------------------------------------------------------ |
+| `create(spec)`          | `WorkspaceHandle`   | Provisions a new workspace; auto-bundles host credentials in Node              |
+| `start(id)`             | `WorkspaceHandle`   | Starts a stopped workspace and returns a handle; idempotent if already running |
+| `list()`                | `WorkspaceRecord[]` | All workspaces                                                                 |
+| `stop(id)`              | `boolean`           |                                                                                |
+| `remove(id)`            | `boolean`           | Permanently deletes                                                            |
+| `pause(id)`             | `boolean`           | Snapshot and suspend                                                           |
+| `resume(id)`            | `boolean`           | Resume a paused workspace                                                      |
+| `restore(id)`           | `WorkspaceHandle`   | Restore from snapshot                                                          |
+| `fork(id, name?, ref?)` | `WorkspaceHandle`   | Fork to a new branch                                                           |
+
 
 ### `WorkspaceCreateSpec`
 
@@ -161,5 +163,6 @@ unsubExit()
 
 ## Related
 
-- CLI: [`cli.md`](cli.md)
-- Workspace config: [`workspace-config.md`](workspace-config.md)
+- CLI: `[cli.md](cli.md)`
+- Workspace config: `[workspace-config.md](workspace-config.md)`
+

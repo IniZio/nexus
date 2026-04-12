@@ -54,8 +54,8 @@ describe('worktree sync e2e', () => {
       expect(hostStatus.stdout).toContain('M tracked.txt');
       expect(hostStatus.stdout).toContain('?? workspace-created.txt');
 
-      const workspaceStatus = await handle.git('status');
-      const statusStdout = String((workspaceStatus as { stdout?: unknown }).stdout ?? '');
+      const workspaceStatus = await handle.exec('git', ['status']);
+      const statusStdout = workspaceStatus.stdout;
       expect(statusStdout).toContain('M tracked.txt');
       expect(statusStdout).toContain('?? workspace-created.txt');
     } finally {

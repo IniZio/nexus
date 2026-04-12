@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { Capability } from '@nexus/sdk';
 import { createGitFixture, cleanupFixture } from '../../harness/repo';
 import { startSession } from '../../harness/session';
 import {
@@ -31,7 +32,7 @@ describe('spotlight compose e2e', () => {
     const session = await startSession();
     let workspaceId = '';
     try {
-      const caps = await session.client.workspaces.capabilities();
+      const { capabilities: caps } = await session.client.request<{ capabilities: Capability[] }>('capabilities.list', {});
       if (!assertCapabilityOrSkip(caps, 'spotlight.tunnel', 'spotlight.tunnel capability unavailable on this daemon')) {
         return;
       }
@@ -51,7 +52,18 @@ describe('spotlight compose e2e', () => {
       }
       workspaceId = handle.id;
 
-      const applied = await handle.tunnel.applyComposePorts();
+      const applied = await session.client.request<{
+        forwards: Array<{
+          id: string;
+          workspaceId: string;
+          service: string;
+          remotePort: number;
+          localPort: number;
+          host: string;
+          createdAt: string;
+        }>;
+        errors: Array<{ service: string; hostPort: number; targetPort: number; message: string }>;
+      }>('spotlight.applyComposePorts', { workspaceId: handle.id });
       if (applied.forwards.length === 0 && applied.errors.length > 0) {
         const detail = applied.errors[0].message;
         if (e2eStrictRuntime()) {
