@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -23,6 +22,7 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/localws"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/authbundle"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
+	"github.com/spf13/cobra"
 )
 
 type preflightErrorEnvelope struct {
@@ -87,8 +87,6 @@ func renderPreflightCreateError(err error) bool {
 	return true
 }
 
-// ── Daemon connection settings ────────────────────────────────────────────────
-
 const defaultDaemonPort = 7874
 
 func daemonPort() int {
@@ -107,8 +105,6 @@ func daemonToken() (string, error) {
 	return daemonclient.LoadOrCreateToken()
 }
 
-// ensureDaemon starts the daemon if it is not already running and returns
-// an authenticated WebSocket connection to it.
 func ensureDaemon() (*websocket.Conn, error) {
 	port := daemonPort()
 	token, err := daemonToken()
@@ -128,8 +124,6 @@ func ensureDaemon() (*websocket.Conn, error) {
 	}
 	return conn, nil
 }
-
-// ── RPC helper ────────────────────────────────────────────────────────────────
 
 type rpcRequest struct {
 	JSONRPC string      `json:"jsonrpc"`
@@ -177,9 +171,153 @@ var ensureDaemonFn = ensureDaemon
 var daemonRPCFn = daemonRPC
 var waitForInterruptFn = waitForInterrupt
 
-// ── workspace list ────────────────────────────────────────────────────────────
+var listCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List workspaces",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		listWorkspaces()
+	},
+}
 
-func runWorkspaceListCommand(_ []string) {
+var createBackend string
+
+var createCmd = &cobra.Command{
+	Use:   "create",
+	Short: "Create a new workspace",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		createWorkspace(strings.TrimSpace(createBackend))
+	},
+}
+
+var startCmd = &cobra.Command{
+	Use:   "start <id>",
+	Short: "Start a stopped workspace",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		startWorkspace(args[0])
+	},
+}
+
+var stopCmd = &cobra.Command{
+	Use:   "stop <id>",
+	Short: "Stop a workspace",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		stopWorkspace(args[0])
+	},
+}
+
+var removeCmd = &cobra.Command{
+	Use:   "remove <id>",
+	Short: "Remove a workspace",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		removeWorkspace(args[0])
+	},
+}
+
+var forkRef string
+
+var forkCmd = &cobra.Command{
+	Use:   "fork <id> <name>",
+	Short: "Fork a workspace into a new named worktree",
+	Args:  cobra.ExactArgs(2),
+	Run: func(cmd *cobra.Command, args []string) {
+		forkWorkspace(strings.TrimSpace(args[0]), strings.TrimSpace(args[1]), strings.TrimSpace(forkRef))
+	},
+}
+
+var shellTimeout time.Duration
+
+var shellCmd = &cobra.Command{
+	Use:   "shell <id>",
+	Short: "Open an interactive shell in a workspace",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		shellWorkspace(strings.TrimSpace(args[0]), shellTimeout)
+	},
+}
+
+var execTimeout time.Duration
+
+var execCmd = &cobra.Command{
+	Use:   "exec <id> -- <command> [args...]",
+	Short: "Run a non-interactive command in a workspace",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if cmd.ArgsLenAtDash() == -1 {
+			return fmt.Errorf("usage: nexus exec <id> [--timeout <dur>] -- <command> [args...]")
+		}
+		id := strings.TrimSpace(args[0])
+		rest := args[1:]
+		if len(rest) == 0 {
+			return fmt.Errorf("command required after --")
+		}
+		execWorkspace(id, execTimeout, rest)
+		return nil
+	},
+}
+
+var tunnelCmd = &cobra.Command{
+	Use:   "tunnel <id>",
+	Short: "Forward spotlight compose ports for a workspace",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		tunnelWorkspace(strings.TrimSpace(args[0]))
+	},
+}
+
+var pauseCmd = &cobra.Command{
+	Use:   "pause <id>",
+	Short: "Pause a workspace",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		pauseWorkspace(args[0])
+	},
+}
+
+var resumeCmd = &cobra.Command{
+	Use:   "resume <id>",
+	Short: "Resume a paused workspace",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		resumeWorkspace(args[0])
+	},
+}
+
+var restoreCmd = &cobra.Command{
+	Use:   "restore <id>",
+	Short: "Restore a workspace",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		restoreWorkspace(args[0])
+	},
+}
+
+func init() {
+	createCmd.Flags().StringVar(&createBackend, "backend", "", "runtime backend override (firecracker)")
+	forkCmd.Flags().StringVar(&forkRef, "ref", "", "child workspace git ref (defaults to child name)")
+	shellCmd.Flags().DurationVar(&shellTimeout, "timeout", 0, "max wall time waiting for PTY output and exit (e.g. 90s); 0 = no limit")
+	execCmd.Flags().DurationVar(&execTimeout, "timeout", 0, "max wall time for the command; 0 = no limit")
+	rootCmd.AddCommand(
+		listCmd,
+		createCmd,
+		startCmd,
+		stopCmd,
+		removeCmd,
+		forkCmd,
+		shellCmd,
+		execCmd,
+		tunnelCmd,
+		pauseCmd,
+		resumeCmd,
+		restoreCmd,
+	)
+}
+
+func listWorkspaces() {
 	conn, err := ensureDaemon()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nexus list: %v\n", err)
@@ -213,21 +351,7 @@ func runWorkspaceListCommand(_ []string) {
 	}
 }
 
-// ── workspace create ──────────────────────────────────────────────────────────
-
-func runWorkspaceCreateCommand(args []string) {
-	fs := flag.NewFlagSet("workspace create", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	backend := fs.String("backend", "", "runtime backend override (firecracker)")
-	if err := fs.Parse(args); err != nil {
-		os.Exit(2)
-	}
-	if len(fs.Args()) > 0 {
-		fmt.Fprintln(os.Stderr, "nexus create: this command does not take positional arguments")
-		fs.Usage()
-		os.Exit(2)
-	}
-
+func createWorkspace(backend string) {
 	repoPath, err := normalizeLocalRepoPath(".")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nexus create: %v\n", err)
@@ -253,7 +377,7 @@ func runWorkspaceCreateCommand(args []string) {
 		Ref:           "",
 		WorkspaceName: workspaceName,
 		AgentProfile:  "default",
-		Backend:       strings.TrimSpace(*backend),
+		Backend:       strings.TrimSpace(backend),
 		ConfigBundle:  hostAuthBundle,
 	}
 	var result struct {
@@ -270,10 +394,6 @@ func runWorkspaceCreateCommand(args []string) {
 	ws := result.Workspace
 	fmt.Printf("created workspace %s  (id: %s)\n", ws.WorkspaceName, ws.ID)
 
-	// ── Set up local worktree + optional mutagen sync ─────────────────────
-	// A remote sandbox path is needed for the mutagen sync beta endpoint.
-	// If RootPath is empty (the daemon hasn't assigned one yet) we still set
-	// up the local worktree; we just skip the sync.
 	lwMgr, lwErr := localws.NewManager(localws.Config{})
 	if lwErr != nil {
 		fmt.Fprintf(os.Stderr, "nexus create: warning: cannot init localws manager: %v\n", lwErr)
@@ -283,13 +403,12 @@ func runWorkspaceCreateCommand(args []string) {
 			WorkspaceName: ws.WorkspaceName,
 			Repo:          ws.Repo,
 			Ref:           ws.Ref,
-			RemotePath:    ws.RootPath, // empty → mutagen skipped gracefully
+			RemotePath:    ws.RootPath,
 		}
 		setupResult, setupErr := lwMgr.Setup(context.Background(), setupSpec)
 		if setupErr != nil {
 			fmt.Fprintf(os.Stderr, "nexus create: warning: local worktree setup failed: %v\n", setupErr)
 		} else {
-			// Persist worktree info back on the daemon record.
 			setParams := map[string]any{
 				"id":                ws.ID,
 				"localWorktreePath": setupResult.WorktreePath,
@@ -353,13 +472,7 @@ func deriveWorkspaceName(repoPath string) string {
 	return name
 }
 
-// ── workspace stop ────────────────────────────────────────────────────────────
-
-func runWorkspaceStopCommand(args []string) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: nexus stop <id>")
-		os.Exit(2)
-	}
+func stopWorkspace(id string) {
 	conn, err := ensureDaemon()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nexus stop: %v\n", err)
@@ -367,20 +480,14 @@ func runWorkspaceStopCommand(args []string) {
 	}
 	defer conn.Close()
 
-	if err := daemonRPC(conn, "workspace.stop", map[string]any{"id": args[0]}, nil); err != nil {
+	if err := daemonRPC(conn, "workspace.stop", map[string]any{"id": id}, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "nexus stop: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("stopped workspace %s\n", args[0])
+	fmt.Printf("stopped workspace %s\n", id)
 }
 
-// ── workspace start ───────────────────────────────────────────────────────────
-
-func runWorkspaceStartCommand(args []string) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: nexus start <id>")
-		os.Exit(2)
-	}
+func startWorkspace(id string) {
 	conn, err := ensureDaemonFn()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nexus start: %v\n", err)
@@ -390,72 +497,19 @@ func runWorkspaceStartCommand(args []string) {
 		defer conn.Close()
 	}
 
-	if err := daemonRPCFn(conn, "workspace.start", map[string]any{"id": args[0]}, nil); err != nil {
+	if err := daemonRPCFn(conn, "workspace.start", map[string]any{"id": id}, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "nexus start: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("started workspace %s\n", args[0])
+	fmt.Printf("started workspace %s\n", id)
 }
 
-func runWorkspaceShellCommand(args []string) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: nexus shell <id> [--timeout <dur>]")
-		os.Exit(2)
-	}
-	workspaceID := strings.TrimSpace(args[0])
-	fs := flag.NewFlagSet("workspace shell", flag.ExitOnError)
-	fs.SetOutput(os.Stderr)
-	ptyTimeout := fs.Duration("timeout", 0, "max wall time waiting for PTY output and exit (e.g. 90s); 0 = no limit")
-	if err := fs.Parse(args[1:]); err != nil {
-		os.Exit(2)
-	}
-	if fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: nexus shell <id> [--timeout <dur>]")
-		os.Exit(2)
-	}
+func shellWorkspace(workspaceID string, ptyTimeout time.Duration) {
 	token := strings.TrimSpace(os.Getenv("NEXUS_AUTH_RELAY_TOKEN"))
-	runWorkspacePTYSession("nexus shell", workspaceID, token, "bash", "", *ptyTimeout, true)
+	runWorkspacePTYSession("nexus shell", workspaceID, token, "bash", "", ptyTimeout, true)
 }
 
-func runWorkspaceExecCommand(args []string) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: nexus exec <id> [--timeout <dur>] -- <command> [args...]")
-		os.Exit(2)
-	}
-	workspaceID := strings.TrimSpace(args[0])
-	rest := args[1:]
-	dash := -1
-	for i, a := range rest {
-		if a == "--" {
-			dash = i
-			break
-		}
-	}
-	if dash == -1 {
-		fmt.Fprintln(os.Stderr, "usage: nexus exec <id> [--timeout <dur>] -- <command> [args...]")
-		os.Exit(2)
-	}
-	preDash := rest[:dash]
-	postDash := rest[dash+1:]
-	if len(postDash) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: nexus exec <id> [--timeout <dur>] -- <command> [args...]")
-		os.Exit(2)
-	}
-	ptyTimeout := time.Duration(0)
-	for i := 0; i < len(preDash); {
-		if preDash[i] == "--timeout" && i+1 < len(preDash) {
-			d, err := time.ParseDuration(preDash[i+1])
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(2)
-			}
-			ptyTimeout = d
-			i += 2
-			continue
-		}
-		fmt.Fprintln(os.Stderr, "usage: nexus exec <id> [--timeout <dur>] -- <command> [args...]")
-		os.Exit(2)
-	}
+func execWorkspace(workspaceID string, ptyTimeout time.Duration, postDash []string) {
 	cmdLine := formatCommand(postDash[0], postDash[1:])
 	payload := "cd /workspace >/dev/null 2>&1 || true\n" + cmdLine + "\nexit\n"
 	token := strings.TrimSpace(os.Getenv("NEXUS_AUTH_RELAY_TOKEN"))
@@ -621,13 +675,7 @@ func runWorkspacePTYSession(label, workspaceID, relayToken, shell, commandPayloa
 	}
 }
 
-// ── workspace remove ──────────────────────────────────────────────────────────
-
-func runWorkspaceRemoveCommand(args []string) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: nexus remove <id>")
-		os.Exit(2)
-	}
+func removeWorkspace(id string) {
 	conn, err := ensureDaemon()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nexus remove: %v\n", err)
@@ -635,28 +683,14 @@ func runWorkspaceRemoveCommand(args []string) {
 	}
 	defer conn.Close()
 
-	if err := daemonRPC(conn, "workspace.remove", map[string]any{"id": args[0]}, nil); err != nil {
+	if err := daemonRPC(conn, "workspace.remove", map[string]any{"id": id}, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "nexus remove: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("removed workspace %s\n", args[0])
+	fmt.Printf("removed workspace %s\n", id)
 }
 
-// ── workspace fork ────────────────────────────────────────────────────────────
-
-func runWorkspaceForkCommand(args []string) {
-	fs := flag.NewFlagSet("workspace fork", flag.ExitOnError)
-	fs.SetOutput(os.Stderr)
-	childRef := fs.String("ref", "", "child workspace git ref (defaults to child name)")
-	_ = fs.Parse(args)
-
-	if fs.NArg() < 2 {
-		fmt.Fprintf(os.Stderr, "usage: nexus fork <id> <name> [--ref <ref>]\n")
-		os.Exit(2)
-	}
-	id := strings.TrimSpace(fs.Arg(0))
-	childName := strings.TrimSpace(fs.Arg(1))
-	ref := strings.TrimSpace(*childRef)
+func forkWorkspace(id, childName, ref string) {
 	if ref == "" {
 		ref = childName
 	}
@@ -686,12 +720,7 @@ func runWorkspaceForkCommand(args []string) {
 	}
 }
 
-func runWorkspaceTunnelCommand(args []string) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: nexus tunnel <workspace-id>")
-		os.Exit(2)
-	}
-	workspaceID := strings.TrimSpace(args[0])
+func tunnelWorkspace(workspaceID string) {
 	if workspaceID == "" {
 		fmt.Fprintln(os.Stderr, "usage: nexus tunnel <workspace-id>")
 		os.Exit(2)
@@ -758,47 +787,35 @@ func waitForInterrupt() {
 	signal.Stop(ch)
 }
 
-func runWorkspacePauseCommand(args []string) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: nexus pause <id>")
-		os.Exit(2)
-	}
+func pauseWorkspace(id string) {
 	conn, err := ensureDaemon()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nexus pause: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
-	if err := daemonRPC(conn, "workspace.pause", map[string]any{"id": args[0]}, nil); err != nil {
+	if err := daemonRPC(conn, "workspace.pause", map[string]any{"id": id}, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "nexus pause: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("paused workspace %s\n", args[0])
+	fmt.Printf("paused workspace %s\n", id)
 }
 
-func runWorkspaceResumeCommand(args []string) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: nexus resume <id>")
-		os.Exit(2)
-	}
+func resumeWorkspace(id string) {
 	conn, err := ensureDaemon()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nexus resume: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
-	if err := daemonRPC(conn, "workspace.resume", map[string]any{"id": args[0]}, nil); err != nil {
+	if err := daemonRPC(conn, "workspace.resume", map[string]any{"id": id}, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "nexus resume: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("resumed workspace %s\n", args[0])
+	fmt.Printf("resumed workspace %s\n", id)
 }
 
-func runWorkspaceRestoreCommand(args []string) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: nexus restore <id>")
-		os.Exit(2)
-	}
+func restoreWorkspace(id string) {
 	conn, err := ensureDaemon()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nexus restore: %v\n", err)
@@ -808,7 +825,7 @@ func runWorkspaceRestoreCommand(args []string) {
 	var result struct {
 		Workspace workspacemgr.Workspace `json:"workspace"`
 	}
-	if err := daemonRPC(conn, "workspace.restore", map[string]any{"id": args[0]}, &result); err != nil {
+	if err := daemonRPC(conn, "workspace.restore", map[string]any{"id": id}, &result); err != nil {
 		fmt.Fprintf(os.Stderr, "nexus restore: %v\n", err)
 		os.Exit(1)
 	}

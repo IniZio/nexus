@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -25,6 +24,7 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/authbundle"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
+	"github.com/spf13/cobra"
 )
 
 type options struct {
@@ -46,93 +46,90 @@ type initOptions struct {
 
 const execKVMGroupReexecEnv = "NEXUS_EXEC_KVM_GROUP_REEXEC"
 
+var rootCmd = &cobra.Command{
+	Use:           "nexus",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+}
+
+var doctorReportJSON string
+
+var doctorCmd = &cobra.Command{
+	Use:   "doctor",
+	Short: "Run workspace health checks",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectRoot, err := filepath.Abs(".")
+		if err != nil {
+			return fmt.Errorf("resolve project root: %w", err)
+		}
+		return run(options{
+			projectRoot: projectRoot,
+			reportJSON:  strings.TrimSpace(doctorReportJSON),
+		})
+	},
+}
+
+var initForce bool
+
+var initCmd = &cobra.Command{
+	Use:   "init [project-root]",
+	Short: "Scaffold .nexus in a git repository",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectRoot := "."
+		if len(args) == 1 {
+			projectRoot = args[0]
+		}
+		abs, err := filepath.Abs(strings.TrimSpace(projectRoot))
+		if err != nil {
+			return fmt.Errorf("resolve project root: %w", err)
+		}
+		return runInit(initOptions{projectRoot: abs, force: initForce})
+	},
+}
+
+var runBackend string
+var runTimeout time.Duration
+
+var runCmd = &cobra.Command{
+	Use:   "run [--backend name] [--timeout dur] -- <command> [args...]",
+	Short: "Run a command in a new ephemeral workspace",
+	Args:  cobra.ArbitraryArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if cmd.ArgsLenAtDash() == -1 {
+			return fmt.Errorf("usage: nexus run [--backend <name>] [--timeout <dur>] -- <command> [args...]")
+		}
+		if len(args) == 0 {
+			return fmt.Errorf("command required after --")
+		}
+		return runRun(strings.TrimSpace(runBackend), runTimeout, args)
+	},
+}
+
+func init() {
+	doctorCmd.Flags().StringVar(&doctorReportJSON, "report-json", "", "optional path to write doctor probe results as JSON")
+	initCmd.Flags().BoolVar(&initForce, "force", false, "overwrite existing .nexus files")
+	runCmd.Flags().StringVar(&runBackend, "backend", "", "runtime backend override")
+	runCmd.Flags().DurationVar(&runTimeout, "timeout", 10*time.Minute, "max time for the workspace run")
+	rootCmd.AddCommand(doctorCmd, initCmd, runCmd)
+}
+
 func main() {
-	if len(os.Args) == 1 {
+	args := os.Args[1:]
+	for len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	}
+	if len(args) == 0 {
 		printUsage()
 		os.Exit(2)
 	}
-
-	command := os.Args[1]
-	args := os.Args[2:]
-	if strings.HasPrefix(command, "-") {
-		command = "doctor"
-		args = os.Args[1:]
+	if len(args) > 0 && strings.HasPrefix(args[0], "-") && args[0] != "-h" && args[0] != "--help" {
+		rootCmd.SetArgs(append([]string{"doctor"}, args...))
+	} else {
+		rootCmd.SetArgs(args)
 	}
-
-	switch command {
-	case "init":
-		runInitCommand(args)
-		return
-	case "run":
-		runRunCommand(args)
-		return
-	case "exec":
-		runWorkspaceExecCommand(args)
-		return
-	case "list":
-		runWorkspaceListCommand(args)
-		return
-	case "create":
-		runWorkspaceCreateCommand(args)
-		return
-	case "start":
-		runWorkspaceStartCommand(args)
-		return
-	case "stop":
-		runWorkspaceStopCommand(args)
-		return
-	case "remove":
-		runWorkspaceRemoveCommand(args)
-		return
-	case "fork":
-		runWorkspaceForkCommand(args)
-		return
-	case "shell":
-		runWorkspaceShellCommand(args)
-		return
-	case "tunnel":
-		runWorkspaceTunnelCommand(args)
-		return
-	case "pause":
-		runWorkspacePauseCommand(args)
-		return
-	case "resume":
-		runWorkspaceResumeCommand(args)
-		return
-	case "restore":
-		runWorkspaceRestoreCommand(args)
-		return
-	case "doctor":
-		// handled below
-	default:
-		printUsage()
-		fmt.Fprintf(os.Stderr, "\nunknown subcommand: %s\n", command)
-		os.Exit(2)
-	}
-
-	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	reportJSON := fs.String("report-json", "", "optional path to write doctor probe results as JSON")
-	if err := fs.Parse(args); err != nil {
-		os.Exit(2)
-	}
-
-	if fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: nexus doctor [--report-json path]")
-		os.Exit(2)
-	}
-
-	projectRoot := "."
-	absProjectRoot, err := filepath.Abs(projectRoot)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "resolve project root: %v\n", err)
-		os.Exit(2)
-	}
-
-	if err := run(options{
-		projectRoot: absProjectRoot,
-		reportJSON:  strings.TrimSpace(*reportJSON),
-	}); err != nil {
+	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -149,106 +146,22 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  nexus <list|create|start|stop|remove|pause|resume|restore|shell|exec|tunnel>")
 }
 
-func runInitCommand(args []string) {
-	force := false
-	var positional []string
-	for _, arg := range args {
-		switch arg {
-		case "--force", "-force":
-			force = true
-		default:
-			if strings.HasPrefix(arg, "-") {
-				fmt.Fprintf(os.Stderr, "unknown flag: %s\nusage: nexus init [project-root] [--force]\n", arg)
-				os.Exit(2)
-			}
-			positional = append(positional, arg)
-		}
-	}
-	if len(positional) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: nexus init [project-root] [--force]")
-		os.Exit(2)
-	}
-	projectRoot := "."
-	if len(positional) == 1 {
-		projectRoot = strings.TrimSpace(positional[0])
-	}
-	absProjectRoot, err := filepath.Abs(projectRoot)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "resolve project root: %v\n", err)
-		os.Exit(2)
-	}
-
-	if err := runInit(initOptions{
-		projectRoot: absProjectRoot,
-		force:       force,
-	}); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-}
-
-func runRunCommand(args []string) {
-	dash := -1
-	for i, a := range args {
-		if a == "--" {
-			dash = i
-			break
-		}
-	}
-	if dash == -1 || len(args[dash+1:]) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: nexus run [--backend <name>] [--timeout <dur>] -- <command> [args...]")
-		os.Exit(2)
-	}
-	preDash := args[:dash]
-	cmdArgs := args[dash+1:]
-
-	backend := ""
-	timeout := 10 * time.Minute
-	for i := 0; i < len(preDash); {
-		switch preDash[i] {
-		case "--backend":
-			if i+1 >= len(preDash) {
-				fmt.Fprintln(os.Stderr, "nexus run: --backend requires a value")
-				os.Exit(2)
-			}
-			backend = strings.TrimSpace(preDash[i+1])
-			i += 2
-		case "--timeout":
-			if i+1 >= len(preDash) {
-				fmt.Fprintln(os.Stderr, "nexus run: --timeout requires a value")
-				os.Exit(2)
-			}
-			d, err := time.ParseDuration(preDash[i+1])
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "nexus run: invalid timeout: %v\n", err)
-				os.Exit(2)
-			}
-			timeout = d
-			i += 2
-		default:
-			fmt.Fprintf(os.Stderr, "usage: nexus run [--backend <name>] [--timeout <dur>] -- <command> [args...]\n")
-			os.Exit(2)
-		}
-	}
-
+func runRun(backend string, timeout time.Duration, cmdArgs []string) error {
 	repoPath, err := normalizeLocalRepoPath(".")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus run: %v\n", err)
-		os.Exit(2)
+		return fmt.Errorf("nexus run: %w", err)
 	}
 	workspaceName := deriveWorkspaceName(repoPath)
 
 	conn, err := ensureDaemon()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus run: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("nexus run: %w", err)
 	}
 	defer conn.Close()
 
 	hostAuthBundle, err := authbundle.BuildFromHome()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus run: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("nexus run: %w", err)
 	}
 
 	spec := workspacemgr.CreateSpec{
@@ -266,8 +179,7 @@ func runRunCommand(args []string) {
 		if renderPreflightCreateError(err) {
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "nexus run: create failed: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("nexus run: create failed: %w", err)
 	}
 	wsID := createResult.Workspace.ID
 
@@ -280,8 +192,7 @@ func runRunCommand(args []string) {
 	deadline := time.Now().Add(timeout)
 	for {
 		if time.Now().After(deadline) {
-			fmt.Fprintln(os.Stderr, "nexus run: timed out waiting for workspace to become ready")
-			os.Exit(1)
+			return fmt.Errorf("nexus run: timed out waiting for workspace to become ready")
 		}
 		var readyResult struct {
 			Ready bool `json:"ready"`
@@ -299,6 +210,7 @@ func runRunCommand(args []string) {
 	payload := "cd /workspace >/dev/null 2>&1 || true\n" + cmdLine + "\nexit\n"
 	token := strings.TrimSpace(os.Getenv("NEXUS_AUTH_RELAY_TOKEN"))
 	runWorkspacePTYSession("nexus run", wsID, token, "bash", payload, timeout, false)
+	return nil
 }
 
 func runInit(opts initOptions) error {
