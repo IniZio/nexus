@@ -202,6 +202,10 @@ func runVersion(asJSON bool) error {
 		"cli":    info,
 		"daemon": daemonVersion,
 		"update": status,
+		"channel": map[string]string{
+			"name": channelName(),
+			"repo": channelRepo(),
+		},
 	}
 	if asJSON {
 		return json.NewEncoder(os.Stdout).Encode(payload)
@@ -222,6 +226,7 @@ func runVersion(asJSON bool) error {
 	} else {
 		fmt.Printf("Update:  up to date\n")
 	}
+	fmt.Printf("Channel: %s (%s)\n", channelName(), channelRepo())
 	return nil
 }
 
@@ -309,17 +314,30 @@ func releaseBaseURL() string {
 	if value := strings.TrimSpace(os.Getenv("NEXUS_RELEASE_BASE_URL")); value != "" {
 		return value
 	}
-	channel := strings.ToLower(strings.TrimSpace(os.Getenv("NEXUS_RELEASE_CHANNEL")))
-	repo := strings.TrimSpace(os.Getenv("NEXUS_RELEASE_REPO"))
-	if repo == "" {
-		repo = "inizio/nexus"
-	}
+	channel := channelName()
+	repo := channelRepo()
 	if channel == "prerelease" {
 		if prereleaseURL, err := latestPrereleaseBaseURL(repo); err == nil && prereleaseURL != "" {
 			return prereleaseURL
 		}
 	}
 	return "https://github.com/inizio/nexus/releases/latest/download"
+}
+
+func channelName() string {
+	channel := strings.ToLower(strings.TrimSpace(os.Getenv("NEXUS_RELEASE_CHANNEL")))
+	if channel == "" {
+		return "stable"
+	}
+	return channel
+}
+
+func channelRepo() string {
+	repo := strings.TrimSpace(os.Getenv("NEXUS_RELEASE_REPO"))
+	if repo == "" {
+		return "inizio/nexus"
+	}
+	return repo
 }
 
 func latestPrereleaseBaseURL(repo string) (string, error) {

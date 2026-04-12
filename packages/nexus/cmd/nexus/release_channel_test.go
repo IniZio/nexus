@@ -44,3 +44,14 @@ func TestReleaseBaseURLUsesPrereleaseChannel(t *testing.T) {
 		t.Fatalf("expected prerelease URL %s, got %s", want, got)
 	}
 }
+
+func TestChannelDefaults(t *testing.T) {
+	t.Setenv("NEXUS_RELEASE_CHANNEL", "")
+	t.Setenv("NEXUS_RELEASE_REPO", "")
+	if got := channelName(); got != "stable" {
+		t.Fatalf("expected default stable channel, got %s", got)
+	}
+	if got := channelRepo(); got != "inizio/nexus" {
+		t.Fatalf("expected default repo, got %s", got)
+	}
+}
