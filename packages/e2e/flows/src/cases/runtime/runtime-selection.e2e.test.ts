@@ -1,4 +1,4 @@
-import { WorkspaceHandle, Capability } from '@nexus/sdk';
+import { WorkspaceHandle, NodeInfo } from '@nexus/sdk';
 import { createGitFixture, cleanupFixture } from '../../harness/repo';
 import { startSession } from '../../harness/session';
 import { assertCapabilityOrSkip, onWorkspaceCreateRuntimeError } from '../../harness/assertions';
@@ -22,7 +22,7 @@ describe('runtime selection e2e', () => {
 
     let ws: WorkspaceHandle | null = null;
     try {
-      const { capabilities: caps } = await session.client.request<{ capabilities: Capability[] }>('capabilities.list', {});
+      const { capabilities: caps } = await session.client.request<NodeInfo>('node.info', {});
       if (!assertCapabilityOrSkip(caps, 'runtime.firecracker', 'runtime.firecracker capability unavailable on this host')) {
         return;
       }
@@ -66,7 +66,7 @@ describe('runtime selection e2e', () => {
 
     let ws: WorkspaceHandle | null = null;
     try {
-      const { capabilities: caps } = await session.client.request<{ capabilities: Capability[] }>('capabilities.list', {});
+      const { capabilities: caps } = await session.client.request<NodeInfo>('node.info', {});
       if (!assertCapabilityOrSkip(caps, 'runtime.seatbelt', 'runtime.seatbelt capability unavailable on this host')) {
         return;
       }

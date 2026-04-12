@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { Capability } from '@nexus/sdk';
+import type { NodeInfo } from '@nexus/sdk';
 import { createGitFixture, cleanupFixture } from '../../harness/repo';
 import { startSession } from '../../harness/session';
 import {
@@ -32,7 +32,7 @@ describe('spotlight compose e2e', () => {
     const session = await startSession();
     let workspaceId = '';
     try {
-      const { capabilities: caps } = await session.client.request<{ capabilities: Capability[] }>('capabilities.list', {});
+      const { capabilities: caps } = await session.client.request<NodeInfo>('node.info', {});
       if (!assertCapabilityOrSkip(caps, 'spotlight.tunnel', 'spotlight.tunnel capability unavailable on this daemon')) {
         return;
       }

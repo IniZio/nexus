@@ -1,4 +1,4 @@
-import type { Capability } from '@nexus/sdk';
+import type { NodeInfo } from '@nexus/sdk';
 import { connectSDKClient, getDaemonEnvConfig } from '../harness/daemon';
 import { startSession } from '../harness/session';
 import { assertCapabilitiesArray, e2eStrictRuntime, skipTest } from '../harness/assertions';
@@ -15,7 +15,7 @@ describe('flows e2e harness', () => {
     if (env) {
       const client = await connectSDKClient(env);
       try {
-        const { capabilities: caps } = await client.request<{ capabilities: Capability[] }>('capabilities.list', {});
+        const { capabilities: caps } = await client.request<NodeInfo>('node.info', {});
         assertCapabilitiesArray(caps);
       } finally {
         await client.disconnect();
@@ -35,7 +35,7 @@ describe('flows e2e harness', () => {
 
     const session = await startSession({ forceManaged: true });
     try {
-      const { capabilities: caps } = await session.client.request<{ capabilities: Capability[] }>('capabilities.list', {});
+      const { capabilities: caps } = await session.client.request<NodeInfo>('node.info', {});
       assertCapabilitiesArray(caps);
     } finally {
       await session.stop();
