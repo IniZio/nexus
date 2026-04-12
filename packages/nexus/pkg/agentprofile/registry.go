@@ -81,6 +81,58 @@ var registry = []Profile{
 		Name:    "minimax",
 		EnvVars: []string{"MINIMAX_API_KEY"},
 	},
+	{
+		Name:       "gemini",
+		Aliases:    []string{"gemini-cli", "google-gemini"},
+		Binary:     "gemini",
+		EnvVars:    []string{"GEMINI_API_KEY"},
+		CredFiles:  []string{".gemini/settings.json", ".gemini/.env"},
+		InstallPkg: "@google/gemini-cli",
+	},
+	{
+		Name:      "continue",
+		Aliases:   []string{"continue-cli", "cn"},
+		Binary:    "cn",
+		EnvVars:   []string{"CONTINUE_API_KEY"},
+		CredFiles: []string{".continue/config.yaml", ".continue/permissions.yaml", ".continue/.env"},
+	},
+	{
+		Name:       "kiro",
+		Aliases:    []string{"kiro-cli"},
+		Binary:     "kiro-cli",
+		EnvVars:    []string{"KIRO_API_KEY"},
+		CredFiles:  []string{".kiro/settings/cli.json", "Library/Application Support/kiro-cli/data.sqlite3", ".local/share/kiro-cli/data.sqlite3"},
+		InstallPkg: "kiro-cli",
+	},
+	{
+		Name:       "pi",
+		Aliases:    []string{"pi-agent", "pi-coding-agent"},
+		Binary:     "pi",
+		EnvVars:    []string{"PI_API_KEY"},
+		CredFiles:  []string{".pi/agent/auth.json", ".pi/agent/settings.json"},
+		InstallPkg: "@mariozechner/pi-coding-agent",
+	},
+	{
+		Name:      "aider",
+		Aliases:   []string{"aider-chat"},
+		Binary:    "aider",
+		EnvVars:   []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY"},
+		CredFiles: []string{".aider.conf.yml", ".env"},
+	},
+	{
+		Name:      "goose",
+		Aliases:   []string{"block-goose", "goose-cli"},
+		Binary:    "goose",
+		EnvVars:   []string{"GOOSE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"},
+		CredFiles: []string{".config/goose/config.yaml", ".config/goose/profiles.yaml", ".config/goose/secrets.yaml"},
+	},
+	{
+		Name:      "copilot-cli",
+		Aliases:   []string{"github-copilot-cli", "copilot"},
+		Binary:    "copilot",
+		EnvVars:   []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"},
+		CredFiles: []string{".copilot/config.json", ".config/github-copilot/hosts.json"},
+	},
 }
 
 func Lookup(name string) *Profile {

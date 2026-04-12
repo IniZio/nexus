@@ -3,6 +3,7 @@ package discovery
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -167,6 +168,119 @@ func TestDiscoverNoConfig(t *testing.T) {
 
 	if len(configs) != 0 {
 		t.Fatalf("expected 0 configs, got %d", len(configs))
+	}
+}
+
+func TestDiscoverGeminiFromDotEnv(t *testing.T) {
+	home := t.TempDir()
+	geminiDir := filepath.Join(home, ".gemini")
+	if err := os.MkdirAll(geminiDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(geminiDir, ".env"), []byte("GEMINI_API_KEY=gm_key_123\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	configs, err := Discover(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, cfg := range configs {
+		if cfg.Name == "gemini" && cfg.AccessToken == "gm_key_123" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected gemini provider from ~/.gemini/.env")
+	}
+}
+
+func TestDiscoverPiFromAuthJSON(t *testing.T) {
+	home := t.TempDir()
+	piDir := filepath.Join(home, ".pi", "agent")
+	if err := os.MkdirAll(piDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	data := `{"anthropic":{"type":"api_key","key":"sk-ant-pi"}}`
+	if err := os.WriteFile(filepath.Join(piDir, "auth.json"), []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	configs, err := Discover(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, cfg := range configs {
+		if cfg.Name == "pi" && cfg.AccessToken == "sk-ant-pi" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected pi provider from ~/.pi/agent/auth.json")
+	}
+}
+
+func TestDiscoverCopilotFromKeychain(t *testing.T) {
+	home := t.TempDir()
+	original := commandOutput
+	commandOutput = func(name string, args ...string) (string, error) {
+		if name == "security" || name == "secret-tool" {
+			return "ghu_from_keychain", nil
+		}
+		return "", os.ErrNotExist
+	}
+	defer func() { commandOutput = original }()
+
+	configs, err := Discover(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, cfg := range configs {
+		if cfg.Name == "copilot" && cfg.AccessToken == "ghu_from_keychain" && strings.Contains(cfg.ConfigPath, "copilot-cli") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected copilot provider discovered from keychain")
+	}
+}
+
+func TestDiscoverKiroFromSQLite(t *testing.T) {
+	home := t.TempDir()
+	kiroDB := filepath.Join(home, ".local", "share", "kiro-cli")
+	if err := os.MkdirAll(kiroDB, 0755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(kiroDB, "data.sqlite3")
+	if err := os.WriteFile(dbPath, []byte("not-a-real-db"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	original := commandOutput
+	commandOutput = func(name string, args ...string) (string, error) {
+		if name == "sqlite3" {
+			return `{"access_token":"kiro_access_123","refresh_token":"kiro_refresh_456"}`, nil
+		}
+		return "", os.ErrNotExist
+	}
+	defer func() { commandOutput = original }()
+
+	configs, err := Discover(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, cfg := range configs {
+		if cfg.Name == "kiro" && cfg.AccessToken == "kiro_access_123" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected kiro provider discovered from sqlite auth_kv")
 	}
 }
 
