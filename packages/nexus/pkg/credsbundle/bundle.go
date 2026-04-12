@@ -5,12 +5,15 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/agentprofile"
 )
+
+const maxBundledFileBytes = 512 * 1024
 
 func Build() (string, error) {
 	home, err := os.UserHomeDir()
@@ -28,6 +31,9 @@ func BuildFromHome(home string) (string, error) {
 	added := 0
 	for _, cf := range agentprofile.AllCredFiles() {
 		src := filepath.Join(home, cf)
+		if fi, statErr := os.Lstat(src); statErr == nil && fi.IsDir() {
+			continue
+		}
 		if err := addToTar(tw, home, src); err != nil {
 			_ = tw.Close()
 			_ = gz.Close()
@@ -72,45 +78,103 @@ func addToTar(tw *tar.Writer, rootHome, src string) error {
 		return err
 	}
 
-	if fi.IsDir() {
-		return filepath.Walk(src, func(path string, info os.FileInfo, walkErr error) error {
-			if walkErr != nil {
-				if os.IsNotExist(walkErr) {
-					return nil
-				}
-				return walkErr
-			}
-			if info.Mode()&os.ModeSymlink != 0 {
+	if fi.Mode()&os.ModeSymlink != 0 {
+		resolved, err := filepath.EvalSymlinks(src)
+		if err != nil {
+			if os.IsNotExist(err) {
 				return nil
 			}
-			rel2, err2 := filepath.Rel(rootHome, path)
-			if err2 != nil {
-				return err2
-			}
-			hdr, err2 := tar.FileInfoHeader(info, "")
-			if err2 != nil {
-				return err2
-			}
-			hdr.Name = rel2
-			if err2 := tw.WriteHeader(hdr); err2 != nil {
-				return err2
-			}
-			if info.IsDir() {
+			return err
+		}
+		targetInfo, err := os.Stat(resolved)
+		if err != nil {
+			if os.IsNotExist(err) {
 				return nil
 			}
-			f, err2 := os.Open(path)
-			if err2 != nil {
-				if os.IsNotExist(err2) {
-					return nil
-				}
-				return err2
-			}
-			defer f.Close()
-			_, err2 = io.Copy(tw, f)
-			return err2
-		})
+			return err
+		}
+		if targetInfo.IsDir() {
+			return addDirToTar(tw, resolved, rel)
+		}
+		return addFileToTar(tw, rel, resolved, targetInfo)
 	}
 
+	if fi.IsDir() {
+		return addDirToTar(tw, src, rel)
+	}
+
+	return addFileToTar(tw, rel, src, fi)
+}
+
+func addDirToTar(tw *tar.Writer, src, relBase string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			if os.IsNotExist(walkErr) {
+				return nil
+			}
+			return walkErr
+		}
+		if info.IsDir() && filepath.Base(path) == "node_modules" {
+			return filepath.SkipDir
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			resolved, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return nil
+			}
+			targetInfo, err := os.Stat(resolved)
+			if err != nil {
+				return nil
+			}
+			relPath, err := filepath.Rel(src, path)
+			if err != nil {
+				return err
+			}
+			targetRel := filepath.ToSlash(filepath.Join(relBase, relPath))
+			if targetInfo.IsDir() {
+				return nil
+			}
+			if targetInfo.Size() > maxBundledFileBytes {
+				return nil
+			}
+			return addFileToTar(tw, targetRel, resolved, targetInfo)
+		}
+		relPath, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		targetRel := filepath.ToSlash(filepath.Join(relBase, relPath))
+		if !info.IsDir() && info.Size() > maxBundledFileBytes {
+			return nil
+		}
+		hdr, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		hdr.Name = targetRel
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(tw, f)
+		return err
+	})
+}
+
+func addFileToTar(tw *tar.Writer, rel, src string, fi os.FileInfo) error {
+	if fi.Size() > maxBundledFileBytes {
+		return nil
+	}
 	hdr, err := tar.FileInfoHeader(fi, "")
 	if err != nil {
 		return err
@@ -128,5 +192,8 @@ func addToTar(tw *tar.Writer, rootHome, src string) error {
 	}
 	defer f.Close()
 	_, err = io.Copy(tw, f)
-	return err
+	if err != nil {
+		return fmt.Errorf("copy %s to tar: %w", rel, err)
+	}
+	return nil
 }

@@ -216,16 +216,6 @@ func handleFirecrackerPTYOpen(deps *Deps, conn Conn, p OpenParams, wsRecord *wor
 	if workDirHint == "" {
 		workDirHint = "/workspace"
 	}
-	if wsRecord.Backend == "seatbelt" {
-		type guestWorkdirProvider interface {
-			GuestWorkdir(string) string
-		}
-		if sbDriver, ok := driverAny.(guestWorkdirProvider); ok {
-			if gw := sbDriver.GuestWorkdir(wsRecord.ID); gw != "" {
-				workDirHint = gw
-			}
-		}
-	}
 
 	sessionID := fmt.Sprintf("pty-%d", time.Now().UnixNano())
 	enc := json.NewEncoder(agentConn)

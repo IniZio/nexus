@@ -253,7 +253,7 @@ func (d *Driver) serveShellProtocol(ctx context.Context, workspaceID string, con
 			localPath := ""
 			if strings.TrimSpace(workdir) == "" || strings.TrimSpace(workdir) == "/workspace" || strings.TrimSpace(workdir) == perWsPath {
 				localPath = d.workspaceProjectRoot(workspaceID)
-				workdir = perWsPath
+				workdir = "/workspace"
 			}
 
 			instance := d.workspaceInstance(workspaceID)
@@ -396,7 +396,8 @@ func guestWorkdirForID(workspaceID string) string {
 }
 
 func (d *Driver) GuestWorkdir(workspaceID string) string {
-	return guestWorkdirForID(workspaceID)
+	_ = workspaceID
+	return "/workspace"
 }
 
 func prepareWorkspacePath(ctx context.Context, instance, targetPath, localPath string) error {
@@ -449,17 +450,7 @@ func bootstrapSeatbeltTooling(ctx context.Context, instance, configBundle string
 		candidates = shared.ApplyLimaDiscovery(candidates, discovered, true)
 	}
 
-	bundleHostPath := ""
-	if strings.TrimSpace(configBundle) != "" {
-		tmpDir := os.TempDir()
-		bundleFile := filepath.Join(tmpDir, "nexus-bootstrap-"+instance+".tar.gz.b64")
-		if writeErr := os.WriteFile(bundleFile, []byte(configBundle), 0o600); writeErr == nil {
-			bundleHostPath = bundleFile
-			defer func() { _ = os.Remove(bundleFile) }()
-		}
-	}
-
-	script := buildSeatbeltBootstrapScript(bundleHostPath)
+	script := buildSeatbeltBootstrapScript(configBundle)
 	return shared.RunLimactlBootstrapScript(ctx, candidates, script, shared.LimactlBootstrapOptions{
 		EnsureBeforeCandidate:   ensureLimaInstanceRunningFn,
 		MaxAttemptsPerCandidate: 3,
@@ -476,19 +467,19 @@ func ensureLimaInstanceRunning(ctx context.Context, instance string) error {
 	return shared.EnsureLimaInstanceRunning(ctx, instance, limactlOutputFn, limactlCombinedOutputFn)
 }
 
-func buildSeatbeltBootstrapScript(bundleHostPath string) string {
+func buildSeatbeltBootstrapScript(configBundle string) string {
 	parts := []string{
 		"set -e",
 		buildCredentialSymlinkCleanup(),
 	}
 
-	if strings.TrimSpace(bundleHostPath) != "" {
-		quoted := shared.ShellQuote(bundleHostPath)
+	if strings.TrimSpace(configBundle) != "" {
+		quotedBundle := shared.ShellQuote(configBundle)
 		parts = append(parts,
-			`if [ -f `+quoted+` ]; then `+
-				`(cat `+quoted+` | base64 -d 2>/dev/null || cat `+quoted+` | base64 -D 2>/dev/null) >/tmp/nexus-auth.tar.gz && `+
-				`tar -xzf /tmp/nexus-auth.tar.gz -C "$HOME" >/dev/null 2>&1 || true; `+
-				`rm -f /tmp/nexus-auth.tar.gz >/dev/null 2>&1 || true; fi`,
+			`printf '%s' `+quotedBundle+` >/tmp/nexus-auth.tar.gz.b64`,
+			`(cat /tmp/nexus-auth.tar.gz.b64 | base64 -d 2>/dev/null || cat /tmp/nexus-auth.tar.gz.b64 | base64 -D 2>/dev/null) >/tmp/nexus-auth.tar.gz`,
+			`tar -xzf /tmp/nexus-auth.tar.gz -C "$HOME" >/dev/null 2>&1 || true`,
+			`rm -f /tmp/nexus-auth.tar.gz.b64 /tmp/nexus-auth.tar.gz >/dev/null 2>&1 || true`,
 		)
 	}
 
@@ -521,13 +512,18 @@ func buildSeatbeltBootstrapScript(bundleHostPath string) string {
 
 func buildCredentialSymlinkCleanup() string {
 	dirs := make(map[string]struct{})
+	files := make(map[string]struct{})
 	for _, cf := range agentprofile.AllCredFiles() {
 		dir := filepath.Dir(cf)
 		dirs[dir] = struct{}{}
+		files[cf] = struct{}{}
 	}
 	var checks []string
 	for dir := range dirs {
 		checks = append(checks, `if [ -L "$HOME/`+dir+`" ]; then rm -f "$HOME/`+dir+`"; fi`)
+	}
+	for file := range files {
+		checks = append(checks, `if [ -L "$HOME/`+file+`" ]; then rm -f "$HOME/`+file+`"; fi`)
 	}
 	return strings.Join(checks, "; ")
 }

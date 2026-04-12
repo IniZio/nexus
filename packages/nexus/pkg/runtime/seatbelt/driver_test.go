@@ -183,9 +183,9 @@ func TestBuildSeatbeltBootstrapScriptChecksRegistryBinaries(t *testing.T) {
 }
 
 func TestBuildSeatbeltBootstrapScriptExtractsBundleWhenProvided(t *testing.T) {
-	script := buildSeatbeltBootstrapScript("/tmp/test-bundle.tar.gz.b64")
-	if !strings.Contains(script, "/tmp/test-bundle.tar.gz.b64") {
-		t.Fatal("bootstrap script must reference the bundle file path")
+	script := buildSeatbeltBootstrapScript("QUJDREVGRw==")
+	if !strings.Contains(script, "/tmp/nexus-auth.tar.gz.b64") {
+		t.Fatal("bootstrap script must write auth bundle payload to temp file")
 	}
 	if !strings.Contains(script, "base64") {
 		t.Fatal("bootstrap script must contain base64 decode step")
@@ -246,8 +246,8 @@ func TestShellOpenDefaultsToWorkspaceMountPath(t *testing.T) {
 		t.Fatal("spawnShell was not invoked")
 	}
 
-	if gotWorkdir != "/nexus/ws/ws-open" {
-		t.Fatalf("expected workdir /nexus/ws/ws-open, got %q", gotWorkdir)
+	if gotWorkdir != "/workspace" {
+		t.Fatalf("expected workdir /workspace, got %q", gotWorkdir)
 	}
 	if gotLocalPath != root {
 		t.Fatalf("expected localPath %q, got %q", root, gotLocalPath)
