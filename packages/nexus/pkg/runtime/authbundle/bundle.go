@@ -47,6 +47,9 @@ func BuildFromHome() (string, error) {
 		filepath.Join(home, ".config", "openai"),
 		filepath.Join(home, ".config", "github-copilot"),
 		filepath.Join(home, ".claude"),
+		filepath.Join(home, ".config", "git"),
+		filepath.Join(home, ".gitconfig"),
+		filepath.Join(home, ".git-credentials"),
 	}
 
 	var buf bytes.Buffer
@@ -113,6 +116,10 @@ func includeBundledFile(rel string) bool {
 			return true
 		}
 		return ext == ".json" || ext == ".yaml" || ext == ".yml"
+	case rel == ".gitconfig" || rel == ".git-credentials":
+		return true
+	case strings.HasPrefix(rel, ".config/git/"):
+		return base == "config" || base == "credentials"
 	default:
 		return false
 	}
