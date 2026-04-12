@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -16,11 +18,13 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/handlers"
 	"github.com/inizio/nexus/packages/nexus/pkg/lifecycle"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
+	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 	"github.com/inizio/nexus/packages/nexus/pkg/server/pty"
 	"github.com/inizio/nexus/packages/nexus/pkg/server/rpc"
 	"github.com/inizio/nexus/packages/nexus/pkg/services"
 	"github.com/inizio/nexus/packages/nexus/pkg/spotlight"
+	"github.com/inizio/nexus/packages/nexus/pkg/store"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
@@ -34,6 +38,7 @@ type Server struct {
 	connections         map[string]*Connection
 	ws                  *workspace.Workspace
 	workspaceMgr        *workspacemgr.Manager
+	projectMgr          *projectmgr.Manager
 	serviceMgr          *services.Manager
 	spotlightMgr        *spotlight.Manager
 	lifecycle           *lifecycle.Manager
@@ -82,6 +87,13 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 
 	workspaceMgr := workspacemgr.NewManager(workspaceDir)
 
+	var projectStore *store.NodeStore
+	if st, err := store.Open(nodeDBPathForWorkspaceRoot(workspaceDir)); err == nil {
+		projectStore = st
+	}
+	projectMgr := projectmgr.NewManager(workspaceDir, projectStore)
+	workspaceMgr.SetProjectManager(projectMgr)
+
 	spotlightMgr, err := newSpotlightManagerForServer(workspaceMgr)
 	if err != nil {
 		log.Printf("[spotlight] Warning: failed to initialize sqlite-backed spotlight manager, falling back to in-memory manager: %v", err)
@@ -111,6 +123,7 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		connections:         make(map[string]*Connection),
 		ws:                  ws,
 		workspaceMgr:        workspaceMgr,
+		projectMgr:          projectMgr,
 		serviceMgr:          services.NewManager(),
 		spotlightMgr:        spotlightMgr,
 		lifecycle:           lifecycleMgr,
@@ -169,6 +182,31 @@ func (s *Server) resolveWorkspaceTyped(v any) *workspace.Workspace {
 		return s.ws
 	}
 	return s.resolveWorkspace(raw)
+}
+
+func nodeDBPathForWorkspaceRoot(root string) string {
+	cleanRoot := filepath.Clean(root)
+	defaultPath := config.NodeDBPath()
+	if cleanRoot == "" || defaultPath == "" {
+		return defaultPath
+	}
+
+	resolvedRoot := cleanRoot
+	if real, err := filepath.EvalSymlinks(cleanRoot); err == nil {
+		resolvedRoot = filepath.Clean(real)
+	}
+
+	resolvedTemp := filepath.Clean(os.TempDir())
+	if real, err := filepath.EvalSymlinks(resolvedTemp); err == nil {
+		resolvedTemp = filepath.Clean(real)
+	}
+
+	tmpPrefix := resolvedTemp + string(filepath.Separator)
+	if strings.HasPrefix(resolvedRoot+string(filepath.Separator), tmpPrefix) {
+		return filepath.Join(cleanRoot, ".nexus", "state", "node.db")
+	}
+
+	return defaultPath
 }
 
 func extractWorkspaceID(params json.RawMessage) string {
