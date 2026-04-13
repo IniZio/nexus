@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"path/filepath"
+	"strings"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/spotlight"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
@@ -43,7 +44,13 @@ func HandleWorkspaceInfo(
 		if ws, ok := workspaceMgr.Get(workspaceID); ok {
 			result["workspace"] = ws
 			result["workspace_id"] = ws.ID
-			result["workspace_path"] = filepath.Clean(ws.RootPath)
+			// Prefer the host-side worktree path (the user-visible directory)
+			// over the daemon's internal storage path.
+			hostPath := strings.TrimSpace(ws.LocalWorktreePath)
+			if hostPath == "" {
+				hostPath = ws.RootPath
+			}
+			result["workspace_path"] = filepath.Clean(hostPath)
 			result["spotlight"] = spotlightMgr.List(workspaceID)
 		}
 	}

@@ -88,19 +88,24 @@ func DirectSSHInteractiveArgs(instanceName, workdir, shell string) ([]string, er
 		sh = "bash"
 	}
 
-	// Start a login shell; if a workdir is requested, cd first.
-	// `exec` replaces the intermediate sh so the PTY is owned by bash directly.
-	remoteCmd := "exec " + sh + " -l"
-	if wd := strings.TrimSpace(workdir); wd != "" {
-		remoteCmd = "cd " + ShellQuote(wd) + " 2>/dev/null; " + remoteCmd
+	wd := strings.TrimSpace(workdir)
+	if wd != "" {
+		innerCmd := `export PROMPT_COMMAND="cd ` + ShellQuote(wd) + ` 2>/dev/null; unset PROMPT_COMMAND"; exec ` + sh + ` -i`
+		fullCmd := sh + " -l -c " + ShellQuote(innerCmd)
+		return []string{
+			"-F", cfgPath,
+			"-t", // force remote PTY allocation; required when a command is given
+			instanceName,
+			fullCmd,
+		}, nil
 	}
 
+	// No workdir: pass "bash -l" as a single arg so SSH executes it directly.
 	return []string{
 		"-F", cfgPath,
-		"-t", // force remote PTY allocation; required when a command is given
+		"-t",
 		instanceName,
-		"--",
-		"sh", "-c", remoteCmd,
+		sh + " -l",
 	}, nil
 }
 
