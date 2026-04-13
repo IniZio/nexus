@@ -85,7 +85,8 @@ public final class AppState: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(4))
                 guard !Task.isCancelled, let self else { break }
-                if self.connectionState != .starting {
+                if self.connectionState != .starting,
+                   case .outdated = self.daemonStatus {} else {
                     await self.load()
                 }
             }
@@ -139,7 +140,7 @@ public final class AppState: ObservableObject {
         // If it's running but we can't authenticate, leave it alone.
         connectionState = .starting
         if daemonStatus == .offline {
-            DaemonLauncher.killRunning()   // clears stale PID files
+            await Task.detached { DaemonLauncher.killRunning() }.value
             try? await Task.sleep(for: .seconds(0.4))
             do {
                 try await DaemonLauncher.ensureRunning()
@@ -167,7 +168,7 @@ public final class AppState: ObservableObject {
         isRestarting = true
         isBusy = true
         defer { isRestarting = false; isBusy = false }
-        DaemonLauncher.killRunning()
+        await Task.detached { DaemonLauncher.killRunning() }.value
         try? await Task.sleep(for: .seconds(0.5))
         do {
             try await DaemonLauncher.ensureRunning()
