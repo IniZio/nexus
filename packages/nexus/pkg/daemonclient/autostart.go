@@ -279,6 +279,71 @@ func shouldRestartRunningDaemon(port int, daemonBin string) (bool, error) {
 	return binInfo.ModTime().After(startedAt.Add(time.Second)), nil
 }
 
+// Stop terminates the daemon that owns port.
+//
+// Resolution order for the target PID:
+//  1. PID file (daemon-PORT.pid / daemon.pid) — preferred because it is
+//     stable across port changes; the live process is verified before use.
+//  2. lsof fallback — used when the PID file is absent or stale so that a
+//     running daemon is never left orphaned.
+//
+// The function is a no-op when nothing is listening on port.
+func Stop(port int) error {
+	if !IsRunning(port) {
+		return nil
+	}
+
+	// 1. Try the PID file first.
+	if pid, err := readRunningDaemonPID(port); err == nil && pid > 0 {
+		if proc, err := os.FindProcess(pid); err == nil {
+			// Confirm the process is actually alive before trusting the file.
+			if proc.Signal(syscall.Signal(0)) == nil {
+				return killAndWait(proc, pid, port)
+			}
+		}
+	}
+
+	// 2. PID file absent / stale — resolve via lsof.
+	pid, err := pidForPort(port)
+	if err != nil || pid <= 0 {
+		return fmt.Errorf("daemon on :%d is running but PID cannot be determined: %w", port, err)
+	}
+	proc, _ := os.FindProcess(pid)
+	return killAndWait(proc, pid, port)
+}
+
+// killAndWait sends SIGTERM to proc, waits up to 5 s, then SIGKILL.
+func killAndWait(proc *os.Process, pid, port int) error {
+	_ = proc.Signal(syscall.SIGTERM)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !IsRunning(port) {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	_ = proc.Signal(syscall.SIGKILL)
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !IsRunning(port) {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("daemon (pid %d) on :%d did not stop", pid, port)
+}
+
+// pidForPort returns the PID of the process listening on port using lsof.
+func pidForPort(port int) (int, error) {
+	out, err := exec.Command("lsof", "-i", fmt.Sprintf(":%d", port), "-sTCP:LISTEN", "-t").Output()
+	if err != nil {
+		return 0, fmt.Errorf("lsof: %w", err)
+	}
+	// lsof may return multiple PIDs (one per line); take the first.
+	first := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
+	return strconv.Atoi(strings.TrimSpace(first))
+}
+
 func stopRunningDaemon(port int) error {
 	pid, err := readRunningDaemonPID(port)
 	if err != nil {
@@ -344,6 +409,11 @@ func daemonProcessCommandLine(pid int) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// DaemonProcessStartedAt returns the time the process with the given PID started.
+func DaemonProcessStartedAt(pid int) (time.Time, error) {
+	return daemonProcessStartedAt(pid)
 }
 
 func daemonProcessStartedAt(pid int) (time.Time, error) {

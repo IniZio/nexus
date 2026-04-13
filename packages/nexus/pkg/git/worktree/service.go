@@ -192,8 +192,16 @@ func uniqueBranchName(repoPath, desired string) string {
 }
 
 func branchExists(repoPath, branch string) bool {
+	// Check if the exact branch exists.
 	cmd := exec.Command("git", "-C", repoPath, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
-	return cmd.Run() == nil
+	if cmd.Run() == nil {
+		return true
+	}
+	// Also check if any branch uses this name as a namespace prefix (e.g.
+	// refs/heads/nexus/... exists), which would prevent creating refs/heads/nexus.
+	cmd2 := exec.Command("git", "-C", repoPath, "for-each-ref", "--format=%(refname)", "refs/heads/"+branch+"/")
+	out, err := cmd2.Output()
+	return err == nil && len(strings.TrimSpace(string(out))) > 0
 }
 
 func uniqueWorktreePath(desired string) string {

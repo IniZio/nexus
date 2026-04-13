@@ -99,7 +99,12 @@ export class WorkspaceClient {
       if (this.config.workspaceId && this.config.workspaceId.trim() !== '') {
         url.searchParams.set('workspaceId', this.config.workspaceId);
       }
-      url.searchParams.set('token', this.config.token);
+      // Token is now passed in Authorization header, not query parameter
+
+      const headers: Record<string, string> = {};
+      if (this.config.token) {
+        headers['Authorization'] = `Bearer ${this.config.token}`;
+      }
 
       const t = this.transport;
 
@@ -126,7 +131,13 @@ export class WorkspaceClient {
             console.error('WebSocket error:', error.message);
           }
         };
-        t.connect(url.toString());
+        // Pass headers to transport connect
+        if (t instanceof NodeWebSocketTransport) {
+          t.connect(url.toString(), headers);
+        } else {
+          // Browser transport doesn't support custom headers
+          t.connect(url.toString());
+        }
       });
     } catch (error) {
       this.transport = null;

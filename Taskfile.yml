@@ -1,39 +1,169 @@
-version: "3"
+version: '3'
+
+# ---------------------------------------------------------------------------
+# Nexus development task runner
+# Usage:  task <target>
+#
+# Quick start:
+#   task dev          – build daemon + app, restart daemon, launch app
+#   task test:terminal – run terminal XCUITests (daemon must be running)
+#   task test          – run all XCUITests
+# ---------------------------------------------------------------------------
+
+vars:
+  NEXUS_DIR: packages/nexus
+  SWIFT_DIR: packages/nexus-swift
+  DAEMON_BIN: packages/nexus/nexus-daemon
+  # Keep DerivedData inside the repo so paths are stable
+  DERIVED: packages/nexus-swift/.build/xcbuild
+  APP_BUNDLE: packages/nexus-swift/.build/xcbuild/Build/Products/Debug/NexusApp.app
+  XCPRETTY: "{{.HOME}}/.gem/ruby/2.6.0/bin/xcpretty"
+  XCODEBUILD_COMMON: >-
+    -project packages/nexus-swift/NexusApp.xcodeproj
+    -scheme NexusApp
+    -destination 'platform=macOS'
+    -configuration Debug
+    -derivedDataPath packages/nexus-swift/.build/xcbuild
 
 tasks:
-  # ── Dev ─────────────────────────────────────────────────────────────────
+
+  # ── daemon ────────────────────────────────────────────────────────────────
+
+  daemon:build:
+    desc: Compile the Go nexus-daemon binary
+    dir: "{{.NEXUS_DIR}}"
+    sources:
+      - "**/*.go"
+    generates:
+      - nexus-daemon
+    cmds:
+      - go build ./cmd/daemon/...
+
+  swift:bundle-daemon:
+    desc: Build the Go daemon (with version ldflags) and copy it into the app's Resources folder
+    dir: "{{.NEXUS_DIR}}"
+    cmds:
+      - |
+        go build \
+          -ldflags "-X github.com/inizio/nexus/packages/nexus/pkg/buildinfo.DaemonVersion=dev-local \
+                    -X github.com/inizio/nexus/packages/nexus/pkg/buildinfo.Commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
+                    -X github.com/inizio/nexus/packages/nexus/pkg/buildinfo.BuiltAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          -o ../nexus-swift/Resources/nexus-daemon \
+          ./cmd/daemon/
+      - chmod +x ../nexus-swift/Resources/nexus-daemon
+      - echo "Bundled daemon → packages/nexus-swift/Resources/nexus-daemon"
+
+  daemon:restart:
+    desc: Kill any running daemon, start a fresh one, wait for /healthz
+    deps: [daemon:build]
+    dir: "{{.NEXUS_DIR}}"
+    cmds:
+      # Kill existing daemon (SIGTERM first, then SIGKILL if port still held)
+      - pkill -f nexus-daemon 2>/dev/null || true
+      - |
+        for i in $(seq 1 8); do
+          if ! lsof -i :63987 -sTCP:LISTEN >/dev/null 2>&1; then break; fi
+          if [ "$i" = "4" ]; then pkill -9 -f nexus-daemon 2>/dev/null || true; fi
+          sleep 0.5
+        done
+      - ./nexus-daemon &
+      - |
+        echo -n "Waiting for daemon..."
+        for i in $(seq 1 30); do
+          if curl -sf http://localhost:63987/healthz >/dev/null 2>&1; then
+            echo " ready on :63987"
+            exit 0
+          fi
+          sleep 0.5
+          echo -n "."
+        done
+        echo ""
+        echo "Daemon did not become healthy in 15 s" >&2
+        exit 1
+
+  daemon:logs:
+    desc: Tail the running daemon log
+    cmds:
+      - tail -f ~/.config/nexus/run/daemon.log
+
+  # ── swift / xcode ─────────────────────────────────────────────────────────
+
+  swift:build:
+    desc: Build NexusApp.app via xcodebuild (Debug, macOS)
+    generates:
+      - "{{.APP_BUNDLE}}/Contents/MacOS/NexusApp"
+    cmds:
+      - |
+        xcodebuild {{.XCODEBUILD_COMMON}} build \
+          2>&1 | {{.XCPRETTY}} --color || true
+
+  swift:regen:
+    desc: Regenerate NexusApp.xcodeproj from project.yml (run after editing project.yml)
+    dir: "{{.SWIFT_DIR}}"
+    cmds:
+      - xcodegen generate
+
+  # ── app ───────────────────────────────────────────────────────────────────
+
+  app:open:
+    desc: Launch the built NexusApp.app for eyeball testing
+    deps: [swift:build]
+    cmds:
+      - open {{.APP_BUNDLE}}
+
+  app:kill:
+    desc: Quit the running NexusApp
+    cmds:
+      - osascript -e 'tell app "NexusApp" to quit' 2>/dev/null || pkill -f NexusApp || true
+
+  # ── combined dev flow ─────────────────────────────────────────────────────
+
   dev:
-    desc: "Start daemon (air hot-reload) + Vite dev server concurrently"
-    deps: [dev:workspace-dir]
+    desc: "Build everything, restart daemon, open app for eyeball check"
     cmds:
-      - task --parallel dev:daemon dev:ui
+      - task: daemon:restart
+      - task: app:open
 
-  dev:daemon:
-    desc: "Hot-reload daemon with air (proxies /ui to Vite on :5173)"
-    dir: packages/nexus
-    cmds:
-      - >-
-        air
-        --build.cmd "go build -o ./tmp/main ./cmd/daemon"
-        --build.entrypoint "./tmp/main"
-        --build.args_bin "--token dev-token --workspace-dir $(python3 -c 'import os,tempfile; print(os.path.join(tempfile.gettempdir(),"nexus-dev-workspace"))')"
-    env:
-      NEXUS_DEV_UI: "http://localhost:5173"
+  # ── tests ─────────────────────────────────────────────────────────────────
 
-  dev:ui:
-    desc: "Vite dev server for the admin UI"
-    dir: packages/nexus-ui
+  test:terminal:
+    desc: Run NexusTerminalUITests (requires running daemon + Accessibility permission)
     cmds:
-      - pnpm install
-      - pnpm dev
+      - |
+        echo "Running terminal UI tests..."
+        xcodebuild test {{.XCODEBUILD_COMMON}} \
+          -only-testing NexusUITests/NexusTerminalUITests \
+          2>&1 | {{.XCPRETTY}} --test --color
+      - echo "Done. Check above for passed/failed counts."
 
-  dev:workspace-dir:
-    desc: "Ensure dev workspace dir exists"
+  test:smoke:
+    desc: Run quick smoke tests (launch, connect, connection status)
     cmds:
-      - mkdir -p /tmp/nexus-dev-workspace
-    silent: true
+      - |
+        xcodebuild test {{.XCODEBUILD_COMMON}} \
+          -only-testing NexusUITests/NexusUITests/testAppLaunches \
+          -only-testing NexusUITests/NexusUITests/testConnectsOrShowsStartup \
+          -only-testing NexusUITests/NexusUITests/testConnectionStatusIndicatorAppears \
+          2>&1 | {{.XCPRETTY}} --test --color
+
+  test:
+    desc: Run all XCUITests
+    cmds:
+      - |
+        xcodebuild test {{.XCODEBUILD_COMMON}} \
+          -only-testing NexusUITests \
+          2>&1 | {{.XCPRETTY}} --test --color
+
+  test:unit:
+    desc: Run NexusAppTests (unit tests, no UI)
+    cmds:
+      - |
+        xcodebuild test {{.XCODEBUILD_COMMON}} \
+          -only-testing NexusAppTests \
+          2>&1 | {{.XCPRETTY}} --test --color
 
   # ── Build ────────────────────────────────────────────────────────────────
+
   build:
     desc: Build core packages
     cmds:
@@ -61,12 +191,6 @@ tasks:
       - bash -c 'rm -rf ../nexus/pkg/server/portal/ui_dist && mkdir -p ../nexus/pkg/server/portal/ui_dist && cp -r dist/. ../nexus/pkg/server/portal/ui_dist/'
 
   # ── Test ─────────────────────────────────────────────────────────────────
-  test:
-    desc: Run core tests
-    cmds:
-      - task: test:workspace-daemon
-      - task: test:workspace-sdk
-      - task: test:nexus-ui
 
   test:workspace-daemon:
     dir: packages/nexus
@@ -84,6 +208,7 @@ tasks:
       - pnpm check
 
   # ── Lint ─────────────────────────────────────────────────────────────────
+
   lint:
     desc: Run core lint checks
     cmds:
@@ -101,6 +226,7 @@ tasks:
       - pnpm exec tsc --noEmit
 
   # ── CI ───────────────────────────────────────────────────────────────────
+
   ci:
     desc: Run local equivalent of CI jobs
     cmds:
@@ -133,11 +259,11 @@ tasks:
       - ./scripts/ci/flows-e2e-setup.sh
       - bash -lc 'set -euo pipefail; set -a; source "$(git rev-parse --show-toplevel)/.nexus-e2e-env.sh"; set +a; pnpm --filter @nexus/e2e-flows test:ci -- src/cases/runtime/runtime-selection.e2e.test.ts'
 
+  # ── housekeeping ──────────────────────────────────────────────────────────
+
   clean:
-    desc: Clean core build artifacts
+    desc: Remove all build artifacts
     cmds:
-      - rm -rf packages/nexus/nexus
-      - rm -rf packages/nexus/.air-tmp
-      - rm -rf packages/sdk/js/dist
-      - rm -rf packages/nexus-ui/dist
-      - rm -rf packages/nexus/pkg/server/portal/ui_dist
+      - rm -rf packages/nexus-swift/.build
+      - rm -f packages/nexus/nexus-daemon
+      - echo "Clean done."

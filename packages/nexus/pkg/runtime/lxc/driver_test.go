@@ -6,19 +6,6 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/drivers/shared"
 )
 
-func TestSanitizeLimaShellChunk_FiltersKnownMuxNoise(t *testing.T) {
-	noiseLines := []string{
-		"mux_client_request_session: session request failed: Session open refused by peer\n",
-		"ControlSocket /tmp/ssh.sock already exists, disabling multiplexing\n",
-	}
-
-	for _, line := range noiseLines {
-		if got := shared.SanitizeLimaShellChunk(line); got != "" {
-			t.Fatalf("expected noise line to be dropped, got %q", got)
-		}
-	}
-}
-
 func TestFilterCandidatesByAvailability_PrefersConfiguredExistingOrder(t *testing.T) {
 	candidates := []string{"nexus-lxc", "default"}
 	available := []string{"default", "nexus-firecracker"}

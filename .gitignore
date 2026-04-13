@@ -91,6 +91,9 @@ packages/nexus/nexus-daemon
 packages/nexus/.air-tmp/
 packages/nexus/.air.toml
 
+# Swift app bundled daemon (built artifact — do not commit)
+packages/nexus-swift/Resources/nexus-daemon
+
 # Nested nexus folder
 nexus/nexus/
 

@@ -82,7 +82,7 @@ func runInitRuntimeBootstrapDarwin(projectRoot, runtimeName string) error {
 	}
 	defer cleanupTemplate()
 
-	if err := ensurePersistentLimaInstance("nexus-firecracker", templatePath); err == nil {
+	if err := ensurePersistentLimaInstance("nexus", templatePath); err == nil {
 		// Firecracker Lima started successfully - write firecracker env
 		_ = writeNexusInitEnv(projectRoot, map[string]string{
 			"NEXUS_RUNTIME_BACKEND": "firecracker",

@@ -61,7 +61,7 @@ func RunLimactlBootstrapScript(ctx context.Context, candidates []string, script 
 			}
 		}
 		for attempt := 1; attempt <= max; attempt++ {
-			out, err := LimactlShellScript(ctx, candidate, script)
+			out, err := DirectSSHScript(ctx, candidate, script)
 			if err == nil {
 				return nil
 			}

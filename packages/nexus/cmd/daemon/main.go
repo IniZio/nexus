@@ -42,7 +42,7 @@ func (r *CommandRunner) Run(ctx context.Context, dir string, cmd string, args ..
 }
 
 func main() {
-	port := flag.Int("port", 8080, "Port to listen on")
+	port := flag.Int("port", 63987, "Port to listen on")
 	defaultWorkspaceDir := resolveDefaultWorkspaceDir()
 	workspaceDir := flag.String("workspace-dir", defaultWorkspaceDir, "Workspace directory path")
 	tokenFlag := flag.String("token", "", "JWT secret (optional; if unset, a token is loaded or created under --data-dir)")
@@ -170,6 +170,10 @@ func runServer(port int, workspaceDir string, token string) error {
 	portMonitor := spotlight.NewPortMonitor(srv.SpotlightManager(), portScanner, 5*time.Second)
 	srv.SetPortMonitor(portMonitor)
 
+	// Resume port monitoring and re-apply compose ports for workspaces that
+	// were already running when the daemon (re)started.
+	srv.ResumeRunningWorkspaces(context.Background())
+
 	liveIDs := map[string]struct{}{}
 	for _, id := range srv.WorkspaceIDs() {
 		liveIDs[id] = struct{}{}
@@ -223,7 +227,7 @@ func probeLimaFirecrackerInstanceReady(lookPath func(string) (string, error)) bo
 		return false
 	}
 
-	out, err := firecrackerProbeOutputFn("limactl", "list", "--json", "nexus-firecracker")
+	out, err := firecrackerProbeOutputFn("limactl", "list", "--json", "nexus")
 	if err != nil {
 		return false
 	}
@@ -240,7 +244,7 @@ func probeLimaFirecrackerInstanceReady(lookPath func(string) (string, error)) bo
 	var entries []limaInstance
 	if err := json.Unmarshal([]byte(trimmed), &entries); err == nil {
 		for _, entry := range entries {
-			if strings.TrimSpace(entry.Name) == "nexus-firecracker" && strings.EqualFold(strings.TrimSpace(entry.Status), "running") {
+			if strings.TrimSpace(entry.Name) == "nexus" && strings.EqualFold(strings.TrimSpace(entry.Status), "running") {
 				return true
 			}
 		}
@@ -249,7 +253,7 @@ func probeLimaFirecrackerInstanceReady(lookPath func(string) (string, error)) bo
 
 	var single limaInstance
 	if err := json.Unmarshal([]byte(trimmed), &single); err == nil {
-		return strings.TrimSpace(single.Name) == "nexus-firecracker" && strings.EqualFold(strings.TrimSpace(single.Status), "running")
+		return strings.TrimSpace(single.Name) == "nexus" && strings.EqualFold(strings.TrimSpace(single.Status), "running")
 	}
 
 	return false

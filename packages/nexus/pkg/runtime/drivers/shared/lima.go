@@ -100,28 +100,6 @@ func ShellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
-var limaShellNoiseFragments = []string{
-	"mux_client_request_session: session request failed: Session open refused by peer",
-	"ux_client_request_session: session request failed: Session open refused by peer",
-	"ControlSocket ",
-	"already exists, disconnecting",
-	"disabling multiplexing",
-	"Exiting ssh session for the instance",
-}
-
-func SanitizeLimaShellChunk(chunk string) string {
-	trimmed := strings.TrimSpace(chunk)
-	if trimmed == "" {
-		return chunk
-	}
-	for _, noise := range limaShellNoiseFragments {
-		if strings.Contains(trimmed, noise) {
-			return ""
-		}
-	}
-	return chunk
-}
-
 func IsTransientLimaShellError(message string) bool {
 	lower := strings.ToLower(strings.TrimSpace(message))
 	if lower == "" {
@@ -193,7 +171,3 @@ func EnsureLimaInstanceRunning(ctx context.Context, instance string, limactlOutp
 	return nil
 }
 
-func LimactlShellScript(ctx context.Context, instance, script string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "limactl", "shell", instance, "--", "sh", "-lc", script)
-	return cmd.CombinedOutput()
-}

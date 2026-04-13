@@ -8,9 +8,9 @@ export class NodeWebSocketTransport {
   onClose?: (code: number, reason: string) => void;
   onError?: (error: Error) => void;
 
-  connect(url: string): void {
+  connect(url: string, headers?: Record<string, string>): void {
     this.disconnect();
-    this.socket = new WebSocket(url);
+    this.socket = new WebSocket(url, { headers });
     this.socket.on('open', () => this.onOpen?.());
     this.socket.on('message', (data: Buffer) => this.onMessage?.(data.toString()));
     this.socket.on('close', (code: number, reason: Buffer) =>

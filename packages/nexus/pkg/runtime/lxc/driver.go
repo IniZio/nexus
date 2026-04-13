@@ -15,7 +15,7 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/drivers/shared"
 )
 
-var lxcLimaInstanceBase = []string{"nexus-lxc", "nexus-firecracker", "default"}
+var lxcLimaInstanceBase = []string{"nexus"}
 
 type Driver struct {
 	mu                sync.RWMutex
@@ -206,7 +206,11 @@ func (d *Driver) serveShellProtocol(ctx context.Context, workspaceID string, con
 			workdir, _ := req["workdir"].(string)
 			localPath := ""
 			if strings.TrimSpace(workdir) == "" || strings.TrimSpace(workdir) == "/workspace" {
-				localPath = d.workspaceProjectRoot(workspaceID)
+				if v, _ := req["local_path"].(string); strings.TrimSpace(v) != "" {
+					localPath = strings.TrimSpace(v)
+				} else {
+					localPath = d.workspaceProjectRoot(workspaceID)
+				}
 				workdir = "/workspace"
 			}
 
@@ -244,10 +248,7 @@ func (d *Driver) serveShellProtocol(ctx context.Context, workspaceID string, con
 						continue
 					}
 					if n > 0 {
-						clean := shared.SanitizeLimaShellChunk(string(buf[:n]))
-						if clean != "" {
-							_ = writeJSON(map[string]any{"id": s.id, "type": "chunk", "stream": "stdout", "data": clean})
-						}
+						_ = writeJSON(map[string]any{"id": s.id, "type": "chunk", "stream": "stdout", "data": string(buf[:n])})
 					}
 					if err != nil {
 						break
@@ -350,7 +351,7 @@ func startLimaShell(ctx context.Context, instanceName, workdir, localPath, shell
 		return ptmx, err
 	}
 
-	return shared.TryLimactlShellPTY(ctx, shared.TryLimactlPTYOptions{
+	return shared.TrySSHShellPTY(ctx, shared.TrySSHPTYOptions{
 		Candidates:  candidates,
 		LaunchShell: launchShell,
 		Workdir:     workdir,
@@ -402,7 +403,7 @@ func (d *Driver) defaultInstanceName() string {
 	if fromDoctor := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_LXC_INSTANCE")); fromDoctor != "" {
 		return fromDoctor
 	}
-	return "nexus-lxc"
+	return "nexus"
 }
 
 func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance string) error {
@@ -424,7 +425,7 @@ func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance string
 func bootstrapLimaDockerTooling(ctx context.Context, instance string) error {
 	instance = strings.TrimSpace(instance)
 	if instance == "" {
-		instance = "nexus-firecracker"
+		instance = "nexus"
 	}
 	candidates := shared.InstanceCandidates(instance, lxcLimaInstanceBase)
 	if discovered, err := shared.ListLimaInstances(ctx); err == nil && len(discovered) > 0 {

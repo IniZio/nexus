@@ -26,15 +26,16 @@ Focus: remote workspace core quality and usability.
 ## Current iteration
 
 Iteration: `2026-Q2`
-Priority rule: `P0 reliability > P1 UX consistency > P2 surface simplification`
+Priority rule: `P0 security > P0 reliability > P1 UX consistency > P2 surface simplification`
 
 
-| Item                                    | Pri | Status        | Links                                                                  | Exit criteria                                                             |
-| --------------------------------------- | --- | ------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| Native macOS client (SwiftUI)           | P1  | `in_progress` | [Plan](docs/superpowers/plans/2026-04-12-native-macos-swiftui-plan.md) | Pitch-ready demo; passes designer review (M8)                             |
-| Live port detection                     | P0  | `in_progress` | plan TBD                                                               | New listening ports appear in `tunnel.list` without manual `tunnel.add()` |
-| Resumable `nexus run`                   | P1  | `planned`     | plan TBD                                                               | Disconnect/reconnect does not lose ephemeral run command state            |
-| Roadmap/plan convergence tooling        | P2  | `proposed`    | plan TBD                                                               | CI warns on stale roadmap links/status drift                              |
+| Item                                  | Pri | Status        | Links                                                                     | Exit criteria                                                                   |
+| ------------------------------------- | --- | ------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Secure credential storage (no secrets in workspace) | P0  | `planned`     | [Plan](docs/superpowers/plans/2026-04-13-secure-credential-storage.md)    | `auth.json` contains only placeholders; real tokens accessed via proxy only     |
+| Native macOS client (SwiftUI)       | P1  | `in_progress` | [Plan](docs/superpowers/plans/2026-04-12-native-macos-swiftui-plan.md)      | Pitch-ready demo; passes designer review (M8)                                   |
+| Live port detection                   | P0  | `in_progress` | plan TBD                                                                  | New listening ports appear in `tunnel.list` without manual `tunnel.add()`       |
+| Resumable `nexus run`                 | P1  | `planned`     | plan TBD                                                                  | Disconnect/reconnect does not lose ephemeral run command state                  |
+| Roadmap/plan convergence tooling      | P2  | `proposed`    | plan TBD                                                                  | CI warns on stale roadmap links/status drift                                    |
 
 
 ---

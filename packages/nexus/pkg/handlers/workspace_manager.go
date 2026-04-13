@@ -111,7 +111,7 @@ func HandleWorkspaceCreate(ctx context.Context, req WorkspaceCreateParams, mgr *
 
 	ws, err := mgr.Create(ctx, spec)
 	if err != nil {
-		return nil, rpckit.ErrInvalidParams
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("workspace create failed: %v", err)}
 	}
 
 	log.Printf("[workspace.create] Workspace %s created, ensuring runtime...", ws.ID)
@@ -336,10 +336,15 @@ func ensureLocalRuntimeWorkspace(ctx context.Context, ws *workspacemgr.Workspace
 		return &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("backend selection failed: %v", err)}
 	}
 
+	projectRoot := strings.TrimSpace(ws.LocalWorktreePath)
+	if projectRoot == "" {
+		projectRoot = ws.Repo
+	}
+
 	req := runtime.CreateRequest{
 		WorkspaceID:   ws.ID,
 		WorkspaceName: ws.WorkspaceName,
-		ProjectRoot:   ws.RootPath,
+		ProjectRoot:   projectRoot,
 		ConfigBundle:  configBundle,
 		Options: map[string]string{
 			"host_cli_sync": "true",

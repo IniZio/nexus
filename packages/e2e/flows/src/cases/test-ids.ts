@@ -17,6 +17,12 @@ export const spotlightComposeCaseIds = [
   'spotlight-compose/apply-compose-ports-list-close',
 ] as const;
 
+export const spotlightMultiProjectTunnelingCaseIds = {
+  multipleProjectsSeparateTunnels: 'spotlight.multi-project.multiple-projects-separate-tunnels',
+  workspacePortIsolation: 'spotlight.multi-project.workspace-port-isolation',
+  tunnelLifecycleIndependence: 'spotlight.multi-project.tunnel-lifecycle-independence',
+} as const;
+
 export const toolsAuthForwardingCaseIds = [
   'tools-auth-forwarding/mint-exec-revoke',
 ] as const;
@@ -30,12 +36,20 @@ export const cliRuntimeCaseIds = [
   'cli-runtime/failure-paths-and-usage-validation',
 ] as const;
 
+export const multiProjectCaseIds = [
+  'multi-project/workspace-create-with-projects',
+  'multi-project/project-lifecycle-attach-detach',
+  'multi-project/project-port-aggregation',
+] as const;
+
 export const implementedCaseIds = [
   ...runtimeSelectionCaseIds,
   ...worktreeSyncCaseIds,
   ...lifecycleHooksCaseIds,
   ...spotlightComposeCaseIds,
+  ...Object.values(spotlightMultiProjectTunnelingCaseIds),
   ...toolsAuthForwardingCaseIds,
   ...liveToolsAuthCaseIds,
   ...cliRuntimeCaseIds,
+  ...multiProjectCaseIds,
 ] as const;
