@@ -1236,21 +1236,6 @@ func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string
 	if token := strings.TrimSpace(os.Getenv("NEXUS_DOCKERHUB_TOKEN")); token != "" {
 		env = append(env, "NEXUS_DOCKERHUB_TOKEN="+token)
 	}
-	if value := strings.TrimSpace(os.Getenv("NEXUS_API_BASE_URL")); value != "" {
-		env = append(env, "NEXUS_API_BASE_URL="+value)
-	} else {
-		env = append(env, "NEXUS_API_BASE_URL=http://127.0.0.1:8000")
-	}
-	if value := strings.TrimSpace(os.Getenv("NEXUS_AUTHGEAR_STUDENT_BASE_URL")); value != "" {
-		env = append(env, "NEXUS_AUTHGEAR_STUDENT_BASE_URL="+value)
-	} else {
-		env = append(env, "NEXUS_AUTHGEAR_STUDENT_BASE_URL=http://127.0.0.1:3001")
-	}
-	if value := strings.TrimSpace(os.Getenv("NEXUS_AUTHGEAR_ADMIN_BASE_URL")); value != "" {
-		env = append(env, "NEXUS_AUTHGEAR_ADMIN_BASE_URL="+value)
-	} else {
-		env = append(env, "NEXUS_AUTHGEAR_ADMIN_BASE_URL=http://127.0.0.1:4001")
-	}
 
 	request := firecracker.ExecRequest{
 		ID:      firecrackerRequestID(),
