@@ -252,7 +252,11 @@ func (d *Driver) serveShellProtocol(ctx context.Context, workspaceID string, con
 			perWsPath := guestWorkdirForID(workspaceID)
 			localPath := ""
 			if strings.TrimSpace(workdir) == "" || strings.TrimSpace(workdir) == "/workspace" || strings.TrimSpace(workdir) == perWsPath {
-				localPath = d.workspaceProjectRoot(workspaceID)
+				if v, _ := req["local_path"].(string); strings.TrimSpace(v) != "" {
+					localPath = strings.TrimSpace(v)
+				} else {
+					localPath = d.workspaceProjectRoot(workspaceID)
+				}
 				workdir = "/workspace"
 			}
 
