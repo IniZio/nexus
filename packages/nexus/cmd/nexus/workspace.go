@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -117,9 +118,9 @@ func ensureDaemon() (*websocket.Conn, error) {
 		return nil, fmt.Errorf("daemon token: %w", err)
 	}
 
-	url := fmt.Sprintf("ws://localhost:%d/?token=%s", port, token)
-	dialer := websocket.DefaultDialer
-	conn, _, err := dialer.Dial(url, nil)
+	url := fmt.Sprintf("ws://localhost:%d/", port)
+	header := http.Header{"Authorization": {"Bearer " + token}}
+	conn, _, err := websocket.DefaultDialer.Dial(url, header)
 	if err != nil {
 		return nil, fmt.Errorf("connect to daemon: %w", err)
 	}

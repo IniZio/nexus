@@ -119,7 +119,7 @@ describe('WorkspaceClient', () => {
 
       const connectPromise = client.connect();
       const calledURL = MockedWebSocket.mock.calls[0][0] as string;
-      expect(calledURL).toContain('token=test-token');
+      expect(calledURL).not.toContain('token=');
       expect(calledURL).not.toContain('workspaceId=');
       emitEvent('open');
       await connectPromise;
