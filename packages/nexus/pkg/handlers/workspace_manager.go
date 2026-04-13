@@ -111,7 +111,7 @@ func HandleWorkspaceCreate(ctx context.Context, req WorkspaceCreateParams, mgr *
 
 	ws, err := mgr.Create(ctx, spec)
 	if err != nil {
-		return nil, rpckit.ErrInvalidParams
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("workspace create failed: %v", err)}
 	}
 
 	log.Printf("[workspace.create] Workspace %s created, ensuring runtime...", ws.ID)
