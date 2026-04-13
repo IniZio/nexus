@@ -25,9 +25,10 @@ public enum DaemonLaunchError: Error, LocalizedError {
 ///
 /// Binary resolution order:
 ///   1. NEXUS_DAEMON_BIN environment variable (CI / developer override)
-///   2. Next to the running executable (co-installed / app bundle)
-///   3. $PATH via `which nexus-daemon`
-///   4. Dev layout: walk up from the executable looking for
+///   2. App bundle Resources (production: `Contents/Resources/nexus-daemon`)
+///   3. Next to the running executable (co-installed / app bundle)
+///   4. $PATH via `which nexus-daemon`
+///   5. Dev layout: walk up from the executable looking for
 ///      `packages/nexus/nexus-daemon` or `nexus/nexus-daemon`
 ///      (covers `swift run` from packages/nexus-swift/).
 public struct DaemonLauncher {
