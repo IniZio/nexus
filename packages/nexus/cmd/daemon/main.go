@@ -170,6 +170,10 @@ func runServer(port int, workspaceDir string, token string) error {
 	portMonitor := spotlight.NewPortMonitor(srv.SpotlightManager(), portScanner, 5*time.Second)
 	srv.SetPortMonitor(portMonitor)
 
+	// Resume port monitoring and re-apply compose ports for workspaces that
+	// were already running when the daemon (re)started.
+	srv.ResumeRunningWorkspaces(context.Background())
+
 	liveIDs := map[string]struct{}{}
 	for _, id := range srv.WorkspaceIDs() {
 		liveIDs[id] = struct{}{}

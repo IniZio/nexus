@@ -301,6 +301,35 @@ func (s *Server) WorkspaceIDs() []string {
 	return ids
 }
 
+// RunningWorkspaceIDs returns IDs of workspaces currently in the running state.
+func (s *Server) RunningWorkspaceIDs() []string {
+	all := s.workspaceMgr.List()
+	ids := make([]string, 0, len(all))
+	for _, ws := range all {
+		if ws.State == workspacemgr.StateRunning {
+			ids = append(ids, ws.ID)
+		}
+	}
+	return ids
+}
+
+// ResumeRunningWorkspaces restarts port monitoring and re-applies compose port
+// declarations for every workspace that is already in the running state.  Call
+// this once during daemon startup so clients reconnecting after a daemon
+// restart see ports without needing to trigger a workspace event first.
+func (s *Server) ResumeRunningWorkspaces(ctx context.Context) {
+	for _, ws := range s.workspaceMgr.List() {
+		if ws.State != workspacemgr.StateRunning {
+			continue
+		}
+		_ = s.StartPortMonitoring(ws.ID)
+		rootPath := strings.TrimSpace(ws.RootPath)
+		if rootPath != "" {
+			go s.ensureComposeForwards(ctx, ws.ID, rootPath)
+		}
+	}
+}
+
 func (s *Server) SetNodeConfig(cfg *config.NodeConfig) {
 	s.nodeCfg = cfg
 }

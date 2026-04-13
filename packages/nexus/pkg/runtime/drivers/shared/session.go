@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/creack/pty"
 )
@@ -19,24 +18,26 @@ func NormalizeLaunchShell(shell string) string {
 	return s
 }
 
-func LimactlShellReconnectArgs(candidate, launchShell string) []string {
+// LimactlShellReconnectArgs builds the limactl argument list for an
+// interactive shell session. When workdir is non-empty the cd is embedded
+// in the shell startup command so it is never echoed as typed input.
+func LimactlShellReconnectArgs(candidate, workdir, launchShell string) []string {
 	launchShell = NormalizeLaunchShell(launchShell)
+	if wd := strings.TrimSpace(workdir); wd != "" {
+		// bash -c "cd DIR 2>/dev/null; exec bash -l" runs non-interactively,
+		// changes directory silently, then exec-replaces itself with an
+		// interactive login shell that inherits the new CWD.
+		return []string{
+			"shell", "--reconnect", candidate,
+			"--", launchShell, "-c",
+			fmt.Sprintf("cd %s 2>/dev/null; exec %s -l", ShellQuote(wd), launchShell),
+		}
+	}
 	args := []string{"shell", "--reconnect", candidate}
 	if launchShell != "bash" && launchShell != "/bin/bash" {
 		args = append(args, "--", launchShell)
 	}
 	return args
-}
-
-func ScheduleShellWorkdirCD(ptmx *os.File, workdir string) {
-	workdir = strings.TrimSpace(workdir)
-	if workdir == "" {
-		return
-	}
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		_, _ = fmt.Fprintf(ptmx, "cd %s 2>/dev/null; clear\n", ShellQuote(workdir))
-	}()
 }
 
 func ApplyLimaDiscovery(candidates, discovered []string, strict bool) []string {
@@ -69,11 +70,10 @@ func TryLimactlShellPTY(ctx context.Context, opt TryLimactlPTYOptions) (*exec.Cm
 				continue
 			}
 		}
-		args := LimactlShellReconnectArgs(candidate, launchShell)
+		args := LimactlShellReconnectArgs(candidate, workdir, launchShell)
 		cmd := exec.CommandContext(ctx, "limactl", args...)
 		ptmx, ptyErr := opt.PtyStart(cmd, &pty.Winsize{Rows: 30, Cols: 120})
 		if ptyErr == nil {
-			ScheduleShellWorkdirCD(ptmx, workdir)
 			return cmd, ptmx, nil
 		}
 		lastErr = ptyErr
