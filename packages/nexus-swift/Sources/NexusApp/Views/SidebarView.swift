@@ -229,6 +229,8 @@ private struct SidebarFooter: View {
     @State private var showDaemonPanel = false
 
     private var connectionLabel: String {
+        // Outdated overrides connection state — the daemon is reachable but incompatible.
+        if case .outdated = appState.daemonStatus { return "Outdated" }
         switch appState.connectionState {
         case .starting:     return "Starting…"
         case .connecting:   return "Connecting…"
@@ -271,7 +273,7 @@ private struct SidebarFooter: View {
                 .padding(.vertical, 4)
                 .background(
                     RoundedRectangle(cornerRadius: 5)
-                        .fill(showDaemonPanel ? Color.black.opacity(0.08) : .clear)
+                        .fill(showDaemonPanel ? Color.primary.opacity(0.08) : .clear)
                 )
             }
             .buttonStyle(.plain)

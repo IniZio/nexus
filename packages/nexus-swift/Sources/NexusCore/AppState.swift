@@ -22,6 +22,7 @@ public final class AppState: ObservableObject {
 
     private var refreshTask: Task<Void, Never>?
     private var isRestarting = false
+    @Published public var isBusy = false
 
     public init() {
         self.client = WebSocketDaemonClient(daemonURL: WebSocketDaemonClient.discoverURL())
@@ -164,7 +165,8 @@ public final class AppState: ObservableObject {
     public func restartDaemon() async {
         guard !isRestarting else { return }
         isRestarting = true
-        defer { isRestarting = false }
+        isBusy = true
+        defer { isRestarting = false; isBusy = false }
         DaemonLauncher.killRunning()
         try? await Task.sleep(for: .seconds(0.5))
         do {
