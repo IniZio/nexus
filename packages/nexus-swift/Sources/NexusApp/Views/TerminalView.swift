@@ -21,12 +21,20 @@ struct TerminalView: View {
                 DaemonPTYTerminalView(
                     workspaceId: workspace.id,
                     client: client,
-                    onError: { err in ptyError = err }
+                    onError: { err in ptyError = err },
+                    onPTYActive: { appState.ptyState = .active },
+                    onPTYError: { appState.ptyState = .error },
+                    onNSViewCreated: { [weak appState] view in
+                        appState?.refocusTerminalAction = { [weak view] in
+                            view?.window?.makeFirstResponder(view)
+                        }
+                    }
                 )
                 .id(workspace.id + workspace.state.rawValue)
-                // XCUITest finds this element via setAccessibilityIdentifier("terminal_view")
-                // on the underlying NSView — no wrapper-level identifier needed.
                 .accessibilityLabel("Terminal — \(workspace.name)")
+                .onAppear {
+                    appState.ptyState = .idle
+                }
 
                 // Visible + accessible PTY error banner (e.g. "target is busy")
                 if let err = ptyError {
@@ -57,8 +65,7 @@ struct TerminalView: View {
             .onChange(of: workspace.id) { _ in ptyError = nil }
         } else {
             TerminalPlaceholder(workspace: workspace)
-                .accessibilityIdentifier("terminal_placeholder")
-                .accessibilityLabel("Terminal unavailable — \(workspace.state.displayName)")
+                .onAppear { appState.ptyState = .idle }
         }
     }
 }
@@ -80,9 +87,15 @@ struct DaemonPTYTerminalView: NSViewRepresentable {
     let workspaceId: String
     let client: WebSocketDaemonClient
     let onError: (String) -> Void
+    let onPTYActive: () -> Void
+    let onPTYError: () -> Void
+    // Passes the NSView reference back to TerminalView so AppState can store it for refocus
+    let onNSViewCreated: (NSView) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(client: client, workspaceId: workspaceId, onError: onError)
+        Coordinator(client: client, workspaceId: workspaceId,
+                    onError: onError, onPTYActive: onPTYActive,
+                    onPTYError: onPTYError, onNSViewCreated: onNSViewCreated)
     }
 
     func makeNSView(context: Context) -> AutoFocusTerminalView {
@@ -92,6 +105,7 @@ struct DaemonPTYTerminalView: NSViewRepresentable {
         view.terminalDelegate = context.coordinator
         view.setAccessibilityIdentifier("terminal_view")
         context.coordinator.termView = view
+        context.coordinator.onNSViewCreated(view)
         applyStyle(to: view)
         // Open the PTY asynchronously; output will flow into view.feed(text:)
         Task { await context.coordinator.openSession() }
@@ -120,15 +134,24 @@ struct DaemonPTYTerminalView: NSViewRepresentable {
         let client: WebSocketDaemonClient
         let workspaceId: String
         let onError: (String) -> Void
+        let onPTYActive: () -> Void
+        let onPTYError: () -> Void
+        let onNSViewCreated: (NSView) -> Void
         weak var termView: AutoFocusTerminalView?
         private var sessionId: String?
-        // Resize requested before the session was open
         private var pendingResize: (cols: Int, rows: Int)?
 
-        init(client: WebSocketDaemonClient, workspaceId: String, onError: @escaping (String) -> Void) {
+        init(client: WebSocketDaemonClient, workspaceId: String,
+             onError: @escaping (String) -> Void,
+             onPTYActive: @escaping () -> Void,
+             onPTYError: @escaping () -> Void,
+             onNSViewCreated: @escaping (NSView) -> Void) {
             self.client = client
             self.workspaceId = workspaceId
             self.onError = onError
+            self.onPTYActive = onPTYActive
+            self.onPTYError = onPTYError
+            self.onNSViewCreated = onNSViewCreated
         }
 
         // MARK: PTY lifecycle
@@ -160,6 +183,8 @@ struct DaemonPTYTerminalView: NSViewRepresentable {
                     }
                 )
 
+                DispatchQueue.main.async { [weak self] in self?.onPTYActive() }
+
                 // Apply any resize that arrived before the session opened
                 if let r = pendingResize {
                     try? await client.resizePTY(sessionId: sid, cols: r.cols, rows: r.rows)
@@ -170,6 +195,7 @@ struct DaemonPTYTerminalView: NSViewRepresentable {
                 DispatchQueue.main.async { [weak self] in
                     self?.termView?.feed(text: "\u{001b}[31mpty.open failed: \(msg)\u{001b}[0m\r\n")
                     self?.onError(msg)
+                    self?.onPTYError()
                 }
             }
         }

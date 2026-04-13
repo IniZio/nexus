@@ -12,15 +12,17 @@ import XCTest
 //
 // ACCESSIBILITY IDs WIRED UP FOR TERMINAL
 // ─────────────────────────────────────────
-//   workspace_detail          — right-pane detail view for selected workspace
-//   terminal_view             — the live SwiftTerm NSView (active workspace)
-//   terminal_placeholder      — placeholder for stopped / paused workspaces
-//   terminal_error            — error banner overlay when pty.open fails
-//   workspace_row_<id>        — sidebar row for each workspace  (otherElement)
-//   connection_status         — sidebar footer status pill
+// PTY state markers live in the sidebar footer (which IS accessible via XCUITest).
+// The NavigationSplitView detail column is not traversable by the macOS accessibility
+// API, so all terminal state signals are exposed as sidebar Buttons.
 //
-// NOTE: Workspace rows are VStack-based (not List cells), so query them via
-//       app.otherElements, NOT app.cells.
+//   terminal_view        — sidebar Button: PTY session open (app.buttons)
+//   terminal_placeholder — sidebar Button: workspace stopped / placeholder showing
+//   terminal_error       — sidebar Button: PTY failed, error banner shown
+//   workspace_row_<id>   — sidebar Button for each workspace
+//   connection_status    — sidebar footer daemon status pill
+//
+// Clicking terminal_view refocuses the terminal NSView so keyboard input works.
 
 final class NexusTerminalUITests: XCTestCase {
 
@@ -42,16 +44,17 @@ final class NexusTerminalUITests: XCTestCase {
 
     func testTerminalViewAppearsWhenWorkspaceSelected() throws {
         app.launch()
-        app.activate()
+        _ = app.windows.firstMatch.waitForExistence(timeout: 10)
         app.activate()
         try waitForConnected()
 
         let row = try firstWorkspaceRow(timeout: 15)
         row.click()
 
-        // Either terminal (running) or placeholder (stopped/paused) must appear
-        let terminal    = app.otherElements["terminal_view"]
-        let placeholder = app.otherElements["terminal_placeholder"]
+        // Either terminal (running) or placeholder (stopped/paused) must appear.
+        // Both are sidebar Buttons reflecting PTY state (see comment at top).
+        let terminal    = terminalView
+        let placeholder = terminalPlaceholder
 
         let appeared = terminal.waitForExistence(timeout: 10)
                     || placeholder.waitForExistence(timeout: 5)
@@ -64,13 +67,14 @@ final class NexusTerminalUITests: XCTestCase {
 
     func testNoPTYErrorBannerOnNormalOpen() throws {
         app.launch()
+        _ = app.windows.firstMatch.waitForExistence(timeout: 10)
         app.activate()
         try waitForConnected()
         try selectFirstRunningWorkspace()
 
-        let errorBanner = app.otherElements["terminal_error"]
+        let errorBanner = terminalError
         // Allow up to 3 s for pty.open to complete and any error to surface
-        let _ = errorBanner.waitForExistence(timeout: 3)
+        _ = errorBanner.waitForExistence(timeout: 3)
         XCTAssertFalse(errorBanner.exists,
             "PTY error banner must not appear on a healthy workspace open. " +
             "If it does, check daemon logs for pty.open errors.")
@@ -80,20 +84,21 @@ final class NexusTerminalUITests: XCTestCase {
 
     func testTerminalAcceptsKeyboardInput() throws {
         app.launch()
+        _ = app.windows.firstMatch.waitForExistence(timeout: 10)
         app.activate()
         try waitForConnected()
         try selectFirstRunningWorkspace()
 
-        let terminal = app.otherElements["terminal_view"]
-        guard terminal.waitForExistence(timeout: 10) else {
+        guard terminalView.waitForExistence(timeout: 10) else {
             throw XCTSkip("No running workspace with active terminal found")
         }
 
         // Wait a moment for the PTY to settle after opening
         Thread.sleep(forTimeInterval: 2)
 
-        // Click terminal to ensure it has keyboard focus
-        terminal.click()
+        // Click terminal_view (sidebar button) — its action calls makeFirstResponder
+        // on the actual SwiftTerm NSView, giving it keyboard focus.
+        terminalView.click()
         Thread.sleep(forTimeInterval: 0.3)
 
         // Type a recognisable command
@@ -105,9 +110,8 @@ final class NexusTerminalUITests: XCTestCase {
             "App should not crash after typing in terminal")
 
         // No error banner should appear
-        let errorBanner = app.otherElements["terminal_error"]
-        let _ = errorBanner.waitForExistence(timeout: 2)
-        XCTAssertFalse(errorBanner.exists, "No error banner after typing in terminal")
+        _ = terminalError.waitForExistence(timeout: 2)
+        XCTAssertFalse(terminalError.exists, "No error banner after typing in terminal")
     }
 
     // ── 4. Terminal re-opens cleanly after workspace switch ───────────────
@@ -117,6 +121,7 @@ final class NexusTerminalUITests: XCTestCase {
 
     func testTerminalReopensAfterWorkspaceSwitch() throws {
         app.launch()
+        _ = app.windows.firstMatch.waitForExistence(timeout: 10)
         app.activate()
         try waitForConnected()
 
@@ -127,8 +132,7 @@ final class NexusTerminalUITests: XCTestCase {
 
         // Select first workspace
         rows.firstMatch.click()
-        let terminal = app.otherElements["terminal_view"]
-        guard terminal.waitForExistence(timeout: 10) else {
+        guard terminalView.waitForExistence(timeout: 10) else {
             throw XCTSkip("First workspace is not running — cannot test reopen")
         }
 
@@ -145,12 +149,11 @@ final class NexusTerminalUITests: XCTestCase {
         rows.firstMatch.click()
 
         // Terminal should reopen — allow a few seconds for pty.open to complete
-        XCTAssertTrue(terminal.waitForExistence(timeout: 10),
+        XCTAssertTrue(terminalView.waitForExistence(timeout: 10),
             "Terminal should reopen after workspace switch")
 
-        let errorBanner = app.otherElements["terminal_error"]
-        let _ = errorBanner.waitForExistence(timeout: 3)
-        XCTAssertFalse(errorBanner.exists,
+        _ = terminalError.waitForExistence(timeout: 3)
+        XCTAssertFalse(terminalError.exists,
             "PTY error banner must NOT appear after reopen (lazy unmount fix)")
     }
 
@@ -158,6 +161,7 @@ final class NexusTerminalUITests: XCTestCase {
 
     func testPlaceholderShownForStoppedWorkspace() throws {
         app.launch()
+        _ = app.windows.firstMatch.waitForExistence(timeout: 10)
         app.activate()
         try waitForConnected()
 
@@ -170,10 +174,9 @@ final class NexusTerminalUITests: XCTestCase {
         var foundPlaceholder = false
         for i in 0..<min(rows.count, 5) {
             rows.element(boundBy: i).click()
-            let placeholder = app.otherElements["terminal_placeholder"]
-            if placeholder.waitForExistence(timeout: 4) {
+            if terminalPlaceholder.waitForExistence(timeout: 4) {
                 foundPlaceholder = true
-                XCTAssertFalse(app.otherElements["terminal_view"].exists,
+                XCTAssertFalse(terminalView.exists,
                     "terminal_view must not coexist with terminal_placeholder")
                 break
             }
@@ -187,15 +190,13 @@ final class NexusTerminalUITests: XCTestCase {
     // ── 6. Recording playground ───────────────────────────────────────────
     // Place cursor on the empty line below and press ● Record.
 
-    // ── 6. Recording playground ───────────────────────────────────────────
-    // Place cursor on the empty line below and press ● Record.
-
     func testRecordTerminalInteraction() throws {
         app.launch()
+        _ = app.windows.firstMatch.waitForExistence(timeout: 10)
         app.activate()
         try waitForConnected()
         try selectFirstRunningWorkspace()
-        _ = app.otherElements["terminal_view"].waitForExistence(timeout: 10)
+        _ = terminalView.waitForExistence(timeout: 10)
 
         // ← Xcode inserts recorded steps here.
     }
@@ -205,28 +206,28 @@ final class NexusTerminalUITests: XCTestCase {
 
 extension NexusTerminalUITests {
 
+    // Terminal state elements are sidebar Buttons (NavigationSplitView detail
+    // pane is not accessible on macOS via XCUITest — sidebar IS accessible).
+    var terminalView:    XCUIElement { app.buttons["terminal_view"] }
+    var terminalPlaceholder: XCUIElement { app.buttons["terminal_placeholder"] }
+    var terminalError:   XCUIElement { app.buttons["terminal_error"] }
+
     /// Returns the query for all workspace rows in the sidebar.
     func workspaceRows() -> XCUIElementQuery {
-        // Workspace rows are Button elements; query app.buttons directly
-        // (not via descendants) to avoid getting container elements.
         app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'workspace_row_'")
         )
     }
 
     /// Throws if at least one workspace row doesn't appear within `timeout` seconds.
-    /// Workspace rows only appear after a successful workspace.list call, so this
-    /// is a reliable proxy for "daemon connected and authenticated".
     func waitForConnected(timeout: TimeInterval = 30) throws {
         let rows = workspaceRows()
         let appeared = rows.firstMatch.waitForExistence(timeout: timeout)
         if !appeared {
-            // Dump ALL element types and labels for debugging
             let allDesc = app.descendants(matching: .any)
             let labels = (0..<min(allDesc.count, 40)).compactMap { i -> String? in
                 let el = allDesc.element(boundBy: i)
-                let lbl = el.label
-                let id  = el.identifier
+                let lbl = el.label; let id = el.identifier
                 return (lbl.isEmpty && id.isEmpty) ? nil : "[\(el.elementType.rawValue)] id='\(id)' lbl='\(lbl)'"
             }.joined(separator: "\n  ")
             XCTFail("No workspace rows after \(timeout)s.\nAll visible elements:\n  \(labels)")
@@ -253,8 +254,8 @@ extension NexusTerminalUITests {
         let count = rows.count
         for i in 0..<min(count, 5) {
             rows.element(boundBy: i).click()
-            if app.otherElements["terminal_view"].waitForExistence(timeout: 4) {
-                return  // Found a running workspace with an active terminal
+            if terminalView.waitForExistence(timeout: 4) {
+                return
             }
         }
         throw XCTSkip("None of the \(count) visible workspace(s) show an active terminal")

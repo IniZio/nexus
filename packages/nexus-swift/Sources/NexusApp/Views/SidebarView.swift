@@ -284,6 +284,36 @@ private struct SidebarFooter: View {
             .accessibilityIdentifier("connection_status")
             .accessibilityLabel(connectionLabel)
             .padding(.trailing, 4)
+
+            // PTY state accessibility markers — placed in the sidebar footer so they
+            // are reachable by XCUITest (the NavigationSplitView detail column is not
+            // accessible via the standard accessibility API on macOS).
+            // Each state gets a unique accessibilityIdentifier:
+            //   terminal_view        — active PTY session (app.buttons)
+            //   terminal_placeholder — workspace stopped (app.buttons)
+            //   terminal_error       — PTY error (app.buttons)
+            // terminal_view is a Button so clicking it re-focuses the terminal NSView.
+            Group {
+                if appState.ptyState == .active {
+                    Button("", action: { appState.refocusTerminal() })
+                        .buttonStyle(.plain)
+                        .frame(width: 1, height: 1)
+                        .accessibilityIdentifier("terminal_view")
+                        .accessibilityLabel("Active terminal")
+                } else if appState.ptyState == .idle && appState.selectedWorkspace != nil {
+                    Button("", action: {})
+                        .buttonStyle(.plain)
+                        .frame(width: 1, height: 1)
+                        .accessibilityIdentifier("terminal_placeholder")
+                        .accessibilityLabel("Terminal placeholder")
+                } else if appState.ptyState == .error {
+                    Button("", action: {})
+                        .buttonStyle(.plain)
+                        .frame(width: 1, height: 1)
+                        .accessibilityIdentifier("terminal_error")
+                        .accessibilityLabel("Terminal error")
+                }
+            }
         }
         .padding(.horizontal, 6)
         .frame(height: 34)

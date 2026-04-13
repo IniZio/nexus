@@ -162,6 +162,103 @@ tasks:
           -only-testing NexusAppTests \
           2>&1 | {{.XCPRETTY}} --test --color
 
+  # ── Build ────────────────────────────────────────────────────────────────
+
+  build:
+    desc: Build core packages
+    cmds:
+      - task: build:workspace-daemon
+      - task: build:workspace-sdk
+      - task: build:nexus-ui
+
+  build:workspace-daemon:
+    dir: packages/nexus
+    cmds:
+      - go build ./...
+
+  build:workspace-sdk:
+    dir: packages/sdk/js
+    cmds:
+      - pnpm install
+      - pnpm build
+
+  build:nexus-ui:
+    desc: "Build UI and copy clean dist into Go embed directory"
+    dir: packages/nexus-ui
+    cmds:
+      - pnpm install
+      - pnpm build
+      - bash -c 'rm -rf ../nexus/pkg/server/portal/ui_dist && mkdir -p ../nexus/pkg/server/portal/ui_dist && cp -r dist/. ../nexus/pkg/server/portal/ui_dist/'
+
+  # ── Test ─────────────────────────────────────────────────────────────────
+
+  test:workspace-daemon:
+    dir: packages/nexus
+    cmds:
+      - go test ./...
+
+  test:workspace-sdk:
+    dir: packages/sdk/js
+    cmds:
+      - pnpm test
+
+  test:nexus-ui:
+    dir: packages/nexus-ui
+    cmds:
+      - pnpm check
+
+  # ── Lint ─────────────────────────────────────────────────────────────────
+
+  lint:
+    desc: Run core lint checks
+    cmds:
+      - task: lint:workspace-daemon
+      - task: lint:workspace-sdk
+
+  lint:workspace-daemon:
+    dir: packages/nexus
+    cmds:
+      - go test ./... -run TestDoesNotExist
+
+  lint:workspace-sdk:
+    dir: packages/sdk/js
+    cmds:
+      - pnpm exec tsc --noEmit
+
+  # ── CI ───────────────────────────────────────────────────────────────────
+
+  ci:
+    desc: Run local equivalent of CI jobs
+    cmds:
+      - task: ci:go-fix
+      - task: ci:coverage
+      - task: ci:core
+      - task: ci:flows-e2e
+
+  ci:core:
+    desc: Run Core CI (linux) equivalent
+    cmds:
+      - ./scripts/ci/nexus-core.sh
+
+  ci:go-fix:
+    desc: Run Go Fix Check equivalent
+    cmds:
+      - ./scripts/ci/go-fix.sh
+
+  ci:coverage:
+    desc: Run Go Coverage (nexus) equivalent
+    cmds:
+      - ./scripts/ci/coverage.sh
+
+  ci:flows-e2e:
+    desc: Run runtime backend selection E2E package (strict when CI=true; set NEXUS_E2E_STRICT_RUNTIME=0 to allow soft skips locally)
+    env:
+      CI: true
+    cmds:
+      - bash -lc 'set -euo pipefail; if [[ -e /dev/kvm ]]; then sudo chmod 666 /dev/kvm || true; fi'
+      - ./scripts/ci/flows-e2e-setup.sh
+      - bash -lc 'set -euo pipefail; set -a; source "$(git rev-parse --show-toplevel)/.nexus-e2e-env.sh"; set +a; pnpm --filter @nexus/e2e-flows test:ci -- src/cases/runtime/runtime-selection.e2e.test.ts'
+
   # ── housekeeping ──────────────────────────────────────────────────────────
 
   clean:

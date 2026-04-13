@@ -108,7 +108,7 @@ func TestProbeFirecrackerToolingIntegration(t *testing.T) {
 	}
 }
 
-func TestProbeFirecrackerTooling_DarwinUsesLimaNexusFirecrackerInstance(t *testing.T) {
+func TestProbeFirecrackerTooling_DarwinUsesLimaNexusInstance(t *testing.T) {
 	origGOOS := firecrackerProbeGOOS
 	origOutput := firecrackerProbeOutputFn
 	t.Cleanup(func() {
@@ -128,11 +128,11 @@ func TestProbeFirecrackerTooling_DarwinUsesLimaNexusFirecrackerInstance(t *testi
 		if name != "limactl" {
 			return nil, fmt.Errorf("unexpected command %q", name)
 		}
-		return []byte(`[{"name":"nexus-firecracker","status":"Running"}]`), nil
+		return []byte(`[{"name":"nexus","status":"Running"}]`), nil
 	}
 
 	if !probeFirecrackerTooling(lookup) {
-		t.Fatal("expected firecracker availability when nexus-firecracker lima instance is running")
+		t.Fatal("expected firecracker availability when nexus lima instance is running")
 	}
 }
 
@@ -153,10 +153,10 @@ func TestProbeFirecrackerTooling_DarwinLimaStoppedReturnsFalse(t *testing.T) {
 	}
 
 	firecrackerProbeOutputFn = func(name string, args ...string) ([]byte, error) {
-		return []byte(`[{"name":"nexus-firecracker","status":"Stopped"}]`), nil
+		return []byte(`[{"name":"nexus","status":"Stopped"}]`), nil
 	}
 
 	if probeFirecrackerTooling(lookup) {
-		t.Fatal("expected false when nexus-firecracker lima instance is not running")
+		t.Fatal("expected false when nexus lima instance is not running")
 	}
 }

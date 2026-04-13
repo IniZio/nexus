@@ -94,7 +94,7 @@ func TestCreateFallsBackToDefaultInstanceWhenSeatbeltMountPrepareFails(t *testin
 		if instance == "nexus-seatbelt" {
 			return errors.New("instance does not exist")
 		}
-		if instance == "mvm" {
+		if instance == "nexus" {
 			return nil
 		}
 		return errors.New("unexpected instance")
@@ -109,8 +109,8 @@ func TestCreateFallsBackToDefaultInstanceWhenSeatbeltMountPrepareFails(t *testin
 		t.Fatalf("expected fallback create to succeed, got %v", err)
 	}
 
-	if len(seen) < 3 || seen[0] != "nexus-seatbelt" || seen[1] != "nexus-firecracker" || seen[2] != "mvm" {
-		t.Fatalf("expected prepare sequence [nexus-seatbelt nexus-firecracker mvm], got %v", seen)
+	if len(seen) < 2 || seen[0] != "nexus-seatbelt" || seen[1] != "nexus" {
+		t.Fatalf("expected prepare sequence [nexus-seatbelt nexus], got %v", seen)
 	}
 
 	d.mu.RLock()
@@ -119,8 +119,8 @@ func TestCreateFallsBackToDefaultInstanceWhenSeatbeltMountPrepareFails(t *testin
 	if !ok {
 		t.Fatal("expected workspace to be tracked")
 	}
-	if ws.instance != "mvm" {
-		t.Fatalf("expected workspace instance to switch to mvm, got %q", ws.instance)
+	if ws.instance != "nexus" {
+		t.Fatalf("expected workspace instance to switch to nexus, got %q", ws.instance)
 	}
 }
 
@@ -272,10 +272,10 @@ func TestStartLimaShellSkipsUnavailableCandidatesWhenPreparingWorkspaceMount(t *
 	}()
 
 	listLimaInstancesFn = func(context.Context) ([]string, error) {
-		return []string{"default"}, nil
+		return []string{"nexus"}, nil
 	}
 	ensureLimaInstanceRunningFn = func(_ context.Context, instance string) error {
-		if instance != "default" {
+		if instance != "nexus" {
 			return errors.New("instance does not exist")
 		}
 		return nil
@@ -297,8 +297,8 @@ func TestStartLimaShellSkipsUnavailableCandidatesWhenPreparingWorkspaceMount(t *
 	if err == nil {
 		t.Fatal("expected startLimaShell to fail once pty start is stubbed")
 	}
-	if len(called) != 1 || called[0] != "default:/tmp/repo" {
-		t.Fatalf("expected prepareWorkspacePath called only for default candidate, got %v", called)
+	if len(called) != 1 || called[0] != "nexus:/tmp/repo" {
+		t.Fatalf("expected prepareWorkspacePath called only for nexus candidate, got %v", called)
 	}
 }
 

@@ -7,6 +7,21 @@ import Combine
 @MainActor
 public final class AppState: ObservableObject {
 
+    // MARK: - PTY state (tracked for XCUITest via sidebar accessibility markers)
+
+    public enum PTYState {
+        case idle    // workspace stopped / no workspace selected
+        case active  // PTY session open
+        case error   // PTY failed
+    }
+
+    @Published public var ptyState: PTYState = .idle
+    // Set by DaemonPTYTerminalView to re-focus the terminal NSView when the
+    // sidebar terminal_view button is clicked in XCUITest.
+    public var refocusTerminalAction: (() -> Void)?
+
+    public func refocusTerminal() { refocusTerminalAction?() }
+
     // MARK: - Published state
     @Published public var repos: [Repo] = []
     @Published public var selectedWorkspaceID: String?
