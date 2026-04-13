@@ -15,7 +15,7 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/drivers/shared"
 )
 
-var lxcLimaInstanceBase = []string{"nexus-lxc", "nexus-firecracker", "default"}
+var lxcLimaInstanceBase = []string{"nexus"}
 
 type Driver struct {
 	mu                sync.RWMutex
@@ -403,7 +403,7 @@ func (d *Driver) defaultInstanceName() string {
 	if fromDoctor := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_LXC_INSTANCE")); fromDoctor != "" {
 		return fromDoctor
 	}
-	return "nexus-lxc"
+	return "nexus"
 }
 
 func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance string) error {
@@ -425,7 +425,7 @@ func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance string
 func bootstrapLimaDockerTooling(ctx context.Context, instance string) error {
 	instance = strings.TrimSpace(instance)
 	if instance == "" {
-		instance = "nexus-firecracker"
+		instance = "nexus"
 	}
 	candidates := shared.InstanceCandidates(instance, lxcLimaInstanceBase)
 	if discovered, err := shared.ListLimaInstances(ctx); err == nil && len(discovered) > 0 {

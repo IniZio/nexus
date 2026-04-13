@@ -227,7 +227,7 @@ func probeLimaFirecrackerInstanceReady(lookPath func(string) (string, error)) bo
 		return false
 	}
 
-	out, err := firecrackerProbeOutputFn("limactl", "list", "--json", "nexus-firecracker")
+	out, err := firecrackerProbeOutputFn("limactl", "list", "--json", "nexus")
 	if err != nil {
 		return false
 	}
@@ -244,7 +244,7 @@ func probeLimaFirecrackerInstanceReady(lookPath func(string) (string, error)) bo
 	var entries []limaInstance
 	if err := json.Unmarshal([]byte(trimmed), &entries); err == nil {
 		for _, entry := range entries {
-			if strings.TrimSpace(entry.Name) == "nexus-firecracker" && strings.EqualFold(strings.TrimSpace(entry.Status), "running") {
+			if strings.TrimSpace(entry.Name) == "nexus" && strings.EqualFold(strings.TrimSpace(entry.Status), "running") {
 				return true
 			}
 		}
@@ -253,7 +253,7 @@ func probeLimaFirecrackerInstanceReady(lookPath func(string) (string, error)) bo
 
 	var single limaInstance
 	if err := json.Unmarshal([]byte(trimmed), &single); err == nil {
-		return strings.TrimSpace(single.Name) == "nexus-firecracker" && strings.EqualFold(strings.TrimSpace(single.Status), "running")
+		return strings.TrimSpace(single.Name) == "nexus" && strings.EqualFold(strings.TrimSpace(single.Status), "running")
 	}
 
 	return false

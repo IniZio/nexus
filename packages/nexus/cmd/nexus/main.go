@@ -1094,7 +1094,7 @@ func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExe
 
 	workDirRoot := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_FIRECRACKER_WORKDIR_ROOT"))
 	if workDirRoot == "" {
-		workDirRoot = filepath.Join(os.TempDir(), "nexus-firecracker-doctor")
+		workDirRoot = filepath.Join(os.TempDir(), "nexus-doctor")
 	}
 	if err := os.MkdirAll(workDirRoot, 0o755); err != nil {
 		return fmt.Errorf("create firecracker workdir root: %w", err)

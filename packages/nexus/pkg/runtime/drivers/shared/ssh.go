@@ -72,6 +72,7 @@ func DirectSSHInteractiveArgs(instanceName, workdir, shell string) ([]string, er
 
 	return []string{
 		"-F", cfgPath,
+		"-t", // force remote PTY allocation; required when a command is given
 		LimaSSHHost(instanceName),
 		"--",
 		"sh", "-c", remoteCmd,
@@ -107,6 +108,25 @@ func DirectSSHScript(ctx context.Context, instanceName, script string) ([]byte, 
 		return nil, err
 	}
 	return exec.CommandContext(ctx, "ssh", args...).CombinedOutput()
+}
+
+// TryDirectSSHScript runs script in the first candidate Lima instance whose
+// ssh.config exists and the SSH command succeeds.  Use this wherever a single
+// instance name is not guaranteed (e.g. after a daemon restart where the
+// stored instance name may be a legacy alias).
+func TryDirectSSHScript(ctx context.Context, candidates []string, script string) ([]byte, error) {
+	var lastErr error
+	for _, candidate := range candidates {
+		out, err := DirectSSHScript(ctx, candidate, script)
+		if err == nil {
+			return out, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		return nil, fmt.Errorf("no lima instance candidates available")
+	}
+	return nil, lastErr
 }
 
 // TryDirectSSHShellPTY attempts to start an interactive PTY shell in each

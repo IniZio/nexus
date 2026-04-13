@@ -28,7 +28,7 @@ var ptyStartWithSizeFn = pty.StartWithSize
 var limactlOutputFn = shared.DefaultLimactlOutput
 var limactlCombinedOutputFn = shared.DefaultLimactlCombinedOutput
 
-var seatbeltLimaInstanceBase = []string{"nexus-seatbelt", "nexus-firecracker", "default"}
+var seatbeltLimaInstanceBase = []string{"nexus"}
 
 type Driver struct {
 	mu                 sync.RWMutex
@@ -99,17 +99,18 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	if d.prepareWorkspaceFS != nil {
 		targetPath := guestWorkdirForID(req.WorkspaceID)
 		if err := d.prepareWorkspaceFS(ctx, instance, targetPath, req.ProjectRoot); err != nil {
-			if strings.TrimSpace(instance) == "nexus-seatbelt" {
-				fallbackCandidates := []string{"nexus-firecracker", "mvm", "default"}
-				for _, fallback := range fallbackCandidates {
-					if fallbackErr := d.prepareWorkspaceFS(ctx, fallback, targetPath, req.ProjectRoot); fallbackErr != nil {
-						continue
-					}
-					if ws, ok := d.workspaces[req.WorkspaceID]; ok {
-						ws.instance = fallback
-					}
-					return nil
+			// Try remaining candidates in the base list (handles legacy instance names).
+			for _, fallback := range seatbeltLimaInstanceBase {
+				if fallback == instance {
+					continue
 				}
+				if fallbackErr := d.prepareWorkspaceFS(ctx, fallback, targetPath, req.ProjectRoot); fallbackErr != nil {
+					continue
+				}
+				if ws, ok := d.workspaces[req.WorkspaceID]; ok {
+					ws.instance = fallback
+				}
+				return nil
 			}
 			d.mu.Lock()
 			delete(d.workspaces, req.WorkspaceID)
@@ -464,7 +465,7 @@ func teardownWorkspacePath(ctx context.Context, instance, workspaceID string) er
 func bootstrapSeatbeltTooling(ctx context.Context, instance, configBundle string) error {
 	instance = strings.TrimSpace(instance)
 	if instance == "" {
-		instance = "nexus-firecracker"
+		instance = "nexus"
 	}
 
 	candidates := shared.InstanceCandidates(instance, seatbeltLimaInstanceBase)
@@ -567,7 +568,7 @@ func (d *Driver) defaultInstanceName() string {
 	if fromDoctor := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_LXC_INSTANCE")); fromDoctor != "" {
 		return fromDoctor
 	}
-	return "nexus-seatbelt"
+	return "nexus"
 }
 
 func (d *Driver) ensureInstanceBootstrapped(ctx context.Context, instance, configBundle string) error {

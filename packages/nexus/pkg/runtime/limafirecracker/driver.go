@@ -9,7 +9,7 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 )
 
-const defaultLimaInstance = "nexus-firecracker"
+const defaultLimaInstance = "nexus"
 
 type Driver struct {
 	inner runtime.Driver
