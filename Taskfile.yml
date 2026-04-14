@@ -53,6 +53,34 @@ tasks:
       - chmod +x ../nexus-swift/Resources/nexus-daemon
       - echo "Bundled daemon → packages/nexus-swift/Resources/nexus-daemon"
 
+  swift:bundle-tools:
+    desc: Stage fallback tool binaries into packages/nexus-swift/Resources/tools
+    dir: "{{.NEXUS_DIR}}"
+    cmds:
+      - task: swift:bundle-daemon
+      - mkdir -p ../nexus-swift/Resources/tools
+      - cp ../nexus-swift/Resources/nexus-daemon ../nexus-swift/Resources/tools/nexus-daemon && chmod +x ../nexus-swift/Resources/tools/nexus-daemon
+      - |
+        go build \
+          -ldflags "-X github.com/inizio/nexus/packages/nexus/pkg/buildinfo.Version=dev-local \
+                    -X github.com/inizio/nexus/packages/nexus/pkg/buildinfo.Commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
+                    -X github.com/inizio/nexus/packages/nexus/pkg/buildinfo.BuiltAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          -o ../nexus-swift/Resources/tools/nexus \
+          ./cmd/nexus/
+      - chmod +x ../nexus-swift/Resources/tools/nexus
+      - |
+        for tool in mutagen limactl tmux; do
+          if command -v "$tool" >/dev/null 2>&1; then
+            rm -f "../nexus-swift/Resources/tools/$tool"
+            cp "$(command -v "$tool")" "../nexus-swift/Resources/tools/$tool"
+            chmod +x "../nexus-swift/Resources/tools/$tool"
+            echo "Bundled $tool → packages/nexus-swift/Resources/tools/$tool"
+          else
+            echo "warning: $tool not found in PATH; skipping bundle fallback for $tool"
+          fi
+        done
+      - echo "Bundled tool fallbacks ready in packages/nexus-swift/Resources/tools/"
+
   daemon:restart:
     desc: Kill any running daemon, start a fresh one, wait for /healthz
     deps: [daemon:build]
@@ -90,6 +118,7 @@ tasks:
 
   swift:build:
     desc: Build NexusApp.app via xcodebuild (Debug, macOS)
+    deps: [swift:bundle-tools]
     generates:
       - "{{.APP_BUNDLE}}/Contents/MacOS/NexusApp"
     cmds:

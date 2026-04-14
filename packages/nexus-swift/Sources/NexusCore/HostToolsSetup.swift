@@ -28,6 +28,20 @@ public struct HostToolSnapshot: Sendable {
     }
 }
 
+public struct HostSetupProgress: Sendable {
+    public let step: Int
+    public let totalSteps: Int
+    public let title: String
+    public let detail: String?
+
+    public init(step: Int, totalSteps: Int, title: String, detail: String? = nil) {
+        self.step = step
+        self.totalSteps = totalSteps
+        self.title = title
+        self.detail = detail
+    }
+}
+
 public enum HostToolsSetupError: LocalizedError {
     case homebrewMissing
     case installFailed(String)
@@ -64,35 +78,35 @@ public enum HostToolsSetup {
                     id: "lima",
                     name: "Lima",
                     isInstalled: hasLima,
-                    details: hasLima ? "limactl found in PATH" : "Required for macOS firecracker runtime",
+                    details: resolvedDetail(name: "limactl", fallbackInstalled: "limactl available") ?? "Required for macOS firecracker runtime",
                     installFormula: "lima"
                 ),
                 HostToolCheck(
                     id: "mutagen",
                     name: "Mutagen",
                     isInstalled: hasMutagen,
-                    details: hasMutagen ? "mutagen found in PATH" : "Recommended for sync performance",
+                    details: resolvedDetail(name: "mutagen", fallbackInstalled: "mutagen available") ?? "Recommended for sync performance",
                     installFormula: "mutagen-io/mutagen/mutagen"
                 ),
                 HostToolCheck(
                     id: "tmux",
                     name: "tmux",
                     isInstalled: hasTmux,
-                    details: hasTmux ? "tmux found in PATH" : "Required for terminal session persistence",
+                    details: resolvedDetail(name: "tmux", fallbackInstalled: "tmux available") ?? "Required for terminal session persistence",
                     installFormula: "tmux"
                 ),
                 HostToolCheck(
                     id: "nexus",
                     name: "Nexus CLI",
                     isInstalled: hasNexus,
-                    details: hasNexus ? "nexus found in PATH" : "Required for daemon install/update flow",
+                    details: resolvedDetail(name: "nexus", fallbackInstalled: "nexus available") ?? "Required for daemon install/update flow",
                     installFormula: nil
                 ),
                 HostToolCheck(
                     id: "nexus-daemon",
                     name: "Nexus Daemon",
                     isInstalled: hasNexusDaemon,
-                    details: hasNexusDaemon ? "nexus-daemon found in PATH" : "Installed and updated via Nexus installer/updater",
+                    details: resolvedDetail(name: "nexus-daemon", fallbackInstalled: "nexus-daemon available") ?? "Installed and updated via Nexus installer/updater",
                     installFormula: nil
                 ),
             ],
@@ -101,7 +115,10 @@ public enum HostToolsSetup {
         )
     }
 
-    public static func installMissingTools(snapshot: HostToolSnapshot) async throws -> String {
+    public static func installMissingTools(
+        snapshot: HostToolSnapshot,
+        onProgress: (@Sendable (HostSetupProgress) -> Void)? = nil
+    ) async throws -> String {
         guard snapshot.hasHomebrew else {
             throw HostToolsSetupError.homebrewMissing
         }
@@ -113,18 +130,42 @@ public enum HostToolsSetup {
             return "All managed host tools are already installed."
         }
 
-        let command = "brew install " + formulas.joined(separator: " ")
-        let result = await runShell(command)
-        if result.exitCode != 0 {
-            throw HostToolsSetupError.installFailed(result.output)
+        var logs: [String] = []
+        let total = formulas.count
+        for (idx, formula) in formulas.enumerated() {
+            onProgress?(HostSetupProgress(
+                step: idx + 1,
+                totalSteps: total,
+                title: "Installing \(formula)"
+            ))
+            let result = await runShell("brew install \(shellQuote(formula))")
+            if result.exitCode != 0 {
+                throw HostToolsSetupError.installFailed(result.output)
+            }
+            if !result.output.isEmpty {
+                logs.append(result.output)
+            }
         }
-        return result.output.isEmpty ? "Installed: \(formulas.joined(separator: ", "))" : result.output
+        if logs.isEmpty {
+            return "Installed: \(formulas.joined(separator: ", "))"
+        }
+        return logs.joined(separator: "\n\n")
     }
 
-    public static func provisionFirecrackerRuntime(projectRoot: String, useAdministratorPrivileges: Bool) async throws -> String {
+    public static func provisionFirecrackerRuntime(
+        projectRoot: String,
+        useAdministratorPrivileges: Bool,
+        onProgress: (@Sendable (HostSetupProgress) -> Void)? = nil
+    ) async throws -> String {
         let escapedRoot = shellQuote(projectRoot)
         let command = "nexus init --force \(escapedRoot)"
         let result: CommandResult
+        onProgress?(HostSetupProgress(
+            step: 1,
+            totalSteps: 1,
+            title: "Running runtime provisioning",
+            detail: command
+        ))
 
         if useAdministratorPrivileges {
             result = await runPrivileged(command)
@@ -140,25 +181,71 @@ public enum HostToolsSetup {
             : result.output
     }
 
-    public static func installOrUpdateDaemon() async throws -> String {
-        let command = """
-if command -v nexus >/dev/null 2>&1; then
-  nexus update --force
-else
-  curl -fsSL https://raw.githubusercontent.com/inizio/nexus/main/install.sh | bash
-fi
+    public static func installOrUpdateDaemon(
+        onProgress: (@Sendable (HostSetupProgress) -> Void)? = nil
+    ) async throws -> String {
+        var logs: [String] = []
+        let hasNexus = await commandExists("nexus")
+        let nexusPath = ToolBinaryResolver.resolvePreferred("nexus")
+        let daemonPath = ToolBinaryResolver.resolvePreferred("nexus-daemon")
+        let command: String
+        let result: CommandResult
+
+        if let daemonPath {
+            onProgress?(HostSetupProgress(step: 1, totalSteps: 3, title: "Using available daemon binary", detail: daemonPath))
+        }
+
+        if hasNexus, let nexusPath {
+            onProgress?(HostSetupProgress(step: 1, totalSteps: 3, title: "Updating existing Nexus install"))
+            command = """
+\(shellQuote(nexusPath)) update --force
 if ! command -v nexus-daemon >/dev/null 2>&1; then
   echo "nexus-daemon was not found in PATH after install/update." >&2
   exit 1
 fi
 """
-        let result = await runShell(command)
+            result = await runShell(command)
+        } else {
+            // Fresh machines often require privileged writes to /usr/local/bin.
+            // Use macOS admin-auth path instead of a non-interactive shell.
+            onProgress?(HostSetupProgress(step: 1, totalSteps: 3, title: "Installing Nexus CLI + daemon (admin prompt may appear)"))
+            command = """
+curl -fsSL https://raw.githubusercontent.com/inizio/nexus/main/install.sh | bash
+if ! command -v nexus-daemon >/dev/null 2>&1; then
+  echo "nexus-daemon was not found in PATH after install/update." >&2
+  exit 1
+fi
+"""
+            result = await runPrivileged(command)
+        }
+        if !result.output.isEmpty {
+            logs.append(result.output)
+        }
+
         if result.exitCode != 0 {
             throw HostToolsSetupError.daemonInstallFailed(result.output)
         }
-        return result.output.isEmpty
-            ? "Nexus daemon install/update completed."
-            : result.output
+
+        onProgress?(HostSetupProgress(step: 2, totalSteps: 3, title: "Verifying installed binaries"))
+        let verify = await runShell("""
+command -v nexus >/dev/null 2>&1 && command -v nexus-daemon >/dev/null 2>&1
+""")
+        if verify.exitCode != 0 {
+            throw HostToolsSetupError.daemonInstallFailed("Install completed but nexus/nexus-daemon was not found on PATH.")
+        }
+
+        onProgress?(HostSetupProgress(step: 3, totalSteps: 3, title: "Collecting version info"))
+        let versions = await runShell("""
+{ nexus --version 2>/dev/null || true; nexus-daemon --version 2>/dev/null || true; } | sed '/^$/d'
+""")
+        if !versions.output.isEmpty {
+            logs.append(versions.output)
+        }
+
+        if logs.isEmpty {
+            return "Nexus daemon install/update completed."
+        }
+        return logs.joined(separator: "\n\n")
     }
 
     private static func checkNestedVirtualizationSupport() async -> Bool {
@@ -170,8 +257,19 @@ fi
     }
 
     private static func commandExists(_ command: String) async -> Bool {
+        if ToolBinaryResolver.resolvePreferred(command) != nil {
+            return true
+        }
         let result = await runShell("command -v \(command)")
         return result.exitCode == 0
+    }
+
+    private static func resolvedDetail(name: String, fallbackInstalled: String) -> String? {
+        guard let path = ToolBinaryResolver.resolvePreferred(name) else { return nil }
+        if path.contains("/Resources/tools/") || path.hasSuffix("/Resources/\(name)") {
+            return "\(name) using bundled fallback"
+        }
+        return "\(fallbackInstalled) (\(path))"
     }
 
     private static func shellQuote(_ value: String) -> String {
@@ -202,47 +300,63 @@ fi
     private static func runProcess(
         executable: String,
         arguments: [String],
-        includeCommonHomebrewPath: Bool = false
+        includeCommonHomebrewPath: Bool = false,
+        timeoutSeconds: TimeInterval = 180
     ) async -> CommandResult {
         await withCheckedContinuation { continuation in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: executable)
-            process.arguments = arguments
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: executable)
+                process.arguments = arguments
 
-            if includeCommonHomebrewPath {
-                var env = ProcessInfo.processInfo.environment
-                let existingPath = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
-                let extras = ["/opt/homebrew/bin", "/usr/local/bin"]
-                env["PATH"] = (extras + [existingPath]).joined(separator: ":")
-                process.environment = env
-            }
+                if includeCommonHomebrewPath {
+                    var env = ProcessInfo.processInfo.environment
+                    let existingPath = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+                    let extras = ToolBinaryResolver.preferredPathEntries() + ["/opt/homebrew/bin", "/usr/local/bin"]
+                    env["PATH"] = (extras + [existingPath]).joined(separator: ":")
+                    process.environment = env
+                }
 
-            let output = Pipe()
-            process.standardOutput = output
-            process.standardError = output
+                let output = Pipe()
+                process.standardOutput = output
+                process.standardError = output
 
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(
-                    returning: CommandResult(
-                        exitCode: 1,
-                        output: error.localizedDescription
-                    )
-                )
-                return
-            }
+                do {
+                    try process.run()
+                } catch {
+                    continuation.resume(returning: CommandResult(exitCode: 1, output: error.localizedDescription))
+                    return
+                }
 
-            process.terminationHandler = { proc in
+                let deadline = Date().addingTimeInterval(timeoutSeconds)
+                var didTimeout = false
+                while process.isRunning {
+                    if Date() >= deadline {
+                        didTimeout = true
+                        process.terminate()
+                        break
+                    }
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+                if process.isRunning {
+                    process.waitUntilExit()
+                }
+
+                if didTimeout {
+                    continuation.resume(returning: CommandResult(
+                        exitCode: 124,
+                        output: "Command timed out after \(Int(timeoutSeconds))s. Check network/auth prompts and retry."
+                    ))
+                    return
+                }
+
                 let data = output.fileHandleForReading.readDataToEndOfFile()
                 let text = String(data: data, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                continuation.resume(
-                    returning: CommandResult(
-                        exitCode: Int(proc.terminationStatus),
-                        output: text
-                    )
-                )
+                continuation.resume(returning: CommandResult(
+                    exitCode: Int(process.terminationStatus),
+                    output: text
+                ))
             }
         }
     }

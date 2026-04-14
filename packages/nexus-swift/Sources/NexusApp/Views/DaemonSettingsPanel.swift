@@ -1,5 +1,6 @@
 import NexusCore
 import SwiftUI
+import Foundation
 
 /// Popover shown when the user clicks the connection status pill.
 /// Mirrors Docker Desktop's engine status panel.
@@ -10,6 +11,9 @@ struct DaemonSettingsPanel: View {
     @State private var toolingMessage: String?
     @State private var toolingError: String?
     @State private var useAdminPrivileges = false
+    @State private var progressTitle: String?
+    @State private var progressValue: Double?
+    @State private var toolingLogs: [String] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -52,21 +56,24 @@ struct DaemonSettingsPanel: View {
 
     @ViewBuilder
     private var controls: some View {
-        if appState.isBusy || toolingBusy {
-            HStack(spacing: 8) {
-                ProgressView().scaleEffect(0.7)
-                Text("Working…")
-                    .font(.system(size: 12))
-                    .foregroundColor(Theme.labelTertiary)
+        VStack(alignment: .leading, spacing: 0) {
+            if appState.isBusy || toolingBusy {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        ProgressView(value: progressValue)
+                            .scaleEffect(0.8, anchor: .leading)
+                            .frame(maxWidth: .infinity)
+                    }
+                    Text(progressTitle ?? "Working…")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.labelTertiary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-        } else {
-            VStack(alignment: .leading, spacing: 0) {
-                daemonControls
-                Divider().opacity(0.35)
-                toolingControls
-            }
+            daemonControls
+            Divider().opacity(0.35)
+            toolingControls
         }
     }
 
@@ -173,6 +180,23 @@ struct DaemonSettingsPanel: View {
                     .padding(.horizontal, 12)
                     .padding(.bottom, 6)
             }
+            if !toolingLogs.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Install Log")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Theme.labelSecondary)
+                    ScrollView {
+                        Text(toolingLogs.joined(separator: "\n"))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(Theme.labelTertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(height: 120)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+            }
             if let error = toolingError, !error.isEmpty {
                 Text(error)
                     .font(.system(size: 10, design: .monospaced))
@@ -257,6 +281,9 @@ struct DaemonSettingsPanel: View {
         toolingBusy = true
         toolingMessage = nil
         toolingError = nil
+        toolingLogs = []
+        progressTitle = "Preparing tool installation…"
+        progressValue = nil
         defer { toolingBusy = false }
 
         let snapshot: HostToolSnapshot
@@ -267,8 +294,12 @@ struct DaemonSettingsPanel: View {
         }
         toolSnapshot = snapshot
         do {
-            toolingMessage = try await HostToolsSetup.installMissingTools(snapshot: snapshot)
+            toolingMessage = try await HostToolsSetup.installMissingTools(snapshot: snapshot) { update in
+                DispatchQueue.main.async { applyProgress(update) }
+            }
             await refreshToolingSnapshot()
+            progressTitle = "Completed"
+            progressValue = 1.0
         } catch {
             toolingError = error.localizedDescription
         }
@@ -278,6 +309,9 @@ struct DaemonSettingsPanel: View {
         toolingBusy = true
         toolingMessage = nil
         toolingError = nil
+        toolingLogs = []
+        progressTitle = "Preparing runtime provisioning…"
+        progressValue = nil
         defer { toolingBusy = false }
 
         let projectRoot = provisioningProjectRoot()
@@ -285,8 +319,12 @@ struct DaemonSettingsPanel: View {
             toolingMessage = try await HostToolsSetup.provisionFirecrackerRuntime(
                 projectRoot: projectRoot,
                 useAdministratorPrivileges: useAdminPrivileges
-            )
+            ) { update in
+                DispatchQueue.main.async { applyProgress(update) }
+            }
             await refreshToolingSnapshot()
+            progressTitle = "Completed"
+            progressValue = 1.0
         } catch {
             toolingError = error.localizedDescription
         }
@@ -296,14 +334,35 @@ struct DaemonSettingsPanel: View {
         toolingBusy = true
         toolingMessage = nil
         toolingError = nil
+        toolingLogs = []
+        progressTitle = "Preparing daemon install…"
+        progressValue = nil
         defer { toolingBusy = false }
 
         do {
-            toolingMessage = try await HostToolsSetup.installOrUpdateDaemon()
+            toolingMessage = try await HostToolsSetup.installOrUpdateDaemon { update in
+                DispatchQueue.main.async { applyProgress(update) }
+            }
             await appState.restartDaemon()
             await refreshToolingSnapshot()
+            progressTitle = "Completed"
+            progressValue = 1.0
         } catch {
             toolingError = error.localizedDescription
+        }
+    }
+
+    private func applyProgress(_ update: HostSetupProgress) {
+        progressTitle = "[\(update.step)/\(update.totalSteps)] \(update.title)"
+        if update.totalSteps > 0 {
+            progressValue = Double(update.step) / Double(update.totalSteps)
+        } else {
+            progressValue = nil
+        }
+        if let detail = update.detail, !detail.isEmpty {
+            toolingLogs.append("• \(detail)")
+        } else {
+            toolingLogs.append("• \(update.title)")
         }
     }
 

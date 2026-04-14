@@ -219,7 +219,7 @@
 			buildConfigurationList = B992D6D8DB2250A5C1A5A0DF /* Build configuration list for PBXNativeTarget "NexusApp" */;
 			buildPhases = (
 				2C9E70762C891E5819603FF9 /* Sources */,
-				BB326D256E49C86D2D231193 /* Copy nexus-daemon to bundle Resources */,
+				BB326D256E49C86D2D231193 /* Copy bundled tools to app Resources */,
 				FAB36B0455E6FDDE1FDD72F2 /* Frameworks */,
 			);
 			buildRules = (
@@ -349,7 +349,7 @@
 			shellPath = /bin/sh;
 			shellScript = "ditto \"${SCRIPT_INPUT_FILE_0}\" \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 		};
-		BB326D256E49C86D2D231193 /* Copy nexus-daemon to bundle Resources */ = {
+		BB326D256E49C86D2D231193 /* Copy bundled tools to app Resources */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -358,16 +358,26 @@
 			);
 			inputPaths = (
 				"$(SRCROOT)/Resources/nexus-daemon",
+				"$(SRCROOT)/Resources/tools/nexus",
+				"$(SRCROOT)/Resources/tools/nexus-daemon",
+				"$(SRCROOT)/Resources/tools/mutagen",
+				"$(SRCROOT)/Resources/tools/limactl",
+				"$(SRCROOT)/Resources/tools/tmux",
 			);
-			name = "Copy nexus-daemon to bundle Resources";
+			name = "Copy bundled tools to app Resources";
 			outputFileListPaths = (
 			);
 			outputPaths = (
 				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus-daemon",
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/nexus",
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/nexus-daemon",
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/mutagen",
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/limactl",
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/tmux",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "DAEMON_SRC=\"${SRCROOT}/Resources/nexus-daemon\"\nDAEMON_DST=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-daemon\"\nif [ -f \"$DAEMON_SRC\" ]; then\n  mkdir -p \"$(dirname \"$DAEMON_DST\")\"\n  cp \"$DAEMON_SRC\" \"$DAEMON_DST\"\n  chmod +x \"$DAEMON_DST\"\nelse\n  echo \"warning: nexus-daemon not found at ${DAEMON_SRC}; run 'task swift:bundle-daemon' first\"\nfi\n";
+			shellScript = "copy_tool() {\n  local src=\"$1\"\n  local dst=\"$2\"\n  local label=\"$3\"\n  if [ -f \"$src\" ]; then\n    mkdir -p \"$(dirname \"$dst\")\"\n    cp \"$src\" \"$dst\"\n    chmod +x \"$dst\"\n    echo \"Bundled ${label} -> ${dst}\"\n  else\n    echo \"warning: ${label} not found at ${src}; run 'task swift:bundle-tools' to stage fallbacks\"\n  fi\n}\n\ncopy_tool \"${SRCROOT}/Resources/nexus-daemon\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-daemon\" \"nexus-daemon\"\n\nfor tool in nexus nexus-daemon mutagen limactl tmux; do\n  copy_tool \"${SRCROOT}/Resources/tools/${tool}\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/tools/${tool}\" \"${tool}\"\ndone\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

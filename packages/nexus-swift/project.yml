@@ -49,21 +49,41 @@ targets:
     sources:
       - path: Sources/NexusApp
     postCompileScripts:
-      - name: Copy nexus-daemon to bundle Resources
+      - name: Copy bundled tools to app Resources
         inputFiles:
           - $(SRCROOT)/Resources/nexus-daemon
+          - $(SRCROOT)/Resources/tools/nexus
+          - $(SRCROOT)/Resources/tools/nexus-daemon
+          - $(SRCROOT)/Resources/tools/mutagen
+          - $(SRCROOT)/Resources/tools/limactl
+          - $(SRCROOT)/Resources/tools/tmux
         outputFiles:
           - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus-daemon
+          - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/nexus
+          - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/nexus-daemon
+          - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/mutagen
+          - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/limactl
+          - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/tmux
         script: |
-          DAEMON_SRC="${SRCROOT}/Resources/nexus-daemon"
-          DAEMON_DST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-daemon"
-          if [ -f "$DAEMON_SRC" ]; then
-            mkdir -p "$(dirname "$DAEMON_DST")"
-            cp "$DAEMON_SRC" "$DAEMON_DST"
-            chmod +x "$DAEMON_DST"
-          else
-            echo "warning: nexus-daemon not found at ${DAEMON_SRC}; run 'task swift:bundle-daemon' first"
-          fi
+          copy_tool() {
+            local src="$1"
+            local dst="$2"
+            local label="$3"
+            if [ -f "$src" ]; then
+              mkdir -p "$(dirname "$dst")"
+              cp "$src" "$dst"
+              chmod +x "$dst"
+              echo "Bundled ${label} -> ${dst}"
+            else
+              echo "warning: ${label} not found at ${src}; run 'task swift:bundle-tools' to stage fallbacks"
+            fi
+          }
+
+          copy_tool "${SRCROOT}/Resources/nexus-daemon" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-daemon" "nexus-daemon"
+
+          for tool in nexus nexus-daemon mutagen limactl tmux; do
+            copy_tool "${SRCROOT}/Resources/tools/${tool}" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/tools/${tool}" "${tool}"
+          done
     dependencies:
       - target: NexusCore
         link: true
