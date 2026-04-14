@@ -11,8 +11,6 @@ import {
   listWorkspaces,
   createWorkspace,
   forkWorkspace,
-  pauseWorkspace,
-  resumeWorkspace,
   startWorkspace,
   stopWorkspace,
   exposeSpotlight,
@@ -193,8 +191,6 @@ async function runAction(kind: string, wsId: string, wsName: string, extra?: Rec
     switch (kind) {
       case "start":              await startWorkspace(wsId);                  break;
       case "stop":               await stopWorkspace(wsId);                   break;
-      case "pause":              await pauseWorkspace(wsId);                  break;
-      case "resume":             await resumeWorkspace(wsId);                 break;
       case "fork": {
         const childWorkspaceName = extra?.childWorkspaceName || window.prompt("Fork workspace name", `${wsName}-fork`) || "";
         const childRef = extra?.childRef || window.prompt("Fork branch name", `${wsName}-fork`) || "";

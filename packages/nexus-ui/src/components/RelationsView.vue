@@ -83,10 +83,8 @@ function worktreePath(node: WorkspaceRelationNode): string {
   return node.localWorktreePath;
 }
 
-function canStart(node: WorkspaceRelationNode)   { return ["stopped", "created", "restored"].includes(node.state); }
-function canStop(node: WorkspaceRelationNode)    { return node.state === "running"; }
-function canPause(node: WorkspaceRelationNode)   { return node.state === "running"; }
-function canResume(node: WorkspaceRelationNode)  { return node.state === "paused"; }
+function canStart(node: WorkspaceRelationNode)   { return ["stopped", "created", "restored", "paused"].includes(node.state); }
+function canStop(node: WorkspaceRelationNode)    { return node.state === "running" || node.state === "paused"; }
 function canRestore(node: WorkspaceRelationNode) { return ["stopped", "removed"].includes(node.state); }
 
 function act(kind: string, node: WorkspaceRelationNode) {
@@ -353,26 +351,6 @@ function treeNodes(group: WorkspaceRelationsGroup): { node: WorkspaceRelationNod
                       :loading="pendingAction[node.workspaceId] === 'stop'"
                       :disabled="!!pendingAction[node.workspaceId]"
                       @click.stop="act('stop', node)"
-                    />
-                    <Button
-                      v-if="canPause(node)"
-                      size="small"
-                      label="Pause"
-                      icon="pi pi-pause"
-                      severity="secondary"
-                      :loading="pendingAction[node.workspaceId] === 'pause'"
-                      :disabled="!!pendingAction[node.workspaceId]"
-                      @click.stop="act('pause', node)"
-                    />
-                    <Button
-                      v-if="canResume(node)"
-                      size="small"
-                      label="Resume"
-                      icon="pi pi-play"
-                      severity="secondary"
-                      :loading="pendingAction[node.workspaceId] === 'resume'"
-                      :disabled="!!pendingAction[node.workspaceId]"
-                      @click.stop="act('resume', node)"
                     />
                     <Button
                       v-if="canRestore(node)"

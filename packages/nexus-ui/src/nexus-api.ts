@@ -10,8 +10,6 @@ import type {
   WorkspaceForkResult,
   WorkspaceStartResult,
   WorkspaceStopResult,
-  WorkspacePauseResult,
-  WorkspaceResumeResult,
   WorkspaceRemoveResult,
   WorkspaceRestoreResult,
 } from "@nexus/sdk";
@@ -158,16 +156,6 @@ export async function forkWorkspace(id: string, childWorkspaceName: string, chil
     ...(childRef ? { childRef } : {}),
   });
   return res.forked;
-}
-
-export async function pauseWorkspace(id: string): Promise<boolean> {
-  const res = await rpc.request<WorkspacePauseResult>("workspace.pause", { id });
-  return res.paused;
-}
-
-export async function resumeWorkspace(id: string): Promise<boolean> {
-  const res = await rpc.request<WorkspaceResumeResult>("workspace.resume", { id });
-  return res.resumed;
 }
 
 export async function startWorkspace(id: string): Promise<boolean> {

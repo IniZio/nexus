@@ -12,8 +12,6 @@
     "clearLogs": "Clear logs",
     "start": "Start",
     "stop": "Stop",
-    "pause": "Pause",
-    "resume": "Resume",
     "fork": "Fork"
   },
   "create": {

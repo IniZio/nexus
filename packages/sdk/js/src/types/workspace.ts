@@ -89,14 +89,6 @@ export interface WorkspaceRestoreResult {
   workspace: WorkspaceRecord;
 }
 
-export interface WorkspacePauseResult {
-  paused: boolean;
-}
-
-export interface WorkspaceResumeResult {
-  resumed: boolean;
-}
-
 export interface WorkspaceForkResult {
   forked: boolean;
   workspace: WorkspaceRecord;

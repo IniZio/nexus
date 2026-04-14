@@ -5,8 +5,6 @@ import {
   WorkspaceRemoveResult,
   WorkspaceRestoreResult,
   WorkspaceForkResult,
-  WorkspacePauseResult,
-  WorkspaceResumeResult,
   WorkspaceStartResult,
   WorkspaceStopResult,
 } from './types';
@@ -56,16 +54,6 @@ export class WorkspaceManager {
   async restore(id: string): Promise<WorkspaceHandle> {
     const result = await this.client.request<WorkspaceRestoreResult>('workspace.restore', { id });
     return new WorkspaceHandle(this.client, result.workspace);
-  }
-
-  async pause(id: string): Promise<boolean> {
-    const result = await this.client.request<WorkspacePauseResult>('workspace.pause', { id });
-    return result.paused;
-  }
-
-  async resume(id: string): Promise<boolean> {
-    const result = await this.client.request<WorkspaceResumeResult>('workspace.resume', { id });
-    return result.resumed;
   }
 
   async fork(id: string, childWorkspaceName?: string, childRef?: string): Promise<WorkspaceHandle> {

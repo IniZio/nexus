@@ -5,12 +5,10 @@ import type {
   WorkspaceForkResult,
   WorkspaceInfo,
   WorkspaceListResult,
-  WorkspacePauseResult,
   WorkspaceRecord,
   WorkspaceRelationsListResult,
   WorkspaceRemoveResult,
   WorkspaceRestoreResult,
-  WorkspaceResumeResult,
   WorkspaceReadyResult,
   WorkspaceStartResult,
   WorkspaceStopResult,
@@ -51,8 +49,6 @@ export interface RPCSchema {
   'workspace.start': [{ id: string }, WorkspaceStartResult];
   'workspace.stop': [{ id: string }, WorkspaceStopResult];
   'workspace.remove': [{ id: string }, WorkspaceRemoveResult];
-  'workspace.pause': [{ id: string }, WorkspacePauseResult];
-  'workspace.resume': [{ id: string }, WorkspaceResumeResult];
   'workspace.restore': [{ id: string }, WorkspaceRestoreResult];
   'workspace.fork': [
     { id: string; childWorkspaceName?: string; childRef?: string },

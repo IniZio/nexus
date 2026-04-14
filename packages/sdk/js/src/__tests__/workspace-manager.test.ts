@@ -324,46 +324,6 @@ describe('WorkspaceManager', () => {
     expect(ws.state).toBe('restored');
   });
 
-  it('pauses and resumes workspace', async () => {
-    await connectClient();
-
-    const pausePromise = client.workspaces.pause('ws-1');
-    const pauseSent = mockWsInstance.send.mock.calls[0][0] as string;
-    const pauseReq = JSON.parse(pauseSent);
-    expect(pauseReq.method).toBe('workspace.pause');
-    expect(pauseReq.params).toEqual({ id: 'ws-1' });
-
-    emitEvent(
-      'message',
-      Buffer.from(
-        JSON.stringify({
-          jsonrpc: '2.0',
-          id: pauseReq.id,
-          result: { paused: true },
-        })
-      )
-    );
-    await expect(pausePromise).resolves.toBe(true);
-
-    const resumePromise = client.workspaces.resume('ws-1');
-    const resumeSent = mockWsInstance.send.mock.calls[1][0] as string;
-    const resumeReq = JSON.parse(resumeSent);
-    expect(resumeReq.method).toBe('workspace.resume');
-    expect(resumeReq.params).toEqual({ id: 'ws-1' });
-
-    emitEvent(
-      'message',
-      Buffer.from(
-        JSON.stringify({
-          jsonrpc: '2.0',
-          id: resumeReq.id,
-          result: { resumed: true },
-        })
-      )
-    );
-    await expect(resumePromise).resolves.toBe(true);
-  });
-
   it('forks workspace and returns child handle', async () => {
     await connectClient();
 

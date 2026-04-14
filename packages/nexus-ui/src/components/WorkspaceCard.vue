@@ -18,10 +18,8 @@ const stateClass = computed(() => {
   return `nx-badge--${s}`;
 });
 
-const canStart   = computed(() => ["stopped", "created", "restored"].includes(props.workspace.state));
-const canStop    = computed(() => props.workspace.state === "running");
-const canPause   = computed(() => props.workspace.state === "running");
-const canResume  = computed(() => props.workspace.state === "paused");
+const canStart   = computed(() => ["stopped", "created", "restored", "paused"].includes(props.workspace.state));
+const canStop    = computed(() => ["running", "paused"].includes(props.workspace.state));
 
 function act(kind: string) {
   emit("action", kind, props.workspace);
@@ -82,24 +80,6 @@ const updatedLabel = computed(() => {
           severity="secondary"
           :loading="actionPending === 'stop'"
           @click="act('stop')"
-        />
-        <Button
-          v-if="canPause"
-          size="small"
-          label="Pause"
-          icon="pi pi-pause"
-          severity="secondary"
-          :loading="actionPending === 'pause'"
-          @click="act('pause')"
-        />
-        <Button
-          v-if="canResume"
-          size="small"
-          label="Resume"
-          icon="pi pi-play"
-          severity="secondary"
-          :loading="actionPending === 'resume'"
-          @click="act('resume')"
         />
         <Button
           size="small"
