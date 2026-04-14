@@ -37,7 +37,7 @@ tasks:
     generates:
       - nexus-daemon
     cmds:
-      - go build ./cmd/daemon/...
+      - go build -o ./nexus-daemon ./cmd/daemon
 
   swift:bundle-daemon:
     desc: Build the Go daemon (with version ldflags) and copy it into the app's Resources folder

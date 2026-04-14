@@ -69,8 +69,6 @@ Full lifecycle management. All methods return primitives or a `WorkspaceHandle`.
 | `list()`                | `WorkspaceRecord[]` | All workspaces                                                                 |
 | `stop(id)`              | `boolean`           |                                                                                |
 | `remove(id)`            | `boolean`           | Permanently deletes                                                            |
-| `pause(id)`             | `boolean`           | Snapshot and suspend                                                           |
-| `resume(id)`            | `boolean`           | Resume a paused workspace                                                      |
 | `restore(id)`           | `WorkspaceHandle`   | Restore from snapshot                                                          |
 | `fork(id, name?, ref?)` | `WorkspaceHandle`   | Fork to a new branch                                                           |
 

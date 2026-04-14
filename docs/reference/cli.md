@@ -30,11 +30,9 @@ Lists all workspaces with id, name, state, backend, and local worktree path.
 nexus start <id>
 nexus stop <id>
 nexus remove <id>
-nexus pause <id>
-nexus resume <id>
 nexus restore <id>
 ```
-Start a stopped workspace, stop a running one, or permanently remove it. `pause` snapshots and suspends; `resume` wakes it back up; `restore` restores from the last snapshot.
+Start a stopped workspace, stop a running one, or permanently remove it. `restore` restores from the last snapshot.
 
 ```
 nexus fork <id> <name> [--ref <ref>]
