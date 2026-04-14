@@ -131,8 +131,7 @@ public final class AppState: ObservableObject {
     // MARK: - Daemon auto-start
 
     /// On first launch: fast-path if daemon is up and auth works; otherwise
-    /// kill any stale daemon, launch a fresh one (which writes a new token),
-    /// re-discover the URL, and connect.
+    /// restart to a daemon token we control (env/keychain), then reconnect.
     func ensureDaemonAndLoad() async {
         connectionState = .connecting
 
@@ -171,27 +170,25 @@ public final class AppState: ObservableObject {
         }
 
         // Step 4: No injected URL — we own the daemon lifecycle.
-        // Only kill and restart if the daemon is truly offline.
-        // If it's running but we can't authenticate, leave it alone.
+        // If fast-path auth fails, force a restart so daemon and keychain token
+        // are guaranteed to match.
         connectionState = .starting
-        if daemonStatus == .offline {
-            await Task.detached { DaemonLauncher.killRunning() }.value
-            try? await Task.sleep(for: .seconds(0.4))
-            do {
-                try await DaemonLauncher.ensureRunning()
-            } catch {
-                connectionState = .disconnected
-                self.error = error.localizedDescription
-                return
-            }
-            let newURL = WebSocketDaemonClient.discoverURL()
-            client = WebSocketDaemonClient(daemonURL: newURL)
-            if let wsClient = client as? WebSocketDaemonClient,
-               let info = await wsClient.fetchDaemonInfo() {
-                daemonStatus = .running(info: info)
-            } else {
-                daemonStatus = .unknown
-            }
+        await Task.detached { DaemonLauncher.killRunning() }.value
+        try? await Task.sleep(for: .seconds(0.4))
+        do {
+            try await DaemonLauncher.ensureRunning()
+        } catch {
+            connectionState = .disconnected
+            self.error = error.localizedDescription
+            return
+        }
+        let newURL = WebSocketDaemonClient.discoverURL()
+        client = WebSocketDaemonClient(daemonURL: newURL)
+        if let wsClient = client as? WebSocketDaemonClient,
+           let info = await wsClient.fetchDaemonInfo() {
+            daemonStatus = .running(info: info)
+        } else {
+            daemonStatus = .unknown
         }
         await load()
     }

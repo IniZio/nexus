@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 // MARK: - Errors
 
@@ -164,6 +165,8 @@ public struct DaemonLauncher {
         guard let binary = resolveBinary() else {
             throw DaemonLaunchError.binaryNotFound
         }
+        let daemonToken = try resolveOrCreateLaunchToken()
+        setenv("NEXUS_DAEMON_TOKEN", daemonToken, 1)
 
         let runDir = resolveRunDir()
         try FileManager.default.createDirectory(
@@ -177,7 +180,7 @@ public struct DaemonLauncher {
 
         let proc = Process()
         proc.executableURL = binary
-        proc.arguments = ["--port", "\(targetPort)"]
+        proc.arguments = ["--port", "\(targetPort)", "--token", daemonToken]
         proc.standardInput = FileHandle.nullDevice
         proc.standardOutput = logHandle
         proc.standardError = logHandle
@@ -278,6 +281,97 @@ public struct DaemonLauncher {
             dir = dir.deletingLastPathComponent()
         }
         return nil
+    }
+
+    private static func resolveOrCreateLaunchToken() throws -> String {
+        let env = ProcessInfo.processInfo.environment
+        if let token = env["NEXUS_DAEMON_TOKEN"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !token.isEmpty {
+            return token
+        }
+
+        let service = daemonTokenService(env: env)
+        if let keychainToken = readMacKeychainPassword(service: service) {
+            return keychainToken
+        }
+
+        let token = try generateSecureToken()
+        guard writeMacKeychainPassword(token, service: service) else {
+            throw DaemonLaunchError.launchFailed("failed to write daemon token to keychain service \(service)")
+        }
+        return token
+    }
+
+    private static func daemonTokenService(env: [String: String]) -> String {
+        let configured = env["NEXUS_DAEMON_TOKEN_KEYCHAIN_SERVICE"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let configured, !configured.isEmpty {
+            return configured
+        }
+        return "nexus-daemon-token"
+    }
+
+    private static func generateSecureToken() throws -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        guard status == errSecSuccess else {
+            throw DaemonLaunchError.launchFailed("failed to generate daemon token")
+        }
+        let data = Data(bytes)
+        let token = data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            throw DaemonLaunchError.launchFailed("generated daemon token was empty")
+        }
+        return token
+    }
+
+    private static func readMacKeychainPassword(service: String) -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        task.arguments = ["find-generic-password", "-s", service, "-w"]
+
+        let out = Pipe()
+        task.standardOutput = out
+        task.standardError = Pipe()
+
+        do {
+            try task.run()
+        } catch {
+            return nil
+        }
+        task.waitUntilExit()
+        guard task.terminationStatus == 0 else { return nil }
+
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        guard let raw = String(data: data, encoding: .utf8) else { return nil }
+        let token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return token.isEmpty ? nil : token
+    }
+
+    private static func writeMacKeychainPassword(_ token: String, service: String) -> Bool {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        task.arguments = [
+            "add-generic-password",
+            "-U",
+            "-s", service,
+            "-a", "nexus-daemon",
+            "-w", token,
+        ]
+        task.standardOutput = Pipe()
+        task.standardError = Pipe()
+
+        do {
+            try task.run()
+        } catch {
+            return false
+        }
+        task.waitUntilExit()
+        return task.terminationStatus == 0
     }
 }
 
