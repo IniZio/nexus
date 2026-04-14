@@ -26,9 +26,10 @@ public enum DaemonLaunchError: Error, LocalizedError {
 /// Binary resolution order:
 ///   1. NEXUS_DAEMON_BIN environment variable (CI / developer override)
 ///   2. Local dev source daemon (when `NEXUS_USE_SOURCE_DAEMON=1` or DEBUG)
-///   3. Prefer newer downloaded daemon; otherwise bundled fallback
-///   4. Next to the running executable (legacy co-install layout)
-///   5. Dev layout fallback: walk up from the executable looking for
+///   3. App bundle Resources daemon (preferred to avoid app/daemon skew)
+///   4. Downloaded/system daemon fallback (`which nexus-daemon`)
+///   5. Next to the running executable (legacy co-install layout)
+///   6. Dev layout fallback: walk up from the executable looking for
 ///      `packages/nexus/nexus-daemon` or `nexus/nexus-daemon`
 ///      (covers `swift run` from packages/nexus-swift/).
 public struct DaemonLauncher {
@@ -110,12 +111,21 @@ public struct DaemonLauncher {
             return devBinary
         }
 
-        // 2. Prefer newer downloaded daemon if available; otherwise use bundled fallback.
-        if let resolved = ToolBinaryResolver.resolvePreferred("nexus-daemon") {
-            return URL(fileURLWithPath: resolved)
+        // 2. Prefer bundled daemon to keep app and daemon versions aligned.
+        if let resourceURL = Bundle.main.resourceURL {
+            let bundledCandidates = [
+                resourceURL.appendingPathComponent("nexus-daemon"),
+                resourceURL.appendingPathComponent("tools/nexus-daemon"),
+            ]
+            for bundled in bundledCandidates where fm.isExecutableFile(atPath: bundled.path) {
+                return bundled
+            }
         }
 
-        // 3. Co-located with this executable (legacy co-install layout)
+        // 3. Downloaded/system daemon fallback.
+        if let path = which("nexus-daemon") { return URL(fileURLWithPath: path) }
+
+        // 4. Co-located with this executable (legacy co-install layout)
         let exeURL: URL = {
             if let u = Bundle.main.executableURL { return u.resolvingSymlinksInPath() }
             let cwd = FileManager.default.currentDirectoryPath
@@ -126,7 +136,7 @@ public struct DaemonLauncher {
         let colocated = exeURL.deletingLastPathComponent().appendingPathComponent("nexus-daemon")
         if fm.isExecutableFile(atPath: colocated.path) { return colocated }
 
-        // 4. Dev layout fallback.
+        // 5. Dev layout fallback.
         return resolveDevBinary()
     }
 
