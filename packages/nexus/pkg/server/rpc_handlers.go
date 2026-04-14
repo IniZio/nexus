@@ -66,17 +66,22 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 		return handlers.HandleWorkspaceRelationsList(ctx, req, s.workspaceMgr)
 	})
 	rpc.TypedRegister(r, "workspace.remove", func(ctx context.Context, req handlers.WorkspaceRemoveParams) (*handlers.WorkspaceRemoveResult, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceRemove(ctx, req, s.workspaceMgr, s.runtimeFactory)
+		result, rpcErr := handlers.HandleWorkspaceRemove(ctx, req, s.workspaceMgr, s.runtimeFactory)
+		if rpcErr == nil {
+			s.DeactivateWorkspaceTunnels(req.ID)
+		}
+		return result, rpcErr
 	})
 	rpc.TypedRegister(r, "workspace.stop", func(ctx context.Context, req handlers.WorkspaceStopParams) (*handlers.WorkspaceStopResult, *rpckit.RPCError) {
-		result, rpcErr := handlers.HandleWorkspaceStop(ctx, req, s.workspaceMgr)
+		result, rpcErr := handlers.HandleWorkspaceStopWithRuntime(ctx, req, s.workspaceMgr, s.runtimeFactory)
 		if rpcErr == nil {
 			s.StopPortMonitoring(req.ID)
+			s.DeactivateWorkspaceTunnels(req.ID)
 		}
 		return result, rpcErr
 	})
 	rpc.TypedRegister(r, "workspace.start", func(ctx context.Context, req handlers.WorkspaceStartParams) (*handlers.WorkspaceStartResult, *rpckit.RPCError) {
-		result, rpcErr := handlers.HandleWorkspaceStart(ctx, req, s.workspaceMgr)
+		result, rpcErr := handlers.HandleWorkspaceStart(ctx, req, s.workspaceMgr, s.runtimeFactory)
 		if rpcErr == nil {
 			_ = s.StartPortMonitoring(req.ID)
 		}
@@ -84,20 +89,6 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 	})
 	rpc.TypedRegister(r, "workspace.restore", func(ctx context.Context, req handlers.WorkspaceRestoreParams) (*handlers.WorkspaceRestoreResult, *rpckit.RPCError) {
 		result, rpcErr := handlers.HandleWorkspaceRestore(ctx, req, s.workspaceMgr, s.runtimeFactory)
-		if rpcErr == nil {
-			_ = s.StartPortMonitoring(req.ID)
-		}
-		return result, rpcErr
-	})
-	rpc.TypedRegister(r, "workspace.pause", func(ctx context.Context, req handlers.WorkspacePauseParams) (*handlers.WorkspacePauseResult, *rpckit.RPCError) {
-		result, rpcErr := handlers.HandleWorkspacePause(ctx, req, s.workspaceMgr, s.runtimeFactory)
-		if rpcErr == nil {
-			s.StopPortMonitoring(req.ID)
-		}
-		return result, rpcErr
-	})
-	rpc.TypedRegister(r, "workspace.resume", func(ctx context.Context, req handlers.WorkspaceResumeParams) (*handlers.WorkspaceResumeResult, *rpckit.RPCError) {
-		result, rpcErr := handlers.HandleWorkspaceResume(ctx, req, s.workspaceMgr, s.runtimeFactory)
 		if rpcErr == nil {
 			_ = s.StartPortMonitoring(req.ID)
 		}
@@ -127,10 +118,81 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 		workspace := s.resolveWorkspace(raw)
 		rootPath := workspace.Path()
 		if wsRecord, ok := s.workspaceMgr.Get(workspaceID); ok && strings.TrimSpace(wsRecord.RootPath) != "" {
-			rootPath = wsRecord.RootPath
+			rootPath = strings.TrimSpace(wsRecord.LocalWorktreePath)
+			if rootPath == "" {
+				rootPath = wsRecord.RootPath
+			}
 		}
-		s.ensureComposeForwards(ctx, workspaceID, rootPath)
+		s.ensureComposeHints(ctx, workspaceID, rootPath)
 		return handlers.HandleWorkspaceReady(ctx, req, workspace, s.serviceMgr)
+	})
+	rpc.TypedRegister(r, "workspace.ports.list", func(_ context.Context, req struct {
+		WorkspaceID string `json:"workspaceId"`
+	}) (map[string]any, *rpckit.RPCError) {
+		if req.WorkspaceID == "" {
+			return nil, rpckit.ErrInvalidParams
+		}
+		items, activeWorkspaceID := s.WorkspacePortStates(req.WorkspaceID)
+		return map[string]any{
+			"items":             items,
+			"activeWorkspaceId": activeWorkspaceID,
+		}, nil
+	})
+	rpc.TypedRegister(r, "workspace.ports.add", func(_ context.Context, req struct {
+		WorkspaceID string `json:"workspaceId"`
+		Port        int    `json:"port"`
+	}) (map[string]any, *rpckit.RPCError) {
+		if req.WorkspaceID == "" || req.Port <= 0 || req.Port > 65535 {
+			return nil, rpckit.ErrInvalidParams
+		}
+		if err := s.SetWorkspaceTunnelPreference(req.WorkspaceID, req.Port, true); err != nil {
+			return nil, rpckit.ErrInvalidParams
+		}
+		items, activeWorkspaceID := s.WorkspacePortStates(req.WorkspaceID)
+		return map[string]any{"items": items, "activeWorkspaceId": activeWorkspaceID}, nil
+	})
+	rpc.TypedRegister(r, "workspace.ports.remove", func(_ context.Context, req struct {
+		WorkspaceID string `json:"workspaceId"`
+		Port        int    `json:"port"`
+	}) (map[string]any, *rpckit.RPCError) {
+		if req.WorkspaceID == "" || req.Port <= 0 || req.Port > 65535 {
+			return nil, rpckit.ErrInvalidParams
+		}
+		if err := s.SetWorkspaceTunnelPreference(req.WorkspaceID, req.Port, false); err != nil {
+			return nil, rpckit.ErrInvalidParams
+		}
+		items, activeWorkspaceID := s.WorkspacePortStates(req.WorkspaceID)
+		return map[string]any{"items": items, "activeWorkspaceId": activeWorkspaceID}, nil
+	})
+	rpc.TypedRegister(r, "workspace.tunnels.activate", func(_ context.Context, req struct {
+		WorkspaceID string `json:"workspaceId"`
+	}) (map[string]any, *rpckit.RPCError) {
+		if req.WorkspaceID == "" {
+			return nil, rpckit.ErrInvalidParams
+		}
+		other, err := s.ActivateWorkspaceTunnels(req.WorkspaceID)
+		if err != nil {
+			return map[string]any{
+				"active":            false,
+				"activeWorkspaceId": other,
+			}, nil
+		}
+		return map[string]any{
+			"active":            true,
+			"activeWorkspaceId": req.WorkspaceID,
+		}, nil
+	})
+	rpc.TypedRegister(r, "workspace.tunnels.deactivate", func(_ context.Context, req struct {
+		WorkspaceID string `json:"workspaceId"`
+	}) (map[string]any, *rpckit.RPCError) {
+		if req.WorkspaceID == "" {
+			return nil, rpckit.ErrInvalidParams
+		}
+		s.DeactivateWorkspaceTunnels(req.WorkspaceID)
+		return map[string]any{
+			"active":            false,
+			"activeWorkspaceId": "",
+		}, nil
 	})
 	rpc.TypedRegister(r, "git.command", func(ctx context.Context, req handlers.GitCommandParams) (map[string]interface{}, *rpckit.RPCError) {
 		ws := s.resolveWorkspaceTyped(req)
@@ -161,13 +223,28 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 		return pty.HandleOpen(s.ptyDeps(), c, params, workspace)
 	})
 	r.Register("pty.write", func(_ context.Context, _ string, params json.RawMessage, conn any) (interface{}, *rpckit.RPCError) {
-		return pty.HandleWrite(params, conn.(*Connection))
+		return pty.HandleWrite(s.ptyDeps(), params, conn.(*Connection))
 	})
 	r.Register("pty.resize", func(_ context.Context, _ string, params json.RawMessage, conn any) (interface{}, *rpckit.RPCError) {
-		return pty.HandleResize(params, conn.(*Connection))
+		return pty.HandleResize(s.ptyDeps(), params, conn.(*Connection))
 	})
 	r.Register("pty.close", func(_ context.Context, _ string, params json.RawMessage, conn any) (interface{}, *rpckit.RPCError) {
-		return pty.HandleClose(params, conn.(*Connection))
+		return pty.HandleClose(s.ptyDeps(), params, conn.(*Connection))
+	})
+	r.Register("pty.attach", func(_ context.Context, _ string, params json.RawMessage, conn any) (interface{}, *rpckit.RPCError) {
+		return pty.HandleAttach(s.ptyDeps(), params, conn.(*Connection))
+	})
+	r.Register("pty.list", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
+		return pty.HandleList(s.ptyDeps(), params)
+	})
+	r.Register("pty.get", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
+		return pty.HandleGet(s.ptyDeps(), params)
+	})
+	r.Register("pty.rename", func(_ context.Context, _ string, params json.RawMessage, _ any) (interface{}, *rpckit.RPCError) {
+		return pty.HandleRename(s.ptyDeps(), params)
+	})
+	r.Register("pty.tmux", func(_ context.Context, _ string, params json.RawMessage, conn any) (interface{}, *rpckit.RPCError) {
+		return pty.HandleTmuxCommand(s.ptyDeps(), conn.(*Connection), params)
 	})
 
 	return r
@@ -179,5 +256,7 @@ func (s *Server) ptyDeps() *pty.Deps {
 		RuntimeFactory: s.runtimeFactory,
 		AuthRelay:      s.authRelayBroker,
 		RequireStarted: s.requireWorkspaceStarted,
+		Registry:       s.ptyRegistry,
+		SessionStore:   s.ptyStore,
 	}
 }

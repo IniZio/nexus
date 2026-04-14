@@ -5,6 +5,10 @@ export const runtimeSelectionCaseIds = [
   'runtime-selection/installable-missing-setup-fails',
 ] as const;
 
+export const ptyPersistenceCaseIds = [
+  'pty-persistence/daemon-restart-tmux-recovery',
+] as const;
+
 export const worktreeSyncCaseIds = [
   'worktree-sync/host-to-workspace-file-propagation',
 ] as const;
@@ -44,6 +48,7 @@ export const multiProjectCaseIds = [
 
 export const implementedCaseIds = [
   ...runtimeSelectionCaseIds,
+  ...ptyPersistenceCaseIds,
   ...worktreeSyncCaseIds,
   ...lifecycleHooksCaseIds,
   ...spotlightComposeCaseIds,

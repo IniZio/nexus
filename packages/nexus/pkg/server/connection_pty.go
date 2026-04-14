@@ -72,3 +72,10 @@ func (c *Connection) CloseAllPTY() {
 		_ = c.ClosePTY(id)
 	}
 }
+
+// DetachAllPTY drops connection-local PTY bindings without closing sessions.
+func (c *Connection) DetachAllPTY() {
+	c.ptyMu.Lock()
+	c.pty = make(map[string]*pty.Session)
+	c.ptyMu.Unlock()
+}
