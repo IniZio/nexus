@@ -140,7 +140,7 @@ jobs:
   swift-dev-app:
     name: Build Swift Dev App
     if: startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && needs.semantic-release.outputs.released == 'true')
-    needs: [semantic-release, test]
+    needs: [semantic-release, test, build]
     runs-on: macos-latest
     env:
       DERIVED_DATA_PATH: packages/nexus-swift/.build/xcbuild-release
@@ -162,6 +162,27 @@ jobs:
           fi
           echo "bundle_id=$bundle_id" >> "$GITHUB_OUTPUT"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: Download darwin-arm64 CLI/daemon artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: darwin-arm64
+          path: .ci-darwin-arm64
+
+      - name: Refresh bundled nexus binaries from CI build
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f ".ci-darwin-arm64/nexus-darwin-arm64"
+          test -f ".ci-darwin-arm64/nexus-daemon-darwin-arm64"
+          mkdir -p packages/nexus-swift/Resources/tools
+          cp .ci-darwin-arm64/nexus-darwin-arm64 packages/nexus-swift/Resources/tools/nexus
+          cp .ci-darwin-arm64/nexus-daemon-darwin-arm64 packages/nexus-swift/Resources/nexus-daemon
+          cp .ci-darwin-arm64/nexus-daemon-darwin-arm64 packages/nexus-swift/Resources/tools/nexus-daemon
+          chmod +x \
+            packages/nexus-swift/Resources/tools/nexus \
+            packages/nexus-swift/Resources/nexus-daemon \
+            packages/nexus-swift/Resources/tools/nexus-daemon
 
       - name: Build macOS app (unsigned)
         shell: bash

@@ -26,8 +26,8 @@ public enum DaemonLaunchError: Error, LocalizedError {
 /// Binary resolution order:
 ///   1. NEXUS_DAEMON_BIN environment variable (CI / developer override)
 ///   2. Local dev source daemon (when `NEXUS_USE_SOURCE_DAEMON=1` or DEBUG)
-///   3. Installer-managed daemon on $PATH (`which nexus-daemon`)
-///   4. App bundle Resources (legacy fallback)
+///   3. App bundle Resources daemon (preferred to avoid app/daemon skew)
+///   4. Downloaded/system daemon fallback (`which nexus-daemon`)
 ///   5. Next to the running executable (legacy co-install layout)
 ///   6. Dev layout fallback: walk up from the executable looking for
 ///      `packages/nexus/nexus-daemon` or `nexus/nexus-daemon`
@@ -111,14 +111,18 @@ public struct DaemonLauncher {
             return devBinary
         }
 
-        // 2. Bundled resource (preferred over PATH to avoid stale system installs
-        // during local app development/testing).
+        // 2. Prefer bundled daemon to keep app and daemon versions aligned.
         if let resourceURL = Bundle.main.resourceURL {
-            let bundled = resourceURL.appendingPathComponent("nexus-daemon")
-            if fm.isExecutableFile(atPath: bundled.path) { return bundled }
+            let bundledCandidates = [
+                resourceURL.appendingPathComponent("nexus-daemon"),
+                resourceURL.appendingPathComponent("tools/nexus-daemon"),
+            ]
+            for bundled in bundledCandidates where fm.isExecutableFile(atPath: bundled.path) {
+                return bundled
+            }
         }
 
-        // 3. Installer-managed daemon on PATH.
+        // 3. Downloaded/system daemon fallback.
         if let path = which("nexus-daemon") { return URL(fileURLWithPath: path) }
 
         // 4. Co-located with this executable (legacy co-install layout)
@@ -230,7 +234,7 @@ public struct DaemonLauncher {
         return configHome + "/nexus/run"
     }
 
-    private static func which(_ name: String) -> String? {
+    static func which(_ name: String) -> String? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/which")
         proc.arguments = [name]
@@ -274,5 +278,77 @@ public struct DaemonLauncher {
             dir = dir.deletingLastPathComponent()
         }
         return nil
+    }
+}
+
+enum ToolBinaryResolver {
+    static let managedToolNames = ["nexus", "nexus-daemon", "mutagen", "limactl", "tmux"]
+
+    static func resolvePreferred(_ name: String) -> String? {
+        let downloaded = DaemonLauncher.which(name)
+        let bundled = bundledPath(name)
+        guard let downloaded else { return bundled }
+        guard let bundled else { return downloaded }
+
+        if let d = semanticVersion(of: downloaded), let b = semanticVersion(of: bundled) {
+            return compareVersions(d, b) >= 0 ? downloaded : bundled
+        }
+        // If we cannot parse versions, prefer external/downloaded install.
+        return downloaded
+    }
+
+    static func preferredPathEntries() -> [String] {
+        var entries: [String] = []
+        var seen = Set<String>()
+        for name in managedToolNames {
+            guard let path = resolvePreferred(name) else { continue }
+            let dir = URL(fileURLWithPath: path).deletingLastPathComponent().path
+            if seen.insert(dir).inserted {
+                entries.append(dir)
+            }
+        }
+        return entries
+    }
+
+    private static func bundledPath(_ name: String) -> String? {
+        guard let resourceURL = Bundle.main.resourceURL else { return nil }
+        let fm = FileManager.default
+        let candidates = [
+            resourceURL.appendingPathComponent("tools/\(name)").path,
+            resourceURL.appendingPathComponent(name).path,
+        ]
+        for candidate in candidates where fm.isExecutableFile(atPath: candidate) {
+            return candidate
+        }
+        return nil
+    }
+
+    private static func semanticVersion(of executablePath: String) -> [Int]? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: executablePath)
+        proc.arguments = ["--version"]
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = out
+        guard (try? proc.run()) != nil else { return nil }
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else { return nil }
+        let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        guard let match = text.range(of: #"\d+\.\d+\.\d+"#, options: .regularExpression) else {
+            return nil
+        }
+        return text[match].split(separator: ".").compactMap { Int($0) }
+    }
+
+    private static func compareVersions(_ lhs: [Int], _ rhs: [Int]) -> Int {
+        let count = max(lhs.count, rhs.count)
+        for i in 0..<count {
+            let l = i < lhs.count ? lhs[i] : 0
+            let r = i < rhs.count ? rhs[i] : 0
+            if l != r {
+                return l < r ? -1 : 1
+            }
+        }
+        return 0
     }
 }

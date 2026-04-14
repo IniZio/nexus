@@ -424,11 +424,12 @@ func handleFirecrackerPTYOpen(deps *Deps, conn Conn, p OpenParams, wsRecord *wor
 		session.IsTmux = true
 		session.TmuxSession = buildTmuxSessionName(wsRecord.ID, sessionID)
 		if err := sendRemoteShellWrite(enc, dec, nil, sessionID, buildTmuxAttachCommand(session.TmuxSession)); err != nil {
-			_ = agentConn.Close()
-			return nil, &rpckit.RPCError{
-				Code:    rpckit.ErrInternalError.Code,
-				Message: fmt.Sprintf("tmux attach failed: %v", err),
-			}
+			// Fall back to a plain shell when tmux is unavailable/misconfigured.
+			// This keeps terminal startup usable on fresh machines where tmux has
+			// not been installed yet.
+			session.IsTmux = false
+			session.TmuxSession = ""
+			sendPTYData(conn, nil, sessionID, "\r\n[nexus] tmux unavailable; continuing without session persistence.\r\n")
 		}
 	}
 

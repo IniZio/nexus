@@ -373,7 +373,11 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         guard let items = raw as? [[String: Any]] else { return [] }
         return items.compactMap { item in
             let port: Int?
-            if let n = item["localPort"] as? Int {
+            if let n = item["port"] as? Int {
+                port = n
+            } else if let n = item["port"] as? NSNumber {
+                port = n.intValue
+            } else if let n = item["localPort"] as? Int {
                 port = n
             } else if let n = item["localPort"] as? NSNumber {
                 port = n.intValue

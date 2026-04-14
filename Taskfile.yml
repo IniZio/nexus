@@ -53,6 +53,103 @@ tasks:
       - chmod +x ../nexus-swift/Resources/nexus-daemon
       - echo "Bundled daemon → packages/nexus-swift/Resources/nexus-daemon"
 
+  swift:bundle-tools:
+    desc: Download and stage fallback tool binaries into packages/nexus-swift/Resources/tools
+    dir: "{{.NEXUS_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        TOOLS_DIR="../nexus-swift/Resources/tools"
+        mkdir -p "$TOOLS_DIR"
+
+        HOST_OS="$(uname -s)"
+        HOST_ARCH="$(uname -m)"
+        case "$HOST_OS" in
+          Darwin) NEXUS_OS="darwin"; LIMA_OS="Darwin" ;;
+          Linux) NEXUS_OS="linux"; LIMA_OS="Linux" ;;
+          *) echo "unsupported host OS: $HOST_OS" >&2; exit 1 ;;
+        esac
+        case "$HOST_ARCH" in
+          arm64|aarch64) NEXUS_ARCH="arm64"; MUTAGEN_ARCH="arm64" ;;
+          x86_64|amd64) NEXUS_ARCH="amd64"; MUTAGEN_ARCH="amd64" ;;
+          *) echo "unsupported host arch: $HOST_ARCH" >&2; exit 1 ;;
+        esac
+        if [ "$LIMA_OS" = "Darwin" ]; then
+          if [ "$HOST_ARCH" = "x86_64" ] || [ "$HOST_ARCH" = "amd64" ]; then
+            LIMA_ARCH="x86_64"
+          else
+            LIMA_ARCH="arm64"
+          fi
+        else
+          if [ "$HOST_ARCH" = "x86_64" ] || [ "$HOST_ARCH" = "amd64" ]; then
+            LIMA_ARCH="x86_64"
+          else
+            LIMA_ARCH="aarch64"
+          fi
+        fi
+
+        NEXUS_TAG="${NEXUS_BUNDLE_TAG:-latest}"
+        MUTAGEN_TAG="${MUTAGEN_BUNDLE_TAG:-latest}"
+        LIMA_TAG="${LIMA_BUNDLE_TAG:-latest}"
+        TMP="$(mktemp -d)"
+        cleanup() { rm -rf "$TMP"; }
+        trap cleanup EXIT
+
+        download_release_asset() {
+          repo="$1"
+          tag="$2"
+          shift 2
+          if [ "$tag" = "latest" ]; then
+            gh release download -R "$repo" "$@" -D "$TMP"
+          else
+            gh release download "$tag" -R "$repo" "$@" -D "$TMP"
+          fi
+        }
+
+        echo "Downloading nexus + nexus-daemon ($NEXUS_OS/$NEXUS_ARCH) from IniZio/nexus@$NEXUS_TAG…"
+        download_release_asset "IniZio/nexus" "$NEXUS_TAG" -p "nexus-${NEXUS_OS}-${NEXUS_ARCH}" -p "nexus-daemon-${NEXUS_OS}-${NEXUS_ARCH}"
+        rm -f "$TOOLS_DIR/nexus" "$TOOLS_DIR/nexus-daemon"
+        cp "$TMP/nexus-${NEXUS_OS}-${NEXUS_ARCH}" "$TOOLS_DIR/nexus"
+        cp "$TMP/nexus-daemon-${NEXUS_OS}-${NEXUS_ARCH}" "$TOOLS_DIR/nexus-daemon"
+
+        echo "Downloading mutagen ($NEXUS_OS/$MUTAGEN_ARCH) from mutagen-io/mutagen@$MUTAGEN_TAG…"
+        download_release_asset "mutagen-io/mutagen" "$MUTAGEN_TAG" -p "mutagen_${NEXUS_OS}_${MUTAGEN_ARCH}_*.tar.gz"
+        set -- "$TMP"/mutagen_${NEXUS_OS}_${MUTAGEN_ARCH}_*.tar.gz
+        MUTAGEN_TAR="$1"
+        [ -f "$MUTAGEN_TAR" ] || { echo "mutagen archive not found after download" >&2; exit 1; }
+        MUTAGEN_ENTRY="$(tar -tzf "$MUTAGEN_TAR" | awk '/(^|\/)mutagen$/ {print; exit}')"
+        [ -n "$MUTAGEN_ENTRY" ] || { echo "mutagen binary entry not found in archive" >&2; exit 1; }
+        tar -xzf "$MUTAGEN_TAR" -C "$TMP" "$MUTAGEN_ENTRY"
+        rm -f "$TOOLS_DIR/mutagen"
+        cp "$TMP/$MUTAGEN_ENTRY" "$TOOLS_DIR/mutagen"
+
+        echo "Downloading limactl ($LIMA_OS/$LIMA_ARCH) from lima-vm/lima@$LIMA_TAG…"
+        download_release_asset "lima-vm/lima" "$LIMA_TAG" -p "lima-*-${LIMA_OS}-${LIMA_ARCH}.tar.gz"
+        set -- "$TMP"/lima-*-${LIMA_OS}-${LIMA_ARCH}.tar.gz
+        LIMA_TAR="$1"
+        [ -f "$LIMA_TAR" ] || { echo "lima archive not found after download" >&2; exit 1; }
+        LIMA_ENTRY="$(tar -tzf "$LIMA_TAR" | awk '/(^|\/)bin\/limactl$/ {print; exit}')"
+        [ -n "$LIMA_ENTRY" ] || { echo "limactl entry not found in archive" >&2; exit 1; }
+        tar -xzf "$LIMA_TAR" -C "$TMP" "$LIMA_ENTRY"
+        rm -f "$TOOLS_DIR/limactl"
+        cp "$TMP/$LIMA_ENTRY" "$TOOLS_DIR/limactl"
+
+        # tmux doesn't ship portable upstream binaries; keep PATH fallback for now.
+        if command -v tmux >/dev/null 2>&1; then
+          rm -f "$TOOLS_DIR/tmux"
+          cp "$(command -v tmux)" "$TOOLS_DIR/tmux"
+        else
+          rm -f "$TOOLS_DIR/tmux"
+          echo "warning: tmux not found in PATH; tmux fallback binary not bundled"
+        fi
+
+        chmod +x "$TOOLS_DIR/nexus" "$TOOLS_DIR/nexus-daemon" "$TOOLS_DIR/mutagen" "$TOOLS_DIR/limactl"
+        if [ -f "$TOOLS_DIR/tmux" ]; then chmod +x "$TOOLS_DIR/tmux"; fi
+        cp "$TOOLS_DIR/nexus-daemon" ../nexus-swift/Resources/nexus-daemon
+        chmod +x ../nexus-swift/Resources/nexus-daemon
+
+        echo "Bundled fallback tools ready in packages/nexus-swift/Resources/tools/"
+
   daemon:restart:
     desc: Kill any running daemon, start a fresh one, wait for /healthz
     deps: [daemon:build]
@@ -90,6 +187,7 @@ tasks:
 
   swift:build:
     desc: Build NexusApp.app via xcodebuild (Debug, macOS)
+    deps: [swift:bundle-tools]
     generates:
       - "{{.APP_BUNDLE}}/Contents/MacOS/NexusApp"
     cmds:
