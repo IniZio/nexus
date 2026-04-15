@@ -19,12 +19,16 @@ import (
 
 // fakeManager is a test double for the Manager
 type fakeManager struct {
-	spawnCalled bool
-	spawnSpec   SpawnSpec
-	stopCalled  bool
-	stopID      string
-	instance    *Instance
-	err         error
+	spawnCalled      bool
+	spawnSpec        SpawnSpec
+	stopCalled       bool
+	stopID           string
+	checkpointCalled bool
+	checkpointParent string
+	checkpointChild  string
+	checkpointID     string
+	instance         *Instance
+	err              error
 }
 
 func (f *fakeManager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) {
@@ -51,6 +55,19 @@ func (f *fakeManager) Get(workspaceID string) (*Instance, error) {
 
 func (f *fakeManager) GrowWorkspace(_ context.Context, _ string, _ int64) error {
 	return f.err
+}
+
+func (f *fakeManager) CheckpointForkImage(workspaceID string, childWorkspaceID string) (string, error) {
+	f.checkpointCalled = true
+	f.checkpointParent = workspaceID
+	f.checkpointChild = childWorkspaceID
+	if f.err != nil {
+		return "", f.err
+	}
+	if strings.TrimSpace(f.checkpointID) == "" {
+		f.checkpointID = "snap-1"
+	}
+	return f.checkpointID, nil
 }
 
 func TestFirecrackerDriver_Backend(t *testing.T) {
@@ -141,6 +158,60 @@ func TestDriverCreateWithMemMiBOption(t *testing.T) {
 
 	if fakeMgr.spawnSpec.MemoryMiB != 2048 {
 		t.Fatalf("expected MemoryMiB 2048, got %d", fakeMgr.spawnSpec.MemoryMiB)
+	}
+}
+
+func TestDriverCreateWithVCPUsOption(t *testing.T) {
+	fakeMgr := &fakeManager{
+		instance: &Instance{
+			WorkspaceID: "ws-1",
+			WorkDir:     "/tmp/ws-1",
+			APISocket:   "/tmp/ws-1/firecracker.sock",
+			VSockPath:   "/tmp/ws-1/vsock.sock",
+			CID:         1000,
+		},
+	}
+
+	d := NewDriver(nil, WithManager(fakeMgr))
+	err := d.Create(context.Background(), runtime.CreateRequest{
+		WorkspaceID: "ws-1",
+		ProjectRoot: "/projects/ws-1",
+		Options: map[string]string{
+			"vcpus": "3",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	if fakeMgr.spawnSpec.VCPUs != 3 {
+		t.Fatalf("expected VCPUs 3, got %d", fakeMgr.spawnSpec.VCPUs)
+	}
+}
+
+func TestDriverCreatePassesLineageSnapshotToSpawnSpec(t *testing.T) {
+	fakeMgr := &fakeManager{
+		instance: &Instance{
+			WorkspaceID: "ws-1",
+			WorkDir:     "/tmp/ws-1",
+			APISocket:   "/tmp/ws-1/firecracker.sock",
+			VSockPath:   "/tmp/ws-1/vsock.sock",
+			CID:         1000,
+		},
+	}
+	d := NewDriver(nil, WithManager(fakeMgr))
+
+	err := d.Create(context.Background(), runtime.CreateRequest{
+		WorkspaceID: "ws-1",
+		ProjectRoot: "/projects/ws-1",
+		Options: map[string]string{
+			"lineage_snapshot_id": "snap-42",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	if fakeMgr.spawnSpec.SnapshotID != "snap-42" {
+		t.Fatalf("expected spawn snapshot id %q, got %q", "snap-42", fakeMgr.spawnSpec.SnapshotID)
 	}
 }
 
@@ -256,13 +327,43 @@ func TestFirecrackerDriver_ResumeCreatesVMFromProjectRoot(t *testing.T) {
 	}
 }
 
-func TestFirecrackerDriver_ForkNotSupported(t *testing.T) {
+func TestFirecrackerDriver_ForkCopiesParentProjectRoot(t *testing.T) {
 	fakeMgr := &fakeManager{}
 	d := NewDriver(nil, WithManager(fakeMgr))
 
-	err := d.Fork(context.Background(), "ws-1", "ws-2")
-	if err == nil {
-		t.Fatal("expected error - fork not supported")
+	d.mu.Lock()
+	d.projectRoots["ws-1"] = "/projects/ws-1"
+	d.mu.Unlock()
+
+	if err := d.Fork(context.Background(), "ws-1", "ws-2"); err != nil {
+		t.Fatalf("fork failed: %v", err)
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if got := d.projectRoots["ws-2"]; got != "/projects/ws-1" {
+		t.Fatalf("expected child project root to inherit parent root, got %q", got)
+	}
+}
+
+func TestFirecrackerDriver_CheckpointForkUsesManagerSnapshotter(t *testing.T) {
+	fakeMgr := &fakeManager{
+		checkpointID: "snap-fork-42",
+	}
+	d := NewDriver(nil, WithManager(fakeMgr))
+
+	snapshotID, err := d.CheckpointFork(context.Background(), "ws-1", "ws-2")
+	if err != nil {
+		t.Fatalf("checkpoint fork failed: %v", err)
+	}
+	if snapshotID != "snap-fork-42" {
+		t.Fatalf("expected snapshot id %q, got %q", "snap-fork-42", snapshotID)
+	}
+	if !fakeMgr.checkpointCalled {
+		t.Fatal("expected manager checkpoint to be called")
+	}
+	if fakeMgr.checkpointParent != "ws-1" || fakeMgr.checkpointChild != "ws-2" {
+		t.Fatalf("unexpected checkpoint args: parent=%q child=%q", fakeMgr.checkpointParent, fakeMgr.checkpointChild)
 	}
 }
 

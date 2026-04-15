@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
 	"testing"
 
+	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
+	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/selection"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspace/create"
@@ -60,6 +63,434 @@ func TestHandleWorkspaceCreate(t *testing.T) {
 	}
 	if result == nil || result.Workspace == nil || result.Workspace.ID == "" {
 		t.Fatalf("expected workspace with id, got %#v", result)
+	}
+}
+
+func TestHandleWorkspaceCreateWithProjects_UsesProjectFirstPayload(t *testing.T) {
+	mgrRoot := t.TempDir()
+	mgr := workspacemgr.NewManager(mgrRoot)
+	projMgr := projectmgr.NewManager(mgrRoot, mgr.ProjectRepository())
+	mgr.SetProjectManager(projMgr)
+
+	project, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")
+	if err != nil {
+		t.Fatalf("seed project failed: %v", err)
+	}
+	rootWS, err := mgr.Create(context.Background(), workspacemgr.CreateSpec{
+		Repo:          "git@example/repo.git",
+		Ref:           "main",
+		WorkspaceName: "root",
+		AgentProfile:  "default",
+		Backend:       "firecracker",
+	})
+	if err != nil {
+		t.Fatalf("create root ws: %v", err)
+	}
+	if err := mgr.UpdateProjectID(rootWS.ID, project.ID); err != nil {
+		t.Fatalf("update root project id: %v", err)
+	}
+
+	params := WorkspaceCreateParams{
+		ProjectID:     project.ID,
+		TargetBranch:  "feature-proj",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+	}
+	result, rpcErr := HandleWorkspaceCreateWithProjects(context.Background(), params, mgr, projMgr, nil)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result == nil || result.Workspace == nil {
+		t.Fatalf("expected workspace, got %#v", result)
+	}
+	if result.Workspace.Repo != "git@example/repo.git" {
+		t.Fatalf("expected repo from project, got %q", result.Workspace.Repo)
+	}
+	if result.Workspace.Ref != "feature-proj" {
+		t.Fatalf("expected target branch as ref, got %q", result.Workspace.Ref)
+	}
+	if result.FreshApplied {
+		t.Fatal("expected non-fresh create path")
+	}
+	if result.Workspace.ParentWorkspaceID != rootWS.ID {
+		t.Fatalf("expected parent workspace %q, got %q", rootWS.ID, result.Workspace.ParentWorkspaceID)
+	}
+}
+
+func TestHandleWorkspaceCreateWithProjects_RequiresProjectRootForForkedCreate(t *testing.T) {
+	mgrRoot := t.TempDir()
+	mgr := workspacemgr.NewManager(mgrRoot)
+	projMgr := projectmgr.NewManager(mgrRoot, mgr.ProjectRepository())
+	mgr.SetProjectManager(projMgr)
+
+	project, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")
+	if err != nil {
+		t.Fatalf("seed project failed: %v", err)
+	}
+
+	params := WorkspaceCreateParams{
+		ProjectID:     project.ID,
+		TargetBranch:  "feature-proj",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+		Fresh:         false,
+	}
+	result, rpcErr := HandleWorkspaceCreateWithProjects(context.Background(), params, mgr, projMgr, nil)
+	if result != nil {
+		t.Fatalf("expected nil result, got %#v", result)
+	}
+	if rpcErr == nil {
+		t.Fatal("expected rpc error for missing project root")
+	}
+	if rpcErr.Code != rpckit.ErrInvalidParams.Code {
+		t.Fatalf("expected invalid params code %d, got %+v", rpckit.ErrInvalidParams.Code, rpcErr)
+	}
+	if !strings.Contains(strings.ToLower(rpcErr.Message), "project root sandbox is missing") {
+		t.Fatalf("expected missing project root message, got %+v", rpcErr)
+	}
+}
+
+func TestShouldUseProjectRootPathForBase(t *testing.T) {
+	mgr := workspacemgr.NewManager(t.TempDir())
+	req := WorkspaceCreateParams{
+		ProjectID: "proj-1",
+		Fresh:     true,
+	}
+	spec := workspacemgr.CreateSpec{Repo: "git@example/repo.git"}
+	if !shouldUseProjectRootPathForBase(req, spec, mgr) {
+		t.Fatal("expected project base create to use project root host path")
+	}
+}
+
+func TestShouldUseProjectRootPathForBase_FalseWhenRootExists(t *testing.T) {
+	mgr := workspacemgr.NewManager(t.TempDir())
+	rootWS, err := mgr.Create(context.Background(), workspacemgr.CreateSpec{
+		Repo:          "git@example/repo.git",
+		Ref:           "main",
+		WorkspaceName: "base",
+		AgentProfile:  "default",
+	})
+	if err != nil {
+		t.Fatalf("create root workspace: %v", err)
+	}
+	if err := mgr.UpdateProjectID(rootWS.ID, "proj-1"); err != nil {
+		t.Fatalf("set project id: %v", err)
+	}
+
+	req := WorkspaceCreateParams{
+		ProjectID: "proj-1",
+		Fresh:     true,
+	}
+	spec := workspacemgr.CreateSpec{Repo: "git@example/repo.git"}
+	if shouldUseProjectRootPathForBase(req, spec, mgr) {
+		t.Fatal("expected false when project root workspace already exists")
+	}
+}
+
+func TestHandleWorkspaceCreateWithProjects_UsesExplicitSourceBranchSnapshot(t *testing.T) {
+	mgrRoot := t.TempDir()
+	mgr := workspacemgr.NewManager(mgrRoot)
+	projMgr := projectmgr.NewManager(mgrRoot, mgr.ProjectRepository())
+	mgr.SetProjectManager(projMgr)
+
+	project, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")
+	if err != nil {
+		t.Fatalf("seed project failed: %v", err)
+	}
+	mainWS, err := mgr.Create(context.Background(), workspacemgr.CreateSpec{
+		Repo:          "git@example/repo.git",
+		Ref:           "main",
+		WorkspaceName: "main-base",
+		AgentProfile:  "default",
+		Backend:       "firecracker",
+	})
+	if err != nil {
+		t.Fatalf("create main ws: %v", err)
+	}
+	relWS, err := mgr.Create(context.Background(), workspacemgr.CreateSpec{
+		Repo:          "git@example/repo.git",
+		Ref:           "release",
+		WorkspaceName: "release-base",
+		AgentProfile:  "default",
+		Backend:       "firecracker",
+	})
+	if err != nil {
+		t.Fatalf("create release ws: %v", err)
+	}
+	if err := mgr.UpdateProjectID(mainWS.ID, project.ID); err != nil {
+		t.Fatalf("update main project id: %v", err)
+	}
+	if err := mgr.UpdateProjectID(relWS.ID, project.ID); err != nil {
+		t.Fatalf("update release project id: %v", err)
+	}
+	if err := mgr.SetLineageSnapshot(mainWS.ID, "snap-main"); err != nil {
+		t.Fatalf("set main snapshot: %v", err)
+	}
+	if err := mgr.SetLineageSnapshot(relWS.ID, "snap-release"); err != nil {
+		t.Fatalf("set release snapshot: %v", err)
+	}
+
+	var gotSnapshot string
+	factory := runtime.NewFactory([]runtime.Capability{{Name: "runtime.linux", Available: true}, {Name: "runtime.firecracker", Available: true}}, map[string]runtime.Driver{
+		"firecracker": &mockDriver{
+			backend: "firecracker",
+			checkpointForkFn: func(_ context.Context, workspaceID, childWorkspaceID string) (string, error) {
+				if workspaceID != relWS.ID {
+					t.Fatalf("expected checkpoint parent %q, got %q", relWS.ID, workspaceID)
+				}
+				if strings.TrimSpace(childWorkspaceID) == "" {
+					t.Fatal("expected non-empty child workspace id for checkpoint")
+				}
+				return "snap-release-latest", nil
+			},
+			createFn: func(_ context.Context, req runtime.CreateRequest) error {
+				gotSnapshot = strings.TrimSpace(req.Options["lineage_snapshot_id"])
+				return nil
+			},
+		},
+	})
+
+	params := WorkspaceCreateParams{
+		ProjectID:     project.ID,
+		TargetBranch:  "feature-x",
+		SourceBranch:  "release",
+		WorkspaceName: "child",
+		AgentProfile:  "default",
+	}
+	result, rpcErr := HandleWorkspaceCreateWithProjects(context.Background(), params, mgr, projMgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result == nil || result.Workspace == nil {
+		t.Fatalf("expected workspace result, got %#v", result)
+	}
+	if gotSnapshot != "snap-release-latest" {
+		t.Fatalf("expected fresh release snapshot, got %q", gotSnapshot)
+	}
+	if result.EffectiveSourceBranch != "release" {
+		t.Fatalf("expected effective source branch %q, got %q", "release", result.EffectiveSourceBranch)
+	}
+	if result.SourceWorkspaceID != relWS.ID {
+		t.Fatalf("expected source workspace %q, got %q", relWS.ID, result.SourceWorkspaceID)
+	}
+	if result.UsedLineageSnapshotID != "snap-release-latest" {
+		t.Fatalf("expected used snapshot %q, got %q", "snap-release-latest", result.UsedLineageSnapshotID)
+	}
+	if result.Workspace.DerivedFromRef != "release" {
+		t.Fatalf("expected derivedFromRef %q, got %q", "release", result.Workspace.DerivedFromRef)
+	}
+	if result.Workspace.ParentWorkspaceID != relWS.ID {
+		t.Fatalf("expected parent workspace %q, got %q", relWS.ID, result.Workspace.ParentWorkspaceID)
+	}
+}
+
+func TestHandleWorkspaceCreateWithProjects_FreshSkipsSourceSnapshot(t *testing.T) {
+	mgrRoot := t.TempDir()
+	mgr := workspacemgr.NewManager(mgrRoot)
+	projMgr := projectmgr.NewManager(mgrRoot, mgr.ProjectRepository())
+	mgr.SetProjectManager(projMgr)
+
+	project, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")
+	if err != nil {
+		t.Fatalf("seed project failed: %v", err)
+	}
+	baseWS, err := mgr.Create(context.Background(), workspacemgr.CreateSpec{
+		Repo:          "git@example/repo.git",
+		Ref:           "main",
+		WorkspaceName: "main-base",
+		AgentProfile:  "default",
+		Backend:       "firecracker",
+	})
+	if err != nil {
+		t.Fatalf("create base ws: %v", err)
+	}
+	if err := mgr.UpdateProjectID(baseWS.ID, project.ID); err != nil {
+		t.Fatalf("update project id: %v", err)
+	}
+	if err := mgr.SetLineageSnapshot(baseWS.ID, "snap-main"); err != nil {
+		t.Fatalf("set snapshot: %v", err)
+	}
+
+	var gotSnapshot string
+	factory := runtime.NewFactory([]runtime.Capability{{Name: "runtime.linux", Available: true}, {Name: "runtime.firecracker", Available: true}}, map[string]runtime.Driver{
+		"firecracker": &mockDriver{
+			backend: "firecracker",
+			checkpointForkFn: func(_ context.Context, workspaceID, childWorkspaceID string) (string, error) {
+				if workspaceID != baseWS.ID {
+					t.Fatalf("expected checkpoint parent %q, got %q", baseWS.ID, workspaceID)
+				}
+				if strings.TrimSpace(childWorkspaceID) == "" {
+					t.Fatal("expected non-empty child workspace id for checkpoint")
+				}
+				return "snap-source-latest", nil
+			},
+			createFn: func(_ context.Context, req runtime.CreateRequest) error {
+				gotSnapshot = strings.TrimSpace(req.Options["lineage_snapshot_id"])
+				return nil
+			},
+		},
+	})
+
+	params := WorkspaceCreateParams{
+		ProjectID:     project.ID,
+		TargetBranch:  "feature-y",
+		WorkspaceName: "fresh-child",
+		AgentProfile:  "default",
+		Fresh:         true,
+	}
+	result, rpcErr := HandleWorkspaceCreateWithProjects(context.Background(), params, mgr, projMgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result == nil || result.Workspace == nil {
+		t.Fatalf("expected workspace result, got %#v", result)
+	}
+	if gotSnapshot != "" {
+		t.Fatalf("expected no lineage snapshot in runtime create for fresh mode, got %q", gotSnapshot)
+	}
+	if !result.FreshApplied {
+		t.Fatal("expected freshApplied true")
+	}
+	if result.UsedLineageSnapshotID != "" {
+		t.Fatalf("expected no used snapshot for fresh mode, got %q", result.UsedLineageSnapshotID)
+	}
+	if strings.TrimSpace(result.Workspace.DerivedFromRef) != "" {
+		t.Fatalf("expected empty derivedFromRef for fresh mode, got %q", result.Workspace.DerivedFromRef)
+	}
+}
+
+func TestHandleWorkspaceCreateWithProjects_UsesSourceWorkspaceID(t *testing.T) {
+	mgrRoot := t.TempDir()
+	mgr := workspacemgr.NewManager(mgrRoot)
+	projMgr := projectmgr.NewManager(mgrRoot, mgr.ProjectRepository())
+	mgr.SetProjectManager(projMgr)
+
+	project, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")
+	if err != nil {
+		t.Fatalf("seed project failed: %v", err)
+	}
+	sourceWS, err := mgr.Create(context.Background(), workspacemgr.CreateSpec{
+		Repo:          "git@example/repo.git",
+		Ref:           "release",
+		WorkspaceName: "release-base",
+		AgentProfile:  "default",
+		Backend:       "firecracker",
+	})
+	if err != nil {
+		t.Fatalf("create source ws: %v", err)
+	}
+	if err := mgr.UpdateProjectID(sourceWS.ID, project.ID); err != nil {
+		t.Fatalf("update project id: %v", err)
+	}
+	if err := mgr.SetLineageSnapshot(sourceWS.ID, "snap-source-ws"); err != nil {
+		t.Fatalf("set snapshot: %v", err)
+	}
+
+	var gotSnapshot string
+	factory := runtime.NewFactory([]runtime.Capability{{Name: "runtime.linux", Available: true}, {Name: "runtime.firecracker", Available: true}}, map[string]runtime.Driver{
+		"firecracker": &mockDriver{
+			backend: "firecracker",
+			checkpointForkFn: func(_ context.Context, workspaceID, childWorkspaceID string) (string, error) {
+				if workspaceID != sourceWS.ID {
+					t.Fatalf("expected checkpoint parent %q, got %q", sourceWS.ID, workspaceID)
+				}
+				if strings.TrimSpace(childWorkspaceID) == "" {
+					t.Fatal("expected non-empty child workspace id for checkpoint")
+				}
+				return "snap-source-latest", nil
+			},
+			createFn: func(_ context.Context, req runtime.CreateRequest) error {
+				gotSnapshot = strings.TrimSpace(req.Options["lineage_snapshot_id"])
+				return nil
+			},
+		},
+	})
+
+	params := WorkspaceCreateParams{
+		ProjectID:         project.ID,
+		TargetBranch:      "feature-z",
+		SourceWorkspaceID: sourceWS.ID,
+		WorkspaceName:     "child",
+		AgentProfile:      "default",
+	}
+	result, rpcErr := HandleWorkspaceCreateWithProjects(context.Background(), params, mgr, projMgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result == nil || result.Workspace == nil {
+		t.Fatalf("expected workspace result, got %#v", result)
+	}
+	if gotSnapshot != "snap-source-latest" {
+		t.Fatalf("expected source workspace checkpoint snapshot, got %q", gotSnapshot)
+	}
+	if result.SourceWorkspaceID != sourceWS.ID {
+		t.Fatalf("expected source workspace id %q, got %q", sourceWS.ID, result.SourceWorkspaceID)
+	}
+	if result.Workspace.ParentWorkspaceID != sourceWS.ID {
+		t.Fatalf("expected parent workspace id %q, got %q", sourceWS.ID, result.Workspace.ParentWorkspaceID)
+	}
+}
+
+func TestHandleWorkspaceCreateWithProjects_CopiesDirtyStateFromSourceWorkspace(t *testing.T) {
+	mgrRoot := t.TempDir()
+	mgr := workspacemgr.NewManager(mgrRoot)
+	projMgr := projectmgr.NewManager(mgrRoot, mgr.ProjectRepository())
+	mgr.SetProjectManager(projMgr)
+
+	repoRoot := initGitRepoForCheckoutHandlerTests(t)
+	project, err := projMgr.GetOrCreateForRepo(repoRoot, "repo-local")
+	if err != nil {
+		t.Fatalf("seed project failed: %v", err)
+	}
+	sourceWS, err := mgr.Create(context.Background(), workspacemgr.CreateSpec{
+		Repo:          repoRoot,
+		Ref:           "main",
+		WorkspaceName: "base",
+		AgentProfile:  "default",
+		Backend:       "seatbelt",
+	})
+	if err != nil {
+		t.Fatalf("create source ws: %v", err)
+	}
+	if err := mgr.UpdateProjectID(sourceWS.ID, project.ID); err != nil {
+		t.Fatalf("update project id: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(sourceWS.LocalWorktreePath, "README.md"), []byte("# YOLO\n"), 0o644); err != nil {
+		t.Fatalf("write tracked dirty file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceWS.LocalWorktreePath, "YOLO"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatalf("write untracked file: %v", err)
+	}
+
+	params := WorkspaceCreateParams{
+		ProjectID:         project.ID,
+		TargetBranch:      "feat-4",
+		SourceWorkspaceID: sourceWS.ID,
+		WorkspaceName:     "feat-4",
+		AgentProfile:      "default",
+	}
+	result, rpcErr := HandleWorkspaceCreateWithProjects(context.Background(), params, mgr, projMgr, nil)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result == nil || result.Workspace == nil {
+		t.Fatalf("expected workspace result, got %#v", result)
+	}
+
+	trackedData, err := os.ReadFile(filepath.Join(result.Workspace.LocalWorktreePath, "README.md"))
+	if err != nil {
+		t.Fatalf("read child tracked file: %v", err)
+	}
+	if string(trackedData) != "# YOLO\n" {
+		t.Fatalf("expected tracked dirty content in child, got %q", string(trackedData))
+	}
+	untrackedData, err := os.ReadFile(filepath.Join(result.Workspace.LocalWorktreePath, "YOLO"))
+	if err != nil {
+		t.Fatalf("read child untracked file: %v", err)
+	}
+	if string(untrackedData) != "untracked\n" {
+		t.Fatalf("expected untracked file in child, got %q", string(untrackedData))
 	}
 }
 
@@ -294,8 +725,9 @@ func TestHandleWorkspaceCreate_MissingRuntimeRequiredDoesNotFallbackToLocal(t *t
 }
 
 type mockDriver struct {
-	backend  string
-	createFn func(ctx context.Context, req runtime.CreateRequest) error
+	backend          string
+	createFn         func(ctx context.Context, req runtime.CreateRequest) error
+	checkpointForkFn func(ctx context.Context, workspaceID, childWorkspaceID string) (string, error)
 }
 
 func (d *mockDriver) Backend() string { return d.backend }
@@ -314,6 +746,12 @@ func (d *mockDriver) Fork(ctx context.Context, workspaceID, childWorkspaceID str
 	return nil
 }
 func (d *mockDriver) Destroy(ctx context.Context, workspaceID string) error { return nil }
+func (d *mockDriver) CheckpointFork(ctx context.Context, workspaceID, childWorkspaceID string) (string, error) {
+	if d.checkpointForkFn != nil {
+		return d.checkpointForkFn(ctx, workspaceID, childWorkspaceID)
+	}
+	return "", nil
+}
 
 func TestHandleWorkspaceOpen_NotFound(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
@@ -358,6 +796,45 @@ func TestHandleWorkspaceListAndRemove(t *testing.T) {
 	}
 	if !removed.Removed {
 		t.Fatal("expected removed=true")
+	}
+}
+
+func TestHandleWorkspaceRemove_RejectsDeleteHostPathForProjectRootSandbox(t *testing.T) {
+	root := t.TempDir()
+	mgr := workspacemgr.NewManager(root)
+	projMgr := projectmgr.NewManager(root, mgr.ProjectRepository())
+	mgr.SetProjectManager(projMgr)
+
+	created, rpcErr := HandleWorkspaceCreate(context.Background(), WorkspaceCreateParams{
+		Spec: workspacemgr.CreateSpec{
+			Repo:          "git@example/repo.git",
+			Ref:           "main",
+			WorkspaceName: "root",
+			AgentProfile:  "default",
+		},
+	}, mgr, nil)
+	if rpcErr != nil {
+		t.Fatalf("create failed: %+v", rpcErr)
+	}
+	if created.Workspace == nil {
+		t.Fatal("expected created workspace")
+	}
+	if strings.TrimSpace(created.Workspace.ParentWorkspaceID) != "" {
+		t.Fatalf("expected root sandbox with empty parent workspace id, got %q", created.Workspace.ParentWorkspaceID)
+	}
+	if strings.TrimSpace(created.Workspace.ProjectID) == "" {
+		t.Fatal("expected project-scoped workspace")
+	}
+
+	_, rpcErr = HandleWorkspaceRemove(context.Background(), WorkspaceRemoveParams{
+		ID:             created.Workspace.ID,
+		DeleteHostPath: true,
+	}, mgr, nil)
+	if rpcErr == nil {
+		t.Fatal("expected invalid params error")
+	}
+	if rpcErr.Code != rpckit.ErrInvalidParams.Code {
+		t.Fatalf("expected invalid params code %d, got %+v", rpckit.ErrInvalidParams.Code, rpcErr)
 	}
 }
 
@@ -671,6 +1148,313 @@ func TestHandleWorkspaceFork(t *testing.T) {
 	if result.Workspace.ParentWorkspaceID != created.Workspace.ID {
 		t.Fatalf("expected child parent %q, got %q", created.Workspace.ID, result.Workspace.ParentWorkspaceID)
 	}
+	if strings.TrimSpace(result.Workspace.LineageSnapshotID) == "" {
+		t.Fatal("expected child lineage snapshot id to be set on fork")
+	}
+}
+
+func TestHandleWorkspaceCheckout(t *testing.T) {
+	repoRoot := initGitRepoForCheckoutHandlerTests(t)
+	mgr := workspacemgr.NewManager(t.TempDir())
+	created, _ := HandleWorkspaceCreate(context.Background(), WorkspaceCreateParams{
+		Spec: workspacemgr.CreateSpec{
+			Repo:          repoRoot,
+			Ref:           "main",
+			WorkspaceName: "alpha",
+			AgentProfile:  "default",
+		},
+	}, mgr, nil)
+	if created == nil || created.Workspace == nil {
+		t.Fatal("expected created workspace")
+	}
+
+	result, rpcErr := HandleWorkspaceCheckout(context.Background(), WorkspaceCheckoutParams{
+		WorkspaceID: created.Workspace.ID,
+		TargetRef:   "feature-z",
+	}, mgr)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result == nil || result.Workspace == nil {
+		t.Fatalf("expected checkout result, got %#v", result)
+	}
+	if result.CurrentRef != "feature-z" {
+		t.Fatalf("expected currentRef %q, got %q", "feature-z", result.CurrentRef)
+	}
+	if strings.TrimSpace(result.CurrentCommit) == "" {
+		t.Fatal("expected currentCommit to be populated after git checkout")
+	}
+}
+
+func TestHandleWorkspaceCheckout_CreatesNewBranchWhenMissing(t *testing.T) {
+	repoRoot := initGitRepoForCheckoutHandlerTests(t)
+	mgr := workspacemgr.NewManager(t.TempDir())
+	created, _ := HandleWorkspaceCreate(context.Background(), WorkspaceCreateParams{
+		Spec: workspacemgr.CreateSpec{
+			Repo:          repoRoot,
+			Ref:           "main",
+			WorkspaceName: "alpha",
+			AgentProfile:  "default",
+		},
+	}, mgr, nil)
+	if created == nil || created.Workspace == nil {
+		t.Fatal("expected created workspace")
+	}
+
+	result, rpcErr := HandleWorkspaceCheckout(context.Background(), WorkspaceCheckoutParams{
+		WorkspaceID: created.Workspace.ID,
+		TargetRef:   "feature-new-branch",
+	}, mgr)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result == nil || result.Workspace == nil {
+		t.Fatalf("expected checkout result, got %#v", result)
+	}
+	if result.CurrentRef != "feature-new-branch" {
+		t.Fatalf("expected currentRef %q, got %q", "feature-new-branch", result.CurrentRef)
+	}
+}
+
+func TestHandleWorkspaceCheckout_RejectsDirtyTreeByDefault(t *testing.T) {
+	repoRoot := initGitRepoForCheckoutHandlerTests(t)
+	mgr := workspacemgr.NewManager(t.TempDir())
+	ws, err := mgr.Create(context.Background(), workspacemgr.CreateSpec{
+		Repo:          repoRoot,
+		Ref:           "main",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+	})
+	if err != nil {
+		t.Fatalf("create workspace failed: %v", err)
+	}
+
+	filePath := filepath.Join(ws.LocalWorktreePath, "README.md")
+	if err := os.WriteFile(filePath, []byte("# changed\n"), 0o644); err != nil {
+		t.Fatalf("write dirty change: %v", err)
+	}
+
+	_, rpcErr := HandleWorkspaceCheckout(context.Background(), WorkspaceCheckoutParams{
+		WorkspaceID: ws.ID,
+		TargetRef:   "main",
+	}, mgr)
+	if rpcErr == nil {
+		t.Fatal("expected checkout conflict error for dirty tree")
+	}
+	if rpcErr.Code != rpckit.ErrCheckoutConflict.Code {
+		t.Fatalf("expected checkout conflict code %d, got %+v", rpckit.ErrCheckoutConflict.Code, rpcErr)
+	}
+	if !strings.Contains(strings.ToLower(rpcErr.Message), "retry with onconflict=stash") {
+		t.Fatalf("expected prompt-style guidance message, got %+v", rpcErr)
+	}
+	dataMap, ok := rpcErr.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected structured rpc error data, got %#v", rpcErr.Data)
+	}
+	if kind, _ := dataMap["kind"].(string); kind != "workspace.checkout.conflict" {
+		t.Fatalf("expected conflict kind, got %#v", dataMap["kind"])
+	}
+	if actions, ok := dataMap["suggestedActions"].([]map[string]any); !ok || len(actions) == 0 {
+		t.Fatalf("expected suggestedActions in rpc error data, got %#v", dataMap["suggestedActions"])
+	}
+}
+
+func initGitRepoForCheckoutHandlerTests(t *testing.T) string {
+	t.Helper()
+	repoRoot := t.TempDir()
+	runGitForCheckoutHandlerTests(t, repoRoot, "init")
+	runGitForCheckoutHandlerTests(t, repoRoot, "config", "user.email", "nexus-tests@example.com")
+	runGitForCheckoutHandlerTests(t, repoRoot, "config", "user.name", "Nexus Tests")
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("# test\n"), 0o644); err != nil {
+		t.Fatalf("write readme: %v", err)
+	}
+	runGitForCheckoutHandlerTests(t, repoRoot, "add", "README.md")
+	runGitForCheckoutHandlerTests(t, repoRoot, "commit", "-m", "init")
+	runGitForCheckoutHandlerTests(t, repoRoot, "branch", "feature-z")
+	return repoRoot
+}
+
+func runGitForCheckoutHandlerTests(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
+	}
+}
+
+func TestHandleWorkspaceFork_WithFactoryUsesRuntimeCheckpointID(t *testing.T) {
+	mgr := workspacemgr.NewManager(t.TempDir())
+	parent, err := mgr.Create(context.Background(), workspacemgr.CreateSpec{
+		Repo:          "git@example/repo.git",
+		Ref:           "main",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+		Backend:       "firecracker",
+	})
+	if err != nil {
+		t.Fatalf("seed workspace failed: %v", err)
+	}
+
+	const checkpointID = "snap-parent-to-child-1"
+	factory := runtime.NewFactory(
+		[]runtime.Capability{{Name: "runtime.firecracker", Available: true}},
+		map[string]runtime.Driver{
+			"firecracker": &mockDriver{
+				backend: "firecracker",
+				checkpointForkFn: func(_ context.Context, workspaceID, childWorkspaceID string) (string, error) {
+					if workspaceID != parent.ID {
+						t.Fatalf("expected parent id %q, got %q", parent.ID, workspaceID)
+					}
+					if strings.TrimSpace(childWorkspaceID) == "" {
+						t.Fatal("expected non-empty child workspace id")
+					}
+					return checkpointID, nil
+				},
+			},
+		},
+	)
+
+	result, rpcErr := HandleWorkspaceFork(context.Background(), WorkspaceForkParams{
+		ID:                 parent.ID,
+		ChildWorkspaceName: "alpha-child",
+		ChildRef:           "alpha-child",
+	}, mgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result == nil || result.Workspace == nil {
+		t.Fatalf("expected workspace in fork result, got %#v", result)
+	}
+	if result.Workspace.LineageSnapshotID != checkpointID {
+		t.Fatalf("expected lineage snapshot %q, got %q", checkpointID, result.Workspace.LineageSnapshotID)
+	}
+}
+
+func TestHandleWorkspaceFork_UsesProjectRootSandboxAsForkSource(t *testing.T) {
+	mgrRoot := t.TempDir()
+	mgr := workspacemgr.NewManager(mgrRoot)
+	projMgr := projectmgr.NewManager(mgrRoot, mgr.ProjectRepository())
+	mgr.SetProjectManager(projMgr)
+
+	project, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")
+	if err != nil {
+		t.Fatalf("seed project failed: %v", err)
+	}
+	rootWS, err := mgr.Create(context.Background(), workspacemgr.CreateSpec{
+		Repo:          "git@example/repo.git",
+		Ref:           "main",
+		WorkspaceName: "root",
+		AgentProfile:  "default",
+		Backend:       "firecracker",
+	})
+	if err != nil {
+		t.Fatalf("create root ws: %v", err)
+	}
+	if err := mgr.UpdateProjectID(rootWS.ID, project.ID); err != nil {
+		t.Fatalf("update root project id: %v", err)
+	}
+	featureWS, err := mgr.Fork(rootWS.ID, "feature", "feature-a")
+	if err != nil {
+		t.Fatalf("create feature ws via fork: %v", err)
+	}
+
+	factory := runtime.NewFactory(
+		[]runtime.Capability{{Name: "runtime.firecracker", Available: true}},
+		map[string]runtime.Driver{
+			"firecracker": &mockDriver{
+				backend: "firecracker",
+				checkpointForkFn: func(_ context.Context, workspaceID, childWorkspaceID string) (string, error) {
+					if workspaceID != rootWS.ID {
+						t.Fatalf("expected runtime fork source to be root workspace %q, got %q", rootWS.ID, workspaceID)
+					}
+					if strings.TrimSpace(childWorkspaceID) == "" {
+						t.Fatal("expected child workspace id")
+					}
+					return "snap-root-fork", nil
+				},
+			},
+		},
+	)
+
+	result, rpcErr := HandleWorkspaceFork(context.Background(), WorkspaceForkParams{
+		ID:                 featureWS.ID,
+		ChildWorkspaceName: "child",
+		ChildRef:           "child-ref",
+	}, mgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result == nil || result.Workspace == nil {
+		t.Fatalf("expected child workspace result, got %#v", result)
+	}
+	if result.Workspace.ParentWorkspaceID != rootWS.ID {
+		t.Fatalf("expected child parent workspace %q, got %q", rootWS.ID, result.Workspace.ParentWorkspaceID)
+	}
+}
+
+func TestHandleWorkspaceFork_AllowsExplicitSourceWorkspaceOverride(t *testing.T) {
+	mgrRoot := t.TempDir()
+	mgr := workspacemgr.NewManager(mgrRoot)
+	projMgr := projectmgr.NewManager(mgrRoot, mgr.ProjectRepository())
+	mgr.SetProjectManager(projMgr)
+
+	project, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")
+	if err != nil {
+		t.Fatalf("seed project failed: %v", err)
+	}
+	rootWS, err := mgr.Create(context.Background(), workspacemgr.CreateSpec{
+		Repo:          "git@example/repo.git",
+		Ref:           "main",
+		WorkspaceName: "root",
+		AgentProfile:  "default",
+		Backend:       "firecracker",
+	})
+	if err != nil {
+		t.Fatalf("create root ws: %v", err)
+	}
+	if err := mgr.UpdateProjectID(rootWS.ID, project.ID); err != nil {
+		t.Fatalf("update root project id: %v", err)
+	}
+	featureWS, err := mgr.Fork(rootWS.ID, "feature", "feature-a")
+	if err != nil {
+		t.Fatalf("create feature ws via fork: %v", err)
+	}
+
+	factory := runtime.NewFactory(
+		[]runtime.Capability{{Name: "runtime.firecracker", Available: true}},
+		map[string]runtime.Driver{
+			"firecracker": &mockDriver{
+				backend: "firecracker",
+				checkpointForkFn: func(_ context.Context, workspaceID, childWorkspaceID string) (string, error) {
+					if workspaceID != featureWS.ID {
+						t.Fatalf("expected explicit runtime fork source %q, got %q", featureWS.ID, workspaceID)
+					}
+					if strings.TrimSpace(childWorkspaceID) == "" {
+						t.Fatal("expected child workspace id")
+					}
+					return "snap-explicit-fork", nil
+				},
+			},
+		},
+	)
+
+	result, rpcErr := HandleWorkspaceFork(context.Background(), WorkspaceForkParams{
+		ID:                 rootWS.ID,
+		SourceWorkspaceID:  featureWS.ID,
+		ChildWorkspaceName: "child",
+		ChildRef:           "child-ref",
+	}, mgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result == nil || result.Workspace == nil {
+		t.Fatalf("expected child workspace result, got %#v", result)
+	}
+	if result.Workspace.ParentWorkspaceID != featureWS.ID {
+		t.Fatalf("expected child parent workspace %q, got %q", featureWS.ID, result.Workspace.ParentWorkspaceID)
+	}
 }
 
 func TestHandleWorkspaceFork_WithFactoryLinuxRequiresFirecracker(t *testing.T) {
@@ -838,6 +1622,119 @@ func TestHandleWorkspaceCreate_PassesHostAuthBundleToRuntime(t *testing.T) {
 	}
 	if gotConfigBundle != "e30=" {
 		t.Fatalf("expected configBundle in create request, got %q", gotConfigBundle)
+	}
+}
+
+func TestHandleWorkspaceCreate_UsesPreferredLineageSnapshotForRuntimeCreate(t *testing.T) {
+	t.Cleanup(selection.ResetRuntimeSetupRunnerForTest)
+
+	mgrRoot := t.TempDir()
+	mgr := workspacemgr.NewManager(mgrRoot)
+	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
+
+	parent, err := mgr.Create(context.Background(), workspacemgr.CreateSpec{
+		Repo:          repo,
+		Ref:           "main",
+		WorkspaceName: "base",
+		AgentProfile:  "default",
+		Backend:       "firecracker",
+	})
+	if err != nil {
+		t.Fatalf("seed workspace failed: %v", err)
+	}
+	if err := mgr.SetLineageSnapshot(parent.ID, "snap-base-1"); err != nil {
+		t.Fatalf("set lineage snapshot failed: %v", err)
+	}
+
+	var gotSnapshotID string
+	factory := runtime.NewFactory([]runtime.Capability{{Name: "runtime.linux", Available: true}, {Name: "runtime.firecracker", Available: true}}, map[string]runtime.Driver{
+		"firecracker": &mockDriver{
+			backend: "firecracker",
+			createFn: func(ctx context.Context, req runtime.CreateRequest) error {
+				gotSnapshotID = strings.TrimSpace(req.Options["lineage_snapshot_id"])
+				return nil
+			},
+		},
+	})
+
+	params := WorkspaceCreateParams{
+		Spec: workspacemgr.CreateSpec{
+			Repo:          repo,
+			Ref:           "feature-snapshot-child",
+			WorkspaceName: "alpha",
+			AgentProfile:  "default",
+		},
+	}
+
+	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result == nil || result.Workspace == nil {
+		t.Fatalf("expected workspace, got %#v", result)
+	}
+	if gotSnapshotID != "snap-base-1" {
+		t.Fatalf("expected runtime create to receive snapshot %q, got %q", "snap-base-1", gotSnapshotID)
+	}
+}
+
+func TestHandleWorkspaceCreate_AutoCapturesBaselineSnapshotForFirstSandbox(t *testing.T) {
+	t.Cleanup(selection.ResetRuntimeSetupRunnerForTest)
+
+	mgrRoot := t.TempDir()
+	mgr := workspacemgr.NewManager(mgrRoot)
+	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
+
+	const baselineSnapshotID = "snap-baseline-auto-1"
+	var gotCreateSnapshotID string
+	var checkpointCalls int
+	factory := runtime.NewFactory([]runtime.Capability{{Name: "runtime.linux", Available: true}, {Name: "runtime.firecracker", Available: true}}, map[string]runtime.Driver{
+		"firecracker": &mockDriver{
+			backend: "firecracker",
+			createFn: func(ctx context.Context, req runtime.CreateRequest) error {
+				gotCreateSnapshotID = strings.TrimSpace(req.Options["lineage_snapshot_id"])
+				return nil
+			},
+			checkpointForkFn: func(ctx context.Context, workspaceID, childWorkspaceID string) (string, error) {
+				checkpointCalls++
+				if strings.TrimSpace(workspaceID) == "" {
+					t.Fatal("expected non-empty workspaceID for baseline checkpoint")
+				}
+				if workspaceID != childWorkspaceID {
+					t.Fatalf("expected baseline checkpoint to use same workspace id, got parent=%q child=%q", workspaceID, childWorkspaceID)
+				}
+				return baselineSnapshotID, nil
+			},
+		},
+	})
+
+	params := WorkspaceCreateParams{
+		Spec: workspacemgr.CreateSpec{
+			Repo:          repo,
+			Ref:           "feature-first",
+			WorkspaceName: "alpha",
+			AgentProfile:  "default",
+		},
+	}
+
+	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	if result == nil || result.Workspace == nil {
+		t.Fatalf("expected workspace, got %#v", result)
+	}
+	if gotCreateSnapshotID != "" {
+		t.Fatalf("expected first create to run without prior snapshot id, got %q", gotCreateSnapshotID)
+	}
+	if checkpointCalls != 1 {
+		t.Fatalf("expected one baseline checkpoint call, got %d", checkpointCalls)
+	}
+	if result.UsedLineageSnapshotID != baselineSnapshotID {
+		t.Fatalf("expected used lineage snapshot %q, got %q", baselineSnapshotID, result.UsedLineageSnapshotID)
+	}
+	if result.Workspace.LineageSnapshotID != baselineSnapshotID {
+		t.Fatalf("expected workspace lineage snapshot %q, got %q", baselineSnapshotID, result.Workspace.LineageSnapshotID)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -30,9 +31,12 @@ var limactlCombinedOutputFn = shared.DefaultLimactlCombinedOutput
 
 var seatbeltLimaInstanceBase = []string{"nexus"}
 
+const workspaceMarkerFile = ".nexus-workspace-marker.json"
+
 type Driver struct {
 	mu                 sync.RWMutex
 	workspaces         map[string]*workspaceState
+	snapshotRoot       string
 	spawnShell         func(ctx context.Context, instanceName, workdir, localPath, shell string) (*exec.Cmd, *os.File, error)
 	instanceEnv        string
 	bootstrapGuard     *shared.BootstrapOnceGuard
@@ -40,6 +44,8 @@ type Driver struct {
 	applyConfigBundle  func(ctx context.Context, instance, configBundle string) error
 	prepareWorkspaceFS func(ctx context.Context, instance, targetPath, localPath string) error
 }
+
+var _ runtime.ForkSnapshotter = (*Driver)(nil)
 
 type workspaceState struct {
 	projectRoot string
@@ -50,6 +56,7 @@ type workspaceState struct {
 func NewDriver() *Driver {
 	return &Driver{
 		workspaces:         make(map[string]*workspaceState),
+		snapshotRoot:       defaultSeatbeltSnapshotRoot(),
 		spawnShell:         startLimaShell,
 		instanceEnv:        strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_SEATBELT_INSTANCE")),
 		bootstrapGuard:     shared.NewBootstrapOnceGuard(),
@@ -74,18 +81,28 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	if _, err := seatbeltLookPath("limactl"); err != nil {
 		return fmt.Errorf("seatbelt runtime requires limactl for isolated guest")
 	}
+	if snapshotID := strings.TrimSpace(req.Options["lineage_snapshot_id"]); snapshotID != "" {
+		if err := d.restoreLineageSnapshot(snapshotID, req.ProjectRoot); err != nil {
+			return fmt.Errorf("restore lineage snapshot %s: %w", snapshotID, err)
+		}
+	}
 
 	instance := d.instanceNameForOptions(req.Options)
 
 	d.mu.Lock()
 	if existing, exists := d.workspaces[req.WorkspaceID]; exists {
-		if strings.TrimSpace(existing.projectRoot) != "" {
-			d.mu.Unlock()
-			return nil
-		}
 		existing.projectRoot = req.ProjectRoot
 		existing.instance = instance
 		d.mu.Unlock()
+		if err := d.ensureInstanceBootstrapped(ctx, instance, ""); err != nil {
+			return err
+		}
+		if d.prepareWorkspaceFS != nil {
+			targetPath := guestWorkdirForID(req.WorkspaceID)
+			if err := d.prepareWorkspaceOnCandidates(ctx, req.WorkspaceID, instance, targetPath, req.ProjectRoot); err != nil {
+				return fmt.Errorf("%w: %v", runtime.ErrWorkspaceMountFailed, err)
+			}
+		}
 		return nil
 	}
 	d.workspaces[req.WorkspaceID] = &workspaceState{projectRoot: req.ProjectRoot, state: "created", instance: instance}
@@ -108,20 +125,7 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 
 	if d.prepareWorkspaceFS != nil {
 		targetPath := guestWorkdirForID(req.WorkspaceID)
-		if err := d.prepareWorkspaceFS(ctx, instance, targetPath, req.ProjectRoot); err != nil {
-			// Try remaining candidates in the base list (handles legacy instance names).
-			for _, fallback := range seatbeltLimaInstanceBase {
-				if fallback == instance {
-					continue
-				}
-				if fallbackErr := d.prepareWorkspaceFS(ctx, fallback, targetPath, req.ProjectRoot); fallbackErr != nil {
-					continue
-				}
-				if ws, ok := d.workspaces[req.WorkspaceID]; ok {
-					ws.instance = fallback
-				}
-				return nil
-			}
+		if err := d.prepareWorkspaceOnCandidates(ctx, req.WorkspaceID, instance, targetPath, req.ProjectRoot); err != nil {
 			d.mu.Lock()
 			delete(d.workspaces, req.WorkspaceID)
 			d.mu.Unlock()
@@ -130,6 +134,60 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	}
 
 	return nil
+}
+
+func (d *Driver) CheckpointFork(ctx context.Context, workspaceID, childWorkspaceID string) (string, error) {
+	_ = ctx
+	sourceRoot := strings.TrimSpace(d.workspaceProjectRoot(workspaceID))
+	if sourceRoot == "" {
+		return "", fmt.Errorf("workspace %s not found", workspaceID)
+	}
+	if info, err := os.Stat(sourceRoot); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("source workspace path unavailable: %s", sourceRoot)
+	}
+
+	snapshotID := fmt.Sprintf("lima-fc-%s-%s-%d",
+		strings.TrimSpace(workspaceID),
+		strings.TrimSpace(childWorkspaceID),
+		time.Now().UTC().UnixNano(),
+	)
+	snapshotPath := d.snapshotPath(snapshotID)
+	if err := os.RemoveAll(snapshotPath); err != nil {
+		return "", fmt.Errorf("reset snapshot path: %w", err)
+	}
+	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
+		return "", fmt.Errorf("create snapshot path: %w", err)
+	}
+	if err := copyWorkspaceTree(sourceRoot, snapshotPath); err != nil {
+		return "", fmt.Errorf("copy workspace snapshot: %w", err)
+	}
+	return snapshotID, nil
+}
+
+func (d *Driver) prepareWorkspaceOnCandidates(ctx context.Context, workspaceID, instance, targetPath, localPath string) error {
+	if d.prepareWorkspaceFS == nil {
+		return nil
+	}
+	if err := d.prepareWorkspaceFS(ctx, instance, targetPath, localPath); err == nil {
+		return nil
+	} else {
+		// Try remaining candidates in the base list (handles legacy instance names).
+		for _, fallback := range seatbeltLimaInstanceBase {
+			if fallback == instance {
+				continue
+			}
+			if fallbackErr := d.prepareWorkspaceFS(ctx, fallback, targetPath, localPath); fallbackErr != nil {
+				continue
+			}
+			d.mu.Lock()
+			if ws, ok := d.workspaces[workspaceID]; ok {
+				ws.instance = fallback
+			}
+			d.mu.Unlock()
+			return nil
+		}
+		return err
+	}
 }
 
 func (d *Driver) Start(ctx context.Context, workspaceID string) error {
@@ -443,7 +501,7 @@ func prepareWorkspacePath(ctx context.Context, instance, targetPath, localPath s
 	// Repeated lazy unmount/remount cycles can invalidate cwd for long-running
 	// tools (e.g. opencode), which then fail with "cwd was deleted".
 	script := fmt.Sprintf(
-		"set -e; MNTPT=%s; SRC=%s; sudo mkdir -p \"$MNTPT\"; CUR=$(findmnt -n -o SOURCE --target \"$MNTPT\" 2>/dev/null || true); if [ -n \"$CUR\" ]; then CUR_CANON=$(readlink -f \"$CUR\" 2>/dev/null || echo \"$CUR\"); SRC_CANON=$(readlink -f \"$SRC\" 2>/dev/null || echo \"$SRC\"); if [ \"$CUR_CANON\" = \"$SRC_CANON\" ]; then exit 0; fi; sudo umount -l \"$MNTPT\"; fi; sudo mount --bind \"$SRC\" \"$MNTPT\"",
+		"set -e; MNTPT=%s; SRC=%s; sudo -n mkdir -p \"$MNTPT\"; CUR=$(findmnt -n -o SOURCE --target \"$MNTPT\" 2>/dev/null || true); if [ -n \"$CUR\" ]; then CUR_CANON=$(readlink -f \"$CUR\" 2>/dev/null || echo \"$CUR\"); SRC_CANON=$(readlink -f \"$SRC\" 2>/dev/null || echo \"$SRC\"); if [ \"$CUR_CANON\" = \"$SRC_CANON\" ]; then exit 0; fi; sudo -n umount -l \"$MNTPT\"; fi; sudo -n mount --bind \"$SRC\" \"$MNTPT\"",
 		shared.ShellQuote(targetPath),
 		shared.ShellQuote(localPath),
 	)
@@ -462,7 +520,7 @@ func teardownWorkspacePath(ctx context.Context, instance, workspaceID string) er
 	}
 	targetPath := guestWorkdirForID(workspaceID)
 	script := fmt.Sprintf(
-		"MNTPT=%s; if mountpoint -q \"$MNTPT\" 2>/dev/null; then sudo umount -l \"$MNTPT\" 2>/dev/null || sudo umount \"$MNTPT\" 2>/dev/null || true; fi; sudo rmdir \"$MNTPT\" 2>/dev/null || true",
+		"MNTPT=%s; if mountpoint -q \"$MNTPT\" 2>/dev/null; then sudo -n umount -l \"$MNTPT\" 2>/dev/null || sudo -n umount \"$MNTPT\" 2>/dev/null || true; fi; sudo -n rmdir \"$MNTPT\" 2>/dev/null || true",
 		shared.ShellQuote(targetPath),
 	)
 	out, err := shared.DirectSSHScript(ctx, instance, script)
@@ -646,6 +704,116 @@ func (d *Driver) workspaceProjectRoot(workspaceID string) string {
 		return ws.projectRoot
 	}
 	return ""
+}
+
+func (d *Driver) snapshotPath(snapshotID string) string {
+	return filepath.Join(d.snapshotRoot, strings.TrimSpace(snapshotID))
+}
+
+func (d *Driver) restoreLineageSnapshot(snapshotID, targetPath string) error {
+	snapshotPath := d.snapshotPath(snapshotID)
+	info, err := os.Stat(snapshotPath)
+	if err != nil {
+		return fmt.Errorf("snapshot %s missing: %w", snapshotID, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("snapshot %s is invalid", snapshotID)
+	}
+	return copyWorkspaceTree(snapshotPath, targetPath)
+}
+
+func defaultSeatbeltSnapshotRoot() string {
+	if xdg := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); xdg != "" {
+		return filepath.Join(xdg, "nexus", "workspaces", "lineage-snapshots")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return filepath.Join(os.TempDir(), "nexus", "lineage-snapshots")
+	}
+	return filepath.Join(home, ".local", "state", "nexus", "workspaces", "lineage-snapshots")
+}
+
+func copyWorkspaceTree(sourceRoot, targetRoot string) error {
+	sourceRoot = strings.TrimSpace(sourceRoot)
+	targetRoot = strings.TrimSpace(targetRoot)
+	if sourceRoot == "" || targetRoot == "" {
+		return fmt.Errorf("source and target paths are required")
+	}
+	if err := os.MkdirAll(targetRoot, 0o755); err != nil {
+		return err
+	}
+	return filepath.Walk(sourceRoot, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(sourceRoot, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		if shouldSkipWorkspacePath(rel) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		target := filepath.Join(targetRoot, rel)
+		mode := info.Mode()
+		switch {
+		case mode&os.ModeSymlink != 0:
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			_ = os.RemoveAll(target)
+			return os.Symlink(linkTarget, target)
+		case info.IsDir():
+			return os.MkdirAll(target, mode.Perm())
+		case mode.IsRegular():
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			return copyFileWithMode(path, target, mode.Perm())
+		default:
+			return nil
+		}
+	})
+}
+
+func shouldSkipWorkspacePath(rel string) bool {
+	rel = strings.TrimSpace(rel)
+	if rel == "" {
+		return false
+	}
+	if rel == workspaceMarkerFile {
+		return true
+	}
+	if rel == ".git" || strings.HasPrefix(rel, ".git"+string(filepath.Separator)) {
+		return true
+	}
+	if rel == ".worktrees" || strings.HasPrefix(rel, ".worktrees"+string(filepath.Separator)) {
+		return true
+	}
+	return false
+}
+
+func copyFileWithMode(sourcePath, targetPath string, perm os.FileMode) error {
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+	targetFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	defer targetFile.Close()
+	if _, err := io.Copy(targetFile, sourceFile); err != nil {
+		return err
+	}
+	return targetFile.Chmod(perm)
 }
 
 func (d *Driver) workspaceInstance(workspaceID string) string {

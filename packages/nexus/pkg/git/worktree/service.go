@@ -17,7 +17,7 @@ type ForkParentInput struct {
 }
 
 func Create(repoPath, ref, workspaceName string) (string, error) {
-	base := filepath.Clean(repoPath)
+	base := canonicalPath(repoPath)
 	if workspaceName == "" {
 		workspaceName = "workspace"
 	}
@@ -56,7 +56,7 @@ func Create(repoPath, ref, workspaceName string) (string, error) {
 }
 
 func CreateFork(parentWorktreePath, ref, childWorkspaceName string) (string, error) {
-	parentPath := filepath.Clean(parentWorktreePath)
+	parentPath := canonicalPath(parentWorktreePath)
 	worktreesDir := ForkChildrenDir(parentPath)
 	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
 		return "", fmt.Errorf("create nested .worktrees dir: %w", err)
@@ -102,7 +102,7 @@ func ForkChildrenDir(parentPath string) string {
 
 func ResolveForkBasePath(parent ForkParentInput) string {
 	if parent.LocalWorktreePath != "" {
-		candidate := filepath.Clean(strings.TrimSpace(parent.LocalWorktreePath))
+		candidate := canonicalPath(strings.TrimSpace(parent.LocalWorktreePath))
 		if !looksLikeWorktree(candidate) {
 			candidate = ""
 		}
@@ -118,13 +118,24 @@ func ResolveForkBasePath(parent ForkParentInput) string {
 	}
 
 	if isLikelyLocalPath(parent.Repo) {
-		inferred := filepath.Join(filepath.Clean(parent.Repo), ".worktrees", SanitizeWorktreeName(parent.WorkspaceName))
+		inferred := filepath.Join(canonicalPath(parent.Repo), ".worktrees", SanitizeWorktreeName(parent.WorkspaceName))
 		if pathExists(inferred) {
 			return inferred
 		}
 	}
 
 	return ""
+}
+
+func canonicalPath(path string) string {
+	cleaned := filepath.Clean(strings.TrimSpace(path))
+	if cleaned == "" {
+		return ""
+	}
+	if real, err := filepath.EvalSymlinks(cleaned); err == nil && strings.TrimSpace(real) != "" {
+		return filepath.Clean(real)
+	}
+	return cleaned
 }
 
 func looksLikeWorktree(path string) bool {

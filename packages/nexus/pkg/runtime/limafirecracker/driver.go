@@ -12,11 +12,20 @@ import (
 const defaultLimaInstance = "nexus"
 
 type Driver struct {
-	inner runtime.Driver
+	inner              runtime.Driver
+	checkpointDelegate runtime.ForkSnapshotter
 }
 
 func NewDriver(inner runtime.Driver) *Driver {
-	return &Driver{inner: inner}
+	var checkpoint runtime.ForkSnapshotter
+	if snapshotter, ok := inner.(runtime.ForkSnapshotter); ok {
+		checkpoint = snapshotter
+	}
+	return &Driver{inner: inner, checkpointDelegate: checkpoint}
+}
+
+func NewDriverWithCheckpoint(inner runtime.Driver, checkpoint runtime.ForkSnapshotter) *Driver {
+	return &Driver{inner: inner, checkpointDelegate: checkpoint}
 }
 
 func (d *Driver) Backend() string { return "firecracker" }
@@ -93,6 +102,17 @@ func (d *Driver) Destroy(ctx context.Context, workspaceID string) error {
 		return fmt.Errorf("inner driver is required")
 	}
 	return d.inner.Destroy(ctx, workspaceID)
+}
+
+func (d *Driver) CheckpointFork(ctx context.Context, workspaceID, childWorkspaceID string) (string, error) {
+	if d.checkpointDelegate == nil {
+		return "", fmt.Errorf("firecracker wrapper has no checkpoint delegate")
+	}
+	snapshotID, err := d.checkpointDelegate.CheckpointFork(ctx, workspaceID, childWorkspaceID)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(snapshotID), nil
 }
 
 func (d *Driver) AgentConn(ctx context.Context, workspaceID string) (net.Conn, error) {

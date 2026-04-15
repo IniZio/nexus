@@ -5,13 +5,13 @@ import (
 	"testing"
 
 	"github.com/gorilla/websocket"
+	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
-func TestRootCommandIncludesWorkspaceSubcommands(t *testing.T) {
+func TestRootCommandIncludesSandboxCommand(t *testing.T) {
 	usage := rootCmd.UsageString()
 	for _, name := range []string{
-		"create", "list", "start", "stop", "shell", "exec", "run", "fork",
-		"doctor", "init", "remove", "tunnel", "restore",
+		"sandbox", "run", "doctor", "init",
 		"version", "update",
 	} {
 		if !strings.Contains(usage, name) {
@@ -114,3 +114,21 @@ func TestRunWorkspaceTunnelCommandActivatesAndDeactivates(t *testing.T) {
 	}
 }
 
+func TestCreateWorkspaceLocalWorktreePath_UsesDaemonPath(t *testing.T) {
+	ws := workspacemgr.Workspace{
+		LocalWorktreePath: "/Users/newman/magic/hanlun-lms/.worktrees/main",
+		Repo:              "/Users/newman/magic/hanlun-lms",
+	}
+	got := createWorkspaceLocalWorktreePath(ws)
+	if got != ws.LocalWorktreePath {
+		t.Fatalf("expected daemon local worktree path %q, got %q", ws.LocalWorktreePath, got)
+	}
+}
+
+func TestCreateWorkspaceLocalWorktreePath_EmptyWhenUnset(t *testing.T) {
+	ws := workspacemgr.Workspace{}
+	got := createWorkspaceLocalWorktreePath(ws)
+	if got != "" {
+		t.Fatalf("expected empty local worktree path, got %q", got)
+	}
+}

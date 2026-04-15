@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -186,7 +188,7 @@ func buildTmuxSessionName(workspaceID, sessionID string) string {
 
 func buildTmuxAttachCommand(tmuxSession string) string {
 	quoted := shellQuoteUnixExport(tmuxSession)
-	return "TERM=xterm-256color tmux new-session -A -s " + quoted + " \\; set-option -t " + quoted + " status off\n"
+	return "if tmux has-session -t " + quoted + " >/dev/null 2>&1; then CUR=$(tmux display-message -p -t " + quoted + " '#{pane_current_path}' 2>/dev/null || true); if [ -n \"$CUR\" ] && [ ! -d \"$CUR\" ]; then tmux kill-session -t " + quoted + " >/dev/null 2>&1 || true; fi; fi; TERM=xterm-256color tmux new-session -A -c /workspace -s " + quoted + " \\; set-option -t " + quoted + " status off\n"
 }
 
 func buildTmuxHealthCheckCommand(tmuxSession string) string {
@@ -369,8 +371,8 @@ func handleFirecrackerPTYOpen(deps *Deps, conn Conn, p OpenParams, wsRecord *wor
 		"command": shell,
 		"workdir": workDirHint,
 	}
-	if strings.TrimSpace(wsRecord.LocalWorktreePath) != "" {
-		openReq["local_path"] = strings.TrimSpace(wsRecord.LocalWorktreePath)
+	if localPath := localWorkspacePathFromRecord(wsRecord); localPath != "" {
+		openReq["local_path"] = localPath
 	}
 
 	if err := enc.Encode(openReq); err != nil {
@@ -444,6 +446,73 @@ func handleFirecrackerPTYOpen(deps *Deps, conn Conn, p OpenParams, wsRecord *wor
 	go streamRemoteShellOutput(conn, session, deps.Registry, deps.SessionStore)
 
 	return &OpenResult{SessionID: sessionID}, nil
+}
+
+func localWorkspacePathFromRecord(wsRecord *workspacemgr.Workspace) string {
+	if wsRecord == nil {
+		return ""
+	}
+	candidates := make([]string, 0, 3)
+	candidates = append(candidates, strings.TrimSpace(wsRecord.HostWorkspacePath))
+	candidates = append(candidates, strings.TrimSpace(wsRecord.LocalWorktreePath))
+	if inferred := inferredWorkspaceWorktreePath(wsRecord); inferred != "" {
+		candidates = append(candidates, inferred)
+	}
+	candidates = append(candidates, strings.TrimSpace(wsRecord.Repo))
+	for _, candidate := range candidates {
+		if canonical := canonicalWorkspaceCandidate(wsRecord, candidate); canonical != "" {
+			return canonical
+		}
+	}
+	return ""
+}
+
+func inferredWorkspaceWorktreePath(wsRecord *workspacemgr.Workspace) string {
+	if wsRecord == nil {
+		return ""
+	}
+	repoPath := canonicalExistingDir(strings.TrimSpace(wsRecord.Repo))
+	if repoPath == "" {
+		return ""
+	}
+	ref := strings.TrimSpace(wsRecord.CurrentRef)
+	if ref == "" {
+		ref = strings.TrimSpace(wsRecord.TargetBranch)
+	}
+	if ref == "" {
+		ref = strings.TrimSpace(wsRecord.Ref)
+	}
+	return filepath.Join(repoPath, ".worktrees", workspacemgr.HostWorkspaceDirName(ref))
+}
+
+func canonicalExistingDir(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+	resolved := filepath.Clean(path)
+	if real, err := filepath.EvalSymlinks(resolved); err == nil && strings.TrimSpace(real) != "" {
+		resolved = filepath.Clean(real)
+	}
+	return resolved
+}
+
+func canonicalWorkspaceCandidate(wsRecord *workspacemgr.Workspace, candidate string) string {
+	canonical := canonicalExistingDir(candidate)
+	if canonical == "" {
+		return ""
+	}
+	if wsRecord == nil {
+		return canonical
+	}
+	if workspacemgr.IsManagedHostWorkspacePath(canonical) && !workspacemgr.HasValidHostWorkspaceMarker(canonical, wsRecord.ID) {
+		return ""
+	}
+	return canonical
 }
 
 func streamRemoteShellOutput(conn Conn, session *Session, registry *Registry, store *Store) {
@@ -874,12 +943,7 @@ func recoverPersistedTmuxSession(deps *Deps, info SessionInfo) error {
 	}
 	enc := json.NewEncoder(agentConn)
 	dec := json.NewDecoder(agentConn)
-	openReq := map[string]any{
-		"id":      info.ID,
-		"type":    "shell.open",
-		"command": "bash",
-		"workdir": info.WorkDir,
-	}
+	openReq := buildRecoveredShellOpenRequest(info, wsRecord)
 	if err := enc.Encode(openReq); err != nil {
 		_ = agentConn.Close()
 		return err
@@ -961,6 +1025,19 @@ func PruneStalePersistedSessions(deps *Deps) int {
 		}
 	}
 	return removed
+}
+
+func buildRecoveredShellOpenRequest(info SessionInfo, wsRecord *workspacemgr.Workspace) map[string]any {
+	openReq := map[string]any{
+		"id":      info.ID,
+		"type":    "shell.open",
+		"command": "bash",
+		"workdir": info.WorkDir,
+	}
+	if localPath := localWorkspacePathFromRecord(wsRecord); localPath != "" {
+		openReq["local_path"] = localPath
+	}
+	return openReq
 }
 
 func probePersistedTmuxSession(deps *Deps, info SessionInfo) (bool, bool) {

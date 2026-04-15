@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"strings"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/handlers"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
@@ -57,7 +56,37 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 		return handlers.HandleWorkspaceInfo(wid, s.ws, s.workspaceMgr, s.spotlightMgr), nil
 	})
 	rpc.TypedRegister(r, "workspace.create", func(ctx context.Context, req handlers.WorkspaceCreateParams) (*handlers.WorkspaceCreateResult, *rpckit.RPCError) {
-		return handlers.HandleWorkspaceCreate(ctx, req, s.workspaceMgr, s.runtimeFactory)
+		return handlers.HandleWorkspaceCreateWithProjects(ctx, req, s.workspaceMgr, s.projectMgr, s.runtimeFactory)
+	})
+	rpc.TypedRegister(r, "daemon.settings.get", func(ctx context.Context, req handlers.DaemonSettingsGetParams) (*handlers.DaemonSettingsGetResult, *rpckit.RPCError) {
+		return handlers.HandleDaemonSettingsGet(ctx, req, s.workspaceMgr.SandboxResourceSettingsRepository())
+	})
+	rpc.TypedRegister(r, "daemon.settings.update", func(ctx context.Context, req handlers.DaemonSettingsUpdateParams) (*handlers.DaemonSettingsUpdateResult, *rpckit.RPCError) {
+		return handlers.HandleDaemonSettingsUpdate(ctx, req, s.workspaceMgr.SandboxResourceSettingsRepository())
+	})
+	rpc.TypedRegister(r, "project.list", func(ctx context.Context, req handlers.ProjectListParams) (*handlers.ProjectListResult, *rpckit.RPCError) {
+		if s.projectMgr == nil {
+			return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: "project manager unavailable"}
+		}
+		return handlers.HandleProjectList(ctx, req, s.projectMgr)
+	})
+	rpc.TypedRegister(r, "project.create", func(ctx context.Context, req handlers.ProjectCreateParams) (*handlers.ProjectCreateResult, *rpckit.RPCError) {
+		if s.projectMgr == nil {
+			return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: "project manager unavailable"}
+		}
+		return handlers.HandleProjectCreate(ctx, req, s.projectMgr)
+	})
+	rpc.TypedRegister(r, "project.get", func(ctx context.Context, req handlers.ProjectGetParams) (*handlers.ProjectGetResult, *rpckit.RPCError) {
+		if s.projectMgr == nil {
+			return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: "project manager unavailable"}
+		}
+		return handlers.HandleProjectGet(ctx, req, s.projectMgr, s.workspaceMgr)
+	})
+	rpc.TypedRegister(r, "project.remove", func(ctx context.Context, req handlers.ProjectRemoveParams) (*handlers.ProjectRemoveResult, *rpckit.RPCError) {
+		if s.projectMgr == nil {
+			return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: "project manager unavailable"}
+		}
+		return handlers.HandleProjectRemove(ctx, req, s.projectMgr, s.workspaceMgr)
 	})
 	rpc.TypedRegister(r, "workspace.list", func(ctx context.Context, req handlers.WorkspaceListParams) (*handlers.WorkspaceListResult, *rpckit.RPCError) {
 		return handlers.HandleWorkspaceList(ctx, req, s.workspaceMgr)
@@ -97,6 +126,9 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 	rpc.TypedRegister(r, "workspace.fork", func(ctx context.Context, req handlers.WorkspaceForkParams) (*handlers.WorkspaceForkResult, *rpckit.RPCError) {
 		return handlers.HandleWorkspaceFork(ctx, req, s.workspaceMgr, s.runtimeFactory)
 	})
+	rpc.TypedRegister(r, "workspace.checkout", func(ctx context.Context, req handlers.WorkspaceCheckoutParams) (*handlers.WorkspaceCheckoutResult, *rpckit.RPCError) {
+		return handlers.HandleWorkspaceCheckout(ctx, req, s.workspaceMgr)
+	})
 	rpc.TypedRegister(r, "workspace.setLocalWorktree", func(ctx context.Context, req handlers.WorkspaceSetLocalWorktreeParams) (interface{}, *rpckit.RPCError) {
 		return handlers.HandleWorkspaceSetLocalWorktree(ctx, req, s.workspaceMgr)
 	})
@@ -117,10 +149,9 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 		}
 		workspace := s.resolveWorkspace(raw)
 		rootPath := workspace.Path()
-		if wsRecord, ok := s.workspaceMgr.Get(workspaceID); ok && strings.TrimSpace(wsRecord.RootPath) != "" {
-			rootPath = strings.TrimSpace(wsRecord.LocalWorktreePath)
-			if rootPath == "" {
-				rootPath = wsRecord.RootPath
+		if wsRecord, ok := s.workspaceMgr.Get(workspaceID); ok {
+			if preferred := preferredWorkspaceRoot(wsRecord); preferred != "" {
+				rootPath = preferred
 			}
 		}
 		s.ensureComposeHints(ctx, workspaceID, rootPath)

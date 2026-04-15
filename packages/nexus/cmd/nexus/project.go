@@ -24,6 +24,15 @@ var projectListCmd = &cobra.Command{
 	},
 }
 
+var projectCreateCmd = &cobra.Command{
+	Use:   "create <repo>",
+	Short: "Create or return a project for repo/path",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		createProject(strings.TrimSpace(args[0]))
+	},
+}
+
 var projectShowCmd = &cobra.Command{
 	Use:   "show <id>",
 	Short: "Show project details and workspaces",
@@ -43,7 +52,7 @@ var projectRemoveCmd = &cobra.Command{
 }
 
 func init() {
-	projectCmd.AddCommand(projectListCmd, projectShowCmd, projectRemoveCmd)
+	projectCmd.AddCommand(projectListCmd, projectCreateCmd, projectShowCmd, projectRemoveCmd)
 	rootCmd.AddCommand(projectCmd)
 }
 
@@ -74,6 +83,29 @@ func listProjects() {
 	for _, p := range result.Projects {
 		fmt.Printf("%-24s  %-20s  %s\n", p.ID, p.Name, p.PrimaryRepo)
 	}
+}
+
+func createProject(repo string) {
+	if strings.TrimSpace(repo) == "" {
+		fmt.Fprintln(os.Stderr, "nexus project create: repo is required")
+		os.Exit(2)
+	}
+	conn, err := ensureDaemon()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus project create: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	var result struct {
+		Project projectmgr.Project `json:"project"`
+	}
+	if err := daemonRPC(conn, "project.create", map[string]any{"repo": repo}, &result); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus project create: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("project: %s (%s)\n", result.Project.ID, result.Project.PrimaryRepo)
 }
 
 func showProject(id string) {
@@ -111,8 +143,12 @@ func showProject(id string) {
 		"------------------------------------", "--------------------",
 		"----------", "----------")
 	for _, ws := range result.Workspaces {
+		displayRef := ws.CurrentRef
+		if strings.TrimSpace(displayRef) == "" {
+			displayRef = ws.Ref
+		}
 		fmt.Printf("  %-36s  %-20s  %-10s  %s\n",
-			ws.ID, ws.WorkspaceName, ws.State, ws.Ref)
+			ws.ID, ws.WorkspaceName, ws.State, displayRef)
 	}
 }
 

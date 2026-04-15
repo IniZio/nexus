@@ -18,6 +18,7 @@ import (
 )
 
 var _ runtime.Driver = (*Driver)(nil)
+var _ runtime.ForkSnapshotter = (*Driver)(nil)
 
 type CommandRunner interface {
 	Run(ctx context.Context, dir string, cmd string, args ...string) error
@@ -37,6 +38,10 @@ type Driver struct {
 	projectRoots map[string]string
 	agents       map[string]*AgentClient
 	mu           sync.RWMutex
+}
+
+type forkSnapshotManager interface {
+	CheckpointForkImage(workspaceID string, childWorkspaceID string) (string, error)
 }
 
 func (d *Driver) AgentConn(ctx context.Context, workspaceID string) (net.Conn, error) {
@@ -108,20 +113,20 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 		return errors.New("manager is required for firecracker driver")
 	}
 
-	memMiB := 1024
-	if req.Options != nil {
-		if memStr, ok := req.Options["mem_mib"]; ok && memStr != "" {
-			if val, err := strconv.Atoi(memStr); err == nil {
-				memMiB = val
-			}
-		}
+	memMiB := parsePositiveIntOption(req.Options, "mem_mib", 1024)
+	vcpus := parsePositiveIntOption(req.Options, "vcpus", 1)
+	if vcpus <= 0 {
+		vcpus = parsePositiveIntOption(req.Options, "vcpu_count", 1)
 	}
 
 	spec := SpawnSpec{
 		WorkspaceID: req.WorkspaceID,
 		ProjectRoot: req.ProjectRoot,
 		MemoryMiB:   memMiB,
-		VCPUs:       1,
+		VCPUs:       vcpus,
+	}
+	if req.Options != nil {
+		spec.SnapshotID = strings.TrimSpace(req.Options["lineage_snapshot_id"])
 	}
 
 	inst, err := d.manager.Spawn(ctx, spec)
@@ -153,6 +158,21 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	_ = inst
 
 	return nil
+}
+
+func parsePositiveIntOption(options map[string]string, key string, fallback int) int {
+	if options == nil {
+		return fallback
+	}
+	raw := strings.TrimSpace(options[key])
+	if raw == "" {
+		return fallback
+	}
+	val, err := strconv.Atoi(raw)
+	if err != nil || val <= 0 {
+		return fallback
+	}
+	return val
 }
 
 func (d *Driver) GrowWorkspace(ctx context.Context, workspaceID string, newSizeBytes int64) error {
@@ -248,8 +268,29 @@ func (d *Driver) Resume(ctx context.Context, workspaceID string) error {
 }
 
 func (d *Driver) Fork(ctx context.Context, workspaceID, childWorkspaceID string) error {
-	// Native firecracker doesn't support fork in this cutover
-	return fmt.Errorf("%w: fork", runtime.ErrOperationNotSupported)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	parentProjectRoot := strings.TrimSpace(d.projectRoots[workspaceID])
+	if parentProjectRoot == "" {
+		return fmt.Errorf("parent workspace %s not found", workspaceID)
+	}
+	if _, exists := d.projectRoots[childWorkspaceID]; exists {
+		return fmt.Errorf("workspace %s already exists", childWorkspaceID)
+	}
+	d.projectRoots[childWorkspaceID] = parentProjectRoot
+	return nil
+}
+
+func (d *Driver) CheckpointFork(ctx context.Context, workspaceID, childWorkspaceID string) (string, error) {
+	_ = ctx
+	if d.manager == nil {
+		return "", errors.New("manager is required for firecracker driver")
+	}
+	if snapshotter, ok := d.manager.(forkSnapshotManager); ok {
+		return snapshotter.CheckpointForkImage(workspaceID, childWorkspaceID)
+	}
+	return fmt.Sprintf("fc-fork-%s-%s-%d", workspaceID, childWorkspaceID, time.Now().UTC().UnixNano()), nil
 }
 
 func (d *Driver) Destroy(ctx context.Context, workspaceID string) error {

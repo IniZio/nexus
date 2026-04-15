@@ -479,3 +479,71 @@ func (s *NodeStore) ListSpotlightForwardRows() ([]SpotlightForwardRow, error) {
 
 	return all, nil
 }
+
+func (s *NodeStore) GetSandboxResourceSettings() (SandboxResourceSettingsRow, bool, error) {
+	var (
+		defaultMemoryMiB int
+		defaultVCPUs     int
+		maxMemoryMiB     int
+		maxVCPUs         int
+		updated          string
+	)
+	err := s.db.QueryRow(
+		`SELECT default_memory_mib, default_vcpus, max_memory_mib, max_vcpus, updated_at
+		 FROM sandbox_resource_settings
+		 WHERE id = 1`,
+	).Scan(&defaultMemoryMiB, &defaultVCPUs, &maxMemoryMiB, &maxVCPUs, &updated)
+	if err == sql.ErrNoRows {
+		return SandboxResourceSettingsRow{}, false, nil
+	}
+	if err != nil {
+		return SandboxResourceSettingsRow{}, false, fmt.Errorf("get sandbox resource settings: %w", err)
+	}
+	updatedAt, _ := time.Parse(time.RFC3339Nano, updated)
+	return SandboxResourceSettingsRow{
+		DefaultMemoryMiB: defaultMemoryMiB,
+		DefaultVCPUs:     defaultVCPUs,
+		MaxMemoryMiB:     maxMemoryMiB,
+		MaxVCPUs:         maxVCPUs,
+		UpdatedAt:        updatedAt,
+	}, true, nil
+}
+
+func (s *NodeStore) UpsertSandboxResourceSettings(row SandboxResourceSettingsRow) error {
+	if row.DefaultMemoryMiB <= 0 {
+		return fmt.Errorf("default memory MiB must be positive")
+	}
+	if row.DefaultVCPUs <= 0 {
+		return fmt.Errorf("default vCPUs must be positive")
+	}
+	if row.MaxMemoryMiB <= 0 {
+		return fmt.Errorf("max memory MiB must be positive")
+	}
+	if row.MaxVCPUs <= 0 {
+		return fmt.Errorf("max vCPUs must be positive")
+	}
+	updatedAt := row.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO sandbox_resource_settings(
+			id, default_memory_mib, default_vcpus, max_memory_mib, max_vcpus, updated_at
+		) VALUES(1, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			default_memory_mib=excluded.default_memory_mib,
+			default_vcpus=excluded.default_vcpus,
+			max_memory_mib=excluded.max_memory_mib,
+			max_vcpus=excluded.max_vcpus,
+			updated_at=excluded.updated_at`,
+		row.DefaultMemoryMiB,
+		row.DefaultVCPUs,
+		row.MaxMemoryMiB,
+		row.MaxVCPUs,
+		updatedAt.UTC().Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert sandbox resource settings: %w", err)
+	}
+	return nil
+}

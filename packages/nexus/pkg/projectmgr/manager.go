@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -13,19 +14,14 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/store"
 )
 
-type projectStore interface {
-	store.ProjectRepository
-	store.WorkspaceRepository
-}
-
 type Manager struct {
 	root        string
-	projectRepo projectStore
+	projectRepo store.ProjectRepository
 	mu          sync.RWMutex
 	projects    map[string]*Project
 }
 
-func NewManager(root string, repo projectStore) *Manager {
+func NewManager(root string, repo store.ProjectRepository) *Manager {
 	m := &Manager{
 		root:        root,
 		projectRepo: repo,
@@ -180,6 +176,15 @@ func (m *Manager) List() []*Project {
 		all = append(all, cloneProject(p))
 	}
 	m.mu.RUnlock()
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].CreatedAt.Equal(all[j].CreatedAt) {
+			return all[i].CreatedAt.Before(all[j].CreatedAt)
+		}
+		if all[i].Name != all[j].Name {
+			return all[i].Name < all[j].Name
+		}
+		return all[i].ID < all[j].ID
+	})
 	return all
 }
 

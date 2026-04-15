@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/inizio/nexus/packages/nexus/pkg/git/worktree"
 )
 
 func TestNodeStorePathForRoot_UsesTempScopedDBForTmpSymlinkPath(t *testing.T) {
@@ -90,6 +88,234 @@ func TestManager_CreateWorkspace_AssignsRootPath(t *testing.T) {
 	}
 	if _, err := os.Stat(ws.RootPath); err != nil {
 		t.Fatalf("expected workspace root to exist: %v", err)
+	}
+}
+
+func TestManager_CreateWorkspace_UsesDeterministicHostWorkspacePathForLocalRepo(t *testing.T) {
+	m := newTestManager(t)
+	repoRoot := initLocalRepoDirForWorkspaceTests(t)
+	ws, err := m.Create(context.Background(), CreateSpec{
+		Repo:          repoRoot,
+		Ref:           "main",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+	})
+	if err != nil {
+		t.Fatalf("create returned error: %v", err)
+	}
+	wantPrefix := filepath.Join(repoRoot, ".worktrees") + string(filepath.Separator)
+	if !strings.HasPrefix(ws.LocalWorktreePath, wantPrefix) {
+		t.Fatalf("expected local workspace path prefix %q, got %q", wantPrefix, ws.LocalWorktreePath)
+	}
+	if gotBase := filepath.Base(ws.LocalWorktreePath); gotBase != "main" {
+		t.Fatalf("expected branch-based host path segment %q, got %q", "main", gotBase)
+	}
+	if _, statErr := os.Stat(ws.LocalWorktreePath); statErr != nil {
+		t.Fatalf("expected local workspace path to exist: %v", statErr)
+	}
+	if !HasValidHostWorkspaceMarker(ws.LocalWorktreePath, ws.ID) {
+		t.Fatalf("expected host workspace marker for %q", ws.ID)
+	}
+	if _, readErr := os.ReadFile(filepath.Join(ws.LocalWorktreePath, "README.md")); readErr != nil {
+		t.Fatalf("expected git checkout materialized in host workspace path: %v", readErr)
+	}
+	gitignorePath := filepath.Join(repoRoot, ".gitignore")
+	gitignoreData, readErr := os.ReadFile(gitignorePath)
+	if readErr != nil {
+		t.Fatalf("read repo .gitignore: %v", readErr)
+	}
+	if !strings.Contains(string(gitignoreData), ".worktrees/") {
+		t.Fatalf("expected repo .gitignore to include .worktrees/, got %q", string(gitignoreData))
+	}
+}
+
+func TestManager_CreateWorkspace_UsesBranchNameForHostWorkspacePath(t *testing.T) {
+	m := newTestManager(t)
+	repoRoot := initLocalRepoDirForWorkspaceTests(t)
+	ws, err := m.Create(context.Background(), CreateSpec{
+		Repo:          repoRoot,
+		Ref:           "feature/auth-flow",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+	})
+	if err != nil {
+		t.Fatalf("create returned error: %v", err)
+	}
+	if got := filepath.Base(ws.LocalWorktreePath); got != "feature-auth-flow" {
+		t.Fatalf("expected sanitized branch dir name %q, got %q", "feature-auth-flow", got)
+	}
+}
+
+func TestManager_CreateWorkspace_ProjectRootUsesRepoPath(t *testing.T) {
+	m := newTestManager(t)
+	repoRoot := initLocalRepoDirForWorkspaceTests(t)
+	ws, err := m.Create(context.Background(), CreateSpec{
+		Repo:               repoRoot,
+		Ref:                "main",
+		WorkspaceName:      "base",
+		AgentProfile:       "default",
+		UseProjectRootPath: true,
+	})
+	if err != nil {
+		t.Fatalf("create returned error: %v", err)
+	}
+	if ws.LocalWorktreePath != repoRoot {
+		t.Fatalf("expected project root host path %q, got %q", repoRoot, ws.LocalWorktreePath)
+	}
+	if ws.HostWorkspacePath != repoRoot {
+		t.Fatalf("expected project root canonical host path %q, got %q", repoRoot, ws.HostWorkspacePath)
+	}
+	if HasValidHostWorkspaceMarker(repoRoot, ws.ID) {
+		t.Fatalf("did not expect marker file in repo root for project base workspace")
+	}
+}
+
+func TestManager_LoadAll_NormalizesLegacyLocalWorktreePath(t *testing.T) {
+	root := t.TempDir()
+	mgr := NewManager(root)
+	repoRoot := initLocalRepoDirForWorkspaceTests(t)
+
+	ws, err := mgr.Create(context.Background(), CreateSpec{
+		Repo:          repoRoot,
+		Ref:           "main",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+	})
+	if err != nil {
+		t.Fatalf("create returned error: %v", err)
+	}
+	legacyPath := filepath.Join(repoRoot, ".nexus", "workspaces", ws.ID)
+	if err := mgr.SetLocalWorktree(ws.ID, legacyPath, ""); err != nil {
+		t.Fatalf("set legacy local worktree path: %v", err)
+	}
+
+	reloaded := NewManager(root)
+	wsReloaded, ok := reloaded.Get(ws.ID)
+	if !ok {
+		t.Fatalf("expected workspace %s after reload", ws.ID)
+	}
+	want := filepath.Join(repoRoot, ".worktrees", "main")
+	if wsReloaded.LocalWorktreePath != want {
+		t.Fatalf("expected legacy path normalization to %q, got %q", want, wsReloaded.LocalWorktreePath)
+	}
+}
+
+func TestManager_ForkCopiesDirtyParentStateToChildHostWorkspace(t *testing.T) {
+	m := newTestManager(t)
+	repoRoot := initLocalRepoDirForWorkspaceTests(t)
+
+	parent, err := m.Create(context.Background(), CreateSpec{
+		Repo:          repoRoot,
+		Ref:           "main",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+	})
+	if err != nil {
+		t.Fatalf("create parent returned error: %v", err)
+	}
+
+	trackedFile := filepath.Join(parent.LocalWorktreePath, "README.md")
+	if err := os.WriteFile(trackedFile, []byte("# dirty parent\n"), 0o644); err != nil {
+		t.Fatalf("write tracked dirty file: %v", err)
+	}
+	untrackedFile := filepath.Join(parent.LocalWorktreePath, "local-only.txt")
+	if err := os.WriteFile(untrackedFile, []byte("untracked\n"), 0o644); err != nil {
+		t.Fatalf("write untracked file: %v", err)
+	}
+
+	child, err := m.Fork(parent.ID, "alpha-child", "feature-dirty")
+	if err != nil {
+		t.Fatalf("fork returned error: %v", err)
+	}
+
+	trackedChildData, readErr := os.ReadFile(filepath.Join(child.LocalWorktreePath, "README.md"))
+	if readErr != nil {
+		t.Fatalf("read child tracked file: %v", readErr)
+	}
+	if string(trackedChildData) != "# dirty parent\n" {
+		t.Fatalf("expected child tracked changes to carry over, got %q", string(trackedChildData))
+	}
+	untrackedChildData, readErr := os.ReadFile(filepath.Join(child.LocalWorktreePath, "local-only.txt"))
+	if readErr != nil {
+		t.Fatalf("read child untracked file: %v", readErr)
+	}
+	if string(untrackedChildData) != "untracked\n" {
+		t.Fatalf("expected child untracked file to carry over, got %q", string(untrackedChildData))
+	}
+}
+
+func TestManager_CopyDirtyStateFromWorkspace(t *testing.T) {
+	m := newTestManager(t)
+	repoRoot := initLocalRepoDirForWorkspaceTests(t)
+
+	source, err := m.Create(context.Background(), CreateSpec{
+		Repo:          repoRoot,
+		Ref:           "main",
+		WorkspaceName: "base",
+		AgentProfile:  "default",
+	})
+	if err != nil {
+		t.Fatalf("create source returned error: %v", err)
+	}
+	target, err := m.Create(context.Background(), CreateSpec{
+		Repo:          repoRoot,
+		Ref:           "feature-copy",
+		WorkspaceName: "child",
+		AgentProfile:  "default",
+	})
+	if err != nil {
+		t.Fatalf("create target returned error: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(source.LocalWorktreePath, "README.md"), []byte("# YOLO\n"), 0o644); err != nil {
+		t.Fatalf("write source tracked dirty file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(source.LocalWorktreePath, "YOLO"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatalf("write source untracked file: %v", err)
+	}
+
+	if err := m.CopyDirtyStateFromWorkspace(source.ID, target.ID); err != nil {
+		t.Fatalf("copy dirty state: %v", err)
+	}
+
+	trackedData, err := os.ReadFile(filepath.Join(target.LocalWorktreePath, "README.md"))
+	if err != nil {
+		t.Fatalf("read target tracked file: %v", err)
+	}
+	if string(trackedData) != "# YOLO\n" {
+		t.Fatalf("expected tracked content propagated, got %q", string(trackedData))
+	}
+	untrackedData, err := os.ReadFile(filepath.Join(target.LocalWorktreePath, "YOLO"))
+	if err != nil {
+		t.Fatalf("read target untracked file: %v", err)
+	}
+	if string(untrackedData) != "untracked\n" {
+		t.Fatalf("expected untracked content propagated, got %q", string(untrackedData))
+	}
+}
+
+func TestManager_CreateWorkspace_RejectsDuplicateBranchPerRepo(t *testing.T) {
+	m := newTestManager(t)
+	spec := CreateSpec{
+		Repo:          "git@example/repo.git",
+		Ref:           "main",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+	}
+	if _, err := m.Create(context.Background(), spec); err != nil {
+		t.Fatalf("first create returned error: %v", err)
+	}
+	_, err := m.Create(context.Background(), CreateSpec{
+		Repo:          spec.Repo,
+		Ref:           spec.Ref,
+		WorkspaceName: "beta",
+		AgentProfile:  "default",
+	})
+	if err == nil {
+		t.Fatal("expected duplicate branch create to fail")
+	}
+	if !strings.Contains(err.Error(), "workspace already exists for branch") {
+		t.Fatalf("expected duplicate branch error, got %v", err)
 	}
 }
 
@@ -277,10 +503,10 @@ func TestManager_CreateRollbackOnPersistFailure_RemovesCreateSideEffects(t *test
 
 	worktreeEntries, readErr := os.ReadDir(filepath.Join(repoRoot, ".worktrees"))
 	if readErr != nil && !os.IsNotExist(readErr) {
-		t.Fatalf("read local worktrees dir: %v", readErr)
+		t.Fatalf("read local workspace dir: %v", readErr)
 	}
 	if len(worktreeEntries) != 0 {
-		t.Fatalf("expected no local worktrees after failed create, got %d entries", len(worktreeEntries))
+		t.Fatalf("expected no local workspace paths after failed create, got %d entries", len(worktreeEntries))
 	}
 }
 
@@ -359,6 +585,98 @@ func TestManager_StartPersistsAcrossReload(t *testing.T) {
 	}
 	if got.State != StateRunning {
 		t.Fatalf("expected state %q after reload, got %q", StateRunning, got.State)
+	}
+}
+
+func TestManager_CheckoutUpdatesRefAndPersists(t *testing.T) {
+	m := newTestManager(t)
+	ws, err := m.Create(context.Background(), CreateSpec{
+		Repo:          "git@example/repo.git",
+		Ref:           "main",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+	})
+	if err != nil {
+		t.Fatalf("create returned error: %v", err)
+	}
+
+	updated, err := m.Checkout(ws.ID, "feature-a")
+	if err != nil {
+		t.Fatalf("checkout returned error: %v", err)
+	}
+	if updated.Ref != "feature-a" {
+		t.Fatalf("expected ref %q after checkout, got %q", "feature-a", updated.Ref)
+	}
+	if updated.TargetBranch != "feature-a" || updated.CurrentRef != "feature-a" {
+		t.Fatalf("expected target/current ref to track checkout branch, got target=%q current=%q", updated.TargetBranch, updated.CurrentRef)
+	}
+
+	reloaded := NewManager(m.Root())
+	reloadedWS, ok := reloaded.Get(ws.ID)
+	if !ok {
+		t.Fatal("expected workspace after reload")
+	}
+	if reloadedWS.Ref != "feature-a" {
+		t.Fatalf("expected persisted ref %q, got %q", "feature-a", reloadedWS.Ref)
+	}
+	if reloadedWS.TargetBranch != "feature-a" || reloadedWS.CurrentRef != "feature-a" {
+		t.Fatalf("expected persisted target/current refs feature-a, got target=%q current=%q", reloadedWS.TargetBranch, reloadedWS.CurrentRef)
+	}
+}
+
+func TestManager_CheckoutRejectsDuplicateBranchPerRepo(t *testing.T) {
+	m := newTestManager(t)
+	repo := "git@example/repo.git"
+	first, err := m.Create(context.Background(), CreateSpec{
+		Repo:          repo,
+		Ref:           "main",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+	})
+	if err != nil {
+		t.Fatalf("create first returned error: %v", err)
+	}
+	if _, err := m.Create(context.Background(), CreateSpec{
+		Repo:          repo,
+		Ref:           "feature-a",
+		WorkspaceName: "beta",
+		AgentProfile:  "default",
+	}); err != nil {
+		t.Fatalf("create second returned error: %v", err)
+	}
+
+	_, err = m.Checkout(first.ID, "feature-a")
+	if err == nil {
+		t.Fatal("expected checkout duplicate branch to fail")
+	}
+	if !strings.Contains(err.Error(), "workspace already exists for branch") {
+		t.Fatalf("expected duplicate branch error, got %v", err)
+	}
+}
+
+func TestManager_CanCheckoutRejectsDuplicateBranchPerRepo(t *testing.T) {
+	m := newTestManager(t)
+	repo := "git@example/repo.git"
+	first, err := m.Create(context.Background(), CreateSpec{
+		Repo:          repo,
+		Ref:           "main",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+	})
+	if err != nil {
+		t.Fatalf("create first returned error: %v", err)
+	}
+	if _, err := m.Create(context.Background(), CreateSpec{
+		Repo:          repo,
+		Ref:           "feature-a",
+		WorkspaceName: "beta",
+		AgentProfile:  "default",
+	}); err != nil {
+		t.Fatalf("create second returned error: %v", err)
+	}
+
+	if err := m.CanCheckout(first.ID, "feature-a"); err == nil {
+		t.Fatal("expected duplicate branch precheck to fail")
 	}
 }
 
@@ -550,6 +868,54 @@ func TestManager_ForkPersistsParentWorkspaceID(t *testing.T) {
 	}
 }
 
+func TestManager_SetLineageSnapshotPersistsAcrossReload(t *testing.T) {
+	m := newTestManager(t)
+	ws, err := m.Create(context.Background(), CreateSpec{
+		Repo:          "git@example/repo.git",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+	})
+	if err != nil {
+		t.Fatalf("create returned error: %v", err)
+	}
+
+	if err := m.SetLineageSnapshot(ws.ID, "snap-123"); err != nil {
+		t.Fatalf("set lineage snapshot returned error: %v", err)
+	}
+
+	reloaded := NewManager(m.Root())
+	got, ok := reloaded.Get(ws.ID)
+	if !ok {
+		t.Fatal("expected workspace to exist after reload")
+	}
+	if got.LineageSnapshotID != "snap-123" {
+		t.Fatalf("expected persisted lineage snapshot %q, got %q", "snap-123", got.LineageSnapshotID)
+	}
+}
+
+func TestManager_ForkInheritsParentLineageSnapshotID(t *testing.T) {
+	m := newTestManager(t)
+	parent, err := m.Create(context.Background(), CreateSpec{
+		Repo:          "git@example/repo.git",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+	})
+	if err != nil {
+		t.Fatalf("create returned error: %v", err)
+	}
+	if err := m.SetLineageSnapshot(parent.ID, "snap-parent"); err != nil {
+		t.Fatalf("set parent lineage snapshot returned error: %v", err)
+	}
+
+	child, err := m.Fork(parent.ID, "alpha-child", "alpha-child")
+	if err != nil {
+		t.Fatalf("fork returned error: %v", err)
+	}
+	if child.LineageSnapshotID != "snap-parent" {
+		t.Fatalf("expected child to inherit lineage snapshot %q, got %q", "snap-parent", child.LineageSnapshotID)
+	}
+}
+
 func TestManager_CreateSetsRepoIdentityForHostedAndLocal(t *testing.T) {
 	m := newTestManager(t)
 	hosted, err := m.Create(context.Background(), CreateSpec{
@@ -643,65 +1009,6 @@ func TestManager_ForkParallelWorkspacesRemainIndependent(t *testing.T) {
 	}
 }
 
-func TestResolveForkBasePath_PrefersNestedParentUnderRepoRoot(t *testing.T) {
-	repoRoot := t.TempDir()
-	parentName := "alpha"
-	nestedParent := filepath.Join(repoRoot, ".worktrees", worktree.SanitizeWorktreeName(parentName))
-	if err := os.MkdirAll(nestedParent, 0o755); err != nil {
-		t.Fatalf("mkdir nested parent: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repoRoot, ".git"), []byte("gitdir: /tmp/fake\n"), 0o644); err != nil {
-		t.Fatalf("write .git marker: %v", err)
-	}
-
-	parent := &Workspace{
-		Repo:              repoRoot,
-		WorkspaceName:     parentName,
-		LocalWorktreePath: repoRoot,
-	}
-
-	got := worktree.ResolveForkBasePath(worktree.ForkParentInput{
-		Repo:              parent.Repo,
-		WorkspaceName:     parent.WorkspaceName,
-		LocalWorktreePath: parent.LocalWorktreePath,
-	})
-	if got != nestedParent {
-		t.Fatalf("expected nested parent %q, got %q", nestedParent, got)
-	}
-}
-
-func TestResolveForkBasePath_FallsBackToInferredPathWithoutLocalWorktree(t *testing.T) {
-	repoRoot := t.TempDir()
-	parentName := "alpha"
-	inferred := filepath.Join(repoRoot, ".worktrees", worktree.SanitizeWorktreeName(parentName))
-	if err := os.MkdirAll(inferred, 0o755); err != nil {
-		t.Fatalf("mkdir inferred parent: %v", err)
-	}
-
-	parent := &Workspace{
-		Repo:          repoRoot,
-		WorkspaceName: parentName,
-	}
-
-	got := worktree.ResolveForkBasePath(worktree.ForkParentInput{
-		Repo:              parent.Repo,
-		WorkspaceName:     parent.WorkspaceName,
-		LocalWorktreePath: parent.LocalWorktreePath,
-	})
-	if got != inferred {
-		t.Fatalf("expected inferred path %q, got %q", inferred, got)
-	}
-}
-
-func TestForkChildrenDir_UsesRepoRootForNestedParent(t *testing.T) {
-	parent := filepath.Join("/tmp/repo", ".worktrees", "alpha")
-	got := worktree.ForkChildrenDir(parent)
-	want := filepath.Join("/tmp/repo", ".worktrees")
-	if got != want {
-		t.Fatalf("expected %q, got %q", want, got)
-	}
-}
-
 func TestIsLikelyLocalPath_DetectsExistingRelativeDirectory(t *testing.T) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -750,7 +1057,7 @@ func TestDeriveRepoKind_DetectsExistingRelativeDirectoryAsLocal(t *testing.T) {
 
 func TestManager_ForkFallsBackWhenLocalWorktreePathIsStale(t *testing.T) {
 	m := newTestManager(t)
-	repoRoot := initGitRepoForWorktreeTests(t)
+	repoRoot := initLocalRepoDirForWorkspaceTests(t)
 
 	parent, err := m.Create(context.Background(), CreateSpec{
 		Repo:          repoRoot,
@@ -779,31 +1086,64 @@ func TestManager_ForkFallsBackWhenLocalWorktreePathIsStale(t *testing.T) {
 		t.Fatalf("expected child local worktree path to exist: %v", statErr)
 	}
 	if gotBase := filepath.Dir(child.LocalWorktreePath); gotBase != filepath.Join(repoRoot, ".worktrees") {
-		t.Fatalf("expected child worktree under %q, got %q", filepath.Join(repoRoot, ".worktrees"), child.LocalWorktreePath)
+		t.Fatalf("expected child host workspace path under %q, got %q", filepath.Join(repoRoot, ".worktrees"), child.LocalWorktreePath)
+	}
+}
+
+func TestManager_ForkRejectsDuplicateBranchPerRepo(t *testing.T) {
+	m := newTestManager(t)
+	repoRoot := initLocalRepoDirForWorkspaceTests(t)
+
+	parent, err := m.Create(context.Background(), CreateSpec{
+		Repo:          repoRoot,
+		Ref:           "main",
+		WorkspaceName: "alpha",
+		AgentProfile:  "default",
+	})
+	if err != nil {
+		t.Fatalf("create parent returned error: %v", err)
+	}
+	if _, err := m.Create(context.Background(), CreateSpec{
+		Repo:          repoRoot,
+		Ref:           "feature-x",
+		WorkspaceName: "existing-feature",
+		AgentProfile:  "default",
+	}); err != nil {
+		t.Fatalf("create existing feature workspace returned error: %v", err)
+	}
+
+	_, err = m.Fork(parent.ID, "alpha-child", "feature-x")
+	if err == nil {
+		t.Fatal("expected duplicate branch fork to fail")
+	}
+	if !strings.Contains(err.Error(), "workspace already exists for branch") {
+		t.Fatalf("expected duplicate branch error, got %v", err)
 	}
 }
 
 func initGitRepoForWorktreeTests(t *testing.T) string {
 	t.Helper()
+	return initLocalRepoDirForWorkspaceTests(t)
+}
+
+func initLocalRepoDirForWorkspaceTests(t *testing.T) string {
+	t.Helper()
 
 	repoRoot := t.TempDir()
-	runGitForWorktreeTests(t, repoRoot, "init")
-	runGitForWorktreeTests(t, repoRoot, "config", "user.email", "nexus-tests@example.com")
-	runGitForWorktreeTests(t, repoRoot, "config", "user.name", "Nexus Tests")
-
-	readmePath := filepath.Join(repoRoot, "README.md")
-	if err := os.WriteFile(readmePath, []byte("# test repo\n"), 0o644); err != nil {
-		t.Fatalf("write README: %v", err)
+	runGitForWorkspaceTests(t, repoRoot, "init")
+	runGitForWorkspaceTests(t, repoRoot, "config", "user.email", "nexus-tests@example.com")
+	runGitForWorkspaceTests(t, repoRoot, "config", "user.name", "Nexus Tests")
+	runGitForWorkspaceTests(t, repoRoot, "checkout", "-B", "main")
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("# test\n"), 0o644); err != nil {
+		t.Fatalf("write readme: %v", err)
 	}
-	runGitForWorktreeTests(t, repoRoot, "add", "README.md")
-	runGitForWorktreeTests(t, repoRoot, "commit", "-m", "initial commit")
-
+	runGitForWorkspaceTests(t, repoRoot, "add", "README.md")
+	runGitForWorkspaceTests(t, repoRoot, "commit", "-m", "init")
 	return repoRoot
 }
 
-func runGitForWorktreeTests(t *testing.T, dir string, args ...string) {
+func runGitForWorkspaceTests(t *testing.T, dir string, args ...string) {
 	t.Helper()
-
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()

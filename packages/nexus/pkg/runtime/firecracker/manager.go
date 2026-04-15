@@ -3,6 +3,7 @@ package firecracker
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -33,6 +34,7 @@ const VendingVSockPort uint32 = 10790
 type SpawnSpec struct {
 	WorkspaceID string
 	ProjectRoot string
+	SnapshotID  string
 	MemoryMiB   int
 	VCPUs       int
 }
@@ -152,9 +154,20 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	workDir := filepath.Join(m.config.WorkDirRoot, spec.WorkspaceID)
 
-	projectSizeBytes, err := directorySizeBytes(spec.ProjectRoot)
-	if err != nil {
-		return nil, fmt.Errorf("compute project size: %w", err)
+	var projectSizeBytes int64
+	if strings.TrimSpace(spec.SnapshotID) != "" {
+		snapPath := m.snapshotImagePath(spec.SnapshotID)
+		info, statErr := os.Stat(snapPath)
+		if statErr != nil {
+			return nil, fmt.Errorf("stat snapshot image: %w", statErr)
+		}
+		projectSizeBytes = info.Size()
+	} else {
+		size, sizeErr := directorySizeBytes(spec.ProjectRoot)
+		if sizeErr != nil {
+			return nil, fmt.Errorf("compute project size: %w", sizeErr)
+		}
+		projectSizeBytes = size
 	}
 	const miB = int64(1024 * 1024)
 	neededBytes := workspaceImageSizeBytes(projectSizeBytes) + 512*miB
@@ -186,12 +199,22 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		return nil, fmt.Errorf("failed to setup tap %s: %w", tap, err)
 	}
 
-	if err := workspaceImageBuilderFunc(spec.ProjectRoot, workspaceImagePath); err != nil {
-		if cleanupTap {
-			teardownTAP(tap, subnetCIDR)
+	if strings.TrimSpace(spec.SnapshotID) != "" {
+		if err := copyFile(m.snapshotImagePath(spec.SnapshotID), workspaceImagePath); err != nil {
+			if cleanupTap {
+				teardownTAP(tap, subnetCIDR)
+			}
+			os.RemoveAll(workDir)
+			return nil, fmt.Errorf("failed to restore workspace image from snapshot: %w", err)
 		}
-		os.RemoveAll(workDir)
-		return nil, fmt.Errorf("failed to build workspace image: %w", err)
+	} else {
+		if err := workspaceImageBuilderFunc(spec.ProjectRoot, workspaceImagePath); err != nil {
+			if cleanupTap {
+				teardownTAP(tap, subnetCIDR)
+			}
+			os.RemoveAll(workDir)
+			return nil, fmt.Errorf("failed to build workspace image: %w", err)
+		}
 	}
 
 	// Launch Firecracker directly in the host network namespace.
@@ -503,7 +526,8 @@ func processAlive(pid int) bool {
 }
 
 // Get retrieves an instance by workspace ID.
-func (m *Manager) Get(workspaceID string) (*Instance, error) {	m.mu.RLock()
+func (m *Manager) Get(workspaceID string) (*Instance, error) {
+	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	inst, exists := m.instances[workspaceID]
@@ -512,6 +536,42 @@ func (m *Manager) Get(workspaceID string) (*Instance, error) {	m.mu.RLock()
 	}
 
 	return inst, nil
+}
+
+// CheckpointForkImage snapshots the parent workspace image and returns a
+// backend-specific snapshot identifier.
+func (m *Manager) CheckpointForkImage(workspaceID string, childWorkspaceID string) (string, error) {
+	m.mu.RLock()
+	parent, exists := m.instances[workspaceID]
+	m.mu.RUnlock()
+	if !exists {
+		return "", fmt.Errorf("workspace not found: %s", workspaceID)
+	}
+	if strings.TrimSpace(parent.WorkspaceImage) == "" {
+		return "", fmt.Errorf("workspace image missing for %s", workspaceID)
+	}
+
+	snapshotsDir := filepath.Join(m.config.WorkDirRoot, ".snapshots")
+	if err := os.MkdirAll(snapshotsDir, 0o755); err != nil {
+		return "", fmt.Errorf("create snapshots dir: %w", err)
+	}
+
+	snapshotID := fmt.Sprintf(
+		"fc-%s-%s-%d",
+		strings.TrimSpace(workspaceID),
+		strings.TrimSpace(childWorkspaceID),
+		time.Now().UTC().UnixNano(),
+	)
+	dst := filepath.Join(snapshotsDir, snapshotID+".ext4")
+	if err := copyFile(parent.WorkspaceImage, dst); err != nil {
+		return "", fmt.Errorf("checkpoint workspace image: %w", err)
+	}
+
+	return snapshotID, nil
+}
+
+func (m *Manager) snapshotImagePath(snapshotID string) string {
+	return filepath.Join(m.config.WorkDirRoot, ".snapshots", strings.TrimSpace(snapshotID)+".ext4")
 }
 
 func createWorkspaceImage(projectRoot, imagePath string) error {
@@ -599,4 +659,23 @@ func checkDiskSpace(dir string, needed int64) error {
 		return fmt.Errorf("need %d MiB, only %d MiB free in %s", needed>>20, avail>>20, dir)
 	}
 	return nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
 }

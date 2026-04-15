@@ -134,13 +134,15 @@ func runServer(port int, workspaceDir string, token string) error {
 	// Create runtime drivers.
 	firecrackerDriver := firecracker.NewDriver(runner, firecracker.WithManager(fcManager))
 	seatbeltDriver := seatbelt.NewDriver()
-	firecrackerRuntimeDriver := runtime.Driver(firecrackerDriver)
-	if firecrackerProbeGOOS == "darwin" {
-		firecrackerRuntimeDriver = limafirecracker.NewDriver(seatbeltDriver)
-	}
-
 	firecrackerAvailable := probeFirecrackerTooling(exec.LookPath)
 	seatbeltAvailable := firecrackerProbeGOOS == "darwin"
+
+	firecrackerRuntimeDriver := runtime.Driver(firecrackerDriver)
+	if firecrackerProbeGOOS == "darwin" {
+		// On macOS, the firecracker backend alias is implemented through the
+		// Lima-based runtime driver.
+		firecrackerRuntimeDriver = limafirecracker.NewDriver(seatbeltDriver)
+	}
 
 	_, codexErr := exec.LookPath("codex")
 	codexAvailable := codexErr == nil

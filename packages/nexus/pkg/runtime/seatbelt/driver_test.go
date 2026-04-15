@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -153,6 +154,47 @@ func TestCreateFallsBackToDefaultInstanceWhenSeatbeltMountPrepareFails(t *testin
 	}
 }
 
+func TestCreateExistingWorkspaceRefreshesMountPath(t *testing.T) {
+	d := NewDriver()
+	oldLookPath := seatbeltLookPath
+	t.Cleanup(func() { seatbeltLookPath = oldLookPath })
+	seatbeltLookPath = func(file string) (string, error) { return "/usr/local/bin/limactl", nil }
+
+	oldPath := t.TempDir()
+	newPath := t.TempDir()
+	d.workspaces["ws-refresh"] = &workspaceState{
+		projectRoot: oldPath,
+		state:       "created",
+		instance:    "nexus",
+	}
+
+	d.bootstrapInstance = func(ctx context.Context, instance, configBundle string) error { return nil }
+
+	var seenLocalPath string
+	d.prepareWorkspaceFS = func(ctx context.Context, instance, targetPath, localPath string) error {
+		seenLocalPath = localPath
+		return nil
+	}
+
+	err := d.Create(context.Background(), runtime.CreateRequest{
+		WorkspaceID:   "ws-refresh",
+		WorkspaceName: "refresh",
+		ProjectRoot:   newPath,
+	})
+	if err != nil {
+		t.Fatalf("expected create refresh to succeed, got %v", err)
+	}
+	if seenLocalPath != newPath {
+		t.Fatalf("expected prepareWorkspaceFS localPath %q, got %q", newPath, seenLocalPath)
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if got := d.workspaces["ws-refresh"].projectRoot; got != newPath {
+		t.Fatalf("expected stored projectRoot %q, got %q", newPath, got)
+	}
+}
+
 func TestCreateFailsWhenBootstrapFails(t *testing.T) {
 	d := NewDriver()
 	oldLookPath := seatbeltLookPath
@@ -170,6 +212,96 @@ func TestCreateFailsWhenBootstrapFails(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestCheckpointForkCreatesSnapshotFromWorkspaceRoot(t *testing.T) {
+	d := NewDriver()
+	d.snapshotRoot = t.TempDir()
+
+	sourceRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceRoot, "README.md"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, ".git"), []byte("gitdir: test"), 0o644); err != nil {
+		t.Fatalf("write git metadata: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, workspaceMarkerFile), []byte(`{"workspaceId":"ws-parent"}`), 0o644); err != nil {
+		t.Fatalf("write marker file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(sourceRoot, ".worktrees", "feat-1"), 0o755); err != nil {
+		t.Fatalf("create nested worktrees dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, ".worktrees", "feat-1", "big.txt"), []byte("nested"), 0o644); err != nil {
+		t.Fatalf("write nested worktree file: %v", err)
+	}
+
+	d.workspaces["ws-parent"] = &workspaceState{
+		projectRoot: sourceRoot,
+		state:       "running",
+		instance:    "nexus",
+	}
+
+	snapshotID, err := d.CheckpointFork(context.Background(), "ws-parent", "ws-child")
+	if err != nil {
+		t.Fatalf("checkpoint failed: %v", err)
+	}
+	if strings.TrimSpace(snapshotID) == "" {
+		t.Fatal("expected non-empty snapshot id")
+	}
+
+	snapshotPath := d.snapshotPath(snapshotID)
+	if _, err := os.Stat(filepath.Join(snapshotPath, "README.md")); err != nil {
+		t.Fatalf("expected snapshot file to exist: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(snapshotPath, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("expected .git to be excluded from snapshot, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(snapshotPath, workspaceMarkerFile)); !os.IsNotExist(err) {
+		t.Fatalf("expected marker file to be excluded from snapshot, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(snapshotPath, ".worktrees")); !os.IsNotExist(err) {
+		t.Fatalf("expected .worktrees to be excluded from snapshot, err=%v", err)
+	}
+}
+
+func TestCreateRestoresLineageSnapshotIntoProjectRoot(t *testing.T) {
+	d := NewDriver()
+	d.snapshotRoot = t.TempDir()
+	oldLookPath := seatbeltLookPath
+	t.Cleanup(func() { seatbeltLookPath = oldLookPath })
+	seatbeltLookPath = func(file string) (string, error) { return "/usr/local/bin/limactl", nil }
+	d.bootstrapInstance = func(ctx context.Context, instance, configBundle string) error { return nil }
+	d.prepareWorkspaceFS = func(ctx context.Context, instance, targetPath, localPath string) error { return nil }
+	d.applyConfigBundle = func(ctx context.Context, instance, configBundle string) error { return nil }
+
+	snapshotID := "snap-test"
+	snapshotPath := d.snapshotPath(snapshotID)
+	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
+		t.Fatalf("mkdir snapshot path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(snapshotPath, "YOLO.txt"), []byte("from snapshot"), 0o644); err != nil {
+		t.Fatalf("write snapshot file: %v", err)
+	}
+
+	projectRoot := t.TempDir()
+	err := d.Create(context.Background(), runtime.CreateRequest{
+		WorkspaceID:   "ws-restore",
+		WorkspaceName: "restore",
+		ProjectRoot:   projectRoot,
+		Options: map[string]string{
+			"lineage_snapshot_id": snapshotID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create with snapshot failed: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(projectRoot, "YOLO.txt"))
+	if err != nil {
+		t.Fatalf("expected restored file: %v", err)
+	}
+	if string(data) != "from snapshot" {
+		t.Fatalf("unexpected restored file contents: %q", string(data))
 	}
 }
 

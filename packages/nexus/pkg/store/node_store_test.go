@@ -14,6 +14,7 @@ import (
 func TestNodeStore_ImplementsRepositories(t *testing.T) {
 	var _ store.WorkspaceRepository = (*store.NodeStore)(nil)
 	var _ store.SpotlightRepository = (*store.NodeStore)(nil)
+	var _ store.SandboxResourceSettingsRepository = (*store.NodeStore)(nil)
 }
 
 func TestNodeStore_PersistAndLoadWorkspaceAndSpotlight(t *testing.T) {
@@ -216,5 +217,44 @@ func TestNodeStore_ReplaceSpotlightForwardRows_RollsBackOnFailure(t *testing.T) 
 	}
 	if _, ok := byID["new"]; ok {
 		t.Fatalf("expected rollback to remove partially inserted row \"new\": %#v", rows)
+	}
+}
+
+func TestNodeStore_PersistAndLoadSandboxResourceSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	_, ok, err := st.GetSandboxResourceSettings()
+	if err != nil {
+		t.Fatalf("get sandbox settings before upsert: %v", err)
+	}
+	if ok {
+		t.Fatal("expected no sandbox settings row before upsert")
+	}
+
+	upsert := store.SandboxResourceSettingsRow{
+		DefaultMemoryMiB: 2048,
+		DefaultVCPUs:     2,
+		MaxMemoryMiB:     8192,
+		MaxVCPUs:         8,
+		UpdatedAt:        time.Now().UTC(),
+	}
+	if err := st.UpsertSandboxResourceSettings(upsert); err != nil {
+		t.Fatalf("upsert sandbox settings: %v", err)
+	}
+
+	got, ok, err := st.GetSandboxResourceSettings()
+	if err != nil {
+		t.Fatalf("get sandbox settings: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected sandbox settings row to exist")
+	}
+	if got.DefaultMemoryMiB != upsert.DefaultMemoryMiB || got.MaxVCPUs != upsert.MaxVCPUs {
+		t.Fatalf("unexpected sandbox settings row: %#v", got)
 	}
 }

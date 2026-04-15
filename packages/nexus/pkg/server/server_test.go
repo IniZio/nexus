@@ -61,8 +61,41 @@ func TestResolveWorkspacePrefersLocalWorktreePath(t *testing.T) {
 		WorkspaceID: ws.ID,
 	})
 
-	if got := resolved.Path(); got != localWorktree {
-		t.Fatalf("expected resolveWorkspace to prefer local worktree path %q, got %q", localWorktree, got)
+	want := localWorktree
+	if real, err := filepath.EvalSymlinks(localWorktree); err == nil {
+		want = real
+	}
+	if got := resolved.Path(); got != want {
+		t.Fatalf("expected resolveWorkspace to prefer local worktree path %q, got %q", want, got)
+	}
+}
+
+func TestRPCRegistry_ProjectMethodsAreRegistered(t *testing.T) {
+	srv, err := NewServer(0, t.TempDir(), "secret-token")
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	if srv.rpcReg == nil {
+		t.Fatal("expected rpc registry")
+	}
+
+	raw := json.RawMessage(`{}`)
+	if _, rpcErr := srv.rpcReg.Dispatch(context.Background(), "project.list", "1", raw, nil); rpcErr != nil {
+		t.Fatalf("expected project.list to be registered, got rpc error: %+v", rpcErr)
+	}
+	if _, rpcErr := srv.rpcReg.Dispatch(context.Background(), "project.create", "1.5", json.RawMessage(`{"repo":"git@example/repo.git"}`), nil); rpcErr != nil {
+		t.Fatalf("expected project.create to be registered, got rpc error: %+v", rpcErr)
+	}
+	if _, rpcErr := srv.rpcReg.Dispatch(context.Background(), "project.get", "2", json.RawMessage(`{"id":"missing"}`), nil); rpcErr == nil {
+		t.Fatal("expected project.get to execute and return a handler error, got nil")
+	} else if rpcErr.Code == rpckit.ErrMethodNotFound.Code {
+		t.Fatalf("expected project.get to be registered, got method not found: %+v", rpcErr)
+	}
+	if _, rpcErr := srv.rpcReg.Dispatch(context.Background(), "daemon.settings.get", "3", json.RawMessage(`{}`), nil); rpcErr != nil {
+		t.Fatalf("expected daemon.settings.get to be registered, got rpc error: %+v", rpcErr)
+	}
+	if _, rpcErr := srv.rpcReg.Dispatch(context.Background(), "daemon.settings.update", "4", json.RawMessage(`{"sandboxResources":{"defaultMemoryMiB":1024,"defaultVCPUs":1,"maxMemoryMiB":4096,"maxVCPUs":4}}`), nil); rpcErr != nil {
+		t.Fatalf("expected daemon.settings.update to be registered, got rpc error: %+v", rpcErr)
 	}
 }
 

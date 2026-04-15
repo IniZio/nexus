@@ -358,6 +358,49 @@ func TestManagerStopTeardownsTAP(t *testing.T) {
 	}
 }
 
+func TestManagerSpawnFromSnapshotRestoresWorkspaceImage(t *testing.T) {
+	installTestNetworkRunner(t)
+	cfg := testManagerConfig(t)
+	mgr := newManager(cfg)
+	mgr.apiClientFactory = func(sockPath string) apiClientInterface {
+		return &mockAPIClient{}
+	}
+
+	snapshotsDir := filepath.Join(cfg.WorkDirRoot, ".snapshots")
+	if err := os.MkdirAll(snapshotsDir, 0o755); err != nil {
+		t.Fatalf("mkdir snapshots dir: %v", err)
+	}
+	snapshotID := "snap-unit-test"
+	snapshotPath := filepath.Join(snapshotsDir, snapshotID+".ext4")
+	if err := os.WriteFile(snapshotPath, []byte("snapshot-image-bytes"), 0o600); err != nil {
+		t.Fatalf("write snapshot image: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	spec := SpawnSpec{
+		WorkspaceID: "ws-from-snapshot",
+		ProjectRoot: t.TempDir(),
+		SnapshotID:  snapshotID,
+		MemoryMiB:   512,
+		VCPUs:       1,
+	}
+
+	inst, err := mgr.Spawn(ctx, spec)
+	if err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+
+	got, err := os.ReadFile(inst.WorkspaceImage)
+	if err != nil {
+		t.Fatalf("read restored workspace image: %v", err)
+	}
+	if string(got) != "snapshot-image-bytes" {
+		t.Fatalf("expected restored image bytes %q, got %q", "snapshot-image-bytes", string(got))
+	}
+}
+
 // TestDefaultFirecrackerBootArgsDHCP verifies that the default boot args do not
 // contain a static ip= kernel argument — DHCP (udhcpc) runs inside the guest.
 func TestDefaultFirecrackerBootArgsDHCP(t *testing.T) {

@@ -3,6 +3,7 @@ package errors
 type RPCError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
 }
 
 var (
@@ -19,4 +20,5 @@ var (
 	ErrInvalidPath         = &RPCError{Code: -32006, Message: "Invalid path"}
 	ErrWorkspaceNotFound   = &RPCError{Code: -32007, Message: "Workspace not found"}
 	ErrWorkspaceNotStarted = &RPCError{Code: -32010, Message: "Workspace not started"}
+	ErrCheckoutConflict    = &RPCError{Code: -32011, Message: "Workspace checkout conflict"}
 )
