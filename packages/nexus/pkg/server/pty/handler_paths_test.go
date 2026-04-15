@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
@@ -115,6 +116,30 @@ func TestLocalWorkspacePathFromRecordRejectsManagedPathWithoutMarker(t *testing.
 	want := canonicalTestPath(t, repo)
 	if got := localWorkspacePathFromRecord(ws); got != want {
 		t.Fatalf("expected repo fallback %q when marker missing, got %q", want, got)
+	}
+}
+
+func TestLocalWorkDirForOpenPrefersLocalWorkspacePath(t *testing.T) {
+	t.Parallel()
+
+	local := t.TempDir()
+	if err := workspacemgr.WriteHostWorkspaceMarker(local, "ws-local-open"); err != nil {
+		t.Fatalf("write workspace marker: %v", err)
+	}
+	wsRecord := &workspacemgr.Workspace{
+		ID:                "ws-local-open",
+		LocalWorktreePath: local,
+		RootPath:          filepath.Join(t.TempDir(), "instance-root"),
+	}
+	wsResolved, err := workspace.NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatalf("new workspace: %v", err)
+	}
+
+	got := localWorkDirForOpen(wsRecord, wsResolved)
+	want := canonicalTestPath(t, local)
+	if got != want {
+		t.Fatalf("expected local workdir %q, got %q", want, got)
 	}
 }
 

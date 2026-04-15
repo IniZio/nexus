@@ -252,10 +252,7 @@ func HandleOpen(deps *Deps, conn Conn, params json.RawMessage, ws *workspace.Wor
 		return handleFirecrackerPTYOpen(deps, conn, p, wsRecord, relayEnv)
 	}
 
-	workDir := strings.TrimSpace(wsRecord.RootPath)
-	if workDir == "" && ws != nil {
-		workDir = strings.TrimSpace(ws.Path())
-	}
+	workDir := localWorkDirForOpen(wsRecord, ws)
 	if workDir == "" {
 		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: "workspace root path unavailable"}
 	}
@@ -463,6 +460,21 @@ func localWorkspacePathFromRecord(wsRecord *workspacemgr.Workspace) string {
 		if canonical := canonicalWorkspaceCandidate(wsRecord, candidate); canonical != "" {
 			return canonical
 		}
+	}
+	return ""
+}
+
+func localWorkDirForOpen(wsRecord *workspacemgr.Workspace, ws *workspace.Workspace) string {
+	if localPath := localWorkspacePathFromRecord(wsRecord); localPath != "" {
+		return localPath
+	}
+	if ws != nil {
+		if resolved := strings.TrimSpace(ws.Path()); resolved != "" {
+			return resolved
+		}
+	}
+	if wsRecord != nil {
+		return strings.TrimSpace(wsRecord.RootPath)
 	}
 	return ""
 }
