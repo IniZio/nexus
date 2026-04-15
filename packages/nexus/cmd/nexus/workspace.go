@@ -101,7 +101,7 @@ func daemonToken() (string, error) {
 func ensureDaemon() (*websocket.Conn, error) {
 	port := daemonPort()
 	tokenEnv := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_TOKEN"))
-	worktreeRoot, _ := daemonclient.LocalDriverWorktreeRoot(".")
+	worktreeRoot, _ := daemonclient.ProcessWorktreeRoot(".")
 	if err := daemonclient.EnsureRunningForWorktree(port, "", tokenEnv, worktreeRoot); err != nil {
 		return nil, fmt.Errorf("start daemon: %w", err)
 	}

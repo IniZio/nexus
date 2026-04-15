@@ -670,9 +670,9 @@ func TestHandleWorkspaceCreate_MissingRuntimeRequiredDoesNotUseSpecBackend(t *te
 	}
 
 	factory := runtime.NewFactory([]runtime.Capability{
-		{Name: "runtime.local", Available: true},
+		{Name: "runtime.process", Available: true},
 	}, map[string]runtime.Driver{
-		"local": &mockDriver{backend: "local"},
+		"process": &mockDriver{backend: "process"},
 	})
 
 	params := WorkspaceCreateParams{
@@ -681,7 +681,7 @@ func TestHandleWorkspaceCreate_MissingRuntimeRequiredDoesNotUseSpecBackend(t *te
 			Ref:           "main",
 			WorkspaceName: "alpha",
 			AgentProfile:  "default",
-			Backend:       "local",
+			Backend:       "process",
 		},
 	}
 
@@ -704,9 +704,9 @@ func TestHandleWorkspaceCreate_MissingRuntimeRequiredDoesNotFallbackToLocal(t *t
 	}
 
 	factory := runtime.NewFactory([]runtime.Capability{
-		{Name: "runtime.local", Available: true},
+		{Name: "runtime.process", Available: true},
 	}, map[string]runtime.Driver{
-		"local": &mockDriver{backend: "local"},
+		"process": &mockDriver{backend: "process"},
 	})
 
 	params := WorkspaceCreateParams{

@@ -21,8 +21,8 @@ func PrepareCreate(ctx context.Context, spec workspacemgr.CreateSpec, factory *r
 	if factory == nil {
 		return spec, nil, false
 	}
-	if localDriverEnabledForRepo(spec.Repo) {
-		spec.Backend = "local"
+	if processSandboxEnabledForRepo(spec.Repo) {
+		spec.Backend = "process"
 		return spec, nil, false
 	}
 	requiredBackends, requiredCaps := DefaultPlatformHints()
@@ -34,7 +34,7 @@ func PrepareCreate(ctx context.Context, spec workspacemgr.CreateSpec, factory *r
 	return spec, nil, false
 }
 
-func localDriverEnabledForRepo(repo string) bool {
+func processSandboxEnabledForRepo(repo string) bool {
 	repoRoot := strings.TrimSpace(repo)
 	if repoRoot == "" {
 		return false
@@ -58,5 +58,8 @@ func localDriverEnabledForRepo(repo string) bool {
 	if err != nil {
 		return false
 	}
-	return cfg.InternalFeatures.LocalDriver
+	if cfg.Isolation.Level == "process" && cfg.InternalFeatures.ProcessSandbox {
+		return true
+	}
+	return false
 }

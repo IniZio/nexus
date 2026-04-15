@@ -81,6 +81,8 @@ func (f *Factory) expandRuntimeRequirement(raw string) []string {
 		return []string{"firecracker", "seatbelt"}
 	case "seatbelt":
 		return []string{"seatbelt"}
+	case "process":
+		return []string{"process"}
 	case "firecracker":
 		return []string{strings.ToLower(strings.TrimSpace(raw))}
 	default:

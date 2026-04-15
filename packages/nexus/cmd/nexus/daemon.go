@@ -43,7 +43,7 @@ func daemonStartCmd() *cobra.Command {
 		Short: "Start the daemon (no-op if already running)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			port := daemonPort()
-			worktreeRoot, _ := daemonclient.LocalDriverWorktreeRoot(".")
+			worktreeRoot, _ := daemonclient.ProcessWorktreeRoot(".")
 			if daemonclient.IsRunning(port) {
 				pid := daemonReadPID(port)
 				fmt.Fprintf(cmd.OutOrStdout(), "daemon already running  port=:%d  pid=%s\n", port, pid)
@@ -91,7 +91,7 @@ func daemonRestartCmd() *cobra.Command {
 		Short: "Stop (if running) then start the daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			port := daemonPort()
-			worktreeRoot, _ := daemonclient.LocalDriverWorktreeRoot(".")
+			worktreeRoot, _ := daemonclient.ProcessWorktreeRoot(".")
 			if daemonclient.IsRunning(port) {
 				pid := daemonReadPID(port)
 				fmt.Fprintf(cmd.OutOrStdout(), "stopping daemon  pid=%s…\n", pid)

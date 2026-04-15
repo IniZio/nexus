@@ -17,6 +17,7 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/authrelay"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
+	runtimeprocess "github.com/inizio/nexus/packages/nexus/pkg/runtime/process"
 	"github.com/inizio/nexus/packages/nexus/pkg/safeenv"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
@@ -256,9 +257,12 @@ func HandleOpen(deps *Deps, conn Conn, params json.RawMessage, ws *workspace.Wor
 	if workDir == "" {
 		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: "workspace root path unavailable"}
 	}
-	log.Printf("[pty.open] local backend: workDir=%s", workDir)
+	log.Printf("[pty.open] host backend: workDir=%s", workDir)
 
-	cmd := exec.Command(shell)
+	cmd, err := localCommandForBackend(wsRecord, shell, workDir)
+	if err != nil {
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("pty command setup failed: %v", err)}
+	}
 	cmd.Dir = workDir
 	cmdEnv := append(safeenv.Base(), "TERM=xterm-256color")
 	if len(relayEnv) > 0 {
@@ -307,6 +311,17 @@ func HandleOpen(deps *Deps, conn Conn, params json.RawMessage, ws *workspace.Wor
 	go streamPTYOutput(conn, session, deps.Registry, deps.SessionStore)
 
 	return &OpenResult{SessionID: sessionID}, nil
+}
+
+func localCommandForBackend(wsRecord *workspacemgr.Workspace, shell, workDir string) (*exec.Cmd, error) {
+	if wsRecord != nil {
+		backend := strings.TrimSpace(wsRecord.Backend)
+		if strings.EqualFold(backend, "process") {
+			repoRoot := strings.TrimSpace(wsRecord.Repo)
+			return runtimeprocess.ShellCommand(shell, workDir, repoRoot)
+		}
+	}
+	return exec.Command(shell), nil
 }
 
 func handleFirecrackerPTYOpen(deps *Deps, conn Conn, p OpenParams, wsRecord *workspacemgr.Workspace, relayEnv map[string]string) (interface{}, *rpckit.RPCError) {
@@ -772,20 +787,13 @@ func streamPTYOutput(conn Conn, session *Session, registry *Registry, store *Sto
 		}
 	}
 
-	if conn != nil {
-		conn.RemovePTY(session.ID)
-	}
-	if registry != nil {
-		registry.Unregister(session.ID)
-	}
-	if session.Closing.Load() {
-		_ = store.Delete(session.ID)
-	}
 	exitCode := -1
-	if session.Cmd.Process != nil {
-		_, _ = session.Cmd.Process.Wait()
+	if session.Cmd != nil && session.Cmd.Process != nil {
+		if state, waitErr := session.Cmd.Process.Wait(); waitErr == nil && state != nil {
+			exitCode = state.ExitCode()
+		}
 	}
-	if session.Cmd.ProcessState != nil {
+	if exitCode == -1 && session.Cmd != nil && session.Cmd.ProcessState != nil {
 		exitCode = session.Cmd.ProcessState.ExitCode()
 	}
 	payload := map[string]any{
@@ -799,9 +807,18 @@ func streamPTYOutput(conn Conn, session *Session, registry *Registry, store *Sto
 	if encoded, marshalErr := json.Marshal(payload); marshalErr == nil {
 		if registry != nil {
 			registry.Broadcast(session.ID, encoded)
-		} else {
+		} else if conn != nil {
 			conn.Enqueue(encoded)
 		}
+	}
+	if conn != nil {
+		conn.RemovePTY(session.ID)
+	}
+	if registry != nil {
+		registry.Unregister(session.ID)
+	}
+	if session.Closing.Load() && store != nil {
+		_ = store.Delete(session.ID)
 	}
 }
 

@@ -15,7 +15,7 @@ func TestHandleWorkspaceRelationsList_GroupsByRepoAndLineage(t *testing.T) {
 		Ref:           "main",
 		WorkspaceName: "hanlun-main",
 		AgentProfile:  "default",
-		Backend:       "local",
+		Backend:       "process",
 	})
 	if err != nil {
 		t.Fatalf("create parent: %v", err)
@@ -33,7 +33,7 @@ func TestHandleWorkspaceRelationsList_GroupsByRepoAndLineage(t *testing.T) {
 		Ref:           "dev",
 		WorkspaceName: "local-only",
 		AgentProfile:  "default",
-		Backend:       "local",
+		Backend:       "process",
 	})
 	if err != nil {
 		t.Fatalf("create local-only: %v", err)

@@ -55,9 +55,9 @@ func TestDarwinBootstrapReturnsInstallInstructionsWhenLimactlMissing(t *testing.
 }
 
 func TestDarwinBootstrapIsNoOpForNonFirecrackerRuntime(t *testing.T) {
-	err := runInitRuntimeBootstrapDarwin(t.TempDir(), "local")
+	err := runInitRuntimeBootstrapDarwin(t.TempDir(), "process")
 	if err != nil {
-		t.Fatalf("expected no error for local runtime, got: %v", err)
+		t.Fatalf("expected no error for process runtime, got: %v", err)
 	}
 }
 

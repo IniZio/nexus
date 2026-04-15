@@ -22,9 +22,9 @@ var daemonProcessCommandLineFn = daemonProcessCommandLine
 var daemonProcessStartedAtFn = daemonProcessStartedAt
 
 const (
-	defaultDaemonPort   = 63987
-	localDriverPortBase = 64100
-	localDriverPortSpan = 900
+	defaultDaemonPort = 63987
+	processPortBase   = 64100
+	processPortSpan   = 900
 )
 
 // RunDir returns the platform directory used for daemon runtime files
@@ -53,7 +53,7 @@ func PreferredPort() int {
 			return p
 		}
 	}
-	root, ok := LocalDriverWorktreeRoot(".")
+	root, ok := ProcessWorktreeRoot(".")
 	if !ok {
 		return defaultDaemonPort
 	}
@@ -64,9 +64,9 @@ func PreferredPort() int {
 	return port
 }
 
-// LocalDriverWorktreeRoot returns the repository root when .nexus/workspace.json
-// enables internalFeatures.localDriver.
-func LocalDriverWorktreeRoot(startPath string) (string, bool) {
+// ProcessWorktreeRoot returns the repository root when .nexus/workspace.json
+// enables process isolation for host-backed dogfooding.
+func ProcessWorktreeRoot(startPath string) (string, bool) {
 	startPath = strings.TrimSpace(startPath)
 	if startPath == "" {
 		startPath = "."
@@ -80,7 +80,7 @@ func LocalDriverWorktreeRoot(startPath string) (string, bool) {
 		cfgPath := filepath.Join(current, ".nexus", "workspace.json")
 		if st, err := os.Stat(cfgPath); err == nil && !st.IsDir() {
 			cfg, _, loadErr := config.LoadWorkspaceConfig(current)
-			if loadErr == nil && cfg.InternalFeatures.LocalDriver {
+			if loadErr == nil && processSandboxEnabled(cfg) {
 				return canonicalPath(current), true
 			}
 		}
@@ -91,6 +91,10 @@ func LocalDriverWorktreeRoot(startPath string) (string, bool) {
 		current = parent
 	}
 	return "", false
+}
+
+func processSandboxEnabled(cfg config.WorkspaceConfig) bool {
+	return cfg.Isolation.Level == "process" && cfg.InternalFeatures.ProcessSandbox
 }
 
 // SelectPortForWorktreeRoot chooses a daemon port for the given worktree root.
@@ -104,9 +108,9 @@ func SelectPortForWorktreeRoot(worktreeRoot string) (int, error) {
 	if err != nil {
 		return defaultDaemonPort, err
 	}
-	preferred := preferredLocalDriverPort(canonical)
-	for offset := 0; offset < localDriverPortSpan; offset++ {
-		candidate := localDriverPortBase + ((preferred - localDriverPortBase + offset) % localDriverPortSpan)
+	preferred := preferredProcessPort(canonical)
+	for offset := 0; offset < processPortSpan; offset++ {
+		candidate := processPortBase + ((preferred - processPortBase + offset) % processPortSpan)
 		owner := strings.TrimSpace(readDaemonOwner(runDir, candidate))
 		if IsRunning(candidate) {
 			if owner == canonical {
@@ -122,10 +126,10 @@ func SelectPortForWorktreeRoot(worktreeRoot string) (int, error) {
 	return preferred, nil
 }
 
-func preferredLocalDriverPort(canonicalRoot string) int {
+func preferredProcessPort(canonicalRoot string) int {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(canonicalRoot))
-	return localDriverPortBase + int(h.Sum32()%localDriverPortSpan)
+	return processPortBase + int(h.Sum32()%processPortSpan)
 }
 
 func canonicalPath(path string) string {

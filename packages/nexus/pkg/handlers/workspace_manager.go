@@ -516,7 +516,7 @@ func HandleWorkspaceRestore(ctx context.Context, req WorkspaceRestoreParams, mgr
 	var requiredBackends []string
 
 	if factory != nil {
-		explicitBackend := strings.TrimSpace(ws.Backend)
+		explicitBackend := normalizeWorkspaceBackend(strings.TrimSpace(ws.Backend))
 		if explicitBackend != "" {
 			if driver, exists := factory.DriverForBackend(explicitBackend); exists {
 				selectedDriver = driver
@@ -1159,7 +1159,7 @@ func resumeRuntimeWorkspace(ctx context.Context, ws *workspacemgr.Workspace, fac
 }
 
 func selectDriverForWorkspaceBackend(factory *runtime.Factory, backend string) (runtime.Driver, error) {
-	trimmed := strings.TrimSpace(backend)
+	trimmed := normalizeWorkspaceBackend(strings.TrimSpace(backend))
 	if trimmed == "" {
 		return nil, fmt.Errorf("workspace backend is empty")
 	}
@@ -1174,4 +1174,8 @@ func selectDriverForWorkspaceBackend(factory *runtime.Factory, backend string) (
 		return driver, nil
 	}
 	return factory.SelectDriver([]string{trimmed}, nil)
+}
+
+func normalizeWorkspaceBackend(backend string) string {
+	return strings.TrimSpace(backend)
 }

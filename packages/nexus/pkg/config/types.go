@@ -5,11 +5,16 @@ import "fmt"
 type WorkspaceConfig struct {
 	Schema           string                    `json:"$schema,omitempty"`
 	Version          int                       `json:"version,omitempty"`
+	Isolation        WorkspaceIsolation        `json:"isolation,omitempty"`
 	InternalFeatures WorkspaceInternalFeatures `json:"internalFeatures,omitempty"`
 }
 
+type WorkspaceIsolation struct {
+	Level string `json:"level,omitempty"`
+}
+
 type WorkspaceInternalFeatures struct {
-	LocalDriver bool `json:"localDriver,omitempty"`
+	ProcessSandbox bool `json:"processSandbox,omitempty"`
 }
 
 type DoctorCommandCheck struct {
@@ -39,6 +44,11 @@ type DoctorCommandProbe struct {
 func (c WorkspaceConfig) ValidateBasic() error {
 	if c.Version != 0 && c.Version < 1 {
 		return fmt.Errorf("version must be >= 1")
+	}
+	switch c.Isolation.Level {
+	case "", "vm", "process":
+	default:
+		return fmt.Errorf("isolation.level must be one of vm or process")
 	}
 	return nil
 }

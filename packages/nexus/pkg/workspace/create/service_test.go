@@ -28,21 +28,21 @@ func (d *stubDriver) Fork(context.Context, string, string) error {
 }
 func (d *stubDriver) Destroy(context.Context, string) error { return nil }
 
-func TestPrepareCreate_UsesLocalBackendWhenWorkspaceConfigEnablesLocalDriver(t *testing.T) {
+func TestPrepareCreate_UsesProcessBackendWhenWorkspaceConfigEnablesProcessIsolation(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, ".nexus"), 0o755); err != nil {
 		t.Fatalf("mkdir .nexus: %v", err)
 	}
 	if err := os.WriteFile(
 		filepath.Join(repo, ".nexus", "workspace.json"),
-		[]byte(`{"version":1,"internalFeatures":{"localDriver":true}}`),
+		[]byte(`{"version":1,"isolation":{"level":"process"},"internalFeatures":{"processSandbox":true}}`),
 		0o644,
 	); err != nil {
 		t.Fatalf("write workspace.json: %v", err)
 	}
 
 	factory := runtime.NewFactory(nil, map[string]runtime.Driver{
-		"local":       &stubDriver{backend: "local"},
+		"process":     &stubDriver{backend: "process"},
 		"firecracker": &stubDriver{backend: "firecracker"},
 	})
 	spec := workspacemgr.CreateSpec{
@@ -53,7 +53,7 @@ func TestPrepareCreate_UsesLocalBackendWhenWorkspaceConfigEnablesLocalDriver(t *
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %v", rpcErr)
 	}
-	if prepared.Backend != "local" {
-		t.Fatalf("expected local backend, got %q", prepared.Backend)
+	if prepared.Backend != "process" {
+		t.Fatalf("expected process backend, got %q", prepared.Backend)
 	}
 }

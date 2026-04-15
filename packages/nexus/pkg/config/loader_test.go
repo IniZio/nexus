@@ -122,7 +122,7 @@ func TestLoader_LoadsInternalFeatures(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, ".nexus"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	data := []byte(`{"version":1,"internalFeatures":{"localDriver":true}}`)
+	data := []byte(`{"version":1,"isolation":{"level":"process"},"internalFeatures":{"processSandbox":true}}`)
 	if err := os.WriteFile(filepath.Join(root, ".nexus", "workspace.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,26 @@ func TestLoader_LoadsInternalFeatures(t *testing.T) {
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings, got %v", warnings)
 	}
-	if !cfg.InternalFeatures.LocalDriver {
-		t.Fatalf("expected internalFeatures.localDriver=true")
+	if cfg.Isolation.Level != "process" {
+		t.Fatalf("expected isolation.level=process, got %q", cfg.Isolation.Level)
+	}
+	if !cfg.InternalFeatures.ProcessSandbox {
+		t.Fatalf("expected internalFeatures.processSandbox=true")
+	}
+}
+
+func TestLoader_InvalidIsolationLevel_ReturnsError(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".nexus"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"version":1,"isolation":{"level":"container"}}`)
+	if err := os.WriteFile(filepath.Join(root, ".nexus", "workspace.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := LoadWorkspaceConfig(root)
+	if err == nil {
+		t.Fatalf("expected error for invalid isolation.level, got nil")
 	}
 }

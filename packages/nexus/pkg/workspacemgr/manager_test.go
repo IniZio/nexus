@@ -963,7 +963,7 @@ func TestManager_ForkParallelWorkspacesRemainIndependent(t *testing.T) {
 		Repo:          "git@example/repo-a.git",
 		WorkspaceName: "alpha",
 		AgentProfile:  "default",
-		Backend:       "local",
+		Backend:       "process",
 	})
 	if err != nil {
 		t.Fatalf("create parentA returned error: %v", err)
@@ -972,7 +972,7 @@ func TestManager_ForkParallelWorkspacesRemainIndependent(t *testing.T) {
 		Repo:          "git@example/repo-b.git",
 		WorkspaceName: "beta",
 		AgentProfile:  "default",
-		Backend:       "local",
+		Backend:       "process",
 	})
 	if err != nil {
 		t.Fatalf("create parentB returned error: %v", err)
@@ -1064,7 +1064,7 @@ func TestManager_ForkFallsBackWhenLocalWorktreePathIsStale(t *testing.T) {
 		Ref:           "parent-base",
 		WorkspaceName: "alpha",
 		AgentProfile:  "default",
-		Backend:       "local",
+		Backend:       "process",
 	})
 	if err != nil {
 		t.Fatalf("create parent returned error: %v", err)

@@ -167,14 +167,14 @@ func TestShouldRestartRunningDaemonWhenStartTimeUnknown(t *testing.T) {
 	}
 }
 
-func TestLocalDriverWorktreeRoot_DetectsEnabledRepo(t *testing.T) {
+func TestProcessWorktreeRoot_DetectsEnabledProcessSandboxRepo(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, ".nexus"), 0o755); err != nil {
 		t.Fatalf("mkdir .nexus: %v", err)
 	}
 	if err := os.WriteFile(
 		filepath.Join(repo, ".nexus", "workspace.json"),
-		[]byte(`{"version":1,"internalFeatures":{"localDriver":true}}`),
+		[]byte(`{"version":1,"isolation":{"level":"process"},"internalFeatures":{"processSandbox":true}}`),
 		0o644,
 	); err != nil {
 		t.Fatalf("write workspace config: %v", err)
@@ -183,9 +183,9 @@ func TestLocalDriverWorktreeRoot_DetectsEnabledRepo(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatalf("mkdir nested: %v", err)
 	}
-	gotRoot, ok := LocalDriverWorktreeRoot(nested)
+	gotRoot, ok := ProcessWorktreeRoot(nested)
 	if !ok {
-		t.Fatalf("expected local-driver worktree root detection")
+		t.Fatalf("expected process-sandbox worktree root detection")
 	}
 	if gotRoot != canonicalPath(repo) {
 		t.Fatalf("expected root %q, got %q", canonicalPath(repo), gotRoot)
@@ -200,7 +200,7 @@ func TestSelectPortForWorktreeRoot_UsesStablePreferredPortWhenFree(t *testing.T)
 	if err != nil {
 		t.Fatalf("select port: %v", err)
 	}
-	want := preferredLocalDriverPort(canonicalPath(repo))
+	want := preferredProcessPort(canonicalPath(repo))
 	if port != want {
 		t.Fatalf("expected preferred port %d, got %d", want, port)
 	}
@@ -215,7 +215,7 @@ func TestSelectPortForWorktreeRoot_ProbesWhenPreferredOwnedByOtherWorktree(t *te
 	}
 	repoA := t.TempDir()
 	repoB := t.TempDir()
-	preferred := preferredLocalDriverPort(canonicalPath(repoA))
+	preferred := preferredProcessPort(canonicalPath(repoA))
 	if err := writeDaemonOwner(runDir, preferred, repoB); err != nil {
 		t.Fatalf("write owner: %v", err)
 	}
