@@ -166,3 +166,64 @@ func TestShouldRestartRunningDaemonWhenStartTimeUnknown(t *testing.T) {
 		t.Fatalf("expected restart=true when process start time cannot be read")
 	}
 }
+
+func TestLocalDriverWorktreeRoot_DetectsEnabledRepo(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".nexus"), 0o755); err != nil {
+		t.Fatalf("mkdir .nexus: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(repo, ".nexus", "workspace.json"),
+		[]byte(`{"version":1,"internalFeatures":{"localDriver":true}}`),
+		0o644,
+	); err != nil {
+		t.Fatalf("write workspace config: %v", err)
+	}
+	nested := filepath.Join(repo, "packages", "nexus")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	gotRoot, ok := LocalDriverWorktreeRoot(nested)
+	if !ok {
+		t.Fatalf("expected local-driver worktree root detection")
+	}
+	if gotRoot != canonicalPath(repo) {
+		t.Fatalf("expected root %q, got %q", canonicalPath(repo), gotRoot)
+	}
+}
+
+func TestSelectPortForWorktreeRoot_UsesStablePreferredPortWhenFree(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", xdg)
+	repo := t.TempDir()
+	port, err := SelectPortForWorktreeRoot(repo)
+	if err != nil {
+		t.Fatalf("select port: %v", err)
+	}
+	want := preferredLocalDriverPort(canonicalPath(repo))
+	if port != want {
+		t.Fatalf("expected preferred port %d, got %d", want, port)
+	}
+}
+
+func TestSelectPortForWorktreeRoot_ProbesWhenPreferredOwnedByOtherWorktree(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", xdg)
+	runDir := filepath.Join(xdg, "nexus")
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		t.Fatalf("mkdir run dir: %v", err)
+	}
+	repoA := t.TempDir()
+	repoB := t.TempDir()
+	preferred := preferredLocalDriverPort(canonicalPath(repoA))
+	if err := writeDaemonOwner(runDir, preferred, repoB); err != nil {
+		t.Fatalf("write owner: %v", err)
+	}
+	selected, err := SelectPortForWorktreeRoot(repoA)
+	if err != nil {
+		t.Fatalf("select port: %v", err)
+	}
+	if selected == preferred {
+		t.Fatalf("expected probing away from preferred occupied owner port %d", preferred)
+	}
+}

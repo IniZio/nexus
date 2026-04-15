@@ -23,6 +23,7 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/limafirecracker"
+	"github.com/inizio/nexus/packages/nexus/pkg/runtime/local"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/seatbelt"
 	"github.com/inizio/nexus/packages/nexus/pkg/server"
 	"github.com/inizio/nexus/packages/nexus/pkg/spotlight"
@@ -163,6 +164,7 @@ func runServer(port int, workspaceDir string, token string) error {
 	drivers := map[string]runtime.Driver{
 		"firecracker": firecrackerRuntimeDriver,
 		"seatbelt":    seatbeltDriver,
+		"local":       local.NewDriver(),
 	}
 
 	factory := runtime.NewFactory(capabilities, drivers)

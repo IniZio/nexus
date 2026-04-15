@@ -4,6 +4,7 @@ package daemonclient
 
 import (
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"os"
@@ -13,10 +14,18 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/inizio/nexus/packages/nexus/pkg/config"
 )
 
 var daemonProcessCommandLineFn = daemonProcessCommandLine
 var daemonProcessStartedAtFn = daemonProcessStartedAt
+
+const (
+	defaultDaemonPort   = 63987
+	localDriverPortBase = 64100
+	localDriverPortSpan = 900
+)
 
 // RunDir returns the platform directory used for daemon runtime files
 // (PID file, token file, log file).
@@ -34,6 +43,125 @@ func RunDir() (string, error) {
 		configHome = filepath.Join(home, ".config")
 	}
 	return filepath.Join(configHome, "nexus", "run"), nil
+}
+
+// PreferredPort resolves the daemon port for the current process context.
+// Explicit NEXUS_DAEMON_PORT overrides all auto-selection.
+func PreferredPort() int {
+	if v := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_PORT")); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 && p <= 65535 {
+			return p
+		}
+	}
+	root, ok := LocalDriverWorktreeRoot(".")
+	if !ok {
+		return defaultDaemonPort
+	}
+	port, err := SelectPortForWorktreeRoot(root)
+	if err != nil {
+		return defaultDaemonPort
+	}
+	return port
+}
+
+// LocalDriverWorktreeRoot returns the repository root when .nexus/workspace.json
+// enables internalFeatures.localDriver.
+func LocalDriverWorktreeRoot(startPath string) (string, bool) {
+	startPath = strings.TrimSpace(startPath)
+	if startPath == "" {
+		startPath = "."
+	}
+	abs, err := filepath.Abs(startPath)
+	if err != nil {
+		return "", false
+	}
+	current := filepath.Clean(abs)
+	for {
+		cfgPath := filepath.Join(current, ".nexus", "workspace.json")
+		if st, err := os.Stat(cfgPath); err == nil && !st.IsDir() {
+			cfg, _, loadErr := config.LoadWorkspaceConfig(current)
+			if loadErr == nil && cfg.InternalFeatures.LocalDriver {
+				return canonicalPath(current), true
+			}
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+	return "", false
+}
+
+// SelectPortForWorktreeRoot chooses a daemon port for the given worktree root.
+// It prefers a deterministic hash-derived port and linearly probes the reserved range.
+func SelectPortForWorktreeRoot(worktreeRoot string) (int, error) {
+	canonical := canonicalPath(worktreeRoot)
+	if canonical == "" {
+		return defaultDaemonPort, nil
+	}
+	runDir, err := RunDir()
+	if err != nil {
+		return defaultDaemonPort, err
+	}
+	preferred := preferredLocalDriverPort(canonical)
+	for offset := 0; offset < localDriverPortSpan; offset++ {
+		candidate := localDriverPortBase + ((preferred - localDriverPortBase + offset) % localDriverPortSpan)
+		owner := strings.TrimSpace(readDaemonOwner(runDir, candidate))
+		if IsRunning(candidate) {
+			if owner == canonical {
+				return candidate, nil
+			}
+			continue
+		}
+		if owner != "" && owner != canonical {
+			continue
+		}
+		return candidate, nil
+	}
+	return preferred, nil
+}
+
+func preferredLocalDriverPort(canonicalRoot string) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(canonicalRoot))
+	return localDriverPortBase + int(h.Sum32()%localDriverPortSpan)
+}
+
+func canonicalPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	resolved := abs
+	if real, err := filepath.EvalSymlinks(abs); err == nil && strings.TrimSpace(real) != "" {
+		resolved = real
+	}
+	return filepath.Clean(resolved)
+}
+
+func ownerFilePath(runDir string, port int) string {
+	return filepath.Join(runDir, fmt.Sprintf("daemon-%d.owner", port))
+}
+
+func readDaemonOwner(runDir string, port int) string {
+	data, err := os.ReadFile(ownerFilePath(runDir, port))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func writeDaemonOwner(runDir string, port int, worktreeRoot string) error {
+	root := canonicalPath(worktreeRoot)
+	if strings.TrimSpace(root) == "" {
+		return nil
+	}
+	return os.WriteFile(ownerFilePath(runDir, port), []byte(root+"\n"), 0o644)
 }
 
 // defaultWorkspaceDir returns the default directory for workspace storage.
@@ -122,17 +250,37 @@ func IsRunning(port int) bool {
 // If empty, the daemon loads or creates the token in its data directory.
 // workspaceDir is passed as --workspace-dir to the daemon (empty uses default).
 func EnsureRunning(port int, workspaceDir string, tokenForDaemon string) error {
+	return EnsureRunningForWorktree(port, workspaceDir, tokenForDaemon, "")
+}
+
+// EnsureRunningForWorktree starts or reuses the daemon for a specific worktree root.
+// When worktreeRoot is non-empty, a daemon owner record is written per port.
+func EnsureRunningForWorktree(port int, workspaceDir string, tokenForDaemon string, worktreeRoot string) error {
 	daemonBin, err := resolveDaemonBin()
 	if err != nil {
 		return fmt.Errorf("daemonclient: cannot find nexus-daemon binary: %w", err)
 	}
 
+	runDir, err := RunDir()
+	if err != nil {
+		return fmt.Errorf("daemonclient: run dir: %w", err)
+	}
+
 	if IsRunning(port) {
+		if root := canonicalPath(worktreeRoot); root != "" {
+			owner := readDaemonOwner(runDir, port)
+			if owner != "" && owner != root {
+				return fmt.Errorf("daemonclient: daemon on :%d is owned by worktree %s", port, owner)
+			}
+		}
 		restart, err := shouldRestartRunningDaemon(port, daemonBin)
 		if err != nil {
 			return fmt.Errorf("daemonclient: inspect running daemon: %w", err)
 		}
 		if !restart {
+			if err := writeDaemonOwner(runDir, port, worktreeRoot); err != nil {
+				return fmt.Errorf("daemonclient: write daemon owner: %w", err)
+			}
 			return nil
 		}
 		if stopErr := stopRunningDaemon(port); stopErr != nil {
@@ -140,10 +288,6 @@ func EnsureRunning(port int, workspaceDir string, tokenForDaemon string) error {
 		}
 	}
 
-	runDir, err := RunDir()
-	if err != nil {
-		return fmt.Errorf("daemonclient: run dir: %w", err)
-	}
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		return fmt.Errorf("daemonclient: create run dir: %w", err)
 	}
@@ -185,6 +329,9 @@ func EnsureRunning(port int, workspaceDir string, tokenForDaemon string) error {
 
 	_ = os.WriteFile(pidFilePath(runDir, port), []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
 	_ = os.WriteFile(filepath.Join(runDir, "daemon.pid"), []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
+	if err := writeDaemonOwner(runDir, port, worktreeRoot); err != nil {
+		return fmt.Errorf("daemonclient: write daemon owner: %w", err)
+	}
 
 	// Detach from our process table so we don't wait for it.
 	_ = cmd.Process.Release()

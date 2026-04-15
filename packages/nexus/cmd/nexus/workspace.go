@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -88,15 +87,8 @@ func renderPreflightCreateError(err error) bool {
 	return true
 }
 
-const defaultDaemonPort = 63987
-
 func daemonPort() int {
-	if v := os.Getenv("NEXUS_DAEMON_PORT"); v != "" {
-		if p, err := strconv.Atoi(v); err == nil && p > 0 {
-			return p
-		}
-	}
-	return defaultDaemonPort
+	return daemonclient.PreferredPort()
 }
 
 func daemonToken() (string, error) {
@@ -109,7 +101,8 @@ func daemonToken() (string, error) {
 func ensureDaemon() (*websocket.Conn, error) {
 	port := daemonPort()
 	tokenEnv := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_TOKEN"))
-	if err := daemonclient.EnsureRunning(port, "", tokenEnv); err != nil {
+	worktreeRoot, _ := daemonclient.LocalDriverWorktreeRoot(".")
+	if err := daemonclient.EnsureRunningForWorktree(port, "", tokenEnv, worktreeRoot); err != nil {
 		return nil, fmt.Errorf("start daemon: %w", err)
 	}
 	token, err := daemonToken()

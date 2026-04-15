@@ -516,13 +516,25 @@ func HandleWorkspaceRestore(ctx context.Context, req WorkspaceRestoreParams, mgr
 	var requiredBackends []string
 
 	if factory != nil {
-		requiredBackends, requiredCaps := create.DefaultPlatformHints()
-
-		driver, err := factory.SelectDriver(requiredBackends, requiredCaps)
-		if err != nil {
-			return &WorkspaceRestoreResult{}, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("backend selection failed: %v", err)}
+		explicitBackend := strings.TrimSpace(ws.Backend)
+		if explicitBackend != "" {
+			if driver, exists := factory.DriverForBackend(explicitBackend); exists {
+				selectedDriver = driver
+				requiredBackends = []string{explicitBackend}
+			} else {
+				return &WorkspaceRestoreResult{}, &rpckit.RPCError{
+					Code:    rpckit.ErrInternalError.Code,
+					Message: fmt.Sprintf("backend selection failed: driver not registered for workspace backend %q", explicitBackend),
+				}
+			}
+		} else {
+			requiredBackends, requiredCaps := create.DefaultPlatformHints()
+			driver, err := factory.SelectDriver(requiredBackends, requiredCaps)
+			if err != nil {
+				return &WorkspaceRestoreResult{}, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("backend selection failed: %v", err)}
+			}
+			selectedDriver = driver
 		}
-		selectedDriver = driver
 	}
 
 	ws, ok = mgr.Restore(req.ID)

@@ -56,6 +56,8 @@ public struct DaemonLauncher {
 
     /// Default daemon port for all local app modes.
     private static let standardPort = 63987
+    private static let localDriverPortBase = 64100
+    private static let localDriverPortSpan = 900
 
     /// Resolves the preferred daemon port for this app instance.
     ///
@@ -67,7 +69,7 @@ public struct DaemonLauncher {
            let parsed = Int(raw), (1...65535).contains(parsed) {
             return parsed
         }
-        return standardPort
+        return resolveWorktreeAwarePort(env: env)
     }
 
     /// Returns user-visible daemon variant diagnostics for the current app runtime.
@@ -305,6 +307,11 @@ public struct DaemonLauncher {
         // Record PID so URL discovery and the token reader can find this daemon.
         let pidPath = runDir + "/daemon-\(targetPort).pid"
         try? "\(proc.processIdentifier)".write(toFile: pidPath, atomically: true, encoding: .utf8)
+        if let root = localDriverWorktreeRoot() {
+            let canonicalRoot = URL(fileURLWithPath: root).resolvingSymlinksInPath().path
+            let ownerPath = runDir + "/daemon-\(targetPort).owner"
+            try? (canonicalRoot + "\n").write(toFile: ownerPath, atomically: true, encoding: .utf8)
+        }
         if targetPort == preferredPort() {
             try? "\(proc.processIdentifier)".write(
                 toFile: runDir + "/daemon.pid", atomically: true, encoding: .utf8)
@@ -408,6 +415,92 @@ public struct DaemonLauncher {
             throw DaemonLaunchError.launchFailed("failed to write daemon token to keychain service \(service)")
         }
         return token
+    }
+
+    private static func resolveWorktreeAwarePort(env: [String: String]) -> Int {
+        guard let root = localDriverWorktreeRoot() else {
+            return standardPort
+        }
+        let canonicalRoot = URL(fileURLWithPath: root).resolvingSymlinksInPath().path
+        let runDir = resolveRunDir()
+        let preferred = preferredLocalDriverPort(canonicalRoot)
+        for offset in 0..<localDriverPortSpan {
+            let candidate = localDriverPortBase + ((preferred - localDriverPortBase + offset) % localDriverPortSpan)
+            let owner = readDaemonOwner(runDir: runDir, port: candidate)
+            if isPortHealthySync(candidate) {
+                if owner == canonicalRoot { return candidate }
+                continue
+            }
+            if let owner, !owner.isEmpty, owner != canonicalRoot {
+                let ownerPath = "\(runDir)/daemon-\(candidate).owner"
+                try? FileManager.default.removeItem(atPath: ownerPath)
+            }
+            return candidate
+        }
+        return preferred
+    }
+
+    private static func localDriverWorktreeRoot() -> String? {
+        let fm = FileManager.default
+        var dir = URL(fileURLWithPath: fm.currentDirectoryPath).standardizedFileURL
+        while true {
+            let workspacePath = dir.appendingPathComponent(".nexus/workspace.json").path
+            if fm.fileExists(atPath: workspacePath),
+               workspaceConfigEnablesLocalDriver(atPath: workspacePath) {
+                return dir.path
+            }
+            let parent = dir.deletingLastPathComponent()
+            if parent.path == dir.path { break }
+            dir = parent
+        }
+        return nil
+    }
+
+    private static func workspaceConfigEnablesLocalDriver(atPath path: String) -> Bool {
+        struct WorkspaceConfig: Decodable {
+            struct InternalFeatures: Decodable {
+                let localDriver: Bool?
+            }
+            let internalFeatures: InternalFeatures?
+        }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let cfg = try? JSONDecoder().decode(WorkspaceConfig.self, from: data) else {
+            return false
+        }
+        return cfg.internalFeatures?.localDriver == true
+    }
+
+    private static func preferredLocalDriverPort(_ canonicalRoot: String) -> Int {
+        var hash: UInt32 = 2166136261
+        for byte in canonicalRoot.utf8 {
+            hash ^= UInt32(byte)
+            hash = hash &* 16777619
+        }
+        return localDriverPortBase + Int(hash % UInt32(localDriverPortSpan))
+    }
+
+    private static func readDaemonOwner(runDir: String, port: Int) -> String? {
+        let path = "\(runDir)/daemon-\(port).owner"
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func isPortHealthySync(_ port: Int) -> Bool {
+        guard let url = URL(string: "http://localhost:\(port)/healthz") else { return false }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 0.4
+        let sem = DispatchSemaphore(value: 0)
+        final class Box: @unchecked Sendable { var ok = false }
+        let box = Box()
+        URLSession.shared.dataTask(with: req) { _, resp, _ in
+            if let http = resp as? HTTPURLResponse {
+                box.ok = http.statusCode == 200
+            }
+            sem.signal()
+        }.resume()
+        _ = sem.wait(timeout: .now() + 1)
+        return box.ok
     }
 
     private static func daemonTokenService(env: [String: String]) -> String {

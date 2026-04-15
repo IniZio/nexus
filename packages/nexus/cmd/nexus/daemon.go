@@ -43,13 +43,14 @@ func daemonStartCmd() *cobra.Command {
 		Short: "Start the daemon (no-op if already running)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			port := daemonPort()
+			worktreeRoot, _ := daemonclient.LocalDriverWorktreeRoot(".")
 			if daemonclient.IsRunning(port) {
 				pid := daemonReadPID(port)
 				fmt.Fprintf(cmd.OutOrStdout(), "daemon already running  port=:%d  pid=%s\n", port, pid)
 				return nil
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "starting daemon on port :%d…\n", port)
-			if err := daemonclient.EnsureRunning(port, "", ""); err != nil {
+			if err := daemonclient.EnsureRunningForWorktree(port, "", "", worktreeRoot); err != nil {
 				return fmt.Errorf("daemon start: %w", err)
 			}
 			pid := daemonReadPID(port)
@@ -90,6 +91,7 @@ func daemonRestartCmd() *cobra.Command {
 		Short: "Stop (if running) then start the daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			port := daemonPort()
+			worktreeRoot, _ := daemonclient.LocalDriverWorktreeRoot(".")
 			if daemonclient.IsRunning(port) {
 				pid := daemonReadPID(port)
 				fmt.Fprintf(cmd.OutOrStdout(), "stopping daemon  pid=%s…\n", pid)
@@ -99,7 +101,7 @@ func daemonRestartCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "daemon stopped")
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "starting daemon on port :%d…\n", port)
-			if err := daemonclient.EnsureRunning(port, "", ""); err != nil {
+			if err := daemonclient.EnsureRunningForWorktree(port, "", "", worktreeRoot); err != nil {
 				return fmt.Errorf("daemon restart (start): %w", err)
 			}
 			pid := daemonReadPID(port)
