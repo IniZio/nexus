@@ -26,7 +26,7 @@ public enum DaemonLaunchError: Error, LocalizedError {
 ///
 /// Binary resolution order:
 ///   1. NEXUS_DAEMON_BIN environment variable (CI / developer override)
-///   2. Local dev source daemon (when `NEXUS_USE_SOURCE_DAEMON=1` or DEBUG)
+///   2. Local dev source daemon (only when `NEXUS_USE_SOURCE_DAEMON=1`)
 ///   3. App bundle Resources daemon (preferred to avoid app/daemon skew)
 ///   4. Downloaded/system daemon fallback (`which nexus-daemon`)
 ///   5. Next to the running executable (legacy co-install layout)
@@ -367,15 +367,11 @@ public struct DaemonLauncher {
         proc.waitUntilExit()
     }
 
+    /// When `true`, resolves `packages/nexus/nexus-daemon` from the repo tree before the app-bundled binary.
+    /// Opt-in only: in DEBUG, preferring the source tree by default caused eyeball runs to launch a stale or
+    /// mismatched daemon while the bundled `Resources/nexus-daemon` (from `task swift:prepare-resources`) was ignored.
     private static func shouldPreferSourceDaemon(env: [String: String]) -> Bool {
-        if env["NEXUS_USE_SOURCE_DAEMON"] == "1" {
-            return true
-        }
-#if DEBUG
-        return true
-#else
-        return false
-#endif
+        env["NEXUS_USE_SOURCE_DAEMON"] == "1"
     }
 
     private static func resolveDevBinary() -> URL? {

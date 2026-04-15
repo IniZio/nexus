@@ -253,7 +253,21 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
 
     // MARK: - Low-level RPC
 
+    /// Default ceiling for a single JSON-RPC round trip (connect + request + response).
+    private static let defaultRPCSeconds: UInt64 = 90
+
     func call(_ method: String, params: [String: Any] = [:]) async throws -> Any {
+        do {
+            return try await withTimeoutRPC(seconds: Self.defaultRPCSeconds) {
+                try await self.performRPC(method: method, params: params)
+            }
+        } catch {
+            disconnect()
+            throw error
+        }
+    }
+
+    private func performRPC(method: String, params: [String: Any]) async throws -> Any {
         try await connect()
         var id = ""
         lock.withLock {
@@ -265,6 +279,18 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         return try await withCheckedThrowingContinuation { cont in
             lock.withLock { pending[id] = cont }
             task?.send(.string(text)) { _ in }
+        }
+    }
+
+    private func withTimeoutRPC(seconds: UInt64, _ work: @escaping () async throws -> Any) async throws -> Any {
+        try await withThrowingTaskGroup(of: Any.self) { group in
+            group.addTask { try await work() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                throw RPCError(message: "timed out after \(seconds)s (no daemon response)")
+            }
+            defer { group.cancelAll() }
+            return try await group.next()!
         }
     }
 
