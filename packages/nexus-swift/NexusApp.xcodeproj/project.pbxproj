@@ -25,6 +25,8 @@
 		AAD95B3DEC7CDE28C6E99EA9 /* HostToolsSetup.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8D2BD862DC1CF0BC0340EF9 /* HostToolsSetup.swift */; };
 		AD51BA2C3901D464D639F60D /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA9C9A878181FBC6C382D9F0 /* SidebarView.swift */; };
 		B5EC8D397B7A962CD2BDF820 /* debug_pty.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D96DD4872B23F7851C58FC /* debug_pty.swift */; };
+		CBD8EF15A85756F63CF36229 /* AsyncDeadline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E4D7D285580F1646BA523C0 /* AsyncDeadline.swift */; };
+		DA15791279FE3FB2D12D1CC2 /* AsyncDeadlineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1299EB3EDDA3B0AD4AA85C6 /* AsyncDeadlineTests.swift */; };
 		DCD55CD52BA08D65FF1A4C57 /* PTYSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE2B07751BE8ACCB41EBA453 /* PTYSessionManager.swift */; };
 		DF2C4D97A2B64D2BC0771EEE /* MultiTabTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F4BBF609F635803ECB96420 /* MultiTabTerminalView.swift */; };
 		E077E0C9ABB308CD757BA03E /* NewWorkspaceSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B13EB4886DD523ACF011861C /* NewWorkspaceSheet.swift */; };
@@ -58,6 +60,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		0E4D7D285580F1646BA523C0 /* AsyncDeadline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncDeadline.swift; sourceTree = "<group>"; };
 		1075C8BF288888AA4624C6B0 /* NexusAppTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NexusAppTests.swift; sourceTree = "<group>"; };
 		2684A614A507C4F30DE4DDF1 /* DaemonLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonLauncher.swift; sourceTree = "<group>"; };
 		2B1758E3987EA79C35151F7B /* BottomPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BottomPanelView.swift; sourceTree = "<group>"; };
@@ -71,6 +74,7 @@
 		804B2FADD0C5143C198F46DA /* NexusApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NexusApp.swift; sourceTree = "<group>"; };
 		85417139225FD79454603276 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		9A570BFC62A722A8BE1F84B9 /* NexusAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NexusAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1299EB3EDDA3B0AD4AA85C6 /* AsyncDeadlineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncDeadlineTests.swift; sourceTree = "<group>"; };
 		A2BFDE21D93B71D9558A8EB6 /* WebSocketClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketClient.swift; sourceTree = "<group>"; };
 		B13EB4886DD523ACF011861C /* NewWorkspaceSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewWorkspaceSheet.swift; sourceTree = "<group>"; };
 		BA9C9A878181FBC6C382D9F0 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
@@ -157,6 +161,7 @@
 		9F3A300EE22561663F937FB3 /* NexusAppTests */ = {
 			isa = PBXGroup;
 			children = (
+				A1299EB3EDDA3B0AD4AA85C6 /* AsyncDeadlineTests.swift */,
 				1075C8BF288888AA4624C6B0 /* NexusAppTests.swift */,
 			);
 			path = NexusAppTests;
@@ -175,6 +180,7 @@
 			isa = PBXGroup;
 			children = (
 				659564BF098092F19E1351D0 /* AppState.swift */,
+				0E4D7D285580F1646BA523C0 /* AsyncDeadline.swift */,
 				2684A614A507C4F30DE4DDF1 /* DaemonLauncher.swift */,
 				52D96DD4872B23F7851C58FC /* debug_pty.swift */,
 				E8D2BD862DC1CF0BC0340EF9 /* HostToolsSetup.swift */,
@@ -219,7 +225,7 @@
 			buildConfigurationList = B992D6D8DB2250A5C1A5A0DF /* Build configuration list for PBXNativeTarget "NexusApp" */;
 			buildPhases = (
 				2C9E70762C891E5819603FF9 /* Sources */,
-				BB326D256E49C86D2D231193 /* Copy bundled tools to app Resources */,
+				77F45765587B63B666448DE8 /* Copy bundled tools to app Resources */,
 				FAB36B0455E6FDDE1FDD72F2 /* Frameworks */,
 			);
 			buildRules = (
@@ -349,7 +355,7 @@
 			shellPath = /bin/sh;
 			shellScript = "ditto \"${SCRIPT_INPUT_FILE_0}\" \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 		};
-		BB326D256E49C86D2D231193 /* Copy bundled tools to app Resources */ = {
+		77F45765587B63B666448DE8 /* Copy bundled tools to app Resources */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -403,6 +409,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DA15791279FE3FB2D12D1CC2 /* AsyncDeadlineTests.swift in Sources */,
 				062DA6B8127FF2AD08CF5D55 /* NexusAppTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -412,6 +419,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				8831D4FD2BE4EC9CA00D54D9 /* AppState.swift in Sources */,
+				CBD8EF15A85756F63CF36229 /* AsyncDeadline.swift in Sources */,
 				A9273E20904D087845541518 /* DaemonClient.swift in Sources */,
 				02BF55A8E1DB9D2B8AA212C5 /* DaemonLauncher.swift in Sources */,
 				AAD95B3DEC7CDE28C6E99EA9 /* HostToolsSetup.swift in Sources */,

@@ -260,7 +260,7 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
     // MARK: - Low-level RPC
 
     /// Default ceiling for a single JSON-RPC round trip (connect + request + response).
-    private static let defaultRPCSeconds: UInt64 = 90
+    private static let defaultRPCSeconds: UInt64 = 45
 
     func call(_ method: String, params: [String: Any] = [:]) async throws -> Any {
         do {
@@ -284,7 +284,17 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         let text = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8)!
         return try await withCheckedThrowingContinuation { cont in
             lock.withLock { pending[id] = cont }
-            task?.send(.string(text)) { _ in }
+            guard let sock = task else {
+                cont.resume(throwing: RPCError(message: "WebSocket task is nil"))
+                return
+            }
+            sock.send(.string(text)) { [weak self] err in
+                guard let self else { return }
+                if let err {
+                    let cont2 = self.lock.withLock { self.pending.removeValue(forKey: id) }
+                    cont2?.resume(throwing: err)
+                }
+            }
         }
     }
 
