@@ -117,3 +117,24 @@ func TestLoader_UnknownFieldInWorkspaceJSON_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestLoader_LoadsInternalFeatures(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".nexus"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"version":1,"internalFeatures":{"localDriver":true}}`)
+	if err := os.WriteFile(filepath.Join(root, ".nexus", "workspace.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, warnings, err := LoadWorkspaceConfig(root)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+	if !cfg.InternalFeatures.LocalDriver {
+		t.Fatalf("expected internalFeatures.localDriver=true")
+	}
+}

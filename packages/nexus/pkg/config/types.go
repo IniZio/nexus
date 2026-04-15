@@ -3,8 +3,13 @@ package config
 import "fmt"
 
 type WorkspaceConfig struct {
-	Schema  string `json:"$schema,omitempty"`
-	Version int    `json:"version,omitempty"`
+	Schema           string                    `json:"$schema,omitempty"`
+	Version          int                       `json:"version,omitempty"`
+	InternalFeatures WorkspaceInternalFeatures `json:"internalFeatures,omitempty"`
+}
+
+type WorkspaceInternalFeatures struct {
+	LocalDriver bool `json:"localDriver,omitempty"`
 }
 
 type DoctorCommandCheck struct {
