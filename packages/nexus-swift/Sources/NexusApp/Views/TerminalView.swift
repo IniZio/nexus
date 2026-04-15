@@ -294,9 +294,9 @@ private struct TerminalPlaceholder: View {
 
     private var message: String {
         switch workspace.state {
-        case .paused:             "Workspace is paused — start it to open a shell"
-        case .stopped, .created: "Workspace is stopped — start it to open a shell"
-        default:                 "Workspace not available"
+        case .paused:             "Sandbox is paused — start it to open a shell"
+        case .stopped, .created: "Sandbox is stopped — start it to open a shell"
+        default:                 "Sandbox not available"
         }
     }
 }

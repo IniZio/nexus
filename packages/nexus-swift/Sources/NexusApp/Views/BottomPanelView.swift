@@ -96,7 +96,7 @@ private struct PortsPane: View {
             .padding(.horizontal, 12)
             .padding(.top, 8)
             .padding(.bottom, 4)
-            Text("Only one workspace can have active tunnels at a time.")
+            Text("Only one sandbox can have active tunnels at a time.")
                 .font(.system(size: 10))
                 .foregroundColor(Theme.labelTertiary)
                 .frame(maxWidth: .infinity, alignment: .leading)

@@ -20,8 +20,11 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 1080, minHeight: 560)
-        .sheet(isPresented: $appState.showNewWorkspace) {
-            NewWorkspaceSheet().environmentObject(appState)
+        .sheet(isPresented: $appState.showNewWorkspace, onDismiss: {
+            appState.newSandboxProjectID = nil
+        }) {
+            NewWorkspaceSheet(fixedProjectID: appState.newSandboxProjectID)
+                .environmentObject(appState)
         }
     }
 
@@ -53,7 +56,7 @@ private struct StartupView: View {
             Text("Starting Nexus…")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(Theme.label)
-            Text("Launching workspace daemon")
+            Text("Launching sandbox daemon")
                 .font(.system(size: 11))
                 .foregroundColor(Theme.labelTertiary)
         }
@@ -98,7 +101,7 @@ private struct EmptyStateView: View {
                 Image(systemName: "terminal")
                     .font(.system(size: 28, weight: .ultraLight))
                     .foregroundColor(Theme.labelTertiary)
-                Text("Select a workspace")
+                Text("Select a sandbox")
                     .font(Theme.fontBody)
                     .foregroundColor(Theme.labelTertiary)
             }

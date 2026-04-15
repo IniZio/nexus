@@ -274,6 +274,7 @@ private struct TabButton: View {
 
             // Close button (visible on hover or if tab has error)
             if isHovering || tab.error != nil {
+                let helpText = tab.error.map { "Error: \($0)" } ?? "Close tab"
                 Button {
                     onClose()
                 } label: {
@@ -283,7 +284,7 @@ private struct TabButton: View {
                         .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.plain)
-                .help(tab.error != nil ? "Error: \(tab.error!)" : "Close tab")
+                .help(helpText)
             } else {
                 // Spacer for consistent width
                 Color.clear
@@ -467,9 +468,9 @@ private struct TerminalPlaceholderView: View {
 
     private var message: String {
         switch workspace.state {
-        case .paused:             "Workspace is paused — start it to open a shell"
-        case .stopped, .created: "Workspace is stopped — start it to open a shell"
-        default:                 "Workspace not available"
+        case .paused:             "Sandbox is paused — start it to open a shell"
+        case .stopped, .created: "Sandbox is stopped — start it to open a shell"
+        default:                 "Sandbox not available"
         }
     }
 }

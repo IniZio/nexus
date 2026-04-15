@@ -38,6 +38,10 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     public let workspaceName: String
     public let repo: String
     public let ref: String
+    public let targetBranch: String?
+    public let currentRef: String?
+    public let currentCommit: String?
+    public let parentWorkspaceId: String?
     public var state: WorkspaceStatus
     public let rootPath: String
     public let agentProfile: String
@@ -47,12 +51,19 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     public var hasActiveTunnels: Bool
 
     public var name: String   { workspaceName }
-    public var branch: String { ref.isEmpty ? "main" : ref }
+    public var branch: String {
+        let candidate = (currentRef?.isEmpty == false ? currentRef : nil)
+            ?? (targetBranch?.isEmpty == false ? targetBranch : nil)
+            ?? (ref.isEmpty ? nil : ref)
+        return candidate ?? "main"
+    }
     public var status: WorkspaceStatus { state }
     public var snapshotCount: Int { 0 }
 
     enum CodingKeys: String, CodingKey {
         case id, workspaceName, repo, ref, state, rootPath, agentProfile
+        case targetBranch, currentRef, currentCommit
+        case parentWorkspaceId = "parentWorkspaceId"
         case repoId = "repoId"
         case projectId = "projectId"
     }
@@ -63,6 +74,10 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         workspaceName = try c.decodeIfPresent(String.self, forKey: .workspaceName) ?? ""
         repo         = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
         ref          = try c.decodeIfPresent(String.self, forKey: .ref) ?? "main"
+        targetBranch = try c.decodeIfPresent(String.self, forKey: .targetBranch)
+        currentRef   = try c.decodeIfPresent(String.self, forKey: .currentRef)
+        currentCommit = try c.decodeIfPresent(String.self, forKey: .currentCommit)
+        parentWorkspaceId = try c.decodeIfPresent(String.self, forKey: .parentWorkspaceId)
         state        = try c.decodeIfPresent(WorkspaceStatus.self, forKey: .state) ?? .stopped
         rootPath     = try c.decodeIfPresent(String.self, forKey: .rootPath) ?? ""
         agentProfile = try c.decodeIfPresent(String.self, forKey: .agentProfile) ?? ""
@@ -78,6 +93,10 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         try c.encode(workspaceName, forKey: .workspaceName)
         try c.encode(repo, forKey: .repo)
         try c.encode(ref, forKey: .ref)
+        try c.encodeIfPresent(targetBranch, forKey: .targetBranch)
+        try c.encodeIfPresent(currentRef, forKey: .currentRef)
+        try c.encodeIfPresent(currentCommit, forKey: .currentCommit)
+        try c.encodeIfPresent(parentWorkspaceId, forKey: .parentWorkspaceId)
         try c.encode(state, forKey: .state)
         try c.encode(rootPath, forKey: .rootPath)
         try c.encode(agentProfile, forKey: .agentProfile)
@@ -94,6 +113,10 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         self.workspaceName = workspaceName
         self.repo         = repo
         self.ref          = ref
+        self.targetBranch = nil
+        self.currentRef   = nil
+        self.currentCommit = nil
+        self.parentWorkspaceId = nil
         self.state        = state
         self.rootPath     = rootPath
         self.agentProfile = agentProfile
@@ -101,6 +124,17 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         self.projectId    = projectId
         self.ports        = ports
         self.hasActiveTunnels = hasActiveTunnels
+    }
+}
+
+public struct Project: Identifiable, Codable, Equatable, Sendable {
+    public let id: String
+    public let name: String
+    public let primaryRepo: String
+    public let rootPath: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, primaryRepo, rootPath
     }
 }
 
@@ -154,6 +188,19 @@ public struct Repo: Identifiable, Sendable {
         }
     }
 
+    public static func fromProjects(_ projects: [Project], workspaces: [Workspace]) -> [Repo] {
+        guard !projects.isEmpty else { return [] }
+        return projects.map { project in
+            let wsInProject = workspaces.filter { $0.projectId == project.id }
+            return Repo(
+                id: project.id,
+                name: project.name,
+                remoteURL: project.primaryRepo,
+                workspaces: wsInProject
+            )
+        }
+    }
+
     public static func grouping(_ workspaces: [Workspace]) -> [Repo] {
         var map: [String: [Workspace]] = [:]
         var order: [String] = []
@@ -196,7 +243,13 @@ public struct ForwardedPort: Identifiable, Codable, Equatable, Sendable {
     public let tunneled: Bool
     public let process: String?
     public var port: Int { id }
-    public var localURL: URL { URL(string: "http://localhost:\(id)")! }
+    public var localURL: URL {
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = "localhost"
+        components.port = id
+        return components.url ?? URL(fileURLWithPath: "/")
+    }
 
     public init(id: Int, remotePort: Int? = nil, preferred: Bool = false, tunneled: Bool = false, process: String? = nil) {
         self.id = id

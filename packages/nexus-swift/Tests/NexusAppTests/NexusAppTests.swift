@@ -223,10 +223,168 @@ final class WorkspaceModelTests: XCTestCase {
         XCTAssertEqual(dict?["ref"] as? String, "main")
     }
 
+    func testProjectDecode() throws {
+        let json = """
+        {
+            "id": "proj-1",
+            "name": "nexus",
+            "primaryRepo": "git@github.com:inizio/nexus.git",
+            "rootPath": "/Users/me/nexus"
+        }
+        """.data(using: .utf8)!
+        let project = try JSONDecoder().decode(Project.self, from: json)
+        XCTAssertEqual(project.id, "proj-1")
+        XCTAssertEqual(project.name, "nexus")
+        XCTAssertEqual(project.primaryRepo, "git@github.com:inizio/nexus.git")
+    }
+
+    func testProjectFirstGrouping() {
+        let project = Project(id: "proj-1", name: "nexus", primaryRepo: "/tmp/nexus", rootPath: "/tmp/nexus")
+        let workspaces = [
+            Workspace(id: "ws-1", workspaceName: "main", projectId: "proj-1"),
+            Workspace(id: "ws-2", workspaceName: "feature", projectId: "proj-1"),
+            Workspace(id: "ws-3", workspaceName: "other", projectId: "proj-2"),
+        ]
+        let repos = Repo.fromProjects([project], workspaces: workspaces)
+        XCTAssertEqual(repos.count, 1)
+        XCTAssertEqual(repos[0].id, "proj-1")
+        XCTAssertEqual(repos[0].workspaces.count, 2)
+    }
+
     func testForwardedPortURL() {
         let port = ForwardedPort(id: 3000)
         XCTAssertEqual(port.port, 3000)
         XCTAssertEqual(port.localURL.absoluteString, "http://localhost:3000")
+    }
+}
+
+@MainActor
+final class AppStateProjectFlowTests: XCTestCase {
+
+    func testCreateProjectAutoCreatesRootSandbox() async {
+        let client = MockDaemonClient()
+        let appState = AppState(client: client)
+        _ = await appState.createProject(repo: "/tmp/nexus")
+
+        XCTAssertEqual(client.createdProjectRepo, "/tmp/nexus")
+        XCTAssertNotNil(client.createdSandboxRequest)
+        XCTAssertEqual(client.createdSandboxRequest?.projectId, "proj-1")
+        XCTAssertEqual(client.createdSandboxRequest?.targetBranch, "main")
+        XCTAssertEqual(client.createdSandboxRequest?.workspaceName, "nexus")
+        XCTAssertEqual(client.createdSandboxRequest?.fresh, true)
+        XCTAssertEqual(appState.selectedWorkspaceID, "ws-root")
+    }
+
+    func testCreateProjectReturnsNilWhenSandboxBootstrapFails() async {
+        let client = MockDaemonClient()
+        client.shouldFailCreateSandbox = true
+        let appState = AppState(client: client)
+        let created = await appState.createProject(repo: "/tmp/nexus")
+
+        XCTAssertNil(created)
+        XCTAssertEqual(client.createdProjectRepo, "/tmp/nexus")
+        XCTAssertNotNil(appState.error)
+    }
+
+    func testEnsureProjectRootSandboxCreatesMissingRoot() async {
+        let client = MockDaemonClient()
+        client.projects = [Project(id: "proj-1", name: "nexus", primaryRepo: "/tmp/nexus", rootPath: "/tmp/nexus")]
+        let appState = AppState(client: client)
+        await appState.load()
+
+        let root = await appState.ensureProjectRootSandbox(projectID: "proj-1")
+        XCTAssertNotNil(root)
+        XCTAssertEqual(root?.projectId, "proj-1")
+        XCTAssertNotNil(client.createdSandboxRequest)
+        XCTAssertEqual(client.createdSandboxRequest?.fresh, true)
+    }
+
+    func testEnsureProjectRootSandboxReturnsExistingRootWithoutCreate() async {
+        let client = MockDaemonClient()
+        client.projects = [Project(id: "proj-1", name: "nexus", primaryRepo: "/tmp/nexus", rootPath: "/tmp/nexus")]
+        client.workspaces = [Workspace(id: "ws-existing-root", workspaceName: "nexus", projectId: "proj-1")]
+        let appState = AppState(client: client)
+        await appState.load()
+
+        let root = await appState.ensureProjectRootSandbox(projectID: "proj-1")
+        XCTAssertEqual(root?.id, "ws-existing-root")
+        XCTAssertNil(client.createdSandboxRequest)
+    }
+
+    func testEnsureProjectRootSandboxCreatesRootWhenOnlyChildrenExist() async {
+        let client = MockDaemonClient()
+        client.projects = [Project(id: "proj-1", name: "nexus", primaryRepo: "/tmp/nexus", rootPath: "/tmp/nexus")]
+        let childJSON = """
+        {
+            "id": "ws-child",
+            "workspaceName": "feature-x",
+            "projectId": "proj-1",
+            "parentWorkspaceId": "ws-some-parent",
+            "ref": "feature-x"
+        }
+        """.data(using: .utf8)!
+        client.workspaces = [try! JSONDecoder().decode(Workspace.self, from: childJSON)]
+        let appState = AppState(client: client)
+        await appState.load()
+
+        let root = await appState.ensureProjectRootSandbox(projectID: "proj-1")
+        XCTAssertNotNil(root)
+        XCTAssertEqual(root?.id, "ws-root")
+        XCTAssertEqual(root?.parentWorkspaceId, nil)
+        XCTAssertEqual(client.createdSandboxRequest?.projectId, "proj-1")
+        XCTAssertEqual(client.createdSandboxRequest?.fresh, true)
+    }
+}
+
+private final class MockDaemonClient: DaemonClient, @unchecked Sendable {
+    var createdProjectRepo: String?
+    var createdSandboxRequest: SandboxCreateRequest?
+    var shouldFailCreateSandbox = false
+    var projects: [Project] = []
+    var workspaces: [Workspace] = []
+
+    func listProjects() async throws -> [Project] { projects }
+    func createProject(repo: String) async throws -> Project {
+        createdProjectRepo = repo
+        let project = Project(id: "proj-1", name: "nexus", primaryRepo: repo, rootPath: repo)
+        projects = [project]
+        return project
+    }
+    func listWorkspaces() async throws -> [Workspace] { workspaces }
+    func listRelations() async throws -> [RelationsGroup] { [] }
+    func createWorkspace(spec: WorkspaceCreateSpec) async throws -> Workspace {
+        Workspace(id: "ws-create", workspaceName: spec.workspaceName, repo: spec.repo, ref: spec.ref)
+    }
+    func createSandbox(request: SandboxCreateRequest) async throws -> Workspace {
+        createdSandboxRequest = request
+        if shouldFailCreateSandbox {
+            throw NSError(domain: "MockDaemonClient", code: 1, userInfo: [NSLocalizedDescriptionKey: "sandbox create failed"])
+        }
+        let ws = Workspace(id: "ws-root", workspaceName: request.workspaceName, projectId: request.projectId)
+        workspaces.append(ws)
+        return ws
+    }
+    func startWorkspace(id: String) async throws {}
+    func stopWorkspace(id: String) async throws {}
+    func removeWorkspace(id: String) async throws {}
+    func markWorkspaceReady(id: String) async throws {}
+    func listPorts(workspaceId: String) async throws -> [ForwardedPort] { [] }
+    func addPort(workspaceId: String, port: Int) async throws {}
+    func removePort(workspaceId: String, port: Int) async throws {}
+    func activateTunnels(workspaceId: String) async throws -> TunnelStatus { TunnelStatus(active: false, activeWorkspaceId: "") }
+    func deactivateTunnels(workspaceId: String) async throws -> TunnelStatus { TunnelStatus(active: false, activeWorkspaceId: "") }
+    func tunnelStatus(workspaceId: String) async throws -> TunnelStatus { TunnelStatus(active: false, activeWorkspaceId: "") }
+    func exec(workspaceId: String, command: String, args: [String]) async throws -> ExecOutput {
+        ExecOutput(stdout: "", stderr: "", exitCode: 0)
+    }
+    func workspaceInfo(id: String) async throws -> WorkspaceInfo {
+        WorkspaceInfo(workspaceId: id, workspacePath: "/workspace", ports: [])
+    }
+    func getDaemonSandboxResourceSettings() async throws -> SandboxResourceSettings {
+        SandboxResourceSettings(defaultMemoryMiB: 2048, defaultVCPUs: 2, maxMemoryMiB: 8192, maxVCPUs: 8)
+    }
+    func updateDaemonSandboxResourceSettings(_ settings: SandboxResourceSettings) async throws -> SandboxResourceSettings {
+        settings
     }
 }
 

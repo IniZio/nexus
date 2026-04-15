@@ -35,6 +35,62 @@ public enum DaemonLaunchError: Error, LocalizedError {
 ///      (covers `swift run` from packages/nexus-swift/).
 public struct DaemonLauncher {
 
+    public enum DaemonBinarySource: String {
+        case envOverride = "explicit"
+        case localSource = "local-source"
+        case bundled = "bundled"
+        case externalInstalled = "external-installed"
+        case colocated = "colocated"
+        case devFallback = "dev-fallback"
+        case notFound = "not-found"
+    }
+
+    public struct RuntimeVariantInfo {
+        public let mode: String
+        public let preferredPort: Int
+        public let binarySource: DaemonBinarySource
+        public let binaryPath: String
+    }
+
+    // MARK: - Port preferences
+
+    /// Default daemon port for all local app modes.
+    private static let standardPort = 63987
+
+    /// Resolves the preferred daemon port for this app instance.
+    ///
+    /// Priority:
+    ///  1. `NEXUS_DAEMON_PORT` (explicit override)
+    ///  2. Standard mode defaults to `standardPort`
+    public static func preferredPort(env: [String: String] = ProcessInfo.processInfo.environment) -> Int {
+        if let raw = env["NEXUS_DAEMON_PORT"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let parsed = Int(raw), (1...65535).contains(parsed) {
+            return parsed
+        }
+        return standardPort
+    }
+
+    /// Returns user-visible daemon variant diagnostics for the current app runtime.
+    public static func runtimeVariantInfo(env: [String: String] = ProcessInfo.processInfo.environment) -> RuntimeVariantInfo {
+        let prefersSource = shouldPreferSourceDaemon(env: env)
+        let mode = prefersSource ? "local-source" : "bundled-or-installed"
+        let preferred = preferredPort(env: env)
+        if let resolved = resolveBinaryWithSource(env: env) {
+            return RuntimeVariantInfo(
+                mode: mode,
+                preferredPort: preferred,
+                binarySource: resolved.source,
+                binaryPath: resolved.url.path
+            )
+        }
+        return RuntimeVariantInfo(
+            mode: mode,
+            preferredPort: preferred,
+            binarySource: .notFound,
+            binaryPath: "unresolved"
+        )
+    }
+
     // MARK: - Health check
 
     /// Returns true if the daemon is already answering /healthz on `port`.
@@ -49,8 +105,16 @@ public struct DaemonLauncher {
     // MARK: - Port discovery
 
     /// Returns the port of the currently recorded daemon, or nil if no PID file exists.
-    public static func resolveRunningPort() -> Int? {
+    ///
+    /// If a preferred port is provided and its PID file exists, that value is returned first.
+    public static func resolveRunningPort(preferredPort: Int? = nil) -> Int? {
         let runDir = resolveRunDir()
+        if let preferredPort {
+            let preferredPath = "\(runDir)/daemon-\(preferredPort).pid"
+            if FileManager.default.fileExists(atPath: preferredPath) {
+                return preferredPort
+            }
+        }
         guard let entries = try? FileManager.default.contentsOfDirectory(atPath: runDir) else {
             return nil
         }
@@ -63,14 +127,35 @@ public struct DaemonLauncher {
 
     // MARK: - Kill existing
 
-    /// Stops any running nexus-daemon and removes PID files.
+    /// Stops nexus-daemon process(es) and removes PID files.
     ///
-    /// First attempts to SIGTERM each PID recorded in PID files.  Then, as a
-    /// fallback for stale PID files (where the recorded PID no longer matches
-    /// the actual process), uses `pkill` to terminate any remaining process
-    /// named "nexus-daemon".
-    public static func killRunning() {
+    /// When `port` is provided, only that daemon PID file is targeted so multiple
+    /// local daemon variants can run side-by-side.
+    public static func killRunning(port: Int? = nil) {
         let runDir = resolveRunDir()
+
+        if let targetPort = port {
+            let specificPIDPath = "\(runDir)/daemon-\(targetPort).pid"
+            var targetedPID: Int32?
+            if let pidStr = try? String(contentsOfFile: specificPIDPath, encoding: .utf8)
+                                    .trimmingCharacters(in: .whitespacesAndNewlines),
+               let pid = Int32(pidStr), pid > 1 {
+                targetedPID = pid
+                Foundation.kill(pid, SIGTERM)
+            }
+            try? FileManager.default.removeItem(atPath: specificPIDPath)
+            if let genericPidStr = try? String(contentsOfFile: "\(runDir)/daemon.pid", encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               let pid = Int32(genericPidStr), pid > 1,
+               let targetedPID, pid == targetedPID {
+                try? FileManager.default.removeItem(atPath: "\(runDir)/daemon.pid")
+            }
+            // If no recorded PID was available (or it failed to stop), terminate any
+            // daemon still listening on the target port so we can relaunch latest.
+            killProcessListening(on: targetPort)
+            return
+        }
+
         if let entries = try? FileManager.default.contentsOfDirectory(atPath: runDir) {
             for entry in entries where entry.hasSuffix(".pid") {
                 let path = "\(runDir)/\(entry)"
@@ -83,8 +168,7 @@ public struct DaemonLauncher {
             }
         }
 
-        // Fallback: stale PID files mean the recorded PID may not be the real
-        // process.  Use pkill to catch any surviving nexus-daemon.
+        // Broad fallback only when no target port was requested.
         let pkill = Process()
         pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
         pkill.arguments = ["-TERM", "nexus-daemon"]
@@ -97,19 +181,22 @@ public struct DaemonLauncher {
     // MARK: - Binary resolution
 
     public static func resolveBinary() -> URL? {
+        return resolveBinaryWithSource()?.url
+    }
+
+    private static func resolveBinaryWithSource(env: [String: String] = ProcessInfo.processInfo.environment) -> (url: URL, source: DaemonBinarySource)? {
         let fm = FileManager.default
-        let env = ProcessInfo.processInfo.environment
 
         // 0. Environment override (CI / developer convenience)
         if let envBin = env["NEXUS_DAEMON_BIN"], !envBin.isEmpty {
             let u = URL(fileURLWithPath: envBin)
-            if fm.isExecutableFile(atPath: u.path) { return u }
+            if fm.isExecutableFile(atPath: u.path) { return (u, .envOverride) }
         }
 
         // 1. Development override: prefer source daemon during local app development.
         //    This keeps local Swift app runs aligned with active Go daemon sources.
         if shouldPreferSourceDaemon(env: env), let devBinary = resolveDevBinary() {
-            return devBinary
+            return (devBinary, .localSource)
         }
 
         // 2. Prefer bundled daemon to keep app and daemon versions aligned.
@@ -119,12 +206,12 @@ public struct DaemonLauncher {
                 resourceURL.appendingPathComponent("tools/nexus-daemon"),
             ]
             for bundled in bundledCandidates where fm.isExecutableFile(atPath: bundled.path) {
-                return bundled
+                return (bundled, .bundled)
             }
         }
 
         // 3. Downloaded/system daemon fallback.
-        if let path = which("nexus-daemon") { return URL(fileURLWithPath: path) }
+        if let path = which("nexus-daemon") { return (URL(fileURLWithPath: path), .externalInstalled) }
 
         // 4. Co-located with this executable (legacy co-install layout)
         let exeURL: URL = {
@@ -135,10 +222,13 @@ public struct DaemonLauncher {
             return URL(fileURLWithPath: raw).standardized
         }()
         let colocated = exeURL.deletingLastPathComponent().appendingPathComponent("nexus-daemon")
-        if fm.isExecutableFile(atPath: colocated.path) { return colocated }
+        if fm.isExecutableFile(atPath: colocated.path) { return (colocated, .colocated) }
 
         // 5. Dev layout fallback.
-        return resolveDevBinary()
+        if let fallback = resolveDevBinary() {
+            return (fallback, .devFallback)
+        }
+        return nil
     }
 
     // MARK: - Launch
@@ -153,13 +243,18 @@ public struct DaemonLauncher {
     /// Unlike `isHealthy`, this does NOT treat any arbitrary process that
     /// happens to answer /healthz as "our daemon" — it only reuses daemons
     /// whose PID was recorded by a previous `ensureRunning` call.
-    public static func ensureRunning(port: Int = 63987, timeout: TimeInterval = 10) async throws {
+    public static func ensureRunning(port: Int? = nil, timeout: TimeInterval = 10) async throws {
+        let targetPort = port ?? preferredPort()
+
         // Reuse a daemon only if WE recorded its PID and it is still healthy.
-        let targetPort: Int
-        if let recorded = resolveRunningPort(), await isHealthy(port: recorded) {
+        if let recorded = resolveRunningPort(preferredPort: targetPort), await isHealthy(port: recorded) {
             return  // Our managed daemon is already healthy.
-        } else {
-            targetPort = resolveRunningPort() ?? port
+        }
+
+        // If an unmanaged daemon is occupying the port, replace it with latest.
+        if await isHealthy(port: targetPort) {
+            killProcessListening(on: targetPort)
+            try? await Task.sleep(for: .seconds(0.2))
         }
 
         guard let binary = resolveBinary() else {
@@ -210,8 +305,10 @@ public struct DaemonLauncher {
         // Record PID so URL discovery and the token reader can find this daemon.
         let pidPath = runDir + "/daemon-\(targetPort).pid"
         try? "\(proc.processIdentifier)".write(toFile: pidPath, atomically: true, encoding: .utf8)
-        try? "\(proc.processIdentifier)".write(
-            toFile: runDir + "/daemon.pid", atomically: true, encoding: .utf8)
+        if targetPort == preferredPort() {
+            try? "\(proc.processIdentifier)".write(
+                toFile: runDir + "/daemon.pid", atomically: true, encoding: .utf8)
+        }
 
         // Poll /healthz until the daemon is ready.
         // NOTE: do NOT call proc.waitUntilExit() — it would block forever.
@@ -250,6 +347,17 @@ public struct DaemonLauncher {
         let raw = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return raw?.isEmpty == false ? raw : nil
+    }
+
+    private static func killProcessListening(on port: Int) {
+        let script = "pids=$(lsof -ti tcp:\(port) -sTCP:LISTEN 2>/dev/null); if [ -n \"$pids\" ]; then kill -TERM $pids 2>/dev/null || true; fi"
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        proc.arguments = ["-lc", script]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try? proc.run()
+        proc.waitUntilExit()
     }
 
     private static func shouldPreferSourceDaemon(env: [String: String]) -> Bool {

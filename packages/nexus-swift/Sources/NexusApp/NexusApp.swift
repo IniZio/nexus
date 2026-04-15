@@ -14,7 +14,10 @@ struct NexusApp: App {
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New Workspace") { appState.showNewWorkspace = true }
+                Button("New Project") {
+                    appState.newSandboxProjectID = "__new__"
+                    appState.showNewWorkspace = true
+                }
                     .keyboardShortcut("n", modifiers: .command)
             }
         }

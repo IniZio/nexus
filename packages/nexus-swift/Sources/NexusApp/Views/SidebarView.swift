@@ -35,7 +35,7 @@ private struct SidebarHeader: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            Text("Workspaces")
+            Text("Projects")
                 .font(.system(size: 12))
                 .foregroundColor(Theme.labelSecondary)
                 .padding(.leading, 16)
@@ -52,9 +52,12 @@ private struct SidebarHeader: View {
                 }
             }
 
-            SidebarHeaderBtn(icon: "plus") { appState.showNewWorkspace = true }
+            SidebarHeaderBtn(icon: "plus") {
+                appState.newSandboxProjectID = "__new__"
+                appState.showNewWorkspace = true
+            }
                 .padding(.trailing, 6)
-                .accessibilityIdentifier("new_workspace_button")
+                .accessibilityIdentifier("new_project_button")
         }
         .frame(height: 36)
     }
@@ -84,40 +87,85 @@ private struct SidebarHeaderBtn: View {
     }
 }
 
-// MARK: - Repo section
+// MARK: - Project section
 
 private struct RepoSection: View {
     @EnvironmentObject var appState: AppState
     let repo: Repo
     @State private var expanded = true
+    
+    private var hasRootWorkspace: Bool {
+        repo.workspaces.contains { ($0.parentWorkspaceId ?? "").isEmpty }
+    }
+
+    private var orderedWorkspaces: [Workspace] {
+        repo.workspaces.sorted { lhs, rhs in
+            let lhsIsRoot = (lhs.parentWorkspaceId ?? "").isEmpty
+            let rhsIsRoot = (rhs.parentWorkspaceId ?? "").isEmpty
+            if lhsIsRoot != rhsIsRoot {
+                return lhsIsRoot
+            }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Tappable section header with animated chevron
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(Theme.labelSecondary)
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
-                        .animation(.easeInOut(duration: 0.18), value: expanded)
-                    Text(repo.name)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Theme.labelSecondary)
-                    Spacer()
+            // Tappable project header with animated chevron
+            HStack(spacing: 6) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(Theme.labelSecondary)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                            .animation(.easeInOut(duration: 0.18), value: expanded)
+                        Text(repo.name)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Theme.labelSecondary)
+                        Spacer()
+                    }
+                    .padding(.leading, 12)
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
                 }
-                .padding(.leading, 12)
-                .padding(.vertical, 8)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+
+                Button {
+                    appState.newSandboxProjectID = repo.id
+                    appState.showNewWorkspace = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Theme.labelSecondary)
+                        .frame(width: 16, height: 16)
+                }
+                .buttonStyle(.plain)
+                .help("Create sandbox in \(repo.name)")
+                .accessibilityIdentifier("project_add_sandbox_\(repo.id)")
+                .padding(.trailing, 10)
             }
-            .buttonStyle(.plain)
             .padding(.top, 4)
 
             if expanded {
                 VStack(alignment: .leading, spacing: 1) {
-                    ForEach(repo.workspaces) { ws in
+                    if !hasRootWorkspace {
+                        Button {
+                            Task {
+                                if let root = await appState.ensureProjectRootSandbox(projectID: repo.id) {
+                                    appState.selectedWorkspaceID = root.id
+                                }
+                            }
+                        } label: {
+                            MissingBaseRow()
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("project_create_base_\(repo.id)")
+                        .accessibilityLabel("Create base sandbox")
+                    }
+                    ForEach(orderedWorkspaces) { ws in
                         Button {
                             appState.selectedWorkspaceID = ws.id
                         } label: {
@@ -137,6 +185,32 @@ private struct RepoSection: View {
     }
 }
 
+private struct MissingBaseRow: View {
+    @State private var hover = false
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "plus.circle")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(Theme.labelTertiary)
+            Text("Create Base")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(Theme.labelTertiary)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 22)
+        .padding(.trailing, 10)
+        .frame(height: 26)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(hover ? Theme.sidebarHover : .clear)
+                .padding(.horizontal, 6)
+        )
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+    }
+}
+
 // MARK: - Workspace row
 
 private struct WorkspaceRow: View {
@@ -144,14 +218,22 @@ private struct WorkspaceRow: View {
     let isSelected: Bool
     @EnvironmentObject var appState: AppState
     @State private var hover = false
+    
+    private var isRoot: Bool { (workspace.parentWorkspaceId ?? "").isEmpty }
+    private var displayName: String { isRoot ? "Base" : workspace.name }
 
     var body: some View {
         HStack(spacing: 7) {
             StatusDot(status: workspace.status)
-            Text(workspace.name)
+            Text(displayName)
                 .font(.system(size: 13))
                 .foregroundColor(Theme.label)
                 .lineLimit(1)
+            if isRoot {
+                Text("root")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(Theme.labelTertiary)
+            }
             if workspace.hasActiveTunnels {
                 Image(systemName: "dot.radiowaves.left.and.right")
                     .font(.system(size: 10))
@@ -350,7 +432,10 @@ private struct FooterMenuBtn: View {
 
     var body: some View {
         Menu {
-            Button("New Workspace…") { appState.showNewWorkspace = true }
+            Button("New Project…") {
+                appState.newSandboxProjectID = "__new__"
+                appState.showNewWorkspace = true
+            }
 
             Divider()
 

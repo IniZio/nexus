@@ -1,11 +1,13 @@
 import Foundation
 import Combine
+import os
 
 /// Root app state — owns the daemon client and drives all views.
 /// Always connects to the real daemon. If the daemon isn't running,
 /// connectionState reflects .disconnected and an error message is set.
 @MainActor
 public final class AppState: ObservableObject {
+    private static let logger = Logger(subsystem: "com.nexus.NexusApp", category: "AppState")
 
     // MARK: - PTY state (tracked for XCUITest via sidebar accessibility markers)
 
@@ -32,10 +34,12 @@ public final class AppState: ObservableObject {
 
     // MARK: - Published state
     @Published public var repos: [Repo] = []
+    @Published public var projects: [Project] = []
     @Published public var selectedWorkspaceID: String?
     @Published public var connectionState: ConnectionState = .disconnected
     @Published public var daemonStatus: DaemonStatus = .unknown
     @Published public var showNewWorkspace = false
+    @Published public var newSandboxProjectID: String?
     @Published public var sidebarVisible = true
     @Published public var showInspector = true
     @Published public var error: String?
@@ -46,6 +50,12 @@ public final class AppState: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var isRestarting = false
     @Published public var isBusy = false
+
+    private var injectedDaemonURL: String? {
+        let value = ProcessInfo.processInfo.environment["NEXUS_DAEMON_URL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? nil : value
+    }
 
     public init() {
         self.client = WebSocketDaemonClient(daemonURL: WebSocketDaemonClient.discoverURL())
@@ -60,8 +70,10 @@ public final class AppState: ObservableObject {
         Task { await self.load() }
     }
 
-    private func applyLoadedWorkspaces(_ workspaces: [Workspace], relations: [RelationsGroup]) {
-        repos = Repo.fromRelations(relations, workspaces: workspaces)
+    private func applyLoadedWorkspaces(_ workspaces: [Workspace], relations: [RelationsGroup], projects: [Project]) {
+        self.projects = projects
+        let projectRepos = Repo.fromProjects(projects, workspaces: workspaces)
+        repos = projectRepos.isEmpty ? Repo.fromRelations(relations, workspaces: workspaces) : projectRepos
         connectionState = .connected
         error = nil
 
@@ -74,11 +86,13 @@ public final class AppState: ObservableObject {
 
     public func load() async {
         connectionState = .connecting
+        Self.logger.debug("load() started")
         do {
             async let wsFetch        = client.listWorkspaces()
             async let relationsFetch = client.listRelations()
             var workspaces  = try await wsFetch
             let relations   = try await relationsFetch
+            let projects    = try await client.listProjects()
 
             // Fetch ports concurrently for all active workspaces
             var activeTunnelWorkspaceID = ""
@@ -103,12 +117,23 @@ public final class AppState: ObservableObject {
                 workspaces[i].hasActiveTunnels = (workspaces[i].id == activeTunnelWorkspaceID)
             }
 
-            applyLoadedWorkspaces(workspaces, relations: relations)
+            applyLoadedWorkspaces(workspaces, relations: relations, projects: projects)
+            Self.logger.debug("load() succeeded with \(workspaces.count, privacy: .public) workspaces and \(projects.count, privacy: .public) projects")
         } catch {
+            if injectedDaemonURL == nil, isMethodNotFound(error) {
+                // Hard cutover: old local daemon APIs are not supported; restart into latest binary.
+                Self.logger.error("load() hit method-not-found on local daemon; restarting managed daemon")
+                await restartDaemon()
+                return
+            }
             connectionState = .disconnected
-            if self.error == nil {
+            daemonStatus = .offline
+            if injectedDaemonURL != nil {
+                setInjectedDaemonUnavailableError(reason: error.localizedDescription)
+            } else if self.error == nil {
                 self.error = "Cannot reach daemon: \(error.localizedDescription)"
             }
+            Self.logger.error("load() failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -133,7 +158,9 @@ public final class AppState: ObservableObject {
     /// On first launch: fast-path if daemon is up and auth works; otherwise
     /// restart to a daemon token we control (env/keychain), then reconnect.
     func ensureDaemonAndLoad() async {
+        let targetDaemonPort = DaemonLauncher.preferredPort()
         connectionState = .connecting
+        Self.logger.info("ensureDaemonAndLoad() started; preferred port \(targetDaemonPort, privacy: .public)")
 
         // Step 1: Check daemon version compatibility (unauthenticated HTTP).
         if let wsClient = client as? WebSocketDaemonClient {
@@ -142,9 +169,12 @@ public final class AppState: ObservableObject {
                     daemonStatus = .running(info: info)
                 } else {
                     daemonStatus = .outdated(running: info)
-                    connectionState = .disconnected
-                    error = "Daemon protocol v\(info.protocolVersion) is older than required v\(DaemonInfo.requiredProtocol). Use the daemon panel to update."
-                    return
+                    if injectedDaemonURL != nil {
+                        connectionState = .disconnected
+                        error = "Daemon protocol v\(info.protocolVersion) is older than required v\(DaemonInfo.requiredProtocol)."
+                        return
+                    }
+                    // Local daemon is outdated; continue and force managed restart to latest.
                 }
             } else {
                 daemonStatus = .offline
@@ -154,18 +184,27 @@ public final class AppState: ObservableObject {
         // Step 2: Fast path — try to connect using current credentials.
         do {
             try await attemptLoad()
+            Self.logger.info("Fast-path daemon load succeeded")
             return
         } catch {}
 
         // Step 3: If a daemon URL was injected (XCUITest or external daemon), never
         // kill or restart — just retry briefly then report failure.
-        if ProcessInfo.processInfo.environment["NEXUS_DAEMON_URL"] != nil {
+        if injectedDaemonURL != nil {
+            var lastError: Error?
             for delay in [0.5, 1.0, 2.0] as [Double] {
                 try? await Task.sleep(for: .seconds(delay))
-                do { try await attemptLoad(); return } catch {}
+                do {
+                    try await attemptLoad()
+                    return
+                } catch {
+                    lastError = error
+                }
             }
             connectionState = .disconnected
-            error = "Cannot reach daemon at injected URL"
+            daemonStatus = .offline
+            setInjectedDaemonUnavailableError(reason: lastError?.localizedDescription)
+            Self.logger.error("Injected daemon unreachable: \(lastError?.localizedDescription ?? "unknown", privacy: .public)")
             return
         }
 
@@ -173,13 +212,15 @@ public final class AppState: ObservableObject {
         // If fast-path auth fails, force a restart so daemon and keychain token
         // are guaranteed to match.
         connectionState = .starting
-        await Task.detached { DaemonLauncher.killRunning() }.value
+        await Task.detached { DaemonLauncher.killRunning(port: targetDaemonPort) }.value
         try? await Task.sleep(for: .seconds(0.4))
         do {
-            try await DaemonLauncher.ensureRunning()
+            try await DaemonLauncher.ensureRunning(port: targetDaemonPort)
+            Self.logger.info("Managed daemon started on port \(targetDaemonPort, privacy: .public)")
         } catch {
             connectionState = .disconnected
             self.error = error.localizedDescription
+            Self.logger.error("Failed to start managed daemon: \(error.localizedDescription, privacy: .public)")
             return
         }
         let newURL = WebSocketDaemonClient.discoverURL()
@@ -193,6 +234,13 @@ public final class AppState: ObservableObject {
         await load()
     }
 
+    private func setInjectedDaemonUnavailableError(reason: String?) {
+        let urlDisplay = injectedDaemonURL ?? "(unknown)"
+        let trimmedReason = reason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let reasonText = trimmedReason.isEmpty ? "" : " Reason: \(trimmedReason)."
+        error = "Injected daemon URL is unreachable: \(urlDisplay). Check NEXUS_DAEMON_URL, NEXUS_DAEMON_TOKEN, and ensure the daemon is running.\(reasonText)"
+    }
+
     /// Kills the running daemon, starts a fresh one from the resolved binary,
     /// and reconnects. Called by the daemon management UI.
     public func restartDaemon() async {
@@ -200,10 +248,12 @@ public final class AppState: ObservableObject {
         isRestarting = true
         isBusy = true
         defer { isRestarting = false; isBusy = false }
-        await Task.detached { DaemonLauncher.killRunning() }.value
+        Self.logger.info("restartDaemon() requested")
+        let targetDaemonPort = DaemonLauncher.preferredPort()
+        await Task.detached { DaemonLauncher.killRunning(port: targetDaemonPort) }.value
         try? await Task.sleep(for: .seconds(0.5))
         do {
-            try await DaemonLauncher.ensureRunning()
+            try await DaemonLauncher.ensureRunning(port: targetDaemonPort)
             let newURL = WebSocketDaemonClient.discoverURL()
             client = WebSocketDaemonClient(daemonURL: newURL)
             if let wsClient = client as? WebSocketDaemonClient,
@@ -217,12 +267,14 @@ public final class AppState: ObservableObject {
             connectionState = .disconnected
             daemonStatus = .offline
             self.error = error.localizedDescription
+            Self.logger.error("restartDaemon() failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     /// Kills the running daemon without restarting.
     public func stopDaemon() async {
-        await Task.detached { DaemonLauncher.killRunning() }.value
+        let targetDaemonPort = DaemonLauncher.preferredPort()
+        await Task.detached { DaemonLauncher.killRunning(port: targetDaemonPort) }.value
         connectionState = .disconnected
         repos = []
         daemonStatus = .offline
@@ -234,6 +286,7 @@ public final class AppState: ObservableObject {
         async let relationsFetch = client.listRelations()
         var workspaces  = try await wsFetch
         let relations   = try await relationsFetch
+        let projects    = try await client.listProjects()
 
         var activeTunnelWorkspaceID = ""
         await withTaskGroup(of: (String, [ForwardedPort], String).self) { group in
@@ -256,7 +309,11 @@ public final class AppState: ObservableObject {
             workspaces[i].hasActiveTunnels = (workspaces[i].id == activeTunnelWorkspaceID)
         }
 
-        applyLoadedWorkspaces(workspaces, relations: relations)
+        applyLoadedWorkspaces(workspaces, relations: relations, projects: projects)
+    }
+
+    private func isMethodNotFound(_ error: Error) -> Bool {
+        error.localizedDescription.lowercased().contains("method not found")
     }
 
     // MARK: - Workspace actions
@@ -268,6 +325,70 @@ public final class AppState: ObservableObject {
             selectedWorkspaceID = ws.id
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+
+    public func createSandbox(request: SandboxCreateRequest) async {
+        do {
+            let ws = try await client.createSandbox(request: request)
+            await load()
+            selectedWorkspaceID = ws.id
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    public func ensureProjectRootSandbox(projectID: String) async -> Workspace? {
+        if let existing = projectRootSandbox(projectID: projectID) {
+            return existing
+        }
+        if projects.isEmpty || !projects.contains(where: { $0.id == projectID }) {
+            await load()
+            if let existing = projectRootSandbox(projectID: projectID) {
+                return existing
+            }
+        }
+        guard let project = projects.first(where: { $0.id == projectID }) else {
+            self.error = "Project not found: \(projectID)"
+            return nil
+        }
+        do {
+            _ = try await client.createSandbox(request: SandboxCreateRequest(
+                projectId: projectID,
+                targetBranch: "main",
+                sourceBranch: nil,
+                sourceWorkspaceId: nil,
+                fresh: true,
+                workspaceName: project.name
+            ))
+            await load()
+            if let root = projectRootSandbox(projectID: projectID) {
+                return root
+            }
+            self.error = "Project root sandbox creation did not appear in list"
+            return nil
+        } catch {
+            await load()
+            if let root = projectRootSandbox(projectID: projectID) {
+                return root
+            }
+            self.error = error.localizedDescription
+            return nil
+        }
+    }
+
+    public func createProject(repo: String) async -> Project? {
+        do {
+            let project = try await client.createProject(repo: repo)
+            await load()
+            guard let rootSandbox = await ensureProjectRootSandbox(projectID: project.id) else {
+                return nil
+            }
+            selectedWorkspaceID = rootSandbox.id
+            return project
+        } catch {
+            self.error = error.localizedDescription
+            return nil
         }
     }
 
@@ -331,6 +452,11 @@ public final class AppState: ObservableObject {
 
     public var allWorkspaces: [Workspace] {
         repos.flatMap(\.workspaces)
+    }
+
+    private func projectRootSandbox(projectID: String) -> Workspace? {
+        guard let repo = repos.first(where: { $0.id == projectID }) else { return nil }
+        return repo.workspaces.first(where: { ($0.parentWorkspaceId ?? "").isEmpty })
     }
 }
 

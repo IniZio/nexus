@@ -79,7 +79,7 @@ private struct WorkspaceActionMenu: View {
             Button(role: .destructive) {
                 Task { await appState.remove(workspace) }
             } label: {
-                Label("Remove Workspace…", systemImage: "trash")
+                Label("Remove Sandbox…", systemImage: "trash")
             }
         } label: {
             Image(systemName: primaryIcon)

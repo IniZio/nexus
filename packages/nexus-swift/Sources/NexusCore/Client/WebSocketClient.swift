@@ -32,18 +32,31 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         if let env = ProcessInfo.processInfo.environment["NEXUS_DAEMON_URL"], !env.isEmpty,
            let url = URL(string: env) { return url }
 
+        let preferred = DaemonLauncher.preferredPort()
+        if isDaemonHealthy(port: preferred) {
+            return loopbackWebSocketURL(port: preferred)
+        }
+
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let configHome = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"]
                       ?? "\(home)/.config"
         let runDir = "\(configHome)/nexus/run"
 
-        if let activePort = resolveActiveDaemonPort(runDir: runDir) {
-            return URL(string: "ws://localhost:\(activePort)")!
+        if let activePort = resolveActiveDaemonPort(runDir: runDir, preferredPort: preferred) {
+            return loopbackWebSocketURL(port: activePort)
         }
-        return URL(string: "ws://localhost:63987")!
+        return loopbackWebSocketURL(port: preferred)
     }
 
-    private static func resolveActiveDaemonPort(runDir: String) -> Int? {
+    private static func loopbackWebSocketURL(port: Int) -> URL {
+        var components = URLComponents()
+        components.scheme = "ws"
+        components.host = "localhost"
+        components.port = max(1, min(port, 65535))
+        return components.url ?? URL(fileURLWithPath: "/")
+    }
+
+    private static func resolveActiveDaemonPort(runDir: String, preferredPort: Int) -> Int? {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(atPath: runDir) else { return nil }
 
@@ -58,6 +71,10 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
                 return (port, mtime)
             }
             .sorted { $0.mtime > $1.mtime }
+
+        if pidFiles.contains(where: { $0.port == preferredPort }) {
+            return preferredPort
+        }
 
         for candidate in pidFiles {
             if isDaemonHealthy(port: candidate.port) {
@@ -260,6 +277,22 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
                                        from: JSONSerialization.data(withJSONObject: arr))
     }
 
+    public func listProjects() async throws -> [Project] {
+        let result = try await call("project.list")
+        guard let dict = result as? [String: Any], let arr = dict["projects"] else { return [] }
+        return try JSONDecoder().decode([Project].self,
+                                        from: JSONSerialization.data(withJSONObject: arr))
+    }
+
+    public func createProject(repo: String) async throws -> Project {
+        let result = try await call("project.create", params: ["repo": repo])
+        guard let dict = result as? [String: Any], let raw = dict["project"] else {
+            throw RPCError(message: "unexpected response from project.create")
+        }
+        return try JSONDecoder().decode(Project.self,
+                                        from: JSONSerialization.data(withJSONObject: raw))
+    }
+
     public func listRelations() async throws -> [RelationsGroup] {
         let result = try await call("workspace.relations.list")
         guard let dict = result as? [String: Any], let arr = dict["relations"] else { return [] }
@@ -268,11 +301,34 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
     }
 
     public func createWorkspace(spec: WorkspaceCreateSpec) async throws -> Workspace {
-        let specData = try JSONEncoder().encode(spec)
-        guard let specObj = try JSONSerialization.jsonObject(with: specData) as? [String: Any] else {
-            throw RPCError(message: "failed to encode spec")
+        let project = try await createProject(repo: spec.repo)
+        let request = SandboxCreateRequest(
+            projectId: project.id,
+            targetBranch: spec.ref,
+            fresh: false,
+            workspaceName: spec.workspaceName,
+            agentProfile: spec.agentProfile,
+            backend: spec.backend
+        )
+        return try await createSandbox(request: request)
+    }
+
+    public func createSandbox(request: SandboxCreateRequest) async throws -> Workspace {
+        var params: [String: Any] = [
+            "projectId": request.projectId,
+            "targetBranch": request.targetBranch,
+            "fresh": request.fresh,
+            "workspaceName": request.workspaceName,
+            "agentProfile": request.agentProfile,
+            "backend": request.backend
+        ]
+        if let sourceBranch = request.sourceBranch, !sourceBranch.isEmpty {
+            params["sourceBranch"] = sourceBranch
         }
-        let result = try await call("workspace.create", params: ["spec": specObj])
+        if let sourceWorkspaceID = request.sourceWorkspaceId, !sourceWorkspaceID.isEmpty {
+            params["sourceWorkspaceId"] = sourceWorkspaceID
+        }
+        let result = try await call("workspace.create", params: params)
         guard let dict = result as? [String: Any], let ws = dict["workspace"] else {
             throw RPCError(message: "unexpected response from workspace.create")
         }
@@ -369,6 +425,31 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         return WorkspaceInfo(workspaceId: wsId, workspacePath: wsPath, ports: ports)
     }
 
+    public func getDaemonSandboxResourceSettings() async throws -> SandboxResourceSettings {
+        let result = try await call("daemon.settings.get", params: [:])
+        guard let dict = result as? [String: Any],
+              let resources = dict["sandboxResources"] as? [String: Any] else {
+            throw RPCError(message: "unexpected daemon.settings.get response")
+        }
+        return parseSandboxResourceSettings(resources)
+    }
+
+    public func updateDaemonSandboxResourceSettings(_ settings: SandboxResourceSettings) async throws -> SandboxResourceSettings {
+        let result = try await call("daemon.settings.update", params: [
+            "sandboxResources": [
+                "defaultMemoryMiB": settings.defaultMemoryMiB,
+                "defaultVCPUs": settings.defaultVCPUs,
+                "maxMemoryMiB": settings.maxMemoryMiB,
+                "maxVCPUs": settings.maxVCPUs,
+            ],
+        ])
+        guard let dict = result as? [String: Any],
+              let resources = dict["sandboxResources"] as? [String: Any] else {
+            throw RPCError(message: "unexpected daemon.settings.update response")
+        }
+        return parseSandboxResourceSettings(resources)
+    }
+
     private func parseForwardedPorts(from raw: Any?) -> [ForwardedPort] {
         guard let items = raw as? [[String: Any]] else { return [] }
         return items.compactMap { item in
@@ -400,6 +481,19 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         TunnelStatus(
             active: dict["active"] as? Bool ?? false,
             activeWorkspaceId: dict["activeWorkspaceId"] as? String ?? ""
+        )
+    }
+
+    private func parseSandboxResourceSettings(_ dict: [String: Any]) -> SandboxResourceSettings {
+        let defaultMemoryMiB = (dict["defaultMemoryMiB"] as? NSNumber)?.intValue ?? 1024
+        let defaultVCPUs = (dict["defaultVCPUs"] as? NSNumber)?.intValue ?? 1
+        let maxMemoryMiB = (dict["maxMemoryMiB"] as? NSNumber)?.intValue ?? 4096
+        let maxVCPUs = (dict["maxVCPUs"] as? NSNumber)?.intValue ?? 4
+        return SandboxResourceSettings(
+            defaultMemoryMiB: defaultMemoryMiB,
+            defaultVCPUs: defaultVCPUs,
+            maxMemoryMiB: maxMemoryMiB,
+            maxVCPUs: maxVCPUs
         )
     }
     // MARK: - PTY
