@@ -57,7 +57,7 @@ func (f *fakeManager) GrowWorkspace(_ context.Context, _ string, _ int64) error 
 	return f.err
 }
 
-func (f *fakeManager) CheckpointForkImage(workspaceID string, childWorkspaceID string) (string, error) {
+func (f *fakeManager) CheckpointForkSnapshot(ctx context.Context, workspaceID string, childWorkspaceID string) (string, error) {
 	f.checkpointCalled = true
 	f.checkpointParent = workspaceID
 	f.checkpointChild = childWorkspaceID
@@ -346,21 +346,35 @@ func TestFirecrackerDriver_ForkCopiesParentProjectRoot(t *testing.T) {
 	}
 }
 
-func TestFirecrackerDriver_CheckpointForkNotImplemented(t *testing.T) {
-	// TODO: This test will be updated when CheckpointFork is implemented using
-	// btrfs subvolume snapshot (see fork.go). Blocked by: vmlinux-5.10.239 lacks
-	// CONFIG_BTRFS_FS support (see experiments/2026-04-16-btrfs-fork-poc/).
+func TestFirecrackerDriver_CheckpointForkDelegatesToManager(t *testing.T) {
 	fakeMgr := &fakeManager{
 		checkpointID: "snap-fork-42",
 	}
 	d := NewDriver(nil, WithManager(fakeMgr))
 
+	snapID, err := d.CheckpointFork(context.Background(), "ws-1", "ws-2")
+	if err != nil {
+		t.Fatalf("CheckpointFork failed: %v", err)
+	}
+	if snapID != "snap-fork-42" {
+		t.Fatalf("expected snapshot ID %q, got %q", "snap-fork-42", snapID)
+	}
+	if !fakeMgr.checkpointCalled {
+		t.Fatal("expected manager.CheckpointForkImage to be called")
+	}
+	if fakeMgr.checkpointParent != "ws-1" {
+		t.Fatalf("expected parent ws-1, got %q", fakeMgr.checkpointParent)
+	}
+	if fakeMgr.checkpointChild != "ws-2" {
+		t.Fatalf("expected child ws-2, got %q", fakeMgr.checkpointChild)
+	}
+}
+
+func TestFirecrackerDriver_CheckpointForkRequiresManager(t *testing.T) {
+	d := NewDriver(nil)
 	_, err := d.CheckpointFork(context.Background(), "ws-1", "ws-2")
 	if err == nil {
-		t.Fatal("expected CheckpointFork to return an error (not yet implemented)")
-	}
-	if !strings.Contains(err.Error(), "not implemented") {
-		t.Fatalf("expected 'not implemented' error, got: %v", err)
+		t.Fatal("expected error when manager is nil")
 	}
 }
 

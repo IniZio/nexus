@@ -30,6 +30,7 @@ type ManagerInterface interface {
 	Stop(ctx context.Context, workspaceID string) error
 	Get(workspaceID string) (*Instance, error)
 	GrowWorkspace(ctx context.Context, workspaceID string, newSizeBytes int64) error
+	CheckpointForkSnapshot(ctx context.Context, workspaceID, childWorkspaceID string) (string, error)
 }
 
 type Driver struct {
@@ -38,10 +39,6 @@ type Driver struct {
 	projectRoots map[string]string
 	agents       map[string]*AgentClient
 	mu           sync.RWMutex
-}
-
-type forkSnapshotManager interface {
-	CheckpointForkImage(workspaceID string, childWorkspaceID string) (string, error)
 }
 
 func (d *Driver) AgentConn(ctx context.Context, workspaceID string) (net.Conn, error) {
@@ -282,16 +279,18 @@ func (d *Driver) Fork(ctx context.Context, workspaceID, childWorkspaceID string)
 	return nil
 }
 
-// CheckpointFork creates a copy-on-write fork of the parent workspace.
-//
-// TODO: Implement using btrfs subvolume snapshot (btrfsForkScript) once a
-// Firecracker kernel with CONFIG_BTRFS_FS=y is available.
-// Blocked by: vmlinux-5.10.239 lacks btrfs support (see experiments/2026-04-16-btrfs-fork-poc/).
-// To unblock: build a custom Firecracker kernel with CONFIG_BTRFS_FS=y, or
-// source a pre-built kernel from the Firecracker releases with btrfs support.
+// CheckpointFork creates a copy-on-write fork of the parent workspace by
+// snapshotting the workspace ext4 image. The returned snapshot ID is passed
+// as lineage_snapshot_id when spawning the child workspace VM.
 func (d *Driver) CheckpointFork(ctx context.Context, workspaceID, childWorkspaceID string) (string, error) {
-	_ = ctx
-	return "", fmt.Errorf("firecracker fork not implemented: requires btrfs-enabled kernel (see TODO in fork.go)")
+	if d.manager == nil {
+		return "", errors.New("manager is required for firecracker CheckpointFork")
+	}
+	snapshotID, err := d.manager.CheckpointForkSnapshot(ctx, workspaceID, childWorkspaceID)
+	if err != nil {
+		return "", fmt.Errorf("firecracker CheckpointFork: %w", err)
+	}
+	return snapshotID, nil
 }
 
 func (d *Driver) Destroy(ctx context.Context, workspaceID string) error {
