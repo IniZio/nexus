@@ -1,6 +1,9 @@
 package firecracker
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -45,4 +48,44 @@ func (m *Manager) cowCopy(src, dst string) error {
 		return nil
 	}
 	return copyFile(src, dst)
+}
+
+// snapshotCacheKey returns a deterministic key for a (kernelPath, rootfsPath) pair.
+func snapshotCacheKey(kernelPath, rootfsPath string) string {
+	h := sha256.Sum256([]byte(kernelPath + "|" + rootfsPath))
+	return hex.EncodeToString(h[:])[:16]
+}
+
+// ensureBaseSnapshot returns the cached base snapshot for the given kernel+rootfs pair.
+// If no snapshot exists yet in the cache, it creates a placeholder entry. The actual
+// VM state files are written when a VM cold-boots (see Spawn). Callers must check
+// whether snap.vmstatePath exists on disk before using snapshot restore.
+func (m *Manager) ensureBaseSnapshot(ctx context.Context, kernelPath, rootfsPath string) (*baseSnapshot, error) {
+	key := snapshotCacheKey(kernelPath, rootfsPath)
+
+	m.snapshotMu.RLock()
+	snap, ok := m.snapshotCache[key]
+	m.snapshotMu.RUnlock()
+	if ok {
+		return snap, nil
+	}
+
+	snapshotsDir := filepath.Join(m.config.WorkDirRoot, ".snapshots")
+	baseDir := filepath.Join(snapshotsDir, "base-"+key)
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create base snapshot dir: %w", err)
+	}
+
+	snap = &baseSnapshot{
+		vmstatePath: filepath.Join(baseDir, "vm.snap"),
+		memFilePath: filepath.Join(baseDir, "mem.file"),
+		kernelPath:  kernelPath,
+		rootfsPath:  rootfsPath,
+	}
+
+	m.snapshotMu.Lock()
+	m.snapshotCache[key] = snap
+	m.snapshotMu.Unlock()
+
+	return snap, nil
 }
