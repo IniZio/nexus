@@ -194,6 +194,7 @@ jobs:
 
       - name: Build nexus CLI and daemon
         run: |
+          git config --global --add safe.directory "$(pwd)"
           cd packages/nexus
           go build -o /usr/local/bin/nexus ./cmd/nexus
           go build -o /usr/local/bin/nexus-daemon ./cmd/daemon
