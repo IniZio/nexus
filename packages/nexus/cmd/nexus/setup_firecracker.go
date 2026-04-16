@@ -10,8 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	nexusruntime "github.com/inizio/nexus/packages/nexus/pkg/runtime"
 )
 
 // privilegeMode describes how privileged steps will be executed.
@@ -555,8 +553,6 @@ func runSetupScript(mode privilegeMode, script string) error {
 // if any step fails, or if manual steps are needed (non-interactive without
 // passwordless sudo).
 func runSetupFirecracker(w io.Writer) error {
-	_ = nexusruntime.MaybeAutoinstallPreflightHostTools()
-
 	forceRefresh := strings.TrimSpace(os.Getenv("NEXUS_SETUP_FIRECRACKER_FORCE")) == "1"
 
 	fmt.Fprintln(w, "==> Verifying setup...")
