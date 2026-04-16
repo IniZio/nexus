@@ -4,8 +4,10 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -84,16 +86,16 @@ type WorkspaceHandle struct {
 // CreateWorkspace creates a workspace using the nexus CLI and returns a handle.
 func CreateWorkspace(t *testing.T, cfg DriverConfig, projectRoot string) WorkspaceHandle {
 	t.Helper()
-	cmd := exec.Command("nexus", "workspace", "create",
-		"--backend", cfg.Backend,
-		"--mode", cfg.Mode,
-		"--project-root", projectRoot,
-	)
+	args := []string{"sandbox", "create", "--backend", cfg.Backend, "--repo", projectRoot}
+	cmd := exec.Command("nexus", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("create workspace: %v\n%s", err, out)
 	}
 	id := parseWorkspaceID(string(out))
+	if id == "" {
+		t.Fatalf("could not parse workspace ID from output: %q", string(out))
+	}
 	t.Cleanup(func() { DestroyWorkspace(t, id) })
 	return WorkspaceHandle{ID: id, Backend: cfg.Backend, Mode: cfg.Mode}
 }
@@ -103,7 +105,7 @@ func ExecInWorkspace(t *testing.T, ws WorkspaceHandle, shellCmd string) string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "nexus", "exec", ws.ID, "--", "sh", "-c", shellCmd)
+	cmd := exec.CommandContext(ctx, "nexus", "sandbox", "exec", ws.ID, "--", "sh", "-c", shellCmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("exec in workspace %s: %v\n%s", ws.ID, err, out)
@@ -114,30 +116,34 @@ func ExecInWorkspace(t *testing.T, ws WorkspaceHandle, shellCmd string) string {
 // DestroyWorkspace destroys a workspace by ID, ignoring errors (used in cleanup).
 func DestroyWorkspace(t *testing.T, id string) {
 	t.Helper()
-	exec.Command("nexus", "workspace", "destroy", id).Run() //nolint:errcheck
+	exec.Command("nexus", "sandbox", "remove", "-y", id).Run() //nolint:errcheck
 }
 
 // ForkWorkspace forks a workspace and returns the child handle.
 func ForkWorkspace(t *testing.T, parent WorkspaceHandle) WorkspaceHandle {
 	t.Helper()
-	cmd := exec.Command("nexus", "workspace", "fork", parent.ID)
+	childName := fmt.Sprintf("fork-%d", time.Now().UnixNano())
+	cmd := exec.Command("nexus", "sandbox", "fork", parent.ID, childName)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("fork workspace %s: %v\n%s", parent.ID, err, out)
 	}
 	childID := parseWorkspaceID(string(out))
+	if childID == "" {
+		t.Fatalf("could not parse child workspace ID from fork output: %q", string(out))
+	}
 	t.Cleanup(func() { DestroyWorkspace(t, childID) })
 	return WorkspaceHandle{ID: childID, Backend: parent.Backend, Mode: parent.Mode}
 }
 
+// idPattern matches "(id: <uuid-or-id>)" in CLI output lines.
+var idPattern = regexp.MustCompile(`\(id:\s*([^\s)]+)\)`)
+
 func parseWorkspaceID(output string) string {
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	for _, line := range lines {
-		if id := strings.TrimPrefix(line, "workspace-id: "); id != line {
-			return strings.TrimSpace(id)
-		}
+	if m := idPattern.FindStringSubmatch(output); m != nil {
+		return strings.TrimSpace(m[1])
 	}
-	return strings.TrimSpace(lines[len(lines)-1])
+	return ""
 }
 
 func isRunningOnMacOS() bool {
