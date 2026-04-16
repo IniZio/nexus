@@ -592,42 +592,6 @@ func (m *Manager) Get(workspaceID string) (*Instance, error) {
 	return inst, nil
 }
 
-// CheckpointForkImage snapshots the parent workspace image and returns a
-// backend-specific snapshot identifier.
-func (m *Manager) CheckpointForkImage(workspaceID string, childWorkspaceID string) (string, error) {
-	m.mu.RLock()
-	parent, exists := m.instances[workspaceID]
-	m.mu.RUnlock()
-	if !exists {
-		return "", fmt.Errorf("workspace not found: %s", workspaceID)
-	}
-	if strings.TrimSpace(parent.WorkspaceImage) == "" {
-		return "", fmt.Errorf("workspace image missing for %s", workspaceID)
-	}
-
-	snapshotsDir := filepath.Join(m.config.WorkDirRoot, ".snapshots")
-	if err := os.MkdirAll(snapshotsDir, 0o755); err != nil {
-		return "", fmt.Errorf("create snapshots dir: %w", err)
-	}
-
-	snapshotID := fmt.Sprintf(
-		"fc-%s-%s-%d",
-		strings.TrimSpace(workspaceID),
-		strings.TrimSpace(childWorkspaceID),
-		time.Now().UTC().UnixNano(),
-	)
-	dst := filepath.Join(snapshotsDir, snapshotID+".ext4")
-	if err := copyFile(parent.WorkspaceImage, dst); err != nil {
-		return "", fmt.Errorf("checkpoint workspace image: %w", err)
-	}
-
-	return snapshotID, nil
-}
-
-func (m *Manager) snapshotImagePath(snapshotID string) string {
-	return filepath.Join(m.config.WorkDirRoot, ".snapshots", strings.TrimSpace(snapshotID)+".ext4")
-}
-
 func createWorkspaceImage(projectRoot, imagePath string) error {
 	if strings.TrimSpace(projectRoot) == "" {
 		return fmt.Errorf("project root is required for workspace image")

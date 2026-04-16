@@ -309,3 +309,10 @@ func (m *Manager) restoreFromSnapshot(ctx context.Context, spec SpawnSpec, snap 
 	log.Printf("[firecracker] restored workspace %s from snapshot", spec.WorkspaceID)
 	return inst, nil
 }
+
+// snapshotImagePath returns the filesystem path for an image-based snapshot.
+// The fork-based snapshot path (fork-parent-child/workspace.ext4) is used by
+// CheckpointForkSnapshot; this covers the legacy flat .ext4 format.
+func (m *Manager) snapshotImagePath(snapshotID string) string {
+	return filepath.Join(m.config.WorkDirRoot, ".snapshots", strings.TrimSpace(snapshotID)+".ext4")
+}
