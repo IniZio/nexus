@@ -191,10 +191,11 @@ jobs:
         with:
           go-version-file: packages/nexus/go.mod
 
-      - name: Build nexus CLI
+      - name: Build nexus CLI and daemon
         run: |
           cd packages/nexus
           go build -o /usr/local/bin/nexus ./cmd/nexus
+          go build -o /usr/local/bin/nexus-daemon ./cmd/daemon
 
       - name: Run sandbox integration tests
         run: |
