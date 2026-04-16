@@ -181,15 +181,16 @@ jobs:
   integration-sandbox:
     name: Integration Tests (process/sandbox)
     runs-on: ubuntu-latest
+    container:
+      image: golang:1.24
+      options: >-
+        --cap-add SYS_ADMIN
+        --security-opt seccomp=unconfined
+        --security-opt apparmor:unconfined
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: packages/nexus/go.mod
 
       - name: Build nexus CLI and daemon
         run: |
@@ -198,7 +199,7 @@ jobs:
           go build -o /usr/local/bin/nexus-daemon ./cmd/daemon
 
       - name: Install bubblewrap (process sandbox dependency)
-        run: sudo apt-get install -y bubblewrap
+        run: apt-get update -q && apt-get install -y bubblewrap
 
       - name: Run sandbox integration tests
         run: |
