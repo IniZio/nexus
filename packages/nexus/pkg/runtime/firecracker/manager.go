@@ -98,6 +98,8 @@ type Manager struct {
 	mu               sync.RWMutex
 	nextCID          uint32
 	apiClientFactory APIClientFactory
+	snapshotCache    map[string]*baseSnapshot
+	snapshotMu       sync.RWMutex
 	reflinkAvailable bool
 }
 
@@ -108,11 +110,19 @@ func NewManager(cfg ManagerConfig) *Manager {
 
 // newManager creates a new Firecracker manager with the given configuration.
 func newManager(cfg ManagerConfig) *Manager {
+	reflink := false
+	if strings.TrimSpace(cfg.WorkDirRoot) != "" {
+		if err := os.MkdirAll(cfg.WorkDirRoot, 0o755); err == nil {
+			reflink = probeReflink(cfg.WorkDirRoot)
+		}
+	}
 	return &Manager{
 		config:           cfg,
 		instances:        make(map[string]*Instance),
 		nextCID:          initialCID,
 		apiClientFactory: defaultAPIClientFactory,
+		snapshotCache:    make(map[string]*baseSnapshot),
+		reflinkAvailable: reflink,
 	}
 }
 
