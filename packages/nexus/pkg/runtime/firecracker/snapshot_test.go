@@ -2,6 +2,7 @@ package firecracker
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,6 +71,116 @@ func TestSnapshotCacheKey_Deterministic(t *testing.T) {
 	key3 := snapshotCacheKey("/k2", "/r")
 	if key1 == key3 {
 		t.Fatal("different inputs should produce different keys")
+	}
+}
+
+func TestCheckpointForkSnapshot_PausesAndResumes(t *testing.T) {
+	cfg := testManagerConfig(t)
+	mgr := newManager(cfg)
+	mgr.reflinkAvailable = false
+
+	// Create a "running" parent instance
+	parentDir := filepath.Join(cfg.WorkDirRoot, "ws-parent")
+	if err := os.MkdirAll(parentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	parentImg := filepath.Join(parentDir, "workspace.ext4")
+	if err := os.WriteFile(parentImg, []byte("parent-workspace"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	parentInst := &Instance{
+		WorkspaceID:    "ws-parent",
+		WorkDir:        parentDir,
+		WorkspaceImage: parentImg,
+		APISocket:      filepath.Join(parentDir, "firecracker.sock"),
+	}
+	mgr.mu.Lock()
+	mgr.instances["ws-parent"] = parentInst
+	mgr.mu.Unlock()
+
+	mock := &mockAPIClient{}
+	mgr.apiClientFactory = func(sockPath string) apiClientInterface {
+		return mock
+	}
+
+	ctx := context.Background()
+	snapID, err := mgr.CheckpointForkSnapshot(ctx, "ws-parent", "ws-child")
+	if err != nil {
+		t.Fatalf("CheckpointForkSnapshot failed: %v", err)
+	}
+
+	if snapID == "" {
+		t.Fatal("expected non-empty snapshot ID")
+	}
+
+	// Verify pause → snapshot → resume sequence
+	foundPause := false
+	foundSnapshot := false
+	foundResume := false
+	for _, call := range mock.putCalls {
+		switch call {
+		case "/vm:Paused":
+			foundPause = true
+		case "/snapshot/create":
+			foundSnapshot = true
+		case "/vm:Resumed":
+			foundResume = true
+		}
+	}
+	if !foundPause {
+		t.Fatal("expected PauseVM to be called")
+	}
+	if !foundSnapshot {
+		t.Fatal("expected CreateSnapshot to be called")
+	}
+	if !foundResume {
+		t.Fatal("expected ResumeVM to be called after snapshot")
+	}
+}
+
+func TestCheckpointForkSnapshot_ResumesOnSnapshotError(t *testing.T) {
+	cfg := testManagerConfig(t)
+	mgr := newManager(cfg)
+	mgr.reflinkAvailable = false
+
+	parentDir := filepath.Join(cfg.WorkDirRoot, "ws-parent")
+	if err := os.MkdirAll(parentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	parentImg := filepath.Join(parentDir, "workspace.ext4")
+	if err := os.WriteFile(parentImg, []byte("parent-workspace"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	parentInst := &Instance{
+		WorkspaceID:    "ws-parent",
+		WorkDir:        parentDir,
+		WorkspaceImage: parentImg,
+		APISocket:      filepath.Join(parentDir, "firecracker.sock"),
+	}
+	mgr.mu.Lock()
+	mgr.instances["ws-parent"] = parentInst
+	mgr.mu.Unlock()
+
+	mock := &mockAPIClient{snapshotErr: fmt.Errorf("snapshot failed")}
+	mgr.apiClientFactory = func(sockPath string) apiClientInterface {
+		return mock
+	}
+
+	ctx := context.Background()
+	_, err := mgr.CheckpointForkSnapshot(ctx, "ws-parent", "ws-child")
+	if err == nil {
+		t.Fatal("expected error when snapshot fails")
+	}
+
+	// Resume must still be called even though snapshot failed
+	foundResume := false
+	for _, call := range mock.putCalls {
+		if call == "/vm:Resumed" {
+			foundResume = true
+		}
+	}
+	if !foundResume {
+		t.Fatal("expected ResumeVM to be called even after snapshot error")
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 type baseSnapshot struct {
@@ -88,4 +89,57 @@ func (m *Manager) ensureBaseSnapshot(ctx context.Context, kernelPath, rootfsPath
 	m.snapshotMu.Unlock()
 
 	return snap, nil
+}
+
+// CheckpointForkSnapshot pauses the parent VM, creates a VM state snapshot plus
+// a CoW copy of the workspace image for the child, then resumes the parent.
+// Returns a snapshotID that can be used by restoreFromSnapshot to spawn the child.
+// ResumeVM is always called, even if snapshot creation fails.
+func (m *Manager) CheckpointForkSnapshot(ctx context.Context, workspaceID, childWorkspaceID string) (string, error) {
+	m.mu.RLock()
+	parent, exists := m.instances[workspaceID]
+	m.mu.RUnlock()
+	if !exists {
+		return "", fmt.Errorf("workspace not found: %s", workspaceID)
+	}
+	if strings.TrimSpace(parent.WorkspaceImage) == "" {
+		return "", fmt.Errorf("workspace image missing for %s", workspaceID)
+	}
+
+	client := m.apiClientFactory(parent.APISocket)
+
+	if err := client.PauseVM(ctx); err != nil {
+		return "", fmt.Errorf("pause parent VM: %w", err)
+	}
+
+	forkDirName := "fork-" + workspaceID + "-" + childWorkspaceID
+	forkDir := filepath.Join(m.config.WorkDirRoot, ".snapshots", forkDirName)
+	if err := os.MkdirAll(forkDir, 0o755); err != nil {
+		_ = client.ResumeVM(ctx)
+		return "", fmt.Errorf("create fork dir: %w", err)
+	}
+
+	vmstatePath := filepath.Join(forkDir, "vm.snap")
+	memFilePath := filepath.Join(forkDir, "mem.file")
+
+	snapErr := client.CreateSnapshot(ctx, vmstatePath, memFilePath)
+
+	resumeErr := client.ResumeVM(ctx)
+	if snapErr != nil {
+		if resumeErr != nil {
+			log.Printf("[firecracker] WARNING: resume failed after snapshot error for %s: %v", workspaceID, resumeErr)
+		}
+		return "", fmt.Errorf("create fork snapshot: %w", snapErr)
+	}
+	if resumeErr != nil {
+		return "", fmt.Errorf("resume parent VM after fork snapshot: %w", resumeErr)
+	}
+
+	childImg := filepath.Join(forkDir, "workspace.ext4")
+	if err := m.cowCopy(parent.WorkspaceImage, childImg); err != nil {
+		return "", fmt.Errorf("cowCopy workspace image for fork: %w", err)
+	}
+
+	snapshotID := forkDirName
+	return snapshotID, nil
 }
