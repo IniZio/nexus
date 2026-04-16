@@ -74,7 +74,11 @@ Inside this namespace, `getcwd()` returns `/workspace/...`. This is correct Linu
 ### Mounting constraints
 
 **UID mismatch on `lima`**  
-The guest `lima` user (UID 1000) does not match the macOS host user UID (typically 501). Standard bind mounts do not remap UIDs. The workaround — `chmod a+r` on `.git` metadata and objects after mount — is an inherent constraint of bind mounts without `idmapped` mount support in Lima's VZ backend. It is not a fixable implementation mistake. The `gitBindMountPermissionFixScript` in `guest_driver.go` is correct and must be retained.
+The guest `lima` user (UID 1000) does not match the macOS host user UID (typically 501). Standard bind mounts do not remap UIDs. The current workaround — `chmod a+r` on `.git` metadata only — is **not a complete fix**: it is scoped to `.git` subdirectories (`objects`, `refs`, `info`, `lfs`). Regular workspace files with `644`/`755` permissions happen to work as "other"-readable, but any file with `600` permissions is silently unreadable by the guest user. This is a latent bug.
+
+The correct fix is to provision the Lima guest user with a UID matching the host user UID, read dynamically at provisioning time (not hardcoded). Lima supports this via the `user.uid` field in `lima.yaml`. With matching UIDs, the bind mount has no permission mismatch and `gitBindMountPermissionFixScript` can be removed entirely. The provisioning code must resolve the host UID at Lima instance creation time and inject it into the Lima config.
+
+Risk: UID 501 is unlikely to collide with system UIDs in a standard Ubuntu image. Modern Linux tooling handles non-1000 UIDs correctly. This approach is feasible and preferred over the current chmod workaround.
 
 **btrfs data volume requirement**  
 Pool mode (both `firecracker` and `lima`) requires the workspace data volume inside the VM to be formatted as btrfs. This is a provisioning requirement. The rootfs image format is unaffected. See Section 4 (Fork) for the PoC requirement.
@@ -214,7 +218,7 @@ Every driver × every user action has a test. Tests assert behavioral contracts.
 - In pool mode: guest btrfs subvolume at `/workspace/<id>` is deleted and unmounted
 
 **git**
-- `git status` exits 0 inside workspace (validates UID/permission workaround is effective for `lima` drivers; validates bind mount setup for all drivers)
+- `git status` exits 0 inside workspace (validates UID matching is correct for `lima` drivers; validates bind mount setup for all drivers)
 
 ### CI environment requirements
 
