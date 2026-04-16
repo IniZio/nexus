@@ -128,8 +128,12 @@ func ExecInWorkspace(t *testing.T, ws WorkspaceHandle, shellCmd string) string {
 	}
 	clean := stripANSI(strings.ReplaceAll(string(out), "\r\n", "\n"))
 	// Extract lines between sentinels.
-	startIdx := strings.Index(clean, begin)
+	// We may see the sentinel twice: once echoed as part of the typed command,
+	// and once printed by the echo command itself. Find the last occurrence of
+	// begin (i.e. the actual output line) by scanning from the end.
 	endIdx := strings.LastIndex(clean, end)
+	// Find the last begin that comes before endIdx.
+	startIdx := strings.LastIndex(clean[:endIdx], begin)
 	if startIdx == -1 || endIdx == -1 || endIdx <= startIdx {
 		return strings.TrimSpace(clean)
 	}
