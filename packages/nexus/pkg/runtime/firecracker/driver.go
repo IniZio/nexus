@@ -282,15 +282,16 @@ func (d *Driver) Fork(ctx context.Context, workspaceID, childWorkspaceID string)
 	return nil
 }
 
+// CheckpointFork creates a copy-on-write fork of the parent workspace.
+//
+// TODO: Implement using btrfs subvolume snapshot (btrfsForkScript) once a
+// Firecracker kernel with CONFIG_BTRFS_FS=y is available.
+// Blocked by: vmlinux-5.10.239 lacks btrfs support (see experiments/2026-04-16-btrfs-fork-poc/).
+// To unblock: build a custom Firecracker kernel with CONFIG_BTRFS_FS=y, or
+// source a pre-built kernel from the Firecracker releases with btrfs support.
 func (d *Driver) CheckpointFork(ctx context.Context, workspaceID, childWorkspaceID string) (string, error) {
 	_ = ctx
-	if d.manager == nil {
-		return "", errors.New("manager is required for firecracker driver")
-	}
-	if snapshotter, ok := d.manager.(forkSnapshotManager); ok {
-		return snapshotter.CheckpointForkImage(workspaceID, childWorkspaceID)
-	}
-	return fmt.Sprintf("fc-fork-%s-%s-%d", workspaceID, childWorkspaceID, time.Now().UTC().UnixNano()), nil
+	return "", fmt.Errorf("firecracker fork not implemented: requires btrfs-enabled kernel (see TODO in fork.go)")
 }
 
 func (d *Driver) Destroy(ctx context.Context, workspaceID string) error {

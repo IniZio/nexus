@@ -346,24 +346,21 @@ func TestFirecrackerDriver_ForkCopiesParentProjectRoot(t *testing.T) {
 	}
 }
 
-func TestFirecrackerDriver_CheckpointForkUsesManagerSnapshotter(t *testing.T) {
+func TestFirecrackerDriver_CheckpointForkNotImplemented(t *testing.T) {
+	// TODO: This test will be updated when CheckpointFork is implemented using
+	// btrfs subvolume snapshot (see fork.go). Blocked by: vmlinux-5.10.239 lacks
+	// CONFIG_BTRFS_FS support (see experiments/2026-04-16-btrfs-fork-poc/).
 	fakeMgr := &fakeManager{
 		checkpointID: "snap-fork-42",
 	}
 	d := NewDriver(nil, WithManager(fakeMgr))
 
-	snapshotID, err := d.CheckpointFork(context.Background(), "ws-1", "ws-2")
-	if err != nil {
-		t.Fatalf("checkpoint fork failed: %v", err)
+	_, err := d.CheckpointFork(context.Background(), "ws-1", "ws-2")
+	if err == nil {
+		t.Fatal("expected CheckpointFork to return an error (not yet implemented)")
 	}
-	if snapshotID != "snap-fork-42" {
-		t.Fatalf("expected snapshot id %q, got %q", "snap-fork-42", snapshotID)
-	}
-	if !fakeMgr.checkpointCalled {
-		t.Fatal("expected manager checkpoint to be called")
-	}
-	if fakeMgr.checkpointParent != "ws-1" || fakeMgr.checkpointChild != "ws-2" {
-		t.Fatalf("unexpected checkpoint args: parent=%q child=%q", fakeMgr.checkpointParent, fakeMgr.checkpointChild)
+	if !strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("expected 'not implemented' error, got: %v", err)
 	}
 }
 
