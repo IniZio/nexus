@@ -69,6 +69,9 @@ type APIClientFactory func(sockPath string) apiClientInterface
 type apiClientInterface interface {
 	put(ctx context.Context, path string, body any) error
 	patch(ctx context.Context, path string, body any) error
+	PauseVM(ctx context.Context) error
+	ResumeVM(ctx context.Context) error
+	CreateSnapshot(ctx context.Context, vmstatePath, memFilePath string) error
 }
 
 // networkCommandRunner runs a network-related command.

@@ -35,6 +35,22 @@ func (c *apiClient) patch(ctx context.Context, path string, body any) error {
 	return c.request(ctx, http.MethodPatch, path, body)
 }
 
+func (c *apiClient) PauseVM(ctx context.Context) error {
+	return c.put(ctx, "/vm", map[string]any{"state": "Paused"})
+}
+
+func (c *apiClient) ResumeVM(ctx context.Context) error {
+	return c.put(ctx, "/vm", map[string]any{"state": "Resumed"})
+}
+
+func (c *apiClient) CreateSnapshot(ctx context.Context, vmstatePath, memFilePath string) error {
+	return c.put(ctx, "/snapshot/create", map[string]any{
+		"snapshot_path": vmstatePath,
+		"mem_file_path": memFilePath,
+		"snapshot_type": "Full",
+	})
+}
+
 func (c *apiClient) get(ctx context.Context, path string, result any) error {
 	return c.requestWithResult(ctx, http.MethodGet, path, nil, result)
 }

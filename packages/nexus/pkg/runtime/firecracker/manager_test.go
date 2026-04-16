@@ -14,8 +14,12 @@ import (
 )
 
 type mockAPIClient struct {
-	putErr   error
-	putCalls []string // recorded "<method> <path>" entries
+	putErr      error
+	putCalls    []string // recorded "<method> <path>" entries
+	pauseErr    error
+	resumeErr   error
+	snapshotErr error
+	snapCalls   []string
 }
 
 func (m *mockAPIClient) put(ctx context.Context, path string, body any) error {
@@ -26,6 +30,22 @@ func (m *mockAPIClient) put(ctx context.Context, path string, body any) error {
 func (m *mockAPIClient) patch(ctx context.Context, path string, body any) error {
 	m.putCalls = append(m.putCalls, "PATCH:"+path)
 	return m.putErr
+}
+
+func (m *mockAPIClient) PauseVM(ctx context.Context) error {
+	m.putCalls = append(m.putCalls, "/vm:Paused")
+	return m.pauseErr
+}
+
+func (m *mockAPIClient) ResumeVM(ctx context.Context) error {
+	m.putCalls = append(m.putCalls, "/vm:Resumed")
+	return m.resumeErr
+}
+
+func (m *mockAPIClient) CreateSnapshot(ctx context.Context, vmstatePath, memFilePath string) error {
+	m.snapCalls = append(m.snapCalls, vmstatePath+"|"+memFilePath)
+	m.putCalls = append(m.putCalls, "/snapshot/create")
+	return m.snapshotErr
 }
 
 // testNetworkCommands records calls made to network commands and suppresses
@@ -268,6 +288,10 @@ func (c *captureBootArgsClient) put(ctx context.Context, path string, body any) 
 }
 
 func (c *captureBootArgsClient) patch(_ context.Context, _ string, _ any) error { return nil }
+
+func (c *captureBootArgsClient) PauseVM(_ context.Context) error                     { return nil }
+func (c *captureBootArgsClient) ResumeVM(_ context.Context) error                    { return nil }
+func (c *captureBootArgsClient) CreateSnapshot(_ context.Context, _, _ string) error { return nil }
 
 func TestManagerSpawnTAPCleanupOnAPIFailure(t *testing.T) {
 	nc := installTestNetworkRunner(t)
