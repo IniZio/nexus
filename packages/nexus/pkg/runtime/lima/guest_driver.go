@@ -52,6 +52,8 @@ type GuestDriver struct {
 	bootstrapInstance  func(ctx context.Context, instance, configBundle string) error
 	applyConfigBundle  func(ctx context.Context, instance, configBundle string) error
 	prepareWorkspaceFS func(ctx context.Context, instance, targetPath, localPath string) error
+	// forkSSH runs a shell script on the Lima guest; defaults to shared.DirectSSHScript.
+	forkSSH func(ctx context.Context, instance, script string) ([]byte, error)
 }
 
 var _ runtime.ForkSnapshotter = (*GuestDriver)(nil)
@@ -73,6 +75,9 @@ func NewGuestDriver() *GuestDriver {
 		bootstrapInstance:  bootstrapLimaGuestTooling,
 		applyConfigBundle:  applyLimaGuestConfigBundle,
 		prepareWorkspaceFS: prepareWorkspacePath,
+		forkSSH: func(ctx context.Context, instance, script string) ([]byte, error) {
+			return shared.DirectSSHScript(ctx, instance, script)
+		},
 	}
 }
 
@@ -153,31 +158,14 @@ func (d *GuestDriver) Create(ctx context.Context, req runtime.CreateRequest) err
 }
 
 func (d *GuestDriver) CheckpointFork(ctx context.Context, workspaceID, childWorkspaceID string) (string, error) {
-	_ = ctx
-	sourceRoot := strings.TrimSpace(d.workspaceProjectRoot(workspaceID))
-	if sourceRoot == "" {
-		return "", fmt.Errorf("workspace %s not found", workspaceID)
+	instance := d.workspaceInstance(workspaceID)
+	parentPath := guestWorkdirForID(workspaceID)
+	childPath := guestWorkdirForID(childWorkspaceID)
+	script := btrfsForkScript(parentPath, childPath)
+	if out, err := d.forkSSH(ctx, instance, script); err != nil {
+		return "", fmt.Errorf("btrfs fork %s -> %s: %s: %w", workspaceID, childWorkspaceID, strings.TrimSpace(string(out)), err)
 	}
-	if info, err := os.Stat(sourceRoot); err != nil || !info.IsDir() {
-		return "", fmt.Errorf("source workspace path unavailable: %s", sourceRoot)
-	}
-
-	snapshotID := fmt.Sprintf("lima-fc-%s-%s-%d",
-		strings.TrimSpace(workspaceID),
-		strings.TrimSpace(childWorkspaceID),
-		time.Now().UTC().UnixNano(),
-	)
-	snapshotPath := d.snapshotPath(snapshotID)
-	if err := os.RemoveAll(snapshotPath); err != nil {
-		return "", fmt.Errorf("reset snapshot path: %w", err)
-	}
-	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
-		return "", fmt.Errorf("create snapshot path: %w", err)
-	}
-	if err := copyWorkspaceTree(sourceRoot, snapshotPath); err != nil {
-		return "", fmt.Errorf("copy workspace snapshot: %w", err)
-	}
-	return snapshotID, nil
+	return childWorkspaceID, nil
 }
 
 func (d *GuestDriver) prepareWorkspaceOnCandidates(ctx context.Context, workspaceID, instance, targetPath, localPath string) error {

@@ -242,53 +242,40 @@ func TestCreateFailsWhenBootstrapFails(t *testing.T) {
 	}
 }
 
-func TestCheckpointForkCreatesSnapshotFromWorkspaceRoot(t *testing.T) {
+func TestCheckpointForkUsesBtrfsSubvolumeSnapshot(t *testing.T) {
 	d := NewGuestDriver()
-	d.snapshotRoot = t.TempDir()
 
-	sourceRoot := t.TempDir()
-	if err := os.WriteFile(filepath.Join(sourceRoot, "README.md"), []byte("hello"), 0o644); err != nil {
-		t.Fatalf("write source file: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(sourceRoot, ".git"), []byte("gitdir: test"), 0o644); err != nil {
-		t.Fatalf("write git metadata: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(sourceRoot, workspaceMarkerFile), []byte(`{"workspaceId":"ws-parent"}`), 0o644); err != nil {
-		t.Fatalf("write marker file: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(sourceRoot, ".worktrees", "feat-1"), 0o755); err != nil {
-		t.Fatalf("create nested worktrees dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(sourceRoot, ".worktrees", "feat-1", "big.txt"), []byte("nested"), 0o644); err != nil {
-		t.Fatalf("write nested worktree file: %v", err)
+	var capturedInstance, capturedScript string
+	d.forkSSH = func(_ context.Context, instance, script string) ([]byte, error) {
+		capturedInstance = instance
+		capturedScript = script
+		return nil, nil
 	}
 
 	d.workspaces["ws-parent"] = &workspaceState{
-		projectRoot: sourceRoot,
+		projectRoot: "/host/path/unused",
 		state:       "running",
 		instance:    "nexus",
 	}
 
 	snapshotID, err := d.CheckpointFork(context.Background(), "ws-parent", "ws-child")
 	if err != nil {
-		t.Fatalf("checkpoint failed: %v", err)
+		t.Fatalf("CheckpointFork failed: %v", err)
 	}
-	if strings.TrimSpace(snapshotID) == "" {
-		t.Fatal("expected non-empty snapshot id")
+	if snapshotID != "ws-child" {
+		t.Errorf("expected snapshotID to be childWorkspaceID %q, got %q", "ws-child", snapshotID)
 	}
-
-	snapshotPath := d.snapshotPath(snapshotID)
-	if _, err := os.Stat(filepath.Join(snapshotPath, "README.md")); err != nil {
-		t.Fatalf("expected snapshot file to exist: %v", err)
+	if capturedInstance != "nexus" {
+		t.Errorf("expected instance %q, got %q", "nexus", capturedInstance)
 	}
-	if _, err := os.Stat(filepath.Join(snapshotPath, ".git")); !os.IsNotExist(err) {
-		t.Fatalf("expected .git to be excluded from snapshot, err=%v", err)
+	if !strings.Contains(capturedScript, "btrfs subvolume snapshot") {
+		t.Errorf("expected btrfs subvolume snapshot in script, got: %q", capturedScript)
 	}
-	if _, err := os.Stat(filepath.Join(snapshotPath, workspaceMarkerFile)); !os.IsNotExist(err) {
-		t.Fatalf("expected marker file to be excluded from snapshot, err=%v", err)
+	if !strings.Contains(capturedScript, guestWorkdirForID("ws-parent")) {
+		t.Errorf("script should reference parent guest path, got: %q", capturedScript)
 	}
-	if _, err := os.Stat(filepath.Join(snapshotPath, ".worktrees")); !os.IsNotExist(err) {
-		t.Fatalf("expected .worktrees to be excluded from snapshot, err=%v", err)
+	if !strings.Contains(capturedScript, guestWorkdirForID("ws-child")) {
+		t.Errorf("script should reference child guest path, got: %q", capturedScript)
 	}
 }
 
