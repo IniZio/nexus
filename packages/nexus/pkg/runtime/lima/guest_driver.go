@@ -521,17 +521,14 @@ func (d *GuestDriver) GuestWorkdir(workspaceID string) string {
 }
 
 // workspaceBindMountScript mounts the host worktree at the guest path used for PTY shells.
-// After bind, it relaxes .git metadata permissions so the interactive guest user can read
-// loose objects and refs. Host paths are often owned by a different numeric UID than the
-// Lima login used for SSH/PTY; without this, git works on the Mac but fails in the guest
-// with "unable to open loose object: Permission denied".
+// The Lima guest user UID is provisioned to match the macOS host user UID so that
+// bind-mounted host directories are accessible without permission workarounds.
 func workspaceBindMountScript(targetPath, localPath string) string {
 	mnt := shared.ShellQuote(targetPath)
 	src := shared.ShellQuote(localPath)
 	// Avoid remount churn when the guest mount point is already bound to the same host path.
 	// Repeated lazy unmount/remount cycles can invalidate cwd for long-running
 	// tools (e.g. opencode), which then fail with "cwd was deleted".
-	// Do not exit early when the mount is already correct: we still need the git chmod pass.
 	return fmt.Sprintf(`set -e
 MNTPT=%s
 SRC=%s
@@ -547,18 +544,7 @@ if [ -n "$CUR" ]; then
 else
   sudo -n mount --bind "$SRC" "$MNTPT"
 fi
-%s`, mnt, src, gitBindMountPermissionFixScript())
-}
-
-// gitBindMountPermissionFixScript assumes MNTPT is set (guest bind mount root).
-func gitBindMountPermissionFixScript() string {
-	return `if [ -d "$MNTPT/.git" ]; then
-  sudo -n find "$MNTPT/.git" -maxdepth 1 -type f -exec chmod a+r {} \; 2>/dev/null || true
-  if [ -d "$MNTPT/.git/objects" ]; then sudo -n chmod -R a+rX "$MNTPT/.git/objects" 2>/dev/null || true; fi
-  if [ -d "$MNTPT/.git/refs" ]; then sudo -n chmod -R a+rX "$MNTPT/.git/refs" 2>/dev/null || true; fi
-  if [ -d "$MNTPT/.git/info" ]; then sudo -n chmod -R a+rX "$MNTPT/.git/info" 2>/dev/null || true; fi
-  if [ -d "$MNTPT/.git/lfs" ]; then sudo -n chmod -R a+rX "$MNTPT/.git/lfs" 2>/dev/null || true; fi
-fi`
+`, mnt, src)
 }
 
 func prepareWorkspacePath(ctx context.Context, instance, targetPath, localPath string) error {

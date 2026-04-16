@@ -204,3 +204,23 @@ func (e *notFoundError) Error() string {
 func (e *notFoundError) Unwrap() error {
 	return nil
 }
+
+func TestPatchLimaTemplateUID(t *testing.T) {
+	dir := t.TempDir()
+	templatePath := filepath.Join(dir, "lima.yaml")
+	if err := os.WriteFile(templatePath, []byte("vmType: vz\n"), 0644); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+
+	if err := patchLimaTemplateUID(templatePath, 501); err != nil {
+		t.Fatalf("patchLimaTemplateUID: %v", err)
+	}
+
+	content, err := os.ReadFile(templatePath)
+	if err != nil {
+		t.Fatalf("read template: %v", err)
+	}
+	if !strings.Contains(string(content), "uid: 501") {
+		t.Fatalf("expected uid: 501 in template, got:\n%s", content)
+	}
+}

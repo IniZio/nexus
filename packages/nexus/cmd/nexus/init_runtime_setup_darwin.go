@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+
+	lima "github.com/inizio/nexus/packages/nexus/pkg/runtime/lima"
 )
 
 //go:embed templates/lima/firecracker-arm64.yaml
@@ -64,6 +66,10 @@ func runInitRuntimeBootstrapDarwin(projectRoot, runtimeName string) error {
 		return initRuntimeBootstrapDarwinWrapError(projectRoot, err)
 	}
 	defer cleanupTemplate()
+
+	if err := patchLimaTemplateUID(templatePath, lima.HostUID()); err != nil {
+		return initRuntimeBootstrapDarwinWrapError(projectRoot, err)
+	}
 
 	if err := ensurePersistentLimaInstance("nexus", templatePath); err == nil {
 		_ = writeNexusInitEnv(projectRoot, map[string]string{
@@ -134,6 +140,18 @@ func writeEmbeddedLimaTemplate() (string, func(), error) {
 	default:
 		return "", func() {}, fmt.Errorf("unsupported darwin arch for lima template: %s", goruntime.GOARCH)
 	}
+}
+
+// patchLimaTemplateUID appends a user.uid section to the Lima YAML template
+// so the guest user's UID matches the macOS host user's UID.
+func patchLimaTemplateUID(templatePath string, uid int) error {
+	content, err := os.ReadFile(templatePath)
+	if err != nil {
+		return fmt.Errorf("read lima template: %w", err)
+	}
+	patch := fmt.Sprintf("\nuser:\n  uid: %d\n", uid)
+	content = append(content, []byte(patch)...)
+	return os.WriteFile(templatePath, content, 0644)
 }
 
 func writeNexusInitEnv(projectRoot string, kvPairs map[string]string) error {

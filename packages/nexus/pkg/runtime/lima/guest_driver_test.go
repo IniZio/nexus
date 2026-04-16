@@ -31,14 +31,18 @@ func TestGuestWorkdir_ScopedPerWorkspaceID(t *testing.T) {
 
 func TestWorkspaceBindMountScript_includesGitPermissionRepair(t *testing.T) {
 	s := workspaceBindMountScript("/workspace/ws-1", "/Users/me/proj")
-	if !strings.Contains(s, ".git/objects") || !strings.Contains(s, "chmod") {
-		t.Fatalf("expected git permission normalization in mount script:\n%s", s)
-	}
-	if strings.Contains(s, "exit 0") {
-		t.Fatal("mount script should not exit before git chmod when bind is already correct")
-	}
 	if !strings.Contains(s, "CUR_CANON") || !strings.Contains(s, "!=") {
 		t.Fatal("expected remount-only-when-source-differs logic")
+	}
+	if strings.Contains(s, "exit 0") {
+		t.Fatal("mount script should not exit before bind is complete")
+	}
+}
+
+func TestWorkspaceBindMountScriptNoChmod(t *testing.T) {
+	script := workspaceBindMountScript("/workspace/test-id", "/host/project")
+	if strings.Contains(script, "chmod") {
+		t.Error("bind mount script should not contain chmod — UID matching makes it unnecessary")
 	}
 }
 
