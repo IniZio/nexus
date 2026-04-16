@@ -86,7 +86,7 @@ type WorkspaceHandle struct {
 // CreateWorkspace creates a workspace using the nexus CLI and returns a handle.
 func CreateWorkspace(t *testing.T, cfg DriverConfig, projectRoot string) WorkspaceHandle {
 	t.Helper()
-	args := []string{"sandbox", "create", "--backend", cfg.Backend, "--repo", projectRoot}
+	args := []string{"sandbox", "create", "--fresh", "--backend", cfg.Backend, "--repo", projectRoot}
 	cmd := exec.Command("nexus", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
