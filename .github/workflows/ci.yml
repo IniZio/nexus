@@ -68,7 +68,7 @@ jobs:
   ci:
     name: Core CI (linux)
     runs-on: ubuntu-latest
-    if: false # temporarily disabled while fixing integration tests
+
 
     steps:
       - name: Checkout code
