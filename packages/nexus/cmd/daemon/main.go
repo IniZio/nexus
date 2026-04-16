@@ -21,6 +21,7 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/auth"
 	"github.com/inizio/nexus/packages/nexus/pkg/daemonclient"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
+	"github.com/inizio/nexus/packages/nexus/pkg/runtime/drivers/shared"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/lima"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/sandbox"
@@ -164,6 +165,7 @@ func runServer(port int, workspaceDir string, token string) error {
 
 	drivers := map[string]runtime.Driver{
 		"firecracker": firecrackerRuntimeDriver,
+		"lima":        firecrackerRuntimeDriver, // on macOS lima IS the firecracker backend; on linux this is the same native driver
 		"process":     sandbox.NewDriver(),
 	}
 
@@ -200,6 +202,25 @@ func runServer(port int, workspaceDir string, token string) error {
 		<-sigChan
 		srv.Shutdown()
 	}()
+
+	// On macOS, the firecracker backend runs inside Lima. Start a background
+	// health monitor that periodically checks SSH reachability and recovers
+	// zombie instances (status=Running but SSH dead).
+	if firecrackerProbeGOOS == "darwin" {
+		go func() {
+			const limaInstance = "nexus"
+			const checkInterval = 30 * time.Second
+			ticker := time.NewTicker(checkInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				if err := shared.EnsureLimaInstanceRunning(ctx, limaInstance, shared.DefaultLimactlOutput, shared.DefaultLimactlCombinedOutput); err != nil {
+					log.Printf("[lima-health] recovery attempt failed for %s: %v", limaInstance, err)
+				}
+				cancel()
+			}
+		}()
+	}
 
 	log.Printf("Workspace daemon started on port %d", port)
 	return srv.Start()

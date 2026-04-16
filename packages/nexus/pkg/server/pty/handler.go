@@ -262,7 +262,7 @@ func HandleOpen(deps *Deps, conn Conn, params json.RawMessage, ws *workspace.Wor
 	}
 
 	log.Printf("[pty.open] workspace=%s name=%s backend=%s localWorktree=%s root=%s", wsRecord.ID, wsRecord.WorkspaceName, wsRecord.Backend, wsRecord.LocalWorktreePath, wsRecord.RootPath)
-	if wsRecord.Backend == "firecracker" {
+	if isGuestBackend(wsRecord.Backend) {
 		return handleFirecrackerPTYOpen(deps, conn, p, wsRecord, relayEnv)
 	}
 
@@ -337,6 +337,16 @@ func localCommandForBackend(wsRecord *workspacemgr.Workspace, shell, workDir str
 	return exec.Command(shell), nil
 }
 
+// isGuestBackend reports whether the backend routes through a Lima/Firecracker
+// guest VM rather than running as a local process on the daemon host.
+func isGuestBackend(backend string) bool {
+	switch strings.TrimSpace(backend) {
+	case "firecracker", "lima":
+		return true
+	}
+	return false
+}
+
 func handleFirecrackerPTYOpen(deps *Deps, conn Conn, p OpenParams, wsRecord *workspacemgr.Workspace, relayEnv map[string]string) (interface{}, *rpckit.RPCError) {
 	if deps.RuntimeFactory == nil {
 		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: "runtime factory unavailable"}
@@ -347,7 +357,7 @@ func handleFirecrackerPTYOpen(deps *Deps, conn Conn, p OpenParams, wsRecord *wor
 	if backend == "" {
 		backend = "firecracker"
 	}
-	if requestedBackend == "firecracker" {
+	if requestedBackend == "firecracker" || requestedBackend == "lima" {
 		if driverAny, ok := deps.RuntimeFactory.DriverForBackend(requestedBackend); ok {
 			reported := strings.TrimSpace(driverAny.Backend())
 			log.Printf("[pty.open] %s driver type=%T reported-backend=%q", requestedBackend, driverAny, reported)

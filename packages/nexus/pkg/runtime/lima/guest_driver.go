@@ -165,7 +165,12 @@ func (d *GuestDriver) CheckpointFork(ctx context.Context, workspaceID, childWork
 	if out, err := d.forkSSH(ctx, instance, script); err != nil {
 		return "", fmt.Errorf("btrfs fork %s -> %s: %s: %w", workspaceID, childWorkspaceID, strings.TrimSpace(string(out)), err)
 	}
-	return childWorkspaceID, nil
+	// For virtiofs-backed workspaces the fork data lives in the guest at
+	// /workspace/<child> and the host worktree is bind-mounted at start time
+	// via prepareWorkspaceFS. No host-side lineage snapshot is written, so
+	// return "" to prevent workspace.start from trying to restore a snapshot
+	// that does not exist.
+	return "", nil
 }
 
 func (d *GuestDriver) prepareWorkspaceOnCandidates(ctx context.Context, workspaceID, instance, targetPath, localPath string) error {
