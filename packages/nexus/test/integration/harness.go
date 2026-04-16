@@ -97,6 +97,13 @@ func CreateWorkspace(t *testing.T, cfg DriverConfig, projectRoot string) Workspa
 		t.Fatalf("could not parse workspace ID from output: %q", string(out))
 	}
 	t.Cleanup(func() { DestroyWorkspace(t, id) })
+
+	// Workspace is created in StateCreated; must be started before exec.
+	startOut, startErr := exec.Command("nexus", "sandbox", "start", id).CombinedOutput()
+	if startErr != nil {
+		t.Fatalf("start workspace %s: %v\n%s", id, startErr, startOut)
+	}
+
 	return WorkspaceHandle{ID: id, Backend: cfg.Backend, Mode: cfg.Mode}
 }
 
