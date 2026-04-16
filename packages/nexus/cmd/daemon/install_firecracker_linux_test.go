@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -99,5 +100,23 @@ func TestMaybeInstallFirecracker_ErrorWhenCannotWrite(t *testing.T) {
 	err := maybeInstallFirecracker()
 	if err == nil {
 		t.Fatal("expected error when write fails, got nil")
+	}
+}
+
+func TestRunServer_FailsIfFirecrackerInstallFails(t *testing.T) {
+	origInstallPath := firecrackerInstallPath
+	firecrackerInstallPath = "/nonexistent-dir-for-test/firecracker"
+	t.Cleanup(func() { firecrackerInstallPath = origInstallPath })
+
+	origEmbedded := embeddedFirecracker
+	embeddedFirecracker = []byte("fake-firecracker-binary")
+	t.Cleanup(func() { embeddedFirecracker = origEmbedded })
+
+	err := runServer(0, t.TempDir(), "test-token")
+	if err == nil {
+		t.Fatal("expected error when firecracker install fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "install firecracker") {
+		t.Fatalf("expected 'install firecracker' in error, got: %v", err)
 	}
 }

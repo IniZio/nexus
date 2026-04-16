@@ -115,6 +115,10 @@ func runServer(port int, workspaceDir string, token string) error {
 	// preflight auto-install removed: host tool setup is now explicit during nexus init
 	applyDaemonFirecrackerAssetDefaults()
 
+	if err := maybeInstallFirecracker(); err != nil {
+		return fmt.Errorf("firecracker install: %w", err)
+	}
+
 	srv, err := server.NewServer(port, workspaceDir, token)
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
