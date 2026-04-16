@@ -19,6 +19,9 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/store"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspace/create"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
+	goruntime "runtime"
+
+	"github.com/inizio/nexus/packages/nexus/pkg/runtime/selection"
 )
 
 type WorkspaceCreateParams struct {
@@ -543,12 +546,16 @@ func HandleWorkspaceRestore(ctx context.Context, req WorkspaceRestoreParams, mgr
 				}
 			}
 		} else {
-			requiredBackends, requiredCaps := create.DefaultPlatformHints()
-			driver, err := factory.SelectDriver(requiredBackends, requiredCaps)
+			backend, _, err := selection.SelectBackend(goruntime.GOOS, nil)
 			if err != nil {
 				return &WorkspaceRestoreResult{}, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("backend selection failed: %v", err)}
 			}
+			driver, exists := factory.DriverForBackend(backend)
+			if !exists {
+				return &WorkspaceRestoreResult{}, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("backend selection failed: driver not registered for backend %q", backend)}
+			}
 			selectedDriver = driver
+			requiredBackends = []string{backend}
 		}
 	}
 
@@ -1225,7 +1232,7 @@ func runtimeLabelForWorkspace(ws *workspacemgr.Workspace) string {
 		wantDedicated := strings.EqualFold(strings.TrimSpace(cfg.Isolation.VM.Mode), "dedicated")
 		mode := vmModeForRepo(repo)
 		fmt.Fprintf(&b, " vm.mode=%s", mode)
-		if wantDedicated && mode == "pool" && runtime.DarwinLimaRequiresPoolMode() {
+		if wantDedicated && mode == "pool" && !selection.DarwinHasNestedVirt() {
 			fmt.Fprintf(&b, " (pool: nested-virt-off)")
 		}
 	case "process":
@@ -1239,7 +1246,7 @@ func runtimeLabelForWorkspace(ws *workspacemgr.Workspace) string {
 }
 
 func vmModeForRepo(repo string) string {
-	if runtime.DarwinLimaRequiresPoolMode() {
+	if !selection.DarwinHasNestedVirt() {
 		return "pool"
 	}
 	repo = strings.TrimSpace(repo)

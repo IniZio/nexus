@@ -2,7 +2,6 @@ package selection
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,13 +9,8 @@ import (
 	goruntime "runtime"
 	"strings"
 
-	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
-	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
+	"github.com/inizio/nexus/packages/nexus/pkg/config"
 )
-
-var firecrackerPreflightRunner = func(repo string, opts runtime.PreflightOptions) runtime.FirecrackerPreflightResult {
-	return runtime.RunFirecrackerPreflight(repo, opts)
-}
 
 var (
 	runtimeSetupGOOS     = goruntime.GOOS
@@ -70,32 +64,6 @@ var runtimeSetupRunner = func(ctx context.Context, repo, backend string) error {
 		return fmt.Errorf("nexus init failed: %w: %s", err, msg)
 	}
 	return nil
-}
-
-func SetPreflightSequenceForTest(sequence []runtime.FirecrackerPreflightResult) {
-	seq := append([]runtime.FirecrackerPreflightResult(nil), sequence...)
-	idx := 0
-	firecrackerPreflightRunner = func(_ string, _ runtime.PreflightOptions) runtime.FirecrackerPreflightResult {
-		if len(seq) == 0 {
-			return runtime.FirecrackerPreflightResult{Status: runtime.PreflightPass}
-		}
-		if idx >= len(seq) {
-			return seq[len(seq)-1]
-		}
-		result := seq[idx]
-		idx++
-		return result
-	}
-}
-
-func ResetPreflightRunnerForTest() {
-	firecrackerPreflightRunner = func(repo string, opts runtime.PreflightOptions) runtime.FirecrackerPreflightResult {
-		return runtime.RunFirecrackerPreflight(repo, opts)
-	}
-}
-
-func SetFirecrackerPreflightRunnerForTest(runner func(string, runtime.PreflightOptions) runtime.FirecrackerPreflightResult) {
-	firecrackerPreflightRunner = runner
 }
 
 func SetRuntimeSetupRunnerForTest(runner func(ctx context.Context, repo, backend string) error) {
@@ -170,64 +138,62 @@ func runtimeSetupManualPrivilegeError(repo string) error {
 	return fmt.Errorf("firecracker runtime setup requires passwordless sudo or root access in non-interactive sessions\n\nmanual next steps:\n  sudo -E nexus init %s", repo)
 }
 
-func runtimePreflightFailure(result runtime.FirecrackerPreflightResult, setupErr error) *rpckit.RPCError {
-	if setupErr != nil && strings.TrimSpace(result.SetupOutcome) == "" {
-		result.SetupOutcome = fmt.Sprintf("failed: %v", setupErr)
+// SelectBackend returns the driver name and mode for the given platform and config.
+// Selection is deterministic from platform + config — no runtime probing.
+func SelectBackend(platform string, cfg *config.WorkspaceConfig) (backend string, mode string, err error) {
+	level := "vm"
+	vmMode := ""
+	if cfg != nil {
+		if cfg.Isolation.Level != "" {
+			level = cfg.Isolation.Level
+		}
+		vmMode = cfg.Isolation.VM.Mode
 	}
-	payload, err := json.Marshal(result)
-	if err != nil {
-		return &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("runtime preflight failed: status=%s", result.Status)}
-	}
-	return &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("runtime preflight failed: %s", string(payload))}
-}
 
-func SelectBackend(ctx context.Context, repo string, requiredBackends []string, requiredCaps []string, factory *runtime.Factory) (string, *rpckit.RPCError) {
-	preflightOpts := runtime.PreflightOptions{UseOverrides: internalPreflightOverrideEnabled()}
-	preflight := firecrackerPreflightRunner(repo, preflightOpts)
-	var setupErr error
-	var selectedBackend string
+	switch platform {
+	case "linux":
+		if level == "process" {
+			return "process", "process", nil
+		}
+		if vmMode == "" {
+			vmMode = "dedicated" // Linux default
+		}
+		return "firecracker", vmMode, nil
 
-	switch preflight.Status {
-	case runtime.PreflightPass:
-		selectedBackend = "firecracker"
-	case runtime.PreflightInstallableMissing:
-		setupErr = runtimeSetupRunner(ctx, repo, "firecracker")
-		if setupErr != nil {
-			preflight.SetupAttempted = true
-			preflight.SetupOutcome = fmt.Sprintf("failed: %v", setupErr)
-			return "", runtimePreflightFailure(preflight, setupErr)
+	case "darwin":
+		if level == "process" {
+			return "process", "process", nil
 		}
-		postSetup := firecrackerPreflightRunner(repo, preflightOpts)
-		postSetup.SetupAttempted = true
-		postSetup.SetupOutcome = "succeeded"
-		if postSetup.Status != runtime.PreflightPass {
-			return "", runtimePreflightFailure(postSetup, setupErr)
+		if vmMode == "" {
+			vmMode = "pool" // macOS default
 		}
-		selectedBackend = "firecracker"
-	case runtime.PreflightUnsupportedNested:
-		if runtimeSetupGOOS == "darwin" {
-			// Host nested virt is unavailable, but Lima-backed firecracker (pool) still applies.
-			selectedBackend = "firecracker"
-		} else {
-			selectedBackend = "process"
+		// nested virt check is a hardware fact, not a preflight probe
+		if vmMode == "dedicated" && !darwinHasNestedVirt() {
+			fmt.Fprintf(os.Stderr, "warning: nested virtualization unavailable, falling back to lima/pool\n")
+			vmMode = "pool"
 		}
+		return "lima", vmMode, nil
+
 	default:
-		return "", runtimePreflightFailure(preflight, nil)
+		return "", "", fmt.Errorf("unsupported platform: %s", platform)
 	}
-
-	if driver, ok := factory.DriverForBackend(selectedBackend); ok {
-		return driver.Backend(), nil
-	}
-	driver, err := factory.SelectDriver([]string{selectedBackend}, requiredCaps)
-	if err != nil {
-		return "", &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("backend selection failed: %v (required=%v)", err, requiredBackends)}
-	}
-	return driver.Backend(), nil
 }
 
-func internalPreflightOverrideEnabled() bool {
-	value := strings.TrimSpace(strings.ToLower(os.Getenv("NEXUS_INTERNAL_ENABLE_PREFLIGHT_OVERRIDE")))
-	return value == "1" || value == "true" || value == "yes"
+// DarwinHasNestedVirt reports whether nested virtualization is available on the
+// current Darwin host by reading kern.hv_support. Returns false on non-darwin
+// or if the sysctl is absent.
+func DarwinHasNestedVirt() bool {
+	return darwinHasNestedVirt()
+}
+
+// darwinHasNestedVirt reads kern.hv_support once.
+// Returns false on non-darwin or if the sysctl is absent.
+func darwinHasNestedVirt() bool {
+	out, err := exec.Command("sysctl", "-n", "kern.hv_support").Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "1"
 }
 
 func resolveNexusBinaryPath() (string, error) {

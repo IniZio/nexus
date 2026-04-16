@@ -45,9 +45,6 @@ func TestEnsureLocalRuntimeWorkspace_SetsVMDedicatedModeForLima(t *testing.T) {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}
 	wantMode := "dedicated"
-	if runtime.DarwinLimaRequiresPoolMode() {
-		wantMode = "pool"
-	}
 	if gotReq.Options["vm.mode"] != wantMode {
 		t.Fatalf("expected vm.mode=%s, got %q", wantMode, gotReq.Options["vm.mode"])
 	}

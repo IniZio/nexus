@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
-
-	nexusruntime "github.com/inizio/nexus/packages/nexus/pkg/runtime"
 )
 
 //go:embed templates/lima/firecracker-arm64.yaml
@@ -22,10 +20,6 @@ var embeddedLimaTemplateArm64 string
 var embeddedLimaTemplateX8664 string
 
 var initRuntimeBootstrapRunner func(projectRoot, runtimeName string) error = runInitRuntimeBootstrapDarwin
-
-var darwinInitPreflightRunner = func(projectRoot string) nexusruntime.FirecrackerPreflightResult {
-	return nexusruntime.RunFirecrackerPreflight(projectRoot, nexusruntime.PreflightOptions{})
-}
 
 var (
 	initRuntimeBootstrapIsRootFn                   = func() bool { return os.Geteuid() == 0 }
@@ -55,27 +49,16 @@ func runInitRuntimeBootstrapDarwin(projectRoot, runtimeName string) error {
 		return nil
 	}
 
-	_ = nexusruntime.MaybeAutoinstallPreflightHostTools()
-
 	if _, err := limactlLookPathFn("limactl"); err != nil {
 		if _, brewErr := limactlLookPathFn("brew"); brewErr == nil {
 			_ = limactlRunFn("brew", "install", "lima")
 		}
 	}
 
-	pf := darwinInitPreflightRunner(projectRoot)
-	if pf.Status == nexusruntime.PreflightUnsupportedNested {
-		_ = writeNexusInitEnv(projectRoot, map[string]string{
-			"NEXUS_RUNTIME_BACKEND": "firecracker",
-		})
-		return nil
-	}
-
 	if _, err := limactlLookPathFn("limactl"); err != nil {
 		return initRuntimeBootstrapDarwinWrapError(projectRoot, fmt.Errorf("limactl not found; run: brew install lima"))
 	}
 
-	// Try Firecracker template (with nestedVirtualization) first
 	templatePath, cleanupTemplate, err := writeEmbeddedLimaTemplate()
 	if err != nil {
 		return initRuntimeBootstrapDarwinWrapError(projectRoot, err)
@@ -83,9 +66,8 @@ func runInitRuntimeBootstrapDarwin(projectRoot, runtimeName string) error {
 	defer cleanupTemplate()
 
 	if err := ensurePersistentLimaInstance("nexus", templatePath); err == nil {
-		// Firecracker Lima started successfully - write firecracker env
 		_ = writeNexusInitEnv(projectRoot, map[string]string{
-			"NEXUS_RUNTIME_BACKEND": "firecracker",
+			"NEXUS_RUNTIME_BACKEND": "lima",
 		})
 		return nil
 	} else {

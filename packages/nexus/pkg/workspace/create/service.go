@@ -2,9 +2,8 @@ package create
 
 import (
 	"context"
-	"os"
-	"path/filepath"
-	"strings"
+	"fmt"
+	goruntime "runtime"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
@@ -13,53 +12,24 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
-func DefaultPlatformHints() ([]string, []string) {
-	return []string{"darwin", "linux"}, nil
-}
-
 func PrepareCreate(ctx context.Context, spec workspacemgr.CreateSpec, factory *runtime.Factory) (workspacemgr.CreateSpec, *rpckit.RPCError, bool) {
 	if factory == nil {
 		return spec, nil, false
 	}
-	if processSandboxEnabledForRepo(spec.Repo) {
-		spec.Backend = "process"
-		return spec, nil, false
+
+	// Load workspace config for selection (nil cfg is OK — SelectBackend uses defaults).
+	var cfg *config.WorkspaceConfig
+	if spec.Repo != "" {
+		if c, _, err := config.LoadWorkspaceConfig(spec.Repo); err == nil {
+			cfg = &c
+		}
 	}
-	requiredBackends, requiredCaps := DefaultPlatformHints()
-	backend, selErr := selection.SelectBackend(ctx, spec.Repo, requiredBackends, requiredCaps, factory)
-	if selErr != nil {
-		return workspacemgr.CreateSpec{}, selErr, false
+
+	backend, mode, err := selection.SelectBackend(goruntime.GOOS, cfg)
+	if err != nil {
+		return workspacemgr.CreateSpec{}, &rpckit.RPCError{Code: -32603, Message: fmt.Sprintf("backend selection failed: %v", err)}, false
 	}
 	spec.Backend = backend
+	_ = mode // mode is carried separately; backend name is sufficient for spec routing
 	return spec, nil, false
-}
-
-func processSandboxEnabledForRepo(repo string) bool {
-	repoRoot := strings.TrimSpace(repo)
-	if repoRoot == "" {
-		return false
-	}
-	if !filepath.IsAbs(repoRoot) {
-		abs, err := filepath.Abs(repoRoot)
-		if err != nil {
-			return false
-		}
-		repoRoot = abs
-	}
-	info, err := os.Stat(repoRoot)
-	if err != nil || !info.IsDir() {
-		return false
-	}
-	workspaceJSONPath := filepath.Join(repoRoot, ".nexus", "workspace.json")
-	if _, err := os.Stat(workspaceJSONPath); err != nil {
-		return false
-	}
-	cfg, _, err := config.LoadWorkspaceConfig(repoRoot)
-	if err != nil {
-		return false
-	}
-	if cfg.Isolation.Level == "process" {
-		return true
-	}
-	return false
 }

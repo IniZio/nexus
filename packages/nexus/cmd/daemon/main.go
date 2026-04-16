@@ -112,7 +112,7 @@ func resolveDefaultWorkspaceDir() string {
 }
 
 func runServer(port int, workspaceDir string, token string) error {
-	_ = runtime.MaybeAutoinstallPreflightHostTools()
+	// preflight auto-install removed: host tool setup is now explicit during nexus init
 	applyDaemonFirecrackerAssetDefaults()
 
 	srv, err := server.NewServer(port, workspaceDir, token)

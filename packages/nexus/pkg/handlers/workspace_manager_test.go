@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	goruntime "runtime"
 	"strings"
 	"testing"
 
@@ -14,7 +13,6 @@ import (
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/selection"
-	"github.com/inizio/nexus/packages/nexus/pkg/workspace/create"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
@@ -1738,194 +1736,6 @@ func TestHandleWorkspaceCreate_AutoCapturesBaselineSnapshotForFirstSandbox(t *te
 	}
 }
 
-func TestHandleWorkspaceCreate_InstallableMissingRetriesSetupOnce(t *testing.T) {
-	mgr := workspacemgr.NewManager(t.TempDir())
-	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
-
-	selection.SetPreflightSequenceForTest([]runtime.FirecrackerPreflightResult{
-		{Status: runtime.PreflightInstallableMissing, Checks: []runtime.PreflightCheck{{Name: "lima", OK: false, Installable: true}}},
-		{Status: runtime.PreflightPass},
-	})
-	setupCalls := 0
-	selection.SetRuntimeSetupRunnerForTest(func(_ context.Context, _ string, _ string) error {
-		setupCalls++
-		return nil
-	})
-	t.Cleanup(func() {
-		selection.ResetRuntimeSetupRunnerForTest()
-		selection.ResetPreflightRunnerForTest()
-	})
-
-	factory := runtime.NewFactory(
-		[]runtime.Capability{{Name: "runtime.firecracker", Available: true}},
-		map[string]runtime.Driver{"firecracker": &mockDriver{backend: "firecracker"}},
-	)
-
-	params := WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}}
-	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
-	if rpcErr != nil {
-		t.Fatalf("unexpected rpc error: %+v", rpcErr)
-	}
-	if result.Workspace.Backend != "firecracker" {
-		t.Fatalf("expected firecracker backend, got %q", result.Workspace.Backend)
-	}
-	if setupCalls != 1 {
-		t.Fatalf("expected one setup attempt, got %d", setupCalls)
-	}
-}
-
-func TestHandleWorkspaceCreate_InstallableMissingSetupFailureReturnsPreflightError(t *testing.T) {
-	mgr := workspacemgr.NewManager(t.TempDir())
-	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
-
-	preflightCalls := 0
-	selection.SetFirecrackerPreflightRunnerForTest(func(_ string, _ runtime.PreflightOptions) runtime.FirecrackerPreflightResult {
-		preflightCalls++
-		return runtime.FirecrackerPreflightResult{
-			Status: runtime.PreflightInstallableMissing,
-			Checks: []runtime.PreflightCheck{{Name: "lima", OK: false, Installable: true}},
-		}
-	})
-	setupCalls := 0
-	selection.SetRuntimeSetupRunnerForTest(func(_ context.Context, _ string, _ string) error {
-		setupCalls++
-		return fmt.Errorf("bootstrap failed")
-	})
-	t.Cleanup(func() {
-		selection.ResetRuntimeSetupRunnerForTest()
-		selection.ResetPreflightRunnerForTest()
-	})
-
-	factory := runtime.NewFactory(
-		[]runtime.Capability{{Name: "runtime.firecracker", Available: true}},
-		map[string]runtime.Driver{"firecracker": &mockDriver{backend: "firecracker"}},
-	)
-
-	params := WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}}
-	_, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
-	if rpcErr == nil {
-		t.Fatal("expected rpc error")
-	}
-	if setupCalls != 1 {
-		t.Fatalf("expected one setup attempt, got %d", setupCalls)
-	}
-	if preflightCalls != 1 {
-		t.Fatalf("expected exactly one preflight call, got %d", preflightCalls)
-	}
-	if !strings.Contains(rpcErr.Message, string(runtime.PreflightInstallableMissing)) {
-		t.Fatalf("expected installable_missing status, got %q", rpcErr.Message)
-	}
-	if !strings.Contains(rpcErr.Message, "bootstrap failed") {
-		t.Fatalf("expected setup failure details, got %q", rpcErr.Message)
-	}
-}
-
-func TestHandleWorkspaceCreate_UnsupportedNestedVirtSelectsPlatformBackend(t *testing.T) {
-	mgr := workspacemgr.NewManager(t.TempDir())
-	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
-
-	selection.SetPreflightSequenceForTest([]runtime.FirecrackerPreflightResult{{Status: runtime.PreflightUnsupportedNested}})
-	setupCalls := 0
-	selection.SetRuntimeSetupRunnerForTest(func(_ context.Context, _ string, _ string) error {
-		setupCalls++
-		return nil
-	})
-	t.Cleanup(func() {
-		selection.ResetRuntimeSetupRunnerForTest()
-		selection.ResetPreflightRunnerForTest()
-	})
-
-	factory := runtime.NewFactory(
-		[]runtime.Capability{
-			{Name: "runtime.process", Available: true},
-			{Name: "runtime.firecracker", Available: true},
-		},
-		map[string]runtime.Driver{
-			"process":     &mockDriver{backend: "process"},
-			"firecracker": &mockDriver{backend: "firecracker"},
-		},
-	)
-
-	params := WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}}
-	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
-	if rpcErr != nil {
-		t.Fatalf("unexpected rpc error: %+v", rpcErr)
-	}
-	expectedBackend := "process"
-	if goruntime.GOOS == "darwin" {
-		expectedBackend = "firecracker"
-	}
-	if result.Workspace.Backend != expectedBackend {
-		t.Fatalf("expected %s backend, got %q", expectedBackend, result.Workspace.Backend)
-	}
-	if setupCalls != 0 {
-		t.Fatalf("expected zero setup attempts, got %d", setupCalls)
-	}
-}
-
-func TestHandleWorkspaceCreate_HardFailReturnsStructuredPreflightError(t *testing.T) {
-	mgr := workspacemgr.NewManager(t.TempDir())
-	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
-
-	selection.SetPreflightSequenceForTest([]runtime.FirecrackerPreflightResult{{
-		Status: runtime.PreflightHardFail,
-		Checks: []runtime.PreflightCheck{{Name: "kvm", OK: false, Message: "kvm unavailable"}},
-	}})
-	t.Cleanup(func() {
-		selection.ResetRuntimeSetupRunnerForTest()
-		selection.ResetPreflightRunnerForTest()
-	})
-
-	factory := runtime.NewFactory(
-		[]runtime.Capability{{Name: "runtime.firecracker", Available: true}},
-		map[string]runtime.Driver{"firecracker": &mockDriver{backend: "firecracker"}},
-	)
-
-	params := WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}}
-	_, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
-	if rpcErr == nil {
-		t.Fatal("expected rpc error")
-	}
-	if !strings.Contains(rpcErr.Message, "runtime preflight failed") {
-		t.Fatalf("expected preflight failure message, got %q", rpcErr.Message)
-	}
-	if !strings.Contains(rpcErr.Message, string(runtime.PreflightHardFail)) {
-		t.Fatalf("expected hard_fail status in message, got %q", rpcErr.Message)
-	}
-}
-
-func TestHandleWorkspaceCreate_UsesInternalPreflightOverrideWhenEnabled(t *testing.T) {
-	mgr := workspacemgr.NewManager(t.TempDir())
-	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
-
-	t.Setenv("NEXUS_INTERNAL_ENABLE_PREFLIGHT_OVERRIDE", "1")
-	t.Setenv("NEXUS_INTERNAL_PREFLIGHT_OVERRIDE", "unsupported_nested_virt")
-
-	factory := runtime.NewFactory(
-		[]runtime.Capability{
-			{Name: "runtime.process", Available: true},
-			{Name: "runtime.firecracker", Available: true},
-		},
-		map[string]runtime.Driver{
-			"process":     &mockDriver{backend: "process"},
-			"firecracker": &mockDriver{backend: "firecracker"},
-		},
-	)
-
-	params := WorkspaceCreateParams{Spec: workspacemgr.CreateSpec{Repo: repo, WorkspaceName: "alpha", AgentProfile: "default"}}
-	result, rpcErr := HandleWorkspaceCreate(context.Background(), params, mgr, factory)
-	if rpcErr != nil {
-		t.Fatalf("unexpected rpc error: %+v", rpcErr)
-	}
-	expectedBackend := "process"
-	if goruntime.GOOS == "darwin" {
-		expectedBackend = "firecracker"
-	}
-	if result.Workspace.Backend != expectedBackend {
-		t.Fatalf("expected %s backend from override, got %q", expectedBackend, result.Workspace.Backend)
-	}
-}
-
 func TestHandleWorkspaceCreate_IgnoresInternalPreflightOverrideWhenDisabled(t *testing.T) {
 	mgr := workspacemgr.NewManager(t.TempDir())
 	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
@@ -1963,15 +1773,5 @@ func TestRuntimeLabelForWorkspace_Smoke(t *testing.T) {
 	got := runtimeLabelForWorkspace(ws)
 	if !strings.Contains(got, "backend=process") || !strings.Contains(got, "isolation=process") || !strings.Contains(got, "processSandbox=relaxed") {
 		t.Fatalf("unexpected runtime label: %q", got)
-	}
-}
-
-func TestDefaultPlatformHints(t *testing.T) {
-	required, caps := create.DefaultPlatformHints()
-	if len(required) != 2 || required[0] != "darwin" || required[1] != "linux" {
-		t.Fatalf("expected [darwin linux], got %v", required)
-	}
-	if len(caps) != 0 {
-		t.Fatalf("expected no required capabilities, got %v", caps)
 	}
 }
