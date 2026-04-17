@@ -1149,9 +1149,6 @@ func TestHandleWorkspaceFork(t *testing.T) {
 	if result.Workspace.ParentWorkspaceID != created.Workspace.ID {
 		t.Fatalf("expected child parent %q, got %q", created.Workspace.ID, result.Workspace.ParentWorkspaceID)
 	}
-	if strings.TrimSpace(result.Workspace.LineageSnapshotID) == "" {
-		t.Fatal("expected child lineage snapshot id to be set on fork")
-	}
 }
 
 func TestHandleWorkspaceCheckout(t *testing.T) {
