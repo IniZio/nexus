@@ -984,7 +984,6 @@ func ensureLocalRuntimeWorkspace(ctx context.Context, ws *workspacemgr.Workspace
 		"host_cli_sync": "true",
 	}
 	if isVMIsolationBackend(ws.Backend) {
-		options["vm.mode"] = "dedicated"
 	}
 	if strings.TrimSpace(ws.LineageSnapshotID) != "" {
 		options["lineage_snapshot_id"] = strings.TrimSpace(ws.LineageSnapshotID)
@@ -1214,7 +1213,6 @@ func runtimeLabelForWorkspace(ws *workspacemgr.Workspace) string {
 	fmt.Fprintf(&b, "backend=%s isolation=%s", backend, level)
 	switch strings.ToLower(backend) {
 	case "firecracker":
-		fmt.Fprintf(&b, " vm.mode=dedicated")
 	case "process":
 		if cfg.InternalFeatures.ProcessSandbox {
 			fmt.Fprintf(&b, " processSandbox=relaxed")

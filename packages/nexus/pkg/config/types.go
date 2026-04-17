@@ -10,12 +10,7 @@ type WorkspaceConfig struct {
 }
 
 type WorkspaceIsolation struct {
-	Level string              `json:"level,omitempty"`
-	VM    WorkspaceVMSettings `json:"vm,omitempty"`
-}
-
-type WorkspaceVMSettings struct {
-	Mode string `json:"mode,omitempty"`
+	Level string `json:"level,omitempty"`
 }
 
 type WorkspaceInternalFeatures struct {
@@ -54,11 +49,6 @@ func (c WorkspaceConfig) ValidateBasic() error {
 	case "", "vm", "process":
 	default:
 		return fmt.Errorf("isolation.level must be one of vm or process")
-	}
-	switch c.Isolation.VM.Mode {
-	case "", "dedicated":
-	default:
-		return fmt.Errorf("isolation.vm.mode must be dedicated (pool mode was removed)")
 	}
 	return nil
 }
