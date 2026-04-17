@@ -636,6 +636,8 @@ func HandleWorkspaceFork(ctx context.Context, req WorkspaceForkParams, mgr *work
 		return nil, &rpckit.RPCError{Code: rpckit.ErrInvalidParams.Code, Message: err.Error()}
 	}
 
+	lineageSnapshotID := strings.TrimSpace(child.LineageSnapshotID)
+
 	if factory != nil {
 		parent, ok := mgr.Get(forkSource.ID)
 		if !ok {
@@ -660,7 +662,15 @@ func HandleWorkspaceFork(ctx context.Context, req WorkspaceForkParams, mgr *work
 				if setErr := mgr.SetLineageSnapshot(child.ID, snapshotID); setErr != nil {
 					return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("workspace snapshot persist failed: %v", setErr)}
 				}
+				lineageSnapshotID = strings.TrimSpace(snapshotID)
 			}
+		}
+	}
+
+	if lineageSnapshotID == "" {
+		defaultSnapshotID := fmt.Sprintf("fork-%d-%s", time.Now().UTC().UnixNano(), child.ID)
+		if setErr := mgr.SetLineageSnapshot(child.ID, defaultSnapshotID); setErr != nil {
+			return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("workspace snapshot persist failed: %v", setErr)}
 		}
 	}
 
