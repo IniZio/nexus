@@ -337,14 +337,10 @@ func localCommandForBackend(wsRecord *workspacemgr.Workspace, shell, workDir str
 	return exec.Command(shell), nil
 }
 
-// isGuestBackend reports whether the backend routes through a Lima/Firecracker
+// isGuestBackend reports whether the backend routes through a Firecracker
 // guest VM rather than running as a local process on the daemon host.
 func isGuestBackend(backend string) bool {
-	switch strings.TrimSpace(backend) {
-	case "firecracker", "lima":
-		return true
-	}
-	return false
+	return strings.TrimSpace(backend) == "firecracker"
 }
 
 func handleFirecrackerPTYOpen(deps *Deps, conn Conn, p OpenParams, wsRecord *workspacemgr.Workspace, relayEnv map[string]string) (interface{}, *rpckit.RPCError) {
@@ -357,7 +353,7 @@ func handleFirecrackerPTYOpen(deps *Deps, conn Conn, p OpenParams, wsRecord *wor
 	if backend == "" {
 		backend = "firecracker"
 	}
-	if requestedBackend == "firecracker" || requestedBackend == "lima" {
+	if requestedBackend == "firecracker" {
 		if driverAny, ok := deps.RuntimeFactory.DriverForBackend(requestedBackend); ok {
 			reported := strings.TrimSpace(driverAny.Backend())
 			log.Printf("[pty.open] %s driver type=%T reported-backend=%q", requestedBackend, driverAny, reported)

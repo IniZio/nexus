@@ -52,7 +52,6 @@ The integration harness (`packages/nexus/test/integration/harness.go`) provides:
 ```go
 var AllDrivers = []DriverConfig{
     {Backend: "firecracker", Mode: "dedicated"},   // KVM required
-    {Backend: "firecracker", Mode: "pool"},        // KVM required
     {Backend: "process", Mode: "process"},         // runs everywhere
 }
 ```

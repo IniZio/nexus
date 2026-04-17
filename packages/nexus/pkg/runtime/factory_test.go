@@ -31,21 +31,37 @@ func TestSelectDriverLinuxDoesNotFallbackToProcessWhenFirecrackerUnavailable(t *
 	}
 }
 
-func TestSelectDriverDarwinPrefersLimaWhenPreflightPasses(t *testing.T) {
+func TestSelectDriverPrefersFirecrackerOnLinux(t *testing.T) {
 	f := NewFactory([]Capability{
-		{Name: "runtime.darwin", Available: true},
-		{Name: "runtime.lima", Available: true},
+		{Name: "runtime.linux", Available: true},
+		{Name: "runtime.firecracker", Available: true},
 		{Name: "runtime.process", Available: true},
 	}, map[string]Driver{
-		"lima":    &stubDriver{backend: "lima"},
-		"process": &stubDriver{backend: "process"},
+		"firecracker": &stubDriver{backend: "firecracker"},
+		"process":     &stubDriver{backend: "process"},
 	})
 
-	d, err := f.SelectDriver([]string{"darwin"}, nil)
+	d, err := f.SelectDriver([]string{"firecracker"}, nil)
 	if err != nil {
-		t.Fatalf("select darwin driver: %v", err)
+		t.Fatalf("select firecracker driver: %v", err)
 	}
-	if d.Backend() != "lima" {
-		t.Fatalf("expected lima backend, got %q", d.Backend())
+	if d.Backend() != "firecracker" {
+		t.Fatalf("expected firecracker backend, got %q", d.Backend())
+	}
+}
+
+func TestSelectDriverRejectsUnknownBackend(t *testing.T) {
+	f := NewFactory([]Capability{
+		{Name: "runtime.linux", Available: true},
+		{Name: "runtime.firecracker", Available: true},
+		{Name: "runtime.process", Available: true},
+	}, map[string]Driver{
+		"firecracker": &stubDriver{backend: "firecracker"},
+		"process":     &stubDriver{backend: "process"},
+	})
+
+	_, err := f.SelectDriver([]string{"lima"}, nil)
+	if err == nil {
+		t.Fatal("expected unknown backend to be rejected, got nil error")
 	}
 }
