@@ -97,7 +97,7 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 	rpc.TypedRegister(r, "workspace.remove", func(ctx context.Context, req handlers.WorkspaceRemoveParams) (*handlers.WorkspaceRemoveResult, *rpckit.RPCError) {
 		result, rpcErr := handlers.HandleWorkspaceRemove(ctx, req, s.workspaceMgr, s.runtimeFactory)
 		if rpcErr == nil {
-			s.DeactivateWorkspaceTunnels(req.ID)
+			s.StopWorkspaceTunnels(req.ID)
 		}
 		return result, rpcErr
 	})
@@ -105,7 +105,7 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 		result, rpcErr := handlers.HandleWorkspaceStopWithRuntime(ctx, req, s.workspaceMgr, s.runtimeFactory)
 		if rpcErr == nil {
 			s.StopPortMonitoring(req.ID)
-			s.DeactivateWorkspaceTunnels(req.ID)
+			s.StopWorkspaceTunnels(req.ID)
 		}
 		return result, rpcErr
 	})
@@ -195,17 +195,16 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 		items, activeWorkspaceID := s.WorkspacePortStates(req.WorkspaceID)
 		return map[string]any{"items": items, "activeWorkspaceId": activeWorkspaceID}, nil
 	})
-	rpc.TypedRegister(r, "workspace.tunnels.activate", func(_ context.Context, req struct {
+	rpc.TypedRegister(r, "workspace.tunnels.start", func(_ context.Context, req struct {
 		WorkspaceID string `json:"workspaceId"`
 	}) (map[string]any, *rpckit.RPCError) {
 		if req.WorkspaceID == "" {
 			return nil, rpckit.ErrInvalidParams
 		}
-		other, err := s.ActivateWorkspaceTunnels(req.WorkspaceID)
-		if err != nil {
+		if err := s.StartWorkspaceTunnels(req.WorkspaceID); err != nil {
 			return map[string]any{
 				"active":            false,
-				"activeWorkspaceId": other,
+				"activeWorkspaceId": "",
 			}, nil
 		}
 		return map[string]any{
@@ -213,13 +212,13 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 			"activeWorkspaceId": req.WorkspaceID,
 		}, nil
 	})
-	rpc.TypedRegister(r, "workspace.tunnels.deactivate", func(_ context.Context, req struct {
+	rpc.TypedRegister(r, "workspace.tunnels.stop", func(_ context.Context, req struct {
 		WorkspaceID string `json:"workspaceId"`
 	}) (map[string]any, *rpckit.RPCError) {
 		if req.WorkspaceID == "" {
 			return nil, rpckit.ErrInvalidParams
 		}
-		s.DeactivateWorkspaceTunnels(req.WorkspaceID)
+		s.StopWorkspaceTunnels(req.WorkspaceID)
 		return map[string]any{
 			"active":            false,
 			"activeWorkspaceId": "",

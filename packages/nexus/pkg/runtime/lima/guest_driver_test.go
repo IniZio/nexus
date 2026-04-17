@@ -262,8 +262,8 @@ func TestCheckpointForkUsesBtrfsSubvolumeSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CheckpointFork failed: %v", err)
 	}
-	if snapshotID != "ws-child" {
-		t.Errorf("expected snapshotID to be childWorkspaceID %q, got %q", "ws-child", snapshotID)
+	if snapshotID != "" {
+		t.Errorf("expected snapshotID to be empty for virtiofs-backed fork, got %q", snapshotID)
 	}
 	if capturedInstance != "nexus" {
 		t.Errorf("expected instance %q, got %q", "nexus", capturedInstance)

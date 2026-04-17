@@ -15,7 +15,7 @@ import "fmt"
 func namespaceWrapCommand(innerCmd, workspaceID string) string {
 	subvolPath := guestWorkdirForID(workspaceID)
 	return fmt.Sprintf(
-		`unshare --mount -- sh -c 'sudo -n mount --bind %s /workspace && cd /workspace && exec %s'`,
+		`sudo -n unshare --mount -- sh -c 'sudo -n mount --bind %s /workspace && cd /workspace && exec %s'`,
 		subvolPath,
 		innerCmd,
 	)

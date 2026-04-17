@@ -597,32 +597,35 @@ func (s *Server) closeTunnelPort(workspaceID string, port int) {
 	}
 }
 
-func (s *Server) ActivateWorkspaceTunnels(workspaceID string) (string, error) {
+func (s *Server) StartWorkspaceTunnels(workspaceID string) error {
 	s.mu.Lock()
-	if s.activeTunnelWorkspace != "" && s.activeTunnelWorkspace != workspaceID {
-		other := s.activeTunnelWorkspace
-		s.mu.Unlock()
-		return other, fmt.Errorf("another workspace already active")
+	existing := s.activeTunnelWorkspace
+	s.mu.Unlock()
+
+	if existing != "" && existing != workspaceID {
+		s.StopWorkspaceTunnels(existing)
 	}
+
+	s.mu.Lock()
 	s.activeTunnelWorkspace = workspaceID
 	s.mu.Unlock()
 
 	ws, ok := s.workspaceMgr.Get(workspaceID)
 	if !ok {
-		return "", fmt.Errorf("workspace not found")
+		return fmt.Errorf("workspace not found")
 	}
 	for _, p := range ws.TunnelPorts {
 		if p <= 0 || p > 65535 {
 			continue
 		}
 		if err := s.ensureTunnelPort(workspaceID, p); err != nil {
-			return "", err
+			return err
 		}
 	}
-	return "", nil
+	return nil
 }
 
-func (s *Server) DeactivateWorkspaceTunnels(workspaceID string) {
+func (s *Server) StopWorkspaceTunnels(workspaceID string) {
 	for _, fwd := range s.spotlightMgr.List(workspaceID) {
 		_ = s.spotlightMgr.Close(fwd.ID)
 	}

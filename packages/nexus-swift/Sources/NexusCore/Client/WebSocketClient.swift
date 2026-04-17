@@ -436,18 +436,18 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         _ = try await call("workspace.ports.remove", params: ["workspaceId": workspaceId, "port": port])
     }
 
-    public func activateTunnels(workspaceId: String) async throws -> TunnelStatus {
-        let result = try await call("workspace.tunnels.activate", params: ["workspaceId": workspaceId])
+    public func startTunnels(workspaceId: String) async throws -> TunnelStatus {
+        let result = try await call("workspace.tunnels.start", params: ["workspaceId": workspaceId])
         guard let dict = result as? [String: Any] else {
-            throw RPCError(message: "unexpected workspace.tunnels.activate response")
+            throw RPCError(message: "unexpected workspace.tunnels.start response")
         }
         return parseTunnelStatus(dict: dict)
     }
 
-    public func deactivateTunnels(workspaceId: String) async throws -> TunnelStatus {
-        let result = try await call("workspace.tunnels.deactivate", params: ["workspaceId": workspaceId])
+    public func stopTunnels(workspaceId: String) async throws -> TunnelStatus {
+        let result = try await call("workspace.tunnels.stop", params: ["workspaceId": workspaceId])
         guard let dict = result as? [String: Any] else {
-            throw RPCError(message: "unexpected workspace.tunnels.deactivate response")
+            throw RPCError(message: "unexpected workspace.tunnels.stop response")
         }
         return parseTunnelStatus(dict: dict)
     }

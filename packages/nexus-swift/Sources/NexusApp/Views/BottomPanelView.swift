@@ -84,11 +84,11 @@ private struct PortsPane: View {
                     .foregroundColor(workspace.hasActiveTunnels ? Theme.green : Theme.labelTertiary)
                 Spacer()
                 if workspace.hasActiveTunnels {
-                    Button("Deactivate") { Task { await appState.deactivateTunnels(workspace) } }
+                    Button("Stop") { Task { await appState.stopTunnels(workspace) } }
                         .buttonStyle(.plain)
                         .font(.system(size: 10, weight: .medium))
                 } else {
-                    Button("Activate") { Task { await appState.activateTunnels(workspace) } }
+                    Button("Start") { Task { await appState.startTunnels(workspace) } }
                         .buttonStyle(.plain)
                         .font(.system(size: 10, weight: .medium))
                 }

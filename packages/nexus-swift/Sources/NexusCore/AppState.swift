@@ -477,21 +477,15 @@ public final class AppState: ObservableObject {
         }
     }
 
-    public func activateTunnels(_ workspace: Workspace) async {
-        do {
-            let status = try await client.activateTunnels(workspaceId: workspace.id)
-            if !status.active && status.activeWorkspaceId != workspace.id && !status.activeWorkspaceId.isEmpty {
-                self.error = "Tunnels are active in another workspace (\(status.activeWorkspaceId)). Deactivate there first."
-            }
-            await load()
-        } catch {
-            self.error = error.localizedDescription
+    public func startTunnels(_ workspace: Workspace) async {
+        await perform {
+            _ = try await self.client.startTunnels(workspaceId: workspace.id)
         }
     }
 
-    public func deactivateTunnels(_ workspace: Workspace) async {
+    public func stopTunnels(_ workspace: Workspace) async {
         await perform {
-            _ = try await self.client.deactivateTunnels(workspaceId: workspace.id)
+            _ = try await self.client.stopTunnels(workspaceId: workspace.id)
         }
     }
 

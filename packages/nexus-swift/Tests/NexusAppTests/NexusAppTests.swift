@@ -390,8 +390,8 @@ private final class MockDaemonClient: DaemonClient, @unchecked Sendable {
     func listPorts(workspaceId: String) async throws -> [ForwardedPort] { [] }
     func addPort(workspaceId: String, port: Int) async throws {}
     func removePort(workspaceId: String, port: Int) async throws {}
-    func activateTunnels(workspaceId: String) async throws -> TunnelStatus { TunnelStatus(active: false, activeWorkspaceId: "") }
-    func deactivateTunnels(workspaceId: String) async throws -> TunnelStatus { TunnelStatus(active: false, activeWorkspaceId: "") }
+    func startTunnels(workspaceId: String) async throws -> TunnelStatus { TunnelStatus(active: false, activeWorkspaceId: "") }
+    func stopTunnels(workspaceId: String) async throws -> TunnelStatus { TunnelStatus(active: false, activeWorkspaceId: "") }
     func tunnelStatus(workspaceId: String) async throws -> TunnelStatus { TunnelStatus(active: false, activeWorkspaceId: "") }
     func exec(workspaceId: String, command: String, args: [String]) async throws -> ExecOutput {
         ExecOutput(stdout: "", stderr: "", exitCode: 0)

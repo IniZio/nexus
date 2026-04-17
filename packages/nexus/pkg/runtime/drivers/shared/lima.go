@@ -2,10 +2,13 @@ package shared
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net"
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 )
 
 func ListLimaInstances(ctx context.Context) ([]string, error) {
@@ -132,6 +135,44 @@ func DefaultLimactlCombinedOutput(ctx context.Context, args ...string) ([]byte, 
 	return cmd.CombinedOutput()
 }
 
+// limaInstanceInfo holds the fields we care about from `limactl list --json`.
+type limaInstanceInfo struct {
+	Status       string `json:"status"`
+	SSHLocalPort int    `json:"sshLocalPort"`
+}
+
+// parseLimaInstanceInfo extracts status and SSH port from `limactl list --json` output.
+// It handles both array and single-object responses.
+func parseLimaInstanceInfo(data string) (limaInstanceInfo, bool) {
+	data = strings.TrimSpace(data)
+	if data == "" || data == "[]" {
+		return limaInstanceInfo{}, false
+	}
+	var arr []limaInstanceInfo
+	if err := json.Unmarshal([]byte(data), &arr); err == nil && len(arr) > 0 {
+		return arr[0], true
+	}
+	var single limaInstanceInfo
+	if err := json.Unmarshal([]byte(data), &single); err == nil {
+		return single, true
+	}
+	return limaInstanceInfo{}, false
+}
+
+// probeLimaSSH returns true when the local SSH port is accepting TCP connections.
+func probeLimaSSH(port int, timeout time.Duration) bool {
+	if port <= 0 {
+		return false
+	}
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 func EnsureLimaInstanceRunning(ctx context.Context, instance string, limactlOutput LimactlRun, limactlCombined LimactlRun) error {
 	instance = strings.TrimSpace(instance)
 	if instance == "" {
@@ -148,16 +189,26 @@ func EnsureLimaInstanceRunning(ctx context.Context, instance string, limactlOutp
 		return fmt.Errorf("lima instance %s is missing; run `nexus init --force` to create it with Nexus runtime settings", instance)
 	}
 
-	if strings.Contains(trimmed, `"status":"Running"`) {
+	info, ok := parseLimaInstanceInfo(trimmed)
+	if !ok {
+		// Fallback: if we can't parse, just try to start.
+		_, _ = limactlCombined(ctx, "start", "--yes", instance)
 		return nil
 	}
 
-	if strings.Contains(trimmed, `"status":"Stopped"`) {
-		if startOut, startErr := limactlCombined(ctx, "start", "--yes", instance); startErr != nil {
-			return fmt.Errorf("lima start failed for %s: %s", instance, strings.TrimSpace(string(startOut)))
+	status := strings.ToLower(strings.TrimSpace(info.Status))
+
+	if status == "running" {
+		// Verify SSH is actually reachable to catch zombie instances.
+		if probeLimaSSH(info.SSHLocalPort, 3*time.Second) {
+			return nil
 		}
-		return nil
+		// Zombie: status says Running but SSH is dead. Force-cycle the instance.
+		_, _ = limactlCombined(ctx, "stop", "--force", instance)
 	}
 
+	if startOut, startErr := limactlCombined(ctx, "start", "--yes", instance); startErr != nil {
+		return fmt.Errorf("lima start failed for %s: %s", instance, strings.TrimSpace(string(startOut)))
+	}
 	return nil
 }
