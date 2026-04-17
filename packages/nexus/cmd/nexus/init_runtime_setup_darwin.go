@@ -53,6 +53,7 @@ func runInitRuntimeBootstrapDarwin(projectRoot, runtimeName string) error {
 
 	if _, err := limactlLookPathFn("limactl"); err != nil {
 		if _, brewErr := limactlLookPathFn("brew"); brewErr == nil {
+			fmt.Printf("limactl not found; installing via Homebrew...\n")
 			_ = limactlRunFn("brew", "install", "lima")
 		}
 	}
@@ -88,6 +89,7 @@ func ensurePersistentLimaInstance(instanceName, templatePath string) error {
 		return nil
 	}
 
+	fmt.Printf("starting Lima VM instance %q (this may take several minutes to download the VM image)...\n", instanceName)
 	if err := limactlRunFn("limactl", "start", "--name", instanceName, templatePath); err != nil {
 		limaLog := readLimaInstanceLog(instanceName)
 		if limaLog != "" {
