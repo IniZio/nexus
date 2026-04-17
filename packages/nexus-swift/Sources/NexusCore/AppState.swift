@@ -393,6 +393,7 @@ public final class AppState: ObservableObject {
             let ws = try await client.createSandbox(request: request)
             await load()
             selectedWorkspaceID = ws.id
+            ConfigSyncManager.shared.startConfigSync(workspaceID: ws.id, backend: ws.backend)
         } catch {
             self.error = error.localizedDescription
         }
@@ -423,6 +424,7 @@ public final class AppState: ObservableObject {
             ))
             await load()
             if let root = projectRootSandbox(projectID: projectID) {
+                ConfigSyncManager.shared.startConfigSync(workspaceID: root.id, backend: root.backend)
                 return root
             }
             self.error = "Project root sandbox creation did not appear in list"
@@ -462,6 +464,7 @@ public final class AppState: ObservableObject {
 
     public func remove(_ workspace: Workspace) async {
         if selectedWorkspaceID == workspace.id { selectedWorkspaceID = nil }
+        ConfigSyncManager.shared.stopConfigSync(workspaceID: workspace.id)
         await perform { try await self.client.removeWorkspace(id: workspace.id) }
     }
 
