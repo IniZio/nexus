@@ -378,7 +378,8 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
             fresh: false,
             workspaceName: spec.workspaceName,
             agentProfile: spec.agentProfile,
-            backend: spec.backend
+            backend: spec.backend,
+            configBundle: ConfigBundle.build()
         )
         return try await createSandbox(request: request)
     }
@@ -397,6 +398,9 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         }
         if let sourceWorkspaceID = request.sourceWorkspaceId, !sourceWorkspaceID.isEmpty {
             params["sourceWorkspaceId"] = sourceWorkspaceID
+        }
+        if let bundle = request.configBundle, !bundle.isEmpty {
+            params["configBundle"] = bundle
         }
         let result = try await call("workspace.create", params: params)
         guard let dict = result as? [String: Any], let ws = dict["workspace"] else {

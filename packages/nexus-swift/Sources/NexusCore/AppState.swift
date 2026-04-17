@@ -419,7 +419,8 @@ public final class AppState: ObservableObject {
                 sourceBranch: nil,
                 sourceWorkspaceId: nil,
                 fresh: true,
-                workspaceName: project.name
+                workspaceName: project.name,
+                configBundle: ConfigBundle.build()
             ))
             await load()
             if let root = projectRootSandbox(projectID: projectID) {
