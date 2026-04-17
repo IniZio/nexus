@@ -52,7 +52,6 @@ public struct SandboxCreateRequest: Sendable {
     public let workspaceName: String
     public let agentProfile: String
     public let backend: String
-    public let configBundle: String?
 
     public init(
         projectId: String,
@@ -62,8 +61,7 @@ public struct SandboxCreateRequest: Sendable {
         fresh: Bool = false,
         workspaceName: String,
         agentProfile: String = "default",
-        backend: String = "",
-        configBundle: String? = nil
+        backend: String = ""
     ) {
         self.projectId = projectId
         self.targetBranch = targetBranch
@@ -73,7 +71,6 @@ public struct SandboxCreateRequest: Sendable {
         self.workspaceName = workspaceName
         self.agentProfile = agentProfile
         self.backend = backend
-        self.configBundle = configBundle
     }
 }
 
