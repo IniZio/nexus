@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"fmt"
-	"strings"
 )
 
 type Capability struct {
@@ -23,71 +22,13 @@ func NewFactory(capabilities []Capability, drivers map[string]Driver) *Factory {
 }
 
 func (f *Factory) SelectDriver(requiredBackends []string, requiredCapabilities []string) (Driver, error) {
-	if err := f.validateCapabilities(requiredCapabilities); err != nil {
-		return nil, err
-	}
-
-	backend, err := f.selectBackend(requiredBackends)
-	if err != nil {
-		return nil, err
-	}
-
-	driver, ok := f.drivers[backend]
-	if !ok {
-		return nil, fmt.Errorf("backend %q selected but driver not registered", backend)
-	}
-
-	return driver, nil
-}
-
-func (f *Factory) validateCapabilities(required []string) error {
-	for _, req := range required {
-		found := false
-		for _, cap := range f.capabilities {
-			if cap.Name == req && cap.Available {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("required capability %q is not available", req)
+	for _, backend := range requiredBackends {
+		driver, ok := f.drivers[backend]
+		if ok {
+			return driver, nil
 		}
 	}
-	return nil
-}
-
-func (f *Factory) selectBackend(required []string) (string, error) {
-	for _, req := range required {
-		candidates := f.expandRuntimeRequirement(req)
-		if len(candidates) == 0 {
-			continue
-		}
-		for _, backend := range candidates {
-			if _, ok := f.drivers[backend]; !ok {
-				continue
-			}
-			return backend, nil
-		}
-	}
-
-	return "", fmt.Errorf("no required backend available from: %v", required)
-}
-
-func (f *Factory) expandRuntimeRequirement(raw string) []string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "linux":
-		return []string{"firecracker"}
-	case "darwin":
-		return []string{"lima", "process"}
-	case "process":
-		return []string{"process"}
-	case "lima":
-		return []string{"lima"}
-	case "firecracker":
-		return []string{"firecracker"}
-	default:
-		return nil
-	}
+	return nil, fmt.Errorf("no required backend available from: %v", requiredBackends)
 }
 
 func (f *Factory) isCapabilityAvailable(name string) bool {

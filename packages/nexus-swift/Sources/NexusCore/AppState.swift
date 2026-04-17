@@ -401,11 +401,13 @@ public final class AppState: ObservableObject {
 
     public func ensureProjectRootSandbox(projectID: String) async -> Workspace? {
         if let existing = projectRootSandbox(projectID: projectID) {
+            ConfigSyncManager.shared.startConfigSync(workspaceID: existing.id, backend: existing.backend)
             return existing
         }
         if projects.isEmpty || !projects.contains(where: { $0.id == projectID }) {
             await load()
             if let existing = projectRootSandbox(projectID: projectID) {
+                ConfigSyncManager.shared.startConfigSync(workspaceID: existing.id, backend: existing.backend)
                 return existing
             }
         }

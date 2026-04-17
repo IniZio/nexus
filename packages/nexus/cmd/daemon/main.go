@@ -4,16 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	goruntime "runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -21,19 +18,11 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/auth"
 	"github.com/inizio/nexus/packages/nexus/pkg/daemonclient"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
-	"github.com/inizio/nexus/packages/nexus/pkg/runtime/drivers/shared"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
-	"github.com/inizio/nexus/packages/nexus/pkg/runtime/lima"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/sandbox"
 	"github.com/inizio/nexus/packages/nexus/pkg/server"
 	"github.com/inizio/nexus/packages/nexus/pkg/spotlight"
 )
-
-var firecrackerProbeGOOS = goruntime.GOOS
-
-var firecrackerProbeOutputFn = func(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).Output()
-}
 
 type CommandRunner struct{}
 
@@ -113,7 +102,6 @@ func resolveDefaultWorkspaceDir() string {
 }
 
 func runServer(port int, workspaceDir string, token string) error {
-	// preflight auto-install removed: host tool setup is now explicit during nexus init
 	applyDaemonFirecrackerAssetDefaults()
 
 	if err := maybeInstallFirecracker(); err != nil {
@@ -128,7 +116,6 @@ func runServer(port int, workspaceDir string, token string) error {
 
 	runner := &CommandRunner{}
 
-	// Create firecracker manager with default config
 	fcManager := firecracker.NewManager(firecracker.ManagerConfig{
 		FirecrackerBin: "firecracker",
 		KernelPath:     os.Getenv("NEXUS_FIRECRACKER_KERNEL"),
@@ -136,16 +123,7 @@ func runServer(port int, workspaceDir string, token string) error {
 		WorkDirRoot:    filepath.Join(workspaceDir, "firecracker-vms"),
 	})
 
-	// Create runtime drivers.
 	firecrackerDriver := firecracker.NewDriver(runner, firecracker.WithManager(fcManager))
-	guest := lima.NewGuestDriver()
-	firecrackerAvailable := probeFirecrackerTooling(exec.LookPath)
-	firecrackerRuntimeDriver := runtime.Driver(firecrackerDriver)
-	if firecrackerProbeGOOS == "darwin" {
-		// On macOS, firecracker backend is hosted through Lima and can switch
-		// pooled/dedicated instances via driver options.
-		firecrackerRuntimeDriver = lima.NewDriver(guest)
-	}
 
 	_, codexErr := exec.LookPath("codex")
 	codexAvailable := codexErr == nil
@@ -154,9 +132,9 @@ func runServer(port int, workspaceDir string, token string) error {
 	opencodeAvailable := opencodeErr == nil
 
 	capabilities := []runtime.Capability{
-		{Name: "runtime.firecracker", Available: firecrackerAvailable},
+		{Name: "runtime.firecracker", Available: true},
 		{Name: "runtime.process", Available: true},
-		{Name: "runtime.linux", Available: firecrackerAvailable},
+		{Name: "runtime.linux", Available: true},
 		{Name: "spotlight.tunnel", Available: true},
 		{Name: "auth.profile.git", Available: true},
 		{Name: "auth.profile.codex", Available: codexAvailable},
@@ -164,27 +142,18 @@ func runServer(port int, workspaceDir string, token string) error {
 	}
 
 	drivers := map[string]runtime.Driver{
-		"firecracker": firecrackerRuntimeDriver,
-		"lima":        firecrackerRuntimeDriver, // on macOS lima IS the firecracker backend; on linux this is the same native driver
+		"firecracker": firecrackerDriver,
 		"process":     sandbox.NewDriver(),
 	}
 
 	factory := runtime.NewFactory(capabilities, drivers)
 	srv.SetRuntimeFactory(factory)
 
-	// Initialize live port monitoring
-	agentConnFn := guest.AgentConn
-	if connector, ok := firecrackerRuntimeDriver.(interface {
-		AgentConn(context.Context, string) (net.Conn, error)
-	}); ok {
-		agentConnFn = connector.AgentConn
-	}
+	agentConnFn := firecrackerDriver.AgentConn
 	portScanner := spotlight.NewShellPortScanner(agentConnFn)
 	portMonitor := spotlight.NewPortMonitor(srv.SpotlightManager(), portScanner, 5*time.Second)
 	srv.SetPortMonitor(portMonitor)
 
-	// Resume port monitoring and re-apply compose ports for workspaces that
-	// were already running when the daemon (re)started.
 	srv.ResumeRunningWorkspaces(context.Background())
 	srv.StartPTYMaintenance(context.Background(), 2*time.Minute)
 
@@ -203,25 +172,6 @@ func runServer(port int, workspaceDir string, token string) error {
 		srv.Shutdown()
 	}()
 
-	// On macOS, the firecracker backend runs inside Lima. Start a background
-	// health monitor that periodically checks SSH reachability and recovers
-	// zombie instances (status=Running but SSH dead).
-	if firecrackerProbeGOOS == "darwin" {
-		go func() {
-			const limaInstance = "nexus"
-			const checkInterval = 30 * time.Second
-			ticker := time.NewTicker(checkInterval)
-			defer ticker.Stop()
-			for range ticker.C {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-				if err := shared.EnsureLimaInstanceRunning(ctx, limaInstance, shared.DefaultLimactlOutput, shared.DefaultLimactlCombinedOutput); err != nil {
-					log.Printf("[lima-health] recovery attempt failed for %s: %v", limaInstance, err)
-				}
-				cancel()
-			}
-		}()
-	}
-
 	log.Printf("Workspace daemon started on port %d", port)
 	return srv.Start()
 }
@@ -239,73 +189,4 @@ func applyDaemonFirecrackerAssetDefaults() {
 			_ = os.Setenv("NEXUS_FIRECRACKER_ROOTFS", defR)
 		}
 	}
-}
-
-// probeFirecrackerTooling checks if native firecracker binary is available
-func probeFirecrackerTooling(lookPath func(string) (string, error)) bool {
-	if firecrackerProbeGOOS == "darwin" && probeLimaFirecrackerInstanceReady(lookPath) {
-		return true
-	}
-	if _, err := lookPath("firecracker"); err != nil {
-		return false
-	}
-	if !nestedVirtualizationSupported() {
-		return false
-	}
-	return true
-}
-
-func probeLimaFirecrackerInstanceReady(lookPath func(string) (string, error)) bool {
-	if _, err := lookPath("limactl"); err != nil {
-		return false
-	}
-
-	out, err := firecrackerProbeOutputFn("limactl", "list", "--json", "nexus")
-	if err != nil {
-		return false
-	}
-	trimmed := strings.TrimSpace(string(out))
-	if trimmed == "" || trimmed == "[]" {
-		return false
-	}
-
-	type limaInstance struct {
-		Name   string `json:"name"`
-		Status string `json:"status"`
-	}
-
-	var entries []limaInstance
-	if err := json.Unmarshal([]byte(trimmed), &entries); err == nil {
-		for _, entry := range entries {
-			if strings.TrimSpace(entry.Name) == "nexus" && strings.EqualFold(strings.TrimSpace(entry.Status), "running") {
-				return true
-			}
-		}
-		return false
-	}
-
-	var single limaInstance
-	if err := json.Unmarshal([]byte(trimmed), &single); err == nil {
-		return strings.TrimSpace(single.Name) == "nexus" && strings.EqualFold(strings.TrimSpace(single.Status), "running")
-	}
-
-	return false
-}
-
-func nestedVirtualizationSupported() bool {
-	if goruntime.GOOS == "linux" {
-		if info, err := os.ReadFile("/proc/cpuinfo"); err == nil {
-			s := strings.ToLower(string(info))
-			return strings.Contains(s, " vmx") || strings.Contains(s, " svm")
-		}
-		return false
-	}
-	if goruntime.GOOS == "darwin" {
-		out, err := exec.Command("sysctl", "-n", "kern.hv_support").Output()
-		if err != nil {
-			return false
-		}
-		return strings.TrimSpace(string(out)) == "1"
-	}
-	return false
 }

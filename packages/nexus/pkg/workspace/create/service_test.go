@@ -28,7 +28,7 @@ func (d *stubDriver) Fork(context.Context, string, string) error {
 }
 func (d *stubDriver) Destroy(context.Context, string) error { return nil }
 
-func TestPrepareCreate_UsesProcessBackendWhenWorkspaceConfigEnablesProcessIsolation(t *testing.T) {
+func TestPrepareCreate_DefaultsToFirecrackerWhenNoBackendSpecified(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, ".nexus"), 0o755); err != nil {
 		t.Fatalf("mkdir .nexus: %v", err)
@@ -49,16 +49,13 @@ func TestPrepareCreate_UsesProcessBackendWhenWorkspaceConfigEnablesProcessIsolat
 		Repo:          repo,
 		WorkspaceName: "nexus",
 	}
-	prepared, rpcErr, _ := PrepareCreate(context.Background(), spec, factory)
-	if rpcErr != nil {
-		t.Fatalf("unexpected rpc error: %v", rpcErr)
-	}
-	if prepared.Backend != "process" {
-		t.Fatalf("expected process backend, got %q", prepared.Backend)
+	prepared, _ := PrepareCreate(context.Background(), spec, factory)
+	if prepared.Backend != "firecracker" {
+		t.Fatalf("expected firecracker backend, got %q", prepared.Backend)
 	}
 }
 
-func TestPrepareCreate_UsesProcessBackendWhenProcessIsolationIsStrict(t *testing.T) {
+func TestPrepareCreate_DefaultsToFirecrackerWhenProcessOnlyFactory(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, ".nexus"), 0o755); err != nil {
 		t.Fatalf("mkdir .nexus: %v", err)
@@ -78,11 +75,8 @@ func TestPrepareCreate_UsesProcessBackendWhenProcessIsolationIsStrict(t *testing
 		Repo:          repo,
 		WorkspaceName: "nexus",
 	}
-	prepared, rpcErr, _ := PrepareCreate(context.Background(), spec, factory)
-	if rpcErr != nil {
-		t.Fatalf("unexpected rpc error: %v", rpcErr)
-	}
-	if prepared.Backend != "process" {
-		t.Fatalf("expected process backend, got %q", prepared.Backend)
+	prepared, _ := PrepareCreate(context.Background(), spec, factory)
+	if prepared.Backend != "firecracker" {
+		t.Fatalf("expected firecracker backend, got %q", prepared.Backend)
 	}
 }
