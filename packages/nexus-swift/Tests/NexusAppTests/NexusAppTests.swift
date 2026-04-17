@@ -161,15 +161,15 @@ final class WorkspaceModelTests: XCTestCase {
             "ref": "main",
             "state": "running",
             "backend": "firecracker",
-            "runtimeLabel": "backend=firecracker isolation=vm vm.mode=pool"
+            "runtimeLabel": "backend=firecracker isolation=vm vm.mode=dedicated"
         }
         """.data(using: .utf8)!
 
         let ws = try JSONDecoder().decode(Workspace.self, from: json)
         XCTAssertEqual(ws.backend, "firecracker")
-        XCTAssertEqual(ws.runtimeLabel, "backend=firecracker isolation=vm vm.mode=pool")
+        XCTAssertEqual(ws.runtimeLabel, "backend=firecracker isolation=vm vm.mode=dedicated")
         XCTAssertEqual(ws.shortRuntimeBadge, "VM")
-        XCTAssertEqual(ws.detailRuntimeLine, "backend=firecracker isolation=vm vm.mode=pool")
+        XCTAssertEqual(ws.detailRuntimeLine, "backend=firecracker isolation=vm vm.mode=dedicated")
     }
 
     func testWorkspaceStatusDisplayNames() {

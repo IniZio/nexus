@@ -984,7 +984,7 @@ func ensureLocalRuntimeWorkspace(ctx context.Context, ws *workspacemgr.Workspace
 		"host_cli_sync": "true",
 	}
 	if isVMIsolationBackend(ws.Backend) {
-		options["vm.mode"] = vmModeForRepo(strings.TrimSpace(ws.Repo))
+		options["vm.mode"] = "dedicated"
 	}
 	if strings.TrimSpace(ws.LineageSnapshotID) != "" {
 		options["lineage_snapshot_id"] = strings.TrimSpace(ws.LineageSnapshotID)
@@ -1223,20 +1223,4 @@ func runtimeLabelForWorkspace(ws *workspacemgr.Workspace) string {
 		}
 	}
 	return b.String()
-}
-
-func vmModeForRepo(repo string) string {
-	repo = strings.TrimSpace(repo)
-	if repo == "" {
-		return "pool"
-	}
-	cfg, _, err := config.LoadWorkspaceConfig(repo)
-	if err != nil {
-		return "pool"
-	}
-	mode := strings.ToLower(strings.TrimSpace(cfg.Isolation.VM.Mode))
-	if mode == "dedicated" {
-		return "dedicated"
-	}
-	return "pool"
 }

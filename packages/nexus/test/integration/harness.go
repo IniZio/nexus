@@ -21,7 +21,7 @@ func stripANSI(s string) string { return ansiEscape.ReplaceAllString(s, "") }
 // DriverConfig identifies a driver configuration under test.
 type DriverConfig struct {
 	Backend    string // "firecracker", "process"
-	Mode       string // "dedicated", "pool", "process"
+	Mode       string // "dedicated", "process"
 	SkipUnless func(t *testing.T)
 }
 
@@ -30,16 +30,6 @@ var AllDrivers = []DriverConfig{
 	{
 		Backend: "firecracker",
 		Mode:    "dedicated",
-		SkipUnless: func(t *testing.T) {
-			t.Helper()
-			if _, err := os.Stat("/dev/kvm"); err != nil {
-				t.Skip("requires KVM (/dev/kvm not present)")
-			}
-		},
-	},
-	{
-		Backend: "firecracker",
-		Mode:    "pool",
 		SkipUnless: func(t *testing.T) {
 			t.Helper()
 			if _, err := os.Stat("/dev/kvm"); err != nil {

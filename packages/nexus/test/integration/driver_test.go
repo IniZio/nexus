@@ -91,10 +91,10 @@ func TestAllDrivers(t *testing.T) {
 	}
 }
 
-func TestPoolCoexistence(t *testing.T) {
+func TestProcessCoexistence(t *testing.T) {
 	for _, driver := range AllDrivers {
 		driver := driver
-		if driver.Mode != "pool" && driver.Mode != "process" {
+		if driver.Mode != "process" {
 			continue
 		}
 		t.Run(driver.Backend+"/"+driver.Mode, func(t *testing.T) {
