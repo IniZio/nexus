@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
+	"github.com/inizio/nexus/packages/nexus/pkg/project"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 	"github.com/spf13/cobra"
 )
@@ -65,7 +65,7 @@ func listProjects() {
 	defer conn.Close()
 
 	var result struct {
-		Projects []projectmgr.Project `json:"projects"`
+		Projects []project.Project `json:"projects"`
 	}
 	if err := daemonRPC(conn, "project.list", map[string]any{}, &result); err != nil {
 		fmt.Fprintf(os.Stderr, "nexus project list: %v\n", err)
@@ -98,7 +98,7 @@ func createProject(repo string) {
 	defer conn.Close()
 
 	var result struct {
-		Project projectmgr.Project `json:"project"`
+		Project project.Project `json:"project"`
 	}
 	if err := daemonRPC(conn, "project.create", map[string]any{"repo": repo}, &result); err != nil {
 		fmt.Fprintf(os.Stderr, "nexus project create: %v\n", err)
@@ -117,7 +117,7 @@ func showProject(id string) {
 	defer conn.Close()
 
 	var result struct {
-		Project    projectmgr.Project       `json:"project"`
+		Project    project.Project       `json:"project"`
 		Workspaces []workspacemgr.Workspace `json:"workspaces"`
 	}
 	if err := daemonRPC(conn, "project.get", map[string]any{"id": id}, &result); err != nil {

@@ -6,7 +6,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
+	"github.com/inizio/nexus/packages/nexus/pkg/project"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspace/create"
@@ -17,7 +17,7 @@ func HandleWorkspaceCreate(ctx context.Context, req WorkspaceCreateParams, mgr *
 	return HandleWorkspaceCreateWithProjects(ctx, req, mgr, nil, factory)
 }
 
-func HandleWorkspaceCreateWithProjects(ctx context.Context, req WorkspaceCreateParams, mgr *workspacemgr.Manager, projMgr *projectmgr.Manager, factory *runtime.Factory) (*WorkspaceCreateResult, *rpckit.RPCError) {
+func HandleWorkspaceCreateWithProjects(ctx context.Context, req WorkspaceCreateParams, mgr *workspacemgr.Manager, projMgr *project.Manager, factory *runtime.Factory) (*WorkspaceCreateResult, *rpckit.RPCError) {
 	spec, resolveErr := resolveCreateSpec(req, projMgr)
 	if resolveErr != nil {
 		return nil, &rpckit.RPCError{Code: rpckit.ErrInvalidParams.Code, Message: resolveErr.Error()}
@@ -142,7 +142,7 @@ type createSourceHint struct {
 	SourceWorkspaceID string
 }
 
-func resolveCreateSpec(req WorkspaceCreateParams, projMgr *projectmgr.Manager) (workspacemgr.CreateSpec, error) {
+func resolveCreateSpec(req WorkspaceCreateParams, projMgr *project.Manager) (workspacemgr.CreateSpec, error) {
 	spec := req.Spec
 	if strings.TrimSpace(req.ConfigBundle) != "" {
 		spec.ConfigBundle = req.ConfigBundle

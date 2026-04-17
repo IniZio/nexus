@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
+	"github.com/inizio/nexus/packages/nexus/pkg/project"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
@@ -78,7 +78,7 @@ func TestHandleWorkspaceCreate(t *testing.T) {
 func TestHandleWorkspaceCreateWithProjects_UsesProjectFirstPayload(t *testing.T) {
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
-	projMgr := projectmgr.NewManager(mgrRoot, mgr.ProjectRepository())
+	projMgr := project.NewManager(mgrRoot, mgr.ProjectRepository())
 	mgr.SetProjectManager(projMgr)
 
 	project, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")
@@ -129,7 +129,7 @@ func TestHandleWorkspaceCreateWithProjects_UsesProjectFirstPayload(t *testing.T)
 func TestHandleWorkspaceCreateWithProjects_RequiresProjectRootForForkedCreate(t *testing.T) {
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
-	projMgr := projectmgr.NewManager(mgrRoot, mgr.ProjectRepository())
+	projMgr := project.NewManager(mgrRoot, mgr.ProjectRepository())
 	mgr.SetProjectManager(projMgr)
 
 	project, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")
@@ -199,7 +199,7 @@ func TestShouldUseProjectRootPathForBase_FalseWhenRootExists(t *testing.T) {
 func TestHandleWorkspaceCreateWithProjects_UsesExplicitSourceBranchSnapshot(t *testing.T) {
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
-	projMgr := projectmgr.NewManager(mgrRoot, mgr.ProjectRepository())
+	projMgr := project.NewManager(mgrRoot, mgr.ProjectRepository())
 	mgr.SetProjectManager(projMgr)
 
 	project, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")
@@ -294,7 +294,7 @@ func TestHandleWorkspaceCreateWithProjects_UsesExplicitSourceBranchSnapshot(t *t
 func TestHandleWorkspaceCreateWithProjects_FreshSkipsSourceSnapshot(t *testing.T) {
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
-	projMgr := projectmgr.NewManager(mgrRoot, mgr.ProjectRepository())
+	projMgr := project.NewManager(mgrRoot, mgr.ProjectRepository())
 	mgr.SetProjectManager(projMgr)
 
 	project, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")
@@ -367,7 +367,7 @@ func TestHandleWorkspaceCreateWithProjects_FreshSkipsSourceSnapshot(t *testing.T
 func TestHandleWorkspaceCreateWithProjects_UsesSourceWorkspaceID(t *testing.T) {
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
-	projMgr := projectmgr.NewManager(mgrRoot, mgr.ProjectRepository())
+	projMgr := project.NewManager(mgrRoot, mgr.ProjectRepository())
 	mgr.SetProjectManager(projMgr)
 
 	project, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")
@@ -437,7 +437,7 @@ func TestHandleWorkspaceCreateWithProjects_UsesSourceWorkspaceID(t *testing.T) {
 func TestHandleWorkspaceCreateWithProjects_CopiesDirtyStateFromSourceWorkspace(t *testing.T) {
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
-	projMgr := projectmgr.NewManager(mgrRoot, mgr.ProjectRepository())
+	projMgr := project.NewManager(mgrRoot, mgr.ProjectRepository())
 	mgr.SetProjectManager(projMgr)
 
 	repoRoot := initGitRepoForCheckoutHandlerTests(t)
@@ -799,7 +799,7 @@ func TestHandleWorkspaceListAndRemove(t *testing.T) {
 func TestHandleWorkspaceRemove_RejectsDeleteHostPathForProjectRootSandbox(t *testing.T) {
 	root := t.TempDir()
 	mgr := workspacemgr.NewManager(root)
-	projMgr := projectmgr.NewManager(root, mgr.ProjectRepository())
+	projMgr := project.NewManager(root, mgr.ProjectRepository())
 	mgr.SetProjectManager(projMgr)
 
 	created, rpcErr := HandleWorkspaceCreate(context.Background(), WorkspaceCreateParams{
@@ -1319,7 +1319,7 @@ func TestHandleWorkspaceFork_WithFactoryUsesRuntimeCheckpointID(t *testing.T) {
 func TestHandleWorkspaceFork_UsesProjectRootSandboxAsForkSource(t *testing.T) {
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
-	projMgr := projectmgr.NewManager(mgrRoot, mgr.ProjectRepository())
+	projMgr := project.NewManager(mgrRoot, mgr.ProjectRepository())
 	mgr.SetProjectManager(projMgr)
 
 	project, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")
@@ -1379,7 +1379,7 @@ func TestHandleWorkspaceFork_UsesProjectRootSandboxAsForkSource(t *testing.T) {
 func TestHandleWorkspaceFork_AllowsExplicitSourceWorkspaceOverride(t *testing.T) {
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
-	projMgr := projectmgr.NewManager(mgrRoot, mgr.ProjectRepository())
+	projMgr := project.NewManager(mgrRoot, mgr.ProjectRepository())
 	mgr.SetProjectManager(projMgr)
 
 	project, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")

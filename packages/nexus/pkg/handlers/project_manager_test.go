@@ -5,14 +5,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
+	"github.com/inizio/nexus/packages/nexus/pkg/project"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
 func TestHandleProjectCreateAndList(t *testing.T) {
 	root := t.TempDir()
 	wsMgr := workspacemgr.NewManager(root)
-	projMgr := projectmgr.NewManager(root, wsMgr.ProjectRepository())
+	projMgr := project.NewManager(root, wsMgr.ProjectRepository())
 	wsMgr.SetProjectManager(projMgr)
 
 	createResult, rpcErr := HandleProjectCreate(context.Background(), ProjectCreateParams{Repo: "git@example/repo.git"}, projMgr)
@@ -35,7 +35,7 @@ func TestHandleProjectCreateAndList(t *testing.T) {
 func TestHandleProjectGetIncludesWorkspaces(t *testing.T) {
 	root := t.TempDir()
 	wsMgr := workspacemgr.NewManager(root)
-	projMgr := projectmgr.NewManager(root, wsMgr.ProjectRepository())
+	projMgr := project.NewManager(root, wsMgr.ProjectRepository())
 	wsMgr.SetProjectManager(projMgr)
 
 	project, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")
@@ -66,7 +66,7 @@ func TestHandleProjectGetIncludesWorkspaces(t *testing.T) {
 func TestHandleProjectRemove_RemovesProject(t *testing.T) {
 	root := t.TempDir()
 	wsMgr := workspacemgr.NewManager(root)
-	projMgr := projectmgr.NewManager(root, wsMgr.ProjectRepository())
+	projMgr := project.NewManager(root, wsMgr.ProjectRepository())
 	wsMgr.SetProjectManager(projMgr)
 
 	created, rpcErr := HandleProjectCreate(context.Background(), ProjectCreateParams{Repo: "git@example/repo-remove.git"}, projMgr)
@@ -92,7 +92,7 @@ func TestHandleProjectRemove_RemovesProject(t *testing.T) {
 func TestHandleProjectList_ReturnsDeterministicOrder(t *testing.T) {
 	root := t.TempDir()
 	wsMgr := workspacemgr.NewManager(root)
-	projMgr := projectmgr.NewManager(root, wsMgr.ProjectRepository())
+	projMgr := project.NewManager(root, wsMgr.ProjectRepository())
 	wsMgr.SetProjectManager(projMgr)
 
 	first, rpcErr := HandleProjectCreate(context.Background(), ProjectCreateParams{Repo: "git@example/alpha.git"}, projMgr)

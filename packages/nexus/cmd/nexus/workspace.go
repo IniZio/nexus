@@ -20,7 +20,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/inizio/nexus/packages/nexus/pkg/credsbundle"
 	"github.com/inizio/nexus/packages/nexus/pkg/daemonclient"
-	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
+	"github.com/inizio/nexus/packages/nexus/pkg/project"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 	"github.com/spf13/cobra"
 )
@@ -394,7 +394,7 @@ func listWorkspacesFlat(conn *websocket.Conn) {
 
 func listWorkspacesHierarchical(conn *websocket.Conn) {
 	var projectsResult struct {
-		Projects []projectmgr.Project `json:"projects"`
+		Projects []project.Project `json:"projects"`
 	}
 	if err := daemonRPC(conn, "project.list", map[string]any{}, &projectsResult); err != nil {
 		fmt.Fprintf(os.Stderr, "nexus list: %v\n", err)
@@ -551,13 +551,13 @@ func createWorkspaceLocalWorktreePath(ws workspacemgr.Workspace) string {
 	return strings.TrimSpace(ws.LocalWorktreePath)
 }
 
-func resolveCreateProject(conn *websocket.Conn, projectID string, repoHint string) (projectmgr.Project, string, error) {
+func resolveCreateProject(conn *websocket.Conn, projectID string, repoHint string) (project.Project, string, error) {
 	if strings.TrimSpace(projectID) != "" {
 		var getResult struct {
-			Project projectmgr.Project `json:"project"`
+			Project project.Project `json:"project"`
 		}
 		if err := daemonRPC(conn, "project.get", map[string]any{"id": strings.TrimSpace(projectID)}, &getResult); err != nil {
-			return projectmgr.Project{}, "", err
+			return project.Project{}, "", err
 		}
 		return getResult.Project, getResult.Project.PrimaryRepo, nil
 	}
@@ -567,15 +567,15 @@ func resolveCreateProject(conn *websocket.Conn, projectID string, repoHint strin
 		var err error
 		repoPath, err = normalizeLocalRepoPath(".")
 		if err != nil {
-			return projectmgr.Project{}, "", err
+			return project.Project{}, "", err
 		}
 	}
 
 	var createResult struct {
-		Project projectmgr.Project `json:"project"`
+		Project project.Project `json:"project"`
 	}
 	if err := daemonRPC(conn, "project.create", map[string]any{"repo": repoPath}, &createResult); err != nil {
-		return projectmgr.Project{}, "", err
+		return project.Project{}, "", err
 	}
 	return createResult.Project, repoPath, nil
 }

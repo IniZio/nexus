@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
-	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
+	"github.com/inizio/nexus/packages/nexus/pkg/project"
 	"github.com/inizio/nexus/packages/nexus/pkg/store"
 )
 
@@ -21,7 +21,7 @@ type Manager struct {
 	workspaceRepo workspaceStore
 	mu            sync.RWMutex
 	workspaces    map[string]*Workspace
-	projectMgr    *projectmgr.Manager
+	projectMgr    *project.Manager
 }
 
 type workspaceStore interface {
@@ -70,7 +70,7 @@ func nodeStorePathForRoot(root string, defaultPath string) string {
 	return defaultPath
 }
 
-func (m *Manager) SetProjectManager(pm *projectmgr.Manager) {
+func (m *Manager) SetProjectManager(pm *project.Manager) {
 	m.projectMgr = pm
 }
 

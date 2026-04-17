@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -19,7 +17,7 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/compose"
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
 	"github.com/inizio/nexus/packages/nexus/pkg/lifecycle"
-	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
+	"github.com/inizio/nexus/packages/nexus/pkg/project"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 	"github.com/inizio/nexus/packages/nexus/pkg/server/pty"
@@ -38,7 +36,7 @@ type Server struct {
 	connections           map[string]*Connection
 	ws                    *workspace.Workspace
 	workspaceMgr          *workspacemgr.Manager
-	projectMgr            *projectmgr.Manager
+	projectMgr            *project.Manager
 	serviceMgr            *services.Manager
 	spotlightMgr          *spotlight.Manager
 	portMonitor           *spotlight.PortMonitor
@@ -91,7 +89,7 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 	}
 
 	workspaceMgr := workspacemgr.NewManager(workspaceDir)
-	projectMgr := projectmgr.NewManager(workspaceDir, workspaceMgr.ProjectRepository())
+	projectMgr := project.NewManager(workspaceDir, workspaceMgr.ProjectRepository())
 	workspaceMgr.SetProjectManager(projectMgr)
 
 	spotlightMgr, err := newSpotlightManagerForServer(workspaceMgr)
@@ -187,77 +185,6 @@ func (s *Server) resolveWorkspace(params json.RawMessage) *workspace.Workspace {
 	}
 
 	return resolved
-}
-
-func preferredWorkspaceRoot(wsRecord *workspacemgr.Workspace) string {
-	if wsRecord == nil {
-		return ""
-	}
-
-	candidates := make([]string, 0, 4)
-	candidates = append(candidates, strings.TrimSpace(wsRecord.HostWorkspacePath))
-	candidates = append(candidates, strings.TrimSpace(wsRecord.LocalWorktreePath))
-	if inferred := inferredWorkspaceWorktree(wsRecord); inferred != "" {
-		candidates = append(candidates, inferred)
-	}
-	candidates = append(candidates,
-		strings.TrimSpace(wsRecord.Repo),
-		strings.TrimSpace(wsRecord.RootPath),
-	)
-	for _, candidate := range candidates {
-		if canonical := canonicalWorkspaceCandidate(wsRecord, candidate); canonical != "" {
-			return canonical
-		}
-	}
-	return ""
-}
-
-func inferredWorkspaceWorktree(wsRecord *workspacemgr.Workspace) string {
-	if wsRecord == nil {
-		return ""
-	}
-	repoPath := canonicalExistingDir(strings.TrimSpace(wsRecord.Repo))
-	if repoPath == "" {
-		return ""
-	}
-	ref := strings.TrimSpace(wsRecord.CurrentRef)
-	if ref == "" {
-		ref = strings.TrimSpace(wsRecord.TargetBranch)
-	}
-	if ref == "" {
-		ref = strings.TrimSpace(wsRecord.Ref)
-	}
-	return filepath.Join(repoPath, ".worktrees", workspacemgr.HostWorkspaceDirName(ref))
-}
-
-func canonicalExistingDir(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return ""
-	}
-	info, err := os.Stat(path)
-	if err != nil || !info.IsDir() {
-		return ""
-	}
-	resolved := filepath.Clean(path)
-	if real, err := filepath.EvalSymlinks(resolved); err == nil && strings.TrimSpace(real) != "" {
-		resolved = filepath.Clean(real)
-	}
-	return resolved
-}
-
-func canonicalWorkspaceCandidate(wsRecord *workspacemgr.Workspace, candidate string) string {
-	canonical := canonicalExistingDir(candidate)
-	if canonical == "" {
-		return ""
-	}
-	if wsRecord == nil {
-		return canonical
-	}
-	if workspacemgr.IsManagedHostWorkspacePath(canonical) && !workspacemgr.HasValidHostWorkspaceMarker(canonical, wsRecord.ID) {
-		return ""
-	}
-	return canonical
 }
 
 func (s *Server) resolveWorkspaceTyped(v any) *workspace.Workspace {
