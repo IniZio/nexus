@@ -12,7 +12,6 @@ import (
 )
 
 // DaemonSecretStore defines the interface for daemon JWT signing secret storage.
-// This is separate from TokenStore (OIDC tokens per endpoint).
 type DaemonSecretStore interface {
 	// Get retrieves the secret. Returns empty string if not found.
 	Get() (string, error)

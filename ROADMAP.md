@@ -58,7 +58,7 @@ Priority rule: `P0 security > P0 reliability > P1 UX consistency > P2 surface si
 
 | Item                                                               | Status     | Links                                                                         |
 | ------------------------------------------------------------------ | ---------- | ----------------------------------------------------------------------------- |
-| Multi-User Architecture (Pool Mode, OIDC, Federation)              | `planned`  | [Phases](docs/superpowers/plans/2026-04-12-multi-user-architecture-phases.md) |
+| Multi-User Architecture (Federation)                                | `deferred` | —                                                                             |
 | Agent orchestration UI (parallel lanes, diff viewer, conduct view) | `proposed` | —                                                                             |
 
 

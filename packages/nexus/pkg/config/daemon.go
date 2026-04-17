@@ -5,12 +5,9 @@ import "encoding/json"
 // AuthConfig holds authentication configuration
 type AuthConfig struct {
 	// Mode: "personal" (default, current behavior)
-	// Future: "pool" for multi-user mode
 	Mode string `json:"mode"`
 
-	// Provider configuration (deferred parsing for future extensibility)
-	// In personal mode, this is ignored
-	// In future pool mode, this configures OIDC/SAML
+	// Provider configuration (reserved for future extensibility)
 	Provider json.RawMessage `json:"provider,omitempty"`
 }
 

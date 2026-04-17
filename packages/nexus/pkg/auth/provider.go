@@ -10,10 +10,10 @@ type Provider interface {
 	// Returns error if token is invalid or expired
 	ValidateToken(ctx context.Context, token string) (*Identity, error)
 
-	// ProviderType returns the type of auth ("local", "oidc", "saml")
+	// ProviderType returns the type of auth ("local")
 	ProviderType() string
 
-	// ProviderName returns the specific provider ("local", "oidc:authgear", etc.)
+	// ProviderName returns the specific provider ("local")
 	ProviderName() string
 }
 

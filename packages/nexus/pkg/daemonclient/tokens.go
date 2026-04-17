@@ -14,9 +14,7 @@ import (
 
 // TokenSet represents stored authentication
 type TokenSet struct {
-	// For local mode: the token string
-	// For future OIDC: access_token, refresh_token, expiry
-	AccessToken  string     `json:"access_token"`
+	AccessToken  string     `json:"access_token"` // Token string
 	RefreshToken string     `json:"refresh_token,omitempty"`
 	TokenType    string     `json:"token_type"` // "bearer", "local"
 	Expiry       *time.Time `json:"expiry,omitempty"`

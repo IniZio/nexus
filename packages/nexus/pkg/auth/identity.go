@@ -24,7 +24,7 @@ type Identity struct {
 	OrgName  string `json:"org_name,omitempty"`
 
 	// Auth metadata
-	AuthProvider string                 `json:"auth_provider"` // "local", "oidc", "saml"
+	AuthProvider string                 `json:"auth_provider"` // always "local"
 	SessionID    string                 `json:"session_id,omitempty"`
 	Claims       map[string]interface{} `json:"claims,omitempty"` // Provider-specific
 
