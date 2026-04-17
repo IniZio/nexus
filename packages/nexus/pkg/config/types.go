@@ -56,9 +56,9 @@ func (c WorkspaceConfig) ValidateBasic() error {
 		return fmt.Errorf("isolation.level must be one of vm or process")
 	}
 	switch c.Isolation.VM.Mode {
-	case "", "pool", "dedicated":
+	case "", "dedicated":
 	default:
-		return fmt.Errorf("isolation.vm.mode must be one of pool or dedicated")
+		return fmt.Errorf("isolation.vm.mode must be dedicated")
 	}
 	return nil
 }

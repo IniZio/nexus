@@ -58,7 +58,7 @@ func TestLimaDriverBackendName(t *testing.T) {
 	}
 }
 
-func TestDriver_CreateUsesPoolModeByDefault(t *testing.T) {
+func TestDriver_CreateUsesDedicatedInstanceByDefault(t *testing.T) {
 	inner := &stubDriver{}
 	d := NewDriver(inner)
 
@@ -66,13 +66,13 @@ func TestDriver_CreateUsesPoolModeByDefault(t *testing.T) {
 		WorkspaceID:   "ws-1",
 		WorkspaceName: "alpha",
 		ProjectRoot:   "/tmp/repo",
-		Options:       map[string]string{"vm.mode": "pool"},
+		Options:       map[string]string{},
 	}
 	if err := d.Create(context.Background(), req); err != nil {
 		t.Fatalf("unexpected create error: %v", err)
 	}
-	if got := inner.lastReq.Options["lima.instance"]; got != defaultLimaInstance {
-		t.Fatalf("expected lima.instance %q, got %q", defaultLimaInstance, got)
+	if got := inner.lastReq.Options["lima.instance"]; got != "nexus-ws-1" {
+		t.Fatalf("expected default lima.instance %q, got %q", "nexus-ws-1", got)
 	}
 }
 

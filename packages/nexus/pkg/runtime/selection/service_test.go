@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/inizio/nexus/packages/nexus/pkg/config"
 )
 
 func TestRuntimeSetupRunner_FailsFastInNonInteractiveWithoutPasswordlessSudo(t *testing.T) {
@@ -98,5 +100,55 @@ func TestRuntimeSetupRunner_InteractiveSessionAttemptsSetup(t *testing.T) {
 	}
 	if runCalls != 1 {
 		t.Fatalf("expected one setup command run, got %d", runCalls)
+	}
+}
+
+func TestSelectBackend_DarwinDefaultsToProcessWithoutNestedVirt(t *testing.T) {
+	original := darwinHasNestedVirtFn
+	t.Cleanup(func() {
+		darwinHasNestedVirtFn = original
+	})
+	darwinHasNestedVirtFn = func() bool { return false }
+
+	backend, mode, err := SelectBackend("darwin", nil)
+	if err != nil {
+		t.Fatalf("unexpected selection error: %v", err)
+	}
+	if backend != "process" || mode != "process" {
+		t.Fatalf("expected process/process, got %s/%s", backend, mode)
+	}
+}
+
+func TestSelectBackend_DarwinRejectsExplicitVMWithoutNestedVirt(t *testing.T) {
+	original := darwinHasNestedVirtFn
+	t.Cleanup(func() {
+		darwinHasNestedVirtFn = original
+	})
+	darwinHasNestedVirtFn = func() bool { return false }
+
+	_, _, err := SelectBackend("darwin", &config.WorkspaceConfig{
+		Isolation: config.WorkspaceIsolation{Level: "vm"},
+	})
+	if err == nil {
+		t.Fatal("expected explicit vm selection to fail")
+	}
+	if !strings.Contains(err.Error(), "vm isolation requires nested virtualization") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSelectBackend_DarwinUsesDedicatedLimaWithNestedVirt(t *testing.T) {
+	original := darwinHasNestedVirtFn
+	t.Cleanup(func() {
+		darwinHasNestedVirtFn = original
+	})
+	darwinHasNestedVirtFn = func() bool { return true }
+
+	backend, mode, err := SelectBackend("darwin", nil)
+	if err != nil {
+		t.Fatalf("unexpected selection error: %v", err)
+	}
+	if backend != "lima" || mode != "dedicated" {
+		t.Fatalf("expected lima/dedicated, got %s/%s", backend, mode)
 	}
 }
