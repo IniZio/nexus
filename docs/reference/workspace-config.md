@@ -33,8 +33,8 @@ Nexus uses convention-over-configuration. Most projects only need `nexus init`.
 
 Runtime is selected automatically:
 
-- Linux: Firecracker-first
-- macOS: Firecracker via Lima when available, otherwise seatbelt fallback
+- Linux: Firecracker-first, process fallback
+- macOS: Firecracker when nested virtualization is available, process fallback otherwise
 
 Project-level runtime overrides are intentionally not supported.
 

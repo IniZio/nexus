@@ -5,9 +5,9 @@ Short reference for **latency**, **isolation concepts**, and **paths**.
 ## Doctor vs backend
 
 - **`nexus doctor`** runs from CWD (no flags required to specify project root). There is no top-level `--timeout`; probes use internal timeouts.
-- On startup, the CLI prints **`doctor: runtime backend=…`** so you know whether you are on **firecracker** or **seatbelt** (or other supported backend).
+- On startup, the CLI prints **`doctor: runtime backend=…`** so you know whether the runtime is **firecracker** or **process** (or other supported backend).
 - **Firecracker, cold VM:** the first run can take **several minutes** (guest bootstrap, Docker/tooling) before your `.nexus/probe` scripts run. Silence is often normal.
-- **Seatbelt** (common macOS fallback when nested virtualization is unavailable): usually **much faster** for the same project.
+- **Process sandbox** (fallback when VM is unavailable): usually **much faster** for the same project.
 - Predicting backend: see `nexus create --backend …` and host capabilities. See [Workspace config](../reference/workspace-config.md).
 
 ## Isolation: fork vs workspace vs git worktree

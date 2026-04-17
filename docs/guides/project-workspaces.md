@@ -21,10 +21,10 @@ Output:
 ```
 PROJECT: myrepo (github.com/myorg/myrepo)
   main-branch      running    firecracker  main
-  feature-xyz      stopped    seatbelt     feature/xyz
+  feature-xyz      stopped    process      feature/xyz
 
 PROJECT: dotfiles (/Users/me/dotfiles)
-  dotfiles-dev     running    seatbelt   master
+  dotfiles-dev     running    process      master
 
 2 projects, 3 workspaces total
 ```
