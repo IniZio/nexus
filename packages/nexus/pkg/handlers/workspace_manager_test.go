@@ -6,14 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	goruntime "runtime"
 	"strings"
 	"testing"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
-	"github.com/inizio/nexus/packages/nexus/pkg/runtime/selection"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
@@ -44,20 +42,14 @@ func setupRepoWithWorkspaceConfig(t *testing.T, workspaceConfig string) string {
 	return "./" + repo
 }
 
-// vmIsolationBackend returns the VM isolation backend name for the current platform.
-// On darwin it is "lima"; on linux it is "firecracker".
+// vmIsolationBackend returns the VM isolation backend name. Now always "firecracker".
 func vmIsolationBackend() string {
-	if goruntime.GOOS == "darwin" {
-		return "lima"
-	}
 	return "firecracker"
 }
 
-// vmIsolationDrivers returns a map with mock drivers for both VM isolation backends,
-// so tests work cross-platform (darwin uses "lima", linux uses "firecracker").
+// vmIsolationDrivers returns a map with mock drivers for firecracker.
 func vmIsolationDrivers(d runtime.Driver) map[string]runtime.Driver {
 	return map[string]runtime.Driver{
-		"lima":        d,
 		"firecracker": d,
 	}
 }
@@ -506,8 +498,6 @@ func TestHandleWorkspaceCreateWithProjects_CopiesDirtyStateFromSourceWorkspace(t
 }
 
 func TestHandleWorkspaceCreate_WithFactory(t *testing.T) {
-	t.Cleanup(selection.ResetRuntimeSetupRunnerForTest)
-
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
 	repo := setupRepoWithWorkspaceConfig(t, `{"version":1}`)
@@ -548,7 +538,6 @@ func TestHandleWorkspaceCreate_WithFactory(t *testing.T) {
 }
 
 func TestHandleWorkspaceCreate_ConfigRequiredBackendHonored(t *testing.T) {
-	t.Cleanup(selection.ResetRuntimeSetupRunnerForTest)
 
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
@@ -619,7 +608,6 @@ func TestHandleWorkspaceCreate_FactoryWithUnavailableCapability(t *testing.T) {
 }
 
 func TestHandleWorkspaceCreate_MissingRuntimeRequiredUsesDefaultLinux(t *testing.T) {
-	t.Cleanup(selection.ResetRuntimeSetupRunnerForTest)
 
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
@@ -1529,7 +1517,6 @@ func TestHandleWorkspaceFork_WithFactoryLinuxBackendAfterRestartLikeState(t *tes
 }
 
 func TestHandleWorkspaceCreate_WithFactoryFirecrackerBootstrapsRuntime(t *testing.T) {
-	t.Cleanup(selection.ResetRuntimeSetupRunnerForTest)
 
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
@@ -1572,7 +1559,6 @@ func TestHandleWorkspaceCreate_WithFactoryFirecrackerBootstrapsRuntime(t *testin
 }
 
 func TestHandleWorkspaceCreate_PassesHostAuthBundleToRuntime(t *testing.T) {
-	t.Cleanup(selection.ResetRuntimeSetupRunnerForTest)
 
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
@@ -1610,7 +1596,6 @@ func TestHandleWorkspaceCreate_PassesHostAuthBundleToRuntime(t *testing.T) {
 }
 
 func TestHandleWorkspaceCreate_UsesPreferredLineageSnapshotForRuntimeCreate(t *testing.T) {
-	t.Cleanup(selection.ResetRuntimeSetupRunnerForTest)
 
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
@@ -1661,7 +1646,6 @@ func TestHandleWorkspaceCreate_UsesPreferredLineageSnapshotForRuntimeCreate(t *t
 }
 
 func TestHandleWorkspaceCreate_AutoCapturesBaselineSnapshotForFirstSandbox(t *testing.T) {
-	t.Cleanup(selection.ResetRuntimeSetupRunnerForTest)
 
 	mgrRoot := t.TempDir()
 	mgr := workspacemgr.NewManager(mgrRoot)
@@ -1724,8 +1708,6 @@ func TestHandleWorkspaceCreate_IgnoresInternalPreflightOverrideWhenDisabled(t *t
 
 	t.Setenv("NEXUS_INTERNAL_ENABLE_PREFLIGHT_OVERRIDE", "0")
 	t.Setenv("NEXUS_INTERNAL_PREFLIGHT_OVERRIDE", "hard_fail")
-
-	t.Cleanup(selection.ResetRuntimeSetupRunnerForTest)
 
 	factory := runtime.NewFactory(
 		[]runtime.Capability{{Name: "runtime.firecracker", Available: true}},

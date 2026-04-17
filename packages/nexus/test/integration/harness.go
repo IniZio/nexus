@@ -20,7 +20,7 @@ func stripANSI(s string) string { return ansiEscape.ReplaceAllString(s, "") }
 
 // DriverConfig identifies a driver configuration under test.
 type DriverConfig struct {
-	Backend    string // "firecracker", "lima", "process"
+	Backend    string // "firecracker", "process"
 	Mode       string // "dedicated", "pool", "process"
 	SkipUnless func(t *testing.T)
 }
@@ -48,26 +48,15 @@ var AllDrivers = []DriverConfig{
 		},
 	},
 	{
-		Backend: "lima",
+		Backend: "firecracker",
 		Mode:    "dedicated",
 		SkipUnless: func(t *testing.T) {
 			t.Helper()
-			if !isRunningOnMacOS() {
-				t.Skip("requires macOS")
+			if isRunningOnMacOS() {
+				t.Skip("firecracker dedicated mode not supported on macOS (remote daemon only)")
 			}
-			out, _ := exec.Command("sysctl", "-n", "kern.hv_support").Output()
-			if strings.TrimSpace(string(out)) != "1" {
-				t.Skip("requires nested virtualization (kern.hv_support=1)")
-			}
-		},
-	},
-	{
-		Backend: "lima",
-		Mode:    "pool",
-		SkipUnless: func(t *testing.T) {
-			t.Helper()
-			if !isRunningOnMacOS() {
-				t.Skip("requires macOS")
+			if _, err := os.Stat("/dev/kvm"); err != nil {
+				t.Skip("requires KVM (/dev/kvm not present)")
 			}
 		},
 	},

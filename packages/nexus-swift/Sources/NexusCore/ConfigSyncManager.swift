@@ -20,6 +20,11 @@ public final class ConfigSyncManager: Sendable {
     public func startConfigSync(workspaceID: String, backend: String?) {
         guard isSupportedBackend(backend) else { return }
 
+        lock.lock()
+        let alreadyStarted = sessions[workspaceID] != nil
+        lock.unlock()
+        if alreadyStarted { return }
+
         let mutagenPath = resolveMutagen()
         guard let mutagenPath else {
             logger.warning("ConfigSync: mutagen binary not found, skipping sync for \(workspaceID)")
@@ -156,7 +161,7 @@ public final class ConfigSyncManager: Sendable {
     private func isSupportedBackend(_ backend: String?) -> Bool {
         guard let b = backend?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
               !b.isEmpty else { return false }
-        return b == "lxc" || b == "lima"
+        return b == "firecracker"
     }
 
     private func resolveMutagen() -> String? {
@@ -165,21 +170,12 @@ public final class ConfigSyncManager: Sendable {
 
     private func nexusSSHConfigPath() -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let envInstance = ProcessInfo.processInfo.environment["NEXUS_RUNTIME_LIMAGUEST_INSTANCE"]
-            ?? ProcessInfo.processInfo.environment["NEXUS_RUNTIME_SEATBELT_INSTANCE"]
-        let instance = envInstance?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "nexus"
-        return "\(home)/.nexus/ssh/\(instance).ssh.config"
-    }
-
-    private func limaHost() -> String {
-        let envInstance = ProcessInfo.processInfo.environment["NEXUS_RUNTIME_LIMAGUEST_INSTANCE"]
-            ?? ProcessInfo.processInfo.environment["NEXUS_RUNTIME_SEATBELT_INSTANCE"]
-        return envInstance?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "nexus"
+        return "\(home)/.nexus/ssh/nexus.ssh.config"
     }
 
     private func syncSpecs() -> [SyncSpec] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let host = limaHost()
+        let host = "nexus"
 
         return [
             SyncSpec(

@@ -19,9 +19,6 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/store"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspace/create"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
-	goruntime "runtime"
-
-	"github.com/inizio/nexus/packages/nexus/pkg/runtime/selection"
 )
 
 type WorkspaceCreateParams struct {
@@ -146,13 +143,7 @@ func HandleWorkspaceCreateWithProjects(ctx context.Context, req WorkspaceCreateP
 			},
 		}
 	}
-	spec, prepErr, emptyResultOnErr := create.PrepareCreate(ctx, spec, factory)
-	if prepErr != nil {
-		if emptyResultOnErr {
-			return &WorkspaceCreateResult{}, prepErr
-		}
-		return nil, prepErr
-	}
+	spec, _ = create.PrepareCreate(ctx, spec, factory)
 
 	log.Printf("[workspace.create] Creating workspace for repo: %s backend=%s", spec.Repo, strings.TrimSpace(spec.Backend))
 
@@ -274,11 +265,9 @@ func shouldCopyDirtyStateForCreate(ws *workspacemgr.Workspace, usedCheckpointSna
 	return true
 }
 
-// isVMIsolationBackend returns true if the backend name represents a VM isolation backend
-// ("lima" on macOS, "firecracker" on Linux).
+// isVMIsolationBackend returns true if the backend is a VM isolation backend (firecracker only now).
 func isVMIsolationBackend(backend string) bool {
-	b := strings.ToLower(strings.TrimSpace(backend))
-	return b == "firecracker" || b == "lima"
+	return strings.ToLower(strings.TrimSpace(backend)) == "firecracker"
 }
 
 func resolveCreateSpec(req WorkspaceCreateParams, projMgr *projectmgr.Manager) (workspacemgr.CreateSpec, error) {
@@ -553,16 +542,15 @@ func HandleWorkspaceRestore(ctx context.Context, req WorkspaceRestoreParams, mgr
 				}
 			}
 		} else {
-			backend, _, err := selection.SelectBackend(goruntime.GOOS, nil)
-			if err != nil {
-				return &WorkspaceRestoreResult{}, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("backend selection failed: %v", err)}
-			}
-			driver, exists := factory.DriverForBackend(backend)
+			driver, exists := factory.DriverForBackend("firecracker")
 			if !exists {
-				return &WorkspaceRestoreResult{}, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("backend selection failed: driver not registered for backend %q", backend)}
+				return &WorkspaceRestoreResult{}, &rpckit.RPCError{
+					Code:    rpckit.ErrInternalError.Code,
+					Message: "firecracker driver not registered",
+				}
 			}
 			selectedDriver = driver
-			requiredBackends = []string{backend}
+			requiredBackends = []string{"firecracker"}
 		}
 	}
 
@@ -944,7 +932,7 @@ func checkpointBaselineLineageSnapshot(ctx context.Context, ws *workspacemgr.Wor
 
 func checkpointLatestFirecrackerSnapshotForCreate(ctx context.Context, mgr *workspacemgr.Manager, factory *runtime.Factory, sourceWorkspaceID string, childWorkspaceID string) (string, bool, error) {
 	if mgr == nil || factory == nil {
-		return "", false, fmt.Errorf("runtime factory unavailable")
+		return "", false, nil
 	}
 	sourceWorkspaceID = strings.TrimSpace(sourceWorkspaceID)
 	childWorkspaceID = strings.TrimSpace(childWorkspaceID)
@@ -1120,7 +1108,6 @@ func preferredLineageSnapshotForCreate(mgr *workspacemgr.Manager, target *worksp
 		candidateBackend := strings.TrimSpace(candidate.Backend)
 		if candidateBackend != targetBackend {
 			// Allow cross-backend lineage snapshots between VM isolation backends
-			// (e.g. "firecracker" snapshots are compatible with "lima" workspaces).
 			if !(isVMIsolationBackend(candidateBackend) && isVMIsolationBackend(targetBackend)) {
 				continue
 			}
@@ -1227,12 +1214,7 @@ func runtimeLabelForWorkspace(ws *workspacemgr.Workspace) string {
 	fmt.Fprintf(&b, "backend=%s isolation=%s", backend, level)
 	switch strings.ToLower(backend) {
 	case "firecracker":
-		wantDedicated := strings.EqualFold(strings.TrimSpace(cfg.Isolation.VM.Mode), "dedicated")
-		mode := vmModeForRepo(repo)
-		fmt.Fprintf(&b, " vm.mode=%s", mode)
-		if wantDedicated && mode == "pool" && !selection.DarwinHasNestedVirt() {
-			fmt.Fprintf(&b, " (pool: nested-virt-off)")
-		}
+		fmt.Fprintf(&b, " vm.mode=dedicated")
 	case "process":
 		if cfg.InternalFeatures.ProcessSandbox {
 			fmt.Fprintf(&b, " processSandbox=relaxed")
