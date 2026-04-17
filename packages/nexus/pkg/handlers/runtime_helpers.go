@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
@@ -81,65 +79,17 @@ func preferredProjectRootForRuntime(ws *workspacemgr.Workspace) string {
 	candidates := make([]string, 0, 3)
 	candidates = append(candidates, strings.TrimSpace(ws.HostWorkspacePath))
 	candidates = append(candidates, strings.TrimSpace(ws.LocalWorktreePath))
-	if inferred := inferredWorktreePath(ws); inferred != "" {
+	if inferred := workspacemgr.InferredWorktreePath(ws); inferred != "" {
 		candidates = append(candidates, inferred)
 	}
 	candidates = append(candidates, strings.TrimSpace(ws.Repo))
 
 	for _, candidate := range candidates {
-		if canonical := canonicalWorkspaceCandidate(ws, candidate); canonical != "" {
+		if canonical := workspacemgr.CanonicalWorkspaceCandidate(ws, candidate); canonical != "" {
 			return canonical
 		}
 	}
 	return ""
-}
-
-func inferredWorktreePath(ws *workspacemgr.Workspace) string {
-	if ws == nil {
-		return ""
-	}
-	repoPath := canonicalExistingDir(strings.TrimSpace(ws.Repo))
-	if repoPath == "" {
-		return ""
-	}
-	ref := strings.TrimSpace(ws.CurrentRef)
-	if ref == "" {
-		ref = strings.TrimSpace(ws.TargetBranch)
-	}
-	if ref == "" {
-		ref = strings.TrimSpace(ws.Ref)
-	}
-	return filepath.Join(repoPath, ".worktrees", workspacemgr.HostWorkspaceDirName(ref))
-}
-
-func canonicalExistingDir(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return ""
-	}
-	info, err := os.Stat(path)
-	if err != nil || !info.IsDir() {
-		return ""
-	}
-	resolved := filepath.Clean(path)
-	if real, err := filepath.EvalSymlinks(resolved); err == nil && strings.TrimSpace(real) != "" {
-		resolved = filepath.Clean(real)
-	}
-	return resolved
-}
-
-func canonicalWorkspaceCandidate(ws *workspacemgr.Workspace, candidate string) string {
-	canonical := canonicalExistingDir(candidate)
-	if canonical == "" {
-		return ""
-	}
-	if ws == nil {
-		return canonical
-	}
-	if workspacemgr.IsManagedHostWorkspacePath(canonical) && !workspacemgr.HasValidHostWorkspaceMarker(canonical, ws.ID) {
-		return ""
-	}
-	return canonical
 }
 
 func checkpointLatestFirecrackerSnapshotForCreate(ctx context.Context, mgr *workspacemgr.Manager, factory *runtime.Factory, sourceWorkspaceID string, childWorkspaceID string) (string, bool, error) {

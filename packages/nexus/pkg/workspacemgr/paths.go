@@ -102,3 +102,51 @@ func normalizeLegacyWorkspacePath(ws *Workspace) bool {
 	ws.UpdatedAt = time.Now().UTC()
 	return true
 }
+
+func CanonicalExistingDir(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+	resolved := filepath.Clean(path)
+	if real, err := filepath.EvalSymlinks(resolved); err == nil && strings.TrimSpace(real) != "" {
+		resolved = filepath.Clean(real)
+	}
+	return resolved
+}
+
+func InferredWorktreePath(ws *Workspace) string {
+	if ws == nil {
+		return ""
+	}
+	repoPath := CanonicalExistingDir(strings.TrimSpace(ws.Repo))
+	if repoPath == "" {
+		return ""
+	}
+	ref := strings.TrimSpace(ws.CurrentRef)
+	if ref == "" {
+		ref = strings.TrimSpace(ws.TargetBranch)
+	}
+	if ref == "" {
+		ref = strings.TrimSpace(ws.Ref)
+	}
+	return filepath.Join(repoPath, ".worktrees", HostWorkspaceDirName(ref))
+}
+
+func CanonicalWorkspaceCandidate(ws *Workspace, candidate string) string {
+	canonical := CanonicalExistingDir(candidate)
+	if canonical == "" {
+		return ""
+	}
+	if ws == nil {
+		return canonical
+	}
+	if IsManagedHostWorkspacePath(canonical) && !HasValidHostWorkspaceMarker(canonical, ws.ID) {
+		return ""
+	}
+	return canonical
+}
