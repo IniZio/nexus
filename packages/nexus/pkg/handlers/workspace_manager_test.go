@@ -1729,7 +1729,7 @@ func TestRuntimeLabelForWorkspace_Smoke(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, ".nexus"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	cfg := `{"version":1,"isolation":{"level":"process","vm":{"mode":"dedicated"}},"internalFeatures":{"processSandbox":true}}`
+	cfg := `{"version":1,"isolation":{"level":"process"},"internalFeatures":{"processSandbox":true}}`
 	if err := os.WriteFile(filepath.Join(repo, ".nexus", "workspace.json"), []byte(cfg), 0o644); err != nil {
 		t.Fatalf("write workspace.json: %v", err)
 	}
