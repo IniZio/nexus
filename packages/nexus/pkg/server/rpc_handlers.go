@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/handlers"
-	"github.com/inizio/nexus/packages/nexus/pkg/handlers/credentials"
-	"github.com/inizio/nexus/packages/nexus/pkg/handlers/daemon"
-	"github.com/inizio/nexus/packages/nexus/pkg/handlers/project"
-	"github.com/inizio/nexus/packages/nexus/pkg/handlers/workspace"
+	"github.com/inizio/nexus/packages/nexus/pkg/credentials"
+	"github.com/inizio/nexus/packages/nexus/pkg/daemon"
+	"github.com/inizio/nexus/packages/nexus/pkg/project"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/server/pty"
 	"github.com/inizio/nexus/packages/nexus/pkg/server/rpc"
+	"github.com/inizio/nexus/packages/nexus/pkg/spotlight"
+	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
+	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
 func (s *Server) newRPCRegistry() *rpc.Registry {
@@ -84,13 +85,13 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 		if s.projectMgr == nil {
 			return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: "project manager unavailable"}
 		}
-		return project.HandleProjectGet(ctx, req, s.projectMgr, s.workspaceMgr)
+		return project.HandleProjectGet(ctx, req, s.projectMgr, wsManagerAdapter{s.workspaceMgr})
 	})
 	rpc.TypedRegister(r, "project.remove", func(ctx context.Context, req project.ProjectRemoveParams) (*project.ProjectRemoveResult, *rpckit.RPCError) {
 		if s.projectMgr == nil {
 			return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: "project manager unavailable"}
 		}
-		return project.HandleProjectRemove(ctx, req, s.projectMgr, s.workspaceMgr)
+		return project.HandleProjectRemove(ctx, req, s.projectMgr, wsManagerAdapter{s.workspaceMgr})
 	})
 	rpc.TypedRegister(r, "workspace.list", func(ctx context.Context, req workspace.WorkspaceListParams) (*workspace.WorkspaceListResult, *rpckit.RPCError) {
 		return workspace.HandleWorkspaceList(ctx, req, s.workspaceMgr)
@@ -233,14 +234,14 @@ func (s *Server) newRPCRegistry() *rpc.Registry {
 		ws := s.resolveWorkspaceTyped(req)
 		return daemon.HandleServiceCommand(ctx, req, ws, s.serviceMgr)
 	})
-	rpc.TypedRegister(r, "spotlight.expose", func(ctx context.Context, req handlers.SpotlightExposeParams) (*handlers.SpotlightExposeResult, *rpckit.RPCError) {
-		return handlers.HandleSpotlightExpose(ctx, req, s.spotlightMgr)
+	rpc.TypedRegister(r, "spotlight.start", func(ctx context.Context, req spotlight.SpotlightExposeParams) (*spotlight.SpotlightExposeResult, *rpckit.RPCError) {
+		return spotlight.HandleSpotlightExpose(ctx, req, s.spotlightMgr)
 	})
-	rpc.TypedRegister(r, "spotlight.list", func(ctx context.Context, req handlers.SpotlightListParams) (*handlers.SpotlightListResult, *rpckit.RPCError) {
-		return handlers.HandleSpotlightList(ctx, req, s.spotlightMgr)
+	rpc.TypedRegister(r, "spotlight.list", func(ctx context.Context, req spotlight.SpotlightListParams) (*spotlight.SpotlightListResult, *rpckit.RPCError) {
+		return spotlight.HandleSpotlightList(ctx, req, s.spotlightMgr)
 	})
-	rpc.TypedRegister(r, "spotlight.close", func(ctx context.Context, req handlers.SpotlightCloseParams) (*handlers.SpotlightCloseResult, *rpckit.RPCError) {
-		return handlers.HandleSpotlightClose(ctx, req, s.spotlightMgr)
+	rpc.TypedRegister(r, "spotlight.close", func(ctx context.Context, req spotlight.SpotlightCloseParams) (*spotlight.SpotlightCloseResult, *rpckit.RPCError) {
+		return spotlight.HandleSpotlightClose(ctx, req, s.spotlightMgr)
 	})
 
 	r.Register("pty.open", func(_ context.Context, _ string, params json.RawMessage, conn any) (interface{}, *rpckit.RPCError) {
@@ -285,4 +286,20 @@ func (s *Server) ptyDeps() *pty.Deps {
 		Registry:       s.ptyRegistry,
 		SessionStore:   s.ptyStore,
 	}
+}
+
+type wsManagerAdapter struct{ mgr *workspacemgr.Manager }
+
+func (a wsManagerAdapter) ListEntries() []project.WorkspaceEntry {
+	all := a.mgr.List()
+	entries := make([]project.WorkspaceEntry, 0, len(all))
+	for _, ws := range all {
+		entries = append(entries, project.WorkspaceEntry{ID: ws.ID, ProjectID: ws.ProjectID})
+	}
+	return entries
+}
+
+func (a wsManagerAdapter) RemoveWithID(id string) error {
+	_, err := a.mgr.RemoveWithOptions(id, workspacemgr.RemoveOptions{DeleteHostPath: false})
+	return err
 }

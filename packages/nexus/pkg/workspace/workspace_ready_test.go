@@ -6,11 +6,10 @@ import (
 	"time"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/services"
-	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
 )
 
 func TestHandleWorkspaceReady_Immediate(t *testing.T) {
-	ws, err := workspace.NewWorkspace(t.TempDir())
+	ws, err := NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatalf("new workspace: %v", err)
 	}
@@ -33,7 +32,7 @@ func TestHandleWorkspaceReady_Immediate(t *testing.T) {
 }
 
 func TestHandleWorkspaceReady_TimesOut(t *testing.T) {
-	ws, err := workspace.NewWorkspace(t.TempDir())
+	ws, err := NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatalf("new workspace: %v", err)
 	}
@@ -60,7 +59,7 @@ func TestHandleWorkspaceReady_TimesOut(t *testing.T) {
 }
 
 func TestHandleWorkspaceReady_Profile_InternalDogfoodDefault(t *testing.T) {
-	ws, err := workspace.NewWorkspace(t.TempDir())
+	ws, err := NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatalf("new workspace: %v", err)
 	}
@@ -92,7 +91,7 @@ func TestHandleWorkspaceReady_Profile_InternalDogfoodDefault(t *testing.T) {
 }
 
 func TestHandleWorkspaceReady_Profile_Unknown(t *testing.T) {
-	ws, err := workspace.NewWorkspace(t.TempDir())
+	ws, err := NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatalf("new workspace: %v", err)
 	}
@@ -108,7 +107,7 @@ func TestHandleWorkspaceReady_Profile_Unknown(t *testing.T) {
 }
 
 func TestHandleWorkspaceReady_OpencodeACPOptionalWhenBinaryMissing(t *testing.T) {
-	ws, err := workspace.NewWorkspace(t.TempDir())
+	ws, err := NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatalf("new workspace: %v", err)
 	}
@@ -153,7 +152,7 @@ func TestHandleWorkspaceReady_OpencodeACPOptionalWhenBinaryMissing(t *testing.T)
 }
 
 func TestHandleWorkspaceReady_StartsOpencodeACPWhenAvailable(t *testing.T) {
-	ws, err := workspace.NewWorkspace(t.TempDir())
+	ws, err := NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatalf("new workspace: %v", err)
 	}

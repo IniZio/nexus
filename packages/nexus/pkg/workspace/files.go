@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
-	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
 )
 
 type ReadFileParams struct {
@@ -98,7 +97,7 @@ type StatResult struct {
 	ModTime string `json:"modTime"`
 }
 
-func HandleReadFile(ctx context.Context, p ReadFileParams, ws *workspace.Workspace) (*ReadFileResult, *rpckit.RPCError) {
+func HandleReadFile(ctx context.Context, p ReadFileParams, ws *Workspace) (*ReadFileResult, *rpckit.RPCError) {
 	safePath, err := ws.SecurePath(p.Path)
 	if err != nil {
 		return nil, rpckit.ErrInvalidPath
@@ -124,7 +123,7 @@ func HandleReadFile(ctx context.Context, p ReadFileParams, ws *workspace.Workspa
 	}, nil
 }
 
-func HandleWriteFile(ctx context.Context, p WriteFileParams, ws *workspace.Workspace) (*WriteFileResult, *rpckit.RPCError) {
+func HandleWriteFile(ctx context.Context, p WriteFileParams, ws *Workspace) (*WriteFileResult, *rpckit.RPCError) {
 	if p.Path == "" {
 		return nil, rpckit.ErrInvalidParams
 	}
@@ -164,7 +163,7 @@ func HandleWriteFile(ctx context.Context, p WriteFileParams, ws *workspace.Works
 	}, nil
 }
 
-func HandleExists(ctx context.Context, p ExistsParams, ws *workspace.Workspace) (*ExistsResult, *rpckit.RPCError) {
+func HandleExists(ctx context.Context, p ExistsParams, ws *Workspace) (*ExistsResult, *rpckit.RPCError) {
 	safePath, err := ws.SecurePath(p.Path)
 	if err != nil {
 		return nil, rpckit.ErrInvalidPath
@@ -179,7 +178,7 @@ func HandleExists(ctx context.Context, p ExistsParams, ws *workspace.Workspace) 
 	}, nil
 }
 
-func HandleReaddir(ctx context.Context, p ReaddirParams, ws *workspace.Workspace) (*ReaddirResult, *rpckit.RPCError) {
+func HandleReaddir(ctx context.Context, p ReaddirParams, ws *Workspace) (*ReaddirResult, *rpckit.RPCError) {
 	path := "."
 	if p.Path != "" {
 		path = p.Path
@@ -221,7 +220,7 @@ func HandleReaddir(ctx context.Context, p ReaddirParams, ws *workspace.Workspace
 	}, nil
 }
 
-func HandleMkdir(ctx context.Context, p MkdirParams, ws *workspace.Workspace) (*WriteFileResult, *rpckit.RPCError) {
+func HandleMkdir(ctx context.Context, p MkdirParams, ws *Workspace) (*WriteFileResult, *rpckit.RPCError) {
 	if p.Path == "" {
 		return nil, rpckit.ErrInvalidParams
 	}
@@ -246,7 +245,7 @@ func HandleMkdir(ctx context.Context, p MkdirParams, ws *workspace.Workspace) (*
 	}, nil
 }
 
-func HandleRm(ctx context.Context, p RmParams, ws *workspace.Workspace) (*WriteFileResult, *rpckit.RPCError) {
+func HandleRm(ctx context.Context, p RmParams, ws *Workspace) (*WriteFileResult, *rpckit.RPCError) {
 	if p.Path == "" {
 		return nil, rpckit.ErrInvalidParams
 	}
@@ -275,7 +274,7 @@ func HandleRm(ctx context.Context, p RmParams, ws *workspace.Workspace) (*WriteF
 	}, nil
 }
 
-func HandleStat(ctx context.Context, p StatParams, ws *workspace.Workspace) (*StatResult, *rpckit.RPCError) {
+func HandleStat(ctx context.Context, p StatParams, ws *Workspace) (*StatResult, *rpckit.RPCError) {
 	safePath, err := ws.SecurePath(p.Path)
 	if err != nil {
 		return nil, rpckit.ErrInvalidPath

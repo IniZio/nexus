@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/authrelay"
+	"github.com/inizio/nexus/packages/nexus/pkg/infra/relay"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )

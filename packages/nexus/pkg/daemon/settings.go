@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/handlers/workspace"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/store"
+	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
 )
 
 type DaemonSettingsGetParams struct{}

@@ -9,10 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/authrelay"
+	"github.com/inizio/nexus/packages/nexus/pkg/infra/relay"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/safeenv"
-	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
 )
 
 const (
@@ -41,11 +40,11 @@ type ExecResult struct {
 	Command  string `json:"command"`
 }
 
-func HandleExec(ctx context.Context, req ExecParams, ws *workspace.Workspace) (*ExecResult, *rpckit.RPCError) {
+func HandleExec(ctx context.Context, req ExecParams, ws *Workspace) (*ExecResult, *rpckit.RPCError) {
 	return HandleExecWithAuthRelay(ctx, req, ws, nil)
 }
 
-func HandleExecWithAuthRelay(ctx context.Context, req ExecParams, ws *workspace.Workspace, broker *authrelay.Broker) (*ExecResult, *rpckit.RPCError) {
+func HandleExecWithAuthRelay(ctx context.Context, req ExecParams, ws *Workspace, broker *authrelay.Broker) (*ExecResult, *rpckit.RPCError) {
 	if req.Command == "" {
 		return nil, rpckit.ErrInvalidParams
 	}

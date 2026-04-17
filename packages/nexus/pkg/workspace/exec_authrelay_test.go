@@ -6,12 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/authrelay"
-	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
+	authrelay "github.com/inizio/nexus/packages/nexus/pkg/infra/relay"
 )
 
 func TestHandleExecWithAuthRelay_InjectsEnvAndConsumesTokenOnce(t *testing.T) {
-	ws, err := workspace.NewWorkspace(t.TempDir())
+	ws, err := NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatalf("new workspace: %v", err)
 	}
@@ -62,7 +61,7 @@ func TestHandleExecWithAuthRelay_InjectsEnvAndConsumesTokenOnce(t *testing.T) {
 }
 
 func TestHandleExecWithAuthRelay_RejectsWrongWorkspace(t *testing.T) {
-	ws, err := workspace.NewWorkspace(t.TempDir())
+	ws, err := NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatalf("new workspace: %v", err)
 	}
@@ -86,7 +85,7 @@ func TestHandleExecWithAuthRelay_RejectsWrongWorkspace(t *testing.T) {
 }
 
 func TestHandleExecWithAuthRelay_DoesNotInheritDaemonSecretEnv(t *testing.T) {
-	ws, err := workspace.NewWorkspace(t.TempDir())
+	ws, err := NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatalf("new workspace: %v", err)
 	}

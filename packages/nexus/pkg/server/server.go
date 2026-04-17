@@ -13,9 +13,9 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/inizio/nexus/packages/nexus/pkg/auth"
-	"github.com/inizio/nexus/packages/nexus/pkg/authrelay"
 	"github.com/inizio/nexus/packages/nexus/pkg/compose"
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
+	"github.com/inizio/nexus/packages/nexus/pkg/infra/relay"
 	"github.com/inizio/nexus/packages/nexus/pkg/lifecycle"
 	"github.com/inizio/nexus/packages/nexus/pkg/project"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"

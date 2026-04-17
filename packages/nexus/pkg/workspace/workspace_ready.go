@@ -7,7 +7,6 @@ import (
 
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/services"
-	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
 )
 
 const opencodeACPServiceName = "opencode-acp"
@@ -55,7 +54,7 @@ type WorkspaceReadyResult struct {
 	LastResults map[string]int `json:"lastResults"`
 }
 
-func HandleWorkspaceReady(ctx context.Context, p WorkspaceReadyParams, ws *workspace.Workspace, svcMgr *services.Manager) (*WorkspaceReadyResult, *rpckit.RPCError) {
+func HandleWorkspaceReady(ctx context.Context, p WorkspaceReadyParams, ws *Workspace, svcMgr *services.Manager) (*WorkspaceReadyResult, *rpckit.RPCError) {
 	if p.Profile != "" {
 		checks, ok := readinessProfileForWorkspace(ws.Path(), p.Profile)
 		if !ok {
@@ -128,7 +127,7 @@ func HandleWorkspaceReady(ctx context.Context, p WorkspaceReadyParams, ws *works
 	}
 }
 
-func runReadinessCheck(ctx context.Context, check WorkspaceReadyCheck, ws *workspace.Workspace, workspaceID string, svcMgr *services.Manager) (int, bool) {
+func runReadinessCheck(ctx context.Context, check WorkspaceReadyCheck, ws *Workspace, workspaceID string, svcMgr *services.Manager) (int, bool) {
 	switch checkType(check) {
 	case "service":
 		if check.ServiceName == "" || svcMgr == nil {

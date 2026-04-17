@@ -6,6 +6,8 @@ status: active
 sources:
   - docs/prds/2026-04-17-code-cleanup/PRD.md
   - docs/prds/2026-04-17-code-cleanup/2026-04-17-workspace-manager-redesign/PRD.md
+child_prds:
+  - docs/prds/code-cleanup-current/2026-04-18-architecture-redesign/PRD.md
 ---
 
 # Code Cleanup — Current State

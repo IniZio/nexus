@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/spotlight"
-	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
@@ -29,7 +28,7 @@ func WorkspaceInfoWorkspaceID(p WorkspaceInfoParams) string {
 
 func HandleWorkspaceInfo(
 	workspaceID string,
-	defaultWS *workspace.Workspace,
+	defaultWS *Workspace,
 	workspaceMgr *workspacemgr.Manager,
 	spotlightMgr *spotlight.Manager,
 ) map[string]interface{} {

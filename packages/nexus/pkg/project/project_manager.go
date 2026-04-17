@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/project"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
-	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
 type ProjectListParams struct{}
@@ -26,28 +24,38 @@ type ProjectRemoveParams struct {
 }
 
 type ProjectListResult struct {
-	Projects []*project.Project `json:"projects"`
+	Projects []*Project `json:"projects"`
 }
 
 type ProjectCreateResult struct {
-	Project *project.Project `json:"project"`
+	Project *Project `json:"project"`
+}
+
+type WorkspaceEntry struct {
+	ID        string `json:"id"`
+	ProjectID string `json:"projectId,omitempty"`
 }
 
 type ProjectGetResult struct {
-	Project    *project.Project       `json:"project"`
-	Workspaces []*workspacemgr.Workspace `json:"workspaces,omitempty"`
+	Project    *Project         `json:"project"`
+	Workspaces []WorkspaceEntry `json:"workspaces,omitempty"`
 }
 
 type ProjectRemoveResult struct {
 	Removed bool `json:"removed"`
 }
 
-func HandleProjectList(_ context.Context, _ ProjectListParams, mgr *project.Manager) (*ProjectListResult, *rpckit.RPCError) {
+type WorkspaceManager interface {
+	ListEntries() []WorkspaceEntry
+	RemoveWithID(id string) error
+}
+
+func HandleProjectList(_ context.Context, _ ProjectListParams, mgr *Manager) (*ProjectListResult, *rpckit.RPCError) {
 	all := mgr.List()
 	return &ProjectListResult{Projects: all}, nil
 }
 
-func HandleProjectCreate(_ context.Context, req ProjectCreateParams, mgr *project.Manager) (*ProjectCreateResult, *rpckit.RPCError) {
+func HandleProjectCreate(_ context.Context, req ProjectCreateParams, mgr *Manager) (*ProjectCreateResult, *rpckit.RPCError) {
 	repo := strings.TrimSpace(req.Repo)
 	if repo == "" {
 		return nil, rpckit.ErrInvalidParams
@@ -59,16 +67,14 @@ func HandleProjectCreate(_ context.Context, req ProjectCreateParams, mgr *projec
 	return &ProjectCreateResult{Project: project}, nil
 }
 
-func HandleProjectGet(_ context.Context, req ProjectGetParams, projMgr *project.Manager, wsMgr *workspacemgr.Manager) (*ProjectGetResult, *rpckit.RPCError) {
+func HandleProjectGet(_ context.Context, req ProjectGetParams, projMgr *Manager, wsMgr WorkspaceManager) (*ProjectGetResult, *rpckit.RPCError) {
 	p, ok := projMgr.Get(req.ID)
 	if !ok {
 		return nil, rpckit.ErrWorkspaceNotFound
 	}
 
-	// Get workspaces for this project
-	var workspaces []*workspacemgr.Workspace
-	allWorkspaces := wsMgr.List()
-	for _, ws := range allWorkspaces {
+	var workspaces []WorkspaceEntry
+	for _, ws := range wsMgr.ListEntries() {
 		if ws.ProjectID == p.ID {
 			workspaces = append(workspaces, ws)
 		}
@@ -80,12 +86,10 @@ func HandleProjectGet(_ context.Context, req ProjectGetParams, projMgr *project.
 	}, nil
 }
 
-func HandleProjectRemove(_ context.Context, req ProjectRemoveParams, projMgr *project.Manager, wsMgr *workspacemgr.Manager) (*ProjectRemoveResult, *rpckit.RPCError) {
-	// First remove all workspaces in this project
-	allWorkspaces := wsMgr.List()
-	for _, ws := range allWorkspaces {
+func HandleProjectRemove(_ context.Context, req ProjectRemoveParams, projMgr *Manager, wsMgr WorkspaceManager) (*ProjectRemoveResult, *rpckit.RPCError) {
+	for _, ws := range wsMgr.ListEntries() {
 		if ws.ProjectID == req.ID {
-			_, _ = wsMgr.RemoveWithOptions(ws.ID, workspacemgr.RemoveOptions{DeleteHostPath: false})
+			_ = wsMgr.RemoveWithID(ws.ID)
 		}
 	}
 

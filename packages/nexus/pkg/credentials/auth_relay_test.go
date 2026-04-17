@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/authrelay"
+	authrelay "github.com/inizio/nexus/packages/nexus/pkg/infra/relay"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 

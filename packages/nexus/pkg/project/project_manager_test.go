@@ -1,4 +1,4 @@
-package project
+package project_test
 
 import (
 	"context"
@@ -9,13 +9,29 @@ import (
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
+type wsMgrAdapter struct{ mgr *workspacemgr.Manager }
+
+func (a wsMgrAdapter) ListEntries() []project.WorkspaceEntry {
+	all := a.mgr.List()
+	entries := make([]project.WorkspaceEntry, 0, len(all))
+	for _, ws := range all {
+		entries = append(entries, project.WorkspaceEntry{ID: ws.ID, ProjectID: ws.ProjectID})
+	}
+	return entries
+}
+
+func (a wsMgrAdapter) RemoveWithID(id string) error {
+	_, err := a.mgr.RemoveWithOptions(id, workspacemgr.RemoveOptions{DeleteHostPath: false})
+	return err
+}
+
 func TestHandleProjectCreateAndList(t *testing.T) {
 	root := t.TempDir()
 	wsMgr := workspacemgr.NewManager(root)
 	projMgr := project.NewManager(root, wsMgr.ProjectRepository())
 	wsMgr.SetProjectManager(projMgr)
 
-	createResult, rpcErr := HandleProjectCreate(context.Background(), ProjectCreateParams{Repo: "git@example/repo.git"}, projMgr)
+	createResult, rpcErr := project.HandleProjectCreate(context.Background(), project.ProjectCreateParams{Repo: "git@example/repo.git"}, projMgr)
 	if rpcErr != nil {
 		t.Fatalf("unexpected create rpc error: %+v", rpcErr)
 	}
@@ -23,7 +39,7 @@ func TestHandleProjectCreateAndList(t *testing.T) {
 		t.Fatalf("expected created project, got %#v", createResult)
 	}
 
-	listResult, rpcErr := HandleProjectList(context.Background(), ProjectListParams{}, projMgr)
+	listResult, rpcErr := project.HandleProjectList(context.Background(), project.ProjectListParams{}, projMgr)
 	if rpcErr != nil {
 		t.Fatalf("unexpected list rpc error: %+v", rpcErr)
 	}
@@ -38,7 +54,7 @@ func TestHandleProjectGetIncludesWorkspaces(t *testing.T) {
 	projMgr := project.NewManager(root, wsMgr.ProjectRepository())
 	wsMgr.SetProjectManager(projMgr)
 
-	project, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")
+	p, err := projMgr.GetOrCreateForRepo("git@example/repo.git", "repo-test")
 	if err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
@@ -51,7 +67,7 @@ func TestHandleProjectGetIncludesWorkspaces(t *testing.T) {
 		t.Fatalf("create workspace: %v", err)
 	}
 
-	getResult, rpcErr := HandleProjectGet(context.Background(), ProjectGetParams{ID: project.ID}, projMgr, wsMgr)
+	getResult, rpcErr := project.HandleProjectGet(context.Background(), project.ProjectGetParams{ID: p.ID}, projMgr, wsMgrAdapter{wsMgr})
 	if rpcErr != nil {
 		t.Fatalf("unexpected get rpc error: %+v", rpcErr)
 	}
@@ -69,7 +85,7 @@ func TestHandleProjectRemove_RemovesProject(t *testing.T) {
 	projMgr := project.NewManager(root, wsMgr.ProjectRepository())
 	wsMgr.SetProjectManager(projMgr)
 
-	created, rpcErr := HandleProjectCreate(context.Background(), ProjectCreateParams{Repo: "git@example/repo-remove.git"}, projMgr)
+	created, rpcErr := project.HandleProjectCreate(context.Background(), project.ProjectCreateParams{Repo: "git@example/repo-remove.git"}, projMgr)
 	if rpcErr != nil {
 		t.Fatalf("create project: %+v", rpcErr)
 	}
@@ -77,7 +93,7 @@ func TestHandleProjectRemove_RemovesProject(t *testing.T) {
 		t.Fatalf("expected created project, got %#v", created)
 	}
 
-	removeResult, rpcErr := HandleProjectRemove(context.Background(), ProjectRemoveParams{ID: created.Project.ID}, projMgr, wsMgr)
+	removeResult, rpcErr := project.HandleProjectRemove(context.Background(), project.ProjectRemoveParams{ID: created.Project.ID}, projMgr, wsMgrAdapter{wsMgr})
 	if rpcErr != nil {
 		t.Fatalf("remove project: %+v", rpcErr)
 	}
@@ -95,17 +111,17 @@ func TestHandleProjectList_ReturnsDeterministicOrder(t *testing.T) {
 	projMgr := project.NewManager(root, wsMgr.ProjectRepository())
 	wsMgr.SetProjectManager(projMgr)
 
-	first, rpcErr := HandleProjectCreate(context.Background(), ProjectCreateParams{Repo: "git@example/alpha.git"}, projMgr)
+	first, rpcErr := project.HandleProjectCreate(context.Background(), project.ProjectCreateParams{Repo: "git@example/alpha.git"}, projMgr)
 	if rpcErr != nil {
 		t.Fatalf("create first project: %+v", rpcErr)
 	}
 	time.Sleep(2 * time.Millisecond)
-	second, rpcErr := HandleProjectCreate(context.Background(), ProjectCreateParams{Repo: "git@example/bravo.git"}, projMgr)
+	second, rpcErr := project.HandleProjectCreate(context.Background(), project.ProjectCreateParams{Repo: "git@example/bravo.git"}, projMgr)
 	if rpcErr != nil {
 		t.Fatalf("create second project: %+v", rpcErr)
 	}
 
-	listResult, rpcErr := HandleProjectList(context.Background(), ProjectListParams{}, projMgr)
+	listResult, rpcErr := project.HandleProjectList(context.Background(), project.ProjectListParams{}, projMgr)
 	if rpcErr != nil {
 		t.Fatalf("project list: %+v", rpcErr)
 	}

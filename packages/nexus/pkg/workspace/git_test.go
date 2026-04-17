@@ -7,14 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
 )
 
-func createGitWorkspace(t *testing.T) *workspace.Workspace {
+func createGitWorkspace(t *testing.T) *Workspace {
 	t.Helper()
 	root := t.TempDir()
-	ws, err := workspace.NewWorkspace(root)
+	ws, err := NewWorkspace(root)
 	if err != nil {
 		t.Fatalf("new workspace: %v", err)
 	}

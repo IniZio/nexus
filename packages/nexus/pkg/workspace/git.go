@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
-	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
 )
 
 type GitCommandParams struct {
@@ -16,7 +15,7 @@ type GitCommandParams struct {
 	Params      map[string]interface{} `json:"params,omitempty"`
 }
 
-func HandleGitCommand(ctx context.Context, p GitCommandParams, ws *workspace.Workspace) (map[string]interface{}, *rpckit.RPCError) {
+func HandleGitCommand(ctx context.Context, p GitCommandParams, ws *Workspace) (map[string]interface{}, *rpckit.RPCError) {
 	if p.Action == "" {
 		return nil, rpckit.ErrInvalidParams
 	}
