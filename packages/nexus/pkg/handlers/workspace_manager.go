@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
-	"github.com/inizio/nexus/packages/nexus/pkg/credsbundle"
 	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
@@ -286,12 +285,6 @@ func resolveCreateSpec(req WorkspaceCreateParams, projMgr *projectmgr.Manager) (
 	spec := req.Spec
 	if strings.TrimSpace(req.ConfigBundle) != "" {
 		spec.ConfigBundle = req.ConfigBundle
-	} else if strings.TrimSpace(spec.ConfigBundle) == "" {
-		// No bundle from client — build from daemon host $HOME so thin clients
-		// (e.g. the macOS app) get credentials forwarded automatically.
-		if bundle, err := credsbundle.Build(); err == nil && strings.TrimSpace(bundle) != "" {
-			spec.ConfigBundle = bundle
-		}
 	}
 	if strings.TrimSpace(req.WorkspaceName) != "" {
 		spec.WorkspaceName = strings.TrimSpace(req.WorkspaceName)
