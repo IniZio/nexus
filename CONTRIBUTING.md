@@ -5,9 +5,6 @@
 Core packages:
 
 - `packages/nexus` — Workspace Daemon (Go, JSON-RPC over WebSocket)
-- `packages/sdk/js` — Workspace SDK (TypeScript, `@nexus/sdk`)
-- `packages/e2e/flows/` — E2E test harness and flows
-- `packages/nexus-ui/` — Web UI (Vue, served by the daemon)
 - `packages/nexus-swift/` — macOS app (NexusApp, embeds the daemon for local dev)
 
 ## Setup

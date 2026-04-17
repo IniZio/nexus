@@ -9,12 +9,9 @@ Unit tests are colocated with the code they test:
 ```bash
 # Go packages
 cd packages/nexus && go test ./...
-
-# TypeScript SDK
-cd packages/sdk/js && pnpm test
 ```
 
-Go unit tests use the standard `*_test.go` naming convention. TypeScript tests use Jest.
+Go unit tests use the standard `*_test.go` naming convention.
 
 ## Tier 2 — Integration Tests
 
@@ -82,32 +79,7 @@ func TestAllDrivers(t *testing.T) {
 4. Use `CreateWorkspace`, `ExecInWorkspace`, `ForkWorkspace` from harness
 5. `t.Parallel()` is supported per driver sub-test
 
-## Tier 3 — E2E Tests
-
-E2E tests live in `packages/e2e/flows/` and test against a live daemon + runtime.
-
-```bash
-# Full CI-equivalent (requires daemon + runtime)
-task ci:flows-e2e
-
-# Soft-skip mode (no runtime required)
-NEXUS_E2E_STRICT_RUNTIME=0 task ci:flows-e2e
-```
-
-### Environment Variables
-
-| Variable | Description |
-|---|---|
-| `NEXUS_DAEMON_WS` | WebSocket URL for daemon connection |
-| `NEXUS_DAEMON_TOKEN` | Auth token for daemon |
-| `NEXUS_DAEMON_PORT` | Daemon port (default 63987) |
-| `NEXUS_E2E_STRICT_RUNTIME=0` | Allow soft skips when no VM runtime installed |
-| `CI=true` | Enforces runtime expectations (always set in CI) |
-| `NEXUS_CLI_PATH` | Path to nexus CLI binary (set by `flows-e2e-setup.sh`) |
-
-### Setup Script
-
-`scripts/ci/flows-e2e-setup.sh` builds the CLI, initializes a seed repo, and writes `.nexus-e2e-env.sh` with `NEXUS_CLI_PATH` and `PATH` for the test environment.
+Integration tests live in `packages/nexus/test/integration/`.
 
 ## XCUITests (macOS App)
 
@@ -131,8 +103,7 @@ task ci
 Which runs:
 - `ci:go-fix` — Go fix style check
 - `ci:coverage` — Coverage report
-- `ci:core` — Build + lint + test all packages
-- `ci:flows-e2e` — Runtime E2E flows (strict when `CI=true`)
+- `ci:core` — Build + lint + test
 
 ## Coverage
 

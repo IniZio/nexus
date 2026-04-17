@@ -1,6 +1,3 @@
-# E2E local env (scripts/ci/flows-e2e-setup.sh)
-.nexus-e2e-env.sh
-
 # Binaries
 /nexus
 /nexus-*
@@ -128,3 +125,5 @@ nexus-firecracker-agent
 
 # CocoIndex Code (ccc)
 /.cocoindex_code/
+.opencode/
+.opencode/background-tasks/

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Nexus remote workspace core: **Workspace Daemon** (Go, `packages/nexus`) and **Workspace SDK** (TypeScript, `packages/sdk/js`). Keep changes centered on those packages; do not reintroduce removed non-core surfaces.
+Nexus remote workspace core: **Workspace Daemon** (Go, `packages/nexus`). Keep changes centered on that package; do not reintroduce removed non-core surfaces.
 
 **Architecture is firecracker-only.** The only supported VM backend is Firecracker. Lima was removed. The `process` sandbox driver provides process-isolation fallback for environments where VMs are unavailable.
 
@@ -56,8 +56,6 @@ harness/      reusable e2e support code only
 |---|---|---|
 | `packages/nexus/pkg/handlers/workspace_manager.go` | ~1246 | over 400 limit |
 | `packages/nexus/pkg/workspacemgr/manager.go` | ~1268 | over 300/400 limits |
-| `packages/sdk/js/src/browser-client.ts` | ~181 | OK |
-| `packages/sdk/js/src/client.ts` | ~159 | OK |
 
 ## Agent Skills
 
@@ -95,7 +93,7 @@ Complete work fully; verify builds, tests, types, and lint; provide evidence; us
 
 ## Documentation
 
-User-facing docs live under `docs/`: `guides/`, `reference/`, `superpowers/`, and `roadmap.md`. Contributing guidance is in `CONTRIBUTING.md` at the repository root. Only document implemented behavior. Do not document removed module surfaces as current capabilities.
+User-facing docs live under `docs/`: `guides/`, `reference/`. Contributing guidance is in `CONTRIBUTING.md` at the repository root. Only document implemented behavior. Do not document removed module surfaces as current capabilities.
 
 ```
 docs/
@@ -104,15 +102,12 @@ docs/
 │   ├── installation.md
 │   ├── operations.md
 │   ├── release-signing.md
-│   ├── testing.md
-│   └── agent-skills.md
-├── reference/
-│   ├── cli.md
-│   ├── sdk.md
-│   ├── workspace-config.md
-│   ├── host-auth-bundle.md
-│   └── project-structure.md
-└── roadmap.md
+│   └── testing.md
+└── reference/
+    ├── cli.md
+    ├── workspace-config.md
+    ├── host-auth-bundle.md
+    └── project-structure.md
 ```
 
 ## Project scaffold

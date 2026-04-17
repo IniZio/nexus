@@ -2,11 +2,8 @@
   "name": "nexus-workspace-monorepo",
   "version": "1.0.0",
   "private": true,
-  "description": "Nexus remote workspace daemon and SDK",
-  "workspaces": [
-    "packages/*",
-    "packages/sdk/*"
-  ],
+  "description": "Nexus remote workspace daemon",
+  "workspaces": [],
   "scripts": {
     "build": "task build",
     "test": "task test",
@@ -29,7 +26,6 @@
   "keywords": [
     "workspace",
     "remote",
-    "sdk",
     "daemon"
   ],
   "author": "Nexus Team",

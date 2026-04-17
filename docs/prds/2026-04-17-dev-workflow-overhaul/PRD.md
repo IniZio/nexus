@@ -25,13 +25,11 @@ Nexus has completed a radical simplification: the architecture is now Firecracke
 ```
 packages/
 ├── nexus/           # Go daemon + CLI (firecracker-only runtime)
-├── nexus-swift/      # macOS app (NexusApp) embedding the daemon
-├── sdk/js/           # TypeScript SDK (@nexus/sdk)
-└── e2e/flows/       # E2E test harness
+└── nexus-swift/      # macOS app (NexusApp) embedding the daemon
 
 docs/
 ├── guides/           # installation, operations, release-signing
-├── reference/        # cli, sdk, workspace-config, host-auth-bundle, project-structure
+├── reference/        # cli, workspace-config, host-auth-bundle, project-structure
 ├── superpowers/     # plans/
 └── roadmap.md       # (absent — needs creation)
 
@@ -127,19 +125,17 @@ pnpm install
 
 ## Architecture Overview
 
-Nexus has two core packages:
+Nexus has one core package:
 
 - `packages/nexus` — Go daemon exposing JSON-RPC over WebSocket; runs on remote Linux with Firecracker VMs
-- `packages/sdk/js` — TypeScript SDK (`@nexus/sdk`) for client connectivity
 
 Key constraint: **the daemon may run on a different machine than the user**. User credentials travel via `configBundle` in `workspace.create` RPC — never via symlinks to the daemon's `$HOME`.
 
 ## Building
 
 ```bash
-task build              # build all packages (nexus, sdk, nexus-ui)
+task build              # build Go daemon
 task build:workspace-daemon   # build Go daemon only
-task build:workspace-sdk     # build TypeScript SDK only
 ```
 
 ### Daemon Development
@@ -170,18 +166,11 @@ task test:unit       # run NexusAppTests (unit tests, no UI)
 
 ## Testing Tiers
 
-Nexus has three testing tiers:
+Nexus has one testing tier:
 
 | Tier | What | How to Run |
 |---|---|---|
-| Unit | Go package tests, TypeScript package tests | `task test:workspace-daemon`, `task test:workspace-sdk` |
-| Integration | Go integration tests with driver harness | `task test:workspace-daemon` (includes integration) |
-| E2E | Playwright flows against live daemon + runtime | `task ci:flows-e2e` |
-
-For local E2E without a runtime installed:
-```bash
-NEXUS_E2E_STRICT_RUNTIME=0 task ci:flows-e2e
-```
+| Unit | Go package tests | `task test:workspace-daemon` |
 
 ## Release Pipeline
 
@@ -271,25 +260,17 @@ test:smoke        Run quick smoke tests
 test:unit         Run NexusAppTests (unit only)
 test              Run all XCUITests
 test:workspace-daemon  Go test ./...
-test:workspace-sdk    pnpm test
 
 ## build — all packages
-build                 Build all (nexus, sdk, nexus-ui)
+build                 Build (nexus only)
 build:workspace-daemon
-build:workspace-sdk
-build:nexus-ui
 
 ## lint — type/lint checks
 lint                  Run all lint checks
 lint:workspace-daemon
-lint:workspace-sdk
 
 ## ci — CI pipeline equivalents
-ci                    Full local CI (go-fix, coverage, core, flows-e2e)
-ci:core               Core CI (Linux)
-ci:go-fix             Go Fix Check
-ci:coverage           Go Coverage
-ci:flows-e2e          Runtime backend selection E2E
+ci                    Full local CI (go-fix, coverage, core)
 
 ## housekeeping
 clean               Remove all build artifacts
@@ -316,12 +297,6 @@ packages/nexus/pkg/**/*_test.go     # unit + integration tests
 packages/nexus/test/integration/     # integration harness + tests
 packages/nexus/test/integration/driver_test.go
 packages/nexus/test/integration/harness.go
-```
-
-TypeScript tests:
-```
-packages/sdk/js/src/**/*.test.ts
-packages/e2e/flows/src/**/*.test.ts
 ```
 
 XCUITests:
