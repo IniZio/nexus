@@ -91,12 +91,9 @@ func TestAllDrivers(t *testing.T) {
 	}
 }
 
-func TestPoolCoexistence(t *testing.T) {
+func TestWorkspaceCoexistence(t *testing.T) {
 	for _, driver := range AllDrivers {
 		driver := driver
-		if driver.Mode != "pool" && driver.Mode != "process" {
-			continue
-		}
 		t.Run(driver.Backend+"/"+driver.Mode, func(t *testing.T) {
 			t.Parallel()
 			driver.SkipUnless(t)

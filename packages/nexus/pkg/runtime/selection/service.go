@@ -35,6 +35,13 @@ var (
 		cmd := exec.CommandContext(ctx, binary, args...)
 		return cmd.CombinedOutput()
 	}
+	darwinHasNestedVirtFn = func() bool {
+		out, err := exec.Command("sysctl", "-n", "kern.hv_support").Output()
+		if err != nil {
+			return false
+		}
+		return strings.TrimSpace(string(out)) == "1"
+	}
 )
 
 var runtimeSetupRunner = func(ctx context.Context, repo, backend string) error {
@@ -141,13 +148,17 @@ func runtimeSetupManualPrivilegeError(repo string) error {
 // SelectBackend returns the driver name and mode for the given platform and config.
 // Selection is deterministic from platform + config — no runtime probing.
 func SelectBackend(platform string, cfg *config.WorkspaceConfig) (backend string, mode string, err error) {
+	requestedLevel := ""
+	requestedMode := ""
 	level := "vm"
 	vmMode := ""
 	if cfg != nil {
-		if cfg.Isolation.Level != "" {
-			level = cfg.Isolation.Level
+		requestedLevel = strings.TrimSpace(cfg.Isolation.Level)
+		requestedMode = strings.TrimSpace(cfg.Isolation.VM.Mode)
+		if requestedLevel != "" {
+			level = requestedLevel
 		}
-		vmMode = cfg.Isolation.VM.Mode
+		vmMode = requestedMode
 	}
 
 	switch platform {
@@ -165,12 +176,13 @@ func SelectBackend(platform string, cfg *config.WorkspaceConfig) (backend string
 			return "process", "process", nil
 		}
 		if vmMode == "" {
-			vmMode = "pool" // macOS default
+			vmMode = "dedicated"
 		}
-		// nested virt check is a hardware fact, not a preflight probe
-		if vmMode == "dedicated" && !darwinHasNestedVirt() {
-			fmt.Fprintf(os.Stderr, "warning: nested virtualization unavailable, falling back to lima/pool\n")
-			vmMode = "pool"
+		if !darwinHasNestedVirtFn() {
+			if requestedLevel == "vm" || requestedMode != "" {
+				return "", "", fmt.Errorf("vm isolation requires nested virtualization on macOS; use process isolation instead")
+			}
+			return "process", "process", nil
 		}
 		return "lima", vmMode, nil
 
@@ -183,17 +195,7 @@ func SelectBackend(platform string, cfg *config.WorkspaceConfig) (backend string
 // current Darwin host by reading kern.hv_support. Returns false on non-darwin
 // or if the sysctl is absent.
 func DarwinHasNestedVirt() bool {
-	return darwinHasNestedVirt()
-}
-
-// darwinHasNestedVirt reads kern.hv_support once.
-// Returns false on non-darwin or if the sysctl is absent.
-func darwinHasNestedVirt() bool {
-	out, err := exec.Command("sysctl", "-n", "kern.hv_support").Output()
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(string(out)) == "1"
+	return darwinHasNestedVirtFn()
 }
 
 func resolveNexusBinaryPath() (string, error) {

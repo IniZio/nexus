@@ -560,26 +560,10 @@ func TestIsTransientLimaShellError(t *testing.T) {
 	}
 }
 
-func TestStartLimaShellPoolModeWrapsNamespace(t *testing.T) {
-	d := &GuestDriver{
-		workspaces: map[string]*workspaceState{
-			"ws-abc123": {mode: "pool"},
-		},
-	}
-	cmd := d.buildRemoteShellCmd("ws-abc123")
-	if !strings.Contains(cmd, "unshare --mount") {
-		t.Error("pool mode shell command must be wrapped with unshare --mount")
-	}
-}
-
-func TestStartLimaShellDedicatedModeNoNamespace(t *testing.T) {
-	d := &GuestDriver{
-		workspaces: map[string]*workspaceState{
-			"ws-abc123": {mode: "dedicated"},
-		},
-	}
+func TestStartLimaShellDoesNotWrapNamespace(t *testing.T) {
+	d := &GuestDriver{}
 	cmd := d.buildRemoteShellCmd("ws-abc123")
 	if strings.Contains(cmd, "unshare") {
-		t.Error("dedicated mode shell command must not use unshare")
+		t.Error("shell command must not use unshare")
 	}
 }

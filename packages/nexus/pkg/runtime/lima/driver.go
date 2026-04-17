@@ -56,12 +56,7 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 		req.Options = map[string]string{}
 	}
 	if strings.TrimSpace(req.Options["lima.instance"]) == "" {
-		mode := strings.ToLower(strings.TrimSpace(req.Options["vm.mode"]))
-		if mode == "dedicated" {
-			req.Options["lima.instance"] = dedicatedLimaInstance(req.WorkspaceID)
-		} else {
-			req.Options["lima.instance"] = defaultLimaInstance
-		}
+		req.Options["lima.instance"] = dedicatedLimaInstance(req.WorkspaceID)
 	}
 	return d.inner.Create(ctx, req)
 }

@@ -1226,13 +1226,9 @@ func runtimeLabelForWorkspace(ws *workspacemgr.Workspace) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "backend=%s isolation=%s", backend, level)
 	switch strings.ToLower(backend) {
-	case "firecracker":
-		wantDedicated := strings.EqualFold(strings.TrimSpace(cfg.Isolation.VM.Mode), "dedicated")
+	case "firecracker", "lima":
 		mode := vmModeForRepo(repo)
 		fmt.Fprintf(&b, " vm.mode=%s", mode)
-		if wantDedicated && mode == "pool" && !selection.DarwinHasNestedVirt() {
-			fmt.Fprintf(&b, " (pool: nested-virt-off)")
-		}
 	case "process":
 		if cfg.InternalFeatures.ProcessSandbox {
 			fmt.Fprintf(&b, " processSandbox=relaxed")
@@ -1246,15 +1242,15 @@ func runtimeLabelForWorkspace(ws *workspacemgr.Workspace) string {
 func vmModeForRepo(repo string) string {
 	repo = strings.TrimSpace(repo)
 	if repo == "" {
-		return "pool"
+		return "dedicated"
 	}
 	cfg, _, err := config.LoadWorkspaceConfig(repo)
 	if err != nil {
-		return "pool"
-	}
-	mode := strings.ToLower(strings.TrimSpace(cfg.Isolation.VM.Mode))
-	if mode == "dedicated" {
 		return "dedicated"
 	}
-	return "pool"
+	mode := strings.ToLower(strings.TrimSpace(cfg.Isolation.VM.Mode))
+	if mode == "" || mode == "dedicated" {
+		return "dedicated"
+	}
+	return "dedicated"
 }
