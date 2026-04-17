@@ -27,9 +27,8 @@ type DoctorCommandCheck struct {
 }
 
 type DoctorConfig struct {
-	RequiredHostPorts []int                `json:"requiredHostPorts,omitempty"`
-	Probes            []DoctorCommandProbe `json:"probes,omitempty"`
-	Tests             []DoctorCommandCheck `json:"tests,omitempty"`
+	Probes []DoctorCommandProbe `json:"probes,omitempty"`
+	Tests  []DoctorCommandCheck `json:"tests,omitempty"`
 }
 
 type DoctorCommandProbe struct {

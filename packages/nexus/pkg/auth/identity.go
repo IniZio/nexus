@@ -23,18 +23,13 @@ type Identity struct {
 	TenantID string `json:"tenant_id,omitempty"`
 	OrgName  string `json:"org_name,omitempty"`
 
-	// Auth metadata
-	AuthProvider string                 `json:"auth_provider"` // always "local"
-	SessionID    string                 `json:"session_id,omitempty"`
-	Claims       map[string]interface{} `json:"claims,omitempty"` // Provider-specific
-
 	// Token lifecycle (for future token refresh)
 	TokenExpiry *time.Time `json:"token_expiry,omitempty"`
 }
 
 // IsLocal returns true if this is the synthetic local identity
 func (i *Identity) IsLocal() bool {
-	return i.Subject == "local" && i.AuthProvider == "local"
+	return i.Subject == "local"
 }
 
 // UserAddress returns the full user@daemon address
@@ -59,7 +54,6 @@ func IdentityFromContext(ctx context.Context) *Identity {
 	}
 	// Return synthetic local identity for backward compatibility
 	return &Identity{
-		Subject:      "local",
-		AuthProvider: "local",
+		Subject: "local",
 	}
 }

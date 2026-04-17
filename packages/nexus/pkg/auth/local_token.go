@@ -63,6 +63,5 @@ func (p *LocalTokenProvider) localIdentity() *Identity {
 		Name:          "Local User",
 		HomeDaemon:    "localhost",
 		CurrentDaemon: "localhost",
-		AuthProvider:  "local",
 	}
 }

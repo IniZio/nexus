@@ -17,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/auth"
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
 	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
 	"github.com/inizio/nexus/packages/nexus/pkg/store"
@@ -167,7 +166,6 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*Workspace, erro
 		return nil, err
 	}
 
-	identity := auth.IdentityFromContext(ctx)
 	now := time.Now().UTC()
 	id := fmt.Sprintf("ws-%d", now.UnixNano())
 	repoID := deriveRepoID(spec.Repo)
@@ -246,9 +244,6 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*Workspace, erro
 		AuthBinding:       authBinding,
 		LocalWorktreePath: localWorktreePath,
 		HostWorkspacePath: localWorktreePath,
-		OwnerUserID:       identity.Subject,
-		TenantID:          identity.TenantID,
-		CreatedBy:         identity.Subject,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}

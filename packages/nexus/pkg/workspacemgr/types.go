@@ -14,15 +14,15 @@ const (
 )
 
 type CreateSpec struct {
-	Repo          string            `json:"repo"`
-	Ref           string            `json:"ref"`
-	WorkspaceName string            `json:"workspaceName"`
-	AgentProfile  string            `json:"agentProfile"`
-	Policy        Policy            `json:"policy"`
-	Backend       string            `json:"backend,omitempty"`
-	AuthBinding   map[string]string `json:"authBinding,omitempty"`
-	ConfigBundle  string            `json:"configBundle,omitempty"`
-	UseProjectRootPath bool `json:"useProjectRootPath,omitempty"`
+	Repo               string            `json:"repo"`
+	Ref                string            `json:"ref"`
+	WorkspaceName      string            `json:"workspaceName"`
+	AgentProfile       string            `json:"agentProfile"`
+	Policy             Policy            `json:"policy"`
+	Backend            string            `json:"backend,omitempty"`
+	AuthBinding        map[string]string `json:"authBinding,omitempty"`
+	ConfigBundle       string            `json:"configBundle,omitempty"`
+	UseProjectRootPath bool              `json:"useProjectRootPath,omitempty"`
 }
 
 type Workspace struct {
@@ -64,12 +64,6 @@ type Workspace struct {
 	// TunnelPorts stores user-selected host ports that should be tunnelable.
 	// Tunnels are only activated when this workspace holds the global tunnel lease.
 	TunnelPorts []int `json:"tunnelPorts,omitempty"`
-
-	// NEW: Optional fields for future multi-user support
-	// In personal mode, OwnerUserID is "local" and TenantID is empty
-	OwnerUserID string `json:"owner_user_id,omitempty"`
-	TenantID    string `json:"tenant_id,omitempty"`
-	CreatedBy   string `json:"created_by,omitempty"`
 
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
