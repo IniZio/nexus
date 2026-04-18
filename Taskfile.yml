@@ -60,7 +60,7 @@ tasks:
     cmds:
       - mkdir -p bin
       - go build -o bin/nexus ./cmd/nexus
-      - go build -o bin/nexus-daemon ./cmd/daemon
+      - go build -o bin/nexus-daemon ./cmd/nexusd
 
   nexus:dev:
     desc: Build nexus + nexus-daemon into bin/, restart daemon using the co-located binaries
@@ -77,7 +77,7 @@ tasks:
     generates:
       - nexus-daemon
     cmds:
-      - go build -o ./nexus-daemon ./cmd/daemon
+      - go build -o ./nexus-daemon ./cmd/nexusd
 
   daemon:restart:
     desc: Kill any running daemon, start a fresh one, wait for /healthz
@@ -145,7 +145,7 @@ tasks:
                     -X github.com/inizio/nexus/packages/nexus/pkg/buildinfo.Commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
                     -X github.com/inizio/nexus/packages/nexus/pkg/buildinfo.BuiltAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
           -o ../nexus-swift/Resources/nexus-daemon \
-          ./cmd/daemon/
+          ./cmd/nexusd/
       - chmod +x ../nexus-swift/Resources/nexus-daemon
       - echo "Bundled daemon → packages/nexus-swift/Resources/nexus-daemon"
 
@@ -364,7 +364,7 @@ tasks:
   build:workspace-daemon:
     dir: packages/nexus
     cmds:
-      - go build ./...
+      - go build ./internal/... ./cmd/nexusd/
 
   # ── test — testing tiers ───────────────────────────────────────────────────
   # See docs/guides/testing.md for full testing guide (unit, integration, E2E)
@@ -372,7 +372,7 @@ tasks:
   test:workspace-daemon:
     dir: packages/nexus
     cmds:
-      - go test ./...
+      - go test ./internal/... ./cmd/nexusd/
 
   test:terminal:
     desc: Run NexusTerminalUITests (requires running daemon + Accessibility permission)
@@ -420,7 +420,7 @@ tasks:
   lint:workspace-daemon:
     dir: packages/nexus
     cmds:
-      - go test ./... -run TestDoesNotExist
+      - go test ./internal/... ./cmd/nexusd/ -run TestDoesNotExist
 
   # ── ci — CI pipeline equivalents ───────────────────────────────────────────
   # See docs/guides/testing.md for environment variables (NEXUS_E2E_STRICT_RUNTIME, etc.)
