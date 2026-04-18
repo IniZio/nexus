@@ -448,6 +448,15 @@ tasks:
     cmds:
       - ./scripts/ci/coverage.sh
 
+  ci:flows-e2e:
+    desc: Run runtime backend selection E2E package (strict when CI=true; set NEXUS_E2E_STRICT_RUNTIME=0 to allow soft skips locally)
+    env:
+      CI: true
+    cmds:
+      - bash -lc 'set -euo pipefail; if [[ -e /dev/kvm ]]; then sudo chmod 666 /dev/kvm || true; fi'
+      - ./scripts/ci/flows-e2e-setup.sh
+      - bash -lc 'set -euo pipefail; set -a; source "$(git rev-parse --show-toplevel)/.nexus-e2e-env.sh"; set +a; pnpm --filter @nexus/e2e-flows test:ci -- src/cases/runtime/runtime-selection.e2e.test.ts'
+
   # ── housekeeping ────────────────────────────────────────────────────────────
 
   clean:
