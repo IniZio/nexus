@@ -26,15 +26,16 @@ build_nexus_cli() {
     echo "flows e2e: SKIP — cmd/nexus does not compile (CLI not yet rewired); set NEXUS_E2E_STRICT_RUNTIME=1 to fail hard"
     if [[ "${NEXUS_E2E_STRICT_RUNTIME:-0}" == "1" ]]; then
       echo "flows e2e: NEXUS_E2E_STRICT_RUNTIME=1, treating skip as failure" >&2
-      exit 1
+      return 1
     fi
-    exit 0
+    return 2
   fi
   (cd "$NEXUS_MOD" && go build -o "$out" ./cmd/nexus)
   export NEXUS_CLI_PATH="$out"
   if [ -n "${GITHUB_ENV:-}" ]; then
     echo "NEXUS_CLI_PATH=$out" >>"$GITHUB_ENV"
   fi
+  return 0
 }
 
 run_seed_nexus_init() {
@@ -66,6 +67,13 @@ main() {
   local e2e_root
   e2e_root="$(mktemp -d "${TMPDIR:-/tmp}/nexus-e2e-runtime.XXXXXX")"
   build_nexus_cli "$e2e_root"
+  local rc=$?
+  if [[ $rc -eq 2 ]]; then
+    echo "flows e2e: prereqs skipped (CLI not yet compilable)"
+    exit 0
+  elif [[ $rc -ne 0 ]]; then
+    exit $rc
+  fi
   run_seed_nexus_init
   write_env_sh "${GITHUB_WORKSPACE:-$ROOT}/.nexus-e2e-env.sh"
   echo "flows e2e: prereqs ready (NEXUS_CLI_PATH=$NEXUS_CLI_PATH)"

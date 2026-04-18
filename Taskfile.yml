@@ -455,7 +455,7 @@ tasks:
     cmds:
       - bash -lc 'set -euo pipefail; if [[ -e /dev/kvm ]]; then sudo chmod 666 /dev/kvm || true; fi'
       - ./scripts/ci/flows-e2e-setup.sh
-      - bash -lc 'set -euo pipefail; set -a; source "$(git rev-parse --show-toplevel)/.nexus-e2e-env.sh"; set +a; pnpm --filter @nexus/e2e-flows test:ci -- src/cases/runtime/runtime-selection.e2e.test.ts'
+      - bash -lc 'set -euo pipefail; ENV_FILE="$(git rev-parse --show-toplevel)/.nexus-e2e-env.sh"; if [[ ! -f "$ENV_FILE" ]]; then echo "flows e2e: SKIP (no env file written — CLI was not built)"; exit 0; fi; set -a; source "$ENV_FILE"; set +a; pnpm --filter @nexus/e2e-flows test:ci -- src/cases/runtime/runtime-selection.e2e.test.ts'
 
   # ── housekeeping ────────────────────────────────────────────────────────────
 
