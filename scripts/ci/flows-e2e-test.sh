@@ -3,9 +3,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ENV_FILE="${GITHUB_WORKSPACE:-$ROOT}/.nexus-e2e-env.sh"
+SKIP_FILE="${GITHUB_WORKSPACE:-$ROOT}/.nexus-e2e-skip"
 
-if [[ ! -f "$ENV_FILE" ]]; then
-  echo "flows e2e: SKIP (no env file -- CLI was not built)"
+if [[ -f "$SKIP_FILE" ]] || [[ ! -f "$ENV_FILE" ]]; then
+  echo "flows e2e: SKIP (CLI was not built)"
   exit 0
 fi
 
