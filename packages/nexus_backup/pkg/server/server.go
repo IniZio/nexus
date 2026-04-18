@@ -1,0 +1,253 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/inizio/nexus/packages/nexus/pkg/auth"
+	"github.com/inizio/nexus/packages/nexus/pkg/config"
+	authrelay "github.com/inizio/nexus/packages/nexus/pkg/infra/relay"
+	"github.com/inizio/nexus/packages/nexus/pkg/lifecycle"
+	"github.com/inizio/nexus/packages/nexus/pkg/project"
+	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
+	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
+	"github.com/inizio/nexus/packages/nexus/pkg/server/pty"
+	"github.com/inizio/nexus/packages/nexus/pkg/server/rpc"
+	"github.com/inizio/nexus/packages/nexus/pkg/services"
+	"github.com/inizio/nexus/packages/nexus/pkg/spotlight"
+	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
+	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
+)
+
+type Server struct {
+	port                  int
+	workspaceDir          string
+	authProvider          auth.Provider
+	upgrader              websocket.Upgrader
+	connections           map[string]*Connection
+	ws                    *workspace.Workspace
+	workspaceMgr          *workspacemgr.Manager
+	projectMgr            *project.Manager
+	serviceMgr            *services.Manager
+	spotlightMgr          *spotlight.Manager
+	portMonitor           *spotlight.PortMonitor
+	lifecycle             *lifecycle.Manager
+	runtimeFactory        *runtime.Factory
+	nodeCfg               *config.NodeConfig
+	authRelayBroker       *authrelay.Broker
+	autoComposeForwards   map[string]bool
+	composePortHints      map[string]map[int]int
+	activeTunnelWorkspace string
+	rpcReg                *rpc.Registry
+	ptyRegistry           *pty.Registry
+	ptyStore              *pty.Store
+	mu                    sync.RWMutex
+	shutdownCh            chan struct{}
+}
+
+type Connection struct {
+	conn     *websocket.Conn
+	send     chan []byte
+	closed   bool
+	clientID string
+	identity *auth.Identity
+	ptyMu    sync.Mutex
+	pty      map[string]*pty.Session
+}
+
+type RPCMessage struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      string          `json:"id"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params"`
+}
+
+type RPCResponse struct {
+	JSONRPC string           `json:"jsonrpc"`
+	ID      string           `json:"id"`
+	Result  interface{}      `json:"result,omitempty"`
+	Error   *rpckit.RPCError `json:"error,omitempty"`
+}
+
+var newSpotlightManagerForServer = func(workspaceMgr *workspacemgr.Manager) (*spotlight.Manager, error) {
+	return spotlight.NewManagerWithRepository(workspaceMgr.SpotlightRepository())
+}
+
+func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, error) {
+	ws, err := workspace.NewWorkspace(workspaceDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create workspace: %w", err)
+	}
+
+	workspaceMgr := workspacemgr.NewManager(workspaceDir)
+	projectMgr := project.NewManager(workspaceDir, workspaceMgr.ProjectRepository())
+	workspaceMgr.SetProjectManager(projectMgr)
+
+	spotlightMgr, err := newSpotlightManagerForServer(workspaceMgr)
+	if err != nil {
+		log.Printf("[spotlight] Warning: failed to initialize sqlite-backed spotlight manager, falling back to in-memory manager: %v", err)
+		spotlightMgr = spotlight.NewManager()
+	}
+	for _, fwd := range spotlightMgr.List("") {
+		_ = spotlightMgr.Close(fwd.ID)
+	}
+
+	lifecycleMgr, err := lifecycle.NewManager(workspaceDir)
+	if err != nil {
+		log.Printf("[lifecycle] Warning: failed to initialize lifecycle manager: %v", err)
+	} else {
+		if err := lifecycleMgr.RunPreStart(); err != nil {
+			return nil, fmt.Errorf("pre-start hook failed: %w", err)
+		}
+	}
+
+	srv := &Server{
+		port:         port,
+		workspaceDir: workspaceDir,
+		authProvider: auth.NewLocalTokenProvider(tokenSecret),
+		upgrader: websocket.Upgrader{
+			ReadBufferSize:  4096,
+			WriteBufferSize: 4096,
+			CheckOrigin: func(r *http.Request) bool {
+				return true
+			},
+		},
+		connections:         make(map[string]*Connection),
+		ws:                  ws,
+		workspaceMgr:        workspaceMgr,
+		projectMgr:          projectMgr,
+		serviceMgr:          services.NewManager(),
+		spotlightMgr:        spotlightMgr,
+		lifecycle:           lifecycleMgr,
+		authRelayBroker:     authrelay.NewBroker(),
+		autoComposeForwards: make(map[string]bool),
+		composePortHints:    make(map[string]map[int]int),
+		ptyRegistry:         pty.NewRegistry(),
+		ptyStore:            pty.NewStore(workspaceDir),
+		shutdownCh:          make(chan struct{}),
+	}
+	srv.rpcReg = srv.newRPCRegistry()
+	return srv, nil
+}
+
+func (s *Server) Shutdown() {
+	if s.lifecycle != nil {
+		if err := s.lifecycle.RunPreStop(); err != nil {
+			log.Printf("[lifecycle] Pre-stop hook error: %v", err)
+		}
+	}
+
+	close(s.shutdownCh)
+	s.mu.Lock()
+	for _, conn := range s.connections {
+		close(conn.send)
+		conn.conn.Close()
+	}
+	s.mu.Unlock()
+
+	if s.lifecycle != nil {
+		if err := s.lifecycle.RunPostStop(); err != nil {
+			log.Printf("[lifecycle] Post-stop hook error: %v", err)
+		}
+	}
+}
+
+func (s *Server) SetRuntimeFactory(factory *runtime.Factory) {
+	s.runtimeFactory = factory
+}
+
+func (s *Server) SetAuthProvider(provider auth.Provider) {
+	s.authProvider = provider
+}
+
+func (s *Server) WorkspaceIDs() []string {
+	all := s.workspaceMgr.List()
+	ids := make([]string, len(all))
+	for i, ws := range all {
+		ids[i] = ws.ID
+	}
+	return ids
+}
+
+func (s *Server) RunningWorkspaceIDs() []string {
+	all := s.workspaceMgr.List()
+	ids := make([]string, 0, len(all))
+	for _, ws := range all {
+		if ws.State == workspacemgr.StateRunning {
+			ids = append(ids, ws.ID)
+		}
+	}
+	return ids
+}
+
+func (s *Server) ResumeRunningWorkspaces(ctx context.Context) {
+	for _, ws := range s.workspaceMgr.List() {
+		if ws.State != workspacemgr.StateRunning {
+			continue
+		}
+		_ = s.StartPortMonitoring(ws.ID)
+		rootPath := preferredWorkspaceRoot(ws)
+		if rootPath != "" {
+			go s.ensureComposeHints(ctx, ws.ID, rootPath)
+		}
+	}
+}
+
+func (s *Server) PrunePersistedPTYSessions(_ context.Context) int {
+	return pty.PruneStalePersistedSessions(s.ptyDeps())
+}
+
+func (s *Server) StartPTYMaintenance(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 2 * time.Minute
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.shutdownCh:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				removed := s.PrunePersistedPTYSessions(context.Background())
+				if removed > 0 {
+					log.Printf("[pty] pruned %d stale persisted tmux session(s)", removed)
+				}
+			}
+		}
+	}()
+}
+
+func (s *Server) SetNodeConfig(cfg *config.NodeConfig) {
+	s.nodeCfg = cfg
+}
+
+func (s *Server) SetPortMonitor(pm *spotlight.PortMonitor) {
+	s.portMonitor = pm
+}
+
+func (s *Server) SpotlightManager() *spotlight.Manager {
+	return s.spotlightMgr
+}
+
+func (s *Server) StartPortMonitoring(workspaceID string) error {
+	if s.portMonitor == nil {
+		return nil
+	}
+	return s.portMonitor.StartWorkspace(workspaceID)
+}
+
+func (s *Server) StopPortMonitoring(workspaceID string) {
+	if s.portMonitor == nil {
+		return
+	}
+	s.portMonitor.StopWorkspace(workspaceID)
+}

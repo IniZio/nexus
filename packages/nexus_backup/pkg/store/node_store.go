@@ -1,0 +1,549 @@
+package store
+
+import (
+	"database/sql"
+	"embed"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/pressly/goose/v3"
+	_ "modernc.org/sqlite"
+)
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
+
+type WorkspaceRow struct {
+	ID        string
+	Payload   []byte
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type SpotlightForwardRow struct {
+	ID          string
+	WorkspaceID string
+	LocalPort   int
+	Payload     []byte
+	CreatedAt   time.Time
+}
+
+type NodeStore struct {
+	db *sql.DB
+}
+
+func Open(path string) (*NodeStore, error) {
+	if path == "" {
+		return nil, fmt.Errorf("store path is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("create store dir: %w", err)
+	}
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite: %w", err)
+	}
+
+	st := &NodeStore{db: db}
+	if err := st.migrate(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	return st, nil
+}
+
+func (s *NodeStore) Close() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	return s.db.Close()
+}
+
+func (s *NodeStore) migrate() error {
+	goose.SetBaseFS(migrationsFS)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return fmt.Errorf("set goose dialect: %w", err)
+	}
+	if err := goose.Up(s.db, "migrations"); err != nil {
+		return fmt.Errorf("run goose migrations: %w", err)
+	}
+	return nil
+}
+
+func (s *NodeStore) HasTable(name string) (bool, error) {
+	if name == "" {
+		return false, nil
+	}
+	var count int
+	err := s.db.QueryRow(`SELECT count(1) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("check table existence: %w", err)
+	}
+	return count > 0, nil
+}
+
+func (s *NodeStore) UpsertWorkspaceRow(row WorkspaceRow) error {
+	if row.ID == "" {
+		return fmt.Errorf("workspace id is required")
+	}
+	if len(row.Payload) == 0 {
+		return fmt.Errorf("workspace payload is required")
+	}
+	created := row.CreatedAt.UTC().Format(time.RFC3339Nano)
+	updated := row.UpdatedAt.UTC().Format(time.RFC3339Nano)
+
+	type workspacePayload struct {
+		ProjectID string `json:"projectId"`
+	}
+	var payloadData workspacePayload
+	projectID := ""
+	if err := json.Unmarshal(row.Payload, &payloadData); err == nil {
+		projectID = payloadData.ProjectID
+	}
+
+	_, err := s.db.Exec(
+		`INSERT INTO workspaces(id, payload_json, project_id, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+			payload_json=excluded.payload_json,
+			project_id=excluded.project_id,
+			updated_at=excluded.updated_at`,
+		row.ID,
+		string(row.Payload),
+		projectID,
+		created,
+		updated,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert workspace: %w", err)
+	}
+
+	return nil
+}
+
+func (s *NodeStore) DeleteWorkspace(id string) error {
+	if id == "" {
+		return nil
+	}
+	if _, err := s.db.Exec(`DELETE FROM workspaces WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete workspace: %w", err)
+	}
+	return nil
+}
+
+func (s *NodeStore) ListWorkspaceRows() ([]WorkspaceRow, error) {
+	rows, err := s.db.Query(`SELECT id, payload_json, created_at, updated_at FROM workspaces ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list workspaces query: %w", err)
+	}
+	defer rows.Close()
+
+	all := make([]WorkspaceRow, 0)
+	for rows.Next() {
+		var (
+			id      string
+			payload string
+			created string
+			updated string
+		)
+		if err := rows.Scan(&id, &payload, &created, &updated); err != nil {
+			return nil, fmt.Errorf("scan workspace row: %w", err)
+		}
+		createdAt, _ := time.Parse(time.RFC3339Nano, created)
+		updatedAt, _ := time.Parse(time.RFC3339Nano, updated)
+		all = append(all, WorkspaceRow{
+			ID:        id,
+			Payload:   []byte(payload),
+			CreatedAt: createdAt,
+			UpdatedAt: updatedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate workspace rows: %w", err)
+	}
+
+	return all, nil
+}
+
+func (s *NodeStore) ListWorkspaceRowsByProject(projectID string) ([]WorkspaceRow, error) {
+	if projectID == "" {
+		return s.ListWorkspaceRows()
+	}
+	rows, err := s.db.Query(
+		`SELECT id, payload_json, created_at, updated_at FROM workspaces WHERE project_id = ? ORDER BY created_at ASC`,
+		projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list workspaces by project query: %w", err)
+	}
+	defer rows.Close()
+
+	all := make([]WorkspaceRow, 0)
+	for rows.Next() {
+		var (
+			id      string
+			payload string
+			created string
+			updated string
+		)
+		if err := rows.Scan(&id, &payload, &created, &updated); err != nil {
+			return nil, fmt.Errorf("scan workspace row: %w", err)
+		}
+		createdAt, _ := time.Parse(time.RFC3339Nano, created)
+		updatedAt, _ := time.Parse(time.RFC3339Nano, updated)
+		all = append(all, WorkspaceRow{
+			ID:        id,
+			Payload:   []byte(payload),
+			CreatedAt: createdAt,
+			UpdatedAt: updatedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate workspace rows: %w", err)
+	}
+
+	return all, nil
+}
+
+func (s *NodeStore) UpsertProjectRow(row ProjectRow) error {
+	if row.ID == "" {
+		return fmt.Errorf("project id is required")
+	}
+	if len(row.Payload) == 0 {
+		return fmt.Errorf("project payload is required")
+	}
+	created := row.CreatedAt.UTC().Format(time.RFC3339Nano)
+	updated := row.UpdatedAt.UTC().Format(time.RFC3339Nano)
+
+	_, err := s.db.Exec(
+		`INSERT INTO projects(id, payload_json, created_at, updated_at)
+		 VALUES(?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+			payload_json=excluded.payload_json,
+			updated_at=excluded.updated_at`,
+		row.ID,
+		string(row.Payload),
+		created,
+		updated,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert project: %w", err)
+	}
+
+	return nil
+}
+
+func (s *NodeStore) DeleteProject(id string) error {
+	if id == "" {
+		return nil
+	}
+	if _, err := s.db.Exec(`DELETE FROM projects WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete project: %w", err)
+	}
+	return nil
+}
+
+func (s *NodeStore) ListProjectRows() ([]ProjectRow, error) {
+	rows, err := s.db.Query(`SELECT id, payload_json, created_at, updated_at FROM projects ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list projects query: %w", err)
+	}
+	defer rows.Close()
+
+	all := make([]ProjectRow, 0)
+	for rows.Next() {
+		var (
+			id      string
+			payload string
+			created string
+			updated string
+		)
+		if err := rows.Scan(&id, &payload, &created, &updated); err != nil {
+			return nil, fmt.Errorf("scan project row: %w", err)
+		}
+		createdAt, _ := time.Parse(time.RFC3339Nano, created)
+		updatedAt, _ := time.Parse(time.RFC3339Nano, updated)
+		all = append(all, ProjectRow{
+			ID:        id,
+			Payload:   []byte(payload),
+			CreatedAt: createdAt,
+			UpdatedAt: updatedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate project rows: %w", err)
+	}
+
+	return all, nil
+}
+
+func (s *NodeStore) GetProjectRow(id string) (ProjectRow, bool, error) {
+	if id == "" {
+		return ProjectRow{}, false, nil
+	}
+	var (
+		payload string
+		created string
+		updated string
+	)
+	err := s.db.QueryRow(
+		`SELECT payload_json, created_at, updated_at FROM projects WHERE id = ?`,
+		id,
+	).Scan(&payload, &created, &updated)
+	if err == sql.ErrNoRows {
+		return ProjectRow{}, false, nil
+	}
+	if err != nil {
+		return ProjectRow{}, false, fmt.Errorf("get project: %w", err)
+	}
+	createdAt, _ := time.Parse(time.RFC3339Nano, created)
+	updatedAt, _ := time.Parse(time.RFC3339Nano, updated)
+	return ProjectRow{
+		ID:        id,
+		Payload:   []byte(payload),
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+	}, true, nil
+}
+
+func (s *NodeStore) ReplaceSpotlightForwardRows(forwards []SpotlightForwardRow) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin replace spotlight forwards: %w", err)
+	}
+
+	rows, err := tx.Query(`SELECT id FROM spotlight_forwards`)
+	if err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("list spotlight forwards for replace: %w", err)
+	}
+	existing := make(map[string]struct{})
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			_ = tx.Rollback()
+			return fmt.Errorf("scan spotlight id for replace: %w", err)
+		}
+		existing[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		_ = tx.Rollback()
+		return fmt.Errorf("iterate spotlight ids for replace: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("close spotlight ids for replace: %w", err)
+	}
+
+	desired := make(map[string]struct{})
+	for _, fwd := range forwards {
+		if fwd.ID == "" || fwd.WorkspaceID == "" || fwd.LocalPort <= 0 || len(fwd.Payload) == 0 {
+			continue
+		}
+		desired[fwd.ID] = struct{}{}
+	}
+
+	for id := range existing {
+		if _, keep := desired[id]; keep {
+			continue
+		}
+		if _, err := tx.Exec(`DELETE FROM spotlight_forwards WHERE id = ?`, id); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("delete spotlight forward in replace: %w", err)
+		}
+	}
+
+	stmt, err := tx.Prepare(
+		`INSERT INTO spotlight_forwards(id, workspace_id, local_port, payload_json, created_at)
+		 VALUES(?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+			workspace_id=excluded.workspace_id,
+			local_port=excluded.local_port,
+			payload_json=excluded.payload_json,
+			created_at=excluded.created_at`,
+	)
+	if err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("prepare spotlight insert: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, fwd := range forwards {
+		if fwd.ID == "" || fwd.WorkspaceID == "" || fwd.LocalPort <= 0 || len(fwd.Payload) == 0 {
+			continue
+		}
+		if _, err := stmt.Exec(
+			fwd.ID,
+			fwd.WorkspaceID,
+			fwd.LocalPort,
+			string(fwd.Payload),
+			fwd.CreatedAt.UTC().Format(time.RFC3339Nano),
+		); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("upsert spotlight forward in replace: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit spotlight replace: %w", err)
+	}
+
+	return nil
+}
+
+func (s *NodeStore) UpsertSpotlightForwardRow(row SpotlightForwardRow) error {
+	if row.ID == "" {
+		return fmt.Errorf("spotlight id is required")
+	}
+	if row.WorkspaceID == "" {
+		return fmt.Errorf("spotlight workspace id is required")
+	}
+	if row.LocalPort <= 0 {
+		return fmt.Errorf("spotlight local port must be positive")
+	}
+	if len(row.Payload) == 0 {
+		return fmt.Errorf("spotlight payload is required")
+	}
+
+	_, err := s.db.Exec(
+		`INSERT INTO spotlight_forwards(id, workspace_id, local_port, payload_json, created_at)
+		 VALUES(?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+			workspace_id=excluded.workspace_id,
+			local_port=excluded.local_port,
+			payload_json=excluded.payload_json,
+			created_at=excluded.created_at`,
+		row.ID,
+		row.WorkspaceID,
+		row.LocalPort,
+		string(row.Payload),
+		row.CreatedAt.UTC().Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert spotlight forward: %w", err)
+	}
+
+	return nil
+}
+
+func (s *NodeStore) DeleteSpotlightForwardRow(id string) error {
+	if id == "" {
+		return nil
+	}
+
+	if _, err := s.db.Exec(`DELETE FROM spotlight_forwards WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete spotlight forward: %w", err)
+	}
+
+	return nil
+}
+
+func (s *NodeStore) ListSpotlightForwardRows() ([]SpotlightForwardRow, error) {
+	rows, err := s.db.Query(`SELECT id, workspace_id, local_port, payload_json, created_at FROM spotlight_forwards ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list spotlight forwards query: %w", err)
+	}
+	defer rows.Close()
+
+	all := make([]SpotlightForwardRow, 0)
+	for rows.Next() {
+		var (
+			id          string
+			workspaceID string
+			localPort   int
+			payload     string
+			created     string
+		)
+		if err := rows.Scan(&id, &workspaceID, &localPort, &payload, &created); err != nil {
+			return nil, fmt.Errorf("scan spotlight row: %w", err)
+		}
+		createdAt, _ := time.Parse(time.RFC3339Nano, created)
+		all = append(all, SpotlightForwardRow{
+			ID:          id,
+			WorkspaceID: workspaceID,
+			LocalPort:   localPort,
+			Payload:     []byte(payload),
+			CreatedAt:   createdAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate spotlight rows: %w", err)
+	}
+
+	return all, nil
+}
+
+func (s *NodeStore) GetSandboxResourceSettings() (SandboxResourceSettingsRow, bool, error) {
+	var (
+		defaultMemoryMiB int
+		defaultVCPUs     int
+		maxMemoryMiB     int
+		maxVCPUs         int
+		updated          string
+	)
+	err := s.db.QueryRow(
+		`SELECT default_memory_mib, default_vcpus, max_memory_mib, max_vcpus, updated_at
+		 FROM sandbox_resource_settings
+		 WHERE id = 1`,
+	).Scan(&defaultMemoryMiB, &defaultVCPUs, &maxMemoryMiB, &maxVCPUs, &updated)
+	if err == sql.ErrNoRows {
+		return SandboxResourceSettingsRow{}, false, nil
+	}
+	if err != nil {
+		return SandboxResourceSettingsRow{}, false, fmt.Errorf("get sandbox resource settings: %w", err)
+	}
+	updatedAt, _ := time.Parse(time.RFC3339Nano, updated)
+	return SandboxResourceSettingsRow{
+		DefaultMemoryMiB: defaultMemoryMiB,
+		DefaultVCPUs:     defaultVCPUs,
+		MaxMemoryMiB:     maxMemoryMiB,
+		MaxVCPUs:         maxVCPUs,
+		UpdatedAt:        updatedAt,
+	}, true, nil
+}
+
+func (s *NodeStore) UpsertSandboxResourceSettings(row SandboxResourceSettingsRow) error {
+	if row.DefaultMemoryMiB <= 0 {
+		return fmt.Errorf("default memory MiB must be positive")
+	}
+	if row.DefaultVCPUs <= 0 {
+		return fmt.Errorf("default vCPUs must be positive")
+	}
+	if row.MaxMemoryMiB <= 0 {
+		return fmt.Errorf("max memory MiB must be positive")
+	}
+	if row.MaxVCPUs <= 0 {
+		return fmt.Errorf("max vCPUs must be positive")
+	}
+	updatedAt := row.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO sandbox_resource_settings(
+			id, default_memory_mib, default_vcpus, max_memory_mib, max_vcpus, updated_at
+		) VALUES(1, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			default_memory_mib=excluded.default_memory_mib,
+			default_vcpus=excluded.default_vcpus,
+			max_memory_mib=excluded.max_memory_mib,
+			max_vcpus=excluded.max_vcpus,
+			updated_at=excluded.updated_at`,
+		row.DefaultMemoryMiB,
+		row.DefaultVCPUs,
+		row.MaxMemoryMiB,
+		row.MaxVCPUs,
+		updatedAt.UTC().Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert sandbox resource settings: %w", err)
+	}
+	return nil
+}

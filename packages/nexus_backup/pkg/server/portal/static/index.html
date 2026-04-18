@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nexus Workspace Control</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    :root {
+      --bg: #0a1215;
+      --bg2: #0f1e22;
+      --panel: rgba(17, 33, 38, 0.78);
+      --panel-strong: #15292e;
+      --line: #274147;
+      --line-strong: #38606a;
+      --text: #e3f5f4;
+      --text-muted: #9ab4b8;
+      --teal: #43d7ca;
+      --teal-soft: #2ca399;
+      --amber: #ffbf4d;
+      --red: #ff6f5d;
+      --green: #62e4a4;
+      --shadow: 0 12px 50px rgba(0, 0, 0, 0.35);
+      --radius: 16px;
+      --mono: "JetBrains Mono", "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      --sans: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+    }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: var(--sans);
+      background:
+        radial-gradient(circle at 10% -10%, rgba(67, 215, 202, 0.2), transparent 30%),
+        radial-gradient(circle at 90% 10%, rgba(255, 191, 77, 0.13), transparent 30%),
+        linear-gradient(170deg, var(--bg) 0%, var(--bg2) 100%);
+      min-height: 100vh;
+    }
+
+    .layout {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 24px 18px 48px;
+      display: grid;
+      gap: 18px;
+      animation: reveal 0.45s ease;
+    }
+
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 6px 2px;
+    }
+
+    .title-wrap h1 {
+      margin: 0;
+      font-size: 24px;
+      letter-spacing: 0.02em;
+    }
+
+    .title-wrap p {
+      margin: 4px 0 0;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
+    .badge-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .pill {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: var(--mono);
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }
+
+    .card-head {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .card-head h2 {
+      margin: 0;
+      font-size: 14px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .stack { display: grid; gap: 18px; }
+
+    .cap-list {
+      padding: 14px 18px 18px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .cap {
+      font-family: var(--mono);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .cap.ok {
+      border-color: color-mix(in srgb, var(--teal) 45%, var(--line));
+      color: var(--teal);
+    }
+
+    .workspace-wrap {
+      overflow: auto;
+      padding: 0 8px 10px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 890px;
+      font-size: 13px;
+    }
+
+    th, td { padding: 12px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+    th {
+      text-align: left;
+      color: var(--text-muted);
+      font-size: 11px;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+
+    tr:hover td { background: rgba(67, 215, 202, 0.04); }
+    td.code { font-family: var(--mono); color: var(--text-muted); font-size: 12px; }
+    .ws-name { font-weight: 600; }
+    .ws-sub { display: block; color: var(--text-muted); font-size: 11px; margin-top: 3px; }
+
+    .state {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border-radius: 999px;
+      padding: 4px 9px;
+      border: 1px solid var(--line);
+      font-size: 11px;
+      text-transform: capitalize;
+      font-family: var(--mono);
+      color: var(--text-muted);
+    }
+
+    .dot { width: 7px; height: 7px; border-radius: 999px; background: var(--text-muted); }
+    .state.running .dot { background: var(--green); }
+    .state.paused .dot { background: var(--amber); }
+    .state.stopped .dot, .state.created .dot, .state.restored .dot { background: #89a6ac; }
+
+    .actions { display: flex; flex-wrap: wrap; gap: 6px; }
+    button {
+      border: 1px solid var(--line-strong);
+      background: #1a343a;
+      color: var(--text);
+      border-radius: 9px;
+      font-size: 11px;
+      font-family: var(--mono);
+      padding: 6px 10px;
+      cursor: pointer;
+      transition: transform .14s ease, border-color .14s ease, color .14s ease;
+    }
+    button:hover { transform: translateY(-1px); border-color: var(--teal); color: var(--teal); }
+    button.warn:hover { border-color: var(--amber); color: var(--amber); }
+    button.danger:hover { border-color: var(--red); color: var(--red); }
+    button.primary { background: linear-gradient(170deg, #1d4f53 0%, #1b3a40 100%); }
+    button:disabled { opacity: .48; cursor: wait; transform: none; }
+
+    .empty {
+      padding: 18px;
+      color: var(--text-muted);
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .form {
+      padding: 18px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .field { display: grid; gap: 5px; }
+    .field.full { grid-column: 1 / -1; }
+    label {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: var(--mono);
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+    input {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: var(--panel-strong);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 9px 11px;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    input:focus { outline: none; border-color: var(--teal); }
+
+    .form-row {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .status {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-family: var(--mono);
+    }
+    .status.ok { color: var(--green); }
+    .status.err { color: var(--red); }
+
+    @keyframes reveal {
+      from { opacity: 0; transform: translateY(7px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 860px) {
+      .form { grid-template-columns: 1fr; }
+      .title-wrap h1 { font-size: 21px; }
+      .layout { padding: 15px 10px 28px; }
+      .badge-row { justify-content: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <header class="top">
+      <div class="title-wrap">
+        <h1>Nexus Workspace Control</h1>
+        <p>Embedded daemon UI for create, list, and lifecycle management.</p>
+      </div>
+      <div class="badge-row" id="node-badges">
+        <span class="pill">Loading node...</span>
+      </div>
+    </header>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Capabilities</h2>
+        <button id="refresh-btn" class="primary" onclick="loadAll()">Refresh</button>
+      </div>
+      <div class="cap-list" id="cap-list"></div>
+    </section>
+
+    <section class="card stack">
+      <div class="card-head">
+        <h2>Workspaces</h2>
+      </div>
+      <div class="workspace-wrap" id="workspace-wrap"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Create Workspace</h2>
+      </div>
+      <form class="form" id="create-form" onsubmit="return onCreate(event)">
+        <div class="field">
+          <label for="repo">Repository</label>
+          <input id="repo" type="text" placeholder="git@github.com:org/repo.git" required>
+        </div>
+        <div class="field">
+          <label for="ref">Ref</label>
+          <input id="ref" type="text" placeholder="main">
+        </div>
+        <div class="field">
+          <label for="name">Workspace Name</label>
+          <input id="name" type="text" placeholder="web-feature" required>
+        </div>
+        <div class="field">
+          <label for="profile">Agent Profile</label>
+          <input id="profile" type="text" value="default" required>
+        </div>
+        <div class="form-row">
+          <button type="submit" id="create-btn" class="primary">Create Workspace</button>
+          <span id="create-status" class="status"></span>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <script>
+    const TOKEN = "{{.Token}}";
+    const API = {
+      summary: "/ui/api/summary",
+	      workspaces: "/ui/api/workspaces",
+	      spotlight: "/ui/api/spotlight"
+    };
+
+    let inFlight = false;
+
+    function h(path, opts = {}) {
+      const headers = Object.assign({}, opts.headers || {}, {
+        "X-Nexus-Token": TOKEN,
+        "Content-Type": "application/json"
+      });
+      return fetch(path, Object.assign({}, opts, { headers }));
+    }
+
+    async function parseJSON(r) {
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const msg = data && data.error && data.error.message ? data.error.message : `HTTP ${r.status}`;
+        throw new Error(msg);
+      }
+      return data;
+    }
+
+    function esc(v) {
+      return String(v || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function nodeBadges(node) {
+      const wrap = document.getElementById("node-badges");
+      const tags = (node && Array.isArray(node.tags) ? node.tags : []).map((tag) => `<span class="pill">${esc(tag)}</span>`).join("");
+      wrap.innerHTML = `<span class="pill">Node: ${esc(node && node.name ? node.name : "unknown")}</span>${tags}`;
+    }
+
+    function renderCaps(caps) {
+      const el = document.getElementById("cap-list");
+      if (!Array.isArray(caps) || caps.length === 0) {
+        el.innerHTML = '<span class="pill">No capabilities reported</span>';
+        return;
+      }
+      el.innerHTML = caps
+        .map((cap) => `<span class="cap ${cap.available ? "ok" : ""}">${esc(cap.name)}</span>`)
+        .join("");
+    }
+
+    function actionButtons(ws) {
+      const id = esc(ws.id);
+      const state = String(ws.state || "").toLowerCase();
+      const btns = [];
+
+      if (state === "created" || state === "stopped") {
+        btns.push(`<button class="primary" onclick="act('${id}','start')">Start</button>`);
+      }
+
+      if (state === "restored") {
+        btns.push(`<button class="primary" onclick="act('${id}','start')">Start</button>`);
+        btns.push(`<button onclick="act('${id}','stop')">Stop</button>`);
+      }
+
+      if (state === "running") {
+        btns.push(`<button class="warn" onclick="act('${id}','pause')">Pause</button>`);
+        btns.push(`<button onclick="act('${id}','stop')">Stop</button>`);
+      }
+
+      if (state === "paused") {
+        btns.push(`<button class="primary" onclick="act('${id}','resume')">Resume</button>`);
+        btns.push(`<button onclick="act('${id}','stop')">Stop</button>`);
+      }
+
+      if (state === "stopped") {
+        btns.push(`<button onclick="act('${id}','restore')">Restore</button>`);
+      }
+
+      btns.push(`<button onclick="forkWorkspace('${id}','${esc(ws.workspaceName || ws.id)}')">Fork</button>`);
+      btns.push(`<button onclick="applySpotlight('${id}','defaults')">Spotlight Defaults</button>`);
+      btns.push(`<button onclick="applySpotlight('${id}','compose')">Spotlight Compose</button>`);
+      btns.push(`<button onclick="listSpotlight('${id}')">Spotlight List</button>`);
+      btns.push(`<button onclick="copySSH('${id}')">Copy SSH</button>`);
+      btns.push(`<button class="danger" onclick="removeWorkspace('${id}')">Remove</button>`);
+
+      return btns.join("");
+    }
+
+    function renderState(state) {
+      const value = String(state || "created").toLowerCase();
+      return `<span class="state ${esc(value)}"><span class="dot"></span>${esc(value)}</span>`;
+    }
+
+    function renderWorkspaces(items) {
+      const el = document.getElementById("workspace-wrap");
+      if (!Array.isArray(items) || items.length === 0) {
+        el.innerHTML = '<div class="empty">No workspaces yet. Create one below to get started.</div>';
+        return;
+      }
+
+      const rows = items.map((ws) => {
+        const worktree = ws.localWorktreePath ? `<span class="ws-sub">${esc(ws.localWorktreePath)}</span>` : "";
+        return `
+          <tr>
+            <td>
+              <span class="ws-name">${esc(ws.workspaceName || ws.id)}</span>
+              ${worktree}
+            </td>
+            <td>${renderState(ws.state)}</td>
+            <td class="code">${esc(ws.backend || "-")}</td>
+            <td class="code">${esc(ws.agentProfile || "-")}</td>
+            <td class="code">${esc((ws.id || "").slice(0, 10))}</td>
+            <td>
+              <div class="actions">${actionButtons(ws)}</div>
+            </td>
+          </tr>
+        `;
+      }).join("");
+
+      el.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Workspace</th>
+              <th>State</th>
+              <th>Backend</th>
+              <th>Profile</th>
+              <th>ID</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    async function loadAll() {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const [summaryRes, listRes] = await Promise.all([
+          h(API.summary, { method: "GET" }),
+          h(API.workspaces, { method: "GET" })
+        ]);
+        const summary = await parseJSON(summaryRes);
+        const list = await parseJSON(listRes);
+        nodeBadges(summary.node || {});
+        renderCaps(summary.capabilities || []);
+        renderWorkspaces(list.workspaces || []);
+      } catch (error) {
+        renderWorkspaces([]);
+        console.error(error);
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    async function act(id, action) {
+      try {
+        await parseJSON(await h(`${API.workspaces}/${id}/actions/${action}`, { method: "POST", body: "{}" }));
+        setTimeout(loadAll, 120);
+      } catch (error) {
+        alert(`${action} failed: ${error.message}`);
+      }
+    }
+
+    async function removeWorkspace(id) {
+      if (!confirm(`Remove workspace ${id}? This cannot be undone.`)) return;
+      try {
+        await parseJSON(await h(`${API.workspaces}/${id}`, { method: "DELETE" }));
+        setTimeout(loadAll, 120);
+      } catch (error) {
+        alert(`remove failed: ${error.message}`);
+      }
+    }
+
+    async function forkWorkspace(id, name) {
+      const child = prompt("Child workspace name:", `${name}-fork`);
+      if (!child) return;
+      try {
+        await parseJSON(await h(`${API.workspaces}/${id}/fork`, {
+          method: "POST",
+          body: JSON.stringify({ childWorkspaceName: child.trim() })
+        }));
+        setTimeout(loadAll, 120);
+      } catch (error) {
+        alert(`fork failed: ${error.message}`);
+      }
+    }
+
+    async function applySpotlight(id, mode) {
+      try {
+        const res = await parseJSON(await h(`${API.workspaces}/${id}/spotlight/${mode}`, { method: "POST", body: "{}" }));
+        const count = Array.isArray(res.forwards) ? res.forwards.length : 0;
+        const errs = Array.isArray(res.errors) ? res.errors.length : 0;
+        const detail = errs > 0 ? ` (${errs} errors)` : "";
+        alert(`spotlight ${mode}: ${count} forward(s) applied${detail}`);
+        setTimeout(loadAll, 120);
+      } catch (error) {
+        alert(`spotlight ${mode} failed: ${error.message}`);
+      }
+    }
+
+    async function listSpotlight(id) {
+      try {
+        const res = await parseJSON(await h(`${API.workspaces}/${id}/spotlight`, { method: "GET" }));
+        const forwards = Array.isArray(res.forwards) ? res.forwards : [];
+        if (forwards.length === 0) {
+          alert(`No spotlight forwards for ${id}`);
+          return;
+        }
+        const lines = forwards.map((f) => `${f.id} ${f.host}:${f.localPort} -> ${f.service || "service"}:${f.remotePort}`);
+        alert(lines.join("\n"));
+      } catch (error) {
+        alert(`spotlight list failed: ${error.message}`);
+      }
+    }
+
+    async function copySSH(id) {
+      const cmd = `nexus workspace ssh ${id}`;
+      try {
+        await navigator.clipboard.writeText(cmd);
+        alert(`Copied: ${cmd}`);
+      } catch (_) {
+        prompt("Copy SSH command:", cmd);
+      }
+    }
+
+    async function onCreate(event) {
+      event.preventDefault();
+      const status = document.getElementById("create-status");
+      const btn = document.getElementById("create-btn");
+
+      const spec = {
+        repo: document.getElementById("repo").value.trim(),
+        ref: document.getElementById("ref").value.trim(),
+        workspaceName: document.getElementById("name").value.trim(),
+        agentProfile: document.getElementById("profile").value.trim() || "default"
+      };
+
+      btn.disabled = true;
+      status.className = "status";
+      status.textContent = "Creating workspace...";
+
+      try {
+        await parseJSON(await h(API.workspaces, {
+          method: "POST",
+          body: JSON.stringify({ spec })
+        }));
+
+        status.className = "status ok";
+        status.textContent = "Workspace created.";
+        document.getElementById("create-form").reset();
+        document.getElementById("profile").value = "default";
+        setTimeout(loadAll, 120);
+      } catch (error) {
+        status.className = "status err";
+        status.textContent = error.message;
+      } finally {
+        btn.disabled = false;
+      }
+
+      return false;
+    }
+
+    loadAll();
+    setInterval(loadAll, 10000);
+  </script>
+</body>
+</html>
