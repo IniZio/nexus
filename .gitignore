@@ -60,6 +60,9 @@ docs/superpowers/
 .agent-git-backup.sh
 skills/
 
+# PRD specs (workflow: never commit)
+docs/prds/**
+
 # Task runner checksums (build artifacts)
 .task/
 
