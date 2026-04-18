@@ -17,25 +17,28 @@ write_env_sh() {
   echo "flows e2e: wrote $f"
 }
 
-build_nexus_cli() {
-  local out="${1:?}/nexus"
-  echo "flows e2e: building nexus CLI -> $out"
-  # cmd/nexus still imports old pkg/* paths removed in the daemon rewrite.
-  # Skip flows-e2e gracefully until the CLI is rewired to the new internal/ API.
-  if ! (cd "$NEXUS_MOD" && go build -o /dev/null ./cmd/nexus 2>/dev/null); then
+# Returns "ok" if cmd/nexus compiles, "skip" if it doesn't (and strict mode is off), or exits 1 if strict.
+check_nexus_cli_compiles() {
+  if (cd "$NEXUS_MOD" && go build -o /dev/null ./cmd/nexus 2>/dev/null); then
+    echo "ok"
+  else
     echo "flows e2e: SKIP -- cmd/nexus does not compile (CLI not yet rewired); set NEXUS_E2E_STRICT_RUNTIME=1 to fail hard"
     if [[ "${NEXUS_E2E_STRICT_RUNTIME:-0}" == "1" ]]; then
       echo "flows e2e: NEXUS_E2E_STRICT_RUNTIME=1, treating skip as failure" >&2
-      return 1
+      exit 1
     fi
-    return 2
+    echo "skip"
   fi
+}
+
+build_nexus_cli() {
+  local out="${1:?}/nexus"
+  echo "flows e2e: building nexus CLI -> $out"
   (cd "$NEXUS_MOD" && go build -o "$out" ./cmd/nexus)
   export NEXUS_CLI_PATH="$out"
   if [ -n "${GITHUB_ENV:-}" ]; then
     echo "NEXUS_CLI_PATH=$out" >>"$GITHUB_ENV"
   fi
-  return 0
 }
 
 run_seed_nexus_init() {
@@ -64,16 +67,14 @@ run_seed_nexus_init() {
 }
 
 main() {
-  local e2e_root
+  local e2e_root status
   e2e_root="$(mktemp -d "${TMPDIR:-/tmp}/nexus-e2e-runtime.XXXXXX")"
-  build_nexus_cli "$e2e_root"
-  local rc=$?
-  if [[ $rc -eq 2 ]]; then
+  status="$(check_nexus_cli_compiles)"
+  if [[ "$status" == "skip" ]]; then
     echo "flows e2e: prereqs skipped (CLI not yet compilable)"
     exit 0
-  elif [[ $rc -ne 0 ]]; then
-    exit $rc
   fi
+  build_nexus_cli "$e2e_root"
   run_seed_nexus_init
   write_env_sh "${GITHUB_WORKSPACE:-$ROOT}/.nexus-e2e-env.sh"
   echo "flows e2e: prereqs ready (NEXUS_CLI_PATH=$NEXUS_CLI_PATH)"
