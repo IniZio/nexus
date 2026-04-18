@@ -2,7 +2,9 @@
 
 ## Project Overview
 
-Nexus remote workspace core: **Workspace Daemon** (Go, `packages/nexus`) and **Workspace SDK** (TypeScript, `packages/sdk/js`). Keep changes centered on those packages; do not reintroduce removed non-core surfaces.
+Nexus remote workspace core: **Workspace Daemon** (Go, `packages/nexus`). Keep changes centered on that package; do not reintroduce removed non-core surfaces.
+
+**Architecture is firecracker-only.** The only supported VM backend is Firecracker. Lima was removed. The `process` sandbox driver provides process-isolation fallback for environments where VMs are unavailable.
 
 ## Remote-First Architecture
 
@@ -19,12 +21,12 @@ Flag any feature that reads user-owned data from the daemon filesystem without a
 
 **Tiered file-size limits:**
 
-```
-Core/domain logic:              <= 300 lines
-Orchestration/application logic: <= 400 lines
-Transport/adapters/tests:        <= 500 lines
-Generated files:                 exempt
-```
+| Layer | Limit |
+|---|---|
+| Core/domain logic | ≤300 lines |
+| Orchestration/application logic | ≤400 lines |
+| Transport/adapters/tests | ≤500 lines |
+| Generated files | exempt |
 
 **Dependency direction rules:**
 
@@ -50,11 +52,40 @@ harness/      reusable e2e support code only
 
 **Known debt (tracked, not instant failures):**
 
-```
-packages/nexus/pkg/handlers/workspace_manager.go (~429 lines, over 400 limit)
-packages/sdk/js/src/browser-client.ts        (~181 lines, OK)
-packages/sdk/js/src/client.ts                (~159 lines, OK)
-```
+| File | Lines | Status |
+|---|---|---|
+| `packages/nexus/pkg/handlers/workspace_manager.go` | ~1246 | over 400 limit |
+| `packages/nexus/pkg/workspacemgr/manager.go` | ~1268 | over 300/400 limits |
+
+## Agent Skills
+
+Nexus ships two layers of agent skills:
+
+### Project skills (`.opencode/skills/`)
+
+Loaded automatically for this repository. Each is a directory with a `SKILL.md` following the [Agent Skills spec](https://agentskills.io/specification).
+
+| Skill | Description |
+|---|---|
+| `nexus-macos-dev` | Build, run, and test NexusApp.app and its embedded daemon |
+| `bumping-app-version` | Bump or update the app version number |
+| `creating-git-commits` | Create commits matching repository conventions |
+| `superpowers` | Workspace superpowers (experimental) |
+
+### Groundwork workflow skills (`~/.config/opencode/plugins/groundwork/skills/`)
+
+Loaded by the opencode agent automatically. Used for structured development workflows.
+
+| Skill | When to invoke |
+|---|---|
+| `create-prd` | Starting a non-trivial feature (≥1 day estimated); no master PRD exists |
+| `advisor-gate` | Any technical decision with uncertainty; always at task completion before declaring done |
+| `nested-prd` | Architectural pivot or scope increase >1 day discovered mid-implementation |
+| `bdd-implement` | Any visible UI change or bug fix on macOS or web |
+| `commit` | Creating git commits |
+| `session-continue` | Context window growing long or fresh session needed |
+| `consolidate-docs` | Cleaning up PRDs after iterations; preparing for handoff or release |
+| `opencode-acp` | Controlling another opencode instance via ACP protocol |
 
 ## Enforcement
 
@@ -62,14 +93,21 @@ Complete work fully; verify builds, tests, types, and lint; provide evidence; us
 
 ## Documentation
 
-User-facing docs live under `docs/`: `guides/`, `reference/`, `superpowers/`, and `roadmap.md`. Contributing guidance is in the repository root `CONTRIBUTING.md`. Only document implemented behavior. Do not document removed module surfaces as current capabilities.
+User-facing docs live under `docs/`: `guides/`, `reference/`. Contributing guidance is in `CONTRIBUTING.md` at the repository root. Only document implemented behavior. Do not document removed module surfaces as current capabilities.
 
-```text
+```
 docs/
 ├── README.md
 ├── guides/
-├── reference/
-└── roadmap.md
+│   ├── installation.md
+│   ├── operations.md
+│   ├── release-signing.md
+│   └── testing.md
+└── reference/
+    ├── cli.md
+    ├── workspace-config.md
+    ├── host-auth-bundle.md
+    └── project-structure.md
 ```
 
 ## Project scaffold

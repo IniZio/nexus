@@ -14,21 +14,8 @@ docs/
 └── roadmap.md
 
 packages/
-├── e2e/
-│   └── flows/
-│       └── src/
-│           ├── cases/
-│           │   └── parity/
-│           ├── harness/
-│           │   ├── daemon/
-│           │   ├── repo/
-│           │   ├── session/
-│           │   └── assertions/
-│           └── parity/
 ├── nexus/          # Go daemon
-├── nexus-ui/       # Web UI
-└── sdk/
-    └── js/         # TypeScript SDK (@nexus/sdk)
+└── nexus-swift/    # macOS app (NexusApp)
 ```
 
 

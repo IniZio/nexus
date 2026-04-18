@@ -49,7 +49,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     public var projectId: String?
     /// Daemon runtime backend id, e.g. firecracker, process.
     public let backend: String?
-    /// Human-readable summary from daemon (`runtimeLabel` JSON), e.g. backend + isolation + vm.mode.
+    /// Human-readable summary from daemon (`runtimeLabel` JSON), e.g. backend + isolation.
     public let runtimeLabel: String?
     public var ports: [ForwardedPort]
     public var hasActiveTunnels: Bool

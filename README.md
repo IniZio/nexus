@@ -8,7 +8,7 @@ Remote workspace runtime: strong VM isolation with fast local dev loops.
 - Mutagen sync between host and VM.
 - `nexus tunnel <workspace-id>` for forwarded compose ports.
 - Tooling bootstrap and auth-forward for common AI coding tools.
-- On macOS without nested virtualization, Lima-backed firecracker (pool) or process isolation.
+- On macOS without nested virtualization, process isolation (firecracker requires Linux).
 
 ## Install
 

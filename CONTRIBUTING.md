@@ -2,9 +2,10 @@
 
 ## Scope
 
-- `packages/nexus` — Workspace Daemon (Go)
-- `packages/sdk/js` — Workspace SDK (TypeScript, `@nexus/sdk`)
-- `packages/e2e/flows/` — E2E tests and harness
+Core packages:
+
+- `packages/nexus` — Workspace Daemon (Go, JSON-RPC over WebSocket)
+- `packages/nexus-swift/` — macOS app (NexusApp, embeds the daemon for local dev)
 
 ## Setup
 
@@ -14,48 +15,13 @@ cd nexus
 pnpm install
 ```
 
-## Build and test
-
-```bash
-task build
-task test
-```
-
-Directly:
-
-```bash
-cd packages/nexus && go test ./...
-cd packages/sdk/js && pnpm exec tsc --noEmit && pnpm exec jest --runInBand
-```
-
-## E2E (`packages/e2e/flows/`)
-
-The flows package talks to a running daemon. Typical environment variables:
-
-- `NEXUS_DAEMON_WS`, `NEXUS_DAEMON_TOKEN` — point tests at an existing daemon (see harness errors when unset).
-- `NEXUS_DAEMON_PORT` — used where tests or scripts spawn or address a daemon by port.
-- `NEXUS_E2E_STRICT_RUNTIME` — `1` enforces runtime expectations; `0` allows soft skips (see also `CI=true` for managed daemon in CI). Set to `0` for local runs without a runtime installed; CI always sets `1`.
-- `NEXUS_E2E_FIXTURE_ROOT` — optional override for fixture disk layout.
-- Auth and live-model runs may use additional `NEXUS_E2E_*` variables (see `packages/e2e/flows/src/cases/auth/` and CI).
-
-## Docs
-
-When behavior changes, update as needed:
-
-- `docs/reference/cli.md`
-- `docs/reference/sdk.md`
-- `docs/reference/workspace-config.md`
-- `docs/guides/release-signing.md` (when release-signing flow changes)
-
 ## Architecture
 
 Nexus is intentionally small: daemon + SDK + repository conventions.
 
-**Components**
+**Daemon** runs on a **remote Linux** machine. Clients connect via JSON-RPC over WebSocket. The only supported VM backend is **Firecracker** (process sandbox is available as a fallback for environments without VM support).
 
-- `packages/nexus` — JSON-RPC over WebSocket, workspace lifecycle, readiness, spotlight forwards, compose discovery.
-- `packages/sdk/js` — authenticated transport; workspace APIs; scoped handles for `fs`, `exec`, `spotlight`, `git`, and `service`.
-- Project conventions — repository-root `.nexus/` plus compose files; lifecycle scripts and doctor probes.
+Auth travels via `configBundle` in `workspace.create` RPC — never via symlinks to the daemon's `$HOME`.
 
 **Typical request flow**
 
@@ -64,7 +30,141 @@ Nexus is intentionally small: daemon + SDK + repository conventions.
 3. Operations run through workspace-scoped handlers.
 4. Results return as JSON-RPC responses.
 
-**Package layout** (detail): see `docs/reference/project-structure.md`. CLI, SDK, and workspace config references: `docs/reference/cli.md`, `docs/reference/sdk.md`, `docs/reference/workspace-config.md`.
+**Runtime backends**
+
+| Backend | Description |
+|---|---|
+| `firecracker` | VM isolation (primary, Linux only) |
+| `process` | Process isolation fallback (all platforms) |
+
+## Building
+
+```bash
+task build              # all packages (nexus, sdk, nexus-ui)
+task build:workspace-daemon   # Go daemon + CLI only
+task build:workspace-sdk       # TypeScript SDK only
+```
+
+### Daemon development
+
+```bash
+task daemon:build    # compile the Go daemon binary
+task daemon:restart  # kill existing daemon, start fresh, wait for /healthz
+task daemon:logs     # tail ~/.config/nexus/run/daemon.log
+```
+
+### macOS app development
+
+```bash
+task swift:prepare-resources  # embed locally built daemon into the app bundle
+task swift:build             # build NexusApp.app via xcodebuild
+task app:open                # launch NexusApp.app for eyeball testing
+task dev                     # daemon:restart + app:open
+```
+
+## Testing Tiers
+
+Nexus has three testing tiers:
+
+### Tier 1 — Unit tests
+
+```bash
+task test:workspace-daemon   # go test ./...
+task test:workspace-sdk       # pnpm test
+```
+
+### Tier 2 — Integration tests
+
+Integration tests live in `packages/nexus/test/integration/` and use the `//go:build integration` build tag. They require a running daemon with `NEXUS_DAEMON_PORT` set.
+
+```bash
+# Start the daemon first
+task daemon:restart
+
+# Run integration tests
+cd packages/nexus && go test -tags=integration ./...
+```
+
+The integration harness (`packages/nexus/test/integration/harness.go`) provides `CreateWorkspace`, `ExecInWorkspace`, `ForkWorkspace`, and `DestroyWorkspace` helpers. See `packages/nexus/test/integration/driver_test.go` for examples covering all backends.
+
+### Tier 3 — E2E tests
+
+E2E flows test against a live daemon + runtime.
+
+```bash
+# Full CI-equivalent (requires daemon + runtime)
+task ci:flows-e2e
+
+# Local soft-skip mode (no runtime required)
+NEXUS_E2E_STRICT_RUNTIME=0 task ci:flows-e2e
+```
+
+Key environment variables:
+
+| Variable | Description |
+|---|---|
+| `NEXUS_DAEMON_WS`, `NEXUS_DAEMON_TOKEN` | Point tests at an existing daemon |
+| `NEXUS_DAEMON_PORT` | Daemon port (default 63987) |
+| `NEXUS_E2E_STRICT_RUNTIME=0` | Allow soft skips when no VM runtime is installed |
+| `CI=true` | Enforces runtime expectations; always set in CI |
+
+### XCUITests (macOS)
+
+```bash
+task test:smoke    # quick smoke: launch, connect
+task test:terminal # NexusTerminalUITests (requires daemon + Accessibility permission)
+task test          # all XCUITests
+task test:unit     # NexusAppTests (unit only, no UI)
+```
+
+## File Size Policy
+
+Code is organized into layers with size limits:
+
+| Layer | Limit | Examples |
+|---|---|---|
+| Core/domain logic | ≤300 lines | `runtime/driver.go`, `runtime/factory.go` |
+| Orchestration/application logic | ≤400 lines | handlers, workspacemgr |
+| Transport/adapters/tests | ≤500 lines | transport adapters, integration tests |
+
+Known violations (tracked, not hard failures):
+
+```
+packages/nexus/pkg/handlers/workspace_manager.go  ~1246 lines  (severely over limit)
+packages/nexus/pkg/workspacemgr/manager.go        ~1268 lines  (severely over limit)
+```
+
+## Agent Skills
+
+Nexus ships opencode agent skills in `.opencode/skills/`:
+
+| Skill | When to use |
+|---|---|
+| `nexus-macos-dev` | Building and running NexusApp locally |
+| `bumping-app-version` | Incrementing app version numbers |
+| `creating-git-commits` | Creating commits matching repo conventions |
+| `superpowers` | Workspace superpowers (experimental) |
+
+Groundwork workflow skills (loaded from `~/.config/opencode/plugins/groundwork/skills/`):
+
+| Skill | When to use |
+|---|---|
+| `create-prd` | Starting a non-trivial feature (≥1 day) |
+| `advisor-gate` | Any technical decision; always at task completion |
+| `nested-prd` | Architectural pivot mid-implementation |
+| `bdd-implement` | Any visible UI change or bug fix |
+| `commit` | Creating git commits |
+| `session-continue` | Context window growing long |
+
+## Docs
+
+When behavior changes, update as needed:
+
+- `docs/reference/cli.md`
+- `docs/reference/sdk.md`
+- `docs/reference/workspace-config.md`
+- `docs/guides/release-signing.md`
+- `docs/guides/testing.md`
 
 ## Commits
 
@@ -75,7 +175,25 @@ Examples:
 - `feat(workspace-daemon): add compose port auto-forward`
 - `fix(workspace-sdk): align spotlight response types`
 - `docs: update workspace config reference`
+- `refactor(workspacemgr): split manager.go into focused sub-packages`
 
 ## PRs
 
-Keep changes focused; ensure tests pass and docs are updated when behavior changes. Address review feedback.
+Keep changes focused. Ensure `task build` and `task test` pass. Update docs when behavior changes. Address review feedback.
+
+## Release Pipeline
+
+```
+opencode (implementation)
+    │  conventional commits
+    ▼
+gh pr create
+    │  CI checks (task ci)
+    ▼
+merge to main
+    │  tag pushed → GitHub Actions builds + signs + publishes
+    ▼
+GitHub release
+```
+
+Release signing: see `docs/guides/release-signing.md`.

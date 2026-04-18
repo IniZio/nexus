@@ -17,8 +17,6 @@
     "allowSyntheticDefaultImports": true,
     "baseUrl": "."
   },
-  "include": [
-    "packages/sdk/js/src/**/*"
-  ],
+  "include": [],
   "exclude": ["node_modules", "dist"]
 }

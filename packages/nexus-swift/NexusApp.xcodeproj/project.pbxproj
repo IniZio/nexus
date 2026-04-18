@@ -20,6 +20,7 @@
 		7E776D62015DFBCF25EEE644 /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6231766FDA3F470858042A87 /* TerminalView.swift */; };
 		80CE1FC1D1DC6ED9FA1B0B3D /* NexusApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 804B2FADD0C5143C198F46DA /* NexusApp.swift */; };
 		8831D4FD2BE4EC9CA00D54D9 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 659564BF098092F19E1351D0 /* AppState.swift */; };
+		A1B2C3D4E5F6A7B8C9D0E1F2 /* ConfigSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5F6A7B8C9D0E1F2A3 /* ConfigSyncManager.swift */; };
 		A512F81B9A51ED222CBECA5F /* WebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2BFDE21D93B71D9558A8EB6 /* WebSocketClient.swift */; };
 		A774123997F078D6CD0C11BA /* WorkspaceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E59BFA6CB8B1E9F66EE1247E /* WorkspaceDetailView.swift */; };
 		A9273E20904D087845541518 /* DaemonClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9C948C4674F0FD006FCE84F /* DaemonClient.swift */; };
@@ -72,6 +73,7 @@
 		5CBA4800536CF2D77E40B4F3 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		6231766FDA3F470858042A87 /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
 		659564BF098092F19E1351D0 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		B2C3D4E5F6A7B8C9D0E1F2A3 /* ConfigSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigSyncManager.swift; sourceTree = "<group>"; };
 		804B2FADD0C5143C198F46DA /* NexusApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NexusApp.swift; sourceTree = "<group>"; };
 		85417139225FD79454603276 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		9A570BFC62A722A8BE1F84B9 /* NexusAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NexusAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -183,6 +185,7 @@
 			children = (
 				659564BF098092F19E1351D0 /* AppState.swift */,
 				0E4D7D285580F1646BA523C0 /* AsyncDeadline.swift */,
+				B2C3D4E5F6A7B8C9D0E1F2A3 /* ConfigSyncManager.swift */,
 				2684A614A507C4F30DE4DDF1 /* DaemonLauncher.swift */,
 				52D96DD4872B23F7851C58FC /* debug_pty.swift */,
 				E8D2BD862DC1CF0BC0340EF9 /* HostToolsSetup.swift */,
@@ -426,6 +429,7 @@
 				A9273E20904D087845541518 /* DaemonClient.swift in Sources */,
 				02BF55A8E1DB9D2B8AA212C5 /* DaemonLauncher.swift in Sources */,
 				AAD95B3DEC7CDE28C6E99EA9 /* HostToolsSetup.swift in Sources */,
+				A1B2C3D4E5F6A7B8C9D0E1F2 /* ConfigSyncManager.swift in Sources */,
 				DCD55CD52BA08D65FF1A4C57 /* PTYSessionManager.swift in Sources */,
 				5142C089169B296EB634FB67 /* StartupTrace.swift in Sources */,
 				A512F81B9A51ED222CBECA5F /* WebSocketClient.swift in Sources */,

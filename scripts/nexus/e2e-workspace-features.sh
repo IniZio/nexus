@@ -72,7 +72,7 @@ curl -sS --max-time 5 "http://127.0.0.1:$spotlight_local_port" >/dev/null 2>&1 &
   echo "expected spotlight local port $spotlight_local_port to be free" >&2
   exit 1
 } || true
-forward_json="$(node -e 'const WebSocket=require("ws");const ws=new WebSocket(`ws://127.0.0.1:'"$daemon_port"'/?token='"$daemon_token"'`);ws.on("open",()=>ws.send(JSON.stringify({jsonrpc:"2.0",id:"1",method:"spotlight.expose",params:{spec:{workspaceId:"'"$workspace_id"'",service:"compose-web",remotePort:'"$spotlight_remote_port"',localPort:'"$spotlight_local_port"',host:"127.0.0.1"}}})));ws.on("message",m=>{console.log(String(m));process.exit(0);});')"
+forward_json="$(node -e 'const WebSocket=require("ws");const ws=new WebSocket(`ws://127.0.0.1:'"$daemon_port"'/?token='"$daemon_token"'`);ws.on("open",()=>ws.send(JSON.stringify({jsonrpc:"2.0",id:"1",method:"spotlight.start",params:{spec:{workspaceId:"'"$workspace_id"'",service:"compose-web",remotePort:'"$spotlight_remote_port"',localPort:'"$spotlight_local_port"',host:"127.0.0.1"}}})));ws.on("message",m=>{console.log(String(m));process.exit(0);});')"
 echo "$forward_json"
 forward_id="$(printf "%s\n" "$forward_json" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{const j=JSON.parse(s);console.log(j.result.forward.id);});')"
 curl -sS --max-time 10 "http://127.0.0.1:$spotlight_local_port"

@@ -4,7 +4,6 @@ set -euo pipefail
 DEFAULT_ALLOW=(
   "packages/nexus/pkg/server/server.go"
   "packages/nexus/pkg/handlers/workspace_manager.go"
-  "packages/sdk/js/src/types.ts"
 )
 
 extra_allow=()
