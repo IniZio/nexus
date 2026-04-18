@@ -96,6 +96,49 @@ Checks latest release metadata and applies updates for both `nexus` and `nexus-d
 | `NEXUS_RELEASE_CHANNEL` | Release channel (`stable` default, `prerelease` to track latest prerelease tag) |
 | `NEXUS_RELEASE_REPO` | GitHub repo slug for release lookup (default `inizio/nexus`) |
 
+## nexusd flags
+
+### Core flags
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--db` | string | `~/.local/state/nexus/nexus.db` | SQLite database path |
+| `--socket` | string | `~/.local/state/nexus/nexusd.sock` | Unix socket path |
+| `--node-name` | string | hostname | Node identity name |
+| `--firecracker` | bool | false | Enable Firecracker VM backend |
+| `--firecracker-bin` | string | `firecracker` | Firecracker binary name |
+| `--kernel` | string | `$NEXUS_FIRECRACKER_KERNEL` | Firecracker kernel image path |
+| `--rootfs` | string | `$NEXUS_FIRECRACKER_ROOTFS` | Firecracker rootfs image path |
+| `--workdir-root` | string | `~/.local/state/nexus/firecracker-vms` | Firecracker VM work dir root |
+
+### Network listener flags
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--network` | bool | false | Enable TCP/WebSocket network listener |
+| `--bind` | string | `127.0.0.1` | Bind address for the network listener |
+| `--port` | int | `7777` | Port for the network listener |
+| `--token` | string | _(required when `--network`)_ | Static bearer token for authentication |
+| `--tls` | string | `off` | TLS mode: `off` \| `auto` \| `required` |
+| `--tls-cert` | string | — | Path to TLS certificate PEM (`required` mode) |
+| `--tls-key` | string | — | Path to TLS key PEM (`required` mode) |
+
+**TLS modes:**
+
+- `off` — plaintext; safe only over loopback or SSH tunnel
+- `auto` — self-signed certificate generated in memory at startup
+- `required` — use `--tls-cert` / `--tls-key`; falls back to self-signed if files are omitted
+
+**Endpoints exposed by the network listener:**
+
+| Path | Method | Auth | Description |
+|---|---|---|---|
+| `/healthz` | GET | none | Returns `{"status":"ok"}` |
+| `/version` | GET | none | Returns `{"version":"..."}` |
+| `/` | WebSocket | Bearer token | JSON-RPC 2.0 entry point |
+
+See [Remote Daemon runbook](../guides/operations.md#remote-daemon-nexusd-on-linux) for end-to-end setup.
+
 ## Related
 
 - SDK: [`sdk.md`](sdk.md)

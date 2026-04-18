@@ -1,0 +1,7 @@
+{
+  "name": "nexus-macos-app",
+  "lifecycle": {
+    "probe": ["swift", "build", "--configuration", "release", "-C", "packages/nexus-swift"],
+    "start": ["echo", "nexus-swift build workspace ready"]
+  }
+}

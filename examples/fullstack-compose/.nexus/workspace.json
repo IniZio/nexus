@@ -1,0 +1,11 @@
+{
+  "name": "fullstack-compose",
+  "lifecycle": {
+    "probe": ["sh", "-c", "pg_isready -h localhost || exit 1"],
+    "start": ["docker-compose", "up", "-d"]
+  },
+  "ports": [
+    {"guest": 3000, "host": 3001},
+    {"guest": 5432, "host": 5432}
+  ]
+}
