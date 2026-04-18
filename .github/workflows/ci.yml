@@ -133,15 +133,15 @@ jobs:
         run: |
           git config --global --add safe.directory "$(pwd)"
           cd packages/nexus
-          go build -o /usr/local/bin/nexus-daemon ./cmd/nexusd
+          go build -o /tmp/nexusd ./cmd/nexusd/
 
       - name: Install bubblewrap (process sandbox dependency)
         run: apt-get update -q && apt-get install -y bubblewrap
 
-      - name: Run sandbox integration tests
+      - name: Run e2e tests
         run: |
           cd packages/nexus
-          go test -tags integration -v -timeout 10m -run TestAllDrivers/process ./test/bdd/...
+          NEXUS_E2E_BINARY=/tmp/nexusd go test -tags e2e ./test/e2e/...
 
   # Lima/macOS integration tests require macOS runners with nested virtualization.
   # Uncomment when macos-15-intel runners are available in this org.
