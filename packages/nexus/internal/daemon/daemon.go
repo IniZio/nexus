@@ -28,6 +28,36 @@ import (
 	"github.com/inizio/nexus/packages/nexus/internal/transport"
 )
 
+// NetworkConfig holds optional remote-listener settings.
+type NetworkConfig struct {
+	Enabled          bool
+	BindAddress      string
+	Port             int
+	TLSMode          string // "off" | "auto" | "required"
+	TokenAuthEnabled bool
+	Token            string
+	TLSCertFile      string
+	TLSKeyFile       string
+}
+
+// ValidateNetworkConfig enforces policy rules for remote listener configuration.
+func ValidateNetworkConfig(cfg NetworkConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if !cfg.TokenAuthEnabled {
+		return fmt.Errorf("network listener requires token auth (--token must be set when --network is enabled)")
+	}
+	isLoopback := cfg.BindAddress == "127.0.0.1" || cfg.BindAddress == "::1"
+	if !isLoopback && cfg.TLSMode == "off" {
+		return fmt.Errorf("tls-mode \"off\" is not allowed for non-loopback bind address %q; use \"auto\" or \"required\"", cfg.BindAddress)
+	}
+	if len(cfg.Token) < 16 {
+		log.Printf("daemon: WARNING: network auth token is fewer than 16 characters; use a longer token in production")
+	}
+	return nil
+}
+
 // Config holds all configuration for building a Daemon.
 type Config struct {
 	DBPath             string
@@ -39,14 +69,16 @@ type Config struct {
 	WorkDirRoot        string
 	NodeName           string
 	NodeTags           []string
+	Network            NetworkConfig
 }
 
 // Daemon is the assembled daemon with all services wired together.
 type Daemon struct {
-	cfg      Config
-	db       *store.DB
-	registry *rpcregistry.MapRegistry
-	listener *transport.Listener
+	cfg             Config
+	db              *store.DB
+	registry        *rpcregistry.MapRegistry
+	listener        *transport.Listener
+	networkListener *transport.NetworkListener
 }
 
 // New constructs a Daemon by wiring all layers.
@@ -97,18 +129,46 @@ func New(cfg Config) (*Daemon, error) {
 
 	lst := transport.NewListener(cfg.SocketPath, reg)
 
-	return &Daemon{
+	d := &Daemon{
 		cfg:      cfg,
 		db:       db,
 		registry: reg,
 		listener: lst,
-	}, nil
+	}
+
+	if cfg.Network.Enabled {
+		nl, err := transport.NewNetworkListener(transport.NetworkListenerConfig{
+			BindAddress: cfg.Network.BindAddress,
+			Port:        cfg.Network.Port,
+			TLSMode:     cfg.Network.TLSMode,
+			Token:       cfg.Network.Token,
+			TLSCertFile: cfg.Network.TLSCertFile,
+			TLSKeyFile:  cfg.Network.TLSKeyFile,
+		}, reg)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("network listener: %w", err)
+		}
+		d.networkListener = nl
+	}
+
+	return d, nil
 }
 
 // Start begins accepting connections. It blocks until ctx is cancelled or an error occurs.
 func (d *Daemon) Start(ctx context.Context) error {
 	log.Printf("daemon: listening on %s", d.cfg.SocketPath)
-	return d.listener.Serve(ctx)
+
+	if d.networkListener == nil {
+		return d.listener.Serve(ctx)
+	}
+
+	errCh := make(chan error, 2)
+	go func() { errCh <- d.listener.Serve(ctx) }()
+	go func() { errCh <- d.networkListener.Serve(ctx) }()
+
+	err := <-errCh
+	return err
 }
 
 // Stop shuts down the daemon, closing transport and database.
@@ -116,6 +176,11 @@ func (d *Daemon) Stop() error {
 	var errs []error
 	if err := d.listener.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("close listener: %w", err))
+	}
+	if d.networkListener != nil {
+		if err := d.networkListener.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close network listener: %w", err))
+		}
 	}
 	if err := d.db.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("close db: %w", err))

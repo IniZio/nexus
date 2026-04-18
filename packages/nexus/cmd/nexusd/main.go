@@ -24,7 +24,28 @@ func main() {
 	rootfsPath := flag.String("rootfs", os.Getenv("NEXUS_FIRECRACKER_ROOTFS"), "Firecracker rootfs image path")
 	workDirRoot := flag.String("workdir-root", filepath.Join(defaultData, "firecracker-vms"), "Firecracker VM work dir root")
 	nodeName := flag.String("node-name", hostName(), "Node name for identity")
+	network := flag.Bool("network", false, "Enable TCP/WebSocket network listener")
+	bind := flag.String("bind", "127.0.0.1", "Network listener bind address")
+	port := flag.Int("port", 7777, "Network listener port")
+	tls := flag.String("tls", "off", "TLS mode: off | auto | required")
+	token := flag.String("token", "", "Static bearer token for network auth (required when --network is set)")
+	tlsCert := flag.String("tls-cert", "", "TLS certificate file (PEM) for required mode")
+	tlsKey := flag.String("tls-key", "", "TLS key file (PEM) for required mode")
 	flag.Parse()
+
+	netCfg := daemon.NetworkConfig{
+		Enabled:          *network,
+		BindAddress:      *bind,
+		Port:             *port,
+		TLSMode:          *tls,
+		TokenAuthEnabled: *token != "",
+		Token:            *token,
+		TLSCertFile:      *tlsCert,
+		TLSKeyFile:       *tlsKey,
+	}
+	if err := daemon.ValidateNetworkConfig(netCfg); err != nil {
+		log.Fatalf("daemon: invalid network config: %v", err)
+	}
 
 	cfg := daemon.Config{
 		DBPath:             *dbPath,
@@ -35,6 +56,7 @@ func main() {
 		RootFSPath:         *rootfsPath,
 		WorkDirRoot:        *workDirRoot,
 		NodeName:           *nodeName,
+		Network:            netCfg,
 	}
 
 	d, err := daemon.New(cfg)
