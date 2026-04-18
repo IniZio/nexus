@@ -15,6 +15,8 @@ import Foundation
 public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
 
     private let daemonURL: URL
+    /// Optional pre-resolved token for remote profiles. When set, takes priority over env/keychain resolution.
+    private let injectedToken: String?
     /// Single session for all WebSocket connections — `URLSession()` per `connect()` leaked memory when
     /// refresh/load stacked during handshake (see AppState refresh loop).
     private let webSocketSession: URLSession = {
@@ -30,8 +32,9 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
     /// create overlapping WebSocket handshakes — that leaked tasks, stacked `receiveLoop`, and grew RAM.
     private let connectionLock = NSLock()
 
-    public init(daemonURL: URL) {
+    public init(daemonURL: URL, token: String? = nil) {
         self.daemonURL = daemonURL
+        self.injectedToken = token
     }
 
     deinit {
@@ -103,8 +106,7 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
 
     // MARK: - Auth token
 
-    public static func readToken() -> String {
-        if let env = ProcessInfo.processInfo.environment["NEXUS_DAEMON_TOKEN"], !env.isEmpty {
+    public static func readToken() -> String {        if let env = ProcessInfo.processInfo.environment["NEXUS_DAEMON_TOKEN"], !env.isEmpty {
             return env
         }
         let configuredService = ProcessInfo.processInfo.environment["NEXUS_DAEMON_TOKEN_KEYCHAIN_SERVICE"]?
@@ -123,6 +125,12 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
             }
         }
         return ""
+    }
+
+    /// Reads a bearer token directly from a named Keychain service.
+    /// Returns nil if not found. Used by remote profile token resolution.
+    public static func readKeychainToken(service: String) -> String? {
+        readMacKeychainPassword(service: service)
     }
 
     private static func readMacKeychainPassword(service: String) -> String? {
@@ -162,7 +170,7 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
             StartupTrace.checkpoint("ws.connect.noop", "task already exists (state=\(task?.state.rawValue ?? -1))")
             return
         }
-        let token = Self.readToken()
+        let token = injectedToken ?? Self.readToken()
         var request = URLRequest(url: daemonURL)
         if !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -262,6 +270,15 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
     }
 
     private func failAll(_ error: Error) {
+        let isClean: Bool
+        if let wsErr = error as? URLError, wsErr.code == .cancelled {
+            isClean = true
+        } else {
+            isClean = false
+        }
+        if !isClean {
+            print("[WebSocketClient] connection dropped unexpectedly: \(error)")
+        }
         let all = lock.withLock { () -> [String: CheckedContinuation<Any, Error>] in
             let a = pending; pending.removeAll(); return a
         }

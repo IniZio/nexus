@@ -51,6 +51,8 @@ public final class AppState: ObservableObject {
     private var isRestarting = false
     @Published public var isBusy = false
 
+    private var cachedProfile: DaemonProfile?
+
     private var injectedDaemonURL: String? {
         let value = ProcessInfo.processInfo.environment["NEXUS_DAEMON_URL"]?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -60,10 +62,16 @@ public final class AppState: ObservableObject {
     public init() {
         StartupTrace.beginSession()
         StartupTrace.checkpoint("app.init", "before client")
+        let profile = DaemonProfileStore().defaultProfile()
+        self.cachedProfile = profile
         self.client = WebSocketDaemonClient(daemonURL: WebSocketDaemonClient.discoverURL())
         connectionState = .starting
-        StartupTrace.checkpoint("app.init", "after client; scheduling ensureDaemonAndLoad")
-        Task { await self.ensureDaemonAndLoad() }
+        StartupTrace.checkpoint("app.init", "after client; scheduling load")
+        if profile?.mode == .remote {
+            Task { await self.connectRemoteAndLoad() }
+        } else {
+            Task { await self.ensureDaemonAndLoad() }
+        }
         startRefreshLoop()
     }
 
@@ -314,7 +322,6 @@ public final class AppState: ObservableObject {
         await load()
         StartupTrace.checkpoint("ensure.after_full_load")
     }
-
     private func setInjectedDaemonUnavailableError(reason: String?) {
         let urlDisplay = injectedDaemonURL ?? "(unknown)"
         let trimmedReason = reason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -322,9 +329,67 @@ public final class AppState: ObservableObject {
         error = "Injected daemon URL is unreachable: \(urlDisplay). Check NEXUS_DAEMON_URL, NEXUS_DAEMON_TOKEN, and ensure the daemon is running.\(reasonText)"
     }
 
+    // MARK: - Remote connection
+
+    private func connectRemoteAndLoad() async {
+        guard let profile = cachedProfile, profile.mode == .remote else { return }
+        let urlString = "\(profile.scheme.rawValue)://\(profile.host):\(profile.port)"
+        guard let url = URL(string: urlString) else {
+            connectionState = .disconnected
+            error = "Remote daemon profile has invalid URL: \(urlString)"
+            return
+        }
+        // Resolve bearer token from profile.tokenRef
+        let resolvedToken: String
+        switch profile.tokenRef {
+        case .env(let variable):
+            resolvedToken = ProcessInfo.processInfo.environment[variable] ?? ""
+            if resolvedToken.isEmpty {
+                Self.logger.warning("env token var \(variable, privacy: .public) is not set")
+            }
+        case .keychain(let service):
+            resolvedToken = WebSocketDaemonClient.readKeychainToken(service: service)
+                ?? WebSocketDaemonClient.readToken()
+        case .inline(let token):
+            resolvedToken = token
+        }
+        client = WebSocketDaemonClient(daemonURL: url, token: resolvedToken.isEmpty ? nil : resolvedToken)
+        connectionState = .connecting
+        StartupTrace.checkpoint("remote.connect", urlString)
+        do {
+            try await AsyncDeadline.withSecondsOnMainActor(UInt64(profile.connectTimeoutSec)) {
+                await self.load()
+            }
+            // Mark profile as connected on success.
+            self.updateProfileStatus(profileId: profile.profileId, status: .connected)
+        } catch {
+            if connectionState != .connected {
+                connectionState = .disconnected
+                self.error = "Remote daemon unreachable: \(profile.host):\(profile.port) — \(error.localizedDescription)"
+                StartupTrace.checkpoint("remote.connect.failed", error.localizedDescription)
+                Self.logger.error("connectRemoteAndLoad failed: \(error.localizedDescription, privacy: .public)")
+                self.updateProfileStatus(profileId: profile.profileId, status: .unreachable)
+            }
+        }
+    }
+
+    /// Persists an updated `lastKnownStatus` for the given profile ID.
+    private func updateProfileStatus(profileId: String, status: ProfileStatus) {
+        let store = DaemonProfileStore()
+        var profiles = store.load()
+        guard let idx = profiles.firstIndex(where: { $0.profileId == profileId }) else { return }
+        profiles[idx].lastKnownStatus = status
+        store.save(profiles)
+        // Refresh cachedProfile if it matches.
+        if cachedProfile?.profileId == profileId {
+            cachedProfile = profiles[idx]
+        }
+    }
+
     /// Kills the running daemon, starts a fresh one from the resolved binary,
     /// and reconnects. Called by the daemon management UI.
     public func restartDaemon() async {
+        if cachedProfile?.mode == .remote { return }
         guard !isRestarting else { return }
         isRestarting = true
         isBusy = true

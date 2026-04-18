@@ -95,6 +95,34 @@ struct DaemonSettingsPanel: View {
             sandboxResourceControls
             Divider().opacity(0.35)
             toolingControls
+            Divider().opacity(0.35)
+            profilesSection
+        }
+    }
+
+    // MARK: - Profiles section
+
+    @ViewBuilder
+    private var profilesSection: some View {
+        let activeProfile = DaemonProfileStore().defaultProfile()
+        let isRemoteMode = activeProfile?.mode == .remote
+        VStack(alignment: .leading, spacing: 0) {
+            if isRemoteMode {
+                HStack(spacing: 6) {
+                    Image(systemName: "network")
+                        .font(.system(size: 11))
+                        .foregroundColor(.blue)
+                    Text("Remote mode — daemon lifecycle managed externally")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                Divider().opacity(0.25)
+            }
+            RemoteProfileSettingsView()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
         }
     }
 
