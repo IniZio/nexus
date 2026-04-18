@@ -23,7 +23,7 @@ build_nexus_cli() {
   # cmd/nexus still imports old pkg/* paths removed in the daemon rewrite.
   # Skip flows-e2e gracefully until the CLI is rewired to the new internal/ API.
   if ! (cd "$NEXUS_MOD" && go build -o /dev/null ./cmd/nexus 2>/dev/null); then
-    echo "flows e2e: SKIP — cmd/nexus does not compile (CLI not yet rewired); set NEXUS_E2E_STRICT_RUNTIME=1 to fail hard"
+    echo "flows e2e: SKIP -- cmd/nexus does not compile (CLI not yet rewired); set NEXUS_E2E_STRICT_RUNTIME=1 to fail hard"
     if [[ "${NEXUS_E2E_STRICT_RUNTIME:-0}" == "1" ]]; then
       echo "flows e2e: NEXUS_E2E_STRICT_RUNTIME=1, treating skip as failure" >&2
       return 1
