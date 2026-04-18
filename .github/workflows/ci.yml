@@ -141,7 +141,7 @@ jobs:
       - name: Run sandbox integration tests
         run: |
           cd packages/nexus
-          go test -tags integration -v -timeout 10m -run TestAllDrivers/process ./test/integration/...
+          go test -tags integration -v -timeout 10m -run TestAllDrivers/process ./test/bdd/...
 
   # Lima/macOS integration tests require macOS runners with nested virtualization.
   # Uncomment when macos-15-intel runners are available in this org.
