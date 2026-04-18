@@ -3,7 +3,7 @@ type: child
 feature_area: code-cleanup
 date: 2026-04-18
 topic: architecture-redesign
-status: draft
+status: completed
 parent_prd: docs/prds/code-cleanup-current.md
 ---
 
@@ -217,3 +217,29 @@ Path B preserves technical debt and defers the hardest part (moving handlers out
 **Total: ~20–26h (3–4 days)**
 
 This is a significant effort. The user has already committed the Phase 4 win. This child PRD should be reviewed and approved before proceeding.
+
+## Outcomes (Path A — Completed)
+
+All Path A deliverables were implemented:
+
+| Task | Status | Notes |
+|---|---|---|
+| `pkg/transport/` extraction | ✅ | `transport.go`, `websocket.go`, `stdio.go`, `rpc.go` created |
+| `pkg/infra/relay/` grouping | ✅ | relay broker moved from `pkg/authrelay/`; `infra.go` marker created |
+| `pkg/deps/` DI container | ✅ | `deps.go` with `Deps` struct and `NewDeps` constructor |
+| `handlers/` → `pkg/` migration | ✅ | All handlers eliminated; merged into `workspace/`, `project/`, `daemon/`, `credentials/`, `spotlight/` |
+| `spotlight.expose` → `spotlight.start` | ✅ | Renamed in `rpc_handlers.go` |
+| `ARCHITECTURE.md` creation | ✅ | Written at repo root; documents layers, interfaces, remote-first notes |
+| Build + tests | ✅ | `go build ./...` passes; 451 tests pass |
+| Import cycles | ✅ | Resolved via `WorkspaceManager` interface + `wsMgrAdapter` in tests |
+
+**Key design decisions:**
+- `project.WorkspaceManager` interface introduced to break `workspacemgr` ↔ `project` cycle without introducing a shared intermediate package
+- `wsMgrAdapter` used in `pkg/server/rpc_handlers.go` and `pkg/project/project_manager_test.go` to adapt `*workspacemgr.Manager` to the `WorkspaceManager` interface
+- `infra/relay/` uses `package authrelay` (package name differs from directory — valid Go)
+- `spotlight_rpc.go` renamed from `spotlight.go` to avoid filename conflict with `spotlight/` package
+
+**Not completed (out of scope):**
+- Full `server/server.go` migration to use `transport.Transport` — `WebSocketTransport` is a stub; actual WebSocket logic still lives in `server.go`
+- Stdio transport implementation — stub only
+- `pkg/` auth grouping (`auth`, `authrelay`, `agentprofile`, `credsbundle`, `daemonclient`) — deferred

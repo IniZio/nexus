@@ -25,6 +25,10 @@ type CreateSpec struct {
 	UseProjectRootPath bool              `json:"useProjectRootPath,omitempty"`
 }
 
+type RemoveOptions struct {
+	DeleteHostPath bool
+}
+
 type Workspace struct {
 	ID                string         `json:"id"`
 	ProjectID         string         `json:"projectId,omitempty"`
