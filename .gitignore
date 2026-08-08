@@ -11,3 +11,6 @@ coverage.html
 # Development metadata
 .codegraph/
 .groundwork/
+
+# Intermediate prototypes and plans
+.scratch/
