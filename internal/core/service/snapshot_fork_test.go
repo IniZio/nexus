@@ -159,9 +159,15 @@ func TestSnapshot_IntegrityReject(t *testing.T) {
 	}
 }
 
-// ── Snapshot: artifact store persistence ─────────────────────────────────────
+// ── Snapshot: S0-AC5 no placeholder written to service artifact store ─────────
+//
+// S0-AC5: Exactly ONE store record per snapshot create (no duplicate real+placeholder pair).
+// After S0 the service no longer writes a zero-filled placeholder to s.artifacts;
+// persistence is exclusively the driver's responsibility. This test verifies
+// that the service-attached artifact store remains empty after a successful
+// Snapshot call.
 
-func TestSnapshot_PersistsToArtifactStore(t *testing.T) {
+func TestSnapshot_S0AC5_NoPlaceholderWrittenToServiceStore(t *testing.T) {
 	aStore, err := artifact.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("artifact.NewStore: %v", err)
@@ -169,7 +175,7 @@ func TestSnapshot_PersistsToArtifactStore(t *testing.T) {
 	svc := newSvc(t).WithArtifacts(aStore)
 	c := ctx()
 
-	sb, err := svc.Create(c, "proj", "snap-persist", service.CreateOptions{})
+	sb, err := svc.Create(c, "proj", "snap-noplacehold", service.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -177,18 +183,17 @@ func TestSnapshot_PersistsToArtifactStore(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	snap, err := svc.Snapshot(c, sb.ID.String())
-	if err != nil {
+	if _, err := svc.Snapshot(c, sb.ID.String()); err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
 
-	// Verify the snapshot was actually written to the artifact store on disk.
-	stored, err := aStore.Read(snap.ID)
+	// The service-attached artifact store must be empty (no placeholder written).
+	snaps, err := aStore.List()
 	if err != nil {
-		t.Fatalf("artifact.Store.Read: %v — snapshot was not persisted to store", err)
+		t.Fatalf("aStore.List: %v", err)
 	}
-	if stored.ID != snap.ID {
-		t.Errorf("stored.ID: got %s, want %s", stored.ID, snap.ID)
+	if len(snaps) != 0 {
+		t.Errorf("S0-AC5: expected aStore to be empty after Snapshot, got %d record(s)", len(snaps))
 	}
 }
 

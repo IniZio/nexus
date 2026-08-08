@@ -48,6 +48,10 @@ import (
 // to the machine contract layer.
 var ErrNoSubstrate = errors.New("service: no substrate configured")
 
+// ErrNoArtifactStore is returned when an operation requires an artifact store
+// but none is attached via WithArtifacts.
+var ErrNoArtifactStore = errors.New("service: no artifact store attached")
+
 // Service coordinates sandbox operations across the store, driver, and
 // lifecycle machine. It has no CLI or presentation concerns and is safe to
 // call from any context.
@@ -70,9 +74,10 @@ func New(st store.Store, drv driver.Driver, m lifecycle.Machine) *Service {
 	return &Service{store: st, driver: drv, machine: m}
 }
 
-// WithArtifacts attaches an artifact store for snapshot persistence and
-// returns the receiver so calls can be chained. When set, Snapshot writes
-// the snapshot metadata to the store after the driver completes.
+// WithArtifacts attaches an artifact store and returns the receiver so calls
+// can be chained. The store is used by snapshot list and remove operations
+// (S1). Service.Snapshot no longer writes to this store — the driver's
+// canonical store (rooted at its durable SnapshotDir) is the single writer.
 // WithArtifacts does not alter any existing method and does not affect the
 // New constructor signature.
 func (s *Service) WithArtifacts(a *artifact.Store) *Service {
@@ -569,19 +574,6 @@ func (s *Service) Snapshot(ctx context.Context, ref string) (artifact.Snapshot, 
 		return artifact.Snapshot{}, fmt.Errorf("service: snapshot %s: %w", sb.ID, err)
 	}
 
-	// Persist to the artifact store outside the sandbox lock so that a slow
-	// disk write does not hold the per-sandbox flock longer than necessary.
-	if s.artifacts != nil {
-		// The real payload lives inside the driver (e.g. the VMM snapshot dir).
-		// The artifact store receives a synthetic zero-byte placeholder of the
-		// recorded size so that the commit-marker protocol can verify integrity
-		// on every subsequent Read.
-		payload := make([]byte, snap.Size)
-		if err := s.artifacts.Write(snap, payload); err != nil {
-			return artifact.Snapshot{}, fmt.Errorf("service: snapshot %s: persist: %w", sb.ID, err)
-		}
-	}
-
 	return snap, nil
 }
 
@@ -676,4 +668,42 @@ func (s *Service) Fork(ctx context.Context, ref string, count int) ([]domain.San
 	}
 
 	return children, nil
+}
+
+// SnapshotList returns all valid snapshots from the attached artifact store,
+// sorted by creation time (oldest first). Returns nil if no artifact store
+// is attached (WithArtifacts was never called).
+func (s *Service) SnapshotList() ([]artifact.Snapshot, error) {
+	if s.artifacts == nil {
+		return nil, nil
+	}
+	return s.artifacts.List()
+}
+
+// SnapshotRemove removes the snapshot identified by id from the attached
+// artifact store. It refuses with an error if any sandbox has
+// Provenance.SourceSnapshot == id (the snapshot is still in use as a fork
+// source). It is a no-op (idempotent) if the snapshot does not exist.
+//
+// ErrNoArtifactStore is returned if no artifact store is attached.
+func (s *Service) SnapshotRemove(ctx context.Context, id artifact.SnapshotID) error {
+	if s.artifacts == nil {
+		return fmt.Errorf("service: snapshot rm %s: %w", id, ErrNoArtifactStore)
+	}
+
+	// Refuse if any sandbox still references this snapshot as a fork source.
+	all, err := s.store.List(ctx)
+	if err != nil {
+		return fmt.Errorf("service: snapshot rm %s: list sandboxes: %w", id, err)
+	}
+	for _, sb := range all {
+		if sb.Provenance != nil && sb.Provenance.SourceSnapshot == string(id) {
+			return fmt.Errorf(
+				"service: snapshot rm %s: snapshot is referenced by sandbox %s (%s/%s); remove the sandbox first",
+				id, sb.ID, sb.Project, sb.Name,
+			)
+		}
+	}
+
+	return s.artifacts.Remove(id)
 }

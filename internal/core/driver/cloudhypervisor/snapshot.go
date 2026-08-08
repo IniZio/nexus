@@ -71,6 +71,10 @@ type snapshotManifestEntry struct {
 // file CH wrote. ForkFrom verifies this manifest before restoring, confirming
 // that every file is present on disk with the expected size.
 type snapshotManifest struct {
+	// Dir is informational — the absolute path where TakeSnapshot wrote CH's
+	// files at snapshot time. ForkFrom derives the actual directory from the
+	// current SnapshotDir + snapID (d.snapshotDirPath) rather than trusting
+	// this stored value, making the store root relocatable.
 	Dir   string                  `json:"dir"`
 	Files []snapshotManifestEntry `json:"files"` // sorted by Path
 }

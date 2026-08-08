@@ -139,6 +139,12 @@ func (d *CHDriver) ForkFrom(ctx context.Context, snap artifact.Snapshot, childID
 		return nil, fmt.Errorf("cloudhypervisor: fork: %w", err)
 	}
 
+	// Derive the snapshot directory from the current store root + snapID rather
+	// than trusting the path baked into manifest.Dir at snapshot time. This makes
+	// the store root relocatable: if SnapshotDir changed between TakeSnapshot and
+	// ForkFrom (e.g. ephemeral→durable migration), the correct path is still found.
+	manifest.Dir = d.snapshotDirPath(snap.ID)
+
 	// Step 3: verify every snapshot file is present at the expected size.
 	if err := verifyManifest(manifest); err != nil {
 		return nil, fmt.Errorf("cloudhypervisor: fork: manifest verify: %w", err)
@@ -156,7 +162,26 @@ func (d *CHDriver) ForkFrom(ctx context.Context, snap artifact.Snapshot, childID
 		}
 		instanceIDs[i] = iid
 	}
+
+	// Reap transient snapshots after all children are successfully forked.
+	// ForkFrom uses eager restore (prefault=true), so children do not page from
+	// the snapshot after ForkFrom returns. Reaping here prevents indefinite
+	// accumulation in the durable SnapshotDir.
+	d.reapTransientSnapshot(snap)
+
 	return instanceIDs, nil
+}
+
+// reapTransientSnapshot removes the store record and CH file directory for
+// snap when snap.Kind == artifact.KindTransient. Called after a successful
+// ForkFrom so that one-shot fork snapshots do not accumulate in the durable
+// SnapshotDir. For KindRetained snapshots this is a no-op.
+func (d *CHDriver) reapTransientSnapshot(snap artifact.Snapshot) {
+	if snap.Kind != artifact.KindTransient {
+		return
+	}
+	_ = d.snapshotStore.Remove(snap.ID)
+	_ = os.RemoveAll(d.snapshotDirPath(snap.ID))
 }
 
 // spawnChildFromSnapshot spawns a new VMM for childID and restores it from

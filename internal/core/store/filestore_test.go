@@ -682,3 +682,75 @@ func TestDurabilityReopen(t *testing.T) {
 		t.Error("RemovalMarker must survive a process restart (reopen)")
 	}
 }
+
+// TestProvenanceRoundTrip verifies that Provenance (ParentID + SourceSnapshot)
+// survives a Create/List cycle across a fresh FileStore instance.  This
+// exercises the filestore serialization path for fork children; without the
+// provenanceRecord fix the fields would be silently dropped.
+func TestProvenanceRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+
+	// Build a parent sandbox and write it.
+	st1, err := store.NewFileStore(root)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	parent := makeSandbox("parent", "proj")
+	if err := st1.Create(ctx, parent); err != nil {
+		t.Fatalf("Create parent: %v", err)
+	}
+
+	// Write a child sandbox with Provenance referencing the parent and a snapshot.
+	child := makeSandbox("child", "proj")
+	child.Provenance = &domain.Provenance{
+		ParentID:       parent.ID,
+		SourceSnapshot: "snap-abc123",
+	}
+	if err := st1.Create(ctx, child); err != nil {
+		t.Fatalf("Create child: %v", err)
+	}
+
+	// Re-open the store from disk — this proves that serialization, not just
+	// in-memory state, carries provenance.
+	st2, err := store.NewFileStore(root)
+	if err != nil {
+		t.Fatalf("NewFileStore (reopen): %v", err)
+	}
+
+	got, err := st2.Get(ctx, child.ID)
+	if err != nil {
+		t.Fatalf("Get child after reopen: %v", err)
+	}
+	if got.Provenance == nil {
+		t.Fatal("Provenance is nil after round-trip; filestore did not persist it")
+	}
+	if got.Provenance.ParentID != parent.ID {
+		t.Errorf("ParentID: got %v, want %v", got.Provenance.ParentID, parent.ID)
+	}
+	if got.Provenance.SourceSnapshot != "snap-abc123" {
+		t.Errorf("SourceSnapshot: got %q, want %q", got.Provenance.SourceSnapshot, "snap-abc123")
+	}
+
+	// Also verify via List — that path deserializes separately.
+	all, err := st2.List(ctx)
+	if err != nil {
+		t.Fatalf("List after reopen: %v", err)
+	}
+	var found *domain.Sandbox
+	for i := range all {
+		if all[i].ID == child.ID {
+			found = &all[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("child not found in List after reopen")
+	}
+	if found.Provenance == nil {
+		t.Fatal("Provenance is nil in List result after round-trip")
+	}
+	if found.Provenance.SourceSnapshot != "snap-abc123" {
+		t.Errorf("List: SourceSnapshot: got %q, want %q", found.Provenance.SourceSnapshot, "snap-abc123")
+	}
+}

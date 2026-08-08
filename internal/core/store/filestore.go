@@ -34,6 +34,7 @@ const currentSchemaVersion = 1
 //   - policy:         RemoveOnExit
 //   - WAL marker:     RemovalMarker
 //   - stop qualifier: StopReason (omitted when empty for backward compatibility)
+//   - fork lineage:   Provenance (omitted for non-fork sandboxes)
 type record struct {
 	SchemaVersion int               `json:"schema_version"`
 	ID            domain.SandboxID  `json:"id"`
@@ -45,10 +46,19 @@ type record struct {
 	RemoveOnExit  bool              `json:"remove_on_exit"`
 	RemovalMarker bool              `json:"removal_marker"`
 	StopReason    domain.StopReason `json:"stop_reason,omitempty"`
+	Provenance    *provenanceRecord `json:"provenance,omitempty"`
+}
+
+// provenanceRecord is the on-disk form of domain.Provenance. Kept separate
+// from domain.Provenance so the encoding contract remains explicit and
+// the domain package stays free of encoding concerns.
+type provenanceRecord struct {
+	ParentID       domain.SandboxID `json:"parent_id"`
+	SourceSnapshot string           `json:"source_snapshot"`
 }
 
 func toRecord(sb domain.Sandbox) record {
-	return record{
+	r := record{
 		SchemaVersion: currentSchemaVersion,
 		ID:            sb.ID,
 		Name:          sb.Name,
@@ -60,10 +70,17 @@ func toRecord(sb domain.Sandbox) record {
 		RemovalMarker: sb.RemovalMarker,
 		StopReason:    sb.StopReason,
 	}
+	if sb.Provenance != nil {
+		r.Provenance = &provenanceRecord{
+			ParentID:       sb.Provenance.ParentID,
+			SourceSnapshot: sb.Provenance.SourceSnapshot,
+		}
+	}
+	return r
 }
 
 func (r record) toDomain() domain.Sandbox {
-	return domain.Sandbox{
+	sb := domain.Sandbox{
 		ID:            r.ID,
 		Name:          r.Name,
 		Project:       r.Project,
@@ -74,6 +91,13 @@ func (r record) toDomain() domain.Sandbox {
 		RemovalMarker: r.RemovalMarker,
 		StopReason:    r.StopReason,
 	}
+	if r.Provenance != nil {
+		sb.Provenance = &domain.Provenance{
+			ParentID:       r.Provenance.ParentID,
+			SourceSnapshot: r.Provenance.SourceSnapshot,
+		}
+	}
+	return sb
 }
 
 // ErrSchemaTooNew is returned when a stored record has a schema version higher

@@ -14,6 +14,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/artifact"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus3/internal/core/store"
 )
 
 // ErrNoKernelConfigured is returned by Start when Config.KernelPath is empty.
@@ -125,7 +126,10 @@ type Config struct {
 	// occupies a subdirectory named by its SnapshotID (CH files) plus a
 	// .payload and .commit file managed by the artifact.Store for integrity.
 	//
-	// Defaults to <SocketDir>/snapshots when empty.
+	// Defaults to $XDG_STATE_HOME/nexus3/snapshots (or ~/.local/state/nexus3/snapshots
+	// if XDG_STATE_HOME is unset) — a durable location that survives reboots.
+	// SocketDir remains on the ephemeral runtime directory (sun_path limit);
+	// only SnapshotDir moves to the durable state home.
 	SnapshotDir string
 
 }
@@ -183,7 +187,11 @@ func New(cfg Config) (*CHDriver, error) {
 	}
 
 	if cfg.SnapshotDir == "" {
-		cfg.SnapshotDir = filepath.Join(cfg.SocketDir, "snapshots")
+		dir, err := defaultSnapshotDir()
+		if err != nil {
+			return nil, fmt.Errorf("cloudhypervisor: determine snapshot dir: %w", err)
+		}
+		cfg.SnapshotDir = dir
 	}
 	snapshotStore, err := artifact.NewStore(cfg.SnapshotDir)
 	if err != nil {
@@ -204,6 +212,27 @@ func defaultSocketDir() (string, error) {
 		return filepath.Join(xdg, "nexus3"), nil
 	}
 	return filepath.Join(os.TempDir(), fmt.Sprintf("nexus3-%d", os.Getuid())), nil
+}
+
+// defaultSnapshotDir returns the durable default root for snapshot artifacts.
+// It delegates to store.DefaultRoot() so that the driver and the CLI snapshot
+// commands always open the same on-disk directory — preventing the two-store
+// split where the driver writes to an ephemeral path and the CLI reads a
+// different durable one.
+func defaultSnapshotDir() (string, error) {
+	root, err := store.DefaultRoot()
+	if err != nil {
+		return "", fmt.Errorf("determine snapshot dir: %w", err)
+	}
+	return filepath.Join(root, "snapshots"), nil
+}
+
+// SnapshotStore returns the driver's canonical artifact.Store for snapshot
+// artifacts. The store is rooted at cfg.SnapshotDir (the durable snapshot
+// root). Callers may read or list snapshots via the returned store; writing
+// is reserved for TakeSnapshot and must not be done by external callers.
+func (d *CHDriver) SnapshotStore() *artifact.Store {
+	return d.snapshotStore
 }
 
 // callCtx returns a child context bounded by cfg.CallTimeout, taking the
