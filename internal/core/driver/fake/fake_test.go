@@ -244,10 +244,11 @@ func TestCapabilityAssertions(t *testing.T) {
 func TestCapabilitiesHelper(t *testing.T) {
 	caps := driver.Capabilities(fake.New())
 	want := map[string]bool{
-		"PauseResumer": true,
-		"GuestDialer":  true,
-		"Snapshotter":  true,
-		"Forker":       true,
+		"PauseResumer":    true,
+		"GuestDialer":     true,
+		"Snapshotter":     true,
+		"Forker":          true,
+		"SnapshotRemover": true,
 	}
 	for _, c := range caps {
 		if !want[c] {

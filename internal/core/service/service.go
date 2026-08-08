@@ -705,5 +705,19 @@ func (s *Service) SnapshotRemove(ctx context.Context, id artifact.SnapshotID) er
 		}
 	}
 
+	// Route through driver.SnapshotRemover (if available) to also remove
+	// driver-managed files (e.g. the CH memory-image directory). The driver
+	// method removes both its own store record and the CH files directory,
+	// mirroring reapTransientSnapshot. The trailing s.artifacts.Remove is an
+	// idempotent second pass — artifact.Store.Remove returns nil for a
+	// non-existent snapshot — kept so that drivers without SnapshotRemover
+	// still remove the artifact record, and so that the two Store objects
+	// (which share the same on-disk root in production) converge correctly.
+	if remover, ok := s.driver.(driver.SnapshotRemover); ok {
+		if err := remover.RemoveSnapshot(id); err != nil {
+			return fmt.Errorf("service: snapshot rm %s: driver: %w", id, err)
+		}
+	}
+
 	return s.artifacts.Remove(id)
 }

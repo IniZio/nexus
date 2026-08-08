@@ -18,6 +18,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -84,6 +86,11 @@ type FakeDriver struct {
 
 	// snapshots holds in-memory snapshots created by TakeSnapshot.
 	snapshots map[artifact.SnapshotID]artifact.Snapshot
+
+	// snapshotDir, when non-empty, is used by RemoveSnapshot to delete the
+	// simulated CH memory-image directory at <snapshotDir>/<snapID>/.
+	// Set via SetSnapshotDir. Mirrors the production SnapshotDir layout.
+	snapshotDir string
 
 	// guestConns holds the "guest" side of each net.Pipe created by DialGuest.
 	// Tests retrieve the other end via [FakeDriver.GuestConn].
@@ -231,6 +238,16 @@ func (f *FakeDriver) SetForkError(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.forkErr = err
+}
+
+// SetSnapshotDir configures the directory that RemoveSnapshot uses to remove
+// simulated CH memory-image files. When set, RemoveSnapshot removes
+// <dir>/<snapID>/ in addition to the in-memory snapshot record. Pass an
+// empty string to disable directory removal (the default).
+func (f *FakeDriver) SetSnapshotDir(dir string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snapshotDir = dir
 }
 
 // Snapshot returns the in-memory snapshot with the given ID, or the zero value
@@ -452,6 +469,25 @@ func (f *FakeDriver) ForkFrom(_ context.Context, snap artifact.Snapshot, childID
 	return instanceIDs, nil
 }
 
+// --- driver.SnapshotRemover ---
+
+// RemoveSnapshot deletes the in-memory snapshot record for id and, when
+// SetSnapshotDir has been called, removes the simulated CH memory-image
+// directory at <snapshotDir>/<id>/. It is idempotent.
+//
+// Implements driver.SnapshotRemover.
+func (f *FakeDriver) RemoveSnapshot(id artifact.SnapshotID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.snapshots, id)
+	if f.snapshotDir != "" {
+		if err := os.RemoveAll(filepath.Join(f.snapshotDir, string(id))); err != nil {
+			return fmt.Errorf("fake: remove snapshot dir %s: %w", id, err)
+		}
+	}
+	return nil
+}
+
 // --- driver.GuestDialer ---
 
 // DialGuest implements [driver.GuestDialer]. It creates an in-memory
@@ -491,9 +527,10 @@ func newInstanceID() string {
 
 // Compile-time interface assertions.
 var (
-	_ driver.Driver       = (*FakeDriver)(nil)
-	_ driver.PauseResumer = (*FakeDriver)(nil)
-	_ driver.GuestDialer  = (*FakeDriver)(nil)
-	_ driver.Snapshotter  = (*FakeDriver)(nil)
-	_ driver.Forker       = (*FakeDriver)(nil)
+	_ driver.Driver          = (*FakeDriver)(nil)
+	_ driver.PauseResumer    = (*FakeDriver)(nil)
+	_ driver.GuestDialer     = (*FakeDriver)(nil)
+	_ driver.Snapshotter     = (*FakeDriver)(nil)
+	_ driver.Forker          = (*FakeDriver)(nil)
+	_ driver.SnapshotRemover = (*FakeDriver)(nil)
 )

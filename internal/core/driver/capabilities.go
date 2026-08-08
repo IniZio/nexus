@@ -104,6 +104,24 @@ type Forker interface {
 	ForkFrom(ctx context.Context, snap artifact.Snapshot, childIDs []domain.SandboxID) (instanceIDs []string, err error)
 }
 
+// SnapshotRemover is an optional capability for drivers that manage files
+// beyond the artifact-store record for a snapshot (e.g. Cloud Hypervisor
+// writes a memory-image directory alongside the artifact payload).
+// RemoveSnapshot removes BOTH the artifact-store record AND any
+// driver-managed files, mirroring the transient-reap logic used internally
+// after a ForkFrom.
+//
+// The service layer calls RemoveSnapshot (if the driver implements it) and
+// then calls artifact.Store.Remove as an idempotent second pass — safe
+// because artifact.Store.Remove is a no-op for a non-existent snapshot.
+//
+// Discovered via type assertion: if r, ok := drv.(SnapshotRemover); ok { ... }
+type SnapshotRemover interface {
+	// RemoveSnapshot removes the artifact-store record and any driver-managed
+	// files for snapID. It is idempotent if snapID does not exist.
+	RemoveSnapshot(id artifact.SnapshotID) error
+}
+
 // Capabilities returns the names of optional capability interfaces that drv
 // satisfies. The result is suitable for doctor-style diagnostic output.
 func Capabilities(drv Driver) []string {
@@ -119,6 +137,9 @@ func Capabilities(drv Driver) []string {
 	}
 	if _, ok := drv.(Forker); ok {
 		caps = append(caps, "Forker")
+	}
+	if _, ok := drv.(SnapshotRemover); ok {
+		caps = append(caps, "SnapshotRemover")
 	}
 	if _, ok := drv.(NetworkHook); ok {
 		caps = append(caps, "NetworkHook")

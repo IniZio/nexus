@@ -50,6 +50,23 @@ func (d *CHDriver) snapshotDirPath(snapID artifact.SnapshotID) string {
 	return filepath.Join(d.cfg.SnapshotDir, string(snapID))
 }
 
+// RemoveSnapshot removes the artifact-store record AND the Cloud Hypervisor
+// memory-image directory for snapID. It mirrors reapTransientSnapshot but is
+// user-facing (errors are returned rather than swallowed) and applies to any
+// SnapshotKind. It is idempotent: a non-existent record or directory is not
+// an error.
+//
+// Implements driver.SnapshotRemover.
+func (d *CHDriver) RemoveSnapshot(id artifact.SnapshotID) error {
+	if err := d.snapshotStore.Remove(id); err != nil {
+		return fmt.Errorf("cloudhypervisor: remove snapshot %s: store: %w", id, err)
+	}
+	if err := os.RemoveAll(d.snapshotDirPath(id)); err != nil {
+		return fmt.Errorf("cloudhypervisor: remove snapshot %s: dir: %w", id, err)
+	}
+	return nil
+}
+
 // newSnapshotID generates a random 32-hex-character SnapshotID.
 func newSnapshotID() (artifact.SnapshotID, error) {
 	var b [16]byte
