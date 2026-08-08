@@ -1,0 +1,81 @@
+commit 32ffb082f7476959c5333871bdf22b3e52e425ea
+Author: Newman Chow <newman@example-org.com>
+Date:   Sat Aug 8 04:02:22 2026 +0000
+
+    virtualnetwork: add WithDialer outbound dial hook
+
+diff --git a/pkg/services/forwarder/tcp.go b/pkg/services/forwarder/tcp.go
+index 48110ffc..4ff03161 100644
+--- a/pkg/services/forwarder/tcp.go
++++ b/pkg/services/forwarder/tcp.go
+@@ -29,7 +29,7 @@ type AddressFilter func(addr string) error
+ // upstream's default of 10 so held connections can't starve allowed traffic.
+ const maxInFlightConns = 64
+ 
+-func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, ec2MetadataAccess bool, filter AddressFilter) *tcp.Forwarder {
++func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, ec2MetadataAccess bool, filter AddressFilter, dialer func(ctx context.Context, network, addr string) (net.Conn, error)) *tcp.Forwarder {
+ 	return tcp.NewForwarder(s, 0, maxInFlightConns, func(r *tcp.ForwarderRequest) {
+ 		localAddress := r.ID().LocalAddress
+ 
+@@ -53,7 +53,13 @@ func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mute
+ 			}
+ 		}
+ 
+-		outbound, err := net.Dial("tcp", addr)
++		var outbound net.Conn
++		var err error
++		if dialer != nil {
++			outbound, err = dialer(context.Background(), "tcp", addr)
++		} else {
++			outbound, err = net.Dial("tcp", addr)
++		}
+ 		if err != nil {
+ 			log.Tracef("net.Dial() = %v", err)
+ 			r.Complete(true)
+diff --git a/pkg/virtualnetwork/options.go b/pkg/virtualnetwork/options.go
+index 673172d7..91b600c2 100644
+--- a/pkg/virtualnetwork/options.go
++++ b/pkg/virtualnetwork/options.go
+@@ -1,6 +1,9 @@
+ package virtualnetwork
+ 
+ import (
++	"context"
++	"net"
++
+ 	"github.com/containers/gvisor-tap-vsock/pkg/services/dns"
+ 	"github.com/containers/gvisor-tap-vsock/pkg/services/forwarder"
+ )
+@@ -15,6 +18,7 @@ type options struct {
+ 	udpFilter   forwarder.AddressFilter
+ 	icmpFilter  forwarder.AddressFilter
+ 	dnsObserver dns.Observer
++	dialer      func(ctx context.Context, network, addr string) (net.Conn, error)
+ }
+ 
+ // WithTCPFilter gates each new outbound TCP connection through filter. A
+@@ -40,3 +44,11 @@ func WithICMPFilter(filter forwarder.AddressFilter) Option {
+ func WithDNSObserver(observer dns.Observer) Option {
+ 	return func(o *options) { o.dnsObserver = observer }
+ }
++
++// WithDialer replaces the default net.Dial used by the TCP forwarder for
++// outbound connections. When dialer is nil the original net.Dial("tcp", addr)
++// behaviour is preserved exactly. The filter callback (if any) still runs
++// before the dial.
++func WithDialer(dialer func(ctx context.Context, network, addr string) (net.Conn, error)) Option {
++	return func(o *options) { o.dialer = dialer }
++}
+diff --git a/pkg/virtualnetwork/services.go b/pkg/virtualnetwork/services.go
+index f8d9d475..74c4fcb5 100644
+--- a/pkg/virtualnetwork/services.go
++++ b/pkg/virtualnetwork/services.go
+@@ -25,7 +25,7 @@ func addServices(configuration *types.Configuration, s *stack.Stack, ipPool *tap
+ 	var natLock sync.Mutex
+ 	translation := parseNATTable(configuration)
+ 
+-	tcpForwarder := forwarder.TCP(s, translation, &natLock, configuration.Ec2MetadataAccess, o.tcpFilter)
++	tcpForwarder := forwarder.TCP(s, translation, &natLock, configuration.Ec2MetadataAccess, o.tcpFilter, o.dialer)
+ 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
+ 	udpForwarder := forwarder.UDP(s, translation, &natLock, configuration.Ec2MetadataAccess, o.udpFilter)
+ 	s.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
