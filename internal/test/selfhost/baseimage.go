@@ -150,6 +150,16 @@ func BuildSelfHostBaseImage(ctx context.Context, cache *image.Cache) (domain.Ima
 		}
 	}
 
+	// third_party/gvisor-tap-vsock: required because go.mod has a local replace
+	// directive pointing to this path (added in D-P1-12 / commit 9f50c6e).
+	// Without it, "go mod download all" inside the container fails with
+	// "open /seed/third_party/gvisor-tap-vsock/go.mod: no such file".
+	thirdPartySrc := filepath.Join(repoRoot, "third_party", "gvisor-tap-vsock")
+	thirdPartyDst := filepath.Join(ctxDir, "third_party", "gvisor-tap-vsock")
+	if err := copyDir(thirdPartySrc, thirdPartyDst); err != nil {
+		return domain.Image{}, fmt.Errorf("selfhost: copy third_party/gvisor-tap-vsock: %w", err)
+	}
+
 	// Containerfile (generated)
 	cf := generateContainerfile(GoVersion, goSHA256AMD64)
 	if err := os.WriteFile(filepath.Join(ctxDir, "Containerfile"), []byte(cf), 0o644); err != nil {
@@ -428,6 +438,28 @@ func hashAndStore(ctx context.Context, cache *image.Cache, ext4Path string) (dom
 	return img, nil
 }
 
+// copyDir recursively copies all files from srcDir into dstDir, preserving
+// relative paths. Directory entries are created with 0o755; files inherit their
+// source permissions. This is used to stage local replace-directive modules
+// (e.g. third_party/gvisor-tap-vsock) into the Docker build context so that
+// "go mod download all" inside the container can resolve the replace path.
+func copyDir(srcDir, dstDir string) error {
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(dstDir, rel)
+		if info.IsDir() {
+			return os.MkdirAll(dst, 0o755)
+		}
+		return copyFile(path, dst, info.Mode())
+	})
+}
+
 // copyFile copies src to dst with the given file mode.
 func copyFile(src, dst string, mode os.FileMode) error {
 	in, err := os.Open(src)
@@ -481,6 +513,7 @@ RUN /usr/local/go/bin/go version
 FROM go-fetcher AS mod-seeder
 WORKDIR /seed
 COPY go.mod go.sum ./
+COPY third_party/ ./third_party/
 ENV GOPATH=/usr/local/gopath \
     GOMODCACHE=/usr/local/gopath/pkg/mod \
     CGO_ENABLED=0 \

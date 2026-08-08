@@ -197,6 +197,7 @@ func skipDirSH(name string) bool {
 //	cmd/
 //	internal/   (testdata/ subdirs excluded — avoids 50 MB kernel binaries)
 //	proto/
+//	third_party/gvisor-tap-vsock/   (required: go.mod replace directive)
 //	go.mod
 //	go.sum
 //
@@ -260,7 +261,10 @@ func makeSourceTar(repoRoot string) (io.Reader, int64, error) {
 	}
 
 	// Seed subtrees.
-	for _, sub := range []string{"cmd", "internal", "proto"} {
+	// third_party/gvisor-tap-vsock is required because go.mod has a local
+	// replace directive pointing to it (D-P1-12). Without it, "go build ./..."
+	// fails inside the guest with "replacement directory does not exist".
+	for _, sub := range []string{"cmd", "internal", "proto", "third_party/gvisor-tap-vsock"} {
 		if _, err := os.Stat(filepath.Join(repoRoot, sub)); os.IsNotExist(err) {
 			continue // sub may not exist (proto is optional)
 		}
