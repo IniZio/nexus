@@ -1,0 +1,16 @@
+version: v2
+# Local plugins — no BSR network call required per run, fully reproducible.
+plugins:
+  - local: protoc-gen-go
+    out: .
+    opt:
+      # paths=import uses the go_package option in the .proto as the output
+      # path; module= strips the module prefix so the file lands at
+      # internal/core/agent/agentpb/ rather than a nested github.com/ tree.
+      - paths=import
+      - module=github.com/IniZio/nexus3
+  - local: protoc-gen-go-grpc
+    out: .
+    opt:
+      - paths=import
+      - module=github.com/IniZio/nexus3

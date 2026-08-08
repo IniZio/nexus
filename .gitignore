@@ -1,0 +1,13 @@
+# Build artifacts (root-level binaries from go build -o ...)
+/nexus3
+/nexus3-agent
+
+# Go test and coverage output
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Development metadata
+.codegraph/
+.groundwork/

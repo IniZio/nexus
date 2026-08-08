@@ -1,0 +1,102 @@
+# nexus3 — minimal glibc self-hosting base image
+#
+# Ticket 14 (image pipeline), ticket 28 (self-hosting base), ticket 15 (CA/SSH plumbing).
+#
+# Design goals:
+#   - glibc >= 2.28 (VS Code Remote-SSH requirement; ticket 14)
+#   - Upstream Go tarball from go.dev (Debian bookworm ships Go 1.19 — too old; ticket 28)
+#   - git + ca-certificates + openssh-server; NO gcc / build-essential (CGO_ENABLED=0 throughout)
+#   - nexus3-agent baked as the FINAL layer so an agent bump rebuilds only that layer
+#   - Boot contract: init=/sbin/nexus3-agent (kernel cmdline; ticket 14)
+#   - Target size: ~117 MB
+#
+# SSH surface (ticket 11 / doc 09):
+#   openssh-server is included so the guest is an SSH endpoint. sshd listens on
+#   127.0.0.1:22 (loopback only); nexus3-agent bridges vsock port 22 → localhost:22
+#   so the host can reach sshd via `nexus3 ssh --stdio <ref>` as a ProxyCommand.
+#   No SSH TCP port is exposed beyond the VM's loopback interface.
+#
+# Perimeter plumbing (ticket 15) — CA seed and SSH client config — is injected at
+# sandbox start time by the nexus3 host, NOT baked here.  The trust-store and
+# ~/.ssh/config arrive via virtiofs overlay so they stay per-sandbox and can be
+# rotated without a new image build.
+#
+# Seeded/shared Go module cache (design note, not a v1 decision):
+#   A self-hosting sandbox accrues ~1.8 GB of module+build cache and re-pays a
+#   ~32 s cold module download on every fresh sandbox.  A future slice can bake a
+#   pre-seeded $GOPATH/pkg/mod snapshot (or mount a read-only shared virtiofs cache
+#   volume) into this layer to amortise that cost.  The GOPATH/GOMODCACHE env vars
+#   are left open for that override.
+
+# ── Stage 1: fetch and verify the upstream Go toolchain ──────────────────────
+# Pin by tag; once the build pipeline resolves the digest, add:
+#   @sha256:<digest>
+# after the tag for full reproducibility.
+# To resolve: docker buildx imagetools inspect debian:bookworm-slim
+FROM debian:bookworm-slim AS go-fetcher
+
+# renovate: datasource=golang-version depName=go
+ARG GO_VERSION=1.26.5
+# SHA-256 from https://go.dev/dl/#go1.26.5 for go1.26.5.linux-amd64.tar.gz
+ARG GO_SHA256_AMD64=5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053
+ARG TARGETARCH=amd64
+
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL "https://dl.google.com/go/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" \
+        -o /tmp/go.tar.gz && \
+    echo "${GO_SHA256_AMD64}  /tmp/go.tar.gz" | sha256sum -c - && \
+    tar -C /usr/local -xzf /tmp/go.tar.gz && \
+    rm /tmp/go.tar.gz
+
+# ── Stage 2: final base image ────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+# Runtime dependencies:
+#   git              — workspace git operations inside the sandbox
+#   ca-certificates  — TLS verification for go get, curl, etc.
+#   openssh-server   — sshd on 127.0.0.1:22; nexus3-agent bridges vsock:22→localhost:22
+# Explicitly excluded: gcc, build-essential, binutils (CGO_ENABLED=0)
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+        git \
+        ca-certificates \
+        openssh-server \
+    && rm -rf /var/lib/apt/lists/*
+
+# Configure sshd: loopback-only (vsock:22 → localhost:22 is bridged by nexus3-agent).
+# Host keys are generated at build time so first boot does not need key generation.
+RUN echo 'ListenAddress 127.0.0.1' >> /etc/ssh/sshd_config && \
+    echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config && \
+    echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config && \
+    mkdir -p /run/sshd && \
+    ssh-keygen -A
+
+# Install the upstream Go toolchain from the fetcher stage
+COPY --from=go-fetcher /usr/local/go /usr/local/go
+
+ENV PATH="/usr/local/go/bin:${PATH}"
+ENV GOPATH="/go"
+ENV GOMODCACHE="/go/pkg/mod"
+ENV CGO_ENABLED=0
+
+# Verify Go is functional
+RUN go version
+
+# ── Final layer: bake the nexus3 agent ───────────────────────────────────────
+# The agent binary is built separately (CGO_ENABLED=0, linux/amd64) and injected
+# here.  Placing it last means an agent bump only rebuilds this one layer, not
+# the Go toolchain or apt layers above.
+#
+# Boot contract (kernel cmdline): init=/sbin/nexus3-agent
+# The guest kernel PID-1 is nexus3-agent; it manages the workspace lifecycle.
+COPY nexus3-agent /sbin/nexus3-agent
+RUN chmod 0755 /sbin/nexus3-agent
+
+# No CMD or ENTRYPOINT — the kernel boots directly into /sbin/nexus3-agent via
+# the init= cmdline parameter.  This is a VM rootfs, not a container image
+# run via a container runtime.

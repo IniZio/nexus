@@ -1,0 +1,63 @@
+id = "nexus3"
+name = "nexus3"
+version = "0.1.0"
+min_herdr_version = "0.7.5"
+description = "Attach to nexus3 microVM workspaces, list them, and create them without leaving Herdr."
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["sh", "build.sh"]
+
+[[panes]]
+id = "attach"
+title = "nexus3 attach"
+placement = "tab"
+command = ["sh", "bin/pane.sh", "attach"]
+
+[[panes]]
+id = "workspaces"
+title = "nexus3 workspaces"
+placement = "overlay"
+command = ["sh", "bin/pane.sh", "workspaces"]
+
+[[panes]]
+id = "create"
+title = "nexus3 create"
+placement = "tab"
+command = ["sh", "bin/pane.sh", "create"]
+
+[[panes]]
+id = "logs"
+title = "nexus3 logs"
+placement = "split"
+command = ["sh", "bin/pane.sh", "logs"]
+
+[[panes]]
+id = "doctor"
+title = "nexus3 doctor"
+placement = "split"
+command = ["sh", "bin/pane.sh", "doctor"]
+
+[[actions]]
+id = "attach"
+title = "nexus3: attach to a workspace"
+contexts = ["workspace"]
+command = ["sh", "bin/open-pane.sh", "attach", "tab"]
+
+[[actions]]
+id = "create"
+title = "nexus3: create a workspace"
+contexts = ["workspace"]
+command = ["sh", "bin/open-pane.sh", "create", "tab"]
+
+[[actions]]
+id = "logs"
+title = "nexus3: workspace logs"
+contexts = ["workspace"]
+command = ["sh", "bin/open-pane.sh", "logs", "split"]
+
+[[actions]]
+id = "doctor"
+title = "nexus3: doctor"
+contexts = ["workspace"]
+command = ["sh", "bin/open-pane.sh", "doctor", "split"]

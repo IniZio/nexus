@@ -1,0 +1,6 @@
+# Large boot artifacts — fetched by scripts/fetch-boot-artifacts.sh.
+# Do not commit; re-fetch to reproduce.
+vmlinux-x86_64
+bzImage-x86_64
+alpine-minirootfs-*.tar.gz
+alpine-initramfs.cpio.gz

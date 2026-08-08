@@ -1,0 +1,33 @@
+# nexus3 — builder VM rootfs
+#
+# Ticket 14 (image pipeline: one rootfs path, stock buildkitd, nexus3 owns zero OCI code),
+# ticket 21 (internal/core/builder consumes driver to run this VM).
+#
+# This image is booted as a VM by nexus3 to drive all rootfs builds.  It runs
+# stock buildkitd from the upstream moby/buildkit image — nexus3 does not patch
+# or wrap it.  The builder VM exports one raw ext4 artifact consumed by the nexus3
+# host to provision workspace rootfs snapshots.
+#
+# Network posture: the builder VM requires unrestricted egress (it pulls OCI layers,
+# Go modules, apt packages, etc. on behalf of user Containerfiles).  It CANNOT share
+# a workspace's default-deny posture.  The nexus3 host assigns a separate network
+# interface / firewall rule set to builder VMs (ticket 14 → ticket 15).
+#
+# macOS: out of near-term scope (ticket 33).  This Containerfile targets linux/amd64.
+
+# Pin by tag; update the digest comment once the build pipeline resolves it.
+# To get the current digest: docker buildx imagetools inspect moby/buildkit:v0.18.2
+# renovate: datasource=docker depName=moby/buildkit
+FROM moby/buildkit:v0.18.2
+
+# buildkitd is the entrypoint in the upstream image; nexus3 boots the VM and
+# communicates with buildkitd over its default GRPC socket
+# (/run/buildkit/buildkitd.sock) via a vsock-forwarded or TCP channel.
+#
+# No modifications to the upstream image are needed.  nexus3 mounts the workspace
+# Containerfile and build context into the builder VM via virtiofs and then drives
+# the build through buildkitd's GRPC API using BuildKit's Go client.
+#
+# The agent is NOT installed in the builder image — the builder VM is ephemeral and
+# controlled entirely by the nexus3 host process; it does not use the init=/sbin/nexus3-agent
+# boot contract.

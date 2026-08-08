@@ -1,0 +1,142 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/mdlayher/vsock"
+	"golang.org/x/sys/unix"
+
+	"github.com/IniZio/nexus3/internal/core/agent/wire"
+	"github.com/IniZio/nexus3/internal/core/driver"
+)
+
+func main() {
+	isPid1 := os.Getpid() == 1
+
+	// When running as PID 1 (in-guest init), mount the standard
+	// pseudo-filesystems before doing anything else.  devtmpfs populates /dev
+	// (creating /dev/console, /dev/ptmx, …); proc and sysfs are expected by
+	// many userspace tools.  These are raw syscall.Mount calls — they succeed
+	// with a completely empty /dev directory.
+	if isPid1 {
+		mountGuestFS()
+	}
+
+	// Open /dev/console for explicit diagnostic writes.  After mountGuestFS(),
+	// devtmpfs has created the node.  If the open fails (e.g. non-PID-1 run),
+	// diagnostic output falls back to stderr only, which the kernel connects to
+	// the console when it can open /dev/console for the init process.
+	con := openConsole()
+	if con != nil {
+		defer con.Close()
+	}
+
+	consoleLog(con, "nexus3-agent: starting (pid=%d)\n", os.Getpid())
+
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+
+	// Bind control-plane vsock listener (port 1024).
+	consoleLog(con, "nexus3-agent: vsock.Listen port %d\n", driver.AgentControlPort)
+	ctrlLis, err := vsock.Listen(driver.AgentControlPort, nil)
+	if err != nil {
+		consoleFatal(con, isPid1, "nexus3-agent: control listener (port %d): %v\n",
+			driver.AgentControlPort, err)
+	}
+	consoleLog(con, "nexus3-agent: control plane listening\n")
+
+	// Bind data-plane vsock listener (port 1025).
+	consoleLog(con, "nexus3-agent: vsock.Listen port %d\n", wire.DataPort)
+	dataLis, err := vsock.Listen(wire.DataPort, nil)
+	if err != nil {
+		consoleFatal(con, isPid1, "nexus3-agent: data listener (port %d): %v\n",
+			wire.DataPort, err)
+	}
+	consoleLog(con, "nexus3-agent: data plane listening; running agent\n")
+
+	// Bridge vsock:22 → localhost:22 so the host can reach guest sshd via
+	// nexus3 ssh --stdio without needing a TCP network interface.
+	go startSSHForward(ctx, con)
+
+	a := New(ctrlLis, dataLis)
+	if err := a.Run(ctx); err != nil {
+		consoleFatal(con, isPid1, "nexus3-agent: run: %v\n", err)
+	}
+	consoleLog(con, "nexus3-agent: clean shutdown\n")
+}
+
+// mountGuestFS mounts the standard pseudo-filesystems needed by Linux
+// userspace.  Called only when the agent is PID 1 (in-guest init).
+// Uses raw syscall.Mount — works with an entirely empty /dev.
+func mountGuestFS() {
+	tryMount := func(src, target, fstype string) {
+		if err := syscall.Mount(src, target, fstype, 0, ""); err != nil && err != syscall.EBUSY {
+			fmt.Fprintf(os.Stderr, "nexus3-agent: mount %s: %v\n", target, err)
+		}
+	}
+
+	// devtmpfs populates /dev with nodes for all currently-registered kernel
+	// devices (null, zero, tty, console, random, urandom, …).
+	tryMount("devtmpfs", "/dev", "devtmpfs")
+
+	// /dev/ptmx (PTY master multiplexer) may not be in devtmpfs on kernels
+	// without CONFIG_UNIX98_PTYS=y; create the node explicitly so that PTY
+	// sessions work.  major=5 minor=2 is the standard Linux ptmx device.
+	if _, err := os.Stat("/dev/ptmx"); os.IsNotExist(err) {
+		// major=5 minor=2 is the standard Linux PTY master multiplexer device.
+		if err := unix.Mknod("/dev/ptmx", unix.S_IFCHR|0o666,
+			int(unix.Mkdev(5, 2))); err != nil {
+			fmt.Fprintf(os.Stderr, "nexus3-agent: mknod /dev/ptmx: %v\n", err)
+		}
+	}
+
+	// devpts provides per-session slave PTY nodes (/dev/pts/0, …).
+	// Required: opening /dev/ptmx creates a master fd and the slave is
+	// accessed as /dev/pts/N (via ptsname).
+	if err := os.MkdirAll("/dev/pts", 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus3-agent: mkdir /dev/pts: %v\n", err)
+	} else {
+		tryMount("devpts", "/dev/pts", "devpts")
+	}
+
+	tryMount("proc", "/proc", "proc")
+	tryMount("sys", "/sys", "sysfs")
+}
+
+// openConsole opens /dev/console write-only for explicit diagnostic output.
+// Returns nil if the device cannot be opened (caller must tolerate nil).
+func openConsole() *os.File {
+	f, _ := os.OpenFile("/dev/console", os.O_WRONLY, 0)
+	return f
+}
+
+// consoleLog writes a formatted message to con (if non-nil) and to stderr.
+func consoleLog(con *os.File, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if con != nil {
+		_, _ = fmt.Fprint(con, msg)
+	}
+	_, _ = fmt.Fprint(os.Stderr, msg)
+}
+
+// consoleFatal logs msg to con and stderr, sleeps 3 s so the CH serial device
+// can flush the message to the host capture file, then exits.
+// Does not return.
+func consoleFatal(con *os.File, isPid1 bool, format string, args ...any) {
+	consoleLog(con, format, args...)
+	// Sleep to allow CH's serial device to flush the log entry to the host
+	// file before the kernel panics (when running as PID 1) or the process
+	// exits (non-PID-1 use).
+	time.Sleep(3 * time.Second)
+	if isPid1 {
+		// Ensure any virtio ring writes are flushed before exit triggers panic.
+		syscall.Sync()
+	}
+	os.Exit(1)
+}

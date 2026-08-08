@@ -1,0 +1,174 @@
+syntax = "proto3";
+
+package nexus3.agent.v1;
+
+option go_package = "github.com/IniZio/nexus3/internal/core/agent/agentpb;agentpb";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared types
+// ─────────────────────────────────────────────────────────────────────────────
+
+// WinSize describes terminal dimensions.
+// Carried as the initial PTY size inside ExecRequest.PtyOptions.
+// Live resize events travel on the data-plane framed connection (clawk
+// winsize frames), not via a control-plane RPC.
+message WinSize {
+  uint32 rows    = 1;
+  uint32 cols    = 2;
+  uint32 x_pixels = 3;
+  uint32 y_pixels = 4;
+}
+
+// PtyOptions requests a PTY for an Exec call.
+message PtyOptions {
+  // TERM environment variable to advertise inside the PTY (e.g. "xterm-256color").
+  string term = 1;
+  // Initial terminal window size.
+  WinSize initial_size = 2;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Exec — start a process
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ExecRequest starts a process in the guest.
+//
+// session_id is *host-minted* (ticket 16): the host generates and supplies it
+// so that session keying is host-authoritative in the host-dials-guest model.
+// Interactive stdio (stdin, stdout, stderr) flows on the data-plane framed
+// connection demuxed by session_id — never through this gRPC service.
+message ExecRequest {
+  // Host-minted session identifier; must be unique per sandbox lifetime.
+  string session_id = 1;
+  // Command to execute (argv[0] is the binary, subsequent elements are args).
+  repeated string argv = 2;
+  // Additional environment variables to merge into the process environment.
+  map<string, string> env = 3;
+  // Working directory inside the guest (defaults to / when empty).
+  string cwd = 4;
+  // If set, the agent allocates a PTY for the process.
+  PtyOptions pty = 5;
+}
+
+// ExecResponse is returned once the process has been started.
+message ExecResponse {
+  // Guest-side PID of the newly started process.
+  int32 pid = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Signal — deliver a POSIX signal
+// ─────────────────────────────────────────────────────────────────────────────
+
+message SignalRequest {
+  // Session whose process should receive the signal.
+  string session_id = 1;
+  // POSIX signal number (e.g. 2 = SIGINT, 9 = SIGKILL, 15 = SIGTERM).
+  int32 signum = 2;
+}
+
+message SignalResponse {}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Session status — read-only probes
+// ─────────────────────────────────────────────────────────────────────────────
+
+// SessionState is the lifecycle state of a session as seen by the agent.
+enum SessionState {
+  SESSION_STATE_UNSPECIFIED = 0;
+  SESSION_STATE_RUNNING     = 1;
+  SESSION_STATE_EXITED      = 2;
+}
+
+// SessionInfo carries read-only status for one session.
+// It is NOT used as the reattach discriminant — reattach is the data-connection
+// handshake, not a control-plane RPC (ticket 36).
+message SessionInfo {
+  string session_id = 1;
+  SessionState state = 2;
+  // Guest-side PID (0 when state is EXITED and PID has been reaped).
+  int32 pid = 3;
+  // Exit code of the process; meaningful only when state == SESSION_STATE_EXITED.
+  int32 exit_code = 4;
+}
+
+message SessionStatusRequest {
+  string session_id = 1;
+}
+
+message SessionStatusResponse {
+  SessionInfo info = 1;
+}
+
+message ListSessionsRequest {}
+
+message ListSessionsResponse {
+  repeated SessionInfo sessions = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Copy — file-transfer negotiation (split-plane, ticket 22)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// CopyDirection controls the transfer direction.
+enum CopyDirection {
+  COPY_DIRECTION_UNSPECIFIED = 0;
+  // PUSH: host → guest (operator-initiated write into the sandbox).
+  COPY_DIRECTION_PUSH        = 1;
+  // PULL: guest → host (extracting files from the sandbox).
+  COPY_DIRECTION_PULL        = 2;
+}
+
+// CopyRequest negotiates a file-transfer operation.
+//
+// This is a *control-plane* RPC only — it carries metadata and returns a
+// transfer handle.  The actual bytes flow on the data-plane side-channel
+// (separate vsock connection identified by transfer_id).
+// The agent archives directories itself; the caller must not run guest tar.
+message CopyRequest {
+  // Direction of the transfer.
+  CopyDirection direction = 1;
+  // Absolute path inside the guest.
+  string guest_path = 2;
+  // When true the agent archives the directory tree before transfer.
+  bool is_directory = 3;
+}
+
+// CopyResponse carries the transfer handle the caller uses to open the
+// data-plane side-channel for the actual byte transfer.
+message CopyResponse {
+  // Opaque token identifying the data-plane transfer slot.
+  string transfer_id = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AgentService — nexus3.agent.v1 control-plane service
+// ─────────────────────────────────────────────────────────────────────────────
+
+// AgentService is the gRPC control-plane service exposed by the in-guest PID-1
+// agent on a fixed vsock port.  All RPCs are unary request/response.
+//
+// Interactive stdio is NOT modelled here; it flows on a separate multiplexed,
+// clawk-framed vsock data connection (handshake/data/winsize/exit frames,
+// ticket 36).
+service AgentService {
+  // Exec starts a process (optionally with a PTY).
+  // Returns once the process is running.  Interactive stdio flows on the
+  // data-plane connection — this RPC does not stream keystrokes.
+  rpc Exec(ExecRequest) returns (ExecResponse);
+
+  // Signal delivers a POSIX signal to the process of a running session.
+  rpc Signal(SignalRequest) returns (SignalResponse);
+
+  // SessionStatus returns read-only status for a single session.
+  rpc SessionStatus(SessionStatusRequest) returns (SessionStatusResponse);
+
+  // ListSessions returns read-only status for all known sessions.
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+
+  // Copy negotiates a file-transfer operation (split-plane, ticket 22).
+  // Metadata travels on this control RPC; bytes flow on the data-plane
+  // side-channel identified by the returned transfer_id.
+  // The agent archives directories itself (no guest tar).
+  rpc Copy(CopyRequest) returns (CopyResponse);
+}

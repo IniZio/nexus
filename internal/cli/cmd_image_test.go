@@ -1,0 +1,349 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/IniZio/nexus3/internal/core/builder"
+	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus3/internal/core/service"
+)
+
+// ── test helpers ──────────────────────────────────────────────────────────────
+
+// newTestImageService builds an ImageService backed by a real Cache in a temp
+// dir and an optional fake builder (may be nil for list/prune-only tests).
+func newTestImageService(t *testing.T, b service.ImageBuilder) (*service.ImageService, *image.Cache) {
+	t.Helper()
+	c, err := image.NewCache(t.TempDir())
+	if err != nil {
+		t.Fatalf("image.NewCache: %v", err)
+	}
+	return service.NewImageService(c, b), c
+}
+
+// fakeDigest computes a sha256:<hex> digest of content, returning a valid
+// domain.Digest and the content as a bytes.Reader for cache.Put.
+func fakeDigest(content string) (domain.Digest, *bytes.Reader) {
+	h := sha256.Sum256([]byte(content))
+	d := domain.Digest("sha256:" + hex.EncodeToString(h[:]))
+	return d, bytes.NewReader([]byte(content))
+}
+
+// seedCache writes one image record to cache c for testing. Returns the stored image.
+func seedCache(t *testing.T, c *image.Cache, content, ref string) domain.Image {
+	t.Helper()
+	d, r := fakeDigest(content)
+	img := domain.Image{
+		Digest: d,
+		Ref:    ref,
+		Kind:   domain.KindBase,
+		Size:   int64(len(content)),
+	}
+	if err := c.Put(context.Background(), img, r); err != nil {
+		t.Fatalf("cache.Put: %v", err)
+	}
+	return img
+}
+
+// fakeBuilder is an ImageBuilder that returns a pre-canned image.
+type fakeBuilder struct {
+	img domain.Image
+	err error
+}
+
+func (f *fakeBuilder) Build(_ context.Context, _ builder.BuildRequest) (domain.Image, error) {
+	return f.img, f.err
+}
+
+// ── image ls tests ────────────────────────────────────────────────────────────
+
+func TestImageList_JSON_EmptyCache(t *testing.T) {
+	svc, _ := newTestImageService(t, nil)
+	out, stdout, _ := capture(true)
+
+	if err := runImageWithService(context.Background(), []string{"ls"}, out, svc); err != nil {
+		t.Fatalf("image ls (empty): %v", err)
+	}
+
+	var env map[string]any
+	decodeOne(t, stdout, &env)
+
+	if env["schema_version"] != float64(1) {
+		t.Errorf("schema_version: got %v, want 1", env["schema_version"])
+	}
+	if env["kind"] != "image.list" {
+		t.Errorf("kind: got %v, want image.list", env["kind"])
+	}
+	data, ok := env["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("data: expected object, got %T", env["data"])
+	}
+	imgs, ok := data["images"].([]any)
+	if !ok {
+		t.Fatalf("data.images: expected array, got %T", data["images"])
+	}
+	if len(imgs) != 0 {
+		t.Errorf("expected 0 images in empty cache, got %d", len(imgs))
+	}
+}
+
+func TestImageList_JSON_PopulatedCache(t *testing.T) {
+	svc, c := newTestImageService(t, nil)
+	stored := seedCache(t, c, "rootfs content alpha", "test:alpha")
+
+	out, stdout, _ := capture(true)
+	if err := runImageWithService(context.Background(), []string{"ls"}, out, svc); err != nil {
+		t.Fatalf("image ls: %v", err)
+	}
+
+	var env map[string]any
+	decodeOne(t, stdout, &env)
+
+	if env["kind"] != "image.list" {
+		t.Errorf("kind: got %v, want image.list", env["kind"])
+	}
+	data := env["data"].(map[string]any)
+	imgs := data["images"].([]any)
+	if len(imgs) != 1 {
+		t.Fatalf("expected 1 image, got %d", len(imgs))
+	}
+	imgMap := imgs[0].(map[string]any)
+	if imgMap["digest"] != stored.Digest.String() {
+		t.Errorf("digest: got %v, want %s", imgMap["digest"], stored.Digest)
+	}
+	if imgMap["ref"] != "test:alpha" {
+		t.Errorf("ref: got %v, want test:alpha", imgMap["ref"])
+	}
+	if imgMap["kind"] != "base" {
+		t.Errorf("kind: got %v, want base", imgMap["kind"])
+	}
+}
+
+func TestImageList_Human_PopulatedCache(t *testing.T) {
+	svc, c := newTestImageService(t, nil)
+	seedCache(t, c, "rootfs content beta", "test:beta")
+
+	out, stdout, _ := capture(false)
+	if err := runImageWithService(context.Background(), []string{"ls"}, out, svc); err != nil {
+		t.Fatalf("image ls (human): %v", err)
+	}
+
+	if !strings.Contains(stdout.String(), "1 image(s)") {
+		t.Errorf("human output: got %q, want to contain '1 image(s)'", stdout.String())
+	}
+}
+
+// ── image prune tests ─────────────────────────────────────────────────────────
+
+func TestImagePrune_JSON_EmptyCache(t *testing.T) {
+	svc, _ := newTestImageService(t, nil)
+	out, stdout, _ := capture(true)
+
+	if err := runImageWithService(context.Background(), []string{"prune"}, out, svc); err != nil {
+		t.Fatalf("image prune (empty): %v", err)
+	}
+
+	var env map[string]any
+	decodeOne(t, stdout, &env)
+
+	if env["kind"] != "image.pruned" {
+		t.Errorf("kind: got %v, want image.pruned", env["kind"])
+	}
+	data := env["data"].(map[string]any)
+	if data["removed"] != float64(0) {
+		t.Errorf("removed: got %v, want 0", data["removed"])
+	}
+}
+
+func TestImagePrune_JSON_RemovesUnreferenced(t *testing.T) {
+	svc, c := newTestImageService(t, nil)
+	seedCache(t, c, "rootfs content one", "test:one")
+	seedCache(t, c, "rootfs content two", "test:two")
+
+	// Verify both images are present before prune.
+	imgs, err := c.List(context.Background())
+	if err != nil {
+		t.Fatalf("pre-prune List: %v", err)
+	}
+	if len(imgs) != 2 {
+		t.Fatalf("pre-prune: expected 2 images, got %d", len(imgs))
+	}
+
+	out, stdout, _ := capture(true)
+	if err := runImageWithService(context.Background(), []string{"prune"}, out, svc); err != nil {
+		t.Fatalf("image prune: %v", err)
+	}
+
+	var env map[string]any
+	decodeOne(t, stdout, &env)
+
+	if env["kind"] != "image.pruned" {
+		t.Errorf("kind: got %v, want image.pruned", env["kind"])
+	}
+	data := env["data"].(map[string]any)
+	if data["removed"] != float64(2) {
+		t.Errorf("removed: got %v, want 2", data["removed"])
+	}
+
+	// Verify cache is empty after prune.
+	remaining, err := c.List(context.Background())
+	if err != nil {
+		t.Fatalf("post-prune List: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Errorf("post-prune: expected 0 images, got %d", len(remaining))
+	}
+}
+
+func TestImagePrune_Human_ReportsCount(t *testing.T) {
+	svc, c := newTestImageService(t, nil)
+	seedCache(t, c, "rootfs content gamma", "test:gamma")
+
+	out, stdout, _ := capture(false)
+	if err := runImageWithService(context.Background(), []string{"prune"}, out, svc); err != nil {
+		t.Fatalf("image prune (human): %v", err)
+	}
+
+	if !strings.Contains(stdout.String(), "pruned 1 image(s)") {
+		t.Errorf("human output: got %q, want to contain 'pruned 1 image(s)'", stdout.String())
+	}
+}
+
+// ── image build tests ─────────────────────────────────────────────────────────
+
+func TestImageBuild_JSON_FakeBuilder(t *testing.T) {
+	d, _ := fakeDigest("built rootfs content")
+	fakeImg := domain.Image{
+		Digest: d,
+		Ref:    "nexus3-base:test",
+		Kind:   domain.KindBase,
+		Size:   42,
+	}
+	svc, _ := newTestImageService(t, &fakeBuilder{img: fakeImg})
+
+	out, stdout, _ := capture(true)
+	if err := runImageWithService(context.Background(),
+		[]string{"build", "--base", "debian:bookworm-slim", "--workspace", t.TempDir(), "--ref", "nexus3-base:test"},
+		out, svc); err != nil {
+		t.Fatalf("image build: %v", err)
+	}
+
+	var env map[string]any
+	decodeOne(t, stdout, &env)
+
+	if env["schema_version"] != float64(1) {
+		t.Errorf("schema_version: got %v, want 1", env["schema_version"])
+	}
+	if env["kind"] != "image.built" {
+		t.Errorf("kind: got %v, want image.built", env["kind"])
+	}
+	data, ok := env["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("data: expected object, got %T", env["data"])
+	}
+	if data["digest"] != d.String() {
+		t.Errorf("digest: got %v, want %s", data["digest"], d)
+	}
+	if data["ref"] != "nexus3-base:test" {
+		t.Errorf("ref: got %v, want nexus3-base:test", data["ref"])
+	}
+	if data["size"] != float64(42) {
+		t.Errorf("size: got %v, want 42", data["size"])
+	}
+}
+
+func TestImageBuild_JSON_NoBuilder(t *testing.T) {
+	// Builder is nil: should emit an error, not panic.
+	svc, _ := newTestImageService(t, nil)
+	out, stdout, stderr := capture(true)
+
+	if err := runImageWithService(context.Background(),
+		[]string{"build", "--workspace", t.TempDir()},
+		out, svc); err != nil {
+		t.Fatalf("image build (no builder): unexpected non-nil return: %v", err)
+	}
+
+	// Should have written an error envelope to stdout (JSON mode).
+	if stdout.Len() == 0 && stderr.Len() == 0 {
+		t.Fatal("expected error output, got nothing")
+	}
+
+	var env map[string]any
+	decodeOne(t, stdout, &env)
+	if env["kind"] != "error" {
+		t.Errorf("kind: got %v, want error", env["kind"])
+	}
+}
+
+func TestImageBuild_Human_FakeBuilder(t *testing.T) {
+	d, _ := fakeDigest("human build content")
+	fakeImg := domain.Image{Digest: d, Size: 100, Kind: domain.KindBase}
+	svc, _ := newTestImageService(t, &fakeBuilder{img: fakeImg})
+
+	out, stdout, _ := capture(false)
+	if err := runImageWithService(context.Background(),
+		[]string{"build", "--workspace", t.TempDir()},
+		out, svc); err != nil {
+		t.Fatalf("image build (human): %v", err)
+	}
+
+	if !strings.Contains(stdout.String(), "built image") {
+		t.Errorf("human output: got %q, want to contain 'built image'", stdout.String())
+	}
+}
+
+// ── usage error tests ─────────────────────────────────────────────────────────
+
+func TestImage_UsageError_MissingSubcommand(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	code := Run([]string{"image"})
+	if code != 2 {
+		t.Errorf("missing subcommand: exit code = %d, want 2", code)
+	}
+}
+
+func TestImage_UsageError_UnknownSubcommand(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	code := Run([]string{"image", "frobnicate"})
+	if code != 2 {
+		t.Errorf("unknown subcommand: exit code = %d, want 2", code)
+	}
+}
+
+// ── JSON schema shape ─────────────────────────────────────────────────────────
+
+// TestImageList_JSON_SchemaShape verifies the exact JSON envelope fields.
+func TestImageList_JSON_SchemaShape(t *testing.T) {
+	svc, _ := newTestImageService(t, nil)
+	out, stdout, _ := capture(true)
+
+	if err := runImageWithService(context.Background(), []string{"ls"}, out, svc); err != nil {
+		t.Fatalf("image ls: %v", err)
+	}
+
+	// Round-trip through the concrete struct to ensure every field is present
+	// and correctly tagged.
+	var env struct {
+		SchemaVersion int    `json:"schema_version"`
+		Kind          string `json:"kind"`
+		Data          struct {
+			Images []json.RawMessage `json:"images"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(stdout).Decode(&env); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if env.SchemaVersion != 1 {
+		t.Errorf("schema_version: got %d, want 1", env.SchemaVersion)
+	}
+	if env.Kind != "image.list" {
+		t.Errorf("kind: got %q, want image.list", env.Kind)
+	}
+}
