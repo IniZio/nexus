@@ -721,3 +721,79 @@ func (s *Service) SnapshotRemove(ctx context.Context, id artifact.SnapshotID) er
 
 	return s.artifacts.Remove(id)
 }
+
+// RestoreFromSnapshot creates count child sandboxes from a retained snapshot
+// identified by snapID. It is the fan-out sibling of Fork: instead of taking
+// a fresh transient snapshot of a live sandbox, it reads an existing retained
+// snapshot from the artifact store and fans out N children (edge 5: ∅→running,
+// per spec doc-06). The origin sandbox is not touched.
+//
+// The driver must implement [driver.Forker]. If it does not, an error wrapping
+// [ErrNoSubstrate] is returned.
+//
+// An artifact store must be attached via [WithArtifacts]; if not,
+// [ErrNoArtifactStore] is returned. The snapshot is validated for integrity
+// before any child is created — a bad or torn snapshot yields a clean error
+// with zero children created (S2-AC2; no new error state is produced, no new
+// lifecycle edge is traversed).
+func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.SnapshotID, count int) ([]domain.Sandbox, error) {
+	if count < 1 {
+		return nil, fmt.Errorf("service: restore: count must be >= 1, got %d", count)
+	}
+	if s.artifacts == nil {
+		return nil, fmt.Errorf("service: restore %s: %w", snapID, ErrNoArtifactStore)
+	}
+
+	// Read and validate the snapshot BEFORE creating any child (S2-AC2: a bad
+	// snapshot yields a clean failure; no children are created, no error state).
+	snap, err := s.artifacts.Read(snapID)
+	if err != nil {
+		return nil, fmt.Errorf("service: restore %s: read snapshot: %w", snapID, err)
+	}
+	if err := snap.Validate(); err != nil {
+		return nil, fmt.Errorf("service: restore %s: snapshot integrity: %w", snapID, err)
+	}
+
+	// Capability check outside the lock: type assertion has no I/O.
+	forker, ok := s.driver.(driver.Forker)
+	if !ok {
+		return nil, fmt.Errorf(
+			"service: restore %s: driver %q does not support fork: %w",
+			snapID, s.driver.Name(), ErrNoSubstrate,
+		)
+	}
+
+	// Mint child IDs. Each is a UUIDv7; collision-free even in the same ms.
+	childIDs := make([]domain.SandboxID, count)
+	for i := range childIDs {
+		childIDs[i] = domain.NewSandboxID()
+	}
+
+	// Spawn all children from the retained snapshot in one driver call.
+	instanceIDs, err := forker.ForkFrom(ctx, snap, childIDs)
+	if err != nil {
+		return nil, fmt.Errorf("service: restore %s: driver: %w", snapID, err)
+	}
+
+	// Persist each child record. Children start directly in Running state
+	// (edge 5: ∅→running). Provenance.SourceSnapshot satisfies S2-AC3.
+	children := make([]domain.Sandbox, 0, count)
+	for i, id := range childIDs {
+		child := domain.Sandbox{
+			ID:         id,
+			Name:       fmt.Sprintf("restore-%s", id.String()[3:]),
+			State:      domain.Running,
+			InstanceID: instanceIDs[i],
+			Provenance: &domain.Provenance{
+				ParentID:       snap.SandboxID,
+				SourceSnapshot: string(snapID),
+			},
+		}
+		if err := s.store.Create(ctx, child); err != nil {
+			return nil, fmt.Errorf("service: restore %s: persist child %s: %w", snapID, id, err)
+		}
+		children = append(children, child)
+	}
+
+	return children, nil
+}
