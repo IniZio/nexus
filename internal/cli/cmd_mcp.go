@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/IniZio/nexus3/internal/core/domain"
@@ -51,10 +52,7 @@ func (m *mcpService) CreateAndBoot(ctx context.Context, project, name string, op
 
 	kernelPath := kernelPathFor()
 	newDriver := func(ext4Path string) (driver.Driver, error) {
-		cfg := cloudhypervisor.Config{
-			KernelPath:    kernelPath,
-			DiskImagePath: ext4Path,
-		}
+		cfg := buildCHConfig(kernelPath, ext4Path, opts.MemoryMiB, opts.VCPUs)
 		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
 			cfg.BinaryPath = p
 		}
@@ -66,12 +64,21 @@ func (m *mcpService) CreateAndBoot(ctx context.Context, project, name string, op
 		if !ok {
 			return nil
 		}
-		conn, err := gd.DialGuest(ctx, id, driver.AgentControlPort)
-		if err != nil {
-			return err
+		// Poll with 300 ms back-off: CH's vsock multiplexer returns EOF while
+		// the virtio-vsock device is still being negotiated by the guest.
+		for {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			conn, err := gd.DialGuest(dialCtx, id, driver.AgentControlPort)
+			cancel()
+			if err == nil {
+				_ = conn.Close()
+				return nil
+			}
+			time.Sleep(300 * time.Millisecond)
 		}
-		_ = conn.Close()
-		return nil
 	}
 
 	return service.CreateAndBoot(ctx, m.Service, imgCache, newDriver, probe, project, name, opts)

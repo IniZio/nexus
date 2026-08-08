@@ -114,6 +114,9 @@ type createArgs struct {
 	RootfsPath string `json:"rootfs_path,omitempty" jsonschema:"direct path to a raw ext4 rootfs file on the server (optional; triggers boot)"`
 	Digest     string `json:"digest,omitempty"      jsonschema:"sha256:<hex> image digest in the server image cache (optional; triggers boot)"`
 	Ref        string `json:"ref,omitempty"         jsonschema:"image tag or digest string in the server image cache (optional; triggers boot)"`
+	// Optional resource overrides — only used when a boot field is also set.
+	MemoryMiB uint32 `json:"memory_mib,omitempty" jsonschema:"guest RAM in MiB (optional; 0 = driver default 512 MiB)"`
+	VCPUs     uint32 `json:"vcpus,omitempty"      jsonschema:"number of virtual CPUs (optional; 0 = driver default 1)"`
 }
 
 // refArgs holds a single sandbox reference used by start/stop/pause/resume/remove.
@@ -164,6 +167,8 @@ func registerTools(srv *gosdk.Server, svc SandboxService) {
 					Digest:     args.Digest,
 					Ref:        args.Ref,
 				},
+				MemoryMiB: args.MemoryMiB,
+				VCPUs:     args.VCPUs,
 			})
 			if err != nil {
 				return nil, nil, err

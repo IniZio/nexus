@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"time"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
@@ -299,59 +301,117 @@ func runSandbox(ctx context.Context, args []string, out *Output) error {
 // is resolved, a Cloud Hypervisor VM is started, the guest agent is probed for
 // reachability, and the sandbox is recorded as Running.
 //
-// The --rm flag may appear before or after the handle. Flag scanning is done
-// manually so that docker-style order ("create demo/one --rm --image …") works
-// without requiring flags to precede the positional argument.
-func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *service.Service) error {
-	var rmFlag bool
-	var imageRef, rootfsPath, filePath string
-	var positionals []string
+// sandboxCreateFlags holds the result of parsing `sandbox create` arguments.
+type sandboxCreateFlags struct {
+	rm          bool
+	imageRef    string
+	rootfsPath  string
+	filePath    string
+	memoryMiB   uint32
+	vcpus       uint32
+	positionals []string
+}
 
+// parseSandboxCreateArgs parses the raw argument slice for `sandbox create`.
+// All flags and positional arguments are collected; positional count and
+// handle format are validated by the caller.
+func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
+	var f sandboxCreateFlags
 	i := 0
 	for i < len(args) {
 		arg := args[i]
 		switch arg {
 		case "--rm":
-			rmFlag = true
+			f.rm = true
 		case "--image":
 			if i+1 >= len(args) {
-				return &UsageError{Msg: "sandbox create: --image requires an argument"}
+				return f, &UsageError{Msg: "sandbox create: --image requires an argument"}
 			}
 			i++
-			imageRef = args[i]
+			f.imageRef = args[i]
 		case "--rootfs":
 			if i+1 >= len(args) {
-				return &UsageError{Msg: "sandbox create: --rootfs requires an argument"}
+				return f, &UsageError{Msg: "sandbox create: --rootfs requires an argument"}
 			}
 			i++
-			rootfsPath = args[i]
+			f.rootfsPath = args[i]
 		case "--file":
 			if i+1 >= len(args) {
-				return &UsageError{Msg: "sandbox create: --file requires an argument"}
+				return f, &UsageError{Msg: "sandbox create: --file requires an argument"}
 			}
 			i++
-			filePath = args[i]
+			f.filePath = args[i]
+		case "--memory":
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --memory requires an argument"}
+			}
+			i++
+			v, err := strconv.ParseUint(args[i], 10, 32)
+			if err != nil {
+				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --memory %q: invalid MiB value", args[i])}
+			}
+			f.memoryMiB = uint32(v)
+		case "--vcpus":
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --vcpus requires an argument"}
+			}
+			i++
+			v, err := strconv.ParseUint(args[i], 10, 32)
+			if err != nil {
+				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --vcpus %q: invalid count", args[i])}
+			}
+			f.vcpus = uint32(v)
 		default:
 			if len(arg) > 1 && arg[0] == '-' {
-				return &UsageError{Msg: fmt.Sprintf("sandbox create: unknown flag %q", arg)}
+				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: unknown flag %q", arg)}
 			}
-			positionals = append(positionals, arg)
+			f.positionals = append(f.positionals, arg)
 		}
 		i++
 	}
+	return f, nil
+}
 
-	if len(positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>]"}
+// buildCHConfig constructs a cloudhypervisor.Config for the resolved ext4.
+// When memMiB or vcpus is zero the respective field is left unset and the
+// driver applies its built-in default (512 MiB / 1 vCPU).
+// Exposed (unexported) so that cmd_sandbox_create_test.go can assert the
+// flag→Config wiring without booting a real VM.
+func buildCHConfig(kernelPath, ext4Path string, memMiB, vcpus uint32) cloudhypervisor.Config {
+	cfg := cloudhypervisor.Config{
+		KernelPath:    kernelPath,
+		DiskImagePath: ext4Path,
+	}
+	if memMiB > 0 {
+		cfg.MemoryMiB = memMiB
+	}
+	if vcpus > 0 {
+		cfg.VCPUs = vcpus
+	}
+	return cfg
+}
+
+// The --rm flag may appear before or after the handle. Flag scanning is done
+// manually so that docker-style order ("create demo/one --rm --image …") works
+// without requiring flags to precede the positional argument.
+func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *service.Service) error {
+	f, parseErr := parseSandboxCreateArgs(args)
+	if parseErr != nil {
+		return parseErr
 	}
 
-	project, name, err := domain.ParseHandle(positionals[0])
+	if len(f.positionals) != 1 {
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>] [--memory <MiB>] [--vcpus <n>]"}
+	}
+
+	project, name, err := domain.ParseHandle(f.positionals[0])
 	if err != nil {
 		return &UsageError{Code: sandboxErrCodeInvalidArgument, Msg: fmt.Sprintf("sandbox create: %v", err)}
 	}
 
 	// ── No-boot path: store-only create (backwards-compatible) ───────────────
-	if imageRef == "" && rootfsPath == "" && filePath == "" {
-		sb, err := svc.Create(ctx, project, name, service.CreateOptions{RemoveOnExit: rmFlag})
+	if f.imageRef == "" && f.rootfsPath == "" && f.filePath == "" {
+		sb, err := svc.Create(ctx, project, name, service.CreateOptions{RemoveOnExit: f.rm})
 		if err != nil {
 			return errSandbox("sandbox create", err)
 		}
@@ -374,7 +434,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 
 	// --file: build image via .nexus/Containerfile (best-effort; requires
 	// buildkitd). On success the digest is fed into the normal cache path.
-	if filePath != "" && imageRef == "" && rootfsPath == "" {
+	if f.filePath != "" && f.imageRef == "" && f.rootfsPath == "" {
 		// Placeholder: builder integration lives in a future slice.
 		// For now return a clear actionable error rather than silently falling
 		// through to the no-boot path.
@@ -390,10 +450,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// cloudhypervisor.Config. Socket/log paths use default locations so that
 	// svc.Stop (using svc.driver) can find the socket after this call returns.
 	newDriver := func(ext4Path string) (driver.Driver, error) {
-		cfg := cloudhypervisor.Config{
-			KernelPath:    kernelPath,
-			DiskImagePath: ext4Path,
-		}
+		cfg := buildCHConfig(kernelPath, ext4Path, f.memoryMiB, f.vcpus)
 		// BinaryPath: look for cloud-hypervisor in PATH if not set.
 		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
 			cfg.BinaryPath = p
@@ -402,33 +459,45 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	// probe verifies reachability via GuestDialer (vsock connect).
-	// A bare connection attempt is sufficient for S2: it proves the guest
-	// agent's vsock listener is bound and accepting connections.
+	// It polls with a 300 ms back-off until the guest agent's vsock listener
+	// accepts the connection or the context (ReachabilityTimeout) expires.
+	// A single-shot attempt is not enough: CH's vsock multiplexer returns EOF
+	// while the virtio-vsock device is still being negotiated by the guest
+	// (typically < 1 s after vm.boot returns), so a retry loop is required.
 	probe := func(ctx context.Context, drv driver.Driver, id domain.SandboxID) error {
 		gd, ok := drv.(driver.GuestDialer)
 		if !ok {
 			// Driver doesn't implement DialGuest; skip reachability check.
 			return nil
 		}
-		conn, err := gd.DialGuest(ctx, id, driver.AgentControlPort)
-		if err != nil {
-			return err
+		for {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			conn, err := gd.DialGuest(dialCtx, id, driver.AgentControlPort)
+			cancel()
+			if err == nil {
+				_ = conn.Close()
+				return nil
+			}
+			time.Sleep(300 * time.Millisecond)
 		}
-		_ = conn.Close()
-		return nil
 	}
 
 	spec := service.ImageSpec{
-		Ref:        imageRef,
-		RootfsPath: rootfsPath,
+		Ref:        f.imageRef,
+		RootfsPath: f.rootfsPath,
 	}
 
 	sb, err := service.CreateAndBoot(ctx, svc, imgCache, newDriver, probe,
 		project, name,
 		service.CreateAndBootOptions{
-			RemoveOnExit: rmFlag,
+			RemoveOnExit: f.rm,
 			Image:        spec,
 			CacheRoot:    cacheRoot,
+			MemoryMiB:    f.memoryMiB,
+			VCPUs:        f.vcpus,
 		},
 	)
 	if err != nil {

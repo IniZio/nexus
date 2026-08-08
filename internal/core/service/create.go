@@ -82,6 +82,14 @@ type CreateAndBootOptions struct {
 	// credential seeding is skipped. See NewAgentCopySeeder for the production
 	// implementation; tests inject a capture stub.
 	Seeder GuestSeeder
+
+	// MemoryMiB is the guest RAM in mebibytes to pass to the driver factory.
+	// When zero the driver factory uses its built-in default (512 MiB).
+	MemoryMiB uint32
+
+	// VCPUs is the number of virtual CPUs to pass to the driver factory.
+	// When zero the driver factory uses its built-in default (1 vCPU).
+	VCPUs uint32
 }
 
 // CreateAndBoot creates a sandbox record, boots a VM for it, verifies the

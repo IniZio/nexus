@@ -452,3 +452,85 @@ func TestToolsRegistered(t *testing.T) {
 		}
 	}
 }
+
+// ── MEMAC2: memory_mib / vcpus thread through to CreateAndBootOptions ─────────
+
+// TestSandboxCreate_WithMemoryVCPUs_CallsCreateAndBoot verifies that
+// memory_mib and vcpus in sandbox_create args are threaded through to
+// CreateAndBootOptions.MemoryMiB / .VCPUs when the boot path is taken.
+func TestSandboxCreate_WithMemoryVCPUs_CallsCreateAndBoot(t *testing.T) {
+	id := domain.NewSandboxID()
+	stub := &stubService{
+		createAndBootResult: domain.Sandbox{
+			ID:      id,
+			Project: "myproj",
+			Name:    "mysb",
+			State:   domain.Running,
+		},
+	}
+	cs, close := connectPair(t, stub)
+	defer close()
+
+	res := callTool(t, cs, "sandbox_create", map[string]any{
+		"project":        "myproj",
+		"name":           "mysb",
+		"rootfs_path":    "/path/to/rootfs.ext4",
+		"remove_on_exit": false,
+		"memory_mib":     2048,
+		"vcpus":          2,
+	})
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(t, res))
+	}
+
+	cab := stub.createAndBootCalledWith
+	if cab.opts.MemoryMiB != 2048 {
+		t.Errorf("CreateAndBoot MemoryMiB: want 2048, got %d", cab.opts.MemoryMiB)
+	}
+	if cab.opts.VCPUs != 2 {
+		t.Errorf("CreateAndBoot VCPUs: want 2, got %d", cab.opts.VCPUs)
+	}
+	if cab.opts.Image.RootfsPath != "/path/to/rootfs.ext4" {
+		t.Errorf("CreateAndBoot RootfsPath: want %q, got %q", "/path/to/rootfs.ext4", cab.opts.Image.RootfsPath)
+	}
+
+	// Create must NOT have been called (boot path was taken).
+	if stub.createCalledWith.project != "" {
+		t.Errorf("Create was called unexpectedly: project=%q", stub.createCalledWith.project)
+	}
+}
+
+// TestSandboxCreate_WithMemoryVCPUs_DefaultsUnset verifies that omitting
+// memory_mib and vcpus leaves them zero in CreateAndBootOptions (driver
+// applies its own 512 MiB / 1 vCPU defaults — no regression).
+func TestSandboxCreate_WithMemoryVCPUs_DefaultsUnset(t *testing.T) {
+	id := domain.NewSandboxID()
+	stub := &stubService{
+		createAndBootResult: domain.Sandbox{
+			ID:      id,
+			Project: "proj",
+			Name:    "sb",
+			State:   domain.Running,
+		},
+	}
+	cs, close := connectPair(t, stub)
+	defer close()
+
+	res := callTool(t, cs, "sandbox_create", map[string]any{
+		"project":        "proj",
+		"name":           "sb",
+		"rootfs_path":    "/rootfs.ext4",
+		"remove_on_exit": false,
+	})
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(t, res))
+	}
+
+	cab := stub.createAndBootCalledWith
+	if cab.opts.MemoryMiB != 0 {
+		t.Errorf("MemoryMiB default: want 0, got %d", cab.opts.MemoryMiB)
+	}
+	if cab.opts.VCPUs != 0 {
+		t.Errorf("VCPUs default: want 0, got %d", cab.opts.VCPUs)
+	}
+}

@@ -199,3 +199,69 @@ func TestSandboxCreate_WithImage_CallsStartAndRecordsRunning(t *testing.T) {
 		t.Errorf("state = %q, want running", sbJSON["state"])
 	}
 }
+
+// ── MEMAC1: --memory / --vcpus flag-parse → Config wiring ────────────────────
+
+// TestSandboxCreate_Memory_VCPUs_FlagParsing verifies that parseSandboxCreateArgs
+// extracts --memory and --vcpus into the correct fields, and that buildCHConfig
+// threads those values into cloudhypervisor.Config.MemoryMiB / .VCPUs.
+// Together these two assertions prove the full flag-parse→Config wiring
+// without requiring a real VM.
+func TestSandboxCreate_Memory_VCPUs_FlagParsing(t *testing.T) {
+	args := []string{"p/n", "--image", "nexus3-base:latest", "--memory", "2048", "--vcpus", "2"}
+	f, err := parseSandboxCreateArgs(args)
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", err)
+	}
+	if f.memoryMiB != 2048 {
+		t.Errorf("memoryMiB: want 2048, got %d", f.memoryMiB)
+	}
+	if f.vcpus != 2 {
+		t.Errorf("vcpus: want 2, got %d", f.vcpus)
+	}
+	if f.imageRef != "nexus3-base:latest" {
+		t.Errorf("imageRef: want %q, got %q", "nexus3-base:latest", f.imageRef)
+	}
+	if len(f.positionals) != 1 || f.positionals[0] != "p/n" {
+		t.Errorf("positionals: want [p/n], got %v", f.positionals)
+	}
+}
+
+// TestSandboxCreate_Memory_VCPUs_Config verifies that buildCHConfig produces a
+// cloudhypervisor.Config with MemoryMiB and VCPUs set correctly, and that zero
+// values leave the fields unset (driver keeps its 512 MiB / 1 vCPU defaults).
+func TestSandboxCreate_Memory_VCPUs_Config(t *testing.T) {
+	cfg := buildCHConfig("/kernel/vmlinux", "/rootfs.ext4", 2048, 2)
+	if cfg.MemoryMiB != 2048 {
+		t.Errorf("MemoryMiB: want 2048, got %d", cfg.MemoryMiB)
+	}
+	if cfg.VCPUs != 2 {
+		t.Errorf("VCPUs: want 2, got %d", cfg.VCPUs)
+	}
+	if cfg.KernelPath != "/kernel/vmlinux" {
+		t.Errorf("KernelPath: want %q, got %q", "/kernel/vmlinux", cfg.KernelPath)
+	}
+	if cfg.DiskImagePath != "/rootfs.ext4" {
+		t.Errorf("DiskImagePath: want %q, got %q", "/rootfs.ext4", cfg.DiskImagePath)
+	}
+
+	// Zero values → fields unset; driver uses its own 512 MiB / 1 vCPU default.
+	cfg0 := buildCHConfig("/kernel/vmlinux", "/rootfs.ext4", 0, 0)
+	if cfg0.MemoryMiB != 0 {
+		t.Errorf("MemoryMiB unset: want 0 (driver default), got %d", cfg0.MemoryMiB)
+	}
+	if cfg0.VCPUs != 0 {
+		t.Errorf("VCPUs unset: want 0 (driver default), got %d", cfg0.VCPUs)
+	}
+}
+
+// TestSandboxCreate_Memory_VCPUs_InvalidFlag verifies that non-numeric values
+// for --memory and --vcpus return UsageErrors.
+func TestSandboxCreate_Memory_VCPUs_InvalidFlag(t *testing.T) {
+	if _, err := parseSandboxCreateArgs([]string{"p/n", "--memory", "abc"}); err == nil {
+		t.Error("expected UsageError for --memory abc, got nil")
+	}
+	if _, err := parseSandboxCreateArgs([]string{"p/n", "--vcpus", "two"}); err == nil {
+		t.Error("expected UsageError for --vcpus two, got nil")
+	}
+}
