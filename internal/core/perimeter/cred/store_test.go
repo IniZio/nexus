@@ -82,6 +82,87 @@ func TestLoadStore_MalformedJSON(t *testing.T) {
 	}
 }
 
+func TestSaveStoreRoundTrip(t *testing.T) {
+	expiry := time.Date(2027, 6, 15, 12, 0, 0, 0, time.UTC)
+	orig := &cred.DedicatedCredStore{
+		AccessToken:   "at-roundtrip",
+		RefreshToken:  "rt-roundtrip",
+		ExpiresAt:     expiry,
+		TokenType:     "Bearer",
+		ClientID:      "cid-roundtrip",
+		ClientSecret:  "csec-roundtrip",
+		TokenEndpoint: "https://auth.example.com/token",
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "store.json")
+
+	if err := cred.SaveStore(path, orig); err != nil {
+		t.Fatalf("SaveStore: unexpected error: %v", err)
+	}
+
+	// Verify file mode is exactly 0600.
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("file mode = %o, want 0600", got)
+	}
+
+	loaded, err := cred.LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: unexpected error: %v", err)
+	}
+
+	if loaded.AccessToken != orig.AccessToken {
+		t.Errorf("AccessToken = %q, want %q", loaded.AccessToken, orig.AccessToken)
+	}
+	if loaded.RefreshToken != orig.RefreshToken {
+		t.Errorf("RefreshToken = %q, want %q", loaded.RefreshToken, orig.RefreshToken)
+	}
+	if !loaded.ExpiresAt.Equal(orig.ExpiresAt) {
+		t.Errorf("ExpiresAt = %v, want %v", loaded.ExpiresAt, orig.ExpiresAt)
+	}
+	if loaded.TokenType != orig.TokenType {
+		t.Errorf("TokenType = %q, want %q", loaded.TokenType, orig.TokenType)
+	}
+	if loaded.ClientID != orig.ClientID {
+		t.Errorf("ClientID = %q, want %q", loaded.ClientID, orig.ClientID)
+	}
+	if loaded.ClientSecret != orig.ClientSecret {
+		t.Errorf("ClientSecret = %q, want %q", loaded.ClientSecret, orig.ClientSecret)
+	}
+	if loaded.TokenEndpoint != orig.TokenEndpoint {
+		t.Errorf("TokenEndpoint = %q, want %q", loaded.TokenEndpoint, orig.TokenEndpoint)
+	}
+}
+
+func TestSaveStoreRejectsEmptyAccessToken(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "store.json")
+
+	s := &cred.DedicatedCredStore{
+		AccessToken:   "", // empty — must be rejected
+		RefreshToken:  "rt-xyz",
+		ExpiresAt:     time.Now().Add(time.Hour),
+		TokenType:     "Bearer",
+		ClientID:      "cid",
+		ClientSecret:  "csec",
+		TokenEndpoint: "https://auth.example.com/token",
+	}
+
+	err := cred.SaveStore(path, s)
+	if err == nil {
+		t.Fatal("expected error for empty AccessToken, got nil")
+	}
+
+	// File must not have been created.
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("store file should not exist after rejected save, Stat error = %v", statErr)
+	}
+}
+
 // writeTemp writes content to a temporary file and returns its path.
 func writeTemp(t *testing.T, content string) string {
 	t.Helper()

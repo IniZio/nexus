@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -88,4 +89,66 @@ func LoadStore(path string) (*DedicatedCredStore, error) {
 		ClientSecret:  s.ClientSecret,
 		TokenEndpoint: s.TokenEndpoint,
 	}, nil
+}
+
+// SaveStore atomically writes s to the JSON store file at path (mode 0600).
+//
+// The write is atomic: a temp file is written in the same directory as path
+// (guaranteeing same-filesystem rename), chmod'd to 0600, then renamed over
+// path. The temp file is removed on any error before the rename.
+//
+// SaveStore rejects an empty AccessToken; a store without a bearer token is
+// not usable and must not be persisted.
+func SaveStore(path string, s *DedicatedCredStore) error {
+	if s.AccessToken == "" {
+		return fmt.Errorf("cred: SaveStore %s: empty access_token; refusing to persist unusable credential", path)
+	}
+
+	schema := storeSchema{
+		AccessToken:   s.AccessToken,
+		RefreshToken:  s.RefreshToken,
+		ExpiresAt:     s.ExpiresAt,
+		TokenType:     s.TokenType,
+		ClientID:      s.ClientID,
+		ClientSecret:  s.ClientSecret,
+		TokenEndpoint: s.TokenEndpoint,
+	}
+
+	data, err := json.MarshalIndent(schema, "", "  ")
+	if err != nil {
+		return fmt.Errorf("cred: SaveStore %s: marshalling store: %w", path, err)
+	}
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".store-*.tmp")
+	if err != nil {
+		return fmt.Errorf("cred: SaveStore %s: creating temp file: %w", path, err)
+	}
+	tmpName := tmp.Name()
+
+	// Ensure temp file is cleaned up on any failure before rename.
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("cred: SaveStore %s: chmod temp file: %w", path, err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("cred: SaveStore %s: writing temp file: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("cred: SaveStore %s: closing temp file: %w", path, err)
+	}
+
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("cred: SaveStore %s: renaming temp file: %w", path, err)
+	}
+	cleanup = false
+	return nil
 }

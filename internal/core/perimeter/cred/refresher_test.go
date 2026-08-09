@@ -118,7 +118,7 @@ func TestRefresher_RotationPushesToAllSandboxes(t *testing.T) {
 	}
 	broker := &fakeRealTokenSetter{}
 
-	r := newRefresherWithSource(fts, host, broker)
+	r := newRefresherWithSource(fts, host, broker, "", credStoreMeta{})
 	r.Register(sid1)
 	r.Register(sid2)
 
@@ -169,7 +169,7 @@ func TestRefresher_NoRotation_NoBrokerCall(t *testing.T) {
 	fts := &fakeTokenSource{tokens: []*oauth2.Token{tok, tok}}
 	broker := &fakeRealTokenSetter{}
 
-	r := newRefresherWithSource(fts, host, broker)
+	r := newRefresherWithSource(fts, host, broker, "", credStoreMeta{})
 	r.Register(sid)
 
 	if _, _, err := r.Token(context.Background()); err != nil {
@@ -201,7 +201,7 @@ func TestRefresher_DeregisterStopsUpdates(t *testing.T) {
 		},
 	}
 	broker := &fakeRealTokenSetter{}
-	r := newRefresherWithSource(fts, host, broker)
+	r := newRefresherWithSource(fts, host, broker, "", credStoreMeta{})
 	r.Register(sid)
 
 	if _, _, err := r.Token(context.Background()); err != nil {
@@ -226,7 +226,7 @@ func TestRefresher_NoSandboxes_NoBrokerCalls(t *testing.T) {
 	future := time.Now().Add(time.Hour)
 	fts := &fakeTokenSource{tokens: []*oauth2.Token{makeTok("tok-x", future)}}
 	broker := &fakeRealTokenSetter{}
-	r := newRefresherWithSource(fts, "api.anthropic.com", broker)
+	r := newRefresherWithSource(fts, "api.anthropic.com", broker, "", credStoreMeta{})
 	// No Register calls.
 
 	if _, _, err := r.Token(context.Background()); err != nil {
@@ -245,7 +245,7 @@ func TestRefresher_PushErrors_SurfacedButDoesNotFailToken(t *testing.T) {
 	fts := &fakeTokenSource{tokens: []*oauth2.Token{makeTok("tok-push-err", future)}}
 	broker := &fakeRealTokenSetter{err: errors.New("no placeholder registered")}
 
-	r := newRefresherWithSource(fts, "api.anthropic.com", broker)
+	r := newRefresherWithSource(fts, "api.anthropic.com", broker, "", credStoreMeta{})
 	r.Register(sid)
 
 	tok, _, err := r.Token(context.Background())
@@ -268,7 +268,7 @@ func TestRefresher_RefreshFailure(t *testing.T) {
 	fts := &fakeTokenSource{err: refreshErr}
 	broker := &fakeRealTokenSetter{}
 
-	r := newRefresherWithSource(fts, "api.anthropic.com", broker)
+	r := newRefresherWithSource(fts, "api.anthropic.com", broker, "", credStoreMeta{})
 	r.Register(domain.SandboxID{4})
 
 	tok, _, err := r.Token(context.Background())
@@ -396,6 +396,283 @@ func TestRefresher_NewRefresher_RealStack(t *testing.T) {
 	}
 	if broker.calls[0].sandboxID != sid {
 		t.Errorf("SetRealToken sandboxID got %v want %v", broker.calls[0].sandboxID, sid)
+	}
+
+	// Verify NewRefresher's storePath+meta wiring persisted the rotated
+	// refresh_token and the static metadata (token_endpoint, client_id).
+	// The httptest server returns refresh_token="refresh-rotated".
+	if pErr := r.PersistError(); pErr != nil {
+		t.Errorf("PersistError() must be nil, got: %v", pErr)
+	}
+	persisted, err := LoadStore(storePath)
+	if err != nil {
+		t.Fatalf("LoadStore after Token(): %v", err)
+	}
+	if persisted.RefreshToken != "refresh-rotated" {
+		t.Errorf("persisted refresh_token: got %q, want refresh-rotated", persisted.RefreshToken)
+	}
+	if persisted.TokenEndpoint != srv.URL {
+		t.Errorf("persisted token_endpoint: got %q, want %q", persisted.TokenEndpoint, srv.URL)
+	}
+	if persisted.ClientID != "test-client" {
+		t.Errorf("persisted client_id: got %q, want test-client", persisted.ClientID)
+	}
+}
+
+// ── P5-S5b: refresh_token persistence tests ──────────────────────────────────
+
+// makeStoreMeta returns a credStoreMeta populated with test values.
+func makeStoreMeta(tokenEndpoint string) credStoreMeta {
+	return credStoreMeta{
+		tokenType:     "Bearer",
+		clientID:      "test-client",
+		clientSecret:  "",
+		tokenEndpoint: tokenEndpoint,
+	}
+}
+
+// makeTokRT returns an oauth2.Token with access token, refresh token, and expiry.
+func makeTokRT(at, rt string, expiry time.Time) *oauth2.Token {
+	return &oauth2.Token{AccessToken: at, RefreshToken: rt, TokenType: "Bearer", Expiry: expiry}
+}
+
+// TestRefresherPersistsRotatedRefreshTokenAcrossRestart is the core acceptance
+// test for TBD-P5-4. It exercises the exact failure mode: after a refresh_token
+// rotation, a second NewRefresher loading the same path must see the rotated
+// value (not the initial one). A process restart that sees the initial (consumed)
+// refresh_token would fail with invalid_grant.
+func TestRefresherPersistsRotatedRefreshTokenAcrossRestart(t *testing.T) {
+	const initialRT = "rt-initial"
+	const rotatedRT = "rt-rotated"
+	const ep = "https://token.example.com/token"
+	future := time.Now().Add(time.Hour)
+
+	// Write the initial store to a temp file.
+	dir := t.TempDir()
+	p := filepath.Join(dir, "creds.json")
+	if err := SaveStore(p, &DedicatedCredStore{
+		AccessToken:   "at-initial",
+		RefreshToken:  initialRT,
+		ExpiresAt:     future,
+		TokenType:     "Bearer",
+		ClientID:      "test-client",
+		ClientSecret:  "",
+		TokenEndpoint: ep,
+	}); err != nil {
+		t.Fatalf("SaveStore initial: %v", err)
+	}
+
+	// Fake token source returns a token with a rotated refresh_token.
+	fts := &fakeTokenSource{
+		tokens: []*oauth2.Token{makeTokRT("at-new", rotatedRT, future)},
+	}
+	broker := &fakeRealTokenSetter{}
+	r := newRefresherWithSource(fts, "api.anthropic.com", broker, p, makeStoreMeta(ep))
+
+	if _, _, err := r.Token(context.Background()); err != nil {
+		t.Fatalf("Token(): %v", err)
+	}
+
+	// Verify no persist error.
+	if pErr := r.PersistError(); pErr != nil {
+		t.Fatalf("PersistError() must be nil after successful persist, got: %v", pErr)
+	}
+
+	// Simulate a process restart: load the store from the SAME path via LoadStore
+	// for a quick RT check, then via NewRefresher to assert the credential is
+	// usable (non-empty endpoint passes validation — no dial needed here).
+	loaded, err := LoadStore(p)
+	if err != nil {
+		t.Fatalf("LoadStore after rotation: %v", err)
+	}
+	if loaded.RefreshToken != rotatedRT {
+		t.Errorf("after restart: got refresh_token %q, want %q (rotated value)", loaded.RefreshToken, rotatedRT)
+	}
+
+	// NewRefresher validates non-empty refresh_token and token_endpoint eagerly.
+	// A zeroed meta (missing endpoint) would cause this to fail — proving meta is wired.
+	_, err = NewRefresher(p, "api.anthropic.com", &fakeRealTokenSetter{})
+	if err != nil {
+		t.Errorf("second NewRefresher (restart) must succeed on persisted store, got: %v", err)
+	}
+}
+
+// TestRefresherEmptyRotatedRefreshTokenDoesNotClobberStore verifies that when
+// the token source returns a token with an empty RefreshToken, the on-disk store
+// is NOT overwritten (we keep the prior stored refresh_token).
+func TestRefresherEmptyRotatedRefreshTokenDoesNotClobberStore(t *testing.T) {
+	const existingRT = "rt-existing"
+	const ep = "https://token.example.com/token"
+	future := time.Now().Add(time.Hour)
+
+	dir := t.TempDir()
+	p := filepath.Join(dir, "creds.json")
+	if err := SaveStore(p, &DedicatedCredStore{
+		AccessToken:   "at-initial",
+		RefreshToken:  existingRT,
+		ExpiresAt:     future,
+		TokenType:     "Bearer",
+		ClientID:      "test-client",
+		ClientSecret:  "",
+		TokenEndpoint: ep,
+	}); err != nil {
+		t.Fatalf("SaveStore initial: %v", err)
+	}
+
+	// Token source returns a token with NO refresh_token (empty string).
+	fts := &fakeTokenSource{
+		tokens: []*oauth2.Token{makeTok("at-new", future)}, // makeTok has no RefreshToken
+	}
+	broker := &fakeRealTokenSetter{}
+	r := newRefresherWithSource(fts, "api.anthropic.com", broker, p, makeStoreMeta(ep))
+
+	if _, _, err := r.Token(context.Background()); err != nil {
+		t.Fatalf("Token(): %v", err)
+	}
+
+	// The on-disk store must still have the original refresh_token.
+	loaded, err := LoadStore(p)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if loaded.RefreshToken != existingRT {
+		t.Errorf("store was clobbered: got refresh_token %q, want %q", loaded.RefreshToken, existingRT)
+	}
+	// PersistError must be nil — we skipped persistence, which is correct.
+	if pErr := r.PersistError(); pErr != nil {
+		t.Errorf("PersistError() should be nil when persist was skipped, got: %v", pErr)
+	}
+}
+
+// TestRefresherPersistFailureSurfacedViaPersistError verifies that a SaveStore
+// failure (bad path) is surfaced via PersistError() and does NOT fail Token().
+func TestRefresherPersistFailureSurfacedViaPersistError(t *testing.T) {
+	const ep = "https://token.example.com/token"
+	future := time.Now().Add(time.Hour)
+
+	// Use a path in a non-existent directory — SaveStore will fail.
+	badPath := filepath.Join(t.TempDir(), "nonexistent-subdir", "creds.json")
+
+	fts := &fakeTokenSource{
+		tokens: []*oauth2.Token{makeTokRT("at-ok", "rt-rotated", future)},
+	}
+	broker := &fakeRealTokenSetter{}
+	r := newRefresherWithSource(fts, "api.anthropic.com", broker, badPath, makeStoreMeta(ep))
+
+	// Token() must succeed even though SaveStore fails.
+	tok, _, err := r.Token(context.Background())
+	if err != nil {
+		t.Fatalf("Token() must not fail on persist error, got: %v", err)
+	}
+	if tok != "at-ok" {
+		t.Errorf("got token %q want at-ok", tok)
+	}
+
+	// PersistError must carry the SaveStore failure.
+	pErr := r.PersistError()
+	if pErr == nil {
+		t.Fatal("PersistError() must return the SaveStore error, got nil")
+	}
+	t.Logf("surfaced persist error (expected): %v", pErr)
+}
+
+// TestRefresherPersistErrorDistinctFromPushErrors verifies that persist errors
+// and push errors are separate: a push error does not set PersistError, and
+// a persist error does not set PushErrors.
+func TestRefresherPersistErrorDistinctFromPushErrors(t *testing.T) {
+	const ep = "https://token.example.com/token"
+	future := time.Now().Add(time.Hour)
+	sid := domain.SandboxID{99}
+
+	// Persist will fail (bad path); push will also fail (broker error).
+	badPath := filepath.Join(t.TempDir(), "no-such-dir", "creds.json")
+	broker := &fakeRealTokenSetter{err: errors.New("broker: no placeholder")}
+
+	fts := &fakeTokenSource{
+		tokens: []*oauth2.Token{makeTokRT("at-x", "rt-x", future)},
+	}
+	r := newRefresherWithSource(fts, "api.anthropic.com", broker, badPath, makeStoreMeta(ep))
+	r.Register(sid)
+
+	if _, _, err := r.Token(context.Background()); err != nil {
+		t.Fatalf("Token() must not fail: %v", err)
+	}
+	if r.PersistError() == nil {
+		t.Error("PersistError() should be non-nil (bad path)")
+	}
+	if len(r.PushErrors()) == 0 {
+		t.Error("PushErrors() should be non-nil (broker error)")
+	}
+	// Cross-check: PushErrors does not contain the persist error message.
+	for _, pe := range r.PushErrors() {
+		if pe == r.PersistError() {
+			t.Error("PushErrors() must not contain the persist error object")
+		}
+	}
+}
+
+// TestRefresherNoPersistWhenStorePathEmpty verifies that tests using
+// newRefresherWithSource with storePath="" never attempt persistence.
+func TestRefresherNoPersistWhenStorePathEmpty(t *testing.T) {
+	future := time.Now().Add(time.Hour)
+	fts := &fakeTokenSource{
+		tokens: []*oauth2.Token{makeTokRT("at-z", "rt-z", future)},
+	}
+	r := newRefresherWithSource(fts, "api.anthropic.com", &fakeRealTokenSetter{}, "", credStoreMeta{})
+
+	if _, _, err := r.Token(context.Background()); err != nil {
+		t.Fatalf("Token(): %v", err)
+	}
+	if pErr := r.PersistError(); pErr != nil {
+		t.Errorf("PersistError() must be nil when storePath is empty, got: %v", pErr)
+	}
+}
+
+// TestRefresherSameRefreshTokenNotRepersisted verifies that calling Token()
+// twice with the same refresh_token only persists once (idempotent).
+func TestRefresherSameRefreshTokenNotRepersisted(t *testing.T) {
+	const ep = "https://token.example.com/token"
+	future := time.Now().Add(time.Hour)
+	const rt = "rt-stable"
+
+	dir := t.TempDir()
+	p := filepath.Join(dir, "creds.json")
+	if err := SaveStore(p, &DedicatedCredStore{
+		AccessToken:   "at-old",
+		RefreshToken:  "rt-old", // different from rt so first call persists
+		ExpiresAt:     future,
+		TokenType:     "Bearer",
+		ClientID:      "test-client",
+		ClientSecret:  "",
+		TokenEndpoint: ep,
+	}); err != nil {
+		t.Fatalf("SaveStore: %v", err)
+	}
+
+	// Both calls return the same refresh token.
+	tok := makeTokRT("at-stable", rt, future)
+	fts := &fakeTokenSource{tokens: []*oauth2.Token{tok, tok}}
+	r := newRefresherWithSource(fts, "api.anthropic.com", &fakeRealTokenSetter{}, p, makeStoreMeta(ep))
+
+	// First call persists rt.
+	if _, _, err := r.Token(context.Background()); err != nil {
+		t.Fatalf("first Token(): %v", err)
+	}
+	// Second call: same rt → no re-persist; lastPersistedRefresh is already rt.
+	if _, _, err := r.Token(context.Background()); err != nil {
+		t.Fatalf("second Token(): %v", err)
+	}
+
+	// On-disk value must be rt (not the old value).
+	loaded, err := LoadStore(p)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if loaded.RefreshToken != rt {
+		t.Errorf("got refresh_token %q want %q", loaded.RefreshToken, rt)
+	}
+	if r.PersistError() != nil {
+		t.Errorf("unexpected persist error: %v", r.PersistError())
 	}
 }
 

@@ -3,6 +3,7 @@ package cred
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -61,6 +62,17 @@ func (b *oauthRefreshBase) Token() (*oauth2.Token, error) {
 	return t, nil
 }
 
+// credStoreMeta holds the non-rotating fields of a [DedicatedCredStore] that
+// are captured at [NewRefresher] construction time. These are read at persist
+// time without re-reading the on-disk file (torn-read risk against concurrent
+// writers).
+type credStoreMeta struct {
+	tokenType     string
+	clientID      string
+	clientSecret  string
+	tokenEndpoint string
+}
+
 // Refresher is a [CredentialSource] backed by x/oauth2's
 // [oauth2.ReuseTokenSourceWithExpiry]. It is the SOLE refresher for nexus3's
 // dedicated OAuth credential: when the access token rotates, it pushes the new
@@ -80,10 +92,17 @@ type Refresher struct {
 	// the context is captured at construction time for the HTTP refresh client.
 	ts oauth2.TokenSource
 
-	mu           sync.Mutex
-	sandboxes    map[domain.SandboxID]struct{}
-	lastToken    string  // most recently vended access token; "" before first call
-	lastPushErrs []error // broker push errors from the last rotation; informational
+	// storePath and meta are set by NewRefresher; empty in test constructors that
+	// inject a fake TokenSource (persistence is skipped when storePath is "").
+	storePath string
+	meta      credStoreMeta
+
+	mu                   sync.Mutex
+	sandboxes            map[domain.SandboxID]struct{}
+	lastToken            string  // most recently vended access token; "" before first call
+	lastPushErrs         []error // broker push errors from the last rotation; informational
+	lastPersistedRefresh string  // last refresh_token successfully written to storePath
+	lastPersistErr       error   // most recent SaveStore failure; nil on success
 }
 
 // NewRefresher loads a [DedicatedCredStore] from storePath, validates it, and
@@ -141,16 +160,32 @@ func NewRefresher(storePath, host string, broker realTokenSetter) (*Refresher, e
 	}
 	ts := oauth2.ReuseTokenSourceWithExpiry(initialTok, base, refreshExpiryDelta)
 
-	return newRefresherWithSource(ts, host, broker), nil
+	meta := credStoreMeta{
+		tokenType:     store.TokenType,
+		clientID:      store.ClientID,
+		clientSecret:  store.ClientSecret,
+		tokenEndpoint: store.TokenEndpoint,
+	}
+	r := newRefresherWithSource(ts, host, broker, storePath, meta)
+	// Seed lastPersistedRefresh so the first cache-hit vend (access token still
+	// valid) does not redundantly re-persist the already-stored refresh_token.
+	// Without this, a valid cached token triggers needPersist==true on first call
+	// and overwrites the file with identical content, creating a torn-write window.
+	r.lastPersistedRefresh = store.RefreshToken
+	return r, nil
 }
 
 // newRefresherWithSource is the internal constructor used by NewRefresher and
 // by tests that inject a fake [oauth2.TokenSource] to avoid network calls.
-func newRefresherWithSource(ts oauth2.TokenSource, host string, broker realTokenSetter) *Refresher {
+// storePath and meta are used for refresh-token persistence; pass storePath=""
+// to disable persistence (test paths that do not exercise store I/O).
+func newRefresherWithSource(ts oauth2.TokenSource, host string, broker realTokenSetter, storePath string, meta credStoreMeta) *Refresher {
 	return &Refresher{
 		host:      host,
 		broker:    broker,
 		ts:        ts,
+		storePath: storePath,
+		meta:      meta,
 		sandboxes: make(map[domain.SandboxID]struct{}),
 	}
 }
@@ -194,11 +229,31 @@ func (r *Refresher) PushErrors() []error {
 	return out
 }
 
+// PersistError returns the most recent error from persisting a rotated
+// refresh_token back to the on-disk store, or nil if the last persist
+// succeeded or no persist has been attempted.
+//
+// Persist failures do not fail token vending. Use PersistError for monitoring:
+// a persistent non-nil value means the on-disk store is stale and a process
+// restart would load a consumed refresh_token, causing invalid_grant.
+//
+// This is DISTINCT from [Refresher.PushErrors] (broker delivery errors).
+func (r *Refresher) PersistError() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastPersistErr
+}
+
 // Token implements [CredentialSource]. It returns the current real access token
 // and its expiry, refreshing transparently when the token is within
 // [refreshExpiryDelta] of expiry. On each rotation (access token value changes)
 // it calls [Broker.SetRealToken] for every registered sandbox; push errors are
 // stored and retrievable via [Refresher.PushErrors] but do not fail vending.
+//
+// When the refresh_token rotates (Anthropic rotates it on every grant), Token
+// atomically persists the new refresh_token to the on-disk store so that a
+// process restart loads a live credential. Persist failures are surfaced via
+// [Refresher.PersistError] and logged at slog warn; they never fail vending.
 //
 // Note: the underlying [oauth2.TokenSource.Token] takes no context; ctx is
 // accepted to satisfy the [CredentialSource] interface but cannot be threaded
@@ -235,6 +290,41 @@ func (r *Refresher) Token(_ context.Context) (string, time.Time, error) {
 			r.mu.Lock()
 			r.lastPushErrs = pushErrs
 			r.mu.Unlock()
+		}
+	}
+
+	// Persist the refresh_token when it rotates. Triggered by refresh_token
+	// change, not access_token change; Anthropic rotates refresh_token on every
+	// grant. Skip if storePath is empty (test paths) or RefreshToken is empty
+	// (would brick the store: LoadStore rejects empty refresh_token).
+	currentRT := t.RefreshToken
+	if r.storePath != "" && currentRT != "" {
+		r.mu.Lock()
+		needPersist := currentRT != r.lastPersistedRefresh
+		r.mu.Unlock()
+
+		if needPersist {
+			store := &DedicatedCredStore{
+				AccessToken:   t.AccessToken,
+				RefreshToken:  currentRT,
+				ExpiresAt:     t.Expiry,
+				TokenType:     r.meta.tokenType,
+				ClientID:      r.meta.clientID,
+				ClientSecret:  r.meta.clientSecret,
+				TokenEndpoint: r.meta.tokenEndpoint,
+			}
+			if pErr := SaveStore(r.storePath, store); pErr != nil {
+				slog.Warn("cred: refresher: failed to persist rotated refresh_token; process restart may hit invalid_grant",
+					"path", r.storePath, "err", pErr)
+				r.mu.Lock()
+				r.lastPersistErr = pErr
+				r.mu.Unlock()
+			} else {
+				r.mu.Lock()
+				r.lastPersistedRefresh = currentRT
+				r.lastPersistErr = nil
+				r.mu.Unlock()
+			}
 		}
 	}
 
