@@ -39,8 +39,9 @@ func main() {
 	consoleLog(con, "nexus3-agent: starting (pid=%d)\n", os.Getpid())
 
 	// When running as PID 1 (in-guest init), configure the virtio-net interface
-	// with the static IP the nexus3 perimeter netstack assigns via DHCP.
-	// Using static assignment keeps the agent lean — no DHCP client needed.
+	// with the static IP the nexus3 perimeter netstack reserves for the guest
+	// (192.168.127.2/24). Static assignment — not DHCP — keeps the agent lean;
+	// no DHCP client binary is required.
 	if isPid1 {
 		setupNetwork(con)
 	}

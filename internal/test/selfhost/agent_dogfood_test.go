@@ -48,9 +48,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -245,14 +248,31 @@ func TestAgentDogfood(t *testing.T) {
 	if err != nil {
 		t.Fatalf("netfilter.NewAllowList: %v", err)
 	}
+	// auditEvents accumulates perimeter AuditEvents for post-run assertion (a):
+	// we assert that an Allow decision for api.anthropic.com was observed.
+	var auditMu sync.Mutex
+	var auditEvents []perimeter.AuditEvent
 	stack := netstack.New(al, func(ev perimeter.AuditEvent) {
 		t.Logf("perimeter audit: %s %s — %s", ev.Decision, ev.DestHost, ev.Reason)
+		auditMu.Lock()
+		auditEvents = append(auditEvents, ev)
+		auditMu.Unlock()
+	})
+
+	// swapCount counts "credential swapped" slog events from the MITM proxy for
+	// post-run assertion (b): we assert the host-side bearer-swap fired ≥ once.
+	var swapCount atomic.Int64
+	swapLogger := slog.New(&countingHandler{
+		inner:  slog.Default().Handler(),
+		phrase: "credential swapped",
+		count:  &swapCount,
 	})
 
 	mitmProxy, err := mitm.New(mitm.Config{
 		SandboxID:    sb.ID,
 		AllowedHosts: service.AgentEgressHosts(),
 		Broker:       broker,
+		Logger:       swapLogger,
 	})
 	if err != nil {
 		t.Fatalf("mitm.New: %v", err)
@@ -325,6 +345,20 @@ echo "=== PREFLIGHT_DONE ==="
 	execCtx, execCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer execCancel()
 
+	// guestEnv is pulled out so post-run assertions (c) and (d) can inspect it.
+	guestEnv := map[string]string{
+		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME": "/root",
+		"TERM": "dumb",
+		// Bearer-swap: MITM proxy swaps this placeholder for the real token.
+		"CLAUDE_CODE_OAUTH_TOKEN": claudePlaceholder,
+		// TLS: Node.js (claude's runtime) trusts the per-sandbox MITM CA.
+		"NODE_EXTRA_CA_CERTS": service.GuestCACertPath,
+		// Belt-and-suspenders Haiku pin (also --model flag above).
+		"ANTHROPIC_MODEL": dogfoodHaikuModel,
+		// Suppress telemetry, auto-update, and non-allowlisted egress.
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+	}
 	exitCode, execErr := agentClient.Exec(execCtx, agent.ExecOptions{
 		Cwd: "/root",
 		Argv: []string{
@@ -332,19 +366,7 @@ echo "=== PREFLIGHT_DONE ==="
 			"-p", "reply with exactly: NEXUS3_OK",
 			"--model", dogfoodHaikuModel,
 		},
-		Env: map[string]string{
-			"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-			"HOME": "/root",
-			"TERM": "dumb",
-			// Bearer-swap: MITM proxy swaps this placeholder for the real token.
-			"CLAUDE_CODE_OAUTH_TOKEN": claudePlaceholder,
-			// TLS: Node.js (claude's runtime) trusts the per-sandbox MITM CA.
-			"NODE_EXTRA_CA_CERTS": service.GuestCACertPath,
-			// Belt-and-suspenders Haiku pin (also --model flag above).
-			"ANTHROPIC_MODEL": dogfoodHaikuModel,
-			// Suppress telemetry, auto-update, and non-allowlisted egress.
-			"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-		},
+		Env:    guestEnv,
 		Stdout: &stdout,
 		Stderr: &stderr,
 	})
@@ -367,6 +389,53 @@ echo "=== PREFLIGHT_DONE ==="
 		return
 	}
 	t.Logf("dogfood PASSED — model=%s response=%q", dogfoodHaikuModel, output)
+
+	// ── 11. Perimeter invariant assertions ───────────────────────────────────
+	// These four checks harden the security properties of the completed run.
+	// None weakens the existing pass condition (NEXUS3_OK) checked above.
+
+	// (a) Egress to api.anthropic.com must have been observed and allowed.
+	{
+		auditMu.Lock()
+		snap := append([]perimeter.AuditEvent(nil), auditEvents...)
+		auditMu.Unlock()
+		var sawAllow bool
+		for _, ev := range snap {
+			if ev.Decision == perimeter.Allow &&
+				strings.EqualFold(ev.DestHost, service.AnthropicAPIHost) {
+				sawAllow = true
+				break
+			}
+		}
+		if !sawAllow {
+			t.Errorf("(a) perimeter invariant: no Allow audit event for %s (got %d total events)",
+				service.AnthropicAPIHost, len(snap))
+		}
+	}
+
+	// (b) Host-side credential swap must have fired at least once.
+	if swapCount.Load() == 0 {
+		t.Errorf("(b) perimeter invariant: no host-side bearer-swap observed (swapCount=0)")
+	}
+
+	// (c) Model must be pinned to the exact Haiku version — both the constant
+	// and the value delivered to the guest environment.
+	const wantHaikuModel = "claude-haiku-4-5-20251001"
+	if dogfoodHaikuModel != wantHaikuModel {
+		t.Errorf("(c) perimeter invariant: dogfoodHaikuModel constant drifted: got %q, want %q",
+			dogfoodHaikuModel, wantHaikuModel)
+	}
+	if guestEnv["ANTHROPIC_MODEL"] != wantHaikuModel {
+		t.Errorf("(c) perimeter invariant: ANTHROPIC_MODEL in guest env = %q, want %q",
+			guestEnv["ANTHROPIC_MODEL"], wantHaikuModel)
+	}
+
+	// (d) Real Anthropic token must be absent from every value in the guest env.
+	for k, v := range guestEnv {
+		if v == token {
+			t.Errorf("(d) perimeter invariant: real token leaked into guest env[%q]", k)
+		}
+	}
 }
 
 // dogfoodCACopySeeder returns a GuestSeeder that writes payload bytes directly
@@ -385,4 +454,33 @@ func dogfoodCACopySeeder(c *agent.Client) service.GuestSeeder {
 			Src:       bytes.NewReader(payload),
 		})
 	}
+}
+
+// countingHandler is a slog.Handler that increments count each time a log
+// record whose Message contains phrase is handled. All records are forwarded
+// to inner unchanged. The count pointer is shared across WithAttrs/WithGroup
+// copies so all derived handlers increment the same counter.
+type countingHandler struct {
+	inner  slog.Handler
+	phrase string
+	count  *atomic.Int64
+}
+
+func (h *countingHandler) Enabled(ctx context.Context, lvl slog.Level) bool {
+	return h.inner.Enabled(ctx, lvl)
+}
+
+func (h *countingHandler) Handle(ctx context.Context, r slog.Record) error {
+	if strings.Contains(r.Message, h.phrase) {
+		h.count.Add(1)
+	}
+	return h.inner.Handle(ctx, r)
+}
+
+func (h *countingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &countingHandler{inner: h.inner.WithAttrs(attrs), phrase: h.phrase, count: h.count}
+}
+
+func (h *countingHandler) WithGroup(name string) slog.Handler {
+	return &countingHandler{inner: h.inner.WithGroup(name), phrase: h.phrase, count: h.count}
 }
