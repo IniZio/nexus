@@ -12,6 +12,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
@@ -418,6 +419,95 @@ func TestLifecycle_IllegalTransition_RejectsBeforeDriver(t *testing.T) {
 	if callsAfter > callsBefore {
 		t.Errorf("driver was called despite illegal transition (calls before=%d, after=%d)",
 			callsBefore, callsAfter)
+	}
+}
+
+// ── Credential deregistrar ───────────────────────────────────────────────────
+
+// spyDeregistrar records every Deregister call for assertion in unit tests.
+type spyDeregistrar struct {
+	mu  sync.Mutex
+	got []domain.SandboxID
+}
+
+func (spy *spyDeregistrar) Deregister(id domain.SandboxID) {
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	spy.got = append(spy.got, id)
+}
+
+func (spy *spyDeregistrar) calls() []domain.SandboxID {
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	out := make([]domain.SandboxID, len(spy.got))
+	copy(out, spy.got)
+	return out
+}
+
+// TestRemove_CredDeregistrar_AndRevoke verifies two things added by the S4
+// lifecycle fix:
+//
+//  1. RegisterCredDeregistrar + Remove: Deregister is called exactly once with
+//     the sandbox ID when svc.Remove runs (discriminating — fails if
+//     dropDeregistrar is removed from Remove).
+//
+//  2. broker.Revoke: after Remove, broker.SetRealToken for the removed sandbox
+//     returns an error, proving the broker scope was revoked (discriminating —
+//     fails if the broker.Revoke loop is removed from Remove).
+//
+// No KVM or cred store required; this is a pure unit test.
+func TestRemove_CredDeregistrar_AndRevoke(t *testing.T) {
+	// Build a store and seed a sandbox with AllowedHosts directly so the
+	// Remove→broker.Revoke loop has a scope to revoke.
+	underlying, err := store.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+
+	const apiHost = "api.anthropic.com"
+
+	sb := domain.Sandbox{
+		ID:      domain.NewSandboxID(),
+		Name:    "deregtest",
+		Project: "proj",
+		State:   domain.Created,
+		Envelope: domain.Envelope{
+			AllowedHosts: []string{apiHost},
+		},
+	}
+	if err := underlying.Create(ctx(), sb); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+
+	broker := cred.NewBroker()
+	// RegisterPlaceholder to open the scope that Revoke will close.
+	if _, err := broker.RegisterPlaceholder(sb.ID, apiHost, "initial-tok"); err != nil {
+		t.Fatalf("broker.RegisterPlaceholder: %v", err)
+	}
+
+	svc := service.New(underlying, fake.New(), lifecycle.New()).WithBroker(broker)
+
+	spy := &spyDeregistrar{}
+	svc.RegisterCredDeregistrar(sb.ID, spy)
+
+	// Sanity: scope is live before Remove — SetRealToken must succeed.
+	if err := broker.SetRealToken(sb.ID, apiHost, "pre-remove"); err != nil {
+		t.Fatalf("broker.SetRealToken should succeed before Remove: %v", err)
+	}
+
+	if err := svc.Remove(ctx(), sb.ID.String()); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// Assertion 1: Deregister was called exactly once with the sandbox ID.
+	got := spy.calls()
+	if len(got) != 1 || got[0] != sb.ID {
+		t.Errorf("Deregister: want [%s], got %v", sb.ID, got)
+	}
+
+	// Assertion 2: broker.Revoke removed the scope — SetRealToken now fails.
+	if err := broker.SetRealToken(sb.ID, apiHost, "canary"); err == nil {
+		t.Error("broker.SetRealToken should fail after Remove (scope revoked); got nil")
 	}
 }
 

@@ -116,7 +116,7 @@ func TestWireClaudeEgress_AllowedHostsSet(t *testing.T) {
 	cap := &captureSeeder{}
 
 	var opts CreateAndBootOptions
-	WireClaudeEgress(&opts, broker, cap.fn())
+	WireClaudeEgress(&opts, broker, cap.fn(), nil)
 
 	if !opts.UseAgentSeed {
 		t.Error("WireClaudeEgress: UseAgentSeed not set")
@@ -273,8 +273,8 @@ func TestCreateAndBoot_AgentSeed_RealTokenAbsentFromPayload(t *testing.T) {
 	opts.Image = ImageSpec{Digest: string(img.Digest)}
 	opts.CacheRoot = cacheRoot
 	opts.DiskDir = t.TempDir()
-	WireClaudeEgress(&opts, broker, cap.fn())
-	opts.AgentEgressToken = realToken // override env-read (likely empty in CI)
+	WireClaudeEgress(&opts, broker, cap.fn(),
+		cred.NewStaticCredentialSource(&cred.DedicatedCredStore{AccessToken: realToken}))
 
 	if _, err := CreateAndBoot(ctx, svc, cache, fakeDriverFactory(fake.New()), noopProbe, "proj", "agentsandbox", opts); err != nil {
 		t.Fatalf("CreateAndBoot: %v", err)

@@ -114,12 +114,31 @@ type CreateAndBootOptions struct {
 	// NEXUS3_CRED_* vars. Set via WireClaudeEgress.
 	UseAgentSeed bool
 
-	// AgentEgressToken is the real OAuth bearer token to wire into the broker
-	// for api.anthropic.com after placeholder registration. When empty the
-	// placeholder is left unresolved (the proxy sends the placeholder upstream,
-	// which is useless but not a failure) and a warning is logged.
-	// Set via WireClaudeEgress (reads NEXUS3_CLAUDE_OAUTH_TOKEN from env).
+	// AgentEgressToken is the real bearer token for the WireAnthropicAuthToken
+	// path (ANTHROPIC_AUTH_TOKEN / direct API-key). It is read directly from
+	// the ANTHROPIC_AUTH_TOKEN env var by WireAnthropicAuthToken and wired into
+	// the broker after placeholder registration.
+	//
+	// WireClaudeEgress (OAuth path) no longer uses this field — it sets
+	// AgentCredSource instead so the token can be sourced from a Refresher.
 	AgentEgressToken string
+
+	// AgentCredSource is the credential source for the OAuth egress path.
+	// Set by WireClaudeEgress. When non-nil, step 9 of CreateAndBoot calls
+	// Token(ctx) to obtain the real bearer token instead of reading
+	// AgentEgressToken. Use cred.NewStaticCredentialSource for a fixed token
+	// or cred.NewRefresher (backed by DefaultDedicatedCredStorePath) for
+	// automatic rotation. If AgentCredSource also implements
+	//   Register(domain.SandboxID)
+	// (e.g. *cred.Refresher) it is invoked after SetRealToken so the sandbox
+	// is enrolled for rotation.
+	AgentCredSource cred.CredentialSource
+
+	// AgentProfile is the per-sandbox agent profile used to resolve the
+	// placeholder env-var name (e.g. CLAUDE_CODE_OAUTH_TOKEN) in the guest
+	// seed payload. Set by WireClaudeEgress to cred.ClaudeCodeProfile.
+	// Zero value is treated as cred.ClaudeCodeProfile in CreateAndBoot.
+	AgentProfile cred.AgentProfile
 }
 
 // WireClaudeEgress configures opts for an agent sandbox that runs claude
@@ -127,21 +146,45 @@ type CreateAndBootOptions struct {
 //
 // It sets:
 //   - AllowedHosts to [AgentEgressHosts] (api.anthropic.com + platform.claude.com)
-//   - Broker and Seeder to the provided values
-//   - UseAgentSeed = true so step 9 of CreateAndBoot calls SeedGuestAgent
-//   - AgentEgressToken to the value of NEXUS3_CLAUDE_OAUTH_TOKEN from the
-//     environment; when the env var is unset the token is empty and a warning
-//     is logged at sandbox creation time (egress will forward the placeholder
-//     rather than the real token — the S-E2E dogfood requires the env var).
+//   - Broker, Seeder, and AgentCredSource to the provided values
+//   - UseAgentSeed = true so step 9 of CreateAndBoot calls seedGuestAgent
+//   - AgentProfile = cred.ClaudeCodeProfile (CLAUDE_CODE_OAUTH_TOKEN placeholder)
 //
-// The caller owns broker and seeder; WireClaudeEgress does not retain them
-// beyond writing them into opts.
-func WireClaudeEgress(opts *CreateAndBootOptions, broker *cred.Broker, seeder GuestSeeder) {
+// src is the credential source for the real bearer token. Pass
+//
+//	cred.NewStaticCredentialSource(&cred.DedicatedCredStore{AccessToken: tok})
+//
+// for a fixed token read from the NEXUS3_CLAUDE_OAUTH_TOKEN env var, or a
+// *cred.Refresher constructed from [DefaultDedicatedCredStorePath] for
+// automatic token rotation. When src is nil no real token is wired and the
+// MITM proxy forwards the placeholder (egress still works, bearer is invalid).
+//
+// The caller owns broker, seeder, and src; WireClaudeEgress does not retain
+// them beyond writing them into opts.
+func WireClaudeEgress(opts *CreateAndBootOptions, broker *cred.Broker, seeder GuestSeeder, src cred.CredentialSource) {
 	opts.AllowedHosts = AgentEgressHosts()
 	opts.Broker = broker
 	opts.Seeder = seeder
 	opts.UseAgentSeed = true
-	opts.AgentEgressToken = os.Getenv("NEXUS3_CLAUDE_OAUTH_TOKEN")
+	opts.AgentCredSource = src
+	opts.AgentProfile = cred.ClaudeCodeProfile
+}
+
+// DefaultDedicatedCredStorePath returns the path for nexus3's dedicated OAuth
+// credential store used by the host-side Refresher ([cred.NewRefresher]).
+//
+// Default: ~/.config/nexus3/creds.json
+// Override: NEXUS3_DEDICATED_CRED_STORE environment variable.
+//
+// S4 dogfood places the credential file at this path; see charter TBD-P5-2.
+// Construct a *cred.Refresher from this path and pass it to WireClaudeEgress
+// to enable automatic token rotation across sandboxes.
+func DefaultDedicatedCredStorePath() string {
+	if p := os.Getenv("NEXUS3_DEDICATED_CRED_STORE"); p != "" {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "nexus3", "creds.json")
 }
 
 // CreateAndBoot creates a sandbox record, boots a VM for it, verifies the
@@ -295,40 +338,79 @@ func CreateAndBoot(
 
 	// ── 9. Seed guest with placeholder credentials (P1-S6) ───────────────────
 	//
-	// SeedGuest / SeedGuestAgent are no-ops when Broker or Seeder is nil, so
+	// SeedGuest / seedGuestAgent are no-ops when Broker or Seeder is nil, so
 	// existing callers that omit these fields are unaffected.
 	//
 	// When UseAgentSeed is true the agent-specific path is taken:
-	//   a) SeedGuestAgent mints placeholders for AgentEgressHosts and delivers
-	//      the augmented payload (CLAUDE_CODE_OAUTH_TOKEN + CA cert path +
+	//   a) seedGuestAgent mints placeholders for AgentEgressHosts and delivers
+	//      the augmented payload (profile-driven credential var + CA cert path +
 	//      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) to the guest.
-	//   b) broker.SetRealToken wires the real OAuth token host-side so the MITM
-	//      proxy can swap the placeholder on each forwarded request.
-	//      If AgentEgressToken is empty the real-token wiring is skipped and a
-	//      warning is logged; egress still works but the proxy will forward the
-	//      placeholder rather than a valid bearer token.
+	//   b) The real token is obtained from AgentCredSource.Token(ctx) (OAuth
+	//      path, set by WireClaudeEgress) or from AgentEgressToken directly
+	//      (API-key path, set by WireAnthropicAuthToken).
+	//   c) broker.SetRealToken wires the real token host-side so the MITM proxy
+	//      can swap the placeholder on each forwarded request.
+	//   d) If AgentCredSource also implements Register(domain.SandboxID)
+	//      (i.e. is a *cred.Refresher), the sandbox is enrolled for automatic
+	//      token rotation.
+	//      If no real token is available a warning is logged; egress still works
+	//      but the proxy will forward the placeholder rather than a valid bearer.
 	//
 	// NOTE: service.Start (restart of a stopped sandbox) will also need seeding
 	// once it gains a reachability probe — /run is tmpfs and does not survive
 	// a guest restart. That wiring is deferred until the restart probe exists.
 	if opts.UseAgentSeed {
-		recs, err := SeedGuestAgent(ctx, opts.Broker, booted.ID, opts.Seeder)
+		// Resolve the per-sandbox profile; fall back to ClaudeCodeProfile when
+		// none is set (e.g. callers that use WireAnthropicAuthToken).
+		profile := opts.AgentProfile
+		if profile.PlaceholderEnvVar == "" {
+			profile = cred.ClaudeCodeProfile
+		}
+		recs, err := seedGuestAgent(ctx, opts.Broker, booted.ID, opts.Seeder, profile)
 		if err != nil {
 			_ = bootDrv.Stop(ctx, booted.ID)
 			_ = svc.store.Delete(ctx, booted.ID)
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: seed agent: %w", project, name, err)
 		}
-		if opts.AgentEgressToken != "" && opts.Broker != nil && len(recs) > 0 {
-			if err := opts.Broker.SetRealToken(booted.ID, AnthropicAPIHost, opts.AgentEgressToken); err != nil {
+
+		// Resolve the real token: AgentCredSource (OAuth/Refresher path) takes
+		// priority; AgentEgressToken is the legacy fallback for WireAnthropicAuthToken.
+		var realToken string
+		if opts.AgentCredSource != nil {
+			t, _, credErr := opts.AgentCredSource.Token(ctx)
+			if credErr != nil {
+				slog.Warn("create-and-boot: get real token from credential source",
+					"sandbox", booted.ID, "host", AnthropicAPIHost, "err", credErr)
+			} else {
+				realToken = t
+			}
+		} else if opts.AgentEgressToken != "" {
+			// API-key path: WireAnthropicAuthToken populates this field.
+			realToken = opts.AgentEgressToken
+		}
+
+		if realToken != "" && opts.Broker != nil && len(recs) > 0 {
+			if err := opts.Broker.SetRealToken(booted.ID, AnthropicAPIHost, realToken); err != nil {
 				// Non-fatal: the proxy will forward the placeholder, which is
 				// useless but not a build-path failure. Log and continue.
 				slog.Warn("create-and-boot: set real token for agent egress",
 					"sandbox", booted.ID, "host", AnthropicAPIHost, "err", err)
 			}
-		} else if opts.AgentEgressToken == "" {
+			// Enrol in the Refresher if the source supports it (type assert to
+			// avoid importing cred.Refresher directly and to stay interface-clean).
+			type sandboxRegistrar interface{ Register(domain.SandboxID) }
+			if reg, ok := opts.AgentCredSource.(sandboxRegistrar); ok {
+				reg.Register(booted.ID)
+			}
+			// Mirror-enrol for deregistration on Remove. sandboxDeregistrar is
+			// defined in service.go (same package) and *cred.Refresher satisfies it.
+			if dr, ok := opts.AgentCredSource.(sandboxDeregistrar); ok {
+				svc.storeDeregistrar(booted.ID, dr)
+			}
+		} else if realToken == "" {
 			slog.Warn("create-and-boot: no real token for agent egress; egress will send placeholder",
 				"sandbox", booted.ID, "host", AnthropicAPIHost,
-				"hint", "set NEXUS3_CLAUDE_OAUTH_TOKEN env var before starting herdr")
+				"hint", "configure NEXUS3_DEDICATED_CRED_STORE or NEXUS3_CLAUDE_OAUTH_TOKEN before starting herdr")
 		}
 	} else {
 		if _, err := SeedGuest(ctx, opts.Broker, booted.ID, booted.Envelope.AllowedHosts, opts.Seeder); err != nil {

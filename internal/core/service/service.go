@@ -52,6 +52,14 @@ var ErrNoSubstrate = errors.New("service: no substrate configured")
 // but none is attached via WithArtifacts.
 var ErrNoArtifactStore = errors.New("service: no artifact store attached")
 
+// sandboxDeregistrar is the interface type-asserted from AgentCredSource in
+// create.go when a credential source supports sandbox lifecycle events.
+// Defined here (same package as create.go) so both files share the type without
+// exporting it.
+type sandboxDeregistrar interface {
+	Deregister(domain.SandboxID)
+}
+
 // Service coordinates sandbox operations across the store, driver, and
 // lifecycle machine. It has no CLI or presentation concerns and is safe to
 // call from any context.
@@ -68,6 +76,15 @@ type Service struct {
 
 	supervisorsMu sync.Mutex
 	supervisors   map[domain.SandboxID]*perimeter.PerimeterSupervisor
+
+	// deregistrars holds per-sandbox credential deregistration hooks enrolled
+	// via RegisterCredDeregistrar or automatically by create.go when the
+	// AgentCredSource satisfies sandboxDeregistrar. Remove drains this map via
+	// dropDeregistrar so the hook's Deregister is called and broker scopes are
+	// revoked; a cleaned-up Refresher will not accumulate PushErrors for a
+	// dead sandbox.
+	deregistrarsMu sync.Mutex
+	deregistrars   map[domain.SandboxID]sandboxDeregistrar
 }
 
 // New returns a Service backed by the given store, driver, and machine.
@@ -453,6 +470,24 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 	// the record is deleted. Idempotent — a stopped sandbox has no supervisor.
 	s.closeSupervisor(sb.ID)
 
+	// Deregister any credential rotation hook enrolled for this sandbox and
+	// revoke broker scopes. Both are terminal-safe: Remove is never retried
+	// (write-ahead marker stays set on crash), so revocation is permanent.
+	//
+	// dropDeregistrar: notifies the hook (e.g. *cred.Refresher) so it stops
+	// pushing SetRealToken for a sandbox that no longer exists, avoiding
+	// PushErrors accumulation.
+	//
+	// broker.Revoke: removes the (sandbox, host) scope so that any still-
+	// registered Refresher gets a discriminating error on the next rotation
+	// push, making the lifecycle fix observable in tests.
+	s.dropDeregistrar(sb.ID)
+	if s.broker != nil {
+		for _, h := range sb.Envelope.AllowedHosts {
+			s.broker.Revoke(sb.ID, h)
+		}
+	}
+
 	// Step 3: delete the record. The marker is destroyed with it; no
 	// ClearRemovalMarker call is needed or correct here.
 	if err := s.store.Delete(ctx, sb.ID); err != nil {
@@ -537,6 +572,48 @@ func (s *Service) closeSupervisor(id domain.SandboxID) {
 	if ok {
 		_ = sup.Close()
 	}
+}
+
+// storeDeregistrar records a deregistration hook for id. Lazy map init mirrors
+// the supervisors pattern. Called by create.go when AgentCredSource satisfies
+// sandboxDeregistrar, and by RegisterCredDeregistrar for manual-seeding callers.
+func (s *Service) storeDeregistrar(id domain.SandboxID, d sandboxDeregistrar) {
+	s.deregistrarsMu.Lock()
+	if s.deregistrars == nil {
+		s.deregistrars = make(map[domain.SandboxID]sandboxDeregistrar)
+	}
+	s.deregistrars[id] = d
+	s.deregistrarsMu.Unlock()
+}
+
+// dropDeregistrar looks up the hook for id, calls Deregister, and removes the
+// entry. Safe when no hook exists (no-op). Idempotent.
+func (s *Service) dropDeregistrar(id domain.SandboxID) {
+	s.deregistrarsMu.Lock()
+	d, ok := s.deregistrars[id]
+	if ok {
+		delete(s.deregistrars, id)
+	}
+	s.deregistrarsMu.Unlock()
+	if ok {
+		d.Deregister(id)
+	}
+}
+
+// RegisterCredDeregistrar enrolls a credential deregistration hook for id.
+// Call this when using manual seeding (SeedGuestAgent + broker.SetRealToken
+// outside CreateAndBoot) so that Remove still calls Deregister and prevents the
+// hook from accumulating PushErrors for a sandbox that no longer exists.
+//
+// The hook must implement Deregister(domain.SandboxID); *cred.Refresher
+// satisfies this structurally. Passing a nil hook is a no-op.
+func (s *Service) RegisterCredDeregistrar(id domain.SandboxID, d interface {
+	Deregister(domain.SandboxID)
+}) {
+	if d == nil {
+		return
+	}
+	s.storeDeregistrar(id, d)
 }
 
 // Snapshot takes a point-in-time snapshot of the sandbox identified by ref,

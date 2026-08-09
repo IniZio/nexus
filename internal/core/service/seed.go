@@ -259,8 +259,10 @@ func resolveAgentCredKind() agentCredKind {
 // via seeder.
 //
 // The credential kind is resolved at call time from the host environment:
-// kindAuthToken when ANTHROPIC_AUTH_TOKEN is set, kindOAuth otherwise. This
-// keeps [SeedGuestAgent]'s signature stable and create.go untouched.
+// kindAuthToken when ANTHROPIC_AUTH_TOKEN is set, kindOAuth otherwise.
+// The placeholder env-var name for the kindOAuth path comes from
+// [cred.ClaudeCodeProfile].PlaceholderEnvVar ("CLAUDE_CODE_OAUTH_TOKEN").
+// For per-sandbox profile control use [seedGuestAgent] directly.
 //
 // The returned PlaceholderRecords allow the caller to call
 // broker.SetRealToken(id, AnthropicAPIHost, realToken) after seeding.
@@ -279,6 +281,23 @@ func SeedGuestAgent(
 	id domain.SandboxID,
 	seeder GuestSeeder,
 ) ([]cred.PlaceholderRecord, error) {
+	return seedGuestAgent(ctx, broker, id, seeder, cred.ClaudeCodeProfile)
+}
+
+// seedGuestAgent is the internal implementation of [SeedGuestAgent] that
+// accepts an explicit [cred.AgentProfile] for per-sandbox credential-kind
+// resolution. The profile drives the placeholder env-var name emitted in the
+// kindOAuth path (profile.PlaceholderEnvVar).
+//
+// Callers inside this package (e.g. CreateAndBoot) use this directly so they
+// can thread opts.AgentProfile through; external callers use [SeedGuestAgent].
+func seedGuestAgent(
+	ctx context.Context,
+	broker *cred.Broker,
+	id domain.SandboxID,
+	seeder GuestSeeder,
+	profile cred.AgentProfile,
+) ([]cred.PlaceholderRecord, error) {
 	if broker == nil || seeder == nil {
 		return nil, nil
 	}
@@ -293,7 +312,7 @@ func SeedGuestAgent(
 		records = append(records, rec)
 	}
 
-	payload := buildAgentSeedPayload(records, resolveAgentCredKind())
+	payload := buildAgentSeedPayload(records, resolveAgentCredKind(), profile)
 	if err := seeder(ctx, id, payload); err != nil {
 		return nil, fmt.Errorf("seed agent: deliver to guest: %w", err)
 	}
@@ -316,7 +335,7 @@ func SeedGuestAgent(
 // PlaceholderRecord carries ONLY the placeholder string, ExpiresAt, SandboxID,
 // and Host — never the real token. This function cannot embed the real token
 // regardless of what was passed to RegisterPlaceholder or SetRealToken.
-func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind) []byte {
+func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind, profile cred.AgentProfile) []byte {
 	var buf bytes.Buffer
 	buf.Write(buildSeedPayload(records))
 
@@ -331,7 +350,9 @@ func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind)
 				fmt.Fprintf(&buf, "ANTHROPIC_AUTH_TOKEN=%s\n", rec.Placeholder)
 			default:
 				// OAuth subscription path (Milestone A default).
-				fmt.Fprintf(&buf, "CLAUDE_CODE_OAUTH_TOKEN=%s\n", rec.Placeholder)
+				// The var name comes from the profile so different agent types
+				// (future) can use their own credential env var.
+				fmt.Fprintf(&buf, "%s=%s\n", profile.PlaceholderEnvVar, rec.Placeholder)
 			}
 			break
 		}
