@@ -60,6 +60,7 @@ type Service struct {
 	driver    driver.Driver
 	machine   lifecycle.Machine
 	artifacts *artifact.Store // optional; nil means no artifact persistence
+	diskDir   string          // durable dir for per-sandbox ext4 copies (S-COW); empty = defaultDiskDir()
 
 	// perimeter fields — all optional; nil means no egress enforcement.
 	broker   *cred.Broker // host-side credential store for MITM token swap
@@ -106,6 +107,16 @@ func (s *Service) WithBroker(b *cred.Broker) *Service {
 // future slice.
 func (s *Service) WithCASeeder(seeder GuestSeeder) *Service {
 	s.caSeeder = seeder
+	return s
+}
+
+// WithDiskDir sets the directory where per-sandbox ext4 disk copies are
+// created by CreateAndBoot and reaped by Remove. When not set, Remove falls
+// back to defaultDiskDir() which mirrors the store's durable root
+// (store.DefaultRoot()/disks). Tests set this to t.TempDir() so copies stay
+// inside the test filesystem tree and are cleaned up automatically.
+func (s *Service) WithDiskDir(dir string) *Service {
+	s.diskDir = dir
 	return s
 }
 
@@ -440,6 +451,12 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 	if err := s.store.Delete(ctx, sb.ID); err != nil {
 		return fmt.Errorf("service: remove %s: delete record: %w", sb.ID, err)
 	}
+
+	// Step 4: reap the per-sandbox ext4 disk copy created by CreateAndBoot
+	// (S-COW). Delegates to the shared helper so Service.Remove and the
+	// recovery --rm path cannot drift. Idempotent — missing file is not an
+	// error.
+	_ = ReapDiskCopy(s.diskDir, sb.ID)
 
 	return nil
 }

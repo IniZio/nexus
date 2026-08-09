@@ -1,9 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -90,6 +94,48 @@ type CreateAndBootOptions struct {
 	// VCPUs is the number of virtual CPUs to pass to the driver factory.
 	// When zero the driver factory uses its built-in default (1 vCPU).
 	VCPUs uint32
+
+	// DiskDir is the directory where the per-sandbox ext4 disk copy is
+	// written (S-COW). When empty, defaultDiskDir() is used, which mirrors
+	// the P2 snapshot-dir precedent: store.DefaultRoot()/disks.
+	// Tests should set this to t.TempDir() so copies stay inside the test tree.
+	DiskDir string
+
+	// UseAgentSeed selects the agent-specific seeding path in step 9.
+	// When true, SeedGuestAgent is called instead of SeedGuest; the resulting
+	// payload includes CLAUDE_CODE_OAUTH_TOKEN, NODE_EXTRA_CA_CERTS, and
+	// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC in addition to the generic
+	// NEXUS3_CRED_* vars. Set via WireClaudeEgress.
+	UseAgentSeed bool
+
+	// AgentEgressToken is the real OAuth bearer token to wire into the broker
+	// for api.anthropic.com after placeholder registration. When empty the
+	// placeholder is left unresolved (the proxy sends the placeholder upstream,
+	// which is useless but not a failure) and a warning is logged.
+	// Set via WireClaudeEgress (reads NEXUS3_CLAUDE_OAUTH_TOKEN from env).
+	AgentEgressToken string
+}
+
+// WireClaudeEgress configures opts for an agent sandbox that runs claude
+// (Haiku/Sonnet/etc.) in-guest and needs egress to the Anthropic API.
+//
+// It sets:
+//   - AllowedHosts to [AgentEgressHosts] (api.anthropic.com + platform.claude.com)
+//   - Broker and Seeder to the provided values
+//   - UseAgentSeed = true so step 9 of CreateAndBoot calls SeedGuestAgent
+//   - AgentEgressToken to the value of NEXUS3_CLAUDE_OAUTH_TOKEN from the
+//     environment; when the env var is unset the token is empty and a warning
+//     is logged at sandbox creation time (egress will forward the placeholder
+//     rather than the real token — the S-E2E dogfood requires the env var).
+//
+// The caller owns broker and seeder; WireClaudeEgress does not retain them
+// beyond writing them into opts.
+func WireClaudeEgress(opts *CreateAndBootOptions, broker *cred.Broker, seeder GuestSeeder) {
+	opts.AllowedHosts = AgentEgressHosts()
+	opts.Broker = broker
+	opts.Seeder = seeder
+	opts.UseAgentSeed = true
+	opts.AgentEgressToken = os.Getenv("NEXUS3_CLAUDE_OAUTH_TOKEN")
 }
 
 // CreateAndBoot creates a sandbox record, boots a VM for it, verifies the
@@ -126,14 +172,56 @@ func CreateAndBoot(
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot: check handle %q: %w", handle, err)
 	}
 
-	// ── 3. Construct per-sandbox driver instance ──────────────────────────────
+	// ── 3. Mint sandbox ID ────────────────────────────────────────────────────
+	//
+	// ID is minted here (before driver construction) so the per-sandbox disk
+	// copy can be named deterministically by ID. The old placement (after driver
+	// construction) is preserved by moving it up; existing behaviour is unchanged.
+	id := domain.NewSandboxID()
+
+	// ── 4. CoW copy: per-sandbox ext4 (cache artifact only, not --rootfs) ─────
+	//
+	// Each sandbox boots from its own writable copy so the shared cache
+	// artifact (digest-addressed, content-immutable) is never mutated by the
+	// guest kernel's root=/dev/vda rw mount. cp --reflink=auto is free (a CoW
+	// clone) on btrfs/xfs and falls back silently to a full copy elsewhere.
+	//
+	// diskCopyPath is non-empty iff a copy was created here. The deferred
+	// cleanup removes it on any subsequent failure so no 5 GiB orphan is left
+	// on disk if driver construction, record creation, boot, probe, or seeding
+	// fails. On success the copy is retained for the lifetime of the sandbox
+	// and reaped by Service.Remove.
+	var diskCopyPath string
+	if opts.Image.RootfsPath == "" {
+		diskDir := opts.DiskDir
+		if diskDir == "" {
+			diskDir, err = defaultDiskDir()
+			if err != nil {
+				return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, err)
+			}
+		}
+		cp, cpErr := cowExt4(ext4Path, diskDir, id)
+		if cpErr != nil {
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, cpErr)
+		}
+		diskCopyPath = cp
+		ext4Path = cp
+	}
+
+	success := false
+	defer func() {
+		if !success && diskCopyPath != "" {
+			_ = os.Remove(diskCopyPath)
+		}
+	}()
+
+	// ── 5. Construct per-sandbox driver instance ──────────────────────────────
 	bootDrv, err := newDriver(ext4Path)
 	if err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: init driver: %w", project, name, err)
 	}
 
-	// ── 4. Persist sandbox record ─────────────────────────────────────────────
-	id := domain.NewSandboxID()
+	// ── 6. Persist sandbox record ─────────────────────────────────────────────
 	sb := domain.Sandbox{
 		ID:      id,
 		Name:    name,
@@ -149,7 +237,7 @@ func CreateAndBoot(
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: create record: %w", project, name, err)
 	}
 
-	// ── 5. Boot VM inside store.Update (same locking pattern as service.Start) ─
+	// ── 7. Boot VM inside store.Update (same locking pattern as service.Start) ─
 	//
 	// driver.Start is called inside Update so the substrate call and the record
 	// write are guarded by the same per-sandbox exclusive flock. This prevents
@@ -180,7 +268,7 @@ func CreateAndBoot(
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: boot: %w", project, name, bootErr)
 	}
 
-	// ── 6. Reachability probe ─────────────────────────────────────────────────
+	// ── 8. Reachability probe ─────────────────────────────────────────────────
 	if probe != nil {
 		timeout := opts.ReachabilityTimeout
 		if timeout <= 0 {
@@ -198,21 +286,80 @@ func CreateAndBoot(
 		}
 	}
 
-	// ── 7. Seed guest with placeholder credentials (P1-S6) ───────────────────────
+	// ── 9. Seed guest with placeholder credentials (P1-S6) ───────────────────
 	//
-	// SeedGuest is a no-op when Broker, Seeder, or AllowedHosts is nil/empty,
-	// so existing callers that omit these fields are unaffected.
+	// SeedGuest / SeedGuestAgent are no-ops when Broker or Seeder is nil, so
+	// existing callers that omit these fields are unaffected.
+	//
+	// When UseAgentSeed is true the agent-specific path is taken:
+	//   a) SeedGuestAgent mints placeholders for AgentEgressHosts and delivers
+	//      the augmented payload (CLAUDE_CODE_OAUTH_TOKEN + CA cert path +
+	//      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) to the guest.
+	//   b) broker.SetRealToken wires the real OAuth token host-side so the MITM
+	//      proxy can swap the placeholder on each forwarded request.
+	//      If AgentEgressToken is empty the real-token wiring is skipped and a
+	//      warning is logged; egress still works but the proxy will forward the
+	//      placeholder rather than a valid bearer token.
 	//
 	// NOTE: service.Start (restart of a stopped sandbox) will also need seeding
 	// once it gains a reachability probe — /run is tmpfs and does not survive
 	// a guest restart. That wiring is deferred until the restart probe exists.
-	if _, err := SeedGuest(ctx, opts.Broker, booted.ID, booted.Envelope.AllowedHosts, opts.Seeder); err != nil {
-		_ = bootDrv.Stop(ctx, booted.ID)
-		_ = svc.store.Delete(ctx, booted.ID)
-		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: seed: %w", project, name, err)
+	if opts.UseAgentSeed {
+		recs, err := SeedGuestAgent(ctx, opts.Broker, booted.ID, opts.Seeder)
+		if err != nil {
+			_ = bootDrv.Stop(ctx, booted.ID)
+			_ = svc.store.Delete(ctx, booted.ID)
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: seed agent: %w", project, name, err)
+		}
+		if opts.AgentEgressToken != "" && opts.Broker != nil && len(recs) > 0 {
+			if err := opts.Broker.SetRealToken(booted.ID, AnthropicAPIHost, opts.AgentEgressToken); err != nil {
+				// Non-fatal: the proxy will forward the placeholder, which is
+				// useless but not a build-path failure. Log and continue.
+				slog.Warn("create-and-boot: set real token for agent egress",
+					"sandbox", booted.ID, "host", AnthropicAPIHost, "err", err)
+			}
+		} else if opts.AgentEgressToken == "" {
+			slog.Warn("create-and-boot: no real token for agent egress; egress will send placeholder",
+				"sandbox", booted.ID, "host", AnthropicAPIHost,
+				"hint", "set NEXUS3_CLAUDE_OAUTH_TOKEN env var before starting herdr")
+		}
+	} else {
+		if _, err := SeedGuest(ctx, opts.Broker, booted.ID, booted.Envelope.AllowedHosts, opts.Seeder); err != nil {
+			_ = bootDrv.Stop(ctx, booted.ID)
+			_ = svc.store.Delete(ctx, booted.ID)
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: seed: %w", project, name, err)
+		}
 	}
 
+	success = true
 	return booted, nil
+}
+
+// defaultDiskDir returns the durable directory for per-sandbox ext4 disk
+// copies, mirroring the P2 snapshot precedent: store.DefaultRoot()/disks.
+func defaultDiskDir() (string, error) {
+	root, err := store.DefaultRoot()
+	if err != nil {
+		return "", fmt.Errorf("determine disk dir: %w", err)
+	}
+	return filepath.Join(root, "disks"), nil
+}
+
+// cowExt4 copies src to <diskDir>/<id>.raw using cp --reflink=auto for
+// copy-on-write efficiency on btrfs/xfs (falls back to a full copy silently
+// on other filesystems). Returns the destination path.
+func cowExt4(src, diskDir string, id domain.SandboxID) (string, error) {
+	if err := os.MkdirAll(diskDir, 0o700); err != nil {
+		return "", fmt.Errorf("cow ext4: mkdir %s: %w", diskDir, err)
+	}
+	dst := filepath.Join(diskDir, id.String()+".raw")
+	var stderr bytes.Buffer
+	cmd := exec.Command("cp", "--reflink=auto", src, dst)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("cow ext4: cp --reflink=auto %s → %s: %w: %s", src, dst, err, stderr.String())
+	}
+	return dst, nil
 }
 
 // resolveExt4 determines the path to a bootable ext4 artifact from spec.

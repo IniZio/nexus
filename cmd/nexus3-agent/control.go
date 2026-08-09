@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -35,11 +36,11 @@ func (cs *controlServer) Exec(_ context.Context, req *agentpb.ExecRequest) (*age
 		return nil, status.Error(codes.InvalidArgument, "argv required")
 	}
 
-	// Build environment: start from host env, merge extras.
-	env := os.Environ()
-	for k, v := range req.Env {
-		env = append(env, k+"="+v)
-	}
+	// Build environment: start from host env, replace or add extras.
+	// Append-only semantics are wrong: glibc getenv() returns the FIRST match,
+	// so appending "HOME=/root" after "HOME=/" would leave glibc seeing "/".
+	// mergeEnv replaces existing entries so the caller's value always wins.
+	env := mergeEnv(os.Environ(), req.Env)
 
 	// Use exec.Command (not CommandContext): the process must outlive the RPC.
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
@@ -191,6 +192,33 @@ func (cs *controlServer) execPipe(cmd *exec.Cmd, env []string, sess *Session) er
 	}
 
 	return nil
+}
+
+// mergeEnv returns a copy of base with each key in extra replaced or appended.
+// Replace semantics: if a "KEY=..." entry already exists in base, the first
+// such entry is overwritten and no duplicate is appended. This matches glibc
+// getenv() semantics — the first match wins — so the caller's value is always
+// visible to the process even when base contains a prior binding.
+// Values may contain '=' (e.g. "FOO=a=b"); only the key prefix up to the
+// first '=' is matched.
+func mergeEnv(base []string, extra map[string]string) []string {
+	env := make([]string, len(base))
+	copy(env, base)
+	for k, v := range extra {
+		prefix := k + "="
+		replaced := false
+		for i, e := range env {
+			if strings.HasPrefix(e, prefix) {
+				env[i] = k + "=" + v
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
 }
 
 // feedRingFromReader reads from r into ring until error (EOF, EIO, etc.).

@@ -2,6 +2,8 @@ package mitm_test
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"io"
 	"net"
 	"net/http"
@@ -195,6 +197,97 @@ func TestProxy_CACertIsNotNil(t *testing.T) {
 	}
 	if !p.CACert().IsCA {
 		t.Error("CACert() is not a CA certificate")
+	}
+}
+
+// TestProxy_SwapAfterSetRealToken_HTTPS is the D-P4-02 empirical confirmation.
+// It exercises the full HTTPS CONNECT-MITM path with the empty-then-SetRealToken
+// broker pattern — the same sequence the agent sandbox uses at runtime.
+//
+// Specifically it verifies:
+//  1. RegisterPlaceholder(sid, host, "") mints a placeholder with no real token.
+//  2. SetRealToken(sid, host, realToken) fills the real token without changing
+//     the placeholder.
+//  3. A client sending HTTPS CONNECT through the proxy with Bearer <placeholder>
+//     has its Authorization header rewritten to Bearer <realToken> before the
+//     request reaches the upstream server.
+//
+// The upstream is a real TLS server; the client trusts the proxy's per-sandbox
+// CA cert (not the upstream's self-signed cert). The proxy transport redirects
+// all outbound TCP to the TLS upstream and skips hostname verification so the
+// test works without a matching certificate for the allowlisted hostname.
+func TestProxy_SwapAfterSetRealToken_HTTPS(t *testing.T) {
+	t.Parallel()
+
+	// TLS upstream: captures the Authorization header the proxy forwarded.
+	authCh := make(chan string, 1)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authCh <- r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(20)
+	const allowedHost = "api.anthropic.com"
+	const realToken = "real-claude-oauth-token"
+
+	// Build the MITM proxy.  The transport redirects all outbound TCP to the TLS
+	// upstream and skips hostname verification (upstream cert is for 127.0.0.1,
+	// not allowedHost).
+	cfg := mitm.Config{
+		SandboxID:    sid,
+		AllowedHosts: []string{allowedHost},
+		Broker:       broker,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
+			},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test-only redirect
+		},
+	}
+	p, err := mitm.New(cfg)
+	if err != nil {
+		t.Fatalf("mitm.New: %v", err)
+	}
+	proxyServer := httptest.NewServer(p)
+	t.Cleanup(proxyServer.Close)
+
+	// D-P4-02 pattern: register with empty real token, then fill it.
+	rec, err := broker.RegisterPlaceholder(sid, allowedHost, "")
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+	if err := broker.SetRealToken(sid, allowedHost, realToken); err != nil {
+		t.Fatalf("SetRealToken: %v", err)
+	}
+
+	// Client: trusts the proxy CA for MITM leaf certs; routes through the proxy.
+	proxyURL, _ := url.Parse(proxyServer.URL)
+	pool := x509.NewCertPool()
+	pool.AddCert(p.CACert())
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{RootCAs: pool},
+		},
+		Timeout: 10 * time.Second,
+	}
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		"https://"+allowedHost+"/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do (HTTPS through MITM proxy): %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+
+	got := receiveWithTimeout(t, authCh)
+	if want := "Bearer " + realToken; got != want {
+		t.Errorf("upstream Authorization = %q, want %q (placeholder swap did not fire over HTTPS CONNECT)", got, want)
 	}
 }
 

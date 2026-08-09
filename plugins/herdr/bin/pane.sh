@@ -8,7 +8,7 @@ case "$1" in
         # Long-lived panes: exec directly. Exit means the pane is done.
         exec "$SHIM" __herdr-plugin "$@"
         ;;
-    create|logs|doctor)
+    create|logs|doctor|launch)
         # Short-lived panes: run and then pause so errors stay visible.
         "$SHIM" __herdr-plugin "$@"
         STATUS=$?

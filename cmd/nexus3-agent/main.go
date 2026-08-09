@@ -38,6 +38,13 @@ func main() {
 
 	consoleLog(con, "nexus3-agent: starting (pid=%d)\n", os.Getpid())
 
+	// When running as PID 1 (in-guest init), configure the virtio-net interface
+	// with the static IP the nexus3 perimeter netstack assigns via DHCP.
+	// Using static assignment keeps the agent lean — no DHCP client needed.
+	if isPid1 {
+		setupNetwork(con)
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(),
 		syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()

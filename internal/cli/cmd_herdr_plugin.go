@@ -8,9 +8,17 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/IniZio/nexus3/internal/core/agent"
+	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus3/internal/core/store"
 )
 
 func init() {
@@ -33,7 +41,7 @@ const herdrPluginABIVersion = "1"
 // and carries no --json guarantees. The double-underscore prefix marks it.
 func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
-		return &UsageError{Msg: "__herdr-plugin: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane)"}
+		return &UsageError{Msg: "__herdr-plugin: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch)"}
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -86,6 +94,12 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 			return &UsageError{Msg: "__herdr-plugin open-pane: workspace ref required"}
 		}
 		return herdrPluginOpenPane(rest[0], rest[1:])
+
+	case "launch":
+		if len(rest) < 2 {
+			return &UsageError{Msg: "__herdr-plugin launch: usage: launch <image-ref> <command> [args...] (command must be an absolute path, e.g. /usr/local/bin/claude)"}
+		}
+		return herdrPluginLaunch(ctx, rest[0], rest[1:], out)
 
 	default:
 		return &UsageError{Msg: "__herdr-plugin: unknown subcommand: " + sub}
@@ -238,6 +252,124 @@ func herdrPluginOpenPane(ws string, extraArgs []string) error {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin open-pane: " + err.Error(), Err: err}
+	}
+	return nil
+}
+
+// herdrPluginLaunch boots a sandbox from imageRef, runs argv in-guest via the
+// agent exec path (vsock gRPC control + data plane), streams stdout to out,
+// then removes the sandbox. Boot and exec happen in one process; the boot
+// driver's vsock socket path (SocketDir+ID) is shared with svc.driver, so
+// svc.Exec can dial it after CreateAndBoot returns.
+//
+// Auth-header probe finding (D-P4-02 empirical status): UNKNOWN.
+// CreateAndBootOptions.Broker is nil, so startSupervisor is never called and
+// proxy.go's OnRequest swap hook is not on the data path at all. Code
+// inspection confirms proxy.go OnRequest DOES swap Authorization: Bearer
+// placeholders on allowlisted hosts when opts.Broker is non-nil. Empirical
+// YES/NO deferred to S-EGRESS where a Broker will be wired.
+func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, out *Output) error {
+	storeRoot, err := store.DefaultRoot()
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: resolve store: " + err.Error(), Err: err}
+	}
+	cacheRoot := filepath.Join(storeRoot, "images")
+
+	imgCache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: open image cache: " + err.Error(), Err: err}
+	}
+
+	svc, err := newSandboxService()
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: " + err.Error(), Err: err}
+	}
+
+	kernelPath := kernelPathFor()
+
+	// newDriver mirrors cmd_sandbox.go's factory: socket/log paths use default
+	// locations so that svc.driver (from SelectSubstrate, same SocketDir) can
+	// reach the vsock file for svc.Exec after CreateAndBoot returns.
+	newDriver := service.DriverFactory(func(ext4Path string) (driver.Driver, error) {
+		cfg := buildCHConfig(kernelPath, ext4Path, 0, 0)
+		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
+			cfg.BinaryPath = p
+		}
+		return cloudhypervisor.New(cfg)
+	})
+
+	// probe polls vsock until the guest agent's listener accepts. Mirrors the
+	// exact probe in cmd_sandbox.go (runSandboxCreate).
+	probe := func(pCtx context.Context, drv driver.Driver, id domain.SandboxID) error {
+		gd, ok := drv.(driver.GuestDialer)
+		if !ok {
+			return nil
+		}
+		for {
+			if pCtx.Err() != nil {
+				return pCtx.Err()
+			}
+			dialCtx, cancel := context.WithTimeout(pCtx, 2*time.Second)
+			conn, dialErr := gd.DialGuest(dialCtx, id, driver.AgentControlPort)
+			cancel()
+			if dialErr == nil {
+				_ = conn.Close()
+				return nil
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
+
+	// Unique name per invocation to prevent ErrAlreadyExists on retry or concurrent runs.
+	name := fmt.Sprintf("run-%x", time.Now().UnixNano())
+
+	sb, err := service.CreateAndBoot(ctx, svc, imgCache, newDriver, probe,
+		"herdr", name,
+		service.CreateAndBootOptions{
+			Image:               service.ImageSpec{Ref: imageRef},
+			CacheRoot:           cacheRoot,
+			ReachabilityTimeout: 60 * time.Second,
+		},
+	)
+	if err != nil {
+		return &CodedError{Code: sandboxCodeFor(err), Msg: "__herdr-plugin launch: boot: " + err.Error(), Err: err}
+	}
+
+	// Remove internally stops the VM — no separate Stop call needed.
+	defer func() {
+		rmCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := svc.Remove(rmCtx, sb.ID.String()); err != nil {
+			fmt.Fprintf(os.Stderr, "__herdr-plugin launch: cleanup: remove %s: %v\n", sb.ID, err)
+		}
+	}()
+
+	// Exec via svc.Exec (the surface-layer path per agent_ops.go:28). svc.driver
+	// shares defaultSocketDir() with the boot driver, so it can dial the vsock.
+	// Env semantics: the guest agent appends req.Env to os.Environ() — it is a
+	// merge, not a replacement. argv[0] must be an absolute path because
+	// exec.Command resolves it via exec.LookPath in the agent binary's own
+	// process environment (before cmd.Env applies). PATH is still injected for
+	// the child's own subprocess lookups (claude shells out to bash, git, etc.).
+	// HOME is injected for credential path resolution (claude's OAuth files).
+	exitCode, err := svc.Exec(ctx, sb.ID.String(), agent.ExecOptions{
+		Argv: argv,
+		Env: map[string]string{
+			"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+			"HOME": "/root",
+		},
+		Stdout: out.w,
+		Stderr: os.Stderr,
+	})
+	if err != nil {
+		msg := "__herdr-plugin launch: exec: " + err.Error()
+		if strings.Contains(err.Error(), "not found in $PATH") {
+			msg += " (hint: command must be an absolute path, e.g. /usr/local/bin/claude)"
+		}
+		return &CodedError{Code: agentCodeFor(err), Msg: msg, Err: err}
+	}
+	if exitCode != 0 {
+		return &ExitCodeError{Code: exitCode}
 	}
 	return nil
 }

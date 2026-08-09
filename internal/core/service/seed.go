@@ -33,7 +33,28 @@ const GuestCredEnvPath = "/run/nexus3/cred.env"
 // not automated; the agent bootstrap sequence in a future slice must issue the
 // command after seeding. Until then HTTPS clients in the guest will see
 // certificate-validation failures when connecting through the MITM proxy.
+//
+// NODE_EXTRA_CA_CERTS (used in agent egress seeding) sidesteps the
+// update-ca-certificates gap: Node.js reads the PEM file directly, so claude
+// (a Node.js process) trusts the MITM proxy without a system CA bundle update.
 const GuestCACertPath = "/usr/local/share/ca-certificates/nexus3-mitm.crt"
+
+// AnthropicAPIHost is the primary Anthropic API hostname that the in-guest
+// claude process reaches for inference. It is the authoritative source of the
+// CLAUDE_CODE_OAUTH_TOKEN placeholder that the MITM proxy swaps for the real
+// bearer token.
+const AnthropicAPIHost = "api.anthropic.com"
+
+// ClaudePlatformHost is the Claude platform hostname required for OAuth
+// subscription authentication (used by claude's login flow).
+const ClaudePlatformHost = "platform.claude.com"
+
+// AgentEgressHosts returns the minimal set of outbound hostnames an in-guest
+// claude process requires. Each call returns a fresh slice so callers may
+// safely assign it to AllowedHosts without aliasing the package-level value.
+func AgentEgressHosts() []string {
+	return []string{AnthropicAPIHost, ClaudePlatformHost}
+}
 
 // GuestSeeder delivers the credential seed payload into the guest environment.
 // The production implementation writes GuestCredEnvPath via the agent's Copy
@@ -200,4 +221,89 @@ func SeedCA(ctx context.Context, cert *x509.Certificate, id domain.SandboxID, se
 	}
 	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
 	return seeder(ctx, id, pemBytes)
+}
+
+// SeedGuestAgent mints placeholder credentials for [AgentEgressHosts] via
+// broker, builds an agent-specific env-file payload that includes both the
+// generic NEXUS3_CRED_* vars and the claude-specific vars
+// (CLAUDE_CODE_OAUTH_TOKEN, NODE_EXTRA_CA_CERTS,
+// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC), and delivers the payload to the
+// guest exactly once via seeder.
+//
+// The returned PlaceholderRecords allow the caller to call
+// broker.SetRealToken(id, AnthropicAPIHost, realToken) after seeding.
+//
+// # Security invariant
+//
+// Like [SeedGuest], the real token is structurally unreachable from the
+// payload. PlaceholderRecord carries no real-token field; the MITM proxy swaps
+// the placeholder for the real token host-side on each proxied request.
+//
+// If broker or seeder is nil, SeedGuestAgent is a no-op and returns nil records
+// and nil error.
+func SeedGuestAgent(
+	ctx context.Context,
+	broker *cred.Broker,
+	id domain.SandboxID,
+	seeder GuestSeeder,
+) ([]cred.PlaceholderRecord, error) {
+	if broker == nil || seeder == nil {
+		return nil, nil
+	}
+
+	hosts := AgentEgressHosts()
+	records := make([]cred.PlaceholderRecord, 0, len(hosts))
+	for _, host := range hosts {
+		rec, err := broker.RegisterPlaceholder(id, host, "")
+		if err != nil {
+			return nil, fmt.Errorf("seed agent: register placeholder for %q: %w", host, err)
+		}
+		records = append(records, rec)
+	}
+
+	payload := buildAgentSeedPayload(records)
+	if err := seeder(ctx, id, payload); err != nil {
+		return nil, fmt.Errorf("seed agent: deliver to guest: %w", err)
+	}
+	return records, nil
+}
+
+// buildAgentSeedPayload extends [buildSeedPayload] with claude-specific env
+// vars required for in-guest OAuth-authenticated inference:
+//
+//   - CLAUDE_CODE_OAUTH_TOKEN: the placeholder for [AnthropicAPIHost]; the
+//     MITM proxy swaps this for the real bearer token on each request.
+//   - NODE_EXTRA_CA_CERTS: path to the MITM proxy CA cert inside the guest;
+//     Node.js reads this directly, sidestepping the update-ca-certificates gap.
+//   - CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1: suppresses telemetry and
+//     auto-update calls that would hit non-allowlisted hosts.
+//
+// # Security invariant
+//
+// PlaceholderRecord carries ONLY the placeholder string, ExpiresAt, SandboxID,
+// and Host — never the real token. This function cannot embed the real token
+// regardless of what was passed to RegisterPlaceholder or SetRealToken.
+func buildAgentSeedPayload(records []cred.PlaceholderRecord) []byte {
+	var buf bytes.Buffer
+	buf.Write(buildSeedPayload(records))
+
+	// CLAUDE_CODE_OAUTH_TOKEN = placeholder for api.anthropic.com.
+	// The MITM proxy swaps this placeholder for the real bearer token on the
+	// host side — the real token never reaches the guest env file.
+	for _, rec := range records {
+		if rec.Host == AnthropicAPIHost {
+			fmt.Fprintf(&buf, "CLAUDE_CODE_OAUTH_TOKEN=%s\n", rec.Placeholder)
+			break
+		}
+	}
+
+	// NODE_EXTRA_CA_CERTS makes Node.js (claude's runtime) trust the MITM
+	// proxy CA cert directly, without running update-ca-certificates.
+	fmt.Fprintf(&buf, "NODE_EXTRA_CA_CERTS=%s\n", GuestCACertPath)
+
+	// Disable telemetry and auto-update traffic that would hit non-allowlisted
+	// hosts and be blocked by the egress perimeter.
+	fmt.Fprintf(&buf, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\n")
+
+	return buf.Bytes()
 }

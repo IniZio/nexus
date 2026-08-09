@@ -38,6 +38,12 @@ title = "nexus3 doctor"
 placement = "split"
 command = ["sh", "bin/pane.sh", "doctor"]
 
+[[panes]]
+id = "launch"
+title = "nexus3 launch"
+placement = "tab"
+command = ["sh", "bin/pane.sh", "launch"]
+
 [[actions]]
 id = "attach"
 title = "nexus3: attach to a workspace"

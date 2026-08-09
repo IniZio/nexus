@@ -57,6 +57,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
+	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
 
@@ -117,9 +118,10 @@ type Report struct {
 // Recoverer reconciles persisted sandbox records against the live substrate.
 // Construct with [New].
 type Recoverer struct {
-	st   store.Store
-	drv  driver.Driver
-	mach lifecycle.Machine
+	st      store.Store
+	drv     driver.Driver
+	mach    lifecycle.Machine
+	diskDir string // durable dir for per-sandbox ext4 copies (S-COW); empty = defaultDiskDir()
 }
 
 // New constructs a Recoverer backed by the given store and driver.
@@ -129,6 +131,16 @@ func New(st store.Store, drv driver.Driver) *Recoverer {
 		drv:  drv,
 		mach: lifecycle.New(),
 	}
+}
+
+// WithDiskDir sets the directory where per-sandbox ext4 disk copies are reaped
+// on the --rm removal path. When not set, service.ReapDiskCopy falls back to
+// defaultDiskDir() which mirrors the store's durable root
+// (store.DefaultRoot()/disks). Tests set this to t.TempDir() so copies stay
+// inside the test filesystem tree and are cleaned up automatically.
+func (r *Recoverer) WithDiskDir(dir string) *Recoverer {
+	r.diskDir = dir
+	return r
 }
 
 // Recover examines every sandbox in the store and reconciles its record
@@ -291,6 +303,10 @@ func (r *Recoverer) recoverByID(ctx context.Context, id domain.SandboxID) Sandbo
 				Reason: fmt.Sprintf("--rm: failed to delete sandbox: %v", err),
 			}
 		}
+		// Reap the per-sandbox ext4 disk copy (S-COW). Non-fatal: if the reap
+		// fails the record is already deleted and the caller sees a successful
+		// remove. Idempotent — a missing file is not an error.
+		_ = service.ReapDiskCopy(r.diskDir, id)
 	}
 	return outcome
 }

@@ -1238,6 +1238,56 @@ func (d *perSandboxBlockDriver) Observe(ctx context.Context, id domain.SandboxID
 	return d.Driver.Observe(ctx, id)
 }
 
+// TestRecover_RemoveOnExit_ReapsDiskCopy_NoOrphan is the regression test for
+// the CoW orphan bug: a cache-image --rm sandbox whose VM crashed left a full
+// ~5GiB <diskDir>/<id>.raw because the recovery --rm path called st.Delete
+// directly, bypassing the shared service.ReapDiskCopy helper.
+//
+// Fixture: store record with RemoveOnExit=true, Running state (VM absent from
+// driver), and a real dummy <id>.raw in a temp diskDir. After recovery the
+// .raw file must be gone — no orphan.
+func TestRecover_RemoveOnExit_ReapsDiskCopy_NoOrphan(t *testing.T) {
+	ctx := context.Background()
+
+	storeDir := t.TempDir()
+	st, err := store.NewFileStore(storeDir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	drv := fake.New()
+
+	// Place a dummy .raw file in a controlled diskDir.
+	diskDir := t.TempDir()
+	sb := createSandbox(t, ctx, st, domain.Running, withRemoveOnExit())
+	rawPath := filepath.Join(diskDir, sb.ID.String()+".raw")
+	if err := os.WriteFile(rawPath, []byte("dummy ext4 image"), 0600); err != nil {
+		t.Fatalf("write dummy .raw: %v", err)
+	}
+
+	// VM absent: drv has no entry → Observe returns Absent.
+	rec := New(st, drv).WithDiskDir(diskDir)
+
+	report, err := rec.Recover(ctx)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	out := findOutcome(t, report, sb.ID)
+	if out.Kind != OutcomeRemoved {
+		t.Errorf("want %s, got %s (reason: %q)", OutcomeRemoved, out.Kind, out.Reason)
+	}
+
+	// Regression: the .raw file must be gone — no orphan.
+	if _, statErr := os.Stat(rawPath); !os.IsNotExist(statErr) {
+		t.Errorf("orphan .raw file still exists at %s after recovery --rm removal: %v; "+
+			"fix: call service.ReapDiskCopy in the recovery needDelete path", rawPath, statErr)
+	}
+
+	// Record must be gone too.
+	if _, err := st.Get(ctx, sb.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("want ErrNotFound after removal, got %v", err)
+	}
+}
+
 // TestRecover_MultiSandbox_NoGlobalLock proves that recovering two sandboxes
 // does not serialise on a single global lock. Sandbox A's Observe is blocked
 // until sandbox B's recovery completes. Under per-sandbox locking:
