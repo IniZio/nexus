@@ -34,6 +34,9 @@ type Sandbox struct {
 	ID      SandboxID
 	Name    string
 	Project string
+	// MotiveID associates this sandbox with a named external work thread
+	// (motive). Empty string means the sandbox is unassociated.
+	MotiveID string
 
 	// State is a cache. The substrate (the VMM) is authoritative; where a
 	// live VM disagrees with this field, the VM wins.

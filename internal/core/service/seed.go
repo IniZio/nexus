@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -223,12 +224,43 @@ func SeedCA(ctx context.Context, cert *x509.Certificate, id domain.SandboxID, se
 	return seeder(ctx, id, pemBytes)
 }
 
+// agentCredKind selects which guest env var carries the Anthropic API
+// placeholder. The two kinds are mutually exclusive at runtime.
+type agentCredKind int
+
+const (
+	// kindOAuth is the Milestone-A OAuth subscription path: the guest env
+	// receives CLAUDE_CODE_OAUTH_TOKEN=<placeholder>. This is the default when
+	// ANTHROPIC_AUTH_TOKEN is not set in the host environment.
+	kindOAuth agentCredKind = iota
+
+	// kindAuthToken is the direct-SDK API-key path (D-P4-02 / D-P4-05 ToS
+	// rail): the guest env receives ANTHROPIC_AUTH_TOKEN=<placeholder>. The in-
+	// guest agent sends Authorization: Bearer <placeholder>; the MITM proxy
+	// swaps the placeholder for the real token exactly as for the OAuth path.
+	kindAuthToken
+)
+
+// resolveAgentCredKind returns kindAuthToken when ANTHROPIC_AUTH_TOKEN is set
+// in the host environment (direct-SDK API key present), and kindOAuth
+// otherwise. The same env var is the source of truth for [WireAnthropicAuthToken].
+func resolveAgentCredKind() agentCredKind {
+	if os.Getenv("ANTHROPIC_AUTH_TOKEN") != "" {
+		return kindAuthToken
+	}
+	return kindOAuth
+}
+
 // SeedGuestAgent mints placeholder credentials for [AgentEgressHosts] via
 // broker, builds an agent-specific env-file payload that includes both the
-// generic NEXUS3_CRED_* vars and the claude-specific vars
-// (CLAUDE_CODE_OAUTH_TOKEN, NODE_EXTRA_CA_CERTS,
-// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC), and delivers the payload to the
-// guest exactly once via seeder.
+// generic NEXUS3_CRED_* vars and the credential-kind-specific var
+// (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_AUTH_TOKEN, selected by
+// [resolveAgentCredKind]), and delivers the payload to the guest exactly once
+// via seeder.
+//
+// The credential kind is resolved at call time from the host environment:
+// kindAuthToken when ANTHROPIC_AUTH_TOKEN is set, kindOAuth otherwise. This
+// keeps [SeedGuestAgent]'s signature stable and create.go untouched.
 //
 // The returned PlaceholderRecords allow the caller to call
 // broker.SetRealToken(id, AnthropicAPIHost, realToken) after seeding.
@@ -261,7 +293,7 @@ func SeedGuestAgent(
 		records = append(records, rec)
 	}
 
-	payload := buildAgentSeedPayload(records)
+	payload := buildAgentSeedPayload(records, resolveAgentCredKind())
 	if err := seeder(ctx, id, payload); err != nil {
 		return nil, fmt.Errorf("seed agent: deliver to guest: %w", err)
 	}
@@ -269,10 +301,11 @@ func SeedGuestAgent(
 }
 
 // buildAgentSeedPayload extends [buildSeedPayload] with claude-specific env
-// vars required for in-guest OAuth-authenticated inference:
+// vars required for in-guest inference:
 //
-//   - CLAUDE_CODE_OAUTH_TOKEN: the placeholder for [AnthropicAPIHost]; the
-//     MITM proxy swaps this for the real bearer token on each request.
+//   - CLAUDE_CODE_OAUTH_TOKEN (kindOAuth) or ANTHROPIC_AUTH_TOKEN (kindAuthToken):
+//     the placeholder for [AnthropicAPIHost]; the MITM proxy swaps this for
+//     the real bearer token on each request. Exactly one is emitted per call.
 //   - NODE_EXTRA_CA_CERTS: path to the MITM proxy CA cert inside the guest;
 //     Node.js reads this directly, sidestepping the update-ca-certificates gap.
 //   - CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1: suppresses telemetry and
@@ -283,16 +316,23 @@ func SeedGuestAgent(
 // PlaceholderRecord carries ONLY the placeholder string, ExpiresAt, SandboxID,
 // and Host — never the real token. This function cannot embed the real token
 // regardless of what was passed to RegisterPlaceholder or SetRealToken.
-func buildAgentSeedPayload(records []cred.PlaceholderRecord) []byte {
+func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind) []byte {
 	var buf bytes.Buffer
 	buf.Write(buildSeedPayload(records))
 
-	// CLAUDE_CODE_OAUTH_TOKEN = placeholder for api.anthropic.com.
-	// The MITM proxy swaps this placeholder for the real bearer token on the
-	// host side — the real token never reaches the guest env file.
+	// Emit exactly one credential-kind var for api.anthropic.com.
+	// Both vars produce Authorization: Bearer <placeholder> on outbound requests;
+	// the MITM proxy swaps the placeholder host-side on each forwarded request.
 	for _, rec := range records {
 		if rec.Host == AnthropicAPIHost {
-			fmt.Fprintf(&buf, "CLAUDE_CODE_OAUTH_TOKEN=%s\n", rec.Placeholder)
+			switch kind {
+			case kindAuthToken:
+				// Direct-SDK API-key path (D-P4-02 / ToS rail).
+				fmt.Fprintf(&buf, "ANTHROPIC_AUTH_TOKEN=%s\n", rec.Placeholder)
+			default:
+				// OAuth subscription path (Milestone A default).
+				fmt.Fprintf(&buf, "CLAUDE_CODE_OAUTH_TOKEN=%s\n", rec.Placeholder)
+			}
 			break
 		}
 	}
@@ -306,4 +346,25 @@ func buildAgentSeedPayload(records []cred.PlaceholderRecord) []byte {
 	fmt.Fprintf(&buf, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\n")
 
 	return buf.Bytes()
+}
+
+// WireAnthropicAuthToken configures opts for an agent sandbox that
+// authenticates to Anthropic via a direct API auth token (Bearer token, not
+// OAuth subscription). This is the ToS-compliant path for the N-way
+// multiplexer (D-P4-02 / D-P4-05).
+//
+// It mirrors [WireClaudeEgress] but reads ANTHROPIC_AUTH_TOKEN from the host
+// environment. The same env var gates [resolveAgentCredKind] inside
+// [SeedGuestAgent], so calling this function with the env var set is self-
+// consistent: seeding emits ANTHROPIC_AUTH_TOKEN=<placeholder> in the guest,
+// and opts.AgentEgressToken carries the real token for broker.SetRealToken.
+//
+// The caller owns broker and seeder; WireAnthropicAuthToken does not retain
+// them beyond writing them into opts.
+func WireAnthropicAuthToken(opts *CreateAndBootOptions, broker *cred.Broker, seeder GuestSeeder) {
+	opts.AllowedHosts = AgentEgressHosts()
+	opts.Broker = broker
+	opts.Seeder = seeder
+	opts.UseAgentSeed = true
+	opts.AgentEgressToken = os.Getenv("ANTHROPIC_AUTH_TOKEN")
 }

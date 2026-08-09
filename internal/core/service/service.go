@@ -178,6 +178,13 @@ func (s *Service) List(ctx context.Context) ([]domain.Sandbox, error) {
 	return all, nil
 }
 
+// GetByMotive returns all sandboxes associated with the given motive ID.
+// Delegates directly to the store; an unknown or empty motive returns an
+// empty (non-nil) slice and nil error.
+func (s *Service) GetByMotive(ctx context.Context, motiveID string) ([]domain.Sandbox, error) {
+	return s.store.GetByMotive(ctx, motiveID)
+}
+
 // resolve finds a sandbox by handle ("<project>/<name>"), exact ID, or ID
 // prefix. It propagates domain.ErrAmbiguous (which names all candidates) when
 // the prefix matches more than one sandbox.

@@ -309,6 +309,7 @@ type sandboxCreateFlags struct {
 	filePath    string
 	memoryMiB   uint32
 	vcpus       uint32
+	motiveID    string
 	positionals []string
 }
 
@@ -361,6 +362,12 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --vcpus %q: invalid count", args[i])}
 			}
 			f.vcpus = uint32(v)
+		case "--motive":
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --motive requires an argument"}
+			}
+			i++
+			f.motiveID = args[i]
 		default:
 			if len(arg) > 1 && arg[0] == '-' {
 				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: unknown flag %q", arg)}
@@ -401,7 +408,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>] [--memory <MiB>] [--vcpus <n>]"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>] [--memory <MiB>] [--vcpus <n>] [--motive <id>]"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])
@@ -493,6 +500,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	sb, err := service.CreateAndBoot(ctx, svc, imgCache, newDriver, probe,
 		project, name,
 		service.CreateAndBootOptions{
+			MotiveID:     f.motiveID,
 			RemoveOnExit: f.rm,
 			Image:        spec,
 			CacheRoot:    cacheRoot,

@@ -265,3 +265,80 @@ func TestSandboxCreate_Memory_VCPUs_InvalidFlag(t *testing.T) {
 		t.Error("expected UsageError for --vcpus two, got nil")
 	}
 }
+
+// ── S-SURFACE: --motive flag ──────────────────────────────────────────────────
+
+// TestSandboxCreate_Motive_FlagParsing verifies that --motive is parsed into
+// sandboxCreateFlags.motiveID and that omitting it leaves the field empty
+// (unassociated, preserving existing behaviour).
+func TestSandboxCreate_Motive_FlagParsing(t *testing.T) {
+	// With --motive: field populated.
+	args := []string{"p/n", "--image", "nexus3-base:latest", "--motive", "m-abc-123"}
+	f, err := parseSandboxCreateArgs(args)
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", err)
+	}
+	if f.motiveID != "m-abc-123" {
+		t.Errorf("motiveID: want %q, got %q", "m-abc-123", f.motiveID)
+	}
+	if f.imageRef != "nexus3-base:latest" {
+		t.Errorf("imageRef: want %q, got %q", "nexus3-base:latest", f.imageRef)
+	}
+
+	// Without --motive: field stays empty (backwards-compatible default).
+	f2, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest"})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs (no motive): %v", err)
+	}
+	if f2.motiveID != "" {
+		t.Errorf("motiveID without flag: want empty, got %q", f2.motiveID)
+	}
+}
+
+// TestSandboxCreate_Motive_PersistedToSandbox verifies that MotiveID flows from
+// CreateAndBootOptions into the returned sandbox record. Mirrors the boot-path
+// integration test (TestSandboxCreate_WithImage_CallsStartAndRecordsRunning):
+// calls service.CreateAndBoot directly with MotiveID set, then asserts the
+// persisted sandbox carries the motive association.
+func TestSandboxCreate_Motive_PersistedToSandbox(t *testing.T) {
+	ctx := context.Background()
+
+	cacheRoot := t.TempDir()
+	cache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		t.Fatalf("image.NewCache: %v", err)
+	}
+	img := putTestImage(t, cache)
+
+	fd := fake.New()
+	svc := newBootTestService(t, fd)
+
+	probe := func(ctx context.Context, drv driver.Driver, id domain.SandboxID) error {
+		gd, ok := drv.(driver.GuestDialer)
+		if !ok {
+			return nil
+		}
+		conn, dialErr := gd.DialGuest(ctx, id, driver.AgentControlPort)
+		if dialErr != nil {
+			return dialErr
+		}
+		_ = conn.Close()
+		return nil
+	}
+	newDrv := func(_ string) (driver.Driver, error) { return fd, nil }
+
+	sb, err := service.CreateAndBoot(ctx, svc, cache, newDrv, probe,
+		"proj", "motbox",
+		service.CreateAndBootOptions{
+			MotiveID:  "m-abc-123",
+			Image:     service.ImageSpec{Ref: img.Ref},
+			CacheRoot: cacheRoot,
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: %v", err)
+	}
+	if sb.MotiveID != "m-abc-123" {
+		t.Errorf("MotiveID = %q, want %q", sb.MotiveID, "m-abc-123")
+	}
+}

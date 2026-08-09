@@ -90,6 +90,12 @@ func TestAgentDogfood(t *testing.T) {
 		t.Skip("set NEXUS3_CLAUDE_OAUTH_TOKEN (source ~/.config/nexus3/agent.env) to run the live dogfood")
 	}
 
+	// Guard: clear ANTHROPIC_AUTH_TOKEN so resolveAgentCredKind() returns
+	// kindOAuth regardless of what is set in the ambient host environment.
+	// Without this, a host with ANTHROPIC_AUTH_TOKEN set would flip the seeder
+	// to auth-token mode, breaking the OAuth placeholder the test asserts on.
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+
 	// ── 2. Kernel path ────────────────────────────────────────────────────────
 	repoRoot, err := findRepoRoot()
 	if err != nil {
@@ -261,9 +267,21 @@ func TestAgentDogfood(t *testing.T) {
 
 	// swapCount counts "credential swapped" slog events from the MITM proxy for
 	// post-run assertion (b): we assert the host-side bearer-swap fired ≥ once.
+	//
+	// connectAllowCount counts "mitm: CONNECT allowed" slog events where the
+	// "host" attr equals service.AnthropicAPIHost. This is the hostname-bearing
+	// signal used for assertion (a); the netstack AuditEvent.DestHost carries
+	// the resolved IP:port and cannot be matched by hostname.
 	var swapCount atomic.Int64
+	var connectAllowCount atomic.Int64
 	swapLogger := slog.New(&countingHandler{
-		inner:  slog.Default().Handler(),
+		inner: &countingHandler{
+			inner:   slog.Default().Handler(),
+			phrase:  "mitm: CONNECT allowed",
+			count:   &connectAllowCount,
+			attrKey: "host",
+			attrVal: service.AnthropicAPIHost,
+		},
 		phrase: "credential swapped",
 		count:  &swapCount,
 	})
@@ -394,23 +412,16 @@ echo "=== PREFLIGHT_DONE ==="
 	// These four checks harden the security properties of the completed run.
 	// None weakens the existing pass condition (NEXUS3_OK) checked above.
 
-	// (a) Egress to api.anthropic.com must have been observed and allowed.
-	{
-		auditMu.Lock()
-		snap := append([]perimeter.AuditEvent(nil), auditEvents...)
-		auditMu.Unlock()
-		var sawAllow bool
-		for _, ev := range snap {
-			if ev.Decision == perimeter.Allow &&
-				strings.EqualFold(ev.DestHost, service.AnthropicAPIHost) {
-				sawAllow = true
-				break
-			}
-		}
-		if !sawAllow {
-			t.Errorf("(a) perimeter invariant: no Allow audit event for %s (got %d total events)",
-				service.AnthropicAPIHost, len(snap))
-		}
+	// (a) Egress to api.anthropic.com must have been observed and allowed by the MITM proxy.
+	// The netstack AuditEvent.DestHost carries the resolved IP:port (e.g. "160.79.104.10:443"),
+	// not the hostname, so a hostname match against auditEvents is a false-negative. Instead
+	// we count "mitm: CONNECT allowed" log records where host==service.AnthropicAPIHost.
+	if connectAllowCount.Load() == 0 {
+		t.Errorf("(a) perimeter invariant: MITM never observed CONNECT allowed for %s",
+			service.AnthropicAPIHost)
+	} else {
+		t.Logf("(a) PASS: MITM CONNECT allowed to %s observed %d time(s)",
+			service.AnthropicAPIHost, connectAllowCount.Load())
 	}
 
 	// (b) Host-side credential swap must have fired at least once.
@@ -460,10 +471,17 @@ func dogfoodCACopySeeder(c *agent.Client) service.GuestSeeder {
 // record whose Message contains phrase is handled. All records are forwarded
 // to inner unchanged. The count pointer is shared across WithAttrs/WithGroup
 // copies so all derived handlers increment the same counter.
+//
+// When both attrKey and attrVal are non-empty, the record must also carry a
+// slog attr with the given key and a value that matches attrVal
+// (case-insensitive) for count to increment. This lets a single handler match
+// on both message text and a structured field (e.g. "host" == "api.anthropic.com").
 type countingHandler struct {
-	inner  slog.Handler
-	phrase string
-	count  *atomic.Int64
+	inner   slog.Handler
+	phrase  string
+	count   *atomic.Int64
+	attrKey string // optional: slog attr key that must also match
+	attrVal string // optional: expected attr value (case-insensitive)
 }
 
 func (h *countingHandler) Enabled(ctx context.Context, lvl slog.Level) bool {
@@ -472,15 +490,27 @@ func (h *countingHandler) Enabled(ctx context.Context, lvl slog.Level) bool {
 
 func (h *countingHandler) Handle(ctx context.Context, r slog.Record) error {
 	if strings.Contains(r.Message, h.phrase) {
-		h.count.Add(1)
+		match := h.attrKey == ""
+		if !match {
+			r.Attrs(func(a slog.Attr) bool {
+				if a.Key == h.attrKey && strings.EqualFold(a.Value.String(), h.attrVal) {
+					match = true
+					return false // stop iteration
+				}
+				return true
+			})
+		}
+		if match {
+			h.count.Add(1)
+		}
 	}
 	return h.inner.Handle(ctx, r)
 }
 
 func (h *countingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &countingHandler{inner: h.inner.WithAttrs(attrs), phrase: h.phrase, count: h.count}
+	return &countingHandler{inner: h.inner.WithAttrs(attrs), phrase: h.phrase, count: h.count, attrKey: h.attrKey, attrVal: h.attrVal}
 }
 
 func (h *countingHandler) WithGroup(name string) slog.Handler {
-	return &countingHandler{inner: h.inner.WithGroup(name), phrase: h.phrase, count: h.count}
+	return &countingHandler{inner: h.inner.WithGroup(name), phrase: h.phrase, count: h.count, attrKey: h.attrKey, attrVal: h.attrVal}
 }

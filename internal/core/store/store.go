@@ -96,6 +96,11 @@ type Store interface {
 	// ResolveByHandle finds the unique sandbox with the "<project>/<name>"
 	// handle. Returns ErrNotFound if no sandbox matches.
 	ResolveByHandle(ctx context.Context, handle string) (domain.Sandbox, error)
+
+	// GetByMotive returns all sandboxes associated with the given motive ID.
+	// An unknown motive ID returns an empty (non-nil) slice and nil error.
+	// An empty motiveID argument matches nothing and returns an empty slice.
+	GetByMotive(ctx context.Context, motiveID string) ([]domain.Sandbox, error)
 }
 
 // DefaultRoot returns the default state directory for nexus3, following the

@@ -117,6 +117,8 @@ type createArgs struct {
 	// Optional resource overrides — only used when a boot field is also set.
 	MemoryMiB uint32 `json:"memory_mib,omitempty" jsonschema:"guest RAM in MiB (optional; 0 = driver default 512 MiB)"`
 	VCPUs     uint32 `json:"vcpus,omitempty"      jsonschema:"number of virtual CPUs (optional; 0 = driver default 1)"`
+	// Optional motive association — associates the sandbox with a motive work thread.
+	Motive string `json:"motive,omitempty" jsonschema:"motive ID to associate this sandbox with (optional; '' = unassociated)"`
 }
 
 // refArgs holds a single sandbox reference used by start/stop/pause/resume/remove.
@@ -161,6 +163,7 @@ func registerTools(srv *gosdk.Server, svc SandboxService) {
 		// Boot path: any image field triggers CreateAndBoot.
 		if args.RootfsPath != "" || args.Digest != "" || args.Ref != "" {
 			sb, err := svc.CreateAndBoot(ctx, args.Project, args.Name, service.CreateAndBootOptions{
+				MotiveID:     args.Motive,
 				RemoveOnExit: args.RemoveOnExit,
 				Image: service.ImageSpec{
 					RootfsPath: args.RootfsPath,

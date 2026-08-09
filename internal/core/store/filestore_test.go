@@ -754,3 +754,94 @@ func TestProvenanceRoundTrip(t *testing.T) {
 		t.Errorf("List: SourceSnapshot: got %q, want %q", found.Provenance.SourceSnapshot, "snap-abc123")
 	}
 }
+
+// TestMotiveIDRoundTrip verifies that a MotiveID survives a Create/Get
+// round-trip without loss.
+func TestMotiveIDRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+
+	sb := makeSandbox("motive-box", "motive-project")
+	sb.MotiveID = "motive-abc"
+
+	if err := st.Create(ctx, sb); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := st.Get(ctx, sb.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.MotiveID != sb.MotiveID {
+		t.Errorf("MotiveID: got %q, want %q", got.MotiveID, sb.MotiveID)
+	}
+}
+
+// TestGetByMotive verifies that GetByMotive returns exactly the sandboxes
+// matching the given motive ID when several sandboxes with mixed/empty
+// MotiveIDs exist.
+func TestGetByMotive(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+
+	// Two sandboxes in motive-A, one in motive-B, one unassociated.
+	a1 := makeSandbox("a1", "proj")
+	a1.MotiveID = "motive-A"
+	a2 := makeSandbox("a2", "proj")
+	a2.MotiveID = "motive-A"
+	b1 := makeSandbox("b1", "proj")
+	b1.MotiveID = "motive-B"
+	none := makeSandbox("none", "proj")
+	// none.MotiveID is empty — unassociated
+
+	for _, sb := range []domain.Sandbox{a1, a2, b1, none} {
+		if err := st.Create(ctx, sb); err != nil {
+			t.Fatalf("Create %s: %v", sb.Name, err)
+		}
+	}
+
+	got, err := st.GetByMotive(ctx, "motive-A")
+	if err != nil {
+		t.Fatalf("GetByMotive: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("GetByMotive(motive-A): got %d sandboxes, want 2", len(got))
+	}
+	for _, sb := range got {
+		if sb.MotiveID != "motive-A" {
+			t.Errorf("unexpected sandbox in result: MotiveID=%q", sb.MotiveID)
+		}
+	}
+
+	// Confirm motive-B returns only b1.
+	gotB, err := st.GetByMotive(ctx, "motive-B")
+	if err != nil {
+		t.Fatalf("GetByMotive(motive-B): %v", err)
+	}
+	if len(gotB) != 1 || gotB[0].ID != b1.ID {
+		t.Errorf("GetByMotive(motive-B): got %v, want [b1]", gotB)
+	}
+}
+
+// TestGetByMotive_UnknownMotive verifies that an unknown motive ID returns an
+// empty (non-nil) slice and nil error.
+func TestGetByMotive_UnknownMotive(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+
+	sb := makeSandbox("box", "proj")
+	sb.MotiveID = "motive-X"
+	if err := st.Create(ctx, sb); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := st.GetByMotive(ctx, "motive-does-not-exist")
+	if err != nil {
+		t.Fatalf("GetByMotive: unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetByMotive: expected non-nil empty slice, got nil")
+	}
+	if len(got) != 0 {
+		t.Errorf("GetByMotive: expected empty slice, got %d sandboxes", len(got))
+	}
+}

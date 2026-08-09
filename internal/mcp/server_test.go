@@ -534,3 +534,76 @@ func TestSandboxCreate_WithMemoryVCPUs_DefaultsUnset(t *testing.T) {
 		t.Errorf("VCPUs default: want 0, got %d", cab.opts.VCPUs)
 	}
 }
+
+// ── S-SURFACE: motive parameter ───────────────────────────────────────────────
+
+// TestSandboxCreate_WithMotive_SetsMotiveID verifies that passing a motive arg
+// to sandbox_create threads the value through to CreateAndBootOptions.MotiveID.
+// Uses the boot path (rootfs_path set) so CreateAndBoot is invoked.
+func TestSandboxCreate_WithMotive_SetsMotiveID(t *testing.T) {
+	id := domain.NewSandboxID()
+	stub := &stubService{
+		createAndBootResult: domain.Sandbox{
+			ID:       id,
+			Project:  "myproj",
+			Name:     "mysb",
+			State:    domain.Running,
+			MotiveID: "m-abc-123",
+		},
+	}
+	cs, close := connectPair(t, stub)
+	defer close()
+
+	res := callTool(t, cs, "sandbox_create", map[string]any{
+		"project":        "myproj",
+		"name":           "mysb",
+		"remove_on_exit": false,
+		"rootfs_path":    "/fake/rootfs.ext4",
+		"motive":         "m-abc-123",
+	})
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(t, res))
+	}
+
+	cab := stub.createAndBootCalledWith
+	if cab.opts.MotiveID != "m-abc-123" {
+		t.Errorf("MotiveID: want %q, got %q", "m-abc-123", cab.opts.MotiveID)
+	}
+	if cab.opts.Image.RootfsPath != "/fake/rootfs.ext4" {
+		t.Errorf("RootfsPath: want %q, got %q", "/fake/rootfs.ext4", cab.opts.Image.RootfsPath)
+	}
+	// Create must NOT have been called (boot path was taken).
+	if stub.createCalledWith.project != "" {
+		t.Errorf("Create was called unexpectedly: project=%q", stub.createCalledWith.project)
+	}
+}
+
+// TestSandboxCreate_Motive_DefaultsEmpty verifies that omitting the motive arg
+// leaves MotiveID empty in CreateAndBootOptions (unassociated, no regression).
+func TestSandboxCreate_Motive_DefaultsEmpty(t *testing.T) {
+	id := domain.NewSandboxID()
+	stub := &stubService{
+		createAndBootResult: domain.Sandbox{
+			ID:      id,
+			Project: "myproj",
+			Name:    "mysb",
+			State:   domain.Running,
+		},
+	}
+	cs, close := connectPair(t, stub)
+	defer close()
+
+	res := callTool(t, cs, "sandbox_create", map[string]any{
+		"project":        "myproj",
+		"name":           "mysb",
+		"remove_on_exit": false,
+		"rootfs_path":    "/fake/rootfs.ext4",
+	})
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(t, res))
+	}
+
+	if stub.createAndBootCalledWith.opts.MotiveID != "" {
+		t.Errorf("MotiveID default: want empty, got %q", stub.createAndBootCalledWith.opts.MotiveID)
+	}
+}

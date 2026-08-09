@@ -28,6 +28,7 @@ const currentSchemaVersion = 1
 //
 // Durable fields (exactly these, nothing more):
 //   - identity:       ID, Name, Project
+//   - motive:         MotiveID (omitted when empty for backward compatibility)
 //   - frozen config:  Envelope
 //   - state cache:    State
 //   - run identity:   InstanceID
@@ -40,6 +41,7 @@ type record struct {
 	ID            domain.SandboxID  `json:"id"`
 	Name          string            `json:"name"`
 	Project       string            `json:"project"`
+	MotiveID      string            `json:"motive_id,omitempty"`
 	State         domain.State      `json:"state"`
 	Envelope      domain.Envelope   `json:"envelope"`
 	InstanceID    string            `json:"instance_id"`
@@ -63,6 +65,7 @@ func toRecord(sb domain.Sandbox) record {
 		ID:            sb.ID,
 		Name:          sb.Name,
 		Project:       sb.Project,
+		MotiveID:      sb.MotiveID,
 		State:         sb.State,
 		Envelope:      sb.Envelope,
 		InstanceID:    sb.InstanceID,
@@ -84,6 +87,7 @@ func (r record) toDomain() domain.Sandbox {
 		ID:            r.ID,
 		Name:          r.Name,
 		Project:       r.Project,
+		MotiveID:      r.MotiveID,
 		State:         r.State,
 		Envelope:      r.Envelope,
 		InstanceID:    r.InstanceID,
@@ -257,6 +261,40 @@ func (s *FileStore) List(ctx context.Context) ([]domain.Sandbox, error) {
 			continue
 		}
 		out = append(out, r.toDomain())
+	}
+	return out, nil
+}
+
+// GetByMotive returns all sandboxes whose MotiveID equals motiveID.
+//
+// An empty motiveID matches nothing and returns an empty (non-nil) slice —
+// an empty string is never a valid motive identifier, so treating it as
+// "no filter" would silently return unassociated sandboxes.
+// An unknown motiveID returns an empty (non-nil) slice with nil error.
+func (s *FileStore) GetByMotive(ctx context.Context, motiveID string) ([]domain.Sandbox, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	sandboxesDir := filepath.Join(s.root, "sandboxes")
+	entries, err := os.ReadDir(sandboxesDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return []domain.Sandbox{}, nil
+		}
+		return nil, fmt.Errorf("store: get-by-motive: read %s: %w", sandboxesDir, err)
+	}
+	out := []domain.Sandbox{}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		r, err := readRecord(filepath.Join(sandboxesDir, e.Name(), "record.json"))
+		if err != nil {
+			continue // corrupt, missing, or future-version — skip like List does
+		}
+		if motiveID != "" && r.MotiveID == motiveID {
+			out = append(out, r.toDomain())
+		}
 	}
 	return out, nil
 }

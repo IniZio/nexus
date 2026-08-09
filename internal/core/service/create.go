@@ -58,6 +58,12 @@ type ImageSpec struct {
 
 // CreateAndBootOptions carries the options for CreateAndBoot.
 type CreateAndBootOptions struct {
+	// MotiveID associates the new sandbox with a named external work thread.
+	// Empty string means the sandbox is unassociated. When set the value is
+	// stamped onto the sandbox record before persistence and can be retrieved
+	// via store.GetByMotive.
+	MotiveID string
+
 	// RemoveOnExit records the --rm intent durably at creation time.
 	RemoveOnExit bool
 
@@ -223,10 +229,11 @@ func CreateAndBoot(
 
 	// ── 6. Persist sandbox record ─────────────────────────────────────────────
 	sb := domain.Sandbox{
-		ID:      id,
-		Name:    name,
-		Project: project,
-		State:   domain.Created,
+		ID:       id,
+		Name:     name,
+		Project:  project,
+		MotiveID: opts.MotiveID,
+		State:    domain.Created,
 		Envelope: domain.Envelope{
 			ImageDigest:  resolvedDigest,
 			AllowedHosts: opts.AllowedHosts, // frozen at creation (P1-S6)
