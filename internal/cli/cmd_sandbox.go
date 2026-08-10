@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/IniZio/nexus3/internal/core/builder"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
@@ -310,6 +311,7 @@ type sandboxCreateFlags struct {
 	memoryMiB   uint32
 	vcpus       uint32
 	motiveID    string
+	nestedVirt  bool
 	positionals []string
 }
 
@@ -368,6 +370,8 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 			}
 			i++
 			f.motiveID = args[i]
+		case "--nested":
+			f.nestedVirt = true
 		default:
 			if len(arg) > 1 && arg[0] == '-' {
 				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: unknown flag %q", arg)}
@@ -408,7 +412,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>] [--memory <MiB>] [--vcpus <n>] [--motive <id>]"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <Containerfile>] [--memory <MiB>] [--vcpus <n>] [--motive <id>] [--nested]"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])
@@ -439,14 +443,69 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		return errSandbox("sandbox create", fmt.Errorf("open image cache: %w", err))
 	}
 
-	// --file: build image via .nexus/Containerfile (best-effort; requires
-	// buildkitd). On success the digest is fed into the normal cache path.
+	// --file: build image via .nexus/Containerfile (requires buildkitd).
+	// On success the resulting digest is fed into the normal cache boot path.
 	if f.filePath != "" && f.imageRef == "" && f.rootfsPath == "" {
-		// Placeholder: builder integration lives in a future slice.
-		// For now return a clear actionable error rather than silently falling
-		// through to the no-boot path.
-		return errSandbox("sandbox create",
-			fmt.Errorf("--file: builder integration not yet available; use --image or --rootfs"))
+		// Derive the workspace root from the Containerfile path.
+		// Accepted forms:
+		//   --file /path/to/project/.nexus/Containerfile  → workspace=/path/to/project
+		//   --file /path/to/project                        → workspace=/path/to/project
+		var workspaceDir string
+		fi, statErr := os.Stat(f.filePath)
+		if statErr != nil {
+			return errSandbox("sandbox create", fmt.Errorf("--file: stat %q: %w", f.filePath, statErr))
+		}
+		if fi.IsDir() {
+			workspaceDir = f.filePath
+		} else {
+			parent := filepath.Dir(f.filePath)
+			if filepath.Base(parent) == ".nexus" {
+				workspaceDir = filepath.Dir(parent)
+			} else {
+				workspaceDir = parent
+			}
+		}
+
+		// Resolve the buildkitd endpoint: BUILDKIT_HOST env or default socket.
+		buildkitAddr := os.Getenv("BUILDKIT_HOST")
+		if buildkitAddr == "" {
+			const defaultSock = "/run/buildkit/buildkitd.sock"
+			if _, err := os.Stat(defaultSock); err == nil {
+				buildkitAddr = "unix://" + defaultSock
+			} else {
+				return errSandbox("sandbox create",
+					fmt.Errorf("--file: buildkitd not available; set BUILDKIT_HOST or start buildkitd at %s", defaultSock))
+			}
+		}
+
+		// Locate the nexus3-agent binary (same search path as kernelPathFor).
+		agentBin, err := exec.LookPath("nexus3-agent")
+		if err != nil {
+			// Fall back to a binary-relative path.
+			agentBin = filepath.Join(filepath.Dir(kernelPathFor()), "nexus3-agent")
+		}
+
+		b, err := builder.New(builder.Config{
+			BuildkitdAddr:   buildkitAddr,
+			AgentBinaryPath: agentBin,
+		}, imgCache)
+		if err != nil {
+			return errSandbox("sandbox create", fmt.Errorf("--file: init builder: %w", err))
+		}
+
+		buildCtx, buildCancel := context.WithTimeout(ctx, 30*time.Minute)
+		defer buildCancel()
+
+		img, err := b.Build(buildCtx, builder.BuildRequest{
+			BaseRef:      "debian:bookworm-slim",
+			WorkspaceDir: workspaceDir,
+			Ref:          name,
+		})
+		if err != nil {
+			return errSandbox("sandbox create", fmt.Errorf("--file: build: %w", err))
+		}
+		// Feed the built image into the normal boot path.
+		f.imageRef = string(img.Digest)
 	}
 
 	// Resolve the kernel path: env override → binary-relative default.
@@ -458,6 +517,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// svc.Stop (using svc.driver) can find the socket after this call returns.
 	newDriver := func(ext4Path string) (driver.Driver, error) {
 		cfg := buildCHConfig(kernelPath, ext4Path, f.memoryMiB, f.vcpus)
+		cfg.NestedVirt = f.nestedVirt
 		// BinaryPath: look for cloud-hypervisor in PATH if not set.
 		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
 			cfg.BinaryPath = p
@@ -506,6 +566,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			CacheRoot:    cacheRoot,
 			MemoryMiB:    f.memoryMiB,
 			VCPUs:        f.vcpus,
+			NestedVirt:   f.nestedVirt,
 		},
 	)
 	if err != nil {

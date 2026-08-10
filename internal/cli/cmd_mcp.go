@@ -53,6 +53,7 @@ func (m *mcpService) CreateAndBoot(ctx context.Context, project, name string, op
 	kernelPath := kernelPathFor()
 	newDriver := func(ext4Path string) (driver.Driver, error) {
 		cfg := buildCHConfig(kernelPath, ext4Path, opts.MemoryMiB, opts.VCPUs)
+		cfg.NestedVirt = opts.NestedVirt
 		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
 			cfg.BinaryPath = p
 		}

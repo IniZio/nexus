@@ -119,6 +119,9 @@ type createArgs struct {
 	VCPUs     uint32 `json:"vcpus,omitempty"      jsonschema:"number of virtual CPUs (optional; 0 = driver default 1)"`
 	// Optional motive association — associates the sandbox with a motive work thread.
 	Motive string `json:"motive,omitempty" jsonschema:"motive ID to associate this sandbox with (optional; '' = unassociated)"`
+	// NestedVirt opts in to KVM-accelerated nested virtualisation (exposes /dev/kvm in guest).
+	// Default false (hardened posture). Only meaningful when a boot field is set.
+	NestedVirt bool `json:"nested_virt,omitempty" jsonschema:"expose /dev/kvm inside guest (optional; default false)"`
 }
 
 // refArgs holds a single sandbox reference used by start/stop/pause/resume/remove.
@@ -170,8 +173,9 @@ func registerTools(srv *gosdk.Server, svc SandboxService) {
 					Digest:     args.Digest,
 					Ref:        args.Ref,
 				},
-				MemoryMiB: args.MemoryMiB,
-				VCPUs:     args.VCPUs,
+				MemoryMiB:  args.MemoryMiB,
+				VCPUs:      args.VCPUs,
+				NestedVirt: args.NestedVirt,
 			})
 			if err != nil {
 				return nil, nil, err

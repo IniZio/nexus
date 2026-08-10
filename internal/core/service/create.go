@@ -101,6 +101,12 @@ type CreateAndBootOptions struct {
 	// When zero the driver factory uses its built-in default (1 vCPU).
 	VCPUs uint32
 
+	// NestedVirt opts the sandbox into KVM-accelerated nested virtualisation.
+	// When true the driver factory must set NestedVirt on cloudhypervisor.Config
+	// (exposes /dev/kvm inside the guest). Default false keeps the hardened
+	// default posture (D-ORCH-06 / AC-9).
+	NestedVirt bool
+
 	// DiskDir is the directory where the per-sandbox ext4 disk copy is
 	// written (S-COW). When empty, defaultDiskDir() is used, which mirrors
 	// the P2 snapshot-dir precedent: store.DefaultRoot()/disks.
