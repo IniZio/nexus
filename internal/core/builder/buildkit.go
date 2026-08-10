@@ -3,11 +3,18 @@ package builder
 import (
 	"context"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
 	bkclient "github.com/moby/buildkit/client"
 )
+
+// agentContextFilename is the reserved name used for the nexus3-agent binary
+// inside the buildkit context directory. Using a leading underscore avoids
+// collisions with typical workspace filenames.
+const agentContextFilename = "_nexus3-agent"
 
 // SolveRequest is the fully-resolved build specification handed to a
 // [BuildkitClient]. It carries everything needed to describe one complete
@@ -27,6 +34,11 @@ type SolveRequest struct {
 	// AgentInstallPath is the absolute in-guest path where the agent binary is
 	// placed as the final layer. Always "/sbin/nexus3-agent" in production.
 	AgentInstallPath string
+
+	// WorkspaceDir is the absolute host path to the project workspace root.
+	// It is used as the buildkit build context so that COPY instructions in
+	// the user's Containerfile can reference files from the repo.
+	WorkspaceDir string
 }
 
 // BuildkitClient is the seam between [Builder] and a running buildkitd daemon.
@@ -118,31 +130,46 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 	defer bk.Close()
 
 	// Synthesise a combined Dockerfile: user instructions + agent final layer.
+	// The agent COPY uses the reserved agentContextFilename to avoid collisions
+	// with workspace files.
 	finalLayer := fmt.Sprintf(
-		"\n\n# Final layer: bake the nexus3-agent (boot contract: init=%s)\nCOPY --chmod=0755 nexus3-agent %s\n",
-		req.AgentInstallPath, req.AgentInstallPath,
+		"\n\n# Final layer: bake the nexus3-agent (boot contract: init=%s)\nCOPY --chmod=0755 %s %s\n",
+		req.AgentInstallPath, agentContextFilename, req.AgentInstallPath,
 	)
 	synthDF := append(append([]byte(nil), req.ContainerfileBytes...), []byte(finalLayer)...)
 
-	// Build context directory: holds the synthetic Dockerfile and the agent
-	// binary (referenced by the COPY instruction).
+	// Build context directory: populated with workspace files (so user COPY
+	// instructions resolve against the workspace root), plus the synthetic
+	// Dockerfile and the agent binary under its reserved name.
 	ctxDir, err := os.MkdirTemp("", "nexus3-bkctx-*")
 	if err != nil {
 		return fmt.Errorf("buildkit: create context dir: %w", err)
 	}
 	defer os.RemoveAll(ctxDir)
 
+	// Populate the context with the workspace so COPY instructions in the
+	// user's Containerfile can reference repo-tracked files. The workspace is
+	// the root of the build context — buildkit's Dockerfile frontend enforces
+	// that COPY paths cannot escape this root.
+	if req.WorkspaceDir != "" {
+		if err := copyDirIntoContext(req.WorkspaceDir, ctxDir); err != nil {
+			return fmt.Errorf("buildkit: copy workspace into context: %w", err)
+		}
+	}
+
+	// Write the synthetic Dockerfile (overwrites any Dockerfile at workspace
+	// root — acceptable since nexus3 owns the build definition).
 	if err := os.WriteFile(filepath.Join(ctxDir, "Dockerfile"), synthDF, 0600); err != nil {
 		return fmt.Errorf("buildkit: write Dockerfile: %w", err)
 	}
 
-	// Copy the agent binary into the build context so the COPY instruction
-	// can resolve it.
+	// Copy the agent binary into the build context under the reserved name so
+	// the final-layer COPY instruction can resolve it.
 	agentBytes, err := os.ReadFile(req.AgentPath)
 	if err != nil {
 		return fmt.Errorf("buildkit: read agent binary %s: %w", req.AgentPath, err)
 	}
-	if err := os.WriteFile(filepath.Join(ctxDir, "nexus3-agent"), agentBytes, 0755); err != nil {
+	if err := os.WriteFile(filepath.Join(ctxDir, agentContextFilename), agentBytes, 0755); err != nil {
 		return fmt.Errorf("buildkit: write agent to context: %w", err)
 	}
 
@@ -171,4 +198,94 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 		return fmt.Errorf("buildkit: solve: %w", err)
 	}
 	return nil
+}
+
+// copyDirIntoContext recursively copies all files from src into dst, preserving
+// relative paths. Symlinks are resolved; if a symlink target escapes src (i.e.
+// its real path is not rooted at src), the symlink is skipped to prevent
+// workspace-escape attacks. Reserved filenames (Dockerfile, agentContextFilename)
+// are not skipped here — the caller overwrites them after this function returns.
+func copyDirIntoContext(src, dst string) error {
+	// Resolve src to a canonical path for escape detection.
+	srcReal, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return fmt.Errorf("resolve src %s: %w", src, err)
+	}
+
+	return filepath.WalkDir(srcReal, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Derive destination path.
+		rel, err := filepath.Rel(srcReal, path)
+		if err != nil {
+			return err
+		}
+		dstPath := filepath.Join(dst, rel)
+
+		if d.IsDir() {
+			return os.MkdirAll(dstPath, 0755)
+		}
+
+		// For symlinks: resolve target and verify it stays within src.
+		if d.Type()&fs.ModeSymlink != 0 {
+			target, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				// Broken symlink — skip silently.
+				return nil //nolint:nilerr
+			}
+			targetReal, err := filepath.EvalSymlinks(target)
+			if err != nil {
+				return nil //nolint:nilerr
+			}
+			// If the resolved target escapes the workspace root, skip it.
+			if !isDescendant(srcReal, targetReal) {
+				return nil
+			}
+			// Copy the target file contents rather than recreating the symlink.
+			path = targetReal
+		}
+
+		return copyFile(path, dstPath)
+	})
+}
+
+// isDescendant reports whether child is equal to or nested under parent.
+// Both paths must be absolute and clean (EvalSymlinks output).
+func isDescendant(parent, child string) bool {
+	if parent == child {
+		return true
+	}
+	return len(child) > len(parent) &&
+		child[len(parent)] == filepath.Separator &&
+		child[:len(parent)] == parent
+}
+
+// copyFile copies the regular file at src to dst, creating dst's parent
+// directory if necessary.
+func copyFile(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
 }

@@ -178,6 +178,7 @@ func (b *Builder) Build(ctx context.Context, req BuildRequest) (domain.Image, er
 		ContainerfileBytes: cfBytes,
 		AgentPath:          b.cfg.AgentBinaryPath,
 		AgentInstallPath:   agentInstallPath,
+		WorkspaceDir:       req.WorkspaceDir,
 	}, outDir); err != nil {
 		return domain.Image{}, fmt.Errorf("builder: Build: solve: %w", err)
 	}

@@ -289,3 +289,112 @@ func TestBuild_EmptyWorkspaceDir(t *testing.T) {
 		t.Fatal("Build: expected error for empty WorkspaceDir, got nil")
 	}
 }
+
+// ─── build-context tests ──────────────────────────────────────────────────────
+
+// TestBuild_WorkspaceDirThreaded verifies that Build passes WorkspaceDir
+// through to the SolveRequest, so that the BuildkitClient (and therefore
+// buildkitd) receives the correct workspace root as the build context.
+// This is the precondition for user COPY instructions to resolve against the
+// repo root.
+func TestBuild_WorkspaceDirThreaded(t *testing.T) {
+	if !builder.Mke2fsAvailable() {
+		t.Skip("mke2fs not available; install e2fsprogs to run this test")
+	}
+
+	cacheDir := t.TempDir()
+	fake := &fakeBuildkitClient{}
+	b := newTestBuilder(t, fake, cacheDir)
+
+	// Workspace contains a file that a real Containerfile COPY would reference.
+	workspace := setupWorkspace(t, "FROM debian:bookworm-slim\n# COPY assets/hello.txt /hello.txt\n")
+	if err := os.MkdirAll(filepath.Join(workspace, "assets"), 0755); err != nil {
+		t.Fatalf("mkdir assets: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "assets", "hello.txt"), []byte("hello\n"), 0644); err != nil {
+		t.Fatalf("write hello.txt: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if _, err := b.Build(ctx, builder.BuildRequest{
+		BaseRef:      "debian:bookworm-slim",
+		WorkspaceDir: workspace,
+		Ref:          "test:ctx",
+	}); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	// SolveRequest.WorkspaceDir must equal the workspace root.
+	if fake.LastReq.WorkspaceDir != workspace {
+		t.Errorf("SolveRequest.WorkspaceDir = %q, want %q",
+			fake.LastReq.WorkspaceDir, workspace)
+	}
+}
+
+// TestBuild_AgentLayerPreserved verifies that after the WorkspaceDir context
+// extension the appended agent layer still targets /sbin/nexus3-agent.
+// This is the boot contract: the kernel command line passes init=/sbin/nexus3-agent.
+func TestBuild_AgentLayerPreserved(t *testing.T) {
+	if !builder.Mke2fsAvailable() {
+		t.Skip("mke2fs not available; install e2fsprogs to run this test")
+	}
+
+	cacheDir := t.TempDir()
+	fake := &fakeBuildkitClient{}
+	b := newTestBuilder(t, fake, cacheDir)
+	workspace := setupWorkspace(t, "FROM debian:bookworm-slim\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if _, err := b.Build(ctx, builder.BuildRequest{
+		BaseRef:      "debian:bookworm-slim",
+		WorkspaceDir: workspace,
+	}); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	const wantInstall = "/sbin/nexus3-agent"
+	if fake.LastReq.AgentInstallPath != wantInstall {
+		t.Errorf("SolveRequest.AgentInstallPath = %q, want %q (boot contract: init=%s)",
+			fake.LastReq.AgentInstallPath, wantInstall, wantInstall)
+	}
+	if fake.LastReq.AgentPath == "" {
+		t.Error("SolveRequest.AgentPath is empty; agent binary was not threaded through")
+	}
+}
+
+// TestCopyDirIntoContext_EscapeSymlink verifies that copyDirIntoContext skips
+// symlinks whose resolved targets lie outside the source directory, preventing
+// a malicious workspace from reading host files outside the repo root.
+func TestCopyDirIntoContext_EscapeSymlink(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	// Create a legitimate file inside the workspace.
+	if err := os.WriteFile(filepath.Join(src, "legit.txt"), []byte("ok"), 0644); err != nil {
+		t.Fatalf("write legit.txt: %v", err)
+	}
+
+	// Create an escape symlink pointing to /etc/passwd (outside src).
+	escapePath := filepath.Join(src, "escape.txt")
+	if err := os.Symlink("/etc/passwd", escapePath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if err := builder.CopyDirIntoContext(src, dst); err != nil {
+		t.Fatalf("CopyDirIntoContext: %v", err)
+	}
+
+	// The legitimate file must be copied.
+	if _, err := os.Stat(filepath.Join(dst, "legit.txt")); err != nil {
+		t.Errorf("legit.txt not found in dst: %v", err)
+	}
+
+	// The escape symlink must NOT be present in the destination.
+	if _, err := os.Stat(filepath.Join(dst, "escape.txt")); err == nil {
+		t.Error("escape.txt should NOT be copied into dst (escape symlink was allowed)")
+	}
+}

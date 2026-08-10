@@ -9,3 +9,7 @@ var NewWithClient = newWithClient
 // RunMke2fs exposes the unexported runMke2fs function for integration tests
 // that need to produce a raw ext4 image directly from a source directory.
 var RunMke2fs = runMke2fs
+
+// CopyDirIntoContext exposes the unexported copyDirIntoContext function for
+// unit tests that verify workspace-escape prevention.
+var CopyDirIntoContext = copyDirIntoContext
