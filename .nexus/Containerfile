@@ -55,6 +55,39 @@ ENV GOROOT=/usr/local/go
 ENV GOPATH=/root/go
 ENV PATH="/root/go/bin:${PATH}"
 
+# ── buildkitd + buildctl + runc (in-guest image builds) ──────────────────────
+# Versions pinned to match the host's go.mod moby/buildkit dependency
+# (github.com/moby/buildkit v0.18.2) so host and guest speak the same protocol.
+#
+# The moby/buildkit v0.18.2 release tarball contains:
+#   bin/buildkitd    — the build daemon
+#   bin/buildctl     — the CLI client
+#   bin/buildkit-runc — runc bundled with buildkit (used as the OCI worker)
+#
+# Placed in /usr/local/bin alongside cloud-hypervisor and Go.
+# buildkitd is invoked ROOTFUL inside the guest (microVM is the isolation
+# boundary; rootlesskit is not needed). --oci-worker-snapshotter=native is
+# required because overlayfs cannot be nested on virtiofs.
+ARG BUILDKIT_VERSION=v0.18.2
+RUN TARBALL="buildkit-${BUILDKIT_VERSION}.linux-amd64.tar.gz" \
+    && curl -fsSL --retry 5 --retry-delay 2 \
+        "https://github.com/moby/buildkit/releases/download/${BUILDKIT_VERSION}/${TARBALL}" \
+        -o "/tmp/${TARBALL}" \
+    && tar -C /tmp -xzf "/tmp/${TARBALL}" \
+    && install -m 755 /tmp/bin/buildkitd    /usr/local/bin/buildkitd \
+    && install -m 755 /tmp/bin/buildctl     /usr/local/bin/buildctl \
+    && install -m 755 /tmp/bin/buildkit-runc /usr/local/bin/buildkit-runc \
+    && rm -rf /tmp/bin "/tmp/${TARBALL}" \
+    && buildkitd --version \
+    && buildctl  --version
+
+# ── e2fsprogs (mke2fs) — in-guest ext4 image creation ────────────────────────
+# Required by BuildInGuestImage to convert a rootfs directory to a raw ext4
+# disk image consumable by cloud-hypervisor.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        e2fsprogs \
+    && rm -rf /var/lib/apt/lists/*
+
 # ── Sandbox marker ────────────────────────────────────────────────────────────
 # Signal to Claude Code (and similar agents) that this is an isolated sandbox
 # so they accept --dangerously-skip-permissions / root operation.
