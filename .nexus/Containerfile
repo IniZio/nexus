@@ -1,0 +1,61 @@
+# nexus3 guest image — inner nexus3 VM substrate
+#
+# This Containerfile produces the root filesystem for the nexus3 guest VM.
+# buildkit.go appends a final COPY layer for the nexus3-agent binary
+# (boot contract: init=/sbin/nexus3-agent) — do NOT add it here.
+#
+# COPY of local assets (e.g. vmlinux.bin, kernel modules) is deferred to T3.
+# All dependencies are obtained via package installs or in-build downloads.
+
+FROM ubuntu:24.04
+
+LABEL maintainer="Nexus Team"
+LABEL description="nexus3 guest image with inner-VM substrate (cloud-hypervisor, passt, virtiofsd, Go)"
+
+# ── Base packages ─────────────────────────────────────────────────────────────
+# curl + ca-certificates: in-build downloads (cloud-hypervisor, Go toolchain)
+# git: source operations inside the guest
+# passt: user-space network backend for cloud-hypervisor (TAP-less networking)
+# virtiofsd: virtio-fs daemon for guest<->host filesystem sharing
+# iproute2: ip/tc tools expected by network setup scripts
+# xz-utils: decompressing Go tarball and other archives
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        iproute2 \
+        passt \
+        virtiofsd \
+        xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── cloud-hypervisor static binary ────────────────────────────────────────────
+# Not packaged in Ubuntu; download the official GitHub release static binary.
+# Placed in /usr/local/bin so it is on PATH for all users/processes.
+# "latest" resolves to the most recent stable release at image-build time.
+RUN curl -fsSL \
+        "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/latest/download/cloud-hypervisor-static" \
+        -o /usr/local/bin/cloud-hypervisor \
+    && chmod +x /usr/local/bin/cloud-hypervisor \
+    && cloud-hypervisor --version
+
+# ── Go toolchain ──────────────────────────────────────────────────────────────
+# Needed to build nexus3 (and its dependencies) inside the guest.
+# Pin to a specific release so image builds are reproducible.
+ARG GO_VERSION=1.23.4
+ARG GO_ARCH=amd64
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" \
+        | tar -C /usr/local -xz \
+    && ln -sf /usr/local/go/bin/go /usr/local/bin/go \
+    && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt \
+    && go version
+
+# PATH already includes /usr/local/bin; expose GOROOT for tools that need it.
+ENV GOROOT=/usr/local/go
+ENV GOPATH=/root/go
+ENV PATH="/root/go/bin:${PATH}"
+
+# ── Sandbox marker ────────────────────────────────────────────────────────────
+# Signal to Claude Code (and similar agents) that this is an isolated sandbox
+# so they accept --dangerously-skip-permissions / root operation.
+ENV IS_SANDBOX=1
