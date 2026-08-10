@@ -19,6 +19,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -27,11 +29,49 @@ const (
 	guestNetworkDNS     = "192.168.127.1"
 )
 
+// setupLoopback brings the loopback interface (lo) UP via ioctl SIOCSIFFLAGS.
+// The ip(8) binary is absent from the guest image, so we use a direct syscall.
+// This must be called before setupNetwork so that 127.0.0.1 is reachable
+// regardless of egress-interface state.  Errors are logged and non-fatal.
+func setupLoopback(con *os.File) {
+	// Open an AF_INET socket purely to issue the ioctl.
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		consoleLog(con, "nexus3-agent: network: lo: socket: %v\n", err)
+		return
+	}
+	defer unix.Close(fd)
+
+	// Use x/sys/unix typed Ifreq so the struct is correctly sized (40 bytes on
+	// linux/amd64); hand-rolling a [32]byte would undersize the kernel struct.
+	ifreq, err := unix.NewIfreq("lo")
+	if err != nil {
+		consoleLog(con, "nexus3-agent: network: lo: NewIfreq: %v\n", err)
+		return
+	}
+	// Read current flags.
+	if err := unix.IoctlIfreq(fd, unix.SIOCGIFFLAGS, ifreq); err != nil {
+		consoleLog(con, "nexus3-agent: network: lo: SIOCGIFFLAGS: %v\n", err)
+		return
+	}
+	// Set IFF_UP and write back.
+	ifreq.SetUint16(ifreq.Uint16() | unix.IFF_UP)
+	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifreq); err != nil {
+		consoleLog(con, "nexus3-agent: network: lo: SIOCSIFFLAGS: %v\n", err)
+		return
+	}
+	consoleLog(con, "nexus3-agent: network: lo: up\n")
+}
+
 // setupNetwork configures the guest virtio-net interface for the nexus3
 // perimeter.  Called only when running as PID 1 (after mountGuestFS).
 // All errors are logged and non-fatal: if network setup fails, the agent
 // still serves vsock traffic for non-network workloads.
 func setupNetwork(con *os.File) {
+	// Bring loopback up first so 127.0.0.1 is reachable regardless of
+	// egress-interface state.  Uses ioctl directly — ip(8) is absent.
+	setupLoopback(con)
+
 	// Write /etc/resolv.conf before bringing up the interface so DNS
 	// resolves immediately once the interface is up.
 	dns := "nameserver " + guestNetworkDNS + "\n"
