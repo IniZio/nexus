@@ -93,6 +93,12 @@ type CreateAndBootOptions struct {
 	// implementation; tests inject a capture stub.
 	Seeder GuestSeeder
 
+	// SSHPublicKey is an OpenSSH-format public key to inject into the guest at
+	// /root/.ssh/authorized_keys after boot (step 10). When non-empty, the key
+	// is stored in Envelope.SSHPublicKey so Start (restart) can re-inject it.
+	// Leave empty to skip SSH provisioning; existing behaviour is unchanged.
+	SSHPublicKey string
+
 	// MemoryMiB is the guest RAM in mebibytes to pass to the driver factory.
 	// When zero the driver factory uses its built-in default (512 MiB).
 	MemoryMiB uint32
@@ -286,6 +292,7 @@ func CreateAndBoot(
 		Envelope: domain.Envelope{
 			ImageDigest:  resolvedDigest,
 			AllowedHosts: opts.AllowedHosts, // frozen at creation (P1-S6)
+			SSHPublicKey: opts.SSHPublicKey,  // frozen at creation (ORCA-S1)
 		},
 		RemoveOnExit: opts.RemoveOnExit,
 	}
@@ -423,6 +430,20 @@ func CreateAndBoot(
 			_ = bootDrv.Stop(ctx, booted.ID)
 			_ = svc.store.Delete(ctx, booted.ID)
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: seed: %w", project, name, err)
+		}
+	}
+
+	// ── 10. Inject SSH authorized_keys (ORCA-S1) ─────────────────────────────
+	//
+	// SeedSSHAuthorizedKeys is a no-op when SSHPublicKey is empty or when the
+	// service has no sshSeeder attached, preserving existing behaviour.
+	// On failure the VM is stopped and the record deleted — SSH provisioning is
+	// a hard requirement when requested (unlike best-effort CA seeding).
+	if booted.Envelope.SSHPublicKey != "" {
+		if err := SeedSSHAuthorizedKeys(ctx, booted.Envelope.SSHPublicKey, booted.ID, svc.sshSeeder); err != nil {
+			_ = bootDrv.Stop(ctx, booted.ID)
+			_ = svc.store.Delete(ctx, booted.ID)
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: ssh seed: %w", project, name, err)
 		}
 	}
 

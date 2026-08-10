@@ -343,10 +343,21 @@ RUN go mod download all
 # ── Stage 4: final agent base image ──────────────────────────────────────────
 FROM debian:bookworm-slim
 # Runtime dependencies: git (workspace ops) + ca-certificates (TLS) +
-# iproute2 (ip link/addr/route for nexus3-agent network init at PID 1).
+# iproute2 (ip link/addr/route for nexus3-agent network init at PID 1) +
+# openssh-server (sshd for ORCA vsock:22 SSH bridge).
 RUN apt-get update -qq && \
-    apt-get install -y --no-install-recommends git ca-certificates iproute2 && \
+    apt-get install -y --no-install-recommends git ca-certificates iproute2 openssh-server && \
     rm -rf /var/lib/apt/lists/*
+
+# sshd configuration for ORCA pubkey-only root login.
+# authorized_keys are injected at runtime by the seeder to /root/.ssh/authorized_keys
+# (GuestAuthorizedKeysPath), which is OpenSSH's default — no AuthorizedKeysFile override needed.
+RUN printf 'PermitRootLogin prohibit-password\nPasswordAuthentication no\nPubkeyAuthentication yes\n' \
+    > /etc/ssh/sshd_config.d/99-nexus3-orca.conf
+
+# Pre-generate host keys for deterministic image layers; startSSHD also runs
+# ssh-keygen -A at boot as a safety net.
+RUN ssh-keygen -A
 
 # Go toolchain from stage 1.
 COPY --from=go-fetcher /usr/local/go /usr/local/go

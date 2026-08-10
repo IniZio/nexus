@@ -4,12 +4,16 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
 	"os"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 
 	"github.com/IniZio/nexus3/internal/core/agent"
 	"github.com/IniZio/nexus3/internal/core/agent/agentpb"
@@ -222,6 +226,123 @@ func SeedCA(ctx context.Context, cert *x509.Certificate, id domain.SandboxID, se
 	}
 	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
 	return seeder(ctx, id, pemBytes)
+}
+
+// GuestAuthorizedKeysPath is the well-known path inside the guest where the
+// SSH authorized_keys file is written. sshd reads this file to authenticate
+// key-based logins for root.
+const GuestAuthorizedKeysPath = "/root/.ssh/authorized_keys"
+
+// NewAgentSSHKeyCopySeeder returns a GuestSeeder that injects a caller-supplied
+// OpenSSH public key into the guest at [GuestAuthorizedKeysPath] via the
+// agent's Copy mechanism.
+//
+// The tar archive sent to the guest contains two entries:
+//   - .ssh/  (TypeDir, mode 0700) — ensures parent dir exists with strict perms
+//   - .ssh/authorized_keys  (TypeReg, mode 0600) — the public key line
+//
+// The archive is extracted under /root so the full paths resolve correctly.
+// IsDirectory=true is set on the Copy call so the guest agent uses pushDir,
+// which correctly processes the directory mode from the tar header.
+func NewAgentSSHKeyCopySeeder(c *agent.Client) GuestSeeder {
+	return func(ctx context.Context, _ domain.SandboxID, payload []byte) error {
+		var archive bytes.Buffer
+		tw := tar.NewWriter(&archive)
+
+		// Root directory entry: "." with mode 0700 — sets /root itself to
+		// strict perms so sshd StrictModes accepts the authorized_keys chain.
+		rootHdr := &tar.Header{
+			Typeflag: tar.TypeDir,
+			Name:     "./",
+			Mode:     0700,
+			Uid:      0,
+			Gid:      0,
+		}
+		if err := tw.WriteHeader(rootHdr); err != nil {
+			return fmt.Errorf("seed ssh: tar root dir header: %w", err)
+		}
+
+		// Directory entry: .ssh/ with mode 0700.
+		dirHdr := &tar.Header{
+			Typeflag: tar.TypeDir,
+			Name:     ".ssh/",
+			Mode:     0700,
+			Uid:      0,
+			Gid:      0,
+		}
+		if err := tw.WriteHeader(dirHdr); err != nil {
+			return fmt.Errorf("seed ssh: tar dir header: %w", err)
+		}
+
+		// File entry: .ssh/authorized_keys with mode 0600.
+		fileHdr := &tar.Header{
+			Typeflag: tar.TypeReg,
+			Name:     ".ssh/authorized_keys",
+			Mode:     0600,
+			Uid:      0,
+			Gid:      0,
+			Size:     int64(len(payload)),
+		}
+		if err := tw.WriteHeader(fileHdr); err != nil {
+			return fmt.Errorf("seed ssh: tar file header: %w", err)
+		}
+		if _, err := tw.Write(payload); err != nil {
+			return fmt.Errorf("seed ssh: tar write: %w", err)
+		}
+		if err := tw.Close(); err != nil {
+			return fmt.Errorf("seed ssh: tar close: %w", err)
+		}
+
+		return c.Copy(ctx, agent.CopyOptions{
+			Direction:   agentpb.CopyDirection_COPY_DIRECTION_PUSH,
+			GuestPath:   "/root",
+			IsDirectory: true,
+			Src:         &archive,
+		})
+	}
+}
+
+// SeedSSHAuthorizedKeys delivers pubKey (an OpenSSH authorized_keys line) into
+// the guest at [GuestAuthorizedKeysPath] via seeder.
+//
+// The write is idempotent; repeated calls overwrite the file.
+// If pubKey is empty or seeder is nil, SeedSSHAuthorizedKeys is a no-op and
+// returns nil.
+func SeedSSHAuthorizedKeys(ctx context.Context, pubKey string, id domain.SandboxID, seeder GuestSeeder) error {
+	if pubKey == "" || seeder == nil {
+		return nil
+	}
+	// Ensure the key line ends with a newline, as sshd requires.
+	keyBytes := []byte(pubKey)
+	if len(keyBytes) > 0 && keyBytes[len(keyBytes)-1] != '\n' {
+		keyBytes = append(keyBytes, '\n')
+	}
+	return seeder(ctx, id, keyBytes)
+}
+
+// GenerateEphemeralSSHKeypair generates a fresh ed25519 keypair and returns
+// the public key in OpenSSH authorized_keys format and the private key in
+// OpenSSH PEM format. The caller is responsible for storing the private key
+// securely and passing the public key to [CreateAndBootOptions.SSHPublicKey].
+func GenerateEphemeralSSHKeypair() (publicKey, privateKey string, err error) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", "", fmt.Errorf("ssh keygen: generate ed25519: %w", err)
+	}
+
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		return "", "", fmt.Errorf("ssh keygen: marshal public key: %w", err)
+	}
+	pubLine := strings.TrimRight(string(ssh.MarshalAuthorizedKey(sshPub)), "\n")
+
+	privPEM, err := ssh.MarshalPrivateKey(priv, "")
+	if err != nil {
+		return "", "", fmt.Errorf("ssh keygen: marshal private key: %w", err)
+	}
+	privPEMBytes := pem.EncodeToMemory(privPEM)
+
+	return pubLine, string(privPEMBytes), nil
 }
 
 // agentCredKind selects which guest env var carries the Anthropic API

@@ -73,6 +73,7 @@ type Service struct {
 	// perimeter fields — all optional; nil means no egress enforcement.
 	broker   *cred.Broker // host-side credential store for MITM token swap
 	caSeeder GuestSeeder  // delivers the MITM CA cert into the guest trust store
+	sshSeeder GuestSeeder // injects SSH authorized_keys into the guest (ORCA-S1)
 
 	supervisorsMu sync.Mutex
 	supervisors   map[domain.SandboxID]*perimeter.PerimeterSupervisor
@@ -111,6 +112,18 @@ func (s *Service) WithArtifacts(a *artifact.Store) *Service {
 // WithBroker does not alter any existing method or the New constructor.
 func (s *Service) WithBroker(b *cred.Broker) *Service {
 	s.broker = b
+	return s
+}
+
+// WithSSHSeeder attaches a [GuestSeeder] that injects SSH authorized_keys into
+// the guest at sandbox start and restart. The seeder is called only when the
+// sandbox's Envelope.SSHPublicKey is non-empty. Typically constructed via
+// [NewAgentSSHKeyCopySeeder].
+//
+// The injection is best-effort on Start (restart): if the guest agent is not
+// yet reachable the error is logged but does not fail Start.
+func (s *Service) WithSSHSeeder(seeder GuestSeeder) *Service {
+	s.sshSeeder = seeder
 	return s
 }
 
@@ -297,6 +310,15 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 	if hook, ok := s.driver.(driver.NetworkHook); ok && s.broker != nil {
 		if err := s.startSupervisor(ctx, hook, updated); err != nil {
 			return domain.Sandbox{}, fmt.Errorf("service: start %s: perimeter: %w", updated.ID, err)
+		}
+	}
+
+	// Re-inject SSH authorized_keys on restart when a key was provisioned at
+	// creation. Best-effort: the guest agent may not be ready yet immediately
+	// after Start; the error is swallowed (same pattern as caSeeder).
+	if updated.Envelope.SSHPublicKey != "" && s.sshSeeder != nil {
+		if err := SeedSSHAuthorizedKeys(ctx, updated.Envelope.SSHPublicKey, updated.ID, s.sshSeeder); err != nil {
+			_ = err // best-effort; guest agent may not yet be reachable
 		}
 	}
 

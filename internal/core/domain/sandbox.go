@@ -103,6 +103,12 @@ type Envelope struct {
 	// credential per entry and seeds it into the guest (P1-S6).
 	// TODO(S6): agent attachment.
 	AllowedHosts []string
+
+	// SSHPublicKey is the OpenSSH-format public key to inject into
+	// /root/.ssh/authorized_keys at boot and restart. Empty means no SSH key
+	// is provisioned and the guest authorized_keys file is not written.
+	// Set by CreateAndBoot when CreateAndBootOptions.SSHPublicKey is non-empty.
+	SSHPublicKey string
 }
 
 // Handle returns the human handle for the sandbox in "<project>/<name>" form.

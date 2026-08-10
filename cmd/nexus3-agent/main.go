@@ -44,6 +44,9 @@ func main() {
 	// no DHCP client binary is required.
 	if isPid1 {
 		setupNetwork(con)
+		// Start sshd early so the vsock bridge (startSSHForward) has a live
+		// local sshd to connect to on 127.0.0.1:22.
+		startSSHD(con)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(),

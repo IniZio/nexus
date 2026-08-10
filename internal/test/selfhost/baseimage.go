@@ -526,8 +526,10 @@ FROM debian:bookworm-slim
 # Runtime dependencies: git (workspace operations) + ca-certificates (TLS).
 # Explicitly excluded: gcc, build-essential, binutils (CGO_ENABLED=0 throughout).
 RUN apt-get update -qq && \
-    apt-get install -y --no-install-recommends git ca-certificates && \
+    apt-get install -y --no-install-recommends git ca-certificates openssh-server && \
     rm -rf /var/lib/apt/lists/*
+RUN printf 'PermitRootLogin prohibit-password\nPasswordAuthentication no\nPubkeyAuthentication yes\n' > /etc/ssh/sshd_config.d/99-nexus3-orca.conf
+RUN ssh-keygen -A
 
 # Install the upstream Go toolchain from stage 1.
 COPY --from=go-fetcher /usr/local/go /usr/local/go
@@ -544,6 +546,13 @@ ENV GOPATH=/usr/local/gopath \
 
 # Verify Go is functional in the final stage.
 RUN go version
+
+# Fix /root ownership: apt-get package installs (e.g. openssh-server postinst)
+# may allocate uid 1003 and write skel files (.bashrc, .profile, .config) into
+# /root, leaving the directory owned by that uid. sshd StrictModes rejects
+# pubkey login for root when root's home dir is not owned by root (uid 0).
+# This chown runs after all apt installs and ssh-keygen so nothing re-owns /root.
+RUN chown -R root:root /root
 
 # ── Final layer: bake nexus3-agent ───────────────────────────────────────────
 # Placed last so an agent rebuild only invalidates this one layer.
