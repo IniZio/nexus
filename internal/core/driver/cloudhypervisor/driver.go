@@ -132,6 +132,33 @@ type Config struct {
 	// only SnapshotDir moves to the durable state home.
 	SnapshotDir string
 
+	// NestedVirt enables opt-in nested virtualisation support.
+	//
+	// # Security perimeter (D-N3N-02 AC4)
+	//
+	// When true the outer VM's vCPUs expose the host CPU's virtualisation
+	// extensions (Intel VMX / AMD SVM) to the guest, allowing the guest to
+	// run its own KVM-accelerated VMs (cloud-hypervisor or QEMU in-guest).
+	// This WIDENS the isolation perimeter:
+	//   - The outer guest can instantiate full VMs; a compromised guest has a
+	//     richer attack surface (hypervisor CVEs, /dev/kvm, etc.).
+	//   - The host system must have nested KVM enabled
+	//     (/sys/module/kvm_intel(amd)/parameters/nested == "1" or "Y").
+	//   - The host user (and the in-userns child process) must be able to
+	//     open /dev/kvm with read+write permissions.
+	//
+	// When false (the default) the driver still sends CpusConfig.nested=false
+	// explicitly in the JSON payload — it is NEVER omitted. Cloud Hypervisor
+	// v53 treats an absent CpusConfig.nested field as true (nested-virt ON by
+	// default), so omitting it would silently breach this opt-in perimeter.
+	// WARNING: do NOT add omitempty to the Nested field in client.go — doing so
+	// would re-enable nested-by-default and violate D-N3N-02.
+	// The host nested-KVM check is not run and /dev/kvm access is not required.
+	//
+	// Mirrors NEXUS_NESTED_VIRT in old nexus (packages/nexus).
+	// Set via the NEXUS_NESTED_VIRT=1 env var or by setting this field directly.
+	NestedVirt bool
+
 }
 
 // CHDriver implements driver.Driver, driver.PauseResumer, driver.Snapshotter,
@@ -493,16 +520,27 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 		}
 	}
 
+	// Nested-virt preflight: check host support and /dev/kvm access before
+	// constructing vmcfg. We fail loudly here so the error is attributed to
+	// Start (not to a mysterious vmm startup failure later).
+	cpusCfg := &vmCPUsConfig{
+		BootVCPUs: vcpus,
+		MaxVCPUs:  vcpus,
+	}
+	if d.cfg.NestedVirt {
+		if err := nestedVirtPreflight(); err != nil {
+			return "", err
+		}
+		cpusCfg.Nested = true
+	}
+
 	vmcfg := vmConfig{
 		Payload: vmPayloadConfig{
 			Kernel:    d.cfg.KernelPath,
 			Cmdline:   cmdline,
 			Initramfs: d.cfg.InitramfsPath, // omitempty: omitted when empty or disk boot
 		},
-		CPUs: &vmCPUsConfig{
-			BootVCPUs: vcpus,
-			MaxVCPUs:  vcpus,
-		},
+		CPUs: cpusCfg,
 		Memory: &vmMemoryConfig{
 			SizeBytes: uint64(memMiB) * 1024 * 1024,
 		},

@@ -146,9 +146,23 @@ type vmPayloadConfig struct {
 
 // vmCPUsConfig maps to CH's CpusConfig; both boot_vcpus and max_vcpus are
 // required by the CH schema.
+//
+// The Nested field maps to CpusConfig.nested (CH v53 OpenAPI schema,
+// cloud-hypervisor.yaml @ v53.0: CpusConfig.nested boolean, default true).
+// When true CH exposes the host CPU's virtualisation extensions (Intel VMX /
+// AMD SVM) to the guest vCPUs, which allows the guest to run KVM itself.
+//
+// SECURITY: We always send this field explicitly (no omitempty). CH's schema
+// default is true, so omitting it silently enables guest KVM — violating
+// D-N3N-02's default-off guarantee. The zero value (false) is the correct
+// default; Start sets it to true only when Config.NestedVirt opts in.
 type vmCPUsConfig struct {
 	BootVCPUs uint32 `json:"boot_vcpus"`
 	MaxVCPUs  uint32 `json:"max_vcpus"`
+	// Nested sets CpusConfig.nested in the vm.create request. Always sent
+	// explicitly (no omitempty) so CH never falls back to its default (true).
+	// false = default-off (D-N3N-02); true = NestedVirt opt-in path.
+	Nested bool `json:"nested"`
 }
 
 // vmMemoryConfig maps to CH's MemoryConfig. The "size" field is in bytes.
