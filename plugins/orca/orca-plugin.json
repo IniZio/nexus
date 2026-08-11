@@ -1,0 +1,11 @@
+{
+  "manifestVersion": 1,
+  "id": "nexus3",
+  "publisher": "skymakers",
+  "name": "nexus3 VM Sandbox",
+  "version": "0.1.0",
+  "description": "Run Orca worktrees inside VM-isolated nexus3 microVM sandboxes.",
+  "engines": { "orca": ">=0.1.0" },
+  "pluginApi": 1,
+  "contributes": { "vmRecipes": [ { "path": "recipes/nexus3.json" } ] }
+}

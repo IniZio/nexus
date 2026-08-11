@@ -1,0 +1,9 @@
+# nexus3 VM-sandbox recipe (per-repo). Mirrors plugins/orca/recipes/nexus3.json.
+environmentRecipes:
+  - id: nexus3-sandbox
+    name: nexus3 microVM sandbox
+    description: Boot a nexus3 VM sandbox, clone the repo, and run the agent inside it.
+    create: ./scripts/orca-vm/start.sh
+    suspend: ./scripts/orca-vm/suspend.sh
+    resume: ./scripts/orca-vm/resume.sh
+    destroy: ./scripts/orca-vm/stop.sh
