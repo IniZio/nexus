@@ -113,10 +113,9 @@ func (p *managedProcess) kill() {
 // cancel) spawnVMM kills the child and removes socketPath before returning
 // the error — no orphan processes or stale sockets are left behind.
 func spawnVMM(ctx context.Context, cfg Config, socketPath string) (*managedProcess, error) {
-	return spawnVMMWithAttr(ctx, cfg, socketPath, &syscall.SysProcAttr{
-		Setpgid:   true,
-		Pdeathsig: syscall.SIGKILL,
-	})
+	attr := &syscall.SysProcAttr{Setpgid: true}
+	setPdeathsig(attr)
+	return spawnVMMWithAttr(ctx, cfg, socketPath, attr)
 }
 
 // spawnVMMInGroup is like spawnVMM but with Setpgid:false so the spawned CH
@@ -125,10 +124,9 @@ func spawnVMM(ctx context.Context, cfg Config, socketPath string) (*managedProce
 // must be in the same group so that rt.Stop()'s group-kill
 // (Kill(-childPgid, SIGKILL)) reaches CH.
 func spawnVMMInGroup(ctx context.Context, cfg Config, socketPath string) (*managedProcess, error) {
-	return spawnVMMWithAttr(ctx, cfg, socketPath, &syscall.SysProcAttr{
-		Setpgid:   false,
-		Pdeathsig: syscall.SIGKILL, // defense-in-depth: CH dies if child dies unexpectedly
-	})
+	attr := &syscall.SysProcAttr{Setpgid: false}
+	setPdeathsig(attr) // defense-in-depth: CH dies if child dies unexpectedly (Linux-only)
+	return spawnVMMWithAttr(ctx, cfg, socketPath, attr)
 }
 
 // spawnVMMWithAttr is the shared implementation of spawnVMM and spawnVMMInGroup,
