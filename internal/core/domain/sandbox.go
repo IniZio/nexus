@@ -78,6 +78,16 @@ type Sandbox struct {
 	// sandboxes created with Create (not fork). Frozen at creation time and
 	// must not be mutated after the sandbox record is written.
 	Provenance *Provenance `json:"provenance,omitempty"`
+
+	// SupervisorPID is the PID of the detached per-sandbox supervisor process.
+	// Zero means no supervisor is running (in-process perimeter). It is set by
+	// the orca create path after the supervisor reports ready and IS persisted
+	// to the store (D-PP-01 §S2) so destroy can find and stop the supervisor.
+	SupervisorPID int `json:"supervisor_pid,omitempty"`
+
+	// SupervisorSock is the absolute path of the supervisor's Unix-domain
+	// IPC socket. Empty when SupervisorPID is zero.
+	SupervisorSock string `json:"supervisor_sock,omitempty"`
 }
 
 // Provenance records the lineage of a sandbox created as a fork child.

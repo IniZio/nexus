@@ -501,3 +501,69 @@ func TestGitHostsFromURL_Empty(t *testing.T) {
 		t.Errorf("expected nil for empty URL, got %v", hosts)
 	}
 }
+
+// TestOrcaCreate_AllowedHostsInEnvelope is a regression test for the production
+// gap where orcaCreate never set AllowedHosts on CreateAndBootOptions, leaving
+// the sandbox Envelope.AllowedHosts empty. The detached supervisor reads the
+// envelope from the store when it calls svc.Start, so an empty list means the
+// perimeter netfilter is default-deny for all traffic — including api.anthropic.com.
+//
+// This test mirrors the allowedHosts construction in orcaCreate and asserts that
+// the created sandbox Envelope carries all required hosts. It does not require
+// live credentials or a running VM.
+func TestOrcaCreate_AllowedHostsInEnvelope(t *testing.T) {
+	svc := newTestOrcaService(t)
+
+	// Mirror what orcaCreate does: base set + git hosts for a GitHub URL.
+	const repoURL = "https://github.com/anthropics/anthropic-sdk-go"
+	allowedHosts := append(service.AgentEgressHosts(), gitHostsFromURL(repoURL)...)
+
+	f, err := os.CreateTemp(t.TempDir(), "rootfs")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	f.Close()
+	imgCache, err := image.NewCache(t.TempDir())
+	if err != nil {
+		t.Fatalf("image.NewCache: %v", err)
+	}
+	newDriver := service.DriverFactory(func(_ string) (driver.Driver, error) {
+		return fake.New(), nil
+	})
+	sb, err := service.CreateAndBoot(context.Background(), svc, imgCache, newDriver, nopProbe,
+		"orca", "allowed-hosts-regression",
+		service.CreateAndBootOptions{
+			MotiveID:            "regression-test",
+			Image:               service.ImageSpec{RootfsPath: f.Name()},
+			ReachabilityTimeout: 5 * time.Second,
+			AllowedHosts:        allowedHosts,
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: %v", err)
+	}
+
+	// The Envelope is frozen at creation; assert every required host is present.
+	got := make(map[string]bool, len(sb.Envelope.AllowedHosts))
+	for _, h := range sb.Envelope.AllowedHosts {
+		got[h] = true
+	}
+
+	required := []string{
+		service.AnthropicAPIHost,    // api.anthropic.com
+		service.ClaudePlatformHost,  // platform.claude.com
+		"github.com",                // git clone host
+		"codeload.github.com",       // GitHub pack CDN
+	}
+	for _, h := range required {
+		if !got[h] {
+			t.Errorf("Envelope.AllowedHosts missing %q; got %v", h, sb.Envelope.AllowedHosts)
+		}
+	}
+
+	// Paranoia: the list must be non-trivially sized (not open-all — the netfilter
+	// uses this list to allow only these hosts, so empty == deny-all was the bug).
+	if len(sb.Envelope.AllowedHosts) == 0 {
+		t.Error("Envelope.AllowedHosts is empty — perimeter would be default-deny")
+	}
+}

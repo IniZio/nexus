@@ -48,12 +48,18 @@ func startSSHD(con *os.File) {
 		// Non-fatal — baked keys may already be present.
 	}
 
-	// Launch sshd.  Without -D it daemonises automatically, so this returns
-	// once the daemon has forked.
+	// Launch sshd.  Without -D it daemonises automatically (double-fork).
+	// Do NOT use CombinedOutput: the forked daemon inherits the pipe write
+	// end, causing CombinedOutput to block forever waiting for the pipe to
+	// close.  Use Start()+Process.Release() instead: Start returns as soon
+	// as the process is spawned, Release() detaches the child so it can be
+	// reaped by the kernel (PID 1 reaps all orphans).
 	cmd := exec.Command("/usr/sbin/sshd")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		consoleLog(con, "nexus3-agent: sshd: start failed: %v: %s\n", err, out)
+	if err := cmd.Start(); err != nil {
+		consoleLog(con, "nexus3-agent: sshd: start failed: %v\n", err)
 		return
 	}
-	consoleLog(con, "nexus3-agent: sshd: started\n")
+	// Detach: we don't own the daemon's lifecycle; PID 1 will reap it.
+	_ = cmd.Process.Release()
+	consoleLog(con, "nexus3-agent: sshd: started (pid=%d)\n", cmd.Process.Pid)
 }

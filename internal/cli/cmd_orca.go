@@ -19,9 +19,9 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus3/internal/supervisor"
 )
 
 func init() {
@@ -298,12 +298,15 @@ func runOrca(ctx context.Context, args []string, out *Output) error {
 
 // ── create ────────────────────────────────────────────────────────────────────
 
-// orcaCreate boots a new sandbox and prints the Orca connection JSON on w.
-// ORCA_VM_INSTANCE_ID is used as the sandbox's MotiveID so that suspend/resume/
-// destroy can locate it via service.GetByMotive across separate process invocations.
+// orcaCreate provisions a new sandbox, hands VM ownership to a detached
+// supervisor (D-PP-01 S2), and prints the Orca connection JSON on w.
 //
-// Idempotent: if GetByMotive returns an existing sandbox for this instance, the
-// existing connection JSON is returned without booting a new VM.
+// ORCA_VM_INSTANCE_ID is used as the sandbox's MotiveID so that suspend/
+// resume/destroy can locate it via service.GetByMotive across separate
+// process invocations.
+//
+// Idempotent: if GetByMotive returns an existing sandbox for this instance,
+// the existing connection JSON is returned without booting a new VM.
 func orcaCreate(ctx context.Context, w io.Writer) error {
 	env := readOrcaEnv()
 	if env.InstanceID == "" {
@@ -312,9 +315,6 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 
 	// SSH keypair: generate-or-load BEFORE the idempotency check so that
 	// privKeyPath is available regardless of which branch we take.
-	// The public key is injected into the guest via SSHPublicKey; the private key
-	// path is emitted in the connection JSON as identityFile so Orca's ssh2 client
-	// authenticates over the proxyCommand pipe.
 	pubKey, _, err := generateOrLoadOrcaKeypair(env.InstanceID)
 	if err != nil {
 		return fmt.Errorf("orca create: %w", err)
@@ -331,22 +331,36 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	}
 
 	// Idempotency: if a sandbox already exists for this instance, return its JSON.
+	// Supervisor liveness check:
+	//   - Live supervisor → re-adopt (return connection JSON without spawning a second).
+	//   - Stale supervisor (PID dead) → clean up pid/sock files, clear store fields,
+	//     then return the connection JSON (sandbox record preserved; user may restart).
+	//   - No supervisor recorded → return connection JSON as-is.
 	if existing, err := svc.GetByMotive(ctx, env.InstanceID); err == nil && len(existing) > 0 {
 		sb := existing[0]
+		if sb.SupervisorPID > 0 {
+			alive, _ := supervisor.CheckAndReconcile(sb.SupervisorPID, sb.SupervisorSock)
+			if alive {
+				slog.Info("orca create: live supervisor re-adopted",
+					"sandbox", sb.ID, "pid", sb.SupervisorPID, "sock", sb.SupervisorSock)
+			} else {
+				slog.Warn("orca create: stale supervisor detected; cleaning up",
+					"sandbox", sb.ID, "pid", sb.SupervisorPID)
+				// Best-effort: clear the stale supervisor fields so destroy
+				// doesn't try to stop a process that no longer exists.
+				if clearErr := svc.ClearSupervisor(ctx, sb.ID); clearErr != nil {
+					slog.Warn("orca create: clear stale supervisor fields", "err", clearErr)
+				}
+			}
+		}
 		result := buildOrcaConnectionJSON(env.InstanceID, sb.ID.String(), env.WorkspaceName, env.RepoPath, privKeyPath)
 		return json.NewEncoder(w).Encode(result)
 	}
 
 	// Image to boot. Override via NEXUS3_IMAGE; default to the standard base.
 	//
-	// Image requirement (ORCA-P3): the image must include:
-	//   - git          (for repo checkout below)
-	//   - sshd         (for Orca's SSH connection)
-	//   - claude-code  (for Orca's in-guest agent execution)
-	// The default "nexus3-base:latest" may lack these tools. Set NEXUS3_IMAGE
-	// to an image built with internal/core/builder (BuildAgentBaseImage) plus
-	// git and openssh-server installed. The post-boot git check below will warn
-	// at runtime if git is absent.
+	// Image requirement (ORCA-P3): the image must include git, sshd, claude-code.
+	// The default "nexus3-base:latest" may lack these tools.
 	imageRef := os.Getenv("NEXUS3_IMAGE")
 	if imageRef == "" {
 		imageRef = "nexus3-base:latest"
@@ -364,16 +378,44 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	}
 
 	kernelPath := kernelPathFor()
+
+	// ── Resolve socketDir ─────────────────────────────────────────────────────
+	// Must match the formula in cloudhypervisor.defaultSocketDir so that:
+	//   (a) the initial CreateAndBoot factory and
+	//   (b) the detached supervisor (passed as --socket-dir) and
+	//   (c) newSandboxService()'s driver (default)
+	// all resolve to the same directory. This is what makes svc.Exec work after
+	// the supervisor owns the VM.
+	socketDir, err := orcaSocketDir()
+	if err != nil {
+		return fmt.Errorf("orca create: resolve socket dir: %w", err)
+	}
+
+	// ── stateDir for supervisor.pid / supervisor.sock ─────────────────────────
+	// Use /tmp so the path is guaranteed short (supervisor.sock fits in 107-byte
+	// AF_UNIX sun_path even on systems with long $HOME).
+	stateDir, err := os.MkdirTemp("/tmp", "nexus3-sv-")
+	if err != nil {
+		return fmt.Errorf("orca create: create supervisor state dir: %w", err)
+	}
+
+	// ── cloud-hypervisor binary ────────────────────────────────────────────────
+	chBin, _ := exec.LookPath("cloud-hypervisor")
+
+	// ── DriverFactory ─────────────────────────────────────────────────────────
+	// capturedDiskPath: the CoW ext4 copy path forwarded to the supervisor.
+	var capturedDiskPath string
 	newDriver := service.DriverFactory(func(ext4Path string) (driver.Driver, error) {
+		capturedDiskPath = ext4Path
 		cfg := buildCHConfig(kernelPath, ext4Path, 0, 0)
-		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
-			cfg.BinaryPath = p
+		cfg.SocketDir = socketDir // explicit so it matches supervisor + svc
+		if chBin != "" {
+			cfg.BinaryPath = chBin
 		}
 		return cloudhypervisor.New(cfg)
 	})
 
 	// Probe: wait for the guest agent control port to answer via vsock.
-	// Mirrors the probe in cmd_herdr_plugin.go and cmd_sandbox.go exactly.
 	probe := func(pCtx context.Context, drv driver.Driver, id domain.SandboxID) error {
 		gd, ok := drv.(driver.GuestDialer)
 		if !ok {
@@ -394,28 +436,28 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		}
 	}
 
-	// Egress perimeter for git clone: when ORCA_REPO_URL is set, attach a broker
-	// and set AllowedHosts so the service's perimeter supervisor allows outbound
-	// HTTPS to the repo host. For public repos no credential injection is needed —
-	// the MITM proxy forwards traffic without rewriting Authorization headers.
-	//
-	// Egress gap: the perimeter supervisor only activates when svc.WithBroker is
-	// set AND the cloud-hypervisor driver implements driver.NetworkHook. Operator
-	// must ensure the cloud-hypervisor build supports the vsock-tap network stack.
-	// If the guest VM has unrestricted outbound access by default (no perimeter
-	// configured), the git clone will also work without this wiring.
+	// Frozen egress allowlist: AllowedHosts is stored in the sandbox Envelope at
+	// creation time and is read back by the detached supervisor when it calls
+	// svc.Start. Without this, Envelope.AllowedHosts is empty and the perimeter
+	// netfilter is default-deny for all outbound traffic (including api.anthropic.com).
+	// Base set: AgentEgressHosts() (api.anthropic.com + platform.claude.com).
+	// If a git repo URL is configured, also add its hosting domain(s) (e.g.
+	// github.com + codeload.github.com for GitHub) so in-guest git clones work.
+	// The list is fail-closed: only these hosts are permitted; everything else
+	// remains denied by the netfilter AllowList.
+	allowedHosts := append(service.AgentEgressHosts(), gitHostsFromURL(env.RepoURL)...)
+
+	// Initial boot opts: AllowedHosts is frozen here so the detached supervisor
+	// inherits the correct perimeter allowlist when it re-boots the VM.
+	// SSHPublicKey is frozen at creation so the supervisor-owned VM also has it
+	// in the guest's authorized_keys (seeded below via shadow driver).
 	opts := service.CreateAndBootOptions{
 		MotiveID:            env.InstanceID,
 		Image:               service.ImageSpec{Ref: imageRef},
 		CacheRoot:           cacheRoot,
 		ReachabilityTimeout: 120 * time.Second,
 		SSHPublicKey:        pubKey,
-	}
-	if env.RepoURL != "" {
-		broker := cred.NewBroker()
-		svc = svc.WithBroker(broker)
-		opts.Broker = broker
-		opts.AllowedHosts = gitHostsFromURL(env.RepoURL)
+		AllowedHosts:        allowedHosts,
 	}
 
 	name := orcaSandboxName(env.InstanceID)
@@ -423,12 +465,76 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("orca create: boot sandbox: %w", err)
 	}
+	slog.Info("orca create: initial boot done; handing off to supervisor", "sandbox", sb.ID)
+
+	// ── Stop the initial boot — supervisor re-boots with perimeter ────────────
+	if _, stopErr := svc.Stop(ctx, sb.ID.String()); stopErr != nil {
+		return fmt.Errorf("orca create: stop before supervisor handoff: %w", stopErr)
+	}
+
+	// ── SpawnDetached: supervisor takes ownership of VM + perimeter ───────────
+	spawnCfg := supervisor.SpawnConfig{
+		Config: supervisor.Config{
+			SandboxRef: sb.ID.String(),
+			StoreRoot:  storeRoot,
+			StateDir:   stateDir,
+			CHBin:      chBin,
+			SocketDir:  socketDir,
+			KernelPath: kernelPath,
+			DiskPath:   capturedDiskPath,
+			// S3 owns CredsFile / broker wiring; pass the path so the supervisor
+			// can load it when S3 wires the broker. No-op if file is absent.
+			CredsFile: service.DefaultDedicatedCredStorePath(),
+		},
+		ReadyTimeout: 5 * time.Minute,
+	}
+	pid, err := supervisor.SpawnDetached(spawnCfg)
+	if err != nil {
+		return fmt.Errorf("orca create: spawn supervisor: %w", err)
+	}
+	sockPath := supervisor.SockPath(stateDir)
+	slog.Info("orca create: supervisor ready", "pid", pid, "sock", sockPath)
+
+	// ── Persist SupervisorPID + SupervisorSock onto sandbox record ────────────
+	// Must happen before SSH seeding so that a partial failure still leaves
+	// destroy able to find and tear down the supervisor.
+	if err := svc.SetSupervisor(ctx, sb.ID, pid, sockPath); err != nil {
+		return fmt.Errorf("orca create: persist supervisor info: %w", err)
+	}
+
+	// ── SSH authorized_keys seeding via shadow driver ─────────────────────────
+	// The supervisor now owns the VM. Create a shadow CHDriver that talks to
+	// the same API/vsock sockets (same socketDir) without owning the process.
+	if pubKey != "" {
+		shadowCfg := buildCHConfig(kernelPath, capturedDiskPath, 0, 0)
+		shadowCfg.SocketDir = socketDir
+		if chBin != "" {
+			shadowCfg.BinaryPath = chBin
+		}
+		shadowDrv, shadowErr := cloudhypervisor.New(shadowCfg)
+		if shadowErr == nil {
+			if gd, ok := driver.Driver(shadowDrv).(driver.GuestDialer); ok {
+				// Wait for agent under the supervisor-owned VM.
+				waitCtx, waitCancel := context.WithTimeout(ctx, 60*time.Second)
+				defer waitCancel()
+				waitForOrcaAgent(waitCtx, gd, sb.ID)
+
+				agentClient := agent.NewClient(gd, sb.ID)
+				sshSeeder := service.NewAgentSSHKeyCopySeeder(agentClient)
+				seedCtx, seedCancel := context.WithTimeout(ctx, 15*time.Second)
+				defer seedCancel()
+				if seedErr := service.SeedSSHAuthorizedKeys(seedCtx, pubKey, sb.ID, sshSeeder); seedErr != nil {
+					slog.Warn("orca create: seed SSH authorized_keys", "err", seedErr)
+				}
+			}
+		} else {
+			slog.Warn("orca create: shadow driver init failed; SSH seeding skipped", "err", shadowErr)
+		}
+	}
 
 	projectRoot := orcaProjectRoot(env.RepoPath, env.WorkspaceName, env.InstanceID)
 
-	// Post-boot verification: confirm git is present in the image.
-	// Non-fatal: warn and skip clone if absent so the caller still receives
-	// valid JSON and can open the sandbox (empty workspace).
+	// ── Post-boot git availability check ──────────────────────────────────────
 	gitAvailable := true
 	{
 		checkCtx, checkCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -450,14 +556,11 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		}
 	}
 
-	// Repo checkout: clone ORCA_REPO_URL at ORCA_REPO_REF (or ORCA_REPO_BRANCH)
-	// into the guest at projectRoot. Non-fatal on clone failure — return valid
-	// JSON so Orca can still open the sandbox (operator can clone manually).
+	// ── Repo checkout ─────────────────────────────────────────────────────────
 	if env.RepoURL != "" && gitAvailable {
 		cloneCtx, cloneCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cloneCancel()
 
-		// Ensure the workspace parent directory exists.
 		if _, mkErr := svc.Exec(cloneCtx, sb.ID.String(), agent.ExecOptions{
 			Argv: []string{"/bin/sh", "-c", "mkdir -p /root/workspace"},
 			Env:  map[string]string{"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
@@ -472,7 +575,7 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 			Env: map[string]string{
 				"PATH":                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 				"HOME":                "/root",
-				"GIT_TERMINAL_PROMPT": "0", // prevent git from blocking on auth prompts
+				"GIT_TERMINAL_PROMPT": "0",
 			},
 			Stdout: &cloneBuf,
 			Stderr: &cloneBuf,
@@ -494,6 +597,42 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 
 	result := buildOrcaConnectionJSON(env.InstanceID, sb.ID.String(), env.WorkspaceName, env.RepoPath, privKeyPath)
 	return json.NewEncoder(w).Encode(result)
+}
+
+// orcaSocketDir returns the directory used for per-sandbox Cloud Hypervisor
+// API and vsock sockets. It mirrors cloudhypervisor.defaultSocketDir so that
+// the initial CreateAndBoot factory, the detached supervisor (--socket-dir),
+// and newSandboxService()'s CHDriver all resolve to the same path.
+func orcaSocketDir() (string, error) {
+	var dir string
+	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
+		dir = filepath.Join(d, "nexus3")
+	} else {
+		dir = filepath.Join(os.TempDir(), fmt.Sprintf("nexus3-%d", os.Getuid()))
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("orca socket dir %s: %w", dir, err)
+	}
+	return dir, nil
+}
+
+// waitForOrcaAgent polls the guest agent control port via vsock until it
+// answers or ctx expires. Non-fatal: caller logs a warning if ctx times out.
+func waitForOrcaAgent(ctx context.Context, gd driver.GuestDialer, id domain.SandboxID) {
+	for {
+		if ctx.Err() != nil {
+			slog.Warn("orca create: timed out waiting for guest agent under supervisor", "sandbox", id)
+			return
+		}
+		dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		conn, err := gd.DialGuest(dialCtx, id, driver.AgentControlPort)
+		cancel()
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
 }
 
 // ── suspend ───────────────────────────────────────────────────────────────────
@@ -553,6 +692,22 @@ func orcaDestroy(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("orca destroy: %w", err)
 	}
+
+	// Signal the supervisor (and its VM + perimeter) to shut down gracefully
+	// before removing the sandbox record and disk. The supervisor calls
+	// svc.Stop internally so the sandbox transitions to Stopped before Remove.
+	if sb.SupervisorSock != "" {
+		if stopErr := supervisor.StopSupervisor(ctx, sb.SupervisorSock); stopErr != nil {
+			// Supervisor may already be gone (crash, manual kill). Log and proceed
+			// with Remove; the disk + record cleanup must still happen.
+			slog.Warn("orca destroy: StopSupervisor",
+				"sock", sb.SupervisorSock, "pid", sb.SupervisorPID, "err", stopErr)
+		} else {
+			slog.Info("orca destroy: supervisor stopped",
+				"sock", sb.SupervisorSock, "pid", sb.SupervisorPID)
+		}
+	}
+
 	if err := svc.Remove(ctx, sb.ID.String()); err != nil {
 		return fmt.Errorf("orca destroy: remove %s: %w", sb.ID, err)
 	}

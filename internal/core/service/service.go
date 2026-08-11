@@ -25,6 +25,7 @@ package service
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"strings"
@@ -594,6 +595,20 @@ func (s *Service) closeSupervisor(id domain.SandboxID) {
 	if ok {
 		_ = sup.Close()
 	}
+}
+
+// GetPerimeterCACert returns the MITM proxy CA certificate for the sandbox
+// with the given ID. Returns nil if no perimeter supervisor is running for it
+// (e.g. Start has not been called yet, or the supervisor was closed).
+// Safe for concurrent use.
+func (s *Service) GetPerimeterCACert(id domain.SandboxID) *x509.Certificate {
+	s.supervisorsMu.Lock()
+	sup := s.supervisors[id]
+	s.supervisorsMu.Unlock()
+	if sup == nil {
+		return nil
+	}
+	return sup.CACert()
 }
 
 // storeDeregistrar records a deregistration hook for id. Lazy map init mirrors

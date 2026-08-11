@@ -201,6 +201,10 @@ func (r *Refresher) Register(sandboxID domain.SandboxID) {
 	r.sandboxes[sandboxID] = struct{}{}
 }
 
+// Host returns the hostname this Refresher manages credentials for. Read-only;
+// safe for concurrent use without locks.
+func (r *Refresher) Host() string { return r.host }
+
 // Deregister removes sandboxID from the rotation-push set. It is idempotent
 // and safe to call after [Broker.Revoke].
 //

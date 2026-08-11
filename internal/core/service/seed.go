@@ -73,33 +73,18 @@ type GuestSeeder func(ctx context.Context, id domain.SandboxID, payload []byte) 
 
 // NewAgentCopySeeder returns a GuestSeeder that delivers the credential seed
 // payload to the guest by PUSHing it as GuestCredEnvPath via the agent's Copy
-// mechanism. The payload is wrapped in a single-entry tar archive, as required
-// by the agent copy protocol.
+// mechanism. The raw payload bytes are sent directly; IsDirectory=false so the
+// guest agent calls pushFile which writes the bytes verbatim (tar wrapping is
+// NOT used — that is for directory pushes where pushDir extracts the archive).
 //
 // Live VM verification of the sourcing convention is deferred to the in-guest
 // validation slice; this seeder requires a running guest agent.
 func NewAgentCopySeeder(c *agent.Client) GuestSeeder {
 	return func(ctx context.Context, _ domain.SandboxID, payload []byte) error {
-		var archive bytes.Buffer
-		tw := tar.NewWriter(&archive)
-		hdr := &tar.Header{
-			Name: GuestCredEnvPath,
-			Mode: 0600,
-			Size: int64(len(payload)),
-		}
-		if err := tw.WriteHeader(hdr); err != nil {
-			return fmt.Errorf("seed: tar header: %w", err)
-		}
-		if _, err := tw.Write(payload); err != nil {
-			return fmt.Errorf("seed: tar write: %w", err)
-		}
-		if err := tw.Close(); err != nil {
-			return fmt.Errorf("seed: tar close: %w", err)
-		}
 		return c.Copy(ctx, agent.CopyOptions{
 			Direction: agentpb.CopyDirection_COPY_DIRECTION_PUSH,
 			GuestPath: GuestCredEnvPath,
-			Src:       &archive,
+			Src:       bytes.NewReader(payload),
 		})
 	}
 }
@@ -178,36 +163,37 @@ func hostToEnvKey(host string) string {
 
 // NewAgentCACopySeeder returns a GuestSeeder that delivers a PEM-encoded CA
 // certificate to the guest at [GuestCACertPath] via the agent's Copy mechanism.
-// The payload is wrapped in a single-entry tar archive, as required by the
-// agent copy protocol.
+// The raw PEM bytes are sent directly; IsDirectory=false so the guest agent
+// calls pushFile which writes the bytes verbatim. Tar wrapping is NOT used —
+// that is for directory pushes where pushDir extracts the archive.
 //
 // Use this seeder with [SeedCA] to install the MITM proxy trust anchor into the
-// guest. After delivery, the guest must run update-ca-certificates (or
-// equivalent) before HTTPS clients will trust the proxy's leaf certificates.
+// guest. After delivery, run update-ca-certificates in the guest so that system
+// HTTPS clients (git, wget) also trust the proxy's leaf certificates. Node.js
+// (claude) trusts it via NODE_EXTRA_CA_CERTS without update-ca-certificates.
 func NewAgentCACopySeeder(c *agent.Client) GuestSeeder {
 	return func(ctx context.Context, _ domain.SandboxID, payload []byte) error {
-		var archive bytes.Buffer
-		tw := tar.NewWriter(&archive)
-		hdr := &tar.Header{
-			Name: GuestCACertPath,
-			Mode: 0644,
-			Size: int64(len(payload)),
-		}
-		if err := tw.WriteHeader(hdr); err != nil {
-			return fmt.Errorf("seed CA: tar header: %w", err)
-		}
-		if _, err := tw.Write(payload); err != nil {
-			return fmt.Errorf("seed CA: tar write: %w", err)
-		}
-		if err := tw.Close(); err != nil {
-			return fmt.Errorf("seed CA: tar close: %w", err)
-		}
 		return c.Copy(ctx, agent.CopyOptions{
 			Direction: agentpb.CopyDirection_COPY_DIRECTION_PUSH,
 			GuestPath: GuestCACertPath,
-			Src:       &archive,
+			Src:       bytes.NewReader(payload),
 		})
 	}
+}
+
+// SeedCANodeEnv delivers a minimal credential env file to the guest at
+// [GuestCredEnvPath] containing only NODE_EXTRA_CA_CERTS=[GuestCACertPath].
+//
+// Use this on the persistent supervisor path where [SeedGuestAgent] is not
+// called: it ensures claude (a Node.js process) trusts the MITM proxy CA
+// without requiring update-ca-certificates. If seeder is nil, SeedCANodeEnv
+// is a no-op and returns nil.
+func SeedCANodeEnv(ctx context.Context, id domain.SandboxID, seeder GuestSeeder) error {
+	if seeder == nil {
+		return nil
+	}
+	payload := []byte("NODE_EXTRA_CA_CERTS=" + GuestCACertPath + "\n")
+	return seeder(ctx, id, payload)
 }
 
 // SeedCA encodes cert as PEM and delivers it to the guest at [GuestCACertPath]

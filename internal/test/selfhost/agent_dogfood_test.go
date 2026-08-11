@@ -33,14 +33,14 @@
 // so injecting HTTPS_PROXY would actively break the working transparent path.
 // (perimeter/supervisor.go buildDialer, lines 58–95.)
 //
-// Production bug surfaced by dogfood: NewAgentCopySeeder wraps its payload in a
-// tar archive and sends it with IsDirectory=false.  The guest's pushTransfer
-// calls pushFile which writes the raw tar bytes verbatim to GuestCredEnvPath.
-// The cred.env file therefore contains binary tar data, not KEY=VALUE text.
-// No code currently sources GuestCredEnvPath (cmd/nexus3-agent/main.go does NOT
-// source it at startup), so placeholder injection via the seeder path is silently
-// inert.  All agent env vars must be injected via ExecOptions.Env.
-// (cmd/nexus3-agent/control.go:43 — mergeEnv(os.Environ(), req.Env).)
+// Bug fixed after dogfood: NewAgentCopySeeder previously tar-wrapped its payload
+// before calling agent.Copy with IsDirectory=false, causing pushFile to write raw
+// tar bytes to GuestCredEnvPath instead of KEY=VALUE text.  The fix sends the raw
+// payload bytes directly (bytes.NewReader(payload), no archive step).  The S4
+// live-egress probe (TestSupervisorS4LiveEgress) verifies end-to-end by running
+// "set -a; . /run/nexus3/cred.env" inside the guest and confirming the sourced
+// vars reach the claude process.  See internal/core/service/seed_copy_test.go for
+// the fast hermetic regression guard.
 package selfhost
 
 import (
@@ -219,9 +219,10 @@ func TestAgentDogfood(t *testing.T) {
 	agentClient := agent.NewClient(bootDrv, sb.ID)
 
 	// ── 6. Wire egress credentials ────────────────────────────────────────────
-	// SeedGuestAgent registers placeholders in broker and attempts to deliver
-	// cred.env to the guest (currently inert — see production bug note above).
-	// We extract the placeholder value for injection via ExecOptions.Env below.
+	// SeedGuestAgent registers placeholders in broker and delivers the cred.env
+	// file to the guest as raw KEY=VALUE bytes (tar-wrap bug fixed).  The S4
+	// live-egress path sources /run/nexus3/cred.env via "set -a; . cred.env".
+	// We also extract the placeholder value for injection via ExecOptions.Env.
 	credSeeder := service.NewAgentCopySeeder(agentClient)
 	records, err := service.SeedGuestAgent(context.Background(), broker, sb.ID, credSeeder)
 	if err != nil {
@@ -450,13 +451,14 @@ echo "=== PREFLIGHT_DONE ==="
 }
 
 // dogfoodCACopySeeder returns a GuestSeeder that writes payload bytes directly
-// to GuestCACertPath without a tar wrapper.  The guest's pushTransfer with
-// IsDirectory=false calls pushFile, which writes the raw bytes verbatim — the
-// correct behaviour for a PEM certificate file.
+// to GuestCACertPath via agent.Copy with IsDirectory=false.  pushFile on the
+// guest side writes the raw bytes verbatim — the correct behaviour for a PEM
+// certificate file that Node.js reads via NODE_EXTRA_CA_CERTS.
 //
-// This is distinct from NewAgentCopySeeder, which wraps its payload in a tar
-// archive.  When NewAgentCopySeeder is used as a CA seeder, pushFile writes tar
-// binary data to the cert path, and Node.js fails to parse it as PEM.
+// NOTE: service.NewAgentCACopySeeder now does the same thing (raw bytes, no tar
+// wrapping) after the tar-wrap bug was fixed.  This local helper remains because
+// it was written before the fix landed; it can be replaced with
+// service.NewAgentCACopySeeder in a follow-up cleanup.
 func dogfoodCACopySeeder(c *agent.Client) service.GuestSeeder {
 	return func(ctx context.Context, _ domain.SandboxID, payload []byte) error {
 		return c.Copy(ctx, agent.CopyOptions{

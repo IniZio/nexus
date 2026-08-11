@@ -37,18 +37,20 @@ const currentSchemaVersion = 1
 //   - stop qualifier: StopReason (omitted when empty for backward compatibility)
 //   - fork lineage:   Provenance (omitted for non-fork sandboxes)
 type record struct {
-	SchemaVersion int               `json:"schema_version"`
-	ID            domain.SandboxID  `json:"id"`
-	Name          string            `json:"name"`
-	Project       string            `json:"project"`
-	MotiveID      string            `json:"motive_id,omitempty"`
-	State         domain.State      `json:"state"`
-	Envelope      domain.Envelope   `json:"envelope"`
-	InstanceID    string            `json:"instance_id"`
-	RemoveOnExit  bool              `json:"remove_on_exit"`
-	RemovalMarker bool              `json:"removal_marker"`
-	StopReason    domain.StopReason `json:"stop_reason,omitempty"`
-	Provenance    *provenanceRecord `json:"provenance,omitempty"`
+	SchemaVersion  int               `json:"schema_version"`
+	ID             domain.SandboxID  `json:"id"`
+	Name           string            `json:"name"`
+	Project        string            `json:"project"`
+	MotiveID       string            `json:"motive_id,omitempty"`
+	State          domain.State      `json:"state"`
+	Envelope       domain.Envelope   `json:"envelope"`
+	InstanceID     string            `json:"instance_id"`
+	RemoveOnExit   bool              `json:"remove_on_exit"`
+	RemovalMarker  bool              `json:"removal_marker"`
+	StopReason     domain.StopReason `json:"stop_reason,omitempty"`
+	Provenance     *provenanceRecord `json:"provenance,omitempty"`
+	SupervisorPID  int               `json:"supervisor_pid,omitempty"`
+	SupervisorSock string            `json:"supervisor_sock,omitempty"`
 }
 
 // provenanceRecord is the on-disk form of domain.Provenance. Kept separate
@@ -61,17 +63,19 @@ type provenanceRecord struct {
 
 func toRecord(sb domain.Sandbox) record {
 	r := record{
-		SchemaVersion: currentSchemaVersion,
-		ID:            sb.ID,
-		Name:          sb.Name,
-		Project:       sb.Project,
-		MotiveID:      sb.MotiveID,
-		State:         sb.State,
-		Envelope:      sb.Envelope,
-		InstanceID:    sb.InstanceID,
-		RemoveOnExit:  sb.RemoveOnExit,
-		RemovalMarker: sb.RemovalMarker,
-		StopReason:    sb.StopReason,
+		SchemaVersion:  currentSchemaVersion,
+		ID:             sb.ID,
+		Name:           sb.Name,
+		Project:        sb.Project,
+		MotiveID:       sb.MotiveID,
+		State:          sb.State,
+		Envelope:       sb.Envelope,
+		InstanceID:     sb.InstanceID,
+		RemoveOnExit:   sb.RemoveOnExit,
+		RemovalMarker:  sb.RemovalMarker,
+		StopReason:     sb.StopReason,
+		SupervisorPID:  sb.SupervisorPID,
+		SupervisorSock: sb.SupervisorSock,
 	}
 	if sb.Provenance != nil {
 		r.Provenance = &provenanceRecord{
@@ -84,16 +88,18 @@ func toRecord(sb domain.Sandbox) record {
 
 func (r record) toDomain() domain.Sandbox {
 	sb := domain.Sandbox{
-		ID:            r.ID,
-		Name:          r.Name,
-		Project:       r.Project,
-		MotiveID:      r.MotiveID,
-		State:         r.State,
-		Envelope:      r.Envelope,
-		InstanceID:    r.InstanceID,
-		RemoveOnExit:  r.RemoveOnExit,
-		RemovalMarker: r.RemovalMarker,
-		StopReason:    r.StopReason,
+		ID:             r.ID,
+		Name:           r.Name,
+		Project:        r.Project,
+		MotiveID:       r.MotiveID,
+		State:          r.State,
+		Envelope:       r.Envelope,
+		InstanceID:     r.InstanceID,
+		RemoveOnExit:   r.RemoveOnExit,
+		RemovalMarker:  r.RemovalMarker,
+		StopReason:     r.StopReason,
+		SupervisorPID:  r.SupervisorPID,
+		SupervisorSock: r.SupervisorSock,
 	}
 	if r.Provenance != nil {
 		sb.Provenance = &domain.Provenance{
