@@ -282,6 +282,24 @@ func runOrca(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
 		return &UsageError{Msg: "orca: missing subcommand; usage: orca <create|suspend|resume|destroy>"}
 	}
+	remote, rest, rerr := resolveOrcaRemote(args)
+	if rerr != nil {
+		return &UsageError{Msg: "orca: " + rerr.Error()}
+	}
+	if len(rest) == 0 {
+		return &UsageError{Msg: "orca: missing subcommand; usage: orca <create|suspend|resume|destroy>"}
+	}
+	if remote != nil {
+		switch rest[0] {
+		case "create":
+			return orcaCreateRemote(ctx, out.w, remote)
+		case "suspend", "resume", "destroy":
+			return orcaLifecycleRemote(ctx, rest[0], remote)
+		default:
+			return &UsageError{Msg: fmt.Sprintf("orca: unknown subcommand %q", rest[0])}
+		}
+	}
+	args = rest
 	switch args[0] {
 	case "create":
 		return orcaCreate(ctx, out.w)
