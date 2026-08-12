@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"time"
 
+	"github.com/IniZio/nexus3/internal/core/agent"
 	"github.com/IniZio/nexus3/internal/core/builder"
+	"github.com/IniZio/nexus3/internal/core/builder/builderimage"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
@@ -304,15 +307,16 @@ func runSandbox(ctx context.Context, args []string, out *Output) error {
 //
 // sandboxCreateFlags holds the result of parsing `sandbox create` arguments.
 type sandboxCreateFlags struct {
-	rm          bool
-	imageRef    string
-	rootfsPath  string
-	filePath    string
-	memoryMiB   uint32
-	vcpus       uint32
-	motiveID    string
-	nestedVirt  bool
-	positionals []string
+	rm             bool
+	imageRef       string
+	rootfsPath     string
+	filePath       string
+	dockerfilePath string // --dockerfile / -f: explicit Containerfile path override
+	memoryMiB      uint32
+	vcpus          uint32
+	motiveID       string
+	nestedVirt     bool
+	positionals    []string
 }
 
 // parseSandboxCreateArgs parses the raw argument slice for `sandbox create`.
@@ -370,6 +374,12 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 			}
 			i++
 			f.motiveID = args[i]
+		case "--dockerfile", "-f":
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --dockerfile requires an argument"}
+			}
+			i++
+			f.dockerfilePath = args[i]
 		case "--nested":
 			f.nestedVirt = true
 		default:
@@ -402,6 +412,54 @@ func buildCHConfig(kernelPath, ext4Path string, memMiB, vcpus uint32) cloudhyper
 	return cfg
 }
 
+// ── builder-VM helpers ────────────────────────────────────────────────────────
+
+// builderCaptureDrv wraps *cloudhypervisor.CHDriver and captures the SandboxID
+// that builder.BuildInVM mints internally at Start time. The captured ID is
+// used by the GuestExecFn closure to dial the correct vsock endpoint via
+// agent.NewClient — without needing to know the ID before BuildInVM is called.
+type builderCaptureDrv struct {
+	*cloudhypervisor.CHDriver
+	lastStartedID domain.SandboxID
+}
+
+func (b *builderCaptureDrv) Start(ctx context.Context, req driver.StartRequest) (string, error) {
+	b.lastStartedID = req.SandboxID
+	return b.CHDriver.Start(ctx, req)
+}
+
+// resolveContainerfilePath returns the Containerfile path to use for a --file
+// build. Priority:
+//  1. explicit — returned as-is (caller validates existence separately)
+//  2. <workspaceDir>/.nexus/Containerfile — if present
+//  3. <workspaceDir>/.nexus/Dockerfile    — if present
+//
+// Returns an error when explicit is empty and neither default path exists.
+func resolveContainerfilePath(workspaceDir, explicit string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	for _, rel := range []string{".nexus/Containerfile", ".nexus/Dockerfile"} {
+		p := filepath.Join(workspaceDir, rel)
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("no Containerfile found in %s: tried .nexus/Containerfile and .nexus/Dockerfile", workspaceDir)
+}
+
+// preallocateFile creates (or truncates) the file at path to size bytes as a
+// sparse file. Used to pre-size the artifact disk before handing it to the
+// builder VM as /dev/vdc.
+func preallocateFile(path string, size int64) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Truncate(size)
+}
+
 // The --rm flag may appear before or after the handle. Flag scanning is done
 // manually so that docker-style order ("create demo/one --rm --image …") works
 // without requiring flags to precede the positional argument.
@@ -412,7 +470,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <Containerfile>] [--memory <MiB>] [--vcpus <n>] [--motive <id>] [--nested]"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--motive <id>] [--nested]"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])
@@ -443,10 +501,10 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		return errSandbox("sandbox create", fmt.Errorf("open image cache: %w", err))
 	}
 
-	// --file: build image via .nexus/Containerfile (requires buildkitd).
-	// On success the resulting digest is fed into the normal cache boot path.
+	// --file: build image via a builder VM (self-contained; no external buildkitd
+	// required). On success the resulting digest is fed into the normal boot path.
 	if f.filePath != "" && f.imageRef == "" && f.rootfsPath == "" {
-		// Derive the workspace root from the Containerfile path.
+		// Derive the workspace root from the --file path.
 		// Accepted forms:
 		//   --file /path/to/project/.nexus/Containerfile  → workspace=/path/to/project
 		//   --file /path/to/project                        → workspace=/path/to/project
@@ -466,16 +524,12 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			}
 		}
 
-		// Resolve the buildkitd endpoint: BUILDKIT_HOST env or default socket.
-		buildkitAddr := os.Getenv("BUILDKIT_HOST")
-		if buildkitAddr == "" {
-			const defaultSock = "/run/buildkit/buildkitd.sock"
-			if _, err := os.Stat(defaultSock); err == nil {
-				buildkitAddr = "unix://" + defaultSock
-			} else {
-				return errSandbox("sandbox create",
-					fmt.Errorf("--file: buildkitd not available; set BUILDKIT_HOST or start buildkitd at %s", defaultSock))
-			}
+		// Validate the Containerfile exists. The resolved path is passed to the
+		// builder role as part of the context disk; buildkitd finds it at its
+		// canonical location inside the mounted context.
+		_, err := resolveContainerfilePath(workspaceDir, f.dockerfilePath)
+		if err != nil {
+			return errSandbox("sandbox create", fmt.Errorf("--file: %w", err))
 		}
 
 		// Locate the nexus3-agent binary (same search path as kernelPathFor).
@@ -484,28 +538,92 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			// Fall back to a binary-relative path.
 			agentBin = filepath.Join(filepath.Dir(kernelPathFor()), "nexus3-agent")
 		}
-
-		b, err := builder.New(builder.Config{
-			BuildkitdAddr:   buildkitAddr,
-			AgentBinaryPath: agentBin,
-		}, imgCache)
+		agentBytes, err := os.ReadFile(agentBin)
 		if err != nil {
-			return errSandbox("sandbox create", fmt.Errorf("--file: init builder: %w", err))
+			return errSandbox("sandbox create", fmt.Errorf("--file: read agent binary %q: %w", agentBin, err))
 		}
 
 		buildCtx, buildCancel := context.WithTimeout(ctx, 30*time.Minute)
 		defer buildCancel()
 
-		img, err := b.Build(buildCtx, builder.BuildRequest{
-			BaseRef:      "debian:bookworm-slim",
-			WorkspaceDir: workspaceDir,
-			Ref:          name,
-		})
+		// Ensure the builder rootfs image (moby/buildkit) is available.
+		builderRootfs, err := builderimage.EnsureBuilderImage(buildCtx, storeRoot, agentBytes)
+		if err != nil {
+			return errSandbox("sandbox create", fmt.Errorf("--file: builder image: %w", err))
+		}
+
+		// Prepare an ephemeral directory for the per-build disk images.
+		buildWorkDir, err := os.MkdirTemp("", "nexus3-build-*")
+		if err != nil {
+			return errSandbox("sandbox create", fmt.Errorf("--file: build workdir: %w", err))
+		}
+		defer os.RemoveAll(buildWorkDir)
+
+		// vdb — Pack the build context directory into an ext4 image.
+		ctxDiskPath := filepath.Join(buildWorkDir, "ctx.ext4")
+		if err := builder.ContextToDisk(buildCtx, workspaceDir, ctxDiskPath); err != nil {
+			return errSandbox("sandbox create", fmt.Errorf("--file: context disk: %w", err))
+		}
+
+		// vdc — Pre-allocate the artifact disk; builder VM overwrites it with the
+		// built rootfs ext4.
+		const artifactDiskSize = 4 << 30 // 4 GiB sparse file
+		artifactDiskPath := filepath.Join(buildWorkDir, "artifact.ext4")
+		if err := preallocateFile(artifactDiskPath, artifactDiskSize); err != nil {
+			return errSandbox("sandbox create", fmt.Errorf("--file: artifact disk: %w", err))
+		}
+
+		// vdd+ — Attach buildkit (and any future) persistent cache disks.
+		cacheDisks, err := builder.SelectCacheDisks(buildCtx, storeRoot, []string{"buildkit"})
+		if err != nil {
+			return errSandbox("sandbox create", fmt.Errorf("--file: cache disks: %w", err))
+		}
+
+		// Assemble the BuilderVMSpec first so that sizing helpers (VCPUs/MemMiB)
+		// can derive the production defaults (2 vCPU / 2048 MiB) before the
+		// CHDriver config is constructed.
+		spec := builder.BuilderVMSpec{
+			RootfsDiskPath:   builderRootfs,
+			ContextDiskPath:  ctxDiskPath,
+			ArtifactDiskPath: artifactDiskPath,
+			CacheDisks:       cacheDisks,
+		}
+
+		// Build CHDriver config: builder rootfs as vda, extra disks in order.
+		// Sizing is derived from the spec via exported helpers so there is a
+		// single source of truth (builder.DefaultBuilderVCPUs / DefaultBuilderMemMiB).
+		builderCfg := buildCHConfig(kernelPathFor(), builderRootfs,
+			uint32(builder.MemMiB(spec)), uint32(builder.VCPUs(spec)))
+		builderCfg.ExtraDisks = []cloudhypervisor.ExtraDisk{
+			{Path: ctxDiskPath},      // vdb
+			{Path: artifactDiskPath}, // vdc
+		}
+		for _, cd := range cacheDisks {
+			builderCfg.ExtraDisks = append(builderCfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: cd.ImagePath})
+		}
+		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
+			builderCfg.BinaryPath = p
+		}
+
+		rawDrv, err := cloudhypervisor.New(builderCfg)
+		if err != nil {
+			return errSandbox("sandbox create", fmt.Errorf("--file: builder driver: %w", err))
+		}
+
+		// Wrap the driver to capture the SandboxID that BuildInVM mints at boot
+		// time, so the GuestExecFn closure can dial the correct vsock endpoint.
+		bdrv := &builderCaptureDrv{CHDriver: rawDrv}
+		execFn := func(ctx context.Context, argv []string, stderr io.Writer) (int32, error) {
+			ac := agent.NewClient(bdrv, bdrv.lastStartedID)
+			return ac.Exec(ctx, agent.ExecOptions{Argv: argv, Stderr: stderr})
+		}
+
+		digest, err := builder.BuildInVM(buildCtx, bdrv, spec, imgCache, execFn)
 		if err != nil {
 			return errSandbox("sandbox create", fmt.Errorf("--file: build: %w", err))
 		}
 		// Feed the built image into the normal boot path.
-		f.imageRef = string(img.Digest)
+		f.imageRef = digest
 	}
 
 	// Resolve the kernel path: env override → binary-relative default.
