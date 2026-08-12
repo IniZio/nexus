@@ -9,9 +9,12 @@ package main
 // device symlinks to distinguish hardware-backed from virtual interfaces.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // makeFakeSysfs creates a minimal /sys/class/net tree under root:
@@ -104,5 +107,107 @@ func TestFirstNonLoIfaceAt_MultipleDeviceBacked(t *testing.T) {
 	got := firstNonLoIfaceAt(root)
 	if got != "eth0" {
 		t.Errorf("firstNonLoIfaceAt: got %q, want %q", got, "eth0")
+	}
+}
+
+// --- checkEgressWith tests ---
+
+// devnull opens /dev/null as a *os.File for use as a silent console sink in
+// tests that don't need to inspect log output.
+func devnull(t *testing.T) *os.File {
+	t.Helper()
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return f
+}
+
+// okProbe is a fake DNS probe that always reports success.
+func okProbe(addr string, timeout time.Duration) error { return nil }
+
+// failProbe is a fake DNS probe that always reports a timeout.
+func failProbe(addr string, timeout time.Duration) error {
+	return fmt.Errorf("i/o timeout")
+}
+
+// TestCheckEgressWith_HardwareBacked_DNSOk verifies that a hardware-backed
+// interface with a reachable DNS server reports success (returns true, logs
+// the "egress self-check ok" line).
+func TestCheckEgressWith_HardwareBacked_DNSOk(t *testing.T) {
+	root := makeFakeSysfs(t, map[string]bool{
+		"lo":   false,
+		"eth0": true, // hardware-backed
+	})
+
+	ok := checkEgressWith("eth0", root, okProbe, devnull(t))
+	if !ok {
+		t.Error("checkEgressWith: want ok=true for hw-backed iface + live DNS, got false")
+	}
+}
+
+// TestCheckEgressWith_NonHWBacked_Fails is the regression test for the dummy0
+// class of bug: a virtual interface (no sysfs device link) must be detected
+// and the check must report failure even when DNS appears reachable.
+func TestCheckEgressWith_NonHWBacked_Fails(t *testing.T) {
+	root := makeFakeSysfs(t, map[string]bool{
+		"lo":     false,
+		"dummy0": false, // no device link — virtual interface
+	})
+
+	ok := checkEgressWith("dummy0", root, okProbe, devnull(t))
+	if ok {
+		t.Error("checkEgressWith: want ok=false for non-hw-backed iface (dummy0), got true")
+	}
+}
+
+// TestCheckEgressWith_DNSFails verifies that a hardware-backed interface
+// reports failure when the DNS/gateway probe times out.
+func TestCheckEgressWith_DNSFails(t *testing.T) {
+	root := makeFakeSysfs(t, map[string]bool{
+		"lo":   false,
+		"eth0": true,
+	})
+
+	ok := checkEgressWith("eth0", root, failProbe, devnull(t))
+	if ok {
+		t.Error("checkEgressWith: want ok=false when DNS probe fails, got true")
+	}
+}
+
+// TestCheckEgressWith_FailureDiagnostic verifies that the greppable failure
+// marker "EGRESS SELF-CHECK FAILED" appears in the console log and includes
+// the specific failure details (hwbacked, gateway, dns fields).
+func TestCheckEgressWith_FailureDiagnostic(t *testing.T) {
+	root := makeFakeSysfs(t, map[string]bool{
+		"dummy0": false, // non-hw-backed → triggers failure
+	})
+
+	// Write console output to a temp file so we can inspect it.
+	f, err := os.CreateTemp(t.TempDir(), "console-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	checkEgressWith("dummy0", root, okProbe, f)
+
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4096)
+	n, _ := f.Read(buf)
+	out := string(buf[:n])
+
+	for _, want := range []string{
+		"EGRESS SELF-CHECK FAILED",
+		"iface=dummy0",
+		"hwbacked=false",
+		"gateway=" + guestNetworkGateway,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("failure log missing %q; got: %q", want, out)
+		}
 	}
 }

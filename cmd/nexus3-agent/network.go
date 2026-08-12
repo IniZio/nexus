@@ -16,9 +16,12 @@ package main
 // intentional and stable.
 
 import (
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -115,6 +118,11 @@ func setupNetwork(con *os.File) {
 	// Set default route.
 	runNetCmd(con, ipBin, "route", "add", "default", "via", guestNetworkGateway)
 	consoleLog(con, "nexus3-agent: network: %s configured\n", iface)
+
+	// Probe egress immediately after configuration so any breakage (wrong
+	// interface, perimeter down, DNS dead) is logged loudly on the serial
+	// console rather than causing a silent downstream build timeout.
+	checkEgress(iface, con)
 }
 
 // firstNonLoIface returns the name of the first non-loopback network interface
@@ -162,6 +170,106 @@ func firstNonLoIfaceAt(sysRoot string) string {
 		}
 	}
 	return ""
+}
+
+// checkEgress probes the egress path immediately after interface configuration
+// and logs the result to the serial console. It is NON-FATAL: a failure is
+// logged with a greppable "EGRESS SELF-CHECK FAILED" prefix so the host can
+// identify a broken-network boot from the serial log, but the agent continues
+// serving vsock traffic regardless.
+//
+// Decision: log-only (not fatal) so existing working sandboxes are never
+// regressed. A failed check is diagnostic, not a hard blocker.
+//
+// TODO(builder-role): the builder-role path should surface a failed egress
+// check as the build error (instead of letting buildkit time out on DNS).
+// That integration belongs in the builder-role init, not here.
+func checkEgress(iface string, con *os.File) {
+	checkEgressWith(iface, "/sys", probeGatewayDNS, con)
+}
+
+// checkEgressWith is the testable implementation of checkEgress.
+//
+//   - sysRoot: sysfs root ("/sys" in production; a tmpdir in tests)
+//   - probe: called with the DNS server address and a timeout; nil = reachable
+//
+// Returns true if all checks pass, false on any failure.
+func checkEgressWith(iface, sysRoot string, probe func(addr string, timeout time.Duration) error, con *os.File) bool {
+	const probeTimeout = 3 * time.Second
+
+	// 1. Assert the interface is hardware-backed.
+	//    Virtual interfaces (dummy0, veth*, bridge) lack a sysfs "device" entry.
+	//    This is the same heuristic used by firstNonLoIfaceAt to select the
+	//    interface; checking it here gives defence-in-depth against the class of
+	//    bug where the IP is assigned to a black-hole device.
+	hwBacked := false
+	if _, err := os.Stat(sysRoot + "/class/net/" + iface + "/device"); err == nil {
+		hwBacked = true
+	}
+
+	// 2. Probe gateway/DNS reachability.
+	//    Send a minimal DNS query to 192.168.127.1:53 (the gvproxy netstack
+	//    that serves both routing and DNS).  Any valid response proves the
+	//    perimeter is up and traffic is flowing.
+	dnsStatus := "ok"
+	dnsOK := true
+	if err := probe(guestNetworkDNS+":53", probeTimeout); err != nil {
+		dnsOK = false
+		dnsStatus = fmt.Sprintf("timeout(%v)", err)
+	}
+
+	if !hwBacked || !dnsOK {
+		consoleLog(con,
+			"nexus3-agent: EGRESS SELF-CHECK FAILED: iface=%s hwbacked=%v gateway=%s dns=%s"+
+				" — network egress is broken; in-guest builds/pulls will fail\n",
+			iface, hwBacked, guestNetworkGateway, dnsStatus)
+		return false
+	}
+
+	consoleLog(con, "nexus3-agent: egress self-check ok (iface=%s)\n", iface)
+	return true
+}
+
+// probeGatewayDNS sends a minimal DNS wire query (root "." NS IN) to addr over
+// UDP and waits for any response. A valid response proves the perimeter
+// (gvproxy) is reachable and serving DNS. This is the production probe used by
+// checkEgress — never called in unit tests (a fake is injected instead).
+func probeGatewayDNS(addr string, timeout time.Duration) error {
+	conn, err := net.DialTimeout("udp", addr, timeout)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
+	// Minimal valid DNS query: ". NS IN" (17 bytes).
+	// Header: ID=0x0001, Flags=QR=0/OPCODE=0/RD=1 → 0x01 0x00,
+	// QDCOUNT=1, ANCOUNT=0, NSCOUNT=0, ARCOUNT=0.
+	// Question: QNAME=root (single 0x00 label), QTYPE=NS(2), QCLASS=IN(1).
+	query := []byte{
+		0x00, 0x01, // ID
+		0x01, 0x00, // Flags: RD=1
+		0x00, 0x01, // QDCOUNT
+		0x00, 0x00, // ANCOUNT
+		0x00, 0x00, // NSCOUNT
+		0x00, 0x00, // ARCOUNT
+		0x00,       // QNAME: root (empty label)
+		0x00, 0x02, // QTYPE: NS
+		0x00, 0x01, // QCLASS: IN
+	}
+	if _, err := conn.Write(query); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	buf := make([]byte, 512)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return fmt.Errorf("read: %w", err)
+	}
+	if n < 4 {
+		return fmt.Errorf("response too short: %d bytes", n)
+	}
+	return nil
 }
 
 // runNetCmd executes a network-configuration command and logs any error.
