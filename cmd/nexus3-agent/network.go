@@ -118,12 +118,44 @@ func setupNetwork(con *os.File) {
 }
 
 // firstNonLoIface returns the name of the first non-loopback network interface
-// from /sys/class/net, or "" if none is found.
+// from /sys/class/net that has a hardware device backing (i.e. has a
+// /sys/class/net/<name>/device symlink). Virtual interfaces such as dummy0
+// and veth* lack this symlink and are skipped.
+//
+// Kernels built with CONFIG_DUMMY=y (needed for Docker/compose networking)
+// create a dummy0 interface at boot. Because "dummy" < "eth" alphabetically,
+// a naive first-non-lo scan picks dummy0 before the virtio-net interface
+// (eth0), assigning the guest IP to a black-hole device and breaking egress.
+//
+// Fallback: if no hardware-backed interface is found (e.g. an older test
+// kernel where dummy0 is absent), the first non-loopback interface is
+// returned, preserving previous behaviour.
 func firstNonLoIface() string {
-	entries, err := os.ReadDir("/sys/class/net")
+	return firstNonLoIfaceAt("/sys")
+}
+
+// firstNonLoIfaceAt is the testable implementation of firstNonLoIface.
+// sysRoot is the root of the sysfs tree (production: "/sys"; tests: a tmpdir).
+func firstNonLoIfaceAt(sysRoot string) string {
+	netDir := sysRoot + "/class/net"
+	entries, err := os.ReadDir(netDir)
 	if err != nil {
 		return ""
 	}
+	// First pass: prefer hardware-backed interfaces. These have a "device"
+	// symlink in <netDir>/<name>/device pointing to the PCI (or other bus)
+	// device.  Virtual interfaces (dummy0, lo, veth*, bridge) do not.
+	for _, e := range entries {
+		name := e.Name()
+		if name == "lo" {
+			continue
+		}
+		if _, statErr := os.Stat(netDir + "/" + name + "/device"); statErr == nil {
+			return name
+		}
+	}
+	// Fallback: return the first non-loopback interface (original behaviour,
+	// handles kernels that expose no sysfs device links).
 	for _, e := range entries {
 		if e.Name() != "lo" {
 			return e.Name()
