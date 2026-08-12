@@ -25,7 +25,6 @@ package builderimage_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,14 +63,13 @@ func TestEnsureBuilderImage_CachedOffline(t *testing.T) {
 
 	dataDir := t.TempDir()
 
-	// Pre-populate the cache: reproduce the path EnsureBuilderImage would use.
-	// "sha256:0000...0001" → "sha256-0000...0001"
-	digestSafe := strings.NewReplacer(":", "-", "/", "-").Replace(fakeDigest)
-	imagesDir := filepath.Join(dataDir, "images")
-	if err := os.MkdirAll(imagesDir, 0o755); err != nil {
+	// Pre-populate the cache using the same path formula EnsureBuilderImage uses
+	// (digest + agent hash). BuilderImageCachePathForTest delegates to the same
+	// unexported helper, so the test stays in sync with the production code.
+	cachePath := builderimage.BuilderImageCachePathForTest(dataDir, fakeDigest, fakeAgentBytesOffline)
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
 		t.Fatalf("pre-create images dir: %v", err)
 	}
-	cachePath := filepath.Join(imagesDir, fmt.Sprintf("nexus-builder-%s.ext4", digestSafe))
 	// Write non-zero content so the size > 0 check passes.
 	if err := os.WriteFile(cachePath, []byte("fake-ext4-content"), 0o644); err != nil {
 		t.Fatalf("pre-create cache file: %v", err)
