@@ -123,6 +123,10 @@ func main() {
 	// nexus3 ssh --stdio without needing a TCP network interface.
 	go startSSHForward(ctx, con)
 
+	// Multiplex arbitrary host→guest TCP port forwards on vsock:3001.
+	// Each connection sends a 4-byte guest TCP port then is spliced through.
+	go startPortForwardMux(ctx, con)
+
 	a := New(ctrlLis, dataLis)
 	if err := a.Run(ctx); err != nil {
 		consoleFatal(con, isPid1, "nexus3-agent: run: %v\n", err)
