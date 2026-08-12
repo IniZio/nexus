@@ -91,10 +91,22 @@ func setupNetwork(con *os.File) {
 	consoleLog(con, "nexus3-agent: network: configuring %s: ip=%s gw=%s\n",
 		iface, guestNetworkIP, guestNetworkGateway)
 
-	// Use the full path to ip(8) — nexus3-agent runs as PID 1 and the kernel's
-	// default PATH for init may not include /usr/sbin.  iproute2 on Debian
-	// installs the ip binary at /usr/sbin/ip.
-	const ipBin = "/usr/sbin/ip"
+	// Locate the ip(8) binary. Paths differ by distro:
+	//   Debian/Ubuntu: /usr/sbin/ip (iproute2 package)
+	//   Alpine Linux:  /sbin/ip     (busybox applet)
+	// nexus3-agent runs as PID 1, so kernel init PATH may omit these dirs;
+	// we probe absolute paths instead of relying on PATH.
+	ipBin := ""
+	for _, candidate := range []string{"/usr/sbin/ip", "/sbin/ip", "/bin/ip"} {
+		if _, err := os.Stat(candidate); err == nil {
+			ipBin = candidate
+			break
+		}
+	}
+	if ipBin == "" {
+		consoleLog(con, "nexus3-agent: network: ip(8) not found at /usr/sbin/ip, /sbin/ip, /bin/ip; skipping\n")
+		return
+	}
 
 	// Bring interface up.
 	runNetCmd(con, ipBin, "link", "set", iface, "up")
