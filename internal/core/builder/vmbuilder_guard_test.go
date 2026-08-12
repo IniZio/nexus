@@ -261,6 +261,56 @@ func TestBuildInVM_CtxTimeout(t *testing.T) {
 	}
 }
 
+// TestBuildInVM_TaskTimeout verifies that a context whose deadline is already
+// past causes BuildInVM to return a DeadlineExceeded-wrapping error promptly,
+// that Stop is still called (no orphaned CH VMM), and that the function never
+// reaches the ArtifactFromDisk harvest step (no cache write).
+//
+// This mirrors the outer task-timeout path: NEXUS3_BUILD_TASK_TIMEOUT creates a
+// context.WithTimeout whose deadline may expire before or during VM boot — a
+// case the inner NEXUS3_BUILD_SOLVE_TIMEOUT (which caps only the buildkitd solve
+// step) cannot catch.
+func TestBuildInVM_TaskTimeout(t *testing.T) {
+	seq := &seqCounter{}
+	et := newExecTracker(seq)
+	drv := newStopTracker(seq)
+
+	// Deadline already one second in the past — ctx.Err() returns
+	// DeadlineExceeded immediately on first call, making the outcome deterministic.
+	pastCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	err := runBuildInVM(pastCtx, drv, et)
+
+	// Must return a non-nil error.
+	if err == nil {
+		t.Fatal("want error from expired task deadline, got nil")
+	}
+	// The error chain must include DeadlineExceeded — waitForBuilderAgent returns
+	// ctx.Err() (DeadlineExceeded) the instant the expired context is checked,
+	// and BuildInVM wraps it with %w.
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("want errors.Is(err, context.DeadlineExceeded) = true; got: %v", err)
+	}
+	// Stop must have been called if Start succeeded — the deferred panicSafeStop
+	// fires on the early return from waitForBuilderAgent.
+	calls := drv.Calls()
+	started := false
+	for _, c := range calls {
+		if c.Kind == fake.CallStart {
+			started = true
+		}
+	}
+	if started && !drv.stopCalled() {
+		t.Error("Start succeeded but Stop was NOT called — CH VMM would be orphaned after timeout")
+	}
+	// No harvest: BuildInVM returns before ArtifactFromDisk is ever called.
+	// Passing nil cache + empty ArtifactDiskPath to runBuildInVM is a structural
+	// guard: if the harvest step were reached, ArtifactFromDisk would return a
+	// clear error ("spec.ArtifactDiskPath is empty") rather than the
+	// DeadlineExceeded the assertion above already required.
+}
+
 // TestBuildInVM_PanicInExecFn verifies that if the execFn panics (simulating
 // a guest agent crash that corrupts state), the deferred panicSafeStop fires
 // and Stop is called before the panic propagates.
