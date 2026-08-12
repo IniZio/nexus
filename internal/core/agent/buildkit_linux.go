@@ -190,7 +190,12 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 	}
 	defer os.RemoveAll(rootfsDir) //nolint:errcheck
 
-	solveCtx, solveCancel := context.WithTimeout(ctx, 25*time.Minute)
+	// Prototype finding (2026-08): apt-heavy images (e.g. ubuntu:24.04 with
+	// docker.io + docker-compose-v2) routinely exceed the old 25-minute limit.
+	// Default raised to 45 minutes; override via NEXUS3_BUILD_SOLVE_TIMEOUT.
+	solveTimeout := solveBuildTimeout()
+	log.Printf("in-guest build: solve timeout %v (set NEXUS3_BUILD_SOLVE_TIMEOUT to override)", solveTimeout)
+	solveCtx, solveCancel := context.WithTimeout(ctx, solveTimeout)
 	defer solveCancel()
 
 	if err := bkClient.Solve(solveCtx, builder.SolveRequest{
@@ -199,6 +204,14 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 		AgentPath:          opts.AgentPath,
 		AgentInstallPath:   "/sbin/nexus3-agent",
 	}, rootfsDir); err != nil {
+		// Prototype finding (2026-08): the async log-forward goroutine is cut off
+		// at shutdown, so the buildkitd failure reason never reaches the host.
+		// Synchronously flush the buildkitd log and write the solve error to
+		// stderr here so the host captures the real cause before exit.
+		fmt.Fprintf(os.Stderr, "in-guest build: solve failed: %v\n", err)
+		if bkdLog, readErr := os.ReadFile(bkLogPath); readErr == nil {
+			fmt.Fprintf(os.Stderr, "in-guest build: buildkitd log:\n%s\n", bkdLog)
+		}
 		return fmt.Errorf("in-guest build: buildkit solve: %w", err)
 	}
 	log.Printf("in-guest build: rootfs at %s", rootfsDir)
@@ -316,6 +329,18 @@ func findMke2fs() (string, error) {
 		return p, nil
 	}
 	return "", fmt.Errorf("mke2fs not found; tried %v and PATH", candidates)
+}
+
+// solveBuildTimeout returns the buildkit solve timeout. It reads
+// NEXUS3_BUILD_SOLVE_TIMEOUT (a Go duration string, e.g. "60m"); when unset
+// or unparseable it defaults to 45 minutes.
+func solveBuildTimeout() time.Duration {
+	if s := os.Getenv("NEXUS3_BUILD_SOLVE_TIMEOUT"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 45 * time.Minute
 }
 
 // waitForBuildkitSocket polls sockPath at 200 ms intervals until a TCP-style
