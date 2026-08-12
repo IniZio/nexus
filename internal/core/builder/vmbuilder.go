@@ -43,9 +43,14 @@ type GuestExecFn func(ctx context.Context, argv []string, stderr io.Writer) (int
 // multi-stage buildkitd build (pulling base images, compiling, etc.) without
 // OOM-killing the guest. The E2E proof (TestBuilderVME2E) exercises these
 // exact values.
+//
+// DefaultBuilderMemMiB is 8 GiB: apt-heavy multi-stage builds (e.g. debian +
+// compiler toolchains) fill the buildkitd overlay cache and blew through 2 GiB
+// in live testing, OOM-killing the guest mid-build. 8 GiB matches the ceiling
+// proven in old-nexus production runs.
 const (
 	DefaultBuilderVCPUs  uint8  = 2
-	DefaultBuilderMemMiB uint16 = 2048
+	DefaultBuilderMemMiB uint16 = 8192
 )
 
 // BuildInVM boots an ephemeral builder VM described by spec, executes an

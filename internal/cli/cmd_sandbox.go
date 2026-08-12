@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -414,6 +415,27 @@ func buildCHConfig(kernelPath, ext4Path string, memMiB, vcpus uint32) cloudhyper
 
 // ── builder-VM helpers ────────────────────────────────────────────────────────
 
+// buildTaskTimeout parses NEXUS3_BUILD_TASK_TIMEOUT (a Go duration string) and
+// returns the configured duration. It defaults to 20 minutes. This is the OUTER
+// hard wall-clock cap for the entire cache-miss build path: EnsureBuilderImage,
+// ContextToDisk, BuildInVM (VM boot + buildkitd solve + artifact export). It is
+// distinct from NEXUS3_BUILD_SOLVE_TIMEOUT, which caps only the buildkitd solve
+// step and cannot catch a stuck VM boot.
+func buildTaskTimeout() time.Duration {
+	const defaultTimeout = 20 * time.Minute
+	s := os.Getenv("NEXUS3_BUILD_TASK_TIMEOUT")
+	if s == "" {
+		return defaultTimeout
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		slog.Warn("NEXUS3_BUILD_TASK_TIMEOUT: invalid duration, using default",
+			"value", s, "default", defaultTimeout)
+		return defaultTimeout
+	}
+	return d
+}
+
 // builderCaptureDrv wraps *cloudhypervisor.CHDriver and captures the SandboxID
 // that builder.BuildInVM mints internally at Start time. The captured ID is
 // used by the GuestExecFn closure to dial the correct vsock endpoint via
@@ -524,10 +546,11 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			}
 		}
 
-		// Validate the Containerfile exists. The resolved path is passed to the
-		// builder role as part of the context disk; buildkitd finds it at its
-		// canonical location inside the mounted context.
-		_, err := resolveContainerfilePath(workspaceDir, f.dockerfilePath)
+		// Validate the Containerfile exists and save its path for fingerprinting.
+		// The resolved path is passed to the builder role as part of the context
+		// disk; buildkitd finds it at its canonical location inside the mounted
+		// context.
+		containerfilePath, err := resolveContainerfilePath(workspaceDir, f.dockerfilePath)
 		if err != nil {
 			return errSandbox("sandbox create", fmt.Errorf("--file: %w", err))
 		}
@@ -543,87 +566,148 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			return errSandbox("sandbox create", fmt.Errorf("--file: read agent binary %q: %w", agentBin, err))
 		}
 
-		buildCtx, buildCancel := context.WithTimeout(ctx, 30*time.Minute)
+		taskTimeout := buildTaskTimeout()
+		buildCtx, buildCancel := context.WithTimeout(ctx, taskTimeout)
 		defer buildCancel()
 
-		// Ensure the builder rootfs image (moby/buildkit) is available.
-		builderRootfs, err := builderimage.EnsureBuilderImage(buildCtx, storeRoot, agentBytes)
+		// ── Rootfs fingerprint cache ──────────────────────────────────────────
+		// Compute a stable fingerprint over (Containerfile, FROM ref, agent
+		// binary, context directory) and check whether we already have the
+		// built image. A hit skips the entire ~25-min builder VM build.
+		containerfileBytes, err := os.ReadFile(containerfilePath)
 		if err != nil {
-			return errSandbox("sandbox create", fmt.Errorf("--file: builder image: %w", err))
+			return errSandbox("sandbox create", fmt.Errorf("--file: read Containerfile %q: %w", containerfilePath, err))
 		}
-
-		// Prepare an ephemeral directory for the per-build disk images.
-		buildWorkDir, err := os.MkdirTemp("", "nexus3-build-*")
+		baseImageRef := builder.ExtractFromRef(containerfileBytes)
+		fp, err := builder.BuildFingerprint(containerfileBytes, baseImageRef, agentBytes, workspaceDir)
 		if err != nil {
-			return errSandbox("sandbox create", fmt.Errorf("--file: build workdir: %w", err))
-		}
-		defer os.RemoveAll(buildWorkDir)
-
-		// vdb — Pack the build context directory into an ext4 image.
-		ctxDiskPath := filepath.Join(buildWorkDir, "ctx.ext4")
-		if err := builder.ContextToDisk(buildCtx, workspaceDir, ctxDiskPath); err != nil {
-			return errSandbox("sandbox create", fmt.Errorf("--file: context disk: %w", err))
+			return errSandbox("sandbox create", fmt.Errorf("--file: fingerprint: %w", err))
 		}
 
-		// vdc — Pre-allocate the artifact disk; builder VM overwrites it with the
-		// built rootfs ext4.
-		const artifactDiskSize = 4 << 30 // 4 GiB sparse file
-		artifactDiskPath := filepath.Join(buildWorkDir, "artifact.ext4")
-		if err := preallocateFile(artifactDiskPath, artifactDiskSize); err != nil {
-			return errSandbox("sandbox create", fmt.Errorf("--file: artifact disk: %w", err))
+		// Per-fingerprint exclusive lock: prevents two concurrent `sandbox
+		// create --file` calls with identical inputs from both building the
+		// same image. The lock is held until f.imageRef is set.
+		buildCacheBase := filepath.Join(storeRoot, "build-cache")
+		if err := os.MkdirAll(buildCacheBase, 0700); err != nil {
+			return errSandbox("sandbox create", fmt.Errorf("--file: build-cache dir: %w", err))
 		}
-
-		// vdd+ — Attach buildkit (and any future) persistent cache disks.
-		cacheDisks, err := builder.SelectCacheDisks(buildCtx, storeRoot, []string{"buildkit"})
+		fpLock, err := store.OpenLock(filepath.Join(buildCacheBase, fp+".lock"))
 		if err != nil {
-			return errSandbox("sandbox create", fmt.Errorf("--file: cache disks: %w", err))
+			return errSandbox("sandbox create", fmt.Errorf("--file: build-cache lock: %w", err))
+		}
+		defer fpLock.Close()
+		if err := fpLock.Exclusive(buildCtx); err != nil {
+			return errSandbox("sandbox create", fmt.Errorf("--file: build-cache lock acquire: %w", err))
 		}
 
-		// Assemble the BuilderVMSpec first so that sizing helpers (VCPUs/MemMiB)
-		// can derive the production defaults (2 vCPU / 2048 MiB) before the
-		// CHDriver config is constructed.
-		spec := builder.BuilderVMSpec{
-			RootfsDiskPath:   builderRootfs,
-			ContextDiskPath:  ctxDiskPath,
-			ArtifactDiskPath: artifactDiskPath,
-			CacheDisks:       cacheDisks,
-		}
+		if cachedDigest, hit, lookupErr := builder.LookupBuildCache(buildCtx, storeRoot, fp, imgCache); hit {
+			slog.Info("build-cache: hit — skipping builder VM", "fp", fp[:12])
+			f.imageRef = cachedDigest
+		} else {
+			if lookupErr != nil {
+				slog.Warn("build-cache: lookup error, proceeding with build",
+					"fp", fp[:12], "err", lookupErr)
+			} else {
+				slog.Info("build-cache: miss — starting builder VM", "fp", fp[:12])
+			}
 
-		// Build CHDriver config: builder rootfs as vda, extra disks in order.
-		// Sizing is derived from the spec via exported helpers so there is a
-		// single source of truth (builder.DefaultBuilderVCPUs / DefaultBuilderMemMiB).
-		builderCfg := buildCHConfig(kernelPathFor(), builderRootfs,
-			uint32(builder.MemMiB(spec)), uint32(builder.VCPUs(spec)))
-		builderCfg.ExtraDisks = []cloudhypervisor.ExtraDisk{
-			{Path: ctxDiskPath},      // vdb
-			{Path: artifactDiskPath}, // vdc
-		}
-		for _, cd := range cacheDisks {
-			builderCfg.ExtraDisks = append(builderCfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: cd.ImagePath})
-		}
-		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
-			builderCfg.BinaryPath = p
-		}
+			// Ensure the builder rootfs image (moby/buildkit) is available.
+			builderRootfs, err := builderimage.EnsureBuilderImage(buildCtx, storeRoot, agentBytes)
+			if err != nil {
+				return errSandbox("sandbox create", fmt.Errorf("--file: builder image: %w", err))
+			}
 
-		rawDrv, err := cloudhypervisor.New(builderCfg)
-		if err != nil {
-			return errSandbox("sandbox create", fmt.Errorf("--file: builder driver: %w", err))
-		}
+			// Prepare an ephemeral directory for the per-build disk images.
+			buildWorkDir, err := os.MkdirTemp("", "nexus3-build-*")
+			if err != nil {
+				return errSandbox("sandbox create", fmt.Errorf("--file: build workdir: %w", err))
+			}
+			defer os.RemoveAll(buildWorkDir)
 
-		// Wrap the driver to capture the SandboxID that BuildInVM mints at boot
-		// time, so the GuestExecFn closure can dial the correct vsock endpoint.
-		bdrv := &builderCaptureDrv{CHDriver: rawDrv}
-		execFn := func(ctx context.Context, argv []string, stderr io.Writer) (int32, error) {
-			ac := agent.NewClient(bdrv, bdrv.lastStartedID)
-			return ac.Exec(ctx, agent.ExecOptions{Argv: argv, Stderr: stderr})
-		}
+			// vdb — Pack the build context directory into an ext4 image.
+			ctxDiskPath := filepath.Join(buildWorkDir, "ctx.ext4")
+			if err := builder.ContextToDisk(buildCtx, workspaceDir, ctxDiskPath); err != nil {
+				return errSandbox("sandbox create", fmt.Errorf("--file: context disk: %w", err))
+			}
 
-		digest, err := builder.BuildInVM(buildCtx, bdrv, spec, imgCache, execFn)
-		if err != nil {
-			return errSandbox("sandbox create", fmt.Errorf("--file: build: %w", err))
+			// vdc — Pre-allocate the artifact disk; builder VM overwrites it
+			// with the built rootfs ext4.
+			const artifactDiskSize = 4 << 30 // 4 GiB sparse file
+			artifactDiskPath := filepath.Join(buildWorkDir, "artifact.ext4")
+			if err := preallocateFile(artifactDiskPath, artifactDiskSize); err != nil {
+				return errSandbox("sandbox create", fmt.Errorf("--file: artifact disk: %w", err))
+			}
+
+			// vdd+ — Attach buildkit (and any future) persistent cache disks.
+			cacheDisks, err := builder.SelectCacheDisks(buildCtx, storeRoot, []string{"buildkit"})
+			if err != nil {
+				return errSandbox("sandbox create", fmt.Errorf("--file: cache disks: %w", err))
+			}
+
+			// Assemble the BuilderVMSpec first so that sizing helpers
+			// (VCPUs/MemMiB) can derive the production defaults before the
+			// CHDriver config is constructed.
+			spec := builder.BuilderVMSpec{
+				RootfsDiskPath:   builderRootfs,
+				ContextDiskPath:  ctxDiskPath,
+				ArtifactDiskPath: artifactDiskPath,
+				CacheDisks:       cacheDisks,
+			}
+
+			// Build CHDriver config: builder rootfs as vda, extra disks in
+			// order. Sizing is derived from the spec via exported helpers so
+			// there is a single source of truth (builder.DefaultBuilderVCPUs /
+			// DefaultBuilderMemMiB).
+			builderCfg := buildCHConfig(kernelPathFor(), builderRootfs,
+				uint32(builder.MemMiB(spec)), uint32(builder.VCPUs(spec)))
+			builderCfg.ExtraDisks = []cloudhypervisor.ExtraDisk{
+				{Path: ctxDiskPath},      // vdb
+				{Path: artifactDiskPath}, // vdc
+			}
+			for _, cd := range cacheDisks {
+				builderCfg.ExtraDisks = append(builderCfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: cd.ImagePath})
+			}
+			if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
+				builderCfg.BinaryPath = p
+			}
+
+			rawDrv, err := cloudhypervisor.New(builderCfg)
+			if err != nil {
+				return errSandbox("sandbox create", fmt.Errorf("--file: builder driver: %w", err))
+			}
+
+			// Wrap the driver to capture the SandboxID that BuildInVM mints at
+			// boot time, so the GuestExecFn closure can dial the correct vsock
+			// endpoint.
+			bdrv := &builderCaptureDrv{CHDriver: rawDrv}
+			execFn := func(ctx context.Context, argv []string, stderr io.Writer) (int32, error) {
+				ac := agent.NewClient(bdrv, bdrv.lastStartedID)
+				return ac.Exec(ctx, agent.ExecOptions{Argv: argv, Stderr: stderr})
+			}
+
+			digest, err := builder.BuildInVM(buildCtx, bdrv, spec, imgCache, execFn)
+			if err != nil {
+				// If the outer task deadline fired, return a clear actionable message
+				// instead of an opaque wrapped context error. The builder VM's
+				// SyncAndStop / panicSafeStop defer has already run at this point, so
+				// the CH VMM is stopped and no sandbox record was persisted.
+				if buildCtx.Err() != nil {
+					return errSandbox("sandbox create", fmt.Errorf(
+						"builder task exceeded %v (set NEXUS3_BUILD_TASK_TIMEOUT to change) — aborted",
+						taskTimeout))
+				}
+				return errSandbox("sandbox create", fmt.Errorf("--file: build: %w", err))
+			}
+
+			// Cache the produced digest so the next identical create is instant.
+			// Non-fatal: the sandbox boots fine even if this write fails.
+			if storeErr := builder.StoreBuildCache(storeRoot, fp, digest); storeErr != nil {
+				slog.Warn("build-cache: store failed (non-fatal)", "fp", fp[:12], "err", storeErr)
+			}
+
+			// Feed the built image into the normal boot path.
+			f.imageRef = digest
 		}
-		// Feed the built image into the normal boot path.
-		f.imageRef = digest
 	}
 
 	// Resolve the kernel path: env override → binary-relative default.

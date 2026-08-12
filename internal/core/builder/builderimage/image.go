@@ -7,16 +7,18 @@
 //
 // # Cache layout
 //
-//	<dataDir>/images/nexus-builder-<digest>.ext4
+//	<dataDir>/images/nexus-builder-<digest>-agent<agenthash>.ext4
 //
-// The digest is the OCI manifest digest of the pulled image, making the
-// cached file content-addressed: identical image versions yield cache hits
-// with no re-pull or re-convert.
+// The digest is the OCI manifest digest of the pulled image; agenthash is
+// the first 16 hex characters of SHA-256(agentBytes). Both are required
+// so that a changed or grown nexus3-agent binary forces a rebuild instead
+// of reusing a stale image sized for a smaller agent.
 package builderimage
 
 import (
 	"archive/tar"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -82,6 +84,19 @@ var pullRemoteImage = func(ctx context.Context, ociRef string) (v1.Image, error)
 	return img, nil
 }
 
+// builderImageCachePath returns the host path for a cached builder ext4 image.
+//
+// The filename encodes both the OCI digest (digestSafe, already sanitised for
+// filesystem use) and a short hash of the agent binary. Including the agent
+// hash ensures that a grown or rebuilt nexus3-agent produces a distinct key
+// and triggers a fresh image build rather than reusing a stale, too-small
+// ext4.
+func builderImageCachePath(imagesDir, digestSafe string, agentBytes []byte) string {
+	agentSum := sha256.Sum256(agentBytes)
+	agentTag := fmt.Sprintf("%x", agentSum[:8]) // 16 hex chars — sufficient for version skew
+	return filepath.Join(imagesDir, fmt.Sprintf("nexus-builder-%s-agent%s.ext4", digestSafe, agentTag))
+}
+
 // EnsureBuilderImage returns the host path to a bootable raw ext4 image built
 // from the moby/buildkit OCI image. On first call it pulls the image, extracts
 // its layers, adds VM-boot infrastructure, and converts to ext4. Subsequent
@@ -107,7 +122,7 @@ func EnsureBuilderImage(ctx context.Context, dataDir string, embeddedAgentBytes 
 	// "sha256:abc123" → "sha256-abc123"
 	digestSafe := strings.NewReplacer(":", "-", "/", "-").Replace(digest)
 	imagesDir := filepath.Join(dataDir, "images")
-	cachePath := filepath.Join(imagesDir, fmt.Sprintf("nexus-builder-%s.ext4", digestSafe))
+	cachePath := builderImageCachePath(imagesDir, digestSafe, embeddedAgentBytes)
 
 	if info, err := os.Stat(cachePath); err == nil && info.Size() > 0 {
 		slog.Info("builderimage: cache hit", "path", cachePath, "digest", digest)
