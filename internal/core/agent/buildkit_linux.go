@@ -6,8 +6,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
-	"os/exec"
+	"os/exec"  // used for exec.CommandContext (buildkitd) and exec.LookPath (runc fallback)
 	"path/filepath"
 	"syscall"
 	"time"
@@ -21,7 +22,6 @@ const (
 	inGuestBuildkitdPath  = "/usr/local/bin/buildkitd"
 	inGuestBuildkitSock   = "/run/buildkit/buildkitd.sock"
 	inGuestBuildkitState  = "/var/lib/buildkit"
-	inGuestRuncWrapper    = "/run/buildkit/nexus-runc"
 
 	inGuestDefaultBase    = "ubuntu:24.04"
 	inGuestDefaultImgSize = 2 << 30 // 2 GiB
@@ -47,72 +47,131 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 	// These mounts are idempotent — already-mounted targets log and continue.
 	mountKernelFS()
 
-	// ── Step 2: tmpfs for buildkitd state ────────────────────────────────────
-	// xattr operations on virtiofs fail during buildkitd layer squash; state
-	// must be on local tmpfs. The output (type=local rootfs dir) can be on
-	// virtiofs.
+	// ── Step 2: buildkitd state directory ────────────────────────────────────
+	// G6: when a cache disk is attached (G5 EnsureCacheDisk("buildkit")), G3
+	// mounts it at /var/lib/buildkit as a persistent ext4 virtio-blk device
+	// before this function runs. In that case we reuse the persistent mount as
+	// buildkitd's --root so the layer cache survives across builds.
+	//
+	// Without a cache disk, /var/lib/buildkit is not a mountpoint; we mount a
+	// 4 GiB tmpfs so that xattr operations during layer squash succeed (they
+	// fail on virtiofs). This is the original behavior (TestBuildDogfood path).
 	if err := os.MkdirAll(inGuestBuildkitState, 0o700); err != nil {
 		return fmt.Errorf("in-guest build: mkdir buildkit state: %w", err)
 	}
-	if err := mountTmpFS(inGuestBuildkitState, "4g"); err != nil {
-		log.Printf("in-guest build: WARNING: tmpfs on %s failed (%v); state will be on virtiofs",
-			inGuestBuildkitState, err)
+	if buildkitStateIsPersistent(inGuestBuildkitState) {
+		log.Printf("in-guest build: /var/lib/buildkit is a persistent ext4 mount — skipping tmpfs, layer cache will persist")
+	} else {
+		if err := mountTmpFS(inGuestBuildkitState, "4g"); err != nil {
+			log.Printf("in-guest build: WARNING: tmpfs on %s failed (%v); state will be on virtiofs",
+				inGuestBuildkitState, err)
+		}
 	}
 
-	// ── Step 3: runc wrapper (--no-new-keyring) ───────────────────────────────
+	// ── Step 3: locate the runc binary (absolute path, no PATH lookup needed) ──
+	// buildkitd's internal runc check uses exec.LookPath(binary). The kernel
+	// init PATH (/sbin:/usr/sbin:/bin:/usr/bin) often omits /usr/local/bin where
+	// moby/buildkit ships buildkit-runc. Passing --oci-worker-binary with an
+	// absolute path bypasses PATH lookup entirely and matches what G2's shell
+	// script achieves by inheriting a richer shell environment.
 	runcPath, err := findRuncBinary()
 	if err != nil {
 		return fmt.Errorf("in-guest build: find runc: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(inGuestRuncWrapper), 0o755); err != nil {
-		return fmt.Errorf("in-guest build: mkdir wrapper dir: %w", err)
-	}
-	if err := writeRuncWrapper(inGuestRuncWrapper, runcPath); err != nil {
-		return fmt.Errorf("in-guest build: write runc wrapper: %w", err)
+	log.Printf("in-guest build: runc binary at %s", runcPath)
+
+	if err := os.MkdirAll(filepath.Dir(inGuestBuildkitSock), 0o755); err != nil {
+		return fmt.Errorf("in-guest build: mkdir buildkit dir: %w", err)
 	}
 
 	// ── Step 4: start buildkitd ───────────────────────────────────────────────
 	sockPath := inGuestBuildkitSock
-	if err := os.MkdirAll(filepath.Dir(sockPath), 0o755); err != nil {
-		return fmt.Errorf("in-guest build: mkdir sock dir: %w", err)
-	}
 	_ = os.Remove(sockPath) // clear any stale socket
 
 	bkCtx, bkCancel := context.WithCancel(context.Background())
 	defer bkCancel()
 
+	// CRITICAL: redirect buildkitd's output to a log file, NOT to os.Stderr
+	// (the vsock exec pipe).  If buildkitd inherits the exec pipe's write-end,
+	// the ring reader (feedRingFromReader) cannot get EOF while buildkitd is
+	// alive, which prevents the Exit frame from ever reaching the host.
+	// G2's shell script uses the same pattern: > /tmp/bkd.log 2>&1 &
+	bkLogPath := "/tmp/nexus3-bkd.log"
+	bkLogFile, err := os.Create(bkLogPath)
+	if err != nil {
+		return fmt.Errorf("in-guest build: create bkd log: %w", err)
+	}
+
 	bkCmd := exec.CommandContext(bkCtx, bkdPath,
-		"--root", filepath.Join(inGuestBuildkitState, "root"),
+		"--root", inGuestBuildkitState, // same as G2: --root=/var/lib/buildkit
 		"--addr", "unix://"+sockPath,
 		"--oci-worker-snapshotter=native",
-		"--oci-worker-binary="+inGuestRuncWrapper,
+		// Pass the absolute runc path so buildkitd doesn't need PATH lookup.
+		// The kernel init PATH omits /usr/local/bin (where buildkit-runc lives),
+		// so exec.LookPath("buildkit-runc") would fail without this.
+		"--oci-worker-binary="+runcPath,
 		// D-ORCH-11: run OCI worker steps in the guest's host network namespace so
 		// build steps inherit DNS (192.168.127.1 via gvproxy) and outbound egress.
-		// Verified against buildkitd v0.18.2 (--help: --oci-worker-net value).
 		"--oci-worker-net=host",
 	)
 	bkCmd.Env = append(os.Environ(),
 		"BUILDKITD_SNAPSHOTTER=native",
+		// Ensure /usr/local/bin is in PATH so buildkitd can find its bundled
+		// runc even if the kernel init PATH omits it. We also pass
+		// --oci-worker-binary with an absolute path (above) as the primary fix.
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		// buildkitd does not inherit the system CA bundle; set explicitly so
 		// registry pulls (e.g. ubuntu:24.04 from registry-1.docker.io) succeed.
 		"SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
 		"SSL_CERT_DIR=/etc/ssl/certs",
 	)
-	bkCmd.Stdout = os.Stderr // buildkitd logs → serial console
-	bkCmd.Stderr = os.Stderr
+	bkCmd.Stdout = bkLogFile
+	bkCmd.Stderr = bkLogFile
 	bkCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := bkCmd.Start(); err != nil {
+		bkLogFile.Close()
 		return fmt.Errorf("in-guest build: start buildkitd: %w", err)
 	}
+	// Parent closes its copy of the log file FD — buildkitd holds its own.
+	// This ensures the exec-pipe is not held open by buildkitd and the host
+	// gets EOF (and the Exit frame) when builder-role exits normally.
+	bkLogFile.Close()
+
+	// Forward buildkitd log to os.Stderr (→ ring → host execBuf) in background.
+	// Tail-loop exits when buildkitd closes the file (i.e. when bkCmd exits).
+	go func() {
+		f, err := os.Open(bkLogPath)
+		if err != nil {
+			log.Printf("in-guest build: cannot open bkd log: %v", err)
+			return
+		}
+		defer f.Close()
+		buf := make([]byte, 4096)
+		for {
+			n, err := f.Read(buf)
+			if n > 0 {
+				os.Stderr.Write(buf[:n]) //nolint:errcheck
+			}
+			if err != nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
 	// Reap buildkitd in background so it doesn't zombie when bkCancel fires.
 	go func() { _ = bkCmd.Wait() }()
-	log.Printf("in-guest build: buildkitd started pid=%d sock=%s", bkCmd.Process.Pid, sockPath)
+	log.Printf("in-guest build: buildkitd started pid=%d sock=%s log=%s", bkCmd.Process.Pid, sockPath, bkLogPath)
 
 	// ── Step 5: wait for buildkitd socket ────────────────────────────────────
 	waitCtx, waitCancel := context.WithTimeout(ctx, 90*time.Second)
 	defer waitCancel()
 	if err := waitForBuildkitSocket(waitCtx, sockPath); err != nil {
+		// Dump buildkitd's startup log so the host sees the real worker-init error.
+		if bkdLog, readErr := os.ReadFile(bkLogPath); readErr == nil {
+			log.Printf("in-guest build: buildkitd startup log:\n%s", bkdLog)
+		}
 		return fmt.Errorf("in-guest build: buildkitd socket not ready: %w", err)
 	}
 	log.Printf("in-guest build: buildkitd ready")
@@ -187,9 +246,34 @@ func mountTmpFS(path, size string) error {
 	return unix.Mount("tmpfs", path, "tmpfs", 0, "size="+size)
 }
 
-// findRuncBinary returns the absolute path to the runc binary. The
-// moby/buildkit release ships it as "buildkit-runc" in /usr/local/bin; a
-// system install uses /usr/local/bin/runc or /usr/bin/runc.
+// buildkitStateIsPersistent reports whether path is a DISTINCT mountpoint —
+// i.e. a separately-mounted device (e.g. a virtio-blk ext4 cache disk from G5)
+// rather than a plain directory on the guest rootfs.
+//
+// Detection: compare the st_dev (device ID) of path with the st_dev of its
+// parent directory. A real mountpoint has a different st_dev than its parent;
+// a plain directory shares its parent's st_dev. This works regardless of the
+// underlying filesystem type (ext4, tmpfs, …) and requires no CAP_SYS_ADMIN.
+//
+// The guest rootfs itself is virtio-blk ext4, so checking for EXT4_SUPER_MAGIC
+// alone would be wrong — every directory on the rootfs would match. Only a
+// separately-attached cache disk (G5 EnsureCacheDisk("buildkit") → G3 mount)
+// produces a distinct st_dev.
+func buildkitStateIsPersistent(path string) bool {
+	var stPath, stParent unix.Stat_t
+	if err := unix.Stat(path, &stPath); err != nil {
+		return false
+	}
+	if err := unix.Stat(filepath.Dir(path), &stParent); err != nil {
+		return false
+	}
+	return stPath.Dev != stParent.Dev
+}
+
+// findRuncBinary returns the absolute path to the runc binary in the current
+// root filesystem. The moby/buildkit image ships it as buildkit-runc; plain
+// system installs use runc. We use an absolute path to avoid relying on PATH
+// (the kernel init PATH often omits /usr/local/bin).
 func findRuncBinary() (string, error) {
 	candidates := []string{
 		"/usr/local/bin/buildkit-runc",
@@ -197,6 +281,7 @@ func findRuncBinary() (string, error) {
 		"/usr/local/bin/runc",
 		"/usr/bin/runc",
 		"/usr/sbin/runc",
+		"/sbin/runc",
 	}
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
@@ -211,57 +296,33 @@ func findRuncBinary() (string, error) {
 	return "", fmt.Errorf("runc not found; tried %v and PATH", candidates)
 }
 
-// writeRuncWrapper writes an executable wrapper at wrapperPath that delegates
-// to realRuncPath, injecting --no-new-keyring after the first run/create
-// subcommand. This prevents session-keyring exhaustion during large builds.
-// /bin/bash is used when available; POSIX /bin/sh otherwise.
-func writeRuncWrapper(wrapperPath, realRuncPath string) error {
-	var script string
-	if _, err := os.Stat("/bin/bash"); err == nil {
-		script = fmt.Sprintf(`#!/bin/bash
-set -euo pipefail
-REAL_RUNC=%q
-args=()
-injected=false
-for arg in "$@"; do
-  args+=("$arg")
-  if [[ "$injected" == false && "$arg" != -* ]]; then
-    case "$arg" in
-      run|create)
-        args+=("--no-new-keyring")
-        injected=true
-        ;;
-    esac
-  fi
-done
-exec "$REAL_RUNC" "${args[@]}"
-`, realRuncPath)
-	} else {
-		script = fmt.Sprintf(`#!/bin/sh
-set -eu
-REAL_RUNC=%q
-quote() { printf '%%s\n' "$1" | sed "s/'/'\\\\''/g; 1s/^/'/; \$s/\$/'/"; }
-args=""
-injected=false
-for arg in "$@"; do
-  args="$args $(quote "$arg")"
-  if [ "$injected" = false ] && [ "${arg#-}" = "$arg" ]; then
-    case "$arg" in
-      run|create)
-        args="$args $(quote --no-new-keyring)"
-        injected=true
-        ;;
-    esac
-  fi
-done
-eval exec "$REAL_RUNC" $args
-`, realRuncPath)
+// findMke2fs returns the absolute path to mke2fs by probing well-known
+// locations. exec.LookPath relies on os.Getenv("PATH"), which is empty when
+// the agent runs as PID 1 (init=/sbin/nexus3-agent); absolute-path probing
+// avoids that dependency.
+func findMke2fs() (string, error) {
+	candidates := []string{
+		"/sbin/mke2fs",
+		"/usr/sbin/mke2fs",
+		"/usr/bin/mke2fs",
 	}
-	return os.WriteFile(wrapperPath, []byte(script), 0o755)
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	// Fallback: try PATH lookup (works on non-PID-1 environments).
+	if p, err := exec.LookPath("mke2fs"); err == nil {
+		return p, nil
+	}
+	return "", fmt.Errorf("mke2fs not found; tried %v and PATH", candidates)
 }
 
-// waitForBuildkitSocket polls sockPath at 200 ms intervals until it appears
-// (is stat-able) or ctx expires.
+// waitForBuildkitSocket polls sockPath at 200 ms intervals until a TCP-style
+// probe connection succeeds or ctx expires. Stat-only polling is insufficient:
+// buildkitd creates the socket file at bind() but only accepts connections
+// after listen() completes — probing with an actual Dial catches the listen()
+// boundary and avoids an ECONNREFUSED race in the subsequent gRPC Solve.
 func waitForBuildkitSocket(ctx context.Context, sockPath string) error {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
@@ -270,7 +331,9 @@ func waitForBuildkitSocket(ctx context.Context, sockPath string) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if _, err := os.Stat(sockPath); err == nil {
+			conn, err := net.DialTimeout("unix", sockPath, 500*time.Millisecond)
+			if err == nil {
+				conn.Close()
 				return nil
 			}
 		}
@@ -285,19 +348,34 @@ func runMke2fsInGuest(ctx context.Context, srcDir, imgPath string, sizeBytes int
 		sizeBytes = minSize
 	}
 
-	// Pre-allocate the image file.
-	f, err := os.Create(imgPath)
-	if err != nil {
-		return fmt.Errorf("create image file %s: %w", imgPath, err)
-	}
-	if err := f.Truncate(sizeBytes); err != nil {
+	// For a regular file, pre-allocate so mke2fs knows the image size.
+	// For a block device (e.g. /dev/vdc inside the builder VM), truncate is
+	// not supported — mke2fs probes the device size directly via ioctl.
+	fi, statErr := os.Stat(imgPath)
+	isBlockDev := statErr == nil && fi.Mode()&os.ModeDevice != 0
+	if !isBlockDev {
+		f, err := os.Create(imgPath)
+		if err != nil {
+			return fmt.Errorf("create image file %s: %w", imgPath, err)
+		}
+		if err := f.Truncate(sizeBytes); err != nil {
+			f.Close()
+			return fmt.Errorf("truncate image file: %w", err)
+		}
 		f.Close()
-		return fmt.Errorf("truncate image file: %w", err)
 	}
-	f.Close()
+
+	// Locate mke2fs. exec.LookPath uses the PROCESS's os.Getenv("PATH"), not
+	// cmd.Env. When nexus3-agent runs as PID 1 (init=/sbin/nexus3-agent) the
+	// kernel provides no PATH, so LookPath("mke2fs") fails. Probe candidates
+	// with absolute paths instead.
+	mke2fsPath, err := findMke2fs()
+	if err != nil {
+		return fmt.Errorf("mke2fs: %w", err)
+	}
 
 	// mke2fs -d populates the ext4 image directly from srcDir.
-	cmd := exec.CommandContext(ctx, "mke2fs",
+	cmd := exec.CommandContext(ctx, mke2fsPath,
 		"-t", "ext4",
 		"-d", srcDir,
 		"-L", "nexus3-root",
