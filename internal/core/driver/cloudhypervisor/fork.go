@@ -3,13 +3,16 @@ package cloudhypervisor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/IniZio/nexus3/internal/core/artifact"
 	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/driver"
 )
 
 // vmRestoreRequest is the JSON body for PUT /api/v1/vm.restore.
@@ -150,11 +153,57 @@ func (d *CHDriver) ForkFrom(ctx context.Context, snap artifact.Snapshot, childID
 		return nil, fmt.Errorf("cloudhypervisor: fork: manifest verify: %w", err)
 	}
 
-	sourceURL := "file://" + manifest.Dir
+	// Step 4: identify the parent's root disk and net TAP from config.json in the
+	// snapshot directory.
+	//   - For VMs booted via initramfs (no disk), disk isolation is skipped and
+	//     parentDiskPath is left empty.
+	//   - For vsock-only snapshots (no net device), net isolation is skipped and
+	//     parentGuestTap is left empty.
+	// Both are safe after eager restore (prefault=true): RAM state is isolated
+	// per child regardless.
+	configJSONBytes, err := os.ReadFile(filepath.Join(manifest.Dir, "config.json"))
+	if err != nil {
+		return nil, fmt.Errorf("cloudhypervisor: fork: read config.json: %w", err)
+	}
+	parentDiskPath, err := findRootDiskPath(configJSONBytes, snap.SandboxID)
+	if err != nil && !errors.Is(err, errNoDisks) {
+		return nil, fmt.Errorf("cloudhypervisor: fork: find root disk: %w", err)
+	}
+	// errNoDisks is benign: initramfs-only VM, no disk to isolate.
+	if errors.Is(err, errNoDisks) {
+		parentDiskPath = ""
+	}
+
+	parentGuestTap, err := findNetTap(configJSONBytes)
+	if err != nil && !errors.Is(err, errNoNet) {
+		return nil, fmt.Errorf("cloudhypervisor: fork: find net tap: %w", err)
+	}
+	// errNoNet is benign: vsock-only snapshot, no net to isolate.
+	if errors.Is(err, errNoNet) {
+		parentGuestTap = ""
+	}
+
+	parentVsockPath, err := findVsockPath(configJSONBytes)
+	if err != nil && !errors.Is(err, errNoVsock) {
+		return nil, fmt.Errorf("cloudhypervisor: fork: find vsock path: %w", err)
+	}
+	// errNoVsock is benign: VM has no vsock device.
+	if errors.Is(err, errNoVsock) {
+		parentVsockPath = ""
+	}
+
+	var diskDir string
+	if parentDiskPath != "" {
+		diskDir = filepath.Dir(parentDiskPath)
+	}
 
 	instanceIDs := make([]string, len(childIDs))
 	for i, childID := range childIDs {
-		iid, err := d.spawnChildFromSnapshot(ctx, childID, sourceURL)
+		var childDiskPath string
+		if parentDiskPath != "" {
+			childDiskPath = filepath.Join(diskDir, childID.String()+".raw")
+		}
+		iid, err := d.spawnChildFromSnapshot(ctx, childID, manifest.Dir, parentDiskPath, childDiskPath, parentGuestTap, parentVsockPath)
 		if err != nil {
 			// Return already-populated IDs and the first error; caller can
 			// retry or clean up the unseen children.
@@ -185,22 +234,216 @@ func (d *CHDriver) reapTransientSnapshot(snap artifact.Snapshot) {
 }
 
 // spawnChildFromSnapshot spawns a new VMM for childID and restores it from
-// sourceURL. On success it records the child's process handle and instance ID.
-func (d *CHDriver) spawnChildFromSnapshot(ctx context.Context, childID domain.SandboxID, sourceURL string) (string, error) {
+// snapDir.
+//
+// Isolation:
+//   - Disk: when parentDiskPath and childDiskPath are non-empty, the parent
+//     disk is reflink-copied to a child-unique path so siblings share no block
+//     device.
+//   - Net: when parentGuestTap is non-empty (snapshot from a networked VM), the
+//     child runs in an isolated user+network namespace (via StartNetnsRuntime)
+//     with a fresh TAP bridge created using tapIfNames(childID). config.json in
+//     the per-child restore dir has net[].tap rewritten to the child's guest TAP
+//     name, so CH can open it at vm.restore time. The re-exec'd child issues
+//     vm.restore itself (restore mode); the parent polls VMInfo until Running.
+//   - Vsock-only snapshots (errNoNet): no netns is launched; the parent spawns
+//     a plain VMM and calls vm.restore directly (original path, unchanged).
+//
+// On success it records the child's net or proc handle and instance ID.
+// On any failure it cleans up the child disk, restore dir, and netns child.
+func (d *CHDriver) spawnChildFromSnapshot(
+	ctx context.Context,
+	childID domain.SandboxID,
+	snapDir, parentDiskPath, childDiskPath string,
+	parentGuestTap string,
+	parentVsockPath string,
+) (string, error) {
 	socketPath := d.socketPath(childID)
 
-	// Spawn a fresh VMM process for the child VM.
+	// sourceURL points at the snapshot directory CH will restore from.
+	// For disk-bearing or networked VMs this is overwritten with the per-child dir.
+	sourceURL := "file://" + snapDir
+	var restoreDir string
+
+	// Compute the child's guest TAP name (deterministic from childID).
+	// Only non-empty when parentGuestTap is non-empty.
+	childGuestTap := ""
+	if parentGuestTap != "" {
+		childGuestTap, _, _ = tapIfNames(childID)
+	}
+
+	// Compute the child's vsock socket path (per-sandbox, derived from childID).
+	// Only non-empty when parentVsockPath is non-empty.
+	childVsockPath := ""
+	if parentVsockPath != "" {
+		childVsockPath = d.vsockPath(childID)
+	}
+
+	// Prepare a per-child restore directory when disk, net, or vsock isolation
+	// is needed. The directory hardlinks the large snapshot blobs and carries a
+	// rewritten config.json with child-specific paths.
+	needsChildDir := (parentDiskPath != "" && childDiskPath != "") || parentGuestTap != "" || parentVsockPath != ""
+	if needsChildDir {
+		// Step 1: if disk, reflink-copy the parent disk so siblings have
+		// independent block devices.
+		if parentDiskPath != "" && childDiskPath != "" {
+			if err := reflinkCopy(parentDiskPath, childDiskPath); err != nil {
+				return "", fmt.Errorf("copy child disk: %w", err)
+			}
+		}
+
+		// Step 2: create the per-child restore dir with all rewrites applied to
+		// config.json (disk path if disk present, net tap if net present, vsock
+		// socket path always when vsock is present).
+		var prepErr error
+		restoreDir, prepErr = prepareChildRestoreDir(
+			snapDir, childID,
+			parentDiskPath, childDiskPath,
+			parentGuestTap, childGuestTap,
+			parentVsockPath, childVsockPath,
+		)
+		if prepErr != nil {
+			if childDiskPath != "" {
+				_ = os.Remove(childDiskPath)
+			}
+			if restoreDir != "" {
+				_ = os.RemoveAll(restoreDir)
+			}
+			return "", fmt.Errorf("prepare restore dir: %w", prepErr)
+		}
+		sourceURL = "file://" + restoreDir
+	}
+
+	// cleanupDisk removes the child disk, restore dir, and vsock socket on
+	// failure paths.
+	cleanupDisk := func() {
+		if restoreDir != "" {
+			_ = os.RemoveAll(restoreDir)
+		}
+		if childDiskPath != "" {
+			_ = os.Remove(childDiskPath)
+		}
+		if childVsockPath != "" {
+			_ = os.Remove(childVsockPath)
+		}
+	}
+
+	// ── Netns path (snapshot has a net device) ──────────────────────────────
+	// Launch the child VMM inside an isolated user+network namespace with the
+	// child's own TAP bridge. The re-exec'd child (RunNetnsChild) detects the
+	// NEXUS3_NETNS_RESTORE_URL env var and calls vm.restore before tapPump,
+	// so the VM reaches Running inside the netns without any parent API call.
+	if parentGuestTap != "" {
+		rt, err := StartNetnsRuntime(ctx, d.cfg, childID, socketPath, sourceURL)
+		if err != nil {
+			cleanupDisk()
+			return "", fmt.Errorf("spawn netns child: %w", err)
+		}
+
+		// Register netState immediately so clearState → teardownSandboxNet →
+		// rt.Stop() reaches the child on any subsequent failure path.
+		d.mu.Lock()
+		d.nets[childID] = &netState{rt: rt, perimConn: rt.PerimConn}
+		d.mu.Unlock()
+
+		// cleanupNetns kills the netns child, removes per-sandbox files, and
+		// removes the child disk. It is idempotent via rt.Stop()'s stopOnce.
+		cleanupNetns := func() {
+			d.clearState(childID) // → teardownSandboxNet → rt.Stop()
+			cleanupDisk()
+		}
+
+		// Poll VMInfo until the child's vm.restore + vm.resume complete and
+		// the VM is Running. The netns child issues vm.restore then vm.resume
+		// before starting the tapPump; the parent does not call vm.create or
+		// vm.boot.
+		//
+		// CH state machine for restore:
+		//   vm.restore → Paused → vm.resume → Running
+		//
+		// Poll states:
+		//   - err != nil && isAbsent: CH socket not yet bound (child still
+		//     running createTapBridge + spawnVMM) — retry.
+		//   - (Paused, nil): VMRestore done; vm.resume in progress — retry.
+		//   - (Running, nil): vm.resume complete; VM is executing — done.
+		startTimeout := d.cfg.StartTimeout
+		if startTimeout <= 0 {
+			startTimeout = 10 * time.Second
+		}
+		pollCtx, pollCancel := context.WithTimeout(ctx, startTimeout)
+		defer pollCancel()
+		c := newClient(socketPath)
+		for {
+			if err := pollCtx.Err(); err != nil {
+				tail := rt.ChildStderr()
+				cleanupNetns()
+				if tail != "" {
+					return "", fmt.Errorf("child restore not complete within %s: %w\nVMM stderr:\n%s",
+						startTimeout, err, tail)
+				}
+				return "", fmt.Errorf("child restore not complete within %s: %w", startTimeout, err)
+			}
+			state, vmInfoErr := c.VMInfo(pollCtx)
+			if vmInfoErr == nil && state == driver.Running {
+				break
+			}
+			select {
+			case <-pollCtx.Done():
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+
+		// Restore dir served its purpose; remove to avoid accumulation.
+		if restoreDir != "" {
+			_ = os.RemoveAll(restoreDir)
+		}
+
+		// Mint a fresh instance ID for this child.
+		iid, err := newInstanceID()
+		if err != nil {
+			d.clearState(childID) // kills netns child; also cleans nets map entry
+			if childDiskPath != "" {
+				_ = os.Remove(childDiskPath)
+			}
+			return "", fmt.Errorf("generate instance ID: %w", err)
+		}
+
+		// Note: d.procs[childID] is NOT set on the netns path (same as Start).
+		// Kill ownership is via d.nets[childID].rt → rt.Stop().
+		_ = d.writeInstanceID(childID, iid)
+		return iid, nil
+	}
+
+	// ── Plain VMM path (vsock-only snapshot, no net device) ─────────────────
+	// Spawn a fresh VMM process and restore from snapshot. The parent issues
+	// vm.restore directly; no netns or TAP setup is needed.
 	proc, err := spawnVMM(ctx, d.cfg, socketPath)
 	if err != nil {
+		cleanupDisk()
 		return "", fmt.Errorf("spawn VMM: %w", err)
 	}
 
 	// Restore from snapshot. Uses caller ctx (not callCtx): prefault=true
 	// reads all guest memory from disk, which can take O(seconds) for large VMs.
-	if err := newClient(socketPath).VMRestore(ctx, sourceURL); err != nil {
+	chc := newClient(socketPath)
+	if err := chc.VMRestore(ctx, sourceURL); err != nil {
 		proc.kill()
 		_ = os.Remove(socketPath)
+		cleanupDisk()
 		return "", fmt.Errorf("vm.restore: %w", err)
+	}
+	// vm.restore leaves the VM in Paused state; vm.resume brings it to Running.
+	if err := chc.VMResume(ctx); err != nil {
+		proc.kill()
+		_ = os.Remove(socketPath)
+		cleanupDisk()
+		return "", fmt.Errorf("vm.resume after restore: %w", err)
+	}
+
+	// Restore is complete (eager / prefault=true). The restore dir is only
+	// needed during vm.restore; remove it now to avoid accumulation.
+	if restoreDir != "" {
+		_ = os.RemoveAll(restoreDir)
 	}
 
 	// Mint a fresh instance ID for this child.
@@ -208,6 +451,9 @@ func (d *CHDriver) spawnChildFromSnapshot(ctx context.Context, childID domain.Sa
 	if err != nil {
 		proc.kill()
 		_ = os.Remove(socketPath)
+		if childDiskPath != "" {
+			_ = os.Remove(childDiskPath)
+		}
 		return "", fmt.Errorf("generate instance ID: %w", err)
 	}
 

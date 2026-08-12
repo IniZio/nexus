@@ -245,7 +245,7 @@ func TestNetnsRuntime_KVMProof(t *testing.T) {
 	defer cancel()
 
 	t.Log("Starting netns runtime (re-exec into user+net ns)...")
-	rt, err := StartNetnsRuntime(ctx, cfg, id, socketPath)
+	rt, err := StartNetnsRuntime(ctx, cfg, id, socketPath, "") // "" = boot mode
 	if err != nil {
 		t.Fatalf("StartNetnsRuntime: %v", err)
 	}
@@ -494,7 +494,7 @@ func TestNetnsRuntime_CHOrphanKill(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	rt, err := StartNetnsRuntime(ctx, cfg, id, socketPath)
+	rt, err := StartNetnsRuntime(ctx, cfg, id, socketPath, "") // "" = boot mode
 	if err != nil {
 		t.Fatalf("StartNetnsRuntime: %v", err)
 	}

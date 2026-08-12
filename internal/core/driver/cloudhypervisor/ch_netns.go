@@ -59,6 +59,14 @@ const (
 	netnsEnvAPISocket     = "NEXUS3_NETNS_API_SOCKET"
 	netnsEnvCHBin         = "NEXUS3_NETNS_CH_BIN"
 	netnsEnvStartTimeoutMS = "NEXUS3_NETNS_START_TIMEOUT_MS"
+
+	// netnsEnvRestoreURL carries the "file://<dir>" URL the child should pass
+	// to vm.restore after spawning CH. When absent (empty), the child runs in
+	// boot mode: it just spawns CH and pumps frames; the parent issues
+	// vm.create + vm.boot over the shared API socket. When set (restore mode),
+	// the child issues vm.restore before starting the frame pump, so the VM is
+	// Running by the time tapPump blocks.
+	netnsEnvRestoreURL = "NEXUS3_NETNS_RESTORE_URL"
 )
 
 // NetnsRuntime is the parent-side handle to a running netns-runtime child.
@@ -114,17 +122,18 @@ func netnsSocketpairFiles() (perimFile, pumpFile *os.File, err error) {
 // StartNetnsRuntime re-execs the current binary inside a new user+network
 // namespace to host the CH VMM, TAP/bridge topology, and frame pump.
 //
-// On success the caller must:
-//  1. Poll rt.APISocket (via newClient(rt.APISocket).Ping) until CH is ready.
-//  2. Call VMCreateWithNet + VMBoot over rt.APISocket.
-//  3. Read guest Ethernet frames from rt.PerimConn.
-//  4. Call rt.Stop() when done.
+// restoreURL selects the child's operating mode:
+//   - "" (empty, boot mode): child spawns CH and pumps frames; the caller must
+//     poll rt.APISocket until CH is ready, then call VMCreateWithNet + VMBoot.
+//   - "file://<dir>" (restore mode): child spawns CH, issues vm.restore from
+//     restoreURL, then pumps frames; the caller polls for Running state
+//     (VMInfo returns Running) rather than issuing vm.create + vm.boot.
 //
 // socketPath is the path to the CH REST API socket that the child will pass
 // to spawnVMM (--api-socket). It must be accessible from both the child
 // (create) and the parent (connect); /tmp satisfies this because only the
 // mount namespace is shared.
-func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, socketPath string) (*NetnsRuntime, error) {
+func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, socketPath, restoreURL string) (*NetnsRuntime, error) {
 	guestTap, hostTap, bridge := tapIfNames(id)
 
 	// Step 1: create the socketpair as raw *os.File for ExtraFiles handoff.
@@ -169,6 +178,11 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 		fmt.Sprintf("%s=%s", netnsEnvCHBin, cfg.BinaryPath),
 		fmt.Sprintf("%s=%d", netnsEnvStartTimeoutMS, startTimeoutMS),
 		pathEnv,
+	}
+	// Restore mode: pass the snapshot URL so RunNetnsChild issues vm.restore
+	// after spawning CH instead of waiting for the parent to call vm.create+boot.
+	if restoreURL != "" {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", netnsEnvRestoreURL, restoreURL))
 	}
 	cmd.SysProcAttr = netnsChildAttr()
 	// ExtraFiles[0] becomes fd 3 in the child (after stdin/stdout/stderr).
@@ -314,6 +328,24 @@ func RunNetnsChild() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "netns child: spawnVMMInGroup: %v\n", err)
 		os.Exit(1)
+	}
+	// Restore mode: if netnsEnvRestoreURL is set, issue vm.restore now so the
+	// VM reaches Running state before we start pumping frames. Boot mode (empty):
+	// the parent issues vm.create + vm.boot over the shared API socket; no action
+	// here. The normal boot path is byte-for-byte unchanged.
+	if restoreURL := os.Getenv(netnsEnvRestoreURL); restoreURL != "" {
+		chc := newClient(socketPath)
+		if err := chc.VMRestore(ctx, restoreURL); err != nil {
+			fmt.Fprintf(os.Stderr, "netns child: vm.restore %s: %v\n", restoreURL, err)
+			os.Exit(1)
+		}
+		// vm.restore brings the VM to Paused state; vm.resume transitions it
+		// to Running. Without this call the parent's VMInfo poll would never
+		// see Running and would time out after StartTimeout.
+		if err := chc.VMResume(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "netns child: vm.resume: %v\n", err)
+			os.Exit(1)
+		}
 	}
 	_ = proc // CH process; killed by parent's group-kill in rt.Stop()
 

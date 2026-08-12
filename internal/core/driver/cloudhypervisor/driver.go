@@ -437,7 +437,7 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 	// NEXUS3_NETNS_RUN=1 inside CLONE_NEWUSER|CLONE_NEWNET, creates the
 	// TAP/bridge topology, spawnVMM (CH), and the frame pump, then returns
 	// without waiting for CH to be API-ready.
-	rt, err := StartNetnsRuntime(ctx, d.cfg, id, socketPath)
+	rt, err := StartNetnsRuntime(ctx, d.cfg, id, socketPath, "") // "" = boot mode; parent issues vm.create + vm.boot
 	if err != nil {
 		return "", fmt.Errorf("cloudhypervisor: start %s: %w", id, err)
 	}

@@ -100,7 +100,7 @@ func lcBootCH(t *testing.T, chBin, kernelPath string, id domain.SandboxID, socke
 		KernelPath:   kernelPath,
 	}
 	// Use Background so the child is not killed when this helper returns.
-	rt, err := StartNetnsRuntime(context.Background(), cfg, id, socketPath)
+	rt, err := StartNetnsRuntime(context.Background(), cfg, id, socketPath, "") // "" = boot mode
 	if err != nil {
 		t.Fatalf("StartNetnsRuntime: %v", err)
 	}
