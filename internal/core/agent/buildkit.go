@@ -48,6 +48,16 @@ type InGuestBuildOptions struct {
 	// ImageSizeBytes is the size of the raw ext4 image to create.
 	// Defaults to 2 GiB when zero.
 	ImageSizeBytes int64
+
+	// ContextDir is the absolute path to the directory that should be used as
+	// the buildkit build context. When set, its contents are copied into the
+	// synthetic context directory so that COPY instructions in the Containerfile
+	// can reference workspace files (e.g. COPY compose.yaml /workspace/).
+	//
+	// RunBuilderRole sets this to contextMountPoint (/build-context) after
+	// mounting vdb. When empty, COPY instructions referencing non-reserved
+	// files will fail with "not found".
+	ContextDir string
 }
 
 // BuildInGuestImage performs a full in-guest image build and ext4 conversion.

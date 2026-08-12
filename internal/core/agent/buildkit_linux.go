@@ -184,7 +184,24 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 		return fmt.Errorf("in-guest build: create buildkit client: %w", err)
 	}
 
-	rootfsDir, err := os.MkdirTemp("", "nexus3-inguestbuild-rootfs-")
+	// Mount a dedicated tmpfs for the rootfs export directory.
+	// Large images (e.g. ubuntu:24.04 + docker.io ≈ 1.5 GiB uncompressed) exhaust
+	// the builder VM's rootfs /tmp (~400 MiB free) and fail with ENOSPC. A
+	// separate 4 GiB tmpfs (backed by the 8 GiB guest RAM) gives enough room for
+	// any current sandbox image. Non-fatal: if the mount fails we fall back to the
+	// rootfs /tmp (original behaviour, adequate for small Alpine/Debian-slim bases).
+	const exportTmpfs = "/tmp/nexus3-export"
+	exportBase := "" // empty → os.TempDir() = rootfs /tmp (fallback)
+	if mkErr := os.MkdirAll(exportTmpfs, 0o700); mkErr == nil {
+		if mntErr := unix.Mount("tmpfs", exportTmpfs, "tmpfs", 0, "size=4g"); mntErr == nil {
+			exportBase = exportTmpfs
+			defer unix.Unmount(exportTmpfs, unix.MNT_DETACH) //nolint:errcheck
+		} else {
+			log.Printf("in-guest build: WARNING: tmpfs for rootfs export failed (%v); using builder rootfs /tmp", mntErr)
+		}
+	}
+
+	rootfsDir, err := os.MkdirTemp(exportBase, "nexus3-inguestbuild-rootfs-")
 	if err != nil {
 		return fmt.Errorf("in-guest build: mkdir rootfs: %w", err)
 	}
@@ -203,6 +220,7 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 		ContainerfileBytes: opts.ContainerfileBytes,
 		AgentPath:          opts.AgentPath,
 		AgentInstallPath:   "/sbin/nexus3-agent",
+		WorkspaceDir:       opts.ContextDir, // vdb mount point; empty means no user context files
 	}, rootfsDir); err != nil {
 		// Prototype finding (2026-08): the async log-forward goroutine is cut off
 		// at shutdown, so the buildkitd failure reason never reaches the host.

@@ -100,6 +100,7 @@ func RunBuilderRole(ctx context.Context, opts BuilderRoleOptions) error {
 		AgentPath:          agentPath,
 		OutputExt4:         artifactDev,
 		BuildkitdPath:      opts.BuildkitdPath,
+		ContextDir:         contextMountPoint, // /build-context — vdb mounted read-only above
 	}
 	if err := BuildInGuestImage(ctx, buildOpts); err != nil {
 		return fmt.Errorf("builder role: build: %w", err)
