@@ -76,6 +76,11 @@ type Config struct {
 	// When empty the driver uses the initramfs boot path (InitramfsPath).
 	DiskImagePath string
 
+	// ExtraDisks are additional raw ext4 disk images attached at boot after
+	// the rootfs vda. ExtraDisks[0] becomes /dev/vdb, ExtraDisks[1] /dev/vdc,
+	// and so on. See ExtraDisk for details. Only valid when DiskImagePath is set.
+	ExtraDisks []ExtraDisk
+
 	// Cmdline is the kernel command line passed to CH's payload.cmdline.
 	//
 	// When empty, the driver uses the default:
@@ -553,6 +558,9 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 	if d.cfg.DiskImagePath != "" {
 		vmcfg.Disks = []vmDiskConfig{
 			{Path: d.cfg.DiskImagePath, ImageType: "Raw"},
+		}
+		for _, ed := range d.cfg.ExtraDisks {
+			vmcfg.Disks = append(vmcfg.Disks, vmDiskConfig{Path: ed.Path, ImageType: "Raw"})
 		}
 	}
 

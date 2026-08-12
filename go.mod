@@ -6,6 +6,7 @@ require (
 	github.com/containers/gvisor-tap-vsock v0.8.9
 	github.com/creack/pty v1.1.24
 	github.com/elazarl/goproxy v1.9.0
+	github.com/google/go-containerregistry v0.21.5
 	github.com/mdlayher/vsock v1.3.0
 	github.com/moby/buildkit v0.18.2
 	github.com/modelcontextprotocol/go-sdk v1.7.0
@@ -27,12 +28,15 @@ require (
 	github.com/containerd/containerd v1.7.24 // indirect
 	github.com/containerd/containerd/api v1.7.19 // indirect
 	github.com/containerd/continuity v0.4.5 // indirect
-	github.com/containerd/errdefs v0.3.0 // indirect
+	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/platforms v0.2.1 // indirect
+	github.com/containerd/stargz-snapshotter/estargz v0.18.2 // indirect
 	github.com/containerd/ttrpc v1.2.5 // indirect
 	github.com/containerd/typeurl/v2 v2.2.3 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
+	github.com/docker/cli v29.4.0+incompatible // indirect
+	github.com/docker/docker-credential-helpers v0.9.3 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
@@ -51,15 +55,16 @@ require (
 	github.com/in-toto/in-toto-golang v0.5.0 // indirect
 	github.com/inetaf/tcpproxy v0.0.0-20250222171855-c4b9df066048 // indirect
 	github.com/insomniacslk/dhcp v0.0.0-20240710054256-ddd8a41251c9 // indirect
-	github.com/klauspost/compress v1.17.11 // indirect
+	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/mdlayher/socket v0.6.0 // indirect
 	github.com/miekg/dns v1.1.72 // indirect
+	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/locker v1.0.1 // indirect
 	github.com/moby/patternmatcher v0.6.0 // indirect
 	github.com/moby/sys/signal v0.7.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
-	github.com/opencontainers/image-spec v1.1.0 // indirect
+	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.14 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
@@ -70,6 +75,7 @@ require (
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/tonistiigi/fsutil v0.0.0-20241121093142-31cf1f437184 // indirect
 	github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701 // indirect
+	github.com/vbatts/tar-split v0.12.2 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.46.1 // indirect
@@ -90,6 +96,7 @@ require (
 	google.golang.org/genproto v0.0.0-20240123012728-ef4313101c80 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
+	gotest.tools/v3 v3.5.2 // indirect
 	gvisor.dev/gvisor v0.0.0-20260413194555-9680d69bf798 // indirect
 )
 
