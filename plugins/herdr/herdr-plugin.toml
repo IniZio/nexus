@@ -1,7 +1,7 @@
 id = "nexus3"
 name = "nexus3"
 version = "0.1.0"
-min_herdr_version = "0.7.5"
+min_herdr_version = "0.7.4"
 description = "Attach to nexus3 microVM workspaces, list them, and create them without leaving Herdr."
 platforms = ["linux", "macos"]
 
@@ -15,6 +15,12 @@ placement = "tab"
 command = ["sh", "bin/pane.sh", "attach"]
 
 [[panes]]
+id = "shell"
+title = "nexus3 guest shell"
+placement = "tab"
+command = ["sh", "bin/pane.sh", "shell"]
+
+[[panes]]
 id = "workspaces"
 title = "nexus3 workspaces"
 placement = "overlay"
@@ -25,6 +31,12 @@ id = "create"
 title = "nexus3 create"
 placement = "tab"
 command = ["sh", "bin/pane.sh", "create"]
+
+[[panes]]
+id = "create-space"
+title = "nexus3 create sandbox space"
+placement = "tab"
+command = ["sh", "bin/pane.sh", "create-space"]
 
 [[panes]]
 id = "logs"
@@ -51,10 +63,10 @@ contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "attach", "tab"]
 
 [[actions]]
-id = "create"
-title = "nexus3: create a workspace"
+id = "create-space"
+title = "nexus3: create sandbox space (from local Containerfile)"
 contexts = ["workspace"]
-command = ["sh", "bin/open-pane.sh", "create", "tab"]
+command = ["sh", "bin/open-pane.sh", "create-space", "tab"]
 
 [[actions]]
 id = "logs"
@@ -67,3 +79,9 @@ id = "doctor"
 title = "nexus3: doctor"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "doctor", "split"]
+
+[[actions]]
+id = "open-guest-pane"
+title = "nexus3: open guest pane"
+contexts = ["workspace"]
+command = ["sh", "bin/open-pane.sh", "space-open-pane"]

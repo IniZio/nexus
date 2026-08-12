@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -178,5 +179,128 @@ func TestHerdrPlugin_noSubcommand(t *testing.T) {
 	err := runHerdrPlugin(context.Background(), []string{}, out)
 	if err == nil {
 		t.Fatal("expected error for missing subcommand, got nil")
+	}
+}
+
+func TestResolveDockerfilePath_standardContainerfile(t *testing.T) {
+	dir := t.TempDir()
+	nexusDir := dir + "/.nexus"
+	if err := os.MkdirAll(nexusDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cf := nexusDir + "/Containerfile"
+	if err := os.WriteFile(cf, []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, warn, err := resolveDockerfilePath(dir, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved != cf {
+		t.Errorf("resolved: want %q, got %q", cf, resolved)
+	}
+	if warn != "" {
+		t.Errorf("unexpected warning: %q", warn)
+	}
+}
+
+func TestResolveDockerfilePath_dockerfileFallback(t *testing.T) {
+	dir := t.TempDir()
+	nexusDir := dir + "/.nexus"
+	if err := os.MkdirAll(nexusDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	df := nexusDir + "/Dockerfile"
+	if err := os.WriteFile(df, []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, warn, err := resolveDockerfilePath(dir, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved != df {
+		t.Errorf("resolved: want %q, got %q", df, resolved)
+	}
+	if warn == "" {
+		t.Error("expected a warning for Dockerfile fallback, got none")
+	}
+}
+
+func TestResolveDockerfilePath_neitherExists(t *testing.T) {
+	dir := t.TempDir()
+	_, _, err := resolveDockerfilePath(dir, "")
+	if err == nil {
+		t.Fatal("expected error when no Containerfile/Dockerfile found, got nil")
+	}
+	// Error message should name both tried paths.
+	msg := err.Error()
+	if !strings.Contains(msg, "Containerfile") {
+		t.Errorf("error should mention Containerfile, got: %q", msg)
+	}
+	if !strings.Contains(msg, "Dockerfile") {
+		t.Errorf("error should mention Dockerfile, got: %q", msg)
+	}
+}
+
+func TestResolveDockerfilePath_overrideExists(t *testing.T) {
+	dir := t.TempDir()
+	override := dir + "/MyDockerfile"
+	if err := os.WriteFile(override, []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, warn, err := resolveDockerfilePath(dir, override)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved != override {
+		t.Errorf("resolved: want %q, got %q", override, resolved)
+	}
+	if warn == "" {
+		t.Error("expected non-standard warning for override path")
+	}
+}
+
+func TestResolveDockerfilePath_overrideMissing(t *testing.T) {
+	dir := t.TempDir()
+	_, _, err := resolveDockerfilePath(dir, dir+"/nonexistent")
+	if err == nil {
+		t.Fatal("expected error for missing override path, got nil")
+	}
+}
+
+func TestDeriveHandleFromContext(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"/home/user/myproject", "local/myproject"},
+		{"/tmp/foo-bar", "local/foo-bar"},
+		{"/", "local/project"},
+		{".", "local/project"},
+	}
+	for _, tc := range tests {
+		got := deriveHandleFromContext(tc.in)
+		if got != tc.want {
+			t.Errorf("deriveHandleFromContext(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestHerdrPluginContextCwdValue_set(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_CONTEXT_JSON", `{"workspace_cwd":"/workspace/proj"}`)
+	got := herdrPluginContextCwdValue()
+	if got != "/workspace/proj" {
+		t.Errorf("got %q, want %q", got, "/workspace/proj")
+	}
+}
+
+func TestHerdrPluginContextCwdValue_unset(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_CONTEXT_JSON", "")
+	got := herdrPluginContextCwdValue()
+	if got != "" {
+		t.Errorf("expected empty string, got %q", got)
 	}
 }

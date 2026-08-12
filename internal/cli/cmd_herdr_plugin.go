@@ -41,7 +41,7 @@ const herdrPluginABIVersion = "1"
 // and carries no --json guarantees. The double-underscore prefix marks it.
 func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
-		return &UsageError{Msg: "__herdr-plugin: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch)"}
+		return &UsageError{Msg: "__herdr-plugin: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|space-create|space-create-from-file|space-open-pane|space-pause|space-resume|space-remove|space-list)"}
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -101,6 +101,90 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		}
 		return herdrPluginLaunch(ctx, rest[0], rest[1:], out)
 
+	case "space-create":
+		if len(rest) == 0 {
+			return &UsageError{Msg: "__herdr-plugin space-create: sandbox ref required"}
+		}
+		svc, err := newSandboxService()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-create: " + err.Error(), Err: err}
+		}
+		storeRoot, err := store.DefaultRoot()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-create: resolve store: " + err.Error(), Err: err}
+		}
+		return herdrPluginSpaceCreate(ctx, rest[0], out.w, svc, storeRoot)
+
+	case "space-create-from-file":
+		svc, err := newSandboxService()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-create-from-file: " + err.Error(), Err: err}
+		}
+		storeRoot, err := store.DefaultRoot()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-create-from-file: resolve store: " + err.Error(), Err: err}
+		}
+		return herdrPluginSpaceCreateFromFile(ctx, os.Stdin, out.w, svc, storeRoot)
+
+	case "space-open-pane":
+		if len(rest) == 0 {
+			return &UsageError{Msg: "__herdr-plugin space-open-pane: sandbox ref or space label required"}
+		}
+		storeRoot, err := store.DefaultRoot()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-open-pane: resolve store: " + err.Error(), Err: err}
+		}
+		return herdrPluginSpaceOpenPane(ctx, rest[0], storeRoot)
+
+	case "space-pause":
+		if len(rest) == 0 {
+			return &UsageError{Msg: "__herdr-plugin space-pause: space label required"}
+		}
+		svc, err := newSandboxService()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-pause: " + err.Error(), Err: err}
+		}
+		storeRoot, err := store.DefaultRoot()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-pause: resolve store: " + err.Error(), Err: err}
+		}
+		return HerdrSpacePauseByLabel(ctx, svc, storeRoot, rest[0])
+
+	case "space-resume":
+		if len(rest) == 0 {
+			return &UsageError{Msg: "__herdr-plugin space-resume: space label required"}
+		}
+		svc, err := newSandboxService()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-resume: " + err.Error(), Err: err}
+		}
+		storeRoot, err := store.DefaultRoot()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-resume: resolve store: " + err.Error(), Err: err}
+		}
+		return HerdrSpaceResumeByLabel(ctx, svc, storeRoot, rest[0])
+
+	case "space-remove":
+		if len(rest) == 0 {
+			return &UsageError{Msg: "__herdr-plugin space-remove: space label required"}
+		}
+		svc, err := newSandboxService()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-remove: " + err.Error(), Err: err}
+		}
+		storeRoot, err := store.DefaultRoot()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-remove: resolve store: " + err.Error(), Err: err}
+		}
+		return HerdrSpaceRemoveByLabel(ctx, svc, storeRoot, rest[0])
+
+	case "space-list":
+		storeRoot, err := store.DefaultRoot()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-list: resolve store: " + err.Error(), Err: err}
+		}
+		return herdrPluginSpaceList(ctx, out.w, storeRoot)
+
 	default:
 		return &UsageError{Msg: "__herdr-plugin: unknown subcommand: " + sub}
 	}
@@ -149,7 +233,7 @@ func herdrPluginAttach(ctx context.Context, ref string, out *Output, svc *servic
 	// Strip HERDR_* from process env — guest must never see herdr socket paths.
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "HERDR_") {
-			key := strings.SplitN(kv, "=", 2)[0]
+			key, _, _ := strings.Cut(kv, "=")
 			os.Unsetenv(key)
 		}
 	}
@@ -213,6 +297,171 @@ func herdrPluginCreate(ctx context.Context, r io.Reader, w io.Writer, svc *servi
 	}
 	fmt.Fprintf(w, "created: %s\n", sb.Handle())
 	return nil
+}
+
+// resolveDockerfilePath resolves a Containerfile path using docker-style context/dockerfile semantics.
+//
+// Priority:
+//  1. overridePath if non-empty (explicit --file flag)
+//  2. contextDir/.nexus/Containerfile
+//  3. contextDir/.nexus/Dockerfile (fallback)
+//
+// Returns an error (naming both tried paths) if no usable file is found.
+// Also returns a warning string (non-empty) when:
+//   - the resolved file is not at the standard .nexus/Containerfile location
+//     (the nexus3 build engine always reads workspaceDir/.nexus/Containerfile)
+func resolveDockerfilePath(contextDir, overridePath string) (resolved string, warning string, err error) {
+	if overridePath != "" {
+		if _, e := os.Stat(overridePath); e != nil {
+			return "", "", fmt.Errorf("--file %q: %w", overridePath, e)
+		}
+		standard := filepath.Join(contextDir, ".nexus", "Containerfile")
+		if overridePath != standard {
+			warning = fmt.Sprintf(
+				"note: --file %q is not the standard path %q; the build engine reads %q from the context dir",
+				overridePath, standard, standard)
+		}
+		return overridePath, warning, nil
+	}
+
+	cf := filepath.Join(contextDir, ".nexus", "Containerfile")
+	if _, e := os.Stat(cf); e == nil {
+		return cf, "", nil
+	}
+	df := filepath.Join(contextDir, ".nexus", "Dockerfile")
+	if _, e := os.Stat(df); e == nil {
+		// Dockerfile found but the build engine only reads Containerfile.
+		return df, fmt.Sprintf(
+			"warning: found %q but the nexus3 build engine requires %q — please rename it",
+			df, cf), nil
+	}
+	return "", "", fmt.Errorf(
+		"no Containerfile found: tried\n  %s\n  %s\nCreate one of these files or specify --file",
+		cf, df)
+}
+
+// deriveHandleFromContext derives a default sandbox handle from the context directory basename.
+// Convention: "local/<basename>".
+func deriveHandleFromContext(contextDir string) string {
+	base := filepath.Base(contextDir)
+	if base == "" || base == "." || base == "/" {
+		base = "project"
+	}
+	return "local/" + base
+}
+
+// herdrPluginContextCwdValue reads workspace_cwd from HERDR_PLUGIN_CONTEXT_JSON.
+// Returns empty string if the env var is absent or malformed.
+func herdrPluginContextCwdValue() string {
+	raw := os.Getenv("HERDR_PLUGIN_CONTEXT_JSON")
+	if raw == "" {
+		return ""
+	}
+	var obj struct {
+		WorkspaceCwd string `json:"workspace_cwd"`
+	}
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return ""
+	}
+	return obj.WorkspaceCwd
+}
+
+// herdrPluginSpaceCreateFromFile interactively prompts for a build context and
+// Containerfile, boots a sandbox via "nexus3 sandbox create --file <dockerfile>",
+// then calls the space-create flow to open a guest-shell herdr space.
+//
+// Docker-style semantics:
+//   - context: the build context directory (default: workspace_cwd from HERDR_PLUGIN_CONTEXT_JSON)
+//   - dockerfile: defaults to <context>/.nexus/Containerfile with fallback to <context>/.nexus/Dockerfile
+//
+// GAP vs. docker: the nexus3 build engine (builder.Build) always reads
+// WorkspaceDir/.nexus/Containerfile regardless of the dockerfile argument.
+// The --file flag to "sandbox create" derives workspaceDir from the dockerfile
+// path (strips .nexus/ prefix). If the user supplies an override --file that
+// lives outside the standard .nexus/ location, workspaceDir may differ from
+// the context dir. This limitation is noted with a warning; no silent data loss occurs.
+func herdrPluginSpaceCreateFromFile(ctx context.Context, r io.Reader, w io.Writer, svc *service.Service, storeRoot string) error {
+	scanner := bufio.NewScanner(r)
+
+	// ── Resolve context dir ───────────────────────────────────────────────────
+	defaultContext := herdrPluginContextCwdValue()
+	if defaultContext == "" {
+		defaultContext, _ = os.Getwd()
+	}
+
+	fmt.Fprintf(os.Stderr, "context [%s]: ", defaultContext)
+	if !scanner.Scan() {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create-from-file: failed to read context"}
+	}
+	contextDir := strings.TrimSpace(scanner.Text())
+	if contextDir == "" {
+		contextDir = defaultContext
+	}
+	if fi, err := os.Stat(contextDir); err != nil || !fi.IsDir() {
+		fmt.Fprintf(w, "error: context path %q does not exist or is not a directory\n", contextDir)
+		return &UsageError{Msg: "space-create-from-file: invalid context path: " + contextDir}
+	}
+
+	// ── Resolve dockerfile ────────────────────────────────────────────────────
+	defaultDockerfile := filepath.Join(contextDir, ".nexus", "Containerfile")
+	fmt.Fprintf(os.Stderr, "dockerfile [%s]: ", defaultDockerfile)
+	if !scanner.Scan() {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create-from-file: failed to read dockerfile"}
+	}
+	dockerfileOverride := strings.TrimSpace(scanner.Text())
+
+	dockerfile, warn, err := resolveDockerfilePath(contextDir, dockerfileOverride)
+	if err != nil {
+		fmt.Fprintln(w, "error: "+err.Error())
+		return &UsageError{Msg: "space-create-from-file: " + err.Error()}
+	}
+	if warn != "" {
+		fmt.Fprintln(w, warn)
+	}
+	// If the file resolves to Dockerfile (not Containerfile), the build engine
+	// cannot use it — surface the limitation immediately before creating anything.
+	standardCF := filepath.Join(contextDir, ".nexus", "Containerfile")
+	if dockerfile != standardCF {
+		fmt.Fprintf(w, "error: resolved dockerfile %q but the build engine only reads %q\n", dockerfile, standardCF)
+		fmt.Fprintf(w, "       Rename the file to .nexus/Containerfile and retry.\n")
+		return &UsageError{Msg: "space-create-from-file: dockerfile must be at " + standardCF}
+	}
+
+	// ── Derive sandbox handle ─────────────────────────────────────────────────
+	defaultHandle := deriveHandleFromContext(contextDir)
+	fmt.Fprintf(os.Stderr, "sandbox name [%s]: ", defaultHandle)
+	if !scanner.Scan() {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create-from-file: failed to read sandbox name"}
+	}
+	handle := strings.TrimSpace(scanner.Text())
+	if handle == "" {
+		handle = defaultHandle
+	}
+	// Validate handle format: must be project/name.
+	if _, _, err := domain.ParseHandle(handle); err != nil {
+		fmt.Fprintf(w, "error: invalid sandbox name %q (must be project/name, e.g. local/myapp)\n", handle)
+		return &UsageError{Msg: "space-create-from-file: " + err.Error()}
+	}
+
+	// ── Create + boot sandbox via "nexus3 sandbox create <handle> --file <dir>" ──
+	// We pass contextDir (the dir) so cmd_sandbox.go sets workspaceDir = contextDir.
+	// The build engine then reads contextDir/.nexus/Containerfile.
+	fmt.Fprintf(w, "creating sandbox %q from %s ...\n", handle, dockerfile)
+	exe, err := os.Executable()
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create-from-file: resolve executable: " + err.Error(), Err: err}
+	}
+	createCmd := exec.CommandContext(ctx, exe, "sandbox", "create", handle, "--file", contextDir)
+	createCmd.Stdout = w
+	createCmd.Stderr = w
+	if err := createCmd.Run(); err != nil {
+		fmt.Fprintf(w, "error: sandbox create failed: %v\n", err)
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create-from-file: sandbox create: " + err.Error(), Err: err}
+	}
+
+	// ── Open herdr space ──────────────────────────────────────────────────────
+	fmt.Fprintf(w, "opening herdr space for %s ...\n", handle)
+	return herdrPluginSpaceCreate(ctx, handle, w, svc, storeRoot)
 }
 
 // herdrPluginDoctor prints host preflight info and ABI version.
@@ -370,6 +619,182 @@ func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, out 
 	}
 	if exitCode != 0 {
 		return &ExitCodeError{Code: exitCode}
+	}
+	return nil
+}
+
+// herdrSpaceLabelForRef derives the canonical herdr workspace label for a sandbox ref.
+// Convention: "nexus3:<handle>" where handle is the ref (sandbox handles ARE the ref).
+func herdrSpaceLabelForRef(ref string) string {
+	return "nexus3:" + ref
+}
+
+// herdrPluginSpaceCreate creates (or reuses) a herdr workspace for the sandbox,
+// opens the primary guest-shell pane, and stores the binding.
+func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc *service.Service, storeRoot string) error {
+	herdrBin := os.Getenv("HERDR_BIN_PATH")
+	if herdrBin == "" {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: HERDR_BIN_PATH not set"}
+	}
+
+	// Ensure sandbox is running; captures the sandbox for ID resolution.
+	// If Start returns an illegal-transition error the sandbox is already running;
+	// fall back to List to locate it.
+	sb, startErr := svc.Start(ctx, ref)
+	if startErr != nil {
+		if !strings.Contains(startErr.Error(), "illegal transition") {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: start sandbox: " + startErr.Error(), Err: startErr}
+		}
+		// Sandbox already running: resolve via list.
+		all, listErr := svc.List(ctx)
+		if listErr != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: list sandboxes: " + listErr.Error(), Err: listErr}
+		}
+		found := false
+		for _, s := range all {
+			if s.Handle() == ref {
+				sb = s
+				found = true
+				break
+			}
+		}
+		if !found {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: sandbox not found: " + ref}
+		}
+	}
+
+	label := herdrSpaceLabelForRef(ref)
+
+	// Idempotency: reuse existing binding if one exists for this handle.
+	if existing, err := HerdrSpaceGetByLabel(ctx, storeRoot, label); err == nil {
+		fmt.Fprintf(w, "reusing space: label=%s workspace_id=%s\n", existing.SpaceLabel, existing.HerdrWorkspaceID)
+		return herdrOpenGuestShellPane(herdrBin, ref, existing.HerdrWorkspaceID)
+	}
+
+	// Create herdr workspace and capture its ID.
+	workspaceID, err := herdrWorkspaceCreate(herdrBin, label)
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: herdr workspace create: " + err.Error(), Err: err}
+	}
+
+	b := HerdrSpaceBinding{
+		SpaceLabel:       label,
+		HerdrWorkspaceID: workspaceID,
+		SandboxHandle:    ref,
+		SandboxID:        sb.ID.String(),
+	}
+	if err := HerdrSpacePut(ctx, storeRoot, b); err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: store binding: " + err.Error(), Err: err}
+	}
+
+	fmt.Fprintf(w, "created space: label=%s workspace_id=%s\n", label, workspaceID)
+	return herdrOpenGuestShellPane(herdrBin, ref, workspaceID)
+}
+
+// herdrWorkspaceCreate runs "herdr workspace create --label <label>" and returns the workspace ID.
+// herdr prints a JSON envelope; we parse result.workspace.workspace_id from it.
+func herdrWorkspaceCreate(herdrBin, label string) (string, error) {
+	var buf strings.Builder
+	cmd := exec.Command(herdrBin, "workspace", "create", "--label", label, "--no-focus")
+	cmd.Stdout = &buf
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+	// Parse {"id":...,"result":{"workspace":{"workspace_id":"wF",...},...}}
+	var envelope struct {
+		Result struct {
+			Workspace struct {
+				WorkspaceID string `json:"workspace_id"`
+			} `json:"workspace"`
+		} `json:"result"`
+	}
+	raw := strings.TrimSpace(buf.String())
+	if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
+		// Fall back to treating the raw output as a plain ID (plain-text mode).
+		id := raw
+		if id == "" {
+			return "", fmt.Errorf("herdr workspace create: empty output")
+		}
+		return id, nil
+	}
+	id := envelope.Result.Workspace.WorkspaceID
+	if id == "" {
+		return "", fmt.Errorf("herdr workspace create: workspace_id not found in response: %s", raw)
+	}
+	return id, nil
+}
+
+// herdrOpenGuestShellPane opens a guest-shell pane in the named workspace.
+func herdrOpenGuestShellPane(herdrBin, ref, workspaceID string) error {
+	cmd := exec.Command(herdrBin, "plugin", "pane", "open",
+		"--plugin", "nexus3",
+		"--entrypoint", "shell",
+		"--workspace", workspaceID,
+		"--env", "NEXUS3_WORKSPACE="+ref,
+		"--focus",
+	)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: open shell pane: " + err.Error(), Err: err}
+	}
+	return nil
+}
+
+// herdrPluginSpaceOpenPane resolves a space by ref, label, or workspace_id and opens another guest-shell pane.
+func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot string) error {
+	herdrBin := os.Getenv("HERDR_BIN_PATH")
+	if herdrBin == "" {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-open-pane: HERDR_BIN_PATH not set"}
+	}
+
+	b, err := herdrSpaceResolve(ctx, storeRoot, refOrLabel)
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-open-pane: no space binding for " + refOrLabel}
+	}
+
+	return herdrOpenGuestShellPane(herdrBin, b.SandboxHandle, b.HerdrWorkspaceID)
+}
+
+// herdrSpaceResolve looks up a binding by label, sandbox handle, derived label, or workspace ID.
+func herdrSpaceResolve(ctx context.Context, storeRoot, key string) (HerdrSpaceBinding, error) {
+	if b, err := HerdrSpaceGetByLabel(ctx, storeRoot, key); err == nil {
+		return b, nil
+	}
+	if b, err := HerdrSpaceGetByHandle(ctx, storeRoot, key); err == nil {
+		return b, nil
+	}
+	if b, err := HerdrSpaceGetByLabel(ctx, storeRoot, herdrSpaceLabelForRef(key)); err == nil {
+		return b, nil
+	}
+	// Fall through: scan list for matching HerdrWorkspaceID (used by actions passing HERDR_WORKSPACE_ID).
+	all, err := HerdrSpaceList(ctx, storeRoot)
+	if err != nil {
+		return HerdrSpaceBinding{}, err
+	}
+	for _, b := range all {
+		if b.HerdrWorkspaceID == key {
+			return b, nil
+		}
+	}
+	return HerdrSpaceBinding{}, ErrHerdrSpaceNotFound
+}
+
+// herdrPluginSpaceList prints all space bindings.
+func herdrPluginSpaceList(ctx context.Context, w io.Writer, storeRoot string) error {
+	bindings, err := HerdrSpaceList(ctx, storeRoot)
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-list: " + err.Error(), Err: err}
+	}
+	if len(bindings) == 0 {
+		fmt.Fprintln(w, "(no herdr space bindings)")
+		return nil
+	}
+	for _, b := range bindings {
+		fmt.Fprintf(w, "label=%s\tworkspace_id=%s\thandle=%s\tsandbox_id=%s\n",
+			b.SpaceLabel, b.HerdrWorkspaceID, b.SandboxHandle, b.SandboxID)
 	}
 	return nil
 }
