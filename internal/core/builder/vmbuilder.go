@@ -239,6 +239,9 @@ func guestBuild(ctx context.Context, execFn GuestExecFn, cacheDisks []CacheDiskS
 	}
 	exitCode, err := execFn(ctx, argv, &stderr)
 	if err != nil {
+		if s := stderr.String(); s != "" {
+			return fmt.Errorf("exec builder role: %w\nin-guest output:\n%s", err, s)
+		}
 		return fmt.Errorf("exec builder role: %w", err)
 	}
 	if exitCode != 0 {

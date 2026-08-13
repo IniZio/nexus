@@ -624,9 +624,56 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			}
 			defer os.RemoveAll(buildWorkDir)
 
-			// vdb — Pack the build context directory into an ext4 image.
+			// vdb — Pack the build context into an ext4 image.
+			// If the workspace is a git repository, use "git archive HEAD"
+			// to export only committed tracked files. This avoids sending
+			// untracked artefacts (node_modules, .claude, .pnpm-store, …)
+			// into the context disk and prevents host-OOM from ext4 page-cache
+			// pressure when the workspace contains large untracked directories.
+			buildCtxDir := workspaceDir
+			if _, serr := os.Stat(filepath.Join(workspaceDir, ".git")); serr == nil {
+				archiveDir, aerr := os.MkdirTemp("", "nexus3-gitctx-*")
+				if aerr != nil {
+					return errSandbox("sandbox create", fmt.Errorf("--file: git context tempdir: %w", aerr))
+				}
+				defer os.RemoveAll(archiveDir)
+
+				archiveCmd := exec.CommandContext(buildCtx, "git", "-C", workspaceDir, "archive", "HEAD")
+				extractCmd := exec.CommandContext(buildCtx, "tar", "-x", "-C", archiveDir)
+				archivePipe, aerr := archiveCmd.StdoutPipe()
+				if aerr != nil {
+					return errSandbox("sandbox create", fmt.Errorf("--file: git archive pipe: %w", aerr))
+				}
+				extractCmd.Stdin = archivePipe
+				if aerr = archiveCmd.Start(); aerr != nil {
+					return errSandbox("sandbox create", fmt.Errorf("--file: git archive start: %w", aerr))
+				}
+				if aerr = extractCmd.Run(); aerr != nil {
+					archiveCmd.Wait() //nolint:errcheck
+					return errSandbox("sandbox create", fmt.Errorf("--file: git archive extract: %w", aerr))
+				}
+				if aerr = archiveCmd.Wait(); aerr != nil {
+					return errSandbox("sandbox create", fmt.Errorf("--file: git archive wait: %w", aerr))
+				}
+
+				// Overlay files that the build system needs but are intentionally
+				// not committed to version control (.nexus/Containerfile, .dockerignore).
+				for _, relPath := range []string{".nexus/Containerfile", ".dockerignore"} {
+					src := filepath.Join(workspaceDir, relPath)
+					dst := filepath.Join(archiveDir, relPath)
+					if data, rerr := os.ReadFile(src); rerr == nil {
+						if merr := os.MkdirAll(filepath.Dir(dst), 0755); merr == nil {
+							_ = os.WriteFile(dst, data, 0644)
+						}
+					}
+				}
+
+				slog.Info("git context: exported tracked files only", "workspace", workspaceDir, "dir", archiveDir)
+				buildCtxDir = archiveDir
+			}
+
 			ctxDiskPath := filepath.Join(buildWorkDir, "ctx.ext4")
-			if err := builder.ContextToDisk(buildCtx, workspaceDir, ctxDiskPath); err != nil {
+			if err := builder.ContextToDisk(buildCtx, buildCtxDir, ctxDiskPath); err != nil {
 				return errSandbox("sandbox create", fmt.Errorf("--file: context disk: %w", err))
 			}
 
@@ -670,6 +717,9 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
 				builderCfg.BinaryPath = p
 			}
+			// Capture builder VM serial console to a fixed path so crashes are
+			// visible after the VM exits. The file is overwritten on each build.
+			builderCfg.SerialOutputPath = "/tmp/nexus3-builder-console.log"
 
 			rawDrv, err := cloudhypervisor.New(builderCfg)
 			if err != nil {
@@ -682,7 +732,11 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			bdrv := &builderCaptureDrv{CHDriver: rawDrv}
 			execFn := func(ctx context.Context, argv []string, stderr io.Writer) (int32, error) {
 				ac := agent.NewClient(bdrv, bdrv.lastStartedID)
-				return ac.Exec(ctx, agent.ExecOptions{Argv: argv, Stderr: stderr})
+				// streamRingToWriter always tags ring output as StreamStdout
+				// (stdout and stderr are merged in the ring without tagging).
+				// Set both Stdout and Stderr to the same writer so the error
+				// messages from consoleFatal reach the caller.
+				return ac.Exec(ctx, agent.ExecOptions{Argv: argv, Stdout: stderr, Stderr: stderr})
 			}
 
 			digest, err := builder.BuildInVM(buildCtx, bdrv, spec, imgCache, execFn)

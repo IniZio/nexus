@@ -116,10 +116,21 @@ func NewBuildkitClient(addr string) (BuildkitClient, error) {
 //	<content of req.ContainerfileBytes>
 //
 //	# Final layer: bake the nexus3-agent (boot contract: init=/sbin/nexus3-agent)
-//	COPY --chmod=0755 nexus3-agent <req.AgentInstallPath>
+//	COPY --chmod=0755 --from=_nexus3_agent _nexus3-agent <req.AgentInstallPath>
 //
 // Placing the agent COPY last means an agent version bump only invalidates
 // that single layer; all Containerfile layers above are cache-hits in buildkitd.
+//
+// # Context layout
+//
+// Three buildkit local sources are used:
+//
+//   - "context":        req.WorkspaceDir (passed to buildkitd directly, no
+//     intermediate copy; buildkitd's fsutil handles symlinks and large trees).
+//   - "dockerfile":     a small temp dir containing only the synthetic Dockerfile.
+//   - "nexus3agent":   a small temp dir containing only the agent binary,
+//     referenced via the buildkitd named-context feature so the workspace
+//     directory never needs to be polluted with nexus3 internals.
 func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir string) error {
 	// Connect to buildkitd (one connection per Solve; acceptable for the
 	// current slice — a connection pool is an optimisation for later).
@@ -130,47 +141,46 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 	defer bk.Close()
 
 	// Synthesise a combined Dockerfile: user instructions + agent final layer.
-	// The agent COPY uses the reserved agentContextFilename to avoid collisions
-	// with workspace files.
+	// The agent COPY uses a named build context (nexus3agent) so the agent
+	// binary does not need to reside in the workspace context.
 	finalLayer := fmt.Sprintf(
-		"\n\n# Final layer: bake the nexus3-agent (boot contract: init=%s)\nCOPY --chmod=0755 %s %s\n",
+		"\n\n# Final layer: bake the nexus3-agent (boot contract: init=%s)\nCOPY --chmod=0755 --from=nexus3agent %s %s\n",
 		req.AgentInstallPath, agentContextFilename, req.AgentInstallPath,
 	)
 	synthDF := append(append([]byte(nil), req.ContainerfileBytes...), []byte(finalLayer)...)
 
-	// Build context directory: populated with workspace files (so user COPY
-	// instructions resolve against the workspace root), plus the synthetic
-	// Dockerfile and the agent binary under its reserved name.
-	ctxDir, err := os.MkdirTemp("", "nexus3-bkctx-*")
+	// Small temp dir for the synthetic Dockerfile only.
+	dfDir, err := os.MkdirTemp("", "nexus3-bkdf-*")
 	if err != nil {
-		return fmt.Errorf("buildkit: create context dir: %w", err)
+		return fmt.Errorf("buildkit: create dockerfile dir: %w", err)
 	}
-	defer os.RemoveAll(ctxDir)
-
-	// Populate the context with the workspace so COPY instructions in the
-	// user's Containerfile can reference repo-tracked files. The workspace is
-	// the root of the build context — buildkit's Dockerfile frontend enforces
-	// that COPY paths cannot escape this root.
-	if req.WorkspaceDir != "" {
-		if err := copyDirIntoContext(req.WorkspaceDir, ctxDir); err != nil {
-			return fmt.Errorf("buildkit: copy workspace into context: %w", err)
-		}
-	}
-
-	// Write the synthetic Dockerfile (overwrites any Dockerfile at workspace
-	// root — acceptable since nexus3 owns the build definition).
-	if err := os.WriteFile(filepath.Join(ctxDir, "Dockerfile"), synthDF, 0600); err != nil {
+	defer os.RemoveAll(dfDir)
+	if err := os.WriteFile(filepath.Join(dfDir, "Dockerfile"), synthDF, 0600); err != nil {
 		return fmt.Errorf("buildkit: write Dockerfile: %w", err)
 	}
 
-	// Copy the agent binary into the build context under the reserved name so
-	// the final-layer COPY instruction can resolve it.
+	// Small temp dir for the agent binary, used as the "nexus3agent" named
+	// build context. This avoids writing nexus3 internals into the workspace.
+	agentDir, err := os.MkdirTemp("", "nexus3-bkagent-*")
+	if err != nil {
+		return fmt.Errorf("buildkit: create agent dir: %w", err)
+	}
+	defer os.RemoveAll(agentDir)
 	agentBytes, err := os.ReadFile(req.AgentPath)
 	if err != nil {
 		return fmt.Errorf("buildkit: read agent binary %s: %w", req.AgentPath, err)
 	}
-	if err := os.WriteFile(filepath.Join(ctxDir, agentContextFilename), agentBytes, 0755); err != nil {
-		return fmt.Errorf("buildkit: write agent to context: %w", err)
+	if err := os.WriteFile(filepath.Join(agentDir, agentContextFilename), agentBytes, 0755); err != nil {
+		return fmt.Errorf("buildkit: write agent to agent dir: %w", err)
+	}
+
+	// Wire build context: workspace is passed to buildkitd directly (no
+	// intermediate copy). When WorkspaceDir is empty, fall back to the
+	// Dockerfile dir so COPY instructions that only reference the
+	// Dockerfile's own synthetic files still compile.
+	ctxDir := req.WorkspaceDir
+	if ctxDir == "" {
+		ctxDir = dfDir
 	}
 
 	_, err = bk.Solve(ctx, nil, bkclient.SolveOpt{
@@ -179,13 +189,17 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 			// Tell the Dockerfile frontend which file to use (default is
 			// "Dockerfile" but being explicit avoids any path ambiguity).
 			"filename": "Dockerfile",
+			// Register the agent binary dir as a named build context so
+			// the final-layer COPY --from=nexus3agent resolves correctly.
+			"context:nexus3agent": "local:nexus3agent",
 		},
 		// LocalDirs is deprecated in favour of LocalMounts, but it remains
-		// fully supported in moby/buildkit v0.18 and its replacement
+		// fully supported in moby/buildkit v0.19 and its replacement
 		// (fsutil.FS) would add a heavier import for no benefit here.
 		LocalDirs: map[string]string{
-			"context":    ctxDir,
-			"dockerfile": ctxDir,
+			"context":     ctxDir,
+			"dockerfile":  dfDir,
+			"nexus3agent": agentDir,
 		},
 		Exports: []bkclient.ExportEntry{
 			{
