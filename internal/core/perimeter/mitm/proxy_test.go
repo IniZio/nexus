@@ -291,6 +291,94 @@ func TestProxy_SwapAfterSetRealToken_HTTPS(t *testing.T) {
 	}
 }
 
+// TestProxy_AllowAll verifies the AllowAll policy:
+//   - AllowAll: true with an empty AllowedHosts MITM's (allows) a CONNECT to a
+//     host that is not in the allowlist — the HTTPS request succeeds.
+//   - AllowAll: false (the default) with the same empty AllowedHosts REJECTS
+//     the CONNECT — the HTTPS request returns an error.
+//
+// Broker is nil in both sub-tests; the OnRequest handler never calls
+// broker.ResolveScoped because no host is in the allowSet, so nil is safe.
+func TestProxy_AllowAll(t *testing.T) {
+	t.Parallel()
+
+	// TLS upstream that returns 200 OK for any request.
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	const host = "notlisted.example"
+
+	makeCfg := func(allowAll bool) mitm.Config {
+		return mitm.Config{
+			SandboxID:    newSandboxID(30),
+			AllowedHosts: []string{}, // intentionally empty — host is not listed
+			Broker:       nil,        // no credential swap; safe with empty AllowedHosts
+			AllowAll:     allowAll,
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
+				},
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test-only redirect
+			},
+		}
+	}
+
+	t.Run("allow-all permits non-listed host", func(t *testing.T) {
+		t.Parallel()
+		p, err := mitm.New(makeCfg(true))
+		if err != nil {
+			t.Fatalf("mitm.New: %v", err)
+		}
+		proxyServer := httptest.NewServer(p)
+		t.Cleanup(proxyServer.Close)
+
+		proxyURL, _ := url.Parse(proxyServer.URL)
+		pool := x509.NewCertPool()
+		pool.AddCert(p.CACert())
+		client := &http.Client{
+			Transport: &http.Transport{
+				Proxy:           http.ProxyURL(proxyURL),
+				TLSClientConfig: &tls.Config{RootCAs: pool},
+			},
+			Timeout: 5 * time.Second,
+		}
+
+		resp, err := client.Get("https://" + host + "/ping")
+		if err != nil {
+			t.Fatalf("AllowAll=true: CONNECT to non-listed host should be MITM'd but failed: %v", err)
+		}
+		resp.Body.Close()
+	})
+
+	t.Run("default rejects non-listed host", func(t *testing.T) {
+		t.Parallel()
+		p, err := mitm.New(makeCfg(false))
+		if err != nil {
+			t.Fatalf("mitm.New: %v", err)
+		}
+		proxyServer := httptest.NewServer(p)
+		t.Cleanup(proxyServer.Close)
+
+		proxyURL, _ := url.Parse(proxyServer.URL)
+		pool := x509.NewCertPool()
+		pool.AddCert(p.CACert())
+		client := &http.Client{
+			Transport: &http.Transport{
+				Proxy:           http.ProxyURL(proxyURL),
+				TLSClientConfig: &tls.Config{RootCAs: pool},
+			},
+			Timeout: 5 * time.Second,
+		}
+
+		_, err = client.Get("https://" + host + "/ping")
+		if err == nil {
+			t.Fatal("AllowAll=false: expected CONNECT to non-listed host to be rejected, but it succeeded")
+		}
+	})
+}
+
 // TestProxy_CrossSandboxPlaceholderNotSwapped verifies that a placeholder
 // belonging to sandbox A is not swapped when the proxy is serving sandbox B,
 // even if the host is allowlisted. This exercises the ResolveScoped defence.

@@ -73,6 +73,14 @@ type Config struct {
 	// each intercepted request bearing a placeholder Authorization header.
 	Broker *cred.Broker
 
+	// AllowAll makes the proxy MITM and permit EVERY CONNECT regardless of
+	// AllowedHosts. It keeps the proxy in the egress path as the control point
+	// (all traffic is still intercepted and audit-logged) but applies an
+	// allow-all POLICY. Temporary stance until interactive per-connection
+	// approval exists; do not enable for credential-bearing agent sandboxes
+	// where a curated allowlist is the safeguard.
+	AllowAll bool
+
 	// Logger is used for audit events (allow/deny decisions). If nil,
 	// slog.Default() is used. The real token is NEVER passed to the logger.
 	Logger *slog.Logger
@@ -118,15 +126,21 @@ func New(cfg Config) (*Proxy, error) {
 
 	sandboxID := cfg.SandboxID
 	broker := cfg.Broker
+	allowAll := cfg.AllowAll
 
 	// HandleConnect enforces the hostname allowlist on every HTTPS CONNECT.
-	//   allowed host  → MITM (TLS terminated by this proxy; leaf cert signed by CA)
-	//   other host    → reject (guest receives 403; no tunnel established)
+	//   allow-all mode → MITM every host (audit-logged; no curated check)
+	//   allowed host   → MITM (TLS terminated by this proxy; leaf cert signed by CA)
+	//   other host     → reject (guest receives 403; no tunnel established)
 	//
 	// Non-allowed hosts NEVER receive real tokens because the CONNECT is
 	// rejected before any OnRequest handler runs over their traffic.
 	inner.OnRequest().HandleConnect(goproxy.FuncHttpsHandler(func(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
 		hostname := stripHost(host)
+		if allowAll {
+			log.Info("mitm: CONNECT allowed (allow-all policy)", "sandbox", sandboxID, "host", hostname)
+			return mitmAction, host
+		}
 		if _, ok := allowSet[strings.ToLower(hostname)]; ok {
 			// Audit: log decision + host. Token is not available here.
 			log.Info("mitm: CONNECT allowed", "sandbox", sandboxID, "host", hostname)
