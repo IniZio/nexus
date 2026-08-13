@@ -163,7 +163,7 @@ func TestSandboxCreate_WithImage_CallsStartAndRecordsRunning(t *testing.T) {
 		_ = conn.Close()
 		return nil
 	}
-	newDrv := func(_ string) (driver.Driver, error) { return fd, nil }
+	newDrv := func(_ string, _ []service.ExtraDisk) (driver.Driver, error) { return fd, nil }
 
 	sb, err := service.CreateAndBoot(ctx, svc, cache, newDrv, probe,
 		"proj", "box",
@@ -325,7 +325,7 @@ func TestSandboxCreate_Motive_PersistedToSandbox(t *testing.T) {
 		_ = conn.Close()
 		return nil
 	}
-	newDrv := func(_ string) (driver.Driver, error) { return fd, nil }
+	newDrv := func(_ string, _ []service.ExtraDisk) (driver.Driver, error) { return fd, nil }
 
 	sb, err := service.CreateAndBoot(ctx, svc, cache, newDrv, probe,
 		"proj", "motbox",

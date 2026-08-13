@@ -17,6 +17,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
@@ -96,10 +97,15 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		return herdrPluginOpenPane(rest[0], rest[1:])
 
 	case "launch":
-		if len(rest) < 2 {
-			return &UsageError{Msg: "__herdr-plugin launch: usage: launch <image-ref> <command> [args...] (command must be an absolute path, e.g. /usr/local/bin/claude)"}
+		agentEgress := false
+		if len(rest) > 0 && rest[0] == "--agent-egress" {
+			agentEgress = true
+			rest = rest[1:]
 		}
-		return herdrPluginLaunch(ctx, rest[0], rest[1:], out)
+		if len(rest) < 2 {
+			return &UsageError{Msg: "__herdr-plugin launch: usage: launch [--agent-egress] <image-ref> <command> [args...] (command must be an absolute path, e.g. /usr/local/bin/claude)"}
+		}
+		return herdrPluginLaunch(ctx, rest[0], rest[1:], agentEgress, out)
 
 	case "space-create":
 		if len(rest) == 0 {
@@ -505,19 +511,52 @@ func herdrPluginOpenPane(ws string, extraArgs []string) error {
 	return nil
 }
 
+// buildLaunchBootOpts builds CreateAndBootOptions for herdrPluginLaunch.
+// When agentEgress is true, the egress perimeter is wired by calling
+// WireClaudeEgress: Broker is set (non-nil), AllowedHosts is restricted to
+// AgentEgressHosts, UseAgentSeed is true, and a Refresher-backed credential
+// source is attached so the MITM proxy can swap placeholder tokens for real
+// ones. seeder is the GuestSeeder delivered to WireClaudeEgress; it may be nil
+// (credentials are never planted in the guest without a seeder).
+//
+// The returned Broker is non-nil iff agentEgress is true; callers that need to
+// inspect the broker (tests) use it directly. The normal launch path discards it.
+func buildLaunchBootOpts(imageRef, cacheRoot string, agentEgress bool, seeder service.GuestSeeder) (service.CreateAndBootOptions, *cred.Broker) {
+	opts := service.CreateAndBootOptions{
+		Image:               service.ImageSpec{Ref: imageRef},
+		CacheRoot:           cacheRoot,
+		ReachabilityTimeout: 60 * time.Second,
+	}
+	if !agentEgress {
+		return opts, nil
+	}
+	broker := cred.NewBroker()
+	// Source the real token from the dedicated credential store via an
+	// auto-rotating Refresher. If the store file is absent or malformed,
+	// NewRefresher returns an error; we leave src nil so egress still works
+	// structurally (MITM proxy runs) but the bearer will be the placeholder.
+	var src cred.CredentialSource
+	if r, err := cred.NewRefresher(service.DefaultDedicatedCredStorePath(), service.AnthropicAPIHost, broker); err == nil {
+		src = r
+	}
+	service.WireClaudeEgress(&opts, broker, seeder, src)
+	return opts, broker
+}
+
 // herdrPluginLaunch boots a sandbox from imageRef, runs argv in-guest via the
 // agent exec path (vsock gRPC control + data plane), streams stdout to out,
 // then removes the sandbox. Boot and exec happen in one process; the boot
 // driver's vsock socket path (SocketDir+ID) is shared with svc.driver, so
 // svc.Exec can dial it after CreateAndBoot returns.
 //
-// Auth-header probe finding (D-P4-02 empirical status): UNKNOWN.
-// CreateAndBootOptions.Broker is nil, so startSupervisor is never called and
-// proxy.go's OnRequest swap hook is not on the data path at all. Code
-// inspection confirms proxy.go OnRequest DOES swap Authorization: Bearer
-// placeholders on allowlisted hosts when opts.Broker is non-nil. Empirical
-// YES/NO deferred to S-EGRESS where a Broker will be wired.
-func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, out *Output) error {
+// When agentEgress is true (--agent-egress flag), the zero-credential egress
+// perimeter is wired: a Broker is created and WireClaudeEgress is called so
+// that proxy.go's OnRequest swaps Authorization: Bearer placeholders for the
+// real token on every request to api.anthropic.com. The real token is sourced
+// from the dedicated credential store at DefaultDedicatedCredStorePath via an
+// automatic-rotation Refresher. Without --agent-egress, Broker stays nil and
+// the plain launch path is unchanged (no perimeter, no AllowedHosts filter).
+func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, agentEgress bool, out *Output) error {
 	storeRoot, err := store.DefaultRoot()
 	if err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: resolve store: " + err.Error(), Err: err}
@@ -536,15 +575,25 @@ func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, out 
 
 	kernelPath := kernelPathFor()
 
+	// bootDialer is populated by the factory below once the VM is booted.
+	// The lazy seeder (agent-egress path) captures it by pointer and reads it
+	// only after CreateAndBoot's step-9 seeder call — i.e. post-boot.
+	var bootDialer driver.GuestDialer
+
 	// newDriver mirrors cmd_sandbox.go's factory: socket/log paths use default
 	// locations so that svc.driver (from SelectSubstrate, same SocketDir) can
 	// reach the vsock file for svc.Exec after CreateAndBoot returns.
-	newDriver := service.DriverFactory(func(ext4Path string) (driver.Driver, error) {
+	newDriver := service.DriverFactory(func(ext4Path string, _ []service.ExtraDisk) (driver.Driver, error) {
 		cfg := buildCHConfig(kernelPath, ext4Path, 0, 0)
 		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
 			cfg.BinaryPath = p
 		}
-		return cloudhypervisor.New(cfg)
+		d, err := cloudhypervisor.New(cfg)
+		if err != nil {
+			return nil, err
+		}
+		bootDialer = d
+		return d, nil
 	})
 
 	// probe polls vsock until the guest agent's listener accepts. Mirrors the
@@ -572,13 +621,23 @@ func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, out 
 	// Unique name per invocation to prevent ErrAlreadyExists on retry or concurrent runs.
 	name := fmt.Sprintf("run-%x", time.Now().UnixNano())
 
+	// lazySeeder is called from inside CreateAndBoot step 9 (post-boot), so
+	// bootDialer is guaranteed to be non-nil by the factory above at that point.
+	var lazySeeder service.GuestSeeder
+	if agentEgress {
+		lazySeeder = func(ctx context.Context, id domain.SandboxID, payload []byte) error {
+			if bootDialer == nil {
+				return fmt.Errorf("__herdr-plugin launch: agent egress: boot driver does not implement GuestDialer")
+			}
+			c := agent.NewClient(bootDialer, id)
+			return service.NewAgentCopySeeder(c)(ctx, id, payload)
+		}
+	}
+
+	opts, _ := buildLaunchBootOpts(imageRef, cacheRoot, agentEgress, lazySeeder)
+
 	sb, err := service.CreateAndBoot(ctx, svc, imgCache, newDriver, probe,
-		"herdr", name,
-		service.CreateAndBootOptions{
-			Image:               service.ImageSpec{Ref: imageRef},
-			CacheRoot:           cacheRoot,
-			ReachabilityTimeout: 60 * time.Second,
-		},
+		"herdr", name, opts,
 	)
 	if err != nil {
 		return &CodedError{Code: sandboxCodeFor(err), Msg: "__herdr-plugin launch: boot: " + err.Error(), Err: err}

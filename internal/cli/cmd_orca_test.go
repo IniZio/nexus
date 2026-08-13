@@ -47,7 +47,7 @@ func createOrcaSandbox(t *testing.T, svc *service.Service, motiveID, name string
 	if err != nil {
 		t.Fatalf("image.NewCache: %v", err)
 	}
-	newDriver := service.DriverFactory(func(_ string) (driver.Driver, error) {
+	newDriver := service.DriverFactory(func(_ string, _ []service.ExtraDisk) (driver.Driver, error) {
 		return fake.New(), nil
 	})
 	sb, err := service.CreateAndBoot(context.Background(), svc, imgCache, newDriver, nopProbe,
@@ -527,7 +527,7 @@ func TestOrcaCreate_AllowedHostsInEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("image.NewCache: %v", err)
 	}
-	newDriver := service.DriverFactory(func(_ string) (driver.Driver, error) {
+	newDriver := service.DriverFactory(func(_ string, _ []service.ExtraDisk) (driver.Driver, error) {
 		return fake.New(), nil
 	})
 	sb, err := service.CreateAndBoot(context.Background(), svc, imgCache, newDriver, nopProbe,

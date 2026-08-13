@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -302,5 +303,65 @@ func TestHerdrPluginContextCwdValue_unset(t *testing.T) {
 	got := herdrPluginContextCwdValue()
 	if got != "" {
 		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+// TestBuildLaunchBootOpts_noEgress asserts that without --agent-egress,
+// the Broker in the returned CreateAndBootOptions is nil (plain launch path).
+func TestBuildLaunchBootOpts_noEgress(t *testing.T) {
+	opts, broker := buildLaunchBootOpts("myimage:latest", t.TempDir(), false, nil)
+	if broker != nil {
+		t.Error("buildLaunchBootOpts(agentEgress=false): returned Broker must be nil")
+	}
+	if opts.Broker != nil {
+		t.Error("buildLaunchBootOpts(agentEgress=false): opts.Broker must be nil")
+	}
+	if opts.UseAgentSeed {
+		t.Error("buildLaunchBootOpts(agentEgress=false): UseAgentSeed must be false")
+	}
+}
+
+// TestBuildLaunchBootOpts_agentEgress asserts that with --agent-egress the
+// returned options carry a non-nil Broker and UseAgentSeed=true, proving the
+// egress perimeter plumbing is on the data path for CreateAndBoot.
+func TestBuildLaunchBootOpts_agentEgress(t *testing.T) {
+	opts, broker := buildLaunchBootOpts("myimage:latest", t.TempDir(), true, nil)
+	if broker == nil {
+		t.Error("buildLaunchBootOpts(agentEgress=true): returned Broker must be non-nil")
+	}
+	if opts.Broker == nil {
+		t.Error("buildLaunchBootOpts(agentEgress=true): opts.Broker must be non-nil")
+	}
+	if opts.Broker != broker {
+		t.Error("buildLaunchBootOpts(agentEgress=true): opts.Broker and returned Broker must be the same instance")
+	}
+	if !opts.UseAgentSeed {
+		t.Error("buildLaunchBootOpts(agentEgress=true): UseAgentSeed must be true")
+	}
+	if len(opts.AllowedHosts) == 0 {
+		t.Error("buildLaunchBootOpts(agentEgress=true): AllowedHosts must be non-empty")
+	}
+}
+
+// TestHerdrPluginLaunch_flagParsing verifies that --agent-egress can appear
+// before the image-ref and that the bare launch path (no flag) is unchanged.
+// Neither case boots a VM; we only assert UsageError shapes.
+func TestHerdrPluginLaunch_flagParsing(t *testing.T) {
+	out := NewOutput(&bytes.Buffer{}, &bytes.Buffer{}, false)
+
+	// No image-ref after --agent-egress → UsageError (not a different error).
+	err := runHerdrPlugin(context.Background(), []string{"launch", "--agent-egress"}, out)
+	if err == nil {
+		t.Fatal("launch --agent-egress (no image-ref): expected UsageError, got nil")
+	}
+	var ue *UsageError
+	if !errors.As(err, &ue) {
+		t.Errorf("launch --agent-egress (no image-ref): expected *UsageError, got %T: %v", err, err)
+	}
+
+	// No image-ref (plain path) → UsageError too.
+	err2 := runHerdrPlugin(context.Background(), []string{"launch"}, out)
+	if err2 == nil {
+		t.Fatal("launch (no args): expected UsageError, got nil")
 	}
 }

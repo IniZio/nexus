@@ -139,7 +139,7 @@ func TestOrcaSSH(t *testing.T) {
 	// bootDrv is set inside the factory closure and implements driver.GuestDialer.
 	var bootDrv *cloudhypervisor.CHDriver
 
-	factory := service.DriverFactory(func(resolvedExt4 string) (driver.Driver, error) {
+	factory := service.DriverFactory(func(resolvedExt4 string, _ []service.ExtraDisk) (driver.Driver, error) {
 		var newErr error
 		bootDrv, newErr = cloudhypervisor.New(cloudhypervisor.Config{
 			BinaryPath:       chBin,

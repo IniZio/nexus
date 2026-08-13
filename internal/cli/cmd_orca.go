@@ -423,7 +423,7 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	// ── DriverFactory ─────────────────────────────────────────────────────────
 	// capturedDiskPath: the CoW ext4 copy path forwarded to the supervisor.
 	var capturedDiskPath string
-	newDriver := service.DriverFactory(func(ext4Path string) (driver.Driver, error) {
+	newDriver := service.DriverFactory(func(ext4Path string, _ []service.ExtraDisk) (driver.Driver, error) {
 		capturedDiskPath = ext4Path
 		cfg := buildCHConfig(kernelPath, ext4Path, 0, 0)
 		cfg.SocketDir = socketDir // explicit so it matches supervisor + svc

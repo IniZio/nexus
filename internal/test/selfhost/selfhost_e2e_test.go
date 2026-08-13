@@ -407,7 +407,7 @@ func TestSelfHostE2E(t *testing.T) {
 
 	// bootDrv is captured by the factory closure for the probe and agentClient.
 	var bootDrv *cloudhypervisor.CHDriver
-	factory := service.DriverFactory(func(resolvedExt4 string) (driver.Driver, error) {
+	factory := service.DriverFactory(func(resolvedExt4 string, _ []service.ExtraDisk) (driver.Driver, error) {
 		var newErr error
 		bootDrv, newErr = cloudhypervisor.New(cloudhypervisor.Config{
 			BinaryPath:       chBin,

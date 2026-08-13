@@ -178,7 +178,7 @@ func TestOrcaCredBrokerWiring(t *testing.T) {
 	// fires, the DriverFactory has already run and bootDrv is set — exactly the
 	// same pattern as orcaCreate's agentSeeder closure.
 	var bootDrv *cloudhypervisor.CHDriver
-	factory := service.DriverFactory(func(ext4Path string) (driver.Driver, error) {
+	factory := service.DriverFactory(func(ext4Path string, _ []service.ExtraDisk) (driver.Driver, error) {
 		var ferr error
 		bootDrv, ferr = cloudhypervisor.New(cloudhypervisor.Config{
 			BinaryPath:       chBin,

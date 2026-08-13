@@ -156,7 +156,7 @@ func TestOrcaSupervisorWiring(t *testing.T) {
 
 	var diskPath string
 	var bootDrv *cloudhypervisor.CHDriver
-	factory := service.DriverFactory(func(resolvedExt4 string) (driver.Driver, error) {
+	factory := service.DriverFactory(func(resolvedExt4 string, _ []service.ExtraDisk) (driver.Driver, error) {
 		diskPath = resolvedExt4
 		var newErr error
 		bootDrv, newErr = cloudhypervisor.New(cloudhypervisor.Config{

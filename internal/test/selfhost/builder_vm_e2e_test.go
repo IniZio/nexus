@@ -410,7 +410,7 @@ func TestBuilderVME2E(t *testing.T) {
 
 	bootSerialPath := filepath.Join(bootSocketDir, "sandbox-serial.log")
 	var bootDrv *cloudhypervisor.CHDriver
-	drvFactory := service.DriverFactory(func(ext4Path string) (driver.Driver, error) {
+	drvFactory := service.DriverFactory(func(ext4Path string, _ []service.ExtraDisk) (driver.Driver, error) {
 		var ferr error
 		bootDrv, ferr = cloudhypervisor.New(cloudhypervisor.Config{
 			BinaryPath:       chBin,

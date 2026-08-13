@@ -134,7 +134,7 @@ func TestBuildDogfood(t *testing.T) {
 	// comfortable headroom without risking guest OOM (which kills the nexus3-agent
 	// vsock connection mid-exec, producing a cryptic EOF error).
 	var bootDrv *cloudhypervisor.CHDriver
-	factory := service.DriverFactory(func(ext4Path string) (driver.Driver, error) {
+	factory := service.DriverFactory(func(ext4Path string, _ []service.ExtraDisk) (driver.Driver, error) {
 		var ferr error
 		bootDrv, ferr = cloudhypervisor.New(cloudhypervisor.Config{
 			BinaryPath:       chBin,

@@ -167,7 +167,7 @@ func TestAgentDogfood(t *testing.T) {
 	// bootDrv owns the guest vsock/network state.  It must be the same instance
 	// passed to GuestNetworkFD and agent.NewClient (both index into d.nets[id]).
 	var bootDrv *cloudhypervisor.CHDriver
-	factory := service.DriverFactory(func(ext4Path string) (driver.Driver, error) {
+	factory := service.DriverFactory(func(ext4Path string, _ []service.ExtraDisk) (driver.Driver, error) {
 		var ferr error
 		bootDrv, ferr = cloudhypervisor.New(cloudhypervisor.Config{
 			BinaryPath:       chBin,

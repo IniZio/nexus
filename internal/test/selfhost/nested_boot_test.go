@@ -165,7 +165,7 @@ func TestNestedBootInner(t *testing.T) {
 	// VM; 2 GiB gives the inner VM (128 MiB) plus outer OS overhead comfortable
 	// headroom.
 	var bootDrv *cloudhypervisor.CHDriver
-	factory := service.DriverFactory(func(ext4Path string) (driver.Driver, error) {
+	factory := service.DriverFactory(func(ext4Path string, _ []service.ExtraDisk) (driver.Driver, error) {
 		var ferr error
 		bootDrv, ferr = cloudhypervisor.New(cloudhypervisor.Config{
 			BinaryPath:       chBin,
@@ -340,7 +340,7 @@ func TestNestedBootNegativeControl(t *testing.T) {
 
 	// ── 5. Boot WITHOUT NestedVirt (default = false) ──────────────────────────
 	var bootDrv *cloudhypervisor.CHDriver
-	factory := service.DriverFactory(func(ext4Path string) (driver.Driver, error) {
+	factory := service.DriverFactory(func(ext4Path string, _ []service.ExtraDisk) (driver.Driver, error) {
 		var ferr error
 		bootDrv, ferr = cloudhypervisor.New(cloudhypervisor.Config{
 			BinaryPath:    chBin,

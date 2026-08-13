@@ -717,9 +717,12 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// Each sandbox gets its own instance because DiskImagePath is static in
 	// cloudhypervisor.Config. Socket/log paths use default locations so that
 	// svc.Stop (using svc.driver) can find the socket after this call returns.
-	newDriver := func(ext4Path string) (driver.Driver, error) {
+	newDriver := func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
 		cfg := buildCHConfig(kernelPath, ext4Path, f.memoryMiB, f.vcpus)
 		cfg.NestedVirt = f.nestedVirt
+		for _, ed := range extraDisks {
+			cfg.ExtraDisks = append(cfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: ed.Path})
+		}
 		// BinaryPath: look for cloud-hypervisor in PATH if not set.
 		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
 			cfg.BinaryPath = p

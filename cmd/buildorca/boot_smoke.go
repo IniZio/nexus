@@ -107,7 +107,7 @@ func smokeboot() error {
 	serialLog := "/tmp/orca-serial.log"
 	os.Remove(serialLog)
 
-	newDriver := service.DriverFactory(func(ext4Path string) (driver.Driver, error) {
+	newDriver := service.DriverFactory(func(ext4Path string, _ []service.ExtraDisk) (driver.Driver, error) {
 		return cloudhypervisor.New(cloudhypervisor.Config{
 			BinaryPath:       chBin,
 			SocketDir:        socketDir,
