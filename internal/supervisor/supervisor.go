@@ -99,6 +99,9 @@ type Config struct {
 	// CredsFile is the optional path to creds.json for real-token seeding.
 	// When empty, the broker is wired but holds no real tokens.
 	CredsFile string
+
+	// MemoryMiB is the guest RAM in mebibytes. Defaults to 512 when zero.
+	MemoryMiB uint32
 }
 
 // PidfilePath returns the canonical path of the supervisor.pid file.
@@ -139,6 +142,7 @@ func RunDetached(cfg Config) error {
 		KernelPath:    cfg.KernelPath,
 		DiskImagePath: cfg.DiskPath,
 		StartTimeout:  30 * time.Second,
+		MemoryMiB:     cfg.MemoryMiB,
 	})
 	if err != nil {
 		return fmt.Errorf("supervisor: init driver: %w", err)

@@ -25,6 +25,7 @@ func runSupervisorMain(args []string) {
 		kernel     = fs.String("kernel", "", "guest kernel path (required)")
 		disk       = fs.String("disk", "", "per-sandbox ext4 disk image path (required)")
 		credsFile  = fs.String("creds-file", "", "creds.json path for real-token seeding (optional)")
+		memoryMiB  = fs.Uint("memory", 0, "guest RAM in MiB (default 512)")
 	)
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -62,6 +63,7 @@ func runSupervisorMain(args []string) {
 		KernelPath: *kernel,
 		DiskPath:   *disk,
 		CredsFile:  *credsFile,
+		MemoryMiB:  uint32(*memoryMiB),
 	}
 	if err := supervisor.RunDetached(cfg); err != nil {
 		slog.Error("supervisor: run failed", "err", err)

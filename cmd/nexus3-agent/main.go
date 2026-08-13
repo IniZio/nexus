@@ -170,6 +170,14 @@ func mountGuestFS() {
 
 	tryMount("proc", "/proc", "proc")
 	tryMount("sys", "/sys", "sysfs")
+
+	// cgroupv2 unified hierarchy — required by containerd/dockerd running
+	// inside the sandbox. Must be mounted after /sys.
+	if err := os.MkdirAll("/sys/fs/cgroup", 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus3-agent: mkdir /sys/fs/cgroup: %v\n", err)
+	} else {
+		tryMount("cgroup2", "/sys/fs/cgroup", "cgroup2")
+	}
 }
 
 // openConsole opens /dev/console write-only for explicit diagnostic output.
