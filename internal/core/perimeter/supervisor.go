@@ -58,8 +58,8 @@ type dialerSetter interface {
 func buildDialer(ctx context.Context, mitmAddr string) func(context.Context, string, string) (net.Conn, error) {
 	return func(_ context.Context, network, addr string) (net.Conn, error) {
 		_, port, err := net.SplitHostPort(addr)
-		if err != nil || port != "443" {
-			// Non-443 or unparseable address: plain dial, bypass the shim.
+		if err != nil || port != "443" || mitmAddr == "" {
+			// Non-443, unparseable, or no MITM configured: plain dial, bypass the shim.
 			return net.Dial(network, addr)
 		}
 
@@ -150,24 +150,30 @@ func Start(
 	proxy *mitm.Proxy,
 	al *netfilter.AllowList,
 ) (*PerimeterSupervisor, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		fd.Close()
-		al.Stop()
-		return nil, fmt.Errorf("perimeter: listen for MITM proxy: %w", err)
-	}
-
 	childCtx, cancel := context.WithCancel(ctx)
-	srv := &http.Server{Handler: proxy}
 
 	s := &PerimeterSupervisor{
-		cancel:   cancel,
-		ln:       ln,
-		fd:       fd,
-		al:       al,
-		proxy:    proxy,
-		mitmAddr: ln.Addr().String(),
-		srv:      srv,
+		cancel: cancel,
+		fd:     fd,
+		al:     al,
+		proxy:  proxy,
+	}
+
+	// MITM listener: only started when a proxy is provided. When proxy is nil
+	// (AllowAll / no-credential mode) port 443 is forwarded directly without
+	// TLS interception so build tools (apt, wget, pip) trust the real server
+	// certificates and the perimeter still enforces the netfilter ACL.
+	if proxy != nil {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			cancel()
+			fd.Close()
+			al.Stop()
+			return nil, fmt.Errorf("perimeter: listen for MITM proxy: %w", err)
+		}
+		s.ln = ln
+		s.mitmAddr = ln.Addr().String()
+		s.srv = &http.Server{Handler: proxy}
 	}
 
 	// al.Start runs an initial refreshDomains() synchronously (fast when
@@ -176,20 +182,27 @@ func Start(
 
 	// Inject the port-conditional egress dialer into the frame pump before it
 	// starts. SetDialer must happen-before p.Run; wg.Add(2) below provides the
-	// ordering barrier.
+	// ordering barrier. When mitmAddr is empty (no proxy), buildDialer uses a
+	// plain net.Dial for port 443 (no MITM shim).
 	if ds, ok := p.(dialerSetter); ok {
 		ds.SetDialer(buildDialer(childCtx, s.mitmAddr))
 	}
 
-	s.wg.Add(2)
+	goroutines := 1 // frame pump always runs
+	if s.srv != nil {
+		goroutines = 2
+	}
+	s.wg.Add(goroutines)
 	go func() {
 		defer s.wg.Done()
 		_ = p.Run(childCtx, id, fd)
 	}()
-	go func() {
-		defer s.wg.Done()
-		_ = srv.Serve(ln) // returns when ln is closed by Close
-	}()
+	if s.srv != nil {
+		go func() {
+			defer s.wg.Done()
+			_ = s.srv.Serve(s.ln) // returns when ln is closed by Close
+		}()
+	}
 
 	return s, nil
 }
@@ -200,8 +213,13 @@ func (s *PerimeterSupervisor) MitmAddr() string { return s.mitmAddr }
 
 // CACert returns the parsed CA certificate that the guest trust store must
 // import before HTTPS traffic flows through the MITM proxy.
-// Delegates to the underlying [mitm.Proxy.CACert].
-func (s *PerimeterSupervisor) CACert() *x509.Certificate { return s.proxy.CACert() }
+// Returns nil when the supervisor was started without a proxy (AllowAll mode).
+func (s *PerimeterSupervisor) CACert() *x509.Certificate {
+	if s.proxy == nil {
+		return nil
+	}
+	return s.proxy.CACert()
+}
 
 // Close shuts down all supervisor goroutines and releases resources.
 //
@@ -221,7 +239,9 @@ func (s *PerimeterSupervisor) CACert() *x509.Certificate { return s.proxy.CACert
 func (s *PerimeterSupervisor) Close() error {
 	s.once.Do(func() {
 		s.cancel()
-		s.srv.Close()
+		if s.srv != nil {
+			s.srv.Close()
+		}
 		s.fd.Close()
 		s.wg.Wait()
 		s.al.Stop()

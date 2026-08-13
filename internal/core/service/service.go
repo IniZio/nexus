@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/IniZio/nexus3/internal/core/artifact"
 	"github.com/IniZio/nexus3/internal/core/domain"
@@ -540,17 +541,39 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 		return fmt.Errorf("allow list: %w", err)
 	}
 
+	// When AllowedHosts is empty the sandbox has no curated egress policy —
+	// this is the case for sandboxes created via "sandbox create --file" which
+	// carry no Claude credentials and need unrestricted outbound access (e.g.
+	// docker pulls, apt-get, pip). Egress is wide open: the ACL is disarmed
+	// (AllowAllFor), the MITM proxy is NOT instantiated, and onAudit is nil so
+	// no traffic is audited or blocked. This is intentionally unrestricted and
+	// unaudited because these sandboxes carry no real credentials — the risk is
+	// confined. Sandboxes with an explicit AllowedHosts list keep the
+	// restrictive deny-by-default policy with MITM interception.
+	allowAll := len(sb.Envelope.AllowedHosts) == 0
+	if allowAll {
+		al.AllowAllFor(72 * time.Hour) // generous window; supervisor restarts reset it
+	}
+
 	stack := netstack.New(al, nil) // onAudit: nil (discards events; a future slice wires observability)
 
-	proxy, err := mitm.New(mitm.Config{
-		SandboxID:    sb.ID,
-		AllowedHosts: sb.Envelope.AllowedHosts,
-		Broker:       s.broker,
-	})
-	if err != nil {
-		fd.Close()
-		al.Stop()
-		return fmt.Errorf("mitm proxy: %w", err)
+	// MITM proxy: only instantiated when AllowedHosts is non-empty (curated
+	// allowlist mode). AllowAll sandboxes (--file path, no credentials) skip
+	// MITM so that build tools inside containers see real server certificates
+	// and egress flows through gvproxy without TLS interception.
+	var proxy *mitm.Proxy
+	if !allowAll {
+		var err error
+		proxy, err = mitm.New(mitm.Config{
+			SandboxID:    sb.ID,
+			AllowedHosts: sb.Envelope.AllowedHosts,
+			Broker:       s.broker,
+		})
+		if err != nil {
+			fd.Close()
+			al.Stop()
+			return fmt.Errorf("mitm proxy: %w", err)
+		}
 	}
 
 	// Detach from the request context so the supervisor's goroutines survive
@@ -579,6 +602,8 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 			_ = err // TODO(S6): surface via structured log
 		}
 	}
+
+	// AllowAll mode: no MITM proxy; direct forwarding is used for port 443.
 
 	return nil
 }
