@@ -136,11 +136,14 @@ func exportAndCache(ctx context.Context, srcDir, ref string, kind domain.ImageKi
 // The image is pre-allocated as a sparse file of sizeBytes, then formatted
 // with deterministic parameters:
 //   - -U deterministicUUID: fixed filesystem UUID (no random bytes).
-//   - -E hash_seed=deterministicHashSeed: fixed HTree seed.
+//   - -E hash_seed=…,nodiscard,lazy_itable_init=1,lazy_journal_init=1: fixed
+//     HTree seed plus sparse-preserving flags (inode table and journal are
+//     written lazily so their blocks remain holes in the host file).
 //   - SOURCE_DATE_EPOCH=0: forces all timestamps to the Unix epoch.
 //
-// These three constraints together ensure that identical srcDir content
-// always produces identical image bytes.
+// These constraints together ensure that identical srcDir content always
+// produces identical image bytes AND that the on-disk size reflects only the
+// actual content, not the full image size.
 //
 // Host dependency: mke2fs from e2fsprogs. Install with:
 //
@@ -165,11 +168,23 @@ func runMke2fs(ctx context.Context, srcDir, dstPath string, sizeBytes int64) err
 		}
 	}
 
+	// The -E options together ensure the image stays sparse:
+	//   nodiscard         — skip FITRIM (a no-op on plain files, but prevents
+	//                        mke2fs from writing zeros across the device when it
+	//                        issues discard I/Os to simulate trim).
+	//   lazy_itable_init=1 — defer inode-table zero-fill to a background pass;
+	//                        unwritten table blocks remain as holes in the file.
+	//   lazy_journal_init=1 — defer journal zero-fill likewise.
+	// Without these flags mke2fs eagerly writes the inode table and journal
+	// across the full image, destroying the sparse holes and inflating on-disk
+	// usage to nearly the full image size (e.g. 17 MiB vs 364 KiB for a 256 MiB
+	// image with ~100 KiB of content — a 47× waste).
+	extOpts := "hash_seed=" + deterministicHashSeed + ",nodiscard,lazy_itable_init=1,lazy_journal_init=1"
 	cmd := exec.CommandContext(ctx, mke2fsPath,
 		"-t", "ext4",
 		"-d", srcDir,
 		"-U", deterministicUUID,
-		"-E", "hash_seed="+deterministicHashSeed,
+		"-E", extOpts,
 		dstPath,
 	)
 	// SOURCE_DATE_EPOCH=0 instructs mke2fs to use the Unix epoch for all
