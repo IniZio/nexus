@@ -19,6 +19,7 @@ package cloudhypervisor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -606,4 +607,85 @@ func TestLifecycle_ExplicitKillNoPdeathsig(t *testing.T) {
 		t.Logf("PASS reap: child pgid=%d gone (ESRCH) after rt.Stop() via explicit Kill(-pgid), "+
 			"not Pdeathsig (CH was already dead)", childPgid)
 	}
+}
+
+// TestStartCtxCancelDoesNotKillChild is the S-PERIM-TIMEOUT regression test.
+//
+// Symptom: when a sandbox ran a long, silent in-guest command, the outer
+// connection tore down with:
+//
+//	"agent: pump: read frame: EOF"
+//	"cannot receive packets from @...: i/o timeout"
+//
+// Root cause: exec.CommandContext(ctx, self) at StartNetnsRuntime bound the
+// netns child process (which hosts CH + vsock + TAP pump) to the CALLER'S
+// context. When the caller passed a short-lived start context and later
+// cancelled it (e.g. after drv.Start returned), exec.CommandContext's
+// monitoring goroutine fired SIGKILL at the child — killing the VM mid-exec.
+//
+// Fix: exec.Command(self) is used instead; the child's lifetime is controlled
+// solely by rt.Stop(). This test confirms the child survives startCtx
+// cancellation by probing /proc/<childPgid>/stat after cancellation.
+// A zombie state (Z) means the bug is present; any live state (R/S/D) means
+// the fix is in place.
+func TestStartCtxCancelDoesNotKillChild(t *testing.T) {
+	chBin, kernelPath := lcGuards(t)
+	socketDir := lcMakeSocketDir(t, "nx3-lc-ctxcancel-")
+	id := domain.NewSandboxID()
+	socketPath := filepath.Join(socketDir, "sb-ctx-cancel.sock")
+
+	cfg := Config{
+		BinaryPath:   chBin,
+		StartTimeout: 20 * time.Second,
+		KernelPath:   kernelPath,
+	}
+
+	// Use a cancellable start context — the kind a caller might pass for a
+	// boot window and then cancel after drv.Start returns (S-PERIM-TIMEOUT).
+	startCtx, startCancel := context.WithCancel(context.Background())
+
+	rt, err := StartNetnsRuntime(startCtx, cfg, id, socketPath, "")
+	if err != nil {
+		t.Fatalf("StartNetnsRuntime: %v", err)
+	}
+	t.Cleanup(rt.Stop)
+
+	// Cancel the start context immediately — simulating the caller discarding
+	// its boot-phase context after the runtime is up.
+	startCancel()
+
+	// Give any exec.CommandContext monitoring goroutine time to wake and fire
+	// SIGKILL (if the bug were still present). The goroutine wakes on the
+	// already-closed ctx.Done() channel, so 300 ms is generous.
+	time.Sleep(300 * time.Millisecond)
+
+	// Probe child liveness via /proc/<childPgid>/stat.
+	//
+	//   Alive (R/S/D): child survived startCtx cancellation → PASS.
+	//   Zombie (Z):    exec.CommandContext killed it             → FAIL.
+	//   Missing:       child exited and was fully reaped        → FAIL.
+	//
+	// /proc/<pid>/stat format: "<pid> (<comm>) <state> <rest>"
+	// State is the character immediately after the closing ')'.
+	statPath := fmt.Sprintf("/proc/%d/stat", rt.childPgid)
+	statBytes, readErr := os.ReadFile(statPath)
+	if readErr != nil {
+		t.Fatalf("FAIL S-PERIM-TIMEOUT: child (pgid=%d) has no /proc entry after "+
+			"startCtx cancel — child exited (exec.CommandContext killed it): %v",
+			rt.childPgid, readErr)
+	}
+	stat := string(statBytes)
+	closeParenIdx := strings.LastIndex(stat, ")")
+	if closeParenIdx < 0 || closeParenIdx+2 >= len(stat) {
+		t.Fatalf("cannot parse /proc/%d/stat: %q", rt.childPgid, stat)
+	}
+	state := stat[closeParenIdx+2]
+	if state == 'Z' {
+		t.Fatalf("FAIL S-PERIM-TIMEOUT: child (pgid=%d) is a zombie after startCtx "+
+			"cancel — exec.CommandContext killed it. Fix: use exec.Command, not "+
+			"exec.CommandContext. /proc stat: %s",
+			rt.childPgid, strings.TrimSpace(stat))
+	}
+	t.Logf("PASS S-PERIM-TIMEOUT: child (pgid=%d) state=%c after startCtx cancel — "+
+		"survived context cancellation (not a zombie)", rt.childPgid, state)
 }

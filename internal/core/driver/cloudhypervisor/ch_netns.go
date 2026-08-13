@@ -167,7 +167,23 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 		pathEnv = "PATH=" + p
 	}
 
-	cmd := exec.CommandContext(ctx, self)
+	// Use exec.Command (NOT exec.CommandContext) so the child's lifetime is
+	// controlled solely by rt.Stop() — not by the caller's context.
+	//
+	// exec.CommandContext installs a goroutine that sends SIGKILL to the child
+	// process whenever ctx is cancelled or times out. This is dangerous here:
+	// callers often pass a short-lived "start" context (e.g. a 120 s boot
+	// timeout), cancel it after drv.Start returns, and then keep the VM
+	// running for minutes. If exec.CommandContext were used, that cancellation
+	// would kill the netns child — and with it CH, the vsock socket, and the
+	// frame pump — mid-exec, producing:
+	//
+	//   "agent: pump: read frame: EOF"                     (vsock dies)
+	//   "cannot receive packets from @...: i/o timeout"   (TAP conn dead)
+	//
+	// The ctx here is used only to detect cancellation that happened BEFORE or
+	// DURING cmd.Start(); see the explicit ctx.Err() check below.
+	cmd := exec.Command(self)
 	cmd.Env = []string{
 		NetnsRunEnv + "=1",
 		fmt.Sprintf("%s=%d", netnsEnvPumpFD, pumpFDInChild),
@@ -201,6 +217,20 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 	// Record the child's pid as the process group leader id.
 	// netnsChildAttr sets Setpgid:true so pgid == child.pid.
 	childPgid := cmd.Process.Pid
+
+	// One-shot cancellation check: if the caller's ctx was already cancelled
+	// or expired by the time cmd.Start() returned, kill the child immediately
+	// and surface the context error. This handles the narrow window between
+	// the caller's deadline expiry and our cmd.Start() call.
+	// (Ongoing lifetime management is intentionally NOT done here — see the
+	// exec.Command comment above for why we avoid exec.CommandContext.)
+	if err := ctx.Err(); err != nil {
+		_ = syscall.Kill(-childPgid, syscall.SIGKILL)
+		_ = cmd.Wait()
+		perimFile.Close()
+		pumpFile.Close()
+		return nil, fmt.Errorf("cloudhypervisor: StartNetnsRuntime: %w", err)
+	}
 
 	// Step 3: parent closes pumpFile (child has it); keeps perimFile.
 	// Explicit fd-handoff ordering: PARENT closes pumpFile here; CHILD never
