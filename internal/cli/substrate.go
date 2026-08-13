@@ -11,6 +11,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus3/internal/core/store"
 )
 
 // SubstrateError is returned by SelectSubstrate when no usable substrate
@@ -171,8 +172,16 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 
 	// ── Construct driver if all checks passed ─────────────────────────────────
 	if platOK && binCheck.OK && kvmCheck.OK {
+		// Resolve the per-sandbox disk directory so that sandbox start can find
+		// <diskDir>/<id>.raw for sandboxes created by sandbox create --file.
+		var diskDir string
+		if storeRoot, derr := store.DefaultRoot(); derr == nil {
+			diskDir = storeRoot + "/disks"
+		}
 		d, err := cloudhypervisor.New(cloudhypervisor.Config{
 			BinaryPath: binaryPath,
+			KernelPath: kernelPathFor(),
+			DiskDir:    diskDir,
 		})
 		if err != nil {
 			checks = append(checks, CheckResult{

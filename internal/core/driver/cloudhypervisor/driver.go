@@ -76,6 +76,13 @@ type Config struct {
 	// When empty the driver uses the initramfs boot path (InitramfsPath).
 	DiskImagePath string
 
+	// DiskDir, when set, is the directory searched for per-sandbox disk images
+	// when DiskImagePath is empty. On Start the driver looks for
+	// <DiskDir>/<sandboxID>.raw and uses it as the root disk. This allows the
+	// generic substrate driver (SelectSubstrate) to boot pre-existing sandboxes
+	// without knowing each sandbox's disk path at construction time.
+	DiskDir string
+
 	// ExtraDisks are additional raw ext4 disk images attached at boot after
 	// the rootfs vda. ExtraDisks[0] becomes /dev/vdb, ExtraDisks[1] /dev/vdc,
 	// and so on. See ExtraDisk for details. Only valid when DiskImagePath is set.
@@ -426,6 +433,19 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 		return "", fmt.Errorf("cloudhypervisor: start %s: %w", id, ErrNoKernelConfigured)
 	}
 
+	// Resolve the disk image path into a local variable so we never mutate
+	// shared config (d.cfg is owned by the driver and may be read concurrently
+	// on other Start calls; writing to it would be a data race and would also
+	// permanently corrupt the path for any subsequent sandbox started with a
+	// different ID).
+	diskImagePath := d.cfg.DiskImagePath
+	if diskImagePath == "" && d.cfg.DiskDir != "" {
+		candidate := filepath.Join(d.cfg.DiskDir, id.String()+".raw")
+		if _, serr := os.Stat(candidate); serr == nil {
+			diskImagePath = candidate
+		}
+	}
+
 	socketPath := d.socketPath(id)
 
 	// Pre-flight: probe the socket before launching the netns child.
@@ -534,7 +554,7 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 	)
 	cmdline := d.cfg.Cmdline
 	if cmdline == "" {
-		if d.cfg.DiskImagePath != "" {
+		if diskImagePath != "" {
 			cmdline = diskBootCmdline
 		} else {
 			cmdline = defaultCmdline
@@ -584,9 +604,9 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 	// image_type=raw bypasses CH's auto-detection which otherwise disables
 	// sector-0 writes, breaking ext4 rw mount (EXT4-fs: I/O error while
 	// writing superblock).
-	if d.cfg.DiskImagePath != "" {
+	if diskImagePath != "" {
 		vmcfg.Disks = []vmDiskConfig{
-			{Path: d.cfg.DiskImagePath, ImageType: "Raw"},
+			{Path: diskImagePath, ImageType: "Raw"},
 		}
 		for _, ed := range d.cfg.ExtraDisks {
 			// ExtraDisks are scratch/data disks (vdb+), never the rootfs.
