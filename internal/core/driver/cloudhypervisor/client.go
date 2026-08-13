@@ -111,6 +111,7 @@ type vmConfig struct {
 	Memory  *vmMemoryConfig `json:"memory,omitempty"`
 	Serial  *vmSerialConfig `json:"serial,omitempty"`
 	Disks   []vmDiskConfig  `json:"disks,omitempty"`
+	Balloon *balloonConfig  `json:"balloon,omitempty"`
 }
 
 // vmDiskConfig maps to CH's DiskConfig for virtio-blk disk devices.
@@ -122,11 +123,15 @@ type vmConfig struct {
 // "Disabling sector 0 writes").
 //
 // Verified against cloud-hypervisor.yaml @ v52.0 schema:
-// DiskConfig { required: [path], properties: { path, image_type, readonly, ... } }
+// DiskConfig { required: [path], properties: { path, image_type, readonly, direct, ... } }
 // DiskImageType enum (CH v52): ["Raw", "Qcow2", "FixedVhd", "Vhdx", "Unknown"].
+// direct (bool, default false): open the disk image with O_DIRECT so host page
+// cache is bypassed. Use for scratch/data disks to prevent dirty writeback from
+// exhausting host memory under high write load (e.g. buildkit layer export).
 type vmDiskConfig struct {
 	Path      string `json:"path"`
 	ImageType string `json:"image_type,omitempty"`
+	Direct    bool   `json:"direct,omitempty"`
 }
 
 // vmSerialConfig maps to CH's SerialConfig. When Mode is "File", File must be
@@ -168,6 +173,37 @@ type vmCPUsConfig struct {
 // vmMemoryConfig maps to CH's MemoryConfig. The "size" field is in bytes.
 type vmMemoryConfig struct {
 	SizeBytes uint64 `json:"size"`
+}
+
+// balloonConfig maps to CH's BalloonConfig for the virtio-balloon device.
+//
+// SizeBytes is the initial balloon size in bytes (0 = fully deflated; the
+// balloon device still exists and free_page_reporting still works).
+// DeflateOnOOM prevents the balloon from starving the guest under memory
+// pressure — always set true so the guest is never killed by its own balloon.
+// FreePageReporting enables passive free-page reclaim: the guest advertises
+// pages it has freed back to the host without active inflation, allowing the
+// host to reclaim memory the guest no longer uses.
+//
+// Verified against cloud-hypervisor.yaml @ v52.0:
+// BalloonConfig { required: [size], properties: { size, deflate_on_oom, free_page_reporting } }
+type balloonConfig struct {
+	SizeBytes         uint64 `json:"size"`
+	DeflateOnOOM      bool   `json:"deflate_on_oom,omitempty"`
+	FreePageReporting bool   `json:"free_page_reporting,omitempty"`
+}
+
+// vmResizeRequest maps to CH's VmResize body for PUT /api/v1/vm.resize.
+// All fields are optional; nil pointer fields are omitted from the JSON body.
+//
+// Verified against cloud-hypervisor.yaml @ v52.0:
+// VmResize { properties: { desired_vcpus (uint32), desired_ram (uint64),
+//
+//	desired_balloon (uint64) } }
+type vmResizeRequest struct {
+	DesiredRAM     *uint64 `json:"desired_ram,omitempty"`
+	DesiredVCPUs   *uint32 `json:"desired_vcpus,omitempty"`
+	DesiredBalloon *uint64 `json:"desired_balloon,omitempty"`
 }
 
 // client speaks the Cloud Hypervisor REST API over a Unix socket.
@@ -433,6 +469,34 @@ func (c *client) VMDelete(ctx context.Context) error {
 	drainClose(resp)
 	if resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("cloudhypervisor: vm.delete: unexpected status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// VMResize sends PUT /api/v1/vm.resize to adjust guest RAM, vCPU count, or
+// virtio-balloon size at runtime. Nil parameters are omitted from the request
+// body so callers only supply the dimensions they want to change. CH returns
+// 204 No Content on success.
+//
+// To inflate the balloon (reclaim guest-freed memory on the host), pass a
+// non-nil desiredBalloonBytes with the new target size. To deflate (return
+// memory to the guest), pass desiredBalloonBytes pointing to 0.
+//
+// Verified against cloud-hypervisor.yaml @ v52.0:
+// PUT /api/v1/vm.resize → VmResize → 204 No Content.
+func (c *client) VMResize(ctx context.Context, desiredRAMBytes *uint64, desiredVCPUs *uint32, desiredBalloonBytes *uint64) error {
+	req := vmResizeRequest{
+		DesiredRAM:     desiredRAMBytes,
+		DesiredVCPUs:   desiredVCPUs,
+		DesiredBalloon: desiredBalloonBytes,
+	}
+	resp, err := c.do(ctx, http.MethodPut, "/vm.resize", req)
+	if err != nil {
+		return fmt.Errorf("cloudhypervisor: vm.resize: %w", err)
+	}
+	drainClose(resp)
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("cloudhypervisor: vm.resize: unexpected status %d", resp.StatusCode)
 	}
 	return nil
 }

@@ -114,6 +114,22 @@ type Config struct {
 	// MemoryMiB is the guest RAM in mebibytes. Defaults to 512.
 	MemoryMiB uint32
 
+	// BalloonMiB is the initial virtio-balloon device size in mebibytes.
+	// When non-zero, a balloon device is attached at boot with this size.
+	// When zero and FreePageReporting is true, a zero-size balloon device is
+	// still attached (size=0, deflate_on_oom=true, free_page_reporting=true).
+	// When both BalloonMiB and FreePageReporting are zero/false, no balloon
+	// device is configured and ResizeBalloon will return an error from CH.
+	BalloonMiB uint32
+
+	// FreePageReporting enables passive free-page reporting on the
+	// virtio-balloon device. When true the guest balloon driver advertises
+	// pages it has freed back to the host, allowing the host to reclaim memory
+	// that the guest no longer uses without any active balloon inflation step.
+	// If BalloonMiB is 0 and this is true, a zero-size balloon device with
+	// free_page_reporting=true and deflate_on_oom=true is created automatically.
+	FreePageReporting bool
+
 	// StartTimeout is how long to wait for the VMM API socket to become
 	// responsive after spawning the process. Defaults to 10 seconds.
 	StartTimeout time.Duration
@@ -551,6 +567,19 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 		},
 	}
 
+	// Attach a virtio-balloon device when requested. free_page_reporting
+	// requires a balloon device to exist, so if only FreePageReporting is set
+	// we still create a zero-size balloon (size=0 keeps it fully deflated at
+	// boot while reporting remains active). deflate_on_oom is always true to
+	// prevent the balloon from starving the guest under memory pressure.
+	if d.cfg.BalloonMiB > 0 || d.cfg.FreePageReporting {
+		vmcfg.Balloon = &balloonConfig{
+			SizeBytes:         uint64(d.cfg.BalloonMiB) * 1024 * 1024,
+			DeflateOnOOM:      true,
+			FreePageReporting: d.cfg.FreePageReporting,
+		}
+	}
+
 	// When DiskImagePath is set, attach it as a virtio-blk device (vda).
 	// image_type=raw bypasses CH's auto-detection which otherwise disables
 	// sector-0 writes, breaking ext4 rw mount (EXT4-fs: I/O error while
@@ -560,7 +589,15 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 			{Path: d.cfg.DiskImagePath, ImageType: "Raw"},
 		}
 		for _, ed := range d.cfg.ExtraDisks {
-			vmcfg.Disks = append(vmcfg.Disks, vmDiskConfig{Path: ed.Path, ImageType: "Raw"})
+			// ExtraDisks are scratch/data disks (vdb+), never the rootfs.
+			// O_DIRECT bypasses host page cache so large writes (e.g. buildkit
+			// layer export) do not fill host dirty pages and trigger OOM.
+			// The rootfs vda (above) always uses buffered I/O.
+			vmcfg.Disks = append(vmcfg.Disks, vmDiskConfig{
+				Path:      ed.Path,
+				ImageType: "Raw",
+				Direct:    true,
+			})
 		}
 	}
 
@@ -702,6 +739,31 @@ func (d *CHDriver) Resume(ctx context.Context, id domain.SandboxID) error {
 	c := newClient(d.socketPath(id))
 	if err := c.VMResume(ctx); err != nil {
 		return fmt.Errorf("cloudhypervisor: resume %s: %w", id, err)
+	}
+	return nil
+}
+
+// ResizeBalloon adjusts the virtio-balloon device size of the running VM
+// identified by id. balloonMiB is the new target balloon size in mebibytes:
+//   - 0  = fully deflated (all pages returned to the guest).
+//   - >0 = inflate to this size (host reclaims that many MiB from the guest).
+//
+// The VM must have been started with a balloon device (Config.BalloonMiB > 0
+// or Config.FreePageReporting = true); CH returns an error if no balloon
+// device is present.
+//
+// Callers use ResizeBalloon after a workload peak to actively reclaim host
+// memory: inflate (balloonMiB > 0) to shrink the guest's backing footprint,
+// then deflate (balloonMiB = 0) when the guest needs its memory back.
+// Passive free-page reclaim (FreePageReporting) supplements this but does not
+// replace it for large one-time reclaim events.
+func (d *CHDriver) ResizeBalloon(ctx context.Context, id domain.SandboxID, balloonMiB uint32) error {
+	balloonBytes := uint64(balloonMiB) * 1024 * 1024
+	c := newClient(d.socketPath(id))
+	callCtx, cancel := d.callCtx(ctx)
+	defer cancel()
+	if err := c.VMResize(callCtx, nil, nil, &balloonBytes); err != nil {
+		return fmt.Errorf("cloudhypervisor: resize balloon %s: %w", id, err)
 	}
 	return nil
 }
