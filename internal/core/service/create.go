@@ -23,11 +23,24 @@ import (
 // guest agent does not become reachable within the configured timeout.
 var ErrAgentUnreachable = errors.New("service: guest agent did not answer after VM boot")
 
+// ExtraDisk describes an additional raw ext4 disk image to attach to the
+// sandbox VM at boot time. The underlying driver maps them to virtio-blk
+// devices after the rootfs vda: ExtraDisks[0] → /dev/vdb, [1] → /dev/vdc, …
+//
+// ExtraDisk mirrors cloudhypervisor.ExtraDisk so that callers in the CLI
+// layer can pass extra disks through CreateAndBootOptions without the service
+// package depending on a concrete driver implementation.
+type ExtraDisk struct {
+	// Path is the host filesystem path to the raw ext4 disk image.
+	Path string
+}
+
 // DriverFactory constructs a Driver pre-configured for a specific ext4 disk
-// image. CreateAndBoot calls it with the resolved ext4 path so that each
-// sandbox boot uses a fresh driver instance with the correct DiskImagePath.
+// image and an optional set of additional disks. CreateAndBoot calls it with
+// the resolved ext4 path and opts.ExtraDisks so that each sandbox boot uses a
+// fresh driver instance with the correct DiskImagePath and extra volumes.
 // The returned Driver is owned by CreateAndBoot and is not retained by svc.
-type DriverFactory func(ext4Path string) (driver.Driver, error)
+type DriverFactory func(ext4Path string, extraDisks []ExtraDisk) (driver.Driver, error)
 
 // ProbeFunc verifies that the guest agent inside the newly-booted VM is
 // reachable and ready. It is called with a context that already carries the
@@ -126,13 +139,10 @@ type CreateAndBootOptions struct {
 	// NEXUS3_CRED_* vars. Set via WireClaudeEgress.
 	UseAgentSeed bool
 
-	// AgentEgressToken is the real bearer token for the WireAnthropicAuthToken
-	// path (ANTHROPIC_AUTH_TOKEN / direct API-key). It is read directly from
-	// the ANTHROPIC_AUTH_TOKEN env var by WireAnthropicAuthToken and wired into
-	// the broker after placeholder registration.
-	//
-	// WireClaudeEgress (OAuth path) no longer uses this field — it sets
-	// AgentCredSource instead so the token can be sourced from a Refresher.
+	// AgentEgressToken is the real bearer token for the direct API-key path
+	// (ANTHROPIC_AUTH_TOKEN). It is wired into the broker after placeholder
+	// registration. WireClaudeEgress (OAuth path) does not use this field —
+	// it sets AgentCredSource instead so the token can be sourced from a Refresher.
 	AgentEgressToken string
 
 	// AgentCredSource is the credential source for the OAuth egress path.
@@ -151,6 +161,24 @@ type CreateAndBootOptions struct {
 	// seed payload. Set by WireClaudeEgress to cred.ClaudeCodeProfile.
 	// Zero value is treated as cred.ClaudeCodeProfile in CreateAndBoot.
 	AgentProfile cred.AgentProfile
+
+	// AgentCredKind selects whether the guest seed payload carries the OAuth
+	// placeholder (CLAUDE_CODE_OAUTH_TOKEN) or the direct API-key placeholder
+	// (ANTHROPIC_AUTH_TOKEN). The zero value (kindUnset) defers to
+	// resolveAgentCredKind: kindAuthToken when ANTHROPIC_AUTH_TOKEN is present
+	// in the host environment, kindOAuth otherwise.
+	//
+	// Set AgentCredKind explicitly to override env-based resolution so that two
+	// CreateAndBoot calls in the same process can use different credential kinds
+	// (the N-way multiplexer prerequisite, D-P4-02).
+	AgentCredKind agentCredKind
+
+	// ExtraDisks are additional raw ext4 disk images to attach at VM boot.
+	// Passed verbatim to the DriverFactory as extraDisks; the factory is
+	// responsible for mapping them to cloudhypervisor.ExtraDisk and wiring
+	// them into the driver Config. ExtraDisks[0] becomes /dev/vdb, [1] /dev/vdc,
+	// and so on. Leave nil to attach only the rootfs disk (vda).
+	ExtraDisks []ExtraDisk
 }
 
 // WireClaudeEgress configures opts for an agent sandbox that runs claude
@@ -245,7 +273,9 @@ func CreateAndBoot(
 	// Each sandbox boots from its own writable copy so the shared cache
 	// artifact (digest-addressed, content-immutable) is never mutated by the
 	// guest kernel's root=/dev/vda rw mount. cp --reflink=auto is free (a CoW
-	// clone) on btrfs/xfs and falls back silently to a full copy elsewhere.
+	// clone) on btrfs/xfs and falls back silently on other filesystems;
+	// --sparse=always ensures the fallback path also preserves holes so the
+	// per-sandbox copy does not inflate to the full apparent image size.
 	//
 	// diskCopyPath is non-empty iff a copy was created here. The deferred
 	// cleanup removes it on any subsequent failure so no 5 GiB orphan is left
@@ -277,7 +307,7 @@ func CreateAndBoot(
 	}()
 
 	// ── 5. Construct per-sandbox driver instance ──────────────────────────────
-	bootDrv, err := newDriver(ext4Path)
+	bootDrv, err := newDriver(ext4Path, opts.ExtraDisks)
 	if err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: init driver: %w", project, name, err)
 	}
@@ -360,7 +390,7 @@ func CreateAndBoot(
 	//      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) to the guest.
 	//   b) The real token is obtained from AgentCredSource.Token(ctx) (OAuth
 	//      path, set by WireClaudeEgress) or from AgentEgressToken directly
-	//      (API-key path, set by WireAnthropicAuthToken).
+	//      (API-key path, set by the caller via AgentCredKind=kindAuthToken).
 	//   c) broker.SetRealToken wires the real token host-side so the MITM proxy
 	//      can swap the placeholder on each forwarded request.
 	//   d) If AgentCredSource also implements Register(domain.SandboxID)
@@ -374,12 +404,12 @@ func CreateAndBoot(
 	// a guest restart. That wiring is deferred until the restart probe exists.
 	if opts.UseAgentSeed {
 		// Resolve the per-sandbox profile; fall back to ClaudeCodeProfile when
-		// none is set (e.g. callers that use WireAnthropicAuthToken).
+		// none is set (e.g. callers that use WireClaudeEgress with a custom profile).
 		profile := opts.AgentProfile
 		if profile.PlaceholderEnvVar == "" {
 			profile = cred.ClaudeCodeProfile
 		}
-		recs, err := seedGuestAgent(ctx, opts.Broker, booted.ID, opts.Seeder, profile)
+		recs, err := seedGuestAgent(ctx, opts.Broker, booted.ID, opts.Seeder, profile, opts.AgentCredKind)
 		if err != nil {
 			_ = bootDrv.Stop(ctx, booted.ID)
 			_ = svc.store.Delete(ctx, booted.ID)
@@ -387,7 +417,7 @@ func CreateAndBoot(
 		}
 
 		// Resolve the real token: AgentCredSource (OAuth/Refresher path) takes
-		// priority; AgentEgressToken is the legacy fallback for WireAnthropicAuthToken.
+		// priority; AgentEgressToken is the fallback for the direct API-key path.
 		var realToken string
 		if opts.AgentCredSource != nil {
 			t, _, credErr := opts.AgentCredSource.Token(ctx)
@@ -398,7 +428,7 @@ func CreateAndBoot(
 				realToken = t
 			}
 		} else if opts.AgentEgressToken != "" {
-			// API-key path: WireAnthropicAuthToken populates this field.
+			// API-key path: caller sets AgentEgressToken and AgentCredKind=kindAuthToken.
 			realToken = opts.AgentEgressToken
 		}
 
@@ -423,7 +453,7 @@ func CreateAndBoot(
 		} else if realToken == "" {
 			slog.Warn("create-and-boot: no real token for agent egress; egress will send placeholder",
 				"sandbox", booted.ID, "host", AnthropicAPIHost,
-				"hint", "configure NEXUS3_DEDICATED_CRED_STORE or NEXUS3_CLAUDE_OAUTH_TOKEN before starting herdr")
+				"hint", "set ANTHROPIC_AUTH_TOKEN (auth-token path) or configure NEXUS3_DEDICATED_CRED_STORE (OAuth path)")
 		}
 	} else {
 		if _, err := SeedGuest(ctx, opts.Broker, booted.ID, booted.Envelope.AllowedHosts, opts.Seeder); err != nil {
@@ -461,19 +491,26 @@ func defaultDiskDir() (string, error) {
 	return filepath.Join(root, "disks"), nil
 }
 
-// cowExt4 copies src to <diskDir>/<id>.raw using cp --reflink=auto for
-// copy-on-write efficiency on btrfs/xfs (falls back to a full copy silently
-// on other filesystems). Returns the destination path.
+// cowExt4 copies src to <diskDir>/<id>.raw preserving sparseness.
+//
+// It uses two flags:
+//   - --reflink=auto: free CoW clone on btrfs/xfs; silent full-copy fallback
+//     on ext4 and other filesystems that do not support reflinks.
+//   - --sparse=always: on the ext4 fallback path, detect zero runs and punch
+//     holes so that a sparse source image (e.g. one built by runMke2fs with
+//     lazy_itable_init=1) yields a sparse destination. Without this flag the
+//     fallback copy reads the zero blocks and writes them out, filling the
+//     holes and inflating on-disk usage to the full apparent image size.
 func cowExt4(src, diskDir string, id domain.SandboxID) (string, error) {
 	if err := os.MkdirAll(diskDir, 0o700); err != nil {
 		return "", fmt.Errorf("cow ext4: mkdir %s: %w", diskDir, err)
 	}
 	dst := filepath.Join(diskDir, id.String()+".raw")
 	var stderr bytes.Buffer
-	cmd := exec.Command("cp", "--reflink=auto", src, dst)
+	cmd := exec.Command("cp", "--reflink=auto", "--sparse=always", src, dst)
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("cow ext4: cp --reflink=auto %s → %s: %w: %s", src, dst, err, stderr.String())
+		return "", fmt.Errorf("cow ext4: cp --reflink=auto --sparse=always %s → %s: %w: %s", src, dst, err, stderr.String())
 	}
 	return dst, nil
 }

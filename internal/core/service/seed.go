@@ -336,10 +336,17 @@ func GenerateEphemeralSSHKeypair() (publicKey, privateKey string, err error) {
 type agentCredKind int
 
 const (
+	// kindUnset is the zero value. When CreateAndBootOptions.AgentCredKind is
+	// kindUnset the kind is resolved from the host environment at seed time via
+	// resolveAgentCredKind: kindAuthToken when ANTHROPIC_AUTH_TOKEN is set,
+	// kindOAuth otherwise. This preserves the pre-per-sandbox default behaviour
+	// for callers that do not set an explicit kind.
+	kindUnset agentCredKind = iota
+
 	// kindOAuth is the Milestone-A OAuth subscription path: the guest env
 	// receives CLAUDE_CODE_OAUTH_TOKEN=<placeholder>. This is the default when
 	// ANTHROPIC_AUTH_TOKEN is not set in the host environment.
-	kindOAuth agentCredKind = iota
+	kindOAuth
 
 	// kindAuthToken is the direct-SDK API-key path (D-P4-02 / D-P4-05 ToS
 	// rail): the guest env receives ANTHROPIC_AUTH_TOKEN=<placeholder>. The in-
@@ -350,7 +357,8 @@ const (
 
 // resolveAgentCredKind returns kindAuthToken when ANTHROPIC_AUTH_TOKEN is set
 // in the host environment (direct-SDK API key present), and kindOAuth
-// otherwise. The same env var is the source of truth for [WireAnthropicAuthToken].
+// otherwise. It is the default resolver used when no explicit per-sandbox kind
+// is set in [CreateAndBootOptions.AgentCredKind].
 func resolveAgentCredKind() agentCredKind {
 	if os.Getenv("ANTHROPIC_AUTH_TOKEN") != "" {
 		return kindAuthToken
@@ -361,15 +369,13 @@ func resolveAgentCredKind() agentCredKind {
 // SeedGuestAgent mints placeholder credentials for [AgentEgressHosts] via
 // broker, builds an agent-specific env-file payload that includes both the
 // generic NEXUS3_CRED_* vars and the credential-kind-specific var
-// (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_AUTH_TOKEN, selected by
-// [resolveAgentCredKind]), and delivers the payload to the guest exactly once
-// via seeder.
+// (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_AUTH_TOKEN), and delivers the payload
+// to the guest exactly once via seeder.
 //
-// The credential kind is resolved at call time from the host environment:
-// kindAuthToken when ANTHROPIC_AUTH_TOKEN is set, kindOAuth otherwise.
-// The placeholder env-var name for the kindOAuth path comes from
-// [cred.ClaudeCodeProfile].PlaceholderEnvVar ("CLAUDE_CODE_OAUTH_TOKEN").
-// For per-sandbox profile control use [seedGuestAgent] directly.
+// The credential kind is resolved at call time from the host environment via
+// [resolveAgentCredKind]: kindAuthToken when ANTHROPIC_AUTH_TOKEN is set,
+// kindOAuth otherwise. For explicit per-sandbox kind control use
+// [CreateAndBootOptions.AgentCredKind] and [CreateAndBoot] instead.
 //
 // The returned PlaceholderRecords allow the caller to call
 // broker.SetRealToken(id, AnthropicAPIHost, realToken) after seeding.
@@ -388,25 +394,36 @@ func SeedGuestAgent(
 	id domain.SandboxID,
 	seeder GuestSeeder,
 ) ([]cred.PlaceholderRecord, error) {
-	return seedGuestAgent(ctx, broker, id, seeder, cred.ClaudeCodeProfile)
+	return seedGuestAgent(ctx, broker, id, seeder, cred.ClaudeCodeProfile, kindUnset)
 }
 
 // seedGuestAgent is the internal implementation of [SeedGuestAgent] that
-// accepts an explicit [cred.AgentProfile] for per-sandbox credential-kind
-// resolution. The profile drives the placeholder env-var name emitted in the
-// kindOAuth path (profile.PlaceholderEnvVar).
+// accepts an explicit [cred.AgentProfile] and [agentCredKind] for per-sandbox
+// credential-kind resolution. The profile drives the placeholder env-var name
+// emitted in the kindOAuth path (profile.PlaceholderEnvVar). When kind is
+// [kindUnset] the kind is resolved from the host environment via
+// [resolveAgentCredKind] at call time, preserving the default behaviour for
+// callers that do not set an explicit per-sandbox kind.
 //
 // Callers inside this package (e.g. CreateAndBoot) use this directly so they
-// can thread opts.AgentProfile through; external callers use [SeedGuestAgent].
+// can thread opts.AgentProfile and opts.AgentCredKind through; external callers
+// use [SeedGuestAgent].
 func seedGuestAgent(
 	ctx context.Context,
 	broker *cred.Broker,
 	id domain.SandboxID,
 	seeder GuestSeeder,
 	profile cred.AgentProfile,
+	kind agentCredKind,
 ) ([]cred.PlaceholderRecord, error) {
 	if broker == nil || seeder == nil {
 		return nil, nil
+	}
+
+	// Resolve the credential kind: honour an explicit per-sandbox override;
+	// fall back to the process-environment resolver for unset callers.
+	if kind == kindUnset {
+		kind = resolveAgentCredKind()
 	}
 
 	hosts := AgentEgressHosts()
@@ -419,7 +436,7 @@ func seedGuestAgent(
 		records = append(records, rec)
 	}
 
-	payload := buildAgentSeedPayload(records, resolveAgentCredKind(), profile)
+	payload := buildAgentSeedPayload(records, kind, profile)
 	if err := seeder(ctx, id, payload); err != nil {
 		return nil, fmt.Errorf("seed agent: deliver to guest: %w", err)
 	}
@@ -476,23 +493,3 @@ func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind,
 	return buf.Bytes()
 }
 
-// WireAnthropicAuthToken configures opts for an agent sandbox that
-// authenticates to Anthropic via a direct API auth token (Bearer token, not
-// OAuth subscription). This is the ToS-compliant path for the N-way
-// multiplexer (D-P4-02 / D-P4-05).
-//
-// It mirrors [WireClaudeEgress] but reads ANTHROPIC_AUTH_TOKEN from the host
-// environment. The same env var gates [resolveAgentCredKind] inside
-// [SeedGuestAgent], so calling this function with the env var set is self-
-// consistent: seeding emits ANTHROPIC_AUTH_TOKEN=<placeholder> in the guest,
-// and opts.AgentEgressToken carries the real token for broker.SetRealToken.
-//
-// The caller owns broker and seeder; WireAnthropicAuthToken does not retain
-// them beyond writing them into opts.
-func WireAnthropicAuthToken(opts *CreateAndBootOptions, broker *cred.Broker, seeder GuestSeeder) {
-	opts.AllowedHosts = AgentEgressHosts()
-	opts.Broker = broker
-	opts.Seeder = seeder
-	opts.UseAgentSeed = true
-	opts.AgentEgressToken = os.Getenv("ANTHROPIC_AUTH_TOKEN")
-}

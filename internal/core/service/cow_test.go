@@ -76,7 +76,7 @@ func TestCreateAndBoot_DriverGetsCopyPath(t *testing.T) {
 
 	// capturingFactory records the ext4Path argument for inspection.
 	var capturedPath string
-	capturingFactory := func(ext4Path string) (driver.Driver, error) {
+	capturingFactory := func(ext4Path string, _ []ExtraDisk) (driver.Driver, error) {
 		capturedPath = ext4Path
 		return fake.New(), nil
 	}
@@ -173,7 +173,7 @@ func TestCreateAndBoot_RootfsPathNoCopy(t *testing.T) {
 
 	// capturingFactory records the ext4Path argument.
 	var capturedPath string
-	capturingFactory := func(ext4Path string) (driver.Driver, error) {
+	capturingFactory := func(ext4Path string, _ []ExtraDisk) (driver.Driver, error) {
 		capturedPath = ext4Path
 		return fake.New(), nil
 	}

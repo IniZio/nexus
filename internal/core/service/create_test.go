@@ -63,7 +63,7 @@ func errProbe(err error) ProbeFunc {
 
 // fakeDriverFactory returns a DriverFactory that always returns the given driver.
 func fakeDriverFactory(drv driver.Driver) DriverFactory {
-	return func(_ string) (driver.Driver, error) {
+	return func(_ string, _ []ExtraDisk) (driver.Driver, error) {
 		return drv, nil
 	}
 }
@@ -286,5 +286,54 @@ func TestCreateAndBoot_NilSpecErrors(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("expected error for empty ImageSpec, got nil")
+	}
+}
+
+// TestCreateAndBoot_ExtraDisksReachFactory verifies the ExtraDisks threading
+// seam: ExtraDisk values placed in CreateAndBootOptions.ExtraDisks are
+// forwarded verbatim to the DriverFactory as the extraDisks argument.
+// The test uses a capturing factory so no real VM or vsock is needed.
+func TestCreateAndBoot_ExtraDisksReachFactory(t *testing.T) {
+	ctx := context.Background()
+	cacheRoot := t.TempDir()
+	cache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	img := putFakeImage(t, ctx, cache)
+
+	want := []ExtraDisk{
+		{Path: "/mnt/scratch/vdb.raw"},
+		{Path: "/mnt/cache/vdc.raw"},
+	}
+
+	var capturedDisks []ExtraDisk
+	capturingFactory := DriverFactory(func(_ string, extraDisks []ExtraDisk) (driver.Driver, error) {
+		capturedDisks = extraDisks
+		return fake.New(), nil
+	})
+
+	fd := fake.New()
+	svc := newTestSvc(t, fd)
+
+	_, err = CreateAndBoot(ctx, svc, cache, capturingFactory, noopProbe,
+		"proj", "extra-disks",
+		CreateAndBootOptions{
+			Image:      ImageSpec{Digest: string(img.Digest)},
+			CacheRoot:  cacheRoot,
+			ExtraDisks: want,
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: %v", err)
+	}
+
+	if len(capturedDisks) != len(want) {
+		t.Fatalf("factory received %d extra disks, want %d", len(capturedDisks), len(want))
+	}
+	for i, d := range capturedDisks {
+		if d.Path != want[i].Path {
+			t.Errorf("ExtraDisk[%d].Path = %q, want %q", i, d.Path, want[i].Path)
+		}
 	}
 }
