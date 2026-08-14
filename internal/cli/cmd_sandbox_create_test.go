@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
@@ -292,6 +294,282 @@ func TestSandboxCreate_Motive_FlagParsing(t *testing.T) {
 	}
 	if f2.motiveID != "" {
 		t.Errorf("motiveID without flag: want empty, got %q", f2.motiveID)
+	}
+}
+
+// TestSandboxCreate_CaptureMax_FlagParsing verifies that --capture-max parses
+// human size strings into int64 byte counts and that omitting the flag yields 0
+// (auto free-space-derived guard).
+func TestSandboxCreate_CaptureMax_FlagParsing(t *testing.T) {
+	// --capture-max 8GiB → 8589934592
+	const want8GiB int64 = 8 * 1024 * 1024 * 1024
+	f, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest", "--capture-max", "8GiB"})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", err)
+	}
+	if f.captureMaxBytes != want8GiB {
+		t.Errorf("captureMaxBytes with --capture-max 8GiB: got %d, want %d", f.captureMaxBytes, want8GiB)
+	}
+
+	// 500MB → 500_000_000 (decimal SI)
+	f2, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest", "--capture-max", "500MB"})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs (500MB): %v", err)
+	}
+	const want500MB int64 = 500_000_000
+	if f2.captureMaxBytes != want500MB {
+		t.Errorf("captureMaxBytes with --capture-max 500MB: got %d, want %d", f2.captureMaxBytes, want500MB)
+	}
+
+	// Omitting --capture-max → 0 (auto)
+	f3, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest"})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs (no flag): %v", err)
+	}
+	if f3.captureMaxBytes != 0 {
+		t.Errorf("captureMaxBytes without flag: got %d, want 0 (auto)", f3.captureMaxBytes)
+	}
+
+	// Invalid value → UsageError
+	if _, err := parseSandboxCreateArgs([]string{"p/n", "--capture-max", "notasize"}); err == nil {
+		t.Error("expected UsageError for --capture-max notasize, got nil")
+	}
+}
+
+// TestParseHumanBytes is the comprehensive table test for parseHumanBytes.
+//
+// Deliberately rejected spellings (case-sensitive suffix matching, no spaces):
+//
+//	"8gib", "8G", "8 GiB" — wrong case or space before suffix
+//	"1e9"                  — scientific notation not supported by ParseInt
+//	"-1", "-5GiB"          — negative values are meaningless as a byte cap
+//	"0", "0GiB"            — zero is reserved to mean AUTO
+//	"NaNGiB", "InfGiB"     — IEEE special values
+//	"99999999TiB"          — overflows int64
+//
+// Valid inputs use exact case-sensitive suffix matching and must be > 0.
+func TestParseHumanBytes(t *testing.T) {
+	type tc struct {
+		in      string
+		want    int64 // 0 means "expect error"
+		wantErr bool
+	}
+	tests := []tc{
+		// ── valid inputs ─────────────────────────────────────────────────────
+		{in: "1024", want: 1024},
+		{in: "1", want: 1},
+		{in: "1KiB", want: 1024},
+		{in: "1MiB", want: 1 << 20},
+		{in: "1GiB", want: 1 << 30},
+		{in: "8GiB", want: 8 * (1 << 30)},
+		{in: "1TiB", want: 1 << 40},
+		{in: "1KB", want: 1_000},
+		{in: "500MB", want: 500_000_000},
+		{in: "1GB", want: 1_000_000_000},
+
+		// ── rejected: negative ───────────────────────────────────────────────
+		{in: "-1", wantErr: true},
+		{in: "-5GiB", wantErr: true},
+
+		// ── rejected: zero ───────────────────────────────────────────────────
+		{in: "0", wantErr: true},
+		{in: "0GiB", wantErr: true},
+
+		// ── rejected: empty string ────────────────────────────────────────────
+		{in: "", wantErr: true},
+
+		// ── rejected: IEEE special values ─────────────────────────────────────
+		{in: "NaNGiB", wantErr: true},
+		{in: "InfGiB", wantErr: true},
+
+		// ── rejected: int64 overflow ─────────────────────────────────────────
+		{in: "99999999TiB", wantErr: true},
+
+		// ── rejected: wrong case / format (deliberate) ───────────────────────
+		{in: "8gib", wantErr: true},  // suffix is not recognised → falls to ParseInt → error
+		{in: "8G", wantErr: true},    // no matching suffix
+		{in: "8 GiB", wantErr: true}, // space before suffix not matched → ParseFloat("8 ") fails
+		{in: "1e9", wantErr: true},   // scientific notation → no suffix match → ParseInt fails
+		{in: "notasize", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			got, err := parseHumanBytes(tt.in)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("parseHumanBytes(%q) = %d, want error", tt.in, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseHumanBytes(%q) unexpected error: %v", tt.in, err)
+			}
+			if got != tt.want {
+				t.Errorf("parseHumanBytes(%q) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSandboxCreate_CaptureMax_WorkspacePath proves that parsing --workspace and
+// --capture-max together stores captureMaxBytes in the flags struct.
+func TestSandboxCreate_CaptureMax_WorkspacePath(t *testing.T) {
+	const want8GiB int64 = 8 * 1024 * 1024 * 1024
+
+	dir := t.TempDir() // --workspace requires a real directory that exists
+	f, err := parseSandboxCreateArgs([]string{
+		"p/n",
+		"--image", "nexus3-base:latest",
+		"--workspace", dir,
+		"--capture-max", "8GiB",
+	})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", err)
+	}
+	if f.captureMaxBytes != want8GiB {
+		t.Errorf("captureMaxBytes with --workspace + --capture-max 8GiB: got %d, want %d",
+			f.captureMaxBytes, want8GiB)
+	}
+}
+
+// TestSandboxCreate_WorkspaceSpec_CaptureMax verifies the flag→WorkspaceSpec
+// handoff through buildWorkspaceSpec, the single production construction site.
+//
+// This test goes RED if CaptureMaxBytes is removed from buildWorkspaceSpec —
+// the seam makes the handoff directly testable without a store or running VM.
+// It is the test that the prior TestSandboxCreate_CaptureMax_WorkspacePath
+// could not be (that test only exercised flag parsing; its struct literal was
+// built by the test itself, not by production code).
+func TestSandboxCreate_WorkspaceSpec_CaptureMax(t *testing.T) {
+	const want8GiB int64 = 8 * 1024 * 1024 * 1024
+	const wsAbs = "/tmp/myproject"
+	const guestPath = "/workspace/myproject"
+
+	// Non-zero case: CaptureMaxBytes must flow through buildWorkspaceSpec.
+	ws := buildWorkspaceSpec(wsAbs, guestPath, want8GiB)
+	if ws.CaptureMaxBytes != want8GiB {
+		t.Errorf("CaptureMaxBytes: got %d, want %d", ws.CaptureMaxBytes, want8GiB)
+	}
+	if ws.SourcePath != wsAbs {
+		t.Errorf("SourcePath: got %q, want %q", ws.SourcePath, wsAbs)
+	}
+	if ws.GuestPath != guestPath {
+		t.Errorf("GuestPath: got %q, want %q", ws.GuestPath, guestPath)
+	}
+
+	// Zero case: omitted flag → 0 (AUTO mode downstream).
+	ws0 := buildWorkspaceSpec(wsAbs, guestPath, 0)
+	if ws0.CaptureMaxBytes != 0 {
+		t.Errorf("CaptureMaxBytes omitted: got %d, want 0 (auto)", ws0.CaptureMaxBytes)
+	}
+}
+
+// TestSandboxCreate_WorkspaceCallSite_CaptureMax closes the argument-substitution
+// gap left by TestSandboxCreate_WorkspaceSpec_CaptureMax. That test calls
+// buildWorkspaceSpec with a literal — proving the constructor populates fields —
+// but cannot catch the mutation "replace f.captureMaxBytes with 0 at the call
+// site." This test calls workspaceSpecFromFlags with a real sandboxCreateFlags
+// struct so it goes RED when f.captureMaxBytes is replaced by a literal 0
+// inside workspaceSpecFromFlags (the --memory 8GiB mutation shape).
+func TestSandboxCreate_WorkspaceCallSite_CaptureMax(t *testing.T) {
+	const want8GiB int64 = 8 * 1024 * 1024 * 1024
+	const wsAbs = "/tmp/myproject"
+	const guestPath = "/workspace/myproject"
+
+	ws := workspaceSpecFromFlags(sandboxCreateFlags{captureMaxBytes: want8GiB}, wsAbs, guestPath)
+	if ws.CaptureMaxBytes != want8GiB {
+		t.Errorf("CaptureMaxBytes: got %d, want %d (f.captureMaxBytes not passed through)", ws.CaptureMaxBytes, want8GiB)
+	}
+	if ws.SourcePath != wsAbs {
+		t.Errorf("SourcePath: got %q, want %q", ws.SourcePath, wsAbs)
+	}
+	if ws.GuestPath != guestPath {
+		t.Errorf("GuestPath: got %q, want %q", ws.GuestPath, guestPath)
+	}
+
+	// Zero case: default flags → 0 (AUTO mode downstream).
+	ws0 := workspaceSpecFromFlags(sandboxCreateFlags{}, wsAbs, guestPath)
+	if ws0.CaptureMaxBytes != 0 {
+		t.Errorf("CaptureMaxBytes default: got %d, want 0 (auto)", ws0.CaptureMaxBytes)
+	}
+}
+
+// TestSandboxCreate_WorkspaceEntryPoint_WorkspaceSpec drives the real
+// runSandboxCreate entry point with --workspace and --capture-max to close the
+// two surviving mutations at cmd_sandbox.go:1140:
+//
+//   - workspaceSpecFromFlags(sandboxCreateFlags{}, wsAbs, guestPath)  [zero flags]
+//   - workspaceSpecFromFlags(f, guestPath, wsAbs)                     [arg swap]
+//
+// Neither the WorkspaceCallSite nor WorkspaceSpec tests catch these because
+// they call the helper directly; this test drives the real call site through
+// runSandboxCreate so that replacing f with sandboxCreateFlags{} zeroes
+// CaptureMaxBytes (mutation 1) and swapping wsAbs/guestPath scrambles
+// SourcePath/GuestPath (mutation 2).
+//
+// Prerequisite: mke2fs must be on the PATH (the --workspace path calls
+// createShadowDisk before reaching :1140).  The test skips when mke2fs is
+// absent so it does not become a flaky gate on machines without e2fsprogs.
+//
+// runSandboxCreate is expected to fail (no real rootfs/driver); the test only
+// asserts on the WorkspaceSpec captured via testWorkspaceSpecHook before the
+// boot fails.
+func TestSandboxCreate_WorkspaceEntryPoint_WorkspaceSpec(t *testing.T) {
+	if _, err := exec.LookPath("mke2fs"); err != nil {
+		t.Skip("mke2fs not found on PATH — skipping entry-point workspace test (install e2fsprogs)")
+	}
+
+	// Redirect the nexus3 store to a temp dir so shadow disks do not touch
+	// the user's real state directory.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	const want8GiB int64 = 8 * 1024 * 1024 * 1024
+
+	dir := t.TempDir()
+
+	// Capture the WorkspaceSpec set by workspaceSpecFromFlags at the real call
+	// site, before service.CreateAndBoot is reached.
+	var capturedSpec *service.WorkspaceSpec
+	testWorkspaceSpecHook = func(ws *service.WorkspaceSpec) {
+		capturedSpec = ws
+	}
+	defer func() { testWorkspaceSpecHook = nil }()
+
+	svc := newTestService(t)
+	out, _, _ := capture(true)
+	ctx := context.Background()
+
+	// --rootfs /nonexistent enters the boot path without needing a cached
+	// image; resolveExt4 fails inside service.CreateAndBoot (after the hook
+	// fires), so we only care that the hook was reached, not that the command
+	// succeeds.
+	_ = runSandboxCreate(ctx, []string{
+		"proj/name",
+		"--rootfs", "/nonexistent-for-test.ext4",
+		"--workspace", dir,
+		"--capture-max", "8GiB",
+	}, out, svc)
+
+	if capturedSpec == nil {
+		t.Fatal("testWorkspaceSpecHook was not called — workspaceSpecFromFlags at :1140 may not have been reached (check mke2fs / shadow disk creation)")
+	}
+
+	// Mutation 1: workspaceSpecFromFlags(sandboxCreateFlags{}, ...) → CaptureMaxBytes=0
+	if capturedSpec.CaptureMaxBytes != want8GiB {
+		t.Errorf("CaptureMaxBytes: got %d, want %d (f.captureMaxBytes not forwarded from real flags)", capturedSpec.CaptureMaxBytes, want8GiB)
+	}
+
+	// Mutation 2: workspaceSpecFromFlags(f, guestPath, wsAbs) → SourcePath and
+	// GuestPath swapped.  wsAbs is the absolute form of dir; guestPath is
+	// "/workspace/<basename>" — they are distinct strings, so swapping them is
+	// observable.
+	wantSource, _ := filepath.Abs(dir)
+	wantGuest := "/workspace/" + filepath.Base(wantSource)
+	if capturedSpec.SourcePath != wantSource {
+		t.Errorf("SourcePath: got %q, want %q (possible arg-order swap in workspaceSpecFromFlags call)", capturedSpec.SourcePath, wantSource)
+	}
+	if capturedSpec.GuestPath != wantGuest {
+		t.Errorf("GuestPath: got %q, want %q (possible arg-order swap in workspaceSpecFromFlags call)", capturedSpec.GuestPath, wantGuest)
 	}
 }
 

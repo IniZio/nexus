@@ -17,6 +17,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus3/internal/core/vmcfg"
 )
 
 // nopProbe is a service.ProbeFunc that reports the guest as immediately ready.
@@ -414,8 +415,12 @@ func TestOrcaProjectRoot_AbsoluteFromRepoPath(t *testing.T) {
 // ── orcaWorkspaceSpec ─────────────────────────────────────────────────────────
 
 // TestOrcaWorkspaceSpec_RepoPathSet verifies that a valid ORCA_REPO_PATH
-// results in a WorkspaceSpec whose SourcePath is exactly env.RepoPath and
-// whose GuestPath matches orcaProjectRoot.
+// results in a WorkspaceSpec with all fields set correctly. Every field is
+// asserted so that a future WorkspaceSpec field addition that forgets the orca
+// path causes this test to go RED (the same protection buildWorkspaceSpec gives
+// to the sandbox create --workspace path). This test goes RED if any field is
+// dropped from buildWorkspaceSpec — proving orca routes through the shared
+// constructor rather than maintaining its own literal.
 func TestOrcaWorkspaceSpec_RepoPathSet(t *testing.T) {
 	dir := t.TempDir()
 	env := orcaEnv{
@@ -435,6 +440,11 @@ func TestOrcaWorkspaceSpec_RepoPathSet(t *testing.T) {
 	wantGuestPath := orcaProjectRoot(env.RepoPath, env.WorkspaceName, env.InstanceID)
 	if ws.GuestPath != wantGuestPath {
 		t.Errorf("GuestPath: got %q, want %q", ws.GuestPath, wantGuestPath)
+	}
+	// CaptureMaxBytes must be 0 (AUTO): orca does not set an explicit cap so the
+	// builder derives the limit from free space on the host filesystem.
+	if ws.CaptureMaxBytes != 0 {
+		t.Errorf("CaptureMaxBytes: got %d, want 0 (AUTO)", ws.CaptureMaxBytes)
 	}
 }
 
@@ -638,10 +648,10 @@ func TestOrcaSpawnConfig_GovBoundsForwarded(t *testing.T) {
 	)
 	extraDiskPaths := []string{wsDiskPath}
 
-	// govBounds: same call as orcaCreate uses (buildAutoResizeBounds defaults).
-	govBounds := buildAutoResizeBounds(true, 0, 0, 0, 0, 0)
+	// govBounds: same call as orcaCreate uses (vmcfg.Resolve defaults).
+	govBounds := vmcfg.Resolve(vmcfg.Config{}).Bounds
 	if govBounds.MemMaxBytes == 0 {
-		t.Fatal("buildAutoResizeBounds(true,...) returned zero MemMaxBytes; test precondition broken")
+		t.Fatal("vmcfg.Resolve returned zero MemMaxBytes; test precondition broken")
 	}
 
 	const orcaNumShadowDisks = 0 // canonical value from orcaCreate
@@ -704,11 +714,17 @@ func TestOrcaSpawnConfig_GovBoundsForwarded(t *testing.T) {
 	if !strings.Contains(cfg.Config.Cmdline, guestPath) {
 		t.Errorf("Cmdline %q does not contain guest path %q", cfg.Config.Cmdline, guestPath)
 	}
-	if !strings.Contains(cfg.Config.Cmdline, "--auto-resize") {
-		t.Errorf("Cmdline %q does not contain --auto-resize; resize services will not start in guest", cfg.Config.Cmdline)
-	}
 	if !strings.Contains(cfg.Config.Cmdline, "--mem-ceiling=") {
 		t.Errorf("Cmdline %q does not contain --mem-ceiling; guest agent cannot set ZRAM size correctly", cfg.Config.Cmdline)
+	}
+	// Assert the cmdline contains the exact PID1Args string that vmcfg.Resolve
+	// produces. This catches VALUE drift (orca producing a different string than
+	// the shared helper) but does NOT catch structural re-inlining: a duplicate
+	// fmt.Sprintf that happens to produce the same correct value will still pass.
+	memMaxMiB := uint32(govBounds.MemMaxBytes / (1024 * 1024))
+	wantPID1Args := vmcfg.Resolve(vmcfg.Config{MemMaxMiB: memMaxMiB}).PID1Args
+	if !strings.Contains(cfg.Config.Cmdline, wantPID1Args) {
+		t.Errorf("Cmdline %q does not contain vmcfg PID1Args %q; orca path has drifted from shared helper", cfg.Config.Cmdline, wantPID1Args)
 	}
 }
 

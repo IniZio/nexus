@@ -108,7 +108,7 @@ func TestSandboxCapture_DirtyEditCaptured(t *testing.T) {
 	must(t, os.WriteFile(trackFile, []byte("dirty content\n"), 0o644))
 
 	outExt4 := filepath.Join(t.TempDir(), "ctx.ext4")
-	if err := builder.WorktreeToDisk(ctx, srcDir, outExt4, builder.DefaultCaptureMaxBytes); err != nil {
+	if err := builder.WorktreeToDisk(ctx, srcDir, outExt4, 0 /* auto */); err != nil {
 		t.Fatalf("WorktreeToDisk: %v", err)
 	}
 
@@ -134,7 +134,7 @@ func TestSandboxCapture_UntrackedFileCaptured(t *testing.T) {
 	must(t, os.WriteFile(filepath.Join(srcDir, "untracked.txt"), []byte("untracked content\n"), 0o644))
 
 	outExt4 := filepath.Join(t.TempDir(), "ctx.ext4")
-	if err := builder.WorktreeToDisk(ctx, srcDir, outExt4, builder.DefaultCaptureMaxBytes); err != nil {
+	if err := builder.WorktreeToDisk(ctx, srcDir, outExt4, 0 /* auto */); err != nil {
 		t.Fatalf("WorktreeToDisk: %v", err)
 	}
 
@@ -160,7 +160,7 @@ func TestSandboxCapture_DockerignoreExcludes(t *testing.T) {
 	must(t, os.WriteFile(filepath.Join(srcDir, ".dockerignore"), []byte("dist\n"), 0o644))
 
 	outExt4 := filepath.Join(t.TempDir(), "ctx.ext4")
-	if err := builder.WorktreeToDisk(ctx, srcDir, outExt4, builder.DefaultCaptureMaxBytes); err != nil {
+	if err := builder.WorktreeToDisk(ctx, srcDir, outExt4, 0 /* auto */); err != nil {
 		t.Fatalf("WorktreeToDisk: %v", err)
 	}
 
@@ -200,7 +200,7 @@ func TestSandboxCapture_NoCommitsSucceeds(t *testing.T) {
 	must(t, os.WriteFile(filepath.Join(srcDir, "pending.txt"), []byte("not yet committed\n"), 0o644))
 
 	outExt4 := filepath.Join(t.TempDir(), "ctx.ext4")
-	if err := builder.WorktreeToDisk(ctx, srcDir, outExt4, builder.DefaultCaptureMaxBytes); err != nil {
+	if err := builder.WorktreeToDisk(ctx, srcDir, outExt4, 0 /* auto */); err != nil {
 		t.Fatalf("WorktreeToDisk with no commits: %v", err)
 	}
 

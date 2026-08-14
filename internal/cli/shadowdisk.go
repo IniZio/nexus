@@ -11,8 +11,8 @@ package cli
 //     copy-on-write amplification is avoided.
 //
 //  2. OOM safety — keeping bulk build artifacts off the captured workspace disk
-//     so WorktreeToDisk stays below DefaultCaptureMaxBytes (2 GiB) even when
-//     those directories are present on the host working tree.
+//     so WorktreeToDisk's free-space guard is not triggered by directories that
+//     are intentionally ephemeral (node_modules, dist, Cargo target/).
 //
 // Device-letter contract (critical — see orchestrator note in S-HEAVY-WRITE-DISKS):
 //
@@ -219,8 +219,8 @@ func WorkspaceGuestMount(guestPath string, numShadowDisks int) agent.GuestMount 
 // Without this exclusion, directories such as node_modules (if already
 // present in the source tree from a prior npm install) would be included in
 // the workspace capture, inflating the ext4 image and potentially triggering
-// the DefaultCaptureMaxBytes OOM guard — defeating the structural mitigation
-// that shadow disks provide.
+// the free-space guard — defeating the structural mitigation that shadow disks
+// provide.
 //
 // Exclusion is performed by passing shadowDirs as extra patterns to
 // builder.WorktreeToDiskWithExtra. The user's source tree — including

@@ -239,7 +239,7 @@ func TestShadowExcludeCapturer_DockerignoreUnchangedOnSuccess(t *testing.T) {
 
 	capturer := makeShadowExcludeCapturer(DefaultShadowDirs)
 	outExt4 := filepath.Join(t.TempDir(), "ws.ext4")
-	if err := capturer(context.Background(), dir, outExt4, builder.DefaultCaptureMaxBytes); err != nil {
+	if err := capturer(context.Background(), dir, outExt4, 0 /* auto */); err != nil {
 		t.Fatalf("capturer: %v", err)
 	}
 
@@ -329,7 +329,7 @@ func TestShadowExcludeCapturer_ShadowDirsExcluded(t *testing.T) {
 	capturer := makeShadowExcludeCapturer(DefaultShadowDirs)
 	outExt4 := filepath.Join(t.TempDir(), "ws.ext4")
 	ctx := context.Background()
-	if err := capturer(ctx, dir, outExt4, builder.DefaultCaptureMaxBytes); err != nil {
+	if err := capturer(ctx, dir, outExt4, 0 /* auto */); err != nil {
 		t.Fatalf("capturer: %v", err)
 	}
 
