@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -19,9 +20,34 @@ import (
 // BuilderDriver is the subset of driver capabilities required by [BuildInVM].
 // A [*cloudhypervisor.CHDriver] satisfies this interface; the interface is
 // defined here so tests can inject a fake without importing the concrete driver.
+//
+// # Injection seam for UNI-WIRE
+//
+// The boot mechanism (drv.Start) is already injectable through this interface.
+// UNI-WIRE replaces the concrete CH driver with a supervisor-backed
+// implementation so that [BuildInVM] launches the VM under a detached
+// supervisor process without any further rewrite of this function.
 type BuilderDriver interface {
 	driver.Driver
 	driver.GuestDialer
+}
+
+// BuilderStore is the minimal persistence interface required by [BuildInVM] to
+// track the builder VM's lifetime. When non-nil, BuildInVM creates a transient
+// sandbox record before boot and deletes it on every exit path — success,
+// failure, panic, and context cancellation.
+//
+// A *store.FileStore satisfies this interface. Pass nil to run without any
+// persistent record (unit tests / legacy callers that have not yet been wired
+// to a real store).
+type BuilderStore interface {
+	// Create persists a new sandbox record. Called once before VM boot.
+	Create(ctx context.Context, sb domain.Sandbox) error
+	// Update performs a locked read-modify-write on the record. Called once
+	// after a successful boot to stamp the instanceID and Running state.
+	Update(ctx context.Context, id domain.SandboxID, fn func(*domain.Sandbox) error) error
+	// Delete removes the record. Called on every exit path.
+	Delete(ctx context.Context, id domain.SandboxID) error
 }
 
 // GuestExecFn executes a command inside the guest VM and returns the exit
@@ -69,7 +95,10 @@ const (
 //   - Panic (deferred panicSafeStop fires)
 //   - Context cancellation (stopFn always uses context.Background())
 //
-// The ephemeral builder SandboxID is never persisted to the sandbox store.
+// When st is non-nil, a transient sandbox record is created before boot and
+// deleted on every exit path above. The record allows a supervisor process to
+// discover and re-own the running builder VM. It is always removed before
+// BuildInVM returns — callers see no residual record in the sandbox list.
 //
 // # Caller responsibilities
 //
@@ -91,8 +120,38 @@ func BuildInVM(
 	spec BuilderVMSpec,
 	cache *image.Cache,
 	execFn GuestExecFn,
+	st BuilderStore,
 ) (digest string, err error) {
 	id := domain.NewSandboxID()
+
+	// ── 0. Persist transient record ───────────────────────────────────────────
+	// The record exists only while the builder VM runs: a supervisor can
+	// discover and re-own the VM by reading this record. It is unconditionally
+	// deleted on every exit path — success, failure, panic, context
+	// cancellation — because the builder is ephemeral and must not appear in
+	// `nexus3 sandbox list` beyond its own lifetime.
+	//
+	// Defer ordering (LIFO): delete-record is registered FIRST so it executes
+	// LAST, after panicSafeStop. This guarantees the VM is already stopped
+	// before its record is removed.
+	if st != nil {
+		transient := domain.Sandbox{
+			ID:           id,
+			Name:         id.String(),
+			Project:      "__builder",
+			State:        domain.Created,
+			RemoveOnExit: true,           // marks this record as transient / ephemeral
+			CreatorPID:   os.Getpid(),    // used by service.List to reap stale orphans
+		}
+		if createErr := st.Create(ctx, transient); createErr != nil {
+			return "", fmt.Errorf("builder vm: persist transient record: %w", createErr)
+		}
+		defer func() {
+			// Always use background context: the caller's ctx may be cancelled
+			// before we reach cleanup, but the record must always be removed.
+			_ = st.Delete(context.Background(), id)
+		}()
+	}
 
 	lc := newLifecycle(
 		func(stopCtx context.Context) error { return drv.Stop(stopCtx, id) },
@@ -100,6 +159,8 @@ func BuildInVM(
 	)
 
 	// Cover panic / early-exit that occurs before the explicit SyncAndStop.
+	// Registered AFTER the delete-record defer (LIFO), so it executes BEFORE
+	// delete — the VM is stopped before its record is removed.
 	started := false
 	defer func() {
 		if started {
@@ -108,10 +169,23 @@ func BuildInVM(
 	}()
 
 	// ── 1. Boot the builder VM ────────────────────────────────────────────────
-	if _, err := drv.Start(ctx, driver.StartRequest{SandboxID: id}); err != nil {
-		return "", fmt.Errorf("builder vm: start: %w", err)
+	instanceID, startErr := drv.Start(ctx, driver.StartRequest{SandboxID: id})
+	if startErr != nil {
+		return "", fmt.Errorf("builder vm: start: %w", startErr)
 	}
 	started = true
+
+	// ── 1.25. Stamp instanceID into the transient record ─────────────────────
+	// Non-fatal: a supervisor that observes State=Created will retry. The
+	// critical invariant is that the record EXISTS (ensuring delete on exit),
+	// not that it always reflects the Running state immediately after boot.
+	if st != nil {
+		_ = st.Update(context.Background(), id, func(rec *domain.Sandbox) error {
+			rec.InstanceID = instanceID
+			rec.State = domain.Running
+			return nil
+		})
+	}
 
 	// ── 1.5a. Start perimeter so the builder VM has internet access ───────────
 	// CHDriver.Start always launches StartNetnsRuntime: a TAP/bridge pump that

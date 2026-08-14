@@ -230,6 +230,49 @@ func TestList_Multiple(t *testing.T) {
 	}
 }
 
+// TestList_FilterBuilderRecords verifies that transient __builder records are
+// hidden from List() output (UNI-TEARDOWN §listing-filter).
+//
+// Without this filter, a stale __builder record (e.g. left by a SIGKILL'd CLI
+// before the supervisor's svc.Remove ran) would appear in `nexus3 sandbox list`
+// alongside user-visible sandboxes.
+func TestList_FilterBuilderRecords(t *testing.T) {
+	// Insert one normal sandbox and one __builder record directly into the store
+	// (bypassing service.Create so we can set Project = "__builder").
+	st := newFileStore(t)
+	svc := service.New(st, fake.New(), lifecycle.New())
+
+	// Normal user sandbox — must appear in List.
+	if _, err := svc.Create(ctx(), "myproject", "mybox", service.CreateOptions{}); err != nil {
+		t.Fatalf("Create user sandbox: %v", err)
+	}
+
+	// Transient builder record inserted directly into the store — must be hidden.
+	transient := domain.Sandbox{
+		ID:           domain.NewSandboxID(),
+		Name:         "some-id",
+		Project:      "__builder",
+		State:        domain.Created,
+		RemoveOnExit: true,
+	}
+	if err := st.Create(ctx(), transient); err != nil {
+		t.Fatalf("store.Create transient: %v", err)
+	}
+
+	all, err := svc.List(ctx())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("List returned %d records, want 1 (the __builder record must be filtered)", len(all))
+	}
+	for _, sb := range all {
+		if sb.Project == "__builder" {
+			t.Errorf("List returned a __builder record (id=%s): must be filtered", sb.ID)
+		}
+	}
+}
+
 // ── Addressing ───────────────────────────────────────────────────────────────
 
 func TestResolve_ExactID(t *testing.T) {

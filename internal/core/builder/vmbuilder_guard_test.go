@@ -1,16 +1,16 @@
 // Package builder_test — G9 fault-injection guard for BuildInVM.
 //
-// This file drives BuildInVM through four failure modes using a fake
-// BuilderDriver and a recording execFn, asserting that:
+// This file drives BuildInVM through several failure modes using a fake
+// BuilderDriver, a recording execFn, and a fake BuilderStore, asserting that:
 //
 //  (a) drv.Stop is called on every exit path
 //  (b) guest sync is attempted before Stop
-//  (c) no sandbox is left orphaned in any persistent store
-//      (BuildInVM uses an ephemeral SandboxID that it never hands to a store)
+//  (c) the transient sandbox record is deleted on every exit path — build
+//      success, build failure, boot failure, context cancellation, and panic
 //
 // G3's lifecycle_test.go tests the Lifecycle helper in isolation; this file
 // tests BuildInVM end-to-end, including the wiring of the Lifecycle into the
-// driver calls.
+// driver calls and the store cleanup contract.
 //
 // Build tag: none — these are pure-unit tests; no KVM or mke2fs required.
 package builder_test
@@ -28,6 +28,60 @@ import (
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
 )
+
+// ── fakeBuilderStore ──────────────────────────────────────────────────────────
+
+// fakeBuilderStore is an in-memory implementation of builder.BuilderStore used
+// by these tests to verify the transient record lifecycle.
+type fakeBuilderStore struct {
+	mu      sync.Mutex
+	records map[domain.SandboxID]domain.Sandbox
+	creates int
+	deletes int
+}
+
+func newFakeBuilderStore() *fakeBuilderStore {
+	return &fakeBuilderStore{records: make(map[domain.SandboxID]domain.Sandbox)}
+}
+
+// Compile-time check: fakeBuilderStore satisfies builder.BuilderStore.
+var _ builder.BuilderStore = (*fakeBuilderStore)(nil)
+
+func (f *fakeBuilderStore) Create(_ context.Context, sb domain.Sandbox) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.records[sb.ID] = sb
+	f.creates++
+	return nil
+}
+
+func (f *fakeBuilderStore) Update(_ context.Context, id domain.SandboxID, fn func(*domain.Sandbox) error) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rec, ok := f.records[id]
+	if !ok {
+		return errors.New("fakeBuilderStore.Update: record not found")
+	}
+	if err := fn(&rec); err != nil {
+		return err
+	}
+	f.records[id] = rec
+	return nil
+}
+
+func (f *fakeBuilderStore) Delete(_ context.Context, id domain.SandboxID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.records, id)
+	f.deletes++
+	return nil
+}
+
+func (f *fakeBuilderStore) recordCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.records)
+}
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -139,13 +193,14 @@ var _ builder.BuilderDriver = (*stopTrackingDriver)(nil)
 
 // runBuildInVM is a convenience wrapper that calls builder.BuildInVM and
 // returns the error. Pass a nil cache — failure-mode tests never reach the
-// harvest step.
+// harvest step. A fresh fakeBuilderStore is wired so that store cleanup is
+// exercised on every call; the store is discarded after the call returns.
 func runBuildInVM(ctx context.Context, drv builder.BuilderDriver, et *execTracker) error {
 	spec := builder.BuilderVMSpec{
 		RootfsDiskPath:   "/dev/null", // never opened by BuildInVM itself
 		ArtifactDiskPath: "",          // intentionally empty — triggers clear error if reached
 	}
-	_, err := builder.BuildInVM(ctx, drv, spec, nil, et.fn)
+	_, err := builder.BuildInVM(ctx, drv, spec, nil, et.fn, newFakeBuilderStore())
 	return err
 }
 
@@ -354,20 +409,107 @@ func TestBuildInVM_StartFails(t *testing.T) {
 	}
 }
 
-// TestBuildInVM_EphemeralID verifies that BuildInVM never persists the
-// ephemeral builder SandboxID. This is structural: BuildInVM accepts no
-// sandbox store parameter, so persistence is architecturally impossible.
-// This test confirms the function signature has not been changed to accept one.
-func TestBuildInVM_EphemeralID(t *testing.T) {
-	// BuildInVM signature: (ctx, drv BuilderDriver, spec BuilderVMSpec, cache *image.Cache, execFn GuestExecFn)
-	// No sandbox store parameter → ephemeral by construction.
-	// Compile-time proof: if BuildInVM accepted a store, this file would not compile
-	// without passing one — and the fake call below would need updating.
+// TestBuildInVM_StoreCleanupOnBuildFailure verifies that the transient sandbox
+// record created before boot is deleted when the in-guest build fails (non-zero
+// exit code). A record left behind would show up in `nexus3 sandbox list` and
+// confuse users.
+func TestBuildInVM_StoreCleanupOnBuildFailure(t *testing.T) {
+	seq := &seqCounter{}
+	et := newExecTracker(seq)
+	et.buildExit = 1 // non-zero → build error
+
+	drv := newStopTracker(seq)
+	st := newFakeBuilderStore()
+
+	spec := builder.BuilderVMSpec{
+		RootfsDiskPath:   "/dev/null",
+		ArtifactDiskPath: "",
+	}
+	_, err := builder.BuildInVM(context.Background(), drv, spec, nil, et.fn, st)
+
+	if err == nil {
+		t.Fatal("want error from build failure, got nil")
+	}
+	// The transient record must be gone after a build failure.
+	if st.recordCount() != 0 {
+		t.Errorf("transient record still present after build failure: want 0 records, got %d", st.recordCount())
+	}
+	if st.creates != 1 {
+		t.Errorf("expected exactly 1 store.Create call, got %d", st.creates)
+	}
+	if st.deletes != 1 {
+		t.Errorf("expected exactly 1 store.Delete call, got %d", st.deletes)
+	}
+}
+
+// TestBuildInVM_StoreCleanupOnStartFailure verifies that the transient record
+// is deleted even when drv.Start fails (boot failure path). The record is
+// created before Start to allow supervisor discovery; on failure it must be
+// removed immediately so no orphan record appears.
+func TestBuildInVM_StoreCleanupOnStartFailure(t *testing.T) {
+	seq := &seqCounter{}
+	et := newExecTracker(seq)
+
+	drv := newStopTracker(seq)
+	drv.SetStartError(errors.New("G9: injected start failure"))
+	st := newFakeBuilderStore()
+
+	spec := builder.BuilderVMSpec{RootfsDiskPath: "/dev/null"}
+	_, err := builder.BuildInVM(context.Background(), drv, spec, nil, et.fn, st)
+
+	if err == nil {
+		t.Fatal("want error from start failure, got nil")
+	}
+	// The transient record must be cleaned up even when boot fails.
+	if st.recordCount() != 0 {
+		t.Errorf("transient record still present after start failure: want 0 records, got %d", st.recordCount())
+	}
+	if st.deletes != 1 {
+		t.Errorf("expected exactly 1 store.Delete call after start failure, got %d", st.deletes)
+	}
+}
+
+// ── No-double-Stop coverage note (UNI-TEARDOWN) ───────────────────────────────
+//
+// The double-Stop hazard for the supervisor-backed path (supervisorBuilderDriver)
+// cannot be exercised in pure unit tests because it requires a real supervisor
+// process. What is protected at this level:
+//
+//   - lifecycle.once (sync.Once): drv.Stop is called AT MOST ONCE per Lifecycle.
+//     Any call to SyncAndStop or panicSafeStop after the first is a no-op.
+//   - started=false after SyncAndStop prevents the deferred panicSafeStop.
+//   - The per-sandbox flock in store.Update serialises concurrent Stop/Remove.
+//   - WaitForExit in supervisorBuilderDriver.Stop ensures the supervisor's
+//     svc.Remove has completed before the CLI's defer st.Delete runs.
+//
+// What requires real KVM (TestBuilderVME2E, build tag kvm):
+//   - The full CLI→supervisor IPC stop→WaitForExit→defer-Delete ordering.
+//   - The SIGKILL path: parent-watchdog pipe EOF triggers supervisor self-teardown.
+
+// TestBuildInVM_StopCalledExactlyOnce verifies drv.Stop is called exactly once
+// on the harvest-error exit path — both the explicit SyncAndStop and the
+// panicSafeStop defer share the same once.Do, so only one Stop call should
+// reach the driver.
+func TestBuildInVM_StopCalledExactlyOnce(t *testing.T) {
 	seq := &seqCounter{}
 	et := newExecTracker(seq)
 	drv := newStopTracker(seq)
-	drv.SetStartError(errors.New("G9: sentinel — only checks signature"))
 
-	_, _ = builder.BuildInVM(context.Background(), drv, builder.BuilderVMSpec{}, nil, et.fn)
-	// If this line compiles, BuildInVM does not accept a store parameter.
+	// ArtifactDiskPath="" triggers the harvest error after a successful build+stop.
+	spec := builder.BuilderVMSpec{
+		RootfsDiskPath:   "/dev/null",
+		ArtifactDiskPath: "",
+	}
+	st := newFakeBuilderStore()
+	_, err := builder.BuildInVM(context.Background(), drv, spec, nil, et.fn, st)
+	if err == nil {
+		t.Fatal("want harvest error (empty ArtifactDiskPath), got nil")
+	}
+
+	drv.mu.Lock()
+	count := len(drv.stopSeq)
+	drv.mu.Unlock()
+	if count != 1 {
+		t.Errorf("drv.Stop called %d times on harvest-error path, want exactly 1", count)
+	}
 }

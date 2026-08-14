@@ -51,10 +51,14 @@ type WorkspaceSpec struct {
 	// derive the correct agent.GuestMount mapping from the device index.
 	GuestPath string
 
-	// CaptureMaxBytes caps the total size of the captured workspace passed to
-	// builder.WorktreeToDisk. When zero, builder.DefaultCaptureMaxBytes (2 GiB)
-	// is used. Prefer the default for unknown workspaces: too strict produces a
-	// legible error; too loose can OOM the host via ext4 page-cache pressure.
+	// CaptureMaxBytes caps the workspace capture passed to builder.WorktreeToDisk.
+	//   - Positive value: explicit byte cap on raw included file size.
+	//   - Zero or negative: auto mode — the cap is derived from free space on the
+	//     filesystem that will hold the ext4 image (80 % of available). Auto mode
+	//     is the recommended default; it rejects captures whose projected image
+	//     would endanger host disk space without requiring the caller to guess a
+	//     threshold. The guard is surfaced as an actionable error listing the
+	//     largest contributor directories.
 	CaptureMaxBytes int64
 }
 
@@ -363,10 +367,9 @@ func CreateAndBoot(
 		if captureFn == nil {
 			captureFn = builder.WorktreeToDisk
 		}
+		// maxBytes <= 0 means auto (free-space-derived guard); positive values
+		// are explicit caps. WorktreeToDisk handles both cases.
 		maxBytes := ws.CaptureMaxBytes
-		if maxBytes == 0 {
-			maxBytes = builder.DefaultCaptureMaxBytes
-		}
 		wsDiskDir := opts.DiskDir
 		if wsDiskDir == "" {
 			if wsDiskDir, err = defaultDiskDir(); err != nil {

@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/artifact"
@@ -196,18 +197,120 @@ func (s *Service) Create(ctx context.Context, project, name string, opts CreateO
 	return sb, nil
 }
 
-// List returns all sandboxes from the store. The returned slice is always
-// non-nil (an empty store returns []domain.Sandbox{}, never nil), so callers
-// and JSON marshallers see [] rather than null.
+// List returns all user-visible sandboxes from the store. The returned slice
+// is always non-nil (an empty store returns []domain.Sandbox{}, never nil),
+// so callers and JSON marshallers see [] rather than null.
+//
+// # __builder filter (UNI-TEARDOWN)
+//
+// Records with Project == "__builder" are transient: they exist only for the
+// duration of an in-VM build and are always deleted on normal exit. They must
+// not appear in user-facing listings because:
+//
+//   - They are implementation-internal (not user-created sandboxes).
+//   - If the CLI is SIGKILL'd after record creation but before the supervisor
+//     calls svc.Remove (and before the pipe-watchdog has triggered), a stale
+//     __builder record would pollute `nexus3 sandbox list`.
+//
+// The filter here is the last-resort safety net. The primary cleanup mechanism
+// is: supervisor's svc.Remove in ephemeral mode + parent-watchdog pipe for
+// SIGKILL. Both are belt-and-suspenders; the filter handles any gap.
+//
+// In addition, reapBuilders is called before filtering to actually delete
+// orphan __builder records whose creator process has exited (R-REAP).
 func (s *Service) List(ctx context.Context) ([]domain.Sandbox, error) {
 	all, err := s.store.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("service: list: %w", err)
 	}
-	if all == nil {
-		all = []domain.Sandbox{}
+	// Reap stale orphan builder records before filtering (R-REAP).
+	s.reapBuilders(ctx, all)
+	// Filter transient builder records. Use in-place filtering to avoid alloc.
+	out := all[:0]
+	for _, sb := range all {
+		if sb.Project != "__builder" {
+			out = append(out, sb)
+		}
 	}
-	return all, nil
+	if out == nil {
+		out = []domain.Sandbox{}
+	}
+	return out, nil
+}
+
+// reapBuilders deletes __builder sandbox records whose creator process has
+// exited. It is called opportunistically from List before the __builder filter
+// runs, so stale orphan records (from a SIGKILL'd BuildInVM process) accumulate
+// only until the next listing.
+//
+// # Predicate
+//
+// A record is reaped if and only if all three conditions hold:
+//  1. Project == "__builder"
+//  2. CreatorPID != 0 (written by a binary that stamps the creator PID)
+//  3. kill(CreatorPID, 0) == ESRCH — the creator process is provably dead
+//
+// ESRCH ("no such process") is the only safe signal: it means the kernel has
+// removed the PID from its table. A live BuildInVM goroutine IS that process,
+// so kill(os.Getpid(), 0) always returns nil while the build runs. Only after
+// the process exits does the PID become absent and ESRCH is returned.
+//
+// Records with CreatorPID == 0 (written before this feature) are silently
+// skipped; the __builder filter in List still hides them from listings.
+//
+// # What is cleaned up
+//
+// Cleanup order mirrors BuildInVM's LIFO defer order — Stop before Delete:
+//  1. drv.Stop: terminates any surviving CH process and removes the API socket,
+//     vsock socket, .iid sidecar, and tears down the kernel netns. drv.Stop
+//     is safe to call when CH is already dead: isAbsent returns immediately
+//     after calling clearState (which removes the stale socket files).
+//  2. store.Delete: removes the sandbox record directory.
+//
+// # What is NOT cleaned up
+//
+// The ephemeral build disk images (ctx.ext4 and artifact.ext4) live in an
+// os.MkdirTemp directory created by the CLI before calling BuildInVM. Their
+// paths are never written into the sandbox record, so the record is not the
+// "handle" to them. Deleting the record does not orphan them further — they
+// are already unrecoverable once the SIGKILL'd process's stack dies.
+// The os.MkdirTemp directories live in /tmp and are swept by the host OS.
+//
+// # Trigger timing
+//
+// Reaping fires on the next call to svc.List — sandbox list, herdr plugin
+// list, MCP sandbox listing. Nothing on the sandbox create --file build path
+// calls svc.List, so reaping does not fire automatically during a build.
+//
+// # Concurrency
+//
+// Concurrent List calls may attempt to Stop and Delete the same record
+// simultaneously; store.ErrNotFound is silently swallowed to make this
+// idempotent. The double-Stop is also safe: the second call sees an absent
+// socket and returns immediately.
+func (s *Service) reapBuilders(ctx context.Context, all []domain.Sandbox) {
+	for _, sb := range all {
+		if sb.Project != "__builder" || sb.CreatorPID == 0 {
+			continue
+		}
+		if err := syscall.Kill(sb.CreatorPID, 0); !errors.Is(err, syscall.ESRCH) {
+			continue // process still alive (nil) or uncertain (EPERM) — do not delete
+		}
+		// Creator is provably dead.
+		//
+		// Step 1: stop the VM and clean driver-side state (sockets, netns).
+		// Non-fatal: if CH is already gone the Stop returns nil after clearState.
+		// Ignore errors; we proceed to delete the record regardless.
+		_ = s.driver.Stop(ctx, sb.ID)
+
+		// Step 2: delete the store record. ErrNotFound is harmless — a concurrent
+		// reap already deleted it.
+		if derr := s.store.Delete(ctx, sb.ID); derr != nil && !errors.Is(derr, store.ErrNotFound) {
+			// Non-fatal: a stale record that cannot be deleted is cosmetic;
+			// the __builder filter still hides it.
+			_ = derr
+		}
+	}
 }
 
 // GetByMotive returns all sandboxes associated with the given motive ID.

@@ -9,7 +9,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
@@ -454,10 +453,11 @@ func TestCreateAndBoot_NoWorkspace_LegacyBehaviour(t *testing.T) {
 	}
 }
 
-// TestCreateAndBoot_WorkspaceDefaultThresholdApplied verifies that a zero
-// CaptureMaxBytes in WorkspaceSpec causes CreateAndBoot to pass
-// builder.DefaultCaptureMaxBytes to the capturer, not zero.
-func TestCreateAndBoot_WorkspaceDefaultThresholdApplied(t *testing.T) {
+// TestCreateAndBoot_WorkspaceZeroCaptureMaxPassedThrough verifies that a zero
+// CaptureMaxBytes in WorkspaceSpec is forwarded as-is to the capturer. Zero
+// means "auto" (free-space-derived guard); the capturer, not the service layer,
+// resolves the actual limit.
+func TestCreateAndBoot_WorkspaceZeroCaptureMaxPassedThrough(t *testing.T) {
 	ctx := context.Background()
 	cacheRoot := t.TempDir()
 	cache, err := image.NewCache(cacheRoot)
@@ -481,7 +481,7 @@ func TestCreateAndBoot_WorkspaceDefaultThresholdApplied(t *testing.T) {
 			Workspace: &WorkspaceSpec{
 				SourcePath:      "/host/repo",
 				GuestPath:       "/workspace/repo",
-				CaptureMaxBytes: 0, // explicitly zero → must use default
+				CaptureMaxBytes: 0, // zero → auto; must be forwarded as 0
 			},
 			WorkspaceCapturer: stubCapturer(nil, nil, &calledMaxBytes),
 		},
@@ -490,7 +490,7 @@ func TestCreateAndBoot_WorkspaceDefaultThresholdApplied(t *testing.T) {
 		t.Fatalf("CreateAndBoot: %v", err)
 	}
 
-	if calledMaxBytes != builder.DefaultCaptureMaxBytes {
-		t.Errorf("capturer maxBytes = %d, want %d (builder.DefaultCaptureMaxBytes)", calledMaxBytes, builder.DefaultCaptureMaxBytes)
+	if calledMaxBytes != 0 {
+		t.Errorf("capturer maxBytes = %d, want 0 (auto — service must not substitute a constant)", calledMaxBytes)
 	}
 }
