@@ -51,7 +51,9 @@ func runSupervisorMain(args []string) {
 		credsFile  = fs.String("creds-file", "", "creds.json path for real-token seeding (optional)")
 		memoryMiB  = fs.Uint("memory", 0, "guest RAM in MiB (default 512)")
 		// GovBounds fields: all zero by default (passive-mode governor, D-DC-13).
-		// Passed by SpawnDetached when --auto-resize was requested at create time.
+		// Forwarded from the SpawnConfig.Cmdline built by cmd_sandbox.go at create
+		// time. Auto-resize is unconditional; the cmdline always carries
+		// --mem-ceiling=<bytes> (appended by autoResizePID1Args) as its PID-1 arg.
 		govMemMin  = fs.Int64("gov-mem-min", 0, "governor min RAM bytes (0 = passive)")
 		govMemMax  = fs.Int64("gov-mem-max", 0, "governor max RAM bytes (0 = passive)")
 		govVCPUMin = fs.Int("gov-vcpu-min", 0, "governor min vCPU count (0 = passive)")
@@ -60,6 +62,14 @@ func runSupervisorMain(args []string) {
 		// bootVCPUs: seeds SandboxResizer.CurrentVCPUs() before the first resize.
 		// 0 means the supervisor applies the driver default (1 vCPU).
 		bootVCPUs = fs.Uint("boot-vcpus", 0, "vCPU count at VM boot (0 = driver default = 1)")
+		// ephemeral: one-shot/builder mode — exit on POST /supervisor/stop
+		// (the build-complete signal) rather than waiting indefinitely for SIGTERM.
+		ephemeral = fs.Bool("ephemeral", false, "one-shot mode: terminate on /supervisor/stop completion signal")
+		// parentPipeFD: file descriptor holding the read end of the parent-watchdog
+		// pipe created by SpawnDetached. When the spawning CLI exits (including via
+		// SIGKILL) the write end closes and the supervisor reads EOF, triggering
+		// graceful shutdown. 0 means no watchdog pipe (non-ephemeral supervisors).
+		parentPipeFD = fs.Int("parent-pipe-fd", 0, "parent-watchdog pipe read fd (0 = none; ephemeral only)")
 		// workspaceDiskIndex: 0-based ExtraDisks index of the workspace disk.
 		// -1 (default) means no workspace disk is attached; disk axis is skipped.
 		workspaceDiskIndex = fs.Int("workspace-disk-index", -1, "workspace disk ExtraDisks index (-1 = no disk axis)")
@@ -122,7 +132,9 @@ func runSupervisorMain(args []string) {
 			VCPUMax:      int32(*govVCPUMax), //nolint:gosec // range-checked by flag.Int (fits int32)
 			DiskMaxBytes: *govDiskMax,
 		},
-		Cmdline: *cmdline,
+		Cmdline:      *cmdline,
+		Ephemeral:    *ephemeral,
+		ParentPipeFD: *parentPipeFD,
 	}
 	if err := supervisor.RunDetached(cfg); err != nil {
 		slog.Error("supervisor: run failed", "err", err)

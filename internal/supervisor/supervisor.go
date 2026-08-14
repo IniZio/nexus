@@ -149,6 +149,39 @@ type Config struct {
 	// via workspaceMountCmdline + autoResizePID1Args before spawning the supervisor,
 	// since the supervisor package cannot import internal/cli without a cycle.
 	Cmdline string
+
+	// Ephemeral selects one-shot / builder mode. When true the supervisor is
+	// expected to host a short-lived VM (e.g. an in-VM builder) and exit as
+	// soon as the caller signals completion via POST /supervisor/stop. In
+	// non-ephemeral (persistent perimeter) mode the stop verb is still
+	// honoured, but the expected lifecycle is SIGTERM from the operator.
+	//
+	// Behavioural invariant: both modes respond to SIGTERM/SIGINT AND to the
+	// /supervisor/stop IPC verb. The distinction is semantic (intended caller
+	// and lifecycle) and expressed in the shutdown log message, not in the
+	// control flow.
+	//
+	// Governor: the governor is started in both modes. With zero GovBounds the
+	// govern.Run loop immediately returns ("bounds_not_configured"); no poll
+	// loop spins. When GovBounds is non-zero auto-resize is active regardless
+	// of Ephemeral — the builder VM gets the same always-on resize as a
+	// persistent sandbox.
+	Ephemeral bool
+
+	// ParentPipeFD is a file descriptor number (≥ 3) for the read end of a
+	// pipe whose write end is held by the spawning CLI process. Used only when
+	// Ephemeral is true.
+	//
+	// When the CLI exits for any reason — including SIGKILL, which bypasses all
+	// defers — the OS closes the write end, the supervisor reads EOF on this fd,
+	// and cancels its context. This triggers the same graceful shutdown path as
+	// SIGTERM: svc.Remove is called, the VM is stopped, and the detached process
+	// exits. Without this mechanism a SIGKILL'ed CLI would orphan both the
+	// supervisor process and the cloud-hypervisor child indefinitely.
+	//
+	// Zero means no watchdog pipe (non-ephemeral mode; persistent perimeter
+	// supervisors are intentionally long-lived after CLI exit).
+	ParentPipeFD int
 }
 
 // PidfilePath returns the canonical path of the supervisor.pid file.
@@ -271,6 +304,22 @@ func RunDetached(cfg Config) error {
 		return fmt.Errorf("supervisor: bind IPC socket %s: %w", sockPath, err)
 	}
 	defer os.Remove(sockPath)
+
+	// ── 4b. Parent watchdog (ephemeral mode only) ─────────────────────────────
+	// In ephemeral (builder) mode the supervisor is expected to exit when the
+	// CLI sends POST /supervisor/stop. If the CLI is SIGKILL'd mid-build, no
+	// defers run — neither the CLI's st.Delete nor its Stop IPC call. Without a
+	// watchdog the supervisor (and its cloud-hypervisor child) run forever.
+	//
+	// Fix: SpawnDetached passes the read end of a pipe to the supervisor via fd
+	// ParentPipeFD; the CLI holds the write end. When the CLI process exits for
+	// any reason, the OS closes the write end and the supervisor reads EOF here.
+	// EOF triggers cancel(), which causes awaitShutdown to return
+	// shutdownBySignal and the normal graceful-shutdown path to execute.
+	if cfg.Ephemeral && cfg.ParentPipeFD > 0 {
+		pipeR := os.NewFile(uintptr(cfg.ParentPipeFD), "parent-watchdog-pipe") //nolint:gosec // fd provided by SpawnDetached; range-checked by caller
+		startParentWatchdog(pipeR, cfg.SandboxRef, cancel)
+	}
 
 	// ── 5. Boot VM + start in-process perimeter ───────────────────────────────
 	//
@@ -418,21 +467,87 @@ func RunDetached(cfg Config) error {
 	)
 
 	// ── 7. Block until shutdown ───────────────────────────────────────────────
-	select {
-	case <-stopCh:
+	switch cause := awaitShutdown(ctx, stopCh); {
+	case cfg.Ephemeral && cause == shutdownByStopVerb:
+		// Builder finished: the caller sent POST /supervisor/stop to signal
+		// that the build is complete. This is the normal exit path in ephemeral
+		// mode — not an emergency stop.
+		slog.Info("supervisor.build_complete", "sandboxRef", cfg.SandboxRef)
+	case cause == shutdownByStopVerb:
 		slog.Info("supervisor.stop_requested", "sandboxRef", cfg.SandboxRef)
-	case <-ctx.Done():
+	default:
 		slog.Info("supervisor.signal_received", "sandboxRef", cfg.SandboxRef)
 	}
 
 	// ── 8. Graceful shutdown ──────────────────────────────────────────────────
+	// # Teardown ordering — UNI-TEARDOWN
+	//
+	// This is the single authoritative teardown site for the supervisor. See
+	// docs/teardown-ordering.md for the full analysis; the invariants are:
+	//
+	//   Ephemeral (builder) mode:
+	//     svc.Remove is called instead of svc.Stop. Remove: (a) stops the VM
+	//     under the per-sandbox flock, (b) deletes the transient __builder
+	//     store record. This means the record is cleaned up even when the CLI
+	//     was SIGKILL'd and its defer st.Delete never ran.
+	//     If the record was already deleted by the CLI's defer (normal path),
+	//     Remove's inner st.Delete gets ErrNotFound and returns an error here;
+	//     the VM has already been stopped by the CHDriver call inside
+	//     store.Update, which succeeded before Delete tried to clean up.
+	//     The error is logged and the supervisor exits cleanly.
+	//
+	//   Persistent (orca) mode:
+	//     svc.Stop leaves the record alive (State=Stopped) so that
+	//     `nexus3 sandbox list` continues to show the sandbox.
+	//
+	//   Flock invariant:
+	//     Both svc.Stop and svc.Remove call driver.Stop inside store.Update,
+	//     which holds the per-sandbox exclusive flock. If the user concurrently
+	//     runs `nexus3 sandbox stop <id>`, the CLI's service.Stop also acquires
+	//     the flock via store.Update. Only one call proceeds; the other either
+	//     waits or — if the record is already Stopped — hits the lifecycle fast-
+	//     path rejection before touching the driver. CHDriver.Stop is idempotent
+	//     (absent VM is not an error), so the worst outcome is a logged warning.
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer stopCancel()
-	if _, stopErr := svc.Stop(stopCtx, cfg.SandboxRef); stopErr != nil {
-		slog.Warn("supervisor.stop_failed", "sandboxRef", cfg.SandboxRef, "err", stopErr)
+	if cfg.Ephemeral {
+		// Ephemeral: remove the transient __builder record AND stop the VM.
+		// ErrNotFound on the record is expected when the CLI's defer already
+		// deleted it; svc.Remove still called driver.Stop inside store.Update
+		// before the delete failed, so the VM is already stopped.
+		if removeErr := svc.Remove(stopCtx, cfg.SandboxRef); removeErr != nil {
+			slog.Warn("supervisor.remove_failed", "sandboxRef", cfg.SandboxRef, "err", removeErr)
+		}
+	} else {
+		if _, stopErr := svc.Stop(stopCtx, cfg.SandboxRef); stopErr != nil {
+			slog.Warn("supervisor.stop_failed", "sandboxRef", cfg.SandboxRef, "err", stopErr)
+		}
 	}
 	slog.Info("supervisor.exited", "sandboxRef", cfg.SandboxRef)
 	return nil
+}
+
+// shutdownCause identifies how RunDetached was asked to exit.
+type shutdownCause int
+
+const (
+	// shutdownBySignal means SIGTERM or SIGINT cancelled the signal context.
+	shutdownBySignal shutdownCause = iota
+	// shutdownByStopVerb means a POST /supervisor/stop IPC request closed
+	// stopCh. In ephemeral mode this is the normal "build finished" path.
+	shutdownByStopVerb
+)
+
+// awaitShutdown blocks until either the OS signal context is cancelled
+// (SIGTERM / SIGINT) or a /supervisor/stop IPC request closes stopCh.
+// It is extracted from RunDetached for unit-testability.
+func awaitShutdown(ctx context.Context, stopCh <-chan struct{}) shutdownCause {
+	select {
+	case <-stopCh:
+		return shutdownByStopVerb
+	case <-ctx.Done():
+		return shutdownBySignal
+	}
 }
 
 // wireGovernorAxes attaches the CPU and disk AxisEvaluators to gov based on
@@ -482,6 +597,25 @@ type PerimeterCAGetter interface {
 //
 // cert is a pointer-to-pointer so SeedLoop can refresh the CA cert on each
 // attempt if it was nil at call time (requires svc != nil for that path).
+// startParentWatchdog starts a goroutine that blocks on the read end of the
+// parent-watchdog pipe. When the write end closes (because the CLI parent
+// exited for any reason, including SIGKILL), the goroutine reads EOF and calls
+// cancel, which causes awaitShutdown to return shutdownBySignal and the
+// graceful-shutdown path to execute.
+//
+// Only called when cfg.Ephemeral && cfg.ParentPipeFD > 0. The persistent
+// supervisor deliberately has no parent watchdog because it is meant to
+// outlive the CLI that spawned it.
+func startParentWatchdog(pipeR *os.File, sandboxRef string, cancel context.CancelFunc) {
+	go func() {
+		defer pipeR.Close()
+		buf := make([]byte, 1)
+		_, _ = pipeR.Read(buf) // blocks until CLI closes write end or dies
+		slog.Info("supervisor.parent_pipe_closed", "sandboxRef", sandboxRef)
+		cancel() // trigger awaitShutdown → svc.Remove shutdown path
+	}()
+}
+
 func SeedLoop(
 	ctx context.Context,
 	id domain.SandboxID,

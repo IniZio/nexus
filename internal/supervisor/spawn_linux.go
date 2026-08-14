@@ -66,6 +66,11 @@ func buildSupervisorArgv(cfg SpawnConfig) []string {
 	if cfg.GovBounds.DiskMaxBytes != 0 {
 		args = append(args, "--gov-disk-max", strconv.FormatInt(cfg.GovBounds.DiskMaxBytes, 10))
 	}
+	// MemoryMiB is omitted when zero so the supervisor's default (512 MiB)
+	// remains correct for callers that do not configure it explicitly.
+	if cfg.MemoryMiB != 0 {
+		args = append(args, "--memory", strconv.FormatUint(uint64(cfg.MemoryMiB), 10))
+	}
 	// BootVCPUs and workspace-disk-index are omitted when zero/false so the
 	// supervisor's flag defaults (0 / no-disk) remain correct for callers that
 	// do not configure them.
@@ -86,6 +91,16 @@ func buildSupervisorArgv(cfg SpawnConfig) []string {
 	if cfg.Cmdline != "" {
 		args = append(args, "--cmdline", cfg.Cmdline)
 	}
+	// Ephemeral: forward when true; omit otherwise so the default (persistent
+	// perimeter) behaviour is preserved without flag-presence checks.
+	if cfg.Ephemeral {
+		args = append(args, "--ephemeral")
+	}
+	// ParentPipeFD: forward when set so the supervisor opens the watchdog pipe.
+	// Set by SpawnDetached when Ephemeral is true and a pipe was created.
+	if cfg.ParentPipeFD > 0 {
+		args = append(args, "--parent-pipe-fd", strconv.Itoa(cfg.ParentPipeFD))
+	}
 	return args
 }
 
@@ -95,21 +110,41 @@ func buildSupervisorArgv(cfg SpawnConfig) []string {
 // The subprocess is launched with Setsid:true so it is in a new session and
 // survives the calling process's exit. It logs to LogPath (or a temp file).
 //
+// When cfg.Ephemeral is true, SpawnDetached creates a parent-watchdog pipe:
+// the write end is returned as the second value and must be closed by the
+// caller when the supervisor is no longer needed (normally via
+// supervisorBuilderDriver.Stop). The read end is passed to the supervisor
+// as ExtraFiles[0] (fd 3) so the supervisor can detect CLI death. For
+// non-ephemeral callers the returned *os.File is always nil.
+//
 // The caller is responsible for stopping the supervisor via StopSupervisor
 // when it is no longer needed.
-func SpawnDetached(cfg SpawnConfig) (int, error) {
+func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 	exe := cfg.Exe
 	if exe == "" {
-		var err error
 		exe, err = os.Executable()
 		if err != nil {
-			return 0, fmt.Errorf("spawn supervisor: resolve executable: %w", err)
+			return 0, nil, fmt.Errorf("spawn supervisor: resolve executable: %w", err)
 		}
 	}
 
 	readyTimeout := cfg.ReadyTimeout
 	if readyTimeout == 0 {
 		readyTimeout = 5 * time.Minute
+	}
+
+	// Parent-watchdog pipe (ephemeral mode only).
+	// The read end is passed to the supervisor as fd 3 (ExtraFiles[0]).
+	// The write end is returned to the caller; when the caller exits for any
+	// reason the write end closes and the supervisor reads EOF on fd 3.
+	var pipeR, pipeW *os.File
+	if cfg.Ephemeral {
+		pipeR, pipeW, err = os.Pipe()
+		if err != nil {
+			return 0, nil, fmt.Errorf("spawn supervisor: create parent-watchdog pipe: %w", err)
+		}
+		// Tell the supervisor which fd holds the pipe read end.
+		cfg.ParentPipeFD = 3 // first ExtraFiles entry → fd 3 in child
 	}
 
 	args := buildSupervisorArgv(cfg)
@@ -119,9 +154,15 @@ func SpawnDetached(cfg SpawnConfig) (int, error) {
 	if logPath == "" {
 		logPath = cfg.StateDir + "/supervisor.log"
 	}
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return 0, fmt.Errorf("spawn supervisor: open log file %s: %w", logPath, err)
+	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if logErr != nil {
+		if pipeR != nil {
+			pipeR.Close()
+		}
+		if pipeW != nil {
+			pipeW.Close()
+		}
+		return 0, nil, fmt.Errorf("spawn supervisor: open log file %s: %w", logPath, logErr)
 	}
 
 	cmd := exec.Command(exe, args...)
@@ -129,10 +170,23 @@ func SpawnDetached(cfg SpawnConfig) (int, error) {
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if pipeR != nil {
+		cmd.ExtraFiles = []*os.File{pipeR} // becomes fd 3 in supervisor
+	}
 
-	if err := cmd.Start(); err != nil {
+	if startErr := cmd.Start(); startErr != nil {
 		_ = logFile.Close()
-		return 0, fmt.Errorf("spawn supervisor: exec: %w", err)
+		if pipeR != nil {
+			pipeR.Close()
+		}
+		if pipeW != nil {
+			pipeW.Close()
+		}
+		return 0, nil, fmt.Errorf("spawn supervisor: exec: %w", startErr)
+	}
+	// Close parent's copy of the read end; only the supervisor needs it.
+	if pipeR != nil {
+		pipeR.Close()
 	}
 	// Reap the detached child when it eventually exits so it does not become
 	// a zombie. Stdout/Stderr are file redirections so Wait does not block.
@@ -145,16 +199,22 @@ func SpawnDetached(cfg SpawnConfig) (int, error) {
 
 	for time.Now().Before(deadline) {
 		// Check if supervisor exited before writing pidfile.
-		if err := syscall.Kill(spawnPid, 0); err != nil {
-			return 0, fmt.Errorf("spawn supervisor: process exited before writing pidfile (pid %d)", spawnPid)
+		if killErr := syscall.Kill(spawnPid, 0); killErr != nil {
+			if pipeW != nil {
+				pipeW.Close()
+			}
+			return 0, nil, fmt.Errorf("spawn supervisor: process exited before writing pidfile (pid %d)", spawnPid)
 		}
-		data, err := os.ReadFile(pidfile)
-		if err == nil && len(data) > 0 {
+		data, readErr := os.ReadFile(pidfile)
+		if readErr == nil && len(data) > 0 {
 			// Pidfile written: supervisor is ready.
-			return spawnPid, nil
+			return spawnPid, pipeW, nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	_ = cmd.Process.Kill()
-	return 0, fmt.Errorf("spawn supervisor: timed out waiting for %s (pid %d)", pidfile, spawnPid)
+	if pipeW != nil {
+		pipeW.Close()
+	}
+	return 0, nil, fmt.Errorf("spawn supervisor: timed out waiting for %s (pid %d)", pidfile, spawnPid)
 }

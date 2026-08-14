@@ -4,6 +4,7 @@ package supervisor
 
 import (
 	"errors"
+	"os"
 	"time"
 )
 
@@ -22,6 +23,8 @@ type SpawnConfig struct {
 }
 
 // SpawnDetached is unsupported off Linux.
-func SpawnDetached(cfg SpawnConfig) (int, error) {
-	return 0, errSpawnUnsupportedPlatform
+// The *os.File return value (parent-watchdog pipe write end) is always nil
+// on non-Linux platforms.
+func SpawnDetached(cfg SpawnConfig) (int, *os.File, error) {
+	return 0, nil, errSpawnUnsupportedPlatform
 }

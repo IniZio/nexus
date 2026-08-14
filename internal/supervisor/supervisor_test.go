@@ -167,7 +167,11 @@ func TestWireGovernorAxes_DiskNotRegisteredWithoutHasDisk(t *testing.T) {
 // GovBounds in the SpawnConfig, the argv will lack --gov-mem-max and the
 // governor will exit with bounds_not_configured on every boot.
 func TestBuildSupervisorArgv_GovBoundsForwarded(t *testing.T) {
-	const wantCmdline = "root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0 -- --workspace-mount=/dev/vdb:/workspace/repo:ext4:false:true --auto-resize --mem-ceiling=4294967296"
+	// wantCmdline must track what cmd_sandbox.go produces via workspaceMountCmdline +
+	// autoResizePID1Args. Auto-resize is unconditional; the only PID-1 token it
+	// appends is --mem-ceiling=<bytes>. If either helper changes its output, this
+	// constant must change too (the test asserts passthrough, not construction).
+	const wantCmdline = "root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0 -- --workspace-mount=/dev/vdb:/workspace/repo:ext4:false:true --mem-ceiling=4294967296"
 	cfg := SpawnConfig{
 		Config: Config{
 			SandboxRef: "abc123",
@@ -247,6 +251,222 @@ func TestBuildSupervisorArgv_GovBoundsForwarded(t *testing.T) {
 		t.Error("argv missing --cmdline; Cmdline not forwarded to supervisor")
 	} else if v != wantCmdline {
 		t.Errorf("--cmdline = %q, want %q", v, wantCmdline)
+	}
+}
+
+// ── awaitShutdown mode tests ──────────────────────────────────────────────────
+//
+// awaitShutdown is the extracted SELECT loop from RunDetached step 7. These
+// tests verify the two shutdown triggers without needing a real VM or process.
+
+// TestAwaitShutdown_StopVerb verifies that closing the stopCh (i.e. the caller
+// sends POST /supervisor/stop) returns shutdownByStopVerb. This is the
+// completion signal for ephemeral mode and the stop-on-request path for
+// long-lived mode.
+func TestAwaitShutdown_StopVerb(t *testing.T) {
+	stopCh := make(chan struct{})
+	ctx := context.Background()
+
+	// Close the stop channel to simulate POST /supervisor/stop.
+	close(stopCh)
+
+	got := awaitShutdown(ctx, stopCh)
+	if got != shutdownByStopVerb {
+		t.Errorf("awaitShutdown with closed stopCh = %v, want shutdownByStopVerb (%v)", got, shutdownByStopVerb)
+	}
+}
+
+// TestAwaitShutdown_Signal verifies that cancelling the context (i.e. OS
+// delivers SIGTERM/SIGINT) returns shutdownBySignal. This is the primary exit
+// path for long-lived persistent-perimeter supervisors.
+func TestAwaitShutdown_Signal(t *testing.T) {
+	stopCh := make(chan struct{}) // never closed — stop verb not sent
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Simulate SIGTERM by cancelling the context.
+	cancel()
+
+	got := awaitShutdown(ctx, stopCh)
+	if got != shutdownBySignal {
+		t.Errorf("awaitShutdown with cancelled ctx = %v, want shutdownBySignal (%v)", got, shutdownBySignal)
+	}
+}
+
+// TestAwaitShutdown_BothReadyNoDeadlock verifies that when both the stop
+// channel and the signal context are already closed/cancelled before
+// awaitShutdown is called, the function returns promptly without deadlock or
+// panic. Go's select is non-deterministic when multiple cases are ready, so
+// either shutdownCause is a valid outcome; the assertion merely confirms the
+// returned value is one of the two defined constants.
+func TestAwaitShutdown_BothReadyNoDeadlock(t *testing.T) {
+	stopCh := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	close(stopCh)
+	cancel()
+
+	got := awaitShutdown(ctx, stopCh)
+	if got != shutdownByStopVerb && got != shutdownBySignal {
+		t.Errorf("awaitShutdown with both ready = %v, want shutdownByStopVerb or shutdownBySignal", got)
+	}
+}
+
+// ── Ephemeral flag forwarding tests ─────────────────────────────────────────
+
+// TestBuildSupervisorArgv_EphemeralForwarded verifies that Ephemeral=true in
+// SpawnConfig produces --ephemeral in the supervisor argv.
+func TestBuildSupervisorArgv_EphemeralForwarded(t *testing.T) {
+	cfg := SpawnConfig{
+		Config: Config{
+			SandboxRef: "abc123",
+			StoreRoot:  "/store",
+			StateDir:   "/state",
+			CHBin:      "/usr/bin/cloud-hypervisor",
+			SocketDir:  "/run/nexus3",
+			KernelPath: "/boot/vmlinux",
+			DiskPath:   "/data/sb.raw",
+			Ephemeral:  true,
+		},
+	}
+	argv := buildSupervisorArgv(cfg)
+	if !slices.Contains(argv, "--ephemeral") {
+		t.Error("argv missing --ephemeral when Config.Ephemeral=true")
+	}
+}
+
+// TestBuildSupervisorArgv_NotEphemeralOmitsFlag verifies that Ephemeral=false
+// (the default) produces NO --ephemeral flag. This ensures existing long-lived
+// supervisor spawns are byte-identical after the change.
+func TestBuildSupervisorArgv_NotEphemeralOmitsFlag(t *testing.T) {
+	cfg := SpawnConfig{
+		Config: Config{
+			SandboxRef: "abc123",
+			StoreRoot:  "/store",
+			StateDir:   "/state",
+			CHBin:      "/usr/bin/cloud-hypervisor",
+			SocketDir:  "/run/nexus3",
+			KernelPath: "/boot/vmlinux",
+			DiskPath:   "/data/sb.raw",
+			// Ephemeral: false (zero value) — default long-lived mode.
+		},
+	}
+	argv := buildSupervisorArgv(cfg)
+	if slices.Contains(argv, "--ephemeral") {
+		t.Error("argv contains --ephemeral for non-ephemeral config; long-lived mode must not emit this flag")
+	}
+}
+
+// TestBuildSupervisorArgv_ParentPipeFDForwarded verifies that a non-zero
+// ParentPipeFD in Config produces --parent-pipe-fd <n> in the argv. This
+// ensures the supervisor receives the watchdog fd when spawned in ephemeral
+// mode — without which SIGKILL on the CLI would orphan the VM indefinitely.
+func TestBuildSupervisorArgv_ParentPipeFDForwarded(t *testing.T) {
+	cfg := SpawnConfig{
+		Config: Config{
+			SandboxRef:   "abc123",
+			StoreRoot:    "/store",
+			StateDir:     "/state",
+			CHBin:        "/usr/bin/cloud-hypervisor",
+			SocketDir:    "/run/nexus3",
+			KernelPath:   "/boot/vmlinux",
+			DiskPath:     "/data/sb.raw",
+			Ephemeral:    true,
+			ParentPipeFD: 3,
+		},
+	}
+	argv := buildSupervisorArgv(cfg)
+	findFlag := func(flag string) (string, bool) {
+		for i, a := range argv {
+			if a == flag && i+1 < len(argv) {
+				return argv[i+1], true
+			}
+		}
+		return "", false
+	}
+	v, ok := findFlag("--parent-pipe-fd")
+	if !ok {
+		t.Error("argv missing --parent-pipe-fd when ParentPipeFD=3")
+	} else if v != "3" {
+		t.Errorf("--parent-pipe-fd = %q, want \"3\"", v)
+	}
+}
+
+// TestBuildSupervisorArgv_ZeroParentPipeFDOmitsFlag verifies that the zero
+// value (no watchdog pipe) produces no --parent-pipe-fd flag — ensuring the
+// non-ephemeral orca path is byte-identical after the change.
+func TestBuildSupervisorArgv_ZeroParentPipeFDOmitsFlag(t *testing.T) {
+	cfg := SpawnConfig{
+		Config: Config{
+			SandboxRef: "abc123",
+			StoreRoot:  "/store",
+			StateDir:   "/state",
+			CHBin:      "/usr/bin/cloud-hypervisor",
+			SocketDir:  "/run/nexus3",
+			KernelPath: "/boot/vmlinux",
+			DiskPath:   "/data/sb.raw",
+			// ParentPipeFD: 0 (zero value) — no watchdog.
+		},
+	}
+	argv := buildSupervisorArgv(cfg)
+	if slices.Contains(argv, "--parent-pipe-fd") {
+		t.Error("argv contains --parent-pipe-fd for non-ephemeral config with zero ParentPipeFD")
+	}
+}
+
+// TestBuildSupervisorArgv_MemoryForwarded verifies that a non-zero MemoryMiB
+// produces --memory <MiB> in the supervisor argv.
+// This is the forward-trace assertion for the regression where MemoryMiB was
+// set by the builder to 8192 but the flag was never emitted, causing every
+// supervisor-spawned VM to boot at the supervisor default (512 MiB) instead.
+func TestBuildSupervisorArgv_MemoryForwarded(t *testing.T) {
+	cfg := SpawnConfig{
+		Config: Config{
+			SandboxRef: "abc123",
+			StoreRoot:  "/store",
+			StateDir:   "/state",
+			CHBin:      "/usr/bin/cloud-hypervisor",
+			SocketDir:  "/run/nexus3",
+			KernelPath: "/boot/vmlinux",
+			DiskPath:   "/data/sb.raw",
+			MemoryMiB:  8192,
+		},
+	}
+	argv := buildSupervisorArgv(cfg)
+	findFlag := func(flag string) (string, bool) {
+		for i, a := range argv {
+			if a == flag && i+1 < len(argv) {
+				return argv[i+1], true
+			}
+		}
+		return "", false
+	}
+	v, ok := findFlag("--memory")
+	if !ok {
+		t.Fatal("argv missing --memory; MemoryMiB not forwarded to supervisor (regression: VM would boot at 512 MiB instead of 8192 MiB)")
+	}
+	if v != "8192" {
+		t.Errorf("--memory = %q, want \"8192\"", v)
+	}
+}
+
+// TestBuildSupervisorArgv_ZeroMemoryOmitsFlag verifies that MemoryMiB=0
+// produces NO --memory flag, preserving the supervisor's own default (512 MiB).
+// This ensures existing callers that do not set MemoryMiB are byte-identical.
+func TestBuildSupervisorArgv_ZeroMemoryOmitsFlag(t *testing.T) {
+	cfg := SpawnConfig{
+		Config: Config{
+			SandboxRef: "abc123",
+			StoreRoot:  "/store",
+			StateDir:   "/state",
+			CHBin:      "/usr/bin/cloud-hypervisor",
+			SocketDir:  "/run/nexus3",
+			KernelPath: "/boot/vmlinux",
+			DiskPath:   "/data/sb.raw",
+			// MemoryMiB: 0 (zero value) — supervisor default applies.
+		},
+	}
+	argv := buildSupervisorArgv(cfg)
+	if slices.Contains(argv, "--memory") {
+		t.Error("argv contains --memory for zero MemoryMiB; supervisor default must apply (zero must be omitted)")
 	}
 }
 
