@@ -51,6 +51,7 @@ type record struct {
 	Provenance     *provenanceRecord `json:"provenance,omitempty"`
 	SupervisorPID  int               `json:"supervisor_pid,omitempty"`
 	SupervisorSock string            `json:"supervisor_sock,omitempty"`
+	CreatorPID     int               `json:"creator_pid,omitempty"`
 }
 
 // provenanceRecord is the on-disk form of domain.Provenance. Kept separate
@@ -76,6 +77,7 @@ func toRecord(sb domain.Sandbox) record {
 		StopReason:     sb.StopReason,
 		SupervisorPID:  sb.SupervisorPID,
 		SupervisorSock: sb.SupervisorSock,
+		CreatorPID:     sb.CreatorPID,
 	}
 	if sb.Provenance != nil {
 		r.Provenance = &provenanceRecord{
@@ -100,6 +102,7 @@ func (r record) toDomain() domain.Sandbox {
 		StopReason:     r.StopReason,
 		SupervisorPID:  r.SupervisorPID,
 		SupervisorSock: r.SupervisorSock,
+		CreatorPID:     r.CreatorPID,
 	}
 	if r.Provenance != nil {
 		sb.Provenance = &domain.Provenance{

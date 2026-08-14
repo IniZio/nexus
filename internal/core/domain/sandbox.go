@@ -88,6 +88,14 @@ type Sandbox struct {
 	// SupervisorSock is the absolute path of the supervisor's Unix-domain
 	// IPC socket. Empty when SupervisorPID is zero.
 	SupervisorSock string `json:"supervisor_sock,omitempty"`
+
+	// CreatorPID is the OS PID of the process that created this sandbox record.
+	// It is non-zero only for transient __builder records created by BuildInVM.
+	// The service uses kill(CreatorPID, 0) to detect stale orphans: ESRCH means
+	// the creator process has exited and the record is safe to reap. Records
+	// written before this field existed have CreatorPID == 0 and cannot be
+	// automatically reaped (they remain hidden from List by the __builder filter).
+	CreatorPID int `json:"creator_pid,omitempty"`
 }
 
 // Provenance records the lineage of a sandbox created as a fork child.

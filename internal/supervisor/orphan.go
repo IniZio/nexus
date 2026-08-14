@@ -1,9 +1,14 @@
 package supervisor
 
 import (
+	"context"
+	"errors"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -72,6 +77,44 @@ func sockConnectable(sockPath string) bool {
 	}
 	conn.Close()
 	return true
+}
+
+// WaitForExit polls until the supervisor process whose pidfile lives in
+// stateDir has exited. It is used by supervisorBuilderDriver.Stop() to ensure
+// the supervisor has fully torn down the VM (called svc.Remove / CHDriver.Stop)
+// before the CLI deletes the transient sandbox record.
+//
+// The pidfile is written by RunDetached and removed by its defer on exit.
+// WaitForExit returns nil when:
+//   - the pidfile is absent (supervisor never wrote it or already removed it), or
+//   - the pidfile exists but records a PID that is no longer alive.
+//
+// Returns ctx.Err() if the context is cancelled before the supervisor exits.
+// The poll interval is 50 ms; for a normal build completion this function
+// returns in < 100 ms because the supervisor calls svc.Remove immediately
+// after receiving the IPC stop signal.
+func WaitForExit(ctx context.Context, stateDir string) error {
+	pidfile := PidfilePath(stateDir)
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		data, err := os.ReadFile(pidfile)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // supervisor removed its pidfile on exit
+		}
+		if err == nil {
+			pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+			if !PidAlive(pid) {
+				return nil // pidfile present but process is gone
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 // CheckAndReconcile inspects the supervisor state recorded as (pid, sockPath)
