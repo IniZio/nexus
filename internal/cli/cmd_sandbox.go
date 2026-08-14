@@ -317,6 +317,7 @@ type sandboxCreateFlags struct {
 	vcpus          uint32
 	motiveID       string
 	nestedVirt     bool
+	workspacePath  string // --workspace <host-path>: host git worktree to capture
 	positionals    []string
 }
 
@@ -383,6 +384,12 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 			f.dockerfilePath = args[i]
 		case "--nested":
 			f.nestedVirt = true
+		case "--workspace":
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --workspace requires an argument"}
+			}
+			i++
+			f.workspacePath = args[i]
 		default:
 			if len(arg) > 1 && arg[0] == '-' {
 				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: unknown flag %q", arg)}
@@ -411,6 +418,37 @@ func buildCHConfig(kernelPath, ext4Path string, memMiB, vcpus uint32) cloudhyper
 		cfg.VCPUs = vcpus
 	}
 	return cfg
+}
+
+// ── workspace mount cmdline helpers ──────────────────────────────────────────
+
+// diskBootCmdlineBase is the kernel command line for disk-boot sandboxes.
+// It must stay in sync with diskBootCmdline in
+// internal/core/driver/cloudhypervisor/driver.go (unexported constant there).
+const diskBootCmdlineBase = "root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0"
+
+// workspaceMountCmdline builds a kernel command line that wires workspace and
+// shadow disk mount specs into the guest agent's argv.
+//
+// The Linux kernel delivers tokens after "--" in the cmdline directly to PID 1
+// as os.Args[1:], so the agent reads them via parseWorkspaceMountArg.
+//
+// Format per mount: --workspace-mount=<device>:<target>:<fstype>:<readonly>
+// The "readonly" field is "true" when m.ReadOnly is true, "false" otherwise.
+//
+// Callers must pass a non-empty slice; calling with an empty slice is a no-op
+// that is caught by the if-guard in newDriver rather than here to keep the hot
+// path (no workspace) zero-allocation.
+func workspaceMountCmdline(mounts []agent.GuestMount) string {
+	b := diskBootCmdlineBase + " --"
+	for _, m := range mounts {
+		ro := "false"
+		if m.ReadOnly {
+			ro = "true"
+		}
+		b += fmt.Sprintf(" --workspace-mount=%s:%s:%s:%s", m.Device, m.Target, m.FSType, ro)
+	}
+	return b
 }
 
 // ── builder-VM helpers ────────────────────────────────────────────────────────
@@ -492,7 +530,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--motive <id>] [--nested]"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--motive <id>] [--nested] [--workspace <host-path>]"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])
@@ -624,56 +662,28 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			}
 			defer os.RemoveAll(buildWorkDir)
 
-			// vdb — Pack the build context into an ext4 image.
-			// If the workspace is a git repository, use "git archive HEAD"
-			// to export only committed tracked files. This avoids sending
-			// untracked artefacts (node_modules, .claude, .pnpm-store, …)
-			// into the context disk and prevents host-OOM from ext4 page-cache
-			// pressure when the workspace contains large untracked directories.
-			buildCtxDir := workspaceDir
-			if _, serr := os.Stat(filepath.Join(workspaceDir, ".git")); serr == nil {
-				archiveDir, aerr := os.MkdirTemp("", "nexus3-gitctx-*")
-				if aerr != nil {
-					return errSandbox("sandbox create", fmt.Errorf("--file: git context tempdir: %w", aerr))
-				}
-				defer os.RemoveAll(archiveDir)
-
-				archiveCmd := exec.CommandContext(buildCtx, "git", "-C", workspaceDir, "archive", "HEAD")
-				extractCmd := exec.CommandContext(buildCtx, "tar", "-x", "-C", archiveDir)
-				archivePipe, aerr := archiveCmd.StdoutPipe()
-				if aerr != nil {
-					return errSandbox("sandbox create", fmt.Errorf("--file: git archive pipe: %w", aerr))
-				}
-				extractCmd.Stdin = archivePipe
-				if aerr = archiveCmd.Start(); aerr != nil {
-					return errSandbox("sandbox create", fmt.Errorf("--file: git archive start: %w", aerr))
-				}
-				if aerr = extractCmd.Run(); aerr != nil {
-					archiveCmd.Wait() //nolint:errcheck
-					return errSandbox("sandbox create", fmt.Errorf("--file: git archive extract: %w", aerr))
-				}
-				if aerr = archiveCmd.Wait(); aerr != nil {
-					return errSandbox("sandbox create", fmt.Errorf("--file: git archive wait: %w", aerr))
-				}
-
-				// Overlay files that the build system needs but are intentionally
-				// not committed to version control (.nexus/Containerfile, .dockerignore).
-				for _, relPath := range []string{".nexus/Containerfile", ".dockerignore"} {
-					src := filepath.Join(workspaceDir, relPath)
-					dst := filepath.Join(archiveDir, relPath)
-					if data, rerr := os.ReadFile(src); rerr == nil {
-						if merr := os.MkdirAll(filepath.Dir(dst), 0755); merr == nil {
-							_ = os.WriteFile(dst, data, 0644)
-						}
-					}
-				}
-
-				slog.Info("git context: exported tracked files only", "workspace", workspaceDir, "dir", archiveDir)
-				buildCtxDir = archiveDir
-			}
-
+			// vdb — Pack the build context into an ext4 image using the full
+			// working-tree capture (D-DC-08). builder.WorktreeToDisk reads
+			// directly from disk, capturing committed tracked files, dirty
+			// (uncommitted) tracked files, AND untracked files, subject to the
+			// project's .dockerignore and nexus3's always-exclude list
+			// (.claude, .agents, .groundwork, .pnpm-store). Unlike the former
+			// "git archive HEAD" approach, no .git directory or any prior
+			// commits are required — plain directories work too.
+			//
+			// The overlay of .nexus/Containerfile and .dockerignore that was
+			// required under git archive (because those files were intentionally
+			// untracked) is now redundant: WorktreeToDisk reads the working
+			// tree directly and includes those files automatically.
+			//
+			// OOM risk: git archive avoided host OOM by excluding untracked
+			// bulk. WorktreeToDisk re-introduces that risk for workspaces with
+			// large untracked trees. Mitigation: the DefaultCaptureMaxBytes
+			// (2 GiB) preflight guard rejects oversized captures before any
+			// bytes are written, returning an actionable error with suggestions
+			// for .dockerignore entries.
 			ctxDiskPath := filepath.Join(buildWorkDir, "ctx.ext4")
-			if err := builder.ContextToDisk(buildCtx, buildCtxDir, ctxDiskPath); err != nil {
+			if err := builder.WorktreeToDisk(buildCtx, workspaceDir, ctxDiskPath, builder.DefaultCaptureMaxBytes); err != nil {
 				return errSandbox("sandbox create", fmt.Errorf("--file: context disk: %w", err))
 			}
 
@@ -767,6 +777,12 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// Resolve the kernel path: env override → binary-relative default.
 	kernelPath := kernelPathFor()
 
+	// bootGuestMounts is set by the workspace block below and captured by
+	// newDriver. It must be declared here (before newDriver) so the closure
+	// can reference it; Go closures capture by reference, so newDriver reads
+	// the value that is set after CreateAndBoot calls it.
+	var bootGuestMounts []agent.GuestMount
+
 	// newDriver constructs a CHDriver instance for the resolved ext4.
 	// Each sandbox gets its own instance because DiskImagePath is static in
 	// cloudhypervisor.Config. Socket/log paths use default locations so that
@@ -776,6 +792,14 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		cfg.NestedVirt = f.nestedVirt
 		for _, ed := range extraDisks {
 			cfg.ExtraDisks = append(cfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: ed.Path})
+		}
+		// Wire workspace/shadow mount specs into the kernel cmdline when present.
+		// bootGuestMounts is populated by the workspace block below (which runs
+		// before service.CreateAndBoot calls newDriver). An explicit Cmdline
+		// overrides the driver's diskBootCmdline default; the base string is
+		// identical to diskBootCmdline in cloudhypervisor/driver.go.
+		if len(bootGuestMounts) > 0 {
+			cfg.Cmdline = workspaceMountCmdline(bootGuestMounts)
 		}
 		// BinaryPath: look for cloud-hypervisor in PATH if not set.
 		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
@@ -816,19 +840,112 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		RootfsPath: f.rootfsPath,
 	}
 
+	// ── Workspace + shadow disks (D-DC-10) ────────────────────────────────────
+	//
+	// When --workspace is provided:
+	//   1. Shadow disks (DefaultShadowDirs) are created as sparse ext4 images in
+	//      <storeRoot>/disks and prepended to ExtraDisks[0..N-1].
+	//   2. The workspace disk is captured by service.CreateAndBoot (using the
+	//      shadow-aware capturer that excludes shadow dir names from .dockerignore)
+	//      and appended as ExtraDisks[N] — always AFTER shadow disks.
+	//
+	// Device-letter derivation (pinned by unit test):
+	//   ExtraDisks[i]   → /dev/vd{b+i}   (shadow disk i, 0-indexed)
+	//   ExtraDisks[N]   → /dev/vd{b+N}   (workspace, appended by service)
+	//
+	// bootGuestMounts is populated below and consumed by newDriver (above).
+	// newDriver wires the mounts into the kernel cmdline via workspaceMountCmdline
+	// so that the guest agent (PID 1) calls agent.MountWorkspace before any vsock
+	// workload can touch the workspace path.
+	var (
+		bootExtraDisks     []service.ExtraDisk
+		bootWorkspace      *service.WorkspaceSpec
+		bootCapturer       func(context.Context, string, string, int64) error
+		shadowDiskCleanups []string // host paths to remove on CreateAndBoot failure
+	)
+
+	if f.workspacePath != "" {
+		// Validate workspace path.
+		if _, statErr := os.Stat(f.workspacePath); statErr != nil {
+			return errSandbox("sandbox create", fmt.Errorf("--workspace: %w", statErr))
+		}
+		wsAbs, absErr := filepath.Abs(f.workspacePath)
+		if absErr != nil {
+			return errSandbox("sandbox create", fmt.Errorf("--workspace: abs path: %w", absErr))
+		}
+
+		// Guest path: /workspace/<basename>.  Convention keeps all workspace
+		// mounts under /workspace (matching WorkspaceMount.GuestPath contract).
+		guestPath := "/workspace/" + filepath.Base(wsAbs)
+
+		// Durable disk directory — same root as the workspace disk written by
+		// service.CreateAndBoot (defaultDiskDir mirrors <storeRoot>/disks).
+		diskDir := filepath.Join(storeRoot, "disks")
+		if mkErr := os.MkdirAll(diskDir, 0o700); mkErr != nil {
+			return errSandbox("sandbox create", fmt.Errorf("--workspace: disk dir: %w", mkErr))
+		}
+
+		// Build shadow disk specs for DefaultShadowDirs.
+		shadowSpecs := buildShadowDiskSpecs(DefaultShadowDirs, diskDir, guestPath)
+
+		// Create sparse ext4 shadow disks.  Each disk is preallocated and
+		// formatted with mke2fs before the VM boots so the guest can mount them
+		// immediately.  Failures here abort sandbox creation; already-created
+		// images are cleaned up via the defer below.
+		for _, spec := range shadowSpecs {
+			if cErr := createShadowDisk(ctx, spec); cErr != nil {
+				// Clean up any images already written.
+				for _, p := range shadowDiskCleanups {
+					_ = os.Remove(p)
+				}
+				return errSandbox("sandbox create", fmt.Errorf("--workspace: %w", cErr))
+			}
+			shadowDiskCleanups = append(shadowDiskCleanups, spec.HostPath)
+		}
+
+		bootExtraDisks = shadowExtraDisks(shadowSpecs)
+		bootWorkspace = &service.WorkspaceSpec{
+			SourcePath: wsAbs,
+			GuestPath:  guestPath,
+		}
+		bootCapturer = makeShadowExcludeCapturer(DefaultShadowDirs)
+
+		// Compute GuestMount specs for all disks. bootGuestMounts is read by
+		// the newDriver closure (above) to build the kernel cmdline fragment
+		// that delivers the specs to the guest agent (PID 1) as os.Args.
+		allMounts := append(shadowGuestMounts(shadowSpecs, 0),
+			WorkspaceGuestMount(guestPath, len(shadowSpecs)))
+		bootGuestMounts = allMounts
+		slog.Info("workspace shadow disks prepared",
+			"workspace_host", wsAbs,
+			"workspace_guest", guestPath,
+			"num_shadow_disks", len(shadowSpecs),
+			"workspace_device", WorkspaceGuestMount(guestPath, len(shadowSpecs)).Device,
+			"mounts", fmt.Sprintf("%v", allMounts),
+		)
+	}
+
 	sb, err := service.CreateAndBoot(ctx, svc, imgCache, newDriver, probe,
 		project, name,
 		service.CreateAndBootOptions{
-			MotiveID:     f.motiveID,
-			RemoveOnExit: f.rm,
-			Image:        spec,
-			CacheRoot:    cacheRoot,
-			MemoryMiB:    f.memoryMiB,
-			VCPUs:        f.vcpus,
-			NestedVirt:   f.nestedVirt,
+			MotiveID:         f.motiveID,
+			RemoveOnExit:     f.rm,
+			Image:            spec,
+			CacheRoot:        cacheRoot,
+			MemoryMiB:        f.memoryMiB,
+			VCPUs:            f.vcpus,
+			NestedVirt:       f.nestedVirt,
+			ExtraDisks:       bootExtraDisks,
+			Workspace:        bootWorkspace,
+			WorkspaceCapturer: bootCapturer,
 		},
 	)
 	if err != nil {
+		// Clean up shadow disk images that were created before CreateAndBoot
+		// failed; the workspace disk is cleaned up by service.CreateAndBoot itself.
+		for _, p := range shadowDiskCleanups {
+			_ = os.Remove(p)
+		}
 		return errSandbox("sandbox create", err)
 	}
 
