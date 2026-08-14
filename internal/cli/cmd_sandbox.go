@@ -20,6 +20,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
+	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
@@ -318,14 +319,20 @@ type sandboxCreateFlags struct {
 	motiveID       string
 	nestedVirt     bool
 	workspacePath  string // --workspace <host-path>: host git worktree to capture
-	positionals    []string
+	// Auto-resize flags (D-DC-30 reverses D-DC-13: default-on as of 2026-08-14;
+	// use --no-auto-resize to disable). Ceiling flags are optional; defaults apply.
+	autoResize   bool   // true by default; --no-auto-resize sets false
+	memoryMaxMiB uint32 // --memory-max <MiB>: RAM ceiling for hotplug region
+	vcpusMax     uint32 // --vcpus-max <n>:    vCPU ceiling for hotplug
+	diskMaxGiB   uint32 // --disk-max <GiB>:   disk grow ceiling
+	positionals  []string
 }
 
 // parseSandboxCreateArgs parses the raw argument slice for `sandbox create`.
 // All flags and positional arguments are collected; positional count and
 // handle format are validated by the caller.
 func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
-	var f sandboxCreateFlags
+	f := sandboxCreateFlags{autoResize: true}
 	i := 0
 	for i < len(args) {
 		arg := args[i]
@@ -390,6 +397,40 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 			}
 			i++
 			f.workspacePath = args[i]
+		case "--auto-resize":
+			f.autoResize = true
+		case "--no-auto-resize":
+			f.autoResize = false
+		case "--memory-max":
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --memory-max requires an argument"}
+			}
+			i++
+			v, err := strconv.ParseUint(args[i], 10, 32)
+			if err != nil {
+				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --memory-max %q: invalid MiB value", args[i])}
+			}
+			f.memoryMaxMiB = uint32(v)
+		case "--vcpus-max":
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --vcpus-max requires an argument"}
+			}
+			i++
+			v, err := strconv.ParseUint(args[i], 10, 32)
+			if err != nil {
+				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --vcpus-max %q: invalid count", args[i])}
+			}
+			f.vcpusMax = uint32(v)
+		case "--disk-max":
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --disk-max requires an argument"}
+			}
+			i++
+			v, err := strconv.ParseUint(args[i], 10, 32)
+			if err != nil {
+				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --disk-max %q: invalid GiB value", args[i])}
+			}
+			f.diskMaxGiB = uint32(v)
 		default:
 			if len(arg) > 1 && arg[0] == '-' {
 				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: unknown flag %q", arg)}
@@ -433,8 +474,11 @@ const diskBootCmdlineBase = "root=/dev/vda rw init=/sbin/nexus3-agent console=tt
 // The Linux kernel delivers tokens after "--" in the cmdline directly to PID 1
 // as os.Args[1:], so the agent reads them via parseWorkspaceMountArg.
 //
-// Format per mount: --workspace-mount=<device>:<target>:<fstype>:<readonly>
+// Format per mount: --workspace-mount=<device>:<target>:<fstype>:<readonly>:<workspace>
 // The "readonly" field is "true" when m.ReadOnly is true, "false" otherwise.
+// The "workspace" field is "true" when m.IsWorkspace is true, "false" otherwise.
+// Exactly one mount in a well-formed set carries workspace=true; the agent selects
+// the disk-telemetry target by this field (never by position or ReadOnly inference).
 //
 // Callers must pass a non-empty slice; calling with an empty slice is a no-op
 // that is caught by the if-guard in newDriver rather than here to keep the hot
@@ -446,9 +490,92 @@ func workspaceMountCmdline(mounts []agent.GuestMount) string {
 		if m.ReadOnly {
 			ro = "true"
 		}
-		b += fmt.Sprintf(" --workspace-mount=%s:%s:%s:%s", m.Device, m.Target, m.FSType, ro)
+		ws := "false"
+		if m.IsWorkspace {
+			ws = "true"
+		}
+		b += fmt.Sprintf(" --workspace-mount=%s:%s:%s:%s:%s", m.Device, m.Target, m.FSType, ro, ws)
 	}
 	return b
+}
+
+// ── Auto-resize helpers ───────────────────────────────────────────────────────
+
+// buildAutoResizeBounds constructs the resize.Bounds for the auto-resize
+// governor from CLI flags. Returns a zero Bounds when autoResize is false
+// (opt-out via --no-auto-resize; default is true per D-DC-30, reversing D-DC-13).
+//
+// Ceiling defaults (applied when the corresponding flag is 0):
+//   - MemMaxBytes: 4× boot memory, minimum 4096 MiB.
+//     Rationale: the nested-build OOM workload that motivated this feature
+//     consumed >4 GiB; 4096 MiB is the measured lower bound for that workload.
+//     4× reaches 4096 MiB only when boot memory ≥ 1024 MiB; the 4096 MiB
+//     floor prevents a default-memory (512 MiB) sandbox from getting only
+//     2048 MiB — half the stated OOM threshold.
+//     Open question: whether 4096 MiB covers the worst-case nested-build
+//     peak — needs live measurement in AR-LIVE-DC.
+//   - VCPUMax: 4× boot vCPUs, minimum 4.
+//     Rationale: same workload; buildkitd benefits from parallelism.
+//   - DiskMaxBytes: 100 GiB — matches OLD-nexus diskMaxBytes (D-DC-20).
+//
+// bootMemMiB and bootVCPUs are the values the caller intends to pass to the
+// driver (0 means driver default: 512 MiB / 1 vCPU).
+func buildAutoResizeBounds(autoResize bool, bootMemMiB, memMaxMiB uint32, bootVCPUs, vcpusMax uint32, diskMaxGiB uint32) resize.Bounds {
+	if !autoResize {
+		return resize.Bounds{}
+	}
+	// Resolve driver defaults so the minimum ceiling is meaningful.
+	bootMem := bootMemMiB
+	if bootMem == 0 {
+		bootMem = 512 // driver default (Config.MemoryMiB = 0 → 512 MiB)
+	}
+	bootCPUs := bootVCPUs
+	if bootCPUs == 0 {
+		bootCPUs = 1 // driver default (Config.VCPUs = 0 → 1 vCPU)
+	}
+	// Ceiling defaults.
+	memMax := memMaxMiB
+	if memMax == 0 {
+		memMax = bootMem * 4
+		if memMax < 4096 {
+			memMax = 4096
+		}
+	}
+	vcpuMax := vcpusMax
+	if vcpuMax == 0 {
+		vcpuMax = bootCPUs * 4
+		if vcpuMax < 4 {
+			vcpuMax = 4
+		}
+	}
+	diskMax := diskMaxGiB
+	if diskMax == 0 {
+		diskMax = 100
+	}
+	return resize.Bounds{
+		MemMinBytes:  int64(bootMem) * 1024 * 1024,
+		MemMaxBytes:  int64(memMax) * 1024 * 1024,
+		VCPUMin:      int32(bootCPUs),
+		VCPUMax:      int32(vcpuMax),
+		DiskMaxBytes: int64(diskMax) * 1024 * 1024 * 1024,
+	}
+}
+
+// autoResizePID1Args returns the PID-1 argv tokens for auto-resize, to be
+// appended after "--" in the kernel cmdline. Returns "" when disabled.
+//
+// The guest agent (PID 1) receives these as os.Args[1:] and uses them to
+// enable its resize services (ZRAM, telemetry, vCPU onliner, /tmp resizer).
+// The driver places the required memhp kernel params (memhp_default_state=online
+// etc.) BEFORE "--" independently of this function.
+//
+// memMaxMiB is the effective ceiling (after applying defaults); it must already
+// be resolved by the caller (i.e. never zero when autoResize is true).
+func autoResizePID1Args(autoResize bool, memMaxMiB uint32) string {
+	if !autoResize {
+		return ""
+	}
+	return fmt.Sprintf(" --auto-resize --mem-ceiling=%d", int64(memMaxMiB)*1024*1024)
 }
 
 // ── builder-VM helpers ────────────────────────────────────────────────────────
@@ -530,7 +657,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--motive <id>] [--nested] [--workspace <host-path>]"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--motive <id>] [--nested] [--workspace <host-path>] [--no-auto-resize] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] (auto-resize is on by default: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])
@@ -783,6 +910,28 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// the value that is set after CreateAndBoot calls it.
 	var bootGuestMounts []agent.GuestMount
 
+	// Resolve auto-resize bounds early so the values are available to both
+	// the newDriver closure (for driver config) and the CreateAndBoot call.
+	// This must happen before newDriver is defined because the closure captures
+	// effectiveMemMaxMiB by value at construction time.
+	govBounds := buildAutoResizeBounds(
+		f.autoResize, f.memoryMiB, f.memoryMaxMiB,
+		f.vcpus, f.vcpusMax, f.diskMaxGiB,
+	)
+	// effectiveMemMaxMiB is the resolved ceiling in MiB (non-zero iff autoResize).
+	var effectiveMemMaxMiB uint32
+	if f.autoResize {
+		effectiveMemMaxMiB = uint32(govBounds.MemMaxBytes / (1024 * 1024))
+		// AR-CLI-AC2: sandbox create runs no supervisor (D-DC-12 scope boundary).
+		// The hotplug hardware region is configured here; the dynamic governor
+		// loop activates only in the detached supervisor process.
+		slog.Info("auto-resize: hotplug hardware configured; governor activates in supervisor",
+			"mem_max_mib", effectiveMemMaxMiB,
+			"vcpus_max", govBounds.VCPUMax,
+			"disk_max_gib", govBounds.DiskMaxBytes/(1024*1024*1024),
+		)
+	}
+
 	// newDriver constructs a CHDriver instance for the resolved ext4.
 	// Each sandbox gets its own instance because DiskImagePath is static in
 	// cloudhypervisor.Config. Socket/log paths use default locations so that
@@ -790,17 +939,36 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	newDriver := func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
 		cfg := buildCHConfig(kernelPath, ext4Path, f.memoryMiB, f.vcpus)
 		cfg.NestedVirt = f.nestedVirt
+		// Wire auto-resize boot ceilings. These are fixed at vm.create and
+		// irreversible without a full restart (D-DC-27, D-DC-17). The driver
+		// reserves a (MemoryMaxMiB − MemoryMiB) MiB VirtioMem hotplug region
+		// when MemoryMaxMiB > 0, and advertises MaxVCPUs = VCPUMax to CH.
+		if f.autoResize {
+			cfg.MemoryMaxMiB = effectiveMemMaxMiB
+			cfg.VCPUMax = uint32(govBounds.VCPUMax)
+		}
 		for _, ed := range extraDisks {
 			cfg.ExtraDisks = append(cfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: ed.Path})
 		}
-		// Wire workspace/shadow mount specs into the kernel cmdline when present.
-		// bootGuestMounts is populated by the workspace block below (which runs
-		// before service.CreateAndBoot calls newDriver). An explicit Cmdline
-		// overrides the driver's diskBootCmdline default; the base string is
-		// identical to diskBootCmdline in cloudhypervisor/driver.go.
+		// Build the kernel cmdline. Two concerns are handled here:
+		//   1. Workspace/shadow mount specs go after "--" as PID-1 args.
+		//   2. Auto-resize PID-1 args (--auto-resize, --mem-ceiling) go after "--".
+		//
+		// The driver inserts the required memhp kernel params (memhp_default_state=
+		// online, memory_hotplug.online_policy=auto-movable) BEFORE "--" when
+		// MemoryMaxMiB > 0, so they are processed by the kernel and not PID 1.
+		// The CLI builds the PID-1 section; the driver owns the kernel-param section.
+		arArgs := autoResizePID1Args(f.autoResize, effectiveMemMaxMiB)
 		if len(bootGuestMounts) > 0 {
-			cfg.Cmdline = workspaceMountCmdline(bootGuestMounts)
+			// Workspace mounts present: build cmdline with mounts and optional
+			// auto-resize args after "--". Driver inserts memhp before "--".
+			cfg.Cmdline = workspaceMountCmdline(bootGuestMounts) + arArgs
+		} else if arArgs != "" {
+			// Auto-resize only (no workspace): set explicit cmdline with PID-1
+			// section. Driver inserts memhp before "--".
+			cfg.Cmdline = diskBootCmdlineBase + " --" + arArgs
 		}
+		// Otherwise: no explicit Cmdline; driver uses diskBootCmdline default.
 		// BinaryPath: look for cloud-hypervisor in PATH if not set.
 		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
 			cfg.BinaryPath = p
@@ -928,15 +1096,15 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	sb, err := service.CreateAndBoot(ctx, svc, imgCache, newDriver, probe,
 		project, name,
 		service.CreateAndBootOptions{
-			MotiveID:         f.motiveID,
-			RemoveOnExit:     f.rm,
-			Image:            spec,
-			CacheRoot:        cacheRoot,
-			MemoryMiB:        f.memoryMiB,
-			VCPUs:            f.vcpus,
-			NestedVirt:       f.nestedVirt,
-			ExtraDisks:       bootExtraDisks,
-			Workspace:        bootWorkspace,
+			MotiveID:          f.motiveID,
+			RemoveOnExit:      f.rm,
+			Image:             spec,
+			CacheRoot:         cacheRoot,
+			MemoryMiB:         f.memoryMiB,
+			VCPUs:             f.vcpus,
+			NestedVirt:        f.nestedVirt,
+			ExtraDisks:        bootExtraDisks,
+			Workspace:         bootWorkspace,
 			WorkspaceCapturer: bootCapturer,
 		},
 	)

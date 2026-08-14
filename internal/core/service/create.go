@@ -215,6 +215,7 @@ type CreateAndBootOptions struct {
 	// production implementation). Inject a stub in tests to avoid requiring
 	// mke2fs on the test host.
 	WorkspaceCapturer func(ctx context.Context, srcDir, outExt4 string, maxBytes int64) error
+
 }
 
 // WireClaudeEgress configures opts for an agent sandbox that runs claude

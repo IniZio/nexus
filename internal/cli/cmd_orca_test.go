@@ -14,6 +14,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
+	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
@@ -604,6 +605,133 @@ func TestOrcaWorkspaceSyncScript_DeviceDerivation(t *testing.T) {
 			t.Errorf("numShadow=%d: script contains hardcoded /dev/vdb instead of derived %q: %q",
 				tc.numShadow, tc.wantDevice, script)
 		}
+	}
+}
+
+// ── buildOrcaSpawnConfig forward-trace test ───────────────────────────────────
+//
+// This test closes the "value has no production origin" defect class for the
+// orca path. It asserts that buildOrcaSpawnConfig — the function called by
+// orcaCreate immediately before supervisor.SpawnDetached — actually sets
+// GovBounds, ExtraDisks, HasWorkspaceDisk, and WorkspaceDiskIndex.
+//
+// HOW IT BITES: remove the GovBounds assignment from buildOrcaSpawnConfig
+// and cfg.Config.GovBounds.MemMaxBytes == 0; the test fails. That is exactly
+// the defect the prior gate found: SpawnDetached received zero bounds, the
+// supervisor's governor hit bounds_not_configured, and the goroutine exited.
+
+// TestOrcaSpawnConfig_GovBoundsForwarded verifies that buildOrcaSpawnConfig
+// produces a SpawnConfig with non-zero GovBounds, correct ExtraDisks,
+// HasWorkspaceDisk, and WorkspaceDiskIndex derived from orcaNumShadowDisks.
+func TestOrcaSpawnConfig_GovBoundsForwarded(t *testing.T) {
+	// Realistic inputs matching what orcaCreate supplies.
+	const (
+		sandboxID  = "deadbeef01020304"
+		storeRoot  = "/var/lib/nexus3"
+		stateDir   = "/tmp/nexus3-sv-test"
+		chBin      = "/usr/bin/cloud-hypervisor"
+		socketDir  = "/run/nexus3"
+		kernelPath = "/boot/vmlinux"
+		diskPath   = "/var/lib/nexus3/deadbeef.raw"
+		wsDiskPath = "/var/lib/nexus3/deadbeef-ws.raw"
+		credsFile  = "/home/user/.nexus3/creds.json"
+	)
+	extraDiskPaths := []string{wsDiskPath}
+
+	// govBounds: same call as orcaCreate uses (buildAutoResizeBounds defaults).
+	govBounds := buildAutoResizeBounds(true, 0, 0, 0, 0, 0)
+	if govBounds.MemMaxBytes == 0 {
+		t.Fatal("buildAutoResizeBounds(true,...) returned zero MemMaxBytes; test precondition broken")
+	}
+
+	const orcaNumShadowDisks = 0 // canonical value from orcaCreate
+	const guestPath = "/root/workspace/myrepo"
+	cfg := buildOrcaSpawnConfig(
+		sandboxID, storeRoot, stateDir, chBin, socketDir, kernelPath, diskPath,
+		extraDiskPaths,
+		govBounds,
+		1, // bootVCPUs
+		true,              // hasWorkspaceDisk
+		orcaNumShadowDisks, // workspaceDiskIndex
+		credsFile,
+		guestPath,
+	)
+
+	// ── GovBounds must be non-zero ────────────────────────────────────────────
+	// If GovBounds is not forwarded the supervisor hits bounds_not_configured
+	// and the governor goroutine exits immediately (the original defect).
+	if cfg.Config.GovBounds.MemMaxBytes == 0 {
+		t.Error("SpawnConfig.Config.GovBounds.MemMaxBytes == 0: GovBounds not forwarded to supervisor")
+	}
+	if cfg.Config.GovBounds.MemMinBytes == 0 {
+		t.Error("SpawnConfig.Config.GovBounds.MemMinBytes == 0")
+	}
+	if cfg.Config.GovBounds.VCPUMax == 0 {
+		t.Error("SpawnConfig.Config.GovBounds.VCPUMax == 0")
+	}
+	if cfg.Config.GovBounds != govBounds {
+		t.Errorf("GovBounds mismatch: got %+v, want %+v", cfg.Config.GovBounds, govBounds)
+	}
+
+	// ── BootVCPUs must be forwarded ───────────────────────────────────────────
+	if cfg.Config.BootVCPUs != 1 {
+		t.Errorf("BootVCPUs = %d, want 1", cfg.Config.BootVCPUs)
+	}
+
+	// ── ExtraDisks must carry the workspace disk path ─────────────────────────
+	if len(cfg.Config.ExtraDisks) != 1 || cfg.Config.ExtraDisks[0] != wsDiskPath {
+		t.Errorf("ExtraDisks = %v, want [%q]", cfg.Config.ExtraDisks, wsDiskPath)
+	}
+
+	// ── HasWorkspaceDisk and WorkspaceDiskIndex must be set ───────────────────
+	if !cfg.Config.HasWorkspaceDisk {
+		t.Error("HasWorkspaceDisk = false, want true; disk axis will not register")
+	}
+	if cfg.Config.WorkspaceDiskIndex != orcaNumShadowDisks {
+		t.Errorf("WorkspaceDiskIndex = %d, want %d (orcaNumShadowDisks)",
+			cfg.Config.WorkspaceDiskIndex, orcaNumShadowDisks)
+	}
+
+	// ── Cmdline must be non-empty and contain workspace-mount and auto-resize args ─
+	// Without Cmdline the supervisor reboots the VM with no --workspace-mount= args,
+	// selectWorkspaceMount returns ok=false, and DiskSupported=false permanently.
+	if cfg.Config.Cmdline == "" {
+		t.Error("Cmdline is empty; supervisor-owned VM will boot without workspace-mount args (DiskSupported=false)")
+	}
+	if !strings.Contains(cfg.Config.Cmdline, "--workspace-mount=") {
+		t.Errorf("Cmdline %q does not contain --workspace-mount= arg; disk telemetry will be blind", cfg.Config.Cmdline)
+	}
+	if !strings.Contains(cfg.Config.Cmdline, guestPath) {
+		t.Errorf("Cmdline %q does not contain guest path %q", cfg.Config.Cmdline, guestPath)
+	}
+	if !strings.Contains(cfg.Config.Cmdline, "--auto-resize") {
+		t.Errorf("Cmdline %q does not contain --auto-resize; resize services will not start in guest", cfg.Config.Cmdline)
+	}
+	if !strings.Contains(cfg.Config.Cmdline, "--mem-ceiling=") {
+		t.Errorf("Cmdline %q does not contain --mem-ceiling; guest agent cannot set ZRAM size correctly", cfg.Config.Cmdline)
+	}
+}
+
+// TestOrcaSpawnConfig_NoWorkspace verifies that buildOrcaSpawnConfig with
+// hasWorkspaceDisk=false and no extraDiskPaths produces HasWorkspaceDisk=false
+// and an empty ExtraDisks — the disk axis is skipped, no data-loss risk.
+func TestOrcaSpawnConfig_NoWorkspace(t *testing.T) {
+	govBounds := resize.Bounds{MemMinBytes: 512 << 20, MemMaxBytes: 4096 << 20}
+	cfg := buildOrcaSpawnConfig(
+		"abc", "/store", "/state", "/ch", "/run", "/kernel", "/disk",
+		nil,   // no extra disks
+		govBounds,
+		1,
+		false, // hasWorkspaceDisk
+		0,
+		"",
+		"", // no guest path
+	)
+	if cfg.Config.HasWorkspaceDisk {
+		t.Error("HasWorkspaceDisk = true when no workspace; disk axis must not register")
+	}
+	if len(cfg.Config.ExtraDisks) != 0 {
+		t.Errorf("ExtraDisks = %v, want empty", cfg.Config.ExtraDisks)
 	}
 }
 

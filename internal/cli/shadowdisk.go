@@ -206,9 +206,10 @@ func shadowGuestMounts(specs []ShadowDisk, extraDisksOffset int) []agent.GuestMo
 // callers MUST use it rather than hardcoding /dev/vdb or any fixed letter.
 func WorkspaceGuestMount(guestPath string, numShadowDisks int) agent.GuestMount {
 	return agent.GuestMount{
-		Device: shadowDevicePath(numShadowDisks), // ExtraDisks[N] → /dev/vd{b+N}
-		Target: guestPath,
-		FSType: "ext4",
+		Device:      shadowDevicePath(numShadowDisks), // ExtraDisks[N] → /dev/vd{b+N}
+		Target:      guestPath,
+		FSType:      "ext4",
+		IsWorkspace: true, // explicit marker; agent selects telemetry target by this field
 	}
 }
 

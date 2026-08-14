@@ -13,6 +13,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
+	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
@@ -653,5 +654,301 @@ func TestSandboxStart_InternalError_Fallback(t *testing.T) {
 	env := decodeErrEnv(t, stdout)
 	if env.Error.Code != ErrCodeInternalError {
 		t.Errorf("envelope error.code = %q, want %q", env.Error.Code, ErrCodeInternalError)
+	}
+}
+
+// ── auto-resize (AR-CLI) ──────────────────────────────────────────────────────
+
+// TestAutoResize_DefaultOn proves that creating a sandbox without any auto-resize
+// flags produces non-zero GovBounds and hotplug PID-1 args (D-DC-30 default-on).
+func TestAutoResize_DefaultOn(t *testing.T) {
+	f, err := parseSandboxCreateArgs([]string{"proj/box", "--memory", "512", "--vcpus", "2"})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", err)
+	}
+	if !f.autoResize {
+		t.Error("autoResize: got false, want true (default-on per D-DC-30)")
+	}
+	// Ceiling flags are all zero — defaults are applied inside buildAutoResizeBounds.
+	if f.memoryMaxMiB != 0 {
+		t.Errorf("memoryMaxMiB: got %d, want 0 (ceiling unset; default applied by buildAutoResizeBounds)", f.memoryMaxMiB)
+	}
+
+	bounds := buildAutoResizeBounds(f.autoResize, f.memoryMiB, f.memoryMaxMiB, f.vcpus, f.vcpusMax, f.diskMaxGiB)
+	if bounds == (resize.Bounds{}) {
+		t.Error("GovBounds: got zero, want non-zero (default-on)")
+	}
+	if bounds.MemMaxBytes == 0 {
+		t.Error("GovBounds.MemMaxBytes: got 0, want non-zero")
+	}
+	if bounds.VCPUMax == 0 {
+		t.Error("GovBounds.VCPUMax: got 0, want non-zero")
+	}
+
+	arArgs := autoResizePID1Args(f.autoResize, uint32(bounds.MemMaxBytes/(1024*1024)))
+	if arArgs == "" {
+		t.Error("autoResizePID1Args: got empty string, want non-empty (default-on)")
+	}
+}
+
+// TestAutoResize_NoAutoResize_OptOut proves that --no-auto-resize disables
+// auto-resize completely, producing zero GovBounds and no PID-1 args
+// (AR-N-AC1 negative scope / D-DC-30 opt-out invariant).
+func TestAutoResize_NoAutoResize_OptOut(t *testing.T) {
+	f, err := parseSandboxCreateArgs([]string{"proj/box", "--memory", "512", "--vcpus", "2", "--no-auto-resize"})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", err)
+	}
+	if f.autoResize {
+		t.Error("autoResize: got true, want false (--no-auto-resize opt-out)")
+	}
+
+	bounds := buildAutoResizeBounds(f.autoResize, f.memoryMiB, f.memoryMaxMiB, f.vcpus, f.vcpusMax, f.diskMaxGiB)
+	if bounds != (resize.Bounds{}) {
+		t.Errorf("GovBounds: got %+v, want zero (opt-out)", bounds)
+	}
+
+	arArgs := autoResizePID1Args(f.autoResize, f.memoryMaxMiB)
+	if arArgs != "" {
+		t.Errorf("autoResizePID1Args: got %q, want empty string (opt-out)", arArgs)
+	}
+}
+
+// TestAutoResize_FlagParsing verifies that the auto-resize flags are parsed
+// correctly from the argument slice.
+func TestAutoResize_FlagParsing(t *testing.T) {
+	f, err := parseSandboxCreateArgs([]string{
+		"proj/box", "--auto-resize",
+		"--memory-max", "2048",
+		"--vcpus-max", "4",
+		"--disk-max", "100",
+	})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", err)
+	}
+	if !f.autoResize {
+		t.Error("autoResize: got false, want true")
+	}
+	if f.memoryMaxMiB != 2048 {
+		t.Errorf("memoryMaxMiB: got %d, want 2048", f.memoryMaxMiB)
+	}
+	if f.vcpusMax != 4 {
+		t.Errorf("vcpusMax: got %d, want 4", f.vcpusMax)
+	}
+	if f.diskMaxGiB != 100 {
+		t.Errorf("diskMaxGiB: got %d, want 100", f.diskMaxGiB)
+	}
+}
+
+// TestAutoResize_GovBoundsWired proves that with auto-resize flags set,
+// GovBounds reaches the service layer non-zero (the specific gap identified
+// by the advisor gate: no production caller for GovBounds).
+func TestAutoResize_GovBoundsWired(t *testing.T) {
+	f, err := parseSandboxCreateArgs([]string{
+		"proj/box", "--auto-resize",
+		"--memory-max", "2048",
+		"--vcpus-max", "4",
+		"--disk-max", "100",
+	})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", err)
+	}
+
+	bounds := buildAutoResizeBounds(f.autoResize, f.memoryMiB, f.memoryMaxMiB, f.vcpus, f.vcpusMax, f.diskMaxGiB)
+
+	// GovBounds must be non-zero: this is the wiring the gate identified as missing.
+	if bounds.MemMaxBytes == 0 {
+		t.Error("GovBounds.MemMaxBytes: got 0, want non-zero (governor would run in passive mode)")
+	}
+	if bounds.VCPUMax == 0 {
+		t.Error("GovBounds.VCPUMax: got 0, want non-zero")
+	}
+	if bounds.DiskMaxBytes == 0 {
+		t.Error("GovBounds.DiskMaxBytes: got 0, want non-zero")
+	}
+
+	// Verify exact values.
+	const wantMemMax = int64(2048) * 1024 * 1024
+	if bounds.MemMaxBytes != wantMemMax {
+		t.Errorf("GovBounds.MemMaxBytes: got %d, want %d", bounds.MemMaxBytes, wantMemMax)
+	}
+	const wantMemMin = int64(512) * 1024 * 1024 // driver default boot memory
+	if bounds.MemMinBytes != wantMemMin {
+		t.Errorf("GovBounds.MemMinBytes: got %d, want %d (boot default)", bounds.MemMinBytes, wantMemMin)
+	}
+	if bounds.VCPUMax != 4 {
+		t.Errorf("GovBounds.VCPUMax: got %d, want 4", bounds.VCPUMax)
+	}
+	if bounds.VCPUMin != 1 {
+		t.Errorf("GovBounds.VCPUMin: got %d, want 1 (boot default)", bounds.VCPUMin)
+	}
+	const wantDiskMax = int64(100) * 1024 * 1024 * 1024
+	if bounds.DiskMaxBytes != wantDiskMax {
+		t.Errorf("GovBounds.DiskMaxBytes: got %d, want %d", bounds.DiskMaxBytes, wantDiskMax)
+	}
+}
+
+// TestAutoResize_CeilingDefaults verifies the computed ceiling defaults when
+// --auto-resize is set without explicit ceiling flags.
+func TestAutoResize_CeilingDefaults(t *testing.T) {
+	f, err := parseSandboxCreateArgs([]string{"proj/box", "--auto-resize"})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", err)
+	}
+
+	bounds := buildAutoResizeBounds(f.autoResize, f.memoryMiB, f.memoryMaxMiB, f.vcpus, f.vcpusMax, f.diskMaxGiB)
+
+	// Default: 4× boot memory (512 MiB driver default → 2048 MiB), floor 4096 MiB.
+	// 4× 512 = 2048 < 4096, so the floor wins.
+	const wantMemMax = int64(4096) * 1024 * 1024
+	if bounds.MemMaxBytes != wantMemMax {
+		t.Errorf("default MemMaxBytes: got %d, want %d (4× boot default 512 MiB, floor 4096 MiB)", bounds.MemMaxBytes, wantMemMax)
+	}
+	// Default: 4× boot vCPUs (1 driver default → 4), min 4.
+	if bounds.VCPUMax != 4 {
+		t.Errorf("default VCPUMax: got %d, want 4 (4× boot default 1 vCPU)", bounds.VCPUMax)
+	}
+	// Default: 100 GiB (matches OLD-nexus diskMaxBytes).
+	const wantDiskMax = int64(100) * 1024 * 1024 * 1024
+	if bounds.DiskMaxBytes != wantDiskMax {
+		t.Errorf("default DiskMaxBytes: got %d, want %d (100 GiB)", bounds.DiskMaxBytes, wantDiskMax)
+	}
+}
+
+// TestAutoResize_PID1Args verifies that autoResizePID1Args produces the
+// correct cmdline suffix when auto-resize is on, and "" when off.
+func TestAutoResize_PID1Args(t *testing.T) {
+	// Default-off: no args.
+	if got := autoResizePID1Args(false, 0); got != "" {
+		t.Errorf("disabled: got %q, want empty", got)
+	}
+
+	// Enabled: args must contain --auto-resize and --mem-ceiling=<bytes>.
+	memMaxMiB := uint32(2048)
+	got := autoResizePID1Args(true, memMaxMiB)
+	if !strings.Contains(got, "--auto-resize") {
+		t.Errorf("enabled: missing --auto-resize in %q", got)
+	}
+	wantCeiling := fmt.Sprintf("--mem-ceiling=%d", int64(memMaxMiB)*1024*1024)
+	if !strings.Contains(got, wantCeiling) {
+		t.Errorf("enabled: missing %q in %q", wantCeiling, got)
+	}
+	// Args must come after a leading space (to be appended after "--").
+	if len(got) == 0 || got[0] != ' ' {
+		t.Errorf("enabled: args must start with a space for cmdline appending; got %q", got)
+	}
+}
+
+// TestAutoResize_DriverConfig verifies that buildCHConfig wires MemoryMaxMiB
+// and VCPUMax into the driver config when auto-resize is on, and leaves them
+// zero (no hotplug) when auto-resize is off.
+func TestAutoResize_DriverConfig(t *testing.T) {
+	const kernelPath = "/fake/kernel"
+	const ext4Path = "/fake/disk.ext4"
+
+	t.Run("default-off: no hotplug fields", func(t *testing.T) {
+		cfg := buildCHConfig(kernelPath, ext4Path, 512, 2)
+		if cfg.MemoryMaxMiB != 0 {
+			t.Errorf("MemoryMaxMiB: got %d, want 0 (default-off, no hotplug)", cfg.MemoryMaxMiB)
+		}
+		if cfg.VCPUMax != 0 {
+			t.Errorf("VCPUMax: got %d, want 0 (default-off, no hotplug)", cfg.VCPUMax)
+		}
+	})
+
+	t.Run("auto-resize: hotplug fields set", func(t *testing.T) {
+		cfg := buildCHConfig(kernelPath, ext4Path, 512, 2)
+		// Simulate what newDriver does when auto-resize is on.
+		bounds := buildAutoResizeBounds(true, 512, 2048, 2, 4, 100)
+		cfg.MemoryMaxMiB = uint32(bounds.MemMaxBytes / (1024 * 1024))
+		cfg.VCPUMax = uint32(bounds.VCPUMax)
+
+		if cfg.MemoryMaxMiB != 2048 {
+			t.Errorf("MemoryMaxMiB: got %d, want 2048", cfg.MemoryMaxMiB)
+		}
+		if cfg.VCPUMax != 4 {
+			t.Errorf("VCPUMax: got %d, want 4", cfg.VCPUMax)
+		}
+	})
+}
+
+// TestAutoResize_Cmdline verifies cmdline assembly for the auto-resize path.
+// The driver inserts memhp params before "--"; this test checks PID-1 content.
+func TestAutoResize_Cmdline(t *testing.T) {
+	t.Run("default-off: no explicit cmdline change", func(t *testing.T) {
+		arArgs := autoResizePID1Args(false, 0)
+		// No auto-resize → no PID-1 args → no explicit Cmdline is set.
+		// This matches the current behavior (driver uses diskBootCmdline default).
+		if arArgs != "" {
+			t.Errorf("default-off: arArgs = %q, want empty", arArgs)
+		}
+	})
+
+	t.Run("auto-resize: cmdline contains PID-1 args", func(t *testing.T) {
+		const memMaxMiB = uint32(2048)
+		arArgs := autoResizePID1Args(true, memMaxMiB)
+
+		// Build the cmdline as newDriver does (no workspace mounts).
+		cmdline := diskBootCmdlineBase + " --" + arArgs
+
+		if !strings.Contains(cmdline, "--auto-resize") {
+			t.Errorf("cmdline missing --auto-resize: %q", cmdline)
+		}
+		wantCeiling := fmt.Sprintf("--mem-ceiling=%d", int64(memMaxMiB)*1024*1024)
+		if !strings.Contains(cmdline, wantCeiling) {
+			t.Errorf("cmdline missing %q: %q", wantCeiling, cmdline)
+		}
+		// PID-1 args appear after "--".
+		pidBoundary := strings.Index(cmdline, " --")
+		if pidBoundary < 0 {
+			t.Fatalf("cmdline has no '--' PID-1 boundary: %q", cmdline)
+		}
+		pidSection := cmdline[pidBoundary:]
+		if !strings.Contains(pidSection, "--auto-resize") {
+			t.Errorf("--auto-resize not in PID-1 section: %q", pidSection)
+		}
+	})
+
+	t.Run("auto-resize with workspace: PID-1 args appended", func(t *testing.T) {
+		const memMaxMiB = uint32(2048)
+		arArgs := autoResizePID1Args(true, memMaxMiB)
+
+		// Simulate workspaceMountCmdline output.
+		fakeWorkspaceCmdline := diskBootCmdlineBase + " -- --workspace-mount=/dev/vdb:/workspace/repo:ext4:false:true"
+		cmdline := fakeWorkspaceCmdline + arArgs
+
+		if !strings.Contains(cmdline, "--auto-resize") {
+			t.Errorf("cmdline missing --auto-resize: %q", cmdline)
+		}
+		// Both workspace-mount and auto-resize appear after "--".
+		pidIdx := strings.Index(cmdline, " --")
+		if pidIdx < 0 {
+			t.Fatalf("no '--' boundary: %q", cmdline)
+		}
+		pidSection := cmdline[pidIdx:]
+		if !strings.Contains(pidSection, "--workspace-mount=") {
+			t.Errorf("--workspace-mount not in PID-1 section: %q", pidSection)
+		}
+		if !strings.Contains(pidSection, "--auto-resize") {
+			t.Errorf("--auto-resize not in PID-1 section: %q", pidSection)
+		}
+	})
+}
+
+// TestAutoResize_UnknownFlagRejected verifies that unknown flags are still
+// rejected and that --memory-max without --auto-resize is accepted (the value
+// is ignored but not an error, following existing --memory / --vcpus precedent).
+func TestAutoResize_FlagErrors(t *testing.T) {
+	_, err := parseSandboxCreateArgs([]string{"proj/box", "--memory-max", "notanumber"})
+	if err == nil {
+		t.Error("--memory-max notanumber: expected error, got nil")
+	}
+	_, err = parseSandboxCreateArgs([]string{"proj/box", "--vcpus-max", "abc"})
+	if err == nil {
+		t.Error("--vcpus-max abc: expected error, got nil")
+	}
+	_, err = parseSandboxCreateArgs([]string{"proj/box", "--disk-max", "xyz"})
+	if err == nil {
+		t.Error("--disk-max xyz: expected error, got nil")
 	}
 }

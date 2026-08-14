@@ -19,6 +19,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/supervisor"
@@ -300,6 +301,87 @@ func orcaSyncWorkspace(ctx context.Context, svc *service.Service, sandboxID stri
 	return nil
 }
 
+// ── supervisor spawn helper ───────────────────────────────────────────────────
+
+// buildOrcaSpawnConfig constructs the supervisor.SpawnConfig for an orca
+// create handoff. Extracted for unit-testability: the forward-trace test
+// can verify that realistic orca create inputs produce a SpawnConfig with
+// GovBounds, ExtraDisks, HasWorkspaceDisk, WorkspaceDiskIndex, and Cmdline
+// all set — without actually forking a subprocess or booting a VM.
+//
+// extraDiskPaths are the host paths of the extra disks captured by the
+// DriverFactory closure (workspace disk, etc.). workspaceDiskIndex must be
+// derived from orcaNumShadowDisks (= 0 on the orca path), not hardcoded.
+//
+// guestPath is the in-guest directory where the workspace disk is mounted
+// (e.g. "/root/workspace/myrepo"). When non-empty and hasWorkspaceDisk is
+// true, buildOrcaSpawnConfig generates a --workspace-mount= cmdline so the
+// supervisor-owned VM boots with disk telemetry active (DiskSupported=true).
+// Passing empty string skips workspace mount generation (disk axis blind).
+func buildOrcaSpawnConfig(
+	sandboxID, storeRoot, stateDir, chBin, socketDir, kernelPath, capturedDiskPath string,
+	extraDiskPaths []string,
+	govBounds resize.Bounds,
+	bootVCPUs uint32,
+	hasWorkspaceDisk bool,
+	workspaceDiskIndex int,
+	credsFile string,
+	guestPath string,
+) supervisor.SpawnConfig {
+	// Build the kernel cmdline for the supervisor-owned VM. The supervisor
+	// reboots the VM independently (CLI stops the initial boot before handoff),
+	// so it must reproduce the same cmdline the CLI built at CreateAndBoot time.
+	//
+	// Two concerns are composed here, matching the logic in cmd_sandbox.go:
+	//   1. --workspace-mount= PID-1 args so the agent mounts the workspace disk
+	//      and disk telemetry (statfs) is active (DiskSupported=true).
+	//   2. Auto-resize PID-1 args (--auto-resize, --mem-ceiling) so the agent
+	//      starts ZRAM, the telemetry server, vCPU onliner, and /tmp resizer.
+	//
+	// The driver independently inserts memhp kernel params (memhp_default_state=
+	// online etc.) before "--" when MemoryMaxMiB > 0 (supervisor.go derives it
+	// from GovBounds.MemMaxBytes). This function only builds the PID-1 section.
+	autoResize := govBounds.MemMaxBytes > 0
+	var memMaxMiB uint32
+	if autoResize {
+		memMaxMiB = uint32(govBounds.MemMaxBytes / (1024 * 1024)) //nolint:gosec // bytes→MiB, fits uint32
+	}
+	arArgs := autoResizePID1Args(autoResize, memMaxMiB)
+
+	var cmdline string
+	if hasWorkspaceDisk && guestPath != "" {
+		// One workspace mount, no shadow disks on the orca path (orcaNumShadowDisks=0).
+		wsMount := WorkspaceGuestMount(guestPath, workspaceDiskIndex)
+		cmdline = workspaceMountCmdline([]agent.GuestMount{wsMount}) + arArgs
+	} else if arArgs != "" {
+		// Auto-resize only (no workspace disk or guest path unknown).
+		cmdline = diskBootCmdlineBase + " --" + arArgs
+	}
+	// Otherwise: empty cmdline → driver uses its disk-boot default.
+
+	return supervisor.SpawnConfig{
+		Config: supervisor.Config{
+			SandboxRef: sandboxID,
+			StoreRoot:  storeRoot,
+			StateDir:   stateDir,
+			CHBin:      chBin,
+			SocketDir:  socketDir,
+			KernelPath: kernelPath,
+			DiskPath:   capturedDiskPath,
+			// S3 owns CredsFile / broker wiring; pass the path so the supervisor
+			// can load it when S3 wires the broker. No-op if file is absent.
+			CredsFile:          credsFile,
+			ExtraDisks:         extraDiskPaths,
+			GovBounds:          govBounds,
+			BootVCPUs:          bootVCPUs,
+			HasWorkspaceDisk:   hasWorkspaceDisk,
+			WorkspaceDiskIndex: workspaceDiskIndex,
+			Cmdline:            cmdline,
+		},
+		ReadyTimeout: 5 * time.Minute,
+	}
+}
+
 // ── sandbox lookup helper ─────────────────────────────────────────────────────
 
 // orcaByInstanceID resolves a sandbox by ORCA_VM_INSTANCE_ID (its MotiveID).
@@ -461,9 +543,14 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 
 	// ── DriverFactory ─────────────────────────────────────────────────────────
 	// capturedDiskPath: the CoW ext4 copy path forwarded to the supervisor.
+	// capturedExtraDisks: the extra disk paths (workspace disk, etc.) to
+	// re-attach when the supervisor re-boots the VM. Captured here so the
+	// supervisor's cloudhypervisor.New call can pass the same disks.
 	var capturedDiskPath string
+	var capturedExtraDisks []string
 	newDriver := service.DriverFactory(func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
 		capturedDiskPath = ext4Path
+		capturedExtraDisks = nil // reset on each call (CreateAndBoot calls once)
 		cfg := buildCHConfig(kernelPath, ext4Path, 0, 0)
 		cfg.SocketDir = socketDir // explicit so it matches supervisor + svc
 		if chBin != "" {
@@ -471,6 +558,7 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		}
 		for _, ed := range extraDisks {
 			cfg.ExtraDisks = append(cfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: ed.Path})
+			capturedExtraDisks = append(capturedExtraDisks, ed.Path)
 		}
 		return cloudhypervisor.New(cfg)
 	})
@@ -534,18 +622,25 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	}
 	slog.Info("orca create: initial boot done; handing off to supervisor", "sandbox", sb.ID)
 
+	// orcaNumShadowDisks is the count of shadow disks preceding the workspace
+	// disk on the orca path. The orca path attaches no shadow disks, so the
+	// workspace disk is always ExtraDisks[0] → /dev/vdb. This is the canonical
+	// derivation source for WorkspaceDiskIndex passed to the supervisor.
+	const orcaNumShadowDisks = 0
+
 	// ── Sync workspace to rootfs before supervisor handoff ────────────────────
 	// When ORCA_REPO_PATH is set, opts.Workspace captured the host worktree to
-	// an ext4 image attached as ExtraDisks[0] (the orca path attaches no shadow
-	// disks, so the workspace is always the first and only extra disk).
+	// an ext4 image attached as ExtraDisks[orcaNumShadowDisks].
 	// orcaSyncWorkspace derives the device from WorkspaceGuestMount so the
 	// letter tracks the actual disk layout rather than being hardcoded.
+	//
+	// After sync the workspace disk is kept attached (capturedExtraDisks carries
+	// it forward to the supervisor). This gives the disk auto-resize axis a valid
+	// virtio-blk target (/dev/vd{b+orcaNumShadowDisks}) throughout the VM's life.
 	//
 	// Failure is a hard error: booting the agent against an empty workspace is
 	// strictly worse than refusing to boot.
 	if ws := opts.Workspace; ws != nil {
-		// orca path attaches no shadow disks; workspace occupies ExtraDisks[0].
-		const orcaNumShadowDisks = 0
 		if syncErr := orcaSyncWorkspace(ctx, svc, sb.ID.String(), ws, orcaNumShadowDisks); syncErr != nil {
 			// Best-effort stop: halt the running VM before returning so it
 			// does not remain as a live orphan. Consistent with how the
@@ -568,22 +663,33 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		return fmt.Errorf("orca create: stop before supervisor handoff: %w", stopErr)
 	}
 
+	// Auto-resize bounds for the orca supervisor governor. The orca path always
+	// enables auto-resize: the detached supervisor is the exclusive governor host
+	// (D-DC-12). buildAutoResizeBounds with all-zero inputs applies the same
+	// documented defaults as sandbox create with --auto-resize and no overrides:
+	// MemMin=512MiB, MemMax=4096MiB, VCPUMin=1, VCPUMax=4, DiskMax=100GiB.
+	// This is the single source of truth shared with the sandbox-create path.
+	govBounds := buildAutoResizeBounds(true, 0, 0, 0, 0, 0)
+
 	// ── SpawnDetached: supervisor takes ownership of VM + perimeter ───────────
-	spawnCfg := supervisor.SpawnConfig{
-		Config: supervisor.Config{
-			SandboxRef: sb.ID.String(),
-			StoreRoot:  storeRoot,
-			StateDir:   stateDir,
-			CHBin:      chBin,
-			SocketDir:  socketDir,
-			KernelPath: kernelPath,
-			DiskPath:   capturedDiskPath,
-			// S3 owns CredsFile / broker wiring; pass the path so the supervisor
-			// can load it when S3 wires the broker. No-op if file is absent.
-			CredsFile: service.DefaultDedicatedCredStorePath(),
-		},
-		ReadyTimeout: 5 * time.Minute,
+	// Resolve the guest path so buildOrcaSpawnConfig can embed a
+	// --workspace-mount= arg in the cmdline; without it the supervisor-owned
+	// VM boots without workspace mount info and disk telemetry is permanently
+	// blind (DiskSupported=false, selectWorkspaceMount returns ok=false).
+	var guestWorkspacePath string
+	if opts.Workspace != nil {
+		guestWorkspacePath = opts.Workspace.GuestPath
 	}
+	spawnCfg := buildOrcaSpawnConfig(
+		sb.ID.String(), storeRoot, stateDir, chBin, socketDir, kernelPath, capturedDiskPath,
+		capturedExtraDisks,
+		govBounds,
+		1, // bootVCPUs: orca create passes 0 to buildCHConfig → driver default = 1
+		opts.Workspace != nil,
+		orcaNumShadowDisks,
+		service.DefaultDedicatedCredStorePath(),
+		guestWorkspacePath,
+	)
 	pid, err := supervisor.SpawnDetached(spawnCfg)
 	if err != nil {
 		return fmt.Errorf("orca create: spawn supervisor: %w", err)

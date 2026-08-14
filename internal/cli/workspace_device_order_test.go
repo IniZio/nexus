@@ -39,6 +39,9 @@ func TestWorkspaceGuestMount_DeviceOrder(t *testing.T) {
 		if got.ReadOnly {
 			t.Errorf("numShadow=%d: workspace mount should be read-write", tc.numShadow)
 		}
+		if !got.IsWorkspace {
+			t.Errorf("numShadow=%d: WorkspaceGuestMount should set IsWorkspace=true", tc.numShadow)
+		}
 	}
 }
 
@@ -64,6 +67,9 @@ func TestShadowGuestMounts_DeviceOrder(t *testing.T) {
 		if m.Target != specs[i].GuestTarget {
 			t.Errorf("shadow[%d]: got Target=%q, want %q", i, m.Target, specs[i].GuestTarget)
 		}
+		if m.IsWorkspace {
+			t.Errorf("shadow[%d]: IsWorkspace should be false for shadow mounts", i)
+		}
 	}
 }
 
@@ -88,12 +94,13 @@ func TestWorkspaceMountCmdline_Empty(t *testing.T) {
 }
 
 // TestWorkspaceMountCmdline_SingleMount verifies encoding for a single workspace mount.
+// The format is now 5 fields: device:target:fstype:readonly:workspace.
 func TestWorkspaceMountCmdline_SingleMount(t *testing.T) {
 	mounts := []agent.GuestMount{
-		{Device: "/dev/vdb", Target: "/workspace/repo", FSType: "ext4", ReadOnly: false},
+		{Device: "/dev/vdb", Target: "/workspace/repo", FSType: "ext4", ReadOnly: false, IsWorkspace: false},
 	}
 	got := workspaceMountCmdline(mounts)
-	want := diskBootCmdlineBase + " -- --workspace-mount=/dev/vdb:/workspace/repo:ext4:false"
+	want := diskBootCmdlineBase + " -- --workspace-mount=/dev/vdb:/workspace/repo:ext4:false:false"
 	if got != want {
 		t.Errorf("got  %q\nwant %q", got, want)
 	}
@@ -127,13 +134,15 @@ func TestWorkspaceMountCmdline_DefaultLayout(t *testing.T) {
 	}
 
 	// Workspace disk must be on /dev/vdf (4 shadows + 1 workspace).
-	wsMountToken := "--workspace-mount=/dev/vdf:" + guestPath + ":ext4:false"
+	// ReadOnly=false → ":false"; IsWorkspace=true → ":true" (5th field).
+	wsMountToken := "--workspace-mount=/dev/vdf:" + guestPath + ":ext4:false:true"
 	if !strings.Contains(got, wsMountToken) {
 		t.Errorf("workspace mount token %q not found in cmdline: %q", wsMountToken, got)
 	}
 
 	// Shadow for node_modules must be on /dev/vdb (index 0).
-	shadowToken := "--workspace-mount=/dev/vdb:" + guestPath + "/node_modules:ext4:false"
+	// ReadOnly=false → ":false"; IsWorkspace=false → ":false" (5th field).
+	shadowToken := "--workspace-mount=/dev/vdb:" + guestPath + "/node_modules:ext4:false:false"
 	if !strings.Contains(got, shadowToken) {
 		t.Errorf("shadow mount token %q not found in cmdline: %q", shadowToken, got)
 	}
