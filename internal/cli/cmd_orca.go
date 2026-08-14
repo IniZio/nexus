@@ -22,6 +22,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus3/internal/core/vmcfg"
 	"github.com/IniZio/nexus3/internal/supervisor"
 )
 
@@ -164,10 +165,11 @@ func orcaWorkspaceSpec(env orcaEnv) *service.WorkspaceSpec {
 	if _, err := os.Stat(env.RepoPath); err != nil {
 		return nil
 	}
-	return &service.WorkspaceSpec{
-		SourcePath: env.RepoPath,
-		GuestPath:  orcaProjectRoot(env.RepoPath, env.WorkspaceName, env.InstanceID),
-	}
+	return buildWorkspaceSpec(
+		env.RepoPath,
+		orcaProjectRoot(env.RepoPath, env.WorkspaceName, env.InstanceID),
+		0, // AUTO: free-space-derived cap (zero means auto in WorktreeToDisk).
+	)
 }
 
 // gitHostsFromURL extracts the egress allowlist hostnames for a git repo URL.
@@ -335,29 +337,28 @@ func buildOrcaSpawnConfig(
 	// Two concerns are composed here, matching the logic in cmd_sandbox.go:
 	//   1. --workspace-mount= PID-1 args so the agent mounts the workspace disk
 	//      and disk telemetry (statfs) is active (DiskSupported=true).
-	//   2. Auto-resize PID-1 args (--auto-resize, --mem-ceiling) so the agent
-	//      starts ZRAM, the telemetry server, vCPU onliner, and /tmp resizer.
+	//   2. Auto-resize PID-1 args (--mem-ceiling) so the agent starts ZRAM,
+	//      the telemetry server, vCPU onliner, and /tmp resizer.
 	//
 	// The driver independently inserts memhp kernel params (memhp_default_state=
 	// online etc.) before "--" when MemoryMaxMiB > 0 (supervisor.go derives it
 	// from GovBounds.MemMaxBytes). This function only builds the PID-1 section.
-	autoResize := govBounds.MemMaxBytes > 0
-	var memMaxMiB uint32
-	if autoResize {
-		memMaxMiB = uint32(govBounds.MemMaxBytes / (1024 * 1024)) //nolint:gosec // bytes→MiB, fits uint32
-	}
-	arArgs := autoResizePID1Args(autoResize, memMaxMiB)
+	// Auto-resize is unconditional (D-DC-30 revised 2026-08-14).
+	memMaxMiB := uint32(govBounds.MemMaxBytes / (1024 * 1024)) //nolint:gosec // bytes→MiB, fits uint32
+	// PID-1 auto-resize args come from vmcfg.Resolve so there is a single
+	// source of truth for the cmdline fragment (leading space included).
+	arArgs := vmcfg.Resolve(vmcfg.Config{MemMaxMiB: memMaxMiB}).PID1Args
 
 	var cmdline string
 	if hasWorkspaceDisk && guestPath != "" {
 		// One workspace mount, no shadow disks on the orca path (orcaNumShadowDisks=0).
 		wsMount := WorkspaceGuestMount(guestPath, workspaceDiskIndex)
 		cmdline = workspaceMountCmdline([]agent.GuestMount{wsMount}) + arArgs
-	} else if arArgs != "" {
-		// Auto-resize only (no workspace disk or guest path unknown).
+	} else {
+		// Auto-resize (no workspace disk or guest path unknown).
+		// Auto-resize is unconditional so arArgs is always non-empty here.
 		cmdline = diskBootCmdlineBase + " --" + arArgs
 	}
-	// Otherwise: empty cmdline → driver uses its disk-boot default.
 
 	return supervisor.SpawnConfig{
 		Config: supervisor.Config{
@@ -663,13 +664,11 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		return fmt.Errorf("orca create: stop before supervisor handoff: %w", stopErr)
 	}
 
-	// Auto-resize bounds for the orca supervisor governor. The orca path always
-	// enables auto-resize: the detached supervisor is the exclusive governor host
-	// (D-DC-12). buildAutoResizeBounds with all-zero inputs applies the same
-	// documented defaults as sandbox create with --auto-resize and no overrides:
+	// Auto-resize bounds for the orca supervisor governor. The detached supervisor
+	// is the exclusive governor host (D-DC-12). vmcfg.Resolve with zero inputs
+	// applies the documented defaults:
 	// MemMin=512MiB, MemMax=4096MiB, VCPUMin=1, VCPUMax=4, DiskMax=100GiB.
-	// This is the single source of truth shared with the sandbox-create path.
-	govBounds := buildAutoResizeBounds(true, 0, 0, 0, 0, 0)
+	govBounds := vmcfg.Resolve(vmcfg.Config{}).Bounds
 
 	// ── SpawnDetached: supervisor takes ownership of VM + perimeter ───────────
 	// Resolve the guest path so buildOrcaSpawnConfig can embed a
@@ -690,7 +689,8 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		service.DefaultDedicatedCredStorePath(),
 		guestWorkspacePath,
 	)
-	pid, err := supervisor.SpawnDetached(spawnCfg)
+	// Non-ephemeral supervisor: watchdog pipe is nil (orca sandbox persists after CLI exit).
+	pid, _, err := supervisor.SpawnDetached(spawnCfg)
 	if err != nil {
 		return fmt.Errorf("orca create: spawn supervisor: %w", err)
 	}
