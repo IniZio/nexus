@@ -245,7 +245,11 @@ func buildOneImage(
 	}
 
 	t.Logf("%s: calling BuildInVM …", label)
-	d, err := builder.BuildInVM(ctx, bdrv, spec, imgCache, execFn)
+	bldStore, bldStoreErr := store.NewFileStore(storeRoot)
+	if bldStoreErr != nil {
+		t.Fatalf("%s: store.NewFileStore for BuildInVM: %v", label, bldStoreErr)
+	}
+	d, err := builder.BuildInVM(ctx, bdrv, spec, imgCache, execFn, bldStore)
 	if err != nil {
 		// Dump serial log on failure for diagnosis.
 		if serial, rerr := os.ReadFile(serialPath); rerr == nil {

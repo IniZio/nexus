@@ -13,10 +13,10 @@ package selfhost
 // backing file on a 2-disk topology (shadow at ExtraDisks[0]/dev/vdb + workspace at
 // ExtraDisks[1]/dev/vdc). Key findings documented inline:
 //   - The workspace backing file grows, shadow unchanged → device routing correct.
-//   - resize2fs is NOT triggered: EncodeGrowRequest (disk.grow vsock) is not wired
-//     on the host side (GrowDisk calls vm.resize-disk but does not send a GrowRequest).
-//     This is the AR-GA open gap; the guest handler (handleDiskGrow) is implemented
-//     but the host caller is missing.
+//   - resize2fs IS triggered end-to-end (AR-GA closed): GrowDisk expands the backing file,
+//     calls vm.resize-disk (CH v52.0 acknowledged with 204 in live proof), then sends
+//     EncodeGrowRequest over vsock so the guest agent runs resize2fs. A resize2fs failure
+//     on the guest side is logged but does not propagate as a GrowDisk error.
 //   - The atomic-rollback code at driver_resize.go:214-221 is verified by inspection;
 //     live testing requires a TOCTOU VM-kill during vm.resize-disk (not safe to contrive).
 //
@@ -228,7 +228,7 @@ func TestAutoResizeDiskTelemetry(t *testing.T) {
 	}
 	// PID-1 args follow the -- separator already written by arWsMountCmdline.
 	svCmdline := arWsMountCmdline([]agent.GuestMount{wsMount}) +
-		" --auto-resize --mem-ceiling=" + strconv.FormatInt(memCeiling, 10)
+		" --mem-ceiling=" + strconv.FormatInt(memCeiling, 10)
 	t.Logf("supervisor cmdline: %s", svCmdline)
 
 	factory := service.DriverFactory(func(resolvedExt4 string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
@@ -283,7 +283,7 @@ func TestAutoResizeDiskTelemetry(t *testing.T) {
 	// ── Step 4: SpawnDetached — supervisor with workspace disk ────────────────
 	// HasWorkspaceDisk=false keeps the disk governor passive (no grow).
 	// The agent still serves DiskSupported=true from statfs(/workspace).
-	pid, err := supervisor.SpawnDetached(supervisor.SpawnConfig{
+	pid, _, err := supervisor.SpawnDetached(supervisor.SpawnConfig{
 		Config: supervisor.Config{
 			SandboxRef:         sb.ID.String(),
 			StoreRoot:          storeRoot,
@@ -373,11 +373,6 @@ func TestAutoResizeDiskTelemetry(t *testing.T) {
 //  2. Workspace backing file apparent size grows from 200 MiB → 512 MiB
 //  3. Shadow backing file size unchanged (proves index routing correct)
 //
-// Known gap (AR-GA): resize2fs is not triggered on the host side after GrowDisk.
-// GrowDisk truncates the backing file and calls vm.resize-disk, but
-// EncodeGrowRequest (disk.grow vsock → guest resize2fs) is not yet wired.
-// The guest handler (handleDiskGrow in resize_actuate_linux.go) is implemented
-// but the host caller is missing from GrowDisk.
 func TestAutoResizeDiskGrowDevice(t *testing.T) {
 	skipUnlessKVMSH(t)
 	chBin := skipUnlessCHBinSH(t)
@@ -482,11 +477,11 @@ func TestAutoResizeDiskGrowDevice(t *testing.T) {
 	const diskCeiling int64 = 512 * 1024 * 1024   // 512 MiB grow ceiling (keeps test host-friendly)
 
 	// Cmdline: shadow at /dev/vdb (not workspace), workspace at /dev/vdc.
-	// Auto-resize args follow the -- already in arWsMountCmdline.
+	// PID-1 args follow the -- already in arWsMountCmdline.
 	svCmdline := arWsMountCmdline([]agent.GuestMount{
 		{Device: arGuestDev(0), Target: "/shadow", FSType: "ext4", IsWorkspace: false},
 		{Device: arGuestDev(1), Target: "/workspace", FSType: "ext4", IsWorkspace: true},
-	}) + " --auto-resize --mem-ceiling=" + strconv.FormatInt(memCeiling, 10)
+	}) + " --mem-ceiling=" + strconv.FormatInt(memCeiling, 10)
 	t.Logf("supervisor cmdline: %s", svCmdline)
 
 	var rootfsDiskPath string
@@ -542,7 +537,7 @@ func TestAutoResizeDiskGrowDevice(t *testing.T) {
 
 	// ── Step 4: SpawnDetached with disk grow governor ─────────────────────────
 	// WorkspaceDiskIndex=1 → GrowDisk targets ExtraDisks[1] (wsPath) → /dev/vdc.
-	pid, err := supervisor.SpawnDetached(supervisor.SpawnConfig{
+	pid, _, err := supervisor.SpawnDetached(supervisor.SpawnConfig{
 		Config: supervisor.Config{
 			SandboxRef: sb.ID.String(),
 			StoreRoot:  storeRoot,
@@ -679,34 +674,30 @@ func TestAutoResizeDiskGrowDevice(t *testing.T) {
 	}
 	governorTargetedIdx1 := strings.Contains(svLogStr, "diskIndex=1")
 	ch400Rejected := strings.Contains(svLogStr, "unexpected status 400")
-	// Rollback is evident when: governor ran, CH rejected, file reverted to original.
-	rollbackEvident := governorTargetedIdx1 && ch400Rejected && !growDetected &&
-		wsSizeAfter == wsSizeBefore
 
-	t.Logf("EVIDENCE supervisor log: governorTargetedIdx1=%v ch400Rejected=%v rollbackEvident=%v",
-		governorTargetedIdx1, ch400Rejected, rollbackEvident)
+	t.Logf("EVIDENCE supervisor log: governorTargetedIdx1=%v ch400Rejected=%v",
+		governorTargetedIdx1, ch400Rejected)
 
-	// Assertion 1: workspace backing file grew, OR governor targeted diskIndex=1 and rollback fired.
+	// Assertion 1: workspace backing file grew.
 	//
-	// Cloud Hypervisor returns HTTP 400 for vm.resize-disk on virtio-blk disks
-	// attached at boot with Direct=true (driver.go:708). When VMResizeDisk fails,
-	// the atomic rollback at driver_resize.go:214-221 fires: os.Truncate(diskPath,
-	// currentSize) restores the file to its pre-expand size. The combination of
-	// (governor ran) + (diskIndex=1 targeted) + (CH rejected HTTP 400) + (file
-	// restored) constitutes live proof of: (a) correct device routing to ExtraDisks[1]
-	// not ExtraDisks[0], (b) atomic rollback executing against a real CH rejection.
+	// An HTTP 400 from vm.resize-disk is not an acceptable outcome: the root cause
+	// (nexus3 sending JSON field "size" instead of "desired_size") was fixed in
+	// client.go:231-233 and confirmed via a live 204 response against CH v52.0.
+	// If ch400Rejected is true here, that fix has regressed.
+	//
+	// A non-grow with no HTTP 400 indicates the governor threshold was not crossed,
+	// checkFreeSpace declined for insufficient host pool space, or the 90s poll
+	// window was exhausted before the grow landed — none of these are API rejections.
 	if growDetected {
-		t.Logf("PASS assertion 1a (full grow): workspace grew %d MiB → %d MiB",
+		t.Logf("PASS assertion 1 (full grow): workspace grew %d MiB → %d MiB",
 			wsSizeBefore>>20, wsSizeAfter>>20)
-	} else if rollbackEvident {
-		t.Logf("PASS assertion 1b (routing+rollback proof): governor targeted diskIndex=1 "+
-			"(ExtraDisks[1]/dev/vdc, NOT ExtraDisks[0]/dev/vdb), CH rejected vm.resize-disk "+
-			"with HTTP 400, rollback at driver_resize.go:214-221 fired → file restored to %d MiB. "+
-			"FINDING CH-RESIZE-400: CH returns HTTP 400 for vm.resize-disk on virtio-blk "+
-			"disks attached at boot with Direct:true (driver.go:708). Boot-time direct-I/O "+
-			"disks are not resizable via the CH API in this configuration. Fix path: add a "+
-			"resize flag to vmDiskConfig for workspace disks or attach without Direct:true.",
-			wsSizeAfter>>20)
+	} else if ch400Rejected {
+		t.Errorf("FAIL assertion 1: vm.resize-disk returned HTTP 400 — regression of the "+
+			"desired_size fix (client.go:231-233); CH v52.0 requires JSON field \"desired_size\" "+
+			"not \"size\"; a live proof against a real CH v52.0 socket returned 204 after the fix "+
+			"(governorTargetedIdx1=%v wsBefore=%d MiB wsAfter=%d MiB) — "+
+			"check supervisor.log for the full CH error body",
+			governorTargetedIdx1, wsSizeBefore>>20, wsSizeAfter>>20)
 	} else {
 		t.Errorf("FAIL assertion 1: workspace backing file did not grow within %s "+
 			"(before=%d MiB after=%d MiB) and governor activity not confirmed in supervisor log "+
@@ -724,20 +715,29 @@ func TestAutoResizeDiskGrowDevice(t *testing.T) {
 			shadowSizeAfter>>20)
 	}
 
-	// Report AR-GA gap: guest filesystem not expanded (resize2fs not called).
+	// Assertion 3: if the backing file grew, the guest filesystem must also have grown.
+	// AR-GA is closed: GrowDisk expands the backing file, calls vm.resize-disk, then sends
+	// EncodeGrowRequest over vsock so the guest agent runs resize2fs. If the grow was not
+	// confirmed (backing file not larger), the vsock path was never reached — skip this check.
 	postGrowSample, _ := dialTelemetrySample(shadowDrv, sb.ID)
 	t.Logf("EVIDENCE post-grow telemetry: DiskTotal=%d MiB (before=%d MiB)",
 		postGrowSample.DiskTotalBytes>>20, firstSample.DiskTotalBytes>>20)
-	if postGrowSample.DiskTotalBytes > firstSample.DiskTotalBytes {
-		t.Logf("PASS (bonus): guest DiskTotal grew %d→%d MiB — resize2fs triggered",
-			firstSample.DiskTotalBytes>>20, postGrowSample.DiskTotalBytes>>20)
+	if growDetected {
+		if postGrowSample.DiskTotalBytes > firstSample.DiskTotalBytes {
+			t.Logf("PASS assertion 3: guest DiskTotal grew %d→%d MiB — resize2fs triggered via GrowRequest vsock",
+				firstSample.DiskTotalBytes>>20, postGrowSample.DiskTotalBytes>>20)
+		} else {
+			t.Errorf("FAIL assertion 3: backing file grew but guest DiskTotal unchanged (%d MiB) — "+
+				"GrowRequest vsock round-trip or in-guest resize2fs may have failed; check supervisor.log",
+				postGrowSample.DiskTotalBytes>>20)
+		}
 	} else {
-		t.Logf("FINDING AR-GA gap: guest DiskTotal unchanged (%d MiB). "+
-			"GrowDisk (driver_resize.go) truncates the backing file and calls vm.resize-disk, "+
-			"but does NOT send EncodeGrowRequest (disk.grow vsock) to the guest. "+
-			"The guest handler handleDiskGrow (resize_actuate_linux.go:241) is implemented "+
-			"but the host caller is absent from GrowDisk. The CH-RESIZE-400 finding is "+
-			"upstream of resize2fs (the file can't grow if CH rejects vm.resize-disk).",
+		// Grow was not confirmed: backing file did not grow within the poll window, so
+		// GrowDisk either never ran (governor threshold not crossed), was rejected by
+		// checkFreeSpace (host pool insufficient), hit a filesystem or CH API error, or
+		// the 90s poll window was exhausted. resize2fs is not reached in any of these cases.
+		t.Logf("INFO assertion 3 skipped: backing-file grow not confirmed; "+
+			"DiskTotal=%d MiB (unchanged) — check supervisor.log for govern.disk or GrowDisk errors",
 			postGrowSample.DiskTotalBytes>>20)
 	}
 }
@@ -862,7 +862,7 @@ func TestAutoResizeVCPU(t *testing.T) {
 	var bootDrv *cloudhypervisor.CHDriver
 
 	svCmdline := diskBootCmdlineBase +
-		" -- --auto-resize --mem-ceiling=" + strconv.FormatInt(memCeiling, 10)
+		" -- --mem-ceiling=" + strconv.FormatInt(memCeiling, 10)
 
 	factory := service.DriverFactory(func(resolvedExt4 string, _ []service.ExtraDisk) (driver.Driver, error) {
 		rootfsDiskPath = resolvedExt4
@@ -912,7 +912,7 @@ func TestAutoResizeVCPU(t *testing.T) {
 	// BootVCPUs=1 seeds the resizer so CurrentVCPUs() returns 1 before any resize.
 	// The governor's CPU axis is eager (cpuGrowWindow=0s): one sample at >= 15%
 	// fires ResizeCPU immediately.
-	pid, err := supervisor.SpawnDetached(supervisor.SpawnConfig{
+	pid, _, err := supervisor.SpawnDetached(supervisor.SpawnConfig{
 		Config: supervisor.Config{
 			SandboxRef: sb.ID.String(),
 			StoreRoot:  storeRoot,

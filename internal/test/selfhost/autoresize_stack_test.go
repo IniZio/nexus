@@ -6,7 +6,7 @@ package selfhost
 //
 // TestAutoResizeZRAMBeforeWorkload proves that ZRAM swap is enabled BEFORE any
 // workload starts — a MUST from spec-08 §2.4 — by inspecting /proc/swaps and
-// /proc/sys/vm/swappiness inside a real VM booted with --auto-resize.
+// /proc/sys/vm/swappiness inside a real VM (auto-resize is unconditional).
 //
 // TestAutoResizeTmpGrowsWithMemTotal proves that the /tmp tmpfs resizer grows
 // /tmp proportionally as MemTotal grows (critical for buildkit which stages
@@ -43,7 +43,7 @@ import (
 )
 
 // TestAutoResizeZRAMBeforeWorkload proves ZRAM swap is active before any
-// workload when the agent is booted with --auto-resize (spec-08 §2.4 MUST).
+// workload (auto-resize is unconditional; spec-08 §2.4 MUST).
 //
 // Assertions:
 //  1. /proc/swaps has at least one non-header line referencing zram.
@@ -231,9 +231,9 @@ func TestAutoResizeZRAMBeforeWorkload(t *testing.T) {
 	// ── Step 6: SpawnDetached — supervisor owns VM with auto-resize ───────────
 	const memCeilingBytes = 1024 * 1024 * 1024 // 1 GiB
 	svCmdline := diskBootCmdlineBase +
-		" -- --auto-resize --mem-ceiling=" + strconv.FormatInt(memCeilingBytes, 10)
+		" -- --mem-ceiling=" + strconv.FormatInt(memCeilingBytes, 10)
 
-	t.Log("spawning detached supervisor with auto-resize …")
+	t.Log("spawning detached supervisor …")
 	spawnCfg := supervisor.SpawnConfig{
 		Config: supervisor.Config{
 			SandboxRef: sb.ID.String(),
@@ -257,7 +257,7 @@ func TestAutoResizeZRAMBeforeWorkload(t *testing.T) {
 		LogPath:      filepath.Join(stateDir, "supervisor.log"),
 		ReadyTimeout: 3 * time.Minute,
 	}
-	pid, err := supervisor.SpawnDetached(spawnCfg)
+	pid, _, err := supervisor.SpawnDetached(spawnCfg)
 	if err != nil {
 		t.Fatalf("supervisor.SpawnDetached: %v", err)
 	}
@@ -591,9 +591,9 @@ func TestAutoResizeTmpGrowsWithMemTotal(t *testing.T) {
 	// ── Step 6: SpawnDetached — supervisor owns VM with auto-resize ───────────
 	const memCeilingBytes = 1024 * 1024 * 1024 // 1 GiB
 	svCmdline := diskBootCmdlineBase +
-		" -- --auto-resize --mem-ceiling=" + strconv.FormatInt(memCeilingBytes, 10)
+		" -- --mem-ceiling=" + strconv.FormatInt(memCeilingBytes, 10)
 
-	t.Log("spawning detached supervisor with auto-resize …")
+	t.Log("spawning detached supervisor …")
 	spawnCfg := supervisor.SpawnConfig{
 		Config: supervisor.Config{
 			SandboxRef: sb.ID.String(),
@@ -617,7 +617,7 @@ func TestAutoResizeTmpGrowsWithMemTotal(t *testing.T) {
 		LogPath:      filepath.Join(stateDir, "supervisor.log"),
 		ReadyTimeout: 3 * time.Minute,
 	}
-	pid, err := supervisor.SpawnDetached(spawnCfg)
+	pid, _, err := supervisor.SpawnDetached(spawnCfg)
 	if err != nil {
 		t.Fatalf("supervisor.SpawnDetached: %v", err)
 	}
@@ -786,7 +786,7 @@ func TestAutoResizeTmpGrowsWithMemTotal(t *testing.T) {
 			"  firstTmpBytes=%d (%d MiB)\n"+
 			"  grownTmpBytes=%d (%d MiB)\n"+
 			"  firstMemTotal=%d MiB → lastMemTotal=%d MiB\n"+
-			"  Check: is resize_tmp_linux.go goroutine wired under --auto-resize?",
+			"  Check: is resize_tmp_linux.go goroutine running? (auto-resize is unconditional)",
 			firstTmpBytes, firstTmpBytes>>20,
 			grownTmpBytes, grownTmpBytes>>20,
 			firstSample.MemTotalBytes>>20, lastSample.MemTotalBytes>>20)

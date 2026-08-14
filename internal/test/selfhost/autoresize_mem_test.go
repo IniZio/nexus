@@ -16,7 +16,8 @@ package selfhost
 //     leaving MemAvailable ≈ 350–400 MiB < MemMin → governor must resize).
 //  4. Host MemAvailable does not drop below 1 GiB during the test (reported
 //     but not a hard failure; the headroom guard is a governor side-effect).
-//  5. `--auto-resize` appears in /proc/cmdline after the `--` separator.
+//  5. `--mem-ceiling=` appears in /proc/cmdline after the `--` separator with
+//     the expected value.
 //
 // # Running
 //
@@ -232,9 +233,9 @@ func TestAutoResizeMemGrow(t *testing.T) {
 	// and calls buildCmdline which inserts the memhp params before `--`.
 	const memCeilingBytes = 1024 * 1024 * 1024 // 1 GiB
 	svCmdline := diskBootCmdlineBase +
-		" -- --auto-resize --mem-ceiling=" + strconv.FormatInt(memCeilingBytes, 10)
+		" -- --mem-ceiling=" + strconv.FormatInt(memCeilingBytes, 10)
 
-	t.Log("spawning detached supervisor with auto-resize …")
+	t.Log("spawning detached supervisor …")
 	spawnCfg := supervisor.SpawnConfig{
 		Config: supervisor.Config{
 			SandboxRef: sb.ID.String(),
@@ -258,7 +259,7 @@ func TestAutoResizeMemGrow(t *testing.T) {
 		LogPath:      filepath.Join(stateDir, "supervisor.log"),
 		ReadyTimeout: 3 * time.Minute,
 	}
-	pid, err := supervisor.SpawnDetached(spawnCfg)
+	pid, _, err := supervisor.SpawnDetached(spawnCfg)
 	if err != nil {
 		t.Fatalf("supervisor.SpawnDetached: %v", err)
 	}
@@ -286,7 +287,8 @@ func TestAutoResizeMemGrow(t *testing.T) {
 	// Read /proc/cmdline and confirm:
 	//   - memhp_default_state=online and memory_hotplug.online_policy=auto-movable
 	//     appear BEFORE the `--` separator (kernel args, inserted by buildCmdline).
-	//   - --auto-resize appears AFTER the `--` separator (PID-1 args).
+	//   - --mem-ceiling=<value> appears AFTER the `--` separator (PID-1 args).
+	//     Auto-resize is unconditional; there is no --auto-resize token.
 	cmdlineCtx, cmdlineCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cmdlineCancel()
 
@@ -329,11 +331,19 @@ func TestAutoResizeMemGrow(t *testing.T) {
 		t.Log("PASS assertion 1b: memory_hotplug.online_policy=auto-movable in kernel args")
 	}
 
-	// Assertion 5: --auto-resize after `--`.
-	if !strings.Contains(pid1Args, "--auto-resize") {
-		t.Errorf("FAIL assertion 5: --auto-resize not found in PID-1 args: %q", pid1Args)
+	// Assertion 5: --mem-ceiling=<expected> after `--`.
+	// Auto-resize is unconditional; the PID-1 wire contract is " --mem-ceiling=<bytes>"
+	// with NO --auto-resize token (that flag no longer exists).
+	expectedCeilingArg := "--mem-ceiling=" + strconv.FormatInt(memCeilingBytes, 10)
+	if !strings.Contains(pid1Args, expectedCeilingArg) {
+		t.Errorf("FAIL assertion 5: %s not found in PID-1 args: %q", expectedCeilingArg, pid1Args)
 	} else {
-		t.Log("PASS assertion 5: --auto-resize in PID-1 args")
+		t.Logf("PASS assertion 5: %s in PID-1 args", expectedCeilingArg)
+	}
+	if strings.Contains(pid1Args, "--auto-resize") {
+		t.Errorf("FAIL assertion 5b: stale --auto-resize token found in PID-1 args (flag was removed): %q", pid1Args)
+	} else {
+		t.Log("PASS assertion 5b: --auto-resize token absent (unconditional; expected)")
 	}
 
 	// ── Step 9: Assertion 2 — vsock:3002 telemetry + first sample ─────────────
