@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"os"
 	"testing"
 
+	"github.com/IniZio/nexus3/internal/core/builder"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
@@ -335,5 +337,160 @@ func TestCreateAndBoot_ExtraDisksReachFactory(t *testing.T) {
 		if d.Path != want[i].Path {
 			t.Errorf("ExtraDisk[%d].Path = %q, want %q", i, d.Path, want[i].Path)
 		}
+	}
+}
+
+// stubCapturer returns a WorkspaceCapturer stub that creates an empty file at
+// outExt4 (so the deferred cleanup has something to remove) and records the
+// arguments it was called with. The returned pointer fields are populated
+// after CreateAndBoot returns.
+func stubCapturer(calledSrcDir, calledOutExt4 *string, calledMaxBytes *int64) func(ctx context.Context, srcDir, outExt4 string, maxBytes int64) error {
+	return func(_ context.Context, srcDir, outExt4 string, maxBytes int64) error {
+		if calledSrcDir != nil {
+			*calledSrcDir = srcDir
+		}
+		if calledMaxBytes != nil {
+			*calledMaxBytes = maxBytes
+		}
+		if calledOutExt4 != nil {
+			*calledOutExt4 = outExt4
+		}
+		// Create an empty placeholder so the deferred os.Remove succeeds.
+		f, err := os.Create(outExt4)
+		if err != nil {
+			return err
+		}
+		return f.Close()
+	}
+}
+
+// TestCreateAndBoot_WorkspaceReachesFactory verifies the Workspace threading
+// seam: when Workspace is set, the captured disk path is appended to the
+// ExtraDisks slice forwarded to the DriverFactory. The test uses an injected
+// WorkspaceCapturer stub so no mke2fs binary is required.
+func TestCreateAndBoot_WorkspaceReachesFactory(t *testing.T) {
+	ctx := context.Background()
+	cacheRoot := t.TempDir()
+	cache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	img := putFakeImage(t, ctx, cache)
+
+	diskDir := t.TempDir()
+
+	var capturedDisks []ExtraDisk
+	capturingFactory := DriverFactory(func(_ string, extraDisks []ExtraDisk) (driver.Driver, error) {
+		capturedDisks = extraDisks
+		return fake.New(), nil
+	})
+
+	var calledOutExt4 string
+	fd := fake.New()
+	svc := newTestSvc(t, fd)
+
+	_, err = CreateAndBoot(ctx, svc, cache, capturingFactory, noopProbe,
+		"proj", "ws-seam",
+		CreateAndBootOptions{
+			Image:     ImageSpec{Digest: string(img.Digest)},
+			CacheRoot: cacheRoot,
+			DiskDir:   diskDir,
+			Workspace: &WorkspaceSpec{
+				SourcePath: "/host/repo",
+				GuestPath:  "/workspace/repo",
+			},
+			WorkspaceCapturer: stubCapturer(nil, &calledOutExt4, nil),
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: %v", err)
+	}
+
+	// The factory must have received exactly one extra disk (the workspace).
+	if len(capturedDisks) != 1 {
+		t.Fatalf("factory received %d extra disks, want 1", len(capturedDisks))
+	}
+	// The disk path forwarded to the factory must match the one the capturer wrote.
+	if capturedDisks[0].Path != calledOutExt4 {
+		t.Errorf("factory ExtraDisk[0].Path = %q, capturer wrote to %q", capturedDisks[0].Path, calledOutExt4)
+	}
+}
+
+// TestCreateAndBoot_NoWorkspace_LegacyBehaviour verifies that a nil Workspace
+// field leaves ExtraDisks untouched: the DriverFactory receives an empty slice
+// (not a workspace disk appended behind the caller's back).
+func TestCreateAndBoot_NoWorkspace_LegacyBehaviour(t *testing.T) {
+	ctx := context.Background()
+	cacheRoot := t.TempDir()
+	cache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	img := putFakeImage(t, ctx, cache)
+
+	var capturedDisks []ExtraDisk
+	capturingFactory := DriverFactory(func(_ string, extraDisks []ExtraDisk) (driver.Driver, error) {
+		capturedDisks = extraDisks
+		return fake.New(), nil
+	})
+
+	fd := fake.New()
+	svc := newTestSvc(t, fd)
+
+	_, err = CreateAndBoot(ctx, svc, cache, capturingFactory, noopProbe,
+		"proj", "no-ws",
+		CreateAndBootOptions{
+			Image:     ImageSpec{Digest: string(img.Digest)},
+			CacheRoot: cacheRoot,
+			// Workspace intentionally nil.
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: %v", err)
+	}
+
+	if len(capturedDisks) != 0 {
+		t.Errorf("factory received %d extra disks with nil Workspace, want 0", len(capturedDisks))
+	}
+}
+
+// TestCreateAndBoot_WorkspaceDefaultThresholdApplied verifies that a zero
+// CaptureMaxBytes in WorkspaceSpec causes CreateAndBoot to pass
+// builder.DefaultCaptureMaxBytes to the capturer, not zero.
+func TestCreateAndBoot_WorkspaceDefaultThresholdApplied(t *testing.T) {
+	ctx := context.Background()
+	cacheRoot := t.TempDir()
+	cache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	img := putFakeImage(t, ctx, cache)
+
+	diskDir := t.TempDir()
+
+	var calledMaxBytes int64
+	fd := fake.New()
+	svc := newTestSvc(t, fd)
+
+	_, err = CreateAndBoot(ctx, svc, cache, fakeDriverFactory(fd), noopProbe,
+		"proj", "ws-threshold",
+		CreateAndBootOptions{
+			Image:     ImageSpec{Digest: string(img.Digest)},
+			CacheRoot: cacheRoot,
+			DiskDir:   diskDir,
+			Workspace: &WorkspaceSpec{
+				SourcePath:      "/host/repo",
+				GuestPath:       "/workspace/repo",
+				CaptureMaxBytes: 0, // explicitly zero → must use default
+			},
+			WorkspaceCapturer: stubCapturer(nil, nil, &calledMaxBytes),
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: %v", err)
+	}
+
+	if calledMaxBytes != builder.DefaultCaptureMaxBytes {
+		t.Errorf("capturer maxBytes = %d, want %d (builder.DefaultCaptureMaxBytes)", calledMaxBytes, builder.DefaultCaptureMaxBytes)
 	}
 }

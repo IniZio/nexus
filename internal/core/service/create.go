@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/IniZio/nexus3/internal/core/builder"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/image"
@@ -33,6 +34,28 @@ var ErrAgentUnreachable = errors.New("service: guest agent did not answer after 
 type ExtraDisk struct {
 	// Path is the host filesystem path to the raw ext4 disk image.
 	Path string
+}
+
+// WorkspaceSpec describes a host git worktree to capture and attach to the
+// sandbox VM as a read-write workspace disk. When set in CreateAndBootOptions,
+// CreateAndBoot calls builder.WorktreeToDisk to snapshot the tree to a raw
+// ext4 image, then appends an ExtraDisk entry for it so the DriverFactory
+// receives it as a virtio-blk device alongside any caller-supplied ExtraDisks.
+type WorkspaceSpec struct {
+	// SourcePath is the absolute path to the host git worktree root.
+	SourcePath string
+
+	// GuestPath is the absolute path inside the VM where the in-guest agent
+	// will mount the workspace disk (e.g. "/workspace/myrepo"). CreateAndBoot
+	// does not perform the mount; it records GuestPath so the guest agent can
+	// derive the correct agent.GuestMount mapping from the device index.
+	GuestPath string
+
+	// CaptureMaxBytes caps the total size of the captured workspace passed to
+	// builder.WorktreeToDisk. When zero, builder.DefaultCaptureMaxBytes (2 GiB)
+	// is used. Prefer the default for unknown workspaces: too strict produces a
+	// legible error; too loose can OOM the host via ext4 page-cache pressure.
+	CaptureMaxBytes int64
 }
 
 // DriverFactory constructs a Driver pre-configured for a specific ext4 disk
@@ -179,6 +202,19 @@ type CreateAndBootOptions struct {
 	// them into the driver Config. ExtraDisks[0] becomes /dev/vdb, [1] /dev/vdc,
 	// and so on. Leave nil to attach only the rootfs disk (vda).
 	ExtraDisks []ExtraDisk
+
+	// Workspace, when non-nil, captures the host git worktree described by
+	// WorkspaceSpec to a raw ext4 disk image and appends it to ExtraDisks
+	// before the DriverFactory is called. The workspace disk therefore occupies
+	// /dev/vd{b + len(ExtraDisks)} in attachment order. Nil means no workspace
+	// capture; existing callers that omit this field are unaffected.
+	Workspace *WorkspaceSpec
+
+	// WorkspaceCapturer is the function used to build the workspace ext4 image
+	// when Workspace is non-nil. Nil selects builder.WorktreeToDisk (the
+	// production implementation). Inject a stub in tests to avoid requiring
+	// mke2fs on the test host.
+	WorkspaceCapturer func(ctx context.Context, srcDir, outExt4 string, maxBytes int64) error
 }
 
 // WireClaudeEgress configures opts for an agent sandbox that runs claude
@@ -299,12 +335,53 @@ func CreateAndBoot(
 		ext4Path = cp
 	}
 
+	var workspaceDiskPath string
 	success := false
 	defer func() {
-		if !success && diskCopyPath != "" {
-			_ = os.Remove(diskCopyPath)
+		if !success {
+			if diskCopyPath != "" {
+				_ = os.Remove(diskCopyPath)
+			}
+			if workspaceDiskPath != "" {
+				_ = os.Remove(workspaceDiskPath)
+			}
 		}
 	}()
+
+	// ── 4.5 Capture workspace to ext4 (if requested) ─────────────────────────
+	//
+	// WorktreeToDisk (or the injected WorkspaceCapturer stub) walks the host
+	// source tree, applies the .dockerignore + nexus3 exclusion policy, enforces
+	// the size guard, and writes a raw ext4 image. The image is appended to
+	// opts.ExtraDisks so the DriverFactory sees it as the last extra disk:
+	// caller-supplied ExtraDisks[0..n-1] keep their positions and the workspace
+	// lands at /dev/vd{b+n}. On any failure the deferred cleanup removes the
+	// partial image so no orphan disk leaks to DiskDir.
+	if ws := opts.Workspace; ws != nil {
+		captureFn := opts.WorkspaceCapturer
+		if captureFn == nil {
+			captureFn = builder.WorktreeToDisk
+		}
+		maxBytes := ws.CaptureMaxBytes
+		if maxBytes == 0 {
+			maxBytes = builder.DefaultCaptureMaxBytes
+		}
+		wsDiskDir := opts.DiskDir
+		if wsDiskDir == "" {
+			if wsDiskDir, err = defaultDiskDir(); err != nil {
+				return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: workspace disk dir: %w", project, name, err)
+			}
+		}
+		if err = os.MkdirAll(wsDiskDir, 0o700); err != nil {
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: workspace disk dir mkdir: %w", project, name, err)
+		}
+		wsDiskPath := filepath.Join(wsDiskDir, id.String()+"-workspace.ext4")
+		if err = captureFn(ctx, ws.SourcePath, wsDiskPath, maxBytes); err != nil {
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: capture workspace: %w", project, name, err)
+		}
+		workspaceDiskPath = wsDiskPath
+		opts.ExtraDisks = append(opts.ExtraDisks, ExtraDisk{Path: wsDiskPath})
+	}
 
 	// ── 5. Construct per-sandbox driver instance ──────────────────────────────
 	bootDrv, err := newDriver(ext4Path, opts.ExtraDisks)
