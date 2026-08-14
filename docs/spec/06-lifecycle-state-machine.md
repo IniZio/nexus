@@ -2,6 +2,8 @@
 
 *Purpose: the five lifecycle states, the twelve edges, leases for in-flight operations, and substrate-first crash recovery.*
 
+> **Audit note (2026-08-14):** This document was reviewed against the live codebase. Stale claims are annotated with **Corrected 2026-08-14:** in-line. New code-derived state diagrams with per-transition function citations live in **doc 13** (`13-state-machines.md`). That document is authoritative for diagram accuracy; this document remains authoritative for the rulings and design reasoning that the diagrams implement.
+
 ## Five states
 
 **`created` · `running` · `paused` · `stopped` · `error`** — and nothing else (ticket 19 ruling 16). Old nexus's twelve are cut to five:
@@ -28,13 +30,17 @@ The table below has thirteen rows: **twelve user-ruled edges plus edge 4** (rest
 | 6 | `running` | `paused` | `nexus3 pause` | user | a resting place, not an internal step (ruling 8) |
 | 7 | `paused` | `running` | `nexus3 resume` | user | |
 | 8 | `running` | `stopped` | `nexus3 stop` | user | `stop_reason = clean` |
-| 9 | `paused` | `stopped` | `nexus3 stop` | user | `stop_reason = clean` |
+| 9 | `paused` | `stopped` | `nexus3 stop` | user | `stop_reason = clean` — **Corrected 2026-08-14:** this edge does NOT exist in the code's transition table (`internal/core/lifecycle/transitions.go`). `TriggerStop` is only valid from `running`; calling `nexus3 stop` on a paused sandbox returns `IllegalTransitionError`. To stop a paused sandbox the operator must first `nexus3 resume` then `nexus3 stop`. |
 | 10 | `paused` \| `running` | `stopped` | reconcile finds no substrate — memory destroyed (host reboot / VMM kill / power loss) | reconcile | `stop_reason = memory_lost`. **Not** an automatic transition: nothing decided to stop it (ruling 9, extended to the `running` variant — see the intro note above and the recovery bullet below) |
-| 11 | `running` | ∅ | `--rm` primary-command exit, **or** `nexus3 rm` | supervisor / user | unconditional on exit status; record deleted; write-ahead marker |
-| 12 | any | ∅ | `nexus3 rm` | user | including from `error` — this is how a terminal record is cleared |
-| 13 | `created`\|`stopped` | `error` | write-ahead marker present for a crashed **removal** or **save**, **AND substrate observation finds nothing** | reconcile | the only two `error` producers. Terminal but not a tombstone: edge 12 clears it |
+| 11 | `running` | ∅ | `--rm` primary-command exit | supervisor | unconditional on exit status; record deleted; write-ahead marker. **Corrected 2026-08-14:** this doc previously listed `nexus3 rm` as a co-trigger on edge 11. In code, `--rm` primary-command exit is a distinct trigger (`TriggerPrimaryCommandExit`, `transitions.go` row 13). `nexus3 rm` follows the separate four-step `service.Remove` path (see edge 12 below). |
+| 12 | any | ∅ | `nexus3 rm` | user | including from `error`. `service.Remove` (`service.go:490`) bypasses the lifecycle table: (1) write-ahead marker, (2) `driver.Stop` inside lock, (3) `store.Delete`, (4) reap disk. **Corrected 2026-08-14:** doc previously implied edge 12 is the only way to clear `error`. The code also has `TriggerReset` (`error`→`stopped`; `transitions.go` row 12) — see error section below. |
+| 13 | any | `error` | `TriggerFail` from substrate watchdog, VMM signal handler, or any unrecoverable condition | system | **Corrected 2026-08-14:** old doc restricted this edge to `created`\|`stopped` with the "write-ahead marker + absent substrate" precondition. The code table has `TriggerFail` from **every** state (created, running, paused, stopped, error→error idempotent). The write-ahead-marker + absent-substrate path is one producer; the code supports a broader `TriggerFail` signal. |
 
 **Self-edges held under a lease** (operations that most look like states and are not): **snapshot** (`running`→`running`, `stopped`→`stopped`), **fork** (parent unchanged; edge 5 is the child).
+
+**Corrected 2026-08-14 — code table also includes:**
+- `TriggerReset` (`error`→`stopped`): user-acknowledged error recovery (`transitions.go` row 12). The doc previously implied the only exit from `error` was `nexus3 rm`. `TriggerReset` is a second exit path, returning to `stopped` so the sandbox can be restarted or removed from a non-error state.
+- `TriggerFail` is idempotent on `error` (`error`→`error`, row 11): a second failure signal while already in error does not produce `IllegalTransitionError`.
 
 ## `--rm` semantics
 
@@ -43,15 +49,17 @@ The table below has thirteen rows: **twelve user-ruled edges plus edge 4** (rest
 - The **per-sandbox supervisor owns the removal edge** (ruling 3) — the no-central-daemon architecture permits long-lived per-sandbox supervisors and forbids a central reaper.
 - **Removal deletes the record** (ruling 10): no `removed` state, no tombstone; `nexus3 ls` simply stops listing it; `--json` can never report `removed`.
 
-## `error` — exactly two producers, and no `running`→`error` edge
+## `error` — producers and the `running`→`error` edge
 
-`error` means exactly one thing: **a write-ahead marker says a destructive operation crashed part-way, and nexus3 will not guess** (ruling 13). Two producers, no others:
+`error` means exactly one thing: **a write-ahead marker says a destructive operation crashed part-way, and nexus3 will not guess** (ruling 13). Two originally-ruled producers, no others:
 
 - **removal crashed mid-way** (rulings 5, 11);
 - **save/snapshot crashed mid-way** — detected by the marker plus the explicit validation step (doc 05).
 
+**Corrected 2026-08-14:** The old document claimed "exactly two `error` producers" and "no `running`→`error` edge." The code table (`transitions.go`) has **`TriggerFail` from every state**, including `running` and `paused` (rows 7–11). The write-ahead-marker-plus-absent-substrate path is one concrete emitter of `TriggerFail`; the signal can also be emitted by the substrate watchdog or VMM signal handler for any unrecoverable condition. The "exactly two producers" claim reflects the ruled design intent, not the code's actual breadth.
+
 - A **failed `start`/boot is explicitly NOT `error`** (ruling 13): the command returns non-zero, the lease releases, the durable condition stays `stopped`/`created`. Absorbing failed boots into `error` was declined — it would give `stopped` a second meaning.
-- **There is no `running`→`error` edge.** Edge 13 is **gated on an empty substrate**: the marker is consulted only *after* substrate observation, never instead of it. A marker over a **live VM** is an orphan — the sandbox is `running` and stays `running`, and the suspect thing is the **`Snapshot` artifact**, not the sandbox. An earlier draft allowed `running`→`error` on a marker alone; that is old nexus's discarded-healthy-VM bug verbatim (a parent in `StateSnapshotting` with a healthy VM, relabelled `error`).
+- The old doc's "no `running`→`error` edge" claim is now **partially stale**: the ruling that a marker over a live VM is an orphan (sandbox stays `running`) is intact as reconciliation policy, but `TriggerFail` from `running` exists in the code table for VMM crash / signal-handler failure paths.
 
 ## Stop-reason qualifier
 
@@ -75,6 +83,16 @@ Recovery (`internal/core/recovery`) **observes the substrate FIRST; the durable 
 
 - A **fan-out child is an ordinary Sandbox** on the identical machine, provenance a field (ruling 14). `fork --count 3` produces three Sandboxes already `running`, each indistinguishable from a cold-booted one except by provenance.
 - **Post-snapshot state is uniform `running` on both platforms** (ruling 15); the Linux/macOS asymmetry is cost, not state, and stays inside the driver. Original questions 1 and 3 answer *stays inside the driver* — not contingent on ticket 33, which changes cost not state.
+
+## Lifecycles not covered here
+
+Three new operational lifecycles landed after this document was written and are covered exclusively in **doc 13** (`13-state-machines.md`) with code-derived mermaid diagrams:
+
+- **Detached supervisor** (`nexus3 __supervisor`, `internal/supervisor/supervisor.go:RunDetached`) — persistent mode that outlives the CLI, plus ephemeral mode for builder VMs.
+- **Builder VM** (`internal/core/builder/vmbuilder.go:BuildInVM`) — transient `__builder` sandbox record, ephemeral supervisor, in-guest build, artifact harvest.
+- **Resize governor** (`internal/core/govern/`) — three-axis (memory / CPU / disk) control loop running inside each supervisor process.
+
+The `internal/core/vmcfg` package (`vmcfg.Resolve`) is the single source of truth for memory/vCPU ceilings and the PID-1 `--mem-ceiling=<bytes>` cmdline argument; auto-resize is now **unconditional** (D-DC-30, 2026-08-14) — no opt-in flag.
 
 ---
 

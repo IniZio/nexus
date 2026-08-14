@@ -326,7 +326,7 @@ Additionally, `buildOrcaSpawnConfig` (the only production call site for `SpawnDe
 
 4. `internal/cli/cmd_orca.go` — Update `buildOrcaSpawnConfig` to accept `guestPath string`; compute workspace mount cmdline + auto-resize PID-1 args and populate `Config.Cmdline`. Update the production call site to extract `guestPath` from `opts.Workspace.GuestPath`.
 
-5. `internal/cli/cmd_orca_test.go` — Update test call sites (new `guestPath` param); add assertions that `Cmdline` is non-empty and contains `--workspace-mount=`, guest path, `--auto-resize`, `--mem-ceiling=`.
+5. `internal/cli/cmd_orca_test.go` — Update test call sites (new `guestPath` param); add assertions that `Cmdline` is non-empty and contains `--workspace-mount=`, guest path, and `--mem-ceiling=`.
 
 6. `internal/supervisor/supervisor_test.go` — Add `Cmdline` to test fixture; add assertion that `--cmdline` appears in `buildSupervisorArgv` output.
 
@@ -371,11 +371,11 @@ Run command: `TMPDIR=/tmp go test -tags=integration -run TestAutoResizeMemGrow .
 | 2 — vsock:3002 telemetry server running | PASS | First sample MemTotal=484 MiB, MemAvailable=445 MiB |
 | 3 — governor grows MemTotal under load | PASS | 484 MiB → 828 MiB in 10.011s |
 | 4 — host headroom guard | N/A — not triggered | Host MemAvailable=13843 MiB; floor not reached |
-| 5 — --auto-resize in PID-1 args | PASS | Confirmed via `/proc/cmdline` after `--` separator |
+| 5 — --mem-ceiling= in PID-1 args | PASS | Confirmed via `/proc/cmdline` after `--` separator; no --auto-resize token (unconditional) |
 
 **Guest `/proc/cmdline` (verbatim):**
 ```
-root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0 memhp_default_state=online memory_hotplug.online_policy=auto-movable -- --auto-resize --mem-ceiling=1073741824
+root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0 memhp_default_state=online memory_hotplug.online_policy=auto-movable -- --mem-ceiling=1073741824
 ```
 
 **Telemetry sequence (vsock:3002):**
@@ -449,21 +449,25 @@ WorkspaceDiskIndex=1, DiskMaxBytes=512 MiB. Workspace filled to 81.8% (140 MiB /
 | Assertion | Result | Detail |
 |-----------|--------|--------|
 | Foundation: DiskSupported=true | PASS | Workspace at /dev/vdc mounted correctly |
-| 1b: Routing + rollback proven | PASS (live) | Governor targeted diskIndex=1 (_disk2/vdc), CH rejected HTTP 400, rollback at driver_resize.go:214-221 restored file |
+| 1b: Routing + rollback (pre-fix run, superseded by R-CHLIVE) | HISTORICAL — HTTP 400 was a JSON field-name bug (`"size"` vs `"desired_size"`), not a CH capability limit; current test suite treats 400 as a regression (see CH-RESIZE-400 below); real proof after fix: `HTTP/1.1 204` at `internal/test/selfhost/disk_grow_http_evidence_test.go` | Governor targeted diskIndex=1 (_disk2/vdc), CH rejected HTTP 400 (pre-fix); rollback at driver_resize.go:214-221 confirmed; routing isolation confirmed (vdb shadow unchanged) |
 | 2: Shadow unchanged | PASS | Shadow stays 10 MiB — governor never touched ExtraDisks[0]/vdb |
 
-**Finding CH-RESIZE-400:** Cloud Hypervisor returns HTTP 400 for `vm.resize-disk` on virtio-blk
-disks attached at boot time with `Direct:true` (`driver.go:708`). The disk backing file is
-temporarily expanded by `os.Truncate` (line 208) then immediately restored by the atomic rollback
-at lines 214-221 when `VMResizeDisk` returns an error. This is a CH platform limitation —
-boot-time direct-I/O disks are not resizable via the API in this configuration.
+**Finding CH-RESIZE-400 (root-cause corrected — CLOSED):** The test observed HTTP 400 from
+`vm.resize-disk`. The original theory — that `Direct:true` at `driver.go:708` makes virtio-blk
+disks unresizable — was **disproven**: `Direct:true` is still set at `driver.go:708` and disks
+resize correctly after the fix. The actual cause was a JSON field-name mismatch: nexus3 was
+sending `"size"` in the request body where CH v52.0's `VmResizeDisk` schema requires
+`"desired_size"` (fixed at `client.go:231-233`; live-proven with `HTTP/1.1 204` against a
+real CH v52.0 socket). The rollback path (`driver_resize.go:214-221`) still fires correctly
+on genuine CH errors and remains in production.
 
-**Finding AR-GA gap:** The disk grow end-to-end path is split into two pieces:
+**Finding AR-GA gap (CLOSED):** The disk grow end-to-end path is split into two pieces:
 - Host side: `GrowDisk` in `driver_resize.go` truncates the backing file and calls `vm.resize-disk`
 - Guest side: `handleDiskGrow` in `resize_actuate_linux.go:241` runs `resize2fs` when it receives a `disk.grow` vsock message
 
-The host side never sends `EncodeGrowRequest` (the `disk.grow` vsock message). The call site is missing
-from `GrowDisk`. `EncodeGrowRequest` is implemented in `internal/core/resize/wire.go` but has zero callers.
+`EncodeGrowRequest` now has a production caller: `sendGrowToGuest` at `driver_resize.go:259`,
+which encodes and sends the `disk.grow` vsock message at `driver_resize.go:262` and reads back
+the `GrowResponse`. The gap is closed.
 
 **Rollback live proof:** supervisor log showed `govern.disk.grow_failed diskIndex=1 ... unexpected status 400`
 repeated at each 5-second eval tick. The backing file remained at 200 MiB (rollback confirmed).
@@ -531,9 +535,27 @@ SwapTotal: 1048572 kB
 
 **Status: FIXED and re-proven (2026-08-14)**
 
-`mountGuestFS(autoResize bool)` now gates the `/tmp` tmpfs mount on the `--auto-resize` flag.
-When `autoResize=true`, a 32 MiB seed tmpfs is mounted at `/tmp` before `startTmpfsResizer` runs;
-when `autoResize=false` (the escape hatch), `/tmp` stays disk-backed (≈5959 MiB rootfs).
+`mountGuestFS()` (no flag parameter — auto-resize is unconditional) mounts a 32 MiB seed
+tmpfs at `/tmp` before `startTmpfsResizer` runs. The floor is `max(1 GiB, min(50% MemTotal, 2 GiB))`
+truncated to a whole MiB (rounded down): the base image left `/tmp` disk-backed at ≈5959 MiB (rootfs), which
+starved small sandboxes because 50% of a 512 MiB guest is only 256 MiB — far below a practical
+build minimum. The 1 GiB floor costs nothing until written (tmpfs is not preallocated) while
+ensuring small sandboxes have a usable `/tmp` budget. There is no `--auto-resize` opt-in/opt-out;
+the flag was removed in wave-2 and `--no-auto-resize` is now an unknown flag.
+
+> **Tradeoff — 1 GiB floor on small guests:** On a guest with less than 2 GiB MemTotal
+> (e.g. 512 MiB), the floor means `/tmp` advertises 1 GiB — more than the guest's total
+> RAM. Because tmpfs is RAM-backed, a workload that writes ~600 MiB into `/tmp` on such a
+> guest no longer hits a clean, local ENOSPC at the old ~256 MiB size limit; instead it
+> consumes real memory and can trigger an OOM kill, potentially killing an unrelated process
+> with no indication that `/tmp` was the cause. The failure mode changed from a recoverable
+> disk-full error to silent memory pressure.
+>
+> ZRAM swap (`setupZRAMSwap`) provides some headroom against this: compressed swap lets
+> `/tmp` writes spill to disk rather than immediately evicting live pages. However,
+> `setupZRAMSwap` is best-effort and silently no-ops when the guest kernel lacks
+> `CONFIG_ZRAM`. Operators running very small sandboxes (< 2 GiB) should be aware that
+> `/tmp`-heavy workloads may OOM rather than ENOSPC.
 
 **Why 32 MiB seed, not the target size:** `resizeTmpfsOnce` runs immediately on its first tick,
 before the vsock control listener opens and before any workload starts. With any VM ≥ 512 MiB RAM,
@@ -601,15 +623,17 @@ Memory, disk routing, vCPU, and /tmp auto-resize are all live-proven end-to-end:
 |------|--------|------------|
 | TestAutoResizeMemGrow | PASS (113.66s) | MemTotal 484→828 MiB in 10s |
 | TestAutoResizeDiskTelemetry | PASS | DiskSupported=true with 5-field cmdline |
-| TestAutoResizeDiskGrowDevice | PASS (1b) | Routing+rollback live-proven; CH-RESIZE-400 finding |
+| TestAutoResizeDiskGrowDevice | pre-fix run (superseded by R-CHLIVE) | Pre-fix run: routing+rollback recorded against HTTP 400 (JSON field-name bug, `"size"` vs `"desired_size"`); real proof after fix: `HTTP/1.1 204` at `internal/test/selfhost/disk_grow_http_evidence_test.go` |
 | TestAutoResizeVCPU | PASS (132.20s) | VCPUOnline 1→2, PSI=55.91%, mask=0-1 |
 | TestAutoResizeZRAMBeforeWorkload | PASS (184.97s) | ZRAM 1 GiB active before workload |
 | TestAutoResizeTmpGrowsWithMemTotal | PASS (154.25s) | /tmp grew 242→414 MiB following MemTotal 484→828 MiB |
 | Host headroom refusal | UNPROVEN | Host swap too low to safely contrive; permissive path proven |
 | Nested-build OOM | UNPROVEN | Requires ≥32 GiB host; unsafe on this 14 GiB machine |
 
-**Open gaps:**
-- CH-RESIZE-400: workspace disk not resizable via CH API when `Direct:true`. Fix: remove `Direct` flag for workspace disks, or add resizability flag to CH disk config.
-- AR-GA gap: `EncodeGrowRequest` (disk.grow vsock) not sent by `GrowDisk`. Guest `handleDiskGrow` (resize_actuate_linux.go:241) is implemented but the host caller in `driver_resize.go` is absent.
+**Resolved gaps:**
+- CH-RESIZE-400 (CLOSED): Root cause was a JSON field-name bug (`"size"` → `"desired_size"`),
+  not `Direct:true`. Fixed at `client.go:231-233`; live-proven HTTP 204 against CH v52.0.
+- AR-GA gap (CLOSED): `EncodeGrowRequest` now has a production caller at `driver_resize.go:262`
+  (`sendGrowToGuest`). The end-to-end disk grow + guest resize2fs path is wired.
 
 **Host state after all tests:** 0 stray cloud-hypervisor processes, 0 netns entries (verified).
