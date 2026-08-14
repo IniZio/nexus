@@ -51,8 +51,10 @@ import (
 	"github.com/IniZio/nexus3/internal/core/agent"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus3/internal/core/govern"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
@@ -96,12 +98,57 @@ type Config struct {
 	// Typically <diskDir>/<sandboxID>.raw created by CreateAndBoot.
 	DiskPath string
 
+	// ExtraDisks are the host filesystem paths of extra raw ext4 disk images to
+	// re-attach at VM boot alongside the rootfs. The workspace disk (if any) is
+	// at ExtraDisks[WorkspaceDiskIndex]. Paths are forwarded verbatim from the
+	// caller to the supervisor subprocess via repeated --extra-disk flags.
+	ExtraDisks []string
+
 	// CredsFile is the optional path to creds.json for real-token seeding.
 	// When empty, the broker is wired but holds no real tokens.
 	CredsFile string
 
 	// MemoryMiB is the guest RAM in mebibytes. Defaults to 512 when zero.
 	MemoryMiB uint32
+
+	// BootVCPUs is the vCPU count the guest VM was started with.
+	// It seeds the SandboxResizer's atomic vCPU counter so CurrentVCPUs returns
+	// the correct value before the first resize call. When zero, the supervisor
+	// applies the cloudhypervisor driver default (1 vCPU).
+	BootVCPUs uint32
+
+	// HasWorkspaceDisk indicates the supervisor's CHDriver was constructed with a
+	// workspace disk in ExtraDisks. When false, the disk auto-resize axis is not
+	// registered regardless of GovBounds.DiskMaxBytes — preventing GrowDisk from
+	// targeting ExtraDisks[0] on a VM that has no workspace disk attached.
+	HasWorkspaceDisk bool
+
+	// WorkspaceDiskIndex is the 0-based ExtraDisks index of the workspace disk.
+	// Meaningful only when HasWorkspaceDisk is true. Derive from the number of
+	// shadow disks that precede the workspace disk (len(shadowSpecs)), NOT from a
+	// hardcoded constant — a wrong index means resize2fs targets the wrong
+	// filesystem, which is data loss, not a build failure.
+	WorkspaceDiskIndex int
+
+	// GovBounds configures the auto-resize governor. When MemMinBytes or
+	// MemMaxBytes is zero, the governor runs in passive mode (polls but
+	// never resizes). The governor is single-tenant (D-DC-12) and lives
+	// in the supervisor for the VM's full lifetime.
+	GovBounds resize.Bounds
+
+	// Cmdline is the full kernel command line to pass to cloud-hypervisor.
+	// When empty, the driver uses its disk-boot default ("root=/dev/vda rw
+	// init=/sbin/nexus3-agent console=ttyS0").
+	//
+	// The supervisor reboots the VM independently of the CLI process that ran
+	// CreateAndBoot; it must carry the same cmdline that the CLI built, otherwise
+	// the guest agent starts without --workspace-mount= args and disk telemetry
+	// is permanently blind (selectWorkspaceMount returns ok=false, DiskSupported=false).
+	//
+	// Callers (buildOrcaSpawnConfig) are responsible for computing this cmdline
+	// via workspaceMountCmdline + autoResizePID1Args before spawning the supervisor,
+	// since the supervisor package cannot import internal/cli without a cycle.
+	Cmdline string
 }
 
 // PidfilePath returns the canonical path of the supervisor.pid file.
@@ -136,6 +183,20 @@ func RunDetached(cfg Config) error {
 	}
 
 	// ── 2. Construct per-sandbox driver ───────────────────────────────────────
+	extraDisks := make([]cloudhypervisor.ExtraDisk, 0, len(cfg.ExtraDisks))
+	for _, p := range cfg.ExtraDisks {
+		extraDisks = append(extraDisks, cloudhypervisor.ExtraDisk{Path: p})
+	}
+	// Derive MemoryMaxMiB and VCPUMax from GovBounds so the supervisor's boot
+	// reserves the same VirtioMem hotplug region and vCPU headroom as the
+	// initial CLI boot. Without these, MemoryMaxMiB=0 → no hotplug region →
+	// vm.resize returns HTTP 204 but guest MemTotal never moves (Spike Leg 6).
+	// VCPUMax=0 → CH starts with max_vcpus=BootVCPUs, blocking vCPU hotplug.
+	var memMaxMiB uint32
+	if cfg.GovBounds.MemMaxBytes > 0 {
+		memMaxMiB = uint32(cfg.GovBounds.MemMaxBytes / (1024 * 1024)) //nolint:gosec // bytes→MiB; fits uint32 for any sane ceiling
+	}
+	vcpuMax := uint32(cfg.GovBounds.VCPUMax) //nolint:gosec // int32→uint32; VCPUMax is always non-negative by construction
 	drv, err := cloudhypervisor.New(cloudhypervisor.Config{
 		BinaryPath:    cfg.CHBin,
 		SocketDir:     cfg.SocketDir,
@@ -143,6 +204,10 @@ func RunDetached(cfg Config) error {
 		DiskImagePath: cfg.DiskPath,
 		StartTimeout:  30 * time.Second,
 		MemoryMiB:     cfg.MemoryMiB,
+		MemoryMaxMiB:  memMaxMiB,
+		VCPUMax:       vcpuMax,
+		ExtraDisks:    extraDisks,
+		Cmdline:       cfg.Cmdline,
 	})
 	if err != nil {
 		return fmt.Errorf("supervisor: init driver: %w", err)
@@ -223,6 +288,31 @@ func RunDetached(cfg Config) error {
 		return fmt.Errorf("supervisor: start sandbox %s: %w", cfg.SandboxRef, err)
 	}
 	slog.Info("supervisor.vm_running", "sandboxRef", cfg.SandboxRef)
+
+	// ── 5a. Start auto-resize governor ───────────────────────────────────────
+	// The governor is single-tenant (D-DC-12): one per supervisor, for this
+	// sandbox's full lifetime. It polls the guest over vsock (TelemetryVsockPort
+	// 3002) and calls ResizeMemory when the memory control law warrants it.
+	// Host-headroom admission control (fail-conservative) prevents the governor
+	// from amplifying host OOM during nested builds.
+	//
+	// bootVCPUs: apply the driver default (1) when the field is unset so that
+	// SandboxResizer.CurrentVCPUs() reflects the actual running count before the
+	// first resize call. Without this the CPU axis seeds currentVCPUs to 0 and
+	// the atomic accounting is wrong even though cpu.go:135 papers over it by
+	// falling back to minVCPUs.
+	bootVCPUs := int32(cfg.BootVCPUs) //nolint:gosec // uint32→int32; vCPU counts always fit int32
+	if bootVCPUs == 0 {
+		bootVCPUs = 1 // matches cloudhypervisor driver: Config.VCPUs=0 → 1 vCPU
+	}
+	resizer := cloudhypervisor.NewSandboxResizer(drv, sb.ID, cfg.GovBounds, int64(cfg.MemoryMiB)*1024*1024, bootVCPUs)
+	gov := govern.New(govern.Config{
+		Resizer:   resizer,
+		Telemetry: govern.NewVsockTelemetry(drv, sb.ID),
+		Bounds:    cfg.GovBounds,
+	})
+	wireGovernorAxes(gov, resizer, resizer, cfg.GovBounds, cfg.HasWorkspaceDisk, cfg.WorkspaceDiskIndex)
+	go gov.Run(ctx)
 
 	// ── 5b. Wire Refreshers to the running sandbox ───────────────────────────
 	// Register each Refresher with the sandbox so its Token() call can invoke
@@ -343,6 +433,35 @@ func RunDetached(cfg Config) error {
 	}
 	slog.Info("supervisor.exited", "sandboxRef", cfg.SandboxRef)
 	return nil
+}
+
+// wireGovernorAxes attaches the CPU and disk AxisEvaluators to gov based on
+// bounds and disk configuration. The memory axis is always wired by govern.New;
+// this function adds only CPU and disk. Must be called before gov.Run.
+//
+// CPU axis: registered when both VCPUMin and VCPUMax are non-zero. A partial
+// bounds (min-only or max-only) leaves the axis unregistered — the axis itself
+// also guards on the bounds, but skipping registration avoids polling overhead.
+//
+// Disk axis: registered when DiskMaxBytes > 0 AND hasDisk is true. hasDisk
+// must be true only when the supervisor's CHDriver has the workspace disk in
+// ExtraDisks[diskIndex]. A wrong diskIndex causes GrowDisk to truncate the
+// wrong backing file — data loss, not a build failure. Default-off (hasDisk
+// false) is the safe configuration when no workspace disk is attached.
+func wireGovernorAxes(
+	gov *govern.Governor,
+	cpuR resize.CPUResizer,
+	diskR resize.DiskResizer,
+	bounds resize.Bounds,
+	hasDisk bool,
+	diskIndex int,
+) {
+	if bounds.VCPUMin != 0 && bounds.VCPUMax != 0 {
+		govern.NewCPUAxis(gov, cpuR)
+	}
+	if bounds.DiskMaxBytes != 0 && hasDisk {
+		govern.NewDiskAxis(gov, diskR, diskIndex)
+	}
 }
 
 // PerimeterCAGetter is the subset of *service.Service needed by SeedLoop to

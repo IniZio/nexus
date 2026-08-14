@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -28,6 +29,64 @@ type SpawnConfig struct {
 	// ReadyTimeout is the maximum time to wait for supervisor.pid to appear.
 	// Defaults to 5 minutes when zero.
 	ReadyTimeout time.Duration
+}
+
+// buildSupervisorArgv constructs the argv slice for `nexus3 __supervisor`
+// from cfg. Extracted from SpawnDetached for unit-testability: callers can
+// verify that a realistic SpawnConfig produces the expected flags without
+// actually forking a subprocess.
+func buildSupervisorArgv(cfg SpawnConfig) []string {
+	args := []string{
+		HiddenSubcommand,
+		"--sandbox-ref", cfg.SandboxRef,
+		"--store-root", cfg.StoreRoot,
+		"--state-dir", cfg.StateDir,
+		"--ch-bin", cfg.CHBin,
+		"--socket-dir", cfg.SocketDir,
+		"--kernel", cfg.KernelPath,
+		"--disk", cfg.DiskPath,
+	}
+	if cfg.CredsFile != "" {
+		args = append(args, "--creds-file", cfg.CredsFile)
+	}
+	// GovBounds: pass each field only when non-zero so the supervisor's flag
+	// defaults (zero = passive mode) remain correct when auto-resize is off.
+	if cfg.GovBounds.MemMinBytes != 0 {
+		args = append(args, "--gov-mem-min", strconv.FormatInt(cfg.GovBounds.MemMinBytes, 10))
+	}
+	if cfg.GovBounds.MemMaxBytes != 0 {
+		args = append(args, "--gov-mem-max", strconv.FormatInt(cfg.GovBounds.MemMaxBytes, 10))
+	}
+	if cfg.GovBounds.VCPUMin != 0 {
+		args = append(args, "--gov-vcpu-min", strconv.Itoa(int(cfg.GovBounds.VCPUMin)))
+	}
+	if cfg.GovBounds.VCPUMax != 0 {
+		args = append(args, "--gov-vcpu-max", strconv.Itoa(int(cfg.GovBounds.VCPUMax)))
+	}
+	if cfg.GovBounds.DiskMaxBytes != 0 {
+		args = append(args, "--gov-disk-max", strconv.FormatInt(cfg.GovBounds.DiskMaxBytes, 10))
+	}
+	// BootVCPUs and workspace-disk-index are omitted when zero/false so the
+	// supervisor's flag defaults (0 / no-disk) remain correct for callers that
+	// do not configure them.
+	if cfg.BootVCPUs != 0 {
+		args = append(args, "--boot-vcpus", strconv.Itoa(int(cfg.BootVCPUs)))
+	}
+	if cfg.HasWorkspaceDisk {
+		args = append(args, "--workspace-disk-index", strconv.Itoa(cfg.WorkspaceDiskIndex))
+	}
+	// ExtraDisks: one --extra-disk flag per path. The supervisor re-attaches
+	// them in order so ExtraDisks[i] maps to the same guest device as at
+	// initial boot.
+	for _, p := range cfg.ExtraDisks {
+		args = append(args, "--extra-disk", p)
+	}
+	// Cmdline: pass only when non-empty so the driver's disk-boot default
+	// remains correct for callers that do not need a custom cmdline.
+	if cfg.Cmdline != "" {
+		args = append(args, "--cmdline", cfg.Cmdline)
+	}
+	return args
 }
 
 // SpawnDetached forks and detaches a supervisor process for the given sandbox.
@@ -53,20 +112,7 @@ func SpawnDetached(cfg SpawnConfig) (int, error) {
 		readyTimeout = 5 * time.Minute
 	}
 
-	// Build the argv for `nexus3 __supervisor <flags>`.
-	args := []string{
-		HiddenSubcommand,
-		"--sandbox-ref", cfg.SandboxRef,
-		"--store-root", cfg.StoreRoot,
-		"--state-dir", cfg.StateDir,
-		"--ch-bin", cfg.CHBin,
-		"--socket-dir", cfg.SocketDir,
-		"--kernel", cfg.KernelPath,
-		"--disk", cfg.DiskPath,
-	}
-	if cfg.CredsFile != "" {
-		args = append(args, "--creds-file", cfg.CredsFile)
-	}
+	args := buildSupervisorArgv(cfg)
 
 	// Set up log file for supervisor stdout/stderr.
 	logPath := cfg.LogPath
