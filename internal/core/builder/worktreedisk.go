@@ -37,19 +37,56 @@ type WorkspaceMount struct {
 	DiskImage string
 }
 
-// DefaultCaptureMaxBytes is the default capture-size guard threshold for
-// [WorktreeToDisk]. A capture larger than this threshold is rejected before
-// any disk image is written. The value is a conservative 2 GiB because:
+// captureFreeSpaceFraction is the fraction of host free disk space that the
+// auto capture guard considers safe to use for the projected ext4 image. The
+// 20 % reserve exists because the builder VM also writes a 4 GiB artifact
+// disk and buildkit cache disks to the same workdir as the context image (see
+// cmd_sandbox.go). A projected image size exceeding this fraction of available
+// space on the outExt4 filesystem is rejected before any bytes are written.
+const captureFreeSpaceFraction = 0.8
+
+// statfsAvail returns the number of bytes available to unprivileged users on
+// the filesystem containing path. It is a package-level variable so tests can
+// inject a stub without writing real gigabytes to disk; production code uses
+// the real syscall.Statfs.
+var statfsAvail = func(path string) (int64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, fmt.Errorf("statfs %s: %w", path, err)
+	}
+	// Bavail (not Bfree) counts blocks available to unprivileged users.
+	// Both Bavail and Bsize are converted to int64 explicitly: Bsize is
+	// uint32 on darwin and int64 on linux (same portability note as st.Dev
+	// in deviceIDOf).
+	return int64(st.Bavail) * int64(st.Bsize), nil
+}
+
+// walkDirFn is the directory walker used by preflightCaptureSize. It is a
+// package-level variable so tests can inject synthetic walk errors (e.g.
+// ENOENT) without relying on OS-level race conditions. Production code uses
+// filepath.WalkDir directly.
+var walkDirFn func(string, fs.WalkDirFunc) error = filepath.WalkDir
+
+// isVanishedEntry reports whether err indicates that a filesystem entry has
+// ceased to exist since the directory was read. Such entries contribute zero
+// bytes: they are gone, not merely unmeasurable, so they do not cause an
+// undercount.
 //
-//   - Large untracked trees (node_modules, dist, .cache, build outputs) are
-//     the most common cause of host OOM from ext4 page-cache pressure during
-//     VM boot.
-//   - Source trees that legitimately exceed 2 GiB are rare; most working
-//     repos are well under this.
+// ENOENT: the entry was present in the directory listing but was deleted before
+// WalkDir could stat it. This is routine in a live working tree: editors remove
+// temp files, build tools churn output directories, git rewrites index lock files.
 //
-// Callers that have measured their workspaces and know they are safe may pass
-// a larger value; this constant is the recommended default for unknown workspaces.
-const DefaultCaptureMaxBytes int64 = 2 * 1024 * 1024 * 1024 // 2 GiB
+// ENOTDIR: a path component was renamed away while the walk was in progress so a
+// component that appeared to be a directory no longer is. The net effect is the
+// same: the entry is gone and its bytes do not exist on disk.
+//
+// Contrast with EACCES / EPERM / EIO: those errors mean the entry EXISTS but we
+// cannot measure its size. That IS a true undercount and must keep the guard
+// fail-closed — the same entry could be a multi-GiB directory invisible to the
+// measurement but very much present on disk when mke2fs writes.
+func isVanishedEntry(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
+}
 
 // WorktreeToDisk walks srcDir into a raw ext4 image at outExt4, capturing the
 // full on-disk state of the working tree: dirty tracked files AND untracked
@@ -66,11 +103,13 @@ const DefaultCaptureMaxBytes int64 = 2 * 1024 * 1024 * 1024 // 2 GiB
 // an inode on the host (hard links) are materialised as independent files in
 // the image, because mke2fs reads each path independently.
 //
-// Size guard: if the total byte count of included files exceeds maxBytes, the
-// call fails immediately — before any disk image is written — with an
-// actionable error naming the largest contributing directories and suggesting
-// .dockerignore entries. Pass [DefaultCaptureMaxBytes] for the recommended
-// threshold.
+// Size guard: if maxBytes > 0, the total byte count of included files must not
+// exceed maxBytes. If maxBytes <= 0, the guard is derived automatically from
+// free space on the filesystem that will hold outExt4: the projected ext4
+// image size (total * 2 + 64 MiB) must fit within [captureFreeSpaceFraction]
+// of available bytes. Both modes fail immediately — before any disk image is
+// written — with an actionable error naming the largest contributing
+// directories. Pass 0 for automatic free-space-based protection.
 //
 // Returns [ErrMke2fsUnavailable] if mke2fs is not on the host PATH.
 func WorktreeToDisk(ctx context.Context, srcDir string, outExt4 string, maxBytes int64) error {
@@ -105,9 +144,9 @@ func WorktreeToDiskWithExtra(ctx context.Context, srcDir, outExt4 string, maxByt
 	}
 
 	// Pre-flight size check: fail fast before writing any bytes if the
-	// included content would exceed maxBytes. This is the primary defence
-	// against host OOM from large untracked trees.
-	if err := preflightCaptureSize(srcDir, combinedPM, maxBytes); err != nil {
+	// included content would exceed maxBytes (explicit) or if the projected
+	// ext4 image would exceed the free-space safety fraction (auto).
+	if err := preflightCaptureSize(srcDir, outExt4, combinedPM, maxBytes); err != nil {
 		return err
 	}
 
@@ -136,16 +175,70 @@ func WorktreeToDiskWithExtra(ctx context.Context, srcDir, outExt4 string, maxByt
 }
 
 // preflightCaptureSize walks srcDir (applying combinedPM exclusions) and
-// returns an error if the total included byte count exceeds maxBytes. The
-// error names the largest top-level contributors and suggests .dockerignore
-// entries to bring the total under the limit.
-func preflightCaptureSize(srcDir string, combinedPM *patternmatcher.PatternMatcher, maxBytes int64) error {
+// returns an error if the capture would be unsafe. Two modes:
+//
+//   - maxBytes > 0 (explicit cap): the total included byte count must not
+//     exceed maxBytes.
+//   - maxBytes <= 0 (auto): the projected ext4 image size
+//     (total * imageSizeHeadroomFactor + imageMinSizeBytes) must fit within
+//     captureFreeSpaceFraction of the bytes available on the filesystem that
+//     will hold outExt4. If statfs fails the guard fails closed.
+//
+// Both modes fail before any disk image is written, naming the top-5 largest
+// top-level contributors so the operator knows what to add to .dockerignore.
+//
+// Error-skip policy: walk errors are split into two classes.
+//
+// Vanished-entry errors (ENOENT, ENOTDIR — see [isVanishedEntry]): the entry
+// was in the directory listing but has since been deleted or renamed away. It
+// contributes genuinely zero bytes — there is no hidden content and therefore no
+// undercount. These are silently ignored; they do NOT trigger fail-closed. They
+// are routine in a live working tree (editor temp files, build outputs, git lock
+// files). See [isVanishedEntry] for the full rationale.
+//
+// All other I/O errors (EACCES, EPERM, EIO, …): the entry EXISTS but its size
+// could not be measured. Those bytes are absent from total, making it an
+// undercount. A guard built on an undercount cannot guarantee that mke2fs will
+// not exhaust disk space — the same reasoning that drives the statfs fail-closed
+// policy. preflightCaptureSize fails closed if any such entry is encountered.
+//
+// Type-based skips (sockets, device files, named pipes) and exclusion-policy
+// skips (.dockerignore, nexus3AlwaysExclude) are legitimate and expected; they
+// do NOT trigger this check.
+func preflightCaptureSize(srcDir, outExt4 string, combinedPM *patternmatcher.PatternMatcher, maxBytes int64) error {
 	topDirBytes := map[string]int64{}
 	var total int64
 
-	walkErr := filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, werr error) error {
+	// errSkipCount counts entries that exist but whose size could not be measured
+	// (EACCES, EPERM, EIO, and similar). Their bytes are absent from total —
+	// a true undercount. errSkipFirstPath is the first such path, for use in
+	// the error message. Vanished-entry errors (ENOENT, ENOTDIR) are NOT counted
+	// here; see [isVanishedEntry] for the rationale.
+	var errSkipCount int
+	var errSkipFirstPath string
+	recordUnmeasurableSkip := func(path string) {
+		errSkipCount++
+		if errSkipFirstPath == "" {
+			errSkipFirstPath = path
+		}
+	}
+
+	walkErr := walkDirFn(srcDir, func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
-			// Non-fatal: skip unreadable entries rather than aborting the preflight.
+			// Error reaching this entry. Split on the error class:
+			//
+			// Vanished (ENOENT, ENOTDIR): the entry has been deleted or renamed
+			// away since the directory was read. It contributes zero bytes — no
+			// hidden content, no undercount. Skip silently; this is routine in a
+			// live working tree. See [isVanishedEntry].
+			//
+			// All other errors (EACCES, EPERM, EIO, …): the entry EXISTS but we
+			// cannot measure it. Its bytes are absent from total — a true
+			// undercount. Record for the fail-closed check below.
+			if isVanishedEntry(werr) {
+				return nil
+			}
+			recordUnmeasurableSkip(path)
 			return nil
 		}
 		rel, err := filepath.Rel(srcDir, path)
@@ -179,7 +272,15 @@ func preflightCaptureSize(srcDir string, combinedPM *patternmatcher.PatternMatch
 
 		info, err := d.Info()
 		if err != nil {
-			return nil // skip files we cannot stat
+			// Same split as werr: ENOENT/ENOTDIR means the entry vanished between
+			// ReadDir and Info (contributes zero bytes, not an undercount); any
+			// other error means the entry exists but is unmeasurable (undercount,
+			// fail closed).
+			if isVanishedEntry(err) {
+				return nil
+			}
+			recordUnmeasurableSkip(path)
+			return nil
 		}
 		size := info.Size()
 		total += size
@@ -195,8 +296,58 @@ func preflightCaptureSize(srcDir string, combinedPM *patternmatcher.PatternMatch
 		return fmt.Errorf("worktreedisk: size preflight: %w", walkErr)
 	}
 
-	if total <= maxBytes {
-		return nil
+	// Fail closed if any entries were unmeasurable (error class other than
+	// ENOENT/ENOTDIR). Their bytes are absent from total, so the measurement is
+	// an undercount. A guard built on an undercount cannot guarantee safety: a
+	// large unreadable subtree on a nearly-full disk projects a tiny image, sails
+	// through the guard, and then mke2fs writes until ENOSPC — the exact hazard
+	// this guard exists to prevent. Vanished entries (ENOENT, ENOTDIR) are NOT
+	// counted here; see [isVanishedEntry] and the comment above. Fix file
+	// permissions or exclude the path via .dockerignore to proceed.
+	if errSkipCount > 0 {
+		return fmt.Errorf(
+			"worktreedisk: preflight: %d path(s) could not be read during size measurement (first: %s); "+
+				"cannot guarantee the capture fits within safe bounds — fix file permissions or exclude "+
+				"the path via .dockerignore",
+			errSkipCount, errSkipFirstPath)
+	}
+
+	// Determine whether the capture is safe.
+	var header string
+	if maxBytes > 0 {
+		// Explicit cap: check raw file total.
+		if total <= maxBytes {
+			return nil
+		}
+		header = fmt.Sprintf("worktreedisk: capture would be %s (limit %s); the workspace is too large to capture safely.",
+			formatCaptureBytes(total), formatCaptureBytes(maxBytes))
+	} else {
+		// Auto mode: check projected image size against available disk space.
+		projectedBytes := total*imageSizeHeadroomFactor + imageMinSizeBytes
+		avail, statErr := statfsAvail(filepath.Dir(outExt4))
+		if statErr != nil {
+			// Cannot measure available space — fail closed rather than
+			// proceeding unguarded. A guard that cannot measure cannot
+			// guarantee safety: mke2fs will happily write a large image
+			// until it hits ENOSPC, which is exactly the hazard this guard
+			// exists to prevent. Fail-closed is the only policy that upholds
+			// the guard's contract; fail-open would be a silent no-op on any
+			// host where the output path is inaccessible at preflight time.
+			return fmt.Errorf("worktreedisk: preflight: %w", statErr)
+		}
+		safeAvail := int64(float64(avail) * captureFreeSpaceFraction)
+		if projectedBytes <= safeAvail {
+			return nil
+		}
+		dir := filepath.Dir(outExt4)
+		header = fmt.Sprintf(
+			"worktreedisk: capture is %s; projected ext4 image %s exceeds %.0f%% of %s available on %s",
+			formatCaptureBytes(total),
+			formatCaptureBytes(projectedBytes),
+			captureFreeSpaceFraction*100,
+			formatCaptureBytes(avail),
+			dir,
+		)
 	}
 
 	// Build an actionable error listing the largest contributors.
@@ -214,9 +365,8 @@ func preflightCaptureSize(srcDir string, combinedPM *patternmatcher.PatternMatch
 	n := min(topN, len(entries))
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "worktreedisk: capture would be %s (limit %s); the workspace is too large to capture safely.\n",
-		formatCaptureBytes(total), formatCaptureBytes(maxBytes))
-	fmt.Fprintf(&sb, "Add entries to .dockerignore to exclude large directories. Largest contributors:\n")
+	fmt.Fprintf(&sb, "%s\n", header)
+	fmt.Fprintf(&sb, "Add entries to .dockerignore to exclude large directories, or pass --capture-max <size> to override. Largest contributors:\n")
 	for _, e := range entries[:n] {
 		fmt.Fprintf(&sb, "  %-40s  %s\n", e.name, formatCaptureBytes(e.size))
 	}
@@ -235,9 +385,9 @@ func preflightCaptureSize(srcDir string, combinedPM *patternmatcher.PatternMatch
 // stagingBase is passed as the first argument to os.MkdirTemp. An empty string
 // uses the OS default (honouring TMPDIR). The staging directory MUST be on the
 // same filesystem as src: hardlinking across devices is impossible, and the copy
-// fallback would move up to DefaultCaptureMaxBytes of data into memory-backed
-// storage, risking host OOM. filteredWorktreeDir detects a cross-device staging
-// target and returns an actionable error rather than silently falling back.
+// fallback would move all captured file data into memory-backed storage, risking
+// host OOM. filteredWorktreeDir detects a cross-device staging target and returns
+// an actionable error rather than silently falling back.
 //
 // Multiple hard links to the same source inode are naturally materialised as
 // independent files in the resulting ext4 image because mke2fs reads each path
@@ -253,9 +403,9 @@ func filteredWorktreeDir(src string, combinedPM *patternmatcher.PatternMatcher, 
 
 	// Guard: refuse if the staging directory is on a different device than the
 	// source tree. A cross-device layout makes os.Link impossible, and the copy
-	// fallback would write up to DefaultCaptureMaxBytes of file data into
-	// whatever backing store tmpDir sits on (often a tmpfs) — the exact host-OOM
-	// hazard this package exists to prevent.
+	// fallback would write all captured file data into whatever backing store
+	// tmpDir sits on (often a tmpfs) — the exact host-OOM hazard this package
+	// exists to prevent.
 	srcDev, err := deviceIDOf(src)
 	if err != nil {
 		cleanup()
