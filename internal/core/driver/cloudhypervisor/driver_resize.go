@@ -3,6 +3,8 @@ package cloudhypervisor
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"net"
 	"os"
 	"sync/atomic"
 	"syscall"
@@ -34,6 +36,10 @@ type SandboxResizer struct {
 	id     domain.SandboxID
 	bounds resize.Bounds
 
+	// dialGuest opens a vsock connection to the sandbox guest at the given
+	// port. Defaults to d.DialGuest; overridable in tests.
+	dialGuest func(ctx context.Context, id domain.SandboxID, port uint32) (net.Conn, error)
+
 	memBytes atomic.Int64 // current desired memory in bytes; updated on each successful ResizeMemory
 	vcpus    atomic.Int32 // current desired vCPU count; updated on each successful ResizeCPU
 }
@@ -43,7 +49,7 @@ type SandboxResizer struct {
 // CurrentMemoryBytes and CurrentVCPUs return correct values before the first
 // resize call.
 func NewSandboxResizer(d *CHDriver, id domain.SandboxID, bounds resize.Bounds, bootMemBytes int64, bootVCPUs int32) *SandboxResizer {
-	r := &SandboxResizer{d: d, id: id, bounds: bounds}
+	r := &SandboxResizer{d: d, id: id, bounds: bounds, dialGuest: d.DialGuest}
 	r.memBytes.Store(bootMemBytes)
 	r.vcpus.Store(bootVCPUs)
 	return r
@@ -169,7 +175,7 @@ func (r *SandboxResizer) GrowDisk(ctx context.Context, diskIndex int, targetByte
 	chDiskID := diskIndexToCHID(diskIndex)
 	guestDev := diskIndexToGuestDev(diskIndex)
 
-	_ = guestDev // documented for callers (resize2fs target via GrowRequest); not used on the host side
+	_ = guestDev // guestDev is carried in the GrowRequest.DiskIndex derivation on the guest; not used directly on the host
 
 	diskPath := r.d.cfg.ExtraDisks[diskIndex].Path
 
@@ -221,19 +227,48 @@ func (r *SandboxResizer) GrowDisk(ctx context.Context, diskIndex int, targetByte
 		return fmt.Errorf("cloudhypervisor: GrowDisk %s: vm.resize-disk: %w", r.id, err)
 	}
 
-	// TODO-DEFERRED(AR-GA-DISK-GROW): after a successful vm.resize-disk, the
-	// host must send resize.EncodeGrowRequest(vsockConn, GrowRequest{DiskIndex: diskIndex,
-	// TargetBytes: targetBytes}) over vsock TelemetryVsockPort (3002) to trigger
-	// resize2fs in the guest. The guest handler is already implemented at
-	// cmd/nexus3-agent/resize_actuate_linux.go:241 (handleDiskGrow). This wire
-	// call is NOT yet sent. Blocked by two conditions that must both be resolved:
-	//   1. CH returns HTTP 400 for vm.resize-disk on Direct:true disks; nexus3
-	//      sets Direct:true on ExtraDisks to keep buildkit layer exports out of
-	//      the host page cache. Until CH adds non-direct resize support (or we
-	//      remove Direct:true), vm.resize-disk always fails before reaching here.
-	//   2. SandboxResizer has no vsock dialer. Wiring requires either adding a
-	//      DialGuest field to SandboxResizer or passing a telemetry conn to GrowDisk.
-	// See also: internal/test/selfhost/autoresize_disk_vcpu_test.go:16.
+	// Instruct the guest agent to grow the filesystem (resize2fs) over vsock
+	// port TelemetryVsockPort (3002). This is best-effort: a dial failure or a
+	// guest-side resize2fs error does NOT fail GrowDisk — the host backing file
+	// is already expanded and CH has acknowledged the new size. A missed
+	// resize2fs leaves free space unavailable inside the guest until the guest
+	// agent reconnects or the sandbox restarts, but it does not corrupt data.
+	// Both failure modes are logged with enough context to diagnose from logs alone.
+	if conn, dialErr := r.dialGuest(ctx, r.id, resize.TelemetryVsockPort); dialErr != nil {
+		slog.Warn("cloudhypervisor.disk.grow_guest_unreachable",
+			"sandbox", r.id,
+			"diskIndex", diskIndex,
+			"targetBytes", targetBytes,
+			"err", dialErr,
+		)
+	} else if growErr := r.sendGrowToGuest(conn, diskIndex, targetBytes); growErr != nil {
+		slog.Warn("cloudhypervisor.disk.grow_guest_failed",
+			"sandbox", r.id,
+			"diskIndex", diskIndex,
+			"targetBytes", targetBytes,
+			"err", growErr,
+		)
+	}
+	return nil
+}
+
+// sendGrowToGuest sends a GrowRequest over conn and reads the GrowResponse.
+// conn is always closed when this function returns. A non-nil error is
+// returned so the caller can log it; GrowDisk never propagates it to its
+// own caller because the host-side grow is already committed.
+func (r *SandboxResizer) sendGrowToGuest(conn net.Conn, diskIndex int, targetBytes int64) error {
+	defer conn.Close()
+	req := resize.GrowRequest{DiskIndex: diskIndex, TargetBytes: targetBytes}
+	if err := resize.EncodeGrowRequest(conn, req); err != nil {
+		return fmt.Errorf("cloudhypervisor: sendGrowToGuest %s: encode: %w", r.id, err)
+	}
+	resp, err := resize.DecodeGrowResponse(conn)
+	if err != nil {
+		return fmt.Errorf("cloudhypervisor: sendGrowToGuest %s: decode response: %w", r.id, err)
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("cloudhypervisor: sendGrowToGuest %s: guest resize2fs: %s", r.id, resp.Error)
+	}
 	return nil
 }
 

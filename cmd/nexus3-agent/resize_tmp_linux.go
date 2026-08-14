@@ -50,6 +50,15 @@ const (
 	// the governor is protecting; cap it here.
 	tmpfsAbsoluteCapBytes uint64 = 2 << 30 // 2 GiB
 
+	// tmpfsAbsoluteFloorBytes: minimum /tmp size regardless of MemTotal.
+	// The base-image disk-backed /tmp was ≈5959 MiB; the 50%-of-MemTotal formula
+	// on a 512 MiB sandbox would yield only ≈242 MiB — a 24× scratch regression.
+	// The floor prevents this starvation on small sandboxes.
+	// IMPORTANT: tmpfs is sized, not preallocated. A 1 GiB floor on a 512 MiB
+	// guest costs nothing until bytes are actually written into /tmp. Do NOT
+	// remove this floor to "fix" apparent over-sizing on small guests.
+	tmpfsAbsoluteFloorBytes uint64 = 1 << 30 // 1 GiB
+
 	// tmpResizeGrowMarginBytes: minimum delta needed to trigger a remount.
 	// Avoids churn when the ceiling and current cap are already close.
 	tmpResizeGrowMarginBytes uint64 = 64 << 20 // 64 MiB
@@ -133,22 +142,36 @@ func resizeTmpfsOnce(con *os.File) error {
 	return nil
 }
 
-// computeTmpTargetBytes computes the desired /tmp size: 50% of current live
-// MemTotal, hard-capped at tmpfsAbsoluteCapBytes (2 GiB), rounded to MiB.
+// computeTmpSizeBytes is the pure sizing formula: given totalKB (from
+// /proc/meminfo MemTotal, in kibibytes), returns the desired /tmp size in bytes.
+// Formula: max(tmpfsAbsoluteFloorBytes, min(50% of totalKB*1024, tmpfsAbsoluteCapBytes)),
+// rounded down to a whole MiB.
+// Returns 0 when totalKB is 0 (MemTotal unavailable — caller skips the tick).
+func computeTmpSizeBytes(totalKB uint64) uint64 {
+	if totalKB == 0 {
+		return 0
+	}
+	// Convert kB → bytes before applying the fraction to avoid integer truncation.
+	totalBytes := totalKB * 1024
+	target := totalBytes * tmpfsMemFractionNum / tmpfsMemFractionDen
+	if target > tmpfsAbsoluteCapBytes {
+		target = tmpfsAbsoluteCapBytes
+	}
+	if target < tmpfsAbsoluteFloorBytes {
+		target = tmpfsAbsoluteFloorBytes
+	}
+	const mib = 1 << 20
+	return (target / mib) * mib // round down to whole MiB
+}
+
+// computeTmpTargetBytes reads live MemTotal and delegates to computeTmpSizeBytes.
 // Returns 0 when MemTotal is unavailable.
 func computeTmpTargetBytes() uint64 {
 	_, total, err := readMeminfoKB(tmpMeminfoPath)
 	if err != nil || total == 0 {
 		return 0
 	}
-	// total is in kB; convert to bytes first to avoid integer truncation.
-	totalBytes := total * 1024
-	target := totalBytes * tmpfsMemFractionNum / tmpfsMemFractionDen
-	if target > tmpfsAbsoluteCapBytes {
-		target = tmpfsAbsoluteCapBytes
-	}
-	const mib = 1 << 20
-	return (target / mib) * mib // round down to whole MiB
+	return computeTmpSizeBytes(total)
 }
 
 // currentTmpCapBytes returns the current /tmp tmpfs size limit by reading the

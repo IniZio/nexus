@@ -43,9 +43,11 @@ func (f axisEvalFunc) Evaluate(ctx context.Context) { f(ctx) }
 
 // Governor is the single-tenant auto-resize control loop for one sandbox.
 //
-// It polls the guest for telemetry over vsock (D-DC-10, D-DC-11), applies the
-// memory control law (memory.go), checks host headroom before every grow
-// (hostheadroom.go), and calls the MemoryResizer when a resize is warranted.
+// It polls the guest for telemetry over vsock (D-DC-10, D-DC-11) and calls
+// each registered AxisEvaluator. The memory axis (memory.go) applies its
+// control law and guards grows against host RAM exhaustion via HasHeadroom
+// (hostheadroom.go); the disk and vCPU axes apply their own control laws
+// without a RAM headroom check.
 //
 // Single-tenant design: OLD-nexus maintains a workspaceID-keyed map of states
 // for N workspaces. nexus3 drops the map entirely — one Governor per supervisor
@@ -83,8 +85,9 @@ type Config struct {
 	// In production: NewVsockTelemetry(drv, id). In tests: a fake.
 	Telemetry resize.TelemetrySource
 
-	// Headroom checks host memory availability before each grow. When nil,
-	// NewProcfsHeadroom() is used (reads /proc/meminfo on the host).
+	// Headroom checks host memory availability before each memory-axis grow.
+	// When nil, NewProcfsHeadroom() is used (reads /proc/meminfo on the host).
+	// The disk and vCPU axes do not call this reader.
 	Headroom HostHeadroomReader
 
 	// Bounds carries the per-sandbox resource ceilings. When MemMinBytes or

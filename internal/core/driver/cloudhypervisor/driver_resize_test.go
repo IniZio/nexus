@@ -141,15 +141,28 @@ func TestGrowDisk_success(t *testing.T) {
 	var gotSize uint64
 
 	mux := http.NewServeMux()
+	// The mock intentionally mirrors CH's strictness on the wire format: it
+	// decodes into a local struct with hardcoded json:"desired_size" (NOT
+	// vmResizeDiskRequest) so that any regression of the client tag back to
+	// "size" leaves DesiredSize == 0 and the mock returns HTTP 400 — exactly
+	// as real CH does — causing the test to fail on the old wire format.
 	mux.HandleFunc("/api/v1/vm.resize-disk", func(w http.ResponseWriter, r *http.Request) {
-		var req vmResizeDiskRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var body struct {
+			ID          string `json:"id"`
+			DesiredSize uint64 `json:"desired_size"` // must match CH VmResizeDisk schema @ v52.0
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if body.DesiredSize == 0 {
+			// desired_size missing or zero — reject exactly as real CH does.
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		mu.Lock()
-		gotID = req.ID
-		gotSize = req.Size
+		gotID = body.ID
+		gotSize = body.DesiredSize
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -556,8 +569,8 @@ func TestBuildCmdline_HotplugPlacement(t *testing.T) {
 	// baseNoBoundary is diskBootCmdline: no PID-1 args, no " --".
 	baseNoBoundary := diskBootCmdline
 	// baseWithBoundary simulates a Cmdline built by the substrate when
-	// workspace mounts or auto-resize PID-1 args are appended via " --".
-	baseWithBoundary := diskBootCmdline + " -- --auto-resize --workspace-mount /work"
+	// workspace mounts or other PID-1 args are appended via " --".
+	baseWithBoundary := diskBootCmdline + " -- --workspace-mount /work"
 
 	// Case 1: auto-resize off, no boundary → unchanged.
 	if got := buildCmdline(baseNoBoundary, 0); got != baseNoBoundary {
@@ -596,9 +609,112 @@ func TestBuildCmdline_HotplugPlacement(t *testing.T) {
 		t.Errorf("case 4 (resize-on, boundary): hotplug tokens at offset %d are AFTER \" --\" at offset %d; "+
 			"kernel will not receive them (revert of insertion fix detected)", hotplugIdx, boundaryIdx)
 	}
-	// PID-1 args must still be present after the boundary.
-	if !strings.Contains(got4, "--auto-resize") {
-		t.Errorf("case 4 (resize-on, boundary): PID-1 args missing from result %q", got4)
+	// "--auto-resize" is not a recognised PID-1 token and must not appear anywhere.
+	if strings.Contains(got4, "--auto-resize") {
+		t.Errorf("case 4 (resize-on, boundary): unexpected --auto-resize token found in %q", got4)
+	}
+}
+
+// TestGrowDisk_sendsGrowRequestToGuest verifies that after a successful
+// vm.resize-disk, GrowDisk dials the guest over vsock and sends a GrowRequest
+// carrying the correct DiskIndex and TargetBytes.
+//
+// Break-and-restore proof: comment out the dialGuest call in GrowDisk and
+// the test fails with "timed out: GrowDisk did not send GrowRequest to guest".
+func TestGrowDisk_sendsGrowRequestToGuest(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	const origSize = 5 * 1024 * 1024
+	const targetSize = 10 * 1024 * 1024
+	diskPath := filepath.Join(dir, "extra0.raw")
+	if err := createSizedFile(diskPath, origSize); err != nil {
+		t.Fatalf("create backing file: %v", err)
+	}
+	d.cfg.ExtraDisks = []ExtraDisk{{Path: diskPath}}
+
+	// Fake CH HTTP: accept vm.resize-disk unconditionally.
+	fakeSockListener(t, d.socketPath(id), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	// Fake vsock: host side returned from dialGuest; guest side serves the wire protocol.
+	hostConn, guestConn := net.Pipe()
+
+	var gotReq resize.GrowRequest
+	var guestDecodeErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer guestConn.Close()
+		gotReq, guestDecodeErr = resize.DecodeGrowRequest(guestConn)
+		if guestDecodeErr != nil {
+			return
+		}
+		_ = resize.EncodeGrowResponse(guestConn, resize.GrowResponse{ResultBytes: int64(targetSize)})
+	}()
+
+	resizer := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
+	resizer.dialGuest = func(ctx context.Context, _ domain.SandboxID, _ uint32) (net.Conn, error) {
+		return hostConn, nil
+	}
+
+	if err := resizer.GrowDisk(context.Background(), 0, targetSize); err != nil {
+		t.Fatalf("GrowDisk: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out: GrowDisk did not send GrowRequest to guest")
+	}
+
+	if guestDecodeErr != nil {
+		t.Fatalf("guest DecodeGrowRequest: %v", guestDecodeErr)
+	}
+	if gotReq.DiskIndex != 0 {
+		t.Errorf("GrowRequest.DiskIndex = %d, want 0 (ExtraDisks[0])", gotReq.DiskIndex)
+	}
+	if gotReq.TargetBytes != targetSize {
+		t.Errorf("GrowRequest.TargetBytes = %d, want %d", gotReq.TargetBytes, targetSize)
+	}
+}
+
+// TestGrowDisk_guestUnreachable_bestEffort verifies that a failed vsock dial
+// (guest unreachable) does NOT fail GrowDisk. The host-side file expansion
+// and CH notification are already committed; the guest phase is best-effort.
+func TestGrowDisk_guestUnreachable_bestEffort(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	const origSize = 5 * 1024 * 1024
+	const targetSize = 10 * 1024 * 1024
+	diskPath := filepath.Join(dir, "extra0.raw")
+	if err := createSizedFile(diskPath, origSize); err != nil {
+		t.Fatalf("create backing file: %v", err)
+	}
+	d.cfg.ExtraDisks = []ExtraDisk{{Path: diskPath}}
+
+	fakeSockListener(t, d.socketPath(id), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	resizer := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
+	resizer.dialGuest = func(ctx context.Context, _ domain.SandboxID, _ uint32) (net.Conn, error) {
+		return nil, fmt.Errorf("vsock: guest unreachable (injected)")
+	}
+
+	// GrowDisk must return nil even when the guest is unreachable.
+	if err := resizer.GrowDisk(context.Background(), 0, targetSize); err != nil {
+		t.Errorf("GrowDisk returned error when guest unreachable; want nil (best-effort): %v", err)
+	}
+
+	// Backing file must still be expanded.
+	fi, _ := os.Stat(diskPath)
+	if fi.Size() != targetSize {
+		t.Errorf("backing file size = %d, want %d (must be expanded despite guest unreachable)", fi.Size(), targetSize)
 	}
 }
 

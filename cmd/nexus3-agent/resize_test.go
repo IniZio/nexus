@@ -18,8 +18,8 @@ package main
 //     computed size clamped to [1 GiB, 4 GiB].
 //   - /tmp resize: no remount within hysteresis; remount when MemTotal grows;
 //     2 GiB cap honoured; live MemTotal used as sizing base (not ceiling).
-//   - Disabled path: startResizeServices is gated by --auto-resize in main.go;
-//     when absent, nothing spawns.
+//   - Always-on: startResizeServices is called unconditionally from main.go;
+//     being PID 1 is sufficient.
 
 import (
 	"net"
@@ -546,6 +546,60 @@ func TestComputeTmpTargetBytes_LiveMemTotal(t *testing.T) {
 	got := computeTmpTargetBytes()
 	if got != uint64(1<<30) {
 		t.Errorf("computeTmpTargetBytes = %d, want %d (1 GiB)", got, uint64(1<<30))
+	}
+}
+
+// TestComputeTmpSizeBytes exercises the pure sizing formula across floor, cap,
+// and proportional cases without touching /proc/meminfo.
+func TestComputeTmpSizeBytes(t *testing.T) {
+	const (
+		gib = uint64(1 << 30)
+		mib = uint64(1 << 20)
+	)
+	cases := []struct {
+		name    string
+		totalKB uint64
+		wantB   uint64
+		note    string
+	}{
+		{
+			name:    "512MiB_guest_floor_wins",
+			totalKB: 512 * 1024,
+			// 50% of 512 MiB = 256 MiB < 1 GiB floor → floor wins.
+			wantB: 1 * gib,
+			note: "floor: 1 GiB (tmpfs sized not preallocated — no real cost on 512 MiB guest)",
+		},
+		{
+			name:    "8GiB_guest_cap_wins",
+			totalKB: 8 * 1024 * 1024,
+			// 50% of 8 GiB = 4 GiB > 2 GiB cap → cap wins.
+			wantB: 2 * gib,
+			note: "cap: 2 GiB",
+		},
+		{
+			name:    "3GiB_guest_proportional",
+			totalKB: 3 * 1024 * 1024,
+			// 50% of 3 GiB = 1.5 GiB; between floor and cap.
+			wantB: (1536 * mib / mib) * mib, // 1536 MiB = 1.5 GiB, already MiB-aligned
+			note: "proportional: 1.5 GiB",
+		},
+		{
+			name:    "zero_totalKB_returns_zero",
+			totalKB: 0,
+			wantB:   0,
+			note: "unavailable MemTotal sentinel",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := computeTmpSizeBytes(tc.totalKB)
+			if got != tc.wantB {
+				t.Errorf("computeTmpSizeBytes(%d kB) = %d bytes (%d MiB), want %d bytes (%d MiB) [%s]",
+					tc.totalKB, got, got>>20, tc.wantB, tc.wantB>>20, tc.note)
+			}
+		})
 	}
 }
 

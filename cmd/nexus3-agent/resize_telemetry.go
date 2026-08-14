@@ -31,8 +31,9 @@ type resizeEnvelope struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
-// startResizeServices starts all auto-resize subsystems when --auto-resize is
-// present in the kernel cmdline. Call order matters:
+// startResizeServices starts all auto-resize subsystems. Auto-resize is
+// unconditional: the agent starts these services whenever it runs as PID 1,
+// with no opt-in token required. Call order matters:
 //
 //  1. setupZRAMSwap — synchronous, must complete before vsock listeners open
 //     so compressed swap is active before any workload can start (spec-08:67,
