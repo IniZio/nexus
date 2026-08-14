@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +27,50 @@ var ErrNoKernelConfigured = errors.New("cloudhypervisor: no guest kernel configu
 // sockaddr_un.sun_path is 108 bytes including the null terminator, so the
 // usable length is 107 bytes.
 const maxSocketPathLen = 107
+
+// Default kernel cmdlines by boot mode.
+const (
+	defaultCmdline  = "console=ttyS0"
+	diskBootCmdline = "root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0"
+
+	// memHotplugCmdline is appended to the guest cmdline when a virtio-mem
+	// hotplug region is reserved (Config.MemoryMaxMiB > Config.MemoryMiB).
+	// Both tokens are REQUIRED, not optional — confirmed by
+	// docs/design/auto-resize.md Leg 6 (negative control): without them
+	// PUT /api/v1/vm.resize returns 204 but MemTotal does not grow.
+	//   memhp_default_state=online: auto-online hotplugged memory blocks.
+	//   memory_hotplug.online_policy=auto-movable: zone blocks as MOVABLE so
+	//     they can be migrated back out during shrink (Leg 7 shrink path).
+	// CONFIG_MEMORY_HOTPLUG_DEFAULT_ONLINE is deliberately absent from the
+	// nexus3 kernel config (scripts/kernel/config-6.12.76:895) — the cmdline
+	// override provides per-sandbox control without baking it into the image.
+	memHotplugCmdline = " memhp_default_state=online memory_hotplug.online_policy=auto-movable"
+)
+
+// buildCmdline inserts memHotplugCmdline into base when memoryMaxMiB > 0.
+//
+// Placement rule: hotplug tokens are KERNEL parameters and must appear before
+// the PID-1 boundary (" --"). Everything after " --" is passed by the kernel
+// to PID 1 as os.Args; appending there would silently break memory hotplug
+// (Leg 6: tokens never reach the kernel).
+//
+//   - No " --" boundary → append (safe: all of base is kernel params).
+//   - " --" boundary present → insert immediately before it.
+//   - memoryMaxMiB == 0 → return base unchanged (AR-N-AC1: byte-identical to
+//     the no-resize path).
+//
+// This function is the single source of truth for cmdline assembly. It is
+// package-private so driver_resize_test.go can call it directly and verify
+// placement under all four cases (no-mounts/mounts × auto-resize-on/off).
+func buildCmdline(base string, memoryMaxMiB uint32) string {
+	if memoryMaxMiB == 0 {
+		return base
+	}
+	if idx := strings.Index(base, " --"); idx >= 0 {
+		return base[:idx] + memHotplugCmdline + base[idx:]
+	}
+	return base + memHotplugCmdline
+}
 
 // Config holds the static configuration for the Cloud Hypervisor driver.
 // It is set at construction time and must not be mutated afterwards.
@@ -114,12 +159,34 @@ type Config struct {
 	// guest to actually route kernel output to the serial port.
 	SerialOutputPath string
 
-	// VCPUs is the number of virtual CPUs for each VM (used for both
-	// boot_vcpus and max_vcpus). Defaults to 1.
+	// VCPUs is the number of virtual CPUs for each VM (used for boot_vcpus).
+	// Defaults to 1.
 	VCPUs uint32
+
+	// VCPUMax is the max_vcpus ceiling advertised to CH at vm.create, which
+	// fixes the upper bound for runtime vCPU hotplug. When 0, max_vcpus is set
+	// equal to VCPUs (no hotplug headroom). When > VCPUs, CH allows hotplug up
+	// to this ceiling and SandboxResizer.ResizeCPU may grow up to it.
+	//
+	// Must be > VCPUs when set; New returns an error otherwise.
+	VCPUMax uint32
 
 	// MemoryMiB is the guest RAM in mebibytes. Defaults to 512.
 	MemoryMiB uint32
+
+	// MemoryMaxMiB is the ceiling for memory hotplug in mebibytes. When 0,
+	// no virtio-mem hotplug region is reserved at vm.create. When > MemoryMiB,
+	// the driver reserves a (MemoryMaxMiB − MemoryMiB) MiB hotplug region using
+	// VirtioMem and adds the required cmdline tokens (confirmed by spike
+	// docs/design/auto-resize.md Legs 1–7):
+	//
+	//	memhp_default_state=online memory_hotplug.online_policy=auto-movable
+	//
+	// These tokens are required (not optional): without them vm.resize returns
+	// 204 silently but MemTotal does not grow (Leg 6 negative control).
+	//
+	// Must be > MemoryMiB when set; New returns an error otherwise.
+	MemoryMaxMiB uint32
 
 	// BalloonMiB is the initial virtio-balloon device size in mebibytes.
 	// When non-zero, a balloon device is attached at boot with this size.
@@ -235,6 +302,15 @@ func New(cfg Config) (*CHDriver, error) {
 	}
 	if cfg.CallTimeout <= 0 {
 		cfg.CallTimeout = 10 * time.Second
+	}
+
+	// Validate auto-resize ceilings after defaults are applied so the
+	// comparisons reflect the resolved VCPUs/MemoryMiB values.
+	if cfg.VCPUMax > 0 && cfg.VCPUMax <= cfg.VCPUs {
+		return nil, fmt.Errorf("cloudhypervisor: VCPUMax (%d) must be > VCPUs (%d) when set", cfg.VCPUMax, cfg.VCPUs)
+	}
+	if cfg.MemoryMaxMiB > 0 && cfg.MemoryMaxMiB <= cfg.MemoryMiB {
+		return nil, fmt.Errorf("cloudhypervisor: MemoryMaxMiB (%d) must be > MemoryMiB (%d) when set", cfg.MemoryMaxMiB, cfg.MemoryMiB)
 	}
 
 	if err := os.MkdirAll(cfg.SocketDir, 0o700); err != nil {
@@ -545,13 +621,9 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 	}
 
 	// Resolve the kernel command line. The default depends on the boot mode:
-	//   - disk boot (DiskImagePath set):  root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0
-	//   - initramfs boot:                 console=ttyS0
+	//   - disk boot (DiskImagePath set):  diskBootCmdline (package const)
+	//   - initramfs boot:                 defaultCmdline   (package const)
 	// When Cmdline is set explicitly it overrides the mode-specific default.
-	const (
-		defaultCmdline  = "console=ttyS0"
-		diskBootCmdline = "root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0"
-	)
 	cmdline := d.cfg.Cmdline
 	if cmdline == "" {
 		if diskImagePath != "" {
@@ -560,6 +632,7 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 			cmdline = defaultCmdline
 		}
 	}
+	cmdline = buildCmdline(cmdline, d.cfg.MemoryMaxMiB)
 
 	// Nested-virt preflight: check host support and /dev/kvm access before
 	// constructing vmcfg. We fail loudly here so the error is attributed to
@@ -568,11 +641,29 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 		BootVCPUs: vcpus,
 		MaxVCPUs:  vcpus,
 	}
+	// When auto-resize is enabled, MaxVCPUs must exceed BootVCPUs at vm.create
+	// because CH fixes the ceiling at that point — it cannot be raised later.
+	if d.cfg.VCPUMax > vcpus {
+		cpusCfg.MaxVCPUs = d.cfg.VCPUMax
+	}
 	if d.cfg.NestedVirt {
 		if err := nestedVirtPreflight(); err != nil {
 			return "", err
 		}
 		cpusCfg.Nested = true
+	}
+
+	// Build the memory config. When MemoryMaxMiB is set, reserve a VirtioMem
+	// hotplug region of (MemoryMaxMiB − MemoryMiB) MiB. The method MUST be
+	// "VirtioMem" — CH v52.0 defaults to "Acpi" and that must not be left
+	// implicit (confirmed by spike Leg 1 finding).
+	memCfg := &vmMemoryConfig{
+		SizeBytes: uint64(memMiB) * 1024 * 1024,
+	}
+	if d.cfg.MemoryMaxMiB > 0 {
+		hotplugMiB := d.cfg.MemoryMaxMiB - memMiB
+		memCfg.HotplugSize = uint64(hotplugMiB) * 1024 * 1024
+		memCfg.HotplugMethod = "VirtioMem"
 	}
 
 	vmcfg := vmConfig{
@@ -581,10 +672,8 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 			Cmdline:   cmdline,
 			Initramfs: d.cfg.InitramfsPath, // omitempty: omitted when empty or disk boot
 		},
-		CPUs: cpusCfg,
-		Memory: &vmMemoryConfig{
-			SizeBytes: uint64(memMiB) * 1024 * 1024,
-		},
+		CPUs:   cpusCfg,
+		Memory: memCfg,
 	}
 
 	// Attach a virtio-balloon device when requested. free_page_reporting

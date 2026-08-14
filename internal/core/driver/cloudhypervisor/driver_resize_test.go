@@ -1,0 +1,637 @@
+package cloudhypervisor
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/resize"
+)
+
+// TestDiskIndexMapping verifies the critical disk index → CH id and
+// disk index → guest device derivations for a 3-extra-disk topology.
+//
+// CH auto-assigns disk IDs in attach order (vmDiskConfig has no id field):
+//   - rootfs (DiskImagePath)  → _disk0 → /dev/vda
+//   - ExtraDisks[0]           → _disk1 → /dev/vdb
+//   - ExtraDisks[1]           → _disk2 → /dev/vdc
+//   - ExtraDisks[2]           → _disk3 → /dev/vdd
+//
+// A wrong mapping routes GrowDisk to the wrong filesystem: data loss, not
+// a failed build. This test is the primary guard against that class of bug.
+func TestDiskIndexMapping(t *testing.T) {
+	cases := []struct {
+		diskIndex    int
+		wantCHID     string
+		wantGuestDev string
+	}{
+		{0, "_disk1", "/dev/vdb"}, // workspace disk in a single-extra-disk setup
+		{1, "_disk2", "/dev/vdc"}, // second extra disk
+		{2, "_disk3", "/dev/vdd"}, // third extra disk (3-disk topology)
+	}
+
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("index=%d", tc.diskIndex), func(t *testing.T) {
+			gotID := diskIndexToCHID(tc.diskIndex)
+			if gotID != tc.wantCHID {
+				t.Errorf("diskIndexToCHID(%d) = %q, want %q", tc.diskIndex, gotID, tc.wantCHID)
+			}
+			gotDev := diskIndexToGuestDev(tc.diskIndex)
+			if gotDev != tc.wantGuestDev {
+				t.Errorf("diskIndexToGuestDev(%d) = %q, want %q", tc.diskIndex, gotDev, tc.wantGuestDev)
+			}
+		})
+	}
+}
+
+// TestGrowDisk_shrinkRejected verifies SAFETY RULE 1 (grow-only):
+//   - targetBytes < currentSize → error returned, file untouched.
+//   - targetBytes == currentSize → nil (no-op), file untouched.
+func TestGrowDisk_shrinkRejected(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	const origSize = 10 * 1024 * 1024
+	diskPath := filepath.Join(dir, "extra0.raw")
+	if err := createSizedFile(diskPath, origSize); err != nil {
+		t.Fatalf("create backing file: %v", err)
+	}
+	d.cfg.ExtraDisks = []ExtraDisk{{Path: diskPath}}
+
+	// Fake socket so the running-required check passes.
+	fakeSockListener(t, d.socketPath(id), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	r := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
+
+	// Shrink: must return error.
+	if err := r.GrowDisk(context.Background(), 0, origSize-1); err == nil {
+		t.Error("GrowDisk shrink target returned nil; want error")
+	}
+
+	// Equal size: must be a no-op (nil error).
+	if err := r.GrowDisk(context.Background(), 0, origSize); err != nil {
+		t.Errorf("GrowDisk equal-size returned error: %v; want nil (no-op)", err)
+	}
+
+	// File must be unchanged.
+	fi, _ := os.Stat(diskPath)
+	if fi.Size() != origSize {
+		t.Errorf("backing file size = %d, want %d (unchanged after no-op/shrink reject)", fi.Size(), origSize)
+	}
+}
+
+// TestGrowDisk_notRunning verifies SAFETY RULE 2 (running-required): GrowDisk
+// rejects the grow and leaves the file untouched when the VMM socket is absent.
+func TestGrowDisk_notRunning(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	const origSize = 5 * 1024 * 1024
+	diskPath := filepath.Join(dir, "extra0.raw")
+	if err := createSizedFile(diskPath, origSize); err != nil {
+		t.Fatalf("create backing file: %v", err)
+	}
+	d.cfg.ExtraDisks = []ExtraDisk{{Path: diskPath}}
+
+	// No socket file: sandbox is not running.
+	r := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
+
+	if err := r.GrowDisk(context.Background(), 0, origSize*2); err == nil {
+		t.Error("GrowDisk with missing socket returned nil; want error")
+	}
+
+	fi, _ := os.Stat(diskPath)
+	if fi.Size() != origSize {
+		t.Errorf("backing file size = %d after not-running rejection; want %d (unchanged)", fi.Size(), origSize)
+	}
+}
+
+// TestGrowDisk_success verifies the happy path:
+//   - backing file is expanded to targetBytes
+//   - CH receives PUT /api/v1/vm.resize-disk with chDiskID "_disk1" and correct size
+func TestGrowDisk_success(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	const origSize = 5 * 1024 * 1024
+	const targetSize = 10 * 1024 * 1024
+	diskPath := filepath.Join(dir, "extra0.raw")
+	if err := createSizedFile(diskPath, origSize); err != nil {
+		t.Fatalf("create backing file: %v", err)
+	}
+	d.cfg.ExtraDisks = []ExtraDisk{{Path: diskPath}}
+
+	var mu sync.Mutex
+	var gotID string
+	var gotSize uint64
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/vm.resize-disk", func(w http.ResponseWriter, r *http.Request) {
+		var req vmResizeDiskRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		gotID = req.ID
+		gotSize = req.Size
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	fakeSockListenerMux(t, d.socketPath(id), mux)
+
+	resizer := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
+	if err := resizer.GrowDisk(context.Background(), 0, targetSize); err != nil {
+		t.Fatalf("GrowDisk: %v", err)
+	}
+
+	// Backing file must be expanded.
+	fi, _ := os.Stat(diskPath)
+	if fi.Size() != targetSize {
+		t.Errorf("backing file size = %d, want %d", fi.Size(), targetSize)
+	}
+
+	// CH must have received the correct disk ID and size.
+	mu.Lock()
+	receivedID, receivedSize := gotID, gotSize
+	mu.Unlock()
+
+	const wantID = "_disk1" // ExtraDisks[0] → _disk{0+1} = _disk1
+	if receivedID != wantID {
+		t.Errorf("vm.resize-disk id = %q, want %q", receivedID, wantID)
+	}
+	if receivedSize != targetSize {
+		t.Errorf("vm.resize-disk size = %d, want %d", receivedSize, uint64(targetSize))
+	}
+}
+
+// TestGrowDisk_atomicRollback verifies SAFETY RULE 4 (atomic-on-failure): when
+// vm.resize-disk fails, the backing file is truncated back to its original size.
+func TestGrowDisk_atomicRollback(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	const origSize = 5 * 1024 * 1024
+	diskPath := filepath.Join(dir, "extra0.raw")
+	if err := createSizedFile(diskPath, origSize); err != nil {
+		t.Fatalf("create backing file: %v", err)
+	}
+	d.cfg.ExtraDisks = []ExtraDisk{{Path: diskPath}}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/vm.resize-disk", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError) // simulate CH rejection
+	})
+	fakeSockListenerMux(t, d.socketPath(id), mux)
+
+	resizer := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
+	if err := resizer.GrowDisk(context.Background(), 0, origSize*2); err == nil {
+		t.Error("GrowDisk with failing CH returned nil; want error")
+	}
+
+	// Backing file must be rolled back to original size.
+	fi, _ := os.Stat(diskPath)
+	if fi.Size() != origSize {
+		t.Errorf("backing file size after rollback = %d, want %d (must be original)", fi.Size(), origSize)
+	}
+}
+
+// TestGrowDisk_sparseAccountsForActual proves the sparse-aware pool check
+// (SAFETY RULE 3) uses actual host allocation rather than apparent file size.
+//
+// A sparse file created with ftruncate has an apparent size (fi.Size()) that
+// far exceeds the blocks actually allocated on the host (Stat_t.Blocks * 512).
+// The check must use actual bytes because:
+//
+//   - The guest can fill existing holes without any resize call, silently
+//     consuming host blocks up to the current apparent size at any time.
+//   - Using (targetBytes - apparentSize) as "needed" severely under-counts
+//     the real host commitment; using (targetBytes - actualBytes) accounts for
+//     all holes the guest could write into.
+//
+// The test verifies:
+//  1. diskActualBytes returns a value less than fi.Size() for a genuinely
+//     sparse file (proves the measurement function works as designed).
+//  2. checkFreeSpace does not error when called with targetBytes == apparentSize,
+//     proving the function handles sparse inputs without panic or wrong error.
+//
+// If the underlying filesystem does not support sparse files (e.g. FAT32,
+// tmpfs on certain kernels) the test skips rather than failing.
+func TestGrowDisk_sparseAccountsForActual(t *testing.T) {
+	const apparentSize = 16 * 1024 * 1024 // 16 MiB apparent (fully sparse)
+	const writeSize = 4096                  // 4 KiB actually written at offset 0
+
+	dir := t.TempDir()
+	diskPath := filepath.Join(dir, "sparse.raw")
+
+	// Create a sparse file: truncate to large apparent size, write a small
+	// payload at the beginning to force at least one block to be allocated.
+	f, err := os.Create(diskPath)
+	if err != nil {
+		t.Fatalf("create sparse file: %v", err)
+	}
+	if err := f.Truncate(apparentSize); err != nil {
+		f.Close()
+		t.Fatalf("truncate to apparent size: %v", err)
+	}
+	if _, err := f.WriteAt(make([]byte, writeSize), 0); err != nil {
+		f.Close()
+		t.Fatalf("write at offset 0: %v", err)
+	}
+	f.Close()
+
+	// --- Part 1: diskActualBytes returns blocks-based allocation, not fi.Size() ---
+
+	actual, err := diskActualBytes(diskPath)
+	if err != nil {
+		t.Fatalf("diskActualBytes: %v", err)
+	}
+	fi, err := os.Stat(diskPath)
+	if err != nil {
+		t.Fatalf("os.Stat: %v", err)
+	}
+	if fi.Size() != apparentSize {
+		t.Fatalf("apparent size = %d B, want %d B", fi.Size(), apparentSize)
+	}
+	if actual >= fi.Size() {
+		// tmpfs and some other filesystems do not create holes; skip rather than fail.
+		t.Skipf("filesystem does not support sparse files "+
+			"(apparent=%d B, actual=%d B); skipping sparse-aware accounting test",
+			fi.Size(), actual)
+	}
+	t.Logf("sparse file: apparent=%d B, actual=%d B (actual is %.1f%% of apparent)",
+		fi.Size(), actual, 100*float64(actual)/float64(fi.Size()))
+
+	// --- Part 2: checkFreeSpace accepts target == apparentSize ---
+	// The commitment is (apparentSize - actualBytes) which is less than
+	// apparentSize and easily fits on any dev-machine temp partition.
+	if err := checkFreeSpace(diskPath, apparentSize); err != nil {
+		t.Errorf("checkFreeSpace(target=apparentSize) returned unexpected error: %v", err)
+	}
+}
+
+// TestResizeMemory verifies that ResizeMemory calls PUT /api/v1/vm.resize with
+// the correct desired_ram value and updates CurrentMemoryBytes.
+func TestResizeMemory(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	const bootMem int64 = 512 * 1024 * 1024
+	const targetMem int64 = 768 * 1024 * 1024
+
+	var mu sync.Mutex
+	var gotDesiredRAM uint64
+	var gotDesiredVCPUs *uint32
+	var gotDesiredBalloon *uint64
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/vm.resize", func(w http.ResponseWriter, r *http.Request) {
+		var req vmResizeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		if req.DesiredRAM != nil {
+			gotDesiredRAM = *req.DesiredRAM
+		}
+		gotDesiredVCPUs = req.DesiredVCPUs
+		gotDesiredBalloon = req.DesiredBalloon
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	fakeSockListenerMux(t, d.socketPath(id), mux)
+
+	bounds := resize.Bounds{MemMinBytes: bootMem, MemMaxBytes: 1024 * 1024 * 1024}
+	resizer := NewSandboxResizer(d, id, bounds, bootMem, 1)
+
+	if got := resizer.CurrentMemoryBytes(); got != bootMem {
+		t.Errorf("CurrentMemoryBytes before resize = %d, want %d", got, bootMem)
+	}
+
+	got, err := resizer.ResizeMemory(context.Background(), targetMem)
+	if err != nil {
+		t.Fatalf("ResizeMemory: %v", err)
+	}
+	if got != targetMem {
+		t.Errorf("ResizeMemory returned %d, want %d", got, targetMem)
+	}
+	if resizer.CurrentMemoryBytes() != targetMem {
+		t.Errorf("CurrentMemoryBytes after resize = %d, want %d", resizer.CurrentMemoryBytes(), targetMem)
+	}
+
+	mu.Lock()
+	ramSent := gotDesiredRAM
+	vcpusSent := gotDesiredVCPUs
+	balloonSent := gotDesiredBalloon
+	mu.Unlock()
+
+	if ramSent != uint64(targetMem) {
+		t.Errorf("desired_ram sent = %d, want %d", ramSent, uint64(targetMem))
+	}
+	// ResizeMemory must NOT touch desired_vcpus or desired_balloon (D-DC-08).
+	if vcpusSent != nil {
+		t.Errorf("desired_vcpus must be nil in ResizeMemory call; got %v", *vcpusSent)
+	}
+	if balloonSent != nil {
+		t.Errorf("desired_balloon must be nil in ResizeMemory call (balloon is host reclaim only, D-DC-08); got %v", *balloonSent)
+	}
+}
+
+// TestResizeMemory_clamp verifies that ResizeMemory clamps to Bounds.
+func TestResizeMemory_clamp(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	const bootMem int64 = 512 * 1024 * 1024
+	const maxMem int64 = 1024 * 1024 * 1024
+
+	var mu sync.Mutex
+	var gotRAM uint64
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/vm.resize", func(w http.ResponseWriter, r *http.Request) {
+		var req vmResizeRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		if req.DesiredRAM != nil {
+			gotRAM = *req.DesiredRAM
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	fakeSockListenerMux(t, d.socketPath(id), mux)
+
+	bounds := resize.Bounds{MemMinBytes: bootMem, MemMaxBytes: maxMem}
+	resizer := NewSandboxResizer(d, id, bounds, bootMem, 1)
+
+	// Request above ceiling: should be clamped to maxMem.
+	got, err := resizer.ResizeMemory(context.Background(), maxMem*2)
+	if err != nil {
+		t.Fatalf("ResizeMemory: %v", err)
+	}
+	if got != maxMem {
+		t.Errorf("ResizeMemory with over-ceiling target returned %d, want %d (clamped to MemMaxBytes)", got, maxMem)
+	}
+
+	mu.Lock()
+	ramSent := gotRAM
+	mu.Unlock()
+
+	if ramSent != uint64(maxMem) {
+		t.Errorf("desired_ram sent = %d, want %d (clamped)", ramSent, uint64(maxMem))
+	}
+}
+
+// TestResizeCPU verifies that ResizeCPU calls PUT /api/v1/vm.resize with the
+// correct desired_vcpus and updates CurrentVCPUs. Also verifies desired_ram
+// and desired_balloon are absent (not other dimensions polluted).
+func TestResizeCPU(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	var mu sync.Mutex
+	var gotVCPUs uint32
+	var gotRAM *uint64
+	var gotBalloon *uint64
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/vm.resize", func(w http.ResponseWriter, r *http.Request) {
+		var req vmResizeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		if req.DesiredVCPUs != nil {
+			gotVCPUs = *req.DesiredVCPUs
+		}
+		gotRAM = req.DesiredRAM
+		gotBalloon = req.DesiredBalloon
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	fakeSockListenerMux(t, d.socketPath(id), mux)
+
+	bounds := resize.Bounds{VCPUMin: 1, VCPUMax: 4}
+	resizer := NewSandboxResizer(d, id, bounds, 512*1024*1024, 1)
+
+	if resizer.CurrentVCPUs() != 1 {
+		t.Errorf("CurrentVCPUs before resize = %d, want 1", resizer.CurrentVCPUs())
+	}
+
+	got, err := resizer.ResizeCPU(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("ResizeCPU: %v", err)
+	}
+	if got != 2 {
+		t.Errorf("ResizeCPU returned %d, want 2", got)
+	}
+	if resizer.CurrentVCPUs() != 2 {
+		t.Errorf("CurrentVCPUs after resize = %d, want 2", resizer.CurrentVCPUs())
+	}
+
+	mu.Lock()
+	vcpuSent, ramSent, balloonSent := gotVCPUs, gotRAM, gotBalloon
+	mu.Unlock()
+
+	if vcpuSent != 2 {
+		t.Errorf("desired_vcpus sent = %d, want 2", vcpuSent)
+	}
+	if ramSent != nil {
+		t.Errorf("desired_ram must be nil in ResizeCPU call; got %v", *ramSent)
+	}
+	if balloonSent != nil {
+		t.Errorf("desired_balloon must be nil in ResizeCPU call; got %v", *balloonSent)
+	}
+}
+
+// TestMemHotplugCmdline_presentWhenEnabled verifies AR-DRV-AC2: when
+// MemoryMaxMiB > 0 the required cmdline tokens are appended. This exercises
+// the package-level constants directly without booting a VM.
+func TestMemHotplugCmdline_presentWhenEnabled(t *testing.T) {
+	cmdline := diskBootCmdline + memHotplugCmdline
+
+	if !strings.Contains(cmdline, "memhp_default_state=online") {
+		t.Errorf("cmdline %q missing required token memhp_default_state=online", cmdline)
+	}
+	if !strings.Contains(cmdline, "memory_hotplug.online_policy=auto-movable") {
+		t.Errorf("cmdline %q missing required token memory_hotplug.online_policy=auto-movable", cmdline)
+	}
+}
+
+// TestMemHotplugCmdline_absentWhenDisabled verifies AR-N-AC1 (negative scope):
+// when MemoryMaxMiB == 0 the hotplug tokens do not appear in the cmdline.
+func TestMemHotplugCmdline_absentWhenDisabled(t *testing.T) {
+	// With MemoryMaxMiB == 0 the driver does NOT append memHotplugCmdline.
+	cmdline := diskBootCmdline // no append
+
+	if strings.Contains(cmdline, "memhp_default_state") {
+		t.Errorf("cmdline %q contains hotplug token when MemoryMaxMiB=0 (AR-N-AC1 violation)", cmdline)
+	}
+	if strings.Contains(cmdline, "memory_hotplug") {
+		t.Errorf("cmdline %q contains hotplug token when MemoryMaxMiB=0 (AR-N-AC1 violation)", cmdline)
+	}
+}
+
+// TestNewConfig_validation verifies that New rejects misconfigured
+// MemoryMaxMiB and VCPUMax values and accepts valid ones.
+func TestNewConfig_validation(t *testing.T) {
+	dir := t.TempDir()
+	base := Config{
+		BinaryPath:   "/usr/bin/true",
+		SocketDir:    dir,
+		KernelPath:   "/dev/null",
+		VCPUs:        2,
+		MemoryMiB:    512,
+		StartTimeout: 200 * time.Millisecond,
+	}
+
+	bad := []struct {
+		name string
+		cfg  func(Config) Config
+	}{
+		{"MemoryMaxMiB==MemoryMiB", func(c Config) Config { c.MemoryMaxMiB = 512; return c }},
+		{"MemoryMaxMiB<MemoryMiB", func(c Config) Config { c.MemoryMaxMiB = 256; return c }},
+		{"VCPUMax==VCPUs", func(c Config) Config { c.VCPUMax = 2; return c }},
+		{"VCPUMax<VCPUs", func(c Config) Config { c.VCPUMax = 1; return c }},
+	}
+	for _, tc := range bad {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := New(tc.cfg(base)); err == nil {
+				t.Errorf("New with %s returned nil error; want error", tc.name)
+			}
+		})
+	}
+
+	good := []struct {
+		name string
+		cfg  func(Config) Config
+	}{
+		{"valid MemoryMaxMiB", func(c Config) Config { c.MemoryMaxMiB = 1024; return c }},
+		{"valid VCPUMax", func(c Config) Config { c.VCPUMax = 4; return c }},
+	}
+	for _, tc := range good {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := New(tc.cfg(base)); err != nil {
+				t.Errorf("New with %s returned error: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestBuildCmdline_HotplugPlacement exercises the four cases of buildCmdline
+// and is the anti-regression guard for the PID-1 boundary insertion fix.
+//
+// Reverting buildCmdline to always-append (removing the strings.Index branch)
+// causes cases 2 and 4 to fail: the hotplug tokens would land after " --" and
+// never reach the kernel.
+//
+// Cases:
+//
+//	1. auto-resize off, no " --" boundary → base unchanged (AR-N-AC1)
+//	2. auto-resize off, " --" boundary present → base unchanged (AR-N-AC1)
+//	3. auto-resize on,  no " --" boundary → hotplug tokens appended at end
+//	4. auto-resize on,  " --" boundary present → hotplug tokens inserted BEFORE boundary
+func TestBuildCmdline_HotplugPlacement(t *testing.T) {
+	// baseNoBoundary is diskBootCmdline: no PID-1 args, no " --".
+	baseNoBoundary := diskBootCmdline
+	// baseWithBoundary simulates a Cmdline built by the substrate when
+	// workspace mounts or auto-resize PID-1 args are appended via " --".
+	baseWithBoundary := diskBootCmdline + " -- --auto-resize --workspace-mount /work"
+
+	// Case 1: auto-resize off, no boundary → unchanged.
+	if got := buildCmdline(baseNoBoundary, 0); got != baseNoBoundary {
+		t.Errorf("case 1 (resize-off, no boundary): got %q, want base unchanged", got)
+	}
+
+	// Case 2: auto-resize off, boundary present → unchanged.
+	if got := buildCmdline(baseWithBoundary, 0); got != baseWithBoundary {
+		t.Errorf("case 2 (resize-off, boundary): got %q, want base unchanged", got)
+	}
+
+	// Case 3: auto-resize on, no boundary → hotplug tokens appended.
+	got3 := buildCmdline(baseNoBoundary, 1024)
+	if !strings.Contains(got3, "memhp_default_state=online") {
+		t.Errorf("case 3 (resize-on, no boundary): missing memhp_default_state=online in %q", got3)
+	}
+	if strings.Contains(got3, " --") {
+		t.Errorf("case 3 (resize-on, no boundary): unexpected \" --\" in %q", got3)
+	}
+	if !strings.HasPrefix(got3, baseNoBoundary) {
+		t.Errorf("case 3 (resize-on, no boundary): hotplug tokens must be a suffix, not prefix; got %q", got3)
+	}
+
+	// Case 4: auto-resize on, " --" boundary present → hotplug inserted BEFORE boundary.
+	// This is the critical placement check. Reverting to always-append fails here.
+	got4 := buildCmdline(baseWithBoundary, 1024)
+	boundaryIdx := strings.Index(got4, " --")
+	if boundaryIdx < 0 {
+		t.Fatalf("case 4 (resize-on, boundary): PID-1 boundary \" --\" missing from result %q", got4)
+	}
+	hotplugIdx := strings.Index(got4, "memhp_default_state=online")
+	if hotplugIdx < 0 {
+		t.Fatalf("case 4 (resize-on, boundary): memhp_default_state=online missing from result %q", got4)
+	}
+	if hotplugIdx > boundaryIdx {
+		t.Errorf("case 4 (resize-on, boundary): hotplug tokens at offset %d are AFTER \" --\" at offset %d; "+
+			"kernel will not receive them (revert of insertion fix detected)", hotplugIdx, boundaryIdx)
+	}
+	// PID-1 args must still be present after the boundary.
+	if !strings.Contains(got4, "--auto-resize") {
+		t.Errorf("case 4 (resize-on, boundary): PID-1 args missing from result %q", got4)
+	}
+}
+
+// --- helpers -----------------------------------------------------------------
+
+// fakeSockListener starts an httptest server on a Unix socket at path,
+// serving all requests with handler. The server is stopped at test cleanup.
+func fakeSockListener(t *testing.T, path string, handler http.Handler) {
+	t.Helper()
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen unix %s: %v", path, err)
+	}
+	srv := httptest.NewUnstartedServer(handler)
+	srv.Listener = ln
+	srv.Start()
+	t.Cleanup(srv.Close)
+}
+
+// fakeSockListenerMux starts an httptest server on a Unix socket using a mux.
+func fakeSockListenerMux(t *testing.T, path string, mux *http.ServeMux) {
+	t.Helper()
+	fakeSockListener(t, path, mux)
+}
+
+// createSizedFile creates a new file at path and sets its size to size bytes
+// using os.Truncate. This is the host-side equivalent of what
+// substrate.CreateSparseFile does for disk images.
+func createSizedFile(path string, size int64) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	f.Close()
+	return os.Truncate(path, size)
+}

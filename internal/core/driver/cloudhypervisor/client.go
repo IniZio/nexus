@@ -171,8 +171,20 @@ type vmCPUsConfig struct {
 }
 
 // vmMemoryConfig maps to CH's MemoryConfig. The "size" field is in bytes.
+//
+// Verified against cloud-hypervisor.yaml @ v52.0:
+// MemoryConfig { required: [size], properties: {
+//
+//	size (uint64), hotplug_size (uint64),
+//	hotplug_method (string, enum: ["Acpi","VirtioMem"]) } }
+//
+// hotplug_method defaults to "Acpi" in CH v52.0 and must be set explicitly to
+// "VirtioMem" when a hotplug region is requested — leaving it implicit produces
+// the wrong method silently (confirmed by auto-resize spike, Leg 1).
 type vmMemoryConfig struct {
-	SizeBytes uint64 `json:"size"`
+	SizeBytes     uint64 `json:"size"`
+	HotplugSize   uint64 `json:"hotplug_size,omitempty"`
+	HotplugMethod string `json:"hotplug_method,omitempty"`
 }
 
 // balloonConfig maps to CH's BalloonConfig for the virtio-balloon device.
@@ -204,6 +216,19 @@ type vmResizeRequest struct {
 	DesiredRAM     *uint64 `json:"desired_ram,omitempty"`
 	DesiredVCPUs   *uint32 `json:"desired_vcpus,omitempty"`
 	DesiredBalloon *uint64 `json:"desired_balloon,omitempty"`
+}
+
+// vmResizeDiskRequest maps to CH's VmResizeDisk body for PUT /api/v1/vm.resize-disk.
+//
+// Verified against cloud-hypervisor.yaml @ v52.0:
+// VmResizeDisk { required: [id, size], properties: { id (string), size (uint64) } }
+// where id is the CH-assigned disk identifier (e.g. "_disk0") and size is the
+// new desired disk capacity in bytes.
+//
+// Ported from OLD packages/nexus/internal/vm/driver/cloudhypervisor/types.go:60-63.
+type vmResizeDiskRequest struct {
+	ID   string `json:"id"`
+	Size uint64 `json:"size"`
 }
 
 // client speaks the Cloud Hypervisor REST API over a Unix socket.
@@ -497,6 +522,35 @@ func (c *client) VMResize(ctx context.Context, desiredRAMBytes *uint64, desiredV
 	drainClose(resp)
 	if resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("cloudhypervisor: vm.resize: unexpected status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// VMResizeDisk sends PUT /api/v1/vm.resize-disk to notify CH that a backing
+// file has grown and it should re-read the device capacity. CH returns 204 No
+// Content on success.
+//
+// id is the CH-assigned disk identifier (e.g. "_disk1"). newSizeBytes is the
+// new total capacity in bytes; it must be ≥ the current size (grow-only).
+// The caller is responsible for expanding the host backing file before this
+// call and rolling back on failure.
+//
+// Verified against cloud-hypervisor.yaml @ v52.0:
+// PUT /api/v1/vm.resize-disk → VmResizeDisk → 204 No Content.
+//
+// Ported from OLD packages/nexus/internal/vm/driver/cloudhypervisor/client.go:143-146.
+func (c *client) VMResizeDisk(ctx context.Context, id string, newSizeBytes uint64) error {
+	req := vmResizeDiskRequest{
+		ID:   id,
+		Size: newSizeBytes,
+	}
+	resp, err := c.do(ctx, http.MethodPut, "/vm.resize-disk", req)
+	if err != nil {
+		return fmt.Errorf("cloudhypervisor: vm.resize-disk: %w", err)
+	}
+	drainClose(resp)
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("cloudhypervisor: vm.resize-disk %s: unexpected status %d", id, resp.StatusCode)
 	}
 	return nil
 }
