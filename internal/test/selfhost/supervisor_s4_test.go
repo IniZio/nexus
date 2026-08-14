@@ -356,7 +356,7 @@ func TestSupervisorS4PlaceholderInGuest(t *testing.T) {
 		Exe:          nexus3Bin,
 		ReadyTimeout: 5 * time.Minute,
 	}
-	pid, err := supervisor.SpawnDetached(spawnCfg)
+	pid, _, err := supervisor.SpawnDetached(spawnCfg)
 	if err != nil {
 		t.Fatalf("supervisor.SpawnDetached: %v", err)
 	}
@@ -650,7 +650,7 @@ func TestSupervisorS4LiveEgress(t *testing.T) {
 		Exe:          nexus3Bin,
 		ReadyTimeout: 5 * time.Minute,
 	}
-	pid, err := supervisor.SpawnDetached(spawnCfg)
+	pid, _, err := supervisor.SpawnDetached(spawnCfg)
 	if err != nil {
 		t.Fatalf("SpawnDetached (live creds): %v", err)
 	}

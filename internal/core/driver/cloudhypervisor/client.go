@@ -221,14 +221,16 @@ type vmResizeRequest struct {
 // vmResizeDiskRequest maps to CH's VmResizeDisk body for PUT /api/v1/vm.resize-disk.
 //
 // Verified against cloud-hypervisor.yaml @ v52.0:
-// VmResizeDisk { required: [id, size], properties: { id (string), size (uint64) } }
-// where id is the CH-assigned disk identifier (e.g. "_disk0") and size is the
-// new desired disk capacity in bytes.
+// VmResizeDisk { properties: { id (string), desired_size (int64) } }
+// There is no "required:" list in the schema; CH enforces presence at runtime.
+// The "desired_*" prefix follows the same convention as VmResize (desired_vcpus,
+// desired_ram, desired_balloon) — which is why memory/vCPU resize works but disk
+// resize silently failed when the old "size" field name was used.
 //
 // Ported from OLD packages/nexus/internal/vm/driver/cloudhypervisor/types.go:60-63.
 type vmResizeDiskRequest struct {
-	ID   string `json:"id"`
-	Size uint64 `json:"size"`
+	ID          string `json:"id"`
+	DesiredSize uint64 `json:"desired_size"`
 }
 
 // client speaks the Cloud Hypervisor REST API over a Unix socket.
@@ -541,8 +543,8 @@ func (c *client) VMResize(ctx context.Context, desiredRAMBytes *uint64, desiredV
 // Ported from OLD packages/nexus/internal/vm/driver/cloudhypervisor/client.go:143-146.
 func (c *client) VMResizeDisk(ctx context.Context, id string, newSizeBytes uint64) error {
 	req := vmResizeDiskRequest{
-		ID:   id,
-		Size: newSizeBytes,
+		ID:          id,
+		DesiredSize: newSizeBytes,
 	}
 	resp, err := c.do(ctx, http.MethodPut, "/vm.resize-disk", req)
 	if err != nil {

@@ -252,7 +252,7 @@ func TestSupervisorPostExitEgress(t *testing.T) {
 		Exe:          nexus3Bin,
 		ReadyTimeout: 5 * time.Minute,
 	}
-	pid, err := supervisor.SpawnDetached(spawnCfg)
+	pid, _, err := supervisor.SpawnDetached(spawnCfg)
 	if err != nil {
 		t.Fatalf("supervisor.SpawnDetached: %v", err)
 	}
