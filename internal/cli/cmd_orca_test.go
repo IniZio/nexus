@@ -410,65 +410,69 @@ func TestOrcaProjectRoot_AbsoluteFromRepoPath(t *testing.T) {
 	}
 }
 
-// ── buildGitCloneArgv ─────────────────────────────────────────────────────────
+// ── orcaWorkspaceSpec ─────────────────────────────────────────────────────────
 
-func TestBuildGitCloneArgv_Basic(t *testing.T) {
-	argv := buildGitCloneArgv("https://github.com/owner/repo.git", "abc123", "", "/root/workspace/repo")
-	if argv == nil {
-		t.Fatal("expected non-nil argv for non-empty repoURL")
+// TestOrcaWorkspaceSpec_RepoPathSet verifies that a valid ORCA_REPO_PATH
+// results in a WorkspaceSpec whose SourcePath is exactly env.RepoPath and
+// whose GuestPath matches orcaProjectRoot.
+func TestOrcaWorkspaceSpec_RepoPathSet(t *testing.T) {
+	dir := t.TempDir()
+	env := orcaEnv{
+		RepoPath:      dir,
+		WorkspaceName: "my-workspace",
+		InstanceID:    "inst-123",
 	}
-	if argv[0] != "/bin/sh" {
-		t.Errorf("argv[0]: got %q, want /bin/sh", argv[0])
+	ws := orcaWorkspaceSpec(env)
+	if ws == nil {
+		t.Fatal("orcaWorkspaceSpec: got nil, want non-nil WorkspaceSpec")
 	}
-	if argv[1] != "-c" {
-		t.Errorf("argv[1]: got %q, want -c", argv[1])
+	if ws.SourcePath != env.RepoPath {
+		t.Errorf("SourcePath: got %q, want %q (ORCA_REPO_PATH)", ws.SourcePath, env.RepoPath)
 	}
-	cmd := argv[2]
-	if !strings.Contains(cmd, "git clone") {
-		t.Errorf("shell command %q: missing 'git clone'", cmd)
-	}
-	if !strings.Contains(cmd, "https://github.com/owner/repo.git") {
-		t.Errorf("shell command %q: missing repo URL", cmd)
-	}
-	if !strings.Contains(cmd, "/root/workspace/repo") {
-		t.Errorf("shell command %q: missing destDir", cmd)
-	}
-	if !strings.Contains(cmd, "--branch abc123") {
-		t.Errorf("shell command %q: missing --branch abc123", cmd)
+	// GuestPath must equal orcaProjectRoot for the same inputs so that
+	// connection.projectRoot is correct.
+	wantGuestPath := orcaProjectRoot(env.RepoPath, env.WorkspaceName, env.InstanceID)
+	if ws.GuestPath != wantGuestPath {
+		t.Errorf("GuestPath: got %q, want %q", ws.GuestPath, wantGuestPath)
 	}
 }
 
-func TestBuildGitCloneArgv_UsesBranchWhenRefEmpty(t *testing.T) {
-	argv := buildGitCloneArgv("https://github.com/o/r.git", "", "main", "/root/workspace/r")
-	cmd := argv[2]
-	if !strings.Contains(cmd, "--branch main") {
-		t.Errorf("shell command %q: expected --branch main when ref is empty", cmd)
+// TestOrcaWorkspaceSpec_RepoPathEmpty verifies that an empty ORCA_REPO_PATH
+// returns nil (no workspace, no capture).
+func TestOrcaWorkspaceSpec_RepoPathEmpty(t *testing.T) {
+	env := orcaEnv{RepoPath: "", WorkspaceName: "ws", InstanceID: "id"}
+	if ws := orcaWorkspaceSpec(env); ws != nil {
+		t.Errorf("orcaWorkspaceSpec: got non-nil WorkspaceSpec for empty RepoPath, want nil")
 	}
 }
 
-func TestBuildGitCloneArgv_NoBranchWhenBothEmpty(t *testing.T) {
-	argv := buildGitCloneArgv("https://github.com/o/r.git", "", "", "/root/workspace/r")
-	cmd := argv[2]
-	if strings.Contains(cmd, "--branch") {
-		t.Errorf("shell command %q: must not contain --branch when ref and branch are both empty", cmd)
+// TestOrcaWorkspaceSpec_RepoPathNonexistent verifies that a nonexistent
+// ORCA_REPO_PATH returns nil rather than propagating the stat error.
+func TestOrcaWorkspaceSpec_RepoPathNonexistent(t *testing.T) {
+	env := orcaEnv{RepoPath: "/nonexistent/path/does/not/exist", WorkspaceName: "ws", InstanceID: "id"}
+	if ws := orcaWorkspaceSpec(env); ws != nil {
+		t.Errorf("orcaWorkspaceSpec: got non-nil WorkspaceSpec for nonexistent RepoPath, want nil")
 	}
 }
 
-func TestBuildGitCloneArgv_NilWhenURLEmpty(t *testing.T) {
-	argv := buildGitCloneArgv("", "main", "", "/root/workspace/r")
-	if argv != nil {
-		t.Errorf("expected nil argv for empty repoURL, got %v", argv)
+// TestOrcaWorkspaceSpec_GuestPathMatchesProjectRoot verifies that the
+// connection.projectRoot emitted by buildOrcaConnectionJSON equals the
+// GuestPath set by orcaWorkspaceSpec, so Orca opens the correct folder.
+func TestOrcaWorkspaceSpec_GuestPathMatchesProjectRoot(t *testing.T) {
+	dir := t.TempDir()
+	env := orcaEnv{
+		RepoPath:      dir,
+		WorkspaceName: "ws",
+		InstanceID:    "inst-xyz",
 	}
-}
-
-func TestBuildGitCloneArgv_RefTakesPriorityOverBranch(t *testing.T) {
-	argv := buildGitCloneArgv("https://github.com/o/r.git", "v1.2.3", "main", "/dest")
-	cmd := argv[2]
-	if !strings.Contains(cmd, "--branch v1.2.3") {
-		t.Errorf("shell command %q: repoRef %q should take priority over repoBranch", cmd, "v1.2.3")
+	ws := orcaWorkspaceSpec(env)
+	if ws == nil {
+		t.Fatal("orcaWorkspaceSpec: unexpected nil")
 	}
-	if strings.Contains(cmd, "main") {
-		t.Errorf("shell command %q: repoBranch should be ignored when repoRef is set", cmd)
+	result := buildOrcaConnectionJSON(env.InstanceID, "sb-id", env.WorkspaceName, env.RepoPath, "")
+	if result.Connection.ProjectRoot != ws.GuestPath {
+		t.Errorf("connection.projectRoot %q != WorkspaceSpec.GuestPath %q",
+			result.Connection.ProjectRoot, ws.GuestPath)
 	}
 }
 
@@ -565,5 +569,67 @@ func TestOrcaCreate_AllowedHostsInEnvelope(t *testing.T) {
 	// uses this list to allow only these hosts, so empty == deny-all was the bug).
 	if len(sb.Envelope.AllowedHosts) == 0 {
 		t.Error("Envelope.AllowedHosts is empty — perimeter would be default-deny")
+	}
+}
+
+// ── workspace sync helpers ────────────────────────────────────────────────────
+
+// TestOrcaWorkspaceSyncScript_DeviceDerivation verifies that orcaWorkspaceSyncScript
+// derives the device path from WorkspaceGuestMount rather than hardcoding /dev/vdb.
+//
+// The assertion strategy: with numShadowDisks > 0, the workspace disk shifts to a
+// later virtio-blk letter (/dev/vdc, /dev/vdd, …). If the script hardcoded /dev/vdb,
+// the tests with numShadow > 0 would fail because /dev/vdb would still appear
+// (wrong device) and the expected device would be absent.
+func TestOrcaWorkspaceSyncScript_DeviceDerivation(t *testing.T) {
+	cases := []struct {
+		numShadow  int
+		wantDevice string
+	}{
+		{0, "/dev/vdb"}, // no shadows → workspace at vdb
+		{1, "/dev/vdc"}, // 1 shadow → workspace at vdc
+		{2, "/dev/vdd"},
+		{4, "/dev/vdf"}, // DefaultShadowDirs count
+	}
+	for _, tc := range cases {
+		script := orcaWorkspaceSyncScript("/workspace/repo", tc.numShadow)
+		if !strings.Contains(script, tc.wantDevice) {
+			t.Errorf("numShadow=%d: script does not contain device %q: %q",
+				tc.numShadow, tc.wantDevice, script)
+		}
+		// Key assertion: when shadow disks are present, /dev/vdb must NOT
+		// appear in the script — it would only appear if the device were
+		// hardcoded rather than derived.
+		if tc.numShadow > 0 && strings.Contains(script, "/dev/vdb") {
+			t.Errorf("numShadow=%d: script contains hardcoded /dev/vdb instead of derived %q: %q",
+				tc.numShadow, tc.wantDevice, script)
+		}
+	}
+}
+
+// TestOrcaSyncWorkspace_ExecFailureIsHardError verifies that orcaSyncWorkspace
+// returns a non-nil error rather than swallowing the failure.
+//
+// With a fake driver there is no real vsock agent in the guest, so svc.Exec
+// must fail. This test confirms that failure propagates as an error — i.e.
+// the function never silently continues the way the old warn-and-continue
+// code path did.
+//
+// KVM-gated: the mount/cp execution itself cannot be verified without a real
+// guest; this test only covers the error-surface contract.
+func TestOrcaSyncWorkspace_ExecFailureIsHardError(t *testing.T) {
+	svc := newTestOrcaService(t)
+	sb := createOrcaSandbox(t, svc, "motive-sync-err", "sync-err-sandbox")
+
+	ws := &service.WorkspaceSpec{
+		SourcePath: t.TempDir(),
+		GuestPath:  "/workspace/repo",
+	}
+	// With a fake driver there is no real vsock/agent connection; svc.Exec
+	// must fail. orcaSyncWorkspace must return that error (hard failure), not
+	// succeed or swallow it as a warning.
+	err := orcaSyncWorkspace(context.Background(), svc, sb.ID.String(), ws, 0)
+	if err == nil {
+		t.Fatal("orcaSyncWorkspace: expected non-nil error with fake (non-running) sandbox, got nil")
 	}
 }

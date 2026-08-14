@@ -149,29 +149,24 @@ func buildOrcaConnectionJSON(instanceID, sandboxID, workspaceName, repoPath, pri
 	}
 }
 
-// buildGitCloneArgv returns the argv for a /bin/sh -c git-clone that clones
-// repoURL at repoRef (falling back to repoBranch) into destDir. Returns nil
-// when repoURL is empty. PATH is not set here — callers must pass it via
-// agent.ExecOptions.Env so that /bin/sh can resolve git.
-func buildGitCloneArgv(repoURL, repoRef, repoBranch, destDir string) []string {
-	if repoURL == "" {
+// orcaWorkspaceSpec returns a WorkspaceSpec that captures the Orca-managed
+// host git worktree (ORCA_REPO_PATH) for delivery into the sandbox, or nil
+// when ORCA_REPO_PATH is absent or the path does not exist on disk (e.g. no
+// repo is configured in the Orca workspace).
+//
+// The GuestPath mirrors orcaProjectRoot so the connection.projectRoot emitted
+// to Orca is the directory that actually receives the workspace files.
+func orcaWorkspaceSpec(env orcaEnv) *service.WorkspaceSpec {
+	if env.RepoPath == "" {
 		return nil
 	}
-	ref := repoRef
-	if ref == "" {
-		ref = repoBranch
+	if _, err := os.Stat(env.RepoPath); err != nil {
+		return nil
 	}
-	var sb strings.Builder
-	sb.WriteString("git clone --depth=1")
-	if ref != "" {
-		sb.WriteString(" --branch ")
-		sb.WriteString(ref)
+	return &service.WorkspaceSpec{
+		SourcePath: env.RepoPath,
+		GuestPath:  orcaProjectRoot(env.RepoPath, env.WorkspaceName, env.InstanceID),
 	}
-	sb.WriteString(" -- ")
-	sb.WriteString(repoURL)
-	sb.WriteString(" ")
-	sb.WriteString(destDir)
-	return []string{"/bin/sh", "-c", sb.String()}
 }
 
 // gitHostsFromURL extracts the egress allowlist hostnames for a git repo URL.
@@ -259,6 +254,50 @@ func orcaSandboxName(instanceID string) string {
 		s = "instance"
 	}
 	return s
+}
+
+// ── workspace sync helpers ────────────────────────────────────────────────────
+
+// orcaWorkspaceSyncScript returns the shell script that mounts the workspace
+// disk read-only and copies its contents to guestPath in the rootfs.
+//
+// The device path is derived from WorkspaceGuestMount rather than hardcoded:
+// the workspace disk occupies ExtraDisks[numShadowDisks], mapping to
+// /dev/vd{b+numShadowDisks}. Callers pass the actual shadow-disk count so
+// the device letter always matches the real disk layout even when shadow disks
+// are added in the future.
+func orcaWorkspaceSyncScript(guestPath string, numShadowDisks int) string {
+	device := WorkspaceGuestMount(guestPath, numShadowDisks).Device
+	return fmt.Sprintf(
+		"set -e; mkdir -p /mnt/__ws_src %s; "+
+			"mount -t ext4 -o ro %s /mnt/__ws_src; "+
+			"cp -a /mnt/__ws_src/. %s/; "+
+			"umount /mnt/__ws_src",
+		guestPath, device, guestPath)
+}
+
+// orcaSyncWorkspace mounts the workspace disk inside the running sandbox
+// identified by sandboxID, copies all files to ws.GuestPath in the rootfs,
+// then unmounts. Returns an error if the mount/copy fails.
+//
+// Callers must treat any returned error as fatal: booting the agent against
+// an empty workspace is strictly worse than failing the create step.
+func orcaSyncWorkspace(ctx context.Context, svc *service.Service, sandboxID string, ws *service.WorkspaceSpec, numShadowDisks int) error {
+	syncCtx, syncCancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer syncCancel()
+	script := orcaWorkspaceSyncScript(ws.GuestPath, numShadowDisks)
+	var buf bytes.Buffer
+	code, err := svc.Exec(syncCtx, sandboxID, agent.ExecOptions{
+		Argv:   []string{"/bin/sh", "-c", script},
+		Env:    map[string]string{"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+		Stderr: &buf,
+	})
+	if err != nil || code != 0 {
+		device := WorkspaceGuestMount(ws.GuestPath, numShadowDisks).Device
+		return fmt.Errorf("mount/copy workspace disk (%s) to %s failed (exit %d, err %w): %s",
+			device, ws.GuestPath, code, err, buf.String())
+	}
+	return nil
 }
 
 // ── sandbox lookup helper ─────────────────────────────────────────────────────
@@ -423,12 +462,15 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	// ── DriverFactory ─────────────────────────────────────────────────────────
 	// capturedDiskPath: the CoW ext4 copy path forwarded to the supervisor.
 	var capturedDiskPath string
-	newDriver := service.DriverFactory(func(ext4Path string, _ []service.ExtraDisk) (driver.Driver, error) {
+	newDriver := service.DriverFactory(func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
 		capturedDiskPath = ext4Path
 		cfg := buildCHConfig(kernelPath, ext4Path, 0, 0)
 		cfg.SocketDir = socketDir // explicit so it matches supervisor + svc
 		if chBin != "" {
 			cfg.BinaryPath = chBin
+		}
+		for _, ed := range extraDisks {
+			cfg.ExtraDisks = append(cfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: ed.Path})
 		}
 		return cloudhypervisor.New(cfg)
 	})
@@ -460,7 +502,7 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	// netfilter is default-deny for all outbound traffic (including api.anthropic.com).
 	// Base set: AgentEgressHosts() (api.anthropic.com + platform.claude.com).
 	// If a git repo URL is configured, also add its hosting domain(s) (e.g.
-	// github.com + codeload.github.com for GitHub) so in-guest git clones work.
+	// github.com + codeload.github.com for GitHub) so in-guest git operations work.
 	// The list is fail-closed: only these hosts are permitted; everything else
 	// remains denied by the netfilter AllowList.
 	allowedHosts := append(service.AgentEgressHosts(), gitHostsFromURL(env.RepoURL)...)
@@ -469,6 +511,12 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	// inherits the correct perimeter allowlist when it re-boots the VM.
 	// SSHPublicKey is frozen at creation so the supervisor-owned VM also has it
 	// in the guest's authorized_keys (seeded below via shadow driver).
+	// Workspace captures the Orca host worktree (ORCA_REPO_PATH) to an ext4
+	// image and attaches it in the initial boot so the sync step below can copy
+	// the files to the rootfs before the supervisor takes over. The device is
+	// derived via WorkspaceGuestMount (currently /dev/vdb, since the orca path
+	// attaches no shadow disks) — never hardcode it, or adding shadow disks
+	// here would silently mount the wrong volume.
 	opts := service.CreateAndBootOptions{
 		MotiveID:            env.InstanceID,
 		Image:               service.ImageSpec{Ref: imageRef},
@@ -476,6 +524,7 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		ReachabilityTimeout: 120 * time.Second,
 		SSHPublicKey:        pubKey,
 		AllowedHosts:        allowedHosts,
+		Workspace:           orcaWorkspaceSpec(env),
 	}
 
 	name := orcaSandboxName(env.InstanceID)
@@ -484,6 +533,35 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		return fmt.Errorf("orca create: boot sandbox: %w", err)
 	}
 	slog.Info("orca create: initial boot done; handing off to supervisor", "sandbox", sb.ID)
+
+	// ── Sync workspace to rootfs before supervisor handoff ────────────────────
+	// When ORCA_REPO_PATH is set, opts.Workspace captured the host worktree to
+	// an ext4 image attached as ExtraDisks[0] (the orca path attaches no shadow
+	// disks, so the workspace is always the first and only extra disk).
+	// orcaSyncWorkspace derives the device from WorkspaceGuestMount so the
+	// letter tracks the actual disk layout rather than being hardcoded.
+	//
+	// Failure is a hard error: booting the agent against an empty workspace is
+	// strictly worse than refusing to boot.
+	if ws := opts.Workspace; ws != nil {
+		// orca path attaches no shadow disks; workspace occupies ExtraDisks[0].
+		const orcaNumShadowDisks = 0
+		if syncErr := orcaSyncWorkspace(ctx, svc, sb.ID.String(), ws, orcaNumShadowDisks); syncErr != nil {
+			// Best-effort stop: halt the running VM before returning so it
+			// does not remain as a live orphan. Consistent with how the
+			// surrounding code handles other post-boot failures.
+			if _, stopErr := svc.Stop(ctx, sb.ID.String()); stopErr != nil {
+				slog.Warn("orca create: stop after sync failure", "stopErr", stopErr)
+			}
+			return fmt.Errorf("orca create: workspace sync to rootfs: %w", syncErr)
+		}
+		slog.Info("orca create: workspace synced to rootfs",
+			"src", env.RepoPath,
+			"guestPath", ws.GuestPath)
+	} else {
+		slog.Info("orca create: ORCA_REPO_PATH not set or nonexistent; skipping workspace capture",
+			"repoPath", env.RepoPath)
+	}
 
 	// ── Stop the initial boot — supervisor re-boots with perimeter ────────────
 	if _, stopErr := svc.Stop(ctx, sb.ID.String()); stopErr != nil {
@@ -548,69 +626,6 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		} else {
 			slog.Warn("orca create: shadow driver init failed; SSH seeding skipped", "err", shadowErr)
 		}
-	}
-
-	projectRoot := orcaProjectRoot(env.RepoPath, env.WorkspaceName, env.InstanceID)
-
-	// ── Post-boot git availability check ──────────────────────────────────────
-	gitAvailable := true
-	{
-		checkCtx, checkCancel := context.WithTimeout(ctx, 10*time.Second)
-		defer checkCancel()
-		var checkBuf bytes.Buffer
-		code, checkErr := svc.Exec(checkCtx, sb.ID.String(), agent.ExecOptions{
-			Argv:   []string{"/bin/sh", "-c", "command -v git"},
-			Env:    map[string]string{"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
-			Stdout: &checkBuf,
-			Stderr: &checkBuf,
-		})
-		if checkErr != nil || code != 0 {
-			slog.Warn("orca create: git not found in sandbox image; repo clone skipped",
-				"image", imageRef,
-				"check_err", checkErr,
-				"exit_code", code,
-				"hint", "set NEXUS3_IMAGE to an image with git, sshd, and claude-code installed")
-			gitAvailable = false
-		}
-	}
-
-	// ── Repo checkout ─────────────────────────────────────────────────────────
-	if env.RepoURL != "" && gitAvailable {
-		cloneCtx, cloneCancel := context.WithTimeout(ctx, 5*time.Minute)
-		defer cloneCancel()
-
-		if _, mkErr := svc.Exec(cloneCtx, sb.ID.String(), agent.ExecOptions{
-			Argv: []string{"/bin/sh", "-c", "mkdir -p /root/workspace"},
-			Env:  map[string]string{"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
-		}); mkErr != nil {
-			slog.Warn("orca create: mkdir /root/workspace failed", "err", mkErr)
-		}
-
-		cloneArgv := buildGitCloneArgv(env.RepoURL, env.RepoRef, env.RepoBranch, projectRoot)
-		var cloneBuf bytes.Buffer
-		code, cloneErr := svc.Exec(cloneCtx, sb.ID.String(), agent.ExecOptions{
-			Argv: cloneArgv,
-			Env: map[string]string{
-				"PATH":                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-				"HOME":                "/root",
-				"GIT_TERMINAL_PROMPT": "0",
-			},
-			Stdout: &cloneBuf,
-			Stderr: &cloneBuf,
-		})
-		if cloneErr != nil || code != 0 {
-			slog.Warn("orca create: git clone failed; workspace will be empty",
-				"url", env.RepoURL,
-				"dest", projectRoot,
-				"exit_code", code,
-				"err", cloneErr,
-				"output", cloneBuf.String())
-		} else {
-			slog.Info("orca create: git clone succeeded", "url", env.RepoURL, "dest", projectRoot)
-		}
-	} else if env.RepoURL == "" {
-		slog.Info("orca create: ORCA_REPO_URL not set; skipping repo clone",
-			"projectRoot", projectRoot)
 	}
 
 	result := buildOrcaConnectionJSON(env.InstanceID, sb.ID.String(), env.WorkspaceName, env.RepoPath, privKeyPath)
