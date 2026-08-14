@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -20,13 +21,26 @@ import (
 func main() {
 	isPid1 := os.Getpid() == 1
 
+	// Quick pre-scan: determine auto-resize mode before mounting filesystems.
+	// The /tmp tmpfs mount is gated on --auto-resize; without it /tmp stays
+	// disk-backed (larger, not RAM-limited, never grows with RAM).  The full
+	// arg parsing loop runs later; this scan just checks for the one flag that
+	// must be known before mountGuestFS() is called.
+	earlyAutoResize := false
+	for _, arg := range os.Args[1:] {
+		if arg == "--auto-resize" {
+			earlyAutoResize = true
+			break
+		}
+	}
+
 	// When running as PID 1 (in-guest init), mount the standard
 	// pseudo-filesystems before doing anything else.  devtmpfs populates /dev
 	// (creating /dev/console, /dev/ptmx, …); proc and sysfs are expected by
 	// many userspace tools.  These are raw syscall.Mount calls — they succeed
 	// with a completely empty /dev directory.
 	if isPid1 {
-		mountGuestFS()
+		mountGuestFS(earlyAutoResize)
 		// The Linux kernel provides no PATH environment variable to PID-1 (init=
 		// processes). Without a default PATH, exec.Command("uname") and similar
 		// relative-path exec calls fail with "executable file not found in $PATH".
@@ -47,6 +61,14 @@ func main() {
 	}
 
 	consoleLog(con, "nexus3-agent: starting (pid=%d)\n", os.Getpid())
+	if earlyAutoResize && isPid1 {
+		// Log the /tmp capacity transition explicitly: without auto-resize /tmp
+		// is the disk-backed rootfs (≈5959 MiB); with it /tmp becomes a RAM-backed
+		// tmpfs seeded at 32 MiB that the resizer immediately grows to
+		// min(50% MemTotal, 2 GiB). On a 512 MiB sandbox that is ≈242 MiB — a
+		// 24× reduction. This line makes the trade-off discoverable in the boot log.
+		consoleLog(con, "nexus3-agent: /tmp: RAM-backed tmpfs (32 MiB seed; resizer grows to min(50%% MemTotal, 2 GiB)); base-image disk-backed /tmp replaced — scratch space is now RAM-limited\n")
+	}
 
 	// When running as PID 1 (in-guest init), configure the virtio-net interface
 	// with the static IP the nexus3 perimeter netstack reserves for the guest
@@ -73,7 +95,16 @@ func main() {
 	//                                    workspaceMountCmdline helper and passed
 	//                                    via the Linux kernel cmdline after "--",
 	//                                    which delivers them as os.Args[1:] to PID 1.
+	// --auto-resize:                     enable auto-resize services (ZRAM swap,
+	//                                    telemetry server, vCPU onliner, /tmp resize).
+	//                                    Default off (D-DC-13).
+	// --mem-ceiling=<bytes>:             boot-time RAM ceiling in bytes (TBD-DC-9,
+	//                                    seam B — kernel cmdline). The host (AR-DRV /
+	//                                    AR-CLI) must emit this alongside workspace mounts.
+	//                                    Used by the governor; /tmp resize uses live MemTotal.
 	var wsMounts []agent.GuestMount
+	var autoResize bool
+	var memCeilingBytes int64
 	{
 		isBuilderRole := false
 		var cacheDiskMounts []agent.CacheDiskMount
@@ -81,6 +112,15 @@ func main() {
 			switch {
 			case arg == "--builder-role":
 				isBuilderRole = true
+			case arg == "--auto-resize":
+				autoResize = true
+			case strings.HasPrefix(arg, "--mem-ceiling="):
+				v := strings.TrimPrefix(arg, "--mem-ceiling=")
+				if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+					memCeilingBytes = n
+				} else {
+					consoleLog(con, "nexus3-agent: ignoring malformed --mem-ceiling arg: %q\n", arg)
+				}
 			case strings.HasPrefix(arg, "--cache-disk="):
 				pair := strings.TrimPrefix(arg, "--cache-disk=")
 				parts := strings.SplitN(pair, ":", 2)
@@ -125,6 +165,34 @@ func main() {
 		consoleLog(con, "nexus3-agent: workspace mounts complete\n")
 	}
 
+	// Derive the workspace mount path for disk telemetry (statfs). The workspace
+	// mount is identified by GuestMount.IsWorkspace=true — an explicit marker set
+	// by WorkspaceGuestMount on the host side. Shadow mounts always have IsWorkspace=false,
+	// so position-based or ReadOnly-based inference is never used here.
+	workspacePath := ""
+	if wsMount, ok, err := selectWorkspaceMount(wsMounts); err != nil {
+		consoleFatal(con, isPid1, "nexus3-agent: workspace mount selection: %v\n", err)
+	} else if ok {
+		workspacePath = wsMount.Target
+	} else if autoResize {
+		// No mount claimed IsWorkspace. The likeliest cause is host/guest version
+		// skew: an older host emits the 4-field mount spec, which parses as
+		// IsWorkspace=false for every mount. Disk telemetry then reports nothing
+		// and the disk governor never grows — degrade loudly rather than silently.
+		consoleLog(con, "nexus3-agent: auto-resize: NO workspace mount found in %d mount(s); disk telemetry disabled (host may predate the 5-field mount spec)\n", len(wsMounts))
+	}
+
+	// Wire in auto-resize services: ZRAM swap safety net, telemetry server on
+	// vsock:3002, vCPU onliner, and /tmp tmpfs resizer. Enabled only when
+	// --auto-resize is present in the kernel cmdline (D-DC-13, opt-in default-off).
+	// ZRAM runs synchronously inside startResizeServices before returning so it
+	// is active before the vsock listeners open and any workload can start
+	// (spec-08:67,231 MUST).
+	if autoResize {
+		consoleLog(con, "nexus3-agent: auto-resize: starting services (mem-ceiling=%d)\n", memCeilingBytes)
+		startResizeServices(ctx, con, workspacePath, memCeilingBytes)
+	}
+
 	// Bind control-plane vsock listener (port 1024).
 	consoleLog(con, "nexus3-agent: vsock.Listen port %d\n", driver.AgentControlPort)
 	ctrlLis, err := vsock.Listen(driver.AgentControlPort, nil)
@@ -158,19 +226,31 @@ func main() {
 	consoleLog(con, "nexus3-agent: clean shutdown\n")
 }
 
+// guestMountFn is the syscall used by mountGuestFS. Replaced in tests to
+// capture mount calls without requiring root or a real mount namespace.
+var guestMountFn = func(source, target, fstype string, flags uintptr, data string) error {
+	return syscall.Mount(source, target, fstype, flags, data)
+}
+
 // mountGuestFS mounts the standard pseudo-filesystems needed by Linux
 // userspace.  Called only when the agent is PID 1 (in-guest init).
 // Uses raw syscall.Mount — works with an entirely empty /dev.
-func mountGuestFS() {
-	tryMount := func(src, target, fstype string) {
-		if err := syscall.Mount(src, target, fstype, 0, ""); err != nil && err != syscall.EBUSY {
+//
+// When autoResize is true, /tmp is mounted as a 32 MiB tmpfs seed so the
+// /tmp resizer (startTmpfsResizer) can grow it proportionally as MemTotal
+// grows. Without autoResize, /tmp is left disk-backed (the rootfs ext4 image,
+// ≈5959 MiB) — the documented escape hatch from a misbehaving governor must
+// not ENOSPC out the workload.
+func mountGuestFS(autoResize bool) {
+	tryMount := func(src, target, fstype, data string) {
+		if err := guestMountFn(src, target, fstype, 0, data); err != nil && err != syscall.EBUSY {
 			fmt.Fprintf(os.Stderr, "nexus3-agent: mount %s: %v\n", target, err)
 		}
 	}
 
 	// devtmpfs populates /dev with nodes for all currently-registered kernel
 	// devices (null, zero, tty, console, random, urandom, …).
-	tryMount("devtmpfs", "/dev", "devtmpfs")
+	tryMount("devtmpfs", "/dev", "devtmpfs", "")
 
 	// /dev/ptmx (PTY master multiplexer) may not be in devtmpfs on kernels
 	// without CONFIG_UNIX98_PTYS=y; create the node explicitly so that PTY
@@ -189,18 +269,36 @@ func mountGuestFS() {
 	if err := os.MkdirAll("/dev/pts", 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "nexus3-agent: mkdir /dev/pts: %v\n", err)
 	} else {
-		tryMount("devpts", "/dev/pts", "devpts")
+		tryMount("devpts", "/dev/pts", "devpts", "")
 	}
 
-	tryMount("proc", "/proc", "proc")
-	tryMount("sys", "/sys", "sysfs")
+	tryMount("proc", "/proc", "proc", "")
+	tryMount("sys", "/sys", "sysfs", "")
 
 	// cgroupv2 unified hierarchy — required by containerd/dockerd running
 	// inside the sandbox. Must be mounted after /sys.
 	if err := os.MkdirAll("/sys/fs/cgroup", 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "nexus3-agent: mkdir /sys/fs/cgroup: %v\n", err)
 	} else {
-		tryMount("cgroup2", "/sys/fs/cgroup", "cgroup2")
+		tryMount("cgroup2", "/sys/fs/cgroup", "cgroup2", "")
+	}
+
+	// tmpfs on /tmp — required for the /tmp auto-resizer (resize_tmp_linux.go).
+	// Gated on autoResize: without auto-resize, /tmp stays disk-backed so the
+	// workload has the full rootfs scratch area (≈5959 MiB) and the escape hatch
+	// from a misbehaving governor remains functional.
+	//
+	// Initial size: 32 MiB. The resizer (startTmpfsResizer) immediately grows
+	// this to min(50% of live MemTotal, 2 GiB) on its first tick — before the
+	// vsock control listener opens and before any workload starts. 32 MiB is
+	// always less than that target (any VM has ≥512 MiB RAM → target ≥256 MiB,
+	// which exceeds 32+64 MiB hysteresis margin), so the first tick always fires.
+	// Using size=0 (unlimited) would give f_blocks=ULONG_MAX, making
+	// currentTmpCapBytes() enormous and the resizer would never grow it.
+	//
+	// Ported from OLD packages/nexus/cmd/nexus-guest-agent/tmp_resize.go.
+	if autoResize {
+		tryMount("tmpfs", "/tmp", "tmpfs", "size=32m")
 	}
 }
 

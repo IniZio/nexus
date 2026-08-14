@@ -20,4 +20,11 @@ type GuestMount struct {
 
 	// ReadOnly, when true, passes MS_RDONLY to mount(2).
 	ReadOnly bool
+
+	// IsWorkspace marks exactly one mount as the primary workspace disk — the
+	// disk whose capacity is reported by disk-telemetry (statfs) and managed by
+	// the disk governor. Shadow mounts (node_modules, .next, …) leave this false.
+	// The agent selects the telemetry target by this marker, never by position or
+	// ReadOnly inference.
+	IsWorkspace bool
 }
