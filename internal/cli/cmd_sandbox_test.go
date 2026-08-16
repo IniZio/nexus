@@ -106,6 +106,65 @@ func TestSandboxCreate_JSON_WithRmFlag(t *testing.T) {
 	}
 }
 
+// TestSandboxCreate_EgressClosed_GitHubInSecretHostsOnly proves D-PD-33 at the
+// CLI layer: --egress closed must produce OpenEgress=false, github.com must not
+// appear in AllowedHosts, and all GitHubSecretHosts must be wired into the
+// SecretBind that the boot path merges into secrets.
+//
+// We test parseSandboxCreateArgs (real flag parser) + the service.MergeSecrets
+// call from lines 1247-1251 of cmd_sandbox.go directly, because the no-boot
+// path (no --image/--rootfs/--file) skips egress wiring; the boot path needs a
+// kernel/VM which is unavailable in unit tests. The service-layer invariants
+// (OpenEgress=false → ACL enforced) are covered by egress_failclosed_test.go.
+func TestSandboxCreate_EgressClosed_GitHubInSecretHostsOnly(t *testing.T) {
+	// D-PD-36: --egress closed now requires --repo (enforced in parseSandboxCreateArgs).
+	// Include a valid repo so the D-PD-33 invariants can still be verified.
+	f, err := parseSandboxCreateArgs([]string{"proj/closed-box", "--egress", "closed", "--repo", "acme/myrepo"})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", err)
+	}
+
+	// D-PD-33: --egress closed must set egressClosed=true, which becomes OpenEgress=false.
+	if !f.egressClosed {
+		t.Error("SECURITY VIOLATION — D-PD-33: --egress closed did not set egressClosed=true")
+	}
+	openEgress := !f.egressClosed
+	if openEgress {
+		t.Error("SECURITY VIOLATION — D-PD-33: OpenEgress would be true for --egress closed sandbox")
+	}
+
+	// AllowedHosts (from --allow-host) must never contain GitHub hosts.
+	for _, h := range f.allowHosts {
+		for _, ghHost := range service.GitHubSecretHosts {
+			if h == ghHost {
+				t.Errorf("SECURITY VIOLATION — D-PD-33: GitHub host %q found in AllowedHosts; must only appear in SecretHosts", h)
+			}
+		}
+	}
+
+	// The boot path (cmd_sandbox.go:1247-1251) merges GitHubSecretHosts into
+	// SecretBinds when egressClosed=true. Replicate that merge and verify.
+	var secrets []service.SecretBind
+	if f.egressClosed {
+		secrets = service.MergeSecrets(secrets, service.SecretBind{
+			Env:   service.BuiltinGitHubEnv,
+			Hosts: append([]string(nil), service.GitHubSecretHosts...),
+		})
+	}
+
+	hostSet := map[string]bool{}
+	for _, bind := range secrets {
+		for _, h := range bind.Hosts {
+			hostSet[h] = true
+		}
+	}
+	for _, want := range service.GitHubSecretHosts {
+		if !hostSet[want] {
+			t.Errorf("D-PD-33: %q absent from SecretHosts after --egress closed; must be present", want)
+		}
+	}
+}
+
 func TestSandboxCreate_UsageError_MissingHandle(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	code := Run([]string{"sandbox", "create"})

@@ -668,3 +668,165 @@ func TestResolveCreateSecrets_NoBuiltinKeepsExplicit(t *testing.T) {
 		t.Errorf("binds = %+v", binds)
 	}
 }
+
+// TestD36_ExplicitGitHubSecretWithoutRepo_Refused verifies the runtime
+// D-PD-36 guard in resolveCreateSecrets: an explicit --secret binding that
+// covers a GitHub host is refused when --repo is absent.
+//
+// This covers the open-egress path that the parse-time check misses (the
+// parse-time check only fires for --egress closed).
+//
+// Mutation evidence: remove the `if f.allowedRepo == ""` guard block from
+// resolveCreateSecrets → this test fails because no error is returned.
+// Restore → passes.
+func TestD36_ExplicitGitHubSecretWithoutRepo_Refused(t *testing.T) {
+	f := sandboxCreateFlags{
+		secrets:     []string{"GH_TOKEN@github.com,api.github.com"},
+		noBuiltinGH: true,  // skip builtin so only the explicit bind is in play
+		allowedRepo: "",
+	}
+	_, err := resolveCreateSecrets(context.Background(), f)
+	if err == nil {
+		t.Fatal("want D-PD-36 error for GitHub secret without --repo, got nil")
+	}
+	if _, ok := err.(*UsageError); !ok {
+		t.Errorf("want *UsageError, got %T: %v", err, err)
+	}
+}
+
+// TestD36_ExplicitGitHubSecretWithRepo_Allowed verifies that an explicit
+// GitHub --secret binding IS accepted when --repo is provided.
+func TestD36_ExplicitGitHubSecretWithRepo_Allowed(t *testing.T) {
+	f := sandboxCreateFlags{
+		secrets:     []string{"GH_TOKEN@github.com,api.github.com"},
+		noBuiltinGH: true,
+		allowedRepo: "acme/myrepo",
+	}
+	binds, err := resolveCreateSecrets(context.Background(), f)
+	if err != nil {
+		t.Fatalf("resolveCreateSecrets: %v (want nil when --repo is set)", err)
+	}
+	if len(binds) != 1 || binds[0].Env != "GH_TOKEN" {
+		t.Errorf("binds = %+v, want one GH_TOKEN bind", binds)
+	}
+}
+
+// TestD36_NoBuiltinGH_NoGitHubBind_NoRepo_OK verifies that --no-builtin-gh
+// with no explicit GitHub secret and no --repo is accepted. There is no GitHub
+// token to bound, so D-PD-36 is not triggered.
+func TestD36_NoBuiltinGH_NoGitHubBind_NoRepo_OK(t *testing.T) {
+	f := sandboxCreateFlags{
+		secrets:     []string{"NPM_TOKEN@registry.npmjs.org"},
+		noBuiltinGH: true,
+		allowedRepo: "",
+	}
+	binds, err := resolveCreateSecrets(context.Background(), f)
+	if err != nil {
+		t.Fatalf("resolveCreateSecrets: %v", err)
+	}
+	if len(binds) != 1 || binds[0].Env != "NPM_TOKEN" {
+		t.Errorf("binds = %+v, want one NPM_TOKEN bind", binds)
+	}
+}
+
+// ── D-PD-36: --repo flag parse → AllowedRepo wiring ─────────────────────────
+
+// TestD36_RepoFlagParsed verifies that --repo owner/name is parsed into
+// sandboxCreateFlags.allowedRepo and round-trips correctly.
+//
+// Mutation evidence: remove the "--repo" case from parseSandboxCreateArgs →
+// this test fails because allowedRepo is empty. Restore → passes.
+func TestD36_RepoFlagParsed(t *testing.T) {
+	args := []string{"p/n", "--image", "nexus3-base:latest",
+		"--egress", "closed", "--repo", "acme/myrepo"}
+	f, err := parseSandboxCreateArgs(args)
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", err)
+	}
+	if f.allowedRepo != "acme/myrepo" {
+		t.Errorf("allowedRepo: want %q, got %q", "acme/myrepo", f.allowedRepo)
+	}
+	if !f.egressClosed {
+		t.Error("egressClosed: want true, got false")
+	}
+}
+
+// TestD36_EgressClosedWithoutRepo verifies that --egress closed without --repo
+// is rejected at parse time with a clear error (D-PD-36 enforcement).
+//
+// This is the primary security invariant: a sandbox with GitHub in SecretHosts
+// and no path restriction must not be constructible.
+//
+// Mutation evidence: remove the `if f.egressClosed && f.allowedRepo == ""` block
+// from parseSandboxCreateArgs → this test fails because no error is returned.
+// Restore → test passes.
+func TestD36_EgressClosedWithoutRepo_RefusedAtParse(t *testing.T) {
+	_, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest",
+		"--egress", "closed"})
+	if err == nil {
+		t.Fatal("want error for --egress closed without --repo, got nil")
+	}
+	if _, ok := err.(*UsageError); !ok {
+		t.Errorf("want *UsageError, got %T: %v", err, err)
+	}
+}
+
+// TestD36_RepoMalformedFlag verifies that --repo without a slash is rejected.
+func TestD36_RepoMalformedFlag(t *testing.T) {
+	_, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest",
+		"--egress", "closed", "--repo", "notaslash"})
+	if err == nil {
+		t.Fatal("want error for --repo without slash, got nil")
+	}
+}
+
+// TestD36_RepoFlagMissingValue verifies that --repo with no argument is rejected.
+func TestD36_RepoFlagMissingValue(t *testing.T) {
+	_, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest",
+		"--egress", "closed", "--repo"})
+	if err == nil {
+		t.Fatal("want error for --repo with no value, got nil")
+	}
+}
+
+// TestD36_OpenEgressNoRepo_Allowed verifies that an open-egress sandbox
+// (--egress open, the default) does NOT require --repo. Open-egress sandboxes
+// use AllowAll and are human-interactive; path restriction is not applicable.
+func TestD36_OpenEgressNoRepo_Allowed(t *testing.T) {
+	f, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest"})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", err)
+	}
+	if f.allowedRepo != "" {
+		t.Errorf("allowedRepo: want empty for open-egress sandbox, got %q", f.allowedRepo)
+	}
+	if f.egressClosed {
+		t.Error("egressClosed: want false (default open), got true")
+	}
+}
+
+// TestD36_AllowedRepoWiredToOptions verifies that --repo is passed through
+// parseSandboxCreateArgs into f.allowedRepo and would be assigned to
+// CreateAndBootOptions.AllowedRepo (the assignment is at cmd_sandbox.go:AllowedRepo).
+//
+// End-to-end Envelope wiring (CreateAndBootOptions → Envelope.AllowedRepo) is
+// proven by service.TestCreateAndBoot_AllowedRepoReachesEnvelope which drives
+// the REAL CreateAndBoot with a fake driver. Both tests together prove the full
+// flag→parse→options→Envelope chain without a real VM.
+//
+// Mutation evidence: remove the "--repo" case from parseSandboxCreateArgs →
+// this test fails because f.allowedRepo is empty. Restore → passes.
+func TestD36_AllowedRepoWiredToOptions(t *testing.T) {
+	f, err := parseSandboxCreateArgs([]string{
+		"proj/d36box", "--egress", "closed", "--repo", "acme/myrepo",
+	})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", err)
+	}
+	// f.allowedRepo is the value that cmd_sandbox.go assigns to
+	// CreateAndBootOptions.AllowedRepo. If this is non-empty, the proxy sees it.
+	if f.allowedRepo != "acme/myrepo" {
+		t.Errorf("f.allowedRepo = %q, want %q (AllowedRepo would be empty in CreateAndBootOptions)",
+			f.allowedRepo, "acme/myrepo")
+	}
+}

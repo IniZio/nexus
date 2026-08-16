@@ -343,6 +343,9 @@ type sandboxCreateFlags struct {
 	diskMaxGiB   uint32   // --disk-max <GiB>:   disk grow ceiling
 	secrets      []string // --secret ENV@host[,host…] (repeatable)
 	noBuiltinGH  bool     // --no-builtin-gh: skip host gh auth token bind
+	egressClosed bool     // --egress closed: disable open egress (D-PD-33)
+	allowHosts   []string // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
+	allowedRepo  string   // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
 	positionals  []string
 }
 
@@ -470,6 +473,36 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 			f.secrets = append(f.secrets, args[i])
 		case "--no-builtin-gh":
 			f.noBuiltinGH = true
+		case "--egress":
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --egress requires a value (open|closed)"}
+			}
+			i++
+			switch args[i] {
+			case "open":
+				f.egressClosed = false
+			case "closed":
+				f.egressClosed = true
+			default:
+				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --egress %q: want 'open' or 'closed'", args[i])}
+			}
+		case "--allow-host":
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --allow-host requires a hostname"}
+			}
+			i++
+			f.allowHosts = append(f.allowHosts, args[i])
+		case "--repo":
+			// D-PD-36: scope MITM path allowlist to a single GitHub repo.
+			// Required when --egress closed is used (validated after parsing).
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --repo requires owner/name"}
+			}
+			i++
+			if !strings.Contains(args[i], "/") {
+				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --repo %q is not in owner/name format", args[i])}
+			}
+			f.allowedRepo = args[i]
 		default:
 			if len(arg) > 1 && arg[0] == '-' {
 				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: unknown flag %q", arg)}
@@ -491,6 +524,17 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 		return f, &UsageError{Msg: fmt.Sprintf(
 			"sandbox create: --vcpus-max %d is less than --vcpus %d; ceiling must exceed boot count",
 			f.vcpusMax, f.vcpus)}
+	}
+	// D-PD-36: --egress closed always adds GitHub hosts to SecretHosts, which
+	// triggers MITM credential swap for every request to those hosts. Without
+	// an AllowedRepo the path allowlist is disabled and the operator's full-scope
+	// token is unbounded — any GitHub path is reachable. That configuration MUST
+	// NOT be constructible. Refuse it here rather than at boot time so the error
+	// is immediate, readable, and testable without a VM.
+	if f.egressClosed && f.allowedRepo == "" {
+		return f, &UsageError{Msg: "sandbox create: --egress closed requires --repo owner/name " +
+			"(D-PD-36): GitHub is added to SecretHosts and the full-scope token would " +
+			"be unbounded without a per-repo path allowlist"}
 	}
 	return f, nil
 }
@@ -1218,6 +1262,20 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		return errSandbox("sandbox create", err)
 	}
 
+	// D-PD-33: closed-egress path — ensure GitHub goes into SecretHosts even
+	// if `--no-builtin-gh` was passed or `gh auth token` is unavailable.
+	// github.com / api.github.com / uploads.github.com must appear in
+	// SecretHosts so the MITM proxy intercepts them; they must NEVER be added
+	// to AllowedHosts (which would bypass the deny-all ACL).
+	// D-PD-36: --egress closed without --repo is rejected at parse time (see
+	// parseSandboxCreateArgs), so f.allowedRepo is always non-empty here.
+	if f.egressClosed {
+		secrets = service.MergeSecrets(secrets, service.SecretBind{
+			Env:   service.BuiltinGitHubEnv,
+			Hosts: append([]string(nil), service.GitHubSecretHosts...),
+		})
+	}
+
 	sb, err := service.CreateAndBoot(ctx, svc, imgCache, newDriver, probe,
 		project, name,
 		service.CreateAndBootOptions{
@@ -1233,6 +1291,13 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			WorkspaceCapturer: bootCapturer,
 			BaseRef:           bootBaseRef, // GIT-SEED: host HEAD at capture time (D-PD-19/D-PD-29)
 			Secrets:           secrets,
+			AllowedHosts: f.allowHosts, // populated by --allow-host (empty = no curated list)
+			// D-PD-33: human sandboxes (sandbox create) default to open egress.
+			// --egress closed opts out: OpenEgress=false, ACL denies everything
+			// not in AllowedHosts. Agent sandboxes (orca, herdr) must NOT set
+			// OpenEgress=true — they use WireClaudeEgress with a curated allowlist.
+			OpenEgress:  !f.egressClosed,
+			AllowedRepo: f.allowedRepo, // D-PD-36: set by --repo; empty for open-egress sandboxes
 		},
 	)
 	if err != nil {
@@ -1268,17 +1333,31 @@ func resolveCreateSecrets(ctx context.Context, f sandboxCreateFlags) ([]service.
 		}
 		binds = append(binds, b)
 	}
-	if f.noBuiltinGH {
-		return binds, nil
+	if !f.noBuiltinGH {
+		builtin, ok, err := service.BuiltinGitHubSecret(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			binds = service.MergeSecrets(binds, builtin)
+		}
 	}
-	builtin, ok, err := service.BuiltinGitHubSecret(ctx)
-	if err != nil {
-		return nil, err
+	// D-PD-36: if any resolved secret bind covers a GitHub host and AllowedRepo
+	// is not set, the operator's full-scope token would be unbounded — every
+	// repository the account can reach is accessible. Refuse with an actionable
+	// error. The --egress closed path is caught earlier at parse time; this
+	// guard covers every other path (open-egress with builtin, explicit --secret
+	// binds that name GitHub hosts, etc.).
+	if f.allowedRepo == "" {
+		for _, b := range binds {
+			if service.SecretTouchesGitHub(b) {
+				return nil, &UsageError{Msg: "sandbox create: GitHub credential would be " +
+					"unbounded (D-PD-36): pass --repo owner/name to scope the per-repo " +
+					"path allowlist, or --no-builtin-gh to skip the GitHub token"}
+			}
+		}
 	}
-	if !ok {
-		return binds, nil
-	}
-	return service.MergeSecrets(binds, builtin), nil
+	return binds, nil
 }
 
 // handoffHumanSupervisor stops the in-process boot VM and re-owns it in a
