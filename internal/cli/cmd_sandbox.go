@@ -1177,8 +1177,9 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		// GIT-SEED (D-PD-29): this is the HUMAN create path — capture the
 		// full repository (working tree + .git) so the guest can commit and
 		// push. The .dockerignore `.git` exclusion is image-build hygiene and
-		// is negated here for this path only; agent/plugin paths keep the
-		// plain shadow-disk capturer.
+		// is negated here for this path only; other create paths (agent,
+		// herdr/mcp/orca) use the service default capturer (nil →
+		// builder.WorktreeToDisk), which always honours .dockerignore.
 		bootCapturer = makeHumanWorkspaceCapturer(DefaultShadowDirs)
 
 		// Fail fast on a git workspace without a configured host identity

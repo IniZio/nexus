@@ -517,9 +517,8 @@ is either a success or an error envelope.
   }
 }
 ```
-
 `kind` identifies the event type (e.g. `sandbox.created`, `exec.done`, `harvest.done`,
-`exec_batch`, `reap.report`). Error `code` values are stable machine-contract strings versioned at
+`reap.report`). Error `code` values are stable machine-contract strings versioned at
 `schema_version` 1; within a version, changes are additive only.
 
 ### 4.2 MCP envelope
