@@ -183,30 +183,19 @@ nexus3 exec <ref> [--pty] [--rows N] [--cols N] -- <command> [args...]
 | `--rows <N>` | Terminal rows (requires `--pty`; default: 24) |
 | `--cols <N>` | Terminal columns (requires `--pty`; default: 80) |
 
-**Batch form (fan-out across label-matched sandboxes):**
-```
-nexus3 exec --label KEY=VALUE [--parallel N] -- <command> [args...]
-```
-
-| Flag | Description |
-|---|---|
-| `--label KEY=VALUE` | Select sandboxes matching this label (see Section 3) |
-| `--parallel <N>` | Max concurrent sandboxes (default: 2) |
-
-The default of 2 is not arbitrary: at 2 concurrent nexus3 VMs the host measured 84% swap
-pressure. Raising `--parallel` beyond 2 risks swap thrashing; measure before changing.
-**Current restriction:** `--label` batch exec only supports the `motive` label key. Other keys
-return a usage error. This is a known limitation (see Section 6).
-
-Stdout and stderr from each sandbox are buffered separately and printed sequentially after all
-sandboxes complete, so output from different sandboxes never interleaves.
+**Batch exec (`exec --label`) was retracted 2026-08-15 (D-PD-30).** No reference tool ships
+fleet exec — microsandbox deliberately excluded `exec` from its label-driven fleet verbs. To run
+a command across N sandboxes, loop host-side:
 
 ```
-# Single
+for sb in $(nexus3 --json sandbox list | jq -r '.data.sandboxes[].handle'); do
+  nexus3 exec "$sb" -- git status
+done
+```
+
+```
+# Single-sandbox exec
 nexus3 exec myproject/worker-1 -- python3 run_test.py
-
-# Batch across motive
-nexus3 exec --label motive=my-motive --parallel 4 -- git status
 ```
 
 No MCP equivalent.
@@ -474,18 +463,16 @@ output and the `sandbox_list` MCP tool response.
 
 ### Selecting by label
 
-**`exec --label KEY=VALUE`** selects all sandboxes matching the label and runs the command in each:
+`sandbox list --label KEY=VALUE` filters the list to sandboxes carrying that label (AND-matched
+when repeated). Pair it with a host-side loop to act on the selected set:
 
 ```
-nexus3 exec --label motive=pr-42 -- git bundle create /tmp/out.bundle HEAD
+for sb in $(nexus3 --json sandbox list --label motive=pr-42 | jq -r '.data.sandboxes[].handle'); do
+  nexus3 exec "$sb" -- git status
+done
 ```
 
-When multiple `--label` flags are given they are AND-matched: a sandbox must carry all specified
-labels to be selected.
-
-**Current restriction:** `exec --label` batch mode only supports the `motive` label key. Using any
-other key returns a usage error (`exec --label: batch exec currently only supports the motive label
-key`). This is a known gap (see Section 6).
+Batch exec `exec --label` was retracted 2026-08-15 (D-PD-30); see the `exec` section above.
 
 **`up --label`** stamps labels on creation but is not a selector (it creates new sandboxes).
 
@@ -496,8 +483,7 @@ selector. This is a gap vs. microsandbox (see Section 5).
 
 An earlier design used a first-class `MotiveID` field on sandbox records. Decision D-PD-21 replaced
 this with generic labels. Existing sandbox records with a `MotiveID` load correctly; the field is
-treated as `Labels["motive"]`. The `harvest` command and `exec --label motive=X` both use this
-migration path.
+treated as `Labels["motive"]`. The `harvest` command uses this migration path.
 
 ---
 
@@ -596,7 +582,7 @@ must be justified or marked OPEN.
 |---|---|---|---|---|
 | **Labels (stamp)** | YES — `--label KEY=VALUE` repeatable on `sandbox create`, `up` | YES — `--label KEY=VALUE` on most create/run verbs | NO | NO |
 | **Selectors (fleet lifecycle)** | NO — no `sandbox stop --label` or `sandbox rm --label` | YES — `--label` on `start`/`stop`/`restart`/`rm` etc. | NO | NO |
-| **Batch exec** | YES — `exec --label` with bounded parallelism (DEPARTURE — see below) | NO — exec is single-sandbox only; explicitly excluded from fleet verbs | NO | UNKNOWN |
+| **Batch exec** | NO — retracted 2026-08-15 (D-PD-30) | NO — exec is single-sandbox only; explicitly excluded from fleet verbs | NO | NO |
 | **Single exec** | YES — `exec <ref> -- <cmd>` | YES — `sandbox exec <name> -- <cmd>` | NO (UNKNOWN from source) | UNKNOWN |
 | **Ephemeral exec** | YES — `run` (create+boot+exec+rm, guaranteed cleanup) | UNKNOWN | NO | UNKNOWN |
 | **Lifecycle verbs** | create/list/rm/start/stop/pause/resume | create/ls/rm/start/stop/restart/pause/resume | start/stop (INFERRED) | create/start/stop/destroy/restart (INFERRED) |
@@ -607,7 +593,7 @@ must be justified or marked OPEN.
 | **Response envelope (CLI)** | `{schema_version, kind, data/error}` newline-delimited | N/A (no documented --json) | `{schema}` versioned, additive-only | UNKNOWN |
 | **Egress policy** | MITM proxy, currently AllowAll; per-sandbox configurable | Per-sandbox network policy (details UNKNOWN) | Default-deny (UNKNOWN) | Rich YAML security policy per-sandbox |
 | **SSH plumbing** | `ssh --stdio` (ProxyCommand), `config-ssh` (stanza writer) | UNKNOWN | NO | `sandbox connect` (SSH interactive — INFERRED) |
-| **Fleet selector on exec** | Partial (motive key only) | NO (exec is single only) | NO | UNKNOWN |
+| **Fleet selector on exec** | NO (batch exec retracted 2026-08-15, D-PD-30) | NO (exec is single only) | NO | UNKNOWN |
 
 Confidence grades on reference data are inherited from the prior-art study. INFERRED = behavior
 matches documented patterns but exact verb spelling unconfirmed. UNKNOWN = not found in any
@@ -620,20 +606,16 @@ unjustified departure is a surface-design debt.
 
 ---
 
-**DEPARTURE 1 — batch exec across N sandboxes (`exec --label`)**
+**DEPARTURE 1 — batch exec across N sandboxes (`exec --label`) — RESOLVED: RETRACTED**
 
 No reference ships fleet exec. microsandbox deliberately excluded `exec` from its label-driven
 fleet verbs (`ps`, `start`, `stop`, `restart`, `ping`, `touch`, `rm` — no `exec`). clawk and
 OpenShell have no batch exec at all.
 
-**Status: OPEN.** Two candidates:
-- Retract `exec --label` entirely; document a host-side shell loop as the pattern instead.
-- Keep it, justified as a substrate-safety primitive: the `--parallel 2` default encodes
-  measured host swap pressure (84% at 2 concurrent VMs). A floor of 2 is host-specific knowledge
-  that a wrapper would have to duplicate or ignore.
-
-Current implementation additionally restricts to the `motive` key only, which limits the
-departure's scope but also limits its utility.
+**Status: RESOLVED 2026-08-15 (D-PD-30) — retracted.** The substrate-safety argument (bounded
+parallelism encoding measured swap pressure) did not justify a surface no reference provides;
+the documented pattern is now a host-side shell loop over `sandbox list --label` + `exec <ref>`
+(see the `exec` section). Fleet lifecycle selectors (DEPARTURE 2) remain open and undecided.
 
 ---
 
@@ -774,7 +756,7 @@ thin wrapper binary. OPEN.
 **Implementation gaps (features referenced in specs but not yet built):**
 
 1. `nexus3 pr` — host-side git bundle application and PR creation (see [parallel dev flow guide](guides/parallel-dev-flow.md)). Not yet built.
-2. `exec --label` batch exec restricted to `motive` key only. Generic label key support not yet wired.
+2. Batch exec `exec --label` — RETRACTED 2026-08-15 (D-PD-30), not a gap.
 3. `harvest` restricted to motive-ID. No `harvest --label KEY=VALUE` generalization.
 4. No fleet lifecycle selectors: `sandbox stop --label` / `sandbox rm --label` do not exist.
 5. MCP `truncated` field only wired for `sandbox_list`. Other tools always return `truncated: null`.
@@ -782,8 +764,8 @@ thin wrapper binary. OPEN.
 
 **Open operator decisions:**
 
-- **OPEN-1:** Retain or retract `exec --label` batch exec? (DEPARTURE 1) — no reference does this;
-  microsandbox explicitly excluded it from fleet verbs. Decision needed before surface stabilises.
+- **OPEN-1: RESOLVED 2026-08-15 (D-PD-30)** — `exec --label` batch exec retracted; host-side
+  loop is the documented pattern.
 - **OPEN-2:** Docker autostart resolved by deletion; buildkitd autostart remains, special-cased to
   `--builder-role`. Whether this surviving instance warrants a generic boot-services declaration
   mechanism (rather than staying as special-cased code) is undecided. (DEPARTURE 3)

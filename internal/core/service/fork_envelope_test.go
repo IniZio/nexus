@@ -232,8 +232,8 @@ func TestFork_ChildInheritsSSHPublicKey(t *testing.T) {
 // TestFork_ChildrenRemainInParentLabelGroup pins the property:
 //
 //	Children forked from a labelled sandbox stay inside the parent's label
-//	group, so `exec --label` (cli/cmd_sandbox.go:1322 → GetByLabels) and
-//	`harvest <motive-id>` (service/harvest.go:54 → GetByMotive) select them.
+//	group, so `harvest <motive-id>` (service/harvest.go:54 → GetByMotive) and
+//	`sandbox list --label` (cli/cmd_sandbox.go → GetByLabels) select them.
 func TestFork_ChildrenRemainInParentLabelGroup(t *testing.T) {
 	const motiveID = "m-fork-group"
 	labels := map[string]string{"motive": motiveID, "tier": "dev"}
@@ -246,7 +246,7 @@ func TestFork_ChildrenRemainInParentLabelGroup(t *testing.T) {
 		t.Fatalf("Fork: %v", err)
 	}
 
-	// harvest / batch-exec selection path.
+	// harvest selection path.
 	byMotive, err := svc.GetByMotive(c, motiveID)
 	if err != nil {
 		t.Fatalf("GetByMotive: %v", err)
@@ -254,12 +254,12 @@ func TestFork_ChildrenRemainInParentLabelGroup(t *testing.T) {
 	if len(byMotive) != 1+len(children) {
 		t.Errorf("PROPERTY VIOLATED (label group membership): GetByMotive(%q) returned %d "+
 			"sandbox(es), want %d (parent + %d forked children). Fork does not copy "+
-			"parent.Labels onto the child record (service.go:939-949), so `harvest %s` and "+
-			"`exec --label motive=%s` silently skip the children.",
-			motiveID, len(byMotive), 1+len(children), len(children), motiveID, motiveID)
+			"parent.Labels onto the child record (service.go:939-949), so `harvest %s` "+
+			"silently skips the children.",
+			motiveID, len(byMotive), 1+len(children), len(children), motiveID)
 	}
 
-	// exec --label selection path (AND-matched multi-key).
+	// label selection path (AND-matched multi-key; backs `sandbox list --label`).
 	byLabels, err := svc.GetByLabels(c, labels)
 	if err != nil {
 		t.Fatalf("GetByLabels: %v", err)

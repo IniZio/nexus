@@ -106,25 +106,21 @@ an independent create.
 
 ### Fan-out exec across a motive
 
-`exec --label motive=<id>` runs a command in every sandbox whose `motive` label matches:
+Batch exec `exec --label` was retracted (2026-08-15, D-PD-30): no reference tool ships fleet
+exec, and a bounded-parallelism wrapper is a host-side concern. Fan out with a shell loop over
+the label-selected set:
 
 ```
-nexus3 exec --label motive=pr-42 --parallel 2 -- go test ./...
+for sb in $(nexus3 --json sandbox list --label motive=pr-42 | jq -r '.data.sandboxes[].handle'); do
+  nexus3 exec "$sb" -- go test ./... &
+  # bound concurrency to what your host memory allows — at 2 concurrent
+  # nexus3 VMs this host measured 84% swap pressure
+  while [ "$(jobs -r | wc -l)" -ge 2 ]; do wait -n; done
+done
+wait
 ```
-
-**`--parallel` default is 2.** This is measured, not arbitrary: at 2 concurrent nexus3 VMs the
-host swap pressure reached 84%. Raising `--parallel` beyond 2 risks swap thrashing; measure your
-host's memory before changing it.
-
-Output from each sandbox is buffered and printed sequentially when all sandboxes complete, so
-output from different sandboxes never interleaves.
-
-**Restriction:** `exec --label` batch mode currently accepts only the `motive` key. Using any
-other key returns a usage error. This is a known gap tracked in [Surface reference § Known gaps](../surface.md#6-known-gaps-and-open-questions).
 
 ### Single-sandbox exec
-
-To target one specific sandbox while the batch runs:
 
 ```
 nexus3 exec dev/worker-1 -- git log --oneline -5
@@ -136,12 +132,12 @@ nexus3 exec dev/worker-1 -- git log --oneline -5
 
 ### Bundling work with git bundle
 
-Inside each sandbox (via batch exec):
+Inside each sandbox:
 
 ```
-nexus3 exec --label motive=pr-42 -- \
-  git bundle create /tmp/work.bundle HEAD
+nexus3 exec dev/worker-1 -- git bundle create /tmp/work.bundle HEAD
 ```
+
 
 ### Harvesting all bundles in one call
 

@@ -108,8 +108,8 @@ nexus3 sandbox create myproject/worker-1 --image nexus3-base:20260807 \
 
 Multiple `--label` flags are AND-matched when selecting. See [Surface reference](surface.md#3-labels-and-selectors) for the full selector contract.
 
-**Known restriction:** `exec --label` batch mode currently only accepts the `motive` key.
-Any other key returns a usage error.
+Batch exec `exec --label` was retracted (2026-08-15); select with `sandbox list --label` and
+loop `exec <ref>` host-side. See [Surface reference](surface.md#3-labels-and-selectors).
 
 ---
 

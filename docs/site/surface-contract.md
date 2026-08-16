@@ -25,7 +25,7 @@ rejected because it omits operations that are fully implemented and exposed thro
 | `RestoreFromSnapshot` | `service.go:1025` | `restore` |
 | `HarvestMotive` | `harvest.go:47` | `harvest` |
 | `DialGuestPortForward` | `forward_ops.go:19` | `forward` |
-| `BatchExec` | `batch_exec.go:81` | `exec --label` |
+| ~~`BatchExec`~~ | retracted with `exec --label` (D-PD-30, 2026-08-15); `batch_exec.go` deleted | — |
 
 Using `SandboxService` as the canonical surface would mean these operations have no declared
 canonical backing, which would break the N-AC4 parity invariant. TBR-PD-13 is permanently closed.
@@ -56,7 +56,7 @@ configuration methods (`WithArtifacts`, `WithBroker`, `WithSSHSeeder`, `WithCASe
 | `Resume(ctx, ref)` | `service.go:525` | `sandbox resume` | `sandbox_resume` |
 | `Remove(ctx, ref)` | `service.go:583` | `sandbox remove` | `sandbox_remove` |
 | `Exec(ctx, ref, agent.ExecOptions)` | `agent_ops.go:29` | `exec`, `shell`, `attach`, `run` | — |
-| `BatchExec(ctx, motiveID, BatchExecOptions)` | `batch_exec.go:81` | `exec --label motive=X` | — |
+| ~~`BatchExec`~~ | retracted (D-PD-30) | — | — |
 | `Fork(ctx, ref, count)` | `service.go:877` | `fork` | — |
 | `Snapshot(ctx, ref)` | `service.go:814` | `snapshot create` | — |
 | `SnapshotList()` | `service.go:962` | `snapshot list` | — |
@@ -97,7 +97,7 @@ call is deferred with a background context so cleanup runs even under SIGINT or 
 |---|---|---|
 | **Stable** | `*service.Service` lifecycle ops (Create/List/Start/Stop/Pause/Resume/Remove) | Breaking changes require a version bump |
 | **Stable** | `CreateAndBoot`, `RunEphemeral` | Breaking changes require a version bump |
-| **Internal** | Snapshot/Fork/Restore, HarvestMotive, BatchExec, DialGuestPortForward | May change as design matures; callers are adapters only |
+| **Internal** | Snapshot/Fork/Restore, HarvestMotive, DialGuestPortForward | May change as design matures; callers are adapters only |
 | **CLI adapter** | `internal/cli/` flag parsing | Not API — CLI flags are user-visible but not a library API |
 | **MCP adapter** | `internal/mcp/` tool definitions | MCP tool names are stable; response shapes may be versioned |
 
