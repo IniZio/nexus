@@ -11,8 +11,9 @@ import (
 // for various shadow-disk counts without booting a VM.
 //
 // Contract (D-DC-10):
-//   ExtraDisks[i]   → /dev/vd{b+i}   (shadow disk i, 0-indexed)
-//   ExtraDisks[N]   → /dev/vd{b+N}   (workspace disk; appended last by service)
+//
+//	ExtraDisks[i]   → /dev/vd{b+i}   (shadow disk i, 0-indexed)
+//	ExtraDisks[N]   → /dev/vd{b+N}   (workspace disk; appended last by service)
 func TestWorkspaceGuestMount_DeviceOrder(t *testing.T) {
 	cases := []struct {
 		numShadow  int

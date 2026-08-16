@@ -71,7 +71,7 @@ func TestFirstNonLoIfaceAt_DummySkipped(t *testing.T) {
 // The fallback must return the first non-lo interface alphabetically.
 func TestFirstNonLoIfaceAt_NoDeviceLinks(t *testing.T) {
 	root := makeFakeSysfs(t, map[string]bool{
-		"lo":  false,
+		"lo":   false,
 		"eth0": false, // no device link — fallback path
 	})
 

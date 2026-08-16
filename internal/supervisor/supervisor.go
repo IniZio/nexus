@@ -104,6 +104,13 @@ type Config struct {
 	// caller to the supervisor subprocess via repeated --extra-disk flags.
 	ExtraDisks []string
 
+	// WorkspaceGuestPath is the in-guest mount point of the workspace disk
+	// (e.g. /workspace/<name>). Empty when the sandbox has no workspace disk.
+	// When non-empty AND the host workspace carried a .git, the supervisor
+	// seeds the operator's git identity to GuestGitconfigPath (GIT-SEED,
+	// D-PD-29) so in-guest commits carry the human's identity (ID-1).
+	WorkspaceGuestPath string
+
 	// CredsFile is the optional path to creds.json for real-token seeding.
 	// When empty, the broker is wired but holds no real tokens.
 	CredsFile string
@@ -231,16 +238,16 @@ func RunDetached(cfg Config) error {
 	}
 	vcpuMax := uint32(cfg.GovBounds.VCPUMax) //nolint:gosec // int32→uint32; VCPUMax is always non-negative by construction
 	drv, err := cloudhypervisor.New(cloudhypervisor.Config{
-		BinaryPath:    cfg.CHBin,
-		SocketDir:     cfg.SocketDir,
-		KernelPath:    cfg.KernelPath,
-		DiskImagePath: cfg.DiskPath,
-		StartTimeout:  30 * time.Second,
-		MemoryMiB:     cfg.MemoryMiB,
-		MemoryMaxMiB:  memMaxMiB,
-		VCPUMax:       vcpuMax,
-		ExtraDisks:    extraDisks,
-		Cmdline:       cfg.Cmdline,
+		BinaryPath:       cfg.CHBin,
+		SocketDir:        cfg.SocketDir,
+		KernelPath:       cfg.KernelPath,
+		DiskImagePath:    cfg.DiskPath,
+		StartTimeout:     30 * time.Second,
+		MemoryMiB:        cfg.MemoryMiB,
+		MemoryMaxMiB:     memMaxMiB,
+		VCPUMax:          vcpuMax,
+		ExtraDisks:       extraDisks,
+		Cmdline:          cfg.Cmdline,
 	})
 	if err != nil {
 		return fmt.Errorf("supervisor: init driver: %w", err)
@@ -450,6 +457,25 @@ func RunDetached(cfg Config) error {
 				slog.Warn("supervisor.update_ca_certs_failed", "err", ucErr)
 			} else {
 				slog.Info("supervisor.update_ca_certs_done")
+			}
+
+			// GIT-SEED (D-PD-29): on the human path with a workspace, push the
+			// operator's git identity (user.name/user.email from the host's
+			// global git config, per-sandbox branch name) to /root/.gitconfig so
+			// in-guest commits carry the human's identity (ID-1: no synthetic
+			// bot). Missing host identity fails the seed loudly — the CLI
+			// pre-flight already refused create for a .git workspace without it,
+			// so reaching here without an identity is a configuration drift.
+			if humanSecrets && cfg.WorkspaceGuestPath != "" {
+				gitSeeder := service.NewGuestFileSeeder(agentClient, service.GuestGitconfigPath)
+				if _, gitErr := service.SeedGitIdentity(ctx, sb.ID, sb.Labels, cfg.WorkspaceGuestPath, gitSeeder); gitErr != nil {
+					slog.Warn("supervisor.git_identity_seed_failed",
+						"sandbox", sb.ID, "err", gitErr,
+						"action", "guest git will fall back to no identity; configure host git user.name/user.email")
+				} else {
+					slog.Info("supervisor.git_identity_seeded", "sandbox", sb.ID,
+						"path", service.GuestGitconfigPath, "workspace", cfg.WorkspaceGuestPath)
+				}
 			}
 		}
 	}
@@ -714,4 +740,3 @@ func seedHumanSecrets(
 	}
 	return false
 }
-

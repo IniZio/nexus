@@ -23,6 +23,7 @@ func TestWriteReadSpawnSpec_RoundTrip(t *testing.T) {
 		BootVCPUs:          2,
 		HasWorkspaceDisk:   true,
 		WorkspaceDiskIndex: 0,
+		WorkspaceGuestPath: "/workspace/proj", // GIT-SEED (D-PD-29)
 		GovBounds: resize.Bounds{
 			MemMinBytes:  512 << 20,
 			MemMaxBytes:  4096 << 20,
@@ -49,6 +50,9 @@ func TestWriteReadSpawnSpec_RoundTrip(t *testing.T) {
 	}
 	if got.DiskPath != in.DiskPath || got.MemoryMiB != 2048 || !got.HasWorkspaceDisk {
 		t.Errorf("got %+v", got)
+	}
+	if got.WorkspaceGuestPath != in.WorkspaceGuestPath {
+		t.Errorf("WorkspaceGuestPath = %q, want %q", got.WorkspaceGuestPath, in.WorkspaceGuestPath)
 	}
 	if got.GovBounds.MemMaxBytes != in.GovBounds.MemMaxBytes {
 		t.Errorf("GovBounds = %+v", got.GovBounds)

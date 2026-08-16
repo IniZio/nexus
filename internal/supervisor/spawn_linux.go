@@ -31,11 +31,11 @@ type SpawnConfig struct {
 	ReadyTimeout time.Duration
 }
 
-// buildSupervisorArgv constructs the argv slice for `nexus3 __supervisor`
+// BuildSupervisorArgv constructs the argv slice for `nexus3 __supervisor`
 // from cfg. Extracted from SpawnDetached for unit-testability: callers can
 // verify that a realistic SpawnConfig produces the expected flags without
 // actually forking a subprocess.
-func buildSupervisorArgv(cfg SpawnConfig) []string {
+func BuildSupervisorArgv(cfg SpawnConfig) []string {
 	args := []string{
 		HiddenSubcommand,
 		"--sandbox-ref", cfg.SandboxRef,
@@ -79,6 +79,11 @@ func buildSupervisorArgv(cfg SpawnConfig) []string {
 	}
 	if cfg.HasWorkspaceDisk {
 		args = append(args, "--workspace-disk-index", strconv.Itoa(cfg.WorkspaceDiskIndex))
+	}
+	// WorkspaceGuestPath: forwarded when non-empty so the supervisor can seed
+	// the operator's git identity into the guest (GIT-SEED, D-PD-29).
+	if cfg.WorkspaceGuestPath != "" {
+		args = append(args, "--workspace-guest-path", cfg.WorkspaceGuestPath)
 	}
 	// ExtraDisks: one --extra-disk flag per path. The supervisor re-attaches
 	// them in order so ExtraDisks[i] maps to the same guest device as at
@@ -147,7 +152,7 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 		cfg.ParentPipeFD = 3 // first ExtraFiles entry → fd 3 in child
 	}
 
-	args := buildSupervisorArgv(cfg)
+	args := BuildSupervisorArgv(cfg)
 
 	// Set up log file for supervisor stdout/stderr.
 	logPath := cfg.LogPath

@@ -255,7 +255,7 @@ func TestOnlineOfflineCPUs_AllOnlineIsNoOp(t *testing.T) {
 func TestReadVCPUs(t *testing.T) {
 	dir := t.TempDir()
 	cpuDir := filepath.Join(dir, "cpu")
-	_ = os.MkdirAll(filepath.Join(cpuDir, "cpu0"), 0o755)           // no online file → always online
+	_ = os.MkdirAll(filepath.Join(cpuDir, "cpu0"), 0o755)            // no online file → always online
 	writeTestFile(t, filepath.Join(cpuDir, "cpu1", "online"), "1\n") // online
 	writeTestFile(t, filepath.Join(cpuDir, "cpu2", "online"), "0\n") // offline
 	_ = os.MkdirAll(filepath.Join(cpuDir, "cpuidle"), 0o755)         // must be ignored
@@ -567,27 +567,27 @@ func TestComputeTmpSizeBytes(t *testing.T) {
 			totalKB: 512 * 1024,
 			// 50% of 512 MiB = 256 MiB < 1 GiB floor → floor wins.
 			wantB: 1 * gib,
-			note: "floor: 1 GiB (tmpfs sized not preallocated — no real cost on 512 MiB guest)",
+			note:  "floor: 1 GiB (tmpfs sized not preallocated — no real cost on 512 MiB guest)",
 		},
 		{
 			name:    "8GiB_guest_cap_wins",
 			totalKB: 8 * 1024 * 1024,
 			// 50% of 8 GiB = 4 GiB > 2 GiB cap → cap wins.
 			wantB: 2 * gib,
-			note: "cap: 2 GiB",
+			note:  "cap: 2 GiB",
 		},
 		{
 			name:    "3GiB_guest_proportional",
 			totalKB: 3 * 1024 * 1024,
 			// 50% of 3 GiB = 1.5 GiB; between floor and cap.
 			wantB: (1536 * mib / mib) * mib, // 1536 MiB = 1.5 GiB, already MiB-aligned
-			note: "proportional: 1.5 GiB",
+			note:  "proportional: 1.5 GiB",
 		},
 		{
 			name:    "zero_totalKB_returns_zero",
 			totalKB: 0,
 			wantB:   0,
-			note: "unavailable MemTotal sentinel",
+			note:    "unavailable MemTotal sentinel",
 		},
 	}
 

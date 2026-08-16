@@ -74,10 +74,10 @@ const tmpfsMagic = int64(0x01021994)
 
 // Injectable seams — real implementations by default; replaced in unit tests.
 var (
-	tmpMeminfoPath  = "/proc/meminfo" // read via readMeminfoKB (resize_actuate_linux.go)
-	tmpStatfsFunc   = func(path string, st *unix.Statfs_t) error { return unix.Statfs(path, st) }
-	tmpMountFunc    = unix.Mount
-	tmpResizePath   = "/tmp"
+	tmpMeminfoPath = "/proc/meminfo" // read via readMeminfoKB (resize_actuate_linux.go)
+	tmpStatfsFunc  = func(path string, st *unix.Statfs_t) error { return unix.Statfs(path, st) }
+	tmpMountFunc   = unix.Mount
+	tmpResizePath  = "/tmp"
 )
 
 // startTmpfsResizer spawns a panic-guarded goroutine that runs resizeTmpfsOnce

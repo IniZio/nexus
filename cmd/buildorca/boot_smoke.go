@@ -3,7 +3,8 @@
 // and the full netns re-exec wired in via main()'s NetnsRunEnv check.
 //
 // Run: HOME=$HOME NEXUS3_KERNEL_PATH=$HOME/.pi/nexus-bin/vmlinux.bin
-//      TMPDIR=/tmp go run ./cmd/buildorca/ -smoke
+//
+//	TMPDIR=/tmp go run ./cmd/buildorca/ -smoke
 package main
 
 import (

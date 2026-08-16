@@ -169,9 +169,9 @@ func TestHerdrSpacePut1to1InvariantHandle(t *testing.T) {
 
 // fakeSandboxSvc is a test double for HerdrSpaceSandboxService.
 type fakeSandboxSvc struct {
-	paused  []string
-	resumed []string
-	removed []string
+	paused    []string
+	resumed   []string
+	removed   []string
 	pauseErr  error
 	resumeErr error
 	removeErr error

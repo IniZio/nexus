@@ -67,9 +67,9 @@ type supervisorBuilderDriver struct {
 	dialerDrv *cloudhypervisor.CHDriver
 
 	// ── static config (set at construction) ──────────────────────────────────
-	storeRoot  string       // FileStore root; the supervisor opens the same store
-	stateBase  string       // base dir for per-build supervisor state dirs
-	socketDir  string       // must match dialerDrv's SocketDir
+	storeRoot  string // FileStore root; the supervisor opens the same store
+	stateBase  string // base dir for per-build supervisor state dirs
+	socketDir  string // must match dialerDrv's SocketDir
 	kernelPath string
 	diskPath   string   // builder rootfs (vda)
 	extraDisks []string // [vdb=context, vdc=artifact, vdd+=cache]

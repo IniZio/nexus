@@ -153,7 +153,7 @@ func TestWireGovernorAxes_DiskNotRegisteredWithoutHasDisk(t *testing.T) {
 	}
 }
 
-// ── buildSupervisorArgv forward-trace tests ───────────────────────────────────
+// ── BuildSupervisorArgv forward-trace tests ───────────────────────────────────
 //
 // These tests close the "value has no production origin" defect class by
 // asserting that a SpawnConfig with realistic bounds actually produces the
@@ -191,11 +191,12 @@ func TestBuildSupervisorArgv_GovBoundsForwarded(t *testing.T) {
 			BootVCPUs:          1,
 			HasWorkspaceDisk:   true,
 			WorkspaceDiskIndex: 0,
+			WorkspaceGuestPath: "/workspace/proj",
 			ExtraDisks:         []string{"/data/ws.raw"},
 			Cmdline:            wantCmdline,
 		},
 	}
-	argv := buildSupervisorArgv(cfg)
+	argv := BuildSupervisorArgv(cfg)
 
 	// Helper: find --flag value in argv.
 	findFlag := func(flag string) (string, bool) {
@@ -236,6 +237,13 @@ func TestBuildSupervisorArgv_GovBoundsForwarded(t *testing.T) {
 		t.Error("argv missing --workspace-disk-index; HasWorkspaceDisk not forwarded")
 	} else if v != "0" {
 		t.Errorf("--workspace-disk-index = %q, want 0", v)
+	}
+
+	// WorkspaceGuestPath must produce --workspace-guest-path (GIT-SEED).
+	if v, ok := findFlag("--workspace-guest-path"); !ok {
+		t.Error("argv missing --workspace-guest-path; WorkspaceGuestPath not forwarded")
+	} else if v != "/workspace/proj" {
+		t.Errorf("--workspace-guest-path = %q, want /workspace/proj", v)
 	}
 
 	// ExtraDisks must be forwarded as --extra-disk flags.
@@ -327,7 +335,7 @@ func TestBuildSupervisorArgv_EphemeralForwarded(t *testing.T) {
 			Ephemeral:  true,
 		},
 	}
-	argv := buildSupervisorArgv(cfg)
+	argv := BuildSupervisorArgv(cfg)
 	if !slices.Contains(argv, "--ephemeral") {
 		t.Error("argv missing --ephemeral when Config.Ephemeral=true")
 	}
@@ -349,7 +357,7 @@ func TestBuildSupervisorArgv_NotEphemeralOmitsFlag(t *testing.T) {
 			// Ephemeral: false (zero value) — default long-lived mode.
 		},
 	}
-	argv := buildSupervisorArgv(cfg)
+	argv := BuildSupervisorArgv(cfg)
 	if slices.Contains(argv, "--ephemeral") {
 		t.Error("argv contains --ephemeral for non-ephemeral config; long-lived mode must not emit this flag")
 	}
@@ -373,7 +381,7 @@ func TestBuildSupervisorArgv_ParentPipeFDForwarded(t *testing.T) {
 			ParentPipeFD: 3,
 		},
 	}
-	argv := buildSupervisorArgv(cfg)
+	argv := BuildSupervisorArgv(cfg)
 	findFlag := func(flag string) (string, bool) {
 		for i, a := range argv {
 			if a == flag && i+1 < len(argv) {
@@ -406,7 +414,7 @@ func TestBuildSupervisorArgv_ZeroParentPipeFDOmitsFlag(t *testing.T) {
 			// ParentPipeFD: 0 (zero value) — no watchdog.
 		},
 	}
-	argv := buildSupervisorArgv(cfg)
+	argv := BuildSupervisorArgv(cfg)
 	if slices.Contains(argv, "--parent-pipe-fd") {
 		t.Error("argv contains --parent-pipe-fd for non-ephemeral config with zero ParentPipeFD")
 	}
@@ -430,7 +438,7 @@ func TestBuildSupervisorArgv_MemoryForwarded(t *testing.T) {
 			MemoryMiB:  8192,
 		},
 	}
-	argv := buildSupervisorArgv(cfg)
+	argv := BuildSupervisorArgv(cfg)
 	findFlag := func(flag string) (string, bool) {
 		for i, a := range argv {
 			if a == flag && i+1 < len(argv) {
@@ -464,7 +472,7 @@ func TestBuildSupervisorArgv_ZeroMemoryOmitsFlag(t *testing.T) {
 			// MemoryMiB: 0 (zero value) — supervisor default applies.
 		},
 	}
-	argv := buildSupervisorArgv(cfg)
+	argv := BuildSupervisorArgv(cfg)
 	if slices.Contains(argv, "--memory") {
 		t.Error("argv contains --memory for zero MemoryMiB; supervisor default must apply (zero must be omitted)")
 	}
@@ -487,7 +495,7 @@ func TestBuildSupervisorArgv_ZeroBoundsNoGovFlags(t *testing.T) {
 			// HasWorkspaceDisk: false — no disk axis.
 		},
 	}
-	argv := buildSupervisorArgv(cfg)
+	argv := BuildSupervisorArgv(cfg)
 
 	for _, flag := range []string{"--gov-mem-min", "--gov-mem-max", "--gov-vcpu-min", "--gov-vcpu-max", "--gov-disk-max"} {
 		if slices.Contains(argv, flag) {
@@ -496,6 +504,9 @@ func TestBuildSupervisorArgv_ZeroBoundsNoGovFlags(t *testing.T) {
 	}
 	if slices.Contains(argv, "--workspace-disk-index") {
 		t.Error("argv contains --workspace-disk-index when HasWorkspaceDisk=false")
+	}
+	if slices.Contains(argv, "--workspace-guest-path") {
+		t.Error("argv contains --workspace-guest-path when WorkspaceGuestPath is empty")
 	}
 	if slices.Contains(argv, "--extra-disk") {
 		t.Error("argv contains --extra-disk when ExtraDisks is empty")

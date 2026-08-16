@@ -335,7 +335,7 @@ func buildRemoteCmd(envTokens []string, argv ...string) string {
 }
 
 // shellQuote returns a POSIX single-quoted version of s, safe for use in a
-// shell command. Every single-quote inside s is replaced with '\'' (end-quote,
+// shell command. Every single-quote inside s is replaced with '\” (end-quote,
 // literal quote, re-open-quote).
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"

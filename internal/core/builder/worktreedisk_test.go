@@ -49,6 +49,86 @@ func TestWorktreeToDisk_UntrackedFileCaptured(t *testing.T) {
 	}
 }
 
+// TestWorktreeToDiskWithExtra_GitNegationReincludesDotGit is the GIT-SEED
+// invariant (D-PD-29): projects list `.git` in .dockerignore — correct for
+// image builds, wrong for a human git-workflow sandbox. Appending the
+// negation patterns ("!.git", "!.git/**") after the project's patterns must
+// re-include the full .git directory (dockerignore semantics are
+// last-match-wins) while the plain capture still honours the exclusion.
+func TestWorktreeToDiskWithExtra_GitNegationReincludesDotGit(t *testing.T) {
+	skipIfInGuest(t)
+	if !Mke2fsAvailable() {
+		t.Skip("mke2fs not available; skipping git-negation test")
+	}
+	if !debugfsAvailable() {
+		t.Skip("debugfs not available; skipping git-negation test")
+	}
+
+	ctx := context.Background()
+	srcDir := t.TempDir()
+
+	// A .git directory with one object file and a root marker file.
+	gitDir := filepath.Join(srcDir, ".git")
+	if err := os.MkdirAll(filepath.Join(gitDir, "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "objects", "marker"), []byte("git-object\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "work.txt"), []byte("tree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Project .dockerignore excludes .git (image-build hygiene).
+	if err := os.WriteFile(filepath.Join(srcDir, ".dockerignore"), []byte(".git\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	lsHead := func(ext4 string) string {
+		out, err := exec.CommandContext(ctx, "debugfs", "-R", "ls -l /", ext4).CombinedOutput()
+		if err != nil {
+			t.Fatalf("debugfs ls /: %v\n%s", err, out)
+		}
+		return string(out)
+	}
+
+	// Plain capture (no negations): .git must be excluded per .dockerignore.
+	plainExt4 := filepath.Join(t.TempDir(), "plain.ext4")
+	if err := WorktreeToDisk(ctx, srcDir, plainExt4, 0); err != nil {
+		t.Fatalf("WorktreeToDisk (plain): %v", err)
+	}
+	if ls := lsHead(plainExt4); strings.Contains(ls, ".git") {
+		t.Errorf("plain capture included .git despite .dockerignore exclusion;\n%s", ls)
+	}
+
+	// Human capture (negations appended): .git and its nested content must
+	// be present.
+	humanExt4 := filepath.Join(t.TempDir(), "human.ext4")
+	negations := []string{"!.git", "!.git/**"}
+	if err := WorktreeToDiskWithExtra(ctx, srcDir, humanExt4, 0, negations); err != nil {
+		t.Fatalf("WorktreeToDiskWithExtra (human): %v", err)
+	}
+	if ls := lsHead(humanExt4); !strings.Contains(ls, ".git") {
+		t.Errorf("human capture missing .git directory despite negation patterns;\n%s", ls)
+	}
+	catOut, err := exec.CommandContext(ctx, "debugfs", "-R", "cat /.git/HEAD", humanExt4).CombinedOutput()
+	if err != nil {
+		t.Fatalf("debugfs cat /.git/HEAD: %v\n%s", err, catOut)
+	}
+	if !strings.Contains(string(catOut), "ref: refs/heads/main") {
+		t.Errorf(".git/HEAD content not captured; got %q", string(catOut))
+	}
+	objOut, err := exec.CommandContext(ctx, "debugfs", "-R", "cat /.git/objects/marker", humanExt4).CombinedOutput()
+	if err != nil {
+		t.Fatalf("debugfs cat /.git/objects/marker: %v\n%s", err, objOut)
+	}
+	if !strings.Contains(string(objOut), "git-object") {
+		t.Errorf(".git nested content not captured (negation must cover children); got %q", string(objOut))
+	}
+}
+
 // TestWorktreeToDisk_DirtyEditCaptured verifies that an uncommitted edit to a
 // tracked file IS captured. WorktreeToDisk reads from the filesystem, not from
 // git HEAD, so the dirty on-disk content must appear in the image.

@@ -23,7 +23,7 @@ import (
 //   - fstype:    filesystem type (e.g. "ext4")
 //   - readonly:  "true" → MS_RDONLY; anything else → read-write
 //   - workspace: "true" → this is the primary workspace disk (telemetry target);
-//               absent or anything else → shadow disk (IsWorkspace=false)
+//     absent or anything else → shadow disk (IsWorkspace=false)
 //
 // The 5th field (workspace) is optional for backward compatibility: a 4-field
 // arg (old format) is accepted and yields IsWorkspace=false.

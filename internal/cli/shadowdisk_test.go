@@ -518,9 +518,9 @@ func TestWorkspaceCaptureTiming_WithShadowExclusion(t *testing.T) {
 
 func TestIsShadowDisk(t *testing.T) {
 	cases := []struct {
-		name   string
-		input  string
-		want   bool
+		name  string
+		input string
+		want  bool
 	}{
 		// B1 current format — owned by a handle
 		{"b1 node_modules", "example-app_b1-proof-a.shadow.node_modules.ext4", true},
@@ -547,10 +547,10 @@ func TestIsShadowDisk(t *testing.T) {
 
 func TestShadowDiskSafeHandle(t *testing.T) {
 	cases := []struct {
-		name          string
-		input         string
-		wantHandle    string
-		wantOK        bool
+		name       string
+		input      string
+		wantHandle string
+		wantOK     bool
 	}{
 		// B1 format: handle is extractable
 		{"b1 node_modules", "example-app_b1-proof-a.shadow.node_modules.ext4", "example-app_b1-proof-a", true},

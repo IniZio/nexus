@@ -24,8 +24,8 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/core/vmcfg"
 	"github.com/IniZio/nexus3/internal/supervisor"
@@ -325,22 +325,22 @@ func runSandbox(ctx context.Context, args []string, out *Output) error {
 //
 // sandboxCreateFlags holds the result of parsing `sandbox create` arguments.
 type sandboxCreateFlags struct {
-	rm             bool
-	imageRef       string
-	rootfsPath     string
-	filePath       string
-	dockerfilePath string // --dockerfile / -f: explicit Containerfile path override
-	memoryMiB      uint32
-	vcpus          uint32
-	labels         map[string]string
-	nestedVirt     bool
-	workspacePath  string // --workspace <host-path>: host git worktree to capture
+	rm              bool
+	imageRef        string
+	rootfsPath      string
+	filePath        string
+	dockerfilePath  string // --dockerfile / -f: explicit Containerfile path override
+	memoryMiB       uint32
+	vcpus           uint32
+	labels          map[string]string
+	nestedVirt      bool
+	workspacePath   string // --workspace <host-path>: host git worktree to capture
 	captureMaxBytes int64  // --capture-max <size>: explicit workspace capture cap (0 = auto)
 	// Auto-resize ceiling flags are optional; defaults apply. Auto-resize is
 	// unconditional (no opt-out; D-DC-30 revised 2026-08-14).
-	memoryMaxMiB uint32 // --memory-max <MiB>: RAM ceiling for hotplug region
-	vcpusMax     uint32 // --vcpus-max <n>:    vCPU ceiling for hotplug
-	diskMaxGiB   uint32 // --disk-max <GiB>:   disk grow ceiling
+	memoryMaxMiB uint32   // --memory-max <MiB>: RAM ceiling for hotplug region
+	vcpusMax     uint32   // --vcpus-max <n>:    vCPU ceiling for hotplug
+	diskMaxGiB   uint32   // --disk-max <GiB>:   disk grow ceiling
 	secrets      []string // --secret ENV@host[,host…] (repeatable)
 	noBuiltinGH  bool     // --no-builtin-gh: skip host gh auth token bind
 	positionals  []string
@@ -1016,7 +1016,6 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	var capturedCHBin string
 	var capturedSocketDir string
 
-
 	// Resolve auto-resize bounds early via vmcfg so the values are available
 	// to both the newDriver closure (for driver config) and the log below.
 	// This must happen before newDriver is defined because the closure captures
@@ -1127,9 +1126,9 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		bootExtraDisks     []service.ExtraDisk
 		bootWorkspace      *service.WorkspaceSpec
 		bootCapturer       func(context.Context, string, string, int64) error
+		bootBaseRef        string   // host HEAD SHA when the workspace carries .git (GIT-SEED)
 		shadowDiskCleanups []string // host paths to remove on CreateAndBoot failure
 	)
-
 	if f.workspacePath != "" {
 		// Validate workspace path.
 		if _, statErr := os.Stat(f.workspacePath); statErr != nil {
@@ -1174,7 +1173,30 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		if h := testWorkspaceSpecHook; h != nil {
 			h(bootWorkspace)
 		}
-		bootCapturer = makeShadowExcludeCapturer(DefaultShadowDirs)
+
+		// GIT-SEED (D-PD-29): this is the HUMAN create path — capture the
+		// full repository (working tree + .git) so the guest can commit and
+		// push. The .dockerignore `.git` exclusion is image-build hygiene and
+		// is negated here for this path only; agent/plugin paths keep the
+		// plain shadow-disk capturer.
+		bootCapturer = makeHumanWorkspaceCapturer(DefaultShadowDirs)
+
+		// Fail fast on a git workspace without a configured host identity
+		// (ID-1): the guest would mint commits with no author. Refuse BEFORE
+		// the expensive capture rather than seeding a synthetic bot identity.
+		if _, statErr := os.Stat(filepath.Join(wsAbs, ".git")); statErr == nil {
+			if _, _, idErr := service.HostGitIdentity(); idErr != nil {
+				return errSandbox("sandbox create", fmt.Errorf(
+					"--workspace %s is a git repository but the host has no git identity configured; "+
+						"run `git config --global user.name <name>` and `git config --global user.email <email>` first: %w",
+					wsAbs, idErr))
+			}
+			if head, headErr := service.HostHeadSHA(wsAbs); headErr == nil {
+				bootBaseRef = head
+			} else {
+				slog.Warn("sandbox create: cannot resolve host HEAD for BaseRef", "workspace", wsAbs, "err", headErr)
+			}
+		}
 
 		// Compute GuestMount specs for all disks. bootGuestMounts is read by
 		// the newDriver closure (above) to build the kernel cmdline fragment
@@ -1208,6 +1230,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			ExtraDisks:        bootExtraDisks,
 			Workspace:         bootWorkspace,
 			WorkspaceCapturer: bootCapturer,
+			BaseRef:           bootBaseRef, // GIT-SEED: host HEAD at capture time (D-PD-19/D-PD-29)
 			Secrets:           secrets,
 		},
 	)
@@ -1221,7 +1244,8 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if handoffErr := handoffHumanSupervisor(ctx, svc, sb, storeRoot, kernelPath, govBounds, f.memoryMiB, f.vcpus,
-		capturedDiskPath, capturedExtraDisks, capturedCmdline, capturedCHBin, capturedSocketDir, bootWorkspace != nil, len(bootExtraDisks)); handoffErr != nil {
+		capturedDiskPath, capturedExtraDisks, capturedCmdline, capturedCHBin, capturedSocketDir, bootWorkspace != nil, len(bootExtraDisks),
+		workspaceGuestPathFor(bootWorkspace)); handoffErr != nil {
 		slog.Warn("sandbox create: supervisor handoff failed; broker will not survive CLI exit",
 			"sandbox", sb.ID, "err", handoffErr)
 	}
@@ -1270,6 +1294,7 @@ func handoffHumanSupervisor(
 	cmdline, chBin, socketDir string,
 	hasWorkspace bool,
 	workspaceDiskIndex int,
+	workspaceGuestPath string,
 ) error {
 	if diskPath == "" {
 		return fmt.Errorf("no disk path captured")
@@ -1298,6 +1323,7 @@ func handoffHumanSupervisor(
 		BootVCPUs:          bootVCPUs,
 		HasWorkspaceDisk:   hasWorkspace,
 		WorkspaceDiskIndex: workspaceDiskIndex,
+		WorkspaceGuestPath: workspaceGuestPath, // GIT-SEED: git identity seed target
 		GovBounds:          govBounds,
 		Cmdline:            cmdline,
 	}
@@ -1308,6 +1334,16 @@ func handoffHumanSupervisor(
 		return fmt.Errorf("stop before supervisor handoff: %w", err)
 	}
 	return spawnPersistedSupervisor(ctx, svc, sb.ID, stateDir)
+}
+
+// workspaceGuestPathFor returns the workspace's in-guest mount point, or ""
+// when the sandbox has no workspace. Consumed by the supervisor handoff so
+// the detached supervisor can seed the git identity (GIT-SEED).
+func workspaceGuestPathFor(ws *service.WorkspaceSpec) string {
+	if ws == nil {
+		return ""
+	}
+	return ws.GuestPath
 }
 
 func spawnPersistedSupervisor(ctx context.Context, svc *service.Service, id domain.SandboxID, stateDir string) error {
@@ -1359,7 +1395,6 @@ func stopDetachedSupervisor(ctx context.Context, svc *service.Service, sb domain
 	_ = svc.ClearSupervisor(ctx, sb.ID)
 }
 
-
 // kernelPathFor is retained for callers outside runSandboxCreate that only need
 // a best-effort path (no preflight validation). New callers should prefer
 // resolveKernelPath which validates existence and returns a legible error.
@@ -1395,7 +1430,7 @@ type sandboxListWideDataJSON struct {
 	// LabelKey and LabelValue record the filter that produced this view.
 	LabelKey        string                   `json:"label_key"`
 	LabelValue      string                   `json:"label_value"`
-	Sandboxes       []sandboxListWideRowJSON  `json:"sandboxes"`
+	Sandboxes       []sandboxListWideRowJSON `json:"sandboxes"`
 	TotalAllocBytes int64                    `json:"total_alloc_bytes"`
 	LeakedResources int                      `json:"leaked_resources"`
 }

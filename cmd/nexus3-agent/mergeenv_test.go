@@ -13,13 +13,13 @@ import (
 // exact path; a silent regression here would silently break agent auth.
 func TestMergeEnv(t *testing.T) {
 	cases := []struct {
-		name    string
-		base    []string
-		extra   map[string]string
+		name  string
+		base  []string
+		extra map[string]string
 		// checks is a list of (key, wantValue) pairs; all must be present in result.
-		checks  [][2]string
+		checks [][2]string
 		// absent is a list of "KEY=VAL" entries that must NOT appear verbatim in result.
-		absent  []string
+		absent []string
 	}{
 		{
 			name:  "replace_existing_key",

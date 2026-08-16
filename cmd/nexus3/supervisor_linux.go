@@ -39,7 +39,26 @@ func (e *supervisorExtraDisks) Set(v string) error {
 // dispatched from main() before any CLI routing so the supervisor process
 // never touches cobra or the CLI command registry.
 func runSupervisorMain(args []string) {
-	fs := flag.NewFlagSet(supervisor.HiddenSubcommand, flag.ExitOnError)
+	cfg, err := parseSupervisorFlags(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	if err := supervisor.RunDetached(cfg); err != nil {
+		slog.Error("supervisor: run failed", "err", err)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+// parseSupervisorFlags turns `nexus3 __supervisor` argv into a
+// supervisor.Config. Extracted from runSupervisorMain so the flag→struct
+// glue is unit-testable: a field silently dropped from the struct literal
+// (as happened with ExtraDisks on 2026-08-16 — the supervisor then attached
+// only the rootfs and the guest panicked mounting its workspace) is caught
+// by a round-trip test instead of a live boot.
+func parseSupervisorFlags(args []string) (supervisor.Config, error) {
+	fs := flag.NewFlagSet(supervisor.HiddenSubcommand, flag.ContinueOnError)
 	var (
 		sandboxRef = fs.String("sandbox-ref", "", "sandbox ID hex or <project>/<name> handle (required)")
 		storeRoot  = fs.String("store-root", "", "FileStore root directory (required)")
@@ -71,8 +90,11 @@ func runSupervisorMain(args []string) {
 		// graceful shutdown. 0 means no watchdog pipe (non-ephemeral supervisors).
 		parentPipeFD = fs.Int("parent-pipe-fd", 0, "parent-watchdog pipe read fd (0 = none; ephemeral only)")
 		// workspaceDiskIndex: 0-based ExtraDisks index of the workspace disk.
-		// -1 (default) means no workspace disk is attached; disk axis is skipped.
 		workspaceDiskIndex = fs.Int("workspace-disk-index", -1, "workspace disk ExtraDisks index (-1 = no disk axis)")
+		// workspaceGuestPath: in-guest mount point of the workspace disk. When
+		// non-empty the supervisor seeds the operator's git identity into the
+		// guest after the human-secret seed loop (GIT-SEED, D-PD-29).
+		workspaceGuestPath = fs.String("workspace-guest-path", "", "in-guest workspace mount point (empty = no workspace)")
 		// cmdline: full kernel command line passed to cloud-hypervisor. When empty
 		// the driver uses the disk-boot default. Set by SpawnDetached when the
 		// caller pre-computed workspace-mount args and auto-resize PID-1 args.
@@ -82,8 +104,7 @@ func runSupervisorMain(args []string) {
 	var extraDisks supervisorExtraDisks
 	fs.Var(&extraDisks, "extra-disk", "extra disk image path to re-attach (repeatable, order-preserving)")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return supervisor.Config{}, err
 	}
 
 	missing := ""
@@ -104,8 +125,7 @@ func runSupervisorMain(args []string) {
 		missing = "--disk"
 	}
 	if missing != "" {
-		fmt.Fprintf(os.Stderr, "supervisor: %s is required\n", missing)
-		os.Exit(1)
+		return supervisor.Config{}, fmt.Errorf("supervisor: %s is required", missing)
 	}
 
 	cfg := supervisor.Config{
@@ -124,6 +144,7 @@ func runSupervisorMain(args []string) {
 		// default means no workspace disk is attached; the disk axis is skipped.
 		HasWorkspaceDisk:   *workspaceDiskIndex >= 0,
 		WorkspaceDiskIndex: *workspaceDiskIndex,
+		WorkspaceGuestPath: *workspaceGuestPath,
 		ExtraDisks:         []string(extraDisks),
 		GovBounds: resize.Bounds{
 			MemMinBytes:  *govMemMin,
@@ -136,9 +157,5 @@ func runSupervisorMain(args []string) {
 		Ephemeral:    *ephemeral,
 		ParentPipeFD: *parentPipeFD,
 	}
-	if err := supervisor.RunDetached(cfg); err != nil {
-		slog.Error("supervisor: run failed", "err", err)
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	return cfg, nil
 }

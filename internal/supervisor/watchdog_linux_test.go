@@ -190,8 +190,8 @@ func TestWatchdogPipeEOFOnParentSIGKILL(t *testing.T) {
 
 	// Ensure all subprocesses are reaped even on test failure.
 	t.Cleanup(func() {
-		supCmd.Process.Kill() //nolint:errcheck
-		supCmd.Wait()         //nolint:errcheck
+		supCmd.Process.Kill()    //nolint:errcheck
+		supCmd.Wait()            //nolint:errcheck
 		holderCmd.Process.Kill() //nolint:errcheck
 		holderCmd.Wait()         //nolint:errcheck
 	})
@@ -245,4 +245,3 @@ func TestWatchdogPipeEOFOnParentSIGKILL(t *testing.T) {
 			maxWait, supStderr.String())
 	}
 }
-

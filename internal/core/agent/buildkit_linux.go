@@ -8,7 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/exec"  // used for exec.CommandContext (buildkitd) and exec.LookPath (runc fallback)
+	"os/exec" // used for exec.CommandContext (buildkitd) and exec.LookPath (runc fallback)
 	"path/filepath"
 	"syscall"
 	"time"
@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	inGuestBuildkitdPath  = "/usr/local/bin/buildkitd"
-	inGuestBuildkitSock   = "/run/buildkit/buildkitd.sock"
-	inGuestBuildkitState  = "/var/lib/buildkit"
+	inGuestBuildkitdPath = "/usr/local/bin/buildkitd"
+	inGuestBuildkitSock  = "/run/buildkit/buildkitd.sock"
+	inGuestBuildkitState = "/var/lib/buildkit"
 
 	inGuestDefaultBase    = "ubuntu:24.04"
 	inGuestDefaultImgSize = 2 << 30 // 2 GiB

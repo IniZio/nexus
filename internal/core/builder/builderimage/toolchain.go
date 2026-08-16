@@ -88,11 +88,11 @@ func addToolchainLayers(ctx context.Context, stagingDir string) error {
 		rel  string
 		mode os.FileMode
 	}{
-		{"tmp", 0o1777},                     // scratch space, sticky bit
-		{"build-context", 0o755},             // builder_role_linux.go context mount point
-		{"sys/fs/cgroup", 0o755},             // cgroup2 mount point (runc, buildkitd)
-		{"run/buildkit", 0o755},              // buildkitd socket directory
-		{"var/lib/buildkit", 0o711},          // buildkitd metadata / snapshotter root
+		{"tmp", 0o1777},             // scratch space, sticky bit
+		{"build-context", 0o755},    // builder_role_linux.go context mount point
+		{"sys/fs/cgroup", 0o755},    // cgroup2 mount point (runc, buildkitd)
+		{"run/buildkit", 0o755},     // buildkitd socket directory
+		{"var/lib/buildkit", 0o711}, // buildkitd metadata / snapshotter root
 	}
 	for _, d := range runtimeDirs {
 		p := filepath.Join(stagingDir, d.rel)
@@ -171,7 +171,7 @@ func injectE2fsprogs(ctx context.Context, stagingDir string) error {
 	pkgs := []string{
 		"e2fsprogs-libs-1.47.1-r1.apk",
 		"libcom_err-1.47.1-r1.apk",
-		"libeconf-0.6.3-r0.apk",   // libblkid.so.1 → libeconf.so.0
+		"libeconf-0.6.3-r0.apk", // libblkid.so.1 → libeconf.so.0
 		"libblkid-2.40.4-r1.apk",
 		"libuuid-2.40.4-r1.apk",
 		"e2fsprogs-1.47.1-r1.apk", // last: binary depends on libs above

@@ -180,7 +180,7 @@ func formatExt4(ctx context.Context, path string) error {
 	}
 	cmd := exec.CommandContext(ctx, mke2fsPath,
 		"-t", "ext4",
-		"-F",                              // force (no interactive confirmation)
+		"-F",                                           // force (no interactive confirmation)
 		"-E", "lazy_itable_init=0,lazy_journal_init=0", // fully initialize inode table
 		path,
 	)
@@ -275,6 +275,33 @@ func makeShadowExcludeCapturer(shadowDirs []string) func(context.Context, string
 		slog.Info("workspace capture complete",
 			"elapsed", elapsed.Round(time.Millisecond),
 			"shadow_dirs_excluded", true,
+			"err", err,
+		)
+		return err
+	}
+}
+
+// gitIncludePatterns re-include the host .git directory in the workspace
+// capture for HUMAN sandboxes (GIT-SEED, D-PD-29). Projects routinely list
+// `.git` in .dockerignore — correct for image builds, wrong for a git
+// workflow sandbox whose guest must commit and push. Docker ignore semantics
+// are last-match-wins, so appending both the directory and its contents
+// after the project's patterns re-includes the full repository metadata.
+var gitIncludePatterns = []string{"!.git", "!.git/**"}
+
+// makeHumanWorkspaceCapturer is makeShadowExcludeCapturer plus the .git
+// re-inclusion negations: the human create path captures the FULL repository
+// (working tree + complete .git history) into the workspace ext4.
+func makeHumanWorkspaceCapturer(shadowDirs []string) func(context.Context, string, string, int64) error {
+	extra := append(append([]string{}, shadowDirs...), gitIncludePatterns...)
+	return func(ctx context.Context, srcDir, outExt4 string, maxBytes int64) error {
+		start := time.Now()
+		err := builder.WorktreeToDiskWithExtra(ctx, srcDir, outExt4, maxBytes, extra)
+		elapsed := time.Since(start)
+		slog.Info("workspace capture complete",
+			"elapsed", elapsed.Round(time.Millisecond),
+			"shadow_dirs_excluded", true,
+			"git_included", true,
 			"err", err,
 		)
 		return err

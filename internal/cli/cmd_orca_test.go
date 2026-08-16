@@ -661,8 +661,8 @@ func TestOrcaSpawnConfig_GovBoundsForwarded(t *testing.T) {
 		sandboxID, storeRoot, stateDir, chBin, socketDir, kernelPath, diskPath,
 		extraDiskPaths,
 		govBounds,
-		1, // bootVCPUs
-		true,              // hasWorkspaceDisk
+		1,                  // bootVCPUs
+		true,               // hasWorkspaceDisk
 		orcaNumShadowDisks, // workspaceDiskIndex
 		credsFile,
 		guestPath,
@@ -736,7 +736,7 @@ func TestOrcaSpawnConfig_NoWorkspace(t *testing.T) {
 	govBounds := resize.Bounds{MemMinBytes: 512 << 20, MemMaxBytes: 4096 << 20}
 	cfg := buildOrcaSpawnConfig(
 		"abc", "/store", "/state", "/ch", "/run", "/kernel", "/disk",
-		nil,   // no extra disks
+		nil, // no extra disks
 		govBounds,
 		1,
 		false, // hasWorkspaceDisk
