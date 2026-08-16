@@ -164,7 +164,16 @@ else
     mkdir -p "${WORK_DIR}/rootfs"
     tar -xzf "${WORK_DIR}/${ALPINE_TARBALL}" -C "${WORK_DIR}/rootfs"
 
-    # Inject an /init that loops forever.
+    # Inject an /init that configures the network and loops forever.
+    #
+    # Network: bring up the first HARDWARE-BACKED interface (has a sysfs
+    # "device" symlink; skips virtual ifaces like dummy0) and run udhcpc.
+    # The DHCP discovers carry the guest NIC MAC onto the TAP so
+    # TestNetnsRuntime_KVMProof observes frames from the guest — the kernel
+    # has no CONFIG_IP_PNP, so cmdline "ip=dhcp" does nothing; userspace must
+    # drive DHCP. udhcpc failing (no reply) is fine: the discovers themselves
+    # are the frames under test.
+    #
     # WARNING: Do NOT use poweroff or reboot here — that drives the VM to
     # "Shutdown" state, which the driver maps to driver.Unknown, breaking the
     # pause/resume test. This init keeps the VM in "Running" indefinitely.
@@ -172,6 +181,19 @@ else
 #!/bin/sh
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+IFACE=""
+for d in /sys/class/net/*; do
+    n=$(basename "$d")
+    [ "$n" = "lo" ] && continue
+    [ -e "$d/device" ] || continue
+    IFACE="$n"
+    break
+done
+if [ -n "$IFACE" ]; then
+    ip link set "$IFACE" up 2>/dev/null || true
+    udhcpc -i "$IFACE" -n -q -t 3 -T 2 2>/dev/null || true
+fi
 echo "nexus3-test-vm: init reached — sleeping forever"
 while true; do
     sleep 60
