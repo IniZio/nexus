@@ -34,9 +34,11 @@ type Sandbox struct {
 	ID      SandboxID
 	Name    string
 	Project string
-	// MotiveID associates this sandbox with a named external work thread
-	// (motive). Empty string means the sandbox is unassociated.
-	MotiveID string
+	// Labels is an arbitrary key=value map for grouping and selecting sandboxes.
+	// The CLI exposes this via repeatable --label KEY=VALUE flags; multiple
+	// flags are AND-matched on fleet verbs (D-PD-21).
+	// Nil and empty map are equivalent: the sandbox carries no labels.
+	Labels map[string]string
 
 	// State is a cache. The substrate (the VMM) is authoritative; where a
 	// live VM disagrees with this field, the VM wins.
@@ -96,6 +98,16 @@ type Sandbox struct {
 	// written before this field existed have CreatorPID == 0 and cannot be
 	// automatically reaped (they remain hidden from List by the __builder filter).
 	CreatorPID int `json:"creator_pid,omitempty"`
+
+	// BaseRef is the full 40-hex SHA of the host repository's HEAD commit at the
+	// time the sandbox was created (D-PD-19). It marks the shallow-clone boundary:
+	// the guest's git history begins at this commit, and git bundle operations
+	// (G2) use it as the base ref anchor.
+	//
+	// Empty for sandboxes created without a git workspace (no WorkspaceSpec) or
+	// before G1 was introduced. G2 (nexus3 bundle) fails fast when BaseRef is
+	// absent on a motive sandbox — callers must check.
+	BaseRef string `json:"base_ref,omitempty"`
 }
 
 // Provenance records the lineage of a sandbox created as a fork child.
@@ -127,6 +139,17 @@ type Envelope struct {
 	// is provisioned and the guest authorized_keys file is not written.
 	// Set by CreateAndBoot when CreateAndBootOptions.SSHPublicKey is non-empty.
 	SSHPublicKey string
+
+	// SecretHosts are hostnames that receive MITM credential swap without
+	// entering AllowedHosts. Used by the human create path (AllowAll egress)
+	// so GitHub can be swapped while every other host still tunnels with a
+	// real server certificate (D-PD-25). Empty means no secret-only MITM.
+	SecretHosts []string
+
+	// SecretSpecs are the ENV@host[,host…] binds frozen at create (no tokens).
+	// The detached supervisor re-resolves real tokens (builtin gh / --secret)
+	// into its in-process broker on every Start.
+	SecretSpecs []string
 }
 
 // Handle returns the human handle for the sandbox in "<project>/<name>" form.

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/builder"
@@ -98,11 +99,11 @@ type ImageSpec struct {
 
 // CreateAndBootOptions carries the options for CreateAndBoot.
 type CreateAndBootOptions struct {
-	// MotiveID associates the new sandbox with a named external work thread.
-	// Empty string means the sandbox is unassociated. When set the value is
-	// stamped onto the sandbox record before persistence and can be retrieved
-	// via store.GetByMotive.
-	MotiveID string
+	// Labels is the arbitrary key=value map stamped onto the sandbox record at
+	// creation time. Callers set labels via repeatable --label KEY=VALUE flags;
+	// fleet verbs select by label with AND-semantics (D-PD-21).
+	// Nil and empty map are equivalent (sandbox carries no labels).
+	Labels map[string]string
 
 	// RemoveOnExit records the --rm intent durably at creation time.
 	RemoveOnExit bool
@@ -220,6 +221,31 @@ type CreateAndBootOptions struct {
 	// mke2fs on the test host.
 	WorkspaceCapturer func(ctx context.Context, srcDir, outExt4 string, maxBytes int64) error
 
+	// GitSeeder is an optional GuestSeeder that delivers the per-sandbox git
+	// identity configuration (user.name, user.email, safe.directory,
+	// init.defaultBranch) to GuestGitconfigPath (/root/.gitconfig) in the
+	// guest. When non-nil, step 11 of CreateAndBoot calls SeedGitIdentity.
+	// When nil, git identity seeding is skipped (backward compatible).
+	//
+	// Use NewGuestFileSeeder(client, GuestGitconfigPath) to produce this seeder
+	// from a live agent client (G1, D-PD-02).
+	GitSeeder GuestSeeder
+
+	// BaseRef is the full 40-hex SHA of the host repository's HEAD commit
+	// at sandbox-creation time (D-PD-19). Recorded on the Sandbox domain record
+	// as the shallow-clone boundary for G2 (nexus3 bundle). Empty means no git
+	// workspace is attached; G2 will fail fast for such sandboxes.
+	//
+	// Compute this value via HostHeadSHA(Workspace.SourcePath) before calling
+	// CreateAndBoot when Workspace is non-nil.
+	BaseRef string
+
+	// Secrets are host-side credential binds (D-PD-23 / D-PD-25). Each bind
+	// mints a guest placeholder env var; the real token stays in the broker.
+	// GitHub hosts listed here do NOT enter AllowedHosts — human create is
+	// AllowAll and a curated allowlist would 403 every other host.
+	// Agent create (UseAgentSeed) must not include a GitHub bind.
+	Secrets []SecretBind
 }
 
 // WireClaudeEgress configures opts for an agent sandbox that runs claude
@@ -309,40 +335,63 @@ func CreateAndBoot(
 	// construction) is preserved by moving it up; existing behaviour is unchanged.
 	id := domain.NewSandboxID()
 
-	// ── 4. CoW copy: per-sandbox ext4 (cache artifact only, not --rootfs) ─────
+	// ── 3.5 Resolve disk dir and pre-compute disk resource paths ─────────────
 	//
-	// Each sandbox boots from its own writable copy so the shared cache
-	// artifact (digest-addressed, content-immutable) is never mutated by the
-	// guest kernel's root=/dev/vda rw mount. cp --reflink=auto is free (a CoW
-	// clone) on btrfs/xfs and falls back silently on other filesystems;
-	// --sparse=always ensures the fallback path also preserves holes so the
-	// per-sandbox copy does not inflate to the full apparent image size.
-	//
-	// diskCopyPath is non-empty iff a copy was created here. The deferred
-	// cleanup removes it on any subsequent failure so no 5 GiB orphan is left
-	// on disk if driver construction, record creation, boot, probe, or seeding
-	// fails. On success the copy is retained for the lifetime of the sandbox
-	// and reaped by Service.Remove.
-	var diskCopyPath string
-	if opts.Image.RootfsPath == "" {
-		diskDir := opts.DiskDir
+	// diskDir is resolved once here (before any materialisation) so that:
+	//   (a) the create-intent file can be written before cowExt4 runs (R2-AC1);
+	//   (b) the disk dir is not re-derived independently for cowExt4 and the
+	//       workspace capture (both use the same directory).
+	needsDisk := opts.Image.RootfsPath == ""
+	needsWorkspace := opts.Workspace != nil
+	var diskDir string
+	if needsDisk || needsWorkspace {
+		diskDir = opts.DiskDir
 		if diskDir == "" {
 			diskDir, err = defaultDiskDir()
 			if err != nil {
 				return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, err)
 			}
 		}
-		cp, cpErr := cowExt4(ext4Path, diskDir, id)
-		if cpErr != nil {
-			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, cpErr)
-		}
-		diskCopyPath = cp
-		ext4Path = cp
 	}
 
-	var workspaceDiskPath string
+	// Pre-compute planned disk paths so the intent can record them before the
+	// files actually exist on disk.
+	var diskCopyPath, workspaceDiskPath string
+	if needsDisk {
+		diskCopyPath = filepath.Join(diskDir, id.String()+".raw")
+	}
+	if needsWorkspace {
+		workspaceDiskPath = filepath.Join(diskDir, id.String()+"-workspace.ext4")
+	}
+
+	// ── 3.6 Write create intent ───────────────────────────────────────────────
+	//
+	// The intent is written to <diskDir>/<id>.create-intent.json before any
+	// host resource (disk copy, workspace disk) is materialized. It records the
+	// planned disk paths so the R1 reaper can reclaim them if this process is
+	// killed between step 3.6 and the durable store.Create at step 6.
+	//
+	// On clean exit (error or success) the deferred cleanup always removes the
+	// intent file. On an unclean exit (SIGKILL, panic, power loss) the defer
+	// does not run; the intent survives and the reaper can discover it.
+	var intentPath string
+	if diskCopyPath != "" || workspaceDiskPath != "" {
+		intentPath, err = writeCreateIntent(diskDir, id, diskCopyPath, workspaceDiskPath)
+		if err != nil {
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: write create intent: %w", project, name, err)
+		}
+	}
+
+	// success is set to true only when CreateAndBoot completes without error.
+	// The deferred cleanup:
+	//   - always removes the intent file (crash: defer doesn't run → intent survives
+	//     for the reaper);
+	//   - removes disk files on any failure so no orphan accumulates on clean errors.
 	success := false
 	defer func() {
+		if intentPath != "" {
+			_ = os.Remove(intentPath)
+		}
 		if !success {
 			if diskCopyPath != "" {
 				_ = os.Remove(diskCopyPath)
@@ -352,6 +401,29 @@ func CreateAndBoot(
 			}
 		}
 	}()
+
+	// ── 4. CoW copy: per-sandbox ext4 (cache artifact only, not --rootfs) ─────
+	//
+	// Each sandbox boots from its own writable copy so the shared cache
+	// artifact (digest-addressed, content-immutable) is never mutated by the
+	// guest kernel's root=/dev/vda rw mount. cp --reflink=auto is free (a CoW
+	// clone) on btrfs/xfs and falls back silently on other filesystems;
+	// --sparse=always ensures the fallback path also preserves holes so the
+	// per-sandbox copy does not inflate to the full apparent image size.
+	//
+	// diskCopyPath is non-empty iff a copy will be created here. The deferred
+	// cleanup removes it on any subsequent failure so no 5 GiB orphan is left
+	// on disk if driver construction, record creation, boot, probe, or seeding
+	// fails. On success the copy is retained for the lifetime of the sandbox
+	// and reaped by Service.Remove (via ReapDiskCopy).
+	if needsDisk {
+		cp, cpErr := cowExt4(ext4Path, diskDir, id)
+		if cpErr != nil {
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, cpErr)
+		}
+		// cp == diskCopyPath: cowExt4 uses the same <diskDir>/<id>.raw convention.
+		ext4Path = cp
+	}
 
 	// ── 4.5 Capture workspace to ext4 (if requested) ─────────────────────────
 	//
@@ -370,21 +442,14 @@ func CreateAndBoot(
 		// maxBytes <= 0 means auto (free-space-derived guard); positive values
 		// are explicit caps. WorktreeToDisk handles both cases.
 		maxBytes := ws.CaptureMaxBytes
-		wsDiskDir := opts.DiskDir
-		if wsDiskDir == "" {
-			if wsDiskDir, err = defaultDiskDir(); err != nil {
-				return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: workspace disk dir: %w", project, name, err)
-			}
-		}
-		if err = os.MkdirAll(wsDiskDir, 0o700); err != nil {
+		if err = os.MkdirAll(diskDir, 0o700); err != nil {
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: workspace disk dir mkdir: %w", project, name, err)
 		}
-		wsDiskPath := filepath.Join(wsDiskDir, id.String()+"-workspace.ext4")
-		if err = captureFn(ctx, ws.SourcePath, wsDiskPath, maxBytes); err != nil {
+		// workspaceDiskPath already resolved above; pass it directly.
+		if err = captureFn(ctx, ws.SourcePath, workspaceDiskPath, maxBytes); err != nil {
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: capture workspace: %w", project, name, err)
 		}
-		workspaceDiskPath = wsDiskPath
-		opts.ExtraDisks = append(opts.ExtraDisks, ExtraDisk{Path: wsDiskPath})
+		opts.ExtraDisks = append(opts.ExtraDisks, ExtraDisk{Path: workspaceDiskPath})
 	}
 
 	// ── 5. Construct per-sandbox driver instance ──────────────────────────────
@@ -393,19 +458,21 @@ func CreateAndBoot(
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: init driver: %w", project, name, err)
 	}
 
-	// ── 6. Persist sandbox record ─────────────────────────────────────────────
 	sb := domain.Sandbox{
-		ID:       id,
-		Name:     name,
-		Project:  project,
-		MotiveID: opts.MotiveID,
-		State:    domain.Created,
+		ID:      id,
+		Name:    name,
+		Project: project,
+		Labels:  opts.Labels,
+		State:   domain.Created,
 		Envelope: domain.Envelope{
 			ImageDigest:  resolvedDigest,
 			AllowedHosts: opts.AllowedHosts, // frozen at creation (P1-S6)
-			SSHPublicKey: opts.SSHPublicKey,  // frozen at creation (ORCA-S1)
+			SSHPublicKey: opts.SSHPublicKey, // frozen at creation (ORCA-S1)
+			SecretHosts:  secretHostsFromBinds(opts.Secrets),
+			SecretSpecs:  secretSpecsFromBinds(opts.Secrets),
 		},
 		RemoveOnExit: opts.RemoveOnExit,
+		BaseRef:      opts.BaseRef, // G1: shallow-clone boundary SHA (D-PD-19); empty if no git workspace
 	}
 	if err := svc.store.Create(ctx, sb); err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: create record: %w", project, name, err)
@@ -484,6 +551,13 @@ func CreateAndBoot(
 	// once it gains a reachability probe — /run is tmpfs and does not survive
 	// a guest restart. That wiring is deferred until the restart probe exists.
 	if opts.UseAgentSeed {
+		for _, b := range opts.Secrets {
+			if SecretTouchesGitHub(b) {
+				_ = bootDrv.Stop(ctx, booted.ID)
+				_ = svc.store.Delete(ctx, booted.ID)
+				return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, ErrAgentGitHubSecret)
+			}
+		}
 		// Resolve the per-sandbox profile; fall back to ClaudeCodeProfile when
 		// none is set (e.g. callers that use WireClaudeEgress with a custom profile).
 		profile := opts.AgentProfile
@@ -537,10 +611,33 @@ func CreateAndBoot(
 				"hint", "set ANTHROPIC_AUTH_TOKEN (auth-token path) or configure NEXUS3_DEDICATED_CRED_STORE (OAuth path)")
 		}
 	} else {
-		if _, err := SeedGuest(ctx, opts.Broker, booted.ID, booted.Envelope.AllowedHosts, opts.Seeder); err != nil {
+		var combined []byte
+		capture := func(_ context.Context, _ domain.SandboxID, payload []byte) error {
+			combined = append(combined, payload...)
+			return nil
+		}
+		seedFn := opts.Seeder
+		if seedFn != nil {
+			seedFn = capture
+		}
+		if _, err := SeedGuest(ctx, opts.Broker, booted.ID, booted.Envelope.AllowedHosts, seedFn); err != nil {
 			_ = bootDrv.Stop(ctx, booted.ID)
 			_ = svc.store.Delete(ctx, booted.ID)
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: seed: %w", project, name, err)
+		}
+		extra, _, err := applySecrets(opts.Broker, booted.ID, opts.Secrets)
+		if err != nil {
+			_ = bootDrv.Stop(ctx, booted.ID)
+			_ = svc.store.Delete(ctx, booted.ID)
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: secrets: %w", project, name, err)
+		}
+		combined = append(combined, extra...)
+		if opts.Seeder != nil && len(combined) > 0 {
+			if err := opts.Seeder(ctx, booted.ID, combined); err != nil {
+				_ = bootDrv.Stop(ctx, booted.ID)
+				_ = svc.store.Delete(ctx, booted.ID)
+				return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: seed: %w", project, name, err)
+			}
 		}
 	}
 
@@ -555,6 +652,34 @@ func CreateAndBoot(
 			_ = bootDrv.Stop(ctx, booted.ID)
 			_ = svc.store.Delete(ctx, booted.ID)
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: ssh seed: %w", project, name, err)
+		}
+	}
+
+	// ── 11. Seed git identity (G1, D-PD-03) ─────────────────────────────────────
+	//
+	// SeedGitIdentity is a no-op when GitSeeder is nil (existing callers that
+	// omit GitSeeder are unaffected). When set, it resolves the operator's git
+	// identity from the host's global git config (user.name, user.email) and
+	// pushes a gitconfig to GuestGitconfigPath (/root/.gitconfig) configuring
+	// that real identity, the workspace safe.directory, and the per-sandbox
+	// branch name (nexus3/<motive-slug>/<short-id>).
+	//
+	// If the host git identity is not configured, CreateAndBoot returns an
+	// actionable error — a silent bot-identity fallback is deliberately absent
+	// (operator decision 2026-08-15, reversing D-PD-02).
+	//
+	// BaseRef was already recorded on the Sandbox domain record at step 6.
+	// The in-guest `git clone --depth 1 file://<host-path>` that establishes the
+	// shallow boundary is an in-guest startup action (live-VM, out of scope here).
+	if opts.GitSeeder != nil {
+		var workspaceGuestPath string
+		if opts.Workspace != nil {
+			workspaceGuestPath = opts.Workspace.GuestPath
+		}
+		if _, err := SeedGitIdentity(ctx, booted.ID, opts.Labels, workspaceGuestPath, opts.GitSeeder); err != nil {
+			_ = bootDrv.Stop(ctx, booted.ID)
+			_ = svc.store.Delete(ctx, booted.ID)
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: git identity: %w", project, name, err)
 		}
 	}
 
@@ -645,3 +770,43 @@ func resolveExt4(
 		return "", "", fmt.Errorf("resolve image: one of Digest, Ref, or RootfsPath must be set")
 	}
 }
+
+func secretHostsFromBinds(binds []SecretBind) []string {
+	if len(binds) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	for _, b := range binds {
+		for _, h := range b.Hosts {
+			h = strings.ToLower(strings.TrimSpace(h))
+			if h == "" {
+				continue
+			}
+			if _, ok := seen[h]; ok {
+				continue
+			}
+			seen[h] = struct{}{}
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+func secretSpecsFromBinds(binds []SecretBind) []string {
+	if len(binds) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(binds))
+	for _, b := range binds {
+		if b.Env == "" || len(b.Hosts) == 0 {
+			continue
+		}
+		out = append(out, b.Env+"@"+strings.Join(b.Hosts, ","))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+

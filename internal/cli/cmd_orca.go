@@ -172,19 +172,34 @@ func orcaWorkspaceSpec(env orcaEnv) *service.WorkspaceSpec {
 	)
 }
 
-// gitHostsFromURL extracts the egress allowlist hostnames for a git repo URL.
-// For github.com, codeload.github.com (the CDN used for git-pack downloads) is
-// included. Returns nil for unrecognised or unparseable URLs.
+// gitHostsFromURL extracts extra egress hostnames for a git repo URL so an
+// orca sandbox can fetch from non-GitHub forges. GitHub hosts are NEVER
+// returned (D-PD-23 / N-AC1): the orca path is an agent sandbox and stays
+// dark. A future --secret bind on a human/git sandbox is the only way
+// github.com enters AllowedHosts. Returns nil for empty, unparseable, or
+// GitHub URLs.
 func gitHostsFromURL(repoURL string) []string {
 	u, err := url.Parse(repoURL)
 	if err != nil || u.Host == "" {
 		return nil
 	}
 	host := u.Hostname() // strips port if present
-	if host == "github.com" {
-		return []string{"github.com", "codeload.github.com"}
+	if isGitHubEgressHost(host) {
+		return nil
 	}
 	return []string{host}
+}
+
+// isGitHubEgressHost matches github.com, its APIs, and GitHub CDNs.
+// Kept in lockstep with cli.isN_AC1GitHubHost / service.isGitHubHost.
+func isGitHubEgressHost(h string) bool {
+	h = strings.ToLower(strings.TrimSpace(h))
+	switch h {
+	case "github.com", "api.github.com", "ssh.github.com",
+		"codeload.github.com", "objects.githubusercontent.com":
+		return true
+	}
+	return strings.HasSuffix(h, ".github.com") || strings.HasSuffix(h, ".githubusercontent.com")
 }
 
 // ── SSH keypair helpers ───────────────────────────────────────────────────────
@@ -506,6 +521,14 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		imageRef = "nexus3-base:latest"
 	}
 
+	// Preflight: validate the kernel path before store/cache/VM setup so that a
+	// missing/misconfigured NEXUS3_KERNEL_PATH surfaces immediately with an
+	// actionable error rather than after expensive work inside CreateAndBoot.
+	kernelPath, err := resolveKernelPath()
+	if err != nil {
+		return fmt.Errorf("orca create: %w", err)
+	}
+
 	storeRoot, err := store.DefaultRoot()
 	if err != nil {
 		return fmt.Errorf("orca create: store root: %w", err)
@@ -516,8 +539,6 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("orca create: image cache: %w", err)
 	}
-
-	kernelPath := kernelPathFor()
 
 	// ── Resolve socketDir ─────────────────────────────────────────────────────
 	// Must match the formula in cloudhypervisor.defaultSocketDir so that:
@@ -590,10 +611,8 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	// svc.Start. Without this, Envelope.AllowedHosts is empty and the perimeter
 	// netfilter is default-deny for all outbound traffic (including api.anthropic.com).
 	// Base set: AgentEgressHosts() (api.anthropic.com + platform.claude.com).
-	// If a git repo URL is configured, also add its hosting domain(s) (e.g.
-	// github.com + codeload.github.com for GitHub) so in-guest git operations work.
-	// The list is fail-closed: only these hosts are permitted; everything else
-	// remains denied by the netfilter AllowList.
+	// Non-GitHub forges from the recipe URL may be appended. GitHub hosts are
+	// never added here (D-PD-23): orca is an agent path.
 	allowedHosts := append(service.AgentEgressHosts(), gitHostsFromURL(env.RepoURL)...)
 
 	// Initial boot opts: AllowedHosts is frozen here so the detached supervisor
@@ -607,7 +626,7 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	// attaches no shadow disks) — never hardcode it, or adding shadow disks
 	// here would silently mount the wrong volume.
 	opts := service.CreateAndBootOptions{
-		MotiveID:            env.InstanceID,
+		Labels:              map[string]string{"motive": env.InstanceID},
 		Image:               service.ImageSpec{Ref: imageRef},
 		CacheRoot:           cacheRoot,
 		ReachabilityTimeout: 120 * time.Second,

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 // Run is the top-level entry point for the nexus3 CLI. args should be
@@ -54,7 +56,11 @@ func Run(args []string) int {
 		return 2
 	}
 
-	ctx := context.Background()
+	// Cancel the command context on SIGINT or SIGTERM so subcommands can
+	// perform cooperative cleanup. RunEphemeral (used by "nexus3 run") relies
+	// on context cancellation to trigger its deferred Remove call.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 	if err := cmd.Run(ctx, cmdArgs, out); err != nil {
 		var usageErr *UsageError
 		if errors.As(err, &usageErr) {

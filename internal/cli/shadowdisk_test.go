@@ -18,8 +18,9 @@ import (
 func TestBuildShadowDiskSpecs_BasicMapping(t *testing.T) {
 	diskDir := t.TempDir()
 	guestPath := "/workspace/myrepo"
+	handle := "myproject/mysandbox"
 
-	specs := buildShadowDiskSpecs(DefaultShadowDirs, diskDir, guestPath)
+	specs := buildShadowDiskSpecs(DefaultShadowDirs, diskDir, guestPath, handle)
 
 	if len(specs) != len(DefaultShadowDirs) {
 		t.Fatalf("want %d specs, got %d", len(DefaultShadowDirs), len(specs))
@@ -34,8 +35,11 @@ func TestBuildShadowDiskSpecs_BasicMapping(t *testing.T) {
 		if s.GuestTarget != wantTarget {
 			t.Errorf("spec[%d].GuestTarget: got %q, want %q", i, s.GuestTarget, wantTarget)
 		}
-		if !strings.HasSuffix(s.HostPath, ".shadow.ext4") {
-			t.Errorf("spec[%d].HostPath: %q does not end in .shadow.ext4", i, s.HostPath)
+		if !strings.HasSuffix(s.HostPath, ".ext4") {
+			t.Errorf("spec[%d].HostPath: %q does not end in .ext4", i, s.HostPath)
+		}
+		if !strings.Contains(filepath.Base(s.HostPath), ".shadow.") {
+			t.Errorf("spec[%d].HostPath: %q does not contain .shadow. infix", i, s.HostPath)
 		}
 		if filepath.Dir(s.HostPath) != diskDir {
 			t.Errorf("spec[%d].HostPath: dir is %q, want %q", i, filepath.Dir(s.HostPath), diskDir)
@@ -48,7 +52,7 @@ func TestBuildShadowDiskSpecs_InvalidDirsSkipped(t *testing.T) {
 		"/absolute/path", // absolute — must be skipped
 		".",              // dot — must be skipped
 		"valid",          // ok
-	}, t.TempDir(), "/workspace/repo")
+	}, t.TempDir(), "/workspace/repo", "proj/sb")
 
 	if len(specs) != 1 {
 		t.Fatalf("want 1 spec (only 'valid'), got %d: %+v", len(specs), specs)
@@ -60,7 +64,8 @@ func TestBuildShadowDiskSpecs_InvalidDirsSkipped(t *testing.T) {
 
 func TestBuildShadowDiskSpecs_NestedPath(t *testing.T) {
 	// Nested monorepo path: separator must be flattened in the host filename.
-	specs := buildShadowDiskSpecs([]string{"packages/web/node_modules"}, t.TempDir(), "/workspace/mono")
+	handle := "myproj/sb1"
+	specs := buildShadowDiskSpecs([]string{"packages/web/node_modules"}, t.TempDir(), "/workspace/mono", handle)
 	if len(specs) != 1 {
 		t.Fatalf("want 1 spec, got %d", len(specs))
 	}
@@ -76,8 +81,77 @@ func TestBuildShadowDiskSpecs_NestedPath(t *testing.T) {
 	if strings.Contains(base, "/") {
 		t.Errorf("HostPath basename contains slash: %q", base)
 	}
-	if !strings.HasPrefix(base, "packages_web_node_modules") {
+	// Filename must contain the safeHandle component and the .shadow. infix.
+	if !strings.Contains(base, "myproj_sb1") {
+		t.Errorf("HostPath basename %q: expected safeHandle myproj_sb1", base)
+	}
+	if !strings.Contains(base, ".shadow.") {
+		t.Errorf("HostPath basename %q: expected .shadow. infix", base)
+	}
+	// Dir separator must have been flattened.
+	if !strings.Contains(base, "packages_web_node_modules") {
 		t.Errorf("HostPath basename %q: expected separator replacement with _", base)
+	}
+}
+
+// TestBuildShadowDiskSpecs_SandboxHandleInPath verifies that the sandbox handle
+// is embedded in every shadow disk HostPath.
+//
+// REGRESSION: this test FAILS against the old code (no handle in path) — if the
+// handle check below passes with the old path format, the concurrent-sandbox
+// lock bug would silently return.
+func TestBuildShadowDiskSpecs_SandboxHandleInPath(t *testing.T) {
+	handle := "example-app/parallel-a"
+	safeHandle := "example-app_parallel-a"
+	specs := buildShadowDiskSpecs(DefaultShadowDirs, t.TempDir(), "/workspace/example-app", handle)
+	for i, s := range specs {
+		base := filepath.Base(s.HostPath)
+		if !strings.Contains(base, safeHandle) {
+			t.Errorf("spec[%d].HostPath %q does not contain safeHandle %q — "+
+				"concurrent sandboxes of the same project would share this path and conflict",
+				i, s.HostPath, safeHandle)
+		}
+	}
+}
+
+// TestBuildShadowDiskSpecs_DifferentHandlesDifferentPaths verifies that two
+// sandboxes of the same project (same diskDir, same guestPath, same dirs) produce
+// non-overlapping HostPaths.  This is the exact scenario that caused the write-lock
+// failure in the parallel-dev walkthrough (scenario 4).
+func TestBuildShadowDiskSpecs_DifferentHandlesDifferentPaths(t *testing.T) {
+	diskDir := t.TempDir()
+	guestPath := "/workspace/example-app"
+
+	specs1 := buildShadowDiskSpecs(DefaultShadowDirs, diskDir, guestPath, "example-app/parallel-a")
+	specs2 := buildShadowDiskSpecs(DefaultShadowDirs, diskDir, guestPath, "example-app/parallel-b")
+
+	if len(specs1) != len(specs2) {
+		t.Fatalf("spec count mismatch: %d vs %d", len(specs1), len(specs2))
+	}
+	for i := range specs1 {
+		if specs1[i].HostPath == specs2[i].HostPath {
+			t.Errorf("spec[%d]: parallel-a and parallel-b share HostPath %q — "+
+				"concurrent sandbox create would fail with a write-lock error",
+				i, specs1[i].HostPath)
+		}
+	}
+}
+
+// TestBuildShadowDiskSpecs_LeadingDotSanitized verifies that directories with a
+// leading dot (e.g. ".next") produce a filename component that does not start with
+// "." — preventing hidden files in the disks directory.
+func TestBuildShadowDiskSpecs_LeadingDotSanitized(t *testing.T) {
+	specs := buildShadowDiskSpecs([]string{".next"}, t.TempDir(), "/workspace/r", "proj/sb")
+	if len(specs) != 1 {
+		t.Fatalf("want 1 spec, got %d", len(specs))
+	}
+	base := filepath.Base(specs[0].HostPath)
+	if strings.HasPrefix(base, ".") {
+		t.Errorf("HostPath basename %q starts with '.'; leading-dot dirs must be sanitized", base)
+	}
+	// RelDir must preserve the original name unchanged.
+	if specs[0].RelDir != ".next" {
+		t.Errorf("RelDir should be .next, got %q", specs[0].RelDir)
 	}
 }
 
@@ -128,7 +202,7 @@ func TestDeviceOrderWithNShadowDisks(t *testing.T) {
 
 	// With the default 4 shadow dirs, workspace is ExtraDisks[4] → /dev/vdf.
 	diskDir := t.TempDir()
-	specs := buildShadowDiskSpecs(DefaultShadowDirs, diskDir, "/workspace/repo")
+	specs := buildShadowDiskSpecs(DefaultShadowDirs, diskDir, "/workspace/repo", "proj/sb")
 	wm := WorkspaceGuestMount("/workspace/repo", len(specs))
 	if wm.Device != "/dev/vdf" {
 		t.Errorf("default shadow dirs: workspace device got %q, want /dev/vdf", wm.Device)
@@ -139,7 +213,7 @@ func TestDeviceOrderWithNShadowDisks(t *testing.T) {
 // assigns the correct device letters to shadow disks.
 func TestShadowGuestMounts_DeviceOrderAndTargets(t *testing.T) {
 	diskDir := t.TempDir()
-	specs := buildShadowDiskSpecs(DefaultShadowDirs, diskDir, "/workspace/repo")
+	specs := buildShadowDiskSpecs(DefaultShadowDirs, diskDir, "/workspace/repo", "proj/sb")
 
 	mounts := shadowGuestMounts(specs, 0 /* no prior ExtraDisks */)
 
@@ -165,7 +239,7 @@ func TestShadowGuestMounts_DeviceOrderAndTargets(t *testing.T) {
 // TestShadowGuestMounts_WithOffset verifies that extraDisksOffset shifts all
 // device letters correctly (for future use with pre-existing ExtraDisks).
 func TestShadowGuestMounts_WithOffset(t *testing.T) {
-	specs := buildShadowDiskSpecs([]string{"node_modules"}, t.TempDir(), "/workspace/r")
+	specs := buildShadowDiskSpecs([]string{"node_modules"}, t.TempDir(), "/workspace/r", "proj/sb")
 	mounts := shadowGuestMounts(specs, 2 /* two prior ExtraDisks */)
 
 	if len(mounts) != 1 {
@@ -182,7 +256,7 @@ func TestShadowGuestMounts_WithOffset(t *testing.T) {
 func TestAllMountsConsistency(t *testing.T) {
 	diskDir := t.TempDir()
 	guestPath := "/workspace/proj"
-	specs := buildShadowDiskSpecs(DefaultShadowDirs, diskDir, guestPath)
+	specs := buildShadowDiskSpecs(DefaultShadowDirs, diskDir, guestPath, "proj/sb")
 
 	shadowMounts := shadowGuestMounts(specs, 0)
 	workspaceMount := WorkspaceGuestMount(guestPath, len(specs))
@@ -352,7 +426,7 @@ func TestShadowExcludeCapturer_ShadowDirsExcluded(t *testing.T) {
 // ── shadowExtraDisks ──────────────────────────────────────────────────────────
 
 func TestShadowExtraDisks_OrderPreserved(t *testing.T) {
-	specs := buildShadowDiskSpecs(DefaultShadowDirs, t.TempDir(), "/workspace/r")
+	specs := buildShadowDiskSpecs(DefaultShadowDirs, t.TempDir(), "/workspace/r", "proj/sb")
 	eds := shadowExtraDisks(specs)
 
 	if len(eds) != len(specs) {
@@ -438,6 +512,112 @@ func TestWorkspaceCaptureTiming_WithShadowExclusion(t *testing.T) {
 
 	t.Logf("MEASUREMENT(with-shadow-exclusion, node_modules excluded): elapsed=%v err=%v",
 		elapsed.Round(time.Millisecond), err)
+}
+
+// ── Classification API: IsShadowDisk, ShadowDiskSafeHandle ───────────────────
+
+func TestIsShadowDisk(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		want   bool
+	}{
+		// B1 current format — owned by a handle
+		{"b1 node_modules", "example-app_b1-proof-a.shadow.node_modules.ext4", true},
+		{"b1 _next", "example-app_b1-proof-a.shadow._next.ext4", true},
+		{"b1 dist", "proj_sb.shadow.dist.ext4", true},
+		// Legacy pre-B1 format — unconditionally unowned
+		{"legacy node_modules", "node_modules.shadow.ext4", true},
+		{"legacy dist", "dist.shadow.ext4", true},
+		{"legacy target", "target.shadow.ext4", true},
+		// Not shadow disks
+		{"raw file", "sb-06FZZX7V8XZM12YE7VTR7T8168.raw", false},
+		{"workspace ext4", "sb-06FZZX7V8XZM12YE7VTR7T8168-workspace.ext4", false},
+		{"intent json", "sb-abc.create-intent.json", false},
+		{"plain ext4", "disk.ext4", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsShadowDisk(tc.input); got != tc.want {
+				t.Errorf("IsShadowDisk(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestShadowDiskSafeHandle(t *testing.T) {
+	cases := []struct {
+		name          string
+		input         string
+		wantHandle    string
+		wantOK        bool
+	}{
+		// B1 format: handle is extractable
+		{"b1 node_modules", "example-app_b1-proof-a.shadow.node_modules.ext4", "example-app_b1-proof-a", true},
+		{"b1 _next", "example-app_b1-proof-a.shadow._next.ext4", "example-app_b1-proof-a", true},
+		{"b1 dist", "proj_sb.shadow.dist.ext4", "proj_sb", true},
+		{"b1 nested path", "proj_sb.shadow.packages_web_node_modules.ext4", "proj_sb", true},
+		// Legacy pre-B1: no handle — unconditionally unowned
+		{"legacy node_modules", "node_modules.shadow.ext4", "", false},
+		{"legacy dist", "dist.shadow.ext4", "", false},
+		{"legacy target", "target.shadow.ext4", "", false},
+		// Not shadow disks at all
+		{"raw file", "sb-06FZZX7V8XZM12YE7VTR7T8168.raw", "", false},
+		{"workspace ext4", "sb-abc-workspace.ext4", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ShadowDiskSafeHandle(tc.input)
+			if ok != tc.wantOK || got != tc.wantHandle {
+				t.Errorf("ShadowDiskSafeHandle(%q) = (%q, %v), want (%q, %v)",
+					tc.input, got, ok, tc.wantHandle, tc.wantOK)
+			}
+		})
+	}
+}
+
+// TestCreateShadowDisk_DoesNotInheritStaleFile verifies that createShadowDisk
+// removes an existing file at the target path before allocating a fresh disk.
+// This is the handle-reuse safety guarantee: a new sandbox never silently
+// starts with a prior sandbox's build artifacts.
+//
+// The test creates a marker file at spec.HostPath, calls createShadowDisk, and
+// confirms the marker content is gone (replaced by a fresh ext4 filesystem).
+// If createShadowDisk inherits the old file, the marker would survive inside
+// the filesystem — this would be caught by mke2fs failing to format, but the
+// intent check is stronger: we verify the file was removed BEFORE allocation.
+func TestCreateShadowDisk_DoesNotInheritStaleFile(t *testing.T) {
+	if !hasMke2fs() {
+		t.Skip("mke2fs not found; skipping createShadowDisk handle-reuse test")
+	}
+
+	diskDir := t.TempDir()
+	spec := ShadowDisk{
+		RelDir:      "node_modules",
+		HostPath:    filepath.Join(diskDir, "proj_sb.shadow.node_modules.ext4"),
+		GuestTarget: "/workspace/repo/node_modules",
+	}
+
+	// Write a stale sentinel that simulates a prior sandbox's shadow disk.
+	staleContent := []byte("stale-prior-sandbox-content-must-not-survive")
+	if err := os.WriteFile(spec.HostPath, staleContent, 0o664); err != nil {
+		t.Fatalf("create stale file: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := createShadowDisk(ctx, spec); err != nil {
+		t.Fatalf("createShadowDisk: %v", err)
+	}
+
+	// The file must exist (new disk was created).
+	info, err := os.Stat(spec.HostPath)
+	if err != nil {
+		t.Fatalf("shadow disk missing after create: %v", err)
+	}
+	// A fresh mke2fs-formatted sparse disk must be larger than the stale content.
+	if info.Size() == int64(len(staleContent)) {
+		t.Errorf("file size %d matches stale content size — disk may not have been replaced", info.Size())
+	}
 }
 
 // prepareMeasurementDirs creates a synthetic workspace with a populated

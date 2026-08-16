@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"io"
 	"net"
 	"net/http"
@@ -292,17 +293,11 @@ func TestProxy_SwapAfterSetRealToken_HTTPS(t *testing.T) {
 }
 
 // TestProxy_AllowAll verifies the AllowAll policy:
-//   - AllowAll: true with an empty AllowedHosts MITM's (allows) a CONNECT to a
-//     host that is not in the allowlist — the HTTPS request succeeds.
-//   - AllowAll: false (the default) with the same empty AllowedHosts REJECTS
-//     the CONNECT — the HTTPS request returns an error.
-//
-// Broker is nil in both sub-tests; the OnRequest handler never calls
-// broker.ResolveScoped because no host is in the allowSet, so nil is safe.
+//   - AllowAll: true tunnels a CONNECT to a non-listed host (real cert, no MITM).
+//   - AllowAll: false rejects that CONNECT.
 func TestProxy_AllowAll(t *testing.T) {
 	t.Parallel()
 
-	// TLS upstream that returns 200 OK for any request.
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -313,8 +308,8 @@ func TestProxy_AllowAll(t *testing.T) {
 	makeCfg := func(allowAll bool) mitm.Config {
 		return mitm.Config{
 			SandboxID:    newSandboxID(30),
-			AllowedHosts: []string{}, // intentionally empty — host is not listed
-			Broker:       nil,        // no credential swap; safe with empty AllowedHosts
+			AllowedHosts: []string{},
+			Broker:       nil,
 			AllowAll:     allowAll,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
@@ -325,7 +320,7 @@ func TestProxy_AllowAll(t *testing.T) {
 		}
 	}
 
-	t.Run("allow-all permits non-listed host", func(t *testing.T) {
+	t.Run("allow-all tunnels non-listed host", func(t *testing.T) {
 		t.Parallel()
 		p, err := mitm.New(makeCfg(true))
 		if err != nil {
@@ -335,19 +330,17 @@ func TestProxy_AllowAll(t *testing.T) {
 		t.Cleanup(proxyServer.Close)
 
 		proxyURL, _ := url.Parse(proxyServer.URL)
-		pool := x509.NewCertPool()
-		pool.AddCert(p.CACert())
 		client := &http.Client{
 			Transport: &http.Transport{
 				Proxy:           http.ProxyURL(proxyURL),
-				TLSClientConfig: &tls.Config{RootCAs: pool},
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // tunneled real cert
 			},
 			Timeout: 5 * time.Second,
 		}
 
 		resp, err := client.Get("https://" + host + "/ping")
 		if err != nil {
-			t.Fatalf("AllowAll=true: CONNECT to non-listed host should be MITM'd but failed: %v", err)
+			t.Fatalf("AllowAll=true: CONNECT to non-listed host should tunnel: %v", err)
 		}
 		resp.Body.Close()
 	})
@@ -423,5 +416,129 @@ func TestProxy_CrossSandboxPlaceholderNotSwapped(t *testing.T) {
 	got := receiveWithTimeout(t, authCh)
 	if got == "Bearer "+realToken {
 		t.Error("cross-sandbox placeholder was swapped; token leak across sandbox boundary detected")
+	}
+}
+
+// TestProxy_SwapBasicOnAllow verifies git-over-HTTPS Authorization: Basic
+// (D-PD-23). Git sends base64(user:password); the password field is the
+// placeholder and must be replaced, then the header re-encoded.
+func TestProxy_SwapBasicOnAllow(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(3)
+	const allowedHost = "github.com"
+	const realToken = "ghp_real_token"
+	rec, err := broker.RegisterPlaceholder(sid, allowedHost, realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:    sid,
+		AllowedHosts: []string{allowedHost},
+		Broker:       broker,
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	client := proxyClient(proxyServer.URL)
+	req, _ := http.NewRequest(http.MethodGet, "http://"+allowedHost+"/git-upload-pack", nil)
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:"+rec.Placeholder)))
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+
+	got := receiveWithTimeout(t, authCh)
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+realToken))
+	if got != want {
+		t.Errorf("upstream Authorization = %q, want %q", got, want)
+	}
+}
+
+// TestProxy_NoSwapBasicOnDeny verifies Basic is not rewritten off-allowlist.
+func TestProxy_NoSwapBasicOnDeny(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(4)
+	const allowedHost = "api.allowed.example"
+	const deniedHost = "evil.example"
+	const realToken = "should-not-leak"
+	rec, err := broker.RegisterPlaceholder(sid, allowedHost, realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:    sid,
+		AllowedHosts: []string{allowedHost},
+		Broker:       broker,
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	placeholderBasic := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+rec.Placeholder))
+	client := proxyClient(proxyServer.URL)
+	req, _ := http.NewRequest(http.MethodGet, "http://"+deniedHost+"/git-upload-pack", nil)
+	req.Header.Set("Authorization", placeholderBasic)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+
+	got := receiveWithTimeout(t, authCh)
+	if got != placeholderBasic {
+		t.Errorf("denied-host Authorization = %q, want placeholder unchanged %q", got, placeholderBasic)
+	}
+}
+
+// TestProxy_AllowAll_SecretHostSwapsGitHub proves D-PD-25: AllowAll + SecretHosts
+// MITMs github.com (swap fires) without putting it on AllowedHosts.
+func TestProxy_AllowAll_SecretHostSwapsGitHub(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(25)
+	const secretHost = "github.com"
+	const realToken = "ghs_allowall_swap"
+	rec, err := broker.RegisterPlaceholder(sid, secretHost, realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:   sid,
+		SecretHosts: []string{secretHost},
+		Broker:      broker,
+		AllowAll:    true,
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	client := proxyClient(proxyServer.URL)
+	req, _ := http.NewRequest(http.MethodGet, "http://"+secretHost+"/user", nil)
+	req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+
+	got := receiveWithTimeout(t, authCh)
+	if want := "Bearer " + realToken; got != want {
+		t.Errorf("upstream Authorization = %q, want %q", got, want)
 	}
 }

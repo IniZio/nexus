@@ -755,14 +755,14 @@ func TestProvenanceRoundTrip(t *testing.T) {
 	}
 }
 
-// TestMotiveIDRoundTrip verifies that a MotiveID survives a Create/Get
-// round-trip without loss.
-func TestMotiveIDRoundTrip(t *testing.T) {
+// TestLabelsRoundTrip verifies that Labels (including the motive key) survive a
+// Create/Get round-trip without loss.
+func TestLabelsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	st := newStore(t)
 
-	sb := makeSandbox("motive-box", "motive-project")
-	sb.MotiveID = "motive-abc"
+	sb := makeSandbox("label-box", "label-project")
+	sb.Labels = map[string]string{"motive": "motive-abc", "env": "ci"}
 
 	if err := st.Create(ctx, sb); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -771,8 +771,11 @@ func TestMotiveIDRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.MotiveID != sb.MotiveID {
-		t.Errorf("MotiveID: got %q, want %q", got.MotiveID, sb.MotiveID)
+	if got.Labels["motive"] != sb.Labels["motive"] {
+		t.Errorf("Labels[motive]: got %q, want %q", got.Labels["motive"], sb.Labels["motive"])
+	}
+	if got.Labels["env"] != sb.Labels["env"] {
+		t.Errorf("Labels[env]: got %q, want %q", got.Labels["env"], sb.Labels["env"])
 	}
 }
 
@@ -785,13 +788,13 @@ func TestGetByMotive(t *testing.T) {
 
 	// Two sandboxes in motive-A, one in motive-B, one unassociated.
 	a1 := makeSandbox("a1", "proj")
-	a1.MotiveID = "motive-A"
+	a1.Labels = map[string]string{"motive": "motive-A"}
 	a2 := makeSandbox("a2", "proj")
-	a2.MotiveID = "motive-A"
+	a2.Labels = map[string]string{"motive": "motive-A"}
 	b1 := makeSandbox("b1", "proj")
-	b1.MotiveID = "motive-B"
+	b1.Labels = map[string]string{"motive": "motive-B"}
 	none := makeSandbox("none", "proj")
-	// none.MotiveID is empty — unassociated
+	// none.Labels is nil — unassociated
 
 	for _, sb := range []domain.Sandbox{a1, a2, b1, none} {
 		if err := st.Create(ctx, sb); err != nil {
@@ -807,8 +810,8 @@ func TestGetByMotive(t *testing.T) {
 		t.Fatalf("GetByMotive(motive-A): got %d sandboxes, want 2", len(got))
 	}
 	for _, sb := range got {
-		if sb.MotiveID != "motive-A" {
-			t.Errorf("unexpected sandbox in result: MotiveID=%q", sb.MotiveID)
+		if sb.Labels["motive"] != "motive-A" {
+			t.Errorf("unexpected sandbox in result: Labels[motive]=%q", sb.Labels["motive"])
 		}
 	}
 
@@ -829,7 +832,7 @@ func TestGetByMotive_UnknownMotive(t *testing.T) {
 	st := newStore(t)
 
 	sb := makeSandbox("box", "proj")
-	sb.MotiveID = "motive-X"
+	sb.Labels = map[string]string{"motive": "motive-X"}
 	if err := st.Create(ctx, sb); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -843,5 +846,112 @@ func TestGetByMotive_UnknownMotive(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("GetByMotive: expected empty slice, got %d sandboxes", len(got))
+	}
+}
+
+// TestLegacyMotiveIDMigration verifies that a record written with the old
+// motive_id JSON field (before the Labels field existed) is loaded correctly:
+// the MotiveID value must appear in Labels["motive"] and the sandbox must be
+// reachable by GetByMotive. No data must be lost or cause a crash.
+func TestLegacyMotiveIDMigration(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	st, err := store.NewFileStore(root)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+
+	// Write a raw JSON record that carries motive_id but no labels field —
+	// exactly what an old nexus3 binary would have written to disk.
+	legacyID := domain.NewSandboxID()
+	legacyJSON := `{
+		"schema_version": 1,
+		"id": "` + legacyID.String() + `",
+		"name": "legacy-box",
+		"project": "proj",
+		"motive_id": "old-motive-42",
+		"state": "stopped",
+		"envelope": {},
+		"instance_id": "",
+		"remove_on_exit": false,
+		"removal_marker": false
+	}`
+
+	// Write the record directly to disk, bypassing the store API
+	// (the same path convention the store uses: root/sandboxes/<id>/record.json).
+	sandboxDir := filepath.Join(root, "sandboxes", legacyID.String())
+	if err := os.MkdirAll(sandboxDir, 0700); err != nil {
+		t.Fatalf("mkdir sandbox dir: %v", err)
+	}
+	recordPath := filepath.Join(sandboxDir, "record.json")
+	if err := os.WriteFile(recordPath, []byte(legacyJSON), 0600); err != nil {
+		t.Fatalf("write legacy record: %v", err)
+	}
+
+	// Get: the sandbox must load without error.
+	sb, err := st.Get(ctx, legacyID)
+	if err != nil {
+		t.Fatalf("Get legacy sandbox: %v", err)
+	}
+
+	// The MotiveID value must be accessible as Labels["motive"].
+	if sb.Labels["motive"] != "old-motive-42" {
+		t.Errorf("Labels[motive]: got %q, want %q", sb.Labels["motive"], "old-motive-42")
+	}
+
+	// GetByMotive must find the sandbox by its legacy motive value.
+	found, err := st.GetByMotive(ctx, "old-motive-42")
+	if err != nil {
+		t.Fatalf("GetByMotive on legacy record: %v", err)
+	}
+	if len(found) != 1 || found[0].ID != legacyID {
+		t.Errorf("GetByMotive: got %d sandboxes, want 1 with ID %s", len(found), legacyID)
+	}
+}
+
+// TestGetByLabels_ANDMatch verifies that GetByLabels with multiple labels
+// performs AND-matching: a sandbox must carry ALL specified labels to appear
+// in the result. A sandbox with only a subset of the labels is excluded.
+func TestGetByLabels_ANDMatch(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+
+	// both: has app=engine AND tier=web — must appear in AND-query.
+	both := makeSandbox("both", "proj")
+	both.Labels = map[string]string{"app": "engine", "tier": "web"}
+
+	// appOnly: only has app=engine — excluded from AND-query requiring tier=web.
+	appOnly := makeSandbox("app-only", "proj")
+	appOnly.Labels = map[string]string{"app": "engine"}
+
+	// tierOnly: only has tier=web — excluded from AND-query requiring app=engine.
+	tierOnly := makeSandbox("tier-only", "proj")
+	tierOnly.Labels = map[string]string{"tier": "web"}
+
+	// none: no labels at all.
+	none := makeSandbox("none", "proj")
+
+	for _, sb := range []domain.Sandbox{both, appOnly, tierOnly, none} {
+		if err := st.Create(ctx, sb); err != nil {
+			t.Fatalf("Create %s: %v", sb.Name, err)
+		}
+	}
+
+	// AND-query: must return only "both".
+	got, err := st.GetByLabels(ctx, map[string]string{"app": "engine", "tier": "web"})
+	if err != nil {
+		t.Fatalf("GetByLabels AND: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != both.ID {
+		t.Errorf("AND-match: got %d results (want 1 with ID %s)", len(got), both.ID)
+	}
+
+	// Single-label query: must return "both" and "appOnly".
+	gotApp, err := st.GetByLabels(ctx, map[string]string{"app": "engine"})
+	if err != nil {
+		t.Fatalf("GetByLabels single: %v", err)
+	}
+	if len(gotApp) != 2 {
+		t.Errorf("single-label (app=engine): got %d results, want 2", len(gotApp))
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -271,29 +272,38 @@ func TestSandboxCreate_Memory_VCPUs_InvalidFlag(t *testing.T) {
 // ── S-SURFACE: --motive flag ──────────────────────────────────────────────────
 
 // TestSandboxCreate_Motive_FlagParsing verifies that --motive is parsed into
-// sandboxCreateFlags.motiveID and that omitting it leaves the field empty
+// sandboxCreateFlags.labels["motive"] and that omitting it leaves the field nil
 // (unassociated, preserving existing behaviour).
-func TestSandboxCreate_Motive_FlagParsing(t *testing.T) {
-	// With --motive: field populated.
-	args := []string{"p/n", "--image", "nexus3-base:latest", "--motive", "m-abc-123"}
+func TestSandboxCreate_Label_FlagParsing(t *testing.T) {
+	// With --label motive=<id>: Labels["motive"] populated.
+	args := []string{"p/n", "--image", "nexus3-base:latest", "--label", "motive=m-abc-123"}
 	f, err := parseSandboxCreateArgs(args)
 	if err != nil {
 		t.Fatalf("parseSandboxCreateArgs: %v", err)
 	}
-	if f.motiveID != "m-abc-123" {
-		t.Errorf("motiveID: want %q, got %q", "m-abc-123", f.motiveID)
+	if f.labels["motive"] != "m-abc-123" {
+		t.Errorf("labels[motive]: want %q, got %q", "m-abc-123", f.labels["motive"])
 	}
 	if f.imageRef != "nexus3-base:latest" {
 		t.Errorf("imageRef: want %q, got %q", "nexus3-base:latest", f.imageRef)
 	}
 
-	// Without --motive: field stays empty (backwards-compatible default).
+	// Multiple --label flags: all keys collected.
+	f3, err := parseSandboxCreateArgs([]string{"p/n", "--label", "motive=x", "--label", "env=ci"})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs (multi-label): %v", err)
+	}
+	if f3.labels["motive"] != "x" || f3.labels["env"] != "ci" {
+		t.Errorf("multi-label: got %v, want motive=x env=ci", f3.labels)
+	}
+
+	// Without --label: Labels stays nil (backwards-compatible default).
 	f2, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest"})
 	if err != nil {
-		t.Fatalf("parseSandboxCreateArgs (no motive): %v", err)
+		t.Fatalf("parseSandboxCreateArgs (no label): %v", err)
 	}
-	if f2.motiveID != "" {
-		t.Errorf("motiveID without flag: want empty, got %q", f2.motiveID)
+	if len(f2.labels) != 0 {
+		t.Errorf("labels without flag: want nil/empty, got %v", f2.labels)
 	}
 }
 
@@ -523,6 +533,15 @@ func TestSandboxCreate_WorkspaceEntryPoint_WorkspaceSpec(t *testing.T) {
 	// the user's real state directory.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
+	// Kernel preflight (added 2026-08-15) runs before shadow disk creation.
+	// Point NEXUS3_KERNEL_PATH at a placeholder file so the preflight passes
+	// and execution reaches the workspace block where testWorkspaceSpecHook fires.
+	kernelFile := filepath.Join(t.TempDir(), "vmlinux-x86_64")
+	if err := os.WriteFile(kernelFile, []byte("fake-kernel"), 0o600); err != nil {
+		t.Fatalf("write fake kernel: %v", err)
+	}
+	t.Setenv("NEXUS3_KERNEL_PATH", kernelFile)
+
 	const want8GiB int64 = 8 * 1024 * 1024 * 1024
 
 	dir := t.TempDir()
@@ -608,7 +627,7 @@ func TestSandboxCreate_Motive_PersistedToSandbox(t *testing.T) {
 	sb, err := service.CreateAndBoot(ctx, svc, cache, newDrv, probe,
 		"proj", "motbox",
 		service.CreateAndBootOptions{
-			MotiveID:  "m-abc-123",
+			Labels:    map[string]string{"motive": "m-abc-123"},
 			Image:     service.ImageSpec{Ref: img.Ref},
 			CacheRoot: cacheRoot,
 		},
@@ -616,7 +635,36 @@ func TestSandboxCreate_Motive_PersistedToSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAndBoot: %v", err)
 	}
-	if sb.MotiveID != "m-abc-123" {
-		t.Errorf("MotiveID = %q, want %q", sb.MotiveID, "m-abc-123")
+	if sb.Labels["motive"] != "m-abc-123" {
+		t.Errorf("Labels[motive] = %q, want %q", sb.Labels["motive"], "m-abc-123")
+	}
+}
+
+func TestSandboxCreate_SecretFlagParsing(t *testing.T) {
+	f, err := parseSandboxCreateArgs([]string{
+		"p/n", "--image", "base",
+		"--secret", "GH_TOKEN@github.com,api.github.com",
+		"--secret", "NPM_TOKEN@registry.npmjs.org",
+		"--no-builtin-gh",
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !f.noBuiltinGH {
+		t.Error("noBuiltinGH = false")
+	}
+	if len(f.secrets) != 2 || f.secrets[0] != "GH_TOKEN@github.com,api.github.com" {
+		t.Errorf("secrets = %v", f.secrets)
+	}
+}
+
+func TestResolveCreateSecrets_NoBuiltinKeepsExplicit(t *testing.T) {
+	f := sandboxCreateFlags{secrets: []string{"NPM_TOKEN@registry.npmjs.org"}, noBuiltinGH: true}
+	binds, err := resolveCreateSecrets(context.Background(), f)
+	if err != nil {
+		t.Fatalf("resolveCreateSecrets: %v", err)
+	}
+	if len(binds) != 1 || binds[0].Env != "NPM_TOKEN" {
+		t.Errorf("binds = %+v", binds)
 	}
 }

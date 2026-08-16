@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/IniZio/nexus3/internal/mcp"
 )
 
 // TestMCPIntegration_stdio builds the nexus3 binary and runs it as an MCP
@@ -100,10 +101,18 @@ func TestMCPIntegration_stdio(t *testing.T) {
 		t.Fatalf("sandbox_list: expected *TextContent, got %T", res.Content[0])
 	}
 
-	// The result must be a valid JSON array (empty since the store is blank).
+	// The result is a Response envelope; data must be an empty JSON array.
+	var env mcp.Response
+	if err := json.Unmarshal([]byte(tc.Text), &env); err != nil {
+		t.Fatalf("sandbox_list envelope unmarshal: %v (text=%q)", err, tc.Text)
+	}
+	if !env.OK {
+		t.Fatalf("sandbox_list envelope not ok: %+v", env.Error)
+	}
+	dataBytes, _ := json.Marshal(env.Data)
 	var list []json.RawMessage
-	if err := json.Unmarshal([]byte(tc.Text), &list); err != nil {
-		t.Fatalf("sandbox_list result is not valid JSON array: %v (text=%q)", err, tc.Text)
+	if err := json.Unmarshal(dataBytes, &list); err != nil {
+		t.Fatalf("sandbox_list data is not valid JSON array: %v (data=%q)", err, dataBytes)
 	}
 	if len(list) != 0 {
 		t.Errorf("expected empty list from blank store, got %d items", len(list))

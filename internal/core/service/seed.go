@@ -89,6 +89,22 @@ func NewAgentCopySeeder(c *agent.Client) GuestSeeder {
 	}
 }
 
+// NewGuestFileSeeder returns a GuestSeeder that pushes payload bytes to an
+// arbitrary path inside the guest via the agent's Copy mechanism. Use this
+// to build per-path seeders (e.g. GuestGitconfigPath for SeedGitIdentity)
+// from a live agent client.
+//
+// The path must be absolute. The bytes are written verbatim (IsDirectory=false).
+func NewGuestFileSeeder(c *agent.Client, guestPath string) GuestSeeder {
+	return func(ctx context.Context, _ domain.SandboxID, payload []byte) error {
+		return c.Copy(ctx, agent.CopyOptions{
+			Direction: agentpb.CopyDirection_COPY_DIRECTION_PUSH,
+			GuestPath: guestPath,
+			Src:       bytes.NewReader(payload),
+		})
+	}
+}
+
 // SeedGuest mints one placeholder credential per allowed host via broker,
 // builds a guest-safe env-file payload (placeholder + far-future expiresAt,
 // never the real token), and delivers it to the guest exactly once via seeder.

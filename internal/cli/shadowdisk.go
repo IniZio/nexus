@@ -41,6 +41,7 @@ import (
 
 	"github.com/IniZio/nexus3/internal/core/agent"
 	"github.com/IniZio/nexus3/internal/core/builder"
+	"github.com/IniZio/nexus3/internal/core/diskname"
 	"github.com/IniZio/nexus3/internal/core/service"
 )
 
@@ -89,14 +90,35 @@ type ShadowDisk struct {
 
 // buildShadowDiskSpecs computes a ShadowDisk descriptor for each entry in
 // dirs.  diskDir is the host directory where ext4 images will be created;
-// guestPath is the guest-side workspace root (WorkspaceSpec.GuestPath).
+// guestPath is the guest-side workspace root (WorkspaceSpec.GuestPath);
+// sandboxHandle is the sandbox's unique handle ("project/name") and is
+// embedded in each disk filename to ensure that two sandboxes of the same
+// project never share a HostPath.
+//
+// Owner-key format (parseable by the reaper, slice R1):
+//
+//	<safeHandle>.shadow.<safeDirName>.ext4
+//
+// Where safeHandle = sandboxHandle with "/" replaced by "_", and
+// safeDirName = rel dir with path separators replaced by "_" and any
+// leading "." replaced by "_" (to avoid producing hidden filenames).
+// Splitting on the first ".shadow." token recovers safeHandle and safeDirName.
+//
+// NOTE: shadow disks are created BEFORE service.CreateAndBoot mints the
+// sandbox ULID, so the owner key is the sandbox HANDLE (not the ULID).
+// This falls under spec-18 §4.4 supplementary correlation: R1 resolves
+// handle → sandbox record → liveness check. R1 must not assume ULID parity.
 //
 // All dirs in the provided list are included; existence in the source tree
 // is NOT required — shadow disks are created regardless so the guest always
 // has a writable overlay on those paths.
 //
 // Invalid entries (absolute paths, ".") are silently skipped.
-func buildShadowDiskSpecs(dirs []string, diskDir, guestPath string) []ShadowDisk {
+func buildShadowDiskSpecs(dirs []string, diskDir, guestPath, sandboxHandle string) []ShadowDisk {
+	// Sanitize the sandbox handle for use as a filename component.
+	// Only "/" needs replacing on Linux; use "_" which is always safe.
+	safeHandle := strings.ReplaceAll(sandboxHandle, "/", "_")
+
 	specs := make([]ShadowDisk, 0, len(dirs))
 	for _, rel := range dirs {
 		rel = filepath.Clean(rel)
@@ -106,9 +128,13 @@ func buildShadowDiskSpecs(dirs []string, diskDir, guestPath string) []ShadowDisk
 		// Flatten path separators into underscores for the host filename so
 		// nested paths (packages/web/node_modules) produce a safe filename.
 		safeName := strings.ReplaceAll(rel, string(filepath.Separator), "_")
+		// Replace any leading "." to avoid hidden files (e.g. ".next" → "_next").
+		if strings.HasPrefix(safeName, ".") {
+			safeName = "_" + safeName[1:]
+		}
 		specs = append(specs, ShadowDisk{
 			RelDir:      rel,
-			HostPath:    filepath.Join(diskDir, safeName+".shadow.ext4"),
+			HostPath:    filepath.Join(diskDir, safeHandle+".shadow."+safeName+".ext4"),
 			GuestTarget: guestPath + "/" + rel,
 		})
 	}
@@ -119,7 +145,20 @@ func buildShadowDiskSpecs(dirs []string, diskDir, guestPath string) []ShadowDisk
 // as an empty ext4 filesystem ready for read-write use by the guest.
 //
 // Requires mke2fs on the host PATH.
+//
+// Handle-reuse safety: if a file already exists at spec.HostPath (left over
+// from a previous sandbox with the same handle that was removed before
+// shadow-disk reclamation was wired up), it is deleted before allocation so
+// that the new sandbox always starts with a blank filesystem and never
+// silently inherits a prior sandbox's build artifacts. This is a deliberate
+// safety-over-performance choice: warm-cache reuse must be explicit and
+// opt-in, never a side-effect of handle recycling.
 func createShadowDisk(ctx context.Context, spec ShadowDisk) error {
+	// Remove any stale file from a prior sandbox with the same handle before
+	// allocating the new one. Idempotent — ErrNotExist is not an error.
+	if err := os.Remove(spec.HostPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("shadow disk %s: remove stale: %w", spec.RelDir, err)
+	}
 	if err := preallocateFile(spec.HostPath, defaultShadowDiskSizeBytes); err != nil {
 		return fmt.Errorf("shadow disk %s: preallocate: %w", spec.RelDir, err)
 	}
@@ -240,4 +279,51 @@ func makeShadowExcludeCapturer(shadowDirs []string) func(context.Context, string
 		)
 		return err
 	}
+}
+
+// ── Shadow disk classification (supplementary correlation, spec-18 §4.4) ─────
+//
+// Shadow disks are handle-keyed rather than ULID-keyed, so the reaper (R1)
+// cannot match them by ID. The two functions below expose the naming contract
+// so R1 (or a follow-up pass) can classify every .ext4 file in the disk
+// directory as: not a shadow disk, a live-owned B1 shadow disk, or an orphan
+// (either legacy pre-B1 or B1 with no matching live sandbox record).
+//
+// Naming scheme summary (authoritative source: buildShadowDiskSpecs):
+//
+//	B1 (current):  <safeHandle>.shadow.<safeDirName>.ext4
+//	Legacy pre-B1: <safeDirName>.shadow.ext4
+//
+// Where safeHandle = sandboxHandle with "/" replaced by "_", and
+// safeDirName  = rel-dir with path separators and leading "." replaced by "_".
+//
+// Distinguishing B1 from legacy: legacy files end in ".shadow.ext4" (the
+// token after ".shadow." is the bare extension "ext4"). B1 files end in
+// ".<safeDirName>.ext4" where safeDirName ≠ "ext4".
+//
+// To correlate a B1 safeHandle with a live sandbox:
+//   - Enumerate all sandbox records from the store.
+//   - For each, compute candidate = strings.ReplaceAll(sb.Handle(), "/", "_").
+//   - If candidate == safeHandle the sandbox is the owner.
+
+// IsShadowDisk reports whether basename is a shadow disk image in either the
+// current B1 format or the legacy pre-B1 format.
+//
+// Delegates to diskname.IsShadowDisk; see that package for the canonical
+// contract documentation.
+func IsShadowDisk(basename string) bool {
+	return diskname.IsShadowDisk(basename)
+}
+
+// ShadowDiskSafeHandle returns the safeHandle component of a B1-format shadow
+// disk filename. The safeHandle is the sandbox handle with "/" replaced by
+// "_"; callers correlate it against a live sandbox by comparing it to
+// strings.ReplaceAll(sb.Handle(), "/", "_").
+//
+// Returns ("", false) for legacy files (*.shadow.ext4) and non-shadow files.
+//
+// Delegates to diskname.ShadowDiskSafeHandle; see that package for the
+// canonical contract documentation.
+func ShadowDiskSafeHandle(basename string) (safeHandle string, ok bool) {
+	return diskname.ShadowDiskSafeHandle(basename)
 }

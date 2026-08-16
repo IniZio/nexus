@@ -43,14 +43,20 @@ type mcpService struct {
 // path. opts.CacheRoot is always set from m.cacheRoot (the tool does not
 // expose cache_root as a parameter).
 func (m *mcpService) CreateAndBoot(ctx context.Context, project, name string, opts service.CreateAndBootOptions) (domain.Sandbox, error) {
+	// Preflight: validate the kernel path before image-cache or driver setup so
+	// that a missing/misconfigured NEXUS3_KERNEL_PATH surfaces immediately with
+	// an actionable error rather than after expensive work inside CreateAndBoot.
+	kernelPath, err := resolveKernelPath()
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("sandbox create (mcp): %w", err)
+	}
+
 	opts.CacheRoot = m.cacheRoot
 
 	imgCache, err := image.NewCache(m.cacheRoot)
 	if err != nil {
 		return domain.Sandbox{}, fmt.Errorf("open image cache: %w", err)
 	}
-
-	kernelPath := kernelPathFor()
 	newDriver := func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
 		cfg := buildCHConfig(kernelPath, ext4Path, opts.MemoryMiB, opts.VCPUs)
 		cfg.NestedVirt = opts.NestedVirt

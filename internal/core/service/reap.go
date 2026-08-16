@@ -1,0 +1,435 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/store"
+)
+
+// ReapStatus classifies a host resource for reclamation purposes.
+type ReapStatus string
+
+const (
+	// ReapStatusOrphan means no record and no live process: resource is safe
+	// to delete.
+	ReapStatusOrphan ReapStatus = "orphan"
+	// ReapStatusLive means a live process or responsive socket was found for
+	// this ULID: keep it (likely a sandbox mid-create).
+	ReapStatusLive ReapStatus = "live"
+	// ReapStatusOwned means a store record exists for this ULID: keep it
+	// (stale-record cleanup is R2's job).
+	ReapStatusOwned ReapStatus = "owned"
+)
+
+// ReapEntry describes one host resource and its classification.
+type ReapEntry struct {
+	Resource       HostResource
+	Status         ReapStatus
+	Reason         string
+	AllocatedBytes int64 // syscall.Stat_t.Blocks * 512; 0 for dirs
+}
+
+// ReapReport is the result of a Reap call.
+type ReapReport struct {
+	Entries          []ReapEntry
+	ReclaimableBytes int64    // sum of orphan AllocatedBytes
+	Deleted          []string // paths removed (non-empty only when apply=true)
+}
+
+// ReapOptions provides injectable overrides for Reap. All fields are optional;
+// the zero value selects production defaults. Use in tests to avoid real /proc
+// and real sockets.
+type ReapOptions struct {
+	// ProcDir overrides the directory scanned for process cmdlines.
+	// Empty → "/proc". In tests pass a temp dir containing synthetic PID entries.
+	ProcDir string
+}
+
+// Reap enumerates host resources via idx, classifies each one against the
+// store, and (when apply=true) deletes orphans.
+//
+// Classification rules for ULID-keyed resources:
+//
+//   - ReapStatusOwned: a store record exists → skip (R2's job).
+//   - ReapStatusLive:  no record, but liveness checks detect a running process
+//     or a responsive API socket → skip (mid-create or crashed-but-live).
+//   - ReapStatusOrphan: no record and all liveness checks definitive-dead →
+//     reclaimable.
+//
+// Classification rules for KindDiskShadow resources (§4.4 supplementary):
+//
+//   - Legacy format (ShadowHandle == ""): unconditionally ReapStatusOrphan.
+//   - B1 format: ReapStatusOwned when ShadowHandle matches a sandbox record;
+//     ReapStatusOrphan otherwise.
+func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, opts ...ReapOptions) (*ReapReport, error) {
+	var opt ReapOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	if opt.ProcDir == "" {
+		opt.ProcDir = "/proc"
+	}
+	resources, err := idx.List()
+	if err != nil {
+		return nil, fmt.Errorf("reap: enumerate resources: %w", err)
+	}
+
+	all, err := st.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reap: list store records: %w", err)
+	}
+	recordMap := make(map[domain.SandboxID]domain.Sandbox, len(all))
+	for _, sb := range all {
+		recordMap[sb.ID] = sb
+	}
+
+	// Build safeHandle → sandbox ID map for shadow disk correlation (§4.4).
+	// safeHandle = strings.ReplaceAll(sb.Handle(), "/", "_").
+	shadowHandleMap := make(map[string]domain.SandboxID, len(all))
+	for i := range all {
+		sh := strings.ReplaceAll(all[i].Handle(), "/", "_")
+		shadowHandleMap[sh] = all[i].ID
+	}
+
+	// Resolve the socket directory once so liveness helpers can locate .sock
+	// files for non-socket resources.
+	socketDir, err := idx.socketDir()
+	if err != nil {
+		return nil, fmt.Errorf("reap: resolve socket dir: %w", err)
+	}
+
+	report := &ReapReport{
+		Entries: make([]ReapEntry, 0, len(resources)),
+	}
+
+	for _, res := range resources {
+		var entry ReapEntry
+		if res.Kind == KindDiskShadow {
+			// Shadow disks use handle-based correlation, not ULID/liveness.
+			entry = classifyShadowDisk(res, shadowHandleMap)
+		} else {
+			entry = classifyResource(ctx, res, recordMap, socketDir, opt.ProcDir)
+		}
+		if entry.Status == ReapStatusOrphan {
+			report.ReclaimableBytes += entry.AllocatedBytes
+			if apply {
+				if err := deleteResource(res); err == nil {
+					report.Deleted = append(report.Deleted, res.Path)
+				}
+				// On deletion error we silently skip adding to Deleted; the
+				// entry still appears in the report as orphan.
+			}
+		}
+		report.Entries = append(report.Entries, entry)
+	}
+
+	return report, nil
+}
+
+// classifyShadowDisk classifies a KindDiskShadow resource using handle-based
+// supplementary correlation (spec §4.4).
+//
+// Phase separation: List() extracts the safeHandle from the filename (record-
+// free). classifyShadowDisk receives the pre-built handleMap (which required
+// record access) and applies the ownership decision here, in the classification
+// phase. This keeps the record-free invariant on ResourceIndex.List().
+func classifyShadowDisk(res HostResource, handleMap map[string]domain.SandboxID) ReapEntry {
+	entry := ReapEntry{
+		Resource:       res,
+		AllocatedBytes: allocatedBytes(res.Path),
+	}
+	if res.ShadowHandle == "" {
+		// Legacy format (*.shadow.ext4): no embedded handle, no owning sandbox.
+		// Unconditionally reclaimable.
+		entry.Status = ReapStatusOrphan
+		entry.Reason = "legacy shadow disk (no embedded sandbox handle)"
+		return entry
+	}
+	if ownerID, ok := handleMap[res.ShadowHandle]; ok {
+		entry.Status = ReapStatusOwned
+		entry.Reason = fmt.Sprintf("shadow disk owned by sandbox %s (handle=%s)", ownerID, res.ShadowHandle)
+		return entry
+	}
+	entry.Status = ReapStatusOrphan
+	entry.Reason = fmt.Sprintf("shadow disk handle %q matches no live sandbox", res.ShadowHandle)
+	return entry
+}
+
+// classifyResource determines the ReapStatus of a single host resource.
+func classifyResource(
+	ctx context.Context,
+	res HostResource,
+	recordMap map[domain.SandboxID]domain.Sandbox,
+	socketDir string,
+	procDir string,
+) ReapEntry {
+	entry := ReapEntry{
+		Resource:       res,
+		AllocatedBytes: allocatedBytes(res.Path),
+	}
+
+	// R1: a store record exists → owned, skip.
+	if sb, ok := recordMap[res.OwnerID]; ok {
+		entry.Status = ReapStatusOwned
+		entry.Reason = fmt.Sprintf("owner %s has record (state=%s)", sb.ID, sb.State)
+		return entry
+	}
+
+	idStr := res.OwnerID.String()
+
+	// Liveness gate (TBD-PD-11) — three-way result; ambiguity → KEEP (N-AC2).
+	// 1. /proc/*/cmdline scan: LIVE if found; AMBIGUOUS if scan incomplete.
+	switch scanProcForULID(procDir, idStr) {
+	case procScanLive:
+		entry.Status = ReapStatusLive
+		entry.Reason = "found ULID in /proc cmdline"
+		return entry
+	case procScanAmbiguous:
+		// Scan was inconclusive (unreadable proc entry, truncated cmdline, etc.)
+		// Ambiguity resolves to keep per N-AC2.
+		entry.Status = ReapStatusLive
+		entry.Reason = "proc scan inconclusive (unreadable entry or truncated cmdline) — keeping"
+		return entry
+	// procScanDead: continue to socket check.
+	}
+
+	// 3. API socket liveness (for non-socket resources, derive the socket path
+	//    from the socket directory).
+	sockPath := socketPathForID(res, socketDir)
+	if sockPath != "" {
+		alive, ambiguous := socketResponsive(ctx, sockPath)
+		if ambiguous {
+			entry.Status = ReapStatusLive
+			entry.Reason = "socket check ambiguous — keeping"
+			return entry
+		}
+		if alive {
+			entry.Status = ReapStatusLive
+			entry.Reason = fmt.Sprintf("API socket %s is responsive", sockPath)
+			return entry
+		}
+	}
+
+	// All checks definitive-dead.
+	entry.Status = ReapStatusOrphan
+	entry.Reason = "no record, no live process, no responsive socket"
+	return entry
+}
+
+// socketPathForID returns the API socket path to probe for the given resource.
+// For KindSocketAPI resources the resource's own path is used. For other
+// resource kinds the socket is derived from the socket directory.
+func socketPathForID(res HostResource, socketDir string) string {
+	if res.Kind == KindSocketAPI {
+		return res.Path
+	}
+	return filepath.Join(socketDir, res.OwnerID.String()+".sock")
+}
+
+// deleteResource removes a resource from disk.
+func deleteResource(res HostResource) error {
+	if res.Kind == KindBuilderSupervisor {
+		return os.RemoveAll(res.Path)
+	}
+	return os.Remove(res.Path)
+}
+
+// allocatedBytes returns the number of bytes physically allocated on disk for
+// path, computed as stat(2).Blocks * 512. Returns 0 for directories or on any
+// error (directories are not meaningful for reclamation reporting).
+func allocatedBytes(path string) int64 {
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return 0
+	}
+	if st.Mode&syscall.S_IFMT == syscall.S_IFDIR {
+		return 0
+	}
+	return st.Blocks * 512
+}
+
+// procScanResult is the three-way outcome of a /proc scan.
+// Ambiguity always resolves to KEEP (N-AC2).
+type procScanResult int
+
+const (
+	// procScanDead means every process in /proc was checked and none contained
+	// the ULID. The scan was complete and definitive.
+	procScanDead procScanResult = iota
+	// procScanLive means at least one process' cmdline contained the ULID.
+	procScanLive
+	// procScanAmbiguous means the scan was incomplete or inconclusive:
+	// ReadDir failed, a PID's cmdline was unreadable, or a read was truncated.
+	// Ambiguity resolves to KEEP per N-AC2.
+	procScanAmbiguous
+)
+
+// scanProcForULID scans procDir (usually "/proc") for any process whose
+// cmdline contains ulidStr. It returns a three-way result:
+//
+//   - procScanLive:      ULID found in at least one process cmdline.
+//   - procScanDead:      Every process scanned; ULID not found anywhere.
+//   - procScanAmbiguous: Scan was incomplete (ReadDir failure, unreadable
+//     cmdline, truncated read). Ambiguity resolves to KEEP per N-AC2.
+//
+// procDir is injectable for tests; production callers pass "/proc".
+func scanProcForULID(procDir, ulidStr string) procScanResult {
+	entries, err := os.ReadDir(procDir)
+	if err != nil {
+		// Cannot read /proc at all — complete unknown state.
+		return procScanAmbiguous
+	}
+
+	anyAmbiguous := false
+	for _, e := range entries {
+		if !isNumeric(e.Name()) {
+			continue
+		}
+		cmdlinePath := filepath.Join(procDir, e.Name(), "cmdline")
+		result := checkPIDCmdline(cmdlinePath, ulidStr)
+		switch result {
+		case procScanLive:
+			return procScanLive
+		case procScanAmbiguous:
+			// Don't short-circuit: another PID might be definitively live.
+			anyAmbiguous = true
+		// procScanDead: this PID is not our process; continue.
+		}
+	}
+	if anyAmbiguous {
+		return procScanAmbiguous
+	}
+	return procScanDead
+}
+
+// maxCmdlineRead is the read limit per /proc/<pid>/cmdline. Cloud-hypervisor
+// cmdlines can be long (many --device args), so we use a generous limit.
+// If a read reaches this limit without finding the ULID, we treat the result
+// as ambiguous because the ULID might appear beyond the truncation point.
+const maxCmdlineRead = 512 * 1024 // 512 KiB
+
+// checkPIDCmdline reads the cmdline file at path and reports whether it
+// contains ulidStr.
+//
+//   - procScanLive:      cmdline contains ulidStr.
+//   - procScanDead:      cmdline fully read; ulidStr absent.
+//   - procScanAmbiguous: file unreadable (EACCES, ENOENT — PID may have been
+//     live when enumerated), or read was truncated (ULID may be beyond cutoff).
+func checkPIDCmdline(path, ulidStr string) procScanResult {
+	f, err := os.Open(path)
+	if err != nil {
+		// Any open failure is ambiguous:
+		//   EACCES: process exists but is owned by another user.
+		//   ENOENT: process vanished between ReadDir and Open — it may have
+		//           been our target and just exited (mid-create race).
+		// In both cases we cannot rule out the process being ours.
+		return procScanAmbiguous
+	}
+	defer f.Close()
+
+	// Read up to maxCmdlineRead+1 bytes. LimitReader(n+1) lets us detect
+	// truncation: if ReadAll returns exactly n+1 bytes, the cmdline is longer.
+	lr := io.LimitReader(f, maxCmdlineRead+1)
+	data, err := io.ReadAll(lr)
+	if err != nil {
+		// Unexpected read error → ambiguous.
+		return procScanAmbiguous
+	}
+
+	truncated := int64(len(data)) > maxCmdlineRead
+	if truncated {
+		data = data[:maxCmdlineRead]
+	}
+
+	if strings.Contains(string(data), ulidStr) {
+		return procScanLive
+	}
+	if truncated {
+		// We read the cmdline but it was cut off. The ULID might be in the
+		// unread tail (e.g. the socket path appears after many disk args).
+		return procScanAmbiguous
+	}
+	return procScanDead
+}
+
+// socketResponsive attempts an HTTP GET to http://unix/.version over the Unix
+// socket at path, with a 500ms timeout.
+//
+// Returns:
+//
+//	(true,  false) — any 2xx or 4xx response (socket is alive)
+//	(false, false) — connection refused, ENOENT, or socket does not exist
+//	(false, true)  — timeout or unexpected error (ambiguous → caller keeps)
+func socketResponsive(ctx context.Context, path string) (alive bool, ambiguous bool) {
+	// If the socket file doesn't exist at all, it's definitively dead.
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, false
+		}
+		// Unexpected stat error: ambiguous.
+		return false, true
+	}
+
+	dialCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+
+	sockPath := path // capture for closure
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", sockPath)
+		},
+	}
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   500 * time.Millisecond,
+	}
+
+	req, err := http.NewRequestWithContext(dialCtx, http.MethodGet, "http://unix/.version", nil)
+	if err != nil {
+		return false, true // unexpected
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		// Connection refused or file not found → definitively dead.
+		errStr := err.Error()
+		if strings.Contains(errStr, "connection refused") ||
+			strings.Contains(errStr, "no such file") ||
+			strings.Contains(errStr, "connect: no such file") {
+			return false, false
+		}
+		// Timeout or any other error → ambiguous, keep.
+		return false, true
+	}
+	defer func() { _ = resp.Body.Close() }()
+	// Drain a small body to allow connection reuse; ignore errors.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+
+	// Any HTTP response (2xx or 4xx) means the socket is live.
+	return true, false
+}
+
+// isNumeric returns true if s consists entirely of ASCII digits.
+func isNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+

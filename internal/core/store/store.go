@@ -97,7 +97,13 @@ type Store interface {
 	// handle. Returns ErrNotFound if no sandbox matches.
 	ResolveByHandle(ctx context.Context, handle string) (domain.Sandbox, error)
 
+	// GetByLabels returns all sandboxes whose Labels map contains every
+	// key=value pair in labels (AND-semantics). An empty labels argument
+	// matches nothing and returns an empty (non-nil) slice.
+	GetByLabels(ctx context.Context, labels map[string]string) ([]domain.Sandbox, error)
+
 	// GetByMotive returns all sandboxes associated with the given motive ID.
+	// Convenience wrapper over GetByLabels for the motive=<id> pattern.
 	// An unknown motive ID returns an empty (non-nil) slice and nil error.
 	// An empty motiveID argument matches nothing and returns an empty slice.
 	GetByMotive(ctx context.Context, motiveID string) ([]domain.Sandbox, error)

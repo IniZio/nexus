@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -1061,4 +1063,113 @@ func TestCeilingBelowBootIsRejected(t *testing.T) {
 			t.Errorf("valid ceiling > boot: unexpected error: %v", err)
 		}
 	})
+}
+
+// ── kernel preflight ──────────────────────────────────────────────────────────
+
+// TestResolveKernelPath_EnvVar_Valid verifies that NEXUS3_KERNEL_PATH pointing
+// at a real file is returned as-is without searching defaults.
+func TestResolveKernelPath_EnvVar_Valid(t *testing.T) {
+	dir := t.TempDir()
+	kernel := dir + "/vmlinux-x86_64"
+	if err := os.WriteFile(kernel, []byte("fake"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NEXUS3_KERNEL_PATH", kernel)
+
+	got, err := resolveKernelPath()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != kernel {
+		t.Errorf("want %q, got %q", kernel, got)
+	}
+}
+
+// TestResolveKernelPath_EnvVar_Missing verifies that a non-existent
+// NEXUS3_KERNEL_PATH value returns an error that names the env var and the
+// missing path.
+func TestResolveKernelPath_EnvVar_Missing(t *testing.T) {
+	t.Setenv("NEXUS3_KERNEL_PATH", "/no/such/kernel/vmlinux-x86_64")
+
+	_, err := resolveKernelPath()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "NEXUS3_KERNEL_PATH") {
+		t.Errorf("error does not mention NEXUS3_KERNEL_PATH: %q", msg)
+	}
+	if !strings.Contains(msg, "/no/such/kernel/vmlinux-x86_64") {
+		t.Errorf("error does not name the missing path: %q", msg)
+	}
+}
+
+// TestResolveKernelPath_NoEnv_SearchedPathsListed verifies that when
+// NEXUS3_KERNEL_PATH is unset and no default exists, the error lists the
+// searched candidate paths so the operator knows what to set.
+func TestResolveKernelPath_NoEnv_SearchedPathsListed(t *testing.T) {
+	t.Setenv("NEXUS3_KERNEL_PATH", "")
+
+	_, err := resolveKernelPath()
+	if err == nil {
+		// resolveKernelPath succeeded (kernel is present in the default location).
+		// That is valid in a dev environment; skip rather than fail.
+		t.Skip("kernel found at default location; skipping missing-kernel test")
+	}
+	msg := err.Error()
+	// Error must name the env var so the operator knows what to set.
+	if !strings.Contains(msg, "NEXUS3_KERNEL_PATH") {
+		t.Errorf("error does not mention NEXUS3_KERNEL_PATH: %q", msg)
+	}
+	// Error must list at least one searched path.
+	if !strings.Contains(msg, "images/kernel/vmlinux-x86_64") {
+		t.Errorf("error does not list searched paths: %q", msg)
+	}
+}
+
+// TestKernelPreflight_BeforeWorkspaceCapture is an ORDERING test.
+// It proves that kernel validation runs before any workspace setup
+// (shadow disk creation, workspace capture) so that a future refactor that
+// moves capture before the kernel check fails loudly.
+//
+// Method: install testWorkspaceSpecHook to detect if the workspace block was
+// entered. With a bad NEXUS3_KERNEL_PATH, the hook must never fire — the
+// function must return the kernel error first.
+func TestKernelPreflight_BeforeWorkspaceCapture(t *testing.T) {
+	// Point NEXUS3_KERNEL_PATH at a path that does not exist.
+	t.Setenv("NEXUS3_KERNEL_PATH", filepath.Join(t.TempDir(), "no-such-kernel"))
+
+	// Arm the workspace spec hook. If it fires, the workspace block ran —
+	// which means kernel validation did NOT happen first.
+	workspaceEntered := false
+	orig := testWorkspaceSpecHook
+	testWorkspaceSpecHook = func(*service.WorkspaceSpec) { workspaceEntered = true }
+	defer func() { testWorkspaceSpecHook = orig }()
+
+	svc := newTestService(t)
+	out, _, _ := capture(true)
+
+	// Use --image and --workspace so both the boot path and workspace block
+	// would be reached if kernel validation were absent or deferred.
+	wsDir := t.TempDir()
+	err := runSandboxCreate(
+		context.Background(),
+		[]string{"proj/ordering-test", "--image", "sha256:abc123", "--workspace", wsDir},
+		out, svc,
+	)
+
+	// The call must have failed.
+	if err == nil {
+		t.Fatal("expected kernel-not-found error, got nil")
+	}
+	// The error must be about the kernel, not about an image or workspace.
+	if !strings.Contains(err.Error(), "NEXUS3_KERNEL_PATH") {
+		t.Errorf("expected NEXUS3_KERNEL_PATH in error; got: %v", err)
+	}
+	// The workspace block must NOT have been entered — proves ordering.
+	if workspaceEntered {
+		t.Error("ORDERING VIOLATION: workspace spec was built before kernel validation ran; " +
+			"a refactor moved capture before the kernel preflight check")
+	}
 }

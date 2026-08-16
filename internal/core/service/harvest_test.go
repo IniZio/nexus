@@ -35,10 +35,10 @@ func makeFakeCopy(failFor ...domain.SandboxID) harvestCopyFn {
 func seedSandbox(t *testing.T, ctx context.Context, svc *Service, motiveID string) domain.Sandbox {
 	t.Helper()
 	sb := domain.Sandbox{
-		ID:       domain.NewSandboxID(),
-		Name:     "harvest-test-" + motiveID,
-		MotiveID: motiveID,
-		State:    domain.Created,
+		ID:     domain.NewSandboxID(),
+		Name:   "harvest-test-" + motiveID,
+		Labels: map[string]string{"motive": motiveID},
+		State:  domain.Created,
 	}
 	if err := svc.store.Create(ctx, sb); err != nil {
 		t.Fatalf("store.Create: %v", err)

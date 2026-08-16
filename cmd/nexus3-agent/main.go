@@ -18,6 +18,18 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver"
 )
 
+// agentBuildTag is stamped at image-build time via:
+//
+//	go build -ldflags "-X main.agentBuildTag=<YYYYMMDD>-<git-short-sha>"
+//
+// Default "dev" means the binary was built without stamping (local dev or
+// direct `go build` without the Makefile / rebuild script).  When a sandbox
+// starts, this tag is printed on the console so the operator can compare it
+// against the current git revision to detect image staleness.  Any arg the
+// agent does not recognize is also logged with this tag so the operator can
+// correlate the unknown arg with the agent version that ignored it.
+var agentBuildTag = "dev"
+
 func main() {
 	isPid1 := os.Getpid() == 1
 
@@ -47,7 +59,7 @@ func main() {
 		defer con.Close()
 	}
 
-	consoleLog(con, "nexus3-agent: starting (pid=%d)\n", os.Getpid())
+	consoleLog(con, "nexus3-agent: starting (pid=%d build=%s)\n", os.Getpid(), agentBuildTag)
 	if isPid1 {
 		// /tmp is unconditionally RAM-backed: 32 MiB seed; resizer grows it to
 		// max(1 GiB, min(50%% MemTotal, 2 GiB)). The 1 GiB floor prevents scratch
@@ -119,6 +131,15 @@ func main() {
 				} else {
 					consoleLog(con, "nexus3-agent: ignoring malformed --workspace-mount arg: %q\n", arg)
 				}
+			default:
+				// An unrecognized arg most likely means the host is newer than the
+				// guest agent: the host emits a flag this agent version does not
+				// understand. Log it loudly rather than silently ignoring it so
+				// the operator can see the skew in the serial/console capture and
+				// know to rebuild the base image.  We continue rather than fataling
+				// because PID-1 exit triggers a kernel panic; a loud degraded mode
+				// is safer and still gives the operator the information they need.
+				consoleLog(con, "nexus3-agent: WARN: unrecognized cmdline arg %q — host/guest version skew? agent build=%s\n", arg, agentBuildTag)
 			}
 		}
 		if isBuilderRole {

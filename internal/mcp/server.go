@@ -79,24 +79,12 @@ func toSandboxJSON(sb domain.Sandbox) sandboxJSON {
 	}
 }
 
-func marshalSandbox(sb domain.Sandbox) string {
-	b, _ := json.Marshal(toSandboxJSON(sb))
-	return string(b)
-}
-
-func marshalSandboxList(sbs []domain.Sandbox) string {
+func toSandboxList(sbs []domain.Sandbox) []sandboxJSON {
 	out := make([]sandboxJSON, len(sbs))
 	for i, sb := range sbs {
 		out[i] = toSandboxJSON(sb)
 	}
-	b, _ := json.Marshal(out)
-	return string(b)
-}
-
-func textResult(text string) *gosdk.CallToolResult {
-	return &gosdk.CallToolResult{
-		Content: []gosdk.Content{&gosdk.TextContent{Text: text}},
-	}
+	return out
 }
 
 // ── tool input types ──────────────────────────────────────────────────────────
@@ -147,6 +135,55 @@ func NewServer(svc SandboxService) *gosdk.Server {
 	return srv
 }
 
+// KnownTools returns the names of all MCP tools registered by this server.
+// The surface parity check (internal/cli/surface_parity_test.go) calls this
+// to assert CLI-MCP surface alignment.
+func KnownTools() []string {
+	return []string{
+		"sandbox_create",
+		"sandbox_list",
+		"sandbox_start",
+		"sandbox_stop",
+		"sandbox_pause",
+		"sandbox_resume",
+		"sandbox_remove",
+	}
+}
+
+// listMaxResponseBytes caps sandbox_list responses. Lists exceeding this size
+// are trimmed and returned with a Truncated header so callers can detect
+// omission. 64 KiB is generous for typical sandbox counts (thousands of
+// entries) while staying well within MCP message-size limits.
+const listMaxResponseBytes = 64 * 1024
+
+// listResultWithCap serialises list, returning successResult when the full
+// array fits within maxBytes. When it does not, as many complete items as
+// fit are returned via successWithTruncation. At least one item is always
+// returned — a zero-item truncated response would be more confusing than a
+// slightly-over-budget one.
+func listResultWithCap(list []sandboxJSON, maxBytes int64) *gosdk.CallToolResult {
+	b, _ := json.Marshal(list)
+	totalBytes := int64(len(b))
+	if totalBytes <= maxBytes {
+		return successResult(list)
+	}
+	// Find the longest prefix that fits within maxBytes.
+	trimmed := list[:0]
+	for i := range list {
+		candidate := list[:i+1]
+		cb, _ := json.Marshal(candidate)
+		if int64(len(cb)) > maxBytes && i > 0 {
+			break
+		}
+		trimmed = candidate
+	}
+	tb, _ := json.Marshal(trimmed)
+	return successWithTruncation(trimmed, Truncated{
+		BytesOmitted: totalBytes - int64(len(tb)),
+		TotalBytes:   totalBytes,
+	})
+}
+
 // registerTools wires each sandbox lifecycle method to an MCP tool on srv.
 func registerTools(srv *gosdk.Server, svc SandboxService) {
 	// sandbox_create — create a sandbox record, optionally booting it.
@@ -165,8 +202,12 @@ func registerTools(srv *gosdk.Server, svc SandboxService) {
 
 		// Boot path: any image field triggers CreateAndBoot.
 		if args.RootfsPath != "" || args.Digest != "" || args.Ref != "" {
+			var bootLabels map[string]string
+			if args.Motive != "" {
+				bootLabels = map[string]string{"motive": args.Motive}
+			}
 			sb, err := svc.CreateAndBoot(ctx, args.Project, args.Name, service.CreateAndBootOptions{
-				MotiveID:     args.Motive,
+				Labels:       bootLabels,
 				RemoveOnExit: args.RemoveOnExit,
 				Image: service.ImageSpec{
 					RootfsPath: args.RootfsPath,
@@ -178,9 +219,9 @@ func registerTools(srv *gosdk.Server, svc SandboxService) {
 				NestedVirt: args.NestedVirt,
 			})
 			if err != nil {
-				return nil, nil, err
+				return errorResult(err), nil, nil
 			}
-			return textResult(marshalSandbox(sb)), nil, nil
+			return successResult(toSandboxJSON(sb)), nil, nil
 		}
 
 		// Record-only path: back-compatible default when no image is specified.
@@ -188,21 +229,25 @@ func registerTools(srv *gosdk.Server, svc SandboxService) {
 			RemoveOnExit: args.RemoveOnExit,
 		})
 		if err != nil {
-			return nil, nil, err
+			return errorResult(err), nil, nil
 		}
-		return textResult(marshalSandbox(sb)), nil, nil
+		return successResult(toSandboxJSON(sb)), nil, nil
 	})
 
 	// sandbox_list — list all sandbox records.
+	// Responses exceeding listMaxResponseBytes are trimmed; the truncated field
+	// carries bytes_omitted and total_bytes so callers can distinguish a short
+	// list from a capped one (I1-AC2 truncation wire).
 	gosdk.AddTool(srv, &gosdk.Tool{
-		Name:        "sandbox_list",
-		Description: "List all sandboxes. Returns a JSON array of sandbox objects.",
+		Name: "sandbox_list",
+		Description: "List all sandboxes. Returns a JSON array of sandbox objects. " +
+			"Large lists are capped at 64 KiB; check truncated.bytes_omitted.",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, _ noArgs) (*gosdk.CallToolResult, any, error) {
 		sbs, err := svc.List(ctx)
 		if err != nil {
-			return nil, nil, err
+			return errorResult(err), nil, nil
 		}
-		return textResult(marshalSandboxList(sbs)), nil, nil
+		return listResultWithCap(toSandboxList(sbs), listMaxResponseBytes), nil, nil
 	})
 
 	// sandbox_start — transition a sandbox to the running state.
@@ -215,9 +260,9 @@ func registerTools(srv *gosdk.Server, svc SandboxService) {
 		}
 		sb, err := svc.Start(ctx, args.Ref)
 		if err != nil {
-			return nil, nil, err
+			return errorResult(err), nil, nil
 		}
-		return textResult(marshalSandbox(sb)), nil, nil
+		return successResult(toSandboxJSON(sb)), nil, nil
 	})
 
 	// sandbox_stop — terminate a running sandbox.
@@ -230,9 +275,9 @@ func registerTools(srv *gosdk.Server, svc SandboxService) {
 		}
 		sb, err := svc.Stop(ctx, args.Ref)
 		if err != nil {
-			return nil, nil, err
+			return errorResult(err), nil, nil
 		}
-		return textResult(marshalSandbox(sb)), nil, nil
+		return successResult(toSandboxJSON(sb)), nil, nil
 	})
 
 	// sandbox_pause — suspend a running sandbox.
@@ -245,9 +290,9 @@ func registerTools(srv *gosdk.Server, svc SandboxService) {
 		}
 		sb, err := svc.Pause(ctx, args.Ref)
 		if err != nil {
-			return nil, nil, err
+			return errorResult(err), nil, nil
 		}
-		return textResult(marshalSandbox(sb)), nil, nil
+		return successResult(toSandboxJSON(sb)), nil, nil
 	})
 
 	// sandbox_resume — resume a paused sandbox.
@@ -260,9 +305,9 @@ func registerTools(srv *gosdk.Server, svc SandboxService) {
 		}
 		sb, err := svc.Resume(ctx, args.Ref)
 		if err != nil {
-			return nil, nil, err
+			return errorResult(err), nil, nil
 		}
-		return textResult(marshalSandbox(sb)), nil, nil
+		return successResult(toSandboxJSON(sb)), nil, nil
 	})
 
 	// sandbox_remove — delete a sandbox record.
@@ -274,8 +319,8 @@ func registerTools(srv *gosdk.Server, svc SandboxService) {
 			return nil, nil, fmt.Errorf("ref is required")
 		}
 		if err := svc.Remove(ctx, args.Ref); err != nil {
-			return nil, nil, err
+			return errorResult(err), nil, nil
 		}
-		return textResult(`{"removed":true}`), nil, nil
+		return successResult(map[string]bool{"removed": true}), nil, nil
 	})
 }

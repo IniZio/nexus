@@ -75,6 +75,14 @@ func NewOutput(w, errW io.Writer, jsonMode bool) *Output {
 // IsJSON reports whether JSON mode is active.
 func (o *Output) IsJSON() bool { return o.json }
 
+// Stdout returns the underlying stdout writer. Commands that need to write
+// raw formatted output (e.g. captured sandbox output in batch exec) use this
+// to avoid going through EmitSuccess for every line.
+func (o *Output) Stdout() io.Writer { return o.w }
+
+// Stderr returns the underlying stderr writer.
+func (o *Output) Stderr() io.Writer { return o.errW }
+
 // EmitSuccess writes a successful response. In JSON mode it writes the
 // schema-versioned envelope to stdout. In human mode it writes msg to stdout.
 func (o *Output) EmitSuccess(kind string, data any, msg string) {

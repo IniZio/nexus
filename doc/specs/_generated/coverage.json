@@ -1,0 +1,246 @@
+{
+  "total": 45,
+  "by_source": {
+    "unknown": 45
+  },
+  "by_concept": {
+    "C-PDF": 28,
+    "C-RES": 12,
+    "C-SUR": 5
+  },
+  "by_verification": {
+    "manual": 45
+  },
+  "by_criticality": {
+    "must": 45
+  },
+  "verified": 0,
+  "unverified_automated": [],
+  "by_requirement": {
+    "PDF-R-001": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-002": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-003": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-004": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-005": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-006": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-007": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-008": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-009": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-010": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-011": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-012": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-013": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-014": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-015": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-016": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-017": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-018": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-019": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-020": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-021": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-022": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-023": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-024": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-025": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-026": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-027": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-028": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-001": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-002": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-003": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-004": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-005": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-006": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-007": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-008": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-009": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-010": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-011": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-012": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "SUR-R-001": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "SUR-R-002": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "SUR-R-003": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "SUR-R-004": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "SUR-R-005": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    }
+  }
+}

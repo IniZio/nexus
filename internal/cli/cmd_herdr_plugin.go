@@ -277,6 +277,14 @@ func runHerdrCmd(bin string, args ...string) error {
 
 // herdrPluginCreate interactively prompts for project/name and creates a sandbox.
 func herdrPluginCreate(ctx context.Context, r io.Reader, w io.Writer, svc *service.Service) error {
+	// Preflight: validate the kernel path before prompting. svc.Create is
+	// metadata-only (no boot), but the subsequent space-create will need the
+	// kernel; failing fast here gives an actionable error before the interactive
+	// prompts, rather than a cryptic boot failure on space-create.
+	if _, err := resolveKernelPath(); err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin create: " + err.Error(), Err: err}
+	}
+
 	scanner := bufio.NewScanner(r)
 
 	fmt.Fprint(os.Stderr, "project: ")
@@ -557,6 +565,14 @@ func buildLaunchBootOpts(imageRef, cacheRoot string, agentEgress bool, seeder se
 // automatic-rotation Refresher. Without --agent-egress, Broker stays nil and
 // the plain launch path is unchanged (no perimeter, no AllowedHosts filter).
 func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, agentEgress bool, out *Output) error {
+	// Preflight: validate the kernel path before store/cache/service setup so
+	// that a missing/misconfigured NEXUS3_KERNEL_PATH surfaces immediately with
+	// an actionable error rather than after expensive work inside CreateAndBoot.
+	kernelPath, err := resolveKernelPath()
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: " + err.Error(), Err: err}
+	}
+
 	storeRoot, err := store.DefaultRoot()
 	if err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: resolve store: " + err.Error(), Err: err}
@@ -572,8 +588,6 @@ func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, agen
 	if err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: " + err.Error(), Err: err}
 	}
-
-	kernelPath := kernelPathFor()
 
 	// bootDialer is populated by the factory below once the VM is booted.
 	// The lazy seeder (agent-egress path) captures it by pointer and reads it

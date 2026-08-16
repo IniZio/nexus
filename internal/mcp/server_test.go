@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -142,6 +143,25 @@ func resultText(t *testing.T, res *gosdk.CallToolResult) string {
 	return tc.Text
 }
 
+// resultData unwraps the Response envelope and returns the data field as JSON bytes.
+// It fails the test if the envelope cannot be parsed or ok=false.
+func resultData(t *testing.T, res *gosdk.CallToolResult) []byte {
+	t.Helper()
+	text := resultText(t, res)
+	var env Response
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("envelope unmarshal: %v (text=%q)", err, text)
+	}
+	if !env.OK {
+		t.Fatalf("response not ok: %+v", env.Error)
+	}
+	b, err := json.Marshal(env.Data)
+	if err != nil {
+		t.Fatalf("re-marshal data: %v", err)
+	}
+	return b
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 func TestSandboxList_empty(t *testing.T) {
@@ -154,10 +174,9 @@ func TestSandboxList_empty(t *testing.T) {
 		t.Fatalf("expected success, got error: %s", resultText(t, res))
 	}
 
-	text := resultText(t, res)
 	var got []any
-	if err := json.Unmarshal([]byte(text), &got); err != nil {
-		t.Fatalf("json.Unmarshal: %v (text=%q)", err, text)
+	if err := json.Unmarshal(resultData(t, res), &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
 	}
 	if len(got) != 0 {
 		t.Fatalf("expected empty list, got %d items", len(got))
@@ -182,7 +201,7 @@ func TestSandboxList_nonEmpty(t *testing.T) {
 	}
 
 	var got []sandboxJSON
-	if err := json.Unmarshal([]byte(resultText(t, res)), &got); err != nil {
+	if err := json.Unmarshal(resultData(t, res), &got); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
 	if len(got) != 1 {
@@ -236,7 +255,7 @@ func TestSandboxCreate_invokesService(t *testing.T) {
 
 	// Verify the response JSON.
 	var got sandboxJSON
-	if err := json.Unmarshal([]byte(resultText(t, res)), &got); err != nil {
+	if err := json.Unmarshal(resultData(t, res), &got); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
 	if got.Project != "myproj" || got.Name != "mysb" {
@@ -384,7 +403,7 @@ func TestSandboxCreate_WithImage_CallsCreateAndBoot(t *testing.T) {
 
 	// Response must reflect the running state returned by the stub.
 	var got sandboxJSON
-	if err := json.Unmarshal([]byte(resultText(t, res)), &got); err != nil {
+	if err := json.Unmarshal(resultData(t, res), &got); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
 	if got.State != domain.Running.String() {
@@ -538,17 +557,17 @@ func TestSandboxCreate_WithMemoryVCPUs_DefaultsUnset(t *testing.T) {
 // ── S-SURFACE: motive parameter ───────────────────────────────────────────────
 
 // TestSandboxCreate_WithMotive_SetsMotiveID verifies that passing a motive arg
-// to sandbox_create threads the value through to CreateAndBootOptions.MotiveID.
+// to sandbox_create threads the value through to CreateAndBootOptions.Labels["motive"].
 // Uses the boot path (rootfs_path set) so CreateAndBoot is invoked.
 func TestSandboxCreate_WithMotive_SetsMotiveID(t *testing.T) {
 	id := domain.NewSandboxID()
 	stub := &stubService{
 		createAndBootResult: domain.Sandbox{
-			ID:       id,
-			Project:  "myproj",
-			Name:     "mysb",
-			State:    domain.Running,
-			MotiveID: "m-abc-123",
+			ID:      id,
+			Project: "myproj",
+			Name:    "mysb",
+			State:   domain.Running,
+			Labels:  map[string]string{"motive": "m-abc-123"},
 		},
 	}
 	cs, close := connectPair(t, stub)
@@ -566,8 +585,8 @@ func TestSandboxCreate_WithMotive_SetsMotiveID(t *testing.T) {
 	}
 
 	cab := stub.createAndBootCalledWith
-	if cab.opts.MotiveID != "m-abc-123" {
-		t.Errorf("MotiveID: want %q, got %q", "m-abc-123", cab.opts.MotiveID)
+	if cab.opts.Labels["motive"] != "m-abc-123" {
+		t.Errorf("Labels[motive]: want %q, got %q", "m-abc-123", cab.opts.Labels["motive"])
 	}
 	if cab.opts.Image.RootfsPath != "/fake/rootfs.ext4" {
 		t.Errorf("RootfsPath: want %q, got %q", "/fake/rootfs.ext4", cab.opts.Image.RootfsPath)
@@ -579,7 +598,7 @@ func TestSandboxCreate_WithMotive_SetsMotiveID(t *testing.T) {
 }
 
 // TestSandboxCreate_Motive_DefaultsEmpty verifies that omitting the motive arg
-// leaves MotiveID empty in CreateAndBootOptions (unassociated, no regression).
+// leaves Labels nil in CreateAndBootOptions (unassociated, no regression).
 func TestSandboxCreate_Motive_DefaultsEmpty(t *testing.T) {
 	id := domain.NewSandboxID()
 	stub := &stubService{
@@ -603,7 +622,63 @@ func TestSandboxCreate_Motive_DefaultsEmpty(t *testing.T) {
 		t.Fatalf("expected success, got error: %s", resultText(t, res))
 	}
 
-	if stub.createAndBootCalledWith.opts.MotiveID != "" {
-		t.Errorf("MotiveID default: want empty, got %q", stub.createAndBootCalledWith.opts.MotiveID)
+	if stub.createAndBootCalledWith.opts.Labels["motive"] != "" {
+		t.Errorf("Labels[motive] default: want empty, got %q", stub.createAndBootCalledWith.opts.Labels["motive"])
+	}
+}
+
+// TestSandboxList_truncation verifies that sandbox_list applies the byte cap
+// and returns non-nil truncated metadata when the list is large (I1-AC2).
+func TestSandboxList_truncation(t *testing.T) {
+	// Build a list large enough to exceed listMaxResponseBytes (64 KiB).
+	// Each sandboxJSON is ~120 bytes; 800 items ≈ 96 KiB > 64 KiB cap.
+	const n = 800
+	sbs := make([]domain.Sandbox, n)
+	for i := range sbs {
+		sbs[i] = domain.Sandbox{
+			ID:      domain.NewSandboxID(),
+			Project: "proj",
+			Name:    fmt.Sprintf("sandbox-%04d", i),
+			State:   domain.Created,
+		}
+	}
+	stub := &stubService{listResult: sbs}
+	cs, close := connectPair(t, stub)
+	defer close()
+
+	res := callTool(t, cs, "sandbox_list", nil)
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(t, res))
+	}
+
+	text := resultText(t, res)
+	var env Response
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("envelope unmarshal: %v", err)
+	}
+	if !env.OK {
+		t.Fatalf("response not ok: %+v", env.Error)
+	}
+	if env.Truncated == nil {
+		t.Fatal("expected truncated metadata for large list, got nil")
+	}
+	if env.Truncated.BytesOmitted <= 0 {
+		t.Errorf("bytes_omitted: want > 0, got %d", env.Truncated.BytesOmitted)
+	}
+	if env.Truncated.TotalBytes <= int64(listMaxResponseBytes) {
+		t.Errorf("total_bytes %d should exceed cap %d", env.Truncated.TotalBytes, listMaxResponseBytes)
+	}
+
+	// The data should be a valid, non-empty, proper subset of the full list.
+	var items []sandboxJSON
+	db, _ := json.Marshal(env.Data)
+	if err := json.Unmarshal(db, &items); err != nil {
+		t.Fatalf("data unmarshal: %v", err)
+	}
+	if len(items) == 0 {
+		t.Fatal("truncated list must contain at least one item")
+	}
+	if len(items) >= n {
+		t.Errorf("truncated list has %d items, expected fewer than %d", len(items), n)
 	}
 }

@@ -12,7 +12,7 @@
 //	guest HTTP client
 //	  → proxy (this package): HandleConnect decides allow/reject by hostname
 //	      → allowed: MITM (goproxy signs leaf cert with per-sandbox CA)
-//	          → OnRequest swaps placeholder Bearer with real token (broker)
+//	          → OnRequest swaps placeholder Bearer/Basic with real token (broker)
 //	          → forwarded to real upstream
 //	      → non-allowed: reject (CONNECT receives 403)
 //
@@ -27,6 +27,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -45,8 +46,8 @@ import (
 // with:
 //   - A per-sandbox CA whose trust anchor ([Proxy.CACert]) the guest must import.
 //   - A HandleConnect handler that enforces the hostname allowlist.
-//   - An OnRequest handler that swaps placeholder Bearer tokens with real tokens.
-//
+//   - An OnRequest handler that swaps placeholder tokens in Authorization
+//     Bearer (gh) and Basic (git HTTPS) headers with the real broker token.
 // Proxy implements [http.Handler]; run it behind an httptest.Server in tests
 // or a standard net/http server in production.
 //
@@ -65,20 +66,26 @@ type Config struct {
 	SandboxID domain.SandboxID
 
 	// AllowedHosts is the set of hostnames the proxy will MITM and for which
-	// it will perform bearer-token swap. Comparison is case-insensitive.
-	// Non-listed hosts receive a CONNECT rejection and no credential swap.
+	// it will perform bearer-token swap when AllowAll is false. Comparison is
+	// case-insensitive. Non-listed hosts receive a CONNECT rejection unless
+	// AllowAll is set.
 	AllowedHosts []string
+
+	// SecretHosts are MITM'd even when AllowAll is true, so a placeholder
+	// token can be swapped without putting the host on AllowedHosts (which
+	// would 403 every other destination). Non-secret hosts under AllowAll
+	// are CONNECT-tunneled without TLS interception.
+	SecretHosts []string
 
 	// Broker is the host-side credential store. ResolveScoped is called for
 	// each intercepted request bearing a placeholder Authorization header.
 	Broker *cred.Broker
 
-	// AllowAll makes the proxy MITM and permit EVERY CONNECT regardless of
-	// AllowedHosts. It keeps the proxy in the egress path as the control point
-	// (all traffic is still intercepted and audit-logged) but applies an
-	// allow-all POLICY. Temporary stance until interactive per-connection
-	// approval exists; do not enable for credential-bearing agent sandboxes
-	// where a curated allowlist is the safeguard.
+	// AllowAll makes the proxy permit EVERY CONNECT regardless of
+	// AllowedHosts. SecretHosts are MITM'd; other hosts are tunneled
+	// (real server cert, no swap). Temporary stance until interactive
+	// per-connection approval exists; do not enable for credential-bearing
+	// agent sandboxes where a curated allowlist is the safeguard.
 	AllowAll bool
 
 	// Logger is used for audit events (allow/deny decisions). If nil,
@@ -99,9 +106,15 @@ func New(cfg Config) (*Proxy, error) {
 		return nil, fmt.Errorf("mitm: generate per-sandbox CA: %w", err)
 	}
 
-	allowSet := make(map[string]struct{}, len(cfg.AllowedHosts))
+	allowSet := make(map[string]struct{}, len(cfg.AllowedHosts)+len(cfg.SecretHosts))
 	for _, h := range cfg.AllowedHosts {
 		allowSet[strings.ToLower(h)] = struct{}{}
+	}
+	secretSet := make(map[string]struct{}, len(cfg.SecretHosts))
+	for _, h := range cfg.SecretHosts {
+		lh := strings.ToLower(h)
+		secretSet[lh] = struct{}{}
+		allowSet[lh] = struct{}{}
 	}
 
 	log := cfg.Logger
@@ -128,60 +141,44 @@ func New(cfg Config) (*Proxy, error) {
 	broker := cfg.Broker
 	allowAll := cfg.AllowAll
 
-	// HandleConnect enforces the hostname allowlist on every HTTPS CONNECT.
-	//   allow-all mode → MITM every host (audit-logged; no curated check)
-	//   allowed host   → MITM (TLS terminated by this proxy; leaf cert signed by CA)
-	//   other host     → reject (guest receives 403; no tunnel established)
-	//
-	// Non-allowed hosts NEVER receive real tokens because the CONNECT is
-	// rejected before any OnRequest handler runs over their traffic.
+	// HandleConnect:
+	//   secret host    → MITM (swap possible)
+	//   allow-all else → CONNECT tunnel (real cert, no swap)
+	//   allowed host   → MITM
+	//   other host     → reject
 	inner.OnRequest().HandleConnect(goproxy.FuncHttpsHandler(func(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
 		hostname := stripHost(host)
-		if allowAll {
-			log.Info("mitm: CONNECT allowed (allow-all policy)", "sandbox", sandboxID, "host", hostname)
+		lh := strings.ToLower(hostname)
+		if _, ok := secretSet[lh]; ok {
+			log.Info("mitm: CONNECT allowed (secret host)", "sandbox", sandboxID, "host", hostname)
 			return mitmAction, host
 		}
-		if _, ok := allowSet[strings.ToLower(hostname)]; ok {
-			// Audit: log decision + host. Token is not available here.
+		if allowAll {
+			log.Info("mitm: CONNECT tunneled (allow-all)", "sandbox", sandboxID, "host", hostname)
+			return goproxy.OkConnect, host
+		}
+		if _, ok := allowSet[lh]; ok {
 			log.Info("mitm: CONNECT allowed", "sandbox", sandboxID, "host", hostname)
 			return mitmAction, host
 		}
-		// Audit: log decision + host.
 		log.Info("mitm: CONNECT rejected", "sandbox", sandboxID, "host", hostname)
 		return goproxy.RejectConnect, host
 	}))
 
-	// OnRequest swaps placeholder Authorization bearer tokens with real tokens.
-	// The swap is only performed for allowlisted hosts; all others pass through
-	// with their original header (which contains only the useless placeholder).
-	//
-	// ResolveScoped is used (not Resolve) so that a placeholder belonging to a
-	// different sandbox is rejected even if it somehow arrives here.
+	// OnRequest swaps placeholder Authorization tokens with real tokens.
+	// Bearer (gh CLI) and Basic (git HTTPS) are both handled (D-PD-23).
+	// Swap only for allowlisted / secret hosts.
 	inner.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-		authHeader := req.Header.Get("Authorization")
-		if !strings.HasPrefix(authHeader, "Bearer ") {
-			return req, nil
-		}
-		placeholder := strings.TrimPrefix(authHeader, "Bearer ")
-
 		host := reqHost(req)
 		if _, ok := allowSet[strings.ToLower(host)]; !ok {
-			// Non-allowlisted host: never swap. The placeholder is useless
-			// without the corresponding entry in the broker.
 			return req, nil
 		}
-
-		realToken, ok := broker.ResolveScoped(placeholder, sandboxID)
+		swapped, ok := swapAuthorization(req.Header.Get("Authorization"), sandboxID, broker)
 		if !ok {
-			// Unknown or cross-sandbox placeholder; pass through unchanged.
 			return req, nil
 		}
-
-		// Clone before mutating to avoid aliasing the original request.
 		req2 := req.Clone(req.Context())
-		req2.Header.Set("Authorization", "Bearer "+realToken)
-
-		// Audit: log allow decision + host. The real token is NEVER logged.
+		req2.Header.Set("Authorization", swapped)
 		log.Info("mitm: credential swapped", "sandbox", sandboxID, "host", host)
 		return req2, nil
 	})
@@ -248,6 +245,40 @@ func generateCA() (tls.Certificate, error) {
 		PrivateKey:  key,
 		Leaf:        leaf,
 	}, nil
+}
+
+// swapAuthorization rewrites an Authorization header whose token/password
+// field is a broker placeholder. Returns ("", false) when there is nothing
+// to swap. The real token is never logged.
+func swapAuthorization(authHeader string, sandboxID domain.SandboxID, broker *cred.Broker) (string, bool) {
+	if broker == nil || authHeader == "" {
+		return "", false
+	}
+	switch {
+	case strings.HasPrefix(authHeader, "Bearer "):
+		placeholder := strings.TrimPrefix(authHeader, "Bearer ")
+		realToken, ok := broker.ResolveScoped(placeholder, sandboxID)
+		if !ok {
+			return "", false
+		}
+		return "Bearer " + realToken, true
+	case strings.HasPrefix(authHeader, "Basic "):
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(authHeader, "Basic "))
+		if err != nil {
+			return "", false
+		}
+		user, pass, ok := strings.Cut(string(raw), ":")
+		if !ok {
+			return "", false
+		}
+		realToken, ok := broker.ResolveScoped(pass, sandboxID)
+		if !ok {
+			return "", false
+		}
+		return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+realToken)), true
+	default:
+		return "", false
+	}
 }
 
 // stripHost extracts the hostname without port from a "host:port" string.

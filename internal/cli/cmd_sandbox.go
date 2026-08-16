@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/agent"
@@ -23,8 +25,10 @@ import (
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
 	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/vmcfg"
+	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus3/internal/core/vmcfg"
+	"github.com/IniZio/nexus3/internal/supervisor"
 )
 
 func init() {
@@ -213,13 +217,14 @@ func errSandbox(prefix string, cause error) *CodedError {
 // ── JSON data types ───────────────────────────────────────────────────────────
 
 type sandboxInfoJSON struct {
-	ID           string `json:"id"`
-	Project      string `json:"project"`
-	Name         string `json:"name"`
-	Handle       string `json:"handle"`
-	State        string `json:"state"`
-	RemoveOnExit bool   `json:"remove_on_exit,omitempty"`
-	StopReason   string `json:"stop_reason,omitempty"`
+	ID           string            `json:"id"`
+	Project      string            `json:"project"`
+	Name         string            `json:"name"`
+	Handle       string            `json:"handle"`
+	State        string            `json:"state"`
+	Labels       map[string]string `json:"labels,omitempty"`
+	RemoveOnExit bool              `json:"remove_on_exit,omitempty"`
+	StopReason   string            `json:"stop_reason,omitempty"`
 }
 
 func toSandboxInfoJSON(sb domain.Sandbox) sandboxInfoJSON {
@@ -229,6 +234,7 @@ func toSandboxInfoJSON(sb domain.Sandbox) sandboxInfoJSON {
 		Name:         sb.Name,
 		Handle:       sb.Handle(),
 		State:        sb.State.String(),
+		Labels:       sb.Labels,
 		RemoveOnExit: sb.RemoveOnExit,
 		StopReason:   string(sb.StopReason),
 	}
@@ -309,6 +315,14 @@ func runSandbox(ctx context.Context, args []string, out *Output) error {
 // is resolved, a Cloud Hypervisor VM is started, the guest agent is probed for
 // reachability, and the sandbox is recorded as Running.
 //
+// Kernel (boot path only): NEXUS3_KERNEL_PATH env var overrides the default.
+// If unset the binary-relative path <binary-dir>/images/kernel/vmlinux-x86_64
+// is tried first, then <cwd>/images/kernel/vmlinux-x86_64 (convenient for
+// "go run ./cmd/nexus3" from the repo root). Resolution is validated before
+// any expensive work (workspace capture, shadow disks, builder VM) begins; a
+// missing kernel surfaces a legible error immediately rather than after a
+// multi-second capture.
+//
 // sandboxCreateFlags holds the result of parsing `sandbox create` arguments.
 type sandboxCreateFlags struct {
 	rm             bool
@@ -318,7 +332,7 @@ type sandboxCreateFlags struct {
 	dockerfilePath string // --dockerfile / -f: explicit Containerfile path override
 	memoryMiB      uint32
 	vcpus          uint32
-	motiveID       string
+	labels         map[string]string
 	nestedVirt     bool
 	workspacePath  string // --workspace <host-path>: host git worktree to capture
 	captureMaxBytes int64  // --capture-max <size>: explicit workspace capture cap (0 = auto)
@@ -327,6 +341,8 @@ type sandboxCreateFlags struct {
 	memoryMaxMiB uint32 // --memory-max <MiB>: RAM ceiling for hotplug region
 	vcpusMax     uint32 // --vcpus-max <n>:    vCPU ceiling for hotplug
 	diskMaxGiB   uint32 // --disk-max <GiB>:   disk grow ceiling
+	secrets      []string // --secret ENV@host[,host…] (repeatable)
+	noBuiltinGH  bool     // --no-builtin-gh: skip host gh auth token bind
 	positionals  []string
 }
 
@@ -379,12 +395,19 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --vcpus %q: invalid count", args[i])}
 			}
 			f.vcpus = uint32(v)
-		case "--motive":
+		case "--label":
 			if i+1 >= len(args) {
-				return f, &UsageError{Msg: "sandbox create: --motive requires an argument"}
+				return f, &UsageError{Msg: "sandbox create: --label requires an argument"}
 			}
 			i++
-			f.motiveID = args[i]
+			k, v, ok := strings.Cut(args[i], "=")
+			if !ok || k == "" {
+				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --label %q: must be KEY=VALUE", args[i])}
+			}
+			if f.labels == nil {
+				f.labels = make(map[string]string)
+			}
+			f.labels[k] = v
 		case "--dockerfile", "-f":
 			if i+1 >= len(args) {
 				return f, &UsageError{Msg: "sandbox create: --dockerfile requires an argument"}
@@ -439,6 +462,14 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --disk-max %q: invalid GiB value", args[i])}
 			}
 			f.diskMaxGiB = uint32(v)
+		case "--secret":
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --secret requires ENV@host[,host…]"}
+			}
+			i++
+			f.secrets = append(f.secrets, args[i])
+		case "--no-builtin-gh":
+			f.noBuiltinGH = true
 		default:
 			if len(arg) > 1 && arg[0] == '-' {
 				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: unknown flag %q", arg)}
@@ -682,7 +713,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--motive <id>] [--nested] [--workspace <host-path>] [--capture-max <size>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--workspace <host-path>] [--capture-max <size>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--no-builtin-gh] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])
@@ -702,6 +733,17 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	// ── Boot path: resolve ext4 → start VM → probe agent ─────────────────────
+	//
+	// Preflight: validate the kernel path before any expensive work. This must
+	// run before shadow disk creation, workspace capture, and builder VM launch
+	// so that a misconfigured NEXUS3_KERNEL_PATH (or missing kernel) surfaces
+	// immediately with an actionable message rather than after a 28-second capture
+	// followed by an opaque CloudHypervisor "Cannot open kernel file" error.
+	kernelPath, err := resolveKernelPath()
+	if err != nil {
+		return errSandbox("sandbox create", err)
+	}
+
 	storeRoot, err := store.DefaultRoot()
 	if err != nil {
 		return errSandbox("sandbox create", fmt.Errorf("resolve state directory: %w", err))
@@ -749,7 +791,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		agentBin, err := exec.LookPath("nexus3-agent")
 		if err != nil {
 			// Fall back to a binary-relative path.
-			agentBin = filepath.Join(filepath.Dir(kernelPathFor()), "nexus3-agent")
+			agentBin = filepath.Join(filepath.Dir(kernelPath), "nexus3-agent")
 		}
 		agentBytes, err := os.ReadFile(agentBin)
 		if err != nil {
@@ -890,7 +932,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			// the execFn can reach the vsock listener the supervisor-owned VM.
 			// MemoryMaxMiB and VCPUMax must be set so CHDriver.New validation
 			// (ceiling > boot) passes; they are used by the supervisor, not here.
-			dialerCfg := buildCHConfig(kernelPathFor(), builderRootfs,
+			dialerCfg := buildCHConfig(kernelPath, builderRootfs,
 				builderBootMemMiB, builderBootVCPUs)
 			dialerCfg.SocketDir = builderSocketDir
 			dialerCfg.MemoryMaxMiB = builderAR.MemoryMaxMiB
@@ -916,7 +958,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				storeRoot:  storeRoot,
 				stateBase:  filepath.Join(storeRoot, "builder-supervisors"),
 				socketDir:  builderSocketDir,
-				kernelPath: kernelPathFor(),
+				kernelPath: kernelPath,
 				diskPath:   builderRootfs,
 				extraDisks: builderExtraDisks,
 				ar:         builderAR,
@@ -963,14 +1005,17 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		}
 	}
 
-	// Resolve the kernel path: env override → binary-relative default.
-	kernelPath := kernelPathFor()
-
 	// bootGuestMounts is set by the workspace block below and captured by
 	// newDriver. It must be declared here (before newDriver) so the closure
 	// can reference it; Go closures capture by reference, so newDriver reads
 	// the value that is set after CreateAndBoot calls it.
 	var bootGuestMounts []agent.GuestMount
+	var capturedDiskPath string
+	var capturedExtraDisks []string
+	var capturedCmdline string
+	var capturedCHBin string
+	var capturedSocketDir string
+
 
 	// Resolve auto-resize bounds early via vmcfg so the values are available
 	// to both the newDriver closure (for driver config) and the log below.
@@ -1004,37 +1049,28 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	newDriver := func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
 		cfg := buildCHConfig(kernelPath, ext4Path, f.memoryMiB, f.vcpus)
 		cfg.NestedVirt = f.nestedVirt
-		// Wire auto-resize boot ceilings. These are fixed at vm.create and
-		// irreversible without a full restart (D-DC-27, D-DC-17). The driver
-		// reserves a (MemoryMaxMiB − MemoryMiB) MiB VirtioMem hotplug region
-		// when MemoryMaxMiB > 0, and advertises MaxVCPUs = VCPUMax to CH.
-		// Auto-resize is unconditional (D-DC-30 revised 2026-08-14).
 		cfg.MemoryMaxMiB = ar.MemoryMaxMiB
 		cfg.VCPUMax = ar.VCPUMax
+		capturedExtraDisks = nil
 		for _, ed := range extraDisks {
 			cfg.ExtraDisks = append(cfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: ed.Path})
+			capturedExtraDisks = append(capturedExtraDisks, ed.Path)
 		}
-		// Build the kernel cmdline. Two concerns are handled here:
-		//   1. Workspace/shadow mount specs go after "--" as PID-1 args.
-		//   2. Auto-resize PID-1 arg (--mem-ceiling=<bytes>) goes after "--".
-		//
-		// The driver inserts the required memhp kernel params (memhp_default_state=
-		// online, memory_hotplug.online_policy=auto-movable) BEFORE "--" when
-		// MemoryMaxMiB > 0, so they are processed by the kernel and not PID 1.
-		// The CLI builds the PID-1 section; the driver owns the kernel-param section.
 		if len(bootGuestMounts) > 0 {
-			// Workspace mounts present: build cmdline with mounts and auto-resize
-			// args after "--". Driver inserts memhp before "--".
 			cfg.Cmdline = workspaceMountCmdline(bootGuestMounts) + ar.PID1Args
 		} else {
-			// Auto-resize (no workspace): set explicit cmdline with PID-1
-			// section. Driver inserts memhp before "--".
 			cfg.Cmdline = diskBootCmdlineBase + " --" + ar.PID1Args
 		}
-		// BinaryPath: look for cloud-hypervisor in PATH if not set.
 		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
 			cfg.BinaryPath = p
 		}
+		if socketDir, serr := orcaSocketDir(); serr == nil {
+			cfg.SocketDir = socketDir
+			capturedSocketDir = socketDir
+		}
+		capturedDiskPath = ext4Path
+		capturedCmdline = cfg.Cmdline
+		capturedCHBin = cfg.BinaryPath
 		return cloudhypervisor.New(cfg)
 	}
 
@@ -1116,7 +1152,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		}
 
 		// Build shadow disk specs for DefaultShadowDirs.
-		shadowSpecs := buildShadowDiskSpecs(DefaultShadowDirs, diskDir, guestPath)
+		shadowSpecs := buildShadowDiskSpecs(DefaultShadowDirs, diskDir, guestPath, f.positionals[0])
 
 		// Create sparse ext4 shadow disks.  Each disk is preallocated and
 		// formatted with mke2fs before the VM boots so the guest can mount them
@@ -1154,11 +1190,15 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			"mounts", fmt.Sprintf("%v", allMounts),
 		)
 	}
+	secrets, err := resolveCreateSecrets(ctx, f)
+	if err != nil {
+		return errSandbox("sandbox create", err)
+	}
 
 	sb, err := service.CreateAndBoot(ctx, svc, imgCache, newDriver, probe,
 		project, name,
 		service.CreateAndBootOptions{
-			MotiveID:          f.motiveID,
+			Labels:            f.labels,
 			RemoveOnExit:      f.rm,
 			Image:             spec,
 			CacheRoot:         cacheRoot,
@@ -1168,6 +1208,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			ExtraDisks:        bootExtraDisks,
 			Workspace:         bootWorkspace,
 			WorkspaceCapturer: bootCapturer,
+			Secrets:           secrets,
 		},
 	)
 	if err != nil {
@@ -1179,17 +1220,156 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		return errSandbox("sandbox create", err)
 	}
 
+	if handoffErr := handoffHumanSupervisor(ctx, svc, sb, storeRoot, kernelPath, govBounds, f.memoryMiB, f.vcpus,
+		capturedDiskPath, capturedExtraDisks, capturedCmdline, capturedCHBin, capturedSocketDir, bootWorkspace != nil, len(bootExtraDisks)); handoffErr != nil {
+		slog.Warn("sandbox create: supervisor handoff failed; broker will not survive CLI exit",
+			"sandbox", sb.ID, "err", handoffErr)
+	}
+
 	out.EmitSuccess("sandbox.created", toSandboxInfoJSON(sb),
 		fmt.Sprintf("created sandbox %s (%s)", sb.Handle(), sb.ID))
 	return nil
 }
 
-// kernelPathFor returns the path to the pinned guest kernel.
-// Priority: NEXUS3_KERNEL_PATH env > binary-relative default.
-func kernelPathFor() string {
-	if k := os.Getenv("NEXUS3_KERNEL_PATH"); k != "" {
-		return k
+// resolveCreateSecrets parses --secret flags and, unless --no-builtin-gh,
+// appends the host `gh auth token` as GH_TOKEN@github.com,api.github.com.
+// Explicit GH_TOKEN / GITHUB_TOKEN binds win over the builtin.
+func resolveCreateSecrets(ctx context.Context, f sandboxCreateFlags) ([]service.SecretBind, error) {
+	var binds []service.SecretBind
+	for _, spec := range f.secrets {
+		b, err := service.ParseSecretSpec(spec)
+		if err != nil {
+			return nil, &UsageError{Msg: "sandbox create: " + err.Error()}
+		}
+		binds = append(binds, b)
 	}
+	if f.noBuiltinGH {
+		return binds, nil
+	}
+	builtin, ok, err := service.BuiltinGitHubSecret(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return binds, nil
+	}
+	return service.MergeSecrets(binds, builtin), nil
+}
+
+// handoffHumanSupervisor stops the in-process boot VM and re-owns it in a
+// detached supervisor that holds the credential broker (D-PD-26).
+func handoffHumanSupervisor(
+	ctx context.Context,
+	svc *service.Service,
+	sb domain.Sandbox,
+	storeRoot, kernelPath string,
+	govBounds resize.Bounds,
+	memoryMiB, bootVCPUs uint32,
+	diskPath string,
+	extraDisks []string,
+	cmdline, chBin, socketDir string,
+	hasWorkspace bool,
+	workspaceDiskIndex int,
+) error {
+	if diskPath == "" {
+		return fmt.Errorf("no disk path captured")
+	}
+	if chBin == "" {
+		chBin, _ = exec.LookPath("cloud-hypervisor")
+	}
+	if socketDir == "" {
+		var err error
+		socketDir, err = orcaSocketDir()
+		if err != nil {
+			return err
+		}
+	}
+	stateDir := supervisor.DefaultStateDir(storeRoot, sb.ID)
+	cfg := supervisor.Config{
+		SandboxRef:         sb.ID.String(),
+		StoreRoot:          storeRoot,
+		StateDir:           stateDir,
+		CHBin:              chBin,
+		SocketDir:          socketDir,
+		KernelPath:         kernelPath,
+		DiskPath:           diskPath,
+		ExtraDisks:         extraDisks,
+		MemoryMiB:          memoryMiB,
+		BootVCPUs:          bootVCPUs,
+		HasWorkspaceDisk:   hasWorkspace,
+		WorkspaceDiskIndex: workspaceDiskIndex,
+		GovBounds:          govBounds,
+		Cmdline:            cmdline,
+	}
+	if err := supervisor.WriteSpawnSpec(stateDir, cfg); err != nil {
+		return err
+	}
+	if _, err := svc.Stop(ctx, sb.ID.String()); err != nil {
+		return fmt.Errorf("stop before supervisor handoff: %w", err)
+	}
+	return spawnPersistedSupervisor(ctx, svc, sb.ID, stateDir)
+}
+
+func spawnPersistedSupervisor(ctx context.Context, svc *service.Service, id domain.SandboxID, stateDir string) error {
+	cfg, err := supervisor.ReadSpawnSpec(stateDir)
+	if err != nil {
+		return err
+	}
+	pid, _, err := supervisor.SpawnDetached(supervisor.SpawnConfig{
+		Config:       cfg,
+		ReadyTimeout: 5 * time.Minute,
+	})
+	if err != nil {
+		return err
+	}
+	sock := supervisor.SockPath(stateDir)
+	if err := svc.SetSupervisor(ctx, id, pid, sock); err != nil {
+		return fmt.Errorf("persist supervisor pid: %w", err)
+	}
+	slog.Info("sandbox: supervisor ready", "sandbox", id, "pid", pid, "sock", sock)
+	return nil
+}
+
+func ensureDetachedSupervisor(ctx context.Context, svc *service.Service, sb domain.Sandbox) error {
+	if sb.SupervisorPID > 0 {
+		alive, _ := supervisor.CheckAndReconcile(sb.SupervisorPID, sb.SupervisorSock)
+		if alive {
+			return nil
+		}
+		_ = svc.ClearSupervisor(ctx, sb.ID)
+	}
+	storeRoot, err := store.DefaultRoot()
+	if err != nil {
+		return err
+	}
+	stateDir := supervisor.DefaultStateDir(storeRoot, sb.ID)
+	if _, err := os.Stat(supervisor.SpecPath(stateDir)); err != nil {
+		return fmt.Errorf("no spawn spec for %s: %w", sb.ID, err)
+	}
+	return spawnPersistedSupervisor(ctx, svc, sb.ID, stateDir)
+}
+
+func stopDetachedSupervisor(ctx context.Context, svc *service.Service, sb domain.Sandbox) {
+	if sb.SupervisorSock == "" {
+		return
+	}
+	if err := supervisor.StopSupervisor(ctx, sb.SupervisorSock); err != nil {
+		slog.Warn("sandbox: StopSupervisor", "sock", sb.SupervisorSock, "err", err)
+	}
+	_ = svc.ClearSupervisor(ctx, sb.ID)
+}
+
+
+// kernelPathFor is retained for callers outside runSandboxCreate that only need
+// a best-effort path (no preflight validation). New callers should prefer
+// resolveKernelPath which validates existence and returns a legible error.
+func kernelPathFor() string {
+	p, _ := resolveKernelPath()
+	if p != "" {
+		return p
+	}
+	// Fallback: return the binary-relative candidate even if it does not exist,
+	// so callers that only need the path for printing/logging still get something.
 	exe, err := os.Executable()
 	if err != nil {
 		return ""
@@ -1199,24 +1379,175 @@ func kernelPathFor() string {
 
 // ── list ─────────────────────────────────────────────────────────────────────
 
+// sandboxListWideRowJSON is one row in the wide label-filtered list output.
+// Used only when --label and --wide are both present.
+type sandboxListWideRowJSON struct {
+	ID             string `json:"id"`
+	Handle         string `json:"handle"`
+	State          string `json:"state"`
+	UptimeSeconds  int64  `json:"uptime_seconds"`
+	AllocatedBytes int64  `json:"allocated_bytes"`
+	Error          string `json:"error,omitempty"`
+}
+
+// sandboxListWideDataJSON is the machine-contract payload for sandbox list --wide.
+type sandboxListWideDataJSON struct {
+	// LabelKey and LabelValue record the filter that produced this view.
+	LabelKey        string                   `json:"label_key"`
+	LabelValue      string                   `json:"label_value"`
+	Sandboxes       []sandboxListWideRowJSON  `json:"sandboxes"`
+	TotalAllocBytes int64                    `json:"total_alloc_bytes"`
+	LeakedResources int                      `json:"leaked_resources"`
+}
+
+// parseLabel splits a KEY=VALUE label string. Returns an error on bad format.
+func parseLabel(cmd, label string) (key, value string, err error) {
+	k, v, ok := strings.Cut(label, "=")
+	if !ok || k == "" || v == "" {
+		return "", "", &UsageError{Msg: fmt.Sprintf("%s --label: requires KEY=VALUE format; got %q", cmd, label)}
+	}
+	return k, v, nil
+}
+
+// runSandboxList implements `sandbox list [--label KEY=VALUE] [--wide]`.
+//
+// Without flags: lists all sandboxes (existing behaviour).
+// --label KEY=VALUE: filters by label (AND-matched when repeated; any key accepted).
+// --wide (requires --label): shows per-sandbox disk allocation, uptime, and
+//
+//	host-wide leaked-resource count using the same three-way ResourceIndex
+//	classification as `nexus3 reap` (owned/orphan/live). Allocated bytes use
+//	stat(2).Blocks*512 — never apparent size — to avoid the sparse-disk trap.
+//	Degradation: an unreachable sandbox appears as a row with its error; other
+//	rows are unaffected. Zero matches → empty output, exit 0.
 func runSandboxList(ctx context.Context, args []string, out *Output, svc *service.Service) error {
-	if len(args) != 0 {
-		return &UsageError{Msg: "sandbox list: usage: sandbox list"}
+	var labelFlag string
+	var wideFlag bool
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--label":
+			if i+1 >= len(args) {
+				return &UsageError{Msg: "sandbox list: --label requires an argument"}
+			}
+			i++
+			labelFlag = args[i]
+		case args[i] == "--wide":
+			wideFlag = true
+		default:
+			return &UsageError{Msg: fmt.Sprintf("sandbox list: unknown flag %q; usage: sandbox list [--label KEY=VALUE] [--wide]", args[i])}
+		}
 	}
 
-	all, err := svc.List(ctx)
+	if wideFlag && labelFlag == "" {
+		return &UsageError{Msg: "sandbox list: --wide requires --label"}
+	}
+
+	// Unfiltered list: existing behaviour unchanged.
+	if labelFlag == "" {
+		all, err := svc.List(ctx)
+		if err != nil {
+			return errSandbox("sandbox list", err)
+		}
+		infos := make([]sandboxInfoJSON, 0, len(all))
+		for _, sb := range all {
+			infos = append(infos, toSandboxInfoJSON(sb))
+		}
+		out.EmitSuccess("sandbox.list", sandboxListDataJSON{Sandboxes: infos},
+			fmt.Sprintf("%d sandbox(es)", len(infos)))
+		return nil
+	}
+
+	// Label-filtered list.
+	lKey, lVal, lErr := parseLabel("sandbox list", labelFlag)
+	if lErr != nil {
+		return lErr
+	}
+
+	if wideFlag {
+		return runSandboxListWide(ctx, lKey, lVal, out, svc)
+	}
+
+	// Narrow label-filtered list: AND-match on the single specified label.
+	sandboxes, err := svc.GetByLabels(ctx, map[string]string{lKey: lVal})
 	if err != nil {
 		return errSandbox("sandbox list", err)
 	}
-
-	infos := make([]sandboxInfoJSON, 0, len(all))
-	for _, sb := range all {
+	infos := make([]sandboxInfoJSON, 0, len(sandboxes))
+	for _, sb := range sandboxes {
 		infos = append(infos, toSandboxInfoJSON(sb))
 	}
-
 	out.EmitSuccess("sandbox.list", sandboxListDataJSON{Sandboxes: infos},
-		fmt.Sprintf("%d sandbox(es)", len(infos)))
+		fmt.Sprintf("%d sandbox(es) with %s=%s", len(infos), lKey, lVal))
 	return nil
+}
+
+// runSandboxListWide renders the wide (--wide) view for
+// `sandbox list --label KEY=VALUE --wide`. It calls service.LabelStatus which
+// uses the same ResourceIndex three-way classification (owned/orphan/live) as
+// `nexus3 reap`, ensuring that this view and `nexus3 reap` never disagree
+// about leaked count.
+func runSandboxListWide(ctx context.Context, labelKey, labelValue string, out *Output, svc *service.Service) error {
+	report, err := svc.LabelStatus(ctx, labelKey, labelValue)
+	if err != nil {
+		return errSandbox("sandbox list --wide", err)
+	}
+
+	rows := make([]sandboxListWideRowJSON, 0, len(report.Rows))
+	for _, row := range report.Rows {
+		r := sandboxListWideRowJSON{
+			ID:             row.Sandbox.ID.String(),
+			Handle:         row.Sandbox.Handle(),
+			State:          row.Sandbox.State.String(),
+			UptimeSeconds:  row.UptimeSeconds,
+			AllocatedBytes: row.AllocatedBytes,
+		}
+		if row.Err != nil {
+			r.Error = row.Err.Error()
+		}
+		rows = append(rows, r)
+	}
+
+	data := sandboxListWideDataJSON{
+		LabelKey:        labelKey,
+		LabelValue:      labelValue,
+		Sandboxes:       rows,
+		TotalAllocBytes: report.TotalAllocBytes,
+		LeakedResources: report.LeakedCount,
+	}
+
+	msg := renderSandboxListWide(labelKey, labelValue, report)
+	out.EmitSuccess("sandbox.list.wide", data, msg)
+	return nil
+}
+
+// renderSandboxListWide formats the wide list as a tabwriter table. Returns the
+// table as a string without a trailing newline (EmitSuccess appends its own).
+func renderSandboxListWide(labelKey, labelValue string, report *service.LabelStatusReport) string {
+	var buf bytes.Buffer
+	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
+
+	fmt.Fprintf(tw, "ID\tSTATE\tUPTIME\tDISK\tERROR\n")
+	for _, row := range report.Rows {
+		errStr := ""
+		if row.Err != nil {
+			errStr = row.Err.Error()
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+			row.Sandbox.ID.String(),
+			row.Sandbox.State.String(),
+			service.FormatUptime(row.UptimeSeconds),
+			service.FormatBytes(row.AllocatedBytes),
+			errStr,
+		)
+	}
+	tw.Flush()
+
+	fmt.Fprintf(&buf, "\n%s=%s | total disk: %s | leaked resources: %d",
+		labelKey, labelValue,
+		service.FormatBytes(report.TotalAllocBytes),
+		report.LeakedCount,
+	)
+	return strings.TrimRight(buf.String(), "\n")
 }
 
 // ── rm ────────────────────────────────────────────────────────────────────────
@@ -1240,6 +1571,9 @@ func runSandboxRm(ctx context.Context, args []string, out *Output, svc *service.
 			target = &sb
 			break
 		}
+	}
+	if target != nil {
+		stopDetachedSupervisor(ctx, svc, *target)
 	}
 	// We prefer the service.Remove resolution (prefix/handle/id) rather than
 	// duplicating it; target is just for the success message.
@@ -1265,12 +1599,24 @@ func runSandboxStart(ctx context.Context, args []string, out *Output, svc *servi
 	if len(args) != 1 {
 		return &UsageError{Msg: "sandbox start: usage: sandbox start <id|prefix|project/name>"}
 	}
-
-	sb, err := svc.Start(ctx, args[0])
+	sb, err := svc.ResolveRef(ctx, args[0])
 	if err != nil {
 		return errSandbox("sandbox start", err)
 	}
-
+	if err := ensureDetachedSupervisor(ctx, svc, sb); err != nil {
+		// No spawn spec (store-only or pre-D-PD-26 sandbox): fall back to in-process Start.
+		slog.Info("sandbox start: no detached supervisor; in-process start", "sandbox", sb.ID, "err", err)
+		started, startErr := svc.Start(ctx, args[0])
+		if startErr != nil {
+			return errSandbox("sandbox start", startErr)
+		}
+		sb = started
+	} else {
+		fresh, getErr := svc.GetSandboxByID(ctx, sb.ID)
+		if getErr == nil {
+			sb = fresh
+		}
+	}
 	out.EmitSuccess("sandbox.started", toSandboxInfoJSON(sb),
 		fmt.Sprintf("started sandbox %s (%s)", sb.Handle(), sb.ID))
 	return nil
@@ -1282,12 +1628,23 @@ func runSandboxStop(ctx context.Context, args []string, out *Output, svc *servic
 	if len(args) != 1 {
 		return &UsageError{Msg: "sandbox stop: usage: sandbox stop <id|prefix|project/name>"}
 	}
-
-	sb, err := svc.Stop(ctx, args[0])
+	sb, err := svc.ResolveRef(ctx, args[0])
 	if err != nil {
 		return errSandbox("sandbox stop", err)
 	}
-
+	if sb.SupervisorSock != "" {
+		stopDetachedSupervisor(ctx, svc, sb)
+		fresh, getErr := svc.GetSandboxByID(ctx, sb.ID)
+		if getErr == nil {
+			sb = fresh
+		}
+	} else {
+		stopped, stopErr := svc.Stop(ctx, args[0])
+		if stopErr != nil {
+			return errSandbox("sandbox stop", stopErr)
+		}
+		sb = stopped
+	}
 	out.EmitSuccess("sandbox.stopped", toSandboxInfoJSON(sb),
 		fmt.Sprintf("stopped sandbox %s (%s)", sb.Handle(), sb.ID))
 	return nil

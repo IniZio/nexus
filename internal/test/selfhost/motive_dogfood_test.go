@@ -202,7 +202,7 @@ func TestMotiveDogfood(t *testing.T) {
 		}
 	})
 
-	// MotiveID is non-empty; Broker/UseAgentSeed are intentionally UNSET
+	// Labels["motive"] is non-empty; Broker/UseAgentSeed are intentionally UNSET
 	// (double-seed hazard — do NOT set options-seeding AND seed manually).
 	sb, err := service.CreateAndBoot(
 		bootCtx, svc, cache, factory, probe,
@@ -210,7 +210,7 @@ func TestMotiveDogfood(t *testing.T) {
 		service.CreateAndBootOptions{
 			Image:               service.ImageSpec{Digest: string(img.Digest)},
 			CacheRoot:           cacheRoot,
-			MotiveID:            motiveE2EMotiveID,
+			Labels:              map[string]string{"motive": motiveE2EMotiveID},
 			AllowedHosts:        service.AgentEgressHosts(),
 			ReachabilityTimeout: 60 * time.Second,
 		},

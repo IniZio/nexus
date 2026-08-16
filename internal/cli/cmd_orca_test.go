@@ -52,10 +52,14 @@ func createOrcaSandbox(t *testing.T, svc *service.Service, motiveID, name string
 	newDriver := service.DriverFactory(func(_ string, _ []service.ExtraDisk) (driver.Driver, error) {
 		return fake.New(), nil
 	})
+	var orcaLabels map[string]string
+	if motiveID != "" {
+		orcaLabels = map[string]string{"motive": motiveID}
+	}
 	sb, err := service.CreateAndBoot(context.Background(), svc, imgCache, newDriver, nopProbe,
 		"orca", name,
 		service.CreateAndBootOptions{
-			MotiveID:            motiveID,
+			Labels:              orcaLabels,
 			Image:               service.ImageSpec{RootfsPath: f.Name()},
 			ReachabilityTimeout: 5 * time.Second,
 		},
@@ -491,15 +495,8 @@ func TestOrcaWorkspaceSpec_GuestPathMatchesProjectRoot(t *testing.T) {
 
 func TestGitHostsFromURL_GitHub(t *testing.T) {
 	hosts := gitHostsFromURL("https://github.com/owner/repo.git")
-	found := map[string]bool{}
-	for _, h := range hosts {
-		found[h] = true
-	}
-	if !found["github.com"] {
-		t.Error("github.com must be in allowlist")
-	}
-	if !found["codeload.github.com"] {
-		t.Error("codeload.github.com must be in allowlist for GitHub repos")
+	if hosts != nil {
+		t.Errorf("D-PD-23: GitHub URLs must not widen orca AllowedHosts; got %v", hosts)
 	}
 }
 
@@ -529,7 +526,8 @@ func TestGitHostsFromURL_Empty(t *testing.T) {
 func TestOrcaCreate_AllowedHostsInEnvelope(t *testing.T) {
 	svc := newTestOrcaService(t)
 
-	// Mirror what orcaCreate does: base set + git hosts for a GitHub URL.
+	// Mirror what orcaCreate does: AgentEgressHosts only. GitHub hosts from
+	// the recipe URL are NOT appended (D-PD-23).
 	const repoURL = "https://github.com/anthropics/anthropic-sdk-go"
 	allowedHosts := append(service.AgentEgressHosts(), gitHostsFromURL(repoURL)...)
 
@@ -548,7 +546,7 @@ func TestOrcaCreate_AllowedHostsInEnvelope(t *testing.T) {
 	sb, err := service.CreateAndBoot(context.Background(), svc, imgCache, newDriver, nopProbe,
 		"orca", "allowed-hosts-regression",
 		service.CreateAndBootOptions{
-			MotiveID:            "regression-test",
+			Labels:              map[string]string{"motive": "regression-test"},
 			Image:               service.ImageSpec{RootfsPath: f.Name()},
 			ReachabilityTimeout: 5 * time.Second,
 			AllowedHosts:        allowedHosts,
@@ -565,14 +563,17 @@ func TestOrcaCreate_AllowedHostsInEnvelope(t *testing.T) {
 	}
 
 	required := []string{
-		service.AnthropicAPIHost,    // api.anthropic.com
-		service.ClaudePlatformHost,  // platform.claude.com
-		"github.com",                // git clone host
-		"codeload.github.com",       // GitHub pack CDN
+		service.AnthropicAPIHost,   // api.anthropic.com
+		service.ClaudePlatformHost, // platform.claude.com
 	}
 	for _, h := range required {
 		if !got[h] {
 			t.Errorf("Envelope.AllowedHosts missing %q; got %v", h, sb.Envelope.AllowedHosts)
+		}
+	}
+	for _, h := range sb.Envelope.AllowedHosts {
+		if h == "github.com" || h == "codeload.github.com" {
+			t.Errorf("D-PD-23: orca Envelope must not contain %q; got %v", h, sb.Envelope.AllowedHosts)
 		}
 	}
 

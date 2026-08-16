@@ -28,6 +28,8 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -155,6 +157,11 @@ func (s *Service) WithDiskDir(dir string) *Service {
 
 // CreateOptions carries options for Create.
 type CreateOptions struct {
+	// Labels is the arbitrary key=value map stamped onto the sandbox record at
+	// creation time. Nil and empty map are equivalent (sandbox carries no labels).
+	// Callers set labels via repeatable --label KEY=VALUE flags (D-PD-21).
+	Labels map[string]string
+
 	// RemoveOnExit records the --rm intent durably at creation time.
 	// When true, the sandbox is removed when its primary command exits.
 	RemoveOnExit bool
@@ -187,6 +194,7 @@ func (s *Service) Create(ctx context.Context, project, name string, opts CreateO
 		ID:           domain.NewSandboxID(),
 		Name:         name,
 		Project:      project,
+		Labels:       opts.Labels,
 		State:        domain.Created,
 		Envelope:     domain.Envelope{}, // frozen at creation; future slices populate fields
 		RemoveOnExit: opts.RemoveOnExit,
@@ -313,9 +321,15 @@ func (s *Service) reapBuilders(ctx context.Context, all []domain.Sandbox) {
 	}
 }
 
+// GetByLabels returns all sandboxes whose Labels map contains every key=value
+// pair in labels (AND-semantics). An empty labels argument matches nothing.
+func (s *Service) GetByLabels(ctx context.Context, labels map[string]string) ([]domain.Sandbox, error) {
+	return s.store.GetByLabels(ctx, labels)
+}
+
 // GetByMotive returns all sandboxes associated with the given motive ID.
-// Delegates directly to the store; an unknown or empty motive returns an
-// empty (non-nil) slice and nil error.
+// Convenience wrapper over GetByLabels for the motive=<id> pattern.
+// An unknown or empty motive returns an empty (non-nil) slice and nil error.
 func (s *Service) GetByMotive(ctx context.Context, motiveID string) ([]domain.Sandbox, error) {
 	return s.store.GetByMotive(ctx, motiveID)
 }
@@ -621,17 +635,26 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 		return fmt.Errorf("service: remove %s: delete record: %w", sb.ID, err)
 	}
 
-	// Step 4: reap the per-sandbox ext4 disk copy created by CreateAndBoot
-	// (S-COW). Delegates to the shared helper so Service.Remove and the
-	// recovery --rm path cannot drift. Idempotent — missing file is not an
-	// error.
+	// Step 4: reap per-sandbox disk resources. Both helpers are idempotent
+	// (missing files are not errors) so crashes mid-remove are safe to retry.
+	//
+	// ReapDiskCopy removes ULID-keyed resources: .raw, -workspace.ext4,
+	// .create-intent.json.
+	//
+	// ReapShadowDisks removes handle-keyed shadow disk images created by
+	// buildShadowDiskSpecs. Shadow disks are named <safeHandle>.shadow.*.ext4
+	// and cannot be correlated by ULID; the sandbox handle is the owner key.
+	// Both are reaped here so that a single Service.Remove call is the complete
+	// reclamation contract for all disk resources of a sandbox.
 	_ = ReapDiskCopy(s.diskDir, sb.ID)
+	_ = ReapShadowDisks(s.diskDir, sb.Handle())
 
 	return nil
 }
 
 // startSupervisor assembles a PerimeterSupervisor for the running sandbox and
-// stores it. Called by Start after the store lock is released.
+// stores it. Called by Start after the store lock is released, and by Fork
+// and RestoreFromSnapshot for children persisted directly as Running.
 func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, sb domain.Sandbox) error {
 	fd, err := hook.GuestNetworkFD(ctx, sb.ID)
 	if err != nil {
@@ -648,11 +671,10 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 	// this is the case for sandboxes created via "sandbox create --file" which
 	// carry no Claude credentials and need unrestricted outbound access (e.g.
 	// docker pulls, apt-get, pip). Egress is wide open: the ACL is disarmed
-	// (AllowAllFor), the MITM proxy is NOT instantiated, and onAudit is nil so
-	// no traffic is audited or blocked. This is intentionally unrestricted and
-	// unaudited because these sandboxes carry no real credentials — the risk is
-	// confined. Sandboxes with an explicit AllowedHosts list keep the
-	// restrictive deny-by-default policy with MITM interception.
+	// (AllowAllFor). If SecretHosts is also empty, the MITM proxy is NOT
+	// instantiated. If SecretHosts is set (builtin gh / --secret), MITM
+	// intercepts only those hosts so placeholders can be swapped; every other
+	// CONNECT is tunneled with a real server certificate (D-PD-25).
 	allowAll := len(sb.Envelope.AllowedHosts) == 0
 	if allowAll {
 		al.AllowAllFor(72 * time.Hour) // generous window; supervisor restarts reset it
@@ -660,17 +682,18 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 
 	stack := netstack.New(al, nil) // onAudit: nil (discards events; a future slice wires observability)
 
-	// MITM proxy: only instantiated when AllowedHosts is non-empty (curated
-	// allowlist mode). AllowAll sandboxes (--file path, no credentials) skip
-	// MITM so that build tools inside containers see real server certificates
-	// and egress flows through gvproxy without TLS interception.
+	// MITM proxy: instantiated when AllowedHosts is non-empty (curated
+	// allowlist) OR SecretHosts is set (human-path secret swap). Pure
+	// AllowAll sandboxes skip MITM so build tools see real server certs.
 	var proxy *mitm.Proxy
-	if !allowAll {
+	if !allowAll || len(sb.Envelope.SecretHosts) > 0 {
 		var err error
 		proxy, err = mitm.New(mitm.Config{
 			SandboxID:    sb.ID,
 			AllowedHosts: sb.Envelope.AllowedHosts,
+			SecretHosts:  sb.Envelope.SecretHosts,
 			Broker:       s.broker,
+			AllowAll:     allowAll && len(sb.Envelope.SecretHosts) > 0,
 		})
 		if err != nil {
 			fd.Close()
@@ -914,14 +937,28 @@ func (s *Service) Fork(ctx context.Context, ref string, count int) ([]domain.San
 	// Persist each child record. Children start directly in Running state
 	// (edge 5: ∅→running); there is no ∅ state in the domain model so we
 	// use store.Create (not store.Update) with State already set to Running.
+	//
+	// Envelope and Labels are copied from the parent. An empty child
+	// AllowedHosts is the AllowAll sentinel in startSupervisor (empty list
+	// => 72h wide-open unaudited egress). Copying the allowlist is NOT a
+	// credential copy: broker tokens are keyed by sandbox ID, so the child
+	// MITM mints its own placeholders. D-PD-22: an agent parent has no
+	// github.com in AllowedHosts, so children stay dark. Do not fork a
+	// future git VM until GIT-CRED decides credential-scope inheritance.
 	children := make([]domain.Sandbox, 0, count)
 	for i, id := range childIDs {
 		child := domain.Sandbox{
 			ID:         id,
 			Name:       fmt.Sprintf("fork-%s", id.String()[3:]),
 			Project:    parent.Project,
+			Labels:     maps.Clone(parent.Labels),
 			State:      domain.Running,
 			InstanceID: instanceIDs[i],
+			Envelope: domain.Envelope{
+				ImageDigest:  parent.Envelope.ImageDigest,
+				AllowedHosts: slices.Clone(parent.Envelope.AllowedHosts),
+				SSHPublicKey: parent.Envelope.SSHPublicKey,
+			},
 			Provenance: &domain.Provenance{
 				ParentID:       parent.ID,
 				SourceSnapshot: string(snap.ID),
@@ -931,6 +968,18 @@ func (s *Service) Fork(ctx context.Context, ref string, count int) ([]domain.San
 			return nil, fmt.Errorf("service: fork %s: persist child %s: %w", parent.ID, id, err)
 		}
 		children = append(children, child)
+	}
+
+	// Fork persists children Running and never calls Start, so this is the
+	// only chance to attach a perimeter. Same gate as Start: NetworkHook
+	// plus a broker. The driver already holds a per-child perimConn
+	// (cloudhypervisor/fork.go); GuestNetworkFD claims it here.
+	if hook, ok := s.driver.(driver.NetworkHook); ok && s.broker != nil {
+		for i := range children {
+			if err := s.startSupervisor(ctx, hook, children[i]); err != nil {
+				return nil, fmt.Errorf("service: fork %s: perimeter child %s: %w", parent.ID, children[i].ID, err)
+			}
+		}
 	}
 
 	return children, nil
@@ -1043,6 +1092,15 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 
 	// Persist each child record. Children start directly in Running state
 	// (edge 5: ∅→running). Provenance.SourceSnapshot satisfies S2-AC3.
+	//
+	// If the origin sandbox still exists, copy its Envelope, Labels and
+	// Project — same inheritance as Fork. A missing origin (retained
+	// snapshot whose sandbox was removed) cannot reconstruct policy; those
+	// children stay empty, matching prior restore behaviour, and we do
+	// not start a supervisor (empty AllowedHosts is AllowAll).
+	origin, originErr := s.store.Get(ctx, snap.SandboxID)
+	haveOrigin := originErr == nil
+
 	children := make([]domain.Sandbox, 0, count)
 	for i, id := range childIDs {
 		child := domain.Sandbox{
@@ -1055,10 +1113,29 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 				SourceSnapshot: string(snapID),
 			},
 		}
+		if haveOrigin {
+			child.Project = origin.Project
+			child.Labels = maps.Clone(origin.Labels)
+			child.Envelope = domain.Envelope{
+				ImageDigest:  origin.Envelope.ImageDigest,
+				AllowedHosts: slices.Clone(origin.Envelope.AllowedHosts),
+				SSHPublicKey: origin.Envelope.SSHPublicKey,
+			}
+		}
 		if err := s.store.Create(ctx, child); err != nil {
 			return nil, fmt.Errorf("service: restore %s: persist child %s: %w", snapID, id, err)
 		}
 		children = append(children, child)
+	}
+
+	if haveOrigin {
+		if hook, ok := s.driver.(driver.NetworkHook); ok && s.broker != nil {
+			for i := range children {
+				if err := s.startSupervisor(ctx, hook, children[i]); err != nil {
+					return nil, fmt.Errorf("service: restore %s: perimeter child %s: %w", snapID, children[i].ID, err)
+				}
+			}
+		}
 	}
 
 	return children, nil

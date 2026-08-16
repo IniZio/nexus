@@ -40,3 +40,9 @@ func (s *Service) GetSandboxByID(ctx context.Context, id domain.SandboxID) (doma
 	}
 	return sb, nil
 }
+
+// ResolveRef finds a sandbox by handle, exact ID, or ID prefix.
+func (s *Service) ResolveRef(ctx context.Context, ref string) (domain.Sandbox, error) {
+	return s.resolve(ctx, ref)
+}
+

@@ -223,8 +223,16 @@ func findRepoRoot() (string, error) {
 
 // buildAgent compiles cmd/nexus3-agent as a static CGO_ENABLED=0 linux/amd64
 // binary and writes it to dstPath.
+//
+// The binary is stamped with a build tag of the form "YYYYMMDD-<git-short-sha>"
+// via -ldflags so that image staleness can be detected at runtime: when the
+// sandbox starts, nexus3-agent logs "starting (pid=1 build=<tag>)" on the
+// console, and the operator can compare <tag> against the current git revision.
 func buildAgent(ctx context.Context, repoRoot, dstPath string) error {
+	buildTag := agentBuildStamp(ctx, repoRoot)
+	ldflag := "-X main.agentBuildTag=" + buildTag
 	cmd := exec.CommandContext(ctx, "go", "build",
+		"-ldflags", ldflag,
 		"-o", dstPath,
 		"./cmd/nexus3-agent",
 	)
@@ -240,6 +248,20 @@ func buildAgent(ctx context.Context, repoRoot, dstPath string) error {
 		return fmt.Errorf("go build ./cmd/nexus3-agent: %w", err)
 	}
 	return nil
+}
+
+// agentBuildStamp returns a short build tag for embedding in the agent binary.
+// Format: "YYYYMMDD-<short-sha>" where short-sha is the first 7 chars of the
+// current git HEAD commit.  Falls back to "YYYYMMDD-unknown" if git is
+// unavailable.
+func agentBuildStamp(ctx context.Context, repoRoot string) string {
+	date := time.Now().UTC().Format("20060102")
+	out, err := exec.CommandContext(ctx, "git", "rev-parse", "--short=7", "HEAD").
+		Output()
+	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
+		return date + "-unknown"
+	}
+	return date + "-" + strings.TrimSpace(string(out))
 }
 
 // exportRootfs creates a stopped container from imgTag, streams its filesystem

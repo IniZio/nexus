@@ -196,6 +196,67 @@ func TestSubstrateError_WrapsErrNoSubstrate(t *testing.T) {
 	}
 }
 
+// ── Kernel check (check 4) ────────────────────────────────────────────────────
+
+// TestSelectWith_MissingKernel_SubstrateError verifies that when the first
+// three checks (platform, binary, kvm) all pass but the kernel image is
+// missing, selectWith returns a SubstrateError that mentions NEXUS3_KERNEL_PATH
+// rather than producing a driver with an empty KernelPath that would fail
+// later at VM boot with an opaque "Cannot open kernel file" error.
+func TestSelectWith_MissingKernel_SubstrateError(t *testing.T) {
+	t.Setenv("NEXUS3_KERNEL_PATH", "/nonexistent-kernel-for-test/vmlinux")
+
+	p := workingLinuxProbes("/usr/bin/cloud-hypervisor")
+	drv, serr := selectWith(p, "")
+	if drv != nil {
+		t.Error("missing kernel: expected nil driver")
+	}
+	if serr == nil {
+		t.Fatal("missing kernel: expected SubstrateError, got nil")
+	}
+	if !strings.Contains(serr.Msg, "NEXUS3_KERNEL_PATH") {
+		t.Errorf("SubstrateError.Msg should mention NEXUS3_KERNEL_PATH; got: %s", serr.Msg)
+	}
+	if !errors.Is(serr, service.ErrNoSubstrate) {
+		t.Errorf("SubstrateError must wrap service.ErrNoSubstrate")
+	}
+}
+
+// TestRunAllChecks_MissingKernel_KernelCheckPresent verifies that when all
+// three platform/binary/kvm checks pass but the kernel is missing, runAllChecks
+// appends a "kernel" CheckResult with OK=false (so cmd_doctor can report it)
+// and returns a nil driver.
+func TestRunAllChecks_MissingKernel_KernelCheckPresent(t *testing.T) {
+	t.Setenv("NEXUS3_KERNEL_PATH", "/nonexistent-kernel-for-test/vmlinux")
+
+	p := workingLinuxProbes("/usr/bin/cloud-hypervisor")
+	checks, drv := runAllChecks(p)
+	if drv != nil {
+		t.Error("missing kernel: expected nil driver")
+	}
+
+	// Find the kernel check in the results.
+	var kernelCheck *CheckResult
+	for i := range checks {
+		if checks[i].Name == "kernel" {
+			kernelCheck = &checks[i]
+			break
+		}
+	}
+	if kernelCheck == nil {
+		t.Fatalf("expected a \"kernel\" CheckResult in %v", checks)
+	}
+	if kernelCheck.OK {
+		t.Error("kernel check should be OK=false when the kernel is missing")
+	}
+	if !strings.Contains(kernelCheck.Detail, "NEXUS3_KERNEL_PATH") {
+		t.Errorf("kernel check detail should mention NEXUS3_KERNEL_PATH; got: %s", kernelCheck.Detail)
+	}
+	if kernelCheck.Remediation == "" {
+		t.Error("kernel check should have non-empty Remediation")
+	}
+}
+
 // ── runAllChecks always reports all checks ────────────────────────────────────
 
 func TestRunAllChecks_NonLinux_ReportsAllThree(t *testing.T) {

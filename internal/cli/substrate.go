@@ -178,9 +178,40 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 		if storeRoot, derr := store.DefaultRoot(); derr == nil {
 			diskDir = storeRoot + "/disks"
 		}
+
+		// ── Check 4: Kernel ──────────────────────────────────────────────────
+		// Validate the kernel path before driver construction. kernelPathFor()
+		// is intentionally NOT used here: it swallows the resolution error and
+		// returns a best-effort non-existent path, which causes cloudhypervisor.New
+		// to succeed (path is not validated at construction time) and defer the
+		// failure to VM boot, where CH emits an opaque "Cannot open kernel file"
+		// error instead of a legible NEXUS3_KERNEL_PATH message.
+		//
+		// cmd_doctor calls runAllChecks and reports every check — including this
+		// one — without aborting, so adding it here is additive for doctor.
+		// selectWith (→ SelectSubstrate → operational start/recover paths) uses
+		// the returned drv; when kernelErr != nil we return (checks, nil) so
+		// selectWith surfaces this check as a SubstrateError with the actionable
+		// kernel message.
+		kernelPath, kernelErr := resolveKernelPath()
+		kernelCheck := CheckResult{
+			Name:        "kernel",
+			Description: "guest kernel image (vmlinux) exists",
+		}
+		if kernelErr != nil {
+			kernelCheck.OK = false
+			kernelCheck.Detail = kernelErr.Error()
+			kernelCheck.Remediation = "Set NEXUS3_KERNEL_PATH to the vmlinux image path, or place the kernel image at images/kernel/vmlinux-x86_64 alongside the nexus3 binary."
+			checks = append(checks, kernelCheck)
+			return checks, nil // drv stays nil; selectWith will return a SubstrateError
+		}
+		kernelCheck.OK = true
+		kernelCheck.Detail = kernelPath
+		checks = append(checks, kernelCheck)
+
 		d, err := cloudhypervisor.New(cloudhypervisor.Config{
 			BinaryPath: binaryPath,
-			KernelPath: kernelPathFor(),
+			KernelPath: kernelPath,
 			DiskDir:    diskDir,
 		})
 		if err != nil {

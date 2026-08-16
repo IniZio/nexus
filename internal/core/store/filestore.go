@@ -28,7 +28,8 @@ const currentSchemaVersion = 1
 //
 // Durable fields (exactly these, nothing more):
 //   - identity:       ID, Name, Project
-//   - motive:         MotiveID (omitted when empty for backward compatibility)
+//   - labels:         Labels (map[string]string; omitted when empty)
+//   - legacy motive:  MotiveID (read-only backward compat; migrated to Labels["motive"] on load)
 //   - frozen config:  Envelope
 //   - state cache:    State
 //   - run identity:   InstanceID
@@ -36,11 +37,17 @@ const currentSchemaVersion = 1
 //   - WAL marker:     RemovalMarker
 //   - stop qualifier: StopReason (omitted when empty for backward compatibility)
 //   - fork lineage:   Provenance (omitted for non-fork sandboxes)
+//   - git anchor:     BaseRef (40-hex SHA; omitted for sandboxes without a git workspace)
 type record struct {
 	SchemaVersion  int               `json:"schema_version"`
 	ID             domain.SandboxID  `json:"id"`
 	Name           string            `json:"name"`
 	Project        string            `json:"project"`
+	// Labels is the current label store. Written by all new records.
+	Labels         map[string]string `json:"labels,omitempty"`
+	// MotiveID is a legacy field present in records written before the Labels
+	// field existed. On read, a non-empty MotiveID is migrated into
+	// Labels["motive"]. New records never write this field.
 	MotiveID       string            `json:"motive_id,omitempty"`
 	State          domain.State      `json:"state"`
 	Envelope       domain.Envelope   `json:"envelope"`
@@ -52,6 +59,9 @@ type record struct {
 	SupervisorPID  int               `json:"supervisor_pid,omitempty"`
 	SupervisorSock string            `json:"supervisor_sock,omitempty"`
 	CreatorPID     int               `json:"creator_pid,omitempty"`
+	// BaseRef is the shallow-clone boundary SHA recorded by G1 (D-PD-19).
+	// Omitted for sandboxes created without a git workspace.
+	BaseRef        string            `json:"base_ref,omitempty"`
 }
 
 // provenanceRecord is the on-disk form of domain.Provenance. Kept separate
@@ -68,7 +78,7 @@ func toRecord(sb domain.Sandbox) record {
 		ID:             sb.ID,
 		Name:           sb.Name,
 		Project:        sb.Project,
-		MotiveID:       sb.MotiveID,
+		Labels:         sb.Labels,
 		State:          sb.State,
 		Envelope:       sb.Envelope,
 		InstanceID:     sb.InstanceID,
@@ -78,6 +88,8 @@ func toRecord(sb domain.Sandbox) record {
 		SupervisorPID:  sb.SupervisorPID,
 		SupervisorSock: sb.SupervisorSock,
 		CreatorPID:     sb.CreatorPID,
+		BaseRef:        sb.BaseRef,
+		// MotiveID intentionally omitted: new records never write this field.
 	}
 	if sb.Provenance != nil {
 		r.Provenance = &provenanceRecord{
@@ -89,11 +101,26 @@ func toRecord(sb domain.Sandbox) record {
 }
 
 func (r record) toDomain() domain.Sandbox {
+	// Start with the stored Labels map (may be nil for old records).
+	labels := r.Labels
+	// Backward compat: a legacy record carries MotiveID but no Labels.
+	// Migrate the value into Labels["motive"] so callers need not know about
+	// the old field. If both exist (should not happen but be defensive), the
+	// stored Labels["motive"] takes precedence.
+	if r.MotiveID != "" {
+		if labels == nil {
+			labels = make(map[string]string, 1)
+		}
+		if labels["motive"] == "" {
+			labels["motive"] = r.MotiveID
+		}
+	}
+
 	sb := domain.Sandbox{
 		ID:             r.ID,
 		Name:           r.Name,
 		Project:        r.Project,
-		MotiveID:       r.MotiveID,
+		Labels:         labels,
 		State:          r.State,
 		Envelope:       r.Envelope,
 		InstanceID:     r.InstanceID,
@@ -103,6 +130,7 @@ func (r record) toDomain() domain.Sandbox {
 		SupervisorPID:  r.SupervisorPID,
 		SupervisorSock: r.SupervisorSock,
 		CreatorPID:     r.CreatorPID,
+		BaseRef:        r.BaseRef,
 	}
 	if r.Provenance != nil {
 		sb.Provenance = &domain.Provenance{
@@ -274,38 +302,53 @@ func (s *FileStore) List(ctx context.Context) ([]domain.Sandbox, error) {
 	return out, nil
 }
 
-// GetByMotive returns all sandboxes whose MotiveID equals motiveID.
+// GetByLabels returns all sandboxes whose Labels map contains every key=value
+// pair in the labels argument (AND-semantics). An empty labels argument matches
+// nothing and returns an empty (non-nil) slice. An unknown label combination
+// returns an empty (non-nil) slice with nil error.
 //
-// An empty motiveID matches nothing and returns an empty (non-nil) slice —
-// an empty string is never a valid motive identifier, so treating it as
-// "no filter" would silently return unassociated sandboxes.
-// An unknown motiveID returns an empty (non-nil) slice with nil error.
-func (s *FileStore) GetByMotive(ctx context.Context, motiveID string) ([]domain.Sandbox, error) {
+// Legacy records carrying a MotiveID field (written before the Labels field
+// existed) are transparently migrated: their MotiveID value is accessible as
+// Labels["motive"] and participates in the AND-match.
+func (s *FileStore) GetByLabels(ctx context.Context, labels map[string]string) ([]domain.Sandbox, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	sandboxesDir := filepath.Join(s.root, "sandboxes")
-	entries, err := os.ReadDir(sandboxesDir)
+	if len(labels) == 0 {
+		return []domain.Sandbox{}, nil
+	}
+	all, err := s.List(ctx)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return []domain.Sandbox{}, nil
-		}
-		return nil, fmt.Errorf("store: get-by-motive: read %s: %w", sandboxesDir, err)
+		return nil, fmt.Errorf("store: get-by-labels: %w", err)
 	}
 	out := []domain.Sandbox{}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+	for _, sb := range all {
+		match := true
+		for k, v := range labels {
+			if sb.Labels[k] != v {
+				match = false
+				break
+			}
 		}
-		r, err := readRecord(filepath.Join(sandboxesDir, e.Name(), "record.json"))
-		if err != nil {
-			continue // corrupt, missing, or future-version — skip like List does
-		}
-		if motiveID != "" && r.MotiveID == motiveID {
-			out = append(out, r.toDomain())
+		if match {
+			out = append(out, sb)
 		}
 	}
 	return out, nil
+}
+
+// GetByMotive returns all sandboxes whose Labels["motive"] equals motiveID.
+// This is a convenience wrapper over GetByLabels for the common motive=<id>
+// selection pattern. Legacy records with a MotiveID field are transparently
+// migrated and matched correctly.
+//
+// An empty motiveID matches nothing and returns an empty (non-nil) slice.
+// An unknown motiveID returns an empty (non-nil) slice with nil error.
+func (s *FileStore) GetByMotive(ctx context.Context, motiveID string) ([]domain.Sandbox, error) {
+	if motiveID == "" {
+		return []domain.Sandbox{}, nil
+	}
+	return s.GetByLabels(ctx, map[string]string{"motive": motiveID})
 }
 
 // Update performs a read-modify-write of a sandbox record under an exclusive

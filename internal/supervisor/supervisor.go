@@ -420,8 +420,16 @@ func RunDetached(cfg Config) error {
 		caSeeder := service.NewAgentCACopySeeder(agentClient)
 		agentSeeder := service.NewAgentCopySeeder(agentClient)
 		cert := svc.GetPerimeterCACert(sb.ID)
-		seedDone := SeedLoop(ctx, sb.ID, &cert, caSeeder, agentSeeder, broker, refreshers,
-			maxSeedAttempts, 2*time.Second, svc)
+		humanSecrets := len(sb.Envelope.AllowedHosts) == 0 && len(sb.Envelope.SecretHosts) > 0
+		var seedDone bool
+		if humanSecrets {
+			// Human/git path (D-PD-25 / D-PD-26): seed CA + GH_TOKEN placeholder.
+			// SeedLoop would also emit CLAUDE_CODE_* vars; those belong on agent sandboxes.
+			seedDone = seedHumanSecrets(ctx, sb, cert, caSeeder, agentSeeder, broker, svc)
+		} else {
+			seedDone = SeedLoop(ctx, sb.ID, &cert, caSeeder, agentSeeder, broker, refreshers,
+				maxSeedAttempts, 2*time.Second, svc)
+		}
 		if !seedDone {
 			if ctx.Err() != nil {
 				slog.Warn("supervisor.seed_skipped", "reason", "context cancelled before seeding complete")
@@ -432,17 +440,11 @@ func RunDetached(cfg Config) error {
 			}
 		} else {
 			// Activate the CA cert in the system trust store so that non-Node.js
-			// HTTPS clients (git, wget, curl) trust the MITM proxy CA without
-			// explicit per-process configuration. GuestCACertPath is already in
-			// /usr/local/share/ca-certificates/ (written by SeedCA), so a single
-			// update-ca-certificates call incorporates it into /etc/ssl/certs/.
-			// Failure is non-fatal — claude still works via NODE_EXTRA_CA_CERTS.
+			// HTTPS clients (git, wget, curl, gh) trust the MITM proxy CA without
+			// explicit per-process configuration.
 			ucCtx, ucCancel := context.WithTimeout(ctx, 30*time.Second)
 			defer ucCancel()
 			if _, ucErr := agentClient.Exec(ucCtx, agent.ExecOptions{
-				// Full path: exec.Command does LookPath in the agent's own
-				// environment (PID-1 init, PATH may be unset), so a bare name
-				// would not be found even with Env["PATH"] set.
 				Argv: []string{"/usr/sbin/update-ca-certificates"},
 			}); ucErr != nil {
 				slog.Warn("supervisor.update_ca_certs_failed", "err", ucErr)
@@ -674,3 +676,42 @@ func SeedLoop(
 	}
 	return false
 }
+
+// seedHumanSecrets seeds the MITM CA plus GH_TOKEN / --secret placeholders
+// for a human sandbox (AllowAll + SecretHosts). The supervisor-owned broker
+// re-resolves tokens from `gh auth token` / process env (D-PD-26).
+func seedHumanSecrets(
+	ctx context.Context,
+	sb domain.Sandbox,
+	cert *x509.Certificate,
+	caSeeder, secretSeeder service.GuestSeeder,
+	broker *cred.Broker,
+	svc PerimeterCAGetter,
+) bool {
+	for attempt := range maxSeedAttempts {
+		if ctx.Err() != nil {
+			return false
+		}
+		if cert == nil && svc != nil {
+			cert = svc.GetPerimeterCACert(sb.ID)
+		}
+		if cert != nil {
+			if caErr := service.SeedCA(ctx, cert, sb.ID, caSeeder); caErr != nil {
+				slog.Debug("supervisor.seed_ca_retry", "attempt", attempt, "err", caErr)
+			} else if secErr := service.SeedGuestSecrets(ctx, broker, sb.ID, sb.Envelope.SecretSpecs, secretSeeder); secErr != nil {
+				slog.Debug("supervisor.seed_secrets_retry", "attempt", attempt, "err", secErr)
+			} else {
+				slog.Info("supervisor.human_secrets_complete", "sandbox", sb.ID,
+					"secret_hosts", sb.Envelope.SecretHosts)
+				return true
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return false
+}
+

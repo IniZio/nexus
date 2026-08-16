@@ -28,11 +28,11 @@ func newHarvestSvc(t *testing.T, motiveID string, count int) *service.Service {
 	ctx := context.Background()
 	for i := 0; i < count; i++ {
 		sb := domain.Sandbox{
-			ID:       domain.NewSandboxID(),
-			Name:     "w",
-			Project:  "test",
-			State:    domain.Created,
-			MotiveID: motiveID,
+			ID:      domain.NewSandboxID(),
+			Name:    "w",
+			Project: "test",
+			State:   domain.Created,
+			Labels:  map[string]string{"motive": motiveID},
 		}
 		if err := st.Create(ctx, sb); err != nil {
 			t.Fatalf("store.Create sandbox %d: %v", i, err)
