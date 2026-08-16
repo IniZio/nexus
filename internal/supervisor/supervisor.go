@@ -427,7 +427,12 @@ func RunDetached(cfg Config) error {
 		caSeeder := service.NewAgentCACopySeeder(agentClient)
 		agentSeeder := service.NewAgentCopySeeder(agentClient)
 		cert := svc.GetPerimeterCACert(sb.ID)
-		humanSecrets := len(sb.Envelope.AllowedHosts) == 0 && len(sb.Envelope.SecretHosts) > 0
+		// D-PD-33 / D-PD-36: seed human secrets whenever SecretHosts is non-empty.
+		// OpenEgress=true (human open-egress) AND OpenEgress=false (--egress closed)
+		// both carry SecretHosts that require MITM credential swap; the supervisor
+		// must mint placeholders in either posture. The original guard on OpenEgress
+		// silently skipped GH_TOKEN seeding for --egress closed sandboxes.
+		humanSecrets := len(sb.Envelope.SecretHosts) > 0
 		var seedDone bool
 		if humanSecrets {
 			// Human/git path (D-PD-25 / D-PD-26): seed CA + GH_TOKEN placeholder.

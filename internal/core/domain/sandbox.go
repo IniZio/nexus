@@ -150,6 +150,25 @@ type Envelope struct {
 	// The detached supervisor re-resolves real tokens (builtin gh / --secret)
 	// into its in-process broker on every Start.
 	SecretSpecs []string
+
+	// OpenEgress, when true, disarms the egress ACL so the sandbox has
+	// unrestricted outbound connectivity (docker pulls, apt-get, pip, etc.).
+	// This field MUST be set explicitly by the caller; an empty AllowedHosts
+	// is NOT a sentinel for open access (D-PD-33). Only the human create path
+	// (sandbox create --workspace / --file / --image) sets this to true.
+	// Agent sandboxes (WireClaudeEgress / orca / herdr) must never set it.
+	OpenEgress bool `json:"open_egress,omitempty"`
+
+	// AllowedRepo, when non-empty, scopes the MITM request allowlist to a
+	// single GitHub repository in "owner/repo" format. The MITM proxy enforces
+	// a per-request path allowlist for github.com, api.github.com, and
+	// uploads.github.com, refusing any path not explicitly needed for the PR
+	// and release flow (D-PD-36). This is the ONLY control bounding the
+	// operator's full-scope GitHub token for agent sandboxes; it must never
+	// be left empty when GitHub hosts appear in AllowedHosts or SecretHosts.
+	// An empty string disables the repo-scoped path check (human sandboxes
+	// with AllowAll egress do not need path restriction).
+	AllowedRepo string `json:"allowed_repo,omitempty"`
 }
 
 // Handle returns the human handle for the sandbox in "<project>/<name>" form.

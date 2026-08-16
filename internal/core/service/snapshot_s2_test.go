@@ -10,11 +10,30 @@ package service_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/IniZio/nexus3/internal/core/artifact"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/service"
 )
+
+// writeSnapWithOrigin writes a snapshot record whose SandboxID points to an
+// existing sandbox. D-PD-33 requires a valid origin for RestoreFromSnapshot.
+func writeSnapWithOrigin(t *testing.T, st *artifact.Store, id string, originID domain.SandboxID, kind artifact.SnapshotKind) artifact.Snapshot {
+	t.Helper()
+	snap := artifact.Snapshot{
+		ID:           artifact.SnapshotID(id),
+		SandboxID:    originID,
+		Kind:         kind,
+		Size:         4,
+		CommitMarker: "committed",
+		CreatedAt:    time.Now(),
+	}
+	if err := st.Write(snap, []byte("data")); err != nil {
+		t.Fatalf("aStore.Write(%s): %v", id, err)
+	}
+	return snap
+}
 
 // ── S2-AC1: fan-out N children from a retained snapshot ──────────────────────
 
@@ -26,10 +45,17 @@ func TestS2AC1_RestoreFromSnapshot_CreatesNRunningChildren(t *testing.T) {
 	const snapIDStr = "s2-ac1-retained-snap-000000"
 	snapID := artifact.SnapshotID(snapIDStr)
 
+	// D-PD-33: RestoreFromSnapshot requires the origin sandbox to exist so it
+	// can reconstruct the egress policy. Create a minimal origin record first.
+	origin, err := svc.Create(c, "proj", "s2-ac1-origin", service.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create origin: %v", err)
+	}
+
 	// Seed a retained snapshot record into the artifact store. The fake driver's
 	// ForkFrom does not read the store itself — it receives the Snapshot struct
 	// from the service, so only the artifact store record matters here.
-	writeSnap(t, aStore, snapIDStr, artifact.KindRetained)
+	writeSnapWithOrigin(t, aStore, snapIDStr, origin.ID, artifact.KindRetained)
 
 	const count = 3
 	children, err := svc.RestoreFromSnapshot(c, snapID, count)
@@ -94,7 +120,9 @@ func TestS2AC1_RestoreFromSnapshot_ParentSandboxUnaffected(t *testing.T) {
 	}
 
 	// Seed an artifact-store record representing a retained snapshot of parent.
-	writeSnap(t, aStore, "s2-parent-snap-000000", artifact.KindRetained)
+	// D-PD-33: the snapshot's SandboxID must point to the origin (parent) so
+	// RestoreFromSnapshot can reconstruct the egress policy.
+	writeSnapWithOrigin(t, aStore, "s2-parent-snap-000000", parent.ID, artifact.KindRetained)
 	snapID := artifact.SnapshotID("s2-parent-snap-000000")
 
 	children, err := svc.RestoreFromSnapshot(c, snapID, 2)

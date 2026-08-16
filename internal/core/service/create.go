@@ -122,7 +122,22 @@ type CreateAndBootOptions struct {
 	// AllowedHosts is the list of hostnames the sandbox may reach through the
 	// egress perimeter. Stored frozen on the Envelope and used at boot to mint
 	// placeholder credentials. If empty no credentials are seeded.
+	// An empty AllowedHosts does NOT imply open egress — set OpenEgress for
+	// that (D-PD-33).
 	AllowedHosts []string
+
+	// OpenEgress, when true, stores OpenEgress=true in the Envelope so that
+	// startSupervisor disarms the ACL for unrestricted outbound connectivity.
+	// Use this for human sandboxes (--workspace, --file, --image) that need
+	// unrestricted egress (docker pulls, apt-get, pip, etc.). Agent sandboxes
+	// (WireClaudeEgress / orca / herdr) must never set this. D-PD-33.
+	OpenEgress bool
+
+	// AllowedRepo, when non-empty, scopes the MITM path allowlist to a single
+	// GitHub repository ("owner/repo"). Required when GitHub hosts appear in
+	// SecretHosts and OpenEgress is false (--egress closed). Stored frozen on
+	// the Envelope; validated at create time (D-PD-36).
+	AllowedRepo string
 
 	// Broker is the host-side credential broker used to mint placeholder
 	// credentials for AllowedHosts. If nil, credential seeding is skipped even
@@ -470,9 +485,38 @@ func CreateAndBoot(
 			SSHPublicKey: opts.SSHPublicKey, // frozen at creation (ORCA-S1)
 			SecretHosts:  secretHostsFromBinds(opts.Secrets),
 			SecretSpecs:  secretSpecsFromBinds(opts.Secrets),
+			OpenEgress:   opts.OpenEgress,  // D-PD-33: explicit opt-in; never inferred from empty AllowedHosts
+			AllowedRepo:  opts.AllowedRepo, // D-PD-36: per-repo path allowlist; enforced below
 		},
 		RemoveOnExit: opts.RemoveOnExit,
 		BaseRef:      opts.BaseRef, // G1: shallow-clone boundary SHA (D-PD-19); empty if no git workspace
+	}
+	// ── 6a. Mixed-host guard: a bind must not span GitHub and non-GitHub hosts ─
+	//
+	// Non-GitHub hosts carry no path filter, so mixing them with GitHub hosts
+	// in a single bind would forward the real token to any path on those hosts.
+	// The operator already holds the token (no escalation), but the config is
+	// refused to prevent accidental misconfiguration. Checked before the
+	// AllowedRepo guard below because it is unconditional.
+	for _, b := range opts.Secrets {
+		if SecretMixesGitHubHosts(b) {
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, ErrMixedGitHubSecret)
+		}
+	}
+	// ── 6b. D-PD-36 invariant: GitHub secret requires a per-repo allowlist ────
+	//
+	// Enforced here (service layer) so every caller — CLI, MCP, orca, herdr —
+	// is covered. A GitHub host in SecretHosts without AllowedRepo means the
+	// full-scope token is unbounded; that configuration must never be persisted.
+	//
+	// The UseAgentSeed path is excluded: it has a stricter guard further down
+	// (ErrAgentGitHubSecret) that covers agent sandboxes regardless of AllowedRepo.
+	if opts.AllowedRepo == "" && !opts.UseAgentSeed {
+		for _, b := range opts.Secrets {
+			if SecretTouchesGitHub(b) {
+				return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, ErrUnboundGitHubSecret)
+			}
+		}
 	}
 	if err := svc.store.Create(ctx, sb); err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: create record: %w", project, name, err)
@@ -554,7 +598,15 @@ func CreateAndBoot(
 		for _, b := range opts.Secrets {
 			if SecretTouchesGitHub(b) {
 				_ = bootDrv.Stop(ctx, booted.ID)
-				_ = svc.store.Delete(ctx, booted.ID)
+				// Surface Delete failures: a failed Delete leaves the forbidden
+				// record on disk, which Hole-1 guards would then refuse to boot but
+				// which is still a leaked, unrecoverable record. Include the delete
+				// error in the returned error without masking the original refusal.
+				if delErr := svc.store.Delete(ctx, booted.ID); delErr != nil {
+					return domain.Sandbox{}, fmt.Errorf(
+						"service: create-and-boot %s/%s: rollback failed (record not deleted: %v): %w",
+						project, name, delErr, ErrAgentGitHubSecret)
+				}
 				return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, ErrAgentGitHubSecret)
 			}
 		}

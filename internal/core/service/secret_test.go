@@ -61,8 +61,9 @@ func TestApplySecrets_PlaceholderNotRealToken(t *testing.T) {
 	if !bytes.Contains(extra, []byte("GH_TOKEN=")) || !bytes.Contains(extra, []byte("GITHUB_TOKEN=")) {
 		t.Fatalf("missing GH_TOKEN/GITHUB_TOKEN:\n%s", extra)
 	}
-	if len(hosts) != 2 {
-		t.Errorf("hosts = %v", hosts)
+	// D-PD-33: GitHubSecretHosts now includes uploads.github.com (3 hosts).
+	if len(hosts) != len(GitHubSecretHosts) {
+		t.Errorf("hosts = %v; want len=%d matching GitHubSecretHosts", hosts, len(GitHubSecretHosts))
 	}
 	// Extract placeholder and confirm broker swap for both GitHub hosts.
 	line := strings.SplitN(string(extra), "\n", 2)[0]
@@ -99,6 +100,7 @@ func TestCreateAndBoot_HumanSecrets_NotOnAllowedHosts(t *testing.T) {
 			Hosts: append([]string(nil), GitHubSecretHosts...),
 			Token: real,
 		}},
+		AllowedRepo: "test/repo", // D-PD-36: required for any GitHub secret (service-layer guard)
 	})
 	if err != nil {
 		t.Fatalf("CreateAndBoot: %v", err)
@@ -170,6 +172,39 @@ func TestBuiltinGitHubSecret_Present(t *testing.T) {
 	}
 	if b.Env != BuiltinGitHubEnv || b.Token != "ghs_from_gh" {
 		t.Errorf("bind = %+v", b)
+	}
+}
+
+// TestCreateAndBoot_MixedHostSecretRefused verifies that a secret bind mixing
+// GitHub hosts with a non-GitHub host is rejected at create time with
+// ErrMixedGitHubSecret. This drives the real validation path in create.go so
+// that non-CLI callers (MCP, orca, herdr) cannot bypass it.
+//
+// Mutation evidence: removing the SecretMixesGitHubHosts check in create.go
+// causes this test to receive nil instead of ErrMixedGitHubSecret.
+func TestCreateAndBoot_MixedHostSecretRefused(t *testing.T) {
+	ctx := context.Background()
+	cacheRoot := t.TempDir()
+	cache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	img := putFakeImage(t, ctx, cache)
+	svc := newTestSvc(t, fake.New())
+	_, err = CreateAndBoot(ctx, svc, cache, fakeDriverFactory(fake.New()), noopProbe, "proj", "human", CreateAndBootOptions{
+		Image:     ImageSpec{Digest: string(img.Digest)},
+		CacheRoot: cacheRoot,
+		DiskDir:   t.TempDir(),
+		Broker:    cred.NewBroker(),
+		Secrets: []SecretBind{{
+			Env:   "GH_TOKEN",
+			Hosts: []string{"github.com", "internal.example.com"},
+			Token: "ghs_mixed_host_token",
+		}},
+		AllowedRepo: "test/repo",
+	})
+	if !errors.Is(err, ErrMixedGitHubSecret) {
+		t.Fatalf("CreateAndBoot err = %v, want ErrMixedGitHubSecret", err)
 	}
 }
 

@@ -239,19 +239,23 @@ func TestSeedGitIdentity_MissingHostConfig_FailsCreate(t *testing.T) {
 // ── N-AC1: The standing security regression test ──────────────────────────────
 //
 // TestN_AC1_NoGitHubEgressPermitted is the durable rail for D-PD-22
-// (revises D-PD-01). It covers the AGENT sandbox only.
+// (revises D-PD-01, extended by D-PD-33). It covers the AGENT sandbox only.
 //
 // Security property: "the agent guest commits locally; it never holds a
-// GitHub credential and never reaches github.com." A separate human git VM
-// is the only role that may receive github.com in AllowedHosts (D-PD-22).
-// This test does not cover that role — it is not built yet.
+// GitHub credential and never reaches github.com." github.com is reachable
+// only as a SecretHost behind the MITM credential swap on the human path
+// (D-PD-25). It must NEVER appear in plain AllowedHosts for any sandbox.
 //
 // No GitHub token, SSH key, gh-auth state, or forwarded ssh-agent socket
 // ever enters an agent sandbox. github.com NEVER appears in AllowedHosts
 // for the standard agent path (AgentEgressHosts / WireClaudeEgress).
 //
-// This test has THREE sub-checks (a)–(c) for the standard agent path, plus a
-// cross-reference note about the orca-path scoped exception (d):
+// D-PD-33 adds: an empty AllowedHosts is no longer an implicit AllowAll
+// sentinel. Open egress requires the explicit Envelope.OpenEgress=true flag.
+// WireClaudeEgress must never set OpenEgress=true.
+//
+// This test has FOUR sub-checks (a)–(d) for the standard agent path, plus a
+// cross-reference note about the orca-path scoped exception (e):
 //
 //	(a) AgentEgressHosts — the source of AllowedHosts for every agent sandbox —
 //	    contains no GitHub hostname. A violation here means every agent sandbox
@@ -271,7 +275,12 @@ func TestSeedGitIdentity_MissingHostConfig_FailsCreate(t *testing.T) {
 //	    that makes an in-agent `git push` fail closed. The actual push-fail
 //	    requires a booted VM; it is covered by X0-AC3 in the E2E flow.
 //
-//	(d) ORCA PATH is an AGENT path (D-PD-23). gitHostsFromURL must not return
+//	(d) WireClaudeEgress must not set OpenEgress=true. D-PD-33: OpenEgress
+//	    disarms the egress ACL for unrestricted outbound access. An agent sandbox
+//	    with OpenEgress=true would reach github.com without restriction. Only the
+//	    human create path (sandbox create) sets OpenEgress=true.
+//
+//	(e) ORCA PATH is an AGENT path (D-PD-23). gitHostsFromURL must not return
 //	    GitHub hosts. Asserted by cli.TestN_AC1_OrcaPathGitHubInAllowedHosts.
 //	    Both test files must stay — deleting either breaks the two-sided rail.
 //
@@ -317,6 +326,27 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 					h,
 				)
 			}
+		}
+	})
+
+	t.Run("(d) WireClaudeEgress does not set OpenEgress — D-PD-33", func(t *testing.T) {
+		// D-PD-33: OpenEgress=true disarms the egress ACL so the sandbox
+		// reaches any host without restriction (docker pulls, github.com, etc.).
+		// Agent sandboxes must NEVER have OpenEgress=true; only the human create
+		// path (sandbox create) sets it. WireClaudeEgress is the standard wiring
+		// helper for agent sandboxes — it must not set OpenEgress.
+		var opts CreateAndBootOptions
+		WireClaudeEgress(&opts, nil, nil, nil)
+		if opts.OpenEgress {
+			t.Error(
+				"SECURITY VIOLATION — N-AC1 / D-PD-33\n" +
+					"WireClaudeEgress set OpenEgress=true.\n\n" +
+					"OpenEgress disarms the egress ACL, giving the agent sandbox " +
+					"unrestricted outbound access — including to github.com. " +
+					"Agent sandboxes must never have open egress; only the human " +
+					"create path (sandbox create) sets OpenEgress=true.\n\n" +
+					"To fix: remove OpenEgress=true from WireClaudeEgress. See D-PD-33.",
+			)
 		}
 	})
 

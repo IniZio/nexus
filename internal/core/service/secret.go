@@ -17,10 +17,13 @@ import (
 const BuiltinGitHubEnv = "GH_TOKEN"
 
 // GitHubSecretHosts is the host set covered by the builtin gh bind.
-// github.com is git HTTPS; api.github.com is the gh CLI. One placeholder
-// (minted for github.com) is emitted as GH_TOKEN/GITHUB_TOKEN; ResolveScoped
-// keys on placeholder+sandbox, so api.github.com requests still swap.
-var GitHubSecretHosts = []string{"github.com", "api.github.com"}
+// github.com is git HTTPS; api.github.com is the gh CLI; uploads.github.com
+// handles release-asset uploads. One placeholder (minted for github.com) is
+// emitted as GH_TOKEN/GITHUB_TOKEN; ResolveScoped keys on placeholder+sandbox,
+// so api.github.com and uploads.github.com requests still swap.
+// These hosts go into SecretHosts, NOT AllowedHosts — they are MITM'd for
+// credential swap on the human (open-egress) path (D-PD-25 / D-PD-33).
+var GitHubSecretHosts = []string{"github.com", "api.github.com", "uploads.github.com"}
 
 // SecretBind is one host-side secret bound to a guest env var and a set of
 // egress hosts. The guest sees only a placeholder; the real token stays in
@@ -109,6 +112,36 @@ func SecretTouchesGitHub(b SecretBind) bool {
 // ErrAgentGitHubSecret is returned when an agent create path is asked to
 // bind a GitHub secret (D-PD-22 / D-PD-23 / D-PD-25).
 var ErrAgentGitHubSecret = fmt.Errorf("service: agent sandbox must not bind a GitHub secret")
+
+// ErrUnboundGitHubSecret is returned by CreateAndBoot when a secret bind
+// covers a GitHub host but AllowedRepo is empty (D-PD-36). Without a per-repo
+// path allowlist the operator's full-scope token is unbounded — every
+// repository the account can reach is accessible. The invariant is enforced
+// here (service layer) so non-CLI callers (MCP, orca, herdr) cannot bypass it.
+var ErrUnboundGitHubSecret = fmt.Errorf("service: GitHub secret requires AllowedRepo (D-PD-36): " +
+	"full-scope token would be unbounded without a per-repo path allowlist")
+
+// ErrMixedGitHubSecret is returned by CreateAndBoot when a single --secret
+// bind lists both GitHub hosts and non-GitHub hosts. Non-GitHub hosts have no
+// per-path filter, so mixing them with GitHub hosts would forward the real
+// token to any path on those hosts — an operator foot-gun. The operator
+// already holds the token, so this is not an escalation, but it is refused to
+// prevent accidental misconfiguration.
+var ErrMixedGitHubSecret = fmt.Errorf("service: secret bind must not mix GitHub hosts with non-GitHub hosts")
+
+// SecretMixesGitHubHosts reports whether a bind's host list contains at least
+// one GitHub host and at least one non-GitHub host.
+func SecretMixesGitHubHosts(b SecretBind) bool {
+	hasGitHub, hasOther := false, false
+	for _, h := range b.Hosts {
+		if isGitHubHost(h) {
+			hasGitHub = true
+		} else {
+			hasOther = true
+		}
+	}
+	return hasGitHub && hasOther
+}
 
 // MergeSecrets appends extra binds that do not collide on Env. An explicit
 // bind for the same env wins over a builtin.

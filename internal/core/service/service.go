@@ -379,6 +379,19 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 		return domain.Sandbox{}, fmt.Errorf("service: start %s: %w", sb.ID, err)
 	}
 
+	// D-PD-36 boot-time invariant: a GitHub secret host without a per-repo
+	// path allowlist is a forbidden configuration. CreateAndBoot enforces this
+	// at creation time, but a record written before that guard existed (or one
+	// that survived a failed rollback) must not be allowed to boot. Failing the
+	// entire boot — rather than silently skipping or degrading the credential
+	// swap — makes the misconfiguration immediately visible to the operator.
+	// The sandbox must be deleted and recreated with a valid AllowedRepo.
+	for _, h := range sb.Envelope.SecretHosts {
+		if isGitHubHost(h) && sb.Envelope.AllowedRepo == "" {
+			return domain.Sandbox{}, fmt.Errorf("service: start %s: %w", sb.ID, ErrUnboundGitHubSecret)
+		}
+	}
+
 	// driver.Start is called inside store.Update so that the substrate call and
 	// the record write are guarded by the same per-sandbox exclusive flock.
 	//
@@ -661,26 +674,43 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 		return fmt.Errorf("guest network fd: %w", err)
 	}
 
-	al, err := netfilter.NewAllowList(nil, nil, sb.Envelope.AllowedHosts)
+	// D-PD-36: SecretHosts must be admitted at the TCP layer so the SNI bridge
+	// can hand them to the MITM proxy for credential swap. Without this they are
+	// blocked by the deny-all ACL before the dialer hook fires, producing a
+	// "connection refused" error at the guest instead of a MITM CONNECT.
+	// AllowedHosts covers the curated allowlist; SecretHosts covers MITM targets.
+	aclHosts := append(append([]string(nil), sb.Envelope.AllowedHosts...), sb.Envelope.SecretHosts...)
+	al, err := netfilter.NewAllowList(nil, nil, aclHosts)
 	if err != nil {
 		fd.Close()
 		return fmt.Errorf("allow list: %w", err)
 	}
 
-	// When AllowedHosts is empty the sandbox has no curated egress policy —
-	// this is the case for sandboxes created via "sandbox create --file" which
-	// carry no Claude credentials and need unrestricted outbound access (e.g.
-	// docker pulls, apt-get, pip). Egress is wide open: the ACL is disarmed
-	// (AllowAllFor). If SecretHosts is also empty, the MITM proxy is NOT
-	// instantiated. If SecretHosts is set (builtin gh / --secret), MITM
-	// intercepts only those hosts so placeholders can be swapped; every other
-	// CONNECT is tunneled with a real server certificate (D-PD-25).
-	allowAll := len(sb.Envelope.AllowedHosts) == 0
+	// D-PD-33: open egress is an explicit opt-in stored in the Envelope. An
+	// empty AllowedHosts is no longer treated as an AllowAll sentinel — a
+	// sandbox with empty AllowedHosts and OpenEgress=false gets NO egress.
+	// Only the human create path (sandbox create) sets OpenEgress=true;
+	// agent sandboxes never do. AllowAllFor is reachable only when OpenEgress
+	// is true.
+	allowAll := sb.Envelope.OpenEgress
 	if allowAll {
 		al.AllowAllFor(72 * time.Hour) // generous window; supervisor restarts reset it
 	}
 
 	stack := netstack.New(al, nil) // onAudit: nil (discards events; a future slice wires observability)
+
+	// D-PD-36 redundant backstop: also guard here so fork/restore children
+	// are covered if any future code path copies SecretHosts onto children.
+	// fd and al have been acquired; clean them up if we bail out.
+	if sb.Envelope.AllowedRepo == "" {
+		for _, h := range sb.Envelope.SecretHosts {
+			if isGitHubHost(h) {
+				fd.Close()
+				al.Stop()
+				return fmt.Errorf("service: sandbox %s: %w", sb.ID, ErrUnboundGitHubSecret)
+			}
+		}
+	}
 
 	// MITM proxy: instantiated when AllowedHosts is non-empty (curated
 	// allowlist) OR SecretHosts is set (human-path secret swap). Pure
@@ -694,6 +724,7 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 			SecretHosts:  sb.Envelope.SecretHosts,
 			Broker:       s.broker,
 			AllowAll:     allowAll && len(sb.Envelope.SecretHosts) > 0,
+			AllowedRepo:  sb.Envelope.AllowedRepo, // D-PD-36: per-repo path allowlist
 		})
 		if err != nil {
 			fd.Close()
@@ -938,13 +969,13 @@ func (s *Service) Fork(ctx context.Context, ref string, count int) ([]domain.San
 	// (edge 5: ∅→running); there is no ∅ state in the domain model so we
 	// use store.Create (not store.Update) with State already set to Running.
 	//
-	// Envelope and Labels are copied from the parent. An empty child
-	// AllowedHosts is the AllowAll sentinel in startSupervisor (empty list
-	// => 72h wide-open unaudited egress). Copying the allowlist is NOT a
-	// credential copy: broker tokens are keyed by sandbox ID, so the child
-	// MITM mints its own placeholders. D-PD-22: an agent parent has no
-	// github.com in AllowedHosts, so children stay dark. Do not fork a
-	// future git VM until GIT-CRED decides credential-scope inheritance.
+	// Envelope and Labels are copied from the parent. OpenEgress is inherited
+	// so a human sandbox's open-egress posture carries through to its children.
+	// Copying the allowlist is NOT a credential copy: broker tokens are keyed
+	// by sandbox ID, so the child MITM mints its own placeholders.
+	// D-PD-22: an agent parent has no github.com in AllowedHosts, so children
+	// stay dark. D-PD-33: OpenEgress is explicit — a child with an empty
+	// AllowedHosts gets no egress unless the parent had OpenEgress=true.
 	children := make([]domain.Sandbox, 0, count)
 	for i, id := range childIDs {
 		child := domain.Sandbox{
@@ -958,6 +989,8 @@ func (s *Service) Fork(ctx context.Context, ref string, count int) ([]domain.San
 				ImageDigest:  parent.Envelope.ImageDigest,
 				AllowedHosts: slices.Clone(parent.Envelope.AllowedHosts),
 				SSHPublicKey: parent.Envelope.SSHPublicKey,
+				OpenEgress:   parent.Envelope.OpenEgress,  // D-PD-33: inherit explicit opt-in
+				AllowedRepo:  parent.Envelope.AllowedRepo, // D-PD-36: inherit repo-scoped path allowlist
 			},
 			Provenance: &domain.Provenance{
 				ParentID:       parent.ID,
@@ -1093,13 +1126,14 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 	// Persist each child record. Children start directly in Running state
 	// (edge 5: ∅→running). Provenance.SourceSnapshot satisfies S2-AC3.
 	//
-	// If the origin sandbox still exists, copy its Envelope, Labels and
-	// Project — same inheritance as Fork. A missing origin (retained
-	// snapshot whose sandbox was removed) cannot reconstruct policy; those
-	// children stay empty, matching prior restore behaviour, and we do
-	// not start a supervisor (empty AllowedHosts is AllowAll).
+	// The origin sandbox must exist so we can reconstruct the egress policy
+	// (Envelope). D-PD-33: without the origin we cannot determine whether
+	// OpenEgress was set, so we fail loudly rather than silently producing a
+	// sandbox with unknown or no egress policy.
 	origin, originErr := s.store.Get(ctx, snap.SandboxID)
-	haveOrigin := originErr == nil
+	if originErr != nil {
+		return nil, fmt.Errorf("service: restore %s: origin sandbox %s unavailable — cannot reconstruct egress policy (D-PD-33): %w", snapID, snap.SandboxID, originErr)
+	}
 
 	children := make([]domain.Sandbox, 0, count)
 	for i, id := range childIDs {
@@ -1108,19 +1142,19 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 			Name:       fmt.Sprintf("restore-%s", id.String()[3:]),
 			State:      domain.Running,
 			InstanceID: instanceIDs[i],
+			Project:    origin.Project,
+			Labels:     maps.Clone(origin.Labels),
+			Envelope: domain.Envelope{
+				ImageDigest:  origin.Envelope.ImageDigest,
+				AllowedHosts: slices.Clone(origin.Envelope.AllowedHosts),
+				SSHPublicKey: origin.Envelope.SSHPublicKey,
+				OpenEgress:   origin.Envelope.OpenEgress,  // D-PD-33: inherit explicit opt-in
+				AllowedRepo:  origin.Envelope.AllowedRepo, // D-PD-36: inherit repo-scoped path allowlist
+			},
 			Provenance: &domain.Provenance{
 				ParentID:       snap.SandboxID,
 				SourceSnapshot: string(snapID),
 			},
-		}
-		if haveOrigin {
-			child.Project = origin.Project
-			child.Labels = maps.Clone(origin.Labels)
-			child.Envelope = domain.Envelope{
-				ImageDigest:  origin.Envelope.ImageDigest,
-				AllowedHosts: slices.Clone(origin.Envelope.AllowedHosts),
-				SSHPublicKey: origin.Envelope.SSHPublicKey,
-			}
 		}
 		if err := s.store.Create(ctx, child); err != nil {
 			return nil, fmt.Errorf("service: restore %s: persist child %s: %w", snapID, id, err)
@@ -1128,12 +1162,10 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 		children = append(children, child)
 	}
 
-	if haveOrigin {
-		if hook, ok := s.driver.(driver.NetworkHook); ok && s.broker != nil {
-			for i := range children {
-				if err := s.startSupervisor(ctx, hook, children[i]); err != nil {
-					return nil, fmt.Errorf("service: restore %s: perimeter child %s: %w", snapID, children[i].ID, err)
-				}
+	if hook, ok := s.driver.(driver.NetworkHook); ok && s.broker != nil {
+		for i := range children {
+			if err := s.startSupervisor(ctx, hook, children[i]); err != nil {
+				return nil, fmt.Errorf("service: restore %s: perimeter child %s: %w", snapID, children[i].ID, err)
 			}
 		}
 	}
