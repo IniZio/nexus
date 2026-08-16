@@ -278,13 +278,8 @@ func HostHeadSHA(repoPath string) (string, error) {
 }
 
 // isGitHubHost reports whether h is any GitHub or GitHub-adjacent hostname.
-// Conservative: also covers api.github.com, ssh.github.com, *.github.com,
-// and *.githubusercontent.com.
+// Delegates to domain.IsGitHubHost, which is the authoritative definition
+// shared with the MITM proxy layer.
 func isGitHubHost(h string) bool {
-	h = strings.ToLower(strings.TrimSpace(h))
-	return h == "github.com" ||
-		h == "api.github.com" ||
-		h == "ssh.github.com" ||
-		strings.HasSuffix(h, ".github.com") ||
-		strings.HasSuffix(h, ".githubusercontent.com")
+	return domain.IsGitHubHost(h)
 }

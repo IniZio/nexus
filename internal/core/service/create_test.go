@@ -494,3 +494,102 @@ func TestCreateAndBoot_WorkspaceZeroCaptureMaxPassedThrough(t *testing.T) {
 		t.Errorf("capturer maxBytes = %d, want 0 (auto — service must not substitute a constant)", calledMaxBytes)
 	}
 }
+
+// TestCreateAndBoot_AllowedRepoReachesEnvelope verifies end-to-end that
+// CreateAndBootOptions.AllowedRepo is stored in the sandbox Envelope (D-PD-36).
+// The test drives the REAL CreateAndBoot function against a fake driver.
+//
+// Mutation evidence: remove the `AllowedRepo: opts.AllowedRepo` assignment
+// in the Envelope block of CreateAndBoot → this test fails with
+// Envelope.AllowedRepo = "" (want "acme/myrepo"). Restore → passes.
+func TestCreateAndBoot_AllowedRepoReachesEnvelope(t *testing.T) {
+	ctx := context.Background()
+	cacheRoot := t.TempDir()
+	cache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	img := putFakeImage(t, ctx, cache)
+
+	fd := fake.New()
+	svc := newTestSvc(t, fd)
+
+	sb, err := CreateAndBoot(ctx, svc, cache, fakeDriverFactory(fd), noopProbe,
+		"proj", "d36box",
+		CreateAndBootOptions{
+			Image:       ImageSpec{Digest: string(img.Digest)},
+			CacheRoot:   cacheRoot,
+			AllowedRepo: "acme/myrepo",
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: %v", err)
+	}
+	if sb.Envelope.AllowedRepo != "acme/myrepo" {
+		t.Errorf("Envelope.AllowedRepo = %q, want %q", sb.Envelope.AllowedRepo, "acme/myrepo")
+	}
+}
+
+// TestCreateAndBoot_GitHubSecretWithoutRepo_Refused verifies the D-PD-36
+// service-layer invariant: a GitHub secret bind without AllowedRepo is refused
+// by CreateAndBoot directly, regardless of caller (CLI, MCP, orca, herdr).
+//
+// Mutation evidence: remove the ErrUnboundGitHubSecret guard in CreateAndBoot
+// → this test fails (got nil error, want ErrUnboundGitHubSecret). Restore → passes.
+func TestCreateAndBoot_GitHubSecretWithoutRepo_Refused(t *testing.T) {
+	ctx := context.Background()
+	cacheRoot := t.TempDir()
+	cache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	img := putFakeImage(t, ctx, cache)
+
+	fd := fake.New()
+	svc := newTestSvc(t, fd)
+
+	_, err = CreateAndBoot(ctx, svc, cache, fakeDriverFactory(fd), noopProbe,
+		"proj", "gh-no-repo",
+		CreateAndBootOptions{
+			Image:     ImageSpec{Digest: string(img.Digest)},
+			CacheRoot: cacheRoot,
+			// GitHub secret bind, AllowedRepo deliberately left empty.
+			Secrets: []SecretBind{{Env: BuiltinGitHubEnv, Hosts: GitHubSecretHosts, Token: "ghp_testtoken"}},
+			// AllowedRepo: "",  // omitted — triggers the guard
+		},
+	)
+	if !errors.Is(err, ErrUnboundGitHubSecret) {
+		t.Fatalf("CreateAndBoot: got %v, want ErrUnboundGitHubSecret", err)
+	}
+}
+
+// TestCreateAndBoot_GitHubSecretWithRepo_Allowed verifies that the D-PD-36
+// guard does NOT fire when AllowedRepo is set — the allowed combination succeeds.
+func TestCreateAndBoot_GitHubSecretWithRepo_Allowed(t *testing.T) {
+	ctx := context.Background()
+	cacheRoot := t.TempDir()
+	cache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	img := putFakeImage(t, ctx, cache)
+
+	fd := fake.New()
+	svc := newTestSvc(t, fd)
+
+	sb, err := CreateAndBoot(ctx, svc, cache, fakeDriverFactory(fd), noopProbe,
+		"proj", "gh-with-repo",
+		CreateAndBootOptions{
+			Image:       ImageSpec{Digest: string(img.Digest)},
+			CacheRoot:   cacheRoot,
+			Secrets:     []SecretBind{{Env: BuiltinGitHubEnv, Hosts: GitHubSecretHosts, Token: "ghp_testtoken"}},
+			AllowedRepo: "owner/repo", // D-PD-36: guard must NOT fire
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: %v", err)
+	}
+	if sb.Envelope.AllowedRepo != "owner/repo" {
+		t.Errorf("Envelope.AllowedRepo = %q, want %q", sb.Envelope.AllowedRepo, "owner/repo")
+	}
+}
