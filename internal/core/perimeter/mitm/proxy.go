@@ -29,10 +29,12 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
@@ -88,6 +90,17 @@ type Config struct {
 	// agent sandboxes where a curated allowlist is the safeguard.
 	AllowAll bool
 
+	// AllowedRepo, when non-empty, enables the D-PD-36 per-request path
+	// allowlist for GitHub hosts (github.com, api.github.com,
+	// uploads.github.com). Only method+path combinations needed for the PR
+	// and release flow are forwarded; all others are refused with HTTP 403
+	// BEFORE any credential swap occurs. Format: "owner/repo" (case-sensitive).
+	//
+	// This is the ONLY control bounding the operator's full-scope GitHub token
+	// for agent sandboxes. Leave empty only for human sandboxes (AllowAll
+	// egress) that have no per-repo restriction requirement.
+	AllowedRepo string
+
 	// Logger is used for audit events (allow/deny decisions). If nil,
 	// slog.Default() is used. The real token is NEVER passed to the logger.
 	Logger *slog.Logger
@@ -141,6 +154,22 @@ func New(cfg Config) (*Proxy, error) {
 	broker := cfg.Broker
 	allowAll := cfg.AllowAll
 
+	// D-PD-36: parse AllowedRepo at construction time; no per-request parsing.
+	var (
+		repoOwner string
+		repoName  string
+		repoSet   bool
+	)
+	if cfg.AllowedRepo != "" {
+		owner, name, ok := strings.Cut(cfg.AllowedRepo, "/")
+		if !ok || owner == "" || name == "" {
+			return nil, fmt.Errorf("mitm: AllowedRepo %q is not in owner/repo format", cfg.AllowedRepo)
+		}
+		repoOwner = owner
+		repoName = name
+		repoSet = true
+	}
+
 	// HandleConnect:
 	//   secret host    → MITM (swap possible)
 	//   allow-all else → CONNECT tunnel (real cert, no swap)
@@ -164,6 +193,60 @@ func New(cfg Config) (*Proxy, error) {
 		log.Info("mitm: CONNECT rejected", "sandbox", sandboxID, "host", hostname)
 		return goproxy.RejectConnect, host
 	}))
+
+	// D-PD-36: path allowlist — fires BEFORE the credential swap handler.
+	// Requests to GitHub hosts that are not in the explicit allowlist are
+	// refused with 403 without forwarding or swapping any credential.
+	//
+	// Redirect handling: goproxy does not follow redirects autonomously. A 3xx
+	// from upstream is forwarded to the guest; the guest's HTTP client issues
+	// the redirected request through this proxy again, where it is
+	// re-evaluated by this handler. No Location-rewriting is needed — a
+	// redirect to a different repo or host fails the next pass automatically.
+	// goproxy neither rewrites Location headers nor follows them; if an upstream
+	// 3xx points outside the allowlist, the re-submitted request fails the next
+	// pass, so no Location-rewriting or hop-counting is needed here.
+	//
+	// Body buffering: path matching uses only method+URL.Path; no body
+	// buffering is performed. There is nothing to size-cap. The only
+	// request property this handler reads is the URL path and method; the
+	// body is neither inspected nor buffered, consistent with D-PD-36 §2.
+	//
+	// Path canonicalisation: Go's HTTP layer does NOT normalise "." or ".."
+	// segments, semicolons, backslashes, or non-ASCII lookalikes. isCanonicalPath
+	// applies two independent checks before any prefix rule fires:
+	//   1. path.Clean(URL.Path) == URL.Path — traversal segments and double
+	//      slashes are absent from the decoded form.
+	//   2. Every segment of EscapedPath matches [A-Za-z0-9._~-] — no percent-
+	//      encoded bytes (%xx), semicolons, backslashes, or non-ASCII characters
+	//      that a downstream server might re-interpret as path separators.
+	// Together these block all known bypass spellings including "..;", backslash
+	// separators, overlong UTF-8 dots (%c0%ae), and fullwidth lookalikes (U+FF0E).
+	// The real token is therefore never emitted upstream for any traversal attempt.
+	if repoSet {
+		inner.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+			host := strings.ToLower(reqHost(req))
+			if !domain.IsGitHubHost(host) {
+				return req, nil // non-GitHub allowed host: no path restriction
+			}
+			// Reject any non-canonical path before the allowlist rules run.
+			// isCanonicalPath checks both the decoded and raw (escaped) forms
+			// to catch all known traversal spellings.
+			if !isCanonicalPath(req.URL.Path, req.URL.EscapedPath()) {
+				log.Info("mitm: D-PD-36 request denied (non-canonical path)",
+					"sandbox", sandboxID, "host", host,
+					"method", req.Method, "path", req.URL.Path)
+				return req, denyResponse(req)
+			}
+			if !gitHubPathAllowed(host, req.Method, req.URL.Path, repoOwner, repoName) {
+				log.Info("mitm: D-PD-36 request denied",
+					"sandbox", sandboxID, "host", host,
+					"method", req.Method, "path", req.URL.Path)
+				return req, denyResponse(req)
+			}
+			return req, nil
+		})
+	}
 
 	// OnRequest swaps placeholder Authorization tokens with real tokens.
 	// Bearer (gh CLI) and Basic (git HTTPS) are both handled (D-PD-23).
@@ -262,6 +345,14 @@ func swapAuthorization(authHeader string, sandboxID domain.SandboxID, broker *cr
 			return "", false
 		}
 		return "Bearer " + realToken, true
+	case strings.HasPrefix(authHeader, "token "):
+		// GitHub CLI uses "token <TOKEN>" (not Bearer) for classic PATs and GH_TOKEN.
+		placeholder := strings.TrimPrefix(authHeader, "token ")
+		realToken, ok := broker.ResolveScoped(placeholder, sandboxID)
+		if !ok {
+			return "", false
+		}
+		return "token " + realToken, true
 	case strings.HasPrefix(authHeader, "Basic "):
 		raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(authHeader, "Basic "))
 		if err != nil {
@@ -292,14 +383,223 @@ func stripHost(addr string) string {
 }
 
 // reqHost returns the lowercase target hostname for an HTTP request, stripping
-// any port. For MITM'd HTTPS the Host header is authoritative; for plain
-// proxy-forwarded HTTP the URL host is the fallback.
+// any port and a single trailing dot (valid FQDN form). For MITM'd HTTPS the
+// Host header is authoritative; for plain proxy-forwarded HTTP the URL host is
+// the fallback.
+//
+// Trailing-dot normalisation is performed here — not separately in each handler
+// — so the filter gate (domain.IsGitHubHost) and the swap handler (allowSet
+// membership check) always operate on the same canonical form and cannot
+// diverge.
 func reqHost(req *http.Request) string {
 	host := req.Host
 	if host == "" {
 		host = req.URL.Host
 	}
-	return stripHost(host)
+	return strings.TrimSuffix(stripHost(host), ".")
+}
+
+// isCanonicalPath reports whether a request path is safe to forward to the
+// D-PD-36 allowlist rules. It applies two independent invariants:
+//
+//  1. path.Clean(decoded) == decoded: the decoded path is already in canonical
+//     form — no ".." traversal, no "." self-references, no double slashes.
+//     Any path that path.Clean normalises to a different value is refused.
+//
+//  2. Every slash-delimited segment of escaped (the wire form) matches the
+//     positive charset [A-Za-z0-9._~-]: no percent-encoded bytes (%xx),
+//     semicolons, backslashes, or non-ASCII characters that a downstream server
+//     might re-interpret as path separators or traversal tokens.
+//
+// decoded is req.URL.Path (percent-decoded by Go's URL parser); escaped is
+// req.URL.EscapedPath() (the raw wire form). Both are required because they
+// catch orthogonal attack classes:
+//   - decoded catches "..", ".%2f..", double-slash forms via path.Clean.
+//   - escaped catches "..;", backslash separators, overlong UTF-8 dots
+//     (%c0%ae), and fullwidth lookalikes (U+FF0E → %ef%bc%ae) via the charset.
+//
+// Implementation invariants — do not remove; their violation silently reopens
+// the path-traversal vulnerability:
+//
+//   - segmentOK ACCEPTS ".." because dot (.) is in its allowed charset. The
+//     `tags/` HasPrefix rule and every other allowlist prefix rule are safe ONLY
+//     because invariant 1 (path.Clean equality) removes dot-segments before any
+//     prefix match fires. Any future allowlist rule that skips path.Clean, or
+//     that operates on the raw wire form without first applying path.Clean,
+//     reopens traversal.
+//
+//   - Invariant 1 (path.Clean equality) is sufficient only because URL.Path
+//     always carries a leading slash in requests that reach this handler. Go's
+//     HTTP layer rejects relative request targets (targets with no leading slash)
+//     via ParseRequestURI before they enter the proxy pipeline, so a relative
+//     target such as "../../etc/passwd" never arrives here undecorated.
+func isCanonicalPath(decoded, escaped string) bool {
+	if path.Clean(decoded) != decoded {
+		return false
+	}
+	for _, seg := range strings.Split(escaped, "/") {
+		if seg == "" {
+			continue // leading slash produces an empty first element; skip it
+		}
+		if !segmentOK(seg) {
+			return false
+		}
+	}
+	return true
+}
+
+// segmentOK reports whether a path segment consists entirely of characters
+// that are safe in GitHub API paths: ASCII letters, digits, dot, underscore,
+// tilde, and hyphen. Percent-encoded bytes (%xx), semicolons, backslashes, and
+// any non-ASCII are rejected. This covers the full set of characters needed by
+// every path in the D-PD-36 allowlist (owner names, repo names, numeric IDs,
+// tag names like "v1.0.0", and git path segments like "git-upload-pack").
+func segmentOK(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+			(c >= '0' && c <= '9') || c == '.' || c == '_' || c == '~' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// allDigits reports whether s is a non-empty string of ASCII decimal digits.
+// GitHub release IDs and asset IDs are always positive integers in API paths.
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// gitHubPathAllowed reports whether a request to a GitHub host is permitted
+// by the D-PD-36 allowlist for the given owner/repo.
+//
+// §3 of D-PD-36: /graphql is always denied regardless of method — the target
+// repo is encoded in the POST body and cannot be validated without a GraphQL
+// parser.
+//
+// Permitted paths are the minimal set for the PR and release flow:
+//
+//	github.com        — git smart-HTTP (clone, fetch, push)
+//	api.github.com    — read repo, list/create PRs, list/create/read/update releases, GET /user
+//	uploads.github.com — release-asset upload (POST only)
+//
+// host must be lowercase. Returns false for any host not in the above set.
+func gitHubPathAllowed(host, method, path, owner, repo string) bool {
+	switch host {
+	case "github.com":
+		// Git smart-HTTP protocol endpoints for the target repo only.
+		// Reference: https://git-scm.com/docs/http-backend
+		prefix := "/" + owner + "/" + repo + ".git/"
+		switch {
+		case method == http.MethodGet && path == prefix+"info/refs":
+			// Clone/fetch service discovery.
+			return true
+		case method == http.MethodPost && path == prefix+"git-upload-pack":
+			// Clone/fetch data transfer.
+			return true
+		case method == http.MethodPost && path == prefix+"git-receive-pack":
+			// Push data transfer.
+			return true
+		}
+		return false
+
+	case "api.github.com":
+		// /graphql is unconditionally denied: target repo lives in POST body.
+		if strings.HasPrefix(path, "/graphql") {
+			return false
+		}
+		repoBase := "/repos/" + owner + "/" + repo
+		relBase := repoBase + "/releases"
+		switch {
+		case method == http.MethodGet && path == "/user":
+			// gh auth status. No per-repo context; safe to allow.
+			return true
+		case method == http.MethodGet && path == repoBase:
+			// Read repository metadata (gh pr create reads it for base branch).
+			return true
+		case (method == http.MethodGet || method == http.MethodPost) && path == repoBase+"/pulls":
+			// List or create pull requests.
+			return true
+		case method == http.MethodGet && path == relBase:
+			// List releases.
+			return true
+		case method == http.MethodPost && path == relBase:
+			// Create release.
+			return true
+		case method == http.MethodGet && path == relBase+"/latest":
+			// Get the latest published release.
+			return true
+		case method == http.MethodGet && strings.HasPrefix(path, relBase+"/tags/"):
+			// Get a release by tag name. GitHub allows "/" in tag names so a
+			// prefix match is correct; isCanonicalPath above ensures no traversal
+			// sequences are present before this point.
+			return true
+		}
+		// Remaining shapes require a suffix after /releases/.
+		suf, ok := strings.CutPrefix(path, relBase+"/")
+		if !ok {
+			return false
+		}
+		// GET|PATCH|DELETE /releases/assets/{numeric_id} — per-asset operations.
+		if rest, ok2 := strings.CutPrefix(suf, "assets/"); ok2 {
+			return allDigits(rest) &&
+				(method == http.MethodGet || method == http.MethodPatch || method == http.MethodDelete)
+		}
+		// /releases/{numeric_id} or /releases/{numeric_id}/assets.
+		id, sub, hasSub := strings.Cut(suf, "/")
+		if !allDigits(id) {
+			return false
+		}
+		if !hasSub {
+			// Read, update, or delete a specific release by numeric ID.
+			return method == http.MethodGet || method == http.MethodPatch || method == http.MethodDelete
+		}
+		// GET /releases/{numeric_id}/assets — list assets for a release.
+		return sub == "assets" && method == http.MethodGet
+
+	case "uploads.github.com":
+		// POST /repos/{owner}/{repo}/releases/{numeric_id}/assets — upload asset.
+		repoBase := "/repos/" + owner + "/" + repo
+		suf, ok := strings.CutPrefix(path, repoBase+"/releases/")
+		if !ok || method != http.MethodPost {
+			return false
+		}
+		id, sub, hasSub := strings.Cut(suf, "/")
+		return hasSub && allDigits(id) && sub == "assets"
+
+	default:
+		// Should not be reached; isGitHubHost guards the call site.
+		return false
+	}
+}
+
+// denyResponse builds an HTTP 403 response for a D-PD-36 denied request.
+// It is returned by the OnRequest deny handler to stop proxy processing and
+// send the denial to the guest without forwarding the request or swapping
+// any credential.
+func denyResponse(req *http.Request) *http.Response {
+	const body = "D-PD-36: request path not in allowlist\n"
+	return &http.Response{
+		StatusCode:    http.StatusForbidden,
+		Status:        "403 Forbidden",
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+		Body:          io.NopCloser(strings.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Request:       req,
+	}
 }
 
 // Compile-time assertion: Proxy satisfies http.Handler.
