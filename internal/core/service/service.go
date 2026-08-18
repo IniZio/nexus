@@ -46,6 +46,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
 	"github.com/IniZio/nexus3/internal/core/perimeter/netstack"
 	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus3/internal/core/volumestore"
 )
 
 // ErrNoSubstrate is returned when an operation requires a hypervisor driver
@@ -73,8 +74,9 @@ type Service struct {
 	store     store.Store
 	driver    driver.Driver
 	machine   lifecycle.Machine
-	artifacts *artifact.Store // optional; nil means no artifact persistence
-	diskDir   string          // durable dir for per-sandbox ext4 copies (S-COW); empty = defaultDiskDir()
+	artifacts *artifact.Store       // optional; nil means no artifact persistence
+	diskDir   string                 // durable dir for per-sandbox ext4 copies (S-COW); empty = defaultDiskDir()
+	volumes   *volumestore.VolumeStore // optional; nil means no named-volume support (SD2-6-MOUNT)
 
 	// perimeter fields — all optional; nil means no egress enforcement.
 	broker   *cred.Broker // host-side credential store for MITM token swap
@@ -107,6 +109,16 @@ func New(st store.Store, drv driver.Driver, m lifecycle.Machine) *Service {
 // New constructor signature.
 func (s *Service) WithArtifacts(a *artifact.Store) *Service {
 	s.artifacts = a
+	return s
+}
+
+// WithVolumes attaches a VolumeStore for named-volume operations (SD2-6-MOUNT).
+// When set, Service.Remove detaches all MountedVolumes for the removed sandbox
+// under the per-volume lock. Service.Snapshot and Service.Fork refuse outright
+// when any named volume is attached (D-PD-96, TBR-PD-15) — snapshot-with-volumes
+// is not yet supported; see TBR-PD-15 for the design work that will lift this.
+func (s *Service) WithVolumes(vs *volumestore.VolumeStore) *Service {
+	s.volumes = vs
 	return s
 }
 
@@ -307,12 +319,12 @@ func (s *Service) reapBuilders(ctx context.Context, all []domain.Sandbox) {
 		}
 		// Creator is provably dead.
 		//
-		// Step 1: stop the VM and clean driver-side state (sockets, netns).
+		// Stop the VM and clean driver-side state (sockets, netns).
 		// Non-fatal: if CH is already gone the Stop returns nil after clearState.
 		// Ignore errors; we proceed to delete the record regardless.
 		_ = s.driver.Stop(ctx, sb.ID)
 
-		// Step 2: delete the store record. ErrNotFound is harmless — a concurrent
+		// Delete the store record. ErrNotFound is harmless — a concurrent
 		// reap already deleted it.
 		if derr := s.store.Delete(ctx, sb.ID); derr != nil && !errors.Is(derr, store.ErrNotFound) {
 			// Non-fatal: a stale record that cannot be deleted is cosmetic;
@@ -417,6 +429,40 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 		// marker set is being deleted; launching a VM now would produce an orphan.
 		if rec.RemovalMarker {
 			return fmt.Errorf("re-validate: %w: sandbox is marked for removal", store.ErrNotFound)
+		}
+		// M-b start-time volume guard (D-PD-94): re-run the rw attach check
+		// before the driver boots the VM. Row 2 allows sandbox B to attach a
+		// rw volume while A is stopped; without this guard, restarting A after
+		// B attached would put two live VMs on one rw ext4 filesystem.
+		//
+		// checkRWAttach is idempotent for A's own attachment entry (Row-skip
+		// path: att.SandboxID == sandboxID). It fires Row 1 if any other
+		// sandbox is now Running or Paused with the same volume — exactly the
+		// case we need to block. The check runs inside store.Update (holding
+		// the per-sandbox flock) so no concurrent Start can race past it; the
+		// per-volume flock acquired inside checkRWAttach is independent.
+		//
+		// Do NOT detach in Service.Stop: a stop/start cycle must not silently
+		// drop user-attached volumes (D-PD-94 ruling, explicitly rejected).
+		if s.volumes != nil {
+			guardDiskDir := s.diskDir
+			if guardDiskDir == "" {
+				var e error
+				guardDiskDir, e = defaultDiskDir()
+				if e != nil {
+					return fmt.Errorf("start volume guard: resolve disk dir: %w", e)
+				}
+			}
+			for _, va := range rec.MountedVolumes {
+				if va.Kind == string(volumestore.KindDisk) && !va.ReadOnly {
+					guardCtx, guardCancel := context.WithTimeout(ctx, 10*time.Second)
+					checkErr := checkRWAttach(guardCtx, s.volumes, s.store, guardDiskDir, va.Name, rec.ID.String())
+					guardCancel()
+					if checkErr != nil {
+						return fmt.Errorf("start volume guard: %w", checkErr)
+					}
+				}
+			}
 		}
 		instanceID, err := s.driver.Start(ctx, driver.StartRequest{
 			SandboxID:   rec.ID,
@@ -602,12 +648,12 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 		return err
 	}
 
-	// Step 1: write-ahead removal marker. Must precede all destructive work.
+	// Write-ahead removal marker. Must precede all destructive work.
 	if err := s.store.SetRemovalMarker(ctx, sb.ID); err != nil {
 		return fmt.Errorf("service: remove %s: set removal marker: %w", sb.ID, err)
 	}
 
-	// Step 2: terminate the VM inside the per-sandbox exclusive lock.
+	// Terminate the VM inside the per-sandbox exclusive lock.
 	// The lock prevents a concurrent Start from launching a VM between the
 	// marker write (step 1) and the record deletion (step 3): a Start blocked
 	// on this lock will read the marker and be rejected at re-validation.
@@ -643,13 +689,13 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 		}
 	}
 
-	// Step 3: delete the record. The marker is destroyed with it; no
+	// Delete the record. The marker is destroyed with it; no
 	// ClearRemovalMarker call is needed or correct here.
 	if err := s.store.Delete(ctx, sb.ID); err != nil {
 		return fmt.Errorf("service: remove %s: delete record: %w", sb.ID, err)
 	}
 
-	// Step 4: reap per-sandbox disk resources. Both helpers are idempotent
+	// Reap per-sandbox disk resources. Both helpers are idempotent
 	// (missing files are not errors) so crashes mid-remove are safe to retry.
 	//
 	// ReapDiskCopy removes ULID-keyed resources: .raw, -workspace.ext4,
@@ -662,6 +708,16 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 	// reclamation contract for all disk resources of a sandbox.
 	_ = ReapDiskCopy(s.diskDir, sb.ID)
 	_ = ReapShadowDisks(s.diskDir, sb.Handle())
+
+	// Detach named volumes under the per-volume lock (D-PD-87: Remove
+	// NEVER deletes volume backing files — only the attachment record is cleared).
+	// Uses detachVolumeLocked so the write races neither against a concurrent
+	// attach check nor a concurrent prune.
+	if s.volumes != nil {
+		for _, va := range sb.MountedVolumes {
+			_ = detachVolumeLocked(ctx, s.volumes, va.Name, sb.ID.String())
+		}
+	}
 
 	return nil
 }
@@ -881,6 +937,27 @@ func (s *Service) Snapshot(ctx context.Context, ref string) (artifact.Snapshot, 
 		if err != nil {
 			return fmt.Errorf("re-validate: %w", err)
 		}
+		// Interim gate (TBR-PD-15, D-PD-96): refuse snapshots when any named
+		// volume is attached. A retained snapshot manifest would carry the parent's
+		// volume paths; RestoreFromSnapshot calls ForkFrom with no volume check, so
+		// the restored child's config.json would point at the parent's named-volume
+		// image read-write. Gating here covers every ForkFrom caller — the two that
+		// exist and any added later — which per-caller gating does not. TBR-PD-15
+		// will design snapshot-with-volumes as a whole; this gate is not a settled
+		// semantic. Use independent nexus3 create calls for sandboxes that need volumes.
+		var attachedVolDescs []string
+		for _, va := range rec.MountedVolumes {
+			attachedVolDescs = append(attachedVolDescs, va.Name+"(kind="+va.Kind+")")
+		}
+		if len(attachedVolDescs) > 0 {
+			return fmt.Errorf(
+				"sandbox has attached named volume(s) [%s]: "+
+					"snapshotting a sandbox with named volumes is not yet supported "+
+					"(TBR-PD-15, D-PD-96); use independent nexus3 create calls for "+
+					"sandboxes that need volumes",
+				strings.Join(attachedVolDescs, ", "),
+			)
+		}
 		localSnap, err := snapper.TakeSnapshot(ctx, rec.ID, artifact.KindRetained)
 		if err != nil {
 			return fmt.Errorf("driver: %w", err)
@@ -923,6 +1000,32 @@ func (s *Service) Fork(ctx context.Context, ref string, count int) ([]domain.San
 	// forked because there is no quiescent memory state to snapshot.
 	if _, err := s.machine.Next(parent.State, lifecycle.TriggerSnapshot); err != nil {
 		return nil, fmt.Errorf("service: fork %s: parent not snapshotable: %w", parent.ID, err)
+	}
+
+	// D-PD-96: refuse fork on any parent with ANY attached named volume,
+	// regardless of kind.  The correct fork-with-volumes semantic is pending
+	// design (TBR-PD-15); until that design is ratified, allowing any kind
+	// through would silently establish a contract that may need reversal.
+	//
+	// Background per kind:
+	//   kind=disk: virtio-blk block device; two VMs sharing the same ext4 image
+	//     read-write simultaneously corrupt it; a per-child copy leaks into
+	//     unreclaimed storage permanently (D-PD-95).
+	//   kind=dir: host directory served over virtiofs; two VMs sharing the same
+	//     host directory get a single mutable view — the isolation that fork is
+	//     supposed to provide does not exist (D-PD-53).
+	// Use independent `nexus3 create` calls for sandboxes that need volumes.
+	var attachedVolDescs []string
+	for _, va := range parent.MountedVolumes {
+		attachedVolDescs = append(attachedVolDescs, va.Name+"(kind="+va.Kind+")")
+	}
+	if len(attachedVolDescs) > 0 {
+		return nil, fmt.Errorf(
+			"service: fork %s: sandbox has attached named volume(s) [%s]: "+
+				"forking a sandbox with named volumes is not yet supported (TBR-PD-15, D-PD-96); "+
+				"detach the volume(s) before forking",
+			parent.ID, strings.Join(attachedVolDescs, ", "),
+		)
 	}
 
 	// Capability checks outside the lock: type assertions have no I/O.

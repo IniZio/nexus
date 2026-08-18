@@ -19,6 +19,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus3/internal/core/volumestore"
 )
 
 // ErrAgentUnreachable is returned by CreateAndBoot when the VM starts but the
@@ -261,6 +262,29 @@ type CreateAndBootOptions struct {
 	// AllowAll and a curated allowlist would 403 every other host.
 	// Agent create (UseAgentSeed) must not include a GitHub bind.
 	Secrets []SecretBind
+
+	// Volumes is the volume store for named-volume operations. Required when
+	// NamedVolumeMounts is non-empty. If nil, NamedVolumeMounts is ignored.
+	Volumes *volumestore.VolumeStore
+
+	// NamedVolumeMounts are --mount-named attachments to create and wire at
+	// VM boot time. Each mount's kind=disk backing file is prepended to
+	// ExtraDisks (before workspace) in declaration order, so the first mount
+	// gets the first available device letter. Kind=dir mounts are virtiofs
+	// (TBD-SD2-LIVE-4; attachment is recorded but no cmdline is emitted yet).
+	// Guest paths containing .git are rejected by the CLI before this point.
+	NamedVolumeMounts []NamedVolumeMount
+}
+
+// NamedVolumeMount describes a single --mount-named attachment resolved by the
+// CLI and passed to CreateAndBoot. The Name identifies a VolumeStore entry;
+// GuestPath is the absolute path inside the guest.
+type NamedVolumeMount struct {
+	Name      string                 // volume name in the VolumeStore
+	GuestPath string                 // absolute path inside the guest
+	Kind      volumestore.VolumeKind // KindDisk or KindDir
+	SizeBytes int64                  // kind=disk only; 0 = DefaultDiskSizeBytes
+	ReadOnly  bool
 }
 
 // WireClaudeEgress configures opts for an agent sandbox that runs claude
@@ -329,13 +353,13 @@ func CreateAndBoot(
 	project, name string,
 	opts CreateAndBootOptions,
 ) (domain.Sandbox, error) {
-	// ── 1. Resolve ext4 path from the image spec ─────────────────────────────
+	// 1. Resolve ext4 path from the image spec
 	ext4Path, resolvedDigest, err := resolveExt4(ctx, opts.Image, cache, opts.CacheRoot)
 	if err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, err)
 	}
 
-	// ── 2. Guard against duplicate handles (mirrors service.Create) ───────────
+	// 2. Guard against duplicate handles (mirrors service.Create)
 	handle := project + "/" + name
 	if _, err := svc.store.ResolveByHandle(ctx, handle); err == nil {
 		return domain.Sandbox{}, fmt.Errorf("sandbox %q already exists: %w", handle, store.ErrAlreadyExists)
@@ -343,14 +367,14 @@ func CreateAndBoot(
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot: check handle %q: %w", handle, err)
 	}
 
-	// ── 3. Mint sandbox ID ────────────────────────────────────────────────────
+	// 3. Mint sandbox ID
 	//
 	// ID is minted here (before driver construction) so the per-sandbox disk
 	// copy can be named deterministically by ID. The old placement (after driver
 	// construction) is preserved by moving it up; existing behaviour is unchanged.
 	id := domain.NewSandboxID()
 
-	// ── 3.5 Resolve disk dir and pre-compute disk resource paths ─────────────
+	// 3.5 Resolve disk dir and pre-compute disk resource paths
 	//
 	// diskDir is resolved once here (before any materialisation) so that:
 	//   (a) the create-intent file can be written before cowExt4 runs (R2-AC1);
@@ -358,8 +382,9 @@ func CreateAndBoot(
 	//       workspace capture (both use the same directory).
 	needsDisk := opts.Image.RootfsPath == ""
 	needsWorkspace := opts.Workspace != nil
+	needsNamedVols := opts.Volumes != nil && len(opts.NamedVolumeMounts) > 0
 	var diskDir string
-	if needsDisk || needsWorkspace {
+	if needsDisk || needsWorkspace || needsNamedVols {
 		diskDir = opts.DiskDir
 		if diskDir == "" {
 			diskDir, err = defaultDiskDir()
@@ -379,7 +404,7 @@ func CreateAndBoot(
 		workspaceDiskPath = filepath.Join(diskDir, id.String()+"-workspace.ext4")
 	}
 
-	// ── 3.6 Write create intent ───────────────────────────────────────────────
+	// 3.6 Write create intent
 	//
 	// The intent is written to <diskDir>/<id>.create-intent.json before any
 	// host resource (disk copy, workspace disk) is materialized. It records the
@@ -397,7 +422,15 @@ func CreateAndBoot(
 	// /proc liveness gate cannot see this create. The kernel drops the lease if
 	// this process dies, so a crashed create still leaves reclaimable disks.
 	var intentLease *createIntentLease
-	if diskCopyPath != "" || workspaceDiskPath != "" {
+	// The intent lease is required whenever the §4.1 guard depends on it.
+	// That is: whenever a disk copy or workspace disk will be written (the
+	// original cases), OR whenever named volumes are being attached rw (M-a,
+	// D-PD-93). In --rootfs mode with no workspace but with named volumes,
+	// diskCopyPath and workspaceDiskPath are both empty — without this third
+	// arm the intent file is never written and Row 3 cannot see this create
+	// as in-flight, so two concurrent rootfs creates both fall through to
+	// Row 5 (stale prune) and both attach the same rw volume.
+	if diskCopyPath != "" || workspaceDiskPath != "" || needsNamedVols {
 		intentLease, err = writeCreateIntent(diskDir, id, diskCopyPath, workspaceDiskPath)
 		if err != nil {
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: write create intent: %w", project, name, err)
@@ -426,7 +459,63 @@ func CreateAndBoot(
 		}
 	}()
 
-	// ── 4. CoW copy: per-sandbox ext4 (cache artifact only, not --rootfs) ─────
+	// 3.7 Named-volume create + concurrency guard
+	//
+	// Named volumes are set up AFTER the intent lease is held (step 3.6) so
+	// that concurrent attachment checkers see this sandbox as "in flight" via
+	// the intent file (§4.1 Row 3 — load-bearing). The guard runs before step 4
+	// (CoW copy) so no heavy I/O occurs inside the volume lock.
+	//
+	// For kind=disk rw: checkRWAttach acquires the per-volume lock, applies the
+	// five-row verdict table, and atomically records the attachment (§4.1).
+	// For kind=disk ro and kind=dir: simple idempotent Attach (no guard needed).
+	//
+	// Kind=disk volume paths are prepended to opts.ExtraDisks (before workspace)
+	// in declaration order, giving them the first available device letters (§1.5).
+	var namedDiskAttached []string // for rollback on failure
+	defer func() {
+		if !success && opts.Volumes != nil {
+			for _, vname := range namedDiskAttached {
+				_ = detachVolumeLocked(context.Background(), opts.Volumes, vname, id.String())
+			}
+		}
+	}()
+	if vs := opts.Volumes; vs != nil && len(opts.NamedVolumeMounts) > 0 {
+		var namedDiskExtras []ExtraDisk
+		for _, mount := range opts.NamedVolumeMounts {
+			// Create volume idempotently — returns existing record if already present.
+			if _, err = vs.Create(ctx, mount.Name, mount.Kind, mount.SizeBytes, ""); err != nil {
+				return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: create volume %s: %w", project, name, mount.Name, err)
+			}
+			if mount.Kind == volumestore.KindDisk && !mount.ReadOnly {
+				// Guard: one rw kind=disk attach at a time. Use a deadline so a
+				// wedged lock-holder surfaces as an error, not a hung CLI (RISK-SD2-1).
+				guardCtx, guardCancel := context.WithTimeout(ctx, 10*time.Second)
+				err = checkRWAttach(guardCtx, vs, svc.store, diskDir, mount.Name, id.String())
+				guardCancel()
+				if err != nil {
+					return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: volume %s: %w", project, name, mount.Name, err)
+				}
+				namedDiskAttached = append(namedDiskAttached, mount.Name)
+			} else {
+				// ro kind=disk or kind=dir: no concurrency guard; idempotent Attach.
+				if err = vs.Attach(mount.Name, id.String()); err != nil {
+					return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: attach volume %s: %w", project, name, mount.Name, err)
+				}
+			}
+			if mount.Kind == volumestore.KindDisk {
+				namedDiskExtras = append(namedDiskExtras, ExtraDisk{Path: vs.DiskPath(mount.Name)})
+			}
+		}
+		// Prepend named-disk volumes before caller-supplied ExtraDisks so named
+		// volumes receive the lower device letters (§1.5: named disks → /dev/vdb…
+		// shadow/workspace follow).
+		if len(namedDiskExtras) > 0 {
+			opts.ExtraDisks = append(namedDiskExtras, opts.ExtraDisks...)
+		}
+	}
+
+	// 4. CoW copy: per-sandbox ext4 (cache artifact only, not --rootfs)
 	//
 	// Each sandbox boots from its own writable copy so the shared cache
 	// artifact (digest-addressed, content-immutable) is never mutated by the
@@ -449,7 +538,7 @@ func CreateAndBoot(
 		ext4Path = cp
 	}
 
-	// ── 4.5 Capture workspace to ext4 (if requested) ─────────────────────────
+	// 4.5 Capture workspace to ext4 (if requested)
 	//
 	// WorktreeToDisk (or the injected WorkspaceCapturer stub) walks the host
 	// source tree, applies the .dockerignore + nexus3 exclusion policy, enforces
@@ -476,7 +565,7 @@ func CreateAndBoot(
 		opts.ExtraDisks = append(opts.ExtraDisks, ExtraDisk{Path: workspaceDiskPath})
 	}
 
-	// ── 5. Construct per-sandbox driver instance ──────────────────────────────
+	// 5. Construct per-sandbox driver instance
 	bootDrv, err := newDriver(ext4Path, opts.ExtraDisks)
 	if err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: init driver: %w", project, name, err)
@@ -497,10 +586,11 @@ func CreateAndBoot(
 			OpenEgress:   opts.OpenEgress,  // D-PD-33: explicit opt-in; never inferred from empty AllowedHosts
 			AllowedRepo:  opts.AllowedRepo, // D-PD-36: per-repo path allowlist; enforced below
 		},
-		RemoveOnExit: opts.RemoveOnExit,
-		BaseRef:      opts.BaseRef, // G1: shallow-clone boundary SHA (D-PD-19); empty if no git workspace
+		RemoveOnExit:   opts.RemoveOnExit,
+		BaseRef:        opts.BaseRef, // G1: shallow-clone boundary SHA (D-PD-19); empty if no git workspace
+		MountedVolumes: namedVolumeAttachments(opts.NamedVolumeMounts),
 	}
-	// ── 6a. Mixed-host guard: a bind must not span GitHub and non-GitHub hosts ─
+	// 6a. Mixed-host guard: a bind must not span GitHub and non-GitHub hosts
 	//
 	// Non-GitHub hosts carry no path filter, so mixing them with GitHub hosts
 	// in a single bind would forward the real token to any path on those hosts.
@@ -512,7 +602,7 @@ func CreateAndBoot(
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, ErrMixedGitHubSecret)
 		}
 	}
-	// ── 6b. D-PD-36 invariant: GitHub secret requires a per-repo allowlist ────
+	// 6b. D-PD-36 invariant: GitHub secret requires a per-repo allowlist
 	//
 	// Enforced here (service layer) so every caller — CLI, MCP, orca, herdr —
 	// is covered. A GitHub host in SecretHosts without AllowedRepo means the
@@ -531,7 +621,7 @@ func CreateAndBoot(
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: create record: %w", project, name, err)
 	}
 
-	// ── 7. Boot VM inside store.Update (same locking pattern as service.Start) ─
+	// 7. Boot VM inside store.Update (same locking pattern as service.Start)
 	//
 	// driver.Start is called inside Update so the substrate call and the record
 	// write are guarded by the same per-sandbox exclusive flock. This prevents
@@ -562,7 +652,7 @@ func CreateAndBoot(
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: boot: %w", project, name, bootErr)
 	}
 
-	// ── 8. Reachability probe ─────────────────────────────────────────────────
+	// 8. Reachability probe
 	if probe != nil {
 		timeout := opts.ReachabilityTimeout
 		if timeout <= 0 {
@@ -580,7 +670,7 @@ func CreateAndBoot(
 		}
 	}
 
-	// ── 9. Seed guest with placeholder credentials (P1-S6) ───────────────────
+	// 9. Seed guest with placeholder credentials (P1-S6)
 	//
 	// SeedGuest / seedGuestAgent are no-ops when Broker or Seeder is nil, so
 	// existing callers that omit these fields are unaffected.
@@ -702,7 +792,7 @@ func CreateAndBoot(
 		}
 	}
 
-	// ── 10. Inject SSH authorized_keys (ORCA-S1) ─────────────────────────────
+	// 10. Inject SSH authorized_keys (ORCA-S1)
 	//
 	// SeedSSHAuthorizedKeys is a no-op when SSHPublicKey is empty or when the
 	// service has no sshSeeder attached, preserving existing behaviour.
@@ -716,7 +806,7 @@ func CreateAndBoot(
 		}
 	}
 
-	// ── 11. Seed git identity (G1, D-PD-03) ─────────────────────────────────────
+	// 11. Seed git identity (G1, D-PD-03)
 	//
 	// SeedGitIdentity is a no-op when GitSeeder is nil (existing callers that
 	// omit GitSeeder are unaffected). When set, it resolves the operator's git
@@ -871,3 +961,21 @@ func secretSpecsFromBinds(binds []SecretBind) []string {
 	return out
 }
 
+
+// namedVolumeAttachments converts NamedVolumeMount slice to domain.VolumeAttachment
+// slice for storage on the sandbox record (MountedVolumes field).
+func namedVolumeAttachments(mounts []NamedVolumeMount) []domain.VolumeAttachment {
+	if len(mounts) == 0 {
+		return nil
+	}
+	vas := make([]domain.VolumeAttachment, len(mounts))
+	for i, m := range mounts {
+		vas[i] = domain.VolumeAttachment{
+			Name:      m.Name,
+			GuestPath: m.GuestPath,
+			Kind:      string(m.Kind),
+			ReadOnly:  m.ReadOnly,
+		}
+	}
+	return vas
+}
