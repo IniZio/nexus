@@ -108,6 +108,33 @@ type Sandbox struct {
 	// before G1 was introduced. G2 (nexus3 bundle) fails fast when BaseRef is
 	// absent on a motive sandbox — callers must check.
 	BaseRef string `json:"base_ref,omitempty"`
+
+	// MountedVolumes lists the named volumes attached to this sandbox at creation
+	// time (D-PD-82). Nil and empty slice are equivalent: no volumes are attached.
+	// Elements are frozen at creation and must not be mutated after the record is
+	// written. The concurrency guard for named volumes is dual-source: this field
+	// and the volume store's meta.json are unioned; this field wins on conflict.
+	MountedVolumes []VolumeAttachment `json:"mounted_volumes,omitempty"`
+}
+
+// VolumeAttachment describes a single named volume attached to a sandbox.
+// All fields are set at attachment time and must not be mutated after the
+// sandbox record is written.
+type VolumeAttachment struct {
+	// Name is the user-assigned name of the volume (unique within the project).
+	Name string `json:"name"`
+
+	// GuestPath is the absolute path inside the guest at which the volume is
+	// mounted (e.g. "/mnt/data").
+	GuestPath string `json:"guest_path"`
+
+	// Kind is the attachment kind: "dir" for a host-directory virtiofs mount,
+	// "disk" for a virtio-blk block device.
+	Kind string `json:"kind"`
+
+	// ReadOnly is true when the volume is attached read-only; false means
+	// read-write.
+	ReadOnly bool `json:"read_only"`
 }
 
 // Provenance records the lineage of a sandbox created as a fork child.
