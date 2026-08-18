@@ -197,13 +197,35 @@ func (d *CHDriver) ForkFrom(ctx context.Context, snap artifact.Snapshot, childID
 		diskDir = filepath.Dir(parentDiskPath)
 	}
 
+	// Collect extra (non-root) disk paths from config.json so they can be
+	// isolated per child alongside the root disk (D-PD-54). When
+	// parentDiskPath is empty the config has no disks at all (initramfs), so
+	// there is nothing extra to collect.
+	var parentExtraDiskPaths []string
+	if parentDiskPath != "" {
+		var collErr error
+		parentExtraDiskPaths, collErr = collectExtraDiskPaths(configJSONBytes, parentDiskPath)
+		if collErr != nil {
+			return nil, fmt.Errorf("cloudhypervisor: fork: collect extra disk paths: %w", collErr)
+		}
+	}
+
 	instanceIDs := make([]string, len(childIDs))
 	for i, childID := range childIDs {
 		var childDiskPath string
 		if parentDiskPath != "" {
 			childDiskPath = filepath.Join(diskDir, childID.String()+".raw")
 		}
-		iid, err := d.spawnChildFromSnapshot(ctx, childID, manifest.Dir, parentDiskPath, childDiskPath, parentGuestTap, parentVsockPath)
+		// Build a child copy path for each extra disk: same directory as the
+		// source, with childID prepended to the filename for uniqueness.
+		extraDiskPairs := make([]diskPair, len(parentExtraDiskPaths))
+		for j, p := range parentExtraDiskPaths {
+			extraDiskPairs[j] = diskPair{
+				parent: p,
+				child:  filepath.Join(filepath.Dir(p), childID.String()+"-"+filepath.Base(p)),
+			}
+		}
+		iid, err := d.spawnChildFromSnapshot(ctx, childID, manifest.Dir, parentDiskPath, childDiskPath, extraDiskPairs, parentGuestTap, parentVsockPath)
 		if err != nil {
 			// Return already-populated IDs and the first error; caller can
 			// retry or clean up the unseen children.
@@ -255,6 +277,7 @@ func (d *CHDriver) spawnChildFromSnapshot(
 	ctx context.Context,
 	childID domain.SandboxID,
 	snapDir, parentDiskPath, childDiskPath string,
+	extraDiskPairs []diskPair,
 	parentGuestTap string,
 	parentVsockPath string,
 ) (string, error) {
@@ -279,32 +302,53 @@ func (d *CHDriver) spawnChildFromSnapshot(
 		childVsockPath = d.vsockPath(childID)
 	}
 
+	// Collect ALL disk pairs that require per-child isolation: root disk first
+	// (if present), then every extra disk (shadow + workspace, D-PD-54).
+	// Preserving insertion order guarantees that device indices (/dev/vdb, …)
+	// in the child match those in the parent.
+	var allDiskPairs []diskPair
+	if parentDiskPath != "" && childDiskPath != "" {
+		allDiskPairs = append(allDiskPairs, diskPair{parentDiskPath, childDiskPath})
+	}
+	allDiskPairs = append(allDiskPairs, extraDiskPairs...)
+
 	// Prepare a per-child restore directory when disk, net, or vsock isolation
 	// is needed. The directory hardlinks the large snapshot blobs and carries a
 	// rewritten config.json with child-specific paths.
-	needsChildDir := (parentDiskPath != "" && childDiskPath != "") || parentGuestTap != "" || parentVsockPath != ""
+	needsChildDir := len(allDiskPairs) > 0 || parentGuestTap != "" || parentVsockPath != ""
 	if needsChildDir {
-		// Step 1: if disk, reflink-copy the parent disk so siblings have
-		// independent block devices.
-		if parentDiskPath != "" && childDiskPath != "" {
-			if err := reflinkCopy(parentDiskPath, childDiskPath); err != nil {
-				return "", fmt.Errorf("copy child disk: %w", err)
+		// Step 1: reflink-copy every disk so siblings have independent block
+		// devices. On failure, roll back all copies made so far.
+		for i, dp := range allDiskPairs {
+			if err := reflinkCopy(dp.parent, dp.child); err != nil {
+				_ = os.Remove(dp.child) // remove partial destination; dst must not exist per reflinkCopy contract
+				for _, done := range allDiskPairs[:i] {
+					_ = os.Remove(done.child)
+				}
+				return "", fmt.Errorf("copy child disk %s: %w", filepath.Base(dp.parent), err)
 			}
 		}
 
-		// Step 2: create the per-child restore dir with all rewrites applied to
-		// config.json (disk path if disk present, net tap if net present, vsock
-		// socket path always when vsock is present).
+		// Step 2: build the full disk-path rewrite map: parent path → child path
+		// for every disk. rewriteAllConfigDiskPaths rewrites ALL entries in one
+		// pass so the child config.json references no parent-owned file.
+		diskRewrites := make(map[string]string, len(allDiskPairs))
+		for _, dp := range allDiskPairs {
+			diskRewrites[dp.parent] = dp.child
+		}
+
+		// Step 3: create the per-child restore dir with all rewrites applied to
+		// config.json (all disk paths, net tap if present, vsock path if present).
 		var prepErr error
 		restoreDir, prepErr = prepareChildRestoreDir(
 			snapDir, childID,
-			parentDiskPath, childDiskPath,
+			diskRewrites,
 			parentGuestTap, childGuestTap,
 			parentVsockPath, childVsockPath,
 		)
 		if prepErr != nil {
-			if childDiskPath != "" {
-				_ = os.Remove(childDiskPath)
+			for _, dp := range allDiskPairs {
+				_ = os.Remove(dp.child)
 			}
 			if restoreDir != "" {
 				_ = os.RemoveAll(restoreDir)
@@ -314,14 +358,14 @@ func (d *CHDriver) spawnChildFromSnapshot(
 		sourceURL = "file://" + restoreDir
 	}
 
-	// cleanupDisk removes the child disk, restore dir, and vsock socket on
-	// failure paths.
+	// cleanupDisk removes all child disk copies, the restore dir, and vsock
+	// socket on failure paths.
 	cleanupDisk := func() {
 		if restoreDir != "" {
 			_ = os.RemoveAll(restoreDir)
 		}
-		if childDiskPath != "" {
-			_ = os.Remove(childDiskPath)
+		for _, dp := range allDiskPairs {
+			_ = os.Remove(dp.child)
 		}
 		if childVsockPath != "" {
 			_ = os.Remove(childVsockPath)
@@ -402,8 +446,8 @@ func (d *CHDriver) spawnChildFromSnapshot(
 		iid, err := newInstanceID()
 		if err != nil {
 			d.clearState(childID) // kills netns child; also cleans nets map entry
-			if childDiskPath != "" {
-				_ = os.Remove(childDiskPath)
+			for _, dp := range allDiskPairs {
+				_ = os.Remove(dp.child)
 			}
 			return "", fmt.Errorf("generate instance ID: %w", err)
 		}
@@ -451,8 +495,8 @@ func (d *CHDriver) spawnChildFromSnapshot(
 	if err != nil {
 		proc.kill()
 		_ = os.Remove(socketPath)
-		if childDiskPath != "" {
-			_ = os.Remove(childDiskPath)
+		for _, dp := range allDiskPairs {
+			_ = os.Remove(dp.child)
 		}
 		return "", fmt.Errorf("generate instance ID: %w", err)
 	}

@@ -105,6 +105,117 @@ func findRootDiskPath(configJSON []byte, parentID domain.SandboxID) (string, err
 	)
 }
 
+// diskPair pairs a parent disk image path with the per-child copy path.
+// Used by ForkFrom to carry all disk isolation work (root + extra disks)
+// through spawnChildFromSnapshot.
+type diskPair struct{ parent, child string }
+
+// findAllDiskPaths returns all disk paths from config.json in their array
+// index order. Returns errNoDisks when config.json has no "disks" field or
+// the array is empty.
+func findAllDiskPaths(configJSON []byte) ([]string, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(configJSON, &top); err != nil {
+		return nil, fmt.Errorf("unmarshal config.json: %w", err)
+	}
+	disksRaw, ok := top["disks"]
+	if !ok {
+		return nil, errNoDisks
+	}
+	var disks []map[string]json.RawMessage
+	if err := json.Unmarshal(disksRaw, &disks); err != nil {
+		return nil, fmt.Errorf("unmarshal disks array: %w", err)
+	}
+	if len(disks) == 0 {
+		return nil, errNoDisks
+	}
+	paths := make([]string, 0, len(disks))
+	for _, d := range disks {
+		p, err := diskEntryPath(d)
+		if err != nil {
+			return nil, fmt.Errorf("disk entry: %w", err)
+		}
+		paths = append(paths, p)
+	}
+	return paths, nil
+}
+
+// collectExtraDiskPaths returns the paths of all disks in configJSON that are
+// not rootDiskPath (i.e. the extra/shadow/workspace disks). errNoDisks is
+// treated as "no extras to collect" and returns (nil, nil); any other error
+// from findAllDiskPaths is returned to the caller — a malformed disk entry
+// must not be silently ignored.
+func collectExtraDiskPaths(configJSON []byte, rootDiskPath string) ([]string, error) {
+	allPaths, err := findAllDiskPaths(configJSON)
+	if errors.Is(err, errNoDisks) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var extras []string
+	for _, p := range allPaths {
+		if p != rootDiskPath {
+			extras = append(extras, p)
+		}
+	}
+	return extras, nil
+}
+
+// rewriteAllConfigDiskPaths returns a copy of configJSON with disk paths
+// rewritten according to rewrites (old path → new path). Matching is by full
+// path. Disk entries whose path is not a key in rewrites are preserved
+// verbatim. Unknown config fields are never dropped.
+//
+// When rewrites is empty the input is returned unchanged.
+func rewriteAllConfigDiskPaths(configJSON []byte, rewrites map[string]string) ([]byte, error) {
+	if len(rewrites) == 0 {
+		return configJSON, nil
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(configJSON, &top); err != nil {
+		return nil, fmt.Errorf("unmarshal config.json: %w", err)
+	}
+	disksRaw, ok := top["disks"]
+	if !ok {
+		return nil, fmt.Errorf("config.json has no \"disks\" field")
+	}
+	var disks []map[string]json.RawMessage
+	if err := json.Unmarshal(disksRaw, &disks); err != nil {
+		return nil, fmt.Errorf("unmarshal disks array: %w", err)
+	}
+	matched := 0
+	for i, disk := range disks {
+		p, err := diskEntryPath(disk)
+		if err != nil {
+			continue
+		}
+		newPath, hit := rewrites[p]
+		if !hit {
+			continue
+		}
+		matched++
+		newPathRaw, err := json.Marshal(newPath)
+		if err != nil {
+			return nil, fmt.Errorf("marshal new disk path: %w", err)
+		}
+		disks[i]["path"] = newPathRaw
+	}
+	if matched != len(rewrites) {
+		return nil, fmt.Errorf("rewriteAllConfigDiskPaths: %d of %d rewrite keys matched disk entries; unmatched keys indicate a stale or corrupt config.json", matched, len(rewrites))
+	}
+	newDisksRaw, err := json.Marshal(disks)
+	if err != nil {
+		return nil, fmt.Errorf("re-encode disks: %w", err)
+	}
+	top["disks"] = newDisksRaw
+	out, err := json.Marshal(top)
+	if err != nil {
+		return nil, fmt.Errorf("re-encode config.json: %w", err)
+	}
+	return out, nil
+}
+
 // rewriteConfigDiskPath returns a rewritten copy of configJSON in which the
 // first disk entry whose path basename matches filepath.Base(oldDiskPath) has
 // its "path" replaced by newDiskPath. All other top-level fields and all other
@@ -174,7 +285,8 @@ func rewriteConfigDiskPath(configJSON []byte, oldDiskPath, newDiskPath string) (
 //     directory (sharing the large read-only snapshot blobs — e.g. memory.snapshot
 //     — without copying them). Falls back to reflinkCopy on cross-device error.
 //  2. Writes a new config.json with the requested rewrites applied:
-//     - When parentDiskPath is non-empty, rewrites the root-disk path to childDiskPath.
+//     - diskRewrites maps every parent disk path to its child copy path; ALL
+//       matched entries are rewritten (root disk + extra disks in index order).
 //     - When parentGuestTap is non-empty, rewrites the first net[].tap to childGuestTap.
 //     - When parentVsockPath is non-empty, rewrites the vsock.socket path to childVsockPath.
 //     At least one rewrite is expected; any combination may be applied together.
@@ -184,7 +296,7 @@ func rewriteConfigDiskPath(configJSON []byte, oldDiskPath, newDiskPath string) (
 func prepareChildRestoreDir(
 	snapDir string,
 	childID domain.SandboxID,
-	parentDiskPath, childDiskPath string,
+	diskRewrites map[string]string,
 	parentGuestTap, childGuestTap string,
 	parentVsockPath, childVsockPath string,
 ) (restoreDir string, err error) {
@@ -199,10 +311,10 @@ func prepareChildRestoreDir(
 		return restoreDir, fmt.Errorf("read config.json: %w", err)
 	}
 	rewrittenJSON := configJSON
-	if parentDiskPath != "" {
-		rewrittenJSON, err = rewriteConfigDiskPath(rewrittenJSON, parentDiskPath, childDiskPath)
+	if len(diskRewrites) > 0 {
+		rewrittenJSON, err = rewriteAllConfigDiskPaths(rewrittenJSON, diskRewrites)
 		if err != nil {
-			return restoreDir, fmt.Errorf("rewrite config.json disk path: %w", err)
+			return restoreDir, fmt.Errorf("rewrite config.json disk paths: %w", err)
 		}
 	}
 	if parentGuestTap != "" {

@@ -231,7 +231,9 @@ func TestPrepareChildRestoreDir(t *testing.T) {
 		t.Fatalf("write memory.snapshot: %v", err)
 	}
 
-	restoreDir, err := prepareChildRestoreDir(snapDir, childID, parentDisk, childDisk, "", "", "", "")
+	restoreDir, err := prepareChildRestoreDir(snapDir, childID,
+		map[string]string{parentDisk: childDisk},
+		"", "", "", "")
 	if err != nil {
 		t.Fatalf("prepareChildRestoreDir: %v", err)
 	}
@@ -323,4 +325,186 @@ func mustDiskPath(t *testing.T, d map[string]json.RawMessage) string {
 		t.Fatalf("decode disk path: %v", err)
 	}
 	return p
+}
+
+// ---------------------------------------------------------------------------
+// D-PD-54 regression: all disks must be isolated on fork
+// ---------------------------------------------------------------------------
+
+// TestFork_ExtraDisksAllIsolated is the regression test for D-PD-54.
+//
+// Before the fix, prepareChildRestoreDir only rewrote the root disk path in
+// config.json. Extra disks (shadow disks, workspace disk) were left pointing
+// at the parent's paths, causing N concurrent children to share the same
+// block device with no error surfaced.
+//
+// This test exercises the config-rewrite and disk-copy logic directly
+// (reflinkCopy + prepareChildRestoreDir) without a real VM. It verifies:
+//
+//  1. Every disk path in the child's config.json differs from the corresponding
+//     parent path (no parent path leaks into the child config).
+//  2. Device order (index 0, 1, 2, …) is identical between parent and child.
+//  3. Child disk files are independent: writing to a child file does not
+//     modify the parent file.
+func TestFork_ExtraDisksAllIsolated(t *testing.T) {
+	dir := t.TempDir()
+	childID := domain.NewSandboxID()
+
+	// Three parent disk files: root, shadow (node_modules), workspace.
+	parentRoot := filepath.Join(dir, "parent-root.raw")
+	parentShadow := filepath.Join(dir, "shadow-node_modules.raw")
+	parentWorkspace := filepath.Join(dir, "parent-workspace.raw")
+	for _, p := range []string{parentRoot, parentShadow, parentWorkspace} {
+		if err := os.WriteFile(p, []byte("disk:"+p), 0o600); err != nil {
+			t.Fatalf("create disk %s: %v", p, err)
+		}
+	}
+
+	// Config referencing all 3 disks in order (same layout as a real sandbox
+	// with shadow disks: root=vda, shadow=vdb, workspace=vdc).
+	cfg := buildConfig([]diskSpec{
+		{path: parentRoot},
+		{path: parentShadow},
+		{path: parentWorkspace},
+	})
+	snapDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(snapDir, "config.json"), cfg, 0o600); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+
+	// Child copy paths: childID prefix keeps them unique per fork.
+	childRoot := filepath.Join(dir, childID.String()+"-root.raw")
+	childShadow := filepath.Join(dir, childID.String()+"-shadow-node_modules.raw")
+	childWorkspace := filepath.Join(dir, childID.String()+"-workspace.raw")
+
+	allPairs := []diskPair{
+		{parentRoot, childRoot},
+		{parentShadow, childShadow},
+		{parentWorkspace, childWorkspace},
+	}
+
+	// Step 1: reflink-copy all disks (mirrors the copy loop in spawnChildFromSnapshot).
+	for _, dp := range allPairs {
+		if err := reflinkCopy(dp.parent, dp.child); err != nil {
+			t.Fatalf("reflinkCopy %s: %v", dp.parent, err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, dp := range allPairs {
+			os.Remove(dp.child)
+		}
+	})
+
+	// Step 2: build rewrite map and prepare child restore dir.
+	diskRewrites := map[string]string{
+		parentRoot:      childRoot,
+		parentShadow:    childShadow,
+		parentWorkspace: childWorkspace,
+	}
+	restoreDir, err := prepareChildRestoreDir(snapDir, childID, diskRewrites, "", "", "", "")
+	if err != nil {
+		t.Fatalf("prepareChildRestoreDir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(restoreDir) })
+
+	// Assert 1: child config.json contains NO parent path.
+	gotCfg, err := os.ReadFile(filepath.Join(restoreDir, "config.json"))
+	if err != nil {
+		t.Fatalf("read child config.json: %v", err)
+	}
+	disks := parseDisks(t, gotCfg)
+	if len(disks) != 3 {
+		t.Fatalf("expected 3 disks in child config.json, got %d", len(disks))
+	}
+	parentPaths := map[string]bool{parentRoot: true, parentShadow: true, parentWorkspace: true}
+	for i, d := range disks {
+		p := mustDiskPath(t, d)
+		if parentPaths[p] {
+			t.Errorf("disk[%d] in child config.json still points at parent path %q (D-PD-54)", i, p)
+		}
+	}
+
+	// Assert 2: device order is preserved (root→shadow→workspace).
+	wantPaths := []string{childRoot, childShadow, childWorkspace}
+	for i, d := range disks {
+		p := mustDiskPath(t, d)
+		if p != wantPaths[i] {
+			t.Errorf("disk[%d]: got %q, want %q (device order must match parent)", i, p, wantPaths[i])
+		}
+	}
+
+	// Assert 3: child disk files are independent of their parent copies.
+	for _, dp := range allPairs {
+		orig, err := os.ReadFile(dp.parent)
+		if err != nil {
+			t.Fatalf("read parent %s: %v", dp.parent, err)
+		}
+		if err := os.WriteFile(dp.child, []byte("child-modified"), 0o600); err != nil {
+			t.Fatalf("write child %s: %v", dp.child, err)
+		}
+		after, err := os.ReadFile(dp.parent)
+		if err != nil {
+			t.Fatalf("re-read parent %s: %v", dp.parent, err)
+		}
+		if string(after) != string(orig) {
+			t.Errorf("parent disk %s changed after writing child copy (not isolated)", dp.parent)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Defect 1 regression: malformed sibling disk entry must error (D-PD-54)
+// ---------------------------------------------------------------------------
+
+// TestCollectExtraDiskPaths_MalformedSibling verifies that collectExtraDiskPaths
+// returns an error when config.json has a root disk plus a sibling disk entry
+// with no "path" field. Before the fix (fork.go swallowed the error from
+// findAllDiskPaths), the sibling was silently dropped and the child would
+// inherit the parent's block device.
+func TestCollectExtraDiskPaths_MalformedSibling(t *testing.T) {
+	// config: root disk + valid shadow disk + a malformed entry (no "path" field).
+	cfg := map[string]any{
+		"payload": map[string]any{"kernel": "/boot/vmlinux"},
+		"cpus":    map[string]any{"boot_vcpus": 1},
+		"memory":  map[string]any{"size": 536870912},
+		"disks": []any{
+			map[string]any{"path": "/disks/root.raw", "image_type": "Raw"},
+			map[string]any{"path": "/data/shadow.raw", "image_type": "Raw"},
+			map[string]any{"image_type": "Raw"}, // malformed: no "path" field
+		},
+	}
+	b, _ := json.Marshal(cfg)
+
+	_, err := collectExtraDiskPaths(b, "/disks/root.raw")
+	if err == nil {
+		t.Fatal("expected error for config with malformed disk entry, got nil — " +
+			"pre-fix: findAllDiskPaths error was swallowed, silently dropping shadow disk isolation")
+	}
+	if errors.Is(err, errNoDisks) {
+		t.Fatalf("expected non-errNoDisks error, got errNoDisks: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Defect 2 regression: unmatched rewrite key must error (D-PD-54)
+// ---------------------------------------------------------------------------
+
+// TestRewriteAllConfigDiskPaths_UnmatchedKey verifies that
+// rewriteAllConfigDiskPaths returns an error when a rewrite key does not match
+// any disk entry in config.json. Before the fix, the miss was silent — a
+// child config could still reference a parent-owned disk path with no error.
+func TestRewriteAllConfigDiskPaths_UnmatchedKey(t *testing.T) {
+	input := buildConfig([]diskSpec{
+		{path: "/disks/root.raw", imageType: "Raw"},
+	})
+
+	// rewrites contains a key that is not present in the config.
+	_, err := rewriteAllConfigDiskPaths(input, map[string]string{
+		"/disks/root.raw":        "/disks/child-root.raw",
+		"/disks/nonexistent.raw": "/disks/child-nonexistent.raw", // no match
+	})
+	if err == nil {
+		t.Fatal("expected error for unmatched rewrite key, got nil — " +
+			"pre-fix: miss was silent, leaving child config pointing at parent disk")
+	}
 }
