@@ -15,3 +15,9 @@ coverage.html
 # Intermediate prototypes and plans
 .scratch/
 /buildorca
+
+# Docs site build artifacts (VitePress). The Markdown under docs/site is the
+# source; node_modules and the rendered output are never committed.
+docs/site/node_modules/
+docs/site/.vitepress/dist/
+docs/site/.vitepress/cache/

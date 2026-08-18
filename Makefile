@@ -1,4 +1,4 @@
-.PHONY: proto build vet test check-agent-fresh
+.PHONY: proto build vet test check-agent-fresh docs docs-build
 
 # proto regenerates the Go stubs from proto/nexus3/agent/v1/agent.proto.
 # Running this target twice must leave the tree byte-identical (deterministic).
@@ -18,6 +18,19 @@ vet:
 
 test:
 	go test -race ./...
+
+# docs serves the documentation site locally with live reload.
+# docs-build renders it to docs/site/.vitepress/dist (gitignored).
+#
+# The site is the ONLY part of this repo with a JS toolchain, and it is scoped
+# to docs/site so the Go build never sees it. Requires pnpm; first run installs
+# VitePress into docs/site/node_modules.
+docs:
+	@echo "Docs dev server → http://localhost:5180"
+	cd docs/site && pnpm install --frozen-lockfile && pnpm run dev
+
+docs-build:
+	cd docs/site && pnpm install --frozen-lockfile && pnpm run build
 
 # check-agent-fresh fails when the in-guest agent source changed but the
 # staged agent binary (images/kernel/nexus3-agent, embedded into the

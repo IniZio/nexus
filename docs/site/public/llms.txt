@@ -1,0 +1,43 @@
+# nexus3 documentation index
+# Generated for LLM consumption. One entry per page.
+# Format: title | path | description
+
+nexus3 | / | Landing page: what nexus3 is, key capabilities, and where to start.
+Quickstart | /quickstart | Install nexus3 and run your first sandbox in minutes; full create → exec → forward → stop round trip.
+AI Agents | /ai-agents | MCP server integration, per-task sandbox orchestration, and the herdr plugin launch path.
+
+## Sandboxes
+
+Sandboxes overview | /sandboxes/ | Conceptual map of the sandbox model and links to each subsection.
+Sandbox model | /sandboxes/sandbox-model | What a sandbox is: isolation boundaries, disk, network, and the handle/ref model.
+Execution substrate | /sandboxes/execution-substrate | Cloud Hypervisor VM internals, vsock channels, and the in-guest agent architecture.
+Guest agent | /sandboxes/guest-agent | The in-guest agent protocol: exec, attach, cp, and credential injection.
+Images | /sandboxes/images | Guest image format, Containerfile conventions, and the image build pipeline.
+Lifecycle states | /sandboxes/lifecycle-states | State machine: created, running, paused, stopped, and legal transitions.
+Snapshots and fork | /sandboxes/snapshots-and-fork | Copy-on-write fork, retained snapshots, and restore semantics.
+
+## CLI Reference
+
+CLI reference | /cli/ | Invocation syntax, global flags, verb index, and the deliberately-excluded surface list.
+Lifecycle commands | /cli/sandbox-commands | create, ps, rm, start, stop, pause, resume — full flag reference and label selectors.
+Exec, SSH and Forward | /cli/exec-ssh-forward | exec, attach, cp, forward, ssh, and ssh config — routing commands and file transfer.
+Snapshot, fork and restore | /cli/snapshot-fork-restore | snapshot create/list/rm, fork, and restore command reference.
+Image commands | /cli/image-commands | image build, ls, and prune — building and managing guest images.
+Auth, MCP and reap | /cli/auth-mcp-reap | auth login (coding agent credentials), named secret store, mcp server, reap, recover, and doctor.
+Configuration | /cli/configuration | --context / --file flag, .nexus/Containerfile, and per-project config.
+
+## Recipes
+
+Building images | /recipes/building-images | Custom guest images from a Containerfile; layer caching and shadow disks.
+Docker in a sandbox | /recipes/docker-in-sandbox | Running Docker Compose stacks inside a nexus3 sandbox with nested buildkitd.
+Mounts and worktrees | /recipes/mounts-and-worktrees | Mounting host directories and git worktrees into sandboxes with -v; git identity notes.
+Parallel development flow | /recipes/parallel-dev-flow | Fan N sandboxes out, work in parallel, and integrate results; worktree-per-task pattern.
+
+## Security
+
+Egress and perimeter | /security/egress-and-perimeter | MITM proxy, GitHub allowlist, --repo flag, and in-guest credential refresh.
+Accepted risks | /security/accepted-risks | Known limitations and explicit operator-accepted risk entries.
+
+## Operations
+
+Resource lifecycle | /operations/resource-lifecycle | Host resource accounting, reap, orphan detection, and disk reclamation.

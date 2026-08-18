@@ -1,6 +1,18 @@
+---
+title: "Resource Lifecycle"
+description: "Intent journaling, reaper classification, and reclaiming disk and network resources"
+---
+
 # Resource Lifecycle
 
-nexus3 manages six resource kinds on the host. This page describes how they are created, owned, and reclaimed.
+> nexus3 creates, journals, and reaps host resources deterministically — orphans left by a crash are recoverable without operator intervention.
+
+Every disk and socket resource is journaled before it is materialized. The reaper classifies survivors after a crash and removes orphans. Kernel-owned network resources are reclaimed automatically.
+
+```sh
+nexus3 reap           # report orphaned resources (dry-run)
+nexus3 reap --apply   # delete orphans
+```
 
 ## Resource kinds
 
@@ -17,9 +29,15 @@ nexus3 manages six resource kinds on the host. This page describes how they are 
 
 TAP interfaces, bridge, and the network namespace are in-kernel resources, named with the first 10 hex characters of the sandbox ULID. They are auto-reclaimed by the kernel when the Cloud Hypervisor process group dies — even under SIGKILL. The reaper does not target them; for correlation purposes, enumerate `ip link` entries matching `nx3[ghb]-<hex>` and strip the prefix.
 
+### Mounts are host-owned; nexus3 does not reclaim them <Badge type="danger" text="not built" />
+
+When a sandbox is created with a `-v` argument, nexus3 binds a host directory into the guest via virtiofs. That directory is **not a nexus3-managed resource** — it is owned by whoever created it (typically the orchestrator, which creates a `git worktree` per sandbox). `nexus3 rm` removes the sandbox record, shadow disks, sockets, and the raw OS disk. <Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox remove`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping. It does **not** delete the mounted host directory. The orchestrator is responsible for cleaning up the worktree it created (e.g. `git worktree remove`).
+
+Shadow disks are per-sandbox virtio-blk images that cover write-heavy paths inside the mount (`node_modules`, `.next`, `target`, `dist`). These are nexus3-managed and **are** removed by `nexus3 rm`.
+
 ## Creation: intent-before-materialize
 
-Every workspace disk creation is journaled before the disk is materialized. The write sequence in `writeCreateIntent` (`internal/core/service/intent.go`):
+Every disk creation (raw OS disk, shadow disks) is journaled before the disk is materialized. Mounted worktrees are not disk artifacts — no intent record is written for them. <Badge type="danger" text="not built" /> The write sequence in `writeCreateIntent` (`internal/core/service/intent.go`):
 
 ```
 os.OpenFile(intentPath, O_WRONLY|O_CREATE|O_TRUNC, 0o600)
@@ -110,14 +128,16 @@ Shadow disks (`KindDiskShadow`) use handle-based correlation rather than the ULI
 
 ## Disk preflight
 
-All `sandbox create` entry points run a disk-space preflight before any expensive work (`CheckDiskSpace` in `internal/core/service/preflight.go`). The preflight:
+All `nexus3 create` entry points run a disk-space preflight before any expensive work (`CheckDiskSpace` in `internal/core/service/preflight.go`). The preflight:
 
-- Measures existing workspace disks using `stat(2).Blocks * 512` (allocated bytes, not apparent size — sparse ext4 images have inflated apparent sizes).
+- Measures existing sandbox disks (raw and shadow) using `stat(2).Blocks * 512` (allocated bytes, not apparent size — sparse ext4 images have inflated apparent sizes).
 - Projects `count × per-sandbox-estimate` against the host's available bytes (`Bavail × Bsize` from `statfs(2)`).
 - Returns `ErrInsufficientDisk` if the projection exceeds available space.
 
-The per-sandbox estimate defaults to ~4.57 GiB (measured from a real pilot sandbox) when no existing workspace disks are present to sample.
+The preflight covers nexus3-managed disks only. Mounted host directories are outside the estimate — the orchestrator is responsible for ensuring the host worktree fits the available disk budget. <Badge type="danger" text="not built" />
+
+The per-sandbox estimate defaults to ~4.57 GiB (measured from a real pilot sandbox) when no existing sandbox disks are present to sample.
 
 ## Kernel preflight
 
-All sandbox-creation entry points (`sandbox create`, `nexus3 run`, `nexus3 orca`) call `resolveKernelPath()` before any store or VM setup. If `NEXUS3_KERNEL_PATH` is unset or the file does not exist, creation fails immediately with a legible error. Without this preflight, Cloud Hypervisor's own error is the opaque `"Cannot open kernel file"`.
+All sandbox-creation entry points (`nexus3 create`, `nexus3 run`, `nexus3 orca`) call `resolveKernelPath()` before any store or VM setup. If `NEXUS3_KERNEL_PATH` is unset or the file does not exist, creation fails immediately with a legible error. Without this preflight, Cloud Hypervisor's own error is the opaque `"Cannot open kernel file"`.

@@ -1,0 +1,15 @@
+{
+  "name": "nexus3-docs",
+  "private": true,
+  "description": "Documentation site for nexus3. Scoped to docs/site so the Go repo root stays free of a JS toolchain.",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "mermaid": "^11.4.1",
+    "vitepress": "^1.6.3",
+    "vitepress-plugin-mermaid": "^2.0.17"
+  }
+}
