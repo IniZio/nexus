@@ -6,10 +6,10 @@ import (
 
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
 	"github.com/IniZio/nexus3/internal/core/recovery"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
+	testharness "github.com/IniZio/nexus3/internal/test/harness"
 )
 
 // harness holds wired-together components for a single acceptance test.
@@ -24,20 +24,18 @@ type harness struct {
 
 // newHarness returns a harness backed by a fresh temporary directory.
 // The store root is isolated from the real state directory.
+// Component wiring is delegated to the shared internal/test/harness seam.
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	root := t.TempDir()
-	st, err := store.NewFileStore(root)
+	h, err := testharness.New(t.TempDir())
 	if err != nil {
-		t.Fatalf("newHarness: NewFileStore: %v", err)
+		t.Fatalf("newHarness: %v", err)
 	}
-	drv := fake.New()
-	mach := lifecycle.New()
 	return &harness{
-		st:  st,
-		drv: drv,
-		svc: service.New(st, drv, mach),
-		rec: recovery.New(st, drv),
+		st:  h.St,
+		drv: h.Drv,
+		svc: h.Svc,
+		rec: h.Rec,
 	}
 }
 

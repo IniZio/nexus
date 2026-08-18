@@ -9,6 +9,7 @@ coverage.txt
 coverage.html
 
 # Development metadata
+.claude/
 .codegraph/
 .groundwork/
 
@@ -21,3 +22,4 @@ coverage.html
 docs/site/node_modules/
 docs/site/.vitepress/dist/
 docs/site/.vitepress/cache/
+__pycache__/

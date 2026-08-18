@@ -1,0 +1,104 @@
+# cli-surface.toml
+# ─────────────────────────────────────────────────────────────────────────────
+# Machine-readable CLI surface manifest for nexus3.
+#
+# Consumed by scripts/docs/validate-cli-examples.py.
+# Format: TOML 1.0 (stdlib tomllib, Python >= 3.11 — no third-party deps).
+#
+# AUTHORING DISCIPLINE
+#
+#   target_only_verbs, target_only_flags, partial_flags:
+#     Each entry carries a `page` field (relative to docs/site/) naming the doc
+#     where the required <Badge> lives.  The validator enforces bidirectional
+#     consistency:
+#       manifest → docs : every entry must resolve to an actual badge in a
+#                         section of the claimed page that contains the verb/flag.
+#       docs → manifest : every target-only/partial flag used in a code block
+#                         must be listed here (enforced by the flag-check loop).
+#     Badge presence is checked at SECTION granularity (heading to next heading),
+#     not page-level, so removing a badge from one section is always detected
+#     even when another section on the same page retains a badge.
+#
+#   removed_verbs, removed_flags:
+#     Surface deliberately ABSENT from the manual.  No badge can encode a
+#     prohibition, so these live exclusively here.  Any code-block occurrence is
+#     a validator violation.  See cli/index.md "Removed from target" for
+#     human-readable rationale.
+#
+# HOW TO RUN
+#   python3 scripts/docs/validate-cli-examples.py
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Verbs removed from the target entirely.
+# Any fenced-code-block occurrence in any doc page is a validator violation.
+removed_verbs = ["up", "shell"]
+
+# ── Target-only verbs (not yet built) ────────────────────────────────────────
+# Each entry: { verb, page }  — page is relative to docs/site/.
+# Any code-block invocation of these verbs requires a <Badge type="danger">
+# in the same heading-delimited section as the code block.
+
+[[target_only_verbs]]
+verb = "logs"
+page = "cli/index.md"   # verb index table: `logs` | <Badge type="danger" text="not built" />
+
+[[target_only_verbs]]
+verb = "metrics"
+page = "cli/index.md"   # verb index table: `metrics` | <Badge type="danger" text="not built" />
+
+[[target_only_verbs]]
+verb = "agent"
+page = "ai-agents.md"   # §"Public agent launch surface" <Badge type="danger" text="not built" />
+
+[[target_only_verbs]]
+verb = "secret"
+page = "cli/index.md"   # verb index table: `secret` <Badge type="danger" text="not built" />
+
+# ── Target-only flags (not yet built) ────────────────────────────────────────
+# Each entry: { key, page, flags }
+#   key   — "verb" or "verb/subverb" (matches parse_invocation output)
+#   page  — relative to docs/site/
+#   flags — flag tokens that require <Badge type="danger"> in the same
+#            heading-delimited section as the code block that uses them.
+
+[[target_only_flags]]
+key   = "create"
+page  = "cli/sandbox-commands.md"   # nexus3 create flag table
+flags = ["--volume", "-v", "--shadow", "--service"]
+# | `-v, --volume ...` | … | <Badge type="danger" text="not built" />
+# | `--shadow ...`     | … | <Badge type="danger" text="not built" />
+# | `--service ...`    | … | <Badge type="danger" text="not built" />
+
+[[target_only_flags]]
+key   = "sandbox/create"
+page  = "cli/sandbox-commands.md"   # same table, legacy sandbox-group spelling
+flags = ["--volume", "-v", "--shadow", "--service"]
+
+[[target_only_flags]]
+key   = "auth/login"
+page  = "cli/auth-mcp-reap.md"      # §"nexus3 auth login": --agent not yet built
+flags = ["--agent"]
+
+# ── Partial flags (renamed / reworked in target) ─────────────────────────────
+# Each entry: { key, page, flags }
+# Code blocks using these flags require <Badge type="warning"> or
+# <Badge type="danger"> in the same heading-delimited section.
+
+[[partial_flags]]
+key   = "create"
+page  = "cli/sandbox-commands.md"   # | `--context ...` | … | <Badge type="warning" text="partial" />
+flags = ["--context"]
+
+[[partial_flags]]
+key   = "sandbox/create"
+page  = "cli/sandbox-commands.md"   # same table, legacy sandbox-group spelling
+flags = ["--context"]
+
+# ── Removed flags (cannot appear in docs) ────────────────────────────────────
+# Keyed by top-level verb.  Any fenced-code-block occurrence is a violation.
+# Human-readable rationale: cli/index.md "Removed from target" section.
+[removed_flags]
+fork    = ["--count"]                       # one child per invocation; fan-out is the orchestrator's loop
+restore = ["--count"]                       # same rationale
+create  = ["--workspace", "--capture-max"]  # superseded by live virtiofs mounts

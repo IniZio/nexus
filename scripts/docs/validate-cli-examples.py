@@ -11,9 +11,9 @@ Exit 1  — one or more violations found.
 WHAT IS CHECKED
   Per-verb flag validation: every flag token (--foo) in a docs invocation is
   verified to exist in the parsed flag set for that verb, or to be in the
-  explicit target-only allowlist (which additionally requires a badge on the
-  page — danger badge for not-built flags, warning-or-danger badge for partial
-  flags).
+  explicit target-only allowlist (which additionally requires a badge in the
+  same heading-delimited section as the code block — danger badge for
+  not-built flags, warning-or-danger badge for partial flags).
 
 WHAT IS NOT CHECKED
   Positional arity is NOT enforced. The motivating defect (snapshot create
@@ -33,80 +33,157 @@ TARGET SPELLINGS (R1)
 
 REMOVED FLAGS (R2)
   Some flags are removed from the target even though they exist in source today.
-  Any code-block occurrence is a violation:
-    fork --count      (one child per invocation; fan-out is the orchestrator's loop)
-    restore --count   (same)
-    create --workspace   (superseded by live virtiofs mounts; use -v/--volume)
-    create --capture-max (removed alongside --workspace)
+  Any code-block occurrence is a violation.  See removed_flags in
+  docs/site/cli-surface.toml for the current list.
 
 OLD SPELLING (R3)
   `nexus3 sandbox <lifecycle-verb>` in a code block is a violation on every page.
   The target spells lifecycle verbs flat: create/ps/rm/start/stop/pause/resume.
   Prose mapping notes are prose, not code-block invocations, so they are not checked.
 
-Allowlisted target-only flags requiring a <Badge type="danger"...> on the page:
-  --volume, -v, --shadow, --service  (create target-only, not built)
+SOURCE OF TRUTH FOR ALLOWLISTS
+  All five allowlists (target_only_verbs, target_only_flags, partial_flags,
+  removed_verbs, removed_flags) are loaded at runtime from:
 
-Allowlisted partial flags requiring a <Badge type="warning"...> or
-<Badge type="danger"...> on the page:
-  --context  (create target spelling; built today as --file)
+    docs/site/cli-surface.toml
 
-Allowlisted target-only verbs (not yet built but badged where used):
-  logs, metrics, agent, secret
+  Edit that file to add, remove, or reclassify surface.  Every entry in
+  target_only_flags and partial_flags MUST have a corresponding <Badge> in the
+  doc section noted by the `page` field in cli-surface.toml.
+  removed_verbs and removed_flags cannot appear in the docs by definition and
+  live exclusively in the manifest.
 
-Allowlisted target-only flags requiring a <Badge type="danger"...> on the page:
-  auth login --agent  (provider profile selector; not yet built)
+BADGE GRANULARITY
+  Badges are checked at SECTION granularity (heading to next heading), not at
+  page level.  A badge in section A does not excuse an unguarded invocation in
+  section B of the same page.  This means removing the badge for one specific
+  verb or flag is always detected, even when other badges remain on the page.
+
+MANIFEST CROSS-CHECK
+  A bidirectional check runs before invocation scanning:
+    manifest → docs : every target_only_verbs / target_only_flags / partial_flags
+                      entry must resolve to an actual badge in a section of the
+                      claimed page that contains the verb or flag name.
+    docs → manifest : every target-only or partial flag used in a code block
+                      must be listed in the manifest (enforced by the flag-check
+                      loop; unknown flags are violations).
+  removed_verbs and removed_flags are manifest-only by design (no badge encodes
+  a prohibition) and are excluded from the manifest → docs direction.
 """
 
 import os
 import re
 import sys
+import tomllib  # stdlib since Python 3.11 — no third-party deps
 from collections import defaultdict
 
-REPO_ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
-CLI_DIR = os.path.join(REPO_ROOT, "internal", "cli")
-DOCS_DIR = os.path.join(REPO_ROOT, "docs", "site")
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.environ.get(
+    "NEXUS3_REPO_ROOT", os.path.join(_script_dir, "..", "..")
+)
+CLI_DIR = os.environ.get(
+    "NEXUS3_CLI_DIR", os.path.join(REPO_ROOT, "internal", "cli")
+)
+DOCS_DIR = os.environ.get(
+    "NEXUS3_DOCS_DIR", os.path.join(REPO_ROOT, "docs", "site")
+)
+SURFACE_MANIFEST = os.environ.get(
+    "NEXUS3_SURFACE_MANIFEST", os.path.join(DOCS_DIR, "cli-surface.toml")
+)
 
-# ── Target-only surface: flags that exist in the target spec but not in source.
-# Any doc page that uses these flags MUST have a <Badge type="danger"...> nearby.
-# Entries here suppress flag-unknown errors; the badge check is not suppressed.
-# Key is (verb, subverb) — use None for subverb when flag applies to all subverbs.
-# NOTE: flat lifecycle verbs (create, ps, rm, ...) use subverb=None.
-TARGET_ONLY_FLAGS: dict[tuple[str, str | None], set[str]] = {
-    # Flat target verb "create" maps to source "sandbox create"
-    ("create", None): {"--volume", "-v", "--shadow", "--service"},
-    # Legacy spelling kept for any non-cli pages still using sandbox group
-    ("sandbox", "create"): {"--volume", "-v", "--shadow", "--service"},
-    # auth login --agent: provider profile selector, not yet built
-    ("auth", "login"): {"--agent"},
-}
 
-# Partial flags: exist in the target under a different spelling than source.
-# Require a <Badge type="warning"...> OR <Badge type="danger"...> on the page.
-PARTIAL_FLAGS: dict[tuple[str, str | None], set[str]] = {
-    ("create", None): {"--context"},
-    ("sandbox", "create"): {"--context"},
-}
+def load_surface_manifest() -> tuple[
+    set[str],
+    dict[tuple[str, str | None], set[str]],
+    dict[tuple[str, str | None], set[str]],
+    set[str],
+    dict[str, set[str]],
+    dict,
+]:
+    """
+    Load the CLI surface manifest from docs/site/cli-surface.toml.
 
-# Global target-only flags valid on any verb.
+    Returns (target_only_verbs, target_only_flags, partial_flags,
+             removed_verbs, removed_flags, manifest_entries).
+
+    manifest_entries holds the raw structured data for the bidirectional
+    manifest↔docs cross-check; the first five items are the runtime lookups
+    used by the invocation checker.
+    """
+    try:
+        with open(SURFACE_MANIFEST, "rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError:
+        print(f"ERROR: surface manifest not found: {SURFACE_MANIFEST}", file=sys.stderr)
+        sys.exit(2)
+
+    # target_only_verbs: TOML array-of-tables [{verb, page}, ...]
+    tov_entries: list[dict] = data.get("target_only_verbs") or []
+    target_only_verbs: set[str] = {e["verb"] for e in tov_entries}
+
+    # target_only_flags: TOML array-of-tables [{key, page, flags}, ...]
+    tof_entries: list[dict] = data.get("target_only_flags") or []
+    target_only_flags: dict[tuple[str, str | None], set[str]] = {}
+    for e in tof_entries:
+        key = e["key"]
+        flags = set(e.get("flags") or [])
+        if "/" in key:
+            verb, subverb = key.split("/", 1)
+        else:
+            verb, subverb = key, None
+        target_only_flags[(verb, subverb)] = flags
+
+    # partial_flags: TOML array-of-tables [{key, page, flags}, ...]
+    pf_entries: list[dict] = data.get("partial_flags") or []
+    partial_flags: dict[tuple[str, str | None], set[str]] = {}
+    for e in pf_entries:
+        key = e["key"]
+        flags = set(e.get("flags") or [])
+        if "/" in key:
+            verb, subverb = key.split("/", 1)
+        else:
+            verb, subverb = key, None
+        partial_flags[(verb, subverb)] = flags
+
+    # removed_verbs: simple TOML array ["up", "shell"]
+    removed_verbs: set[str] = set(data.get("removed_verbs") or [])
+
+    # removed_flags: TOML table {verb: [flags], ...}
+    removed_flags: dict[str, set[str]] = {
+        verb: set(flags or [])
+        for verb, flags in (data.get("removed_flags") or {}).items()
+    }
+
+    # Raw structured entries for manifest→docs cross-check
+    manifest_entries = {
+        "target_only_verbs": tov_entries,
+        "target_only_flags": tof_entries,
+        "partial_flags": pf_entries,
+    }
+
+    return (
+        target_only_verbs,
+        target_only_flags,
+        partial_flags,
+        removed_verbs,
+        removed_flags,
+        manifest_entries,
+    )
+
+
+# Load allowlists from the docs manifest — not hard-coded here.
+(
+    TARGET_ONLY_VERBS,
+    TARGET_ONLY_FLAGS,
+    PARTIAL_FLAGS,
+    REMOVED_VERBS,
+    REMOVED_FLAGS,
+    MANIFEST_ENTRIES,
+) = load_surface_manifest()
+
+# Global target-only flags valid on any verb (currently empty; extend in manifest
+# if a flag needs to be target-only across all verbs).
 GLOBAL_TARGET_ONLY_FLAGS: set[str] = set()
-
-# Verbs that are target-only (not yet built) — skip invocation checks for these.
-# "secret" is target-only (cmd_secret.go does not exist).
-TARGET_ONLY_VERBS: set[str] = {"logs", "metrics", "agent", "secret"}
-
-# Verbs removed from the target — any occurrence in docs is a violation.
-# "shell" is built today but retired in the target; use exec instead.
-REMOVED_VERBS: set[str] = {"up", "shell"}
-
-# Flags removed from the target for specific verbs — any occurrence is a violation.
-# Keyed by top-level verb. Note: "create" here covers only the flat lifecycle verb;
-# "image build --workspace" uses top-level verb "image" and is unaffected.
-REMOVED_FLAGS: dict[str, set[str]] = {
-    "fork": {"--count"},
-    "restore": {"--count"},
-    "create": {"--workspace", "--capture-max"},
-}
 
 # Flat lifecycle verbs: the target spelling → source verb for flag lookup.
 # Source uses `sandbox <verb>`; target uses the flat form.
@@ -180,23 +257,87 @@ def parse_go_flags(cli_dir: str) -> dict[str, set[str]]:
     return dict(verb_flags)
 
 
+# ── Section-level badge helpers ───────────────────────────────────────────────
+
+def _split_into_sections(src: str) -> list[tuple[int, int, bool, bool]]:
+    """
+    Split markdown source into sections bounded by ATX headings.
+    Returns a list of (start_line, end_line_exclusive, has_danger, has_warning).
+
+    Section boundaries are heading lines (^#{1,6} ) that appear OUTSIDE fenced
+    code blocks.  This means a heading inside a code example is NOT treated as
+    a section boundary.
+
+    The first section starts at line 0 and covers any frontmatter / preamble
+    before the first heading.
+    """
+    lines = src.split("\n")
+    n = len(lines)
+
+    # Pass 1: find heading line indices outside code blocks
+    heading_indices: list[int] = [0]
+    in_block = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_block = not in_block
+        elif not in_block and re.match(r'^#{1,6}\s', line) and i > 0:
+            heading_indices.append(i)
+    heading_indices.append(n)  # sentinel
+
+    # Pass 2: compute badge presence for each section
+    sections: list[tuple[int, int, bool, bool]] = []
+    for j in range(len(heading_indices) - 1):
+        start = heading_indices[j]
+        end = heading_indices[j + 1]
+        section_text = "\n".join(lines[start:end])
+        has_danger = bool(re.search(r'<Badge\s+type="danger"', section_text))
+        has_warning = bool(re.search(r'<Badge\s+type="warning"', section_text))
+        sections.append((start, end, has_danger, has_warning))
+
+    return sections
+
+
+def _page_sections(page_path: str) -> list[str]:
+    """
+    Return a list of section text strings for the given doc page.
+    Used by check_manifest_coverage() to search for verb/flag+badge pairs.
+    """
+    with open(page_path) as f:
+        src = f.read()
+    meta = _split_into_sections(src)
+    lines = src.split("\n")
+    return ["\n".join(lines[s:e]) for s, e, _, _ in meta]
+
+
 # ── Extract nexus3 invocations from markdown ─────────────────────────────────
 
 def extract_invocations(md_path: str) -> list[tuple[int, str, bool, bool]]:
     """
     Returns list of (line_number, invocation_string, has_danger_badge, has_warning_badge).
     Only lines inside fenced code blocks (``` or ~~~) starting with 'nexus3 '
-    are extracted. Badge presence is a page-level coarse check.
+    are extracted.
+
+    Badge presence is SECTION-LEVEL: the heading-delimited section that contains
+    the code block must carry the badge.  A badge in another section of the same
+    page does NOT satisfy the requirement for this invocation.  This ensures that
+    removing the badge for one specific verb or flag is always detected even when
+    other badges remain on the page.
     """
     with open(md_path) as f:
         src = f.read()
 
-    has_danger_badge = bool(re.search(r'<Badge\s+type="danger"', src))
-    has_warning_badge = bool(re.search(r'<Badge\s+type="warning"', src))
+    # Build per-line badge lookup from section metadata
+    lines = src.split("\n")
+    n = len(lines)
+    line_danger = [False] * n
+    line_warning = [False] * n
+    for start, end, has_danger, has_warning in _split_into_sections(src):
+        for k in range(start, min(end, n)):
+            line_danger[k] = has_danger
+            line_warning[k] = has_warning
 
     results: list[tuple[int, str, bool, bool]] = []
-    lines = src.split("\n")
-
     in_block = False
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -207,9 +348,100 @@ def extract_invocations(md_path: str) -> list[tuple[int, str, bool, bool]]:
             # Strip trailing inline comment
             code = re.sub(r'\s+#.*$', '', line).strip()
             if code.startswith("nexus3 "):
-                results.append((i + 1, code, has_danger_badge, has_warning_badge))
+                results.append((i + 1, code, line_danger[i], line_warning[i]))
 
     return results
+
+
+# ── Bidirectional manifest↔docs cross-check ───────────────────────────────────
+
+def check_manifest_coverage(docs_dir: str, manifest_entries: dict) -> list[str]:
+    """
+    Manifest → Docs direction: verify that every entry in target_only_verbs,
+    target_only_flags, and partial_flags resolves to an actual badge in a section
+    of the claimed page that contains the verb or flag name.
+
+    Docs → Manifest direction: enforced by the invocation checker in main() —
+    any flag used in a code block that is not in real_flags and not in the
+    manifest is reported as an unknown flag.
+
+    removed_verbs and removed_flags are intentionally excluded from the
+    manifest → docs direction: they name surface that CANNOT appear in the
+    manual (no badge encodes a prohibition) and legitimately have no doc location.
+    """
+    violations: list[str] = []
+
+    # ── target_only_verbs ────────────────────────────────────────────────────
+    for entry in manifest_entries.get("target_only_verbs") or []:
+        verb = entry["verb"]
+        page = entry["page"]
+        page_path = os.path.join(docs_dir, page)
+        if not os.path.exists(page_path):
+            violations.append(
+                f"manifest: target_only_verbs['{verb}'] references non-existent page {page!r}"
+            )
+            continue
+        found = any(
+            verb in section and re.search(r'<Badge\s+type="danger"', section)
+            for section in _page_sections(page_path)
+        )
+        if not found:
+            violations.append(
+                f"manifest: target_only_verbs['{verb}'] claims <Badge type=\"danger\">"
+                f" on {page!r} but no section containing '{verb}' has a danger badge"
+                f" — add badge or remove manifest entry"
+            )
+
+    # ── target_only_flags ────────────────────────────────────────────────────
+    for entry in manifest_entries.get("target_only_flags") or []:
+        key = entry["key"]
+        page = entry["page"]
+        page_path = os.path.join(docs_dir, page)
+        if not os.path.exists(page_path):
+            violations.append(
+                f"manifest: target_only_flags['{key}'] references non-existent page {page!r}"
+            )
+            continue
+        sections = _page_sections(page_path)
+        for flag in entry.get("flags") or []:
+            found = any(
+                flag in section and re.search(r'<Badge\s+type="danger"', section)
+                for section in sections
+            )
+            if not found:
+                violations.append(
+                    f"manifest: target_only_flags['{key}']['{flag}'] claims"
+                    f" <Badge type=\"danger\"> on {page!r}"
+                    f" but no section containing '{flag}' has a danger badge"
+                    f" — add badge or remove manifest entry"
+                )
+
+    # ── partial_flags ────────────────────────────────────────────────────────
+    for entry in manifest_entries.get("partial_flags") or []:
+        key = entry["key"]
+        page = entry["page"]
+        page_path = os.path.join(docs_dir, page)
+        if not os.path.exists(page_path):
+            violations.append(
+                f"manifest: partial_flags['{key}'] references non-existent page {page!r}"
+            )
+            continue
+        sections = _page_sections(page_path)
+        for flag in entry.get("flags") or []:
+            found = any(
+                flag in section
+                and re.search(r'<Badge\s+type="(warning|danger)"', section)
+                for section in sections
+            )
+            if not found:
+                violations.append(
+                    f"manifest: partial_flags['{key}']['{flag}'] claims"
+                    f" <Badge type=\"warning\"> or <Badge type=\"danger\"> on {page!r}"
+                    f" but no section containing '{flag}' has such a badge"
+                    f" — add badge or remove manifest entry"
+                )
+
+    return violations
 
 
 # ── Parse a nexus3 invocation ────────────────────────────────────────────────
@@ -308,6 +540,9 @@ def main() -> None:
     violations: list[str] = []
     checked = 0
 
+    # Bidirectional manifest↔docs cross-check (manifest→docs direction)
+    violations.extend(check_manifest_coverage(DOCS_DIR, MANIFEST_ENTRIES))
+
     for dirpath, _, filenames in os.walk(DOCS_DIR):
         if ".vitepress" in dirpath:
             continue
@@ -344,12 +579,12 @@ def main() -> None:
                             f" removed from the target — delete this flag\n  invocation: {inv}"
                         )
 
-                # Target-only verbs: require danger badge, then skip flag checks.
+                # Target-only verbs: require danger badge in the same section, then skip flag checks.
                 if verb in TARGET_ONLY_VERBS:
                     if not has_danger_badge:
                         violations.append(
                             f"{rel}:{lineno}: verb '{verb}' is target-only (not built)"
-                            f" but page has no <Badge type=\"danger\">"
+                            f" but section has no <Badge type=\"danger\">"
                             f" — add badge or remove invocation\n  invocation: {inv}"
                         )
                     continue
@@ -361,14 +596,14 @@ def main() -> None:
                 real_flags: set[str] = set(verb_flags.get(source_verb, set()))
                 real_flags |= verb_flags.get("__global__", set())
 
-                # Target-only flags (require danger badge): (verb, subverb) and (verb, None)
+                # Target-only flags (require danger badge in same section): (verb, subverb) and (verb, None)
                 target_only: set[str] = (
                     TARGET_ONLY_FLAGS.get((verb, subverb), set())
                     | TARGET_ONLY_FLAGS.get((verb, None), set())
                     | GLOBAL_TARGET_ONLY_FLAGS
                 )
 
-                # Partial flags (require warning or danger badge)
+                # Partial flags (require warning or danger badge in same section)
                 partial: set[str] = (
                     PARTIAL_FLAGS.get((verb, subverb), set())
                     | PARTIAL_FLAGS.get((verb, None), set())
@@ -384,7 +619,7 @@ def main() -> None:
                         if not has_danger_badge:
                             violations.append(
                                 f"{rel}:{lineno}: flag {flag!r} is target-only (not built)"
-                                f" but page has no <Badge type=\"danger\">"
+                                f" but section has no <Badge type=\"danger\">"
                                 f" — add badge or remove flag\n  invocation: {inv}"
                             )
                         continue
@@ -392,7 +627,7 @@ def main() -> None:
                         if not (has_warning_badge or has_danger_badge):
                             violations.append(
                                 f"{rel}:{lineno}: flag {flag!r} is a partial target flag"
-                                f" but page has no <Badge type=\"warning\"> or"
+                                f" but section has no <Badge type=\"warning\"> or"
                                 f" <Badge type=\"danger\">"
                                 f" — add badge or remove flag\n  invocation: {inv}"
                             )
