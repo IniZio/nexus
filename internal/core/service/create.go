@@ -389,9 +389,16 @@ func CreateAndBoot(
 	// On clean exit (error or success) the deferred cleanup always removes the
 	// intent file. On an unclean exit (SIGKILL, panic, power loss) the defer
 	// does not run; the intent survives and the reaper can discover it.
-	var intentPath string
+	//
+	// The intent file also carries an flock(2) lease held for the whole create
+	// window (see createIntentLease). It is what tells a concurrent reaper that
+	// the disks below belong to a create that is still running: between here
+	// and step 6 no process carries the ULID in its cmdline, so the reaper's
+	// /proc liveness gate cannot see this create. The kernel drops the lease if
+	// this process dies, so a crashed create still leaves reclaimable disks.
+	var intentLease *createIntentLease
 	if diskCopyPath != "" || workspaceDiskPath != "" {
-		intentPath, err = writeCreateIntent(diskDir, id, diskCopyPath, workspaceDiskPath)
+		intentLease, err = writeCreateIntent(diskDir, id, diskCopyPath, workspaceDiskPath)
 		if err != nil {
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: write create intent: %w", project, name, err)
 		}
@@ -404,9 +411,11 @@ func CreateAndBoot(
 	//   - removes disk files on any failure so no orphan accumulates on clean errors.
 	success := false
 	defer func() {
-		if intentPath != "" {
-			_ = os.Remove(intentPath)
-		}
+		// release removes the intent file and drops the in-flight lease that
+		// keeps a concurrent reaper off these disks. It runs only after
+		// store.Create has committed the record (step 6), so the resources go
+		// straight from leased to owned with no unprotected instant between.
+		intentLease.release()
 		if !success {
 			if diskCopyPath != "" {
 				_ = os.Remove(diskCopyPath)

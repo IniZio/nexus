@@ -61,8 +61,9 @@ type ReapOptions struct {
 // Classification rules for ULID-keyed resources:
 //
 //   - ReapStatusOwned: a store record exists → skip (R2's job).
-//   - ReapStatusLive:  no record, but liveness checks detect a running process
-//     or a responsive API socket → skip (mid-create or crashed-but-live).
+//   - ReapStatusLive:  no record, but a liveness check detects a create in
+//     flight (leased intent file), a running process, or a responsive API
+//     socket → skip.
 //   - ReapStatusOrphan: no record and all liveness checks definitive-dead →
 //     reclaimable.
 //
@@ -82,6 +83,60 @@ func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, o
 	resources, err := idx.List()
 	if err != nil {
 		return nil, fmt.Errorf("reap: enumerate resources: %w", err)
+	}
+
+	// Identify sandboxes whose create is still in flight. This MUST happen
+	// before the store snapshot below — the order is the correctness argument,
+	// not an optimisation.
+	//
+	// A create materialises its disks seconds before it commits the store
+	// record (create.go: writeCreateIntent → cowExt4 → … → store.Create), and
+	// during that window nothing carries the ULID in its cmdline, so the /proc
+	// gate cannot see it. The flock lease on the intent file is the signal that
+	// closes that window; the kernel releases it if the creator dies, so a
+	// crashed create is still reclaimable on the next reap.
+	//
+	// # Why probe BEFORE st.List
+	//
+	// The reaper cannot observe the filesystem and the store atomically, so the
+	// order decides whether the two observations can BOTH miss a live sandbox.
+	// The creator's release sequence is: store.Create commits → CreateAndBoot
+	// returns → the deferred release unlinks the intent and drops the lease.
+	// Release therefore strictly FOLLOWS the record becoming visible.
+	//
+	// With probe-then-list, every outcome is safe:
+	//
+	//   - probe says leased → in flight → keep. Safe.
+	//   - probe says not leased → the creator either never published a lease
+	//     (crashed create, or a legacy intent) or already released it. Release
+	//     follows store.Create, so if it had released, the record was already
+	//     committed BEFORE this probe — and st.List runs AFTER the probe, so it
+	//     must see that record → Owned → keep. Safe.
+	//
+	// Listing records first inverts this: the record snapshot could be taken
+	// before the commit while the lease probe happens after the release, so a
+	// sandbox that is live throughout appears in neither set and its disk is
+	// unlinked. That is the residual race this ordering closes.
+	//
+	// The set is keyed by ULID because a leased intent protects ALL of that
+	// sandbox's resources (intent, .raw, workspace disk), each of which is
+	// enumerated as a separate HostResource.
+	// Maps ULID → the reason to report for keeping it. A leased intent and an
+	// unreadable one both keep, but they are reported differently: the first
+	// expires when the creator dies, the second does not (see intentLeaseState).
+	inFlight := make(map[domain.SandboxID]string)
+	for _, res := range resources {
+		if res.Kind != KindCreateIntent {
+			continue
+		}
+		switch probeIntentLease(res.Path) {
+		case leaseHeld:
+			inFlight[res.OwnerID] = fmt.Sprintf("create in flight: intent lease held for %s", res.OwnerID)
+		case leaseUnknown:
+			inFlight[res.OwnerID] = fmt.Sprintf(
+				"intent file unreadable, cannot rule out a live creator — keeping indefinitely; "+
+					"inspect %s (this keep does not expire on its own)", res.Path)
+		}
 	}
 
 	all, err := st.List(ctx)
@@ -118,7 +173,7 @@ func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, o
 			// Shadow disks use handle-based correlation, not ULID/liveness.
 			entry = classifyShadowDisk(res, shadowHandleMap)
 		} else {
-			entry = classifyResource(ctx, res, recordMap, socketDir, opt.ProcDir)
+			entry = classifyResource(ctx, res, recordMap, inFlight, socketDir, opt.ProcDir)
 		}
 		if entry.Status == ReapStatusOrphan {
 			report.ReclaimableBytes += entry.AllocatedBytes
@@ -170,6 +225,7 @@ func classifyResource(
 	ctx context.Context,
 	res HostResource,
 	recordMap map[domain.SandboxID]domain.Sandbox,
+	inFlight map[domain.SandboxID]string,
 	socketDir string,
 	procDir string,
 ) ReapEntry {
@@ -182,6 +238,17 @@ func classifyResource(
 	if sb, ok := recordMap[res.OwnerID]; ok {
 		entry.Status = ReapStatusOwned
 		entry.Reason = fmt.Sprintf("owner %s has record (state=%s)", sb.ID, sb.State)
+		return entry
+	}
+
+	// Liveness gate, step 0: a create-intent lease held by a live creator.
+	// This precedes the /proc scan because it is both cheaper and strictly more
+	// informative during the create window — the window in which the /proc scan
+	// is blind (create.go step 3.6 → step 6). Deleting here would destroy the
+	// disk of a create that is still running.
+	if reason, ok := inFlight[res.OwnerID]; ok {
+		entry.Status = ReapStatusLive
+		entry.Reason = reason
 		return entry
 	}
 

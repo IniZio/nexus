@@ -2,9 +2,11 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
 )
@@ -57,11 +59,147 @@ type createIntent struct {
 	WorkspaceDiskPath string `json:"workspace_disk_path,omitempty"`
 }
 
-// writeCreateIntent writes a create-intent file for id into diskDir durably.
-// It creates diskDir if it does not exist. Returns the path of the written
-// intent file.
+// createIntentLease is an in-flight-create lease: an open file descriptor
+// holding an exclusive flock(2) on the create-intent file for as long as the
+// creating process is inside the create window.
 //
-// Durability contract: the function performs a write→Sync→close→dir-Sync
+// # Why a lease is needed
+//
+// CreateAndBoot materialises the per-sandbox disk (a multi-second cp for a
+// multi-GiB image) BEFORE it commits the store record. During that window the
+// disk exists with no record, and no process anywhere carries the ULID in its
+// cmdline — cloud-hypervisor is not launched until after the record write — so
+// the reaper's /proc liveness gate (reap.go, scanProcForULID) has nothing to
+// match. Without a lease the reaper correctly concludes "no record, no live
+// process" and unlinks the disk of a create that is still running.
+//
+// # Why flock
+//
+// The kernel releases flock(2) locks when the holding process dies, including
+// on SIGKILL, and a reboot releases everything. So a dead creator can NEVER
+// block reclamation: the next reaper acquires the lease and reclaims. That is
+// the property that makes this safe to add to a reaper whose entire purpose is
+// reclaiming leaked disks. It is the same primitive, and the same reasoning,
+// that store.Lock already uses for sandbox records (see store/lock.go, "Crash
+// safety guarantee" and "Lease equivalence").
+//
+// A lease is held from before the intent file is discoverable (see
+// writeCreateIntent) until CreateAndBoot's deferred cleanup calls release,
+// which happens after store.Create has committed the record. There is
+// therefore no instant at which a create's disks are neither leased nor owned.
+type createIntentLease struct {
+	path string
+	f    *os.File
+}
+
+// Path returns the intent file path this lease covers.
+func (l *createIntentLease) Path() string {
+	if l == nil {
+		return ""
+	}
+	return l.path
+}
+
+// release removes the intent file and drops the lease. It is safe to call on a
+// nil lease and safe to call more than once.
+//
+// Order matters: the file is removed BEFORE the descriptor is closed, so the
+// intent is never visible to a reaper in an unleased state.
+func (l *createIntentLease) release() {
+	if l == nil || l.f == nil {
+		return
+	}
+	_ = os.Remove(l.path)
+	// Closing the descriptor releases the flock.
+	_ = l.f.Close()
+	l.f = nil
+}
+
+// abort tears down a partially constructed lease, removing the staging file.
+func (l *createIntentLease) abort(stagePath string) {
+	if l == nil || l.f == nil {
+		return
+	}
+	_ = l.f.Close()
+	l.f = nil
+	_ = os.Remove(stagePath)
+}
+
+// intentLeaseState is the three-way result of probing a create-intent file's
+// lease. Ambiguity resolves to keep, matching the reaper's N-AC2 rule — but it
+// is reported distinctly from a genuine live lease, because the two have very
+// different operational meanings (see leaseUnknown).
+type intentLeaseState int
+
+const (
+	// leaseFree means nobody holds the lease: the creator is gone (crashed,
+	// killed, or the host rebooted) or the intent predates leases. The
+	// resources are reclaimable exactly as they were before leases existed.
+	leaseFree intentLeaseState = iota
+	// leaseHeld means a live creator holds the lease: a create is in flight.
+	// This state ends when the creator dies, so it cannot persist.
+	leaseHeld
+	// leaseUnknown means the intent file could not be read, so a live creator
+	// cannot be ruled out. Unlike leaseHeld this state does NOT expire on its
+	// own: an intent file left mode-0600 by another uid keeps its sandbox's
+	// disks unreclaimable until an operator intervenes. It therefore gets its
+	// own reason string in the reap report so a permanent keep is legible as
+	// one rather than masquerading as a create that is still running.
+	leaseUnknown
+)
+
+// probeIntentLease reports whether the intent file at path is currently leased
+// by a live creator, i.e. whether a create is in flight for that sandbox.
+//
+// It probes with a non-blocking exclusive flock:
+//
+//   - EWOULDBLOCK  → leaseHeld.
+//   - acquired     → leaseFree.
+//   - ENOENT       → leaseFree (the intent vanished; the creator finished).
+//   - other errors → leaseUnknown; the caller keeps the resources.
+//
+// The probe lock is held only for the duration of the call. A second reaper
+// probing concurrently may observe the first reaper's probe lock and treat the
+// sandbox as in flight; that is conservative, not a leak — the reaper holding
+// the lock is itself about to reclaim the resource, and any leftover is swept
+// by the next reap.
+//
+// probeIntentLease never creates the file: probing must not resurrect an intent
+// that a concurrent reaper just unlinked.
+func probeIntentLease(path string) intentLeaseState {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return leaseFree
+		}
+		// Unreadable (e.g. EACCES): cannot rule out a live creator.
+		return leaseUnknown
+	}
+	defer func() { _ = f.Close() }()
+
+	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	switch {
+	case err == nil:
+		// No live holder. Drop the probe lock immediately; the close in the
+		// defer would do it too, but releasing early narrows the window in
+		// which a concurrent reaper sees our probe lock.
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		return leaseFree
+	case errors.Is(err, syscall.EWOULDBLOCK), errors.Is(err, syscall.EAGAIN):
+		return leaseHeld
+	default:
+		return leaseUnknown
+	}
+}
+
+// writeCreateIntent writes a create-intent file for id into diskDir durably and
+// returns the lease that protects the in-flight create. The caller MUST call
+// release on the returned lease when the create window closes (CreateAndBoot
+// does this in its deferred cleanup).
+//
+// It creates diskDir if it does not exist.
+//
+// Durability contract: the function performs a write→Sync→rename→dir-Sync
 // sequence before returning. Both syncs are required for true power-loss
 // durability:
 //
@@ -70,6 +208,17 @@ type createIntent struct {
 //     the file by scanning diskDir. Without the directory sync the inode may
 //     survive a power loss while the directory entry does not, leaving the
 //     reaper unable to find the intent and the orphaned disk invisible.
+//
+// Lease-before-visibility: the file is written under a staging name
+// ("<ULID>.create-intent.json.tmp") and flocked BEFORE being renamed into
+// place. The reaper's index matches only the exact ".create-intent.json"
+// suffix (resource_index.go), so the staging name is invisible to it. The
+// rename is atomic and carries the flock with the inode, so the intent becomes
+// discoverable only in the already-leased state — there is no window in which
+// a reaper can see an unleased intent for a live create.
+//
+// The descriptor deliberately stays open after this function returns: closing
+// it would drop the lease. It is closed by release.
 //
 // The intent must be fully durable before cowExt4 materialises the .raw disk,
 // or the failure window this function is designed to close simply moves.
@@ -84,43 +233,58 @@ type createIntent struct {
 //
 // diskCopyPath and workspaceDiskPath are the planned disk paths; either may be
 // empty if the corresponding resource will not be created.
-func writeCreateIntent(diskDir string, id domain.SandboxID, diskCopyPath, workspaceDiskPath string) (string, error) {
+func writeCreateIntent(diskDir string, id domain.SandboxID, diskCopyPath, workspaceDiskPath string) (*createIntentLease, error) {
 	if err := os.MkdirAll(diskDir, 0o700); err != nil {
-		return "", fmt.Errorf("create intent: mkdir %s: %w", diskDir, err)
+		return nil, fmt.Errorf("create intent: mkdir %s: %w", diskDir, err)
 	}
-	intentPath := filepath.Join(diskDir, id.String()+".create-intent.json")
+	intentPath := IntentPath(diskDir, id)
 	data, err := json.Marshal(createIntent{
 		ID:                id.String(),
 		DiskCopyPath:      diskCopyPath,
 		WorkspaceDiskPath: workspaceDiskPath,
 	})
 	if err != nil {
-		return "", fmt.Errorf("create intent: marshal: %w", err)
+		return nil, fmt.Errorf("create intent: marshal: %w", err)
 	}
 
-	// Open explicitly (not os.WriteFile) so we can Sync before Close.
-	f, err := os.OpenFile(intentPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	// Stage under a name the reaper's index does not match, so the intent is
+	// never discoverable before its lease is held.
+	stagePath := intentPath + ".tmp"
+	f, err := os.OpenFile(stagePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
-		return "", fmt.Errorf("create intent: open %s: %w", intentPath, err)
+		return nil, fmt.Errorf("create intent: open %s: %w", stagePath, err)
+	}
+	lease := &createIntentLease{path: intentPath, f: f}
+
+	// Take the lease. Non-blocking: the staging path is unique to this ULID, so
+	// a conflict means something is badly wrong and blocking would hang a create.
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		lease.abort(stagePath)
+		return nil, fmt.Errorf("create intent: lease %s: %w", stagePath, err)
 	}
 	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return "", fmt.Errorf("create intent: write %s: %w", intentPath, err)
+		lease.abort(stagePath)
+		return nil, fmt.Errorf("create intent: write %s: %w", stagePath, err)
 	}
-	// Sync file data before closing. intentFileSyncer is a package-level seam
-	// so tests can assert this call without relying on page-cache reads.
+	// Sync file data before it becomes visible. intentFileSyncer is a
+	// package-level seam so tests can assert this call without relying on
+	// page-cache reads.
 	if err := intentFileSyncer(f); err != nil {
-		_ = f.Close()
-		return "", fmt.Errorf("create intent: sync %s: %w", intentPath, err)
+		lease.abort(stagePath)
+		return nil, fmt.Errorf("create intent: sync %s: %w", stagePath, err)
 	}
-	if err := f.Close(); err != nil {
-		return "", fmt.Errorf("create intent: close %s: %w", intentPath, err)
+	// Atomic publish. The flock follows the inode, so the intent appears
+	// already leased.
+	if err := os.Rename(stagePath, intentPath); err != nil {
+		lease.abort(stagePath)
+		return nil, fmt.Errorf("create intent: publish %s: %w", intentPath, err)
 	}
 	// Sync the directory entry. intentDirSyncer is a seam for the same reason.
 	if err := intentDirSyncer(diskDir); err != nil {
-		return "", fmt.Errorf("create intent: sync dir %s: %w", diskDir, err)
+		lease.release()
+		return nil, fmt.Errorf("create intent: sync dir %s: %w", diskDir, err)
 	}
-	return intentPath, nil
+	return lease, nil
 }
 
 // readCreateIntent reads and parses the intent file at intentPath.

@@ -22,13 +22,13 @@ func TestWriteCreateIntent_WritesAndReads(t *testing.T) {
 	diskCopy := filepath.Join(dir, id.String()+".raw")
 	wsDisk := filepath.Join(dir, id.String()+"-workspace.ext4")
 
-	intentPath, err := writeCreateIntent(dir, id, diskCopy, wsDisk)
+	lease, err := writeCreateIntent(dir, id, diskCopy, wsDisk)
 	if err != nil {
 		t.Fatalf("writeCreateIntent: %v", err)
 	}
-	t.Cleanup(func() { os.Remove(intentPath) })
+	t.Cleanup(lease.release)
 
-	ci, err := readCreateIntent(intentPath)
+	ci, err := readCreateIntent(lease.Path())
 	if err != nil {
 		t.Fatalf("readCreateIntent: %v", err)
 	}
@@ -49,13 +49,13 @@ func TestWriteCreateIntent_EmptyPaths(t *testing.T) {
 	dir := t.TempDir()
 	id := domain.NewSandboxID()
 
-	intentPath, err := writeCreateIntent(dir, id, "", "")
+	lease, err := writeCreateIntent(dir, id, "", "")
 	if err != nil {
 		t.Fatalf("writeCreateIntent: %v", err)
 	}
-	t.Cleanup(func() { os.Remove(intentPath) })
+	t.Cleanup(lease.release)
 
-	ci, err := readCreateIntent(intentPath)
+	ci, err := readCreateIntent(lease.Path())
 	if err != nil {
 		t.Fatalf("readCreateIntent: %v", err)
 	}
@@ -116,11 +116,11 @@ func TestWriteCreateIntent_SyncIsCalled(t *testing.T) {
 		return origDirSyncer(d)
 	}
 
-	intentPath, err := writeCreateIntent(dir, id, "", "")
+	lease, err := writeCreateIntent(dir, id, "", "")
 	if err != nil {
 		t.Fatalf("writeCreateIntent: %v", err)
 	}
-	t.Cleanup(func() { os.Remove(intentPath) })
+	t.Cleanup(lease.release)
 
 	if !fileSyncCalled {
 		t.Error("writeCreateIntent did not call Sync() on the intent file — " +
