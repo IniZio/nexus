@@ -3,10 +3,6 @@ package cli
 // herdr_negative_scope_test.go — mechanical guard that the herdr ↔ nexus3
 // integration stays within its agreed scope:
 //
-//   1. herdr-plugin.toml uses ONLY [[build]], [[panes]], [[actions]] tables.
-//   2. No FUSE/fuse references exist under plugins/herdr/ or in cmd_herdr_space.go.
-//   3. No vendor/fork patch directory was introduced under plugins/herdr/.
-//
 // These assertions are intentionally brittle: a future change that would
 // silently expand the integration scope causes the test to fail and forces an
 // explicit review.

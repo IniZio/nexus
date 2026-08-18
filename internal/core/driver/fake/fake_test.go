@@ -15,7 +15,7 @@ var ctx = context.Background()
 
 func newID() domain.SandboxID { return domain.NewSandboxID() }
 
-// --- RunState zero-value safety ---
+// RunState zero-value safety
 
 func TestRunStateZeroIsUnknown(t *testing.T) {
 	var s driver.RunState
@@ -27,7 +27,7 @@ func TestRunStateZeroIsUnknown(t *testing.T) {
 	}
 }
 
-// --- Simulated scenarios ---
+// Simulated scenarios
 
 func TestObserve_Running(t *testing.T) {
 	f := fake.New()
@@ -145,7 +145,7 @@ func TestSimulateCrash(t *testing.T) {
 	}
 }
 
-// --- Start / Stop ---
+// Start / Stop
 
 func TestStart_CreatesRunningVM(t *testing.T) {
 	f := fake.New()
@@ -223,7 +223,7 @@ func TestStop_LeavesVMAbsent(t *testing.T) {
 	}
 }
 
-// --- Optional capabilities ---
+// Optional capabilities
 
 func TestCapabilityAssertions(t *testing.T) {
 	f := fake.New()
@@ -261,7 +261,7 @@ func TestCapabilitiesHelper(t *testing.T) {
 	}
 }
 
-// --- PauseResumer ---
+// PauseResumer
 
 func TestPauseResume(t *testing.T) {
 	f := fake.New()
@@ -287,7 +287,7 @@ func TestPauseResume(t *testing.T) {
 	}
 }
 
-// --- Call log ---
+// Call log
 
 // TestCallLog_ObserveBeforeStart verifies the call log records ordering.
 func TestCallLog_ObserveBeforeStart(t *testing.T) {
@@ -313,7 +313,7 @@ func TestCallLog_ObserveBeforeStart(t *testing.T) {
 	}
 }
 
-// --- Concurrency / race detector ---
+// Concurrency / race detector
 
 // TestConcurrentAccess exercises Observe, Start, and Stop concurrently.
 // Run with go test -race to detect data races.

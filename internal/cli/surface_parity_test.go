@@ -55,6 +55,9 @@ var surfaceMap = []surfaceEntry{
 	// "up" creates N sandboxes with disk-space preflight; registered by cmd_up.go (slice M3).
 	{CLIVerb: "up", CanonicalMethods: []string{"service.CheckDiskSpace", "service.CreateAndBoot"}, MCPTools: nil},
 	{CLIVerb: "version", CLIOnly: true},
+	// volume noun manages named volumes directly via volumestore (not through
+	// service.*) — the canonical backing is the VolumeStore CRUD primitives.
+	{CLIVerb: "volume", CanonicalMethods: []string{"volumestore.Create", "volumestore.List", "volumestore.Rm", "volumestore.Prune"}, MCPTools: nil},
 }
 
 // TestSurfaceParity verifies that every registered CLI verb and every MCP tool

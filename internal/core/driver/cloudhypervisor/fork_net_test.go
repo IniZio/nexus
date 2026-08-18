@@ -8,9 +8,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/domain"
 )
 
-// ---------------------------------------------------------------------------
 // findNetTap
-// ---------------------------------------------------------------------------
 
 // TestFindNetTap_Present verifies that findNetTap returns the tap name of the
 // first net device when config.json contains a "net" array.
@@ -61,9 +59,7 @@ func TestFindNetTap_MultipleEntries(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // rewriteConfigNetTap
-// ---------------------------------------------------------------------------
 
 // TestRewriteConfigNetTap_SingleEntry verifies that rewriteConfigNetTap
 // rewrites the tap field of the matching net entry, preserving all other fields.
@@ -203,9 +199,7 @@ func TestRewriteConfigNetTap_RoundTrip(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // test helpers
-// ---------------------------------------------------------------------------
 
 // netSpec describes one net entry in a synthetic config.json.
 type netSpec struct {

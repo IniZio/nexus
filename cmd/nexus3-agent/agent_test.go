@@ -105,9 +105,7 @@ func hasExitFrame(frames []wire.Frame) (bool, int32) {
 	return false, 0
 }
 
-// -------------------------------------------------------------------
 // Test: Exec → data-plane streams output → reattach from offset
-// -------------------------------------------------------------------
 
 func TestExecStreamAndReattach(t *testing.T) {
 	client, dataLis, cancel := testHarness(t)
@@ -124,7 +122,7 @@ func TestExecStreamAndReattach(t *testing.T) {
 		t.Fatalf("Exec: %v", err)
 	}
 
-	// --- First connection at offset 0 ---
+	// First connection at offset 0
 	conn1, w1, r1 := dialData(t, dataLis)
 
 	if err := w1.WriteHandshake(wire.Handshake{SessionID: "s-reattach", ResumeFromOffset: 0}); err != nil {
@@ -151,7 +149,7 @@ func TestExecStreamAndReattach(t *testing.T) {
 	}
 
 	// "NEXUS3" is 6 bytes. Reconnect at offset 3 → expect "US3".
-	// --- Second connection at offset 3 ---
+	// Second connection at offset 3
 	conn2, w2, r2 := dialData(t, dataLis)
 
 	if err := w2.WriteHandshake(wire.Handshake{SessionID: "s-reattach", ResumeFromOffset: 3}); err != nil {
@@ -175,9 +173,7 @@ func TestExecStreamAndReattach(t *testing.T) {
 	}
 }
 
-// -------------------------------------------------------------------
 // Test: stdin forwarding – cat echoes what we write
-// -------------------------------------------------------------------
 
 func TestStdinForwarding(t *testing.T) {
 	client, dataLis, cancel := testHarness(t)
@@ -231,9 +227,7 @@ func TestStdinForwarding(t *testing.T) {
 	}
 }
 
-// -------------------------------------------------------------------
 // Test: Signal terminates the session → Exit frame delivered
-// -------------------------------------------------------------------
 
 func TestSignalTerminates(t *testing.T) {
 	client, dataLis, cancel := testHarness(t)
@@ -277,9 +271,7 @@ func TestSignalTerminates(t *testing.T) {
 	}
 }
 
-// -------------------------------------------------------------------
 // Test: SessionStatus and ListSessions
-// -------------------------------------------------------------------
 
 func TestSessionStatus(t *testing.T) {
 	client, _, cancel := testHarness(t)
@@ -354,9 +346,7 @@ func sessionIDs(infos []*agentpb.SessionInfo) []string {
 	return ids
 }
 
-// -------------------------------------------------------------------
 // Test: FrameStdinClose causes an EOF-reading process to complete
-// -------------------------------------------------------------------
 
 // TestStdinCloseTerminatesReader reproduces the bug: a guest process that
 // reads stdin to EOF hangs forever without the fix because the host never
@@ -417,9 +407,7 @@ func TestStdinCloseTerminatesReader(t *testing.T) {
 	}
 }
 
-// -------------------------------------------------------------------
 // Test: PTY exec – basic smoke
-// -------------------------------------------------------------------
 
 func TestExecPTY(t *testing.T) {
 	client, dataLis, cancel := testHarness(t)

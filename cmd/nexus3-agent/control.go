@@ -26,7 +26,7 @@ type controlServer struct {
 
 func newControlServer(a *Agent) *controlServer { return &controlServer{a: a} }
 
-// ---- Exec ---------------------------------------------------------------
+// Exec
 
 func (cs *controlServer) Exec(_ context.Context, req *agentpb.ExecRequest) (*agentpb.ExecResponse, error) {
 	if req.SessionId == "" {
@@ -236,7 +236,7 @@ func feedRingFromReader(r io.Reader, ring *Ring) {
 	}
 }
 
-// ---- Signal -------------------------------------------------------------
+// Signal
 
 func (cs *controlServer) Signal(_ context.Context, req *agentpb.SignalRequest) (*agentpb.SignalResponse, error) {
 	sess, ok := cs.a.sessions.get(req.SessionId)
@@ -252,7 +252,7 @@ func (cs *controlServer) Signal(_ context.Context, req *agentpb.SignalRequest) (
 	return &agentpb.SignalResponse{}, nil
 }
 
-// ---- SessionStatus / ListSessions ---------------------------------------
+// SessionStatus / ListSessions
 
 func (cs *controlServer) SessionStatus(_ context.Context, req *agentpb.SessionStatusRequest) (*agentpb.SessionStatusResponse, error) {
 	sess, ok := cs.a.sessions.get(req.SessionId)

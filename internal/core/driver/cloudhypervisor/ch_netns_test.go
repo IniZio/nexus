@@ -181,7 +181,7 @@ func TestNetnsSocketpairCloseOrdering(t *testing.T) {
 //   - cloud-hypervisor binary absent → skip
 //   - testdata artifacts absent      → skip
 func TestNetnsRuntime_KVMProof(t *testing.T) {
-	// ---- guard: /dev/kvm ----
+	// guard: /dev/kvm
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		t.Skip("skipping TestNetnsRuntime_KVMProof: /dev/kvm not present")
 	}
@@ -191,7 +191,7 @@ func TestNetnsRuntime_KVMProof(t *testing.T) {
 	}
 	f.Close()
 
-	// ---- guard: unprivileged userns ----
+	// guard: unprivileged userns
 	// Only check the sysctl knob (older kernels). On modern kernels the file
 	// does not exist and unprivileged userns is enabled by default.
 	if data, err := os.ReadFile("/proc/sys/kernel/unprivileged_userns_clone"); err == nil {
@@ -200,7 +200,7 @@ func TestNetnsRuntime_KVMProof(t *testing.T) {
 		}
 	}
 
-	// ---- guard: cloud-hypervisor binary ----
+	// guard: cloud-hypervisor binary
 	const netnsDefaultCHBin = "$HOME/.local/bin/cloud-hypervisor"
 	chBin := os.Getenv("CLOUD_HYPERVISOR_BIN")
 	if chBin == "" {
@@ -211,14 +211,14 @@ func TestNetnsRuntime_KVMProof(t *testing.T) {
 			"(set CLOUD_HYPERVISOR_BIN to override)", chBin)
 	}
 
-	// ---- guard: testdata artifacts ----
+	// guard: testdata artifacts
 	kernelPath := netnsSkipUnlessArtifact(t, "vmlinux-x86_64")
 	initramfsPath := netnsSkipUnlessArtifact(t, "alpine-initramfs.cpio.gz")
 
-	// ---- assertion (a): host process has ZERO CAP_NET_ADMIN before the test ----
+	// assertion (a): host process has ZERO CAP_NET_ADMIN before the test
 	assertHostCapNetAdminClear(t, "pre-test")
 
-	// ---- socket dir (short path for sun_path limit) ----
+	// socket dir (short path for sun_path limit)
 	socketDir, err := os.MkdirTemp("/tmp", "ch-netns-")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
@@ -231,12 +231,12 @@ func TestNetnsRuntime_KVMProof(t *testing.T) {
 
 	socketPath := filepath.Join(socketDir, "ch-netns.sock")
 
-	// ---- sandbox identity ----
+	// sandbox identity
 	id := domain.NewSandboxID()
 	mac := sandboxMac(id)
 	t.Logf("sandbox id=%x mac=%s", id[:8], mac)
 
-	// ---- start netns runtime ----
+	// start netns runtime
 	cfg := Config{
 		BinaryPath:   chBin,
 		StartTimeout: 20 * time.Second,
@@ -251,7 +251,7 @@ func TestNetnsRuntime_KVMProof(t *testing.T) {
 	}
 	t.Cleanup(func() { rt.Stop() })
 
-	// ---- poll CH API until ready ----
+	// poll CH API until ready
 	t.Log("Polling CH API socket until ready...")
 	c := newClient(socketPath)
 	pollStart := time.Now()
@@ -272,7 +272,7 @@ func TestNetnsRuntime_KVMProof(t *testing.T) {
 	}
 	t.Logf("CH API ready in %v", time.Since(pollStart))
 
-	// ---- vm.create with guest TAP + MAC ----
+	// vm.create with guest TAP + MAC
 	apiCtx, apiCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer apiCancel()
 
@@ -298,7 +298,7 @@ func TestNetnsRuntime_KVMProof(t *testing.T) {
 		t.Fatalf("vm.create: %v", err)
 	}
 
-	// ---- vm.boot ----
+	// vm.boot
 	bootCtx, bootCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer bootCancel()
 	t.Log("vm.boot...")
@@ -307,7 +307,7 @@ func TestNetnsRuntime_KVMProof(t *testing.T) {
 	}
 	t.Log("vm.boot: OK")
 
-	// ---- read guest Ethernet frames off PerimConn ----
+	// read guest Ethernet frames off PerimConn
 	// We wait up to 30 s for at least one frame carrying the guest MAC.
 	t.Log("Waiting for Ethernet frames from guest NIC on parent PerimConn...")
 	rt.PerimConn.SetDeadline(time.Now().Add(30 * time.Second))
@@ -344,7 +344,7 @@ func TestNetnsRuntime_KVMProof(t *testing.T) {
 		}
 	}
 
-	// ---- assertion (a): guest MAC frames arrived on parent end ----
+	// assertion (a): guest MAC frames arrived on parent end
 	if guestMACFrames == 0 {
 		t.Errorf("FAIL: no frames with guest MAC %s received on PerimConn after %d total frames",
 			mac, frameCount)
@@ -352,7 +352,7 @@ func TestNetnsRuntime_KVMProof(t *testing.T) {
 		t.Logf("PASS: %d frame(s) with guest MAC %s received on parent PerimConn", guestMACFrames, mac)
 	}
 
-	// ---- assertion (b): host process holds ZERO CAP_NET_ADMIN ----
+	// assertion (b): host process holds ZERO CAP_NET_ADMIN
 	assertHostCapNetAdminClear(t, "during-test")
 }
 
@@ -445,7 +445,7 @@ func macEquals(a, b []byte) bool {
 // path, then asserts the PID is gone (ESRCH) within a short deadline after
 // rt.Stop() returns.
 func TestNetnsRuntime_CHOrphanKill(t *testing.T) {
-	// ---- guards: same as KVMProof ----
+	// guards: same as KVMProof
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		t.Skip("skipping TestNetnsRuntime_CHOrphanKill: /dev/kvm not present")
 	}
@@ -472,7 +472,7 @@ func TestNetnsRuntime_CHOrphanKill(t *testing.T) {
 
 	kernelPath := netnsSkipUnlessArtifact(t, "vmlinux-x86_64")
 
-	// ---- set up socket dir ----
+	// set up socket dir
 	socketDir, err := os.MkdirTemp("/tmp", "ch-netns-kill-")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
@@ -484,7 +484,7 @@ func TestNetnsRuntime_CHOrphanKill(t *testing.T) {
 	}
 	socketPath := filepath.Join(socketDir, "ch.sock")
 
-	// ---- start netns runtime ----
+	// start netns runtime
 	id := domain.NewSandboxID()
 	cfg := Config{
 		BinaryPath:   chBin,
@@ -502,7 +502,7 @@ func TestNetnsRuntime_CHOrphanKill(t *testing.T) {
 
 	t.Logf("netns child pid/pgid: %d", rt.childPgid)
 
-	// ---- poll CH API until ready ----
+	// poll CH API until ready
 	c := newClient(socketPath)
 	pollStart := time.Now()
 	const pingTimeout = 25 * time.Second
@@ -522,7 +522,7 @@ func TestNetnsRuntime_CHOrphanKill(t *testing.T) {
 	}
 	t.Logf("CH API ready in %v", time.Since(pollStart))
 
-	// ---- locate CH pid ----
+	// locate CH pid
 	chPID, err := findCHPidForSocket(socketPath)
 	if err != nil {
 		t.Fatalf("could not locate CH pid: %v", err)
@@ -534,7 +534,7 @@ func TestNetnsRuntime_CHOrphanKill(t *testing.T) {
 		t.Fatalf("CH pid %d not alive before rt.Stop(): %v", chPID, killErr)
 	}
 
-	// ---- call rt.Stop() and verify CH is gone ----
+	// call rt.Stop() and verify CH is gone
 	stopStart := time.Now()
 	rt.Stop()
 	t.Logf("rt.Stop() returned in %v", time.Since(stopStart))

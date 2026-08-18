@@ -37,12 +37,12 @@ import (
 )
 
 func TestDialGuest_Integration(t *testing.T) {
-	// ------------------------------------------------------------------ guards
+	// guards
 	skipUnlessKVM(t)
 	chBin := skipUnlessCHBin(t)
 	kernelPath := skipUnlessArtifact(t, "vmlinux-x86_64")
 
-	// ------------------------------------------------------------------ socket dir
+	// socket dir
 	socketDir, err := os.MkdirTemp("/tmp", "ch-vsock-it-")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
@@ -53,7 +53,7 @@ func TestDialGuest_Integration(t *testing.T) {
 		t.Skipf("skipping: MkdirTemp returned a path too long for Unix socket: %s", socketDir)
 	}
 
-	// ------------------------------------------------------------------ driver + VM
+	// driver + VM
 	drv, err := New(Config{
 		BinaryPath: chBin,
 		SocketDir:  socketDir,
@@ -78,7 +78,7 @@ func TestDialGuest_Integration(t *testing.T) {
 		_ = drv.Stop(stopCtx, id)
 	})
 
-	// ------------------------------------------------------------------ dial
+	// dial
 	// The guest kernel panics (no initramfs/agent), but the vsock multiplexer
 	// is started by CH before the guest boots. We expect either:
 	//   (a) a successful handshake with NACK (no listener on the guest port), or

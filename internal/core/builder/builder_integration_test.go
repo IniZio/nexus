@@ -392,20 +392,18 @@ func TestImageBootsAndAgentReachable(t *testing.T) {
 		t.Skip("skipping: mke2fs not available; install e2fsprogs")
 	}
 
-	// 1. Build static binaries.
 	agentBin := buildNexus3Agent(t)
 	helloBin := buildHelloGuestBin(t)
 
-	// 2. Assemble rootfs tree.
 	rootfsDir := buildRootfsDir(t, agentBin, helloBin)
 
-	// 3. Export to ext4 via the builder's ext4 path (RunMke2fs = runMke2fs).
+	// Export to ext4 via the builder's ext4 path (RunMke2fs = runMke2fs).
 	ext4Path := buildExt4(t, rootfsDir)
 
-	// 4. Boot CH with the ext4 as a virtio-blk root disk (root=/dev/vda).
+	// Boot CH with the ext4 as a virtio-blk root disk (root=/dev/vda).
 	vsockSock, _ := bootCHWithDisk(t, chBin, kernelPath, ext4Path)
 
-	// 5. Wait for CH to create the vsock socket (agent must bind vsock first).
+	// Wait for CH to create the vsock socket (agent must bind vsock first).
 	//    Typically takes 2-4 s: kernel boot + devtmpfs + vsock.Listen.
 	t.Log("waiting for vsock socket to appear (agent startup)...")
 	waitForSocket(t, vsockSock, 30*time.Second)
@@ -413,7 +411,6 @@ func TestImageBootsAndAgentReachable(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	t.Logf("vsock socket appeared: %s", vsockSock)
 
-	// 6. Dial the agent via vsock and run Exec.
 	dialer := &vsockDialer{sock: vsockSock}
 	id := domain.NewSandboxID()
 	c := agent.NewClient(dialer, id)

@@ -47,16 +47,16 @@ type resizeEnvelope struct {
 // the kernel cmdline (TBD-DC-9, seam B). It is stored for future AR-DRV /
 // governor use; /tmp sizing uses live MemTotal, not the ceiling.
 func startResizeServices(ctx context.Context, con *os.File, workspacePath string, memCeilingBytes int64) {
-	// Step 1: ZRAM — synchronous, before the workload can start.
+	// ZRAM — synchronous, before the workload can start.
 	setupZRAMSwap(con)
 
-	// Step 2: telemetry server — handles sample.request and disk.grow.
+	// telemetry server — handles sample.request and disk.grow.
 	go startResizeTelemetryServer(ctx, con, workspacePath)
 
-	// Step 3: vCPU onliner — brings hot-plugged CPUs online on a 3 s ticker.
+	// vCPU onliner — brings hot-plugged CPUs online on a 3 s ticker.
 	startCPUOnliner(ctx)
 
-	// Step 4: /tmp resizer — remounts /tmp tmpfs as live MemTotal grows.
+	// /tmp resizer — remounts /tmp tmpfs as live MemTotal grows.
 	startTmpfsResizer(ctx, con)
 
 	// memCeilingBytes is available for AR-DRV/governor; /tmp sizing ignores it.

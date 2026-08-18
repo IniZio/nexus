@@ -41,7 +41,6 @@ func (a *Agent) handleDataConn(ctx context.Context, conn net.Conn) {
 	r := wire.NewReader(conn)
 	w := wire.NewWriter(conn)
 
-	// Step 1: handshake
 	frame, err := r.ReadFrame()
 	if err != nil || frame.Type != wire.FrameHandshake {
 		return
@@ -61,7 +60,6 @@ func (a *Agent) handleDataConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	// Step 2: HandshakeAck
 	alreadyExited := sess.exited.Load()
 	if alreadyExited {
 		_ = w.WriteHandshakeAck(wire.HandshakeAck{
@@ -76,7 +74,7 @@ func (a *Agent) handleDataConn(ctx context.Context, conn net.Conn) {
 
 	_ = w.WriteHandshakeAck(wire.HandshakeAck{Status: wire.AckAlive})
 
-	// Step 3+4: outbound (ring → frames) and inbound (frames → PTY/stdin)
+	// outbound (ring → frames) and inbound (frames → PTY/stdin)
 	// The outbound goroutine is authoritative: it closes doneCh when it has
 	// sent the Exit frame. conn.Close() (deferred above) then unblocks the
 	// inbound goroutine's ReadFrame.

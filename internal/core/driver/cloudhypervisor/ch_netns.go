@@ -136,13 +136,13 @@ func netnsSocketpairFiles() (perimFile, pumpFile *os.File, err error) {
 func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, socketPath, restoreURL string) (*NetnsRuntime, error) {
 	guestTap, hostTap, bridge := tapIfNames(id)
 
-	// Step 1: create the socketpair as raw *os.File for ExtraFiles handoff.
+	// Create the socketpair as raw *os.File for ExtraFiles handoff.
 	perimFile, pumpFile, err := netnsSocketpairFiles()
 	if err != nil {
 		return nil, fmt.Errorf("cloudhypervisor: StartNetnsRuntime: %w", err)
 	}
 
-	// Step 2: resolve the binary path for re-exec.
+	// Resolve the binary path for re-exec.
 	self, err := os.Executable()
 	if err != nil {
 		perimFile.Close()
@@ -232,7 +232,7 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 		return nil, fmt.Errorf("cloudhypervisor: StartNetnsRuntime: %w", err)
 	}
 
-	// Step 3: parent closes pumpFile (child has it); keeps perimFile.
+	// Parent closes pumpFile (child has it); keeps perimFile.
 	// Explicit fd-handoff ordering: PARENT closes pumpFile here; CHILD never
 	// receives perimFile — so teardown cannot hang on pump EOF.
 	pumpFile.Close()
@@ -328,7 +328,7 @@ func RunNetnsChild() {
 	}
 	defer pumpConn.Close()
 
-	// Step 4: set up the TAP/bridge topology inside the netns.
+	// Set up the TAP/bridge topology inside the netns.
 	// createTapBridge calls applySandboxNetSysctls (LEAK-TIGHT).
 	if err := createTapBridge(guestTap, hostTap, bridge); err != nil {
 		fmt.Fprintf(os.Stderr, "netns child: createTapBridge: %v\n", err)
@@ -345,7 +345,7 @@ func RunNetnsChild() {
 	}
 	defer hostTapFile.Close()
 
-	// Step 5: spawn CH inside the netns (CH inherits the child's netns).
+	// Spawn CH inside the netns (CH inherits the child's netns).
 	// spawnVMMInGroup sets Setpgid:false so CH inherits this child's process
 	// group (pgid == child.pid, set by netnsChildAttr Setpgid:true). The
 	// parent's rt.Stop() then sends Kill(-childPgid, SIGKILL) to reach both.

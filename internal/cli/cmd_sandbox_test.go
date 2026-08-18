@@ -967,12 +967,6 @@ func TestAutoResize_Cmdline(t *testing.T) {
 // half-converted state (MemoryMaxMiB == 0 / no memhp tokens / no --mem-ceiling)
 // that the AR2-BUILDER advisor correction identified.
 //
-// The three assertions map directly to the three missing wires:
-//  1. MemoryMaxMiB > 0 → CH reserves a VirtioMem hotplug region.
-//  2. Cmdline contains memhp tokens before "--" (injected by driver.buildCmdline
-//     when MemoryMaxMiB > 0; tested here by checking the cmdline string we set).
-//  3. Cmdline contains --mem-ceiling=<bytes> after "--" → PID-1 knows its ceiling.
-//
 // Revert the builderCfg.MemoryMaxMiB / VCPUMax / Cmdline assignments in
 // cmd_sandbox.go and this test fails.
 func TestBuilderVM_AutoResizeFullyWired(t *testing.T) {
@@ -981,14 +975,14 @@ func TestBuilderVM_AutoResizeFullyWired(t *testing.T) {
 	bootMemMiB := uint32(builder.DefaultBuilderMemMiB) // 8192
 	bootVCPUs := uint32(builder.DefaultBuilderVCPUs)   // 2
 
-	// Step 1: build the base config (same call as the production path).
+	// Build the base config (same call as the production path).
 	cfg := buildCHConfig("/fake/kernel", "/fake/builder.ext4", bootMemMiB, bootVCPUs)
 
-	// Step 2: resolve auto-resize via vmcfg (same as the production path).
+	// Resolve auto-resize via vmcfg (same as the production path).
 	// REVERT THIS and the test FAILS — proving the builder path is fully wired.
 	builderAR := vmcfg.Resolve(vmcfg.Config{BootMemMiB: bootMemMiB, BootVCPUs: bootVCPUs})
 
-	// Step 3: wire the three fields (mirrors the production path).
+	// Wire the three fields (mirrors the production path).
 	cfg.MemoryMaxMiB = builderAR.MemoryMaxMiB
 	cfg.VCPUMax = builderAR.VCPUMax
 	cfg.Cmdline = diskBootCmdlineBase + " --" + builderAR.PID1Args

@@ -136,24 +136,24 @@ func pollSerialForNetworkIface(serialPath string, deadline time.Time) string {
 // This test catches that: pollSerialForNetworkIface extracts "dummy0", the
 // gotIface == "dummy0" check fires, and the test FAILS.
 func TestBootEgressSmoke(t *testing.T) {
-	// ------------------------------------------------------------------ guards
+	// guards
 	skipUnlessKVM(t)
 	chBin := skipUnlessCHBin(t)
 	kernelPath := skipUnlessArtifact(t, "vmlinux-x86_64")
 	skipUnlessMke2fs(t)
 
-	// ------------------------------------------------------------------ build static agent binary
+	// build static agent binary
 	// CRITICAL: CGO_ENABLED=0 (static) is mandatory for a PID-1 binary.
 	// A dynamically-linked binary panics the kernel (ENOENT on the dynamic
 	// loader, which is absent from the minimal rootfs). buildNexus3Agent sets
 	// CGO_ENABLED=0 internally (see agent_integration_test.go).
 	agentBin := buildNexus3Agent(t)
 
-	// ------------------------------------------------------------------ assemble rootfs + ext4
+	// assemble rootfs + ext4
 	rootfsDir := buildEgressSmokeRootfs(t, agentBin)
 	ext4Path := buildExt4Image(t, rootfsDir)
 
-	// ------------------------------------------------------------------ socket dir (sun_path safe)
+	// socket dir (sun_path safe)
 	socketDir, err := os.MkdirTemp("/tmp", "ch-egress-")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
@@ -169,7 +169,7 @@ func TestBootEgressSmoke(t *testing.T) {
 
 	serialPath := filepath.Join(socketDir, "serial.log")
 
-	// ------------------------------------------------------------------ driver
+	// driver
 	drv, err := New(Config{
 		BinaryPath:       chBin,
 		SocketDir:        socketDir,
@@ -205,7 +205,7 @@ func TestBootEgressSmoke(t *testing.T) {
 		os.RemoveAll(socketDir)
 	})
 
-	// ------------------------------------------------------------------ boot
+	// boot
 	startCtx, startCancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer startCancel()
 
@@ -223,14 +223,14 @@ func TestBootEgressSmoke(t *testing.T) {
 	}
 	drv.mu.Unlock()
 
-	// ------------------------------------------------------------------ wait for agent
+	// wait for agent
 	// Poll vsock port 1024 (AgentControlPort) until nexus3-agent accepts.
 	// By the time vsock is up, the agent has already logged its network
 	// selection — so the serial assertion below will find the line immediately.
 	waitForAgentReady(t, drv, id, 30*time.Second)
 	t.Log("agent vsock reachable — asserting hardware network interface in serial log")
 
-	// ------------------------------------------------------------------ assert hardware interface (primary gate)
+	// assert hardware interface (primary gate)
 	//
 	// The agent logs immediately after firstNonLoIfaceAt() returns:
 	//   "nexus3-agent: network: configuring <iface>: ip=192.168.127.2/24 gw=…"
@@ -272,7 +272,7 @@ func TestBootEgressSmoke(t *testing.T) {
 
 	t.Logf("PASS: agent selected hardware interface %q — dummy0 regression is NOT present", gotIface)
 
-	// ------------------------------------------------------------------ TODO: egress-probe upgrade
+	// TODO: egress-probe upgrade
 	//
 	// The driver sets up a full perimeter netstack (gvproxy/netstack at
 	// 192.168.127.1). The next hardening step:

@@ -330,6 +330,9 @@ func TestReap_KilledCreatorDoesNotBlockReclamation(t *testing.T) {
 				return
 			}
 		}
+		if err := sc.Err(); err != nil {
+			t.Errorf("lease-held scanner: %v", err)
+		}
 	}()
 	select {
 	case <-held:

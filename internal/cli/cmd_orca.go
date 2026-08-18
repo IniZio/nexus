@@ -349,11 +349,7 @@ func buildOrcaSpawnConfig(
 	// reboots the VM independently (CLI stops the initial boot before handoff),
 	// so it must reproduce the same cmdline the CLI built at CreateAndBoot time.
 	//
-	// Two concerns are composed here, matching the logic in cmd_sandbox.go:
-	//   1. --workspace-mount= PID-1 args so the agent mounts the workspace disk
-	//      and disk telemetry (statfs) is active (DiskSupported=true).
-	//   2. Auto-resize PID-1 args (--mem-ceiling) so the agent starts ZRAM,
-	//      the telemetry server, vCPU onliner, and /tmp resizer.
+	// Two concerns are composed here, matching the logic in cmd_sandbox.go.
 	//
 	// The driver independently inserts memhp kernel params (memhp_default_state=
 	// online etc.) before "--" when MemoryMaxMiB > 0 (supervisor.go derives it

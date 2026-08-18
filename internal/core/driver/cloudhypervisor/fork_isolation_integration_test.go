@@ -159,13 +159,13 @@ func forkExec(t *testing.T, drv *CHDriver, id domain.SandboxID, argv []string, s
 // ── test ───────────────────────────────────────────────────────────────────
 
 func TestForkDiskIsolation(t *testing.T) {
-	// ------------------------------------------------------------------ guards
+	// guards
 	skipUnlessKVM(t)
 	chBin := skipUnlessCHBin(t)
 	kernelPath := skipUnlessArtifact(t, "vmlinux-x86_64")
 	skipUnlessMke2fs(t)
 
-	// ------------------------------------------------------------------ build guest binaries
+	// build guest binaries
 	t.Log("building guest binaries...")
 	agentBin := buildNexus3Agent(t)
 	helloBin := buildHelloBinForDisk(t)
@@ -173,7 +173,7 @@ func TestForkDiskIsolation(t *testing.T) {
 	readMarkerBin := buildMarkerBin(t, "read-marker", readMarkerSrc)
 	t.Log("guest binaries ready")
 
-	// ------------------------------------------------------------------ assemble rootfs
+	// assemble rootfs
 	rootfsDir := buildRootfsForDisk(t, agentBin, helloBin)
 	// Inject the marker binaries into /bin so the guest agent can exec them.
 	if err := copyExecutable(filepath.Join(rootfsDir, "bin", "write-marker"), writeMarkerBin); err != nil {
@@ -183,11 +183,11 @@ func TestForkDiskIsolation(t *testing.T) {
 		t.Fatalf("inject read-marker: %v", err)
 	}
 
-	// ------------------------------------------------------------------ build ext4
+	// build ext4
 	ext4Path := buildExt4Image(t, rootfsDir)
 	t.Logf("ext4 image: %s", ext4Path)
 
-	// ------------------------------------------------------------------ socket dir (must be in /tmp for sun_path limit)
+	// socket dir (must be in /tmp for sun_path limit)
 	socketDir, err := os.MkdirTemp("/tmp", "ch-fiso-")
 	if err != nil {
 		t.Fatalf("MkdirTemp (socketDir): %v", err)
@@ -206,7 +206,7 @@ func TestForkDiskIsolation(t *testing.T) {
 
 	serialPath := filepath.Join(socketDir, "serial.log")
 
-	// ------------------------------------------------------------------ driver
+	// driver
 	drv, err := New(Config{
 		BinaryPath:       chBin,
 		SocketDir:        socketDir,
@@ -225,7 +225,7 @@ func TestForkDiskIsolation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 360*time.Second)
 	defer cancel()
 
-	// ------------------------------------------------------------------ start parent VM
+	// start parent VM
 	parentID := domain.NewSandboxID()
 	var parentVMMPID int
 
@@ -262,7 +262,7 @@ func TestForkDiskIsolation(t *testing.T) {
 	waitForAgentReady(t, drv, parentID, 30*time.Second)
 	t.Log("parent agent ready")
 
-	// ------------------------------------------------------------------ snapshot
+	// snapshot
 	snap, err := drv.TakeSnapshot(ctx, parentID, artifact.KindTransient)
 	if err != nil {
 		t.Fatalf("TakeSnapshot: %v", err)
@@ -274,7 +274,7 @@ func TestForkDiskIsolation(t *testing.T) {
 		t.Errorf("parent not Running after snapshot: %v (%s)", obs.State, obs.Detail)
 	}
 
-	// ------------------------------------------------------------------ stop parent VM
+	// stop parent VM
 	// Stop the parent so its disk writes quiesce before we record the baseline
 	// stat. The children fork from the snapshot, independent of the parent.
 	{
@@ -285,7 +285,7 @@ func TestForkDiskIsolation(t *testing.T) {
 		parentVMMPID = 0 // clearState already removed it; avoid double-kill
 	}
 
-	// ------------------------------------------------------------------ parent disk baseline stat
+	// parent disk baseline stat
 	parentStatBefore, err := os.Stat(ext4Path)
 	if err != nil {
 		t.Fatalf("stat parent disk before fork: %v", err)
@@ -294,7 +294,7 @@ func TestForkDiskIsolation(t *testing.T) {
 	parentSizeBefore := parentStatBefore.Size()
 	t.Logf("parent disk (baseline): size=%d mtime=%v", parentSizeBefore, parentMtimeBefore)
 
-	// ------------------------------------------------------------------ fork two children
+	// fork two children
 	childAID := domain.NewSandboxID()
 	childBID := domain.NewSandboxID()
 
@@ -343,7 +343,7 @@ func TestForkDiskIsolation(t *testing.T) {
 	}
 	drv.mu.Unlock()
 
-	// ------------------------------------------------------------------ proof 5: per-child disk files exist
+	// proof 5: per-child disk files exist
 	childAInfo, err := os.Stat(childADisk)
 	if err != nil {
 		t.Errorf("FAIL: childA disk %q absent: %v", childADisk, err)
@@ -357,7 +357,7 @@ func TestForkDiskIsolation(t *testing.T) {
 		t.Logf("PASS (proof 5): childB disk exists: %s (size=%d)", childBDisk, childBInfo.Size())
 	}
 
-	// ------------------------------------------------------------------ proof 1: both children boot healthy
+	// proof 1: both children boot healthy
 	t.Log("waiting for childA to reach Running...")
 	obs = pollForState(t, drv, childAID, driver.Running, 30*time.Second)
 	if obs.State != driver.Running {
@@ -376,7 +376,7 @@ func TestForkDiskIsolation(t *testing.T) {
 	waitForAgentReady(t, drv, childBID, 30*time.Second)
 	t.Log("PASS (proof 1): childB boot healthy, agent reachable")
 
-	// ------------------------------------------------------------------ proof 2: isolation A→B
+	// proof 2: isolation A→B
 	// Write a unique marker to childA's disk, then read it on childB.
 	markerA := fmt.Sprintf("A-marker-%s\n", childAID.String()[:12])
 
@@ -402,7 +402,7 @@ func TestForkDiskIsolation(t *testing.T) {
 		t.Logf("PASS (proof 2): childB does not see childA's marker (exit=%d, out=%q)", codeB, strings.TrimSpace(outB))
 	}
 
-	// ------------------------------------------------------------------ proof 3: isolation B→A
+	// proof 3: isolation B→A
 	// Write a different marker to childB's disk, then confirm childA doesn't see it.
 	markerB := fmt.Sprintf("B-marker-%s\n", childBID.String()[:12])
 
@@ -428,7 +428,7 @@ func TestForkDiskIsolation(t *testing.T) {
 		t.Logf("PASS (proof 3): childA does not see childB's marker (exit=%d, out=%q)", codeA2, strings.TrimSpace(outA2))
 	}
 
-	// ------------------------------------------------------------------ proof 4: parent disk unmodified
+	// proof 4: parent disk unmodified
 	// After ForkFrom + child disk writes, the parent's original ext4 file must
 	// have the same mtime and size it had just before ForkFrom.
 	parentStatAfter, err := os.Stat(ext4Path)
@@ -442,7 +442,7 @@ func TestForkDiskIsolation(t *testing.T) {
 		t.Logf("PASS (proof 4): parent disk unmodified: size=%d mtime=%v", parentSizeBefore, parentMtimeBefore)
 	}
 
-	// ------------------------------------------------------------------ summary
+	// summary
 	t.Logf("=== ForkDiskIsolation summary ===")
 	t.Logf("  Parent disk:   %s (size=%d)", ext4Path, parentSizeBefore)
 	t.Logf("  Snapshot:      %s", snap.ID)

@@ -60,12 +60,12 @@ const defaultCHBin = "$HOME/.local/bin/cloud-hypervisor"
 // work. This is deliberate: TestBootLifecycle tests driver mechanics, not
 // userspace. See TestBootToUserspace for the userspace-reachable boot.
 func TestBootLifecycle(t *testing.T) {
-	// ------------------------------------------------------------------ guards
+	// guards
 	skipUnlessKVM(t)
 	chBin := skipUnlessCHBin(t)
 	kernelPath := skipUnlessArtifact(t, "vmlinux-x86_64")
 
-	// ------------------------------------------------------------------ socket dir
+	// socket dir
 	// Use a short base path to stay under the 107-byte Linux sun_path limit.
 	// The driver rejects SocketDir paths where len(dir)+35 > 107.
 	socketDir, err := os.MkdirTemp("/tmp", "ch-it-")
@@ -78,7 +78,7 @@ func TestBootLifecycle(t *testing.T) {
 		t.Skipf("skipping: MkdirTemp returned a path too long for Unix socket: %s", socketDir)
 	}
 
-	// ------------------------------------------------------------------ driver
+	// driver
 	drv, err := New(Config{
 		BinaryPath:   chBin,
 		SocketDir:    socketDir,
@@ -93,7 +93,7 @@ func TestBootLifecycle(t *testing.T) {
 
 	id := domain.NewSandboxID()
 
-	// ------------------------------------------------------------------ belt-and-braces cleanup
+	// belt-and-braces cleanup
 	// Stash the VMM PID immediately after Start returns so cleanup can kill it
 	// even if Stop panics, fails mid-sequence, or is never reached.
 	//
@@ -110,7 +110,7 @@ func TestBootLifecycle(t *testing.T) {
 		drv.clearState(id)
 	})
 
-	// ------------------------------------------------------------------ 1. Start
+	// 1. Start
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -131,7 +131,7 @@ func TestBootLifecycle(t *testing.T) {
 	}
 	drv.mu.Unlock()
 
-	// ------------------------------------------------------------------ 2. Observe → Running
+	// 2. Observe → Running
 	obs, err := drv.Observe(context.Background(), id)
 	if err != nil {
 		t.Errorf("Observe after Start returned error: %v", err)
@@ -148,7 +148,7 @@ func TestBootLifecycle(t *testing.T) {
 		t.Errorf("InstanceID mismatch: Start returned %q, Observe returned %q", iid, obs.InstanceID)
 	}
 
-	// ------------------------------------------------------------------ 3. Pause → Paused
+	// 3. Pause → Paused
 	pauseCtx, pauseCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer pauseCancel()
 
@@ -165,7 +165,7 @@ func TestBootLifecycle(t *testing.T) {
 		t.Errorf("expected Paused after Pause, got %v — detail: %s", obs.State, obs.Detail)
 	}
 
-	// ------------------------------------------------------------------ 4. Resume → Running
+	// 4. Resume → Running
 	resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer resumeCancel()
 
@@ -182,7 +182,7 @@ func TestBootLifecycle(t *testing.T) {
 		t.Errorf("expected Running after Resume, got %v — detail: %s", obs.State, obs.Detail)
 	}
 
-	// ------------------------------------------------------------------ 5. Stop → Absent
+	// 5. Stop → Absent
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer stopCancel()
 
@@ -200,12 +200,12 @@ func TestBootLifecycle(t *testing.T) {
 		t.Errorf("expected Absent after Stop, got %v — detail: %s", obs.State, obs.Detail)
 	}
 
-	// ------------------------------------------------------------------ orphan check
+	// orphan check
 	// No belt-and-braces PID remains; verify via /proc that no CH process we
 	// own is still alive. (A full pgrep would race against unrelated tests.)
 	t.Log("No orphan VMM detected (vmmPID cleared by Stop)")
 
-	// ------------------------------------------------------------------ summary
+	// summary
 	t.Logf("=== Boot lifecycle summary ===")
 	t.Logf("  Kernel format:  vmlinux (ELF, PVH), no initramfs")
 	t.Logf("  Boot-to-Running: %v", bootDuration)
@@ -308,13 +308,13 @@ func skipUnlessArtifact(t *testing.T, name string) string {
 //   - boot-to-userspace: additional time from Running until the userspace
 //     marker appears in the serial log. This measures kernel init time.
 func TestBootToUserspace(t *testing.T) {
-	// ------------------------------------------------------------------ guards
+	// guards
 	skipUnlessKVM(t)
 	chBin := skipUnlessCHBin(t)
 	kernelPath := skipUnlessArtifact(t, "vmlinux-x86_64")
 	initramfsPath := skipUnlessArtifact(t, "alpine-initramfs.cpio.gz")
 
-	// ------------------------------------------------------------------ socket dir (short path for sun_path limit)
+	// socket dir (short path for sun_path limit)
 	socketDir, err := os.MkdirTemp("/tmp", "ch-us-")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
@@ -325,10 +325,10 @@ func TestBootToUserspace(t *testing.T) {
 		t.Skipf("skipping: MkdirTemp returned a path too long for Unix socket: %s", socketDir)
 	}
 
-	// ------------------------------------------------------------------ serial output file
+	// serial output file
 	serialFile := filepath.Join(socketDir, "serial.log")
 
-	// ------------------------------------------------------------------ driver
+	// driver
 	drv, err := New(Config{
 		BinaryPath:       chBin,
 		SocketDir:        socketDir,
@@ -346,7 +346,7 @@ func TestBootToUserspace(t *testing.T) {
 
 	id := domain.NewSandboxID()
 
-	// ------------------------------------------------------------------ belt-and-braces cleanup
+	// belt-and-braces cleanup
 	var vmmPID int
 	t.Cleanup(func() {
 		if vmmPID != 0 {
@@ -356,7 +356,7 @@ func TestBootToUserspace(t *testing.T) {
 		drv.clearState(id)
 	})
 
-	// ------------------------------------------------------------------ 1. Start (boot-to-Running timing)
+	// 1. Start (boot-to-Running timing)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -376,7 +376,7 @@ func TestBootToUserspace(t *testing.T) {
 	}
 	drv.mu.Unlock()
 
-	// ------------------------------------------------------------------ 2. Assert Running
+	// 2. Assert Running
 	obs, err := drv.Observe(context.Background(), id)
 	if err != nil {
 		t.Errorf("Observe after Start returned error: %v", err)
@@ -385,7 +385,7 @@ func TestBootToUserspace(t *testing.T) {
 		t.Errorf("expected Running after Start, got %v — detail: %s", obs.State, obs.Detail)
 	}
 
-	// ------------------------------------------------------------------ 3. Wait for userspace marker in serial log
+	// 3. Wait for userspace marker in serial log
 	//
 	// We look for two markers:
 	//   "Run /init as init process"  — kernel message, appears before /init runs
@@ -439,7 +439,7 @@ func TestBootToUserspace(t *testing.T) {
 		t.Logf("Userspace reached — kernelMarker=%v userspaceMarker=%v", foundKernelMarker, foundUserspaceMarker)
 	}
 
-	// ------------------------------------------------------------------ 4. Stop → Absent
+	// 4. Stop → Absent
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer stopCancel()
 	if err := drv.Stop(stopCtx, id); err != nil {
@@ -452,7 +452,7 @@ func TestBootToUserspace(t *testing.T) {
 		t.Errorf("expected Absent after Stop, got %v — detail: %s", obs.State, obs.Detail)
 	}
 
-	// ------------------------------------------------------------------ summary
+	// summary
 	t.Logf("=== Boot-to-userspace summary ===")
 	t.Logf("  Kernel format:      vmlinux (ELF, PVH)")
 	t.Logf("  Initramfs:          alpine-initramfs.cpio.gz (Alpine 3.20.0 minirootfs)")
@@ -477,7 +477,7 @@ func TestBootToUserspace(t *testing.T) {
 // The driver now includes this response body in the Start error. Before the
 // fix, Start returned a bare "unexpected status 500" with no CH context.
 func TestBrokenBoot_StderrCaptured(t *testing.T) {
-	// ------------------------------------------------------------------ guards
+	// guards
 	skipUnlessKVM(t)
 	chBin := skipUnlessCHBin(t)
 
@@ -505,7 +505,7 @@ func TestBrokenBoot_StderrCaptured(t *testing.T) {
 
 	id := domain.NewSandboxID()
 
-	// ------------------------------------------------------------------ Start must fail
+	// Start must fail
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -514,7 +514,7 @@ func TestBrokenBoot_StderrCaptured(t *testing.T) {
 		t.Fatal("expected Start to return an error for nonexistent kernel; got nil")
 	}
 
-	// ------------------------------------------------------------------ Error must contain CH detail
+	// Error must contain CH detail
 	//
 	// CH v52 returns HTTP 500 from vm.boot when the kernel can't be opened.
 	// The driver includes the response body in the error message. Assert on
@@ -537,7 +537,7 @@ func TestBrokenBoot_StderrCaptured(t *testing.T) {
 			wantCHDetail1, wantCHDetail2, errStr)
 	}
 
-	// ------------------------------------------------------------------ No orphan VMM
+	// No orphan VMM
 	// Start's cleanup() path kills the spawned process. The socket must be gone.
 	sockPath := drv.socketPath(id)
 	if _, err := os.Stat(sockPath); !os.IsNotExist(err) {

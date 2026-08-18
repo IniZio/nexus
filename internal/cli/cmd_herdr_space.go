@@ -148,7 +148,6 @@ func HerdrSpacePut(ctx context.Context, storeRoot string, b HerdrSpaceBinding) e
 }
 
 // HerdrSpaceGetByLabel returns the binding whose SpaceLabel matches label.
-// Returns ErrHerdrSpaceNotFound when no match exists.
 func HerdrSpaceGetByLabel(ctx context.Context, storeRoot string, label string) (HerdrSpaceBinding, error) {
 	if err := ctx.Err(); err != nil {
 		return HerdrSpaceBinding{}, err
@@ -166,7 +165,6 @@ func HerdrSpaceGetByLabel(ctx context.Context, storeRoot string, label string) (
 }
 
 // HerdrSpaceGetByHandle returns the binding whose SandboxHandle matches handle.
-// Returns ErrHerdrSpaceNotFound when no match exists.
 func HerdrSpaceGetByHandle(ctx context.Context, storeRoot string, handle string) (HerdrSpaceBinding, error) {
 	if err := ctx.Err(); err != nil {
 		return HerdrSpaceBinding{}, err
@@ -192,7 +190,6 @@ func HerdrSpaceList(ctx context.Context, storeRoot string) ([]HerdrSpaceBinding,
 }
 
 // HerdrSpaceDelete removes the binding identified by SpaceLabel.
-// Returns ErrHerdrSpaceNotFound when no match exists.
 func HerdrSpaceDelete(ctx context.Context, storeRoot string, label string) error {
 	return herdrSpaceWithLock(ctx, storeRoot, func() error {
 		bindings, err := herdrSpaceReadAll(storeRoot)

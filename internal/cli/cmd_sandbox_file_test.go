@@ -8,11 +8,6 @@ import (
 
 // TestResolveContainerfilePath verifies the three-tier Containerfile resolution
 // used by the --file builder-VM path (G7).
-//
-//  1. Explicit override: returned as-is, no stat required.
-//  2. Default .nexus/Containerfile: found when present.
-//  3. Fallback .nexus/Dockerfile:   used when Containerfile absent.
-//  4. Error: neither path exists and no explicit override given.
 func TestResolveContainerfilePath(t *testing.T) {
 	t.Run("explicit_override_returned_as_is", func(t *testing.T) {
 		got, err := resolveContainerfilePath("/any/workspace", "/explicit/Custom.containerfile")

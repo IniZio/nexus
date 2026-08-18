@@ -53,12 +53,10 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver"
 )
 
-// ----------------------------------------------------------------------------
 // Guest helper binary sources
 // All helpers are compiled as static linux/amd64 binaries and included in the
 // test rootfs alongside nexus3-agent. They are invoked via agent.Exec over
 // vsock, so there is no dependency on a shell or libc in the guest.
-// ----------------------------------------------------------------------------
 
 // mdMountSrc mounts /dev/vdb at /mnt/vdb and /dev/vdc at /mnt/vdc (ext4),
 // then prints a one-line status for each mount to stdout. Exit 0 on success.
@@ -166,9 +164,7 @@ func main() {
 }
 `
 
-// ----------------------------------------------------------------------------
 // Build helpers
-// ----------------------------------------------------------------------------
 
 // buildMultidiskHelper compiles src as a static linux/amd64 binary. Reuses
 // the same CGO_ENABLED=0 pattern as buildHelloBinForDisk.
@@ -271,9 +267,7 @@ func buildEmptyExt4(t *testing.T, sizeMiB int) string {
 	return imgPath
 }
 
-// ----------------------------------------------------------------------------
 // Multi-disk boot helper
-// ----------------------------------------------------------------------------
 
 // multidiskVM boots a VM with rootfs vda + extra disks vdb and vdc using
 // nexus3-agent as PID-1. It waits for the agent to be reachable via vsock
@@ -401,19 +395,17 @@ func serialContainsStr(serialPath, needle string) bool {
 	return bytes.Contains(data, []byte(needle))
 }
 
-// ----------------------------------------------------------------------------
 // TestMultiDisk
-// ----------------------------------------------------------------------------
 
 // TestMultiDisk proves multi-disk boot and write persistence via three sub-tests.
 func TestMultiDisk(t *testing.T) {
-	// ------------------------------------------------------------------ guards
+	// guards
 	skipUnlessKVM(t)
 	chBin := skipUnlessCHBin(t)
 	kernelPath := skipUnlessArtifact(t, "vmlinux-x86_64")
 	skipUnlessMke2fs(t)
 
-	// ------------------------------------------------------------------ TestMultiDisk/Connectivity
+	// TestMultiDisk/Connectivity
 	// Diagnostic sub-test: boot with the exact same rootfs as TestDiskBoot
 	// (nexus3-agent + hello) but add ExtraDisks (vdb + vdc). Verifies that
 	// ExtraDisks do not interfere with vsock/gRPC connectivity.
@@ -487,7 +479,7 @@ func TestMultiDisk(t *testing.T) {
 		t.Logf("Connectivity PASSED: agent Exec works with ExtraDisks; output=%q", strings.TrimSpace(stdout.String()))
 	})
 
-	// ------------------------------------------------------------------ compile shared binaries once
+	// compile shared binaries once
 	// nexus3-agent is the PID-1 init; the helpers are Exec'd via vsock.
 	agentBin := buildNexus3Agent(t)
 	mountBin := buildMultidiskHelper(t, mdMountSrc, "mdmount")
@@ -495,7 +487,7 @@ func TestMultiDisk(t *testing.T) {
 	writeNoSyncBin := buildMultidiskHelper(t, mdWriteNoSyncSrc, "mdwrite-nosync")
 	checkBin := buildMultidiskHelper(t, mdCheckSrc, "mdcheck")
 
-	// ------------------------------------------------------------------ TestMultiDisk/Mount
+	// TestMultiDisk/Mount
 	// Boot with vda (rootfs) + vdb + vdc. Exec a helper that mounts both
 	// data disks inside the guest. Verify the kernel ext4 mount messages
 	// appear in the serial log AND the helper output confirms the mounts.
@@ -540,7 +532,7 @@ func TestMultiDisk(t *testing.T) {
 		t.Log("Mount PASSED: vdb and vdc mounted ext4 r/w inside guest")
 	})
 
-	// ------------------------------------------------------------------ TestMultiDisk/PersistenceWithSync
+	// TestMultiDisk/PersistenceWithSync
 	// Write a marker to vdb WITH sync, then reboot and assert the marker survives.
 	t.Run("PersistenceWithSync", func(t *testing.T) {
 		rootfsDir1 := buildMultidiskRootfs(t, agentBin, map[string]string{
@@ -584,7 +576,7 @@ func TestMultiDisk(t *testing.T) {
 		}
 	})
 
-	// ------------------------------------------------------------------ TestMultiDisk/PersistenceNoSync (negative control)
+	// TestMultiDisk/PersistenceNoSync (negative control)
 	// Write marker WITHOUT sync; report what is observed after reboot.
 	// This test NEVER fails — it documents the D-BVM-11 observation.
 	t.Run("PersistenceNoSync", func(t *testing.T) {

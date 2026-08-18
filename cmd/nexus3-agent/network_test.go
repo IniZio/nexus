@@ -110,7 +110,7 @@ func TestFirstNonLoIfaceAt_MultipleDeviceBacked(t *testing.T) {
 	}
 }
 
-// --- checkEgressWith tests ---
+// checkEgressWith tests
 
 // devnull opens /dev/null as a *os.File for use as a silent console sink in
 // tests that don't need to inspect log output.

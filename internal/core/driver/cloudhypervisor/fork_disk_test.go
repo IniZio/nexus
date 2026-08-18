@@ -10,9 +10,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/domain"
 )
 
-// ---------------------------------------------------------------------------
 // rewriteConfigDiskPath
-// ---------------------------------------------------------------------------
 
 // TestRewriteConfigDiskPath_SingleDisk verifies that the root disk path is
 // rewritten and all other fields (including unknown ones) are preserved.
@@ -94,9 +92,7 @@ func TestRewriteConfigDiskPath_NoMatch(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // findRootDiskPath
-// ---------------------------------------------------------------------------
 
 // TestFindRootDiskPath_ExactMatch verifies that the disk whose basename is
 // parentID.String()+".raw" is returned when present.
@@ -161,9 +157,7 @@ func TestFindRootDiskPath_EmptyDisks(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // reflinkCopy
-// ---------------------------------------------------------------------------
 
 // TestReflinkCopy_Independence verifies that:
 //   - dst starts with the same content as src, and
@@ -204,9 +198,7 @@ func TestReflinkCopy_Independence(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // prepareChildRestoreDir
-// ---------------------------------------------------------------------------
 
 // TestPrepareChildRestoreDir verifies that the restore dir contains:
 //   - a rewritten config.json with the child disk path,
@@ -262,9 +254,7 @@ func TestPrepareChildRestoreDir(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // test helpers
-// ---------------------------------------------------------------------------
 
 // diskSpec describes one disk entry in a synthetic config.json.
 type diskSpec struct {
@@ -327,9 +317,7 @@ func mustDiskPath(t *testing.T, d map[string]json.RawMessage) string {
 	return p
 }
 
-// ---------------------------------------------------------------------------
 // D-PD-54 regression: all disks must be isolated on fork
-// ---------------------------------------------------------------------------
 
 // TestFork_ExtraDisksAllIsolated is the regression test for D-PD-54.
 //
@@ -383,7 +371,7 @@ func TestFork_ExtraDisksAllIsolated(t *testing.T) {
 		{parentWorkspace, childWorkspace},
 	}
 
-	// Step 1: reflink-copy all disks (mirrors the copy loop in spawnChildFromSnapshot).
+	// Reflink-copy all disks (mirrors the copy loop in spawnChildFromSnapshot).
 	for _, dp := range allPairs {
 		if err := reflinkCopy(dp.parent, dp.child); err != nil {
 			t.Fatalf("reflinkCopy %s: %v", dp.parent, err)
@@ -395,7 +383,6 @@ func TestFork_ExtraDisksAllIsolated(t *testing.T) {
 		}
 	})
 
-	// Step 2: build rewrite map and prepare child restore dir.
 	diskRewrites := map[string]string{
 		parentRoot:      childRoot,
 		parentShadow:    childShadow,
@@ -452,9 +439,7 @@ func TestFork_ExtraDisksAllIsolated(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Defect 1 regression: malformed sibling disk entry must error (D-PD-54)
-// ---------------------------------------------------------------------------
 
 // TestCollectExtraDiskPaths_MalformedSibling verifies that collectExtraDiskPaths
 // returns an error when config.json has a root disk plus a sibling disk entry
@@ -485,9 +470,7 @@ func TestCollectExtraDiskPaths_MalformedSibling(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Defect 2 regression: unmatched rewrite key must error (D-PD-54)
-// ---------------------------------------------------------------------------
 
 // TestRewriteAllConfigDiskPaths_UnmatchedKey verifies that
 // rewriteAllConfigDiskPaths returns an error when a rewrite key does not match

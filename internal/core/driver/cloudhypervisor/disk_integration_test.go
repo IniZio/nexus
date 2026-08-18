@@ -208,23 +208,23 @@ func waitForAgentReady(t *testing.T, drv *CHDriver, id domain.SandboxID, timeout
 //  7. Dial the agent via drv (implements GuestDialer) and run Exec /bin/hello.
 //  8. Assert "hello-from-disk" appears in stdout.
 func TestDiskBoot(t *testing.T) {
-	// ------------------------------------------------------------------ guards
+	// guards
 	skipUnlessKVM(t)
 	chBin := skipUnlessCHBin(t)
 	kernelPath := skipUnlessArtifact(t, "vmlinux-x86_64")
 	skipUnlessMke2fs(t)
 
-	// ------------------------------------------------------------------ build binaries
+	// build binaries
 	agentBin := buildNexus3Agent(t)
 	helloBin := buildHelloBinForDisk(t)
 
-	// ------------------------------------------------------------------ assemble rootfs
+	// assemble rootfs
 	rootfsDir := buildRootfsForDisk(t, agentBin, helloBin)
 
-	// ------------------------------------------------------------------ build ext4
+	// build ext4
 	ext4Path := buildExt4Image(t, rootfsDir)
 
-	// ------------------------------------------------------------------ socket dir
+	// socket dir
 	// Use /tmp as base to stay under the 107-byte Linux sun_path limit.
 	// The driver enforces: len(socketDir)+35 <= diskTestSunPathMax.
 	socketDir, err := os.MkdirTemp("/tmp", "ch-disk-")
@@ -237,12 +237,12 @@ func TestDiskBoot(t *testing.T) {
 		t.Skipf("skipping: socket dir path too long for unix socket: %s", socketDir)
 	}
 
-	// ------------------------------------------------------------------ serial
+	// serial
 	// Capture serial to a file so the kernel cmdline + agent boot logs are
 	// visible in t.Logf on failure.
 	serialPath := filepath.Join(socketDir, "serial.log")
 
-	// ------------------------------------------------------------------ driver
+	// driver
 	drv, err := New(Config{
 		BinaryPath: chBin,
 		SocketDir:  socketDir,
@@ -284,7 +284,7 @@ func TestDiskBoot(t *testing.T) {
 		os.RemoveAll(socketDir)
 	})
 
-	// ------------------------------------------------------------------ start
+	// start
 	startCtx, startCancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer startCancel()
 
@@ -300,7 +300,7 @@ func TestDiskBoot(t *testing.T) {
 	}
 	drv.mu.Unlock()
 
-	// ------------------------------------------------------------------ wait for agent
+	// wait for agent
 	// The vsock socket file is created by CH at vm.create time, long before
 	// the guest agent starts. Poll DialGuest until the agent's vsock listener
 	// is reachable (kernel boot + ext4 mount + agent start ~2-5 s).
@@ -308,7 +308,7 @@ func TestDiskBoot(t *testing.T) {
 	waitForAgentReady(t, drv, id, 30*time.Second)
 	t.Log("guest agent vsock reachable — proceeding with Exec")
 
-	// ------------------------------------------------------------------ assert agent reachable via DialGuest
+	// assert agent reachable via DialGuest
 	// agent.NewClient uses drv (which implements driver.GuestDialer via
 	// drv.DialGuest → vsock AF_UNIX socket) to reach the control and data
 	// planes inside the guest.

@@ -28,6 +28,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/core/vmcfg"
+	"github.com/IniZio/nexus3/internal/core/volumestore"
 	"github.com/IniZio/nexus3/internal/supervisor"
 )
 
@@ -39,7 +40,7 @@ func init() {
 	})
 }
 
-// ── Sandbox-specific error codes (machine contract) ──────────────────────────
+// Sandbox-specific error codes (machine contract)
 //
 // These codes form a stable, versioned API surface. See the full code table in
 // output.go. Renaming any constant requires a schemaVersion bump.
@@ -90,7 +91,7 @@ const (
 	sandboxErrCodeAgentUnreachable = "agent_unreachable"
 )
 
-// ── noopDriver ───────────────────────────────────────────────────────────────
+// noopDriver
 
 // sandboxNoopDriver is the fallback driver used when substrate selection fails.
 // It preserves the existing behaviour for store-only verbs (create, list, rm):
@@ -135,7 +136,7 @@ func (d *sandboxNoopDriver) Stop(_ context.Context, _ domain.SandboxID) error {
 // in service.Pause/Resume will fail and return a "no substrate configured"
 // error, which is correct: pause/resume require a running VM.
 
-// ── service construction ──────────────────────────────────────────────────────
+// service construction
 
 // newSandboxService builds a Service for use by CLI command handlers. The store
 // root follows XDG_STATE_HOME (see store.DefaultRoot). SelectSubstrate is
@@ -170,7 +171,7 @@ func newSandboxService() (*service.Service, error) {
 	return service.New(st, drv, lifecycle.New()), nil
 }
 
-// ── Error code mapping ────────────────────────────────────────────────────────
+// Error code mapping
 
 // sandboxCodeFor maps a core-package error to the appropriate sandbox error
 // code using errors.Is / errors.As. It never inspects error message text.
@@ -214,7 +215,7 @@ func errSandbox(prefix string, cause error) *CodedError {
 	}
 }
 
-// ── JSON data types ───────────────────────────────────────────────────────────
+// JSON data types
 
 type sandboxInfoJSON struct {
 	ID           string            `json:"id"`
@@ -249,7 +250,7 @@ type sandboxRemovedDataJSON struct {
 	Handle string `json:"handle"`
 }
 
-// ── dispatcher ───────────────────────────────────────────────────────────────
+// dispatcher
 
 func runSandbox(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
@@ -301,7 +302,7 @@ func runSandbox(ctx context.Context, args []string, out *Output) error {
 	}
 }
 
-// ── create ────────────────────────────────────────────────────────────────────
+// create
 
 // runSandboxCreate handles:
 //
@@ -346,6 +347,7 @@ type sandboxCreateFlags struct {
 	egressClosed bool     // --egress closed: disable open egress (D-PD-33)
 	allowHosts   []string // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
 	allowedRepo  string   // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
+	mountNamed   []string // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
 	positionals  []string
 }
 
@@ -503,6 +505,14 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --repo %q is not in owner/name format", args[i])}
 			}
 			f.allowedRepo = args[i]
+		case "--mount-named":
+			// SD2-6-MOUNT: <volume-name>:<guest-path>[:ro|kind=dir|size=Xg]
+			// guest-path must not contain a .git component (hard refusal, design line 63).
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --mount-named requires <volume-name>:<guest-path>"}
+			}
+			i++
+			f.mountNamed = append(f.mountNamed, args[i])
 		default:
 			if len(arg) > 1 && arg[0] == '-' {
 				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: unknown flag %q", arg)}
@@ -558,7 +568,7 @@ func buildCHConfig(kernelPath, ext4Path string, memMiB, vcpus uint32) cloudhyper
 	return cfg
 }
 
-// ── workspace mount cmdline helpers ──────────────────────────────────────────
+// workspace mount cmdline helpers
 
 // diskBootCmdlineBase is the kernel command line for disk-boot sandboxes.
 // It must stay in sync with diskBootCmdline in
@@ -596,7 +606,7 @@ func workspaceMountCmdline(mounts []agent.GuestMount) string {
 	return b
 }
 
-// ── builder-VM helpers ────────────────────────────────────────────────────────
+// builder-VM helpers
 
 // parseHumanBytes parses a human-readable byte count string (e.g. "8GiB",
 // "500MB", "1024") into an int64 byte count. Recognised suffixes (case-sensitive):
@@ -765,7 +775,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		return &UsageError{Code: sandboxErrCodeInvalidArgument, Msg: fmt.Sprintf("sandbox create: %v", err)}
 	}
 
-	// ── No-boot path: store-only create (backwards-compatible) ───────────────
+	// No-boot path: store-only create (backwards-compatible)
 	if f.imageRef == "" && f.rootfsPath == "" && f.filePath == "" {
 		sb, err := svc.Create(ctx, project, name, service.CreateOptions{RemoveOnExit: f.rm})
 		if err != nil {
@@ -776,7 +786,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		return nil
 	}
 
-	// ── Boot path: resolve ext4 → start VM → probe agent ─────────────────────
+	// Boot path: resolve ext4 → start VM → probe agent
 	//
 	// Preflight: validate the kernel path before any expensive work. This must
 	// run before shadow disk creation, workspace capture, and builder VM launch
@@ -793,6 +803,22 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		return errSandbox("sandbox create", fmt.Errorf("resolve state directory: %w", err))
 	}
 	cacheRoot := filepath.Join(storeRoot, "images")
+
+	// SD2-6-MOUNT: parse --mount-named specs and wire the VolumeStore.
+	// Parsing includes the .git hard refusal (design line 63) before any I/O.
+	var namedMounts []service.NamedVolumeMount
+	var namedVS *volumestore.VolumeStore
+	if len(f.mountNamed) > 0 {
+		namedVS = volumestore.New(filepath.Join(storeRoot, "volumes"))
+		svc.WithVolumes(namedVS)
+		for _, spec := range f.mountNamed {
+			m, mErr := parseMountNamed(spec)
+			if mErr != nil {
+				return mErr
+			}
+			namedMounts = append(namedMounts, m)
+		}
+	}
 
 	imgCache, err := image.NewCache(cacheRoot)
 	if err != nil {
@@ -846,7 +872,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		buildCtx, buildCancel := context.WithTimeout(ctx, taskTimeout)
 		defer buildCancel()
 
-		// ── Rootfs fingerprint cache ──────────────────────────────────────────
+		// Rootfs fingerprint cache
 		// Compute a stable fingerprint over (Containerfile, FROM ref, agent
 		// binary, context directory) and check whether we already have the
 		// built image. A hit skips the entire ~25-min builder VM build.
@@ -1149,7 +1175,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		RootfsPath: f.rootfsPath,
 	}
 
-	// ── Workspace + shadow disks (D-DC-10) ────────────────────────────────────
+	// Workspace + shadow disks (D-DC-10)
 	//
 	// When --workspace is provided:
 	//   1. Shadow disks (DefaultShadowDirs) are created as sparse ext4 images in
@@ -1296,8 +1322,10 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			// --egress closed opts out: OpenEgress=false, ACL denies everything
 			// not in AllowedHosts. Agent sandboxes (orca, herdr) must NOT set
 			// OpenEgress=true — they use WireClaudeEgress with a curated allowlist.
-			OpenEgress:  !f.egressClosed,
-			AllowedRepo: f.allowedRepo, // D-PD-36: set by --repo; empty for open-egress sandboxes
+			OpenEgress:        !f.egressClosed,
+			AllowedRepo:       f.allowedRepo, // D-PD-36: set by --repo; empty for open-egress sandboxes
+			Volumes:           namedVS,        // SD2-6-MOUNT: nil when --mount-named not used
+			NamedVolumeMounts: namedMounts,
 		},
 	)
 	if err != nil {
@@ -1492,7 +1520,7 @@ func kernelPathFor() string {
 	return filepath.Join(filepath.Dir(exe), "images", "kernel", "vmlinux-x86_64")
 }
 
-// ── list ─────────────────────────────────────────────────────────────────────
+// list
 
 // sandboxListWideRowJSON is one row in the wide label-filtered list output.
 // Used only when --label and --wide are both present.
@@ -1665,7 +1693,7 @@ func renderSandboxListWide(labelKey, labelValue string, report *service.LabelSta
 	return strings.TrimRight(buf.String(), "\n")
 }
 
-// ── rm ────────────────────────────────────────────────────────────────────────
+// rm
 
 func runSandboxRm(ctx context.Context, args []string, out *Output, svc *service.Service) error {
 	if len(args) != 1 {
@@ -1708,7 +1736,7 @@ func runSandboxRm(ctx context.Context, args []string, out *Output, svc *service.
 	return nil
 }
 
-// ── start ─────────────────────────────────────────────────────────────────────
+// start
 
 func runSandboxStart(ctx context.Context, args []string, out *Output, svc *service.Service) error {
 	if len(args) != 1 {
@@ -1737,7 +1765,7 @@ func runSandboxStart(ctx context.Context, args []string, out *Output, svc *servi
 	return nil
 }
 
-// ── stop ──────────────────────────────────────────────────────────────────────
+// stop
 
 func runSandboxStop(ctx context.Context, args []string, out *Output, svc *service.Service) error {
 	if len(args) != 1 {
@@ -1765,7 +1793,7 @@ func runSandboxStop(ctx context.Context, args []string, out *Output, svc *servic
 	return nil
 }
 
-// ── pause ─────────────────────────────────────────────────────────────────────
+// pause
 
 func runSandboxPause(ctx context.Context, args []string, out *Output, svc *service.Service) error {
 	if len(args) != 1 {
@@ -1782,7 +1810,7 @@ func runSandboxPause(ctx context.Context, args []string, out *Output, svc *servi
 	return nil
 }
 
-// ── resume ────────────────────────────────────────────────────────────────────
+// resume
 
 func runSandboxResume(ctx context.Context, args []string, out *Output, svc *service.Service) error {
 	if len(args) != 1 {
@@ -1797,4 +1825,111 @@ func runSandboxResume(ctx context.Context, args []string, out *Output, svc *serv
 	out.EmitSuccess("sandbox.resumed", toSandboxInfoJSON(sb),
 		fmt.Sprintf("resumed sandbox %s (%s)", sb.Handle(), sb.ID))
 	return nil
+}
+
+// parseMountNamed parses a --mount-named spec of the form:
+//
+//	<volume-name>:<guest-path>[:ro|kind=dir|size=Xg]
+//
+// The .git hard refusal (design line 63) rejects any guest path where ".git"
+// appears as a path component — terminal or non-terminal. This guard runs at
+// parse time, before any I/O, so the error is immediate regardless of whether
+// the volume exists.
+func parseMountNamed(spec string) (service.NamedVolumeMount, error) {
+	parts := strings.SplitN(spec, ":", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return service.NamedVolumeMount{}, &UsageError{
+			Msg: fmt.Sprintf("sandbox create: --mount-named %q: want <volume-name>:<guest-path>[:ro|kind=dir|size=Xg]", spec),
+		}
+	}
+	name := parts[0]
+	guestPath := parts[1]
+
+	// Hard refusal: reject any guest path containing .git as a path component.
+	if hasGitComponent(guestPath) {
+		return service.NamedVolumeMount{}, &UsageError{
+			Msg: fmt.Sprintf("sandbox create: --mount-named %q: guest path %q must not contain a .git component (design line 63)", spec, guestPath),
+		}
+	}
+
+	m := service.NamedVolumeMount{
+		Name:      name,
+		GuestPath: guestPath,
+		Kind:      volumestore.KindDisk, // default
+	}
+
+	if len(parts) == 3 {
+		opts := strings.Split(parts[2], ",")
+		for _, opt := range opts {
+			switch {
+			case opt == "ro":
+				m.ReadOnly = true
+			case opt == "kind=dir":
+				m.Kind = volumestore.KindDir
+			case strings.HasPrefix(opt, "size="):
+				sizeStr := strings.TrimPrefix(opt, "size=")
+				sz, sErr := parseVolumeSize(sizeStr)
+				if sErr != nil {
+					return service.NamedVolumeMount{}, &UsageError{
+						Msg: fmt.Sprintf("sandbox create: --mount-named %q: invalid size %q: %v", spec, sizeStr, sErr),
+					}
+				}
+				m.SizeBytes = sz
+			default:
+				return service.NamedVolumeMount{}, &UsageError{
+					Msg: fmt.Sprintf("sandbox create: --mount-named %q: unknown option %q", spec, opt),
+				}
+			}
+		}
+	}
+	return m, nil
+}
+
+// hasGitComponent reports whether path contains ".git" as a slash-separated
+// component, terminal or non-terminal. Called by parseMountNamed for the hard
+// refusal on guest paths (design line 63, SD2-6-MOUNT).
+func hasGitComponent(path string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if part == ".git" {
+			return true
+		}
+	}
+	return false
+}
+
+// parseVolumeSize parses a human-friendly size string such as "10g", "512m",
+// "1024k" into bytes. Accepted suffixes: g/G (GiB), m/M (MiB), k/K (KiB);
+// bare integer is treated as bytes. Returns an error for any unrecognised form.
+func parseVolumeSize(s string) (int64, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty size string")
+	}
+	suffix := strings.ToLower(string(s[len(s)-1]))
+	numStr := s[:len(s)-1]
+	switch suffix {
+	case "g":
+		v, err := strconv.ParseInt(numStr, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid GiB value %q", s)
+		}
+		return v << 30, nil
+	case "m":
+		v, err := strconv.ParseInt(numStr, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid MiB value %q", s)
+		}
+		return v << 20, nil
+	case "k":
+		v, err := strconv.ParseInt(numStr, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid KiB value %q", s)
+		}
+		return v << 10, nil
+	default:
+		v, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid byte count %q", s)
+		}
+		return v, nil
+	}
 }

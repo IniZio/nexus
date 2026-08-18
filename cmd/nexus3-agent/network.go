@@ -115,7 +115,6 @@ func setupNetwork(con *os.File) {
 	runNetCmd(con, ipBin, "link", "set", iface, "up")
 	// Assign static IP.
 	runNetCmd(con, ipBin, "addr", "add", guestNetworkIP, "dev", iface)
-	// Set default route.
 	runNetCmd(con, ipBin, "route", "add", "default", "via", guestNetworkGateway)
 	consoleLog(con, "nexus3-agent: network: %s configured\n", iface)
 
@@ -150,7 +149,7 @@ func firstNonLoIfaceAt(sysRoot string) string {
 	if err != nil {
 		return ""
 	}
-	// First pass: prefer hardware-backed interfaces. These have a "device"
+	// Prefer hardware-backed interfaces. These have a "device"
 	// symlink in <netDir>/<name>/device pointing to the PCI (or other bus)
 	// device.  Virtual interfaces (dummy0, lo, veth*, bridge) do not.
 	for _, e := range entries {

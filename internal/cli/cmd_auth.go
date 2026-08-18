@@ -71,10 +71,9 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 		return &UsageError{Msg: "auth login: " + err.Error()}
 	}
 
-	// 1. Resolve destination path.
 	dest := service.DefaultDedicatedCredStorePath()
 
-	// 2. Guard: refuse to overwrite a live (complete) credential store unless
+	// Guard: refuse to overwrite a live (complete) credential store unless
 	//    --force is set.
 	if !*force {
 		existing, err := cred.LoadStore(dest)
@@ -88,7 +87,6 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 		// malformed store is not "live").
 	}
 
-	// 3. Import credentials from the source file.
 	store, err := cred.ImportClaudeCredentials(*fromPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -102,12 +100,11 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 		return fmt.Errorf("auth login: importing credentials: %w", err)
 	}
 
-	// 4. Save to the dedicated credential store.
 	if err := cred.SaveStore(dest, store); err != nil {
 		return fmt.Errorf("auth login: saving credential store: %w", err)
 	}
 
-	// 5. Report success (no token values printed).
+	// Report success (no token values printed).
 	data := authLoginJSON{
 		DestPath:      dest,
 		TokenEndpoint: store.TokenEndpoint,

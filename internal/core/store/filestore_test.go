@@ -378,7 +378,6 @@ func TestRemovalMarkerRoundTrip(t *testing.T) {
 		t.Error("RemovalMarker should be false after Create")
 	}
 
-	// Set the marker.
 	if err := st.SetRemovalMarker(ctx, sb.ID); err != nil {
 		t.Fatalf("SetRemovalMarker: %v", err)
 	}

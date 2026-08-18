@@ -37,12 +37,12 @@ import (
 )
 
 func TestSnapshotFork(t *testing.T) {
-	// ------------------------------------------------------------------ guards
+	// guards
 	skipUnlessKVM(t)
 	chBin := skipUnlessCHBin(t)
 	kernelPath := skipUnlessArtifact(t, "vmlinux-x86_64")
 
-	// ------------------------------------------------------------------ dirs
+	// dirs
 	// Use short base paths to stay under the 107-byte Linux sun_path limit.
 	socketDir, err := os.MkdirTemp("/tmp", "ch-snap-")
 	if err != nil {
@@ -60,7 +60,7 @@ func TestSnapshotFork(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(snapDir) })
 
-	// ------------------------------------------------------------------ driver
+	// driver
 	drv, err := New(Config{
 		BinaryPath:  chBin,
 		SocketDir:   socketDir,
@@ -76,7 +76,7 @@ func TestSnapshotFork(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 
-	// ------------------------------------------------------------------ start parent VM
+	// start parent VM
 	parentID := domain.NewSandboxID()
 	iid, err := drv.Start(ctx, driver.StartRequest{SandboxID: parentID})
 	if err != nil {
@@ -90,7 +90,7 @@ func TestSnapshotFork(t *testing.T) {
 		t.Fatalf("parent VM did not reach Running: %v (%s)", obs.State, obs.Detail)
 	}
 
-	// ------------------------------------------------------------------ snapshot
+	// snapshot
 	snap, err := drv.TakeSnapshot(ctx, parentID, artifact.KindTransient)
 	if err != nil {
 		t.Fatalf("TakeSnapshot: %v", err)
@@ -116,7 +116,7 @@ func TestSnapshotFork(t *testing.T) {
 		t.Errorf("stored.ID mismatch: got %s, want %s", stored.ID, snap.ID)
 	}
 
-	// ------------------------------------------------------------------ fork
+	// fork
 	childID := domain.NewSandboxID()
 	instanceIDs, err := drv.ForkFrom(ctx, snap, []domain.SandboxID{childID})
 	if err != nil {
