@@ -26,18 +26,22 @@ nexus3 reap --apply   # delete orphans
 | `socket_vsock` / `socket_iid` | `<socketDir>/…` | full ULID | reap |
 | `builder_supervisor` | `<stateRoot>/builder/…` | full ULID | reap (`os.RemoveAll`) |
 | TAP / bridge / netns | `nx3g-<prefix>`, `nx3h-<prefix>`, `nx3b-<prefix>` | 5-byte ULID prefix | **kernel** (auto) |
+| `volume_disk` | `<stateRoot>/volumes/<name>/disk.ext4` | volume name | **user** — never reap |
+| `volume_dir` | `<stateRoot>/volumes/<name>/data/` | volume name | **user** — never reap |
 
 TAP interfaces, bridge, and the network namespace are in-kernel resources, named with the first 10 hex characters of the sandbox ULID. They are auto-reclaimed by the kernel when the Cloud Hypervisor process group dies — even under SIGKILL. The reaper does not target them; for correlation purposes, enumerate `ip link` entries matching `nx3[ghb]-<hex>` and strip the prefix.
 
-### Mounts are host-owned; nexus3 does not reclaim them <Badge type="danger" text="not built" />
+### Named volumes
 
-When a sandbox is created with a `-v` argument, nexus3 binds a host directory into the guest via virtiofs. That directory is **not a nexus3-managed resource** — it is owned by whoever created it (typically the orchestrator, which creates a `git worktree` per sandbox). `nexus3 rm` removes the sandbox record, shadow disks, sockets, and the raw OS disk. <Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox remove`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping. It does **not** delete the mounted host directory. The orchestrator is responsible for cleaning up the worktree it created (e.g. `git worktree remove`).
+Named volumes (`volume_disk` and `volume_dir`) are user-owned resources that live in `<stateRoot>/volumes/<name>/`. They are **structurally excluded** from the reaper: `ResourceIndex.List()` scans only `<stateRoot>/disks/` and `<stateRoot>/sockets/`; it has no visibility into `<stateRoot>/volumes/`. A guard test (`TestReap_NeverTouchesVolumes`) fails if that scan boundary ever widens.
 
-Shadow disks are per-sandbox virtio-blk images that cover write-heavy paths inside the mount (`node_modules`, `.next`, `target`, `dist`). These are nexus3-managed and **are** removed by `nexus3 rm`.
+`nexus3 rm` detaches a sandbox's named volumes but **never** deletes their backing files (D-PD-87). The volume persists until the user explicitly removes it with `nexus3 volume rm <name>` or reclaims detached volumes with `nexus3 volume prune`.
+
+See [Volume commands](/cli/volume-commands) for the full volume lifecycle.
 
 ## Creation: intent-before-materialize
 
-Every disk creation (raw OS disk, shadow disks) is journaled before the disk is materialized. Mounted worktrees are not disk artifacts — no intent record is written for them. <Badge type="danger" text="not built" /> The write sequence in `writeCreateIntent` (`internal/core/service/intent.go`):
+Every disk creation (raw OS disk, shadow disks) is journaled before the disk is materialized. Named volume backing files are not subject to the intent system — they are created inside the volume store under exclusive per-volume locks, not via the disks/ intent path. The write sequence in `writeCreateIntent` (`internal/core/service/intent.go`):
 
 ```
 os.OpenFile(intentPath, O_WRONLY|O_CREATE|O_TRUNC, 0o600)
@@ -93,7 +97,7 @@ The kernel releases `flock` when the holding process dies — including on `SIGK
 
 The reaper probes leases **before** it snapshots the store records. The two observations are not atomic, and this is the order that makes them safe together: a lease is released only after the record is committed, so a create that releases between the two observations is guaranteed to appear in the record snapshot taken afterwards. Listing records first inverts that guarantee and reopens the window.
 
-Both creation paths take a lease: `nexus3 create`, and `nexus3 fork` for each child's `<childID>.raw`. Nothing else is covered. A fork child's copies of the parent's **extra** disks are neither leased nor protected: its workspace copy is invisible to the reaper (a permanent leak, never reclaimed), and its shadow-disk copies are deleted by any `reap --apply` — see [Shadow disk classification](#shadow-disk-classification). <Badge type="warning" text="partial" />
+Both creation paths take a lease: `nexus3 create`, and `nexus3 fork` for each child's `<childID>.raw` and for any shadow disk copies created during fork. Fork children's workspace disks are named `<childID>-workspace.ext4` (ULID-keyed) and handled by the standard liveness gate. Named volumes of any kind are excluded from fork children: `nexus3 fork` refuses when the parent has any attached named volume (D-PD-96, TBR-PD-15 pending design). <Badge type="warning" text="partial" />
 
 Two residuals remain on both create and fork. `ResourceIndex.List()` is a `readdir`, not an atomic directory snapshot, so a scan can in principle observe a `.raw` dirent while having already passed the slot where its `.create-intent.json` landed, yielding a disk with no lease to probe. And an intent file that cannot be read at all (for example one left mode-0600 by another uid) keeps its sandbox's disks indefinitely, as described above.
 
@@ -132,18 +136,20 @@ Shadow disks (`KindDiskShadow`) use handle-based correlation rather than the ULI
 - **Legacy format** (`.shadow.ext4`, no embedded handle): unconditionally orphan.
 - **B1 format**: owned when the handle matches a live sandbox record; orphan otherwise.
 
-Two shadow-disk hazards follow from handle correlation, and they differ in kind:
+Two shadow-disk hazards follow from handle correlation, and they have been addressed:
 
-- **On create — windowed.** A shadow disk is materialized before the sandbox record that will own it, and it carries no lease, so a `reap --apply` firing in that window finds no matching handle and deletes it. The window closes when the record commits.
-- **On fork — unconditional.** A forked child copies the parent's shadow disks as `<childID>-<parentSafeHandle>.shadow.<name>.ext4`. `ShadowDiskSafeHandle` reads everything before the first `.shadow.`, yielding `<childID>-<parentSafeHandle>`, which can never equal any live sandbox's handle. The copy is therefore classified `orphan` **permanently** — a `reap --apply` deletes a forked sandbox's `node_modules` (or equivalent) at any time, long after the fork completed and while the child is `running` with a committed record.
+- **On create — windowed.** A shadow disk is materialized before the sandbox record that will own it. A flock lease on the create-intent artifact now prevents the reaper from acting during this window (D-PD-73): the lease is held until the record commits; the reaper probes leases before loading records so a create that releases between the two observations is guaranteed to be visible in the record snapshot. The window is closed.
 
-Both need a handle-keyed lease artifact and a child-copy naming scheme that still correlates. <Badge type="danger" text="not built" />
+- **On fork.** Forked children's workspace disks are named `<childID>-workspace.ext4` (D-PD-80(b)) and are ULID-keyed, so they are owned by the standard liveness gate and never misclassified. Shadow disk copies created during fork are protected by the same flock lease scheme during the create window (D-PD-74). After the window closes, the fork correlation hazard remains for shadow disks named `<childID>-<parentSafeHandle>.shadow.<name>.ext4`: `ShadowDiskSafeHandle` yields `<childID>-<parentSafeHandle>`, which cannot match any live sandbox handle. Such copies are classified orphan permanently once the fork create window closes.
+
+The recommended parallel-dev approach avoids this residual entirely: use `--mount-named kind=disk` volumes instead of shadow disks. Named volumes are excluded from fork children (never copied), so no shadow disk copies are created and no residual correlation hazard arises.
 
 ### What reap does not touch
 
 - TAP / bridge / netns (kernel-owned; auto-reclaimed)
 - The record store itself (that is `recover`'s domain)
 - Any resource not matched by `ResourceIndex.List()`'s filename patterns
+- The `<stateRoot>/volumes/` directory — structurally excluded; named volumes are user-owned
 
 ## Recovery
 
@@ -159,7 +165,7 @@ All `nexus3 create` entry points run a disk-space preflight before any expensive
 - Projects `count × per-sandbox-estimate` against the host's available bytes (`Bavail × Bsize` from `statfs(2)`).
 - Returns `ErrInsufficientDisk` if the projection exceeds available space.
 
-The preflight covers nexus3-managed disks only. Mounted host directories are outside the estimate — the orchestrator is responsible for ensuring the host worktree fits the available disk budget. <Badge type="danger" text="not built" />
+The preflight covers nexus3-managed disks only. Named volume backing files are outside the estimate — volume sizes are set explicitly at creation time and are the user's responsibility.
 
 The per-sandbox estimate defaults to ~4.57 GiB (measured from a real pilot sandbox) when no existing sandbox disks are present to sample.
 

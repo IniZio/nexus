@@ -65,15 +65,14 @@ page = "cli/index.md"   # verb index table: `secret` <Badge type="danger" text="
 [[target_only_flags]]
 key   = "create"
 page  = "cli/sandbox-commands.md"   # nexus3 create flag table
-flags = ["--volume", "-v", "--shadow", "--service"]
-# | `-v, --volume ...` | … | <Badge type="danger" text="not built" />
-# | `--shadow ...`     | … | <Badge type="danger" text="not built" />
+flags = ["--service"]
 # | `--service ...`    | … | <Badge type="danger" text="not built" />
+# --volume/-v/--shadow removed from target; superseded by --mount-named (named volumes)
 
 [[target_only_flags]]
 key   = "sandbox/create"
 page  = "cli/sandbox-commands.md"   # same table, legacy sandbox-group spelling
-flags = ["--volume", "-v", "--shadow", "--service"]
+flags = ["--service"]
 
 [[target_only_flags]]
 key   = "auth/login"
@@ -99,6 +98,6 @@ flags = ["--context"]
 # Keyed by top-level verb.  Any fenced-code-block occurrence is a violation.
 # Human-readable rationale: cli/index.md "Removed from target" section.
 [removed_flags]
-fork    = ["--count"]                       # one child per invocation; fan-out is the orchestrator's loop
-restore = ["--count"]                       # same rationale
-create  = ["--workspace", "--capture-max"]  # superseded by live virtiofs mounts
+fork    = ["--count"]                                           # one child per invocation; fan-out is the orchestrator's loop
+restore = ["--count"]                                           # same rationale
+create  = ["--workspace", "--capture-max", "--volume", "-v", "--shadow"]  # --workspace/--capture-max superseded by named volumes; --volume/-v/--shadow superseded by --mount-named

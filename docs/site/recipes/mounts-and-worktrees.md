@@ -5,6 +5,10 @@ description: "Mount a git worktree per sandbox so edits inside the VM appear on 
 
 # Mounts and worktrees <Badge type="danger" text="not built" />
 
+::: tip Named volumes are the shipped path for dependency isolation
+`--mount-named kind=disk` volumes (built) replace the shadow disk sections on this page for dependency stores and build caches. For per-sandbox dependency isolation today, see [Volume commands](/cli/volume-commands) and [CLI — Named volumes](/cli/sandbox-commands#named-volumes). The live virtiofs worktree mount design (`-v`/`--shadow`) described below is a ratified but unbuilt design (D-PD-53).
+:::
+
 > Mount a host git worktree as the live workspace — edits inside the sandbox appear on the host immediately, and work flows back through normal git push.
 
 Live virtiofs mounts replace workspace capture. There is no archive step and no extraction step.

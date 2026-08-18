@@ -123,34 +123,27 @@ See [Labels and selectors](/cli/#labels-and-selectors).
 
 ---
 
-## Mounting a working tree <Badge type="danger" text="not built" />
+## Named volumes
 
-The target surface lets you mount a host directory into the guest as a named disk, so the sandbox sees your live working tree — dirty files, untracked files, and unpushed commits included — without a capture step:
+Attach persistent named volumes to a sandbox so write-heavy directories (dependency stores, build caches, Docker data) survive across sandbox removes and are shared across concurrent sandboxes:
 
 ```
+nexus3 volume create myapp-node_modules --kind disk --size 10737418240
 nexus3 create myproject/dev-1 \
-  --context /data/repos/myrepo \
-  -v /data/repos/myrepo:/workspace/myrepo \
+  --image myapp-base:latest \
+  --mount-named myapp-node_modules:/workspace/myapp/node_modules \
   --memory 8192
 ```
 
-<Badge type="warning" text="partial" /> — `--context` current implementation uses `--file`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+`nexus3 volume create` is optional — `--mount-named` auto-creates the volume on first attach (kind=disk, 10 GiB default). The volume persists after `nexus3 rm`; delete it explicitly with `nexus3 volume rm myapp-node_modules`.
 
-`-v host-path:guest-path` (repeatable) attaches the host directory as a virtio-blk ext4 disk. Build-artifact directories (`node_modules`, `target`, `.next`, `dist`) are automatically backed by per-sandbox shadow disks so writes do not flow back to the host.
+See [Volume commands](/cli/volume-commands) and [CLI — Named volumes](/cli/sandbox-commands#named-volumes).
 
-If the image declares startup services — or you pass `--service` at create time — the create command blocks until all readiness probes pass:
+## Live virtiofs worktree mount <Badge type="danger" text="not built" />
 
-```
-nexus3 create myproject/dev-1 \
-  --context /data/repos/myrepo \
-  -v /data/repos/myrepo:/workspace/myrepo \
-  --service 'dockerd:dockerd:docker info' \
-  --memory 8192
+The longer-term target is a live virtiofs mount of the host worktree so the sandbox sees dirty files, untracked files, and unpushed commits without a capture step. This is a ratified design (D-PD-53) that is not yet implemented.
 
-nexus3 exec myproject/dev-1 -- docker ps
-```
-
-See [Mounts and worktrees](/recipes/mounts-and-worktrees), [CLI — Mounts and shadow disks](/cli/#mounts-and-shadow-disks), [CLI — Startup services](/cli/#startup-services).
+See [Mounts and worktrees](/recipes/mounts-and-worktrees) for the design.
 
 ---
 

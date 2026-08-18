@@ -52,24 +52,40 @@ nexus3 create <project>/<name> [flags]
 | `--egress <mode>` | string | — | Egress policy (`open` or `github-only`) |
 | `--allow-host <host>` | string | — | Add a host to the egress allowlist; repeatable |
 | `--repo <owner/repo>` | string | — | Add a GitHub repo to the MITM allowlist; repeatable |
-| `-v, --volume <host>:<guest>[:ro]` | string | — | <Badge type="danger" text="not built" /> Attach a host directory as a virtio-blk disk at `<guest>`. `:ro` marks it read-only |
-| `--shadow <guest-path>` | string | — | <Badge type="danger" text="not built" /> Back a write-heavy path inside a mount with a per-sandbox shadow disk |
+| `--mount-named <name>:<guest-path>[:<options>]` | string | — | Attach a named volume at `<guest-path>`; repeatable. Options: `kind=dir\|disk` (default `disk`), `size=<N>g` (default `10g`; kind=disk only), `ro`. Volume is created automatically when it does not exist. Guest paths whose components include `.git` are rejected. See [Named volumes](#named-volumes). |
 | `--service 'name:cmd[:probe]'` | string | — | <Badge type="danger" text="not built" /> Per-sandbox addition or override of a same-named service declared in the image's `.nexus/services.yaml`. `create` blocks until all probes pass (30-second cap). See [Docker in a sandbox](/recipes/docker-in-sandbox). |
 
 Auto-resize is unconditional: hotplug hardware is configured at create time and the dynamic governor activates in the supervisor process. `--memory-max`, `--vcpus-max`, and `--disk-max` set the ceiling; the governor expands within it automatically.
 
-### Mounts and shadow disks <Badge type="danger" text="not built" />
+### Named volumes
 
-`-v` / `--volume` attaches a host directory into the guest as a virtio-blk ext4 disk:
+`--mount-named <name>:<guest-path>[:<options>]` attaches a named volume into the guest. Named volumes are user-owned and persist independently of any sandbox — `nexus3 rm` detaches them but never deletes their backing files.
 
 ```
 nexus3 create myproject/dev-1 \
-  --context /data/repos/myrepo \
-  --volume /data/repos/myrepo:/workspace/myrepo \
+  --image myapp-base:latest \
+  --mount-named myapp-node_modules:/workspace/myapp/node_modules:kind=disk,size=10g \
+  --mount-named myapp-docker:/var/lib/docker:kind=disk,size=20g \
   --memory 8192
 ```
 
-`--shadow` declares a write-heavy path inside a mounted directory that should be backed by a per-sandbox shadow disk. Common build-artifact directories (`node_modules`, `target`, `.next`, `dist`) are shadowed automatically when `--shadow` is omitted.
+| Option | Values | Default | Effect |
+|--------|--------|---------|--------|
+| `kind` | `dir`, `disk` | `disk` | `dir` = virtiofs host directory; `disk` = ext4 block image |
+| `size` | e.g. `10g`, `20g` | `10g` | Backing disk size (kind=disk only) |
+| `ro` | (flag) | rw | Mount read-only inside the guest |
+
+Prefer `kind=disk` for dependency stores and build caches — block I/O is measurably faster than virtiofs for metadata-heavy operations. Use `kind=dir` when the host directory path must stay accessible outside the sandbox.
+
+**Hard refusals:** any guest path whose components include `.git` (terminal or non-terminal) is rejected at parse time.
+
+**Attach rules:**
+- `kind=disk`: one read-write attacher at a time; multiple read-only attachers are allowed simultaneously.
+- `kind=dir`: no attach-count restriction.
+
+Use `nexus3 volume rm <name>` to delete a volume explicitly, or `nexus3 volume prune` to reclaim detached volumes. See [Volume commands](/cli/volume-commands) for the full lifecycle.
+
+For the agent skill that generates `--mount-named` fragments from project manifests (package.json, Cargo.toml, go.mod, etc.), see [AI agents](/ai-agents).
 
 ### Startup services <Badge type="danger" text="not built" />
 

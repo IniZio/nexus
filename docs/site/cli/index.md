@@ -47,6 +47,7 @@ Global flags precede the verb:
 | `snapshot create/list/rm` | [Snapshot, fork and restore](/cli/snapshot-fork-restore) | Manage retained snapshots |
 | `fork` | [Snapshot, fork and restore](/cli/snapshot-fork-restore) | Fork a running sandbox into a new copy-on-write child |
 | `restore` | [Snapshot, fork and restore](/cli/snapshot-fork-restore) | Restore a retained snapshot into a new running sandbox |
+| `volume create/ls/rm/prune` | [Volume commands](/cli/volume-commands) | Manage named volumes that persist across sandboxes |
 | `image build/ls/prune` | [Image commands](/cli/image-commands) | Build and manage guest images |
 | `auth` | [Auth, MCP and reap](/cli/auth-mcp-reap) | Authenticate your coding agent (Claude Code, Codex, opencode, …) |
 | `secret` <Badge type="danger" text="not built" /> | [Auth, MCP and reap](/cli/auth-mcp-reap) | Named secret store: `set`, `ls`, `rm` |
@@ -92,7 +93,6 @@ These capabilities have no implementation today. An unbadged entry in the verb i
 |---|---|---|
 | `logs` | <Badge type="danger" text="not built" /> | Read a sandbox's captured output without opening a shell. |
 | `metrics` | <Badge type="danger" text="not built" /> | Report CPU and memory as `effective / max`. The data exists — auto-resize computes it — but nothing surfaces it. |
-| Volumes | <Badge type="danger" text="not built" /> | Named storage that persists across sandboxes and can be shared between them. Mounts and shadow disks are neither named nor shareable. |
 | Label mutation | <Badge type="danger" text="not built" /> | Add and remove labels on an existing sandbox. |
 | Fleet lifecycle selectors | <Badge type="danger" text="not built" /> | `--label` as a selector for `stop` and `rm`, not only for `list`. |
 | Full help | <Badge type="warning" text="partial" /> | Help on every verb and group, on stdout, exit zero. See the note at the top of this page for exactly what is missing. |
@@ -104,7 +104,7 @@ Eleven things are deliberately excluded from the target:
 - **`harvest`** — superseded by live virtiofs mounts; the verb exists in source but is slated for removal once the mounts path ships.
 - **`up`** — removed from the target. Bringing up N sandboxes is a host-side loop over `create`.
 - **`fork --count`/`restore --count`** — built today, removed from the target. Each invocation creates one child; fan-out is the orchestrator looping the verb.
-- **`create --workspace <host-path>`** — working-tree capture superseded by live virtiofs mounts (`-v`/`--volume`). Use `--volume` to mount a host directory into the sandbox instead.
+- **`create --workspace <host-path>`** — working-tree capture superseded by named volumes. Use `--mount-named` to attach a named volume into the sandbox instead.
 - **`create --capture-max <size>`** — capture size limit; removed alongside `--workspace`.
 - **`shell`** — built today, retired in the target. `exec` subsumes it: without a trailing command, or when stdin is a terminal, `exec` opens an interactive PTY session automatically.
 - **Reserved-label convention and git-driven branch naming** — nexus3 is git-unaware. `--label` carries arbitrary key-value metadata only; no label key has special semantics, and branch names are chosen by the user or orchestrator, not by nexus3.
