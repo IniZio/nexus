@@ -102,3 +102,113 @@ func TestLockCrossProcess(t *testing.T) {
 	}
 	_ = lk.Unlock()
 }
+
+// TestHelperHoldsLockForTryTest is a subprocess helper for TestTryExclusive_deadline.
+// Unlike TestHelperHoldsLock (which uses select{} and triggers Go's deadlock detector),
+// this helper uses time.Sleep so the runtime stays alive while holding the lock.
+// The parent SIGKILLs this subprocess when done.
+func TestHelperHoldsLockForTryTest(t *testing.T) {
+	if os.Getenv("NEXUS3_TEST_LOCK_TRY_HELPER") != "1" {
+		t.Skip("subprocess helper mode not active")
+	}
+	path := os.Getenv("NEXUS3_TEST_LOCK_FILE")
+	if path == "" {
+		t.Fatal("NEXUS3_TEST_LOCK_FILE not set")
+	}
+	lk, err := store.OpenLock(path)
+	if err != nil {
+		t.Fatalf("open lock: %v", err)
+	}
+	defer lk.Close()
+	if err := lk.Exclusive(context.Background()); err != nil {
+		t.Fatalf("acquire exclusive: %v", err)
+	}
+	// Signal readiness AFTER holding the lock.
+	os.Stdout.WriteString("ready\n")
+	// Sleep long enough for the parent's TryExclusive test to complete.
+	// Parent sends SIGKILL before this expires.
+	time.Sleep(30 * time.Second)
+}
+
+// TestTryExclusive_deadline verifies that TryExclusive returns a context-deadline
+// error within the deadline when another process holds the lock, rather than
+// blocking indefinitely past the deadline.
+//
+// Mutation proof: replacing TryExclusive's LOCK_NB retry loop with a blocking
+// LOCK_EX call (i.e., reverting to Exclusive) would cause this test to hang
+// because the subprocess holds the lock for the full test duration and no signal
+// fires to interrupt the blocking flock syscall.
+func TestTryExclusive_deadline(t *testing.T) {
+	dir := t.TempDir()
+	lockFile := filepath.Join(dir, "lock")
+
+	// Pre-create the lock file so the subprocess can open it.
+	f, err := os.Create(lockFile)
+	if err != nil {
+		t.Fatalf("create lock file: %v", err)
+	}
+	f.Close()
+
+	// Spawn a subprocess that acquires the lock and holds it.
+	// Uses TestHelperHoldsLockForTryTest (not TestHelperHoldsLock) to avoid
+	// triggering Go's deadlock detector: select{} in a blocked test goroutine
+	// causes a deadlock panic which exits the subprocess, releasing the lock.
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperHoldsLockForTryTest$", "-test.v")
+	cmd.Env = append(os.Environ(),
+		"NEXUS3_TEST_LOCK_TRY_HELPER=1",
+		"NEXUS3_TEST_LOCK_FILE="+lockFile,
+	)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start subprocess: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Signal(syscall.SIGKILL)
+		_, _ = cmd.Process.Wait()
+	}()
+
+	// Wait for "ready" (written by subprocess after holding the lock).
+	scanner := bufio.NewScanner(stdout)
+	gotReady := false
+	for scanner.Scan() {
+		if scanner.Text() == "ready" {
+			gotReady = true
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("read subprocess stdout: %v", err)
+	}
+	if !gotReady {
+		t.Fatalf("subprocess exited without printing 'ready' (subprocess may have panicked)")
+	}
+
+	// TryExclusive with a short deadline: must return an error within the
+	// deadline, not hang in the kernel past it.
+	lk, err := store.OpenLock(lockFile)
+	if err != nil {
+		t.Fatalf("open lock: %v", err)
+	}
+	defer lk.Close()
+
+	const deadline = 200 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+
+	start := time.Now()
+	tryErr := lk.TryExclusive(ctx)
+	elapsed := time.Since(start)
+
+	if tryErr == nil {
+		t.Fatal("TryExclusive: expected error (lock is held by subprocess), got nil")
+	}
+	// Must return within a reasonable margin of the deadline (not hang).
+	const margin = 100 * time.Millisecond
+	if elapsed > deadline+margin {
+		t.Errorf("TryExclusive blocked past deadline: elapsed=%v, want ≤%v", elapsed, deadline+margin)
+	}
+	t.Logf("TryExclusive returned in %v (deadline=%v): %v", elapsed, deadline, tryErr)
+}

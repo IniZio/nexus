@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+	"time"
 )
 
 // Lock is a per-sandbox advisory file lock backed by flock(2).
@@ -55,6 +56,39 @@ func OpenLock(path string) (*Lock, error) {
 // available or ctx is cancelled. EINTR is retried transparently.
 func (l *Lock) Exclusive(ctx context.Context) error {
 	return l.acquire(ctx, syscall.LOCK_EX)
+}
+
+// TryExclusive acquires an exclusive (write) lock using non-blocking attempts
+// (LOCK_EX|LOCK_NB) with a 5 ms backoff between retries. Unlike Exclusive,
+// the kernel syscall never blocks: each attempt returns immediately with
+// EWOULDBLOCK if the lock is held, and the caller checks ctx.Done between
+// tries. This gives the context deadline real force (RISK-SD2-1): the caller
+// surfaces a timeout error within one backoff interval of the deadline rather
+// than being parked in the kernel until a signal happens to fire.
+//
+// Use TryExclusive for the per-volume advisory lock (checkRWAttach,
+// detachVolumeLocked). Use Exclusive for per-sandbox record locks where
+// blocking semantics are intentional — do not change those callers.
+func (l *Lock) TryExclusive(ctx context.Context) error {
+	const retryInterval = 5 * time.Millisecond
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("store: lock: %w", err)
+	}
+	for {
+		err := syscall.Flock(int(l.f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			return fmt.Errorf("store: flock LOCK_NB: %w", err)
+		}
+		// Lock is held; back off and re-check the deadline.
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("store: lock: %w", ctx.Err())
+		case <-time.After(retryInterval):
+		}
+	}
 }
 
 // Unlock releases a previously acquired lock. The underlying file descriptor
