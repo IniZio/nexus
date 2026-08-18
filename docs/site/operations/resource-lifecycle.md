@@ -18,9 +18,9 @@ nexus3 reap --apply   # delete orphans
 
 | Kind | Path pattern | Owner key | Reclamation |
 |---|---|---|---|
-| `disk_raw` | `<stateRoot>/disks/<ULID>-raw.ext4` | full ULID | reap |
+| `disk_raw` | `<stateRoot>/disks/<ULID>.raw` | full ULID | reap |
 | `disk_workspace` | `<stateRoot>/disks/<ULID>-workspace.ext4` | full ULID | reap |
-| `disk_shadow` | `<stateRoot>/disks/<handle>-<ULID>.shadow.ext4` | sandbox handle | reap (handle correlation) |
+| `disk_shadow` | `<stateRoot>/disks/<safeHandle>.shadow.<name>.ext4` | sandbox handle | reap (handle correlation) |
 | `create_intent` | `<stateRoot>/disks/<ULID>.create-intent.json` | full ULID | reap |
 | `socket_api` | `<socketDir>/<ULID>.sock` | full ULID | reap |
 | `socket_vsock` / `socket_iid` | `<socketDir>/…` | full ULID | reap |
@@ -79,9 +79,27 @@ nexus3 reap --apply   # delete orphans
 
 `Reap` (`internal/core/service/reap.go`) enumerates resources by calling `ResourceIndex.List()`, which **scans the filesystem directly and never reads the record store**. It then loads all store records and classifies each filesystem resource independently.
 
-### Liveness gate (three-way)
+### In-flight creates (intent lease)
 
-For each ULID-keyed resource that has no store record, the reaper runs three checks. **Ambiguity always resolves to KEEP.**
+A create materializes its disk **before** it commits the store record — a multi-second copy for a multi-GiB image. During that window the disk has no record, and no process carries the ULID in its command line (the creator is the `nexus3` CLI itself; the VMM is not launched until afterwards), so the `/proc` gate below cannot see it. The reaper would classify a live create's disk as an orphan and delete it.
+
+The create-intent file therefore carries an exclusive `flock(2)` **lease**, taken before the intent becomes discoverable and released only after the record is committed:
+
+- **lease held** → a create is in flight → keep.
+- **lease free** → the creator is gone (crashed, killed, or the host rebooted) → classify normally.
+- **intent unreadable** → cannot rule out a live creator → keep, and say so distinctly in the report. This is the one keep that does **not** expire on its own and needs an operator to inspect the file.
+
+The kernel releases `flock` when the holding process dies — including on `SIGKILL` — and a reboot releases everything, so a dead creator can never block reclamation.
+
+The reaper probes leases **before** it snapshots the store records. The two observations are not atomic, and this is the order that makes them safe together: a lease is released only after the record is committed, so a create that releases between the two observations is guaranteed to appear in the record snapshot taken afterwards. Listing records first inverts that guarantee and reopens the window.
+
+Both creation paths take a lease: `nexus3 create`, and `nexus3 fork` for each child's `<childID>.raw`. Nothing else is covered. A fork child's copies of the parent's **extra** disks are neither leased nor protected: its workspace copy is invisible to the reaper (a permanent leak, never reclaimed), and its shadow-disk copies are deleted by any `reap --apply` — see [Shadow disk classification](#shadow-disk-classification). <Badge type="warning" text="partial" />
+
+Two residuals remain on both create and fork. `ResourceIndex.List()` is a `readdir`, not an atomic directory snapshot, so a scan can in principle observe a `.raw` dirent while having already passed the slot where its `.create-intent.json` landed, yielding a disk with no lease to probe. And an intent file that cannot be read at all (for example one left mode-0600 by another uid) keeps its sandbox's disks indefinitely, as described above.
+
+### Liveness gate
+
+For each ULID-keyed resource that has no store record and no held lease, the reaper runs two further checks before reaching a verdict. **Ambiguity always resolves to KEEP.**
 
 ```
 1. /proc/*/cmdline scan
@@ -104,7 +122,7 @@ Truncated `/proc/<pid>/cmdline` reads (beyond 512 KiB) are treated as ambiguous 
 | Status | Condition | Action |
 |---|---|---|
 | `owned` | Store record exists | Skip (stale-record cleanup is `recover`'s job) |
-| `live` | No record, but liveness check found the process or responsive socket | Skip |
+| `live` | No record, but a held intent lease, a matching process, or a responsive socket was found | Skip |
 | `orphan` | No record, all liveness checks definitive-dead | Reclaimable; deleted when `--apply` |
 
 ### Shadow disk classification
@@ -113,6 +131,13 @@ Shadow disks (`KindDiskShadow`) use handle-based correlation rather than the ULI
 
 - **Legacy format** (`.shadow.ext4`, no embedded handle): unconditionally orphan.
 - **B1 format**: owned when the handle matches a live sandbox record; orphan otherwise.
+
+Two shadow-disk hazards follow from handle correlation, and they differ in kind:
+
+- **On create — windowed.** A shadow disk is materialized before the sandbox record that will own it, and it carries no lease, so a `reap --apply` firing in that window finds no matching handle and deletes it. The window closes when the record commits.
+- **On fork — unconditional.** A forked child copies the parent's shadow disks as `<childID>-<parentSafeHandle>.shadow.<name>.ext4`. `ShadowDiskSafeHandle` reads everything before the first `.shadow.`, yielding `<childID>-<parentSafeHandle>`, which can never equal any live sandbox's handle. The copy is therefore classified `orphan` **permanently** — a `reap --apply` deletes a forked sandbox's `node_modules` (or equivalent) at any time, long after the fork completed and while the child is `running` with a committed record.
+
+Both need a handle-keyed lease artifact and a child-copy naming scheme that still correlates. <Badge type="danger" text="not built" />
 
 ### What reap does not touch
 

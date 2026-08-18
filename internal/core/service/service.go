@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -959,6 +960,53 @@ func (s *Service) Fork(ctx context.Context, ref string, count int) ([]domain.San
 		childIDs[i] = domain.NewSandboxID()
 	}
 
+	// Lease every child ID before the driver materialises anything.
+	//
+	// ForkFrom writes <diskDir>/<childID>.raw for each child
+	// (cloudhypervisor/fork.go), and the reaper enumerates those files as
+	// ULID-keyed disks. The child records are not committed until after
+	// ForkFrom returns for ALL children, so without a lease each child disk
+	// spends the entire fork window unowned and unleased — precisely the shape
+	// the reaper classifies as an orphan and unlinks, while Fork goes on to
+	// return the child as a live sandbox. That is the same silent-loss failure
+	// CreateAndBoot closes with writeCreateIntent; fork reaches it by a
+	// different path and needs the same protection.
+	//
+	// The lease is taken here rather than inside the driver so that it covers
+	// the child disk from before it exists, and it is dropped only after that
+	// child's store.Create commits, so no child disk is ever simultaneously
+	// unleased and unrecorded.
+	//
+	// diskDir must be the directory the reaper scans (store.DefaultRoot()/disks
+	// via defaultDiskDir), which is also where the driver places child disks:
+	// it derives them from the parent's own disk path. A parent created with a
+	// non-default DiskDir puts its children outside the reaper's scan entirely,
+	// so there is no window to protect there either.
+	diskDir := s.diskDir
+	if diskDir == "" {
+		diskDir, err = defaultDiskDir()
+		if err != nil {
+			return nil, fmt.Errorf("service: fork %s: resolve disk dir: %w", parent.ID, err)
+		}
+	}
+	childLeases := make(map[domain.SandboxID]*createIntentLease, count)
+	// Drain leases still held when Fork returns. On the success path each lease
+	// is released the moment its record commits and removed from the map, so
+	// this drains only children that never got a record — whose disks then
+	// become correctly reclaimable orphans instead of leaking forever.
+	defer func() {
+		for _, lease := range childLeases {
+			lease.release()
+		}
+	}()
+	for _, id := range childIDs {
+		lease, leaseErr := writeCreateIntent(diskDir, id, filepath.Join(diskDir, id.String()+".raw"), "")
+		if leaseErr != nil {
+			return nil, fmt.Errorf("service: fork %s: lease child %s: %w", parent.ID, id, leaseErr)
+		}
+		childLeases[id] = lease
+	}
+
 	// Spawn all children from the snapshot in one driver call.
 	instanceIDs, err := forker.ForkFrom(ctx, snap, childIDs)
 	if err != nil {
@@ -1000,6 +1048,12 @@ func (s *Service) Fork(ctx context.Context, ref string, count int) ([]domain.San
 		if err := s.store.Create(ctx, child); err != nil {
 			return nil, fmt.Errorf("service: fork %s: persist child %s: %w", parent.ID, id, err)
 		}
+		// The record is committed, so the reaper now classifies this child's
+		// disk as Owned. Only now is it safe to drop the lease (release also
+		// removes the intent file). Releasing before the commit — or deferring
+		// all releases to the end of the loop — would reopen the window.
+		childLeases[id].release()
+		delete(childLeases, id)
 		children = append(children, child)
 	}
 
