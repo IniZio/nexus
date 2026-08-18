@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/artifact"
@@ -95,6 +96,23 @@ func verifyManifest(m snapshotManifest) error {
 	return nil
 }
 
+// ChildExtraDiskPath returns the host path to use for the child's per-fork copy
+// of an extra disk rooted at parentPath. Workspace disks (suffix
+// "-workspace.ext4") are renamed to <childID>-workspace.ext4 so that
+// ParseSandboxID can recover the owner from the filename and the reaper can
+// classify the file as KindDiskWorkspace (D-PD-80(b)). All other extra disks
+// keep their basename, prefixed by childID.
+//
+// Exported so that tests in sibling packages can verify the naming convention
+// without exercising a full VM fork.
+func ChildExtraDiskPath(childID domain.SandboxID, parentPath string) string {
+	dir := filepath.Dir(parentPath)
+	if strings.HasSuffix(parentPath, "-workspace.ext4") {
+		return filepath.Join(dir, childID.String()+"-workspace.ext4")
+	}
+	return filepath.Join(dir, childID.String()+"-"+filepath.Base(parentPath))
+}
+
 // ForkFrom spawns one child VM per entry in childIDs, each restored from snap.
 //
 // # Pre-restore integrity check
@@ -131,12 +149,12 @@ func verifyManifest(m snapshotManifest) error {
 //
 // Implements driver.Forker.
 func (d *CHDriver) ForkFrom(ctx context.Context, snap artifact.Snapshot, childIDs []domain.SandboxID) ([]string, error) {
-	// Step 1: confirm the commit marker is present and the payload length is intact.
+	// Confirm the commit marker is present and the payload length is intact.
 	if _, err := d.snapshotStore.Read(snap.ID); err != nil {
 		return nil, fmt.Errorf("cloudhypervisor: fork: snapshot record: %w", err)
 	}
 
-	// Step 2: read and decode the manifest that TakeSnapshot stored as payload.
+	// Read and decode the manifest that TakeSnapshot stored as payload.
 	manifest, err := d.readSnapshotManifest(snap)
 	if err != nil {
 		return nil, fmt.Errorf("cloudhypervisor: fork: %w", err)
@@ -148,12 +166,12 @@ func (d *CHDriver) ForkFrom(ctx context.Context, snap artifact.Snapshot, childID
 	// ForkFrom (e.g. ephemeral→durable migration), the correct path is still found.
 	manifest.Dir = d.snapshotDirPath(snap.ID)
 
-	// Step 3: verify every snapshot file is present at the expected size.
+	// Verify every snapshot file is present at the expected size.
 	if err := verifyManifest(manifest); err != nil {
 		return nil, fmt.Errorf("cloudhypervisor: fork: manifest verify: %w", err)
 	}
 
-	// Step 4: identify the parent's root disk and net TAP from config.json in the
+	// Identify the parent's root disk and net TAP from config.json in the
 	// snapshot directory.
 	//   - For VMs booted via initramfs (no disk), disk isolation is skipped and
 	//     parentDiskPath is left empty.
@@ -216,14 +234,15 @@ func (d *CHDriver) ForkFrom(ctx context.Context, snap artifact.Snapshot, childID
 		if parentDiskPath != "" {
 			childDiskPath = filepath.Join(diskDir, childID.String()+".raw")
 		}
-		// Build a child copy path for each extra disk: same directory as the
-		// source, with childID prepended to the filename for uniqueness.
-		extraDiskPairs := make([]diskPair, len(parentExtraDiskPaths))
-		for j, p := range parentExtraDiskPaths {
-			extraDiskPairs[j] = diskPair{
+		// Build per-child disk pairs for all extra disks.
+		// Workspace disks are renamed to <childID>-workspace.ext4 so the reaper
+		// can classify them by owner (D-PD-80(b)).
+		var extraDiskPairs []diskPair
+		for _, p := range parentExtraDiskPaths {
+			extraDiskPairs = append(extraDiskPairs, diskPair{
 				parent: p,
-				child:  filepath.Join(filepath.Dir(p), childID.String()+"-"+filepath.Base(p)),
-			}
+				child:  ChildExtraDiskPath(childID, p),
+			})
 		}
 		iid, err := d.spawnChildFromSnapshot(ctx, childID, manifest.Dir, parentDiskPath, childDiskPath, extraDiskPairs, parentGuestTap, parentVsockPath)
 		if err != nil {
@@ -317,7 +336,7 @@ func (d *CHDriver) spawnChildFromSnapshot(
 	// rewritten config.json with child-specific paths.
 	needsChildDir := len(allDiskPairs) > 0 || parentGuestTap != "" || parentVsockPath != ""
 	if needsChildDir {
-		// Step 1: reflink-copy every disk so siblings have independent block
+		// Reflink-copy every disk so siblings have independent block
 		// devices. On failure, roll back all copies made so far.
 		for i, dp := range allDiskPairs {
 			if err := reflinkCopy(dp.parent, dp.child); err != nil {
@@ -329,7 +348,7 @@ func (d *CHDriver) spawnChildFromSnapshot(
 			}
 		}
 
-		// Step 2: build the full disk-path rewrite map: parent path → child path
+		// Build the full disk-path rewrite map: parent path → child path
 		// for every disk. rewriteAllConfigDiskPaths rewrites ALL entries in one
 		// pass so the child config.json references no parent-owned file.
 		diskRewrites := make(map[string]string, len(allDiskPairs))
@@ -337,7 +356,7 @@ func (d *CHDriver) spawnChildFromSnapshot(
 			diskRewrites[dp.parent] = dp.child
 		}
 
-		// Step 3: create the per-child restore dir with all rewrites applied to
+		// Create the per-child restore dir with all rewrites applied to
 		// config.json (all disk paths, net tap if present, vsock path if present).
 		var prepErr error
 		restoreDir, prepErr = prepareChildRestoreDir(
