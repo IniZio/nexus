@@ -54,14 +54,19 @@ type record struct {
 	InstanceID     string            `json:"instance_id"`
 	RemoveOnExit   bool              `json:"remove_on_exit"`
 	RemovalMarker  bool              `json:"removal_marker"`
-	StopReason     domain.StopReason `json:"stop_reason,omitempty"`
-	Provenance     *provenanceRecord `json:"provenance,omitempty"`
-	SupervisorPID  int               `json:"supervisor_pid,omitempty"`
-	SupervisorSock string            `json:"supervisor_sock,omitempty"`
-	CreatorPID     int               `json:"creator_pid,omitempty"`
+	StopReason     domain.StopReason          `json:"stop_reason,omitempty"`
+	Provenance     *provenanceRecord          `json:"provenance,omitempty"`
+	SupervisorPID  int                        `json:"supervisor_pid,omitempty"`
+	SupervisorSock string                     `json:"supervisor_sock,omitempty"`
+	CreatorPID     int                        `json:"creator_pid,omitempty"`
 	// BaseRef is the shallow-clone boundary SHA recorded by G1 (D-PD-19).
 	// Omitted for sandboxes created without a git workspace.
-	BaseRef        string            `json:"base_ref,omitempty"`
+	BaseRef        string                     `json:"base_ref,omitempty"`
+	// MountedVolumes records named volumes attached at create time (D-PD-82).
+	// Omitted for sandboxes with no attached volumes; nil on read is equivalent
+	// to an empty slice. Backward-compatible: old records without this field
+	// deserialise to nil, which is the correct default (no volumes).
+	MountedVolumes []domain.VolumeAttachment  `json:"mounted_volumes,omitempty"`
 }
 
 // provenanceRecord is the on-disk form of domain.Provenance. Kept separate
@@ -89,6 +94,7 @@ func toRecord(sb domain.Sandbox) record {
 		SupervisorSock: sb.SupervisorSock,
 		CreatorPID:     sb.CreatorPID,
 		BaseRef:        sb.BaseRef,
+		MountedVolumes: sb.MountedVolumes,
 		// MotiveID intentionally omitted: new records never write this field.
 	}
 	if sb.Provenance != nil {
@@ -131,6 +137,7 @@ func (r record) toDomain() domain.Sandbox {
 		SupervisorSock: r.SupervisorSock,
 		CreatorPID:     r.CreatorPID,
 		BaseRef:        r.BaseRef,
+		MountedVolumes: r.MountedVolumes,
 	}
 	if r.Provenance != nil {
 		sb.Provenance = &domain.Provenance{
