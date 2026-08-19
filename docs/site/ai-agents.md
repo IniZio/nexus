@@ -73,7 +73,7 @@ nexus3 rm myproject/task-42
 
 <Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
-For higher throughput, the herdr plugin's `launch` path (below) boots the sandbox and execs the agent in a single call and wires credential seeding automatically.
+For higher throughput, the herdr plugin's `launch` path (below) boots the sandbox and execs the agent in a single call, and wires the placeholder credential seed automatically.
 
 ---
 

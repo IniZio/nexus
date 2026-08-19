@@ -39,6 +39,18 @@ import (
 // (supervisor log: seeds_complete → real_token_pushed → update_ca_certs_done →
 // "mitm: credential swapped") and is not reproducible in a unit test. Treat
 // this as a regression tripwire, not as coverage.
+//
+// Two limits worth stating precisely, because overselling this test would
+// recreate the problem it exists to catch:
+//
+//   - ast.Inspect records every callee name in the function body with no
+//     reachability analysis. A call inside `if false`, a call hoisted out of
+//     the `if agentEgress` branch, or a call with the wrong arguments all pass.
+//     This checks position-in-source, not execution.
+//   - Deleting the handoff call by itself does not compile (capturedDiskPath
+//     goes unused), so the compiler catches the naive edit. This test earns its
+//     keep on the next step — after a refactorer makes the compiler happy,
+//     which is exactly how the wiring would really go missing.
 func TestHerdrPluginLaunchWiresPerimeterSupervisor(t *testing.T) {
 	const src = "cmd_herdr_plugin.go"
 
