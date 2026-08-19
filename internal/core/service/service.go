@@ -958,6 +958,23 @@ func (s *Service) Snapshot(ctx context.Context, ref string) (artifact.Snapshot, 
 				strings.Join(attachedVolDescs, ", "),
 			)
 		}
+		// D-PD-53: refuse snapshot on any sandbox with live host-directory mounts.
+		// A retained snapshot manifest would carry the parent's mount paths;
+		// RestoreFromSnapshot → ForkFrom would then give the restored child a live
+		// virtiofs link back to the same host directory, meaning two VMs share one
+		// mutable host directory — the exact corruption D-PD-53 exists to prevent.
+		var liveMountDescs []string
+		for _, lm := range rec.LiveMounts {
+			liveMountDescs = append(liveMountDescs, lm.HostPath+"→"+lm.GuestPath)
+		}
+		if len(liveMountDescs) > 0 {
+			return fmt.Errorf(
+				"sandbox has live host-directory mount(s) [%s]: "+
+					"snapshotting a sandbox with live mounts is not supported (D-PD-53); "+
+					"two VMs sharing one host directory read-write causes data corruption",
+				strings.Join(liveMountDescs, ", "),
+			)
+		}
 		localSnap, err := snapper.TakeSnapshot(ctx, rec.ID, artifact.KindRetained)
 		if err != nil {
 			return fmt.Errorf("driver: %w", err)
@@ -1025,6 +1042,23 @@ func (s *Service) Fork(ctx context.Context, ref string, count int) ([]domain.San
 				"forking a sandbox with named volumes is not yet supported (TBR-PD-15, D-PD-96); "+
 				"detach the volume(s) before forking",
 			parent.ID, strings.Join(attachedVolDescs, ", "),
+		)
+	}
+
+	// D-PD-53: refuse fork on any parent with live host-directory mounts.
+	// Two VMs sharing one host worktree read-write is the exact corruption
+	// scenario D-PD-53 exists to prevent: virtiofs exposes a single mutable
+	// directory and both children would write into it concurrently.
+	var liveMountDescs []string
+	for _, lm := range parent.LiveMounts {
+		liveMountDescs = append(liveMountDescs, lm.HostPath+"→"+lm.GuestPath)
+	}
+	if len(liveMountDescs) > 0 {
+		return nil, fmt.Errorf(
+			"service: fork %s: sandbox has live host-directory mount(s) [%s]: "+
+				"forking a sandbox with live mounts is not supported (D-PD-53); "+
+				"two VMs sharing one host directory read-write causes data corruption",
+			parent.ID, strings.Join(liveMountDescs, ", "),
 		)
 	}
 
