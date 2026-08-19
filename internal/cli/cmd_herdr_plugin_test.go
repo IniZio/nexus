@@ -306,40 +306,75 @@ func TestHerdrPluginContextCwdValue_unset(t *testing.T) {
 	}
 }
 
-// TestBuildLaunchBootOpts_noEgress asserts that without --agent-egress,
-// the Broker in the returned CreateAndBootOptions is nil (plain launch path).
+// TestBuildLaunchBootOpts_noEgress asserts the plain launch path carries no
+// egress configuration at all: no allowlist, and — as on every launch path —
+// no CLI-side broker.
 func TestBuildLaunchBootOpts_noEgress(t *testing.T) {
-	opts, broker := buildLaunchBootOpts("myimage:latest", t.TempDir(), false, nil)
-	if broker != nil {
-		t.Error("buildLaunchBootOpts(agentEgress=false): returned Broker must be nil")
+	opts := buildLaunchBootOpts("myimage:latest", t.TempDir(), false)
+	if len(opts.AllowedHosts) != 0 {
+		t.Errorf("agentEgress=false: AllowedHosts must be empty, got %v", opts.AllowedHosts)
 	}
-	if opts.Broker != nil {
-		t.Error("buildLaunchBootOpts(agentEgress=false): opts.Broker must be nil")
-	}
-	if opts.UseAgentSeed {
-		t.Error("buildLaunchBootOpts(agentEgress=false): UseAgentSeed must be false")
+	if opts.OpenEgress {
+		t.Error("agentEgress=false: OpenEgress must stay false")
 	}
 }
 
-// TestBuildLaunchBootOpts_agentEgress asserts that with --agent-egress the
-// returned options carry a non-nil Broker and UseAgentSeed=true, proving the
-// egress perimeter plumbing is on the data path for CreateAndBoot.
+// TestBuildLaunchBootOpts_agentEgress asserts the two things CreateAndBoot is
+// actually responsible for on the egress path — freezing the allowlist onto the
+// Envelope, and NOT wiring a credential broker.
+//
+// The absent broker is the load-bearing assertion. An earlier version of this
+// path set Broker/Seeder/UseAgentSeed here and a test asserted they were set;
+// that test passed for the entire time the feature was non-functional, because
+// those options start no proxy. The perimeter is a process (the detached
+// supervisor), and it mints its own placeholders after it re-boots the VM — a
+// CLI-side broker can only mint a second, conflicting set.
 func TestBuildLaunchBootOpts_agentEgress(t *testing.T) {
-	opts, broker := buildLaunchBootOpts("myimage:latest", t.TempDir(), true, nil)
-	if broker == nil {
-		t.Error("buildLaunchBootOpts(agentEgress=true): returned Broker must be non-nil")
-	}
-	if opts.Broker == nil {
-		t.Error("buildLaunchBootOpts(agentEgress=true): opts.Broker must be non-nil")
-	}
-	if opts.Broker != broker {
-		t.Error("buildLaunchBootOpts(agentEgress=true): opts.Broker and returned Broker must be the same instance")
-	}
-	if !opts.UseAgentSeed {
-		t.Error("buildLaunchBootOpts(agentEgress=true): UseAgentSeed must be true")
-	}
+	opts := buildLaunchBootOpts("myimage:latest", t.TempDir(), true)
 	if len(opts.AllowedHosts) == 0 {
-		t.Error("buildLaunchBootOpts(agentEgress=true): AllowedHosts must be non-empty")
+		t.Error("agentEgress=true: AllowedHosts must be frozen onto the Envelope")
+	}
+	if opts.OpenEgress {
+		t.Error("agentEgress=true: agent sandboxes must never get open egress (D-PD-33)")
+	}
+	if opts.Broker != nil {
+		t.Error("agentEgress=true: no CLI-side broker — the supervisor owns credential minting")
+	}
+	if opts.Seeder != nil {
+		t.Error("agentEgress=true: no CLI-side seeder — the supervisor seeds the guest after its reboot")
+	}
+	if opts.UseAgentSeed {
+		t.Error("agentEgress=true: UseAgentSeed would seed placeholders the supervisor reboot discards")
+	}
+}
+
+// TestLaunchCredSourcedArgv asserts the guest command sources the credential
+// env file the supervisor seeded, and that the caller's argv survives intact as
+// the shell's positional parameters.
+func TestLaunchCredSourcedArgv(t *testing.T) {
+	argv := []string{"/usr/local/bin/claude", "-p", "hello world", "--model", "m"}
+	got := launchCredSourcedArgv(argv)
+
+	if got[0] != "/bin/sh" || got[1] != "-c" {
+		t.Fatalf("must exec through a shell, got %v", got[:2])
+	}
+	if !strings.Contains(got[2], service.GuestCredEnvPath) {
+		t.Errorf("script must source %s, got:\n%s", service.GuestCredEnvPath, got[2])
+	}
+	if !strings.Contains(got[2], "set -a") {
+		t.Error("script must export the sourced vars (set -a), or the agent never sees the placeholder")
+	}
+	if !strings.Contains(got[2], `exec "$@"`) {
+		t.Error(`script must exec "$@" so the child's exit status is the launch exit status`)
+	}
+	// got[3] is $0; the caller's argv must follow verbatim from got[4].
+	if diff := len(got) - 4; diff != len(argv) {
+		t.Fatalf("expected %d positional args after $0, got %d: %v", len(argv), diff, got)
+	}
+	for i, want := range argv {
+		if got[4+i] != want {
+			t.Errorf("positional arg %d: got %q, want %q", i, got[4+i], want)
+		}
 	}
 }
 

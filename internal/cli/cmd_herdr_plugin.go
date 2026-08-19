@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,9 +19,9 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus3/internal/supervisor"
 )
 
 func init() {
@@ -520,50 +522,178 @@ func herdrPluginOpenPane(ws string, extraArgs []string) error {
 }
 
 // buildLaunchBootOpts builds CreateAndBootOptions for herdrPluginLaunch.
-// When agentEgress is true, the egress perimeter is wired by calling
-// WireClaudeEgress: Broker is set (non-nil), AllowedHosts is restricted to
-// AgentEgressHosts, UseAgentSeed is true, and a Refresher-backed credential
-// source is attached so the MITM proxy can swap placeholder tokens for real
-// ones. seeder is the GuestSeeder delivered to WireClaudeEgress; it may be nil
-// (credentials are never planted in the guest without a seeder).
 //
-// The returned Broker is non-nil iff agentEgress is true; callers that need to
-// inspect the broker (tests) use it directly. The normal launch path discards it.
-func buildLaunchBootOpts(imageRef, cacheRoot string, agentEgress bool, seeder service.GuestSeeder) (service.CreateAndBootOptions, *cred.Broker) {
+// When agentEgress is true the agent egress allowlist is frozen onto the
+// sandbox Envelope (AgentEgressHosts, OpenEgress left false — agent sandboxes
+// never get unrestricted egress, D-PD-33). That Envelope is what the detached
+// perimeter supervisor reads back to build its MITM allowlist.
+//
+// Nothing credential-related is wired here. The broker, the MITM proxy, the CA
+// seed and the placeholder seed all belong to the supervisor that takes
+// ownership of the VM immediately after this boot (handoffLaunchSupervisor).
+// A second CLI-side broker would mint placeholders that the supervisor's reboot
+// invalidates on the spot: GuestCredEnvPath lives under /run (tmpfs), so the
+// guest's copy does not survive the handoff, and the supervisor re-seeds from
+// its own broker. Minting them twice guarantees the guest and the proxy
+// disagree about which placeholder to swap.
+func buildLaunchBootOpts(imageRef, cacheRoot string, agentEgress bool) service.CreateAndBootOptions {
 	opts := service.CreateAndBootOptions{
 		Image:               service.ImageSpec{Ref: imageRef},
 		CacheRoot:           cacheRoot,
 		ReachabilityTimeout: 60 * time.Second,
 	}
-	if !agentEgress {
-		return opts, nil
+	if agentEgress {
+		opts.AllowedHosts = service.AgentEgressHosts()
 	}
-	broker := cred.NewBroker()
-	// Source the real token from the dedicated credential store via an
-	// auto-rotating Refresher. If the store file is absent or malformed,
-	// NewRefresher returns an error; we leave src nil so egress still works
-	// structurally (MITM proxy runs) but the bearer will be the placeholder.
-	var src cred.CredentialSource
-	if r, err := cred.NewRefresher(service.DefaultDedicatedCredStorePath(), service.AnthropicAPIHost, broker); err == nil {
-		src = r
+	return opts
+}
+
+// launchCredSourcedArgv wraps argv in a /bin/sh -c preamble that sources the
+// supervisor-seeded credential env file before exec'ing the real command.
+//
+// GuestCredEnvPath is the only place the guest's placeholder credential exists:
+// the supervisor mints it (SeedGuestAgent) against the same broker instance the
+// MITM proxy swaps against, so sourcing the file is what makes the placeholder
+// the proxy expects and the placeholder the agent sends the same string. The
+// host cannot inject it from its side — the CLI process holds no broker.
+//
+// "set -a" exports every variable the file defines (CLAUDE_CODE_OAUTH_TOKEN or
+// ANTHROPIC_AUTH_TOKEN, NODE_EXTRA_CA_CERTS, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC),
+// matching the sourcing convention buildAgentSeedPayload documents. exec "$@"
+// replaces the shell so the child's exit status is the launch exit status.
+func launchCredSourcedArgv(argv []string) []string {
+	script := "set -a\n" +
+		". " + service.GuestCredEnvPath + "\n" +
+		"set +a\n" +
+		"exec \"$@\"\n"
+	return append([]string{"/bin/sh", "-c", script, "nexus3-launch"}, argv...)
+}
+
+// handoffLaunchSupervisor stops the CLI-owned boot and hands the VM to a
+// detached ephemeral supervisor that owns the egress perimeter for the rest of
+// the launch.
+//
+// This is the step that makes --agent-egress mean anything. The perimeter is a
+// process, not a set of options: netstack ACL, MITM proxy, credential broker,
+// Refresher, CA seed, update-ca-certificates and the placeholder seed all live
+// inside `nexus3 __supervisor`. CreateAndBoot starts none of them, so a sandbox
+// booted by the CLI alone has no proxy to swap its bearer token and no CA to
+// trust — every HTTPS call to api.anthropic.com fails at connect time.
+//
+// Ephemeral mode is what suits a launch: the supervisor exits on the /supervisor/stop
+// verb and removes the sandbox record itself, and the returned watchdog pipe
+// makes that teardown survive a SIGKILL'ed CLI.
+//
+// Returns the watchdog write end (to be closed after the supervisor exits) and
+// the supervisor's IPC socket path.
+func handoffLaunchSupervisor(
+	ctx context.Context,
+	svc *service.Service,
+	sb domain.Sandbox,
+	storeRoot, kernelPath, diskPath string,
+	extraDisks []string,
+) (*os.File, string, error) {
+	if diskPath == "" {
+		return nil, "", fmt.Errorf("boot driver captured no disk path")
 	}
-	service.WireClaudeEgress(&opts, broker, seeder, src)
-	return opts, broker
+	socketDir, err := orcaSocketDir()
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve socket dir: %w", err)
+	}
+	chBin, _ := exec.LookPath("cloud-hypervisor")
+	stateDir := supervisor.DefaultStateDir(storeRoot, sb.ID)
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return nil, "", fmt.Errorf("create supervisor state dir: %w", err)
+	}
+
+	// The supervisor re-boots the VM itself; the CLI-owned boot must be stopped
+	// first or two cloud-hypervisor processes contend for the same disk.
+	if _, err := svc.Stop(ctx, sb.ID.String()); err != nil {
+		return nil, "", fmt.Errorf("stop before supervisor handoff: %w", err)
+	}
+
+	// Cmdline is left empty so the driver applies its disk-boot default, which
+	// is exactly what the CLI-owned boot used (buildCHConfig sets no cmdline).
+	// GovBounds is left zero: the governor starts in passive mode, matching the
+	// launch path's existing behaviour — a launch VM is short-lived and is not
+	// the place to introduce auto-resize.
+	pid, watchdogW, err := supervisor.SpawnDetached(supervisor.SpawnConfig{
+		Config: supervisor.Config{
+			SandboxRef: sb.ID.String(),
+			StoreRoot:  storeRoot,
+			StateDir:   stateDir,
+			CHBin:      chBin,
+			SocketDir:  socketDir,
+			KernelPath: kernelPath,
+			DiskPath:   diskPath,
+			ExtraDisks: extraDisks,
+			// Real bearer tokens are read here, inside the supervisor, and never
+			// leave it: the broker hands the MITM proxy the token at swap time.
+			CredsFile: service.DefaultDedicatedCredStorePath(),
+			Ephemeral: true,
+		},
+		ReadyTimeout: 5 * time.Minute,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("spawn supervisor: %w", err)
+	}
+	sockPath := supervisor.SockPath(stateDir)
+	slog.Info("__herdr-plugin launch: perimeter supervisor ready",
+		"sandbox", sb.ID, "pid", pid, "sock", sockPath)
+	return watchdogW, sockPath, nil
+}
+
+// verifyLaunchPerimeterSeed checks that the supervisor actually delivered the
+// two artefacts the agent cannot run without: the placeholder credential file
+// and the MITM CA certificate.
+//
+// The supervisor writes its READY pidfile even when seeding exhausts its retry
+// cap (supervisor.maxSeedAttempts) — the perimeter is live at that point and it
+// would rather come up degraded than not at all. That is the right call for a
+// persistent sandbox and the wrong one to inherit silently here: a launch that
+// proceeds without these files reaches the API unauthenticated and fails with
+// an error that says nothing about the cause. Check explicitly and say so.
+func verifyLaunchPerimeterSeed(ctx context.Context, svc *service.Service, id string) error {
+	script := "test -s " + service.GuestCredEnvPath + " || { echo MISSING_CRED_ENV; exit 11; }\n" +
+		"test -s " + service.GuestCACertPath + " || { echo MISSING_CA_CERT; exit 12; }\n"
+	var sink strings.Builder
+	code, err := svc.Exec(ctx, id, agent.ExecOptions{
+		Argv:   []string{"/bin/sh", "-c", script},
+		Stdout: &sink,
+		Stderr: &sink,
+	})
+	if err != nil {
+		return fmt.Errorf("probe guest for perimeter seed: %w", err)
+	}
+	switch code {
+	case 0:
+		return nil
+	case 11:
+		return fmt.Errorf("%s is absent in the guest: the supervisor did not seed the "+
+			"placeholder credential, so the agent would run unauthenticated", service.GuestCredEnvPath)
+	case 12:
+		return fmt.Errorf("%s is absent in the guest: the supervisor did not seed the MITM "+
+			"CA certificate, so every HTTPS call would fail certificate validation", service.GuestCACertPath)
+	default:
+		return fmt.Errorf("perimeter seed probe exited %d: %s", code, strings.TrimSpace(sink.String()))
+	}
 }
 
 // herdrPluginLaunch boots a sandbox from imageRef, runs argv in-guest via the
 // agent exec path (vsock gRPC control + data plane), streams stdout to out,
-// then removes the sandbox. Boot and exec happen in one process; the boot
-// driver's vsock socket path (SocketDir+ID) is shared with svc.driver, so
-// svc.Exec can dial it after CreateAndBoot returns.
+// then tears the sandbox down.
 //
-// When agentEgress is true (--agent-egress flag), the zero-credential egress
-// perimeter is wired: a Broker is created and WireClaudeEgress is called so
-// that proxy.go's OnRequest swaps Authorization: Bearer placeholders for the
-// real token on every request to api.anthropic.com. The real token is sourced
-// from the dedicated credential store at DefaultDedicatedCredStorePath via an
-// automatic-rotation Refresher. Without --agent-egress, Broker stays nil and
-// the plain launch path is unchanged (no perimeter, no AllowedHosts filter).
+// Without --agent-egress the sandbox is CLI-owned end to end: CreateAndBoot
+// boots it, svc.Exec runs argv over the boot driver's vsock, and the deferred
+// Remove stops it. No perimeter, no allowlist.
+//
+// With --agent-egress the VM changes hands. CreateAndBoot boots it once to
+// materialise the disk and prove the guest agent answers; then
+// handoffLaunchSupervisor stops that boot and re-boots the VM under a detached
+// supervisor which owns the whole zero-credential perimeter — netstack ACL,
+// MITM proxy, credential broker, CA seed, placeholder seed. The agent then runs
+// with the guest's seeded placeholder, and the proxy swaps it for the real
+// bearer token host-side, on the wire. The real token never enters the guest.
 func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, agentEgress bool, out *Output) error {
 	// Preflight: validate the kernel path before store/cache/service setup so
 	// that a missing/misconfigured NEXUS3_KERNEL_PATH surfaces immediately with
@@ -589,25 +719,21 @@ func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, agen
 		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: " + err.Error(), Err: err}
 	}
 
-	// bootDialer is populated by the factory below once the VM is booted.
-	// The lazy seeder (agent-egress path) captures it by pointer and reads it
-	// only after CreateAndBoot's step-9 seeder call — i.e. post-boot.
-	var bootDialer driver.GuestDialer
+	// capturedDiskPath is the per-sandbox ext4 copy CreateAndBoot resolves. The
+	// supervisor re-boots from the same file, so it must be captured here — the
+	// factory is the only place the CLI sees it.
+	var capturedDiskPath string
 
 	// newDriver mirrors cmd_sandbox.go's factory: socket/log paths use default
 	// locations so that svc.driver (from SelectSubstrate, same SocketDir) can
 	// reach the vsock file for svc.Exec after CreateAndBoot returns.
 	newDriver := service.DriverFactory(func(ext4Path string, _ []service.ExtraDisk) (driver.Driver, error) {
+		capturedDiskPath = ext4Path
 		cfg := buildCHConfig(kernelPath, ext4Path, 0, 0)
 		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
 			cfg.BinaryPath = p
 		}
-		d, err := cloudhypervisor.New(cfg)
-		if err != nil {
-			return nil, err
-		}
-		bootDialer = d
-		return d, nil
+		return cloudhypervisor.New(cfg)
 	})
 
 	// probe polls vsock until the guest agent's listener accepts. Mirrors the
@@ -635,77 +761,80 @@ func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, agen
 	// Unique name per invocation to prevent ErrAlreadyExists on retry or concurrent runs.
 	name := fmt.Sprintf("run-%x", time.Now().UnixNano())
 
-	// lazySeeder is called from inside CreateAndBoot step 9 (post-boot), so
-	// bootDialer is guaranteed to be non-nil by the factory above at that point.
-	var lazySeeder service.GuestSeeder
-	if agentEgress {
-		lazySeeder = func(ctx context.Context, id domain.SandboxID, payload []byte) error {
-			if bootDialer == nil {
-				return fmt.Errorf("__herdr-plugin launch: agent egress: boot driver does not implement GuestDialer")
-			}
-			c := agent.NewClient(bootDialer, id)
-			return service.NewAgentCopySeeder(c)(ctx, id, payload)
-		}
-	}
-
-	opts, broker := buildLaunchBootOpts(imageRef, cacheRoot, agentEgress, lazySeeder)
-
 	sb, err := service.CreateAndBoot(ctx, svc, imgCache, newDriver, probe,
-		"herdr", name, opts,
+		"herdr", name, buildLaunchBootOpts(imageRef, cacheRoot, agentEgress),
 	)
 	if err != nil {
 		return &CodedError{Code: sandboxCodeFor(err), Msg: "__herdr-plugin launch: boot: " + err.Error(), Err: err}
 	}
 
-	// Remove internally stops the VM — no separate Stop call needed.
+	// supSock/supWatchdog are set once the VM is handed to a supervisor; the
+	// teardown below reads them, so they are declared before the defer.
+	var (
+		supSock     string
+		supWatchdog *os.File
+	)
 	defer func() {
+		// Ephemeral supervisor teardown: /supervisor/stop, then wait for the
+		// process to exit. The supervisor calls svc.Remove itself on the way
+		// out, so waiting is what guarantees the VM is down and the record gone
+		// before the fallback Remove below runs.
+		if supSock != "" {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			if err := supervisor.StopSupervisor(stopCtx, supSock); err != nil {
+				fmt.Fprintf(os.Stderr, "__herdr-plugin launch: cleanup: stop supervisor: %v\n", err)
+			} else if err := supervisor.WaitForExit(stopCtx, filepath.Dir(supSock)); err != nil {
+				fmt.Fprintf(os.Stderr, "__herdr-plugin launch: cleanup: wait for supervisor exit: %v\n", err)
+			}
+			cancel()
+			if supWatchdog != nil {
+				_ = supWatchdog.Close()
+			}
+		}
+		// Fallback for the no-supervisor path (and for a supervisor that died
+		// before removing the record). Remove internally stops the VM.
 		rmCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := svc.Remove(rmCtx, sb.ID.String()); err != nil {
+		if err := svc.Remove(rmCtx, sb.ID.String()); err != nil && !errors.Is(err, store.ErrNotFound) {
 			fmt.Fprintf(os.Stderr, "__herdr-plugin launch: cleanup: remove %s: %v\n", sb.ID, err)
 		}
 	}()
 
+	execArgv := argv
+	if agentEgress {
+		w, sock, err := handoffLaunchSupervisor(ctx, svc, sb, storeRoot, kernelPath, capturedDiskPath, nil)
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: " + err.Error(), Err: err}
+		}
+		supWatchdog, supSock = w, sock
+
+		seedCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		seedErr := verifyLaunchPerimeterSeed(seedCtx, svc, sb.ID.String())
+		cancel()
+		if seedErr != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: " + seedErr.Error(), Err: seedErr}
+		}
+		execArgv = launchCredSourcedArgv(argv)
+	}
+
 	// Exec via svc.Exec (the surface-layer path per agent_ops.go:28). svc.driver
-	// shares defaultSocketDir() with the boot driver, so it can dial the vsock.
+	// shares defaultSocketDir() with the boot driver and with the supervisor's
+	// CHDriver, so it can dial the vsock either way.
+	//
 	// Env semantics: the guest agent appends req.Env to os.Environ() — it is a
-	// merge, not a replacement. argv[0] must be an absolute path because
-	// exec.Command resolves it via exec.LookPath in the agent binary's own
-	// process environment (before cmd.Env applies). PATH is still injected for
-	// the child's own subprocess lookups (claude shells out to bash, git, etc.).
+	// merge, not a replacement. On the plain path argv[0] must be an absolute
+	// path because exec.Command resolves it via exec.LookPath in the agent
+	// binary's own process environment (before cmd.Env applies); on the egress
+	// path /bin/sh performs the lookup instead. PATH is still injected for the
+	// child's own subprocess lookups (claude shells out to bash, git, etc.).
 	// HOME is injected for credential path resolution (claude's OAuth files).
 	execEnv := map[string]string{
 		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"HOME": "/root",
 	}
 
-	// Agent credential: CreateAndBoot's seeder writes the placeholder to a file
-	// inside the guest, but nothing sources that file before exec — the agent
-	// would start unauthenticated and exit "Not logged in" before any API
-	// contact. Read the placeholder back out of the broker and put it in the
-	// exec environment, which is where the agent actually looks.
-	//
-	// What crosses into the guest is the PLACEHOLDER, never the real token:
-	// Broker.Placeholder exposes no real-token field, and the L7 MITM proxy
-	// performs the placeholder→real swap host-side on the wire. NODE_EXTRA_CA_CERTS
-	// is required alongside it so the agent's Node runtime trusts that proxy's CA.
-	if agentEgress && broker != nil {
-		profile := opts.AgentProfile
-		if profile.PlaceholderEnvVar == "" {
-			profile = cred.ClaudeCodeProfile
-		}
-		if ph, ok := broker.Placeholder(sb.ID, profile.CredentialedHost); ok {
-			execEnv[profile.PlaceholderEnvVar] = ph
-			execEnv["NODE_EXTRA_CA_CERTS"] = service.GuestCACertPath
-		} else {
-			fmt.Fprintf(os.Stderr,
-				"__herdr-plugin launch: warning: no placeholder registered for %s; "+
-					"the agent will start unauthenticated\n", profile.CredentialedHost)
-		}
-	}
-
 	exitCode, err := svc.Exec(ctx, sb.ID.String(), agent.ExecOptions{
-		Argv:   argv,
+		Argv:   execArgv,
 		Env:    execEnv,
 		Stdout: out.w,
 		Stderr: os.Stderr,
