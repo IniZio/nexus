@@ -88,8 +88,10 @@ __herdr-plugin launch --agent-egress \
 ```
 
 - `<command>` must be an absolute path (e.g. `/usr/local/bin/claude`).
-- `--agent-egress` scopes egress to `api.anthropic.com` and `platform.claude.com`, and seeds guest credentials from the host broker. Without this flag the sandbox runs in AllowAll mode with no MITM and no credential injection.
-- The command boots the sandbox, seeds credentials if `--agent-egress`, then execs the command in-guest.
+- `--agent-egress` hands the booted VM to a detached perimeter supervisor (`nexus3 __supervisor`, ephemeral mode) which owns the whole zero-credential perimeter: the egress allowlist (`api.anthropic.com`, `platform.claude.com`), the MITM proxy, the credential broker, the CA seed, and the guest placeholder seed. The guest receives a placeholder; the proxy swaps it for the real bearer token host-side, on the wire.
+- Without the flag no supervisor is started, and therefore no perimeter process pumps the guest's network device — the sandbox has **no egress at all**, not open egress.
+- The command boots the sandbox, hands it to the supervisor if `--agent-egress`, verifies the guest received both the placeholder credential and the CA cert, then execs the command in-guest with the seeded credential sourced from `/run/nexus3/cred.env`.
+- Teardown stops the supervisor and waits for it to exit; a parent-watchdog pipe tears the VM down even if the caller is `SIGKILL`ed.
 
 **Worktree-native parallel flow**: create a `git worktree` on the host per sandbox, pass it via `--mount`, and the agent commits directly into the mounted worktree. No extraction step; teardown calls `git worktree remove`. Each task gets its own branch and its own mount — sandboxes are created independently (not forked) so mounts are never shared between concurrent VMs.
 
