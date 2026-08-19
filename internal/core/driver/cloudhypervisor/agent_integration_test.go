@@ -276,6 +276,13 @@ func bootAgentVM(t *testing.T, chBin, kernelPath, initramfsPath string) (*CHDriv
 
 	// Give nexus3-agent time to initialise its vsock listeners.
 	// In practice it binds within 200-500 ms of the kernel entering userspace.
+	//
+	// This fixed budget is also the regression guard for the boot-critical-path
+	// defect: any blocking work added to PID-1 startup AHEAD of the vsock
+	// listeners (the egress DNS probe used to sit there and cost up to 3s)
+	// pushes the bind past this sleep and every agent test fails with
+	// "read handshake reply: EOF". Do not raise it to make a slow boot pass —
+	// move the slow work off the pre-bind path instead.
 	time.Sleep(2 * time.Second)
 
 	return drv, id

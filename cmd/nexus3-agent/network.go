@@ -121,7 +121,15 @@ func setupNetwork(con *os.File) {
 	// Probe egress immediately after configuration so any breakage (wrong
 	// interface, perimeter down, DNS dead) is logged loudly on the serial
 	// console rather than causing a silent downstream build timeout.
-	checkEgress(iface, con)
+	//
+	// Run it in the background: the probe is diagnostic-only (log, never
+	// fatal, no caller consumes its result) but blocks for up to
+	// probeTimeout (3s) waiting on a DNS reply. Called synchronously it sat
+	// on the boot critical path AHEAD of the vsock listeners, so on any boot
+	// where the perimeter is not yet answering DNS the agent bound its
+	// control plane >3s late and the host's dial failed with an opaque
+	// "read handshake reply: EOF".
+	go checkEgress(iface, con)
 }
 
 // firstNonLoIface returns the name of the first non-loopback network interface
