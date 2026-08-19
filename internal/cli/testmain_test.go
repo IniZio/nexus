@@ -14,5 +14,24 @@ func TestMain(m *testing.M) {
 			os.Exit(0)
 		}
 	}
-	os.Exit(m.Run())
+	// Redirect the durable state root for the package run — same reason as
+	// internal/core/service's TestMain (TBD-PD-29). CLI tests that reach
+	// store.DefaultRoot() otherwise deposit stub disks in the OPERATOR's real
+	// ~/.local/state/nexus3/disks, where `nexus3 reap` reports every one as an
+	// ORPHAN and the reaper stops being readable as a teardown signal.
+	// store.DefaultRoot() reads XDG_STATE_HOME first (store.go:116).
+	stateRoot, err := os.MkdirTemp("", "nexus3-cli-state-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cli: create temp state root: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("XDG_STATE_HOME", stateRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "cli: set XDG_STATE_HOME: %v\n", err)
+		os.Exit(1)
+	}
+
+	// os.Exit skips defers, so clean up explicitly around the run.
+	code := m.Run()
+	_ = os.RemoveAll(stateRoot)
+	os.Exit(code)
 }
