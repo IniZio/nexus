@@ -34,7 +34,7 @@ Imports credentials from a dedicated Claude Code session. The dedicated session 
 | `--from <path>` | string | `~/.config/nexus3/claude-dedicated/.credentials.json` | Source Claude Code `.credentials.json` path (nexus3 dedicated-session store) |
 | `--force` | bool | false | Allow overwriting an existing complete credential store |
 
-The imported credential is injected into sandboxes that request agent egress (via `--agent-egress`).
+The imported credential is **never injected into a sandbox**. It stays host-side, held by the perimeter supervisor's credential broker. A sandbox that requests agent egress (via `--agent-egress`) receives a *placeholder* string in its guest environment; the host-side MITM proxy swaps that placeholder for the real bearer token on the wire, per request. The guest never holds a credential that is valid off-host.
 
 ## nexus3 mcp
 

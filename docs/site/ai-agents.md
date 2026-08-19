@@ -111,7 +111,7 @@ The host credential broker can deliver tokens to the guest over vsock. An in-gue
 |---|---|---|
 | MCP 7-tool surface | Yes | Yes |
 | `__herdr-plugin launch` | Yes | Yes |
-| `--agent-egress` credential seeding | Yes | Yes |
+| `--agent-egress` perimeter handoff (MITM + placeholder swap) | Yes | Yes |
 | `__herdr-plugin space-create[-from-file]` | Yes | Yes |
 | `nexus3 recipe` CLI (Orca) | Yes | Yes |
 | `__herdr-plugin launch -v` | No | — |
