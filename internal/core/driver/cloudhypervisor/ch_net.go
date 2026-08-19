@@ -73,18 +73,23 @@ type vmNetConfig struct {
 	NumQueues int    `json:"num_queues"`
 }
 
-// vmConfigWithNet extends vmConfig with vsock and net devices.
+// vmConfigWithNet extends vmConfig with vsock, net, and virtiofs-fs devices.
+// All three device classes are collapsed into this one type (not split across
+// vmConfigWithNet + vmConfigWithFsAndNet) so that a single PUT /vm.create
+// payload covers every device nexus3 attaches at boot.
 type vmConfigWithNet struct {
 	vmConfig
 	Vsock *vmVsockConfig `json:"vsock,omitempty"`
 	Net   []vmNetConfig  `json:"net,omitempty"`
+	Fs    []vmFsConfig   `json:"fs,omitempty"`
 }
 
-// VMCreateWithNet sends PUT /vm.create with a vsock device and named TAP
-// network attachment. CH stores the config but does NOT call TUNSETIFF until
+// VMCreateWithNet sends PUT /vm.create with vsock, TAP network, and optional
+// virtiofs-fs devices. CH stores the config but does NOT call TUNSETIFF until
 // vm.boot; the named TAP interface must already exist at create time.
-func (c *client) VMCreateWithNet(ctx context.Context, cfg vmConfig, vsock *vmVsockConfig, nets []vmNetConfig) error {
-	full := vmConfigWithNet{vmConfig: cfg, Vsock: vsock, Net: nets}
+// Pass nil (or an empty slice) for fs when no virtiofs mounts are needed.
+func (c *client) VMCreateWithNet(ctx context.Context, cfg vmConfig, vsock *vmVsockConfig, nets []vmNetConfig, fs []vmFsConfig) error {
+	full := vmConfigWithNet{vmConfig: cfg, Vsock: vsock, Net: nets, Fs: fs}
 	resp, err := c.do(ctx, http.MethodPut, "/vm.create", full)
 	if err != nil {
 		return fmt.Errorf("cloudhypervisor: vm.create (net): %w", err)

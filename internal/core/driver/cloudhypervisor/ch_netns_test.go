@@ -294,7 +294,7 @@ func TestNetnsRuntime_KVMProof(t *testing.T) {
 		{Tap: rt.GuestTap, Mac: mac, NumQueues: 2},
 	}
 	t.Logf("vm.create: guestTap=%s mac=%s", rt.GuestTap, mac)
-	if err := c.VMCreateWithNet(apiCtx, vmcfg, nil, nets); err != nil {
+	if err := c.VMCreateWithNet(apiCtx, vmcfg, nil, nets, nil); err != nil {
 		t.Fatalf("vm.create: %v", err)
 	}
 
