@@ -266,7 +266,7 @@ func TestSeedGitIdentity_MissingHostConfig_FailsCreate(t *testing.T) {
 //	    the standard create path would seed GitHub tokens into every agent sandbox.
 //
 //	(c) The credential env payload emitted by SeedGuest (called with
-//	    AgentEgressHosts()) does not contain any GITHUB-pattern variable name.
+//	    AgentEgressHosts(cred.ClaudeCodeProfile)) does not contain any GITHUB-pattern variable name.
 //	    This is the runtime check: even if (a) or (b) were somehow bypassed,
 //	    the payload itself must not carry a GitHub credential var.
 //
@@ -289,12 +289,12 @@ func TestSeedGitIdentity_MissingHostConfig_FailsCreate(t *testing.T) {
 // rather than deleting the test.
 func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 	t.Run("(a) AgentEgressHosts contains no GitHub hostname", func(t *testing.T) {
-		hosts := AgentEgressHosts()
+		hosts := AgentEgressHosts(cred.ClaudeCodeProfile)
 		for _, h := range hosts {
 			if isGitHubHost(h) {
 				t.Errorf(
 					"SECURITY VIOLATION — N-AC1 / D-PD-22\n"+
-						"AgentEgressHosts() returned %q.\n\n"+
+						"AgentEgressHosts(cred.ClaudeCodeProfile) returned %q.\n\n"+
 						"github.com must NEVER appear in an AGENT sandbox AllowedHosts. "+
 						"Adding it causes the MITM placeholder-swap mechanism to mint a GitHub "+
 						"credential for every agent sandbox, giving any in-guest process a valid "+
@@ -321,7 +321,7 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 						"AllowedHosts to Anthropic API hosts ONLY (api.anthropic.com, "+
 						"platform.claude.com). Adding github.com here widens the egress perimeter "+
 						"for every agent sandbox created through the standard wiring path.\n\n"+
-						"To fix: remove the GitHub host from WireClaudeEgress / AgentEgressHosts(). "+
+						"To fix: remove the GitHub host from WireClaudeEgress / AgentEgressHosts(cred.ClaudeCodeProfile). "+
 						"See D-PD-22.",
 					h,
 				)
@@ -366,11 +366,11 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 		// provides the live-VM proof.
 
 		// Part 1: config invariant — no GitHub host in egress set.
-		for _, h := range AgentEgressHosts() {
+		for _, h := range AgentEgressHosts(cred.ClaudeCodeProfile) {
 			if isGitHubHost(h) {
 				t.Errorf(
 					"SECURITY VIOLATION — N-AC1 / D-PD-22\n"+
-						"AgentEgressHosts() contains GitHub host %q.\n"+
+						"AgentEgressHosts(cred.ClaudeCodeProfile) contains GitHub host %q.\n"+
 						"An in-agent `git push` to github.com would succeed because the MITM "+
 						"perimeter allows egress to this host. The push must FAIL CLOSED. "+
 						"See D-PD-22.",
@@ -387,7 +387,7 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 		})
 		id := domain.NewSandboxID()
 		broker := cred.NewBroker()
-		_, err := SeedGuest(context.Background(), broker, id, AgentEgressHosts(), stubSeeder)
+		_, err := SeedGuest(context.Background(), broker, id, AgentEgressHosts(cred.ClaudeCodeProfile), stubSeeder)
 		if err != nil {
 			t.Fatalf("SeedGuest returned error: %v", err)
 		}
@@ -399,11 +399,10 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 					"was emitted into the guest env file. Any in-guest process sourcing that file "+
 					"(e.g. the claude agent) would have a GitHub bearer token. The perimeter MITM "+
 					"would swap it for a real GitHub token on every outbound github.com request.\n\n"+
-					"To fix: remove github.com from AgentEgressHosts() and AllowedHosts. "+
+					"To fix: remove github.com from AgentEgressHosts(cred.ClaudeCodeProfile) and AllowedHosts. "+
 					"See D-PD-22.\n\npayload:\n%s",
 				captured,
 			)
 		}
 	})
 }
-

@@ -80,7 +80,7 @@ func TestSupervisorS3RefresherWiring(t *testing.T) {
 	broker := cred.NewBroker()
 
 	// Construct a Refresher for each agent-egress host and verify Host().
-	for _, host := range service.AgentEgressHosts() {
+	for _, host := range service.AgentEgressHosts(cred.ClaudeCodeProfile) {
 		r, err := cred.NewRefresher(credsFile, host, broker)
 		if err != nil {
 			t.Fatalf("cred.NewRefresher(%q): %v — Part A wiring broken", host, err)

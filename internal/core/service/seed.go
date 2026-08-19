@@ -54,11 +54,20 @@ const AnthropicAPIHost = "api.anthropic.com"
 // subscription authentication (used by claude's login flow).
 const ClaudePlatformHost = "platform.claude.com"
 
-// AgentEgressHosts returns the minimal set of outbound hostnames an in-guest
-// claude process requires. Each call returns a fresh slice so callers may
-// safely assign it to AllowedHosts without aliasing the package-level value.
-func AgentEgressHosts() []string {
-	return []string{AnthropicAPIHost, ClaudePlatformHost}
+// AgentEgressHosts returns the minimal set of outbound hostnames the given
+// agent requires. The profile is the single source of truth: a new agent type
+// gets its allowlist by declaring [cred.AgentProfile.EgressHosts], not by
+// editing this function.
+//
+// The profile is a required argument rather than an optional one so that no
+// call site can silently apply Claude Code's allowlist to a different agent.
+// Callers with no profile in hand should pass [cred.ClaudeCodeProfile]
+// explicitly, which makes the assumption visible in the diff.
+//
+// Each call returns a fresh slice, so callers may assign it to AllowedHosts
+// without aliasing the package-level profile value.
+func AgentEgressHosts(profile cred.AgentProfile) []string {
+	return profile.Egress()
 }
 
 // GuestSeeder delivers the credential seed payload into the guest environment.
@@ -442,7 +451,7 @@ func seedGuestAgent(
 		kind = resolveAgentCredKind()
 	}
 
-	hosts := AgentEgressHosts()
+	hosts := AgentEgressHosts(profile)
 	records := make([]cred.PlaceholderRecord, 0, len(hosts))
 	for _, host := range hosts {
 		rec, err := broker.RegisterPlaceholder(id, host, "")
@@ -483,7 +492,7 @@ func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind,
 	// Both vars produce Authorization: Bearer <placeholder> on outbound requests;
 	// the MITM proxy swaps the placeholder host-side on each forwarded request.
 	for _, rec := range records {
-		if rec.Host == AnthropicAPIHost {
+		if rec.Host == profile.CredentialedHost {
 			switch kind {
 			case kindAuthToken:
 				// Direct-SDK API-key path (D-P4-02 / ToS rail).

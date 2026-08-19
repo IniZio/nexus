@@ -229,7 +229,7 @@ func TestOAuthRotationDogfood(t *testing.T) {
 		service.CreateAndBootOptions{
 			Image:               service.ImageSpec{Digest: string(img.Digest)},
 			CacheRoot:           cacheRoot,
-			AllowedHosts:        service.AgentEgressHosts(),
+			AllowedHosts:        service.AgentEgressHosts(cred.ClaudeCodeProfile),
 			ReachabilityTimeout: 60 * time.Second,
 		},
 	)
@@ -300,7 +300,7 @@ func TestOAuthRotationDogfood(t *testing.T) {
 		t.Fatalf("GuestNetworkFD: %v", err)
 	}
 
-	al, err := netfilter.NewAllowList(nil, nil, service.AgentEgressHosts())
+	al, err := netfilter.NewAllowList(nil, nil, service.AgentEgressHosts(cred.ClaudeCodeProfile))
 	if err != nil {
 		t.Fatalf("netfilter.NewAllowList: %v", err)
 	}
@@ -330,7 +330,7 @@ func TestOAuthRotationDogfood(t *testing.T) {
 
 	mitmProxy, err := mitm.New(mitm.Config{
 		SandboxID:    sb.ID,
-		AllowedHosts: service.AgentEgressHosts(),
+		AllowedHosts: service.AgentEgressHosts(cred.ClaudeCodeProfile),
 		Broker:       broker,
 		Logger:       swapLogger,
 	})
@@ -357,12 +357,12 @@ func TestOAuthRotationDogfood(t *testing.T) {
 	// ── 10. runClaudeRaw helper ─────────────────────────────────────────────────
 	// Returns (exitCode, stdout, stderr, execErr). Never asserts; callers decide.
 	guestEnv := map[string]string{
-		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"HOME": "/root",
-		"TERM": "dumb",
+		"PATH":                                   "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME":                                   "/root",
+		"TERM":                                   "dumb",
 		cred.ClaudeCodeProfile.PlaceholderEnvVar: claudePlaceholder,
 		"NODE_EXTRA_CA_CERTS":                    service.GuestCACertPath,
-		"ANTHROPIC_MODEL":                         dogfoodHaikuModel,
+		"ANTHROPIC_MODEL":                        dogfoodHaikuModel,
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
 	}
 

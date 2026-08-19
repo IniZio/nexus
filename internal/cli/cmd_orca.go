@@ -19,6 +19,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
@@ -607,10 +608,10 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	// creation time and is read back by the detached supervisor when it calls
 	// svc.Start. Without this, Envelope.AllowedHosts is empty and the perimeter
 	// netfilter is default-deny for all outbound traffic (including api.anthropic.com).
-	// Base set: AgentEgressHosts() (api.anthropic.com + platform.claude.com).
+	// Base set: AgentEgressHosts(cred.ClaudeCodeProfile) (api.anthropic.com + platform.claude.com).
 	// Non-GitHub forges from the recipe URL may be appended. GitHub hosts are
 	// never added here (D-PD-23): orca is an agent path.
-	allowedHosts := append(service.AgentEgressHosts(), gitHostsFromURL(env.RepoURL)...)
+	allowedHosts := append(service.AgentEgressHosts(cred.ClaudeCodeProfile), gitHostsFromURL(env.RepoURL)...)
 
 	// Initial boot opts: AllowedHosts is frozen here so the detached supervisor
 	// inherits the correct perimeter allowlist when it re-boots the VM.

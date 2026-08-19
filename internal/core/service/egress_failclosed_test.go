@@ -43,10 +43,11 @@ import (
 // AllowAll branch was NOT taken — the sandbox is fail-closed.
 //
 // MUTATION PROOF (service.go:678):
-//   Revert:  allowAll := sb.Envelope.OpenEgress
-//   To:      allowAll := len(sb.Envelope.AllowedHosts) == 0
-//   Effect:  empty AllowedHosts → allowAll=true → no MITM → GetPerimeterCACert=nil
-//   Result:  t.Errorf fires ("must be behind a MITM perimeter"), test FAILS
+//
+//	Revert:  allowAll := sb.Envelope.OpenEgress
+//	To:      allowAll := len(sb.Envelope.AllowedHosts) == 0
+//	Effect:  empty AllowedHosts → allowAll=true → no MITM → GetPerimeterCACert=nil
+//	Result:  t.Errorf fires ("must be behind a MITM perimeter"), test FAILS
 func TestD_PD33_StartSupervisor_FailClosed(t *testing.T) {
 	st, err := store.NewFileStore(t.TempDir())
 	if err != nil {
@@ -64,8 +65,8 @@ func TestD_PD33_StartSupervisor_FailClosed(t *testing.T) {
 		Project: "proj",
 		State:   domain.Created,
 		Envelope: domain.Envelope{
-			AllowedHosts: nil,    // empty
-			OpenEgress:   false,  // explicit: closed
+			AllowedHosts: nil,   // empty
+			OpenEgress:   false, // explicit: closed
 		},
 	}
 	if err := st.Create(context.Background(), sb); err != nil {
@@ -86,12 +87,12 @@ func TestD_PD33_StartSupervisor_FailClosed(t *testing.T) {
 	// !allowAll=false, len(SecretHosts)=0 → no proxy → CA=nil → test FAILS.
 	if svc.GetPerimeterCACert(sb.ID) == nil {
 		t.Errorf(
-			"SECURITY REGRESSION — D-PD-33\n"+
-				"A sandbox with empty AllowedHosts and OpenEgress=false has no MITM perimeter.\n\n"+
-				"startSupervisor must derive allowAll from sb.Envelope.OpenEgress (not from\n"+
-				"len(AllowedHosts)==0). With OpenEgress=false the MITM proxy must be assembled\n"+
-				"so that all egress is denied. A nil CA cert means no MITM — the sandbox has\n"+
-				"uncontrolled network access.\n\n"+
+			"SECURITY REGRESSION — D-PD-33\n" +
+				"A sandbox with empty AllowedHosts and OpenEgress=false has no MITM perimeter.\n\n" +
+				"startSupervisor must derive allowAll from sb.Envelope.OpenEgress (not from\n" +
+				"len(AllowedHosts)==0). With OpenEgress=false the MITM proxy must be assembled\n" +
+				"so that all egress is denied. A nil CA cert means no MITM — the sandbox has\n" +
+				"uncontrolled network access.\n\n" +
 				"Restore service.go:678 to: allowAll := sb.Envelope.OpenEgress",
 		)
 	}
@@ -106,9 +107,10 @@ func TestD_PD33_StartSupervisor_FailClosed(t *testing.T) {
 // a MITM proxy to be assembled for the child — CA becomes non-nil.
 //
 // MUTATION PROOF (service.go:961):
-//   Remove:  OpenEgress: parent.Envelope.OpenEgress,
-//   Effect:  child.Envelope.OpenEgress = false → allowAll=false → MITM assembled
-//   Result:  CA non-nil → child "open parent must pass no CA" assertion FAILS
+//
+//	Remove:  OpenEgress: parent.Envelope.OpenEgress,
+//	Effect:  child.Envelope.OpenEgress = false → allowAll=false → MITM assembled
+//	Result:  CA non-nil → child "open parent must pass no CA" assertion FAILS
 func TestD_PD33_Fork_OpenEgressInherited(t *testing.T) {
 	st, err := store.NewFileStore(t.TempDir())
 	if err != nil {
@@ -151,9 +153,9 @@ func TestD_PD33_Fork_OpenEgressInherited(t *testing.T) {
 	// Child must inherit OpenEgress=true.
 	if !child.Envelope.OpenEgress {
 		t.Errorf(
-			"SECURITY REGRESSION — D-PD-33\n"+
-				"Forked child of open-egress parent has OpenEgress=false.\n\n"+
-				"service.go Fork loop must copy parent.Envelope.OpenEgress onto the child.\n"+
+			"SECURITY REGRESSION — D-PD-33\n" +
+				"Forked child of open-egress parent has OpenEgress=false.\n\n" +
+				"service.go Fork loop must copy parent.Envelope.OpenEgress onto the child.\n" +
 				"Restore the line: OpenEgress: parent.Envelope.OpenEgress,",
 		)
 	}
@@ -161,9 +163,9 @@ func TestD_PD33_Fork_OpenEgressInherited(t *testing.T) {
 	// Child must also have no MITM CA (allowAll=true, no SecretHosts).
 	if ca := svc.GetPerimeterCACert(child.ID); ca != nil {
 		t.Errorf(
-			"SECURITY REGRESSION — D-PD-33\n"+
-				"Forked child of open-egress parent has a MITM CA, meaning allowAll=false was\n"+
-				"used in startSupervisor. The child did not inherit OpenEgress=true from the\n"+
+			"SECURITY REGRESSION — D-PD-33\n" +
+				"Forked child of open-egress parent has a MITM CA, meaning allowAll=false was\n" +
+				"used in startSupervisor. The child did not inherit OpenEgress=true from the\n" +
 				"parent. Restore: OpenEgress: parent.Envelope.OpenEgress in service.go:961.",
 		)
 	}
@@ -179,10 +181,11 @@ func TestD_PD33_Fork_OpenEgressInherited(t *testing.T) {
 // tests are needed. The meaningful check here is that AllowedHosts IS copied.
 //
 // MUTATION PROOF (service.go:959 — AllowedHosts clone):
-//   Remove:  AllowedHosts: slices.Clone(parent.Envelope.AllowedHosts),
-//   Effect:  child.AllowedHosts = nil → still no MITM since OpenEgress=false
-//            AND empty AllowedHosts triggers MITM (allowAll=false) — but
-//            child.Envelope.AllowedHosts assertion catches the missing clone.
+//
+//	Remove:  AllowedHosts: slices.Clone(parent.Envelope.AllowedHosts),
+//	Effect:  child.AllowedHosts = nil → still no MITM since OpenEgress=false
+//	         AND empty AllowedHosts triggers MITM (allowAll=false) — but
+//	         child.Envelope.AllowedHosts assertion catches the missing clone.
 func TestD_PD33_Fork_ClosedEgressInherited(t *testing.T) {
 	st, err := store.NewFileStore(t.TempDir())
 	if err != nil {
@@ -225,8 +228,8 @@ func TestD_PD33_Fork_ClosedEgressInherited(t *testing.T) {
 
 	if child.Envelope.OpenEgress {
 		t.Errorf(
-			"SECURITY REGRESSION — D-PD-33\n"+
-				"Forked child of closed-egress parent has OpenEgress=true.\n"+
+			"SECURITY REGRESSION — D-PD-33\n" +
+				"Forked child of closed-egress parent has OpenEgress=true.\n" +
 				"Restore: OpenEgress: parent.Envelope.OpenEgress in service.go:961.",
 		)
 	}
@@ -236,8 +239,8 @@ func TestD_PD33_Fork_ClosedEgressInherited(t *testing.T) {
 	// Child must also be behind a MITM perimeter (allowAll=false, curated hosts).
 	if svc.GetPerimeterCACert(child.ID) == nil {
 		t.Errorf(
-			"SECURITY REGRESSION — D-PD-33\n"+
-				"Forked child of closed-egress parent has no MITM CA.\n"+
+			"SECURITY REGRESSION — D-PD-33\n" +
+				"Forked child of closed-egress parent has no MITM CA.\n" +
 				"The child must be governed by a deny-all perimeter, not open egress.",
 		)
 	}
@@ -250,9 +253,10 @@ func TestD_PD33_Fork_ClosedEgressInherited(t *testing.T) {
 // child inherits OpenEgress=true.
 //
 // MUTATION PROOF (service.go:1119):
-//   Remove:  OpenEgress: origin.Envelope.OpenEgress,
-//   Effect:  child.Envelope.OpenEgress = false (Go zero value)
-//   Result:  "child must inherit OpenEgress=true" assertion FAILS
+//
+//	Remove:  OpenEgress: origin.Envelope.OpenEgress,
+//	Effect:  child.Envelope.OpenEgress = false (Go zero value)
+//	Result:  "child must inherit OpenEgress=true" assertion FAILS
 func TestD_PD33_Restore_OpenEgressInherited(t *testing.T) {
 	aStore, err := artifact.NewStore(t.TempDir())
 	if err != nil {
@@ -304,9 +308,9 @@ func TestD_PD33_Restore_OpenEgressInherited(t *testing.T) {
 
 	if !children[0].Envelope.OpenEgress {
 		t.Errorf(
-			"SECURITY REGRESSION — D-PD-33\n"+
-				"Restored child of open-egress origin has OpenEgress=false.\n\n"+
-				"RestoreFromSnapshot must copy origin.Envelope.OpenEgress onto the child.\n"+
+			"SECURITY REGRESSION — D-PD-33\n" +
+				"Restored child of open-egress origin has OpenEgress=false.\n\n" +
+				"RestoreFromSnapshot must copy origin.Envelope.OpenEgress onto the child.\n" +
 				"Restore the line: OpenEgress: origin.Envelope.OpenEgress, in service.go:1119.",
 		)
 	}
@@ -320,10 +324,11 @@ func TestD_PD33_Restore_OpenEgressInherited(t *testing.T) {
 // with an unknown egress policy.
 //
 // MUTATION PROOF (service.go:1102-1104 — the new early-return error):
-//   Revert:  if originErr != nil { return nil, fmt.Errorf(...) }
-//   To:      haveOrigin := originErr == nil (old optional behavior)
-//   Effect:  RestoreFromSnapshot returns children, err=nil
-//   Result:  "expected error for missing origin" assertion FAILS
+//
+//	Revert:  if originErr != nil { return nil, fmt.Errorf(...) }
+//	To:      haveOrigin := originErr == nil (old optional behavior)
+//	Effect:  RestoreFromSnapshot returns children, err=nil
+//	Result:  "expected error for missing origin" assertion FAILS
 func TestD_PD33_Restore_MissingOriginFailsLoudly(t *testing.T) {
 	aStore, err := artifact.NewStore(t.TempDir())
 	if err != nil {
@@ -365,24 +370,26 @@ func TestD_PD33_Restore_MissingOriginFailsLoudly(t *testing.T) {
 
 // ── Test 6: GitHub hosts absent from AgentEgressHosts (seed.go) ──────────────
 
-// TestD_PD33_GitHubNotInAgentEgressHosts calls AgentEgressHosts() and
+// TestD_PD33_GitHubNotInAgentEgressHosts calls AgentEgressHosts(cred.ClaudeCodeProfile) and
 // GitHubSecretHosts directly — both are package-level calls into production
 // code. It also verifies all three GitHub hostnames are present in
 // GitHubSecretHosts (the uploads host is new in D-PD-33).
 //
 // MUTATION PROOF (secret.go:23 — GitHubSecretHosts):
-//   Remove "uploads.github.com" from GitHubSecretHosts
-//   Result: "GitHubSecretHosts missing uploads.github.com" assertion FAILS
+//
+//	Remove "uploads.github.com" from GitHubSecretHosts
+//	Result: "GitHubSecretHosts missing uploads.github.com" assertion FAILS
 //
 // MUTATION PROOF (seed.go:AgentEgressHosts):
-//   Add "github.com" to the returned slice
-//   Result: "AgentEgressHosts contains github.com" assertion FAILS
+//
+//	Add "github.com" to the returned slice
+//	Result: "AgentEgressHosts contains github.com" assertion FAILS
 func TestD_PD33_GitHubNotInAgentEgressHosts(t *testing.T) {
-	for _, h := range service.AgentEgressHosts() {
+	for _, h := range service.AgentEgressHosts(cred.ClaudeCodeProfile) {
 		if isGitHubHostForTest(h) {
 			t.Errorf(
 				"SECURITY VIOLATION — D-PD-33\n"+
-					"AgentEgressHosts() contains GitHub host %q.\n"+
+					"AgentEgressHosts(cred.ClaudeCodeProfile) contains GitHub host %q.\n"+
 					"GitHub hosts must never appear in agent AllowedHosts.", h,
 			)
 		}

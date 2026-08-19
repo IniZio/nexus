@@ -28,7 +28,7 @@
 //  2. Import to nexus3: nexus3 auth login --force
 //  3. Verify token validity: cat ~/.config/nexus3/creds.json | jq .expires_at
 //  4. Run: TMPDIR=/tmp go test -tags integration -run TestOAuthRotationDogfood
-//         ./internal/test/selfhost/ -v -timeout 20m
+//     ./internal/test/selfhost/ -v -timeout 20m
 //
 // # Prerequisites
 //
@@ -295,7 +295,7 @@ func TestOrcaCredBrokerWiring(t *testing.T) {
 		t.Fatalf("GuestNetworkFD: %v", err)
 	}
 
-	al, err := netfilter.NewAllowList(nil, nil, service.AgentEgressHosts())
+	al, err := netfilter.NewAllowList(nil, nil, service.AgentEgressHosts(cred.ClaudeCodeProfile))
 	if err != nil {
 		t.Fatalf("netfilter.NewAllowList: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestOrcaCredBrokerWiring(t *testing.T) {
 
 	mitmProxy, err := mitm.New(mitm.Config{
 		SandboxID:    sb.ID,
-		AllowedHosts: service.AgentEgressHosts(),
+		AllowedHosts: service.AgentEgressHosts(cred.ClaudeCodeProfile),
 		Broker:       broker,
 		Logger:       swapLogger,
 	})
@@ -356,13 +356,13 @@ func TestOrcaCredBrokerWiring(t *testing.T) {
 	// fires regardless of the upstream response — swapCount > 0 proves
 	// host-side bearer injection.
 	guestEnv := map[string]string{
-		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"HOME": "/root",
-		"TERM": "dumb",
-		cred.ClaudeCodeProfile.PlaceholderEnvVar:        claudePlaceholder,
-		"NODE_EXTRA_CA_CERTS":                            service.GuestCACertPath,
-		"ANTHROPIC_MODEL":                                dogfoodHaikuModel,
-		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":       "1",
+		"PATH":                                   "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME":                                   "/root",
+		"TERM":                                   "dumb",
+		cred.ClaudeCodeProfile.PlaceholderEnvVar: claudePlaceholder,
+		"NODE_EXTRA_CA_CERTS":                    service.GuestCACertPath,
+		"ANTHROPIC_MODEL":                        dogfoodHaikuModel,
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
 	}
 
 	swapBefore := swapCount.Load()

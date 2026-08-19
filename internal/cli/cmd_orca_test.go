@@ -14,6 +14,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
@@ -529,7 +530,7 @@ func TestOrcaCreate_AllowedHostsInEnvelope(t *testing.T) {
 	// Mirror what orcaCreate does: AgentEgressHosts only. GitHub hosts from
 	// the recipe URL are NOT appended (D-PD-23).
 	const repoURL = "https://github.com/anthropics/anthropic-sdk-go"
-	allowedHosts := append(service.AgentEgressHosts(), gitHostsFromURL(repoURL)...)
+	allowedHosts := append(service.AgentEgressHosts(cred.ClaudeCodeProfile), gitHostsFromURL(repoURL)...)
 
 	f, err := os.CreateTemp(t.TempDir(), "rootfs")
 	if err != nil {

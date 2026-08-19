@@ -93,7 +93,7 @@ func TestSeedGuestAgent_BothAnthropicHostsSeeded(t *testing.T) {
 		t.Fatalf("SeedGuestAgent: %v", err)
 	}
 
-	hosts := AgentEgressHosts()
+	hosts := AgentEgressHosts(cred.ClaudeCodeProfile)
 	if len(recs) != len(hosts) {
 		t.Fatalf("expected %d records (one per AgentEgressHost), got %d", len(hosts), len(recs))
 	}
@@ -129,7 +129,7 @@ func TestWireClaudeEgress_AllowedHostsSet(t *testing.T) {
 	}
 
 	want := map[string]bool{
-		AnthropicAPIHost:  false,
+		AnthropicAPIHost:   false,
 		ClaudePlatformHost: false,
 	}
 	for _, h := range opts.AllowedHosts {

@@ -238,16 +238,16 @@ func RunDetached(cfg Config) error {
 	}
 	vcpuMax := uint32(cfg.GovBounds.VCPUMax) //nolint:gosec // int32→uint32; VCPUMax is always non-negative by construction
 	drv, err := cloudhypervisor.New(cloudhypervisor.Config{
-		BinaryPath:       cfg.CHBin,
-		SocketDir:        cfg.SocketDir,
-		KernelPath:       cfg.KernelPath,
-		DiskImagePath:    cfg.DiskPath,
-		StartTimeout:     30 * time.Second,
-		MemoryMiB:        cfg.MemoryMiB,
-		MemoryMaxMiB:     memMaxMiB,
-		VCPUMax:          vcpuMax,
-		ExtraDisks:       extraDisks,
-		Cmdline:          cfg.Cmdline,
+		BinaryPath:    cfg.CHBin,
+		SocketDir:     cfg.SocketDir,
+		KernelPath:    cfg.KernelPath,
+		DiskImagePath: cfg.DiskPath,
+		StartTimeout:  30 * time.Second,
+		MemoryMiB:     cfg.MemoryMiB,
+		MemoryMaxMiB:  memMaxMiB,
+		VCPUMax:       vcpuMax,
+		ExtraDisks:    extraDisks,
+		Cmdline:       cfg.Cmdline,
 	})
 	if err != nil {
 		return fmt.Errorf("supervisor: init driver: %w", err)
@@ -270,7 +270,7 @@ func RunDetached(cfg Config) error {
 	// until the operator provisions the credential store.
 	var refreshers []*cred.Refresher
 	if cfg.CredsFile != "" {
-		for _, host := range service.AgentEgressHosts() {
+		for _, host := range service.AgentEgressHosts(cred.ClaudeCodeProfile) {
 			r, rErr := cred.NewRefresher(cfg.CredsFile, host, broker)
 			if errors.Is(rErr, cred.ErrStoreAbsent) {
 				slog.Info("supervisor.creds_absent", "path", cfg.CredsFile)

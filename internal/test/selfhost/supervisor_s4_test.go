@@ -457,10 +457,11 @@ func TestSupervisorS4PlaceholderInGuest(t *testing.T) {
 //     proxied request.
 //
 // Assertions:
-//   (A) curl https://api.anthropic.com/v1/models inside guest → HTTP 200.
-//   (B) git clone of a public HTTPS repo inside guest → exit 0 + dir non-empty.
-//   (C) AC-7 zero-cred: grep guest for real token markers → empty.
-//   (D) StopSupervisor → supervisor PID gone (teardown).
+//
+//	(A) curl https://api.anthropic.com/v1/models inside guest → HTTP 200.
+//	(B) git clone of a public HTTPS repo inside guest → exit 0 + dir non-empty.
+//	(C) AC-7 zero-cred: grep guest for real token markers → empty.
+//	(D) StopSupervisor → supervisor PID gone (teardown).
 func TestSupervisorS4LiveEgress(t *testing.T) {
 	// ── Gate: skip if no cred store ───────────────────────────────────────────
 	storePath := service.DefaultDedicatedCredStorePath()
@@ -601,7 +602,7 @@ func TestSupervisorS4LiveEgress(t *testing.T) {
 	// Without it, the fail-closed netfilter blocks ALL outbound connections
 	// including api.anthropic.com — the very host we're asserting against.
 	// github.com is added for assertion B (git clone general egress test).
-	liveHosts := append(service.AgentEgressHosts(), "github.com")
+	liveHosts := append(service.AgentEgressHosts(cred.ClaudeCodeProfile), "github.com")
 	liveOpts := service.CreateAndBootOptions{
 		Image:               service.ImageSpec{Digest: string(img.Digest)},
 		CacheRoot:           cacheRoot,

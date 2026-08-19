@@ -315,7 +315,7 @@ type NamedVolumeMount struct {
 // The caller owns broker, seeder, and src; WireClaudeEgress does not retain
 // them beyond writing them into opts.
 func WireClaudeEgress(opts *CreateAndBootOptions, broker *cred.Broker, seeder GuestSeeder, src cred.CredentialSource) {
-	opts.AllowedHosts = AgentEgressHosts()
+	opts.AllowedHosts = AgentEgressHosts(cred.ClaudeCodeProfile)
 	opts.Broker = broker
 	opts.Seeder = seeder
 	opts.UseAgentSeed = true
@@ -578,6 +578,16 @@ func CreateAndBoot(
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: init driver: %w", project, name, err)
 	}
 
+	// Resolve this sandbox's agent profile ONCE, ahead of the record, so that
+	// the persisted AgentName and the credential seed delivered to the guest
+	// can never disagree about which agent is running. A caller that asks for
+	// the agent seed without naming a profile gets the default, matching the
+	// pre-TBD-PD-32 behaviour.
+	agentProfile := opts.AgentProfile
+	if opts.UseAgentSeed && agentProfile.PlaceholderEnvVar == "" {
+		agentProfile = cred.ClaudeCodeProfile
+	}
+
 	sb := domain.Sandbox{
 		ID:      id,
 		Name:    name,
@@ -597,6 +607,7 @@ func CreateAndBoot(
 		BaseRef:        opts.BaseRef, // G1: shallow-clone boundary SHA (D-PD-19); empty if no git workspace
 		MountedVolumes: namedVolumeAttachments(opts.NamedVolumeMounts),
 		LiveMounts:     opts.LiveMounts,
+		AgentName:      agentProfile.Name, // TBD-PD-32: empty when no agent is attached
 	}
 	// 6a. Mixed-host guard: a bind must not span GitHub and non-GitHub hosts
 	//
@@ -717,13 +728,9 @@ func CreateAndBoot(
 				return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, ErrAgentGitHubSecret)
 			}
 		}
-		// Resolve the per-sandbox profile; fall back to ClaudeCodeProfile when
-		// none is set (e.g. callers that use WireClaudeEgress with a custom profile).
-		profile := opts.AgentProfile
-		if profile.PlaceholderEnvVar == "" {
-			profile = cred.ClaudeCodeProfile
-		}
-		recs, err := seedGuestAgent(ctx, opts.Broker, booted.ID, opts.Seeder, profile, opts.AgentCredKind)
+		// agentProfile was resolved above and is the same value recorded as
+		// sb.AgentName, so the guest seed and the sandbox record cannot diverge.
+		recs, err := seedGuestAgent(ctx, opts.Broker, booted.ID, opts.Seeder, agentProfile, opts.AgentCredKind)
 		if err != nil {
 			_ = bootDrv.Stop(ctx, booted.ID)
 			_ = svc.store.Delete(ctx, booted.ID)
@@ -737,7 +744,7 @@ func CreateAndBoot(
 			t, _, credErr := opts.AgentCredSource.Token(ctx)
 			if credErr != nil {
 				slog.Warn("create-and-boot: get real token from credential source",
-					"sandbox", booted.ID, "host", AnthropicAPIHost, "err", credErr)
+					"sandbox", booted.ID, "host", agentProfile.CredentialedHost, "err", credErr)
 			} else {
 				realToken = t
 			}
@@ -747,11 +754,11 @@ func CreateAndBoot(
 		}
 
 		if realToken != "" && opts.Broker != nil && len(recs) > 0 {
-			if err := opts.Broker.SetRealToken(booted.ID, AnthropicAPIHost, realToken); err != nil {
+			if err := opts.Broker.SetRealToken(booted.ID, agentProfile.CredentialedHost, realToken); err != nil {
 				// Non-fatal: the proxy will forward the placeholder, which is
 				// useless but not a build-path failure. Log and continue.
 				slog.Warn("create-and-boot: set real token for agent egress",
-					"sandbox", booted.ID, "host", AnthropicAPIHost, "err", err)
+					"sandbox", booted.ID, "host", agentProfile.CredentialedHost, "err", err)
 			}
 			// Enrol in the Refresher if the source supports it (type assert to
 			// avoid importing cred.Refresher directly and to stay interface-clean).
@@ -766,7 +773,7 @@ func CreateAndBoot(
 			}
 		} else if realToken == "" {
 			slog.Warn("create-and-boot: no real token for agent egress; egress will send placeholder",
-				"sandbox", booted.ID, "host", AnthropicAPIHost,
+				"sandbox", booted.ID, "host", agentProfile.CredentialedHost,
 				"hint", "set ANTHROPIC_AUTH_TOKEN (auth-token path) or configure NEXUS3_DEDICATED_CRED_STORE (OAuth path)")
 		}
 	} else {
@@ -968,7 +975,6 @@ func secretSpecsFromBinds(binds []SecretBind) []string {
 	}
 	return out
 }
-
 
 // namedVolumeAttachments converts NamedVolumeMount slice to domain.VolumeAttachment
 // slice for storage on the sandbox record (MountedVolumes field).
