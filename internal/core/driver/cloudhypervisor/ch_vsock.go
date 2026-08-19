@@ -135,6 +135,15 @@ func (d *CHDriver) DialGuest(ctx context.Context, id domain.SandboxID, port uint
 	reply, err := br.ReadString('\n')
 	if err != nil {
 		conn.Close()
+		if err == io.EOF {
+			// EOF here means the guest closed the connection before sending any
+			// reply — the vsock multiplexer is up (the AF_UNIX connect succeeded)
+			// but nothing is listening on port %d inside the VM yet.  This is
+			// the signature of a race between the host dialer and in-guest agent
+			// startup, not a transport fault.
+			return nil, fmt.Errorf("cloudhypervisor: dial guest %s: read handshake reply:"+
+				" EOF (guest agent not yet listening on vsock port %d — VM may still be starting up)", id, port)
+		}
 		return nil, fmt.Errorf("cloudhypervisor: dial guest %s: read handshake reply: %w", id, err)
 	}
 	reply = strings.TrimRight(reply, "\r\n")
