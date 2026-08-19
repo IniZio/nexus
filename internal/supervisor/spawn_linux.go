@@ -195,7 +195,8 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 	}
 	// Reap the detached child when it eventually exits so it does not become
 	// a zombie. Stdout/Stderr are file redirections so Wait does not block.
-	go func() { _ = cmd.Wait() }()
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
 	_ = logFile.Close()
 
 	spawnPid := cmd.Process.Pid
@@ -217,9 +218,55 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	_ = cmd.Process.Kill()
+	terminateSupervisor(spawnPid, exited, terminateSupervisorGrace)
 	if pipeW != nil {
 		pipeW.Close()
 	}
 	return 0, nil, fmt.Errorf("spawn supervisor: timed out waiting for %s (pid %d)", pidfile, spawnPid)
+}
+
+// terminateSupervisorGrace is how long terminateSupervisor waits for a SIGTERM'd
+// supervisor to tear its VM down before escalating to SIGKILL.
+const terminateSupervisorGrace = 10 * time.Second
+
+// terminateSupervisor shuts down a supervisor that never reported READY,
+// escalating SIGTERM → SIGKILL.
+//
+// SIGKILL alone orphans the VM. Reproduced 2026-08-19 on the launch path: the
+// process tree is supervisor → netns child → cloud-hypervisor, and the netns
+// child is its own process-group leader (netnsChildAttr sets Setpgid with
+// CLONE_NEWUSER|CLONE_NEWNET). SIGKILLing the supervisor left the netns child
+// reparented to PID 1 and cloud-hypervisor still serving the VM, while the
+// caller's cleanup deleted the sandbox record — a running VM with no record,
+// exactly the orphan class the reaper exists to eliminate.
+//
+// Pdeathsig does not cover this. It is set on cloud-hypervisor relative to its
+// own parent (the netns child), so it fires when the netns child dies — not
+// when the supervisor above it does.
+//
+// Killing the process group does not cover it either: Setsid makes the
+// supervisor a group leader, but the netns child starts its own group, so
+// Kill(-supervisorPgid) stops at the supervisor.
+//
+// SIGTERM is what works, because the supervisor already knows how to tear its
+// own VM down: RunDetached listens on signal.NotifyContext(SIGTERM, SIGINT)
+// (supervisor.go:212) and its shutdown path calls svc.Remove/svc.Stop, which
+// stops the VM through the driver. SIGKILL remains as the last resort for a
+// supervisor wedged before it installed that handler — in which case the VM is
+// orphaned as before, and only `nexus3 reap` can reclaim it (TBD-PD-30).
+func terminateSupervisor(pid int, exited <-chan struct{}, grace time.Duration) {
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		return // already gone
+	}
+	// Wait on the reaping goroutine's channel rather than polling Kill(pid, 0):
+	// a process that has exited but not yet been reaped is a zombie, and
+	// Kill(pid, 0) succeeds against a zombie. Polling would therefore report a
+	// cleanly-exited supervisor as still running and escalate to SIGKILL for no
+	// reason. The channel closes only after Wait returns, which is unambiguous.
+	select {
+	case <-exited:
+		return // shut down on its own; its VM went with it
+	case <-time.After(grace):
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
 }
