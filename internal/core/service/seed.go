@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -384,8 +385,8 @@ const (
 // in the host environment (direct-SDK API key present), and kindOAuth
 // otherwise. It is the default resolver used when no explicit per-sandbox kind
 // is set in [CreateAndBootOptions.AgentCredKind].
-func resolveAgentCredKind() agentCredKind {
-	if os.Getenv("ANTHROPIC_AUTH_TOKEN") != "" {
+func resolveAgentCredKind(profile cred.AgentProfile) agentCredKind {
+	if profile.APIKeyEnvVar != "" && os.Getenv(profile.APIKeyEnvVar) != "" {
 		return kindAuthToken
 	}
 	return kindOAuth
@@ -448,7 +449,7 @@ func seedGuestAgent(
 	// Resolve the credential kind: honour an explicit per-sandbox override;
 	// fall back to the process-environment resolver for unset callers.
 	if kind == kindUnset {
-		kind = resolveAgentCredKind()
+		kind = resolveAgentCredKind(profile)
 	}
 
 	hosts := AgentEgressHosts(profile)
@@ -461,7 +462,10 @@ func seedGuestAgent(
 		records = append(records, rec)
 	}
 
-	payload := buildAgentSeedPayload(records, kind, profile)
+	payload, err := buildAgentSeedPayload(records, kind, profile)
+	if err != nil {
+		return nil, fmt.Errorf("seed agent: %w", err)
+	}
 	if err := seeder(ctx, id, payload); err != nil {
 		return nil, fmt.Errorf("seed agent: deliver to guest: %w", err)
 	}
@@ -484,37 +488,56 @@ func seedGuestAgent(
 // PlaceholderRecord carries ONLY the placeholder string, ExpiresAt, SandboxID,
 // and Host — never the real token. This function cannot embed the real token
 // regardless of what was passed to RegisterPlaceholder or SetRealToken.
-func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind, profile cred.AgentProfile) []byte {
+func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind, profile cred.AgentProfile) ([]byte, error) {
+	// Which env var carries the credential is a property of the agent and of
+	// the chosen path, never a literal here: a hardcoded name would be handed
+	// to every agent regardless of what it actually reads.
+	credEnvVar := profile.PlaceholderEnvVar // OAuth subscription path
+	if kind == kindAuthToken {
+		credEnvVar = profile.APIKeyEnvVar // direct API-key path (D-P4-02 / ToS rail)
+	}
+	if credEnvVar == "" {
+		return nil, fmt.Errorf("agent %q declares no credential env var for the selected path", profile.Name)
+	}
+
 	var buf bytes.Buffer
 	buf.Write(buildSeedPayload(records))
 
-	// Emit exactly one credential-kind var for api.anthropic.com.
-	// Both vars produce Authorization: Bearer <placeholder> on outbound requests;
-	// the MITM proxy swaps the placeholder host-side on each forwarded request.
+	// Emit exactly one credential var, for the host the real token
+	// authenticates to. Either name produces Authorization: Bearer
+	// <placeholder> on outbound requests; the MITM proxy swaps the placeholder
+	// host-side on each forwarded request.
+	found := false
 	for _, rec := range records {
 		if rec.Host == profile.CredentialedHost {
-			switch kind {
-			case kindAuthToken:
-				// Direct-SDK API-key path (D-P4-02 / ToS rail).
-				fmt.Fprintf(&buf, "ANTHROPIC_AUTH_TOKEN=%s\n", rec.Placeholder)
-			default:
-				// OAuth subscription path (Milestone A default).
-				// The var name comes from the profile so different agent types
-				// (future) can use their own credential env var.
-				fmt.Fprintf(&buf, "%s=%s\n", profile.PlaceholderEnvVar, rec.Placeholder)
-			}
+			fmt.Fprintf(&buf, "%s=%s\n", credEnvVar, rec.Placeholder)
+			found = true
 			break
 		}
 	}
+	if !found {
+		// Seeding a guest with no credential at all is worse than failing: the
+		// agent starts, reaches the API unauthenticated, and the cause shows up
+		// as an opaque 401 from inside the VM.
+		return nil, fmt.Errorf("agent %q: no placeholder minted for credentialed host %q",
+			profile.Name, profile.CredentialedHost)
+	}
 
-	// NODE_EXTRA_CA_CERTS makes Node.js (claude's runtime) trust the MITM
-	// proxy CA cert directly, without running update-ca-certificates.
-	fmt.Fprintf(&buf, "NODE_EXTRA_CA_CERTS=%s\n", GuestCACertPath)
+	// Runtimes that read a CA bundle from the environment trust the MITM proxy
+	// this way, without update-ca-certificates having run in the guest.
+	for _, name := range profile.CACertEnvVars {
+		fmt.Fprintf(&buf, "%s=%s\n", name, GuestCACertPath)
+	}
 
-	// Disable telemetry and auto-update traffic that would hit non-allowlisted
-	// hosts and be blocked by the egress perimeter.
-	fmt.Fprintf(&buf, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\n")
+	// Agent-specific fixed environment, sorted so the payload is byte-stable.
+	keys := make([]string, 0, len(profile.GuestEnv))
+	for k := range profile.GuestEnv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(&buf, "%s=%s\n", k, profile.GuestEnv[k])
+	}
 
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
-

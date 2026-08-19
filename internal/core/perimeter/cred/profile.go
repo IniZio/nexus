@@ -46,6 +46,41 @@ type AgentProfile struct {
 	// alias (and therefore mutate) the package-level profile value.
 	EgressHosts []string
 
+	// APIKeyEnvVar is the env var name for this agent's direct API-key
+	// credential path, as opposed to the OAuth subscription path carried by
+	// PlaceholderEnvVar (e.g. "ANTHROPIC_AUTH_TOKEN" for Claude Code). The
+	// guest is seeded with exactly one of the two.
+	//
+	// It doubles as the name of the HOST env var consulted to decide which of
+	// the two paths to take by default: an API key present in the host
+	// environment under this name selects the API-key path. Each agent looks
+	// only at its own variable, so an operator holding an Anthropic API key
+	// does not push a different agent onto its API-key path.
+	//
+	// Empty means this agent has no API-key path; only the OAuth path is
+	// available.
+	APIKeyEnvVar string
+
+	// CACertEnvVars names guest environment variables that must be set to the
+	// path of the MITM proxy's CA certificate inside the guest. Runtimes that
+	// read a CA bundle from the environment (Node.js via NODE_EXTRA_CA_CERTS)
+	// trust the proxy this way without a system CA-bundle update.
+	//
+	// The path itself is not stored here: it is a property of the guest
+	// filesystem layout, not of the agent, and lives with the seeding code.
+	CACertEnvVars []string
+
+	// GuestEnv is additional fixed environment this agent needs in the guest,
+	// merged into the credential seed payload. Use it for agent-specific
+	// switches such as suppressing telemetry that the egress allowlist would
+	// block anyway. Keys are emitted in sorted order so the payload is
+	// byte-stable across runs.
+	//
+	// It must never carry a credential: the seed payload is written to a file
+	// in the guest, and the whole design turns on the guest holding only
+	// placeholders.
+	GuestEnv map[string]string
+
 	// Capabilities holds host-enforced behavioural flags for this agent type.
 	Capabilities AgentCapabilities
 }
@@ -67,7 +102,16 @@ var ClaudeCodeProfile = AgentProfile{
 	CredentialedHost:  "api.anthropic.com",
 	// platform.claude.com is required by claude's OAuth subscription login
 	// flow; api.anthropic.com carries inference. Nothing else is reachable.
-	EgressHosts: []string{"api.anthropic.com", "platform.claude.com"},
+	EgressHosts:  []string{"api.anthropic.com", "platform.claude.com"},
+	APIKeyEnvVar: "ANTHROPIC_AUTH_TOKEN",
+	// claude runs on Node.js, which reads NODE_EXTRA_CA_CERTS directly and so
+	// trusts the MITM proxy without update-ca-certificates having run.
+	CACertEnvVars: []string{"NODE_EXTRA_CA_CERTS"},
+	GuestEnv: map[string]string{
+		// Telemetry and auto-update calls target hosts outside EgressHosts;
+		// left on, they retry against a default-deny perimeter.
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+	},
 	Capabilities: AgentCapabilities{
 		GuestNoSelfRefresh: true,
 	},

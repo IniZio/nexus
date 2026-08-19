@@ -64,8 +64,16 @@ func TestBuildAgentSeedPayloadPerSandboxCredKind(t *testing.T) {
 	}
 	profile := cred.ClaudeCodeProfile
 
-	oauthPayload := string(buildAgentSeedPayload(records, kindOAuth, profile))
-	authPayload := string(buildAgentSeedPayload(records, kindAuthToken, profile))
+	oauthBytes, err := buildAgentSeedPayload(records, kindOAuth, profile)
+	if err != nil {
+		t.Fatalf("buildAgentSeedPayload(kindOAuth): %v", err)
+	}
+	authBytes, err := buildAgentSeedPayload(records, kindAuthToken, profile)
+	if err != nil {
+		t.Fatalf("buildAgentSeedPayload(kindAuthToken): %v", err)
+	}
+	oauthPayload := string(oauthBytes)
+	authPayload := string(authBytes)
 
 	// --- kindOAuth assertions ---
 	if !strings.Contains(oauthPayload, "CLAUDE_CODE_OAUTH_TOKEN="+placeholder) {
@@ -94,7 +102,7 @@ func TestBuildAgentSeedPayloadPerSandboxCredKind(t *testing.T) {
 // callers that set nothing still get the OAuth placeholder — no regression.
 func TestResolveAgentCredKindDefaultIsOAuth(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
-	got := resolveAgentCredKind()
+	got := resolveAgentCredKind(cred.ClaudeCodeProfile)
 	if got != kindOAuth {
 		t.Errorf("expected kindOAuth (%d) with empty ANTHROPIC_AUTH_TOKEN, got %d", kindOAuth, got)
 	}
@@ -104,7 +112,7 @@ func TestResolveAgentCredKindDefaultIsOAuth(t *testing.T) {
 // the host environment causes resolveAgentCredKind to return kindAuthToken.
 func TestResolveAgentCredKindAuthTokenEnv(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sk-ant-test")
-	got := resolveAgentCredKind()
+	got := resolveAgentCredKind(cred.ClaudeCodeProfile)
 	if got != kindAuthToken {
 		t.Errorf("expected kindAuthToken (%d) with ANTHROPIC_AUTH_TOKEN set, got %d", kindAuthToken, got)
 	}
