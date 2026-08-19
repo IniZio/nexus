@@ -183,6 +183,24 @@ func (b *Broker) ResolveScoped(placeholder string, sandboxID domain.SandboxID) (
 	return e.realToken, true
 }
 
+// Placeholder returns the placeholder currently registered for the
+// (sandboxID, host) scope, and whether one exists.
+//
+// It returns ONLY the placeholder — never the real token. This is deliberate:
+// callers use it to build the guest's environment, and the guest must never
+// receive a real credential. The placeholder→real swap happens host-side in
+// the L7 MITM proxy. Adding a real-token accessor here would defeat the
+// zero-credential-in-guest invariant this package exists to enforce.
+func (b *Broker) Placeholder(sandboxID domain.SandboxID, host string) (string, bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	e, ok := b.byScope[scope{sandboxID: sandboxID, host: host}]
+	if !ok {
+		return "", false
+	}
+	return e.placeholder, true
+}
+
 // SetRealToken updates the host-side real token for an existing (sandboxID,
 // host) scope WITHOUT changing the placeholder. The guest is unaware of the
 // rotation; on the next Resolve call the new token is returned.

@@ -648,7 +648,7 @@ func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, agen
 		}
 	}
 
-	opts, _ := buildLaunchBootOpts(imageRef, cacheRoot, agentEgress, lazySeeder)
+	opts, broker := buildLaunchBootOpts(imageRef, cacheRoot, agentEgress, lazySeeder)
 
 	sb, err := service.CreateAndBoot(ctx, svc, imgCache, newDriver, probe,
 		"herdr", name, opts,
@@ -674,12 +674,39 @@ func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, agen
 	// process environment (before cmd.Env applies). PATH is still injected for
 	// the child's own subprocess lookups (claude shells out to bash, git, etc.).
 	// HOME is injected for credential path resolution (claude's OAuth files).
+	execEnv := map[string]string{
+		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME": "/root",
+	}
+
+	// Agent credential: CreateAndBoot's seeder writes the placeholder to a file
+	// inside the guest, but nothing sources that file before exec — the agent
+	// would start unauthenticated and exit "Not logged in" before any API
+	// contact. Read the placeholder back out of the broker and put it in the
+	// exec environment, which is where the agent actually looks.
+	//
+	// What crosses into the guest is the PLACEHOLDER, never the real token:
+	// Broker.Placeholder exposes no real-token field, and the L7 MITM proxy
+	// performs the placeholder→real swap host-side on the wire. NODE_EXTRA_CA_CERTS
+	// is required alongside it so the agent's Node runtime trusts that proxy's CA.
+	if agentEgress && broker != nil {
+		profile := opts.AgentProfile
+		if profile.PlaceholderEnvVar == "" {
+			profile = cred.ClaudeCodeProfile
+		}
+		if ph, ok := broker.Placeholder(sb.ID, profile.CredentialedHost); ok {
+			execEnv[profile.PlaceholderEnvVar] = ph
+			execEnv["NODE_EXTRA_CA_CERTS"] = service.GuestCACertPath
+		} else {
+			fmt.Fprintf(os.Stderr,
+				"__herdr-plugin launch: warning: no placeholder registered for %s; "+
+					"the agent will start unauthenticated\n", profile.CredentialedHost)
+		}
+	}
+
 	exitCode, err := svc.Exec(ctx, sb.ID.String(), agent.ExecOptions{
-		Argv: argv,
-		Env: map[string]string{
-			"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-			"HOME": "/root",
-		},
+		Argv:   argv,
+		Env:    execEnv,
 		Stdout: out.w,
 		Stderr: os.Stderr,
 	})
