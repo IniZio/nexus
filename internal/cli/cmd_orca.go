@@ -361,17 +361,13 @@ func buildOrcaSpawnConfig(
 	// source of truth for the cmdline fragment (leading space included).
 	arArgs := vmcfg.Resolve(vmcfg.Config{MemMaxMiB: memMaxMiB}).PID1Args
 
-	hostArg := " --sandbox-handle=" + sandboxHandleHostname(sandboxHandle)
-	var cmdline string
+	// One workspace mount, no shadow disks on the orca path (orcaNumShadowDisks=0).
+	// No mounts when there is no workspace disk or the guest path is unknown.
+	var mounts []agent.GuestMount
 	if hasWorkspaceDisk && guestPath != "" {
-		// One workspace mount, no shadow disks on the orca path (orcaNumShadowDisks=0).
-		wsMount := WorkspaceGuestMount(guestPath, workspaceDiskIndex)
-		cmdline = workspaceMountCmdline([]agent.GuestMount{wsMount}) + arArgs + hostArg
-	} else {
-		// Auto-resize (no workspace disk or guest path unknown).
-		// Auto-resize is unconditional so arArgs is always non-empty here.
-		cmdline = diskBootCmdlineBase + " --" + arArgs + hostArg
+		mounts = []agent.GuestMount{WorkspaceGuestMount(guestPath, workspaceDiskIndex)}
 	}
+	cmdline := guestBootCmdline(mounts, arArgs, sandboxHandle)
 
 	return supervisor.SpawnConfig{
 		Config: supervisor.Config{

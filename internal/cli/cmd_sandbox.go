@@ -639,6 +639,30 @@ func workspaceMountCmdline(mounts []agent.GuestMount) string {
 	return b
 }
 
+// guestBootCmdline assembles the complete kernel command line for a disk-boot
+// sandbox: the base boot args, one --workspace-mount token per guest mount, the
+// PID-1 auto-resize args, and the sandbox handle the guest adopts as its
+// hostname.
+//
+// Every path that boots a sandbox must produce the SAME cmdline for the same
+// inputs. `nexus3 sandbox create` boots the VM once and a detached supervisor
+// then re-boots it, reconstructing the cmdline from the sandbox record; if the
+// two disagree the VM comes back missing its mounts or its hostname, with
+// nothing failing loudly. That reconstruction used to be a hand-maintained copy
+// of this logic in cmd_orca.go, annotated "matching the logic in
+// cmd_sandbox.go" — the annotation is the bug report. There is now one
+// function, so the copies cannot drift.
+//
+// mounts may be empty: a sandbox with no workspace, shadow or live mounts boots
+// on the base args alone.
+func guestBootCmdline(mounts []agent.GuestMount, pid1Args, sandboxHandle string) string {
+	base := diskBootCmdlineBase + " --"
+	if len(mounts) > 0 {
+		base = workspaceMountCmdline(mounts)
+	}
+	return base + pid1Args + " --sandbox-handle=" + sandboxHandleHostname(sandboxHandle)
+}
+
 // builder-VM helpers
 
 // parseHumanBytes parses a human-readable byte count string (e.g. "8GiB",
@@ -1175,12 +1199,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		// Combine disk-based mounts (workspace + shadow) with virtiofs live mounts
 		// so workspaceMountCmdline emits one --workspace-mount arg per share.
 		allGuestMounts := append(bootGuestMounts, liveGuestMounts...)
-		hostArg := " --sandbox-handle=" + sandboxHandleHostname(project+"/"+name)
-		if len(allGuestMounts) > 0 {
-			cfg.Cmdline = workspaceMountCmdline(allGuestMounts) + ar.PID1Args + hostArg
-		} else {
-			cfg.Cmdline = diskBootCmdlineBase + " --" + ar.PID1Args + hostArg
-		}
+		cfg.Cmdline = guestBootCmdline(allGuestMounts, ar.PID1Args, project+"/"+name)
 		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
 			cfg.BinaryPath = p
 		}
@@ -1380,14 +1399,14 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			WorkspaceCapturer: bootCapturer,
 			BaseRef:           bootBaseRef, // GIT-SEED: host HEAD at capture time (D-PD-19/D-PD-29)
 			Secrets:           secrets,
-			AllowedHosts: f.allowHosts, // populated by --allow-host (empty = no curated list)
+			AllowedHosts:      f.allowHosts, // populated by --allow-host (empty = no curated list)
 			// D-PD-33: human sandboxes (sandbox create) default to open egress.
 			// --egress closed opts out: OpenEgress=false, ACL denies everything
 			// not in AllowedHosts. Agent sandboxes (orca, herdr) must NOT set
 			// OpenEgress=true — they use WireClaudeEgress with a curated allowlist.
 			OpenEgress:        !f.egressClosed,
 			AllowedRepo:       f.allowedRepo, // D-PD-36: set by --repo; empty for open-egress sandboxes
-			Volumes:           namedVS,        // SD2-6-MOUNT: nil when --mount-named not used
+			Volumes:           namedVS,       // SD2-6-MOUNT: nil when --mount-named not used
 			NamedVolumeMounts: namedMounts,
 			LiveMounts:        bootLiveMounts, // D-PD-53: populated from --mount flags
 		},
