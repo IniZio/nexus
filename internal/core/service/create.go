@@ -713,10 +713,16 @@ func CreateAndBoot(
 	// once it gains a reachability probe — /run is tmpfs and does not survive
 	// a guest restart. That wiring is deferred until the restart probe exists.
 	// D-PD-23: no agent sandbox may carry a GitHub secret bind, whichever way
-	// it was declared an agent sandbox — by asking for the credential seed, or
-	// by naming an agent profile. The guard was on UseAgentSeed alone, which a
-	// `sandbox create --agent` never sets: it names its agent and lets the
-	// detached supervisor do the seeding.
+	// it was declared an agent sandbox — by asking for the credential seed
+	// (UseAgentSeed), or by naming an agent profile (`sandbox create --agent`,
+	// which never sets UseAgentSeed: it names its agent and leaves the seeding
+	// to the detached supervisor).
+	//
+	// This refusal is deliberately SEPARATE from the seeding block below.
+	// Folding it in would make naming an agent also request a CLI-side seed,
+	// and a CLI-side seed on that path mints placeholders that the
+	// supervisor's reboot discards — /run is tmpfs — leaving the guest and
+	// the proxy disagreeing about which placeholder to swap.
 	if opts.UseAgentSeed || agentProfile.Name != "" {
 		for _, b := range opts.Secrets {
 			if SecretTouchesGitHub(b) {
@@ -733,6 +739,9 @@ func CreateAndBoot(
 				return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, ErrAgentGitHubSecret)
 			}
 		}
+	}
+
+	if opts.UseAgentSeed {
 		// agentProfile was resolved above and is the same value recorded as
 		// sb.AgentName, so the guest seed and the sandbox record cannot diverge.
 		recs, err := seedGuestAgent(ctx, opts.Broker, booted.ID, opts.Seeder, agentProfile, opts.AgentCredKind)
