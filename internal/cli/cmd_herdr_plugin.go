@@ -729,75 +729,147 @@ func verifyLaunchPerimeterSeed(ctx context.Context, svc *service.Service, id str
 // MITM proxy, credential broker, CA seed, placeholder seed. The agent then runs
 // with the guest's seeded placeholder, and the proxy swaps it for the real
 // bearer token host-side, on the wire. The real token never enters the guest.
-func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, agentEgress bool, out *Output) error {
+// launchDeps is the injectable surface of the launch path (TBD-PD-31).
+//
+// herdrPluginLaunch used to build its service, driver factory and supervisor
+// handoff inline, which left no way to drive the real function from a test. The
+// wiring was guarded instead by an AST tripwire that parsed this file and
+// asserted the three calls appeared in it — which proves the call sites EXIST,
+// not that they run, not that their arguments are right, and not that the
+// perimeter comes up. That is the same blind spot as the options-shape tests it
+// replaced, displaced one layer.
+//
+// With the dependencies injected, a fake-driver test drives runHerdrLaunch and
+// observes whether the handoff actually happened.
+type launchDeps struct {
+	svc        *service.Service
+	imgCache   *image.Cache
+	newDriver  service.DriverFactory
+	probe      service.ProbeFunc
+	storeRoot  string
+	kernelPath string
+	cacheRoot  string
+
+	// capturedDiskPath returns the per-sandbox ext4 path the driver factory
+	// saw. It is a function because the value is only known after
+	// CreateAndBoot has called the factory.
+	capturedDiskPath func() string
+
+	// handoff hands the booted VM to a detached perimeter supervisor and
+	// returns the watchdog pipe and the supervisor's IPC socket path.
+	handoff func(ctx context.Context, svc *service.Service, sb domain.Sandbox,
+		storeRoot, kernelPath, diskPath string, extraDisks []string) (*os.File, string, error)
+
+	// verifySeed checks the guest received the placeholder credential and the
+	// CA certificate the agent cannot run without.
+	verifySeed func(ctx context.Context, svc *service.Service, id string) error
+
+	// stopSupervisor and waitForExit tear the detached supervisor down.
+	stopSupervisor func(ctx context.Context, sock string) error
+	waitForExit    func(ctx context.Context, stateDir string) error
+
+	// execInGuest runs the command inside the booted sandbox.
+	execInGuest func(ctx context.Context, ref string, opts agent.ExecOptions) (int32, error)
+}
+
+// newLaunchDeps builds the production dependency set: a real service, a
+// cloud-hypervisor driver factory, and the real supervisor handoff.
+func newLaunchDeps() (launchDeps, error) {
+	var d launchDeps
+
 	// Preflight: validate the kernel path before store/cache/service setup so
 	// that a missing/misconfigured NEXUS3_KERNEL_PATH surfaces immediately with
 	// an actionable error rather than after expensive work inside CreateAndBoot.
 	kernelPath, err := resolveKernelPath()
 	if err != nil {
-		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: " + err.Error(), Err: err}
+		return d, err
 	}
-
 	storeRoot, err := store.DefaultRoot()
 	if err != nil {
-		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: resolve store: " + err.Error(), Err: err}
+		return d, fmt.Errorf("resolve store: %w", err)
 	}
 	cacheRoot := filepath.Join(storeRoot, "images")
-
 	imgCache, err := image.NewCache(cacheRoot)
 	if err != nil {
-		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: open image cache: " + err.Error(), Err: err}
+		return d, fmt.Errorf("open image cache: %w", err)
 	}
-
 	svc, err := newSandboxService()
 	if err != nil {
-		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: " + err.Error(), Err: err}
+		return d, err
 	}
 
 	// capturedDiskPath is the per-sandbox ext4 copy CreateAndBoot resolves. The
 	// supervisor re-boots from the same file, so it must be captured here — the
 	// factory is the only place the CLI sees it.
-	var capturedDiskPath string
+	var diskPath string
 
 	// newDriver mirrors cmd_sandbox.go's factory: socket/log paths use default
 	// locations so that svc.driver (from SelectSubstrate, same SocketDir) can
 	// reach the vsock file for svc.Exec after CreateAndBoot returns.
 	newDriver := service.DriverFactory(func(ext4Path string, _ []service.ExtraDisk) (driver.Driver, error) {
-		capturedDiskPath = ext4Path
+		diskPath = ext4Path
 		cfg := buildCHConfig(kernelPath, ext4Path, 0, 0)
-		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
+		if p, lookErr := exec.LookPath("cloud-hypervisor"); lookErr == nil {
 			cfg.BinaryPath = p
 		}
 		return cloudhypervisor.New(cfg)
 	})
 
-	// probe polls vsock until the guest agent's listener accepts. Mirrors the
-	// exact probe in cmd_sandbox.go (runSandboxCreate).
-	probe := func(pCtx context.Context, drv driver.Driver, id domain.SandboxID) error {
-		gd, ok := drv.(driver.GuestDialer)
-		if !ok {
+	return launchDeps{
+		svc:              svc,
+		imgCache:         imgCache,
+		newDriver:        newDriver,
+		probe:            waitForGuestAgent,
+		storeRoot:        storeRoot,
+		kernelPath:       kernelPath,
+		cacheRoot:        cacheRoot,
+		capturedDiskPath: func() string { return diskPath },
+		handoff:          handoffLaunchSupervisor,
+		verifySeed:       verifyLaunchPerimeterSeed,
+		stopSupervisor:   supervisor.StopSupervisor,
+		waitForExit:      supervisor.WaitForExit,
+		execInGuest:      svc.Exec,
+	}, nil
+}
+
+// waitForGuestAgent polls vsock until the guest agent's listener accepts.
+// Mirrors the probe in cmd_sandbox.go (runSandboxCreate).
+func waitForGuestAgent(pCtx context.Context, drv driver.Driver, id domain.SandboxID) error {
+	gd, ok := drv.(driver.GuestDialer)
+	if !ok {
+		return nil
+	}
+	for {
+		if pCtx.Err() != nil {
+			return pCtx.Err()
+		}
+		dialCtx, cancel := context.WithTimeout(pCtx, 2*time.Second)
+		conn, dialErr := gd.DialGuest(dialCtx, id, driver.AgentControlPort)
+		cancel()
+		if dialErr == nil {
+			_ = conn.Close()
 			return nil
 		}
-		for {
-			if pCtx.Err() != nil {
-				return pCtx.Err()
-			}
-			dialCtx, cancel := context.WithTimeout(pCtx, 2*time.Second)
-			conn, dialErr := gd.DialGuest(dialCtx, id, driver.AgentControlPort)
-			cancel()
-			if dialErr == nil {
-				_ = conn.Close()
-				return nil
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
+		time.Sleep(300 * time.Millisecond)
 	}
+}
 
+func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, agentEgress bool, out *Output) error {
+	d, err := newLaunchDeps()
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: " + err.Error(), Err: err}
+	}
+	return runHerdrLaunch(ctx, d, imageRef, argv, agentEgress, out)
+}
+
+// runHerdrLaunch is the launch path proper, driven entirely through d so a test
+// can supply a fake driver and observe whether the perimeter handoff happens.
+func runHerdrLaunch(ctx context.Context, d launchDeps, imageRef string, argv []string, agentEgress bool, out *Output) error {
 	// Unique name per invocation to prevent ErrAlreadyExists on retry or concurrent runs.
 	name := fmt.Sprintf("run-%x", time.Now().UnixNano())
 
-	sb, err := service.CreateAndBoot(ctx, svc, imgCache, newDriver, probe,
-		"herdr", name, buildLaunchBootOpts(imageRef, cacheRoot, agentEgress),
+	sb, err := service.CreateAndBoot(ctx, d.svc, d.imgCache, d.newDriver, d.probe,
+		"herdr", name, buildLaunchBootOpts(imageRef, d.cacheRoot, agentEgress),
 	)
 	if err != nil {
 		return &CodedError{Code: sandboxCodeFor(err), Msg: "__herdr-plugin launch: boot: " + err.Error(), Err: err}
@@ -816,9 +888,9 @@ func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, agen
 		// before the fallback Remove below runs.
 		if supSock != "" {
 			stopCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			if err := supervisor.StopSupervisor(stopCtx, supSock); err != nil {
+			if err := d.stopSupervisor(stopCtx, supSock); err != nil {
 				fmt.Fprintf(os.Stderr, "__herdr-plugin launch: cleanup: stop supervisor: %v\n", err)
-			} else if err := supervisor.WaitForExit(stopCtx, filepath.Dir(supSock)); err != nil {
+			} else if err := d.waitForExit(stopCtx, filepath.Dir(supSock)); err != nil {
 				fmt.Fprintf(os.Stderr, "__herdr-plugin launch: cleanup: wait for supervisor exit: %v\n", err)
 			}
 			cancel()
@@ -830,21 +902,21 @@ func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, agen
 		// before removing the record). Remove internally stops the VM.
 		rmCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := svc.Remove(rmCtx, sb.ID.String()); err != nil && !errors.Is(err, store.ErrNotFound) {
+		if err := d.svc.Remove(rmCtx, sb.ID.String()); err != nil && !errors.Is(err, store.ErrNotFound) {
 			fmt.Fprintf(os.Stderr, "__herdr-plugin launch: cleanup: remove %s: %v\n", sb.ID, err)
 		}
 	}()
 
 	execArgv := argv
 	if agentEgress {
-		w, sock, err := handoffLaunchSupervisor(ctx, svc, sb, storeRoot, kernelPath, capturedDiskPath, nil)
+		w, sock, err := d.handoff(ctx, d.svc, sb, d.storeRoot, d.kernelPath, d.capturedDiskPath(), nil)
 		if err != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: " + err.Error(), Err: err}
 		}
 		supWatchdog, supSock = w, sock
 
 		seedCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		seedErr := verifyLaunchPerimeterSeed(seedCtx, svc, sb.ID.String())
+		seedErr := d.verifySeed(seedCtx, d.svc, sb.ID.String())
 		cancel()
 		if seedErr != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin launch: " + seedErr.Error(), Err: seedErr}
@@ -868,7 +940,7 @@ func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, agen
 		"HOME": "/root",
 	}
 
-	exitCode, err := svc.Exec(ctx, sb.ID.String(), agent.ExecOptions{
+	exitCode, err := d.execInGuest(ctx, sb.ID.String(), agent.ExecOptions{
 		Argv:   execArgv,
 		Env:    execEnv,
 		Stdout: out.w,
