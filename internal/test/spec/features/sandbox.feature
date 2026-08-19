@@ -42,3 +42,33 @@ Feature: Sandbox capabilities — doc-as-spec badge reconciliation
     Given the nexus3 CLI
     When an agent requests a launch for task "my-task"
     Then a new sandbox is created for the agent task
+
+  # ── Scenario 4: BUILT ────────────────────────────────────────────────────
+  # Capability: D-PD-53 guard — fork and snapshot refuse any sandbox that
+  #             carries live host-directory mounts.
+  # Badge:      no danger/warning badge → built.
+  # Docs ref:   docs/site/cli/sandbox-commands.md (fork / snapshot sections).
+  # Expected outcome: PASS — service.Fork and service.Snapshot both return an
+  #             error whose message cites "D-PD-53".
+  @badge-built
+  Scenario: Fork and snapshot refuse a sandbox with live host-directory mounts
+    Given a sandbox with a live host-directory mount exists in the store
+    When I fork the sandbox
+    Then the error cites "D-PD-53"
+    When I snapshot the sandbox
+    Then the error cites "D-PD-53"
+
+  # ── Scenario 5: BUILT (negative control) ─────────────────────────────────
+  # Capability: D-PD-53 guard is not over-broad.
+  # Badge:      no danger/warning badge → built.
+  # Docs ref:   docs/site/cli/sandbox-commands.md (fork / snapshot sections).
+  # Expected outcome: PASS — a sandbox with no live mounts reaches the driver
+  #             layer without D-PD-53 refusal.  The fake driver then fails for
+  #             an unrelated reason (ErrNoSubstrate) which does not cite D-PD-53.
+  @badge-built
+  Scenario: Fork and snapshot do not cite D-PD-53 for a sandbox with no live mounts
+    Given a sandbox with no live mounts exists in the store
+    When I fork the sandbox
+    Then the error does not cite "D-PD-53"
+    When I snapshot the sandbox
+    Then the error does not cite "D-PD-53"

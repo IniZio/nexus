@@ -34,11 +34,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/cucumber/godog"
 	"github.com/IniZio/nexus3/internal/cli"
+	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus3/internal/core/store"
 	testharness "github.com/IniZio/nexus3/internal/test/harness"
 )
 
@@ -46,9 +49,12 @@ import (
 
 type specCtx struct {
 	svc        *service.Service
+	st         *store.FileStore
 	listLen    int
 	cmdFound   bool
 	hadPending bool // set by any step that explicitly returns (or wraps) ErrPending
+	seededID   string
+	lastErr    error
 }
 
 type ctxKey struct{}
@@ -66,7 +72,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 		if err != nil {
 			return ctx, fmt.Errorf("harness.New: %w", err)
 		}
-		return context.WithValue(ctx, ctxKey{}, &specCtx{svc: h.Svc}), nil
+		return context.WithValue(ctx, ctxKey{}, &specCtx{svc: h.Svc, st: h.St}), nil
 	})
 
 	// After each scenario: enforce stale-badge invariant.
@@ -222,6 +228,85 @@ func registerSteps(sc *godog.ScenarioContext) {
 			}
 			return gctx, nil
 		})
+
+	// ── Scenarios 4–5: BUILT — D-PD-53 live-mount guard ──────────────────
+	// Docs:    docs/site/cli/sandbox-commands.md (fork / snapshot sections).
+	//          No danger/warning badge → capability is fully built.
+	// Scenario 4: refusal path — a sandbox with a live host-directory mount
+	//             must be refused by both Fork and Snapshot, citing D-PD-53.
+	// Scenario 5: negative control — a sandbox with no live mounts must NOT
+	//             trigger the D-PD-53 guard (proves the guard is not over-broad).
+
+	sc.Step(`^a sandbox with a live host-directory mount exists in the store$`,
+		func(gctx context.Context) error {
+			s := gctx.Value(ctxKey{}).(*specCtx)
+			sb := domain.Sandbox{
+				ID:         domain.NewSandboxID(),
+				Name:       "sb-live-mount",
+				Project:    "spec-d-pd-53",
+				State:      domain.Running,
+				Envelope:   domain.Envelope{ImageDigest: "sha256:spec-d-pd-53"},
+				InstanceID: "inst-spec-d-pd-53",
+				LiveMounts: []domain.LiveMount{
+					{HostPath: "/spec/host/project", GuestPath: "/workspace", ReadOnly: false},
+				},
+			}
+			if err := s.st.Create(context.Background(), sb); err != nil {
+				return fmt.Errorf("seed sandbox with live mount: %w", err)
+			}
+			s.seededID = sb.ID.String()
+			return nil
+		})
+
+	sc.Step(`^a sandbox with no live mounts exists in the store$`,
+		func(gctx context.Context) error {
+			s := gctx.Value(ctxKey{}).(*specCtx)
+			sb := domain.Sandbox{
+				ID:         domain.NewSandboxID(),
+				Name:       "sb-no-live-mounts",
+				Project:    "spec-d-pd-53-clean",
+				State:      domain.Running,
+				Envelope:   domain.Envelope{ImageDigest: "sha256:spec-d-pd-53-clean"},
+				InstanceID: "inst-spec-d-pd-53-clean",
+				LiveMounts: nil,
+			}
+			if err := s.st.Create(context.Background(), sb); err != nil {
+				return fmt.Errorf("seed sandbox with no live mounts: %w", err)
+			}
+			s.seededID = sb.ID.String()
+			return nil
+		})
+
+	sc.Step(`^I fork the sandbox$`, func(gctx context.Context) error {
+		s := gctx.Value(ctxKey{}).(*specCtx)
+		_, s.lastErr = s.svc.Fork(context.Background(), s.seededID, 1)
+		return nil
+	})
+
+	sc.Step(`^I snapshot the sandbox$`, func(gctx context.Context) error {
+		s := gctx.Value(ctxKey{}).(*specCtx)
+		_, s.lastErr = s.svc.Snapshot(context.Background(), s.seededID)
+		return nil
+	})
+
+	sc.Step(`^the error cites "([^"]*)"$`, func(gctx context.Context, marker string) error {
+		s := gctx.Value(ctxKey{}).(*specCtx)
+		if s.lastErr == nil {
+			return fmt.Errorf("expected an error citing %q but got nil", marker)
+		}
+		if !strings.Contains(s.lastErr.Error(), marker) {
+			return fmt.Errorf("error does not cite %q: %v", marker, s.lastErr)
+		}
+		return nil
+	})
+
+	sc.Step(`^the error does not cite "([^"]*)"$`, func(gctx context.Context, marker string) error {
+		s := gctx.Value(ctxKey{}).(*specCtx)
+		if s.lastErr != nil && strings.Contains(s.lastErr.Error(), marker) {
+			return fmt.Errorf("unexpected %q refusal: %v", marker, s.lastErr)
+		}
+		return nil
+	})
 }
 
 // ── test entry point ──────────────────────────────────────────────────────────
