@@ -139,6 +139,26 @@ func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, o
 		}
 	}
 
+	// Shadow disks are correlated by HANDLE, not ULID, so the ULID-keyed
+	// inFlight map above cannot answer "is a create for this handle running?".
+	// Shadow intents carry that answer; probe their leases the same way
+	// (TBD-PD-25). Maps safeHandle → the reason to report for keeping it.
+	inFlightShadow := make(map[string]string)
+	for _, res := range resources {
+		if res.Kind != KindShadowIntent {
+			continue
+		}
+		switch probeIntentLease(res.Path) {
+		case leaseHeld:
+			inFlightShadow[res.ShadowHandle] = fmt.Sprintf(
+				"create in flight: shadow intent lease held for handle %q", res.ShadowHandle)
+		case leaseUnknown:
+			inFlightShadow[res.ShadowHandle] = fmt.Sprintf(
+				"shadow intent unreadable, cannot rule out a live creator — keeping indefinitely; "+
+					"inspect %s (this keep does not expire on its own)", res.Path)
+		}
+	}
+
 	all, err := st.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("reap: list store records: %w", err)
@@ -169,9 +189,10 @@ func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, o
 
 	for _, res := range resources {
 		var entry ReapEntry
-		if res.Kind == KindDiskShadow {
-			// Shadow disks use handle-based correlation, not ULID/liveness.
-			entry = classifyShadowDisk(res, shadowHandleMap)
+		if res.Kind == KindDiskShadow || res.Kind == KindShadowIntent {
+			// Shadow disks and their intents use handle-based correlation,
+			// not ULID/liveness.
+			entry = classifyShadowDisk(res, shadowHandleMap, inFlightShadow)
 		} else {
 			entry = classifyResource(ctx, res, recordMap, inFlight, socketDir, opt.ProcDir)
 		}
@@ -198,10 +219,23 @@ func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, o
 // free). classifyShadowDisk receives the pre-built handleMap (which required
 // record access) and applies the ownership decision here, in the classification
 // phase. This keeps the record-free invariant on ResourceIndex.List().
-func classifyShadowDisk(res HostResource, handleMap map[string]domain.SandboxID) ReapEntry {
+func classifyShadowDisk(
+	res HostResource,
+	handleMap map[string]domain.SandboxID,
+	inFlightShadow map[string]string,
+) ReapEntry {
 	entry := ReapEntry{
 		Resource:       res,
 		AllocatedBytes: allocatedBytes(res.Path),
+	}
+	// In-flight check FIRST. During a create the owning handle has no committed
+	// record yet, so handleMap cannot see it and every subsequent branch would
+	// conclude "orphan" — deleting a live sandbox's shadow disks mid-create,
+	// which is the defect this ordering exists to prevent (TBD-PD-25).
+	if reason, ok := inFlightShadow[res.ShadowHandle]; ok && res.ShadowHandle != "" {
+		entry.Status = ReapStatusLive
+		entry.Reason = reason
+		return entry
 	}
 	if res.ShadowHandle == "" {
 		// Legacy format (*.shadow.ext4): no embedded handle, no owning sandbox.
@@ -210,13 +244,17 @@ func classifyShadowDisk(res HostResource, handleMap map[string]domain.SandboxID)
 		entry.Reason = "legacy shadow disk (no embedded sandbox handle)"
 		return entry
 	}
+	noun := "shadow disk"
+	if res.Kind == KindShadowIntent {
+		noun = "shadow intent"
+	}
 	if ownerID, ok := handleMap[res.ShadowHandle]; ok {
 		entry.Status = ReapStatusOwned
-		entry.Reason = fmt.Sprintf("shadow disk owned by sandbox %s (handle=%s)", ownerID, res.ShadowHandle)
+		entry.Reason = fmt.Sprintf("%s owned by sandbox %s (handle=%s)", noun, ownerID, res.ShadowHandle)
 		return entry
 	}
 	entry.Status = ReapStatusOrphan
-	entry.Reason = fmt.Sprintf("shadow disk handle %q matches no live sandbox", res.ShadowHandle)
+	entry.Reason = fmt.Sprintf("%s handle %q matches no live sandbox", noun, res.ShadowHandle)
 	return entry
 }
 

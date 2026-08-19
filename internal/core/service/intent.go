@@ -246,43 +246,57 @@ func writeCreateIntent(diskDir string, id domain.SandboxID, diskCopyPath, worksp
 	if err != nil {
 		return nil, fmt.Errorf("create intent: marshal: %w", err)
 	}
+	return publishLeasedIntent(diskDir, intentPath, data, "create intent")
+}
 
+// publishLeasedIntent writes data to intentPath durably and returns a held
+// lease, performing the stage → flock → write → fsync → rename → dir-fsync
+// sequence documented on writeCreateIntent.
+//
+// It is shared by the ULID-keyed create intent and the handle-keyed shadow
+// intent so the two cannot drift: the lease-before-visibility property is the
+// whole reason either file is safe to leave lying around, and re-deriving it
+// per intent kind is how one of them ends up publishing an unleased file.
+//
+// label prefixes error messages so a failure names the intent kind.
+func publishLeasedIntent(dir, intentPath string, data []byte, label string) (*createIntentLease, error) {
 	// Stage under a name the reaper's index does not match, so the intent is
 	// never discoverable before its lease is held.
 	stagePath := intentPath + ".tmp"
 	f, err := os.OpenFile(stagePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("create intent: open %s: %w", stagePath, err)
+		return nil, fmt.Errorf("%s: open %s: %w", label, stagePath, err)
 	}
 	lease := &createIntentLease{path: intentPath, f: f}
 
-	// Take the lease. Non-blocking: the staging path is unique to this ULID, so
-	// a conflict means something is badly wrong and blocking would hang a create.
+	// Take the lease. Non-blocking: the staging path is unique to this owner,
+	// so a conflict means something is badly wrong and blocking would hang a
+	// create.
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		lease.abort(stagePath)
-		return nil, fmt.Errorf("create intent: lease %s: %w", stagePath, err)
+		return nil, fmt.Errorf("%s: lease %s: %w", label, stagePath, err)
 	}
 	if _, err := f.Write(data); err != nil {
 		lease.abort(stagePath)
-		return nil, fmt.Errorf("create intent: write %s: %w", stagePath, err)
+		return nil, fmt.Errorf("%s: write %s: %w", label, stagePath, err)
 	}
 	// Sync file data before it becomes visible. intentFileSyncer is a
 	// package-level seam so tests can assert this call without relying on
 	// page-cache reads.
 	if err := intentFileSyncer(f); err != nil {
 		lease.abort(stagePath)
-		return nil, fmt.Errorf("create intent: sync %s: %w", stagePath, err)
+		return nil, fmt.Errorf("%s: sync %s: %w", label, stagePath, err)
 	}
 	// Atomic publish. The flock follows the inode, so the intent appears
 	// already leased.
 	if err := os.Rename(stagePath, intentPath); err != nil {
 		lease.abort(stagePath)
-		return nil, fmt.Errorf("create intent: publish %s: %w", intentPath, err)
+		return nil, fmt.Errorf("%s: publish %s: %w", label, intentPath, err)
 	}
 	// Sync the directory entry. intentDirSyncer is a seam for the same reason.
-	if err := intentDirSyncer(diskDir); err != nil {
+	if err := intentDirSyncer(dir); err != nil {
 		lease.release()
-		return nil, fmt.Errorf("create intent: sync dir %s: %w", diskDir, err)
+		return nil, fmt.Errorf("%s: sync dir %s: %w", label, dir, err)
 	}
 	return lease, nil
 }

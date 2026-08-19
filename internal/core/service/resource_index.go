@@ -19,6 +19,7 @@ const (
 	KindDiskWorkspace     ResourceKind = "disk_workspace"
 	KindDiskShadow        ResourceKind = "disk_shadow"        // shadow disk (handle-keyed, not ULID-keyed)
 	KindCreateIntent      ResourceKind = "create_intent"      // <diskDir>/<ULID>.create-intent.json
+	KindShadowIntent      ResourceKind = "shadow_intent"      // <diskDir>/<safeHandle>.shadow-intent.json
 	KindSocketAPI         ResourceKind = "socket_api"
 	KindSocketVSock       ResourceKind = "socket_vsock"
 	KindSocketIID         ResourceKind = "socket_iid"
@@ -30,7 +31,8 @@ type HostResource struct {
 	Kind    ResourceKind
 	Path    string
 	OwnerID domain.SandboxID // zero for KindDiskShadow (handle-keyed)
-	// ShadowHandle is the B1-format safeHandle for KindDiskShadow resources:
+	// ShadowHandle is the B1-format safeHandle for KindDiskShadow and
+	// KindShadowIntent resources:
 	// the sandbox handle with "/" replaced by "_". Empty for legacy shadow
 	// disks (*.shadow.ext4) and for all other resource kinds. Correlate
 	// against live sandboxes via strings.ReplaceAll(sb.Handle(), "/", "_").
@@ -124,6 +126,17 @@ func (x *ResourceIndex) List() ([]HostResource, error) {
 				continue
 			}
 			resources = append(resources, HostResource{Kind: KindDiskWorkspace, Path: path, OwnerID: id})
+
+		case strings.HasSuffix(name, shadowIntentSuffix):
+			// Shadow intent: published before any shadow disk for this handle
+			// is materialised, deleted on clean completion. A surviving intent
+			// means the create died mid-flight. Enumerated so Reap can probe
+			// its lease and keep the in-flight handle's disks (TBD-PD-25).
+			resources = append(resources, HostResource{
+				Kind:         KindShadowIntent,
+				Path:         path,
+				ShadowHandle: strings.TrimSuffix(name, shadowIntentSuffix),
+			})
 
 		case diskname.IsShadowDisk(name):
 			// Shadow disk (handle-keyed, §4.4 supplementary correlation).

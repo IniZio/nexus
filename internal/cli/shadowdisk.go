@@ -354,3 +354,48 @@ func IsShadowDisk(basename string) bool {
 func ShadowDiskSafeHandle(basename string) (safeHandle string, ok bool) {
 	return diskname.ShadowDiskSafeHandle(basename)
 }
+
+// createShadowDiskFn is the seam through which prepareShadowDisks materialises
+// each disk. Tests replace it to observe the filesystem at the exact instant a
+// disk is being created — the instant a concurrent reaper would see it.
+// Production code must never replace it outside of tests.
+var createShadowDiskFn = createShadowDisk
+
+// prepareShadowDisks publishes the shadow intent for handle and then
+// materialises every disk in specs, in that order.
+//
+// The ordering is the contract, not an implementation detail. Shadow disks are
+// created before CreateAndBoot writes the ULID-keyed create intent, so until
+// this function existed there was a window in which a shadow disk was on disk
+// with no marker of any kind claiming it — and a concurrent `nexus3 reap
+// --apply` deleted a live sandbox's node_modules (TBD-PD-25). Publishing the
+// intent first means no shadow disk is ever visible unprotected.
+//
+// On failure every disk already written is removed and the lease is released,
+// so a failed create leaves nothing behind. On success the caller owns the
+// returned lease and MUST release it only after the sandbox record is
+// committed.
+func prepareShadowDisks(ctx context.Context, diskDir, handle string, specs []ShadowDisk) (*service.ShadowIntentLease, []string, error) {
+	paths := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		paths = append(paths, spec.HostPath)
+	}
+
+	lease, err := service.WriteShadowIntent(diskDir, handle, paths)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var created []string
+	for _, spec := range specs {
+		if cErr := createShadowDiskFn(ctx, spec); cErr != nil {
+			for _, p := range created {
+				_ = os.Remove(p)
+			}
+			lease.Release()
+			return nil, nil, cErr
+		}
+		created = append(created, spec.HostPath)
+	}
+	return lease, created, nil
+}

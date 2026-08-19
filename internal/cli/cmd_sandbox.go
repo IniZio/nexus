@@ -1329,7 +1329,16 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		bootCapturer       func(context.Context, string, string, int64) error
 		bootBaseRef        string   // host HEAD SHA when the workspace carries .git (GIT-SEED)
 		shadowDiskCleanups []string // host paths to remove on CreateAndBoot failure
+		shadowLease        *service.ShadowIntentLease
 	)
+	// The shadow intent lease keeps a concurrent `nexus3 reap --apply` off this
+	// create's shadow disks for the whole window. It is released only after
+	// CreateAndBoot returns, i.e. after the sandbox record is committed, so the
+	// disks go straight from leased to owned with no unprotected instant
+	// between (TBD-PD-25). On an unclean exit the defer does not run, but the
+	// kernel drops the flock when the process dies, so a crashed create cannot
+	// protect its disks forever.
+	defer func() { shadowLease.Release() }()
 	if f.workspacePath != "" {
 		// Validate workspace path.
 		if _, statErr := os.Stat(f.workspacePath); statErr != nil {
@@ -1354,19 +1363,15 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		// Build shadow disk specs for DefaultShadowDirs.
 		shadowSpecs := buildShadowDiskSpecs(DefaultShadowDirs, diskDir, guestPath, f.positionals[0])
 
-		// Create sparse ext4 shadow disks.  Each disk is preallocated and
-		// formatted with mke2fs before the VM boots so the guest can mount them
-		// immediately.  Failures here abort sandbox creation; already-created
-		// images are cleaned up via the defer below.
-		for _, spec := range shadowSpecs {
-			if cErr := createShadowDisk(ctx, spec); cErr != nil {
-				// Clean up any images already written.
-				for _, p := range shadowDiskCleanups {
-					_ = os.Remove(p)
-				}
-				return errSandbox("sandbox create", fmt.Errorf("--workspace: %w", cErr))
-			}
-			shadowDiskCleanups = append(shadowDiskCleanups, spec.HostPath)
+		// Publish the shadow intent, then materialise the disks — in that
+		// order, which prepareShadowDisks owns and a test drives. A marker
+		// written after the first disk exists cannot protect that disk, and
+		// this is the half of TBD-PD-25 that the ULID-keyed create intent
+		// (written later, inside CreateAndBoot) structurally cannot cover.
+		var siErr error
+		shadowLease, shadowDiskCleanups, siErr = prepareShadowDisks(ctx, diskDir, f.positionals[0], shadowSpecs)
+		if siErr != nil {
+			return errSandbox("sandbox create", fmt.Errorf("--workspace: %w", siErr))
 		}
 
 		bootExtraDisks = shadowExtraDisks(shadowSpecs)
