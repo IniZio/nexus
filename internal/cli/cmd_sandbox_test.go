@@ -1226,3 +1226,54 @@ func TestKernelPreflight_BeforeWorkspaceCapture(t *testing.T) {
 			"a refactor moved capture before the kernel preflight check")
 	}
 }
+
+// ── No-boot guard regression tests (D-NOBOOT-MOUNT) ─────────────────────────
+
+// TestSandboxCreate_NoBootMount_UsageError proves that --mount is rejected on
+// the store-only (no-boot) create path (no --image/--rootfs/--file).
+// Before this guard, the flag was silently dropped and the create returned RC=0
+// with the mount never applied.
+func TestSandboxCreate_NoBootMount_UsageError(t *testing.T) {
+	svc := newTestService(t)
+	out, _, _ := capture(false)
+	err := runSandboxCreate(context.Background(),
+		[]string{"proj/box", "--mount", "/tmp/x:/w"},
+		out, svc)
+	if err == nil {
+		t.Fatal("expected UsageError for --mount on no-boot path, got nil")
+	}
+	var ue *UsageError
+	if !isUsageError(err, &ue) {
+		t.Errorf("expected *UsageError, got %T: %v", err, err)
+	}
+}
+
+// TestSandboxCreate_NoBootMountNamed_UsageError proves that --mount-named is
+// rejected on the store-only (no-boot) create path.
+func TestSandboxCreate_NoBootMountNamed_UsageError(t *testing.T) {
+	svc := newTestService(t)
+	out, _, _ := capture(false)
+	err := runSandboxCreate(context.Background(),
+		[]string{"proj/box", "--mount-named", "vol:/v"},
+		out, svc)
+	if err == nil {
+		t.Fatal("expected UsageError for --mount-named on no-boot path, got nil")
+	}
+	var ue *UsageError
+	if !isUsageError(err, &ue) {
+		t.Errorf("expected *UsageError, got %T: %v", err, err)
+	}
+}
+
+// TestSandboxCreate_NoBoot_PlainCreate_OK is the negative control: a plain
+// store-only create with no mount flags must succeed.  A test suite that only
+// rejects inputs proves nothing without at least one accepting path.
+func TestSandboxCreate_NoBoot_PlainCreate_OK(t *testing.T) {
+	svc := newTestService(t)
+	out, _, _ := capture(false)
+	if err := runSandboxCreate(context.Background(),
+		[]string{"proj/plainbox"},
+		out, svc); err != nil {
+		t.Fatalf("plain no-boot create should succeed, got: %v", err)
+	}
+}
