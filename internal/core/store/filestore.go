@@ -67,6 +67,10 @@ type record struct {
 	// to an empty slice. Backward-compatible: old records without this field
 	// deserialise to nil, which is the correct default (no volumes).
 	MountedVolumes []domain.VolumeAttachment  `json:"mounted_volumes,omitempty"`
+	// LiveMounts records live host-directory virtiofs shares attached at create
+	// time (D-PD-53). Omitted when nil; nil on read is equivalent to no mounts.
+	// Backward-compatible: old records without this field deserialise to nil.
+	LiveMounts     []domain.LiveMount         `json:"live_mounts,omitempty"`
 }
 
 // provenanceRecord is the on-disk form of domain.Provenance. Kept separate
@@ -95,6 +99,7 @@ func toRecord(sb domain.Sandbox) record {
 		CreatorPID:     sb.CreatorPID,
 		BaseRef:        sb.BaseRef,
 		MountedVolumes: sb.MountedVolumes,
+		LiveMounts:     sb.LiveMounts,
 		// MotiveID intentionally omitted: new records never write this field.
 	}
 	if sb.Provenance != nil {
@@ -138,6 +143,7 @@ func (r record) toDomain() domain.Sandbox {
 		CreatorPID:     r.CreatorPID,
 		BaseRef:        r.BaseRef,
 		MountedVolumes: r.MountedVolumes,
+		LiveMounts:     r.LiveMounts,
 	}
 	if r.Provenance != nil {
 		sb.Provenance = &domain.Provenance{

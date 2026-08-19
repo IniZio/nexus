@@ -115,6 +115,33 @@ type Sandbox struct {
 	// written. The concurrency guard for named volumes is dual-source: this field
 	// and the volume store's meta.json are unioned; this field wins on conflict.
 	MountedVolumes []VolumeAttachment `json:"mounted_volumes,omitempty"`
+
+	// LiveMounts lists host-directory mounts wired into this sandbox as live
+	// virtiofs shares (D-PD-53). Nil and empty slice are equivalent: no live
+	// mounts are present. Elements are frozen at creation and must not be mutated
+	// after the record is written.
+	//
+	// The virtiofs tag (the kernel mount label passed to -device vhost-user-fs)
+	// is NOT stored here; it is derived downstream by the hypervisor layer from
+	// the sandbox ID and the element index. Storing it here would couple the
+	// domain type to a transport detail and create a redundant source of truth.
+	LiveMounts []LiveMount `json:"live_mounts,omitempty"`
+}
+
+// LiveMount describes a single live host-directory virtiofs share attached to
+// a sandbox (D-PD-53). All fields are set at creation time and must not be
+// mutated after the sandbox record is written.
+type LiveMount struct {
+	// HostPath is the absolute path on the host that is shared into the guest.
+	HostPath string `json:"host_path"`
+
+	// GuestPath is the absolute path inside the guest at which the share is
+	// mounted (e.g. "/workspace").
+	GuestPath string `json:"guest_path"`
+
+	// ReadOnly is true when the share is exposed read-only inside the guest;
+	// false means read-write.
+	ReadOnly bool `json:"read_only"`
 }
 
 // VolumeAttachment describes a single named volume attached to a sandbox.
