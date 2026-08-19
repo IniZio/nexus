@@ -36,11 +36,15 @@ func (cs *controlServer) Exec(_ context.Context, req *agentpb.ExecRequest) (*age
 		return nil, status.Error(codes.InvalidArgument, "argv required")
 	}
 
-	// Build environment: start from host env, replace or add extras.
-	// Append-only semantics are wrong: glibc getenv() returns the FIRST match,
-	// so appending "HOME=/root" after "HOME=/" would leave glibc seeing "/".
-	// mergeEnv replaces existing entries so the caller's value always wins.
-	env := mergeEnv(os.Environ(), req.Env)
+	// Build environment: baseline, then req.Env wins over it.
+	// When the agent runs as PID 1 (init=), the Linux kernel injects a few
+	// variables into os.Environ() — notably HOME=/ — that are wrong for
+	// interactive use. Rather than passing os.Environ() through (which would
+	// propagate the wrong HOME), we start from guestBaselineEnv() which
+	// supplies correct sane defaults (HOME=/root, PATH), then let the caller's
+	// req.Env override anything. All useful agent-level env (credentials,
+	// NODE_EXTRA_CA_CERTS, etc.) is injected through req.Env by the host.
+	env := mergeEnv(guestBaselineEnv(), req.Env)
 
 	// Use exec.Command (not CommandContext): the process must outlive the RPC.
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
@@ -192,6 +196,39 @@ func (cs *controlServer) execPipe(cmd *exec.Cmd, env []string, sess *Session) er
 	}
 
 	return nil
+}
+
+// guestBaselineEnv returns the minimum environment that every exec'd process
+// should inherit when the agent runs as PID 1 (init=). The Linux kernel provides
+// no environment to PID 1, so os.Environ() is nearly empty; this baseline fills
+// in sane defaults. It is overridden by os.Environ() and then by req.Env.
+func guestBaselineEnv() []string {
+	return []string{
+		// uid 0 always maps to /root in the guest's /etc/passwd. Without HOME,
+		// login shells start at "/" and "~" expands to "/".
+		"HOME=/root",
+		// Debian/Alpine-compatible default PATH so relative-binary exec calls
+		// (e.g. exec.Command("bash", ...)) work without callers spelling it out.
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+	}
+}
+
+// envToMap converts a "KEY=VALUE" slice to a map.
+// If a key appears more than once only the first value is kept, mirroring
+// glibc getenv() first-match semantics.
+func envToMap(env []string) map[string]string {
+	m := make(map[string]string, len(env))
+	for _, e := range env {
+		idx := strings.IndexByte(e, '=')
+		if idx < 0 {
+			continue
+		}
+		k := e[:idx]
+		if _, exists := m[k]; !exists {
+			m[k] = e[idx+1:]
+		}
+	}
+	return m
 }
 
 // mergeEnv returns a copy of base with each key in extra replaced or appended.

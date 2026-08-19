@@ -99,6 +99,7 @@ func main() {
 	//                                    Used by the governor; /tmp resize uses live MemTotal.
 	var wsMounts []agent.GuestMount
 	var memCeilingBytes int64
+	var sandboxHandle string // set from --sandbox-handle=<handle> on the kernel cmdline
 	{
 		isBuilderRole := false
 		var cacheDiskMounts []agent.CacheDiskMount
@@ -124,6 +125,8 @@ func main() {
 				} else {
 					consoleLog(con, "nexus3-agent: ignoring malformed --cache-disk arg: %q\n", arg)
 				}
+			case strings.HasPrefix(arg, "--sandbox-handle="):
+				sandboxHandle = strings.TrimPrefix(arg, "--sandbox-handle=")
 			case strings.HasPrefix(arg, "--workspace-mount="):
 				m, ok := parseWorkspaceMountArg(arg)
 				if ok {
@@ -150,6 +153,24 @@ func main() {
 			}
 			consoleLog(con, "nexus3-agent: builder role complete\n")
 			os.Exit(0)
+		}
+	}
+
+	// Set the guest hostname. When --sandbox-handle= was supplied on the kernel
+	// cmdline the sandbox's human-readable handle becomes the hostname so that
+	// the shell prompt reads "root@<handle>:/#" instead of "root@(none):/#".
+	// Absent the arg (old host or plain VM launch) we fall back to "nexus3" —
+	// always better than the kernel's default "(none)".
+	// This is best-effort; failure is logged but never fatal (PID-1 exit = panic).
+	if isPid1 {
+		hn := sandboxHandle
+		if hn == "" {
+			hn = "nexus3"
+		}
+		if err := syscall.Sethostname([]byte(hn)); err != nil {
+			consoleLog(con, "nexus3-agent: sethostname(%q): %v\n", hn, err)
+		} else {
+			consoleLog(con, "nexus3-agent: hostname=%q\n", hn)
 		}
 	}
 
