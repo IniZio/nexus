@@ -72,6 +72,30 @@ func buildCmdline(base string, memoryMaxMiB uint32) string {
 	return base + memHotplugCmdline
 }
 
+// buildMemoryConfig constructs the CH MemoryConfig for a sandbox.
+//
+// Shared memory (memfd-backed) is enabled when live mounts are present —
+// CH requires shared memory or huge pages for any vhost-user device
+// (including virtiofs). Enabling it unconditionally would impose the memfd
+// overhead on every sandbox; gating on LiveMounts keeps the blast radius small.
+//
+// hugepages is NOT used: it requires host-level huge page pre-allocation and
+// is an operator/system decision outside nexus3's scope.
+func buildMemoryConfig(cfg Config, memMiB uint64) *vmMemoryConfig {
+	mc := &vmMemoryConfig{
+		SizeBytes: memMiB * 1024 * 1024,
+	}
+	if len(cfg.LiveMounts) > 0 {
+		mc.Shared = true
+	}
+	if cfg.MemoryMaxMiB > 0 {
+		hotplugMiB := uint64(cfg.MemoryMaxMiB) - memMiB
+		mc.HotplugSize = hotplugMiB * 1024 * 1024
+		mc.HotplugMethod = "VirtioMem"
+	}
+	return mc
+}
+
 // Config holds the static configuration for the Cloud Hypervisor driver.
 // It is set at construction time and must not be mutated afterwards.
 type Config struct {
@@ -132,6 +156,13 @@ type Config struct {
 	// the rootfs vda. ExtraDisks[0] becomes /dev/vdb, ExtraDisks[1] /dev/vdc,
 	// and so on. See ExtraDisk for details. Only valid when DiskImagePath is set.
 	ExtraDisks []ExtraDisk
+
+	// LiveMounts are host-directory virtiofs shares attached at boot. Each
+	// entry spawns one virtiofsd process and emits one FsConfig device in
+	// vm.create. VirtiofsdPath must be non-empty when LiveMounts is non-empty.
+	// LiveMounts[i] is exposed to the guest under the tag VirtiofsTag(i);
+	// the CLI uses VirtiofsTag to emit the matching guest mount argument.
+	LiveMounts []domain.LiveMount
 
 	// Cmdline is the kernel command line passed to CH's payload.cmdline.
 	//
@@ -227,6 +258,19 @@ type Config struct {
 	// only SnapshotDir moves to the durable state home.
 	SnapshotDir string
 
+	// VirtiofsdPath is the path to the virtiofsd binary (version 1.x) used to
+	// serve virtiofs devices for named-volume LiveMount attachments.
+	//
+	// Optional: when empty, mounts requiring virtiofs are refused at Start time.
+	//
+	// Preflight: when non-empty, New verifies the binary exists and is executable
+	// so misconfiguration surfaces before any VM is started — not after an
+	// expensive workspace capture produces an opaque CH device error.
+	//
+	// The binary at $HOME/.local/bin/virtiofsd (version 1.13.3) is the
+	// reference implementation; any virtiofsd 1.x build is compatible.
+	VirtiofsdPath string
+
 	// NestedVirt enables opt-in nested virtualisation support.
 	//
 	// # Security perimeter (D-N3N-02 AC4)
@@ -262,12 +306,14 @@ type Config struct {
 // Construct with New.
 //
 // NetworkHook is implemented via a two-TAP/L2-bridge topology: see ch_net.go.
+// virtiofs lifecycle is managed in ch_virtiofs.go.
 type CHDriver struct {
 	cfg Config
 
-	mu    sync.Mutex
-	procs map[domain.SandboxID]*managedProcess
-	nets  map[domain.SandboxID]*netState // per-sandbox network resources; see ch_net.go
+	mu              sync.Mutex
+	procs           map[domain.SandboxID]*managedProcess
+	nets            map[domain.SandboxID]*netState            // per-sandbox network resources; see ch_net.go
+	virtiofsdProcs  map[domain.SandboxID][]*managedProcess    // per-sandbox virtiofsd processes; see ch_virtiofs.go
 
 	snapshotStore *artifact.Store
 }
@@ -313,6 +359,16 @@ func New(cfg Config) (*CHDriver, error) {
 		return nil, fmt.Errorf("cloudhypervisor: MemoryMaxMiB (%d) must be > MemoryMiB (%d) when set", cfg.MemoryMaxMiB, cfg.MemoryMiB)
 	}
 
+	// Virtiofsd preflight: validate before any VM is started so that
+	// misconfiguration does not surface as an opaque CH error after an
+	// expensive workspace capture. Only checked when VirtiofsdPath is set —
+	// an empty path means virtiofs mounts are simply not supported.
+	if cfg.VirtiofsdPath != "" {
+		if err := checkVirtiofsd(cfg.VirtiofsdPath); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := os.MkdirAll(cfg.SocketDir, 0o700); err != nil {
 		return nil, fmt.Errorf("cloudhypervisor: create socket dir: %w", err)
 	}
@@ -330,10 +386,11 @@ func New(cfg Config) (*CHDriver, error) {
 	}
 
 	return &CHDriver{
-		cfg:           cfg,
-		procs:         make(map[domain.SandboxID]*managedProcess),
-		nets:          make(map[domain.SandboxID]*netState),
-		snapshotStore: snapshotStore,
+		cfg:            cfg,
+		procs:          make(map[domain.SandboxID]*managedProcess),
+		nets:           make(map[domain.SandboxID]*netState),
+		virtiofsdProcs: make(map[domain.SandboxID][]*managedProcess),
+		snapshotStore:  snapshotStore,
 	}, nil
 }
 
@@ -419,12 +476,24 @@ func newInstanceID() (string, error) {
 }
 
 // clearState removes the socket file, the IID sidecar, the proc entry, and
-// all sandbox network resources for id. It is idempotent: missing files and
-// absent map entries are not errors.
+// all sandbox network and virtiofs resources for id. It is idempotent: missing
+// files and absent map entries are not errors.
 func (d *CHDriver) clearState(id domain.SandboxID) {
 	_ = os.Remove(d.socketPath(id))
 	_ = os.Remove(d.vsockPath(id))
 	_ = os.Remove(d.iidPath(id))
+
+	// Kill virtiofsd processes and remove their sockets. Done outside d.mu
+	// because kill() may block waiting for the child; holding the lock would
+	// deadlock teardownSandboxNet (which also acquires d.mu internally).
+	d.mu.Lock()
+	vprocs := d.virtiofsdProcs[id]
+	delete(d.virtiofsdProcs, id)
+	d.mu.Unlock()
+	for i, vp := range vprocs {
+		vp.kill()
+		_ = os.Remove(virtiofsdSockPath(d.cfg.SocketDir, id, i))
+	}
 
 	// teardownSandboxNet acquires d.mu internally; must not be called while
 	// d.mu is held. It closes fds, waits for pump goroutines, and deletes
@@ -653,18 +722,9 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 		cpusCfg.Nested = true
 	}
 
-	// Build the memory config. When MemoryMaxMiB is set, reserve a VirtioMem
-	// hotplug region of (MemoryMaxMiB − MemoryMiB) MiB. The method MUST be
-	// "VirtioMem" — CH v52.0 defaults to "Acpi" and that must not be left
-	// implicit (confirmed by spike Leg 1 finding).
-	memCfg := &vmMemoryConfig{
-		SizeBytes: uint64(memMiB) * 1024 * 1024,
-	}
-	if d.cfg.MemoryMaxMiB > 0 {
-		hotplugMiB := d.cfg.MemoryMaxMiB - memMiB
-		memCfg.HotplugSize = uint64(hotplugMiB) * 1024 * 1024
-		memCfg.HotplugMethod = "VirtioMem"
-	}
+	// Build the memory config via the helper so the shared-memory condition is
+	// testable without a real VM (see TestMemoryConfig_SharedSetWithLiveMounts).
+	memCfg := buildMemoryConfig(d.cfg, uint64(memMiB))
 
 	vmcfg := vmConfig{
 		Payload: vmPayloadConfig{
@@ -731,7 +791,19 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 		NumQueues: 2,
 	}
 
-	if err := c.VMCreateWithNet(apiCtx, vmcfg, vsock, []vmNetConfig{netCfg}); err != nil {
+	// Spawn virtiofsd for each live mount BEFORE vm.create.
+	// CH connects to each virtiofsd socket at device-creation time; all sockets
+	// must be present before VMCreateWithNet is called. spawnVirtiofsdForMounts
+	// polls each socket until it appears (mirroring spawnVMM's API-socket poll)
+	// and registers each proc in d.virtiofsdProcs[id] immediately so the
+	// existing cleanup() → clearState path kills them on any subsequent failure.
+	fsCfgs, err := d.spawnVirtiofsdForMounts(apiCtx, id)
+	if err != nil {
+		cleanup()
+		return "", fmt.Errorf("cloudhypervisor: start %s: %w", id, err)
+	}
+
+	if err := c.VMCreateWithNet(apiCtx, vmcfg, vsock, []vmNetConfig{netCfg}, fsCfgs); err != nil {
 		wrapped := withStderr(fmt.Errorf("cloudhypervisor: start %s: %w", id, err))
 		cleanup()
 		return "", wrapped

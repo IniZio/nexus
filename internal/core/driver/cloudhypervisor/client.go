@@ -176,15 +176,26 @@ type vmCPUsConfig struct {
 // MemoryConfig { required: [size], properties: {
 //
 //	size (uint64), hotplug_size (uint64),
-//	hotplug_method (string, enum: ["Acpi","VirtioMem"]) } }
+//	hotplug_method (string, enum: ["Acpi","VirtioMem"]),
+//	shared (bool, default: false), hugepages (bool, default: false) } }
 //
 // hotplug_method defaults to "Acpi" in CH v52.0 and must be set explicitly to
 // "VirtioMem" when a hotplug region is requested — leaving it implicit produces
 // the wrong method silently (confirmed by auto-resize spike, Leg 1).
+//
+// shared enables POSIX shared memory (memfd) for the guest RAM region. CH
+// REQUIRES this (or hugepages) for ANY vhost-user device including virtiofs —
+// omitting it produces HTTP 500 "Using vhost-user requires using shared memory
+// or huge pages". hugepages is NOT used: it requires host huge page
+// pre-allocation and is a system-wide operator decision outside nexus3's scope.
 type vmMemoryConfig struct {
 	SizeBytes     uint64 `json:"size"`
 	HotplugSize   uint64 `json:"hotplug_size,omitempty"`
 	HotplugMethod string `json:"hotplug_method,omitempty"`
+	// Shared backs guest RAM with a memfd shared-memory region. Required by
+	// CH when any vhost-user device (virtiofs, vhost-user-net, …) is present.
+	// Default false; omitempty omits it for sandboxes without live mounts.
+	Shared bool `json:"shared,omitempty"`
 }
 
 // balloonConfig maps to CH's BalloonConfig for the virtio-balloon device.

@@ -317,3 +317,34 @@ func TestClient_isAbsent_notTriggeredByTimeout(t *testing.T) {
 		t.Fatal("isAbsent(context.DeadlineExceeded) must be false")
 	}
 }
+
+// TestVmMemoryConfig_SharedField verifies that vmMemoryConfig serialises
+// "shared":true when Shared=true, and omits the key entirely when Shared=false
+// (omitempty behaviour — CH defaults to false so the key need not be present).
+func TestVmMemoryConfig_SharedField(t *testing.T) {
+	unmarshal := func(t *testing.T, v any) map[string]any {
+		t.Helper()
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("json.Marshal: %v", err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatalf("json.Unmarshal: %v", err)
+		}
+		return m
+	}
+
+	// Shared=true must appear in the JSON body sent to CH.
+	m := unmarshal(t, vmMemoryConfig{SizeBytes: 512 * 1024 * 1024, Shared: true})
+	if v, _ := m["shared"].(bool); !v {
+		t.Errorf("shared = %v, want true (CH requires shared=true for vhost-user/virtiofs)", m["shared"])
+	}
+
+	// Shared=false (zero value) must be omitted via omitempty — CH defaults to false.
+	m2 := unmarshal(t, vmMemoryConfig{SizeBytes: 512 * 1024 * 1024})
+	if _, present := m2["shared"]; present {
+		b, _ := json.Marshal(vmMemoryConfig{SizeBytes: 512 * 1024 * 1024})
+		t.Errorf("shared present when false (omitempty should suppress it); raw=%s", b)
+	}
+}

@@ -734,3 +734,27 @@ func TestObserve_hungServerIsNotAbsent(t *testing.T) {
 		t.Error("expected non-nil error for hung server, got nil")
 	}
 }
+
+// TestBuildMemoryConfig_SharedSetWithLiveMounts verifies that buildMemoryConfig
+// enables shared memory (CH vhost-user requirement) when LiveMounts are present,
+// and suppresses it when absent.
+//
+// This test catches the regression where omitting the shared field causes CH to
+// reject the vm.create request with HTTP 500 "Using vhost-user requires using
+// shared memory or huge pages" (D-PD-104 / LM-SHARED-MEM).
+func TestBuildMemoryConfig_SharedSetWithLiveMounts(t *testing.T) {
+	mount := domain.LiveMount{HostPath: "/tmp/x", GuestPath: "/mnt/x"}
+
+	// With live mounts: Shared must be true.
+	got := buildMemoryConfig(Config{MemoryMiB: 512, LiveMounts: []domain.LiveMount{mount}}, 512)
+	if !got.Shared {
+		t.Errorf("Shared = false, want true when LiveMounts present (CH rejects vhost-user without shared memory)")
+	}
+
+	// Without live mounts: Shared must be false (omitted from JSON via omitempty).
+	got2 := buildMemoryConfig(Config{MemoryMiB: 512}, 512)
+	if got2.Shared {
+		t.Errorf("Shared = true, want false when no LiveMounts (unnecessary memfd overhead on every sandbox)")
+	}
+}
+
