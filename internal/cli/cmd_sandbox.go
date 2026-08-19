@@ -24,6 +24,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
@@ -345,11 +346,17 @@ type sandboxCreateFlags struct {
 	secrets      []string // --secret ENV@host[,host…] (repeatable)
 	noBuiltinGH  bool     // --no-builtin-gh: skip host gh auth token bind
 	egressClosed bool     // --egress closed: disable open egress (D-PD-33)
-	allowHosts   []string // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
-	allowedRepo  string   // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
-	mountNamed   []string // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
-	mountLive    []string // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
-	positionals  []string
+	// egressExplicit records that --egress was actually passed, so that
+	// --agent can refuse an explicit "open" without also refusing the default.
+	egressExplicit bool
+	// agentName is the --agent <name> value: a registered cred.AgentProfile
+	// name. Empty means the sandbox runs no agent and receives no credentials.
+	agentName   string
+	allowHosts  []string // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
+	allowedRepo string   // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
+	mountNamed  []string // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
+	mountLive   []string // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
+	positionals []string
 }
 
 // parseSandboxCreateArgs parses the raw argument slice for `sandbox create`.
@@ -481,6 +488,7 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 				return f, &UsageError{Msg: "sandbox create: --egress requires a value (open|closed)"}
 			}
 			i++
+			f.egressExplicit = true
 			switch args[i] {
 			case "open":
 				f.egressClosed = false
@@ -489,6 +497,21 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 			default:
 				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --egress %q: want 'open' or 'closed'", args[i])}
 			}
+		case "--agent":
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --agent requires a name (one of: %s)",
+					strings.Join(cred.ProfileNames(), ", "))}
+			}
+			i++
+			// Resolve now rather than at boot: an unknown agent is a typo, and
+			// reporting it here is immediate, readable, and testable without a VM.
+			// Falling back to a default would answer --agent codex with Claude
+			// Code's credentials and allowlist.
+			if _, ok := cred.ProfileByName(args[i]); !ok {
+				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --agent %q is not a known agent (one of: %s)",
+					args[i], strings.Join(cred.ProfileNames(), ", "))}
+			}
+			f.agentName = args[i]
 		case "--allow-host":
 			if i+1 >= len(args) {
 				return f, &UsageError{Msg: "sandbox create: --allow-host requires a hostname"}
@@ -555,6 +578,16 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 		return f, &UsageError{Msg: "sandbox create: --egress closed requires --repo owner/name " +
 			"(D-PD-36): GitHub is added to SecretHosts and the full-scope token would " +
 			"be unbounded without a per-repo path allowlist"}
+	}
+	// D-PD-33: an agent sandbox never gets open egress. Open egress means no
+	// curated allowlist and, with nothing to swap, no MITM proxy — so the
+	// agent's placeholder bearer would reach the real API unexchanged. The
+	// default (open) is silently narrowed for agent sandboxes; an explicit
+	// request for it is refused rather than ignored.
+	if f.agentName != "" && f.egressExplicit && !f.egressClosed {
+		return f, &UsageError{Msg: "sandbox create: --agent cannot be combined with --egress open " +
+			"(D-PD-33): an agent sandbox needs a curated allowlist and an MITM proxy to " +
+			"exchange its placeholder credential; omit --egress to get that automatically"}
 	}
 	return f, nil
 }
@@ -661,6 +694,34 @@ func guestBootCmdline(mounts []agent.GuestMount, pid1Args, sandboxHandle string)
 		base = workspaceMountCmdline(mounts)
 	}
 	return base + pid1Args + " --sandbox-handle=" + sandboxHandleHostname(sandboxHandle)
+}
+
+// resolveAgentPosture derives the three create-time settings that --agent
+// controls: the agent profile recorded on the sandbox, the egress allowlist
+// frozen onto its Envelope, and whether egress is open.
+//
+// All three come from the one profile so they cannot drift: a sandbox recorded
+// as running claude-code is exactly a sandbox allowed to reach claude-code's
+// hosts.
+//
+// It deliberately does NOT set UseAgentSeed. The credential seed belongs to the
+// detached supervisor that takes ownership after the boot: the supervisor
+// re-boots the VM, and the seed lives under /run (tmpfs), so anything seeded
+// before the handoff is discarded by it.
+//
+// Without --agent this is the identity function on the flags: no profile, the
+// user's --allow-host list verbatim, and egress open unless --egress closed.
+func resolveAgentPosture(f sandboxCreateFlags) (cred.AgentProfile, []string, bool) {
+	if f.agentName == "" {
+		return cred.AgentProfile{}, f.allowHosts, !f.egressClosed
+	}
+	// Validated at parse time, so the lookup cannot fail here.
+	profile, _ := cred.ProfileByName(f.agentName)
+	// The agent's own hosts first, then whatever the task additionally needs.
+	allowHosts := append(service.AgentEgressHosts(profile), f.allowHosts...)
+	// D-PD-33: never open egress for an agent. An explicit --egress open is
+	// refused at parse time; the default is narrowed here.
+	return profile, allowHosts, false
 }
 
 // builder-VM helpers
@@ -824,7 +885,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--workspace <host-path>] [--capture-max <size>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--no-builtin-gh] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--workspace <host-path>] [--capture-max <size>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--no-builtin-gh] [--agent <name>] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])
@@ -1365,10 +1426,27 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		bootLiveMounts = append(bootLiveMounts, lm)
 	}
 
+	// An agent sandbox never carries a GitHub secret bind (D-PD-23), and the
+	// host `gh auth token` bind is on by default. Suppress it here rather than
+	// letting CreateAndBoot refuse the create: the user did not ask for it.
+	if f.agentName != "" {
+		f.noBuiltinGH = true
+	}
+
 	secrets, err := resolveCreateSecrets(ctx, f)
 	if err != nil {
 		return errSandbox("sandbox create", err)
 	}
+
+	// Agent posture. The profile is the single source for both halves: the
+	// egress allowlist frozen onto the Envelope, and the AgentName recorded on
+	// the sandbox. --allow-host is unioned on top so an agent can still reach a
+	// package registry or a forge the task needs.
+	//
+	// UseAgentSeed is deliberately NOT set. The credential seed belongs to the
+	// detached supervisor that takes ownership below: it re-boots the VM, and
+	// /run is tmpfs, so anything seeded here is discarded on that reboot.
+	agentProfile, allowHosts, openEgress := resolveAgentPosture(f)
 
 	// D-PD-33: closed-egress path — ensure GitHub goes into SecretHosts even
 	// if `--no-builtin-gh` was passed or `gh auth token` is unavailable.
@@ -1399,12 +1477,13 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			WorkspaceCapturer: bootCapturer,
 			BaseRef:           bootBaseRef, // GIT-SEED: host HEAD at capture time (D-PD-19/D-PD-29)
 			Secrets:           secrets,
-			AllowedHosts:      f.allowHosts, // populated by --allow-host (empty = no curated list)
+			AllowedHosts:      allowHosts, // --allow-host, plus the agent's own hosts when --agent is set
 			// D-PD-33: human sandboxes (sandbox create) default to open egress.
 			// --egress closed opts out: OpenEgress=false, ACL denies everything
 			// not in AllowedHosts. Agent sandboxes (orca, herdr) must NOT set
 			// OpenEgress=true — they use WireClaudeEgress with a curated allowlist.
-			OpenEgress:        !f.egressClosed,
+			OpenEgress:        openEgress,
+			AgentProfile:      agentProfile,  // zero value when --agent was not passed
 			AllowedRepo:       f.allowedRepo, // D-PD-36: set by --repo; empty for open-egress sandboxes
 			Volumes:           namedVS,       // SD2-6-MOUNT: nil when --mount-named not used
 			NamedVolumeMounts: namedMounts,

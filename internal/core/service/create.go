@@ -712,7 +712,12 @@ func CreateAndBoot(
 	// NOTE: service.Start (restart of a stopped sandbox) will also need seeding
 	// once it gains a reachability probe — /run is tmpfs and does not survive
 	// a guest restart. That wiring is deferred until the restart probe exists.
-	if opts.UseAgentSeed {
+	// D-PD-23: no agent sandbox may carry a GitHub secret bind, whichever way
+	// it was declared an agent sandbox — by asking for the credential seed, or
+	// by naming an agent profile. The guard was on UseAgentSeed alone, which a
+	// `sandbox create --agent` never sets: it names its agent and lets the
+	// detached supervisor do the seeding.
+	if opts.UseAgentSeed || agentProfile.Name != "" {
 		for _, b := range opts.Secrets {
 			if SecretTouchesGitHub(b) {
 				_ = bootDrv.Stop(ctx, booted.ID)
