@@ -348,6 +348,7 @@ type sandboxCreateFlags struct {
 	allowHosts   []string // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
 	allowedRepo  string   // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
 	mountNamed   []string // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
+	mountLive    []string // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
 	positionals  []string
 }
 
@@ -513,6 +514,15 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 			}
 			i++
 			f.mountNamed = append(f.mountNamed, args[i])
+		case "--mount":
+			// D-PD-53: live virtiofs mount of a host directory into the guest.
+			// Unlike --mount-named, the guest path MAY contain a .git component
+			// (D-PD-99): mounting a real worktree is the primary use-case.
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --mount requires <host-path>:<guest-path>[:ro]"}
+			}
+			i++
+			f.mountLive = append(f.mountLive, args[i])
 		default:
 			if len(arg) > 1 && arg[0] == '-' {
 				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: unknown flag %q", arg)}
@@ -777,6 +787,12 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 
 	// No-boot path: store-only create (backwards-compatible)
 	if f.imageRef == "" && f.rootfsPath == "" && f.filePath == "" {
+		if len(f.mountLive) > 0 {
+			return &UsageError{Msg: "sandbox create: --mount requires a bootable sandbox; use --image, --rootfs, or --file to boot"}
+		}
+		if len(f.mountNamed) > 0 {
+			return &UsageError{Msg: "sandbox create: --mount-named requires a bootable sandbox; use --image, --rootfs, or --file to boot"}
+		}
 		sb, err := svc.Create(ctx, project, name, service.CreateOptions{RemoveOnExit: f.rm})
 		if err != nil {
 			return errSandbox("sandbox create", err)
@@ -1080,6 +1096,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// can reference it; Go closures capture by reference, so newDriver reads
 	// the value that is set after CreateAndBoot calls it.
 	var bootGuestMounts []agent.GuestMount
+	var bootLiveMounts []domain.LiveMount // D-PD-53: captured by newDriver closure
 	var capturedDiskPath string
 	var capturedExtraDisks []string
 	var capturedCmdline string
@@ -1125,8 +1142,18 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			cfg.ExtraDisks = append(cfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: ed.Path})
 			capturedExtraDisks = append(capturedExtraDisks, ed.Path)
 		}
-		if len(bootGuestMounts) > 0 {
-			cfg.Cmdline = workspaceMountCmdline(bootGuestMounts) + ar.PID1Args
+		// Wire live virtiofs mounts into the driver Config. VirtiofsTag is the
+		// SINGLE SOURCE OF TRUTH for the per-mount tag; we call it here (for the
+		// guest --workspace-mount arg) and the driver calls it again with the same
+		// index when it starts virtiofsd — both derive the same string, so they
+		// cannot silently diverge (D-PD-53).
+		cfg.LiveMounts = bootLiveMounts
+		liveGuestMounts := liveMountsToGuestMounts(bootLiveMounts)
+		// Combine disk-based mounts (workspace + shadow) with virtiofs live mounts
+		// so workspaceMountCmdline emits one --workspace-mount arg per share.
+		allGuestMounts := append(bootGuestMounts, liveGuestMounts...)
+		if len(allGuestMounts) > 0 {
+			cfg.Cmdline = workspaceMountCmdline(allGuestMounts) + ar.PID1Args
 		} else {
 			cfg.Cmdline = diskBootCmdlineBase + " --" + ar.PID1Args
 		}
@@ -1283,6 +1310,18 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			"mounts", fmt.Sprintf("%v", allMounts),
 		)
 	}
+	// D-PD-53: parse --mount specs into bootLiveMounts (captured by newDriver).
+	// Parsing checks host-path existence and directory requirement before any
+	// VM work begins. .git components in guest paths are explicitly ALLOWED
+	// (D-PD-99; contrast with --mount-named which hard-refuses them).
+	for _, spec := range f.mountLive {
+		lm, lmErr := parseMountLive(spec)
+		if lmErr != nil {
+			return lmErr
+		}
+		bootLiveMounts = append(bootLiveMounts, lm)
+	}
+
 	secrets, err := resolveCreateSecrets(ctx, f)
 	if err != nil {
 		return errSandbox("sandbox create", err)
@@ -1326,6 +1365,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			AllowedRepo:       f.allowedRepo, // D-PD-36: set by --repo; empty for open-egress sandboxes
 			Volumes:           namedVS,        // SD2-6-MOUNT: nil when --mount-named not used
 			NamedVolumeMounts: namedMounts,
+			LiveMounts:        bootLiveMounts, // D-PD-53: populated from --mount flags
 		},
 	)
 	if err != nil {
@@ -1883,6 +1923,84 @@ func parseMountNamed(spec string) (service.NamedVolumeMount, error) {
 		}
 	}
 	return m, nil
+}
+
+// parseMountLive parses a --mount spec of the form:
+//
+//	<host-path>:<guest-path>[:ro]
+//
+// The host path must exist and must be a directory (virtiofs shares a
+// directory, not a file). The resolved absolute host path is stored.
+//
+// Unlike --mount-named, guest paths containing .git components are explicitly
+// ALLOWED (D-PD-99): mounting a real worktree into the guest, including its
+// .git directory, is the primary use-case for live mounts. Do NOT call
+// hasGitComponent here.
+func parseMountLive(spec string) (domain.LiveMount, error) {
+	parts := strings.SplitN(spec, ":", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return domain.LiveMount{}, &UsageError{
+			Msg: fmt.Sprintf("sandbox create: --mount %q: want <host-path>:<guest-path>[:ro]", spec),
+		}
+	}
+	hostPath := parts[0]
+	guestPath := parts[1]
+
+	// Resolve and validate host path: must exist and be a directory.
+	info, err := os.Stat(hostPath)
+	if err != nil {
+		return domain.LiveMount{}, &UsageError{
+			Msg: fmt.Sprintf("sandbox create: --mount %q: host path %q: %v", spec, hostPath, err),
+		}
+	}
+	if !info.IsDir() {
+		return domain.LiveMount{}, &UsageError{
+			Msg: fmt.Sprintf("sandbox create: --mount %q: host path %q is not a directory (virtiofs shares directories only)", spec, hostPath),
+		}
+	}
+	abs, err := filepath.Abs(hostPath)
+	if err != nil {
+		return domain.LiveMount{}, &UsageError{
+			Msg: fmt.Sprintf("sandbox create: --mount %q: resolve host path: %v", spec, err),
+		}
+	}
+
+	lm := domain.LiveMount{
+		HostPath:  abs,
+		GuestPath: guestPath,
+	}
+	if len(parts) == 3 {
+		switch parts[2] {
+		case "ro":
+			lm.ReadOnly = true
+		default:
+			return domain.LiveMount{}, &UsageError{
+				Msg: fmt.Sprintf("sandbox create: --mount %q: unknown option %q; want <host-path>:<guest-path>[:ro]", spec, parts[2]),
+			}
+		}
+	}
+	return lm, nil
+}
+
+// liveMountsToGuestMounts converts []domain.LiveMount to []agent.GuestMount
+// for inclusion in the kernel cmdline via workspaceMountCmdline.
+//
+// The virtiofs tag for mount index i is VirtiofsTag(i). Both this function and
+// the CH driver (spawnVirtiofsdForMounts) call VirtiofsTag — using one shared
+// derivation prevents the silent tag mismatch that fails at boot with no
+// actionable error.
+func liveMountsToGuestMounts(mounts []domain.LiveMount) []agent.GuestMount {
+	out := make([]agent.GuestMount, len(mounts))
+	for i, m := range mounts {
+		out[i] = agent.GuestMount{
+			Device:      cloudhypervisor.VirtiofsTag(i),
+			Target:      m.GuestPath,
+			FSType:      "virtiofs",
+			ReadOnly:    m.ReadOnly,
+			IsWorkspace: false, // live mounts are not the disk-telemetry workspace
+		}
+	}
+	return out
 }
 
 // hasGitComponent reports whether path contains ".git" as a slash-separated

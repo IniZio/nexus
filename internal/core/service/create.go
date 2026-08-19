@@ -274,6 +274,13 @@ type CreateAndBootOptions struct {
 	// (TBD-SD2-LIVE-4; attachment is recorded but no cmdline is emitted yet).
 	// Guest paths containing .git are rejected by the CLI before this point.
 	NamedVolumeMounts []NamedVolumeMount
+
+	// LiveMounts are live host-directory virtiofs shares to attach at boot
+	// (D-PD-53). Each entry is stored on the sandbox record; the newDriver
+	// closure in the CLI wires them into the driver Config.LiveMounts and
+	// emits the matching --workspace-mount guest arguments. Nil or empty means
+	// no virtiofs shares; existing callers are unaffected.
+	LiveMounts []domain.LiveMount
 }
 
 // NamedVolumeMount describes a single --mount-named attachment resolved by the
@@ -589,6 +596,7 @@ func CreateAndBoot(
 		RemoveOnExit:   opts.RemoveOnExit,
 		BaseRef:        opts.BaseRef, // G1: shallow-clone boundary SHA (D-PD-19); empty if no git workspace
 		MountedVolumes: namedVolumeAttachments(opts.NamedVolumeMounts),
+		LiveMounts:     opts.LiveMounts,
 	}
 	// 6a. Mixed-host guard: a bind must not span GitHub and non-GitHub hosts
 	//

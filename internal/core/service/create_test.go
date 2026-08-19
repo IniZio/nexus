@@ -593,3 +593,97 @@ func TestCreateAndBoot_GitHubSecretWithRepo_Allowed(t *testing.T) {
 		t.Errorf("Envelope.AllowedRepo = %q, want %q", sb.Envelope.AllowedRepo, "owner/repo")
 	}
 }
+
+// TestCreateAndBoot_LiveMounts_FlowsToRecord verifies that LiveMounts set in
+// CreateAndBootOptions are persisted on the sandbox record (D-PD-53).
+//
+// The DriverFactory is a closure (not the real cloudhypervisor driver), so this
+// test verifies the service layer — that opts.LiveMounts reaches sb.LiveMounts
+// — without exercising virtiofsd or the kernel cmdline. The CLI-layer
+// liveMountsToGuestMounts + VirtiofsTag agreement is covered in the cli package
+// (TestLiveMountsToGuestMounts_TagAgreement).
+func TestCreateAndBoot_LiveMounts_FlowsToRecord(t *testing.T) {
+	ctx := context.Background()
+	cacheRoot := t.TempDir()
+	cache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	img := putFakeImage(t, ctx, cache)
+
+	fd := fake.New()
+	svc := newTestSvc(t, fd)
+
+	mounts := []domain.LiveMount{
+		{HostPath: "/host/a", GuestPath: "/guest/a", ReadOnly: false},
+		{HostPath: "/host/b", GuestPath: "/guest/b", ReadOnly: true},
+	}
+
+	sb, err := CreateAndBoot(ctx, svc, cache, fakeDriverFactory(fd), noopProbe,
+		"proj", "live-mounts-test",
+		CreateAndBootOptions{
+			Image:      ImageSpec{Digest: string(img.Digest)},
+			CacheRoot:  cacheRoot,
+			LiveMounts: mounts,
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: %v", err)
+	}
+
+	// Verify all three acceptance criteria at once:
+	// 1. LiveMounts length matches.
+	// 2. HostPath, GuestPath, ReadOnly propagate correctly for each entry.
+	if len(sb.LiveMounts) != len(mounts) {
+		t.Fatalf("sb.LiveMounts len = %d, want %d", len(sb.LiveMounts), len(mounts))
+	}
+	for i, want := range mounts {
+		got := sb.LiveMounts[i]
+		if got.HostPath != want.HostPath {
+			t.Errorf("LiveMounts[%d].HostPath = %q, want %q", i, got.HostPath, want.HostPath)
+		}
+		if got.GuestPath != want.GuestPath {
+			t.Errorf("LiveMounts[%d].GuestPath = %q, want %q", i, got.GuestPath, want.GuestPath)
+		}
+		if got.ReadOnly != want.ReadOnly {
+			t.Errorf("LiveMounts[%d].ReadOnly = %v, want %v", i, got.ReadOnly, want.ReadOnly)
+		}
+	}
+}
+
+// TestCreateAndBoot_LiveMounts_ReadOnly_EndToEnd proves that :ro propagates
+// through the domain record correctly — ReadOnly=true on the second mount and
+// ReadOnly=false on the first are both preserved.
+func TestCreateAndBoot_LiveMounts_ReadOnly_EndToEnd(t *testing.T) {
+	ctx := context.Background()
+	cacheRoot := t.TempDir()
+	cache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	img := putFakeImage(t, ctx, cache)
+
+	fd := fake.New()
+	svc := newTestSvc(t, fd)
+
+	sb, err := CreateAndBoot(ctx, svc, cache, fakeDriverFactory(fd), noopProbe,
+		"proj", "ro-live-mount",
+		CreateAndBootOptions{
+			Image:     ImageSpec{Digest: string(img.Digest)},
+			CacheRoot: cacheRoot,
+			LiveMounts: []domain.LiveMount{
+				{HostPath: "/host/rw", GuestPath: "/guest/rw", ReadOnly: false},
+				{HostPath: "/host/ro", GuestPath: "/guest/ro", ReadOnly: true},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: %v", err)
+	}
+	if sb.LiveMounts[0].ReadOnly {
+		t.Error("LiveMounts[0].ReadOnly: got true, want false")
+	}
+	if !sb.LiveMounts[1].ReadOnly {
+		t.Error("LiveMounts[1].ReadOnly: got false, want true")
+	}
+}
