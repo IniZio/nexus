@@ -50,6 +50,12 @@ SURFACE_MANIFEST = Path(
 )
 VALIDATOR = _script_dir / "validate-cli-examples.py"
 
+# ── Honesty baseline ──────────────────────────────────────────────────────────
+# Minimum total badge count that must be present in docs/site/**/*.md.
+# Lower this by the exact number of badges removed whenever an intentional
+# removal is committed; the commit message is the explanation.
+_MIN_BADGE_COUNT = 85
+
 # ── Regex patterns ────────────────────────────────────────────────────────────
 BADGE_RE = re.compile(r'<Badge\s+type="(danger|warning|info)"[^/]*/>')
 
@@ -271,6 +277,20 @@ def main() -> None:
     if not VALIDATOR.exists():
         sys.exit(f"Validator not found: {VALIDATOR}")
 
+    # ── Pre-check: validate current docs before sweeping ─────────────────────
+    # If a load-bearing badge was removed from the docs tree, the validator
+    # fails here before we run any sweep iterations.  This is the primary gate
+    # for the regression: badge removed → validator fails → badge-coverage exits 1.
+    pre = subprocess.run(
+        [sys.executable, str(VALIDATOR)],
+        capture_output=True, text=True,
+    )
+    if pre.returncode != 0:
+        print("FAIL: validate-cli-examples.py failed on the current docs tree.")
+        print("A load-bearing badge may have been removed.  Validator output:")
+        print(pre.stdout.strip())
+        sys.exit(1)
+
     badges = find_all_badges(DOCS_DIR)
     total = len(badges)
     print(f"Found {total} badges in {DOCS_DIR}")
@@ -281,6 +301,29 @@ def main() -> None:
     elapsed = time.monotonic() - t0
 
     report(badges, detected, undetected, elapsed)
+
+    # ── Honesty gate: minimum badge count baseline ────────────────────────────
+    # Badges communicate honesty: partial/not-built badges tell readers what
+    # isn't built yet.  Silent badge removal breaks that contract.  A floor on
+    # the total badge count makes removal explicit: if the count drops below
+    # MIN_BADGE_COUNT the author must lower the baseline deliberately (explaining
+    # the removal in the diff) rather than letting it slip through unnoticed.
+    #
+    # Raising this baseline when new badges are added is unnecessary — only
+    # lowering (badge removal) requires a deliberate update.
+    #
+    # To update after an intentional removal: lower MIN_BADGE_COUNT by the
+    # number of badges removed and commit the change with a reason.
+    if total < _MIN_BADGE_COUNT:
+        print(
+            f"\nFAIL: badge count dropped to {total} (minimum is {_MIN_BADGE_COUNT})."
+        )
+        print(
+            "Badges were removed without updating the baseline.  If this removal"
+            " is intentional, lower _MIN_BADGE_COUNT in badge-coverage.py by the"
+            " number of badges removed and commit the change with a reason."
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":
