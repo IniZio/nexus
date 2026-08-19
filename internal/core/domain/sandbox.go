@@ -126,6 +126,23 @@ type Sandbox struct {
 	// the sandbox ID and the element index. Storing it here would couple the
 	// domain type to a transport detail and create a redundant source of truth.
 	LiveMounts []LiveMount `json:"live_mounts,omitempty"`
+
+	// AgentName is the registered agent profile this sandbox was created for
+	// (cred.AgentProfile.Name, e.g. "claude-code"). It is frozen at creation:
+	// the agent a sandbox runs determines its egress allowlist and the shape of
+	// the credential seed, both of which are baked into the Envelope and into
+	// the guest at boot. Changing it in place would leave a sandbox whose
+	// running perimeter disagrees with its record.
+	//
+	// Empty means the sandbox was created without an agent (a plain sandbox,
+	// or a record written before this field existed). Callers must not read an
+	// empty value as "the default agent" — a sandbox with no agent gets no
+	// credential seed at all.
+	//
+	// The name is stored rather than the resolved profile so that fixing a
+	// profile's egress list or capabilities takes effect on the next boot of an
+	// existing sandbox, instead of freezing a stale copy into the store.
+	AgentName string `json:"agent_name,omitempty"`
 }
 
 // LiveMount describes a single live host-directory virtiofs share attached to

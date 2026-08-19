@@ -39,12 +39,12 @@ const currentSchemaVersion = 1
 //   - fork lineage:   Provenance (omitted for non-fork sandboxes)
 //   - git anchor:     BaseRef (40-hex SHA; omitted for sandboxes without a git workspace)
 type record struct {
-	SchemaVersion  int               `json:"schema_version"`
-	ID             domain.SandboxID  `json:"id"`
-	Name           string            `json:"name"`
-	Project        string            `json:"project"`
+	SchemaVersion int              `json:"schema_version"`
+	ID            domain.SandboxID `json:"id"`
+	Name          string           `json:"name"`
+	Project       string           `json:"project"`
 	// Labels is the current label store. Written by all new records.
-	Labels         map[string]string `json:"labels,omitempty"`
+	Labels map[string]string `json:"labels,omitempty"`
 	// MotiveID is a legacy field present in records written before the Labels
 	// field existed. On read, a non-empty MotiveID is migrated into
 	// Labels["motive"]. New records never write this field.
@@ -54,23 +54,26 @@ type record struct {
 	InstanceID     string            `json:"instance_id"`
 	RemoveOnExit   bool              `json:"remove_on_exit"`
 	RemovalMarker  bool              `json:"removal_marker"`
-	StopReason     domain.StopReason          `json:"stop_reason,omitempty"`
-	Provenance     *provenanceRecord          `json:"provenance,omitempty"`
-	SupervisorPID  int                        `json:"supervisor_pid,omitempty"`
-	SupervisorSock string                     `json:"supervisor_sock,omitempty"`
-	CreatorPID     int                        `json:"creator_pid,omitempty"`
+	StopReason     domain.StopReason `json:"stop_reason,omitempty"`
+	Provenance     *provenanceRecord `json:"provenance,omitempty"`
+	SupervisorPID  int               `json:"supervisor_pid,omitempty"`
+	SupervisorSock string            `json:"supervisor_sock,omitempty"`
+	CreatorPID     int               `json:"creator_pid,omitempty"`
 	// BaseRef is the shallow-clone boundary SHA recorded by G1 (D-PD-19).
 	// Omitted for sandboxes created without a git workspace.
-	BaseRef        string                     `json:"base_ref,omitempty"`
+	BaseRef string `json:"base_ref,omitempty"`
 	// MountedVolumes records named volumes attached at create time (D-PD-82).
 	// Omitted for sandboxes with no attached volumes; nil on read is equivalent
 	// to an empty slice. Backward-compatible: old records without this field
 	// deserialise to nil, which is the correct default (no volumes).
-	MountedVolumes []domain.VolumeAttachment  `json:"mounted_volumes,omitempty"`
+	MountedVolumes []domain.VolumeAttachment `json:"mounted_volumes,omitempty"`
 	// LiveMounts records live host-directory virtiofs shares attached at create
 	// time (D-PD-53). Omitted when nil; nil on read is equivalent to no mounts.
 	// Backward-compatible: old records without this field deserialise to nil.
-	LiveMounts     []domain.LiveMount         `json:"live_mounts,omitempty"`
+	LiveMounts []domain.LiveMount `json:"live_mounts,omitempty"`
+	// AgentName records the agent profile the sandbox was created for (TBD-PD-32).
+	// Empty for plain sandboxes and for records written before the field existed.
+	AgentName string `json:"agent_name,omitempty"`
 }
 
 // provenanceRecord is the on-disk form of domain.Provenance. Kept separate
@@ -100,6 +103,7 @@ func toRecord(sb domain.Sandbox) record {
 		BaseRef:        sb.BaseRef,
 		MountedVolumes: sb.MountedVolumes,
 		LiveMounts:     sb.LiveMounts,
+		AgentName:      sb.AgentName,
 		// MotiveID intentionally omitted: new records never write this field.
 	}
 	if sb.Provenance != nil {
@@ -144,6 +148,7 @@ func (r record) toDomain() domain.Sandbox {
 		BaseRef:        r.BaseRef,
 		MountedVolumes: r.MountedVolumes,
 		LiveMounts:     r.LiveMounts,
+		AgentName:      r.AgentName,
 	}
 	if r.Provenance != nil {
 		sb.Provenance = &domain.Provenance{
