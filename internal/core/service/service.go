@@ -377,6 +377,11 @@ func (s *Service) resolve(ctx context.Context, ref string) (domain.Sandbox, erro
 	return sb, nil
 }
 
+// Get returns the sandbox identified by ref (handle, exact ID, or ID prefix).
+func (s *Service) Get(ctx context.Context, ref string) (domain.Sandbox, error) {
+	return s.resolve(ctx, ref)
+}
+
 // Start starts the sandbox identified by ref. ref may be an exact ID, an ID
 // prefix, or a "<project>/<name>" handle. The sandbox must be in state
 // Created or Stopped.

@@ -64,7 +64,7 @@ func TestExec_NoGuestDialer_ReturnsNoSubstrate(t *testing.T) {
 	ref := createTestSandbox(t, svc)
 
 	out, _, _ := capture(false)
-	err := runExecWithSvc(context.Background(), ref, []string{"/bin/sh"}, nil, out, svc)
+	err := runExecWithSvc(context.Background(), ref, []string{"/bin/sh"}, "", nil, out, svc)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -87,7 +87,7 @@ func TestExec_JSON_EmitsExecDone(t *testing.T) {
 	ref := createTestSandbox(t, svc)
 
 	out, stdout, _ := capture(true)
-	err := runExecWithSvc(context.Background(), ref, []string{"/bin/sh"}, nil, out, svc)
+	err := runExecWithSvc(context.Background(), ref, []string{"/bin/sh"}, "", nil, out, svc)
 	if err == nil {
 		t.Fatal("expected error (no GuestDialer)")
 	}

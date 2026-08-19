@@ -93,5 +93,5 @@ func runShell(ctx context.Context, args []string, out *Output) error {
 	// Delegate to the same PTY-streaming path that "exec --pty" uses.
 	// runExecWithSvc calls enterRawMode when ptyOpts != nil and handles
 	// SIGWINCH forwarding, raw-mode setup, and exit-code propagation.
-	return runExecWithSvc(ctx, ref, argv, ptyOpts, out, svc)
+	return runExecWithSvc(ctx, ref, argv, "", ptyOpts, out, svc)
 }

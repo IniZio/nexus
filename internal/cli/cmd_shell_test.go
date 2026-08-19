@@ -32,7 +32,7 @@ func TestShell_DefaultCommand_PassesThroughExec(t *testing.T) {
 	// Invoke runShell's flag-parsing and argv-building logic, but bypass
 	// newSandboxService by calling runExecWithSvc directly with ptyOpts=nil
 	// (non-PTY to avoid raw-mode calls in test) and the default argv.
-	err := runExecWithSvc(context.Background(), ref, defaultShellArgv, nil, out, svc)
+	err := runExecWithSvc(context.Background(), ref, defaultShellArgv, "", nil, out, svc)
 	if err == nil {
 		t.Fatal("expected error (no GuestDialer), got nil")
 	}
@@ -60,7 +60,7 @@ func TestShell_TrailingCommand_Parsed(t *testing.T) {
 
 	out, _, _ := capture(false)
 	// Simulate: nexus3 shell <ref> /bin/sh -c echo (after -- stripping by shellArgv).
-	err := runExecWithSvc(context.Background(), ref, []string{"/bin/sh", "-c", "echo"}, nil, out, svc)
+	err := runExecWithSvc(context.Background(), ref, []string{"/bin/sh", "-c", "echo"}, "", nil, out, svc)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -145,7 +145,7 @@ func TestShell_SizeFallback_Defaults(t *testing.T) {
 	out, _, _ := capture(false)
 	// The service will return ErrNoSubstrate before touching the PTY — no
 	// actual raw-mode is entered, so this is safe in a test harness.
-	err := runExecWithSvc(context.Background(), ref, defaultShellArgv, nil, out, svc)
+	err := runExecWithSvc(context.Background(), ref, defaultShellArgv, "", nil, out, svc)
 	var usageErr *UsageError
 	if errors.As(err, &usageErr) {
 		t.Fatalf("unexpected UsageError with non-TTY stdin: %v", err)

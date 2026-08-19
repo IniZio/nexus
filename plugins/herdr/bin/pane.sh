@@ -16,7 +16,17 @@ case "$1" in
             echo "pane.sh shell: NEXUS3_WORKSPACE not set" >&2
             exit 1
         fi
-        exec "$SHIM" exec "$REF" /bin/sh
+        # Resolve workspace guest directory (prints /root when no workspace is mounted).
+        SHELL_CWD="$("$SHIM" __herdr-plugin shell-cwd "$REF" 2>/dev/null)"
+        if [ -z "$SHELL_CWD" ]; then
+            SHELL_CWD="/root"
+        fi
+        # Prefer bash as a login shell; fall back to /bin/sh for minimal images.
+        if [ -x /usr/bin/bash ]; then
+            exec "$SHIM" exec --pty --cwd "$SHELL_CWD" "$REF" /usr/bin/bash -l
+        else
+            exec "$SHIM" exec --pty --cwd "$SHELL_CWD" "$REF" /bin/sh
+        fi
         ;;
     create-space)
         # Discoverable create+boot+space action. Maps to space-create-from-file subcommand.

@@ -46,6 +46,7 @@ func runExec(ctx context.Context, args []string, out *Output) error {
 		ptyFlag  = fs.Bool("pty", false, "allocate a PTY for the session")
 		rowsFlag = fs.Uint("rows", 24, "terminal rows (requires --pty)")
 		colsFlag = fs.Uint("cols", 80, "terminal columns (requires --pty)")
+		cwdFlag  = fs.String("cwd", "", "working directory for the command inside the guest")
 	)
 	if err := fs.Parse(args); err != nil {
 		return &UsageError{Msg: "exec: " + err.Error()}
@@ -58,7 +59,7 @@ func runExec(ctx context.Context, args []string, out *Output) error {
 
 	positional := fs.Args()
 	if len(positional) < 2 {
-		return &UsageError{Msg: "exec: usage: exec <sandbox-ref> <command> [args...]"}
+		return &UsageError{Msg: "exec: usage: exec [--cwd <dir>] <sandbox-ref> <command> [args...]"}
 	}
 
 	ref := positional[0]
@@ -75,17 +76,18 @@ func runExec(ctx context.Context, args []string, out *Output) error {
 		}
 	}
 
-	return runExecWithSvc(ctx, ref, argv, ptyOpts, out, svc)
+	return runExecWithSvc(ctx, ref, argv, *cwdFlag, ptyOpts, out, svc)
 }
 
 // runExecWithSvc executes a command in the guest sandbox and streams output.
 // Extracted for testability — callers pass a pre-built service.
-func runExecWithSvc(ctx context.Context, ref string, argv []string, ptyOpts *agentpb.PtyOptions, out *Output, svc *service.Service) error {
+func runExecWithSvc(ctx context.Context, ref string, argv []string, cwd string, ptyOpts *agentpb.PtyOptions, out *Output, svc *service.Service) error {
 	// Enter raw mode only when a PTY was requested. Non-TTY stdin (pipes,
 	// test harnesses, --json mode) is a no-op: enterRawMode returns ok==false
 	// and a nil winsizeCh so nothing changes for non-interactive callers.
 	opts := agent.ExecOptions{
 		Argv:   argv,
+		Cwd:    cwd,
 		Pty:    ptyOpts,
 		Stdin:  os.Stdin,
 		Stdout: os.Stdout,
