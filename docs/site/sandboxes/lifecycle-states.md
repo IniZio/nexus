@@ -76,7 +76,7 @@ Snapshot is a self-edge valid only from `running` (row S1) and `stopped` (row S2
 
 `TriggerFork` has no entry in the transition table. Fork children are created directly in `running` state by the service layer; the parent sandbox state is unchanged.
 
-### Fork and snapshot on a live-mounted sandbox <Badge type="danger" text="not built" />
+### Fork and snapshot on a live-mounted sandbox
 
 When a sandbox holds a live virtiofs mount, two operations are **refused with an explicit error** regardless of sandbox state:
 

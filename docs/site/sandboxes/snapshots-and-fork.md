@@ -50,7 +50,7 @@ A `Snapshot` records the full memory and disk state of a sandbox at a point in t
 
 The operation runs under a lease alongside the record; the sandbox never enters a transient state.
 
-**Live-mounted sandbox — snapshot refused** <Badge type="danger" text="not built" />: when a sandbox holds a live virtiofs mount, `nexus3 snapshot` is refused with an explicit error. The mounted tree lives on the host and is not captured in the snapshot; a restore would resume memory state referencing files that may have changed underneath it.
+**Live-mounted sandbox — snapshot refused**: when a sandbox holds a live virtiofs mount, `nexus3 snapshot` is refused with an explicit error naming the offending host→guest pairs. The mounted tree lives on the host and is not captured in the snapshot; a restore would resume memory state referencing files that may have changed underneath it.
 
 ## Fork
 
@@ -62,7 +62,7 @@ The operation runs under a lease alongside the record; the sandbox never enters 
 - **Children are ordinary Sandboxes**, created directly in `running` state. Their `Provenance` field records the parent ID and source snapshot ID.
 - Children get **identity fixup** on wake: new MAC address, new IP, new hostname, new `machine-id`. The kernel, disk state, and memory image are otherwise identical to the snapshot.
 - **All disks are isolated per child**: every sandbox disk receives an independent CoW sparse copy via reflink (or fallback copy-on-write) — root disk and shadow disks <Badge type="danger" text="not built" /> if any. No disk is shared between siblings after fork.
-- **Live-mounted sandbox — fork refused** <Badge type="danger" text="not built" />: `nexus3 fork` is refused on a sandbox holding a live virtiofs mount. Two child VMs sharing one host worktree would collide on `.git/index.lock`. The N-way parallel pattern uses independent `create` calls, each with its own worktree.
+- **Live-mounted sandbox — fork refused**: `nexus3 fork` is refused on a sandbox holding a live virtiofs mount, with an explicit error naming the offending mount pairs. Two child VMs sharing one host worktree would collide on `.git/index.lock`. The N-way parallel pattern uses independent `create` calls, each with its own worktree.
 
 ### Cost model (Linux)
 

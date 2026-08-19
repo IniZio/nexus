@@ -57,13 +57,13 @@ flowchart TD
 - **No transient states.** An operation in flight holds a lease alongside the record; the record never enters an intermediate state.
 - **Custom agent, not a container runtime.** The agent is a thin Go binary baked into every image. It speaks a narrow bespoke gRPC protocol; it does not implement OCI or any container spec.
 - **Zero VMM code.** nexus3 drives Cloud Hypervisor over its REST API. It owns no hypervisor code.
-- **Live mounts as source.** <Badge type="danger" text="not built" /> The target source-init model mounts a host `git worktree` directory into the sandbox via virtiofs — bidirectional and live; edits inside appear on the host immediately. Shadow disks absorb write-heavy directories. Fork and snapshot are refused on a live-mounted sandbox; N-way parallelism uses independent `create` calls, each with its own worktree.
+- **Live mounts as source.** `--mount <host-path>:<guest-path>` mounts a host `git worktree` directory into the sandbox via virtiofs — bidirectional and live; edits inside appear on the host immediately. Fork and snapshot are refused on a live-mounted sandbox; N-way parallelism uses independent `create` calls, each with its own worktree.
 
 ## What sandboxes can do
 
 **Build and test.** Full Linux guests with unrestricted shell access. Large Go codebases build and test in-sandbox: `go build ./...` runs clean (`CGO_ENABLED=0`; no C compiler in the guest by default), with cold full-build around 32 seconds and per-package incremental test runs around 2 seconds.
 
-**Source init.** Under the live-mount model <Badge type="danger" text="not built" />, a host `git worktree` directory is mounted directly via virtiofs — edits inside appear on the host immediately, and fork/snapshot are refused on a live-mounted sandbox (see [Snapshots and fork](snapshots-and-fork.md)).
+**Source init.** Under the live-mount model, a host `git worktree` directory is mounted directly via virtiofs using `--mount` — edits inside appear on the host immediately, and fork/snapshot are refused on a live-mounted sandbox (see [Snapshots and fork](snapshots-and-fork.md)).
 
 **Nested virtualisation.** `/dev/kvm` is absent inside a guest unless explicitly opted in at sandbox create time (`--nested`). Workloads that boot or manage VMs require it.
 

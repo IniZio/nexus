@@ -139,11 +139,18 @@ nexus3 create myproject/dev-1 \
 
 See [Volume commands](/cli/volume-commands) and [CLI — Named volumes](/cli/sandbox-commands#named-volumes).
 
-## Live virtiofs worktree mount <Badge type="danger" text="not built" />
+## Live virtiofs worktree mount
 
-The longer-term target is a live virtiofs mount of the host worktree so the sandbox sees dirty files, untracked files, and unpushed commits without a capture step. This is a ratified design (D-PD-53) that is not yet implemented.
+`--mount <host-path>:<guest-path>[:ro]` mounts a host directory into the sandbox as a live virtiofs share — the sandbox sees dirty files, untracked files, and unpushed commits without a capture step (D-PD-53).
 
-See [Mounts and worktrees](/recipes/mounts-and-worktrees) for the design.
+```
+nexus3 create myproject/dev-1 \
+  --image nexus3-base:20260807 \
+  --mount /path/to/myrepo:/workspace/myrepo \
+  --memory 8192
+```
+
+See [Mounts and worktrees](/recipes/mounts-and-worktrees) for the full workflow.
 
 ---
 

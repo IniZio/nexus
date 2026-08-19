@@ -52,6 +52,7 @@ nexus3 create <project>/<name> [flags]
 | `--egress <mode>` | string | — | Egress policy (`open` or `github-only`) |
 | `--allow-host <host>` | string | — | Add a host to the egress allowlist; repeatable |
 | `--repo <owner/repo>` | string | — | Add a GitHub repo to the MITM allowlist; repeatable |
+| `--mount <host-path>:<guest-path>[:ro]` | string | — | Live virtiofs mount of a host directory into the guest; repeatable. The host path must exist and be a directory; it is resolved to an absolute path. Add `:ro` for read-only. Guest paths containing `.git` components are **allowed** (unlike `--mount-named`). See [Live host mounts](#live-host-mounts). |
 | `--mount-named <name>:<guest-path>[:<options>]` | string | — | Attach a named volume at `<guest-path>`; repeatable. Options: `kind=dir\|disk` (default `disk`), `size=<N>g` (default `10g`; kind=disk only), `ro`. Volume is created automatically when it does not exist. Guest paths whose components include `.git` are rejected. See [Named volumes](#named-volumes). |
 | `--service 'name:cmd[:probe]'` | string | — | <Badge type="danger" text="not built" /> Per-sandbox addition or override of a same-named service declared in the image's `.nexus/services.yaml`. `create` blocks until all probes pass (30-second cap). See [Docker in a sandbox](/recipes/docker-in-sandbox). |
 
@@ -86,6 +87,38 @@ Prefer `kind=disk` for dependency stores and build caches — block I/O is measu
 Use `nexus3 volume rm <name>` to delete a volume explicitly, or `nexus3 volume prune` to reclaim detached volumes. See [Volume commands](/cli/volume-commands) for the full lifecycle.
 
 For the agent skill that generates `--mount-named` fragments from project manifests (package.json, Cargo.toml, go.mod, etc.), see [AI agents](/ai-agents).
+
+### Live host mounts
+
+`--mount <host-path>:<guest-path>[:ro]` mounts a host directory into the guest as a live virtiofs share. Edits inside the sandbox appear on the host immediately; no sync step is needed.
+
+```
+nexus3 create myproject/dev-1 \
+  --image nexus3-base:20260807 \
+  --mount /data/repos/myrepo:/workspace/myrepo \
+  --memory 8192
+```
+
+Key differences from `--mount-named`:
+
+| | `--mount` (live host mount) | `--mount-named` (named volume) |
+|---|---|---|
+| Backing | Host directory via virtiofs | User-owned volume (ext4 disk or virtiofs dir) |
+| Persistence | Host filesystem — survives `rm` naturally | Volume store — explicit `volume rm` to delete |
+| `.git` guest path | **Allowed** (D-PD-99) — mounting a real worktree is the primary use-case | **Hard refused** at parse time |
+| Fork / snapshot | **Refused** with an explicit error | Refused (TBR-PD-15, deferred) |
+| Use case | Live worktree editing; read-only config injection | Dependency stores, build caches |
+
+The host path must exist and be a directory; it is resolved to an absolute path. Repeatable:
+
+```
+nexus3 create myproject/dev-1 \
+  --mount /data/repos/myrepo:/workspace/myrepo \
+  --mount /data/shared/secrets:/run/secrets:ro \
+  --memory 8192
+```
+
+See [Mounts and worktrees](/recipes/mounts-and-worktrees) for the full worktree workflow.
 
 ### Startup services <Badge type="danger" text="not built" />
 

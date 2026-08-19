@@ -18,7 +18,7 @@ host's worktree branch, with no nexus3 branch naming or identity seeding involve
 
 ```mermaid
 flowchart LR
-    A["Create worktrees<br/>on branches you choose"] --> B["Mount each worktree<br/>into a sandbox with -v"]
+    A["Create worktrees<br/>on branches you choose"] --> B["Mount each worktree<br/>into a sandbox with --mount"]
     B --> C["Exec agent<br/>per sandbox (parallel)"]
     C --> D["Integrate: fetch,<br/>merge, open PR on host"]
 ```
@@ -45,16 +45,12 @@ additional identity seeding is needed.
 ```sh
 nexus3 create myproject/task-42 \
   --image nexus3-base:20260807 \
-  -v /path/to/myrepo-task-42:/workspace/myrepo \
+  --mount /path/to/myrepo-task-42:/workspace/myrepo \
   --memory 4096 \
   --label task-id=42
 ```
 
-<Badge type="danger" text="not built" /> — live virtiofs `-v` mounts are a target-only capability;
-see [Mounts and worktrees](mounts-and-worktrees.md) for current status.
-
-<Badge type="warning" text="partial" /> — `nexus3 create` maps to `nexus3 sandbox create` in the
-current implementation; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+<Badge type="warning" text="partial" /> —`nexus3 create` maps to `nexus3 sandbox create` in the current implementation; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
 For N sandboxes, loop over `nexus3 create`:
 
@@ -64,7 +60,7 @@ for task in 42 43 44; do
 
   nexus3 create myproject/task-$task \
     --image nexus3-base:20260807 \
-    -v /path/to/myrepo-task-$task:/workspace/myrepo \
+    --mount /path/to/myrepo-task-$task:/workspace/myrepo \
     --memory 4096 \
     --label task-id=$task
 done
@@ -109,7 +105,7 @@ git -C /path/to/myrepo-task-42 push origin feat/task-42
 git -C /path/to/myrepo-task-43 push origin feat/task-43
 ```
 
-**Option B — push in-guest via the MITM credential path** <Badge type="danger" text="not built — depends on live `-v` mounts; the `--repo` MITM path itself is implemented today" />
+**Option B — push in-guest via the MITM credential path** <Badge type="danger" text="not built — in-guest git push via MITM credential path is not yet wired; use Option A" />
 
 Pass `--repo` at create time to bind the sandbox to a specific repository allowlist entry. The
 MITM proxy swaps the placeholder credential for a real one on GitHub requests that match the
@@ -118,7 +114,7 @@ allowlist:
 ```sh
 nexus3 create myproject/task-42 \
   --image nexus3-base:20260807 \
-  -v /path/to/myrepo-task-42:/workspace/myrepo \
+  --mount /path/to/myrepo-task-42:/workspace/myrepo \
   --memory 4096 \
   --repo owner/myrepo \
   --label task-id=42

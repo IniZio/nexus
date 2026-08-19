@@ -41,22 +41,20 @@ nexus3 create myproject/worker-1 \
 
 `nexus3 create --context <dir>` builds the image and boots the sandbox in a single command:
 
-> **`-v` in the example below is <Badge type="danger" text="not built" />.** Omit it for now;
-> the sandbox boots and runs correctly without a mounted workspace.
-
 ```sh
 nexus3 create myproject/builder-1 \
   --context /path/to/project \
-  -v /path/to/project:/workspace/project \
+  --mount /path/to/project:/workspace/project \
   --memory 8192 \
   --vcpus 4
 ```
+
 
 Steps performed:
 1. Reads `.nexus/Containerfile` from `<dir>`
 2. Builds the image using in-VM buildkitd
 3. Boots the sandbox with the resulting image
-4. Mounts the source directory as the live workspace if `-v` is given <Badge type="danger" text="not built" /> — `-v` and the virtiofs workspace attach are part of the target design but not yet implemented; omit the flag for now
+4. Mounts the source directory as a live virtiofs share if `--mount` is given
 
 Egress is automatically granted for the full `--context` build path, so `apt-get`, `pnpm install`,
 and image pulls all work without extra configuration.

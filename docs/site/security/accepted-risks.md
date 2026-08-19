@@ -40,21 +40,21 @@ nexus3 create --allow-host api.example.com my-sandbox
 
 **Acceptance rationale**: An eager O(1) length check catches a truncated parent before any UFFD child can exist, so the only case the refusal blocks is removing a snapshot with healthy live children. Force-remove of a live parent is fundamentally unsafe (children would SIGBUS); the refusal is the correct behavior. Force-remove is deferred to a future version that can safely drain children.
 
-### Live worktree mount — ~20× metadata overhead <Badge type="danger" text="not built" />
+### Live worktree mount — metadata overhead
 
-**Risk**: The virtiofs transport that delivers the host worktree to the guest carries a ~20× metadata overhead compared to a virtio-blk disk: 327 ms vs 16 ms on a 1000-file create/stat/unlink benchmark. Build steps that create many small files would be penalized if run on the mounted path.
+**Risk**: The virtiofs transport that delivers the host worktree to the guest carries elevated metadata overhead compared to a virtio-blk disk. Measured values (D-PD-102/103, n=10 bench-redo on equal-footing `cp -a` copies): `git status` is **4.74× slower** than ext4 in-guest (ratio of means) and **~10× slower** than the 14.75 ms host-native baseline; metadata **writes** remain **~15–20×** slower. The earlier figure of "327 ms vs 16 ms (~20×)" was void — an `mke2fs -d` inode artifact caused git to re-hash 489 MB on one leg only. Build steps that create many small files would be penalized if run on the mounted path.
 
-**Acceptance rationale**: Shadow disks absorb all write-heavy paths (`node_modules`, `.next`, `target`, `dist`). These paths are redirected to per-sandbox virtio-blk images at boot; file creation under them never touches the virtiofs transport. The content that remains on the mount is source files: predominantly read, occasionally written by the agent during editing. For that access pattern the overhead is tolerable.
+**Acceptance rationale**: Write-heavy directories (`node_modules`, `.next`, `target`, `dist`) are steered onto named volumes (`--mount-named kind=disk`) — per-sandbox virtio-blk images whose metadata never crosses the virtiofs transport (D-PD-99). The content that remains on the live mount is source files: predominantly read, occasionally written by the agent during editing. For that access pattern the overhead is tolerable.
 
-**Mitigations**: Shadow disks for write-heavy paths. Fork and snapshot refusal on a mounted sandbox <Badge type="danger" text="not built" /> — the two operations that would compound the concurrent-access risk are planned to be refused but the enforcement does not yet exist.
+**Mitigations**: Named volumes (`--mount-named`) for write-heavy paths. Fork and snapshot are refused on a mounted sandbox — the enforcement exists and names the offending host→guest pairs in the error.
 
-### Live mount gives guest write access to the host worktree <Badge type="danger" text="not built" />
+### Live mount gives guest write access to the host worktree
 
 **Risk**: The virtiofs mount is bidirectional. A running guest can write to any path in the mounted host directory that the host process owns. A compromised agent could modify source files, corrupt the git index, or delete staged commits.
 
 **Acceptance rationale**: nexus3's threat model is credential theft and unauthorized egress — not host filesystem corruption. The mounted directory is a `git worktree` under orchestrator control; integrity can be verified after the agent exits via `git diff` or `git fsck`. The host process user, not root, owns the files; the guest cannot escalate beyond those permissions.
 
-**Mitigations**: Each sandbox gets its own worktree — no two concurrent sandboxes share a mounted path. `nexus3 sandbox fork` and snapshot refusal on a mounted sandbox <Badge type="danger" text="not built" /> — planned to refuse with an explicit error, but the enforcement does not yet exist. This mitigation is absent in the current binary.
+**Mitigations**: Each sandbox gets its own worktree — no two concurrent sandboxes share a mounted path. `fork` and `snapshot create` are refused on a mounted sandbox with an explicit error naming the offending host→guest pairs; the enforcement exists in the current binary.
 
 ## Retired risks
 

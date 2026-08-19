@@ -3,10 +3,10 @@ title: "Mounts and worktrees"
 description: "Mount a git worktree per sandbox so edits inside the VM appear on the host tree in real time"
 ---
 
-# Mounts and worktrees <Badge type="danger" text="not built" />
+# Mounts and worktrees
 
-::: tip Named volumes are the shipped path for dependency isolation
-`--mount-named kind=disk` volumes (built) replace the shadow disk sections on this page for dependency stores and build caches. For per-sandbox dependency isolation today, see [Volume commands](/cli/volume-commands) and [CLI — Named volumes](/cli/sandbox-commands#named-volumes). The live virtiofs worktree mount design (`-v`/`--shadow`) described below is a ratified but unbuilt design (D-PD-53).
+::: tip Shadow disks are not yet built
+`--mount-named kind=disk` volumes are the shipped path for dependency isolation (node_modules, build caches, etc.). The **shadow disk** sections on this page are a deferred design — see badges below. For dependency isolation today, see [Volume commands](/cli/volume-commands) and [CLI — Named volumes](/cli/sandbox-commands#named-volumes).
 :::
 
 > Mount a host git worktree as the live workspace — edits inside the sandbox appear on the host immediately, and work flows back through normal git push.
@@ -19,22 +19,20 @@ Live virtiofs mounts replace workspace capture. There is no archive step and no 
 git -C /data/repos/myrepo worktree add /data/repos/myrepo-dev1 feat/my-branch
 ```
 
-**2. Boot the sandbox with the worktree attached** <Badge type="danger" text="not built" />
+**2. Boot the sandbox with the worktree attached**
 
 ```sh
 nexus3 create myproject/dev-1 \
   --context /data/repos/myrepo-dev1 \
-  -v /data/repos/myrepo-dev1:/workspace/myrepo \
+  --mount /data/repos/myrepo-dev1:/workspace/myrepo \
   --memory 8192
 ```
 
-<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create` and `--file`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
-<Badge type="warning" text="partial" /> — current implementation uses `--file`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
-
-`--context` locates `.nexus/Containerfile` for the rootfs build. `-v host-path:guest-path`
-(repeatable; add `:ro` for read-only) attaches the host directory as a live virtiofs volume at
-the guest path.
+`--context` locates `.nexus/Containerfile` for the rootfs build. `--mount host-path:guest-path`
+(repeatable; add `:ro` for read-only) attaches the host directory as a live virtiofs mount at
+the guest path. The host path must exist and be a directory; it is resolved to an absolute path.
 
 ## Git identity in mounted worktrees
 
@@ -45,8 +43,8 @@ When a host git worktree is mounted into the sandbox, git operations inside the 
 
   ```
   nexus3 create myproject/dev-1 \
-    -v /data/repos/myrepo:/workspace/myrepo \
-    -v ~/.gitconfig:/root/.gitconfig:ro \
+    --mount /data/repos/myrepo:/workspace/myrepo \
+    --mount ~/.gitconfig:/root/.gitconfig:ro \
     --image nexus3-base:20260807
   ```
 
@@ -76,10 +74,12 @@ source tree:
 ```sh
 nexus3 create myproject/dev-1 \
   --context /data/repos/myrepo \
-  -v /data/repos/myrepo:/workspace/myrepo \
-  -v /data/shared/secrets:/run/secrets:ro \
+  --mount /data/repos/myrepo:/workspace/myrepo \
+  --mount /data/shared/secrets:/run/secrets:ro \
   --memory 8192
 ```
+
+<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create` and `--file`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
 ---
 
@@ -92,7 +92,7 @@ disk space.
 
 ### Default shadow paths <Badge type="danger" text="not built" />
 
-When `--shadow` is not specified, these paths under any `-v` target are automatically backed
+When `--shadow` is not specified, these paths under any `--mount` target are automatically backed
 by shadow disks:
 
 | Guest path (relative to mount root) | Typical owner |
@@ -107,12 +107,12 @@ The guest sees these as ordinary directories; the shadow binding is transparent 
 ### Declaring additional shadow paths <Badge type="danger" text="not built" />
 
 Use `--shadow` to add paths beyond the defaults. The path must be a subdirectory of a declared
-`-v` target.
+`--mount` target.
 
 ```sh
 nexus3 create myproject/dev-1 \
   --context /data/repos/monorepo \
-  -v /data/repos/monorepo:/workspace/monorepo \
+  --mount /data/repos/monorepo:/workspace/monorepo \
   --shadow /workspace/monorepo/packages/web/node_modules \
   --shadow /workspace/monorepo/packages/api/node_modules \
   --memory 16384
@@ -131,10 +131,10 @@ per sandbox. Durable work flows back via git push, not file copy.
 
 ---
 
-## Fork and snapshot restrictions <Badge type="danger" text="not built" />
+## Fork and snapshot restrictions
 
 `fork` and `snapshot create` are **refused** on a live-mounted sandbox and return an
-explicit error.
+explicit error naming the offending host→guest pairs.
 
 - **Fork refused**: two VMs would share one worktree and one `.git/index.lock`, producing
   concurrent writes to the same tree with no coordination.

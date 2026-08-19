@@ -59,9 +59,9 @@ nexus3 restore <name-or-id>
 
 Addressing by name is <Badge type="danger" text="not built" /> — today only the ULID is accepted.
 
-## Fork and snapshot refusals on mounted sandboxes <Badge type="danger" text="not built" />
+## Fork and snapshot refusals on mounted sandboxes
 
-Once `-v`/`--volume` is implemented, `fork` and `snapshot create` will be refused on a sandbox that holds a live mount, with an explicit error. Two operations cannot be made correct under a live mount:
+`fork` and `snapshot create` are **refused** on a sandbox that holds a live `--mount`, with an explicit error naming the offending host→guest pairs. Two operations cannot be made correct under a live mount:
 
 - **Fork** — two VMs would share one host worktree and one `.git/index.lock`.
 - **Snapshot** — the mounted tree lives on the host and is not captured; a restore would resume memory state referencing files that changed underneath it.

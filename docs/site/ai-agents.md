@@ -91,7 +91,7 @@ __herdr-plugin launch --agent-egress \
 - `--agent-egress` scopes egress to `api.anthropic.com` and `platform.claude.com`, and seeds guest credentials from the host broker. Without this flag the sandbox runs in AllowAll mode with no MITM and no credential injection.
 - The command boots the sandbox, seeds credentials if `--agent-egress`, then execs the command in-guest.
 
-**Worktree-native parallel flow** <Badge type="danger" text="not built" />: the target pattern creates a `git worktree` on the host per sandbox, passes it via `-v`, and the agent commits directly into the mounted worktree. No extraction step; teardown calls `git worktree remove`. Each task gets its own branch and its own mount — sandboxes are created independently (not forked) so mounts are never shared between concurrent VMs.
+**Worktree-native parallel flow**: create a `git worktree` on the host per sandbox, pass it via `--mount`, and the agent commits directly into the mounted worktree. No extraction step; teardown calls `git worktree remove`. Each task gets its own branch and its own mount — sandboxes are created independently (not forked) so mounts are never shared between concurrent VMs.
 
 ### Public agent launch surface <Badge type="danger" text="not built" />
 

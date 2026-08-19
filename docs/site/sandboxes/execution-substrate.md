@@ -52,7 +52,7 @@ Validated findings for when this backlog item is scheduled:
 Each sandbox VM is created with:
 
 - A root disk: a CoW sparse ext4 image forked from the base image.
-- **Source mounts** <Badge type="danger" text="not built" />: one virtiofs device per declared `-v <host-path>:<guest-path>`, providing a live bidirectional view of the host directory.
+- **Source mounts**: one virtiofs device per declared `--mount <host-path>:<guest-path>`, providing a live bidirectional view of the host directory.
 - **Shadow disks** <Badge type="danger" text="not built" />: virtio-blk ext4 images that shadow write-heavy directories (`node_modules`, `.next`, `target`, `dist`) inside the mount, keeping virtiofs metadata cost off the hot build paths.
 - A TAP-based network interface in its own network namespace.
 - A vsock device (CID allocated per sandbox) for host↔guest communication.
@@ -78,7 +78,7 @@ The guest kernel is a custom Linux build shipped per-arch alongside the nexus3 b
 
 - `CONFIG_BRIDGE` + netfilter — required for Docker networking inside the guest.
 - `CONFIG_VIRTIO_*` — virtio-blk (disks), virtio-net (network), virtio-balloon (memory resize).
-- `CONFIG_VIRTIO_FS` (virtiofs) — required for live source mounts. <Badge type="danger" text="not built" />
+- `CONFIG_VIRTIO_FS` (virtiofs) — required for live source mounts.
 - Balloon free-page reporting — lets the host reclaim guest idle pages.
 
 The kernel source and pinned config are in `scripts/kernel/`. The build is reproducible from source.

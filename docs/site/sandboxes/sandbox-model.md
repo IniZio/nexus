@@ -44,7 +44,7 @@ nexus3 ps --label task-id=42
 | `ImageDigest` | `string` | Content-addressable digest of the rootfs image. |
 | `AllowedHosts` | `[]string` | Hostnames the sandbox may reach through the egress perimeter. |
 | `SSHPublicKey` | `string` | OpenSSH public key injected into `/root/.ssh/authorized_keys` at boot. Empty = no SSH provisioned. |
-| `Mounts` | `[]MountSpec` | Live virtiofs mounts: host path → guest path. Edits inside the sandbox appear on the host immediately. Shadow disks sit in front of write-heavy directories to keep virtiofs metadata cost off hot build paths. <Badge type="danger" text="not built" /> |
+| `Mounts` | `[]MountSpec` | Live virtiofs mounts: host path → guest path. Edits inside the sandbox appear on the host immediately. Shadow disks sit in front of write-heavy directories to keep virtiofs metadata cost off hot build paths. |
 
 ### StopReason values
 
@@ -73,9 +73,9 @@ nexus3 create worker --label task-id=lint --label env=ci
 nexus3 ps --label task-id=lint
 ```
 
-## Source model <Badge type="danger" text="not built" />
+## Source model
 
-The primary source-init answer is a **live virtiofs mount**: declare one or more host paths to mount into the sandbox via `-v <host-path>:<guest-path>`. Edits inside the sandbox appear on the host immediately. This is the target model for agentic workflows where a `git worktree` directory is the sandbox source.
+The primary source-init answer is a **live virtiofs mount**: declare one or more host paths to mount into the sandbox via `--mount <host-path>:<guest-path>`. Edits inside the sandbox appear on the host immediately. This is the target model for agentic workflows where a `git worktree` directory is the sandbox source.
 
 Shadow disks sit in front of write-heavy directories inside the mount (`node_modules`, `.next`, `target`, `dist`) to keep virtiofs metadata cost off the hot build paths.
 
