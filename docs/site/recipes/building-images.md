@@ -96,6 +96,8 @@ nexus3 create myproject/heavy-builder \
   --nested
 ```
 
+<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create` and `--file`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+
 `--nested` is off by default to minimise the security surface. Enable it only when the workload
 specifically needs nested virtualisation.
 

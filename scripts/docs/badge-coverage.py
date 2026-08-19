@@ -23,6 +23,7 @@ Stdlib only (Python ≥ 3.11 for tomllib).
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -54,7 +55,6 @@ VALIDATOR = _script_dir / "validate-cli-examples.py"
 # Minimum total badge count that must be present in docs/site/**/*.md.
 # Lower this by the exact number of badges removed whenever an intentional
 # removal is committed; the commit message is the explanation.
-_MIN_BADGE_COUNT = 85
 
 # ── Regex patterns ────────────────────────────────────────────────────────────
 BADGE_RE = re.compile(r'<Badge\s+type="(danger|warning|info)"[^/]*/>')
@@ -302,28 +302,66 @@ def main() -> None:
 
     report(badges, detected, undetected, elapsed)
 
-    # ── Honesty gate: minimum badge count baseline ────────────────────────────
+    # ── Honesty gate: per-file badge census ──────────────────────────────────
     # Badges communicate honesty: partial/not-built badges tell readers what
-    # isn't built yet.  Silent badge removal breaks that contract.  A floor on
-    # the total badge count makes removal explicit: if the count drops below
-    # MIN_BADGE_COUNT the author must lower the baseline deliberately (explaining
-    # the removal in the diff) rather than letting it slip through unnoticed.
+    # isn't built yet, and an UNBADGED claim asserts the thing IS built. Silent
+    # badge removal breaks that contract.
     #
-    # Raising this baseline when new badges are added is unnecessary — only
-    # lowering (badge removal) requires a deliberate update.
+    # This replaces a global floor (total >= N). A global floor cannot see a
+    # single badge going missing while the total stays above the line — with 89
+    # badges against a floor of 85, four could have vanished unnoticed — and it
+    # cannot see a badge removed from one page while another page gains one.
+    # A per-file census catches both, because the unit of a false claim is a
+    # page, not a repo.
     #
-    # To update after an intentional removal: lower MIN_BADGE_COUNT by the
-    # number of badges removed and commit the change with a reason.
-    if total < _MIN_BADGE_COUNT:
-        print(
-            f"\nFAIL: badge count dropped to {total} (minimum is {_MIN_BADGE_COUNT})."
-        )
-        print(
-            "Badges were removed without updating the baseline.  If this removal"
-            " is intentional, lower _MIN_BADGE_COUNT in badge-coverage.py by the"
-            " number of badges removed and commit the change with a reason."
-        )
+    # The census is a FLOOR PER FILE, not an equality: adding a badge is always
+    # honest (it marks something as unbuilt) and needs no baseline update.
+    # Removing one requires `--update-baseline` and shows up in the diff as a
+    # deliberate act with a number attached.
+    if not check_badge_census(badges, update=("--update-baseline" in sys.argv)):
         sys.exit(1)
+
+
+BASELINE_PATH = Path(__file__).with_name("badge-baseline.json")
+
+
+def check_badge_census(badges: list[Badge], update: bool) -> bool:
+    """Compare per-file badge counts against the recorded baseline."""
+    counts: dict[str, int] = {}
+    for b in badges:
+        rel = str(b.file.relative_to(DOCS_DIR))
+        counts[rel] = counts.get(rel, 0) + 1
+
+    if update:
+        BASELINE_PATH.write_text(json.dumps(dict(sorted(counts.items())), indent=2) + "\n")
+        print(f"\nBaseline updated: {len(counts)} file(s), {sum(counts.values())} badge(s).")
+        return True
+
+    if not BASELINE_PATH.exists():
+        print(f"\nFAIL: no badge baseline at {BASELINE_PATH}."
+              f" Run with --update-baseline to create it.")
+        return False
+
+    baseline: dict[str, int] = json.loads(BASELINE_PATH.read_text())
+    losses = [
+        (f, was, counts.get(f, 0))
+        for f, was in sorted(baseline.items())
+        if counts.get(f, 0) < was
+    ]
+    if losses:
+        print(f"\nFAIL: {len(losses)} page(s) lost badges since the baseline.")
+        for f, was, now in losses:
+            print(f"  {f}: {was} -> {now}  ({was - now} removed)")
+        print("\nAn unbadged claim asserts the thing is built. If these removals"
+              " are intentional, re-run with --update-baseline and commit the"
+              " baseline change with a reason.")
+        return False
+
+    gained = sum(max(0, counts.get(f, 0) - was) for f, was in baseline.items())
+    gained += sum(c for f, c in counts.items() if f not in baseline)
+    suffix = f"; {gained} added since baseline" if gained else ""
+    print(f"\nBadge census OK: no page lost a badge{suffix}.")
+    return True
 
 
 if __name__ == "__main__":

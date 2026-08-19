@@ -32,6 +32,8 @@ nexus3 create myproject/dev-1 \
   --memory 8192
 ```
 
+<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create` and `--file`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+
 nexus3 copies the context directory into the VM, runs `buildkitd`, builds the image, and boots the sandbox. The build cache is stored on a virtio-blk disk and reused across subsequent `--context` creates for the same project.
 
 ## What `--context` captures

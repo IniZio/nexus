@@ -307,6 +307,74 @@ nexus3 create --totally-unknown-flag
         expect_violations=["unknown flag '--totally-unknown-flag'"],
     ))
 
+    # ── line continuations ───────────────────────────────────────────────────
+    # Until TBD-PD-24, extract_invocations only looked at lines STARTING with
+    # "nexus3 ", so every flag on a backslash-continued line was invisible. A
+    # fabricated --shadow flag lived in the docs through repeated green runs
+    # because of it. 20 of 128 fenced invocations are continued.
+    results.append(test(
+        name="line continuation (flag on continued line is checked)",
+        manifest_toml="removed_verbs = []\n",
+        dirty_pages={"cli/fixture.md": """\
+## nexus3 create
+
+```bash
+nexus3 create myproject/dev \\
+  --totally-unknown-flag \\
+  --memory 2048
+```
+"""},
+        expect_violations=["unknown flag '--totally-unknown-flag'"],
+        clean_pages={"cli/fixture.md": """\
+## nexus3 create
+
+```bash
+nexus3 create myproject/dev \\
+  myproject/dev2
+```
+"""},
+    ))
+
+    # ── inline prose spelling ────────────────────────────────────────────────
+    # The old `nexus3 sandbox <verb>` spelling in narrative text passed clean
+    # because only fenced blocks were parsed; two real occurrences survived a
+    # green run on 2026-08-19 and were caught by hand.
+    results.append(test(
+        name="inline prose spelling (old verb in narrative text)",
+        manifest_toml="removed_verbs = []\n",
+        dirty_pages={"cli/fixture.md": """\
+## nexus3 rm
+
+To delete a sandbox, run `nexus3 sandbox rm myproject/dev`.
+"""},
+        expect_violations=["old spelling 'nexus3 sandbox rm"],
+        clean_pages={"cli/fixture.md": """\
+## nexus3 rm
+
+To delete a sandbox, run `nexus3 rm myproject/dev`.
+"""},
+    ))
+
+    # The exemption must actually exempt — otherwise the mapping table and every
+    # partial-badge note become unfixable violations and the check gets disabled.
+    results.append(test(
+        name="inline prose spelling (dirty without marker, clean with it)",
+        manifest_toml="removed_verbs = []\n",
+        dirty_pages={"cli/fixture.md": """\
+## nexus3 rm
+
+Use `nexus3 sandbox rm` for this.
+"""},
+        expect_violations=["old spelling 'nexus3 sandbox rm' in prose"],
+        clean_pages={"cli/fixture.md": """\
+## nexus3 rm
+
+current implementation uses `nexus3 sandbox rm`; see the mapping.
+
+Use `nexus3 sandbox rm` for this. <!-- cli-spelling-exempt -->
+"""},
+    ))
+
     # ── Print results ─────────────────────────────────────────────────────────
     print()
     all_pass = True

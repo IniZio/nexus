@@ -339,16 +339,39 @@ def extract_invocations(md_path: str) -> list[tuple[int, str, bool, bool]]:
 
     results: list[tuple[int, str, bool, bool]] = []
     in_block = False
-    for i, line in enumerate(lines):
+    i = 0
+    while i < n:
+        line = lines[i]
         stripped = line.strip()
         if stripped.startswith("```") or stripped.startswith("~~~"):
             in_block = not in_block
+            i += 1
             continue
         if in_block:
             # Strip trailing inline comment
             code = re.sub(r'\s+#.*$', '', line).strip()
             if code.startswith("nexus3 "):
-                results.append((i + 1, code, line_danger[i], line_warning[i]))
+                start = i
+                # Join backslash continuations into ONE logical invocation.
+                #
+                # Without this every flag on a continued line is invisible to
+                # the checks below, because they only ever saw lines beginning
+                # with "nexus3 ". That blind spot let a fabricated --shadow
+                # flag (and its --context companion) sit in the docs through
+                # repeated green runs; a probe confirmed --totally-bogus-flag
+                # on a continuation line also passed clean. 20 of 128 fenced
+                # invocations are continued, carrying 61 unchecked flags.
+                while code.endswith("\\") and i + 1 < n:
+                    i += 1
+                    nxt = re.sub(r'\s+#.*$', '', lines[i]).strip()
+                    code = code[:-1].rstrip() + " " + nxt
+                    if in_block and (lines[i].strip().startswith("```")
+                                     or lines[i].strip().startswith("~~~")):
+                        # Malformed block (continuation ran past the fence).
+                        # Stop joining; the fence toggle is handled next pass.
+                        break
+                results.append((start + 1, code.strip(), line_danger[start], line_warning[start]))
+        i += 1
 
     return results
 
@@ -505,12 +528,75 @@ def parse_invocation(inv: str) -> tuple[str, str | None, set[str]] | None:
 
 # ── Main validation ──────────────────────────────────────────────────────────
 
+# Inline-prose exemptions for the old `nexus3 sandbox <verb>` spelling.
+#
+# The spelling is legitimate in prose in exactly two places: the target ->
+# implementation mapping table, and the recurring "current implementation
+# uses ..." note that accompanies a partial badge. Both NAME the current
+# spelling rather than instructing the reader to use it.
+#
+# These are deliberately narrow and matched against the surrounding line, not
+# against a file or a directory. A blanket per-file skip would recreate the
+# blind spot this check exists to close: the two `nexus3 sandbox rm`
+# occurrences that survived a green run on 2026-08-19 were on pages that also
+# carry legitimate mapping prose.
+INLINE_SPELLING_EXEMPTIONS: tuple[tuple[str, str], ...] = (
+    ("impl-note", r"current implementation uses"),
+    ("mapping-row", r"^\s*\|\s*`nexus3 [^`]+`\s*\|\s*`nexus3 sandbox [^`]+`\s*\|"),
+    ("explicit-marker", r"<!--\s*cli-spelling-exempt\s*-->"),
+)
+
+
+def check_inline_cli_spelling(md_path: str, rel: str) -> tuple[list[str], int]:
+    """
+    Return (violations, exemptions_applied) for inline-backtick `nexus3 ...`
+    spans in PROSE that use the old `nexus3 sandbox <lifecycle-verb>` spelling.
+
+    Fenced blocks are handled by check_old_sandbox_spelling; this covers the
+    narrative text that check could not see. The exemption count is returned so
+    the summary can report it — an exemption list that grows silently is just a
+    slower version of the blind spot.
+    """
+    lifecycle_verbs = set(FLAT_LIFECYCLE_VERBS.keys())
+    violations: list[str] = []
+    exempted = 0
+    with open(md_path) as f:
+        lines = f.read().split("\n")
+    in_block = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_block = not in_block
+            continue
+        if in_block:
+            continue
+        for m in re.finditer(r'`(nexus3\s+sandbox\s+[^`]*)`', line):
+            span = m.group(1).strip()
+            vm = re.match(r'nexus3\s+sandbox\s+(\S+)', span)
+            if not vm or vm.group(1) not in lifecycle_verbs:
+                continue
+            exempt = next(
+                (name for name, pat in INLINE_SPELLING_EXEMPTIONS
+                 if re.search(pat, line)),
+                None,
+            )
+            if exempt:
+                exempted += 1
+                continue
+            violations.append(
+                f"{rel}:{i + 1}: old spelling '{span}' in prose"
+                f" — use flat verb '{vm.group(1)}' (target spelling), or if this"
+                f" line is naming the current implementation spelling on purpose,"
+                f" add <!-- cli-spelling-exempt -->\n  text: {line.strip()}"
+            )
+    return violations, exempted
+
+
 def check_old_sandbox_spelling(md_path: str, rel: str) -> list[str]:
     """
     Return violations for any code-block line matching
     `nexus3 sandbox <lifecycle-verb>` — the old spelling, replaced by flat verbs.
-    Prose mapping/migration notes are prose, not code blocks, so a code-block
-    check is sufficient without false-positives.
+    Prose is covered separately by check_inline_cli_spelling.
     """
     lifecycle_verbs = set(FLAT_LIFECYCLE_VERBS.keys())
     violations: list[str] = []
@@ -539,6 +625,7 @@ def main() -> None:
 
     violations: list[str] = []
     checked = 0
+    exempted = 0
 
     # Bidirectional manifest↔docs cross-check (manifest→docs direction)
     violations.extend(check_manifest_coverage(DOCS_DIR, MANIFEST_ENTRIES))
@@ -554,6 +641,11 @@ def main() -> None:
 
             # Check old sandbox-group spelling in code blocks (all pages)
             violations.extend(check_old_sandbox_spelling(md_path, rel))
+
+            # ... and in inline-backtick prose, which the above cannot see.
+            inline_v, inline_ex = check_inline_cli_spelling(md_path, rel)
+            violations.extend(inline_v)
+            exempted += inline_ex
 
             for lineno, inv, has_danger_badge, has_warning_badge in extract_invocations(md_path):
                 parsed = parse_invocation(inv)
@@ -639,12 +731,14 @@ def main() -> None:
                     )
 
     if violations:
-        print(f"FAIL: {len(violations)} violation(s) found ({checked} invocations checked)\n")
+        print(f"FAIL: {len(violations)} violation(s) found ({checked} invocations"
+              f" checked, {exempted} inline spelling exemption(s) in force)\n")
         for v in violations:
             print(f"  {v}\n")
         sys.exit(1)
     else:
-        print(f"OK: {checked} nexus3 invocations checked — all clean")
+        print(f"OK: {checked} nexus3 invocations checked — all clean"
+              f" ({exempted} inline spelling exemption(s) in force)")
 
 
 if __name__ == "__main__":

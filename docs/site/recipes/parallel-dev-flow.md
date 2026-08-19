@@ -50,7 +50,7 @@ nexus3 create myproject/task-42 \
   --label task-id=42
 ```
 
-<Badge type="warning" text="partial" /> —`nexus3 create` maps to `nexus3 sandbox create` in the current implementation; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
 For N sandboxes, loop over `nexus3 create`:
 
