@@ -585,6 +585,29 @@ func buildCHConfig(kernelPath, ext4Path string, memMiB, vcpus uint32) cloudhyper
 // internal/core/driver/cloudhypervisor/driver.go (unexported constant there).
 const diskBootCmdlineBase = "root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0"
 
+// sandboxHandleHostname converts a sandbox handle (e.g. "orca/agent1") into a
+// valid DNS label for use as the guest hostname (e.g. "orca-agent1"). Slashes
+// are replaced with hyphens; any remaining non-alphanumeric-or-hyphen chars are
+// replaced with hyphens. The result is truncated to 63 characters (RFC 1123).
+func sandboxHandleHostname(handle string) string {
+	b := make([]byte, 0, len(handle))
+	for i := 0; i < len(handle); i++ {
+		c := handle[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '-':
+			b = append(b, c)
+		case c >= 'A' && c <= 'Z':
+			b = append(b, c+32) // to lower
+		default:
+			b = append(b, '-')
+		}
+	}
+	if len(b) > 63 {
+		b = b[:63]
+	}
+	return string(b)
+}
+
 // workspaceMountCmdline builds a kernel command line that wires workspace and
 // shadow disk mount specs into the guest agent's argv.
 //
@@ -1152,10 +1175,11 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		// Combine disk-based mounts (workspace + shadow) with virtiofs live mounts
 		// so workspaceMountCmdline emits one --workspace-mount arg per share.
 		allGuestMounts := append(bootGuestMounts, liveGuestMounts...)
+		hostArg := " --sandbox-handle=" + sandboxHandleHostname(project+"/"+name)
 		if len(allGuestMounts) > 0 {
-			cfg.Cmdline = workspaceMountCmdline(allGuestMounts) + ar.PID1Args
+			cfg.Cmdline = workspaceMountCmdline(allGuestMounts) + ar.PID1Args + hostArg
 		} else {
-			cfg.Cmdline = diskBootCmdlineBase + " --" + ar.PID1Args
+			cfg.Cmdline = diskBootCmdlineBase + " --" + ar.PID1Args + hostArg
 		}
 		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
 			cfg.BinaryPath = p

@@ -336,7 +336,7 @@ func orcaSyncWorkspace(ctx context.Context, svc *service.Service, sandboxID stri
 // supervisor-owned VM boots with disk telemetry active (DiskSupported=true).
 // Passing empty string skips workspace mount generation (disk axis blind).
 func buildOrcaSpawnConfig(
-	sandboxID, storeRoot, stateDir, chBin, socketDir, kernelPath, capturedDiskPath string,
+	sandboxID, sandboxHandle, storeRoot, stateDir, chBin, socketDir, kernelPath, capturedDiskPath string,
 	extraDiskPaths []string,
 	govBounds resize.Bounds,
 	bootVCPUs uint32,
@@ -360,15 +360,16 @@ func buildOrcaSpawnConfig(
 	// source of truth for the cmdline fragment (leading space included).
 	arArgs := vmcfg.Resolve(vmcfg.Config{MemMaxMiB: memMaxMiB}).PID1Args
 
+	hostArg := " --sandbox-handle=" + sandboxHandleHostname(sandboxHandle)
 	var cmdline string
 	if hasWorkspaceDisk && guestPath != "" {
 		// One workspace mount, no shadow disks on the orca path (orcaNumShadowDisks=0).
 		wsMount := WorkspaceGuestMount(guestPath, workspaceDiskIndex)
-		cmdline = workspaceMountCmdline([]agent.GuestMount{wsMount}) + arArgs
+		cmdline = workspaceMountCmdline([]agent.GuestMount{wsMount}) + arArgs + hostArg
 	} else {
 		// Auto-resize (no workspace disk or guest path unknown).
 		// Auto-resize is unconditional so arArgs is always non-empty here.
-		cmdline = diskBootCmdlineBase + " --" + arArgs
+		cmdline = diskBootCmdlineBase + " --" + arArgs + hostArg
 	}
 
 	return supervisor.SpawnConfig{
@@ -695,7 +696,7 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		guestWorkspacePath = opts.Workspace.GuestPath
 	}
 	spawnCfg := buildOrcaSpawnConfig(
-		sb.ID.String(), storeRoot, stateDir, chBin, socketDir, kernelPath, capturedDiskPath,
+		sb.ID.String(), sb.Handle(), storeRoot, stateDir, chBin, socketDir, kernelPath, capturedDiskPath,
 		capturedExtraDisks,
 		govBounds,
 		1, // bootVCPUs: orca create passes 0 to buildCHConfig → driver default = 1

@@ -657,8 +657,9 @@ func TestOrcaSpawnConfig_GovBoundsForwarded(t *testing.T) {
 
 	const orcaNumShadowDisks = 0 // canonical value from orcaCreate
 	const guestPath = "/root/workspace/myrepo"
+	const sandboxHandle = "orca/myrepo"
 	cfg := buildOrcaSpawnConfig(
-		sandboxID, storeRoot, stateDir, chBin, socketDir, kernelPath, diskPath,
+		sandboxID, sandboxHandle, storeRoot, stateDir, chBin, socketDir, kernelPath, diskPath,
 		extraDiskPaths,
 		govBounds,
 		1,                  // bootVCPUs
@@ -718,6 +719,9 @@ func TestOrcaSpawnConfig_GovBoundsForwarded(t *testing.T) {
 	if !strings.Contains(cfg.Config.Cmdline, "--mem-ceiling=") {
 		t.Errorf("Cmdline %q does not contain --mem-ceiling; guest agent cannot set ZRAM size correctly", cfg.Config.Cmdline)
 	}
+	if !strings.Contains(cfg.Config.Cmdline, "--sandbox-handle=orca-myrepo") {
+		t.Errorf("Cmdline %q does not contain --sandbox-handle=orca-myrepo; guest hostname will be 'nexus3' not the sandbox name", cfg.Config.Cmdline)
+	}
 	// Assert the cmdline contains the exact PID1Args string that vmcfg.Resolve
 	// produces. This catches VALUE drift (orca producing a different string than
 	// the shared helper) but does NOT catch structural re-inlining: a duplicate
@@ -735,7 +739,7 @@ func TestOrcaSpawnConfig_GovBoundsForwarded(t *testing.T) {
 func TestOrcaSpawnConfig_NoWorkspace(t *testing.T) {
 	govBounds := resize.Bounds{MemMinBytes: 512 << 20, MemMaxBytes: 4096 << 20}
 	cfg := buildOrcaSpawnConfig(
-		"abc", "/store", "/state", "/ch", "/run", "/kernel", "/disk",
+		"abc", "test/no-workspace", "/store", "/state", "/ch", "/run", "/kernel", "/disk",
 		nil, // no extra disks
 		govBounds,
 		1,
@@ -749,6 +753,9 @@ func TestOrcaSpawnConfig_NoWorkspace(t *testing.T) {
 	}
 	if len(cfg.Config.ExtraDisks) != 0 {
 		t.Errorf("ExtraDisks = %v, want empty", cfg.Config.ExtraDisks)
+	}
+	if !strings.Contains(cfg.Config.Cmdline, "--sandbox-handle=test-no-workspace") {
+		t.Errorf("Cmdline %q does not contain --sandbox-handle=test-no-workspace", cfg.Config.Cmdline)
 	}
 }
 
