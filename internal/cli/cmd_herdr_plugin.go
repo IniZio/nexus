@@ -572,7 +572,13 @@ func buildLaunchBootOpts(imageRef, cacheRoot string, agentEgress bool) service.C
 		ReachabilityTimeout: 60 * time.Second,
 	}
 	if agentEgress {
-		opts.AllowedHosts = service.AgentEgressHosts(cred.ClaudeCodeProfile)
+		// One profile drives both halves: the frozen egress allowlist, and the
+		// AgentName recorded on the sandbox. UseAgentSeed stays false — the
+		// credential seed belongs to the supervisor, per the comment above —
+		// but the record must still say which agent this sandbox is for, or
+		// nothing downstream can distinguish it from a plain sandbox.
+		opts.AgentProfile = cred.ClaudeCodeProfile
+		opts.AllowedHosts = service.AgentEgressHosts(opts.AgentProfile)
 	}
 	return opts
 }

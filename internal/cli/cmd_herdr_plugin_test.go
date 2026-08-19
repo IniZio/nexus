@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
@@ -345,6 +347,28 @@ func TestBuildLaunchBootOpts_agentEgress(t *testing.T) {
 	}
 	if opts.UseAgentSeed {
 		t.Error("agentEgress=true: UseAgentSeed would seed placeholders the supervisor reboot discards")
+	}
+	// The profile must be set even though nothing here seeds credentials: it is
+	// what puts AgentName on the sandbox record, and without it the record
+	// cannot be told apart from a plain sandbox on a later start.
+	if opts.AgentProfile.Name != cred.ClaudeCodeProfileName {
+		t.Errorf("agentEgress=true: AgentProfile.Name = %q, want %q", opts.AgentProfile.Name, cred.ClaudeCodeProfileName)
+	}
+	// The allowlist must come from that same profile, so the hosts the sandbox
+	// may reach and the agent it is recorded as running cannot drift apart.
+	want := opts.AgentProfile.Egress()
+	if !slices.Equal(opts.AllowedHosts, want) {
+		t.Errorf("AllowedHosts = %v, want the profile's egress %v", opts.AllowedHosts, want)
+	}
+}
+
+// The plain launch path must record no agent. An empty AgentName is what marks
+// a sandbox as having no credential seed; defaulting it here would claim every
+// launched sandbox is an agent sandbox.
+func TestBuildLaunchBootOpts_noEgress_recordsNoAgent(t *testing.T) {
+	opts := buildLaunchBootOpts("myimage:latest", t.TempDir(), false)
+	if opts.AgentProfile.Name != "" {
+		t.Errorf("agentEgress=false: AgentProfile.Name = %q, want empty", opts.AgentProfile.Name)
 	}
 }
 

@@ -631,6 +631,11 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		SSHPublicKey:        pubKey,
 		AllowedHosts:        allowedHosts,
 		Workspace:           orcaWorkspaceSpec(env),
+		// Record which agent this sandbox serves. The credential seed itself is
+		// the detached supervisor's job (UseAgentSeed stays false), but without
+		// the profile here the record carries no agent and the perimeter cannot
+		// tell an agent sandbox apart from a plain one.
+		AgentProfile: cred.ClaudeCodeProfile,
 	}
 
 	name := orcaSandboxName(env.InstanceID)
