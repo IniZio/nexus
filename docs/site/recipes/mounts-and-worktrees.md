@@ -5,8 +5,8 @@ description: "Mount a git worktree per sandbox so edits inside the VM appear on 
 
 # Mounts and worktrees
 
-::: tip Shadow disks are not yet built
-`--mount-named kind=disk` volumes are the shipped path for dependency isolation (node_modules, build caches, etc.). The **shadow disk** sections on this page are a deferred design — see badges below. For dependency isolation today, see [Volume commands](/cli/volume-commands) and [CLI — Named volumes](/cli/sandbox-commands#named-volumes).
+::: tip Shadow disks do not apply to mounts
+Shadow disks are built, but they attach to a captured `--workspace`, **not** to a `--mount`. On a live virtiofs mount the shipped path for dependency isolation (node_modules, build caches, etc.) is `--mount-named kind=disk` — see [Volume commands](/cli/volume-commands) and [CLI — Named volumes](/cli/sandbox-commands#named-volumes).
 :::
 
 > Mount a host git worktree as the live workspace — edits inside the sandbox appear on the host immediately, and work flows back through normal git push.
@@ -83,19 +83,21 @@ nexus3 create myproject/dev-1 \
 
 ---
 
-## Shadow disks <Badge type="danger" text="not built" />
+## Shadow disks <Badge type="tip" text="built" />
 
-Write-heavy paths (package managers, build caches, compiler outputs) perform poorly on a virtiofs
-volume because every metadata operation crosses a virtio channel. Shadow disks back the named guest
-path with a **per-sandbox sparse ext4 virtio-blk image** that lives entirely inside the guest's
-disk space.
+Write-heavy paths (package managers, build caches, compiler outputs) amplify the cost of a captured
+workspace disk. A shadow disk backs one such path with a **per-sandbox sparse ext4 virtio-blk image**
+that lives entirely inside the guest's disk space, so those writes never land on the workspace disk.
 
-### Default shadow paths <Badge type="danger" text="not built" />
+**Shadow disks attach to `--workspace`, not to `--mount`.** A sandbox created with `--mount` gets no
+shadow disks at all. This section is here because the two mechanisms are easy to confuse; if you are
+mounting a worktree, use named volumes instead (see the note at the top of this page).
 
-When `--shadow` is not specified, these paths under any `--mount` target are automatically backed
-by shadow disks:
+### Default shadow paths <Badge type="tip" text="built" />
 
-| Guest path (relative to mount root) | Typical owner |
+Every `--workspace` sandbox gets exactly these four, relative to the workspace root:
+
+| Guest path (relative to workspace root) | Typical owner |
 |---|---|
 | `node_modules` | npm / pnpm / yarn |
 | `.next` | Next.js build cache |
@@ -106,28 +108,24 @@ The guest sees these as ordinary directories; the shadow binding is transparent 
 
 ### Declaring additional shadow paths <Badge type="danger" text="not built" />
 
-Use `--shadow` to add paths beyond the defaults. The path must be a subdirectory of a declared
-`--mount` target.
-
-```sh
-nexus3 create myproject/dev-1 \
-  --context /data/repos/monorepo \
-  --mount /data/repos/monorepo:/workspace/monorepo \
-  --shadow /workspace/monorepo/packages/web/node_modules \
-  --shadow /workspace/monorepo/packages/api/node_modules \
-  --memory 16384
-```
+The set above is fixed. There is **no flag to add or remove a shadow path** — the design called for
+one and it was never built, so a monorepo with nested `packages/*/node_modules` gets shadow disks
+only at the top level. Use `--mount-named kind=disk` to isolate a nested path today.
 
 ### Shadow disk lifecycle
 
 | Event | Workspace disk | Shadow disks |
 |---|---|---|
-| `create` | created from host dir | created as empty sparse images |
+| `create --workspace` | created from host dir | created as empty sparse images |
 | `stop` | persisted | persisted |
 | `rm` | deleted | deleted |
 
-Shadow disks do **not** survive `rm`. Build artifacts and package trees are ephemeral
-per sandbox. Durable work flows back via git push, not file copy.
+Shadow disks do **not** survive `rm` — `Service.Remove` calls `ReapShadowDisks` for the sandbox's
+handle. Build artifacts and package trees are ephemeral per sandbox. Durable work flows back via
+git push, not file copy.
+
+A `fork` child receives a copy-on-write copy of each of its parent's shadow disks, named
+`<childID>-<parentHandle>.shadow.<name>.ext4`, and owns it for as long as the child record lives.
 
 ---
 

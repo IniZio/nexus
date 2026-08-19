@@ -53,7 +53,7 @@ Each sandbox VM is created with:
 
 - A root disk: a CoW sparse ext4 image forked from the base image.
 - **Source mounts**: one virtiofs device per declared `--mount <host-path>:<guest-path>`, providing a live bidirectional view of the host directory.
-- **Shadow disks** <Badge type="danger" text="not built" />: virtio-blk ext4 images that shadow write-heavy directories (`node_modules`, `.next`, `target`, `dist`) inside the mount, keeping virtiofs metadata cost off the hot build paths.
+- **Shadow disks** <Badge type="tip" text="built" />: virtio-blk ext4 images that shadow write-heavy directories (`node_modules`, `.next`, `target`, `dist`) in a captured `--workspace`, keeping write amplification off the workspace disk. The set is fixed; there is no flag to extend it. They do **not** apply to `--mount` (live virtiofs) sandboxes.
 - A TAP-based network interface in its own network namespace.
 - A vsock device (CID allocated per sandbox) for host↔guest communication.
 - Optional `/dev/kvm` passthrough for nested virtualisation (opt-in via `--nested`, off by default).

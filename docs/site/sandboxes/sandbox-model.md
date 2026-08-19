@@ -44,7 +44,7 @@ nexus3 ps --label task-id=42
 | `ImageDigest` | `string` | Content-addressable digest of the rootfs image. |
 | `AllowedHosts` | `[]string` | Hostnames the sandbox may reach through the egress perimeter. |
 | `SSHPublicKey` | `string` | OpenSSH public key injected into `/root/.ssh/authorized_keys` at boot. Empty = no SSH provisioned. |
-| `Mounts` | `[]MountSpec` | Live virtiofs mounts: host path → guest path. Edits inside the sandbox appear on the host immediately. Shadow disks sit in front of write-heavy directories to keep virtiofs metadata cost off hot build paths. |
+| `Mounts` | `[]MountSpec` | Live virtiofs mounts: host path → guest path. Edits inside the sandbox appear on the host immediately. |
 
 ### StopReason values
 
@@ -77,7 +77,7 @@ nexus3 ps --label task-id=lint
 
 The primary source-init answer is a **live virtiofs mount**: declare one or more host paths to mount into the sandbox via `--mount <host-path>:<guest-path>`. Edits inside the sandbox appear on the host immediately. This is the target model for agentic workflows where a `git worktree` directory is the sandbox source.
 
-Shadow disks sit in front of write-heavy directories inside the mount (`node_modules`, `.next`, `target`, `dist`) to keep virtiofs metadata cost off the hot build paths.
+Shadow disks sit in front of write-heavy directories (`node_modules`, `.next`, `target`, `dist`) to keep write amplification off the captured workspace. They attach to `--workspace`, **not** to `--mount`: a live virtiofs mount gets no shadow disks. For dependency isolation on a mounted tree, use `--mount-named kind=disk`.
 
 Fork and snapshot are refused on a live-mounted sandbox (see [Snapshots and fork](snapshots-and-fork.md#live-mounted-sandbox--fork-refused)). N-way parallelism uses independent `create` calls, each with its own worktree.
 

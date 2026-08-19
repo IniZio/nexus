@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/service"
 )
 
@@ -242,5 +243,75 @@ func TestResourceIndex_ShadowIntentIsItsOwnKind(t *testing.T) {
 	}
 	if !sawDisk {
 		t.Error("shadow disk was not enumerated")
+	}
+}
+
+// RL-14: `nexus3 fork` copies every parent extra disk, and shadow disks ARE
+// extra disks, so each child gets
+// <childULID>-<parentSafeHandle>.shadow.<name>.ext4 (ChildExtraDiskPath).
+// That composite matches no sandbox handle, so handle correlation alone
+// orphans it permanently — `reap --apply` would delete a LIVE forked
+// sandbox's dependency tree at any point after the fork window closed.
+//
+// The register recorded this hazard's premise as unconfirmed ("no code path
+// that creates fork shadow-disk copies could be located"). The producer does
+// exist; it is in the driver, not Service.Fork.
+func TestReap_ShadowDisk_ForkChildCopyIsOwned(t *testing.T) {
+	stateRoot := t.TempDir()
+	disksDir := filepath.Join(stateRoot, "disks")
+	mustMkdir(t, disksDir)
+
+	// A live CHILD record. Its handle is unrelated to the parent's, exactly as
+	// a fork child's is.
+	st, childID := makeStoreWithSandbox(t, "proj", "child")
+
+	childCopy := mustWriteShadowDisk(t, disksDir,
+		childID.String()+"-proj_parent.shadow.node_modules.ext4")
+
+	idx := service.NewResourceIndex(service.IndexConfig{
+		StateRoot: stateRoot,
+		SocketDir: t.TempDir(),
+	})
+	report, err := service.Reap(context.Background(), st, idx, true /*apply*/, service.ReapOptions{ProcDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	for _, e := range report.Entries {
+		if e.Resource.Path == childCopy && e.Status == service.ReapStatusOrphan {
+			t.Errorf("fork child's shadow copy classified orphan while the child is live (reason: %s)", e.Reason)
+		}
+	}
+	if _, err := os.Stat(childCopy); err != nil {
+		t.Errorf("fork child's shadow copy was DELETED while the child is live: %v", err)
+	}
+}
+
+// The ULID escape hatch must not become a blanket amnesty: once the child is
+// gone its copies are reclaimable like anything else.
+func TestReap_ShadowDisk_ForkChildCopyReclaimedWhenChildGone(t *testing.T) {
+	stateRoot := t.TempDir()
+	disksDir := filepath.Join(stateRoot, "disks")
+	mustMkdir(t, disksDir)
+
+	deadChild := domain.NewSandboxID()
+	orphanCopy := mustWriteShadowDisk(t, disksDir,
+		deadChild.String()+"-proj_parent.shadow.node_modules.ext4")
+
+	st := newEmptyStore(t) // no record for deadChild
+	idx := service.NewResourceIndex(service.IndexConfig{
+		StateRoot: stateRoot,
+		SocketDir: t.TempDir(),
+	})
+	report, err := service.Reap(context.Background(), st, idx, true /*apply*/, service.ReapOptions{ProcDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	for _, e := range report.Entries {
+		if e.Resource.Path == orphanCopy && e.Status != service.ReapStatusOrphan {
+			t.Errorf("dead fork child's copy status = %q, want orphan (reason: %s)", e.Status, e.Reason)
+		}
+	}
+	if _, err := os.Stat(orphanCopy); err == nil {
+		t.Error("dead fork child's shadow copy survived reap --apply")
 	}
 }

@@ -192,7 +192,7 @@ func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, o
 		if res.Kind == KindDiskShadow || res.Kind == KindShadowIntent {
 			// Shadow disks and their intents use handle-based correlation,
 			// not ULID/liveness.
-			entry = classifyShadowDisk(res, shadowHandleMap, inFlightShadow)
+			entry = classifyShadowDisk(res, shadowHandleMap, recordMap, inFlightShadow)
 		} else {
 			entry = classifyResource(ctx, res, recordMap, inFlight, socketDir, opt.ProcDir)
 		}
@@ -222,6 +222,7 @@ func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, o
 func classifyShadowDisk(
 	res HostResource,
 	handleMap map[string]domain.SandboxID,
+	recordMap map[domain.SandboxID]domain.Sandbox,
 	inFlightShadow map[string]string,
 ) ReapEntry {
 	entry := ReapEntry{
@@ -253,9 +254,47 @@ func classifyShadowDisk(
 		entry.Reason = fmt.Sprintf("%s owned by sandbox %s (handle=%s)", noun, ownerID, res.ShadowHandle)
 		return entry
 	}
+	// Fork child copy (RL-14). ForkFrom copies every parent extra disk, and
+	// shadow disks ARE extra disks, so a child gets
+	// <childULID>-<parentSafeHandle>.shadow.<name>.ext4. That composite matches
+	// no sandbox handle, so the handle lookup above can never resolve it and
+	// the copy would be orphaned for the child's whole life — deleting a live
+	// forked sandbox's dependency tree. Resolve it by the ULID it carries.
+	if childID, ok := forkChildShadowOwner(res.ShadowHandle); ok {
+		if sb, live := recordMap[childID]; live {
+			entry.Status = ReapStatusOwned
+			entry.Reason = fmt.Sprintf("%s owned by fork child %s (copied from handle=%s)",
+				noun, sb.ID, strings.TrimPrefix(res.ShadowHandle, childID.String()+"-"))
+			return entry
+		}
+	}
 	entry.Status = ReapStatusOrphan
 	entry.Reason = fmt.Sprintf("%s handle %q matches no live sandbox", noun, res.ShadowHandle)
 	return entry
+}
+
+// forkChildShadowOwner extracts the child sandbox ULID from a fork-copied
+// shadow disk's safeHandle, which ForkFrom builds as
+// "<childULID>-<parentSafeHandle>" (see ChildExtraDiskPath).
+//
+// The ULID's own string form contains a "-" ("sb-06G…"), and a parent handle
+// may contain any number more, so the boundary cannot be found by splitting on
+// the first or last separator. Instead every "-" position is offered to
+// ParseSandboxID and the first that parses wins — the ULID is fixed-width and
+// checksummed, so a false positive would require the parent handle to begin
+// with a valid ULID.
+//
+// Returns ok=false for an ordinary (non-fork) safeHandle.
+func forkChildShadowOwner(safeHandle string) (domain.SandboxID, bool) {
+	for i, r := range safeHandle {
+		if r != '-' {
+			continue
+		}
+		if id, err := domain.ParseSandboxID(safeHandle[:i]); err == nil {
+			return id, true
+		}
+	}
+	return domain.SandboxID{}, false
 }
 
 // classifyResource determines the ReapStatus of a single host resource.

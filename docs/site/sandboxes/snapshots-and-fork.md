@@ -61,7 +61,7 @@ The operation runs under a lease alongside the record; the sandbox never enters 
 - The **parent sandbox state is unchanged.** Fork is not a transition in the lifecycle table. `TriggerFork` has no table entry; calling `Machine.Next` with it returns `IllegalTransitionError`.
 - **Children are ordinary Sandboxes**, created directly in `running` state. Their `Provenance` field records the parent ID and source snapshot ID.
 - Children get **identity fixup** on wake: new MAC address, new IP, new hostname, new `machine-id`. The kernel, disk state, and memory image are otherwise identical to the snapshot.
-- **All disks are isolated per child**: every sandbox disk receives an independent CoW sparse copy via reflink (or fallback copy-on-write) — root disk and shadow disks <Badge type="danger" text="not built" /> if any. No disk is shared between siblings after fork.
+- **All disks are isolated per child**: every sandbox disk receives an independent CoW sparse copy via reflink (or fallback copy-on-write) — the root disk, and every extra disk the parent carries, which includes its shadow disks. No disk is shared between siblings after fork.
 - **Live-mounted sandbox — fork refused**: `nexus3 fork` is refused on a sandbox holding a live virtiofs mount, with an explicit error naming the offending mount pairs. Two child VMs sharing one host worktree would collide on `.git/index.lock`. The N-way parallel pattern uses independent `create` calls, each with its own worktree.
 
 ### Cost model (Linux)
