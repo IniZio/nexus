@@ -44,7 +44,7 @@ const herdrPluginABIVersion = "1"
 // and carries no --json guarantees. The double-underscore prefix marks it.
 func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
-		return &UsageError{Msg: "__herdr-plugin: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|space-create|space-create-from-file|space-open-pane|space-pause|space-resume|space-remove|space-list)"}
+		return &UsageError{Msg: "__herdr-plugin: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|space-create|space-create-from-file|space-open-pane|space-pause|space-resume|space-remove|space-list|shell-cwd)"}
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -146,7 +146,7 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 
 	case "space-pause":
 		if len(rest) == 0 {
-			return &UsageError{Msg: "__herdr-plugin space-pause: space label required"}
+			return &UsageError{Msg: "__herdr-plugin space-pause: sandbox ref or space label required"}
 		}
 		svc, err := newSandboxService()
 		if err != nil {
@@ -156,11 +156,15 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if err != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-pause: resolve store: " + err.Error(), Err: err}
 		}
-		return HerdrSpacePauseByLabel(ctx, svc, storeRoot, rest[0])
+		b, err := herdrSpaceResolve(ctx, storeRoot, rest[0])
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-pause: binding not found: " + rest[0], Err: err}
+		}
+		return HerdrSpacePauseByLabel(ctx, svc, storeRoot, b.SpaceLabel)
 
 	case "space-resume":
 		if len(rest) == 0 {
-			return &UsageError{Msg: "__herdr-plugin space-resume: space label required"}
+			return &UsageError{Msg: "__herdr-plugin space-resume: sandbox ref or space label required"}
 		}
 		svc, err := newSandboxService()
 		if err != nil {
@@ -170,11 +174,15 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if err != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-resume: resolve store: " + err.Error(), Err: err}
 		}
-		return HerdrSpaceResumeByLabel(ctx, svc, storeRoot, rest[0])
+		b, err := herdrSpaceResolve(ctx, storeRoot, rest[0])
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-resume: binding not found: " + rest[0], Err: err}
+		}
+		return HerdrSpaceResumeByLabel(ctx, svc, storeRoot, b.SpaceLabel)
 
 	case "space-remove":
 		if len(rest) == 0 {
-			return &UsageError{Msg: "__herdr-plugin space-remove: space label required"}
+			return &UsageError{Msg: "__herdr-plugin space-remove: sandbox ref or space label required"}
 		}
 		svc, err := newSandboxService()
 		if err != nil {
@@ -184,7 +192,27 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if err != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-remove: resolve store: " + err.Error(), Err: err}
 		}
-		return HerdrSpaceRemoveByLabel(ctx, svc, storeRoot, rest[0])
+		b, err := herdrSpaceResolve(ctx, storeRoot, rest[0])
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-remove: binding not found: " + rest[0], Err: err}
+		}
+		herdrBin := os.Getenv("HERDR_BIN_PATH")
+		return herdrSpaceRemoveFull(ctx, svc, storeRoot, herdrBin, b)
+
+	case "shell-cwd":
+		// Prints the guest working directory for a sandbox's workspace.
+		// Used by pane.sh to pass --cwd to nexus3 exec for the shell pane.
+		// Falls back to /root when no workspace is mounted.
+		if len(rest) == 0 {
+			return &UsageError{Msg: "__herdr-plugin shell-cwd: sandbox ref required"}
+		}
+		svc, err := newSandboxService()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin shell-cwd: " + err.Error(), Err: err}
+		}
+		cwd := herdrShellCwd(ctx, rest[0], svc)
+		fmt.Fprintln(out.w, cwd)
+		return nil
 
 	case "space-list":
 		storeRoot, err := store.DefaultRoot()
@@ -1009,6 +1037,73 @@ func herdrSpaceResolve(ctx context.Context, storeRoot, key string) (HerdrSpaceBi
 		}
 	}
 	return HerdrSpaceBinding{}, ErrHerdrSpaceNotFound
+}
+
+// sandboxGetter is the subset of *service.Service used by herdrShellCwd.
+type sandboxGetter interface {
+	Get(ctx context.Context, ref string) (domain.Sandbox, error)
+}
+
+// herdrShellCwd returns the guest working directory for the shell pane.
+// Priority: first LiveMount GuestPath, then first MountedVolume GuestPath,
+// fallback /root. Never fails — on any error returns /root.
+func herdrShellCwd(ctx context.Context, ref string, svc sandboxGetter) string {
+	sb, err := svc.Get(ctx, ref)
+	if err != nil {
+		return "/root"
+	}
+	for _, m := range sb.LiveMounts {
+		if m.GuestPath != "" {
+			return m.GuestPath
+		}
+	}
+	for _, v := range sb.MountedVolumes {
+		if v.GuestPath != "" {
+			return v.GuestPath
+		}
+	}
+	return "/root"
+}
+
+// herdrSpaceRemoveFull is the complete teardown sequence for a herdr space:
+//  1. Remove the sandbox (tolerating store.ErrNotFound — already gone).
+//  2. Close the herdr workspace (tolerating workspace_not_found — already closed).
+//  3. Delete the binding.
+func herdrSpaceRemoveFull(ctx context.Context, svc HerdrSpaceSandboxService, storeRoot, herdrBin string, b HerdrSpaceBinding) error {
+	if err := svc.Remove(ctx, b.SandboxHandle); err != nil {
+		// Tolerate not-found: sandbox already gone via another route (reaper,
+		// manual remove). Delete the binding anyway so no orphan mapping remains.
+		// store.ErrNotFound is wrapped by service.resolve as "resolve %q: %w",
+		// so errors.Is traverses the chain; the string fallback catches fakes.
+		if !errors.Is(err, store.ErrNotFound) && !strings.Contains(err.Error(), "not found") {
+			return fmt.Errorf("herdr-space: remove sandbox %q: %w", b.SandboxHandle, err)
+		}
+	}
+	if err := herdrWorkspaceClose(ctx, herdrBin, b.HerdrWorkspaceID); err != nil {
+		// Non-fatal: log and continue so the binding is always cleaned up.
+		fmt.Fprintf(os.Stderr, "herdr-space: close workspace %q: %v (continuing)\n", b.HerdrWorkspaceID, err)
+	}
+	if err := HerdrSpaceDelete(ctx, storeRoot, b.SpaceLabel); err != nil && !errors.Is(err, ErrHerdrSpaceNotFound) {
+		return fmt.Errorf("herdr-space: delete binding %q: %w", b.SpaceLabel, err)
+	}
+	return nil
+}
+
+// herdrWorkspaceClose runs `herdr workspace close <workspaceID>`.
+// A "workspace_not_found" response is treated as success (already closed).
+// herdrBin or workspaceID being empty is a no-op.
+func herdrWorkspaceClose(ctx context.Context, herdrBin, workspaceID string) error {
+	if herdrBin == "" || workspaceID == "" {
+		return nil
+	}
+	out, err := exec.CommandContext(ctx, herdrBin, "workspace", "close", workspaceID).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(string(out), "workspace_not_found") {
+		return nil
+	}
+	return fmt.Errorf("herdr workspace close %q: %w: %s", workspaceID, err, strings.TrimSpace(string(out)))
 }
 
 // herdrPluginSpaceList prints all space bindings.

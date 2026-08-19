@@ -256,7 +256,11 @@ func HerdrSpaceRemoveByLabel(ctx context.Context, svc HerdrSpaceSandboxService, 
 		return err
 	}
 	if err := svc.Remove(ctx, b.SandboxHandle); err != nil {
-		return fmt.Errorf("herdr-space: remove sandbox %q: %w", b.SandboxHandle, err)
+		// Sandbox already gone via another route (reaper, manual remove, etc.) —
+		// proceed to delete the binding so no orphan mapping remains.
+		if !errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("herdr-space: remove sandbox %q: %w", b.SandboxHandle, err)
+		}
 	}
 	// Delete the binding after the sandbox is gone.
 	if err := HerdrSpaceDelete(ctx, storeRoot, label); err != nil && !errors.Is(err, ErrHerdrSpaceNotFound) {
