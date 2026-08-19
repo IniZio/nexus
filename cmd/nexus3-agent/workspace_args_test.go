@@ -69,6 +69,33 @@ func TestParseWorkspaceMountArg_Valid(t *testing.T) {
 			wantRO:  false,
 			wantWS:  false,
 		},
+		{
+			// virtiofs: tag in device position, fstype=virtiofs, read-write workspace.
+			arg:     "--workspace-mount=workspace-tag:/workspace/repo:virtiofs:false:true",
+			wantDev: "workspace-tag",
+			wantTgt: "/workspace/repo",
+			wantFS:  "virtiofs",
+			wantRO:  false,
+			wantWS:  true,
+		},
+		{
+			// virtiofs: read-only, not primary workspace (e.g. a shared read-only volume).
+			arg:     "--workspace-mount=shared-data-tag:/workspace/shared:virtiofs:true:false",
+			wantDev: "shared-data-tag",
+			wantTgt: "/workspace/shared",
+			wantFS:  "virtiofs",
+			wantRO:  true,
+			wantWS:  false,
+		},
+		{
+			// virtiofs: 4-field backward-compat (IsWorkspace defaults false).
+			arg:     "--workspace-mount=my-vol-tag:/workspace/repo:virtiofs:false",
+			wantDev: "my-vol-tag",
+			wantTgt: "/workspace/repo",
+			wantFS:  "virtiofs",
+			wantRO:  false,
+			wantWS:  false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -147,6 +174,42 @@ func TestParseWorkspaceMountArg_RoundTrip(t *testing.T) {
 		}
 		if got != m {
 			t.Errorf("round-trip mismatch for %+v: got %+v", m, got)
+		}
+	}
+}
+
+// TestParseWorkspaceMountArg_RoundTrip_Virtiofs verifies that the virtiofs
+// variant of the host-emitted arg format round-trips through the guest parser,
+// including the read-only variant. The virtiofs "device" position holds an
+// opaque tag string rather than a /dev path; the parser must treat it as-is.
+func TestParseWorkspaceMountArg_RoundTrip_Virtiofs(t *testing.T) {
+	mounts := []agent.GuestMount{
+		// read-write workspace virtiofs mount
+		{Device: "workspace-tag", Target: "/workspace/repo", FSType: "virtiofs", ReadOnly: false, IsWorkspace: true},
+		// read-only virtiofs (shared data volume)
+		{Device: "shared-data-tag", Target: "/workspace/shared", FSType: "virtiofs", ReadOnly: true, IsWorkspace: false},
+		// read-write shadow-style virtiofs at a nested path
+		{Device: "shadow-vol-tag", Target: "/workspace/repo/node_modules", FSType: "virtiofs", ReadOnly: false, IsWorkspace: false},
+	}
+
+	for _, m := range mounts {
+		ro := "false"
+		if m.ReadOnly {
+			ro = "true"
+		}
+		ws := "false"
+		if m.IsWorkspace {
+			ws = "true"
+		}
+		// Encode using the 5-field format emitted by workspaceMountCmdline.
+		encoded := "--workspace-mount=" + m.Device + ":" + m.Target + ":" + m.FSType + ":" + ro + ":" + ws
+		got, ok := parseWorkspaceMountArg(encoded)
+		if !ok {
+			t.Errorf("virtiofs round-trip failed for %+v: parse returned ok=false", m)
+			continue
+		}
+		if got != m {
+			t.Errorf("virtiofs round-trip mismatch for %+v: got %+v", m, got)
 		}
 	}
 }
