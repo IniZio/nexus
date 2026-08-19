@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -938,13 +939,35 @@ func resolveExt4(
 		if err != nil {
 			return "", "", fmt.Errorf("resolve image: list cache: %w", err)
 		}
+		var matches []domain.Image
 		for _, img := range imgs {
 			if img.Ref == spec.Ref {
-				d := img.Digest
-				return filepath.Join(cacheRoot, d.Algo(), d.Hex(), "artifact"), string(d), nil
+				matches = append(matches, img)
 			}
 		}
-		return "", "", fmt.Errorf("resolve image: no cached image with ref %q", spec.Ref)
+		switch len(matches) {
+		case 0:
+			return "", "", fmt.Errorf("resolve image: no cached image with ref %q", spec.Ref)
+		case 1:
+			d := matches[0].Digest
+			return filepath.Join(cacheRoot, d.Algo(), d.Hex(), "artifact"), string(d), nil
+		default:
+			// Refuse rather than pick. Cache.Put transfers a ref to the newest
+			// holder, so more than one holder means the cache predates that
+			// rule — and guessing here is how a stale image boots while the
+			// operator believes they are testing the new one. Newest first so
+			// the digest they most likely want is the first line.
+			sort.Slice(matches, func(i, j int) bool {
+				return matches[i].CreatedAt.After(matches[j].CreatedAt)
+			})
+			var b strings.Builder
+			fmt.Fprintf(&b, "resolve image: ref %q is ambiguous — %d cached images carry it:", spec.Ref, len(matches))
+			for _, m := range matches {
+				fmt.Fprintf(&b, "\n  %s  (created %s)", m.Digest, m.CreatedAt.UTC().Format(time.RFC3339))
+			}
+			fmt.Fprintf(&b, "\nPass one of these digests instead, or rebuild the image to reassign the ref to the newest.")
+			return "", "", errors.New(b.String())
+		}
 
 	default:
 		return "", "", fmt.Errorf("resolve image: one of Digest, Ref, or RootfsPath must be set")

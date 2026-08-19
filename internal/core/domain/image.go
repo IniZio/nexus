@@ -181,7 +181,14 @@ type Image struct {
 	Digest Digest
 
 	// Ref is the optional human-readable tag, e.g. "nexus3-base:20260807".
-	// Informational only; not used for equality or cache lookup.
+	// It is not part of image identity — equality and digest lookup ignore it
+	// entirely — but it IS a lookup key: `--image <ref>` resolves through it.
+	//
+	// A ref therefore names at most one image. The cache enforces this by
+	// transferring a ref to the newest artifact stored under it, so an older
+	// entry keeps its content and its digest but loses the name. Callers
+	// resolving by ref must still refuse a ref held by more than one entry
+	// (a cache written before that rule existed), never pick one.
 	Ref string
 
 	// Kind is whether this is a base or builder image (ticket 14).

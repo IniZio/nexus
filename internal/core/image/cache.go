@@ -216,6 +216,52 @@ func (c *Cache) Put(ctx context.Context, img domain.Image, r io.Reader) error {
 	if err := writeMeta(c.metaPath(img.Digest), rec); err != nil {
 		return fmt.Errorf("image cache: put: write meta: %w", err)
 	}
+
+	// A ref names exactly one image. Storing a new artifact under a ref that
+	// another entry already carries transfers the ref to the new entry, as
+	// docker does when a build reuses a tag. Without this, a ref accumulates
+	// holders and ref lookup silently picks an arbitrary one — the older
+	// entry keeps its content and stays reachable by digest, it just loses
+	// the name.
+	if err := c.releaseRefFrom(img.Ref, img.Digest); err != nil {
+		return fmt.Errorf("image cache: put: %w", err)
+	}
+	return nil
+}
+
+// releaseRefFrom clears ref from every cache entry except keep. An empty ref
+// is a no-op: untagged entries do not compete for a name.
+//
+// A failure to rewrite one entry's meta.json aborts: leaving the ref on two
+// entries is exactly the ambiguity this exists to prevent, so a partial
+// release must be reported rather than swallowed.
+func (c *Cache) releaseRefFrom(ref string, keep domain.Digest) error {
+	if ref == "" {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	imgs, err := c.List(context.Background())
+	if err != nil {
+		return fmt.Errorf("release ref %q: %w", ref, err)
+	}
+	for _, img := range imgs {
+		if img.Ref != ref || img.Digest == keep {
+			continue
+		}
+		rec := imageRecord{
+			SchemaVersion: currentMetaVersion,
+			Digest:        img.Digest,
+			Ref:           "",
+			Kind:          img.Kind,
+			Size:          img.Size,
+			CreatedAt:     img.CreatedAt,
+		}
+		if err := writeMeta(c.metaPath(img.Digest), rec); err != nil {
+			return fmt.Errorf("release ref %q from %s: %w", ref, img.Digest, err)
+		}
+	}
 	return nil
 }
 
