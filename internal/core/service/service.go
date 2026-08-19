@@ -74,14 +74,14 @@ type Service struct {
 	store     store.Store
 	driver    driver.Driver
 	machine   lifecycle.Machine
-	artifacts *artifact.Store       // optional; nil means no artifact persistence
-	diskDir   string                 // durable dir for per-sandbox ext4 copies (S-COW); empty = defaultDiskDir()
+	artifacts *artifact.Store          // optional; nil means no artifact persistence
+	diskDir   string                   // durable dir for per-sandbox ext4 copies (S-COW); empty = defaultDiskDir()
 	volumes   *volumestore.VolumeStore // optional; nil means no named-volume support (SD2-6-MOUNT)
 
 	// perimeter fields — all optional; nil means no egress enforcement.
-	broker   *cred.Broker // host-side credential store for MITM token swap
-	caSeeder GuestSeeder  // delivers the MITM CA cert into the guest trust store
-	sshSeeder GuestSeeder // injects SSH authorized_keys into the guest (ORCA-S1)
+	broker    *cred.Broker // host-side credential store for MITM token swap
+	caSeeder  GuestSeeder  // delivers the MITM CA cert into the guest trust store
+	sshSeeder GuestSeeder  // injects SSH authorized_keys into the guest (ORCA-S1)
 
 	supervisorsMu sync.Mutex
 	supervisors   map[domain.SandboxID]*perimeter.PerimeterSupervisor
@@ -774,18 +774,18 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 		}
 	}
 
-	// MITM proxy: instantiated when AllowedHosts is non-empty (curated
-	// allowlist) OR SecretHosts is set (human-path secret swap). Pure
-	// AllowAll sandboxes skip MITM so build tools see real server certs.
+	// MITM proxy: see [SandboxHasMITMProxy] for the conditions. Pure AllowAll
+	// sandboxes with nothing to swap skip MITM so build tools see real server
+	// certs.
 	var proxy *mitm.Proxy
-	if !allowAll || len(sb.Envelope.SecretHosts) > 0 {
+	if SandboxHasMITMProxy(sb) {
 		var err error
 		proxy, err = mitm.New(mitm.Config{
 			SandboxID:    sb.ID,
 			AllowedHosts: sb.Envelope.AllowedHosts,
 			SecretHosts:  sb.Envelope.SecretHosts,
 			Broker:       s.broker,
-			AllowAll:     allowAll && len(sb.Envelope.SecretHosts) > 0,
+			AllowAll:     allowAll && (len(sb.Envelope.SecretHosts) > 0 || sb.AgentName != ""),
 			AllowedRepo:  sb.Envelope.AllowedRepo, // D-PD-36: per-repo path allowlist
 		})
 		if err != nil {
@@ -845,6 +845,30 @@ func (s *Service) closeSupervisor(id domain.SandboxID) {
 // with the given ID. Returns nil if no perimeter supervisor is running for it
 // (e.g. Start has not been called yet, or the supervisor was closed).
 // Safe for concurrent use.
+// SandboxHasMITMProxy reports whether starting this sandbox's perimeter will
+// stand up an L7 MITM proxy, and therefore whether a CA certificate will ever
+// become available from [Service.GetPerimeterCACert].
+//
+// It exists so the component that CREATES the proxy and the component that
+// WAITS for its CA cert read the same predicate. They were separate copies:
+// the supervisor's seed loop retried 30 times at 2s intervals waiting for a
+// cert that the perimeter had already decided not to produce, spending a
+// minute before signalling READY and then seeding nothing.
+//
+// Three postures need a proxy:
+//   - a curated egress allowlist (OpenEgress false), where the proxy is what
+//     enforces the allowlist at L7;
+//   - any sandbox carrying secret hosts, where the proxy performs the
+//     placeholder→real swap for the human/git path;
+//   - any sandbox running an agent, for the same swap on the agent's
+//     credential. An agent without a proxy would hold a placeholder bearer
+//     that nothing ever exchanges, and would fail against the real API.
+func SandboxHasMITMProxy(sb domain.Sandbox) bool {
+	return !sb.Envelope.OpenEgress ||
+		len(sb.Envelope.SecretHosts) > 0 ||
+		sb.AgentName != ""
+}
+
 func (s *Service) GetPerimeterCACert(id domain.SandboxID) *x509.Certificate {
 	s.supervisorsMu.Lock()
 	sup := s.supervisors[id]

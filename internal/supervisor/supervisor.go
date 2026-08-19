@@ -433,16 +433,33 @@ func RunDetached(cfg Config) error {
 		// must mint placeholders in either posture. The original guard on OpenEgress
 		// silently skipped GH_TOKEN seeding for --egress closed sandboxes.
 		humanSecrets := len(sb.Envelope.SecretHosts) > 0
+		// Nothing to seed without a proxy: the CA cert we would install exists
+		// only if one was started, and the placeholder we would write is only
+		// meaningful if something swaps it. Waiting anyway cost a full minute
+		// (maxSeedAttempts x retry delay) before READY and seeded nothing.
+		noProxy := !service.SandboxHasMITMProxy(sb)
 		var seedDone bool
-		if humanSecrets {
+		switch {
+		case noProxy:
+			slog.Info("supervisor.seed_not_applicable",
+				"sandbox", sb.ID,
+				"reason", "no MITM proxy for this sandbox: open egress, no secrets, no agent")
+		case humanSecrets:
 			// Human/git path (D-PD-25 / D-PD-26): seed CA + GH_TOKEN placeholder.
-			// SeedLoop would also emit CLAUDE_CODE_* vars; those belong on agent sandboxes.
+			// SeedLoop would also emit the agent's credential vars; those belong
+			// on agent sandboxes.
 			seedDone = seedHumanSecrets(ctx, sb, cert, caSeeder, agentSeeder, broker, svc)
-		} else {
+		default:
+			// seedAgentCreds is false for a sandbox with no agent: it still
+			// needs the CA to speak HTTPS through the proxy, but writing an
+			// agent placeholder into it would hand credential env vars to a
+			// guest that runs no agent.
 			seedDone = SeedLoop(ctx, sb.ID, &cert, caSeeder, agentSeeder, broker, refreshers,
-				maxSeedAttempts, 2*time.Second, svc)
+				maxSeedAttempts, 2*time.Second, svc, sb.AgentName != "")
 		}
-		if !seedDone {
+		// noProxy skips both branches below: there is no seed failure to warn
+		// about, and no CA in the guest to activate.
+		if !noProxy && !seedDone {
 			if ctx.Err() != nil {
 				slog.Warn("supervisor.seed_skipped", "reason", "context cancelled before seeding complete")
 			} else {
@@ -450,7 +467,7 @@ func RunDetached(cfg Config) error {
 					"max_attempts", maxSeedAttempts,
 					"action", "writing READY anyway; perimeter live, guest may lack placeholder+CA")
 			}
-		} else {
+		} else if !noProxy {
 			// Activate the CA cert in the system trust store so that non-Node.js
 			// HTTPS clients (git, wget, curl, gh) trust the MITM proxy CA without
 			// explicit per-process configuration.
@@ -660,6 +677,7 @@ func SeedLoop(
 	maxAttempts int,
 	retryDelay time.Duration,
 	svc PerimeterCAGetter,
+	seedAgentCreds bool,
 ) bool {
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if ctx.Err() != nil {
@@ -671,7 +689,7 @@ func SeedLoop(
 		if *cert != nil {
 			caErr := service.SeedCA(ctx, *cert, id, caSeeder)
 			var agentErr error
-			if caErr == nil {
+			if caErr == nil && seedAgentCreds {
 				_, agentErr = service.SeedGuestAgent(ctx, broker, id, agentSeeder)
 			}
 			if caErr == nil && agentErr == nil {
