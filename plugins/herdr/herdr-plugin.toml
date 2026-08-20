@@ -85,3 +85,21 @@ id = "open-guest-pane"
 title = "nexus3: open guest pane"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "space-open-pane"]
+
+[[actions]]
+id = "space-pause"
+title = "nexus3: pause this sandbox"
+contexts = ["workspace"]
+command = ["sh", "bin/open-pane.sh", "space-pause"]
+
+[[actions]]
+id = "space-resume"
+title = "nexus3: resume this sandbox"
+contexts = ["workspace"]
+command = ["sh", "bin/open-pane.sh", "space-resume"]
+
+[[actions]]
+id = "space-remove"
+title = "nexus3: remove this sandbox and close the space"
+contexts = ["workspace"]
+command = ["sh", "bin/open-pane.sh", "space-remove"]

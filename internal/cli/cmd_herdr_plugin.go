@@ -139,11 +139,15 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if len(rest) == 0 {
 			return &UsageError{Msg: "__herdr-plugin space-open-pane: sandbox ref or space label required"}
 		}
+		svc, err := newSandboxService()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-open-pane: " + err.Error(), Err: err}
+		}
 		storeRoot, err := store.DefaultRoot()
 		if err != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-open-pane: resolve store: " + err.Error(), Err: err}
 		}
-		return herdrPluginSpaceOpenPane(ctx, rest[0], storeRoot)
+		return herdrPluginSpaceOpenPane(ctx, rest[0], storeRoot, svc)
 
 	case "space-pause":
 		if len(rest) == 0 {
@@ -157,9 +161,12 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if err != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-pause: resolve store: " + err.Error(), Err: err}
 		}
-		b, err := herdrSpaceResolve(ctx, storeRoot, rest[0])
+		b, adopted, err := herdrSpaceResolveOrAdopt(ctx, svc, storeRoot, rest[0])
 		if err != nil {
-			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-pause: binding not found: " + rest[0], Err: err}
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-pause: " + err.Error(), Err: err}
+		}
+		if adopted {
+			herdrAdoptNotice(b)
 		}
 		return HerdrSpacePauseByLabel(ctx, svc, storeRoot, b.SpaceLabel)
 
@@ -175,9 +182,12 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if err != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-resume: resolve store: " + err.Error(), Err: err}
 		}
-		b, err := herdrSpaceResolve(ctx, storeRoot, rest[0])
+		b, adopted, err := herdrSpaceResolveOrAdopt(ctx, svc, storeRoot, rest[0])
 		if err != nil {
-			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-resume: binding not found: " + rest[0], Err: err}
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-resume: " + err.Error(), Err: err}
+		}
+		if adopted {
+			herdrAdoptNotice(b)
 		}
 		return HerdrSpaceResumeByLabel(ctx, svc, storeRoot, b.SpaceLabel)
 
@@ -193,9 +203,12 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if err != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-remove: resolve store: " + err.Error(), Err: err}
 		}
-		b, err := herdrSpaceResolve(ctx, storeRoot, rest[0])
+		b, adopted, err := herdrSpaceResolveOrAdopt(ctx, svc, storeRoot, rest[0])
 		if err != nil {
-			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-remove: binding not found: " + rest[0], Err: err}
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-remove: " + err.Error(), Err: err}
+		}
+		if adopted {
+			herdrAdoptNotice(b)
 		}
 		herdrBin := os.Getenv("HERDR_BIN_PATH")
 		return herdrSpaceRemoveFull(ctx, svc, storeRoot, herdrBin, b)
@@ -244,16 +257,118 @@ func herdrPluginContextCwd(w io.Writer) error {
 	return nil
 }
 
-// herdrPluginWorkspaces lists all sandboxes, one per line: "project/name\tstate".
+// herdrPluginWorkspaces renders the workspaces overlay: one aligned row per
+// sandbox, whatever created it.
+//
+// svc.List is deliberately unfiltered, so a sandbox made with `nexus3 sandbox
+// create` shows up here exactly like one herdr created. Handle and state alone
+// were not enough to act on: the operator could see a row but not tell whether
+// it was bound to a herdr space, whether it carried a mount worth attaching
+// to, or which agent it was running. Every column below answers a question the
+// operator would otherwise have to drop to a terminal to answer.
+//
+// Failure to read the bindings file is NOT fatal — the overlay degrades to
+// showing "-" in the SPACE column rather than refusing to render, because an
+// overlay that shows nothing is worse than one missing a column.
 func herdrPluginWorkspaces(ctx context.Context, w io.Writer, svc *service.Service) error {
 	sandboxes, err := svc.List(ctx)
 	if err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin workspaces: " + err.Error(), Err: err}
 	}
+
+	bound := map[string]bool{}
+	if storeRoot, rErr := store.DefaultRoot(); rErr == nil {
+		if bindings, bErr := HerdrSpaceList(ctx, storeRoot); bErr == nil {
+			for _, b := range bindings {
+				bound[b.SandboxHandle] = true
+			}
+		}
+	}
+
+	rows := make([][6]string, 0, len(sandboxes))
 	for _, sb := range sandboxes {
-		fmt.Fprintf(w, "%s\t%s\n", sb.Handle(), sb.State.String())
+		space := "-"
+		if bound[sb.Handle()] {
+			space = "bound"
+		}
+		rows = append(rows, [6]string{
+			sb.Handle(),
+			sb.State.String(),
+			herdrWorkspaceAgent(sb),
+			herdrWorkspaceMounts(sb),
+			space,
+			sb.ID.String(),
+		})
+	}
+
+	fmt.Fprint(w, renderWorkspaceTable(rows))
+	if len(rows) == 0 {
+		fmt.Fprintln(w, "(no sandboxes — use `nexus3: create sandbox space` to make one)")
 	}
 	return nil
+}
+
+// workspaceTableHeaders is the overlay's column set.
+var workspaceTableHeaders = [6]string{"WORKSPACE", "STATE", "AGENT", "MOUNTS", "SPACE", "ID"}
+
+// renderWorkspaceTable lays the rows out in fixed-width columns sized to the
+// widest cell. Alignment is not cosmetic in a terminal overlay: ragged columns
+// are what make a list unscannable, which defeats the point of the pane.
+func renderWorkspaceTable(rows [][6]string) string {
+	widths := [6]int{}
+	for i, h := range workspaceTableHeaders {
+		widths[i] = len(h)
+	}
+	for _, r := range rows {
+		for i, c := range r {
+			if len(c) > widths[i] {
+				widths[i] = len(c)
+			}
+		}
+	}
+	var b strings.Builder
+	writeRow := func(r [6]string) {
+		for i, c := range r {
+			if i == len(r)-1 {
+				b.WriteString(c)
+				b.WriteString("\n")
+				continue
+			}
+			fmt.Fprintf(&b, "%-*s  ", widths[i], c)
+		}
+	}
+	writeRow(workspaceTableHeaders)
+	for _, r := range rows {
+		writeRow(r)
+	}
+	return b.String()
+}
+
+// herdrWorkspaceAgent names the agent profile a sandbox was created for, or
+// "-" for a plain sandbox with no agent.
+func herdrWorkspaceAgent(sb domain.Sandbox) string {
+	if sb.AgentName == "" {
+		return "-"
+	}
+	return sb.AgentName
+}
+
+// herdrWorkspaceMounts summarises what the sandbox has attached, because that
+// is what decides whether a guest shell lands somewhere useful. Live host
+// mounts are listed first since they are the ones with a host path the
+// operator recognises.
+func herdrWorkspaceMounts(sb domain.Sandbox) string {
+	var parts []string
+	for _, m := range sb.LiveMounts {
+		parts = append(parts, m.GuestPath)
+	}
+	for _, v := range sb.MountedVolumes {
+		parts = append(parts, v.Name+"→"+v.GuestPath)
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, ",")
 }
 
 // herdrPluginAttach runs an interactive PTY attach session.
@@ -1080,15 +1195,25 @@ func herdrOpenGuestShellPane(herdrBin, ref, workspaceID string) error {
 }
 
 // herdrPluginSpaceOpenPane resolves a space by ref, label, or workspace_id and opens another guest-shell pane.
-func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot string) error {
+func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot string, svc herdrAdoptGetter) error {
 	herdrBin := os.Getenv("HERDR_BIN_PATH")
 	if herdrBin == "" {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-open-pane: HERDR_BIN_PATH not set"}
 	}
 
-	b, err := herdrSpaceResolve(ctx, storeRoot, refOrLabel)
+	b, adopted, err := herdrSpaceResolveOrAdopt(ctx, svc, storeRoot, refOrLabel)
 	if err != nil {
-		return &CodedError{Code: ErrCodeInternalError, Msg: "space-open-pane: no space binding for " + refOrLabel}
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-open-pane: " + err.Error(), Err: err}
+	}
+	if adopted {
+		herdrAdoptNotice(b)
+	}
+
+	// A binding adopted from a sandbox created outside herdr has no workspace
+	// yet. Mint one now — this is the only subcommand that needs one.
+	b, err = herdrSpaceEnsureWorkspace(ctx, storeRoot, herdrBin, b)
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-open-pane: " + err.Error(), Err: err}
 	}
 
 	return herdrOpenGuestShellPane(herdrBin, b.SandboxHandle, b.HerdrWorkspaceID)

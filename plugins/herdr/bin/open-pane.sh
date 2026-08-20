@@ -5,6 +5,19 @@ PLACEMENT="${2:-tab}"
 SHIM="$(dirname "$0")/../nexus3-shim.sh"
 
 case "$ENTRYPOINT" in
+    space-pause|space-resume|space-remove)
+        # Lifecycle control on the sandbox bound to the focused herdr workspace.
+        # These are not panes: they act and exit. Resolved by HERDR_WORKSPACE_ID
+        # so no sandbox ref is required from the caller, exactly like
+        # space-open-pane. A sandbox created outside herdr is adopted on the
+        # spot rather than dead-ending on a missing binding.
+        "$SHIM" __herdr-plugin "$ENTRYPOINT" "$HERDR_WORKSPACE_ID"
+        STATUS=$?
+        if [ "$STATUS" -ne 0 ]; then
+            echo "nexus3: $ENTRYPOINT failed (status $STATUS)" >&2
+        fi
+        exit "$STATUS"
+        ;;
     space-open-pane)
         # Invoke the nexus3 space-open-pane subcommand to open an extra guest-shell
         # pane in the herdr workspace that is currently focused. Resolves the binding

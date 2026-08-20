@@ -115,8 +115,15 @@ func TestHerdrPluginWorkspaces_empty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("workspaces: unexpected error: %v", err)
 	}
-	if stdout.Len() != 0 {
-		t.Errorf("workspaces: expected empty output, got %q", stdout.String())
+	// An overlay pane that renders NOTHING is indistinguishable from one that
+	// crashed. With no sandboxes the pane must still show its header and say
+	// what to do next, so "empty" reads as a state rather than a failure.
+	out := stdout.String()
+	if !strings.Contains(out, "WORKSPACE") {
+		t.Errorf("workspaces: empty overlay is missing its header, got %q", out)
+	}
+	if !strings.Contains(out, "no sandboxes") {
+		t.Errorf("workspaces: empty overlay does not tell the operator what to do, got %q", out)
 	}
 }
 
