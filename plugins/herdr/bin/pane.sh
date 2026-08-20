@@ -22,11 +22,19 @@ case "$1" in
             SHELL_CWD="/root"
         fi
         # Prefer bash as a login shell; fall back to /bin/sh for minimal images.
-        if [ -x /usr/bin/bash ]; then
-            exec "$SHIM" exec --pty --cwd "$SHELL_CWD" "$REF" /usr/bin/bash -l
-        else
-            exec "$SHIM" exec --pty --cwd "$SHELL_CWD" "$REF" /bin/sh
+        # The probe must run in the GUEST. Testing the host for /usr/bin/bash
+        # asked the wrong machine entirely: on macOS (a supported platform,
+        # where bash lives at /bin/bash) every guest would be demoted to
+        # /bin/sh, and on a guest with no bash the exec would fail and the pane
+        # would close before the error could be read.
+        GUEST_SHELL=$("$SHIM" exec "$REF" /bin/sh -c 'command -v bash 2>/dev/null || echo /bin/sh' 2>/dev/null | tr -d '\r' | tail -n 1)
+        if [ -z "$GUEST_SHELL" ]; then
+            GUEST_SHELL=/bin/sh
         fi
+        case "$GUEST_SHELL" in
+            */bash) exec "$SHIM" exec --pty --cwd "$SHELL_CWD" "$REF" "$GUEST_SHELL" -l ;;
+            *)      exec "$SHIM" exec --pty --cwd "$SHELL_CWD" "$REF" "$GUEST_SHELL" ;;
+        esac
         ;;
     create-space)
         # Discoverable create+boot+space action. Maps to space-create-from-file subcommand.

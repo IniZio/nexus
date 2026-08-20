@@ -52,9 +52,13 @@ func newScriptEnv(t *testing.T) *scriptEnv {
 
 	// The shim sits one level above bin/, exactly as in the real plugin.
 	// shell-cwd must answer on stdout because pane.sh captures it.
+	// The stub answers both guest round-trips pane.sh makes: shell-cwd, and
+	// the `command -v bash` probe. STUB_GUEST_BASH controls what the guest is
+	// pretending to have, so both branches are reachable.
 	shim := "#!/bin/sh\n" +
 		"printf '%s\\n' \"$*\" >> " + e.shimLog + "\n" +
 		"if [ \"$2\" = \"shell-cwd\" ]; then echo /work; fi\n" +
+		"case \"$*\" in *'command -v bash'*) echo \"${STUB_GUEST_BASH:-/usr/bin/bash}\";; esac\n" +
 		"exit 0\n"
 	if err := os.WriteFile(filepath.Join(root, "nexus3-shim.sh"), []byte(shim), 0o755); err != nil {
 		t.Fatal(err)
@@ -81,7 +85,7 @@ func (e *scriptEnv) run(t *testing.T, script string, args []string, env map[stri
 	}
 }
 
-func (e *scriptEnv) shimArgv(t *testing.T) string { return readLog(t, e.shimLog) }
+func (e *scriptEnv) shimArgv(t *testing.T) string  { return readLog(t, e.shimLog) }
 func (e *scriptEnv) herdrArgv(t *testing.T) string { return readLog(t, e.herdrLog) }
 
 func readLog(t *testing.T, path string) string {
@@ -202,5 +206,44 @@ func TestPaneScript_RejectsUnknownSubcommand(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "unknown subcommand") {
 		t.Errorf("error should say the subcommand is unknown; got %q", out)
+	}
+}
+
+// TestPaneScript_ProbesGuestNotHostForBash pins a defect that asked the wrong
+// machine: the shell pane tested the HOST for /usr/bin/bash to decide which
+// shell to run in the GUEST. On macOS — a platform the manifest declares —
+// bash is at /bin/bash, so every guest would have been demoted to /bin/sh.
+func TestPaneScript_ProbesGuestNotHostForBash(t *testing.T) {
+	e := newScriptEnv(t)
+	e.run(t, "pane.sh", []string{"shell"}, map[string]string{
+		"NEXUS3_WORKSPACE": "demo/api",
+		"STUB_GUEST_BASH":  "/usr/bin/bash",
+	})
+
+	got := e.shimArgv(t)
+	if !strings.Contains(got, "command -v bash") {
+		t.Errorf("shell pane must probe the GUEST for bash; argv was %q", got)
+	}
+	if !strings.Contains(got, "/usr/bin/bash -l") {
+		t.Errorf("guest reported bash, so it must be used as a login shell; argv was %q", got)
+	}
+}
+
+// TestPaneScript_FallsBackToShWhenGuestLacksBash covers the other branch: a
+// minimal guest image must get /bin/sh rather than an exec that fails and
+// closes the pane before the error can be read.
+func TestPaneScript_FallsBackToShWhenGuestLacksBash(t *testing.T) {
+	e := newScriptEnv(t)
+	e.run(t, "pane.sh", []string{"shell"}, map[string]string{
+		"NEXUS3_WORKSPACE": "demo/api",
+		"STUB_GUEST_BASH":  "/bin/sh",
+	})
+
+	got := e.shimArgv(t)
+	if !strings.Contains(got, "demo/api /bin/sh") {
+		t.Errorf("guest without bash must fall back to /bin/sh; argv was %q", got)
+	}
+	if strings.Contains(got, "bash -l") {
+		t.Errorf("must not run bash when the guest does not have it; argv was %q", got)
 	}
 }

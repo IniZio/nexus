@@ -214,7 +214,7 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if adopted {
 			herdrAdoptNotice(b)
 		}
-		herdrBin := os.Getenv("HERDR_BIN_PATH")
+		herdrBin, _ := resolveHerdrBin() // best-effort: removal proceeds without herdr
 		return herdrSpaceRemoveFull(ctx, svc, storeRoot, herdrBin, b)
 
 	case "shell-cwd":
@@ -361,7 +361,7 @@ func herdrPluginAttach(ctx context.Context, ref string, out *Output, svc *servic
 		}
 	}
 
-	herdrBin := os.Getenv("HERDR_BIN_PATH")
+	herdrBin, _ := resolveHerdrBin() // best-effort: attach works without a reporter
 	herdrPane := os.Getenv("HERDR_PANE_ID")
 	haveReporter := herdrBin != "" && herdrPane != ""
 
@@ -716,14 +716,17 @@ func herdrPluginSpaceCreateFromFile(ctx context.Context, r io.Reader, w io.Write
 // herdrPluginDoctor prints host preflight info and ABI version.
 func herdrPluginDoctor(w io.Writer) error {
 	exe, _ := os.Executable()
-	herdrBin := os.Getenv("HERDR_BIN_PATH")
+	herdrBin, herdrBinErr := resolveHerdrBin()
 	herdrVer := os.Getenv("HERDR_VERSION")
 	if herdrVer == "" {
 		herdrVer = "(HERDR_VERSION not set)"
 	}
-	herdrBinStatus := "(HERDR_BIN_PATH not set)"
-	if herdrBin != "" {
+	herdrBinStatus := "(not found)"
+	if herdrBinErr == nil {
 		herdrBinStatus = herdrBin
+		if os.Getenv("HERDR_BIN_PATH") == "" {
+			herdrBinStatus += "  (resolved from PATH; HERDR_BIN_PATH unset)"
+		}
 	}
 	fmt.Fprintf(w, "nexus3 binary:  %s\n", exe)
 	fmt.Fprintf(w, "plugin ABI:     %s\n", herdrPluginABIVersion)
@@ -732,12 +735,31 @@ func herdrPluginDoctor(w io.Writer) error {
 	return nil
 }
 
+// resolveHerdrBin returns the herdr binary these commands should invoke.
+//
+// HERDR_BIN_PATH is injected by herdr into PLUGIN processes only. An ordinary
+// pane running inside herdr does NOT carry it — HERDR_ENV, HERDR_WORKSPACE_ID
+// and HERDR_PANE_ID are set there, but not this one. Reading the variable
+// alone therefore refused `space-create` and friends for anyone running nexus3
+// from a shell inside herdr, which is the most natural way to use them and the
+// case where herdr is provably installed. Falling back to PATH fixes exactly
+// that case without weakening anything: if no herdr exists, this still fails.
+func resolveHerdrBin() (string, error) {
+	if p := os.Getenv("HERDR_BIN_PATH"); p != "" {
+		return p, nil
+	}
+	if p, err := exec.LookPath("herdr"); err == nil {
+		return p, nil
+	}
+	return "", errors.New("herdr not found: HERDR_BIN_PATH is unset and no \"herdr\" binary is on PATH")
+}
+
 // herdrPluginOpenPane calls herdr to open a pane for the given workspace.
 func herdrPluginOpenPane(ws string, extraArgs []string) error {
-	herdrBin := os.Getenv("HERDR_BIN_PATH")
-	if herdrBin == "" {
-		fmt.Fprintln(os.Stderr, "__herdr-plugin open-pane: HERDR_BIN_PATH not set")
-		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin open-pane: HERDR_BIN_PATH not set"}
+	herdrBin, binErr := resolveHerdrBin()
+	if binErr != nil {
+		fmt.Fprintln(os.Stderr, "__herdr-plugin open-pane: "+binErr.Error())
+		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin open-pane: " + binErr.Error(), Err: binErr}
 	}
 	args := []string{"plugin", "pane", "open",
 		"--plugin", "nexus3",
@@ -1172,9 +1194,9 @@ func herdrSpaceLabelForRef(ref string) string {
 // herdrPluginSpaceCreate creates (or reuses) a herdr workspace for the sandbox,
 // opens the primary guest-shell pane, and stores the binding.
 func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc *service.Service, storeRoot string) error {
-	herdrBin := os.Getenv("HERDR_BIN_PATH")
-	if herdrBin == "" {
-		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: HERDR_BIN_PATH not set"}
+	herdrBin, binErr := resolveHerdrBin()
+	if binErr != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: " + binErr.Error(), Err: binErr}
 	}
 
 	// Ensure sandbox is running; captures the sandbox for ID resolution.
@@ -1285,9 +1307,9 @@ func herdrOpenGuestShellPane(herdrBin, ref, workspaceID string) error {
 
 // herdrPluginSpaceOpenPane resolves a space by ref, label, or workspace_id and opens another guest-shell pane.
 func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot string, svc herdrAdoptGetter) error {
-	herdrBin := os.Getenv("HERDR_BIN_PATH")
-	if herdrBin == "" {
-		return &CodedError{Code: ErrCodeInternalError, Msg: "space-open-pane: HERDR_BIN_PATH not set"}
+	herdrBin, binErr := resolveHerdrBin()
+	if binErr != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-open-pane: " + binErr.Error(), Err: binErr}
 	}
 
 	b, adopted, err := herdrSpaceResolveOrAdopt(ctx, svc, storeRoot, refOrLabel)

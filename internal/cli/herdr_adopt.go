@@ -93,7 +93,7 @@ func herdrSpaceEnsureWorkspace(
 		return b, nil
 	}
 	if herdrBin == "" {
-		return b, fmt.Errorf("cannot create a herdr workspace for %q: HERDR_BIN_PATH not set", b.SandboxHandle)
+		return b, fmt.Errorf("cannot create a herdr workspace for %q: no herdr binary (HERDR_BIN_PATH unset and none on PATH)", b.SandboxHandle)
 	}
 	id, err := herdrWorkspaceCreate(herdrBin, b.SpaceLabel)
 	if err != nil {
