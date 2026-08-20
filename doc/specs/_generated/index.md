@@ -1,6 +1,6 @@
 # Spec Index
 
-_Generated: 2026-08-15T05:33:26.146Z_
+_Generated: 2026-08-20T01:35:25.801Z_
 
 ## Concepts
 

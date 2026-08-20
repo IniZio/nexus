@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-15T05:33:26.139Z",
+  "generated_at": "2026-08-20T01:35:25.797Z",
   "nodes": {
     "C-NEXUS3": {
       "id": "C-NEXUS3",
@@ -162,7 +162,7 @@
         "C-PDF"
       ],
       "inbound": [],
-      "byteSize": 235,
+      "byteSize": 221,
       "relPath": "pdf/PDF-R-006.md",
       "status": "active",
       "pattern": null,
@@ -297,40 +297,16 @@
       "source": null,
       "views": null
     },
-    "PDF-R-012": {
-      "id": "PDF-R-012",
-      "type": "requirement",
-      "title": "nexus3 up <motive> --count N provisions N sandboxes from a single create-and-boot call.",
-      "summary": "nexus3 up <motive> --count N provisions N sandboxes from a single create-and-boot call.",
-      "refs": [
-        "C-PDF"
-      ],
-      "inbound": [],
-      "byteSize": 190,
-      "relPath": "pdf/PDF-R-012.md",
-      "status": "active",
-      "pattern": null,
-      "verification": "manual",
-      "criticality": "must",
-      "concept": "C-PDF",
-      "parent": null,
-      "ears": null,
-      "anchor": null,
-      "why": null,
-      "fitCriterion": null,
-      "source": null,
-      "views": null
-    },
     "PDF-R-013": {
       "id": "PDF-R-013",
       "type": "requirement",
-      "title": "nexus3 up preflight checks allocated disk bytes against available free space and refuses when insufficient.",
-      "summary": "nexus3 up preflight checks allocated disk bytes against available free space and refuses when insufficient.",
+      "title": "Sandbox creation refuses up front when projected allocated disk bytes exceed host free space.",
+      "summary": "Sandbox creation refuses up front when projected allocated disk bytes exceed host free space.",
       "refs": [
         "C-PDF"
       ],
       "inbound": [],
-      "byteSize": 210,
+      "byteSize": 196,
       "relPath": "pdf/PDF-R-013.md",
       "status": "active",
       "pattern": null,
@@ -450,7 +426,7 @@
         "C-PDF"
       ],
       "inbound": [],
-      "byteSize": 220,
+      "byteSize": 224,
       "relPath": "pdf/PDF-R-018.md",
       "status": "active",
       "pattern": null,
@@ -474,7 +450,7 @@
         "C-PDF"
       ],
       "inbound": [],
-      "byteSize": 216,
+      "byteSize": 230,
       "relPath": "pdf/PDF-R-019.md",
       "status": "active",
       "pattern": null,
@@ -730,7 +706,6 @@
         "PDF-R-009",
         "PDF-R-010",
         "PDF-R-011",
-        "PDF-R-012",
         "PDF-R-013",
         "PDF-R-014",
         "PDF-R-015",
@@ -886,7 +861,7 @@
         "C-RES"
       ],
       "inbound": [],
-      "byteSize": 241,
+      "byteSize": 249,
       "relPath": "res/RES-R-004.md",
       "status": "active",
       "pattern": null,
@@ -1139,7 +1114,7 @@
       "inbound": [
         "C-SUR"
       ],
-      "byteSize": 215,
+      "byteSize": 212,
       "relPath": "sur/SUR-R-001.md",
       "status": "active",
       "pattern": null,

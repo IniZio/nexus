@@ -100,6 +100,18 @@ func estimatePerSandbox(diskDir string) int64 {
 // CheckDiskSpace verifies that diskDir has enough free space for count new
 // sandbox workspace disks.
 //
+// # NO PRODUCTION CALLER (TBD-PD-26)
+//
+// As of the deletion of `nexus3 up` this function has zero non-test callers.
+// Its only caller was cmd_up.go, which projected workspace-disk bytes for a
+// command that allocated none — it wrote store records and never booted a VM.
+// The arithmetic below is correct and tested; it is simply not wired in.
+//
+// Do not read the green tests in preflight_test.go as evidence that any
+// nexus3 command performs a disk preflight today. None does. TBD-PD-26 is to
+// wire this into the workspace-disk materialisation path shared by create,
+// run and fork — the point where bytes are actually allocated.
+//
 // # Sparse-disk contract
 //
 // The per-sandbox estimate is derived from existing workspace disks in diskDir

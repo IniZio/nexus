@@ -1,7 +1,7 @@
 ---
 id: PDF-R-013
 concept: C-PDF
-summary: "nexus3 up preflight checks allocated disk bytes against available free space and refuses when insufficient."
+summary: "Sandbox creation refuses up front when projected allocated disk bytes exceed host free space."
 criticality: must
 verification: manual
 status: active

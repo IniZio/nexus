@@ -1,18 +1,18 @@
 {
-  "total": 45,
+  "total": 44,
   "by_source": {
-    "unknown": 45
+    "unknown": 44
   },
   "by_concept": {
-    "C-PDF": 28,
+    "C-PDF": 27,
     "C-RES": 12,
     "C-SUR": 5
   },
   "by_verification": {
-    "manual": 45
+    "manual": 44
   },
   "by_criticality": {
-    "must": 45
+    "must": 44
   },
   "verified": 0,
   "unverified_automated": [],
@@ -68,11 +68,6 @@
       "tests": []
     },
     "PDF-R-011": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-012": {
       "declared": "manual",
       "verified": false,
       "tests": []

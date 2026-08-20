@@ -52,8 +52,6 @@ var surfaceMap = []surfaceEntry{
 	{CLIVerb: "shell", CanonicalMethods: []string{"service.Exec"}, MCPTools: nil},
 	{CLIVerb: "snapshot", CanonicalMethods: []string{"service.Snapshot", "service.SnapshotList", "service.SnapshotRemove"}, MCPTools: nil},
 	{CLIVerb: "ssh", CanonicalMethods: []string{"service.SSHConn"}, MCPTools: nil},
-	// "up" creates N sandboxes with disk-space preflight; registered by cmd_up.go (slice M3).
-	{CLIVerb: "up", CanonicalMethods: []string{"service.CheckDiskSpace", "service.CreateAndBoot"}, MCPTools: nil},
 	{CLIVerb: "version", CLIOnly: true},
 	// volume noun manages named volumes directly via volumestore (not through
 	// service.*) — the canonical backing is the VolumeStore CRUD primitives.

@@ -247,15 +247,19 @@ The recommended parallel-dev approach avoids this residual entirely: use `--moun
 
 **Scoped exception**: netns, TAP, and bridge are in-kernel and auto-reclaimed when the Cloud Hypervisor process group dies even under SIGKILL. For those three, the kernel is the handle — `recover` does not need to track them explicitly.
 
-## Disk preflight <Badge type="warning" text="partial" />
+## Disk preflight <Badge type="danger" text="not built" />
 
-Only `nexus3 up` runs a disk-space preflight. `service.CheckDiskSpace` (`internal/core/service/preflight.go:122`) has exactly one non-test caller in the repo, `cmd_up.go:60`; `nexus3 create` (`cmd_sandbox.go:812`), `nexus3 run` (`cmd_run.go:58`) and `nexus3 orca` (`cmd_orca.go:523`) do **not** call it — they resolve the kernel path only. Where it does run, the preflight:
+**No nexus3 command runs a disk-space preflight.** `service.CheckDiskSpace` (`internal/core/service/preflight.go:122`) has **zero** non-test callers. Its only caller was `nexus3 up`, deleted 2026-08-20 — and that command allocated no disk at all, so the preflight guarded bytes it never wrote. `nexus3 create` (`cmd_sandbox.go:812`), `nexus3 run` (`cmd_run.go:58`) and `nexus3 orca` (`cmd_orca.go:523`) resolve the kernel path only.
+
+Creating a sandbox on a nearly-full host therefore fails at `mke2fs`/write time with whatever error the filesystem produces, not with an actionable up-front refusal.
+
+The arithmetic below is implemented and unit-tested; it is simply not wired to any entry point. Wiring it into the workspace-disk materialisation path shared by create, run and fork is TBD-PD-26. As written, `CheckDiskSpace`:
 
 - Measures existing sandbox disks (raw and shadow) using `stat(2).Blocks * 512` (allocated bytes, not apparent size — sparse ext4 images have inflated apparent sizes).
 - Projects `count × per-sandbox-estimate` against the host's available bytes (`Bavail × Bsize` from `statfs(2)`).
 - Returns `ErrInsufficientDisk` if the projection exceeds available space.
 
-The preflight covers nexus3-managed disks only. Named volume backing files are outside the estimate — volume sizes are set explicitly at creation time and are the user's responsibility.
+The estimate covers nexus3-managed disks only. Named volume backing files are outside the estimate — volume sizes are set explicitly at creation time and are the user's responsibility.
 
 The per-sandbox estimate defaults to ~4.57 GiB (measured from a real pilot sandbox) when no existing sandbox disks are present to sample.
 
