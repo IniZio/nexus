@@ -29,7 +29,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -1213,22 +1212,27 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 		return nil, err
 	}
 
-	childLeases := make(map[domain.SandboxID]*createIntentLease, count)
-	// Drain leases still held when Fork returns. On the success path each lease
-	// is released the moment its record commits and removed from the map, so
-	// this drains only children that never got a record — whose disks then
-	// become correctly reclaimable orphans instead of leaking forever.
+	// Lease every child's disks before the driver writes them. Two intents are
+	// needed and neither substitutes for the other: the ULID create intent
+	// covers <childID>.raw (D-PD-74), and the handle-keyed shadow intent
+	// covers the child's copies of the parent's shadow disks (TBD-PD-38).
+	//
+	// Drain whatever is still held when Fork returns. On the success path each
+	// pair is released the moment its record commits and removed from the map,
+	// so this drains only children that never got a record — whose disks then
+	// become correctly reclaimable orphans instead of leaking forever behind a
+	// flock this process still holds.
+	childLeases, childShadowLeases, leaseErr := leaseForkChildren(diskDir, parent.Handle(), childIDs)
 	defer func() {
-		for _, lease := range childLeases {
-			lease.release()
+		for _, l := range childLeases {
+			l.release()
+		}
+		for _, l := range childShadowLeases {
+			l.Release()
 		}
 	}()
-	for _, id := range childIDs {
-		lease, leaseErr := writeCreateIntent(diskDir, id, filepath.Join(diskDir, id.String()+".raw"), "")
-		if leaseErr != nil {
-			return nil, fmt.Errorf("service: fork %s: lease child %s: %w", parent.ID, id, leaseErr)
-		}
-		childLeases[id] = lease
+	if leaseErr != nil {
+		return nil, fmt.Errorf("service: fork %s: %w", parent.ID, leaseErr)
 	}
 
 	// Spawn all children from the snapshot in one driver call.
@@ -1276,8 +1280,13 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 		// disk as Owned. Only now is it safe to drop the lease (release also
 		// removes the intent file). Releasing before the commit — or deferring
 		// all releases to the end of the loop — would reopen the window.
-		childLeases[id].release()
-		delete(childLeases, id)
+		// The record is committed, so the reaper now classifies this child's
+		// disks as Owned — .raw by ULID, shadow copies via
+		// forkChildShadowOwner. Only now is it safe to drop the leases
+		// (releasing also removes the intent files). Releasing before the
+		// commit — or deferring all releases to the end of the loop — would
+		// reopen the window.
+		releaseChildLeases(childLeases, childShadowLeases, id)
 		children = append(children, child)
 	}
 
@@ -1395,23 +1404,53 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 		childIDs[i] = domain.NewSandboxID()
 	}
 
+	restoreDiskDir := s.diskDir
+	if restoreDiskDir == "" {
+		d, dErr := defaultDiskDir()
+		if dErr != nil {
+			return nil, fmt.Errorf("service: restore %s: resolve disk dir: %w", snapID, dErr)
+		}
+		restoreDiskDir = d
+	}
+
 	// Disk-space preflight (TBD-PD-26). Restore copies the origin sandbox's
 	// disks once per child exactly as Fork does, so it is guarded identically.
-	// diskDir is resolved here rather than reused from Fork because restore has
-	// no earlier need for it.
-	{
-		restoreDiskDir := s.diskDir
-		if restoreDiskDir == "" {
-			d, dErr := defaultDiskDir()
-			if dErr != nil {
-				return nil, fmt.Errorf("service: restore %s: resolve disk dir: %w", snapID, dErr)
-			}
-			restoreDiskDir = d
+	if err := checkForkDiskSpace(newForkConfig(opts), restoreDiskDir, snap.SandboxID.String(), count,
+		fmt.Sprintf("restore %s", snapID)); err != nil {
+		return nil, err
+	}
+
+	// The origin sandbox must exist so we can reconstruct the egress policy
+	// (Envelope). D-PD-33: without the origin we cannot determine whether
+	// OpenEgress was set, so we fail loudly rather than silently producing a
+	// sandbox with unknown or no egress policy.
+	//
+	// This lookup used to sit AFTER ForkFrom, which meant a missing origin
+	// killed the restore only once N child VMs were already running. It is
+	// hoisted here so the failure is free, and because the leases below need
+	// the origin's handle to name its shadow disks.
+	origin, originErr := s.store.Get(ctx, snap.SandboxID)
+	if originErr != nil {
+		return nil, fmt.Errorf("service: restore %s: origin sandbox %s unavailable — cannot reconstruct egress policy (D-PD-33): %w", snapID, snap.SandboxID, originErr)
+	}
+
+	// Lease every child's disks before the driver writes them (TBD-PD-38).
+	// Restore had NO leases at all: both the ULID-keyed <childID>.raw and the
+	// handle-keyed shadow copies were exposed to a concurrent reap for the
+	// whole restore window. Fork's exposure was the narrower of the two and
+	// was the one on record; this is the same defect in the sibling path.
+	childLeases, childShadowLeases, leaseErr := leaseForkChildren(
+		restoreDiskDir, origin.Handle(), childIDs)
+	defer func() {
+		for _, l := range childLeases {
+			l.release()
 		}
-		if err := checkForkDiskSpace(newForkConfig(opts), restoreDiskDir, snap.SandboxID.String(), count,
-			fmt.Sprintf("restore %s", snapID)); err != nil {
-			return nil, err
+		for _, l := range childShadowLeases {
+			l.Release()
 		}
+	}()
+	if leaseErr != nil {
+		return nil, fmt.Errorf("service: restore %s: %w", snapID, leaseErr)
 	}
 
 	// Spawn all children from the retained snapshot in one driver call.
@@ -1422,15 +1461,6 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 
 	// Persist each child record. Children start directly in Running state
 	// (edge 5: ∅→running). Provenance.SourceSnapshot satisfies S2-AC3.
-	//
-	// The origin sandbox must exist so we can reconstruct the egress policy
-	// (Envelope). D-PD-33: without the origin we cannot determine whether
-	// OpenEgress was set, so we fail loudly rather than silently producing a
-	// sandbox with unknown or no egress policy.
-	origin, originErr := s.store.Get(ctx, snap.SandboxID)
-	if originErr != nil {
-		return nil, fmt.Errorf("service: restore %s: origin sandbox %s unavailable — cannot reconstruct egress policy (D-PD-33): %w", snapID, snap.SandboxID, originErr)
-	}
 
 	children := make([]domain.Sandbox, 0, count)
 	for i, id := range childIDs {
@@ -1456,6 +1486,9 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 		if err := s.store.Create(ctx, child); err != nil {
 			return nil, fmt.Errorf("service: restore %s: persist child %s: %w", snapID, id, err)
 		}
+		// Record committed: the reaper resolves these disks to a live child
+		// now, so and only now is it safe to drop the leases.
+		releaseChildLeases(childLeases, childShadowLeases, id)
 		children = append(children, child)
 	}
 
