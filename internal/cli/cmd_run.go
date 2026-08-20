@@ -53,7 +53,9 @@ func runRun(ctx context.Context, args []string, out *Output) error {
 	}
 
 	imageRef := positional[0]
-	argv := positional[1:]
+	// Strip the conventional "--" separator: flag.Parse stops at the first
+	// positional and never consumes it. See stripArgvSeparator.
+	argv := stripArgvSeparator(positional[1:])
 
 	// Resolve kernel path before any expensive work (preflight validation).
 	kernelPath, err := resolveKernelPath()

@@ -63,7 +63,9 @@ func runExec(ctx context.Context, args []string, out *Output) error {
 	}
 
 	ref := positional[0]
-	argv := positional[1:]
+	// Strip the conventional "--" separator: flag.Parse stops at the first
+	// positional and never consumes it. See stripArgvSeparator.
+	argv := stripArgvSeparator(positional[1:])
 
 	var ptyOpts *agentpb.PtyOptions
 	if *ptyFlag {
