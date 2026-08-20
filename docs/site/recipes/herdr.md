@@ -68,7 +68,7 @@ These appear in herdr's action list for the focused workspace:
 | Action | Effect |
 |---|---|
 | `nexus3: list sandboxes` | open the listing overlay described above |
-| `nexus3: create a sandbox` | prompt for image and handle, then create |
+| `nexus3: create a sandbox` | prompt for image, project and name, then create, boot and open a space |
 | `nexus3: attach to a workspace` | reattach to an existing guest session |
 | `nexus3: create sandbox space (from local Containerfile)` | build, boot, and open a space in one step |
 | `nexus3: open guest pane` | another guest shell in the current space |

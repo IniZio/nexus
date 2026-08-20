@@ -104,7 +104,7 @@ func TestHerdrPluginCreate_KernelPreflight_RejectsBeforePrompt(t *testing.T) {
 	defer pr.Close()
 
 	ctx := context.Background()
-	ferr := herdrPluginCreate(ctx, pr, io.Discard, svc)
+	ferr := herdrPluginCreate(ctx, pr, io.Discard, svc, t.TempDir())
 	if ferr == nil {
 		t.Fatal("expected kernel-preflight error, got nil")
 	}

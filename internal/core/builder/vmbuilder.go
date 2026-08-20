@@ -140,8 +140,29 @@ func BuildInVM(
 			Name:         id.String(),
 			Project:      "__builder",
 			State:        domain.Created,
-			RemoveOnExit: true,           // marks this record as transient / ephemeral
-			CreatorPID:   os.Getpid(),    // used by service.List to reap stale orphans
+			RemoveOnExit: true,        // marks this record as transient / ephemeral
+			CreatorPID:   os.Getpid(), // used by service.List to reap stale orphans
+
+			// The builder VM needs wildcard egress: buildkitd resolves and
+			// pulls arbitrary base images and package indexes, so no finite
+			// allowlist can describe it.
+			//
+			// This MUST be stated on the record. In production the driver is
+			// the CLI's supervisorBuilderDriver, which boots the VM under a
+			// DETACHED supervisor process; that supervisor builds the
+			// perimeter by reading this record's Envelope back from the
+			// store. A zero Envelope means OpenEgress=false, and since
+			// D-PD-33 an empty AllowedHosts no longer implies allow-all — so
+			// the builder VM got a default-deny perimeter and every registry
+			// connection was refused. DNS still resolved, which made the
+			// failure read like a network fault rather than a policy one.
+			//
+			// This opens egress for the EPHEMERAL BUILDER VM only. It does
+			// not touch the egress policy of the sandbox being built, which
+			// is configured separately after this builder VM exits. The
+			// builder supervisor is spawned with no CredsFile, so no
+			// credential is ever seeded into the builder guest.
+			Envelope: domain.Envelope{OpenEgress: true},
 		}
 		if createErr := st.Create(ctx, transient); createErr != nil {
 			return "", fmt.Errorf("builder vm: persist transient record: %w", createErr)
@@ -193,6 +214,13 @@ func BuildInVM(
 	// Without a consumer, frames are dropped → DNS timeouts and no network.
 	// Start a wildcard-egress netstack perimeter (same code path as regular
 	// sandboxes, no MITM, passthrough dialer) so buildkitd can pull base images.
+	//
+	// NOTE: this in-process perimeter only runs for drivers that implement
+	// driver.NetworkHook. The production CLI driver does NOT — it delegates to
+	// a detached supervisor that owns the perimeter itself, driven by the
+	// transient record's Envelope set above. Do not read this block as the
+	// thing that gives the builder its egress; for `nexus3 sandbox create
+	// --file` it never executes.
 	var perimCancel context.CancelFunc
 	if hook, ok := drv.(driver.NetworkHook); ok {
 		fd, fdErr := hook.GuestNetworkFD(ctx, id)

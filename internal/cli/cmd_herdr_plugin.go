@@ -84,7 +84,11 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if err != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin create: " + err.Error(), Err: err}
 		}
-		return herdrPluginCreate(ctx, os.Stdin, out.w, svc)
+		storeRoot, err := store.DefaultRoot()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin create: resolve store: " + err.Error(), Err: err}
+		}
+		return herdrPluginCreate(ctx, os.Stdin, out.w, svc, storeRoot)
 
 	case "logs":
 		fmt.Fprintln(out.w, "log tailing not yet implemented")
@@ -388,17 +392,37 @@ func runHerdrCmd(bin string, args ...string) error {
 	return nil
 }
 
-// herdrPluginCreate interactively prompts for project/name and creates a sandbox.
-func herdrPluginCreate(ctx context.Context, r io.Reader, w io.Writer, svc *service.Service) error {
-	// Preflight: validate the kernel path before prompting. svc.Create is
-	// metadata-only (no boot), but the subsequent space-create will need the
-	// kernel; failing fast here gives an actionable error before the interactive
-	// prompts, rather than a cryptic boot failure on space-create.
+// herdrDefaultImage is the image offered by default in the herdr create
+// prompt. It matches the default used by the orca remote path.
+const herdrDefaultImage = "nexus3-agent-base"
+
+// herdrPluginCreate interactively prompts for an image and a handle, creates
+// and BOOTS a sandbox, then opens a herdr space for it.
+//
+// It deliberately shells out to "sandbox create --image" rather than calling
+// svc.Create directly. svc.Create is metadata-only: it mints a record in state
+// Created with an empty Envelope, so the sandbox has no image and can never
+// boot. An action titled "create a sandbox" that leaves a dead record behind —
+// with no VM, no space, and no pane — is indistinguishable from doing nothing,
+// which is exactly how it was reported. Delegating to the real verb also keeps
+// flag handling, exit codes and preflight in one place.
+func herdrPluginCreate(ctx context.Context, r io.Reader, w io.Writer, svc *service.Service, storeRoot string) error {
+	// Preflight: validate the kernel path before prompting, so a missing
+	// kernel is reported up front rather than after the interactive prompts.
 	if _, err := resolveKernelPath(); err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin create: " + err.Error(), Err: err}
 	}
 
 	scanner := bufio.NewScanner(r)
+
+	fmt.Fprintf(os.Stderr, "image [%s]: ", herdrDefaultImage)
+	if !scanner.Scan() {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin create: failed to read image"}
+	}
+	image := strings.TrimSpace(scanner.Text())
+	if image == "" {
+		image = herdrDefaultImage
+	}
 
 	fmt.Fprint(os.Stderr, "project: ")
 	if !scanner.Scan() {
@@ -418,12 +442,28 @@ func herdrPluginCreate(ctx context.Context, r io.Reader, w io.Writer, svc *servi
 		return &UsageError{Msg: "__herdr-plugin create: sandbox name required"}
 	}
 
-	sb, err := svc.Create(ctx, project, name, service.CreateOptions{})
-	if err != nil {
-		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin create: " + err.Error(), Err: err}
+	handle := project + "/" + name
+	if _, _, err := domain.ParseHandle(handle); err != nil {
+		fmt.Fprintf(w, "error: invalid sandbox name %q (must be project/name)\n", handle)
+		return &UsageError{Msg: "__herdr-plugin create: " + err.Error()}
 	}
-	fmt.Fprintf(w, "created: %s\n", sb.Handle())
-	return nil
+
+	exe, err := os.Executable()
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin create: resolve executable: " + err.Error(), Err: err}
+	}
+
+	fmt.Fprintf(w, "creating sandbox %q from image %s ...\n", handle, image)
+	createCmd := exec.CommandContext(ctx, exe, "sandbox", "create", handle, "--image", image)
+	createCmd.Stdout = w
+	createCmd.Stderr = w
+	if err := createCmd.Run(); err != nil {
+		fmt.Fprintf(w, "error: sandbox create failed: %v\n", err)
+		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin create: sandbox create: " + err.Error(), Err: err}
+	}
+
+	fmt.Fprintf(w, "opening herdr space for %s ...\n", handle)
+	return herdrPluginSpaceCreate(ctx, handle, w, svc, storeRoot)
 }
 
 // resolveDockerfilePath resolves a Containerfile path using docker-style context/dockerfile semantics.
