@@ -392,6 +392,67 @@ func runHerdrCmd(bin string, args ...string) error {
 	return nil
 }
 
+// herdrPrintImages lists cached images so the create prompt has visible
+// choices. Best-effort: a failure to list is not a reason to refuse to create,
+// so it degrades to a short notice and the prompt still runs.
+func herdrPrintImages(ctx context.Context, w io.Writer) {
+	isvc, err := newImageService()
+	if err != nil {
+		fmt.Fprintf(w, "(could not list images: %v)\n", err)
+		return
+	}
+	imgs, err := isvc.ListImages(ctx)
+	if err != nil {
+		fmt.Fprintf(w, "(could not list images: %v)\n", err)
+		return
+	}
+	rows := make([][]string, 0, len(imgs))
+	for _, img := range imgs {
+		r := toImageInfoJSON(img)
+		if r.Kind != "base" {
+			continue // builder artifacts are not bootable sandbox images
+		}
+		rows = append(rows, []string{r.Ref, r.Digest, r.CreatedAt.UTC().Format("2006-01-02 15:04")})
+	}
+	if len(rows) == 0 {
+		fmt.Fprintln(w, "no base images cached — build one with: nexus3 image build")
+		return
+	}
+	fmt.Fprintln(w, "available base images:")
+	fmt.Fprint(w, renderTable([]string{"REF", "DIGEST", "CREATED"}, rows))
+	fmt.Fprintln(w, "(paste a DIGEST if a REF appears more than once)")
+	fmt.Fprintln(w)
+}
+
+// herdrRepoFlags prompts for the GitHub repo the sandbox may reach and returns
+// the corresponding `sandbox create` flags.
+//
+// D-PD-36 refuses to create a sandbox that would carry an unbounded GitHub
+// credential: the caller must either scope it to one repo (--repo owner/name)
+// or decline the token (--no-builtin-gh). That guard is correct, but a herdr
+// pane that shells out without either flag simply dead-ends on it, which is
+// how both create actions failed. Asking makes the choice visible at the only
+// point where the answer is known.
+//
+// Declining is the default: a sandbox with no GitHub token is the safe
+// posture, and the operator can create a scoped one deliberately.
+func herdrRepoFlags(scanner *bufio.Scanner) ([]string, error) {
+	fmt.Fprint(os.Stderr, "github repo to allow (owner/name, blank for no GitHub token): ")
+	if !scanner.Scan() {
+		return nil, &CodedError{Code: ErrCodeInternalError, Msg: "failed to read github repo"}
+	}
+	repo := strings.TrimSpace(scanner.Text())
+	if repo == "" {
+		return []string{"--no-builtin-gh"}, nil
+	}
+	// Reject anything that is not owner/name before spending a build on it.
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil, &UsageError{Msg: fmt.Sprintf("invalid repo %q: expected owner/name", repo)}
+	}
+	return []string{"--repo", repo}, nil
+}
+
 // herdrDefaultImage is the image offered by default in the herdr create
 // prompt. It matches the default used by the orca remote path.
 const herdrDefaultImage = "nexus3-agent-base"
@@ -414,6 +475,13 @@ func herdrPluginCreate(ctx context.Context, r io.Reader, w io.Writer, svc *servi
 	}
 
 	scanner := bufio.NewScanner(r)
+
+	// Show what is actually available before asking. The default ref is not
+	// guaranteed to be unique: several builds can carry the same ref, and
+	// `sandbox create` then refuses it as ambiguous and asks for a digest.
+	// Printing the candidates here is the difference between a prompt the
+	// operator can answer and one they have to leave to go investigate.
+	herdrPrintImages(ctx, w)
 
 	fmt.Fprintf(os.Stderr, "image [%s]: ", herdrDefaultImage)
 	if !scanner.Scan() {
@@ -448,13 +516,20 @@ func herdrPluginCreate(ctx context.Context, r io.Reader, w io.Writer, svc *servi
 		return &UsageError{Msg: "__herdr-plugin create: " + err.Error()}
 	}
 
+	repoFlags, err := herdrRepoFlags(scanner)
+	if err != nil {
+		fmt.Fprintf(w, "error: %v\n", err)
+		return err
+	}
+
 	exe, err := os.Executable()
 	if err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin create: resolve executable: " + err.Error(), Err: err}
 	}
 
 	fmt.Fprintf(w, "creating sandbox %q from image %s ...\n", handle, image)
-	createCmd := exec.CommandContext(ctx, exe, "sandbox", "create", handle, "--image", image)
+	args := append([]string{"sandbox", "create", handle, "--image", image}, repoFlags...)
+	createCmd := exec.CommandContext(ctx, exe, args...)
 	createCmd.Stdout = w
 	createCmd.Stderr = w
 	if err := createCmd.Run(); err != nil {
@@ -613,12 +688,19 @@ func herdrPluginSpaceCreateFromFile(ctx context.Context, r io.Reader, w io.Write
 	// ── Create + boot sandbox via "nexus3 sandbox create <handle> --file <dir>" ──
 	// We pass contextDir (the dir) so cmd_sandbox.go sets workspaceDir = contextDir.
 	// The build engine then reads contextDir/.nexus/Containerfile.
+	repoFlags, repoErr := herdrRepoFlags(scanner)
+	if repoErr != nil {
+		fmt.Fprintf(w, "error: %v\n", repoErr)
+		return repoErr
+	}
+
 	fmt.Fprintf(w, "creating sandbox %q from %s ...\n", handle, dockerfile)
 	exe, err := os.Executable()
 	if err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create-from-file: resolve executable: " + err.Error(), Err: err}
 	}
-	createCmd := exec.CommandContext(ctx, exe, "sandbox", "create", handle, "--file", contextDir)
+	args := append([]string{"sandbox", "create", handle, "--file", contextDir}, repoFlags...)
+	createCmd := exec.CommandContext(ctx, exe, args...)
 	createCmd.Stdout = w
 	createCmd.Stderr = w
 	if err := createCmd.Run(); err != nil {

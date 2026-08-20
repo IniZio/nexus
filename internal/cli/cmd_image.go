@@ -140,9 +140,49 @@ func runImageList(ctx context.Context, _ []string, out *Output, svc *service.Ima
 	for i, img := range imgs {
 		rows[i] = toImageInfoJSON(img)
 	}
+
+	// Human mode gets a table. This command printed only "N image(s)" — the
+	// rows went into the JSON envelope and were never rendered, so an operator
+	// asking which images exist was told a number and nothing else. That
+	// matters most when `--image <ref>` is refused as ambiguous: the fix is to
+	// pass a digest, and this was the command that should have shown them.
+	// JSON output is unchanged; the table is additive and human-only.
+	if !out.IsJSON() && len(rows) > 0 {
+		table := make([][]string, 0, len(rows))
+		for _, r := range rows {
+			table = append(table, []string{
+				r.Ref,
+				r.Kind,
+				r.Digest,
+				humanBytes(r.Size),
+				r.CreatedAt.UTC().Format("2006-01-02 15:04"),
+			})
+		}
+		fmt.Fprint(out.w, renderTable(imageListHeaders, table))
+	}
+
 	out.EmitSuccess("image.list", imageListJSON{Images: rows},
 		fmt.Sprintf("%d image(s)", len(imgs)))
 	return nil
+}
+
+// imageListHeaders are the human-mode columns for `image ls`. DIGEST is shown
+// in full rather than abbreviated: its purpose here is to be copied verbatim
+// into `--image` when a ref is ambiguous, and a truncated digest cannot be.
+var imageListHeaders = []string{"REF", "KIND", "DIGEST", "SIZE", "CREATED"}
+
+// humanBytes renders a byte count in binary units.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 // ── prune ─────────────────────────────────────────────────────────────────────
