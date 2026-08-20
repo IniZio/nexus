@@ -133,3 +133,8 @@ running as the same user: state lives under the user's own state directory.
 
 **herdr shows behaviour you already fixed.** Rebuild nexus3 and re-run the
 plugin install, per the warning above.
+
+**`stop` says the sandbox is still running.** That is the honest answer, not a
+bug in the report: the detached supervisor did not finish within its timeout, so
+the record still reads `running`. Wait a moment and check `nexus3 ps`; if the
+state does not settle, `nexus3 reap` will show whether anything leaked.

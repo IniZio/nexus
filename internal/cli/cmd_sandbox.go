@@ -1667,6 +1667,32 @@ func ensureDetachedSupervisor(ctx context.Context, svc *service.Service, sb doma
 	return spawnPersistedSupervisor(ctx, svc, sb.ID, stateDir)
 }
 
+// supervisorExitTimeout bounds how long a lifecycle command waits for a
+// detached supervisor to finish exiting. Generous relative to the observed
+// ~3 s, because waiting slightly too long is a pause and not waiting long
+// enough is a wrong answer.
+const supervisorExitTimeout = 15 * time.Second
+
+// stopDetachedSupervisor asks the detached supervisor to shut down and WAITS
+// for it to exit.
+//
+// # Why the wait exists (TBD-PD-39)
+//
+// StopSupervisor returns as soon as the /stop HTTP response arrives; the
+// supervisor then tears the VM down and writes the stopped record
+// asynchronously. Without a wait, `nexus3 stop` returned while the record
+// still read `running` — and because runSandboxStop prints success
+// unconditionally, the command announced "stopped sandbox X" while emitting a
+// `sandbox.stopped` envelope carrying `"state":"running"`.
+//
+// That is a self-contradicting machine contract, not merely a slow UI: it
+// reproduced in 2 of 3 runs, and the state column it corrupts is the one the
+// herdr overlay and every scripted caller read.
+//
+// WaitForExit polls the supervisor pidfile and returns as soon as the process
+// is gone. A timeout is NOT treated as failure — the stop request was
+// delivered and the supervisor may simply be slow — but the caller re-reads
+// the record afterwards and reports what it actually finds.
 func stopDetachedSupervisor(ctx context.Context, svc *service.Service, sb domain.Sandbox) {
 	if sb.SupervisorSock == "" {
 		return
@@ -1674,8 +1700,18 @@ func stopDetachedSupervisor(ctx context.Context, svc *service.Service, sb domain
 	if err := supervisor.StopSupervisor(ctx, sb.SupervisorSock); err != nil {
 		slog.Warn("sandbox: StopSupervisor", "sock", sb.SupervisorSock, "err", err)
 	}
+	waitCtx, cancel := context.WithTimeout(ctx, supervisorExitTimeout)
+	defer cancel()
+	if err := supervisorWaitForExit(waitCtx, filepath.Dir(sb.SupervisorSock)); err != nil {
+		slog.Warn("sandbox: supervisor did not exit within timeout; state may lag",
+			"sock", sb.SupervisorSock, "timeout", supervisorExitTimeout, "err", err)
+	}
 	_ = svc.ClearSupervisor(ctx, sb.ID)
 }
+
+// supervisorWaitForExit is a seam so tests can drive the timeout branch
+// without spawning a real supervisor process.
+var supervisorWaitForExit = supervisor.WaitForExit
 
 // kernelPathFor is retained for callers outside runSandboxCreate that only need
 // a best-effort path (no preflight validation). New callers should prefer
@@ -1978,6 +2014,20 @@ func runSandboxStop(ctx context.Context, args []string, out *Output, svc *servic
 		fresh, getErr := svc.GetSandboxByID(ctx, sb.ID)
 		if getErr == nil {
 			sb = fresh
+		}
+		// Report what the record ACTUALLY says. Announcing "stopped" over a
+		// record that still reads `running` is how the sandbox.stopped
+		// envelope came to carry "state":"running" (TBD-PD-39). If the
+		// supervisor outran its timeout, say so rather than claim success —
+		// the operator's next command is almost always a list, and a
+		// contradiction there costs more than an honest warning here.
+		if sb.State != domain.Stopped {
+			return &CodedError{
+				Code: ErrCodeInternalError,
+				Msg: fmt.Sprintf(
+					"sandbox stop: supervisor for %s did not finish within %s; sandbox is still %s — re-run `nexus3 ps` in a moment, or `nexus3 reap` if it stays this way",
+					sb.Handle(), supervisorExitTimeout, sb.State),
+			}
 		}
 	} else {
 		stopped, stopErr := svc.Stop(ctx, args[0])
