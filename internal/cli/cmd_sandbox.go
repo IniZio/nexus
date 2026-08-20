@@ -328,6 +328,7 @@ func runSandbox(ctx context.Context, args []string, out *Output) error {
 // sandboxCreateFlags holds the result of parsing `sandbox create` arguments.
 type sandboxCreateFlags struct {
 	rm              bool
+	forceDiskSpace  bool
 	imageRef        string
 	rootfsPath      string
 	filePath        string
@@ -370,6 +371,11 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 		switch arg {
 		case "--rm":
 			f.rm = true
+		case "--force":
+			// Skip the disk-space preflight (TBD-PD-26). The projection
+			// measures the source artifact's allocated bytes, which over-counts
+			// on btrfs/xfs where cp --reflink clones extents for free.
+			f.forceDiskSpace = true
 		case "--image":
 			if i+1 >= len(args) {
 				return f, &UsageError{Msg: "sandbox create: --image requires an argument"}
@@ -1472,6 +1478,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		service.CreateAndBootOptions{
 			Labels:            f.labels,
 			RemoveOnExit:      f.rm,
+			ForceDiskSpace:    f.forceDiskSpace,
 			Image:             spec,
 			CacheRoot:         cacheRoot,
 			MemoryMiB:         f.memoryMiB,

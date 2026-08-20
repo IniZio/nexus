@@ -100,17 +100,13 @@ func estimatePerSandbox(diskDir string) int64 {
 // CheckDiskSpace verifies that diskDir has enough free space for count new
 // sandbox workspace disks.
 //
-// # NO PRODUCTION CALLER (TBD-PD-26)
+// # Estimate scope (read before trusting the number)
 //
-// As of the deletion of `nexus3 up` this function has zero non-test callers.
-// Its only caller was cmd_up.go, which projected workspace-disk bytes for a
-// command that allocated none — it wrote store records and never booted a VM.
-// The arithmetic below is correct and tested; it is simply not wired in.
-//
-// Do not read the green tests in preflight_test.go as evidence that any
-// nexus3 command performs a disk preflight today. None does. TBD-PD-26 is to
-// wire this into the workspace-disk materialisation path shared by create,
-// run and fork — the point where bytes are actually allocated.
+// The per-sandbox figure comes from estimatePerSandbox, which samples ONLY
+// existing *-workspace.ext4 files. It does NOT sample the root .raw disk,
+// which is usually the larger of the two. Callers that know exactly what they
+// are about to write should use ProjectCreateBytes / ProjectForkBytes with
+// CheckDiskSpaceBytes instead; this count-based form is the coarse fallback.
 //
 // # Sparse-disk contract
 //
@@ -133,14 +129,34 @@ func estimatePerSandbox(diskDir string) int64 {
 // message is actionable (names free/projected figures and the --force flag).
 func CheckDiskSpace(diskDir string, count int) (*DiskPreflightResult, error) {
 	per := estimatePerSandbox(diskDir)
-	projected := int64(count) * per
-
-	// Fall back to parent dir if diskDir does not yet exist.
-	checkDir := diskDir
-	if _, serr := os.Stat(diskDir); os.IsNotExist(serr) {
-		checkDir = filepath.Dir(diskDir)
+	detail := fmt.Sprintf("%d sandbox(es) × %.2f GiB", count, float64(per)/(1<<30))
+	r, err := CheckDiskSpaceBytes(diskDir, int64(count)*per, detail)
+	if r != nil {
+		r.Count = count
+		r.PerSandboxBytes = per
 	}
+	return r, err
+}
 
+// CheckDiskSpaceBytes is the byte-exact form of the preflight: the caller has
+// already computed how many allocated bytes it is about to write, so no
+// sampling heuristic is involved. detail is a short human phrase naming where
+// the projection came from (e.g. "root disk 4.44 GiB + workspace 0.12 GiB");
+// it is interpolated into the refusal message so the operator can see which
+// component dominates.
+//
+// # Reflink caveat
+//
+// The projection assumes the copy actually allocates. On btrfs and xfs,
+// cowExt4's `cp --reflink=auto` clones extents and the true cost is near zero,
+// so on those filesystems this check can refuse a create that would have
+// succeeded. That is the reason every caller exposes a --force override.
+//
+// Returns (*DiskPreflightResult, nil) when sufficient space is available.
+// Returns (result, ErrInsufficientDisk) when the check fails. Fails CLOSED:
+// if free space cannot be measured at all, the check refuses.
+func CheckDiskSpaceBytes(diskDir string, projected int64, detail string) (*DiskPreflightResult, error) {
+	checkDir := existingAncestor(diskDir)
 	free, err := DiskStatfs(checkDir)
 	if err != nil {
 		// Fail closed: cannot measure free space, refuse to proceed.
@@ -149,23 +165,110 @@ func CheckDiskSpace(diskDir string, count int) (*DiskPreflightResult, error) {
 	}
 
 	r := &DiskPreflightResult{
-		Count:           count,
-		PerSandboxBytes: per,
+		Count:           1,
+		PerSandboxBytes: projected,
 		ProjectedBytes:  projected,
 		FreeBytes:       free,
 	}
 
 	if projected > free {
 		return r, fmt.Errorf(
-			"%w: %d sandbox(es) × %.2f GiB = %.2f GiB projected, only %.2f GiB free on %s"+
-				"; remove unused sandboxes or use --force to override",
+			"%w: %s = %.2f GiB projected, only %.2f GiB free on %s"+
+				"; remove unused sandboxes (nexus3 reap --apply) or pass --force to override",
 			ErrInsufficientDisk,
-			count,
-			float64(per)/(1<<30),
+			detail,
 			float64(projected)/(1<<30),
 			float64(free)/(1<<30),
 			checkDir,
 		)
 	}
 	return r, nil
+}
+
+// existingAncestor walks up from path until it finds a directory that exists,
+// and returns that. statfs reports the containing filesystem, so any existing
+// ancestor answers the free-space question for a path that does not exist yet.
+//
+// Walking up ONE level is not enough. On a machine that has never run nexus3,
+// neither <root>/disks nor <root> itself exists, so a single-level fallback
+// statfs'd a missing directory, failed closed, and refused the create — the
+// preflight would have blocked every first-ever create on a fresh host. The
+// walk terminates at "/" or ".", both of which always exist.
+func existingAncestor(path string) string {
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return path
+		}
+		path = parent
+	}
+}
+
+// ProjectCreateBytes returns a conservative UPPER BOUND on the allocated bytes
+// one CreateAndBoot is about to write into diskDir, plus a human phrase naming
+// the components.
+//
+// The root figure is the source artifact's own allocated size. That is an
+// upper bound, not an exact cost: cowExt4 runs `cp --sparse=always`, which
+// punches holes for zero runs the source had allocated, so the copy can only
+// ever be smaller. Measured on a real host, a 6.00 GiB artifact produced a
+// 2.64 GiB copy — the projection over-charges by ~2.3x. It is still far better
+// than the sampled estimate it replaces (which ignored root disks entirely),
+// and it errs toward refusing rather than toward filling the disk, but it is
+// the reason --force exists on every caller.
+//
+// The workspace disk cannot be measured before capture runs, so it falls back
+// to estimatePerSandbox's sample of existing workspace disks.
+//
+// sourceArtifact is empty when --rootfs is used (the image is booted in place,
+// no copy is made). withWorkspace is false when no capture was requested.
+// Both empty means nothing will be allocated and the projection is zero.
+func ProjectCreateBytes(diskDir, sourceArtifact string, withWorkspace bool) (int64, string) {
+	var projected int64
+	var parts []string
+	if sourceArtifact != "" {
+		n := diskAllocatedBytes(sourceArtifact)
+		projected += n
+		parts = append(parts, fmt.Sprintf("root disk %.2f GiB", float64(n)/(1<<30)))
+	}
+	if withWorkspace {
+		n := estimatePerSandbox(diskDir)
+		projected += n
+		parts = append(parts, fmt.Sprintf("workspace ~%.2f GiB", float64(n)/(1<<30)))
+	}
+	return projected, strings.Join(parts, " + ")
+}
+
+// ProjectForkBytes returns the allocated bytes a fork of parent into count
+// children is about to write into diskDir, plus a human phrase.
+//
+// Fork copies every one of the parent's disks per child — the root .raw and
+// each extra disk (workspace, shadow disks) — so the projection is the
+// parent's measured on-disk footprint multiplied by the child count. Unlike
+// the create path there is no estimate here: every file being copied already
+// exists and is measured directly.
+//
+// A parent with no disks in diskDir (e.g. a --rootfs sandbox) projects zero.
+func ProjectForkBytes(diskDir, parentID string, count int) (int64, string) {
+	entries, err := os.ReadDir(diskDir)
+	if err != nil {
+		return 0, ""
+	}
+	var per int64
+	for _, e := range entries {
+		if !e.Type().IsRegular() || !strings.HasPrefix(e.Name(), parentID) {
+			continue
+		}
+		// Intent files are metadata, not copied by fork.
+		if strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		per += diskAllocatedBytes(filepath.Join(diskDir, e.Name()))
+	}
+	projected := int64(count) * per
+	return projected, fmt.Sprintf("%d child(ren) × %.2f GiB parent footprint",
+		count, float64(per)/(1<<30))
 }

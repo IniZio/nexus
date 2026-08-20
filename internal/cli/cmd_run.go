@@ -41,6 +41,7 @@ func runRun(ctx context.Context, args []string, out *Output) error {
 		vcpusFlag   = fs.Uint("vcpus", 0, "number of virtual CPUs (0 = driver default)")
 		nameFlag    = fs.String("name", "", "sandbox name (default: generated)")
 		projectFlag = fs.String("project", "ephemeral", "sandbox project")
+		forceFlag   = fs.Bool("force", false, "skip the disk-space preflight")
 	)
 	if err := fs.Parse(args); err != nil {
 		return &UsageError{Msg: "run: " + err.Error()}
@@ -116,6 +117,7 @@ func runRun(ctx context.Context, args []string, out *Output) error {
 		MemoryMiB:           memoryMiB,
 		VCPUs:               vcpus,
 		ReachabilityTimeout: 30 * time.Second,
+		ForceDiskSpace:      *forceFlag,
 	}
 
 	exitCode, runErr := service.RunEphemeral(

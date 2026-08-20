@@ -1032,7 +1032,60 @@ func (s *Service) Snapshot(ctx context.Context, ref string) (artifact.Snapshot, 
 // is unchanged, not transitioned). Instead, Fork validates that the parent can
 // be snapshotted (TriggerSnapshot must be legal) as a prerequisite, giving a
 // clear error when the parent is in Created, Paused, or Error state.
-func (s *Service) Fork(ctx context.Context, ref string, count int) ([]domain.Sandbox, error) {
+// ForkOption customises Fork and RestoreFromSnapshot. Variadic so that the
+// existing three-argument call sites keep compiling unchanged.
+type ForkOption func(*forkConfig)
+
+type forkConfig struct {
+	forceDiskSpace bool
+	diskPreflight  func(diskDir string, projected int64, detail string) (*DiskPreflightResult, error)
+}
+
+// ForkForceDiskSpace skips the disk-space preflight. Set by --force.
+func ForkForceDiskSpace() ForkOption {
+	return func(c *forkConfig) { c.forceDiskSpace = true }
+}
+
+// ForkDiskPreflight overrides the disk-space check. Tests use it to drive the
+// refusal path without filling a real filesystem.
+func ForkDiskPreflight(fn func(diskDir string, projected int64, detail string) (*DiskPreflightResult, error)) ForkOption {
+	return func(c *forkConfig) { c.diskPreflight = fn }
+}
+
+func newForkConfig(opts []ForkOption) forkConfig {
+	c := forkConfig{diskPreflight: CheckDiskSpaceBytes}
+	for _, o := range opts {
+		o(&c)
+	}
+	if c.diskPreflight == nil {
+		c.diskPreflight = CheckDiskSpaceBytes
+	}
+	return c
+}
+
+// checkForkDiskSpace refuses a fork that cannot fit. Fork copies EVERY one of
+// the parent's disks once per child — root .raw plus workspace and shadow
+// disks — so an N-way fork of a 5 GiB parent needs 5N GiB. This is the single
+// largest allocation nexus3 performs, and until TBD-PD-26 it was unguarded.
+//
+// Projection is measured, not estimated: every file being copied already
+// exists on disk. A parent with nothing in diskDir projects zero and the check
+// is skipped rather than charged a default.
+func checkForkDiskSpace(cfg forkConfig, diskDir, parentID string, count int, what string) error {
+	if cfg.forceDiskSpace {
+		return nil
+	}
+	projected, detail := ProjectForkBytes(diskDir, parentID, count)
+	if projected <= 0 {
+		return nil
+	}
+	if _, err := cfg.diskPreflight(diskDir, projected, detail); err != nil {
+		return fmt.Errorf("service: %s: %w", what, err)
+	}
+	return nil
+}
+
+func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkOption) ([]domain.Sandbox, error) {
 	if count < 1 {
 		return nil, fmt.Errorf("service: fork: count must be >= 1, got %d", count)
 	}
@@ -1155,6 +1208,11 @@ func (s *Service) Fork(ctx context.Context, ref string, count int) ([]domain.San
 			return nil, fmt.Errorf("service: fork %s: resolve disk dir: %w", parent.ID, err)
 		}
 	}
+	if err := checkForkDiskSpace(newForkConfig(opts), diskDir, parent.ID.String(), count,
+		fmt.Sprintf("fork %s", parent.ID)); err != nil {
+		return nil, err
+	}
+
 	childLeases := make(map[domain.SandboxID]*createIntentLease, count)
 	// Drain leases still held when Fork returns. On the success path each lease
 	// is released the moment its record commits and removed from the map, so
@@ -1304,7 +1362,7 @@ func (s *Service) SnapshotRemove(ctx context.Context, id artifact.SnapshotID) er
 // before any child is created — a bad or torn snapshot yields a clean error
 // with zero children created (S2-AC2; no new error state is produced, no new
 // lifecycle edge is traversed).
-func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.SnapshotID, count int) ([]domain.Sandbox, error) {
+func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.SnapshotID, count int, opts ...ForkOption) ([]domain.Sandbox, error) {
 	if count < 1 {
 		return nil, fmt.Errorf("service: restore: count must be >= 1, got %d", count)
 	}
@@ -1335,6 +1393,25 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 	childIDs := make([]domain.SandboxID, count)
 	for i := range childIDs {
 		childIDs[i] = domain.NewSandboxID()
+	}
+
+	// Disk-space preflight (TBD-PD-26). Restore copies the origin sandbox's
+	// disks once per child exactly as Fork does, so it is guarded identically.
+	// diskDir is resolved here rather than reused from Fork because restore has
+	// no earlier need for it.
+	{
+		restoreDiskDir := s.diskDir
+		if restoreDiskDir == "" {
+			d, dErr := defaultDiskDir()
+			if dErr != nil {
+				return nil, fmt.Errorf("service: restore %s: resolve disk dir: %w", snapID, dErr)
+			}
+			restoreDiskDir = d
+		}
+		if err := checkForkDiskSpace(newForkConfig(opts), restoreDiskDir, snap.SandboxID.String(), count,
+			fmt.Sprintf("restore %s", snapID)); err != nil {
+			return nil, err
+		}
 	}
 
 	// Spawn all children from the retained snapshot in one driver call.

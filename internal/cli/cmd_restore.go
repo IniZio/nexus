@@ -29,6 +29,7 @@ func runRestore(ctx context.Context, args []string, out *Output) error {
 // production constructor is used.
 func runRestoreWith(ctx context.Context, args []string, out *Output, svcs ...*service.Service) error {
 	count := 1
+	force := false
 	var positionals []string
 
 	i := 0
@@ -52,6 +53,11 @@ func runRestoreWith(ctx context.Context, args []string, out *Output, svcs ...*se
 				return &UsageError{Msg: fmt.Sprintf("restore: --count must be a positive integer, got %q", val)}
 			}
 			count = n
+		case arg == "--force":
+			// Skip the disk-space preflight. See service.ForkForceDiskSpace:
+			// the projection charges the full parent footprint per child, which
+			// over-counts on reflink filesystems where the copy is near-free.
+			force = true
 		case len(arg) > 1 && arg[0] == '-':
 			return &UsageError{Msg: fmt.Sprintf("restore: unknown flag %q", arg)}
 		default:
@@ -61,7 +67,7 @@ func runRestoreWith(ctx context.Context, args []string, out *Output, svcs ...*se
 	}
 
 	if len(positionals) != 1 {
-		return &UsageError{Msg: "restore: usage: restore <snapshot-id> [--count N]"}
+		return &UsageError{Msg: "restore: usage: restore <snapshot-id> [--count N] [--force]"}
 	}
 	snapID := artifact.SnapshotID(positionals[0])
 
@@ -76,7 +82,11 @@ func runRestoreWith(ctx context.Context, args []string, out *Output, svcs ...*se
 		}
 	}
 
-	children, err := svc.RestoreFromSnapshot(ctx, snapID, count)
+	var forkOpts []service.ForkOption
+	if force {
+		forkOpts = append(forkOpts, service.ForkForceDiskSpace())
+	}
+	children, err := svc.RestoreFromSnapshot(ctx, snapID, count, forkOpts...)
 	if err != nil {
 		return errSandbox("restore", err)
 	}

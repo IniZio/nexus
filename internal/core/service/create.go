@@ -110,6 +110,19 @@ type CreateAndBootOptions struct {
 	// RemoveOnExit records the --rm intent durably at creation time.
 	RemoveOnExit bool
 
+	// ForceDiskSpace skips the disk-space preflight (step 3.55). Set by the
+	// --force flag. The preflight projects allocated bytes and can refuse a
+	// create that would in fact succeed — most notably on btrfs/xfs, where
+	// cowExt4's `cp --reflink=auto` clones extents at near-zero cost while the
+	// projection still charges the full parent size. --force is the escape
+	// hatch for that and for any other case where the operator knows better.
+	ForceDiskSpace bool
+
+	// DiskPreflight is the injectable disk-space check used at step 3.55.
+	// Nil means CheckDiskSpaceBytes (production). Tests override it to drive
+	// the refusal path without filling a real filesystem.
+	DiskPreflight func(diskDir string, projected int64, detail string) (*DiskPreflightResult, error)
+
 	// Image describes how to resolve the bootable ext4 artifact.
 	Image ImageSpec
 
@@ -410,6 +423,37 @@ func CreateAndBoot(
 	}
 	if needsWorkspace {
 		workspaceDiskPath = filepath.Join(diskDir, id.String()+"-workspace.ext4")
+	}
+
+	// 3.55 Disk-space preflight
+	//
+	// Runs BEFORE the create intent and before any byte is written, so a host
+	// with no room refuses immediately with an actionable message instead of
+	// failing partway through a multi-gigabyte cp with whatever errno the
+	// filesystem produces (TBD-PD-26, M3-AC2).
+	//
+	// The projection is a conservative upper bound: the root figure is the
+	// source artifact's allocated size, which cowExt4's `cp --sparse=always`
+	// can only shrink (measured on a real host: 6.00 GiB artifact -> 2.64 GiB
+	// copy). The workspace capture cannot be measured before it runs and falls
+	// back to a sample of existing workspace disks. When neither applies
+	// (--rootfs with no workspace) the projection is zero and the check is
+	// skipped entirely rather than charged against a default estimate.
+	if !opts.ForceDiskSpace {
+		src := ""
+		if needsDisk {
+			src = ext4Path
+		}
+		if projected, detail := ProjectCreateBytes(diskDir, src, needsWorkspace); projected > 0 {
+			check := opts.DiskPreflight
+			if check == nil {
+				check = CheckDiskSpaceBytes
+			}
+			if _, dErr := check(diskDir, projected, detail); dErr != nil {
+				return domain.Sandbox{}, fmt.Errorf(
+					"service: create-and-boot %s/%s: %w", project, name, dErr)
+			}
+		}
 	}
 
 	// 3.6 Write create intent

@@ -8,7 +8,7 @@
   "cli/snapshot-fork-restore.md": 4,
   "cli/volume-commands.md": 2,
   "index.md": 5,
-  "operations/resource-lifecycle.md": 9,
+  "operations/resource-lifecycle.md": 8,
   "quickstart.md": 3,
   "recipes/building-images.md": 4,
   "recipes/docker-in-sandbox.md": 9,

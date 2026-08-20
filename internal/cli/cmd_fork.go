@@ -28,6 +28,7 @@ func runFork(ctx context.Context, args []string, out *Output) error {
 // production constructor is used.
 func runForkWith(ctx context.Context, args []string, out *Output, svcs ...*service.Service) error {
 	count := 1
+	force := false
 	var positionals []string
 
 	i := 0
@@ -51,6 +52,11 @@ func runForkWith(ctx context.Context, args []string, out *Output, svcs ...*servi
 				return &UsageError{Msg: fmt.Sprintf("fork: --count must be a positive integer, got %q", val)}
 			}
 			count = n
+		case arg == "--force":
+			// Skip the disk-space preflight. See service.ForkForceDiskSpace:
+			// the projection charges the full parent footprint per child, which
+			// over-counts on reflink filesystems where the copy is near-free.
+			force = true
 		case len(arg) > 1 && arg[0] == '-':
 			return &UsageError{Msg: fmt.Sprintf("fork: unknown flag %q", arg)}
 		default:
@@ -60,7 +66,7 @@ func runForkWith(ctx context.Context, args []string, out *Output, svcs ...*servi
 	}
 
 	if len(positionals) != 1 {
-		return &UsageError{Msg: "fork: usage: fork <ref> [--count N]"}
+		return &UsageError{Msg: "fork: usage: fork <ref> [--count N] [--force]"}
 	}
 	ref := positionals[0]
 
@@ -75,7 +81,11 @@ func runForkWith(ctx context.Context, args []string, out *Output, svcs ...*servi
 		}
 	}
 
-	children, err := svc.Fork(ctx, ref, count)
+	var forkOpts []service.ForkOption
+	if force {
+		forkOpts = append(forkOpts, service.ForkForceDiskSpace())
+	}
+	children, err := svc.Fork(ctx, ref, count, forkOpts...)
 	if err != nil {
 		return errSandbox("fork", err)
 	}

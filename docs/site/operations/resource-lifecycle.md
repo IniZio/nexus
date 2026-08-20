@@ -247,21 +247,34 @@ The recommended parallel-dev approach avoids this residual entirely: use `--moun
 
 **Scoped exception**: netns, TAP, and bridge are in-kernel and auto-reclaimed when the Cloud Hypervisor process group dies even under SIGKILL. For those three, the kernel is the handle — `recover` does not need to track them explicitly.
 
-## Disk preflight <Badge type="danger" text="not built" />
+## Disk preflight <Badge type="tip" text="built" />
 
-**No nexus3 command runs a disk-space preflight.** `service.CheckDiskSpace` (`internal/core/service/preflight.go:122`) has **zero** non-test callers. Its only caller was `nexus3 up`, deleted 2026-08-20 — and that command allocated no disk at all, so the preflight guarded bytes it never wrote. `nexus3 create` (`cmd_sandbox.go:812`), `nexus3 run` (`cmd_run.go:58`) and `nexus3 orca` (`cmd_orca.go:523`) resolve the kernel path only.
+Every sandbox-creating path refuses up front when the projected allocation exceeds host free space. There are two call sites, both in the service layer so the CLI, MCP and Orca surfaces are covered by the same code:
 
-Creating a sandbox on a nearly-full host therefore fails at `mke2fs`/write time with whatever error the filesystem produces, not with an actionable up-front refusal.
+| Path | Where | What is projected |
+|---|---|---|
+| `create`, `run`, `orca`, MCP `sandbox_create` | `CreateAndBoot` step 3.55 | source artifact's allocated size, plus a workspace-disk estimate when `--workspace` is given |
+| `fork`, `restore` | `Service.Fork` / `Service.RestoreFromSnapshot` | parent's whole measured footprint × child count |
 
-The arithmetic below is implemented and unit-tested; it is simply not wired to any entry point. Wiring it into the workspace-disk materialisation path shared by create, run and fork is TBD-PD-26. As written, `CheckDiskSpace`:
+The check runs **before** the create intent is written and before any byte is copied, so a refusal leaves nothing behind to reap.
 
-- Measures existing sandbox disks (raw and shadow) using `stat(2).Blocks * 512` (allocated bytes, not apparent size — sparse ext4 images have inflated apparent sizes).
-- Projects `count × per-sandbox-estimate` against the host's available bytes (`Bavail × Bsize` from `statfs(2)`).
-- Returns `ErrInsufficientDisk` if the projection exceeds available space.
+All measurement uses `stat(2).Blocks * 512` (allocated bytes), never apparent size — sparse ext4 images report apparent sizes many times their real footprint.
 
-The estimate covers nexus3-managed disks only. Named volume backing files are outside the estimate — volume sizes are set explicitly at creation time and are the user's responsibility.
+### The projection is an upper bound, not a cost
 
-The per-sandbox estimate defaults to ~4.57 GiB (measured from a real pilot sandbox) when no existing sandbox disks are present to sample.
+The create-path figure is the **source artifact's** allocated size. `cowExt4` runs `cp --sparse=always`, which punches holes for zero runs that the source had allocated, so the copy can only come out smaller. Measured on a real host: a **6.00 GiB artifact produced a 2.64 GiB copy** — the projection over-charges by roughly 2.3×.
+
+It errs toward refusing rather than toward filling the disk, which is the right direction, but it does mean a create can be refused that would have fit. On btrfs and xfs the gap is wider still, because `cp --reflink=auto` clones extents at near-zero cost while the projection charges full price.
+
+`--force` skips the check on `sandbox create`, `run`, `fork` and `restore`. It exists for exactly these cases.
+
+Fork is the opposite: every file it copies already exists, so its projection is measured rather than estimated. Fork is also the largest allocator nexus3 has — an N-way fork of a 5 GiB parent needs 5N GiB — and it was entirely unguarded until this landed.
+
+### What is not covered
+
+Only the workspace capture is estimated rather than measured, because it cannot be sized before it runs; it falls back to the mean of existing `*-workspace.ext4` files, or ~4.57 GiB when there are none to sample.
+
+Named volume backing files are outside the projection entirely — volume sizes are set explicitly at creation time and are the user's responsibility.
 
 ## Kernel preflight
 
