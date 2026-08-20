@@ -31,10 +31,11 @@ type reapEntryJSON struct {
 
 // reapReportJSON is the data payload for the reap.report event.
 type reapReportJSON struct {
-	Entries          []reapEntryJSON `json:"entries"`
-	ReclaimableBytes int64           `json:"reclaimable_bytes"`
-	Deleted          []string        `json:"deleted"`
-	Apply            bool            `json:"apply"`
+	Entries          []reapEntryJSON   `json:"entries"`
+	ReclaimableBytes int64             `json:"reclaimable_bytes"`
+	Deleted          []string          `json:"deleted"`
+	Failed           []reapFailureJSON `json:"failed"`
+	Apply            bool              `json:"apply"`
 }
 
 // ── command ───────────────────────────────────────────────────────────────────
@@ -118,15 +119,27 @@ func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex
 	if deleted == nil {
 		deleted = []string{}
 	}
+	failed := make([]reapFailureJSON, 0, len(report.Failed))
+	for _, f := range report.Failed {
+		failed = append(failed, reapFailureJSON{
+			Path:   f.Path,
+			Kind:   string(f.Kind),
+			Reason: f.Reason,
+		})
+	}
 	data := reapReportJSON{
 		Entries:          entries,
 		ReclaimableBytes: report.ReclaimableBytes,
 		Deleted:          deleted,
+		Failed:           failed,
 		Apply:            apply,
 	}
 
 	if out.IsJSON() {
 		out.EmitSuccess("reap.report", data, "")
+		if len(report.Failed) > 0 {
+			return &ExitCodeError{Code: 1}
+		}
 		return nil
 	}
 
@@ -167,7 +180,27 @@ func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex
 		fmt.Fprintf(out.w, "\nRun with --apply to delete.\n")
 	}
 
+	// Failures are printed AFTER the deleted list and to stderr, so a caller
+	// piping stdout still sees them, and exit 1 so a script cannot read a
+	// partial reclamation as a complete one (TBD-PD-37).
+	if len(report.Failed) > 0 {
+		fmt.Fprintf(out.Stderr(), "\nFAILED to reclaim %d of %d orphan(s):\n",
+			len(report.Failed), orphans)
+		for _, f := range report.Failed {
+			fmt.Fprintf(out.Stderr(), "  %s\n          %s\n", f.Path, f.Reason)
+		}
+		fmt.Fprintf(out.Stderr(), "Re-run `nexus3 reap --apply`; if a path fails twice, inspect it by hand.\n")
+		return &ExitCodeError{Code: 1}
+	}
+
 	return nil
+}
+
+// reapFailureJSON is the machine-readable form of service.ReapFailure.
+type reapFailureJSON struct {
+	Path   string `json:"path"`
+	Kind   string `json:"kind"`
+	Reason string `json:"reason"`
 }
 
 // formatBytes formats allocated bytes as a human-readable string.

@@ -39,11 +39,29 @@ type ReapEntry struct {
 	AllocatedBytes int64 // syscall.Stat_t.Blocks * 512; 0 for dirs
 }
 
+// ReapFailure records an orphan that --apply tried and failed to reclaim.
+//
+// Before TBD-PD-37 these were dropped on the floor: the resource simply did
+// not appear in Deleted, with no message, no report line and no non-zero exit,
+// which made `--apply` unverifiable from its own output. A caller could not
+// tell "129 orphans, all deleted" from "129 orphans, 128 deleted".
+type ReapFailure struct {
+	Path   string
+	Kind   ResourceKind
+	Reason string
+}
+
 // ReapReport is the result of a Reap call.
 type ReapReport struct {
 	Entries          []ReapEntry
 	ReclaimableBytes int64    // sum of orphan AllocatedBytes
 	Deleted          []string // paths removed (non-empty only when apply=true)
+
+	// Failed lists orphans that --apply could not reclaim. Two things land
+	// here: a delete that returned an error, and a delete that returned
+	// success while the path was still present on the verify pass. The second
+	// case exists because a reported success is not evidence of a removal.
+	Failed []ReapFailure
 }
 
 // ReapOptions provides injectable overrides for Reap. All fields are optional;
@@ -53,6 +71,16 @@ type ReapOptions struct {
 	// ProcDir overrides the directory scanned for process cmdlines.
 	// Empty → "/proc". In tests pass a temp dir containing synthetic PID entries.
 	ProcDir string
+
+	// VerifyStat overrides the existence probe used by the post-apply verify
+	// pass. Empty → os.Lstat.
+	//
+	// It exists because the survivor observed on 2026-08-19 — a delete that
+	// reported success while the file remained — has no known cause and so
+	// cannot be reproduced by arranging real files. This seam lets a test
+	// drive the DETECTION end-to-end through Reap even though the mechanism
+	// that produces a survivor is unexplained.
+	VerifyStat func(path string) error
 }
 
 // Reap enumerates host resources via idx, classifies each one against the
@@ -199,17 +227,69 @@ func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, o
 		if entry.Status == ReapStatusOrphan {
 			report.ReclaimableBytes += entry.AllocatedBytes
 			if apply {
-				if err := deleteResource(res); err == nil {
+				switch err := deleteResourceFn(res); {
+				case err == nil:
 					report.Deleted = append(report.Deleted, res.Path)
+				case os.IsNotExist(err):
+					// Already gone — another reaper or a concurrent Remove got
+					// there first. Reclamation is idempotent, so this is a
+					// success, not a failure.
+					report.Deleted = append(report.Deleted, res.Path)
+				default:
+					report.Failed = append(report.Failed, ReapFailure{
+						Path:   res.Path,
+						Kind:   res.Kind,
+						Reason: err.Error(),
+					})
 				}
-				// On deletion error we silently skip adding to Deleted; the
-				// entry still appears in the report as orphan.
 			}
 		}
 		report.Entries = append(report.Entries, entry)
 	}
 
+	if apply {
+		statFn := opt.VerifyStat
+		if statFn == nil {
+			statFn = func(path string) error {
+				_, err := os.Lstat(path)
+				return err
+			}
+		}
+		verifyDeletions(report, statFn)
+	}
+
 	return report, nil
+}
+
+// verifyDeletions re-stats every path Reap believes it deleted and moves any
+// survivor into Failed.
+//
+// This exists because a successful os.Remove is not by itself evidence that
+// the resource is gone. During the authorised cleanup on 2026-08-19 an --apply
+// pass reported "Deleted 129 resource(s)" and a stub file survived it; a second
+// pass removed the same file. Whatever the cause, the report asserted a
+// reclamation that had not happened, and nothing in the output contradicted it.
+// A verify pass makes that class of discrepancy visible at the moment it
+// occurs instead of on the next run.
+//
+// Survivors are moved out of Deleted rather than merely added to Failed, so
+// the two lists stay mutually exclusive and len(Deleted) means what it says.
+func verifyDeletions(report *ReapReport, stat func(string) error) {
+	if len(report.Deleted) == 0 {
+		return
+	}
+	kept := report.Deleted[:0]
+	for _, path := range report.Deleted {
+		if err := stat(path); err == nil {
+			report.Failed = append(report.Failed, ReapFailure{
+				Path:   path,
+				Reason: "delete reported success but the path still exists",
+			})
+			continue
+		}
+		kept = append(kept, path)
+	}
+	report.Deleted = kept
 }
 
 // classifyShadowDisk classifies a KindDiskShadow resource using handle-based
@@ -379,6 +459,13 @@ func socketPathForID(res HostResource, socketDir string) string {
 	}
 	return filepath.Join(socketDir, res.OwnerID.String()+".sock")
 }
+
+// deleteResourceFn is the indirection point for removal. Production always
+// uses deleteResource; same-package tests replace it to drive branches that
+// cannot be produced by arranging real files — notably the ENOENT branch,
+// which requires the path to vanish between enumeration and deletion.
+// Mirrors the DiskStatfs / intentFileSyncer seams elsewhere in this package.
+var deleteResourceFn = deleteResource
 
 // deleteResource removes a resource from disk.
 func deleteResource(res HostResource) error {

@@ -164,6 +164,21 @@ nexus3 reap --apply   # delete orphans
 
 `Reap` (`internal/core/service/reap.go`) enumerates resources by calling `ResourceIndex.List()`, which **scans the filesystem directly and never reads the record store**. It then loads all store records and classifies each filesystem resource independently.
 
+### Failed reclamations are reported <Badge type="tip" text="built" />
+
+`--apply` reports every orphan it could not reclaim, on stderr and in the JSON `failed[]` array, and **exits non-zero**. Two cases land there:
+
+- the delete returned an error (permissions, a non-empty directory, a busy mount), and
+- the delete returned success while the path was still present on a verify pass.
+
+The second case exists because a reported success is not evidence of a removal. On 2026-08-19 an `--apply` pass printed `Deleted 129 resource(s)` while one file survived it; a second pass removed the same file, and nothing in the first pass's output contradicted the claim. `Reap` now re-stats every path it believes it deleted and moves survivors out of `deleted[]` into `failed[]`, so the count never overstates the work.
+
+A path that vanished between the scan and the delete is **not** a failure — another reaper or a concurrent `sandbox rm` finished the job, and reclamation is idempotent.
+
+::: warning The 2026-08-19 survivor has no known cause
+Enumeration was cleared as the culprit — a probe enumerated 5, 129, 130 and 200 disks correctly. The verify pass makes that class of discrepancy visible at the moment it happens rather than on the next run; it does not explain it. If a path lands in `failed[]` with "delete reported success but the path still exists", that is new evidence worth capturing.
+:::
+
 ### In-flight creates (intent lease)
 
 A create materializes its disk **before** it commits the store record — a multi-second copy for a multi-GiB image. During that window the disk has no record, and no process carries the ULID in its command line (the creator is the `nexus3` CLI itself; the VMM is not launched until afterwards), so the `/proc` gate below cannot see it. The reaper would classify a live create's disk as an orphan and delete it.
