@@ -77,6 +77,42 @@ For higher throughput, the herdr plugin's `launch` path (below) boots the sandbo
 
 ---
 
+## Choosing an agent: `--agent` <Badge type="tip" text="built" />
+
+`nexus3 create --agent <name>` records which agent profile a sandbox is for. The profile is not a label — it decides the credential seed, the egress allowlist, and the guest environment the sandbox gets:
+
+```sh
+nexus3 create myproject/task-42 --agent claude-code --image nexus3-agent-base
+```
+
+The chosen name is persisted on the record and shown in the `AGENT` column of `nexus3 ps` and the herdr overlay, so a sandbox never disagrees with itself about which agent is running inside it.
+
+### Registered profiles
+
+| Name | Placeholder env var | Reachable hosts |
+|---|---|---|
+| `claude-code` (default) | `CLAUDE_CODE_OAUTH_TOKEN` | `api.anthropic.com`, `platform.claude.com` |
+
+::: warning One profile is registered today
+`claude-code` is the only entry in the registry, and it is the default when `--agent` is omitted. The mechanism is deliberately declarative — adding an agent means adding one `AgentProfile` value, and no call site branches on the name — but until a second profile exists, `--agent` selects from a set of one.
+
+An unregistered name is **refused**, never silently defaulted: a typo must not be answered with the wrong credential seed.
+:::
+
+### What a profile carries
+
+| Field | Effect |
+|---|---|
+| `PlaceholderEnvVar` | the variable the guest sees; holds a placeholder, never a real token |
+| `EgressHosts` | the entire allowlist for that sandbox — everything else is denied |
+| `APIKeyEnvVar` | the variable the MITM proxy swaps host-side, on the wire |
+| `CACertEnvVars` | how the agent is told to trust the MITM CA (`NODE_EXTRA_CA_CERTS` for Node-based agents) |
+| `GuestEnv` | extra guest environment, e.g. disabling telemetry that would retry against a default-deny perimeter |
+
+The guest never holds a real credential. See [egress and perimeter](/security/egress-and-perimeter).
+
+---
+
 ## herdr plugin launch path
 
 `__herdr-plugin` is the private CLI shim between nexus3 and the herdr workspace plugin. The `launch` subcommand is the primary path for booting an agent sandbox from an orchestrator:
