@@ -57,6 +57,18 @@ placement = "tab"
 command = ["sh", "bin/pane.sh", "launch"]
 
 [[actions]]
+id = "workspaces"
+title = "nexus3: list sandboxes"
+contexts = ["workspace"]
+command = ["sh", "bin/open-pane.sh", "workspaces", "overlay"]
+
+[[actions]]
+id = "create"
+title = "nexus3: create a sandbox"
+contexts = ["workspace"]
+command = ["sh", "bin/open-pane.sh", "create", "tab"]
+
+[[actions]]
 id = "attach"
 title = "nexus3: attach to a workspace"
 contexts = ["workspace"]

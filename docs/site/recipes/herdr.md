@@ -29,7 +29,16 @@ behaviour": the plugin directory is current and the binary it execs is not.
 
 ## What the overlay shows <Badge type="tip" text="built" />
 
-The `nexus3 workspaces` pane lists every sandbox, however it was created:
+Open it with the **`nexus3: list sandboxes`** action. herdr has no built-in
+action menu key, so actions are invoked through whatever you have bound to a
+palette — with the `jt.command-palette` plugin that is `prefix+p` — or from a
+terminal:
+
+```sh
+herdr plugin action invoke workspaces --plugin nexus3
+```
+
+The overlay lists every sandbox, however it was created:
 
 ```
 WORKSPACE     STATE    AGENT        MOUNTS              SPACE  ID
@@ -58,13 +67,15 @@ These appear in herdr's action list for the focused workspace:
 
 | Action | Effect |
 |---|---|
+| `nexus3: list sandboxes` | open the listing overlay described above |
+| `nexus3: create a sandbox` | prompt for image and handle, then create |
 | `nexus3: attach to a workspace` | reattach to an existing guest session |
 | `nexus3: create sandbox space (from local Containerfile)` | build, boot, and open a space in one step |
 | `nexus3: open guest pane` | another guest shell in the current space |
 | `nexus3: pause this sandbox` | pause the bound sandbox — frees CPU, keeps memory state |
 | `nexus3: resume this sandbox` | resume it |
 | `nexus3: remove this sandbox and close the space` | remove the sandbox, close the workspace, drop the binding |
-| `nexus3: workspace logs` | tail the sandbox's logs |
+| `nexus3: workspace logs` | <Badge type="danger" text="not built" /> prints a not-implemented notice |
 | `nexus3: doctor` | substrate and plugin diagnostics |
 
 Every action resolves the sandbox from the focused herdr workspace, so none of
@@ -109,7 +120,7 @@ nexus3 create demo/api --image nexus3-agent-base --mount "$PWD:/work"
 nexus3 ps
 ```
 
-Then, in herdr: open the `nexus3 workspaces` overlay, find `demo/api`, and use
+Then, in herdr: run the `nexus3: list sandboxes` action, find `demo/api`, and use
 `nexus3: open guest pane`. The pane opens a login shell already in `/work`,
 because the shell's working directory is derived from the sandbox's first live
 mount.
