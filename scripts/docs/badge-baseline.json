@@ -1,10 +1,10 @@
 {
-  "ai-agents.md": 4,
+  "ai-agents.md": 3,
   "cli/auth-mcp-reap.md": 3,
   "cli/configuration.md": 2,
   "cli/exec-ssh-forward.md": 2,
   "cli/index.md": 11,
-  "cli/sandbox-commands.md": 6,
+  "cli/sandbox-commands.md": 5,
   "cli/snapshot-fork-restore.md": 4,
   "cli/volume-commands.md": 2,
   "index.md": 5,

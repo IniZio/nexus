@@ -71,7 +71,7 @@ nexus3 exec myproject/task-42 -- /usr/local/bin/claude --task "fix the flaky tes
 nexus3 rm myproject/task-42
 ```
 
-<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+<Badge type="tip" text="built" /> — the flat verbs shown above are the real CLI surface; `nexus3 sandbox create` remains an equivalent alias. See [CLI sandbox commands](/cli/sandbox-commands). <!-- cli-spelling-exempt -->
 
 For higher throughput, the herdr plugin's `launch` path (below) boots the sandbox and execs the agent in a single call, and wires the placeholder credential seed automatically.
 

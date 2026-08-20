@@ -9,20 +9,20 @@ description: "Reference for nexus3 lifecycle verbs: create, ps, rm, start, stop,
 
 A sandbox is a Cloud Hypervisor microVM identified by `project/name`. Every lifecycle operation goes through `internal/core/service`; the CLI verbs here are thin wrappers.
 
-::: warning Implementation spelling <Badge type="warning" text="partial" />
-Today's implementation spells the lifecycle verbs as `nexus3 sandbox <verb>`. The target spells them flat:
+::: tip Both spellings work <Badge type="tip" text="built" />
+The lifecycle verbs are spelled flat — `nexus3 create`, `nexus3 ps`, and so on. The grouped spelling is kept as an equivalent alias for existing scripts, the MCP tools and the herdr plugin:
 
-| Target | Implementation today |
+| Flat (preferred) | Grouped (equivalent) |
 |---|---|
 | `nexus3 create` | `nexus3 sandbox create` |
-| `nexus3 ps` | `nexus3 sandbox list` |
+| `nexus3 ps` (or `nexus3 ls`) | `nexus3 sandbox list` |
 | `nexus3 rm` | `nexus3 sandbox rm` |
 | `nexus3 start` | `nexus3 sandbox start` |
 | `nexus3 stop` | `nexus3 sandbox stop` |
 | `nexus3 pause` | `nexus3 sandbox pause` |
 | `nexus3 resume` | `nexus3 sandbox resume` |
 
-The rest of this page uses the target spelling throughout.
+They are not two implementations: each flat verb delegates to the same code path, so flags, exit codes and JSON envelopes are identical either way.
 :::
 
 ## nexus3 create

@@ -68,7 +68,7 @@ func TestHerdrWorkspaceAgent_DashWhenNoAgent(t *testing.T) {
 func TestHerdrWorkspacesRendering_ColumnsAlign(t *testing.T) {
 	// Render through the real helper with deliberately uneven widths, then
 	// assert the header offsets are preserved.
-	out := renderWorkspaceTable([][6]string{
+	out := renderTable(workspaceTableHeaders[:], [][]string{
 		{"a/b", "running", "-", "-", "-", "sb-1"},
 		{"much-longer/handle", "paused", "claude-code", "/work", "bound", "sb-2"},
 	})
@@ -85,5 +85,37 @@ func TestHerdrWorkspacesRendering_ColumnsAlign(t *testing.T) {
 		if len(line) <= stateCol || line[stateCol] == ' ' {
 			t.Errorf("row %d does not align its STATE column at offset %d:\n%s", i, stateCol, out)
 		}
+	}
+}
+
+// `nexus3 ps` printed only "N sandbox(es)" — the rows went into the JSON
+// envelope and were never rendered in human mode, so the primary listing
+// command told the operator how many sandboxes existed but not what any of
+// them were. This pins the table renderer that fixed it.
+func TestRenderTable_PadsShortRowsInsteadOfTruncating(t *testing.T) {
+	out := renderTable([]string{"A", "B", "C"}, [][]string{
+		{"1", "2", "3"},
+		{"only-one"}, // a caller that forgot two cells
+	})
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want 3:\n%s", len(lines), out)
+	}
+	if !strings.HasPrefix(lines[2], "only-one") {
+		t.Errorf("short row was dropped or mangled:\n%s", out)
+	}
+}
+
+// The header must widen to the widest cell, not the other way round, or long
+// handles would be silently cut off.
+func TestRenderTable_HeaderWidensToContent(t *testing.T) {
+	out := renderTable([]string{"A", "B"}, [][]string{{"a-very-long-value", "x"}})
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	bCol := strings.Index(lines[0], "B")
+	if bCol <= len("a-very-long-value") {
+		t.Errorf("column B starts at %d, before the widest cell ends; content is being truncated:\n%s", bCol, out)
+	}
+	if !strings.Contains(lines[1], "a-very-long-value") {
+		t.Errorf("long value was truncated:\n%s", out)
 	}
 }

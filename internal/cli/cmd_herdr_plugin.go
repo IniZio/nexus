@@ -285,13 +285,13 @@ func herdrPluginWorkspaces(ctx context.Context, w io.Writer, svc *service.Servic
 		}
 	}
 
-	rows := make([][6]string, 0, len(sandboxes))
+	rows := make([][]string, 0, len(sandboxes))
 	for _, sb := range sandboxes {
 		space := "-"
 		if bound[sb.Handle()] {
 			space = "bound"
 		}
-		rows = append(rows, [6]string{
+		rows = append(rows, []string{
 			sb.Handle(),
 			sb.State.String(),
 			herdrWorkspaceAgent(sb),
@@ -301,7 +301,7 @@ func herdrPluginWorkspaces(ctx context.Context, w io.Writer, svc *service.Servic
 		})
 	}
 
-	fmt.Fprint(w, renderWorkspaceTable(rows))
+	fmt.Fprint(w, renderTable(workspaceTableHeaders[:], rows))
 	if len(rows) == 0 {
 		fmt.Fprintln(w, "(no sandboxes — use `nexus3: create sandbox space` to make one)")
 	}
@@ -310,39 +310,6 @@ func herdrPluginWorkspaces(ctx context.Context, w io.Writer, svc *service.Servic
 
 // workspaceTableHeaders is the overlay's column set.
 var workspaceTableHeaders = [6]string{"WORKSPACE", "STATE", "AGENT", "MOUNTS", "SPACE", "ID"}
-
-// renderWorkspaceTable lays the rows out in fixed-width columns sized to the
-// widest cell. Alignment is not cosmetic in a terminal overlay: ragged columns
-// are what make a list unscannable, which defeats the point of the pane.
-func renderWorkspaceTable(rows [][6]string) string {
-	widths := [6]int{}
-	for i, h := range workspaceTableHeaders {
-		widths[i] = len(h)
-	}
-	for _, r := range rows {
-		for i, c := range r {
-			if len(c) > widths[i] {
-				widths[i] = len(c)
-			}
-		}
-	}
-	var b strings.Builder
-	writeRow := func(r [6]string) {
-		for i, c := range r {
-			if i == len(r)-1 {
-				b.WriteString(c)
-				b.WriteString("\n")
-				continue
-			}
-			fmt.Fprintf(&b, "%-*s  ", widths[i], c)
-		}
-	}
-	writeRow(workspaceTableHeaders)
-	for _, r := range rows {
-		writeRow(r)
-	}
-	return b.String()
-}
 
 // herdrWorkspaceAgent names the agent profile a sandbox was created for, or
 // "-" for a plain sandbox with no agent.

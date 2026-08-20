@@ -891,7 +891,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--workspace <host-path>] [--capture-max <size>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--no-builtin-gh] [--agent <name>] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--workspace <host-path>] [--capture-max <size>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--no-builtin-gh] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])
@@ -1737,6 +1737,12 @@ func parseLabel(cmd, label string) (key, value string, err error) {
 //	stat(2).Blocks*512 — never apparent size — to avoid the sparse-disk trap.
 //	Degradation: an unreachable sandbox appears as a row with its error; other
 //	rows are unaffected. Zero matches → empty output, exit 0.
+//
+// sandboxListHeaders is the human-mode column set for `nexus3 ps`.
+// Deliberately the same shape as the herdr overlay: the operator sees one
+// vocabulary whether they are in a terminal or a herdr pane.
+var sandboxListHeaders = []string{"HANDLE", "STATE", "AGENT", "MOUNTS", "ID"}
+
 func runSandboxList(ctx context.Context, args []string, out *Output, svc *service.Service) error {
 	var labelFlag string
 	var wideFlag bool
@@ -1768,6 +1774,24 @@ func runSandboxList(ctx context.Context, args []string, out *Output, svc *servic
 		infos := make([]sandboxInfoJSON, 0, len(all))
 		for _, sb := range all {
 			infos = append(infos, toSandboxInfoJSON(sb))
+		}
+		// Human mode gets a table. Until now this command printed only
+		// "N sandbox(es)" — the rows went into the JSON envelope and were
+		// never rendered, so the primary listing command told an operator how
+		// many sandboxes existed but not what any of them were. JSON output is
+		// unchanged; the table is additive and human-only.
+		if !out.IsJSON() && len(all) > 0 {
+			rows := make([][]string, 0, len(all))
+			for _, sb := range all {
+				rows = append(rows, []string{
+					sb.Handle(),
+					sb.State.String(),
+					herdrWorkspaceAgent(sb),
+					herdrWorkspaceMounts(sb),
+					sb.ID.String(),
+				})
+			}
+			fmt.Fprint(out.w, renderTable(sandboxListHeaders, rows))
 		}
 		out.EmitSuccess("sandbox.list", sandboxListDataJSON{Sandboxes: infos},
 			fmt.Sprintf("%d sandbox(es)", len(infos)))
