@@ -218,6 +218,82 @@ func SockPath(stateDir string) string {
 //
 // The function signals readiness (D-PP-01 §S1) by writing supervisor.pid to
 // cfg.StateDir AFTER the VM is running and the perimeter is active.
+// seedRoute is the routing decision for guest-credential seeding.
+type seedRoute int
+
+const (
+	routeNone         seedRoute = iota // no MITM proxy: skip seeding entirely
+	routeCombined                      // agent + human secrets: seedAgentAndHumanSecrets
+	routeHumanSecrets                  // human/git secrets only: seedHumanSecrets
+	routeAgent                         // agent-only (or no secrets): SeedLoop
+)
+
+// chooseSeedRoute is a pure function that decides which seeding path RunDetached
+// takes for a given sandbox. Extracted so the decision is testable independently
+// of RunDetached's I/O.
+//
+// Branch ordering is load-bearing: routeCombined MUST be evaluated before
+// routeHumanSecrets so that an agent+secrets sandbox is never routed to the
+// human-only path and silently loses its Claude credential.
+func chooseSeedRoute(sb domain.Sandbox) seedRoute {
+	if !service.SandboxHasMITMProxy(sb) {
+		return routeNone
+	}
+	agentSandbox := sb.AgentName != ""
+	humanSecrets := len(sb.Envelope.SecretHosts) > 0
+	switch {
+	case agentSandbox && humanSecrets:
+		return routeCombined
+	case humanSecrets:
+		return routeHumanSecrets
+	default:
+		return routeAgent
+	}
+}
+
+// seedRouteInputs bundles the already-constructed seeders and clients that
+// runSeedRoute needs to dispatch to the right seeder without re-deriving them.
+type seedRouteInputs struct {
+	SB          domain.Sandbox
+	Cert        *x509.Certificate
+	CASeeder    service.GuestSeeder
+	AgentSeeder service.GuestSeeder
+	Broker      *cred.Broker
+	Refreshers  []*cred.Refresher
+	Svc         PerimeterCAGetter
+}
+
+// Package-level function vars so tests can spy which seeder runSeedRoute
+// invokes for a given route, following the same pattern as seedShellProfileFn.
+//
+// A test swaps one of these to a spy, calls runSeedRoute, and asserts the spy
+// fired (or did not). Restoring after the test is the caller's responsibility.
+var seedAgentAndHumanSecretsFn = seedAgentAndHumanSecrets
+var seedHumanSecretsFn = seedHumanSecrets
+var seedLoopFn = SeedLoop
+
+// runSeedRoute dispatches to the seeder selected by route and returns
+// (ok, guestEverResponded). For routeNone it logs and returns (false, false);
+// RunDetached guards the post-seed checks with route != routeNone so the
+// (false, false) return is never treated as a seed failure.
+func runSeedRoute(ctx context.Context, route seedRoute, in seedRouteInputs) (ok, guestEverResponded bool) {
+	switch route {
+	case routeNone:
+		slog.Info("supervisor.seed_not_applicable",
+			"sandbox", in.SB.ID,
+			"reason", "no MITM proxy for this sandbox: open egress, no secrets, no agent")
+		return false, false
+	case routeCombined:
+		return seedAgentAndHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers, in.Svc)
+	case routeHumanSecrets:
+		return seedHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Svc)
+	default: // routeAgent
+		agentSandbox := in.SB.AgentName != ""
+		return seedLoopFn(ctx, in.SB.ID, &in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers,
+			maxSeedAttempts, 2*time.Second, in.Svc, agentSandbox)
+	}
+}
+
 func RunDetached(cfg Config) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
@@ -494,43 +570,19 @@ func RunDetached(cfg Config) error {
 		// both carry SecretHosts that require MITM credential swap; the supervisor
 		// must mint placeholders in either posture. The original guard on OpenEgress
 		// silently skipped GH_TOKEN seeding for --egress closed sandboxes.
-		agentSandbox := sb.AgentName != ""
-		humanSecrets := len(sb.Envelope.SecretHosts) > 0
-		// Nothing to seed without a proxy: the CA cert we would install exists
-		// only if one was started, and the placeholder we would write is only
-		// meaningful if something swaps it. Waiting anyway cost a full minute
-		// (maxSeedAttempts x retry delay) before READY and seeded nothing.
-		noProxy := !service.SandboxHasMITMProxy(sb)
-		var seedDone, guestEverResponded bool
-		switch {
-		case noProxy:
-			slog.Info("supervisor.seed_not_applicable",
-				"sandbox", sb.ID,
-				"reason", "no MITM proxy for this sandbox: open egress, no secrets, no agent")
-		case agentSandbox && humanSecrets:
-			// Combined path: sandbox has BOTH an agent (AgentName != "") and secret
-			// hosts (e.g. GH_TOKEN). seedHumanSecrets seeds only the human secret;
-			// SeedLoop seeds only the agent credential. Using either branch alone
-			// leaves the guest missing one set. SeedGuestAgentAndSecrets composes
-			// both into one payload and writes it once, preventing the second write
-			// from silently overwriting the first.
-			seedDone, guestEverResponded = seedAgentAndHumanSecrets(ctx, sb, cert, caSeeder, agentSeeder, broker, refreshers, svc)
-		case humanSecrets:
-			// Human/git path (D-PD-25 / D-PD-26): seed CA + GH_TOKEN placeholder.
-			// SeedLoop would also emit the agent's credential vars; those belong
-			// on agent sandboxes.
-			seedDone, guestEverResponded = seedHumanSecrets(ctx, sb, cert, caSeeder, agentSeeder, broker, svc)
-		default:
-			// seedAgentCreds is false for a sandbox with no agent: it still
-			// needs the CA to speak HTTPS through the proxy, but writing an
-			// agent placeholder into it would hand credential env vars to a
-			// guest that runs no agent.
-			seedDone, guestEverResponded = SeedLoop(ctx, sb.ID, &cert, caSeeder, agentSeeder, broker, refreshers,
-				maxSeedAttempts, 2*time.Second, svc, agentSandbox)
-		}
-		// noProxy skips both branches below: there is no seed failure to warn
+		route := chooseSeedRoute(sb)
+		seedDone, guestEverResponded := runSeedRoute(ctx, route, seedRouteInputs{
+			SB:          sb,
+			Cert:        cert,
+			CASeeder:    caSeeder,
+			AgentSeeder: agentSeeder,
+			Broker:      broker,
+			Refreshers:  refreshers,
+			Svc:         svc,
+		})
+		// routeNone skips both branches below: there is no seed failure to warn
 		// about, and no CA in the guest to activate.
-		if !noProxy && !seedDone {
+		if route != routeNone && !seedDone {
 			if ctx.Err() != nil {
 				slog.Warn("supervisor.seed_skipped", "reason", "context cancelled before seeding complete")
 			} else if !guestEverResponded {
@@ -560,7 +612,7 @@ func RunDetached(cfg Config) error {
 					"max_attempts", maxSeedAttempts,
 					"action", "writing READY anyway; perimeter live, guest may lack placeholder+CA")
 			}
-		} else if !noProxy {
+		} else if route != routeNone {
 			// Activate the CA cert in the system trust store so that non-Node.js
 			// HTTPS clients (git, wget, curl, gh) trust the MITM proxy CA without
 			// explicit per-process configuration.

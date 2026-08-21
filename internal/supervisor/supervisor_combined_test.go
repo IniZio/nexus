@@ -146,3 +146,192 @@ func TestSeedAgentAndHumanSecrets_OneWrite(t *testing.T) {
 		t.Errorf("credSeeder called %d times, want exactly 1 (overwrite prevented)", credCap.calls)
 	}
 }
+
+// --- dispatch tests ---
+// These tests call chooseSeedRoute (the production decision function) and
+// assert the route. They are the mutation guards for MUT-A and MUT-B.
+//
+// Residual gap (stated plainly): these tests cover the decision function but
+// NOT the binding from RunDetached to that decision. A mutation that makes
+// RunDetached ignore the returned route would still pass. That binding is
+// uncovered because RunDetached does real I/O (VM, perimeter) and cannot be
+// unit-tested here.
+
+// sandboxWithProxy returns a domain.Sandbox that SandboxHasMITMProxy reports
+// true for. SandboxHasMITMProxy returns true when AgentName != "" OR
+// SecretHosts is non-empty (either implies a MITM proxy was started).
+func sandboxWithProxy(agentName string, secretHosts []string) domain.Sandbox {
+	return domain.Sandbox{
+		AgentName: agentName,
+		Envelope:  domain.Envelope{SecretHosts: secretHosts},
+	}
+}
+
+// TestChooseSeedRoute_Dispatch is the mutation guard for MUT-A:
+// mutating `case agentSandbox && humanSecrets:` to `case false && agentSandbox && humanSecrets:`
+// must make this test RED (the combined sandbox falls through to routeHumanSecrets instead).
+func TestChooseSeedRoute_Dispatch(t *testing.T) {
+	cases := []struct {
+		name      string
+		sb        domain.Sandbox
+		wantRoute seedRoute
+	}{
+		{
+			// OpenEgress=true, no AgentName, no SecretHosts → SandboxHasMITMProxy=false → routeNone.
+			// (OpenEgress defaults false, meaning curated allowlist → proxy is required; must be
+			// explicitly true to get open egress and skip the proxy.)
+			name:      "no_proxy_returns_none",
+			sb:        domain.Sandbox{Envelope: domain.Envelope{OpenEgress: true}},
+			wantRoute: routeNone,
+		},
+		{
+			name:      "agent_only_returns_agent",
+			sb:        sandboxWithProxy("claude", nil),
+			wantRoute: routeAgent,
+		},
+		{
+			name:      "secrets_only_returns_human",
+			sb:        sandboxWithProxy("", []string{"github.com"}),
+			wantRoute: routeHumanSecrets,
+		},
+		{
+			// MUT-A guard: disabling the combined case makes this return routeHumanSecrets.
+			name:      "agent_and_secrets_returns_combined",
+			sb:        sandboxWithProxy("claude", []string{"github.com"}),
+			wantRoute: routeCombined,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := chooseSeedRoute(tc.sb)
+			if got != tc.wantRoute {
+				t.Errorf("chooseSeedRoute = %v, want %v", got, tc.wantRoute)
+			}
+		})
+	}
+}
+
+// TestChooseSeedRoute_Ordering is the mutation guard for MUT-B:
+// swapping the routeCombined and routeHumanSecrets cases in chooseSeedRoute
+// makes an agent+secrets sandbox return routeHumanSecrets, and this test
+// turns RED because it asserts routeCombined.
+func TestChooseSeedRoute_Ordering(t *testing.T) {
+	sb := sandboxWithProxy("claude", []string{"github.com"})
+	got := chooseSeedRoute(sb)
+	if got != routeCombined {
+		t.Errorf("chooseSeedRoute for agent+secrets = %v, want routeCombined (%v)\n"+
+			"If routeHumanSecrets was returned, the combined case is ordered after the human-secrets case;\n"+
+			"that silently drops the Claude credential from agent+secrets sandboxes.",
+			got, routeCombined)
+	}
+	// Also assert it is NOT routeHumanSecrets to give an unambiguous ordering signal.
+	if got == routeHumanSecrets {
+		t.Errorf("agent+secrets sandbox routed to routeHumanSecrets: ordering defect — combined case must precede human-secrets case")
+	}
+}
+
+// --- route→seeder binding tests ---
+// These tests call runSeedRoute (the production dispatch function) with spy
+// function vars and assert WHICH seeder was invoked. They close the gap between
+// "chooseSeedRoute returns the right route" and "runSeedRoute calls the right
+// seeder for that route".
+//
+// Residual gap (stated plainly): nothing asserts that RunDetached calls
+// runSeedRoute(chooseSeedRoute(sb), ...) at all. That is a single wiring line,
+// and testing it would require driving RunDetached through its full I/O
+// (VM boot, perimeter). The established TestProbeAndSeedGuest_* pattern covers
+// that class of gap when the blast radius is acceptable.
+
+// TestRunSeedRoute_CombinedCallsCombinedSeeder is the mutation guard for the
+// route→seeder binding. Make routeCombined call seedHumanSecretsFn instead of
+// seedAgentAndHumanSecretsFn → this test turns RED (combinedCalled=false).
+func TestRunSeedRoute_CombinedCallsCombinedSeeder(t *testing.T) {
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("NEXUS3_TEST_SECRET_RS1", "rs1-secret")
+
+	var combinedCalled, humanCalled bool
+
+	// Spy replacements — restore after test.
+	origCombined := seedAgentAndHumanSecretsFn
+	origHuman := seedHumanSecretsFn
+	t.Cleanup(func() {
+		seedAgentAndHumanSecretsFn = origCombined
+		seedHumanSecretsFn = origHuman
+	})
+	seedAgentAndHumanSecretsFn = func(_ context.Context, _ domain.Sandbox, _ *x509.Certificate,
+		_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher, _ PerimeterCAGetter,
+	) (bool, bool) {
+		combinedCalled = true
+		return true, true
+	}
+	seedHumanSecretsFn = func(_ context.Context, _ domain.Sandbox, _ *x509.Certificate,
+		_, _ service.GuestSeeder, _ *cred.Broker, _ PerimeterCAGetter,
+	) (bool, bool) {
+		humanCalled = true
+		return true, true
+	}
+
+	var id domain.SandboxID
+	id[0] = 0xD1
+	in := seedRouteInputs{
+		SB:          sandboxWithProxy("claude", []string{"github.com"}),
+		Cert:        fakeCert(),
+		CASeeder:    func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil },
+		AgentSeeder: func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil },
+		Broker:      cred.NewBroker(),
+	}
+
+	ok, _ := runSeedRoute(context.Background(), routeCombined, in)
+	if !ok {
+		t.Fatal("runSeedRoute returned ok=false for routeCombined")
+	}
+	if !combinedCalled {
+		t.Error("seedAgentAndHumanSecretsFn was NOT called for routeCombined (wrong seeder dispatched)")
+	}
+	if humanCalled {
+		t.Error("seedHumanSecretsFn was called for routeCombined (routing defect: combined fell through to human-only)")
+	}
+}
+
+// TestRunSeedRoute_HumanSecretsCallsHumanSeeder guards routeHumanSecrets binding.
+func TestRunSeedRoute_HumanSecretsCallsHumanSeeder(t *testing.T) {
+	var humanCalled, combinedCalled bool
+
+	origCombined := seedAgentAndHumanSecretsFn
+	origHuman := seedHumanSecretsFn
+	t.Cleanup(func() {
+		seedAgentAndHumanSecretsFn = origCombined
+		seedHumanSecretsFn = origHuman
+	})
+	seedAgentAndHumanSecretsFn = func(_ context.Context, _ domain.Sandbox, _ *x509.Certificate,
+		_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher, _ PerimeterCAGetter,
+	) (bool, bool) {
+		combinedCalled = true
+		return true, true
+	}
+	seedHumanSecretsFn = func(_ context.Context, _ domain.Sandbox, _ *x509.Certificate,
+		_, _ service.GuestSeeder, _ *cred.Broker, _ PerimeterCAGetter,
+	) (bool, bool) {
+		humanCalled = true
+		return true, true
+	}
+
+	in := seedRouteInputs{
+		SB:          sandboxWithProxy("", []string{"github.com"}),
+		Cert:        fakeCert(),
+		CASeeder:    func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil },
+		AgentSeeder: func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil },
+		Broker:      cred.NewBroker(),
+	}
+
+	ok, _ := runSeedRoute(context.Background(), routeHumanSecrets, in)
+	if !ok {
+		t.Fatal("runSeedRoute returned ok=false for routeHumanSecrets")
+	}
+	if !humanCalled {
+		t.Error("seedHumanSecretsFn was NOT called for routeHumanSecrets")
+	}
+	if combinedCalled {
+		t.Error("seedAgentAndHumanSecretsFn was called for routeHumanSecrets (routing defect)")
+	}
+}
