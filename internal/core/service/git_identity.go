@@ -289,19 +289,15 @@ func buildGitconfigPayload(name, email string, sourcePaths []string, branch stri
 	// bookworm is dash. The helper uses only POSIX shell constructs (case, printf,
 	// [ -n ]) — no bashisms, no python3, no jq, no curl.
 	//
-	// Degradation when $GH_TOKEN unset: the && guard short-circuits, the || :
-	// ensures the case branch (and thus the helper) exits 0. Git sees no credential
-	// and falls through to its normal error path (e.g. a 401 from the remote).
+	// Degradation when $GH_TOKEN is unset: the script's [ -n "${GH_TOKEN}" ] || exit 0
+	// check exits 0 immediately, producing no output. Git sees no credential and
+	// falls through to its normal error path (e.g. a 401 from the remote).
 	// No prompt, no confusing error message from the helper itself.
 	//
 	// Security: $GH_TOKEN is the 64-hex placeholder swapped by the MITM proxy.
 	// It is read from the guest environment at push time; it never appears in the
 	// gitconfig file itself, in remote URLs, or in git's reflog.
 	buf.WriteString("[credential \"https://github.com\"]\n")
-	// Reference the script by path. The "!sh <path>" form contains no characters
-	// that git's config parser treats specially (no double-quotes, no \n
-	// sequences), so the value round-trips through the parser unchanged.
-	// The script is seeded separately via SeedGitCredentialHelper.
 	// Reference the script by path. The "!sh <path>" form contains no characters
 	// that git's config parser treats specially (no double-quotes, no \n
 	// sequences), so the value round-trips through the parser unchanged.

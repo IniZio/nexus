@@ -283,7 +283,9 @@ type CreateAndBootOptions struct {
 	// mints a guest placeholder env var; the real token stays in the broker.
 	// GitHub hosts listed here do NOT enter AllowedHosts — human create is
 	// AllowAll and a curated allowlist would 403 every other host.
-	// Agent create (UseAgentSeed) must not include a GitHub bind.
+	// D-SHL-05: agent create (UseAgentSeed) MAY include a GitHub bind when
+	// AllowedRepo is set; the pre-boot guard 6b enforces that combination.
+	// Without AllowedRepo the same guard still rejects any GitHub bind.
 	Secrets []SecretBind
 
 	// Volumes is the volume store for named-volume operations. Required when
@@ -759,9 +761,20 @@ func CreateAndBoot(
 	// D-SHL-05: agent sandboxes MAY bind a GitHub secret when AllowedRepo is
 	// set — the guest holds only a 64-hex placeholder; the host-side MITM proxy
 	// swaps the real token restricted to the single repo named by AllowedRepo.
-	// This pre-boot check is the sole enforcement point for ALL callers; the
-	// previous post-boot ErrAgentGitHubSecret guard has been removed because
-	// it was unreachable once this check became unconditional.
+	// This guard runs before store.Create and before boot, so a violating
+	// sandbox cannot be persisted or started. It is the primary enforcement
+	// point for ALL callers (CLI, MCP, orca, herdr).
+	//
+	// The post-boot ErrAgentGitHubSecret guard that previously rejected agent
+	// sandboxes with any GitHub secret has been removed as an intentional
+	// reversal of D-PD-23 under D-SHL-05 — NOT as dead-code cleanup. That
+	// guard fired on UseAgentSeed/AgentProfile regardless of AllowedRepo, so
+	// it was reachable for the agent+AllowedRepo combination D-SHL-05 permits.
+	// Its removal is a deliberate policy change, not a refactoring.
+	//
+	// Independent backstops for records already on disk:
+	//   - service.go Start (line ~407): rejects a boot if GitHub secret lacks AllowedRepo
+	//   - service.go startSupervisor (line ~780): same check before the proxy starts
 	if opts.AllowedRepo == "" {
 		for _, b := range opts.Secrets {
 			if SecretTouchesGitHub(b) {
@@ -860,12 +873,12 @@ func CreateAndBoot(
 	// NOTE: service.Start (restart of a stopped sandbox) will also need seeding
 	// once it gains a reachability probe — /run is tmpfs and does not survive
 	// a guest restart. That wiring is deferred until the restart probe exists.
-	// D-SHL-05: the pre-boot guard 6b above (ErrUnboundGitHubSecret) is now
-	// unconditional — it covers agent sandboxes and non-agent sandboxes alike.
-	// The earlier post-boot refusal (ErrAgentGitHubSecret) has been removed:
-	// it was unreachable because guard 6b returns before boot or persistence
-	// for any sandbox that would have triggered it, and dead code that looks
-	// like a security guard is worse than no code.
+	// D-SHL-05: the pre-boot guard 6b above (ErrUnboundGitHubSecret) now covers
+	// agent sandboxes and non-agent sandboxes alike (AllowedRepo == "" is the
+	// only forbidden shape regardless of UseAgentSeed).
+	// The post-boot ErrAgentGitHubSecret guard has been removed as a deliberate
+	// reversal of D-PD-23 under D-SHL-05 — it was reachable for the
+	// agent+AllowedRepo case D-SHL-05 permits, not dead code.
 
 	if opts.UseAgentSeed {
 		// agentProfile was resolved above and is the same value recorded as
