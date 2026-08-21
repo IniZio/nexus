@@ -53,8 +53,8 @@ func TestBuildAgentBaseImage(t *testing.T) {
 		t.Fatalf("image.NewCache: %v", err)
 	}
 
-	t.Logf("Building agent base image (Go %s + Node.js %s + claude-code %s; first run ~15–30 min)...",
-		selfhost.GoVersion, selfhost.NodeVersion, selfhost.ClaudeCodeVersion)
+	t.Logf("Building agent base image (Go %s + Node.js %s + claude-code %s + gh %s; first run ~15–30 min)...",
+		selfhost.GoVersion, selfhost.NodeVersion, selfhost.ClaudeCodeVersion, selfhost.GHVersion)
 	img, err := selfhost.BuildAgentBaseImage(ctx, cache)
 	if err != nil {
 		if errors.Is(err, selfhost.ErrDockerUnavailable) || errors.Is(err, builder.ErrMke2fsUnavailable) {
@@ -127,9 +127,13 @@ func TestBuildAgentBaseImage(t *testing.T) {
 	// Claude Code CLI: symlinked into /usr/bin for standard guest PATH
 	checkPath("/usr/bin/claude")
 
+	// gh CLI: symlinked into /usr/bin for standard guest PATH
+	checkPath("/usr/bin/gh")
+
 	// The actual binaries behind the /usr/bin symlinks
 	checkPath("/usr/local/bin/node")
 	checkPath("/usr/local/bin/claude")
+	checkPath("/usr/local/bin/gh")
 
 	// The real claude payload: a native ELF installed by npm as an optionalDependency.
 	// /usr/local/bin/claude is a wrapper; this is the actual binary it resolves to.

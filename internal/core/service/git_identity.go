@@ -206,6 +206,9 @@ func SourceGuestPaths(workspacePath string, liveMounts []domain.LiveMount) []str
 //     "dubious ownership" errors for workspace and --mount directories)
 //   - [init] defaultBranch: the per-sandbox branch name (D-PD-03)
 //   - [core] safecrlf=false: suppress line-ending conversion warnings in the guest
+//   - [credential "https://github.com"] helper: reads $GH_TOKEN from the guest
+//     environment at push time; produces no credentials when the variable is
+//     absent; the token is never written into the file (see inline comment below)
 //
 // git's config format allows multiple directory = entries under a single [safe]
 // section; all entries are written there. Empty paths in sourcePaths are skipped.
@@ -231,6 +234,39 @@ func buildGitconfigPayload(name, email string, sourcePaths []string, branch stri
 	fmt.Fprintf(&buf, "\tdefaultBranch = %s\n", branch)
 	fmt.Fprintf(&buf, "[core]\n")
 	fmt.Fprintf(&buf, "\tsafecrlf = false\n")
+	// Credential helper for github.com pushes.
+	//
+	// This section is unconditional: every sandbox gets the helper regardless of
+	// whether a GitHub secret is currently bound, because:
+	//   (a) The helper is environment-driven — it reads $GH_TOKEN at push time
+	//       and produces no credentials when the variable is absent, so it is a
+	//       no-op on sandboxes without a token.
+	//   (b) Adding it only when a GitHub secret is bound would require threading
+	//       that decision through SeedGitIdentity's signature and into supervisor.go
+	//       (owned by a different slice in this wave). Keeping the signature
+	//       unchanged is the minimal, safe choice.
+	//   (c) No token is written into the gitconfig file: the file is safe to log,
+	//       inspect, and commit without ever revealing a credential.
+	//
+	// Helper protocol: git calls the helper with argument "get" (also "store",
+	// "erase"). We respond only to "get". Output format is key=value, one per line.
+	//
+	// Shell compatibility: git executes "!" helpers via sh -c, which on Debian
+	// bookworm is dash. The helper uses only POSIX shell constructs (case, printf,
+	// [ -n ]) — no bashisms, no python3, no jq, no curl.
+	//
+	// Degradation when $GH_TOKEN unset: the && guard short-circuits, the || :
+	// ensures the case branch (and thus the helper) exits 0. Git sees no credential
+	// and falls through to its normal error path (e.g. a 401 from the remote).
+	// No prompt, no confusing error message from the helper itself.
+	//
+	// Security: $GH_TOKEN is the 64-hex placeholder swapped by the MITM proxy.
+	// It is read from the guest environment at push time; it never appears in the
+	// gitconfig file itself, in remote URLs, or in git's reflog.
+	buf.WriteString("[credential \"https://github.com\"]\n")
+	buf.WriteString("\thelper = " +
+		`!f(){ case $1 in get) [ -n "${GH_TOKEN}" ] && { printf 'username=x-token-auth\n'; printf 'password=%s\n' "${GH_TOKEN}"; } || :;; esac; }; f` +
+		"\n")
 	return buf.Bytes()
 }
 
@@ -260,10 +296,12 @@ func buildGitconfigPayload(name, email string, sourcePaths []string, branch stri
 //
 // # Security invariant
 //
-// The gitconfig payload contains ONLY the operator's name/email and git
-// configuration. It does not contain any token, credential, SSH key, or
-// host-identifying information. It does not wire up any GitHub credential
-// path. D-PD-22: an AGENT sandbox must never list github.com in AllowedHosts.
+// The gitconfig payload contains only the operator's name/email, git
+// configuration, and an environment-driven GitHub credential helper.
+// No token, SSH key, or static credential is written into the file.
+// The credential helper reads $GH_TOKEN from the guest environment at push
+// time (the 64-hex MITM placeholder); it never embeds the value in the file.
+// D-PD-22: an AGENT sandbox must never list github.com in AllowedHosts.
 // See N-AC1 (TestN_AC1_NoGitHubEgressPermitted).
 func SeedGitIdentity(
 	ctx context.Context,

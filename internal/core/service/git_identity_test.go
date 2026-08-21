@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -183,10 +184,12 @@ func TestSeedGitIdentity_Payload(t *testing.T) {
 		if !strings.Contains(payload, branch) {
 			t.Errorf("gitconfig payload missing branch %q; got:\n%s", branch, payload)
 		}
-		// Must not contain any operator credential or GitHub indicator.
-		for _, forbidden := range []string{"github.com", "ghp_", "gho_", "gh auth", "PAT"} {
+		// Must not contain any static token or raw credential value.
+		// Note: "github.com" legitimately appears in the [credential] section URL;
+		// only actual token patterns are forbidden here.
+		for _, forbidden := range []string{"ghp_", "gho_", "gh auth", "PAT"} {
 			if strings.Contains(strings.ToLower(payload), strings.ToLower(forbidden)) {
-				t.Errorf("gitconfig payload contains forbidden string %q\npayload:\n%s", forbidden, payload)
+				t.Errorf("gitconfig payload contains forbidden token pattern %q\npayload:\n%s", forbidden, payload)
 			}
 		}
 	})
@@ -510,6 +513,158 @@ func TestSourceGuestPaths(t *testing.T) {
 		got := SourceGuestPaths("", mounts)
 		if len(got) != 0 {
 			t.Errorf("got %v, want empty slice", got)
+		}
+	})
+}
+
+// ── GitHub credential helper ──────────────────────────────────────────────────
+
+// TestBuildGitconfigPayload_GitHubCredentialHelper asserts the structural
+// properties of the credential helper section written by buildGitconfigPayload:
+//
+//  1. A [credential "https://github.com"] section is present (scoped, not global).
+//  2. A helper = line is present inside that section.
+//  3. No token value, placeholder hex string, or raw credential appears in the
+//     payload — the helper reads $GH_TOKEN from the environment at push time.
+//  4. The existing user.name, user.email, and safe.directory assertions hold
+//     (regression guard).
+//
+// Mutation guards (run mutations manually, restore before committing):
+//
+//	Mutation A: delete fmt.Fprint(&buf, "[credential...]") from buildGitconfigPayload.
+//	            → "credential section present" assertion fails RED.
+//	Mutation B: delete the helper = fmt.Fprint line.
+//	            → "helper line present" assertion fails RED.
+//	Mutation C: replace the raw-string helper value with a hardcoded token like
+//	            "helper = ghp_fakeTOKEN".
+//	            → "no token in payload" assertion fails RED.
+func TestBuildGitconfigPayload_GitHubCredentialHelper(t *testing.T) {
+	const (
+		name   = "Test Op"
+		email  = "op@example.com"
+		branch = "nexus3/default/ab12cd34"
+	)
+	payload := string(buildGitconfigPayload(name, email, []string{"/work"}, branch))
+
+	// Assertion 1: credential section is present and scoped to github.com.
+	// Mutation A guard: delete the [credential] Fprint → this assertion fails RED.
+	const credSection = `[credential "https://github.com"]`
+	if !strings.Contains(payload, credSection) {
+		t.Errorf("gitconfig payload missing %q section; got:\n%s", credSection, payload)
+	}
+
+	// Assertion 2: a helper = line is present.
+	// Mutation B guard: delete the helper Fprint → this assertion fails RED.
+	if !strings.Contains(payload, "\thelper = ") {
+		t.Errorf("gitconfig payload missing 'helper =' line; got:\n%s", payload)
+	}
+
+	// Assertion 3: no token value appears in the payload.
+	// The helper must read $GH_TOKEN from the environment, not embed it in the file.
+	// Mutation C guard: embed a static token in the helper → this assertion fails RED.
+	for _, tokenPattern := range []string{
+		"ghp_", "gho_", "github_pat_",
+		// 64-char hex placeholder pattern (a realistic-looking fake):
+		"0000000000000000000000000000000000000000000000000000000000000000",
+	} {
+		if strings.Contains(payload, tokenPattern) {
+			t.Errorf("gitconfig payload contains token pattern %q — token must not appear in file; got:\n%s",
+				tokenPattern, payload)
+		}
+	}
+
+	// Assertion 4 (regression): existing fields still present.
+	if !strings.Contains(payload, "name = "+name) {
+		t.Errorf("payload missing user.name; got:\n%s", payload)
+	}
+	if !strings.Contains(payload, "email = "+email) {
+		t.Errorf("payload missing user.email; got:\n%s", payload)
+	}
+	if !strings.Contains(payload, "directory = /work") {
+		t.Errorf("payload missing safe.directory; got:\n%s", payload)
+	}
+}
+
+// TestGitCredentialHelper_ShellBehavior tests the helper script embedded in
+// the gitconfig payload by executing it under the system sh (dash on Debian)
+// with GH_TOKEN set and unset. It verifies the output format git expects.
+//
+// This test is skipped if sh is not available (not expected on any Linux host).
+//
+// Mutation guards:
+//
+//	Mutation D: in the helper, change "get" to "GET" in the case pattern so the
+//	            action never matches.
+//	            → "token present → output contains password=" assertion fails RED.
+//	Mutation E: remove the [ -n "${GH_TOKEN}" ] guard.
+//	            → "token absent → output is empty" assertion fails RED (outputs password=).
+func TestGitCredentialHelper_ShellBehavior(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not in PATH; skipping shell helper behaviour test")
+	}
+
+	// Extract the helper command from a real payload (same path as git uses it).
+	payload := string(buildGitconfigPayload("Op", "op@example.com", nil, "nexus3/t/ab12cd34"))
+	helperLine := ""
+	for _, line := range strings.Split(payload, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "helper = ") {
+			helperLine = strings.TrimSpace(line[len("helper = "):])
+			break
+		}
+	}
+	if helperLine == "" {
+		t.Fatal("could not extract helper = line from gitconfig payload")
+	}
+	// Strip the leading "!" — git removes it before passing to sh -c.
+	helperCmd := strings.TrimPrefix(helperLine, "!")
+
+	t.Run("GH_TOKEN set — output has username and password lines", func(t *testing.T) {
+		const fakeToken = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+		// git invokes: sh -c '<helper> get'  (appends the action as a word)
+		cmd := exec.Command(sh, "-c", helperCmd+" get")
+		cmd.Env = []string{"GH_TOKEN=" + fakeToken}
+		out, execErr := cmd.Output()
+		if execErr != nil {
+			t.Fatalf("sh -c helper get: %v (output: %s)", execErr, out)
+		}
+		outStr := string(out)
+		// Mutation D guard: changing case "get" → "GET" causes this to fail RED.
+		if !strings.Contains(outStr, "username=") {
+			t.Errorf("helper output missing username= line; got: %q", outStr)
+		}
+		if !strings.Contains(outStr, "password="+fakeToken) {
+			t.Errorf("helper output missing password=<token> line; got: %q", outStr)
+		}
+		// The token value must appear in the output (it was read from env).
+		if !strings.Contains(outStr, fakeToken) {
+			t.Errorf("helper output does not contain the token value; got: %q", outStr)
+		}
+	})
+
+	t.Run("GH_TOKEN unset — output is empty (quiet degradation)", func(t *testing.T) {
+		cmd := exec.Command(sh, "-c", helperCmd+" get")
+		cmd.Env = []string{} // explicitly empty — no GH_TOKEN
+		out, execErr := cmd.Output()
+		if execErr != nil {
+			t.Fatalf("sh -c helper get (no token): %v (output: %s)", execErr, out)
+		}
+		outStr := strings.TrimSpace(string(out))
+		// Mutation E guard: removing [ -n "${GH_TOKEN}" ] guard causes this to fail RED.
+		if outStr != "" {
+			t.Errorf("helper output should be empty when GH_TOKEN is unset; got: %q", outStr)
+		}
+	})
+
+	t.Run("store action — output is empty (helper ignores non-get actions)", func(t *testing.T) {
+		cmd := exec.Command(sh, "-c", helperCmd+" store")
+		cmd.Env = []string{"GH_TOKEN=sometoken"}
+		out, execErr := cmd.Output()
+		if execErr != nil {
+			t.Fatalf("sh -c helper store: %v (output: %s)", execErr, out)
+		}
+		if strings.TrimSpace(string(out)) != "" {
+			t.Errorf("helper should produce no output for 'store' action; got: %q", string(out))
 		}
 	})
 }
