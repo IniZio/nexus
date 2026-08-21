@@ -14,6 +14,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
 
@@ -591,6 +592,122 @@ func TestCreateAndBoot_GitHubSecretWithRepo_Allowed(t *testing.T) {
 	}
 	if sb.Envelope.AllowedRepo != "owner/repo" {
 		t.Errorf("Envelope.AllowedRepo = %q, want %q", sb.Envelope.AllowedRepo, "owner/repo")
+	}
+}
+
+// TestCreateAndBoot_DShl05_AgentGitHubGuards covers the D-SHL-05 invariant
+// change: the blanket agent-GitHub ban is replaced by the unconditional
+// AllowedRepo requirement (ErrUnboundGitHubSecret) shared with all callers.
+//
+// Table:
+//   agent + GitHub + AllowedRepo  → ACCEPTED  (D-SHL-05)
+//   agent + GitHub + no AllowedRepo → REFUSED  (ErrUnboundGitHubSecret, D-PD-36)
+//   non-agent + GitHub + no AllowedRepo → REFUSED (unchanged)
+//   agent + mixed-host secret     → REFUSED   (ErrMixedGitHubSecret, unchanged)
+//
+// Mutation evidence for each case is documented inline; run with -v to see names.
+func TestCreateAndBoot_DShl05_AgentGitHubGuards(t *testing.T) {
+	type tc struct {
+		name        string
+		useAgent    bool   // sets UseAgentSeed=true
+		agentName   bool   // sets AgentProfile=ClaudeCodeProfile
+		githubBind  bool   // includes a GitHub SecretBind
+		mixedBind   bool   // includes a mixed-host SecretBind
+		allowedRepo string // empty = omitted
+		wantErr     error  // nil = expect success
+	}
+	cases := []tc{
+		{
+			name:        "agent_seed+GitHub+repo=accepted",
+			useAgent:    true,
+			githubBind:  true,
+			allowedRepo: "owner/repo",
+			wantErr:     nil,
+		},
+		{
+			name:       "agent_seed+GitHub+no_repo=refused",
+			useAgent:   true,
+			githubBind: true,
+			wantErr:    ErrUnboundGitHubSecret,
+		},
+		{
+			name:       "non_agent+GitHub+no_repo=refused",
+			githubBind: true,
+			wantErr:    ErrUnboundGitHubSecret,
+		},
+		{
+			name:      "agent_profile+GitHub+repo=accepted",
+			agentName: true,
+			githubBind: true,
+			allowedRepo: "owner/repo",
+			wantErr:   nil,
+		},
+		{
+			name:      "agent_profile+GitHub+no_repo=refused",
+			agentName: true,
+			githubBind: true,
+			wantErr:   ErrUnboundGitHubSecret,
+		},
+		{
+			name:      "agent_seed+mixed_host=refused",
+			useAgent:  true,
+			mixedBind: true,
+			wantErr:   ErrMixedGitHubSecret,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			cacheRoot := t.TempDir()
+			cache, err := image.NewCache(cacheRoot)
+			if err != nil {
+				t.Fatalf("NewCache: %v", err)
+			}
+			img := putFakeImage(t, ctx, cache)
+			fd := fake.New()
+			svc := newTestSvc(t, fd)
+
+			var secrets []SecretBind
+			if c.githubBind {
+				secrets = append(secrets, SecretBind{
+					Env:   BuiltinGitHubEnv,
+					Hosts: append([]string(nil), GitHubSecretHosts...),
+					Token: "ghp_test",
+				})
+			}
+			if c.mixedBind {
+				secrets = append(secrets, SecretBind{
+					Env:   "MIXED_TOKEN",
+					Hosts: []string{"github.com", "registry.example.com"},
+					Token: "tok",
+				})
+			}
+
+			opts := CreateAndBootOptions{
+				Image:        ImageSpec{Digest: string(img.Digest)},
+				CacheRoot:    cacheRoot,
+				UseAgentSeed: c.useAgent,
+				Secrets:      secrets,
+				AllowedRepo:  c.allowedRepo,
+			}
+			if c.agentName {
+				opts.AgentProfile = cred.ClaudeCodeProfile
+			}
+
+			_, gotErr := CreateAndBoot(ctx, svc, cache, fakeDriverFactory(fd), noopProbe,
+				"proj", c.name, opts)
+
+			if c.wantErr == nil {
+				if gotErr != nil {
+					t.Fatalf("CreateAndBoot: got error %v, want success", gotErr)
+				}
+			} else {
+				if !errors.Is(gotErr, c.wantErr) {
+					t.Fatalf("CreateAndBoot: got %v, want %v", gotErr, c.wantErr)
+				}
+			}
+		})
 	}
 }
 

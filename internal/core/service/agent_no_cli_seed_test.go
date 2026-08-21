@@ -14,7 +14,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
@@ -62,9 +61,10 @@ func TestCreateAndBoot_NamedAgent_DoesNotSeedFromTheCLI(t *testing.T) {
 	}
 }
 
-// The GitHub-secret refusal must still reach a sandbox that declared its agent
-// by profile rather than by UseAgentSeed (D-PD-23).
-func TestCreateAndBoot_NamedAgent_StillRefusesGitHubSecret(t *testing.T) {
+// D-SHL-05: an agent sandbox named by profile (--agent) WITH AllowedRepo set
+// must now SUCCEED — the MITM proxy scopes the real token to that one repo.
+// The old ErrAgentGitHubSecret refusal is gone; AllowedRepo is the sole guard.
+func TestCreateAndBoot_NamedAgent_GitHubSecretWithRepo_Allowed(t *testing.T) {
 	ctx := context.Background()
 	cacheRoot := t.TempDir()
 	cache, err := image.NewCache(cacheRoot)
@@ -79,15 +79,15 @@ func TestCreateAndBoot_NamedAgent_StillRefusesGitHubSecret(t *testing.T) {
 		CacheRoot:    cacheRoot,
 		DiskDir:      t.TempDir(),
 		AgentProfile: cred.ClaudeCodeProfile,
-		Secrets:      []SecretBind{{Env: "GH_TOKEN", Hosts: []string{"api.github.com"}}},
-		// AllowedRepo satisfies the earlier D-PD-36 guard, so the failure this
-		// test observes is the agent-specific refusal and not the unbound-token
-		// one that fires first for any sandbox.
-		AllowedRepo: "owner/name",
+		Secrets:      []SecretBind{{Env: "GH_TOKEN", Hosts: []string{"api.github.com"}, Token: "ghp_test"}},
+		AllowedRepo:  "owner/name", // D-PD-36 satisfied; D-SHL-05 permits this combination
 	}
 
-	_, err = CreateAndBoot(ctx, svc, cache, fakeDriverFactory(fake.New()), noopProbe, "proj", "agent-gh", opts)
-	if !errors.Is(err, ErrAgentGitHubSecret) {
-		t.Fatalf("expected ErrAgentGitHubSecret for an agent sandbox with a GitHub bind, got %v", err)
+	sb, err := CreateAndBoot(ctx, svc, cache, fakeDriverFactory(fake.New()), noopProbe, "proj", "agent-gh", opts)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: got error %v, want success (agent+GitHub+AllowedRepo must be accepted per D-SHL-05)", err)
+	}
+	if sb.Envelope.AllowedRepo != "owner/name" {
+		t.Errorf("AllowedRepo = %q, want %q", sb.Envelope.AllowedRepo, "owner/name")
 	}
 }

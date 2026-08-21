@@ -109,10 +109,6 @@ func SecretTouchesGitHub(b SecretBind) bool {
 	return false
 }
 
-// ErrAgentGitHubSecret is returned when an agent create path is asked to
-// bind a GitHub secret (D-PD-22 / D-PD-23 / D-PD-25).
-var ErrAgentGitHubSecret = fmt.Errorf("service: agent sandbox must not bind a GitHub secret")
-
 // ErrUnboundGitHubSecret is returned by CreateAndBoot when a secret bind
 // covers a GitHub host but AllowedRepo is empty (D-PD-36). Without a per-repo
 // path allowlist the operator's full-scope token is unbounded — every
@@ -196,8 +192,9 @@ func ResolveEnvelopeSecrets(ctx context.Context, specs []string) ([]SecretBind, 
 }
 
 // SeedGuestSecrets re-resolves frozen ENV@hosts specs, mints placeholders
-// into broker, and appends KEY=VALUE lines to the guest cred.env. Tokens
-// never leave the supervisor process.
+// into broker, and writes KEY=VALUE lines as the guest cred.env (whole-file
+// overwrite via the seeder, not an append). Tokens never leave the supervisor
+// process.
 func SeedGuestSecrets(ctx context.Context, broker *cred.Broker, id domain.SandboxID, specs []string, seeder GuestSeeder) error {
 	if broker == nil || len(specs) == 0 {
 		return nil
@@ -219,7 +216,8 @@ func SeedGuestSecrets(ctx context.Context, broker *cred.Broker, id domain.Sandbo
 
 
 // applySecrets mints placeholders for each bind, wires real tokens into the
-// broker, and returns the extra KEY=VALUE lines to append to cred.env.
+// broker, and returns KEY=VALUE lines that the caller writes as the guest
+// cred.env (whole-file overwrite, not an append — the seeder owns the write).
 // The first host of each bind owns the placeholder emitted as Env (and, for
 // GH_TOKEN, also as GITHUB_TOKEN).
 func applySecrets(broker *cred.Broker, id domain.SandboxID, binds []SecretBind) (extra []byte, hosts []string, err error) {

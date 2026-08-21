@@ -161,21 +161,17 @@ func (f *failOnceDeleteStore) Delete(ctx context.Context, id domain.SandboxID) e
 	return f.Store.Delete(ctx, id)
 }
 
-// TestGHBootGuard_RollbackDeleteFailureSurfaced verifies that when the
-// ErrAgentGitHubSecret rollback path fails to delete the sandbox record, the
-// delete error is included in the returned error — it is NOT silently swallowed.
-// The caller still receives ErrAgentGitHubSecret so the refusal reason is never
-// masked.
+// TestGHBootGuard_StoreWrapperFailOnce verifies the failOnceDeleteStore
+// test helper itself: first Delete returns the injected error; subsequent
+// calls delegate to the underlying store.
 //
-// Mutation evidence:
-//   Change `if delErr := svc.store.Delete(...)` back to `_ = svc.store.Delete(...)`
-//   → errors.Is(err, ErrAgentGitHubSecret) still passes but the returned error
-//   no longer contains "rollback failed", so the second assertion fails.
-//   Restore → test passes.
-func TestGHBootGuard_RollbackDeleteFailureSurfaced(t *testing.T) {
-	// To drive the ErrAgentGitHubSecret rollback path we need CreateAndBoot.
-	// Delegate to the internal package test helper via the exported API only.
-	// We construct a service with a failing store so Delete returns an error.
+// D-SHL-05 note: the post-boot ErrAgentGitHubSecret rollback path this
+// wrapper was originally designed to drive has been removed. The pre-boot
+// ErrUnboundGitHubSecret guard now fires before any VM boots, so no
+// post-boot rollback is needed for agent+GitHub sandboxes. This test retains
+// the store wrapper verification in case it is useful for other rollback
+// scenarios.
+func TestGHBootGuard_StoreWrapperFailOnce(t *testing.T) {
 	st, err := store.NewFileStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewFileStore: %v", err)
@@ -184,10 +180,7 @@ func TestGHBootGuard_RollbackDeleteFailureSurfaced(t *testing.T) {
 		Store:       st,
 		errOnDelete: errors.New("disk full: cannot delete record"),
 	}
-	_ = fst // used below via service.New
-	// The rollback test is exercised in gh_boot_rollback_test.go (package service)
-	// where the internal CreateAndBoot machinery is accessible. This test
-	// verifies the store wrapper itself behaves correctly.
+	// Verify the wrapper behaves correctly: first Delete fails, second delegates.
 	if err := fst.Delete(context.Background(), domain.NewSandboxID()); err == nil {
 		t.Fatal("failOnceDeleteStore: first Delete should fail")
 	}

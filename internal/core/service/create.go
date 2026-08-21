@@ -756,9 +756,13 @@ func CreateAndBoot(
 	// is covered. A GitHub host in SecretHosts without AllowedRepo means the
 	// full-scope token is unbounded; that configuration must never be persisted.
 	//
-	// The UseAgentSeed path is excluded: it has a stricter guard further down
-	// (ErrAgentGitHubSecret) that covers agent sandboxes regardless of AllowedRepo.
-	if opts.AllowedRepo == "" && !opts.UseAgentSeed {
+	// D-SHL-05: agent sandboxes MAY bind a GitHub secret when AllowedRepo is
+	// set — the guest holds only a 64-hex placeholder; the host-side MITM proxy
+	// swaps the real token restricted to the single repo named by AllowedRepo.
+	// This pre-boot check is the sole enforcement point for ALL callers; the
+	// previous post-boot ErrAgentGitHubSecret guard has been removed because
+	// it was unreachable once this check became unconditional.
+	if opts.AllowedRepo == "" {
 		for _, b := range opts.Secrets {
 			if SecretTouchesGitHub(b) {
 				return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, ErrUnboundGitHubSecret)
@@ -856,34 +860,12 @@ func CreateAndBoot(
 	// NOTE: service.Start (restart of a stopped sandbox) will also need seeding
 	// once it gains a reachability probe — /run is tmpfs and does not survive
 	// a guest restart. That wiring is deferred until the restart probe exists.
-	// D-PD-23: no agent sandbox may carry a GitHub secret bind, whichever way
-	// it was declared an agent sandbox — by asking for the credential seed
-	// (UseAgentSeed), or by naming an agent profile (`sandbox create --agent`,
-	// which never sets UseAgentSeed: it names its agent and leaves the seeding
-	// to the detached supervisor).
-	//
-	// This refusal is deliberately SEPARATE from the seeding block below.
-	// Folding it in would make naming an agent also request a CLI-side seed,
-	// and a CLI-side seed on that path mints placeholders that the
-	// supervisor's reboot discards — /run is tmpfs — leaving the guest and
-	// the proxy disagreeing about which placeholder to swap.
-	if opts.UseAgentSeed || agentProfile.Name != "" {
-		for _, b := range opts.Secrets {
-			if SecretTouchesGitHub(b) {
-				_ = bootDrv.Stop(ctx, booted.ID)
-				// Surface Delete failures: a failed Delete leaves the forbidden
-				// record on disk, which Hole-1 guards would then refuse to boot but
-				// which is still a leaked, unrecoverable record. Include the delete
-				// error in the returned error without masking the original refusal.
-				if delErr := svc.store.Delete(ctx, booted.ID); delErr != nil {
-					return domain.Sandbox{}, fmt.Errorf(
-						"service: create-and-boot %s/%s: rollback failed (record not deleted: %v): %w",
-						project, name, delErr, ErrAgentGitHubSecret)
-				}
-				return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, ErrAgentGitHubSecret)
-			}
-		}
-	}
+	// D-SHL-05: the pre-boot guard 6b above (ErrUnboundGitHubSecret) is now
+	// unconditional — it covers agent sandboxes and non-agent sandboxes alike.
+	// The earlier post-boot refusal (ErrAgentGitHubSecret) has been removed:
+	// it was unreachable because guard 6b returns before boot or persistence
+	// for any sandbox that would have triggered it, and dead code that looks
+	// like a security guard is worse than no code.
 
 	if opts.UseAgentSeed {
 		// agentProfile was resolved above and is the same value recorded as

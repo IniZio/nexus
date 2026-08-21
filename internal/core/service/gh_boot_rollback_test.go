@@ -1,108 +1,29 @@
-// gh_boot_rollback_test.go — D-PD-36 Hole 2: rollback Delete failure surface.
+// gh_boot_rollback_test.go — D-PD-36 pre-boot guard: agent + GitHub + no AllowedRepo.
 //
-// This file is package service (internal) so it can reuse the CreateAndBoot
-// test helpers (noopProbe, fakeDriverFactory, putFakeImage) from create_test.go.
+// D-SHL-05 removed the post-boot ErrAgentGitHubSecret guard. The pre-boot
+// ErrUnboundGitHubSecret guard (guard 6b in CreateAndBoot) is now unconditional
+// and fires before the VM boots or the record is persisted, so no rollback is
+// needed. These tests verify that the pre-boot refusal fires and that no
+// sandbox record is left behind.
 
 package service
 
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
 	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/store"
 )
 
-// failOnDeleteStore wraps a Store and returns errOnDelete on every Delete call.
-// Used to simulate a disk-full or lock-failure scenario during rollback.
-type failOnDeleteStore struct {
-	store.Store
-	errOnDelete error
-}
-
-func (f *failOnDeleteStore) Delete(_ context.Context, _ domain.SandboxID) error {
-	return f.errOnDelete
-}
-
-// TestGHBootGuard_RollbackDeleteFailureSurfaced drives the REAL CreateAndBoot
-// path with UseAgentSeed=true and a GitHub secret bind. When the rollback's
-// store.Delete fails, the error must appear in the returned error rather than
-// being silently swallowed. The caller must still see ErrAgentGitHubSecret
-// as the sentinel so the refusal reason is preserved.
+// TestGHBootGuard_AgentSeed_NoRepo_Refused verifies that UseAgentSeed + GitHub
+// secret + no AllowedRepo is refused PRE-BOOT with ErrUnboundGitHubSecret.
+// No sandbox record is created, so no rollback cleanup is needed.
 //
-// Mutation evidence:
-//   Change the rollback from:
-//     if delErr := svc.store.Delete(ctx, booted.ID); delErr != nil { return ..., ErrAgentGitHubSecret }
-//   back to:
-//     _ = svc.store.Delete(ctx, booted.ID)
-//   → errors.Is(err, ErrAgentGitHubSecret) still passes but
-//     strings.Contains(err.Error(), "rollback failed") is false → assertion fails.
-//   Restore → test passes.
-func TestGHBootGuard_RollbackDeleteFailureSurfaced(t *testing.T) {
-	ctx := context.Background()
-	cacheRoot := t.TempDir()
-	cache, err := image.NewCache(cacheRoot)
-	if err != nil {
-		t.Fatalf("NewCache: %v", err)
-	}
-	img := putFakeImage(t, ctx, cache)
-
-	// Backing store that always fails on Delete — simulates disk-full / flock
-	// error during rollback cleanup.
-	realSt, err := store.NewFileStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
-	deleteErr := errors.New("disk full: cannot delete record")
-	fst := &failOnDeleteStore{Store: realSt, errOnDelete: deleteErr}
-
-	fd := fake.New()
-	svc := New(fst, fd, lifecycle.New())
-
-	_, createErr := CreateAndBoot(
-		ctx,
-		svc,
-		cache,
-		fakeDriverFactory(fd),
-		noopProbe,
-		"proj", "rollback-test",
-		CreateAndBootOptions{
-			Image:        ImageSpec{Digest: string(img.Digest)},
-			CacheRoot:    cacheRoot,
-			UseAgentSeed: true,
-			// GitHub secret bind triggers ErrAgentGitHubSecret in UseAgentSeed path.
-			Secrets: []SecretBind{{Env: BuiltinGitHubEnv, Hosts: GitHubSecretHosts, Token: "ghp_tok"}},
-		},
-	)
-
-	// 1. The caller must see ErrAgentGitHubSecret as the refusal sentinel.
-	if !errors.Is(createErr, ErrAgentGitHubSecret) {
-		t.Fatalf("CreateAndBoot: got %v, want ErrAgentGitHubSecret", createErr)
-	}
-
-	// 2. The Delete failure must appear in the error string so the operator can
-	// diagnose the leaked record. A swallowed delete error produces a plain
-	// ErrAgentGitHubSecret message with no mention of the rollback failure.
-	if createErr == nil || !strings.Contains(createErr.Error(), "rollback failed") {
-		t.Errorf("CreateAndBoot error should mention rollback failure; got: %v", createErr)
-	}
-
-	// 3. The fake driver's sandboxes still contain the leaked record (Delete
-	// failed), confirming that the guard correctly surfaced the leak rather than
-	// pretending the cleanup succeeded.
-	_ = createErr // already checked above
-}
-
-// TestGHBootGuard_RollbackDeleteSuccess_ErrAgentGitHubSecret is a baseline: when
-// Delete succeeds the caller still sees ErrAgentGitHubSecret (no mention of
-// "rollback failed" since there was no failure).
-func TestGHBootGuard_RollbackDeleteSuccess_ErrAgentGitHubSecret(t *testing.T) {
+// Mutation evidence: comment out guard 6b in CreateAndBoot
+// → errors.Is(err, ErrUnboundGitHubSecret) fails (got nil). Restore → passes.
+func TestGHBootGuard_AgentSeed_NoRepo_Refused(t *testing.T) {
 	ctx := context.Background()
 	cacheRoot := t.TempDir()
 	cache, err := image.NewCache(cacheRoot)
@@ -115,28 +36,61 @@ func TestGHBootGuard_RollbackDeleteSuccess_ErrAgentGitHubSecret(t *testing.T) {
 	svc := newTestSvc(t, fd)
 
 	_, createErr := CreateAndBoot(
-		ctx,
-		svc,
-		cache,
-		fakeDriverFactory(fd),
-		noopProbe,
-		"proj", "rollback-ok-test",
+		ctx, svc, cache, fakeDriverFactory(fd), noopProbe,
+		"proj", "agent-no-repo",
+		CreateAndBootOptions{
+			Image:        ImageSpec{Digest: string(img.Digest)},
+			CacheRoot:    cacheRoot,
+			UseAgentSeed: true,
+			// GitHub secret bind — AllowedRepo deliberately absent.
+			Secrets: []SecretBind{{Env: BuiltinGitHubEnv, Hosts: GitHubSecretHosts, Token: "ghp_tok"}},
+			// AllowedRepo: "",  // omitted — triggers ErrUnboundGitHubSecret
+		},
+	)
+
+	if !errors.Is(createErr, ErrUnboundGitHubSecret) {
+		t.Fatalf("CreateAndBoot: got %v, want ErrUnboundGitHubSecret", createErr)
+	}
+	// Guard fires pre-boot: driver should never have received a Start call.
+	for _, c := range fd.Calls() {
+		if c.Kind == fake.CallStart {
+			t.Errorf("driver.Start was called despite pre-boot refusal (sandbox ID %s)", c.ID)
+		}
+	}
+}
+
+// TestGHBootGuard_AgentSeed_WithRepo_Allowed verifies that UseAgentSeed +
+// GitHub secret + AllowedRepo set is ACCEPTED (D-SHL-05).
+//
+// Mutation evidence: set AllowedRepo = "" in the options
+// → CreateAndBoot returns ErrUnboundGitHubSecret, err != nil check fails.
+func TestGHBootGuard_AgentSeed_WithRepo_Allowed(t *testing.T) {
+	ctx := context.Background()
+	cacheRoot := t.TempDir()
+	cache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	img := putFakeImage(t, ctx, cache)
+
+	fd := fake.New()
+	svc := newTestSvc(t, fd)
+
+	sb, err := CreateAndBoot(
+		ctx, svc, cache, fakeDriverFactory(fd), noopProbe,
+		"proj", "agent-with-repo",
 		CreateAndBootOptions{
 			Image:        ImageSpec{Digest: string(img.Digest)},
 			CacheRoot:    cacheRoot,
 			UseAgentSeed: true,
 			Secrets:      []SecretBind{{Env: BuiltinGitHubEnv, Hosts: GitHubSecretHosts, Token: "ghp_tok"}},
+			AllowedRepo:  "owner/repo", // D-PD-36 satisfied; D-SHL-05 permits this
 		},
 	)
-
-	if !errors.Is(createErr, ErrAgentGitHubSecret) {
-		t.Fatalf("CreateAndBoot: got %v, want ErrAgentGitHubSecret", createErr)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: got %v, want success", err)
 	}
-	// When Delete succeeds the rollback failure path is NOT taken.
-	if strings.Contains(createErr.Error(), "rollback failed") {
-		t.Errorf("unexpected 'rollback failed' in error: %v", createErr)
+	if sb.Envelope.AllowedRepo != "owner/repo" {
+		t.Errorf("AllowedRepo = %q, want %q", sb.Envelope.AllowedRepo, "owner/repo")
 	}
 }
-
-// Compile-time: failOnDeleteStore implements store.Store.
-var _ driver.Driver = (*fake.FakeDriver)(nil)

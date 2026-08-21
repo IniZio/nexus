@@ -125,7 +125,12 @@ func TestCreateAndBoot_HumanSecrets_NotOnAllowedHosts(t *testing.T) {
 	}
 }
 
-func TestCreateAndBoot_AgentRefusesGitHubSecret(t *testing.T) {
+// TestCreateAndBoot_AgentSeed_GitHubSecret_NoRepo_Refused verifies that
+// UseAgentSeed + GitHub secret + no AllowedRepo is refused by the unconditional
+// pre-boot D-PD-36 guard (ErrUnboundGitHubSecret). D-SHL-05 lifted the blanket
+// agent-GitHub ban; the AllowedRepo requirement is still enforced for every
+// caller.
+func TestCreateAndBoot_AgentSeed_GitHubSecret_NoRepo_Refused(t *testing.T) {
 	ctx := context.Background()
 	cacheRoot := t.TempDir()
 	cache, err := image.NewCache(cacheRoot)
@@ -146,9 +151,10 @@ func TestCreateAndBoot_AgentRefusesGitHubSecret(t *testing.T) {
 		Token: "should-never-bind",
 	}}
 	WireClaudeEgress(&opts, broker, cap.fn(), nil)
+	// AllowedRepo deliberately omitted.
 	_, err = CreateAndBoot(ctx, svc, cache, fakeDriverFactory(fake.New()), noopProbe, "proj", "agent", opts)
-	if !errors.Is(err, ErrAgentGitHubSecret) {
-		t.Fatalf("CreateAndBoot err = %v, want ErrAgentGitHubSecret", err)
+	if !errors.Is(err, ErrUnboundGitHubSecret) {
+		t.Fatalf("CreateAndBoot err = %v, want ErrUnboundGitHubSecret", err)
 	}
 }
 
