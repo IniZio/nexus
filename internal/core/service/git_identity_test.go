@@ -668,3 +668,44 @@ func TestGitCredentialHelper_ShellBehavior(t *testing.T) {
 		}
 	})
 }
+
+// TestBuildGitconfigPayload_GitHubSSHRewrite pins the insteadOf rewrite that
+// makes a GitHub SSH remote pushable from inside a sandbox.
+//
+// A guest holds no SSH key — the credential rail forbids seeding one — and the
+// MITM proxy that swaps the placeholder for the real token only observes HTTPS
+// CONNECTs. So "git@github.com:owner/repo.git", the default remote for most
+// clones, cannot be pushed from a sandbox at all. The agent inherits that
+// remote through its mounted worktree, so without the rewrite the outbound
+// half fails with an SSH timeout that reads as a network fault.
+//
+// Mutation: delete either insteadOf line -> the matching subtest fails RED.
+func TestBuildGitconfigPayload_GitHubSSHRewrite(t *testing.T) {
+	payload := string(buildGitconfigPayload("Ada Lovelace", "ada@example.com", []string{"/work"}, "nexus3/x/abc123"))
+
+	if !strings.Contains(payload, `[url "https://github.com/"]`) {
+		t.Fatalf("payload has no [url \"https://github.com/\"] section; a git@github.com: remote\n"+
+			"would be unpushable from the guest.\npayload:\n%s", payload)
+	}
+
+	// Both spellings matter: scp-style is what `git clone git@github.com:o/r`
+	// writes, and ssh:// is what some tools normalise it to. Covering only one
+	// leaves the other silently broken.
+	for _, form := range []string{
+		"insteadOf = git@github.com:",
+		"insteadOf = ssh://git@github.com/",
+	} {
+		t.Run(form, func(t *testing.T) {
+			if !strings.Contains(payload, form) {
+				t.Errorf("payload missing %q\npayload:\n%s", form, payload)
+			}
+		})
+	}
+
+	// The rewrite must be scoped to GitHub. A bare "insteadOf = git@" would
+	// silently redirect every SSH remote — GitLab, an internal host — to a
+	// GitHub URL that will not exist.
+	if strings.Contains(payload, "insteadOf = git@\n") {
+		t.Error("payload contains an unscoped git@ rewrite; it would misroute non-GitHub SSH remotes")
+	}
+}

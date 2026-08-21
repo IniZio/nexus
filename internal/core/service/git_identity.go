@@ -267,6 +267,28 @@ func buildGitconfigPayload(name, email string, sourcePaths []string, branch stri
 	buf.WriteString("\thelper = " +
 		`!f(){ case $1 in get) [ -n "${GH_TOKEN}" ] && { printf 'username=x-token-auth\n'; printf 'password=%s\n' "${GH_TOKEN}"; } || :;; esac; }; f` +
 		"\n")
+
+	// Rewrite GitHub SSH remotes to HTTPS.
+	//
+	// A guest cannot push over SSH, and not by accident: no SSH key is ever
+	// seeded into a sandbox (the credential rail forbids it), and the MITM
+	// proxy that swaps the placeholder for the real token only sees HTTPS
+	// CONNECTs. A "git@github.com:owner/repo.git" remote — the default for
+	// most cloned repositories, including this one — is therefore
+	// structurally unpushable from inside a sandbox.
+	//
+	// Without this rewrite the agent inherits that remote through its mounted
+	// worktree and fails with an SSH timeout, which reads as a network fault
+	// rather than as the credential-design decision it actually is. With it,
+	// the same remote transparently uses the perimeter and the credential
+	// helper above.
+	//
+	// This grants a sandbox no reach it did not already have: contacting
+	// github.com still requires the host to have admitted it, and the token
+	// swap still requires a bound secret scoped to a single repository.
+	buf.WriteString("[url \"https://github.com/\"]\n")
+	buf.WriteString("\tinsteadOf = git@github.com:\n")
+	buf.WriteString("\tinsteadOf = ssh://git@github.com/\n")
 	return buf.Bytes()
 }
 
