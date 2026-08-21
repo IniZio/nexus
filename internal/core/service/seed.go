@@ -7,8 +7,10 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -587,6 +589,128 @@ func SeedGuestShellProfile(ctx context.Context, id domain.SandboxID, seeder Gues
 	}
 	if err := seeder(ctx, id, []byte(guestShellProfileScript)); err != nil {
 		return fmt.Errorf("seed guest shell profile: deliver to guest: %w", err)
+	}
+	return nil
+}
+
+// GuestAgentOnboardingPath is the well-known path inside the guest where the
+// claude CLI stores its first-run onboarding state.
+//
+// The guest runs as root so the path is under /root. Seeding this file lets
+// an interactively started `claude` skip the theme-picker and folder-trust
+// wizards and go straight to its prompt. Without it the operator sees
+// first-run dialogs on every freshly booted sandbox.
+const GuestAgentOnboardingPath = "/root/.claude.json"
+
+// GuestExecer runs an arbitrary command in the guest and returns its exit
+// code. The production implementation delegates to (*agent.Client).Exec;
+// tests inject a spy. argv must be non-empty. A non-zero exit code is
+// treated as an error by callers (SeedGuestAgentOnboarding).
+//
+// stdin is forwarded to the guest process (may be nil for no stdin).
+type GuestExecer func(ctx context.Context, id domain.SandboxID, argv []string, stdin io.Reader) (int32, error)
+
+// NewAgentExecer returns a GuestExecer that runs commands in the guest via
+// the agent's Exec mechanism. Use it to build a GuestExecer from a live
+// agent client.
+func NewAgentExecer(c *agent.Client) GuestExecer {
+	return func(ctx context.Context, _ domain.SandboxID, argv []string, stdin io.Reader) (int32, error) {
+		return c.Exec(ctx, agent.ExecOptions{Argv: argv, Stdin: stdin})
+	}
+}
+
+// guestAgentOnboardingScript is run inside the guest as `sh -c SCRIPT` by
+// SeedGuestAgentOnboarding. Passing the script as a -c argument (rather than
+// via stdin) leaves stdin free for `cat > "$tmp"` to read the JSON payload.
+//
+// It is idempotent: if GuestAgentOnboardingPath already exists it exits 0
+// immediately so real agent state (project history, granted allowedTools,
+// userID) is never overwritten. The JSON is read from stdin and written
+// atomically via a temp file so a killed write cannot leave a truncated file.
+//
+// The guard is implemented INSIDE the guest (not host-side) because a
+// host-side exists-check followed by a write is a TOCTOU race: the file
+// could be created between the check and the write by a concurrently
+// running agent. The in-guest guard executes as a single atomic shell
+// process.
+const guestAgentOnboardingScript = `set -e
+dst='` + GuestAgentOnboardingPath + `'
+[ -e "$dst" ] && exit 0
+tmp="${dst}.nexus3.tmp.$$"
+cat > "$tmp"
+mv "$tmp" "$dst"
+`
+
+// claudeOnboardingConfig is the structure marshalled into GuestAgentOnboardingPath.
+type claudeOnboardingConfig struct {
+	HasCompletedOnboarding bool                          `json:"hasCompletedOnboarding"`
+	Theme                  string                        `json:"theme"`
+	Projects               map[string]claudeProjectEntry `json:"projects,omitempty"`
+}
+
+type claudeProjectEntry struct {
+	HasTrustDialogAccepted        bool     `json:"hasTrustDialogAccepted"`
+	HasCompletedProjectOnboarding bool     `json:"hasCompletedProjectOnboarding"`
+	AllowedTools                  []string `json:"allowedTools"`
+}
+
+// SeedGuestAgentOnboarding writes GuestAgentOnboardingPath inside the guest
+// so that an interactively started `claude` skips the first-run wizards and
+// lands directly at its prompt.
+//
+// The three keys required, measured in a live guest:
+//   - hasCompletedOnboarding — skips the theme-picker wizard.
+//   - theme — skips the colour-scheme prompt.
+//   - projects[projectDir] — skips the per-directory folder-trust dialog.
+//
+// If projectDir is empty, no projects entry is written; claude will still
+// skip the global wizards but will stop at the folder-trust dialog for
+// whichever directory it is started in.
+//
+// The write is idempotent: if GuestAgentOnboardingPath already exists the
+// guest script exits 0 immediately, so real agent state accumulated after
+// first launch (project history, operator-granted allowedTools, userID) is
+// never clobbered.
+//
+// If execer is nil this is a no-op, matching SeedGuestShellProfile.
+func SeedGuestAgentOnboarding(ctx context.Context, id domain.SandboxID, projectDir string, execer GuestExecer) error {
+	if execer == nil {
+		return nil
+	}
+
+	cfg := claudeOnboardingConfig{
+		HasCompletedOnboarding: true,
+		Theme:                  "dark",
+	}
+	if projectDir != "" {
+		cfg.Projects = map[string]claudeProjectEntry{
+			projectDir: {
+				HasTrustDialogAccepted:        true,
+				HasCompletedProjectOnboarding: true,
+				AllowedTools:                  []string{},
+			},
+		}
+	}
+
+	payload, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("seed guest agent onboarding: marshal config: %w", err)
+	}
+
+	// The guest script is passed as a -c argument (not via stdin) so that
+	// stdin remains free for `cat > "$tmp"` to receive the JSON payload.
+	// The JSON is piped via stdin; encoding/json handles all escaping so
+	// projectDir (which may contain double quotes, backslashes, or $(...))
+	// is already safe inside the JSON blob and never touches shell syntax.
+	code, err := execer(ctx, id,
+		[]string{"/bin/sh", "-c", guestAgentOnboardingScript},
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		return fmt.Errorf("seed guest agent onboarding: exec script: %w", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("seed guest agent onboarding: script exited %d", code)
 	}
 	return nil
 }

@@ -42,7 +42,7 @@ func TestProbeAndSeedGuest_DeadProberReturnsError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := probeAndSeedGuest(ctx, domain.SandboxID{}, &alwaysFailProber{err: errors.New("vsock refused")}, nil)
+	err := probeAndSeedGuest(ctx, domain.SandboxID{}, &alwaysFailProber{err: errors.New("vsock refused")}, nil, nil, "")
 	if err == nil {
 		t.Fatal("probeAndSeedGuest with dead prober returned nil — ProbeGuestAgent call may be missing (D-M4 mutation guard)")
 	}
@@ -68,11 +68,37 @@ func TestProbeAndSeedGuest_LiveProberSeedIsInvoked(t *testing.T) {
 	}
 	t.Cleanup(func() { seedShellProfileFn = old })
 
-	err := probeAndSeedGuest(context.Background(), domain.SandboxID{}, &alwaysOKProber{}, nil)
+	err := probeAndSeedGuest(context.Background(), domain.SandboxID{}, &alwaysOKProber{}, nil, nil, "")
 	if err != nil {
 		t.Fatalf("probeAndSeedGuest with live prober: unexpected error %v", err)
 	}
 	if !seedCalled {
 		t.Fatal("seedShellProfileFn was not called — SeedGuestShellProfile wiring missing from probeAndSeedGuest (D-M4 mutation guard)")
+	}
+}
+
+// TestProbeAndSeedGuest_AgentOnboardingIsInvoked is the mutation guard for the
+// seedAgentOnboardingFn call inside probeAndSeedGuest (D-J10):
+//
+//	Delete seedAgentOnboardingFn(…) from probeAndSeedGuest → this test fails RED.
+//
+// When the guest agent is reachable, the onboarding seeder must be invoked so
+// that an interactively started claude skips the first-run wizards and reaches
+// its prompt directly.
+func TestProbeAndSeedGuest_AgentOnboardingIsInvoked(t *testing.T) {
+	onboardCalled := false
+	old := seedAgentOnboardingFn
+	seedAgentOnboardingFn = func(_ context.Context, _ domain.SandboxID, _ string, _ service.GuestExecer) error {
+		onboardCalled = true
+		return nil
+	}
+	t.Cleanup(func() { seedAgentOnboardingFn = old })
+
+	err := probeAndSeedGuest(context.Background(), domain.SandboxID{}, &alwaysOKProber{}, nil, nil, "")
+	if err != nil {
+		t.Fatalf("probeAndSeedGuest with live prober: unexpected error %v", err)
+	}
+	if !onboardCalled {
+		t.Fatal("seedAgentOnboardingFn was not called — SeedGuestAgentOnboarding wiring missing from probeAndSeedGuest (D-J10 mutation guard)")
 	}
 }

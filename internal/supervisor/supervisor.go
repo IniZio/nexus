@@ -441,7 +441,27 @@ func RunDetached(cfg Config) error {
 		// and the login-shell credential drop-in, both extracted into a testable
 		// helper so deleting either call turns the unit suite RED (D-M4).
 		profileSeeder := service.NewGuestFileSeeder(agentClient, service.GuestShellProfilePath)
-		if checkErr := probeAndSeedGuest(ctx, sb.ID, agentClient, profileSeeder); checkErr != nil {
+		onboardingExecer := service.NewAgentExecer(agentClient)
+		// Resolve the guest project directory: the first live-mount guest path,
+		// then the first mounted-volume guest path, then "" (no projects entry).
+		// This mirrors herdrShellCwd's priority and ensures the onboarding seed
+		// records the directory where the operator's source is mounted.
+		projectDir := ""
+		for _, m := range sb.LiveMounts {
+			if m.GuestPath != "" {
+				projectDir = m.GuestPath
+				break
+			}
+		}
+		if projectDir == "" {
+			for _, v := range sb.MountedVolumes {
+				if v.GuestPath != "" {
+					projectDir = v.GuestPath
+					break
+				}
+			}
+		}
+		if checkErr := probeAndSeedGuest(ctx, sb.ID, agentClient, profileSeeder, onboardingExecer, projectDir); checkErr != nil {
 			slog.Error("supervisor.guest_agent_unreachable",
 				"err", checkErr,
 				"action", "refusing READY; sandbox unusable without a reachable guest agent")
@@ -723,15 +743,21 @@ func ProbeGuestAgent(ctx context.Context, prober GuestProber, retryDelay time.Du
 // tests replace it with a spy to verify the call without a live VM (D-M4).
 var seedShellProfileFn = service.SeedGuestShellProfile
 
-// probeAndSeedGuest runs the liveness probe (D-J14) and login-shell credential
-// drop-in seed (D-J11) for a newly-booted guest. Returns non-nil only when the
-// probe fails (guest unreachable); shell-profile seed failures are non-fatal.
+// seedAgentOnboardingFn is the function called by probeAndSeedGuest to write
+// the claude CLI onboarding state. Default is service.SeedGuestAgentOnboarding;
+// tests replace it with a spy to verify the call without a live VM (D-J10).
+var seedAgentOnboardingFn = service.SeedGuestAgentOnboarding
+
+// probeAndSeedGuest runs the liveness probe (D-J14), login-shell credential
+// drop-in seed (D-J11), and claude onboarding seed (D-J10) for a newly-booted
+// guest. Returns non-nil only when the probe fails (guest unreachable);
+// shell-profile and onboarding seed failures are non-fatal.
 //
 // Extracted from RunDetached for unit-testability: tests exercise this function
 // directly with stub probers instead of launching a real VM (D-M4 mutation guard).
 // RunDetached calls this immediately after VM boot; on non-nil return the caller
 // must tear down the VM and return the error so supervisor.pid is never written.
-func probeAndSeedGuest(ctx context.Context, id domain.SandboxID, prober GuestProber, profileSeeder service.GuestSeeder) error {
+func probeAndSeedGuest(ctx context.Context, id domain.SandboxID, prober GuestProber, profileSeeder service.GuestSeeder, onboardingExecer service.GuestExecer, projectDir string) error {
 	const probeTimeout = 30 * time.Second
 	probeCtx, probeCancel := context.WithTimeout(ctx, probeTimeout)
 	probeErr := ProbeGuestAgent(probeCtx, prober, 500*time.Millisecond)
@@ -751,6 +777,19 @@ func probeAndSeedGuest(ctx context.Context, id domain.SandboxID, prober GuestPro
 	} else {
 		slog.Info("supervisor.shell_profile_seeded",
 			"sandbox", id, "path", service.GuestShellProfilePath)
+	}
+
+	// Claude CLI onboarding seed (D-J10). Writes ~/.claude.json so an
+	// interactively started claude skips the theme-picker, login, and
+	// folder-trust wizards and reaches its prompt directly. Non-fatal:
+	// the agent still works, it just opens first-run wizards.
+	if onbErr := seedAgentOnboardingFn(ctx, id, projectDir, onboardingExecer); onbErr != nil {
+		slog.Warn("supervisor.agent_onboarding_seed_failed",
+			"sandbox", id, "path", service.GuestAgentOnboardingPath, "err", onbErr,
+			"action", "an interactively started agent in this guest will open first-run wizards")
+	} else {
+		slog.Info("supervisor.agent_onboarding_seeded",
+			"sandbox", id, "path", service.GuestAgentOnboardingPath)
 	}
 	return nil
 }
