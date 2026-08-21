@@ -12,7 +12,6 @@
   "quickstart.md": 3,
   "recipes/building-images.md": 4,
   "recipes/docker-in-sandbox.md": 9,
-  "recipes/herdr-test-strategy.md": 1,
   "recipes/herdr.md": 5,
   "recipes/mounts-and-worktrees.md": 5,
   "recipes/parallel-dev-flow.md": 3,

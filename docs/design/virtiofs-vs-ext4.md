@@ -3,7 +3,7 @@
 **Date**: 2026-08-18  
 **Branch**: milestone-a-agent-sandbox  
 **Decision**: D-DC-09 — ext4 virtio-blk chosen as the in-guest workspace filesystem  
-**Status**: spike complete; decision ratified. The raw bench output, the bench script, and the guest benchmark source are all committed alongside this document at `docs/design/bench-data/` — that is the authoritative, self-contained evidence for D-DC-09. Caution for auditors: commit `8f3e8fc1c7306ed5d1c4cf2a9dc698f9ff2b1037` also carries `spike/virtiofs/last_run.bench_lines.txt`, an EARLIER 3-round run with different figures and no git-status series; it is NOT the source of the numbers below. This change set untracks `spike/`, which is why the real evidence is committed here instead.
+**Status**: spike complete; decision ratified. The analysis and all figures are committed here. The raw bench output, the bench script, and the guest benchmark source are local-only proof-of-concept artifacts retained on the operator's machine; they are NOT committed to the repo. Caution for auditors: commit `8f3e8fc1c7306ed5d1c4cf2a9dc698f9ff2b1037` also carries `spike/virtiofs/last_run.bench_lines.txt`, an EARLIER 3-round run with different figures and no git-status series; it is NOT the source of the numbers below. That changeset also untracks `spike/`.
 
 ---
 
@@ -26,7 +26,7 @@ Two filesystems were benchmarked in-guest under the same KVM sandbox:
 | `virtiofs` | virtio-fs device (host-shared dir) | `always-writeback` cache mode |
 | `ext4-blk` | virtio-blk device (sparse ext4 image) | defaults |
 
-A Go benchmark binary (`docs/design/bench-data/guest_bench/main.go`) ran 10 rounds of
+A Go benchmark binary (`guest_bench/main.go`, local-only, not in repo) ran 10 rounds of
 1 000-file create / stat / unlink. A separate `git status` probe ran 10 warm
 rounds (plus one cold round) on a 19-file repository cloned onto each
 filesystem.
@@ -52,7 +52,7 @@ All figures in this table are the **always-writeback** run (see Method above). T
 run measures **~12.8×** on the same total; `auto` is what production uses — see
 `docs/site/security/accepted-risks.md`.
 
-Raw round data (ns) from `docs/design/bench-data/2026-08-18-gitstatus-redo-always-writeback-bench_lines.txt` (10 rounds, `cp -a`-equalised legs):
+Raw round data (ns) from `2026-08-18-gitstatus-redo-always-writeback-bench_lines.txt` (local-only capture file, not in repo; 10 rounds, `cp -a`-equalised legs):
 
 **virtiofs create (ns):** 163 950 336 / 142 799 009 / 125 261 024 / 126 244 787 /
 130 654 252 / 148 820 047 / 171 842 650 / 153 476 152 / 149 077 657 / 168 613 434

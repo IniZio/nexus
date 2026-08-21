@@ -1,8 +1,3 @@
----
-title: "herdr plugin test strategy"
-description: "Four-layer test contract for the herdr+nexus3 integration — what each layer proves and what it cannot"
----
-
 # herdr plugin test strategy
 
 This is the standing contract for how the herdr+nexus3 integration is tested.
@@ -10,13 +5,12 @@ Future changes to the plugin, the manifest, or the shell scripts are held to
 these four layers. Each layer names its concrete file or mechanism, states what
 it can prove, and states what it cannot.
 
-::: info Human check — not in any layer
-**Pane rendering and keybindings are outside all four layers and remain a
-human check.** No automated layer verifies that panes open with the correct
-placement, that tab labels are correct, that the UI is legible, or that
-keybindings fire the intended action. These must be checked by a person running
-a real herdr session.
-:::
+> **Human check — not in any layer**
+> **Pane rendering and keybindings are outside all four layers and remain a
+> human check.** No automated layer verifies that panes open with the correct
+> placement, that tab labels are correct, that the UI is legible, or that
+> keybindings fire the intended action. These must be checked by a person running
+> a real herdr session.
 
 ---
 
@@ -101,7 +95,9 @@ herdr parses on the other side of the pane boundary.
 
 ---
 
-## Layer 4 — live herdr session <Badge type="tip" text="built" />
+## Layer 4 — live herdr session
+
+**Status: built**
 
 **Test file:** `internal/cli/herdr_l4_live_test.go`
 
