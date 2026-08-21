@@ -92,11 +92,6 @@ type Refresher struct {
 	// the context is captured at construction time for the HTTP refresh client.
 	ts oauth2.TokenSource
 
-	// base is the non-caching HTTP refresh source used by the production locked
-	// path (lockedToken). It is set only by NewRefresher; nil in test constructors
-	// that inject a fake TokenSource via newRefresherWithSource.
-	base *oauthRefreshBase
-
 	// storePath and meta are set by NewRefresher; empty in test constructors that
 	// inject a fake TokenSource (persistence is skipped when storePath is "").
 	storePath string
@@ -104,11 +99,10 @@ type Refresher struct {
 
 	mu                   sync.Mutex
 	sandboxes            map[domain.SandboxID]struct{}
-	lastToken            string        // most recently vended access token; "" before first call
-	cachedTok            *oauth2.Token // in-process token cache for the production locked path
-	lastPushErrs         []error       // broker push errors from the last rotation; informational
-	lastPersistedRefresh string        // last refresh_token successfully written to storePath
-	lastPersistErr       error         // most recent SaveStore failure; nil on success
+	lastToken            string  // most recently vended access token; "" before first call
+	lastPushErrs         []error // broker push errors from the last rotation; informational
+	lastPersistedRefresh string  // last refresh_token successfully written to storePath
+	lastPersistErr       error   // most recent SaveStore failure; nil on success
 }
 
 // NewRefresher loads a [DedicatedCredStore] from storePath, validates it, and
@@ -178,10 +172,6 @@ func NewRefresher(storePath, host string, broker realTokenSetter) (*Refresher, e
 	// Without this, a valid cached token triggers needPersist==true on first call
 	// and overwrites the file with identical content, creating a torn-write window.
 	r.lastPersistedRefresh = store.RefreshToken
-	// Wire the production locked path: base drives the HTTP refresh call;
-	// cachedTok seeds the in-process cache from the initial on-disk state.
-	r.base = base
-	r.cachedTok = initialTok
 	return r, nil
 }
 
@@ -269,27 +259,10 @@ func (r *Refresher) PersistError() error {
 // process restart loads a live credential. Persist failures are surfaced via
 // [Refresher.PersistError] and logged at slog warn; they never fail vending.
 //
-// Production path (NewRefresher, base != nil): uses [lockedToken], which holds
-// a process-global file lock across the load → HTTP refresh → save cycle to
-// prevent concurrent supervisors from racing on the same refresh_token.
-//
-// Test path (newRefresherWithSource, base == nil): uses the injected
-// oauth2.TokenSource directly without any file locking.
-//
 // Note: the underlying [oauth2.TokenSource.Token] takes no context; ctx is
 // accepted to satisfy the [CredentialSource] interface but cannot be threaded
 // to the HTTP refresh call (the context is captured at construction time).
 func (r *Refresher) Token(_ context.Context) (string, time.Time, error) {
-	// Production path: cross-process serialisation via file lock.
-	// Guard on r.base alone (not a conjunction with r.storePath) so that
-	// zeroing r.storePath is a loud failure (WithStoreLock("", …) errors at
-	// OpenLock) rather than a silent bypass to the unlocked path. r.base is
-	// set ONLY by NewRefresher; newRefresherWithSource leaves it nil.
-	if r.base != nil {
-		return r.lockedToken()
-	}
-
-	// Test / fake-source path: use the injected oauth2.TokenSource as before.
 	t, err := r.ts.Token()
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("cred: refresher: obtaining token: %w", err)
@@ -328,9 +301,6 @@ func (r *Refresher) Token(_ context.Context) (string, time.Time, error) {
 	// change, not access_token change; Anthropic rotates refresh_token on every
 	// grant. Skip if storePath is empty (test paths) or RefreshToken is empty
 	// (would brick the store: LoadStore rejects empty refresh_token).
-	// NOTE: this is the UNLOCKED persist path used by tests that inject a fake
-	// TokenSource via newRefresherWithSource. It is safe for tests because there
-	// are no concurrent supervisor processes in that context.
 	currentRT := t.RefreshToken
 	if r.storePath != "" && currentRT != "" {
 		r.mu.Lock()
@@ -363,156 +333,4 @@ func (r *Refresher) Token(_ context.Context) (string, time.Time, error) {
 	}
 
 	return t.AccessToken, t.Expiry, nil
-}
-
-// lockedToken is the production token-vend path. It holds a process-global file
-// lock (via [WithStoreLock]) across the entire in-process cache check → disk
-// re-read → HTTP refresh (if needed) → disk save cycle.
-//
-// Fast path: if the in-process cached token is still fresh (>refreshExpiryDelta
-// until expiry), return it immediately without any I/O or lock acquisition.
-//
-// Slow path (token stale): acquire the file lock, re-read the store. If another
-// process refreshed while we waited for the lock the disk token is now fresh
-// — use it and skip the HTTP call. Otherwise make the HTTP refresh call while
-// holding the lock and save the result.
-func (r *Refresher) lockedToken() (string, time.Time, error) {
-	// Fast path: in-process cache hit — no lock, no I/O.
-	r.mu.Lock()
-	ct := r.cachedTok
-	r.mu.Unlock()
-	if ct != nil && ct.AccessToken != "" && time.Until(ct.Expiry) > refreshExpiryDelta {
-		return ct.AccessToken, ct.Expiry, nil
-	}
-
-	// Slow path: acquire file lock, re-read disk, refresh if still needed.
-	var (
-		result  *oauth2.Token // token to vend; set inside the closure
-		savedRT string        // non-empty iff an HTTP refresh was made and a save was attempted
-	)
-	lockErr := WithStoreLock(context.Background(), r.storePath, func(diskStore *DedicatedCredStore) (*DedicatedCredStore, error) {
-		// --- Begin cross-process critical section ---
-
-		// Re-check: another process may have refreshed while we waited for the
-		// lock. If the disk token is fresh, use it without an HTTP call.
-		if diskStore != nil && diskStore.AccessToken != "" && time.Until(diskStore.ExpiresAt) > refreshExpiryDelta {
-			tok := &oauth2.Token{
-				AccessToken:  diskStore.AccessToken,
-				RefreshToken: diskStore.RefreshToken,
-				Expiry:       diskStore.ExpiresAt,
-				TokenType:    diskStore.TokenType,
-			}
-			// Sync base's refresh_token so our next HTTP call uses the current one.
-			if diskStore.RefreshToken != "" {
-				r.base.mu.Lock()
-				r.base.rt = diskStore.RefreshToken
-				r.base.mu.Unlock()
-			}
-			result = tok
-			return nil, nil // no save needed
-		}
-
-		// On-disk token is also stale. Make the HTTP refresh call WHILE HOLDING
-		// THE FILE LOCK so no other process can concurrently consume the same
-		// refresh_token. See [WithStoreLock] doc comment for full rationale.
-		newTok, err := r.base.Token() // HTTP round-trip (≈200 ms)
-		if err != nil {
-			return nil, fmt.Errorf("cred: refresher: HTTP refresh: %w", err)
-		}
-		if newTok.AccessToken == "" {
-			return nil, fmt.Errorf("cred: refresher: HTTP refresh returned empty access token")
-		}
-
-		// Determine the refresh_token to persist. oauthRefreshBase.Token() updates
-		// r.base.rt in-place when the server rotates it; newTok.RefreshToken carries
-		// the new value. Fall back to r.base.rt if the server omitted it.
-		rt := newTok.RefreshToken
-		if rt == "" {
-			r.base.mu.Lock()
-			rt = r.base.rt
-			r.base.mu.Unlock()
-		}
-
-		tt := newTok.TokenType
-		if tt == "" {
-			tt = r.meta.tokenType
-		}
-
-		result = newTok
-
-		if rt == "" {
-			// No refresh_token available — cannot persist a usable store.
-			// Return the token without saving; PersistError is not set because
-			// there was nothing to persist (LoadStore rejects empty refresh_token).
-			return nil, nil
-		}
-
-		savedRT = rt
-		return &DedicatedCredStore{
-			AccessToken:   newTok.AccessToken,
-			RefreshToken:  rt,
-			ExpiresAt:     newTok.Expiry,
-			TokenType:     tt,
-			ClientID:      r.meta.clientID,
-			ClientSecret:  r.meta.clientSecret,
-			TokenEndpoint: r.meta.tokenEndpoint,
-		}, nil
-		// --- End cross-process critical section ---
-	})
-
-	if lockErr != nil {
-		// Distinguish save failure (result set, savedRT set) from lock/refresh failure.
-		if savedRT != "" {
-			// HTTP refresh succeeded but SaveStore failed. Surface via PersistError;
-			// vend the token anyway (persist failures are informational).
-			r.mu.Lock()
-			r.lastPersistErr = lockErr
-			r.mu.Unlock()
-			slog.Warn("cred: refresher: failed to persist rotated refresh_token; process restart may hit invalid_grant",
-				"path", r.storePath, "err", lockErr)
-			// Fall through: result is set, we can still vend.
-		} else {
-			// Lock acquisition failed or HTTP refresh failed — cannot vend.
-			return "", time.Time{}, lockErr
-		}
-	}
-
-	if result == nil || result.AccessToken == "" {
-		return "", time.Time{}, fmt.Errorf("cred: refresher: lockedToken: no valid token after lock cycle")
-	}
-
-	// Update in-process cache and detect rotation.
-	r.mu.Lock()
-	rotated := result.AccessToken != r.lastToken
-	if rotated {
-		r.lastToken = result.AccessToken
-		r.lastPushErrs = nil
-	}
-	r.cachedTok = result
-	if savedRT != "" && lockErr == nil {
-		r.lastPersistedRefresh = savedRT
-		r.lastPersistErr = nil
-	}
-	sandboxes := make([]domain.SandboxID, 0, len(r.sandboxes))
-	for id := range r.sandboxes {
-		sandboxes = append(sandboxes, id)
-	}
-	r.mu.Unlock()
-
-	// Push rotation to registered sandboxes (outside the file lock; in-process only).
-	if rotated && len(sandboxes) > 0 {
-		var pushErrs []error
-		for _, id := range sandboxes {
-			if sErr := r.broker.SetRealToken(id, r.host, result.AccessToken); sErr != nil {
-				pushErrs = append(pushErrs, fmt.Errorf("sandbox %v: %w", id, sErr))
-			}
-		}
-		if len(pushErrs) > 0 {
-			r.mu.Lock()
-			r.lastPushErrs = pushErrs
-			r.mu.Unlock()
-		}
-	}
-
-	return result.AccessToken, result.Expiry, nil
 }
