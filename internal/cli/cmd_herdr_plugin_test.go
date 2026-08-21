@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -429,5 +431,148 @@ func TestHerdrPluginLaunch_flagParsing(t *testing.T) {
 	err2 := runHerdrPlugin(context.Background(), []string{"launch"}, out)
 	if err2 == nil {
 		t.Fatal("launch (no args): expected UsageError, got nil")
+	}
+}
+
+// ── herdrReadMountSpec unit tests ─────────────────────────────────────────────
+
+func TestHerdrReadMountSpec_Empty_NoFlags(t *testing.T) {
+	// Blank answer must produce nil flags — empty = no mount.
+	flags, err := herdrReadMountSpec(bufio.NewScanner(strings.NewReader("\n")))
+	if err != nil {
+		t.Fatalf("unexpected error for blank: %v", err)
+	}
+	if len(flags) != 0 {
+		t.Errorf("blank mount spec: want no flags, got %v", flags)
+	}
+}
+
+func TestHerdrReadMountSpec_Valid_ReturnsMountFlag(t *testing.T) {
+	flags, err := herdrReadMountSpec(bufio.NewScanner(strings.NewReader("/tmp:/work\n")))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(flags) != 2 || flags[0] != "--mount" || flags[1] != "/tmp:/work" {
+		t.Errorf("want [--mount /tmp:/work], got %v", flags)
+	}
+}
+
+func TestHerdrReadMountSpec_ValidRO(t *testing.T) {
+	flags, err := herdrReadMountSpec(bufio.NewScanner(strings.NewReader("/tmp:/work:ro\n")))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(flags) != 2 || flags[0] != "--mount" || flags[1] != "/tmp:/work:ro" {
+		t.Errorf("want [--mount /tmp:/work:ro], got %v", flags)
+	}
+}
+
+func TestHerdrReadMountSpec_Invalid_Error(t *testing.T) {
+	// A spec with no colon is rejected before any VM is created.
+	_, err := herdrReadMountSpec(bufio.NewScanner(strings.NewReader("notaspec\n")))
+	if err == nil {
+		t.Fatal("invalid spec: expected error, got nil")
+	}
+}
+
+func TestHerdrReadMountSpec_NonExistentHost_Error(t *testing.T) {
+	_, err := herdrReadMountSpec(bufio.NewScanner(strings.NewReader("/nonexistent-nexus3-test-path:/work\n")))
+	if err == nil {
+		t.Fatal("non-existent host path: expected error, got nil")
+	}
+}
+
+// ── Wiring mutation tests ─────────────────────────────────────────────────────
+//
+// These tests prove the wiring from herdrReadMountSpec to the sandbox-create
+// exec call. Mutation: delete "args = append(args, mountArgs...)" from
+// herdrPluginCreate → TestHerdrPluginCreate_MountWired fails with
+// "--mount not forwarded to sandbox create".
+
+func TestHerdrPluginCreate_MountWired(t *testing.T) {
+	// Point resolveKernelPath at a file that exists.
+	fakeKernel := t.TempDir() + "/vmlinux-x86_64"
+	if err := os.WriteFile(fakeKernel, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NEXUS3_KERNEL_PATH", fakeKernel)
+
+	// Intercept the subprocess and capture args; return non-zero exit so we
+	// stop before herdrPluginSpaceCreate (which needs a real svc).
+	var capturedArgs []string
+	old := herdrExecCommandContext
+	herdrExecCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		capturedArgs = append([]string(nil), args...)
+		return exec.CommandContext(ctx, "false")
+	}
+	defer func() { herdrExecCommandContext = old }()
+
+	// stdin order: image, project, name, github-repo (blank→no-gh), mount-spec
+	input := "sha256:abc\nteam\nbox\n\n/tmp:/work\n"
+	var w strings.Builder
+	_ = herdrPluginCreate(context.Background(), strings.NewReader(input), &w, nil, t.TempDir())
+
+	// The wiring line "args = append(args, mountArgs...)" must forward --mount.
+	if !slices.Contains(capturedArgs, "--mount") {
+		t.Fatalf("--mount not forwarded to sandbox create; args: %v", capturedArgs)
+	}
+	idx := slices.Index(capturedArgs, "--mount")
+	if idx+1 >= len(capturedArgs) || capturedArgs[idx+1] != "/tmp:/work" {
+		t.Fatalf("--mount value wrong in sandbox create args: %v", capturedArgs)
+	}
+}
+
+func TestHerdrPluginCreate_MountEmpty_NoFlag(t *testing.T) {
+	// Blank mount answer → sandbox create must NOT receive --mount.
+	fakeKernel := t.TempDir() + "/vmlinux-x86_64"
+	if err := os.WriteFile(fakeKernel, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NEXUS3_KERNEL_PATH", fakeKernel)
+
+	var capturedArgs []string
+	old := herdrExecCommandContext
+	herdrExecCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		capturedArgs = append([]string(nil), args...)
+		return exec.CommandContext(ctx, "false")
+	}
+	defer func() { herdrExecCommandContext = old }()
+
+	// stdin order: image, project, name, github-repo, mount (blank)
+	input := "sha256:abc\nteam\nbox\n\n\n"
+	var w strings.Builder
+	_ = herdrPluginCreate(context.Background(), strings.NewReader(input), &w, nil, t.TempDir())
+
+	if slices.Contains(capturedArgs, "--mount") {
+		t.Fatalf("--mount must not appear when mount answer is blank; args: %v", capturedArgs)
+	}
+}
+
+func TestHerdrPluginCreate_MountInvalid_ErrorBeforeExec(t *testing.T) {
+	// Invalid mount spec → error returned before any exec call.
+	fakeKernel := t.TempDir() + "/vmlinux-x86_64"
+	if err := os.WriteFile(fakeKernel, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NEXUS3_KERNEL_PATH", fakeKernel)
+
+	execCalled := false
+	old := herdrExecCommandContext
+	herdrExecCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		execCalled = true
+		return exec.CommandContext(ctx, "false")
+	}
+	defer func() { herdrExecCommandContext = old }()
+
+	// stdin: image, project, name, github-repo, invalid mount spec (no host path colon)
+	input := "sha256:abc\nteam\nbox\n\nbadspec\n"
+	var w strings.Builder
+	err := herdrPluginCreate(context.Background(), strings.NewReader(input), &w, nil, t.TempDir())
+
+	if err == nil {
+		t.Fatal("invalid mount spec: expected error, got nil")
+	}
+	if execCalled {
+		t.Fatal("exec must not be called when mount spec is invalid; no half-created sandbox")
 	}
 }

@@ -457,6 +457,33 @@ func herdrRepoFlags(scanner *bufio.Scanner) ([]string, error) {
 // prompt. It matches the default used by the orca remote path.
 const herdrDefaultImage = "nexus3-agent-base"
 
+// herdrExecCommandContext is the exec.CommandContext seam. Production code
+// always uses exec.CommandContext; tests override it to capture args without
+// spawning a real subprocess.
+var herdrExecCommandContext = exec.CommandContext
+
+// herdrReadMountSpec reads one line from scanner and returns the --mount flag
+// pair when the user supplies a spec, or nil when the answer is blank.
+//
+// An empty answer is the safe default (no live mount). A non-empty answer is
+// validated with parseMountLive so the operator gets a legible error before
+// any VM is created. parseMountLive is the single authoritative parser — this
+// function deliberately never duplicates its logic.
+func herdrReadMountSpec(scanner *bufio.Scanner) ([]string, error) {
+	fmt.Fprint(os.Stderr, "mount host:guest[:ro] (blank for none): ")
+	if !scanner.Scan() {
+		return nil, &CodedError{Code: ErrCodeInternalError, Msg: "failed to read mount spec"}
+	}
+	spec := strings.TrimSpace(scanner.Text())
+	if spec == "" {
+		return nil, nil
+	}
+	if _, err := parseMountLive(spec); err != nil {
+		return nil, err
+	}
+	return []string{"--mount", spec}, nil
+}
+
 // herdrPluginCreate interactively prompts for an image and a handle, creates
 // and BOOTS a sandbox, then opens a herdr space for it.
 //
@@ -522,6 +549,12 @@ func herdrPluginCreate(ctx context.Context, r io.Reader, w io.Writer, svc *servi
 		return err
 	}
 
+	mountArgs, err := herdrReadMountSpec(scanner)
+	if err != nil {
+		fmt.Fprintf(w, "error: %v\n", err)
+		return err
+	}
+
 	exe, err := os.Executable()
 	if err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin create: resolve executable: " + err.Error(), Err: err}
@@ -529,7 +562,8 @@ func herdrPluginCreate(ctx context.Context, r io.Reader, w io.Writer, svc *servi
 
 	fmt.Fprintf(w, "creating sandbox %q from image %s ...\n", handle, image)
 	args := append([]string{"sandbox", "create", handle, "--image", image}, repoFlags...)
-	createCmd := exec.CommandContext(ctx, exe, args...)
+	args = append(args, mountArgs...)
+	createCmd := herdrExecCommandContext(ctx, exe, args...)
 	createCmd.Stdout = w
 	createCmd.Stderr = w
 	if err := createCmd.Run(); err != nil {
@@ -694,13 +728,20 @@ func herdrPluginSpaceCreateFromFile(ctx context.Context, r io.Reader, w io.Write
 		return repoErr
 	}
 
+	mountArgs, mountErr := herdrReadMountSpec(scanner)
+	if mountErr != nil {
+		fmt.Fprintf(w, "error: %v\n", mountErr)
+		return mountErr
+	}
+
 	fmt.Fprintf(w, "creating sandbox %q from %s ...\n", handle, dockerfile)
 	exe, err := os.Executable()
 	if err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create-from-file: resolve executable: " + err.Error(), Err: err}
 	}
 	args := append([]string{"sandbox", "create", handle, "--file", contextDir}, repoFlags...)
-	createCmd := exec.CommandContext(ctx, exe, args...)
+	args = append(args, mountArgs...)
+	createCmd := herdrExecCommandContext(ctx, exe, args...)
 	createCmd.Stdout = w
 	createCmd.Stderr = w
 	if err := createCmd.Run(); err != nil {
