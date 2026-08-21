@@ -717,6 +717,27 @@ func guestBootCmdline(mounts []agent.GuestMount, pid1Args, sandboxHandle string)
 //
 // Without --agent this is the identity function on the flags: no profile, the
 // user's --allow-host list verbatim, and egress open unless --egress closed.
+
+// suppressBuiltinGitHub reports whether the builtin `gh auth token` bind
+// should be dropped for this create.
+//
+// D-SHL-05: an agent sandbox MAY carry a GitHub secret, but only when --repo
+// scopes it to one repository. So the builtin is suppressed for an agent
+// sandbox only when no --repo was given — keeping the convenience that an
+// ordinary agent sandbox is not refused a create over a credential the
+// operator never asked for, without discarding the credential in the case the
+// decision exists to enable.
+//
+// This lives in its own function so a test can call the real condition rather
+// than restate it. The rule this replaces ("an agent sandbox never carries a
+// GitHub secret", D-PD-23) was implemented in three separate places; lifting
+// it in the service layer alone left this one silently enforcing the reversed
+// decision, and a live run booted an agent sandbox with --repo set, the
+// service layer willing, and no GitHub credential anywhere.
+func suppressBuiltinGitHub(agentName, allowedRepo string) bool {
+	return agentName != "" && allowedRepo == ""
+}
+
 func resolveAgentPosture(f sandboxCreateFlags) (cred.AgentProfile, []string, bool) {
 	if f.agentName == "" {
 		return cred.AgentProfile{}, f.allowHosts, !f.egressClosed
@@ -1442,10 +1463,21 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		bootLiveMounts = append(bootLiveMounts, lm)
 	}
 
-	// An agent sandbox never carries a GitHub secret bind (D-PD-23), and the
-	// host `gh auth token` bind is on by default. Suppress it here rather than
-	// letting CreateAndBoot refuse the create: the user did not ask for it.
-	if f.agentName != "" {
+	// D-SHL-05: an agent sandbox MAY carry a GitHub secret bind, but only when
+	// --repo scopes it to a single repository. The builtin `gh auth token` bind
+	// is therefore suppressed for an agent sandbox only when no --repo was given.
+	//
+	// Without the --repo condition this suppression silently defeats the whole
+	// outbound path: the service layer permits the bind, the supervisor is ready
+	// to seed it, and the sandbox still boots with no GitHub credential at all —
+	// which is exactly what a live run produced before this was found. The rule
+	// "an agent sandbox never carries a GitHub secret" was implemented in three
+	// places; lifting it in the service layer alone left this one enforcing the
+	// reversed decision.
+	//
+	// The suppression is kept for the no---repo case so that an ordinary agent
+	// sandbox is not refused a create for a credential the user never asked for.
+	if suppressBuiltinGitHub(f.agentName, f.allowedRepo) {
 		f.noBuiltinGH = true
 	}
 

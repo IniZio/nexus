@@ -682,7 +682,7 @@ func TestResolveCreateSecrets_NoBuiltinKeepsExplicit(t *testing.T) {
 func TestD36_ExplicitGitHubSecretWithoutRepo_Refused(t *testing.T) {
 	f := sandboxCreateFlags{
 		secrets:     []string{"GH_TOKEN@github.com,api.github.com"},
-		noBuiltinGH: true,  // skip builtin so only the explicit bind is in play
+		noBuiltinGH: true, // skip builtin so only the explicit bind is in play
 		allowedRepo: "",
 	}
 	_, err := resolveCreateSecrets(context.Background(), f)
@@ -828,5 +828,74 @@ func TestD36_AllowedRepoWiredToOptions(t *testing.T) {
 	if f.allowedRepo != "acme/myrepo" {
 		t.Errorf("f.allowedRepo = %q, want %q (AllowedRepo would be empty in CreateAndBootOptions)",
 			f.allowedRepo, "acme/myrepo")
+	}
+}
+
+// TestAgentBuiltinGitHubSuppression pins the CLI-side half of D-SHL-05.
+//
+// The rule "an agent sandbox never carries a GitHub secret" (D-PD-23) was
+// implemented in three places: a pre-boot service guard, a post-boot service
+// guard, and a CLI suppression of the builtin `gh auth token` bind. D-SHL-05
+// reverses that rule for repo-scoped sandboxes. Lifting only the service
+// guards left this suppression enforcing the reversed decision, and a live
+// run produced an agent sandbox with --repo set, the service layer willing,
+// the supervisor ready to seed — and no GitHub credential anywhere, because
+// the bind was discarded before it was ever built.
+//
+// Nothing in the service package could catch that: from its side the caller
+// simply passed no secrets. So the assertion belongs here, on the flags.
+//
+// Mutation: drop the `&& allowedRepo == ""` clause from suppressBuiltinGitHub
+// -> the repo-scoped case goes RED.
+func TestAgentBuiltinGitHubSuppression(t *testing.T) {
+	cases := []struct {
+		name         string
+		agentName    string
+		allowedRepo  string
+		wantSuppress bool
+	}{
+		{
+			// The capability D-SHL-05 exists to enable. This is the case that
+			// silently failed live.
+			name:         "agent with --repo keeps the builtin GitHub bind",
+			agentName:    "claude-code",
+			allowedRepo:  "owner/repo",
+			wantSuppress: false,
+		},
+		{
+			// Convenience, deliberately preserved: an agent sandbox that never
+			// asked for GitHub must not be refused a create over a credential
+			// the operator did not request.
+			name:         "agent without --repo suppresses the builtin",
+			agentName:    "claude-code",
+			allowedRepo:  "",
+			wantSuppress: true,
+		},
+		{
+			name:         "non-agent with --repo keeps the builtin",
+			agentName:    "",
+			allowedRepo:  "owner/repo",
+			wantSuppress: false,
+		},
+		{
+			name:         "non-agent without --repo keeps the builtin",
+			agentName:    "",
+			allowedRepo:  "",
+			wantSuppress: false,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Calls the production condition. Restating it here instead would
+			// assert a copy, and would stay green through any change to the
+			// real one — the drift this whole slice exists to close.
+			got := suppressBuiltinGitHub(c.agentName, c.allowedRepo)
+
+			if got != c.wantSuppress {
+				t.Errorf("suppressBuiltinGitHub(%q, %q) = %v, want %v",
+					c.agentName, c.allowedRepo, got, c.wantSuppress)
+			}
+		})
 	}
 }
