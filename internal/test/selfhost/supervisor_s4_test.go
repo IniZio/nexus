@@ -100,14 +100,17 @@ func TestSupervisorS4BoundedRetryReady(t *testing.T) {
 	start := time.Now()
 
 	// nil svc is safe: cert != nil so GetPerimeterCACert is never called.
-	done := supervisor.SeedLoop(context.Background(), id, &cert,
+	done, guestEverResponded := supervisor.SeedLoop(context.Background(), id, &cert,
 		failSeeder, failSeeder, broker, nil, maxAttempts, 0, nil, true)
 	elapsed := time.Since(start)
 
 	if done {
 		t.Fatal("SeedLoop returned true but seeders always fail — expected false")
 	}
-	t.Logf("PASS: SeedLoop exited after cap=%d in %v (returned false — caller writes READY)",
+	if guestEverResponded {
+		t.Fatal("SeedLoop reported guestEverResponded=true but CA seeder always fails — expected false")
+	}
+	t.Logf("PASS: SeedLoop exited after cap=%d in %v (returned false, guestEverResponded=false — caller must NOT write READY)",
 		maxAttempts, elapsed)
 }
 
@@ -405,26 +408,20 @@ func TestSupervisorS4PlaceholderInGuest(t *testing.T) {
 		t.Logf("PASS (a): GuestCACertPath contains PEM certificate")
 	}
 
-	// (b) GuestCredEnvPath must contain placeholder token var + NODE_EXTRA_CA_CERTS.
-	credOut, credCode := execGuest("cat " + service.GuestCredEnvPath)
-	if credCode != 0 {
-		t.Errorf("FAIL (b): cannot read GuestCredEnvPath (exit %d): %q", credCode, credOut)
+	// (b) GuestCredEnvPath must be ABSENT for this sandbox.
+	// This sandbox is created without UseAgentSeed, so sb.AgentName="". RunDetached
+	// passes AgentName!="" as seedAgentCreds to SeedLoop (supervisor.go); with
+	// seedAgentCreds=false SeedLoop writes only the CA cert, not the agent
+	// placeholder env file. Asserting absence is the correct post-security-narrowing
+	// expectation (deliberate design: do not hand credential env vars to a guest
+	// that runs no agent). The old assertion that cred.env must be present was
+	// written before that narrowing and was never updated.
+	_, credCode := execGuest("test -e " + service.GuestCredEnvPath)
+	if credCode == 0 {
+		t.Errorf("FAIL (b): GuestCredEnvPath unexpectedly present for non-agent sandbox — "+
+			"agent placeholder must not be seeded when AgentName is empty (D-PD-32 security narrowing)")
 	} else {
-		hasPlaceholder := strings.Contains(credOut, "CLAUDE_CODE_OAUTH_TOKEN=") ||
-			strings.Contains(credOut, "ANTHROPIC_AUTH_TOKEN=")
-		hasNodeCA := strings.Contains(credOut, "NODE_EXTRA_CA_CERTS="+service.GuestCACertPath)
-		if !hasPlaceholder {
-			t.Errorf("FAIL (b): GuestCredEnvPath missing placeholder token var\ncontent: %q",
-				truncateS4(credOut, 400))
-		} else {
-			t.Logf("PASS (b1): GuestCredEnvPath contains placeholder token var")
-		}
-		if !hasNodeCA {
-			t.Errorf("FAIL (b): GuestCredEnvPath missing NODE_EXTRA_CA_CERTS\ncontent: %q",
-				truncateS4(credOut, 400))
-		} else {
-			t.Logf("PASS (b2): GuestCredEnvPath contains NODE_EXTRA_CA_CERTS=%s", service.GuestCACertPath)
-		}
+		t.Logf("PASS (b): GuestCredEnvPath correctly absent for non-agent sandbox (seedAgentCreds=false)")
 	}
 
 	// (c) AC-7 zero-cred-in-guest: no real bearer material on guest disk.
@@ -436,6 +433,27 @@ func TestSupervisorS4PlaceholderInGuest(t *testing.T) {
 		t.Errorf("AC-7 FAIL (c): real cred material found on guest disk:\n%s", zeroOut)
 	} else {
 		t.Logf("PASS (c): AC-7 zero-cred-in-guest: no real token material found")
+	}
+
+	// (d) D-M4 mutation guard: shell-profile drop-in must be present.
+	//
+	// probeAndSeedGuest (called by RunDetached) seeds /etc/profile.d/nexus3-cred.sh
+	// via SeedGuestShellProfile so that login shells (the herdr pane path) pick up
+	// the placeholder credential. Deleting the probeAndSeedGuest call from RunDetached
+	// means the seeder is never invoked and this file is never written → this assertion
+	// fails RED, closing the M4 wiring hole.
+	profContent, profCode := execGuest("cat " + service.GuestShellProfilePath)
+	if profCode != 0 {
+		t.Errorf("D-M4 FAIL (d): shell-profile drop-in absent from guest at %s (exit %d)\n"+
+			"Deleting probeAndSeedGuest call from RunDetached causes this failure.",
+			service.GuestShellProfilePath, profCode)
+	} else {
+		if !strings.Contains(profContent, service.GuestCredEnvPath) {
+			t.Errorf("D-M4 FAIL (d): drop-in at %s does not reference GuestCredEnvPath (%s)\ncontent: %q",
+				service.GuestShellProfilePath, service.GuestCredEnvPath, profContent)
+		} else {
+			t.Logf("PASS (d): shell-profile drop-in present and references GuestCredEnvPath (D-M4 guard)")
+		}
 	}
 
 	// ── Step 8: stop supervisor ────────────────────────────────────────────────

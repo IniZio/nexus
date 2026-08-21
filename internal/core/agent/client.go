@@ -66,6 +66,22 @@ func (c *Client) controlClient(ctx context.Context) (agentpb.AgentServiceClient,
 	return agentpb.NewAgentServiceClient(cc), cc, nil
 }
 
+// Ping proves the guest agent is listening by issuing a ListSessions RPC and
+// discarding the response. It is the cheapest available call: read-only, no
+// side effects, fails immediately if the vsock control port is not open.
+// Used by the supervisor's unconditional liveness probe before seeding.
+func (c *Client) Ping(ctx context.Context) error {
+	stub, cc, err := c.controlClient(ctx)
+	if err != nil {
+		return fmt.Errorf("agent: ping: dial: %w", err)
+	}
+	defer cc.Close()
+	if _, err := stub.ListSessions(ctx, &agentpb.ListSessionsRequest{}); err != nil {
+		return fmt.Errorf("agent: ping: %w", err)
+	}
+	return nil
+}
+
 // dialData opens a raw data-plane connection to the guest.
 func (c *Client) dialData(ctx context.Context) (net.Conn, error) {
 	conn, err := c.dialer.DialGuest(ctx, c.id, wire.DataPort)

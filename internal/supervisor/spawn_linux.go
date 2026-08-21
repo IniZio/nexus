@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -91,6 +92,18 @@ func BuildSupervisorArgv(cfg SpawnConfig) []string {
 	for _, p := range cfg.ExtraDisks {
 		args = append(args, "--extra-disk", p)
 	}
+	// LiveMounts / VirtiofsdPath: forwarded so the supervisor re-attaches the
+	// virtiofs shares on every boot. Without these the supervisor boots the VM
+	// with no fs device and memory.shared=false, while the guest cmdline still
+	// carries --workspace-mount=nx3fs0:...:virtiofs — the guest agent then
+	// blocks forever on a mount tag that has no backing device and never
+	// listens on vsock, so every exec fails with "read handshake reply: EOF".
+	if cfg.VirtiofsdPath != "" {
+		args = append(args, "--virtiofsd", cfg.VirtiofsdPath)
+	}
+	for _, lm := range cfg.LiveMounts {
+		args = append(args, "--mount", EncodeLiveMount(lm))
+	}
 	// Cmdline: pass only when non-empty so the driver's disk-boot default
 	// remains correct for callers that do not need a custom cmdline.
 	if cfg.Cmdline != "" {
@@ -125,6 +138,10 @@ func BuildSupervisorArgv(cfg SpawnConfig) []string {
 // The caller is responsible for stopping the supervisor via StopSupervisor
 // when it is no longer needed.
 func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
+	// Remove any supervisor.err left by a previous run. A stale file would
+	// cause a new failure to be attributed to the wrong cause (D-M4-T2).
+	_ = os.Remove(filepath.Join(cfg.StateDir, supervisorErrFile))
+
 	exe := cfg.Exe
 	if exe == "" {
 		exe, err = os.Executable()
@@ -209,7 +226,13 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 			if pipeW != nil {
 				pipeW.Close()
 			}
-			return 0, nil, fmt.Errorf("spawn supervisor: process exited before writing pidfile (pid %d)", spawnPid)
+			// If the supervisor wrote its failure reason to supervisor.err,
+			// surface it directly so the user sees the real cause rather than
+			// the generic "process exited before writing pidfile" message.
+			if reason, readErr := os.ReadFile(filepath.Join(cfg.StateDir, supervisorErrFile)); readErr == nil && len(reason) > 0 {
+				return 0, nil, fmt.Errorf("spawn supervisor: %s", string(reason))
+			}
+			return 0, nil, fmt.Errorf("spawn supervisor: process exited before writing pidfile (pid %d); see %s/supervisor.log", spawnPid, cfg.StateDir)
 		}
 		data, readErr := os.ReadFile(pidfile)
 		if readErr == nil && len(data) > 0 {

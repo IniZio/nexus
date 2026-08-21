@@ -157,6 +157,16 @@ type Config struct {
 	// since the supervisor package cannot import internal/cli without a cycle.
 	Cmdline string
 
+	// LiveMounts are host-directory virtiofs shares that must be re-attached
+	// each time the supervisor boots the VM (D-PD-53). Mirrors
+	// cloudhypervisor.Config.LiveMounts. Must be set whenever the sandbox was
+	// created with --mount; empty slice is safe when no mounts were requested.
+	LiveMounts []domain.LiveMount
+
+	// VirtiofsdPath is the absolute path to the virtiofsd 1.x binary.
+	// Must be non-empty when LiveMounts is non-empty; ignored otherwise.
+	VirtiofsdPath string
+
 	// Ephemeral selects one-shot / builder mode. When true the supervisor is
 	// expected to host a short-lived VM (e.g. an in-VM builder) and exit as
 	// soon as the caller signals completion via POST /supervisor/stop. In
@@ -248,6 +258,8 @@ func RunDetached(cfg Config) error {
 		VCPUMax:       vcpuMax,
 		ExtraDisks:    extraDisks,
 		Cmdline:       cfg.Cmdline,
+		LiveMounts:    cfg.LiveMounts,
+		VirtiofsdPath: cfg.VirtiofsdPath,
 	})
 	if err != nil {
 		return fmt.Errorf("supervisor: init driver: %w", err)
@@ -424,6 +436,26 @@ func RunDetached(cfg Config) error {
 	// Retry with 2-second backoff; the guest agent may not respond immediately
 	// after driver.Start returns.
 	if agentClient != nil {
+		// ── 5d-probe + shell-profile seed (D-J14 / D-J11) ───────────────────
+		// probeAndSeedGuest runs the unconditional liveness gate (30 s window)
+		// and the login-shell credential drop-in, both extracted into a testable
+		// helper so deleting either call turns the unit suite RED (D-M4).
+		profileSeeder := service.NewGuestFileSeeder(agentClient, service.GuestShellProfilePath)
+		if checkErr := probeAndSeedGuest(ctx, sb.ID, agentClient, profileSeeder); checkErr != nil {
+			slog.Error("supervisor.guest_agent_unreachable",
+				"err", checkErr,
+				"action", "refusing READY; sandbox unusable without a reachable guest agent")
+			writeFailureReason(cfg.StateDir, checkErr)
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer stopCancel()
+			if cfg.Ephemeral {
+				_ = svc.Remove(stopCtx, cfg.SandboxRef)
+			} else {
+				_, _ = svc.Stop(stopCtx, cfg.SandboxRef)
+			}
+			return checkErr
+		}
+
 		caSeeder := service.NewAgentCACopySeeder(agentClient)
 		agentSeeder := service.NewAgentCopySeeder(agentClient)
 		cert := svc.GetPerimeterCACert(sb.ID)
@@ -438,7 +470,7 @@ func RunDetached(cfg Config) error {
 		// meaningful if something swaps it. Waiting anyway cost a full minute
 		// (maxSeedAttempts x retry delay) before READY and seeded nothing.
 		noProxy := !service.SandboxHasMITMProxy(sb)
-		var seedDone bool
+		var seedDone, guestEverResponded bool
 		switch {
 		case noProxy:
 			slog.Info("supervisor.seed_not_applicable",
@@ -448,13 +480,13 @@ func RunDetached(cfg Config) error {
 			// Human/git path (D-PD-25 / D-PD-26): seed CA + GH_TOKEN placeholder.
 			// SeedLoop would also emit the agent's credential vars; those belong
 			// on agent sandboxes.
-			seedDone = seedHumanSecrets(ctx, sb, cert, caSeeder, agentSeeder, broker, svc)
+			seedDone, guestEverResponded = seedHumanSecrets(ctx, sb, cert, caSeeder, agentSeeder, broker, svc)
 		default:
 			// seedAgentCreds is false for a sandbox with no agent: it still
 			// needs the CA to speak HTTPS through the proxy, but writing an
 			// agent placeholder into it would hand credential env vars to a
 			// guest that runs no agent.
-			seedDone = SeedLoop(ctx, sb.ID, &cert, caSeeder, agentSeeder, broker, refreshers,
+			seedDone, guestEverResponded = SeedLoop(ctx, sb.ID, &cert, caSeeder, agentSeeder, broker, refreshers,
 				maxSeedAttempts, 2*time.Second, svc, sb.AgentName != "")
 		}
 		// noProxy skips both branches below: there is no seed failure to warn
@@ -462,7 +494,29 @@ func RunDetached(cfg Config) error {
 		if !noProxy && !seedDone {
 			if ctx.Err() != nil {
 				slog.Warn("supervisor.seed_skipped", "reason", "context cancelled before seeding complete")
+			} else if !guestEverResponded {
+				// The guest agent was reachable at the probe (above) but did not
+				// complete a single CA-seed round-trip across all seeding attempts
+				// — most likely the guest died during init. The sandbox is
+				// structurally unusable (D-J14).
+				slog.Error("supervisor.guest_died_during_seeding",
+					"max_attempts", maxSeedAttempts,
+					"action", "refusing READY; guest was alive at probe but died before seeding completed")
+				failErr := fmt.Errorf("supervisor: guest agent stopped responding during seeding after %d attempts: sandbox unusable", maxSeedAttempts)
+				writeFailureReason(cfg.StateDir, failErr)
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer stopCancel()
+				if cfg.Ephemeral {
+					_ = svc.Remove(stopCtx, cfg.SandboxRef)
+				} else {
+					_, _ = svc.Stop(stopCtx, cfg.SandboxRef)
+				}
+				return failErr
 			} else {
+				// Guest was alive (at least one CA seed succeeded) but the full
+				// seed did not complete — e.g. a specific secret write failed.
+				// Perimeter is live; the sandbox is usable for some things.
+				// This degradation is deliberate (D-J14: preserve existing behaviour).
 				slog.Warn("supervisor.seed_cap_exhausted",
 					"max_attempts", maxSeedAttempts,
 					"action", "writing READY anyway; perimeter live, guest may lack placeholder+CA")
@@ -629,6 +683,78 @@ func wireGovernorAxes(
 	}
 }
 
+// supervisorErrFile is the filename written by RunDetached when it refuses
+// READY. SpawnDetached reads it to surface the reason in the spawner's error.
+const supervisorErrFile = "supervisor.err"
+
+// writeFailureReason writes err.Error() to cfg.StateDir/supervisor.err so that
+// SpawnDetached can surface the supervisor's reason in the spawner error.
+// Errors are silently ignored — this is best-effort diagnostics.
+func writeFailureReason(stateDir string, err error) {
+	path := filepath.Join(stateDir, supervisorErrFile)
+	_ = os.WriteFile(path, []byte(err.Error()), 0o644)
+}
+
+// GuestProber is the subset of *agent.Client needed by ProbeGuestAgent.
+// Extracted as an interface so the probe logic is testable without a live VM.
+type GuestProber interface {
+	Ping(ctx context.Context) error
+}
+
+// ProbeGuestAgent retries prober.Ping at retryDelay intervals until ctx expires
+// or Ping returns nil. Returns nil on first success, ctx.Err() on timeout.
+// Exported so unit tests can verify both dead-guest and alive-guest behaviour
+// without starting a VM (D-J14).
+func ProbeGuestAgent(ctx context.Context, prober GuestProber, retryDelay time.Duration) error {
+	for {
+		if err := prober.Ping(ctx); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(retryDelay):
+		}
+	}
+}
+
+// seedShellProfileFn is the function called by probeAndSeedGuest to write the
+// login-shell credential drop-in. Default is service.SeedGuestShellProfile;
+// tests replace it with a spy to verify the call without a live VM (D-M4).
+var seedShellProfileFn = service.SeedGuestShellProfile
+
+// probeAndSeedGuest runs the liveness probe (D-J14) and login-shell credential
+// drop-in seed (D-J11) for a newly-booted guest. Returns non-nil only when the
+// probe fails (guest unreachable); shell-profile seed failures are non-fatal.
+//
+// Extracted from RunDetached for unit-testability: tests exercise this function
+// directly with stub probers instead of launching a real VM (D-M4 mutation guard).
+// RunDetached calls this immediately after VM boot; on non-nil return the caller
+// must tear down the VM and return the error so supervisor.pid is never written.
+func probeAndSeedGuest(ctx context.Context, id domain.SandboxID, prober GuestProber, profileSeeder service.GuestSeeder) error {
+	const probeTimeout = 30 * time.Second
+	probeCtx, probeCancel := context.WithTimeout(ctx, probeTimeout)
+	probeErr := ProbeGuestAgent(probeCtx, prober, 500*time.Millisecond)
+	probeCancel()
+	if probeErr != nil {
+		return fmt.Errorf("supervisor: guest agent unreachable after %s: %w", probeTimeout, probeErr)
+	}
+
+	// Login-shell credential drop-in (D-J11). Written unconditionally before the
+	// proxy/seeding split so whether a shell picks up a credential does not depend
+	// on which seeding branch this sandbox takes. The drop-in carries no credential
+	// itself; it is harmless when cred.env never arrives (no MITM proxy).
+	if profErr := seedShellProfileFn(ctx, id, profileSeeder); profErr != nil {
+		slog.Warn("supervisor.shell_profile_seed_failed",
+			"sandbox", id, "path", service.GuestShellProfilePath, "err", profErr,
+			"action", "interactively started agents in this guest will lack credentials")
+	} else {
+		slog.Info("supervisor.shell_profile_seeded",
+			"sandbox", id, "path", service.GuestShellProfilePath)
+	}
+	return nil
+}
+
 // PerimeterCAGetter is the subset of *service.Service needed by SeedLoop to
 // fetch the MITM CA certificate. Nil is permitted; if nil, GetPerimeterCACert
 // is never called (the caller must pre-populate cert).
@@ -637,6 +763,11 @@ type PerimeterCAGetter interface {
 }
 
 // SeedLoop attempts up to maxAttempts rounds of CA + agent-placeholder seeding.
+// It returns (ok, guestEverResponded): ok is true only when all seeds succeed;
+// guestEverResponded is true when the guest agent answered at least one CA-seed
+// round-trip (caErr == nil ≥ once) even if the full seed never completed.
+// Callers must distinguish the two failure modes: a dead guest (guestEverResponded
+// false) is a hard failure; a partially-seeded live guest is a soft degradation.
 // It is called from RunDetached and also exported for testing so the bounded-
 // retry behaviour can be verified without booting a real VM.
 //
@@ -678,16 +809,20 @@ func SeedLoop(
 	retryDelay time.Duration,
 	svc PerimeterCAGetter,
 	seedAgentCreds bool,
-) bool {
+) (ok bool, guestEverResponded bool) {
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if ctx.Err() != nil {
-			return false
+			return false, guestEverResponded
 		}
 		if *cert == nil && svc != nil {
 			*cert = svc.GetPerimeterCACert(id)
 		}
 		if *cert != nil {
 			caErr := service.SeedCA(ctx, *cert, id, caSeeder)
+			if caErr == nil {
+				// At least one vsock round-trip to the guest agent succeeded.
+				guestEverResponded = true
+			}
 			var agentErr error
 			if caErr == nil && seedAgentCreds {
 				_, agentErr = service.SeedGuestAgent(ctx, broker, id, agentSeeder)
@@ -708,7 +843,7 @@ func SeedLoop(
 							"host", r.Host(), "sandbox", id)
 					}
 				}
-				return true
+				return true, true
 			}
 			if caErr != nil {
 				slog.Debug("supervisor.seed_ca_retry", "attempt", attempt, "err", caErr)
@@ -719,11 +854,11 @@ func SeedLoop(
 		}
 		select {
 		case <-ctx.Done():
-			return false
+			return false, guestEverResponded
 		case <-time.After(retryDelay):
 		}
 	}
-	return false
+	return false, guestEverResponded
 }
 
 // seedHumanSecrets seeds the MITM CA plus GH_TOKEN / --secret placeholders
@@ -736,10 +871,10 @@ func seedHumanSecrets(
 	caSeeder, secretSeeder service.GuestSeeder,
 	broker *cred.Broker,
 	svc PerimeterCAGetter,
-) bool {
+) (ok bool, guestEverResponded bool) {
 	for attempt := range maxSeedAttempts {
 		if ctx.Err() != nil {
-			return false
+			return false, guestEverResponded
 		}
 		if cert == nil && svc != nil {
 			cert = svc.GetPerimeterCACert(sb.ID)
@@ -747,19 +882,23 @@ func seedHumanSecrets(
 		if cert != nil {
 			if caErr := service.SeedCA(ctx, cert, sb.ID, caSeeder); caErr != nil {
 				slog.Debug("supervisor.seed_ca_retry", "attempt", attempt, "err", caErr)
-			} else if secErr := service.SeedGuestSecrets(ctx, broker, sb.ID, sb.Envelope.SecretSpecs, secretSeeder); secErr != nil {
-				slog.Debug("supervisor.seed_secrets_retry", "attempt", attempt, "err", secErr)
 			} else {
-				slog.Info("supervisor.human_secrets_complete", "sandbox", sb.ID,
-					"secret_hosts", sb.Envelope.SecretHosts)
-				return true
+				// CA seed succeeded: at least one vsock round-trip to the guest agent.
+				guestEverResponded = true
+				if secErr := service.SeedGuestSecrets(ctx, broker, sb.ID, sb.Envelope.SecretSpecs, secretSeeder); secErr != nil {
+					slog.Debug("supervisor.seed_secrets_retry", "attempt", attempt, "err", secErr)
+				} else {
+					slog.Info("supervisor.human_secrets_complete", "sandbox", sb.ID,
+						"secret_hosts", sb.Envelope.SecretHosts)
+					return true, true
+				}
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return false
+			return false, guestEverResponded
 		case <-time.After(2 * time.Second):
 		}
 	}
-	return false
+	return false, guestEverResponded
 }

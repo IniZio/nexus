@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
+	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/supervisor"
 )
@@ -20,18 +22,37 @@ func (e *supervisorExtraDisks) String() string {
 	if e == nil {
 		return ""
 	}
-	result := ""
-	for i, p := range *e {
-		if i > 0 {
-			result += ","
-		}
-		result += p
-	}
-	return result
+	return strings.Join(*e, ",")
 }
 
 func (e *supervisorExtraDisks) Set(v string) error {
 	*e = append(*e, v)
+	return nil
+}
+
+// supervisorLiveMounts is a flag.Value implementation that accumulates
+// repeated --mount <host>:<guest>[:ro] flags into []domain.LiveMount.
+// Encoding and decoding both go through supervisor.EncodeLiveMount /
+// supervisor.ParseLiveMountSpec so the two sides cannot drift.
+type supervisorLiveMounts []domain.LiveMount
+
+func (m *supervisorLiveMounts) String() string {
+	if m == nil {
+		return ""
+	}
+	specs := make([]string, 0, len(*m))
+	for _, lm := range *m {
+		specs = append(specs, supervisor.EncodeLiveMount(lm))
+	}
+	return strings.Join(specs, ",")
+}
+
+func (m *supervisorLiveMounts) Set(v string) error {
+	lm, err := supervisor.ParseLiveMountSpec(v)
+	if err != nil {
+		return err
+	}
+	*m = append(*m, lm)
 	return nil
 }
 
@@ -99,7 +120,17 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 		// the driver uses the disk-boot default. Set by SpawnDetached when the
 		// caller pre-computed workspace-mount args and auto-resize PID-1 args.
 		cmdline = fs.String("cmdline", "", "kernel command line (empty = driver disk-boot default)")
+		// virtiofsd: absolute path to the virtiofsd 1.x binary. Required
+		// whenever --mount is passed; the driver refuses to boot with live
+		// mounts and an empty VirtiofsdPath.
+		virtiofsd = fs.String("virtiofsd", "", "virtiofsd binary path (required with --mount)")
 	)
+	// liveMounts accumulates repeated --mount flags (one per virtiofs share).
+	// These must be re-attached on every supervisor boot: the guest cmdline
+	// carries a --workspace-mount=<tag>:...:virtiofs entry per share, and a
+	// guest that mounts a tag with no backing device blocks at boot forever.
+	var liveMounts supervisorLiveMounts
+	fs.Var(&liveMounts, "mount", "live virtiofs share <host-path>:<guest-path>[:ro] (repeatable, order-preserving)")
 	// extraDisks accumulates repeated --extra-disk flags (one per disk path).
 	var extraDisks supervisorExtraDisks
 	fs.Var(&extraDisks, "extra-disk", "extra disk image path to re-attach (repeatable, order-preserving)")
@@ -153,9 +184,11 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 			VCPUMax:      int32(*govVCPUMax), //nolint:gosec // range-checked by flag.Int (fits int32)
 			DiskMaxBytes: *govDiskMax,
 		},
-		Cmdline:      *cmdline,
-		Ephemeral:    *ephemeral,
-		ParentPipeFD: *parentPipeFD,
+		Cmdline:       *cmdline,
+		LiveMounts:    []domain.LiveMount(liveMounts),
+		VirtiofsdPath: *virtiofsd,
+		Ephemeral:     *ephemeral,
+		ParentPipeFD:  *parentPipeFD,
 	}
 	return cfg, nil
 }

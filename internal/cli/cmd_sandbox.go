@@ -1216,6 +1216,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	var capturedCmdline string
 	var capturedCHBin string
 	var capturedSocketDir string
+	var capturedVirtiofsdPath string
 
 	// Resolve auto-resize bounds early via vmcfg so the values are available
 	// to both the newDriver closure (for driver config) and the log below.
@@ -1261,7 +1262,11 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		// guest --workspace-mount arg) and the driver calls it again with the same
 		// index when it starts virtiofsd — both derive the same string, so they
 		// cannot silently diverge (D-PD-53).
-		cfg.LiveMounts = bootLiveMounts
+		vp, verr := wireLiveMountsToConfig(&cfg, bootLiveMounts)
+		if verr != nil {
+			return nil, verr
+		}
+		capturedVirtiofsdPath = vp
 		liveGuestMounts := liveMountsToGuestMounts(bootLiveMounts)
 		// Combine disk-based mounts (workspace + shadow) with virtiofs live mounts
 		// so workspaceMountCmdline emits one --workspace-mount arg per share.
@@ -1513,7 +1518,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 
 	if handoffErr := handoffHumanSupervisor(ctx, svc, sb, storeRoot, kernelPath, govBounds, f.memoryMiB, f.vcpus,
 		capturedDiskPath, capturedExtraDisks, capturedCmdline, capturedCHBin, capturedSocketDir, bootWorkspace != nil, len(bootExtraDisks),
-		workspaceGuestPathFor(bootWorkspace)); handoffErr != nil {
+		workspaceGuestPathFor(bootWorkspace), bootLiveMounts, capturedVirtiofsdPath); handoffErr != nil {
 		slog.Warn("sandbox create: supervisor handoff failed; broker will not survive CLI exit",
 			"sandbox", sb.ID, "err", handoffErr)
 	}
@@ -1577,6 +1582,8 @@ func handoffHumanSupervisor(
 	hasWorkspace bool,
 	workspaceDiskIndex int,
 	workspaceGuestPath string,
+	liveMounts []domain.LiveMount,
+	virtiofsdPath string,
 ) error {
 	if diskPath == "" {
 		return fmt.Errorf("no disk path captured")
@@ -1592,8 +1599,68 @@ func handoffHumanSupervisor(
 		}
 	}
 	stateDir := supervisor.DefaultStateDir(storeRoot, sb.ID)
-	cfg := supervisor.Config{
-		SandboxRef:         sb.ID.String(),
+	cfg := buildHumanSupervisorConfig(
+		sb.ID.String(), storeRoot, stateDir,
+		kernelPath, govBounds, memoryMiB, bootVCPUs,
+		diskPath, extraDisks, cmdline, chBin, socketDir,
+		hasWorkspace, workspaceDiskIndex, workspaceGuestPath,
+		liveMounts, virtiofsdPath,
+	)
+	if err := supervisor.WriteSpawnSpec(stateDir, cfg); err != nil {
+		return err
+	}
+	if _, err := svc.Stop(ctx, sb.ID.String()); err != nil {
+		return fmt.Errorf("stop before supervisor handoff: %w", err)
+	}
+	return spawnPersistedSupervisor(ctx, svc, sb.ID, stateDir)
+}
+
+// wireLiveMountsToConfig sets cfg.LiveMounts and, when mounts is non-empty,
+// resolves the virtiofsd binary path and sets cfg.VirtiofsdPath.
+// It is separated from buildCHConfig so that unit tests can verify the
+// VirtiofsdPath wiring without booting a real VM.
+//
+// Returns the resolved virtiofsd path (empty when mounts is empty) and any
+// resolution error.
+func wireLiveMountsToConfig(cfg *cloudhypervisor.Config, mounts []domain.LiveMount) (virtiofsdPath string, err error) {
+	cfg.LiveMounts = mounts
+	if len(mounts) == 0 {
+		return "", nil
+	}
+	vp, verr := resolveVirtiofsdPath()
+	if verr != nil {
+		return "", fmt.Errorf("--mount requires virtiofsd: %w", verr)
+	}
+	cfg.VirtiofsdPath = vp
+	return vp, nil
+}
+
+// buildHumanSupervisorConfig constructs the supervisor.Config for a persistent
+// (non-ephemeral, non-builder) sandbox supervisor. Extracted from
+// handoffHumanSupervisor so the construction site is unit-testable:
+// TestBuildHumanSupervisorConfig_AllFieldsPopulated uses reflection to fail
+// when any field is silently omitted — the same pattern as the argv-codec
+// guard in cmd/nexus3/supervisor_linux_test.go, but at the construction site.
+//
+// J16 precedent: CredsFile was absent here while the rest of the suite was
+// green, causing long-running agent sandboxes to die at token expiry with an
+// opaque 401. Keeping the literal here, under test, prevents the next drift.
+func buildHumanSupervisorConfig(
+	sandboxRef, storeRoot, stateDir string,
+	kernelPath string,
+	govBounds resize.Bounds,
+	memoryMiB, bootVCPUs uint32,
+	diskPath string,
+	extraDisks []string,
+	cmdline, chBin, socketDir string,
+	hasWorkspace bool,
+	workspaceDiskIndex int,
+	workspaceGuestPath string, // GIT-SEED: git identity seed target
+	liveMounts []domain.LiveMount,
+	virtiofsdPath string,
+) supervisor.Config {
+	return supervisor.Config{
+		SandboxRef:         sandboxRef,
 		StoreRoot:          storeRoot,
 		StateDir:           stateDir,
 		CHBin:              chBin,
@@ -1605,17 +1672,19 @@ func handoffHumanSupervisor(
 		BootVCPUs:          bootVCPUs,
 		HasWorkspaceDisk:   hasWorkspace,
 		WorkspaceDiskIndex: workspaceDiskIndex,
-		WorkspaceGuestPath: workspaceGuestPath, // GIT-SEED: git identity seed target
+		WorkspaceGuestPath: workspaceGuestPath,
 		GovBounds:          govBounds,
 		Cmdline:            cmdline,
+		LiveMounts:         liveMounts,
+		VirtiofsdPath:      virtiofsdPath,
+		// CredsFile (J16): without it the detached supervisor builds NO
+		// Refresher (supervisor.go gates on CredsFile != ""), so the real
+		// token is frozen at create time. A long-running agent sandbox dies
+		// at expiry with an opaque 401 in the guest. Set unconditionally:
+		// when the store is absent the supervisor logs creds_absent and
+		// carries on, so there is no cost for sandboxes that need no cred.
+		CredsFile: service.DefaultDedicatedCredStorePath(),
 	}
-	if err := supervisor.WriteSpawnSpec(stateDir, cfg); err != nil {
-		return err
-	}
-	if _, err := svc.Stop(ctx, sb.ID.String()); err != nil {
-		return fmt.Errorf("stop before supervisor handoff: %w", err)
-	}
-	return spawnPersistedSupervisor(ctx, svc, sb.ID, stateDir)
 }
 
 // workspaceGuestPathFor returns the workspace's in-guest mount point, or ""

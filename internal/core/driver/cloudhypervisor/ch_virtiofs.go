@@ -13,6 +13,7 @@
 package cloudhypervisor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -146,8 +147,29 @@ func spawnVirtiofsd(ctx context.Context, binaryPath, socketPath, sharedDir strin
 				socketPath, readyTimeout,
 			)
 		}
+		// Liveness must be checked BEFORE the socket, and the socket check must
+		// not be trusted on its own. virtiofsd creates the socket file and only
+		// then begins serving, so a virtiofsd that dies immediately after
+		// binding leaves the socket behind. Treating "socket exists" as
+		// readiness therefore reports success for a dead backend, and CH goes on
+		// to attach a vhost-user-fs device whose backend is gone — the guest
+		// then hangs probing the device, with no error anywhere on the host.
+		if exited, state := processExited(pid); exited {
+			tail := stderrBuf.Tail()
+			cleanup()
+			if tail != "" {
+				return nil, fmt.Errorf(
+					"cloudhypervisor: virtiofsd for %s exited during startup (state %s)\nvirtiofsd stderr:\n%s",
+					sharedDir, state, tail,
+				)
+			}
+			return nil, fmt.Errorf(
+				"cloudhypervisor: virtiofsd for %s exited during startup (state %s) with no stderr output",
+				sharedDir, state,
+			)
+		}
 		if _, statErr := os.Stat(socketPath); statErr == nil {
-			// Socket file created — virtiofsd is accepting connections.
+			// Socket file created and the process is still alive.
 			return &managedProcess{cmd: cmd, pid: pid, stderrBuf: stderrBuf}, nil
 		}
 		select {
@@ -198,4 +220,36 @@ func (d *CHDriver) spawnVirtiofsdForMounts(ctx context.Context, id domain.Sandbo
 		})
 	}
 	return fsCfgs, nil
+}
+
+// processExited reports whether pid has exited or become a zombie, along with
+// the raw /proc state character for diagnostics. It deliberately does NOT call
+// cmd.Wait: managedProcess.kill owns the single Wait that reaps the child, and
+// a second concurrent Wait would race it. A zombie counts as exited — the
+// process is dead and only the exit status remains uncollected.
+//
+// On a kernel without /proc, or if the stat file cannot be parsed, this returns
+// false so an unreadable /proc degrades to the previous socket-only behaviour
+// rather than failing every spawn.
+func processExited(pid int) (bool, string) {
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		// No such process: it exited and was already reaped.
+		if os.IsNotExist(err) {
+			return true, "gone"
+		}
+		return false, ""
+	}
+	// Field 3 is the state character. comm (field 2) is parenthesised and may
+	// itself contain spaces, so scan from the LAST ')' rather than splitting.
+	close := bytes.LastIndexByte(raw, ')')
+	if close < 0 || close+2 >= len(raw) {
+		return false, ""
+	}
+	fields := bytes.Fields(raw[close+1:])
+	if len(fields) == 0 {
+		return false, ""
+	}
+	state := string(fields[0])
+	return state == "Z" || state == "X" || state == "x", state
 }

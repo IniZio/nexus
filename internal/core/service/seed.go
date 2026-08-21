@@ -541,3 +541,52 @@ func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind,
 
 	return buf.Bytes(), nil
 }
+
+// GuestShellProfilePath is the well-known path inside the guest where the
+// login-shell drop-in that sources GuestCredEnvPath is written.
+//
+// /etc/profile.d is read by every LOGIN shell (`bash -l`, which is what
+// `nexus3 exec --pty <ref> /usr/bin/bash -l` starts). Without this drop-in the
+// placeholder credential reaches only commands launched through
+// launchCredSourcedArgv — the headless `herdr launch` wrapper. An agent a human
+// or an orchestrator starts INTERACTIVELY in a guest shell got no credential at
+// all, so it fell back to its own login flow and never spoke through the
+// perimeter. That gap is why GuestCredEnvPath's own doc comment ("Guest shells
+// ... source this file at startup") was false until this drop-in existed.
+const GuestShellProfilePath = "/etc/profile.d/nexus3-cred.sh"
+
+// guestShellProfileScript sources GuestCredEnvPath into every login shell.
+//
+// The existence guard matters: GuestCredEnvPath lives on /run (tmpfs) and is
+// absent on a sandbox with no MITM proxy — no agent, no secrets, open egress.
+// A drop-in that failed there would break `bash -l` for every plain sandbox.
+//
+// `if`/`fi` rather than an early `return` because /etc/profile.d entries are
+// sourced by dash as well as bash, and `return` outside a function is not
+// portable across both.
+const guestShellProfileScript = `# nexus3: make the supervisor-seeded placeholder credential visible to
+# interactively started agents. Written by SeedGuestShellProfile; do not edit.
+if [ -r ` + GuestCredEnvPath + ` ]; then
+    set -a
+    . ` + GuestCredEnvPath + `
+    set +a
+fi
+`
+
+// SeedGuestShellProfile writes the login-shell drop-in that sources the
+// credential env file into the guest.
+//
+// It carries NO credential itself — only the path of the file to source — so
+// it is safe to write before, after, or independently of the credential seed,
+// and safe on a guest whose cred.env never arrives.
+//
+// If seeder is nil this is a no-op, matching SeedGuest and SeedGuestAgent.
+func SeedGuestShellProfile(ctx context.Context, id domain.SandboxID, seeder GuestSeeder) error {
+	if seeder == nil {
+		return nil
+	}
+	if err := seeder(ctx, id, []byte(guestShellProfileScript)); err != nil {
+		return fmt.Errorf("seed guest shell profile: deliver to guest: %w", err)
+	}
+	return nil
+}

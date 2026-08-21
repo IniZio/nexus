@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -60,6 +61,50 @@ func resolveKernelPath() (string, error) {
 		"kernel not found: set NEXUS3_KERNEL_PATH to the vmlinux image path\n"+
 			"  searched (NEXUS3_KERNEL_PATH not set):\n    %s",
 		strings.Join(searched, "\n    "))
+}
+
+// resolveVirtiofsdPath returns the absolute path to the virtiofsd 1.x binary.
+//
+// Search order:
+//  1. NEXUS3_VIRTIOFSD_PATH environment variable (always used if set; file must exist).
+//  2. exec.LookPath("virtiofsd") — honours the caller's PATH.
+//  3. Conventional system install locations: /usr/lib/virtiofsd, /usr/libexec/virtiofsd,
+//     /usr/local/bin/virtiofsd.
+//
+// Returns an error (naming NEXUS3_VIRTIOFSD_PATH) only when virtiofsd is not found.
+// Called only when live mounts are configured; hosts without virtiofsd and without
+// --mount are unaffected.
+func resolveVirtiofsdPath() (string, error) {
+	if v := os.Getenv("NEXUS3_VIRTIOFSD_PATH"); v != "" {
+		if _, err := os.Stat(v); err != nil {
+			return "", fmt.Errorf(
+				"virtiofsd not found: NEXUS3_VIRTIOFSD_PATH=%q: no such file\n"+
+					"  Correct the path or unset NEXUS3_VIRTIOFSD_PATH to use PATH-based resolution",
+				v)
+		}
+		return v, nil
+	}
+
+	// PATH lookup: honours any user-installed virtiofsd.
+	if p, err := exec.LookPath("virtiofsd"); err == nil {
+		return p, nil
+	}
+
+	// Conventional system install locations (Debian/Ubuntu/Fedora/RHEL).
+	for _, p := range []string{
+		"/usr/lib/virtiofsd",
+		"/usr/libexec/virtiofsd",
+		"/usr/local/bin/virtiofsd",
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+
+	return "", fmt.Errorf(
+		"virtiofsd not found: set NEXUS3_VIRTIOFSD_PATH to the virtiofsd binary path\n" +
+			"  See https://gitlab.com/virtio-fs/virtiofsd for installation instructions\n" +
+			"  virtiofsd is required when --mount is used; sandboxes without --mount are unaffected")
 }
 
 // AC4 — enforceability of "all new creation paths must call resolveKernelPath":

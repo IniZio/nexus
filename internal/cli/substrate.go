@@ -209,6 +209,24 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 		kernelCheck.Detail = kernelPath
 		checks = append(checks, kernelCheck)
 
+		// ── Check 5: Virtiofsd ───────────────────────────────────────────────
+		// Informational only — virtiofsd is required only when --mount is used.
+		// A host without virtiofsd can still create sandboxes without --mount.
+		// Absence does NOT block driver construction or selectWith.
+		virtiofsdCheck := CheckResult{
+			Name:        "virtiofsd",
+			Description: "virtiofsd binary for live directory mounts (--mount)",
+		}
+		if vp, verr := resolveVirtiofsdPath(); verr != nil {
+			virtiofsdCheck.OK = false
+			virtiofsdCheck.Detail = "not found"
+			virtiofsdCheck.Remediation = "Set NEXUS3_VIRTIOFSD_PATH to the virtiofsd binary path, or install virtiofsd (https://gitlab.com/virtio-fs/virtiofsd). Required only for --mount; sandboxes without --mount continue to work."
+		} else {
+			virtiofsdCheck.OK = true
+			virtiofsdCheck.Detail = vp
+		}
+		checks = append(checks, virtiofsdCheck)
+
 		d, err := cloudhypervisor.New(cloudhypervisor.Config{
 			BinaryPath: binaryPath,
 			KernelPath: kernelPath,

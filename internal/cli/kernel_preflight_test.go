@@ -161,3 +161,33 @@ func TestOrcaCreate_KernelPreflight_RejectsBeforeStoreSetup(t *testing.T) {
 		t.Errorf("kernel preflight fired too late (after store/cache setup): %v", err)
 	}
 }
+
+// ── resolveVirtiofsdPath unit tests ──────────────────────────────────────────
+
+func TestResolveVirtiofsdPath_EnvSet_FileExists(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "virtiofsd")
+	if err := os.WriteFile(f, []byte("fake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NEXUS3_VIRTIOFSD_PATH", f)
+
+	got, err := resolveVirtiofsdPath()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != f {
+		t.Errorf("got %q, want %q", got, f)
+	}
+}
+
+func TestResolveVirtiofsdPath_EnvSet_FileMissing(t *testing.T) {
+	t.Setenv("NEXUS3_VIRTIOFSD_PATH", "/nonexistent/virtiofsd")
+
+	_, err := resolveVirtiofsdPath()
+	if err == nil {
+		t.Fatal("expected error for missing virtiofsd, got nil")
+	}
+	if !strings.Contains(err.Error(), "NEXUS3_VIRTIOFSD_PATH") {
+		t.Errorf("error should mention NEXUS3_VIRTIOFSD_PATH: %v", err)
+	}
+}
