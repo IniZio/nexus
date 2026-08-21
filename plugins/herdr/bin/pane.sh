@@ -44,6 +44,15 @@ case "$1" in
         read -r _
         exit "$STATUS"
         ;;
+    space-agent)
+        # Launch a Claude agent in an existing sandbox. Prompts for sandbox ref and
+        # slice brief on stdin, then drives claude via herdr pane commands.
+        "$SHIM" __herdr-plugin space-agent-from-file
+        STATUS=$?
+        printf "Command exited with status %d. Press Enter to close.\n" "$STATUS"
+        read -r _
+        exit "$STATUS"
+        ;;
     create|logs|doctor|launch)
         # Short-lived panes: run and then pause so errors stay visible.
         "$SHIM" __herdr-plugin "$@"

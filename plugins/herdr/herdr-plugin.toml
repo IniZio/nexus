@@ -56,6 +56,12 @@ title = "nexus3 launch"
 placement = "tab"
 command = ["sh", "bin/pane.sh", "launch"]
 
+[[panes]]
+id = "space-agent"
+title = "nexus3 launch agent in sandbox"
+placement = "tab"
+command = ["sh", "bin/pane.sh", "space-agent"]
+
 [[actions]]
 id = "workspaces"
 title = "nexus3: list sandboxes"
@@ -115,3 +121,9 @@ id = "space-remove"
 title = "nexus3: remove this sandbox and close the space"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "space-remove"]
+
+[[actions]]
+id = "space-agent"
+title = "nexus3: launch Claude agent in sandbox"
+contexts = ["workspace"]
+command = ["sh", "bin/open-pane.sh", "space-agent", "tab"]

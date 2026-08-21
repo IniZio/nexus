@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,7 +46,7 @@ const herdrPluginABIVersion = "1"
 // and carries no --json guarantees. The double-underscore prefix marks it.
 func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
-		return &UsageError{Msg: "__herdr-plugin: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|space-create|space-create-from-file|space-open-pane|space-pause|space-resume|space-remove|space-list|shell-cwd)"}
+		return &UsageError{Msg: "__herdr-plugin: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|space-create|space-create-from-file|space-open-pane|space-pause|space-resume|space-remove|space-list|shell-cwd|space-agent|space-agent-from-file)"}
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -237,6 +238,43 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-list: resolve store: " + err.Error(), Err: err}
 		}
 		return herdrPluginSpaceList(ctx, out.w, storeRoot)
+
+	case "space-agent":
+		// Usage: space-agent <sandbox-ref> <brief>
+		// Starts the sandbox, creates a herdr space (or reuses one), then launches
+		// claude in the guest shell pane and delivers the brief.
+		autonomous := false
+		if len(rest) > 0 && rest[0] == "--autonomous" {
+			autonomous = true
+			rest = rest[1:]
+		}
+		if len(rest) < 2 {
+			return &UsageError{Msg: "__herdr-plugin space-agent: usage: space-agent [--autonomous] <sandbox-ref> <brief>"}
+		}
+		svc, err := newSandboxService()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-agent: " + err.Error(), Err: err}
+		}
+		storeRoot, err := store.DefaultRoot()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-agent: resolve store: " + err.Error(), Err: err}
+		}
+		ref := rest[0]
+		brief := strings.Join(rest[1:], " ")
+		return herdrPluginSpaceAgent(ctx, ref, brief, autonomous, out.w, svc, storeRoot)
+
+	case "space-agent-from-file":
+		// Interactive stdin-based variant: prompts for sandbox ref and brief.
+		// Invoked by pane.sh's space-agent case.
+		svc, err := newSandboxService()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-agent-from-file: " + err.Error(), Err: err}
+		}
+		storeRoot, err := store.DefaultRoot()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-agent-from-file: resolve store: " + err.Error(), Err: err}
+		}
+		return herdrPluginSpaceAgentFromFile(ctx, os.Stdin, out.w, svc, storeRoot)
 
 	default:
 		return &UsageError{Msg: "__herdr-plugin: unknown subcommand: " + sub}
@@ -1660,4 +1698,367 @@ func sealEnv(env []string) []string {
 		}
 	}
 	return out
+}
+
+// claudeReadyMatch is the substring in claude's startup banner that signals
+// the agent has fully initialised and its input box is live. It appears
+// exactly once the prompt is ready for user input.
+//
+// Why not the prompt glyph (❯)?  ❯ is ALSO the selection glyph inside the
+// first-run wizards (theme picker, folder-trust dialog), so matching it would
+// report "ready" while claude is still blocking on a wizard — exactly the
+// failure this guard is meant to prevent.
+//
+// Captured 2026-08-21 from guest loop/chain pane w1W:p2, claude v2.1.226.
+// claudeReadyMatch returns the literal substring that means claude has
+// finished starting and its input box is accepting text, for the permission
+// mode it was launched in. Verbatim footers from a live guest pane
+// (claude v2.1.226):
+//
+//	 ⏸ manual mode on · ? for shortcuts · ← for agents
+//	 ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+//
+// The token is selected by mode rather than searched for, because the caller
+// already knows which mode it launched. Three shorter tokens are all wrong,
+// and each one cost a live run to find out:
+//
+//   - "? for shortcuts" holds only in the default mode; under
+//     --dangerously-skip-permissions the footer replaces it, so the wait
+//     times out against an agent that is already at its prompt.
+//   - "for agents" appeared in both footers at first, but the "← for agents"
+//     affordance comes and goes with pane state — it was observed absent from
+//     a ready pane moments after being present in the same one.
+//   - "❯" is the prompt glyph, but it is ALSO the selector glyph in all four
+//     first-run wizards, so it reports ready while claude still sits on the
+//     theme picker — precisely the failure this wait exists to prevent.
+func claudeReadyMatch(autonomous bool) string {
+	if autonomous {
+		return "shift+tab to cycle"
+	}
+	return "? for shortcuts"
+}
+
+// guestAgentLaunchCommand returns the shell command typed into the guest pane
+// to start the agent.
+//
+// autonomous adds --dangerously-skip-permissions, which makes the agent act
+// without stopping to ask the operator to approve each tool call. That flag is
+// deliberately NOT the default even though this motive's whole purpose is
+// autonomous slice agents: the flag's safety argument rests entirely on the
+// blast radius being a disposable microVM, and this function cannot verify
+// that the caller's sandbox is one. Making it a per-invocation decision keeps
+// the judgement with the operator who knows what they mounted, instead of
+// burying it in a product default that would also apply to a sandbox with the
+// operator's real working tree mounted read-write.
+//
+// IS_SANDBOX=1 is required alongside it: claude refuses
+// --dangerously-skip-permissions when running as root (which the guest does)
+// unless that variable marks the environment as already-isolated.
+func guestAgentLaunchCommand(autonomous bool) string {
+	if autonomous {
+		return "IS_SANDBOX=1 claude --dangerously-skip-permissions"
+	}
+	return "claude"
+}
+
+// claudeReadyTimeoutMS is the wait-output timeout in milliseconds. 90 s gives
+// claude enough time to load on a cold guest without blocking the operator
+// indefinitely on a hung pane.
+const claudeReadyTimeoutMS = 90_000
+
+// briefSettleDelay is how long to wait between placing the brief in claude's
+// input box and pressing Enter. See herdrPaneSubmitToAgent.
+const briefSettleDelay = 750 * time.Millisecond
+
+// herdrPaneSubmitToAgent puts text into a running agent's input box and then
+// submits it, as two calls with a pause between them.
+//
+// `herdr pane run` — which sends text and Enter in one call — is correct for a
+// shell prompt and WRONG here. Observed live: the brief arrived in claude's
+// input box and simply sat there unsubmitted; a single Enter sent afterwards
+// by hand submitted it and the agent answered immediately. claude's TUI needs
+// to finish processing the pasted text before it will treat an Enter as
+// "submit" rather than as part of the paste, and `pane run` gives it no gap in
+// which to do that.
+//
+// This is why the step is its own function rather than another herdrPaneRun
+// call: the difference is invisible in the argv and only shows up as an agent
+// that looks started, looks prompted, and never does anything.
+func herdrPaneSubmitToAgent(ctx context.Context, herdrBin, paneID, text string) error {
+	cmd := herdrExecCommandContext(ctx, herdrBin, "pane", "send-text", paneID, text)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(briefSettleDelay):
+	}
+
+	enter := herdrExecCommandContext(ctx, herdrBin, "pane", "send-keys", paneID, "Enter")
+	enter.Stdout = os.Stderr
+	enter.Stderr = os.Stderr
+	return enter.Run()
+}
+
+// herdrPaneRun sends text to a herdr pane and simulates Enter, equivalent to
+// the operator typing the text at the pane's prompt.
+//
+// herdr pane run <paneID> <text> — sends text and Enter in one call.
+func herdrPaneRun(ctx context.Context, herdrBin, paneID, text string) error {
+	cmd := herdrExecCommandContext(ctx, herdrBin, "pane", "run", paneID, text)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// herdrPaneWaitOutput waits until the pane's output contains match or timeoutMS
+// elapses. Returns an error on timeout or subprocess failure.
+func herdrPaneWaitOutput(ctx context.Context, herdrBin, paneID, match string, timeoutMS int) error {
+	cmd := herdrExecCommandContext(ctx, herdrBin, "pane", "wait-output", paneID,
+		"--match", match, "--timeout", strconv.Itoa(timeoutMS))
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// herdrPaneReportAgent registers the claude process running in paneID with
+// herdr's agent tracker so it shows in `herdr agent list`. Non-fatal; call
+// sites log and continue on error.
+func herdrPaneReportAgent(ctx context.Context, herdrBin, paneID, source string) error {
+	cmd := herdrExecCommandContext(ctx, herdrBin, "pane", "report-agent", paneID,
+		"--source", source, "--agent", "nexus3-slice-agent", "--state", "working")
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// herdrPluginSpaceAgent starts the named sandbox (or resumes it), opens a
+// herdr space with a guest shell pane, then launches claude inside that pane
+// and delivers brief to it.
+//
+// The sandbox must have at least one live mount or mounted volume so that the
+// nexus3 source is present in the guest. If herdrShellCwd returns /root (no
+// mount), the function refuses with an actionable error naming the flag the
+// operator should have passed.
+// herdrSpaceAgentProjectDir resolves the guest directory an agent should work
+// in, or returns a *UsageError explaining why this sandbox cannot host one.
+//
+// It exists as its own function, taking the narrow sandboxGetter rather than
+// *service.Service, so both refusals are reachable from a unit test with a
+// stub. Inlined in herdrPluginSpaceAgent they were not: the function needs a
+// real *service.Service and therefore a real store, and the test that tried
+// ended up asserting herdrShellCwd's behaviour instead of the guard's.
+//
+// The two refusals are kept distinct on purpose. herdrShellCwd never fails and
+// answers "/root" both for a sandbox with no mount and for a ref that does not
+// resolve at all; collapsing them tells an operator who mistyped a handle to
+// go re-create a sandbox that was never the problem.
+// guestBypassConsentScript merges skipDangerousModePermissionPrompt into the
+// guest's ~/.claude/settings.json.
+//
+// It MERGES rather than overwrites: settings.json is a file the agent and the
+// operator both own, and clobbering it would silently drop any other setting
+// already there.
+//
+// The merge runs under node, not python3 or jq: probing a live guest showed
+// python3, python and jq are all ABSENT from the agent image, while node is
+// at /usr/local/bin/node. That is not a coincidence worth relying on loosely —
+// claude is a node program, so any image that can run the agent can run this.
+const guestBypassConsentScript = `set -e
+mkdir -p /root/.claude
+node -e '
+const fs = require("fs");
+const path = "/root/.claude/settings.json";
+let cfg = {};
+try {
+  const parsed = JSON.parse(fs.readFileSync(path, "utf8"));
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) cfg = parsed;
+} catch (e) { /* absent or unparseable: start from an empty object */ }
+cfg.skipDangerousModePermissionPrompt = true;
+const tmp = path + ".nexus3.tmp";
+fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2));
+fs.renameSync(tmp, path);
+'
+`
+
+// seedGuestBypassConsent pre-answers the "Bypass Permissions mode" consent
+// dialog inside the guest. Without it, an agent launched with
+// --dangerously-skip-permissions stops on a fourth wizard and never reaches
+// its prompt.
+func seedGuestBypassConsent(ctx context.Context, svc *service.Service, ref string) error {
+	code, err := svc.Exec(ctx, ref, agent.ExecOptions{
+		Argv:   []string{"/bin/sh", "-c", guestBypassConsentScript},
+		Stderr: os.Stderr,
+	})
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("guest script exited %d", code)
+	}
+	return nil
+}
+
+func herdrSpaceAgentProjectDir(ctx context.Context, ref string, svc sandboxGetter) (string, error) {
+	if _, getErr := svc.Get(ctx, ref); getErr != nil {
+		return "", &UsageError{
+			Msg: fmt.Sprintf("space-agent: no such sandbox %q: %v (list them with: nexus3 sandbox list)", ref, getErr),
+		}
+	}
+	projectDir := herdrShellCwd(ctx, ref, svc)
+	if projectDir == "/root" {
+		return "", &UsageError{
+			Msg: fmt.Sprintf("space-agent: sandbox %q has no mounted source directory, so an agent "+
+				"started in it would have nothing to work on; re-create it with: "+
+				"nexus3 create --mount <host-path>:<guest-path> %s", ref, ref),
+		}
+	}
+	return projectDir, nil
+}
+
+func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous bool, w io.Writer, svc *service.Service, storeRoot string) error {
+	// 1. Check for a mounted source BEFORE starting the sandbox. Failing fast
+	//    here avoids a started-but-useless sandbox and gives a clear message.
+	//
+	//    Resolve the sandbox first rather than relying on herdrShellCwd alone:
+	//    herdrShellCwd never fails, and returns "/root" both for a sandbox with
+	//    no mount AND for a ref that does not resolve at all. Collapsing those
+	//    two cases would answer "your sandbox has no mounted source" to an
+	//    operator who simply mistyped the handle, sending them to re-create a
+	//    sandbox that was never the problem.
+	if _, err := herdrSpaceAgentProjectDir(ctx, ref, svc); err != nil {
+		return err
+	}
+
+	// 2. Start the sandbox and open/reuse the herdr workspace with its guest shell pane.
+	fmt.Fprintf(w, "space-agent: opening space for %q ...\n", ref)
+	if err := herdrPluginSpaceCreate(ctx, ref, w, svc, storeRoot); err != nil {
+		return err
+	}
+
+	// 3. Read the binding back to get the guest pane ID.
+	label := herdrSpaceLabelForRef(ref)
+	binding, err := HerdrSpaceGetByLabel(ctx, storeRoot, label)
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError,
+			Msg: "space-agent: read binding after space-create: " + err.Error(), Err: err}
+	}
+	paneID := binding.GuestPaneID
+	if paneID == "" {
+		return &CodedError{Code: ErrCodeInternalError,
+			Msg: "space-agent: guest pane ID not recorded; space-create may have partially failed"}
+	}
+
+	herdrBin, err := resolveHerdrBin()
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-agent: " + err.Error(), Err: err}
+	}
+
+	// 4. Pre-accept the bypass-permissions consent dialog, but ONLY when the
+	//    operator asked for autonomy. This is a fourth first-run wizard, and
+	//    it lives in a different file from the other three: the acceptance is
+	//    recorded in ~/.claude/settings.json as skipDangerousModePermissionPrompt,
+	//    not in ~/.claude.json. Seeding it at supervisor boot alongside the
+	//    other three would pre-answer a safety question for every sandbox,
+	//    including ones the operator never intends to run an agent in; doing
+	//    it here keeps the pre-acceptance scoped to the invocation that
+	//    explicitly opted in.
+	if autonomous {
+		if err := seedGuestBypassConsent(ctx, svc, ref); err != nil {
+			return &CodedError{Code: ErrCodeInternalError,
+				Msg: "space-agent: pre-accept bypass-permissions dialog: " + err.Error(), Err: err}
+		}
+	}
+
+	// 5. Launch claude in the guest shell pane.
+	fmt.Fprintf(w, "space-agent: launching %s in pane %s ...\n", guestAgentLaunchCommand(autonomous), paneID)
+	if err := herdrPaneRun(ctx, herdrBin, paneID, guestAgentLaunchCommand(autonomous)); err != nil {
+		return &CodedError{Code: ErrCodeInternalError,
+			Msg: "space-agent: launch claude: " + err.Error(), Err: err}
+	}
+
+	// 6. Wait for the claude prompt. See claudeReadyMatch for why this token
+	//    and not the ❯ glyph.
+	readyMatch := claudeReadyMatch(autonomous)
+	fmt.Fprintf(w, "space-agent: waiting for claude prompt (match=%q, timeout=%ds) ...\n",
+		readyMatch, claudeReadyTimeoutMS/1000)
+	if err := herdrPaneWaitOutput(ctx, herdrBin, paneID, readyMatch, claudeReadyTimeoutMS); err != nil {
+		return &CodedError{Code: ErrCodeInternalError,
+			Msg: fmt.Sprintf("space-agent: claude did not reach its prompt within %ds: %v",
+				claudeReadyTimeoutMS/1000, err), Err: err}
+	}
+
+	// 7. Deliver the slice brief.
+	fmt.Fprintf(w, "space-agent: delivering brief ...\n")
+	if err := herdrPaneSubmitToAgent(ctx, herdrBin, paneID, brief); err != nil {
+		return &CodedError{Code: ErrCodeInternalError,
+			Msg: "space-agent: deliver brief: " + err.Error(), Err: err}
+	}
+
+	// 8. Report the agent in herdr's agent tracker (non-fatal).
+	if err := herdrPaneReportAgent(ctx, herdrBin, paneID, ref); err != nil {
+		fmt.Fprintf(w, "space-agent: warning: report-agent failed: %v (continuing)\n", err)
+	}
+
+	fmt.Fprintf(w, "space-agent: agent running in pane %s for %q\n", paneID, ref)
+	return nil
+}
+
+// herdrPluginSpaceAgentFromFile is the interactive stdin-based variant of
+// herdrPluginSpaceAgent. It prompts for the sandbox ref (defaulting to
+// NEXUS3_WORKSPACE or the sandbox bound to HERDR_WORKSPACE_ID) and the
+// slice brief, then delegates to herdrPluginSpaceAgent.
+func herdrPluginSpaceAgentFromFile(ctx context.Context, r io.Reader, w io.Writer, svc *service.Service, storeRoot string) error {
+	scanner := bufio.NewScanner(r)
+
+	// Resolve a sensible default sandbox ref: NEXUS3_WORKSPACE env var first,
+	// then the sandbox bound to the currently-focused herdr workspace.
+	defaultRef := os.Getenv("NEXUS3_WORKSPACE")
+	if defaultRef == "" {
+		if wsID := os.Getenv("HERDR_WORKSPACE_ID"); wsID != "" {
+			if b, err := herdrSpaceResolve(ctx, storeRoot, wsID); err == nil {
+				defaultRef = b.SandboxHandle
+			}
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "sandbox ref [%s]: ", defaultRef)
+	if !scanner.Scan() {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-agent-from-file: failed to read sandbox ref"}
+	}
+	ref := strings.TrimSpace(scanner.Text())
+	if ref == "" {
+		ref = defaultRef
+	}
+	if ref == "" {
+		return &UsageError{Msg: "space-agent-from-file: sandbox ref required (set NEXUS3_WORKSPACE or pass as argument)"}
+	}
+
+	fmt.Fprintf(os.Stderr, "slice brief: ")
+	if !scanner.Scan() {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-agent-from-file: failed to read brief"}
+	}
+	brief := strings.TrimSpace(scanner.Text())
+	if brief == "" {
+		return &UsageError{Msg: "space-agent-from-file: brief must not be empty"}
+	}
+
+	// Autonomy is asked, not assumed. See guestAgentLaunchCommand for why this
+	// is a per-invocation decision rather than a product default. Default is
+	// no: the operator must type y, and an empty line (just pressing Enter)
+	// selects the safe answer.
+	fmt.Fprintf(os.Stderr, "run autonomously, without asking approval for each tool call? [y/N]: ")
+	autonomous := false
+	if scanner.Scan() {
+		switch strings.ToLower(strings.TrimSpace(scanner.Text())) {
+		case "y", "yes":
+			autonomous = true
+		}
+	}
+
+	return herdrPluginSpaceAgent(ctx, ref, brief, autonomous, w, svc, storeRoot)
 }
