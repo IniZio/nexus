@@ -57,7 +57,7 @@ VALIDATOR = _script_dir / "validate-cli-examples.py"
 # removal is committed; the commit message is the explanation.
 
 # ── Regex patterns ────────────────────────────────────────────────────────────
-BADGE_RE = re.compile(r'<Badge\s+type="(danger|warning|info)"[^/]*/>')
+BADGE_RE = re.compile(r'<Badge\s+type="(danger|warning|tip|info)"[^/]*/>')
 
 
 # ── Data types ────────────────────────────────────────────────────────────────
@@ -277,6 +277,22 @@ def main() -> None:
     if not VALIDATOR.exists():
         sys.exit(f"Validator not found: {VALIDATOR}")
 
+    census_only = "--census-only" in sys.argv
+    update = "--update-baseline" in sys.argv
+
+    badges = find_all_badges(DOCS_DIR)
+
+    if census_only:
+        # Fast path used in CI: count badges per file vs baseline, no sweep.
+        # The validate-cli-examples.py CI step separately gates load-bearing
+        # badge removal; this step gates silent badge erasure across all badge
+        # types (danger, warning, tip, info).
+        if not check_badge_census(badges, update=update):
+            sys.exit(1)
+        total = len(badges)
+        print(f"Census OK: {total} badges across {len({b.file for b in badges})} file(s) checked.")
+        return
+
     # ── Pre-check: validate current docs before sweeping ─────────────────────
     # If a load-bearing badge was removed from the docs tree, the validator
     # fails here before we run any sweep iterations.  This is the primary gate
@@ -291,7 +307,6 @@ def main() -> None:
         print(pre.stdout.strip())
         sys.exit(1)
 
-    badges = find_all_badges(DOCS_DIR)
     total = len(badges)
     print(f"Found {total} badges in {DOCS_DIR}")
     print(f"Running single-badge-removal sweep ({total} iterations) ...")
@@ -318,7 +333,7 @@ def main() -> None:
     # honest (it marks something as unbuilt) and needs no baseline update.
     # Removing one requires `--update-baseline` and shows up in the diff as a
     # deliberate act with a number attached.
-    if not check_badge_census(badges, update=("--update-baseline" in sys.argv)):
+    if not check_badge_census(badges, update=update):
         sys.exit(1)
 
 

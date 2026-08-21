@@ -1,0 +1,160 @@
+name: CD
+
+# Triggered by pushing a semver tag: git tag v1.2.3 && git push origin v1.2.3
+on:
+  push:
+    tags:
+      - "v[0-9]*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.2.3)"
+        required: true
+
+concurrency:
+  group: cd-${{ github.ref }}
+  # Never cancel a release run: a cancel mid-publish can leave a draft
+  # release with a partial asset set.
+  cancel-in-progress: false
+
+# contents:write is required to create releases and upload assets.
+permissions:
+  contents: write
+
+jobs:
+  # ── Create the GitHub release from the tag ──────────────────────────────
+  release-create:
+    name: Create release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag and version
+        id: tag
+        env:
+          # Passed via env rather than interpolated into the script body: the
+          # dispatch input is attacker-controllable text and would otherwise be
+          # substituted into the shell BEFORE the semver validation below.
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          # Require semver shape: vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-pre
+          if ! echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "ERROR: tag '$TAG' is not a semver tag" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Tag: $TAG  Version: $VERSION"
+
+      - name: Create GitHub release (draft)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Create a draft release. release-build uploads binaries; we mark it
+          # non-draft in release-publish once all assets are present.
+          gh release create "$TAG" \
+            --draft \
+            --title "$TAG" \
+            --generate-notes
+
+  # ── Build binaries for each platform in parallel ────────────────────────
+  release-build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: [release-create]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # darwin/arm64 is intentionally absent. internal/core/builder/builderimage
+      # is linux-only (linux build constraints; no darwin stubs). Adding darwin
+      # requires build-tagged stubs there first. A previously committed
+      # dist/nexus3-darwin-arm64 binary was removed on 2026-08-21 when this leg
+      # was dropped. Restore by adding darwin stubs then re-adding the matrix entry.
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build nexus3 binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.release-create.outputs.version }}
+        run: |
+          set -euo pipefail
+          OUTFILE="nexus3-${{ matrix.goos }}-${{ matrix.goarch }}"
+          LDFLAGS="-s -w \
+            -X github.com/IniZio/nexus3/internal/cli.version=${VERSION}"
+          go build -trimpath -ldflags "$LDFLAGS" -o "$OUTFILE" ./cmd/nexus3
+          echo "Built $OUTFILE ($(du -sh "$OUTFILE" | cut -f1))"
+          ls -lh "$OUTFILE"
+
+      - name: Upload binary to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-create.outputs.tag }}
+        run: |
+          set -euo pipefail
+          OUTFILE="nexus3-${{ matrix.goos }}-${{ matrix.goarch }}"
+          gh release upload "$TAG" "$OUTFILE" --clobber
+
+  # ── Publish: compute checksums and mark release non-draft ───────────────
+  # Fail-closed gate: `needs: [release-build]` means GitHub Actions skips this
+  # job (and never marks the release non-draft) if any release-build leg fails.
+  # With fail-fast disabled, partial asset uploads would otherwise leave a
+  # published release advertising platforms whose binaries are missing from
+  # SHA256SUMS. The needs dependency is the enforcement mechanism.
+  release-publish:
+    name: Publish release
+    needs: [release-create, release-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download release assets and generate checksums
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-create.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh release download "$TAG" --dir release-assets
+          cd release-assets
+          sha256sum nexus3-* > SHA256SUMS
+          echo "=== SHA256SUMS ==="
+          cat SHA256SUMS
+
+      - name: Upload checksums and publish release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-create.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" release-assets/SHA256SUMS --clobber
+          gh release edit "$TAG" --draft=false
+          echo "Release $TAG published."

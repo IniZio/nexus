@@ -21,11 +21,17 @@ func TestIsGitHubHost(t *testing.T) {
 		{"github.com.", true},
 		{"githubusercontent.com.", true},
 		{"raw.githubusercontent.com.", true},
+		// multi-dot FQDN forms (TrimRight strips all; TrimSuffix would leave one dot and miss these)
+		{"api.github.com..", true},
+		{"github.com..", true},
+		{"  API.GITHUB.COM..  ", true}, // whitespace + uppercase + multi-dot
 		// non-GitHub
 		{"internal.example.com", false},
 		{"notgithub.com", false},
+		{"notgithub.com.", false},  // trailing dot must not widen to non-GitHub hosts
 		{"fakegithub.com", false},
 		{"api.github.com.evil.com", false},
+		{"evil.com..", false}, // multi-dot negative control
 		{"", false},
 	}
 	for _, tc := range tests {

@@ -10,11 +10,13 @@ import "strings"
 //
 // Conservative: covers github.com, every subdomain (*.github.com — api, ssh,
 // codeload, …), and GitHub's content-delivery domain (githubusercontent.com and
-// *.githubusercontent.com). A single trailing dot (valid FQDN form) is stripped
-// before comparison so "api.github.com." and "api.github.com" are equivalent.
+// *.githubusercontent.com). All trailing dots are stripped before comparison
+// (strings.TrimRight) so "api.github.com." and "api.github.com" are equivalent;
+// stripping all dots rather than only one is the safe direction — it narrows
+// egress rather than widening it.
 // The input is otherwise lowercased and whitespace-trimmed before comparison.
 func IsGitHubHost(h string) bool {
-	h = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".")
+	h = strings.TrimRight(strings.ToLower(strings.TrimSpace(h)), ".")
 	return h == "github.com" ||
 		h == "githubusercontent.com" ||
 		strings.HasSuffix(h, ".github.com") ||

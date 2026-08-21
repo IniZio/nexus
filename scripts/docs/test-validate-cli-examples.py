@@ -375,6 +375,107 @@ Use `nexus3 sandbox rm` for this. <!-- cli-spelling-exempt -->
 """},
     ))
 
+    # ── 11. Closed-set badge vocabulary (R4) ─────────────────────────────────
+    # A badge with a type outside {danger, warning, tip, info} must be caught.
+    results.append(test(
+        name="closed-set badge (unknown type is a violation)",
+        manifest_toml="removed_verbs = []\n",
+        dirty_pages={"cli/fixture.md": """\
+## nexus3 create
+
+<Badge type="success" text="done" />
+
+```bash
+nexus3 create myproject/dev
+```
+"""},
+        expect_violations=['badge type \'success\' is not in the closed set'],
+        clean_pages={"cli/fixture.md": """\
+## nexus3 create
+
+```bash
+nexus3 create myproject/dev
+```
+"""},
+    ))
+
+    # A badge with a valid type but wrong text must also be caught.
+    results.append(test(
+        name="closed-set badge (wrong text for valid type is a violation)",
+        manifest_toml="removed_verbs = []\n",
+        dirty_pages={"cli/fixture.md": """\
+## nexus3 create
+
+<Badge type="tip" text="wip" />
+
+```bash
+nexus3 create myproject/dev
+```
+"""},
+        expect_violations=["badge type='tip' text='wip' is not a valid combination"],
+        clean_pages={"cli/fixture.md": """\
+## nexus3 create
+
+```bash
+nexus3 create myproject/dev
+```
+"""},
+    ))
+
+    # ── 12. Built-badge verb enforcement (R5) ────────────────────────────────
+    # A "built" badge on a section whose code block invokes a fabricated verb
+    # (not present in Go source, since the test CLI dir is empty) must fail.
+    results.append(test(
+        name="built badge with unknown verb (fabricated surface is a violation)",
+        manifest_toml="removed_verbs = []\n",
+        dirty_pages={"cli/fixture.md": """\
+## Feature <Badge type="tip" text="built" />
+
+```bash
+nexus3 fabricatedverb
+```
+"""},
+        expect_violations=[
+            "verb 'fabricatedverb' is not found in Go source",
+            'built badge is unearned',
+        ],
+        clean_pages={"cli/fixture.md": """\
+## Feature <Badge type="tip" text="built" />
+
+This feature is fully implemented.
+No code block here — prose-only built section is valid.
+"""},
+    ))
+
+    # ── 13. Built-badge subverb enforcement (R5) ─────────────────────────────
+    # A "built" badge on a section whose code block invokes a noun-group verb
+    # (image, snapshot, auth, sandbox, ssh) with a fabricated subverb must fail.
+    # This is the hole that existed before the _SUBVERBS resolver was added to
+    # check_built_badge_claims(): "nexus3 image frobnicate" with no flags used
+    # to exit rc=0 because only the verb "image" was validated, not the subverb.
+    results.append(test(
+        name="built badge with unknown noun-group subverb (fabricated subverb is a violation)",
+        manifest_toml="removed_verbs = []\n",
+        dirty_pages={"cli/fixture.md": """\
+## Image commands <Badge type="tip" text="built" />
+
+```bash
+nexus3 image frobnicate
+```
+"""},
+        expect_violations=[
+            "subverb 'image frobnicate' is not a recognised subverb",
+            'built badge is unearned',
+        ],
+        clean_pages={"cli/fixture.md": """\
+## Image commands <Badge type="tip" text="built" />
+
+```bash
+nexus3 image ls
+```
+"""},
+    ))
+
     # ── Print results ─────────────────────────────────────────────────────────
     print()
     all_pass = True

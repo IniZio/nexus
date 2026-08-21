@@ -2,9 +2,11 @@ package volumestore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
 )
@@ -56,6 +58,13 @@ type PruneResult struct {
 // (2) the sandbox store's Sandbox.MountedVolumes field. Sandbox records win on
 // conflict — a live sandbox record with MountedVolumes containing the volume
 // name always blocks deletion, even if the volume's attachment list is stale.
+//
+// Locking (D1, D2): before classifying each volume directory, Prune probes the
+// per-volume advisory flock (LockPath).  If the lock is held by another process
+// (e.g. an in-flight Create, Rm, Attach, Detach, or a sandbox create holding
+// the volume across its store.Create commit), Prune keeps the volume.  Ambiguity
+// always resolves to keep — a reaper that is merely "usually right" is a worse
+// defect than the leak it fixes.
 func (s *VolumeStore) Prune(ctx context.Context, sandboxes SandboxLister, opts PruneOptions) (*PruneResult, error) {
 	result := &PruneResult{}
 
@@ -97,75 +106,123 @@ func (s *VolumeStore) Prune(ctx context.Context, sandboxes SandboxLister, opts P
 			continue
 		}
 		name := e.Name()
-		volDir := filepath.Join(s.root, name)
-
-		metaPath := filepath.Join(volDir, metaFile)
-		diskPath := filepath.Join(volDir, diskFile)
-		dataPath := filepath.Join(volDir, dataDirName)
-
-		metaOK := isRegularFile(metaPath)
-		diskOK := isRegularFile(diskPath)
-		dataOK := isDirPath(dataPath)
-		backingOK := diskOK || dataOK
-
-		switch {
-		case metaOK && !backingOK:
-			// Case (a): stub record — meta.json without a backing file.
-			// Cause: create crashed between writing meta.json and materialising
-			// the backing resource (D-PD-89 ordering).
-			if opts.Apply {
-				if err := os.Remove(metaPath); err != nil && !os.IsNotExist(err) {
-					return nil, fmt.Errorf("prune: remove stub meta %s: %w", name, err)
-				}
-				_ = os.Remove(volDir) // best-effort: may fail if dir is non-empty
-			}
-			result.StubsDeleted = append(result.StubsDeleted, name)
-
-		case !metaOK && backingOK:
-			// Case (b): orphaned backing file — backing resource without meta.json.
-			// Cause: filesystem inconsistency or an interrupted delete.
-			var orphans []string
-			if diskOK {
-				orphans = append(orphans, diskPath)
-			}
-			if dataOK {
-				orphans = append(orphans, dataPath)
-			}
-			if opts.Apply {
-				for _, p := range orphans {
-					if err := os.RemoveAll(p); err != nil {
-						return nil, fmt.Errorf("prune: remove orphaned backing %s: %w", p, err)
-					}
-				}
-				_ = os.Remove(volDir)
-			}
-			result.OrphanedFilesDeleted = append(result.OrphanedFilesDeleted, orphans...)
-
-		case metaOK && backingOK:
-			// Case (c): volume record is intact — check liveness via both sources.
-			rec, err := s.readRecord(name)
-			if err != nil {
-				// Unreadable meta.json — skip; do not touch unknown state.
-				continue
-			}
-
-			if isLive(rec, liveIDs, recordRefs) {
-				continue // at least one live sandbox references this volume
-			}
-
-			// Volume is detached.
-			if opts.IncludeDetached && opts.Apply {
-				if err := os.RemoveAll(volDir); err != nil {
-					return nil, fmt.Errorf("prune: remove detached volume %s: %w", name, err)
-				}
-				result.DetachedDeleted = append(result.DetachedDeleted, name)
-			} else {
-				result.DetachedCandidates = append(result.DetachedCandidates, name)
-			}
+		if err := s.pruneEntry(name, liveIDs, recordRefs, opts, result); err != nil {
+			return nil, err
 		}
 	}
 
 	return result, nil
+}
+
+// pruneEntry classifies and (when opts.Apply is true) deletes one volume
+// directory.  It is called once per directory entry by Prune.
+//
+// The per-volume flock is probed with LOCK_EX|LOCK_NB before any
+// classification.  If the lock is already held (EWOULDBLOCK) the entry is
+// skipped — ambiguity resolves to KEEP.  If the lock is acquired it is held
+// for the duration of the classify + delete so that no concurrent operation
+// can race between the stat calls and the remove calls.
+func (s *VolumeStore) pruneEntry(name string, liveIDs map[string]bool, recordRefs map[string]map[string]bool, opts PruneOptions, result *PruneResult) error {
+	volDir := filepath.Join(s.root, name)
+	lockPath := s.LockPath(name)
+
+	// Open the lock file without O_CREATE: Prune must not create a lock file
+	// for a directory that is not a managed volume.  Pre-fix volumes (created
+	// before VOL-LOCK) have no lock file; treat them as free and proceed with
+	// classification (the TOCTOU residual for those volumes is acceptable
+	// during the migration period — they have no active writers using the lock).
+	f, err := os.Open(lockPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		// Unreadable lock file: cannot determine whether a writer is active.
+		// Ambiguity resolves to KEEP.
+		return nil
+	}
+	if f != nil {
+		defer f.Close() //nolint:errcheck
+		lockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		switch {
+		case errors.Is(lockErr, syscall.EWOULDBLOCK), errors.Is(lockErr, syscall.EAGAIN):
+			// Lock held: an active Create, Rm, Attach, Detach, or sandbox create
+			// has the volume in an in-flight state.  KEEP.
+			return nil
+		case lockErr != nil:
+			// Unexpected flock error: cannot verify state.  KEEP.
+			return nil
+		}
+		// Lock acquired. Release after we are done with classify + delete.
+		defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+	}
+	// f == nil: no lock file (pre-fix volume); proceed without holding a lock.
+
+	metaPath := filepath.Join(volDir, metaFile)
+	diskPath := filepath.Join(volDir, diskFile)
+	dataPath := filepath.Join(volDir, dataDirName)
+
+	metaOK := isRegularFile(metaPath)
+	diskOK := isRegularFile(diskPath)
+	dataOK := isDirPath(dataPath)
+	backingOK := diskOK || dataOK
+
+	switch {
+	case metaOK && !backingOK:
+		// Case (a): stub record — meta.json without a backing file.
+		//
+		// Correctness invariant (D1): Create holds the flock from before
+		// writeRecord until after materialise.  If Prune reached this branch,
+		// it holds the flock — so no live Create can also be in the stub window.
+		// This is therefore a genuine crash artifact, not an in-flight create.
+		if opts.Apply {
+			if err := os.Remove(metaPath); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("prune: remove stub meta %s: %w", name, err)
+			}
+			_ = os.Remove(volDir) // best-effort: may fail if dir is non-empty
+		}
+		result.StubsDeleted = append(result.StubsDeleted, name)
+
+	case !metaOK && backingOK:
+		// Case (b): orphaned backing file — backing resource without meta.json.
+		// Cause: filesystem inconsistency or an interrupted delete.
+		var orphans []string
+		if diskOK {
+			orphans = append(orphans, diskPath)
+		}
+		if dataOK {
+			orphans = append(orphans, dataPath)
+		}
+		if opts.Apply {
+			for _, p := range orphans {
+				if err := os.RemoveAll(p); err != nil {
+					return fmt.Errorf("prune: remove orphaned backing %s: %w", p, err)
+				}
+			}
+			_ = os.Remove(volDir)
+		}
+		result.OrphanedFilesDeleted = append(result.OrphanedFilesDeleted, orphans...)
+
+	case metaOK && backingOK:
+		// Case (c): volume record is intact — check liveness via both sources.
+		rec, err := s.readRecord(name)
+		if err != nil {
+			// Unreadable meta.json — skip; do not touch unknown state.
+			return nil
+		}
+
+		if isLive(rec, liveIDs, recordRefs) {
+			return nil // at least one live sandbox references this volume
+		}
+
+		// Volume is detached.
+		if opts.IncludeDetached && opts.Apply {
+			if err := os.RemoveAll(volDir); err != nil {
+				return fmt.Errorf("prune: remove detached volume %s: %w", name, err)
+			}
+			result.DetachedDeleted = append(result.DetachedDeleted, name)
+		} else {
+			result.DetachedCandidates = append(result.DetachedCandidates, name)
+		}
+	}
+
+	return nil
 }
 
 // isLive returns true if any live sandbox references rec from either source:

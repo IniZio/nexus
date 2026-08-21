@@ -1,6 +1,12 @@
 # Build artifacts (root-level binaries from go build -o ...)
 /nexus3
 /nexus3-agent
+/bin/
+
+# Release binaries — CD publishes linux/amd64 only (never committed).
+# dist/ held nexus3-darwin-arm64 until 2026-08-21; darwin was removed because
+# internal/core/builder/builderimage is linux-only (no darwin build stubs).
+/dist/
 
 # Go test and coverage output
 *.test

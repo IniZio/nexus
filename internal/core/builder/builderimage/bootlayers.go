@@ -33,7 +33,7 @@ exec ` + nexus3AgentInstallPath + "\n"
 //  2. /sbin/init — a one-liner that delegates to builder-init.sh.
 //  3. /etc/securetty — appended with "ttyS0" so the serial console works.
 //  4. /workspace — ext4 virtio-blk disk mount point (virtiofs measured and
-//     rejected ~20× metadata penalty; see spike/virtiofs/).
+//     rejected ~17× metadata penalty; see docs/design/virtiofs-vs-ext4.md).
 //  5. /run/buildkit — buildkitd socket directory.
 //  6. /var/lib/buildkit — scratch block device mount point.
 //  7. nexus3-agent binary at nexus3AgentInstallPath.
@@ -79,7 +79,7 @@ func addBootLayers(stagingDir string, agentBytes []byte) error {
 		_ = f.Close()
 	}
 
-	// 4. /workspace — ext4 virtio-blk disk mount point (virtiofs rejected; see spike/virtiofs/).
+	// 4. /workspace — ext4 virtio-blk disk mount point (virtiofs rejected; see docs/design/virtiofs-vs-ext4.md).
 	if err := os.MkdirAll(filepath.Join(stagingDir, "workspace"), 0o755); err != nil {
 		return fmt.Errorf("mkdir /workspace: %w", err)
 	}

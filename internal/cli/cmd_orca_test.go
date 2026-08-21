@@ -515,6 +515,41 @@ func TestGitHostsFromURL_Empty(t *testing.T) {
 	}
 }
 
+// TestGitHostsFromURL_GitHubTrailingDot verifies that a trailing-dot FQDN
+// spelling of a GitHub host ("github.com.") is not returned as an allowed
+// egress host. "github.com." is a valid DNS form that resolves normally, so
+// admitting it would silently widen the agent-sandbox AllowedHosts in
+// violation of D-PD-23 / N-AC1.
+func TestGitHostsFromURL_GitHubTrailingDot(t *testing.T) {
+	hosts := gitHostsFromURL("https://github.com./owner/repo.git")
+	if hosts != nil {
+		t.Errorf("D-PD-23: trailing-dot GitHub FQDN must not widen orca AllowedHosts; got %v", hosts)
+	}
+}
+
+// TestGitHostsFromURL_GitHubVariants checks every alternate spelling of a
+// GitHub host that must be suppressed: uppercase, trailing dot on a subdomain,
+// and api.github.com with a port suffix.
+func TestGitHostsFromURL_GitHubVariants(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{"uppercase", "https://GITHUB.COM/owner/repo.git"},
+		{"mixed-case subdomain", "https://API.GitHub.com/owner/repo.git"},
+		{"trailing dot subdomain", "https://api.github.com./owner/repo.git"},
+		{"githubusercontent trailing dot", "https://raw.githubusercontent.com./owner/repo/main/file"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hosts := gitHostsFromURL(tc.url)
+			if hosts != nil {
+				t.Errorf("D-PD-23: %s URL must not widen orca AllowedHosts; got %v", tc.name, hosts)
+			}
+		})
+	}
+}
+
 // TestOrcaCreate_AllowedHostsInEnvelope is a regression test for the production
 // gap where orcaCreate never set AllowedHosts on CreateAndBootOptions, leaving
 // the sandbox Envelope.AllowedHosts empty. The detached supervisor reads the

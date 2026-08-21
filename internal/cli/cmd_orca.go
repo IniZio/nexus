@@ -185,22 +185,10 @@ func gitHostsFromURL(repoURL string) []string {
 		return nil
 	}
 	host := u.Hostname() // strips port if present
-	if isGitHubEgressHost(host) {
+	if domain.IsGitHubHost(host) {
 		return nil
 	}
 	return []string{host}
-}
-
-// isGitHubEgressHost matches github.com, its APIs, and GitHub CDNs.
-// Kept in lockstep with cli.isN_AC1GitHubHost / service.isGitHubHost.
-func isGitHubEgressHost(h string) bool {
-	h = strings.ToLower(strings.TrimSpace(h))
-	switch h {
-	case "github.com", "api.github.com", "ssh.github.com",
-		"codeload.github.com", "objects.githubusercontent.com":
-		return true
-	}
-	return strings.HasSuffix(h, ".github.com") || strings.HasSuffix(h, ".githubusercontent.com")
 }
 
 // ── SSH keypair helpers ───────────────────────────────────────────────────────

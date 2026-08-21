@@ -15,6 +15,60 @@ WHAT IS CHECKED
   same heading-delimited section as the code block — danger badge for
   not-built flags, warning-or-danger badge for partial flags).
 
+BADGE VOCABULARY — CLOSED SET (R4)
+  Every <Badge .../> tag in docs must be one of exactly four legitimate
+  type/text pairs.  Any other combination is a violation.
+
+    danger  + text starting with "not built"   (long-form notes are allowed,
+                                                e.g. "not built — rationale")
+    warning + text == "partial"
+    tip     + text == "built"
+    info    + text == "backlogged"
+
+  info/backlogged is included in the closed-set check — no rogue type/text
+  combination passes — but is NOT cross-checked against Go source.  Backlogged
+  items are deliberately deferred and have no Go implementation by definition;
+  checking them against source would always fail and would provide no signal.
+  The closed-set rule ensures the text is exactly "backlogged"; nothing more is
+  mechanically verifiable.
+
+BUILT BADGE ENFORCEMENT (R5)
+  A section carrying <Badge type="tip" text="built" /> that contains a nexus3
+  invocation in a fenced code block must use a verb — and for the five
+  noun-group verbs (image, snapshot, auth, sandbox, ssh) also a subverb —
+  that actually exists in Go source (cmd_*.go Name: fields plus the
+  flat-lifecycle verb aliases and the _SUBVERBS table).  An unrecognised verb
+  or subverb means the badge asserts unbuilt surface as built.
+
+  Flag-level enforcement is already provided by the main invocation checker
+  (unknown flags are violations regardless of badge type); R5 adds verb- and
+  subverb-level coverage for the gap where a fabricated verb or subverb with
+  no flags silently passes.
+
+  KNOWN MISSES (empirically confirmed; each is documented rather than fixed):
+  - Any fabrication in a section WITHOUT a built badge is not caught.  Under
+    doc-as-spec an unbadged claim also asserts "built", so this asymmetry is
+    real: a fake subverb in an unbadged section passes silently.
+  - Claims in prose or table cells rather than fenced code blocks are not
+    scanned.  Only lines inside ``` fences are examined.
+  - Fabricated positional arguments are not checked (see "Positional arity"
+    below).
+  - A verb or subverb that exists but whose documented behaviour is wrong is
+    not detectable (no semantic model of behaviour is available).
+  - A flag placed BEFORE the subverb evades the subverb check:
+    `nexus3 image --json frobnicate` passes, because a token starting with
+    "-" is skipped.  This mirrors parse_invocation's own token handling, so
+    it is consistent rather than a new inconsistency.  Zero doc invocations
+    use that spelling.
+  - A bare noun-group verb with no subverb (`nexus3 image`) is not checked by
+    this or any other rule; it is arity, not a fabricated name.
+
+  LATENT PARSER LIMIT (zero current instances; documentation note only):
+  A multi-line <Badge tag, or badge text containing a '/', evades both
+  _BADGE_ANY_RE and BADGE_RE (grep census as of 2026-08-20: 108 instances,
+  none multi-line, none with '/' in text).  This is a documentation note, not
+  a defect to fix now.
+
 WHAT IS NOT CHECKED
   Positional arity is NOT enforced. The motivating defect (snapshot create
   --tag, which had a spurious flag, not a spurious positional) was a flag
@@ -73,6 +127,7 @@ MANIFEST CROSS-CHECK
 
 import os
 import re
+from collections.abc import Callable
 import sys
 import tomllib  # stdlib since Python 3.11 — no third-party deps
 from collections import defaultdict
@@ -195,6 +250,19 @@ FLAT_LIFECYCLE_VERBS: dict[str, str] = {
     "stop": "sandbox",
     "pause": "sandbox",
     "resume": "sandbox",
+}
+
+# Noun-group verbs and their valid subverbs.  Shared between parse_invocation()
+# and check_built_badge_claims() so both resolve the same two-token spellings.
+_SUBVERBS: dict[str, set[str]] = {
+    "sandbox": {"create", "list", "rm", "start", "stop", "pause", "resume"},
+    "snapshot": {"create", "list", "rm"},
+    "image": {"build", "ls", "prune"},
+    "auth": {"login", "logout", "status"},
+    # "ssh config" is the target spelling for config-ssh (partial).
+    # Recognise it as a subverb so the validator does not flag "config"
+    # as an unknown flag.  Pages using it must carry a warning badge.
+    "ssh": {"config"},
 }
 
 
@@ -495,17 +563,7 @@ def parse_invocation(inv: str) -> tuple[str, str | None, set[str]] | None:
     subverb: str | None = None
     if rest and not rest[0].startswith("-"):
         candidate = rest[0]
-        subverbs: dict[str, set[str]] = {
-            "sandbox": {"create", "list", "rm", "start", "stop", "pause", "resume"},
-            "snapshot": {"create", "list", "rm"},
-            "image": {"build", "ls", "prune"},
-            "auth": {"login", "logout", "status"},
-            # "ssh config" is the target spelling for config-ssh (partial).
-            # Recognise it as a subverb so the validator does not flag "config"
-            # as an unknown flag.  Pages using it must carry a warning badge.
-            "ssh": {"config"},
-        }
-        if verb in subverbs and candidate in subverbs[verb]:
+        if verb in _SUBVERBS and candidate in _SUBVERBS[verb]:
             subverb = candidate
             rest = rest[1:]
 
@@ -620,12 +678,207 @@ def check_old_sandbox_spelling(md_path: str, rel: str) -> list[str]:
     return violations
 
 
+# ── Closed-set badge vocabulary check (R4) ───────────────────────────────────
+
+# Match any self-closing Badge component
+_BADGE_ANY_RE = re.compile(r'<Badge\b[^/]*/>')
+
+# Match a properly-formed Badge with both type and text attributes
+_BADGE_FULL_RE = re.compile(r'<Badge\b[^/]*\btype="([^"]+)"[^/]*\btext="([^"]*)"[^/]*/>')
+
+# Legitimate type → text predicate.  Order matters for the "not built" prefix rule.
+# danger  : text must START WITH "not built" (long-form rationale notes are permitted)
+# warning : text must be exactly "partial"
+# tip     : text must be exactly "built"
+# info    : text must be exactly "backlogged" (not cross-checked against Go source —
+#           see module docstring §"WHAT IS NOT CHECKED" for rationale)
+_VALID_BADGE_TEXT: dict[str, Callable[[str], bool]] = {
+    "danger":  lambda t: t.startswith("not built"),
+    "warning": lambda t: t == "partial",
+    "tip":     lambda t: t == "built",
+    "info":    lambda t: t == "backlogged",
+}
+
+
+def check_badge_closed_set(docs_dir: str) -> list[str]:
+    """
+    R4 — every <Badge .../> in docs must use one of the four legitimate
+    type/text pairs.  Any other combination is a violation.
+    Badges inside fenced code blocks (examples, not real components) are skipped.
+    """
+    violations: list[str] = []
+    for dirpath, _, filenames in os.walk(docs_dir):
+        if ".vitepress" in dirpath:
+            continue
+        for fname in sorted(filenames):
+            if not fname.endswith(".md"):
+                continue
+            md_path = os.path.join(dirpath, fname)
+            rel = os.path.relpath(md_path, REPO_ROOT)
+            with open(md_path) as f:
+                lines = f.read().split("\n")
+            in_block = False
+            for lineno, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if stripped.startswith("```") or stripped.startswith("~~~"):
+                    in_block = not in_block
+                    continue
+                if in_block:
+                    continue  # badges inside code blocks are examples, not real components
+                for m in _BADGE_ANY_RE.finditer(line):
+                    badge_raw = m.group(0)
+                    m2 = _BADGE_FULL_RE.search(badge_raw)
+                    if not m2:
+                        violations.append(
+                            f"{rel}:{lineno}: badge is missing required type/text attributes"
+                            f" — must be one of: danger/\"not built[...]\","
+                            f" warning/\"partial\", tip/\"built\", info/\"backlogged\""
+                            f"\n  badge: {badge_raw}"
+                        )
+                        continue
+                    btype, btext = m2.group(1), m2.group(2)
+                    pred = _VALID_BADGE_TEXT.get(btype)
+                    if pred is None:
+                        violations.append(
+                            f"{rel}:{lineno}: badge type {btype!r} is not in the"
+                            f" closed set (danger/warning/tip/info)"
+                            f"\n  badge: {badge_raw}"
+                        )
+                    elif not pred(btext):
+                        violations.append(
+                            f"{rel}:{lineno}: badge type={btype!r} text={btext!r}"
+                            f" is not a valid combination"
+                            f" — expected danger+\"not built[...]\","
+                            f" warning+\"partial\", tip+\"built\", or info+\"backlogged\""
+                            f"\n  badge: {badge_raw}"
+                        )
+    return violations
+
+
+# ── Built-badge verb enforcement (R5) ─────────────────────────────────────────
+
+_BUILT_BADGE_RE = re.compile(r'<Badge\s+type="tip"\s+text="built"\s*/>')
+
+
+def _all_go_verbs(cli_dir: str) -> set[str]:
+    """
+    Return every command Name defined in cmd_*.go (excluding test files).
+    Uses a permissive pattern that also matches internal verbs like __herdr-plugin
+    which parse_go_flags() misses due to its alpha-initial requirement.
+    """
+    verbs: set[str] = set()
+    name_re = re.compile(r'\bName:\s+"([^"]+)"')
+    if not os.path.isdir(cli_dir):
+        return verbs
+    for fname in sorted(os.listdir(cli_dir)):
+        if fname.startswith("cmd_") and fname.endswith(".go") and not fname.endswith("_test.go"):
+            with open(os.path.join(cli_dir, fname)) as f:
+                src = f.read()
+            for m in name_re.finditer(src):
+                verbs.add(m.group(1))
+    return verbs
+
+
+def check_built_badge_claims(docs_dir: str, verb_flags: dict) -> list[str]:
+    """
+    R5 — a section carrying <Badge type="tip" text="built" /> that contains a
+    nexus3 invocation in a fenced code block must use a verb that actually exists
+    in Go source.  Fabricated verbs with no flags silently pass the flag checker
+    but are caught here.
+    """
+    go_verbs = _all_go_verbs(CLI_DIR)
+    # Noun-group verbs are always known at the verb level; subverb validity is
+    # checked separately below via _SUBVERBS.  Without this, noun-group verbs
+    # without Go source (e.g. in test environments) would be caught as unknown
+    # verbs before the subverb check is reached.
+    known_verbs = set(verb_flags.keys()) | set(FLAT_LIFECYCLE_VERBS.keys()) | go_verbs | set(_SUBVERBS.keys())
+
+    violations: list[str] = []
+    for dirpath, _, filenames in os.walk(docs_dir):
+        if ".vitepress" in dirpath:
+            continue
+        for fname in sorted(filenames):
+            if not fname.endswith(".md"):
+                continue
+            md_path = os.path.join(dirpath, fname)
+            rel = os.path.relpath(md_path, REPO_ROOT)
+            with open(md_path) as f:
+                src = f.read()
+
+            if 'type="tip"' not in src:
+                continue  # fast skip for pages with no tip badges
+
+            lines = src.split("\n")
+            n = len(lines)
+
+            # Build per-line flag: is this line inside a built-badge section?
+            line_in_built = [False] * n
+            for start, end, _has_d, _has_w in _split_into_sections(src):
+                sec = "\n".join(lines[start:min(end, n)])
+                if _BUILT_BADGE_RE.search(sec):
+                    for k in range(start, min(end, n)):
+                        line_in_built[k] = True
+
+            # Scan fenced code blocks for nexus3 invocations in built sections
+            in_block = False
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith("```") or stripped.startswith("~~~"):
+                    in_block = not in_block
+                    continue
+                if not in_block or not line_in_built[i]:
+                    continue
+                code = re.sub(r'\s+#.*$', '', line).strip()
+                if not code.startswith("nexus3 "):
+                    continue
+                tokens = code.split()
+                if len(tokens) < 2:
+                    continue
+                verb = tokens[1]
+                if verb in TARGET_ONLY_VERBS:
+                    violations.append(
+                        f"{rel}:{i + 1}: verb '{verb}' is in target_only_verbs"
+                        f" but section carries <Badge type=\"tip\" text=\"built\" />"
+                        f" — a verb cannot be both target-only and built"
+                        f"\n  invocation: {code}"
+                    )
+                elif verb not in known_verbs and verb not in REMOVED_VERBS:
+                    violations.append(
+                        f"{rel}:{i + 1}: verb '{verb}' is not found in Go source"
+                        f" but section carries <Badge type=\"tip\" text=\"built\" />"
+                        f" — built badge is unearned; remove the badge or add the verb"
+                        f"\n  invocation: {code}"
+                    )
+                elif verb in _SUBVERBS:
+                    # Noun-group verb: the next token is the subverb.  Validate it.
+                    if len(tokens) < 3:
+                        continue  # bare "nexus3 image": missing subverb is arity, which
+                        # this module declines to enforce (see "Positional arity").
+                        # Nothing else catches it either — listed under KNOWN MISSES.
+                    candidate = tokens[2]
+                    if not candidate.startswith("-") and candidate not in _SUBVERBS[verb]:
+                        violations.append(
+                            f"{rel}:{i + 1}: subverb '{verb} {candidate}' is not a"
+                            f" recognised subverb of '{verb}'"
+                            f" but section carries <Badge type=\"tip\" text=\"built\" />"
+                            f" — built badge is unearned; remove the badge or add the subverb"
+                            f"\n  invocation: {code}"
+                        )
+    return violations
+
+
 def main() -> None:
     verb_flags = parse_go_flags(CLI_DIR)
 
     violations: list[str] = []
     checked = 0
     exempted = 0
+
+    # R4 — Closed-set badge vocabulary
+    violations.extend(check_badge_closed_set(DOCS_DIR))
+
+    # R5 — Built-badge verb enforcement
+    violations.extend(check_built_badge_claims(DOCS_DIR, verb_flags))
 
     # Bidirectional manifest↔docs cross-check (manifest→docs direction)
     violations.extend(check_manifest_coverage(DOCS_DIR, MANIFEST_ENTRIES))

@@ -152,7 +152,7 @@ func TestRm_notAttached(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	if err := s.Rm("del-vol"); err != nil {
+	if err := s.Rm(ctx, "del-vol"); err != nil {
 		t.Fatalf("rm: %v", err)
 	}
 
@@ -177,11 +177,11 @@ func TestRm_attached(t *testing.T) {
 	if _, err := s.Create(ctx, "busy-vol", volumestore.KindDir, 0, ""); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := s.Attach("busy-vol", "sb-01ABC"); err != nil {
+	if err := s.Attach(ctx, "busy-vol", "sb-01ABC"); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
 
-	err := s.Rm("busy-vol")
+	err := s.Rm(ctx, "busy-vol")
 	if err == nil {
 		t.Fatal("expected 'volume in use' error, got nil")
 	}
@@ -249,15 +249,15 @@ func TestDetach(t *testing.T) {
 	if _, err := s.Create(ctx, "det-vol", volumestore.KindDir, 0, ""); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := s.Attach("det-vol", "sb-AAAAAA"); err != nil {
+	if err := s.Attach(ctx, "det-vol", "sb-AAAAAA"); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
 
 	// After detach, rm must succeed.
-	if err := s.Detach("det-vol", "sb-AAAAAA"); err != nil {
+	if err := s.Detach(ctx, "det-vol", "sb-AAAAAA"); err != nil {
 		t.Fatalf("detach: %v", err)
 	}
-	if err := s.Rm("det-vol"); err != nil {
+	if err := s.Rm(ctx, "det-vol"); err != nil {
 		t.Errorf("rm after detach: %v", err)
 	}
 }

@@ -460,8 +460,14 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 			for _, va := range rec.MountedVolumes {
 				if va.Kind == string(volumestore.KindDisk) && !va.ReadOnly {
 					guardCtx, guardCancel := context.WithTimeout(ctx, 10*time.Second)
-					checkErr := checkRWAttach(guardCtx, s.volumes, s.store, guardDiskDir, va.Name, rec.ID.String())
+					// Start-time guard: sandbox record already exists, so D2 does
+					// not apply.  Release the lock immediately after the check.
+					startLk, checkErr := checkRWAttach(guardCtx, s.volumes, s.store, guardDiskDir, va.Name, rec.ID.String())
 					guardCancel()
+					if startLk != nil {
+						_ = startLk.Unlock()
+						_ = startLk.Close()
+					}
 					if checkErr != nil {
 						return fmt.Errorf("start volume guard: %w", checkErr)
 					}
@@ -717,9 +723,17 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 	// NEVER deletes volume backing files — only the attachment record is cleared).
 	// Uses detachVolumeLocked so the write races neither against a concurrent
 	// attach check nor a concurrent prune.
+	//
+	// Bound the acquisition independently of the caller's ctx (RISK-SD2-1): the
+	// four CLI call sites that reach here supply the root signal.NotifyContext
+	// which has no deadline, so a contended volume lock would spin forever without
+	// this internal bound. WithoutCancel prevents a pre-cancelled ctx (already
+	// returned an error) from skipping detach entirely.
 	if s.volumes != nil {
+		detachCtx, detachCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer detachCancel()
 		for _, va := range sb.MountedVolumes {
-			_ = detachVolumeLocked(ctx, s.volumes, va.Name, sb.ID.String())
+			_ = detachVolumeLocked(detachCtx, s.volumes, va.Name, sb.ID.String())
 		}
 	}
 

@@ -1,0 +1,238 @@
+# PROVENANCE (added 2026-08-21 when this file was committed as evidence)
+#   virtiofs cache mode : always-writeback
+#   run date            : 2026-08-18
+#   rounds              : n=1000 files x 10 rounds; both legs equalised via `cp -a`
+#   produced by         : docs/design/bench-data/bench.sh (guest binary: guest_bench/main.go)
+#   decisions           : D-DC-09, D-PD-100, D-PD-102/103
+#   note                : Source of every figure in docs/design/virtiofs-vs-ext4.md.
+#   cache mode is NOT otherwise recorded in the payload below — it lived only
+#   in the filename until this header was added.
+#
+GUEST_INIT_START
+GUEST_PARAMS n=1000 runs=10
+GUEST_HAS_GIT 1
+MOUNT_OK virtiofs
+BENCH_START virtiofs-r1 n=1000
+BENCH_CREATE_NS virtiofs-r1 163950336
+BENCH_STAT_NS virtiofs-r1 38311738
+BENCH_UNLINK_NS virtiofs-r1 135293646
+BENCH_END virtiofs-r1 create=163ms stat=38ms unlink=135ms total=337ms
+BENCH_START virtiofs-r2 n=1000
+BENCH_CREATE_NS virtiofs-r2 142799009
+BENCH_STAT_NS virtiofs-r2 19973593
+BENCH_UNLINK_NS virtiofs-r2 87739868
+BENCH_END virtiofs-r2 create=142ms stat=19ms unlink=87ms total=250ms
+BENCH_START virtiofs-r3 n=1000
+BENCH_CREATE_NS virtiofs-r3 125261024
+BENCH_STAT_NS virtiofs-r3 30161193
+BENCH_UNLINK_NS virtiofs-r3 86150648
+BENCH_END virtiofs-r3 create=125ms stat=30ms unlink=86ms total=241ms
+BENCH_START virtiofs-r4 n=1000
+BENCH_CREATE_NS virtiofs-r4 126244787
+BENCH_STAT_NS virtiofs-r4 33523137
+BENCH_UNLINK_NS virtiofs-r4 91562390
+BENCH_END virtiofs-r4 create=126ms stat=33ms unlink=91ms total=251ms
+BENCH_START virtiofs-r5 n=1000
+BENCH_CREATE_NS virtiofs-r5 130654252
+BENCH_STAT_NS virtiofs-r5 25138134
+BENCH_UNLINK_NS virtiofs-r5 88919957
+BENCH_END virtiofs-r5 create=130ms stat=25ms unlink=88ms total=244ms
+BENCH_START virtiofs-r6 n=1000
+BENCH_CREATE_NS virtiofs-r6 148820047
+BENCH_STAT_NS virtiofs-r6 41682369
+BENCH_UNLINK_NS virtiofs-r6 107989946
+BENCH_END virtiofs-r6 create=148ms stat=41ms unlink=107ms total=298ms
+BENCH_START virtiofs-r7 n=1000
+BENCH_CREATE_NS virtiofs-r7 171842650
+BENCH_STAT_NS virtiofs-r7 31268016
+BENCH_UNLINK_NS virtiofs-r7 100057086
+BENCH_END virtiofs-r7 create=171ms stat=31ms unlink=100ms total=303ms
+BENCH_START virtiofs-r8 n=1000
+BENCH_CREATE_NS virtiofs-r8 153476152
+BENCH_STAT_NS virtiofs-r8 43677506
+BENCH_UNLINK_NS virtiofs-r8 88766221
+BENCH_END virtiofs-r8 create=153ms stat=43ms unlink=88ms total=285ms
+BENCH_START virtiofs-r9 n=1000
+BENCH_CREATE_NS virtiofs-r9 149077657
+BENCH_STAT_NS virtiofs-r9 30627032
+BENCH_UNLINK_NS virtiofs-r9 97014347
+BENCH_END virtiofs-r9 create=149ms stat=30ms unlink=97ms total=276ms
+BENCH_START virtiofs-r10 n=1000
+BENCH_CREATE_NS virtiofs-r10 168613434
+BENCH_STAT_NS virtiofs-r10 33817766
+BENCH_UNLINK_NS virtiofs-r10 100305279
+BENCH_END virtiofs-r10 create=168ms stat=33ms unlink=100ms total=302ms
+MOUNT_OK ext4-blk
+BENCH_START ext4-blk-r1 n=1000
+BENCH_CREATE_NS ext4-blk-r1 11657148
+BENCH_STAT_NS ext4-blk-r1 613032
+BENCH_UNLINK_NS ext4-blk-r1 6894215
+BENCH_END ext4-blk-r1 create=11ms stat=0ms unlink=6ms total=19ms
+BENCH_START ext4-blk-r2 n=1000
+BENCH_CREATE_NS ext4-blk-r2 8826484
+BENCH_STAT_NS ext4-blk-r2 464596
+BENCH_UNLINK_NS ext4-blk-r2 6901247
+BENCH_END ext4-blk-r2 create=8ms stat=0ms unlink=6ms total=16ms
+BENCH_START ext4-blk-r3 n=1000
+BENCH_CREATE_NS ext4-blk-r3 8168930
+BENCH_STAT_NS ext4-blk-r3 437345
+BENCH_UNLINK_NS ext4-blk-r3 6684284
+BENCH_END ext4-blk-r3 create=8ms stat=0ms unlink=6ms total=15ms
+BENCH_START ext4-blk-r4 n=1000
+BENCH_CREATE_NS ext4-blk-r4 8576650
+BENCH_STAT_NS ext4-blk-r4 499731
+BENCH_UNLINK_NS ext4-blk-r4 6752590
+BENCH_END ext4-blk-r4 create=8ms stat=0ms unlink=6ms total=15ms
+BENCH_START ext4-blk-r5 n=1000
+BENCH_CREATE_NS ext4-blk-r5 8596496
+BENCH_STAT_NS ext4-blk-r5 469575
+BENCH_UNLINK_NS ext4-blk-r5 6606499
+BENCH_END ext4-blk-r5 create=8ms stat=0ms unlink=6ms total=15ms
+BENCH_START ext4-blk-r6 n=1000
+BENCH_CREATE_NS ext4-blk-r6 8256363
+BENCH_STAT_NS ext4-blk-r6 469385
+BENCH_UNLINK_NS ext4-blk-r6 6754795
+BENCH_END ext4-blk-r6 create=8ms stat=0ms unlink=6ms total=15ms
+BENCH_START ext4-blk-r7 n=1000
+BENCH_CREATE_NS ext4-blk-r7 7824688
+BENCH_STAT_NS ext4-blk-r7 507556
+BENCH_UNLINK_NS ext4-blk-r7 6756048
+BENCH_END ext4-blk-r7 create=7ms stat=0ms unlink=6ms total=15ms
+BENCH_START ext4-blk-r8 n=1000
+BENCH_CREATE_NS ext4-blk-r8 8519633
+BENCH_STAT_NS ext4-blk-r8 447043
+BENCH_UNLINK_NS ext4-blk-r8 6734647
+BENCH_END ext4-blk-r8 create=8ms stat=0ms unlink=6ms total=15ms
+BENCH_START ext4-blk-r9 n=1000
+BENCH_CREATE_NS ext4-blk-r9 11732148
+BENCH_STAT_NS ext4-blk-r9 467901
+BENCH_UNLINK_NS ext4-blk-r9 7355554
+BENCH_END ext4-blk-r9 create=11ms stat=0ms unlink=7ms total=19ms
+BENCH_START ext4-blk-r10 n=1000
+BENCH_CREATE_NS ext4-blk-r10 8203574
+BENCH_STAT_NS ext4-blk-r10 453625
+BENCH_UNLINK_NS ext4-blk-r10 6791082
+BENCH_END ext4-blk-r10 create=8ms stat=0ms unlink=6ms total=15ms
+MOUNT_OK tmpfs-local
+BENCH_START tmpfs-r1 n=1000
+BENCH_CREATE_NS tmpfs-r1 1946065
+BENCH_STAT_NS tmpfs-r1 466388
+BENCH_UNLINK_NS tmpfs-r1 895078
+BENCH_END tmpfs-r1 create=1ms stat=0ms unlink=0ms total=3ms
+BENCH_START tmpfs-r2 n=1000
+BENCH_CREATE_NS tmpfs-r2 1992102
+BENCH_STAT_NS tmpfs-r2 422718
+BENCH_UNLINK_NS tmpfs-r2 858830
+BENCH_END tmpfs-r2 create=1ms stat=0ms unlink=0ms total=3ms
+BENCH_START tmpfs-r3 n=1000
+BENCH_CREATE_NS tmpfs-r3 2292822
+BENCH_STAT_NS tmpfs-r3 467381
+BENCH_UNLINK_NS tmpfs-r3 917820
+BENCH_END tmpfs-r3 create=2ms stat=0ms unlink=0ms total=3ms
+BENCH_START tmpfs-r4 n=1000
+BENCH_CREATE_NS tmpfs-r4 1783122
+BENCH_STAT_NS tmpfs-r4 537151
+BENCH_UNLINK_NS tmpfs-r4 1028716
+BENCH_END tmpfs-r4 create=1ms stat=0ms unlink=1ms total=3ms
+BENCH_START tmpfs-r5 n=1000
+BENCH_CREATE_NS tmpfs-r5 1853984
+BENCH_STAT_NS tmpfs-r5 421425
+BENCH_UNLINK_NS tmpfs-r5 869370
+BENCH_END tmpfs-r5 create=1ms stat=0ms unlink=0ms total=3ms
+BENCH_START tmpfs-r6 n=1000
+BENCH_CREATE_NS tmpfs-r6 1953099
+BENCH_STAT_NS tmpfs-r6 490413
+BENCH_UNLINK_NS tmpfs-r6 912580
+BENCH_END tmpfs-r6 create=1ms stat=0ms unlink=0ms total=3ms
+BENCH_START tmpfs-r7 n=1000
+BENCH_CREATE_NS tmpfs-r7 1842442
+BENCH_STAT_NS tmpfs-r7 461169
+BENCH_UNLINK_NS tmpfs-r7 905167
+BENCH_END tmpfs-r7 create=1ms stat=0ms unlink=0ms total=3ms
+BENCH_START tmpfs-r8 n=1000
+BENCH_CREATE_NS tmpfs-r8 2447220
+BENCH_STAT_NS tmpfs-r8 523605
+BENCH_UNLINK_NS tmpfs-r8 970117
+BENCH_END tmpfs-r8 create=2ms stat=0ms unlink=0ms total=3ms
+BENCH_START tmpfs-r9 n=1000
+BENCH_CREATE_NS tmpfs-r9 1858984
+BENCH_STAT_NS tmpfs-r9 492288
+BENCH_UNLINK_NS tmpfs-r9 958556
+BENCH_END tmpfs-r9 create=1ms stat=0ms unlink=0ms total=3ms
+BENCH_START tmpfs-r10 n=1000
+BENCH_CREATE_NS tmpfs-r10 1828757
+BENCH_STAT_NS tmpfs-r10 958105
+BENCH_UNLINK_NS tmpfs-r10 1424625
+BENCH_END tmpfs-r10 create=1ms stat=0ms unlink=1ms total=4ms
+MOUNT_OK gitrepo
+MOUNT_OK git-ext4
+GITSTATUS_COLD_START
+BENCH_GITSTATUS_START virtiofs-git-cold
+BENCH_GITSTATUS_NS virtiofs-git-cold 2367630746
+BENCH_GITSTATUS_END virtiofs-git-cold elapsed=2367ms files=19
+BENCH_GITSTATUS_START ext4-git-cold
+BENCH_GITSTATUS_NS ext4-git-cold 1744480013
+BENCH_GITSTATUS_END ext4-git-cold elapsed=1744ms files=19
+GITSTATUS_COLD_DONE
+GITSTATUS_STEADY_START
+BENCH_GITSTATUS_START virtiofs-git-r1
+BENCH_GITSTATUS_NS virtiofs-git-r1 143857772
+BENCH_GITSTATUS_END virtiofs-git-r1 elapsed=143ms files=19
+BENCH_GITSTATUS_START ext4-git-r1
+BENCH_GITSTATUS_NS ext4-git-r1 30281257
+BENCH_GITSTATUS_END ext4-git-r1 elapsed=30ms files=19
+BENCH_GITSTATUS_START virtiofs-git-r2
+BENCH_GITSTATUS_NS virtiofs-git-r2 163727761
+BENCH_GITSTATUS_END virtiofs-git-r2 elapsed=163ms files=19
+BENCH_GITSTATUS_START ext4-git-r2
+BENCH_GITSTATUS_NS ext4-git-r2 32599446
+BENCH_GITSTATUS_END ext4-git-r2 elapsed=32ms files=19
+BENCH_GITSTATUS_START virtiofs-git-r3
+BENCH_GITSTATUS_NS virtiofs-git-r3 146458296
+BENCH_GITSTATUS_END virtiofs-git-r3 elapsed=146ms files=19
+BENCH_GITSTATUS_START ext4-git-r3
+BENCH_GITSTATUS_NS ext4-git-r3 39914164
+BENCH_GITSTATUS_END ext4-git-r3 elapsed=39ms files=19
+BENCH_GITSTATUS_START virtiofs-git-r4
+BENCH_GITSTATUS_NS virtiofs-git-r4 142688113
+BENCH_GITSTATUS_END virtiofs-git-r4 elapsed=142ms files=19
+BENCH_GITSTATUS_START ext4-git-r4
+BENCH_GITSTATUS_NS ext4-git-r4 26127708
+BENCH_GITSTATUS_END ext4-git-r4 elapsed=26ms files=19
+BENCH_GITSTATUS_START virtiofs-git-r5
+BENCH_GITSTATUS_NS virtiofs-git-r5 149455230
+BENCH_GITSTATUS_END virtiofs-git-r5 elapsed=149ms files=19
+BENCH_GITSTATUS_START ext4-git-r5
+BENCH_GITSTATUS_NS ext4-git-r5 27423923
+BENCH_GITSTATUS_END ext4-git-r5 elapsed=27ms files=19
+BENCH_GITSTATUS_START virtiofs-git-r6
+BENCH_GITSTATUS_NS virtiofs-git-r6 190023453
+BENCH_GITSTATUS_END virtiofs-git-r6 elapsed=190ms files=19
+BENCH_GITSTATUS_START ext4-git-r6
+BENCH_GITSTATUS_NS ext4-git-r6 45152273
+BENCH_GITSTATUS_END ext4-git-r6 elapsed=45ms files=19
+BENCH_GITSTATUS_START virtiofs-git-r7
+BENCH_GITSTATUS_NS virtiofs-git-r7 199330462
+BENCH_GITSTATUS_END virtiofs-git-r7 elapsed=199ms files=19
+BENCH_GITSTATUS_START ext4-git-r7
+BENCH_GITSTATUS_NS ext4-git-r7 36027984
+BENCH_GITSTATUS_END ext4-git-r7 elapsed=36ms files=19
+BENCH_GITSTATUS_START virtiofs-git-r8
+BENCH_GITSTATUS_NS virtiofs-git-r8 125438705
+BENCH_GITSTATUS_END virtiofs-git-r8 elapsed=125ms files=19
+BENCH_GITSTATUS_START ext4-git-r8
+BENCH_GITSTATUS_NS ext4-git-r8 48885629
+BENCH_GITSTATUS_END ext4-git-r8 elapsed=48ms files=19
+BENCH_GITSTATUS_START virtiofs-git-r9
+BENCH_GITSTATUS_NS virtiofs-git-r9 160397647
+BENCH_GITSTATUS_END virtiofs-git-r9 elapsed=160ms files=19
+BENCH_GITSTATUS_START ext4-git-r9
+BENCH_GITSTATUS_NS ext4-git-r9 28944206
+BENCH_GITSTATUS_END ext4-git-r9 elapsed=28ms files=19
+BENCH_GITSTATUS_START virtiofs-git-r10
+BENCH_GITSTATUS_NS virtiofs-git-r10 141792083
+BENCH_GITSTATUS_END virtiofs-git-r10 elapsed=141ms files=19
+BENCH_GITSTATUS_START ext4-git-r10
+BENCH_GITSTATUS_NS ext4-git-r10 29536920
+BENCH_GITSTATUS_END ext4-git-r10 elapsed=29ms files=19
+GITSTATUS_STEADY_DONE

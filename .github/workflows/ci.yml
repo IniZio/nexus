@@ -35,3 +35,10 @@ jobs:
 
       - name: Mutation-test the doc validator
         run: python3 scripts/docs/test-validate-cli-examples.py
+
+      # Badge census: no page may lose a <Badge> without a same-commit baseline
+      # update (--update-baseline).  Catches silent removal of danger/warning/tip/info
+      # badges across all doc pages.  Run --census-only to skip the expensive
+      # single-badge-removal sweep (that sweep is an offline analysis tool).
+      - name: Badge census
+        run: python3 scripts/docs/badge-coverage.py --census-only

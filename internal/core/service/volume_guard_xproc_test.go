@@ -267,8 +267,18 @@ func writeCtrlResult(ctrlDir, idx, content string) {
 
 func writeCtrlFileContent(ctrlDir, name, content string) {
 	p := filepath.Join(ctrlDir, name)
-	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
-		fmt.Fprintf(os.Stderr, "subprocess: writeCtrlFileContent %s: %v\n", p, err)
+	// Write atomically: write to a .tmp sibling then os.Rename into place.
+	// Rename(2) is atomic within a filesystem, so the parent can never see a
+	// partially-written file — it either sees the old state (file absent) or
+	// the complete content.  Belt-and-braces alongside the readResult empty-
+	// content guard which closes the torn-read window from the reader side.
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "subprocess: writeCtrlFileContent %s: write tmp: %v\n", p, err)
+		os.Exit(1)
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		fmt.Fprintf(os.Stderr, "subprocess: writeCtrlFileContent %s: rename: %v\n", p, err)
 		os.Exit(1)
 	}
 }
@@ -336,14 +346,28 @@ func waitForCtrlFiles(t *testing.T, ctrlDir, prefix string, n int, timeout time.
 }
 
 // readResult reads the result_<idx> control file and returns its content.
-// It polls until the file appears, then returns the trimmed content.
+// It polls until the file appears with non-empty content, then returns the
+// trimmed content.
+//
+// Empty content is treated as "not yet written" and polling continues.
+// Every writeCtrlResult call writes either "OK" or an "ERR:…" prefix — no
+// helper ever legitimately writes an empty result. A subprocess that exits
+// before writing leaves NO file (ReadFile returns an error and the loop
+// continues), so a nil-error read of 0 bytes has exactly one origin: a torn
+// read where the parent caught the file between the writer's O_CREAT|O_TRUNC
+// and its subsequent write(2) call. Treating "" as not-written closes this
+// window without changing any assertions.
 func readResult(ctrlDir string, idx int, timeout time.Duration) (string, error) {
 	p := filepath.Join(ctrlDir, "result_"+strconv.Itoa(idx))
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		data, err := os.ReadFile(p)
 		if err == nil {
-			return strings.TrimSpace(string(data)), nil
+			if s := strings.TrimSpace(string(data)); s != "" {
+				return s, nil
+			}
+			// torn read: file truncated but content not yet written — retry
+			fmt.Fprintf(os.Stderr, "readResult[%d]: torn read, retrying\n", idx)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -506,8 +530,8 @@ func TestCrossProcess_nonOverRefusal_concurrentRO(t *testing.T) {
 	id1 := domain.NewSandboxID().String()
 	id2 := domain.NewSandboxID().String()
 	var errs [2]error
-	errs[0] = vs.Attach(volName, id1)
-	errs[1] = vs.Attach(volName, id2)
+	errs[0] = vs.Attach(ctx, volName, id1)
+	errs[1] = vs.Attach(ctx, volName, id2)
 
 	for i, e := range errs {
 		if e != nil {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/core/volumestore"
@@ -50,6 +51,25 @@ func runVolume(ctx context.Context, args []string, out *Output) error {
 // create
 
 func runVolumeCreate(ctx context.Context, args []string, out *Output, vs *volumestore.VolumeStore) error {
+	return runVolumeCreateWith(ctx, args, out, vs)
+}
+
+// runVolumeCreateWith is the testable core; tests inject vs directly.
+//
+// No disk-space preflight is applied here. For kind=dir the operation is a
+// mkdir — zero disk allocation. For kind=disk, preallocateFile uses
+// ftruncate (sparse file: no blocks until guest writes) and formatExt4 (mke2fs)
+// writes only filesystem metadata (~5% of sizeBytes); neither cost is
+// projectable from the CLI layer at create time because there is no source
+// artifact to measure against. The disk fills at guest-write time, not here.
+//
+// The TBD-PD-26 preflight (commit 48d1b82, M3-AC2) covers CreateAndBoot and
+// Service.Fork, where a real OCI artifact is copied — an immediate, measurable
+// allocation. Volume create has no such source; applying the same check would
+// either over-charge sizeBytes (~10–30× the actual mke2fs footprint) or use a
+// fixed metadata estimate that passes unconditionally. Both outcomes are
+// misleading. Volume create is intentionally outside the TBD-PD-26 scope.
+func runVolumeCreateWith(ctx context.Context, args []string, out *Output, vs *volumestore.VolumeStore) error {
 	fs := flag.NewFlagSet("volume create", flag.ContinueOnError)
 	kindFlag := fs.String("kind", "disk", "volume kind: dir or disk")
 	sizeFlag := fs.Int64("size", 0, "size in bytes for kind=disk (default: 10 GiB)")
@@ -179,7 +199,7 @@ func runVolumeLs(ctx context.Context, args []string, out *Output, vs *volumestor
 
 // rm
 
-func runVolumeRm(_ context.Context, args []string, out *Output, vs *volumestore.VolumeStore) error {
+func runVolumeRm(ctx context.Context, args []string, out *Output, vs *volumestore.VolumeStore) error {
 	fs := flag.NewFlagSet("volume rm", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
 		return &UsageError{Msg: "volume rm: " + err.Error()}
@@ -192,7 +212,11 @@ func runVolumeRm(_ context.Context, args []string, out *Output, vs *volumestore.
 	}
 	name := fs.Arg(0)
 
-	if err := vs.Rm(name); err != nil {
+	// Bound the per-volume flock acquisition (RISK-SD2-1): the root CLI ctx
+	// carries no deadline, so a contended lock would spin forever without this.
+	rmCtx, rmCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer rmCancel()
+	if err := vs.Rm(rmCtx, name); err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: fmt.Sprintf("volume rm %s: %v", name, err)}
 	}
 

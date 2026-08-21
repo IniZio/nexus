@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/builder"
@@ -26,6 +27,14 @@ import (
 // ErrAgentUnreachable is returned by CreateAndBoot when the VM starts but the
 // guest agent does not become reachable within the configured timeout.
 var ErrAgentUnreachable = errors.New("service: guest agent did not answer after VM boot")
+
+// testHookBeforeStoreCreate is called inside CreateAndBoot immediately before
+// svc.store.Create commits the sandbox record. It is nil in production and is
+// set only by tests that need to observe the volume-lease state in the D2
+// window (between vs.AttachLocked and store.Create). If the hook returns a
+// non-nil error, CreateAndBoot propagates it and aborts without writing the
+// record.
+var testHookBeforeStoreCreate atomic.Pointer[func() error]
 
 // ExtraDisk describes an additional raw ext4 disk image to attach to the
 // sandbox VM at boot time. The underlying driver maps them to virtio-blk
@@ -511,59 +520,57 @@ func CreateAndBoot(
 		}
 	}()
 
-	// 3.7 Named-volume create + concurrency guard
+	// 3.7 Named-volume setup — variable declarations and deferred cleanup
 	//
-	// Named volumes are set up AFTER the intent lease is held (step 3.6) so
-	// that concurrent attachment checkers see this sandbox as "in flight" via
-	// the intent file (§4.1 Row 3 — load-bearing). The guard runs before step 4
-	// (CoW copy) so no heavy I/O occurs inside the volume lock.
+	// The per-volume flock (volumeLeases) is held from vs.AttachLocked /
+	// checkRWAttach until svc.store.Create commits the sandbox record (D2).
+	// The attach loop itself runs AFTER workspace capture (step 4.7) so the
+	// hold does not span the I/O-heavy capture. The protected window becomes:
+	//   attach → driver construction → §6 guards → store.Create → unlock.
 	//
-	// For kind=disk rw: checkRWAttach acquires the per-volume lock, applies the
-	// five-row verdict table, and atomically records the attachment (§4.1).
-	// For kind=disk ro and kind=dir: simple idempotent Attach (no guard needed).
-	//
-	// Kind=disk volume paths are prepended to opts.ExtraDisks (before workspace)
-	// in declaration order, giving them the first available device letters (§1.5).
+	// The intent lease written at step 3.6 continues to cover the entire window
+	// including capture; it is what tells a concurrent reaper that this create
+	// is in flight (§4.1 Row 3 — load-bearing, unaffected by this reorder).
 	var namedDiskAttached []string // for rollback on failure
+	// volumeLeases holds the per-volume flocks returned by checkRWAttach /
+	// vs.AttachLocked. Each lock is held from step 4.7 until svc.store.Create
+	// commits the sandbox record, preventing Prune from deleting a volume that
+	// has been attached in meta.json but whose sandbox record does not yet
+	// exist (D2).
+	var volumeLeases []*store.Lock
 	defer func() {
+		// Release D2 leases FIRST so vs.Detach (called below) can re-lock.
+		for _, lk := range volumeLeases {
+			_ = lk.Unlock()
+			_ = lk.Close()
+		}
 		if !success && opts.Volumes != nil {
+			// ctx may already be cancelled on the error path; use WithoutCancel
+			// so the rollback ctx is not pre-cancelled, then bound it (RISK-SD2-1).
+			rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer rollbackCancel()
 			for _, vname := range namedDiskAttached {
-				_ = detachVolumeLocked(context.Background(), opts.Volumes, vname, id.String())
+				_ = detachVolumeLocked(rollbackCtx, opts.Volumes, vname, id.String())
 			}
 		}
 	}()
-	if vs := opts.Volumes; vs != nil && len(opts.NamedVolumeMounts) > 0 {
-		var namedDiskExtras []ExtraDisk
+
+	// 3.75 Unlocked rw-volume pre-check (fail-fast UX only — NO correctness weight)
+	//
+	// Reads the volume record and the sandbox store WITHOUT holding the
+	// per-volume lock, applies rows 1–4 of the §4.1 verdict table. Because the
+	// lock is not held, the result may be stale (a concurrent create could win
+	// the lock between this check and step 4.7). Its sole purpose is to surface
+	// "volume already in use" BEFORE workspace capture so a user on the error
+	// path does not wait 28–40 s for capture to complete. The authoritative
+	// locked check runs at step 4.7 regardless of whether this pre-check passes.
+	if vs := opts.Volumes; vs != nil {
 		for _, mount := range opts.NamedVolumeMounts {
-			// Create volume idempotently — returns existing record if already present.
-			if _, err = vs.Create(ctx, mount.Name, mount.Kind, mount.SizeBytes, ""); err != nil {
-				return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: create volume %s: %w", project, name, mount.Name, err)
-			}
 			if mount.Kind == volumestore.KindDisk && !mount.ReadOnly {
-				// Guard: one rw kind=disk attach at a time. Use a deadline so a
-				// wedged lock-holder surfaces as an error, not a hung CLI (RISK-SD2-1).
-				guardCtx, guardCancel := context.WithTimeout(ctx, 10*time.Second)
-				err = checkRWAttach(guardCtx, vs, svc.store, diskDir, mount.Name, id.String())
-				guardCancel()
-				if err != nil {
-					return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: volume %s: %w", project, name, mount.Name, err)
-				}
-				namedDiskAttached = append(namedDiskAttached, mount.Name)
-			} else {
-				// ro kind=disk or kind=dir: no concurrency guard; idempotent Attach.
-				if err = vs.Attach(mount.Name, id.String()); err != nil {
-					return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: attach volume %s: %w", project, name, mount.Name, err)
+				if preErr := preCheckRWAttachUnlocked(ctx, vs, svc.store, diskDir, mount.Name, id.String()); preErr != nil {
+					return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, preErr)
 				}
 			}
-			if mount.Kind == volumestore.KindDisk {
-				namedDiskExtras = append(namedDiskExtras, ExtraDisk{Path: vs.DiskPath(mount.Name)})
-			}
-		}
-		// Prepend named-disk volumes before caller-supplied ExtraDisks so named
-		// volumes receive the lower device letters (§1.5: named disks → /dev/vdb…
-		// shadow/workspace follow).
-		if len(namedDiskExtras) > 0 {
-			opts.ExtraDisks = append(namedDiskExtras, opts.ExtraDisks...)
 		}
 	}
 
@@ -615,6 +622,83 @@ func CreateAndBoot(
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: capture workspace: %w", project, name, err)
 		}
 		opts.ExtraDisks = append(opts.ExtraDisks, ExtraDisk{Path: workspaceDiskPath})
+	}
+
+	// 4.7 Named-volume create + concurrency guard (moved from step 3.7)
+	//
+	// Runs AFTER workspace capture so the per-volume flock does not span the
+	// I/O-heavy capture (up to 40 s at monorepo scale). The protected window
+	// is now: attach → driver construction → §6 guards → store.Create → unlock.
+	//
+	// Lock acquisition order: a COPY of NamedVolumeMounts is sorted by Name
+	// before the attach loop. Two concurrent creates that name the same volumes
+	// in opposite declaration order (A,B and B,A) would otherwise deadlock on
+	// the per-volume flocks. Consistent sorted order eliminates the ABBA cycle.
+	//
+	// Device-letter order (§1.5): namedDiskExtras is built from the ORIGINAL
+	// declaration order, not the sorted order, so named volumes always receive
+	// the device letters the caller expects regardless of sort outcome.
+	//
+	// The intent lease from step 3.6 remains held across this block; Row 3
+	// detection is unaffected.
+	if vs := opts.Volumes; vs != nil && len(opts.NamedVolumeMounts) > 0 {
+		// Create all volumes idempotently first (no locking required here).
+		for _, mount := range opts.NamedVolumeMounts {
+			if _, err = vs.Create(ctx, mount.Name, mount.Kind, mount.SizeBytes, ""); err != nil {
+				return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: create volume %s: %w", project, name, mount.Name, err)
+			}
+		}
+
+		// Acquire per-volume locks in sorted-name order (ABBA deadlock prevention).
+		// Declaration order is preserved in the namedDiskExtras loop below.
+		sortedMounts := make([]NamedVolumeMount, len(opts.NamedVolumeMounts))
+		copy(sortedMounts, opts.NamedVolumeMounts)
+		sort.Slice(sortedMounts, func(i, j int) bool {
+			return sortedMounts[i].Name < sortedMounts[j].Name
+		})
+		for _, mount := range sortedMounts {
+			if mount.Kind == volumestore.KindDisk && !mount.ReadOnly {
+				// Guard: one rw kind=disk attach at a time. Use a deadline so a
+				// wedged lock-holder surfaces as an error, not a hung CLI (RISK-SD2-1).
+				// The returned lock is held until svc.store.Create commits (D2).
+				guardCtx, guardCancel := context.WithTimeout(ctx, 10*time.Second)
+				var lk *store.Lock
+				lk, err = checkRWAttach(guardCtx, vs, svc.store, diskDir, mount.Name, id.String())
+				guardCancel()
+				if err != nil {
+					return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: volume %s: %w", project, name, mount.Name, err)
+				}
+				volumeLeases = append(volumeLeases, lk)
+				namedDiskAttached = append(namedDiskAttached, mount.Name)
+			} else {
+				// ro kind=disk or kind=dir: attach and hold the per-volume flock
+				// across svc.store.Create (D2). Use the same guardCtx budget as
+				// the rw path — 10 s to acquire; held until step 6.
+				guardCtx, guardCancel := context.WithTimeout(ctx, 10*time.Second)
+				var lk *store.Lock
+				lk, err = vs.AttachLocked(guardCtx, mount.Name, id.String())
+				guardCancel()
+				if err != nil {
+					return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: attach volume %s: %w", project, name, mount.Name, err)
+				}
+				volumeLeases = append(volumeLeases, lk)
+				namedDiskAttached = append(namedDiskAttached, mount.Name)
+			}
+		}
+
+		// Build namedDiskExtras in DECLARATION order (§1.5: named disks must
+		// keep their declared device-letter assignment regardless of which order
+		// the locks were acquired above). Prepend before caller-supplied
+		// ExtraDisks and the workspace disk appended by step 4.5.
+		var namedDiskExtras []ExtraDisk
+		for _, mount := range opts.NamedVolumeMounts {
+			if mount.Kind == volumestore.KindDisk {
+				namedDiskExtras = append(namedDiskExtras, ExtraDisk{Path: vs.DiskPath(mount.Name)})
+			}
+		}
+		if len(namedDiskExtras) > 0 {
+			opts.ExtraDisks = append(namedDiskExtras, opts.ExtraDisks...)
+		}
 	}
 
 	// 5. Construct per-sandbox driver instance
@@ -681,9 +765,24 @@ func CreateAndBoot(
 			}
 		}
 	}
+	// D2 test seam: fires while volumeLeases are still held (locks not yet
+	// released). Nil in production. Tests use this to call Prune inside the
+	// window and confirm the held lease blocks deletion.
+	if hookPtr := testHookBeforeStoreCreate.Load(); hookPtr != nil {
+		if hookErr := (*hookPtr)(); hookErr != nil {
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: testHookBeforeStoreCreate: %w", project, name, hookErr)
+		}
+	}
 	if err := svc.store.Create(ctx, sb); err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: create record: %w", project, name, err)
 	}
+	// D2: sandbox record is now durable — release volume leases so Prune can
+	// observe the committed record and correctly classify the volume as live.
+	for _, lk := range volumeLeases {
+		_ = lk.Unlock()
+		_ = lk.Close()
+	}
+	volumeLeases = nil
 
 	// 7. Boot VM inside store.Update (same locking pattern as service.Start)
 	//

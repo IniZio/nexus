@@ -6,9 +6,20 @@
 // non-interference guarantee (D-PD-87).
 //
 // Ordering invariant (D-PD-89): meta.json is written BEFORE the backing file
-// (disk.ext4 or data/) is materialised.  No flock lease is used because the
-// reaper never reaches this directory; crash recovery is handled by
-// `volume prune` (implemented in prune.go, owned by SD2-4-CLI).
+// (disk.ext4 or data/) is materialised.
+//
+// Locking (VOL-LOCK): every mutating method — Create, Rm, Attach, Detach, and
+// Prune — holds the per-volume advisory flock (LockPath) across its full
+// check-then-write sequence.  The lock closes three TOCTOU windows:
+//
+//   - D1: volume prune deletes a stub record while Create is still materialising
+//     the backing file.  Create holds the lock across the meta-write + materialise
+//     window; Prune probes the lock before classifying each entry.
+//   - D2: volume prune deletes a volume while a sandbox create has already
+//     attached it but has not yet committed the sandbox record.  The service layer
+//     holds the lock from checkRWAttach until store.Create commits.
+//   - D3: Rm races with a concurrent Attach and deletes the volume directory
+//     while Attach is writing an attachment.
 package volumestore
 
 import (
@@ -21,6 +32,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/IniZio/nexus3/internal/core/store"
 )
 
 const (
@@ -79,6 +92,12 @@ type VolumeStore struct {
 	// simulate a crash between the two steps (ordering proof for D-PD-89).
 	// Nil in production.
 	testHookAfterMetaWrite func() error
+
+	// testHookAfterRmRead is called inside Rm after reading the volume record
+	// (and verifying no attachments) but before deleting any files.  Set only
+	// in tests that need to simulate a concurrent Attach racing with an Rm to
+	// prove D3 TOCTOU protection.  Nil in production.
+	testHookAfterRmRead func() error
 }
 
 // New returns a VolumeStore rooted at root.
@@ -164,6 +183,13 @@ func (s *VolumeStore) writeRecord(rec *VolumeRecord) error {
 // materialised.  If the process crashes between those two steps, a stub record
 // (meta.json without a backing file) is left on disk; prune.go handles it.
 //
+// Locking (D1): the per-volume advisory flock is held from before writeRecord
+// until after materialise completes.  This prevents Prune from treating the
+// transient "meta.json present, backing absent" state as a crash stub while
+// the create is still in progress.  Crash recovery: the kernel releases the
+// flock automatically on process death, so a genuinely crashed create leaves
+// the stub claimable by the next prune run.
+//
 // sizeBytes applies to kind=disk only; pass ≤0 for DefaultDiskSizeBytes.
 // hostPath applies to kind=dir only; pass "" for a managed data/ directory.
 func (s *VolumeStore) Create(ctx context.Context, name string, kind VolumeKind, sizeBytes int64, hostPath string) (*VolumeRecord, error) {
@@ -174,10 +200,10 @@ func (s *VolumeStore) Create(ctx context.Context, name string, kind VolumeKind, 
 		return nil, fmt.Errorf("volume %s: unknown kind %q", name, kind)
 	}
 
-	// Idempotency check: read any existing record.
+	// Fast-path idempotency check without the lock (avoids creating the vol dir
+	// on the common re-create path).
 	existing, err := s.readRecord(name)
 	if err == nil {
-		// Volume already exists.
 		if existing.Kind != kind {
 			return nil, fmt.Errorf("volume %s: kind conflict: existing kind=%s, requested kind=%s",
 				name, existing.Kind, kind)
@@ -188,14 +214,46 @@ func (s *VolumeStore) Create(ctx context.Context, name string, kind VolumeKind, 
 		return nil, fmt.Errorf("volume %s: check existing: %w", name, err)
 	}
 
-	// Volume does not exist — create it.
-	if sizeBytes <= 0 {
-		sizeBytes = DefaultDiskSizeBytes
-	}
-
+	// Volume does not exist (at fast-path check time). Create the directory and
+	// take the per-volume lock before writing anything, so Prune cannot observe
+	// the transient stub state while we are alive (D1).
 	dir := s.volDir(name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("volume %s: mkdir: %w", name, err)
+	}
+
+	lk, err := store.OpenLock(s.LockPath(name))
+	if err != nil {
+		return nil, fmt.Errorf("volume %s: open lock: %w", name, err)
+	}
+	defer lk.Close() //nolint:errcheck
+	// Bound the acquisition so a hung lock-holder surfaces as an error, not a
+	// hung CLI (TBD-PD-42).  Create is not a cleanup path — a cancelled parent
+	// (Ctrl-C) must propagate promptly, so WithoutCancel is intentionally
+	// absent here.  10 s matches the neighbouring guardCtx in service/create.go.
+	lockCtx, lockCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer lockCancel()
+	if err := lk.TryExclusive(lockCtx); err != nil {
+		return nil, fmt.Errorf("volume %s: acquire lock: %w", name, err)
+	}
+	defer lk.Unlock() //nolint:errcheck
+
+	// Authoritative idempotency check under the lock (another Create may have
+	// committed between the fast-path check above and now).
+	existing, err = s.readRecord(name)
+	if err == nil {
+		if existing.Kind != kind {
+			return nil, fmt.Errorf("volume %s: kind conflict: existing kind=%s, requested kind=%s",
+				name, existing.Kind, kind)
+		}
+		return existing, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("volume %s: check existing (locked): %w", name, err)
+	}
+
+	if sizeBytes <= 0 {
+		sizeBytes = DefaultDiskSizeBytes
 	}
 
 	rec := &VolumeRecord{
@@ -211,14 +269,14 @@ func (s *VolumeStore) Create(ctx context.Context, name string, kind VolumeKind, 
 	}
 
 	// D-PD-89: write meta.json BEFORE materialising the backing resource.
-	// A crash after this point leaves a stub record that prune.go can clean.
+	// The lock is held across both steps (D1): Prune cannot observe the
+	// transient stub state while this process is alive.
 	if err := s.writeRecord(rec); err != nil {
-		_ = os.Remove(dir) // best-effort; may fail if dir has content
 		return nil, err
 	}
 
-	// testHookAfterMetaWrite allows tests to simulate a crash here and verify
-	// that meta.json exists while the backing resource does not yet.
+	// testHookAfterMetaWrite allows tests to call Prune from within the Create
+	// window (while the lock is held) and verify that Prune KEEPs the volume.
 	if s.testHookAfterMetaWrite != nil {
 		if hookErr := s.testHookAfterMetaWrite(); hookErr != nil {
 			return nil, hookErr
@@ -227,7 +285,8 @@ func (s *VolumeStore) Create(ctx context.Context, name string, kind VolumeKind, 
 
 	// Materialise the backing resource.
 	if err := s.materialise(ctx, rec); err != nil {
-		// meta.json stays on disk intentionally: prune handles the stub.
+		// meta.json stays on disk intentionally: prune handles the stub after
+		// the lock is released (the kernel releases it on process death too).
 		return nil, fmt.Errorf("volume %s: materialise backing: %w", name, err)
 	}
 
@@ -297,7 +356,27 @@ func (s *VolumeStore) List() ([]*VolumeRecord, error) {
 
 // Rm removes the named volume and its backing resource.
 // It refuses if the volume has any recorded attachments.
-func (s *VolumeStore) Rm(name string) error {
+//
+// Locking (D3): the per-volume advisory flock is held across the full
+// read-check-delete sequence so that a concurrent Attach cannot write a new
+// attachment between Rm's read (which sees zero attachments) and Rm's delete.
+func (s *VolumeStore) Rm(ctx context.Context, name string) error {
+	// Open the lock file for the volume. OpenLock creates the file if absent
+	// (migration compat: pre-fix volumes have no lock file). ENOENT on the
+	// volume directory itself surfaces as "not found".
+	lk, err := store.OpenLock(s.LockPath(name))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("volume %s: not found", name)
+		}
+		return fmt.Errorf("volume %s: open lock for rm: %w", name, err)
+	}
+	defer lk.Close() //nolint:errcheck
+	if err := lk.TryExclusive(ctx); err != nil {
+		return fmt.Errorf("volume %s: acquire lock for rm: %w", name, err)
+	}
+	defer lk.Unlock() //nolint:errcheck
+
 	rec, err := s.readRecord(name)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -311,6 +390,14 @@ func (s *VolumeStore) Rm(name string) error {
 			ids[i] = a.SandboxID
 		}
 		return fmt.Errorf("volume %s: volume in use: attached to %s", name, strings.Join(ids, ", "))
+	}
+
+	// testHookAfterRmRead lets tests inject a concurrent Attach to verify that
+	// the flock prevents the TOCTOU race (D3).  In production this is nil.
+	if s.testHookAfterRmRead != nil {
+		if hookErr := s.testHookAfterRmRead(); hookErr != nil {
+			return hookErr
+		}
 	}
 
 	dir := s.volDir(name)
@@ -327,9 +414,16 @@ func (s *VolumeStore) Rm(name string) error {
 	// If the volume uses a pinned host path, we do NOT delete it —
 	// it is user-owned and was only borrowed, not managed by us.
 
-	// Remove meta.json then the volume directory.
+	// Remove meta.json, then the lock file (so the directory is empty), then
+	// the directory itself. The lock file inode remains valid (and the flock
+	// on the fd stays held) until lk.Close() runs in the defer — any other
+	// process that had opened the lock file before this Remove will receive
+	// ENOENT on its next open, surfacing as "not found".
 	if err := os.Remove(s.metaPath(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("volume %s: remove meta.json: %w", name, err)
+	}
+	if err := os.Remove(s.LockPath(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("volume %s: remove lock: %w", name, err)
 	}
 	if err := os.Remove(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("volume %s: remove volume dir: %w", name, err)
@@ -339,7 +433,24 @@ func (s *VolumeStore) Rm(name string) error {
 
 // Attach records sandboxID in the volume's attachment list.
 // It is idempotent: a second call for the same sandboxID is a no-op.
-func (s *VolumeStore) Attach(name, sandboxID string) error {
+//
+// Locking (D3): the per-volume advisory flock is held across the full
+// read-append-write sequence so that a concurrent Rm cannot delete the
+// volume directory between Attach's read and Attach's write.
+func (s *VolumeStore) Attach(ctx context.Context, name, sandboxID string) error {
+	lk, err := store.OpenLock(s.LockPath(name))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("volume %s: attach: %w", name, os.ErrNotExist)
+		}
+		return fmt.Errorf("volume %s: attach: open lock: %w", name, err)
+	}
+	defer lk.Close() //nolint:errcheck
+	if err := lk.TryExclusive(ctx); err != nil {
+		return fmt.Errorf("volume %s: attach: acquire lock: %w", name, err)
+	}
+	defer lk.Unlock() //nolint:errcheck
+
 	rec, err := s.readRecord(name)
 	if err != nil {
 		return fmt.Errorf("volume %s: attach: %w", name, err)
@@ -356,9 +467,81 @@ func (s *VolumeStore) Attach(name, sandboxID string) error {
 	return s.writeRecord(rec)
 }
 
+// AttachLocked records sandboxID in the volume's attachment list and returns
+// the per-volume exclusive flock still held. The caller MUST release the lock
+// by calling lk.Unlock()+lk.Close() after committing the sandbox record to the
+// store (D2 fix for kind=dir and ro kind=disk). Holding the lock across
+// store.Create prevents Prune from treating the volume as "detached" in the
+// window between meta.json write and sandbox-record commit.
+//
+// ctx MUST carry a deadline (RISK-SD2-1): TryExclusive retries with a 5 ms
+// backoff and surfaces a context-deadline error when the lock is held longer
+// than the deadline, so a wedged peer does not hang the CLI.
+//
+// On error the lock is always released before returning; the caller receives
+// (nil, err) and must not attempt a release.
+//
+// Do NOT call Attach and then separately acquire the lock on the same inode —
+// that would open a second fd on the same inode and conflict under flock.
+// This method is the only correct way to hold the lock across store.Create for
+// the else-branch path.
+func (s *VolumeStore) AttachLocked(ctx context.Context, name, sandboxID string) (*store.Lock, error) {
+	lk, err := store.OpenLock(s.LockPath(name))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("volume %s: attach: %w", name, os.ErrNotExist)
+		}
+		return nil, fmt.Errorf("volume %s: attach: open lock: %w", name, err)
+	}
+	if err := lk.TryExclusive(ctx); err != nil {
+		_ = lk.Close()
+		return nil, fmt.Errorf("volume %s: attach: acquire lock: %w", name, err)
+	}
+
+	rec, err := s.readRecord(name)
+	if err != nil {
+		_ = lk.Unlock()
+		_ = lk.Close()
+		return nil, fmt.Errorf("volume %s: attach: %w", name, err)
+	}
+	for _, a := range rec.Attachments {
+		if a.SandboxID == sandboxID {
+			// already recorded — return held lock so caller's D2 window is still covered
+			return lk, nil
+		}
+	}
+	rec.Attachments = append(rec.Attachments, VolumeAttachment{
+		SandboxID:  sandboxID,
+		AttachedAt: time.Now().UTC(),
+	})
+	if err := s.writeRecord(rec); err != nil {
+		_ = lk.Unlock()
+		_ = lk.Close()
+		return nil, fmt.Errorf("volume %s: attach: write: %w", name, err)
+	}
+	// Return with lock held — caller releases after sandbox record commits (D2).
+	return lk, nil
+}
+
 // Detach removes sandboxID from the volume's attachment list.
 // It is a no-op if sandboxID is not present or the volume no longer exists.
-func (s *VolumeStore) Detach(name, sandboxID string) error {
+//
+// Locking: the per-volume advisory flock is held across the read-filter-write
+// sequence, serialising Detach with concurrent Attach and Prune calls.
+func (s *VolumeStore) Detach(ctx context.Context, name, sandboxID string) error {
+	lk, err := store.OpenLock(s.LockPath(name))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // volume gone — nothing to detach
+		}
+		return fmt.Errorf("volume %s: detach: open lock: %w", name, err)
+	}
+	defer lk.Close() //nolint:errcheck
+	if err := lk.TryExclusive(ctx); err != nil {
+		return fmt.Errorf("volume %s: detach: acquire lock: %w", name, err)
+	}
+	defer lk.Unlock() //nolint:errcheck
+
 	rec, err := s.readRecord(name)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

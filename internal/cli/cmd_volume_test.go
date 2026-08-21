@@ -64,6 +64,44 @@ func writeVolMetaAndDisk(t *testing.T, root, name string, atts []volumestore.Vol
 
 // ── CLI registration ──────────────────────────────────────────────────────────
 
+// TestVolumeCreateDir_SuccessShape pins the kind=dir create success shape, and
+// documents the scope exclusion identified by
+// slice VOL-PREFLIGHT: nexus3 volume create intentionally does not run a
+// disk-space preflight (TBD-PD-26 / commit 48d1b82).
+//
+// For kind=dir the allocation is a mkdir — zero disk blocks. For kind=disk,
+// preallocateFile uses ftruncate (sparse — no blocks until guest writes) and
+// formatExt4 (mke2fs) writes only filesystem metadata (~5% of sizeBytes).
+// Neither cost is projectable from the CLI layer: there is no source artifact
+// to measure. Applying service.CheckDiskSpaceBytes here would either
+// over-charge sizeBytes (~10–30× the actual mke2fs footprint, blocking valid
+// creates) or use a fixed metadata estimate that always passes. The TBD-PD-26
+// preflight covers CreateAndBoot and Fork, where a real OCI artifact is
+// copied — an immediate, measurable allocation. Volume create is outside that
+// scope by design.
+//
+// What this test ACTUALLY asserts: that kind=dir create succeeds and emits the
+// expected success shape. It does NOT assert the absence of a preflight — there
+// is no observable signal for an absent call, so no test can. The rationale
+// above is the record of that decision; this test is coverage for a CLI path
+// that previously had none. kind=disk is omitted (requires mke2fs on PATH).
+func TestVolumeCreateDir_SuccessShape(t *testing.T) {
+	vs, _ := newVolTestVolumeStore(t)
+	out, buf := newVolTestOutput()
+
+	err := runVolumeCreateWith(context.Background(),
+		[]string{"--kind=dir", "my-dir-vol"}, out, vs)
+	if err != nil {
+		t.Fatalf("runVolumeCreateWith: %v", err)
+	}
+	if !strings.Contains(buf.String(), "my-dir-vol") {
+		t.Errorf("output should mention my-dir-vol; got: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "created") {
+		t.Errorf("output should contain 'created'; got: %s", buf.String())
+	}
+}
+
 // TestVolumeCommandRegistered verifies that the volume noun is registered via
 // the decentralised init() mechanism (acceptance criterion 4).
 func TestVolumeCommandRegistered(t *testing.T) {

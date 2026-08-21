@@ -19,14 +19,36 @@ func ApplyRWVerdictTable(ctx context.Context, vs *volumestore.VolumeStore, st st
 // Cross-process tests use this to verify that the flock gates concurrent
 // processes (killing M3: if flock is replaced with sync.Mutex, two processes
 // can both succeed in the N=8 storm test).
+//
+// The D2 lock is released immediately after the call because the caller does
+// not have a store.Create commit to protect — these tests exercise the verdict
+// table, not the D2 commit window.
 func CheckRWAttach(ctx context.Context, vs *volumestore.VolumeStore, st store.Store, diskDir, name, sandboxID string) error {
-	return checkRWAttach(ctx, vs, st, diskDir, name, sandboxID)
+	lk, err := checkRWAttach(ctx, vs, st, diskDir, name, sandboxID)
+	if lk != nil {
+		_ = lk.Unlock()
+		_ = lk.Close()
+	}
+	return err
 }
 
 // IsVolumeLiveRecord is exported for testing only. It reports whether a
 // sandbox is actively running and could hold a volume in active use.
 func IsVolumeLiveRecord(sb domain.Sandbox) bool {
 	return isVolumeLiveRecord(sb)
+}
+
+// SetHookBeforeStoreCreate installs fn as testHookBeforeStoreCreate for the
+// duration of one test. Call the returned cleanup to clear the hook.
+// This hook fires inside CreateAndBoot while all volumeLeases are still held
+// (the D2 window), letting tests run Prune and confirm the held lock prevents
+// deletion. fn is called on the goroutine that is executing CreateAndBoot.
+func SetHookBeforeStoreCreate(fn func() error) (cleanup func()) {
+	// Stored atomically: CreateAndBoot reads this hook from whatever goroutine
+	// is running a create, while other tests in the package set and clear it.
+	// A plain package var raced under whole-package -race (observed 1 in 6).
+	testHookBeforeStoreCreate.Store(&fn)
+	return func() { testHookBeforeStoreCreate.Store(nil) }
 }
 
 // HoldCreateIntentForTest writes a create-intent file for id in diskDir and holds
@@ -40,4 +62,12 @@ func HoldCreateIntentForTest(diskDir string, id domain.SandboxID) (release func(
 		return nil, err
 	}
 	return func() { lease.release() }, nil
+}
+
+// DetachVolumeLocked is exported for testing only. It calls the internal
+// detachVolumeLocked function so that tests can verify deadline semantics
+// and Service.Remove continuation on detach timeout without spinning up a
+// full service.
+func DetachVolumeLocked(ctx context.Context, vs *volumestore.VolumeStore, name, sandboxID string) error {
+	return detachVolumeLocked(ctx, vs, name, sandboxID)
 }
