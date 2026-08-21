@@ -1760,13 +1760,18 @@ func claudeReadyMatch(autonomous bool) string {
 //
 // Both branches are EXPLICIT and neither relies on the `claude` shell function
 // that SeedGuestShellProfile installs. That function exists for humans typing
-// in a guest shell; depending on it here is a race. The pane's login shell
-// sources /etc/profile.d asynchronously, so a command typed before that
-// finishes resolves `claude` to the raw binary — which starts in the DEFAULT
-// permission mode, prints the default footer, and makes the autonomous
-// readiness wait time out against an agent that is running perfectly well.
-// Observed live. The flag is idempotent (the function does not double it), so
-// passing it explicitly is correct whether or not the profile has loaded.
+// in a guest shell; depending on it here would make the launch depend on
+// whether the pane's login shell has finished sourcing /etc/profile.d, which
+// is not something this code can observe. The flag is idempotent (the function
+// does not double it), so passing it explicitly is correct either way.
+//
+// What was actually OBSERVED, and what is NOT known: launching with a bare
+// `claude` failed live — the pane echoed the command and returned immediately
+// to a shell prompt, and the readiness wait then timed out. Typing the same
+// command by hand a moment later worked. Adding the guest-shell readiness wait
+// in herdrPluginSpaceAgent made it reliable. The precise mechanism for the
+// immediate exit was never isolated, so this comment does not claim one; the
+// explicit flag is defence in depth, and the readiness wait is the fix.
 //
 // autonomous adds --dangerously-skip-permissions, which makes the agent act
 // without stopping to ask the operator to approve each tool call. IS_SANDBOX=1

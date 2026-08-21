@@ -75,6 +75,7 @@ import (
 // Run with:
 //
 //	TMPDIR=/tmp go test -count=1 -tags herdr_live ./internal/cli/ -run TestHerdrPlugin_L4_AC6Chain
+//
 // ac6Env returns the environment for a nexus3 subprocess with XDG_STATE_HOME
 // REMOVED.
 //
@@ -109,11 +110,11 @@ func ac6Cmd(binary string, args ...string) *exec.Cmd {
 func TestHerdrPlugin_L4_AC6Chain(t *testing.T) {
 	// --- 0. Prerequisites: skip, never fail, when absent. ---
 	if _, err := os.Stat("/dev/kvm"); err != nil {
-		t.Skipf("AC-6: /dev/kvm not available: %v", err)
+		liveSkip(t, "AC-6: /dev/kvm not available: %v", err)
 	}
 	beforeWorkspaces := herdrWorkspaceList(t)
 	if !strings.Contains(beforeWorkspaces, "workspace_list") {
-		t.Skip("AC-6: herdr is not reachable (herdr workspace list did not return a workspace_list)")
+		liveSkip(t, "AC-6: herdr is not reachable (herdr workspace list did not return a workspace_list)")
 	}
 	t.Logf("BEFORE: %s", beforeWorkspaces)
 
@@ -121,7 +122,7 @@ func TestHerdrPlugin_L4_AC6Chain(t *testing.T) {
 	// gitignored binary that lives only in a full checkout, so a clone (or a
 	// CI box) legitimately will not have one — that is a skip, not a failure.
 	if os.Getenv("NEXUS3_KERNEL_PATH") == "" {
-		t.Skip("AC-6: NEXUS3_KERNEL_PATH is not set and the kernel is not resolvable from this tree; " +
+		liveSkip(t, "AC-6: NEXUS3_KERNEL_PATH is not set and the kernel is not resolvable from this tree; "+
 			"set it to a vmlinux image to run this test")
 	}
 
@@ -130,7 +131,7 @@ func TestHerdrPlugin_L4_AC6Chain(t *testing.T) {
 	build := exec.Command("go", "build", "-o", binary, "./cmd/nexus3")
 	build.Dir = filepath.Join("..", "..")
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Skipf("AC-6: nexus3 binary cannot be built: %v\n%s", err, out)
+		liveSkip(t, "AC-6: nexus3 binary cannot be built: %v\n%s", err, out)
 	}
 
 	// --- 1. Set up the scratch handle, mount source, and the two addends. ---

@@ -286,3 +286,26 @@ func closeL4ScratchWorkspace(t *testing.T, wsID, expectedLabel string) {
 	}
 	t.Logf("closed scratch workspace %s", wsID)
 }
+
+// liveSkip is how every herdr_live test declines to run when a precondition is
+// absent (no /dev/kvm, no herdr, no kernel image).
+//
+// It exists because `go test` reports a package whose only live test skipped as
+// "ok", with no indication on the default (non -v) output that nothing ran.
+// That is this repo's signature failure mode wearing a new hat: a green that
+// asserts nothing. It has already been observed here — a live AC test was
+// believed to be passing when NEXUS3_KERNEL_PATH simply was not set.
+//
+// Setting NEXUS3_LIVE_REQUIRED=1 turns every such skip into a failure, so
+// "were the live tests actually exercised?" becomes a switch rather than a
+// question you answer by squinting at -v output. Use it in any context that
+// intends the live layer to run — a release check, or a session that just
+// changed the code these tests cover.
+func liveSkip(t *testing.T, format string, args ...any) {
+	t.Helper()
+	msg := fmt.Sprintf(format, args...)
+	if os.Getenv("NEXUS3_LIVE_REQUIRED") == "1" {
+		t.Fatalf("%s [NEXUS3_LIVE_REQUIRED=1: refusing to skip]", msg)
+	}
+	t.Skip(msg)
+}
