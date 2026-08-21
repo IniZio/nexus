@@ -84,26 +84,33 @@ func herdrSpaceResolveOrAdopt(
 // Only pane-opening needs this. Splitting it out from adoption is what keeps
 // `space-pause` from leaving an empty herdr workspace behind every time it
 // touches a sandbox that herdr did not create.
+//
+// The second return value is the new workspace's root pane ID, non-empty
+// only when this call actually minted a workspace (as opposed to reusing an
+// existing one). The caller grafts the guest pane onto that root pane instead
+// of opening a second tab — see herdrOpenGuestShellPane.
 func herdrSpaceEnsureWorkspace(
 	ctx context.Context,
+	svc herdrAdoptGetter,
 	storeRoot, herdrBin string,
 	b HerdrSpaceBinding,
-) (HerdrSpaceBinding, error) {
+) (HerdrSpaceBinding, string, error) {
 	if b.HerdrWorkspaceID != "" {
-		return b, nil
+		return b, "", nil
 	}
 	if herdrBin == "" {
-		return b, fmt.Errorf("cannot create a herdr workspace for %q: no herdr binary (HERDR_BIN_PATH unset and none on PATH)", b.SandboxHandle)
+		return b, "", fmt.Errorf("cannot create a herdr workspace for %q: no herdr binary (HERDR_BIN_PATH unset and none on PATH)", b.SandboxHandle)
 	}
-	id, err := herdrWorkspaceCreate(herdrBin, b.SpaceLabel)
+	hostCwd := herdrShellHostCwd(ctx, b.SandboxHandle, svc)
+	id, rootPaneID, err := herdrWorkspaceCreate(ctx, herdrBin, b.SpaceLabel, hostCwd)
 	if err != nil {
-		return b, fmt.Errorf("herdr workspace create for %q: %w", b.SpaceLabel, err)
+		return b, "", fmt.Errorf("herdr workspace create for %q: %w", b.SpaceLabel, err)
 	}
 	b.HerdrWorkspaceID = id
 	if err := HerdrSpacePut(ctx, storeRoot, b); err != nil {
-		return b, fmt.Errorf("store binding for %q: %w", b.SpaceLabel, err)
+		return b, "", fmt.Errorf("store binding for %q: %w", b.SpaceLabel, err)
 	}
-	return b, nil
+	return b, rootPaneID, nil
 }
 
 // herdrAdoptNotice tells the operator on stderr that a sandbox was adopted, so

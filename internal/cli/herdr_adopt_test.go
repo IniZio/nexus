@@ -157,23 +157,29 @@ func TestHerdrSpaceResolveOrAdopt_AdoptsByID(t *testing.T) {
 // needs to create one and herdr is not reachable.
 func TestHerdrSpaceEnsureWorkspace_NoopWhenPresent(t *testing.T) {
 	b := HerdrSpaceBinding{SpaceLabel: "nexus3:proj/x", SandboxHandle: "proj/x", HerdrWorkspaceID: "wZ"}
-	got, err := herdrSpaceEnsureWorkspace(context.Background(), t.TempDir(), "", b)
+	got, rootPaneID, err := herdrSpaceEnsureWorkspace(context.Background(), nil, t.TempDir(), "", b)
 	if err != nil {
 		t.Fatalf("ensure with an existing workspace consulted herdr: %v", err)
 	}
 	if got.HerdrWorkspaceID != "wZ" {
 		t.Errorf("workspace ID = %q, want wZ unchanged", got.HerdrWorkspaceID)
 	}
+	if rootPaneID != "" {
+		t.Errorf("root pane ID = %q, want empty — no workspace was minted", rootPaneID)
+	}
 }
 
 func TestHerdrSpaceEnsureWorkspace_RefusesWithoutHerdrBin(t *testing.T) {
 	t.Setenv("HERDR_BIN_PATH", "")
 	b := HerdrSpaceBinding{SpaceLabel: "nexus3:proj/x", SandboxHandle: "proj/x"}
-	got, err := herdrSpaceEnsureWorkspace(context.Background(), t.TempDir(), "", b)
+	got, rootPaneID, err := herdrSpaceEnsureWorkspace(context.Background(), nil, t.TempDir(), "", b)
 	if err == nil {
 		t.Fatal("returned nil error with no herdr binary and no workspace to reuse")
 	}
 	if got.HerdrWorkspaceID != "" {
 		t.Errorf("workspace ID = %q, want empty on failure", got.HerdrWorkspaceID)
+	}
+	if rootPaneID != "" {
+		t.Errorf("root pane ID = %q, want empty on failure", rootPaneID)
 	}
 }
