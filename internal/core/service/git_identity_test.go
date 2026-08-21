@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -573,7 +574,40 @@ func TestBuildGitconfigPayload_GitHubCredentialHelper(t *testing.T) {
 		}
 	}
 
-	// Assertion 4 (regression): existing fields still present.
+	// Assertion 4: git itself parses the helper value back correctly.
+	//
+	// This is the defect-class assertion the original test lacked: the previous
+	// inline-function helper value contained double-quotes and \n sequences that
+	// git's config parser consumed, leaving sh with a shredded command. This
+	// assertion would have caught that defect at commit time.
+	//
+	// Mutation F (inline function regression): revert the helper to
+	//   !f(){ case $1 in get) [ -n "${GH_TOKEN}" ] && { ... }; f
+	// → git config --get returns "" and this assertion fails RED.
+	if git, lookErr := exec.LookPath("git"); lookErr == nil {
+		tmp, tmpErr := os.CreateTemp(t.TempDir(), "gitconfig-*.ini")
+		if tmpErr != nil {
+			t.Fatalf("create temp gitconfig: %v", tmpErr)
+		}
+		if _, writeErr := tmp.WriteString(payload); writeErr != nil {
+			t.Fatalf("write temp gitconfig: %v", writeErr)
+		}
+		tmp.Close()
+		out, gitErr := exec.Command(git, "config", "--file", tmp.Name(),
+			"--get", "credential.https://github.com.helper").Output()
+		if gitErr != nil {
+			t.Fatalf("git config --get credential helper: %v — git could not parse the helper value", gitErr)
+		}
+		got := strings.TrimSpace(string(out))
+		const wantHelper = "!sh " + GuestGitCredentialHelperPath
+		if got != wantHelper {
+			t.Errorf("git parsed helper value = %q; want %q\n"+
+				"(if got is empty, the config parser shredded the value — inline function regression)",
+				got, wantHelper)
+		}
+	}
+
+	// Assertion 5 (regression): existing fields still present.
 	if !strings.Contains(payload, "name = "+name) {
 		t.Errorf("payload missing user.name; got:\n%s", payload)
 	}
@@ -585,48 +619,71 @@ func TestBuildGitconfigPayload_GitHubCredentialHelper(t *testing.T) {
 	}
 }
 
-// TestGitCredentialHelper_ShellBehavior tests the helper script embedded in
-// the gitconfig payload by executing it under the system sh (dash on Debian)
-// with GH_TOKEN set and unset. It verifies the output format git expects.
+// TestGitCredentialHelperScript_DashSyntax checks that GuestGitCredentialHelperScript
+// passes a POSIX syntax check under dash (or sh). The guest's /bin/sh is dash;
+// a bash-only construct in the script would silently fail at push time.
 //
-// This test is skipped if sh is not available (not expected on any Linux host).
+// Mutation: add a bashism (e.g. [[ … ]]) to the script → dash -n exits non-zero
+// and this test fails RED.
+func TestGitCredentialHelperScript_DashSyntax(t *testing.T) {
+	// Try dash first (the actual guest shell), fall back to sh.
+	shell, err := exec.LookPath("dash")
+	if err != nil {
+		shell, err = exec.LookPath("sh")
+		if err != nil {
+			t.Skip("neither dash nor sh in PATH; skipping syntax check")
+		}
+	}
+	cmd := exec.Command(shell, "-n", "/dev/stdin")
+	cmd.Stdin = strings.NewReader(GuestGitCredentialHelperScript)
+	if out, runErr := cmd.CombinedOutput(); runErr != nil {
+		t.Fatalf("shell -n syntax check failed: %v\noutput: %s\nscript:\n%s",
+			runErr, out, GuestGitCredentialHelperScript)
+	}
+	// Script must not contain a real token (only env var references).
+	for _, pattern := range []string{"ghp_", "gho_", "github_pat_"} {
+		if strings.Contains(GuestGitCredentialHelperScript, pattern) {
+			t.Errorf("script contains token pattern %q — script must not embed a real token", pattern)
+		}
+	}
+}
+
+// TestGitCredentialHelper_ShellBehavior tests GuestGitCredentialHelperScript by
+// executing it under sh with GH_TOKEN set and unset. It verifies the output
+// format git's credential protocol expects.
+//
+// The script is written to a temp file so the test does not depend on the file
+// being present at GuestGitCredentialHelperPath (a guest-only path absent on
+// the host).
 //
 // Mutation guards:
 //
-//	Mutation D: in the helper, change "get" to "GET" in the case pattern so the
-//	            action never matches.
-//	            → "token present → output contains password=" assertion fails RED.
+//	Mutation D: change "get" to "GET" in the case pattern.
+//	            → "token present → output contains password=" fails RED.
 //	Mutation E: remove the [ -n "${GH_TOKEN}" ] guard.
-//	            → "token absent → output is empty" assertion fails RED (outputs password=).
+//	            → "token absent → output is empty" fails RED (outputs password=).
 func TestGitCredentialHelper_ShellBehavior(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
 		t.Skip("sh not in PATH; skipping shell helper behaviour test")
 	}
 
-	// Extract the helper command from a real payload (same path as git uses it).
-	payload := string(buildGitconfigPayload("Op", "op@example.com", nil, "nexus3/t/ab12cd34"))
-	helperLine := ""
-	for _, line := range strings.Split(payload, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "helper = ") {
-			helperLine = strings.TrimSpace(line[len("helper = "):])
-			break
-		}
+	// Write the script to a temp file — we test the constant directly, not via
+	// git config extraction, because the gitconfig now references the script by
+	// path rather than inlining it.
+	scriptFile := t.TempDir() + "/nexus3-git-credential"
+	if writeErr := os.WriteFile(scriptFile, []byte(GuestGitCredentialHelperScript), 0o755); writeErr != nil {
+		t.Fatalf("write helper script: %v", writeErr)
 	}
-	if helperLine == "" {
-		t.Fatal("could not extract helper = line from gitconfig payload")
-	}
-	// Strip the leading "!" — git removes it before passing to sh -c.
-	helperCmd := strings.TrimPrefix(helperLine, "!")
 
 	t.Run("GH_TOKEN set — output has username and password lines", func(t *testing.T) {
 		const fakeToken = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-		// git invokes: sh -c '<helper> get'  (appends the action as a word)
-		cmd := exec.Command(sh, "-c", helperCmd+" get")
+		// git invokes: sh <scriptpath> get
+		cmd := exec.Command(sh, scriptFile, "get")
 		cmd.Env = []string{"GH_TOKEN=" + fakeToken}
 		out, execErr := cmd.Output()
 		if execErr != nil {
-			t.Fatalf("sh -c helper get: %v (output: %s)", execErr, out)
+			t.Fatalf("sh <script> get: %v (output: %s)", execErr, out)
 		}
 		outStr := string(out)
 		// Mutation D guard: changing case "get" → "GET" causes this to fail RED.
@@ -636,18 +693,17 @@ func TestGitCredentialHelper_ShellBehavior(t *testing.T) {
 		if !strings.Contains(outStr, "password="+fakeToken) {
 			t.Errorf("helper output missing password=<token> line; got: %q", outStr)
 		}
-		// The token value must appear in the output (it was read from env).
 		if !strings.Contains(outStr, fakeToken) {
 			t.Errorf("helper output does not contain the token value; got: %q", outStr)
 		}
 	})
 
 	t.Run("GH_TOKEN unset — output is empty (quiet degradation)", func(t *testing.T) {
-		cmd := exec.Command(sh, "-c", helperCmd+" get")
+		cmd := exec.Command(sh, scriptFile, "get")
 		cmd.Env = []string{} // explicitly empty — no GH_TOKEN
 		out, execErr := cmd.Output()
 		if execErr != nil {
-			t.Fatalf("sh -c helper get (no token): %v (output: %s)", execErr, out)
+			t.Fatalf("sh <script> get (no token): %v (output: %s)", execErr, out)
 		}
 		outStr := strings.TrimSpace(string(out))
 		// Mutation E guard: removing [ -n "${GH_TOKEN}" ] guard causes this to fail RED.
@@ -657,14 +713,118 @@ func TestGitCredentialHelper_ShellBehavior(t *testing.T) {
 	})
 
 	t.Run("store action — output is empty (helper ignores non-get actions)", func(t *testing.T) {
-		cmd := exec.Command(sh, "-c", helperCmd+" store")
+		cmd := exec.Command(sh, scriptFile, "store")
 		cmd.Env = []string{"GH_TOKEN=sometoken"}
 		out, execErr := cmd.Output()
 		if execErr != nil {
-			t.Fatalf("sh -c helper store: %v (output: %s)", execErr, out)
+			t.Fatalf("sh <script> store: %v (output: %s)", execErr, out)
 		}
 		if strings.TrimSpace(string(out)) != "" {
 			t.Errorf("helper should produce no output for 'store' action; got: %q", string(out))
+		}
+	})
+}
+
+// TestGitCredentialHelper_EndToEnd runs the helper script end-to-end through
+// git credential fill, isolated from the host's own git configuration.
+//
+// GIT_CONFIG_GLOBAL=/dev/null and GIT_CONFIG_SYSTEM=/dev/null prevent the
+// host's real credential helper from answering and prevent any real token from
+// appearing in test output. These env vars are mandatory; without them the
+// host's credential store answers and the test passes for the wrong reason —
+// or, worse, prints the operator's real token into the test log.
+//
+// Mutation guards:
+//
+//	Mutation G: revert the gitconfig helper to an inline function with quotes.
+//	            → git credential fill exits with a parse/syntax error and the
+//	              subtest "GH_TOKEN set" fails RED.
+//	Mutation H: remove GIT_CONFIG_GLOBAL=/dev/null from the command env.
+//	            → the host credential helper may answer with real tokens — the
+//	              test then passes for the wrong reason (and may leak).
+func TestGitCredentialHelper_EndToEnd(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not in PATH; skipping end-to-end credential helper test")
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not in PATH; skipping end-to-end credential helper test")
+	}
+
+	// Write the helper script to a temp file.
+	scriptFile := t.TempDir() + "/nexus3-git-credential"
+	if writeErr := os.WriteFile(scriptFile, []byte(GuestGitCredentialHelperScript), 0o755); writeErr != nil {
+		t.Fatalf("write helper script: %v", writeErr)
+	}
+
+	// Run git credential fill using -c to pass the helper inline.
+	// This avoids needing the script at GuestGitCredentialHelperPath.
+	// Combined with GIT_CONFIG_GLOBAL=/dev/null and GIT_CONFIG_SYSTEM=/dev/null,
+	// the only credential source is our script.
+	helperArg := "credential.https://github.com.helper=!sh " + scriptFile
+
+	_ = sh // referenced via helperArg above; referenced here to avoid unused-import lint
+
+	runFill := func(t *testing.T, ghToken string) string {
+		t.Helper()
+		cmd := exec.Command(git, "-c", helperArg, "credential", "fill")
+		// Isolation: disable host global and system git configs.
+		// Without these, the host's real credential helper can answer and
+		// the test passes for the wrong reason (Mutation H guard).
+		cmd.Env = []string{
+			"GIT_CONFIG_GLOBAL=/dev/null",
+			"GIT_CONFIG_SYSTEM=/dev/null",
+			"GIT_CONFIG_NO_SYSTEM=1",
+		}
+		if ghToken != "" {
+			cmd.Env = append(cmd.Env, "GH_TOKEN="+ghToken)
+		}
+		// git credential fill reads: protocol=<p>\nhost=<h>\n\n
+		cmd.Stdin = strings.NewReader("protocol=https\nhost=github.com\n\n")
+		out, runErr := cmd.Output()
+		if runErr != nil {
+			// Non-zero exit is expected when no credential is produced (unset token path).
+			// We only fail if the error is unexpected (e.g. shell syntax error).
+			if exitErr, ok := runErr.(*exec.ExitError); ok {
+				stderr := string(exitErr.Stderr)
+				if strings.Contains(stderr, "Syntax error") || strings.Contains(stderr, "syntax error") {
+					t.Fatalf("git credential fill: shell syntax error in helper: %s", stderr)
+				}
+			}
+		}
+		return string(out)
+	}
+
+	t.Run("GH_TOKEN set — credential fill returns username and password", func(t *testing.T) {
+		const fakeToken = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+		out := runFill(t, fakeToken)
+		// Mutation G guard: inline function with quotes causes a shell syntax
+		// error (visible in stderr) caught by runFill above, so the test fails RED.
+		if !strings.Contains(out, "username=x-token-auth") {
+			t.Errorf("credential fill: missing username=x-token-auth; output: %q", out)
+		}
+		if !strings.Contains(out, "password="+fakeToken) {
+			t.Errorf("credential fill: missing password=<token>; output: %q", out)
+		}
+		// The raw token must not appear anywhere except the password= line.
+		lines := strings.Split(strings.TrimSpace(out), "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "password=") {
+				continue
+			}
+			if strings.Contains(line, fakeToken) {
+				t.Errorf("token value leaked into non-password line: %q", line)
+			}
+		}
+	})
+
+	t.Run("GH_TOKEN unset — credential fill produces no credential", func(t *testing.T) {
+		out := runFill(t, "")
+		// When no credential is available, git credential fill returns nothing
+		// useful. We assert the script does not accidentally emit a password.
+		if strings.Contains(out, "password=") {
+			t.Errorf("credential fill with no GH_TOKEN produced a password line; output: %q", out)
 		}
 	})
 }

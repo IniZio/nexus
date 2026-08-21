@@ -462,13 +462,14 @@ func RunDetached(cfg Config) error {
 			}
 		}
 		seedInputs := guestSeedInputs{
-			ID:            sb.ID,
-			Labels:        sb.Labels,
-			ProjectDir:    projectDir,
-			SourcePaths:   service.SourceGuestPaths(cfg.WorkspaceGuestPath, sb.LiveMounts),
-			ProfileSeeder: profileSeeder,
-			GitSeeder:     service.NewGuestFileSeeder(agentClient, service.GuestGitconfigPath),
-			Execer:        onboardingExecer,
+			ID:                    sb.ID,
+			Labels:                sb.Labels,
+			ProjectDir:            projectDir,
+			SourcePaths:           service.SourceGuestPaths(cfg.WorkspaceGuestPath, sb.LiveMounts),
+			ProfileSeeder:         profileSeeder,
+			GitSeeder:             service.NewGuestFileSeeder(agentClient, service.GuestGitconfigPath),
+			CredentialHelperSeeder: service.NewGuestFileSeeder(agentClient, service.GuestGitCredentialHelperPath),
+			Execer:                onboardingExecer,
 		}
 		if checkErr := probeAndSeedGuest(ctx, agentClient, seedInputs); checkErr != nil {
 			slog.Error("supervisor.guest_agent_unreachable",
@@ -758,19 +759,25 @@ var seedBypassConsentFn = service.SeedGuestBypassConsent
 // with a spy (D-J13 mutation guard).
 var seedGitIdentityFn = service.SeedGitIdentity
 
+// seedGitCredentialHelperFn is the function called by probeAndSeedGuest to
+// write the credential-helper script to GuestGitCredentialHelperPath.
+// Default is service.SeedGitCredentialHelper; tests replace it with a spy.
+var seedGitCredentialHelperFn = service.SeedGitCredentialHelper
+
 // guestSeedInputs carries everything probeAndSeedGuest writes into a freshly
 // booted guest. It is a struct rather than a parameter list because the seeds
-// are an open-ended set — four already, each with its own path, payload and
+// are an open-ended set — five already, each with its own path, payload and
 // seeder — and every addition was otherwise widening the signature at both the
 // call site and every test.
 type guestSeedInputs struct {
-	ID            domain.SandboxID
-	Labels        map[string]string
-	ProjectDir    string   // guest dir the agent works in; "" when nothing is mounted
-	SourcePaths   []string // every guest dir holding source, for safe.directory
-	ProfileSeeder service.GuestSeeder
-	GitSeeder     service.GuestSeeder
-	Execer        service.GuestExecer
+	ID                    domain.SandboxID
+	Labels                map[string]string
+	ProjectDir            string   // guest dir the agent works in; "" when nothing is mounted
+	SourcePaths           []string // every guest dir holding source, for safe.directory
+	ProfileSeeder         service.GuestSeeder
+	GitSeeder             service.GuestSeeder
+	CredentialHelperSeeder service.GuestSeeder
+	Execer                service.GuestExecer
 }
 
 // probeAndSeedGuest runs the liveness probe (D-J14), login-shell credential
@@ -847,6 +854,19 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 	// name/email and nothing else — no token, no key, no credential path. See
 	// the security invariant on service.SeedGitIdentity.
 	if len(in.SourcePaths) > 0 {
+		// Credential-helper script: must be seeded before the gitconfig,
+		// because the gitconfig references the script by path
+		// (helper = !sh /usr/local/bin/nexus3-git-credential).
+		// Non-fatal: git push will fail with "credential helper not found"
+		// rather than with a sandbox-fatal error.
+		if helperErr := seedGitCredentialHelperFn(ctx, id, in.CredentialHelperSeeder); helperErr != nil {
+			slog.Warn("supervisor.git_credential_helper_seed_failed",
+				"sandbox", id, "path", service.GuestGitCredentialHelperPath, "err", helperErr,
+				"action", "in-guest git push will fail; credential helper script not present")
+		} else {
+			slog.Info("supervisor.git_credential_helper_seeded",
+				"sandbox", id, "path", service.GuestGitCredentialHelperPath)
+		}
 		if _, gitErr := seedGitIdentityFn(ctx, id, in.Labels, in.SourcePaths, in.GitSeeder); gitErr != nil {
 			slog.Warn("supervisor.git_identity_seed_failed",
 				"sandbox", id, "err", gitErr,

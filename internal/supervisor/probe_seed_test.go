@@ -189,3 +189,58 @@ func TestProbeAndSeedGuest_NoGitIdentityWithoutSourcePaths(t *testing.T) {
 		t.Error("seedGitIdentityFn was called for a sandbox with no source paths")
 	}
 }
+
+// TestProbeAndSeedGuest_GitCredentialHelperSeeded is the mutation guard for the
+// seedGitCredentialHelperFn call inside probeAndSeedGuest.
+//
+// The gitconfig written by seedGitIdentityFn references the helper script at
+// GuestGitCredentialHelperPath. If the script is never seeded, every git push
+// inside the guest fails with "credential helper not found" — a failure that
+// is invisible to the gitconfig payload tests (which assert on bytes written,
+// not on whether the referenced script file exists).
+//
+// This test asserts the CALL, following the same pattern as the gitconfig
+// mutation guard above:
+//
+//	Delete seedGitCredentialHelperFn(…) from probeAndSeedGuest → this test
+//	fails RED.
+func TestProbeAndSeedGuest_GitCredentialHelperSeeded(t *testing.T) {
+	called := false
+	old := seedGitCredentialHelperFn
+	seedGitCredentialHelperFn = func(_ context.Context, _ domain.SandboxID, _ service.GuestSeeder) error {
+		called = true
+		return nil
+	}
+	t.Cleanup(func() { seedGitCredentialHelperFn = old })
+
+	err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{
+		SourcePaths: []string{"/work"},
+	})
+	if err != nil {
+		t.Fatalf("probeAndSeedGuest with live prober: unexpected error %v", err)
+	}
+	if !called {
+		t.Fatal("seedGitCredentialHelperFn was not called for a sandbox with source paths — " +
+			"the git credential helper script will be absent from the guest and pushes will fail")
+	}
+}
+
+// TestProbeAndSeedGuest_NoGitCredentialHelperWithoutSourcePaths asserts that
+// the helper script is not seeded for sandboxes with no source paths (same
+// gate as the gitconfig).
+func TestProbeAndSeedGuest_NoGitCredentialHelperWithoutSourcePaths(t *testing.T) {
+	called := false
+	old := seedGitCredentialHelperFn
+	seedGitCredentialHelperFn = func(_ context.Context, _ domain.SandboxID, _ service.GuestSeeder) error {
+		called = true
+		return nil
+	}
+	t.Cleanup(func() { seedGitCredentialHelperFn = old })
+
+	if err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{}); err != nil {
+		t.Fatalf("probeAndSeedGuest: unexpected error %v", err)
+	}
+	if called {
+		t.Error("seedGitCredentialHelperFn was called for a sandbox with no source paths")
+	}
+}

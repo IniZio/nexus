@@ -16,6 +16,40 @@ import (
 // standard in-guest agent user).
 const GuestGitconfigPath = "/root/.gitconfig"
 
+// GuestGitCredentialHelperPath is the well-known guest path for the
+// credential-helper script seeded by SeedGitCredentialHelper.
+// The gitconfig references it as: helper = !sh /usr/local/bin/nexus3-git-credential
+// Using "!sh <path>" avoids any git config-parser quoting issues that arise
+// with inline shell functions (double-quotes and \n sequences are
+// interpreted by the config parser before sh ever sees them).
+const GuestGitCredentialHelperPath = "/usr/local/bin/nexus3-git-credential"
+
+// GuestGitCredentialHelperScript is the content of the credential-helper
+// script placed at GuestGitCredentialHelperPath inside the guest.
+//
+// The script reads $GH_TOKEN from the guest environment at push time and
+// emits the username/password pair that git's credential protocol expects.
+// It is a no-op (exits 0, no output) when GH_TOKEN is unset.
+//
+// Shell compatibility: /bin/sh in the guest is dash (Debian bookworm).
+// The script uses only POSIX constructs — case, printf, [ -n ] — and
+// deliberately avoids bash, python3, jq, and curl, none of which are
+// guaranteed to be present in the guest base image.
+//
+// Security: GH_TOKEN is the 64-hex MITM placeholder swapped in by the
+// perimeter proxy. It is never written into a config file or remote URL.
+const GuestGitCredentialHelperScript = `#!/bin/sh
+# nexus3 git credential helper.
+case "$1" in
+get)
+	[ -n "${GH_TOKEN}" ] || exit 0
+	printf 'username=x-token-auth\n'
+	printf 'password=%s\n' "${GH_TOKEN}"
+	;;
+esac
+exit 0
+`
+
 // GitCloneHeadroomBytes is the additional workspace disk space consumed by
 // a depth-1 shallow git clone of the host repository injected at seed time
 // (decision D-PD-19). Measured from example-app: ~89 MiB.
@@ -264,9 +298,15 @@ func buildGitconfigPayload(name, email string, sourcePaths []string, branch stri
 	// It is read from the guest environment at push time; it never appears in the
 	// gitconfig file itself, in remote URLs, or in git's reflog.
 	buf.WriteString("[credential \"https://github.com\"]\n")
-	buf.WriteString("\thelper = " +
-		`!f(){ case $1 in get) [ -n "${GH_TOKEN}" ] && { printf 'username=x-token-auth\n'; printf 'password=%s\n' "${GH_TOKEN}"; } || :;; esac; }; f` +
-		"\n")
+	// Reference the script by path. The "!sh <path>" form contains no characters
+	// that git's config parser treats specially (no double-quotes, no \n
+	// sequences), so the value round-trips through the parser unchanged.
+	// The script is seeded separately via SeedGitCredentialHelper.
+	// Reference the script by path. The "!sh <path>" form contains no characters
+	// that git's config parser treats specially (no double-quotes, no \n
+	// sequences), so the value round-trips through the parser unchanged.
+	// The script is seeded separately via SeedGitCredentialHelper.
+	buf.WriteString("\thelper = !sh " + GuestGitCredentialHelperPath + "\n")
 
 	// Rewrite GitHub SSH remotes to HTTPS.
 	//
@@ -345,6 +385,23 @@ func SeedGitIdentity(
 		return branch, fmt.Errorf("git_identity: write %s: %w", GuestGitconfigPath, err)
 	}
 	return branch, nil
+}
+
+// SeedGitCredentialHelper pushes GuestGitCredentialHelperScript to
+// GuestGitCredentialHelperPath inside the guest via seeder. The script must
+// be present before any git push that relies on the credential helper written
+// into GuestGitconfigPath by SeedGitIdentity.
+//
+// seeder should be NewGuestFileSeeder(client, GuestGitCredentialHelperPath).
+// When seeder is nil, SeedGitCredentialHelper is a no-op.
+func SeedGitCredentialHelper(ctx context.Context, id domain.SandboxID, seeder GuestSeeder) error {
+	if seeder == nil {
+		return nil
+	}
+	if err := seeder(ctx, id, []byte(GuestGitCredentialHelperScript)); err != nil {
+		return fmt.Errorf("git_identity: write %s: %w", GuestGitCredentialHelperPath, err)
+	}
+	return nil
 }
 
 // HostHeadSHA returns the current HEAD commit SHA (40-hex) of the git
