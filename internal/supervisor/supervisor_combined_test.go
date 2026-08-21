@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/x509"
 	"testing"
+	"time"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
@@ -151,15 +152,21 @@ func TestSeedAgentAndHumanSecrets_OneWrite(t *testing.T) {
 // These tests call chooseSeedRoute (the production decision function) and
 // assert the route. They are the mutation guards for MUT-A and MUT-B.
 //
-// Residual gap (stated plainly): these tests cover the decision function but
-// NOT the binding from RunDetached to that decision. A mutation that makes
-// RunDetached ignore the returned route would still pass. That binding is
-// uncovered because RunDetached does real I/O (VM, perimeter) and cannot be
-// unit-tested here.
+// Residual gap (stated plainly): these tests cover the decision function AND
+// the binding from a route to the seeder it invokes. What remains uncovered is
+// the single line where RunDetached calls runSeedRoute(chooseSeedRoute(sb), …).
+// A mutation deleting that call would still pass, because RunDetached does real
+// I/O (VM boot, perimeter start) and cannot be driven from a unit test here.
 
 // sandboxWithProxy returns a domain.Sandbox that SandboxHasMITMProxy reports
-// true for. SandboxHasMITMProxy returns true when AgentName != "" OR
-// SecretHosts is non-empty (either implies a MITM proxy was started).
+// true for.
+//
+// SandboxHasMITMProxy is !OpenEgress || len(SecretHosts) > 0 || AgentName != "".
+// The !OpenEgress clause is first and broadest, and omitting it from this
+// description would matter: it is what makes a closed-egress sandbox with no
+// agent and no secrets reach routeAgent. That case is exactly the one whose
+// consequence is worth guarding — routing it wrongly would hand agent
+// credential env vars to a guest that runs no agent.
 func sandboxWithProxy(agentName string, secretHosts []string) domain.Sandbox {
 	return domain.Sandbox{
 		AgentName: agentName,
@@ -333,5 +340,100 @@ func TestRunSeedRoute_HumanSecretsCallsHumanSeeder(t *testing.T) {
 	}
 	if combinedCalled {
 		t.Error("seedAgentAndHumanSecretsFn was called for routeHumanSecrets (routing defect)")
+	}
+}
+
+// TestRunSeedRoute_AgentCallsSeedLoop closes the last uncovered route binding.
+//
+// An independent review mutated routeAgent to dispatch at the combined seeder
+// and found NOTHING caught it — the other three arms were guarded, this one
+// was not. Its failure mode is the mirror image of the defect this whole change
+// set exists to fix: instead of an agent losing its credential, a guest that
+// runs NO agent is handed agent credential env vars.
+//
+// The seedAgentCreds argument is asserted too, not just the call. routeAgent is
+// reached by two different kinds of sandbox — one with an agent, and (via the
+// !OpenEgress clause of SandboxHasMITMProxy) a closed-egress sandbox with no
+// agent and no secrets. Both take this arm; only the first may receive agent
+// credentials. A test that asserted only "seedLoopFn was called" would pass
+// while that distinction was inverted.
+//
+// Mutation: dispatch routeAgent at seedAgentAndHumanSecretsFn -> the call
+// assertion goes RED. Hardcode the final argument to true -> the no-agent
+// subtest goes RED.
+func TestRunSeedRoute_AgentCallsSeedLoop(t *testing.T) {
+	cases := []struct {
+		name              string
+		sb                domain.Sandbox
+		wantSeedAgentCred bool
+	}{
+		{
+			name:              "agent sandbox receives agent credentials",
+			sb:                sandboxWithProxy("claude-code", nil),
+			wantSeedAgentCred: true,
+		},
+		{
+			// Closed egress, no agent, no secrets: still has a proxy (the
+			// !OpenEgress clause), still routes here, but must NOT be given
+			// credential env vars for an agent it does not run.
+			name:              "closed-egress sandbox with no agent gets the CA only",
+			sb:                domain.Sandbox{},
+			wantSeedAgentCred: false,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var loopCalled, combinedCalled, humanCalled bool
+			var gotSeedAgentCreds bool
+
+			origLoop, origCombined, origHuman := seedLoopFn, seedAgentAndHumanSecretsFn, seedHumanSecretsFn
+			t.Cleanup(func() {
+				seedLoopFn, seedAgentAndHumanSecretsFn, seedHumanSecretsFn = origLoop, origCombined, origHuman
+			})
+
+			seedLoopFn = func(_ context.Context, _ domain.SandboxID, _ **x509.Certificate,
+				_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher,
+				_ int, _ time.Duration, _ PerimeterCAGetter, seedAgentCreds bool,
+			) (bool, bool) {
+				loopCalled = true
+				gotSeedAgentCreds = seedAgentCreds
+				return true, true
+			}
+			seedAgentAndHumanSecretsFn = func(_ context.Context, _ domain.Sandbox, _ *x509.Certificate,
+				_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher, _ PerimeterCAGetter,
+			) (bool, bool) {
+				combinedCalled = true
+				return true, true
+			}
+			seedHumanSecretsFn = func(_ context.Context, _ domain.Sandbox, _ *x509.Certificate,
+				_, _ service.GuestSeeder, _ *cred.Broker, _ PerimeterCAGetter,
+			) (bool, bool) {
+				humanCalled = true
+				return true, true
+			}
+
+			in := seedRouteInputs{
+				SB:          c.sb,
+				Cert:        fakeCert(),
+				CASeeder:    func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil },
+				AgentSeeder: func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil },
+				Broker:      cred.NewBroker(),
+			}
+
+			if ok, _ := runSeedRoute(context.Background(), routeAgent, in); !ok {
+				t.Fatal("runSeedRoute returned ok=false for routeAgent")
+			}
+			if !loopCalled {
+				t.Error("seedLoopFn was NOT called for routeAgent")
+			}
+			if combinedCalled || humanCalled {
+				t.Errorf("routeAgent reached the wrong seeder (combined=%v human=%v)", combinedCalled, humanCalled)
+			}
+			if gotSeedAgentCreds != c.wantSeedAgentCred {
+				t.Errorf("seedAgentCreds = %v, want %v — a guest that runs no agent must not be seeded agent credentials",
+					gotSeedAgentCreds, c.wantSeedAgentCred)
+			}
+		})
 	}
 }
