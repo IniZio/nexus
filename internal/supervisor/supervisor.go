@@ -348,9 +348,10 @@ func RunDetached(cfg Config) error {
 
 	// Build Refresher-backed credential sources for the agent egress hosts
 	// (api.anthropic.com, platform.claude.com). Each Refresher loads the
-	// dedicated OAuth credential store and uses oauth2 ReuseTokenSourceWithExpiry
-	// to maintain a live access token; it pushes the real token into broker via
-	// broker.SetRealToken whenever the access token rotates.
+	// dedicated OAuth credential store; it maintains a live access token via
+	// lockedToken + oauthRefreshBase under a cross-process flock, and pushes the
+	// real token into broker via broker.SetRealToken whenever the access token
+	// rotates.
 	//
 	// Graceful degradation: if the creds file is absent or unreadable the broker
 	// starts with no real tokens and the perimeter still enforces network ACLs;
@@ -473,10 +474,11 @@ func RunDetached(cfg Config) error {
 	}
 
 	// ── 5c. Background token refresh ─────────────────────────────────────────
-	// Poll each Refresher every minute; oauth2 ReuseTokenSourceWithExpiry only
-	// actually fetches when the cached token is near expiry. Token() may return
-	// an error if SeedGuestAgent has not yet run (scope not yet registered in
-	// the broker); the goroutine logs and retries each tick.
+	// Poll each Refresher every minute; lockedToken re-uses the in-process
+	// cachedTok when the token is not near expiry and only calls oauthRefreshBase
+	// (an HTTP round-trip) when within refreshExpiryDelta of expiry. Token() may
+	// return an error if SeedGuestAgent has not yet run (scope not yet registered
+	// in the broker); the goroutine logs and retries each tick.
 	for _, r := range refreshers {
 		go func(r *cred.Refresher) {
 			ticker := time.NewTicker(time.Minute)
@@ -972,11 +974,21 @@ func seedAgentAndHumanSecrets(
 				} else {
 					slog.Info("supervisor.agent_and_secrets_complete", "sandbox", sb.ID,
 						"secret_hosts", sb.Envelope.SecretHosts)
-					// Re-push real tokens for the agent credential, mirroring SeedLoop.
+					// ForcePush re-pushes the real token to the placeholder freshly
+					// minted by SeedGuestAgentAndSecrets. A plain Token() call would
+					// skip the push because lastToken has not changed since the
+					// previous rotation; ForcePush bypasses that guard.
+					//
+					// READY is correct even when a post-seed push fails. The sandbox
+					// is running with egress live, and the failure is recorded in
+					// lastPushErrs so the next Token tick repairs it automatically
+					// (see refresher.go ForcePush and vend). Blocking READY on push
+					// outcome would delay sandbox availability indefinitely on
+					// transient broker errors.
 					for _, r := range refreshers {
-						if _, _, tokErr := r.Token(ctx); tokErr != nil {
+						if fpErr := r.ForcePush(ctx, sb.ID); fpErr != nil {
 							slog.Warn("supervisor.post_seed_token_push_failed",
-								"host", r.Host(), "err", tokErr)
+								"host", r.Host(), "err", fpErr)
 						} else {
 							slog.Info("supervisor.real_token_pushed",
 								"host", r.Host(), "sandbox", sb.ID)
@@ -1064,13 +1076,22 @@ func SeedLoop(
 				slog.Info("supervisor.seeds_complete", "sandbox", id,
 					"cert_path", service.GuestCACertPath,
 					"env_path", service.GuestCredEnvPath)
-				// Re-push real tokens to the placeholder freshly minted by
-				// SeedGuestAgent (which revoked the step-5b placeholder and
-				// minted a new one for the same scope).
+				// ForcePush re-pushes the real token to the placeholder freshly
+				// minted by SeedGuestAgent (which revoked the previous placeholder
+				// and minted a new one for the same scope). A plain Token() call
+				// would skip the push because lastToken has not changed since the
+				// previous rotation; ForcePush bypasses that guard.
+				//
+				// READY is correct even when a post-seed push fails. The sandbox
+				// is running with egress live, and the failure is recorded in
+				// lastPushErrs so the next Token tick repairs it automatically
+				// (see refresher.go ForcePush and vend). Blocking READY on push
+				// outcome would delay sandbox availability indefinitely on
+				// transient broker errors.
 				for _, r := range refreshers {
-					if _, _, tokErr := r.Token(ctx); tokErr != nil {
+					if fpErr := r.ForcePush(ctx, id); fpErr != nil {
 						slog.Warn("supervisor.post_seed_token_push_failed",
-							"host", r.Host(), "err", tokErr)
+							"host", r.Host(), "err", fpErr)
 					} else {
 						slog.Info("supervisor.real_token_pushed",
 							"host", r.Host(), "sandbox", id)

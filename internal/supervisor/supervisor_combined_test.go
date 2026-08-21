@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -435,5 +438,196 @@ func TestRunSeedRoute_AgentCallsSeedLoop(t *testing.T) {
 					gotSeedAgentCreds, c.wantSeedAgentCred)
 			}
 		})
+	}
+}
+
+// ── Finding 1: supervisor-level ForcePush wiring tests ───────────────────────
+
+// writeFreshSupervisorStore writes a DedicatedCredStore JSON with a fresh
+// access_token (expires 1 hour from now) so NewRefresher's lockedToken fast
+// path returns the cached token without any HTTP call.
+func writeFreshSupervisorStore(t *testing.T, accessToken string) string {
+	t.Helper()
+	s := map[string]interface{}{
+		"access_token":   accessToken,
+		"refresh_token":  "rt-dummy-supervisor-test",
+		"expires_at":     time.Now().Add(time.Hour).Format(time.RFC3339),
+		"token_type":     "Bearer",
+		"client_id":      "test-client",
+		"client_secret":  "",
+		"token_endpoint": "http://localhost:0/no-http-calls",
+	}
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("writeFreshSupervisorStore: marshal: %v", err)
+	}
+	p := filepath.Join(t.TempDir(), "store.json")
+	if err := os.WriteFile(p, data, 0600); err != nil {
+		t.Fatalf("writeFreshSupervisorStore: write: %v", err)
+	}
+	return p
+}
+
+// TestSeedLoop_ForcePushWritesRealToken is the mutation guard for
+// supervisor.go:SeedLoop's ForcePush call.
+//
+// Sequence (from reviewer's construction hint):
+//  1. RegisterPlaceholder — initial seed, scope minted with realToken="".
+//  2. r.Register — wire refresher.
+//  3. r.Token — ticker push: rotation detected (lastToken "" → realToken), broker set.
+//  4. SeedLoop — internally calls SeedGuestAgent → RegisterPlaceholder re-mints scope,
+//     wiping realToken back to "". Then ForcePush writes realToken unconditionally.
+//  5. Assert broker.Resolve(placeholder) == realToken.
+//
+// Mutation proof: revert supervisor.go:SeedLoop's r.ForcePush(ctx, id) to
+// r.Token(ctx) discarding the result. Token() detects no rotation (lastToken
+// unchanged), vend() skips the push, broker scope stays at realToken="", and:
+//
+//	broker.Resolve(placeholder) == "" ≠ realToken → RED
+func TestSeedLoop_ForcePushWritesRealToken(t *testing.T) {
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "") // ensure kindOAuth path
+
+	const realToken = "tok-real-seedloop-fp"
+	var id domain.SandboxID
+	id[0] = 0xF1
+
+	broker := cred.NewBroker()
+	storePath := writeFreshSupervisorStore(t, realToken)
+	r, err := cred.NewRefresher(storePath, service.AnthropicAPIHost, broker)
+	if err != nil {
+		t.Fatalf("NewRefresher: %v", err)
+	}
+
+	// Step 1: initial RegisterPlaceholder (simulates first seed attempt before
+	// guest was reachable; scope exists but realToken is empty).
+	if _, err := broker.RegisterPlaceholder(id, service.AnthropicAPIHost, ""); err != nil {
+		t.Fatalf("RegisterPlaceholder (initial): %v", err)
+	}
+
+	// Step 2: wire refresher.
+	r.Register(id)
+
+	// Step 3: ticker fires — rotation detected (lastToken "" → realToken) → push.
+	if _, _, err := r.Token(context.Background()); err != nil {
+		t.Fatalf("Token (ticker): %v", err)
+	}
+
+	// Verify ticker pushed correctly (precondition for the mutation to bite).
+	if ph, ok := broker.Placeholder(id, service.AnthropicAPIHost); !ok {
+		t.Fatal("broker has no placeholder after ticker push (precondition)")
+	} else if got, _ := broker.Resolve(ph); got != realToken {
+		t.Fatalf("after ticker push: placeholder resolves to %q, want %q (precondition)", got, realToken)
+	}
+
+	// Step 4: SeedLoop — re-mints scope via SeedGuestAgent → RegisterPlaceholder
+	// wipes realToken. Then ForcePush must write it back.
+	caSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
+	agentSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
+	cert := fakeCert()
+	ok, _ := SeedLoop(
+		context.Background(), id, &cert,
+		caSeeder, agentSeeder,
+		broker, []*cred.Refresher{r},
+		1, 0, nil, true,
+	)
+	if !ok {
+		t.Fatal("SeedLoop returned ok=false; seed failed")
+	}
+
+	// Step 5: the ForcePush inside SeedLoop must have written the real token to
+	// the newly-minted scope. Use broker.Placeholder + broker.Resolve so the
+	// assertion is on the OBSERVABLE OUTCOME, not on call counts.
+	ph, hasPh := broker.Placeholder(id, service.AnthropicAPIHost)
+	if !hasPh {
+		t.Fatal("broker has no placeholder for anthropic scope after SeedLoop")
+	}
+	got, ok2 := broker.Resolve(ph)
+	if !ok2 {
+		t.Fatalf("broker.Resolve(%q) = false after SeedLoop", ph)
+	}
+	if got != realToken {
+		t.Errorf("broker.Resolve(placeholder) = %q, want %q\n"+
+			"(ForcePush in SeedLoop did not write real token to re-minted scope;\n"+
+			" revert supervisor.go:SeedLoop ForcePush → Token to reproduce)", got, realToken)
+	}
+}
+
+// TestSeedAgentAndHumanSecrets_ForcePushWritesRealToken is the mutation guard
+// for supervisor.go:seedAgentAndHumanSecrets's ForcePush call.
+//
+// Same construction as TestSeedLoop_ForcePushWritesRealToken but exercises the
+// combined agent+secrets path (seedAgentAndHumanSecrets) instead of the
+// agent-only path (SeedLoop). The two tests protect INDEPENDENT call sites:
+// reverting seedAgentAndHumanSecrets's ForcePush leaves this test RED while
+// the SeedLoop test stays GREEN, and vice versa.
+//
+// Mutation proof: revert supervisor.go:seedAgentAndHumanSecrets's r.ForcePush
+// to r.Token discarding the result. vend() skips the push (no rotation), broker
+// scope stays at realToken="", and:
+//
+//	broker.Resolve(placeholder) == "" ≠ realToken → RED
+func TestSeedAgentAndHumanSecrets_ForcePushWritesRealToken(t *testing.T) {
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("NEXUS3_TEST_SAHS_FP", "secret-val-for-fp-test")
+
+	const realToken = "tok-real-sahs-fp"
+	var id domain.SandboxID
+	id[0] = 0xF2
+
+	broker := cred.NewBroker()
+	storePath := writeFreshSupervisorStore(t, realToken)
+	r, err := cred.NewRefresher(storePath, service.AnthropicAPIHost, broker)
+	if err != nil {
+		t.Fatalf("NewRefresher: %v", err)
+	}
+
+	// Step 1: initial RegisterPlaceholder (same as SeedLoop test above).
+	if _, err := broker.RegisterPlaceholder(id, service.AnthropicAPIHost, ""); err != nil {
+		t.Fatalf("RegisterPlaceholder (initial): %v", err)
+	}
+
+	// Step 2: wire refresher.
+	r.Register(id)
+
+	// Step 3: ticker fires — rotation detected → push.
+	if _, _, err := r.Token(context.Background()); err != nil {
+		t.Fatalf("Token (ticker): %v", err)
+	}
+
+	// Verify ticker pushed (precondition).
+	if ph, ok := broker.Placeholder(id, service.AnthropicAPIHost); !ok {
+		t.Fatal("broker has no placeholder after ticker push (precondition)")
+	} else if got, _ := broker.Resolve(ph); got != realToken {
+		t.Fatalf("after ticker push: placeholder resolves to %q, want %q (precondition)", got, realToken)
+	}
+
+	// Step 4: seedAgentAndHumanSecrets — re-mints scope via SeedGuestAgentAndSecrets
+	// → RegisterPlaceholder wipes realToken. Then ForcePush must write it back.
+	sb := combinedSandboxWithEnvSecret(id, "NEXUS3_TEST_SAHS_FP")
+	caSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
+	credCap := &captureGuestSeeder{}
+	ok, _ := seedAgentAndHumanSecrets(
+		context.Background(), sb, fakeCert(),
+		caSeeder, credCap.fn(),
+		broker, []*cred.Refresher{r}, nil,
+	)
+	if !ok {
+		t.Fatal("seedAgentAndHumanSecrets returned ok=false; combined seeding failed")
+	}
+
+	// Step 5: ForcePush inside seedAgentAndHumanSecrets must have written the
+	// real token to the newly-minted scope.
+	ph, hasPh := broker.Placeholder(id, service.AnthropicAPIHost)
+	if !hasPh {
+		t.Fatal("broker has no placeholder for anthropic scope after seedAgentAndHumanSecrets")
+	}
+	got, ok2 := broker.Resolve(ph)
+	if !ok2 {
+		t.Fatalf("broker.Resolve(%q) = false after seedAgentAndHumanSecrets", ph)
+	}
+	if got != realToken {
+		t.Errorf("broker.Resolve(placeholder) = %q, want %q\n"+
+			"(ForcePush in seedAgentAndHumanSecrets did not write real token to re-minted scope;\n"+
+			" revert supervisor.go:seedAgentAndHumanSecrets ForcePush → Token to reproduce)", got, realToken)
 	}
 }

@@ -346,7 +346,7 @@ func TestRefresher_StoreValidation_EmptyTokenEndpoint(t *testing.T) {
 // ── Real oauth2 stack (httptest — loopback only, no external network) ────────
 
 // TestRefresher_NewRefresher_RealStack exercises the full NewRefresher path:
-// an expired store triggers ReuseTokenSourceWithExpiry → oauthRefreshBase →
+// an expired store triggers lockedToken → oauthRefreshBase →
 // HTTP to the fake token endpoint → new token returned and pushed to broker.
 func TestRefresher_NewRefresher_RealStack(t *testing.T) {
 	const freshToken = "server-issued-access-token"
@@ -708,4 +708,501 @@ func TestRefresher_NewRefresher_InvalidGrant(t *testing.T) {
 		t.Errorf("on error, token must be empty, got %q", tok)
 	}
 	t.Logf("surfaced expected error: %v", err)
+}
+
+// ── DEFECT 3 / wiring proof ───────────────────────────────────────────────────
+
+// TestNewRefresher_LockedPathWired is the wiring proof for the cross-process
+// lock. It asserts a BEHAVIOURAL consequence of the locked path being taken:
+// WithStoreLock creates the lock file at storePath+".lock". If Token() bypasses
+// the locked path (e.g. because r.base was not wired), the lock file does not
+// exist and the test fails.
+//
+// The test uses an expired store (forces the slow path — fast path skips the
+// lock) and an httptest server so no real network is involved.
+//
+// # Mutation proof
+//
+// Comment out `r.base = base` in NewRefresher → r.base == nil → Token() falls
+// to the unlocked test path → lock file is never created → test goes RED:
+//
+//	--- FAIL: TestNewRefresher_LockedPathWired (0.00s)
+//	    refresher_test.go:NNN: lock file does not exist after Token(): storePath+".lock"
+//	    want: lock file created by WithStoreLock (proof the locked path ran)
+func TestNewRefresher_LockedPathWired(t *testing.T) {
+	const freshToken = "locked-path-token"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token":  freshToken,
+			"token_type":    "Bearer",
+			"expires_in":    3600,
+			"refresh_token": "rt-locked-fresh",
+		}); err != nil {
+			t.Errorf("httptest encode: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	// writeStoreJSON sets expires_at in the past → forces the slow path so
+	// WithStoreLock is always invoked (fast path skips the lock).
+	storePath := writeStoreJSON(t, t.TempDir(), srv.URL)
+	lockPath := lockFilePath(storePath)
+
+	r, err := NewRefresher(storePath, "api.anthropic.com", &fakeRealTokenSetter{})
+	if err != nil {
+		t.Fatalf("NewRefresher: %v", err)
+	}
+
+	tok, _, err := r.Token(context.Background())
+	if err != nil {
+		t.Fatalf("Token(): %v", err)
+	}
+	if tok != freshToken {
+		t.Errorf("got token %q, want %q", tok, freshToken)
+	}
+
+	// Lock file existence is the behavioural proof: WithStoreLock creates it via
+	// OpenLock (O_CREATE). If the unlocked path ran instead, this file does not
+	// exist and the wiring is broken.
+	if _, statErr := os.Stat(lockPath); os.IsNotExist(statErr) {
+		t.Errorf("lock file does not exist after Token(): %s\nwant: lock file created by WithStoreLock (proof the locked path ran)", lockPath)
+	}
+}
+
+// ── DEFECT 1 mutation proof ───────────────────────────────────────────────────
+
+// TestLockedToken_FastPathPushesToBroker asserts that even when the in-process
+// cached token is still fresh (fast path taken, no HTTP call), the broker push
+// happens on the first Token() call of a freshly-constructed Refresher.
+//
+// The regression: lockedToken()'s original fast path did an early return before
+// vend(), so lastToken was "" and SetRealToken was never called. The broker had
+// no real token behind the sandbox placeholder, and the MITM proxied nothing.
+//
+// # Mutation proof
+//
+// Change the fast-path call from `return r.vend(ct)` back to the early return
+// `return ct.AccessToken, ct.Expiry, nil`. The broker push is skipped. With a
+// registered sandbox the test goes RED:
+//
+//	--- FAIL: TestLockedToken_FastPathPushesToBroker (0.00s)
+//	    refresher_test.go:NNN: SetRealToken call count = 0, want 1
+//	    (broker never received the real token; fast path skipped vend)
+func TestLockedToken_FastPathPushesToBroker(t *testing.T) {
+	const freshToken = "fresh-cached-token"
+	sid := domain.SandboxID{42}
+	broker := &fakeRealTokenSetter{}
+
+	// Build a store with a FUTURE expiry so the fast path is taken.
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "creds.json")
+	futureExpiry := time.Now().Add(time.Hour)
+	store := &DedicatedCredStore{
+		AccessToken:   freshToken,
+		RefreshToken:  "rt-still-valid",
+		ExpiresAt:     futureExpiry,
+		TokenType:     "Bearer",
+		ClientID:      "test-client",
+		ClientSecret:  "",
+		TokenEndpoint: "http://unused.example.com/token",
+	}
+	if err := SaveStore(storePath, store); err != nil {
+		t.Fatalf("SaveStore: %v", err)
+	}
+
+	r, err := NewRefresher(storePath, "api.anthropic.com", broker)
+	if err != nil {
+		t.Fatalf("NewRefresher: %v", err)
+	}
+	r.Register(sid)
+
+	tok, _, err := r.Token(context.Background())
+	if err != nil {
+		t.Fatalf("Token(): %v", err)
+	}
+	if tok != freshToken {
+		t.Errorf("got token %q, want %q", tok, freshToken)
+	}
+
+	// The fast path must still push to the broker. On first call lastToken is ""
+	// so rotated==true regardless of which path is taken — vend() must run.
+	broker.mu.Lock()
+	n := len(broker.calls)
+	broker.mu.Unlock()
+	if n != 1 {
+		t.Errorf("SetRealToken call count = %d, want 1\n(broker never received the real token; fast path skipped vend)", n)
+	}
+}
+
+// ── DEFECT 2 mutation proof ───────────────────────────────────────────────────
+
+// TestLockedToken_SlowPathUsesDiskRefreshToken asserts that when the slow path
+// is taken, the HTTP refresh grant uses the refresh_token from the on-disk store
+// (not the potentially-stale in-memory base.rt).
+//
+// Scenario: after construction, base.rt is set to "initial-rt". A sibling process
+// then refreshes and writes "rotated-rt" to disk. The next Token() call finds the
+// access token expired, enters the slow path, and MUST send "rotated-rt" in the
+// HTTP grant — not the stale "initial-rt".
+//
+// # Mutation proof
+//
+// Remove the unconditional `r.base.rt = diskStore.RefreshToken` sync from
+// lockedToken (leave only the sync on the "disk token fresh" branch that was
+// present in the original broken code). The HTTP server records which refresh_token
+// it received. Without the fix it gets "stale-rt"; with the fix it gets "disk-rt".
+// The test goes RED:
+//
+//	--- FAIL: TestLockedToken_SlowPathUsesDiskRefreshToken (0.00s)
+//	    refresher_test.go:NNN: HTTP grant used refresh_token "stale-rt", want "disk-rt"
+//	    (base.rt was not synced from disk before the HTTP call)
+func TestLockedToken_SlowPathUsesDiskRefreshToken(t *testing.T) {
+	const freshToken = "server-fresh-token"
+	const diskRT = "disk-rt"
+	const staleRT = "stale-rt"
+
+	var gotRefreshToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if err := req.ParseForm(); err != nil {
+			t.Errorf("httptest ParseForm: %v", err)
+		}
+		gotRefreshToken = req.FormValue("refresh_token")
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token":  freshToken,
+			"token_type":    "Bearer",
+			"expires_in":    3600,
+			"refresh_token": "server-new-rt",
+		}); err != nil {
+			t.Errorf("httptest encode: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	// Create store with an expired access token (force slow path) and diskRT.
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "creds.json")
+	expiredStore := &DedicatedCredStore{
+		AccessToken:   "expired-token",
+		RefreshToken:  diskRT,
+		ExpiresAt:     time.Now().Add(-time.Hour), // expired → slow path
+		TokenType:     "Bearer",
+		ClientID:      "test-client",
+		ClientSecret:  "",
+		TokenEndpoint: srv.URL,
+	}
+	if err := SaveStore(storePath, expiredStore); err != nil {
+		t.Fatalf("SaveStore: %v", err)
+	}
+
+	r, err := NewRefresher(storePath, "api.anthropic.com", &fakeRealTokenSetter{})
+	if err != nil {
+		t.Fatalf("NewRefresher: %v", err)
+	}
+
+	// Simulate stale in-memory base.rt (as if a sibling process rotated it since
+	// construction). White-box access is intentional: this is package cred.
+	r.base.mu.Lock()
+	r.base.rt = staleRT
+	r.base.mu.Unlock()
+
+	tok, _, err := r.Token(context.Background())
+	if err != nil {
+		t.Fatalf("Token(): %v", err)
+	}
+	if tok != freshToken {
+		t.Errorf("got token %q, want %q", tok, freshToken)
+	}
+
+	// The HTTP grant must have used the disk RT, not the stale in-memory one.
+	if gotRefreshToken != diskRT {
+		t.Errorf("HTTP grant used refresh_token %q, want %q\n(base.rt was not synced from disk before the HTTP call)", gotRefreshToken, diskRT)
+	}
+}
+
+// ── Finding A: push retry on previous failure ─────────────────────────────────
+
+// TestVend_RetryPushOnPreviousFailure is the regression test for the supervisor
+// push-retry fix. On the supervisor/restart path the first 60s ticker fires
+// before SeedGuestAgent has registered the broker scope, so SetRealToken returns
+// an error. The token has not rotated, so the ORIGINAL code skipped the push on
+// the next tick, leaving the guest permanently on a placeholder.
+//
+// The fix: vend() retries the push whenever lastPushErrs > 0, regardless of
+// rotation, clearing lastPushErrs before the attempt and repopulating it only
+// if the retry also fails.
+//
+// # Mutation proof
+//
+// Revert vend()'s push condition from `rotated || hadPushErrs` back to
+// `rotated`. The second Token() call does not push (rotated == false),
+// broker.callCount() stays 1, and the test goes RED:
+//
+//	--- FAIL: TestVend_RetryPushOnPreviousFailure (0.00s)
+//	    refresher_test.go:NNN: broker call count after retry tick = 1, want 2
+//	    (push not retried after previous failure; supervisor guest stuck on placeholder)
+func TestVend_RetryPushOnPreviousFailure(t *testing.T) {
+	const stableToken = "stable-supervisor-token"
+	sid := domain.SandboxID{88}
+
+	// Loopback HTTP server returns a stable access token on every call.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token":  stableToken,
+			"token_type":    "Bearer",
+			"expires_in":    3600,
+			"refresh_token": "rt-stable",
+		}); err != nil {
+			t.Errorf("httptest encode: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	// Expired store forces the slow path on the first Token() call.
+	storePath := writeStoreJSON(t, t.TempDir(), srv.URL)
+
+	broker := &fakeRealTokenSetter{err: errors.New("scope not registered: RegisterPlaceholder not yet called")}
+	r, err := NewRefresher(storePath, "api.anthropic.com", broker)
+	if err != nil {
+		t.Fatalf("NewRefresher: %v", err)
+	}
+	r.Register(sid)
+
+	// First Token() call: slow path (expired store), real token fetched,
+	// push FAILS because broker scope is not yet registered.
+	tok, _, err := r.Token(context.Background())
+	if err != nil {
+		t.Fatalf("Token() (first call): %v", err)
+	}
+	if tok != stableToken {
+		t.Errorf("first call: got token %q, want %q", tok, stableToken)
+	}
+	if broker.callCount() != 1 {
+		t.Fatalf("after first Token(): broker call count = %d, want 1", broker.callCount())
+	}
+	if len(r.PushErrors()) == 0 {
+		t.Fatal("after first Token(): PushErrors() empty; want the broker error recorded")
+	}
+
+	// Simulate scope becoming available: clear the broker error.
+	broker.mu.Lock()
+	broker.err = nil
+	broker.mu.Unlock()
+
+	// Second Token() call: fast path (token is now fresh in cache).
+	// rotated == false (same token), but hadPushErrs == true → push must retry.
+	tok2, _, err := r.Token(context.Background())
+	if err != nil {
+		t.Fatalf("Token() (retry tick): %v", err)
+	}
+	if tok2 != stableToken {
+		t.Errorf("retry tick: got token %q, want %q", tok2, stableToken)
+	}
+	if broker.callCount() != 2 {
+		t.Errorf("broker call count after retry tick = %d, want 2\n(push not retried after previous failure; supervisor guest stuck on placeholder)", broker.callCount())
+	}
+	if len(r.PushErrors()) != 0 {
+		t.Errorf("PushErrors() non-empty after successful retry: %v", r.PushErrors())
+	}
+
+	// Confirm the correct token was delivered.
+	broker.mu.Lock()
+	lastTok := broker.calls[len(broker.calls)-1].token
+	broker.mu.Unlock()
+	if lastTok != stableToken {
+		t.Errorf("broker received token %q on retry, want %q", lastTok, stableToken)
+	}
+}
+
+// ── C1 regression: post-seed ForcePush after re-mint ─────────────────────────
+
+// TestRefresher_ForcePush_PostSeedRemint reproduces the C1 defect sequence
+// against the REAL cred.Broker:
+//
+//  1. RegisterPlaceholder mints scope with empty realToken (seed attempt 1, guest not reachable).
+//  2. r.Register wires the refresher to the sandbox.
+//  3. r.Token (ticker) fires: lastToken was "", access token is different → rotated=true → SetRealToken pushes.
+//  4. RegisterPlaceholder re-mints (seed attempt 2 succeeds): new entry has realToken="", old placeholder revoked.
+//  5. Post-seed call: with the OLD Token() path, rotated=false, hadPushErrs=false → no push → guest gets 401.
+//     With ForcePush: SetRealToken is called unconditionally → broker holds real token.
+//  6. Assert broker.Resolve(newPlaceholder) == realToken.
+//
+// Mutation proof (apply to PRODUCTION code, not this file):
+//   In refresher.go ForcePush, remove or no-op the r.broker.SetRealToken call.
+//   ForcePush returns nil, but broker.Resolve(rec2.Placeholder) == "" → RED:
+//   "after post-seed push: broker resolves new placeholder to ..."
+// Do NOT mutate the r.ForcePush call on line ~1086 of this file — that mutates
+// the test itself and only proves the test checks its own assertion.
+func TestRefresher_ForcePush_PostSeedRemint(t *testing.T) {
+	ctx := context.Background()
+	const host = "api.anthropic.com"
+	sbID := domain.SandboxID{42}
+	const realToken = "tok-real-c1"
+
+	// Use the REAL Broker — not a fake — as the reviewer specified.
+	broker := NewBroker()
+
+	fts := &fakeTokenSource{
+		tokens: []*oauth2.Token{
+			makeTok(realToken, time.Now().Add(time.Hour)),
+			makeTok(realToken, time.Now().Add(time.Hour)), // second call (ForcePush path)
+		},
+	}
+	r := newRefresherWithSource(fts, host, broker, "", credStoreMeta{})
+
+	// Step 1: seed attempt 1 — RegisterPlaceholder mints scope with empty realToken.
+	rec1, err := broker.RegisterPlaceholder(sbID, host, "")
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder (seed 1): %v", err)
+	}
+
+	// Step 2: wire refresher.
+	r.Register(sbID)
+
+	// Step 3: ticker fires → Token → vend → lastToken changes "" → realToken → push.
+	if _, _, tokErr := r.Token(ctx); tokErr != nil {
+		t.Fatalf("Token (ticker): %v", tokErr)
+	}
+	// Verify ticker pushed correctly.
+	if got, ok := broker.Resolve(rec1.Placeholder); !ok || got != realToken {
+		t.Fatalf("after ticker push: placeholder1 resolves to %q (ok=%v), want %q", got, ok, realToken)
+	}
+
+	// Step 4: seed retry → RegisterPlaceholder re-mints scope; realToken wiped in new entry.
+	rec2, err := broker.RegisterPlaceholder(sbID, host, "")
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder (seed retry): %v", err)
+	}
+	// Old placeholder must be revoked.
+	if _, ok := broker.Resolve(rec1.Placeholder); ok {
+		t.Error("old placeholder must be revoked after re-mint")
+	}
+	// New placeholder resolves to "" — the bug state before post-seed push.
+	if got, _ := broker.Resolve(rec2.Placeholder); got != "" {
+		t.Fatalf("new placeholder pre-push: got %q, want \"\" (precondition)", got)
+	}
+
+	// Step 5: post-seed push.
+	if pushErr := r.ForcePush(ctx, sbID); pushErr != nil {
+		t.Fatalf("ForcePush: %v", pushErr)
+	}
+
+	// Step 6: broker must hold the real token on the new placeholder.
+	got, ok := broker.Resolve(rec2.Placeholder)
+	if !ok {
+		t.Fatal("after post-seed push: broker does not know new placeholder (registered=false)")
+	}
+	if got != realToken {
+		t.Errorf("after post-seed push: broker resolves new placeholder to %q, want %q", got, realToken)
+	}
+}
+
+// ── Finding 2: ForcePush failure must be recorded for ticker retry ────────────
+
+// TestForcePush_FailureIsRetried is the regression test for the F2 fix:
+// before the fix, a ForcePush failure was returned to the caller but NOT
+// recorded in lastPushErrs, so the next vend tick (rotated=false,
+// hadPushErrs=false) silently skipped the retry, leaving the guest on an
+// unresolvable placeholder until the next genuine token rotation.
+//
+// # Mutation proof
+//
+// Remove the `r.lastPushErrs = append(...)` block inside ForcePush's error
+// branch in refresher.go. PushErrors() returns nil after the failed push, so
+// the test goes RED:
+//
+//	--- FAIL: TestForcePush_FailureIsRetried (0.00s)
+//	    refresher_test.go:NNN: after failed ForcePush: PushErrors() empty;
+//	        want error recorded (needed for ticker retry)
+//
+// Also: remove the `hadPushErrs` clause from vend's push condition
+// (`rotated || hadPushErrs` → `rotated`). The retry tick skips the push,
+// broker stays stale, and the test goes RED:
+//
+//	--- FAIL: TestForcePush_FailureIsRetried (0.00s)
+//	    refresher_test.go:NNN: PushErrors() non-empty after retry tick — push not retried
+func TestForcePush_FailureIsRetried(t *testing.T) {
+	// Use NewRefresher (production locked path → lockedToken → vend) so that
+	// vend's hadPushErrs retry logic is exercised. The store has a fresh token
+	// so no HTTP call is made.
+	const realToken = "tok-fp-retry-test"
+	sid := domain.SandboxID{77}
+
+	// Write a fresh store: token expires 1 hour from now, far beyond the
+	// refreshExpiryDelta (30 s) so lockedToken's fast path returns the cached token.
+	dir := t.TempDir()
+	storeData := map[string]interface{}{
+		"access_token":   realToken,
+		"refresh_token":  "rt-dummy-fp-retry",
+		"expires_at":     time.Now().Add(time.Hour).Format(time.RFC3339),
+		"token_type":     "Bearer",
+		"client_id":      "test-client",
+		"client_secret":  "",
+		"token_endpoint": "http://localhost:0/no-calls",
+	}
+	storeBytes, err := json.Marshal(storeData)
+	if err != nil {
+		t.Fatalf("marshal store: %v", err)
+	}
+	storePath := filepath.Join(dir, "creds.json")
+	if err := os.WriteFile(storePath, storeBytes, 0600); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+
+	broker := &fakeRealTokenSetter{}
+	r, err := NewRefresher(storePath, "api.anthropic.com", broker)
+	if err != nil {
+		t.Fatalf("NewRefresher: %v", err)
+	}
+	r.Register(sid)
+
+	// Step 1: first Token() establishes lastToken = realToken; push succeeds.
+	if _, _, tokErr := r.Token(context.Background()); tokErr != nil {
+		t.Fatalf("initial Token(): %v", tokErr)
+	}
+	if broker.callCount() != 1 {
+		t.Fatalf("after initial Token(): call count = %d, want 1", broker.callCount())
+	}
+
+	// Step 2: broker starts failing (simulates a re-minted scope that is not yet
+	// registered, i.e. the post-seed window where ForcePush may fail transiently).
+	broker.mu.Lock()
+	broker.err = errors.New("broker: scope not found after re-mint")
+	broker.mu.Unlock()
+
+	// Step 3: ForcePush fails. lockedToken fast path returns cached token
+	// (no rotation detected in vend → no bulk push). Only ForcePush's own
+	// SetRealToken is attempted and fails.
+	pushErr := r.ForcePush(context.Background(), sid)
+	if pushErr == nil {
+		t.Fatal("ForcePush: expected error, got nil")
+	}
+	// F2 fix: the error must be recorded so the ticker can retry.
+	if len(r.PushErrors()) == 0 {
+		t.Fatal("after failed ForcePush: PushErrors() empty; want error recorded (needed for ticker retry)")
+	}
+
+	// Step 4: broker recovers (transient error resolved).
+	broker.mu.Lock()
+	broker.err = nil
+	broker.mu.Unlock()
+
+	// Step 5: next Token() tick — rotated=false, but hadPushErrs=true → retry.
+	if _, _, tokErr := r.Token(context.Background()); tokErr != nil {
+		t.Fatalf("retry tick Token(): %v", tokErr)
+	}
+	if len(r.PushErrors()) != 0 {
+		t.Errorf("PushErrors() non-empty after retry tick — push not retried: %v", r.PushErrors())
+	}
+
+	// Confirm the real token was delivered on the retry.
+	broker.mu.Lock()
+	lastCall := broker.calls[len(broker.calls)-1]
+	broker.mu.Unlock()
+	if lastCall.token != realToken {
+		t.Errorf("retry push delivered %q, want %q", lastCall.token, realToken)
+	}
 }

@@ -74,7 +74,7 @@ func TestRefresherLiveRefreshGrant(t *testing.T) {
 
 	// ── Build the expired-seed temp store ─────────────────────────────────────
 	// Copy all fields from the real store but set ExpiresAt in the past.
-	// This causes ReuseTokenSourceWithExpiry to call through to oauthRefreshBase
+	// This causes lockedToken to call through to oauthRefreshBase
 	// (which hits the real token endpoint) instead of returning the cached token.
 	// The refresh_token is the SAME live token — using it will rotate it.
 	//

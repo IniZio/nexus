@@ -1,9 +1,12 @@
 package cred_test
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -172,4 +175,74 @@ func writeTemp(t *testing.T, content string) string {
 		t.Fatalf("writeTemp: %v", err)
 	}
 	return path
+}
+
+// TestWithStoreLock_ConcurrentWritersNoUpdateLost is the goroutine-level
+// concurrency proof for [cred.WithStoreLock].
+//
+// N goroutines each perform a load-modify-save cycle under the lock: they read a
+// counter encoded in the AccessToken field, increment it, and write it back.
+// After all goroutines finish the counter must equal N — every increment must
+// survive, none lost to last-write-wins overwrite.
+//
+// # Mutation proof
+//
+// Temporarily removing the TryExclusive call from WithStoreLock so that all
+// goroutines entered the critical section simultaneously gives counter < N
+// (typically 1–4), confirming last-write-wins overwrites.
+func TestWithStoreLock_ConcurrentWritersNoUpdateLost(t *testing.T) {
+	const N = 20
+
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "creds.json")
+	expiry := time.Now().Add(time.Hour)
+
+	if err := cred.SaveStore(storePath, &cred.DedicatedCredStore{
+		AccessToken:   "counter=0",
+		RefreshToken:  "rt-init",
+		ExpiresAt:     expiry,
+		TokenType:     "Bearer",
+		TokenEndpoint: "https://auth.example.com/token",
+		ClientID:      "test-client",
+	}); err != nil {
+		t.Fatalf("initial SaveStore: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for range N {
+		go func() {
+			defer wg.Done()
+			err := cred.WithStoreLock(context.Background(), storePath, func(s *cred.DedicatedCredStore) (*cred.DedicatedCredStore, error) {
+				if s == nil {
+					return nil, fmt.Errorf("store unexpectedly absent")
+				}
+				var count int
+				fmt.Sscanf(s.AccessToken, "counter=%d", &count)
+				count++
+				return &cred.DedicatedCredStore{
+					AccessToken:   fmt.Sprintf("counter=%d", count),
+					RefreshToken:  s.RefreshToken,
+					ExpiresAt:     s.ExpiresAt,
+					TokenType:     s.TokenType,
+					TokenEndpoint: s.TokenEndpoint,
+					ClientID:      s.ClientID,
+				}, nil
+			})
+			if err != nil {
+				t.Errorf("WithStoreLock goroutine error: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	final, err := cred.LoadStore(storePath)
+	if err != nil {
+		t.Fatalf("LoadStore final: %v", err)
+	}
+	var got int
+	fmt.Sscanf(final.AccessToken, "counter=%d", &got)
+	if got != N {
+		t.Errorf("counter = %d, want %d (some updates were lost)", got, N)
+	}
 }
