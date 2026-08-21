@@ -1,12 +1,15 @@
 package cred
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
+
+	corestore "github.com/IniZio/nexus3/internal/core/store"
 )
 
 // ErrStoreAbsent is returned by [LoadStore] when the store file does not exist.
@@ -89,6 +92,83 @@ func LoadStore(path string) (*DedicatedCredStore, error) {
 		ClientSecret:  s.ClientSecret,
 		TokenEndpoint: s.TokenEndpoint,
 	}, nil
+}
+
+// lockFilePath returns the path of the advisory lock file used to serialise
+// cross-process reads and writes of the credential store at storePath. The
+// lock file is a sibling so that creating the parent directory is sufficient
+// for both files.
+func lockFilePath(storePath string) string {
+	return storePath + ".lock"
+}
+
+// WithStoreLock serialises a read-modify-write of the credential store at
+// storePath across OS processes by holding an exclusive flock. It:
+//
+//  1. Opens (or creates) storePath+".lock" as the advisory lock file.
+//  2. Acquires an exclusive flock within a 30 s deadline using non-blocking
+//     LOCK_NB retries with a 5 ms backoff, so the context deadline has real
+//     force (no kernel-park risk past the deadline). A stale lock cannot
+//     deadlock forever: the kernel releases it automatically when the holding
+//     process dies, including SIGKILL.
+//  3. Re-reads storePath under the lock and passes the result to fn. fn
+//     receives nil when the file is absent.
+//  4. If fn returns a non-nil *DedicatedCredStore, atomically saves it to
+//     storePath before releasing the lock.
+//  5. Propagates fn's error without saving when fn returns a non-nil error.
+//
+// # Why hold the lock across a network call
+//
+// fn may make an OAuth HTTP refresh call while the lock is held (e.g. when
+// the on-disk token is stale). Holding the lock through the network call
+// prevents two concurrent supervisor processes from simultaneously consuming
+// the same refresh_token. Anthropic's token endpoint rotates the
+// refresh_token on every grant — a second call with the now-invalidated
+// token returns invalid_grant and permanently bricks the credential chain.
+// The serialisation ensures only one process calls the endpoint; the loser
+// re-reads the freshly written token from disk and skips the HTTP call. The
+// trade-off — holding the lock for a ~200 ms network round-trip — is
+// acceptable: refresh is infrequent (hourly for long-lived tokens), supervisor
+// count is bounded by sandbox count, and the alternative has permanent
+// consequences.
+func WithStoreLock(ctx context.Context, storePath string, fn func(*DedicatedCredStore) (*DedicatedCredStore, error)) error {
+	lkPath := lockFilePath(storePath)
+	lk, err := corestore.OpenLock(lkPath)
+	if err != nil {
+		return fmt.Errorf("cred: open store lock %s: %w", lkPath, err)
+	}
+	defer lk.Close() // Close releases the flock if it is still held.
+
+	const lockTimeout = 30 * time.Second
+	lockCtx, cancel := context.WithTimeout(ctx, lockTimeout)
+	defer cancel()
+	// TryExclusive uses non-blocking LOCK_NB with a 5 ms backoff between
+	// attempts so ctx.Done is checked between retries — the caller cannot be
+	// parked in the kernel past the deadline.
+	if err := lk.TryExclusive(lockCtx); err != nil {
+		return fmt.Errorf("cred: acquire store lock %s (timeout %s): %w", lkPath, lockTimeout, err)
+	}
+
+	// Re-read under the lock so fn sees the freshest on-disk state. Another
+	// process may have refreshed while we waited.
+	current, err := LoadStore(storePath)
+	if err != nil {
+		if !errors.Is(err, ErrStoreAbsent) {
+			return fmt.Errorf("cred: read store under lock: %w", err)
+		}
+		current = nil // absent is fine; fn decides what to do
+	}
+
+	updated, fnErr := fn(current)
+	if fnErr != nil {
+		return fnErr
+	}
+	if updated != nil {
+		if saveErr := SaveStore(storePath, updated); saveErr != nil {
+			return fmt.Errorf("cred: save store under lock: %w", saveErr)
+		}
+	}
+	return nil
 }
 
 // SaveStore atomically writes s to the JSON store file at path (mode 0600).
