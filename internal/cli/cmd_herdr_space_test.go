@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
@@ -269,63 +268,3 @@ func TestHerdrSpaceResumeByLabel_NotFound(t *testing.T) {
 	}
 }
 
-func TestHerdrSpaceRemoveByLabel(t *testing.T) {
-	root := t.TempDir()
-	ctx := context.Background()
-	b := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:demo", HerdrWorkspaceID: "wX",
-		SandboxHandle: "orca/demo", SandboxID: "sb-xxx",
-	}
-	if err := HerdrSpacePut(ctx, root, b); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-
-	svc := &fakeSandboxSvc{}
-	if err := HerdrSpaceRemoveByLabel(ctx, svc, root, b.SpaceLabel); err != nil {
-		t.Fatalf("RemoveByLabel: %v", err)
-	}
-	// Sandbox removed with the correct handle.
-	if len(svc.removed) != 1 || svc.removed[0] != b.SandboxHandle {
-		t.Errorf("removed refs = %v, want [%s]", svc.removed, b.SandboxHandle)
-	}
-	// Binding deleted — subsequent lookup must return ErrHerdrSpaceNotFound.
-	if _, err := HerdrSpaceGetByLabel(ctx, root, b.SpaceLabel); !errors.Is(err, ErrHerdrSpaceNotFound) {
-		t.Errorf("binding still present after Remove; want ErrHerdrSpaceNotFound, got %v", err)
-	}
-}
-
-func TestHerdrSpaceRemoveByLabel_NotFound(t *testing.T) {
-	root := t.TempDir()
-	ctx := context.Background()
-	svc := &fakeSandboxSvc{}
-	err := HerdrSpaceRemoveByLabel(ctx, svc, root, "nexus3:nope")
-	if !errors.Is(err, ErrHerdrSpaceNotFound) {
-		t.Errorf("want ErrHerdrSpaceNotFound, got %v", err)
-	}
-	if len(svc.removed) != 0 {
-		t.Errorf("service must not be called for missing label")
-	}
-}
-
-func TestHerdrSpaceRemoveByLabel_ServiceError(t *testing.T) {
-	root := t.TempDir()
-	ctx := context.Background()
-	b := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:demo", HerdrWorkspaceID: "wX",
-		SandboxHandle: "orca/demo", SandboxID: "sb-xxx",
-	}
-	if err := HerdrSpacePut(ctx, root, b); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-
-	svcErr := fmt.Errorf("driver offline")
-	svc := &fakeSandboxSvc{removeErr: svcErr}
-	err := HerdrSpaceRemoveByLabel(ctx, svc, root, b.SpaceLabel)
-	if err == nil {
-		t.Fatal("expected error from service, got nil")
-	}
-	// Binding must still exist when the service call fails.
-	if _, err2 := HerdrSpaceGetByLabel(ctx, root, b.SpaceLabel); err2 != nil {
-		t.Errorf("binding must remain after failed Remove, got %v", err2)
-	}
-}

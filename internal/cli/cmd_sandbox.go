@@ -2031,32 +2031,62 @@ func renderSandboxListWide(labelKey, labelValue string, report *service.LabelSta
 // rm
 
 func runSandboxRm(ctx context.Context, args []string, out *Output, svc *service.Service) error {
+	root, _ := store.DefaultRoot() // best-effort: herdr cascade proceeds even on error
+	herdrBin, herdrBinErr := resolveHerdrBin()
+	var closer func(ctx context.Context, workspaceID string) error
+	if herdrBinErr != nil {
+		// herdr is not available on this host. Pass a closer that returns the
+		// resolution error so herdrSpaceTeardownOnRm sees a non-nil error and
+		// retains the binding — space-prune can recover it once herdr is installed.
+		// sandbox rm itself still succeeds (herdrSpaceTeardownOnRm is non-fatal).
+		slog.Warn("sandbox rm: herdr not found; binding retained for space-prune recovery", "reason", herdrBinErr.Error())
+		closer = func(_ context.Context, _ string) error { return herdrBinErr }
+	} else {
+		closer = func(ctx context.Context, workspaceID string) error {
+			return herdrWorkspaceClose(ctx, herdrBin, workspaceID)
+		}
+	}
+	return runSandboxRmFull(ctx, args, out, svc, root, closer)
+}
+
+// runSandboxRmFull is the testable core of "sandbox rm".
+// closeWorkspace is the seam tests inject to avoid shelling out to the real
+// herdr binary; production code passes a closure over herdrWorkspaceClose.
+func runSandboxRmFull(ctx context.Context, args []string, out *Output, svc *service.Service, storeRoot string, closeWorkspace func(context.Context, string) error) error {
 	if len(args) != 1 {
 		return &UsageError{Msg: "sandbox rm: usage: sandbox rm <id|prefix|project/name>"}
 	}
 	ref := args[0]
 
-	// Resolve before remove so we can include the handle in the success message.
-	// If resolution fails, return immediately without touching the store.
-	all, err := svc.List(ctx)
-	if err != nil {
-		return errSandbox("sandbox rm", err)
-	}
+	// Resolve before remove so we can include the handle in the success message
+	// and locate the herdr workspace binding. Use svc.Get so that an ID prefix
+	// resolves to the same sandbox as svc.Remove (which also accepts prefixes).
+	// An ambiguous prefix is rejected here to surface a clearer error before any
+	// mutation; svc.Remove → s.resolve would propagate ErrAmbiguous itself, but
+	// returning early here gives a more direct error provenance. A not-found ref
+	// is allowed through so that svc.Remove returns the authoritative error.
 	var target *domain.Sandbox
-	for i := range all {
-		if all[i].ID.String() == ref || all[i].Handle() == ref {
-			sb := all[i]
-			target = &sb
-			break
+	if sb, resolveErr := svc.Get(ctx, ref); resolveErr == nil {
+		target = &sb
+	} else {
+		var ambig *domain.ErrAmbiguous
+		if errors.As(resolveErr, &ambig) {
+			return errSandbox("sandbox rm", resolveErr)
 		}
+		// Not found or other transient error: leave target nil and let
+		// svc.Remove surface the definitive error.
 	}
 	if target != nil {
 		stopDetachedSupervisor(ctx, svc, *target)
 	}
-	// We prefer the service.Remove resolution (prefix/handle/id) rather than
-	// duplicating it; target is just for the success message.
 	if err := svc.Remove(ctx, ref); err != nil {
 		return errSandbox("sandbox rm", err)
+	}
+
+	// Tear down the herdr space binding if one exists for this sandbox.
+	// Non-fatal: sandbox removal already succeeded.
+	if target != nil && storeRoot != "" {
+		herdrSpaceTeardownOnRm(ctx, storeRoot, closeWorkspace, target.Handle())
 	}
 
 	id := ref

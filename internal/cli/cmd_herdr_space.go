@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -260,24 +261,121 @@ func HerdrSpaceResumeByLabel(ctx context.Context, svc HerdrSpaceSandboxService, 
 	return nil
 }
 
-// HerdrSpaceRemoveByLabel removes the sandbox bound to label and deletes the
-// binding so no orphan mapping remains.
-// Returns ErrHerdrSpaceNotFound when no binding exists for label.
-func HerdrSpaceRemoveByLabel(ctx context.Context, svc HerdrSpaceSandboxService, storeRoot, label string) error {
-	b, err := HerdrSpaceGetByLabel(ctx, storeRoot, label)
+// herdrSpacePruneLister is the subset of *service.Service needed for the prune
+// sandbox-alive check. Injected so tests avoid spinning up a real service.
+type herdrSpacePruneLister interface {
+	List(ctx context.Context) ([]domain.Sandbox, error)
+}
+
+// herdrSpacePruneSandboxExistsFn returns a predicate that reports whether the
+// sandbox recorded in a binding still exists in the store. The sandbox list is
+// fetched ONCE before the closure is returned; on list failure every sandbox is
+// considered alive so no binding is pruned due to a transient store error.
+//
+// Inside the closure, a binding whose SandboxHandle cannot be parsed as a valid
+// "<project>/<name>" handle is treated as alive — "cannot determine" must not
+// trigger a destructive prune.
+func herdrSpacePruneSandboxExistsFn(ctx context.Context, svc herdrSpacePruneLister) func(HerdrSpaceBinding) bool {
+	sbs, err := svc.List(ctx)
 	if err != nil {
-		return err
+		slog.Warn("space-prune: sandbox list; treating all as alive", "err", err)
+		return func(HerdrSpaceBinding) bool { return true }
 	}
-	if err := svc.Remove(ctx, b.SandboxHandle); err != nil {
-		// Sandbox already gone via another route (reaper, manual remove, etc.) —
-		// proceed to delete the binding so no orphan mapping remains.
-		if !errors.Is(err, store.ErrNotFound) {
-			return fmt.Errorf("herdr-space: remove sandbox %q: %w", b.SandboxHandle, err)
+	alive := make(map[string]bool, len(sbs))
+	for _, sb := range sbs {
+		if sb.Project != "" && sb.Name != "" {
+			alive[sb.Project+"/"+sb.Name] = true
 		}
 	}
-	// Delete the binding after the sandbox is gone.
-	if err := HerdrSpaceDelete(ctx, storeRoot, label); err != nil && !errors.Is(err, ErrHerdrSpaceNotFound) {
-		return fmt.Errorf("herdr-space: delete binding %q: %w", label, err)
+	return func(b HerdrSpaceBinding) bool {
+		if _, _, err := domain.ParseHandle(b.SandboxHandle); err != nil {
+			// Malformed handle — existence cannot be determined; treat as alive.
+			return true
+		}
+		return alive[b.SandboxHandle]
 	}
-	return nil
+}
+
+// herdrSpacePruneWorkspaceExistsFn returns a predicate that reports whether
+// the herdr workspace recorded in a binding still exists in herdr. The list
+// is fetched once; on fetch or parse failure every workspace is considered
+// alive so no binding is pruned due to herdr being unreachable.  An empty
+// response or a response where no entry carries a non-empty workspace_id is
+// treated as "response not understood" → all bindings alive, so a malformed
+// response never causes mass deletion.
+func herdrSpacePruneWorkspaceExistsFn(ctx context.Context, herdrBin string) func(HerdrSpaceBinding) bool {
+	out, err := herdrExecCommandContext(ctx, herdrBin, "workspace", "list").Output()
+	if err != nil {
+		slog.Warn("space-prune: workspace list", "err", err)
+		return func(HerdrSpaceBinding) bool { return true }
+	}
+	var resp struct {
+		Result struct {
+			Workspaces []struct {
+				WorkspaceID string `json:"workspace_id"`
+			} `json:"workspaces"`
+		} `json:"result"`
+	}
+	if jsonErr := json.Unmarshal(out, &resp); jsonErr != nil {
+		slog.Warn("space-prune: parse workspace list; treating all as alive", "err", jsonErr)
+		return func(HerdrSpaceBinding) bool { return true }
+	}
+	// Count entries with a non-empty workspace_id. A list where every entry has
+	// a blank or absent workspace_id is indistinguishable from a malformed
+	// response; treat it as all-alive to avoid destroying every binding.
+	alive := make(map[string]bool, len(resp.Result.Workspaces))
+	for _, ws := range resp.Result.Workspaces {
+		if ws.WorkspaceID != "" {
+			alive[ws.WorkspaceID] = true
+		}
+	}
+	if len(alive) == 0 {
+		slog.Warn("space-prune: workspace list returned no entries with a non-empty workspace_id; treating all as alive (likely unexpected response shape)")
+		return func(HerdrSpaceBinding) bool { return true }
+	}
+	// Stated assumption (F5): herdr's workspace list API is unpaginated — a
+	// single response contains ALL workspaces for the account. If herdr ever
+	// adds pagination, a partial response would be indistinguishable from a
+	// complete one and bindings absent from the page would be incorrectly
+	// pruned (blast radius: binding record only; prune does not close a live
+	// workspace in this path). If herdr gains pagination, adopt option (b):
+	// block --apply when the returned workspace count is implausibly below
+	// the known binding count. Verified from herdr's workspace list command
+	// source: no next-page token is present; the list is returned in one call.
+	return func(b HerdrSpaceBinding) bool {
+		if b.HerdrWorkspaceID == "" {
+			// Empty workspace ID — cannot determine existence; treat as alive.
+			// Adopted bindings (herdrSpaceAdopt) intentionally omit the workspace
+			// ID, so this guard prevents adopted sandboxes from being pruned.
+			return true
+		}
+		return alive[b.HerdrWorkspaceID]
+	}
+}
+
+// herdrSpaceTeardownOnRm tears down the herdr workspace binding for the sandbox
+// identified by handle, closing the workspace via closeWorkspace. Called from
+// sandbox rm after the sandbox itself has been removed. Non-fatal: errors are
+// logged but do not prevent the sandbox removal from reporting success.
+//
+// When closeWorkspace fails the binding is intentionally retained so that
+// space-prune can recover the orphaned workspace on its next run. A transient
+// herdr outage must not permanently discard the live workspace record.
+func herdrSpaceTeardownOnRm(ctx context.Context, storeRoot string, closeWorkspace func(context.Context, string) error, handle string) {
+	b, err := HerdrSpaceGetByHandle(ctx, storeRoot, handle)
+	if errors.Is(err, ErrHerdrSpaceNotFound) {
+		return // no binding — nothing to tear down
+	}
+	if err != nil {
+		slog.Warn("space teardown on rm: get binding", "handle", handle, "err", err)
+		return
+	}
+	if closeErr := closeWorkspace(ctx, b.HerdrWorkspaceID); closeErr != nil {
+		// Retain the binding so space-prune can recover the live workspace later.
+		slog.Warn("space teardown on rm: close workspace", "workspace_id", b.HerdrWorkspaceID, "err", closeErr)
+		return
+	}
+	if delErr := HerdrSpaceDelete(ctx, storeRoot, b.SpaceLabel); delErr != nil && !errors.Is(delErr, ErrHerdrSpaceNotFound) {
+		slog.Warn("space teardown on rm: delete binding", "label", b.SpaceLabel, "err", delErr)
+	}
 }
