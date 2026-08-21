@@ -1,88 +1,102 @@
 name: CD
 
-# Triggered by pushing a semver tag: git tag v1.2.3 && git push origin v1.2.3
+# semantic-release runs on every push to main and decides whether the
+# accumulated commits warrant a release. It mints the tag and creates the
+# GitHub release; the build jobs run only when released=true.
 on:
   push:
-    tags:
-      - "v[0-9]*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag (e.g. v1.2.3)"
-        required: true
+    branches:
+      - main
+  workflow_dispatch: {}
+  # Note: if workflow_dispatch inputs are ever re-added, pass them through
+  # env: rather than interpolating directly into shell — dispatch inputs are
+  # attacker-controllable text.
 
 concurrency:
   group: cd-${{ github.ref }}
-  # Never cancel a release run: a cancel mid-publish can leave a draft
+  # Never cancel a release run: a cancel mid-publish can leave a published
   # release with a partial asset set.
   cancel-in-progress: false
 
-# contents:write is required to create releases and upload assets.
+# contents:write is required for semantic-release to push tags and create
+# GitHub releases, and for gh release upload/edit calls in later jobs.
 permissions:
   contents: write
 
 jobs:
-  # ── Create the GitHub release from the tag ──────────────────────────────
+  # ── Run semantic-release to decide if this push warrants a release ──────
+  # semantic-release inspects commits since the last tag, applies the
+  # releaseRules in .releaserc.json, and creates the tag + GitHub release
+  # when warranted. The build jobs run only when released=true.
   release-create:
     name: Create release
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.tag.outputs.tag }}
-      version: ${{ steps.tag.outputs.version }}
+      released: ${{ steps.semantic.outputs.released }}
+      version: ${{ steps.semantic.outputs.version }}
+      tag: ${{ steps.semantic.outputs.tag }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Resolve tag and version
-        id: tag
-        env:
-          # Passed via env rather than interpolated into the script body: the
-          # dispatch input is attacker-controllable text and would otherwise be
-          # substituted into the shell BEFORE the semver validation below.
-          INPUT_TAG: ${{ github.event.inputs.tag }}
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="$INPUT_TAG"
-          else
-            TAG="${GITHUB_REF#refs/tags/}"
-          fi
-          # Require semver shape: vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-pre
-          if ! echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
-            echo "ERROR: tag '$TAG' is not a semver tag" >&2
-            exit 1
-          fi
-          VERSION="${TAG#v}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Tag: $TAG  Version: $VERSION"
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
-      - name: Create GitHub release (draft)
+      - name: Install semantic-release and plugins
+        # Pinned to exact versions; no package.json is added to the repo
+        # because nexus3 is a Go project and a lockfile would need to be
+        # generated in CI. These three versions match the sibling repo's
+        # devDependencies and are tested together.
+        run: |
+          npm install --no-save \
+            semantic-release@24.2.3 \
+            @semantic-release/commit-analyzer@13.0.1 \
+            @semantic-release/release-notes-generator@14.1.3 \
+            @semantic-release/github@11.0.6
+
+      - name: Run semantic-release
+        id: semantic
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
-          # Create a draft release. release-build uploads binaries; we mark it
-          # non-draft in release-publish once all assets are present.
-          gh release create "$TAG" \
-            --draft \
-            --title "$TAG" \
-            --generate-notes
+          # Compare tags before and after to detect whether a new release was
+          # created. semantic-release --json mixes JSON and log text on stdout
+          # making jq unreliable; the tag-diff approach is always accurate.
+          git fetch --tags --force origin
+          BEFORE_TAG="$(git tag -l 'v*' | sort -V | tail -1)"
 
-  # ── Build binaries for each platform in parallel ────────────────────────
+          ./node_modules/.bin/semantic-release || true
+
+          git fetch --tags --force origin
+          AFTER_TAG="$(git tag -l 'v*' | sort -V | tail -1)"
+
+          if [ "$BEFORE_TAG" != "$AFTER_TAG" ] && [ -n "$AFTER_TAG" ]; then
+            version="${AFTER_TAG#v}"
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "tag=$AFTER_TAG" >> "$GITHUB_OUTPUT"
+            echo "Release created: $AFTER_TAG"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "No release this run (before=${BEFORE_TAG:-none} after=${AFTER_TAG:-none})"
+          fi
+
+  # ── Build binaries with the exact version from semantic-release ─────────
   release-build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
     needs: [release-create]
+    if: needs.release-create.outputs.released == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       # darwin/arm64 is intentionally absent. internal/core/builder/builderimage
       # is linux-only (linux build constraints; no darwin stubs). Adding darwin
-      # requires build-tagged stubs there first. A previously committed
-      # dist/nexus3-darwin-arm64 binary was removed on 2026-08-21 when this leg
-      # was dropped. Restore by adding darwin stubs then re-adding the matrix entry.
+      # requires build-tagged stubs there first.
+      fail-fast: false
       matrix:
         include:
           - runner: ubuntu-latest
@@ -107,11 +121,14 @@ jobs:
         run: |
           set -euo pipefail
           OUTFILE="nexus3-${{ matrix.goos }}-${{ matrix.goarch }}"
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "ERROR: invalid version '$VERSION' — expected semver"
+            exit 1
+          fi
           LDFLAGS="-s -w \
             -X github.com/IniZio/nexus3/internal/cli.version=${VERSION}"
           go build -trimpath -ldflags "$LDFLAGS" -o "$OUTFILE" ./cmd/nexus3
           echo "Built $OUTFILE ($(du -sh "$OUTFILE" | cut -f1))"
-          ls -lh "$OUTFILE"
 
       - name: Upload binary to release
         env:
@@ -122,15 +139,17 @@ jobs:
           OUTFILE="nexus3-${{ matrix.goos }}-${{ matrix.goarch }}"
           gh release upload "$TAG" "$OUTFILE" --clobber
 
-  # ── Publish: compute checksums and mark release non-draft ───────────────
-  # Fail-closed gate: `needs: [release-build]` means GitHub Actions skips this
-  # job (and never marks the release non-draft) if any release-build leg fails.
+  # ── Publish: compute checksums ──────────────────────────────────────────
+  # Fail-closed gate: `needs: [release-build]` means GitHub Actions skips
+  # this job if any release-build leg fails (fail-fast is disabled, so a
+  # partial upload would otherwise produce a release with incomplete assets).
   # With fail-fast disabled, partial asset uploads would otherwise leave a
   # published release advertising platforms whose binaries are missing from
   # SHA256SUMS. The needs dependency is the enforcement mechanism.
   release-publish:
-    name: Publish release
+    name: Publish release assets
     needs: [release-create, release-build]
+    if: needs.release-create.outputs.released == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -149,12 +168,11 @@ jobs:
           echo "=== SHA256SUMS ==="
           cat SHA256SUMS
 
-      - name: Upload checksums and publish release
+      - name: Upload checksums
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.release-create.outputs.tag }}
         run: |
           set -euo pipefail
           gh release upload "$TAG" release-assets/SHA256SUMS --clobber
-          gh release edit "$TAG" --draft=false
-          echo "Release $TAG published."
+          echo "Release $TAG assets published."

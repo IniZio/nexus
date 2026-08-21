@@ -1,0 +1,27 @@
+name: Commitlint
+
+# Validate the PR title against conventional-commit format on every pull request.
+#
+# Why PR title only (not every commit):
+#   GitHub squash-merge uses the PR title as the commit message that lands on
+#   main and is analyzed by semantic-release. Individual commits in the PR
+#   branch are irrelevant to the release pipeline; validating them too would
+#   block fixup!/squash! commits and incremental WIP pushes unnecessarily.
+#   One check, one commit, one source of truth.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  check-pr-title:
+    name: PR title follows conventional-commit format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          bash scripts/ci/check-commit-subject.sh "$PR_TITLE"
