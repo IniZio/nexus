@@ -126,7 +126,7 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if err != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-create: resolve store: " + err.Error(), Err: err}
 		}
-		return herdrPluginSpaceCreate(ctx, rest[0], out.w, svc, storeRoot)
+		return herdrPluginSpaceCreate(ctx, rest[0], out.w, svc, storeRoot, true)
 
 	case "space-create-from-file":
 		svc, err := newSandboxService()
@@ -240,16 +240,26 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		return herdrPluginSpaceList(ctx, out.w, storeRoot)
 
 	case "space-agent":
-		// Usage: space-agent <sandbox-ref> <brief>
+		// Usage: space-agent [--autonomous] [--no-focus] <sandbox-ref> <brief>
 		// Starts the sandbox, creates a herdr space (or reuses one), then launches
 		// claude in the guest shell pane and delivers the brief.
+		// --no-focus suppresses pane focus, allowing N concurrent runs without
+		// each one stealing the operator's view from the previous.
 		autonomous := false
-		if len(rest) > 0 && rest[0] == "--autonomous" {
-			autonomous = true
+		focus := true
+		for len(rest) > 0 && strings.HasPrefix(rest[0], "--") {
+			switch rest[0] {
+			case "--autonomous":
+				autonomous = true
+			case "--no-focus":
+				focus = false
+			default:
+				return &UsageError{Msg: "__herdr-plugin space-agent: unknown flag: " + rest[0]}
+			}
 			rest = rest[1:]
 		}
 		if len(rest) < 2 {
-			return &UsageError{Msg: "__herdr-plugin space-agent: usage: space-agent [--autonomous] <sandbox-ref> <brief>"}
+			return &UsageError{Msg: "__herdr-plugin space-agent: usage: space-agent [--autonomous] [--no-focus] <sandbox-ref> <brief>"}
 		}
 		svc, err := newSandboxService()
 		if err != nil {
@@ -261,7 +271,7 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		}
 		ref := rest[0]
 		brief := strings.Join(rest[1:], " ")
-		return herdrPluginSpaceAgent(ctx, ref, brief, autonomous, out.w, svc, storeRoot)
+		return herdrPluginSpaceAgent(ctx, ref, brief, autonomous, focus, out.w, svc, storeRoot)
 
 	case "space-agent-from-file":
 		// Interactive stdin-based variant: prompts for sandbox ref and brief.
@@ -609,7 +619,7 @@ func herdrPluginCreate(ctx context.Context, r io.Reader, w io.Writer, svc *servi
 	}
 
 	fmt.Fprintf(w, "opening herdr space for %s ...\n", handle)
-	return herdrPluginSpaceCreate(ctx, handle, w, svc, storeRoot)
+	return herdrPluginSpaceCreate(ctx, handle, w, svc, storeRoot, true)
 }
 
 // resolveDockerfilePath resolves a Containerfile path using docker-style context/dockerfile semantics.
@@ -788,7 +798,7 @@ func herdrPluginSpaceCreateFromFile(ctx context.Context, r io.Reader, w io.Write
 
 	// ── Open herdr space ──────────────────────────────────────────────────────
 	fmt.Fprintf(w, "opening herdr space for %s ...\n", handle)
-	return herdrPluginSpaceCreate(ctx, handle, w, svc, storeRoot)
+	return herdrPluginSpaceCreate(ctx, handle, w, svc, storeRoot, true)
 }
 
 // herdrPluginDoctor prints host preflight info and ABI version.
@@ -1271,7 +1281,7 @@ func herdrSpaceLabelForRef(ref string) string {
 
 // herdrPluginSpaceCreate creates (or reuses) a herdr workspace for the sandbox,
 // opens the primary guest-shell pane, and stores the binding.
-func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc *service.Service, storeRoot string) error {
+func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc *service.Service, storeRoot string, focus bool) error {
 	herdrBin, binErr := resolveHerdrBin()
 	if binErr != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: " + binErr.Error(), Err: binErr}
@@ -1305,15 +1315,11 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc *s
 
 	label := herdrSpaceLabelForRef(ref)
 
-	// herdrPluginSpaceCreate is reached only from human-interactive paths
-	// today: the "space-create" subcommand typed directly, and the
-	// interactive create prompts (herdrPluginCreate,
-	// herdrPluginSpaceCreateFromFile). focus stays true throughout this
-	// function, matching today's focus-stealing behaviour — that is what a
-	// human asking for one space wants. A future programmatic/bulk caller
-	// (N-way spawning) should call herdrOpenGuestShellPane directly with
-	// focus=false rather than going through this human-facing entrypoint.
-	const focus = true
+	// focus is a caller decision: human-interactive callers (space-create,
+	// herdrPluginCreate, herdrPluginSpaceCreateFromFile) pass true so the
+	// operator's view lands on the new pane. Programmatic/N-way callers
+	// (space-agent --no-focus) pass false to avoid stealing focus from a
+	// concurrent run that is already visible.
 
 	// Idempotency: reuse existing binding if one exists for this handle. There
 	// is no fresh root pane id to graft onto here, so this falls back to
@@ -1462,6 +1468,8 @@ func herdrOpenGuestShellPane(ctx context.Context, herdrBin, ref, workspaceID, ro
 	args = append(args, "--env", "NEXUS3_WORKSPACE="+ref)
 	if focus {
 		args = append(args, "--focus")
+	} else {
+		args = append(args, "--no-focus")
 	}
 	cmd := herdrExecCommandContext(ctx, herdrBin, args...)
 	cmd.Stdin = os.Stdin
@@ -1715,8 +1723,8 @@ func sealEnv(env []string) []string {
 // mode it was launched in. Verbatim footers from a live guest pane
 // (claude v2.1.226):
 //
-//	 ⏸ manual mode on · ? for shortcuts · ← for agents
-//	 ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+//	⏸ manual mode on · ? for shortcuts · ← for agents
+//	⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
 //
 // The token is selected by mode rather than searched for, because the caller
 // already knows which mode it launched. Three shorter tokens are all wrong,
@@ -1742,14 +1750,16 @@ func claudeReadyMatch(autonomous bool) string {
 // to start the agent.
 //
 // autonomous == true  → "claude"          — the shell function (added by
-//   SeedGuestShellProfile) supplies --dangerously-skip-permissions, and
-//   IS_SANDBOX=1 is exported by the same profile. The flag is correct for an
-//   autonomous slice agent whose blast radius is the sandbox.
+//
+//	SeedGuestShellProfile) supplies --dangerously-skip-permissions, and
+//	IS_SANDBOX=1 is exported by the same profile. The flag is correct for an
+//	autonomous slice agent whose blast radius is the sandbox.
 //
 // autonomous == false → "command claude"  — bypasses the shell function so
-//   --dangerously-skip-permissions is genuinely absent. claude opens in manual
-//   mode (footer: "? for shortcuts"), which is exactly what claudeReadyMatch
-//   waits for on the non-autonomous path.
+//
+//	--dangerously-skip-permissions is genuinely absent. claude opens in manual
+//	mode (footer: "? for shortcuts"), which is exactly what claudeReadyMatch
+//	waits for on the non-autonomous path.
 //
 // The distinction matters because claudeReadyMatch selects its wait token by
 // the permission mode claude actually starts in, not by the flag spelling. A
@@ -1903,7 +1913,7 @@ func herdrSpaceAgentProjectDir(ctx context.Context, ref string, svc sandboxGette
 	return projectDir, nil
 }
 
-func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous bool, w io.Writer, svc *service.Service, storeRoot string) error {
+func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, focus bool, w io.Writer, svc *service.Service, storeRoot string) error {
 	// 1. Check for a mounted source BEFORE starting the sandbox. Failing fast
 	//    here avoids a started-but-useless sandbox and gives a clear message.
 	//
@@ -1919,7 +1929,7 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous bo
 
 	// 2. Start the sandbox and open/reuse the herdr workspace with its guest shell pane.
 	fmt.Fprintf(w, "space-agent: opening space for %q ...\n", ref)
-	if err := herdrPluginSpaceCreate(ctx, ref, w, svc, storeRoot); err != nil {
+	if err := herdrPluginSpaceCreate(ctx, ref, w, svc, storeRoot, focus); err != nil {
 		return err
 	}
 
@@ -2047,5 +2057,5 @@ func herdrPluginSpaceAgentFromFile(ctx context.Context, r io.Reader, w io.Writer
 		}
 	}
 
-	return herdrPluginSpaceAgent(ctx, ref, brief, autonomous, w, svc, storeRoot)
+	return herdrPluginSpaceAgent(ctx, ref, brief, autonomous, true, w, svc, storeRoot)
 }

@@ -403,3 +403,74 @@ func TestGuestAgentLaunchCommand_DoesNotDependOnTheShellFunction(t *testing.T) {
 		t.Error("readiness tokens for the two modes collapsed; see claudeReadyMatch")
 	}
 }
+
+// ── J2: space-agent --no-focus propagates through herdrOpenGuestShellPane ────
+//
+// Both tests call the production herdrOpenGuestShellPane directly — they do
+// not restate the condition inline. The mutation target is the focus branch
+// inside herdrOpenGuestShellPane: inverting it makes both tests RED.
+
+// TestSpaceAgent_PaneOpenFocusArgv_WithFocus asserts that focus=true produces
+// --focus (and no --no-focus) in the herdr pane open argv. This pins the
+// default interactive path: a single space-agent run must bring the new pane
+// into view without the operator having to click.
+func TestSpaceAgent_PaneOpenFocusArgv_WithFocus(t *testing.T) {
+	var calls [][]string
+	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd { return fakePaneOpenCmd("w1:p1") })
+
+	if _, err := herdrOpenGuestShellPane(context.Background(), "/fake/herdr", "proj/a", "wW", "pR", true); err != nil {
+		t.Fatalf("herdrOpenGuestShellPane: %v", err)
+	}
+	if len(calls) == 0 {
+		t.Fatal("herdrOpenGuestShellPane made no herdr calls")
+	}
+	argv := calls[0]
+	if !contains(argv, "--focus") {
+		t.Errorf("argv %v missing --focus when focus=true", argv)
+	}
+	if contains(argv, "--no-focus") {
+		t.Errorf("argv %v contains --no-focus when focus=true — mutually exclusive with --focus", argv)
+	}
+}
+
+// TestSpaceAgent_PaneOpenFocusArgv_WithNoFocus asserts that focus=false
+// produces --no-focus (and no --focus) in the herdr pane open argv. This is
+// the N-way concurrent path: AC-5 requires that a second concurrent
+// space-agent does not steal focus from the first.
+func TestSpaceAgent_PaneOpenFocusArgv_WithNoFocus(t *testing.T) {
+	var calls [][]string
+	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd { return fakePaneOpenCmd("w1:p2") })
+
+	if _, err := herdrOpenGuestShellPane(context.Background(), "/fake/herdr", "proj/b", "wW", "pR", false); err != nil {
+		t.Fatalf("herdrOpenGuestShellPane: %v", err)
+	}
+	if len(calls) == 0 {
+		t.Fatal("herdrOpenGuestShellPane made no herdr calls")
+	}
+	argv := calls[0]
+	if contains(argv, "--focus") {
+		t.Errorf("argv %v contains --focus when focus=false — concurrent runs must not steal focus", argv)
+	}
+	if !contains(argv, "--no-focus") {
+		t.Errorf("argv %v missing --no-focus when focus=false — must pass explicitly, not just omit --focus", argv)
+	}
+}
+
+// TestSpaceAgentSubcommand_NoFocusFlagParsed verifies that --no-focus is
+// accepted before the sandbox ref and does not produce an "unknown flag"
+// usage error. The call fails later (no real sandbox), but the flag must be
+// consumed without complaint.
+func TestSpaceAgentSubcommand_NoFocusFlagParsed(t *testing.T) {
+	var stdout bytes.Buffer
+	out := NewOutput(&stdout, &bytes.Buffer{}, false)
+	err := runHerdrPlugin(context.Background(), []string{"space-agent", "--no-focus", "proj/x", "do something"}, out)
+	if err == nil {
+		t.Fatal("expected an error (no real sandbox), got nil")
+	}
+	// The "unknown flag" guard produces a UsageError containing the flag name.
+	// Any other error (including a UsageError about a missing sandbox) proves
+	// the flag was consumed correctly by the parser.
+	if ue, ok := err.(*UsageError); ok && strings.Contains(ue.Msg, "--no-focus") {
+		t.Errorf("--no-focus was not parsed; got usage error: %v", ue)
+	}
+}
