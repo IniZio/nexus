@@ -2,7 +2,7 @@
   "ai-agents.md": 5,
   "cli/auth-mcp-reap.md": 3,
   "cli/configuration.md": 2,
-  "cli/exec-ssh-forward.md": 2,
+  "cli/exec-ssh-forward.md": 3,
   "cli/index.md": 11,
   "cli/sandbox-commands.md": 6,
   "cli/snapshot-fork-restore.md": 4,

@@ -40,10 +40,6 @@ removed_verbs = ["up", "shell"]
 # in the same heading-delimited section as the code block.
 
 [[target_only_verbs]]
-verb = "logs"
-page = "cli/index.md"   # verb index table: `logs` | <Badge type="danger" text="not built" />
-
-[[target_only_verbs]]
 verb = "metrics"
 page = "cli/index.md"   # verb index table: `metrics` | <Badge type="danger" text="not built" />
 

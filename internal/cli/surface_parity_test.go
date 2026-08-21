@@ -42,6 +42,7 @@ var surfaceMap = []surfaceEntry{
 	{CLIVerb: "forward", CanonicalMethods: []string{"service.Forward"}, MCPTools: nil},
 	{CLIVerb: "harvest", CanonicalMethods: []string{"service.Harvest"}, MCPTools: nil},
 	{CLIVerb: "image", CanonicalMethods: []string{"service.ImageOps"}, MCPTools: nil},
+	{CLIVerb: "log", CanonicalMethods: []string{"service.ResolveRef"}, MCPTools: nil},
 	{CLIVerb: "mcp", CanonicalMethods: []string{"service.*"}, MCPTools: nil},
 	{CLIVerb: "orca", CanonicalMethods: []string{"service.CreateAndBoot", "service.List"}, MCPTools: nil},
 	{CLIVerb: "reap", CanonicalMethods: []string{"service.Reap"}, MCPTools: nil},

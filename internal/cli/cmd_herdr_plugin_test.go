@@ -165,16 +165,37 @@ func TestHerdrPluginDoctor(t *testing.T) {
 	}
 }
 
+// TestHerdrPluginLogs verifies "__herdr-plugin logs" delegates to the real
+// `nexus3 log` implementation (runLog) rather than the old stub message.
 func TestHerdrPluginLogs(t *testing.T) {
+	_, sb, stateDir := newLogTestSandbox(t)
+	writeLog(t, stateDir, "hello\nworld\n")
+
+	var stdout bytes.Buffer
+	out := NewOutput(&stdout, &bytes.Buffer{}, false)
+
+	err := runHerdrPlugin(context.Background(), []string{"logs", sb.Handle()}, out)
+	if err != nil {
+		t.Fatalf("logs: unexpected error: %v", err)
+	}
+	if stdout.String() != "hello\nworld\n" {
+		t.Errorf("logs: got %q, want %q", stdout.String(), "hello\nworld\n")
+	}
+}
+
+// TestHerdrPluginLogs_MissingRef verifies the delegation still enforces
+// runLog's own usage contract (a ref is required) instead of silently
+// succeeding the way the old stub did.
+func TestHerdrPluginLogs_MissingRef(t *testing.T) {
 	var stdout bytes.Buffer
 	out := NewOutput(&stdout, &bytes.Buffer{}, false)
 
 	err := runHerdrPlugin(context.Background(), []string{"logs"}, out)
-	if err != nil {
-		t.Fatalf("logs: unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("logs: expected a usage error for a missing ref, got nil")
 	}
-	if !strings.Contains(stdout.String(), "not yet implemented") {
-		t.Errorf("logs: expected stub message, got %q", stdout.String())
+	if _, ok := err.(*UsageError); !ok {
+		t.Fatalf("logs: error is not *UsageError: %T: %v", err, err)
 	}
 }
 

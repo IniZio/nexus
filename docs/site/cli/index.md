@@ -42,6 +42,7 @@ Global flags precede the verb:
 | `attach` | [Exec, SSH and forward](/cli/exec-ssh-forward) | Reattach to an existing guest session |
 | `cp` | [Exec, SSH and forward](/cli/exec-ssh-forward) | Copy files between host and guest |
 | `forward` | [Exec, SSH and forward](/cli/exec-ssh-forward) | Forward a host TCP port to a guest port over vsock |
+| `log` <Badge type="tip" text="built" /> | [Exec, SSH and forward](/cli/exec-ssh-forward) | Print a sandbox's supervisor log (`--tail <N>` for the last N lines, `--follow` to stream) |
 | `ssh` | [Exec, SSH and forward](/cli/exec-ssh-forward) | Dial a sandbox's sshd over vsock |
 | `ssh config` <Badge type="warning" text="partial" /> | [Exec, SSH and forward](/cli/exec-ssh-forward) | Print an SSH `ProxyCommand` configuration snippet (built today as `config-ssh`) |
 | `snapshot create/list/rm` | [Snapshot, fork and restore](/cli/snapshot-fork-restore) | Manage retained snapshots |
@@ -91,7 +92,6 @@ These capabilities have no implementation today. An unbadged entry in the verb i
 
 | Surface | State | What the target is |
 |---|---|---|
-| `logs` | <Badge type="danger" text="not built" /> | Read a sandbox's captured output without opening a shell. |
 | `metrics` | <Badge type="danger" text="not built" /> | Report CPU and memory as `effective / max`. The data exists — auto-resize computes it — but nothing surfaces it. |
 | Label mutation | <Badge type="danger" text="not built" /> | Add and remove labels on an existing sandbox. |
 | Fleet lifecycle selectors | <Badge type="danger" text="not built" /> | `--label` as a selector for `stop` and `rm`, not only for `list`. |

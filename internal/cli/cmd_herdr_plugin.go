@@ -91,8 +91,7 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		return herdrPluginCreate(ctx, os.Stdin, out.w, svc, storeRoot)
 
 	case "logs":
-		fmt.Fprintln(out.w, "log tailing not yet implemented")
-		return nil
+		return runLog(ctx, rest, out)
 
 	case "doctor":
 		return herdrPluginDoctor(out.w)

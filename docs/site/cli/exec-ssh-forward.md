@@ -1,13 +1,13 @@
 ---
 title: "Exec, SSH and Forward"
-description: "Reference for exec, attach, cp, forward, ssh, and ssh config commands"
+description: "Reference for exec, attach, cp, log, forward, ssh, and ssh config commands"
 ---
 
 # Exec, SSH and Forward
 
 > Run commands inside sandboxes and move data in and out.
 
-These verbs operate against a running sandbox. `exec` and `attach` route through the in-guest agent. `cp`, `forward`, `ssh`, and `ssh config` use direct vsock connections.
+These verbs operate against a running sandbox. `exec` and `attach` route through the in-guest agent. `cp`, `forward`, `ssh`, and `ssh config` use direct vsock connections. `log` reads the sandbox's supervisor log directly from host state — no guest round-trip.
 
 ## nexus3 exec
 
@@ -57,6 +57,27 @@ nexus3 cp myproject/w1 ./local-file.txt guest:/workspace/local-file.txt
 
 # guest → host
 nexus3 cp myproject/w1 guest:/workspace/output.tar ./output.tar
+```
+
+## nexus3 log <Badge type="tip" text="built" />
+
+Print a sandbox's supervisor log (captured stdout+stderr).
+
+```
+nexus3 log <sandbox-ref> [--tail <N>] [--follow]
+```
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--tail` | int | 0 | Print only the last N lines (0 = whole log); `-n` is a short alias for the same flag |
+| `--follow` | bool | false | Stream appended lines until interrupted (Ctrl-C); `-f` is a short alias; refused under `--json` |
+
+Examples:
+
+```
+nexus3 log myproject/w1
+nexus3 log myproject/w1 --tail 50
+nexus3 log myproject/w1 --follow
 ```
 
 ## nexus3 forward
