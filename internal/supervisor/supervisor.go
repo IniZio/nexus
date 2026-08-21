@@ -461,7 +461,16 @@ func RunDetached(cfg Config) error {
 				}
 			}
 		}
-		if checkErr := probeAndSeedGuest(ctx, sb.ID, agentClient, profileSeeder, onboardingExecer, projectDir); checkErr != nil {
+		seedInputs := guestSeedInputs{
+			ID:            sb.ID,
+			Labels:        sb.Labels,
+			ProjectDir:    projectDir,
+			SourcePaths:   service.SourceGuestPaths(cfg.WorkspaceGuestPath, sb.LiveMounts),
+			ProfileSeeder: profileSeeder,
+			GitSeeder:     service.NewGuestFileSeeder(agentClient, service.GuestGitconfigPath),
+			Execer:        onboardingExecer,
+		}
+		if checkErr := probeAndSeedGuest(ctx, agentClient, seedInputs); checkErr != nil {
 			slog.Error("supervisor.guest_agent_unreachable",
 				"err", checkErr,
 				"action", "refusing READY; sandbox unusable without a reachable guest agent")
@@ -553,25 +562,6 @@ func RunDetached(cfg Config) error {
 				slog.Warn("supervisor.update_ca_certs_failed", "err", ucErr)
 			} else {
 				slog.Info("supervisor.update_ca_certs_done")
-			}
-
-			// GIT-SEED (D-PD-29): on the human path with a workspace, push the
-			// operator's git identity (user.name/user.email from the host's
-			// global git config, per-sandbox branch name) to /root/.gitconfig so
-			// in-guest commits carry the human's identity (ID-1: no synthetic
-			// bot). Missing host identity fails the seed loudly — the CLI
-			// pre-flight already refused create for a .git workspace without it,
-			// so reaching here without an identity is a configuration drift.
-			if humanSecrets && cfg.WorkspaceGuestPath != "" {
-				gitSeeder := service.NewGuestFileSeeder(agentClient, service.GuestGitconfigPath)
-				if _, gitErr := service.SeedGitIdentity(ctx, sb.ID, sb.Labels, cfg.WorkspaceGuestPath, gitSeeder); gitErr != nil {
-					slog.Warn("supervisor.git_identity_seed_failed",
-						"sandbox", sb.ID, "err", gitErr,
-						"action", "guest git will fall back to no identity; configure host git user.name/user.email")
-				} else {
-					slog.Info("supervisor.git_identity_seeded", "sandbox", sb.ID,
-						"path", service.GuestGitconfigPath, "workspace", cfg.WorkspaceGuestPath)
-				}
 			}
 		}
 	}
@@ -748,6 +738,32 @@ var seedShellProfileFn = service.SeedGuestShellProfile
 // tests replace it with a spy to verify the call without a live VM (D-J10).
 var seedAgentOnboardingFn = service.SeedGuestAgentOnboarding
 
+// seedBypassConsentFn is the function called by probeAndSeedGuest to seed the
+// bypass-permissions consent state into ~/.claude/settings.json. Default is
+// service.SeedGuestBypassConsent; tests replace it with a spy (D-J12 mutation guard).
+var seedBypassConsentFn = service.SeedGuestBypassConsent
+
+// seedGitIdentityFn is the function called by probeAndSeedGuest to write the
+// guest gitconfig (operator identity, safe.directory for every source path,
+// per-sandbox branch). Default is service.SeedGitIdentity; tests replace it
+// with a spy (D-J13 mutation guard).
+var seedGitIdentityFn = service.SeedGitIdentity
+
+// guestSeedInputs carries everything probeAndSeedGuest writes into a freshly
+// booted guest. It is a struct rather than a parameter list because the seeds
+// are an open-ended set — four already, each with its own path, payload and
+// seeder — and every addition was otherwise widening the signature at both the
+// call site and every test.
+type guestSeedInputs struct {
+	ID            domain.SandboxID
+	Labels        map[string]string
+	ProjectDir    string   // guest dir the agent works in; "" when nothing is mounted
+	SourcePaths   []string // every guest dir holding source, for safe.directory
+	ProfileSeeder service.GuestSeeder
+	GitSeeder     service.GuestSeeder
+	Execer        service.GuestExecer
+}
+
 // probeAndSeedGuest runs the liveness probe (D-J14), login-shell credential
 // drop-in seed (D-J11), and claude onboarding seed (D-J10) for a newly-booted
 // guest. Returns non-nil only when the probe fails (guest unreachable);
@@ -757,7 +773,8 @@ var seedAgentOnboardingFn = service.SeedGuestAgentOnboarding
 // directly with stub probers instead of launching a real VM (D-M4 mutation guard).
 // RunDetached calls this immediately after VM boot; on non-nil return the caller
 // must tear down the VM and return the error so supervisor.pid is never written.
-func probeAndSeedGuest(ctx context.Context, id domain.SandboxID, prober GuestProber, profileSeeder service.GuestSeeder, onboardingExecer service.GuestExecer, projectDir string) error {
+func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInputs) error {
+	id := in.ID
 	const probeTimeout = 30 * time.Second
 	probeCtx, probeCancel := context.WithTimeout(ctx, probeTimeout)
 	probeErr := ProbeGuestAgent(probeCtx, prober, 500*time.Millisecond)
@@ -770,7 +787,7 @@ func probeAndSeedGuest(ctx context.Context, id domain.SandboxID, prober GuestPro
 	// proxy/seeding split so whether a shell picks up a credential does not depend
 	// on which seeding branch this sandbox takes. The drop-in carries no credential
 	// itself; it is harmless when cred.env never arrives (no MITM proxy).
-	if profErr := seedShellProfileFn(ctx, id, profileSeeder); profErr != nil {
+	if profErr := seedShellProfileFn(ctx, id, in.ProfileSeeder); profErr != nil {
 		slog.Warn("supervisor.shell_profile_seed_failed",
 			"sandbox", id, "path", service.GuestShellProfilePath, "err", profErr,
 			"action", "interactively started agents in this guest will lack credentials")
@@ -783,7 +800,7 @@ func probeAndSeedGuest(ctx context.Context, id domain.SandboxID, prober GuestPro
 	// interactively started claude skips the theme-picker, login, and
 	// folder-trust wizards and reaches its prompt directly. Non-fatal:
 	// the agent still works, it just opens first-run wizards.
-	if onbErr := seedAgentOnboardingFn(ctx, id, projectDir, onboardingExecer); onbErr != nil {
+	if onbErr := seedAgentOnboardingFn(ctx, id, in.ProjectDir, in.Execer); onbErr != nil {
 		slog.Warn("supervisor.agent_onboarding_seed_failed",
 			"sandbox", id, "path", service.GuestAgentOnboardingPath, "err", onbErr,
 			"action", "an interactively started agent in this guest will open first-run wizards")
@@ -791,6 +808,47 @@ func probeAndSeedGuest(ctx context.Context, id domain.SandboxID, prober GuestPro
 		slog.Info("supervisor.agent_onboarding_seeded",
 			"sandbox", id, "path", service.GuestAgentOnboardingPath)
 	}
+
+	// Bypass-permissions consent seed (D-J12). Merges
+	// skipDangerousModePermissionPrompt:true into ~/.claude/settings.json so
+	// the shell-function `claude` (which always adds --dangerously-skip-permissions)
+	// does not stop on the bypass-permissions wizard. Non-fatal: the agent
+	// reaches its prompt after the wizard, it just blocks for operator input.
+	if bypassErr := seedBypassConsentFn(ctx, id, in.Execer); bypassErr != nil {
+		slog.Warn("supervisor.bypass_consent_seed_failed",
+			"sandbox", id, "err", bypassErr,
+			"action", "guest claude will stop on bypass-permissions consent dialog")
+	} else {
+		slog.Info("supervisor.bypass_consent_seeded", "sandbox", id)
+	}
+	// Guest gitconfig (D-PD-29 + safe.directory). Seeded here, unconditionally,
+	// rather than on the human-secrets branch it used to live on.
+	//
+	// That gating was wrong twice over. It keyed the gitconfig off
+	// `len(sb.Envelope.SecretHosts) > 0` — whether the sandbox holds a PUSH
+	// CREDENTIAL — but the gitconfig answers two entirely different questions:
+	// can git read this directory at all (safe.directory), and whose name is on
+	// a commit (identity). Neither depends on being able to push. The visible
+	// symptom was that every `--agent` sandbox, which is exactly what this
+	// motive creates, failed `git log` in its own mounted source with "detected
+	// dubious ownership". It also sat inside the proxy-dependent seeding block,
+	// so an open-egress sandbox with no MITM proxy skipped it too.
+	//
+	// Safe to write unconditionally: the payload carries the operator's
+	// name/email and nothing else — no token, no key, no credential path. See
+	// the security invariant on service.SeedGitIdentity.
+	if len(in.SourcePaths) > 0 {
+		if _, gitErr := seedGitIdentityFn(ctx, id, in.Labels, in.SourcePaths, in.GitSeeder); gitErr != nil {
+			slog.Warn("supervisor.git_identity_seed_failed",
+				"sandbox", id, "err", gitErr,
+				"action", "in-guest git will report dubious ownership and commits will lack an identity; "+
+					"configure host git user.name/user.email")
+		} else {
+			slog.Info("supervisor.git_identity_seeded",
+				"sandbox", id, "path", service.GuestGitconfigPath, "sources", in.SourcePaths)
+		}
+	}
+
 	return nil
 }
 

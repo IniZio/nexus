@@ -98,9 +98,13 @@ func TestSeedGuestShellProfile_CarriesNoCredential(t *testing.T) {
 		if strings.HasPrefix(line, "#") || line == "" {
 			continue
 		}
-		if strings.Contains(line, "=") && !strings.HasPrefix(line, "if ") {
+		// Permitted '=' lines: shell conditionals, and the IS_SANDBOX marker.
+		// IS_SANDBOX=1 is a non-secret environment marker, not a credential.
+		if strings.Contains(line, "=") &&
+			!strings.HasPrefix(line, "if ") &&
+			!strings.HasPrefix(line, "export IS_SANDBOX=") {
 			t.Errorf("drop-in payload assigns a value inline: %q\n"+
-				"it must only source %s, never carry a credential itself", line, GuestCredEnvPath)
+				"it must only source %s or export the IS_SANDBOX marker, never carry a credential itself", line, GuestCredEnvPath)
 		}
 	}
 	if !strings.Contains(string(captured), GuestCredEnvPath) {
@@ -129,5 +133,147 @@ func TestSeedGuestShellProfile_SeederErrorPropagates(t *testing.T) {
 	}
 	if !errors.Is(err, want) {
 		t.Errorf("error does not wrap the seeder failure: %v", err)
+	}
+}
+
+// ── Slice 2: IS_SANDBOX + claude function ─────────────────────────────────────
+
+// TestSeedGuestShellProfile_IsSandboxExported verifies that IS_SANDBOX=1 is
+// exported by the drop-in so child processes see it.
+//
+// Mutation guard: remove `export IS_SANDBOX=1` from guestShellProfileScript → fails RED.
+func TestSeedGuestShellProfile_IsSandboxExported(t *testing.T) {
+	dir := t.TempDir()
+	absent := filepath.Join(dir, "does-not-exist.env")
+	script := strings.ReplaceAll(guestShellProfileScript, GuestCredEnvPath, absent)
+	profile := filepath.Join(dir, "nexus3-cred.sh")
+	if err := os.WriteFile(profile, []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Child shell must see IS_SANDBOX=1 because the drop-in exported it.
+	out, err := exec.Command("/bin/sh", "-c",
+		". "+profile+"; /bin/sh -c 'echo $IS_SANDBOX'").CombinedOutput()
+	if err != nil {
+		t.Fatalf("sourcing drop-in failed: %v\noutput: %s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "1" {
+		t.Errorf("IS_SANDBOX not exported to child process: got %q, want \"1\"\n"+
+			"The drop-in must export IS_SANDBOX=1 so claude can run as root with "+
+			"--dangerously-skip-permissions", got)
+	}
+}
+
+// stubClaude writes an executable shell script that records its argv, one
+// argument per line, to dir/args. Returns the stub's full path.
+func stubClaude(t *testing.T, dir string) string {
+	t.Helper()
+	stub := filepath.Join(dir, "claude")
+	const script = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$STUB_ARGS_FILE\"\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return stub
+}
+
+// buildProfileForTest returns a profile script retargeted at a non-existent
+// cred.env (absence is harmless) and written to dir/nexus3-cred.sh.
+func buildProfileForTest(t *testing.T, dir string) string {
+	t.Helper()
+	absent := filepath.Join(dir, "does-not-exist.env")
+	script := strings.ReplaceAll(guestShellProfileScript, GuestCredEnvPath, absent)
+	profile := filepath.Join(dir, "nexus3-cred.sh")
+	if err := os.WriteFile(profile, []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return profile
+}
+
+// runProfileCmd executes a shell command after sourcing the profile, with the
+// stub claude on PATH and STUB_ARGS_FILE pointing at argsFile so the stub can
+// record its argv. Env vars are passed via cmd.Env to avoid relying on
+// assignment-prefix semantics (which differ between sh builtins and exec).
+func runProfileCmd(t *testing.T, profile, dir, argsFile, shellCmd string) ([]byte, error) {
+	t.Helper()
+	cmd := exec.Command("/bin/sh", "-c", ". "+profile+"; "+shellCmd)
+	cmd.Env = append(os.Environ(),
+		"PATH="+dir+":"+os.Getenv("PATH"),
+		"STUB_ARGS_FILE="+argsFile,
+	)
+	return cmd.CombinedOutput()
+}
+
+// TestSeedGuestShellProfile_ClaudeFunctionAddsFlag verifies that calling
+// "claude some-task" through the shell function adds --dangerously-skip-permissions.
+//
+// Mutation guard: remove the "command claude --dangerously-skip-permissions" branch
+// from the function → fails RED.
+func TestSeedGuestShellProfile_ClaudeFunctionAddsFlag(t *testing.T) {
+	dir := t.TempDir()
+	profile := buildProfileForTest(t, dir)
+	argsFile := filepath.Join(dir, "args")
+	_ = stubClaude(t, dir) // records argv to $STUB_ARGS_FILE
+
+	out, err := runProfileCmd(t, profile, dir, argsFile, "claude some-task")
+	if err != nil {
+		t.Fatalf("claude via shell function failed: %v\noutput: %s", err, out)
+	}
+	args, _ := os.ReadFile(argsFile)
+	argStr := string(args)
+	if !strings.Contains(argStr, "--dangerously-skip-permissions") {
+		t.Errorf("claude function did not add --dangerously-skip-permissions; stub saw args:\n%s", argStr)
+	}
+	if !strings.Contains(argStr, "some-task") {
+		t.Errorf("claude function dropped the user's arguments; stub saw args:\n%s", argStr)
+	}
+}
+
+// TestSeedGuestShellProfile_ClaudeFunctionNoDoubleFlag verifies that the
+// function does NOT add --dangerously-skip-permissions a second time when the
+// caller already passed it.
+//
+// Mutation guard: remove the case guard from the claude function → test sees the
+// flag twice and fails RED.
+func TestSeedGuestShellProfile_ClaudeFunctionNoDoubleFlag(t *testing.T) {
+	dir := t.TempDir()
+	profile := buildProfileForTest(t, dir)
+	argsFile := filepath.Join(dir, "args")
+	_ = stubClaude(t, dir)
+
+	out, err := runProfileCmd(t, profile, dir, argsFile, "claude --dangerously-skip-permissions foo")
+	if err != nil {
+		t.Fatalf("claude via shell function failed: %v\noutput: %s", err, out)
+	}
+	args, _ := os.ReadFile(argsFile)
+	argStr := string(args)
+	count := strings.Count(argStr, "--dangerously-skip-permissions")
+	if count != 1 {
+		t.Errorf("expected --dangerously-skip-permissions exactly once, got %d occurrences; stub saw args:\n%s",
+			count, argStr)
+	}
+}
+
+// TestSeedGuestShellProfile_CommandClaudeBypassesFunction verifies that
+// "command claude" reaches the binary without the injected flag.
+//
+// Mutation guard: the shell function must not intercept "command claude".
+// If the function wrapped "command" semantics this test would fail RED.
+func TestSeedGuestShellProfile_CommandClaudeBypassesFunction(t *testing.T) {
+	dir := t.TempDir()
+	profile := buildProfileForTest(t, dir)
+	argsFile := filepath.Join(dir, "args")
+	_ = stubClaude(t, dir)
+
+	out, err := runProfileCmd(t, profile, dir, argsFile, "command claude foo")
+	if err != nil {
+		t.Fatalf("command claude failed: %v\noutput: %s", err, out)
+	}
+	args, _ := os.ReadFile(argsFile)
+	argStr := string(args)
+	if strings.Contains(argStr, "--dangerously-skip-permissions") {
+		t.Errorf("\"command claude\" must bypass the wrapper function and not inject the flag; stub saw args:\n%s", argStr)
+	}
+	if !strings.Contains(argStr, "foo") {
+		t.Errorf("\"command claude foo\" must pass 'foo' through; stub saw args:\n%s", argStr)
 	}
 }

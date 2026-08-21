@@ -175,6 +175,26 @@ func SandboxBranchName(labels map[string]string, id domain.SandboxID) string {
 	return fmt.Sprintf("nexus3/%s/%s", slug, sandboxShortID(id))
 }
 
+// SourceGuestPaths collects the in-guest paths of all directories that need a
+// git safe.directory entry: the capture-style workspace (if any) plus all live
+// virtiofs mounts (--mount). Empty strings are silently skipped.
+//
+// Both CreateAndBoot (create.go) and the supervisor's RunDetached use this to
+// build the sourcePaths list passed to SeedGitIdentity. Extracting it here
+// makes the collection logic testable without a running VM.
+func SourceGuestPaths(workspacePath string, liveMounts []domain.LiveMount) []string {
+	var paths []string
+	if workspacePath != "" {
+		paths = append(paths, workspacePath)
+	}
+	for _, m := range liveMounts {
+		if m.GuestPath != "" {
+			paths = append(paths, m.GuestPath)
+		}
+	}
+	return paths
+}
+
 // buildGitconfigPayload serialises the per-sandbox git configuration as a
 // gitconfig INI file. The payload is safe to write directly to
 // GuestGitconfigPath (/root/.gitconfig) inside the guest.
@@ -182,17 +202,30 @@ func SandboxBranchName(labels map[string]string, id domain.SandboxID) string {
 // Fields set:
 //   - [user] name / email: the operator's host git identity (resolved by
 //     HostGitIdentity at sandbox-create time; operator decision 2026-08-15)
-//   - [safe] directory:    the workspace mount point (prevents "dubious ownership" errors)
+//   - [safe] directory:    one entry per element of sourcePaths (prevents
+//     "dubious ownership" errors for workspace and --mount directories)
 //   - [init] defaultBranch: the per-sandbox branch name (D-PD-03)
 //   - [core] safecrlf=false: suppress line-ending conversion warnings in the guest
-func buildGitconfigPayload(name, email, workspaceGuestPath, branch string) []byte {
+//
+// git's config format allows multiple directory = entries under a single [safe]
+// section; all entries are written there. Empty paths in sourcePaths are skipped.
+func buildGitconfigPayload(name, email string, sourcePaths []string, branch string) []byte {
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "[user]\n")
 	fmt.Fprintf(&buf, "\tname = %s\n", name)
 	fmt.Fprintf(&buf, "\temail = %s\n", email)
-	if workspaceGuestPath != "" {
+	// Collect non-empty paths; emit all under one [safe] block.
+	var dirs []string
+	for _, p := range sourcePaths {
+		if p != "" {
+			dirs = append(dirs, p)
+		}
+	}
+	if len(dirs) > 0 {
 		fmt.Fprintf(&buf, "[safe]\n")
-		fmt.Fprintf(&buf, "\tdirectory = %s\n", workspaceGuestPath)
+		for _, d := range dirs {
+			fmt.Fprintf(&buf, "\tdirectory = %s\n", d)
+		}
 	}
 	fmt.Fprintf(&buf, "[init]\n")
 	fmt.Fprintf(&buf, "\tdefaultBranch = %s\n", branch)
@@ -204,8 +237,9 @@ func buildGitconfigPayload(name, email, workspaceGuestPath, branch string) []byt
 // SeedGitIdentity pushes a per-sandbox git configuration file to the guest
 // via seeder. The file is written to GuestGitconfigPath (/root/.gitconfig)
 // and configures the operator's host git identity (user.name, user.email
-// read from the host's global git config at create time), the workspace
-// safe.directory, and the per-sandbox branch name (D-PD-03).
+// read from the host's global git config at create time), a safe.directory
+// entry for every element of sourcePaths (workspace + --mount directories),
+// and the per-sandbox branch name (D-PD-03).
 //
 // seeder must be a GuestSeeder that targets GuestGitconfigPath. Callers
 // should use NewGuestFileSeeder(client, GuestGitconfigPath) to produce the
@@ -235,7 +269,7 @@ func SeedGitIdentity(
 	ctx context.Context,
 	id domain.SandboxID,
 	labels map[string]string,
-	workspaceGuestPath string,
+	sourcePaths []string,
 	seeder GuestSeeder,
 ) (branch string, err error) {
 	branch = SandboxBranchName(labels, id)
@@ -246,7 +280,7 @@ func SeedGitIdentity(
 	if err != nil {
 		return branch, err
 	}
-	payload := buildGitconfigPayload(name, email, workspaceGuestPath, branch)
+	payload := buildGitconfigPayload(name, email, sourcePaths, branch)
 	if err := seeder(ctx, id, payload); err != nil {
 		return branch, fmt.Errorf("git_identity: write %s: %w", GuestGitconfigPath, err)
 	}

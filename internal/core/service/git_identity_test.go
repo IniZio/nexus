@@ -155,7 +155,7 @@ func TestSeedGitIdentity_Payload(t *testing.T) {
 			return nil
 		})
 
-		branch, err := SeedGitIdentity(context.Background(), id, labels, workspacePath, seeder)
+		branch, err := SeedGitIdentity(context.Background(), id, labels, []string{workspacePath}, seeder)
 		if err != nil {
 			t.Fatalf("SeedGitIdentity: %v", err)
 		}
@@ -204,7 +204,7 @@ func TestSeedGitIdentity_NilSeederIsNoop(t *testing.T) {
 
 	id := domain.NewSandboxID()
 	labels := map[string]string{"motive": "test"}
-	branch, err := SeedGitIdentity(context.Background(), id, labels, "", nil)
+	branch, err := SeedGitIdentity(context.Background(), id, labels, nil, nil)
 	if err != nil {
 		t.Errorf("SeedGitIdentity with nil seeder should be a no-op, got error: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestSeedGitIdentity_MissingHostConfig_FailsCreate(t *testing.T) {
 			called = true
 			return nil
 		})
-		_, err := SeedGitIdentity(context.Background(), id, nil, "", seeder)
+		_, err := SeedGitIdentity(context.Background(), id, nil, nil, seeder)
 		if err == nil {
 			t.Fatal("SeedGitIdentity should fail when host git identity is not configured")
 		}
@@ -403,6 +403,113 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 					"See D-PD-22.\n\npayload:\n%s",
 				captured,
 			)
+		}
+	})
+}
+
+// TestBuildGitconfigPayload_SafeDirectory is a table test for buildGitconfigPayload
+// covering the safe.directory behaviour with zero, one, and several source paths.
+//
+// Mutation guard: delete the [safe] section from buildGitconfigPayload → fails RED.
+func TestBuildGitconfigPayload_SafeDirectory(t *testing.T) {
+	const (
+		name   = "Test Op"
+		email  = "op@example.com"
+		branch = "nexus3/default/ab12cd34"
+	)
+
+	t.Run("zero paths — no safe section", func(t *testing.T) {
+		payload := string(buildGitconfigPayload(name, email, nil, branch))
+		if strings.Contains(payload, "[safe]") {
+			t.Errorf("expected no [safe] section with zero source paths; got:\n%s", payload)
+		}
+	})
+
+	t.Run("one path — safe.directory present", func(t *testing.T) {
+		paths := []string{"/work"}
+		payload := string(buildGitconfigPayload(name, email, paths, branch))
+		if !strings.Contains(payload, "[safe]") {
+			t.Errorf("expected [safe] section; got:\n%s", payload)
+		}
+		if !strings.Contains(payload, "\tdirectory = /work") {
+			t.Errorf("expected directory = /work; got:\n%s", payload)
+		}
+	})
+
+	t.Run("several paths — each gets a directory entry", func(t *testing.T) {
+		paths := []string{"/work", "/data", "/mnt/src"}
+		payload := string(buildGitconfigPayload(name, email, paths, branch))
+		for _, p := range paths {
+			if !strings.Contains(payload, "\tdirectory = "+p) {
+				t.Errorf("expected directory = %s in payload; got:\n%s", p, payload)
+			}
+		}
+		// All under one [safe] block: count occurrences of [safe].
+		if count := strings.Count(payload, "[safe]"); count != 1 {
+			t.Errorf("expected exactly one [safe] section header, got %d; payload:\n%s", count, payload)
+		}
+	})
+
+	t.Run("empty strings in list are skipped", func(t *testing.T) {
+		paths := []string{"", "/work", ""}
+		payload := string(buildGitconfigPayload(name, email, paths, branch))
+		if !strings.Contains(payload, "\tdirectory = /work") {
+			t.Errorf("expected directory = /work; got:\n%s", payload)
+		}
+		if strings.Contains(payload, "directory = \n") {
+			t.Errorf("empty path must not produce a directory entry; got:\n%s", payload)
+		}
+	})
+}
+
+// TestSourceGuestPaths is the mutation guard for the SourceGuestPaths helper
+// called at the create.go call site. It proves that live-mount guest paths are
+// included in the list, which is the defect that existed before this fix.
+//
+// Mutation guard: remove the liveMounts loop from SourceGuestPaths → fails RED.
+func TestSourceGuestPaths(t *testing.T) {
+	t.Run("workspace only", func(t *testing.T) {
+		got := SourceGuestPaths("/workspace/repo", nil)
+		if len(got) != 1 || got[0] != "/workspace/repo" {
+			t.Errorf("got %v, want [\"/workspace/repo\"]", got)
+		}
+	})
+
+	t.Run("live mounts only", func(t *testing.T) {
+		mounts := []domain.LiveMount{
+			{HostPath: "/home/user/code", GuestPath: "/work"},
+			{HostPath: "/data", GuestPath: "/mnt/data"},
+		}
+		got := SourceGuestPaths("", mounts)
+		if len(got) != 2 {
+			t.Fatalf("got %v, want 2 elements", got)
+		}
+		if got[0] != "/work" || got[1] != "/mnt/data" {
+			t.Errorf("got %v, want [\"/work\", \"/mnt/data\"]", got)
+		}
+	})
+
+	t.Run("workspace and live mounts — all paths collected", func(t *testing.T) {
+		mounts := []domain.LiveMount{
+			{HostPath: "/home/user/src", GuestPath: "/src"},
+		}
+		got := SourceGuestPaths("/workspace/proj", mounts)
+		if len(got) != 2 {
+			t.Fatalf("got %v, want 2 elements", got)
+		}
+		if got[0] != "/workspace/proj" {
+			t.Errorf("first element: got %q, want /workspace/proj", got[0])
+		}
+		if got[1] != "/src" {
+			t.Errorf("second element: got %q, want /src", got[1])
+		}
+	})
+
+	t.Run("empty workspace and mount with empty GuestPath skipped", func(t *testing.T) {
+		mounts := []domain.LiveMount{{HostPath: "/x", GuestPath: ""}}
+		got := SourceGuestPaths("", mounts)
+		if len(got) != 0 {
+			t.Errorf("got %v, want empty slice", got)
 		}
 	})
 }

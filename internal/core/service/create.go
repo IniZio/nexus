@@ -996,11 +996,11 @@ func CreateAndBoot(
 	// The in-guest `git clone --depth 1 file://<host-path>` that establishes the
 	// shallow boundary is an in-guest startup action (live-VM, out of scope here).
 	if opts.GitSeeder != nil {
-		var workspaceGuestPath string
+		var workspacePath string
 		if opts.Workspace != nil {
-			workspaceGuestPath = opts.Workspace.GuestPath
+			workspacePath = opts.Workspace.GuestPath
 		}
-		if _, err := SeedGitIdentity(ctx, booted.ID, opts.Labels, workspaceGuestPath, opts.GitSeeder); err != nil {
+		if _, err := SeedGitIdentity(ctx, booted.ID, opts.Labels, SourceGuestPaths(workspacePath, opts.LiveMounts), opts.GitSeeder); err != nil {
 			_ = bootDrv.Stop(ctx, booted.ID)
 			_ = svc.store.Delete(ctx, booted.ID)
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: git identity: %w", project, name, err)

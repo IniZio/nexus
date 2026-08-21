@@ -42,7 +42,7 @@ func TestProbeAndSeedGuest_DeadProberReturnsError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := probeAndSeedGuest(ctx, domain.SandboxID{}, &alwaysFailProber{err: errors.New("vsock refused")}, nil, nil, "")
+	err := probeAndSeedGuest(ctx, &alwaysFailProber{err: errors.New("vsock refused")}, guestSeedInputs{})
 	if err == nil {
 		t.Fatal("probeAndSeedGuest with dead prober returned nil — ProbeGuestAgent call may be missing (D-M4 mutation guard)")
 	}
@@ -68,7 +68,7 @@ func TestProbeAndSeedGuest_LiveProberSeedIsInvoked(t *testing.T) {
 	}
 	t.Cleanup(func() { seedShellProfileFn = old })
 
-	err := probeAndSeedGuest(context.Background(), domain.SandboxID{}, &alwaysOKProber{}, nil, nil, "")
+	err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{})
 	if err != nil {
 		t.Fatalf("probeAndSeedGuest with live prober: unexpected error %v", err)
 	}
@@ -94,11 +94,98 @@ func TestProbeAndSeedGuest_AgentOnboardingIsInvoked(t *testing.T) {
 	}
 	t.Cleanup(func() { seedAgentOnboardingFn = old })
 
-	err := probeAndSeedGuest(context.Background(), domain.SandboxID{}, &alwaysOKProber{}, nil, nil, "")
+	err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{})
 	if err != nil {
 		t.Fatalf("probeAndSeedGuest with live prober: unexpected error %v", err)
 	}
 	if !onboardCalled {
 		t.Fatal("seedAgentOnboardingFn was not called — SeedGuestAgentOnboarding wiring missing from probeAndSeedGuest (D-J10 mutation guard)")
+	}
+}
+
+// TestProbeAndSeedGuest_BypassConsentIsSeeded is the mutation guard for the
+// seedBypassConsentFn call inside probeAndSeedGuest (D-J12):
+//
+//	Delete seedBypassConsentFn(…) from probeAndSeedGuest → this test fails RED.
+//
+// With the shell-function `claude` adding --dangerously-skip-permissions
+// automatically, every guest shell is now autonomous. The bypass-permissions
+// consent dialog (skipDangerousModePermissionPrompt in settings.json) must be
+// pre-answered at boot so the wizard does not stall an interactively started
+// agent.
+func TestProbeAndSeedGuest_BypassConsentIsSeeded(t *testing.T) {
+	called := false
+	old := seedBypassConsentFn
+	seedBypassConsentFn = func(_ context.Context, _ domain.SandboxID, _ service.GuestExecer) error {
+		called = true
+		return nil
+	}
+	t.Cleanup(func() { seedBypassConsentFn = old })
+
+	err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{})
+	if err != nil {
+		t.Fatalf("probeAndSeedGuest with live prober: unexpected error %v", err)
+	}
+	if !called {
+		t.Fatal("seedBypassConsentFn was not called — SeedGuestBypassConsent wiring missing from probeAndSeedGuest (D-J12 mutation guard)")
+	}
+}
+
+// TestProbeAndSeedGuest_GitIdentitySeededForAnySourcePaths is the mutation
+// guard for the seedGitIdentityFn call inside probeAndSeedGuest.
+//
+// It pins the fix for a defect that a payload-level test could not see. The
+// gitconfig seed used to live on the human-secrets branch, gated on
+// `len(sb.Envelope.SecretHosts) > 0` — whether the sandbox holds a push
+// credential. The gitconfig answers two questions that have nothing to do with
+// pushing: may git read this directory at all (safe.directory), and whose name
+// goes on a commit (identity). The result was that every `--agent` sandbox
+// failed `git log` in its own mounted source with "detected dubious ownership",
+// while unit tests over the payload builder stayed green throughout, because
+// the payload was always correct — it was simply never written.
+//
+// So this test asserts the CALL, with no secrets configured at all.
+func TestProbeAndSeedGuest_GitIdentitySeededForAnySourcePaths(t *testing.T) {
+	var gotPaths []string
+	called := false
+	old := seedGitIdentityFn
+	seedGitIdentityFn = func(_ context.Context, _ domain.SandboxID, _ map[string]string, sourcePaths []string, _ service.GuestSeeder) (string, error) {
+		called = true
+		gotPaths = sourcePaths
+		return "branch", nil
+	}
+	t.Cleanup(func() { seedGitIdentityFn = old })
+
+	err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{
+		SourcePaths: []string{"/work"},
+	})
+	if err != nil {
+		t.Fatalf("probeAndSeedGuest with live prober: unexpected error %v", err)
+	}
+	if !called {
+		t.Fatal("seedGitIdentityFn was not called for a sandbox with source paths and no secrets — " +
+			"the guest would report dubious ownership on its own mounted source")
+	}
+	if len(gotPaths) != 1 || gotPaths[0] != "/work" {
+		t.Errorf("source paths not forwarded to the seeder: got %v, want [/work]", gotPaths)
+	}
+}
+
+// A sandbox with nothing mounted has no directory to exempt and no repository
+// to attribute, so it must not write a gitconfig at all.
+func TestProbeAndSeedGuest_NoGitIdentityWithoutSourcePaths(t *testing.T) {
+	called := false
+	old := seedGitIdentityFn
+	seedGitIdentityFn = func(_ context.Context, _ domain.SandboxID, _ map[string]string, _ []string, _ service.GuestSeeder) (string, error) {
+		called = true
+		return "", nil
+	}
+	t.Cleanup(func() { seedGitIdentityFn = old })
+
+	if err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{}); err != nil {
+		t.Fatalf("probeAndSeedGuest: unexpected error %v", err)
+	}
+	if called {
+		t.Error("seedGitIdentityFn was called for a sandbox with no source paths")
 	}
 }

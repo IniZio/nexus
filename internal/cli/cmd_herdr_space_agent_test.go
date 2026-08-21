@@ -360,3 +360,46 @@ func TestHerdrPaneSubmitToAgent_SendsTextThenEnterSeparately(t *testing.T) {
 		}
 	}
 }
+
+// TestGuestAgentLaunchCommand_DoesNotDependOnTheShellFunction pins the launch
+// command to being self-contained.
+//
+// SeedGuestShellProfile installs a `claude` shell function that adds
+// --dangerously-skip-permissions automatically, which makes it tempting to
+// launch with a bare "claude" and let the profile supply the flag. That is a
+// race, and it was observed failing live: the pane's login shell sources
+// /etc/profile.d asynchronously, so a command typed before that completes
+// resolves `claude` to the raw binary. The agent then starts in the DEFAULT
+// permission mode and prints the default footer, so the autonomous readiness
+// wait times out against an agent that is running perfectly well — a 90-second
+// failure with no error message pointing anywhere near the cause.
+func TestGuestAgentLaunchCommand_DoesNotDependOnTheShellFunction(t *testing.T) {
+	const flag = "--dangerously-skip-permissions"
+
+	autonomous := guestAgentLaunchCommand(true)
+	if !strings.Contains(autonomous, flag) {
+		t.Errorf("autonomous launch must pass %s explicitly rather than relying on the shell "+
+			"function, which may not be loaded yet; got %q", flag, autonomous)
+	}
+	if !strings.Contains(autonomous, "IS_SANDBOX=1") {
+		t.Errorf("autonomous launch must set IS_SANDBOX=1: claude refuses %s as root without it; got %q",
+			flag, autonomous)
+	}
+
+	normal := guestAgentLaunchCommand(false)
+	if strings.Contains(normal, flag) {
+		t.Errorf("non-autonomous launch must not pass %s; got %q", flag, normal)
+	}
+	// It must also bypass the shell function, or the profile silently re-adds
+	// the flag and the non-autonomous mode does not exist in practice.
+	if !strings.HasPrefix(normal, "command ") {
+		t.Errorf("non-autonomous launch must use `command claude` to bypass the shell function "+
+			"that would otherwise re-add %s; got %q", flag, normal)
+	}
+
+	// The readiness token is chosen by mode, so the two must stay in step: the
+	// mode the command actually produces determines the footer that is matched.
+	if claudeReadyMatch(true) == claudeReadyMatch(false) {
+		t.Error("readiness tokens for the two modes collapsed; see claudeReadyMatch")
+	}
+}

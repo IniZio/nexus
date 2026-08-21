@@ -557,22 +557,59 @@ func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind,
 // ... source this file at startup") was false until this drop-in existed.
 const GuestShellProfilePath = "/etc/profile.d/nexus3-cred.sh"
 
-// guestShellProfileScript sources GuestCredEnvPath into every login shell.
+// guestShellProfileScript sources GuestCredEnvPath into every login shell,
+// exports IS_SANDBOX=1, and defines a `claude` shell function that adds
+// --dangerously-skip-permissions automatically.
 //
-// The existence guard matters: GuestCredEnvPath lives on /run (tmpfs) and is
-// absent on a sandbox with no MITM proxy — no agent, no secrets, open egress.
-// A drop-in that failed there would break `bash -l` for every plain sandbox.
+// IS_SANDBOX=1 — claude refuses --dangerously-skip-permissions when running as
+// root (the standard in-guest user) unless this variable is set. Exporting it
+// here in the profile means every login shell and its children see it, so
+// `claude` in the guest always works without per-invocation boilerplate.
 //
-// `if`/`fi` rather than an early `return` because /etc/profile.d entries are
-// sourced by dash as well as bash, and `return` outside a function is not
-// portable across both.
-const guestShellProfileScript = `# nexus3: make the supervisor-seeded placeholder credential visible to
-# interactively started agents. Written by SeedGuestShellProfile; do not edit.
+// The `claude` function — wraps the claude binary and adds the flag unless the
+// caller already passed it. Idempotent: the case-match on `$*` detects the
+// flag with surrounding spaces so substrings are not falsely matched. The flag
+// is appended only when absent; a double occurrence is never emitted.
+// Deliberately bypassable: `command claude` skips shell functions and reaches
+// the raw binary without the flag, which is how the non-autonomous path
+// (claudeReadyMatch "? for shortcuts") remains meaningful.
+//
+// IS_SANDBOX and the claude function are safe on sandboxes where the operator
+// never intends to start an agent: IS_SANDBOX is a read-only marker and the
+// claude function is inert until `claude` is typed.
+//
+// The existence guard for GuestCredEnvPath matters: it lives on tmpfs and is
+// absent on a sandbox with no MITM proxy. A drop-in that errored there would
+// break `bash -l` for every plain sandbox. `if`/`fi` is used (not `return`)
+// because /etc/profile.d entries are sourced by dash as well as bash, and
+// `return` outside a function is not portable.
+//
+// The script is POSIX sh — no bashisms; the guest may run dash.
+const guestShellProfileScript = `# nexus3: credential, sandbox marker, and agent wrapper for login shells.
+# Written by SeedGuestShellProfile; do not edit.
 if [ -r ` + GuestCredEnvPath + ` ]; then
     set -a
     . ` + GuestCredEnvPath + `
     set +a
 fi
+
+# Mark this as a sandbox environment. Required by claude alongside
+# --dangerously-skip-permissions when running as root.
+export IS_SANDBOX=1
+
+# claude(): add --dangerously-skip-permissions automatically.
+# The flag is only added when absent, so callers that already pass it are
+# unaffected (no double-flag). Use "command claude" to bypass this wrapper.
+claude() {
+    case " $* " in
+        *" --dangerously-skip-permissions "*)
+            command claude "$@"
+            ;;
+        *)
+            command claude --dangerously-skip-permissions "$@"
+            ;;
+    esac
+}
 `
 
 // SeedGuestShellProfile writes the login-shell drop-in that sources the
@@ -711,6 +748,60 @@ func SeedGuestAgentOnboarding(ctx context.Context, id domain.SandboxID, projectD
 	}
 	if code != 0 {
 		return fmt.Errorf("seed guest agent onboarding: script exited %d", code)
+	}
+	return nil
+}
+
+// GuestBypassConsentScript merges skipDangerousModePermissionPrompt:true into
+// the guest's ~/.claude/settings.json.
+//
+// It MERGES rather than overwrites: settings.json is co-owned by the agent and
+// the operator; clobbering it would silently drop settings accumulated at
+// runtime (allowedTools, etc.).
+//
+// The script runs under node, not python3/python/jq: all three are absent from
+// the claude agent image. node is at /usr/local/bin/node and is guaranteed
+// present because claude is itself a node program.
+//
+// Idempotent: re-running sets the same key to the same value; existing settings
+// are unaffected.
+const GuestBypassConsentScript = `set -e
+mkdir -p /root/.claude
+node -e '
+const fs = require("fs");
+const path = "/root/.claude/settings.json";
+let cfg = {};
+try {
+  const parsed = JSON.parse(fs.readFileSync(path, "utf8"));
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) cfg = parsed;
+} catch (e) { /* absent or unparseable: start from an empty object */ }
+cfg.skipDangerousModePermissionPrompt = true;
+const tmp = path + ".nexus3.tmp";
+fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2));
+fs.renameSync(tmp, path);
+'
+`
+
+// SeedGuestBypassConsent merges skipDangerousModePermissionPrompt:true into
+// the guest's ~/.claude/settings.json so that a `claude` invocation (via the
+// shell function added by SeedGuestShellProfile) does not block on the
+// bypass-permissions consent wizard.
+//
+// This is seeded at boot alongside the onboarding seed so the wizard is
+// pre-answered for any shell session, not only for sessions that go through
+// space-agent.
+//
+// If execer is nil this is a no-op, matching SeedGuestShellProfile.
+func SeedGuestBypassConsent(ctx context.Context, id domain.SandboxID, execer GuestExecer) error {
+	if execer == nil {
+		return nil
+	}
+	code, err := execer(ctx, id, []string{"/bin/sh", "-c", GuestBypassConsentScript}, nil)
+	if err != nil {
+		return fmt.Errorf("seed guest bypass consent: exec script: %w", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("seed guest bypass consent: script exited %d", code)
 	}
 	return nil
 }

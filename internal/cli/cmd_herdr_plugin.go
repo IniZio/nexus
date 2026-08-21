@@ -1741,25 +1741,49 @@ func claudeReadyMatch(autonomous bool) string {
 // guestAgentLaunchCommand returns the shell command typed into the guest pane
 // to start the agent.
 //
-// autonomous adds --dangerously-skip-permissions, which makes the agent act
-// without stopping to ask the operator to approve each tool call. That flag is
-// deliberately NOT the default even though this motive's whole purpose is
-// autonomous slice agents: the flag's safety argument rests entirely on the
-// blast radius being a disposable microVM, and this function cannot verify
-// that the caller's sandbox is one. Making it a per-invocation decision keeps
-// the judgement with the operator who knows what they mounted, instead of
-// burying it in a product default that would also apply to a sandbox with the
-// operator's real working tree mounted read-write.
+// autonomous == true  → "claude"          — the shell function (added by
+//   SeedGuestShellProfile) supplies --dangerously-skip-permissions, and
+//   IS_SANDBOX=1 is exported by the same profile. The flag is correct for an
+//   autonomous slice agent whose blast radius is the sandbox.
 //
-// IS_SANDBOX=1 is required alongside it: claude refuses
-// --dangerously-skip-permissions when running as root (which the guest does)
-// unless that variable marks the environment as already-isolated.
+// autonomous == false → "command claude"  — bypasses the shell function so
+//   --dangerously-skip-permissions is genuinely absent. claude opens in manual
+//   mode (footer: "? for shortcuts"), which is exactly what claudeReadyMatch
+//   waits for on the non-autonomous path.
+//
+// The distinction matters because claudeReadyMatch selects its wait token by
+// the permission mode claude actually starts in, not by the flag spelling. A
+// function-bypassed `command claude` enters manual mode → "? for shortcuts".
+// The wrapped `claude` enters bypass mode → "shift+tab to cycle".
+// guestAgentLaunchCommand returns the shell command typed into the guest pane
+// to start the agent.
+//
+// Both branches are EXPLICIT and neither relies on the `claude` shell function
+// that SeedGuestShellProfile installs. That function exists for humans typing
+// in a guest shell; depending on it here is a race. The pane's login shell
+// sources /etc/profile.d asynchronously, so a command typed before that
+// finishes resolves `claude` to the raw binary — which starts in the DEFAULT
+// permission mode, prints the default footer, and makes the autonomous
+// readiness wait time out against an agent that is running perfectly well.
+// Observed live. The flag is idempotent (the function does not double it), so
+// passing it explicitly is correct whether or not the profile has loaded.
+//
+// autonomous adds --dangerously-skip-permissions, which makes the agent act
+// without stopping to ask the operator to approve each tool call. IS_SANDBOX=1
+// is required alongside it: claude refuses the flag when running as root
+// (which the guest does) unless that variable marks the environment as
+// already-isolated. The non-autonomous branch uses `command claude` to bypass
+// the shell function, so the flag is genuinely absent rather than silently
+// re-added by the profile.
 func guestAgentLaunchCommand(autonomous bool) string {
 	if autonomous {
 		return "IS_SANDBOX=1 claude --dangerously-skip-permissions"
 	}
-	return "claude"
+	return "command claude"
 }
+
+// guestShellTimeoutMS bounds the wait for the pane's guest shell to attach.
+const guestShellTimeoutMS = 60_000
 
 // claudeReadyTimeoutMS is the wait-output timeout in milliseconds. 90 s gives
 // claude enough time to load on a cold guest without blocking the operator
@@ -1857,52 +1881,6 @@ func herdrPaneReportAgent(ctx context.Context, herdrBin, paneID, source string) 
 // answers "/root" both for a sandbox with no mount and for a ref that does not
 // resolve at all; collapsing them tells an operator who mistyped a handle to
 // go re-create a sandbox that was never the problem.
-// guestBypassConsentScript merges skipDangerousModePermissionPrompt into the
-// guest's ~/.claude/settings.json.
-//
-// It MERGES rather than overwrites: settings.json is a file the agent and the
-// operator both own, and clobbering it would silently drop any other setting
-// already there.
-//
-// The merge runs under node, not python3 or jq: probing a live guest showed
-// python3, python and jq are all ABSENT from the agent image, while node is
-// at /usr/local/bin/node. That is not a coincidence worth relying on loosely —
-// claude is a node program, so any image that can run the agent can run this.
-const guestBypassConsentScript = `set -e
-mkdir -p /root/.claude
-node -e '
-const fs = require("fs");
-const path = "/root/.claude/settings.json";
-let cfg = {};
-try {
-  const parsed = JSON.parse(fs.readFileSync(path, "utf8"));
-  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) cfg = parsed;
-} catch (e) { /* absent or unparseable: start from an empty object */ }
-cfg.skipDangerousModePermissionPrompt = true;
-const tmp = path + ".nexus3.tmp";
-fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2));
-fs.renameSync(tmp, path);
-'
-`
-
-// seedGuestBypassConsent pre-answers the "Bypass Permissions mode" consent
-// dialog inside the guest. Without it, an agent launched with
-// --dangerously-skip-permissions stops on a fourth wizard and never reaches
-// its prompt.
-func seedGuestBypassConsent(ctx context.Context, svc *service.Service, ref string) error {
-	code, err := svc.Exec(ctx, ref, agent.ExecOptions{
-		Argv:   []string{"/bin/sh", "-c", guestBypassConsentScript},
-		Stderr: os.Stderr,
-	})
-	if err != nil {
-		return err
-	}
-	if code != 0 {
-		return fmt.Errorf("guest script exited %d", code)
-	}
-	return nil
-}
-
 func herdrSpaceAgentProjectDir(ctx context.Context, ref string, svc sandboxGetter) (string, error) {
 	if _, getErr := svc.Get(ctx, ref); getErr != nil {
 		return "", &UsageError{
@@ -1958,30 +1936,34 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous bo
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-agent: " + err.Error(), Err: err}
 	}
 
-	// 4. Pre-accept the bypass-permissions consent dialog, but ONLY when the
-	//    operator asked for autonomy. This is a fourth first-run wizard, and
-	//    it lives in a different file from the other three: the acceptance is
-	//    recorded in ~/.claude/settings.json as skipDangerousModePermissionPrompt,
-	//    not in ~/.claude.json. Seeding it at supervisor boot alongside the
-	//    other three would pre-answer a safety question for every sandbox,
-	//    including ones the operator never intends to run an agent in; doing
-	//    it here keeps the pre-acceptance scoped to the invocation that
-	//    explicitly opted in.
-	if autonomous {
-		if err := seedGuestBypassConsent(ctx, svc, ref); err != nil {
-			return &CodedError{Code: ErrCodeInternalError,
-				Msg: "space-agent: pre-accept bypass-permissions dialog: " + err.Error(), Err: err}
-		}
+	// 4. (Bypass-permissions consent is now seeded at boot by SeedGuestBypassConsent
+	//    in probeAndSeedGuest, alongside the onboarding and shell-profile seeds.
+	//    The shell-function `claude` always adds --dangerously-skip-permissions,
+	//    so pre-answering at boot is correct and no per-launch seed is needed.)
+
+	// 5. Wait for the guest shell itself before typing at it.
+	//
+	//    The pane runs `nexus3 exec --pty` and only then attaches a shell in
+	//    the guest; keystrokes sent before that attaches go nowhere, and the
+	//    launch silently does not happen. Waiting on the guest hostname in the
+	//    prompt is what distinguishes the guest shell from the host pane the
+	//    plugin was opened from.
+	guestPrompt := sandboxHandleHostname(ref)
+	fmt.Fprintf(w, "space-agent: waiting for the guest shell (match=%q) ...\n", guestPrompt)
+	if err := herdrPaneWaitOutput(ctx, herdrBin, paneID, guestPrompt, guestShellTimeoutMS); err != nil {
+		return &CodedError{Code: ErrCodeInternalError,
+			Msg: fmt.Sprintf("space-agent: guest shell did not appear in pane %s within %ds: %v",
+				paneID, guestShellTimeoutMS/1000, err), Err: err}
 	}
 
-	// 5. Launch claude in the guest shell pane.
+	// 6. Launch claude in the guest shell pane.
 	fmt.Fprintf(w, "space-agent: launching %s in pane %s ...\n", guestAgentLaunchCommand(autonomous), paneID)
 	if err := herdrPaneRun(ctx, herdrBin, paneID, guestAgentLaunchCommand(autonomous)); err != nil {
 		return &CodedError{Code: ErrCodeInternalError,
 			Msg: "space-agent: launch claude: " + err.Error(), Err: err}
 	}
 
-	// 6. Wait for the claude prompt. See claudeReadyMatch for why this token
+	// 7. Wait for the claude prompt. See claudeReadyMatch for why this token
 	//    and not the ❯ glyph.
 	readyMatch := claudeReadyMatch(autonomous)
 	fmt.Fprintf(w, "space-agent: waiting for claude prompt (match=%q, timeout=%ds) ...\n",
@@ -1992,14 +1974,14 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous bo
 				claudeReadyTimeoutMS/1000, err), Err: err}
 	}
 
-	// 7. Deliver the slice brief.
+	// 8. Deliver the slice brief.
 	fmt.Fprintf(w, "space-agent: delivering brief ...\n")
 	if err := herdrPaneSubmitToAgent(ctx, herdrBin, paneID, brief); err != nil {
 		return &CodedError{Code: ErrCodeInternalError,
 			Msg: "space-agent: deliver brief: " + err.Error(), Err: err}
 	}
 
-	// 8. Report the agent in herdr's agent tracker (non-fatal).
+	// 9. Report the agent in herdr's agent tracker (non-fatal).
 	if err := herdrPaneReportAgent(ctx, herdrBin, paneID, ref); err != nil {
 		fmt.Fprintf(w, "space-agent: warning: report-agent failed: %v (continuing)\n", err)
 	}
