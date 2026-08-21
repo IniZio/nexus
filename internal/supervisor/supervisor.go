@@ -493,6 +493,7 @@ func RunDetached(cfg Config) error {
 		// both carry SecretHosts that require MITM credential swap; the supervisor
 		// must mint placeholders in either posture. The original guard on OpenEgress
 		// silently skipped GH_TOKEN seeding for --egress closed sandboxes.
+		agentSandbox := sb.AgentName != ""
 		humanSecrets := len(sb.Envelope.SecretHosts) > 0
 		// Nothing to seed without a proxy: the CA cert we would install exists
 		// only if one was started, and the placeholder we would write is only
@@ -505,6 +506,14 @@ func RunDetached(cfg Config) error {
 			slog.Info("supervisor.seed_not_applicable",
 				"sandbox", sb.ID,
 				"reason", "no MITM proxy for this sandbox: open egress, no secrets, no agent")
+		case agentSandbox && humanSecrets:
+			// Combined path: sandbox has BOTH an agent (AgentName != "") and secret
+			// hosts (e.g. GH_TOKEN). seedHumanSecrets seeds only the human secret;
+			// SeedLoop seeds only the agent credential. Using either branch alone
+			// leaves the guest missing one set. SeedGuestAgentAndSecrets composes
+			// both into one payload and writes it once, preventing the second write
+			// from silently overwriting the first.
+			seedDone, guestEverResponded = seedAgentAndHumanSecrets(ctx, sb, cert, caSeeder, agentSeeder, broker, refreshers, svc)
 		case humanSecrets:
 			// Human/git path (D-PD-25 / D-PD-26): seed CA + GH_TOKEN placeholder.
 			// SeedLoop would also emit the agent's credential vars; those belong
@@ -516,7 +525,7 @@ func RunDetached(cfg Config) error {
 			// agent placeholder into it would hand credential env vars to a
 			// guest that runs no agent.
 			seedDone, guestEverResponded = SeedLoop(ctx, sb.ID, &cert, caSeeder, agentSeeder, broker, refreshers,
-				maxSeedAttempts, 2*time.Second, svc, sb.AgentName != "")
+				maxSeedAttempts, 2*time.Second, svc, agentSandbox)
 		}
 		// noProxy skips both branches below: there is no seed failure to warn
 		// about, and no CA in the guest to activate.
@@ -857,6 +866,61 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 // is never called (the caller must pre-populate cert).
 type PerimeterCAGetter interface {
 	GetPerimeterCACert(id domain.SandboxID) *x509.Certificate
+}
+
+// seedAgentAndHumanSecrets seeds MITM CA + both agent credential vars and human
+// secret placeholders (e.g. GH_TOKEN) for a sandbox that has BOTH an attached
+// agent and secret hosts. It composes both credential sets into one payload via
+// [service.SeedGuestAgentAndSecrets] to prevent a second write from silently
+// overwriting the first. After a successful seed it re-pushes real tokens to all
+// refreshers, mirroring the behaviour of [SeedLoop] on the agent path.
+func seedAgentAndHumanSecrets(
+	ctx context.Context,
+	sb domain.Sandbox,
+	cert *x509.Certificate,
+	caSeeder, credSeeder service.GuestSeeder,
+	broker *cred.Broker,
+	refreshers []*cred.Refresher,
+	svc PerimeterCAGetter,
+) (ok bool, guestEverResponded bool) {
+	for attempt := range maxSeedAttempts {
+		if ctx.Err() != nil {
+			return false, guestEverResponded
+		}
+		if cert == nil && svc != nil {
+			cert = svc.GetPerimeterCACert(sb.ID)
+		}
+		if cert != nil {
+			if caErr := service.SeedCA(ctx, cert, sb.ID, caSeeder); caErr != nil {
+				slog.Debug("supervisor.seed_ca_retry", "attempt", attempt, "err", caErr)
+			} else {
+				guestEverResponded = true
+				if _, combErr := service.SeedGuestAgentAndSecrets(ctx, broker, sb.ID, sb.Envelope.SecretSpecs, credSeeder); combErr != nil {
+					slog.Debug("supervisor.seed_combined_retry", "attempt", attempt, "err", combErr)
+				} else {
+					slog.Info("supervisor.agent_and_secrets_complete", "sandbox", sb.ID,
+						"secret_hosts", sb.Envelope.SecretHosts)
+					// Re-push real tokens for the agent credential, mirroring SeedLoop.
+					for _, r := range refreshers {
+						if _, _, tokErr := r.Token(ctx); tokErr != nil {
+							slog.Warn("supervisor.post_seed_token_push_failed",
+								"host", r.Host(), "err", tokErr)
+						} else {
+							slog.Info("supervisor.real_token_pushed",
+								"host", r.Host(), "sandbox", sb.ID)
+						}
+					}
+					return true, true
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return false, guestEverResponded
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return false, guestEverResponded
 }
 
 // SeedLoop attempts up to maxAttempts rounds of CA + agent-placeholder seeding.

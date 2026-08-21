@@ -448,6 +448,26 @@ func seedGuestAgent(
 		return nil, nil
 	}
 
+	records, payload, err := prepareAgentCredPayload(broker, id, profile, kind)
+	if err != nil {
+		return nil, err
+	}
+	if err := seeder(ctx, id, payload); err != nil {
+		return nil, fmt.Errorf("seed agent: deliver to guest: %w", err)
+	}
+	return records, nil
+}
+
+// prepareAgentCredPayload registers placeholders with broker for each agent
+// egress host and builds the seed payload, WITHOUT writing it to the guest.
+// Use this when the payload must be composed with other credential sets before
+// a single delivery (see [SeedGuestAgentAndSecrets]).
+func prepareAgentCredPayload(
+	broker *cred.Broker,
+	id domain.SandboxID,
+	profile cred.AgentProfile,
+	kind agentCredKind,
+) ([]cred.PlaceholderRecord, []byte, error) {
 	// Resolve the credential kind: honour an explicit per-sandbox override;
 	// fall back to the process-environment resolver for unset callers.
 	if kind == kindUnset {
@@ -459,19 +479,83 @@ func seedGuestAgent(
 	for _, host := range hosts {
 		rec, err := broker.RegisterPlaceholder(id, host, "")
 		if err != nil {
-			return nil, fmt.Errorf("seed agent: register placeholder for %q: %w", host, err)
+			return nil, nil, fmt.Errorf("seed agent: register placeholder for %q: %w", host, err)
 		}
 		records = append(records, rec)
 	}
 
 	payload, err := buildAgentSeedPayload(records, kind, profile)
 	if err != nil {
-		return nil, fmt.Errorf("seed agent: %w", err)
+		return nil, nil, fmt.Errorf("seed agent: %w", err)
 	}
-	if err := seeder(ctx, id, payload); err != nil {
-		return nil, fmt.Errorf("seed agent: deliver to guest: %w", err)
+	return records, payload, nil
+}
+
+// SeedGuestAgentAndSecrets seeds agent credentials (e.g. CLAUDE_CODE_OAUTH_TOKEN)
+// AND human secret placeholders (e.g. GH_TOKEN) into the guest in ONE write.
+// Use this for sandboxes that have both an attached agent (AgentName != "") and
+// secret binds (SecretHosts non-empty). A second write would silently overwrite
+// the first set of credentials; this function composes both into one payload
+// and calls the seeder exactly once.
+//
+// # Security invariant
+//
+// Both the agent payload and the secret payload are built from [PlaceholderRecord]
+// values. Neither path has access to a real token; the combined payload inherits
+// the same structural guarantee as [SeedGuestAgent] and [SeedGuestSecrets].
+func SeedGuestAgentAndSecrets(
+	ctx context.Context,
+	broker *cred.Broker,
+	id domain.SandboxID,
+	specs []string,
+	seeder GuestSeeder,
+) ([]cred.PlaceholderRecord, error) {
+	return seedGuestAgentAndSecrets(ctx, broker, id, specs, seeder, cred.ClaudeCodeProfile, kindUnset)
+}
+
+func seedGuestAgentAndSecrets(
+	ctx context.Context,
+	broker *cred.Broker,
+	id domain.SandboxID,
+	specs []string,
+	seeder GuestSeeder,
+	profile cred.AgentProfile,
+	kind agentCredKind,
+) ([]cred.PlaceholderRecord, error) {
+	if broker == nil || seeder == nil {
+		return nil, nil
 	}
-	return records, nil
+
+	// Build agent payload: registers placeholders, returns payload bytes.
+	agentRecords, agentPayload, err := prepareAgentCredPayload(broker, id, profile, kind)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build secret payload: resolves specs, mints placeholders, returns bytes.
+	var secretPayload []byte
+	if len(specs) > 0 {
+		binds, err := ResolveEnvelopeSecrets(ctx, specs)
+		if err != nil {
+			return nil, fmt.Errorf("seed combined: resolve secrets: %w", err)
+		}
+		secretPayload, _, err = applySecrets(broker, id, binds)
+		if err != nil {
+			return nil, fmt.Errorf("seed combined: apply secrets: %w", err)
+		}
+	}
+
+	// Compose ONE payload and write it ONCE. A second write would silently
+	// overwrite the first set of credentials (the second, subtler defect the
+	// combined path was introduced to fix).
+	combined := make([]byte, 0, len(agentPayload)+len(secretPayload))
+	combined = append(combined, agentPayload...)
+	combined = append(combined, secretPayload...)
+
+	if err := seeder(ctx, id, combined); err != nil {
+		return nil, fmt.Errorf("seed combined: deliver to guest: %w", err)
+	}
+	return agentRecords, nil
 }
 
 // buildAgentSeedPayload extends [buildSeedPayload] with claude-specific env
