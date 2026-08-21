@@ -43,6 +43,19 @@ type HerdrSpaceBinding struct {
 	SandboxHandle string `json:"sandbox_handle"`
 	// SandboxID is the stable nexus3 sandbox ID, e.g. "sb-...".
 	SandboxID string `json:"sandbox_id"`
+	// GuestPaneID is the opaque pane ID herdr assigned to the guest-shell pane
+	// last opened for this space, e.g. "w1V:p2" — see
+	// result.plugin_pane.pane.pane_id in the `herdr plugin pane open`
+	// response. It is what `herdr agent start --pane <ID>` needs, so a later
+	// invocation can start an agent in an already-open space without
+	// reopening a pane.
+	//
+	// Empty on bindings written before this field existed, and on any binding
+	// where the pane ID could not be parsed out of herdr's response (JSON
+	// mode failed, e.g.) — encoding/json leaves missing fields at their zero
+	// value on decode, so an old binding on disk loads without error; there is
+	// nothing else to migrate.
+	GuestPaneID string `json:"guest_pane_id,omitempty"`
 }
 
 // ErrHerdrSpaceNotFound is returned when no matching binding exists.

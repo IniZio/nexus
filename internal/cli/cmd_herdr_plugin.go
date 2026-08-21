@@ -150,7 +150,7 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if err != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-open-pane: resolve store: " + err.Error(), Err: err}
 		}
-		return herdrPluginSpaceOpenPane(ctx, rest[0], storeRoot, svc)
+		return herdrPluginSpaceOpenPane(ctx, rest[0], storeRoot, svc, out.w)
 
 	case "space-pause":
 		if len(rest) == 0 {
@@ -1267,12 +1267,31 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc *s
 
 	label := herdrSpaceLabelForRef(ref)
 
+	// herdrPluginSpaceCreate is reached only from human-interactive paths
+	// today: the "space-create" subcommand typed directly, and the
+	// interactive create prompts (herdrPluginCreate,
+	// herdrPluginSpaceCreateFromFile). focus stays true throughout this
+	// function, matching today's focus-stealing behaviour — that is what a
+	// human asking for one space wants. A future programmatic/bulk caller
+	// (N-way spawning) should call herdrOpenGuestShellPane directly with
+	// focus=false rather than going through this human-facing entrypoint.
+	const focus = true
+
 	// Idempotency: reuse existing binding if one exists for this handle. There
 	// is no fresh root pane id to graft onto here, so this falls back to
 	// --workspace (see herdrOpenGuestShellPane).
 	if existing, err := HerdrSpaceGetByLabel(ctx, storeRoot, label); err == nil {
 		fmt.Fprintf(w, "reusing space: label=%s workspace_id=%s\n", existing.SpaceLabel, existing.HerdrWorkspaceID)
-		return herdrOpenGuestShellPane(ctx, herdrBin, ref, existing.HerdrWorkspaceID, "")
+		paneID, err := herdrOpenGuestShellPane(ctx, herdrBin, ref, existing.HerdrWorkspaceID, "", focus)
+		if err != nil {
+			return err
+		}
+		existing.GuestPaneID = paneID
+		if err := HerdrSpacePut(ctx, storeRoot, existing); err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: store binding: " + err.Error(), Err: err}
+		}
+		fmt.Fprintf(w, "opened pane: pane_id=%s\n", paneID)
+		return nil
 	}
 
 	// Create herdr workspace and capture its ID and root pane ID. The cwd is
@@ -1298,7 +1317,16 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc *s
 	// Grafts the guest pane into the root pane herdr just created instead of
 	// opening a second tab — see herdrOpenGuestShellPane. Nothing is ever
 	// closed: nexus3 does not destroy panes or tabs it did not create.
-	return herdrOpenGuestShellPane(ctx, herdrBin, ref, workspaceID, rootPaneID)
+	paneID, err := herdrOpenGuestShellPane(ctx, herdrBin, ref, workspaceID, rootPaneID, focus)
+	if err != nil {
+		return err
+	}
+	b.GuestPaneID = paneID
+	if err := HerdrSpacePut(ctx, storeRoot, b); err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: store binding: " + err.Error(), Err: err}
+	}
+	fmt.Fprintf(w, "opened pane: pane_id=%s\n", paneID)
+	return nil
 }
 
 // herdrWorkspaceCreate runs "herdr workspace create --label <label> [--cwd
@@ -1355,7 +1383,7 @@ func herdrWorkspaceCreate(ctx context.Context, herdrBin, label, cwd string) (wor
 	return id, envelope.Result.RootPane.PaneID, nil
 }
 
-// herdrOpenGuestShellPane opens a guest-shell pane.
+// herdrOpenGuestShellPane opens a guest-shell pane and returns its pane ID.
 //
 // When rootPaneID is known, the pane is GRAFTED into the workspace's existing
 // root pane via --target-pane (a horizontal split) instead of opening a
@@ -1371,7 +1399,19 @@ func herdrWorkspaceCreate(ctx context.Context, herdrBin, label, cwd string) (wor
 // workspace is being reused rather than freshly created (its root pane id
 // from creation time is not retained) — --workspace is used instead: today's
 // separate-tab behaviour. That is a degradation, not a failure.
-func herdrOpenGuestShellPane(ctx context.Context, herdrBin, ref, workspaceID, rootPaneID string) error {
+//
+// focus controls whether --focus is passed. herdr agent start requires
+// --pane <ID>, which is why this function's return value matters: without it
+// the id nexus3 opens is thrown away and the rest of the agent-start chain
+// can never be scripted (see the package doc comment on the chain this
+// closes). focus is a separate concern from the pane ID: under N-way
+// spawning, every new sandbox stealing the operator's focus away from
+// whatever they are doing is its own bug, independent of whether the ID gets
+// captured. Callers decide: interactive single-space use should keep
+// stealing focus (that is what a human asking for one space wants); bulk/
+// programmatic creation should not (see the two call sites for the actual
+// per-caller decision and why).
+func herdrOpenGuestShellPane(ctx context.Context, herdrBin, ref, workspaceID, rootPaneID string, focus bool) (string, error) {
 	args := []string{"plugin", "pane", "open",
 		"--plugin", "nexus3",
 		"--entrypoint", "shell",
@@ -1381,19 +1421,54 @@ func herdrOpenGuestShellPane(ctx context.Context, herdrBin, ref, workspaceID, ro
 	} else {
 		args = append(args, "--workspace", workspaceID)
 	}
-	args = append(args, "--env", "NEXUS3_WORKSPACE="+ref, "--focus")
+	args = append(args, "--env", "NEXUS3_WORKSPACE="+ref)
+	if focus {
+		args = append(args, "--focus")
+	}
 	cmd := herdrExecCommandContext(ctx, herdrBin, args...)
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
+	// Tee to the operator's terminal — that is today's behaviour and stays
+	// unchanged — while also capturing the output so the pane ID can be
+	// parsed out of it below.
+	var buf strings.Builder
+	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: open shell pane: " + err.Error(), Err: err}
+		return "", &CodedError{Code: ErrCodeInternalError, Msg: "space-create: open shell pane: " + err.Error(), Err: err}
 	}
-	return nil
+	return herdrParsePluginPaneID(buf.String()), nil
+}
+
+// herdrParsePluginPaneID extracts result.plugin_pane.pane.pane_id from a
+// `herdr plugin pane open` JSON envelope, e.g.:
+//
+//	{"id":"cli:plugin","result":{"plugin_pane":{"entrypoint":"shell",
+//	  "pane":{"pane_id":"w1V:p2","tab_id":"w1V:t1","workspace_id":"w1V",
+//	          "label":"nexus3 guest shell", ...},
+//	  "plugin_id":"nexus3"},"type":"plugin_pane_opened"}}
+//
+// Mirrors herdrWorkspaceCreate's tolerance for non-JSON output: unparseable
+// text (plain-text mode, or any other shape) yields an empty pane ID, never
+// an error — a pane that opens successfully but whose ID could not be
+// captured is a degradation, not a failure.
+func herdrParsePluginPaneID(raw string) string {
+	var envelope struct {
+		Result struct {
+			PluginPane struct {
+				Pane struct {
+					PaneID string `json:"pane_id"`
+				} `json:"pane"`
+			} `json:"plugin_pane"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &envelope); err != nil {
+		return ""
+	}
+	return envelope.Result.PluginPane.Pane.PaneID
 }
 
 // herdrPluginSpaceOpenPane resolves a space by ref, label, or workspace_id and opens another guest-shell pane.
-func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot string, svc herdrAdoptGetter) error {
+func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot string, svc herdrAdoptGetter, w io.Writer) error {
 	herdrBin, binErr := resolveHerdrBin()
 	if binErr != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-open-pane: " + binErr.Error(), Err: binErr}
@@ -1418,7 +1493,23 @@ func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot 
 	// it grafts the guest pane onto herdr's root pane instead of opening a
 	// second tab. A reused workspace has no fresh root pane id, so this falls
 	// back to --workspace — see herdrOpenGuestShellPane.
-	return herdrOpenGuestShellPane(ctx, herdrBin, b.SandboxHandle, b.HerdrWorkspaceID, rootPaneID)
+	//
+	// herdrPluginSpaceOpenPane is invoked interactively by a human (the
+	// "space-open-pane" subcommand) — focus stays true, matching today's
+	// focus-stealing behaviour, since that is what the user asked for by
+	// running the command. A future programmatic/bulk caller (N-way
+	// spawning) should call herdrOpenGuestShellPane directly with
+	// focus=false rather than going through this human-facing entrypoint.
+	paneID, err := herdrOpenGuestShellPane(ctx, herdrBin, b.SandboxHandle, b.HerdrWorkspaceID, rootPaneID, true)
+	if err != nil {
+		return err
+	}
+	b.GuestPaneID = paneID
+	if err := HerdrSpacePut(ctx, storeRoot, b); err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "space-open-pane: store binding: " + err.Error(), Err: err}
+	}
+	fmt.Fprintf(w, "opened pane: pane_id=%s\n", paneID)
+	return nil
 }
 
 // herdrSpaceResolve looks up a binding by label, sandbox handle, derived label, or workspace ID.
@@ -1548,8 +1639,8 @@ func herdrPluginSpaceList(ctx context.Context, w io.Writer, storeRoot string) er
 		return nil
 	}
 	for _, b := range bindings {
-		fmt.Fprintf(w, "label=%s\tworkspace_id=%s\thandle=%s\tsandbox_id=%s\n",
-			b.SpaceLabel, b.HerdrWorkspaceID, b.SandboxHandle, b.SandboxID)
+		fmt.Fprintf(w, "label=%s\tworkspace_id=%s\thandle=%s\tsandbox_id=%s\tpane_id=%s\n",
+			b.SpaceLabel, b.HerdrWorkspaceID, b.SandboxHandle, b.SandboxID, b.GuestPaneID)
 	}
 	return nil
 }
