@@ -49,7 +49,8 @@ only the final binary invocations are stubbed.
 | Test | What it proves |
 |---|---|
 | `TestOpenPaneScript_LifecycleActionsResolveByWorkspaceID` | `pause`, `resume`, and `remove` forward `$HERDR_WORKSPACE_ID` as the subcommand argument — without it every action would fail with "sandbox ref required". |
-| `TestOpenPaneScript_GenericPaneCarriesPlacementAndWorkspace` | A pane action calls herdr with the correct `--plugin`, `--entrypoint`, `--placement`, `--workspace`, and `--focus` flags. |
+| `TestOpenPaneScript_SplitOmitsWorkspace` | A split pane action carries `--plugin`, `--entrypoint`, `--placement`, and `--focus` but NOT `--workspace` — the server rejects `--workspace` for split and zoomed placements. |
+| `TestOpenPaneScript_OverlayWithEnvOmitsWorkspace` | When `NEXUS3_WORKSPACE` is set with an overlay placement, `--env NEXUS3_WORKSPACE=…` is forwarded but `--workspace` is still absent — the server rejects `--workspace` for overlay regardless of the env var. |
 | `TestOpenPaneScript_OmitsEnvFlagWhenWorkspaceUnset` | When `NEXUS3_WORKSPACE` is not set, `--env "NEXUS3_WORKSPACE="` is NOT forwarded (an empty ref is not the same as an absent one). |
 | `TestOpenPaneScript_PassesEnvFlagWhenWorkspaceSet` | When `NEXUS3_WORKSPACE` is set, `--env NEXUS3_WORKSPACE=<value>` reaches herdr. |
 | `TestPaneScript_ShellUsesResolvedGuestCwd` | The shell pane queries the guest for its working directory (`shell-cwd`) and passes it to `exec --cwd` — without this every shell opens in `/root`. |

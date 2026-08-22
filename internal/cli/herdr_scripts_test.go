@@ -126,17 +126,51 @@ func TestOpenPaneScript_LifecycleActionsResolveByWorkspaceID(t *testing.T) {
 	}
 }
 
-// TestOpenPaneScript_GenericPaneCarriesPlacementAndWorkspace pins that a pane
-// action reaches herdr with the plugin, entrypoint, placement and workspace it
-// was configured with. A wrong placement silently changes where the pane opens.
-func TestOpenPaneScript_GenericPaneCarriesPlacementAndWorkspace(t *testing.T) {
+// TestOpenPaneScript_SplitOmitsWorkspace pins the server-side rule that split
+// (and zoomed) placements target an existing pane, so --workspace is rejected:
+// "split and zoomed plugin panes target an existing pane; use target_pane_id".
+// The flags --plugin, --entrypoint, --placement, and --focus must still be present.
+func TestOpenPaneScript_SplitOmitsWorkspace(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "open-pane.sh", []string{"doctor", "split"}, map[string]string{"HERDR_WORKSPACE_ID": "w7"})
 
 	got := e.herdrArgv(t)
+	if strings.Contains(got, "--workspace") {
+		t.Errorf("split must not pass --workspace; herdr argv = %q", got)
+	}
+	if strings.Contains(got, "w7") {
+		t.Errorf("split must not pass the workspace id; herdr argv = %q", got)
+	}
 	for _, want := range []string{
 		"plugin pane open", "--plugin nexus3", "--entrypoint doctor",
-		"--placement split", "--workspace w7", "--focus",
+		"--placement split", "--focus",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("herdr argv %q missing %q", got, want)
+		}
+	}
+}
+
+// TestOpenPaneScript_ZoomedOmitsWorkspace covers the zoomed case of the
+// overlay|popup|split|zoomed pattern in open-pane.sh. Narrowing that pattern
+// to overlay|popup|split leaves the suite green because zoomed is never
+// exercised otherwise — this test is the guard on the guard.
+// The server error for zoomed matches split: "split and zoomed plugin panes
+// target an existing pane; use target_pane_id".
+func TestOpenPaneScript_ZoomedOmitsWorkspace(t *testing.T) {
+	e := newScriptEnv(t)
+	e.run(t, "open-pane.sh", []string{"logs", "zoomed"}, map[string]string{"HERDR_WORKSPACE_ID": "w7"})
+
+	got := e.herdrArgv(t)
+	if strings.Contains(got, "--workspace") {
+		t.Errorf("zoomed must not pass --workspace; herdr argv = %q", got)
+	}
+	if strings.Contains(got, "w7") {
+		t.Errorf("zoomed must not pass the workspace id; herdr argv = %q", got)
+	}
+	for _, want := range []string{
+		"plugin pane open", "--plugin nexus3", "--entrypoint logs",
+		"--placement zoomed",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("herdr argv %q missing %q", got, want)
@@ -310,6 +344,81 @@ func TestABIFileValue(t *testing.T) {
 	const want = "2"
 	if got != want {
 		t.Errorf("plugins/herdr/abi = %q, want %q — bump the file and const herdrPluginABIVersion in cmd_herdr_plugin.go together", got, want)
+	}
+}
+
+// TestOpenPaneScript_OverlayOmitsWorkspace pins the server-side rule that
+// overlay and popup placements target the active pane, so --workspace is
+// rejected. If open-pane.sh passes --workspace for these placements, herdr
+// responds with "overlay and popup plugin panes target the active pane".
+func TestOpenPaneScript_OverlayOmitsWorkspace(t *testing.T) {
+	e := newScriptEnv(t)
+	e.run(t, "open-pane.sh", []string{"workspaces", "overlay"}, map[string]string{"HERDR_WORKSPACE_ID": "w8"})
+
+	got := e.herdrArgv(t)
+	if strings.Contains(got, "--workspace") {
+		t.Errorf("overlay must not pass --workspace; herdr argv = %q", got)
+	}
+	if strings.Contains(got, "w8") {
+		t.Errorf("overlay must not pass the workspace id; herdr argv = %q", got)
+	}
+	for _, want := range []string{"--plugin nexus3", "--entrypoint workspaces", "--placement overlay"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("herdr argv %q missing %q", got, want)
+		}
+	}
+}
+
+// TestOpenPaneScript_OverlayCarriesFocus pins that --focus is kept for overlay
+// placements. herdr accepts --focus alongside overlay (live probe: EXIT:0,
+// focused:true in the result).
+func TestOpenPaneScript_OverlayCarriesFocus(t *testing.T) {
+	e := newScriptEnv(t)
+	e.run(t, "open-pane.sh", []string{"workspaces", "overlay"}, map[string]string{"HERDR_WORKSPACE_ID": "w8"})
+
+	if got := e.herdrArgv(t); !strings.Contains(got, "--focus") {
+		t.Errorf("overlay must still carry --focus; herdr argv = %q", got)
+	}
+}
+
+// TestOpenPaneScript_TabCarriesWorkspace verifies that tab placements carry
+// --workspace. Tab is the only placement the server accepts it for; every other
+// placement (overlay, popup, split, zoomed) targets an active or existing pane
+// and the server rejects --workspace for them.
+func TestOpenPaneScript_TabCarriesWorkspace(t *testing.T) {
+	e := newScriptEnv(t)
+	e.run(t, "open-pane.sh", []string{"attach", "tab"}, map[string]string{"HERDR_WORKSPACE_ID": "w33"})
+
+	got := e.herdrArgv(t)
+	for _, want := range []string{
+		"--plugin nexus3", "--entrypoint attach", "--placement tab", "--workspace w33",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("tab: herdr argv %q missing %q", got, want)
+		}
+	}
+}
+
+// TestOpenPaneScript_OverlayWithEnvOmitsWorkspace exercises the env-SET branch
+// of the overlay leg. When NEXUS3_WORKSPACE is set, --env NEXUS3_WORKSPACE=…
+// must be forwarded but --workspace must still be absent — the server rejects
+// --workspace for overlay regardless of whether an env var is set.
+func TestOpenPaneScript_OverlayWithEnvOmitsWorkspace(t *testing.T) {
+	e := newScriptEnv(t)
+	e.run(t, "open-pane.sh", []string{"workspaces", "overlay"}, map[string]string{
+		"HERDR_WORKSPACE_ID": "w8",
+		"NEXUS3_WORKSPACE":   "demo/api",
+	})
+
+	got := e.herdrArgv(t)
+	if strings.Contains(got, "--workspace") {
+		t.Errorf("overlay must not pass --workspace even when NEXUS3_WORKSPACE is set; herdr argv = %q", got)
+	}
+	if strings.Contains(got, "w8") {
+		t.Errorf("overlay must not pass the workspace id; herdr argv = %q", got)
+	}
+	if !strings.Contains(got, "--env NEXUS3_WORKSPACE=demo/api") {
+		t.Errorf("NEXUS3_WORKSPACE must be forwarded as --env; herdr argv = %q", got)
 	}
 }
 

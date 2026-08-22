@@ -116,3 +116,51 @@ func TestHerdrManifest_EveryEntrypointResolves(t *testing.T) {
 		}
 	}
 }
+
+// TestHerdrManifest_ShellPlacementIsTab pins that the "shell" pane's declared
+// placement is "tab". This is a load-bearing coupling:
+// herdrOpenGuestShellPane (internal/cli/cmd_herdr_plugin.go) passes
+// --workspace without --placement when no root pane ID is available. The
+// herdr server then falls back to the manifest-declared placement for the
+// shell entrypoint. Tab is the only placement that accepts --workspace; if
+// this line changes to split, overlay, or zoomed the fallback branch silently
+// returns rc=1 and no call site warns. Change it only after updating
+// herdrOpenGuestShellPane to pass an explicit --placement tab.
+func TestHerdrManifest_ShellPlacementIsTab(t *testing.T) {
+	raw, err := os.ReadFile(manifestPath(t))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+
+	// Extract every [[panes]] block and locate the one with id = "shell".
+	rePane := regexp.MustCompile(`(?s)\[\[panes\]\][^\[]*`)
+	rePlacement := regexp.MustCompile(`(?m)^placement = "([^"]+)"`)
+	rePaneID := regexp.MustCompile(`(?m)^id = "([^"]+)"`)
+
+	blocks := rePane.FindAllString(string(raw), -1)
+	for _, block := range blocks {
+		idM := rePaneID.FindStringSubmatch(block)
+		if idM == nil || idM[1] != "shell" {
+			continue
+		}
+		placementM := rePlacement.FindStringSubmatch(block)
+		if placementM == nil {
+			t.Fatal(`shell pane has no placement declaration in herdr-plugin.toml`)
+		}
+		got := placementM[1]
+		if got != "tab" {
+			t.Errorf(
+				"shell pane placement = %q, want \"tab\"\n"+
+					"herdrOpenGuestShellPane omits --placement in its --workspace fallback\n"+
+					"and relies on the manifest-declared placement for the shell entrypoint.\n"+
+					"Tab is the only placement herdr accepts --workspace for; switching to\n"+
+					"%q causes the fallback branch to return rc=1 silently.\n"+
+					"Fix: update herdrOpenGuestShellPane to pass --placement tab explicitly,\n"+
+					"then restore this assertion to match the new manifest value.",
+				got, got,
+			)
+		}
+		return
+	}
+	t.Fatal(`shell pane not found in herdr-plugin.toml`)
+}

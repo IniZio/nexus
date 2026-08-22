@@ -1598,9 +1598,13 @@ func herdrWorkspaceCreate(ctx context.Context, herdrBin, label, cwd string) (wor
 // closing it, so never generalise this into closing panes we did not just
 // cause to exist.
 //
-// herdr rejects --workspace and --target-pane together ("split and zoomed
-// plugin panes target an existing pane; use target_pane_id"), so this is an
-// either/or choice.
+// herdr accepts --workspace only with --placement tab. Split and zoomed
+// reject --workspace unconditionally ("split and zoomed plugin panes target
+// an existing pane; use target_pane_id") — the rejection is placement-driven,
+// not caused by the presence of --target-pane. So rootPaneID present → split
+// + --target-pane; rootPaneID absent → --workspace only (no --placement, so
+// the server falls back to the manifest-declared placement for the shell
+// entrypoint, which must be "tab" — see TestHerdrManifest_ShellPlacementIsTab).
 //
 // When rootPaneID is empty — no root pane id could be parsed, or an existing
 // workspace is being reused rather than freshly created (its root pane id
@@ -1626,6 +1630,11 @@ func herdrOpenGuestShellPane(ctx context.Context, herdrBin, ref, workspaceID, ro
 	if rootPaneID != "" {
 		args = append(args, "--placement", "split", "--target-pane", rootPaneID, "--direction", "right")
 	} else {
+		// No --placement: herdr falls back to the manifest-declared placement
+		// for the shell entrypoint, which is "tab". Tab is the only placement
+		// that accepts --workspace; if the manifest ever changes shell to split,
+		// overlay, or zoomed, this call silently returns rc=1.
+		// TestHerdrManifest_ShellPlacementIsTab pins that invariant.
 		args = append(args, "--workspace", workspaceID)
 	}
 	args = append(args, "--env", "NEXUS3_WORKSPACE="+ref)

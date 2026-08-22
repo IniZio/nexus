@@ -39,21 +39,46 @@ case "$ENTRYPOINT" in
         ;;
     *)
         # Generic pane open: build optional --env arg only when NEXUS3_WORKSPACE is set.
-        if [ -n "$NEXUS3_WORKSPACE" ]; then
-            exec "$HERDR_BIN_PATH" plugin pane open \
-                --plugin nexus3 \
-                --entrypoint "$ENTRYPOINT" \
-                --placement "$PLACEMENT" \
-                --focus \
-                --workspace "$HERDR_WORKSPACE_ID" \
-                --env "NEXUS3_WORKSPACE=$NEXUS3_WORKSPACE"
-        else
-            exec "$HERDR_BIN_PATH" plugin pane open \
-                --plugin nexus3 \
-                --entrypoint "$ENTRYPOINT" \
-                --placement "$PLACEMENT" \
-                --focus \
-                --workspace "$HERDR_WORKSPACE_ID"
-        fi
+        # Only tab carries --workspace. Every other placement targets an active or
+        # existing pane and the server rejects --workspace for them:
+        #   overlay/popup: "overlay and popup plugin panes target the active pane"
+        #   split/zoomed:  "split and zoomed plugin panes target an existing pane;
+        #                   use target_pane_id"
+        case "$PLACEMENT" in
+            overlay|popup|split|zoomed)
+                if [ -n "$NEXUS3_WORKSPACE" ]; then
+                    exec "$HERDR_BIN_PATH" plugin pane open \
+                        --plugin nexus3 \
+                        --entrypoint "$ENTRYPOINT" \
+                        --placement "$PLACEMENT" \
+                        --focus \
+                        --env "NEXUS3_WORKSPACE=$NEXUS3_WORKSPACE"
+                else
+                    exec "$HERDR_BIN_PATH" plugin pane open \
+                        --plugin nexus3 \
+                        --entrypoint "$ENTRYPOINT" \
+                        --placement "$PLACEMENT" \
+                        --focus
+                fi
+                ;;
+            *)
+                if [ -n "$NEXUS3_WORKSPACE" ]; then
+                    exec "$HERDR_BIN_PATH" plugin pane open \
+                        --plugin nexus3 \
+                        --entrypoint "$ENTRYPOINT" \
+                        --placement "$PLACEMENT" \
+                        --focus \
+                        --workspace "$HERDR_WORKSPACE_ID" \
+                        --env "NEXUS3_WORKSPACE=$NEXUS3_WORKSPACE"
+                else
+                    exec "$HERDR_BIN_PATH" plugin pane open \
+                        --plugin nexus3 \
+                        --entrypoint "$ENTRYPOINT" \
+                        --placement "$PLACEMENT" \
+                        --focus \
+                        --workspace "$HERDR_WORKSPACE_ID"
+                fi
+                ;;
+        esac
         ;;
 esac

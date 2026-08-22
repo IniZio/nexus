@@ -84,8 +84,10 @@ herdr plugin pane open \
 ```
 
 This splits the guest shell into the workspace's existing tab, beside the root
-pane, instead of opening a second tab. `--workspace` and `--target-pane` are
-mutually exclusive — passing both is rejected:
+pane, instead of opening a second tab. Split and zoomed placements reject
+`--workspace` unconditionally — not because of `--target-pane`, but because
+those placements target an existing pane and the server refuses `--workspace`
+regardless of what other flags are present:
 
 ```json
 {"error":{"code":"invalid_params","message":"split and zoomed plugin panes target an existing pane; use target_pane_id"}}
