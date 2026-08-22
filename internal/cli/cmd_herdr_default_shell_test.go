@@ -706,15 +706,25 @@ func TestHerdrInstallDefaultShell(t *testing.T) {
 		}
 	}
 
-	// Sidecar must exist and line 1 must be a non-empty nexus3 binary path.
-	// (Line 2 carries the kernel path and may be empty if unresolved at install.)
+	// Sidecar must exist and line 1 must equal the real nexus3 binary path
+	// (the installer writes os.Executable() as line 1). Non-emptiness alone is
+	// not sufficient: a wrong-but-executable path (e.g. "/bin/echo") passes the
+	// empty check, but syscall.Exec replaces the process with echo and leaves a
+	// dead pane — the only unsafe corruption that bypasses fail-open.
+	// Line 2 carries the kernel path and may be empty if unresolved at install.
 	sidecarData, err := os.ReadFile(sidecarPath)
 	if err != nil {
 		t.Fatalf("sidecar not created: %v", err)
 	}
 	lines := strings.SplitN(strings.TrimRight(string(sidecarData), "\n"), "\n", 2)
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) == "" {
-		t.Error("sidecar line 1 (nexus3 binary path) is empty")
+	expectedBin, _ := os.Executable()
+	if len(lines) == 0 || lines[0] != expectedBin {
+		t.Errorf("sidecar line 1 = %q, want nexus3 binary path %q", func() string {
+			if len(lines) == 0 {
+				return ""
+			}
+			return lines[0]
+		}(), expectedBin)
 	}
 
 	// Output must include the config snippet pointing at the install path.
@@ -884,8 +894,11 @@ func TestRunHerdrGuestShell_PanicRecovery(t *testing.T) {
 // sandbox pane silently gets a host shell. That is how the feature shipped
 // "live-proven" and inert: every proof was run from the repo root.
 //
-// Deleting the mechanism previously left the whole suite green, which is
-// exactly why this test exists rather than relying on a live run.
+// Deleting the function body of herdrApplyKernelPath previously left the whole
+// suite green — this test bites only on that mutation (function body deleted).
+// The call site in RunHerdrGuestShell was separately uncovered until
+// TestRunHerdrGuestShell_KernelPathPublished was added; that test bites on the
+// `_ = kernelPath` (call-site suppressed) mutation instead.
 func TestHerdrApplyKernelPath(t *testing.T) {
 	const stamped = "/stamped/vmlinux-x86_64"
 
@@ -908,9 +921,24 @@ func TestHerdrApplyKernelPath(t *testing.T) {
 				gotKey, gotValue = k, v
 				return nil
 			}
-			getenv := func(string) string { return tc.existing }
+			var askedKey string
+			getenv := func(key string) string {
+				askedKey = key
+				if key == "NEXUS3_KERNEL_PATH" {
+					return tc.existing
+				}
+				return ""
+			}
 
 			herdrApplyKernelPath(tc.kernelPath, getenv, setenv)
+
+			// Pin the exact env key so a typo in the production lookup (e.g.
+			// "NEXUS3_KERNEL_PATH_TYPO") turns RED: getenv would return "" for
+			// the wrong key and setenv would be called even when tc.existing is
+			// set, failing the wantSet:false "operator override wins" case.
+			if tc.kernelPath != "" && askedKey != "NEXUS3_KERNEL_PATH" {
+				t.Errorf("getenv called with key %q, want %q", askedKey, "NEXUS3_KERNEL_PATH")
+			}
 
 			if tc.wantSet {
 				if calls != 1 {
@@ -928,5 +956,60 @@ func TestHerdrApplyKernelPath(t *testing.T) {
 				t.Fatalf("setenv called %d times with %s=%q; want no call", calls, gotKey, gotValue)
 			}
 		})
+	}
+}
+
+// TestRunHerdrGuestShell_KernelPathPublished covers the call site of
+// herdrApplyKernelPath inside RunHerdrGuestShell (Finding 2).
+//
+// TestHerdrApplyKernelPath proves the function body works in isolation, but the
+// call `herdrApplyKernelPath(kernelPath, os.Getenv, os.Setenv)` at the
+// RunHerdrGuestShell level was untested: replacing it with `_ = kernelPath`
+// left the entire suite green. This test closes that gap.
+//
+// Mutation proof: replace the call with `_ = kernelPath` in RunHerdrGuestShell.
+// The sidecar contains "/stamped/kernel" as line 2, but NEXUS3_KERNEL_PATH is
+// never set, so os.Getenv("NEXUS3_KERNEL_PATH") returns "" after the call →
+// t.Errorf fires → RED.
+func TestRunHerdrGuestShell_KernelPathPublished(t *testing.T) {
+	origExec := herdrGuestShellExecFn
+	origExit := herdrGuestShellExitFn
+	t.Cleanup(func() {
+		herdrGuestShellExecFn = origExec
+		herdrGuestShellExitFn = origExit
+	})
+
+	// Capture exec calls so RunHerdrGuestShell does not actually exec-replace.
+	herdrGuestShellExecFn = func(argv0 string, argv []string, envv []string) error {
+		return nil // captured; process continues
+	}
+	herdrGuestShellExitFn = func(int) {} // suppress os.Exit
+
+	// Write a sidecar next to the test binary so herdrReadSidecar finds it.
+	// Line 1 = os.Executable() (must stat-check clean).
+	// Line 2 = stamped kernel path under test.
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	const stampedKernel = "/stamped/vmlinux-kernel-path-published"
+	sidecarPath := self + herdrSidecarSuffix
+	if err := os.WriteFile(sidecarPath, []byte(self+"\n"+stampedKernel+"\n"), 0o644); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	t.Cleanup(func() { os.Remove(sidecarPath) })
+
+	// Clear NEXUS3_KERNEL_PATH so herdrApplyKernelPath has something to set.
+	t.Setenv("NEXUS3_KERNEL_PATH", "")
+	// Route herdrDefaultShellCore to execHostShell immediately — keeps the rest
+	// of the resolution simple and predictable.
+	t.Setenv("NEXUS3_HOST_SHELL", "1")
+	t.Setenv("SHELL", "/bin/bash")
+
+	RunHerdrGuestShell()
+
+	got := os.Getenv("NEXUS3_KERNEL_PATH")
+	if got != stampedKernel {
+		t.Errorf("NEXUS3_KERNEL_PATH = %q after RunHerdrGuestShell, want %q — herdrApplyKernelPath call site may be suppressed", got, stampedKernel)
 	}
 }

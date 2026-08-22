@@ -224,8 +224,8 @@ func herdrDefaultShellLookup(storeRoot, wsID string) (HerdrSpaceBinding, bool, e
 // top-level panic recovery (CRITICAL 3): a panic anywhere in the resolution
 // path is caught here and the operator always gets a working host shell.
 //
-// The host shell is the default branch — new failure modes fall through
-// automatically rather than requiring a new guard.
+// New checks inside herdrDefaultShellCore must still call return execHostShell()
+// explicitly — see that function's FAIL-OPEN contract comment.
 func RunHerdrGuestShell() {
 	defer func() {
 		if r := recover(); r != nil {
