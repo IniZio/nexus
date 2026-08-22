@@ -323,20 +323,7 @@ func RunDetached(cfg Config) error {
 		memMaxMiB = uint32(cfg.GovBounds.MemMaxBytes / (1024 * 1024)) //nolint:gosec // bytes→MiB; fits uint32 for any sane ceiling
 	}
 	vcpuMax := uint32(cfg.GovBounds.VCPUMax) //nolint:gosec // int32→uint32; VCPUMax is always non-negative by construction
-	drv, err := cloudhypervisor.New(cloudhypervisor.Config{
-		BinaryPath:    cfg.CHBin,
-		SocketDir:     cfg.SocketDir,
-		KernelPath:    cfg.KernelPath,
-		DiskImagePath: cfg.DiskPath,
-		StartTimeout:  30 * time.Second,
-		MemoryMiB:     cfg.MemoryMiB,
-		MemoryMaxMiB:  memMaxMiB,
-		VCPUMax:       vcpuMax,
-		ExtraDisks:    extraDisks,
-		Cmdline:       cfg.Cmdline,
-		LiveMounts:    cfg.LiveMounts,
-		VirtiofsdPath: cfg.VirtiofsdPath,
-	})
+	drv, err := cloudhypervisor.New(buildSupervisorDriverConfig(cfg, memMaxMiB, vcpuMax, extraDisks))
 	if err != nil {
 		return fmt.Errorf("supervisor: init driver: %w", err)
 	}
@@ -540,14 +527,14 @@ func RunDetached(cfg Config) error {
 			}
 		}
 		seedInputs := guestSeedInputs{
-			ID:                    sb.ID,
-			Labels:                sb.Labels,
-			ProjectDir:            projectDir,
-			SourcePaths:           service.SourceGuestPaths(cfg.WorkspaceGuestPath, sb.LiveMounts),
-			ProfileSeeder:         profileSeeder,
-			GitSeeder:             service.NewGuestFileSeeder(agentClient, service.GuestGitconfigPath),
+			ID:                     sb.ID,
+			Labels:                 sb.Labels,
+			ProjectDir:             projectDir,
+			SourcePaths:            service.SourceGuestPaths(cfg.WorkspaceGuestPath, sb.LiveMounts),
+			ProfileSeeder:          profileSeeder,
+			GitSeeder:              service.NewGuestFileSeeder(agentClient, service.GuestGitconfigPath),
 			CredentialHelperSeeder: service.NewGuestFileSeeder(agentClient, service.GuestGitCredentialHelperPath),
-			Execer:                onboardingExecer,
+			Execer:                 onboardingExecer,
 		}
 		if checkErr := probeAndSeedGuest(ctx, agentClient, seedInputs); checkErr != nil {
 			slog.Error("supervisor.guest_agent_unreachable",
@@ -824,14 +811,14 @@ var seedGitCredentialHelperFn = service.SeedGitCredentialHelper
 // seeder — and every addition was otherwise widening the signature at both the
 // call site and every test.
 type guestSeedInputs struct {
-	ID                    domain.SandboxID
-	Labels                map[string]string
-	ProjectDir            string   // guest dir the agent works in; "" when nothing is mounted
-	SourcePaths           []string // every guest dir holding source, for safe.directory
-	ProfileSeeder         service.GuestSeeder
-	GitSeeder             service.GuestSeeder
+	ID                     domain.SandboxID
+	Labels                 map[string]string
+	ProjectDir             string   // guest dir the agent works in; "" when nothing is mounted
+	SourcePaths            []string // every guest dir holding source, for safe.directory
+	ProfileSeeder          service.GuestSeeder
+	GitSeeder              service.GuestSeeder
 	CredentialHelperSeeder service.GuestSeeder
-	Execer                service.GuestExecer
+	Execer                 service.GuestExecer
 }
 
 // probeAndSeedGuest runs the liveness probe (D-J14), login-shell credential
@@ -1155,4 +1142,42 @@ func seedHumanSecrets(
 		}
 	}
 	return false, guestEverResponded
+}
+
+// buildSupervisorDriverConfig assembles the cloudhypervisor.Config the detached
+// supervisor boots its VM with.
+//
+// It exists as a separate function so a test can observe the config WITHOUT
+// booting a VM. That matters because of the bug this function was extracted to
+// prevent: VCPUs was simply absent from this literal, so the driver fell back
+// to its 1-vCPU default while VCPUMax still advertised the hotplug ceiling.
+// Every supervisor-backed sandbox therefore booted with exactly one CPU and
+// N-1 empty slots (/sys/devices/system/cpu present=0, possible=0-15) no matter
+// what --vcpus asked for.
+//
+// It stayed invisible because BootVCPUs WAS forwarded over argv as
+// --boot-vcpus and WAS consumed by the resize governor, so the argv test kept
+// passing: it asserted the value was TRANSPORTED, never that it reached the VM.
+// A test over this function closes the config half only — that the supervisor
+// actually calls it is proven by booting a sandbox and reading nproc.
+func buildSupervisorDriverConfig(
+	cfg Config,
+	memMaxMiB, vcpuMax uint32,
+	extraDisks []cloudhypervisor.ExtraDisk,
+) cloudhypervisor.Config {
+	return cloudhypervisor.Config{
+		BinaryPath:    cfg.CHBin,
+		SocketDir:     cfg.SocketDir,
+		KernelPath:    cfg.KernelPath,
+		DiskImagePath: cfg.DiskPath,
+		StartTimeout:  30 * time.Second,
+		MemoryMiB:     cfg.MemoryMiB,
+		MemoryMaxMiB:  memMaxMiB,
+		VCPUs:         cfg.BootVCPUs, // boot_vcpus — see doc comment above
+		VCPUMax:       vcpuMax,
+		ExtraDisks:    extraDisks,
+		Cmdline:       cfg.Cmdline,
+		LiveMounts:    cfg.LiveMounts,
+		VirtiofsdPath: cfg.VirtiofsdPath,
+	}
 }

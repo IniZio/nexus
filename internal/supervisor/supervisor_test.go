@@ -515,3 +515,41 @@ func TestBuildSupervisorArgv_ZeroBoundsNoGovFlags(t *testing.T) {
 		t.Error("argv contains --cmdline when Cmdline is empty; passive-mode path must omit it")
 	}
 }
+
+// TestBuildSupervisorDriverConfig_ForwardsBootVCPUs asserts that the vCPU count
+// the supervisor was started with reaches the DRIVER as boot_vcpus.
+//
+// The pre-existing argv test (--boot-vcpus present in the spawn argv) asserted
+// only that the value was TRANSPORTED to the supervisor process. It passed for
+// the entire time the value was being dropped on the floor: BootVCPUs was
+// parsed, handed to the resize governor, and never placed in the driver config,
+// so every supervisor-backed sandbox booted with one vCPU regardless of --vcpus.
+// Transport and effect are different claims and need different assertions.
+func TestBuildSupervisorDriverConfig_ForwardsBootVCPUs(t *testing.T) {
+	cfg := Config{
+		CHBin:      "/usr/bin/cloud-hypervisor",
+		SocketDir:  "/run/user/1000/n3",
+		KernelPath: "/k",
+		DiskPath:   "/d",
+		MemoryMiB:  4096,
+		BootVCPUs:  6,
+	}
+
+	got := buildSupervisorDriverConfig(cfg, 16384, 24, nil)
+
+	if got.VCPUs != 6 {
+		t.Errorf("driver VCPUs = %d, want 6 — boot_vcpus never reached the driver, "+
+			"so the guest boots on the driver's 1-vCPU default", got.VCPUs)
+	}
+	// Memory is the control: it was always forwarded correctly, so a failure
+	// here means the extraction broke something rather than the vCPU wiring.
+	if got.MemoryMiB != 4096 {
+		t.Errorf("driver MemoryMiB = %d, want 4096", got.MemoryMiB)
+	}
+	// VCPUMax must stay independent of VCPUs: it is the hotplug ceiling, and
+	// collapsing the two is what makes the bug invisible (slots exist, and no
+	// CPU is ever present in them).
+	if got.VCPUMax != 24 {
+		t.Errorf("driver VCPUMax = %d, want 24", got.VCPUMax)
+	}
+}
