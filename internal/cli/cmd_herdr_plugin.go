@@ -28,23 +28,92 @@ import (
 )
 
 func init() {
+	// __herdr-plugin is the deprecated alias kept for backward compatibility with
+	// installed herdr plugin builds that were compiled before the `herdr` group
+	// existed. Hidden so it does not appear in the usage banner; still fully
+	// runnable for any older installed shim that invokes it directly.
 	Register(Command{
 		Name:    "__herdr-plugin",
-		Summary: "Private shim invoked by the herdr plugin (not a public CLI surface)",
+		Summary: "Deprecated alias for `herdr` (kept for installed plugin backward compat)",
+		Hidden:  true,
 		Run:     runHerdrPlugin,
+	})
+	// herdr is the primary command group for herdr-plugin operations. Hidden
+	// because it is a plugin-private surface, not a public CLI command — it must
+	// not appear in `nexus3 --help` alongside sandbox lifecycle verbs.
+	Register(Command{
+		Name:    "herdr",
+		Summary: "herdr plugin operations (attach, create, list, agent, …)",
+		Hidden:  true,
+		Run:     runHerdrGroup,
 	})
 }
 
 // herdrPluginABIVersion is the integer probed by build.sh to detect skew
 // between the installed plugin manifest and the nexus3 binary. Bump this
-// whenever __herdr-plugin's subcommand surface changes in an incompatible way.
+// whenever the herdr subcommand surface changes in an incompatible way.
 const herdrPluginABIVersion = "1"
+
+// runHerdrGroup dispatches `nexus3 herdr <subcommand> [args...]`.
+//
+// Verb mapping from the deprecated __herdr-plugin surface:
+//   - space-* prefix dropped where unambiguous (e.g. space-pause → pause)
+//   - space-create and space-open-pane KEEP their space- prefix to avoid
+//     collision with the non-space `create` and `open-pane` verbs, which
+//     perform distinct operations (sandbox create and raw pane open respectively).
+//
+// All cases delegate to runHerdrPlugin so behaviour is unchanged.
+func runHerdrGroup(ctx context.Context, args []string, out *Output) error {
+	if len(args) == 0 {
+		return &UsageError{Msg: "herdr: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|shell-cwd|space-create|space-open-pane|create-from-file|pause|resume|remove|list|prune|agent|agent-from-file)"}
+	}
+	sub := args[0]
+	rest := args[1:]
+
+	// Map herdr-group verbs to the internal runHerdrPlugin dispatch names.
+	var pluginSub string
+	switch sub {
+	// Non-space verbs: keep name unchanged.
+	case "abi", "context-cwd", "workspaces", "attach", "create", "logs", "doctor",
+		"open-pane", "launch", "shell-cwd":
+		pluginSub = sub
+	// space-* verbs that dropped their prefix (no collision).
+	case "create-from-file":
+		pluginSub = "space-create-from-file"
+	case "pause":
+		pluginSub = "space-pause"
+	case "resume":
+		pluginSub = "space-resume"
+	case "remove":
+		pluginSub = "space-remove"
+	case "list":
+		pluginSub = "space-list"
+	case "prune":
+		pluginSub = "space-prune"
+	case "agent":
+		pluginSub = "space-agent"
+	case "agent-from-file":
+		pluginSub = "space-agent-from-file"
+	// space-* verbs that KEEP their prefix because the bare name is already
+	// taken by a non-space verb with different behaviour:
+	//   `herdr create`     → __herdr-plugin create (sandbox create)
+	//   `herdr space-create` → __herdr-plugin space-create (herdr workspace create)
+	//   `herdr open-pane`    → __herdr-plugin open-pane (raw pane open)
+	//   `herdr space-open-pane` → __herdr-plugin space-open-pane (space pane open)
+	case "space-create", "space-open-pane":
+		pluginSub = sub
+	default:
+		return &UsageError{Msg: fmt.Sprintf("herdr: unknown subcommand %q", sub)}
+	}
+
+	return runHerdrPlugin(ctx, append([]string{pluginSub}, rest...), out)
+}
 
 // runHerdrPlugin dispatches __herdr-plugin <subcommand> [args...].
 //
 // This is a private surface between nexus3 and its own in-repo herdr plugin
 // (plugins/herdr/). It is NOT part of the versioned --json machine contract
-// and carries no --json guarantees. The double-underscore prefix marks it.
+// and carries no --json guarantees. Prefer the `herdr` group for new callers.
 func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
 		return &UsageError{Msg: "__herdr-plugin: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|space-create|space-create-from-file|space-open-pane|space-pause|space-resume|space-remove|space-list|space-prune|shell-cwd|space-agent|space-agent-from-file)"}

@@ -74,7 +74,7 @@ host).
 **Test file:** `internal/cli/cmd_herdr_plugin_test.go`
 
 Calls `runHerdrPlugin` directly — the same Go function that `nexus3
-__herdr-plugin <sub>` dispatches to — using an in-memory service and a fake
+`herdr <sub>` dispatches to (and the deprecated `__herdr-plugin <sub>` alias) — using an in-memory service and a fake
 driver. This exercises the real command router and Go handler logic without
 forking a binary or touching disk.
 
@@ -111,11 +111,11 @@ TMPDIR=/tmp go test -count=1 -tags herdr_live ./internal/cli/ -run TestHerdrPlug
 **Mechanism:** `TestHerdrPlugin_L4_BinaryVerb` builds the nexus3 binary, then
 makes two probes:
 
-1. **Direct exec** — calls `nexus3 __herdr-plugin abi` as a subprocess and
+1. **Direct exec** — calls `nexus3 herdr abi` as a subprocess and
    asserts stdout is `"1"`. This is the mutation-sensitive primary assertion:
    renaming or deleting the `init()`-level
-   `Command{Name: "__herdr-plugin", ...}` registration causes the binary to
-   exit 2 with `"error: unknown command: __herdr-plugin"`, and this probe
+   `Command{Name: "herdr", ...}` registration causes the binary to
+   exit 2 with `"error: unknown command: herdr"`, and this probe
    fails immediately.
 
 2. **herdr pane smoke test** — creates a scratch workspace with a unique
@@ -125,8 +125,8 @@ makes two probes:
    workspace whose label does not match. The four operator workspaces (`w6`,
    `w7`, `w8`, `wN`) are never touched.
 
-**What this layer proves:** The `__herdr-plugin` verb is registered in the
-shipped binary's CLI dispatch. The binary accepts `__herdr-plugin abi` and
+**What this layer proves:** The `herdr` verb group is registered in the
+shipped binary's CLI dispatch. The binary accepts `herdr abi` and
 returns the ABI version. The verb registration in `cmd_herdr_plugin.go`'s
 `init()` function cannot be silently deleted without this test failing.
 
@@ -154,7 +154,7 @@ the resulting pane.
 | Manifest structural correctness | 1 | — |
 | Shell script wiring (argv, env, branching) | 2 | — |
 | Subcommand router and handler logic | 3 | — |
-| Binary verb registration (`__herdr-plugin`) | 4 | — |
+| Binary verb registration (`herdr`) | 4 | — |
 | herdr manifest→action→script→binary round-trip | 4 (partial) | full chain via plugin action invoke |
 | Pane rendering | none | human check |
 | Keybindings | none | human check |

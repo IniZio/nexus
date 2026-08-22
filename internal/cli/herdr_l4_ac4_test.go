@@ -7,7 +7,7 @@
 // The chain (verified by hand, now automated):
 //
 //	nexus3 create --mount              →  sandbox with source mounted
-//	__herdr-plugin space-agent         →  guest agent running in a herdr pane
+//	nexus3 herdr agent           →  guest agent running in a herdr pane
 //	ORCHESTRATOR TURN: wait for STEP1= →  agent read the secret and reported it
 //	OPERATOR TURN: send text to pane   →  same pane, as if a human typed
 //	continuity assertion               →  agent recalled the orchestrator's token

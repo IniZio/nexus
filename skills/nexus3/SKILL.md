@@ -379,7 +379,7 @@ per-open argument), while `WorkspaceCreateParams` and `TabCreateParams` carry
 To get another **guest** shell, open a plugin pane rather than a plain tab:
 
 ```sh
-nexus3 __herdr-plugin space-open-pane <sandbox-ref>
+nexus3 herdr space-open-pane <sandbox-ref>
 ```
 
 ## Starting an agent inside a sandbox
@@ -387,7 +387,7 @@ nexus3 __herdr-plugin space-open-pane <sandbox-ref>
 One command does the whole thing:
 
 ```
-nexus3 __herdr-plugin space-agent [--autonomous] <sandbox-ref> "<brief>"
+nexus3 herdr agent [--autonomous] <sandbox-ref> "<brief>"
 ```
 
 It starts the sandbox, creates or reuses its herdr space, opens the guest
@@ -395,7 +395,7 @@ pane, launches claude, waits for the prompt, and types the brief. It is also a
 herdr action (**nexus3: launch Claude agent in sandbox**), which prompts for
 the ref, the brief, and whether to run autonomously.
 
-The sandbox must have source mounted. `space-agent` refuses one that does not,
+The sandbox must have source mounted. `herdr agent` refuses one that does not,
 because an agent with nothing to work on looks identical to a healthy agent.
 
 `--autonomous` adds `--dangerously-skip-permissions` so the agent acts without

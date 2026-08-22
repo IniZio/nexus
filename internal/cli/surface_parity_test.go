@@ -29,7 +29,10 @@ type surfaceEntry struct {
 // Update this table whenever a new verb or MCP tool is added — the test will
 // fail at CI time if the table drifts from what is registered.
 var surfaceMap = []surfaceEntry{
+	// __herdr-plugin: deprecated alias, Hidden. Same canonical backing as `herdr`.
 	{CLIVerb: "__herdr-plugin", CanonicalMethods: []string{"service.CreateAndBoot", "service.List", "service.Remove"}, MCPTools: nil},
+	// herdr: plugin-private command group, Hidden. Dispatches all herdr-plugin verbs.
+	{CLIVerb: "herdr", CanonicalMethods: []string{"service.CreateAndBoot", "service.List", "service.Remove"}, MCPTools: nil},
 	{CLIVerb: "attach", CanonicalMethods: []string{"service.Exec"}, MCPTools: nil},
 	{CLIVerb: "auth", CLIOnly: true},
 	// config-ssh writes a local ~/.ssh/config stanza; the service is only used

@@ -17,6 +17,10 @@ import (
 type Command struct {
 	Name    string
 	Summary string
+	// Hidden suppresses the command from the usage banner. A hidden command is
+	// still runnable and still resolved by Lookup — hidden means absent from the
+	// listing, not disabled.
+	Hidden bool
 	// Run executes the command. args are the arguments that follow the command
 	// name on the command line. Use flag.FlagSet to parse subcommand-specific
 	// flags from args.
@@ -48,7 +52,7 @@ func Lookup(name string) (Command, bool) {
 	return c, ok
 }
 
-// All returns all registered commands sorted by name.
+// All returns all registered commands sorted by name, including hidden ones.
 func All() []Command {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
@@ -59,5 +63,18 @@ func All() []Command {
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].Name < out[j].Name
 	})
+	return out
+}
+
+// AllVisible returns all non-hidden registered commands sorted by name.
+// This is the set printed in the usage banner.
+func AllVisible() []Command {
+	all := All()
+	out := all[:0:0]
+	for _, c := range all {
+		if !c.Hidden {
+			out = append(out, c)
+		}
+	}
 	return out
 }

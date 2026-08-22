@@ -115,10 +115,10 @@ The guest never holds a real credential. See [egress and perimeter](/security/eg
 
 ## herdr plugin launch path
 
-`__herdr-plugin` is the private CLI shim between nexus3 and the herdr workspace plugin. The `launch` subcommand is the primary path for booting an agent sandbox from an orchestrator:
+`herdr` is the plugin-private command group between nexus3 and the herdr workspace plugin. The `launch` subcommand is the primary path for booting an agent sandbox from an orchestrator:
 
 ```
-__herdr-plugin launch --agent-egress \
+nexus3 herdr launch --agent-egress \
   nexus3-base:20260807 \
   /usr/local/bin/claude
 ```
@@ -133,7 +133,7 @@ __herdr-plugin launch --agent-egress \
 
 ### Public agent launch surface <Badge type="danger" text="not built" />
 
-A single `nexus3 agent launch` public command will wrap `__herdr-plugin launch` with a stable, versioned interface for external orchestrators. Today, external callers use the private `__herdr-plugin` shim or the MCP tools.
+A single `nexus3 agent launch` public command will wrap `nexus3 herdr launch` with a stable, versioned interface for external orchestrators. Today, external callers use the `herdr` group or the MCP tools.
 
 ### In-guest credential refresh <Badge type="danger" text="not built" />
 
@@ -146,11 +146,11 @@ The host credential broker can deliver tokens to the guest over vsock. An in-gue
 | Surface | Built | Live-proven |
 |---|---|---|
 | MCP 7-tool surface | Yes | Yes |
-| `__herdr-plugin launch` | Yes | Yes |
+| `nexus3 herdr launch` | Yes | Yes |
 | `--agent-egress` perimeter handoff (MITM + placeholder swap) | Yes | Yes |
-| `__herdr-plugin space-create[-from-file]` | Yes | Yes |
+| `nexus3 herdr space-create` / `herdr create-from-file` | Yes | Yes |
 | `nexus3 recipe` CLI (Orca) | Yes | Yes |
-| `__herdr-plugin launch -v` | No | — |
+| `nexus3 herdr launch -v` | No | — |
 | `nexus3 agent launch` public command | No | — |
 | MCP log streaming / pane attach | No | — |
 | In-guest credential refresh via MCP | No | — |

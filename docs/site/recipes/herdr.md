@@ -108,7 +108,7 @@ only the sandbox handle; only opening a pane needs a workspace, and that one is
 created at the moment it is needed. Otherwise pausing a sandbox would leave an
 empty workspace behind every time.
 
-Run `nexus3 __herdr-plugin space-list` to see the current bindings.
+Run `nexus3 herdr list` to see the current bindings.
 
 ## A working session
 
@@ -135,7 +135,7 @@ nexus3 reap
 ## Troubleshooting
 
 **An action says a sandbox does not exist.** The binding outlived the sandbox —
-something removed it outside herdr. `nexus3 __herdr-plugin space-list` shows the
+something removed it outside herdr. `nexus3 herdr list` shows the
 stale entry; removing through herdr again clears it.
 
 **The overlay is empty but you know a sandbox exists.** The overlay reads the

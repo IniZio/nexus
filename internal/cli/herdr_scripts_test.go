@@ -108,7 +108,10 @@ func TestOpenPaneScript_LifecycleActionsResolveByWorkspaceID(t *testing.T) {
 		e.run(t, "open-pane.sh", []string{entry}, map[string]string{"HERDR_WORKSPACE_ID": "w42"})
 
 		got := strings.TrimSpace(e.shimArgv(t))
-		want := "__herdr-plugin " + entry + " w42"
+		// open-pane.sh strips the space- prefix when forwarding to `herdr`:
+		// space-pause → herdr pause, space-resume → herdr resume, etc.
+		verb := strings.TrimPrefix(entry, "space-")
+		want := "herdr " + verb + " w42"
 		if got != want {
 			t.Errorf("%s: shim argv = %q, want %q", entry, got, want)
 		}
@@ -168,7 +171,7 @@ func TestPaneScript_ShellUsesResolvedGuestCwd(t *testing.T) {
 	e.run(t, "pane.sh", []string{"shell"}, map[string]string{"NEXUS3_WORKSPACE": "demo/api"})
 
 	got := e.shimArgv(t)
-	if !strings.Contains(got, "__herdr-plugin shell-cwd demo/api") {
+	if !strings.Contains(got, "herdr shell-cwd demo/api") {
 		t.Errorf("shell pane must resolve the guest cwd first; argv was %q", got)
 	}
 	if !strings.Contains(got, "--cwd /work") {

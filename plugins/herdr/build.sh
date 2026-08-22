@@ -10,13 +10,13 @@ NEXUS3=$(command -v nexus3 2>/dev/null) || {
 }
 NEXUS3=$(readlink -f "$NEXUS3")
 
-# Smoke-test: __herdr-plugin context-cwd must print the workspace_cwd we pass.
-GOT=$(HERDR_PLUGIN_CONTEXT_JSON='{"workspace_cwd":"/"}' "$NEXUS3" __herdr-plugin context-cwd 2>/dev/null) || {
-    echo "nexus3: error: __herdr-plugin context-cwd probe failed" >&2
+# Smoke-test: herdr context-cwd must print the workspace_cwd we pass.
+GOT=$(HERDR_PLUGIN_CONTEXT_JSON='{"workspace_cwd":"/"}' "$NEXUS3" herdr context-cwd 2>/dev/null) || {
+    echo "nexus3: error: herdr context-cwd probe failed" >&2
     exit 1
 }
 if [ "$GOT" != "/" ]; then
-    echo "nexus3: error: __herdr-plugin context-cwd returned '$GOT', expected '/'" >&2
+    echo "nexus3: error: herdr context-cwd returned '$GOT', expected '/'" >&2
     exit 1
 fi
 
@@ -25,8 +25,8 @@ EXPECTED_ABI=$(cat "$(dirname "$0")/abi" 2>/dev/null) || {
     echo "nexus3: error: plugins/herdr/abi not found" >&2
     exit 1
 }
-GOT_ABI=$("$NEXUS3" __herdr-plugin abi 2>/dev/null) || {
-    echo "nexus3: error: __herdr-plugin abi probe failed" >&2
+GOT_ABI=$("$NEXUS3" herdr abi 2>/dev/null) || {
+    echo "nexus3: error: herdr abi probe failed" >&2
     exit 1
 }
 if [ "$GOT_ABI" != "$EXPECTED_ABI" ]; then

@@ -87,7 +87,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: nexus3 [--json] <command> [args...]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Commands:")
-	for _, cmd := range All() {
+	for _, cmd := range AllVisible() {
 		fmt.Fprintf(w, "  %-16s %s\n", cmd.Name, cmd.Summary)
 	}
 	fmt.Fprintln(w)
