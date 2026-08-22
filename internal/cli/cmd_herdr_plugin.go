@@ -185,8 +185,18 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		return herdrPluginLaunch(ctx, rest[0], rest[1:], agentEgress, out)
 
 	case "space-create":
+		// --no-focus suppresses pane focus, so binding a workspace does not
+		// yank the operator away from whatever they are working in. Binding
+		// several sandboxes in a row would otherwise steal focus once per
+		// sandbox. Focus remains the default: an operator running this
+		// interactively for a single sandbox expects to land in it.
+		focus := true
+		for len(rest) > 0 && rest[0] == "--no-focus" {
+			focus = false
+			rest = rest[1:]
+		}
 		if len(rest) == 0 {
-			return &UsageError{Msg: "__herdr-plugin space-create: sandbox ref required"}
+			return &UsageError{Msg: "__herdr-plugin space-create: usage: space-create [--no-focus] <sandbox-ref>"}
 		}
 		svc, err := newSandboxService()
 		if err != nil {
@@ -196,7 +206,7 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if err != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-create: resolve store: " + err.Error(), Err: err}
 		}
-		return herdrPluginSpaceCreate(ctx, rest[0], out.w, svc, storeRoot, true)
+		return herdrPluginSpaceCreate(ctx, rest[0], out.w, svc, storeRoot, focus)
 
 	case "space-create-from-file":
 		svc, err := newSandboxService()
@@ -2086,6 +2096,48 @@ func herdrPaneReportAgent(ctx context.Context, herdrBin, paneID, source string) 
 	return cmd.Run()
 }
 
+// herdrAgentEnsureSandboxExists checks whether the sandbox named by ref exists.
+// If get returns nil the sandbox is present and the function returns immediately.
+// Only a definite store.ErrNotFound (wrapped by service.resolve as %w) causes
+// create to be called to build the sandbox from nexus3.yaml. Every other error
+// is returned as a CodedError. A transient store failure must not be mistaken
+// for absence: falling through would attempt to create a sandbox that already
+// exists precisely when the store is least able to say otherwise.
+//
+// Extracted as a standalone function (with injected dependencies) so the
+// create-if-absent branch is testable without a real *service.Service or store.
+func herdrAgentEnsureSandboxExists(
+	ctx context.Context,
+	ref string,
+	w io.Writer,
+	get func(context.Context, string) (domain.Sandbox, error),
+	create func(context.Context, string, io.Writer) error,
+) error {
+	_, err := get(ctx, ref)
+	if err == nil {
+		return nil // sandbox already exists
+	}
+	// Create ONLY on a definite "does not exist". Any other error — a transient
+	// store failure, a permissions problem — must propagate. Falling through on
+	// every error would attempt to create a sandbox that already exists, and
+	// would do so precisely when the store is least able to say otherwise.
+	// service.resolve wraps store.ErrNotFound with %w, so errors.Is sees it.
+	if !errors.Is(err, store.ErrNotFound) {
+		return &CodedError{
+			Code: ErrCodeInternalError,
+			Msg:  "herdr agent: resolve " + ref + ": " + err.Error(),
+			Err:  err,
+		}
+	}
+	fmt.Fprintf(w, "herdr agent: sandbox %q not found; creating from nexus3.yaml ...\n", ref)
+	return create(ctx, ref, w)
+}
+
+// herdrEnsureFn is the package-level hook called by herdrPluginSpaceAgent to
+// check whether the target sandbox exists and create it if not. It is a var so
+// that tests can swap it for a recording stub without a real *service.Service.
+var herdrEnsureFn = herdrAgentEnsureSandboxExists
+
 // herdrPluginSpaceAgent starts the named sandbox (or resumes it), opens a
 // herdr space with a guest shell pane, then launches claude inside that pane
 // and delivers brief to it.
@@ -2125,6 +2177,19 @@ func herdrSpaceAgentProjectDir(ctx context.Context, ref string, svc sandboxGette
 }
 
 func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, focus bool, w io.Writer, svc *service.Service, storeRoot string) error {
+	// 0. Ensure the sandbox exists. If it has never been created, build it now
+	//    from nexus3.yaml (same precedence rules as `sandbox create`). This runs
+	//    before step 1 so herdrSpaceAgentProjectDir sees an existing record.
+	if err := herdrEnsureFn(ctx, ref, w,
+		func(ctx context.Context, r string) (domain.Sandbox, error) { return svc.Get(ctx, r) },
+		func(ctx context.Context, r string, w io.Writer) error {
+			out := NewOutput(w, w, false)
+			return runSandboxCreate(ctx, []string{r}, out, svc)
+		},
+	); err != nil {
+		return err
+	}
+
 	// 1. Check for a mounted source BEFORE starting the sandbox. Failing fast
 	//    here avoids a started-but-useless sandbox and gives a clear message.
 	//
