@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 
 	"github.com/IniZio/nexus3/internal/cli"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
@@ -22,6 +23,14 @@ func main() {
 	// CLI machinery (JSON flag scanning, command registry, etc.).
 	if len(os.Args) > 1 && os.Args[1] == supervisor.HiddenSubcommand {
 		runSupervisorMain(os.Args[2:])
+		return
+	}
+
+	// argv[0] dispatch: when hard-linked as "nexus3-guest-shell" by
+	// "nexus3 herdr install-default-shell", run the fail-open guest-shell
+	// entry point. This path has a top-level panic recovery and no PATH lookup.
+	if filepath.Base(os.Args[0]) == "nexus3-guest-shell" {
+		cli.RunHerdrGuestShell()
 		return
 	}
 

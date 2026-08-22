@@ -1,0 +1,493 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"os"
+	osexec "os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus3/internal/core/store"
+)
+
+// herdrSidecarSuffix is the filename extension appended to the installed
+// binary path to form the companion sidecar. A single source-of-truth constant
+// prevents the writer, reader, and tests from silently diverging.
+const herdrSidecarSuffix = ".nexus3bin"
+
+// herdrExecFn is the syscall.Exec signature used by herdrDefaultShellCore.
+// Replaced in tests so the test drives the real decision logic without
+// actually exec-replacing the test process.
+type herdrExecFn func(argv0 string, argv []string, envv []string) error
+
+// sandboxDialer is an optional extension of sandboxGetter that can probe
+// whether a guest is reachable via vsock. *service.Service implements it;
+// simple test fakes that only exercise the record-fetch path do not need to.
+// herdrDefaultShellCore performs a type-assertion and skips the check when
+// the concrete svc does not implement this interface.
+type sandboxDialer interface {
+	sandboxGetter
+	DialGuest(ctx context.Context, ref string, port uint32) (net.Conn, error)
+}
+
+// herdrGuestShellExecFn is the exec seam for RunHerdrGuestShell and
+// herdrGuestShellFallback. Production code uses syscall.Exec; tests replace
+// this to capture exec calls without replacing the test process.
+var herdrGuestShellExecFn herdrExecFn = syscall.Exec
+
+// herdrGuestShellExitFn is the os.Exit seam for RunHerdrGuestShell.
+// Tests replace this to prevent the test process from exiting.
+var herdrGuestShellExitFn = os.Exit
+
+// herdrSkipInstallProbeForTest disables the install-time probe in
+// runHerdrInstallDefaultShell. Set to true in tests where the installed binary
+// is the test runner and lacks the argv[0] dispatch.
+var herdrSkipInstallProbeForTest bool
+
+// herdrDefaultShellCore is the testable core of "nexus3 herdr default-shell".
+//
+// It reads HERDR_WORKSPACE_ID from getenv, resolves the binding, determines
+// the guest cwd, then calls execFn to replace the current process with either
+// the guest shell (inside the nexus3 sandbox) or the host shell (on any error
+// path).
+//
+// FAIL-OPEN contract: every code path that cannot confirm a live sandbox
+// binding returns execHostShell. All failure modes reach it through explicit
+// early returns — any new check must call return execHostShell() explicitly.
+// The guest exec is inside an explicit block near the end of the function;
+// if it fails, execHostShell() is returned immediately.
+func herdrDefaultShellCore(
+	ctx context.Context,
+	getenv func(string) string,
+	storeRoot string,
+	svc sandboxGetter, // nil → skip state check and cwd resolution, use /root
+	nexus3Bin string, // path to the nexus3 binary for re-exec
+	execFn herdrExecFn,
+) error {
+	// execHostShell replaces the current process with the operator's host shell.
+	// Prefer $SHELL; fall back to /bin/sh. Never returns on success.
+	execHostShell := func() error {
+		sh := getenv("SHELL")
+		if sh == "" {
+			sh = "/bin/sh"
+		}
+		return execFn(sh, []string{sh}, os.Environ())
+	}
+
+	// Escape hatch: operator forces host shell regardless of workspace binding.
+	if getenv("NEXUS3_HOST_SHELL") != "" {
+		return execHostShell()
+	}
+
+	// No workspace ID → not in a herdr pane or not a nexus3 space.
+	wsID := getenv("HERDR_WORKSPACE_ID")
+	if wsID == "" {
+		return execHostShell()
+	}
+
+	// Store root unavailable → cannot locate bindings file.
+	if storeRoot == "" {
+		return execHostShell()
+	}
+
+	// Read the bindings file. Any read or parse error → fall through.
+	// A missing file is not an error (no bindings yet).
+	binding, found, err := herdrDefaultShellLookup(storeRoot, wsID)
+	if err != nil || !found {
+		return execHostShell()
+	}
+
+	// Guard: empty nexus3Bin means the delivery mechanism could not locate the
+	// nexus3 binary (e.g. sidecar missing after install). Fall back rather than
+	// exec'ing an empty path into a dead pane. (CRITICAL 1)
+	if nexus3Bin == "" {
+		return execHostShell()
+	}
+
+	// Verify sandbox is running and dialable before the exec point of no return.
+	// After syscall.Exec the process is replaced; a non-running sandbox
+	// (paused/stopped/error) cannot attach, so the pane would be dead.
+	//
+	// CRITICAL: "State == Running" is not the condition that fails. The real
+	// failure is in substrate/driver resolution inside nexus3 exec — if PATH
+	// lacks the hypervisor binary (e.g. a systemd unit with a lean PATH), nexus3
+	// exec returns `driver "none" does not support guest dialing` AFTER replacing
+	// the process, leaving a dead pane with no shell to recover from. The dial
+	// check here catches that before the point of no return.
+	//
+	// When svc is nil (daemon unreachable), skip both checks and use /root cwd —
+	// the existing fail-open behaviour for daemon-unreachable is preserved.
+	// (CRITICAL 4 + CRITICAL 5)
+	cwd := "/root"
+	if svc != nil {
+		sb, sbErr := svc.Get(ctx, binding.SandboxHandle)
+		if sbErr != nil || sb.State != domain.Running {
+			return execHostShell()
+		}
+		// Probe actual dialability: attempt a vsock connection with a short
+		// timeout. If substrate/driver resolution fails the error is immediate
+		// (no I/O roundtrip); if the guest is up the connection is local and
+		// fast. Only performed when svc implements sandboxDialer — real service
+		// does, simple test fakes do not.
+		if d, ok := svc.(sandboxDialer); ok {
+			dialCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			conn, dialErr := d.DialGuest(dialCtx, binding.SandboxHandle, driver.AgentControlPort)
+			cancel()
+			if dialErr != nil {
+				slog.Warn("nexus3-guest-shell: guest not dialable; falling back to host shell", "err", dialErr)
+				return execHostShell()
+			}
+			conn.Close()
+		}
+		cwd = herdrShellCwdFromSandbox(sb)
+	}
+
+	// Guest exec: all checks above passed.
+	//
+	// Re-exec this process as "nexus3 exec --pty ..." so the new nexus3
+	// process manages the PTY and the pane lifecycle is driven by the guest
+	// shell's exit, not ours.
+	//
+	// Guest shell: nexus3 guest images carry bash; /bin/bash --login sources
+	// the login profile. This matches the assumption in cmd_shell.go and
+	// pane.sh's final exec leg.
+	//
+	// FAIL-OPEN: execFn is syscall.Exec in production. If it returns — either
+	// because exec itself failed, or because a test seam replaced it — the
+	// process was NOT replaced. An exec failure is logged and execHostShell is
+	// returned immediately. A test seam returning nil falls through to return nil.
+	argv := []string{nexus3Bin, "exec", "--pty", "--cwd", cwd, binding.SandboxHandle, "/bin/bash", "--login"}
+	if err := execFn(nexus3Bin, argv, os.Environ()); err != nil {
+		slog.Warn("nexus3-guest-shell: exec failed; falling back to host shell", "err", err)
+		return execHostShell()
+	}
+	// Reached only by test seams that return nil (production syscall.Exec
+	// replaced the process and this line is unreachable in the live path).
+	return nil
+}
+
+// herdrShellCwdFromSandbox extracts the guest cwd from an already-fetched
+// domain.Sandbox, avoiding a second svc.Get call. Mirrors herdrShellCwd
+// priority: first live mount, then mounted volume, then /root.
+func herdrShellCwdFromSandbox(sb domain.Sandbox) string {
+	for _, m := range sb.LiveMounts {
+		if m.GuestPath != "" {
+			return m.GuestPath
+		}
+	}
+	for _, v := range sb.MountedVolumes {
+		if v.GuestPath != "" {
+			return v.GuestPath
+		}
+	}
+	return "/root"
+}
+
+// herdrDefaultShellLookup reads the bindings file and returns the binding for
+// wsID. Uses (HerdrSpaceBinding{}, false, nil) when the binding is absent;
+// (HerdrSpaceBinding{}, false, err) on file or parse errors; (b, true, nil)
+// when found.
+func herdrDefaultShellLookup(storeRoot, wsID string) (HerdrSpaceBinding, bool, error) {
+	path := filepath.Join(storeRoot, "herdr-space-bindings.json")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return HerdrSpaceBinding{}, false, nil // no bindings yet — not an error
+	}
+	if err != nil {
+		return HerdrSpaceBinding{}, false, fmt.Errorf("default-shell: read bindings: %w", err)
+	}
+	var bindings []HerdrSpaceBinding
+	if err := json.Unmarshal(data, &bindings); err != nil {
+		return HerdrSpaceBinding{}, false, fmt.Errorf("default-shell: parse bindings: %w", err)
+	}
+	for _, b := range bindings {
+		if b.HerdrWorkspaceID == wsID {
+			return b, true, nil
+		}
+	}
+	return HerdrSpaceBinding{}, false, nil
+}
+
+// RunHerdrGuestShell is the argv[0]-dispatched entry point when the nexus3
+// binary is hard-linked as "nexus3-guest-shell" by
+// "nexus3 herdr install-default-shell". It wraps the resolution logic with a
+// top-level panic recovery (CRITICAL 3): a panic anywhere in the resolution
+// path is caught here and the operator always gets a working host shell.
+//
+// The host shell is the default branch — new failure modes fall through
+// automatically rather than requiring a new guard.
+func RunHerdrGuestShell() {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Warn("nexus3-guest-shell: panic; falling back to host shell", "panic", r)
+			sh := os.Getenv("SHELL")
+			if sh == "" {
+				sh = "/bin/sh"
+			}
+			_ = herdrGuestShellExecFn(sh, []string{sh}, os.Environ())
+			herdrGuestShellExitFn(0)
+			return
+		}
+	}()
+
+	ctx := context.Background()
+	storeRoot, err := store.DefaultRoot()
+	if err != nil {
+		storeRoot = ""
+	}
+
+	// Read the sidecar for the real nexus3 binary path and the stamped kernel
+	// path. CRITICAL 1: the hard link installs into ~/.local/bin which has no
+	// images/ sibling, so resolveKernelPath falls through to cwd — which is
+	// /home/<user> when herdr opens a pane, not the repo root. Setting
+	// NEXUS3_KERNEL_PATH from the install-time-stamped value in the sidecar
+	// makes substrate selection (SelectSubstrate → resolveKernelPath) succeed
+	// regardless of the pane's starting cwd.
+	nexus3Bin, kernelPath := herdrReadSidecar()
+	herdrApplyKernelPath(kernelPath, os.Getenv, os.Setenv)
+
+	var svc sandboxGetter
+	if s, err := newSandboxService(); err == nil {
+		svc = s
+	}
+
+	if err := herdrDefaultShellCore(ctx, os.Getenv, storeRoot, svc, nexus3Bin, herdrGuestShellExecFn); err != nil {
+		slog.Warn("nexus3-guest-shell: exec failed; retrying host shell", "err", err)
+	}
+	// Reached only when syscall.Exec failed to replace the process (rare).
+	// herdrDefaultShellCore already attempted execHostShell; try once more.
+	sh := os.Getenv("SHELL")
+	if sh == "" {
+		sh = "/bin/sh"
+	}
+	_ = herdrGuestShellExecFn(sh, []string{sh}, os.Environ())
+	herdrGuestShellExitFn(0)
+}
+
+// herdrApplyKernelPath publishes the install-time-stamped kernel path into the
+// environment so substrate selection succeeds regardless of the pane's cwd.
+//
+// This is the CRITICAL 1 fix in isolated form. It exists as a separate function
+// because the inline version had no test: disabling it left the entire suite
+// green while the feature was dead from herdr's actual pane cwd (/home/<user>),
+// and the only thing that caught it was a live run from the right directory.
+//
+// An explicit NEXUS3_KERNEL_PATH always wins — the operator's override must not
+// be clobbered by the stamped value.
+func herdrApplyKernelPath(kernelPath string, getenv func(string) string, setenv func(string, string) error) {
+	if kernelPath == "" {
+		return
+	}
+	if getenv("NEXUS3_KERNEL_PATH") != "" {
+		return
+	}
+	_ = setenv("NEXUS3_KERNEL_PATH", kernelPath)
+}
+
+// herdrReadSidecar reads the companion sidecar written by
+// "nexus3 herdr install-default-shell" and returns (nexus3Bin, kernelPath).
+//
+// Sidecar format (two newline-separated lines):
+//
+//	<real nexus3 binary path>
+//	<kernel image path stamped at install time>   ← may be absent (old sidecar)
+//
+// The sidecar is necessary because os.Executable() inside the hard-linked
+// binary returns the hard link's own path. Using that as nexus3Bin would cause
+// an exec loop (argv[0] == "nexus3-guest-shell" → RunHerdrGuestShell again).
+// The kernel path is stamped at install time to break the cwd dependency in
+// resolveKernelPath (CRITICAL 1): herdr opens panes from the user's home dir,
+// not the repo root, so the cwd fallback in resolveKernelPath always misses.
+//
+// Returns ("", "") on any error; callers fall back to host shell on empty nexus3Bin.
+func herdrReadSidecar() (nexus3Bin, kernelPath string) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", ""
+	}
+	data, err := os.ReadFile(self + herdrSidecarSuffix)
+	if err != nil {
+		return "", ""
+	}
+	lines := strings.SplitN(strings.TrimRight(string(data), "\n"), "\n", 2)
+	if len(lines) >= 1 {
+		nexus3Bin = strings.TrimSpace(lines[0])
+	}
+	if len(lines) >= 2 {
+		kernelPath = strings.TrimSpace(lines[1])
+	}
+	if nexus3Bin == "" {
+		return "", ""
+	}
+	if _, err := os.Stat(nexus3Bin); err != nil {
+		return "", "" // sidecar path stale; fail-open
+	}
+	return nexus3Bin, kernelPath
+}
+
+// runHerdrDefaultShell is the production entry point for
+// "nexus3 herdr default-shell". Used when invoked directly via the CLI;
+// the preferred path is the argv[0] dispatch through RunHerdrGuestShell.
+// Every failure path falls through to the host shell.
+func runHerdrDefaultShell(ctx context.Context, _ []string, _ *Output) error {
+	storeRoot, err := store.DefaultRoot()
+	if err != nil {
+		storeRoot = "" // soft error: core falls back to host shell
+	}
+
+	// Connect to the nexus3 daemon for cwd resolution and sandbox state check.
+	// A failure means svc=nil; core skips state check and uses /root cwd.
+	var svc sandboxGetter
+	if s, err := newSandboxService(); err == nil {
+		svc = s
+	}
+
+	nexus3Bin, err := os.Executable()
+	if err != nil {
+		nexus3Bin = "" // guard in core falls to host shell
+	}
+
+	return herdrDefaultShellCore(ctx, os.Getenv, storeRoot, svc, nexus3Bin, syscall.Exec)
+}
+
+// runHerdrInstallDefaultShell hard-links the nexus3 binary to
+// ~/.local/bin/nexus3-guest-shell and writes a companion sidecar file with the
+// real nexus3 binary path. herdr's [terminal] default_shell is set to the
+// install path.
+//
+// Hard link vs wrapper script:
+//   - No PATH lookup at runtime — the installed path IS the binary (CRITICAL 1).
+//   - Hard link survives rebuilds: "go build" creates a new inode; the hard
+//     link holds the installed inode until re-install (CRITICAL 2).
+//   - The binary's argv[0] dispatch (main.go) routes to RunHerdrGuestShell
+//     which has a top-level panic recovery (CRITICAL 3).
+//   - The sidecar stores the real nexus3 binary path so the exec leg does not
+//     loop back into the guest-shell dispatch (avoids execve self-loop).
+func runHerdrInstallDefaultShell(_ context.Context, _ []string, out *Output) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("install-default-shell: resolve home: %w", err)
+	}
+	binDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return fmt.Errorf("install-default-shell: create ~/.local/bin: %w", err)
+	}
+
+	// Resolve the real path of this binary. EvalSymlinks is required before
+	// os.Link — hard links cannot cross symlink boundaries.
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("install-default-shell: resolve own binary: %w", err)
+	}
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		return fmt.Errorf("install-default-shell: resolve own binary symlinks: %w", err)
+	}
+
+	installPath := filepath.Join(binDir, "nexus3-guest-shell")
+	_ = os.Remove(installPath) // remove old file/link before installing
+
+	// Hard-link this binary to the install path. A hard link means the
+	// installed entry point IS this binary's inode: no PATH lookup, no stale
+	// subcommand, survives rebuilds until re-install.
+	if err := os.Link(self, installPath); err != nil {
+		// Cross-device or unsupported filesystem: copy the binary instead.
+		if err2 := herdrCopyBinary(self, installPath); err2 != nil {
+			return fmt.Errorf("install-default-shell: install binary (link: %v; copy: %w)", err, err2)
+		}
+	}
+
+	// Sidecar: two-line file storing the real nexus3 binary path (line 1) and
+	// the kernel image path (line 2). The kernel path is stamped at install time
+	// so RunHerdrGuestShell can set NEXUS3_KERNEL_PATH before substrate selection,
+	// breaking the cwd dependency in resolveKernelPath (CRITICAL 1). If kernel
+	// resolution fails at install time (kernel not yet present), line 2 is empty
+	// and the pane falls back to host shell — fail-open is preserved.
+	//
+	// Version skew: the hard link freezes the DECISION binary at install time;
+	// the sidecar always names the latest-built nexus3 for the EXEC leg. If the
+	// exec verb's CLI surface changes after a rebuild, the stale decision binary
+	// builds an argv that the new exec binary rejects — AFTER syscall.Exec
+	// replaces the process. The symptom is a visible error in the pane (not a
+	// silent dead pane), and recovery is "nexus3 herdr install-default-shell".
+	// A build-ID stamp was considered and rejected: it requires embedding a
+	// timestamp (complicates reproducibility) or computing a content hash
+	// (startup cost), for an error that is visible and self-documenting.
+	sidecarPath := installPath + herdrSidecarSuffix
+	kernelLine := ""
+	if kp, kErr := resolveKernelPath(); kErr == nil {
+		kernelLine = kp
+	}
+	sidecarContent := self + "\n" + kernelLine + "\n"
+	if err := os.WriteFile(sidecarPath, []byte(sidecarContent), 0o644); err != nil {
+		_ = os.Remove(installPath)
+		return fmt.Errorf("install-default-shell: write sidecar: %w", err)
+	}
+
+	// Probe: run the installed binary as "nexus3-guest-shell" with
+	// NEXUS3_HOST_SHELL=1 and SHELL=/bin/true. A working install exec-replaces
+	// itself with /bin/true (exit 0). A stale binary without the argv[0]
+	// dispatch routes to the CLI and exits non-zero.
+	if !herdrSkipInstallProbeForTest {
+		if err := herdrInstallProbeCmd(installPath).Run(); err != nil {
+			_ = os.Remove(installPath)
+			_ = os.Remove(sidecarPath)
+			return fmt.Errorf("install-default-shell: probe failed — binary may be too old; rebuild nexus3 and retry: %w", err)
+		}
+	}
+
+	fmt.Fprintf(out.w, "Installed: %s\n\n", installPath)
+	fmt.Fprintf(out.w, "Add to ~/.config/herdr/config.toml:\n\n")
+	fmt.Fprintf(out.w, "[terminal]\ndefault_shell = %q\n", installPath)
+	return nil
+}
+
+// herdrInstallProbeCmd returns the probe command used by
+// runHerdrInstallDefaultShell to verify the installed binary responds to the
+// argv[0] dispatch. Extracted so tests can inspect the command structure
+// without running it.
+//
+// The probe runs installPath as "nexus3-guest-shell" with NEXUS3_HOST_SHELL=1
+// and SHELL=/bin/true. A correctly installed binary exec-replaces itself with
+// /bin/true (exit 0). The key invariants:
+//   - Args[0] == "nexus3-guest-shell" triggers the argv[0] dispatch in main.go
+//   - NEXUS3_HOST_SHELL=1 causes herdrDefaultShellCore to exec $SHELL immediately
+//   - SHELL=/bin/true exits 0, confirming the dispatch and escape-hatch work
+func herdrInstallProbeCmd(installPath string) *osexec.Cmd {
+	return &osexec.Cmd{
+		Path: installPath,
+		Args: []string{"nexus3-guest-shell"},
+		Env:  append(os.Environ(), "NEXUS3_HOST_SHELL=1", "SHELL=/bin/true"),
+	}
+}
+
+// herdrCopyBinary copies the file at src to dst with the same permissions.
+// Used as a cross-device fallback when os.Link fails.
+func herdrCopyBinary(src, dst string) error {
+	srcF, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcF.Close()
+	info, err := srcF.Stat()
+	if err != nil {
+		return err
+	}
+	dstF, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+	defer dstF.Close()
+	_, err = io.Copy(dstF, srcF)
+	return err
+}

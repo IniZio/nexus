@@ -65,10 +65,19 @@ const herdrPluginABIVersion = "2"
 // All cases delegate to runHerdrPlugin so behaviour is unchanged.
 func runHerdrGroup(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
-		return &UsageError{Msg: "herdr: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|shell-cwd|new-tab|space-create|space-open-pane|create-from-file|pause|resume|remove|list|prune|agent|agent-from-file)"}
+		return &UsageError{Msg: "herdr: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|shell-cwd|new-tab|space-create|space-open-pane|create-from-file|pause|resume|remove|list|prune|agent|agent-from-file|default-shell|install-default-shell)"}
 	}
 	sub := args[0]
 	rest := args[1:]
+
+	// default-shell and install-default-shell are self-contained verbs handled
+	// directly here; they do not route through the __herdr-plugin machinery.
+	switch sub {
+	case "default-shell":
+		return runHerdrDefaultShell(ctx, rest, out)
+	case "install-default-shell":
+		return runHerdrInstallDefaultShell(ctx, rest, out)
+	}
 
 	// Map herdr-group verbs to the internal runHerdrPlugin dispatch names.
 	var pluginSub string

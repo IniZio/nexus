@@ -30,6 +30,11 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	// The install-default-shell probe runs the installed binary as
+	// "nexus3-guest-shell". In tests the installed binary is the test runner
+	// which lacks the argv[0] dispatch, so skip the probe to avoid spurious failure.
+	herdrSkipInstallProbeForTest = true
+
 	// os.Exit skips defers, so clean up explicitly around the run.
 	code := m.Run()
 	_ = os.RemoveAll(stateRoot)
