@@ -397,11 +397,11 @@ func New(cfg Config) (*CHDriver, error) {
 	}
 
 	return &CHDriver{
-		cfg:            cfg,
-		procs:          make(map[domain.SandboxID]*managedProcess),
-		nets:           make(map[domain.SandboxID]*netState),
-		virtiofsdProcs: make(map[domain.SandboxID][]*managedProcess),
-		snapshotStore:  snapshotStore,
+		cfg:   cfg,
+		procs: make(map[domain.SandboxID]*managedProcess),
+		nets:               make(map[domain.SandboxID]*netState),
+		virtiofsdProcs:     make(map[domain.SandboxID][]*managedProcess),
+		snapshotStore:      snapshotStore,
 	}, nil
 }
 
@@ -429,6 +429,19 @@ func defaultSocketDir() (string, error) {
 // exceed the sun_path limit — which cannot happen in practice because the
 // longest possible base (/tmp/n3s-<10-digit-uid>) is 21 bytes and the suffix
 // adds 9 bytes (slash + 8 hex), totalling 30 bytes, well under 72 (= 107 - 35).
+//
+// LIFETIME: the relocated directory is intentionally NEVER reaped by Stop.
+// The hash is deterministic: two drivers configured with identical (too-long)
+// SocketDir paths resolve to the SAME relocated directory. A peer driver that
+// called New but has not yet called Start holds an empty dir with no socket file
+// in it; os.MkdirAll for this path exists only in New, so nothing on the Start
+// path recreates it. Deleting the directory from Stop destroys the peer's
+// socket bind point (ENOENT) before it can use it. The project rule "ambiguity
+// resolves to KEEP" applies: the cost of leaking a small runtime directory is
+// negligible; the cost of destroying a peer's socket dir is a live sandbox
+// failure. Note also that the isAbsent(shutErr) branch in Stop calls
+// clearState itself and returns early, so any reap placed after the terminal
+// clearState at the end of Stop never ran in the socket-absent case anyway.
 func relocateSocketDir(requested string) (string, error) {
 	h := sha256.Sum256([]byte(requested))
 	suffix := hex.EncodeToString(h[:4]) // 8 hex chars

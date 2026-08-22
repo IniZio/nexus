@@ -540,4 +540,38 @@ func TestSchemaCoversAllStructFields(t *testing.T) {
 			t.Errorf("schema missing sandbox property %q — add it to docs/schema/nexus3.schema.json", name)
 		}
 	}
+
+	// Reverse direction: every schema property must map to a known Go field.
+	// A schema-only property documents a key the parser refuses (unknown YAML
+	// keys are a hard parse error), so the schema would be lying to the user.
+
+	// Top-level: only "version", "egress", "sandbox" are valid.
+	knownTopLevel := map[string]bool{"version": true, "egress": true, "sandbox": true}
+	for key := range topProps {
+		if !knownTopLevel[key] {
+			t.Errorf("schema has unknown top-level property %q — remove it from docs/schema/nexus3.schema.json or add to the Go config struct", key)
+		}
+	}
+
+	// Egress reverse: every schema egress property must be a yaml tag in EgressConfig.
+	egressYAML := map[string]bool{}
+	for _, name := range yamlFields(reflect.TypeOf(config.EgressConfig{})) {
+		egressYAML[name] = true
+	}
+	for key := range egressProps {
+		if !egressYAML[key] {
+			t.Errorf("schema has egress property %q with no corresponding Go yaml tag — remove from schema or add to EgressConfig", key)
+		}
+	}
+
+	// Sandbox reverse: every schema sandbox property must be a yaml tag in SandboxConfig.
+	sandboxYAML := map[string]bool{}
+	for _, name := range yamlFields(reflect.TypeOf(config.SandboxConfig{})) {
+		sandboxYAML[name] = true
+	}
+	for key := range sandboxProps {
+		if !sandboxYAML[key] {
+			t.Errorf("schema has sandbox property %q with no corresponding Go yaml tag — remove from schema or add to SandboxConfig", key)
+		}
+	}
 }

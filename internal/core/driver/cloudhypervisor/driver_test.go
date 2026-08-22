@@ -255,9 +255,6 @@ func TestNew_socketDirTooLong_relocates(t *testing.T) {
 	}
 
 	// The driver must have relocated: resulting SocketDir must fit the limit.
-	if len(d.cfg.SocketDir)+maxSocketPathLen > maxSocketPathLen {
-		// Re-check correctly: dir + 35-char name + null must be ≤ 108.
-	}
 	const sockNameLen = 35
 	if len(d.cfg.SocketDir)+sockNameLen > maxSocketPathLen {
 		t.Errorf("after relocation, SocketDir %q is still too long (%d + %d > %d)",

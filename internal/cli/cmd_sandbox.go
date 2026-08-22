@@ -365,7 +365,11 @@ type sandboxCreateFlags struct {
 // process cwd to the repo root) and applies its settings to f:
 //
 //   - [sandbox].image / memory / vcpus: precedence is explicit CLI flag > project
-//     config > built-in default. The config provides the default; a flag overrides it.
+//     config. The config provides the default; a flag overrides it. (config.Defaults{}
+//     is passed empty so the built-in-default tier is inert on this path.)
+//     For image specifically, --image, --file, and --rootfs all suppress the
+//     config value — any of the three signals the user's intent for how the
+//     image is provided.
 //   - [egress].allow: ADDITIVE — config hosts are appended to any --allow-host flags.
 //     Neither replaces the other; both reach AllowedHosts. This keeps the project's
 //     standing allowlist and a per-invocation flag independent.
@@ -419,7 +423,14 @@ func applyProjectConfig(f *sandboxCreateFlags) error {
 	}
 	resolved := config.Resolve(flags, cfg, config.Defaults{})
 
-	f.imageRef = resolved.Image
+	// Apply config image only when no image source was given on the command
+	// line. If --image, --file, or --rootfs was passed, those flag the user's
+	// intent for how the image is provided; letting the config overwrite imageRef
+	// here would silently suppress --file's build branch (which requires
+	// f.imageRef == "") and would set both imageRef and rootfsPath at once.
+	if f.imageRef == "" && f.filePath == "" && f.rootfsPath == "" {
+		f.imageRef = resolved.Image
+	}
 	if resolved.MemoryMiB != 0 {
 		f.memoryMiB = uint32(resolved.MemoryMiB)
 	}

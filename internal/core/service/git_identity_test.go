@@ -402,6 +402,17 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 		}
 
 		// Part 2: payload check — no GITHUB-pattern credential variable.
+		//
+		// Operator decision note: project [egress].allow may include github.com
+		// (by operator choice). The CREDENTIAL GUARD is independent of the host
+		// ACL: prepareAgentCredPayload uses AgentEgressHosts(profile), NOT the
+		// sandbox AllowedHosts. AllowedHosts controls which hosts the egress ACL
+		// passes; the credential list controls which hosts receive a MITM
+		// placeholder token. These two lists are independently controlled.
+		// Adding github.com to AllowedHosts (e.g. via nexus3.yaml egress.allow)
+		// must NOT produce a GitHub token in the agent payload. There is no
+		// code path where AllowedHosts flows into SeedGuestAgent — the function
+		// only takes the seeder callback.
 		var captured []byte
 		stubSeeder := GuestSeeder(func(_ context.Context, _ domain.SandboxID, payload []byte) error {
 			captured = payload
@@ -423,56 +434,6 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 					"would swap it for a real GitHub token on every outbound github.com request.\n\n"+
 					"The credential guard is prepareAgentCredPayload in seed.go: it must use "+
 					"AgentEgressHosts(profile), never AllowedHosts. "+
-					"See D-PD-22.\n\npayload:\n%s",
-				captured,
-			)
-		}
-	})
-
-	t.Run("(e) agent seed excludes GitHub credential when github.com is in AllowedHosts", func(t *testing.T) {
-		// Operator decision: project [egress].allow may include github.com.
-		// The CREDENTIAL GUARD is in the seeding path, not the host list:
-		// prepareAgentCredPayload uses AgentEgressHosts(profile), not AllowedHosts.
-		// So even when github.com is explicitly listed as an AllowedHost, the agent
-		// seed payload must carry no GitHub credential variable.
-		//
-		// This sub-check proves the guard holds for the case where AllowedHosts
-		// (from config or --allow-host) includes github.com.
-		//
-		// Mutation guard: change prepareAgentCredPayload to append "github.com"
-		// to the profile's hosts → this sub-check fails RED (GITHUB appears in payload).
-		// Separately: removing the guard does not affect sub-check (a) or (b) — which
-		// is why (e) exists as an independent check.
-
-		var captured []byte
-		stubSeeder := GuestSeeder(func(_ context.Context, _ domain.SandboxID, payload []byte) error {
-			captured = payload
-			return nil
-		})
-		id := domain.NewSandboxID()
-		broker := cred.NewBroker()
-
-		// SeedGuestAgent uses AgentEgressHosts(ClaudeCodeProfile) internally.
-		// The caller's AllowedHosts (which may include github.com from config) are
-		// NOT passed to SeedGuestAgent — it only receives the seeder.
-		_, err := SeedGuestAgent(context.Background(), broker, id, stubSeeder)
-		if err != nil {
-			t.Fatalf("SeedGuestAgent returned error: %v", err)
-		}
-		if bytes.Contains(bytes.ToUpper(captured), []byte("GITHUB")) {
-			t.Errorf(
-				"SECURITY VIOLATION — N-AC1 / D-PD-22 (credential invariant)\n"+
-					"The agent seed payload contains 'GITHUB', meaning a GitHub credential\n"+
-					"variable was minted by the agent seeding path.\n\n"+
-					"The credential guard is in prepareAgentCredPayload (seed.go): it must\n"+
-					"iterate AgentEgressHosts(profile), NOT the sandbox AllowedHosts.\n"+
-					"AllowedHosts controls which hosts the egress ACL passes; the credential\n"+
-					"list controls which hosts receive a MITM placeholder token. These two\n"+
-					"lists are independently controlled. Adding github.com to AllowedHosts\n"+
-					"(e.g. via nexus3.yaml egress.allow) must NOT produce a GitHub token\n"+
-					"in the agent payload.\n\n"+
-					"To fix: restore AgentEgressHosts(profile) as the host source in\n"+
-					"prepareAgentCredPayload — do NOT use AllowedHosts there.\n"+
 					"See D-PD-22.\n\npayload:\n%s",
 				captured,
 			)

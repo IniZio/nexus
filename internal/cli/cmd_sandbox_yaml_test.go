@@ -3,7 +3,11 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/IniZio/nexus3/internal/core/config"
 )
 
 // writeYaml writes a nexus3.yaml to dir and returns the file path.
@@ -199,5 +203,215 @@ sandbox:
 	if len(f.mountLive) != 1 || f.mountLive[0] != "/explicit:/guest" {
 		t.Errorf("mountLive = %v, want [/explicit:/guest] (explicit --mount must replace config mounts)",
 			f.mountLive)
+	}
+}
+
+// TestApplyProjectConfig_FileFlag_BeatsConfigImage verifies that when --file is
+// given alongside a config sandbox.image, the config image is NOT applied to
+// f.imageRef. The build branch at runSandboxCreate requires f.imageRef == "",
+// so any unconditional assignment of the config image here would silently
+// suppress the build and use the config image instead.
+//
+// Mutation target: remove the guard `if f.imageRef == "" && f.filePath == "" &&
+// f.rootfsPath == ""` around the f.imageRef = resolved.Image assignment. The
+// config image would be applied unconditionally, imageRef becomes non-empty,
+// and this test turns RED.
+func TestApplyProjectConfig_FileFlag_BeatsConfigImage(t *testing.T) {
+	dir := t.TempDir()
+	writeGitRoot(t, dir)
+	writeYaml(t, dir, `version: 1
+sandbox:
+  image: config-image
+`)
+	t.Chdir(dir)
+
+	f := sandboxCreateFlags{
+		filePath: "/some/project", // simulates --file given on CLI
+	}
+	if err := applyProjectConfig(&f); err != nil {
+		t.Fatalf("applyProjectConfig: %v", err)
+	}
+
+	// imageRef must remain empty so the build branch is reachable.
+	if f.imageRef != "" {
+		t.Errorf("imageRef = %q, want empty: config image must not win when --file is given (build branch requires imageRef == \"\")", f.imageRef)
+	}
+	// filePath must be preserved unchanged.
+	if f.filePath != "/some/project" {
+		t.Errorf("filePath = %q, want %q", f.filePath, "/some/project")
+	}
+}
+
+// TestApplyProjectConfig_RootfsFlag_BeatsConfigImage verifies that when
+// --rootfs is given alongside a config sandbox.image, the config image is NOT
+// applied to f.imageRef. Setting both would place two conflicting image sources
+// on the spec simultaneously.
+//
+// Mutation target: same guard as TestApplyProjectConfig_FileFlag_BeatsConfigImage.
+// Without it, imageRef is set from config even though rootfsPath is also set.
+func TestApplyProjectConfig_RootfsFlag_BeatsConfigImage(t *testing.T) {
+	dir := t.TempDir()
+	writeGitRoot(t, dir)
+	writeYaml(t, dir, `version: 1
+sandbox:
+  image: config-image
+`)
+	t.Chdir(dir)
+
+	f := sandboxCreateFlags{
+		rootfsPath: "/path/to/rootfs.ext4", // simulates --rootfs given on CLI
+	}
+	if err := applyProjectConfig(&f); err != nil {
+		t.Fatalf("applyProjectConfig: %v", err)
+	}
+
+	// imageRef must remain empty; config image must not win when --rootfs is given.
+	if f.imageRef != "" {
+		t.Errorf("imageRef = %q, want empty: config image must not win when --rootfs is given", f.imageRef)
+	}
+	// rootfsPath must be preserved unchanged.
+	if f.rootfsPath != "/path/to/rootfs.ext4" {
+		t.Errorf("rootfsPath = %q, want %q", f.rootfsPath, "/path/to/rootfs.ext4")
+	}
+}
+
+// TestApplyProjectConfig_FieldGuardCoverage is a two-part structural test:
+//
+//  1. Reflection sweep: every yaml tag in config.SandboxConfig must appear in
+//     the cases table below. A new field added to SandboxConfig without a
+//     corresponding entry here fails the test RED — forcing the author to
+//     consciously add a guard case AND verify it works.
+//
+//  2. Per-field guard verification: for each case, a config value AND a CLI
+//     override are set simultaneously; the test asserts the CLI value survives.
+//     Remove the guard that owns a field's precedence and its case turns RED.
+//
+//     Which layer owns that guard is NOT uniform, and the case for each field
+//     is written against its own owning layer:
+//
+//     image   — applyProjectConfig (--file / --rootfs suppress the config image)
+//     mounts  — applyProjectConfig (f.mountLive == nil)
+//     memory  — config.Resolve     (the f.Memory != nil branch)
+//     vcpus   — config.Resolve     (the f.VCPUs != nil branch)
+//
+//     memory and vcpus have NO precedence guard in applyProjectConfig at all:
+//     their `if resolved.X != 0` is a zero-value check, not a precedence guard.
+//     Making those two applications unconditional leaves this test GREEN, and
+//     correctly so — Resolve already returned the CLI value.
+//
+// Mutation proofs (independent — revert each before trying the next):
+//
+//	Part 1: add `Extra string \`yaml:"extra"\`` to SandboxConfig without a
+//	corresponding case entry below — the reflection sweep fails RED on the
+//	missing "extra" tag. Revert to restore GREEN.
+//
+//	Part 2: in applyProjectConfig replace the image guard with unconditional
+//	`f.imageRef = resolved.Image` — the image cases below fail RED because
+//	the suppressor flags (--file, --rootfs) no longer suppress the assignment.
+//	Revert to restore GREEN.
+func TestApplyProjectConfig_FieldGuardCoverage(t *testing.T) {
+	type fieldCase struct {
+		yamlTag    string
+		configYAML string                                   // nexus3.yaml content setting this field
+		setupFlags func(f *sandboxCreateFlags)              // set the CLI override before applyProjectConfig
+		check      func(t *testing.T, f sandboxCreateFlags) // assert CLI value survived
+	}
+
+	cases := []fieldCase{
+		{
+			// image/--file suppressor: when --file is given, the guard must block
+			// the config image from overwriting imageRef (imageRef must stay "").
+			// This bites when the guard is deleted: resolved.Image becomes
+			// "config-image" and the unconditional assignment sets imageRef.
+			yamlTag:    "image",
+			configYAML: "version: 1\nsandbox:\n  image: config-image\n",
+			setupFlags: func(f *sandboxCreateFlags) { f.filePath = "." },
+			check: func(t *testing.T, f sandboxCreateFlags) {
+				if f.imageRef != "" {
+					t.Errorf("image/--file: guard failed, config set imageRef = %q, want empty", f.imageRef)
+				}
+			},
+		},
+		{
+			// image/--rootfs suppressor: when --rootfs is given, the guard must
+			// block the config image from overwriting imageRef (imageRef must stay "").
+			yamlTag:    "image",
+			configYAML: "version: 1\nsandbox:\n  image: config-image\n",
+			setupFlags: func(f *sandboxCreateFlags) { f.rootfsPath = "/tmp/root.ext4" },
+			check: func(t *testing.T, f sandboxCreateFlags) {
+				if f.imageRef != "" {
+					t.Errorf("image/--rootfs: guard failed, config set imageRef = %q, want empty", f.imageRef)
+				}
+			},
+		},
+		{
+			yamlTag:    "memory",
+			configYAML: "version: 1\nsandbox:\n  memory: 8192\n",
+			setupFlags: func(f *sandboxCreateFlags) { f.memoryMiB = 4096 },
+			check: func(t *testing.T, f sandboxCreateFlags) {
+				if f.memoryMiB != 4096 {
+					t.Errorf("memory: config overwrote CLI --memory flag: got %d, want 4096", f.memoryMiB)
+				}
+			},
+		},
+		{
+			yamlTag:    "vcpus",
+			configYAML: "version: 1\nsandbox:\n  vcpus: 8\n",
+			setupFlags: func(f *sandboxCreateFlags) { f.vcpus = 2 },
+			check: func(t *testing.T, f sandboxCreateFlags) {
+				if f.vcpus != 2 {
+					t.Errorf("vcpus: config overwrote CLI --vcpus flag: got %d, want 2", f.vcpus)
+				}
+			},
+		},
+		{
+			// mounts: any --mount flag causes the CLI mounts to replace config mounts entirely.
+			yamlTag:    "mounts",
+			configYAML: "version: 1\nsandbox:\n  mounts:\n    - /tmp/config-host:/config-guest\n",
+			setupFlags: func(f *sandboxCreateFlags) { f.mountLive = []string{"cli-host:cli-guest"} },
+			check: func(t *testing.T, f sandboxCreateFlags) {
+				if len(f.mountLive) != 1 || f.mountLive[0] != "cli-host:cli-guest" {
+					t.Errorf("mounts: config overwrote CLI --mount flag: got %v, want [cli-host:cli-guest]", f.mountLive)
+				}
+			},
+		},
+	}
+
+	// Part 1: reflection sweep — every yaml tag in SandboxConfig must be in cases.
+	covered := make(map[string]bool, len(cases))
+	for _, c := range cases {
+		covered[c.yamlTag] = true
+	}
+	typ := reflect.TypeOf(config.SandboxConfig{})
+	for i := 0; i < typ.NumField(); i++ {
+		tag := typ.Field(i).Tag.Get("yaml")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		if idx := strings.IndexByte(tag, ','); idx >= 0 {
+			tag = tag[:idx]
+		}
+		if !covered[tag] {
+			t.Errorf("SandboxConfig field with yaml tag %q has no entry in TestApplyProjectConfig_FieldGuardCoverage cases — "+
+				"add an entry to cases AND a CLI-intent guard in applyProjectConfig before applying the field", tag)
+		}
+	}
+
+	// Part 2: per-field guard verification.
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.yamlTag, func(t *testing.T) {
+			dir := t.TempDir()
+			writeGitRoot(t, dir)
+			writeYaml(t, dir, tc.configYAML)
+			t.Chdir(dir)
+
+			f := sandboxCreateFlags{}
+			tc.setupFlags(&f)
+			if err := applyProjectConfig(&f); err != nil {
+				t.Fatalf("applyProjectConfig: %v", err)
+			}
+			tc.check(t, f)
+		})
 	}
 }
