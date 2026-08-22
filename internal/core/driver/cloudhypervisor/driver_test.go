@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -18,8 +19,22 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver"
 )
 
+// testSocketDir returns a guaranteed-short, uniquely-named, auto-cleaned
+// directory suitable for use as a socket directory in tests. It uses /tmp
+// directly (bypassing $TMPDIR) so the path is always short enough to satisfy
+// the 107-byte Linux sun_path limit, even when $TMPDIR is set to a long path.
+func testSocketDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "ch-t-")
+	if err != nil {
+		t.Fatalf("testSocketDir: MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
 // newTestDriver returns a CHDriver configured for testing. socketDir is used
-// as the socket directory (callers should use t.TempDir()).
+// as the socket directory (callers should use testSocketDir(t)).
 func newTestDriver(t *testing.T, socketDir string) *CHDriver {
 	t.Helper()
 	d, err := New(Config{
@@ -39,7 +54,7 @@ func newTestDriver(t *testing.T, socketDir string) *CHDriver {
 // TestStop_idempotence verifies that calling Stop on a sandbox that was never
 // started returns nil — the fundamental idempotence contract.
 func TestStop_idempotence(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	d := newTestDriver(t, dir)
 	id := domain.NewSandboxID()
 
@@ -57,7 +72,7 @@ func TestStop_idempotence(t *testing.T) {
 // TestObserve_neverStarted verifies that Observe on a sandbox that was never
 // started returns Absent and no error.
 func TestObserve_neverStarted(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	d := newTestDriver(t, dir)
 	id := domain.NewSandboxID()
 
@@ -76,7 +91,7 @@ func TestObserve_neverStarted(t *testing.T) {
 // TestSocketPath_perSandbox verifies that two distinct sandbox IDs produce
 // two distinct socket paths — collision would cause one VM to corrupt another.
 func TestSocketPath_perSandbox(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	d := newTestDriver(t, dir)
 
 	id1 := domain.NewSandboxID()
@@ -110,17 +125,18 @@ func TestStart_failedStart_noOrphan(t *testing.T) {
 		t.Skip("skipping: /bin/sh not available")
 	}
 
-	dir := t.TempDir()
+	fileDir := t.TempDir()
+	socketDir := testSocketDir(t)
 
 	// Write a script that ignores all arguments and sleeps.
-	script := filepath.Join(dir, "fake-ch.sh")
+	script := filepath.Join(fileDir, "fake-ch.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 300\n"), 0o700); err != nil {
 		t.Fatalf("write script: %v", err)
 	}
 
 	d, err := New(Config{
 		BinaryPath:   script,
-		SocketDir:    dir,
+		SocketDir:    socketDir,
 		KernelPath:   "/dev/null",
 		StartTimeout: 300 * time.Millisecond,
 	})
@@ -163,11 +179,12 @@ func TestStart_failedStart_noOrphan_pidCheck(t *testing.T) {
 		t.Skip("skipping: /bin/sh not available")
 	}
 
-	dir := t.TempDir()
+	fileDir := t.TempDir()
+	socketDir := testSocketDir(t)
 
 	// Write a script that prints its own PID to a file, then sleeps.
-	pidFile := filepath.Join(dir, "spawned.pid")
-	script := filepath.Join(dir, "fake-ch2.sh")
+	pidFile := filepath.Join(fileDir, "spawned.pid")
+	script := filepath.Join(fileDir, "fake-ch2.sh")
 	scriptContent := fmt.Sprintf("#!/bin/sh\necho $$ > %s\nsleep 300\n", pidFile)
 	if err := os.WriteFile(script, []byte(scriptContent), 0o700); err != nil {
 		t.Fatalf("write script: %v", err)
@@ -175,7 +192,7 @@ func TestStart_failedStart_noOrphan_pidCheck(t *testing.T) {
 
 	d, err := New(Config{
 		BinaryPath:   script,
-		SocketDir:    dir,
+		SocketDir:    socketDir,
 		KernelPath:   "/dev/null",
 		StartTimeout: 400 * time.Millisecond,
 	})
@@ -219,21 +236,74 @@ func isSRCH(err error) bool {
 	return err == syscall.ESRCH
 }
 
-// TestNew_socketDirTooLong verifies that New rejects a SocketDir that would
-// produce a socket path exceeding the Linux sun_path limit.
-func TestNew_socketDirTooLong(t *testing.T) {
-	// Generate a path that is 80 chars long (safe temp dir is shorter).
-	longDir := "/" + string(make([]byte, 80))
-	for i := range longDir[1:] {
-		longDir = longDir[:i+1] + "a" + longDir[i+2:]
-	}
+// TestNew_socketDirTooLong_relocates verifies that New SUCCEEDS when the
+// requested SocketDir would produce a socket path exceeding the Linux sun_path
+// limit: New must transparently relocate to a shorter path rather than error.
+// The resulting Config.SocketDir must be short enough that the longest possible
+// socket name fits within the 107-byte limit.
+func TestNew_socketDirTooLong_relocates(t *testing.T) {
+	// Build a path that is definitely too long (80 'a's under root = 81 bytes,
+	// exceeds the 72-byte budget for a directory that leaves room for a 35-byte name).
+	longDir := "/" + strings.Repeat("a", 80)
 
-	_, err := New(Config{
+	d, err := New(Config{
 		BinaryPath: "/bin/true",
 		SocketDir:  longDir,
 	})
-	if err == nil {
-		t.Fatal("expected error for too-long SocketDir, got nil")
+	if err != nil {
+		t.Fatalf("New with long SocketDir must not error; got: %v", err)
+	}
+
+	// The driver must have relocated: resulting SocketDir must fit the limit.
+	if len(d.cfg.SocketDir)+maxSocketPathLen > maxSocketPathLen {
+		// Re-check correctly: dir + 35-char name + null must be ≤ 108.
+	}
+	const sockNameLen = 35
+	if len(d.cfg.SocketDir)+sockNameLen > maxSocketPathLen {
+		t.Errorf("after relocation, SocketDir %q is still too long (%d + %d > %d)",
+			d.cfg.SocketDir, len(d.cfg.SocketDir), sockNameLen, maxSocketPathLen)
+	}
+	// The relocated dir must differ from the requested (too-long) dir.
+	if d.cfg.SocketDir == longDir {
+		t.Errorf("SocketDir was not relocated; still equals the too-long requested dir")
+	}
+}
+
+// TestNew_socketDirTooLong_deterministic verifies that two calls with the same
+// too-long SocketDir produce the same relocated path (same input → same short
+// dir), so a restart or a second process resolves the same location.
+func TestNew_socketDirTooLong_deterministic(t *testing.T) {
+	longDir := "/" + strings.Repeat("b", 80)
+
+	d1, err := New(Config{BinaryPath: "/bin/true", SocketDir: longDir})
+	if err != nil {
+		t.Fatalf("first New: %v", err)
+	}
+	d2, err := New(Config{BinaryPath: "/bin/true", SocketDir: longDir})
+	if err != nil {
+		t.Fatalf("second New: %v", err)
+	}
+	if d1.cfg.SocketDir != d2.cfg.SocketDir {
+		t.Errorf("relocation is non-deterministic: %q vs %q", d1.cfg.SocketDir, d2.cfg.SocketDir)
+	}
+}
+
+// TestNew_socketDirTooLong_collisionFree verifies that two different too-long
+// SocketDir values relocate to two different short dirs — no collision.
+func TestNew_socketDirTooLong_collisionFree(t *testing.T) {
+	longDir1 := "/" + strings.Repeat("c", 80)
+	longDir2 := "/" + strings.Repeat("d", 80)
+
+	d1, err := New(Config{BinaryPath: "/bin/true", SocketDir: longDir1})
+	if err != nil {
+		t.Fatalf("New(longDir1): %v", err)
+	}
+	d2, err := New(Config{BinaryPath: "/bin/true", SocketDir: longDir2})
+	if err != nil {
+		t.Fatalf("New(longDir2): %v", err)
+	}
+	if d1.cfg.SocketDir == d2.cfg.SocketDir {
+		t.Errorf("collision: two different long dirs relocated to the same short dir %q", d1.cfg.SocketDir)
 	}
 }
 
@@ -242,7 +312,7 @@ func TestNew_socketDirTooLong(t *testing.T) {
 // d.socketPath(id) records which API paths were hit; the test asserts that
 // /api/v1/vmm.shutdown appears in the recorded set.
 func TestStop_callsVMMShutdown(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	d := newTestDriver(t, dir)
 	id := domain.NewSandboxID()
 
@@ -303,7 +373,7 @@ func TestStop_callsVMMShutdown(t *testing.T) {
 // vmm.shutdown ran. On restart, no proc handle exists in d.procs; vmm.shutdown
 // is the only path to kill the process.
 func TestStop_callsVMMShutdown_afterRestart(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	d := newTestDriver(t, dir)
 	id := domain.NewSandboxID()
 
@@ -365,7 +435,7 @@ func TestStop_callsVMMShutdown_afterRestart(t *testing.T) {
 // Unknown + non-nil error, NOT Absent. Returning Absent here would authorise
 // a second Start() that collides with the existing VMM process.
 func TestObserve_shutdownStateIsUnknown(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	d := newTestDriver(t, dir)
 	id := domain.NewSandboxID()
 
@@ -402,7 +472,7 @@ func TestObserve_shutdownStateIsUnknown(t *testing.T) {
 // TestObserve_createdStateIsUnknown verifies that CH "Created" state also maps
 // to Unknown + error (guest not yet booted, but VMM socket is live).
 func TestObserve_createdStateIsUnknown(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	d := newTestDriver(t, dir)
 	id := domain.NewSandboxID()
 
@@ -437,7 +507,7 @@ func TestObserve_createdStateIsUnknown(t *testing.T) {
 // recovery path that used to require Unknown here is now unnecessary because
 // spawnVMM pre-flights and refuses to spawn onto an occupied socket.
 func TestObserve_liveVMM_noVM(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	d := newTestDriver(t, dir)
 	id := domain.NewSandboxID()
 
@@ -471,7 +541,7 @@ func TestObserve_liveVMM_noVM(t *testing.T) {
 // binary is NOT spawned — verified by using a non-existent binary path, so any
 // attempt to exec would produce a different ENOENT error, not ErrVMMAlreadyBound.
 func TestSpawnVMM_liveSocket(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	sockPath := filepath.Join(dir, "live.sock")
 
 	// Serve a successful vmm.ping response.
@@ -520,7 +590,7 @@ func TestSpawnVMM_staleSocket(t *testing.T) {
 		t.Skip("skipping: /bin/sh not available")
 	}
 
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	sockPath := filepath.Join(dir, "stale.sock")
 
 	// Create a real socket then immediately close the listener — leaves the
@@ -571,7 +641,7 @@ func TestSpawnVMM_staleSocket(t *testing.T) {
 // never responds produces an error rather than treating the VMM as absent.
 // The socket file must NOT be removed — we cannot confirm the VMM is dead.
 func TestSpawnVMM_hungSocket(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	sockPath := filepath.Join(dir, "hung.sock")
 
 	// Accept connections but never reply.
@@ -617,7 +687,7 @@ func TestSpawnVMM_hungSocket(t *testing.T) {
 // this test to hang until the go test -timeout deadline fires. With the fix
 // applied, the test returns in ≈ CallTimeout (2 s here).
 func TestObserve_callTimeout_wedgedListener_doesNotHang(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	d, err := New(Config{
 		BinaryPath:   "/usr/bin/true",
 		SocketDir:    dir,
@@ -669,7 +739,7 @@ func TestObserve_callTimeout_wedgedListener_doesNotHang(t *testing.T) {
 // ErrNoKernelConfigured before spawning any process when Config.KernelPath is
 // empty. A non-existent BinaryPath proves no exec happened.
 func TestStart_noKernelPath_returnsError(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	d, err := New(Config{
 		BinaryPath:   "/nonexistent/cloud-hypervisor", // must never be reached
 		SocketDir:    dir,
@@ -702,7 +772,7 @@ func TestStart_noKernelPath_returnsError(t *testing.T) {
 // NEVER Absent. Absent authorises destruction; Unknown triggers the conservative
 // recovery path.
 func TestObserve_hungServerIsNotAbsent(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	d := newTestDriver(t, dir)
 	id := domain.NewSandboxID()
 

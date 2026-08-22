@@ -232,11 +232,6 @@ func TestDiskBoot(t *testing.T) {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
 
-	if len(socketDir)+35 > diskTestSunPathMax {
-		os.RemoveAll(socketDir)
-		t.Skipf("skipping: socket dir path too long for unix socket: %s", socketDir)
-	}
-
 	// serial
 	// Capture serial to a file so the kernel cmdline + agent boot logs are
 	// visible in t.Logf on failure.

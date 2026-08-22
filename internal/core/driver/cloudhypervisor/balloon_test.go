@@ -210,7 +210,7 @@ func TestClient_VMResize_unexpectedStatus(t *testing.T) {
 // correct PUT /vm.resize body to the sandbox's socket. It wires a fake HTTP
 // server at d.socketPath(id) — the same pattern used by TestStop_callsVMMShutdown.
 func TestResizeBalloon_driver(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	d := newTestDriver(t, dir)
 	id := domain.NewSandboxID()
 

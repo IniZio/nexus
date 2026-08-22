@@ -3,9 +3,11 @@ package cloudhypervisor
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,11 +108,14 @@ type Config struct {
 	// SocketDir is the directory under which per-sandbox API sockets are
 	// created. Each socket is named "<sandboxID>.sock".
 	//
-	// Defaults to $XDG_RUNTIME_DIR/nexus3, or $TMPDIR/nexus3-<uid> if
+	// Defaults to $XDG_RUNTIME_DIR/nexus3, or /tmp/nexus3-<uid> if
 	// XDG_RUNTIME_DIR is unset.
 	//
-	// Must be short enough that the full socket path fits within the 107-byte
-	// Linux sun_path limit. New returns an error if the directory is too long.
+	// If the requested directory is too long for the Linux sun_path limit
+	// (107 usable bytes), New transparently relocates sockets to a shorter
+	// path derived deterministically from a hash of the requested path and
+	// updates this field to reflect the actual directory in use. The only
+	// error case is when even the short fallback base is unusable.
 	SocketDir string
 
 	// KernelPath is the path to the guest kernel image passed to CH's
@@ -334,10 +339,16 @@ func New(cfg Config) (*CHDriver, error) {
 	// Longest name: "sb-" + 26 Crockford chars + ".sock" = 34 chars; +1 for "/".
 	const sockNameLen = 35
 	if len(cfg.SocketDir)+sockNameLen > maxSocketPathLen {
-		return nil, fmt.Errorf(
-			"cloudhypervisor: SocketDir %q is too long: socket path would exceed %d bytes (Linux sun_path limit)",
-			cfg.SocketDir, maxSocketPathLen,
-		)
+		relocated, err := relocateSocketDir(cfg.SocketDir)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"cloudhypervisor: SocketDir %q is too long and relocation failed: %w",
+				cfg.SocketDir, err,
+			)
+		}
+		slog.Info("cloudhypervisor: SocketDir too long for sun_path limit; relocated",
+			"requested", cfg.SocketDir, "relocated", relocated)
+		cfg.SocketDir = relocated
 	}
 
 	if cfg.VCPUs == 0 {
@@ -394,12 +405,52 @@ func New(cfg Config) (*CHDriver, error) {
 	}, nil
 }
 
-// defaultSocketDir returns $XDG_RUNTIME_DIR/nexus3 or a tmp fallback.
+// defaultSocketDir returns $XDG_RUNTIME_DIR/nexus3 or a /tmp fallback.
+// It deliberately uses /tmp (not os.TempDir()) so that the default is always
+// short enough to satisfy the Linux sun_path limit, regardless of $TMPDIR.
 func defaultSocketDir() (string, error) {
 	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
 		return filepath.Join(xdg, "nexus3"), nil
 	}
-	return filepath.Join(os.TempDir(), fmt.Sprintf("nexus3-%d", os.Getuid())), nil
+	return fmt.Sprintf("/tmp/nexus3-%d", os.Getuid()), nil
+}
+
+// relocateSocketDir returns a short, deterministic, collision-free socket
+// directory derived from a hash of the requested (too-long) path.
+//
+// The returned path has the form <base>/<8-hex-chars> where <base> is
+// $XDG_RUNTIME_DIR/n3s or /tmp/n3s-<uid>. Using /tmp (not os.TempDir())
+// ensures the base is always short even when $TMPDIR is set to a long path.
+// Two different requested dirs produce different 8-hex suffixes (sha256 of
+// the path bytes), so collisions are structurally impossible for any realistic
+// set of directories.
+//
+// An error is returned only when the derived short path itself would still
+// exceed the sun_path limit — which cannot happen in practice because the
+// longest possible base (/tmp/n3s-<10-digit-uid>) is 21 bytes and the suffix
+// adds 9 bytes (slash + 8 hex), totalling 30 bytes, well under 72 (= 107 - 35).
+func relocateSocketDir(requested string) (string, error) {
+	h := sha256.Sum256([]byte(requested))
+	suffix := hex.EncodeToString(h[:4]) // 8 hex chars
+
+	var base string
+	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
+		base = filepath.Join(xdg, "n3s")
+	} else {
+		base = fmt.Sprintf("/tmp/n3s-%d", os.Getuid())
+	}
+
+	short := filepath.Join(base, suffix)
+
+	// Defensive check: even the fallback path must fit.
+	const sockNameLen = 35
+	if len(short)+sockNameLen > maxSocketPathLen {
+		return "", fmt.Errorf(
+			"cloudhypervisor: relocated socket dir %q still exceeds sun_path limit (%d bytes)",
+			short, maxSocketPathLen,
+		)
+	}
+	return short, nil
 }
 
 // defaultSnapshotDir returns the durable default root for snapshot artifacts.

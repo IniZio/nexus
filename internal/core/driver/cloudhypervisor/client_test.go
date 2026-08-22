@@ -14,11 +14,12 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver"
 )
 
-// unixTestServer starts an HTTP server on a Unix socket in t.TempDir() and
-// returns the socket path and a function to close the server.
+// unixTestServer starts an HTTP server on a Unix socket in a short temp dir
+// (bypassing $TMPDIR) and returns the socket path. This avoids the Linux
+// sun_path limit regardless of how long $TMPDIR is.
 func unixTestServer(t *testing.T, handler http.Handler) (socketPath string) {
 	t.Helper()
-	socketPath = filepath.Join(t.TempDir(), "test.sock")
+	socketPath = filepath.Join(testSocketDir(t), "test.sock")
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -56,7 +57,7 @@ func TestClient_Ping(t *testing.T) {
 // TestClient_Ping_absent verifies that Ping on a non-existent socket returns
 // an error for which isAbsent is true.
 func TestClient_Ping_absent(t *testing.T) {
-	c := newClient(filepath.Join(t.TempDir(), "no-such.sock"))
+	c := newClient(filepath.Join(testSocketDir(t), "no-such.sock"))
 	err := c.Ping(context.Background())
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -133,7 +134,7 @@ func TestClient_VMInfo_unrecognisedState(t *testing.T) {
 // TestClient_VMInfo_absent verifies that a connection to a non-existent socket
 // returns an error for which isAbsent is true (the caller maps this to Absent).
 func TestClient_VMInfo_absent(t *testing.T) {
-	c := newClient(filepath.Join(t.TempDir(), "no-such.sock"))
+	c := newClient(filepath.Join(testSocketDir(t), "no-such.sock"))
 	state, err := c.VMInfo(context.Background())
 	if state != driver.Unknown {
 		t.Errorf("state = %v, want Unknown (caller will convert via isAbsent)", state)

@@ -64,7 +64,7 @@ func testDriver(t *testing.T, virtiofsdBin string, mounts []domain.LiveMount) *C
 	t.Helper()
 	return &CHDriver{
 		cfg: Config{
-			SocketDir:     t.TempDir(),
+			SocketDir:     testSocketDir(t),
 			VirtiofsdPath: virtiofsdBin,
 			LiveMounts:    mounts,
 		},
@@ -130,7 +130,7 @@ func TestSpawnVirtiofsdForMounts_FailureKillsOrphans(t *testing.T) {
 	shared := t.TempDir()
 
 	// Build driver with good binary but set cfg.VirtiofsdPath to bad after pre-registering mount[0].
-	socketDir := t.TempDir()
+	socketDir := testSocketDir(t)
 	var id domain.SandboxID
 
 	d := &CHDriver{

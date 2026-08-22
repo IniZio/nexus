@@ -68,10 +68,6 @@ func TestCHDiskLockProbe(t *testing.T) {
 		t.Fatalf("MkdirTemp socketDir: %v", err)
 	}
 	t.Cleanup(func() { os.RemoveAll(socketDir) })
-	if len(socketDir)+35 > 107 {
-		t.Skipf("socketDir too long for unix socket: %s", socketDir)
-	}
-
 	snapDir, err := os.MkdirTemp("/tmp", "ch-dlp-snap-")
 	if err != nil {
 		t.Fatalf("MkdirTemp snapDir: %v", err)

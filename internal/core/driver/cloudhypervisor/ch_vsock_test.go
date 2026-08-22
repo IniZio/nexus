@@ -83,7 +83,7 @@ func fakeMultiplexer(
 //   - returns a working net.Conn on "OK" reply
 //   - the returned conn round-trips bytes in both directions
 func TestDialGuest_HandshakeSuccess(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	id := domain.NewSandboxID()
 
 	drv := &CHDriver{
@@ -139,7 +139,7 @@ func TestDialGuest_HandshakeSuccess(t *testing.T) {
 // does not hand back a half-open conn) when the multiplexer replies with a
 // non-OK line.
 func TestDialGuest_HandshakeError(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	id := domain.NewSandboxID()
 
 	drv := &CHDriver{
@@ -173,7 +173,7 @@ func TestDialGuest_HandshakeError(t *testing.T) {
 // TestDialGuest_CorrectPort verifies that DialGuest sends exactly
 // "CONNECT <AgentControlPort>\n" — not some other port.
 func TestDialGuest_CorrectPort(t *testing.T) {
-	dir := t.TempDir()
+	dir := testSocketDir(t)
 	id := domain.NewSandboxID()
 
 	drv := &CHDriver{

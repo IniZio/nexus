@@ -10,6 +10,19 @@ import (
 	"time"
 )
 
+// shortTempDir returns a guaranteed-short, auto-cleaned directory under /tmp,
+// bypassing $TMPDIR. Use whenever the directory will hold a Unix socket, to
+// avoid the 107-byte Linux sun_path limit regardless of the ambient $TMPDIR.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "sup-t-")
+	if err != nil {
+		t.Fatalf("shortTempDir: MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
 // ── WaitForExit tests ─────────────────────────────────────────────────────────
 
 // TestWaitForExit_NoPidfile verifies that WaitForExit returns immediately when
@@ -121,7 +134,7 @@ func TestCheckAndReconcile_PidDead(t *testing.T) {
 // TestCheckAndReconcile_PidAliveSocketConnectable verifies that a live PID
 // with a connectable socket is correctly reported as alive.
 func TestCheckAndReconcile_PidAliveSocketConnectable(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	sockPath := filepath.Join(dir, "supervisor.sock")
 
 	ln, err := net.Listen("unix", sockPath)

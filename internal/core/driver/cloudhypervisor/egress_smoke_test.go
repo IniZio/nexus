@@ -159,14 +159,6 @@ func TestBootEgressSmoke(t *testing.T) {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
 
-	// maxSocketPathLen is the package constant (107 bytes). sockNameLen is 35
-	// (UUID + ".sock"). Reuse the same arithmetic as disk_integration_test.go.
-	const sockNameLen = 35
-	if len(socketDir)+sockNameLen > maxSocketPathLen {
-		os.RemoveAll(socketDir)
-		t.Skipf("skipping: socket dir path too long for AF_UNIX: %s", socketDir)
-	}
-
 	serialPath := filepath.Join(socketDir, "serial.log")
 
 	// driver

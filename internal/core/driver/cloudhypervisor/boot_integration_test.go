@@ -74,10 +74,6 @@ func TestBootLifecycle(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(socketDir) })
 
-	if len(socketDir)+35 > 107 {
-		t.Skipf("skipping: MkdirTemp returned a path too long for Unix socket: %s", socketDir)
-	}
-
 	// driver
 	drv, err := New(Config{
 		BinaryPath:   chBin,
@@ -321,10 +317,6 @@ func TestBootToUserspace(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(socketDir) })
 
-	if len(socketDir)+35 > 107 {
-		t.Skipf("skipping: MkdirTemp returned a path too long for Unix socket: %s", socketDir)
-	}
-
 	// serial output file
 	serialFile := filepath.Join(socketDir, "serial.log")
 
@@ -486,10 +478,6 @@ func TestBrokenBoot_StderrCaptured(t *testing.T) {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
 	t.Cleanup(func() { os.RemoveAll(socketDir) })
-
-	if len(socketDir)+35 > 107 {
-		t.Skipf("skipping: MkdirTemp returned path too long for Unix socket: %s", socketDir)
-	}
 
 	drv, err := New(Config{
 		BinaryPath:   chBin,

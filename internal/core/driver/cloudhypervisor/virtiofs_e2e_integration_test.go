@@ -109,11 +109,6 @@ func TestLiveVirtiofsE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MkdirTemp socketDir: %v", err)
 	}
-	if len(socketDir)+35 > maxSocketPathLen {
-		os.RemoveAll(socketDir)
-		t.Skipf("socket dir too long for AF_UNIX sun_path: %s", socketDir)
-	}
-
 	serialPath := filepath.Join(socketDir, "serial.log")
 
 	liveMounts := []domain.LiveMount{

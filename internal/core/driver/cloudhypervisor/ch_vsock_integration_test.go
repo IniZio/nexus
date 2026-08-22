@@ -49,10 +49,6 @@ func TestDialGuest_Integration(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(socketDir) })
 
-	if len(socketDir)+35 > 107 {
-		t.Skipf("skipping: MkdirTemp returned a path too long for Unix socket: %s", socketDir)
-	}
-
 	// driver + VM
 	drv, err := New(Config{
 		BinaryPath: chBin,

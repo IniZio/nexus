@@ -225,10 +225,6 @@ func TestNetnsRuntime_KVMProof(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(socketDir) })
 
-	if len(socketDir)+35 > 107 {
-		t.Skipf("skipping: MkdirTemp returned path too long for Unix socket: %s", socketDir)
-	}
-
 	socketPath := filepath.Join(socketDir, "ch-netns.sock")
 
 	// sandbox identity

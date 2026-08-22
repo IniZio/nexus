@@ -214,11 +214,6 @@ func bootAgentVM(t *testing.T, chBin, kernelPath, initramfsPath string) (*CHDriv
 		t.Fatalf("MkdirTemp: %v", err)
 	}
 
-	if len(socketDir)+35 > maxSocketPathLen {
-		os.RemoveAll(socketDir)
-		t.Skipf("skipping: socket dir path too long for unix socket: %s", socketDir)
-	}
-
 	// Capture the guest serial port (ttyS0) to a file so that nexus3-agent's
 	// diagnostic output is visible in t.Logf on test failure.
 	serialPath := filepath.Join(socketDir, "serial.log")
