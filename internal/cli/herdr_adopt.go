@@ -89,6 +89,11 @@ func herdrSpaceResolveOrAdopt(
 // only when this call actually minted a workspace (as opposed to reusing an
 // existing one). The caller grafts the guest pane onto that root pane instead
 // of opening a second tab — see herdrOpenGuestShellPane.
+//
+// Orphan window (TBD-SHL-7): if HerdrSpacePut fails after herdrWorkspaceCreate
+// has already returned a workspace ID, the live herdr workspace is permanently
+// orphaned — its ID is not recorded in any binding and cannot be reached or
+// reaped by space-prune.
 func herdrSpaceEnsureWorkspace(
 	ctx context.Context,
 	svc herdrAdoptGetter,

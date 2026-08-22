@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -676,5 +677,77 @@ func TestHerdrSpacePruneWorkspaceExistsFn_AdoptedBinding(t *testing.T) {
 	// Nothing should have been deleted.
 	if strings.Contains(buf.String(), "STALE") {
 		t.Errorf("adopted binding must not be reported STALE; output: %q", buf.String())
+	}
+}
+
+// ── Site C: HerdrSpaceDelete failure in prune apply loop ─────────────────────
+
+// TestHerdrSpacePruneFull_DeleteFail_BindingRetained asserts that when close
+// succeeds but HerdrSpaceDelete itself fails, the deleted counter is NOT
+// incremented and the binding remains on disk.
+//
+// MUTATION TARGET (M14): remove the `continue` after the delete-error log so
+// that deleted++ fires even when HerdrSpaceDelete errored (counting attempts
+// instead of actual deletions).
+// Expected RED: output contains "Deleted 1" but the test asserts "Deleted 0".
+func TestHerdrSpacePruneFull_DeleteFail_BindingRetained(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("chmod-based injection is ineffective as root")
+	}
+	ctx := context.Background()
+	root := t.TempDir()
+
+	b := HerdrSpaceBinding{
+		SpaceLabel:       "nexus3:delete-fail",
+		HerdrWorkspaceID: "wDELFAIL",
+		SandboxHandle:    "proj/delete-fail",
+		SandboxID:        "sb-df",
+	}
+	// Write binding (also creates the lock file as a side effect of Put's lock
+	// acquisition, so that OpenLock can succeed with the directory unwritable).
+	if err := HerdrSpacePut(ctx, root, b); err != nil {
+		t.Fatalf("HerdrSpacePut: %v", err)
+	}
+
+	// Make the store directory unwritable so that herdrSpaceWriteAll's
+	// os.CreateTemp fails. Read+execute are kept so OpenLock can open the
+	// existing lock file by name, and ReadFile can read the existing bindings.
+	if err := os.Chmod(root, 0500); err != nil {
+		t.Fatalf("chmod storeRoot: %v", err)
+	}
+	// Restore write permission before TempDir cleanup runs.
+	defer func() { _ = os.Chmod(root, 0700) }()
+
+	// Verify that the chmod actually causes HerdrSpaceDelete to fail.
+	// If it does not, the test would silently pass for the wrong reason.
+	probeErr := HerdrSpaceDelete(ctx, root, b.SpaceLabel)
+	if probeErr == nil {
+		t.Fatal("chmod did not make HerdrSpaceDelete fail — injection point is ineffective on this filesystem/uid; test cannot proceed")
+	}
+
+	// Re-write the binding (the failed delete left it intact; confirm via API).
+	_, err := HerdrSpaceGetByLabel(ctx, root, b.SpaceLabel)
+	if err != nil {
+		t.Fatalf("binding should still exist after failed probe delete: %v", err)
+	}
+
+	sandboxExists, workspaceExists := buildFakeCheckers(
+		map[string]bool{},                  // sandbox gone → stale
+		map[string]bool{"wDELFAIL": true},
+	)
+	closer := func(_ context.Context, _ string) error { return nil } // close succeeds
+
+	var buf bytes.Buffer
+	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, true); err != nil {
+		t.Fatalf("herdrSpacePruneFull: %v", err)
+	}
+
+	// Binding must still exist — delete failed, so the record was not removed.
+	if _, err := HerdrSpaceGetByLabel(ctx, root, b.SpaceLabel); err != nil {
+		t.Errorf("binding must be retained after delete failure; HerdrSpaceGetByLabel: %v", err)
+	}
+	// Counter must reflect actual deletions (zero), not attempts.
+	if !strings.Contains(buf.String(), "Deleted 0") {
+		t.Errorf("output should report 0 deleted; got %q", buf.String())
 	}
 }
