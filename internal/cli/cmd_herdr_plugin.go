@@ -98,6 +98,8 @@ func herdrGroupVerbToPluginSub(sub string) (pluginSub string, known bool) {
 		return sub, true
 	case "worktree-sandbox":
 		return sub, true
+	case "backfill-repo-root":
+		return "backfill-repo-root", true
 	default:
 		return "", false
 	}
@@ -114,7 +116,7 @@ func herdrGroupVerbToPluginSub(sub string) (pluginSub string, known bool) {
 // All cases delegate to runHerdrPlugin so behaviour is unchanged.
 func runHerdrGroup(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
-		return &UsageError{Msg: "herdr: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|shell-cwd|new-tab|space-create|space-open-pane|create-from-file|pause|resume|remove|list|prune|agent|agent-from-file|default-shell|install-default-shell|worktree-sandbox)"}
+		return &UsageError{Msg: "herdr: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|shell-cwd|new-tab|space-create|space-open-pane|create-from-file|pause|resume|remove|list|prune|agent|agent-from-file|default-shell|install-default-shell|worktree-sandbox|backfill-repo-root)"}
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -435,9 +437,9 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: herdr workspace ID required"}
 		}
 		// Parse --auto / --conditional flags BEFORE the positional workspace ID.
-		// --auto is accepted by the CLI; not emitted by any script today. --conditional
-		// is an accepted alias for backwards compatibility.
-		rest, conditional := herdrWorktreeSandboxParseArgs(rest)
+		// --auto activates the repo-level predicate (c); --conditional activates
+		// the legacy SourceWorkspaceID predicate. The two flags are distinct.
+		rest, conditional, auto := herdrWorktreeSandboxParseArgs(rest)
 		if len(rest) == 0 {
 			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: herdr workspace ID required"}
 		}
@@ -464,7 +466,14 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		getFn := func(ctx context.Context, handle string) (domain.Sandbox, error) {
 			return svc.Get(ctx, handle)
 		}
-		return herdrWorktreeSandbox(ctx, workspaceID, out.w, storeRoot, true, conditional, createFn, getFn)
+		return herdrWorktreeSandbox(ctx, workspaceID, out.w, storeRoot, true, conditional, auto, createFn, getFn)
+
+	case "backfill-repo-root":
+		storeRoot, err := store.DefaultRoot()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin backfill-repo-root: resolve store: " + err.Error(), Err: err}
+		}
+		return herdrPluginBackfillRepoRoot(ctx, storeRoot, out.w)
 
 	default:
 		exe, _ := os.Executable()
@@ -2047,6 +2056,31 @@ func herdrPluginSpaceList(ctx context.Context, w io.Writer, storeRoot string) er
 	return nil
 }
 
+// herdrPluginBackfillRepoRoot implements __herdr-plugin backfill-repo-root
+// (exposed as `nexus3 herdr backfill-repo-root`).
+//
+// It calls `herdr workspace list` once and fills RepoRoot in every binding
+// whose RepoRoot is currently empty. Non-empty RepoRoot values are never
+// overwritten. Bindings whose workspace herdr does not report are skipped.
+// The update is applied immediately (no --apply flag required) because it only
+// fills empty fields and cannot overwrite operator-supplied values.
+func herdrPluginBackfillRepoRoot(ctx context.Context, storeRoot string, w io.Writer) error {
+	herdrBin, err := resolveHerdrBin()
+	if err != nil {
+		return fmt.Errorf("backfill-repo-root: resolve herdr binary: %w", err)
+	}
+	n, err := HerdrBackfillRepoRoot(ctx, storeRoot, herdrBin, w)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		fmt.Fprintln(w, "backfill-repo-root: nothing to update")
+	} else {
+		fmt.Fprintf(w, "backfill-repo-root: updated %d binding(s)\n", n)
+	}
+	return nil
+}
+
 // herdrPluginSpacePrune implements __herdr-plugin space-prune [--apply].
 // It reads all herdr-space bindings and removes entries whose sandbox no longer
 // exists in the store, or whose herdr workspace no longer exists.
@@ -2580,7 +2614,49 @@ type herdrWorktreeInfo struct {
 	Path              string
 	IsLinkedWorktree  bool
 	SourceWorkspaceID string
+	// RepoKey identifies the repository (source.repo_key in the response, e.g.
+	// "/repo/.git"). Used by herdrWorktreeSandboxRepoCheck (predicate c) to
+	// confirm the repo can be identified; an empty value is treated as unknown.
+	RepoKey string
+	// AllWorkspaceIDs is the set of open_workspace_id values for every worktree
+	// entry in the response. Used by herdrWorktreeSandboxRepoCheck to enumerate
+	// sibling workspaces without additional herdr calls.
+	AllWorkspaceIDs []string
 }
+
+// herdrWorktreeSandboxRepoCheck reports whether the repo identified by info
+// has at least one workspace with an existing nexus3 binding.
+//
+// Predicate (c) of the auto-bind rule: "the repo has AT LEAST ONE existing
+// nexus3-bound workspace." The check enumerates info.AllWorkspaceIDs (all
+// open_workspace_id values from the same herdr worktree list response) and
+// calls herdrSpaceResolve for each. The first match returns true.
+//
+// If info.RepoKey is empty the repo cannot be identified → returns false
+// (fail toward host shell, never guess).
+func herdrWorktreeSandboxRepoCheck(ctx context.Context, storeRoot string, info herdrWorktreeInfo) bool {
+	if info.RepoKey == "" {
+		return false
+	}
+	for _, wsID := range info.AllWorkspaceIDs {
+		if wsID == "" {
+			continue
+		}
+		if _, err := herdrSpaceResolve(ctx, storeRoot, wsID); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// herdrWorktreeListTimeout bounds the `herdr worktree list` probe in step 3.
+// A hung herdr daemon must not wedge every new pane on the machine.
+const herdrWorktreeListTimeout = 2 * time.Second
+
+// herdrWorktreeCreateTimeout bounds the sandbox create call in step 7.
+// Sandbox creation involves image pull, ext4 setup, and VM boot — 90 s is
+// generous for typical fast hardware with a warm image cache.
+const herdrWorktreeCreateTimeout = 90 * time.Second
 
 // herdrListWorktreeForWorkspaceFn is the injectable function for listing worktrees.
 // Replaced in tests to avoid calling the live herdr binary.
@@ -2599,6 +2675,7 @@ func herdrParseWorktreeListForWorkspace(data []byte, workspaceID string) (herdrW
 		Result struct {
 			Source struct {
 				SourceWorkspaceID string `json:"source_workspace_id"`
+				RepoKey           string `json:"repo_key"`
 			} `json:"source"`
 			Worktrees []struct {
 				Branch           string `json:"branch"`
@@ -2612,6 +2689,14 @@ func herdrParseWorktreeListForWorkspace(data []byte, workspaceID string) (herdrW
 		return herdrWorktreeInfo{}, fmt.Errorf("herdr worktree list: parse response: %w", err)
 	}
 	sourceWorkspaceID := resp.Result.Source.SourceWorkspaceID
+	repoKey := resp.Result.Source.RepoKey
+	// Collect all workspace IDs from the response for use in predicate (c).
+	allIDs := make([]string, 0, len(resp.Result.Worktrees))
+	for _, wt := range resp.Result.Worktrees {
+		if wt.OpenWorkspaceID != "" {
+			allIDs = append(allIDs, wt.OpenWorkspaceID)
+		}
+	}
 	for _, wt := range resp.Result.Worktrees {
 		if wt.OpenWorkspaceID == workspaceID {
 			return herdrWorktreeInfo{
@@ -2619,6 +2704,8 @@ func herdrParseWorktreeListForWorkspace(data []byte, workspaceID string) (herdrW
 				Path:              wt.Path,
 				IsLinkedWorktree:  wt.IsLinkedWorktree,
 				SourceWorkspaceID: sourceWorkspaceID,
+				RepoKey:           repoKey,
+				AllWorkspaceIDs:   allIDs,
 			}, nil
 		}
 	}
@@ -2692,19 +2779,35 @@ func herdrWorktreeSandboxHandle(branch string) string {
 }
 
 // herdrWorktreeSandboxParseArgs strips --auto / --conditional flags from the
-// beginning of args and returns the remaining positional args and whether the
-// conditional flag was present. Both flags are accepted by the CLI; not emitted
-// by any script today. --conditional is an accepted alias for --auto.
+// beginning of args and returns the remaining positional args and mode flags.
+//
+// --auto    activates the repo-level predicate (predicate c): at least one
+//
+//	sibling workspace in the same repo must be nexus3-bound. This is
+//	the mode used by the guest-shell dispatcher (herdrDefaultShellCore).
+//
+// --conditional activates the legacy SourceWorkspaceID predicate. Kept for
+//
+//	backward compatibility with any scripts that relied on the old
+//	behaviour; the two flags are mutually exclusive in practice.
 //
 // Called by the "worktree-sandbox" case in runHerdrPlugin so flag parsing
-// happens before the workspace ID is read, preventing --auto from being
+// happens before the workspace ID is read, preventing the flags from being
 // consumed as the workspace ID.
-func herdrWorktreeSandboxParseArgs(args []string) (rest []string, conditional bool) {
-	for len(args) > 0 && (args[0] == "--auto" || args[0] == "--conditional") {
-		conditional = true
-		args = args[1:]
+func herdrWorktreeSandboxParseArgs(args []string) (rest []string, conditional bool, auto bool) {
+	for len(args) > 0 {
+		switch args[0] {
+		case "--auto":
+			auto = true
+			args = args[1:]
+		case "--conditional":
+			conditional = true
+			args = args[1:]
+		default:
+			return args, conditional, auto
+		}
 	}
-	return args, conditional
+	return args, conditional, auto
 }
 
 // herdrWorktreeSandbox orchestrates the worktree-sandbox flow for one herdr workspace.
@@ -2750,6 +2853,7 @@ func herdrWorktreeSandbox(
 	storeRoot string,
 	openPane bool,
 	conditional bool,
+	auto bool,
 	createFn func(context.Context, string, string) error,
 	getFn func(context.Context, string) (domain.Sandbox, error),
 ) error {
@@ -2766,21 +2870,40 @@ func herdrWorktreeSandbox(
 		return nil
 	}
 
-	// Step 3: list worktrees (fail-safe on error).
-	info, err := herdrListWorktreeForWorkspaceFn(ctx, herdrBin, workspaceID)
+	// Step 3: list worktrees (fail-safe on error). A 2 s context bounds the
+	// herdr probe so a hung daemon cannot wedge every new pane on the machine.
+	listCtx, listCancel := context.WithTimeout(ctx, herdrWorktreeListTimeout)
+	defer listCancel()
+	info, err := herdrListWorktreeForWorkspaceFn(listCtx, herdrBin, workspaceID)
 	if err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: herdr worktree list: %v\n", err)
 		return nil
 	}
 
-	// Step 4: linked-worktree guard.
+	// Step 4: linked-worktree guard (predicates a+b).
 	if !info.IsLinkedWorktree {
 		fmt.Fprintf(w, "worktree-sandbox: workspace %s is main checkout, skipping\n", workspaceID)
 		return nil
 	}
 
-	// Step 5: conditional source check.
-	if conditional {
+	// Step 5: mode-specific source check.
+	//
+	//  auto mode (--auto): repo-level predicate (c). At least one sibling
+	//  workspace in the same repo must be nexus3-bound. If the repo cannot be
+	//  identified (RepoKey empty) or no sibling is bound, fail safe.
+	//
+	//  conditional mode (--conditional): legacy SourceWorkspaceID predicate.
+	//  The source workspace (the main checkout that owns this worktree) must
+	//  have a nexus3 binding. Kept for backward compatibility.
+	//
+	//  explicit mode (neither flag): no source check — always bind.
+	switch {
+	case auto:
+		if !herdrWorktreeSandboxRepoCheck(ctx, storeRoot, info) {
+			fmt.Fprintf(w, "worktree-sandbox: no nexus3-bound workspace in repo, skipping\n")
+			return nil
+		}
+	case conditional:
 		srcID := info.SourceWorkspaceID
 		if srcID == "" {
 			fmt.Fprintf(w, "worktree-sandbox: source workspace unknown, skipping\n")
@@ -2796,11 +2919,15 @@ func herdrWorktreeSandbox(
 	handle := herdrWorktreeSandboxHandle(info.Branch)
 	mountSpec := info.Path + ":/workspace"
 
-	// Step 7: create sandbox. Explicit mode failures are real errors; conditional
-	// mode is fail-safe (workspace stays a host shell).
-	if err := createFn(ctx, handle, mountSpec); err != nil {
+	// Step 7: create sandbox. A 90 s context covers image pull, ext4 setup,
+	// and VM boot on typical hardware. Explicit mode failures are real errors;
+	// auto/conditional mode is fail-safe (workspace stays a host shell).
+	createCtx, createCancel := context.WithTimeout(ctx, herdrWorktreeCreateTimeout)
+	defer createCancel()
+	failSafe := conditional || auto
+	if err := createFn(createCtx, handle, mountSpec); err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: sandbox create: %v\n", err)
-		if !conditional {
+		if !failSafe {
 			return fmt.Errorf("worktree-sandbox: sandbox create: %w", err)
 		}
 		return nil
@@ -2812,35 +2939,52 @@ func herdrWorktreeSandbox(
 	sb, err := getFn(ctx, handle)
 	if err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: get sandbox %s: %v\n", handle, err)
-		if !conditional {
+		if !failSafe {
 			return fmt.Errorf("worktree-sandbox: get sandbox %s: %w", handle, err)
 		}
 		return nil
 	}
 	label := "nexus3:" + handle
+	// Derive the main repo root from info.RepoKey (e.g. "/repo/.git" → "/repo").
+	// Empty RepoKey → empty RepoRoot → NO MATCH in the predicate (fail-open).
+	repoRoot := ""
+	if info.RepoKey != "" {
+		repoRoot = filepath.Dir(filepath.Clean(info.RepoKey))
+	}
 	binding := HerdrSpaceBinding{
 		SpaceLabel:       label,
 		HerdrWorkspaceID: workspaceID,
 		SandboxHandle:    handle,
 		SandboxID:        sb.ID.String(),
+		RepoRoot:         repoRoot,
 	}
 	if err := HerdrSpacePut(ctx, storeRoot, binding); err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: write binding: %v\n", err)
-		if !conditional {
+		if !failSafe {
 			return fmt.Errorf("worktree-sandbox: write binding: %w", err)
 		}
 		return nil
 	}
 
+	// Opportunistic backfill: heal sibling bindings whose RepoRoot is still
+	// empty. Best-effort — errors are logged but never returned; the binding
+	// we just wrote is already correct and must not be blocked on this.
+	// NOTE: must NOT be called from the guest-shell dispatcher (herdrDefaultShellCore)
+	// hot path; here in herdrWorktreeSandbox it is safe because herdr calls
+	// are already made in this flow.
+	if _, bfErr := HerdrBackfillRepoRoot(ctx, storeRoot, herdrBin, io.Discard); bfErr != nil {
+		slog.Warn("worktree-sandbox: backfill-repo-root", "err", bfErr)
+	}
+
 	// Step 9: open guest shell pane and patch GuestPaneID into the stored binding.
 	// Error policy: sandbox+binding already exist and are recoverable on the next run,
 	// so pane failure is always printed. Explicit mode also returns it (non-zero exit);
-	// conditional mode continues because the binding committed and the workspace is usable.
+	// auto/conditional mode continues because the binding committed and the workspace is usable.
 	if openPane {
 		paneID, paneErr := herdrOpenGuestShellPane(ctx, herdrBin, handle, workspaceID, "", false)
 		if paneErr != nil {
 			fmt.Fprintf(w, "worktree-sandbox: open guest pane: %v\n", paneErr)
-			if !conditional {
+			if !failSafe {
 				return fmt.Errorf("worktree-sandbox: open guest pane: %w", paneErr)
 			}
 		}

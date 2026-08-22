@@ -54,6 +54,148 @@ var herdrGuestShellExitFn = os.Exit
 // is the test runner and lacks the argv[0] dispatch.
 var herdrSkipInstallProbeForTest bool
 
+// herdrAutoCreateTimeout is the outer deadline for the auto-create subprocess
+// launched by herdrDefaultShellCore when a workspace has no binding yet.
+// The subprocess itself runs "nexus3 herdr worktree-sandbox --auto <wsID>"
+// which has its own 90s create timeout; 120s gives it headroom plus the 2s
+// herdr list probe.
+const herdrAutoCreateTimeout = 120 * time.Second
+
+// herdrDefaultShellAutoCreateFn is the seam for the auto-create subprocess.
+// Replaced in tests to prevent live herdr/nexus3 calls.
+var herdrDefaultShellAutoCreateFn = herdrDefaultShellAutoCreate
+
+// herdrAutoCreatePredicateFn gates auto-create attempts in herdrDefaultShellCore.
+//
+// Returns true only when (b) the current working directory is inside a linked
+// worktree AND (c) a binding in the file carries a RepoRoot matching that
+// linked worktree's main repo. Bindings with empty RepoRoot are NO MATCH.
+// Both conditions must hold; false on any I/O error (FAIL-OPEN toward host shell).
+//
+// Replaced in tests to avoid filesystem fixtures in integration tests.
+var herdrAutoCreatePredicateFn = func(allBindings []HerdrSpaceBinding) bool {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return false
+	}
+	return herdrAutoCreatePredicateWith(cwd, allBindings, os.Stat, os.ReadFile)
+}
+
+// herdrAutoCreatePredicateWith is the injectable core of herdrAutoCreatePredicateFn.
+// Accepts cwd and fs functions so unit tests can drive it with t.TempDir() fixtures.
+//
+// (b) Walks up from cwd, bounded to herdrGitSearchDepth levels, looking for a
+// .git entry. A linked worktree's .git is a regular FILE ("gitdir: <path>");
+// a main checkout's .git is a DIRECTORY. Anything else → false.
+//
+// (c) Only when (b) holds: the main repo path derived from the .git file must
+// match the RepoRoot of at least one binding. Bindings with an empty RepoRoot
+// are treated as NO MATCH (legacy bindings, or bindings from non-worktree
+// flows). False on any I/O error (FAIL-OPEN toward host shell).
+func herdrAutoCreatePredicateWith(
+	cwd string,
+	allBindings []HerdrSpaceBinding,
+	statFn func(string) (os.FileInfo, error),
+	readFileFn func(string) ([]byte, error),
+) bool {
+	// Fast-path: no bindings → no nexus3 worktree sandboxes on this machine.
+	if len(allBindings) == 0 {
+		return false
+	}
+	// (b) Walk up from cwd looking for .git.
+	const herdrGitSearchDepth = 8
+	dir := cwd
+	for i := 0; i < herdrGitSearchDepth; i++ {
+		candidate := filepath.Join(dir, ".git")
+		fi, err := statFn(candidate)
+		if err == nil {
+			if fi.Mode().IsRegular() {
+				// .git is a regular file → linked worktree. Parse the gitdir
+				// target to derive the main repo root path.
+				data, rerr := readFileFn(candidate)
+				if rerr != nil {
+					return false
+				}
+				mainRepo := herdrMainRepoFromGitdir(string(data))
+				if mainRepo == "" {
+					return false
+				}
+				// (c) Repo-scoped check: at least one binding must carry a
+				// RepoRoot that matches the main repo of this linked worktree.
+				// Empty RepoRoot is NO MATCH (legacy binding, fail toward host shell).
+				cleanMain := filepath.Clean(mainRepo)
+				for _, b := range allBindings {
+					if b.RepoRoot == "" {
+						continue
+					}
+					if filepath.Clean(b.RepoRoot) == cleanMain {
+						return true
+					}
+				}
+				return false
+			}
+			// .git is a directory (main checkout) or something unexpected.
+			return false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break // reached filesystem root
+		}
+		dir = parent
+	}
+	return false // no .git found within depth limit
+}
+
+// herdrMainRepoFromGitdir parses a linked worktree's .git file and returns the
+// main repo root path.
+//
+// The file contains a single line: "gitdir: <main>/.git/worktrees/<name>"
+// Returns "" if the content doesn't match the expected shape.
+//
+// Known limitation: newer Git can write relative gitdir: paths
+// (worktree.useRelativePaths). A relative path returned here will never match
+// an absolute RepoRoot, so the predicate silently returns false and falls
+// through to the host shell. This is fail-open (safe) but means auto-create
+// will not engage on repos configured that way.
+func herdrMainRepoFromGitdir(content string) string {
+	line := strings.TrimSpace(content)
+	const prefix = "gitdir: "
+	if !strings.HasPrefix(line, prefix) {
+		return ""
+	}
+	target := strings.TrimSpace(line[len(prefix):])
+	// Expect: <main>/.git/worktrees/<name>
+	// Trim the last three path components to reach <main>.
+	worktreesDir := filepath.Dir(target) // <main>/.git/worktrees
+	gitDir := filepath.Dir(worktreesDir) // <main>/.git
+	if filepath.Base(worktreesDir) != "worktrees" || filepath.Base(gitDir) != ".git" {
+		return ""
+	}
+	return filepath.Dir(gitDir) // <main>
+}
+
+// herdrDefaultShellAutoCreate runs "nexus3 herdr worktree-sandbox --auto <wsID>"
+// as a subprocess, waits for it to finish, then re-reads the binding store.
+// Returns the binding and true on success; (zero, false) on any error so the
+// caller falls through to execHostShell (FAIL-OPEN).
+func herdrDefaultShellAutoCreate(ctx context.Context, storeRoot, wsID, nexus3Bin string, w io.Writer) (HerdrSpaceBinding, bool) {
+	if nexus3Bin == "" {
+		return HerdrSpaceBinding{}, false
+	}
+	fmt.Fprintf(w, "nexus3-guest-shell: linked worktree detected — auto-creating sandbox (may take ~1 min)...\n")
+	autoCtx, cancel := context.WithTimeout(ctx, herdrAutoCreateTimeout)
+	defer cancel()
+	cmd := herdrExecCommandContext(autoCtx, nexus3Bin, "herdr", "worktree-sandbox", "--auto", wsID)
+	cmd.Stdout = w
+	cmd.Stderr = w
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(w, "nexus3-guest-shell: auto-create: %v\n", err)
+		return HerdrSpaceBinding{}, false
+	}
+	b, ok, _ := herdrDefaultShellLookup(storeRoot, wsID)
+	return b, ok
+}
+
 // herdrDefaultShellCore is the testable core of "nexus3 herdr default-shell".
 //
 // It reads HERDR_WORKSPACE_ID from getenv, resolves the binding, determines
@@ -100,11 +242,38 @@ func herdrDefaultShellCore(
 		return execHostShell()
 	}
 
-	// Read the bindings file. Any read or parse error → fall through.
-	// A missing file is not an error (no bindings yet).
-	binding, found, err := herdrDefaultShellLookup(storeRoot, wsID)
-	if err != nil || !found {
+	// Read all bindings from disk once. Any parse error → fall through.
+	// A missing file is not an error (no bindings yet → empty slice).
+	allBindings, readErr := herdrSpaceReadAll(storeRoot)
+	if readErr != nil {
 		return execHostShell()
+	}
+
+	// Find this workspace's binding in the full list.
+	var binding HerdrSpaceBinding
+	found := false
+	for _, b := range allBindings {
+		if b.HerdrWorkspaceID == wsID {
+			binding = b
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		// Gate: only engage auto-create when (b) the cwd is inside a linked
+		// worktree AND (c) a binding already carries a RepoRoot matching that
+		// linked worktree's main repo. Both checks are pure local filesystem
+		// reads — no subprocess, no herdr call. False on any error
+		// (FAIL-OPEN toward host shell).
+		if !herdrAutoCreatePredicateFn(allBindings) {
+			return execHostShell()
+		}
+		var ok bool
+		binding, ok = herdrDefaultShellAutoCreateFn(ctx, storeRoot, wsID, nexus3Bin, os.Stderr)
+		if !ok {
+			return execHostShell()
+		}
 	}
 
 	// Guard: empty nexus3Bin means the delivery mechanism could not locate the

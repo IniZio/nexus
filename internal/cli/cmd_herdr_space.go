@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -57,6 +58,15 @@ type HerdrSpaceBinding struct {
 	// value on decode, so an old binding on disk loads without error; there is
 	// nothing else to migrate.
 	GuestPaneID string `json:"guest_pane_id,omitempty"`
+	// RepoRoot is the absolute path to the main repository checkout this
+	// sandbox's workspace belongs to; populated only for bindings created by
+	// the worktree-sandbox flow.
+	//
+	// Empty on bindings written before this field existed, and empty is treated
+	// as NO MATCH (fail toward host shell) — never as a wildcard.
+	// encoding/json leaves missing fields at their zero value on decode, so an
+	// old binding on disk loads without error; there is nothing to migrate.
+	RepoRoot string `json:"repo_root,omitempty"`
 }
 
 // ErrHerdrSpaceNotFound is returned when no matching binding exists.
@@ -201,6 +211,117 @@ func HerdrSpaceList(ctx context.Context, storeRoot string) ([]HerdrSpaceBinding,
 		return nil, err
 	}
 	return herdrSpaceReadAll(storeRoot)
+}
+
+// ── backfill-repo-root ────────────────────────────────────────────────────────
+
+// herdrWorkspaceListForBackfillFn is the injectable seam used by
+// HerdrBackfillRepoRoot to call `herdr workspace list`. Replaced in tests to
+// avoid spawning the live herdr binary.
+var herdrWorkspaceListForBackfillFn = func(ctx context.Context, herdrBin string) ([]byte, error) {
+	return herdrExecCommandContext(ctx, herdrBin, "workspace", "list").Output()
+}
+
+// herdrParseWorkspaceListForBackfill parses the JSON output of
+// `herdr workspace list` and returns a map from workspace_id to
+// worktree.repo_root. Workspaces with an empty workspace_id are skipped.
+// Workspaces present but carrying an empty repo_root are included with an
+// empty value so the caller can distinguish "workspace known, no repo" from
+// "workspace not returned by herdr".
+func herdrParseWorkspaceListForBackfill(data []byte) (map[string]string, error) {
+	var resp struct {
+		Result struct {
+			Workspaces []struct {
+				WorkspaceID string `json:"workspace_id"`
+				Worktree    struct {
+					RepoRoot string `json:"repo_root"`
+				} `json:"worktree"`
+			} `json:"workspaces"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("backfill-repo-root: parse workspace list: %w", err)
+	}
+	m := make(map[string]string, len(resp.Result.Workspaces))
+	for _, ws := range resp.Result.Workspaces {
+		if ws.WorkspaceID != "" {
+			m[ws.WorkspaceID] = ws.Worktree.RepoRoot
+		}
+	}
+	return m, nil
+}
+
+// HerdrBackfillRepoRoot fills RepoRoot in bindings that have an empty RepoRoot,
+// using one `herdr workspace list` call to resolve repo_root per workspace.
+//
+// Safety rules:
+//   - Never overwrites a non-empty RepoRoot.
+//   - Skips bindings whose HerdrWorkspaceID herdr does not report (stale/closed).
+//   - Skips bindings with no HerdrWorkspaceID (adopted bindings).
+//   - On herdr call or parse failure, returns an error without touching the
+//     bindings file (all-or-nothing; a partial write corrupts the live state).
+//   - Uses the same lock discipline as HerdrSpacePut (herdrSpaceWithLock).
+//
+// Prints each binding it fills to w before applying. Returns the count of
+// bindings updated.
+func HerdrBackfillRepoRoot(ctx context.Context, storeRoot, herdrBin string, w io.Writer) (int, error) {
+	// Fetch the workspace list BEFORE acquiring the lock. The herdr call is a
+	// subprocess; holding the lock across it would block every concurrent
+	// reader/writer.
+	out, err := herdrWorkspaceListForBackfillFn(ctx, herdrBin)
+	if err != nil {
+		return 0, fmt.Errorf("backfill-repo-root: workspace list: %w", err)
+	}
+	wsMap, err := herdrParseWorkspaceListForBackfill(out)
+	if err != nil {
+		return 0, err
+	}
+
+	if err := os.MkdirAll(storeRoot, 0700); err != nil {
+		return 0, fmt.Errorf("backfill-repo-root: ensure store dir: %w", err)
+	}
+	var changed int
+	lockErr := herdrSpaceWithLock(ctx, storeRoot, func() error {
+		bindings, err := herdrSpaceReadAll(storeRoot)
+		if err != nil {
+			return err
+		}
+		for i := range bindings {
+			b := &bindings[i]
+			if b.RepoRoot != "" {
+				// Already populated — never overwrite. MUTATION PROOF: remove
+				// this guard → existing non-empty RepoRoot gets overwritten → RED.
+				continue
+			}
+			if b.HerdrWorkspaceID == "" {
+				// Adopted binding with no workspace ID — cannot look up.
+				continue
+			}
+			repoRoot, known := wsMap[b.HerdrWorkspaceID]
+			if !known {
+				// Workspace not in herdr's list — stale or closed; skip.
+				// Note: the !known guard is redundant with the repoRoot==""
+				// check below (a Go map miss yields ""), but kept for clarity.
+				continue
+			}
+			if repoRoot == "" {
+				// Workspace known but carries no repo_root — nothing to fill.
+				continue
+			}
+			fmt.Fprintf(w, "backfill-repo-root: %s (%s) → %s\n",
+				b.SpaceLabel, b.HerdrWorkspaceID, repoRoot)
+			b.RepoRoot = repoRoot
+			changed++
+		}
+		if changed == 0 {
+			return nil
+		}
+		return herdrSpaceWriteAll(storeRoot, bindings)
+	})
+	if lockErr != nil {
+		return 0, lockErr
+	}
+	return changed, nil
 }
 
 // HerdrSpaceDelete removes the binding identified by SpaceLabel.

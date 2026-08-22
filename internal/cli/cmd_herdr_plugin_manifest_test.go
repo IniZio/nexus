@@ -270,6 +270,8 @@ func TestHerdrGroupUsageString_containsAllPluginVerbs(t *testing.T) {
 		"space-create", "space-open-pane",
 		// Worktree verb.
 		"worktree-sandbox",
+		// Backfill verb.
+		"backfill-repo-root",
 	} {
 		if !strings.Contains(ue.Msg, verb) {
 			t.Errorf("usage string missing verb %q; add it to the runHerdrGroup usage literal", verb)

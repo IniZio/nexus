@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -1011,5 +1012,359 @@ func TestRunHerdrGuestShell_KernelPathPublished(t *testing.T) {
 	got := os.Getenv("NEXUS3_KERNEL_PATH")
 	if got != stampedKernel {
 		t.Errorf("NEXUS3_KERNEL_PATH = %q after RunHerdrGuestShell, want %q — herdrApplyKernelPath call site may be suppressed", got, stampedKernel)
+	}
+}
+
+// ── auto-create in herdrDefaultShellCore ─────────────────────────────────────
+
+func TestHerdrDefaultShell_UnboundWorktree_AutoCreateSucceeds(t *testing.T) {
+	// An unbound workspace that succeeds auto-create must exec into the guest
+	// shell (not the host shell). The auto-create stub returns (binding, true).
+	//
+	// MUTATION PROOF: remove the herdrDefaultShellAutoCreateFn call in
+	// herdrDefaultShellCore → auto-create never fires → workspace stays unbound
+	// → execHostShell is returned → argv0 = host shell, not nexus3. RED.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	wsID := "wWT1"
+
+	binding := HerdrSpaceBinding{
+		SpaceLabel:       "nexus3:wt/feat",
+		HerdrWorkspaceID: wsID,
+		SandboxHandle:    "wt/feat",
+		SandboxID:        "sb-wt1",
+	}
+
+	// Stub the predicate to return true (simulates: linked worktree + binding exists).
+	// MUTATION PROOF (predicate gate): set predFn to return false → auto-create
+	// is never reached → execHostShell → argv0 = host shell. RED.
+	oldPred := herdrAutoCreatePredicateFn
+	herdrAutoCreatePredicateFn = func(_ []HerdrSpaceBinding) bool { return true }
+	t.Cleanup(func() { herdrAutoCreatePredicateFn = oldPred })
+
+	// Stub: auto-create succeeds and returns the binding.
+	old := herdrDefaultShellAutoCreateFn
+	herdrDefaultShellAutoCreateFn = func(_ context.Context, _, gotWsID, _ string, _ io.Writer) (HerdrSpaceBinding, bool) {
+		if gotWsID != wsID {
+			t.Errorf("auto-create called with wsID=%q; want %q", gotWsID, wsID)
+		}
+		return binding, true
+	}
+	t.Cleanup(func() { herdrDefaultShellAutoCreateFn = old })
+
+	// Use a svc that reports Running + dialable.
+	svc := &fakeDialableGetter{
+		fakeDefaultShellGetter: fakeDefaultShellGetter{
+			sb: domain.Sandbox{State: domain.Running},
+		},
+	}
+
+	getenv := func(k string) string {
+		switch k {
+		case "HERDR_WORKSPACE_ID":
+			return wsID
+		case "SHELL":
+			return "/bin/bash"
+		}
+		return ""
+	}
+
+	cap := &capturedExec{}
+	// Pass an EMPTY store root so the bindings file lookup returns !found.
+	emptyRoot := t.TempDir()
+	if err := herdrDefaultShellCore(context.Background(), getenv, emptyRoot, svc, "/fake/nexus3", cap.fn); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Must have exec'd into the guest, not the host shell.
+	if cap.argv0 == "" {
+		t.Fatal("execFn was not called")
+	}
+	if cap.argv0 == "/bin/bash" || cap.argv0 == "/bin/sh" {
+		t.Errorf("expected guest exec (nexus3), got host shell %q", cap.argv0)
+	}
+}
+
+func TestHerdrDefaultShell_UnboundNonWorktree_NoSpawn_HostShell(t *testing.T) {
+	// An unbound NON-worktree workspace must reach the host shell with ZERO
+	// output and ZERO calls to herdrDefaultShellAutoCreateFn. This is the path
+	// for w6/w8/w2R — plain operator workspaces that are NOT linked worktrees.
+	//
+	// The predicate herdrAutoCreatePredicateFn returns false for a non-worktree
+	// workspace, so the auto-create path is never entered. Any output before the
+	// predicate passes is itself a failure (e.g. a false "linked worktree
+	// detected" message).
+	//
+	// MUTATION PROOF (predicate gate removed): bypass the predicate check in
+	// herdrDefaultShellCore → auto-create stub is called → autoCreateCalled
+	// becomes true → assertion fires RED.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	wsID := "w8"
+
+	autoCreateCalled := false
+	old := herdrDefaultShellAutoCreateFn
+	herdrDefaultShellAutoCreateFn = func(_ context.Context, _, _ string, _ string, _ io.Writer) (HerdrSpaceBinding, bool) {
+		autoCreateCalled = true
+		return HerdrSpaceBinding{}, false
+	}
+	t.Cleanup(func() { herdrDefaultShellAutoCreateFn = old })
+
+	getenv := func(k string) string {
+		switch k {
+		case "HERDR_WORKSPACE_ID":
+			return wsID
+		case "SHELL":
+			return "/bin/bash"
+		}
+		return ""
+	}
+
+	cap := &capturedExec{}
+	// emptyRoot has no bindings file → (c) is false → predicate returns false
+	// → auto-create path is NOT entered.
+	emptyRoot := t.TempDir()
+	if err := herdrDefaultShellCore(context.Background(), getenv, emptyRoot, nil, "/fake/nexus3", cap.fn); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The auto-create fn must NOT have been called.
+	if autoCreateCalled {
+		t.Error("auto-create stub was called for a non-worktree workspace — predicate gate is not wired")
+	}
+	assertHostShell(t, cap, "/bin/bash")
+}
+
+func TestHerdrDefaultShell_AutoCreateFails_HostShell(t *testing.T) {
+	// When the predicate passes (cwd is inside a linked worktree with a
+	// matching RepoRoot binding) but auto-create returns false, execution
+	// must fall through to execHostShell rather than continuing with a
+	// zero-value binding.
+	//
+	// MUTATION PROOF (fail-open guard at :267-269 removed): with svc==nil,
+	// execution falls through to the guest exec with an empty SandboxHandle
+	// → this test goes RED.
+	dir := t.TempDir()
+	cwd, binding := makeLinkedWorktreeFixture(t, dir)
+	storeRoot := t.TempDir()
+	// Seed only the existing binding — wsID below is different, so !found.
+	makeBindings(t, storeRoot, []HerdrSpaceBinding{binding})
+
+	// Override the predicate to call the real implementation with the
+	// fixture cwd so the predicate actually PASSES.
+	oldPred := herdrAutoCreatePredicateFn
+	herdrAutoCreatePredicateFn = func(allBindings []HerdrSpaceBinding) bool {
+		return herdrAutoCreatePredicateWith(cwd, allBindings, os.Stat, os.ReadFile)
+	}
+	t.Cleanup(func() { herdrAutoCreatePredicateFn = oldPred })
+
+	// Stub auto-create to signal failure.
+	autoCreateCalled := false
+	oldCreate := herdrDefaultShellAutoCreateFn
+	herdrDefaultShellAutoCreateFn = func(_ context.Context, _, _ string, _ string, _ io.Writer) (HerdrSpaceBinding, bool) {
+		autoCreateCalled = true
+		return HerdrSpaceBinding{}, false
+	}
+	t.Cleanup(func() { herdrDefaultShellAutoCreateFn = oldCreate })
+
+	wsID := "wNEW" // not in bindings → !found path is taken
+	getenv := func(k string) string {
+		switch k {
+		case "HERDR_WORKSPACE_ID":
+			return wsID
+		case "SHELL":
+			return "/bin/bash"
+		}
+		return ""
+	}
+
+	cap := &capturedExec{}
+	// svc == nil: daemon unreachable, which is exactly when auto-create is
+	// most likely to have failed.
+	if err := herdrDefaultShellCore(context.Background(), getenv, storeRoot, nil, "/fake/nexus3", cap.fn); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !autoCreateCalled {
+		t.Error("auto-create stub was never called; predicate may have returned false unexpectedly")
+	}
+	assertHostShell(t, cap, "/bin/bash")
+}
+
+// ── herdrAutoCreatePredicateWith unit tests ───────────────────────────────────
+
+// makeLinkedWorktreeFixture creates a linked-worktree layout in dir:
+//
+//	<dir>/main/.git/           (directory — the main repo's .git)
+//	<dir>/main/.git/worktrees/feat/  (worktree admin dir)
+//	<dir>/worktree/.git        (file — the linked worktree's .git file)
+//
+// Returns (worktreePath, binding). The binding has a workspace ID matching
+// the worktree so callers can seed it into the bindings file as required.
+func makeLinkedWorktreeFixture(t *testing.T, dir string) (worktreePath string, binding HerdrSpaceBinding) {
+	t.Helper()
+	mainGit := filepath.Join(dir, "main", ".git")
+	wtAdmin := filepath.Join(mainGit, "worktrees", "feat")
+	if err := os.MkdirAll(wtAdmin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktreePath = filepath.Join(dir, "worktree")
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The .git file in a linked worktree points at the worktrees admin dir.
+	gitFile := filepath.Join(worktreePath, ".git")
+	gitdirTarget := filepath.Join(mainGit, "worktrees", "feat")
+	if err := os.WriteFile(gitFile, []byte("gitdir: "+gitdirTarget+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binding = HerdrSpaceBinding{
+		SpaceLabel:       "nexus3:wt/feat",
+		HerdrWorkspaceID: "wWT2",
+		SandboxHandle:    "wt/feat",
+		SandboxID:        "sb-wt2",
+		RepoRoot:         filepath.Join(dir, "main"),
+	}
+	return worktreePath, binding
+}
+
+func TestHerdrAutoCreatePredicate_LinkedWorktreeWithBindings_Engages(t *testing.T) {
+	// (b) cwd is inside a linked worktree AND (c) a binding exists with a
+	// RepoRoot matching the linked worktree's main repo → predicate returns true.
+	//
+	// MUTATION PROOF (b deleted): replace the .git-file check with a check that
+	// always returns true → main-checkout test fails. RED.
+	//
+	// MUTATION PROOF (c repo-comparison replaced with true): the
+	// DifferentRepoRoot test below returns true. RED.
+	//
+	// MUTATION PROOF (len==0 fast-path deleted): linked worktree with NO
+	// bindings (LinkedWorktreeNoBindings test) returns true. RED.
+	dir := t.TempDir()
+	cwd, binding := makeLinkedWorktreeFixture(t, dir)
+	allBindings := []HerdrSpaceBinding{binding}
+
+	got := herdrAutoCreatePredicateWith(cwd, allBindings, os.Stat, os.ReadFile)
+	if !got {
+		t.Error("predicate returned false for linked worktree with matching RepoRoot binding; want true")
+	}
+}
+
+func TestHerdrAutoCreatePredicate_LinkedWorktreeNoBindings_DoesNotEngage(t *testing.T) {
+	// (b) cwd is inside a linked worktree BUT (c) no bindings exist
+	// → predicate returns false.
+	//
+	// MUTATION PROOF (c deleted): remove the len==0 fast-path → this returns
+	// true → test fails RED.
+	dir := t.TempDir()
+	cwd, _ := makeLinkedWorktreeFixture(t, dir)
+
+	got := herdrAutoCreatePredicateWith(cwd, nil, os.Stat, os.ReadFile)
+	if got {
+		t.Error("predicate returned true for linked worktree with no bindings; want false")
+	}
+}
+
+func TestHerdrAutoCreatePredicate_MainCheckout_DoesNotEngage(t *testing.T) {
+	// (b) cwd has a .git DIRECTORY (main checkout) → predicate returns false
+	// regardless of bindings.
+	//
+	// What this proves: the predicate returns false when cwd is in a main
+	// checkout (.git is a directory). It does NOT isolate the IsRegular()
+	// guard — os.ReadFile on a .git DIRECTORY returns EISDIR, so :117
+	// returns false regardless. The IsRegular() guard is still the right
+	// mechanism; this test confirms the directory case is rejected, not
+	// which exact line rejects it.
+	dir := t.TempDir()
+	mainGit := filepath.Join(dir, ".git")
+	if err := os.MkdirAll(mainGit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	allBindings := []HerdrSpaceBinding{{
+		HerdrWorkspaceID: "wANY",
+		SandboxHandle:    "any/sandbox",
+	}}
+
+	got := herdrAutoCreatePredicateWith(dir, allBindings, os.Stat, os.ReadFile)
+	if got {
+		t.Error("predicate returned true for a main checkout (.git is a directory); want false")
+	}
+}
+
+func TestHerdrAutoCreatePredicate_NoGitFound_DoesNotEngage(t *testing.T) {
+	// No .git anywhere in the walk → predicate returns false.
+	dir := t.TempDir()
+	allBindings := []HerdrSpaceBinding{{HerdrWorkspaceID: "wANY"}}
+
+	got := herdrAutoCreatePredicateWith(dir, allBindings, os.Stat, os.ReadFile)
+	if got {
+		t.Error("predicate returned true when no .git exists; want false")
+	}
+}
+
+// ── Additional herdrAutoCreatePredicateWith tests (repo-scoped predicate) ────
+
+func TestHerdrAutoCreatePredicate_DifferentRepoRoot_DoesNotEngage(t *testing.T) {
+	// Linked worktree of repo A, but the only binding belongs to repo B
+	// (different RepoRoot) → predicate returns false.
+	//
+	// This is the exact defect the fix addresses: the old code returned true
+	// whenever any binding existed, regardless of which repo it belonged to.
+	// This test is RED against the pre-fix implementation.
+	//
+	// MUTATION PROOF (repo comparison replaced with true): this test fails RED.
+	dir := t.TempDir()
+	cwd, _ := makeLinkedWorktreeFixture(t, dir)
+
+	// Binding whose RepoRoot points at an unrelated repo ("example-app").
+	unrelatedBinding := HerdrSpaceBinding{
+		SpaceLabel:       "nexus3:wt/other",
+		HerdrWorkspaceID: "wOTH",
+		SandboxHandle:    "wt/other",
+		SandboxID:        "sb-other",
+		RepoRoot:         "/some/unrelated/repo",
+	}
+	allBindings := []HerdrSpaceBinding{unrelatedBinding}
+
+	got := herdrAutoCreatePredicateWith(cwd, allBindings, os.Stat, os.ReadFile)
+	if got {
+		t.Error("predicate returned true for linked worktree whose repo does not match any binding RepoRoot; want false")
+	}
+}
+
+func TestHerdrAutoCreatePredicate_EmptyRepoRoot_LegacyBinding_DoesNotEngage(t *testing.T) {
+	// Linked worktree with bindings that all have empty RepoRoot (legacy
+	// bindings written before this field existed) → predicate returns false.
+	// Empty RepoRoot must never act as a wildcard.
+	//
+	// MUTATION PROOF (empty RepoRoot treated as wildcard/match): this test
+	// fails RED.
+	dir := t.TempDir()
+	cwd, _ := makeLinkedWorktreeFixture(t, dir)
+
+	legacyBinding := HerdrSpaceBinding{
+		SpaceLabel:       "nexus3:wt/legacy",
+		HerdrWorkspaceID: "wLEG",
+		SandboxHandle:    "wt/legacy",
+		SandboxID:        "sb-leg",
+		// RepoRoot intentionally absent (legacy binding).
+	}
+	allBindings := []HerdrSpaceBinding{legacyBinding}
+
+	got := herdrAutoCreatePredicateWith(cwd, allBindings, os.Stat, os.ReadFile)
+	if got {
+		t.Error("predicate returned true for linked worktree when all bindings have empty RepoRoot; want false")
+	}
+}
+
+func TestHerdrSpaceBinding_LegacyJSON_DecodesCleanly(t *testing.T) {
+	// Verify that a binding JSON written before the repo_root field existed
+	// decodes without error and produces an empty RepoRoot — encoding/json
+	// leaves missing fields at their zero value.
+	legacy := `[{"space_label":"nexus3:demo","herdr_workspace_id":"wXX","sandbox_handle":"demo","sandbox_id":"sb-demo"}]`
+	var bindings []HerdrSpaceBinding
+	if err := json.Unmarshal([]byte(legacy), &bindings); err != nil {
+		t.Fatalf("unmarshal legacy binding: %v", err)
+	}
+	if len(bindings) != 1 {
+		t.Fatalf("got %d bindings; want 1", len(bindings))
+	}
+	if bindings[0].RepoRoot != "" {
+		t.Errorf("RepoRoot = %q; want empty string for legacy binding", bindings[0].RepoRoot)
 	}
 }

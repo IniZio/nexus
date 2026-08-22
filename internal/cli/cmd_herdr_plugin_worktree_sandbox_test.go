@@ -169,6 +169,7 @@ func callHerdrWorktreeSandbox(
 	workspaceID string,
 	storeRoot string,
 	conditional bool,
+	auto bool,
 	create func(context.Context, string, string) error,
 	get func(context.Context, string) (domain.Sandbox, error),
 ) error {
@@ -193,7 +194,7 @@ func callHerdrWorktreeSandbox(
 	if get == nil {
 		get = stubSandboxGet(domain.Sandbox{}, nil)
 	}
-	return herdrWorktreeSandbox(ctx, workspaceID, &w, storeRoot, false, conditional, create, get)
+	return herdrWorktreeSandbox(ctx, workspaceID, &w, storeRoot, false, conditional, auto, create, get)
 }
 
 // seedBinding writes a binding for workspaceID into storeRoot so idempotency checks fire.
@@ -228,7 +229,7 @@ func TestHerdrWorktreeSandbox_alreadyBound_noOp(t *testing.T) {
 	})
 
 	createCalled := false
-	err := callHerdrWorktreeSandbox(t, "w-already", root, false,
+	err := callHerdrWorktreeSandbox(t, "w-already", root, false, false, /*auto*/
 		func(_ context.Context, _, _ string) error { createCalled = true; return nil },
 		nil,
 	)
@@ -258,7 +259,7 @@ func TestHerdrWorktreeSandbox_mainCheckout_notBound(t *testing.T) {
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
 	createCalled := false
-	err := callHerdrWorktreeSandbox(t, "w8", root, false,
+	err := callHerdrWorktreeSandbox(t, "w8", root, false, false, /*auto*/
 		func(_ context.Context, _, _ string) error { createCalled = true; return nil },
 		nil,
 	)
@@ -285,7 +286,7 @@ func TestHerdrWorktreeSandbox_listError_failSafe(t *testing.T) {
 	root := t.TempDir()
 	swapListFn(t, stubWorktreeList{err: errors.New("herdr unreachable")}.fn())
 
-	err := callHerdrWorktreeSandbox(t, "w-new", root, false, nil, nil)
+	err := callHerdrWorktreeSandbox(t, "w-new", root, false, false /*auto*/, nil, nil)
 	if err != nil {
 		t.Fatalf("expected nil (fail-safe) but got: %v", err)
 	}
@@ -311,7 +312,7 @@ func TestHerdrWorktreeSandbox_conditional_sourceNotBound_staysHost(t *testing.T)
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
 	createCalled := false
-	err := callHerdrWorktreeSandbox(t, "w-worktree", root, true,
+	err := callHerdrWorktreeSandbox(t, "w-worktree", root, true, false, /*auto*/
 		func(_ context.Context, _, _ string) error { createCalled = true; return nil },
 		nil,
 	)
@@ -347,7 +348,7 @@ func TestHerdrWorktreeSandbox_conditional_sourceBound_binds(t *testing.T) {
 	// branch path "worktree/feat" encoded) and mount "/path/feat:/workspace".
 	const wantHandle = "wt/worktree-feat"
 	var gotHandle, gotMount string
-	err := callHerdrWorktreeSandbox(t, "w-new", root, true,
+	err := callHerdrWorktreeSandbox(t, "w-new", root, true, false, /*auto*/
 		func(_ context.Context, handle, mountSpec string) error {
 			gotHandle = handle
 			gotMount = mountSpec
@@ -398,7 +399,7 @@ func TestHerdrWorktreeSandbox_conditional_sourceUnknown_failSafe(t *testing.T) {
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
 	createCalled := false
-	err := callHerdrWorktreeSandbox(t, "w-new", root, true,
+	err := callHerdrWorktreeSandbox(t, "w-new", root, true, false, /*auto*/
 		func(_ context.Context, _, _ string) error { createCalled = true; return nil },
 		nil,
 	)
@@ -426,7 +427,7 @@ func TestHerdrWorktreeSandbox_explicit_noSourceCheck(t *testing.T) {
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
-	err := callHerdrWorktreeSandbox(t, "w-explicit", root, false /*conditional=false*/, nil, stubSandboxGet(domain.Sandbox{}, nil))
+	err := callHerdrWorktreeSandbox(t, "w-explicit", root, false /*conditional=false*/, false /*auto*/, nil, stubSandboxGet(domain.Sandbox{}, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -458,7 +459,7 @@ func TestHerdrWorktreeSandbox_createFails_noBinding(t *testing.T) {
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
-	err := callHerdrWorktreeSandbox(t, "w-fail", root, true /* conditional */, errCreate, nil)
+	err := callHerdrWorktreeSandbox(t, "w-fail", root, true /* conditional */, false /*auto*/, errCreate, nil)
 	if err != nil {
 		t.Fatalf("unexpected error (conditional mode should fail-safe): %v", err)
 	}
@@ -493,7 +494,7 @@ func TestHerdrWorktreeSandbox_happyPath_bindingFields(t *testing.T) {
 		return nil
 	})
 
-	err := callHerdrWorktreeSandbox(t, "w-new", root, false, nil, stubSandboxGet(domain.Sandbox{}, nil))
+	err := callHerdrWorktreeSandbox(t, "w-new", root, false, false /*auto*/, nil, stubSandboxGet(domain.Sandbox{}, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -541,7 +542,7 @@ func TestHerdrWorktreeSandbox_createArgs(t *testing.T) {
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
 	var gotHandle, gotMount string
-	_ = callHerdrWorktreeSandbox(t, "w-c", root, false,
+	_ = callHerdrWorktreeSandbox(t, "w-c", root, false, false, /*auto*/
 		func(_ context.Context, h, m string) error {
 			gotHandle = h
 			gotMount = m
@@ -606,7 +607,7 @@ func TestHerdrWorktreeSandbox_step9_guestPaneIDCaptured(t *testing.T) {
 	}
 	t.Cleanup(func() { herdrExecCommandContext = old })
 
-	err := herdrWorktreeSandbox(context.Background(), "w-pane", &strings.Builder{}, root, true, false, noopCreate, stubSandboxGet(domain.Sandbox{}, nil))
+	err := herdrWorktreeSandbox(context.Background(), "w-pane", &strings.Builder{}, root, true, false, false, noopCreate, stubSandboxGet(domain.Sandbox{}, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -671,6 +672,24 @@ func TestHerdrListWorktreeForWorkspace_parsesResponse(t *testing.T) {
 	}
 	if info.SourceWorkspaceID != "w8" {
 		t.Errorf("SourceWorkspaceID = %q; want %q", info.SourceWorkspaceID, "w8")
+	}
+	// Predicate (c) fields: RepoKey and AllWorkspaceIDs must be populated.
+	// MUTATION PROOF (RepoKey): clear RepoKey in herdrParseWorktreeListForWorkspace →
+	// herdrWorktreeSandboxRepoCheck returns false regardless of sibling bindings → RED.
+	if info.RepoKey != "/repo/.git" {
+		t.Errorf("RepoKey = %q; want %q", info.RepoKey, "/repo/.git")
+	}
+	// AllWorkspaceIDs must contain all open_workspace_id values in the response.
+	// MUTATION PROOF (AllWorkspaceIDs): return nil → no siblings found →
+	// herdrWorktreeSandboxRepoCheck always returns false → RED.
+	wantIDs := map[string]bool{"w8": true, "wFEAT": true}
+	if len(info.AllWorkspaceIDs) != 2 {
+		t.Errorf("AllWorkspaceIDs = %v; want 2 entries", info.AllWorkspaceIDs)
+	}
+	for _, id := range info.AllWorkspaceIDs {
+		if !wantIDs[id] {
+			t.Errorf("AllWorkspaceIDs contains unexpected %q", id)
+		}
 	}
 }
 
@@ -739,38 +758,49 @@ func TestHerdrGroup_worktreeSandbox_dispatch(t *testing.T) {
 
 func TestHerdrWorktreeSandboxParseArgs_autoFlag(t *testing.T) {
 	// --auto is accepted by the CLI; not emitted by any script today.
-	// ["--auto", "w1"]: the flag must be stripped and conditional set to true.
+	// ["--auto", "w1"]: the flag must be stripped and auto set to true.
+	// --auto activates the repo-level predicate (c); it does NOT set conditional.
 	//
 	// MUTATION PROOF: rename "--auto" to "--never-matches" in herdrWorktreeSandboxParseArgs →
 	// --auto is not consumed, rest[0]="--auto" ≠ "w1" → RED.
-	rest, conditional := herdrWorktreeSandboxParseArgs([]string{"--auto", "w1"})
+	rest, conditional, auto := herdrWorktreeSandboxParseArgs([]string{"--auto", "w1"})
 	if len(rest) == 0 || rest[0] != "w1" {
 		t.Errorf("--auto not stripped: rest=%v, want [w1]", rest)
 	}
-	if !conditional {
-		t.Errorf("--auto should set conditional=true; got false")
+	if !auto {
+		t.Errorf("--auto should set auto=true; got false")
+	}
+	if conditional {
+		t.Errorf("--auto should NOT set conditional; got true")
 	}
 }
 
 func TestHerdrWorktreeSandboxParseArgs_conditionalAlias(t *testing.T) {
-	// --conditional is accepted as an alias for --auto.
-	rest, conditional := herdrWorktreeSandboxParseArgs([]string{"--conditional", "w1"})
+	// --conditional sets conditional=true (legacy SourceWorkspaceID predicate).
+	// It is kept for backward compatibility and is distinct from --auto.
+	rest, conditional, auto := herdrWorktreeSandboxParseArgs([]string{"--conditional", "w1"})
 	if len(rest) == 0 || rest[0] != "w1" {
 		t.Errorf("--conditional not stripped: rest=%v, want [w1]", rest)
 	}
 	if !conditional {
 		t.Errorf("--conditional should set conditional=true; got false")
 	}
+	if auto {
+		t.Errorf("--conditional should NOT set auto; got true")
+	}
 }
 
 func TestHerdrWorktreeSandboxParseArgs_noFlag(t *testing.T) {
-	// No flag: workspace ID passes through unchanged, conditional stays false.
-	rest, conditional := herdrWorktreeSandboxParseArgs([]string{"w1"})
+	// No flag: workspace ID passes through unchanged, both booleans stay false.
+	rest, conditional, auto := herdrWorktreeSandboxParseArgs([]string{"w1"})
 	if len(rest) == 0 || rest[0] != "w1" {
 		t.Errorf("plain ID: rest=%v, want [w1]", rest)
 	}
 	if conditional {
 		t.Errorf("no flag: expected conditional=false; got true")
+	}
+	if auto {
+		t.Errorf("no flag: expected auto=false; got true")
 	}
 }
 
@@ -790,7 +820,7 @@ func TestHerdrWorktreeSandbox_explicitMode_createError_returnsError(t *testing.T
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
 	createErr := errors.New("create failed: explicit test")
-	err := callHerdrWorktreeSandbox(t, "w-exp", root, false,
+	err := callHerdrWorktreeSandbox(t, "w-exp", root, false, false, /*auto*/
 		func(_ context.Context, _, _ string) error { return createErr },
 		nil,
 	)
@@ -811,7 +841,7 @@ func TestHerdrWorktreeSandbox_conditionalMode_createError_returnsNil(t *testing.
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
-	err := callHerdrWorktreeSandbox(t, "w-cond", root, true,
+	err := callHerdrWorktreeSandbox(t, "w-cond", root, true, false, /*auto*/
 		func(_ context.Context, _, _ string) error { return errors.New("create failed") },
 		nil,
 	)
@@ -837,7 +867,7 @@ func TestHerdrWorktreeSandbox_explicitMode_getFnError_returnsError(t *testing.T)
 	getFail := func(_ context.Context, _ string) (domain.Sandbox, error) {
 		return domain.Sandbox{}, errors.New("sandbox lookup failed: explicit test")
 	}
-	err := callHerdrWorktreeSandbox(t, "w-getfail-exp", root, false, nil, getFail)
+	err := callHerdrWorktreeSandbox(t, "w-getfail-exp", root, false, false /*auto*/, nil, getFail)
 	if err == nil {
 		t.Error("explicit mode: getFn error must return non-nil error; got nil")
 	}
@@ -857,7 +887,7 @@ func TestHerdrWorktreeSandbox_conditionalMode_getFnError_returnsNil(t *testing.T
 	getFail := func(_ context.Context, _ string) (domain.Sandbox, error) {
 		return domain.Sandbox{}, errors.New("sandbox lookup failed: conditional test")
 	}
-	err := callHerdrWorktreeSandbox(t, "w-getfail-cond", root, true, nil, getFail)
+	err := callHerdrWorktreeSandbox(t, "w-getfail-cond", root, true, false /*auto*/, nil, getFail)
 	if err != nil {
 		t.Errorf("conditional mode: getFn error must return nil (fail-safe); got %v", err)
 	}
@@ -884,7 +914,7 @@ func TestHerdrWorktreeSandbox_explicitMode_spacePutError_returnsError(t *testing
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
-	err := callHerdrWorktreeSandbox(t, "w-putfail-exp", badRoot, false, nil, stubSandboxGet(domain.Sandbox{}, nil))
+	err := callHerdrWorktreeSandbox(t, "w-putfail-exp", badRoot, false, false /*auto*/, nil, stubSandboxGet(domain.Sandbox{}, nil))
 	if err == nil {
 		t.Error("explicit mode: HerdrSpacePut error must return non-nil error; got nil")
 	}
@@ -906,7 +936,7 @@ func TestHerdrWorktreeSandbox_conditionalMode_spacePutError_returnsNil(t *testin
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
-	err := callHerdrWorktreeSandbox(t, "w-putfail-cond", badRoot, true, nil, stubSandboxGet(domain.Sandbox{}, nil))
+	err := callHerdrWorktreeSandbox(t, "w-putfail-cond", badRoot, true, false /*auto*/, nil, stubSandboxGet(domain.Sandbox{}, nil))
 	if err != nil {
 		t.Errorf("conditional mode: HerdrSpacePut error must return nil (fail-safe); got %v", err)
 	}
@@ -944,7 +974,7 @@ func TestHerdrWorktreeSandbox_bindingWrittenBeforePaneOpen(t *testing.T) {
 
 	ctx := context.Background()
 	var w strings.Builder
-	err := herdrWorktreeSandbox(ctx, wsID, &w, root, true, false, noopCreate, stubSandboxGet(domain.Sandbox{}, nil))
+	err := herdrWorktreeSandbox(ctx, wsID, &w, root, true, false, false, noopCreate, stubSandboxGet(domain.Sandbox{}, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -979,7 +1009,7 @@ func TestHerdrWorktreeSandbox_explicitMode_paneError_returnsError(t *testing.T) 
 
 	ctx := context.Background()
 	var w strings.Builder
-	err := herdrWorktreeSandbox(ctx, "w-panefail-exp", &w, root, true /*openPane*/, false /*conditional*/, noopCreate, stubSandboxGet(domain.Sandbox{}, nil))
+	err := herdrWorktreeSandbox(ctx, "w-panefail-exp", &w, root, true /*openPane*/, false /*conditional*/, false /*auto*/, noopCreate, stubSandboxGet(domain.Sandbox{}, nil))
 	if err == nil {
 		t.Error("explicit mode: pane open error must return non-nil error; got nil")
 	}
@@ -1006,8 +1036,240 @@ func TestHerdrWorktreeSandbox_conditionalMode_paneError_returnsNil(t *testing.T)
 
 	ctx := context.Background()
 	var w strings.Builder
-	err := herdrWorktreeSandbox(ctx, "w-panefail-cond", &w, root, true /*openPane*/, true /*conditional*/, noopCreate, stubSandboxGet(domain.Sandbox{}, nil))
+	err := herdrWorktreeSandbox(ctx, "w-panefail-cond", &w, root, true /*openPane*/, true /*conditional*/, false /*auto*/, noopCreate, stubSandboxGet(domain.Sandbox{}, nil))
 	if err != nil {
 		t.Errorf("conditional mode: pane open error must return nil (fail-safe); got %v", err)
+	}
+}
+
+// ── auto mode (--auto / repo-level predicate) ─────────────────────────────────
+
+// linkedWorktreeInfoAuto returns a herdrWorktreeInfo for a linked worktree
+// with the repo-level fields (RepoKey, AllWorkspaceIDs) populated.
+// workspaceID is included in AllWorkspaceIDs along with any siblings.
+func linkedWorktreeInfoAuto(workspaceID, branch, path, repoKey string, siblings ...string) herdrWorktreeInfo {
+	all := append(siblings, workspaceID)
+	return herdrWorktreeInfo{
+		Branch:           branch,
+		Path:             path,
+		IsLinkedWorktree: true,
+		RepoKey:          repoKey,
+		AllWorkspaceIDs:  all,
+	}
+}
+
+func TestHerdrWorktreeSandbox_auto_siblingBound_binds(t *testing.T) {
+	// When auto=true and a sibling workspace (in AllWorkspaceIDs) is
+	// nexus3-bound, the function must create a sandbox and write a binding.
+	//
+	// MUTATION PROOF (predicate c): remove herdrWorktreeSandboxRepoCheck call
+	// (always return true) → test still passes. CORRECT PROOF: invert the
+	// check (return false) → no binding written → RED:
+	// "expected 1 binding in store; got 0".
+	root := t.TempDir()
+
+	// Seed a binding for the sibling workspace "w-src".
+	seedBinding(t, root, "w-src", "wt/src-sandbox")
+
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfoAuto("w-new", "worktree/feat", "/path/feat", "/repo/.git", "w-src"),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+
+	err := callHerdrWorktreeSandbox(t, "w-new", root, false, true, /*auto*/
+		nil, stubSandboxGet(domain.Sandbox{}, nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	all, _ := herdrSpaceReadAll(root)
+	var found bool
+	for _, b := range all {
+		if b.HerdrWorkspaceID == "w-new" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected binding for w-new in store; got none")
+	}
+}
+
+func TestHerdrWorktreeSandbox_auto_noRepoBound_staysHost(t *testing.T) {
+	// When auto=true but no sibling workspace is nexus3-bound, the function
+	// must leave the workspace unbound (fail safe).
+	//
+	// MUTATION PROOF: remove repo check (always proceed) → createSandbox is
+	// called → RED: "createSandbox must not be called".
+	root := t.TempDir()
+	// No bindings in the store.
+
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfoAuto("w-new", "worktree/feat", "/path/feat", "/repo/.git", "w-src"),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+
+	createCalled := false
+	err := callHerdrWorktreeSandbox(t, "w-new", root, false, true, /*auto*/
+		func(_ context.Context, _, _ string) error { createCalled = true; return nil },
+		nil)
+	if err != nil {
+		t.Fatalf("unexpected error (auto mode is fail-safe): %v", err)
+	}
+	if createCalled {
+		t.Error("createSandbox must not be called when no repo sibling is nexus3-bound")
+	}
+	all, _ := herdrSpaceReadAll(root)
+	if len(all) != 0 {
+		t.Errorf("expected no bindings; got %d", len(all))
+	}
+}
+
+func TestHerdrWorktreeSandbox_auto_repoKeyEmpty_staysHost(t *testing.T) {
+	// When auto=true but RepoKey is empty, the repo cannot be identified →
+	// herdrWorktreeSandboxRepoCheck returns false → workspace stays unbound.
+	//
+	// MUTATION PROOF: remove the `info.RepoKey == ""` guard in
+	// herdrWorktreeSandboxRepoCheck → proceeds to scan AllWorkspaceIDs.
+	// With w-src seeded and in AllWorkspaceIDs, a binding IS found → creates
+	// sandbox → RED: "createSandbox must not be called".
+	root := t.TempDir()
+	seedBinding(t, root, "w-src", "wt/src-sandbox")
+
+	swapListFn(t, stubWorktreeList{
+		// RepoKey is deliberately empty.
+		info: linkedWorktreeInfoAuto("w-new", "worktree/feat", "/path/feat", "" /*repoKey=empty*/, "w-src"),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+
+	createCalled := false
+	err := callHerdrWorktreeSandbox(t, "w-new", root, false, true, /*auto*/
+		func(_ context.Context, _, _ string) error { createCalled = true; return nil },
+		nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if createCalled {
+		t.Error("createSandbox must not be called when RepoKey is empty")
+	}
+}
+
+func TestHerdrWorktreeSandbox_auto_notLinkedWorktree_noSideEffects(t *testing.T) {
+	// When auto=true but IsLinkedWorktree=false (e.g. workspace w8 main checkout),
+	// the function must return nil with zero createFn calls and zero
+	// herdrExecCommandContext calls (no pane opens, no workspace renames).
+	//
+	// This is the "NARROW ENGAGEMENT" proof: a non-linked workspace (w6, w8, w2R)
+	// must not produce any sandbox or herdr side-effects beyond the probe.
+	//
+	// MUTATION PROOF: remove the !info.IsLinkedWorktree guard →
+	// herdrWorktreeSandboxRepoCheck fires. With no bindings in the store it
+	// returns false → still no create. To make the mutation RED: also seed a
+	// sibling binding so repoCheck returns true → createSandbox IS called →
+	// createCalled = true → RED.
+	root := t.TempDir()
+	// Seed a sibling binding so that IF the linked-worktree guard were removed
+	// and repoCheck evaluated, it would return true and proceed to create.
+	seedBinding(t, root, "w-src", "wt/src-sandbox")
+
+	swapListFn(t, stubWorktreeList{
+		info: herdrWorktreeInfo{
+			Branch:           "main",
+			Path:             "/repo",
+			IsLinkedWorktree: false, // main checkout — must be skipped
+			RepoKey:          "/repo/.git",
+			AllWorkspaceIDs:  []string{"w-src", "w-new"},
+		},
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+
+	// Call herdrWorktreeSandbox directly (not via callHerdrWorktreeSandbox)
+	// so our recording exec seam is not overwritten by the helper's no-op seam.
+	t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
+	execCalled := false
+	old := herdrExecCommandContext
+	herdrExecCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		execCalled = true
+		return exec.CommandContext(ctx, "sh", "-c", "exit 0")
+	}
+	t.Cleanup(func() { herdrExecCommandContext = old })
+
+	createCalled := false
+	var w strings.Builder
+	err := herdrWorktreeSandbox(context.Background(), "w-new", &w, root,
+		false /*openPane*/, false /*conditional*/, true, /*auto*/
+		func(_ context.Context, _, _ string) error { createCalled = true; return nil },
+		stubSandboxGet(domain.Sandbox{}, nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if createCalled {
+		t.Error("createSandbox must not be called for a non-linked workspace")
+	}
+	if execCalled {
+		t.Error("herdrExecCommandContext must not be called for a non-linked workspace (no pane open, no rename)")
+	}
+	all, _ := herdrSpaceReadAll(root)
+	// Only the seeded sibling binding should be in the store.
+	for _, b := range all {
+		if b.HerdrWorkspaceID == "w-new" {
+			t.Errorf("unexpected binding for w-new (non-linked workspace must stay unbound)")
+		}
+	}
+}
+
+func TestHerdrWorktreeSandbox_auto_concurrent_secondIsNoOp(t *testing.T) {
+	// Concurrency: a second call for the same workspace after the first has
+	// written a binding must be a no-op (idempotency guard fires in step 1).
+	// The second call must not corrupt the existing binding.
+	//
+	// MUTATION PROOF: remove the step-1 idempotency check → second call
+	// proceeds to create, which may conflict with the existing sandbox or
+	// write a second binding → the final binding count may be 2 → RED.
+	root := t.TempDir()
+	seedBinding(t, root, "w-src", "wt/src-sandbox")
+
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfoAuto("w-new", "worktree/feat", "/path/feat", "/repo/.git", "w-src"),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+
+	// First call creates the binding.
+	err := callHerdrWorktreeSandbox(t, "w-new", root, false, true, /*auto*/
+		nil, stubSandboxGet(domain.Sandbox{}, nil))
+	if err != nil {
+		t.Fatalf("first call: unexpected error: %v", err)
+	}
+	allAfterFirst, _ := herdrSpaceReadAll(root)
+	var firstCountForWNew int
+	for _, b := range allAfterFirst {
+		if b.HerdrWorkspaceID == "w-new" {
+			firstCountForWNew++
+		}
+	}
+	if firstCountForWNew != 1 {
+		t.Fatalf("expected 1 binding for w-new after first call; got %d", firstCountForWNew)
+	}
+
+	// Second call (simulates a second pane opening concurrently).
+	createCalledSecond := false
+	err = callHerdrWorktreeSandbox(t, "w-new", root, false, true, /*auto*/
+		func(_ context.Context, _, _ string) error { createCalledSecond = true; return nil },
+		nil)
+	if err != nil {
+		t.Fatalf("second call: unexpected error: %v", err)
+	}
+	if createCalledSecond {
+		t.Error("second call must not invoke createSandbox (idempotency: binding exists)")
+	}
+
+	// Binding must still be exactly one.
+	allAfterSecond, _ := herdrSpaceReadAll(root)
+	var finalCountForWNew int
+	for _, b := range allAfterSecond {
+		if b.HerdrWorkspaceID == "w-new" {
+			finalCountForWNew++
+		}
+	}
+	if finalCountForWNew != 1 {
+		t.Errorf("expected exactly 1 binding for w-new after second call; got %d", finalCountForWNew)
 	}
 }
