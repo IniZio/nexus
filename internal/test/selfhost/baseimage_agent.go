@@ -23,10 +23,11 @@ package selfhost
 // # PATH materialisation
 //
 // docker export discards image config (ENV, CMD). The guest PATH is set by the
-// caller (typically "/usr/local/go/bin:/usr/bin:/bin:/usr/sbin:/sbin"). To keep
-// 'node' and 'claude' reachable without /usr/local/bin in that PATH, the
-// Containerfile creates /usr/bin/node and /usr/bin/claude as symlinks into
-// /usr/local/bin.
+// caller (typically "/usr/bin:/bin:/usr/sbin:/sbin") and does NOT include
+// /usr/local/bin or /usr/local/go/bin. The Containerfile creates /usr/bin
+// symlinks for node, claude, gh, go, and gofmt. It also writes /etc/environment
+// and /etc/profile.d/nexus3-go.sh so that nexus3-agent's readEtcEnvironment()
+// and login shells both pick up GOPATH, GOMODCACHE, and PATH.
 //
 // # Image size
 //
@@ -433,12 +434,35 @@ RUN command -v claude && \
 
 # ── Materialise /usr/bin symlinks for standard guest PATH ────────────────────
 # docker export discards ENV (including PATH). The guest PATH injected by the
-# caller ("...:/usr/bin:/bin:/usr/sbin:/sbin") does NOT include /usr/local/bin.
-# Symlink node and claude into /usr/bin so both are reachable without
-# /usr/local/bin on PATH. Verify with debugfs stat /usr/bin/claude on the ext4.
+# caller ("...:/usr/bin:/bin:/usr/sbin:/sbin") does NOT include /usr/local/bin
+# or /usr/local/go/bin.  Symlink node, claude, gh, and the Go toolchain binaries
+# into /usr/bin so all are reachable on the caller-injected PATH.
 RUN ln -sf /usr/local/bin/node /usr/bin/node && \
     ln -sf /usr/local/bin/claude /usr/bin/claude && \
-    ln -sf /usr/local/bin/gh /usr/bin/gh
+    ln -sf /usr/local/bin/gh /usr/bin/gh && \
+    ln -sf /usr/local/go/bin/go /usr/bin/go && \
+    ln -sf /usr/local/go/bin/gofmt /usr/bin/gofmt
+
+# ── Materialise /etc/environment and /etc/profile.d so env vars survive ext4 ─
+# OCI ENV metadata lives only in the image config JSON and is never read by the
+# guest: the VM boots init=/sbin/nexus3-agent directly from the ext4 rootfs, so
+# no container runtime ever reads Config.Env.  nexus3-agent reads /etc/environment
+# via readEtcEnvironment() and merges it into every exec'd process env.
+# Values DERIVED from the ENV declarations above — not re-typed literals — so
+# that editing the ENV block cannot silently leave these files at stale values.
+RUN printf '%%s=%%s\n' \
+        GOPATH "$GOPATH" \
+        GOMODCACHE "$GOMODCACHE" \
+        CGO_ENABLED "$CGO_ENABLED" \
+        GOTOOLCHAIN "$GOTOOLCHAIN" \
+        PATH "$PATH" \
+    > /etc/environment && \
+    { echo '# nexus3: Go toolchain env — generated from the Containerfile ENV block.'; \
+      echo '# Do not edit; edit the ENV declarations and rebuild.'; \
+      sed 's/^/export /' /etc/environment; } \
+    > /etc/profile.d/nexus3-go.sh && \
+    chmod 0644 /etc/environment /etc/profile.d/nexus3-go.sh && \
+    mkdir -p "$GOMODCACHE"
 
 # ── Final layer: bake nexus3-agent ───────────────────────────────────────────
 # Placed last so an agent rebuild only invalidates this one layer.

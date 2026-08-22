@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
@@ -96,4 +98,126 @@ func envFirstValues(env []string) map[string]string {
 		}
 	}
 	return m
+}
+
+// TestGuestBaselineEtcEnvironment verifies that guestBaselineEnv picks up
+// variables written to /etc/environment (by the Containerfile RUN that
+// materialises OCI ENV declarations as real filesystem entries).
+//
+// Mechanism: OCI ENV metadata lives only in the image config JSON and is never
+// read by the guest (the VM boots init=/sbin/nexus3-agent directly from ext4;
+// no container runtime ever reads Config.Env). Writing /etc/environment via a
+// Containerfile RUN creates a real file that survives ext4 conversion.
+// readEtcEnvironment() reads that file at exec time and guestBaselineEnv()
+// merges it on top of the hardcoded fallback.
+//
+// Mutation guard: if the readEtcEnvironment() call is removed from
+// guestBaselineEnv(), GOPATH and GOMODCACHE will be absent from the returned
+// slice and this test will fail — that is the intended regression signal.
+func TestGuestBaselineEtcEnvironment(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "etc-environment-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintln(f, "PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	fmt.Fprintln(f, "GOPATH=/go")
+	fmt.Fprintln(f, "GOMODCACHE=/go/pkg/mod")
+	fmt.Fprintln(f, "CGO_ENABLED=0")
+	f.Close()
+
+	// Redirect the package-level path; restore it after the test.
+	orig := etcEnvironmentPath
+	etcEnvironmentPath = f.Name()
+	defer func() { etcEnvironmentPath = orig }()
+
+	env := guestBaselineEnv()
+	m := envFirstValues(env)
+
+	for key, want := range map[string]string{
+		"GOPATH":      "/go",
+		"GOMODCACHE":  "/go/pkg/mod",
+		"CGO_ENABLED": "0",
+	} {
+		got, ok := m[key]
+		if !ok {
+			t.Errorf("%s missing from guestBaselineEnv() — readEtcEnvironment propagation broken", key)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s = %q; want %q", key, got, want)
+		}
+	}
+
+	// PATH must include the Go bin dir from /etc/environment.
+	if path := m["PATH"]; !strings.Contains(path, "/usr/local/go/bin") {
+		t.Errorf("PATH %q does not contain /usr/local/go/bin — readEtcEnvironment propagation broken", path)
+	}
+}
+
+// TestInitPid1EnvPathFromEtcEnvironment verifies that initPid1Env lets the
+// /etc/environment PATH win over the hardcoded fallback.
+//
+// This is the exact bug guarded here: when the hardcoded default was applied
+// before reading /etc/environment, the merge loop's "skip keys already set"
+// guard prevented the image's PATH from ever landing in the process env.
+// initPid1Env reads /etc/environment FIRST; this test proves the invariant.
+//
+// The test covers the PID-1 init path in main.go (now delegated to
+// initPid1Env), not only the guestBaselineEnv exec-env path in control.go.
+func TestInitPid1EnvPathFromEtcEnvironment(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "etc-environment-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Write a PATH that includes /usr/local/go/bin — the canonical image PATH.
+	fmt.Fprintln(f, "PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	fmt.Fprintln(f, "GOPATH=/go")
+	f.Close()
+
+	// Redirect the package-level /etc/environment path; restore after the test.
+	origEtcEnv := etcEnvironmentPath
+	etcEnvironmentPath = f.Name()
+	defer func() { etcEnvironmentPath = origEtcEnv }()
+
+	// Simulate PID 1: the kernel supplies no PATH, so clear it now.
+	// Restore the original value on exit so we do not pollute other tests.
+	origPath := os.Getenv("PATH")
+	if err := os.Unsetenv("PATH"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if origPath != "" {
+			os.Setenv("PATH", origPath)
+		} else {
+			os.Unsetenv("PATH")
+		}
+	}()
+
+	// Also save/restore GOPATH in case the test host has it set.
+	origGopath := os.Getenv("GOPATH")
+	os.Unsetenv("GOPATH")
+	defer func() {
+		if origGopath != "" {
+			os.Setenv("GOPATH", origGopath)
+		} else {
+			os.Unsetenv("GOPATH")
+		}
+	}()
+
+	initPid1Env()
+
+	got := os.Getenv("PATH")
+	if !strings.Contains(got, "/usr/local/go/bin") {
+		t.Errorf("PATH = %q; want /usr/local/go/bin from /etc/environment to win over hardcoded fallback — initPid1Env merge ordering broken", got)
+	}
+	// Confirm the hardcoded fallback portions are also present (via /etc/environment value).
+	for _, seg := range []string{"/usr/bin", "/bin"} {
+		if !strings.Contains(got, seg) {
+			t.Errorf("PATH %q does not contain %q", got, seg)
+		}
+	}
+	// GOPATH from /etc/environment must also be set.
+	if gp := os.Getenv("GOPATH"); gp != "/go" {
+		t.Errorf("GOPATH = %q; want /go from /etc/environment", gp)
+	}
 }

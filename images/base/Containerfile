@@ -84,6 +84,43 @@ ENV GOPATH="/go"
 ENV GOMODCACHE="/go/pkg/mod"
 ENV CGO_ENABLED=0
 
+# NOTE: this file builds the minimal glibc self-hosting base image used by
+# TestBuildkitBaseBuild (internal/core/builder/builder_integration_test.go).
+# It does NOT build nexus3-agent-base — that image is generated in Go by
+# generateAgentContainerfile() in internal/test/selfhost/baseimage_agent.go.
+# Edit THIS file for the builder-test image; edit baseimage_agent.go for
+# the agent image.  They share the same /etc/environment pattern for the same
+# reason: OCI ENV metadata is lost on ext4 conversion and must be materialised
+# as a real filesystem file.
+#
+# Materialise the ENV declarations above as real filesystem files that survive
+# ext4 conversion.  OCI ENV metadata lives only in the image config JSON and
+# is never read by the guest: the VM boots init=/sbin/nexus3-agent directly
+# from the ext4 rootfs, so no container runtime ever reads Config.Env.
+#
+# /etc/environment  — KEY=VALUE pairs parsed by the agent's readEtcEnvironment;
+#                     injected into every exec'd process via guestBaselineEnv,
+#                     and applied to the agent itself via initPid1Env().
+# /etc/profile.d/nexus3-go.sh — sourced by every LOGIN shell (bash -l, dash).
+# /go/pkg/mod       — GOPATH root; created here because ENV GOPATH=/go does not
+#                     create the directory and go tools fail if it is absent.
+# The values are DERIVED from the ENV declarations above ($PATH, $GOPATH, ...
+# are set inside this RUN), never re-typed.  Re-typing them would create two
+# independent declarations of the same fact, and editing the ENV block would
+# silently leave these files stating the old value.
+RUN printf '%s=%s\n' \
+        PATH "$PATH" \
+        GOPATH "$GOPATH" \
+        GOMODCACHE "$GOMODCACHE" \
+        CGO_ENABLED "$CGO_ENABLED" \
+    > /etc/environment && \
+    { echo '# nexus3: Go toolchain env — generated from the Containerfile ENV block.'; \
+      echo '# Do not edit; edit the ENV declarations and rebuild.'; \
+      sed 's/^/export /' /etc/environment; } \
+    > /etc/profile.d/nexus3-go.sh && \
+    chmod 0644 /etc/environment /etc/profile.d/nexus3-go.sh && \
+    mkdir -p "$GOMODCACHE"
+
 # Verify Go is functional
 RUN go version
 

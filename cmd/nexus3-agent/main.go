@@ -40,14 +40,9 @@ func main() {
 	// with a completely empty /dev directory.
 	if isPid1 {
 		mountGuestFS()
-		// The Linux kernel provides no PATH environment variable to PID-1 (init=
-		// processes). Without a default PATH, exec.Command("uname") and similar
-		// relative-path exec calls fail with "executable file not found in $PATH".
-		// Set a Debian/Alpine-compatible default PATH so that guest exec RPCs work
-		// without callers having to use absolute paths.
-		if os.Getenv("PATH") == "" {
-			os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-		}
+		// Apply /etc/environment and the hardcoded PATH fallback to the agent's
+		// own process environment. See initPid1Env for ordering rationale.
+		initPid1Env()
 	}
 
 	// Open /dev/console for explicit diagnostic writes.  After mountGuestFS(),
@@ -244,6 +239,44 @@ func main() {
 		consoleFatal(con, isPid1, "nexus3-agent: run: %v\n", err)
 	}
 	consoleLog(con, "nexus3-agent: clean shutdown\n")
+}
+
+// initPid1Env merges /etc/environment into the agent's own process environment,
+// then applies a hardcoded PATH fallback for images that do not ship an
+// /etc/environment (older images must still boot).
+//
+// Ordering is critical: /etc/environment is read BEFORE the hardcoded default.
+// If the hardcoded default were set first, the merge loop's "skip keys already
+// set" guard would prevent PATH from being overridden — exactly the bug this
+// function was extracted to fix. With this ordering:
+//
+//  1. /etc/environment is applied; if it sets PATH, that value wins.
+//  2. The hardcoded default is applied only if PATH is still empty, i.e. the
+//     image ships no /etc/environment or its /etc/environment omits PATH.
+//
+// The Linux kernel supplies no environment to PID 1, so os.Getenv always
+// returns "" for every key when this is called. Any key in /etc/environment
+// therefore wins unconditionally over the hardcoded fallback.
+func initPid1Env() {
+	// Step 1: apply /etc/environment. Keys already set in os.Environ() are
+	// not overridden — preserves any value the kernel did supply (rare but
+	// possible in unusual boot configurations).
+	for _, kv := range readEtcEnvironment() {
+		idx := strings.IndexByte(kv, '=')
+		if idx < 0 {
+			continue
+		}
+		k := kv[:idx]
+		if os.Getenv(k) == "" {
+			os.Setenv(k, kv[idx+1:])
+		}
+	}
+	// Step 2: hardcoded fallback for images without /etc/environment PATH.
+	// Without a PATH, exec.Command("uname") and similar relative-path exec
+	// calls fail with "executable file not found in $PATH".
+	if os.Getenv("PATH") == "" {
+		os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	}
 }
 
 // guestMountFn is the syscall used by mountGuestFS. Replaced in tests to

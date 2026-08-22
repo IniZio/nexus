@@ -198,19 +198,59 @@ func (cs *controlServer) execPipe(cmd *exec.Cmd, env []string, sess *Session) er
 	return nil
 }
 
+// etcEnvironmentPath is the path read by readEtcEnvironment. It is a variable
+// so tests can redirect to a temporary file without touching the real system file.
+var etcEnvironmentPath = "/etc/environment"
+
+// readEtcEnvironment parses /etc/environment (KEY=VALUE pairs, one per line,
+// no shell substitution) and returns the entries as a "KEY=VALUE" slice.
+// Lines starting with '#' and empty lines are skipped. A missing or
+// unreadable file is silently ignored — not every image writes this file.
+func readEtcEnvironment() []string {
+	data, err := os.ReadFile(etcEnvironmentPath)
+	if err != nil {
+		return nil
+	}
+	var env []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.ContainsRune(line, '=') {
+			env = append(env, line)
+		}
+	}
+	return env
+}
+
 // guestBaselineEnv returns the minimum environment that every exec'd process
 // should inherit when the agent runs as PID 1 (init=). The Linux kernel provides
 // no environment to PID 1, so os.Environ() is nearly empty; this baseline fills
 // in sane defaults. It is overridden by os.Environ() and then by req.Env.
+//
+// The hardcoded fallback (HOME, PATH) applies to any image. Values written by
+// the image's Containerfile to /etc/environment are layered on top, so a
+// single RUN in the Containerfile is the sole source of truth for image-specific
+// variables (GOPATH, GOMODCACHE, CGO_ENABLED, …). OCI ENV metadata is not read
+// here — it lives only in the image config and is never visible to the agent,
+// which boots as init= directly from the ext4 rootfs.
 func guestBaselineEnv() []string {
-	return []string{
+	base := []string{
 		// uid 0 always maps to /root in the guest's /etc/passwd. Without HOME,
 		// login shells start at "/" and "~" expands to "/".
 		"HOME=/root",
 		// Debian/Alpine-compatible default PATH so relative-binary exec calls
 		// (e.g. exec.Command("bash", ...)) work without callers spelling it out.
+		// Images that extend PATH (e.g. adding /usr/local/go/bin) write their
+		// canonical PATH to /etc/environment; the merge below picks it up.
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	}
+	etcEnv := readEtcEnvironment()
+	if len(etcEnv) == 0 {
+		return base
+	}
+	return mergeEnv(base, envToMap(etcEnv))
 }
 
 // envToMap converts a "KEY=VALUE" slice to a map.
