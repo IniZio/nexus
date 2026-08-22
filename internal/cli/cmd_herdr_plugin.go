@@ -52,7 +52,7 @@ func init() {
 // herdrPluginABIVersion is the integer probed by build.sh to detect skew
 // between the installed plugin manifest and the nexus3 binary. Bump this
 // whenever the herdr subcommand surface changes in an incompatible way.
-const herdrPluginABIVersion = "1"
+const herdrPluginABIVersion = "2"
 
 // runHerdrGroup dispatches `nexus3 herdr <subcommand> [args...]`.
 //
@@ -65,7 +65,7 @@ const herdrPluginABIVersion = "1"
 // All cases delegate to runHerdrPlugin so behaviour is unchanged.
 func runHerdrGroup(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
-		return &UsageError{Msg: "herdr: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|shell-cwd|space-create|space-open-pane|create-from-file|pause|resume|remove|list|prune|agent|agent-from-file)"}
+		return &UsageError{Msg: "herdr: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|shell-cwd|new-tab|space-create|space-open-pane|create-from-file|pause|resume|remove|list|prune|agent|agent-from-file)"}
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -75,7 +75,7 @@ func runHerdrGroup(ctx context.Context, args []string, out *Output) error {
 	switch sub {
 	// Non-space verbs: keep name unchanged.
 	case "abi", "context-cwd", "workspaces", "attach", "create", "logs", "doctor",
-		"open-pane", "launch", "shell-cwd":
+		"open-pane", "launch", "shell-cwd", "new-tab":
 		pluginSub = sub
 	// space-* verbs that dropped their prefix (no collision).
 	case "create-from-file":
@@ -116,7 +116,7 @@ func runHerdrGroup(ctx context.Context, args []string, out *Output) error {
 // and carries no --json guarantees. Prefer the `herdr` group for new callers.
 func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
-		return &UsageError{Msg: "__herdr-plugin: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|space-create|space-create-from-file|space-open-pane|space-pause|space-resume|space-remove|space-list|space-prune|shell-cwd|space-agent|space-agent-from-file)"}
+		return &UsageError{Msg: "__herdr-plugin: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|new-tab|space-create|space-create-from-file|space-open-pane|space-pause|space-resume|space-remove|space-list|space-prune|shell-cwd|space-agent|space-agent-from-file)"}
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -383,6 +383,20 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-agent-from-file: resolve store: " + err.Error(), Err: err}
 		}
 		return herdrPluginSpaceAgentFromFile(ctx, os.Stdin, out.w, svc, storeRoot)
+
+	case "new-tab":
+		if len(rest) == 0 {
+			return &UsageError{Msg: "__herdr-plugin new-tab: herdr workspace ID required"}
+		}
+		svc, err := newSandboxService()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin new-tab: " + err.Error(), Err: err}
+		}
+		storeRoot, err := store.DefaultRoot()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin new-tab: resolve store: " + err.Error(), Err: err}
+		}
+		return herdrPluginNewTab(ctx, rest[0], storeRoot, svc, out.w)
 
 	default:
 		return &UsageError{Msg: "__herdr-plugin: unknown subcommand: " + sub}
@@ -1379,7 +1393,7 @@ func herdrSpaceLabelForRef(ref string) string {
 
 // herdrPluginSpaceCreate creates (or reuses) a herdr workspace for the sandbox,
 // opens the primary guest-shell pane, and stores the binding.
-func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc *service.Service, storeRoot string, focus bool) error {
+func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc herdrSpaceCreateSvc, storeRoot string, focus bool) error {
 	herdrBin, binErr := resolveHerdrBin()
 	if binErr != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: " + binErr.Error(), Err: binErr}
@@ -1419,10 +1433,33 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc *s
 	// (space-agent --no-focus) pass false to avoid stealing focus from a
 	// concurrent run that is already visible.
 
-	// Idempotency: reuse existing binding if one exists for this handle. There
-	// is no fresh root pane id to graft onto here, so this falls back to
-	// --workspace (see herdrOpenGuestShellPane).
-	if existing, err := HerdrSpaceGetByLabel(ctx, storeRoot, label); err == nil {
+	// Idempotency: reuse an existing binding for this handle — but only after
+	// confirming the workspace it names still EXISTS. A binding is a stored
+	// pointer and the operator can close a workspace in herdr at any time;
+	// nothing tells nexus3. Trusting the pointer blindly made space-create
+	// fail outright against a closed workspace:
+	//
+	//	reusing space: label=nexus3:ac3/vcpuctl workspace_id=w35
+	//	{"error":{"code":"workspace_not_found",...}}
+	//	error: space-create: open shell pane: exit status 1
+	//
+	// stranding the sandbox until someone pruned the binding by hand. When the
+	// workspace is gone we mint a fresh one instead.
+	//
+	// The predicate is shared with space-prune and fails SAFE for both callers:
+	// when herdr is unreachable or answers in an unexpected shape it reports
+	// every workspace alive, so prune deletes nothing and we reuse rather than
+	// minting a duplicate during a transient herdr outage.
+	existing, existingErr := HerdrSpaceGetByLabel(ctx, storeRoot, label)
+	reusable := existingErr == nil
+	if reusable && !herdrSpacePruneWorkspaceExistsFn(ctx, herdrBin)(existing) {
+		slog.Warn("space-create: bound herdr workspace no longer exists; minting a new one",
+			"label", existing.SpaceLabel, "stale_workspace_id", existing.HerdrWorkspaceID)
+		fmt.Fprintf(w, "space-create: workspace %s for %s is gone; creating a new one\n",
+			existing.HerdrWorkspaceID, existing.SpaceLabel)
+		reusable = false
+	}
+	if reusable {
 		fmt.Fprintf(w, "reusing space: label=%s workspace_id=%s\n", existing.SpaceLabel, existing.HerdrWorkspaceID)
 		paneID, err := herdrOpenGuestShellPane(ctx, herdrBin, ref, existing.HerdrWorkspaceID, "", focus)
 		if err != nil {
@@ -1456,13 +1493,18 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc *s
 	}
 
 	fmt.Fprintf(w, "created space: label=%s workspace_id=%s\n", label, workspaceID)
-	// Grafts the guest pane into the root pane herdr just created instead of
-	// opening a second tab — see herdrOpenGuestShellPane. Nothing is ever
-	// closed: nexus3 does not destroy panes or tabs it did not create.
+	// Opens the guest pane beside the root pane herdr just created
+	// (--placement split --target-pane <root> --direction right — see
+	// herdrOpenGuestShellPane), then closes the root pane to leave the
+	// workspace guest-only.
 	paneID, err := herdrOpenGuestShellPane(ctx, herdrBin, ref, workspaceID, rootPaneID, focus)
 	if err != nil {
 		return err
 	}
+	// Guest pane is open. Close the root host pane we were split beside.
+	// A close failure is cosmetic: the sandbox is fully operational, so log
+	// a warning and continue rather than failing space-create.
+	herdrCloseRootPane(ctx, herdrBin, "space-create", rootPaneID)
 	b.GuestPaneID = paneID
 	if err := HerdrSpacePut(ctx, storeRoot, b); err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: store binding: " + err.Error(), Err: err}
@@ -1472,17 +1514,32 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc *s
 }
 
 // herdrWorkspaceCreate runs "herdr workspace create --label <label> [--cwd
-// <cwd>]" and returns the new workspace's ID and its root pane's ID (the pane
-// the guest shell is grafted onto — see herdrOpenGuestShellPane). herdr
+// <cwd>]" and returns the new workspace's ID and its root pane's ID. herdr
 // prints a JSON envelope; we parse result.workspace.workspace_id and
 // result.root_pane.pane_id from it.
 //
+// The root pane ID is used by the caller to (a) split the guest pane beside
+// it (--placement split --target-pane <root> --direction right) and then
+// (b) close it, leaving the workspace guest-only. See herdrOpenGuestShellPane.
+//
+// herdrCloseRootPane closes the operator-facing root pane that was created
+// alongside the guest pane. A failure is cosmetic — the sandbox is fully
+// operational — so we log a warning and continue. caller is the subcommand
+// name used in the warning message (e.g. "space-create", "space-open-pane").
+func herdrCloseRootPane(ctx context.Context, herdrBin, caller, rootPaneID string) {
+	if rootPaneID == "" {
+		return
+	}
+	closeCmd := herdrExecCommandContext(ctx, herdrBin, "pane", "close", rootPaneID)
+	closeCmd.Stderr = os.Stderr
+	if closeErr := closeCmd.Run(); closeErr != nil {
+		slog.Warn(caller+": herdr pane close failed; workspace has extra host pane",
+			"pane_id", rootPaneID, "err", closeErr)
+	}
+}
+
 // cwd is optional: an empty value omits --cwd entirely rather than passing an
-// empty flag, which preserves herdr's own default-cwd behaviour. It still
-// matters even though the guest pane is grafted onto the root pane rather
-// than opening its own tab: --cwd sets the root pane's own directory, so the
-// host shell sharing that tab lands in the project instead of an unrelated
-// repo.
+// empty flag, which preserves herdr's own default-cwd behaviour.
 func herdrWorkspaceCreate(ctx context.Context, herdrBin, label, cwd string) (workspaceID, rootPaneID string, err error) {
 	args := []string{"workspace", "create", "--label", label, "--no-focus"}
 	if cwd != "" {
@@ -1527,15 +1584,23 @@ func herdrWorkspaceCreate(ctx context.Context, herdrBin, label, cwd string) (wor
 
 // herdrOpenGuestShellPane opens a guest-shell pane and returns its pane ID.
 //
-// When rootPaneID is known, the pane is GRAFTED into the workspace's existing
-// root pane via --target-pane (a horizontal split) instead of opening a
-// second tab. This is deliberate: nexus3 must never destroy a terminal it did
-// not create (an earlier version of this closed the root tab after opening a
-// second one — that SIGHUPs whatever is running in it) and must never leave
-// one behind either, so grafting onto the pane herdr already made is the only
-// option that neither destroys nor duplicates. herdr rejects --workspace and
-// --target-pane together ("split and zoomed plugin panes target an existing
-// pane; use target_pane_id"), so this is an either/or choice.
+// When rootPaneID is known, the pane is opened as a horizontal split beside
+// the workspace's root pane via --target-pane, rather than as a second tab.
+// The caller then closes that root pane, leaving the workspace GUEST-ONLY —
+// a nexus3:<handle> workspace represents a sandbox, so a host shell sitting
+// in it is noise, and it made "new tab" land in a host path.
+//
+// Closing the root PANE is safe; closing the root TAB is not. An earlier
+// version closed the tab after opening a second one, which SIGHUPs whatever
+// is running in it. The root pane here is one herdr minted moments ago for a
+// workspace we just created and nobody has typed into — a freshly-made empty
+// shell, not someone's work. That distinction is the whole licence for
+// closing it, so never generalise this into closing panes we did not just
+// cause to exist.
+//
+// herdr rejects --workspace and --target-pane together ("split and zoomed
+// plugin panes target an existing pane; use target_pane_id"), so this is an
+// either/or choice.
 //
 // When rootPaneID is empty — no root pane id could be parsed, or an existing
 // workspace is being reused rather than freshly created (its root pane id
@@ -1633,10 +1698,11 @@ func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot 
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-open-pane: " + err.Error(), Err: err}
 	}
 
-	// rootPaneID is only non-empty when this call just minted the workspace;
-	// it grafts the guest pane onto herdr's root pane instead of opening a
-	// second tab. A reused workspace has no fresh root pane id, so this falls
-	// back to --workspace — see herdrOpenGuestShellPane.
+	// rootPaneID is only non-empty when this call just minted the workspace.
+	// The guest pane is split beside the root pane (--placement split
+	// --target-pane <root> --direction right); the root pane is then closed
+	// to leave the workspace guest-only. A reused workspace has no fresh root
+	// pane id, so this falls back to --workspace — see herdrOpenGuestShellPane.
 	//
 	// herdrPluginSpaceOpenPane is invoked interactively by a human (the
 	// "space-open-pane" subcommand) — focus stays true, matching today's
@@ -1648,11 +1714,68 @@ func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot 
 	if err != nil {
 		return err
 	}
+	// Guest pane is open. Close the root host pane we were split beside.
+	// A close failure is cosmetic: the sandbox is fully operational, so log
+	// a warning and continue rather than failing space-open-pane.
+	herdrCloseRootPane(ctx, herdrBin, "space-open-pane", rootPaneID)
 	b.GuestPaneID = paneID
 	if err := HerdrSpacePut(ctx, storeRoot, b); err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-open-pane: store binding: " + err.Error(), Err: err}
 	}
 	fmt.Fprintf(w, "opened pane: pane_id=%s\n", paneID)
+	return nil
+}
+
+// herdrPluginNewTab implements `herdr new-tab <workspace-id>`.
+//
+// It is designed to be wired to a key that the operator has overridden globally
+// in herdr. Three paths:
+//
+//   - Binding found → open an additional guest-shell pane in the nexus3 space,
+//     reusing herdrPluginSpaceOpenPane so the behaviour is identical to the
+//     "open-guest-pane" action.
+//   - Not found → fall through to herdr's built-in: `herdr tab create
+//     --workspace <id> --focus`. This is what makes a global override safe in
+//     non-nexus3 workspaces (example-app, groundwork, the operator's own
+//     nexus3 workspace that carries no binding).
+//   - Lookup fails for a reason other than "not found" (transient store error)
+//     → log a warning and fall through to the host-tab path. The operator
+//     pressed new-tab and must get a tab; degrading to herdr's default is
+//     recoverable, erroring out is not.
+func herdrPluginNewTab(ctx context.Context, workspaceID, storeRoot string, svc herdrAdoptGetter, w io.Writer) error {
+	herdrBin, binErr := resolveHerdrBin()
+
+	// Look up a nexus3 binding for this herdr workspace ID.
+	// herdrSpaceResolve's last-resort scan matches HerdrWorkspaceID, so
+	// passing a workspace ID here works without a dedicated index.
+	_, lookupErr := herdrSpaceResolve(ctx, storeRoot, workspaceID)
+	if lookupErr != nil && !errors.Is(lookupErr, ErrHerdrSpaceNotFound) {
+		// Transient store error: log and degrade to host-tab. The operator
+		// pressed new-tab and must get a tab; degrading is recoverable,
+		// erroring is not.
+		slog.Warn("new-tab: binding lookup failed; falling back to host tab",
+			"workspace_id", workspaceID, "err", lookupErr)
+		lookupErr = ErrHerdrSpaceNotFound
+	}
+
+	if lookupErr == nil {
+		// Binding found: open an additional guest-shell pane in this space.
+		// Pass the workspace ID — herdrPluginSpaceOpenPane's internal resolve
+		// finds it via the same HerdrWorkspaceID scan.
+		return herdrPluginSpaceOpenPane(ctx, workspaceID, storeRoot, svc, w)
+	}
+
+	// No binding (or lookup error degraded above): fall through to herdr's
+	// normal new-tab behaviour.
+	if binErr != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "new-tab: herdr not found: " + binErr.Error(), Err: binErr}
+	}
+	tabCmd := herdrExecCommandContext(ctx, herdrBin, "tab", "create", "--workspace", workspaceID, "--focus")
+	tabCmd.Stdout = w
+	tabCmd.Stderr = os.Stderr
+	if err := tabCmd.Run(); err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "new-tab: herdr tab create: " + err.Error(), Err: err}
+	}
 	return nil
 }
 
@@ -1682,6 +1805,15 @@ func herdrSpaceResolve(ctx context.Context, storeRoot, key string) (HerdrSpaceBi
 
 // sandboxGetter is the subset of *service.Service used by herdrShellCwd.
 type sandboxGetter interface {
+	Get(ctx context.Context, ref string) (domain.Sandbox, error)
+}
+
+// herdrSpaceCreateSvc is the subset of *service.Service used by
+// herdrPluginSpaceCreate. Extracted as an interface so tests can inject a fake
+// without spinning up a real sandbox service.
+type herdrSpaceCreateSvc interface {
+	Start(ctx context.Context, ref string) (domain.Sandbox, error)
+	List(ctx context.Context) ([]domain.Sandbox, error)
 	Get(ctx context.Context, ref string) (domain.Sandbox, error)
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -16,6 +17,8 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
+
+	"github.com/IniZio/nexus3/internal/core/domain"
 )
 
 // newTestHerdrService builds an in-memory service for herdr plugin tests.
@@ -28,17 +31,32 @@ func newTestHerdrService(t *testing.T) *service.Service {
 	return service.New(st, fake.New(), lifecycle.New())
 }
 
+// TestHerdrPluginABI asserts the binary reports the SAME ABI the plugin
+// declares in plugins/herdr/abi. The expected value is READ FROM THAT FILE,
+// never restated here: build.sh compares those two, and a test that hardcodes
+// its own third copy would go green while the pair it is meant to protect
+// drifted apart. That is not hypothetical — the herdr command-group rename
+// changed the plugin-facing CLI surface without bumping the ABI, so a binary
+// that had lost the `herdr` verb still passed the probe, and every pane
+// silently fell back to /root.
 func TestHerdrPluginABI(t *testing.T) {
+	declared, err := os.ReadFile(filepath.Join("..", "..", "plugins", "herdr", "abi"))
+	if err != nil {
+		t.Fatalf("read plugins/herdr/abi: %v", err)
+	}
+	want := strings.TrimSpace(string(declared))
+
 	var stdout bytes.Buffer
 	out := NewOutput(&stdout, &bytes.Buffer{}, false)
 
-	err := runHerdrPlugin(context.Background(), []string{"abi"}, out)
-	if err != nil {
+	if err := runHerdrPlugin(context.Background(), []string{"abi"}, out); err != nil {
 		t.Fatalf("abi: unexpected error: %v", err)
 	}
 	got := strings.TrimSpace(stdout.String())
-	if got != "1" {
-		t.Errorf("abi output: want %q, got %q", "1", got)
+	if got != want {
+		t.Errorf("binary reports ABI %q but plugins/herdr/abi declares %q — "+
+			"bump herdrPluginABIVersion and plugins/herdr/abi together, or "+
+			"build.sh will refuse to install the plugin", got, want)
 	}
 }
 
@@ -150,18 +168,27 @@ func TestHerdrPluginWorkspaces_nonEmpty(t *testing.T) {
 }
 
 func TestHerdrPluginDoctor(t *testing.T) {
-	var stdout bytes.Buffer
-	err := herdrPluginDoctor(&stdout)
+	// Read the expected ABI from the canonical file so the assertion is
+	// independent of herdrPluginABIVersion. If the constant is flipped
+	// without updating the file (or vice versa), the test goes RED.
+	abiDecl, err := os.ReadFile(filepath.Join("..", "..", "plugins", "herdr", "abi"))
 	if err != nil {
+		t.Fatalf("read plugins/herdr/abi: %v", err)
+	}
+	wantABI := strings.TrimSpace(string(abiDecl))
+
+	var stdout bytes.Buffer
+	if err := herdrPluginDoctor(&stdout); err != nil {
 		t.Fatalf("doctor: unexpected error: %v", err)
 	}
 	out := stdout.String()
 	if len(out) == 0 {
 		t.Error("doctor: expected non-empty output")
 	}
-	// Must report the ABI version.
-	if !strings.Contains(out, "1") {
-		t.Errorf("doctor output: expected ABI version %q, got %q", "1", out)
+	// Must report the ABI version on the exact line "plugin ABI:     <version>".
+	wantLine := "plugin ABI:     " + wantABI
+	if !strings.Contains(out, wantLine) {
+		t.Errorf("doctor output: expected %q, got %q", wantLine, out)
 	}
 }
 
@@ -595,5 +622,126 @@ func TestHerdrPluginCreate_MountInvalid_ErrorBeforeExec(t *testing.T) {
 	}
 	if execCalled {
 		t.Fatal("exec must not be called when mount spec is invalid; no half-created sandbox")
+	}
+}
+
+// --- herdrPluginNewTab tests ---
+
+// fakeNewTabGetter is a non-nil herdrAdoptGetter for the new-tab tests.
+//
+// Passing nil here would "work": under a mutation that always takes the
+// guest-pane branch, the nil svc panics and the test goes red. But it would go
+// red by CRASHING, not by its own predicate — and a future nil-safety fix would
+// silently disarm it. A real fake lets the assertions below do the deciding.
+type fakeNewTabGetter struct{}
+
+func (fakeNewTabGetter) Get(context.Context, string) (domain.Sandbox, error) {
+	return domain.Sandbox{}, nil
+}
+
+// TestHerdrNewTab_BindingFound asserts that when a nexus3 binding exists for
+// the focused workspace ID, herdrPluginNewTab opens a guest-shell pane via
+// `herdr plugin pane open` and does NOT call `herdr tab create`.
+func TestHerdrNewTab_BindingFound(t *testing.T) {
+	storeRoot := t.TempDir()
+	binding := HerdrSpaceBinding{
+		SpaceLabel:       "nexus3:test-sb",
+		HerdrWorkspaceID: "wAA",
+		SandboxHandle:    "test/sb",
+		SandboxID:        "sb-test",
+	}
+	if err := HerdrSpacePut(context.Background(), storeRoot, binding); err != nil {
+		t.Fatalf("HerdrSpacePut: %v", err)
+	}
+
+	var capturedArgs []string
+	old := herdrExecCommandContext
+	herdrExecCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		capturedArgs = append([]string(nil), args...)
+		// Return true so the pane-open call succeeds and the function returns nil.
+		return exec.CommandContext(ctx, "true")
+	}
+	defer func() { herdrExecCommandContext = old }()
+
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+
+	svc := newTestHerdrService(t)
+	var w strings.Builder
+	err := herdrPluginNewTab(context.Background(), "wAA", storeRoot, svc, &w)
+	if err != nil {
+		t.Fatalf("binding found: unexpected error: %v", err)
+	}
+	// Must have called `herdr plugin pane open` (guest pane), NOT `herdr tab create`.
+	if !slices.Contains(capturedArgs, "pane") {
+		t.Errorf("binding found: expected `plugin pane open` call; got args: %v", capturedArgs)
+	}
+	if slices.Contains(capturedArgs, "tab") {
+		t.Errorf("binding found: must not call `herdr tab create`; got args: %v", capturedArgs)
+	}
+}
+
+// TestHerdrNewTab_NoBinding asserts that when no nexus3 binding exists for the
+// workspace ID, herdrPluginNewTab calls `herdr tab create --workspace <id>
+// --focus` and does NOT open a guest pane.
+func TestHerdrNewTab_NoBinding(t *testing.T) {
+	storeRoot := t.TempDir() // empty store: no bindings
+
+	var capturedArgs []string
+	old := herdrExecCommandContext
+	herdrExecCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		capturedArgs = append([]string(nil), args...)
+		return exec.CommandContext(ctx, "true")
+	}
+	defer func() { herdrExecCommandContext = old }()
+
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+
+	var w strings.Builder
+	err := herdrPluginNewTab(context.Background(), "wBB", storeRoot, fakeNewTabGetter{}, &w)
+	if err != nil {
+		t.Fatalf("no binding: unexpected error: %v", err)
+	}
+	// Must have called `herdr tab create --workspace wBB --focus`.
+	if !slices.Contains(capturedArgs, "tab") {
+		t.Errorf("no binding: expected `herdr tab create`; got args: %v", capturedArgs)
+	}
+	if !slices.Contains(capturedArgs, "wBB") {
+		t.Errorf("no binding: workspace ID missing in tab create args: %v", capturedArgs)
+	}
+	if slices.Contains(capturedArgs, "pane") {
+		t.Errorf("no binding: must not call `herdr plugin pane open`; got args: %v", capturedArgs)
+	}
+}
+
+// TestHerdrNewTab_LookupError asserts that a transient store error (not
+// ErrHerdrSpaceNotFound) triggers the host-tab fallback with no error returned.
+// The operator pressed new-tab and must get a tab; erroring out is not an option.
+func TestHerdrNewTab_LookupError(t *testing.T) {
+	// Write an invalid bindings JSON so HerdrSpaceList returns a parse error.
+	storeRoot := t.TempDir()
+	bindingsPath := filepath.Join(storeRoot, "herdr-space-bindings.json")
+	if err := os.WriteFile(bindingsPath, []byte("{{{invalid json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var capturedArgs []string
+	old := herdrExecCommandContext
+	herdrExecCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		capturedArgs = append([]string(nil), args...)
+		return exec.CommandContext(ctx, "true")
+	}
+	defer func() { herdrExecCommandContext = old }()
+
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+
+	var w strings.Builder
+	// Must return nil (degraded to host tab, not an error).
+	err := herdrPluginNewTab(context.Background(), "wCC", storeRoot, fakeNewTabGetter{}, &w)
+	if err != nil {
+		t.Fatalf("lookup error: expected nil (host-tab fallback), got: %v", err)
+	}
+	// Must have fallen through to `herdr tab create`.
+	if !slices.Contains(capturedArgs, "tab") {
+		t.Errorf("lookup error: expected host-tab fallback; got args: %v", capturedArgs)
 	}
 }

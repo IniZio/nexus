@@ -55,9 +55,14 @@ func newScriptEnv(t *testing.T) *scriptEnv {
 	// The stub answers both guest round-trips pane.sh makes: shell-cwd, and
 	// the `command -v bash` probe. STUB_GUEST_BASH controls what the guest is
 	// pretending to have, so both branches are reachable.
+	// STUB_SHELL_CWD_FAIL=1 makes shell-cwd exit non-zero (simulates stale binary).
+	// STUB_SHELL_CWD overrides the directory shell-cwd reports (default /work).
 	shim := "#!/bin/sh\n" +
 		"printf '%s\\n' \"$*\" >> " + e.shimLog + "\n" +
-		"if [ \"$2\" = \"shell-cwd\" ]; then echo /work; fi\n" +
+		"if [ \"$2\" = \"shell-cwd\" ]; then\n" +
+		"  if [ \"${STUB_SHELL_CWD_FAIL:-0}\" = \"1\" ]; then exit 1; fi\n" +
+		"  echo \"${STUB_SHELL_CWD:-/work}\"\n" +
+		"fi\n" +
 		"case \"$*\" in *'command -v bash'*) echo \"${STUB_GUEST_BASH:-/usr/bin/bash}\";; esac\n" +
 		"exit 0\n"
 	if err := os.WriteFile(filepath.Join(root, "nexus3-shim.sh"), []byte(shim), 0o755); err != nil {
@@ -248,5 +253,83 @@ func TestPaneScript_FallsBackToShWhenGuestLacksBash(t *testing.T) {
 	}
 	if strings.Contains(got, "bash -l") {
 		t.Errorf("must not run bash when the guest does not have it; argv was %q", got)
+	}
+}
+
+// TestPaneScript_ShellCwdFailureIsVisible guards the silent-failure that
+// originally caused the operator to land at /root with no error: if the
+// nexus3 binary is stale and does not recognise "herdr shell-cwd", the
+// command exits non-zero and the pane must say so loudly — not silently
+// substitute /root.
+func TestPaneScript_ShellCwdFailureIsVisible(t *testing.T) {
+	e := newScriptEnv(t)
+	cmd := exec.Command("sh", filepath.Join(e.dir, "pane.sh"), "shell")
+	cmd.Env = append(os.Environ(),
+		"NEXUS3_WORKSPACE=ac3/envproof2",
+		"STUB_SHELL_CWD_FAIL=1",
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit when shell-cwd fails")
+	}
+	outStr := string(out)
+	if !strings.Contains(outStr, "stale") && !strings.Contains(outStr, "herdr") {
+		t.Errorf("error must mention the likely cause (stale binary / herdr); got %q", outStr)
+	}
+	if !strings.Contains(outStr, "build.sh") {
+		t.Errorf("error must tell the operator how to fix it (build.sh); got %q", outStr)
+	}
+}
+
+// TestPaneScript_ShellCwdLegitimateRoot checks that a sandbox with no mount
+// legitimately returning /root (exit 0) is NOT treated as an error: the pane
+// must continue and open the shell at /root rather than aborting.
+func TestPaneScript_ShellCwdLegitimateRoot(t *testing.T) {
+	e := newScriptEnv(t)
+	e.run(t, "pane.sh", []string{"shell"}, map[string]string{
+		"NEXUS3_WORKSPACE": "ac3/vcpuctl",
+		"STUB_SHELL_CWD":   "/root",
+	})
+
+	got := e.shimArgv(t)
+	if !strings.Contains(got, "--cwd /root") {
+		t.Errorf("legitimate /root from shell-cwd must be honoured as --cwd /root; argv was %q", got)
+	}
+}
+
+// TestABIFileValue pins the plugin's declared ABI to 2, which was bumped when
+// the CLI surface moved from __herdr-plugin to the herdr command group.
+// A pre-rename binary reports ABI 1 and build.sh will reject it.
+// Mutation: revert plugins/herdr/abi to "1" and this test goes RED.
+func TestABIFileValue(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "plugins", "herdr", "abi"))
+	if err != nil {
+		t.Fatalf("read plugins/herdr/abi: %v", err)
+	}
+	got := strings.TrimSpace(string(b))
+	const want = "2"
+	if got != want {
+		t.Errorf("plugins/herdr/abi = %q, want %q — bump the file and const herdrPluginABIVersion in cmd_herdr_plugin.go together", got, want)
+	}
+}
+
+// TestOpenPaneScript_NewTab pins that the new-tab entrypoint forwards
+// HERDR_WORKSPACE_ID to `nexus3 herdr new-tab` via the shim. The context-aware
+// dispatch (guest pane vs host tab) happens in Go, not in the shell script —
+// the script's only job is to pass the workspace ID through correctly.
+func TestOpenPaneScript_NewTab(t *testing.T) {
+	e := newScriptEnv(t)
+	e.run(t, "open-pane.sh", []string{"new-tab"}, map[string]string{
+		"HERDR_WORKSPACE_ID": "w42",
+	})
+
+	got := strings.TrimSpace(e.shimArgv(t))
+	want := "herdr new-tab w42"
+	if got != want {
+		t.Errorf("new-tab: shim argv = %q, want %q", got, want)
+	}
+	// The herdr binary must NOT be called directly — the dispatch is in Go.
+	if h := e.herdrArgv(t); h != "" {
+		t.Errorf("new-tab must not call herdr directly; herdr was called with %q", h)
 	}
 }

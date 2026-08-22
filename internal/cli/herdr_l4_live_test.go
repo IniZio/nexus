@@ -32,7 +32,7 @@ import (
 // It builds the nexus3 binary, then asserts in two ways:
 //
 //  1. Direct exec — the binary is called with `__herdr-plugin abi` as a
-//     subprocess and stdout is checked for the exact ABI string "1". This is
+//     subprocess and stdout is checked for the ABI string declared in plugins/herdr/abi. This is
 //     the mutation-sensitive primary assertion: layers 1–3 all call
 //     runHerdrPlugin in-process; none would catch a deleted or renamed
 //     `init()`-level Command{Name: "__herdr-plugin", ...} registration.
@@ -51,7 +51,7 @@ import (
 //	/tmp/nexus3-mutated __herdr-plugin abi  # exits 2: "unknown command"
 //	go test ./internal/cli/ -count=1        # L1/L2/L3: all green
 //	TMPDIR=/tmp go test -count=1 -tags herdr_live ./internal/cli/ -run TestHerdrPlugin_L4
-//	# L4: FAIL — want "1", binary exited non-zero
+//	# L4: FAIL — want current ABI from plugins/herdr/abi, binary exited non-zero
 func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
 	// Safety: record before-state so the operator can confirm their
 	// workspaces are untouched after the run.
@@ -70,9 +70,17 @@ func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}
 
+	// Read the expected ABI value from the canonical source so this file
+	// never re-introduces a hardcoded copy that silently drifts.
+	abiDecl, abiDeclErr := os.ReadFile(filepath.Join("..", "..", "plugins", "herdr", "abi"))
+	if abiDeclErr != nil {
+		t.Fatalf("read plugins/herdr/abi: %v", abiDeclErr)
+	}
+	wantABI := strings.TrimSpace(string(abiDecl))
+
 	// --- 2. Primary assertion: exec the binary directly. ---
 	//
-	// `herdr pane wait-output` cannot distinguish "1" from shell-prompt
+	// `herdr pane wait-output` cannot distinguish the ABI value from shell-prompt
 	// noise, so we exec the binary as a subprocess and check stdout
 	// directly. This is both deterministic and mutation-sensitive.
 	abiCmd := exec.Command(binary, "__herdr-plugin", "abi")
@@ -88,8 +96,8 @@ func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
 		t.Fatalf("nexus3 __herdr-plugin abi: exit %v\nstderr: %s", abiErr, stderr)
 	}
 	got := strings.TrimSpace(string(abiOut))
-	if got != "1" {
-		t.Errorf("nexus3 __herdr-plugin abi: want %q, got %q", "1", got)
+	if got != wantABI {
+		t.Errorf("nexus3 __herdr-plugin abi: want %q, got %q", wantABI, got)
 	}
 	t.Logf("nexus3 __herdr-plugin abi stdout: %q", got)
 
@@ -97,8 +105,10 @@ func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
 	//
 	// Run the same binary inside a real herdr workspace pane. This confirms
 	// the binary works in herdr's execution context. The pane output is
-	// logged; the assertion is wait-output success, which confirms "1"
-	// appeared (even if other content also appeared before the shell reset).
+	// logged; the assertion is wait-output success, which confirms the ABI
+	// value read from plugins/herdr/abi appeared (even if other content also
+	// appeared before the shell reset). Do NOT restate the number here — it
+	// was hardcoded as "1" and silently went stale when the ABI moved to 2.
 	label := fmt.Sprintf("nexus3-l4-probe-%d", time.Now().UnixMilli())
 	// Register cleanup by label BEFORE createL4ScratchWorkspace so that a
 	// t.Fatal inside the helper (e.g. at JSON parse, after herdr has already
@@ -139,22 +149,21 @@ func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
 		t.Fatalf("herdr pane run: %v\n%s", err, runOut)
 	}
 
-	// wait-output confirms the pane produced "1" before the subprocess
-	// exited. Shell-prompt noise can also contain "1" (e.g. prompt with
-	// line numbers), but here we are using this only as a smoke test that
-	// herdr's pane machinery ran the binary — the direct-exec assertion
-	// above is the real gate.
+	// wait-output confirms the pane produced the ABI value before the subprocess
+	// exited. Shell-prompt noise may also match, but here we are using this
+	// only as a smoke test that herdr's pane machinery ran the binary — the
+	// direct-exec assertion above is the real gate.
 	waitOut, err := exec.Command(
 		"herdr", "pane", "wait-output",
 		paneID,
-		"--match", "1",
+		"--match", wantABI,
 		"--source", "recent",
 		"--timeout", "10000",
 	).CombinedOutput()
 	if err != nil {
 		readOut, _ := exec.Command("herdr", "pane", "read", paneID, "--source", "visible", "--lines", "10").CombinedOutput()
 		t.Logf("herdr pane wait-output did not find %q within 10 s: %v\n%s\npane (visible):\n%s",
-			"1", err, waitOut, readOut)
+			wantABI, err, waitOut, readOut)
 		// Non-fatal: the primary assertion (direct exec) already passed.
 	} else {
 		readOut, _ := exec.Command("herdr", "pane", "read", paneID, "--source", "visible", "--lines", "5").CombinedOutput()

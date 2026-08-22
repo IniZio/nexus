@@ -3,7 +3,7 @@ package cli
 // Tests for the stray-tab defect fix and its revisions:
 //   - herdrWorkspaceCreate threading a host cwd through to
 //     `herdr workspace create --cwd`
-//   - grafting the guest pane onto the workspace's root pane
+//   - splitting the guest pane beside the root pane, then closing that root
 //     (--target-pane) instead of opening a second tab and then closing the
 //     first one
 //   - J1: capturing and persisting the guest pane ID instead of throwing it
@@ -427,18 +427,18 @@ func TestHerdrPluginSpaceList_ShowsPaneID(t *testing.T) {
 	}
 }
 
-// ── space-open-pane: graft-not-close behaviour, pane ID capture/persist, focus ──
+// ── space-open-pane: split-then-close-root, pane ID capture/persist, focus ──
 
-// TestHerdrPluginSpaceOpenPane_GraftsGuestPaneOntoRootPane drives the real
+// TestHerdrPluginSpaceOpenPane_SplitsGuestPaneThenClosesRootPane drives the real
 // adopt-and-mint path (no existing binding) and asserts the full observable
 // argv sequence: workspace create (carrying --cwd), then plugin pane open
 // carrying --placement split / --target-pane <root-pane-id> / --direction
-// right / --focus — and, critically, that `tab close` is never invoked at
-// all. An earlier version of this fix closed the root tab after opening a
-// second one; that SIGHUPs whatever is running in it, which is exactly what
-// that revision replaced. This test also pins J1 (pane ID captured and
-// persisted onto the binding, and printed to the caller) end to end.
-func TestHerdrPluginSpaceOpenPane_GraftsGuestPaneOntoRootPane(t *testing.T) {
+// right / --focus, then pane close <root-pane-id> to leave the workspace
+// guest-only. Critically, `tab close` is never called — an earlier revision
+// closed the root TAB after opening a second one, which SIGHUPs whatever is
+// running in it. This test also pins J1 (pane ID captured and persisted onto
+// the binding, and printed to the caller) end to end.
+func TestHerdrPluginSpaceOpenPane_SplitsGuestPaneThenClosesRootPane(t *testing.T) {
 	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
 	storeRoot := t.TempDir()
 	ctx := context.Background()
@@ -457,7 +457,7 @@ func TestHerdrPluginSpaceOpenPane_GraftsGuestPaneOntoRootPane(t *testing.T) {
 		if len(args) >= 2 && args[0] == "plugin" && args[1] == "pane" {
 			return fakePaneOpenCmd("w1V:p2")
 		}
-		return exec.Command("/bin/true")
+		return exec.Command("/bin/true") // handles pane close and anything else
 	})
 
 	var out strings.Builder
@@ -465,7 +465,7 @@ func TestHerdrPluginSpaceOpenPane_GraftsGuestPaneOntoRootPane(t *testing.T) {
 		t.Fatalf("space-open-pane: %v", err)
 	}
 
-	var createIdx, paneOpenIdx = -1, -1
+	var createIdx, paneOpenIdx, paneCloseIdx = -1, -1, -1
 	for i, argv := range calls {
 		switch {
 		case len(argv) >= 3 && argv[1] == "workspace" && argv[2] == "create":
@@ -490,6 +490,8 @@ func TestHerdrPluginSpaceOpenPane_GraftsGuestPaneOntoRootPane(t *testing.T) {
 			if !contains(argv, "--focus") {
 				t.Errorf("pane open argv %v missing --focus — space-open-pane is the interactive, human path", argv)
 			}
+		case len(argv) >= 4 && argv[1] == "pane" && argv[2] == "close" && argv[3] == "p1":
+			paneCloseIdx = i
 		case len(argv) >= 2 && argv[1] == "tab":
 			t.Errorf("tab close was called (%v) — this revision must never close a tab", argv)
 		}
@@ -501,8 +503,14 @@ func TestHerdrPluginSpaceOpenPane_GraftsGuestPaneOntoRootPane(t *testing.T) {
 	if paneOpenIdx == -1 {
 		t.Fatal("plugin pane open was never called")
 	}
+	if paneCloseIdx == -1 {
+		t.Fatal("pane close was never called for root pane p1 — workspace has extra host pane")
+	}
 	if !(createIdx < paneOpenIdx) {
 		t.Errorf("expected order create(%d) < pane-open(%d)", createIdx, paneOpenIdx)
+	}
+	if !(paneOpenIdx < paneCloseIdx) {
+		t.Errorf("expected order pane-open(%d) < pane-close(%d) — must open guest pane before closing root", paneOpenIdx, paneCloseIdx)
 	}
 
 	// J1: the pane ID must be persisted on the binding, retrievable by a
@@ -580,5 +588,539 @@ func TestHerdrPluginSpaceOpenPane_ReusedWorkspaceOpensPaneWithoutCreating(t *tes
 	}
 	if got.GuestPaneID != "w2X:p5" {
 		t.Errorf("persisted GuestPaneID = %q, want w2X:p5", got.GuestPaneID)
+	}
+}
+
+// ── guest-only workspace: pane close discipline ───────────────────────────────
+
+// TestHerdrPluginSpaceOpenPane_ClosesRootPaneAfterGuestPaneOpens is the
+// dedicated pin for the guest-only invariant: after the guest pane is
+// successfully opened, the root host pane must be closed so the workspace
+// contains only the guest shell.
+//
+// Mutation proof: remove the "pane close" block in herdrPluginSpaceOpenPane,
+// run this test, it goes RED with "pane close was never called".
+func TestHerdrPluginSpaceOpenPane_ClosesRootPaneAfterGuestPaneOpens(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	storeRoot := t.TempDir()
+	ctx := context.Background()
+
+	sb := domain.Sandbox{
+		ID: domain.NewSandboxID(), Project: "proj", Name: "closetest", State: domain.Running,
+	}
+	g := &fakeAdoptGetter{byRef: map[string]domain.Sandbox{sb.Handle(): sb}}
+
+	var calls [][]string
+	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd {
+		switch {
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "create":
+			return fakeWorkspaceCreateCmd("wC", "rootC")
+		case len(args) >= 2 && args[0] == "plugin" && args[1] == "pane":
+			return fakePaneOpenCmd("wC:guestC")
+		default:
+			return exec.Command("/bin/true") // pane close succeeds
+		}
+	})
+
+	if err := herdrPluginSpaceOpenPane(ctx, sb.Handle(), storeRoot, g, &strings.Builder{}); err != nil {
+		t.Fatalf("space-open-pane: %v", err)
+	}
+
+	var paneOpenIdx, paneCloseIdx = -1, -1
+	for i, argv := range calls {
+		if len(argv) >= 3 && argv[1] == "plugin" && argv[2] == "pane" {
+			paneOpenIdx = i
+		}
+		if len(argv) >= 4 && argv[1] == "pane" && argv[2] == "close" && argv[3] == "rootC" {
+			paneCloseIdx = i
+		}
+	}
+	if paneCloseIdx == -1 {
+		t.Error("pane close was never called for root pane rootC — workspace has extra host pane")
+	}
+	if paneOpenIdx != -1 && paneCloseIdx != -1 && !(paneOpenIdx < paneCloseIdx) {
+		t.Errorf("pane open(%d) must precede pane close(%d)", paneOpenIdx, paneCloseIdx)
+	}
+}
+
+// TestHerdrPluginSpaceOpenPane_DoesNotCloseRootPaneIfGuestPaneOpenFails
+// guarantees the safety invariant: if the guest pane fails to open, the root
+// pane must NOT be closed (closing the last pane destroys the workspace).
+func TestHerdrPluginSpaceOpenPane_DoesNotCloseRootPaneIfGuestPaneOpenFails(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	storeRoot := t.TempDir()
+	ctx := context.Background()
+
+	sb := domain.Sandbox{
+		ID: domain.NewSandboxID(), Project: "proj", Name: "failopen", State: domain.Running,
+	}
+	g := &fakeAdoptGetter{byRef: map[string]domain.Sandbox{sb.Handle(): sb}}
+
+	var calls [][]string
+	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd {
+		switch {
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "create":
+			return fakeWorkspaceCreateCmd("wFail", "rootFail")
+		case len(args) >= 2 && args[0] == "plugin" && args[1] == "pane":
+			// Guest pane open fails.
+			return exec.Command("/bin/false")
+		default:
+			return exec.Command("/bin/true")
+		}
+	})
+
+	err := herdrPluginSpaceOpenPane(ctx, sb.Handle(), storeRoot, g, &strings.Builder{})
+	if err == nil {
+		t.Fatal("expected error when guest pane open fails, got nil")
+	}
+
+	for _, argv := range calls {
+		if len(argv) >= 3 && argv[1] == "pane" && argv[2] == "close" {
+			t.Errorf("pane close called (%v) after guest pane open failed — root pane must be left alone", argv)
+		}
+	}
+}
+
+// TestHerdrPluginSpaceOpenPane_CloseRootPaneFailureDoesNotFailSpaceCreate
+// pins the failure policy: a pane-close failure is cosmetic. The sandbox is
+// fully operational; herdr is a terminal multiplexer and nexus3 is a VM
+// manager — a herdr problem must not break a working sandbox.
+func TestHerdrPluginSpaceOpenPane_CloseRootPaneFailureDoesNotFailSpaceCreate(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	storeRoot := t.TempDir()
+	ctx := context.Background()
+
+	sb := domain.Sandbox{
+		ID: domain.NewSandboxID(), Project: "proj", Name: "closefail", State: domain.Running,
+	}
+	g := &fakeAdoptGetter{byRef: map[string]domain.Sandbox{sb.Handle(): sb}}
+
+	var calls [][]string
+	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd {
+		switch {
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "create":
+			return fakeWorkspaceCreateCmd("wCF", "rootCF")
+		case len(args) >= 2 && args[0] == "plugin" && args[1] == "pane":
+			return fakePaneOpenCmd("wCF:guestCF")
+		case len(args) >= 3 && args[0] == "pane" && args[1] == "close":
+			// pane close fails — must not propagate as an error.
+			return exec.Command("/bin/false")
+		default:
+			return exec.Command("/bin/true")
+		}
+	})
+
+	var out strings.Builder
+	if err := herdrPluginSpaceOpenPane(ctx, sb.Handle(), storeRoot, g, &out); err != nil {
+		t.Fatalf("space-open-pane must succeed even when pane close fails, got: %v", err)
+	}
+
+	// Verify pane close was at least attempted.
+	paneCloseCalled := false
+	for _, argv := range calls {
+		if len(argv) >= 4 && argv[1] == "pane" && argv[2] == "close" && argv[3] == "rootCF" {
+			paneCloseCalled = true
+		}
+	}
+	if !paneCloseCalled {
+		t.Error("pane close was not attempted — the function must try to close the root pane")
+	}
+}
+
+// ── herdrPluginSpaceCreate: stale-binding fix coverage ───────────────────────
+//
+// Tests 1–4 pin the fix introduced for the "workspace_not_found" regression:
+// herdrPluginSpaceCreate used to reuse a stored binding blindly. If the
+// operator closed that workspace in herdr, space-create failed outright
+// against a dead binding, stranding the sandbox.
+//
+// The fix checks the stored workspace still appears in `herdr workspace list`
+// before reusing; if absent it mints a fresh one. The predicate
+// (herdrSpacePruneWorkspaceExistsFn) fails SAFE: on fetch/parse failure it
+// reports every workspace alive, so we reuse rather than minting a duplicate
+// during a transient herdr outage.
+
+// fakeSpaceCreateSvc satisfies herdrSpaceCreateSvc for tests that need to
+// drive herdrPluginSpaceCreate without a real sandbox service. Start always
+// succeeds, returning the configured sandbox.
+type fakeSpaceCreateSvc struct {
+	sb domain.Sandbox
+}
+
+func (f *fakeSpaceCreateSvc) Start(_ context.Context, _ string) (domain.Sandbox, error) {
+	return f.sb, nil
+}
+func (f *fakeSpaceCreateSvc) List(_ context.Context) ([]domain.Sandbox, error) {
+	return []domain.Sandbox{f.sb}, nil
+}
+func (f *fakeSpaceCreateSvc) Get(_ context.Context, _ string) (domain.Sandbox, error) {
+	return f.sb, nil
+}
+
+// TestHerdrPluginSpaceCreate_StaleBindingMints verifies that when a stored
+// binding's workspace_id is ABSENT from the live `workspace list` output,
+// herdrPluginSpaceCreate does NOT open a pane in the stale workspace, DOES
+// call `workspace create`, and the binding is updated to the new workspace ID.
+//
+// Mutation proof: delete the `if reusable && !herdrSpacePruneWorkspaceExistsFn`
+// block so the code reuses blindly → `workspace create` is never called →
+// workspaceCreateCalled stays false → test goes RED.
+func TestHerdrPluginSpaceCreate_StaleBindingMints(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	storeRoot := t.TempDir()
+	ctx := context.Background()
+
+	sb := domain.Sandbox{ID: domain.NewSandboxID(), Project: "proj", Name: "stale", State: domain.Running}
+	svc := &fakeSpaceCreateSvc{sb: sb}
+
+	// Pre-write a binding whose workspace is gone.
+	staleBinding := HerdrSpaceBinding{
+		SpaceLabel: "nexus3:proj/stale", HerdrWorkspaceID: "wStale",
+		SandboxHandle: "proj/stale", SandboxID: sb.ID.String(),
+	}
+	if err := HerdrSpacePut(ctx, storeRoot, staleBinding); err != nil {
+		t.Fatalf("HerdrSpacePut: %v", err)
+	}
+
+	var workspaceCreateCalled bool
+	var calls [][]string
+	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd {
+		switch {
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "list":
+			// wStale is NOT in this list → predicate returns false → mint.
+			return exec.Command("printf", "%s",
+				`{"result":{"workspaces":[{"workspace_id":"wOtherUnrelated"}]}}`)
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "create":
+			workspaceCreateCalled = true
+			return fakeWorkspaceCreateCmd("wNew", "pRoot")
+		case len(args) >= 2 && args[0] == "plugin" && args[1] == "pane":
+			return fakePaneOpenCmd("wNew:p1")
+		default:
+			return exec.Command("/bin/true")
+		}
+	})
+
+	var out strings.Builder
+	if err := herdrPluginSpaceCreate(ctx, sb.Handle(), &out, svc, storeRoot, false); err != nil {
+		t.Fatalf("space-create: %v", err)
+	}
+
+	// workspace create must have been called (minted a new workspace).
+	if !workspaceCreateCalled {
+		t.Error("workspace create was not called; stale binding should have triggered a mint")
+	}
+
+	// Binding must be updated to the new workspace, not left pointing at the stale one.
+	got, err := HerdrSpaceGetByLabel(ctx, storeRoot, "nexus3:proj/stale")
+	if err != nil {
+		t.Fatalf("GetByLabel after mint: %v", err)
+	}
+	if got.HerdrWorkspaceID != "wNew" {
+		t.Errorf("binding.HerdrWorkspaceID = %q, want wNew", got.HerdrWorkspaceID)
+	}
+
+	// No pane call must reference the stale workspace ID.
+	for _, argv := range calls {
+		for _, arg := range argv {
+			if arg == "wStale" {
+				t.Errorf("call argv %v references stale workspace ID wStale", argv)
+			}
+		}
+	}
+}
+
+// TestHerdrPluginSpaceCreate_LiveBindingReuses is the regression guard: when
+// the stored workspace_id IS present in `workspace list`, workspace create is
+// NOT called and the existing workspace is reused.
+//
+// Mutation proof: force reusable = false unconditionally (always mint) →
+// workspaceCreateCalled becomes true → test goes RED, proving the suite can
+// distinguish "checks correctly" from "always mints".
+func TestHerdrPluginSpaceCreate_LiveBindingReuses(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	storeRoot := t.TempDir()
+	ctx := context.Background()
+
+	sb := domain.Sandbox{ID: domain.NewSandboxID(), Project: "proj", Name: "live", State: domain.Running}
+	svc := &fakeSpaceCreateSvc{sb: sb}
+
+	liveBinding := HerdrSpaceBinding{
+		SpaceLabel: "nexus3:proj/live", HerdrWorkspaceID: "wLive",
+		SandboxHandle: "proj/live", SandboxID: sb.ID.String(),
+	}
+	if err := HerdrSpacePut(ctx, storeRoot, liveBinding); err != nil {
+		t.Fatalf("HerdrSpacePut: %v", err)
+	}
+
+	var workspaceCreateCalled bool
+	var calls [][]string
+	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd {
+		switch {
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "list":
+			// wLive IS in the list → predicate returns true → reuse.
+			return exec.Command("printf", "%s",
+				`{"result":{"workspaces":[{"workspace_id":"wLive"}]}}`)
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "create":
+			workspaceCreateCalled = true
+			return fakeWorkspaceCreateCmd("wUnexpected", "pUnexpected")
+		case len(args) >= 2 && args[0] == "plugin" && args[1] == "pane":
+			return fakePaneOpenCmd("wLive:p1")
+		default:
+			return exec.Command("/bin/true")
+		}
+	})
+
+	var out strings.Builder
+	if err := herdrPluginSpaceCreate(ctx, sb.Handle(), &out, svc, storeRoot, false); err != nil {
+		t.Fatalf("space-create: %v", err)
+	}
+
+	if workspaceCreateCalled {
+		t.Error("workspace create was called; live binding should be reused, not minted")
+	}
+}
+
+// TestHerdrPluginSpaceCreate_HerdrUnreachableReuses pins the fail-safe
+// direction: when `workspace list` returns a non-zero exit code,
+// herdrSpacePruneWorkspaceExistsFn reports every workspace alive, so
+// herdrPluginSpaceCreate REUSES the existing binding rather than minting a
+// duplicate during a transient herdr outage.
+func TestHerdrPluginSpaceCreate_HerdrUnreachableReuses(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	storeRoot := t.TempDir()
+	ctx := context.Background()
+
+	sb := domain.Sandbox{ID: domain.NewSandboxID(), Project: "proj", Name: "outage", State: domain.Running}
+	svc := &fakeSpaceCreateSvc{sb: sb}
+
+	binding := HerdrSpaceBinding{
+		SpaceLabel: "nexus3:proj/outage", HerdrWorkspaceID: "wExisting",
+		SandboxHandle: "proj/outage", SandboxID: sb.ID.String(),
+	}
+	if err := HerdrSpacePut(ctx, storeRoot, binding); err != nil {
+		t.Fatalf("HerdrSpacePut: %v", err)
+	}
+
+	var workspaceCreateCalled bool
+	var calls [][]string
+	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd {
+		switch {
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "list":
+			// Non-zero exit → herdr unreachable → fail-safe: all alive → reuse.
+			return exec.Command("/bin/sh", "-c", "exit 1")
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "create":
+			workspaceCreateCalled = true
+			return fakeWorkspaceCreateCmd("wShouldNotCreate", "pRoot")
+		case len(args) >= 2 && args[0] == "plugin" && args[1] == "pane":
+			return fakePaneOpenCmd("wExisting:p1")
+		default:
+			return exec.Command("/bin/true")
+		}
+	})
+
+	var out strings.Builder
+	if err := herdrPluginSpaceCreate(ctx, sb.Handle(), &out, svc, storeRoot, false); err != nil {
+		t.Fatalf("space-create: %v", err)
+	}
+
+	if workspaceCreateCalled {
+		t.Error("workspace create was called during herdr outage; fail-safe must reuse existing binding")
+	}
+}
+
+// TestHerdrPluginSpaceCreate_MalformedWorkspaceListReuses pins the fail-safe
+// for a malformed (but exit-0) workspace list: when `workspace list` returns
+// output whose entries all have empty workspace_id (key renamed from
+// "workspace_id" to something else), herdrSpacePruneWorkspaceExistsFn sees
+// zero non-empty IDs and treats all bindings as alive, so the existing binding
+// is REUSED rather than triggering a spurious mint.
+func TestHerdrPluginSpaceCreate_MalformedWorkspaceListReuses(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	storeRoot := t.TempDir()
+	ctx := context.Background()
+
+	sb := domain.Sandbox{ID: domain.NewSandboxID(), Project: "proj", Name: "malformed", State: domain.Running}
+	svc := &fakeSpaceCreateSvc{sb: sb}
+
+	binding := HerdrSpaceBinding{
+		SpaceLabel: "nexus3:proj/malformed", HerdrWorkspaceID: "wExisting",
+		SandboxHandle: "proj/malformed", SandboxID: sb.ID.String(),
+	}
+	if err := HerdrSpacePut(ctx, storeRoot, binding); err != nil {
+		t.Fatalf("HerdrSpacePut: %v", err)
+	}
+
+	var workspaceCreateCalled bool
+	var calls [][]string
+	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd {
+		switch {
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "list":
+			// Field renamed to "id" — all WorkspaceID fields unmarshal as "".
+			// Zero non-empty IDs → fail-safe: all alive → reuse.
+			return exec.Command("printf", "%s",
+				`{"result":{"workspaces":[{"id":"wExisting"},{"id":"wOther"}]}}`)
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "create":
+			workspaceCreateCalled = true
+			return fakeWorkspaceCreateCmd("wShouldNotCreate", "pRoot")
+		case len(args) >= 2 && args[0] == "plugin" && args[1] == "pane":
+			return fakePaneOpenCmd("wExisting:p1")
+		default:
+			return exec.Command("/bin/true")
+		}
+	})
+
+	var out strings.Builder
+	if err := herdrPluginSpaceCreate(ctx, sb.Handle(), &out, svc, storeRoot, false); err != nil {
+		t.Fatalf("space-create: %v", err)
+	}
+
+	if workspaceCreateCalled {
+		t.Error("workspace create was called on malformed list; fail-safe must reuse existing binding")
+	}
+}
+
+// ── herdrPluginSpaceCreate: pane-close invariants ────────────────────────────
+//
+// The three tests below mirror the pane-close coverage that exists for
+// herdrPluginSpaceOpenPane (SplitsGuestPaneThenClosesRootPane,
+// DoesNotCloseRootPaneIfGuestPaneOpenFails,
+// CloseRootPaneFailureDoesNotFailSpaceCreate) but drive
+// herdrPluginSpaceCreate — the function the operator actually reaches via
+// `herdr space-create`, `create-from-file`, and the sandbox launch path.
+// Both copies of the close block must be pinned so a future edit cannot fix
+// only one.
+
+// TestHerdrPluginSpaceCreate_ClosesRootPaneAfterGuestPaneOpens pins the
+// invariant that (a) the root pane IS closed after the guest pane opens,
+// (b) pane close comes AFTER the plugin-pane open, and (c) "tab" never
+// appears in any argv (closing the tab SIGHUPs running work).
+//
+// Mutation proof: delete the herdrCloseRootPane(ctx, herdrBin, "space-create",
+// rootPaneID) call, confirm RED, restore. Named by SYMBOL, not line range: the
+// range this comment used to cite drifted onto the guest-pane open, so anyone
+// following it reproduced the wrong mutation and concluded the close was
+// covered when it was not.
+func TestHerdrPluginSpaceCreate_ClosesRootPaneAfterGuestPaneOpens(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	storeRoot := t.TempDir()
+	ctx := context.Background()
+
+	sb := domain.Sandbox{ID: domain.NewSandboxID(), Project: "proj", Name: "close-after", State: domain.Running}
+	svc := &fakeSpaceCreateSvc{sb: sb}
+
+	var calls [][]string
+	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd {
+		switch {
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "create":
+			return fakeWorkspaceCreateCmd("wA", "rootA")
+		case len(args) >= 2 && args[0] == "plugin" && args[1] == "pane":
+			return fakePaneOpenCmd("wA:guestA")
+		default:
+			return exec.Command("/bin/true")
+		}
+	})
+
+	var out strings.Builder
+	if err := herdrPluginSpaceCreate(ctx, sb.Handle(), &out, svc, storeRoot, false); err != nil {
+		t.Fatalf("space-create: %v", err)
+	}
+
+	var paneOpenIdx, paneCloseIdx = -1, -1
+	for i, argv := range calls {
+		if len(argv) >= 3 && argv[1] == "plugin" && argv[2] == "pane" {
+			paneOpenIdx = i
+		}
+		if len(argv) >= 4 && argv[1] == "pane" && argv[2] == "close" && argv[3] == "rootA" {
+			paneCloseIdx = i
+		}
+		for _, a := range argv {
+			if a == "tab" {
+				t.Errorf("argv %v contains %q — closing a tab SIGHUPs running work; must use pane close", argv, "tab")
+			}
+		}
+	}
+	if paneCloseIdx == -1 {
+		t.Error("pane close was never called for root pane rootA — workspace has extra host pane")
+	}
+	if paneOpenIdx != -1 && paneCloseIdx != -1 && !(paneOpenIdx < paneCloseIdx) {
+		t.Errorf("pane open(%d) must precede pane close(%d)", paneOpenIdx, paneCloseIdx)
+	}
+}
+
+// TestHerdrPluginSpaceCreate_DoesNotCloseRootPaneIfGuestPaneOpenFails
+// guarantees the safety invariant: if the guest pane fails to open, the root
+// pane must NOT be closed (closing the last pane destroys the workspace).
+func TestHerdrPluginSpaceCreate_DoesNotCloseRootPaneIfGuestPaneOpenFails(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	storeRoot := t.TempDir()
+	ctx := context.Background()
+
+	sb := domain.Sandbox{ID: domain.NewSandboxID(), Project: "proj", Name: "guestfail", State: domain.Running}
+	svc := &fakeSpaceCreateSvc{sb: sb}
+
+	var calls [][]string
+	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd {
+		switch {
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "create":
+			return fakeWorkspaceCreateCmd("wB", "rootB")
+		case len(args) >= 2 && args[0] == "plugin" && args[1] == "pane":
+			return exec.Command("/bin/false")
+		default:
+			return exec.Command("/bin/true")
+		}
+	})
+
+	err := herdrPluginSpaceCreate(ctx, sb.Handle(), &strings.Builder{}, svc, storeRoot, false)
+	if err == nil {
+		t.Fatal("expected error when guest pane open fails, got nil")
+	}
+
+	for _, argv := range calls {
+		if len(argv) >= 3 && argv[1] == "pane" && argv[2] == "close" {
+			t.Errorf("pane close called (%v) after guest pane open failed — root pane must be left alone", argv)
+		}
+	}
+}
+
+// TestHerdrPluginSpaceCreate_CloseRootPaneFailureDoesNotFailSpaceCreate
+// pins the failure policy: a pane-close failure is cosmetic. The sandbox is
+// fully operational; herdr is a terminal multiplexer and nexus3 is a VM
+// manager — a herdr problem must not break a working sandbox.
+func TestHerdrPluginSpaceCreate_CloseRootPaneFailureDoesNotFailSpaceCreate(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	storeRoot := t.TempDir()
+	ctx := context.Background()
+
+	sb := domain.Sandbox{ID: domain.NewSandboxID(), Project: "proj", Name: "closefail2", State: domain.Running}
+	svc := &fakeSpaceCreateSvc{sb: sb}
+
+	var calls [][]string
+	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd {
+		switch {
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "create":
+			return fakeWorkspaceCreateCmd("wC2", "rootC2")
+		case len(args) >= 2 && args[0] == "plugin" && args[1] == "pane":
+			return fakePaneOpenCmd("wC2:guestC2")
+		case len(args) >= 3 && args[0] == "pane" && args[1] == "close":
+			return exec.Command("/bin/false")
+		default:
+			return exec.Command("/bin/true")
+		}
+	})
+
+	var out strings.Builder
+	if err := herdrPluginSpaceCreate(ctx, sb.Handle(), &out, svc, storeRoot, false); err != nil {
+		t.Fatalf("space-create must succeed even when pane close fails, got: %v", err)
+	}
+
+	// Verify pane close was at least attempted.
+	paneCloseCalled := false
+	for _, argv := range calls {
+		if len(argv) >= 4 && argv[1] == "pane" && argv[2] == "close" && argv[3] == "rootC2" {
+			paneCloseCalled = true
+		}
+	}
+	if !paneCloseCalled {
+		t.Error("pane close was not attempted — the function must try to close the root pane")
 	}
 }

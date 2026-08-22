@@ -30,6 +30,13 @@ case "$ENTRYPOINT" in
         # `herdr open-pane` is already taken by the non-space open-pane verb.
         exec "$SHIM" herdr space-open-pane "$HERDR_WORKSPACE_ID"
         ;;
+    new-tab)
+        # Context-aware new tab: opens a guest-shell pane when the focused
+        # workspace is a nexus3 space, or falls through to herdr's built-in
+        # tab-create otherwise. Safe to bind globally — non-nexus3 workspaces
+        # (example-app, groundwork, …) get a normal host tab.
+        exec "$SHIM" herdr new-tab "$HERDR_WORKSPACE_ID"
+        ;;
     *)
         # Generic pane open: build optional --env arg only when NEXUS3_WORKSPACE is set.
         if [ -n "$NEXUS3_WORKSPACE" ]; then

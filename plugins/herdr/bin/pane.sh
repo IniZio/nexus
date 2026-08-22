@@ -17,7 +17,18 @@ case "$1" in
             exit 1
         fi
         # Resolve workspace guest directory (prints /root when no workspace is mounted).
-        SHELL_CWD="$("$SHIM" herdr shell-cwd "$REF" 2>/dev/null)"
+        # Distinguish command failure (stale binary) from a legitimate /root answer:
+        # a zero-exit /root means no mount; a non-zero exit means the binary is broken.
+        SHELL_CWD=$("$SHIM" herdr shell-cwd "$REF" 2>/dev/null)
+        SHELL_CWD_STATUS=$?
+        if [ "$SHELL_CWD_STATUS" -ne 0 ]; then
+            printf "pane.sh: 'nexus3 herdr shell-cwd %s' failed (exit %d)\n" "$REF" "$SHELL_CWD_STATUS"
+            printf "The nexus3 binary is likely stale and does not recognise the 'herdr' command group.\n"
+            printf "Fix: reinstall the nexus3 binary and re-run plugins/herdr/build.sh\n"
+            printf "Press Enter to close this pane.\n"
+            read -r _
+            exit 1
+        fi
         if [ -z "$SHELL_CWD" ]; then
             SHELL_CWD="/root"
         fi
