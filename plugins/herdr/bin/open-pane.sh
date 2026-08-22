@@ -5,6 +5,18 @@ PLACEMENT="${2:-tab}"
 SHIM="$(dirname "$0")/../nexus3-shim.sh"
 
 case "$ENTRYPOINT" in
+    worktree-sandbox)
+        # Bind the focused worktree workspace to a new nexus3 sandbox.
+        # Resolves via HERDR_WORKSPACE_ID — no sandbox ref needed from the caller.
+        # Wire a worktree_created hook here when herdr ships event support; the
+        # nexus3 CLI accepts --auto for conditional bind (source must be nexus3-bound).
+        "$SHIM" herdr worktree-sandbox "$HERDR_WORKSPACE_ID"
+        STATUS=$?
+        if [ "$STATUS" -ne 0 ]; then
+            echo "nexus3: $ENTRYPOINT failed (status $STATUS)" >&2
+        fi
+        exit "$STATUS"
+        ;;
     space-pause|space-resume|space-remove)
         # Lifecycle control on the sandbox bound to the focused herdr workspace.
         # These are not panes: they act and exit. Resolved by HERDR_WORKSPACE_ID

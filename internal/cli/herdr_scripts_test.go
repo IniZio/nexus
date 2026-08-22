@@ -24,6 +24,7 @@ type scriptEnv struct {
 	dir      string // contains the copied scripts
 	shimLog  string
 	herdrLog string
+	herdrBin string // absolute path to the herdr stub; set HERDR_BIN_PATH to this value
 }
 
 func newScriptEnv(t *testing.T) *scriptEnv {
@@ -74,13 +75,14 @@ func newScriptEnv(t *testing.T) *scriptEnv {
 	if err := os.WriteFile(herdrPath, []byte(herdrStub), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	e.herdrBin = herdrPath
 	return e
 }
 
 func (e *scriptEnv) run(t *testing.T, script string, args []string, env map[string]string) {
 	t.Helper()
 	cmd := exec.Command("sh", append([]string{filepath.Join(e.dir, script)}, args...)...)
-	cmd.Env = append(os.Environ(), "HERDR_BIN_PATH="+filepath.Join(filepath.Dir(e.dir), "herdr-stub"))
+	cmd.Env = append(os.Environ(), "HERDR_BIN_PATH="+e.herdrBin)
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}

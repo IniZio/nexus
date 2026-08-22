@@ -54,6 +54,55 @@ func init() {
 // whenever the herdr subcommand surface changes in an incompatible way.
 const herdrPluginABIVersion = "2"
 
+// herdrGroupVerbToPluginSub maps a herdr-group verb (the public CLI sub) to
+// the internal pluginSub name used by runHerdrPlugin. Returns ("", false) for
+// unknown verbs. "default-shell" and "install-default-shell" are handled before
+// plugin routing in runHerdrGroup (self-contained verbs that bypass the plugin
+// machinery entirely); they appear in this switch only as the complete inventory.
+//
+// The usage string in runHerdrGroup is a hand-maintained duplicate of this set;
+// TestHerdrGroupUsageString_containsAllPluginVerbs asserts that key verbs appear in both.
+func herdrGroupVerbToPluginSub(sub string) (pluginSub string, known bool) {
+	switch sub {
+	// Self-contained verbs handled before plugin routing.
+	case "default-shell", "install-default-shell":
+		return sub, true
+	// Non-space verbs: keep name unchanged.
+	case "abi", "context-cwd", "workspaces", "attach", "create", "logs", "doctor",
+		"open-pane", "launch", "shell-cwd", "new-tab":
+		return sub, true
+	// space-* verbs that dropped their prefix (no collision).
+	case "create-from-file":
+		return "space-create-from-file", true
+	case "pause":
+		return "space-pause", true
+	case "resume":
+		return "space-resume", true
+	case "remove":
+		return "space-remove", true
+	case "list":
+		return "space-list", true
+	case "prune":
+		return "space-prune", true
+	case "agent":
+		return "space-agent", true
+	case "agent-from-file":
+		return "space-agent-from-file", true
+	// space-* verbs that KEEP their prefix because the bare name is already
+	// taken by a non-space verb with different behaviour:
+	//   `herdr create`          → __herdr-plugin create (sandbox create)
+	//   `herdr space-create`    → __herdr-plugin space-create (herdr workspace create)
+	//   `herdr open-pane`       → __herdr-plugin open-pane (raw pane open)
+	//   `herdr space-open-pane` → __herdr-plugin space-open-pane (space pane open)
+	case "space-create", "space-open-pane":
+		return sub, true
+	case "worktree-sandbox":
+		return sub, true
+	default:
+		return "", false
+	}
+}
+
 // runHerdrGroup dispatches `nexus3 herdr <subcommand> [args...]`.
 //
 // Verb mapping from the deprecated __herdr-plugin surface:
@@ -65,7 +114,7 @@ const herdrPluginABIVersion = "2"
 // All cases delegate to runHerdrPlugin so behaviour is unchanged.
 func runHerdrGroup(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
-		return &UsageError{Msg: "herdr: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|shell-cwd|new-tab|space-create|space-open-pane|create-from-file|pause|resume|remove|list|prune|agent|agent-from-file|default-shell|install-default-shell)"}
+		return &UsageError{Msg: "herdr: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|shell-cwd|new-tab|space-create|space-open-pane|create-from-file|pause|resume|remove|list|prune|agent|agent-from-file|default-shell|install-default-shell|worktree-sandbox)"}
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -80,41 +129,15 @@ func runHerdrGroup(ctx context.Context, args []string, out *Output) error {
 	}
 
 	// Map herdr-group verbs to the internal runHerdrPlugin dispatch names.
-	var pluginSub string
-	switch sub {
-	// Non-space verbs: keep name unchanged.
-	case "abi", "context-cwd", "workspaces", "attach", "create", "logs", "doctor",
-		"open-pane", "launch", "shell-cwd", "new-tab":
-		pluginSub = sub
-	// space-* verbs that dropped their prefix (no collision).
-	case "create-from-file":
-		pluginSub = "space-create-from-file"
-	case "pause":
-		pluginSub = "space-pause"
-	case "resume":
-		pluginSub = "space-resume"
-	case "remove":
-		pluginSub = "space-remove"
-	case "list":
-		pluginSub = "space-list"
-	case "prune":
-		pluginSub = "space-prune"
-	case "agent":
-		pluginSub = "space-agent"
-	case "agent-from-file":
-		pluginSub = "space-agent-from-file"
-	// space-* verbs that KEEP their prefix because the bare name is already
-	// taken by a non-space verb with different behaviour:
-	//   `herdr create`     → __herdr-plugin create (sandbox create)
-	//   `herdr space-create` → __herdr-plugin space-create (herdr workspace create)
-	//   `herdr open-pane`    → __herdr-plugin open-pane (raw pane open)
-	//   `herdr space-open-pane` → __herdr-plugin space-open-pane (space pane open)
-	case "space-create", "space-open-pane":
-		pluginSub = sub
-	default:
-		return &UsageError{Msg: fmt.Sprintf("herdr: unknown subcommand %q", sub)}
+	pluginSub, known := herdrGroupVerbToPluginSub(sub)
+	if !known {
+		exe, _ := os.Executable()
+		return &UsageError{Msg: fmt.Sprintf(
+			"herdr: unknown subcommand %q\n\n"+
+				"The binary is likely stale. Executed: %s\n"+
+				"Rebuild: go build -o nexus3 ./cmd/nexus3 && nexus3 herdr install-default-shell",
+			sub, exe)}
 	}
-
 	return runHerdrPlugin(ctx, append([]string{pluginSub}, rest...), out)
 }
 
@@ -407,8 +430,49 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		}
 		return herdrPluginNewTab(ctx, rest[0], storeRoot, svc, out.w)
 
+	case "worktree-sandbox":
+		if len(rest) == 0 {
+			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: herdr workspace ID required"}
+		}
+		// Parse --auto / --conditional flags BEFORE the positional workspace ID.
+		// --auto is accepted by the CLI; not emitted by any script today. --conditional
+		// is an accepted alias for backwards compatibility.
+		rest, conditional := herdrWorktreeSandboxParseArgs(rest)
+		if len(rest) == 0 {
+			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: herdr workspace ID required"}
+		}
+		workspaceID := rest[0]
+		svc, err := newSandboxService()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin worktree-sandbox: " + err.Error(), Err: err}
+		}
+		storeRoot, err := store.DefaultRoot()
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin worktree-sandbox: resolve store: " + err.Error(), Err: err}
+		}
+		exe, exeErr := os.Executable()
+		if exeErr != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin worktree-sandbox: resolve executable: " + exeErr.Error(), Err: exeErr}
+		}
+		createFn := func(ctx context.Context, handle, mountSpec string) error {
+			args := herdrWorktreeSandboxCreateArgs(handle, mountSpec)
+			cmd := herdrExecCommandContext(ctx, exe, append([]string{"sandbox", "create"}, args...)...)
+			cmd.Stdout = out.w
+			cmd.Stderr = out.w
+			return cmd.Run()
+		}
+		getFn := func(ctx context.Context, handle string) (domain.Sandbox, error) {
+			return svc.Get(ctx, handle)
+		}
+		return herdrWorktreeSandbox(ctx, workspaceID, out.w, storeRoot, true, conditional, createFn, getFn)
+
 	default:
-		return &UsageError{Msg: "__herdr-plugin: unknown subcommand: " + sub}
+		exe, _ := os.Executable()
+		return &UsageError{Msg: fmt.Sprintf(
+			"__herdr-plugin: unknown subcommand %q\n\n"+
+				"The binary is likely stale. Executed: %s\n"+
+				"Rebuild: go build -o nexus3 ./cmd/nexus3 && nexus3 herdr install-default-shell",
+			sub, exe)}
 	}
 }
 
@@ -941,6 +1005,27 @@ func herdrPluginDoctor(w io.Writer) error {
 	fmt.Fprintf(w, "plugin ABI:     %s\n", herdrPluginABIVersion)
 	fmt.Fprintf(w, "herdr version:  %s\n", herdrVer)
 	fmt.Fprintf(w, "HERDR_BIN_PATH: %s\n", herdrBinStatus)
+
+	// ABI file check: compare HERDR_PLUGIN_ROOT/abi against herdrPluginABIVersion.
+	// This catches a stale plugin installation where the nexus3 binary and the
+	// herdr-plugin.toml were installed at different times.
+	pluginRoot := os.Getenv("HERDR_PLUGIN_ROOT")
+	if pluginRoot == "" {
+		fmt.Fprintf(w, "ABI file check: HERDR_PLUGIN_ROOT unset (not running as a herdr plugin)\n")
+	} else {
+		abiPath := filepath.Join(pluginRoot, "abi")
+		abiBytes, err := os.ReadFile(abiPath)
+		if err != nil {
+			fmt.Fprintf(w, "ABI file check: cannot read %s: %v\n", abiPath, err)
+		} else {
+			expected := strings.TrimSpace(string(abiBytes))
+			if expected == herdrPluginABIVersion {
+				fmt.Fprintf(w, "ABI file check: ok (%s)\n", expected)
+			} else {
+				fmt.Fprintf(w, "ABI file check: MISMATCH — file has %q, binary expects %q\n", expected, herdrPluginABIVersion)
+			}
+		}
+	}
 	return nil
 }
 
@@ -2484,4 +2569,292 @@ func herdrPluginSpaceAgentFromFile(ctx context.Context, r io.Reader, w io.Writer
 	}
 
 	return herdrPluginSpaceAgent(ctx, ref, brief, autonomous, true, w, svc, storeRoot)
+}
+
+// ── worktree-sandbox helpers ──────────────────────────────────────────────────
+
+// herdrWorktreeInfo holds the information extracted from `herdr plugin pane worktree list`
+// for one workspace entry in the worktree list response.
+type herdrWorktreeInfo struct {
+	Branch            string
+	Path              string
+	IsLinkedWorktree  bool
+	SourceWorkspaceID string
+}
+
+// herdrListWorktreeForWorkspaceFn is the injectable function for listing worktrees.
+// Replaced in tests to avoid calling the live herdr binary.
+var herdrListWorktreeForWorkspaceFn = herdrListWorktreeForWorkspace
+
+// herdrWorkspaceRenameFn is the injectable function for renaming a herdr workspace.
+// Replaced in tests to avoid calling the live herdr binary.
+var herdrWorkspaceRenameFn = herdrWorkspaceRename
+
+// herdrParseWorktreeListForWorkspace parses the JSON response from
+// `herdr plugin pane worktree list --workspace-id <id>` and returns the
+// herdrWorktreeInfo for the entry whose open_workspace_id matches workspaceID.
+// Returns an error if workspaceID is not found or the JSON is malformed.
+func herdrParseWorktreeListForWorkspace(data []byte, workspaceID string) (herdrWorktreeInfo, error) {
+	var resp struct {
+		Result struct {
+			Source struct {
+				SourceWorkspaceID string `json:"source_workspace_id"`
+			} `json:"source"`
+			Worktrees []struct {
+				Branch           string `json:"branch"`
+				IsLinkedWorktree bool   `json:"is_linked_worktree"`
+				OpenWorkspaceID  string `json:"open_workspace_id"`
+				Path             string `json:"path"`
+			} `json:"worktrees"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return herdrWorktreeInfo{}, fmt.Errorf("herdr worktree list: parse response: %w", err)
+	}
+	sourceWorkspaceID := resp.Result.Source.SourceWorkspaceID
+	for _, wt := range resp.Result.Worktrees {
+		if wt.OpenWorkspaceID == workspaceID {
+			return herdrWorktreeInfo{
+				Branch:            wt.Branch,
+				Path:              wt.Path,
+				IsLinkedWorktree:  wt.IsLinkedWorktree,
+				SourceWorkspaceID: sourceWorkspaceID,
+			}, nil
+		}
+	}
+	return herdrWorktreeInfo{}, fmt.Errorf("herdr worktree list: workspace %q not found in response", workspaceID)
+}
+
+// herdrListWorktreeForWorkspace calls `herdr plugin pane worktree list` and
+// returns the herdrWorktreeInfo for the given workspaceID.
+func herdrListWorktreeForWorkspace(ctx context.Context, herdrBin, workspaceID string) (herdrWorktreeInfo, error) {
+	cmd := herdrExecCommandContext(ctx, herdrBin, "plugin", "pane", "worktree", "list", "--workspace-id", workspaceID)
+	out, err := cmd.Output()
+	if err != nil {
+		return herdrWorktreeInfo{}, fmt.Errorf("herdr plugin pane worktree list: %w", err)
+	}
+	return herdrParseWorktreeListForWorkspace(out, workspaceID)
+}
+
+// herdrWorkspaceRename calls `herdr workspace rename` to update the workspace
+// label to label for the given workspaceID.
+func herdrWorkspaceRename(ctx context.Context, herdrBin, workspaceID, label string) error {
+	cmd := herdrExecCommandContext(ctx, herdrBin, "workspace", "rename", workspaceID, label)
+	return cmd.Run()
+}
+
+// herdrWorktreeSandboxCreateArgs returns the argument list for
+// `nexus3 sandbox create` that creates a worktree sandbox.
+//
+// --no-builtin-gh is always included: it gates whether the builtin GitHub
+// credential enters the sandbox. Omitting it silently grants access.
+// This is the SOLE place this flag is constructed for the worktree-sandbox
+// path; tests assert its presence here, not via side-channel inspection.
+func herdrWorktreeSandboxCreateArgs(handle, mountSpec string) []string {
+	return []string{"--mount", mountSpec, "--no-builtin-gh", handle}
+}
+
+// herdrWorktreeSandboxHandle derives a deterministic, collision-free sandbox
+// handle from a git branch name.
+//
+// The full branch path (not just the last segment) is encoded so that
+// "feature/x" and "bugfix/x" map to distinct handles. Non-alphanumeric chars
+// (including "/") are replaced with "-" so the handle is a valid single-segment
+// nexus3 handle token.
+//
+// Steps:
+//  1. Lowercase and replace non-[a-z0-9-] chars with "-" (including "/").
+//  2. Collapse consecutive "-" to one and trim leading/trailing "-".
+//  3. Prepend "wt/". If the slug is empty after cleaning, use "wt/worktree".
+func herdrWorktreeSandboxHandle(branch string) string {
+	// Lowercase; the sanitiser loop below maps all non-[a-z0-9] chars
+	// (including "/") to "-" without a separate ReplaceAll pass.
+	slug := strings.ToLower(branch)
+	// Replace non-alphanumeric-dash chars.
+	var b strings.Builder
+	prev := '-'
+	for _, r := range slug {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prev = r
+		} else {
+			if prev != '-' {
+				b.WriteByte('-')
+			}
+			prev = '-'
+		}
+	}
+	slug = strings.Trim(b.String(), "-")
+	if slug == "" {
+		slug = "worktree"
+	}
+	return "wt/" + slug
+}
+
+// herdrWorktreeSandboxParseArgs strips --auto / --conditional flags from the
+// beginning of args and returns the remaining positional args and whether the
+// conditional flag was present. Both flags are accepted by the CLI; not emitted
+// by any script today. --conditional is an accepted alias for --auto.
+//
+// Called by the "worktree-sandbox" case in runHerdrPlugin so flag parsing
+// happens before the workspace ID is read, preventing --auto from being
+// consumed as the workspace ID.
+func herdrWorktreeSandboxParseArgs(args []string) (rest []string, conditional bool) {
+	for len(args) > 0 && (args[0] == "--auto" || args[0] == "--conditional") {
+		conditional = true
+		args = args[1:]
+	}
+	return args, conditional
+}
+
+// herdrWorktreeSandbox orchestrates the worktree-sandbox flow for one herdr workspace.
+//
+// Steps (performed in order):
+//
+//  1. Idempotency: if a binding already exists for workspaceID, return early.
+//
+//  2. Resolve herdr binary path via resolveHerdrBin.
+//
+//  3. List worktrees for workspaceID via herdrListWorktreeForWorkspaceFn.
+//     On error: log and return nil (fail-safe — workspace stays a host shell).
+//
+//  4. Linked-worktree guard: if !info.IsLinkedWorktree, workspace is the main
+//     checkout; return nil (no sandbox created).
+//
+//  5. Conditional source check (only when conditional=true):
+//     a. If SourceWorkspaceID is empty, return nil (ambiguous source).
+//     b. If the source workspace has no nexus3 binding, return nil (source
+//     is not nexus3-managed; worktree workspace stays a host shell).
+//
+//  6. Derive sandbox handle from branch name via herdrWorktreeSandboxHandle.
+//
+//  7. Create sandbox via createFn(ctx, handle, mountSpec).
+//     On error (explicit, conditional==false): return error.
+//     On error (conditional mode): log and return nil (fail-safe).
+//
+//  8. Look up sandbox ID via getFn; write the HerdrSpaceBinding (without GuestPaneID).
+//     Binding is written BEFORE the pane opens so idempotency is safe on crash.
+//     On error: same policy as step 7.
+//
+//  9. Open guest shell pane; if successful, patch GuestPaneID into the stored binding.
+//     On error: always printed. Explicit mode (conditional==false) returns the error
+//     (sandbox+binding exist and are recoverable, but silence is not acceptable).
+//     Conditional mode continues — the binding committed and the workspace is usable.
+//
+//  10. Rename the herdr workspace to the space label via herdrWorkspaceRenameFn.
+//     On error: printed, never returned (best-effort step).
+func herdrWorktreeSandbox(
+	ctx context.Context,
+	workspaceID string,
+	w io.Writer,
+	storeRoot string,
+	openPane bool,
+	conditional bool,
+	createFn func(context.Context, string, string) error,
+	getFn func(context.Context, string) (domain.Sandbox, error),
+) error {
+	// Step 1: idempotency.
+	if _, err := herdrSpaceResolve(ctx, storeRoot, workspaceID); err == nil {
+		fmt.Fprintf(w, "worktree-sandbox: workspace %s already bound\n", workspaceID)
+		return nil
+	}
+
+	// Step 2: resolve herdr binary.
+	herdrBin, err := resolveHerdrBin()
+	if err != nil {
+		fmt.Fprintf(w, "worktree-sandbox: resolve herdr binary: %v\n", err)
+		return nil
+	}
+
+	// Step 3: list worktrees (fail-safe on error).
+	info, err := herdrListWorktreeForWorkspaceFn(ctx, herdrBin, workspaceID)
+	if err != nil {
+		fmt.Fprintf(w, "worktree-sandbox: herdr worktree list: %v\n", err)
+		return nil
+	}
+
+	// Step 4: linked-worktree guard.
+	if !info.IsLinkedWorktree {
+		fmt.Fprintf(w, "worktree-sandbox: workspace %s is main checkout, skipping\n", workspaceID)
+		return nil
+	}
+
+	// Step 5: conditional source check.
+	if conditional {
+		srcID := info.SourceWorkspaceID
+		if srcID == "" {
+			fmt.Fprintf(w, "worktree-sandbox: source workspace unknown, skipping\n")
+			return nil
+		}
+		if _, err := herdrSpaceResolve(ctx, storeRoot, srcID); err != nil {
+			fmt.Fprintf(w, "worktree-sandbox: source workspace %s not nexus3-bound, skipping\n", srcID)
+			return nil
+		}
+	}
+
+	// Step 6: derive handle.
+	handle := herdrWorktreeSandboxHandle(info.Branch)
+	mountSpec := info.Path + ":/workspace"
+
+	// Step 7: create sandbox. Explicit mode failures are real errors; conditional
+	// mode is fail-safe (workspace stays a host shell).
+	if err := createFn(ctx, handle, mountSpec); err != nil {
+		fmt.Fprintf(w, "worktree-sandbox: sandbox create: %v\n", err)
+		if !conditional {
+			return fmt.Errorf("worktree-sandbox: sandbox create: %w", err)
+		}
+		return nil
+	}
+
+	// Step 8: look up sandbox ID and write the binding (without GuestPaneID).
+	// The binding is written BEFORE opening the pane so the idempotency check
+	// on the next run sees it even if the process dies during pane open.
+	sb, err := getFn(ctx, handle)
+	if err != nil {
+		fmt.Fprintf(w, "worktree-sandbox: get sandbox %s: %v\n", handle, err)
+		if !conditional {
+			return fmt.Errorf("worktree-sandbox: get sandbox %s: %w", handle, err)
+		}
+		return nil
+	}
+	label := "nexus3:" + handle
+	binding := HerdrSpaceBinding{
+		SpaceLabel:       label,
+		HerdrWorkspaceID: workspaceID,
+		SandboxHandle:    handle,
+		SandboxID:        sb.ID.String(),
+	}
+	if err := HerdrSpacePut(ctx, storeRoot, binding); err != nil {
+		fmt.Fprintf(w, "worktree-sandbox: write binding: %v\n", err)
+		if !conditional {
+			return fmt.Errorf("worktree-sandbox: write binding: %w", err)
+		}
+		return nil
+	}
+
+	// Step 9: open guest shell pane and patch GuestPaneID into the stored binding.
+	// Error policy: sandbox+binding already exist and are recoverable on the next run,
+	// so pane failure is always printed. Explicit mode also returns it (non-zero exit);
+	// conditional mode continues because the binding committed and the workspace is usable.
+	if openPane {
+		paneID, paneErr := herdrOpenGuestShellPane(ctx, herdrBin, handle, workspaceID, "", false)
+		if paneErr != nil {
+			fmt.Fprintf(w, "worktree-sandbox: open guest pane: %v\n", paneErr)
+			if !conditional {
+				return fmt.Errorf("worktree-sandbox: open guest pane: %w", paneErr)
+			}
+		}
+		if paneID != "" {
+			binding.GuestPaneID = paneID
+			_ = HerdrSpacePut(ctx, storeRoot, binding) // best-effort patch
+		}
+	}
+
+	// Step 10: rename workspace to space label.
+	if err := herdrWorkspaceRenameFn(ctx, herdrBin, workspaceID, label); err != nil {
+		fmt.Fprintf(w, "worktree-sandbox: rename workspace: %v\n", err)
+	}
+
+	fmt.Fprintf(w, "worktree-sandbox: bound workspace %s → sandbox %s\n", workspaceID, handle)
+	return nil
 }

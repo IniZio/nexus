@@ -232,6 +232,19 @@ func TestHerdrPlugin_unknownSubcommand(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown subcommand, got nil")
 	}
+	// The message must be actionable: name the binary and say it is stale.
+	// MUTATION PROOF: drop the staleness hint from the default case →
+	// strings.Contains(msg, "stale") fails → RED.
+	ue, ok := err.(*UsageError)
+	if !ok {
+		t.Fatalf("expected *UsageError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ue.Msg, "stale") {
+		t.Errorf("error message should mention staleness; got: %q", ue.Msg)
+	}
+	if !strings.Contains(ue.Msg, "install-default-shell") {
+		t.Errorf("error message should give the rebuild command; got: %q", ue.Msg)
+	}
 }
 
 func TestHerdrPlugin_noSubcommand(t *testing.T) {

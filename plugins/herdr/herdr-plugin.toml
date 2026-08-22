@@ -133,3 +133,17 @@ id = "space-agent"
 title = "nexus3: launch Claude agent in sandbox"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "space-agent", "tab"]
+
+[[actions]]
+id = "worktree-sandbox"
+title = "nexus3: sandbox this worktree"
+contexts = ["workspace"]
+command = ["sh", "bin/open-pane.sh", "worktree-sandbox"]
+
+# No [[events]] hook: herdr 0.8.0 parses the table but its event registry is
+# empty -- startup, workspace_created, tab_created, worktree_created and
+# pane_created are all rejected as "unknown event", which leaves a permanent
+# warning on the plugin and fires nothing. Wire a worktree_created hook
+# (invoking `nexus3 herdr worktree-sandbox --auto <ws>`) when herdr ships
+# event support; --auto implements the conditional rule (sandbox only when the
+# source workspace is nexus3-bound).
