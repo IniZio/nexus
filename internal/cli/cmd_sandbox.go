@@ -19,6 +19,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/agent"
 	"github.com/IniZio/nexus3/internal/core/builder"
 	"github.com/IniZio/nexus3/internal/core/builder/builderimage"
+	"github.com/IniZio/nexus3/internal/core/config"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
@@ -358,6 +359,104 @@ type sandboxCreateFlags struct {
 	mountNamed  []string // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
 	mountLive   []string // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
 	positionals []string
+}
+
+// applyProjectConfig loads the nearest nexus3.yaml (by walking up from the
+// process cwd to the repo root) and applies its settings to f:
+//
+//   - [sandbox].image / memory / vcpus: precedence is explicit CLI flag > project
+//     config > built-in default. The config provides the default; a flag overrides it.
+//   - [egress].allow: ADDITIVE — config hosts are appended to any --allow-host flags.
+//     Neither replaces the other; both reach AllowedHosts. This keeps the project's
+//     standing allowlist and a per-invocation flag independent.
+//   - [sandbox].mounts: explicit --mount flags REPLACE config mounts entirely (see below).
+//
+// An absent nexus3.yaml is a no-op: f is left exactly as parseSandboxCreateArgs
+// produced it, and nil is returned. A present but malformed file (or a YAML key
+// that does not exist in the schema) returns an error.
+//
+// Mounts ([sandbox].mounts / --mount): explicit --mount flags REPLACE config
+// mounts entirely. A user who passes any --mount flag controls exactly which
+// host directories reach the guest; config-defined mounts are superseded. To
+// use both CLI and config mounts simultaneously, list all desired mounts in
+// nexus3.yaml and omit --mount on the command line.
+//
+// When config mounts are used (no --mount flag given), relative host paths in
+// the config are resolved against the directory that contains nexus3.yaml —
+// NOT the process cwd — so ".:/work" always refers to the repo root where the
+// config lives, regardless of the subdirectory the user is in when they run the
+// command.
+func applyProjectConfig(f *sandboxCreateFlags) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("sandbox create: getwd: %w", err)
+	}
+	cfg, cfgPath, err := config.Load(cwd)
+	if err != nil {
+		return fmt.Errorf("sandbox create: %w", err)
+	}
+
+	// Build the Flags struct for the resolver. Pointers distinguish "flag was
+	// set" (non-nil) from "flag was absent" (nil). The zero uint32 for memoryMiB
+	// and vcpus is safe to use as the "not set" sentinel: zero is not a valid
+	// memory or vCPU count, and parseSandboxCreateArgs starts with a zero struct.
+	var memPtr *int
+	if f.memoryMiB > 0 {
+		v := int(f.memoryMiB)
+		memPtr = &v
+	}
+	var vcpusPtr *int
+	if f.vcpus > 0 {
+		v := int(f.vcpus)
+		vcpusPtr = &v
+	}
+	flags := config.Flags{
+		EgressAllow: f.allowHosts, // nil when no --allow-host was given
+		Image:       f.imageRef,
+		Memory:      memPtr,
+		VCPUs:       vcpusPtr,
+		Mounts:      f.mountLive, // nil when --mount was not given
+	}
+	resolved := config.Resolve(flags, cfg, config.Defaults{})
+
+	f.imageRef = resolved.Image
+	if resolved.MemoryMiB != 0 {
+		f.memoryMiB = uint32(resolved.MemoryMiB)
+	}
+	if resolved.VCPUs != 0 {
+		f.vcpus = uint32(resolved.VCPUs)
+	}
+
+	// EgressAllow is ADDITIVE, and the union is computed by config.Resolve —
+	// not here — so that one function owns every precedence rule. An earlier
+	// version appended cfg.Egress.Allow directly at this line, which left
+	// Resolve's own EgressAllow branch computed but never read: dead code
+	// documenting a flag > config rule that production did not implement.
+	//
+	// resolveAgentPosture later adds the agent profile's own hosts on top of
+	// these (or, for a non-agent sandbox, passes them through as AllowedHosts).
+	//
+	// Mutation guard: making Resolve drop either input means config
+	// [egress].allow or --allow-host hosts never reach AllowedHosts →
+	// TestSandboxCreate_ConfigEgress_Allow fails RED.
+	f.allowHosts = resolved.EgressAllow
+
+	// Mounts: when --mount was absent (f.mountLive == nil), resolved.Mounts
+	// carries config-file mounts. Resolve their relative host paths against the
+	// config file's directory — NOT cwd — before handing them to parseMountLive.
+	// When --mount was given (f.mountLive != nil), the resolver picked the flag
+	// mounts; parseMountLive (called later in runSandboxCreate) absolutises them
+	// against cwd, exactly as it did before this feature existed.
+	if f.mountLive == nil && len(resolved.Mounts) > 0 {
+		cfgDir := filepath.Dir(cfgPath)
+		resolvedMounts, resolveErr := config.ResolveMounts(resolved.Mounts, cfgDir)
+		if resolveErr != nil {
+			return fmt.Errorf("sandbox create: nexus3.yaml: %w", resolveErr)
+		}
+		f.mountLive = resolvedMounts
+	}
+
+	return nil
 }
 
 // parseSandboxCreateArgs parses the raw argument slice for `sandbox create`.
@@ -909,6 +1008,13 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	f, parseErr := parseSandboxCreateArgs(args)
 	if parseErr != nil {
 		return parseErr
+	}
+
+	// Apply [sandbox] defaults from the nearest nexus3.yaml (precedence:
+	// explicit CLI flag > project config > built-in default). An absent
+	// config file is a no-op: f is unchanged and this call returns nil.
+	if cfgErr := applyProjectConfig(&f); cfgErr != nil {
+		return cfgErr
 	}
 
 	if len(f.positionals) != 1 {

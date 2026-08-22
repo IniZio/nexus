@@ -899,3 +899,60 @@ func TestAgentBuiltinGitHubSuppression(t *testing.T) {
 		})
 	}
 }
+
+// ── CFG-egress: [egress].allow wiring ─────────────────────────────────────────
+
+// TestSandboxCreate_ConfigEgress_Allow verifies that egress.allow from
+// nexus3.yaml is merged into f.allowHosts ADDITIVELY: both config hosts and
+// any --allow-host flags reach resolveAgentPosture; neither replaces the other.
+//
+// Mutation guard: remove the "f.allowHosts = append(f.allowHosts, cfg.Egress.Allow...)"
+// line in applyProjectConfig → both sub-tests fail RED (config hosts absent).
+func TestSandboxCreate_ConfigEgress_Allow(t *testing.T) {
+	// Set up a temp dir that looks like a git repo root with a nexus3.yaml.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const yaml = "version: 1\negress:\n  allow: [\"registry.example.com\", \"pkg.example.com\"]\n"
+	if err := os.WriteFile(filepath.Join(dir, "nexus3.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	t.Run("config hosts appear when no --allow-host given", func(t *testing.T) {
+		f := sandboxCreateFlags{}
+		if err := applyProjectConfig(&f); err != nil {
+			t.Fatalf("applyProjectConfig: %v", err)
+		}
+		want := map[string]bool{"registry.example.com": false, "pkg.example.com": false}
+		for _, h := range f.allowHosts {
+			want[h] = true
+		}
+		for h, found := range want {
+			if !found {
+				t.Errorf("allowHosts missing config host %q; got: %v", h, f.allowHosts)
+			}
+		}
+	})
+
+	t.Run("flag hosts and config hosts are both present — additive", func(t *testing.T) {
+		f := sandboxCreateFlags{allowHosts: []string{"flag.example.com"}}
+		if err := applyProjectConfig(&f); err != nil {
+			t.Fatalf("applyProjectConfig: %v", err)
+		}
+		want := map[string]bool{
+			"flag.example.com":     false,
+			"registry.example.com": false,
+			"pkg.example.com":      false,
+		}
+		for _, h := range f.allowHosts {
+			want[h] = true
+		}
+		for h, found := range want {
+			if !found {
+				t.Errorf("allowHosts missing host %q; got: %v", h, f.allowHosts)
+			}
+		}
+	})
+}

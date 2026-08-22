@@ -1,0 +1,167 @@
+// Package config loads and represents per-repository nexus3 configuration
+// from a nexus3.yaml file found by walking up from a start directory.
+//
+// Discovery: Load walks from startDir toward the filesystem root, stopping
+// at the first directory that contains a .git entry (the repository root).
+// An absent nexus3.yaml is not an error; a present but malformed file is.
+// An unknown YAML key is a hard error (security-relevant: a typo in an
+// egress allowlist silently disables the intended host).
+//
+// Usage pattern (caller drives precedence):
+//
+//	cfg, cfgPath, err := config.Load(startDir)
+//	opts := config.Resolve(explicitFlags, cfg, config.Defaults())
+package config
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"gopkg.in/yaml.v3"
+)
+
+// SupportedVersion is the highest nexus3.yaml schema version this binary understands.
+const SupportedVersion = 1
+
+// MinSupportedVersion is the lowest nexus3.yaml schema version this binary accepts.
+// Files declaring a version below this must be re-created before use.
+const MinSupportedVersion = 1
+
+// EgressConfig holds per-repo egress allow rules.
+type EgressConfig struct {
+	// Allow lists additional hostnames the sandbox may reach.
+	// These are merged on top of the built-in perimeter allowlist by the
+	// precedence resolver; they do not replace it.
+	Allow []string `yaml:"allow"`
+}
+
+// SandboxConfig holds per-repo sandbox defaults.
+type SandboxConfig struct {
+	// Image is the container image name used when no --image flag is given.
+	Image string `yaml:"image"`
+
+	// Memory is the sandbox RAM in MiB. Zero means "use the built-in default".
+	Memory int `yaml:"memory"`
+
+	// VCPUs is the number of virtual CPUs. Zero means "use the built-in default".
+	VCPUs int `yaml:"vcpus"`
+
+	// Mounts is a list of host:guest mount entries, e.g. ".:/work".
+	// Host-relative paths are resolved against the directory that contains the
+	// nexus3.yaml file by ResolveMounts — NOT against the process working dir.
+	Mounts []string `yaml:"mounts"`
+}
+
+// Config is the in-memory representation of a nexus3.yaml file.
+// A zero Config is valid and means "no project-level overrides".
+type Config struct {
+	Egress  EgressConfig  `yaml:"egress"`
+	Sandbox SandboxConfig `yaml:"sandbox"`
+}
+
+// fileConfig is the on-disk YAML shape, including the required version field.
+// Used only by parse; callers work with Config.
+type fileConfig struct {
+	// Version is a *int so that nil (field absent from file) is distinguishable
+	// from 0 (field present but set to zero). A missing version is a hard error.
+	Version *int          `yaml:"version"`
+	Egress  EgressConfig  `yaml:"egress"`
+	Sandbox SandboxConfig `yaml:"sandbox"`
+}
+
+// configFileName is the well-known name discovered during Load.
+const configFileName = "nexus3.yaml"
+
+// Load walks up from startDir looking for nexus3.yaml, stopping at the repo
+// root (a directory containing .git) or the filesystem root.
+//
+// Returns:
+//   - cfg: the parsed Config (zero value when no file is found)
+//   - filePath: absolute path of the loaded file, or "" when no file was found
+//   - err: non-nil only when the file exists but cannot be parsed, when an
+//     unknown YAML key is present, or when the version field is absent or
+//     outside [MinSupportedVersion, SupportedVersion]
+//
+// An absent nexus3.yaml is NOT an error.
+func Load(startDir string) (Config, string, error) {
+	abs, err := filepath.Abs(startDir)
+	if err != nil {
+		return Config{}, "", fmt.Errorf("config.Load: resolve startDir %q: %w", startDir, err)
+	}
+
+	dir := abs
+	for {
+		candidate := filepath.Join(dir, configFileName)
+		data, err := os.ReadFile(candidate)
+		if err == nil {
+			// File found: parse and return.
+			cfg, parseErr := parse(data)
+			if parseErr != nil {
+				return Config{}, "", fmt.Errorf("config: parse %q: %w", candidate, parseErr)
+			}
+			return cfg, candidate, nil
+		}
+		if !os.IsNotExist(err) {
+			// Unexpected I/O error (permission denied, etc.) — propagate.
+			return Config{}, "", fmt.Errorf("config: read %q: %w", candidate, err)
+		}
+
+		// Stop at a .git boundary (repository root).
+		if hasGitRoot(dir) {
+			break
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached the filesystem root.
+			break
+		}
+		dir = parent
+	}
+
+	// No file found — not an error.
+	return Config{}, "", nil
+}
+
+// parse decodes YAML data into a Config, rejecting any unknown keys.
+// Unknown keys are a hard error: a typo in the egress allowlist silently
+// disables the intended host, which is a security-relevant failure.
+//
+// A missing or out-of-range version field is also a hard error. A missing
+// version cannot be silently defaulted: that is how a future syntax version
+// would silently misparse an old file, with no warning and no path to upgrade.
+func parse(data []byte) (Config, error) {
+	var fc fileConfig
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&fc); err != nil {
+		return Config{}, err
+	}
+	if fc.Version == nil {
+		return Config{}, fmt.Errorf(
+			"nexus3.yaml: missing required field \"version\" — add `version: %d` as the first line",
+			SupportedVersion,
+		)
+	}
+	v := *fc.Version
+	if v < MinSupportedVersion || v > SupportedVersion {
+		return Config{}, fmt.Errorf(
+			"nexus3.yaml declares version %d; this nexus3 supports versions %d–%d — "+
+				"upgrade nexus3 if the file is newer, or re-create the file if it is older",
+			v, MinSupportedVersion, SupportedVersion,
+		)
+	}
+	return Config{
+		Egress:  fc.Egress,
+		Sandbox: fc.Sandbox,
+	}, nil
+}
+
+// hasGitRoot returns true when dir contains a .git entry (file or directory),
+// indicating it is the root of a git repository.
+func hasGitRoot(dir string) bool {
+	_, err := os.Lstat(filepath.Join(dir, ".git"))
+	return err == nil
+}

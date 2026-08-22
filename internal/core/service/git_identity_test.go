@@ -245,46 +245,61 @@ func TestSeedGitIdentity_MissingHostConfig_FailsCreate(t *testing.T) {
 // TestN_AC1_NoGitHubEgressPermitted is the durable rail for D-PD-22
 // (revises D-PD-01, extended by D-PD-33). It covers the AGENT sandbox only.
 //
-// Security property: "the agent guest commits locally; it never holds a
-// GitHub credential and never reaches github.com." github.com is reachable
-// only as a SecretHost behind the MITM credential swap on the human path
-// (D-PD-25). It must NEVER appear in plain AllowedHosts for any sandbox.
+// Security property (CREDENTIAL INVARIANT — D-PD-22): an agent sandbox never
+// carries a real GitHub credential. This is enforced by three independent guards,
+// each of which must hold independently:
 //
-// No GitHub token, SSH key, gh-auth state, or forwarded ssh-agent socket
-// ever enters an agent sandbox. github.com NEVER appears in AllowedHosts
-// for the standard agent path (AgentEgressHosts / WireClaudeEgress).
+//  1. suppressBuiltinGitHub (cmd_sandbox.go): suppresses the builtin `gh auth
+//     token` bind for agent sandboxes without --repo, so the operator's GitHub
+//     token never enters Secrets for an ordinary agent run.
+//  2. ErrUnboundGitHubSecret (create.go): rejects any GitHub secret bind that
+//     lacks an AllowedRepo scope. Covers all callers (CLI, orca, herdr, MCP).
+//  3. Agent seeding (seed.go prepareAgentCredPayload): mints placeholders from
+//     AgentEgressHosts(profile), NOT from AllowedHosts. So even when a project's
+//     nexus3.yaml egress.allow includes github.com, the agent seed payload
+//     contains no GitHub credential variable.
 //
-// D-PD-33 adds: an empty AllowedHosts is no longer an implicit AllowAll
-// sentinel. Open egress requires the explicit Envelope.OpenEgress=true flag.
+// Operator decision: project config may add github.com (or any host) to
+// AllowedHosts via [egress].allow. This is safe because the credential guard
+// (guard 3 above) operates independently of the host list: the agent seeding
+// path is keyed on the profile, not the envelope. Sub-check (e) verifies this.
+//
+// D-PD-33: an empty AllowedHosts is not an implicit AllowAll sentinel.
 // WireClaudeEgress must never set OpenEgress=true.
 //
-// This test has FOUR sub-checks (a)–(d) for the standard agent path, plus a
-// cross-reference note about the orca-path scoped exception (e):
+// This test has FIVE sub-checks (a)–(e) for the standard agent path, plus a
+// cross-reference note about the orca-path scoped rail:
 //
-//	(a) AgentEgressHosts — the source of AllowedHosts for every agent sandbox —
-//	    contains no GitHub hostname. A violation here means every agent sandbox
-//	    would receive a GitHub credential via the MITM placeholder-swap mechanism.
+//	(a) AgentEgressHosts (the claude-code profile's own host list) contains no
+//	    GitHub hostname. The profile is the source for the agent seed payload;
+//	    a GitHub host here would produce a GitHub credential var in every agent
+//	    sandbox payload regardless of AllowedHosts.
 //
-//	(b) WireClaudeEgress (the standard wiring helper for agent sandboxes) does
-//	    not insert any GitHub hostname into AllowedHosts. A violation here means
-//	    the standard create path would seed GitHub tokens into every agent sandbox.
+//	(b) WireClaudeEgress (the test-wiring helper; not called on the sandbox-create
+//	    path) does not insert any GitHub hostname into AllowedHosts when called on
+//	    a zero opts value. This checks the profile-driven baseline only; project
+//	    config may legitimately extend AllowedHosts with github.com at runtime.
 //
-//	(c) The credential env payload emitted by SeedGuest (called with
-//	    AgentEgressHosts(cred.ClaudeCodeProfile)) does not contain any GITHUB-pattern variable name.
-//	    This is the runtime check: even if (a) or (b) were somehow bypassed,
-//	    the payload itself must not carry a GitHub credential var.
+//	(c) The credential env payload emitted by SeedGuestAgent (the agent-path seeder,
+//	    which uses AgentEgressHosts internally) does not contain any GITHUB-pattern
+//	    variable name. This is the RUNTIME check: guard 3 above.
 //
-//	    LIVE-VM PROOF REQUIRED for the push-fail itself: sub-check (c) here
-//	    asserts the CONFIGURATION INVARIANT (AllowedHosts never contains github.com)
-//	    that makes an in-agent `git push` fail closed. The actual push-fail
-//	    requires a booted VM; it is covered by X0-AC3 in the E2E flow.
+//	    LIVE-VM PROOF REQUIRED for the push-fail itself: this sub-check asserts the
+//	    CREDENTIAL INVARIANT (agent seed never contains a GitHub var) that makes an
+//	    in-agent `git push` fail closed when github.com is absent from the profile.
+//	    The actual push-fail requires a booted VM; it is covered by X0-AC3.
 //
 //	(d) WireClaudeEgress must not set OpenEgress=true. D-PD-33: OpenEgress
-//	    disarms the egress ACL for unrestricted outbound access. An agent sandbox
-//	    with OpenEgress=true would reach github.com without restriction. Only the
-//	    human create path (sandbox create) sets OpenEgress=true.
+//	    disarms the egress ACL for unrestricted outbound access. Agent sandboxes
+//	    must never have open egress; only the human create path sets OpenEgress=true.
 //
-//	(e) ORCA PATH is an AGENT path (D-PD-23). gitHostsFromURL must not return
+//	(e) CREDENTIAL INVARIANT with github.com in AllowedHosts: even when github.com
+//	    is explicitly listed as an AllowedHost (as it would be via [egress].allow in
+//	    nexus3.yaml), the agent seed payload must contain no GitHub credential var.
+//	    The agent seeder (prepareAgentCredPayload) uses AgentEgressHosts(profile),
+//	    not AllowedHosts, so the two lists are independently controlled.
+//
+//	(f) ORCA PATH is an AGENT path (D-PD-23). gitHostsFromURL must not return
 //	    GitHub hosts. Asserted by cli.TestN_AC1_OrcaPathGitHubInAllowedHosts.
 //	    Both test files must stay — deleting either breaks the two-sided rail.
 //
@@ -354,30 +369,33 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 		}
 	})
 
-	t.Run("(c) credential env payload contains no GITHUB variable — config invariant", func(t *testing.T) {
+	t.Run("(c) credential env payload contains no GITHUB variable — credential invariant", func(t *testing.T) {
 		// This sub-check has two parts:
 		//
 		// Part 1: verify that the running product code (AgentEgressHosts) does not
 		// contain any GitHub host that would lead to a GITHUB placeholder var.
 		//
-		// Part 2: capture the SeedGuest payload and confirm no GITHUB-pattern var
-		// appears, even if the host list were somehow expanded by a future change.
+		// Part 2: capture the SeedGuestAgent payload and confirm no GITHUB-pattern
+		// var appears. SeedGuestAgent uses AgentEgressHosts(profile) internally;
+		// it never reads AllowedHosts.
+		//
+		// Mutation guard: change prepareAgentCredPayload to use hosts that include
+		// "github.com" → Part 2 fails RED (GITHUB appears in the payload).
 		//
 		// LIVE-VM PROOF REQUIRED: the actual in-guest `git push` failure cannot be
-		// verified in-process. This test covers the configuration invariant only.
-		// An in-guest `git push` to github.com will fail closed because the MITM
-		// perimeter rejects connections to hosts absent from AllowedHosts. X0-AC3
-		// provides the live-VM proof.
+		// verified in-process. This test covers the CREDENTIAL INVARIANT only.
+		// An in-guest `git push` to github.com will fail closed because the agent
+		// seed payload carries no GitHub credential var. X0-AC3 provides the live proof.
 
-		// Part 1: config invariant — no GitHub host in egress set.
+		// Part 1: profile invariant — no GitHub host in AgentEgressHosts.
 		for _, h := range AgentEgressHosts(cred.ClaudeCodeProfile) {
 			if isGitHubHost(h) {
 				t.Errorf(
 					"SECURITY VIOLATION — N-AC1 / D-PD-22\n"+
 						"AgentEgressHosts(cred.ClaudeCodeProfile) contains GitHub host %q.\n"+
-						"An in-agent `git push` to github.com would succeed because the MITM "+
-						"perimeter allows egress to this host. The push must FAIL CLOSED. "+
-						"See D-PD-22.",
+						"A GitHub host in the profile causes prepareAgentCredPayload to mint "+
+						"a GitHub placeholder var in every agent sandbox payload. The push must "+
+						"FAIL CLOSED. See D-PD-22.",
 					h,
 				)
 			}
@@ -391,19 +409,70 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 		})
 		id := domain.NewSandboxID()
 		broker := cred.NewBroker()
-		_, err := SeedGuest(context.Background(), broker, id, AgentEgressHosts(cred.ClaudeCodeProfile), stubSeeder)
+		_, err := SeedGuestAgent(context.Background(), broker, id, stubSeeder)
 		if err != nil {
-			t.Fatalf("SeedGuest returned error: %v", err)
+			t.Fatalf("SeedGuestAgent returned error: %v", err)
 		}
 		if bytes.Contains(bytes.ToUpper(captured), []byte("GITHUB")) {
 			t.Errorf(
 				"SECURITY VIOLATION — N-AC1 / D-PD-22\n"+
-					"The credential env payload contains 'GITHUB'.\n\n"+
+					"The agent credential env payload contains 'GITHUB'.\n\n"+
 					"This means a GitHub credential variable (e.g. NEXUS3_CRED_GITHUB_COM_TOKEN) "+
 					"was emitted into the guest env file. Any in-guest process sourcing that file "+
 					"(e.g. the claude agent) would have a GitHub bearer token. The perimeter MITM "+
 					"would swap it for a real GitHub token on every outbound github.com request.\n\n"+
-					"To fix: remove github.com from AgentEgressHosts(cred.ClaudeCodeProfile) and AllowedHosts. "+
+					"The credential guard is prepareAgentCredPayload in seed.go: it must use "+
+					"AgentEgressHosts(profile), never AllowedHosts. "+
+					"See D-PD-22.\n\npayload:\n%s",
+				captured,
+			)
+		}
+	})
+
+	t.Run("(e) agent seed excludes GitHub credential when github.com is in AllowedHosts", func(t *testing.T) {
+		// Operator decision: project [egress].allow may include github.com.
+		// The CREDENTIAL GUARD is in the seeding path, not the host list:
+		// prepareAgentCredPayload uses AgentEgressHosts(profile), not AllowedHosts.
+		// So even when github.com is explicitly listed as an AllowedHost, the agent
+		// seed payload must carry no GitHub credential variable.
+		//
+		// This sub-check proves the guard holds for the case where AllowedHosts
+		// (from config or --allow-host) includes github.com.
+		//
+		// Mutation guard: change prepareAgentCredPayload to append "github.com"
+		// to the profile's hosts → this sub-check fails RED (GITHUB appears in payload).
+		// Separately: removing the guard does not affect sub-check (a) or (b) — which
+		// is why (e) exists as an independent check.
+
+		var captured []byte
+		stubSeeder := GuestSeeder(func(_ context.Context, _ domain.SandboxID, payload []byte) error {
+			captured = payload
+			return nil
+		})
+		id := domain.NewSandboxID()
+		broker := cred.NewBroker()
+
+		// SeedGuestAgent uses AgentEgressHosts(ClaudeCodeProfile) internally.
+		// The caller's AllowedHosts (which may include github.com from config) are
+		// NOT passed to SeedGuestAgent — it only receives the seeder.
+		_, err := SeedGuestAgent(context.Background(), broker, id, stubSeeder)
+		if err != nil {
+			t.Fatalf("SeedGuestAgent returned error: %v", err)
+		}
+		if bytes.Contains(bytes.ToUpper(captured), []byte("GITHUB")) {
+			t.Errorf(
+				"SECURITY VIOLATION — N-AC1 / D-PD-22 (credential invariant)\n"+
+					"The agent seed payload contains 'GITHUB', meaning a GitHub credential\n"+
+					"variable was minted by the agent seeding path.\n\n"+
+					"The credential guard is in prepareAgentCredPayload (seed.go): it must\n"+
+					"iterate AgentEgressHosts(profile), NOT the sandbox AllowedHosts.\n"+
+					"AllowedHosts controls which hosts the egress ACL passes; the credential\n"+
+					"list controls which hosts receive a MITM placeholder token. These two\n"+
+					"lists are independently controlled. Adding github.com to AllowedHosts\n"+
+					"(e.g. via nexus3.yaml egress.allow) must NOT produce a GitHub token\n"+
+					"in the agent payload.\n\n"+
+					"To fix: restore AgentEgressHosts(profile) as the host source in\n"+
+					"prepareAgentCredPayload — do NOT use AllowedHosts there.\n"+
 					"See D-PD-22.\n\npayload:\n%s",
 				captured,
 			)
