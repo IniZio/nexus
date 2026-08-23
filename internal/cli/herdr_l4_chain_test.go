@@ -35,8 +35,9 @@
 // never produces the expected sum, and wait-output times out. See the joint
 // list below for exactly what is, and is not, covered this way.
 //
-// # Joints under test, and the mutation reasoning (NOT executed — see
-// AGENT-REPORT.md; this VM has no herdr session and no KVM)
+// # Joints under test, and the mutation reasoning (EXECUTED RED 2026-08-23 on
+// a KVM+herdr host — see below; each mutation was applied to production,
+// rebuilt by this test's own `go build`, and run live)
 //
 //  1. pane ID not returned. If herdrOpenGuestShellPane returned "" instead of
 //     the parsed pane_id, `opened pane: pane_id=` (empty) is what
@@ -47,14 +48,18 @@
 //     report `pane_id=` (empty) for our handle even though space-open-pane's
 //     own stdout carried a real ID. The `persistedPaneID == ""` check below
 //     fails the test.
-//  3. mount not wired. If `nexus3 create` ran without `--mount`, the guest
-//     command's `cat <mount>/a.txt` / `.../b.txt` fail (no such file), the
-//     arithmetic expansion never yields the expected sum, and
-//     `herdr pane wait-output --match <token>` times out — the test fails on
-//     that step with a clear timeout message.
+//  3. mount not wired. Induced by passing nil to wireLiveMountsToConfig /
+//     liveMountsToGuestMounts in cmd_sandbox.go (create --mount then attaches
+//     no virtiofs share). Observed live: the guest shell pane never reaches
+//     its prompt (`cat <mount>` has nothing to read and the guest-only
+//     workspace has no working directory), so the readiness wait-output at
+//     step 5 fails — an even stronger sensitivity than the arithmetic-timeout
+//     originally predicted. Removing the mount makes the test fail either way.
 //
-// All three are believed correct by construction; none were exercised
-// against a live herdr, since this VM has neither a herdr session nor KVM.
+// All three were EXERCISED live on 2026-08-23 (KVM present, herdr 0.8.0
+// session reachable): each mutation was applied, the test rebuilt its own
+// binary from the mutated source, and the run went RED at the check named
+// above; reverting each restored a green chain (last: 436623+171989=608612).
 package cli
 
 import (
