@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/agent"
+	"github.com/IniZio/nexus3/internal/core/config"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
@@ -456,8 +457,8 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if exeErr != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin worktree-sandbox: resolve executable: " + exeErr.Error(), Err: exeErr}
 		}
-		createFn := func(ctx context.Context, handle, mountSpec string) error {
-			args := herdrWorktreeSandboxCreateArgs(handle, mountSpec)
+		createFn := func(ctx context.Context, handle, mountSpec, imageFlag, imageVal string) error {
+			args := herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal)
 			cmd := herdrExecCommandContext(ctx, exe, append([]string{"sandbox", "create"}, args...)...)
 			cmd.Stdout = out.w
 			cmd.Stderr = out.w
@@ -2742,12 +2743,48 @@ func herdrWorkspaceRename(ctx context.Context, herdrBin, workspaceID, label stri
 // herdrWorktreeSandboxCreateArgs returns the argument list for
 // `nexus3 sandbox create` that creates a worktree sandbox.
 //
+// imageFlag and imageVal must be exactly one of:
+//   - "--image", "<ref>"   — use a pre-built cached image
+//   - "--file", "<dir>"    — build from a nexus3.yaml in that directory
+//   - "--rootfs", "<path>" — use a raw rootfs (not currently produced by this
+//     path, reserved for future use)
+//
+// Exactly one bootable flag is always present: the caller is responsible for
+// resolving imageFlag/imageVal via herdrResolveWorktreeImage before calling
+// this function. An empty imageFlag produces an unbootable argv that
+// `sandbox create` will reject with exit status 2.
+//
 // --no-builtin-gh is always included: it gates whether the builtin GitHub
 // credential enters the sandbox. Omitting it silently grants access.
 // This is the SOLE place this flag is constructed for the worktree-sandbox
 // path; tests assert its presence here, not via side-channel inspection.
-func herdrWorktreeSandboxCreateArgs(handle, mountSpec string) []string {
-	return []string{"--mount", mountSpec, "--no-builtin-gh", handle}
+func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal string) []string {
+	return []string{imageFlag, imageVal, "--mount", mountSpec, "--no-builtin-gh", handle}
+}
+
+// herdrResolveWorktreeImage resolves the bootable image flag pair for a
+// worktree sandbox created from checkoutPath.
+//
+// Resolution order:
+//  1. If checkoutPath (or any ancestor up to the .git root) contains a
+//     nexus3.yaml, return --file <dir-containing-nexus3.yaml> so the full
+//     project config (image, egress rules, etc.) is applied during the build.
+//  2. Otherwise return --image <herdrDefaultImage>.
+//
+// Never returns an imageFlag/imageVal pair that would produce an unbootable
+// sandbox create argv. Returns a non-nil error only when config.Load itself
+// fails (e.g., the nexus3.yaml file is present but malformed).
+func herdrResolveWorktreeImage(checkoutPath string) (imageFlag, imageVal string, err error) {
+	_, cfgPath, loadErr := config.Load(checkoutPath)
+	if loadErr != nil {
+		return "", "", fmt.Errorf("resolve worktree image: load config: %w", loadErr)
+	}
+	if cfgPath != "" {
+		// nexus3.yaml found: use --file so the build applies the full project config.
+		return "--file", filepath.Dir(cfgPath), nil
+	}
+	// No project config: fall back to the named default base image.
+	return "--image", herdrDefaultImage, nil
 }
 
 // herdrWorktreeSandboxHandle derives a deterministic, collision-free sandbox
@@ -2863,7 +2900,7 @@ func herdrWorktreeSandbox(
 	openPane bool,
 	conditional bool,
 	auto bool,
-	createFn func(context.Context, string, string) error,
+	createFn func(context.Context, string, string, string, string) error,
 	getFn func(context.Context, string) (domain.Sandbox, error),
 ) error {
 	// Step 1: idempotency.
@@ -2929,13 +2966,29 @@ func herdrWorktreeSandbox(
 	handle := herdrWorktreeSandboxHandle(info.Branch)
 	mountSpec := info.Path + ":/workspace"
 
+	// failSafe controls error-handling mode for steps 6.5 and 7.
+	// Explicit mode (neither flag) returns errors; auto/conditional is fail-safe.
+	failSafe := conditional || auto
+
+	// Step 6.5: resolve the bootable image for this worktree checkout.
+	// config.Load walks from info.Path up to the .git boundary; an absent
+	// nexus3.yaml is not an error. A malformed nexus3.yaml IS an error — the
+	// operator must fix it before the sandbox can be created.
+	imageFlag, imageVal, imgErr := herdrResolveWorktreeImage(info.Path)
+	if imgErr != nil {
+		fmt.Fprintf(w, "worktree-sandbox: resolve image: %v\n", imgErr)
+		if !failSafe {
+			return fmt.Errorf("worktree-sandbox: resolve image: %w", imgErr)
+		}
+		return nil
+	}
+
 	// Step 7: create sandbox. A 90 s context covers image pull, ext4 setup,
 	// and VM boot on typical hardware. Explicit mode failures are real errors;
 	// auto/conditional mode is fail-safe (workspace stays a host shell).
 	createCtx, createCancel := context.WithTimeout(ctx, herdrWorktreeCreateTimeout)
 	defer createCancel()
-	failSafe := conditional || auto
-	if err := createFn(createCtx, handle, mountSpec); err != nil {
+	if err := createFn(createCtx, handle, mountSpec, imageFlag, imageVal); err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: sandbox create: %v\n", err)
 		if !failSafe {
 			return fmt.Errorf("worktree-sandbox: sandbox create: %w", err)

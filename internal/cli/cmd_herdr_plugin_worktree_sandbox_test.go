@@ -134,10 +134,10 @@ func stubSandboxGet(sb domain.Sandbox, err error) func(context.Context, string) 
 }
 
 // noopCreate is a createSandbox stub that always succeeds.
-func noopCreate(_ context.Context, _, _ string) error { return nil }
+func noopCreate(_ context.Context, _, _, _, _ string) error { return nil }
 
 // errCreate is a createSandbox stub that always fails.
-func errCreate(_ context.Context, _, _ string) error { return errors.New("create failed") }
+func errCreate(_ context.Context, _, _, _, _ string) error { return errors.New("create failed") }
 
 // swapListFn replaces herdrListWorktreeForWorkspaceFn for the duration of the
 // test, restoring the original via t.Cleanup.
@@ -170,7 +170,7 @@ func callHerdrWorktreeSandbox(
 	storeRoot string,
 	conditional bool,
 	auto bool,
-	create func(context.Context, string, string) error,
+	create func(context.Context, string, string, string, string) error,
 	get func(context.Context, string) (domain.Sandbox, error),
 ) error {
 	t.Helper()
@@ -230,7 +230,7 @@ func TestHerdrWorktreeSandbox_alreadyBound_noOp(t *testing.T) {
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-already", root, false, false, /*auto*/
-		func(_ context.Context, _, _ string) error { createCalled = true; return nil },
+		func(_ context.Context, _, _, _, _ string) error { createCalled = true; return nil },
 		nil,
 	)
 	if err != nil {
@@ -260,7 +260,7 @@ func TestHerdrWorktreeSandbox_mainCheckout_notBound(t *testing.T) {
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w8", root, false, false, /*auto*/
-		func(_ context.Context, _, _ string) error { createCalled = true; return nil },
+		func(_ context.Context, _, _, _, _ string) error { createCalled = true; return nil },
 		nil,
 	)
 	if err != nil {
@@ -313,7 +313,7 @@ func TestHerdrWorktreeSandbox_conditional_sourceNotBound_staysHost(t *testing.T)
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-worktree", root, true, false, /*auto*/
-		func(_ context.Context, _, _ string) error { createCalled = true; return nil },
+		func(_ context.Context, _, _, _, _ string) error { createCalled = true; return nil },
 		nil,
 	)
 	if err != nil {
@@ -349,7 +349,7 @@ func TestHerdrWorktreeSandbox_conditional_sourceBound_binds(t *testing.T) {
 	const wantHandle = "wt/worktree-feat"
 	var gotHandle, gotMount string
 	err := callHerdrWorktreeSandbox(t, "w-new", root, true, false, /*auto*/
-		func(_ context.Context, handle, mountSpec string) error {
+		func(_ context.Context, handle, mountSpec, _, _ string) error {
 			gotHandle = handle
 			gotMount = mountSpec
 			return nil
@@ -400,7 +400,7 @@ func TestHerdrWorktreeSandbox_conditional_sourceUnknown_failSafe(t *testing.T) {
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-new", root, true, false, /*auto*/
-		func(_ context.Context, _, _ string) error { createCalled = true; return nil },
+		func(_ context.Context, _, _, _, _ string) error { createCalled = true; return nil },
 		nil,
 	)
 	if err != nil {
@@ -543,7 +543,7 @@ func TestHerdrWorktreeSandbox_createArgs(t *testing.T) {
 
 	var gotHandle, gotMount string
 	_ = callHerdrWorktreeSandbox(t, "w-c", root, false, false, /*auto*/
-		func(_ context.Context, h, m string) error {
+		func(_ context.Context, h, m, _, _ string) error {
 			gotHandle = h
 			gotMount = m
 			return nil
@@ -567,7 +567,7 @@ func TestHerdrWorktreeSandboxCreateArgs_containsNoBuiltinGh(t *testing.T) {
 	// MUTATION PROOF: delete "--no-builtin-gh" from herdrWorktreeSandboxCreateArgs.
 	// This test goes RED. A suite-wide build+green is insufficient — this flag
 	// is in a closure and no other test observed the argv before this change.
-	args := herdrWorktreeSandboxCreateArgs("wt/my-branch", "/repo:/workspace")
+	args := herdrWorktreeSandboxCreateArgs("wt/my-branch", "/repo:/workspace", "--image", herdrDefaultImage)
 	found := false
 	for _, a := range args {
 		if a == "--no-builtin-gh" {
@@ -578,6 +578,46 @@ func TestHerdrWorktreeSandboxCreateArgs_containsNoBuiltinGh(t *testing.T) {
 	if !found {
 		t.Errorf("--no-builtin-gh missing from herdrWorktreeSandboxCreateArgs %v; "+
 			"this flag gates the builtin GitHub credential and must always be present", args)
+	}
+}
+
+// TestHerdrWorktreeSandboxCreateArgs_isBootableShaped asserts that the argv
+// produced by herdrWorktreeSandboxCreateArgs contains exactly one of --image,
+// --rootfs, or --file, so that `nexus3 sandbox create` never sees --mount
+// without a bootable flag and rejects with exit 2.
+//
+// MUTATION PROOF: remove imageFlag/imageVal from herdrWorktreeSandboxCreateArgs.
+// Exactly-one count = 0 → RED. This test catches the original defect.
+func TestHerdrWorktreeSandboxCreateArgs_isBootableShaped(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		imageFlag string
+		imageVal  string
+	}{
+		{"image flag", "--image", "nexus3-agent-base"},
+		{"file flag", "--file", "/some/checkout"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := herdrWorktreeSandboxCreateArgs("wt/branch", "/repo:/workspace", tc.imageFlag, tc.imageVal)
+			bootableFlags := []string{"--image", "--rootfs", "--file"}
+			count := 0
+			for i, a := range args {
+				for _, bf := range bootableFlags {
+					if a == bf {
+						count++
+						// Verify the value immediately follows the flag.
+						if i+1 >= len(args) {
+							t.Errorf("bootable flag %q has no following value in argv %v", bf, args)
+						}
+						break
+					}
+				}
+			}
+			if count != 1 {
+				t.Errorf("argv must contain exactly one bootable flag (--image|--rootfs|--file); "+
+					"got %d in %v — sandbox create rejects --mount without a bootable flag", count, args)
+			}
+		})
 	}
 }
 
@@ -809,7 +849,7 @@ func TestHerdrWorktreeSandbox_explicitMode_createError_returnsError(t *testing.T
 
 	createErr := errors.New("create failed: explicit test")
 	err := callHerdrWorktreeSandbox(t, "w-exp", root, false, false, /*auto*/
-		func(_ context.Context, _, _ string) error { return createErr },
+		func(_ context.Context, _, _, _, _ string) error { return createErr },
 		nil,
 	)
 	if err == nil {
@@ -830,7 +870,7 @@ func TestHerdrWorktreeSandbox_conditionalMode_createError_returnsNil(t *testing.
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
 	err := callHerdrWorktreeSandbox(t, "w-cond", root, true, false, /*auto*/
-		func(_ context.Context, _, _ string) error { return errors.New("create failed") },
+		func(_ context.Context, _, _, _, _ string) error { return errors.New("create failed") },
 		nil,
 	)
 	if err != nil {
@@ -1110,7 +1150,7 @@ func TestHerdrWorktreeSandbox_auto_noRepoBound_staysHost(t *testing.T) {
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-new", root, false, true, /*auto*/
-		func(_ context.Context, _, _ string) error { createCalled = true; return nil },
+		func(_ context.Context, _, _, _, _ string) error { createCalled = true; return nil },
 		nil)
 	if err != nil {
 		t.Fatalf("unexpected error (auto mode is fail-safe): %v", err)
@@ -1145,7 +1185,7 @@ func TestHerdrWorktreeSandbox_auto_repoKeyEmpty_staysHost(t *testing.T) {
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-new", root, false, true, /*auto*/
-		func(_ context.Context, _, _ string) error { createCalled = true; return nil },
+		func(_ context.Context, _, _, _, _ string) error { createCalled = true; return nil },
 		nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1198,7 +1238,7 @@ func TestHerdrWorktreeSandbox_auto_notLinkedWorktree_noSideEffects(t *testing.T)
 	var w strings.Builder
 	err := herdrWorktreeSandbox(context.Background(), "w-new", &w, root,
 		false /*openPane*/, false /*conditional*/, true, /*auto*/
-		func(_ context.Context, _, _ string) error { createCalled = true; return nil },
+		func(_ context.Context, _, _, _, _ string) error { createCalled = true; return nil },
 		stubSandboxGet(domain.Sandbox{}, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1254,7 +1294,7 @@ func TestHerdrWorktreeSandbox_auto_concurrent_secondIsNoOp(t *testing.T) {
 	// Second call (simulates a second pane opening concurrently).
 	createCalledSecond := false
 	err = callHerdrWorktreeSandbox(t, "w-new", root, false, true, /*auto*/
-		func(_ context.Context, _, _ string) error { createCalledSecond = true; return nil },
+		func(_ context.Context, _, _, _, _ string) error { createCalledSecond = true; return nil },
 		nil)
 	if err != nil {
 		t.Fatalf("second call: unexpected error: %v", err)
