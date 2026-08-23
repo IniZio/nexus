@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	osexec "os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -64,6 +65,20 @@ const herdrAutoCreateTimeout = 120 * time.Second
 // herdrDefaultShellAutoCreateFn is the seam for the auto-create subprocess.
 // Replaced in tests to prevent live herdr/nexus3 calls.
 var herdrDefaultShellAutoCreateFn = herdrDefaultShellAutoCreate
+
+// herdrWtChildRunnerFn runs the guest shell as a supervised child process for
+// wt/ (auto-bound worktree) panes and waits for it to exit.  The child
+// inherits stdin/stdout/stderr so it holds the controlling TTY and is the
+// terminal foreground.  Replaced in tests.
+var herdrWtChildRunnerFn func(ctx context.Context, nexus3Bin string, argv []string) error = herdrWtChildRunner
+
+// herdrWtPaneListerFn returns the count of panes in workspaceID that are NOT
+// ownPaneID.  Returns (0, nil) when no other panes remain.  Replaced in tests.
+var herdrWtPaneListerFn func(ctx context.Context, workspaceID, ownPaneID string) (int, error) = herdrWtPaneLister
+
+// herdrWtSandboxRemoverFn removes the sandbox by handle.  Called only when
+// all panes in the workspace have closed.  Replaced in tests.
+var herdrWtSandboxRemoverFn func(ctx context.Context, handle string) error = herdrWtSandboxRemover
 
 // herdrAutoCreatePredicateFn gates auto-create attempts in herdrDefaultShellCore.
 //
@@ -326,6 +341,17 @@ func herdrDefaultShellCore(
 	// process was NOT replaced. An exec failure is logged and execHostShell is
 	// returned immediately. A test seam returning nil falls through to return nil.
 	argv := []string{nexus3Bin, "exec", "--pty", "--cwd", cwd, binding.SandboxHandle, "/bin/bash", "--login"}
+
+	// Worktree-bound panes use supervised mode: the parent survives the
+	// pane-close SIGHUP (sent to the process group by herdr) so it can run
+	// last-pane teardown after the child exits.
+	//
+	// Non-worktree panes keep the original exec-replace behaviour: syscall.Exec
+	// replaces this process entirely so no cleanup code ever runs.
+	if isHerdrWorktreeHandle(binding.SandboxHandle) {
+		return herdrWtSupervisedShell(ctx, nexus3Bin, binding, argv)
+	}
+
 	if err := execFn(nexus3Bin, argv, os.Environ()); err != nil {
 		slog.Warn("nexus3-guest-shell: exec failed; falling back to host shell", "err", err)
 		return execHostShell()
@@ -649,4 +675,141 @@ func herdrCopyBinary(src, dst string) error {
 	defer dstF.Close()
 	_, err = io.Copy(dstF, srcF)
 	return err
+}
+
+// ── wt/ supervised shell (Mechanism 2) ───────────────────────────────────────
+
+// herdrWtSupervisedShell runs the guest shell as a supervised child for an
+// auto-bound worktree pane.  It replaces the exec-replace path so the parent
+// process survives pane-close (herdr sends SIGHUP to the process group) and
+// can run last-pane teardown.
+//
+// FAIL-OPEN contract: every error after the child exits is logged and
+// swallowed — a bug here would freeze every new pane on the machine, which is
+// strictly worse than leaking a sandbox VM (Mechanism 1 / prune backstop
+// catches those).
+func herdrWtSupervisedShell(ctx context.Context, nexus3Bin string, binding HerdrSpaceBinding, argv []string) error {
+	// Ignore SIGHUP so the pane-close signal from herdr (sent to the process
+	// group) does not kill us.  The child is in the same process group and
+	// receives SIGHUP, which terminates nexus3 exec / the guest shell.
+	signal.Ignore(syscall.SIGHUP)
+
+	// Run the guest shell as a child.  The child inherits stdin/stdout/stderr
+	// so it holds the controlling TTY; job control and Ctrl-C pass through.
+	if err := herdrWtChildRunnerFn(ctx, nexus3Bin, argv); err != nil {
+		// Non-fatal: the child can exit non-zero (user typed "exit 1", agent
+		// aborted, SIGHUP from pane-close, etc.).  Continue to the last-pane
+		// check regardless.
+		slog.Warn("nexus3-guest-shell: wt/ child exited with error", "handle", binding.SandboxHandle, "err", err)
+	}
+
+	// Last-pane check: if other panes remain in this workspace, the user is
+	// still active — skip teardown.
+	remaining, err := herdrWtPaneListerFn(ctx, binding.HerdrWorkspaceID, binding.GuestPaneID)
+	if err != nil {
+		// FAIL-OPEN: herdr unreachable, parse error, etc.  The prune backstop
+		// (Mechanism 1) will reap the sandbox on its next run.
+		slog.Warn("nexus3-guest-shell: wt/ pane-list failed; skipping teardown (prune will catch it)",
+			"handle", binding.SandboxHandle, "err", err)
+		return nil
+	}
+	if remaining > 0 {
+		// Other panes still alive — not the last one.
+		return nil
+	}
+
+	// Last pane: reap the sandbox VM.
+	if err := herdrWtSandboxRemoverFn(ctx, binding.SandboxHandle); err != nil {
+		// FAIL-OPEN: log and exit; prune backstop catches it.
+		slog.Warn("nexus3-guest-shell: wt/ sandbox rm failed; prune will catch it",
+			"handle", binding.SandboxHandle, "err", err)
+	}
+	return nil
+}
+
+// herdrWtChildRunner is the production implementation of herdrWtChildRunnerFn.
+// It runs argv[0] with argv[1:] as a child process, inheriting the controlling
+// TTY, and waits for it to exit.
+func herdrWtChildRunner(_ context.Context, _ string, argv []string) error {
+	cmd := osexec.Command(argv[0], argv[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Wait()
+}
+
+// herdrWtPaneLister is the production implementation of herdrWtPaneListerFn.
+// It calls `herdr pane list --workspace <workspaceID>` and counts panes whose
+// pane_id is not ownPaneID.
+func herdrWtPaneLister(ctx context.Context, workspaceID, ownPaneID string) (int, error) {
+	herdrBin, err := resolveHerdrBin()
+	if err != nil {
+		return 0, fmt.Errorf("wt/ pane-list: resolve herdr: %w", err)
+	}
+	if herdrBin == "" {
+		return 0, fmt.Errorf("wt/ pane-list: herdr binary not available (HERDR_BIN_PATH unset and herdr not on PATH)")
+	}
+	// NOTE: the workspace is passed via --workspace; herdr rejects a bare
+	// positional ("unknown option"). Output is {"result":{"panes":[...]}} on
+	// success and {"error":{"code":...}} on failure, both with the error body
+	// on stdout even when the exit status is non-zero — so parse before trusting
+	// cmdErr.
+	out, cmdErr := osexec.CommandContext(ctx, herdrBin, "pane", "list", "--workspace", workspaceID).CombinedOutput()
+	return parseWtPaneListRemaining(out, cmdErr, ownPaneID)
+}
+
+// parseWtPaneListRemaining interprets `herdr pane list --workspace` output into
+// the count of panes OTHER than ownPaneID.
+//
+// A workspace_not_found error means the workspace is gone — which is the common
+// "closed the whole worktree workspace" case — so it maps to 0 remaining panes
+// (the sandbox SHOULD be reaped), NOT to a fail-open error. Any other command
+// failure (herdr unreachable, unparseable output) propagates as an error so the
+// caller fails open and leaves the sandbox for the prune backstop.
+func parseWtPaneListRemaining(out []byte, cmdErr error, ownPaneID string) (int, error) {
+	var resp struct {
+		Result struct {
+			Panes []struct {
+				PaneID string `json:"pane_id"`
+			} `json:"panes"`
+		} `json:"result"`
+		Error *struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	// herdr prints a JSON body (result or error) on both success and failure.
+	if jsonErr := json.Unmarshal(out, &resp); jsonErr == nil {
+		if resp.Error != nil {
+			if resp.Error.Code == "workspace_not_found" {
+				return 0, nil // workspace gone → no panes remain → reap
+			}
+			return 0, fmt.Errorf("wt/ pane-list: herdr error: %s", resp.Error.Code)
+		}
+		count := 0
+		for _, p := range resp.Result.Panes {
+			if p.PaneID != ownPaneID {
+				count++
+			}
+		}
+		return count, nil
+	}
+	// Unparseable output: if the command also failed, surface that (herdr down);
+	// otherwise report the parse failure.
+	if cmdErr != nil {
+		return 0, fmt.Errorf("wt/ pane-list: herdr pane list: %w: %s", cmdErr, strings.TrimSpace(string(out)))
+	}
+	return 0, fmt.Errorf("wt/ pane-list: parse output: %q", strings.TrimSpace(string(out)))
+}
+
+// herdrWtSandboxRemover is the production implementation of herdrWtSandboxRemoverFn.
+// It removes the sandbox VM via the local service.
+func herdrWtSandboxRemover(ctx context.Context, handle string) error {
+	svc, err := newSandboxService()
+	if err != nil {
+		return fmt.Errorf("wt/ sandbox rm: open service: %w", err)
+	}
+	return svc.Remove(ctx, handle)
 }

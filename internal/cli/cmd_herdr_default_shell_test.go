@@ -1018,12 +1018,17 @@ func TestRunHerdrGuestShell_KernelPathPublished(t *testing.T) {
 // ── auto-create in herdrDefaultShellCore ─────────────────────────────────────
 
 func TestHerdrDefaultShell_UnboundWorktree_AutoCreateSucceeds(t *testing.T) {
-	// An unbound workspace that succeeds auto-create must exec into the guest
-	// shell (not the host shell). The auto-create stub returns (binding, true).
+	// An unbound workspace that succeeds auto-create must run the guest shell
+	// via herdrWtChildRunnerFn (supervised mode), not the host shell.
+	// wt/ handles take the supervised path so execFn is not called.
 	//
 	// MUTATION PROOF: remove the herdrDefaultShellAutoCreateFn call in
 	// herdrDefaultShellCore → auto-create never fires → workspace stays unbound
-	// → execHostShell is returned → argv0 = host shell, not nexus3. RED.
+	// → execHostShell is returned → herdrWtChildRunnerFn never called. RED.
+	//
+	// MUTATION PROOF (wt/ branch): remove the isHerdrWorktreeHandle guard in
+	// herdrDefaultShellCore → wt/ handle goes to execFn instead of supervised
+	// path → herdrWtChildRunnerFn never called → test RED.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	wsID := "wWT1"
 
@@ -1036,7 +1041,7 @@ func TestHerdrDefaultShell_UnboundWorktree_AutoCreateSucceeds(t *testing.T) {
 
 	// Stub the predicate to return true (simulates: linked worktree + binding exists).
 	// MUTATION PROOF (predicate gate): set predFn to return false → auto-create
-	// is never reached → execHostShell → argv0 = host shell. RED.
+	// is never reached → execHostShell → herdrWtChildRunnerFn never called. RED.
 	oldPred := herdrAutoCreatePredicateFn
 	herdrAutoCreatePredicateFn = func(_ []HerdrSpaceBinding) bool { return true }
 	t.Cleanup(func() { herdrAutoCreatePredicateFn = oldPred })
@@ -1050,6 +1055,28 @@ func TestHerdrDefaultShell_UnboundWorktree_AutoCreateSucceeds(t *testing.T) {
 		return binding, true
 	}
 	t.Cleanup(func() { herdrDefaultShellAutoCreateFn = old })
+
+	// Stub herdrWtChildRunnerFn to record calls and return immediately.
+	oldChild := herdrWtChildRunnerFn
+	var childArgv []string
+	herdrWtChildRunnerFn = func(_ context.Context, _ string, argv []string) error {
+		childArgv = argv
+		return nil
+	}
+	t.Cleanup(func() { herdrWtChildRunnerFn = oldChild })
+
+	// Stub herdrWtPaneListerFn to return 1 remaining pane (so remover not called).
+	oldPaner := herdrWtPaneListerFn
+	herdrWtPaneListerFn = func(_ context.Context, _, _ string) (int, error) { return 1, nil }
+	t.Cleanup(func() { herdrWtPaneListerFn = oldPaner })
+
+	// Stub herdrWtSandboxRemoverFn: must not be called in this test.
+	oldRemov := herdrWtSandboxRemoverFn
+	herdrWtSandboxRemoverFn = func(_ context.Context, h string) error {
+		t.Errorf("herdrWtSandboxRemoverFn called unexpectedly for handle %q", h)
+		return nil
+	}
+	t.Cleanup(func() { herdrWtSandboxRemoverFn = oldRemov })
 
 	// Use a svc that reports Running + dialable.
 	svc := &fakeDialableGetter{
@@ -1074,12 +1101,17 @@ func TestHerdrDefaultShell_UnboundWorktree_AutoCreateSucceeds(t *testing.T) {
 	if err := herdrDefaultShellCore(context.Background(), getenv, emptyRoot, svc, "/fake/nexus3", cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Must have exec'd into the guest, not the host shell.
-	if cap.argv0 == "" {
-		t.Fatal("execFn was not called")
+	// Must have called herdrWtChildRunnerFn with the guest-exec argv (not host shell).
+	if len(childArgv) == 0 {
+		t.Fatal("herdrWtChildRunnerFn was not called; wt/ binding must use supervised path")
 	}
-	if cap.argv0 == "/bin/bash" || cap.argv0 == "/bin/sh" {
-		t.Errorf("expected guest exec (nexus3), got host shell %q", cap.argv0)
+	// The argv must target nexus3 exec, not the host shell.
+	if len(childArgv) > 0 && (childArgv[0] == "/bin/bash" || childArgv[0] == "/bin/sh") {
+		t.Errorf("herdrWtChildRunnerFn called with host shell %q; want nexus3 exec argv", childArgv[0])
+	}
+	// execFn (cap) must NOT have been called — wt/ takes the supervised path.
+	if cap.argv0 != "" {
+		t.Errorf("execFn called for wt/ binding (argv0=%q); wt/ must use supervised path, not exec-replace", cap.argv0)
 	}
 }
 
