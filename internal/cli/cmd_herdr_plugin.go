@@ -457,8 +457,8 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if exeErr != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin worktree-sandbox: resolve executable: " + exeErr.Error(), Err: exeErr}
 		}
-		createFn := func(ctx context.Context, handle, mountSpec, imageFlag, imageVal string) error {
-			args := herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal)
+		createFn := func(ctx context.Context, handle, mountSpec, imageFlag, imageVal string, extraMounts []string) error {
+			args := herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal, extraMounts)
 			cmd := herdrExecCommandContext(ctx, exe, append([]string{"sandbox", "create"}, args...)...)
 			cmd.Stdout = out.w
 			cmd.Stderr = out.w
@@ -2676,6 +2676,24 @@ const herdrWorktreeListTimeout = 2 * time.Second
 // generous for typical fast hardware with a warm image cache.
 const herdrWorktreeCreateTimeout = 90 * time.Second
 
+// herdrWorktreeCreateLockTimeout bounds how long the second concurrent caller
+// waits for the per-handle create-intent lock.  120 s > herdrWorktreeCreateTimeout
+// (90 s) so the first caller always finishes before the waiter gives up.
+const herdrWorktreeCreateLockTimeout = 120 * time.Second
+
+// herdrWorktreeCreateLockPath returns the path to the per-handle create-intent
+// lock file.  The lock serialises concurrent auto-create attempts for the same
+// sandbox handle (e.g. two panes opening in the same worktree workspace within
+// the ~60 s create window).
+//
+// Safe filename: "/" → "_".  After herdrWorktreeSandboxHandle's sanitisation,
+// handles contain only [a-z0-9-/] with at most one "/", so this mapping is
+// collision-free.
+func herdrWorktreeCreateLockPath(storeRoot, handle string) string {
+	safe := strings.ReplaceAll(handle, "/", "_")
+	return filepath.Join(storeRoot, "herdr-wt-create-"+safe+".lock")
+}
+
 // herdrListWorktreeForWorkspaceFn is the injectable function for listing worktrees.
 // Replaced in tests to avoid calling the live herdr binary.
 var herdrListWorktreeForWorkspaceFn = herdrListWorktreeForWorkspace
@@ -2758,8 +2776,66 @@ func herdrWorkspaceRename(ctx context.Context, herdrBin, workspaceID, label stri
 // credential enters the sandbox. Omitting it silently grants access.
 // This is the SOLE place this flag is constructed for the worktree-sandbox
 // path; tests assert its presence here, not via side-channel inspection.
-func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal string) []string {
-	return []string{imageFlag, imageVal, "--mount", mountSpec, "--no-builtin-gh", handle}
+//
+// extraMounts is a slice of additional "host:guest[:ro]" mount specs (one
+// --mount flag pair per element). For a linked worktree sandbox, it carries
+// the main repo's .git directory so git is fully functional inside the guest
+// (D-PD-99-git: worktree .git resolution requires the main .git to be
+// reachable at its host absolute path inside the VM).
+func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal string, extraMounts []string) []string {
+	args := []string{imageFlag, imageVal, "--mount", mountSpec}
+	for _, m := range extraMounts {
+		args = append(args, "--mount", m)
+	}
+	args = append(args, "--no-builtin-gh", handle)
+	return args
+}
+
+// herdrWorktreeGitDirMount returns the extra --mount spec needed to make git
+// functional inside a linked-worktree sandbox, or "" if it cannot be derived.
+//
+// A linked worktree's checkout/.git is a file containing:
+//
+//	gitdir: <main>/.git/worktrees/<name>
+//
+// Inside the guest, the checkout is at /workspace but the gitdir pointer
+// still holds the host absolute path. Mounting <main>/.git at its host
+// path inside the VM makes all three legs of the resolution chain reachable:
+//
+//	/workspace/.git → gitdir file → <main>/.git/worktrees/<name>/
+//	                                commondir → ../.. → <main>/.git ✓
+//
+// The returned spec is "<mainGitDir>:<mainGitDir>" (same path host and guest).
+// Read-write so `git commit` can write new objects and update refs.
+func herdrWorktreeGitDirMount(worktreePath string) string {
+	data, err := os.ReadFile(filepath.Join(worktreePath, ".git"))
+	if err != nil {
+		return "" // not a linked worktree or unreadable
+	}
+	line := strings.TrimSpace(string(data))
+	const prefix = "gitdir: "
+	if !strings.HasPrefix(line, prefix) {
+		return "" // main checkout (directory) or malformed file
+	}
+	target := strings.TrimPrefix(line, prefix)
+	// target = <commondir>/worktrees/<name>. git normally writes an absolute
+	// path, but a relative gitdir: pointer is valid and is resolved against the
+	// directory holding the .git file. Normalise to an absolute host path so
+	// the mount spec is never a relative "<rel>:<rel>".
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(worktreePath, target)
+	}
+	target = filepath.Clean(target)
+	worktreesDir := filepath.Dir(target) // <commondir>/worktrees
+	gitDir := filepath.Dir(worktreesDir) // <commondir> (normally <main>/.git)
+	// The "worktrees" segment is the reliable structural marker git guarantees;
+	// the parent's name is NOT (a bare repo's common dir is "<name>.git", a
+	// non-bare repo's is ".git"). Anchor on "worktrees" only, then mount the
+	// common dir at its host path so commondir/../.. resolution succeeds.
+	if filepath.Base(worktreesDir) != "worktrees" {
+		return "" // unexpected structure; bail rather than mount the wrong dir
+	}
+	return gitDir + ":" + gitDir
 }
 
 // herdrResolveWorktreeImage resolves the bootable image flag pair for a
@@ -2900,7 +2976,7 @@ func herdrWorktreeSandbox(
 	openPane bool,
 	conditional bool,
 	auto bool,
-	createFn func(context.Context, string, string, string, string) error,
+	createFn func(context.Context, string, string, string, string, []string) error,
 	getFn func(context.Context, string) (domain.Sandbox, error),
 ) error {
 	// Step 1: idempotency.
@@ -2966,9 +3042,72 @@ func herdrWorktreeSandbox(
 	handle := herdrWorktreeSandboxHandle(info.Branch)
 	mountSpec := info.Path + ":/workspace"
 
-	// failSafe controls error-handling mode for steps 6.5 and 7.
+	// Extra mounts for linked worktrees: mount the main repo's .git dir at its
+	// host absolute path so the gitdir: pointer in <checkout>/.git resolves
+	// inside the VM. Without this git fails with "not a git repository".
+	var extraMounts []string
+	if gitMount := herdrWorktreeGitDirMount(info.Path); gitMount != "" {
+		extraMounts = []string{gitMount}
+	}
+
+	// Step 6.1: per-handle create-intent lock.
+	//
+	// Two concurrent callers for the same worktree workspace both pass the
+	// unlocked step-1 idempotency check before either writes a binding.  A
+	// second create succeeds because the sandbox store does NOT enforce handle
+	// uniqueness — producing an orphaned VM that holds memory with no reference.
+	//
+	// Fix: serialise on a per-handle flock.  Only callers racing for the SAME
+	// handle contend; different handles use different lock files and never block
+	// each other.  herdr-space-bindings.lock (acquired briefly inside
+	// HerdrSpacePut) is a separate file, so no deadlock is possible.
+	//
+	// Protocol:
+	//   winner — acquires lock, re-checks (not bound), runs create, writes
+	//            binding, opens pane, releases lock.
+	//   loser  — blocks on Exclusive, acquires after winner releases, re-checks
+	//            (bound), logs and returns nil → pane gets a host shell.
+	//            The workspace is already mapped to the sandbox via the binding.
+	//
+	// Fail-open in auto/conditional mode: a lock error logs and returns nil so
+	// the pane falls back to a host shell (a deadlock here would freeze every
+	// new pane on the machine, since this binary is herdr's default_shell). In
+	// explicit mode the operator asked for a sandbox directly, so a lock error
+	// is a real failure and must surface.
+	//
+	// failSafe controls error-handling mode for the lock block and steps 6.5/7.
 	// Explicit mode (neither flag) returns errors; auto/conditional is fail-safe.
 	failSafe := conditional || auto
+	{
+		lk, lkErr := store.OpenLock(herdrWorktreeCreateLockPath(storeRoot, handle))
+		if lkErr != nil {
+			fmt.Fprintf(w, "worktree-sandbox: open create-intent lock: %v\n", lkErr)
+			if !failSafe {
+				return fmt.Errorf("worktree-sandbox: open create-intent lock: %w", lkErr)
+			}
+			return nil
+		}
+		defer lk.Close()
+		lkCtx, lkCancel := context.WithTimeout(ctx, herdrWorktreeCreateLockTimeout)
+		defer lkCancel()
+		if lkErr := lk.Exclusive(lkCtx); lkErr != nil {
+			fmt.Fprintf(w, "worktree-sandbox: acquire create-intent lock: %v\n", lkErr)
+			if !failSafe {
+				return fmt.Errorf("worktree-sandbox: acquire create-intent lock: %w", lkErr)
+			}
+			return nil
+		}
+		defer lk.Unlock() //nolint:errcheck
+		// Re-check by handle under the lock — closes the TOCTOU window between
+		// step 1 (keyed on workspaceID) and step 7 (sandbox create).  Two
+		// different workspace IDs that resolve to the same handle must converge
+		// on one sandbox; the loser sees the binding the winner wrote. Reuse is
+		// idempotent success in every mode, so this returns nil unconditionally.
+		if _, boundErr := HerdrSpaceGetByHandle(ctx, storeRoot, handle); boundErr == nil {
+			fmt.Fprintf(w, "worktree-sandbox: handle %s already bound (concurrent create race), reusing existing sandbox\n", handle)
+			return nil
+		}
+	}
 
 	// Step 6.5: resolve the bootable image for this worktree checkout.
 	// config.Load walks from info.Path up to the .git boundary; an absent
@@ -2988,7 +3127,7 @@ func herdrWorktreeSandbox(
 	// auto/conditional mode is fail-safe (workspace stays a host shell).
 	createCtx, createCancel := context.WithTimeout(ctx, herdrWorktreeCreateTimeout)
 	defer createCancel()
-	if err := createFn(createCtx, handle, mountSpec, imageFlag, imageVal); err != nil {
+	if err := createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts); err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: sandbox create: %v\n", err)
 		if !failSafe {
 			return fmt.Errorf("worktree-sandbox: sandbox create: %w", err)

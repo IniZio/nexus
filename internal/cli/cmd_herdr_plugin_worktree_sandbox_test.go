@@ -134,10 +134,12 @@ func stubSandboxGet(sb domain.Sandbox, err error) func(context.Context, string) 
 }
 
 // noopCreate is a createSandbox stub that always succeeds.
-func noopCreate(_ context.Context, _, _, _, _ string) error { return nil }
+func noopCreate(_ context.Context, _, _, _, _ string, _ []string) error { return nil }
 
 // errCreate is a createSandbox stub that always fails.
-func errCreate(_ context.Context, _, _, _, _ string) error { return errors.New("create failed") }
+func errCreate(_ context.Context, _, _, _, _ string, _ []string) error {
+	return errors.New("create failed")
+}
 
 // swapListFn replaces herdrListWorktreeForWorkspaceFn for the duration of the
 // test, restoring the original via t.Cleanup.
@@ -170,7 +172,7 @@ func callHerdrWorktreeSandbox(
 	storeRoot string,
 	conditional bool,
 	auto bool,
-	create func(context.Context, string, string, string, string) error,
+	create func(context.Context, string, string, string, string, []string) error,
 	get func(context.Context, string) (domain.Sandbox, error),
 ) error {
 	t.Helper()
@@ -230,7 +232,7 @@ func TestHerdrWorktreeSandbox_alreadyBound_noOp(t *testing.T) {
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-already", root, false, false, /*auto*/
-		func(_ context.Context, _, _, _, _ string) error { createCalled = true; return nil },
+		func(_ context.Context, _, _, _, _ string, _ []string) error { createCalled = true; return nil },
 		nil,
 	)
 	if err != nil {
@@ -260,7 +262,7 @@ func TestHerdrWorktreeSandbox_mainCheckout_notBound(t *testing.T) {
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w8", root, false, false, /*auto*/
-		func(_ context.Context, _, _, _, _ string) error { createCalled = true; return nil },
+		func(_ context.Context, _, _, _, _ string, _ []string) error { createCalled = true; return nil },
 		nil,
 	)
 	if err != nil {
@@ -313,7 +315,7 @@ func TestHerdrWorktreeSandbox_conditional_sourceNotBound_staysHost(t *testing.T)
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-worktree", root, true, false, /*auto*/
-		func(_ context.Context, _, _, _, _ string) error { createCalled = true; return nil },
+		func(_ context.Context, _, _, _, _ string, _ []string) error { createCalled = true; return nil },
 		nil,
 	)
 	if err != nil {
@@ -349,7 +351,7 @@ func TestHerdrWorktreeSandbox_conditional_sourceBound_binds(t *testing.T) {
 	const wantHandle = "wt/worktree-feat"
 	var gotHandle, gotMount string
 	err := callHerdrWorktreeSandbox(t, "w-new", root, true, false, /*auto*/
-		func(_ context.Context, handle, mountSpec, _, _ string) error {
+		func(_ context.Context, handle, mountSpec, _, _ string, _ []string) error {
 			gotHandle = handle
 			gotMount = mountSpec
 			return nil
@@ -400,7 +402,7 @@ func TestHerdrWorktreeSandbox_conditional_sourceUnknown_failSafe(t *testing.T) {
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-new", root, true, false, /*auto*/
-		func(_ context.Context, _, _, _, _ string) error { createCalled = true; return nil },
+		func(_ context.Context, _, _, _, _ string, _ []string) error { createCalled = true; return nil },
 		nil,
 	)
 	if err != nil {
@@ -543,7 +545,7 @@ func TestHerdrWorktreeSandbox_createArgs(t *testing.T) {
 
 	var gotHandle, gotMount string
 	_ = callHerdrWorktreeSandbox(t, "w-c", root, false, false, /*auto*/
-		func(_ context.Context, h, m, _, _ string) error {
+		func(_ context.Context, h, m, _, _ string, _ []string) error {
 			gotHandle = h
 			gotMount = m
 			return nil
@@ -567,7 +569,7 @@ func TestHerdrWorktreeSandboxCreateArgs_containsNoBuiltinGh(t *testing.T) {
 	// MUTATION PROOF: delete "--no-builtin-gh" from herdrWorktreeSandboxCreateArgs.
 	// This test goes RED. A suite-wide build+green is insufficient — this flag
 	// is in a closure and no other test observed the argv before this change.
-	args := herdrWorktreeSandboxCreateArgs("wt/my-branch", "/repo:/workspace", "--image", herdrDefaultImage)
+	args := herdrWorktreeSandboxCreateArgs("wt/my-branch", "/repo:/workspace", "--image", herdrDefaultImage, nil)
 	found := false
 	for _, a := range args {
 		if a == "--no-builtin-gh" {
@@ -598,7 +600,7 @@ func TestHerdrWorktreeSandboxCreateArgs_isBootableShaped(t *testing.T) {
 		{"file flag", "--file", "/some/checkout"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := herdrWorktreeSandboxCreateArgs("wt/branch", "/repo:/workspace", tc.imageFlag, tc.imageVal)
+			args := herdrWorktreeSandboxCreateArgs("wt/branch", "/repo:/workspace", tc.imageFlag, tc.imageVal, nil)
 			bootableFlags := []string{"--image", "--rootfs", "--file"}
 			count := 0
 			for i, a := range args {
@@ -849,7 +851,7 @@ func TestHerdrWorktreeSandbox_explicitMode_createError_returnsError(t *testing.T
 
 	createErr := errors.New("create failed: explicit test")
 	err := callHerdrWorktreeSandbox(t, "w-exp", root, false, false, /*auto*/
-		func(_ context.Context, _, _, _, _ string) error { return createErr },
+		func(_ context.Context, _, _, _, _ string, _ []string) error { return createErr },
 		nil,
 	)
 	if err == nil {
@@ -870,7 +872,7 @@ func TestHerdrWorktreeSandbox_conditionalMode_createError_returnsNil(t *testing.
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
 	err := callHerdrWorktreeSandbox(t, "w-cond", root, true, false, /*auto*/
-		func(_ context.Context, _, _, _, _ string) error { return errors.New("create failed") },
+		func(_ context.Context, _, _, _, _ string, _ []string) error { return errors.New("create failed") },
 		nil,
 	)
 	if err != nil {
@@ -1150,7 +1152,7 @@ func TestHerdrWorktreeSandbox_auto_noRepoBound_staysHost(t *testing.T) {
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-new", root, false, true, /*auto*/
-		func(_ context.Context, _, _, _, _ string) error { createCalled = true; return nil },
+		func(_ context.Context, _, _, _, _ string, _ []string) error { createCalled = true; return nil },
 		nil)
 	if err != nil {
 		t.Fatalf("unexpected error (auto mode is fail-safe): %v", err)
@@ -1185,7 +1187,7 @@ func TestHerdrWorktreeSandbox_auto_repoKeyEmpty_staysHost(t *testing.T) {
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-new", root, false, true, /*auto*/
-		func(_ context.Context, _, _, _, _ string) error { createCalled = true; return nil },
+		func(_ context.Context, _, _, _, _ string, _ []string) error { createCalled = true; return nil },
 		nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1238,7 +1240,7 @@ func TestHerdrWorktreeSandbox_auto_notLinkedWorktree_noSideEffects(t *testing.T)
 	var w strings.Builder
 	err := herdrWorktreeSandbox(context.Background(), "w-new", &w, root,
 		false /*openPane*/, false /*conditional*/, true, /*auto*/
-		func(_ context.Context, _, _, _, _ string) error { createCalled = true; return nil },
+		func(_ context.Context, _, _, _, _ string, _ []string) error { createCalled = true; return nil },
 		stubSandboxGet(domain.Sandbox{}, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1294,7 +1296,7 @@ func TestHerdrWorktreeSandbox_auto_concurrent_secondIsNoOp(t *testing.T) {
 	// Second call (simulates a second pane opening concurrently).
 	createCalledSecond := false
 	err = callHerdrWorktreeSandbox(t, "w-new", root, false, true, /*auto*/
-		func(_ context.Context, _, _, _, _ string) error { createCalledSecond = true; return nil },
+		func(_ context.Context, _, _, _, _ string, _ []string) error { createCalledSecond = true; return nil },
 		nil)
 	if err != nil {
 		t.Fatalf("second call: unexpected error: %v", err)
@@ -1313,5 +1315,179 @@ func TestHerdrWorktreeSandbox_auto_concurrent_secondIsNoOp(t *testing.T) {
 	}
 	if finalCountForWNew != 1 {
 		t.Errorf("expected exactly 1 binding for w-new after second call; got %d", finalCountForWNew)
+	}
+}
+
+// ── herdrWorktreeGitDirMount ──────────────────────────────────────────────────
+
+func TestHerdrWorktreeGitDirMount_linkedWorktree_returnsMainGitMount(t *testing.T) {
+	// A linked worktree's .git file contains "gitdir: <main>/.git/worktrees/<name>".
+	// herdrWorktreeGitDirMount must return "<main>/.git:<main>/.git".
+	//
+	// MUTATION PROOF: return "" unconditionally → this test gets "" → RED.
+	mainGit := t.TempDir() // stand-in for <main>/.git
+	worktreesDir := filepath.Join(mainGit, "worktrees")
+	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	checkoutDir := t.TempDir()
+	// Simulate the .git file written by `git worktree add`.
+	gitFile := filepath.Join(mainGit, "worktrees", "my-wt")
+	if err := os.WriteFile(filepath.Join(checkoutDir, ".git"),
+		[]byte("gitdir: "+gitFile+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := herdrWorktreeGitDirMount(checkoutDir)
+	want := mainGit + ":" + mainGit
+	if got != want {
+		t.Errorf("herdrWorktreeGitDirMount = %q; want %q", got, want)
+	}
+}
+
+func TestHerdrWorktreeGitDirMount_mainCheckout_returnsEmpty(t *testing.T) {
+	// A main checkout's .git is a directory, not a file.
+	// herdrWorktreeGitDirMount must return "" (nothing to mount).
+	//
+	// MUTATION PROOF: return a non-empty string unconditionally →
+	// this test fails because "got non-empty for main checkout".
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := herdrWorktreeGitDirMount(dir)
+	if got != "" {
+		t.Errorf("herdrWorktreeGitDirMount for main checkout = %q; want empty", got)
+	}
+}
+
+func TestHerdrWorktreeGitDirMount_noGitFile_returnsEmpty(t *testing.T) {
+	// No .git at all → empty (not a git checkout or non-git dir).
+	got := herdrWorktreeGitDirMount(t.TempDir())
+	if got != "" {
+		t.Errorf("herdrWorktreeGitDirMount with no .git = %q; want empty", got)
+	}
+}
+
+func TestHerdrWorktreeGitDirMount_noWorktreesParent_returnsEmpty(t *testing.T) {
+	// A gitdir: pointer whose target's parent is NOT "worktrees" is not a
+	// linked-worktree structure git would produce; the function must bail with
+	// "" rather than mount an arbitrary directory.
+	//
+	// MUTATION PROOF: delete the `filepath.Base(worktreesDir) != "worktrees"`
+	// guard → dir(dir(target)) is mounted unconditionally → got is non-empty → RED.
+	checkoutDir := t.TempDir()
+	// target = <tmp>/notworktrees/my-wt → dir = <tmp>/notworktrees (base != "worktrees")
+	bogus := filepath.Join(t.TempDir(), "notworktrees", "my-wt")
+	if err := os.WriteFile(filepath.Join(checkoutDir, ".git"),
+		[]byte("gitdir: "+bogus+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := herdrWorktreeGitDirMount(checkoutDir); got != "" {
+		t.Errorf("herdrWorktreeGitDirMount with non-worktrees parent = %q; want empty", got)
+	}
+}
+
+func TestHerdrWorktreeGitDirMount_relativeGitdir_resolvedAbsolute(t *testing.T) {
+	// A relative gitdir: pointer is valid and resolved against the directory
+	// holding the .git file. The mount spec must be the ABSOLUTE common dir,
+	// never a relative "<rel>:<rel>".
+	//
+	// MUTATION PROOF: remove the `if !filepath.IsAbs(target)` resolution →
+	// gitDir stays relative → mount spec is relative → RED (want absolute).
+	checkoutDir := t.TempDir()
+	// Build <checkout>/.real-git/worktrees/wt and point at it relatively.
+	commonDir := filepath.Join(checkoutDir, ".real-git")
+	if err := os.MkdirAll(filepath.Join(commonDir, "worktrees"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkoutDir, ".git"),
+		[]byte("gitdir: .real-git/worktrees/wt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := herdrWorktreeGitDirMount(checkoutDir)
+	want := commonDir + ":" + commonDir
+	if got != want {
+		t.Errorf("herdrWorktreeGitDirMount relative = %q; want %q (absolute)", got, want)
+	}
+}
+
+func TestHerdrWorktreeSandboxCreateArgs_extraMountsAddedAfterPrimary(t *testing.T) {
+	// When extraMounts is non-empty, each entry must appear as a --mount pair
+	// AFTER the primary --mount <mountSpec> and BEFORE --no-builtin-gh.
+	//
+	// MUTATION PROOF: remove the extraMounts loop from herdrWorktreeSandboxCreateArgs
+	// → the extra --mount entry is absent → RED ("want 2 --mount pairs; got 1").
+	extra := []string{"/main/.git:/main/.git"}
+	args := herdrWorktreeSandboxCreateArgs("wt/branch", "/checkout:/workspace", "--image", "base", extra)
+
+	// Count --mount pairs and collect their values.
+	var mounts []string
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--mount" {
+			mounts = append(mounts, args[i+1])
+		}
+	}
+	if len(mounts) != 2 {
+		t.Fatalf("want 2 --mount pairs; got %d in argv %v", len(mounts), args)
+	}
+	if mounts[0] != "/checkout:/workspace" {
+		t.Errorf("first --mount = %q; want /checkout:/workspace", mounts[0])
+	}
+	if mounts[1] != "/main/.git:/main/.git" {
+		t.Errorf("second --mount = %q; want /main/.git:/main/.git", mounts[1])
+	}
+}
+
+func TestHerdrWorktreeSandbox_linkedWorktree_gitDirMountPassedToCreate(t *testing.T) {
+	// For a linked-worktree sandbox, herdrWorktreeSandbox must pass a non-empty
+	// extraMounts slice to createFn containing the main .git mount spec.
+	// This is the bootable-shape invariant for the git-in-worktree feature.
+	//
+	// MUTATION PROOF: remove "if gitMount := herdrWorktreeGitDirMount..." block
+	// → extraMounts is always nil → createFn receives nil → RED.
+
+	// Build a real linked-worktree structure on disk so herdrWorktreeGitDirMount
+	// can read the .git file.
+	mainGit := t.TempDir() // stands for <main>/.git
+	if err := os.MkdirAll(filepath.Join(mainGit, "worktrees"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	checkoutDir := t.TempDir()
+	gitdirTarget := filepath.Join(mainGit, "worktrees", "probe-wt")
+	if err := os.WriteFile(filepath.Join(checkoutDir, ".git"),
+		[]byte("gitdir: "+gitdirTarget+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfo("w-gitproof", "w-src", "worktree/gitproof", checkoutDir),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+
+	wantGitMount := mainGit + ":" + mainGit
+
+	var gotExtraMounts []string
+	err := callHerdrWorktreeSandbox(t, "w-gitproof", root, false, false, /*auto*/
+		func(_ context.Context, _, _, _, _ string, extraMounts []string) error {
+			gotExtraMounts = extraMounts
+			return nil
+		},
+		stubSandboxGet(domain.Sandbox{}, nil),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := false
+	for _, m := range gotExtraMounts {
+		if m == wantGitMount {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("extraMounts %v does not contain git-dir mount %q; "+
+			"git will be unusable inside the worktree sandbox", gotExtraMounts, wantGitMount)
 	}
 }
