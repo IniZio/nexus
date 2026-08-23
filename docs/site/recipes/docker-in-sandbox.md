@@ -49,14 +49,12 @@ Create `.nexus/services.yaml` alongside the Containerfile:
 # .nexus/services.yaml
 services:
   - name: dockerd
-    command: [dockerd, --storage-driver=overlay2, --iptables=false]
+    command: [dockerd, --storage-driver=overlay2]
     ready: [docker, info]
     restart: never
 ```
 
 - `--storage-driver=overlay2` — the nexus3 guest kernel supports overlayfs.
-- `--iptables=false` — Docker's iptables rules are redundant inside the nexus3 network namespace
-  and can interfere with the host perimeter; disable them.
 
 `ready: [docker, info]` is the readiness probe. `nexus3 create` polls it and returns only once
 it exits zero, with a 30-second cap after which `create` fails. There is no poll loop to write.
@@ -121,8 +119,7 @@ specific KVM requirement.
 - Do **not** bake credentials (registry auth, secret env vars) into the guest image via the
   Containerfile. Inject secrets at runtime via `nexus3 exec` environment variables or the
   credential broker.
-- `--iptables=false` is recommended (see above). Docker's iptables rules inside the guest can
-  create unexpected interactions with the nexus3 perimeter netstack.
+- Docker's guest-side bridge/iptables NAT is independent of the nexus3 perimeter. The perimeter intercepts all outbound traffic at the gvproxy gateway (network-stack layer on the host), which is orthogonal to guest iptables — Docker's default NAT does not bypass or conflict with the perimeter allowlist.
 
 ---
 

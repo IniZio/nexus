@@ -100,7 +100,7 @@ The agent reads a **services table** at startup and starts declared services bef
 # /etc/nexus3/services.yaml
 services:
   - name: dockerd
-    command: [dockerd, --storage-driver=overlay2, --iptables=false]
+    command: [dockerd, --storage-driver=overlay2]
     ready: [docker, info]
 ```
 

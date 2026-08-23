@@ -128,7 +128,7 @@ Declare services by placing a `services.yaml` file in `.nexus/` and copying it i
 # .nexus/services.yaml → baked to /etc/nexus3/services.yaml
 services:
   - name: dockerd
-    command: [dockerd, --storage-driver=overlay2, --iptables=false]
+    command: [dockerd, --storage-driver=overlay2]
     ready: [docker, info]
     restart: never
 ```

@@ -93,7 +93,7 @@ COPY services.yaml /etc/nexus3/services.yaml
 # services.yaml
 services:
   - name: dockerd
-    command: [dockerd, --storage-driver=overlay2, --iptables=false]
+    command: [dockerd, --storage-driver=overlay2]
     ready: [docker, info]
 ```
 
