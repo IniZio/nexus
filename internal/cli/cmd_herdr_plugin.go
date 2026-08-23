@@ -2607,7 +2607,7 @@ func herdrPluginSpaceAgentFromFile(ctx context.Context, r io.Reader, w io.Writer
 
 // ── worktree-sandbox helpers ──────────────────────────────────────────────────
 
-// herdrWorktreeInfo holds the information extracted from `herdr plugin pane worktree list`
+// herdrWorktreeInfo holds the information extracted from `herdr worktree list`
 // for one workspace entry in the worktree list response.
 type herdrWorktreeInfo struct {
 	Branch            string
@@ -2615,38 +2615,55 @@ type herdrWorktreeInfo struct {
 	IsLinkedWorktree  bool
 	SourceWorkspaceID string
 	// RepoKey identifies the repository (source.repo_key in the response, e.g.
-	// "/repo/.git"). Used by herdrWorktreeSandboxRepoCheck (predicate c) to
-	// confirm the repo can be identified; an empty value is treated as unknown.
+	// "/repo/.git"). The parent directory of RepoKey is the main repo root used
+	// by herdrRepoHasBoundSandbox (predicate c); an empty value is unknown.
 	RepoKey string
-	// AllWorkspaceIDs is the set of open_workspace_id values for every worktree
-	// entry in the response. Used by herdrWorktreeSandboxRepoCheck to enumerate
-	// sibling workspaces without additional herdr calls.
-	AllWorkspaceIDs []string
 }
 
-// herdrWorktreeSandboxRepoCheck reports whether the repo identified by info
-// has at least one workspace with an existing nexus3 binding.
+// herdrRepoHasBoundSandbox is THE SINGLE MECHANISM for the question
+// "does this repo have at least one nexus3-bound sandbox?"
 //
-// Predicate (c) of the auto-bind rule: "the repo has AT LEAST ONE existing
-// nexus3-bound workspace." The check enumerates info.AllWorkspaceIDs (all
-// open_workspace_id values from the same herdr worktree list response) and
-// calls herdrSpaceResolve for each. The first match returns true.
+// It returns true when at least one binding's RepoRoot equals mainRepo
+// (after filepath.Clean normalisation). An empty mainRepo or an empty
+// binding RepoRoot is NEVER a match — empty RepoRoot means a legacy binding
+// that pre-dates repo tracking, and must fail toward the host shell.
 //
-// If info.RepoKey is empty the repo cannot be identified → returns false
-// (fail toward host shell, never guess).
-func herdrWorktreeSandboxRepoCheck(ctx context.Context, storeRoot string, info herdrWorktreeInfo) bool {
-	if info.RepoKey == "" {
+// Both the dispatcher (herdrAutoCreatePredicateWith) and the subprocess
+// (herdrWorktreeSandboxRepoCheck) call this function. Do not duplicate the
+// comparison logic. Enforced by TestHerdrRepoHasBoundSandbox_BothCallSitesAgree.
+func herdrRepoHasBoundSandbox(mainRepo string, bindings []HerdrSpaceBinding) bool {
+	if mainRepo == "" {
 		return false
 	}
-	for _, wsID := range info.AllWorkspaceIDs {
-		if wsID == "" {
+	clean := filepath.Clean(mainRepo)
+	for _, b := range bindings {
+		if b.RepoRoot == "" {
 			continue
 		}
-		if _, err := herdrSpaceResolve(ctx, storeRoot, wsID); err == nil {
+		if filepath.Clean(b.RepoRoot) == clean {
 			return true
 		}
 	}
 	return false
+}
+
+// herdrWorktreeSandboxRepoCheck reports whether the repo identified by
+// info.RepoKey has at least one binding in storeRoot whose RepoRoot matches.
+//
+// Predicate (c) of the auto-bind rule. Derives the main repo root from
+// info.RepoKey (parent dir of the .git path) and delegates to
+// herdrRepoHasBoundSandbox. If info.RepoKey is empty or bindings cannot be
+// read, returns false (fail toward host shell, never guess).
+func herdrWorktreeSandboxRepoCheck(ctx context.Context, storeRoot string, info herdrWorktreeInfo) bool {
+	if info.RepoKey == "" {
+		return false
+	}
+	mainRepo := filepath.Dir(filepath.Clean(info.RepoKey))
+	bindings, err := HerdrSpaceList(ctx, storeRoot)
+	if err != nil {
+		return false
+	}
+	return herdrRepoHasBoundSandbox(mainRepo, bindings)
 }
 
 // herdrWorktreeListTimeout bounds the `herdr worktree list` probe in step 3.
@@ -2667,7 +2684,7 @@ var herdrListWorktreeForWorkspaceFn = herdrListWorktreeForWorkspace
 var herdrWorkspaceRenameFn = herdrWorkspaceRename
 
 // herdrParseWorktreeListForWorkspace parses the JSON response from
-// `herdr plugin pane worktree list --workspace-id <id>` and returns the
+// `herdr worktree list --workspace <id>` and returns the
 // herdrWorktreeInfo for the entry whose open_workspace_id matches workspaceID.
 // Returns an error if workspaceID is not found or the JSON is malformed.
 func herdrParseWorktreeListForWorkspace(data []byte, workspaceID string) (herdrWorktreeInfo, error) {
@@ -2690,13 +2707,6 @@ func herdrParseWorktreeListForWorkspace(data []byte, workspaceID string) (herdrW
 	}
 	sourceWorkspaceID := resp.Result.Source.SourceWorkspaceID
 	repoKey := resp.Result.Source.RepoKey
-	// Collect all workspace IDs from the response for use in predicate (c).
-	allIDs := make([]string, 0, len(resp.Result.Worktrees))
-	for _, wt := range resp.Result.Worktrees {
-		if wt.OpenWorkspaceID != "" {
-			allIDs = append(allIDs, wt.OpenWorkspaceID)
-		}
-	}
 	for _, wt := range resp.Result.Worktrees {
 		if wt.OpenWorkspaceID == workspaceID {
 			return herdrWorktreeInfo{
@@ -2705,20 +2715,19 @@ func herdrParseWorktreeListForWorkspace(data []byte, workspaceID string) (herdrW
 				IsLinkedWorktree:  wt.IsLinkedWorktree,
 				SourceWorkspaceID: sourceWorkspaceID,
 				RepoKey:           repoKey,
-				AllWorkspaceIDs:   allIDs,
 			}, nil
 		}
 	}
 	return herdrWorktreeInfo{}, fmt.Errorf("herdr worktree list: workspace %q not found in response", workspaceID)
 }
 
-// herdrListWorktreeForWorkspace calls `herdr plugin pane worktree list` and
+// herdrListWorktreeForWorkspace calls `herdr worktree list --workspace <id>` and
 // returns the herdrWorktreeInfo for the given workspaceID.
 func herdrListWorktreeForWorkspace(ctx context.Context, herdrBin, workspaceID string) (herdrWorktreeInfo, error) {
-	cmd := herdrExecCommandContext(ctx, herdrBin, "plugin", "pane", "worktree", "list", "--workspace-id", workspaceID)
+	cmd := herdrExecCommandContext(ctx, herdrBin, "worktree", "list", "--workspace", workspaceID)
 	out, err := cmd.Output()
 	if err != nil {
-		return herdrWorktreeInfo{}, fmt.Errorf("herdr plugin pane worktree list: %w", err)
+		return herdrWorktreeInfo{}, fmt.Errorf("herdr worktree list: %w", err)
 	}
 	return herdrParseWorktreeListForWorkspace(out, workspaceID)
 }
@@ -2888,9 +2897,10 @@ func herdrWorktreeSandbox(
 
 	// Step 5: mode-specific source check.
 	//
-	//  auto mode (--auto): repo-level predicate (c). At least one sibling
-	//  workspace in the same repo must be nexus3-bound. If the repo cannot be
-	//  identified (RepoKey empty) or no sibling is bound, fail safe.
+	//  auto mode (--auto): repo-level predicate (c). At least one binding's
+	//  RepoRoot must match the main repo root derived from info.RepoKey. If
+	//  the repo cannot be identified (RepoKey empty) or no binding matches,
+	//  fail safe.
 	//
 	//  conditional mode (--conditional): legacy SourceWorkspaceID predicate.
 	//  The source workspace (the main checkout that owns this worktree) must

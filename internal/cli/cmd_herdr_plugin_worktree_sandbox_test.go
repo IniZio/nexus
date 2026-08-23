@@ -673,23 +673,11 @@ func TestHerdrListWorktreeForWorkspace_parsesResponse(t *testing.T) {
 	if info.SourceWorkspaceID != "w8" {
 		t.Errorf("SourceWorkspaceID = %q; want %q", info.SourceWorkspaceID, "w8")
 	}
-	// Predicate (c) fields: RepoKey and AllWorkspaceIDs must be populated.
+	// Predicate (c) field: RepoKey must be populated.
 	// MUTATION PROOF (RepoKey): clear RepoKey in herdrParseWorktreeListForWorkspace →
-	// herdrWorktreeSandboxRepoCheck returns false regardless of sibling bindings → RED.
+	// herdrWorktreeSandboxRepoCheck returns false (empty RepoKey guard fires) → RED.
 	if info.RepoKey != "/repo/.git" {
 		t.Errorf("RepoKey = %q; want %q", info.RepoKey, "/repo/.git")
-	}
-	// AllWorkspaceIDs must contain all open_workspace_id values in the response.
-	// MUTATION PROOF (AllWorkspaceIDs): return nil → no siblings found →
-	// herdrWorktreeSandboxRepoCheck always returns false → RED.
-	wantIDs := map[string]bool{"w8": true, "wFEAT": true}
-	if len(info.AllWorkspaceIDs) != 2 {
-		t.Errorf("AllWorkspaceIDs = %v; want 2 entries", info.AllWorkspaceIDs)
-	}
-	for _, id := range info.AllWorkspaceIDs {
-		if !wantIDs[id] {
-			t.Errorf("AllWorkspaceIDs contains unexpected %q", id)
-		}
 	}
 }
 
@@ -1045,34 +1033,47 @@ func TestHerdrWorktreeSandbox_conditionalMode_paneError_returnsNil(t *testing.T)
 // ── auto mode (--auto / repo-level predicate) ─────────────────────────────────
 
 // linkedWorktreeInfoAuto returns a herdrWorktreeInfo for a linked worktree
-// with the repo-level fields (RepoKey, AllWorkspaceIDs) populated.
-// workspaceID is included in AllWorkspaceIDs along with any siblings.
-func linkedWorktreeInfoAuto(workspaceID, branch, path, repoKey string, siblings ...string) herdrWorktreeInfo {
-	all := append(siblings, workspaceID)
+// with the RepoKey field populated for predicate (c).
+func linkedWorktreeInfoAuto(workspaceID, branch, path, repoKey string) herdrWorktreeInfo {
 	return herdrWorktreeInfo{
 		Branch:           branch,
 		Path:             path,
 		IsLinkedWorktree: true,
 		RepoKey:          repoKey,
-		AllWorkspaceIDs:  all,
+	}
+}
+
+// seedBindingWithRepoRoot writes a binding with the given RepoRoot to storeRoot.
+// Used by auto-mode tests to seed a repo-level binding that herdrRepoHasBoundSandbox matches.
+func seedBindingWithRepoRoot(t *testing.T, storeRoot, workspaceID, sandboxHandle, repoRoot string) {
+	t.Helper()
+	b := HerdrSpaceBinding{
+		SpaceLabel:       "nexus3:" + sandboxHandle,
+		HerdrWorkspaceID: workspaceID,
+		SandboxHandle:    sandboxHandle,
+		SandboxID:        "sb-seed",
+		RepoRoot:         repoRoot,
+	}
+	if err := HerdrSpacePut(context.Background(), storeRoot, b); err != nil {
+		t.Fatalf("seedBindingWithRepoRoot: %v", err)
 	}
 }
 
 func TestHerdrWorktreeSandbox_auto_siblingBound_binds(t *testing.T) {
-	// When auto=true and a sibling workspace (in AllWorkspaceIDs) is
-	// nexus3-bound, the function must create a sandbox and write a binding.
+	// When auto=true and a binding exists whose RepoRoot matches the worktree's
+	// main repo, the function must create a sandbox and write a binding.
 	//
-	// MUTATION PROOF (predicate c): remove herdrWorktreeSandboxRepoCheck call
-	// (always return true) → test still passes. CORRECT PROOF: invert the
-	// check (return false) → no binding written → RED:
-	// "expected 1 binding in store; got 0".
+	// MUTATION PROOF (predicate c): invert herdrWorktreeSandboxRepoCheck
+	// (return false) → no binding written → RED: "expected binding for w-new; got none".
 	root := t.TempDir()
 
-	// Seed a binding for the sibling workspace "w-src".
-	seedBinding(t, root, "w-src", "wt/src-sandbox")
+	// Seed a binding whose RepoRoot == "/repo" (parent of info.RepoKey="/repo/.git").
+	// This is the nexus3-created binding — its workspace ID ("w-src") is NOT
+	// in the workspace IDs that open worktrees, matching the live disjoint scenario.
+	seedBindingWithRepoRoot(t, root, "w-src", "wt/src-sandbox", "/repo")
 
 	swapListFn(t, stubWorktreeList{
-		info: linkedWorktreeInfoAuto("w-new", "worktree/feat", "/path/feat", "/repo/.git", "w-src"),
+		info: linkedWorktreeInfoAuto("w-new", "worktree/feat", "/path/feat", "/repo/.git"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -1103,7 +1104,7 @@ func TestHerdrWorktreeSandbox_auto_noRepoBound_staysHost(t *testing.T) {
 	// No bindings in the store.
 
 	swapListFn(t, stubWorktreeList{
-		info: linkedWorktreeInfoAuto("w-new", "worktree/feat", "/path/feat", "/repo/.git", "w-src"),
+		info: linkedWorktreeInfoAuto("w-new", "worktree/feat", "/path/feat", "/repo/.git"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -1115,7 +1116,7 @@ func TestHerdrWorktreeSandbox_auto_noRepoBound_staysHost(t *testing.T) {
 		t.Fatalf("unexpected error (auto mode is fail-safe): %v", err)
 	}
 	if createCalled {
-		t.Error("createSandbox must not be called when no repo sibling is nexus3-bound")
+		t.Error("createSandbox must not be called when no binding's RepoRoot matches the repo")
 	}
 	all, _ := herdrSpaceReadAll(root)
 	if len(all) != 0 {
@@ -1128,15 +1129,17 @@ func TestHerdrWorktreeSandbox_auto_repoKeyEmpty_staysHost(t *testing.T) {
 	// herdrWorktreeSandboxRepoCheck returns false → workspace stays unbound.
 	//
 	// MUTATION PROOF: remove the `info.RepoKey == ""` guard in
-	// herdrWorktreeSandboxRepoCheck → proceeds to scan AllWorkspaceIDs.
-	// With w-src seeded and in AllWorkspaceIDs, a binding IS found → creates
-	// sandbox → RED: "createSandbox must not be called".
+	// herdrWorktreeSandboxRepoCheck → derives mainRepo=filepath.Dir(".")="."
+	// → herdrRepoHasBoundSandbox(".", bindings) finds the seeded binding
+	// (RepoRoot=".") → creates sandbox → RED: "createSandbox must not be called".
 	root := t.TempDir()
-	seedBinding(t, root, "w-src", "wt/src-sandbox")
+	// Seed binding with RepoRoot="." — matches what the mutated code would derive
+	// from an empty RepoKey: filepath.Dir(filepath.Clean("")) == ".".
+	seedBindingWithRepoRoot(t, root, "w-src", "wt/src-sandbox", ".")
 
 	swapListFn(t, stubWorktreeList{
 		// RepoKey is deliberately empty.
-		info: linkedWorktreeInfoAuto("w-new", "worktree/feat", "/path/feat", "" /*repoKey=empty*/, "w-src"),
+		info: linkedWorktreeInfoAuto("w-new", "worktree/feat", "/path/feat", "" /*repoKey=empty*/),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -1161,14 +1164,14 @@ func TestHerdrWorktreeSandbox_auto_notLinkedWorktree_noSideEffects(t *testing.T)
 	// must not produce any sandbox or herdr side-effects beyond the probe.
 	//
 	// MUTATION PROOF: remove the !info.IsLinkedWorktree guard →
-	// herdrWorktreeSandboxRepoCheck fires. With no bindings in the store it
-	// returns false → still no create. To make the mutation RED: also seed a
-	// sibling binding so repoCheck returns true → createSandbox IS called →
+	// herdrWorktreeSandboxRepoCheck fires. A binding with RepoRoot="/repo" is
+	// seeded so herdrRepoHasBoundSandbox returns true → createSandbox IS called →
 	// createCalled = true → RED.
 	root := t.TempDir()
-	// Seed a sibling binding so that IF the linked-worktree guard were removed
-	// and repoCheck evaluated, it would return true and proceed to create.
-	seedBinding(t, root, "w-src", "wt/src-sandbox")
+	// Seed a binding with RepoRoot="/repo" so that IF the linked-worktree guard
+	// were removed and repoCheck evaluated, herdrRepoHasBoundSandbox("/repo", ...)
+	// would return true → createSandbox IS called → createCalled=true → RED.
+	seedBindingWithRepoRoot(t, root, "w-src", "wt/src-sandbox", "/repo")
 
 	swapListFn(t, stubWorktreeList{
 		info: herdrWorktreeInfo{
@@ -1176,7 +1179,6 @@ func TestHerdrWorktreeSandbox_auto_notLinkedWorktree_noSideEffects(t *testing.T)
 			Path:             "/repo",
 			IsLinkedWorktree: false, // main checkout — must be skipped
 			RepoKey:          "/repo/.git",
-			AllWorkspaceIDs:  []string{"w-src", "w-new"},
 		},
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
@@ -1225,10 +1227,10 @@ func TestHerdrWorktreeSandbox_auto_concurrent_secondIsNoOp(t *testing.T) {
 	// proceeds to create, which may conflict with the existing sandbox or
 	// write a second binding → the final binding count may be 2 → RED.
 	root := t.TempDir()
-	seedBinding(t, root, "w-src", "wt/src-sandbox")
+	seedBindingWithRepoRoot(t, root, "w-src", "wt/src-sandbox", "/repo")
 
 	swapListFn(t, stubWorktreeList{
-		info: linkedWorktreeInfoAuto("w-new", "worktree/feat", "/path/feat", "/repo/.git", "w-src"),
+		info: linkedWorktreeInfoAuto("w-new", "worktree/feat", "/path/feat", "/repo/.git"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 

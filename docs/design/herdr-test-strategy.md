@@ -14,6 +14,34 @@ it can prove, and states what it cannot.
 
 ---
 
+## Standing rule — borrowed interfaces require Layer 4 probes
+
+Any assertion about an interface nexus3 does **not** own requires a Layer 4
+proof against the real thing. Fakes and stubs can only encode a belief about a
+borrowed interface — they cannot detect that the interface changed.
+
+Concretely:
+
+- **herdr's CLI surface** — a flag name nexus3 passes, a subcommand nexus3
+  calls, or an argv shape nexus3 constructs is not owned by nexus3. Layers 1–3
+  stub the exec seam; they accept any argv without complaint. Layer 4 must
+  assert the real herdr binary accepts the exact argv nexus3 sends.
+
+- **herdr's JSON response shape** — a field name nexus3 parses from herdr
+  output is not owned by nexus3. A herdr upgrade that renames a field is
+  invisible to all three lower layers. Layer 4 must invoke the real command and
+  assert every parsed field is present with the expected JSON type.
+
+- **On-disk binding format** — a field nexus3 reads from a binding record
+  written in a prior version must be present in records that predate the field.
+  Layer 4 or a migration test must assert the backfill path works against real
+  on-disk data.
+
+**Adding a new herdr invocation requires a Layer 4 probe in the same change.**
+Internal branch logic and in-process handler behaviour stay at Layers 1–3.
+
+---
+
 ## Layer 1 — static manifest invariants
 
 **Test file:** `internal/cli/herdr_manifest_test.go`
@@ -113,11 +141,13 @@ TMPDIR=/tmp go test -count=1 -tags herdr_live ./internal/cli/ -run TestHerdrPlug
 makes two probes:
 
 1. **Direct exec** — calls `nexus3 herdr abi` as a subprocess and
-   asserts stdout is `"1"`. This is the mutation-sensitive primary assertion:
-   renaming or deleting the `init()`-level
-   `Command{Name: "herdr", ...}` registration causes the binary to
-   exit 2 with `"error: unknown command: herdr"`, and this probe
-   fails immediately.
+   asserts stdout matches the ABI value declared in `plugins/herdr/abi`
+   (currently `"2"`; the test reads the file rather than hardcoding the
+   value, so this prose stays accurate when the ABI is next bumped).
+   This is the mutation-sensitive primary assertion: renaming or deleting
+   the `init()`-level `Command{Name: "herdr", ...}` registration causes
+   the binary to exit 2 with `"error: unknown command: herdr"`, and this
+   probe fails immediately.
 
 2. **herdr pane smoke test** — creates a scratch workspace with a unique
    timestamp label, runs the binary inside it via `herdr pane run`, and waits
@@ -136,6 +166,40 @@ correct script end-to-end (the full manifest→action→script→binary round-tr
 is only verifiable by clicking an action in herdr). Correct pane rendering,
 correct keybinding behaviour, and anything requiring visual inspection of
 herdr's UI remain human checks.
+
+**`TestHerdrPlugin_L4_Contract`** (file: `internal/cli/herdr_l4_contract_test.go`)
+asserts the herdr CLI contract:
+
+- **Command acceptance** — every `herdr` subcommand nexus3 invokes is verified
+  to exist in the installed herdr binary. Read-only commands (`workspace list`,
+  `worktree list --workspace <id>`) are invoked for real and exit 0 is
+  asserted. Safe-mutating commands (`workspace rename`, `tab create`) are
+  driven against a scratch workspace using the same timestamp-label + label-
+  verified cleanup guard as `TestHerdrPlugin_L4_BinaryVerb`. All remaining
+  mutating commands (`workspace close`, all `pane *`, `plugin pane open`) are
+  verified structurally: `herdr <group> <subcmd> --help` is parsed to confirm
+  each flag nexus3 passes appears in the usage text. A flag-name typo (e.g.
+  `--workspace-id` vs `--workspace`) fails the structural probe.
+
+- **Response shape** — `herdr worktree list --workspace <id>` and
+  `herdr workspace list` are invoked for real and the JSON fields that
+  `herdrParseWorktreeListForWorkspace` and the backfill parser depend on are
+  asserted present with the expected types: `result.source.repo_key`,
+  `result.source.source_workspace_id`, `result.worktrees[].branch`,
+  `.path`, `.is_linked_worktree`, `.open_workspace_id`; and for workspace
+  list, `worktree.repo_root` on each workspace entry that has a worktree. Field
+  values are not asserted — only presence and type. A herdr upgrade that renames
+  a field must fail this test.
+
+**What `TestHerdrPlugin_L4_Contract` proves:** Every herdr command nexus3
+currently issues is syntactically valid and accepted by the installed herdr
+binary. Every JSON field the production parsers read is present in real herdr
+output. Flag-name drift and response-shape changes that are invisible to all
+three lower layers are caught here.
+
+**What `TestHerdrPlugin_L4_Contract` cannot prove:** That the field values are
+semantically correct; that herdr routes plugin actions to the correct script
+end-to-end; or that optional flags behave as nexus3 expects when present.
 
 **Residual gap (TBD-PD-40 remains open):** The layer proves the binary-level
 verb exists but does not drive the full herdr manifest→action→shell-script→
@@ -156,6 +220,8 @@ the resulting pane.
 | Shell script wiring (argv, env, branching) | 2 | — |
 | Subcommand router and handler logic | 3 | — |
 | Binary verb registration (`herdr`) | 4 | — |
+| herdr CLI command acceptance (every invocation) | 4 | — |
+| herdr JSON response shape (parsed fields) | 4 | field values; optional-flag semantics |
 | herdr manifest→action→script→binary round-trip | 4 (partial) | full chain via plugin action invoke |
 | Pane rendering | none | human check |
 | Keybindings | none | human check |

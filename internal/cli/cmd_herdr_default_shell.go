@@ -120,19 +120,9 @@ func herdrAutoCreatePredicateWith(
 				if mainRepo == "" {
 					return false
 				}
-				// (c) Repo-scoped check: at least one binding must carry a
-				// RepoRoot that matches the main repo of this linked worktree.
-				// Empty RepoRoot is NO MATCH (legacy binding, fail toward host shell).
-				cleanMain := filepath.Clean(mainRepo)
-				for _, b := range allBindings {
-					if b.RepoRoot == "" {
-						continue
-					}
-					if filepath.Clean(b.RepoRoot) == cleanMain {
-						return true
-					}
-				}
-				return false
+				// (c) Repo-scoped check: delegate to the single shared
+				// mechanism herdrRepoHasBoundSandbox (predicate c).
+				return herdrRepoHasBoundSandbox(mainRepo, allBindings)
 			}
 			// .git is a directory (main checkout) or something unexpected.
 			return false
