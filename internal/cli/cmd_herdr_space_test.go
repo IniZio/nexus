@@ -200,71 +200,36 @@ func (f *fakeSandboxSvc) Remove(_ context.Context, ref string) error {
 	return nil
 }
 
-// ── lifecycle tests ───────────────────────────────────────────────────────────
+// ── lifecycle helpers ─────────────────────────────────────────────────────────
 
-func TestHerdrSpacePauseByLabel(t *testing.T) {
+// TestHerdrSpaceBindingClearWorkspaceID asserts that the helper clears
+// HerdrWorkspaceID and persists the updated binding.
+//
+// MUTATION TARGET: the HerdrSpacePut call in herdrSpaceBindingClearWorkspaceID.
+// Removing it means the clear is not persisted and re-reads return the stale ID → RED.
+func TestHerdrSpaceBindingClearWorkspaceID(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
 	b := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:demo", HerdrWorkspaceID: "wX",
+		SpaceLabel: "nexus3:demo", HerdrWorkspaceID: "wSTALE",
 		SandboxHandle: "orca/demo", SandboxID: "sb-xxx",
 	}
 	if err := HerdrSpacePut(ctx, root, b); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-
-	svc := &fakeSandboxSvc{}
-	if err := HerdrSpacePauseByLabel(ctx, svc, root, b.SpaceLabel); err != nil {
-		t.Fatalf("PauseByLabel: %v", err)
+	if err := herdrSpaceBindingClearWorkspaceID(ctx, root, b.SpaceLabel); err != nil {
+		t.Fatalf("clearWorkspaceID: %v", err)
 	}
-	if len(svc.paused) != 1 || svc.paused[0] != b.SandboxHandle {
-		t.Errorf("paused refs = %v, want [%s]", svc.paused, b.SandboxHandle)
+	got, err := HerdrSpaceGetByLabel(ctx, root, b.SpaceLabel)
+	if err != nil {
+		t.Fatalf("GetByLabel after clear: %v", err)
 	}
-}
-
-func TestHerdrSpacePauseByLabel_NotFound(t *testing.T) {
-	root := t.TempDir()
-	ctx := context.Background()
-	svc := &fakeSandboxSvc{}
-	err := HerdrSpacePauseByLabel(ctx, svc, root, "nexus3:nope")
-	if !errors.Is(err, ErrHerdrSpaceNotFound) {
-		t.Errorf("want ErrHerdrSpaceNotFound, got %v", err)
+	if got.HerdrWorkspaceID != "" {
+		t.Errorf("HerdrWorkspaceID must be empty after clear; got %q", got.HerdrWorkspaceID)
 	}
-	if len(svc.paused) != 0 {
-		t.Errorf("service must not be called for missing label")
-	}
-}
-
-func TestHerdrSpaceResumeByLabel(t *testing.T) {
-	root := t.TempDir()
-	ctx := context.Background()
-	b := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:demo", HerdrWorkspaceID: "wX",
-		SandboxHandle: "orca/demo", SandboxID: "sb-xxx",
-	}
-	if err := HerdrSpacePut(ctx, root, b); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-
-	svc := &fakeSandboxSvc{}
-	if err := HerdrSpaceResumeByLabel(ctx, svc, root, b.SpaceLabel); err != nil {
-		t.Fatalf("ResumeByLabel: %v", err)
-	}
-	if len(svc.resumed) != 1 || svc.resumed[0] != b.SandboxHandle {
-		t.Errorf("resumed refs = %v, want [%s]", svc.resumed, b.SandboxHandle)
-	}
-}
-
-func TestHerdrSpaceResumeByLabel_NotFound(t *testing.T) {
-	root := t.TempDir()
-	ctx := context.Background()
-	svc := &fakeSandboxSvc{}
-	err := HerdrSpaceResumeByLabel(ctx, svc, root, "nexus3:nope")
-	if !errors.Is(err, ErrHerdrSpaceNotFound) {
-		t.Errorf("want ErrHerdrSpaceNotFound, got %v", err)
-	}
-	if len(svc.resumed) != 0 {
-		t.Errorf("service must not be called for missing label")
+	// Other fields preserved.
+	if got.SandboxHandle != b.SandboxHandle {
+		t.Errorf("SandboxHandle changed: got %q, want %q", got.SandboxHandle, b.SandboxHandle)
 	}
 }
 

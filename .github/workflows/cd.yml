@@ -188,3 +188,36 @@ jobs:
           set -euo pipefail
           gh release upload "$TAG" release-assets/SHA256SUMS --clobber
           echo "Release $TAG assets published."
+
+  # ── Stamp plugin nexus3-version with the released tag ────────────────────
+  # Keeps plugins/herdr/nexus3-version in sync with the published binary so
+  # `herdr plugin install` always fetches the matching release.
+  # Runs after release-publish so the binary + SHA256SUMS are confirmed live
+  # before we point the plugin at the new version.
+  # The commit uses [skip ci] to suppress re-triggering CI/CD.
+  release-stamp:
+    name: Stamp plugin nexus3-version
+    needs: [release-create, release-publish]
+    if: needs.release-create.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # The default GITHUB_TOKEN ref is the SHA that triggered the workflow;
+          # fetch the branch tip so we can push back to it cleanly.
+          ref: main
+
+      - name: Stamp nexus3-version
+        env:
+          TAG: ${{ needs.release-create.outputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "$TAG" > plugins/herdr/nexus3-version
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add plugins/herdr/nexus3-version
+          # No-op if nexus3-version already matches (e.g. manual pre-stamp).
+          git diff --cached --quiet && echo "nexus3-version already up to date." && exit 0
+          git commit -m "chore(plugin): stamp nexus3-version to ${TAG} [skip ci]"
+          git push

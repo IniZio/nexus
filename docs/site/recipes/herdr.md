@@ -7,25 +7,141 @@ focused workspace.
 
 ## Install the plugin <Badge type="tip" text="built" />
 
-The plugin lives in this repo and installs from a local path, so it tracks
-whatever is checked out:
+### One-command install (Linux x86-64)
+
+The plugin is self-bootstrapping. One command downloads, verifies, and installs
+everything:
 
 ```sh
-herdr plugin install /path/to/nexus3/plugins/herdr
+herdr plugin install IniZio/nexus3/plugins/herdr
+```
+
+`build.sh` (the plugin's build hook) reads `plugins/herdr/nexus3-version` for a
+pinned release tag, downloads `nexus3-linux-amd64` and `SHA256SUMS` from GitHub
+Releases, verifies the checksum, installs the binary to `~/.local/bin/nexus3`,
+ABI-probes it, then runs `nexus3 herdr install-default-shell` to hard-link the
+guest shell and print the one config line you still need to paste.
+
+**One remaining manual step.** `install-default-shell` prints a line like:
+
+```
+[terminal]
+default_shell = ~/.local/bin/nexus3-guest-shell
+```
+
+Paste it into `~/.config/herdr/config.toml`. herdr's config is user-owned and
+is not written automatically.
+
+Confirm the plugin loaded:
+
+```sh
 herdr plugin list
 ```
 
-Installation runs `build.sh`, which writes a shim pointing at the absolute path
-of the `nexus3` on your `PATH`. Two probes must pass first — a `context-cwd`
-round-trip and an ABI match — so a mismatched binary fails the install rather
-than misbehaving later.
+### Platform matrix
+
+| Platform | Status |
+|---|---|
+| Linux x86-64 | **supported** — binary downloaded and installed by `build.sh` |
+| macOS (any arch) | no released binary — build from source (see below) |
+| Linux arm64 | no released binary — build from source (see below) |
+
+For macOS and Linux arm64, `build.sh` exits with a clear message. Build and
+wire the shell manually:
+
+```sh
+git clone https://github.com/IniZio/nexus3
+cd nexus3 && go build -o ~/.local/bin/nexus3 ./cmd/nexus3
+nexus3 herdr install-default-shell
+# then paste the printed line into ~/.config/herdr/config.toml
+```
+
+Then install the plugin pointing at a local clone so the build hook skips the
+download:
+
+```sh
+NEXUS3_LOCAL=1 herdr plugin install /path/to/nexus3/plugins/herdr
+```
+
+### Local-dev path
+
+If `nexus3` is already on `PATH` and you want to skip the download entirely
+(e.g. while iterating on the binary itself), set `NEXUS3_LOCAL=1`:
+
+```sh
+NEXUS3_LOCAL=1 herdr plugin install /path/to/nexus3/plugins/herdr
+```
+
+`build.sh` uses the binary already on `PATH` and runs the same probes without
+touching the download path.
 
 ::: warning Rebuild the binary, not just the plugin
-The shim records an absolute path. If you rebuild nexus3 to a *different*
-location, or install the plugin before building, re-run the install so the shim
-is rewritten. A stale binary is the most common cause of "herdr shows old
-behaviour": the plugin directory is current and the binary it execs is not.
+The shim records the absolute path of the installed binary. If you install a new
+binary to a different location, re-run the install so the shim is rewritten. A
+stale shim is the most common cause of "herdr shows old behaviour".
 :::
+
+## Sandbox lifecycle in herdr <Badge type="tip" text="built" />
+
+### Create: transactional open
+
+When you run `nexus3: create a sandbox` (or open a worktree pane), nexus3
+creates three things in sequence: the sandbox, the herdr workspace, and the
+binding that links them. If any step fails **before** the binding is written,
+the incomplete pieces are rolled back — you do not end up with orphaned
+workspaces. A sandbox that already exists and is running is never destroyed by a
+failed pane-open.
+
+### Teardown: one idempotent path
+
+Whether teardown is triggered by the `nexus3: remove this sandbox and close the
+space` action, `nexus3 herdr remove`, a `nexus3 rm` cascade, or the
+real-time pane-close reap described below, it follows the same path: remove the
+sandbox, close the herdr workspace, delete the binding. If the workspace close
+does not succeed, the binding is retained rather than deleted, so `nexus3 herdr
+prune --apply` can retry it on the next pass — the only copy of the record is
+never lost.
+
+### Real-time reap on pane close
+
+Closing the last pane of a worktree sandbox tears it down automatically. herdr
+sends a trappable `SIGHUP` to the process group; nexus3 catches it and runs the
+teardown path above. This is best-effort. If the signal arrives while nexus3 is
+in a non-interruptible state, or if herdr is not available, the teardown is
+skipped and the binding remains. `nexus3 herdr prune --apply` is the reliable
+backstop — run it after a session to confirm nothing leaked.
+
+### `prune --apply`: 4-case reconciler
+
+`nexus3 herdr prune` (dry-run by default) inspects every binding and classifies
+it:
+
+| Binding state | Action |
+|---|---|
+| sandbox gone + workspace gone | delete binding |
+| sandbox gone + workspace live | close workspace, delete binding |
+| sandbox live + workspace gone | keep binding, clear stale workspace ID |
+| both live | noop |
+
+It also sweeps for `nexus3:`-labelled orphan workspaces that have no binding at
+all, and closes them.
+
+```sh
+nexus3 herdr prune            # dry-run: report what would change
+nexus3 herdr prune --apply    # apply: close workspaces and delete stale bindings
+```
+
+### Known residue (D-SHL-27)
+
+The **first** worktree you open for a given repo opens a plain host shell — not
+a supervised guest pane. Every subsequent worktree for that repo auto-creates a
+supervised sandbox as expected. This is a known limitation left in place by
+decision D-SHL-27. The first worktree's sandbox, if one is left orphaned, is
+reclaimed by:
+
+```sh
+nexus3 herdr prune --apply
+```
 
 ## What the overlay shows <Badge type="tip" text="built" />
 

@@ -324,7 +324,16 @@ func TestHerdrSpaceTeardownOnRm_NoHerdr_BindingRetained(t *testing.T) {
 	closer := func(ctx context.Context, workspaceID string) error {
 		return herdrWorkspaceClose(ctx, "", workspaceID)
 	}
-	herdrSpaceTeardownOnRm(ctx, root, closer, binding.SandboxHandle, binding.SandboxID)
+	_ = herdrSpaceTeardown(ctx, root, binding.SandboxHandle, txnDeps{
+		workspaceClose: closer,
+		bindingDelete: func(ctx context.Context, label string) error {
+			return HerdrSpaceDelete(ctx, root, label)
+		},
+	}, teardownOpts{
+		expectedSandboxID:     binding.SandboxID,
+		sandboxAlreadyRemoved: true,
+		failOpen:              true,
+	})
 
 	// Binding must survive — the workspace is live and herdr was unavailable.
 	got, err := HerdrSpaceGetByHandle(ctx, root, binding.SandboxHandle)
@@ -365,7 +374,16 @@ func TestHerdrSpaceTeardownOnRm_DifferentSandboxID_WorkspaceRetained(t *testing.
 	}
 
 	// Remove a DIFFERENT sandbox (sb-OTHER) that shares the handle.
-	herdrSpaceTeardownOnRm(ctx, root, closer, binding.SandboxHandle, "sb-OTHER")
+	_ = herdrSpaceTeardown(ctx, root, binding.SandboxHandle, txnDeps{
+		workspaceClose: closer,
+		bindingDelete: func(ctx context.Context, label string) error {
+			return HerdrSpaceDelete(ctx, root, label)
+		},
+	}, teardownOpts{
+		expectedSandboxID:     "sb-OTHER",
+		sandboxAlreadyRemoved: true,
+		failOpen:              true,
+	})
 
 	if len(closed) != 0 {
 		t.Errorf("closer must not run when a different sandbox is removed; closed=%v", closed)
@@ -402,7 +420,16 @@ func TestHerdrSpaceTeardownOnRm_MatchingSandboxID_WorkspaceClosed(t *testing.T) 
 		return nil
 	}
 
-	herdrSpaceTeardownOnRm(ctx, root, closer, binding.SandboxHandle, "sb-MATCH")
+	_ = herdrSpaceTeardown(ctx, root, binding.SandboxHandle, txnDeps{
+		workspaceClose: closer,
+		bindingDelete: func(ctx context.Context, label string) error {
+			return HerdrSpaceDelete(ctx, root, label)
+		},
+	}, teardownOpts{
+		expectedSandboxID:     "sb-MATCH",
+		sandboxAlreadyRemoved: true,
+		failOpen:              true,
+	})
 
 	if len(closed) != 1 || closed[0] != "wMATCH" {
 		t.Errorf("closer must close wMATCH exactly once; closed=%v", closed)

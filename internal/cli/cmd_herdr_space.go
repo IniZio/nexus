@@ -356,30 +356,17 @@ type HerdrSpaceSandboxService interface {
 	Remove(ctx context.Context, ref string) error
 }
 
-// HerdrSpacePauseByLabel pauses the sandbox bound to label.
-// Returns ErrHerdrSpaceNotFound when no binding exists for label.
-func HerdrSpacePauseByLabel(ctx context.Context, svc HerdrSpaceSandboxService, storeRoot, label string) error {
+// herdrSpaceBindingClearWorkspaceID sets HerdrWorkspaceID to "" on the binding
+// identified by SpaceLabel and persists it. Used by space-prune when the herdr
+// workspace has gone stale but the sandbox VM is still running — the binding is
+// retained so the next space-create can mint a fresh workspace.
+func herdrSpaceBindingClearWorkspaceID(ctx context.Context, storeRoot, label string) error {
 	b, err := HerdrSpaceGetByLabel(ctx, storeRoot, label)
 	if err != nil {
-		return err
+		return fmt.Errorf("herdr-space: clear workspace-id for %q: %w", label, err)
 	}
-	if _, err := svc.Pause(ctx, b.SandboxHandle); err != nil {
-		return fmt.Errorf("herdr-space: pause sandbox %q: %w", b.SandboxHandle, err)
-	}
-	return nil
-}
-
-// HerdrSpaceResumeByLabel resumes the sandbox bound to label.
-// Returns ErrHerdrSpaceNotFound when no binding exists for label.
-func HerdrSpaceResumeByLabel(ctx context.Context, svc HerdrSpaceSandboxService, storeRoot, label string) error {
-	b, err := HerdrSpaceGetByLabel(ctx, storeRoot, label)
-	if err != nil {
-		return err
-	}
-	if _, err := svc.Resume(ctx, b.SandboxHandle); err != nil {
-		return fmt.Errorf("herdr-space: resume sandbox %q: %w", b.SandboxHandle, err)
-	}
-	return nil
+	b.HerdrWorkspaceID = ""
+	return HerdrSpacePut(ctx, storeRoot, b)
 }
 
 // herdrSpacePruneLister is the subset of *service.Service needed for the prune
@@ -471,48 +458,5 @@ func herdrSpacePruneWorkspaceExistsFn(ctx context.Context, herdrBin string) func
 			return true
 		}
 		return alive[b.HerdrWorkspaceID]
-	}
-}
-
-// herdrSpaceTeardownOnRm tears down the herdr workspace binding for the sandbox
-// identified by handle, closing the workspace via closeWorkspace. Called from
-// sandbox rm after the sandbox itself has been removed. Non-fatal: errors are
-// logged but do not prevent the sandbox removal from reporting success.
-//
-// When closeWorkspace fails the binding is intentionally retained so that
-// space-prune can recover the orphaned workspace on its next run. A transient
-// herdr outage must not permanently discard the live workspace record.
-//
-// sandboxID identifies the sandbox actually being removed. The binding is keyed
-// by handle (label = "nexus3:"+handle), so two sandboxes that share a handle
-// collide on one binding pointing at whichever wrote last. Matching on handle
-// alone therefore closed the workspace of a DIFFERENT live sandbox when its
-// namesake was removed (this destroyed workspace w4B). The guard below tears
-// down ONLY when the binding actually points at the sandbox being removed.
-// An empty sandboxID falls back to the handle-only behaviour for callers that
-// cannot resolve the ID.
-func herdrSpaceTeardownOnRm(ctx context.Context, storeRoot string, closeWorkspace func(context.Context, string) error, handle, sandboxID string) {
-	b, err := HerdrSpaceGetByHandle(ctx, storeRoot, handle)
-	if errors.Is(err, ErrHerdrSpaceNotFound) {
-		return // no binding — nothing to tear down
-	}
-	if err != nil {
-		slog.Warn("space teardown on rm: get binding", "handle", handle, "err", err)
-		return
-	}
-	if sandboxID != "" && b.SandboxID != "" && b.SandboxID != sandboxID {
-		// The binding belongs to a different sandbox that happens to share this
-		// handle. Removing THIS sandbox must not close ITS workspace.
-		slog.Info("space teardown on rm: binding points at a different sandbox, retaining",
-			"handle", handle, "removed_id", sandboxID, "binding_id", b.SandboxID)
-		return
-	}
-	if closeErr := closeWorkspace(ctx, b.HerdrWorkspaceID); closeErr != nil {
-		// Retain the binding so space-prune can recover the live workspace later.
-		slog.Warn("space teardown on rm: close workspace", "workspace_id", b.HerdrWorkspaceID, "err", closeErr)
-		return
-	}
-	if delErr := HerdrSpaceDelete(ctx, storeRoot, b.SpaceLabel); delErr != nil && !errors.Is(delErr, ErrHerdrSpaceNotFound) {
-		slog.Warn("space teardown on rm: delete binding", "label", b.SpaceLabel, "err", delErr)
 	}
 }

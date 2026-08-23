@@ -896,7 +896,7 @@ const file_nexus3_agent_v1_agent_proto_rawDesc = "" +
 	"\x06Signal\x12\x1e.nexus3.agent.v1.SignalRequest\x1a\x1f.nexus3.agent.v1.SignalResponse\x12^\n" +
 	"\rSessionStatus\x12%.nexus3.agent.v1.SessionStatusRequest\x1a&.nexus3.agent.v1.SessionStatusResponse\x12[\n" +
 	"\fListSessions\x12$.nexus3.agent.v1.ListSessionsRequest\x1a%.nexus3.agent.v1.ListSessionsResponse\x12C\n" +
-	"\x04Copy\x12\x1c.nexus3.agent.v1.CopyRequest\x1a\x1d.nexus3.agent.v1.CopyResponseBBZ@github.com/IniZio/nexus3/internal/core/agent/agentpb;agentpbb\x06proto3"
+	"\x04Copy\x12\x1c.nexus3.agent.v1.CopyRequest\x1a\x1d.nexus3.agent.v1.CopyResponseB>Z<github.com/IniZio/nexus3/internal/core/agent/agentpb;agentpbb\x06proto3"
 
 var (
 	file_nexus3_agent_v1_agent_proto_rawDescOnce sync.Once

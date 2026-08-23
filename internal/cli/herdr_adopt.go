@@ -82,41 +82,38 @@ func herdrSpaceResolveOrAdopt(
 // the herdr workspace and persisting the updated binding if it had none.
 //
 // Only pane-opening needs this. Splitting it out from adoption is what keeps
-// `space-pause` from leaving an empty herdr workspace behind every time it
-// touches a sandbox that herdr did not create.
+// `space-pause` from leaving an empty herdr workspace.
 //
-// The second return value is the new workspace's root pane ID, non-empty
-// only when this call actually minted a workspace (as opposed to reusing an
-// existing one). The caller splits the guest pane beside that root pane and
-// then closes the root, leaving the workspace guest-only — see
-// herdrOpenGuestShellPane.
+// The rootPaneID is only non-empty when this call actually minted the workspace.
 //
-// Orphan window (TBD-SHL-7): if HerdrSpacePut fails after herdrWorkspaceCreate
-// has already returned a workspace ID, the live herdr workspace is permanently
-// orphaned — its ID is not recorded in any binding and cannot be reached or
-// reaped by space-prune.
+// TBD-SHL-7 rollback is handled by herdrSpaceEnsureWorkspaceTxn: if
+// HerdrSpacePut fails after herdrWorkspaceCreate, the live workspace is closed
+// so it is not permanently orphaned.
 func herdrSpaceEnsureWorkspace(
 	ctx context.Context,
 	svc herdrAdoptGetter,
 	storeRoot, herdrBin string,
 	b HerdrSpaceBinding,
 ) (HerdrSpaceBinding, string, error) {
-	if b.HerdrWorkspaceID != "" {
-		return b, "", nil
+	// Compute hostCwd only when we will actually try to create a workspace.
+	// Avoids a nil-svc dereference in the noop path (HerdrWorkspaceID set)
+	// and the no-binary path (herdrBin empty) — both short-circuit in the txn.
+	var hostCwd string
+	if b.HerdrWorkspaceID == "" && herdrBin != "" {
+		hostCwd = herdrShellHostCwd(ctx, b.SandboxHandle, svc)
 	}
-	if herdrBin == "" {
-		return b, "", fmt.Errorf("cannot create a herdr workspace for %q: no herdr binary (HERDR_BIN_PATH unset and none on PATH)", b.SandboxHandle)
+	deps := txnDeps{
+		workspaceCreate: func(ctx context.Context, hBin, label, cwd string) (string, string, error) {
+			return herdrWorkspaceCreate(ctx, hBin, label, cwd)
+		},
+		workspaceClose: func(ctx context.Context, wsID string) error {
+			return herdrWorkspaceClose(ctx, herdrBin, wsID)
+		},
+		bindingPut: func(ctx context.Context, b HerdrSpaceBinding) error {
+			return HerdrSpacePut(ctx, storeRoot, b)
+		},
 	}
-	hostCwd := herdrShellHostCwd(ctx, b.SandboxHandle, svc)
-	id, rootPaneID, err := herdrWorkspaceCreate(ctx, herdrBin, b.SpaceLabel, hostCwd)
-	if err != nil {
-		return b, "", fmt.Errorf("herdr workspace create for %q: %w", b.SpaceLabel, err)
-	}
-	b.HerdrWorkspaceID = id
-	if err := HerdrSpacePut(ctx, storeRoot, b); err != nil {
-		return b, "", fmt.Errorf("store binding for %q: %w", b.SpaceLabel, err)
-	}
-	return b, rootPaneID, nil
+	return herdrSpaceEnsureWorkspaceTxn(ctx, b, hostCwd, deps, herdrBin)
 }
 
 // herdrAdoptNotice tells the operator on stderr that a sandbox was adopted, so

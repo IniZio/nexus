@@ -287,7 +287,11 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if adopted {
 			herdrAdoptNotice(b)
 		}
-		return HerdrSpacePauseByLabel(ctx, svc, storeRoot, b.SpaceLabel)
+		// Act on the already-resolved binding directly — no re-lookup by label.
+		if _, err := svc.Pause(ctx, b.SandboxHandle); err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-pause: " + err.Error(), Err: err}
+		}
+		return nil
 
 	case "space-resume":
 		if len(rest) == 0 {
@@ -308,7 +312,11 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if adopted {
 			herdrAdoptNotice(b)
 		}
-		return HerdrSpaceResumeByLabel(ctx, svc, storeRoot, b.SpaceLabel)
+		// Act on the already-resolved binding directly — no re-lookup by label.
+		if _, err := svc.Resume(ctx, b.SandboxHandle); err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-resume: " + err.Error(), Err: err}
+		}
+		return nil
 
 	case "space-remove":
 		if len(rest) == 0 {
@@ -331,12 +339,26 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		}
 		herdrBin, herdrBinErr := resolveHerdrBin()
 		if herdrBinErr != nil {
-			// herdr unavailable: herdrWorkspaceClose will fail, and herdrSpaceRemoveFull
-			// will retain the binding for space-prune recovery. The sandbox removal
-			// still proceeds — only the binding deletion is skipped.
+			// herdr unavailable: workspaceClose will return herdrBinErr, causing
+			// teardown to retain the binding for space-prune recovery.
 			slog.Warn("__herdr-plugin space-remove: herdr not found; binding retained if workspace close fails", "err", herdrBinErr)
+			herdrBin = ""
 		}
-		return herdrSpaceRemoveFull(ctx, svc, storeRoot, herdrBin, b)
+		deps := txnDeps{
+			workspaceClose: func(ctx context.Context, wsID string) error {
+				if herdrBinErr != nil {
+					return herdrBinErr
+				}
+				return herdrWorkspaceClose(ctx, herdrBin, wsID)
+			},
+			bindingDelete: func(ctx context.Context, label string) error {
+				return HerdrSpaceDelete(ctx, storeRoot, label)
+			},
+			svcRemove: func(ctx context.Context, ref string) error {
+				return svc.Remove(ctx, ref)
+			},
+		}
+		return herdrSpaceTeardown(ctx, storeRoot, b.SandboxHandle, deps, teardownOpts{failOpen: false})
 
 	case "shell-cwd":
 		// Prints the guest working directory for a sandbox's workspace.
@@ -1976,44 +1998,6 @@ func herdrShellHostCwd(ctx context.Context, ref string, svc sandboxGetter) strin
 	return ""
 }
 
-// herdrSpaceRemoveFull is the complete teardown sequence for a herdr space:
-//  1. Remove the sandbox (tolerating store.ErrNotFound — already gone).
-//  2. Close the herdr workspace (tolerating workspace_not_found — already closed).
-//  3. Delete the binding — ONLY when step 2 succeeded.
-//
-// Invariant: a close that did not happen must not authorise deleting the
-// binding. The binding is the only record of this workspace's HerdrWorkspaceID;
-// deleting it after a failed close orphans the live workspace permanently
-// because space-prune operates on bindings. On close failure the binding is
-// retained so space-prune can recover the workspace on its next run.
-//
-// "Workspace already gone" (workspace_not_found) counts as success — the live
-// resource is confirmed absent, so deleting the binding is safe.
-func herdrSpaceRemoveFull(ctx context.Context, svc HerdrSpaceSandboxService, storeRoot, herdrBin string, b HerdrSpaceBinding) error {
-	if err := svc.Remove(ctx, b.SandboxHandle); err != nil {
-		// Tolerate not-found: sandbox already gone via another route (reaper,
-		// manual remove). Proceed to close and binding cleanup.
-		// store.ErrNotFound is wrapped by service.resolve as "resolve %q: %w",
-		// so errors.Is traverses the chain; the string fallback catches fakes.
-		if !errors.Is(err, store.ErrNotFound) && !strings.Contains(err.Error(), "not found") {
-			return fmt.Errorf("herdr-space: remove sandbox %q: %w", b.SandboxHandle, err)
-		}
-	}
-	if err := herdrWorkspaceClose(ctx, herdrBin, b.HerdrWorkspaceID); err != nil {
-		// Retain the binding: a close that did not happen must not authorise
-		// deleting the only record of this workspace's HerdrWorkspaceID.
-		// The binding stays so space-prune can retry on its next run.
-		slog.Warn("herdr-space: close workspace failed; binding retained for space-prune recovery",
-			"workspace_id", b.HerdrWorkspaceID, "err", err)
-		return nil
-	}
-	// Close succeeded (or there was no workspace to close) — safe to delete.
-	if err := HerdrSpaceDelete(ctx, storeRoot, b.SpaceLabel); err != nil && !errors.Is(err, ErrHerdrSpaceNotFound) {
-		return fmt.Errorf("herdr-space: delete binding %q: %w", b.SpaceLabel, err)
-	}
-	return nil
-}
-
 // herdrWorkspaceClose runs `herdr workspace close <workspaceID>`.
 // A "workspace_not_found" response is treated as success (already closed).
 //
@@ -2123,7 +2107,7 @@ func herdrPluginSpacePrune(ctx context.Context, args []string, w io.Writer, svc 
 			return fmt.Errorf("space-prune: removeSandbox not available (svc does not implement HerdrSpaceSandboxService)")
 		}
 	}
-	return herdrSpacePruneFull(ctx, w, storeRoot, sandboxExists, workspaceExists, closer, removeSandbox, *apply)
+	return herdrSpacePruneFull(ctx, w, storeRoot, herdrBin, sandboxExists, workspaceExists, closer, removeSandbox, *apply)
 }
 
 // herdrSpacePruneFull is the testable core of space-prune.
@@ -2145,6 +2129,7 @@ func herdrSpacePruneFull(
 	ctx context.Context,
 	w io.Writer,
 	storeRoot string,
+	herdrBin string,
 	sandboxExists func(HerdrSpaceBinding) bool,
 	workspaceExists func(HerdrSpaceBinding) bool,
 	closer func(context.Context, string) error,
@@ -2172,10 +2157,12 @@ func herdrSpacePruneFull(
 	}
 	fmt.Fprintf(w, "Prune report (%s): %d stale binding(s), %d to keep\n", mode, len(stale), len(keep))
 	for _, b := range stale {
-		// Annotate wt/ bindings that would have their VM reaped (not just
-		// binding-only cleanup) so operators can distinguish the two outcomes.
-		if isHerdrWorktreeHandle(b.SandboxHandle) && sandboxExists(b) && !workspaceExists(b) {
+		sbPresent := sandboxExists(b)
+		wsPresent := workspaceExists(b)
+		if isHerdrWorktreeHandle(b.SandboxHandle) && sbPresent && !wsPresent {
 			fmt.Fprintf(w, "  STALE  sandbox=%s  workspace=%s  (wt/ VM would be reaped)\n", b.SandboxHandle, b.HerdrWorkspaceID)
+		} else if sbPresent && !wsPresent {
+			fmt.Fprintf(w, "  STALE  sandbox=%s  workspace=%s  (workspace-id would be cleared)\n", b.SandboxHandle, b.HerdrWorkspaceID)
 		} else {
 			fmt.Fprintf(w, "  STALE  sandbox=%s  workspace=%s\n", b.SandboxHandle, b.HerdrWorkspaceID)
 		}
@@ -2191,10 +2178,24 @@ func herdrSpacePruneFull(
 
 	deleted := 0
 	for _, b := range stale {
-		// Auto-bound worktree sandbox: if the VM is still running but the
-		// workspace is gone, reap the VM first.  Non-worktree sandboxes and
-		// bindings whose sandbox is already absent skip this block.
-		if isHerdrWorktreeHandle(b.SandboxHandle) && sandboxExists(b) && !workspaceExists(b) {
+		sbPresent := sandboxExists(b)
+		wsPresent := workspaceExists(b)
+
+		// Case: sandbox running, workspace gone, non-wt/ → clear stale workspace ID
+		// and keep the binding so the next space-create can mint a fresh workspace.
+		if sbPresent && !wsPresent && !isHerdrWorktreeHandle(b.SandboxHandle) {
+			if err := herdrSpaceBindingClearWorkspaceID(ctx, storeRoot, b.SpaceLabel); err != nil {
+				slog.Warn("space-prune: clear stale workspace-id failed; binding retained",
+					"label", b.SpaceLabel, "err", err)
+				continue
+			}
+			fmt.Fprintf(w, "  CLEARED workspace-id for sandbox=%s (sandbox running, workspace gone)\n", b.SandboxHandle)
+			deleted++ // counts as reconciled
+			continue
+		}
+
+		// Case: wt/ sandbox running, workspace gone → reap VM then delete binding.
+		if isHerdrWorktreeHandle(b.SandboxHandle) && sbPresent && !wsPresent {
 			if err := removeSandbox(ctx, b.SandboxHandle); err != nil {
 				slog.Warn("space-prune: reap wt/ sandbox failed; binding retained for next run",
 					"handle", b.SandboxHandle, "err", err)
@@ -2202,24 +2203,68 @@ func herdrSpacePruneFull(
 			}
 			fmt.Fprintf(w, "  REAPED sandbox=%s (workspace gone)\n", b.SandboxHandle)
 		}
-		// Close the workspace. herdrWorkspaceClose treats workspace_not_found
-		// as success, so a gone workspace does not block binding cleanup.
+
+		// All other stale cases (both absent, or sandbox absent): close workspace + delete binding.
 		if err := closer(ctx, b.HerdrWorkspaceID); err != nil {
-			// Retain the binding: a close that did not happen must not authorise
-			// deleting the only record of this workspace's HerdrWorkspaceID.
-			// The binding stays so the next prune run can retry.
 			slog.Warn("space-prune: close workspace failed; binding retained for next run",
 				"workspace_id", b.HerdrWorkspaceID, "err", err)
 			continue
 		}
 		if err := HerdrSpaceDelete(ctx, storeRoot, b.SpaceLabel); err != nil && !errors.Is(err, ErrHerdrSpaceNotFound) {
-			slog.Warn("space-prune: delete binding", "label", b.SpaceLabel, "err", err)
+			slog.Warn("space-prune: delete binding failed",
+				"label", b.SpaceLabel, "err", err)
 			continue
 		}
 		deleted++
 	}
 	fmt.Fprintf(w, "Deleted %d stale binding(s).\n", deleted)
+	if apply {
+		herdrSpaceSweepOrphanWorkspaces(ctx, w, storeRoot, herdrBin, closer)
+	}
 	return nil
+}
+
+// herdrSpaceSweepOrphanWorkspaces closes herdr workspaces whose label starts
+// with "nexus3:" but have no corresponding binding. These are created when
+// herdrSpaceEnsureWorkspaceTxn fails after workspace creation (TBD-SHL-7).
+// A failure to list workspaces is a no-op (fail-safe).
+func herdrSpaceSweepOrphanWorkspaces(ctx context.Context, w io.Writer, storeRoot, herdrBin string, closer func(context.Context, string) error) {
+	if herdrBin == "" {
+		return
+	}
+	out, err := herdrExecCommandContext(ctx, herdrBin, "workspace", "list").Output()
+	if err != nil {
+		slog.Warn("space-prune: orphan sweep: workspace list failed", "err", err)
+		return
+	}
+	var resp struct {
+		Result struct {
+			Workspaces []struct {
+				WorkspaceID string `json:"workspace_id"`
+				Label       string `json:"label"`
+			} `json:"workspaces"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		slog.Warn("space-prune: orphan sweep: parse workspace list", "err", err)
+		return
+	}
+	for _, ws := range resp.Result.Workspaces {
+		if !strings.HasPrefix(ws.Label, "nexus3:") {
+			continue
+		}
+		// Derive the expected SpaceLabel and check for a binding.
+		if _, err := HerdrSpaceGetByLabel(ctx, storeRoot, ws.Label); err == nil {
+			continue // binding exists — not orphaned
+		}
+		// No binding: close the orphaned workspace.
+		if err := closer(ctx, ws.WorkspaceID); err != nil {
+			slog.Warn("space-prune: orphan sweep: close workspace failed",
+				"workspace_id", ws.WorkspaceID, "label", ws.Label, "err", err)
+			continue
+		}
+		fmt.Fprintf(w, "  ORPHAN closed workspace=%s label=%s\n", ws.WorkspaceID, ws.Label)
+	}
 }
 
 // sealEnv returns a copy of env (key=value pairs) with all HERDR_* entries

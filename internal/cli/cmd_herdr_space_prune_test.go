@@ -83,7 +83,7 @@ func TestHerdrSpacePrune_StaleSandbox(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, "", sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
 		t.Fatalf("herdrSpacePruneFull: %v", err)
 	}
 
@@ -100,8 +100,13 @@ func TestHerdrSpacePrune_StaleSandbox(t *testing.T) {
 	}
 }
 
-// TestHerdrSpacePrune_StaleWorkspace: a binding whose workspace is gone
-// (sandbox still alive) is pruned.
+// TestHerdrSpacePrune_StaleWorkspace: a non-wt/ binding whose workspace is
+// gone but sandbox is still alive has its HerdrWorkspaceID cleared (binding
+// retained — the sandbox is running; deleting the binding would strand it).
+//
+// MUTATION TARGET: the `sbPresent && !wsPresent && !isHerdrWorktreeHandle` branch
+// in herdrSpacePruneFull. Removing it causes the binding to be deleted instead
+// of cleared → RED (binding missing after prune).
 func TestHerdrSpacePrune_StaleWorkspace(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -123,12 +128,23 @@ func TestHerdrSpacePrune_StaleWorkspace(t *testing.T) {
 	closer := func(_ context.Context, _ string) error { return nil }
 
 	var buf bytes.Buffer
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, "", sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
 		t.Fatalf("herdrSpacePruneFull: %v", err)
 	}
 
-	if _, err := HerdrSpaceGetByLabel(ctx, root, b.SpaceLabel); !errors.Is(err, ErrHerdrSpaceNotFound) {
-		t.Errorf("stale-workspace binding must be pruned; err=%v", err)
+	// Binding must be retained (sandbox still running).
+	got, err := HerdrSpaceGetByLabel(ctx, root, b.SpaceLabel)
+	if err != nil {
+		t.Errorf("binding must be retained (sandbox running); err=%v", err)
+	}
+	// Workspace ID must be cleared so next space-create mints a fresh one.
+	if got.HerdrWorkspaceID != "" {
+		t.Errorf("HerdrWorkspaceID must be cleared after stale-workspace prune; got %q", got.HerdrWorkspaceID)
+	}
+	// closer must NOT have been called (workspace is already gone; no point closing).
+	// The output should mention the clear action.
+	if !strings.Contains(buf.String(), "CLEARED") {
+		t.Errorf("prune output must mention CLEARED; got %q", buf.String())
 	}
 }
 
@@ -159,7 +175,7 @@ func TestHerdrSpacePrune_ValidBinding(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, "", sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
 		t.Fatalf("herdrSpacePruneFull: %v", err)
 	}
 
@@ -197,7 +213,7 @@ func TestHerdrSpacePrune_DryRunPreservesAll(t *testing.T) {
 
 	var buf bytes.Buffer
 	// apply=false
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, false); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, "", sandboxExists, workspaceExists, closer, noopRemoveSandbox, false); err != nil {
 		t.Fatalf("herdrSpacePruneFull (dry-run): %v", err)
 	}
 
@@ -210,8 +226,17 @@ func TestHerdrSpacePrune_DryRunPreservesAll(t *testing.T) {
 	}
 }
 
-// TestHerdrSpacePrune_MixedBindings: three bindings — one stale sandbox, one
-// stale workspace, one valid — only the two stale ones are pruned.
+// TestHerdrSpacePrune_MixedBindings: three bindings — stale sandbox (b1),
+// stale workspace with running sandbox (b2), and valid (b3).
+//
+// 4-case reconciler behaviour:
+//   b1: sandbox absent — workspace closed + binding deleted.
+//   b2: sandbox present, workspace absent, non-wt/ — workspace-id cleared, binding retained.
+//   b3: both present — unchanged.
+//
+// MUTATION TARGET: the `sbPresent && !wsPresent && !isHerdrWorktreeHandle` branch in
+// herdrSpacePruneFull. Removing it causes b2 to be deleted instead of workspace-id-cleared
+// (wrong: the sandbox is still running) → RED.
 func TestHerdrSpacePrune_MixedBindings(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -231,21 +256,27 @@ func TestHerdrSpacePrune_MixedBindings(t *testing.T) {
 	)
 	var buf bytes.Buffer
 	closer := func(_ context.Context, _ string) error { return nil }
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, "", sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
 		t.Fatalf("herdrSpacePruneFull: %v", err)
 	}
 
-	// b1: sandbox gone → pruned
+	// b1: sandbox gone → binding deleted.
 	if _, err := HerdrSpaceGetByLabel(ctx, root, b1.SpaceLabel); !errors.Is(err, ErrHerdrSpaceNotFound) {
-		t.Errorf("b1 (stale sandbox) must be pruned; err=%v", err)
+		t.Errorf("b1 (sandbox absent) must be pruned; err=%v", err)
 	}
-	// b2: workspace gone → pruned
-	if _, err := HerdrSpaceGetByLabel(ctx, root, b2.SpaceLabel); !errors.Is(err, ErrHerdrSpaceNotFound) {
-		t.Errorf("b2 (stale workspace) must be pruned; err=%v", err)
+	// b2: sandbox alive, workspace gone, non-wt/ → binding retained with HerdrWorkspaceID cleared.
+	got2, err := HerdrSpaceGetByLabel(ctx, root, b2.SpaceLabel)
+	if err != nil {
+		t.Errorf("b2 (sandbox running, workspace gone) binding must be retained; err=%v", err)
+	} else if got2.HerdrWorkspaceID != "" {
+		t.Errorf("b2 HerdrWorkspaceID must be cleared; got %q", got2.HerdrWorkspaceID)
 	}
-	// b3: both alive → preserved
-	if _, err := HerdrSpaceGetByLabel(ctx, root, b3.SpaceLabel); err != nil {
+	// b3: both alive → unchanged.
+	got3, err := HerdrSpaceGetByLabel(ctx, root, b3.SpaceLabel)
+	if err != nil {
 		t.Errorf("b3 (valid) must be preserved; err=%v", err)
+	} else if got3.HerdrWorkspaceID != "wC" {
+		t.Errorf("b3 HerdrWorkspaceID must be unchanged; got %q", got3.HerdrWorkspaceID)
 	}
 }
 
@@ -571,7 +602,7 @@ func TestHerdrSpacePruneFull_CloseFail_BindingRetained(t *testing.T) {
 	closer := func(_ context.Context, _ string) error { return closeErr }
 
 	var buf bytes.Buffer
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, "", sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
 		t.Fatalf("herdrSpacePruneFull: %v", err)
 	}
 
@@ -612,7 +643,7 @@ func TestHerdrSpacePruneFull_CloseSucceeds_BindingDeleted(t *testing.T) {
 	closer := func(_ context.Context, _ string) error { return nil } // close succeeds
 
 	var buf bytes.Buffer
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, "", sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
 		t.Fatalf("herdrSpacePruneFull: %v", err)
 	}
 
@@ -672,7 +703,7 @@ func TestHerdrSpacePruneWorkspaceExistsFn_AdoptedBinding(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, "", sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
 		t.Fatalf("herdrSpacePruneFull: %v", err)
 	}
 
@@ -744,7 +775,7 @@ func TestHerdrSpacePruneFull_DeleteFail_BindingRetained(t *testing.T) {
 	closer := func(_ context.Context, _ string) error { return nil } // close succeeds
 
 	var buf bytes.Buffer
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, "", sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
 		t.Fatalf("herdrSpacePruneFull: %v", err)
 	}
 

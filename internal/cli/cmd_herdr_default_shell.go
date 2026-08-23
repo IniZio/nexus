@@ -718,13 +718,43 @@ func herdrWtSupervisedShell(ctx context.Context, nexus3Bin string, binding Herdr
 		return nil
 	}
 
-	// Last pane: reap the sandbox VM.
-	if err := herdrWtSandboxRemoverFn(ctx, binding.SandboxHandle); err != nil {
-		// FAIL-OPEN: log and exit; prune backstop catches it.
-		slog.Warn("nexus3-guest-shell: wt/ sandbox rm failed; prune will catch it",
-			"handle", binding.SandboxHandle, "err", err)
+	// Last pane: tear down the space (VM + workspace + binding) atomically.
+	// FAIL-OPEN: any error is logged by herdrSpaceTeardown (failOpen:true) and
+	// swallowed here — a teardown bug must never freeze a new pane.
+	storeRoot, storeErr := store.DefaultRoot()
+	herdrBin, _ := resolveHerdrBin()
+	if storeErr != nil {
+		// storeRoot unavailable: fall back to VM-only removal.
+		slog.Warn("nexus3-guest-shell: wt/ store root unavailable; falling back to VM-only reap",
+			"handle", binding.SandboxHandle, "err", storeErr)
+		if err := herdrWtSandboxRemoverFn(ctx, binding.SandboxHandle); err != nil {
+			slog.Warn("nexus3-guest-shell: wt/ sandbox rm failed; prune will catch it",
+				"handle", binding.SandboxHandle, "err", err)
+		}
+		return nil
 	}
+	herdrWtTeardownFn(ctx, storeRoot, binding.SandboxHandle, herdrBin, binding.SandboxID)
 	return nil
+}
+
+// herdrWtTeardownFn performs the atomic wt/ space teardown after the last pane
+// closes.  Replaced in tests to avoid live store/herdr calls.
+var herdrWtTeardownFn = func(ctx context.Context, storeRoot, handle, herdrBin, sandboxID string) {
+	deps := txnDeps{
+		svcRemove: func(ctx context.Context, ref string) error {
+			return herdrWtSandboxRemoverFn(ctx, ref)
+		},
+		workspaceClose: func(ctx context.Context, wsID string) error {
+			return herdrWorkspaceClose(ctx, herdrBin, wsID)
+		},
+		bindingDelete: func(ctx context.Context, label string) error {
+			return HerdrSpaceDelete(ctx, storeRoot, label)
+		},
+	}
+	if err := herdrSpaceTeardown(ctx, storeRoot, handle, deps, teardownOpts{failOpen: true, expectedSandboxID: sandboxID}); err != nil {
+		// herdrSpaceTeardown with failOpen:true never returns non-nil; belt-and-suspenders.
+		slog.Warn("nexus3-guest-shell: wt/ teardown error (swallowed)", "handle", handle, "err", err)
+	}
 }
 
 // herdrWtChildRunner is the production implementation of herdrWtChildRunnerFn.

@@ -5,7 +5,6 @@ package cli
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/store"
 )
 
 // ── TBD-PD-33: herdrShellCwd ─────────────────────────────────────────────────
@@ -135,132 +133,6 @@ func TestHerdrSpaceResolve_NotFound(t *testing.T) {
 	}
 }
 
-// ── TBD-PD-35: herdrSpaceRemoveFull ErrNotFound tolerance ───────────────────
-
-// storeNotFoundSvc is a fake that returns an error wrapping store.ErrNotFound.
-type storeNotFoundSvc struct {
-	removed []string
-}
-
-func (s *storeNotFoundSvc) Pause(_ context.Context, ref string) (domain.Sandbox, error) {
-	return domain.Sandbox{}, nil
-}
-func (s *storeNotFoundSvc) Resume(_ context.Context, ref string) (domain.Sandbox, error) {
-	return domain.Sandbox{}, nil
-}
-func (s *storeNotFoundSvc) Remove(_ context.Context, ref string) error {
-	s.removed = append(s.removed, ref)
-	// Simulate service wrapping store.ErrNotFound as "resolve %q: %w".
-	return fmt.Errorf("resolve %q: %w", ref, store.ErrNotFound)
-}
-
-// TestHerdrSpaceRemoveFull_ToleratesNotFound confirms that a sandbox that is
-// already gone (store.ErrNotFound from svc.Remove) still results in binding
-// deletion when there is no workspace to close (HerdrWorkspaceID == "").
-// workspaceID=="" causes herdrWorkspaceClose to return nil immediately, so the
-// invariant (delete only on successful close) is satisfied.
-func TestHerdrSpaceRemoveFull_ToleratesNotFound(t *testing.T) {
-	root := t.TempDir()
-	ctx := context.Background()
-	// HerdrWorkspaceID is empty: no live workspace exists, so close is a no-op
-	// (herdrWorkspaceClose returns nil), and the binding should be deleted.
-	b := HerdrSpaceBinding{SpaceLabel: "nexus3:demo", HerdrWorkspaceID: "", SandboxHandle: "orca/demo", SandboxID: "sb-xxx"}
-	if err := HerdrSpacePut(ctx, root, b); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-
-	svc := &storeNotFoundSvc{}
-	// herdrBin is non-empty so herdrWorkspaceClose passes the binary check;
-	// workspaceID == "" short-circuits immediately with nil (no-op success).
-	// The binary path is never executed — it just needs to be a non-empty string.
-	if err := herdrSpaceRemoveFull(ctx, svc, root, "/no-such-herdr", b); err != nil {
-		t.Fatalf("herdrSpaceRemoveFull returned error: %v", err)
-	}
-	// svc.Remove was called (attempted removal)
-	if len(svc.removed) != 1 || svc.removed[0] != b.SandboxHandle {
-		t.Errorf("removed = %v, want [%s]", svc.removed, b.SandboxHandle)
-	}
-	// Binding deleted: sandbox not-found tolerated, no workspace to close.
-	if _, err := HerdrSpaceGetByLabel(ctx, root, b.SpaceLabel); !errors.Is(err, ErrHerdrSpaceNotFound) {
-		t.Errorf("binding still present after RemoveFull with not-found sandbox; got %v", err)
-	}
-}
-
-// ── Site A: close-failure retention (invariant: close must succeed before delete) ──
-
-// TestHerdrSpaceRemoveFull_CloseFail_BindingRetained asserts that when
-// herdrWorkspaceClose fails (herdrBin == "" + non-empty workspaceID), the
-// binding is NOT deleted. The binding is the only record of the workspace ID;
-// deleting it after a failed close orphans the live workspace forever.
-//
-// MUTATION TARGET: remove the `return nil` inside the close-error branch of
-// herdrSpaceRemoveFull so the code falls through to HerdrSpaceDelete.
-// Expected RED: binding gone after call, but test asserts binding present.
-func TestHerdrSpaceRemoveFull_CloseFail_BindingRetained(t *testing.T) {
-	root := t.TempDir()
-	ctx := context.Background()
-	// HerdrWorkspaceID is non-empty and herdrBin is "": herdrWorkspaceClose returns error.
-	b := HerdrSpaceBinding{SpaceLabel: "nexus3:retain", HerdrWorkspaceID: "wLIVE", SandboxHandle: "orca/retain", SandboxID: "sb-r"}
-	if err := HerdrSpacePut(ctx, root, b); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	svc := &fakeSandboxSvc{} // sandbox remove succeeds
-	if err := herdrSpaceRemoveFull(ctx, svc, root, "", b); err != nil {
-		t.Fatalf("herdrSpaceRemoveFull returned error: %v", err)
-	}
-	// Binding must still be present — close failed, retention required.
-	if _, err := HerdrSpaceGetByLabel(ctx, root, b.SpaceLabel); err != nil {
-		t.Errorf("binding must be retained after close failure; HerdrSpaceGetByLabel: %v", err)
-	}
-}
-
-// TestHerdrSpaceRemoveFull_CloseSucceeds_BindingDeleted asserts that when close
-// returns nil (workspaceID == "" → no-op success), the binding IS deleted.
-//
-// MUTATION TARGET: add `return nil` before HerdrSpaceDelete in herdrSpaceRemoveFull
-// so the binding is never deleted.
-// Expected RED: binding present after call, but test asserts binding absent.
-func TestHerdrSpaceRemoveFull_CloseSucceeds_BindingDeleted(t *testing.T) {
-	root := t.TempDir()
-	ctx := context.Background()
-	// HerdrWorkspaceID is empty: herdrWorkspaceClose returns nil immediately.
-	b := HerdrSpaceBinding{SpaceLabel: "nexus3:delete-me", HerdrWorkspaceID: "", SandboxHandle: "orca/delete-me", SandboxID: "sb-d"}
-	if err := HerdrSpacePut(ctx, root, b); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	svc := &fakeSandboxSvc{}
-	// herdrBin is non-empty so herdrWorkspaceClose passes the binary check;
-	// workspaceID == "" short-circuits immediately with nil (no-op success).
-	// The binary path is never executed — it just needs to be a non-empty string.
-	if err := herdrSpaceRemoveFull(ctx, svc, root, "/no-such-herdr", b); err != nil {
-		t.Fatalf("herdrSpaceRemoveFull returned error: %v", err)
-	}
-	// Binding must be gone — close succeeded (no-op), delete authorised.
-	if _, err := HerdrSpaceGetByLabel(ctx, root, b.SpaceLabel); !errors.Is(err, ErrHerdrSpaceNotFound) {
-		t.Errorf("binding must be deleted after close success; got err=%v", err)
-	}
-}
-
-// TestHerdrSpaceRemoveFull_PropagatesRealError confirms non-not-found errors still fail.
-func TestHerdrSpaceRemoveFull_PropagatesRealError(t *testing.T) {
-	root := t.TempDir()
-	ctx := context.Background()
-	b := HerdrSpaceBinding{SpaceLabel: "nexus3:demo", HerdrWorkspaceID: "wX", SandboxHandle: "orca/demo", SandboxID: "sb-xxx"}
-	if err := HerdrSpacePut(ctx, root, b); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-
-	svc := &fakeSandboxSvc{removeErr: errors.New("driver offline")}
-	err := herdrSpaceRemoveFull(ctx, svc, root, "", b)
-	if err == nil {
-		t.Fatal("expected error from service, got nil")
-	}
-	// Binding must remain.
-	if _, err2 := HerdrSpaceGetByLabel(ctx, root, b.SpaceLabel); err2 != nil {
-		t.Errorf("binding must remain after failed RemoveFull, got %v", err2)
-	}
-}
-
 // ── TBD-PD-35: herdrWorkspaceClose ──────────────────────────────────────────
 
 // TestHerdrWorkspaceClose_EmptyBinReturnsError confirms empty herdrBin returns
@@ -321,37 +193,6 @@ func TestHerdrWorkspaceClose_SuccessIsNil(t *testing.T) {
 	}
 }
 
-// ── mutation-test guard: store.ErrNotFound tolerance ─────────────────────────
-
-// TestHerdrSpaceRemoveFull_MutationGuard_NotFoundTolerance verifies that
-// removing the not-found check in herdrSpaceRemoveFull would cause a test failure.
-// (This test IS the evidence that the guard is covered — a mutation that makes
-// herdrSpaceRemoveFull return the not-found error would fail this test.)
-func TestHerdrSpaceRemoveFull_MutationGuard_NotFoundTolerance(t *testing.T) {
-	root := t.TempDir()
-	ctx := context.Background()
-	// HerdrWorkspaceID is empty: close is a no-op, so the binding deletion path
-	// is reached. This isolates the not-found-tolerance mutation guard from the
-	// close-failure retention path.
-	b := HerdrSpaceBinding{SpaceLabel: "nexus3:x", HerdrWorkspaceID: "", SandboxHandle: "p/x", SandboxID: "sb-q"}
-	if err := HerdrSpacePut(ctx, root, b); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	// Inject a not-found error from the sandbox service.
-	// herdrBin is non-empty so herdrWorkspaceClose passes the binary check;
-	// workspaceID == "" short-circuits with nil (no-op success), so the
-	// function reaches HerdrSpaceDelete, proving the not-found-tolerance guard.
-	svc := &storeNotFoundSvc{}
-	err := herdrSpaceRemoveFull(ctx, svc, root, "/no-such-herdr", b)
-	if err != nil {
-		t.Errorf("MutationGuard: herdrSpaceRemoveFull must succeed when sandbox not found; got %v", err)
-	}
-	// The binding must be gone — if not, the tolerate logic wasn't reached.
-	if _, getErr := HerdrSpaceGetByLabel(ctx, root, b.SpaceLabel); !errors.Is(getErr, ErrHerdrSpaceNotFound) {
-		t.Errorf("MutationGuard: binding still present; not-found tolerance did not delete it; getErr=%v", getErr)
-	}
-}
-
 // ── mutation-test guard: resolver routing ────────────────────────────────────
 
 // TestHerdrSpaceResolve_MutationGuard_HandleRouting verifies that routing
@@ -383,7 +224,6 @@ func TestHerdrSpaceResolve_MutationGuard_HandleRouting(t *testing.T) {
 }
 
 // ── TBD-PD-33: --cwd flag plumbing ──────────────────────────────────────────
-
 
 func TestHerdrShellCwd_EmptyGuestPathSkipped(t *testing.T) {
 	// A LiveMount with an empty GuestPath should be skipped, not returned.

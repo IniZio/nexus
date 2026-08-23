@@ -9,18 +9,50 @@ description: "From nothing to a running sandbox in minutes"
 
 nexus3 is a microVM sandbox manager. Each sandbox is an isolated Cloud Hypervisor VM with its own kernel, disk, and network. The CLI and MCP server expose the same primitives.
 
-## Install <Badge type="danger" text="not built" />
+## Install <Badge type="tip" text="built" />
 
-The target provides a one-line installer:
+Installing the herdr plugin is the install path. One command provisions nexus3
+itself on Linux x86-64:
 
+```sh
+herdr plugin install IniZio/nexus3/plugins/herdr
 ```
-curl -fsSL https://raw.githubusercontent.com/inizio/nexus3/main/scripts/install.sh | sh
+
+The plugin's build hook downloads the pinned `nexus3-linux-amd64` binary from
+GitHub Releases, verifies the SHA256 checksum, installs it to
+`~/.local/bin/nexus3`, and runs `nexus3 herdr install-default-shell`.
+
+**One manual step.** Paste the printed line into `~/.config/herdr/config.toml`:
+
+```toml
+[terminal]
+default_shell = ~/.local/bin/nexus3-guest-shell
 ```
 
-**What works today — build from source:**
+herdr's config is user-owned and is not written automatically.
 
+**Platform matrix:**
+
+| Platform | Install method |
+|---|---|
+| Linux x86-64 | `herdr plugin install IniZio/nexus3/plugins/herdr` (binary bundled) |
+| macOS (any arch) | Build from source, then wire manually (see below) |
+| Linux arm64 | Build from source, then wire manually (see below) |
+
+**macOS / Linux arm64 — build from source:**
+
+```sh
+git clone https://github.com/IniZio/nexus3
+cd nexus3 && go build -o ~/.local/bin/nexus3 ./cmd/nexus3
+nexus3 herdr install-default-shell
+# paste the printed line into ~/.config/herdr/config.toml
+NEXUS3_LOCAL=1 herdr plugin install /path/to/nexus3/plugins/herdr
 ```
-git clone https://github.com/inizio/nexus3
+
+**Without herdr — build from source directly:**
+
+```sh
+git clone https://github.com/IniZio/nexus3
 cd nexus3
 go build -o nexus3 ./cmd/nexus3
 ```

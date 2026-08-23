@@ -272,8 +272,14 @@ def parse_go_flags(cli_dir: str) -> dict[str, set[str]]:
     """
     Returns verb -> set of real flag names (with leading --).
     Parses fs.String/Bool/Int/Uint/Uint64/Int64/Duration/Float64 FlagSet
-    registrations and hand-rolled 'case "--flag":' / 'case arg == "--flag":'
-    blocks in cmd_*.go.
+    registrations, hand-rolled 'case "--flag":' / 'case arg == "--flag":'
+    blocks, and if-statement equality comparisons like 'rest[0] == "--flag"'
+    in cmd_*.go.
+
+    Per-verb precision: FlagSet flags are attributed to the FlagSet context
+    (sub-verb) where possible.  Hand-parsed flags (case + if-equality) are
+    attributed to the file's top-level verb — they cannot be narrowed further
+    without full control-flow analysis.
     """
     verb_flags: dict[str, set[str]] = defaultdict(set)
 
@@ -285,6 +291,10 @@ def parse_go_flags(cli_dir: str) -> dict[str, set[str]]:
     case_flag_re = re.compile(
         r'case\s+(?:arg\s*==\s*)?"(--[a-zA-Z][a-zA-Z0-9_-]*)":?'
     )
+    # If-statement equality comparisons: foo == "--flagname" or rest[0] == "--flagname"
+    # Catches hand-parsed flags that use an if-chain rather than a switch/case.
+    # Attributed to the file's top-level verb (same tradeoff as case_flag_re).
+    eq_flag_re = re.compile(r'==\s*"(--[a-zA-Z][a-zA-Z0-9_-]*)"')
     # Command registration name: Name: "verbname"
     verb_name_re = re.compile(r'Name:\s+"([a-zA-Z][a-zA-Z0-9_-]*)"')
 
@@ -315,8 +325,12 @@ def parse_go_flags(cli_dir: str) -> dict[str, set[str]]:
                 if len(parts) >= 2:
                     verb_flags[parts[0]].add(flag_name)
 
-        # Hand-rolled flags
+        # Hand-rolled flags: switch/case style
         for m in case_flag_re.finditer(src):
+            verb_flags[top_verb].add(m.group(1))
+
+        # Hand-parsed flags: if-equality style (e.g. rest[0] == "--flag")
+        for m in eq_flag_re.finditer(src):
             verb_flags[top_verb].add(m.group(1))
 
     # Global flags (root.go): only --json

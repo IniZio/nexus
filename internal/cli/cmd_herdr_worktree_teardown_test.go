@@ -80,11 +80,11 @@ func (s stubPruneSvc) List(_ context.Context) ([]interface{ Handle() string }, e
 // newPruneHarness returns the injected functions and a populated storeRoot for
 // herdrSpacePruneFull tests.
 type pruneHarness struct {
-	storeRoot      string
-	sandboxExists  func(HerdrSpaceBinding) bool
+	storeRoot       string
+	sandboxExists   func(HerdrSpaceBinding) bool
 	workspaceExists func(HerdrSpaceBinding) bool
-	closer         func(context.Context, string) error
-	removeSandbox  func(context.Context, string) error
+	closer          func(context.Context, string) error
+	removeSandbox   func(context.Context, string) error
 	// call tracking
 	removeCallHandles []string
 	closerCallIDs     []string
@@ -123,6 +123,7 @@ func (h *pruneHarness) run(t *testing.T, apply bool) string {
 		context.Background(),
 		&out,
 		h.storeRoot,
+		"",
 		h.sandboxExists,
 		h.workspaceExists,
 		h.closer,
@@ -278,25 +279,28 @@ func TestPruneFull_dryRun_neverCallsRemove(t *testing.T) {
 
 // ── Mechanism 2: herdrWtSupervisedShell ──────────────────────────────────────
 
-// setupWtSeams replaces all three wt/ seams and returns cleanup functions.
+// setupWtSeams replaces the wt/ seams and returns a pointer to a bool that
+// records whether herdrWtTeardownFn was called (the last-pane teardown path).
 // childErr controls what herdrWtChildRunnerFn returns.
-// paneListerResult controls how many remaining panes herdrWtPaneListerFn reports.
-// removeErr controls what herdrWtSandboxRemoverFn returns.
+// remainingPanes controls how many panes herdrWtPaneListerFn reports.
+// The removeErr parameter is retained for API compatibility but is unused now
+// that teardown is delegated to herdrWtTeardownFn (which swallows all errors
+// via failOpen:true).
 func setupWtSeams(
 	t *testing.T,
 	childErr error,
 	remainingPanes int,
-	removeErr error,
-) (removeCalled *bool) {
+	_ error, // removeErr: unused — teardown errors are swallowed by herdrWtTeardownFn
+) (teardownCalled *bool) {
 	t.Helper()
 
 	origChild := herdrWtChildRunnerFn
 	origPaner := herdrWtPaneListerFn
-	origRemov := herdrWtSandboxRemoverFn
+	origTeardown := herdrWtTeardownFn
 	t.Cleanup(func() {
 		herdrWtChildRunnerFn = origChild
 		herdrWtPaneListerFn = origPaner
-		herdrWtSandboxRemoverFn = origRemov
+		herdrWtTeardownFn = origTeardown
 	})
 
 	herdrWtChildRunnerFn = func(_ context.Context, _ string, _ []string) error {
@@ -306,9 +310,8 @@ func setupWtSeams(
 		return remainingPanes, nil
 	}
 	called := false
-	herdrWtSandboxRemoverFn = func(_ context.Context, _ string) error {
+	herdrWtTeardownFn = func(_ context.Context, _, _, _, _ string) {
 		called = true
-		return removeErr
 	}
 	return &called
 }
@@ -325,14 +328,14 @@ func stubWtBinding() HerdrSpaceBinding {
 }
 
 // TestWtSupervisedShell_lastPane_callsRemover (Mechanism 2, case i):
-// When no other panes remain after the child exits, herdrWtSandboxRemoverFn
-// must be called with the wt/ handle.
+// When no other panes remain after the child exits, herdrWtTeardownFn must be
+// called (which atomically tears down VM + workspace + binding).
 //
-// MUTATION TARGET: the `remaining > 0` guard before the removeSandbox call.
-// Inverting it means the remover is called when panes still exist → case ii RED.
+// MUTATION TARGET: the `remaining > 0` guard before the teardown call.
+// Inverting it means teardown is called when panes still exist → case ii RED.
 // Removing the call entirely → RED.
 func TestWtSupervisedShell_lastPane_callsRemover(t *testing.T) {
-	removeCalled := setupWtSeams(t, nil /* child ok */, 0 /* no panes remain */, nil /* remove ok */)
+	teardownCalled := setupWtSeams(t, nil /* child ok */, 0 /* no panes remain */, nil /* unused */)
 
 	binding := stubWtBinding()
 	argv := []string{"/usr/bin/nexus3", "exec", "--pty", "--cwd", "/root", binding.SandboxHandle, "/bin/bash", "--login"}
@@ -340,19 +343,19 @@ func TestWtSupervisedShell_lastPane_callsRemover(t *testing.T) {
 		t.Fatalf("herdrWtSupervisedShell: %v", err)
 	}
 
-	if !*removeCalled {
-		t.Error("herdrWtSandboxRemoverFn not called when last pane exits; want called")
+	if !*teardownCalled {
+		t.Error("herdrWtTeardownFn not called when last pane exits; want called")
 	}
 }
 
 // TestWtSupervisedShell_otherPanesRemain_doesNotCallRemover (Mechanism 2, case ii):
-// When other panes remain after the child exits, herdrWtSandboxRemoverFn must
-// NOT be called.
+// When other panes remain after the child exits, herdrWtTeardownFn must NOT be
+// called.
 //
 // MUTATION TARGET (MUTATION PROOF): the `remaining > 0` guard.
-// Removing or inverting it causes the remover to be called → RED.
+// Removing or inverting it causes teardown to be called → RED.
 func TestWtSupervisedShell_otherPanesRemain_doesNotCallRemover(t *testing.T) {
-	removeCalled := setupWtSeams(t, nil, 2 /* 2 panes remain */, nil)
+	teardownCalled := setupWtSeams(t, nil, 2 /* 2 panes remain */, nil)
 
 	binding := stubWtBinding()
 	argv := []string{"/usr/bin/nexus3", "exec", "--pty", "--cwd", "/root", binding.SandboxHandle, "/bin/bash", "--login"}
@@ -360,20 +363,20 @@ func TestWtSupervisedShell_otherPanesRemain_doesNotCallRemover(t *testing.T) {
 		t.Fatalf("herdrWtSupervisedShell: %v", err)
 	}
 
-	if *removeCalled {
-		t.Error("herdrWtSandboxRemoverFn called when other panes remain; want NOT called")
+	if *teardownCalled {
+		t.Error("herdrWtTeardownFn called when other panes remain; want NOT called")
 	}
 }
 
 // TestWtSupervisedShell_removerError_swallowed (Mechanism 2, case iv):
-// A remover error must be swallowed (fail-open) — the function must return nil
+// Teardown errors must be swallowed (fail-open) — the function must return nil
 // so the caller (RunHerdrGuestShell) sees a clean exit.
 //
-// MUTATION TARGET: the FAIL-OPEN comment block after removeSandbox call.
-// Propagating the error instead of swallowing it would make a remover failure
-// surface as a shell error to herdr → broken pane lifecycle.
+// MUTATION TARGET: the FAIL-OPEN contract enforced by herdrWtTeardownFn
+// (failOpen:true in herdrSpaceTeardown).  The outer herdrWtSupervisedShell
+// must always return nil regardless of teardown outcome.
 func TestWtSupervisedShell_removerError_swallowed(t *testing.T) {
-	removeCalled := setupWtSeams(t, nil, 0, errors.New("sandbox rm: service unavailable"))
+	teardownCalled := setupWtSeams(t, nil, 0, errors.New("unused: teardown errors are swallowed by herdrWtTeardownFn"))
 
 	binding := stubWtBinding()
 	argv := []string{"/usr/bin/nexus3", "exec", "--pty", "--cwd", "/root", binding.SandboxHandle, "/bin/bash", "--login"}
@@ -381,8 +384,8 @@ func TestWtSupervisedShell_removerError_swallowed(t *testing.T) {
 	if err != nil {
 		t.Errorf("herdrWtSupervisedShell returned error %v; want nil (fail-open)", err)
 	}
-	if !*removeCalled {
-		t.Error("remover was never called; want it called (then error swallowed)")
+	if !*teardownCalled {
+		t.Error("herdrWtTeardownFn was never called; want it called (then errors swallowed)")
 	}
 }
 
@@ -524,3 +527,46 @@ func TestParseWtPaneList_herdrDown_errorsFailOpen(t *testing.T) {
 
 // osexecErr returns a non-nil error standing in for a non-zero herdr exit.
 func osexecErr() error { return errors.New("exit status 1") }
+
+// TestWtTeardownFn_sandboxIDMismatch_guardRefusesSvcRemove verifies that the
+// real-time reap path passes binding.SandboxID as expectedSandboxID so that a
+// handle rebound to a NEW sandbox between binding-capture and pane-close does
+// NOT have its VM removed.
+//
+// MUTATION TARGET: remove the expectedSandboxID wiring in herdrWtTeardownFn
+// (revert teardownOpts{failOpen:true} without expectedSandboxID field).
+// Expected RED: svcRemove is called for the new sandbox → test fails.
+func TestWtTeardownFn_sandboxIDMismatch_guardRefusesSvcRemove(t *testing.T) {
+	ctx := context.Background()
+
+	// Seed the store with a binding whose SandboxID is "sb-original".
+	storeRoot := t.TempDir()
+	b := HerdrSpaceBinding{
+		SpaceLabel:       "nexus3:wt/guard-test",
+		HerdrWorkspaceID: "wGUARD",
+		SandboxHandle:    "wt/guard-test",
+		SandboxID:        "sb-original",
+		GuestPaneID:      "wG:p1",
+	}
+	if err := HerdrSpacePut(ctx, storeRoot, b); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+
+	// Stub herdrWtSandboxRemoverFn to detect any svcRemove call.
+	origRemover := herdrWtSandboxRemoverFn
+	t.Cleanup(func() { herdrWtSandboxRemoverFn = origRemover })
+	removeCalled := false
+	herdrWtSandboxRemoverFn = func(_ context.Context, _ string) error {
+		removeCalled = true
+		return nil
+	}
+
+	// Call the REAL herdrWtTeardownFn with a mismatched sandboxID ("sb-new").
+	// The guard must refuse and herdrWtSandboxRemoverFn must NOT be called.
+	// herdrBin is irrelevant: workspaceClose is never reached when the guard fires.
+	herdrWtTeardownFn(ctx, storeRoot, "wt/guard-test", "herdr-unused", "sb-new")
+
+	if removeCalled {
+		t.Error("svcRemove was called despite SandboxID mismatch; expectedSandboxID guard is not wired")
+	}
+}

@@ -189,9 +189,9 @@ func TestHerdrPlugin_L4_AC6Chain(t *testing.T) {
 		closeL4ScratchWorkspace(t, id, label)
 
 		// Sandbox already removed and workspace already closed above (both
-		// tolerant of "already gone"), so herdrSpaceRemoveFull's own
-		// unchecked removal/close steps are no-ops here — this call exists
-		// only to delete the persisted binding.
+		// tolerant of "already gone"), so the removal/close steps inside
+		// space-remove are no-ops here — this call exists only to delete the
+		// persisted binding.
 		delOut, delErr := ac6Cmd(binary, "__herdr-plugin", "space-remove", handle).CombinedOutput()
 		if delErr != nil {
 			t.Logf("cleanup: space-remove %s: %v\n%s", handle, delErr, delOut)
