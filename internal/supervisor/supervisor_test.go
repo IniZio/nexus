@@ -553,3 +553,37 @@ func TestBuildSupervisorDriverConfig_ForwardsBootVCPUs(t *testing.T) {
 		t.Errorf("driver VCPUMax = %d, want 24", got.VCPUMax)
 	}
 }
+
+// TestBuildSupervisorDriverConfig_FreePageReportingEnabled is a regression
+// test for the Phase 1 memory-reclaim fix.
+//
+// Before the fix, FreePageReporting was never set in the config returned by
+// buildSupervisorDriverConfig.  cloud-hypervisor therefore started with no
+// virtio-balloon device (vm.info showed "balloon: null"), which meant idle
+// sandboxes had no channel to return memory to the host — live measurement
+// showed only ~5 % reclaim.  With FreePageReporting: true the guest attaches
+// a zero-size balloon with deflate_on_oom + free_page_reporting, and idle
+// reclaim rises to ~92 % within 90 s.
+//
+// The builder VM config is a separate code path
+// (buildBuilderSupervisorDriverConfig or equivalent) and deliberately does
+// NOT set FreePageReporting; this test is scoped to buildSupervisorDriverConfig
+// which backs agent sandboxes only.
+func TestBuildSupervisorDriverConfig_FreePageReportingEnabled(t *testing.T) {
+	cfg := Config{
+		CHBin:      "/usr/bin/cloud-hypervisor",
+		SocketDir:  "/run/user/1000/n3",
+		KernelPath: "/k",
+		DiskPath:   "/d",
+		MemoryMiB:  4096,
+		BootVCPUs:  2,
+	}
+
+	got := buildSupervisorDriverConfig(cfg, 16384, 8, nil)
+
+	if !got.FreePageReporting {
+		t.Errorf("driver FreePageReporting = false, want true — "+
+			"without this the guest has no virtio-balloon device and idle "+
+			"sandboxes cannot return RAM to the host (regression: balloon:null, ~5%% reclaim)")
+	}
+}

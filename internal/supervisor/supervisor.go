@@ -1177,7 +1177,8 @@ func buildSupervisorDriverConfig(
 		VCPUMax:       vcpuMax,
 		ExtraDisks:    extraDisks,
 		Cmdline:       cfg.Cmdline,
-		LiveMounts:    cfg.LiveMounts,
-		VirtiofsdPath: cfg.VirtiofsdPath,
+		LiveMounts:        cfg.LiveMounts,
+		VirtiofsdPath:     cfg.VirtiofsdPath,
+		FreePageReporting: true,
 	}
 }
