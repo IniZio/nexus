@@ -72,6 +72,11 @@ var surfaceMap = []surfaceEntry{
 	// volume noun manages named volumes directly via volumestore (not through
 	// service.*) — the canonical backing is the VolumeStore CRUD primitives.
 	{CLIVerb: "volume", CanonicalMethods: []string{"volumestore.Create", "volumestore.List", "volumestore.Rm", "volumestore.Prune"}, MCPTools: nil},
+	// Nexusfile verbs — read a project Nexusfile and exec command arrays via
+	// the agent exec path (same backing as `exec` / `shell`).
+	{CLIVerb: "bake", CanonicalMethods: []string{"service.Exec"}, MCPTools: nil},
+	{CLIVerb: "up", CanonicalMethods: []string{"service.Exec"}, MCPTools: nil},
+	{CLIVerb: "down", CanonicalMethods: []string{"service.Exec"}, MCPTools: nil},
 }
 
 // TestSurfaceParity verifies that every registered CLI verb and every MCP tool
