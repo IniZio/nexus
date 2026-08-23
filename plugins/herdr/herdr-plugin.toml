@@ -1,9 +1,11 @@
 id = "nexus3"
 name = "nexus3"
-version = "0.1.0"
+version = "0.1.1"
 min_herdr_version = "0.7.4"
 description = "Attach to nexus3 microVM workspaces, list them, and create them without leaving Herdr."
-platforms = ["linux", "macos"]
+# Only Linux/x86_64 has a pre-built binary.  build.sh exits non-zero on other
+# platforms with a "build from source" message.
+platforms = ["linux"]
 
 [[build]]
 command = ["sh", "build.sh"]
