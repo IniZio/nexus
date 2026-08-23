@@ -2109,7 +2109,21 @@ func herdrPluginSpacePrune(ctx context.Context, args []string, w io.Writer, svc 
 	closer := func(ctx context.Context, workspaceID string) error {
 		return herdrWorkspaceClose(ctx, herdrBin, workspaceID)
 	}
-	return herdrSpacePruneFull(ctx, w, storeRoot, sandboxExists, workspaceExists, closer, *apply)
+	// removeSandbox is backed by svc.Remove when svc implements the full
+	// sandbox service (always true in production — *service.Service does).
+	// A type assertion is used so herdrSpacePruneLister stays minimal (List
+	// only) and test fakes do not need to implement Remove.
+	var removeSandbox func(context.Context, string) error
+	if rem, ok := svc.(HerdrSpaceSandboxService); ok {
+		removeSandbox = func(ctx context.Context, handle string) error {
+			return rem.Remove(ctx, handle)
+		}
+	} else {
+		removeSandbox = func(_ context.Context, handle string) error {
+			return fmt.Errorf("space-prune: removeSandbox not available (svc does not implement HerdrSpaceSandboxService)")
+		}
+	}
+	return herdrSpacePruneFull(ctx, w, storeRoot, sandboxExists, workspaceExists, closer, removeSandbox, *apply)
 }
 
 // herdrSpacePruneFull is the testable core of space-prune.
@@ -2121,6 +2135,12 @@ func herdrPluginSpacePrune(ctx context.Context, args []string, w io.Writer, svc 
 // a close that did not happen must not authorise deleting the workspace
 // record. The deleted count reported reflects ACTUAL deletions, not
 // stale classifications.
+//
+// removeSandbox(ctx, handle) removes the sandbox VM for auto-bound worktree
+// sandboxes (isHerdrWorktreeHandle) whose workspace is gone but VM is still
+// running.  It is NEVER called for non-worktree handles or when the sandbox
+// is already absent.  A removeSandbox failure retains the binding for the
+// next prune run.
 func herdrSpacePruneFull(
 	ctx context.Context,
 	w io.Writer,
@@ -2128,6 +2148,7 @@ func herdrSpacePruneFull(
 	sandboxExists func(HerdrSpaceBinding) bool,
 	workspaceExists func(HerdrSpaceBinding) bool,
 	closer func(context.Context, string) error,
+	removeSandbox func(context.Context, string) error,
 	apply bool,
 ) error {
 	bindings, err := HerdrSpaceList(ctx, storeRoot)
@@ -2151,7 +2172,13 @@ func herdrSpacePruneFull(
 	}
 	fmt.Fprintf(w, "Prune report (%s): %d stale binding(s), %d to keep\n", mode, len(stale), len(keep))
 	for _, b := range stale {
-		fmt.Fprintf(w, "  STALE  sandbox=%s  workspace=%s\n", b.SandboxHandle, b.HerdrWorkspaceID)
+		// Annotate wt/ bindings that would have their VM reaped (not just
+		// binding-only cleanup) so operators can distinguish the two outcomes.
+		if isHerdrWorktreeHandle(b.SandboxHandle) && sandboxExists(b) && !workspaceExists(b) {
+			fmt.Fprintf(w, "  STALE  sandbox=%s  workspace=%s  (wt/ VM would be reaped)\n", b.SandboxHandle, b.HerdrWorkspaceID)
+		} else {
+			fmt.Fprintf(w, "  STALE  sandbox=%s  workspace=%s\n", b.SandboxHandle, b.HerdrWorkspaceID)
+		}
 	}
 
 	if len(stale) == 0 {
@@ -2164,6 +2191,19 @@ func herdrSpacePruneFull(
 
 	deleted := 0
 	for _, b := range stale {
+		// Auto-bound worktree sandbox: if the VM is still running but the
+		// workspace is gone, reap the VM first.  Non-worktree sandboxes and
+		// bindings whose sandbox is already absent skip this block.
+		if isHerdrWorktreeHandle(b.SandboxHandle) && sandboxExists(b) && !workspaceExists(b) {
+			if err := removeSandbox(ctx, b.SandboxHandle); err != nil {
+				slog.Warn("space-prune: reap wt/ sandbox failed; binding retained for next run",
+					"handle", b.SandboxHandle, "err", err)
+				continue
+			}
+			fmt.Fprintf(w, "  REAPED sandbox=%s (workspace gone)\n", b.SandboxHandle)
+		}
+		// Close the workspace. herdrWorkspaceClose treats workspace_not_found
+		// as success, so a gone workspace does not block binding cleanup.
 		if err := closer(ctx, b.HerdrWorkspaceID); err != nil {
 			// Retain the binding: a close that did not happen must not authorise
 			// deleting the only record of this workspace's HerdrWorkspaceID.
@@ -2897,7 +2937,21 @@ func herdrWorktreeSandboxHandle(branch string) string {
 	if slug == "" {
 		slug = "worktree"
 	}
-	return "wt/" + slug
+	return herdrWorktreeHandlePrefix + slug
+}
+
+// herdrWorktreeHandlePrefix is the prefix that herdrWorktreeSandboxHandle
+// stamps onto every auto-bound worktree sandbox handle.  Defined as a
+// package-level constant so isHerdrWorktreeHandle cannot drift from the
+// producer without a compile-time or test-time failure.
+const herdrWorktreeHandlePrefix = "wt/"
+
+// isHerdrWorktreeHandle reports whether handle was produced by
+// herdrWorktreeSandboxHandle (i.e. it is an auto-bound worktree sandbox).
+// The prefix is the same constant used by the producer, so the two cannot
+// drift silently.
+func isHerdrWorktreeHandle(handle string) bool {
+	return strings.HasPrefix(handle, herdrWorktreeHandlePrefix)
 }
 
 // herdrWorktreeSandboxParseArgs strips --auto / --conditional flags from the

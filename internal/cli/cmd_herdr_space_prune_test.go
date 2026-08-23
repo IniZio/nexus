@@ -27,6 +27,12 @@ import (
 	"github.com/IniZio/nexus3/internal/core/domain"
 )
 
+// noopRemoveSandbox is a no-op removeSandbox stub for existing prune tests
+// that do not exercise the wt/ reap path.  Existing tests use non-wt/ handles
+// so this function is never called; its presence keeps the function signature
+// consistent after the new parameter was added.
+var noopRemoveSandbox = func(_ context.Context, _ string) error { return nil }
+
 // ── fakeListLister ────────────────────────────────────────────────────────────
 
 // fakeListLister implements herdrSpacePruneLister for constructor tests.
@@ -77,7 +83,7 @@ func TestHerdrSpacePrune_StaleSandbox(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, true); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
 		t.Fatalf("herdrSpacePruneFull: %v", err)
 	}
 
@@ -117,7 +123,7 @@ func TestHerdrSpacePrune_StaleWorkspace(t *testing.T) {
 	closer := func(_ context.Context, _ string) error { return nil }
 
 	var buf bytes.Buffer
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, true); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
 		t.Fatalf("herdrSpacePruneFull: %v", err)
 	}
 
@@ -153,7 +159,7 @@ func TestHerdrSpacePrune_ValidBinding(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, true); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
 		t.Fatalf("herdrSpacePruneFull: %v", err)
 	}
 
@@ -191,7 +197,7 @@ func TestHerdrSpacePrune_DryRunPreservesAll(t *testing.T) {
 
 	var buf bytes.Buffer
 	// apply=false
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, false); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, false); err != nil {
 		t.Fatalf("herdrSpacePruneFull (dry-run): %v", err)
 	}
 
@@ -225,7 +231,7 @@ func TestHerdrSpacePrune_MixedBindings(t *testing.T) {
 	)
 	var buf bytes.Buffer
 	closer := func(_ context.Context, _ string) error { return nil }
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, true); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
 		t.Fatalf("herdrSpacePruneFull: %v", err)
 	}
 
@@ -565,7 +571,7 @@ func TestHerdrSpacePruneFull_CloseFail_BindingRetained(t *testing.T) {
 	closer := func(_ context.Context, _ string) error { return closeErr }
 
 	var buf bytes.Buffer
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, true); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
 		t.Fatalf("herdrSpacePruneFull: %v", err)
 	}
 
@@ -606,7 +612,7 @@ func TestHerdrSpacePruneFull_CloseSucceeds_BindingDeleted(t *testing.T) {
 	closer := func(_ context.Context, _ string) error { return nil } // close succeeds
 
 	var buf bytes.Buffer
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, true); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
 		t.Fatalf("herdrSpacePruneFull: %v", err)
 	}
 
@@ -666,7 +672,7 @@ func TestHerdrSpacePruneWorkspaceExistsFn_AdoptedBinding(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, true); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
 		t.Fatalf("herdrSpacePruneFull: %v", err)
 	}
 
@@ -738,7 +744,7 @@ func TestHerdrSpacePruneFull_DeleteFail_BindingRetained(t *testing.T) {
 	closer := func(_ context.Context, _ string) error { return nil } // close succeeds
 
 	var buf bytes.Buffer
-	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, true); err != nil {
+	if err := herdrSpacePruneFull(ctx, &buf, root, sandboxExists, workspaceExists, closer, noopRemoveSandbox, true); err != nil {
 		t.Fatalf("herdrSpacePruneFull: %v", err)
 	}
 
