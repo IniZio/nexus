@@ -482,13 +482,29 @@ func herdrSpacePruneWorkspaceExistsFn(ctx context.Context, herdrBin string) func
 // When closeWorkspace fails the binding is intentionally retained so that
 // space-prune can recover the orphaned workspace on its next run. A transient
 // herdr outage must not permanently discard the live workspace record.
-func herdrSpaceTeardownOnRm(ctx context.Context, storeRoot string, closeWorkspace func(context.Context, string) error, handle string) {
+//
+// sandboxID identifies the sandbox actually being removed. The binding is keyed
+// by handle (label = "nexus3:"+handle), so two sandboxes that share a handle
+// collide on one binding pointing at whichever wrote last. Matching on handle
+// alone therefore closed the workspace of a DIFFERENT live sandbox when its
+// namesake was removed (this destroyed workspace w4B). The guard below tears
+// down ONLY when the binding actually points at the sandbox being removed.
+// An empty sandboxID falls back to the handle-only behaviour for callers that
+// cannot resolve the ID.
+func herdrSpaceTeardownOnRm(ctx context.Context, storeRoot string, closeWorkspace func(context.Context, string) error, handle, sandboxID string) {
 	b, err := HerdrSpaceGetByHandle(ctx, storeRoot, handle)
 	if errors.Is(err, ErrHerdrSpaceNotFound) {
 		return // no binding — nothing to tear down
 	}
 	if err != nil {
 		slog.Warn("space teardown on rm: get binding", "handle", handle, "err", err)
+		return
+	}
+	if sandboxID != "" && b.SandboxID != "" && b.SandboxID != sandboxID {
+		// The binding belongs to a different sandbox that happens to share this
+		// handle. Removing THIS sandbox must not close ITS workspace.
+		slog.Info("space teardown on rm: binding points at a different sandbox, retaining",
+			"handle", handle, "removed_id", sandboxID, "binding_id", b.SandboxID)
 		return
 	}
 	if closeErr := closeWorkspace(ctx, b.HerdrWorkspaceID); closeErr != nil {

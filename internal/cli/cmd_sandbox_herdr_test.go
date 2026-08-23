@@ -324,7 +324,7 @@ func TestHerdrSpaceTeardownOnRm_NoHerdr_BindingRetained(t *testing.T) {
 	closer := func(ctx context.Context, workspaceID string) error {
 		return herdrWorkspaceClose(ctx, "", workspaceID)
 	}
-	herdrSpaceTeardownOnRm(ctx, root, closer, binding.SandboxHandle)
+	herdrSpaceTeardownOnRm(ctx, root, closer, binding.SandboxHandle, binding.SandboxID)
 
 	// Binding must survive — the workspace is live and herdr was unavailable.
 	got, err := HerdrSpaceGetByHandle(ctx, root, binding.SandboxHandle)
@@ -332,5 +332,82 @@ func TestHerdrSpaceTeardownOnRm_NoHerdr_BindingRetained(t *testing.T) {
 		t.Errorf("binding must be retained when herdr absent; HerdrSpaceGetByHandle: %v", err)
 	} else if got.HerdrWorkspaceID != "wNOHERDR" {
 		t.Errorf("retained binding has wrong workspace_id: got %q, want %q", got.HerdrWorkspaceID, "wNOHERDR")
+	}
+}
+
+// TestHerdrSpaceTeardownOnRm_DifferentSandboxID_WorkspaceRetained is the w4B
+// regression guard. The binding is keyed by handle, so a handle collision
+// leaves one binding pointing at whichever sandbox wrote last. Removing a
+// DIFFERENT sandbox that shares the handle must NOT close that live workspace.
+//
+// MUTATION TARGET: delete the `b.SandboxID != sandboxID` guard in
+// herdrSpaceTeardownOnRm. Expected RED: closer is invoked on wLIVE and the
+// binding is deleted even though a different sandbox was removed.
+func TestHerdrSpaceTeardownOnRm_DifferentSandboxID_WorkspaceRetained(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+
+	// Binding belongs to sandbox sb-LIVE (workspace wLIVE).
+	binding := HerdrSpaceBinding{
+		SpaceLabel:       "nexus3:proj-collide",
+		HerdrWorkspaceID: "wLIVE",
+		SandboxHandle:    "proj/collide",
+		SandboxID:        "sb-LIVE",
+	}
+	if err := HerdrSpacePut(ctx, root, binding); err != nil {
+		t.Fatalf("HerdrSpacePut: %v", err)
+	}
+
+	var closed []string
+	closer := func(_ context.Context, workspaceID string) error {
+		closed = append(closed, workspaceID)
+		return nil
+	}
+
+	// Remove a DIFFERENT sandbox (sb-OTHER) that shares the handle.
+	herdrSpaceTeardownOnRm(ctx, root, closer, binding.SandboxHandle, "sb-OTHER")
+
+	if len(closed) != 0 {
+		t.Errorf("closer must not run when a different sandbox is removed; closed=%v", closed)
+	}
+	got, err := HerdrSpaceGetByHandle(ctx, root, binding.SandboxHandle)
+	if err != nil {
+		t.Fatalf("binding for sb-LIVE must be retained; HerdrSpaceGetByHandle: %v", err)
+	}
+	if got.HerdrWorkspaceID != "wLIVE" {
+		t.Errorf("retained binding workspace = %q; want wLIVE", got.HerdrWorkspaceID)
+	}
+}
+
+// TestHerdrSpaceTeardownOnRm_MatchingSandboxID_WorkspaceClosed proves the
+// positive path: when the removed sandbox IS the one the binding points at,
+// the workspace is closed and the binding deleted.
+func TestHerdrSpaceTeardownOnRm_MatchingSandboxID_WorkspaceClosed(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+
+	binding := HerdrSpaceBinding{
+		SpaceLabel:       "nexus3:proj-match",
+		HerdrWorkspaceID: "wMATCH",
+		SandboxHandle:    "proj/match",
+		SandboxID:        "sb-MATCH",
+	}
+	if err := HerdrSpacePut(ctx, root, binding); err != nil {
+		t.Fatalf("HerdrSpacePut: %v", err)
+	}
+
+	var closed []string
+	closer := func(_ context.Context, workspaceID string) error {
+		closed = append(closed, workspaceID)
+		return nil
+	}
+
+	herdrSpaceTeardownOnRm(ctx, root, closer, binding.SandboxHandle, "sb-MATCH")
+
+	if len(closed) != 1 || closed[0] != "wMATCH" {
+		t.Errorf("closer must close wMATCH exactly once; closed=%v", closed)
+	}
+	if _, err := HerdrSpaceGetByHandle(ctx, root, binding.SandboxHandle); !errors.Is(err, ErrHerdrSpaceNotFound) {
+		t.Errorf("binding must be deleted after matching teardown; got err=%v", err)
 	}
 }

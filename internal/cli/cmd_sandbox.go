@@ -2203,7 +2203,7 @@ func runSandboxRmFull(ctx context.Context, args []string, out *Output, svc *serv
 	// Tear down the herdr space binding if one exists for this sandbox.
 	// Non-fatal: sandbox removal already succeeded.
 	if target != nil && storeRoot != "" {
-		herdrSpaceTeardownOnRm(ctx, storeRoot, closeWorkspace, target.Handle())
+		herdrSpaceTeardownOnRm(ctx, storeRoot, closeWorkspace, target.Handle(), target.ID.String())
 	}
 
 	id := ref
