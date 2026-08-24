@@ -526,6 +526,18 @@ func RunDetached(cfg Config) error {
 				}
 			}
 		}
+		// A-MOUNT: detect the agentcfg lower dir by its well-known guest path.
+		// If the sandbox was created with --agent and sharing enabled, the CLI
+		// staged curated host config into a per-sandbox dir and added it as a RO
+		// live mount at this path. The supervisor re-attaches it on every reboot;
+		// probeAndSeedGuest mounts the overlay before any other seed writes.
+		agentCfgLowerGuestPath := ""
+		for _, lm := range cfg.LiveMounts {
+			if lm.GuestPath == "/run/nexus3/agentcfg-lower" {
+				agentCfgLowerGuestPath = lm.GuestPath
+				break
+			}
+		}
 		seedInputs := guestSeedInputs{
 			ID:                     sb.ID,
 			Labels:                 sb.Labels,
@@ -535,6 +547,7 @@ func RunDetached(cfg Config) error {
 			GitSeeder:              service.NewGuestFileSeeder(agentClient, service.GuestGitconfigPath),
 			CredentialHelperSeeder: service.NewGuestFileSeeder(agentClient, service.GuestGitCredentialHelperPath),
 			Execer:                 onboardingExecer,
+			AgentCfgLowerGuestPath: agentCfgLowerGuestPath,
 		}
 		if checkErr := probeAndSeedGuest(ctx, agentClient, seedInputs); checkErr != nil {
 			slog.Error("supervisor.guest_agent_unreachable",
@@ -794,6 +807,38 @@ var seedAgentOnboardingFn = service.SeedGuestAgentOnboarding
 // service.SeedGuestBypassConsent; tests replace it with a spy (D-J12 mutation guard).
 var seedBypassConsentFn = service.SeedGuestBypassConsent
 
+// seedOverlayClaudeConfigFn is the function called by probeAndSeedGuest to
+// mount a writable overlay onto /root/.claude. Default is seedOverlayClaudeConfig;
+// tests replace it with a spy to verify the call without a live VM (A-MOUNT).
+var seedOverlayClaudeConfigFn = seedOverlayClaudeConfig
+
+// seedOverlayClaudeConfig mounts a writable overlay onto /root/.claude in the
+// guest. lowerGuestPath is the guest path of the RO virtiofs share (the curated
+// host config staged by AssembleCuratedConfig). Upper and work dirs land on a
+// tmpfs so all writes are discarded on sandbox exit.
+//
+// Must be the FIRST seed step so onboarding writes (seedAgentOnboarding,
+// seedBypassConsent) land in the tmpfs upper rather than failing against the
+// RO lower.
+func seedOverlayClaudeConfig(ctx context.Context, id domain.SandboxID, lowerGuestPath string, execer service.GuestExecer) error {
+	// Use bash; /bin/sh in the base image is dash which does not support pipefail.
+	script := fmt.Sprintf(`set -eu
+mkdir -p /root/.claude
+mkdir -p /run/nexus3/ovl
+mount -t tmpfs tmpfs /run/nexus3/ovl
+mkdir -p /run/nexus3/ovl/upper /run/nexus3/ovl/work
+mount -t overlay overlay -o lowerdir=%s,upperdir=/run/nexus3/ovl/upper,workdir=/run/nexus3/ovl/work /root/.claude
+`, lowerGuestPath)
+	code, err := execer(ctx, id, []string{"/bin/bash", "-c", script}, nil)
+	if err != nil {
+		return fmt.Errorf("overlay mount: %w", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("overlay mount script exited %d", code)
+	}
+	return nil
+}
+
 // seedGitIdentityFn is the function called by probeAndSeedGuest to write the
 // guest gitconfig (operator identity, safe.directory for every source path,
 // per-sandbox branch). Default is service.SeedGitIdentity; tests replace it
@@ -819,6 +864,10 @@ type guestSeedInputs struct {
 	GitSeeder              service.GuestSeeder
 	CredentialHelperSeeder service.GuestSeeder
 	Execer                 service.GuestExecer
+	// AgentCfgLowerGuestPath is the guest path of the RO virtiofs share
+	// that backs the /root/.claude overlay (A-MOUNT). Empty when sharing is
+	// disabled or the sandbox carries no agentcfg live mount.
+	AgentCfgLowerGuestPath string
 }
 
 // probeAndSeedGuest runs the liveness probe (D-J14), login-shell credential
@@ -838,6 +887,21 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 	probeCancel()
 	if probeErr != nil {
 		return fmt.Errorf("supervisor: guest agent unreachable after %s: %w", probeTimeout, probeErr)
+	}
+
+	// A-MOUNT overlay setup (FIRST seed step). Establishes a writable overlayfs
+	// on /root/.claude before any other seed writes so that seedAgentOnboarding
+	// and seedBypassConsent land in the tmpfs upper layer. Without this ordering
+	// those seeds would either fail (writing to the RO lower) or be lost on
+	// sandbox exit.
+	if in.AgentCfgLowerGuestPath != "" {
+		if ovlErr := seedOverlayClaudeConfigFn(ctx, id, in.AgentCfgLowerGuestPath, in.Execer); ovlErr != nil {
+			slog.Warn("supervisor.overlay_claude_config_failed",
+				"sandbox", id, "lower", in.AgentCfgLowerGuestPath, "err", ovlErr,
+				"action", "agent will not see shared host config; /root/.claude is unshared")
+		} else {
+			slog.Info("supervisor.overlay_claude_config_seeded", "sandbox", id, "lower", in.AgentCfgLowerGuestPath)
+		}
 	}
 
 	// Login-shell credential drop-in (D-J11). Written unconditionally before the

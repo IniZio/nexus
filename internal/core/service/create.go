@@ -110,6 +110,16 @@ type ImageSpec struct {
 
 // CreateAndBootOptions carries the options for CreateAndBoot.
 type CreateAndBootOptions struct {
+	// PreMintedID, when non-zero, is used as the sandbox ID instead of minting a
+	// fresh one at step 3. The CLI sets this so it can stage per-sandbox
+	// resources at a STABLE, ID-keyed path BEFORE CreateAndBoot — specifically
+	// the A-MOUNT agent-config overlay dir named "<id>-agentcfg-lower" under the
+	// disk dir. Staging at a path known up front means the RO live mount's
+	// HostPath never changes across boot → supervisor handoff (no post-boot
+	// rename), and because the dir is ID-keyed under the disk dir it is reclaimed
+	// by ReapDiskCopy on Remove. Zero value = mint the ID here (default).
+	PreMintedID domain.SandboxID
+
 	// Labels is the arbitrary key=value map stamped onto the sandbox record at
 	// creation time. Callers set labels via repeatable --label KEY=VALUE flags;
 	// fleet verbs select by label with AND-semantics (D-PD-21).
@@ -404,7 +414,14 @@ func CreateAndBoot(
 	// ID is minted here (before driver construction) so the per-sandbox disk
 	// copy can be named deterministically by ID. The old placement (after driver
 	// construction) is preserved by moving it up; existing behaviour is unchanged.
-	id := domain.NewSandboxID()
+	//
+	// A caller may pre-mint the ID (opts.PreMintedID) so it can stage ID-keyed
+	// per-sandbox resources before this call (A-MOUNT); an unset value falls back
+	// to minting here so every other caller is unchanged.
+	id := opts.PreMintedID
+	if id == (domain.SandboxID{}) {
+		id = domain.NewSandboxID()
+	}
 
 	// 3.5 Resolve disk dir and pre-compute disk resource paths
 	//

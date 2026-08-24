@@ -357,8 +357,9 @@ type sandboxCreateFlags struct {
 	allowHosts  []string // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
 	allowedRepo string   // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
 	mountNamed  []string // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
-	mountLive   []string // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
-	positionals []string
+	mountLive      []string // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
+	noShareSettings bool    // --no-share-settings: skip curated host agent config overlay (A-MOUNT)
+	positionals    []string
 }
 
 // applyProjectConfig loads the nearest nexus3.yaml (by walking up from the
@@ -599,6 +600,8 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 			f.secrets = append(f.secrets, args[i])
 		case "--no-builtin-gh":
 			f.noBuiltinGH = true
+		case "--no-share-settings":
+			f.noShareSettings = true
 		case "--egress":
 			if i+1 >= len(args) {
 				return f, &UsageError{Msg: "sandbox create: --egress requires a value (open|closed)"}
@@ -1029,7 +1032,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--repo <owner>/<name>] [--no-builtin-gh] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--repo <owner>/<name>] [--no-builtin-gh] [--no-share-settings] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])
@@ -1613,6 +1616,20 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// /run is tmpfs, so anything seeded here is discarded on that reboot.
 	agentProfile, allowHosts, openEgress := resolveAgentPosture(f)
 
+	// C-SECRET: auto-derive http/sse MCP server credentials as SecretBinds for
+	// MITM swap. Stdio MCP vars are handled at seed time (B-SEED) via
+	// resolveMCPStdioPayload in seedGuestAgentAndSecrets. HTTP/SSE hosts are
+	// also added to allowHosts so agent sandboxes can reach them through the
+	// closed-egress ACL.
+	mcpHTTPBinds, mcpErr := service.ResolveMCPHTTPBinds(agentProfile)
+	if mcpErr != nil {
+		return errSandbox("sandbox create", mcpErr)
+	}
+	for _, b := range mcpHTTPBinds {
+		secrets = service.MergeSecrets(secrets, b)
+		allowHosts = append(allowHosts, b.Hosts...)
+	}
+
 	// D-PD-33: closed-egress path — ensure GitHub goes into SecretHosts even
 	// if `--no-builtin-gh` was passed or `gh auth token` is unavailable.
 	// github.com / api.github.com / uploads.github.com must appear in
@@ -1627,9 +1644,51 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		})
 	}
 
+	// A-MOUNT: stage curated agent config and append it as a RO live mount
+	// BEFORE CreateAndBoot so the mount is part of the initial VM boot config
+	// AND, via the same slice, the detached supervisor's spawn spec.
+	// bootLiveMounts drives wireLiveMountsToConfig inside newDriver; appending
+	// after CreateAndBoot would be too late — the boot has already consumed the
+	// slice as it stood at call time.
+	//
+	// The staging dir is at a STABLE, ID-keyed path known before boot: we
+	// pre-mint the sandbox ID and stage into "<storeRoot>/disks/<id>-agentcfg-
+	// lower" (the disk dir, mirroring service.defaultDiskDir). Because the path
+	// never changes between the initial boot and the supervisor handoff there is
+	// no post-boot rename (the prior rename into supervisors/<id> always failed
+	// — that dir does not exist until WriteSpawnSpec runs inside the handoff —
+	// leaving the mount pinned to a leaked temp dir). Because it is ID-keyed
+	// under the disk dir it is reclaimed by service.ReapDiskCopy on `nexus3 rm`
+	// alongside the other per-sandbox disk resources. On CreateAndBoot failure
+	// the dir is removed explicitly below.
+	//
+	// Gate: profile must carry a non-empty MountAllowlist (agent sandboxes
+	// only) and --no-share-settings must not have been passed.
+	var preMintedID domain.SandboxID // zero unless A-MOUNT staging pre-mints
+	var agentCfgStageDir string      // non-empty when staging succeeded; tracks cleanup
+	if !f.noShareSettings && len(agentProfile.MountAllowlist) > 0 {
+		id := domain.NewSandboxID()
+		stageDir := filepath.Join(storeRoot, "disks", id.String()+"-agentcfg-lower")
+		agentConfigDir := filepath.Dir(agentProfile.SettingsPath) // e.g. "~/.claude"
+		if assembleErr := service.AssembleCuratedConfig(agentProfile, agentConfigDir, stageDir); assembleErr != nil {
+			_ = os.RemoveAll(stageDir)
+			slog.Warn("sandbox create: failed to stage agent config; running without shared settings", "err", assembleErr)
+		} else {
+			preMintedID = id
+			agentCfgStageDir = stageDir
+			bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
+				HostPath:  stageDir,
+				GuestPath: "/run/nexus3/agentcfg-lower",
+				ReadOnly:  true,
+			})
+			slog.Info("sandbox create: agent config staged for overlay", "staging", stageDir)
+		}
+	}
+
 	sb, err := service.CreateAndBoot(ctx, svc, imgCache, newDriver, probe,
 		project, name,
 		service.CreateAndBootOptions{
+			PreMintedID:       preMintedID, // A-MOUNT: zero unless curated config was staged at an ID-keyed path
 			Labels:            f.labels,
 			RemoveOnExit:      f.rm,
 			ForceDiskSpace:    f.forceDiskSpace,
@@ -1662,8 +1721,17 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		for _, p := range shadowDiskCleanups {
 			_ = os.Remove(p)
 		}
+		if agentCfgStageDir != "" {
+			_ = os.RemoveAll(agentCfgStageDir)
+		}
 		return errSandbox("sandbox create", err)
 	}
+
+	// A-MOUNT: the staging dir was created at its final ID-keyed path before
+	// boot (see the staging block above), so there is no post-boot rename and
+	// bootLiveMounts already carries the stable HostPath that
+	// handoffHumanSupervisor forwards to the detached supervisor. Reclamation is
+	// handled by service.ReapDiskCopy on `nexus3 rm`.
 
 	if handoffErr := handoffHumanSupervisor(ctx, svc, sb, storeRoot, kernelPath, govBounds, f.memoryMiB, f.vcpus,
 		capturedDiskPath, capturedExtraDisks, capturedCmdline, capturedCHBin, capturedSocketDir, bootWorkspace != nil, len(bootExtraDisks),

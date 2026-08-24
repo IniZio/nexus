@@ -45,6 +45,14 @@ func ReapDiskCopy(diskDir string, id domain.SandboxID) error {
 	if err := os.Remove(filepath.Join(diskDir, id.String()+".create-intent.json")); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	// Remove the A-MOUNT agent-config staging dir (<id>-agentcfg-lower). The CLI
+	// stages a curated, secret-free copy of the user's agent config here before
+	// boot and mounts it RO at /run/nexus3/agentcfg-lower; it is ID-keyed under
+	// the disk dir precisely so this reap reclaims it. RemoveAll (not Remove):
+	// the staging path is a directory tree. A missing dir is not an error.
+	if err := os.RemoveAll(filepath.Join(diskDir, id.String()+"-agentcfg-lower")); err != nil {
+		return err
+	}
 	return nil
 }
 
