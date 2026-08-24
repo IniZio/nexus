@@ -38,6 +38,7 @@ package supervisor
 import (
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -532,9 +533,19 @@ func RunDetached(cfg Config) error {
 		// live mount at this path. The supervisor re-attaches it on every reboot;
 		// probeAndSeedGuest mounts the overlay before any other seed writes.
 		agentCfgLowerGuestPath := ""
+		var mcpServersForSeed map[string]json.RawMessage
 		for _, lm := range cfg.LiveMounts {
 			if lm.GuestPath == "/run/nexus3/agentcfg-lower" {
 				agentCfgLowerGuestPath = lm.GuestPath
+				// Read the MCP servers map staged by cmd_sandbox into the same
+				// host-side config dir. Absent or malformed file is a silent skip:
+				// the overlay/onboarding still succeed; only MCP injection is skipped.
+				if data, readErr := os.ReadFile(filepath.Join(lm.HostPath, "mcp-servers.json")); readErr == nil {
+					var m map[string]json.RawMessage
+					if json.Unmarshal(data, &m) == nil {
+						mcpServersForSeed = m
+					}
+				}
 				break
 			}
 		}
@@ -548,6 +559,7 @@ func RunDetached(cfg Config) error {
 			CredentialHelperSeeder: service.NewGuestFileSeeder(agentClient, service.GuestGitCredentialHelperPath),
 			Execer:                 onboardingExecer,
 			AgentCfgLowerGuestPath: agentCfgLowerGuestPath,
+			MCPServers:             mcpServersForSeed,
 		}
 		if checkErr := probeAndSeedGuest(ctx, agentClient, seedInputs); checkErr != nil {
 			slog.Error("supervisor.guest_agent_unreachable",
@@ -807,6 +819,11 @@ var seedAgentOnboardingFn = service.SeedGuestAgentOnboarding
 // service.SeedGuestBypassConsent; tests replace it with a spy (D-J12 mutation guard).
 var seedBypassConsentFn = service.SeedGuestBypassConsent
 
+// seedMCPServersFn is the function called by probeAndSeedGuest to merge the
+// MCP servers map into /root/.claude.json. Default is service.SeedGuestMCPServers;
+// tests may replace it.
+var seedMCPServersFn = service.SeedGuestMCPServers
+
 // seedOverlayClaudeConfigFn is the function called by probeAndSeedGuest to
 // mount a writable overlay onto /root/.claude. Default is seedOverlayClaudeConfig;
 // tests replace it with a spy to verify the call without a live VM (A-MOUNT).
@@ -868,6 +885,11 @@ type guestSeedInputs struct {
 	// that backs the /root/.claude overlay (A-MOUNT). Empty when sharing is
 	// disabled or the sandbox carries no agentcfg live mount.
 	AgentCfgLowerGuestPath string
+	// MCPServers is the sanitized mcpServers map to merge into the guest's
+	// /root/.claude.json. Read from mcp-servers.json inside the agentcfg
+	// staging dir written by cmd_sandbox at create time. Nil when sharing is
+	// disabled, no servers are configured, or the file is absent.
+	MCPServers map[string]json.RawMessage
 }
 
 // probeAndSeedGuest runs the liveness probe (D-J14), login-shell credential
@@ -928,6 +950,19 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 	} else {
 		slog.Info("supervisor.agent_onboarding_seeded",
 			"sandbox", id, "path", service.GuestAgentOnboardingPath)
+	}
+
+	// MCP servers injection (mcp-defs-inject). Merges the sanitized
+	// mcpServers map into /root/.claude.json so the agent sees shared host
+	// MCP server definitions. Must run AFTER onboarding so the file exists.
+	// Gated on the same A-MOUNT share-settings signal (MCPServers non-nil).
+	// Non-fatal: the agent still works, it just loses host MCP definitions.
+	if mcpErr := seedMCPServersFn(ctx, id, in.MCPServers, in.Execer); mcpErr != nil {
+		slog.Warn("supervisor.mcp_servers_seed_failed",
+			"sandbox", id, "err", mcpErr,
+			"action", "guest claude will not see shared host MCP server definitions")
+	} else if len(in.MCPServers) > 0 {
+		slog.Info("supervisor.mcp_servers_seeded", "sandbox", id, "count", len(in.MCPServers))
 	}
 
 	// Bypass-permissions consent seed (D-J12). Merges
@@ -1230,17 +1265,17 @@ func buildSupervisorDriverConfig(
 	extraDisks []cloudhypervisor.ExtraDisk,
 ) cloudhypervisor.Config {
 	return cloudhypervisor.Config{
-		BinaryPath:    cfg.CHBin,
-		SocketDir:     cfg.SocketDir,
-		KernelPath:    cfg.KernelPath,
-		DiskImagePath: cfg.DiskPath,
-		StartTimeout:  30 * time.Second,
-		MemoryMiB:     cfg.MemoryMiB,
-		MemoryMaxMiB:  memMaxMiB,
-		VCPUs:         cfg.BootVCPUs, // boot_vcpus — see doc comment above
-		VCPUMax:       vcpuMax,
-		ExtraDisks:    extraDisks,
-		Cmdline:       cfg.Cmdline,
+		BinaryPath:        cfg.CHBin,
+		SocketDir:         cfg.SocketDir,
+		KernelPath:        cfg.KernelPath,
+		DiskImagePath:     cfg.DiskPath,
+		StartTimeout:      30 * time.Second,
+		MemoryMiB:         cfg.MemoryMiB,
+		MemoryMaxMiB:      memMaxMiB,
+		VCPUs:             cfg.BootVCPUs, // boot_vcpus — see doc comment above
+		VCPUMax:           vcpuMax,
+		ExtraDisks:        extraDisks,
+		Cmdline:           cfg.Cmdline,
 		LiveMounts:        cfg.LiveMounts,
 		VirtiofsdPath:     cfg.VirtiofsdPath,
 		FreePageReporting: true,

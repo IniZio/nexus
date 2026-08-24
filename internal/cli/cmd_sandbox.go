@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -353,13 +354,13 @@ type sandboxCreateFlags struct {
 	egressExplicit bool
 	// agentName is the --agent <name> value: a registered cred.AgentProfile
 	// name. Empty means the sandbox runs no agent and receives no credentials.
-	agentName   string
-	allowHosts  []string // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
-	allowedRepo string   // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
-	mountNamed  []string // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
-	mountLive      []string // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
-	noShareSettings bool    // --no-share-settings: skip curated host agent config overlay (A-MOUNT)
-	positionals    []string
+	agentName       string
+	allowHosts      []string // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
+	allowedRepo     string   // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
+	mountNamed      []string // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
+	mountLive       []string // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
+	noShareSettings bool     // --no-share-settings: skip curated host agent config overlay (A-MOUNT)
+	positionals     []string
 }
 
 // applyProjectConfig loads the nearest nexus3.yaml (by walking up from the
@@ -1616,16 +1617,17 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// /run is tmpfs, so anything seeded here is discarded on that reboot.
 	agentProfile, allowHosts, openEgress := resolveAgentPosture(f)
 
-	// C-SECRET: auto-derive http/sse MCP server credentials as SecretBinds for
-	// MITM swap. Stdio MCP vars are handled at seed time (B-SEED) via
-	// resolveMCPStdioPayload in seedGuestAgentAndSecrets. HTTP/SSE hosts are
-	// also added to allowHosts so agent sandboxes can reach them through the
-	// closed-egress ACL.
-	mcpHTTPBinds, mcpErr := service.ResolveMCPHTTPBinds(agentProfile)
+	// C-SECRET: auto-derive MCP server credentials and guest definitions via the
+	// unified builder. HTTPBinds become SecretBinds for MITM swap; their hosts
+	// are added to allowHosts so agent sandboxes can reach them through the
+	// closed-egress ACL. Servers (mcpServers map) is staged for guest injection
+	// below inside the A-MOUNT gate. Stdio MCP vars are handled at seed time
+	// (B-SEED) via resolveMCPStdioPayload in seedGuestAgentAndSecrets.
+	sharedMCP, mcpErr := service.BuildSharedMCPServers(agentProfile)
 	if mcpErr != nil {
 		return errSandbox("sandbox create", mcpErr)
 	}
-	for _, b := range mcpHTTPBinds {
+	for _, b := range sharedMCP.HTTPBinds {
 		secrets = service.MergeSecrets(secrets, b)
 		allowHosts = append(allowHosts, b.Hosts...)
 	}
@@ -1682,6 +1684,20 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				ReadOnly:  true,
 			})
 			slog.Info("sandbox create: agent config staged for overlay", "staging", stageDir)
+			// Write the sanitized mcpServers map alongside the curated config so
+			// the detached supervisor can read it from the same host-side dir and
+			// inject it into /root/.claude.json at guest boot. A missing or empty
+			// Servers map is a silent skip; the staging dir is still valid for the
+			// overlay (no MCP servers to inject, but settings sharing still works).
+			if len(sharedMCP.Servers) > 0 {
+				if mcpJSON, marshalErr := json.Marshal(sharedMCP.Servers); marshalErr == nil {
+					mcpPath := filepath.Join(stageDir, "mcp-servers.json")
+					if writeErr := os.WriteFile(mcpPath, mcpJSON, 0o600); writeErr != nil {
+						slog.Warn("sandbox create: failed to write mcp-servers.json; MCP definitions will not be injected",
+							"err", writeErr)
+					}
+				}
+			}
 		}
 	}
 

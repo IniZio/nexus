@@ -452,7 +452,12 @@ func seedGuestAgent(
 	if err != nil {
 		return nil, err
 	}
-	if err := seeder(ctx, id, payload); err != nil {
+	// B-SEED: append stdio MCP credential vars (D-PP-04 exemption) so they
+	// reach cred.env even on the agent-only route (routeAgent → SeedLoop →
+	// SeedGuestAgent). Mirror of what seedGuestAgentAndSecrets does.
+	stdioPayload := resolveMCPStdioPayload(profile)
+	combined := append(payload, stdioPayload...)
+	if err := seeder(ctx, id, combined); err != nil {
 		return nil, fmt.Errorf("seed agent: deliver to guest: %w", err)
 	}
 	return records, nil
@@ -891,6 +896,66 @@ func SeedGuestBypassConsent(ctx context.Context, id domain.SandboxID, execer Gue
 	}
 	if code != 0 {
 		return fmt.Errorf("seed guest bypass consent: script exited %d", code)
+	}
+	return nil
+}
+
+// guestMCPServersScript merges an incoming mcpServers map into the guest's
+// /root/.claude.json top-level mcpServers key. It reads the merge-payload
+// ({"mcpServers":{...}}) from stdin via a temp file, then uses node to
+// deep-merge into the existing config without clobbering unrelated keys or
+// servers. Atomic write via temp-file rename.
+//
+// node is the only JSON-capable tool guaranteed present in the guest image
+// (/usr/local/bin/node); python3/jq are absent.
+const guestMCPServersScript = `set -e
+payload_tmp="/tmp/.nexus3-mcpservers.$$"
+cat > "$payload_tmp"
+PAYLOAD_PATH="$payload_tmp" node -e '
+const fs = require("fs");
+const payloadPath = process.env.PAYLOAD_PATH;
+const payload = JSON.parse(fs.readFileSync(payloadPath, "utf8"));
+const dst = "/root/.claude.json";
+let cfg = {};
+try {
+  const parsed = JSON.parse(fs.readFileSync(dst, "utf8"));
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) cfg = parsed;
+} catch (e) { /* absent or unparseable: start from empty */ }
+if (!cfg.mcpServers || typeof cfg.mcpServers !== "object" || Array.isArray(cfg.mcpServers)) {
+  cfg.mcpServers = {};
+}
+Object.assign(cfg.mcpServers, payload.mcpServers || {});
+const tmp = dst + ".nexus3.tmp";
+fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2));
+fs.renameSync(tmp, dst);
+'
+rm -f "$payload_tmp"
+`
+
+// SeedGuestMCPServers merges the given MCP servers map into the guest's
+// /root/.claude.json top-level mcpServers key. Claude Code reads user-scope
+// MCP definitions exclusively from that location.
+//
+// The merge is additive: existing servers under other names are left untouched;
+// per-server keys from servers overwrite same-named guests entries (idempotent
+// re-run produces identical output).
+//
+// Must be called AFTER SeedGuestAgentOnboarding so /root/.claude.json already
+// exists. If servers is empty or execer is nil this is a no-op.
+func SeedGuestMCPServers(ctx context.Context, id domain.SandboxID, servers map[string]json.RawMessage, execer GuestExecer) error {
+	if execer == nil || len(servers) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(map[string]any{"mcpServers": servers})
+	if err != nil {
+		return fmt.Errorf("seed guest mcp servers: marshal payload: %w", err)
+	}
+	code, err := execer(ctx, id, []string{"/bin/sh", "-c", guestMCPServersScript}, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("seed guest mcp servers: exec script: %w", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("seed guest mcp servers: script exited %d", code)
 	}
 	return nil
 }
