@@ -548,9 +548,14 @@ func seedGuestAgentAndSecrets(
 	// Compose ONE payload and write it ONCE. A second write would silently
 	// overwrite the first set of credentials (the second, subtler defect the
 	// combined path was introduced to fix).
-	combined := make([]byte, 0, len(agentPayload)+len(secretPayload))
+	//
+	// B-SEED: stdio MCP credential vars are resolved from host env and
+	// appended here (D-PP-04 exemption; see resolveMCPStdioPayload).
+	stdioPayload := resolveMCPStdioPayload(profile)
+	combined := make([]byte, 0, len(agentPayload)+len(secretPayload)+len(stdioPayload))
 	combined = append(combined, agentPayload...)
 	combined = append(combined, secretPayload...)
+	combined = append(combined, stdioPayload...)
 
 	if err := seeder(ctx, id, combined); err != nil {
 		return nil, fmt.Errorf("seed combined: deliver to guest: %w", err)
