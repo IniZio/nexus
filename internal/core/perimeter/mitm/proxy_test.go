@@ -1528,6 +1528,88 @@ func TestD36_TrailingDotHostFiltered(t *testing.T) {
 
 // TestProxy_AllowAll_SecretHostSwapsGitHub proves D-PD-25: AllowAll + SecretHosts
 // MITMs github.com (swap fires) without putting it on AllowedHosts.
+// TestProxy_BroadAllowSelectiveMITM proves the "broad-allow + selective MITM"
+// contract end-to-end:
+//
+//   - A host in SecretHosts is intercepted (MITM) even when AllowAll=true, and
+//     its placeholder Bearer token is swapped to the real token before egress.
+//     Mutation sensitivity: removing the swap step causes the upstream to receive
+//     the placeholder ("PLACEHOLDER-xxxx"), not the real token ("REAL-yyyy") →
+//     the assertion goes RED.
+//
+//   - A host NOT in SecretHosts (and not in AllowedHosts) is tunneled by the
+//     proxy under AllowAll=true; its Authorization header is NOT rewritten, so
+//     a placeholder sent to that host reaches upstream unchanged.
+func TestProxy_BroadAllowSelectiveMITM(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(50)
+	const secretHost = "api.credentialed.example"
+	const otherHost = "registry.npmjs.org"
+	const realToken = "REAL-yyyy-secret-token"
+
+	rec, err := broker.RegisterPlaceholder(sid, secretHost, realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:   sid,
+		SecretHosts: []string{secretHost},
+		Broker:      broker,
+		AllowAll:    true,
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	client := proxyClient(proxyServer.URL)
+
+	t.Run("secret_host_swapped", func(t *testing.T) {
+		// Mutation-sensitive: if the swap DoFunc is removed or bypassed, the
+		// upstream receives the placeholder and the assertion fails.
+		req, _ := http.NewRequest(http.MethodGet, "http://"+secretHost+"/v1/messages", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+
+		got := receiveWithTimeout(t, authCh)
+		if want := "Bearer " + realToken; got != want {
+			t.Errorf("secret host: upstream Authorization = %q, want %q (placeholder leaked or swap bypassed)", got, want)
+		}
+	})
+
+	t.Run("other_host_not_swapped", func(t *testing.T) {
+		// Under AllowAll, a host not in SecretHosts is tunneled (CONNECT path) or
+		// forwarded (plain HTTP) without interception. The OnRequest swap guard
+		// (allowSet check) rejects it, so the Authorization header is NOT rewritten.
+		const fakePlaceholder = "PLACEHOLDER-xxxx-not-registered"
+		req, _ := http.NewRequest(http.MethodGet, "http://"+otherHost+"/package", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+fakePlaceholder)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+
+		got := receiveWithTimeout(t, authCh)
+		// The proxy must NOT have rewritten the header — the placeholder arrives unchanged.
+		if got != "Bearer "+fakePlaceholder {
+			t.Errorf("other host: upstream Authorization = %q, want placeholder %q unchanged (unexpected swap)", got, "Bearer "+fakePlaceholder)
+		}
+	})
+}
+
+// TestProxy_AllowAll_SecretHostSwapsGitHub proves D-PD-25: AllowAll + SecretHosts
+// MITMs github.com (swap fires) without putting it on AllowedHosts.
 func TestProxy_AllowAll_SecretHostSwapsGitHub(t *testing.T) {
 	t.Parallel()
 

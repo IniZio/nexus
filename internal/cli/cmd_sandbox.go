@@ -699,16 +699,15 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 			"(D-PD-36): GitHub is added to SecretHosts and the full-scope token would " +
 			"be unbounded without a per-repo path allowlist"}
 	}
-	// D-PD-33: an agent sandbox never gets open egress. Open egress means no
-	// curated allowlist and, with nothing to swap, no MITM proxy — so the
-	// agent's placeholder bearer would reach the real API unexchanged. The
-	// default (open) is silently narrowed for agent sandboxes; an explicit
-	// request for it is refused rather than ignored.
-	if f.agentName != "" && f.egressExplicit && !f.egressClosed {
-		return f, &UsageError{Msg: "sandbox create: --agent cannot be combined with --egress open " +
-			"(D-PD-33): an agent sandbox needs a curated allowlist and an MITM proxy to " +
-			"exchange its placeholder credential; omit --egress to get that automatically"}
-	}
+	// D-PD-33 (updated — dev-egress posture): --agent + --egress open is now
+	// PERMITTED. The MITM proxy intercepts only the agent's credentialed host
+	// (api.anthropic.com) and any http-MCP secret-bind hosts, both of which
+	// land in SecretHosts. SecretHosts are MITM'd by the proxy BEFORE the
+	// AllowAll tunnel, so the placeholder→real swap fires regardless of open
+	// egress — the real token never reaches the open tunnel unexchanged.
+	// All other hosts (npm, apt, etc.) tunnel through untouched.
+	// The DEFAULT (no --egress flag) still produces closed egress for agent
+	// sandboxes; only an explicit --egress open opts into this posture.
 	return f, nil
 }
 
@@ -860,9 +859,35 @@ func resolveAgentPosture(f sandboxCreateFlags) (cred.AgentProfile, []string, boo
 	profile, _ := cred.ProfileByName(f.agentName)
 	// The agent's own hosts first, then whatever the task additionally needs.
 	allowHosts := append(service.AgentEgressHosts(profile), f.allowHosts...)
-	// D-PD-33: never open egress for an agent. An explicit --egress open is
-	// refused at parse time; the default is narrowed here.
-	return profile, allowHosts, false
+	// D-PD-33 (updated): open egress is permitted when the caller explicitly
+	// passes --egress open (egressExplicit && !egressClosed). The default (no
+	// --egress flag) still closes egress for agent sandboxes. The MITM proxy
+	// intercepts SecretHosts regardless of AllowAll, so the credential swap
+	// fires correctly under the broad-allow dev-egress posture.
+	return profile, allowHosts, f.egressExplicit && !f.egressClosed
+}
+
+// agentDevEgressSecretHosts returns the set of hostnames that must appear in
+// SecretHosts when an agent sandbox is created with open egress (dev-egress
+// posture). It returns nil in every other case.
+//
+// In open-egress mode the AllowAll tunnel shadows AllowedHosts, so the only
+// way to ensure the MITM proxy intercepts the agent's credentialed host is to
+// list it in SecretHosts. SecretHosts are checked before the tunnel and are
+// always MITM'd regardless of AllowAll (proxy.go invariant).
+//
+// http-MCP hosts are NOT included here: they enter SecretHosts automatically
+// via service.MergeSecrets + secretHostsFromBinds in the sharedMCP loop.
+//
+// ExtraSecretHosts (not SecretSpecs) is used deliberately: the credentialed
+// host's token is managed by the supervisor's seedGuestAgent path, not by
+// ResolveEnvelopeSecrets, so creating a SecretSpecs entry for it would cause
+// a spurious double-registration at restart time.
+func agentDevEgressSecretHosts(profile cred.AgentProfile, openEgress bool) []string {
+	if profile.Name == "" || !openEgress {
+		return nil
+	}
+	return []string{profile.CredentialedHost}
 }
 
 // builder-VM helpers
@@ -1723,7 +1748,10 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			// --egress closed opts out: OpenEgress=false, ACL denies everything
 			// not in AllowedHosts. Agent sandboxes (orca, herdr) must NOT set
 			// OpenEgress=true — they use WireClaudeEgress with a curated allowlist.
+			// --agent + --egress open (dev-egress posture): OpenEgress=true +
+			// ExtraSecretHosts routes the credentialed host through MITM proxy.
 			OpenEgress:        openEgress,
+			ExtraSecretHosts:  agentDevEgressSecretHosts(agentProfile, openEgress),
 			AgentProfile:      agentProfile,  // zero value when --agent was not passed
 			AllowedRepo:       f.allowedRepo, // D-PD-36: set by --repo; empty for open-egress sandboxes
 			Volumes:           namedVS,       // SD2-6-MOUNT: nil when --mount-named not used

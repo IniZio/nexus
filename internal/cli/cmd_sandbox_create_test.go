@@ -15,6 +15,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
@@ -955,4 +956,108 @@ func TestSandboxCreate_ConfigEgress_Allow(t *testing.T) {
 			}
 		}
 	})
+}
+
+// ── dev-egress-create: open-egress agent posture ──────────────────────────────
+
+// TestDevEgress_ParseGate_AgentPlusOpenEgress_Allowed verifies that
+// --agent claude-code combined with --egress open is no longer refused at
+// parse time (D-PD-33 relaxed: dev-egress posture).
+//
+// Mutation guard: restore the removed parse gate → this test fails RED.
+func TestDevEgress_ParseGate_AgentPlusOpenEgress_Allowed(t *testing.T) {
+	args := []string{
+		"myproject/mysandbox",
+		"--agent", "claude-code",
+		"--egress", "open",
+	}
+	_, err := parseSandboxCreateArgs(args)
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: unexpected error for --agent+--egress open: %v", err)
+	}
+}
+
+// TestDevEgress_ResolveAgentPosture_ClosedByDefault verifies that an agent
+// sandbox WITHOUT an explicit --egress flag still gets closed egress
+// (openEgress=false). The default MUST be unchanged.
+//
+// Mutation guard: change `f.egressExplicit && !f.egressClosed` to `!f.egressClosed`
+// → openEgress becomes true when no --egress flag is given → this test fails RED.
+func TestDevEgress_ResolveAgentPosture_ClosedByDefault(t *testing.T) {
+	f := sandboxCreateFlags{agentName: "claude-code"}
+	// egressExplicit=false (flag not passed), egressClosed=false (default open)
+	_, _, openEgress := resolveAgentPosture(f)
+	if openEgress {
+		t.Error("resolveAgentPosture: openEgress = true for default agent (no --egress flag); want false")
+	}
+}
+
+// TestDevEgress_ResolveAgentPosture_OpenWhenExplicit verifies that an agent
+// sandbox WITH --egress open gets open egress (openEgress=true).
+//
+// Mutation guard: change `f.egressExplicit && !f.egressClosed` to `false`
+// → openEgress is never true → this test fails RED.
+func TestDevEgress_ResolveAgentPosture_OpenWhenExplicit(t *testing.T) {
+	f := sandboxCreateFlags{
+		agentName:      "claude-code",
+		egressExplicit: true,
+		egressClosed:   false, // --egress open
+	}
+	_, _, openEgress := resolveAgentPosture(f)
+	if !openEgress {
+		t.Error("resolveAgentPosture: openEgress = false for --agent + --egress open; want true")
+	}
+}
+
+// TestDevEgress_ResolveAgentPosture_ExplicitClosedStaysClosed verifies that
+// --agent + --egress closed still produces closed egress.
+func TestDevEgress_ResolveAgentPosture_ExplicitClosedStaysClosed(t *testing.T) {
+	f := sandboxCreateFlags{
+		agentName:      "claude-code",
+		egressExplicit: true,
+		egressClosed:   true, // --egress closed
+	}
+	_, _, openEgress := resolveAgentPosture(f)
+	if openEgress {
+		t.Error("resolveAgentPosture: openEgress = true for --agent + --egress closed; want false")
+	}
+}
+
+// TestDevEgress_AgentDevEgressSecretHosts_OpenEgress verifies that
+// agentDevEgressSecretHosts returns the agent's CredentialedHost when
+// openEgress is true, so the MITM proxy can intercept it under AllowAll.
+//
+// Mutation guard: change the function to return nil → this test fails RED.
+func TestDevEgress_AgentDevEgressSecretHosts_OpenEgress(t *testing.T) {
+	profile := cred.ClaudeCodeProfile
+	hosts := agentDevEgressSecretHosts(profile, true)
+	if len(hosts) == 0 {
+		t.Fatal("agentDevEgressSecretHosts: got empty slice for open-egress agent; want CredentialedHost")
+	}
+	if hosts[0] != profile.CredentialedHost {
+		t.Errorf("agentDevEgressSecretHosts[0] = %q, want %q", hosts[0], profile.CredentialedHost)
+	}
+}
+
+// TestDevEgress_AgentDevEgressSecretHosts_ClosedEgress verifies that
+// agentDevEgressSecretHosts returns nil when openEgress is false (closed-egress
+// path must be unchanged: no ExtraSecretHosts injected).
+//
+// Mutation guard: remove the `!openEgress` guard → this test fails RED.
+func TestDevEgress_AgentDevEgressSecretHosts_ClosedEgress(t *testing.T) {
+	profile := cred.ClaudeCodeProfile
+	hosts := agentDevEgressSecretHosts(profile, false)
+	if len(hosts) != 0 {
+		t.Errorf("agentDevEgressSecretHosts: got %v for closed-egress; want nil", hosts)
+	}
+}
+
+// TestDevEgress_AgentDevEgressSecretHosts_NoAgent verifies that
+// agentDevEgressSecretHosts returns nil when no agent profile is set
+// (non-agent open-egress sandbox must not get ExtraSecretHosts).
+func TestDevEgress_AgentDevEgressSecretHosts_NoAgent(t *testing.T) {
+	hosts := agentDevEgressSecretHosts(cred.AgentProfile{}, true)
+	if len(hosts) != 0 {
+		t.Errorf("agentDevEgressSecretHosts: got %v for zero profile; want nil", hosts)
+	}
 }

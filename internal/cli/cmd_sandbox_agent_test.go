@@ -46,13 +46,15 @@ func TestParseSandboxCreate_Agent(t *testing.T) {
 		}
 	})
 
-	// D-PD-33. The default is open egress, so this must refuse only the
-	// EXPLICIT request — refusing the default would make --agent unusable.
-	t.Run("explicit open egress is refused", func(t *testing.T) {
+	// D-PD-33 (updated — dev-egress posture): --agent + --egress open is now
+	// PERMITTED. The MITM proxy intercepts SecretHosts (the agent's
+	// CredentialedHost) regardless of AllowAll, so the placeholder→real swap
+	// fires correctly even with broad-allow egress.
+	t.Run("explicit open egress is allowed", func(t *testing.T) {
 		t.Parallel()
 		_, err := parseSandboxCreateArgs([]string{"--agent", cred.ClaudeCodeProfileName, "--egress", "open", "proj/name"})
-		if err == nil {
-			t.Fatal("expected --agent with --egress open to be refused, got nil")
+		if err != nil {
+			t.Fatalf("expected --agent with --egress open to be accepted (dev-egress posture), got: %v", err)
 		}
 	})
 
@@ -97,10 +99,11 @@ func TestResolveAgentPosture(t *testing.T) {
 		if profile.Name != cred.ClaudeCodeProfileName {
 			t.Errorf("profile.Name = %q, want %q", profile.Name, cred.ClaudeCodeProfileName)
 		}
-		// D-PD-33: an agent with open egress gets no MITM proxy, so its
-		// placeholder bearer would reach the real API unexchanged.
+		// D-PD-33: the DEFAULT (no --egress flag, egressExplicit=false) still
+		// closes egress for an agent sandbox. Open egress requires an explicit
+		// --egress open flag (dev-egress posture).
 		if openEgress {
-			t.Error("an agent sandbox must never get open egress")
+			t.Error("an agent sandbox without --egress open must default to closed egress")
 		}
 		for _, want := range profile.Egress() {
 			if !slices.Contains(hosts, want) {

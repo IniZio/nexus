@@ -170,11 +170,20 @@ func New(cfg Config) (*Proxy, error) {
 		repoSet = true
 	}
 
-	// HandleConnect:
-	//   secret host    → MITM (swap possible)
-	//   allow-all else → CONNECT tunnel (real cert, no swap)
-	//   allowed host   → MITM
-	//   other host     → reject
+	// HandleConnect: broad-allow + selective MITM.
+	//
+	// Credentialed hosts MUST be in SecretHosts (secretSet), not AllowedHosts,
+	// so they are intercepted BEFORE the allowAll tunnel path. Under open-egress
+	// (AllowAll=true), AllowedHosts are shadowed by the tunnel and would NOT be
+	// MITM'd — a host on AllowedHosts only receives the swap in closed-egress
+	// mode. SecretHosts are checked first and always MITM'd regardless of
+	// AllowAll, ensuring the placeholder is swapped for the real token before
+	// any credential-bearing request leaves the host.
+	//
+	//   secret host    → MITM (swap fires; checked BEFORE the allowAll branch)
+	//   allow-all else → CONNECT tunnel (real cert, no swap; placeholder reaches upstream unchanged)
+	//   allowed host   → MITM (only reached in closed-egress mode)
+	//   other host     → reject (closed-egress mode)
 	inner.OnRequest().HandleConnect(goproxy.FuncHttpsHandler(func(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
 		hostname := stripHost(host)
 		lh := strings.ToLower(hostname)
@@ -250,7 +259,10 @@ func New(cfg Config) (*Proxy, error) {
 
 	// OnRequest swaps placeholder Authorization tokens with real tokens.
 	// Bearer (gh CLI) and Basic (git HTTPS) are both handled (D-PD-23).
-	// Swap only for allowlisted / secret hosts.
+	// Guard: only hosts in allowSet (= AllowedHosts ∪ SecretHosts) are swapped.
+	// Under AllowAll, non-secret hosts are CONNECT-tunneled and therefore never
+	// intercepted — they cannot reach this handler. SecretHosts are added to
+	// allowSet at construction, so the swap fires for them under AllowAll too.
 	inner.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
 		host := reqHost(req)
 		if _, ok := allowSet[strings.ToLower(host)]; !ok {

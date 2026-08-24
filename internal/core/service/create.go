@@ -173,6 +173,15 @@ type CreateAndBootOptions struct {
 	// the Envelope; validated at create time (D-PD-36).
 	AllowedRepo string
 
+	// ExtraSecretHosts lists additional hostnames to include in
+	// Envelope.SecretHosts without creating a corresponding SecretSpecs entry.
+	// Use this for agent open-egress sandboxes (D-PD-33 dev-egress posture):
+	// the agent's CredentialedHost must appear in SecretHosts so the AllowAll
+	// tunnel routes it through the MITM proxy for placeholder→real swap, but
+	// the host is managed by the supervisor's seedGuestAgent path — not by
+	// ResolveEnvelopeSecrets — so no SecretSpecs entry should be created.
+	ExtraSecretHosts []string
+
 	// Broker is the host-side credential broker used to mint placeholder
 	// credentials for AllowedHosts. If nil, credential seeding is skipped even
 	// when AllowedHosts is non-empty.
@@ -746,7 +755,7 @@ func CreateAndBoot(
 			ImageDigest:  resolvedDigest,
 			AllowedHosts: opts.AllowedHosts, // frozen at creation (P1-S6)
 			SSHPublicKey: opts.SSHPublicKey, // frozen at creation (ORCA-S1)
-			SecretHosts:  secretHostsFromBinds(opts.Secrets),
+			SecretHosts:  append(secretHostsFromBinds(opts.Secrets), opts.ExtraSecretHosts...),
 			SecretSpecs:  secretSpecsFromBinds(opts.Secrets),
 			OpenEgress:   opts.OpenEgress,  // D-PD-33: explicit opt-in; never inferred from empty AllowedHosts
 			AllowedRepo:  opts.AllowedRepo, // D-PD-36: per-repo path allowlist; enforced below
