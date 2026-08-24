@@ -993,19 +993,48 @@ func SeedGuestUserMounts(ctx context.Context, id domain.SandboxID, manifest User
 	var b strings.Builder
 	b.WriteString("set -eu\n\n")
 
-	// Step 1: home symlink — only when host_home is not /root.
+	// Step 1: per-tool-dir symlinks host_home/<dir> -> /root/<dir>, so tools
+	// that stored ABSOLUTE host paths resolve into the mounts at /root — e.g. a
+	// plugin's installPath /home/<user>/.claude/plugins/cache/... or a hook that
+	// shells out to /home/<user>/.local/share/groundwork/bin/ledger.
+	//
+	// A blanket /home/<user> -> /root symlink CANNOT be used: worktree sandboxes
+	// mount the repo's .git at /home/<user>/magic/<repo>/.git, which pre-creates
+	// /home/<user> as a real directory (so the whole-home symlink is skipped) and
+	// must stay a real directory for the .git mount to resolve. So we link only
+	// the specific first-level tool dirs the manifest actually provides under
+	// /root (.claude, .local, .codegraph, .bun, .vscode-server), which live
+	// beside /home/<user>/magic without conflict.
 	if manifest.HostHome != "" && manifest.HostHome != "/root" {
-		qHome := shSingleQuote(manifest.HostHome)
-		dir := manifest.HostHome
-		if i := strings.LastIndex(dir, "/"); i > 0 {
-			dir = dir[:i]
+		seen := map[string]bool{}
+		var comps []string
+		for _, m := range manifest.Mounts {
+			rel := strings.TrimPrefix(m.GuestPath, "/root/")
+			if rel == m.GuestPath || rel == "" {
+				continue // not under /root (unexpected) — skip
+			}
+			comp := rel
+			if i := strings.IndexByte(rel, '/'); i >= 0 {
+				comp = rel[:i]
+			}
+			if comp == "" || seen[comp] {
+				continue
+			}
+			seen[comp] = true
+			comps = append(comps, comp)
 		}
-		qDir := shSingleQuote(dir)
-		fmt.Fprintf(&b, "# 1. Home symlink: %s -> /root\n", manifest.HostHome)
-		fmt.Fprintf(&b, "if [ ! -e %s ] && [ ! -L %s ]; then\n", qHome, qHome)
-		fmt.Fprintf(&b, "  mkdir -p %s\n", qDir)
-		fmt.Fprintf(&b, "  ln -s /root %s\n", qHome)
-		fmt.Fprintf(&b, "fi\n\n")
+		if len(comps) > 0 {
+			qHome := shSingleQuote(manifest.HostHome)
+			fmt.Fprintf(&b, "# 1. Tool-dir symlinks: %s/<dir> -> /root/<dir>\n", manifest.HostHome)
+			fmt.Fprintf(&b, "mkdir -p %s\n", qHome)
+			for _, comp := range comps {
+				qDst := shSingleQuote(manifest.HostHome + "/" + comp)
+				qSrc := shSingleQuote("/root/" + comp)
+				// Idempotent + non-clobbering: only link when nothing is there.
+				fmt.Fprintf(&b, "if [ ! -e %s ] && [ ! -L %s ]; then ln -s %s %s; fi\n", qDst, qDst, qSrc, qDst)
+			}
+			b.WriteString("\n")
+		}
 	}
 
 	// Step 2: PATH drop-in. Quoted heredoc prevents $PATH from expanding during
