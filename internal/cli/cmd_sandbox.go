@@ -1231,7 +1231,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			// directly from disk, capturing committed tracked files, dirty
 			// (uncommitted) tracked files, AND untracked files, subject to the
 			// project's .dockerignore and nexus3's always-exclude list
-			// (.claude, .agents, .groundwork, .pnpm-store). Unlike the former
+			// (.claude, .agents, .pnpm-store). Unlike the former
 			// "git archive HEAD" approach, no .git directory or any prior
 			// commits are required — plain directories work too.
 			//
@@ -1726,26 +1726,25 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 					}
 				}
 			}
-			// U-MOUNT: operator tool dirs (plugins, local binaries, groundwork).
+			// U-MOUNT: operator tool dirs from user-global config (~/.config/nexus3/config.yaml).
 			// Gate: --no-user-mounts suppresses. Piggbacks on the shared-settings
 			// staging dir so both the overlay config and the tool mounts travel
 			// together through the same virtiofs channel to the supervisor.
 			if !f.noUserMounts {
 				if hostHome, homeErr := os.UserHomeDir(); homeErr == nil {
-					resolved, symlinks := service.ResolveUserMounts(hostHome)
-					for _, m := range resolved {
+					userGlobalCfg, ugErr := config.LoadUserGlobal()
+					if ugErr != nil {
+						slog.Warn("sandbox create: failed to load user global config; user mounts disabled", "err", ugErr)
+					}
+					manifest := service.BuildUserMountManifest(hostHome, []string(userGlobalCfg.Sandbox.Mounts))
+					for _, m := range manifest.Mounts {
 						bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
 							HostPath:  m.HostPath,
 							GuestPath: m.StagingGuestPath,
 							ReadOnly:  true,
 						})
 					}
-					if len(resolved) > 0 || len(symlinks) > 0 {
-						manifest := service.UserMountManifest{
-							HostHome: hostHome,
-							Mounts:   resolved,
-							Symlinks: symlinks,
-						}
+					if len(manifest.Mounts) > 0 {
 						if writeErr := service.WriteUserMountManifest(stageDir, manifest); writeErr != nil {
 							slog.Warn("sandbox create: failed to write usermounts.json; operator tool dirs will not be visible in guest",
 								"err", writeErr)

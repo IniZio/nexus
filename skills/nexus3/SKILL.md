@@ -457,52 +457,36 @@ anything about credentials.
 
 ## Sharing your host agent setup into sandboxes (user mounts)
 
-`--agent` sandboxes receive a set of read-only live mounts from the host automatically — no flags needed. These bring the operator's installed tools, MCP servers, and marketplace plugins into the guest so an in-guest Claude agent works with the same capabilities as the host agent. Pass `--no-user-mounts` to suppress them entirely.
+nexus3 has **no built-in default mounts** — it ships no hardcoded tool list. All host-to-guest sharing is driven entirely by user config. Pass `--no-user-mounts` on a `create` call to suppress all user-global mounts for that sandbox.
 
-### What gets mounted by default
+### User-global config: `~/.config/nexus3/config.yaml`
 
-Eight directories are shared on every `--agent` sandbox:
+The file lives at `$XDG_CONFIG_HOME/nexus3/config.yaml` (falls back to `~/.config/nexus3/config.yaml` when `$XDG_CONFIG_HOME` is unset). It uses `version: 1` and the `sandbox.mounts` key.
 
-| Host path (relative to `$HOME`) | Guest path | Notes |
-|---|---|---|
-| `.claude/plugins` | `/root/.claude/plugins` | Marketplace plugins; overlaid onto existing guest content |
-| `.local/bin` | `/root/.local/bin` | Wrapper scripts and shims |
-| `.local/share/groundwork` | `/root/.local/share/groundwork` | Groundwork plugin data |
-| `.codegraph` | `/root/.codegraph` | CodeGraph index |
-| `.local/share/mise` | `/root/.local/share/mise` | mise-managed tool install trees |
-| `.local/share/uv` | `/root/.local/share/uv` | uv-managed Python environments |
-| `.bun` | `/root/.bun` | Bun global (used by agent-browser) |
-| `.vscode-server/extensions` | `/root/.vscode-server/extensions` | VS Code extensions subtree only |
-
-All mounts are read-only. The guest seed also appends `~/.local/bin`, `~/.bun/bin`, and `~/.local/share/mise/shims` to `PATH`, and creates per-tool-dir symlinks `/home/<user>/<dir> → /root/<dir>` so hardcoded host-absolute paths resolve alongside the worktree `.git` mount.
-
-Host and guest are both **Linux x86_64**, so mounted ELF binaries and shared libraries run without translation.
-
-### Extending mounts via `~/.config/nexus3/config.yaml`
-
-User config extends (or replaces) the defaults. The file is under `$XDG_CONFIG_HOME/nexus3/config.yaml` (falls back to `~/.config/nexus3/config.yaml` when `$XDG_CONFIG_HOME` is unset). Only the `agent_mounts` key is consumed; all other keys are silently ignored.
+Both **short form** (`host:guest[:ro]`) and **long form** (`{source, target, read_only}`) are accepted — same syntax as Docker Compose bind-mounts. `~` and `$HOME` expand against the operator's home directory.
 
 ```yaml
-agent_mounts:
-  # disable_defaults: true   # uncomment to suppress ALL built-in mounts
+version: 1
 
-  # Additional host→guest mounts. ~ and $HOME expand against the operator's home.
-  # Entries with the same guest path as a default replace that default.
-  # All mounts are read-only (ro: field is reserved and currently ignored).
+sandbox:
   mounts:
-    - host: ~/.local/share/my-tool
-      guest: /root/.local/share/my-tool
-      overlay: false   # true = stage then overlay onto existing dir
-
-  # Guest-side symlinks created at first boot (no host path involved).
-  # Use for marketplace plugins whose source is a symlink on the host —
-  # mounting the symlink target directly via virtiofs causes an I/O error.
-  symlinks:
-    - link: /root/.config/opencode/plugins/my-plugin
-      target: /root/.local/share/my-plugin
+    # Short form: host:guest:ro
+    - ~/.claude/plugins:/root/.claude/plugins:ro
+    - ~/.local/bin:/root/.local/bin:ro
+    - ~/.local/share/mise:/root/.local/share/mise:ro
+    - ~/.local/share/uv:/root/.local/share/uv:ro
+    - ~/.bun:/root/.bun:ro
+    - ~/.vscode-server/extensions:/root/.vscode-server/extensions:ro
+    - ~/.local/share/groundwork:/root/.local/share/groundwork:ro
+    # Long form (exercises both YAML shapes)
+    - source: ~/.codegraph
+      target: /root/.codegraph
+      read_only: true
 ```
 
-A parse error in the config file is logged and the sandbox falls back to defaults — `sandbox create` never fails due to a bad config.
+A parse error in the config file is logged and the sandbox starts without user mounts — `sandbox create` never fails due to a bad config.
+
+Host and guest are both **Linux x86_64**, so mounted ELF binaries and shared libraries run without translation.
 
 ### Diagnosis: my tool / plugin / MCP isn't working
 
@@ -517,36 +501,17 @@ Interpret the output:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `ENOENT` / not found in `$PATH` | Tool binary or shim dir not in guest | Add a `mounts:` entry for the tool's install dir; or its `bin/` subdir already present via `.local/bin` but the real tree is missing |
-| Plugin `cache-miss` | Marketplace source dir absent in guest | Add a `mounts:` entry for the source dir, OR a `symlinks:` entry if the source is a symlink on the host |
-| MCP server crashes / exits immediately | Server binary resolves but runtime env missing | Add a `mounts:` entry for the runtime (e.g. the `uv` or `mise` tree the server's wrapper invokes) |
-| Symlink inside a mounted dir doesn't resolve | Symlink target outside the mounted subtree | Add a `symlinks:` entry pointing to the target's guest path |
-
-**Key distinction — mount vs. symlink**: use a `mounts:` entry when the content lives at a real directory on the host. Use a `symlinks:` entry when the host path is itself a symlink: virtiofs follows the link server-side and double-serves the target directory, producing an I/O error inside the guest.
-
-### Worked example: groundwork (loads out of the box)
-
-groundwork needs **no** user config. Its marketplace is registered at `~/.local/share/groundwork`, which is a default mount, so the marketplace directory resolves in-guest at `/root/.local/share/groundwork` and `claude plugin list` shows groundwork `✔ enabled` on a plain `--agent` sandbox.
-
-This is the payoff of registering a marketplace at a Claude-native, already-mounted path rather than a tool-specific alias. If you registered the marketplace via an opencode-era symlink such as `~/.config/opencode/plugins/groundwork`, re-point it once at the real directory so the default mount covers it:
-
-```jsonc
-// ~/.claude/plugins/known_marketplaces.json
-"groundwork": {
-  "source": { "source": "directory", "path": "/home/<you>/.local/share/groundwork" },
-  "installLocation": "/home/<you>/.local/share/groundwork"
-}
-```
-
-Only `~/.local/share/*` (and the other default trees) are symlinked into the guest home; a marketplace registered under `~/.config/opencode/...` will **not** resolve because `.config` is not a mounted component. When a marketplace genuinely lives outside the mounted trees, either add a `mounts:` entry for its directory or a `symlinks:` entry — but note a `mounts:` entry pointing at a host **symlink** fails with an I/O error, because virtiofs follows the link server-side and double-serves the target. Prefer fixing the marketplace registration to a real, already-mounted path.
+| `ENOENT` / not found in `$PATH` | Tool binary or shim dir not in guest | Add a `sandbox.mounts` entry for the tool's install dir |
+| Plugin `cache-miss` | Marketplace source dir absent in guest | Add a `sandbox.mounts` entry for the source dir |
+| MCP server crashes / exits immediately | Server binary resolves but runtime env missing | Add a `sandbox.mounts` entry for the runtime (e.g. the `uv` or `mise` tree the server's wrapper invokes) |
 
 ### Security boundary
 
-Never add credential directories to `mounts:`. The following are deliberately excluded from defaults and must not appear in user config:
+Never add credential directories to `sandbox.mounts`. All virtiofs mounts are host-read-only inside the guest, but read-only is not the same as invisible — an in-guest agent can read anything mounted. The following must never appear in user config:
 
 - `~/.ssh`
 - `~/.config/gh`
 - `~/.claude.json` / `~/.claude/.credentials.json`
 - `~/.aws`, `~/.config/gcloud`, or any provider credential store
 
-All user mounts are read-only, but read-only is not the same as invisible — an in-guest agent can read anything mounted. The security argument for defaults rests on "tool payloads, never credential stores." Hold that line in user config too.
+The security model rests on "tool payloads, never credential stores."

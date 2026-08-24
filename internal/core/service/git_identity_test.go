@@ -319,7 +319,7 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 						"credential for every agent sandbox, giving any in-guest process a valid "+
 						"GitHub token. D-PD-22: the agent stays dark; only a dedicated human "+
 						"git VM may receive github.com. See D-PD-22 in "+
-						".groundwork/motives/nexus3-parallel-dev-pr-flow/motive.md.",
+						".nexus/docs/nexus3-parallel-dev-pr-flow/motive.md.",
 					h,
 				)
 			}

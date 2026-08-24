@@ -277,6 +277,15 @@ func TestWorktreeToDisk_NexusAlwaysExclude(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// .groundwork is in nexus3AlwaysExclude; must be excluded too. It holds run
+	// ledgers with write-tokens — capturing it would leak them into the guest.
+	gwDir := filepath.Join(srcDir, ".groundwork", "runs")
+	if err := os.MkdirAll(gwDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gwDir, "session.json"), []byte(`{"token":"secret"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	outExt4 := filepath.Join(t.TempDir(), "wt.ext4")
 	if err := WorktreeToDisk(ctx, srcDir, outExt4, 0 /* auto */); err != nil {
@@ -286,6 +295,9 @@ func TestWorktreeToDisk_NexusAlwaysExclude(t *testing.T) {
 	lsOut, _ := exec.CommandContext(ctx, "debugfs", "-R", "ls /", outExt4).CombinedOutput()
 	if strings.Contains(string(lsOut), ".claude") {
 		t.Errorf(".claude should be excluded (nexus3AlwaysExclude) but appears in root listing: %s", lsOut)
+	}
+	if strings.Contains(string(lsOut), ".groundwork") {
+		t.Errorf(".groundwork should be excluded (nexus3AlwaysExclude) but appears in root listing: %s", lsOut)
 	}
 
 	// main.go must be present.

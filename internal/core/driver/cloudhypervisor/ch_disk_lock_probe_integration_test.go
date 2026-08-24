@@ -438,7 +438,7 @@ func appendLockProbeVerification(t *testing.T) {
 	t.Helper()
 	// The journal binary path; the exact location is injected by the harness.
 	// Try the known location; skip silently if absent.
-	journalBin := "$HOME/.claude/plugins/groundwork/bin/journal"
+	journalBin := os.Getenv("NEXUS3_JOURNAL_BIN")
 	if _, err := os.Stat(journalBin); err != nil {
 		t.Logf("journal binary not found at %s — skipping VERIFICATION event", journalBin)
 		return

@@ -986,7 +986,7 @@ func shSingleQuote(s string) string {
 // A failed user-mount is never fatal: callers log a warning and continue.
 // No-op when manifest has no mounts or execer is nil.
 func SeedGuestUserMounts(ctx context.Context, id domain.SandboxID, manifest UserMountManifest, execer GuestExecer) error {
-	if execer == nil || (len(manifest.Mounts) == 0 && len(manifest.Symlinks) == 0) {
+	if execer == nil || len(manifest.Mounts) == 0 {
 		return nil
 	}
 
@@ -996,14 +996,14 @@ func SeedGuestUserMounts(ctx context.Context, id domain.SandboxID, manifest User
 	// Step 1: per-tool-dir symlinks host_home/<dir> -> /root/<dir>, so tools
 	// that stored ABSOLUTE host paths resolve into the mounts at /root — e.g. a
 	// plugin's installPath /home/<user>/.claude/plugins/cache/... or a hook that
-	// shells out to /home/<user>/.local/share/groundwork/bin/ledger.
+	// shells out to an absolute path under /home/<user>/.local/share/.
 	//
 	// A blanket /home/<user> -> /root symlink CANNOT be used: worktree sandboxes
 	// mount the repo's .git at /home/<user>/magic/<repo>/.git, which pre-creates
 	// /home/<user> as a real directory (so the whole-home symlink is skipped) and
 	// must stay a real directory for the .git mount to resolve. So we link only
 	// the specific first-level tool dirs the manifest actually provides under
-	// /root (.claude, .local, .codegraph, .bun, .vscode-server), which live
+	// /root (.claude, .local, .bun, .vscode-server, etc.), which live
 	// beside /home/<user>/magic without conflict.
 	if manifest.HostHome != "" && manifest.HostHome != "/root" {
 		seen := map[string]bool{}
@@ -1081,23 +1081,6 @@ func SeedGuestUserMounts(ctx context.Context, id domain.SandboxID, manifest User
 		fmt.Fprintf(&b, "  mount -t overlay overlay -o lowerdir=%s,upperdir=%s,workdir=%s %s\n",
 			qStaging, qUp, qWork, qGuest)
 		fmt.Fprintf(&b, "fi\n\n")
-	}
-
-	// Step 4: user-declared guest-side symlinks (from config agent_mounts.symlinks).
-	// These run entirely in-guest; no host paths are involved. Idempotent: only
-	// create the symlink when nothing already exists at Link.
-	if len(manifest.Symlinks) > 0 {
-		b.WriteString("# 4. User-declared guest symlinks\n")
-		for _, sl := range manifest.Symlinks {
-			qLink := shSingleQuote(sl.Link)
-			qTarget := shSingleQuote(sl.Target)
-			// mkdir -p the parent so the symlink can be created even if the
-			// containing directory does not exist yet (e.g. first boot).
-			fmt.Fprintf(&b, "mkdir -p \"$(dirname %s)\"\n", qLink)
-			fmt.Fprintf(&b, "if [ ! -e %s ] && [ ! -L %s ]; then ln -s %s %s; fi\n",
-				qLink, qLink, qTarget, qLink)
-		}
-		b.WriteString("\n")
 	}
 
 	code, err := execer(ctx, id, []string{"/bin/sh", "-c", b.String()}, nil)

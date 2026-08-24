@@ -37,6 +37,56 @@ type EgressConfig struct {
 	Allow []string `yaml:"allow"`
 }
 
+// Mounts is a list of host→guest mount entries in nexus3.yaml.
+// Each element may be either:
+//   - a short string "host:guest" or "host:guest:ro"
+//   - a YAML mapping {source: host, target: guest, read_only: true|false}
+//
+// Both forms normalise to a "host:guest" or "host:guest:ro" canonical string.
+// Consumers treat the slice as []string — use []string(m) to convert.
+type Mounts []string
+
+// UnmarshalYAML implements yaml.Unmarshaler so that each element of a YAML
+// sequence may be either a scalar string or a {source,target,read_only} mapping.
+func (m *Mounts) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.SequenceNode {
+		return fmt.Errorf("config: mounts must be a YAML sequence, got kind %d", value.Kind)
+	}
+	out := make(Mounts, 0, len(value.Content))
+	for _, item := range value.Content {
+		switch item.Kind {
+		case yaml.ScalarNode:
+			// Short form: "host:guest" or "host:guest:ro"
+			out = append(out, item.Value)
+		case yaml.MappingNode:
+			// Long form: {source: ..., target: ..., read_only: true|false}
+			var entry struct {
+				Source   string `yaml:"source"`
+				Target   string `yaml:"target"`
+				ReadOnly bool   `yaml:"read_only"`
+			}
+			if err := item.Decode(&entry); err != nil {
+				return fmt.Errorf("config: mounts entry: %w", err)
+			}
+			if entry.Source == "" {
+				return fmt.Errorf("config: mounts entry: missing required field 'source'")
+			}
+			if entry.Target == "" {
+				return fmt.Errorf("config: mounts entry: missing required field 'target'")
+			}
+			s := entry.Source + ":" + entry.Target
+			if entry.ReadOnly {
+				s += ":ro"
+			}
+			out = append(out, s)
+		default:
+			return fmt.Errorf("config: mounts entry must be a string or mapping, got YAML kind %d", item.Kind)
+		}
+	}
+	*m = out
+	return nil
+}
+
 // SandboxConfig holds per-repo sandbox defaults.
 type SandboxConfig struct {
 	// Image is the container image name used when no --image flag is given.
@@ -48,10 +98,11 @@ type SandboxConfig struct {
 	// VCPUs is the number of virtual CPUs. Zero means "use the built-in default".
 	VCPUs int `yaml:"vcpus"`
 
-	// Mounts is a list of host:guest mount entries, e.g. ".:/work".
-	// Host-relative paths are resolved against the directory that contains the
-	// nexus3.yaml file by ResolveMounts — NOT against the process working dir.
-	Mounts []string `yaml:"mounts"`
+	// Mounts is a list of host→guest mount entries accepted in short string
+	// form ("host:guest[:ro]") or long object form ({source, target, read_only}).
+	// Both normalise to the canonical "host:guest[:ro]" string.
+	// Host-relative paths are resolved against the nexus3.yaml directory.
+	Mounts Mounts `yaml:"mounts"`
 }
 
 // Config is the in-memory representation of a nexus3.yaml file.

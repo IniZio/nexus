@@ -1871,7 +1871,7 @@ func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot 
 //     "open-guest-pane" action.
 //   - Not found → fall through to herdr's built-in: `herdr tab create
 //     --workspace <id> --focus`. This is what makes a global override safe in
-//     non-nexus3 workspaces (example-app, groundwork, the operator's own
+//     non-nexus3 workspaces (the operator's own
 //     nexus3 workspace that carries no binding).
 //   - Lookup fails for a reason other than "not found" (transient store error)
 //     → log a warning and fall through to the host-tab path. The operator

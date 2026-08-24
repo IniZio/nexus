@@ -183,7 +183,7 @@ func realProbeSH(drv *cloudhypervisor.CHDriver) service.ProbeFunc {
 // plus universal exclusions for any depth.
 func skipDirSH(name string) bool {
 	switch name {
-	case ".git", ".scratch", ".groundwork", "vendor", "testdata":
+	case ".git", ".scratch", "vendor", "testdata":
 		return true
 	}
 	// Skip hidden dirs at any depth.

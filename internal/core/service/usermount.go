@@ -2,59 +2,10 @@ package service
 
 import (
 	"encoding/json"
-	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 )
-
-// UserMount declares one operator-owned host directory that an agent sandbox
-// should receive as a read-only live mount. Extend by appending rows to
-// defaultUserMounts; NEVER add secret dirs (~/.ssh, ~/.config/gh,
-// ~/.claude.json, ~/.claude/.credentials.json) — those are deliberately
-// excluded so the security boundary holds by omission.
-//
-// HostRel is relative to the operator's $HOME.
-// GuestPath is the final in-guest path the agent expects the content at.
-// Overlay=true means the host dir is NOT mounted directly at GuestPath; instead
-// the live mount lands at a staging path (/run/nexus3/usermount/<basename>) and
-// the guest seed overlays it onto GuestPath. This is required when GuestPath may
-// already contain content the agent has written. Overlay=false mounts directly
-// at GuestPath (read-only), which is safe when GuestPath is purely tool content
-// the guest never mutates.
-type UserMount struct {
-	HostRel   string // path relative to $HOME
-	GuestPath string // final in-guest path
-	Overlay   bool   // true → stage at /run/nexus3/usermount/<basename>; false → mount directly at GuestPath
-}
-
-// defaultUserMounts is the built-in ordered list of generic operator tool dirs
-// to share into agent sandboxes. These are chosen because they are common to
-// most developer machines; they carry no credentials. Users may add
-// machine-specific entries via ~/.config/nexus3/config.yaml (agent_mounts:
-// mounts:). Deterministic order → deterministic guest layout.
-//
-// Do NOT add secret dirs — see UserMount doc comment.
-var defaultUserMounts = []UserMount{
-	{HostRel: ".claude/plugins", GuestPath: "/root/.claude/plugins", Overlay: true},
-	{HostRel: ".local/bin", GuestPath: "/root/.local/bin", Overlay: false},
-	{HostRel: ".local/share/groundwork", GuestPath: "/root/.local/share/groundwork", Overlay: false},
-
-	// Version-store dirs: ~/.local/bin entries are frequently thin symlinks or
-	// wrapper scripts that resolve into a version-manager's install tree (mise,
-	// bun, codegraph, uv). Mounting only ~/.local/bin leaves those links
-	// dangling in the guest, so the tool "is not found" even though the symlink
-	// is present. These rows carry the actual install trees the operator's MCP
-	// servers and CLIs resolve into. Read-only; runtime caches (~/.cache/uv,
-	// etc.) stay guest-local and writable. NOT a security widening: these are
-	// tool payloads, never credential stores.
-	{HostRel: ".codegraph", GuestPath: "/root/.codegraph", Overlay: false},
-	{HostRel: ".local/share/mise", GuestPath: "/root/.local/share/mise", Overlay: false}, // node + uv binaries
-	{HostRel: ".local/share/uv", GuestPath: "/root/.local/share/uv", Overlay: false},     // uv-managed python
-	{HostRel: ".bun", GuestPath: "/root/.bun", Overlay: false},                           // bun global (agent-browser)
-	// Only the extensions subtree — NOT all of ~/.vscode-server, which holds VS
-	// Code user state and may carry auth tokens (secret boundary).
-	{HostRel: ".vscode-server/extensions", GuestPath: "/root/.vscode-server/extensions", Overlay: false},
-}
 
 // ResolvedUserMount is a mount resolved against a concrete host home directory.
 // It is serialized into usermounts.json for the guest seed.
@@ -67,109 +18,96 @@ type ResolvedUserMount struct {
 	// == GuestPath for Overlay=false rows (direct mount, no staging needed).
 }
 
-// ResolvedUserSymlink is a guest-side symlink declaration from user config.
-// The guest seed creates these symlinks on first boot (entirely in-guest; no
-// host path is involved). Built-in defaults contribute no symlinks.
-type ResolvedUserSymlink struct {
-	Link   string `json:"link"`   // guest path to create (the symlink)
-	Target string `json:"target"` // guest path it points to
-}
-
-// ResolveUserMounts merges the built-in defaultUserMounts with any
-// user-configured mounts from ~/.config/nexus3/config.yaml, resolves them
-// against hostHome, and returns:
-//   - mounts: only rows whose host directory exists on disk (missing dirs
-//     silently skipped — no broken mounts). Order is deterministic: defaults
-//     first (unless disable_defaults), then user entries.
-//   - symlinks: guest-side symlinks declared in user config (not filtered by
-//     host existence — their targets are guest paths).
-//
-// On config load error, slog.Warn is emitted and defaults-only is used; sandbox
-// create is never failed for a config parse error.
-func ResolveUserMounts(hostHome string) ([]ResolvedUserMount, []ResolvedUserSymlink) {
-	cfg, err := LoadUserMountConfig(hostHome)
-	if err != nil {
-		slog.Warn("usermount: failed to load user config; using built-in defaults only", "err", err)
-		cfg = UserMountConfig{}
-	}
-
-	// Build a set of guest paths provided by user config so defaults with the
-	// same GuestPath can be skipped (user entry overrides the default).
-	userByGuest := make(map[string]bool, len(cfg.Mounts))
-	for _, u := range cfg.Mounts {
-		userByGuest[u.Guest] = true
-	}
-
-	// Collect candidates: defaults (filtered by override set) then user entries.
-	type candidate struct {
-		hostPath  string
-		guestPath string
-		overlay   bool
-	}
-	var candidates []candidate
-
-	if !cfg.DisableDefaults {
-		for _, d := range defaultUserMounts {
-			if userByGuest[d.GuestPath] {
-				continue // user entry takes precedence
-			}
-			candidates = append(candidates, candidate{
-				hostPath:  filepath.Join(hostHome, d.HostRel),
-				guestPath: d.GuestPath,
-				overlay:   d.Overlay,
-			})
-		}
-	}
-	for _, u := range cfg.Mounts {
-		candidates = append(candidates, candidate{
-			hostPath:  u.Host, // already expanded by LoadUserMountConfig
-			guestPath: u.Guest,
-			overlay:   u.Overlay,
-		})
-	}
-
-	// Resolve: skip candidates whose host path is absent.
-	var mounts []ResolvedUserMount
-	for _, c := range candidates {
-		if _, err := os.Stat(c.hostPath); err != nil {
-			continue // dir absent or unreadable → skip
-		}
-		stagingGuestPath := c.guestPath
-		if c.overlay {
-			// Land the virtiofs share under /run/nexus3/usermount/ so the guest
-			// seed can overlay it onto GuestPath without conflicting with any
-			// pre-existing content there.
-			stagingGuestPath = "/run/nexus3/usermount/" + filepath.Base(c.hostPath)
-		}
-		mounts = append(mounts, ResolvedUserMount{
-			HostPath:         c.hostPath,
-			GuestPath:        c.guestPath,
-			Overlay:          c.overlay,
-			StagingGuestPath: stagingGuestPath,
-		})
-	}
-
-	// Symlinks: from config only; defaults contribute none.
-	var symlinks []ResolvedUserSymlink
-	for _, s := range cfg.Symlinks {
-		symlinks = append(symlinks, ResolvedUserSymlink{Link: s.Link, Target: s.Target})
-	}
-
-	return mounts, symlinks
-}
-
 // UserMountManifest is the schema of usermounts.json written into the
 // agent-config staging dir. The guest seed reads it on first boot and:
 //   - for Overlay=true rows: overlays StagingGuestPath (virtiofs) onto GuestPath
 //   - for Overlay=false rows: the live mount is already at GuestPath; no action needed
-//   - Symlinks: creates each declared guest-side symlink
 //
 // HostHome is included so the guest seed can create a /home/<user> → /root
 // symlink when the operator's home is not /root (no-op if already /root).
 type UserMountManifest struct {
-	HostHome string                `json:"host_home"`
-	Mounts   []ResolvedUserMount   `json:"mounts"`
-	Symlinks []ResolvedUserSymlink `json:"symlinks,omitempty"`
+	HostHome string              `json:"host_home"`
+	Mounts   []ResolvedUserMount `json:"mounts"`
+}
+
+// BuildUserMountManifest resolves mounts (in "host:guest[:ro]" form) against
+// hostHome and returns a UserMountManifest ready for virtiofs wiring and
+// guest seeding.
+//
+//   - ~ and $HOME in the host path are expanded against hostHome.
+//   - Mounts whose host path does not exist are silently skipped.
+//   - Overlay is derived: guest paths under /root/.claude/ use overlay mode
+//     (those dirs may contain pre-existing agent content that must be preserved);
+//     all other guest paths mount directly (read-only).
+//   - The :ro suffix is accepted but ignored for routing — all user mounts are
+//     host-read-only by design (the virtiofs share is always RO).
+//
+// An empty or nil mounts slice returns a zero UserMountManifest (HostHome set,
+// Mounts nil).
+func BuildUserMountManifest(hostHome string, mounts []string) UserMountManifest {
+	m := UserMountManifest{HostHome: hostHome}
+	for _, spec := range mounts {
+		// Parse "host:guest" or "host:guest:ro".
+		// Split on the first colon for host, then take guest from the remainder
+		// (ignoring a trailing :ro suffix — we derive RO from overlay logic).
+		parts := strings.SplitN(spec, ":", 3)
+		if len(parts) < 2 {
+			continue // malformed — skip
+		}
+		hostRaw := parts[0]
+		guestPath := parts[1]
+		if hostRaw == "" || guestPath == "" {
+			continue
+		}
+
+		// Expand ~ and $HOME in host path.
+		hostPath := expandHome(hostRaw, hostHome)
+
+		// Skip if host path does not exist.
+		if _, err := os.Stat(hostPath); err != nil {
+			continue
+		}
+
+		// Derive overlay: /root/.claude and paths under it need an overlay so
+		// existing guest content (written by the agent) is not masked by the RO
+		// share. Match the exact dir as well as descendants.
+		overlay := guestPath == "/root/.claude" || strings.HasPrefix(guestPath, "/root/.claude/")
+
+		stagingGuestPath := guestPath
+		if overlay {
+			// Land the virtiofs share at /run/nexus3/usermount/<basename>.
+			base := filepath.Base(guestPath)
+			if base == "" || base == "." || base == "/" {
+				base = "um"
+			}
+			stagingGuestPath = "/run/nexus3/usermount/" + base
+		}
+
+		m.Mounts = append(m.Mounts, ResolvedUserMount{
+			HostPath:         hostPath,
+			GuestPath:        guestPath,
+			Overlay:          overlay,
+			StagingGuestPath: stagingGuestPath,
+		})
+	}
+	return m
+}
+
+// expandHome replaces a leading ~ or $HOME with hostHome.
+func expandHome(path, hostHome string) string {
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(hostHome, path[2:])
+	}
+	if path == "~" {
+		return hostHome
+	}
+	if strings.HasPrefix(path, "$HOME/") {
+		return filepath.Join(hostHome, path[6:])
+	}
+	if path == "$HOME" {
+		return hostHome
+	}
+	return path
 }
 
 // WriteUserMountManifest writes m as usermounts.json into stageDir (mode 0o600).

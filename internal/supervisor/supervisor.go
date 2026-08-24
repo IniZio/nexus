@@ -985,7 +985,7 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 	}
 
 	// User-mount seed (usermount-guest-seed): home symlink, PATH drop-in, and
-	// overlay mounts for operator tool dirs (plugins, ~/.local/bin, groundwork).
+	// overlay mounts for operator tool dirs (from user-global config).
 	// Must run AFTER the /root/.claude overlay (A-MOUNT) so the plugins overlay
 	// layers on top of the already-mounted /root/.claude overlayfs. Non-fatal.
 	if in.UserMounts != nil {

@@ -109,7 +109,7 @@ func Resolve(f Flags, cfg Config, d Defaults) Resolved {
 	case f.Mounts != nil:
 		r.Mounts = f.Mounts
 	default:
-		r.Mounts = cfg.Sandbox.Mounts
+		r.Mounts = []string(cfg.Sandbox.Mounts)
 	}
 
 	return r

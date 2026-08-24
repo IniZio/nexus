@@ -19,7 +19,7 @@ import (
 // to Docker builds and are always development infrastructure:
 //   - .claude    — Claude Code agent sessions, memory, and worktrees
 //   - .agents    — Agent-framework workspace files
-//   - .groundwork — Groundwork motive and run files
+//   - .groundwork — motive and run-ledger files (dev infra, can be large)
 //   - .pnpm-store — pnpm's global content-addressed package cache
 //
 // These directories can be hundreds of megabytes or more. Including them in a

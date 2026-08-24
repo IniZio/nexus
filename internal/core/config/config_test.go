@@ -357,7 +357,7 @@ var resolveTests = []struct {
 			Mounts: []string{"/flag/path:/guest"},
 		},
 		cfg: config.Config{
-			Sandbox: config.SandboxConfig{Mounts: []string{".:/work"}},
+			Sandbox: config.SandboxConfig{Mounts: config.Mounts{".:/work"}},
 		},
 		want: config.Resolved{
 			Image: "default-image", MemoryMiB: 4096, VCPUs: 2,
@@ -574,4 +574,96 @@ func TestSchemaCoversAllStructFields(t *testing.T) {
 			t.Errorf("schema has sandbox property %q with no corresponding Go yaml tag — remove from schema or add to SandboxConfig", key)
 		}
 	}
+}
+
+// --- Mounts YAML type tests ---
+
+func loadFromYAML(t *testing.T, data []byte) (config.Config, error) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "nexus3.yaml"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := config.Load(dir)
+	return cfg, err
+}
+
+func TestMounts_ShortStringPassthrough(t *testing.T) {
+	data := []byte("version: 1\nsandbox:\n  mounts:\n    - /host/a:/guest/a\n    - /host/b:/guest/b:ro\n")
+	cfg, err := loadFromYAML(t, data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	want := []string{"/host/a:/guest/a", "/host/b:/guest/b:ro"}
+	if got := []string(cfg.Sandbox.Mounts); !slicesEqual(got, want) {
+		t.Errorf("Mounts = %v, want %v", got, want)
+	}
+}
+
+func TestMounts_LongFormRO(t *testing.T) {
+	data := []byte("version: 1\nsandbox:\n  mounts:\n    - source: /host/a\n      target: /guest/a\n      read_only: true\n")
+	cfg, err := loadFromYAML(t, data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	want := []string{"/host/a:/guest/a:ro"}
+	if got := []string(cfg.Sandbox.Mounts); !slicesEqual(got, want) {
+		t.Errorf("Mounts = %v, want %v", got, want)
+	}
+}
+
+func TestMounts_LongFormRW(t *testing.T) {
+	data := []byte("version: 1\nsandbox:\n  mounts:\n    - source: /host/a\n      target: /guest/a\n")
+	cfg, err := loadFromYAML(t, data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	want := []string{"/host/a:/guest/a"}
+	if got := []string(cfg.Sandbox.Mounts); !slicesEqual(got, want) {
+		t.Errorf("Mounts = %v, want %v", got, want)
+	}
+}
+
+func TestMounts_MixedList(t *testing.T) {
+	data := []byte("version: 1\nsandbox:\n  mounts:\n    - /host/a:/guest/a\n    - source: /host/b\n      target: /guest/b\n      read_only: true\n")
+	cfg, err := loadFromYAML(t, data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	want := []string{"/host/a:/guest/a", "/host/b:/guest/b:ro"}
+	if got := []string(cfg.Sandbox.Mounts); !slicesEqual(got, want) {
+		t.Errorf("Mounts = %v, want %v", got, want)
+	}
+}
+
+func TestMounts_MissingSource(t *testing.T) {
+	data := []byte("version: 1\nsandbox:\n  mounts:\n    - target: /guest/a\n")
+	_, err := loadFromYAML(t, data)
+	if err == nil {
+		t.Fatal("expected error for missing source, got nil")
+	}
+}
+
+func TestMounts_MissingTarget(t *testing.T) {
+	data := []byte("version: 1\nsandbox:\n  mounts:\n    - source: /host/a\n")
+	_, err := loadFromYAML(t, data)
+	if err == nil {
+		t.Fatal("expected error for missing target, got nil")
+	}
+}
+
+// slicesEqual compares two string slices for equality.
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
