@@ -360,6 +360,7 @@ type sandboxCreateFlags struct {
 	mountNamed      []string // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
 	mountLive       []string // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
 	noShareSettings bool     // --no-share-settings: skip curated host agent config overlay (A-MOUNT)
+	noUserMounts    bool     // --no-user-mounts: skip operator tool-dir live mounts (usermount-table-host)
 	positionals     []string
 }
 
@@ -603,6 +604,8 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 			f.noBuiltinGH = true
 		case "--no-share-settings":
 			f.noShareSettings = true
+		case "--no-user-mounts":
+			f.noUserMounts = true
 		case "--egress":
 			if i+1 >= len(args) {
 				return f, &UsageError{Msg: "sandbox create: --egress requires a value (open|closed)"}
@@ -1058,7 +1061,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--repo <owner>/<name>] [--no-builtin-gh] [--no-share-settings] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--repo <owner>/<name>] [--no-builtin-gh] [--no-share-settings] [--no-user-mounts] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])
@@ -1721,6 +1724,34 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 						slog.Warn("sandbox create: failed to write mcp-servers.json; MCP definitions will not be injected",
 							"err", writeErr)
 					}
+				}
+			}
+			// U-MOUNT: operator tool dirs (plugins, local binaries, groundwork).
+			// Gate: --no-user-mounts suppresses. Piggbacks on the shared-settings
+			// staging dir so both the overlay config and the tool mounts travel
+			// together through the same virtiofs channel to the supervisor.
+			if !f.noUserMounts {
+				if hostHome, homeErr := os.UserHomeDir(); homeErr == nil {
+					resolved := service.ResolveUserMounts(hostHome)
+					for _, m := range resolved {
+						bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
+							HostPath:  m.HostPath,
+							GuestPath: m.StagingGuestPath,
+							ReadOnly:  true,
+						})
+					}
+					if len(resolved) > 0 {
+						manifest := service.UserMountManifest{
+							HostHome: hostHome,
+							Mounts:   resolved,
+						}
+						if writeErr := service.WriteUserMountManifest(stageDir, manifest); writeErr != nil {
+							slog.Warn("sandbox create: failed to write usermounts.json; operator tool dirs will not be visible in guest",
+								"err", writeErr)
+						}
+					}
+				} else {
+					slog.Warn("sandbox create: os.UserHomeDir failed; skipping user-mount table", "err", homeErr)
 				}
 			}
 		}
