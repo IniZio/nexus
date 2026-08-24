@@ -9,29 +9,34 @@ import (
 	"github.com/IniZio/nexus3/internal/core/service"
 )
 
-// TestUserMountTable_ThreeRows verifies the table has exactly the 3 declared
-// rows in order. Mutation guard: if a row is deleted or reordered, this fails.
-func TestUserMountTable_ThreeRows(t *testing.T) {
+// TestUserMountTable_Rows verifies the table's declared rows resolve in order
+// when all host dirs exist. Mutation guard: if a row is deleted or reordered,
+// this fails. Update the expected list when the table is intentionally extended.
+func TestUserMountTable_Rows(t *testing.T) {
 	home := t.TempDir()
-	// Create all three declared dirs.
-	for _, rel := range []string{".claude/plugins", ".local/bin", ".local/share/groundwork"} {
-		if err := os.MkdirAll(filepath.Join(home, rel), 0o755); err != nil {
+	// The declared rows, in table order.
+	want := []struct{ rel, guest string }{
+		{".claude/plugins", "/root/.claude/plugins"},
+		{".local/bin", "/root/.local/bin"},
+		{".local/share/groundwork", "/root/.local/share/groundwork"},
+		{".codegraph", "/root/.codegraph"},
+		{".local/share/mise", "/root/.local/share/mise"},
+		{".local/share/uv", "/root/.local/share/uv"},
+		{".bun", "/root/.bun"},
+		{".vscode-server/extensions", "/root/.vscode-server/extensions"},
+	}
+	for _, w := range want {
+		if err := os.MkdirAll(filepath.Join(home, w.rel), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	got := service.ResolveUserMounts(home)
-	if len(got) != 3 {
-		t.Fatalf("table has %d rows when all dirs exist, want 3", len(got))
+	if len(got) != len(want) {
+		t.Fatalf("table resolved %d rows when all dirs exist, want %d", len(got), len(want))
 	}
-	// Order must match the table declaration.
-	cases := []struct{ guest string }{
-		{"/root/.claude/plugins"},
-		{"/root/.local/bin"},
-		{"/root/.local/share/groundwork"},
-	}
-	for i, c := range cases {
-		if got[i].GuestPath != c.guest {
-			t.Errorf("row %d GuestPath = %q, want %q", i, got[i].GuestPath, c.guest)
+	for i, w := range want {
+		if got[i].GuestPath != w.guest {
+			t.Errorf("row %d GuestPath = %q, want %q", i, got[i].GuestPath, w.guest)
 		}
 	}
 }

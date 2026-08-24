@@ -1016,7 +1016,12 @@ func SeedGuestUserMounts(ctx context.Context, id domain.SandboxID, manifest User
 	fmt.Fprintf(&b, "cat > %s << 'NEXUS3UMEOF'\n", qProfile)
 	fmt.Fprintf(&b, "# nexus3: user-mount PATH for login shells.\n")
 	fmt.Fprintf(&b, "# Written by SeedGuestUserMounts; do not edit.\n")
-	fmt.Fprintf(&b, "export PATH=\"$PATH:/root/.local/bin\"\n")
+	// Append the operator's tool bin dirs. /root/.local/bin holds self-contained
+	// binaries; /root/.bun/bin (bun global) and /root/.local/share/mise/shims
+	// (mise-managed uv/node/etc.) hold shims/wrappers that MCP servers invoke by
+	// bare command name (e.g. `uv run …`, `agent-browser mcp`). Appended, never
+	// prepended, so guest binaries still win. Non-existent entries are harmless.
+	fmt.Fprintf(&b, "export PATH=\"$PATH:/root/.local/bin:/root/.bun/bin:/root/.local/share/mise/shims\"\n")
 	fmt.Fprintf(&b, "NEXUS3UMEOF\n")
 	fmt.Fprintf(&b, "fi\n\n")
 

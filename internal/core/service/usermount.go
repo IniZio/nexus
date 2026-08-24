@@ -33,6 +33,22 @@ var userMountTable = []UserMount{
 	{HostRel: ".claude/plugins", GuestPath: "/root/.claude/plugins", Overlay: true},
 	{HostRel: ".local/bin", GuestPath: "/root/.local/bin", Overlay: false},
 	{HostRel: ".local/share/groundwork", GuestPath: "/root/.local/share/groundwork", Overlay: false},
+
+	// Version-store dirs: ~/.local/bin entries are frequently thin symlinks or
+	// wrapper scripts that resolve into a version-manager's install tree (mise,
+	// bun, codegraph, uv). Mounting only ~/.local/bin leaves those links
+	// dangling in the guest, so the tool "is not found" even though the symlink
+	// is present. These rows carry the actual install trees the operator's MCP
+	// servers and CLIs resolve into. Read-only; runtime caches (~/.cache/uv,
+	// etc.) stay guest-local and writable. NOT a security widening: these are
+	// tool payloads, never credential stores.
+	{HostRel: ".codegraph", GuestPath: "/root/.codegraph", Overlay: false},
+	{HostRel: ".local/share/mise", GuestPath: "/root/.local/share/mise", Overlay: false}, // node + uv binaries
+	{HostRel: ".local/share/uv", GuestPath: "/root/.local/share/uv", Overlay: false},     // uv-managed python
+	{HostRel: ".bun", GuestPath: "/root/.bun", Overlay: false},                           // bun global (agent-browser)
+	// Only the extensions subtree — NOT all of ~/.vscode-server, which holds VS
+	// Code user state and may carry auth tokens (secret boundary).
+	{HostRel: ".vscode-server/extensions", GuestPath: "/root/.vscode-server/extensions", Overlay: false},
 }
 
 // ResolvedUserMount is a userMountTable row resolved against a concrete host
