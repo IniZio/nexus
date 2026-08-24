@@ -22,25 +22,54 @@ import (
 
 // ── Shared predicate ─────────────────────────────────────────────────────────
 
-// TestIsHerdrWorktreeHandle_prefixMatchesProducer asserts that
-// isHerdrWorktreeHandle accepts every handle produced by
-// herdrWorktreeSandboxHandle.
+// TestIsWorktreeManaged_flagTrue asserts that IsWorktreeManaged returns true
+// when the WorktreeManaged flag is explicitly set (the path for new bindings).
 //
-// MUTATION TARGET: herdrWorktreeHandlePrefix constant.
-// If the prefix in herdrWorktreeSandboxHandle diverges from the constant used
-// by isHerdrWorktreeHandle, this test turns RED immediately.
-func TestIsHerdrWorktreeHandle_prefixMatchesProducer(t *testing.T) {
-	cases := []string{"feature/my-branch", "main", "worktree/silver-123", "fix/issue-42"}
-	for _, branch := range cases {
-		handle := herdrWorktreeSandboxHandle(branch)
-		if !isHerdrWorktreeHandle(handle) {
-			t.Errorf("isHerdrWorktreeHandle(%q) = false for handle %q produced by herdrWorktreeSandboxHandle; prefix drifted from producer",
-				handle, handle)
+// MUTATION TARGET: IsWorktreeManaged flag check.
+// Removing the WorktreeManaged branch makes this RED.
+func TestIsWorktreeManaged_flagTrue(t *testing.T) {
+	cases := []string{"myrepo/feature-branch", "example-app/EX-871", "repo/main"}
+	for _, handle := range cases {
+		b := HerdrSpaceBinding{SandboxHandle: handle, WorktreeManaged: true}
+		if !b.IsWorktreeManaged() {
+			t.Errorf("IsWorktreeManaged() = false for handle %q with WorktreeManaged=true; flag not checked", handle)
 		}
 	}
 }
 
-// TestIsHerdrWorktreeHandle_rejectsNonWt asserts that non-wt/ handles return false.
+// TestIsWorktreeManaged_flagFalseNonWt asserts that IsWorktreeManaged returns
+// false for bindings without the flag and without a legacy wt/ handle.
+//
+// MUTATION TARGET: IsWorktreeManaged guard — both the flag and prefix paths.
+// Always returning true makes this RED.
+func TestIsWorktreeManaged_flagFalseNonWt(t *testing.T) {
+	cases := []string{"ac3/demo", "demo/sandbox-1", "local/my-box", "orca/work", "", "wt"}
+	for _, h := range cases {
+		b := HerdrSpaceBinding{SandboxHandle: h, WorktreeManaged: false}
+		if b.IsWorktreeManaged() {
+			t.Errorf("IsWorktreeManaged() = true for handle %q with WorktreeManaged=false; want false", h)
+		}
+	}
+}
+
+// TestIsWorktreeManaged_legacyWtPrefix asserts that legacy bindings with a
+// "wt/" handle prefix are still treated as worktree-managed even when the
+// WorktreeManaged flag is not set (zero value / old-format bindings on disk).
+//
+// MUTATION TARGET: IsWorktreeManaged legacy-fallback path.
+// Removing the strings.HasPrefix fallback makes this RED.
+func TestIsWorktreeManaged_legacyWtPrefix(t *testing.T) {
+	cases := []string{"wt/main", "wt/feature-foo", "wt/worktree-silver-forest-225f"}
+	for _, h := range cases {
+		b := HerdrSpaceBinding{SandboxHandle: h} // WorktreeManaged deliberately unset (old binding)
+		if !b.IsWorktreeManaged() {
+			t.Errorf("IsWorktreeManaged() = false for legacy handle %q; wt/ fallback not firing", h)
+		}
+	}
+}
+
+// TestIsHerdrWorktreeHandle_rejectsNonWt asserts that the legacy prefix helper
+// returns false for non-wt/ handles (unchanged from before).
 //
 // MUTATION TARGET: isHerdrWorktreeHandle prefix guard.
 // Removing the prefix check makes this RED.
@@ -53,10 +82,10 @@ func TestIsHerdrWorktreeHandle_rejectsNonWt(t *testing.T) {
 	}
 }
 
-// TestIsHerdrWorktreeHandle_acceptsWtPrefix asserts that handles starting with
-// "wt/" are accepted.
+// TestIsHerdrWorktreeHandle_acceptsWtPrefix asserts that the legacy prefix
+// helper returns true for "wt/" handles (used as fallback in IsWorktreeManaged).
 //
-// MUTATION TARGET: isHerdrWorktreeHandle prefix guard.
+// MUTATION TARGET: isHerdrWorktreeHandle prefix guard / herdrWorktreeHandlePrefix constant.
 // Changing the prefix to anything other than "wt/" makes this RED.
 func TestIsHerdrWorktreeHandle_acceptsWtPrefix(t *testing.T) {
 	cases := []string{"wt/main", "wt/feature-foo", "wt/worktree-silver-forest-225f"}
@@ -137,20 +166,24 @@ func (h *pruneHarness) run(t *testing.T, apply bool) string {
 }
 
 // TestPruneFull_wtSandboxPresentWorkspaceGone_reapsVM (Mechanism 1, case a):
-// A wt/ binding whose workspace is gone but sandbox is still present triggers
-// removeSandbox and removes the binding.
+// A worktree-managed binding (WorktreeManaged=true, semantic handle) whose
+// workspace is gone but sandbox is still present triggers removeSandbox.
 //
-// MUTATION TARGET: the isHerdrWorktreeHandle guard inside the apply loop.
-// Removing that guard means removeSandbox is also called for non-wt/ handles.
+// MUTATION TARGET: the b.IsWorktreeManaged() guard inside the apply loop.
+// Removing that guard means removeSandbox is also called for non-worktree handles.
 // Changing sandboxExists || workspaceExists conditions prevents the reap.
+//
+// MUTATION-CRITICAL: if reap still keyed on the "wt/" prefix, a semantic-named
+// sandbox with WorktreeManaged=true would NOT be reaped → this test would fail.
 func TestPruneFull_wtSandboxPresentWorkspaceGone_reapsVM(t *testing.T) {
 	h := newPruneHarness(t)
-	const handle = "wt/feature-foo"
+	const handle = "myrepo/feature-foo"
 	b := HerdrSpaceBinding{
 		SpaceLabel:       "nexus3:" + handle,
 		HerdrWorkspaceID: "wTEST-gone",
 		SandboxHandle:    handle,
 		SandboxID:        "sb-abc",
+		WorktreeManaged:  true,
 	}
 	h.addBinding(t, b)
 
@@ -181,9 +214,10 @@ func TestPruneFull_wtSandboxPresentWorkspaceGone_reapsVM(t *testing.T) {
 }
 
 // TestPruneFull_nonWtWorkspaceGone_doesNotReapVM (Mechanism 1, case b):
-// A non-wt/ stale binding MUST NOT have removeSandbox called — binding-only cleanup only.
+// A non-worktree-managed stale binding (WorktreeManaged=false, no wt/ prefix)
+// MUST NOT have removeSandbox called — binding-only cleanup only.
 //
-// MUTATION TARGET (MUTATION PROOF): the isHerdrWorktreeHandle guard in the apply loop.
+// MUTATION TARGET (MUTATION PROOF): the b.IsWorktreeManaged() guard in the apply loop.
 // Removing or weakening it causes removeSandbox to be called here → RED.
 func TestPruneFull_nonWtWorkspaceGone_doesNotReapVM(t *testing.T) {
 	h := newPruneHarness(t)
@@ -204,7 +238,7 @@ func TestPruneFull_nonWtWorkspaceGone_doesNotReapVM(t *testing.T) {
 
 	// MUTATION PROOF: removeSandbox must NOT have been called.
 	if len(h.removeCallHandles) != 0 {
-		t.Errorf("removeSandbox called for non-wt/ handle %q; want never called", handle)
+		t.Errorf("removeSandbox called for non-worktree handle %q; want never called", handle)
 	}
 }
 

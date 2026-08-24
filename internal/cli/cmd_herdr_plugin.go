@@ -2121,7 +2121,7 @@ func herdrPluginSpacePrune(ctx context.Context, args []string, w io.Writer, svc 
 // stale classifications.
 //
 // removeSandbox(ctx, handle) removes the sandbox VM for auto-bound worktree
-// sandboxes (isHerdrWorktreeHandle) whose workspace is gone but VM is still
+// sandboxes (b.IsWorktreeManaged()) whose workspace is gone but VM is still
 // running.  It is NEVER called for non-worktree handles or when the sandbox
 // is already absent.  A removeSandbox failure retains the binding for the
 // next prune run.
@@ -2159,8 +2159,8 @@ func herdrSpacePruneFull(
 	for _, b := range stale {
 		sbPresent := sandboxExists(b)
 		wsPresent := workspaceExists(b)
-		if isHerdrWorktreeHandle(b.SandboxHandle) && sbPresent && !wsPresent {
-			fmt.Fprintf(w, "  STALE  sandbox=%s  workspace=%s  (wt/ VM would be reaped)\n", b.SandboxHandle, b.HerdrWorkspaceID)
+		if b.IsWorktreeManaged() && sbPresent && !wsPresent {
+			fmt.Fprintf(w, "  STALE  sandbox=%s  workspace=%s  (worktree VM would be reaped)\n", b.SandboxHandle, b.HerdrWorkspaceID)
 		} else if sbPresent && !wsPresent {
 			fmt.Fprintf(w, "  STALE  sandbox=%s  workspace=%s  (workspace-id would be cleared)\n", b.SandboxHandle, b.HerdrWorkspaceID)
 		} else {
@@ -2181,9 +2181,9 @@ func herdrSpacePruneFull(
 		sbPresent := sandboxExists(b)
 		wsPresent := workspaceExists(b)
 
-		// Case: sandbox running, workspace gone, non-wt/ → clear stale workspace ID
-		// and keep the binding so the next space-create can mint a fresh workspace.
-		if sbPresent && !wsPresent && !isHerdrWorktreeHandle(b.SandboxHandle) {
+		// Case: sandbox running, workspace gone, non-worktree → clear stale workspace
+		// ID and keep the binding so the next space-create can mint a fresh workspace.
+		if sbPresent && !wsPresent && !b.IsWorktreeManaged() {
 			if err := herdrSpaceBindingClearWorkspaceID(ctx, storeRoot, b.SpaceLabel); err != nil {
 				slog.Warn("space-prune: clear stale workspace-id failed; binding retained",
 					"label", b.SpaceLabel, "err", err)
@@ -2194,10 +2194,10 @@ func herdrSpacePruneFull(
 			continue
 		}
 
-		// Case: wt/ sandbox running, workspace gone → reap VM then delete binding.
-		if isHerdrWorktreeHandle(b.SandboxHandle) && sbPresent && !wsPresent {
+		// Case: worktree sandbox running, workspace gone → reap VM then delete binding.
+		if b.IsWorktreeManaged() && sbPresent && !wsPresent {
 			if err := removeSandbox(ctx, b.SandboxHandle); err != nil {
-				slog.Warn("space-prune: reap wt/ sandbox failed; binding retained for next run",
+				slog.Warn("space-prune: reap worktree sandbox failed; binding retained for next run",
 					"handle", b.SandboxHandle, "err", err)
 				continue
 			}
@@ -2772,8 +2772,8 @@ const herdrWorktreeCreateLockTimeout = 120 * time.Second
 // the ~60 s create window).
 //
 // Safe filename: "/" → "_".  After herdrWorktreeSandboxHandle's sanitisation,
-// handles contain only [a-z0-9-/] with at most one "/", so this mapping is
-// collision-free.
+// handles contain only [A-Za-z0-9._-/] with at most one "/", so this mapping
+// is collision-free.
 func herdrWorktreeCreateLockPath(storeRoot, handle string) string {
 	safe := strings.ReplaceAll(handle, "/", "_")
 	return filepath.Join(storeRoot, "herdr-wt-create-"+safe+".lock")
@@ -2960,52 +2960,52 @@ func herdrResolveWorktreeImage(checkoutPath string) (imageFlag, imageVal string,
 }
 
 // herdrWorktreeSandboxHandle derives a deterministic, collision-free sandbox
-// handle from a git branch name.
+// handle from a repository name and git branch name.
 //
-// The full branch path (not just the last segment) is encoded so that
-// "feature/x" and "bugfix/x" map to distinct handles. Non-alphanumeric chars
-// (including "/") are replaced with "-" so the handle is a valid single-segment
-// nexus3 handle token.
+// The handle format is "<repoName>/<branchSlug>", which is a valid nexus3
+// handle (exactly one "/", both sides non-empty).  Case is PRESERVED so that
+// handles like "example-app/EX-871" remain human-readable.
 //
-// Steps:
-//  1. Lowercase and replace non-[a-z0-9-] chars with "-" (including "/").
-//  2. Collapse consecutive "-" to one and trim leading/trailing "-".
-//  3. Prepend "wt/". If the slug is empty after cleaning, use "wt/worktree".
-func herdrWorktreeSandboxHandle(branch string) string {
-	// Lowercase; the sanitiser loop below maps all non-[a-z0-9] chars
-	// (including "/") to "-" without a separate ReplaceAll pass.
-	slug := strings.ToLower(branch)
-	// Replace non-alphanumeric-dash chars.
-	var b strings.Builder
-	prev := '-'
-	for _, r := range slug {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			prev = r
-		} else {
-			if prev != '-' {
-				b.WriteByte('-')
+// Sanitisation rules (applied to both repoName and branch independently):
+//  1. Any char NOT in [A-Za-z0-9._-] (including "/") is replaced with "-".
+//  2. Consecutive "-" are collapsed to one; leading/trailing "-" are trimmed.
+//  3. An empty result falls back: repoName → "repo", branch → "worktree".
+func herdrWorktreeSandboxHandle(repoName, branch string) string {
+	sanitize := func(s, fallback string) string {
+		var b strings.Builder
+		prev := '-'
+		for _, r := range s {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+				b.WriteRune(r)
+				prev = r
+			} else {
+				if prev != '-' {
+					b.WriteByte('-')
+				}
+				prev = '-'
 			}
-			prev = '-'
 		}
+		slug := strings.Trim(b.String(), "-")
+		if slug == "" {
+			return fallback
+		}
+		return slug
 	}
-	slug = strings.Trim(b.String(), "-")
-	if slug == "" {
-		slug = "worktree"
-	}
-	return herdrWorktreeHandlePrefix + slug
+	return sanitize(repoName, "repo") + "/" + sanitize(branch, "worktree")
 }
 
-// herdrWorktreeHandlePrefix is the prefix that herdrWorktreeSandboxHandle
-// stamps onto every auto-bound worktree sandbox handle.  Defined as a
-// package-level constant so isHerdrWorktreeHandle cannot drift from the
-// producer without a compile-time or test-time failure.
+// herdrWorktreeHandlePrefix is the legacy handle prefix used by bindings
+// written before the WorktreeManaged flag was introduced.  It is retained so
+// that HerdrSpaceBinding.IsWorktreeManaged can identify old records via a
+// prefix fallback and avoid leaking their VMs after an upgrade.
+//
+// New bindings no longer use this prefix — they carry WorktreeManaged=true
+// and a semantic "<repo>/<branch>" handle instead.
 const herdrWorktreeHandlePrefix = "wt/"
 
-// isHerdrWorktreeHandle reports whether handle was produced by
-// herdrWorktreeSandboxHandle (i.e. it is an auto-bound worktree sandbox).
-// The prefix is the same constant used by the producer, so the two cannot
-// drift silently.
+// isHerdrWorktreeHandle reports whether handle was produced by the legacy
+// herdrWorktreeSandboxHandle that prepended "wt/".  Used only as a fallback
+// inside HerdrSpaceBinding.IsWorktreeManaged for pre-WorktreeManaged bindings.
 func isHerdrWorktreeHandle(handle string) bool {
 	return strings.HasPrefix(handle, herdrWorktreeHandlePrefix)
 }
@@ -3148,8 +3148,19 @@ func herdrWorktreeSandbox(
 		}
 	}
 
-	// Step 6: derive handle.
-	handle := herdrWorktreeSandboxHandle(info.Branch)
+	// Step 6: derive handle — "<repoName>/<branchSlug>".
+	// repoName is derived from info.RepoKey (e.g. "/repo/.git" → "repo").
+	// Strip a trailing "/.git" or ".git", take the basename, sanitise.
+	// Falls back to "repo" when RepoKey is empty or the basename is blank.
+	repoNameForHandle := "repo"
+	if info.RepoKey != "" {
+		key := strings.TrimSuffix(info.RepoKey, "/.git")
+		key = strings.TrimSuffix(key, ".git")
+		if base := filepath.Base(key); base != "" && base != "." && base != "/" {
+			repoNameForHandle = base // herdrWorktreeSandboxHandle sanitises it
+		}
+	}
+	handle := herdrWorktreeSandboxHandle(repoNameForHandle, info.Branch)
 	mountSpec := info.Path + ":/workspace"
 
 	// Extra mounts for linked worktrees: mount the main repo's .git dir at its
@@ -3269,6 +3280,7 @@ func herdrWorktreeSandbox(
 		SandboxHandle:    handle,
 		SandboxID:        sb.ID.String(),
 		RepoRoot:         repoRoot,
+		WorktreeManaged:  true,
 	}
 	if err := HerdrSpacePut(ctx, storeRoot, binding); err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: write binding: %v\n", err)

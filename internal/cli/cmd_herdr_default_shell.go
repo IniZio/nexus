@@ -348,7 +348,7 @@ func herdrDefaultShellCore(
 	//
 	// Non-worktree panes keep the original exec-replace behaviour: syscall.Exec
 	// replaces this process entirely so no cleanup code ever runs.
-	if isHerdrWorktreeHandle(binding.SandboxHandle) {
+	if binding.IsWorktreeManaged() {
 		return herdrWtSupervisedShell(ctx, nexus3Bin, binding, argv)
 	}
 

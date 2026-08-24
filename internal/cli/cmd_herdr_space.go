@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/store"
@@ -67,6 +68,28 @@ type HerdrSpaceBinding struct {
 	// encoding/json leaves missing fields at their zero value on decode, so an
 	// old binding on disk loads without error; there is nothing to migrate.
 	RepoRoot string `json:"repo_root,omitempty"`
+	// WorktreeManaged marks bindings created by the worktree-sandbox flow.
+	// When true the space-prune reaper may remove the sandbox VM when the
+	// herdr workspace disappears.  Legacy bindings written before this field
+	// existed are identified by the herdrWorktreeHandlePrefix fallback inside
+	// IsWorktreeManaged.
+	WorktreeManaged bool `json:"worktree_managed,omitempty"`
+}
+
+// IsWorktreeManaged reports whether this binding was created by the
+// worktree-sandbox flow and is therefore eligible for VM reap when its
+// herdr workspace disappears.
+//
+// New bindings set WorktreeManaged=true explicitly.  Legacy bindings written
+// before this field existed are identified by the herdrWorktreeHandlePrefix
+// fallback so that pre-existing VMs are not leaked after an upgrade.
+func (b HerdrSpaceBinding) IsWorktreeManaged() bool {
+	if b.WorktreeManaged {
+		return true
+	}
+	// Legacy fallback: bindings written before WorktreeManaged was introduced
+	// used the "wt/" handle prefix as the sole reap marker.
+	return strings.HasPrefix(b.SandboxHandle, herdrWorktreeHandlePrefix)
 }
 
 // ErrHerdrSpaceNotFound is returned when no matching binding exists.

@@ -28,9 +28,9 @@ import (
 )
 
 // noopRemoveSandbox is a no-op removeSandbox stub for existing prune tests
-// that do not exercise the wt/ reap path.  Existing tests use non-wt/ handles
-// so this function is never called; its presence keeps the function signature
-// consistent after the new parameter was added.
+// that do not exercise the worktree-reap path.  Existing tests use non-worktree
+// handles so this function is never called; its presence keeps the function
+// signature consistent after the new parameter was added.
 var noopRemoveSandbox = func(_ context.Context, _ string) error { return nil }
 
 // ── fakeListLister ────────────────────────────────────────────────────────────
@@ -100,11 +100,11 @@ func TestHerdrSpacePrune_StaleSandbox(t *testing.T) {
 	}
 }
 
-// TestHerdrSpacePrune_StaleWorkspace: a non-wt/ binding whose workspace is
-// gone but sandbox is still alive has its HerdrWorkspaceID cleared (binding
-// retained — the sandbox is running; deleting the binding would strand it).
+// TestHerdrSpacePrune_StaleWorkspace: a non-worktree-managed binding whose
+// workspace is gone but sandbox is still alive has its HerdrWorkspaceID cleared
+// (binding retained — the sandbox is running; deleting the binding would strand it).
 //
-// MUTATION TARGET: the `sbPresent && !wsPresent && !isHerdrWorktreeHandle` branch
+// MUTATION TARGET: the `sbPresent && !wsPresent && !b.IsWorktreeManaged()` branch
 // in herdrSpacePruneFull. Removing it causes the binding to be deleted instead
 // of cleared → RED (binding missing after prune).
 func TestHerdrSpacePrune_StaleWorkspace(t *testing.T) {
@@ -231,10 +231,10 @@ func TestHerdrSpacePrune_DryRunPreservesAll(t *testing.T) {
 //
 // 4-case reconciler behaviour:
 //   b1: sandbox absent — workspace closed + binding deleted.
-//   b2: sandbox present, workspace absent, non-wt/ — workspace-id cleared, binding retained.
+//   b2: sandbox present, workspace absent, non-worktree-managed — workspace-id cleared, binding retained.
 //   b3: both present — unchanged.
 //
-// MUTATION TARGET: the `sbPresent && !wsPresent && !isHerdrWorktreeHandle` branch in
+// MUTATION TARGET: the `sbPresent && !wsPresent && !b.IsWorktreeManaged()` branch in
 // herdrSpacePruneFull. Removing it causes b2 to be deleted instead of workspace-id-cleared
 // (wrong: the sandbox is still running) → RED.
 func TestHerdrSpacePrune_MixedBindings(t *testing.T) {

@@ -27,14 +27,17 @@ func TestHerdrWorktreeSandboxConcurrentCreateConverges(t *testing.T) {
 	ctx := context.Background()
 
 	branch := "feature/raceproof"
-	handle := herdrWorktreeSandboxHandle(branch)
+	// Use a fixed RepoKey so the derived handle is deterministic.
+	// Production code: strip "/.git" → "/repo", base → "repo".
+	const repoKey = "/repo/.git"
+	handle := herdrWorktreeSandboxHandle("repo", branch) // "repo/feature-raceproof"
 
 	// stubInfo is the worktree info both callers will see.
 	stubInfo := herdrWorktreeInfo{
 		IsLinkedWorktree: true,
 		Branch:           branch,
 		Path:             t.TempDir(),
-		RepoKey:          t.TempDir() + "/.git",
+		RepoKey:          repoKey,
 	}
 
 	// Inject list function: both callers always see the worktree.

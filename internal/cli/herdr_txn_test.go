@@ -379,10 +379,11 @@ func TestHerdrSpaceTeardown_SandboxIDMismatch_FailOpen_ReturnsNil(t *testing.T) 
 	ctx := context.Background()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:fo",
+		SpaceLabel:       "nexus3:myrepo/fo",
 		HerdrWorkspaceID: "wFO",
-		SandboxHandle:    "wt/fo",
+		SandboxHandle:    "myrepo/fo",
 		SandboxID:        "sb-FO",
+		WorktreeManaged:  true,
 	}
 	if err := HerdrSpacePut(ctx, root, b); err != nil {
 		t.Fatalf("HerdrSpacePut: %v", err)
@@ -391,7 +392,7 @@ func TestHerdrSpaceTeardown_SandboxIDMismatch_FailOpen_ReturnsNil(t *testing.T) 
 	h := &txnHarness{}
 	deps := h.deps(root)
 
-	err := herdrSpaceTeardown(ctx, root, "wt/fo", deps, teardownOpts{
+	err := herdrSpaceTeardown(ctx, root, "myrepo/fo", deps, teardownOpts{
 		expectedSandboxID:     "sb-WRONG",
 		sandboxAlreadyRemoved: true,
 		failOpen:              true,

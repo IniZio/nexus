@@ -22,59 +22,62 @@ import (
 
 // ── herdrWorktreeSandboxHandle ────────────────────────────────────────────────
 
-func TestHerdrWorktreeSandboxHandle_stripsPrefix(t *testing.T) {
-	// Full path is encoded: "worktree/silver-forest-225f" → "wt/worktree-silver-forest-225f".
-	// Mutation: strip to last segment → "wt/silver-forest-225f". RED: want "wt/worktree-silver-forest-225f".
-	got := herdrWorktreeSandboxHandle("worktree/silver-forest-225f")
-	const want = "wt/worktree-silver-forest-225f"
+func TestHerdrWorktreeSandboxHandle_innerSlashBranch(t *testing.T) {
+	// Inner "/" in branch is sanitised to "-": "worktree/silver-forest-225f" → "worktree-silver-forest-225f".
+	// Mutation: strip to last segment → "silver-forest-225f". RED: want "myrepo/worktree-silver-forest-225f".
+	got := herdrWorktreeSandboxHandle("myrepo", "worktree/silver-forest-225f")
+	const want = "myrepo/worktree-silver-forest-225f"
 	if got != want {
 		t.Errorf("handle = %q; want %q", got, want)
 	}
 }
 
 func TestHerdrWorktreeSandboxHandle_featureBranch(t *testing.T) {
-	// Full path encoding: "feature/my-feature" → "wt/feature-my-feature".
-	// Distinguishes from "bugfix/my-feature" → "wt/bugfix-my-feature".
-	got := herdrWorktreeSandboxHandle("feature/my-feature")
-	const want = "wt/feature-my-feature"
+	// Inner "/" in branch sanitised to "-": "feature/my-feature" → "feature-my-feature".
+	// Distinguishes from "bugfix/my-feature" → "myrepo/bugfix-my-feature".
+	got := herdrWorktreeSandboxHandle("myrepo", "feature/my-feature")
+	const want = "myrepo/feature-my-feature"
 	if got != want {
 		t.Errorf("handle = %q; want %q", got, want)
 	}
 }
 
 func TestHerdrWorktreeSandboxHandle_noPrefixSlash(t *testing.T) {
-	// Branch with no "/" → use whole name.
-	// Mutation: return "" after "wt/" yields "wt/". RED: want "wt/main".
-	got := herdrWorktreeSandboxHandle("main")
-	const want = "wt/main"
+	// Branch with no "/" → whole name used as branch slug.
+	// Mutation: return empty string → fallback "worktree". RED: want "myrepo/main".
+	got := herdrWorktreeSandboxHandle("myrepo", "main")
+	const want = "myrepo/main"
 	if got != want {
 		t.Errorf("handle = %q; want %q", got, want)
 	}
 }
 
-func TestHerdrWorktreeSandboxHandle_sanitizesUppercase(t *testing.T) {
-	// Uppercase chars are lowercased; full path is encoded.
-	got := herdrWorktreeSandboxHandle("Feature/MyBranch")
-	const want = "wt/feature-mybranch"
+func TestHerdrWorktreeSandboxHandle_preservesCase(t *testing.T) {
+	// Case is preserved in both repo name and branch (e.g. "EX-871" stays "EX-871").
+	// Mutation: lowercase → "myrepo/feature-mybranch". RED: want "myrepo/Feature-MyBranch".
+	got := herdrWorktreeSandboxHandle("myrepo", "Feature/MyBranch")
+	const want = "myrepo/Feature-MyBranch"
 	if got != want {
 		t.Errorf("handle = %q; want %q", got, want)
 	}
 }
 
 func TestHerdrWorktreeSandboxHandle_sanitizesSpecialChars(t *testing.T) {
-	// Special chars become "-", consecutive runs are collapsed; full path encoded.
-	got := herdrWorktreeSandboxHandle("feat/my_branch.v2")
-	const want = "wt/feat-my-branch-v2"
+	// Chars in [A-Za-z0-9._-] are kept; "/" is replaced with "-".
+	// Mutation: also replace "." and "_" → "myrepo/feat-my-branch-v2". RED: want dots/underscores preserved.
+	got := herdrWorktreeSandboxHandle("myrepo", "feat/my_branch.v2")
+	const want = "myrepo/feat-my_branch.v2"
 	if got != want {
 		t.Errorf("handle = %q; want %q", got, want)
 	}
 }
 
 func TestHerdrWorktreeSandboxHandle_emptySlugFallback(t *testing.T) {
-	// A branch where all chars are special falls back to "worktree".
-	// Mutation: return "" gives "wt/". RED: want "wt/worktree".
-	got := herdrWorktreeSandboxHandle("___")
-	const want = "wt/worktree"
+	// A branch where all chars are not in [A-Za-z0-9._-] falls back to "worktree".
+	// (Note: "_" is valid and is kept, so use "@@@" which sanitizes to "-" → collapsed → empty.)
+	// Mutation: skip the empty-check → result is "myrepo/". RED: want "myrepo/worktree".
+	got := herdrWorktreeSandboxHandle("myrepo", "@@@")
+	const want = "myrepo/worktree"
 	if got != want {
 		t.Errorf("handle = %q; want %q", got, want)
 	}
@@ -82,22 +85,29 @@ func TestHerdrWorktreeSandboxHandle_emptySlugFallback(t *testing.T) {
 
 func TestHerdrWorktreeSandboxHandle_noBranchCollision(t *testing.T) {
 	// "feature/x" and "bugfix/x" must produce distinct handles.
-	// Under the old last-segment scheme both yielded "wt/x".
-	// Mutation: strip to last segment → both produce "wt/x". RED: a == b.
-	a := herdrWorktreeSandboxHandle("feature/x")
-	b := herdrWorktreeSandboxHandle("bugfix/x")
+	// Mutation: strip to last segment → both produce "myrepo/x". RED: a == b.
+	a := herdrWorktreeSandboxHandle("myrepo", "feature/x")
+	b := herdrWorktreeSandboxHandle("myrepo", "bugfix/x")
 	if a == b {
 		t.Errorf("feature/x and bugfix/x both produce %q; handles must be distinct", a)
 	}
 }
 
-func TestHerdrWorktreeSandboxHandle_hasWtPrefix(t *testing.T) {
-	// Handle always starts with "wt/" — this ensures it can never collide with
-	// the plain "nexus3" label (w8's label) since "wt/" ≠ "nexus3".
-	// Mutation: drop the "wt/" prefix → "silver-forest-225f". RED: no "wt/".
-	got := herdrWorktreeSandboxHandle("worktree/silver-forest-225f")
-	if !strings.HasPrefix(got, "wt/") {
-		t.Errorf("handle %q does not start with 'wt/'; expected 'wt/' prefix", got)
+func TestHerdrWorktreeSandboxHandle_isValidHandle(t *testing.T) {
+	// Result must pass domain.ParseHandle: exactly one "/", both sides non-empty.
+	// Mutation: drop the repoName → "worktree-silver-forest-225f" (no "/"). RED: ParseHandle fails.
+	got := herdrWorktreeSandboxHandle("myrepo", "worktree/silver-forest-225f")
+	if _, _, err := domain.ParseHandle(got); err != nil {
+		t.Errorf("domain.ParseHandle(%q) = %v; handle must be valid", got, err)
+	}
+}
+
+func TestHerdrWorktreeSandboxHandle_semanticExample(t *testing.T) {
+	// Key use-case: "example-app/EX-871" — case preserved, inner "/" → "-".
+	got := herdrWorktreeSandboxHandle("example-app", "EX-871")
+	const want = "example-app/EX-871"
+	if got != want {
+		t.Errorf("handle = %q; want %q", got, want)
 	}
 }
 
@@ -346,9 +356,10 @@ func TestHerdrWorktreeSandbox_conditional_sourceBound_binds(t *testing.T) {
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
-	// Expect createSandbox to be called with handle "wt/worktree-feat" (full
-	// branch path "worktree/feat" encoded) and mount "/path/feat:/workspace".
-	const wantHandle = "wt/worktree-feat"
+	// Expect createSandbox to be called with handle "repo/worktree-feat" (full
+	// branch path "worktree/feat" encoded; no RepoKey → repoName fallback "repo") and
+	// mount "/path/feat:/workspace".
+	const wantHandle = "repo/worktree-feat"
 	var gotHandle, gotMount string
 	err := callHerdrWorktreeSandbox(t, "w-new", root, true, false, /*auto*/
 		func(_ context.Context, handle, mountSpec, _, _ string, _ []string) error {
@@ -477,12 +488,15 @@ func TestHerdrWorktreeSandbox_createFails_noBinding(t *testing.T) {
 
 func TestHerdrWorktreeSandbox_happyPath_bindingFields(t *testing.T) {
 	// A successful explicit bind must write a binding with:
-	//   SpaceLabel       = "nexus3:wt/worktree-silver-forest-225f"
+	//   SpaceLabel       = "nexus3:repo/worktree-silver-forest-225f"
 	//   HerdrWorkspaceID = "w-new"
-	//   SandboxHandle    = "wt/worktree-silver-forest-225f"
+	//   SandboxHandle    = "repo/worktree-silver-forest-225f"
+	//   WorktreeManaged  = true
+	//
+	// No RepoKey in linkedWorktreeInfo → repoName fallback "repo".
 	//
 	// MUTATION PROOF: write empty SpaceLabel.
-	// RED: "SpaceLabel = ''; want 'nexus3:wt/worktree-silver-forest-225f'".
+	// RED: "SpaceLabel = ''; want 'nexus3:repo/worktree-silver-forest-225f'".
 	root := t.TempDir()
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfo("w-new", "w-src", "worktree/silver-forest-225f", "/checkout/sf225f"),
@@ -511,8 +525,8 @@ func TestHerdrWorktreeSandbox_happyPath_bindingFields(t *testing.T) {
 	if found == nil {
 		t.Fatalf("binding for workspace w-new not written")
 	}
-	const wantLabel = "nexus3:wt/worktree-silver-forest-225f"
-	const wantHandle = "wt/worktree-silver-forest-225f"
+	const wantLabel = "nexus3:repo/worktree-silver-forest-225f"
+	const wantHandle = "repo/worktree-silver-forest-225f"
 	if found.SpaceLabel != wantLabel {
 		t.Errorf("SpaceLabel = %q; want %q", found.SpaceLabel, wantLabel)
 	}
@@ -521,6 +535,10 @@ func TestHerdrWorktreeSandbox_happyPath_bindingFields(t *testing.T) {
 	}
 	if found.HerdrWorkspaceID != "w-new" {
 		t.Errorf("HerdrWorkspaceID = %q; want %q", found.HerdrWorkspaceID, "w-new")
+	}
+	// WorktreeManaged must be true so the reaper can identify this binding.
+	if !found.WorktreeManaged {
+		t.Errorf("WorktreeManaged = false; want true for worktree-sandbox binding")
 	}
 	// Workspace was renamed to the correct label.
 	if renamedLabel != wantLabel {
@@ -532,7 +550,7 @@ func TestHerdrWorktreeSandbox_happyPath_bindingFields(t *testing.T) {
 
 func TestHerdrWorktreeSandbox_createArgs(t *testing.T) {
 	// The createSandbox closure must receive:
-	//   handle   = "wt/<branch-slug>"
+	//   handle   = "<repo>/<branch-slug>"
 	//   mountSpec = "<path>:/workspace"
 	//
 	// MUTATION PROOF: pass mountSpec without ":/workspace".
@@ -552,8 +570,9 @@ func TestHerdrWorktreeSandbox_createArgs(t *testing.T) {
 		},
 		stubSandboxGet(domain.Sandbox{}, nil),
 	)
-	if gotHandle != "wt/feature-branch-b" {
-		t.Errorf("handle = %q; want %q", gotHandle, "wt/feature-branch-b")
+	// No RepoKey → repoName "repo"; branch "feature/branch-b" → slug "feature-branch-b".
+	if gotHandle != "repo/feature-branch-b" {
+		t.Errorf("handle = %q; want %q", gotHandle, "repo/feature-branch-b")
 	}
 	if gotMount != "/checkout/b:/workspace" {
 		t.Errorf("mount spec = %q; want %q", gotMount, "/checkout/b:/workspace")
@@ -569,7 +588,7 @@ func TestHerdrWorktreeSandboxCreateArgs_containsNoBuiltinGh(t *testing.T) {
 	// MUTATION PROOF: delete "--no-builtin-gh" from herdrWorktreeSandboxCreateArgs.
 	// This test goes RED. A suite-wide build+green is insufficient — this flag
 	// is in a closure and no other test observed the argv before this change.
-	args := herdrWorktreeSandboxCreateArgs("wt/my-branch", "/repo:/workspace", "--image", herdrDefaultImage, nil)
+	args := herdrWorktreeSandboxCreateArgs("myrepo/my-branch", "/repo:/workspace", "--image", herdrDefaultImage, nil)
 	found := false
 	for _, a := range args {
 		if a == "--no-builtin-gh" {
@@ -592,7 +611,7 @@ func TestHerdrWorktreeSandboxCreateArgs_containsNoBuiltinGh(t *testing.T) {
 // npm/apt inside the worktree sandbox.
 // MUTATION PROOF: drop either flag from herdrWorktreeSandboxCreateArgs → RED.
 func TestHerdrWorktreeSandboxCreateArgs_containsAgentOpenEgress(t *testing.T) {
-	args := herdrWorktreeSandboxCreateArgs("wt/my-branch", "/repo:/workspace", "--image", herdrDefaultImage, nil)
+	args := herdrWorktreeSandboxCreateArgs("myrepo/my-branch", "/repo:/workspace", "--image", herdrDefaultImage, nil)
 	// --agent claude-code
 	agentOK := false
 	for i := 0; i+1 < len(args); i++ {
@@ -634,7 +653,7 @@ func TestHerdrWorktreeSandboxCreateArgs_isBootableShaped(t *testing.T) {
 		{"file flag", "--file", "/some/checkout"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := herdrWorktreeSandboxCreateArgs("wt/branch", "/repo:/workspace", tc.imageFlag, tc.imageVal, nil)
+			args := herdrWorktreeSandboxCreateArgs("myrepo/branch", "/repo:/workspace", tc.imageFlag, tc.imageVal, nil)
 			bootableFlags := []string{"--image", "--rootfs", "--file"}
 			count := 0
 			for i, a := range args {
@@ -1453,7 +1472,7 @@ func TestHerdrWorktreeSandboxCreateArgs_extraMountsAddedAfterPrimary(t *testing.
 	// MUTATION PROOF: remove the extraMounts loop from herdrWorktreeSandboxCreateArgs
 	// → the extra --mount entry is absent → RED ("want 2 --mount pairs; got 1").
 	extra := []string{"/main/.git:/main/.git"}
-	args := herdrWorktreeSandboxCreateArgs("wt/branch", "/checkout:/workspace", "--image", "base", extra)
+	args := herdrWorktreeSandboxCreateArgs("myrepo/branch", "/checkout:/workspace", "--image", "base", extra)
 
 	// Count --mount pairs and collect their values.
 	var mounts []string
