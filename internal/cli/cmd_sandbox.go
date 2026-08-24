@@ -1732,7 +1732,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			// together through the same virtiofs channel to the supervisor.
 			if !f.noUserMounts {
 				if hostHome, homeErr := os.UserHomeDir(); homeErr == nil {
-					resolved := service.ResolveUserMounts(hostHome)
+					resolved, symlinks := service.ResolveUserMounts(hostHome)
 					for _, m := range resolved {
 						bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
 							HostPath:  m.HostPath,
@@ -1740,10 +1740,11 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 							ReadOnly:  true,
 						})
 					}
-					if len(resolved) > 0 {
+					if len(resolved) > 0 || len(symlinks) > 0 {
 						manifest := service.UserMountManifest{
 							HostHome: hostHome,
 							Mounts:   resolved,
+							Symlinks: symlinks,
 						}
 						if writeErr := service.WriteUserMountManifest(stageDir, manifest); writeErr != nil {
 							slog.Warn("sandbox create: failed to write usermounts.json; operator tool dirs will not be visible in guest",
