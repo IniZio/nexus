@@ -2,6 +2,27 @@ package cred
 
 import "sort"
 
+// MCPConfigFormat identifies the file format a given agent uses for its MCP
+// server configuration. The zero value (MCPConfigFormatNone) is correct for
+// agents that have no MCP config concept.
+//
+// Selecting the right format is purely declarative: add a new const for a new
+// agent; no code branch is required.
+type MCPConfigFormat string
+
+const (
+	// MCPConfigFormatNone means the agent has no MCP configuration concept.
+	// This is the zero value; unset fields read as none without explicit init.
+	MCPConfigFormatNone MCPConfigFormat = ""
+
+	// MCPConfigFormatClaudeJSON is the format used by Claude Code:
+	// ~/.claude/claude_mcp_config.json (or the equivalent inside CLAUDE_CONFIG_DIR).
+	MCPConfigFormatClaudeJSON MCPConfigFormat = "claude-json"
+
+	// MCPConfigFormatOpencodeJSON is the format used by opencode.
+	MCPConfigFormatOpencodeJSON MCPConfigFormat = "opencode-json"
+)
+
 // AgentCapabilities describes host-enforced constraints for a specific agent
 // type. Adding a new capability is a new field; adding a new agent type is a
 // new [AgentProfile] value — no code branches required.
@@ -83,6 +104,42 @@ type AgentProfile struct {
 
 	// Capabilities holds host-enforced behavioural flags for this agent type.
 	Capabilities AgentCapabilities
+
+	// SettingsPath is the host path to the agent's user settings file
+	// (e.g. "~/.claude/settings.json" for Claude Code). The tilde is a
+	// conventional prefix; callers must expand it with os.UserHomeDir before
+	// use. The zero value (empty string) means this agent has no settings file.
+	SettingsPath string
+
+	// ConfigDirEnvVar is the name of the environment variable that redirects
+	// the agent's config directory to an arbitrary path
+	// (e.g. "CLAUDE_CONFIG_DIR" for Claude Code). When non-empty, pointing
+	// this variable at an isolated directory is sufficient to separate
+	// per-sandbox agent config from the user's global config.
+	// The zero value (empty string) means the agent has no config-dir redirect.
+	ConfigDirEnvVar string
+
+	// SkillsPath is the host path to the agent's user skills directory
+	// (e.g. "~/.claude/skills" for Claude Code). Skills are
+	// user-authored reusable prompt fragments; they are not credentials.
+	// The zero value (empty string) means this agent has no skills concept.
+	SkillsPath string
+
+	// MCPConfigFormat identifies the file format the agent uses for its MCP
+	// server configuration. The zero value [MCPConfigFormatNone] means the
+	// agent has no MCP config concept and no file needs to be projected.
+	MCPConfigFormat MCPConfigFormat
+
+	// MountAllowlist is the curated list of path globs, relative to the
+	// agent's config directory, that are SAFE to share read-only into a
+	// sandbox. Only portable, non-sensitive files belong here.
+	//
+	// Secrets — .credentials.json, .claude.json, settings.local.json — are
+	// excluded BY OMISSION: the absence of a glob is the refusal. Never add a
+	// pattern that would match a secrets file.
+	//
+	// The zero value (nil or empty) means no files may be shared.
+	MountAllowlist []string
 }
 
 // Egress returns a fresh copy of the profile's egress allowlist. Callers may
@@ -114,6 +171,19 @@ var ClaudeCodeProfile = AgentProfile{
 	},
 	Capabilities: AgentCapabilities{
 		GuestNoSelfRefresh: true,
+	},
+	// Config-sharing descriptor fields (used by future mount/share slices).
+	SettingsPath:    "~/.claude/settings.json",
+	ConfigDirEnvVar: "CLAUDE_CONFIG_DIR",
+	SkillsPath:      "~/.claude/skills",
+	MCPConfigFormat: MCPConfigFormatClaudeJSON,
+	// Portable, non-sensitive files safe to project read-only into sandboxes.
+	// Secrets (.credentials.json, .claude.json, settings.local.json) are
+	// excluded BY OMISSION — their absence is the refusal.
+	MountAllowlist: []string{
+		"CLAUDE.md",
+		"skills/**",
+		"settings.json",
 	},
 }
 
