@@ -1,12 +1,14 @@
 name: CD
 
-# semantic-release runs on every push to main and decides whether the
-# accumulated commits warrant a release. It mints the tag and creates the
-# GitHub release; the build jobs run only when released=true.
+# semantic-release runs on every push to main (stable releases) and develop
+# (x.y.z-nightly.N prereleases) and decides whether the accumulated commits
+# warrant a release. It mints the tag and creates the GitHub release; the build
+# jobs run only when released=true.
 on:
   push:
     branches:
       - main
+      - develop
   workflow_dispatch: {}
   # Note: if workflow_dispatch inputs are ever re-added, pass them through
   # env: rather than interpolating directly into shell — dispatch inputs are
@@ -198,7 +200,10 @@ jobs:
   release-stamp:
     name: Stamp plugin nexus3-version
     needs: [release-create, release-publish]
-    if: needs.release-create.outputs.released == 'true'
+    # main-only: nightly prereleases from develop must NOT stamp the plugin
+    # version or push back to main. Only a stable release repoints
+    # plugins/herdr/nexus3-version.
+    if: needs.release-create.outputs.released == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
