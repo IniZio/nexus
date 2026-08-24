@@ -1,8 +1,6 @@
 package service
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +24,22 @@ func claudeMCPConfigPath(profile cred.AgentProfile) string {
 	return filepath.Join(dir, ".mcp.json")
 }
 
+// claudeDotJSONPath returns the path to the Claude Code user-scope settings
+// file (~/.claude.json). When profile.ConfigDirEnvVar is set and the
+// corresponding env var is non-empty, that directory is used; otherwise the
+// user home directory is the default. The file name is always ".claude.json".
+func claudeDotJSONPath(profile cred.AgentProfile) string {
+	dir := ""
+	if profile.ConfigDirEnvVar != "" {
+		dir = os.Getenv(profile.ConfigDirEnvVar)
+	}
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = home
+	}
+	return filepath.Join(dir, ".claude.json")
+}
+
 // resolveMCPStdioPayload reads the agent's MCP config and resolves ${VAR}
 // credential references for stdio servers from the host environment. It returns
 // KEY=VALUE lines ready to append to the guest credential seed payload.
@@ -46,35 +60,8 @@ func claudeMCPConfigPath(profile cred.AgentProfile) string {
 // Gate: only active when profile.MCPConfigFormat == MCPConfigFormatClaudeJSON
 // and the config file exists. Absent or malformed config is a silent no-op.
 func resolveMCPStdioPayload(profile cred.AgentProfile) []byte {
-	if profile.MCPConfigFormat != cred.MCPConfigFormatClaudeJSON {
-		return nil
-	}
-	servers, err := ParseMCPConfigFile(claudeMCPConfigPath(profile))
-	if err != nil {
-		// File absent is an expected no-op; parse errors are also silent so a
-		// malformed MCP config does not break sandbox creation.
-		return nil
-	}
-
-	var buf bytes.Buffer
-	seen := make(map[string]struct{})
-	for _, srv := range servers {
-		if srv.Transport != MCPTransportStdio {
-			continue
-		}
-		for _, name := range srv.CredVarRefs {
-			if _, ok := seen[name]; ok {
-				continue
-			}
-			seen[name] = struct{}{}
-			val := os.Getenv(name)
-			if val == "" {
-				continue // unset on host → omit; not an error
-			}
-			fmt.Fprintf(&buf, "%s=%s\n", name, val)
-		}
-	}
-	return buf.Bytes()
+	shared, _ := BuildSharedMCPServers(profile)
+	return shared.StdioEnv
 }
 
 // ResolveMCPHTTPBinds reads the agent's MCP config and derives a SecretBind
@@ -83,38 +70,15 @@ func resolveMCPStdioPayload(profile cred.AgentProfile) []byte {
 // proxy swaps the real credential at the egress edge (C-SECRET).
 //
 // Gate: only active when profile.MCPConfigFormat == MCPConfigFormatClaudeJSON
-// and the config file exists. Absent config returns nil, nil (no-op).
+// and the config file exists. Absent or malformed config returns nil, nil (no-op).
 //
 // Each bind covers exactly one host (derived from the server's URL). Callers
 // must also add bind.Hosts to the sandbox AllowedHosts so agent sandboxes
 // can reach the MCP server through the closed-egress ACL.
 func ResolveMCPHTTPBinds(profile cred.AgentProfile) ([]SecretBind, error) {
-	if profile.MCPConfigFormat != cred.MCPConfigFormatClaudeJSON {
-		return nil, nil
-	}
-	servers, err := ParseMCPConfigFile(claudeMCPConfigPath(profile))
+	shared, err := BuildSharedMCPServers(profile)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("mcp http binds: parse config: %w", err)
+		return nil, fmt.Errorf("mcp http binds: %w", err)
 	}
-
-	var binds []SecretBind
-	for _, srv := range servers {
-		if srv.Transport != MCPTransportHTTP && srv.Transport != MCPTransportSSE {
-			continue
-		}
-		if srv.Host == "" || len(srv.CredVarRefs) == 0 {
-			continue
-		}
-		for _, name := range srv.CredVarRefs {
-			binds = append(binds, SecretBind{
-				Env:   name,
-				Hosts: []string{srv.Host},
-				Token: os.Getenv(name),
-			})
-		}
-	}
-	return binds, nil
+	return shared.HTTPBinds, nil
 }

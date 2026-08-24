@@ -50,13 +50,15 @@ type MCPServer struct {
 }
 
 // rawMCPEntry is the JSON shape for a single mcpServers entry.
+// omitempty is safe here: it only affects Marshal (http/sse re-encode path),
+// not Unmarshal — absent fields stay zero-valued on decode regardless.
 type rawMCPEntry struct {
-	Type    string            `json:"type"`
-	Command string            `json:"command"`
-	Args    []string          `json:"args"`
-	Env     map[string]string `json:"env"`
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers"`
+	Type    string            `json:"type,omitempty"`
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // rawMCPFile is the JSON shape of .mcp.json or the mcpServers section of

@@ -1,0 +1,290 @@
+package service
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+)
+
+// writeMCPJSON writes a {"mcpServers": servers} JSON file at path.
+func writeMCPJSON(t *testing.T, path string, servers map[string]any) {
+	t.Helper()
+	data, err := json.Marshal(map[string]any{"mcpServers": servers})
+	if err != nil {
+		t.Fatalf("writeMCPJSON marshal: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("writeMCPJSON write %s: %v", path, err)
+	}
+}
+
+// TestBuildSharedMCPServers_HTTPLiteralRedacted is the CORE SECURITY TEST.
+//
+// An http server with a literal "Authorization: Bearer sk-REALSECRET123" header
+// must never leak the secret into the guest-visible Servers map. The redaction
+// branch in sanitizeHTTPEntry (mcpdefs.go ~line 165–173, the
+// isCredentialHeader→redact case) is the sole guard. If that branch is deleted:
+//   - "sk-REALSECRET123" survives verbatim in Servers JSON → strings.Contains
+//     assertion fires.
+//   - No HTTPBind is minted → len(got.HTTPBinds)==0 → length assertion fires.
+//
+// Both assertions are independent mutation detectors for the same branch.
+func TestBuildSharedMCPServers_HTTPLiteralRedacted(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+
+	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{
+		"linear": map[string]any{
+			"type": "http",
+			"url":  "https://api.linear.app/mcp",
+			"headers": map[string]any{
+				"Authorization": "Bearer sk-REALSECRET123",
+			},
+		},
+	})
+
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	raw, ok := got.Servers["linear"]
+	if !ok {
+		t.Fatal("want server 'linear' in Servers map")
+	}
+	rawStr := string(raw)
+
+	// Mutation guard: deletion of the isCredentialHeader→redact branch makes
+	// the next two assertions fail by leaking the secret.
+	if strings.Contains(rawStr, "sk-REALSECRET123") {
+		t.Error("SECURITY: raw secret 'sk-REALSECRET123' leaked into Servers JSON — redaction branch inactive")
+	}
+	if strings.Contains(rawStr, "REALSECRET") {
+		t.Error("SECURITY: partial secret 'REALSECRET' leaked into Servers JSON")
+	}
+
+	// Header value must be replaced with the synthetic var ref.
+	const synVar = "NEXUS3_MCP_LINEAR_AUTHORIZATION"
+	if !strings.Contains(rawStr, "${"+synVar+"}") {
+		t.Errorf("want synthetic var ref ${%s} in Servers JSON, got: %s", synVar, rawStr)
+	}
+
+	// Exactly one HTTPBind carrying the original literal as Token.
+	if len(got.HTTPBinds) != 1 {
+		t.Fatalf("want 1 HTTPBind, got %d: %+v", len(got.HTTPBinds), got.HTTPBinds)
+	}
+	b := got.HTTPBinds[0]
+	if b.Token != "Bearer sk-REALSECRET123" {
+		t.Errorf("bind.Token = %q, want %q", b.Token, "Bearer sk-REALSECRET123")
+	}
+	if b.Env != synVar {
+		t.Errorf("bind.Env = %q, want %q", b.Env, synVar)
+	}
+	if len(b.Hosts) != 1 || b.Hosts[0] != "api.linear.app" {
+		t.Errorf("bind.Hosts = %v, want [api.linear.app]", b.Hosts)
+	}
+}
+
+// TestBuildSharedMCPServers_HTTPVarRefPreserved verifies that an http header
+// using a ${VAR} reference is kept verbatim in the Servers JSON and a
+// SecretBind is minted with Env==the var name and Token==the resolved env value.
+func TestBuildSharedMCPServers_HTTPVarRefPreserved(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	t.Setenv("LINEAR_KEY", "sk-lin-realvalue")
+
+	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{
+		"linear": map[string]any{
+			"type": "http",
+			"url":  "https://api.linear.app/mcp",
+			"headers": map[string]any{
+				"Authorization": "Bearer ${LINEAR_KEY}",
+			},
+		},
+	})
+
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	raw, ok := got.Servers["linear"]
+	if !ok {
+		t.Fatal("want server 'linear' in Servers map")
+	}
+	if !strings.Contains(string(raw), "${LINEAR_KEY}") {
+		t.Errorf("want ${LINEAR_KEY} preserved verbatim in Servers JSON, got: %s", string(raw))
+	}
+
+	if len(got.HTTPBinds) != 1 {
+		t.Fatalf("want 1 HTTPBind, got %d: %+v", len(got.HTTPBinds), got.HTTPBinds)
+	}
+	b := got.HTTPBinds[0]
+	if b.Env != "LINEAR_KEY" {
+		t.Errorf("bind.Env = %q, want LINEAR_KEY", b.Env)
+	}
+	if b.Token != "sk-lin-realvalue" {
+		t.Errorf("bind.Token = %q, want sk-lin-realvalue", b.Token)
+	}
+}
+
+// TestBuildSharedMCPServers_StdioLiteralKeptAndEnvResolved verifies that:
+//   - stdio entries are kept verbatim in Servers (both ${VAR} refs and literals).
+//   - StdioEnv contains KEY=VALUE lines only for ${VAR} refs whose names resolve
+//     in the host environment; plain literal env values are NOT emitted.
+func TestBuildSharedMCPServers_StdioLiteralKeptAndEnvResolved(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	t.Setenv("MY_TOK", "supersecrettokenvalue")
+
+	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{
+		"mytool": map[string]any{
+			"command": "/usr/bin/mytool",
+			"env": map[string]any{
+				"API_TOKEN": "${MY_TOK}",
+				"PLAIN":     "literalvalue",
+			},
+		},
+	})
+
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	raw, ok := got.Servers["mytool"]
+	if !ok {
+		t.Fatal("want server 'mytool' in Servers map")
+	}
+	rawStr := string(raw)
+
+	// Both env entries must survive verbatim in the Servers JSON.
+	if !strings.Contains(rawStr, "${MY_TOK}") {
+		t.Errorf("want ${MY_TOK} preserved verbatim in Servers JSON, got: %s", rawStr)
+	}
+	if !strings.Contains(rawStr, "literalvalue") {
+		t.Errorf("want literal value preserved in Servers JSON, got: %s", rawStr)
+	}
+
+	stdioEnv := string(got.StdioEnv)
+
+	// ${MY_TOK} ref must be resolved from the host environment.
+	if !strings.Contains(stdioEnv, "MY_TOK=supersecrettokenvalue\n") {
+		t.Errorf("StdioEnv missing MY_TOK resolved value; got: %q", stdioEnv)
+	}
+	// PLAIN is a literal value, not a ${VAR} ref — must NOT appear in StdioEnv.
+	if strings.Contains(stdioEnv, "PLAIN=") {
+		t.Errorf("StdioEnv must not contain PLAIN (literal, not a var ref); got: %q", stdioEnv)
+	}
+}
+
+// TestBuildSharedMCPServers_UnionSource verifies that:
+//   - Servers from .mcp.json and .claude.json are unioned.
+//   - .claude.json wins on name collision.
+func TestBuildSharedMCPServers_UnionSource(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+
+	// alpha only in .mcp.json (lower priority).
+	writeMCPJSON(t, filepath.Join(dir, ".mcp.json"), map[string]any{
+		"alpha": map[string]any{
+			"command": "/mcp-bin",
+			"env":     map[string]any{"VER": "from-mcp"},
+		},
+	})
+	// beta only in .claude.json; alpha is also present to test collision.
+	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{
+		"beta": map[string]any{
+			"command": "/beta-bin",
+		},
+		"alpha": map[string]any{
+			"command": "/mcp-bin",
+			"env":     map[string]any{"VER": "from-claude-json"},
+		},
+	})
+
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := got.Servers["alpha"]; !ok {
+		t.Error("want 'alpha' in Servers (present in both sources)")
+	}
+	if _, ok := got.Servers["beta"]; !ok {
+		t.Error("want 'beta' in Servers (from .claude.json only)")
+	}
+
+	// .claude.json must win the collision on "alpha".
+	alphaRaw := string(got.Servers["alpha"])
+	if !strings.Contains(alphaRaw, "from-claude-json") {
+		t.Errorf("want .claude.json version of 'alpha'; got: %s", alphaRaw)
+	}
+	if strings.Contains(alphaRaw, "from-mcp") {
+		t.Errorf(".mcp.json version of 'alpha' must be overridden; got: %s", alphaRaw)
+	}
+}
+
+// TestBuildSharedMCPServers_NonClaudeFormatNoop verifies the profile gate:
+// a profile with MCPConfigFormat != claude-json returns zero value, nil error,
+// regardless of what config files exist on disk.
+func TestBuildSharedMCPServers_NonClaudeFormatNoop(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+
+	// Write a file to confirm the gate fires before any file I/O.
+	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{
+		"myserver": map[string]any{"command": "/bin/server"},
+	})
+
+	noopProfile := cred.ClaudeCodeProfile
+	noopProfile.MCPConfigFormat = cred.MCPConfigFormatNone
+
+	got, err := BuildSharedMCPServers(noopProfile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Servers != nil || got.HTTPBinds != nil || got.StdioEnv != nil {
+		t.Errorf("want zero-value SharedMCPServers for non-claude-json format, got: %+v", got)
+	}
+}
+
+// TestBuildSharedMCPServers_NonCredentialHeaderUntouched verifies that a
+// non-credential literal header (Content-Type: application/json) is kept
+// verbatim and no SecretBind is minted for it.
+func TestBuildSharedMCPServers_NonCredentialHeaderUntouched(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+
+	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{
+		"myserver": map[string]any{
+			"type": "http",
+			"url":  "https://api.example.com/mcp",
+			"headers": map[string]any{
+				"Content-Type": "application/json",
+			},
+		},
+	})
+
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	raw, ok := got.Servers["myserver"]
+	if !ok {
+		t.Fatal("want server 'myserver' in Servers map")
+	}
+	// Non-credential header value must remain verbatim.
+	if !strings.Contains(string(raw), "application/json") {
+		t.Errorf("want Content-Type value preserved verbatim, got: %s", string(raw))
+	}
+	// No bind must be minted for a non-credential header.
+	if len(got.HTTPBinds) != 0 {
+		t.Errorf("want no HTTPBinds for non-credential header, got %d: %+v", len(got.HTTPBinds), got.HTTPBinds)
+	}
+}
