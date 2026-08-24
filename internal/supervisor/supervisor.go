@@ -534,6 +534,7 @@ func RunDetached(cfg Config) error {
 		// probeAndSeedGuest mounts the overlay before any other seed writes.
 		agentCfgLowerGuestPath := ""
 		var mcpServersForSeed map[string]json.RawMessage
+		var userMountsForSeed *service.UserMountManifest
 		for _, lm := range cfg.LiveMounts {
 			if lm.GuestPath == "/run/nexus3/agentcfg-lower" {
 				agentCfgLowerGuestPath = lm.GuestPath
@@ -544,6 +545,14 @@ func RunDetached(cfg Config) error {
 					var m map[string]json.RawMessage
 					if json.Unmarshal(data, &m) == nil {
 						mcpServersForSeed = m
+					}
+				}
+				// Read the user-mounts manifest staged alongside mcp-servers.json.
+				// Absent or malformed file is a silent skip.
+				if data, readErr := os.ReadFile(filepath.Join(lm.HostPath, "usermounts.json")); readErr == nil {
+					var m service.UserMountManifest
+					if json.Unmarshal(data, &m) == nil {
+						userMountsForSeed = &m
 					}
 				}
 				break
@@ -560,6 +569,7 @@ func RunDetached(cfg Config) error {
 			Execer:                 onboardingExecer,
 			AgentCfgLowerGuestPath: agentCfgLowerGuestPath,
 			MCPServers:             mcpServersForSeed,
+			UserMounts:             userMountsForSeed,
 		}
 		if checkErr := probeAndSeedGuest(ctx, agentClient, seedInputs); checkErr != nil {
 			slog.Error("supervisor.guest_agent_unreachable",
@@ -824,6 +834,11 @@ var seedBypassConsentFn = service.SeedGuestBypassConsent
 // tests may replace it.
 var seedMCPServersFn = service.SeedGuestMCPServers
 
+// seedUserMountsFn is the function called by probeAndSeedGuest to apply the
+// operator tool-dir overlay mounts and home symlink inside the guest. Default
+// is service.SeedGuestUserMounts; tests replace it with a spy.
+var seedUserMountsFn = service.SeedGuestUserMounts
+
 // seedOverlayClaudeConfigFn is the function called by probeAndSeedGuest to
 // mount a writable overlay onto /root/.claude. Default is seedOverlayClaudeConfig;
 // tests replace it with a spy to verify the call without a live VM (A-MOUNT).
@@ -890,6 +905,10 @@ type guestSeedInputs struct {
 	// staging dir written by cmd_sandbox at create time. Nil when sharing is
 	// disabled, no servers are configured, or the file is absent.
 	MCPServers map[string]json.RawMessage
+	// UserMounts is the manifest of operator tool dirs to seed into the guest.
+	// Read from usermounts.json inside the agentcfg staging dir. Nil when
+	// sharing is disabled or the file is absent.
+	UserMounts *service.UserMountManifest
 }
 
 // probeAndSeedGuest runs the liveness probe (D-J14), login-shell credential
@@ -963,6 +982,20 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 			"action", "guest claude will not see shared host MCP server definitions")
 	} else if len(in.MCPServers) > 0 {
 		slog.Info("supervisor.mcp_servers_seeded", "sandbox", id, "count", len(in.MCPServers))
+	}
+
+	// User-mount seed (usermount-guest-seed): home symlink, PATH drop-in, and
+	// overlay mounts for operator tool dirs (plugins, ~/.local/bin, groundwork).
+	// Must run AFTER the /root/.claude overlay (A-MOUNT) so the plugins overlay
+	// layers on top of the already-mounted /root/.claude overlayfs. Non-fatal.
+	if in.UserMounts != nil {
+		if umErr := seedUserMountsFn(ctx, id, *in.UserMounts, in.Execer); umErr != nil {
+			slog.Warn("supervisor.usermount_seed_failed",
+				"sandbox", id, "err", umErr,
+				"action", "guest will not see operator tool dirs or home symlink")
+		} else {
+			slog.Info("supervisor.usermount_seeded", "sandbox", id, "count", len(in.UserMounts.Mounts))
+		}
 	}
 
 	// Bypass-permissions consent seed (D-J12). Merges

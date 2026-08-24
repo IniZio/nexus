@@ -244,3 +244,60 @@ func TestProbeAndSeedGuest_NoGitCredentialHelperWithoutSourcePaths(t *testing.T)
 		t.Error("seedGitCredentialHelperFn was called for a sandbox with no source paths")
 	}
 }
+
+// TestProbeAndSeedGuest_UserMountsSeeded is the mutation guard for the
+// seedUserMountsFn call inside probeAndSeedGuest.
+//
+//	Delete the seedUserMountsFn block from probeAndSeedGuest → this test fails RED.
+//
+// When UserMounts is non-nil, probeAndSeedGuest must invoke seedUserMountsFn
+// so the guest receives the home symlink, PATH drop-in, and overlay mounts.
+func TestProbeAndSeedGuest_UserMountsSeeded(t *testing.T) {
+	called := false
+	old := seedUserMountsFn
+	seedUserMountsFn = func(_ context.Context, _ domain.SandboxID, _ service.UserMountManifest, _ service.GuestExecer) error {
+		called = true
+		return nil
+	}
+	t.Cleanup(func() { seedUserMountsFn = old })
+
+	manifest := service.UserMountManifest{
+		HostHome: "$HOME",
+		Mounts: []service.ResolvedUserMount{
+			{
+				HostPath:         "$HOME/.claude/plugins",
+				GuestPath:        "/root/.claude/plugins",
+				Overlay:          true,
+				StagingGuestPath: "/run/nexus3/usermount/plugins",
+			},
+		},
+	}
+	err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{
+		UserMounts: &manifest,
+	})
+	if err != nil {
+		t.Fatalf("probeAndSeedGuest with live prober: unexpected error %v", err)
+	}
+	if !called {
+		t.Fatal("seedUserMountsFn was not called — SeedGuestUserMounts wiring missing from probeAndSeedGuest")
+	}
+}
+
+// TestProbeAndSeedGuest_NoUserMountsWhenAbsent asserts that seedUserMountsFn
+// is not called when UserMounts is nil (sharing disabled or manifest absent).
+func TestProbeAndSeedGuest_NoUserMountsWhenAbsent(t *testing.T) {
+	called := false
+	old := seedUserMountsFn
+	seedUserMountsFn = func(_ context.Context, _ domain.SandboxID, _ service.UserMountManifest, _ service.GuestExecer) error {
+		called = true
+		return nil
+	}
+	t.Cleanup(func() { seedUserMountsFn = old })
+
+	if err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{}); err != nil {
+		t.Fatalf("probeAndSeedGuest: unexpected error %v", err)
+	}
+	if called {
+		t.Error("seedUserMountsFn was called for a sandbox with no user mounts manifest")
+	}
+}

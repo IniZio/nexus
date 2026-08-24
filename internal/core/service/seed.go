@@ -959,3 +959,102 @@ func SeedGuestMCPServers(ctx context.Context, id domain.SandboxID, servers map[s
 	}
 	return nil
 }
+
+// GuestUserMountsProfilePath is the profile.d drop-in written by
+// SeedGuestUserMounts to append /root/.local/bin to PATH for every login shell.
+const GuestUserMountsProfilePath = "/etc/profile.d/nexus3-usermounts.sh"
+
+// shSingleQuote wraps s in POSIX single quotes, escaping any embedded single
+// quotes so the result is safe to embed in a shell script.
+func shSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// SeedGuestUserMounts runs an idempotent /bin/sh script in the guest that:
+//
+//  1. Creates a home-dir symlink so operator absolute paths (e.g.
+//     $HOME/…) resolve inside the guest (where the real home is /root).
+//  2. Writes /etc/profile.d/nexus3-usermounts.sh to APPEND /root/.local/bin
+//     to PATH (appended, not prepended — the guest's own claude binary must
+//     win over the host's ~/.local/bin/claude symlink whose target is absent).
+//  3. For each overlay=true mount row, mounts a writable overlayfs (tmpfs
+//     upper+work) over the RO virtiofs staging path onto the final guest_path.
+//
+// Non-overlay rows (overlay=false) are skipped: the virtiofs tag is mounted
+// directly at guest_path by the hypervisor and needs no guest action.
+//
+// A failed user-mount is never fatal: callers log a warning and continue.
+// No-op when manifest has no mounts or execer is nil.
+func SeedGuestUserMounts(ctx context.Context, id domain.SandboxID, manifest UserMountManifest, execer GuestExecer) error {
+	if execer == nil || len(manifest.Mounts) == 0 {
+		return nil
+	}
+
+	var b strings.Builder
+	b.WriteString("set -eu\n\n")
+
+	// Step 1: home symlink — only when host_home is not /root.
+	if manifest.HostHome != "" && manifest.HostHome != "/root" {
+		qHome := shSingleQuote(manifest.HostHome)
+		dir := manifest.HostHome
+		if i := strings.LastIndex(dir, "/"); i > 0 {
+			dir = dir[:i]
+		}
+		qDir := shSingleQuote(dir)
+		fmt.Fprintf(&b, "# 1. Home symlink: %s -> /root\n", manifest.HostHome)
+		fmt.Fprintf(&b, "if [ ! -e %s ] && [ ! -L %s ]; then\n", qHome, qHome)
+		fmt.Fprintf(&b, "  mkdir -p %s\n", qDir)
+		fmt.Fprintf(&b, "  ln -s /root %s\n", qHome)
+		fmt.Fprintf(&b, "fi\n\n")
+	}
+
+	// Step 2: PATH drop-in. Quoted heredoc prevents $PATH from expanding during
+	// the write; the resulting file expands $PATH at shell source time.
+	qProfile := shSingleQuote(GuestUserMountsProfilePath)
+	fmt.Fprintf(&b, "# 2. PATH drop-in\n")
+	fmt.Fprintf(&b, "if [ ! -f %s ]; then\n", qProfile)
+	fmt.Fprintf(&b, "cat > %s << 'NEXUS3UMEOF'\n", qProfile)
+	fmt.Fprintf(&b, "# nexus3: user-mount PATH for login shells.\n")
+	fmt.Fprintf(&b, "# Written by SeedGuestUserMounts; do not edit.\n")
+	fmt.Fprintf(&b, "export PATH=\"$PATH:/root/.local/bin\"\n")
+	fmt.Fprintf(&b, "NEXUS3UMEOF\n")
+	fmt.Fprintf(&b, "fi\n\n")
+
+	// Step 3: overlay mounts for overlay=true rows.
+	for _, m := range manifest.Mounts {
+		if !m.Overlay {
+			// overlay=false: virtiofs tag is already mounted directly at
+			// GuestPath by the hypervisor; no guest action needed.
+			continue
+		}
+		// Derive a safe dir name from the basename of staging_guest_path.
+		name := m.StagingGuestPath
+		if i := strings.LastIndex(name, "/"); i >= 0 {
+			name = name[i+1:]
+		}
+		if name == "" {
+			name = "um"
+		}
+		qStaging := shSingleQuote(m.StagingGuestPath)
+		qGuest := shSingleQuote(m.GuestPath)
+		qUp := shSingleQuote("/run/nexus3/ovl-um/" + name + "/up")
+		qWork := shSingleQuote("/run/nexus3/ovl-um/" + name + "/work")
+		fmt.Fprintf(&b, "# 3. Overlay: %s\n", m.GuestPath)
+		// Guard: skip if staging dir absent (host dir was not shared) or already mounted.
+		fmt.Fprintf(&b, "if [ -d %s ] && ! mountpoint -q %s 2>/dev/null; then\n", qStaging, qGuest)
+		fmt.Fprintf(&b, "  mkdir -p %s\n", qGuest)
+		fmt.Fprintf(&b, "  mkdir -p %s %s\n", qUp, qWork)
+		fmt.Fprintf(&b, "  mount -t overlay overlay -o lowerdir=%s,upperdir=%s,workdir=%s %s\n",
+			qStaging, qUp, qWork, qGuest)
+		fmt.Fprintf(&b, "fi\n\n")
+	}
+
+	code, err := execer(ctx, id, []string{"/bin/sh", "-c", b.String()}, nil)
+	if err != nil {
+		return fmt.Errorf("usermount seed: %w", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("usermount seed script exited %d", code)
+	}
+	return nil
+}
