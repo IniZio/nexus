@@ -2862,6 +2862,17 @@ func herdrWorkspaceRename(ctx context.Context, herdrBin, workspaceID, label stri
 // This is the SOLE place this flag is constructed for the worktree-sandbox
 // path; tests assert its presence here, not via side-channel inspection.
 //
+// --agent claude-code --egress open makes a worktree sandbox a full agent dev
+// environment: the operator's curated ~/.claude config (skills, CLAUDE.md,
+// settings) and MCP server definitions are shared in, and Claude's credential
+// is brokered host-side — WHILE keeping open dev egress so npm/apt/registry
+// pulls still work. This is the "broad-allow + selective MITM" posture: the
+// perimeter forwards every host but MITM-swaps only the credentialed ones
+// (anthropic + http-MCP), so a placeholder never reaches the real API and no
+// real token lives in the guest. Without --egress open, --agent would narrow
+// egress to the agent allowlist (D-PD-33) and break dev tooling; the two flags
+// must travel together for a worktree sandbox.
+//
 // extraMounts is a slice of additional "host:guest[:ro]" mount specs (one
 // --mount flag pair per element). For a linked worktree sandbox, it carries
 // the main repo's .git directory so git is fully functional inside the guest
@@ -2872,7 +2883,7 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 	for _, m := range extraMounts {
 		args = append(args, "--mount", m)
 	}
-	args = append(args, "--no-builtin-gh", handle)
+	args = append(args, "--agent", "claude-code", "--egress", "open", "--no-builtin-gh", handle)
 	return args
 }
 

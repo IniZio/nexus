@@ -583,6 +583,40 @@ func TestHerdrWorktreeSandboxCreateArgs_containsNoBuiltinGh(t *testing.T) {
 	}
 }
 
+// TestHerdrWorktreeSandboxCreateArgs_containsAgentOpenEgress asserts that a
+// worktree sandbox is created as a full agent dev env: --agent claude-code
+// (shares the operator's ~/.claude config + MCP definitions and brokers Claude's
+// credential) PAIRED WITH --egress open (broad-allow + selective MITM, so dev
+// tooling keeps open egress while credentialed hosts are still swapped). The two
+// flags MUST travel together: --agent alone narrows egress (D-PD-33) and breaks
+// npm/apt inside the worktree sandbox.
+// MUTATION PROOF: drop either flag from herdrWorktreeSandboxCreateArgs → RED.
+func TestHerdrWorktreeSandboxCreateArgs_containsAgentOpenEgress(t *testing.T) {
+	args := herdrWorktreeSandboxCreateArgs("wt/my-branch", "/repo:/workspace", "--image", herdrDefaultImage, nil)
+	// --agent claude-code
+	agentOK := false
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--agent" && args[i+1] == "claude-code" {
+			agentOK = true
+			break
+		}
+	}
+	if !agentOK {
+		t.Errorf("--agent claude-code missing from %v; worktree sandboxes must share agent config + MCP", args)
+	}
+	// --egress open
+	egressOK := false
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--egress" && args[i+1] == "open" {
+			egressOK = true
+			break
+		}
+	}
+	if !egressOK {
+		t.Errorf("--egress open missing from %v; without it --agent narrows egress (D-PD-33) and breaks dev tooling", args)
+	}
+}
+
 // TestHerdrWorktreeSandboxCreateArgs_isBootableShaped asserts that the argv
 // produced by herdrWorktreeSandboxCreateArgs contains exactly one of --image,
 // --rootfs, or --file, so that `nexus3 sandbox create` never sees --mount
