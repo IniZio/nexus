@@ -10,8 +10,42 @@ import (
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/volumestore"
 )
+
+// TestNamedDiskGuestMounts_deviceIndexing proves --mount-named kind=disk volumes
+// get a guest-mount at the RIGHT device index, and kind=dir volumes are skipped
+// (they are virtiofs, not block devices) without consuming a device letter.
+//
+// This is the fix for the pre-existing gap where a named kind=disk volume was
+// attached as an ExtraDisk but never mounted in-guest (no --workspace-mount arg),
+// which left dockerd's /var/lib/docker on the small root disk.
+//
+// MUTATION PROOF: change shadowDevicePath(len(out)) → shadowDevicePath(i) (index
+// by declaration position, counting kind=dir) and mount[1] becomes /dev/vdd → RED.
+func TestNamedDiskGuestMounts_deviceIndexing(t *testing.T) {
+	mounts := []service.NamedVolumeMount{
+		{Name: "docker", GuestPath: "/var/lib/docker", Kind: volumestore.KindDisk},
+		{Name: "cfg", GuestPath: "/etc/app", Kind: volumestore.KindDir}, // virtiofs → skipped
+		{Name: "cache", GuestPath: "/root/.cache", Kind: volumestore.KindDisk, ReadOnly: true},
+	}
+	got := namedDiskGuestMounts(mounts)
+	if len(got) != 2 {
+		t.Fatalf("want 2 disk mounts (kind=dir skipped), got %d: %+v", len(got), got)
+	}
+	if got[0].Device != "/dev/vdb" || got[0].Target != "/var/lib/docker" ||
+		got[0].FSType != "ext4" || got[0].ReadOnly || got[0].IsWorkspace {
+		t.Errorf("mount[0] = %+v; want {/dev/vdb /var/lib/docker ext4 rw non-workspace}", got[0])
+	}
+	// The kind=dir volume must NOT consume /dev/vdc — the second disk gets it.
+	if got[1].Device != "/dev/vdc" || got[1].Target != "/root/.cache" || !got[1].ReadOnly {
+		t.Errorf("mount[1] = %+v; want {/dev/vdc /root/.cache ext4 ro} — kind=dir must not consume a device letter", got[1])
+	}
+	if namedDiskGuestMounts(nil) != nil {
+		t.Errorf("nil input should yield nil, got %+v", namedDiskGuestMounts(nil))
+	}
+}
 
 // parseMountNamed tests
 

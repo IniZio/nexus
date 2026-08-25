@@ -1120,6 +1120,15 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		}
 	}
 
+	// Guest mounts for --mount-named kind=disk volumes. service.CreateAndBoot
+	// PREPENDS these volumes' ext4 images to ExtraDisks[0..k-1] in declaration
+	// order (create.go step 4.7), so named disk i maps to /dev/vd{b+i}. Without
+	// emitting a guest-mount arg per volume the disk is attached but NEVER mounted
+	// at its GuestPath — exactly the gap that left dockerd's /var/lib/docker on the
+	// 4 GiB root. These occupy the lowest device indices, so the shadow/workspace
+	// disks below are offset past them (len(namedDiskMounts)).
+	namedDiskMounts := namedDiskGuestMounts(namedMounts)
+
 	imgCache, err := image.NewCache(cacheRoot)
 	if err != nil {
 		return errSandbox("sandbox create", fmt.Errorf("open image cache: %w", err))
@@ -1450,7 +1459,13 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		liveGuestMounts := liveMountsToGuestMounts(bootLiveMounts)
 		// Combine disk-based mounts (workspace + shadow) with virtiofs live mounts
 		// so workspaceMountCmdline emits one --workspace-mount arg per share.
-		allGuestMounts := append(bootGuestMounts, liveGuestMounts...)
+		// Named kind=disk volume mounts occupy the lowest device indices
+		// (ExtraDisks[0..k-1] → /dev/vdb..), so they lead; shadow/workspace disks
+		// were offset past them above, and live virtiofs mounts use tags. Agent
+		// planMountOrder re-sorts by depth, so cmdline order is cosmetic — only the
+		// per-mount device index must match the ExtraDisks layout.
+		allGuestMounts := append(append([]agent.GuestMount{}, namedDiskMounts...),
+			append(bootGuestMounts, liveGuestMounts...)...)
 		cfg.Cmdline = guestBootCmdline(allGuestMounts, ar.PID1Args, project+"/"+name)
 		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
 			cfg.BinaryPath = p
@@ -1599,8 +1614,12 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		// Compute GuestMount specs for all disks. bootGuestMounts is read by
 		// the newDriver closure (above) to build the kernel cmdline fragment
 		// that delivers the specs to the guest agent (PID 1) as os.Args.
-		allMounts := append(shadowGuestMounts(shadowSpecs, 0),
-			WorkspaceGuestMount(guestPath, len(shadowSpecs)))
+		// Offset shadow + workspace device indices past any named kind=disk
+		// volumes, which service.CreateAndBoot prepends to ExtraDisks[0..k-1].
+		// When no named disks are present len(namedDiskMounts)==0 and this is
+		// identical to the previous base-0 behaviour (no regression).
+		allMounts := append(shadowGuestMounts(shadowSpecs, len(namedDiskMounts)),
+			WorkspaceGuestMount(guestPath, len(namedDiskMounts)+len(shadowSpecs)))
 		bootGuestMounts = allMounts
 		slog.Info("workspace shadow disks prepared",
 			"workspace_host", wsAbs,
@@ -2492,6 +2511,38 @@ func runSandboxResume(ctx context.Context, args []string, out *Output, svc *serv
 	out.EmitSuccess("sandbox.resumed", toSandboxInfoJSON(sb),
 		fmt.Sprintf("resumed sandbox %s (%s)", sb.Handle(), sb.ID))
 	return nil
+}
+
+// namedDiskGuestMounts computes the guest-mount entries for --mount-named
+// kind=disk volumes so the agent actually mounts each volume's ext4 disk at its
+// GuestPath.
+//
+// service.CreateAndBoot (create.go step 4.7) PREPENDS these volumes' ext4 images
+// to ExtraDisks[0..k-1] in DECLARATION order (kind=disk only), so the i-th
+// kind=disk volume maps to /dev/vd{b+i}. This mirrors that exact indexing:
+// shadowDevicePath(len(out)) counts only the kind=disk mounts already emitted, so
+// a kind=dir volume interleaved in the spec list does not consume a device
+// letter (kind=dir volumes are virtiofs — TBD-SD2-LIVE-4 — and emit no
+// block-device mount here). IsWorkspace stays false: a named volume is never the
+// disk-telemetry/governor target.
+//
+// Without these mounts the disk is attached but never mounted — the guest agent
+// has no --workspace-mount instruction for it — which is the gap that left
+// dockerd writing /var/lib/docker onto the small root disk.
+func namedDiskGuestMounts(mounts []service.NamedVolumeMount) []agent.GuestMount {
+	var out []agent.GuestMount
+	for _, m := range mounts {
+		if m.Kind != volumestore.KindDisk {
+			continue
+		}
+		out = append(out, agent.GuestMount{
+			Device:   shadowDevicePath(len(out)), // ExtraDisks[len(out)] → /dev/vd{b+len(out)}
+			Target:   m.GuestPath,
+			FSType:   "ext4",
+			ReadOnly: m.ReadOnly,
+		})
+	}
+	return out
 }
 
 // parseMountNamed parses a --mount-named spec of the form:
