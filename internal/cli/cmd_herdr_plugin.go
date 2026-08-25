@@ -2883,8 +2883,57 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 	for _, m := range extraMounts {
 		args = append(args, "--mount", m)
 	}
+	// Docker storage disk. A custom .nexus/Containerfile (the --file path) is the
+	// ONLY way docker lands in a worktree sandbox — the base image ships none by
+	// design — so a base-image sandbox needs no docker disk. When we DO build from
+	// a Containerfile, give /var/lib/docker its own ext4 disk: docker's overlay2
+	// storage driver cannot run on the virtiofs /workspace mount, and the small
+	// root disk fills fast under image layers. The volume is named per-sandbox
+	// (from the handle) so two worktree sandboxes of the same repo never contend
+	// on one disk under the D-PD-93 attach guard, while a given worktree keeps its
+	// docker layer cache across re-creations. A 20 GiB sparse disk costs only the
+	// blocks docker actually writes, so it is cheap even when a project's
+	// Containerfile turns out not to use docker.
+	if imageFlag == "--file" {
+		args = append(args, "--mount-named", herdrDockerDiskVolumeName(handle)+":/var/lib/docker:size=20g")
+	}
 	args = append(args, "--agent", "claude-code", "--egress", "open", "--no-builtin-gh", handle)
 	return args
+}
+
+// herdrDockerDiskVolumeName derives a VolumeStore-legal name
+// ([a-z0-9][a-z0-9._-]*, per D-PD-84) for a worktree sandbox's docker storage
+// disk from its handle. The handle is "<repo>/<branch>" with case preserved and
+// a "/" separator, neither of which the grammar allows, so this lower-cases,
+// maps every out-of-grammar byte (including "/") to a single "-", trims to a
+// legal leading char, and appends "-docker".
+func herdrDockerDiskVolumeName(handle string) string {
+	var b strings.Builder
+	prev := byte('-')
+	for i := 0; i < len(handle); i++ {
+		c := handle[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+			lc := c + ('a' - 'A')
+			b.WriteByte(lc)
+			prev = lc
+		case (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_':
+			b.WriteByte(c)
+			prev = c
+		default: // '/', '-', whitespace, anything else → collapse to one '-'
+			if prev != '-' {
+				b.WriteByte('-')
+				prev = '-'
+			}
+		}
+	}
+	// First char must be [a-z0-9]; trim any leading '.', '_', '-' the grammar
+	// forbids in that position, plus trailing separators for tidiness.
+	slug := strings.Trim(b.String(), "-._")
+	if slug == "" {
+		slug = "wt"
+	}
+	return slug + "-docker"
 }
 
 // herdrWorktreeGitDirMount returns the extra --mount spec needed to make git

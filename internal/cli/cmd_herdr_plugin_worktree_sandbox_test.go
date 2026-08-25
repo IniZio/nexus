@@ -579,6 +579,64 @@ func TestHerdrWorktreeSandbox_createArgs(t *testing.T) {
 	}
 }
 
+// ── herdrWorktreeSandboxCreateArgs — docker storage disk ─────────────────────
+
+// argsContainPair reports whether flag is immediately followed by val in args.
+func argsContainPair(args []string, flag, val string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == val {
+			return true
+		}
+	}
+	return false
+}
+
+// TestHerdrWorktreeSandboxCreateArgs_dockerDiskOnFileBuild proves a --file build
+// (a custom .nexus/Containerfile — the ONLY way docker enters a worktree
+// sandbox) auto-attaches a per-sandbox ext4 disk at /var/lib/docker, and a
+// base-image (--image) build does NOT (the base ships no docker).
+//
+// MUTATION PROOF: delete the `if imageFlag == "--file"` docker-disk append in
+// herdrWorktreeSandboxCreateArgs → the --file subtest goes RED. Change the guard
+// to always-append → the --image subtest goes RED.
+func TestHerdrWorktreeSandboxCreateArgs_dockerDiskOnFileBuild(t *testing.T) {
+	fileArgs := herdrWorktreeSandboxCreateArgs("example-app/EX-871", "/wt:/workspace", "--file", "/wt", nil)
+	wantVol := "example-app-ex-871-docker:/var/lib/docker:size=20g"
+	if !argsContainPair(fileArgs, "--mount-named", wantVol) {
+		t.Errorf("--file build: missing docker disk mount --mount-named %q\ngot: %v", wantVol, fileArgs)
+	}
+
+	imgArgs := herdrWorktreeSandboxCreateArgs("example-app/EX-871", "/wt:/workspace", "--image", herdrDefaultImage, nil)
+	for _, a := range imgArgs {
+		if strings.Contains(a, "/var/lib/docker") {
+			t.Errorf("--image build must not attach a docker disk (base image ships none); got: %v", imgArgs)
+		}
+	}
+}
+
+// TestHerdrDockerDiskVolumeName proves the handle→volume-name mapping yields a
+// VolumeStore-legal name ([a-z0-9][a-z0-9._-]*, D-PD-84): lower-cased, the "/"
+// separator and other out-of-grammar bytes collapsed to "-", legal leading char.
+func TestHerdrDockerDiskVolumeName(t *testing.T) {
+	cases := map[string]string{
+		"example-app/EX-871": "example-app-ex-871-docker",
+		"MyRepo/Feature/X":   "myrepo-feature-x-docker",
+		"repo/worktree":      "repo-worktree-docker",
+		"///":                "wt-docker", // degenerate handle → fallback stem
+	}
+	for handle, want := range cases {
+		if got := herdrDockerDiskVolumeName(handle); got != want {
+			t.Errorf("herdrDockerDiskVolumeName(%q) = %q, want %q", handle, got, want)
+		}
+		got := herdrDockerDiskVolumeName(handle)
+		if got[0] < 'a' || got[0] > 'z' {
+			if got[0] < '0' || got[0] > '9' {
+				t.Errorf("herdrDockerDiskVolumeName(%q)=%q: first char %q not [a-z0-9]", handle, got, string(got[0]))
+			}
+		}
+	}
+}
+
 // ── herdrWorktreeSandboxCreateArgs — --no-builtin-gh ─────────────────────────
 
 func TestHerdrWorktreeSandboxCreateArgs_containsNoBuiltinGh(t *testing.T) {

@@ -249,6 +249,17 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Image boot task: run /etc/nexus3/startup (if the image baked one) as a
+	// background, non-fatal task now that workspace/docker disks are mounted, the
+	// network is up, and the ZRAM swap safety net is running. This is how a
+	// project auto-starts in-sandbox services such as dockerd (declared in its
+	// .nexus/Containerfile). Only in a real guest boot (PID 1) does the hook path
+	// exist; PID 1 continues to the control plane below so the agent serves
+	// Exec/Copy while the task runs.
+	if isPid1 {
+		runStartupHook(con)
+	}
+
 	// Bind control-plane vsock listener (port 1024).
 	consoleLog(con, "nexus3-agent: vsock.Listen port %d\n", driver.AgentControlPort)
 	ctrlLis, err := vsock.Listen(driver.AgentControlPort, nil)
