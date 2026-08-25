@@ -139,10 +139,24 @@ make check-agent-fresh
 ```
 
 It fails when any `.go` under `cmd/nexus3-agent/` or `internal/core/agent/`
-is newer than `images/kernel/nexus3-agent`. The 2026-08-15 egress outage
-(stale Aug-11 agent image assigned the guest IP to dummy0; virtio eth0 left
-DOWN; every sandbox booted with dead networking) was exactly this failure
-mode — run the target in CI before any live-sandbox proof.
+is newer than the checked binary. The 2026-08-15 egress outage (stale Aug-11
+agent image assigned the guest IP to dummy0; virtio eth0 left DOWN; every
+sandbox booted with dead networking) was exactly this failure mode — run the
+target before any live-sandbox proof.
+
+**Two binaries are checked:**
+
+1. `images/kernel/nexus3-agent` — the base-image agent embedded in `nexus3-agent-base`.
+   Rebuilding: `images/kernel/rebuild-base.sh [--image]`
+
+2. The **on-PATH builder agent** (`exec.LookPath("nexus3-agent")`, typically
+   `~/.local/bin/nexus3-agent`) — baked into builder VMs by `nexus3 create --file`.
+   Builder-image cache key = `sha256(agentBytes)[:8]`, so a stale on-PATH agent
+   silently re-bakes old code even after the CLI is rebuilt.
+   Rebuilding: `make install-agent`
+
+For the full live-e2e workflow — including the two-binary rebuild requirement
+and the `herdr_live` test incantation — see `CONTRIBUTING.md §Live-e2e incantation`.
 
 ## CI recommendation (superseded by enforcement above)
 
