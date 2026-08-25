@@ -364,3 +364,122 @@ func TestDiskAxis_GrowError_NoCooldownCorruption(t *testing.T) {
 		t.Errorf("lastGrow set after second failed GrowDisk, want zero")
 	}
 }
+
+// ── Multi-disk and per-disk-sample tests ──────────────────────────────────────
+
+// diskSampleWithStats builds a Sample with both DiskStats populated AND
+// legacy fields set. Used to verify that Evaluate prefers DiskStats over
+// legacy when a matching entry exists.
+func diskSampleWithStats(stats []resize.DiskSample) resize.Sample {
+	s := resize.Sample{Timestamp: time.Now()}
+	// Populate legacy fields from the first entry if present, so old-path
+	// callers still see something; multi-disk tests create their own axes.
+	if len(stats) > 0 {
+		s.DiskUsedBytes = stats[0].UsedBytes
+		s.DiskTotalBytes = stats[0].TotalBytes
+		s.DiskSupported = stats[0].Supported
+	}
+	s.DiskStats = stats
+	return s
+}
+
+// TestDiskAxis_PerDiskSample_UsesMatchingEntry verifies that when DiskStats
+// contains an entry for the axis's diskIndex, Evaluate uses that entry's
+// Used/Total/Supported rather than the legacy fields.
+func TestDiskAxis_PerDiskSample_UsesMatchingEntry(t *testing.T) {
+	dr := &fakeDiskResizer{}
+	resizer := newFakeResizer(2 << 30)
+	g, clk := newTestGovernorMinMax(t, 2<<30, 8<<30, resizer, nil)
+	g.bounds.DiskMaxBytes = 100 << 30
+	axis := NewDiskAxis(g, dr, 2) // manage disk index 2
+	pastBootDelay(clk)
+
+	// DiskStats: index 2 is over threshold (90%), index 0 is under (10%).
+	// Legacy fields mirror index 0 (under threshold) — must be ignored.
+	sample := diskSampleWithStats([]resize.DiskSample{
+		{Index: 0, UsedBytes: 1 << 30, TotalBytes: 10 << 30, Supported: true},
+		{Index: 2, UsedBytes: 9 << 30, TotalBytes: 10 << 30, Supported: true},
+	})
+	sample.DiskUsedBytes = 1 << 30  // legacy: under threshold
+	sample.DiskTotalBytes = 10 << 30
+	sample.DiskSupported = true
+	injectSample(g, clk, sample)
+
+	axis.Evaluate(context.Background())
+
+	if len(dr.calls) != 1 {
+		t.Fatalf("expected 1 GrowDisk call (disk 2 over threshold), got %d", len(dr.calls))
+	}
+	if dr.calls[0].diskIndex != 2 {
+		t.Errorf("GrowDisk diskIndex = %d, want 2", dr.calls[0].diskIndex)
+	}
+}
+
+// TestDiskAxis_MultiDisk_IndependentAxes verifies that two DiskAxis instances
+// (indices 1 and 2) each grow based on their own disk's ratio and do not
+// interfere with each other.
+func TestDiskAxis_MultiDisk_IndependentAxes(t *testing.T) {
+	dr1 := &fakeDiskResizer{}
+	dr2 := &fakeDiskResizer{}
+
+	resizer := newFakeResizer(2 << 30)
+	g, clk := newTestGovernorMinMax(t, 2<<30, 8<<30, resizer, nil)
+	g.bounds.DiskMaxBytes = 100 << 30
+
+	// axis1 manages disk index 1 (under threshold), axis2 manages disk index 2 (over threshold).
+	axis1 := NewDiskAxis(g, dr1, 1)
+	axis2 := NewDiskAxis(g, dr2, 2)
+	pastBootDelay(clk)
+
+	sample := diskSampleWithStats([]resize.DiskSample{
+		{Index: 1, UsedBytes: 2 << 30, TotalBytes: 10 << 30, Supported: true}, // 20% — under
+		{Index: 2, UsedBytes: 9 << 30, TotalBytes: 10 << 30, Supported: true}, // 90% — over
+	})
+	injectSample(g, clk, sample)
+
+	axis1.Evaluate(context.Background())
+	axis2.Evaluate(context.Background())
+
+	// axis1 (index 1, 20%) must NOT grow.
+	if len(dr1.calls) != 0 {
+		t.Errorf("axis1 (disk 1, 20%%): expected no GrowDisk calls, got %d", len(dr1.calls))
+	}
+	// axis2 (index 2, 90%) must grow.
+	if len(dr2.calls) != 1 {
+		t.Fatalf("axis2 (disk 2, 90%%): expected 1 GrowDisk call, got %d", len(dr2.calls))
+	}
+	if dr2.calls[0].diskIndex != 2 {
+		t.Errorf("axis2 GrowDisk diskIndex = %d, want 2", dr2.calls[0].diskIndex)
+	}
+}
+
+// TestDiskAxis_LegacyFallback_WhenDiskStatsEmpty verifies that Evaluate falls
+// back to legacy DiskUsedBytes/DiskTotalBytes/DiskSupported when DiskStats is
+// empty (old guest agents that have not yet populated DiskStats).
+func TestDiskAxis_LegacyFallback_WhenDiskStatsEmpty(t *testing.T) {
+	dr := &fakeDiskResizer{}
+	resizer := newFakeResizer(2 << 30)
+	g, clk := newTestGovernorMinMax(t, 2<<30, 8<<30, resizer, nil)
+	g.bounds.DiskMaxBytes = 100 << 30
+	axis := NewDiskAxis(g, dr, 0) // workspace disk at index 0
+	pastBootDelay(clk)
+
+	// No DiskStats — only legacy fields (over threshold).
+	sample := resize.Sample{
+		Timestamp:      time.Now(),
+		DiskUsedBytes:  9 << 30,
+		DiskTotalBytes: 10 << 30,
+		DiskSupported:  true,
+		// DiskStats: nil (omitted)
+	}
+	injectSample(g, clk, sample)
+
+	axis.Evaluate(context.Background())
+
+	if len(dr.calls) != 1 {
+		t.Fatalf("legacy fallback: expected 1 GrowDisk call, got %d", len(dr.calls))
+	}
+	if dr.calls[0].diskIndex != 0 {
+		t.Errorf("legacy fallback: GrowDisk diskIndex = %d, want 0", dr.calls[0].diskIndex)
+	}
+}

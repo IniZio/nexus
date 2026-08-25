@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
@@ -27,6 +28,30 @@ func (e *supervisorExtraDisks) String() string {
 
 func (e *supervisorExtraDisks) Set(v string) error {
 	*e = append(*e, v)
+	return nil
+}
+
+// supervisorResizableDiskIndices is a flag.Value implementation that accumulates
+// repeated --resizable-disk-index <int> flags into a []int slice.
+type supervisorResizableDiskIndices []int
+
+func (r *supervisorResizableDiskIndices) String() string {
+	if r == nil {
+		return ""
+	}
+	parts := make([]string, len(*r))
+	for i, idx := range *r {
+		parts[i] = strconv.Itoa(idx)
+	}
+	return strings.Join(parts, ",")
+}
+
+func (r *supervisorResizableDiskIndices) Set(v string) error {
+	idx, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Errorf("--resizable-disk-index: %w", err)
+	}
+	*r = append(*r, idx)
 	return nil
 }
 
@@ -134,6 +159,13 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 	// extraDisks accumulates repeated --extra-disk flags (one per disk path).
 	var extraDisks supervisorExtraDisks
 	fs.Var(&extraDisks, "extra-disk", "extra disk image path to re-attach (repeatable, order-preserving)")
+	// resizableDiskIndices accumulates repeated --resizable-disk-index flags.
+	// Each value is a 0-based ExtraDisks index whose ext4 disk the disk governor
+	// should monitor and grow. For builder VMs this is [2] (the buildkit cache
+	// disk at ExtraDisks[2]=vdd); for normal sandboxes it is derived from the
+	// workspace disk index and forwarded via HasWorkspaceDisk/WorkspaceDiskIndex.
+	var resizableDiskIndices supervisorResizableDiskIndices
+	fs.Var(&resizableDiskIndices, "resizable-disk-index", "0-based ExtraDisks index for disk governor (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return supervisor.Config{}, err
 	}
@@ -176,7 +208,8 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 		HasWorkspaceDisk:   *workspaceDiskIndex >= 0,
 		WorkspaceDiskIndex: *workspaceDiskIndex,
 		WorkspaceGuestPath: *workspaceGuestPath,
-		ExtraDisks:         []string(extraDisks),
+		ExtraDisks:           []string(extraDisks),
+		ResizableDiskIndices: []int(resizableDiskIndices),
 		GovBounds: resize.Bounds{
 			MemMinBytes:  *govMemMin,
 			MemMaxBytes:  *govMemMax,

@@ -31,3 +31,19 @@ FROM moby/buildkit:v0.18.2
 # The agent is NOT installed in the builder image — the builder VM is ephemeral and
 # controlled entirely by the nexus3 host process; it does not use the init=/sbin/nexus3-agent
 # boot contract.
+
+# Bound buildkitd's cross-build layer cache so the dedicated /var/lib/buildkit disk
+# (10 GiB ext4) does not fill and brick future builds.  GC keep-storage is set to
+# 6 GB, leaving ~4 GiB headroom for the active build; buildkitd GC trims older
+# cache entries automatically between builds to stay within that bound.
+# /etc/buildkit/buildkitd.toml is buildkitd's default config path (no --config
+# override is used; the upstream entrypoint reads this file unconditionally).
+RUN mkdir -p /etc/buildkit && cat > /etc/buildkit/buildkitd.toml <<'EOF'
+[worker.oci]
+  gc = true
+  gckeepstorage = 6000000000
+
+  [[worker.oci.gcpolicy]]
+    keepBytes = 6000000000
+    all = true
+EOF

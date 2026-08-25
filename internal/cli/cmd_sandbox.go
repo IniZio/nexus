@@ -1321,20 +1321,30 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				builderExtraDisks = append(builderExtraDisks, cd.ImagePath)
 			}
 
+			// cacheDiskMountPaths: in-guest mount paths for vdd+ cache disks, in
+			// the same order as cacheDisks (and thus builderExtraDisks[2+]).
+			// Passed to supervisorBuilderDriver so Start() can append
+			// --cache-disk=<dev>:<mountpath> to the kernel cmdline for PID-1.
+			cacheDiskMountPaths := make([]string, len(cacheDisks))
+			for i, cd := range cacheDisks {
+				cacheDiskMountPaths[i] = cd.MountPath
+			}
+
 			// supervisorBuilderDriver routes Start/Stop through SpawnDetached so
 			// the builder VM survives CLI exit. DialGuest delegates to dialerDrv.
 			bdrv := &supervisorBuilderDriver{
-				dialerDrv:  dialerDrv,
-				storeRoot:  storeRoot,
-				stateBase:  filepath.Join(storeRoot, "builder-supervisors"),
-				socketDir:  builderSocketDir,
-				kernelPath: kernelPath,
-				diskPath:   builderRootfs,
-				extraDisks: builderExtraDisks,
-				ar:         builderAR,
-				bootMemMiB: builderBootMemMiB,
-				bootVCPUs:  builderBootVCPUs,
-				logPath:    "/tmp/nexus3-builder-supervisor.log",
+				dialerDrv:           dialerDrv,
+				storeRoot:           storeRoot,
+				stateBase:           filepath.Join(storeRoot, "builder-supervisors"),
+				socketDir:           builderSocketDir,
+				kernelPath:          kernelPath,
+				diskPath:            builderRootfs,
+				extraDisks:          builderExtraDisks,
+				ar:                  builderAR,
+				bootMemMiB:          builderBootMemMiB,
+				bootVCPUs:           builderBootVCPUs,
+				logPath:             "/tmp/nexus3-builder-supervisor.log",
+				cacheDiskMountPaths: cacheDiskMountPaths,
 			}
 			execFn := func(ctx context.Context, argv []string, stderr io.Writer) (int32, error) {
 				// StartedID is set by bdrv.Start (called inside BuildInVM before
@@ -1951,6 +1961,11 @@ func buildHumanSupervisorConfig(
 	liveMounts []domain.LiveMount,
 	virtiofsdPath string,
 ) supervisor.Config {
+	var resizableDiskIndices []int
+	if hasWorkspace {
+		resizableDiskIndices = []int{workspaceDiskIndex}
+	}
+
 	return supervisor.Config{
 		SandboxRef:         sandboxRef,
 		StoreRoot:          storeRoot,
@@ -1964,6 +1979,7 @@ func buildHumanSupervisorConfig(
 		BootVCPUs:          bootVCPUs,
 		HasWorkspaceDisk:   hasWorkspace,
 		WorkspaceDiskIndex: workspaceDiskIndex,
+		ResizableDiskIndices: resizableDiskIndices,
 		WorkspaceGuestPath: workspaceGuestPath,
 		GovBounds:          govBounds,
 		Cmdline:            cmdline,

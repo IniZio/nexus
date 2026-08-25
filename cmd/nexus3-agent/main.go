@@ -95,9 +95,9 @@ func main() {
 	var wsMounts []agent.GuestMount
 	var memCeilingBytes int64
 	var sandboxHandle string // set from --sandbox-handle=<handle> on the kernel cmdline
+	var isBuilderRole bool
+	var cacheDiskMounts []agent.CacheDiskMount
 	{
-		isBuilderRole := false
-		var cacheDiskMounts []agent.CacheDiskMount
 		for _, arg := range os.Args[1:] {
 			switch {
 			case arg == "--builder-role":
@@ -140,15 +140,6 @@ func main() {
 				consoleLog(con, "nexus3-agent: WARN: unrecognized cmdline arg %q — host/guest version skew? agent build=%s\n", arg, agentBuildTag)
 			}
 		}
-		if isBuilderRole {
-			consoleLog(con, "nexus3-agent: builder role starting (cache disks: %d)\n", len(cacheDiskMounts))
-			opts := agent.BuilderRoleOptions{CacheDisks: cacheDiskMounts}
-			if err := agent.RunBuilderRole(ctx, opts); err != nil {
-				consoleFatal(con, isPid1, "nexus3-agent: builder role: %v\n", err)
-			}
-			consoleLog(con, "nexus3-agent: builder role complete\n")
-			os.Exit(0)
-		}
 	}
 
 	// Set the guest hostname. When --sandbox-handle= was supplied on the kernel
@@ -182,15 +173,35 @@ func main() {
 		consoleLog(con, "nexus3-agent: workspace mounts complete\n")
 	}
 
-	// Derive the workspace mount path for disk telemetry (statfs). The workspace
-	// mount is identified by GuestMount.IsWorkspace=true — an explicit marker set
-	// by WorkspaceGuestMount on the host side. Shadow mounts always have IsWorkspace=false,
-	// so position-based or ReadOnly-based inference is never used here.
+	// Derive the workspace mount path (for logging) and the per-disk telemetry
+	// list. The workspace mount is identified by GuestMount.IsWorkspace=true —
+	// an explicit marker set by WorkspaceGuestMount on the host side. Shadow
+	// mounts always have IsWorkspace=false, so position-based or ReadOnly-based
+	// inference is never used here.
+	//
+	// resizableDisksFromWorkspaceMounts derives the (index, mountPath) pair from
+	// the workspace disk's /dev/vd* device path so the reported DiskSample.Index
+	// matches the host's ExtraDisks index for that disk. Virtiofs shadow mounts
+	// are skipped (their tag is not a /dev path; they are never resizable).
 	workspacePath := ""
+	var resizableDisks []resizableDisk
 	if wsMount, ok, err := selectWorkspaceMount(wsMounts); err != nil {
 		consoleFatal(con, isPid1, "nexus3-agent: workspace mount selection: %v\n", err)
 	} else if ok {
 		workspacePath = wsMount.Target
+		resizableDisks = resizableDisksFromWorkspaceMounts(wsMounts)
+		if len(resizableDisks) == 0 {
+			// Workspace mount found but index could not be derived (e.g. virtiofs
+			// workspace — tag is not a /dev/vd* path). Disk telemetry reports
+			// nothing; the disk governor will not grow this disk.
+			consoleLog(con, "nexus3-agent: auto-resize: workspace mount %q: cannot derive disk index from device %q; disk telemetry disabled\n", wsMount.Target, wsMount.Device)
+		} else {
+			consoleLog(con, "nexus3-agent: auto-resize: disk telemetry: %d disk(s) at index(es):", len(resizableDisks))
+			for _, d := range resizableDisks {
+				consoleLog(con, " [%d]%s", d.Index, d.MountPath)
+			}
+			consoleLog(con, "\n")
+		}
 	} else {
 		// No mount claimed IsWorkspace. The likeliest cause is host/guest version
 		// skew: an older host emits the 4-field mount spec, which parses as
@@ -198,15 +209,45 @@ func main() {
 		// and the disk governor never grows — degrade loudly rather than silently.
 		consoleLog(con, "nexus3-agent: auto-resize: NO workspace mount found in %d mount(s); disk telemetry disabled (host may predate the 5-field mount spec)\n", len(wsMounts))
 	}
+	_ = workspacePath // retained for possible future diagnostic use
+
+	// In builder mode the workspace disk list above is empty (no --workspace-mount=
+	// args are passed to a builder VM). Override with the cache-disk list so the
+	// telemetry server reports the correct disks (e.g. /var/lib/buildkit at index 2).
+	// selectResizableDisks encapsulates this mode selection for testability.
+	resizableDisks = selectResizableDisks(isBuilderRole, cacheDiskMounts, resizableDisks)
+	if isBuilderRole && len(resizableDisks) > 0 {
+		consoleLog(con, "nexus3-agent: builder role: resize telemetry: %d cache disk(s)\n", len(resizableDisks))
+	}
 
 	// Wire in auto-resize services: ZRAM swap safety net, telemetry server on
-	// vsock:3002, vCPU onliner, and /tmp tmpfs resizer. Now unconditional —
-	// being PID 1 is sufficient; the --auto-resize opt-in token has been removed.
-	// ZRAM runs synchronously inside startResizeServices before returning so it
-	// is active before the vsock listeners open and any workload can start
-	// (spec-08:67,231 MUST).
-	consoleLog(con, "nexus3-agent: auto-resize: starting services (mem-ceiling=%d)\n", memCeilingBytes)
-	startResizeServices(ctx, con, workspacePath, memCeilingBytes)
+	// vsock:3002, vCPU onliner, and /tmp tmpfs resizer. These run only in the
+	// regular-agent path (PID-1 in a normal sandbox, or PID-1 in a builder VM).
+	// When isBuilderRole=true this binary was exec'd as a CHILD of PID-1's agent
+	// by the host "build" RPC (see internal/core/builder/vmbuilder.go:guestBuild).
+	// PID-1 already bound vsock:3002 and started all resize goroutines; the child
+	// must NOT attempt a second bind or it will get EADDRINUSE.
+	//
+	// EXACTLY ONE call site binds vsock 3002 per VM: the regular-agent PID-1.
+	// Cache-disk telemetry is served by PID-1 because the kernel cmdline in a
+	// builder VM now includes --cache-disk= args alongside --mem-ceiling=
+	// (see internal/cli/builder_supervisor_driver.go:Start).
+	if !isBuilderRole {
+		consoleLog(con, "nexus3-agent: auto-resize: starting services (mem-ceiling=%d)\n", memCeilingBytes)
+		startResizeServices(ctx, con, resizableDisks, memCeilingBytes)
+	}
+
+	// Builder-role dispatch: run the build synchronously and exit. Resize
+	// services are handled by PID-1 (see comment above).
+	if isBuilderRole {
+		consoleLog(con, "nexus3-agent: builder role starting (cache disks: %d)\n", len(cacheDiskMounts))
+		opts := agent.BuilderRoleOptions{CacheDisks: cacheDiskMounts}
+		if err := agent.RunBuilderRole(ctx, opts); err != nil {
+			consoleFatal(con, isPid1, "nexus3-agent: builder role: %v\n", err)
+		}
+		consoleLog(con, "nexus3-agent: builder role complete\n")
+		os.Exit(0)
+	}
 
 	// Bind control-plane vsock listener (port 1024).
 	consoleLog(con, "nexus3-agent: vsock.Listen port %d\n", driver.AgentControlPort)

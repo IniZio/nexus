@@ -48,15 +48,32 @@ var (
 // or unreadable. This is critical: zero pressure with Supported=true would
 // look healthy and suppress a grow decision. Supported=false lets the governor
 // fall back to the MemAvailable ratio alone (motive.md §Axis-1, item 4).
-func collectSample(workspacePath string) (resize.Sample, error) {
+//
+// disks is the list of resizable (index, mountPath) pairs for this VM: one
+// workspace disk for a normal sandbox, or one-or-more cache disks for a builder
+// VM. Each entry is stat'd and reported as a [resize.DiskSample] in DiskStats.
+// The legacy DiskUsedBytes/DiskTotalBytes/DiskSupported fields mirror the first
+// entry (the primary disk) for callers that have not migrated to DiskStats.
+func collectSample(disks []resizableDisk) (resize.Sample, error) {
 	avail, total, err := readMeminfoKB(sampleMeminfoPath)
 	if err != nil {
 		return resize.Sample{}, fmt.Errorf("collectSample: meminfo: %w", err)
 	}
 	memSomeAvg10, memFullAvg10, memPSISupported := readMemoryPSI(samplePSIMemPath)
 	cpuSomeAvg10, cpuPSISupported := readCPUPSI(samplePSICPUPath)
-	diskUsed, diskTotal, diskSupported := readDiskStats(workspacePath)
 	vcpuCount, vcpuOnline := readVCPUs(sampleCPUSysPath)
+
+	diskStats := readMultiDiskStats(disks)
+
+	// Legacy back-compat: mirror primary (first) disk into the flat fields so
+	// host consumers that predate DiskStats continue to work during transition.
+	var diskUsed, diskTotal uint64
+	var diskSupported bool
+	if len(diskStats) > 0 {
+		diskUsed = diskStats[0].UsedBytes
+		diskTotal = diskStats[0].TotalBytes
+		diskSupported = diskStats[0].Supported
+	}
 
 	return resize.Sample{
 		Timestamp:         time.Now().UTC(),
@@ -70,9 +87,34 @@ func collectSample(workspacePath string) (resize.Sample, error) {
 		DiskUsedBytes:     diskUsed,
 		DiskTotalBytes:    diskTotal,
 		DiskSupported:     diskSupported,
+		DiskStats:         diskStats,
 		VCPUCount:         vcpuCount,
 		VCPUOnline:        vcpuOnline,
 	}, nil
+}
+
+// readMultiDiskStats collects per-disk usage for each entry in disks. Each
+// entry's MountPath is stat'd via the injectable sampleStatfsFunc; Supported
+// is false when statfs fails (or MountPath is empty). The caller must not act
+// on entries where Supported=false.
+//
+// The result slice is in the same order as disks, with one [resize.DiskSample]
+// per entry. Index in each DiskSample is taken directly from the resizableDisk.
+func readMultiDiskStats(disks []resizableDisk) []resize.DiskSample {
+	if len(disks) == 0 {
+		return nil // preserve omitempty JSON semantics: nil slice → field omitted
+	}
+	out := make([]resize.DiskSample, 0, len(disks))
+	for _, d := range disks {
+		used, total, ok := readDiskStats(d.MountPath)
+		out = append(out, resize.DiskSample{
+			Index:      d.Index,
+			UsedBytes:  used,
+			TotalBytes: total,
+			Supported:  ok,
+		})
+	}
+	return out
 }
 
 // readMeminfoKB parses /proc/meminfo and returns MemAvailable and MemTotal in

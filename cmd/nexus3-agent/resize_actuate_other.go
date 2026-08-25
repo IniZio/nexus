@@ -17,7 +17,7 @@ import (
 // collectSample returns a minimal Sample with only Timestamp populated. PSI,
 // disk, and vCPU fields are zero/false — the host governor must not act on
 // them when running against a non-Linux stub.
-func collectSample(_ string) (resize.Sample, error) {
+func collectSample(_ []resizableDisk) (resize.Sample, error) {
 	return resize.Sample{Timestamp: time.Now().UTC()}, nil
 }
 

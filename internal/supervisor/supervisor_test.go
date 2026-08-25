@@ -78,7 +78,7 @@ func TestWireGovernorAxes_AllBounds(t *testing.T) {
 		t.Fatalf("before wiring: AxisCount = %d, want 1 (memory axis only)", got)
 	}
 
-	wireGovernorAxes(g, r, r, bounds, true /*hasDisk*/, 0 /*diskIndex*/)
+	wireGovernorAxes(g, r, r, bounds, []int{0})
 
 	// After wiring: memory (built-in) + CPU + disk = 3.
 	const wantAxes = 3
@@ -92,7 +92,7 @@ func TestWireGovernorAxes_AllBounds(t *testing.T) {
 // registers the memory axis; no extra axes must appear.
 func TestWireGovernorAxes_NoBounds(t *testing.T) {
 	g, r := newTestGovernorForWiring(t, resize.Bounds{})
-	wireGovernorAxes(g, r, r, resize.Bounds{}, false /*hasDisk*/, 0)
+	wireGovernorAxes(g, r, r, resize.Bounds{}, nil)
 
 	if got := g.AxisCount(); got != 1 {
 		t.Fatalf("zero bounds: AxisCount = %d, want 1 (memory axis only)", got)
@@ -110,7 +110,7 @@ func TestWireGovernorAxes_CPUOnlyNoDisk(t *testing.T) {
 		// DiskMaxBytes deliberately zero — disk axis must not register.
 	}
 	g, r := newTestGovernorForWiring(t, bounds)
-	wireGovernorAxes(g, r, r, bounds, false /*hasDisk*/, 0)
+	wireGovernorAxes(g, r, r, bounds, nil)
 
 	if got := g.AxisCount(); got != 2 {
 		t.Fatalf("CPU-only bounds: AxisCount = %d, want 2 (mem+cpu)", got)
@@ -127,7 +127,7 @@ func TestWireGovernorAxes_DiskNoCPU(t *testing.T) {
 		// VCPUMin/VCPUMax deliberately zero — CPU axis must not register.
 	}
 	g, r := newTestGovernorForWiring(t, bounds)
-	wireGovernorAxes(g, r, r, bounds, true /*hasDisk*/, 0)
+	wireGovernorAxes(g, r, r, bounds, []int{0})
 
 	if got := g.AxisCount(); got != 2 {
 		t.Fatalf("disk-only bounds: AxisCount = %d, want 2 (mem+disk)", got)
@@ -145,11 +145,48 @@ func TestWireGovernorAxes_DiskNotRegisteredWithoutHasDisk(t *testing.T) {
 		DiskMaxBytes: 100 << 30,
 	}
 	g, r := newTestGovernorForWiring(t, bounds)
-	// hasDisk=false: disk axis must NOT register even though DiskMaxBytes is set.
-	wireGovernorAxes(g, r, r, bounds, false /*hasDisk*/, 0)
+	// diskIndices=nil: disk axis must NOT register even though DiskMaxBytes is set.
+	wireGovernorAxes(g, r, r, bounds, nil)
 
 	if got := g.AxisCount(); got != 1 {
 		t.Fatalf("DiskMaxBytes set but hasDisk=false: AxisCount = %d, want 1 (mem only)", got)
+	}
+}
+
+// TestWireGovernorAxes_MultiDisk verifies that N DiskAxis instances are
+// registered when diskIndices has N entries. Two indices must produce
+// mem+cpu+disk1+disk2 = 4 axes total (with CPU bounds also set).
+func TestWireGovernorAxes_MultiDisk(t *testing.T) {
+	bounds := resize.Bounds{
+		MemMinBytes:  512 << 20,
+		MemMaxBytes:  4096 << 20,
+		VCPUMin:      1,
+		VCPUMax:      4,
+		DiskMaxBytes: 100 << 30,
+	}
+	g, r := newTestGovernorForWiring(t, bounds)
+	wireGovernorAxes(g, r, r, bounds, []int{1, 2})
+
+	// memory (built-in) + CPU + disk@1 + disk@2 = 4 axes.
+	const wantAxes = 4
+	if got := g.AxisCount(); got != wantAxes {
+		t.Fatalf("multi-disk wiring: AxisCount = %d, want %d (mem+cpu+disk1+disk2)", got, wantAxes)
+	}
+}
+
+// TestWireGovernorAxes_EmptyIndices verifies that no disk axis is registered
+// when diskIndices is nil (the default-off configuration).
+func TestWireGovernorAxes_EmptyIndices(t *testing.T) {
+	bounds := resize.Bounds{
+		MemMinBytes:  512 << 20,
+		MemMaxBytes:  4096 << 20,
+		DiskMaxBytes: 100 << 30,
+	}
+	g, r := newTestGovernorForWiring(t, bounds)
+	wireGovernorAxes(g, r, r, bounds, nil)
+
+	if got := g.AxisCount(); got != 1 {
+		t.Fatalf("nil diskIndices: AxisCount = %d, want 1 (mem only)", got)
 	}
 }
 

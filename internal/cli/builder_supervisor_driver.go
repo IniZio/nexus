@@ -77,6 +77,12 @@ type supervisorBuilderDriver struct {
 	bootMemMiB uint32
 	bootVCPUs  uint32
 	logPath    string
+	// cacheDiskMountPaths holds the in-guest mount paths for the cache disks
+	// at extraDisks[2+] (i.e. /dev/vdd, /dev/vde, …). These are appended to
+	// the kernel cmdline as --cache-disk=<dev>:<mountpath> so that PID-1
+	// (regular-agent mode) can serve cache-disk telemetry on vsock:3002 without
+	// needing the builder-role child to bind a second telemetry server.
+	cacheDiskMountPaths []string
 
 	// ── state set by Start ───────────────────────────────────────────────────
 	mu        sync.Mutex
@@ -109,6 +115,23 @@ func (d *supervisorBuilderDriver) Start(_ context.Context, req driver.StartReque
 
 	chBin, _ := exec.LookPath("cloud-hypervisor")
 
+	// The builder declares its cache disk(s) as resizable via the same generic
+	// field; no builder-specific governor branch.
+	var cacheDiskIndices []int
+	for i := 2; i < len(d.extraDisks); i++ {
+		cacheDiskIndices = append(cacheDiskIndices, i)
+	}
+
+	// Build --cache-disk= args for PID-1's telemetry server. PID-1 runs as a
+	// regular agent (isBuilderRole=false) and binds vsock:3002; it needs these
+	// args to report cache-disk fill levels to the governor. Device names follow
+	// the /dev/vd{b+i} convention: extraDisks[2] → /dev/vdd, [3] → /dev/vde, …
+	cacheDiskCmdline := ""
+	for i, mountPath := range d.cacheDiskMountPaths {
+		dev := fmt.Sprintf("/dev/vd%c", 'd'+i)
+		cacheDiskCmdline += fmt.Sprintf(" --cache-disk=%s:%s", dev, mountPath)
+	}
+
 	spawnCfg := supervisor.SpawnConfig{
 		Config: supervisor.Config{
 			SandboxRef: req.SandboxID.String(),
@@ -122,10 +145,12 @@ func (d *supervisorBuilderDriver) Start(_ context.Context, req driver.StartReque
 			GovBounds:  d.ar.Bounds,
 			MemoryMiB:  d.bootMemMiB,
 			BootVCPUs:  d.bootVCPUs,
+			ResizableDiskIndices: cacheDiskIndices,
 			// Cmdline: full kernel cmdline. The supervisor's CHDriver inserts
 			// memhp kernel params before "--" when MemoryMaxMiB > 0; the
-			// PID-1 auto-resize section (--mem-ceiling=<bytes>) comes after.
-			Cmdline:   diskBootCmdlineBase + " --" + d.ar.PID1Args,
+			// PID-1 auto-resize section (--mem-ceiling=<bytes> and
+			// --cache-disk=<dev>:<path> entries) comes after.
+			Cmdline:   diskBootCmdlineBase + " --" + d.ar.PID1Args + cacheDiskCmdline,
 			Ephemeral: true,
 		},
 		LogPath: d.logPath,

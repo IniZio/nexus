@@ -279,7 +279,7 @@ func BuildInVM(
 	started = false // prevent double-stop in the defer above
 
 	if buildErr != nil {
-		return "", fmt.Errorf("builder vm: in-guest build: %w", buildErr)
+		return "", fmt.Errorf("builder vm: in-guest build: %w", wrapOutOfSpaceErr(buildErr))
 	}
 	if tearErr != nil {
 		return "", fmt.Errorf("builder vm: teardown: %w", tearErr)
@@ -397,6 +397,33 @@ func (s *sbuilder) String() string { return string(s.buf) }
 
 // Ensure sbuilder satisfies io.Writer at compile time.
 var _ io.Writer = (*sbuilder)(nil)
+
+// wrapOutOfSpaceErr inspects err for known buildkit cache-disk-full signatures
+// and, when matched, wraps it with an actionable message. The original error is
+// always preserved so callers can use errors.Is / errors.Unwrap.
+//
+// Matched signatures (case-insensitive):
+//   - "no space left on device"  — kernel ENOSPC surfaced by runc or the overlay
+//   - "ResourceExhausted"        — gRPC status code buildkit returns for ENOSPC
+//   - "/var/lib/buildkit"        — buildkit snapshots path (confirms the disk)
+func wrapOutOfSpaceErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	s := strings.ToLower(err.Error())
+	if strings.Contains(s, "no space left on device") ||
+		strings.Contains(s, "resourceexhausted") ||
+		strings.Contains(strings.ToLower(err.Error()), "/var/lib/buildkit") {
+		return fmt.Errorf(
+			"builder vm: buildkit cache disk (/var/lib/buildkit) is full — "+
+				"the auto-grow ceiling was reached or growth is disabled; "+
+				"a very large build context/COPY can exceed the cache. "+
+				"Original: %w",
+			err,
+		)
+	}
+	return err
+}
 
 // VCPUs returns the effective vCPU count for a BuilderVMSpec, substituting
 // DefaultBuilderVCPUs when the spec field is zero.

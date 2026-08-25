@@ -92,6 +92,15 @@ func BuildSupervisorArgv(cfg SpawnConfig) []string {
 	for _, p := range cfg.ExtraDisks {
 		args = append(args, "--extra-disk", p)
 	}
+	// ResizableDiskIndices: one --resizable-disk-index flag per 0-based index.
+	// These tell the supervisor which ExtraDisks entries to hand to the disk
+	// governor's DiskAxis. For builder VMs this is [2] (the buildkit cache disk
+	// at ExtraDisks[2]=vdd). Omitting this field means no DiskAxis is registered
+	// and the disk governor never fires — the assertion-mechanism drift that
+	// caused the autogrow feature to be silently dead.
+	for _, idx := range cfg.ResizableDiskIndices {
+		args = append(args, "--resizable-disk-index", strconv.Itoa(idx))
+	}
 	// LiveMounts / VirtiofsdPath: forwarded so the supervisor re-attaches the
 	// virtiofs shares on every boot. Without these the supervisor boots the VM
 	// with no fs device and memory.shared=false, while the guest cmdline still

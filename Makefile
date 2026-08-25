@@ -13,6 +13,13 @@ proto:
 build:
 	go build ./...
 
+# build-agent compiles the in-guest nexus3-agent with CGO_ENABLED=0 (static,
+# no glibc dependency). The builder VM rootfs is musl/Alpine; a dynamically
+# linked agent crashes as PID 1. Use this target for local development builds;
+# images/kernel/rebuild-base.sh also sets CGO_ENABLED=0 for image builds.
+build-agent:
+	CGO_ENABLED=0 go build -o /tmp/nexus3-agent ./cmd/nexus3-agent
+
 vet:
 	go vet ./...
 

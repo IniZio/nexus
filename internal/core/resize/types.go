@@ -38,6 +38,16 @@ const TelemetryVsockPort uint32 = 3002
 // memory_resize.go:36, cpu_resize.go:28).
 const SampleMaxAge = 60 * time.Second
 
+// DiskSample is per-disk usage telemetry for one resizable disk, keyed by its
+// 0-based index into the VM's ExtraDisks (same index space as GrowRequest.DiskIndex
+// and Config.ResizableDiskIndices).
+type DiskSample struct {
+	Index      int    `json:"index"`
+	UsedBytes  uint64 `json:"used_bytes"`
+	TotalBytes uint64 `json:"total_bytes"`
+	Supported  bool   `json:"supported"`
+}
+
 // Sample is the telemetry payload the guest agent reports to the host
 // governor on each poll. All three governor axes (memory, CPU, disk) are
 // carried in a single struct so one vsock round-trip covers everything.
@@ -102,9 +112,22 @@ type Sample struct {
 	// flag — the same zero-reads-as-healthy trap that MemPSISupported and
 	// CPUPSISupported exist to prevent. The disk governor must take no action
 	// when DiskSupported is false.
+	//
+	// Deprecated in favour of DiskStats: these three fields mirror the
+	// primary/workspace disk (DiskStats[0] when present) and are kept for
+	// backward compatibility. Code that reads both sources should prefer DiskStats.
 	DiskUsedBytes  uint64 `json:"disk_used_bytes"`
 	DiskTotalBytes uint64 `json:"disk_total_bytes"`
 	DiskSupported  bool   `json:"disk_supported"`
+
+	// DiskStats carries per-disk usage telemetry for each resizable disk.
+	// It is the generic successor to the single-disk DiskUsedBytes /
+	// DiskTotalBytes / DiskSupported fields above.  Each entry's Index maps
+	// to the same 0-based ExtraDisks index space used by GrowRequest.DiskIndex
+	// and Config.ResizableDiskIndices.  The legacy fields above mirror the
+	// primary/workspace disk entry for callers that have not yet migrated.
+	// Omitted from JSON when the guest agent has not populated it (old agents).
+	DiskStats []DiskSample `json:"disk_stats,omitempty"`
 
 	// VCPUCount is the total number of vCPUs the VM was created with
 	// (the MaxVCPUs ceiling set at vm.create). VCPUOnline is the number

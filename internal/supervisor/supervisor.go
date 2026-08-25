@@ -138,6 +138,16 @@ type Config struct {
 	// filesystem, which is data loss, not a build failure.
 	WorkspaceDiskIndex int
 
+	// ResizableDiskIndices lists the 0-based ExtraDisks indices whose ext4
+	// filesystems the governor may auto-grow.  This is the generic replacement
+	// for HasWorkspaceDisk/WorkspaceDiskIndex: when non-empty it takes
+	// precedence and allows the governor to manage multiple disks per VM
+	// (e.g. the workspace disk for orca sandboxes AND the buildkit cache disk
+	// for builder VMs).  HasWorkspaceDisk/WorkspaceDiskIndex are kept for
+	// backward compatibility; later slices will bridge the two representations
+	// inside wireGovernorAxes.
+	ResizableDiskIndices []int
+
 	// GovBounds configures the auto-resize governor. When MemMinBytes or
 	// MemMaxBytes is zero, the governor runs in passive mode (polls but
 	// never resizes). The governor is single-tenant (D-DC-12) and lives
@@ -444,7 +454,13 @@ func RunDetached(cfg Config) error {
 		Telemetry: govern.NewVsockTelemetry(drv, sb.ID),
 		Bounds:    cfg.GovBounds,
 	})
-	wireGovernorAxes(gov, resizer, resizer, cfg.GovBounds, cfg.HasWorkspaceDisk, cfg.WorkspaceDiskIndex)
+	// Effective disk indices: prefer ResizableDiskIndices when non-empty;
+	// fall back to the legacy HasWorkspaceDisk/WorkspaceDiskIndex pair.
+	diskIndices := cfg.ResizableDiskIndices
+	if len(diskIndices) == 0 && cfg.HasWorkspaceDisk {
+		diskIndices = []int{cfg.WorkspaceDiskIndex}
+	}
+	wireGovernorAxes(gov, resizer, resizer, cfg.GovBounds, diskIndices)
 	go gov.Run(ctx)
 
 	// ── 5b. Wire Refreshers to the running sandbox ───────────────────────────
@@ -758,24 +774,25 @@ func awaitShutdown(ctx context.Context, stopCh <-chan struct{}) shutdownCause {
 // bounds (min-only or max-only) leaves the axis unregistered — the axis itself
 // also guards on the bounds, but skipping registration avoids polling overhead.
 //
-// Disk axis: registered when DiskMaxBytes > 0 AND hasDisk is true. hasDisk
-// must be true only when the supervisor's CHDriver has the workspace disk in
-// ExtraDisks[diskIndex]. A wrong diskIndex causes GrowDisk to truncate the
-// wrong backing file — data loss, not a build failure. Default-off (hasDisk
-// false) is the safe configuration when no workspace disk is attached.
+// Disk axis: registered for each index in diskIndices when DiskMaxBytes > 0.
+// diskIndices must contain only indices present in the supervisor's CHDriver
+// ExtraDisks list. A wrong diskIndex causes GrowDisk to truncate the wrong
+// backing file — data loss, not a build failure. Default-off (diskIndices nil or empty)
+// is the safe configuration when no workspace disks are attached.
 func wireGovernorAxes(
 	gov *govern.Governor,
 	cpuR resize.CPUResizer,
 	diskR resize.DiskResizer,
 	bounds resize.Bounds,
-	hasDisk bool,
-	diskIndex int,
+	diskIndices []int,
 ) {
 	if bounds.VCPUMin != 0 && bounds.VCPUMax != 0 {
 		govern.NewCPUAxis(gov, cpuR)
 	}
-	if bounds.DiskMaxBytes != 0 && hasDisk {
-		govern.NewDiskAxis(gov, diskR, diskIndex)
+	if bounds.DiskMaxBytes != 0 {
+		for _, idx := range diskIndices {
+			govern.NewDiskAxis(gov, diskR, idx)
+		}
 	}
 }
 

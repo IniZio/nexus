@@ -138,9 +138,24 @@ func NewDiskAxis(g *Governor, resizer resize.DiskResizer, diskIndex int) *DiskAx
 func (a *DiskAxis) Evaluate(ctx context.Context) {
 	s := a.g.latest
 
+	// Per-disk sample lookup: prefer DiskStats entry for this disk index;
+	// fall back to the legacy single-disk fields for old guest agents that
+	// have not yet populated DiskStats.
+	used := s.DiskUsedBytes
+	total := s.DiskTotalBytes
+	supported := s.DiskSupported
+	for _, ds := range s.DiskStats {
+		if ds.Index == a.diskIndex {
+			used = ds.UsedBytes
+			total = ds.TotalBytes
+			supported = ds.Supported
+			break
+		}
+	}
+
 	// Trap 1: never compute a usage ratio or take any action when the guest
 	// reports that disk telemetry is unavailable.
-	if !s.DiskSupported {
+	if !supported {
 		return
 	}
 
@@ -152,11 +167,11 @@ func (a *DiskAxis) Evaluate(ctx context.Context) {
 
 	// Guard division-by-zero (DiskSupported==true but DiskTotalBytes==0 is
 	// unexpected; treat as unsupported to avoid a spurious grow decision).
-	if s.DiskTotalBytes == 0 {
+	if total == 0 {
 		return
 	}
 
-	ratio := float64(s.DiskUsedBytes) / float64(s.DiskTotalBytes)
+	ratio := float64(used) / float64(total)
 	if ratio <= diskGrowThreshold {
 		// Below threshold — disk is healthy; grow-only so no shrink action.
 		return
@@ -173,7 +188,7 @@ func (a *DiskAxis) Evaluate(ctx context.Context) {
 		ceiling = a.g.bounds.DiskMaxBytes
 	}
 
-	current := int64(s.DiskTotalBytes)
+	current := int64(total)
 	if current >= ceiling {
 		slog.Warn("govern.disk.hard_max",
 			"diskIndex", a.diskIndex,

@@ -43,15 +43,18 @@ type resizeEnvelope struct {
 //  3. startCPUOnliner — 3 s ticker bringing hot-plugged vCPUs online (goroutine).
 //  4. startTmpfsResizer — 10 s ticker remounting /tmp as MemTotal grows (goroutine).
 //
+// disks is the list of resizable (index, mountPath) pairs for this VM, used by
+// the telemetry server to report per-disk DiskStats on each sample poll.
+//
 // memCeilingBytes is the boot-time RAM ceiling delivered via --mem-ceiling= on
 // the kernel cmdline (TBD-DC-9, seam B). It is stored for future AR-DRV /
 // governor use; /tmp sizing uses live MemTotal, not the ceiling.
-func startResizeServices(ctx context.Context, con *os.File, workspacePath string, memCeilingBytes int64) {
+func startResizeServices(ctx context.Context, con *os.File, disks []resizableDisk, memCeilingBytes int64) {
 	// ZRAM — synchronous, before the workload can start.
 	setupZRAMSwap(con)
 
 	// telemetry server — handles sample.request and disk.grow.
-	go startResizeTelemetryServer(ctx, con, workspacePath)
+	go startResizeTelemetryServer(ctx, con, disks)
 
 	// vCPU onliner — brings hot-plugged CPUs online on a 3 s ticker.
 	startCPUOnliner(ctx)
@@ -71,10 +74,13 @@ func startResizeServices(ctx context.Context, con *os.File, workspacePath string
 //   - "sample.request" → collectSample → "sample.response"
 //   - "disk.grow"      → handleDiskGrow → "disk.grew"
 //
+// disks is the list of resizable (index, mountPath) pairs to report per-disk
+// DiskStats for on each sample.request poll.
+//
 // Runs until ctx is cancelled. Per-connection errors are logged and
 // best-effort; a listener bind failure is logged and returns (the caller
 // treats it as a non-fatal degradation when auto-resize is disabled).
-func startResizeTelemetryServer(ctx context.Context, con *os.File, workspacePath string) {
+func startResizeTelemetryServer(ctx context.Context, con *os.File, disks []resizableDisk) {
 	lis, err := vsock.Listen(resize.TelemetryVsockPort, nil)
 	if err != nil {
 		consoleLog(con, "nexus3-agent: resize-telemetry: vsock.Listen %d: %v\n",
@@ -99,13 +105,14 @@ func startResizeTelemetryServer(ctx context.Context, con *os.File, workspacePath
 			consoleLog(con, "nexus3-agent: resize-telemetry: accept: %v\n", err)
 			return
 		}
-		go handleResizeConn(con, conn, workspacePath)
+		go handleResizeConn(con, conn, disks)
 	}
 }
 
 // handleResizeConn reads one request from conn, dispatches it, and writes one
 // reply. The connection is closed on return. All errors are best-effort logged.
-func handleResizeConn(con *os.File, conn net.Conn, workspacePath string) {
+// disks is passed through to collectSample for per-disk telemetry.
+func handleResizeConn(con *os.File, conn net.Conn, disks []resizableDisk) {
 	defer conn.Close()
 
 	var env resizeEnvelope
@@ -125,7 +132,7 @@ func handleResizeConn(con *os.File, conn net.Conn, workspacePath string) {
 
 	switch env.Kind {
 	case "sample.request":
-		s, err := collectSample(workspacePath)
+		s, err := collectSample(disks)
 		if err != nil {
 			consoleLog(con, "nexus3-agent: resize-telemetry: collectSample: %v\n", err)
 			_ = resize.EncodeErrorResponse(conn, resize.ErrorResponse{

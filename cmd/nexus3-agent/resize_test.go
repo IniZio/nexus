@@ -22,6 +22,7 @@ package main
 //     being PID 1 is sufficient.
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -95,7 +96,7 @@ func TestCollectSampleMeminfo(t *testing.T) {
 	setStatfsFunc(t, noopStatfs)
 	setCPUSysPath(t, filepath.Join(dir, "no-cpu"))
 
-	s, err := collectSample("/workspace")
+	s, err := collectSample(nil)
 	if err != nil {
 		t.Fatalf("collectSample: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestCollectSamplePSIAbsent(t *testing.T) {
 	setStatfsFunc(t, noopStatfs)
 	setCPUSysPath(t, filepath.Join(dir, "no-cpu"))
 
-	s, err := collectSample("")
+	s, err := collectSample(nil)
 	if err != nil {
 		t.Fatalf("collectSample: %v", err)
 	}
@@ -153,7 +154,7 @@ func TestCollectSamplePSIPresent(t *testing.T) {
 	setStatfsFunc(t, noopStatfs)
 	setCPUSysPath(t, filepath.Join(dir, "no-cpu"))
 
-	s, err := collectSample("")
+	s, err := collectSample(nil)
 	if err != nil {
 		t.Fatalf("collectSample: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestCollectSamplePSIPresent(t *testing.T) {
 }
 
 func TestCollectSampleDiskStatfs(t *testing.T) {
-	// 1000 blocks × 4096 bytes; 200 free → 800 used.
+	// 1000 blocks × 4096 bytes; 200 free → 800 used. Disk at index 3 (/dev/vde).
 	dir := t.TempDir()
 	mi := filepath.Join(dir, "meminfo")
 	writeTestFile(t, mi, "MemTotal: 4096000 kB\nMemAvailable: 2000000 kB\n")
@@ -189,15 +190,30 @@ func TestCollectSampleDiskStatfs(t *testing.T) {
 		return nil
 	})
 
-	s, err := collectSample("/workspace")
+	disks := []resizableDisk{{Index: 3, MountPath: "/workspace"}}
+	s, err := collectSample(disks)
 	if err != nil {
 		t.Fatalf("collectSample: %v", err)
 	}
+	// Legacy flat fields mirror the primary disk.
 	if got, want := s.DiskTotalBytes, uint64(1000*4096); got != want {
 		t.Errorf("DiskTotalBytes = %d, want %d", got, want)
 	}
 	if got, want := s.DiskUsedBytes, uint64(800*4096); got != want {
 		t.Errorf("DiskUsedBytes = %d, want %d", got, want)
+	}
+	if !s.DiskSupported {
+		t.Error("DiskSupported = false, want true")
+	}
+	// DiskStats must carry a single entry with the correct index.
+	if len(s.DiskStats) != 1 {
+		t.Fatalf("len(DiskStats) = %d, want 1", len(s.DiskStats))
+	}
+	if s.DiskStats[0].Index != 3 {
+		t.Errorf("DiskStats[0].Index = %d, want 3", s.DiskStats[0].Index)
+	}
+	if s.DiskStats[0].TotalBytes != uint64(1000*4096) {
+		t.Errorf("DiskStats[0].TotalBytes = %d, want %d", s.DiskStats[0].TotalBytes, uint64(1000*4096))
 	}
 }
 
@@ -711,7 +727,7 @@ func TestHandleResizeConn_SampleRoundtrip(t *testing.T) {
 	server, client := net.Pipe()
 	t.Cleanup(func() { server.Close(); client.Close() })
 
-	go handleResizeConn(nil, server, "")
+	go handleResizeConn(nil, server, nil)
 
 	if err := resize.EncodeSampleRequest(client); err != nil {
 		t.Fatalf("EncodeSampleRequest: %v", err)
@@ -739,7 +755,7 @@ func TestHandleResizeConn_GrowRoundtrip(t *testing.T) {
 	server, client := net.Pipe()
 	t.Cleanup(func() { server.Close(); client.Close() })
 
-	go handleResizeConn(nil, server, "")
+	go handleResizeConn(nil, server, nil)
 
 	req := resize.GrowRequest{DiskIndex: 0, TargetBytes: 655360 * 4096}
 	if err := resize.EncodeGrowRequest(client, req); err != nil {
@@ -754,5 +770,171 @@ func TestHandleResizeConn_GrowRoundtrip(t *testing.T) {
 	}
 	if resp.ResultBytes == 0 {
 		t.Error("ResultBytes = 0")
+	}
+}
+
+// ── readMultiDiskStats ────────────────────────────────────────────────────────
+
+func TestReadMultiDiskStats_MultiMount(t *testing.T) {
+	// Two disks at indices 2 and 4; statfs returns distinct block counts.
+	callCount := 0
+	setStatfsFunc(t, func(path string, st *unix.Statfs_t) error {
+		callCount++
+		st.Bsize = 4096
+		switch path {
+		case "/mnt/disk2":
+			st.Blocks = 500
+			st.Bfree = 100 // used = 400
+		case "/mnt/disk4":
+			st.Blocks = 800
+			st.Bfree = 300 // used = 500
+		}
+		return nil
+	})
+
+	disks := []resizableDisk{
+		{Index: 2, MountPath: "/mnt/disk2"},
+		{Index: 4, MountPath: "/mnt/disk4"},
+	}
+	got := readMultiDiskStats(disks)
+
+	if len(got) != 2 {
+		t.Fatalf("len(DiskStats) = %d, want 2", len(got))
+	}
+	if got[0].Index != 2 {
+		t.Errorf("DiskStats[0].Index = %d, want 2", got[0].Index)
+	}
+	if got[0].TotalBytes != 500*4096 {
+		t.Errorf("DiskStats[0].TotalBytes = %d, want %d", got[0].TotalBytes, uint64(500*4096))
+	}
+	if got[0].UsedBytes != 400*4096 {
+		t.Errorf("DiskStats[0].UsedBytes = %d, want %d", got[0].UsedBytes, uint64(400*4096))
+	}
+	if !got[0].Supported {
+		t.Error("DiskStats[0].Supported = false, want true")
+	}
+	if got[1].Index != 4 {
+		t.Errorf("DiskStats[1].Index = %d, want 4", got[1].Index)
+	}
+	if got[1].TotalBytes != 800*4096 {
+		t.Errorf("DiskStats[1].TotalBytes = %d, want %d", got[1].TotalBytes, uint64(800*4096))
+	}
+	if got[1].UsedBytes != 500*4096 {
+		t.Errorf("DiskStats[1].UsedBytes = %d, want %d", got[1].UsedBytes, uint64(500*4096))
+	}
+	if callCount != 2 {
+		t.Errorf("statfs called %d times, want 2", callCount)
+	}
+}
+
+func TestReadMultiDiskStats_StatfsFailureSetsSupportedFalse(t *testing.T) {
+	// First disk statfs fails; second succeeds. Supported must be false/true.
+	setStatfsFunc(t, func(path string, st *unix.Statfs_t) error {
+		if path == "/mnt/bad" {
+			return fmt.Errorf("statfs: no such file or directory")
+		}
+		st.Bsize = 4096
+		st.Blocks = 100
+		st.Bfree = 20
+		return nil
+	})
+
+	disks := []resizableDisk{
+		{Index: 0, MountPath: "/mnt/bad"},
+		{Index: 1, MountPath: "/mnt/ok"},
+	}
+	got := readMultiDiskStats(disks)
+
+	if len(got) != 2 {
+		t.Fatalf("len(DiskStats) = %d, want 2", len(got))
+	}
+	if got[0].Supported {
+		t.Error("DiskStats[0].Supported = true after statfs failure, want false")
+	}
+	if got[0].TotalBytes != 0 || got[0].UsedBytes != 0 {
+		t.Errorf("DiskStats[0]: want zero bytes on failure, got used=%d total=%d", got[0].UsedBytes, got[0].TotalBytes)
+	}
+	if !got[1].Supported {
+		t.Error("DiskStats[1].Supported = false, want true")
+	}
+	if got[1].TotalBytes != 100*4096 {
+		t.Errorf("DiskStats[1].TotalBytes = %d, want %d", got[1].TotalBytes, uint64(100*4096))
+	}
+}
+
+func TestCollectSampleDiskStats_LegacyMirrorsPrimary(t *testing.T) {
+	// Two disks; legacy flat fields must mirror only the FIRST (primary) entry.
+	dir := t.TempDir()
+	mi := filepath.Join(dir, "meminfo")
+	writeTestFile(t, mi, "MemTotal: 4096000 kB\nMemAvailable: 2000000 kB\n")
+	setMeminfoPath(t, mi)
+	setPSIPaths(t, filepath.Join(dir, "noexist"), filepath.Join(dir, "noexist"))
+	setCPUSysPath(t, filepath.Join(dir, "no-cpu"))
+
+	// statfs: primary at /mnt/ws → 1000 blocks/200 free; secondary at /mnt/cache → 500/100.
+	setStatfsFunc(t, func(path string, st *unix.Statfs_t) error {
+		st.Bsize = 4096
+		switch path {
+		case "/mnt/ws":
+			st.Blocks = 1000
+			st.Bfree = 200
+		case "/mnt/cache":
+			st.Blocks = 500
+			st.Bfree = 100
+		}
+		return nil
+	})
+
+	disks := []resizableDisk{
+		{Index: 0, MountPath: "/mnt/ws"},    // primary
+		{Index: 2, MountPath: "/mnt/cache"}, // secondary (builder cache)
+	}
+	s, err := collectSample(disks)
+	if err != nil {
+		t.Fatalf("collectSample: %v", err)
+	}
+
+	// Legacy fields mirror the primary disk (index 0).
+	if got, want := s.DiskTotalBytes, uint64(1000*4096); got != want {
+		t.Errorf("DiskTotalBytes = %d, want %d (primary)", got, want)
+	}
+	if got, want := s.DiskUsedBytes, uint64(800*4096); got != want {
+		t.Errorf("DiskUsedBytes = %d, want %d (primary)", got, want)
+	}
+	if !s.DiskSupported {
+		t.Error("DiskSupported = false, want true (primary)")
+	}
+
+	// DiskStats must have two entries with correct indices and values.
+	if len(s.DiskStats) != 2 {
+		t.Fatalf("len(DiskStats) = %d, want 2", len(s.DiskStats))
+	}
+	if s.DiskStats[0].Index != 0 || s.DiskStats[1].Index != 2 {
+		t.Errorf("DiskStats indices = [%d, %d], want [0, 2]", s.DiskStats[0].Index, s.DiskStats[1].Index)
+	}
+	if s.DiskStats[1].TotalBytes != 500*4096 {
+		t.Errorf("DiskStats[1].TotalBytes = %d, want %d", s.DiskStats[1].TotalBytes, uint64(500*4096))
+	}
+}
+
+func TestCollectSampleDiskStats_EmptyDisksYieldsNilDiskStats(t *testing.T) {
+	// No resizable disks → DiskStats must be nil (omitempty in JSON).
+	dir := t.TempDir()
+	mi := filepath.Join(dir, "meminfo")
+	writeTestFile(t, mi, "MemTotal: 4096000 kB\nMemAvailable: 2000000 kB\n")
+	setMeminfoPath(t, mi)
+	setPSIPaths(t, filepath.Join(dir, "noexist"), filepath.Join(dir, "noexist"))
+	setCPUSysPath(t, filepath.Join(dir, "no-cpu"))
+	setStatfsFunc(t, noopStatfs)
+
+	s, err := collectSample(nil)
+	if err != nil {
+		t.Fatalf("collectSample: %v", err)
+	}
+	if s.DiskStats != nil {
+		t.Errorf("DiskStats = %v, want nil for empty disk list", s.DiskStats)
+	}
+	if s.DiskSupported {
+		t.Error("DiskSupported = true, want false when no disks")
 	}
 }
