@@ -1,14 +1,22 @@
 package builder
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	bkclient "github.com/moby/buildkit/client"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
+	"github.com/moby/buildkit/frontend/dockerfile/parser"
+
+	"github.com/IniZio/nexus3/internal/core/bootspec"
 )
 
 // agentContextFilename is the reserved name used for the nexus3-agent binary
@@ -184,23 +192,22 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 	}
 
 	_, err = bk.Solve(ctx, nil, bkclient.SolveOpt{
-		Frontend: "dockerfile.v0",
-		FrontendAttrs: map[string]string{
-			// Tell the Dockerfile frontend which file to use (default is
-			// "Dockerfile" but being explicit avoids any path ambiguity).
-			"filename": "Dockerfile",
-			// Register the agent binary dir as a named build context so
-			// the final-layer COPY --from=nexus3agent resolves correctly.
-			"context:nexus3agent": "local:nexus3agent",
-		},
 		// LocalDirs is deprecated in favour of LocalMounts, but it remains
-		// fully supported in moby/buildkit v0.19 and its replacement
+		// fully supported in moby/buildkit v0.18 and its replacement
 		// (fsutil.FS) would add a heavier import for no benefit here.
 		LocalDirs: map[string]string{
 			"context":     ctxDir,
 			"dockerfile":  dfDir,
 			"nexus3agent": agentDir,
 		},
+		FrontendAttrs: map[string]string{
+			// Tell the Dockerfile frontend which file to use.
+			"filename": "Dockerfile",
+			// Register the agent binary dir as a named build context so
+			// the final-layer COPY --from=nexus3agent resolves correctly.
+			"context:nexus3agent": "local:nexus3agent",
+		},
+		Frontend: "dockerfile.v0",
 		Exports: []bkclient.ExportEntry{
 			{
 				Type:      bkclient.ExporterLocal,
@@ -211,7 +218,144 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 	if err != nil {
 		return fmt.Errorf("buildkit: solve: %w", err)
 	}
+
+	// Parse the Containerfile directly and write boot.json into the exported
+	// rootfs. This is the authoritative path: it does not depend on buildkitd
+	// version, exporter type, or gateway metadata availability.
+	// Non-fatal: a parse error must never fail the build (rootfs export succeeded).
+	captureBootSpecFromContainerfile(req.ContainerfileBytes, outDir)
+
 	return nil
+}
+
+// captureBootSpecFromContainerfile parses containerfileBytes (the raw content of
+// the user's .nexus/Containerfile) and, when an ENTRYPOINT or CMD is declared,
+// writes a boot.json into the exported rootfs at <outDir>/etc/nexus3/boot.json.
+//
+// # Mechanism
+//
+// This function uses buildkit's own Dockerfile parser and instructions packages
+// to extract ENTRYPOINT, CMD, WORKDIR, and ENV from the last build stage. Both
+// exec-form (JSON array) and shell-form instructions are handled via
+// ShellDependantCmdLine.PrependShell.
+//
+// # Design rationale
+//
+// Parsing the Containerfile directly is deterministic and buildkitd-version-
+// independent. The previous mechanism read OCI image config from
+// gateway.Result.Metadata, which moby/buildkit v0.19 (the in-guest buildkitd
+// version) does not populate for ExporterLocal builds. The live VM-boot e2e
+// proved this: boot.json was never written in-guest because the key was absent.
+//
+// # Limitation
+//
+// Only instructions DECLARED IN THE USER'S .nexus/Containerfile are captured —
+// config inherited from the base image (FROM) is NOT included. This is
+// intentional for nexus3: the operator is expected to re-declare any base-image
+// ENTRYPOINT/CMD they want the nexus3 boot contract to honour. Incidental base
+// defaults (e.g. ubuntu's CMD ["bash"]) are silently ignored, which is correct.
+//
+// # Edge case: shell-form ENTRYPOINT with CMD
+//
+// In Docker, a shell-form ENTRYPOINT (PrependShell=true) receives its own shell
+// wrapper (/bin/sh -c) and ignores any CMD entirely. This function honours that
+// by dropping CMD when the resolved entrypoint is shell-wrapped.
+//
+// All failures are NON-FATAL: a parse error must never fail the build (the
+// rootfs export already succeeded).
+func captureBootSpecFromContainerfile(containerfileBytes []byte, outDir string) {
+	if len(containerfileBytes) == 0 {
+		slog.Debug("buildkit: captureBootSpecFromContainerfile: empty Containerfile, skipping boot.json")
+		return
+	}
+
+	result, err := parser.Parse(bytes.NewReader(containerfileBytes))
+	if err != nil {
+		slog.Warn("buildkit: captureBootSpecFromContainerfile: failed to parse Containerfile, skipping boot.json", "err", err)
+		return
+	}
+
+	stages, _, err := instructions.Parse(result.AST, nil)
+	if err != nil {
+		slog.Warn("buildkit: captureBootSpecFromContainerfile: failed to parse Containerfile instructions, skipping boot.json", "err", err)
+		return
+	}
+	if len(stages) == 0 {
+		slog.Debug("buildkit: captureBootSpecFromContainerfile: no stages in Containerfile, skipping boot.json")
+		return
+	}
+
+	// Walk only the last (final) stage — that is the image that will be run.
+	last := stages[len(stages)-1]
+
+	var (
+		entrypointCmd *instructions.EntrypointCommand
+		cmdCmd        *instructions.CmdCommand
+		workdir       string
+		envPairs      []string
+	)
+	for _, cmd := range last.Commands {
+		switch c := cmd.(type) {
+		case *instructions.EntrypointCommand:
+			entrypointCmd = c
+		case *instructions.CmdCommand:
+			cmdCmd = c
+		case *instructions.WorkdirCommand:
+			workdir = c.Path
+		case *instructions.EnvCommand:
+			for _, kv := range c.Env {
+				envPairs = append(envPairs, kv.Key+"="+kv.Value)
+			}
+		}
+	}
+
+	// Resolve ENTRYPOINT and CMD to concrete argv, honouring shell form.
+	resolveArgv := func(s instructions.ShellDependantCmdLine) []string {
+		if s.PrependShell {
+			return []string{"/bin/sh", "-c", strings.Join(s.CmdLine, " ")}
+		}
+		return s.CmdLine
+	}
+
+	var entrypointArgv, cmdArgv []string
+	if entrypointCmd != nil {
+		entrypointArgv = resolveArgv(entrypointCmd.ShellDependantCmdLine)
+	}
+	if cmdCmd != nil {
+		// Shell-form ENTRYPOINT ignores CMD entirely (Docker semantics).
+		if entrypointCmd == nil || !entrypointCmd.PrependShell {
+			cmdArgv = resolveArgv(cmdCmd.ShellDependantCmdLine)
+		}
+	}
+
+	ociCfg := bootspec.OCIImageConfig{
+		Entrypoint: entrypointArgv,
+		Cmd:        cmdArgv,
+		WorkingDir: workdir,
+		Env:        envPairs,
+	}
+	spec := bootspec.FromOCIImageConfig(ociCfg)
+	if len(spec.Tasks) == 0 {
+		slog.Debug("buildkit: captureBootSpecFromContainerfile: no entrypoint/cmd declared, skipping boot.json")
+		return
+	}
+
+	specJSON, err := json.Marshal(spec)
+	if err != nil {
+		slog.Warn("buildkit: captureBootSpecFromContainerfile: failed to marshal boot spec, skipping boot.json", "err", err)
+		return
+	}
+
+	bootJSONPath := filepath.Join(outDir, "etc", "nexus3", "boot.json")
+	if err := os.MkdirAll(filepath.Dir(bootJSONPath), 0755); err != nil {
+		slog.Warn("buildkit: captureBootSpecFromContainerfile: failed to create boot.json parent dirs, skipping", "err", err)
+		return
+	}
+	if err := os.WriteFile(bootJSONPath, specJSON, 0644); err != nil {
+		slog.Warn("buildkit: captureBootSpecFromContainerfile: failed to write boot.json, skipping", "err", err)
+		return
+	}
+	slog.Info("buildkit: captureBootSpecFromContainerfile: wrote boot.json", "path", bootJSONPath, "tasks", len(spec.Tasks))
 }
 
 // copyDirIntoContext recursively copies all files from src into dst, preserving

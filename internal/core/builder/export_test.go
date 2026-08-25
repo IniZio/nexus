@@ -13,3 +13,8 @@ var RunMke2fs = runMke2fs
 // CopyDirIntoContext exposes the unexported copyDirIntoContext function for
 // unit tests that verify workspace-escape prevention.
 var CopyDirIntoContext = copyDirIntoContext
+
+// CaptureBootSpecFromContainerfile exposes captureBootSpecFromContainerfile for
+// white-box tests that verify the Containerfile-parse → boot.json path.
+// The first argument is the raw content of a .nexus/Containerfile.
+var CaptureBootSpecFromContainerfile = captureBootSpecFromContainerfile
