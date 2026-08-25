@@ -171,7 +171,16 @@ func newSandboxService() (*service.Service, error) {
 		drv = realDrv
 	}
 
-	return service.New(st, drv, lifecycle.New()), nil
+	svc := service.New(st, drv, lifecycle.New())
+	// Wire the named-volume store so lifecycle verbs (rm, herdr worktree teardown,
+	// …) can detach volumes on removal. Without this Service.volumes is nil and
+	// Service.Remove silently skips its detach loop (service.go), leaking the
+	// attachment lease in the volume's meta.json: the volume stays "in use" and
+	// blocks the next create that reuses its name — e.g. re-creating a worktree
+	// sandbox whose docker disk is named from the (stable) handle. The store is
+	// cheap (a rooted path) and a no-op for sandboxes with no mounted volumes.
+	svc.WithVolumes(volumestore.New(filepath.Join(root, "volumes")))
+	return svc, nil
 }
 
 // Error code mapping
