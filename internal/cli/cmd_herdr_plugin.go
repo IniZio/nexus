@@ -2955,8 +2955,48 @@ func herdrResolveWorktreeImage(checkoutPath string) (imageFlag, imageVal string,
 		// nexus3.yaml found: use --file so the build applies the full project config.
 		return "--file", filepath.Dir(cfgPath), nil
 	}
-	// No project config: fall back to the named default base image.
+	// No nexus3.yaml, but a .nexus/Containerfile (or .nexus/Dockerfile) is itself
+	// a complete build definition — the `--file` build engine reads exactly that
+	// file from the context dir. So its presence ALONE is enough to build the
+	// worktree sandbox from it; requiring a separate nexus3.yaml sentinel would be
+	// a surprising extra step (the Containerfile is the thing that matters).
+	if dir := nexusContainerfileDir(checkoutPath); dir != "" {
+		return "--file", dir, nil
+	}
+	// No project build definition at all: fall back to the named default base image.
 	return "--image", herdrDefaultImage, nil
+}
+
+// nexusContainerfileDir walks up from startDir toward the repository root (the
+// .git boundary, the same stopping rule config.Load uses) and returns the first
+// directory that contains a .nexus/Containerfile or .nexus/Dockerfile. Returns
+// "" when none is found up to the repo root or filesystem root.
+//
+// The returned directory is the build CONTEXT dir (the one holding .nexus/), so
+// it can be passed straight to `sandbox create --file`, which reads
+// <dir>/.nexus/Containerfile (see resolveContainerfilePath).
+func nexusContainerfileDir(startDir string) string {
+	abs, err := filepath.Abs(startDir)
+	if err != nil {
+		return ""
+	}
+	dir := abs
+	for {
+		for _, rel := range []string{".nexus/Containerfile", ".nexus/Dockerfile"} {
+			if _, statErr := os.Stat(filepath.Join(dir, rel)); statErr == nil {
+				return dir
+			}
+		}
+		// Stop at the repository root (a directory containing a .git entry).
+		if _, gitErr := os.Lstat(filepath.Join(dir, ".git")); gitErr == nil {
+			return ""
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "" // filesystem root
+		}
+		dir = parent
+	}
 }
 
 // herdrWorktreeSandboxHandle derives a deterministic, collision-free sandbox
