@@ -257,7 +257,7 @@ func main() {
 	// exist; PID 1 continues to the control plane below so the agent serves
 	// Exec/Copy while the task runs.
 	if isPid1 {
-		runStartupHook(con)
+		runBootTasks(con)
 	}
 
 	// Bind control-plane vsock listener (port 1024).

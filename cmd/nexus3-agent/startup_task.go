@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
+
+	"github.com/IniZio/nexus3/internal/core/bootspec"
 )
 
 // startupHookPath is the in-guest path of an optional executable that the agent
@@ -76,5 +79,89 @@ func runStartupHook(con *os.File) {
 			return
 		}
 		consoleLog(con, "nexus3-agent: startup hook complete\n")
+	}()
+}
+
+// bootspecPath is the in-guest location of the generic boot manifest.
+// A var (not const) so tests can point it at a temp fixture.
+var bootspecPath = bootspec.Path
+
+// runBootTask executes one bootspec.Task. For background tasks it spawns a
+// goroutine and returns immediately; for foreground tasks it blocks the caller
+// (the supervisor goroutine) until the process exits. Either way PID 1 is
+// never blocked: runBootTasks itself runs inside a goroutine.
+//
+// Empty Argv is skipped. A non-zero exit is logged and non-fatal.
+func runBootTask(con *os.File, task bootspec.Task) {
+	if len(task.Argv) == 0 {
+		name := task.Name
+		if name == "" {
+			name = "<unnamed>"
+		}
+		consoleLog(con, "nexus3-agent: boot task %q: empty argv; skipping\n", name)
+		return
+	}
+	label := task.Name
+	if label == "" {
+		label = task.Argv[0]
+	}
+
+	argv0, err := exec.LookPath(task.Argv[0])
+	if err != nil {
+		consoleLog(con, "nexus3-agent: boot task %q: %v; skipping\n", label, err)
+		return
+	}
+
+	launch := func() {
+		cmd := exec.Command(argv0, task.Argv[1:]...)
+		if task.Cwd != "" {
+			cmd.Dir = task.Cwd
+		}
+		// task.Env overrides baseline keys; envToMap handles KEY=VALUE pairs.
+		cmd.Env = mergeEnv(guestBaselineEnv(), envToMap(task.Env))
+		out, err := cmd.CombinedOutput()
+		if len(out) > 0 {
+			consoleLog(con, "nexus3-agent: boot task %q output:\n%s", label, out)
+		}
+		if err != nil {
+			consoleLog(con, "nexus3-agent: boot task %q exited: %v (non-fatal; sandbox continues)\n", label, err)
+		} else {
+			consoleLog(con, "nexus3-agent: boot task %q complete\n", label)
+		}
+	}
+
+	if task.Background {
+		go launch()
+	} else {
+		launch()
+	}
+}
+
+// runBootTasks is the generic boot supervisor. It reads bootspecPath
+// (/etc/nexus3/boot.json) and runs each declared task in order. A missing or
+// unparseable manifest falls back to the legacy /etc/nexus3/startup behavior.
+//
+// PID-1 safety: this function returns immediately — all work runs in a
+// goroutine. Foreground tasks block that goroutine (sequencing), never PID 1.
+func runBootTasks(con *os.File) {
+	data, err := os.ReadFile(bootspecPath)
+	if err != nil {
+		// Absent manifest is the common case — fall through to legacy hook.
+		runStartupHook(con)
+		return
+	}
+	var spec bootspec.Spec
+	if err := json.Unmarshal(data, &spec); err != nil {
+		consoleLog(con, "nexus3-agent: boot.json unparseable: %v; falling back to startup hook\n", err)
+		runStartupHook(con)
+		return
+	}
+
+	// Run all tasks inside a single goroutine so foreground tasks are sequenced
+	// without blocking the agent's main serving path (PID 1).
+	go func() {
+		for _, task := range spec.Tasks {
+			runBootTask(con, task)
+		}
 	}()
 }
