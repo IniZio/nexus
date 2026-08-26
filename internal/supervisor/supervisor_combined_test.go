@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -281,8 +282,6 @@ func TestRunSeedRoute_CombinedCallsCombinedSeeder(t *testing.T) {
 		return true, true
 	}
 
-	var id domain.SandboxID
-	id[0] = 0xD1
 	in := seedRouteInputs{
 		SB:          sandboxWithProxy("claude", []string{"github.com"}),
 		Cert:        fakeCert(),
@@ -448,7 +447,7 @@ func TestRunSeedRoute_AgentCallsSeedLoop(t *testing.T) {
 // path returns the cached token without any HTTP call.
 func writeFreshSupervisorStore(t *testing.T, accessToken string) string {
 	t.Helper()
-	s := map[string]interface{}{
+	s := map[string]any{
 		"access_token":   accessToken,
 		"refresh_token":  "rt-dummy-supervisor-test",
 		"expires_at":     time.Now().Add(time.Hour).Format(time.RFC3339),
@@ -738,9 +737,11 @@ func TestMCPOAuthSeedPayload(t *testing.T) {
 		t.Error("registerMCPOAuthPlaceholders must not include skipped servers in the returned map")
 	}
 
-	// (b) payload must contain the env-var line with "Bearer <ph>" — not the real token.
+	// (b) payload must contain the env-var line with quoted "Bearer <ph>" — not
+	// the real token. The value is single-quoted so POSIX `. file` sourcing
+	// preserves the space (see TestMCPOAuthSeedPayloadShellSourceable).
 	payload := buildMCPOAuthCredPayload(seeds)
-	wantLine := "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION=Bearer " + ph + "\n"
+	wantLine := "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION='Bearer " + ph + "'\n"
 	if !bytes.Contains(payload, []byte(wantLine)) {
 		t.Errorf("buildMCPOAuthCredPayload payload missing expected line %q:\n%s", wantLine, payload)
 	}
@@ -754,5 +755,43 @@ func TestMCPOAuthSeedPayload(t *testing.T) {
 	resolved, resolveOK := broker.ResolveScoped(ph, sid, "mcp.linear.app")
 	if !resolveOK || resolved != realToken {
 		t.Errorf("broker.ResolveScoped(%q, sid, \"mcp.linear.app\") = (%q, %v); want (%q, true)", ph, resolved, resolveOK, realToken)
+	}
+}
+
+// TestMCPOAuthSeedPayloadShellSourceable is the regression bite for the herdr
+// worktree "Linear not authenticated" bug. The MCP OAuth cred.env value is
+// "Bearer <placeholder>" — the only cred.env value with a space. Both guest
+// consumers (launchCredSourcedArgv and guestShellProfileScript) load it with
+// POSIX `. file` sourcing. An unquoted `KEY=Bearer <hex>` line is parsed by the
+// shell as the assignment `KEY=Bearer` followed by the command `<hex>`, so the
+// variable is never exported: the agent sends an empty Authorization header and
+// Linear returns 401.
+//
+// This test sources the real buildMCPOAuthCredPayload output through /bin/sh
+// exactly as the guest does and asserts the exported value is the full
+// "Bearer <placeholder>". It FAILS on the unquoted `%s=Bearer %s` payload
+// (yields "") and PASSES only when the value is shell-quoted.
+func TestMCPOAuthSeedPayloadShellSourceable(t *testing.T) {
+	const ph = "deadbeefcafef00d1234567890abcdef"
+	payload := buildMCPOAuthCredPayload(map[string]string{"linear-server": ph})
+
+	dir := t.TempDir()
+	credEnv := filepath.Join(dir, "cred.env")
+	if err := os.WriteFile(credEnv, payload, 0o600); err != nil {
+		t.Fatalf("write cred.env: %v", err)
+	}
+
+	// Mirror the guest sourcing convention: `set -a; . file; set +a` then print
+	// the variable, identical to launchCredSourcedArgv / guestShellProfileScript.
+	script := "set -a; . " + credEnv + "; set +a; printf %s \"$NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION\""
+	out, err := exec.Command("/bin/sh", "-c", script).Output()
+	if err != nil {
+		t.Fatalf("sourcing cred.env failed (unquoted value breaks the shell): %v", err)
+	}
+
+	want := "Bearer " + ph
+	if string(out) != want {
+		t.Errorf("sourced NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION = %q; want %q\n"+
+			"the cred.env value must be shell-quoted so POSIX `. file` preserves the space", string(out), want)
 	}
 }

@@ -1271,6 +1271,15 @@ func registerMCPOAuthPlaceholders(broker *cred.Broker, sandboxID domain.SandboxI
 // (Authorization: ${NEXUS3_MCP_<SERVER>_AUTHORIZATION}) is exactly
 // "Bearer <placeholder>", matching the format swapAuthorization expects in the
 // MITM proxy. Real tokens are never present; the broker holds them host-side.
+//
+// The value is single-quoted because it is the only cred.env value that
+// contains a space ("Bearer <placeholder>"). GuestCredEnvPath is consumed by
+// POSIX `. file` sourcing in BOTH launchCredSourcedArgv and
+// guestShellProfileScript; an unquoted `KEY=Bearer <hex>` line is parsed as the
+// assignment `KEY=Bearer` followed by the command `<hex>`, so the variable is
+// never exported and the agent sends an empty Authorization header (Linear 401).
+// The placeholder hex is [0-9a-f]+ and never contains a single quote, so
+// single-quoting is a complete, injection-safe escaping.
 func buildMCPOAuthCredPayload(seeds map[string]string) []byte {
 	if len(seeds) == 0 {
 		return nil
@@ -1284,7 +1293,7 @@ func buildMCPOAuthCredPayload(seeds map[string]string) []byte {
 	for _, serverName := range names {
 		ph := seeds[serverName]
 		envVar := service.MCPOAuthVarName(serverName, "Authorization")
-		fmt.Fprintf(&buf, "%s=Bearer %s\n", envVar, ph)
+		fmt.Fprintf(&buf, "%s='Bearer %s'\n", envVar, ph)
 	}
 	return buf.Bytes()
 }
@@ -1317,7 +1326,7 @@ func SeedLoop(
 	svc PerimeterCAGetter,
 	seedAgentCreds bool,
 ) (ok bool, guestEverResponded bool) {
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	for attempt := range maxAttempts {
 		if ctx.Err() != nil {
 			return false, guestEverResponded
 		}
