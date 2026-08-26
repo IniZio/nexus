@@ -419,6 +419,63 @@ func TestProxy_CrossSandboxPlaceholderNotSwapped(t *testing.T) {
 	}
 }
 
+// TestProxy_CrossHostPlaceholderNotSwapped verifies the host-boundary check:
+// a placeholder registered for hostA is NOT swapped when the request targets
+// hostB, even though both hosts are in the allowlist and the sandbox matches.
+// This is the regression test for the cross-credential exfiltration gap closed
+// by the host parameter added to ResolveScoped.
+//
+// Mutation evidence: removing the e.sc.host != host check from ResolveScoped
+// causes this test to fail (the swap fires when it must not).
+func TestProxy_CrossHostPlaceholderNotSwapped(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(12)
+	const hostA = "mcp.linear.app"
+	const hostB = "app.glitchtip.com"
+	const realTokenA = "linear-real-token"
+
+	// Register a placeholder scoped to hostA only.
+	recA, err := broker.RegisterPlaceholder(sid, hostA, realTokenA)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder hostA: %v", err)
+	}
+
+	// Both hosts are allowlisted so the swap handler is reached for hostB.
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:    sid,
+		AllowedHosts: []string{hostA, hostB},
+		Broker:       broker,
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	client := proxyClient(proxyServer.URL)
+
+	// Send hostA's placeholder in a request directed at hostB.
+	req, _ := http.NewRequest(http.MethodGet, "http://"+hostB+"/api", nil)
+	req.Header.Set("Authorization", "Bearer "+recA.Placeholder)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+
+	got := receiveWithTimeout(t, authCh)
+	// The real token must NOT appear in the forwarded header.
+	if got == "Bearer "+realTokenA {
+		t.Error("cross-host placeholder was swapped; token exfiltration gap detected — host-boundary check not enforced")
+	}
+	// The placeholder itself should pass through unchanged (no swap = forward as-is).
+	if want := "Bearer " + recA.Placeholder; got != want {
+		t.Logf("note: upstream received %q (not the real token, gap is closed)", got)
+	}
+}
+
 // TestProxy_SwapBasicOnAllow verifies git-over-HTTPS Authorization: Basic
 // (D-PD-23). Git sends base64(user:password); the password field is the
 // placeholder and must be replaced, then the header re-encoded.

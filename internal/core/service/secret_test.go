@@ -65,14 +65,17 @@ func TestApplySecrets_PlaceholderNotRealToken(t *testing.T) {
 	if len(hosts) != len(GitHubSecretHosts) {
 		t.Errorf("hosts = %v; want len=%d matching GitHubSecretHosts", hosts, len(GitHubSecretHosts))
 	}
-	// Extract placeholder and confirm broker swap for both GitHub hosts.
-	line := strings.SplitN(string(extra), "\n", 2)[0]
-	_, ph, _ := strings.Cut(line, "=")
+	// Each GitHub host has its own placeholder registered; resolve via that
+	// host's placeholder to confirm the broker swap path.
 	for _, h := range GitHubSecretHosts {
-		// RegisterPlaceholder keyed by host; ResolveScoped keys by placeholder.
-		got, ok := broker.ResolveScoped(ph, id)
+		ph, hasPH := broker.Placeholder(id, h)
+		if !hasPH {
+			t.Errorf("broker.Placeholder(id, %q): no placeholder registered", h)
+			continue
+		}
+		got, ok := broker.ResolveScoped(ph, id, h)
 		if !ok || got != real {
-			t.Errorf("ResolveScoped for bind covering %s: ok=%v tok=%q", h, ok, got)
+			t.Errorf("ResolveScoped for host %s: ok=%v tok=%q, want (%q, true)", h, ok, got, real)
 		}
 	}
 }

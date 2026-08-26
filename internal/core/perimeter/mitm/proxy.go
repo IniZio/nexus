@@ -268,7 +268,7 @@ func New(cfg Config) (*Proxy, error) {
 		if _, ok := allowSet[strings.ToLower(host)]; !ok {
 			return req, nil
 		}
-		swapped, ok := swapAuthorization(req.Header.Get("Authorization"), sandboxID, broker)
+		swapped, ok := swapAuthorization(req.Header.Get("Authorization"), sandboxID, host, broker)
 		if !ok {
 			return req, nil
 		}
@@ -343,16 +343,20 @@ func generateCA() (tls.Certificate, error) {
 }
 
 // swapAuthorization rewrites an Authorization header whose token/password
-// field is a broker placeholder. Returns ("", false) when there is nothing
-// to swap. The real token is never logged.
-func swapAuthorization(authHeader string, sandboxID domain.SandboxID, broker *cred.Broker) (string, bool) {
+// field is a broker placeholder. host is the request's target host (lowercase,
+// no port) and must match the host under which the placeholder was registered;
+// this enforces the host-boundary check that prevents cross-credential
+// exfiltration between distinct MCP OAuth tokens sharing the same broker.
+// Returns ("", false) when there is nothing to swap. The real token is never
+// logged.
+func swapAuthorization(authHeader string, sandboxID domain.SandboxID, host string, broker *cred.Broker) (string, bool) {
 	if broker == nil || authHeader == "" {
 		return "", false
 	}
 	switch {
 	case strings.HasPrefix(authHeader, "Bearer "):
 		placeholder := strings.TrimPrefix(authHeader, "Bearer ")
-		realToken, ok := broker.ResolveScoped(placeholder, sandboxID)
+		realToken, ok := broker.ResolveScoped(placeholder, sandboxID, host)
 		if !ok {
 			return "", false
 		}
@@ -360,7 +364,7 @@ func swapAuthorization(authHeader string, sandboxID domain.SandboxID, broker *cr
 	case strings.HasPrefix(authHeader, "token "):
 		// GitHub CLI uses "token <TOKEN>" (not Bearer) for classic PATs and GH_TOKEN.
 		placeholder := strings.TrimPrefix(authHeader, "token ")
-		realToken, ok := broker.ResolveScoped(placeholder, sandboxID)
+		realToken, ok := broker.ResolveScoped(placeholder, sandboxID, host)
 		if !ok {
 			return "", false
 		}
@@ -374,7 +378,7 @@ func swapAuthorization(authHeader string, sandboxID domain.SandboxID, broker *cr
 		if !ok {
 			return "", false
 		}
-		realToken, ok := broker.ResolveScoped(pass, sandboxID)
+		realToken, ok := broker.ResolveScoped(pass, sandboxID, host)
 		if !ok {
 			return "", false
 		}

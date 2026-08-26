@@ -202,13 +202,51 @@ func TestResolveScopedCrossandboxRejected(t *testing.T) {
 	}
 
 	// Scoped resolve with wrong sandbox must fail.
-	if tok, ok := b.ResolveScoped(rec.Placeholder, sidB); ok {
+	if tok, ok := b.ResolveScoped(rec.Placeholder, sidB, host); ok {
 		t.Errorf("ResolveScoped with wrong sandbox: got (%q, true), want (\"\", false)", tok)
 	}
 
 	// Scoped resolve with correct sandbox must succeed.
-	if _, ok := b.ResolveScoped(rec.Placeholder, sidA); !ok {
+	if _, ok := b.ResolveScoped(rec.Placeholder, sidA, host); !ok {
 		t.Error("ResolveScoped with correct sandbox: expected ok=true")
+	}
+}
+
+// TestResolveScopedCrossHostRejected verifies that a placeholder registered for
+// (sandbox S, hostA) is rejected when resolved with (sandbox S, hostB).
+// This is the host-boundary check that prevents cross-credential exfiltration:
+// without it, an MCP-A placeholder presented on a request to MCP-B's endpoint
+// would resolve, leaking MCP-A's real token to MCP-B.
+func TestResolveScopedCrossHostRejected(t *testing.T) {
+	t.Parallel()
+
+	b := cred.NewBroker()
+	sid := newSandboxID(12)
+	const hostA = "mcp.linear.app"
+	const hostB = "app.glitchtip.com"
+	const realTokenA = "linear-real-token"
+
+	rec, err := b.RegisterPlaceholder(sid, hostA, realTokenA)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
+	// Resolving with the correct sandbox + correct host must succeed.
+	got, ok := b.ResolveScoped(rec.Placeholder, sid, hostA)
+	if !ok {
+		t.Fatal("ResolveScoped(correct sandbox, correct host): expected ok=true")
+	}
+	if got != realTokenA {
+		t.Errorf("ResolveScoped: got %q, want %q", got, realTokenA)
+	}
+
+	// Resolving with correct sandbox but WRONG host must be rejected.
+	tok, ok := b.ResolveScoped(rec.Placeholder, sid, hostB)
+	if ok {
+		t.Errorf("ResolveScoped(correct sandbox, WRONG host): got (%q, true), want (\"\", false) — cross-host exfiltration gap open", tok)
+	}
+	if tok != "" {
+		t.Errorf("ResolveScoped(wrong host): returned non-empty token %q", tok)
 	}
 }
 

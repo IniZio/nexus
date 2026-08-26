@@ -166,18 +166,27 @@ func (b *Broker) Resolve(placeholder string) (realToken string, ok bool) {
 }
 
 // ResolveScoped is like [Broker.Resolve] but additionally checks that the
-// placeholder belongs to sandboxID. It returns ("", false) if the placeholder
-// is unknown OR belongs to a different sandbox.
+// placeholder belongs to sandboxID AND was registered for host. It returns
+// ("", false) if the placeholder is unknown, belongs to a different sandbox,
+// or was registered for a different host.
 //
-// P1-S4 SHOULD use this form when the calling context has the sandbox ID
-// readily available, to prevent cross-sandbox token theft in the unlikely
-// event two sandboxes collude.
-func (b *Broker) ResolveScoped(placeholder string, sandboxID domain.SandboxID) (realToken string, ok bool) {
+// The host check closes the cross-credential exfiltration gap: without it, a
+// placeholder registered for (sandbox S, hostA) could be resolved for a
+// request targeting hostB — allowing a prompt-injected agent to present MCP-A's
+// real token to MCP-B's endpoint.
+//
+// host comparison is performed against the stored scope host exactly as
+// registered; callers are responsible for normalising both sides consistently
+// (e.g. lowercase, no port) before calling.
+//
+// P1-S4 MUST use this form so that both the sandbox-boundary and the
+// host-boundary checks are enforced at the resolution site.
+func (b *Broker) ResolveScoped(placeholder string, sandboxID domain.SandboxID, host string) (realToken string, ok bool) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
 	e, found := b.byPlaceholder[placeholder]
-	if !found || e.sc.sandboxID != sandboxID {
+	if !found || e.sc.sandboxID != sandboxID || e.sc.host != host {
 		return "", false
 	}
 	return e.realToken, true

@@ -235,19 +235,19 @@ func TestSeedGuestAgent_AnthropicAuthToken_SeededAndResolvable(t *testing.T) {
 		t.Errorf("payload must NOT contain the real token\npayload:\n%s", payload)
 	}
 
-	// Invariant 4a: correct sandbox resolves placeholder to real token.
-	got, ok := broker.ResolveScoped(placeholder, sid)
+	// Invariant 4a: correct sandbox + correct host resolves placeholder to real token.
+	got, ok := broker.ResolveScoped(placeholder, sid, AnthropicAPIHost)
 	if !ok {
-		t.Errorf("ResolveScoped(%q, sid): ok=false, want true", placeholder)
+		t.Errorf("ResolveScoped(%q, sid, AnthropicAPIHost): ok=false, want true", placeholder)
 	}
 	if got != realToken {
 		t.Errorf("ResolveScoped returned %q, want %q", got, realToken)
 	}
 
 	// Invariant 4b: different sandbox does NOT resolve — cross-sandbox theft prevented.
-	gotOther, okOther := broker.ResolveScoped(placeholder, otherSid)
+	gotOther, okOther := broker.ResolveScoped(placeholder, otherSid, AnthropicAPIHost)
 	if okOther {
-		t.Errorf("ResolveScoped(%q, otherSid): ok=true (cross-sandbox leak), want false; got token=%q", placeholder, gotOther)
+		t.Errorf("ResolveScoped(%q, otherSid, AnthropicAPIHost): ok=true (cross-sandbox leak), want false; got token=%q", placeholder, gotOther)
 	}
 }
 
