@@ -1757,7 +1757,18 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// closed-egress ACL. Servers (mcpServers map) is staged for guest injection
 	// below inside the A-MOUNT gate. Stdio MCP vars are handled at seed time
 	// (B-SEED) via resolveMCPStdioPayload in seedGuestAgentAndSecrets.
-	sharedMCP, mcpErr := service.BuildSharedMCPServers(agentProfile)
+	// Resolve source dir for project-scoped MCP server lookup. Use the
+	// workspace path (made absolute) when given; fall back to cwd so non-workspace
+	// sandboxes also benefit if their cwd matches a projects key.
+	mcpSourceDir := ""
+	if f.workspacePath != "" {
+		if abs, absErr := filepath.Abs(f.workspacePath); absErr == nil {
+			mcpSourceDir = abs
+		}
+	} else if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+		mcpSourceDir = cwd
+	}
+	sharedMCP, mcpErr := service.BuildSharedMCPServers(agentProfile, mcpSourceDir)
 	if mcpErr != nil {
 		return errSandbox("sandbox create", mcpErr)
 	}

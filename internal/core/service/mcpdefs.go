@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -38,10 +39,18 @@ var buildMCPOAuthBindsFn = BuildMCPOAuthBinds
 // BuildSharedMCPServers reads the agent's MCP definitions from the authoritative
 // sources (~/.claude.json top-level mcpServers UNIONed with ~/.claude/.mcp.json
 // for back-compat; ~/.claude.json wins on name collision) and returns the
-// sanitized SharedMCPServers. Gated on profile.MCPConfigFormat==claude-json;
-// returns a zero value (all-nil) and nil error when the format is other or no
-// sources exist. Malformed/absent source files are a silent skip, never an error.
-func BuildSharedMCPServers(profile cred.AgentProfile) (SharedMCPServers, error) {
+// sanitized SharedMCPServers. When sourceDir is non-empty, project-scoped
+// mcpServers under projects.<sourceDir> in ~/.claude.json are also unioned in
+// and WIN over top-level entries on name collision (a project-scoped server for
+// this specific project is the most specific definition available).
+// Gated on profile.MCPConfigFormat==claude-json; returns a zero value (all-nil)
+// and nil error when the format is other or no sources exist. Malformed/absent
+// source files are a silent skip, never an error.
+//
+// sourceDir must be an absolute, cleaned path matching the projects map key in
+// ~/.claude.json exactly. Pass "" to skip project-scoped lookup. Parent-walk
+// and worktree-vs-main-repo key ambiguity are deferred to v2.
+func BuildSharedMCPServers(profile cred.AgentProfile, sourceDir string) (SharedMCPServers, error) {
 	if profile.MCPConfigFormat != cred.MCPConfigFormatClaudeJSON {
 		return SharedMCPServers{}, nil
 	}
@@ -51,9 +60,17 @@ func BuildSharedMCPServers(profile cred.AgentProfile) (SharedMCPServers, error) 
 	if entries, err := readRawMCPFile(claudeMCPConfigPath(profile)); err == nil {
 		maps.Copy(byName, entries)
 	}
-	// ~/.claude.json is authoritative; wins on name collision.
+	// ~/.claude.json top-level mcpServers wins over .mcp.json on name collision.
 	if entries, err := readRawMCPFile(claudeDotJSONPath(profile)); err == nil {
 		maps.Copy(byName, entries)
+	}
+	// Project-scoped mcpServers are most specific and win over top-level on name
+	// collision. Only applied when sourceDir matches a projects key exactly.
+	// Parent-walk and worktree-vs-main-repo key ambiguity are deferred to v2.
+	if sourceDir != "" {
+		if entries, err := readProjectScopedMCPFile(claudeDotJSONPath(profile), sourceDir); err == nil {
+			maps.Copy(byName, entries)
+		}
 	}
 
 	names := make([]string, 0, len(byName))
@@ -195,6 +212,34 @@ func readRawMCPFile(path string) (map[string]json.RawMessage, error) {
 		return nil, err
 	}
 	return raw.MCPServers, nil
+}
+
+// readProjectScopedMCPFile opens path (~/.claude.json) and decodes the
+// projects.<sourceDir>.mcpServers map for the given sourceDir key (exact
+// cleaned-path equality). Returns nil, nil when the projects map is absent
+// or no key matches — a silent no-op so callers can ignore the error.
+func readProjectScopedMCPFile(path, sourceDir string) (map[string]json.RawMessage, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var raw struct {
+		Projects map[string]struct {
+			MCPServers map[string]json.RawMessage `json:"mcpServers"`
+		} `json:"projects"`
+	}
+	if err := json.NewDecoder(f).Decode(&raw); err != nil {
+		return nil, err
+	}
+
+	key := filepath.Clean(sourceDir)
+	proj, ok := raw.Projects[key]
+	if !ok {
+		return nil, nil
+	}
+	return proj.MCPServers, nil
 }
 
 // sanitizeHTTPEntry returns the re-encoded JSON entry with credential-bearing

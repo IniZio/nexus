@@ -47,7 +47,7 @@ func TestBuildSharedMCPServers_HTTPLiteralRedacted(t *testing.T) {
 		},
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestBuildSharedMCPServers_HTTPVarRefPreserved(t *testing.T) {
 		},
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestBuildSharedMCPServers_StdioLiteralKeptAndEnvResolved(t *testing.T) {
 		},
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestBuildSharedMCPServers_UnionSource(t *testing.T) {
 		},
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestBuildSharedMCPServers_NonClaudeFormatNoop(t *testing.T) {
 	noopProfile := cred.ClaudeCodeProfile
 	noopProfile.MCPConfigFormat = cred.MCPConfigFormatNone
 
-	got, err := BuildSharedMCPServers(noopProfile)
+	got, err := BuildSharedMCPServers(noopProfile, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestBuildSharedMCPServers_NonCredentialHeaderUntouched(t *testing.T) {
 		},
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestBuildSharedMCPServers_OAuthInjectsPlaceholderAndBind(t *testing.T) {
 		return []MCPOAuthBind{linearOAuthBind()}, nil, nil
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestBuildSharedMCPServers_OAuthSynthesizesAbsentServer(t *testing.T) {
 		return []MCPOAuthBind{linearOAuthBind()}, nil, nil
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestBuildSharedMCPServers_OAuthSynthesizedPreservesURLPath(t *testing.T) {
 		return []MCPOAuthBind{linearOAuthBind()}, nil, nil
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -481,7 +481,7 @@ func TestBuildSharedMCPServers_OAuthProfileGateOff(t *testing.T) {
 	noopProfile := cred.ClaudeCodeProfile
 	noopProfile.MCPConfigFormat = cred.MCPConfigFormatNone
 
-	got, err := BuildSharedMCPServers(noopProfile)
+	got, err := BuildSharedMCPServers(noopProfile, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -516,7 +516,7 @@ func TestBuildSharedMCPServers_OAuthDeduplicatesBind(t *testing.T) {
 		return []MCPOAuthBind{linearOAuthBind()}, nil, nil
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -530,5 +530,197 @@ func TestBuildSharedMCPServers_OAuthDeduplicatesBind(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("want exactly 1 bind for %s, got %d; binds: %+v", synVar, count, got.HTTPBinds)
+	}
+}
+
+// writeClaudeDotJSON writes a full ~/.claude.json at path with both top-level
+// mcpServers and a projects entry for the given projectKey.
+func writeClaudeDotJSON(t *testing.T, path string, topLevel map[string]any, projectKey string, projectServers map[string]any) {
+	t.Helper()
+	projects := map[string]any{}
+	if projectKey != "" {
+		projects[projectKey] = map[string]any{"mcpServers": projectServers}
+	}
+	data, err := json.Marshal(map[string]any{
+		"mcpServers": topLevel,
+		"projects":   projects,
+	})
+	if err != nil {
+		t.Fatalf("writeClaudeDotJSON marshal: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("writeClaudeDotJSON write %s: %v", path, err)
+	}
+}
+
+// TestBuildSharedMCPServers_ProjectScopedLiteralHTTP verifies that a
+// project-scoped http MCP server in ~/.claude.json projects.<key>.mcpServers:
+//   - Appears in result.Servers with its full URL preserved verbatim.
+//   - Has its literal Authorization header redacted to a synthetic ${VAR}.
+//   - Produces a matching HTTPBind (MITM swap path).
+//   - When sourceDir does NOT match any project key, the project-only server is
+//     absent and no panic occurs (pins the no-op path).
+//
+// MUTATION GUARD: the project-only server name ("proj-mcp") does not exist in
+// the top-level mcpServers map, so any assertion on it can ONLY pass if
+// readProjectScopedMCPFile is wired in.
+func TestBuildSharedMCPServers_ProjectScopedLiteralHTTP(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+
+	sourceDir := t.TempDir() // stands in for the sandbox's source directory
+
+	const topServerName = "top-mcp"
+	const projServerName = "proj-mcp"
+	const projURL = "https://example.test/mcp"
+	const projToken = "Bearer LITERAL-PROJECT-TOKEN"
+	const projSynVar = "NEXUS3_MCP_PROJ_MCP_AUTHORIZATION"
+
+	writeClaudeDotJSON(t, filepath.Join(dir, ".claude.json"),
+		// top-level mcpServers
+		map[string]any{
+			topServerName: map[string]any{
+				"type": "http",
+				"url":  "https://top.example.test/mcp",
+				"headers": map[string]any{
+					"Authorization": "Bearer TOP-SECRET",
+				},
+			},
+		},
+		// project key + project-scoped servers
+		sourceDir,
+		map[string]any{
+			projServerName: map[string]any{
+				"type": "http",
+				"url":  projURL,
+				"headers": map[string]any{
+					"Authorization": projToken,
+				},
+			},
+		},
+	)
+
+	t.Run("matching sourceDir includes project-scoped server", func(t *testing.T) {
+		got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, sourceDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Top-level server must still be present.
+		if _, ok := got.Servers[topServerName]; !ok {
+			t.Errorf("want %q in Servers (top-level)", topServerName)
+		}
+
+		// Project-scoped server must appear.
+		raw, ok := got.Servers[projServerName]
+		if !ok {
+			t.Fatalf("want %q in Servers (project-scoped)", projServerName)
+		}
+		rawStr := string(raw)
+
+		// Full URL must be preserved verbatim — not collapsed to bare host.
+		if !strings.Contains(rawStr, projURL) {
+			t.Errorf("want full URL %q in Servers entry, got: %s", projURL, rawStr)
+		}
+
+		// SECURITY: literal token must be redacted.
+		if strings.Contains(rawStr, "LITERAL-PROJECT-TOKEN") {
+			t.Errorf("SECURITY: raw project token leaked into Servers JSON; got: %s", rawStr)
+		}
+
+		// Synthetic var ref must be injected.
+		if !strings.Contains(rawStr, "${"+projSynVar+"}") {
+			t.Errorf("want synthetic var ref ${%s}, got: %s", projSynVar, rawStr)
+		}
+
+		// HTTPBind for project-scoped server must exist.
+		var found bool
+		for _, b := range got.HTTPBinds {
+			if b.Env == projSynVar {
+				found = true
+				if b.Token != projToken {
+					t.Errorf("bind.Token = %q, want %q", b.Token, projToken)
+				}
+				if len(b.Hosts) != 1 || b.Hosts[0] != "example.test" {
+					t.Errorf("bind.Hosts = %v, want [example.test]", b.Hosts)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("HTTPBinds missing bind for %s; binds: %+v", projSynVar, got.HTTPBinds)
+		}
+	})
+
+	t.Run("non-matching sourceDir omits project-scoped server", func(t *testing.T) {
+		got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "/no/such/project")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Top-level server must still appear.
+		if _, ok := got.Servers[topServerName]; !ok {
+			t.Errorf("want %q in Servers (top-level)", topServerName)
+		}
+
+		// Project-only server must NOT appear.
+		if _, ok := got.Servers[projServerName]; ok {
+			t.Errorf("project-scoped server %q must be absent when sourceDir does not match any project key", projServerName)
+		}
+	})
+}
+
+// TestBuildSharedMCPServers_ProjectScopedOAuthInjected verifies that a
+// project-scoped http server referenced by an OAuth bind gets the Authorization
+// header placeholder injected (the existing branch) rather than synthesized,
+// preserving its real full URL.
+func TestBuildSharedMCPServers_ProjectScopedOAuthInjected(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+
+	sourceDir := t.TempDir()
+
+	const projServerName = "linear-server"
+	const projURL = "https://mcp.linear.app/mcp"
+
+	// linear-server lives ONLY in the project scope (the common real-world case).
+	writeClaudeDotJSON(t, filepath.Join(dir, ".claude.json"),
+		map[string]any{}, // no top-level mcpServers
+		sourceDir,
+		map[string]any{
+			projServerName: map[string]any{
+				"type": "http",
+				"url":  projURL,
+			},
+		},
+	)
+
+	injectOAuthFn(t, func(_ string) ([]MCPOAuthBind, []MCPOAuthRefreshConfig, error) {
+		return []MCPOAuthBind{linearOAuthBind()}, nil, nil
+	})
+
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, sourceDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	raw, ok := got.Servers[projServerName]
+	if !ok {
+		t.Fatalf("want %q in Servers after project-scope read + OAuth injection", projServerName)
+	}
+
+	var e rawMCPEntry
+	if err := json.Unmarshal(raw, &e); err != nil {
+		t.Fatalf("unmarshal entry: %v", err)
+	}
+
+	// URL must be the full project-scoped URL, not bare host or synthesized.
+	if e.URL != projURL {
+		t.Errorf("URL = %q, want %q (project URL must be preserved, not synthesized from OAuth host)", e.URL, projURL)
+	}
+
+	const synVar = "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION"
+	// Placeholder must be injected (existing branch, not synthesis).
+	if e.Headers["Authorization"] != "${"+synVar+"}" {
+		t.Errorf("Authorization header = %q, want ${%s}", e.Headers["Authorization"], synVar)
 	}
 }

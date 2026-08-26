@@ -60,7 +60,9 @@ func claudeDotJSONPath(profile cred.AgentProfile) string {
 // Gate: only active when profile.MCPConfigFormat == MCPConfigFormatClaudeJSON
 // and the config file exists. Absent or malformed config is a silent no-op.
 func resolveMCPStdioPayload(profile cred.AgentProfile) []byte {
-	shared, _ := BuildSharedMCPServers(profile)
+	// Pass "" for sourceDir: stdio payload is seeded from the supervisor path
+	// which has no project context at this call site.
+	shared, _ := BuildSharedMCPServers(profile, "")
 	return shared.StdioEnv
 }
 
@@ -90,7 +92,8 @@ func claudeCredentialsPath(profile cred.AgentProfile) string {
 // must also add bind.Hosts to the sandbox AllowedHosts so agent sandboxes
 // can reach the MCP server through the closed-egress ACL.
 func ResolveMCPHTTPBinds(profile cred.AgentProfile) ([]SecretBind, error) {
-	shared, err := BuildSharedMCPServers(profile)
+	// Pass "" for sourceDir: non-create callers have no project context.
+	shared, err := BuildSharedMCPServers(profile, "")
 	if err != nil {
 		return nil, fmt.Errorf("mcp http binds: %w", err)
 	}
