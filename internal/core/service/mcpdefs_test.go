@@ -302,6 +302,7 @@ func injectOAuthFn(t *testing.T, fn func(string) ([]MCPOAuthBind, []MCPOAuthRefr
 func linearOAuthBind() MCPOAuthBind {
 	return MCPOAuthBind{
 		ServerName: "linear-server",
+		ServerURL:  "https://mcp.linear.app/mcp",
 		Bind: SecretBind{
 			Env:   "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION",
 			Hosts: []string{"mcp.linear.app"},
@@ -418,6 +419,44 @@ func TestBuildSharedMCPServers_OAuthSynthesizesAbsentServer(t *testing.T) {
 	// Must be http type.
 	if !strings.Contains(rawStr, `"http"`) {
 		t.Errorf("synthesized entry should have type=http, got: %s", rawStr)
+	}
+}
+
+// TestBuildSharedMCPServers_OAuthSynthesizedPreservesURLPath is the regression
+// test for the Linear "not authenticated" bug: an OAuth MCP server absent from
+// the top-level mcpServers map (Linear lives under a project scope in the host
+// ~/.claude.json) is synthesized. The synthesized guest entry MUST preserve the
+// full endpoint path from the mcpOAuth serverUrl (https://mcp.linear.app/mcp),
+// not collapse to the bare host (https://mcp.linear.app) — the bare host returns
+// HTTP 404 from Linear and surfaces in-agent as "not authenticated".
+func TestBuildSharedMCPServers_OAuthSynthesizedPreservesURLPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+
+	// linear-server is NOT in the top-level mcpServers map.
+	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{})
+
+	injectOAuthFn(t, func(_ string) ([]MCPOAuthBind, []MCPOAuthRefreshConfig, error) {
+		return []MCPOAuthBind{linearOAuthBind()}, nil, nil
+	})
+
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	raw, ok := got.Servers["linear-server"]
+	if !ok {
+		t.Fatal("want synthesized 'linear-server' in Servers map")
+	}
+
+	var e rawMCPEntry
+	if err := json.Unmarshal(raw, &e); err != nil {
+		t.Fatalf("unmarshal synthesized entry: %v", err)
+	}
+	if e.URL != "https://mcp.linear.app/mcp" {
+		t.Errorf("synthesized URL = %q, want %q (path dropped → Linear 404 → 'not authenticated')",
+			e.URL, "https://mcp.linear.app/mcp")
 	}
 }
 

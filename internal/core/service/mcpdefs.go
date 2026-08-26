@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"sort"
 	"strings"
@@ -48,15 +49,11 @@ func BuildSharedMCPServers(profile cred.AgentProfile) (SharedMCPServers, error) 
 	// .mcp.json is back-compat / lower priority.
 	byName := make(map[string]json.RawMessage)
 	if entries, err := readRawMCPFile(claudeMCPConfigPath(profile)); err == nil {
-		for k, v := range entries {
-			byName[k] = v
-		}
+		maps.Copy(byName, entries)
 	}
 	// ~/.claude.json is authoritative; wins on name collision.
 	if entries, err := readRawMCPFile(claudeDotJSONPath(profile)); err == nil {
-		for k, v := range entries {
-			byName[k] = v
-		}
+		maps.Copy(byName, entries)
 	}
 
 	names := make([]string, 0, len(byName))
@@ -154,13 +151,21 @@ func BuildSharedMCPServers(profile cred.AgentProfile) (SharedMCPServers, error) 
 			}
 		} else {
 			// Server absent from config — synthesize a minimal http guest entry.
-			host := ""
-			if len(ob.Bind.Hosts) > 0 {
-				host = ob.Bind.Hosts[0]
+			// Prefer the full serverUrl (with path) from the mcpOAuth entry;
+			// reconstructing "https://" + host alone drops the endpoint path and
+			// breaks servers whose MCP endpoint is not the host root (e.g. Linear's
+			// https://mcp.linear.app/mcp → 404 at the bare host).
+			url := ob.ServerURL
+			if url == "" {
+				host := ""
+				if len(ob.Bind.Hosts) > 0 {
+					host = ob.Bind.Hosts[0]
+				}
+				url = "https://" + host
 			}
 			e := rawMCPEntry{
 				Type: "http",
-				URL:  "https://" + host,
+				URL:  url,
 				Headers: map[string]string{
 					ob.Header: placeholder,
 				},

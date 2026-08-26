@@ -19,6 +19,12 @@ import (
 type MCPOAuthBind struct {
 	// ServerName is the logical MCP server name (e.g. "linear-server").
 	ServerName string
+	// ServerURL is the full MCP endpoint URL from the mcpOAuth entry
+	// (e.g. "https://mcp.linear.app/mcp"), including any path. It is used to
+	// synthesize the guest config entry when the server is absent from the
+	// top-level mcpServers map; reconstructing from host alone would drop the
+	// path and break servers whose endpoint is not the host root.
+	ServerURL string
 	// Bind carries the synthetic env-var name, the target host, and the real
 	// bearer token (host-side only; never written to the guest).
 	Bind SecretBind
@@ -150,6 +156,7 @@ func BuildMCPOAuthBinds(credPath string) (binds []MCPOAuthBind, refresh []MCPOAu
 
 		binds = append(binds, MCPOAuthBind{
 			ServerName: e.ServerName,
+			ServerURL:  e.ServerURL,
 			Bind: SecretBind{
 				Env:   envVar,
 				Hosts: []string{host},
