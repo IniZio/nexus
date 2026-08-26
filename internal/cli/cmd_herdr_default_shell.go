@@ -679,6 +679,28 @@ func herdrCopyBinary(src, dst string) error {
 
 // ── wt/ supervised shell (Mechanism 2) ───────────────────────────────────────
 
+// installParentSighupAbsorber arms a signal.Notify handler for SIGHUP and
+// returns a stop function the caller must defer.
+//
+// Why Notify, not signal.Ignore: signal.Ignore installs SIG_IGN in the
+// kernel's signal table.  SIG_IGN IS inherited across execve, so any child
+// the caller forks would also ignore SIGHUP and never exit when herdr sends
+// pane-close to the process group — cmd.Wait() would block forever and
+// teardown would be unreachable.
+//
+// A handler installed via signal.Notify is reset to SIG_DFL at the child's
+// execve (Go/kernel semantics), so the child receives and dies on SIGHUP
+// while the parent (which has the handler active) absorbs the signal and
+// proceeds to teardown.
+func installParentSighupAbsorber() (stop func()) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGHUP)
+	go func() {
+		for range ch { /* absorb: keep parent alive to run teardown */ }
+	}()
+	return func() { signal.Stop(ch); close(ch) }
+}
+
 // herdrWtSupervisedShell runs the guest shell as a supervised child for an
 // auto-bound worktree pane.  It replaces the exec-replace path so the parent
 // process survives pane-close (herdr sends SIGHUP to the process group) and
@@ -689,10 +711,11 @@ func herdrCopyBinary(src, dst string) error {
 // strictly worse than leaking a sandbox VM (Mechanism 1 / prune backstop
 // catches those).
 func herdrWtSupervisedShell(ctx context.Context, nexus3Bin string, binding HerdrSpaceBinding, argv []string) error {
-	// Ignore SIGHUP so the pane-close signal from herdr (sent to the process
-	// group) does not kill us.  The child is in the same process group and
-	// receives SIGHUP, which terminates nexus3 exec / the guest shell.
-	signal.Ignore(syscall.SIGHUP)
+	// Absorb SIGHUP via a Notify handler (NOT signal.Ignore) so the parent
+	// survives herdr's pane-close signal while the child exits on its own.
+	// See installParentSighupAbsorber for why Notify is required here.
+	stopSighup := installParentSighupAbsorber()
+	defer stopSighup()
 
 	// Run the guest shell as a child.  The child inherits stdin/stdout/stderr
 	// so it holds the controlling TTY; job control and Ctrl-C pass through.
