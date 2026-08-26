@@ -8,6 +8,7 @@ import (
 
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/supervisor"
 )
 
@@ -146,6 +147,13 @@ func TestParseSupervisorFlags_EveryConfigFieldSurvives(t *testing.T) {
 		VirtiofsdPath: "/usr/libexec/virtiofsd",
 		Ephemeral:     true,
 		ParentPipeFD:  7,
+		// MCPOAuthRefreshConfigs: spawn.json-only field (refresh tokens must NOT
+		// appear in argv because argv is ps-visible). Populated here so Step 1
+		// (no-zero-field guard) passes; excluded from Step 2's argv DeepEqual
+		// and covered separately by TestMCPOAuthRefreshConfigs_SpawnSpecRoundTrip.
+		MCPOAuthRefreshConfigs: []service.MCPOAuthRefreshConfig{
+			{ServerName: "linear-server", Host: "api.linear.app"},
+		},
 	}
 
 	// Step 1: no field may be left at its zero value.
@@ -153,6 +161,10 @@ func TestParseSupervisorFlags_EveryConfigFieldSurvives(t *testing.T) {
 	// WorkspaceDiskIndex is exempt: 0 is a MEANINGFUL value (the first extra
 	// disk) and HasWorkspaceDisk above is what makes it live. It is asserted
 	// explicitly by TestParseSupervisorFlags_RoundTrip with a non-zero index.
+	//
+	// MCPOAuthRefreshConfigs is exempt from the argv round-trip (Step 2):
+	// refresh tokens must not appear in argv (ps-visible); this field travels
+	// via spawn.json. It is covered by TestMCPOAuthRefreshConfigs_SpawnSpecRoundTrip.
 	v := reflect.ValueOf(in)
 	for i := 0; i < v.NumField(); i++ {
 		name := v.Type().Field(i).Name
@@ -164,14 +176,86 @@ func TestParseSupervisorFlags_EveryConfigFieldSurvives(t *testing.T) {
 		}
 	}
 
-	// Step 2: the whole struct must survive the argv round-trip.
+	// Step 2: the argv-carried fields must survive the argv round-trip.
+	// MCPOAuthRefreshConfigs travels via spawn.json (not argv) so it is
+	// zeroed on both sides before the DeepEqual. Its own round-trip is
+	// asserted by TestMCPOAuthRefreshConfigs_SpawnSpecRoundTrip.
 	argv := supervisor.BuildSupervisorArgv(supervisor.SpawnConfig{Config: in})[1:]
 	got, err := parseSupervisorFlags(argv)
 	if err != nil {
 		t.Fatalf("parseSupervisorFlags: %v", err)
 	}
-	if !reflect.DeepEqual(got, in) {
-		t.Errorf("Config did not survive the argv round-trip\n got: %+v\nwant: %+v", got, in)
+	wantArgv := in
+	wantArgv.MCPOAuthRefreshConfigs = nil
+	got.MCPOAuthRefreshConfigs = nil
+	if !reflect.DeepEqual(got, wantArgv) {
+		t.Errorf("Config did not survive the argv round-trip\n got: %+v\nwant: %+v", got, wantArgv)
+	}
+}
+
+// TestMCPOAuthRefreshConfigs_SpawnSpecRoundTrip is the mandatory round-trip
+// test for the spawn.json conveyance path that carries MCPOAuthRefreshConfigs
+// to the detached supervisor subprocess.
+//
+// MCPOAuthRefreshConfigs holds OAuth refresh tokens that must NOT appear in
+// argv (ps-visible). runSupervisorMain reads them from spawn.json
+// (written at 0600 before the subprocess is forked) via ReadSpawnSpec.
+//
+// Failure mode this test catches: the field is added to supervisor.Config and
+// written to spawn.json by the CLI, but never read back in runSupervisorMain
+// — the supervisor then starts with MCPOAuthRefreshConfigs==nil and never
+// calls StartMCPOAuthRefreshers, so MCP OAuth egress produces 401.
+//
+// To verify this test is mutation-proof: momentarily remove the
+// cfg.MCPOAuthRefreshConfigs = spec.MCPOAuthRefreshConfigs assignment in
+// runSupervisorMain and confirm this test fails.
+func TestMCPOAuthRefreshConfigs_SpawnSpecRoundTrip(t *testing.T) {
+	stateDir := t.TempDir()
+
+	want := []service.MCPOAuthRefreshConfig{
+		{
+			ServerName:    "linear-server",
+			Host:          "api.linear.app",
+			AccessToken:   "access-tok-1",
+			RefreshToken:  "refresh-tok-1",
+			TokenEndpoint: "https://api.linear.app/oauth/token",
+			ClientID:      "client-abc",
+			ExpiresAtMs:   1_700_000_000_000,
+		},
+		{
+			ServerName:    "glitchtip",
+			Host:          "app.glitchtip.com",
+			AccessToken:   "access-tok-2",
+			RefreshToken:  "refresh-tok-2",
+			TokenEndpoint: "https://app.glitchtip.com/oauth/token/",
+			ClientID:      "client-xyz",
+			ExpiresAtMs:   1_800_000_000_000,
+		},
+	}
+
+	cfg := supervisor.Config{
+		SandboxRef:             "sb-mcp-test",
+		StoreRoot:              "/store",
+		StateDir:               stateDir,
+		CHBin:                  "/usr/bin/cloud-hypervisor",
+		SocketDir:              "/run/nexus3",
+		KernelPath:             "/boot/vmlinux",
+		DiskPath:               "/data/sb.raw",
+		MCPOAuthRefreshConfigs: want,
+	}
+
+	if err := supervisor.WriteSpawnSpec(stateDir, cfg); err != nil {
+		t.Fatalf("WriteSpawnSpec: %v", err)
+	}
+
+	// Simulate what runSupervisorMain does: read spawn.json and pull the field.
+	spec, err := supervisor.ReadSpawnSpec(stateDir)
+	if err != nil {
+		t.Fatalf("ReadSpawnSpec: %v", err)
+	}
+	if !reflect.DeepEqual(spec.MCPOAuthRefreshConfigs, want) {
+		t.Errorf("MCPOAuthRefreshConfigs did not survive spawn.json round-trip\n got: %+v\nwant: %+v",
+			spec.MCPOAuthRefreshConfigs, want)
 	}
 }
 

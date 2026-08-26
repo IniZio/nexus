@@ -36,6 +36,7 @@
 package supervisor
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/json"
@@ -45,6 +46,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"syscall"
 	"time"
@@ -177,6 +179,13 @@ type Config struct {
 	// VirtiofsdPath is the absolute path to the virtiofsd 1.x binary.
 	// Must be non-empty when LiveMounts is non-empty; ignored otherwise.
 	VirtiofsdPath string
+
+	// MCPOAuthRefreshConfigs carries the OAuth token material for each shared
+	// HTTP MCP server that needs unattended token refresh. Set by the CLI at
+	// create time via BuildMCPOAuthBinds; persisted in spawn.json so the
+	// detached supervisor re-initialises the refreshers on every reboot.
+	// Empty when no OAuth MCP servers are configured.
+	MCPOAuthRefreshConfigs []service.MCPOAuthRefreshConfig
 
 	// Ephemeral selects one-shot / builder mode. When true the supervisor is
 	// expected to host a short-lived VM (e.g. an in-VM builder) and exit as
@@ -463,13 +472,47 @@ func RunDetached(cfg Config) error {
 	wireGovernorAxes(gov, resizer, resizer, cfg.GovBounds, diskIndices)
 	go gov.Run(ctx)
 
+	// ── 5b-mcp. Wire MCP OAuth Refreshers ───────────────────────────────────
+	// Build and register per-server OAuth refreshers for shared HTTP MCP
+	// servers. Uses the same Broker and lifecycle as the Anthropic refreshers;
+	// the returned []*cred.Refresher are appended to refreshers so they ride
+	// the same Register / ticker / ForcePush path below.
+	//
+	// Unlike the Anthropic refresher, MCP OAuth tokens cannot flow through
+	// ResolveEnvelopeSecrets: the bind's Env name is a synthetic placeholder
+	// (e.g. NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION) that is not set in the
+	// detached supervisor's host environment, so the bind is silently dropped
+	// before applySecrets can call RegisterPlaceholder. We register the broker
+	// scope here directly from the refresh config so that:
+	//   (a) ForcePush / SetRealToken succeeds — the scope (sandboxID, host)
+	//       must exist in the broker before step 5d calls r.ForcePush, and
+	//   (b) the MITM proxy can resolve the broker placeholder to the real token.
+	// mcpOAuthSeedMap is serverName→placeholder hex for each successfully
+	// registered MCP OAuth scope. It is consumed in step 5d to seed the guest
+	// env so the MCP client header expands to "Bearer <placeholder>".
+	var mcpOAuthSeedMap map[string]string
+	if len(cfg.MCPOAuthRefreshConfigs) > 0 {
+		mcpOAuthSeedMap = registerMCPOAuthPlaceholders(broker, sb.ID, cfg.MCPOAuthRefreshConfigs)
+		mcpStoreRoot := service.DefaultMCPOAuthStoreRoot()
+		mcpRefreshers, mcpErr := service.StartMCPOAuthRefreshers(ctx, broker, mcpStoreRoot, cfg.MCPOAuthRefreshConfigs)
+		if mcpErr != nil {
+			slog.Warn("supervisor.mcp_oauth_refreshers_failed", "err", mcpErr)
+		} else {
+			for _, r := range mcpRefreshers {
+				slog.Info("supervisor.mcp_oauth_refresher_ready", "host", r.Host())
+			}
+			refreshers = append(refreshers, mcpRefreshers...)
+		}
+	}
+
 	// ── 5b. Wire Refreshers to the running sandbox ───────────────────────────
 	// Register each Refresher with the sandbox so its Token() call can invoke
 	// broker.SetRealToken(sb.ID, host, realToken) after seeding mints the
-	// placeholder. We do NOT call broker.RegisterPlaceholder here; that is
+	// placeholder. For the Anthropic refresher, RegisterPlaceholder is
 	// delegated to SeedGuestAgent in step 5d so the guest and the broker always
-	// hold the same placeholder. The initial real-token push happens after
-	// seeding (step 5d), not here.
+	// hold the same placeholder. For MCP OAuth refreshers, RegisterPlaceholder
+	// is called above in step 5b-mcp (the envelope-secret path cannot supply
+	// the token). The initial real-token push happens after seeding (step 5d).
 	//
 	// Graceful degradation: failures are logged but do not stop the supervisor.
 	for _, r := range refreshers {
@@ -604,6 +647,14 @@ func RunDetached(cfg Config) error {
 
 		caSeeder := service.NewAgentCACopySeeder(agentClient)
 		agentSeeder := service.NewAgentCopySeeder(agentClient)
+		// M2c seed: append NEXUS3_MCP_<SERVER>_AUTHORIZATION=Bearer <placeholder>
+		// lines for each MCP OAuth server registered in step 5b-mcp. The "Bearer "
+		// prefix is required so the expanded MCP header value is exactly
+		// "Bearer <placeholder>", matching swapAuthorization's input format.
+		// Real tokens are never written; the broker holds them host-side.
+		if len(mcpOAuthSeedMap) > 0 {
+			agentSeeder = wrapSeederWithExtra(agentSeeder, buildMCPOAuthCredPayload(mcpOAuthSeedMap))
+		}
 		cert := svc.GetPerimeterCACert(sb.ID)
 		// D-PD-33 / D-PD-36: seed human secrets whenever SecretHosts is non-empty.
 		// OpenEgress=true (human open-egress) AND OpenEgress=false (--egress closed)
@@ -1176,6 +1227,81 @@ func startParentWatchdog(pipeR *os.File, sandboxRef string, cancel context.Cance
 		slog.Info("supervisor.parent_pipe_closed", "sandboxRef", sandboxRef)
 		cancel() // trigger awaitShutdown → svc.Remove shutdown path
 	}()
+}
+
+// registerMCPOAuthPlaceholders registers a broker placeholder for each
+// MCPOAuthRefreshConfig so that (a) ForcePush / SetRealToken can update the
+// scope after seeding, and (b) the MITM proxy can resolve the placeholder to
+// the real token. Configs with an empty AccessToken or Host are logged and
+// skipped; all others are registered unconditionally (RegisterPlaceholder is
+// idempotent: a second call for the same scope replaces the old placeholder).
+// registerMCPOAuthPlaceholders registers a broker placeholder for each
+// MCPOAuthRefreshConfig so that (a) ForcePush / SetRealToken can update the
+// scope after seeding, and (b) the MITM proxy can resolve the placeholder to
+// the real token. Configs with an empty AccessToken or Host are logged and
+// skipped; all others are registered unconditionally (RegisterPlaceholder is
+// idempotent: a second call for the same scope replaces the old placeholder).
+//
+// Returns a serverName→placeholder hex map for the successfully registered
+// servers; callers pass this to buildMCPOAuthCredPayload to seed the guest env.
+func registerMCPOAuthPlaceholders(broker *cred.Broker, sandboxID domain.SandboxID, configs []service.MCPOAuthRefreshConfig) map[string]string {
+	seeds := make(map[string]string, len(configs))
+	for _, cfg := range configs {
+		if cfg.AccessToken == "" || cfg.Host == "" {
+			slog.Warn("supervisor.mcp_oauth_placeholder_skip",
+				"server", cfg.ServerName, "reason", "empty access_token or host")
+			continue
+		}
+		rec, err := broker.RegisterPlaceholder(sandboxID, cfg.Host, cfg.AccessToken)
+		if err != nil {
+			slog.Warn("supervisor.mcp_oauth_placeholder_failed",
+				"host", cfg.Host, "server", cfg.ServerName, "err", err)
+			continue
+		}
+		slog.Info("supervisor.mcp_oauth_placeholder_registered",
+			"host", cfg.Host, "server", cfg.ServerName)
+		seeds[cfg.ServerName] = rec.Placeholder
+	}
+	return seeds
+}
+
+// buildMCPOAuthCredPayload builds KEY=Bearer <placeholder> lines for each
+// MCP OAuth server whose placeholder was minted by registerMCPOAuthPlaceholders.
+// The "Bearer " prefix is included so the expanded MCP header value
+// (Authorization: ${NEXUS3_MCP_<SERVER>_AUTHORIZATION}) is exactly
+// "Bearer <placeholder>", matching the format swapAuthorization expects in the
+// MITM proxy. Real tokens are never present; the broker holds them host-side.
+func buildMCPOAuthCredPayload(seeds map[string]string) []byte {
+	if len(seeds) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(seeds))
+	for name := range seeds {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var buf bytes.Buffer
+	for _, serverName := range names {
+		ph := seeds[serverName]
+		envVar := service.MCPOAuthVarName(serverName, "Authorization")
+		fmt.Fprintf(&buf, "%s=Bearer %s\n", envVar, ph)
+	}
+	return buf.Bytes()
+}
+
+// wrapSeederWithExtra wraps base to append extra bytes to every payload before
+// writing. It is a no-op when extra is empty. Used to inject MCP OAuth
+// placeholder env vars (step 5d) into the agent credential seed payload.
+func wrapSeederWithExtra(base service.GuestSeeder, extra []byte) service.GuestSeeder {
+	if len(extra) == 0 {
+		return base
+	}
+	return func(ctx context.Context, id domain.SandboxID, payload []byte) error {
+		combined := make([]byte, len(payload)+len(extra))
+		copy(combined, payload)
+		copy(combined[len(payload):], extra)
+		return base(ctx, id, combined)
+	}
 }
 
 func SeedLoop(

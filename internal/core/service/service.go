@@ -177,6 +177,12 @@ type CreateOptions struct {
 	// RemoveOnExit records the --rm intent durably at creation time.
 	// When true, the sandbox is removed when its primary command exits.
 	RemoveOnExit bool
+
+	// AgentName is the resolved agent profile name (e.g. "claude-code") to
+	// stamp on the sandbox record. Empty means no agent profile is attached.
+	// Mirrors the AgentName field on domain.Sandbox; the value comes from
+	// resolveAgentPosture (flag OR user-global / project config default).
+	AgentName string
 }
 
 // Create mints a new sandbox record in state Created.
@@ -210,6 +216,7 @@ func (s *Service) Create(ctx context.Context, project, name string, opts CreateO
 		State:        domain.Created,
 		Envelope:     domain.Envelope{}, // frozen at creation; future slices populate fields
 		RemoveOnExit: opts.RemoveOnExit,
+		AgentName:    opts.AgentName,
 	}
 	if err := s.store.Create(ctx, sb); err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create: %w", err)

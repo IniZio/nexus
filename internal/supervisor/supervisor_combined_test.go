@@ -631,3 +631,128 @@ func TestSeedAgentAndHumanSecrets_ForcePushWritesRealToken(t *testing.T) {
 			" revert supervisor.go:seedAgentAndHumanSecrets ForcePush → Token to reproduce)", got, realToken)
 	}
 }
+
+// TestRegisterMCPOAuthPlaceholders verifies that registerMCPOAuthPlaceholders
+// calls broker.RegisterPlaceholder for each valid MCPOAuthRefreshConfig so that
+// a subsequent ForcePush (broker.SetRealToken) succeeds for every registered
+// host. This test FAILS if registerMCPOAuthPlaceholders does not call
+// broker.RegisterPlaceholder — broker.Placeholder will return ("", false) and
+// broker.SetRealToken will return "no placeholder registered".
+//
+// Mutation proof: remove the broker.RegisterPlaceholder call from
+// registerMCPOAuthPlaceholders and this test fails on the broker.Placeholder
+// assertion.
+func TestRegisterMCPOAuthPlaceholders(t *testing.T) {
+	broker := cred.NewBroker()
+	sid := domain.SandboxID{99}
+
+	configs := []service.MCPOAuthRefreshConfig{
+		{ServerName: "linear-server", Host: "mcp.linear.app", AccessToken: "tok-linear-1"},
+		{ServerName: "glitchtip", Host: "app.glitchtip.com", AccessToken: "tok-glitch-1"},
+		// These two must be skipped (empty access_token / empty host).
+		{ServerName: "empty-token", Host: "example.com", AccessToken: ""},
+		{ServerName: "empty-host", Host: "", AccessToken: "some-tok"},
+	}
+
+	registerMCPOAuthPlaceholders(broker, sid, configs)
+
+	// Both valid configs must have a placeholder in the broker.
+	for _, tc := range []struct {
+		host        string
+		initialTok  string
+		rotatedTok  string
+	}{
+		{"mcp.linear.app", "tok-linear-1", "tok-linear-2"},
+		{"app.glitchtip.com", "tok-glitch-1", "tok-glitch-2"},
+	} {
+		ph, ok := broker.Placeholder(sid, tc.host)
+		if !ok || ph == "" {
+			t.Errorf("broker.Placeholder(sid, %q) = (%q, %v); want non-empty placeholder — "+
+				"registerMCPOAuthPlaceholders did not call RegisterPlaceholder for this host", tc.host, ph, ok)
+			continue
+		}
+
+		// Verify the initial real token resolves correctly via the placeholder.
+		got, resolveOK := broker.Resolve(ph)
+		if !resolveOK || got != tc.initialTok {
+			t.Errorf("broker.Resolve(%q) = (%q, %v), want (%q, true) for host %q",
+				ph, got, resolveOK, tc.initialTok, tc.host)
+		}
+
+		// Simulate ForcePush: SetRealToken must succeed because the scope is
+		// registered. This is the direct proof that the fix unblocks ForcePush.
+		if err := broker.SetRealToken(sid, tc.host, tc.rotatedTok); err != nil {
+			t.Errorf("broker.SetRealToken after registerMCPOAuthPlaceholders: %v — "+
+				"scope not registered; ForcePush would have returned 'no placeholder registered'", err)
+			continue
+		}
+
+		// After rotation, Resolve must return the new token (MITM swap path).
+		got, resolveOK = broker.Resolve(ph)
+		if !resolveOK || got != tc.rotatedTok {
+			t.Errorf("broker.Resolve after SetRealToken: got (%q, %v), want (%q, true) for host %q",
+				got, resolveOK, tc.rotatedTok, tc.host)
+		}
+	}
+
+	// Skipped configs must NOT appear in the broker.
+	for _, host := range []string{"example.com"} {
+		if _, ok := broker.Placeholder(sid, host); ok {
+			t.Errorf("broker should NOT have placeholder for %q (empty access_token was provided)", host)
+		}
+	}
+}
+
+// TestMCPOAuthSeedPayload verifies the full MCP OAuth guest-env seed path:
+//
+//   (a) registerMCPOAuthPlaceholders returns a serverName→placeholder hex map,
+//   (b) buildMCPOAuthCredPayload emits NEXUS3_MCP_<SERVER>_AUTHORIZATION=Bearer <placeholder>
+//       lines — NOT the real token (D-PP-04 zero-cred-in-guest),
+//   (c) the bare placeholder (without "Bearer ") resolves to the real token via
+//       the broker — swapAuthorization strips "Bearer " from the incoming header,
+//       resolves the bare hex, and re-emits "Bearer <realToken>" to egress.
+//
+// This test FAILS if:
+//   - registerMCPOAuthPlaceholders does not return the minted placeholder,
+//   - buildMCPOAuthCredPayload omits the "Bearer " prefix (MITM won't match),
+//   - buildMCPOAuthCredPayload includes the real token (cred-in-guest violation).
+func TestMCPOAuthSeedPayload(t *testing.T) {
+	broker := cred.NewBroker()
+	sid := domain.SandboxID{42}
+	const realToken = "real-linear-access-token"
+
+	configs := []service.MCPOAuthRefreshConfig{
+		{ServerName: "linear-server", Host: "mcp.linear.app", AccessToken: realToken},
+		// Skip entries must not appear in returned map.
+		{ServerName: "bad-empty-token", Host: "example.com", AccessToken: ""},
+	}
+
+	seeds := registerMCPOAuthPlaceholders(broker, sid, configs)
+
+	// (a) map must contain an entry for the valid server only.
+	ph, ok := seeds["linear-server"]
+	if !ok || ph == "" {
+		t.Fatalf("registerMCPOAuthPlaceholders returned no placeholder for linear-server: seeds=%v", seeds)
+	}
+	if _, bad := seeds["bad-empty-token"]; bad {
+		t.Error("registerMCPOAuthPlaceholders must not include skipped servers in the returned map")
+	}
+
+	// (b) payload must contain the env-var line with "Bearer <ph>" — not the real token.
+	payload := buildMCPOAuthCredPayload(seeds)
+	wantLine := "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION=Bearer " + ph + "\n"
+	if !bytes.Contains(payload, []byte(wantLine)) {
+		t.Errorf("buildMCPOAuthCredPayload payload missing expected line %q:\n%s", wantLine, payload)
+	}
+	if bytes.Contains(payload, []byte(realToken)) {
+		t.Errorf("buildMCPOAuthCredPayload must not contain the real token (D-PP-04); got:\n%s", payload)
+	}
+
+	// (c) broker resolves the bare placeholder hex to the real token.
+	// swapAuthorization will strip "Bearer " from the Authorization header, call
+	// ResolveScoped with the bare hex, and prepend "Bearer " to the real token.
+	resolved, resolveOK := broker.ResolveScoped(ph, sid, "mcp.linear.app")
+	if !resolveOK || resolved != realToken {
+		t.Errorf("broker.ResolveScoped(%q, sid, \"mcp.linear.app\") = (%q, %v); want (%q, true)", ph, resolved, resolveOK, realToken)
+	}
+}

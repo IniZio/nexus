@@ -90,6 +90,18 @@ func runSupervisorMain(args []string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+	// MCPOAuthRefreshConfigs carries OAuth refresh tokens that must NOT appear
+	// in argv (argv is visible in `ps`). The Anthropic refresher follows the
+	// same pattern: only the CREDENTIAL FILE PATH travels via --creds-file
+	// argv, while the token data lives in the file at 0600. Here the token
+	// material is in spawn.json (written at 0600 before this subprocess is
+	// forked); we read that file and pull MCPOAuthRefreshConfigs from it.
+	// All other Config fields arrive via argv as usual.
+	if spec, specErr := supervisor.ReadSpawnSpec(cfg.StateDir); specErr == nil {
+		cfg.MCPOAuthRefreshConfigs = spec.MCPOAuthRefreshConfigs
+	} else {
+		slog.Warn("supervisor: spawn spec unreadable; MCPOAuthRefreshConfigs will be absent", "err", specErr)
+	}
 	if err := supervisor.RunDetached(cfg); err != nil {
 		slog.Error("supervisor: run failed", "err", err)
 		fmt.Fprintln(os.Stderr, err)

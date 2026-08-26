@@ -25,6 +25,10 @@ var knownOptionalSupervisorConfigFields = map[string]string{
 	// SIGKILL'd. Persistent supervisors are intentionally long-lived after
 	// CLI exit and do not use the pipe.
 	"ParentPipeFD": "0 = no watchdog pipe; only ephemeral supervisors use it",
+	// MCPOAuthRefreshConfigs: nil is correct when no OAuth MCP servers are
+	// configured. The field is populated only when BuildMCPOAuthBinds finds
+	// OAuth entries in ~/.claude/.credentials.json; its absence is never a bug.
+	"MCPOAuthRefreshConfigs": "nil = no OAuth MCP servers; populated on demand by BuildMCPOAuthBinds",
 }
 
 // TestBuildHumanSupervisorConfig_AllFieldsPopulated verifies that
@@ -77,6 +81,7 @@ func TestBuildHumanSupervisorConfig_AllFieldsPopulated(t *testing.T) {
 		"/workspace/proj",                        // workspaceGuestPath
 		[]domain.LiveMount{{HostPath: "/src", GuestPath: "/work"}}, // liveMounts
 		"/usr/bin/virtiofsd",                     // virtiofsdPath
+		nil,                                      // mcpOAuthRefreshConfigs (optional; nil = none)
 	)
 
 	rv := reflect.ValueOf(cfg)
@@ -119,6 +124,7 @@ func TestBuildHumanSupervisorConfig_CredsFilePopulated(t *testing.T) {
 		"root=/dev/vda rw", "/usr/bin/cloud-hypervisor", "/tmp/sockets",
 		false, 0, "",
 		nil, "",
+		nil, // mcpOAuthRefreshConfigs — optional
 	)
 	if cfg.CredsFile == "" {
 		t.Error("supervisor.Config.CredsFile is empty — the detached supervisor " +
