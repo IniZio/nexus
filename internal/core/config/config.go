@@ -126,11 +126,27 @@ type SandboxConfig struct {
 	MemoryMax int `yaml:"memory_max"`
 }
 
+// ImageGCConfig holds image garbage collection settings.
+type ImageGCConfig struct {
+	// FreeSpaceFloorGiB is the minimum free disk space (in GiB) required on
+	// the filesystem backing ~/.local/state/nexus3 before a build starts.
+	// When free space falls below this floor, automatic GC runs first.
+	// Zero means "use the built-in default" (DefaultGCFreeSpaceFloorGiB = 15 GiB).
+	FreeSpaceFloorGiB int `yaml:"free_space_floor_gib"`
+
+	// KeepNewestBuilderImages, when positive, retains up to this many of the
+	// most-recently created builder images regardless of sandbox references.
+	// Zero (the default) disables the retention budget: only sandbox-referenced
+	// and base images are kept.
+	KeepNewestBuilderImages int `yaml:"keep_newest_builder_images"`
+}
+
 // Config is the in-memory representation of a nexus3.yaml file.
 // A zero Config is valid and means "no project-level overrides".
 type Config struct {
 	Egress  EgressConfig  `yaml:"egress"`
 	Sandbox SandboxConfig `yaml:"sandbox"`
+	Image   ImageGCConfig `yaml:"image"`
 }
 
 // fileConfig is the on-disk YAML shape, including the required version field.
@@ -141,6 +157,7 @@ type fileConfig struct {
 	Version *int          `yaml:"version"`
 	Egress  EgressConfig  `yaml:"egress"`
 	Sandbox SandboxConfig `yaml:"sandbox"`
+	Image   ImageGCConfig `yaml:"image"`
 }
 
 // configFileName is the well-known name discovered during Load.
@@ -228,6 +245,7 @@ func parse(data []byte) (Config, error) {
 	return Config{
 		Egress:  fc.Egress,
 		Sandbox: fc.Sandbox,
+		Image:   fc.Image,
 	}, nil
 }
 

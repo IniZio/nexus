@@ -41,6 +41,34 @@ func TestLoadUserGlobal_ValidFile(t *testing.T) {
 	}
 }
 
+// TestLoadUserGlobal_ImageGCKnobs guards against the parse() wiring gap where
+// the image.* block was read into fileConfig but dropped from the returned
+// Config (BUG-1) — the free_space_floor_gib knob was silently ignored in
+// production. The values below must survive the full YAML→fileConfig→Config path.
+func TestLoadUserGlobal_ImageGCKnobs(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	cfgDir := filepath.Join(dir, "nexus3")
+	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("version: 1\nimage:\n  free_space_floor_gib: 42\n  keep_newest_builder_images: 3\n")
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.LoadUserGlobal()
+	if err != nil {
+		t.Fatalf("valid file: %v", err)
+	}
+	if cfg.Image.FreeSpaceFloorGiB != 42 {
+		t.Errorf("Image.FreeSpaceFloorGiB = %d, want 42 (config knob dropped by parse())", cfg.Image.FreeSpaceFloorGiB)
+	}
+	if cfg.Image.KeepNewestBuilderImages != 3 {
+		t.Errorf("Image.KeepNewestBuilderImages = %d, want 3", cfg.Image.KeepNewestBuilderImages)
+	}
+}
+
 func TestLoadUserGlobal_MalformedFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
