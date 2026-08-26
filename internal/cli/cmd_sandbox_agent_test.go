@@ -6,6 +6,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -241,6 +242,74 @@ func TestApplyUserGlobalConfig(t *testing.T) {
 		}
 		if f.agentName != "" {
 			t.Errorf("agentName = %q, want empty when config has no agent", f.agentName)
+		}
+	})
+
+	// memory_max subtests — writeMemoryMaxConfig writes a minimal config.yaml
+	// with the given memory_max value (0 = omit the field).
+	writeMemoryMaxConfig := func(t *testing.T, xdgDir string, memoryMax int) {
+		t.Helper()
+		cfgDir := filepath.Join(xdgDir, "nexus3")
+		if err := os.MkdirAll(cfgDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		var body string
+		if memoryMax != 0 {
+			body = fmt.Sprintf("version: 1\nsandbox:\n  memory_max: %d\n", memoryMax)
+		} else {
+			body = "version: 1\n"
+		}
+		if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// TestApplyUserGlobalConfig_MemoryMax: config memory_max applied when flag absent.
+	// Mutation target: deleting `f.memoryMaxMiB = uint32(userCfg.Sandbox.MemoryMax)`
+	// turns this RED (field silently dropped).
+	t.Run("config memory_max applied when flag absent", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		writeMemoryMaxConfig(t, dir, 2048)
+
+		f := sandboxCreateFlags{} // memoryMaxMiB == 0 → flag absent
+		if err := applyUserGlobalConfig(&f); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if f.memoryMaxMiB != 2048 {
+			t.Errorf("memoryMaxMiB = %d, want 2048 (config must be applied when flag absent)", f.memoryMaxMiB)
+		}
+	})
+
+	// CLI --memory-max wins over user-global config memory_max.
+	// Mutation target: inverting or removing the `f.memoryMaxMiB == 0` guard
+	// causes the config to overwrite the CLI value → turns RED.
+	t.Run("explicit --memory-max wins over config memory_max", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		writeMemoryMaxConfig(t, dir, 2048)
+
+		f := sandboxCreateFlags{memoryMaxMiB: 3072} // --memory-max 3072 was passed
+		if err := applyUserGlobalConfig(&f); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if f.memoryMaxMiB != 3072 {
+			t.Errorf("memoryMaxMiB = %d, want 3072 (CLI --memory-max must beat user-global config)", f.memoryMaxMiB)
+		}
+	})
+
+	// Absent memory_max field leaves memoryMaxMiB zero (no-op).
+	t.Run("absent config memory_max leaves memoryMaxMiB zero", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		writeMemoryMaxConfig(t, dir, 0) // omit memory_max
+
+		f := sandboxCreateFlags{}
+		if err := applyUserGlobalConfig(&f); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if f.memoryMaxMiB != 0 {
+			t.Errorf("memoryMaxMiB = %d, want 0 (absent field must be a no-op)", f.memoryMaxMiB)
 		}
 	})
 }

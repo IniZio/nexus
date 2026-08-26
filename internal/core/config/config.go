@@ -116,6 +116,14 @@ type SandboxConfig struct {
 	//   sandbox:
 	//     agent: claude-code
 	Agent string `yaml:"agent"`
+
+	// MemoryMax is the RAM hotplug ceiling in MiB. Zero means "use the
+	// built-in default" (typically 4× boot memory or 4096 MiB, whichever is
+	// larger). Must exceed the boot Memory when both are set.
+	//
+	// Applies to both the project nexus3.yaml and the user-global config.yaml.
+	// CLI --memory-max always wins over either config source.
+	MemoryMax int `yaml:"memory_max"`
 }
 
 // Config is the in-memory representation of a nexus3.yaml file.

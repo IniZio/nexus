@@ -496,6 +496,20 @@ func applyProjectConfig(f *sandboxCreateFlags) error {
 		f.agentName = cfg.Sandbox.Agent
 	}
 
+	// MemoryMax: explicit --memory-max flag wins (zero is the "not set" sentinel).
+	// Project config provides a per-repo ceiling when the flag was absent.
+	// applyUserGlobalConfig (called after this) provides a further user-level fallback.
+	if f.memoryMaxMiB == 0 && cfg.Sandbox.MemoryMax > 0 {
+		f.memoryMaxMiB = uint32(cfg.Sandbox.MemoryMax)
+		// Re-validate ceiling > boot consistency now that config may have set the ceiling
+		// against a boot size that was already resolved (from the CLI flag or config above).
+		if f.memoryMaxMiB > 0 && f.memoryMiB > 0 && f.memoryMaxMiB < f.memoryMiB {
+			return &UsageError{Msg: fmt.Sprintf(
+				"sandbox create: --memory-max %d MiB is less than --memory %d MiB; ceiling must exceed boot size",
+				f.memoryMaxMiB, f.memoryMiB)}
+		}
+	}
+
 	return nil
 }
 
@@ -517,24 +531,37 @@ func applyProjectConfig(f *sandboxCreateFlags) error {
 // breaking every sandbox create when the user-global config has a stale or
 // misspelled agent name.
 func applyUserGlobalConfig(f *sandboxCreateFlags) error {
-	if f.agentName != "" {
-		return nil // explicit --agent already set; user-global config cannot override it
-	}
 	userCfg, err := config.LoadUserGlobal()
 	if err != nil {
-		slog.Warn("sandbox create: user-global config load failed; skipping agent default", "err", err)
+		slog.Warn("sandbox create: user-global config load failed; skipping user-global defaults", "err", err)
 		return nil
 	}
-	if userCfg.Sandbox.Agent == "" {
-		return nil
+
+	// Agent: explicit --agent flag (or project config via applyProjectConfig) wins;
+	// user-global config provides a further fallback when neither set an agent.
+	// An unknown agent name is non-fatal: log and skip (unlike the project config
+	// where an unknown agent name is a hard error).
+	if f.agentName == "" && userCfg.Sandbox.Agent != "" {
+		if _, ok := cred.ProfileByName(userCfg.Sandbox.Agent); !ok {
+			slog.Warn("sandbox create: user-global config sandbox.agent is not a known agent; ignoring",
+				"agent", userCfg.Sandbox.Agent,
+				"known", strings.Join(cred.ProfileNames(), ", "))
+		} else {
+			f.agentName = userCfg.Sandbox.Agent
+		}
 	}
-	if _, ok := cred.ProfileByName(userCfg.Sandbox.Agent); !ok {
-		slog.Warn("sandbox create: user-global config sandbox.agent is not a known agent; ignoring",
-			"agent", userCfg.Sandbox.Agent,
-			"known", strings.Join(cred.ProfileNames(), ", "))
-		return nil
+
+	// MemoryMax: explicit --memory-max flag (or project nexus3.yaml) wins;
+	// user-global config provides a further fallback ceiling when neither supplied one.
+	if f.memoryMaxMiB == 0 && userCfg.Sandbox.MemoryMax > 0 {
+		f.memoryMaxMiB = uint32(userCfg.Sandbox.MemoryMax)
+		if f.memoryMaxMiB > 0 && f.memoryMiB > 0 && f.memoryMaxMiB < f.memoryMiB {
+			return &UsageError{Msg: fmt.Sprintf(
+				"sandbox create: --memory-max %d MiB is less than --memory %d MiB; ceiling must exceed boot size",
+				f.memoryMaxMiB, f.memoryMiB)}
+		}
 	}
-	f.agentName = userCfg.Sandbox.Agent
+
 	return nil
 }
 
@@ -1125,8 +1152,8 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		return cfgErr
 	}
 
-	// Apply user-global defaults (~/.config/nexus3/config.yaml). Currently
-	// only sandbox.agent is sourced here; errors are non-fatal (logged only).
+	// Apply user-global defaults (~/.config/nexus3/config.yaml).
+	// Sources: sandbox.agent, sandbox.memory_max. Errors are non-fatal (logged only).
 	if cfgErr := applyUserGlobalConfig(&f); cfgErr != nil {
 		return cfgErr
 	}

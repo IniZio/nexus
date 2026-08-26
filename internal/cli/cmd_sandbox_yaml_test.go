@@ -129,6 +129,66 @@ sandbox:
 	}
 }
 
+// TestApplyProjectConfig_MemoryMax verifies the sandbox.memory_max knob:
+//
+//  1. A config with memory_max set populates f.memoryMaxMiB when the CLI flag
+//     was absent (memoryMaxMiB == 0).
+//  2. An explicit CLI --memory-max value (memoryMaxMiB != 0) is NOT overwritten
+//     by the config — the guard `f.memoryMaxMiB == 0` must hold.
+//  3. An absent config field leaves f.memoryMaxMiB at zero (no-op).
+//
+// Mutation proofs:
+//   - Delete the `f.memoryMaxMiB == 0` guard in applyProjectConfig → subtest 1
+//     still passes but subtest 2 turns RED (config overwrites the CLI value).
+//   - Delete the assignment `f.memoryMaxMiB = uint32(cfg.Sandbox.MemoryMax)` →
+//     subtest 1 turns RED (config value is silently dropped).
+func TestApplyProjectConfig_MemoryMax(t *testing.T) {
+	t.Run("config memory_max applied when flag absent", func(t *testing.T) {
+		dir := t.TempDir()
+		writeGitRoot(t, dir)
+		writeYaml(t, dir, "version: 1\nsandbox:\n  memory_max: 2048\n")
+		t.Chdir(dir)
+
+		f := sandboxCreateFlags{} // memoryMaxMiB == 0 → flag absent
+		if err := applyProjectConfig(&f); err != nil {
+			t.Fatalf("applyProjectConfig: %v", err)
+		}
+		if f.memoryMaxMiB != 2048 {
+			t.Errorf("memoryMaxMiB = %d, want 2048 (config must be applied when flag absent)", f.memoryMaxMiB)
+		}
+	})
+
+	t.Run("CLI --memory-max wins over config memory_max", func(t *testing.T) {
+		dir := t.TempDir()
+		writeGitRoot(t, dir)
+		writeYaml(t, dir, "version: 1\nsandbox:\n  memory_max: 2048\n")
+		t.Chdir(dir)
+
+		f := sandboxCreateFlags{memoryMaxMiB: 3072} // --memory-max 3072 was passed
+		if err := applyProjectConfig(&f); err != nil {
+			t.Fatalf("applyProjectConfig: %v", err)
+		}
+		if f.memoryMaxMiB != 3072 {
+			t.Errorf("memoryMaxMiB = %d, want 3072 (CLI --memory-max must beat config)", f.memoryMaxMiB)
+		}
+	})
+
+	t.Run("absent config field leaves memoryMaxMiB zero", func(t *testing.T) {
+		dir := t.TempDir()
+		writeGitRoot(t, dir)
+		writeYaml(t, dir, "version: 1\n")
+		t.Chdir(dir)
+
+		f := sandboxCreateFlags{}
+		if err := applyProjectConfig(&f); err != nil {
+			t.Fatalf("applyProjectConfig: %v", err)
+		}
+		if f.memoryMaxMiB != 0 {
+			t.Errorf("memoryMaxMiB = %d, want 0 (absent field must be a no-op)", f.memoryMaxMiB)
+		}
+	})
+}
+
 // TestApplyProjectConfig_ConfigMountsResolvedAgainstConfigDir verifies that a
 // relative host path in sandbox.mounts is made absolute relative to the
 // nexus3.yaml file's directory, NOT the process cwd.
@@ -384,6 +444,22 @@ func TestApplyProjectConfig_FieldGuardCoverage(t *testing.T) {
 			check: func(t *testing.T, f sandboxCreateFlags) {
 				if f.agentName != "claude-code" {
 					t.Errorf("agent: config overwrote CLI --agent flag: got %q, want %q", f.agentName, "claude-code")
+				}
+			},
+		},
+		{
+			// memory_max: when no --memory-max flag was given (f.memoryMaxMiB == 0),
+			// the config value is applied. When the flag WAS given (non-zero), the
+			// guard `f.memoryMaxMiB == 0` must block the config from overwriting it.
+			// Guard is the `f.memoryMaxMiB == 0` check in applyProjectConfig.
+			// Mutation target: deleting the guard causes config to overwrite the CLI
+			// value → this case turns RED.
+			yamlTag:    "memory_max",
+			configYAML: "version: 1\nsandbox:\n  memory_max: 2048\n",
+			setupFlags: func(f *sandboxCreateFlags) { f.memoryMaxMiB = 3072 }, // CLI --memory-max 3072
+			check: func(t *testing.T, f sandboxCreateFlags) {
+				if f.memoryMaxMiB != 3072 {
+					t.Errorf("memory_max: config overwrote CLI --memory-max flag: got %d, want 3072", f.memoryMaxMiB)
 				}
 			},
 		},

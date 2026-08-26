@@ -63,6 +63,12 @@
           "type": "string",
           "description": "Default agent profile name applied when no --agent flag is given (e.g. \"claude-code\"). Empty means no agent by default.",
           "default": ""
+        },
+        "memory_max": {
+          "type": "integer",
+          "description": "RAM hotplug ceiling in MiB. 0 means use the built-in default (typically 4× boot memory or 4096 MiB, whichever is larger). Must exceed sandbox.memory when both are set. CLI --memory-max always wins over this config value.",
+          "default": 0,
+          "minimum": 0
         }
       }
     }
