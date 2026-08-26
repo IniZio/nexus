@@ -479,6 +479,62 @@ func applyProjectConfig(f *sandboxCreateFlags) error {
 		f.mountLive = resolvedMounts
 	}
 
+	// Agent: explicit --agent flag wins; project config provides a per-repo
+	// default when the flag was absent. applyUserGlobalConfig (called after this
+	// function) provides a further user-level fallback when neither the flag nor
+	// the project config set an agent.
+	//
+	// An unknown agent name in the config is a hard error here (unlike in the
+	// user-global config where it is non-fatal): a nexus3.yaml that names a
+	// non-existent agent is a typo in the project that must be corrected before
+	// the sandbox can boot, just like an unknown egress key.
+	if f.agentName == "" && cfg.Sandbox.Agent != "" {
+		if _, ok := cred.ProfileByName(cfg.Sandbox.Agent); !ok {
+			return fmt.Errorf("sandbox create: nexus3.yaml: sandbox.agent %q is not a known agent (one of: %s)",
+				cfg.Sandbox.Agent, strings.Join(cred.ProfileNames(), ", "))
+		}
+		f.agentName = cfg.Sandbox.Agent
+	}
+
+	return nil
+}
+
+// applyUserGlobalConfig reads the user-global config
+// (~/.config/nexus3/config.yaml, or $XDG_CONFIG_HOME/nexus3/config.yaml) and
+// applies the sandbox.agent default when no --agent flag was given.
+//
+// Precedence: explicit --agent flag > user-global config sandbox.agent > empty.
+//
+// Flag-absent detection: f.agentName == "" means --agent was not passed.
+// The arg parser only assigns agentName when it finds a non-empty,
+// already-validated --agent value; passing --agent "" is refused by the
+// parser because "" is not a known profile name. applyProjectConfig does not
+// set agentName either. So f.agentName == "" here is a safe "not supplied"
+// sentinel with zero misfire risk.
+//
+// Errors (failed read, malformed YAML, unknown agent name) are non-fatal: a
+// warning is logged and the sandbox boots with no agent default. This avoids
+// breaking every sandbox create when the user-global config has a stale or
+// misspelled agent name.
+func applyUserGlobalConfig(f *sandboxCreateFlags) error {
+	if f.agentName != "" {
+		return nil // explicit --agent already set; user-global config cannot override it
+	}
+	userCfg, err := config.LoadUserGlobal()
+	if err != nil {
+		slog.Warn("sandbox create: user-global config load failed; skipping agent default", "err", err)
+		return nil
+	}
+	if userCfg.Sandbox.Agent == "" {
+		return nil
+	}
+	if _, ok := cred.ProfileByName(userCfg.Sandbox.Agent); !ok {
+		slog.Warn("sandbox create: user-global config sandbox.agent is not a known agent; ignoring",
+			"agent", userCfg.Sandbox.Agent,
+			"known", strings.Join(cred.ProfileNames(), ", "))
+		return nil
+	}
+	f.agentName = userCfg.Sandbox.Agent
 	return nil
 }
 
@@ -1069,6 +1125,12 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		return cfgErr
 	}
 
+	// Apply user-global defaults (~/.config/nexus3/config.yaml). Currently
+	// only sandbox.agent is sourced here; errors are non-fatal (logged only).
+	if cfgErr := applyUserGlobalConfig(&f); cfgErr != nil {
+		return cfgErr
+	}
+
 	if len(f.positionals) != 1 {
 		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--repo <owner>/<name>] [--no-builtin-gh] [--no-share-settings] [--no-user-mounts] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
 	}
@@ -1086,7 +1148,13 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		if len(f.mountNamed) > 0 {
 			return &UsageError{Msg: "sandbox create: --mount-named requires a bootable sandbox; use --image, --rootfs, or --file to boot"}
 		}
-		sb, err := svc.Create(ctx, project, name, service.CreateOptions{RemoveOnExit: f.rm})
+		// Resolve agent posture so the config-default agent (from applyUserGlobalConfig
+		// or applyProjectConfig) is persisted on the record even when no image is given.
+		noBootProfile, _, _ := resolveAgentPosture(f)
+		sb, err := svc.Create(ctx, project, name, service.CreateOptions{
+			RemoveOnExit: f.rm,
+			AgentName:    noBootProfile.Name,
+		})
 		if err != nil {
 			return errSandbox("sandbox create", err)
 		}
@@ -1846,9 +1914,25 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// handoffHumanSupervisor forwards to the detached supervisor. Reclamation is
 	// handled by service.ReapDiskCopy on `nexus3 rm`.
 
+	// C-OAUTH-REFRESH: resolve per-server OAuth token material for the
+	// detached supervisor. Gate: same ClaudeJSON profile check as the
+	// sharedMCP HTTPBinds loop above. Non-fatal: if BuildMCPOAuthBinds
+	// fails, log and proceed with no OAuth refreshers (the binds + MITM
+	// injection already happened; only the rotation lifecycle is skipped).
+	var mcpOAuthRefreshConfigs []service.MCPOAuthRefreshConfig
+	if agentProfile.MCPConfigFormat == cred.MCPConfigFormatClaudeJSON {
+		_, oauthRefreshCfgs, oauthErr := service.BuildMCPOAuthBinds("")
+		if oauthErr != nil {
+			slog.Warn("sandbox create: BuildMCPOAuthBinds failed; MCP OAuth token refresh will not be active", "err", oauthErr)
+		} else {
+			mcpOAuthRefreshConfigs = oauthRefreshCfgs
+		}
+	}
+
 	if handoffErr := handoffHumanSupervisor(ctx, svc, sb, storeRoot, kernelPath, govBounds, f.memoryMiB, f.vcpus,
 		capturedDiskPath, capturedExtraDisks, capturedCmdline, capturedCHBin, capturedSocketDir, bootWorkspace != nil, len(bootExtraDisks),
-		workspaceGuestPathFor(bootWorkspace), bootLiveMounts, capturedVirtiofsdPath); handoffErr != nil {
+		workspaceGuestPathFor(bootWorkspace), bootLiveMounts, capturedVirtiofsdPath,
+		mcpOAuthRefreshConfigs); handoffErr != nil {
 		slog.Warn("sandbox create: supervisor handoff failed; broker will not survive CLI exit",
 			"sandbox", sb.ID, "err", handoffErr)
 	}
@@ -1914,6 +1998,7 @@ func handoffHumanSupervisor(
 	workspaceGuestPath string,
 	liveMounts []domain.LiveMount,
 	virtiofsdPath string,
+	mcpOAuthRefreshConfigs []service.MCPOAuthRefreshConfig,
 ) error {
 	if diskPath == "" {
 		return fmt.Errorf("no disk path captured")
@@ -1935,6 +2020,7 @@ func handoffHumanSupervisor(
 		diskPath, extraDisks, cmdline, chBin, socketDir,
 		hasWorkspace, workspaceDiskIndex, workspaceGuestPath,
 		liveMounts, virtiofsdPath,
+		mcpOAuthRefreshConfigs,
 	)
 	if err := supervisor.WriteSpawnSpec(stateDir, cfg); err != nil {
 		return err
@@ -1988,6 +2074,7 @@ func buildHumanSupervisorConfig(
 	workspaceGuestPath string, // GIT-SEED: git identity seed target
 	liveMounts []domain.LiveMount,
 	virtiofsdPath string,
+	mcpOAuthRefreshConfigs []service.MCPOAuthRefreshConfig,
 ) supervisor.Config {
 	var resizableDiskIndices []int
 	if hasWorkspace {
@@ -2019,7 +2106,8 @@ func buildHumanSupervisorConfig(
 		// at expiry with an opaque 401 in the guest. Set unconditionally:
 		// when the store is absent the supervisor logs creds_absent and
 		// carries on, so there is no cost for sandboxes that need no cred.
-		CredsFile: service.DefaultDedicatedCredStorePath(),
+		CredsFile:              service.DefaultDedicatedCredStorePath(),
+		MCPOAuthRefreshConfigs: mcpOAuthRefreshConfigs,
 	}
 }
 

@@ -58,6 +58,11 @@
             "description": "Mount spec in \"<host-path>:<guest-path>\" format."
           },
           "default": []
+        },
+        "agent": {
+          "type": "string",
+          "description": "Default agent profile name applied when no --agent flag is given (e.g. \"claude-code\"). Empty means no agent by default.",
+          "default": ""
         }
       }
     }

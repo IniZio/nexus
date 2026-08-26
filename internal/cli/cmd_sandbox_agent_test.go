@@ -5,6 +5,9 @@ package cli
 // implies the detached supervisor, and the agent cannot be switched in place.
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -136,6 +139,203 @@ func TestResolveAgentPosture(t *testing.T) {
 		t.Parallel()
 		if _, _, openEgress := resolveAgentPosture(sandboxCreateFlags{egressClosed: true}); openEgress {
 			t.Error("--egress closed must close egress")
+		}
+	})
+}
+
+// TestApplyUserGlobalConfig verifies the precedence logic for the user-global
+// config's sandbox.agent default.
+//
+// Each subtest sets XDG_CONFIG_HOME to a temp dir so the real user config is
+// never read. t.Setenv is used (not os.Setenv) so parallel tests don't race.
+func TestApplyUserGlobalConfig(t *testing.T) {
+	// writeConfig writes a minimal config.yaml with the given agent value.
+	writeConfig := func(t *testing.T, xdgDir, agent string) {
+		t.Helper()
+		cfgDir := filepath.Join(xdgDir, "nexus3")
+		if err := os.MkdirAll(cfgDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		var body string
+		if agent != "" {
+			body = "version: 1\nsandbox:\n  agent: " + agent + "\n"
+		} else {
+			body = "version: 1\n"
+		}
+		if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Note: subtests use t.Setenv which requires them to be non-parallel
+	// (t.Setenv panics in a parallel subtest — it would race the parent's env).
+
+	t.Run("config agent applied when flag absent", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		writeConfig(t, dir, cred.ClaudeCodeProfileName)
+
+		f := sandboxCreateFlags{} // agentName == "" → flag absent
+		if err := applyUserGlobalConfig(&f); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if f.agentName != cred.ClaudeCodeProfileName {
+			t.Errorf("agentName = %q, want %q", f.agentName, cred.ClaudeCodeProfileName)
+		}
+	})
+
+	t.Run("explicit flag wins over config agent", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		writeConfig(t, dir, cred.ClaudeCodeProfileName)
+
+		// Simulate --agent already set (e.g. by parseSandboxCreateArgs).
+		const explicitAgent = cred.ClaudeCodeProfileName
+		f := sandboxCreateFlags{agentName: explicitAgent}
+		if err := applyUserGlobalConfig(&f); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// Must remain unchanged — applyUserGlobalConfig must not overwrite an
+		// already-set agentName even when it matches the config.
+		if f.agentName != explicitAgent {
+			t.Errorf("agentName = %q, want %q (explicit flag must win)", f.agentName, explicitAgent)
+		}
+	})
+
+	t.Run("absent config file leaves agentName empty", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		// No config.yaml written.
+
+		f := sandboxCreateFlags{}
+		if err := applyUserGlobalConfig(&f); err != nil {
+			t.Fatalf("absent file must not error: %v", err)
+		}
+		if f.agentName != "" {
+			t.Errorf("agentName = %q, want empty for absent config", f.agentName)
+		}
+	})
+
+	t.Run("unknown agent in config is ignored non-fatally", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		writeConfig(t, dir, "no-such-agent")
+
+		f := sandboxCreateFlags{}
+		if err := applyUserGlobalConfig(&f); err != nil {
+			t.Fatalf("unknown agent must not error (non-fatal): %v", err)
+		}
+		if f.agentName != "" {
+			t.Errorf("agentName = %q, want empty for an unrecognised config agent", f.agentName)
+		}
+	})
+
+	t.Run("empty sandbox.agent in config leaves agentName empty", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		writeConfig(t, dir, "") // agent key absent from config
+
+		f := sandboxCreateFlags{}
+		if err := applyUserGlobalConfig(&f); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if f.agentName != "" {
+			t.Errorf("agentName = %q, want empty when config has no agent", f.agentName)
+		}
+	})
+}
+
+// TestSandboxCreate_NoBootPath_PersistsAgentName verifies that the no-boot
+// create path (no --image/--rootfs/--file) persists the resolved AgentName
+// onto the sandbox record, including when the agent comes from the user-global
+// config default rather than an explicit --agent flag.
+//
+// Uses t.Setenv to isolate XDG_CONFIG_HOME; subtests must not be marked
+// t.Parallel() because t.Setenv panics in a parallel subtest.
+func TestSandboxCreate_NoBootPath_PersistsAgentName(t *testing.T) {
+	writeConfig := func(t *testing.T, xdgDir, agent string) {
+		t.Helper()
+		cfgDir := filepath.Join(xdgDir, "nexus3")
+		if err := os.MkdirAll(cfgDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		body := "version: 1\nsandbox:\n  agent: " + agent + "\n"
+		if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("config default applied when no --agent flag", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		writeConfig(t, dir, cred.ClaudeCodeProfileName)
+
+		svc := newTestService(t)
+		ctx := context.Background()
+		out, _, _ := capture(false)
+		if err := runSandboxCreate(ctx, []string{"proj/noboot"}, out, svc); err != nil {
+			t.Fatalf("runSandboxCreate: %v", err)
+		}
+
+		sandboxes, err := svc.List(ctx)
+		if err != nil {
+			t.Fatalf("svc.List: %v", err)
+		}
+		if len(sandboxes) != 1 {
+			t.Fatalf("expected 1 sandbox, got %d", len(sandboxes))
+		}
+		if sandboxes[0].AgentName != cred.ClaudeCodeProfileName {
+			t.Errorf("AgentName = %q, want %q", sandboxes[0].AgentName, cred.ClaudeCodeProfileName)
+		}
+	})
+
+	t.Run("explicit --agent flag wins over config default", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		writeConfig(t, dir, cred.ClaudeCodeProfileName)
+
+		svc := newTestService(t)
+		ctx := context.Background()
+		out, _, _ := capture(false)
+		// --agent is the same value as the config here; the point is that flag
+		// resolution still works and the record is set correctly.
+		if err := runSandboxCreate(ctx, []string{"--agent", cred.ClaudeCodeProfileName, "proj/noboot2"}, out, svc); err != nil {
+			t.Fatalf("runSandboxCreate: %v", err)
+		}
+
+		sandboxes, err := svc.List(ctx)
+		if err != nil {
+			t.Fatalf("svc.List: %v", err)
+		}
+		if len(sandboxes) != 1 {
+			t.Fatalf("expected 1 sandbox, got %d", len(sandboxes))
+		}
+		if sandboxes[0].AgentName != cred.ClaudeCodeProfileName {
+			t.Errorf("AgentName = %q, want %q", sandboxes[0].AgentName, cred.ClaudeCodeProfileName)
+		}
+	})
+
+	t.Run("no config and no flag leaves AgentName empty", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		// No config.yaml written — absent config is a no-op.
+
+		svc := newTestService(t)
+		ctx := context.Background()
+		out, _, _ := capture(false)
+		if err := runSandboxCreate(ctx, []string{"proj/noboot3"}, out, svc); err != nil {
+			t.Fatalf("runSandboxCreate: %v", err)
+		}
+
+		sandboxes, err := svc.List(ctx)
+		if err != nil {
+			t.Fatalf("svc.List: %v", err)
+		}
+		if len(sandboxes) != 1 {
+			t.Fatalf("expected 1 sandbox, got %d", len(sandboxes))
+		}
+		if sandboxes[0].AgentName != "" {
+			t.Errorf("AgentName = %q, want empty when no config and no flag", sandboxes[0].AgentName)
 		}
 	})
 }

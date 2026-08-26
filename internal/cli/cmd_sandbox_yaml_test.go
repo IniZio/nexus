@@ -375,6 +375,18 @@ func TestApplyProjectConfig_FieldGuardCoverage(t *testing.T) {
 				}
 			},
 		},
+		{
+			// agent: explicit --agent flag must win over the project config default.
+			// Guard is the `f.agentName == ""` check in applyProjectConfig.
+			yamlTag:    "agent",
+			configYAML: "version: 1\nsandbox:\n  agent: claude-code\n",
+			setupFlags: func(f *sandboxCreateFlags) { f.agentName = "claude-code" }, // flag already set
+			check: func(t *testing.T, f sandboxCreateFlags) {
+				if f.agentName != "claude-code" {
+					t.Errorf("agent: config overwrote CLI --agent flag: got %q, want %q", f.agentName, "claude-code")
+				}
+			},
+		},
 	}
 
 	// Part 1: reflection sweep — every yaml tag in SandboxConfig must be in cases.

@@ -103,6 +103,19 @@ type SandboxConfig struct {
 	// Both normalise to the canonical "host:guest[:ro]" string.
 	// Host-relative paths are resolved against the nexus3.yaml directory.
 	Mounts Mounts `yaml:"mounts"`
+
+	// Agent is the default agent profile name applied when no --agent flag is
+	// given at sandbox create time. Must be a registered cred.AgentProfile name
+	// (e.g. "claude-code"). Empty (the default) means no agent by default.
+	//
+	// User-global location: $XDG_CONFIG_HOME/nexus3/config.yaml
+	// (falls back to ~/.config/nexus3/config.yaml).
+	//
+	// Example:
+	//   version: 1
+	//   sandbox:
+	//     agent: claude-code
+	Agent string `yaml:"agent"`
 }
 
 // Config is the in-memory representation of a nexus3.yaml file.
