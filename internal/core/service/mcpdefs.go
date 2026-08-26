@@ -29,6 +29,11 @@ type SharedMCPServers struct {
 	StdioEnv []byte
 }
 
+// buildMCPOAuthBindsFn is the injectable implementation used inside
+// BuildSharedMCPServers. Tests override it to supply synthetic OAuth binds
+// without touching the filesystem.
+var buildMCPOAuthBindsFn = BuildMCPOAuthBinds
+
 // BuildSharedMCPServers reads the agent's MCP definitions from the authoritative
 // sources (~/.claude.json top-level mcpServers UNIONed with ~/.claude/.mcp.json
 // for back-compat; ~/.claude.json wins on name collision) and returns the
@@ -52,10 +57,6 @@ func BuildSharedMCPServers(profile cred.AgentProfile) (SharedMCPServers, error) 
 		for k, v := range entries {
 			byName[k] = v
 		}
-	}
-
-	if len(byName) == 0 {
-		return SharedMCPServers{}, nil
 	}
 
 	names := make([]string, 0, len(byName))
@@ -117,6 +118,57 @@ func BuildSharedMCPServers(profile cred.AgentProfile) (SharedMCPServers, error) 
 			fmt.Fprintf(&buf, "%s=%s\n", k, stdioVars[k])
 		}
 		result.StdioEnv = buf.Bytes()
+	}
+
+	// Integrate OAuth MCP binds (same ClaudeJSON gate already checked above).
+	credPath := claudeCredentialsPath(profile)
+	oauthBinds, _, _ := buildMCPOAuthBindsFn(credPath)
+
+	// Index existing HTTPBinds by Env name to de-dupe.
+	existingEnvs := make(map[string]struct{}, len(result.HTTPBinds))
+	for _, b := range result.HTTPBinds {
+		existingEnvs[b.Env] = struct{}{}
+	}
+
+	for _, ob := range oauthBinds {
+		// 1. Register the SecretBind (allowlist + MITM injection) unless already present.
+		if _, seen := existingEnvs[ob.Bind.Env]; !seen {
+			result.HTTPBinds = append(result.HTTPBinds, ob.Bind)
+			existingEnvs[ob.Bind.Env] = struct{}{}
+		}
+
+		placeholder := "${" + ob.Bind.Env + "}"
+
+		// 2. Inject/merge the Authorization header placeholder into the guest Servers entry.
+		if existing, ok := result.Servers[ob.ServerName]; ok {
+			// Server exists — re-parse, inject header, re-encode. Skip stdio entries.
+			var e rawMCPEntry
+			if err := json.Unmarshal(existing, &e); err == nil && e.Command == "" {
+				if e.Headers == nil {
+					e.Headers = make(map[string]string)
+				}
+				e.Headers[ob.Header] = placeholder
+				if raw, err := json.Marshal(e); err == nil {
+					result.Servers[ob.ServerName] = raw
+				}
+			}
+		} else {
+			// Server absent from config — synthesize a minimal http guest entry.
+			host := ""
+			if len(ob.Bind.Hosts) > 0 {
+				host = ob.Bind.Hosts[0]
+			}
+			e := rawMCPEntry{
+				Type: "http",
+				URL:  "https://" + host,
+				Headers: map[string]string{
+					ob.Header: placeholder,
+				},
+			}
+			if raw, err := json.Marshal(e); err == nil {
+				result.Servers[ob.ServerName] = raw
+			}
+		}
 	}
 
 	return result, nil

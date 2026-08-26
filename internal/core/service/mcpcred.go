@@ -64,6 +64,20 @@ func resolveMCPStdioPayload(profile cred.AgentProfile) []byte {
 	return shared.StdioEnv
 }
 
+// claudeCredentialsPath returns the path to ~/.claude/.credentials.json using
+// the same profile-driven directory resolution as claudeMCPConfigPath.
+func claudeCredentialsPath(profile cred.AgentProfile) string {
+	dir := ""
+	if profile.ConfigDirEnvVar != "" {
+		dir = os.Getenv(profile.ConfigDirEnvVar)
+	}
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".claude")
+	}
+	return filepath.Join(dir, ".credentials.json")
+}
+
 // ResolveMCPHTTPBinds reads the agent's MCP config and derives a SecretBind
 // for each ${VAR} credential reference found in http/sse server headers or
 // URLs. The returned binds feed into the sandbox Secrets slice so the MITM

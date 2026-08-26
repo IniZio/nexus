@@ -288,3 +288,208 @@ func TestBuildSharedMCPServers_NonCredentialHeaderUntouched(t *testing.T) {
 		t.Errorf("want no HTTPBinds for non-credential header, got %d: %+v", len(got.HTTPBinds), got.HTTPBinds)
 	}
 }
+
+// injectOAuthFn overrides buildMCPOAuthBindsFn for the duration of a test.
+// It restores the original on cleanup.
+func injectOAuthFn(t *testing.T, fn func(string) ([]MCPOAuthBind, []MCPOAuthRefreshConfig, error)) {
+	t.Helper()
+	orig := buildMCPOAuthBindsFn
+	buildMCPOAuthBindsFn = fn
+	t.Cleanup(func() { buildMCPOAuthBindsFn = orig })
+}
+
+// linearOAuthBind returns a synthetic MCPOAuthBind for a Linear-like OAuth MCP.
+func linearOAuthBind() MCPOAuthBind {
+	return MCPOAuthBind{
+		ServerName: "linear-server",
+		Bind: SecretBind{
+			Env:   "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION",
+			Hosts: []string{"mcp.linear.app"},
+			Token: "Bearer real-linear-access-token",
+		},
+		Header: "Authorization",
+	}
+}
+
+// TestBuildSharedMCPServers_OAuthInjectsPlaceholderAndBind is the CORE SECURITY
+// TEST for OAuth MCP integration.
+//
+// A Linear-like http MCP with NO headers in the host config + an injected OAuth
+// bind must produce:
+//   - Servers["linear-server"].headers.Authorization == "${NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION}"
+//   - HTTPBinds contains the matching SecretBind (host mcp.linear.app, Bearer token)
+//   - The real token string NEVER appears in the marshaled Servers map.
+func TestBuildSharedMCPServers_OAuthInjectsPlaceholderAndBind(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+
+	// Linear-like http MCP with NO headers (the common OAuth case).
+	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{
+		"linear-server": map[string]any{
+			"type": "http",
+			"url":  "https://mcp.linear.app/mcp",
+		},
+	})
+
+	injectOAuthFn(t, func(_ string) ([]MCPOAuthBind, []MCPOAuthRefreshConfig, error) {
+		return []MCPOAuthBind{linearOAuthBind()}, nil, nil
+	})
+
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// — Guest Servers entry —
+	raw, ok := got.Servers["linear-server"]
+	if !ok {
+		t.Fatal("want server 'linear-server' in Servers map")
+	}
+	rawStr := string(raw)
+
+	const synVar = "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION"
+	const realToken = "real-linear-access-token"
+
+	// SECURITY: real token must NEVER appear in guest-visible Servers JSON.
+	if strings.Contains(rawStr, realToken) {
+		t.Errorf("SECURITY: real OAuth token leaked into Servers JSON — placeholder injection inactive; raw: %s", rawStr)
+	}
+	// Placeholder must be present.
+	if !strings.Contains(rawStr, "${"+synVar+"}") {
+		t.Errorf("want synthetic var ref ${%s} in Servers JSON, got: %s", synVar, rawStr)
+	}
+
+	// — HTTPBinds —
+	var found bool
+	for _, b := range got.HTTPBinds {
+		if b.Env == synVar {
+			found = true
+			if b.Token != "Bearer "+realToken {
+				t.Errorf("bind.Token = %q, want %q", b.Token, "Bearer "+realToken)
+			}
+			if len(b.Hosts) != 1 || b.Hosts[0] != "mcp.linear.app" {
+				t.Errorf("bind.Hosts = %v, want [mcp.linear.app]", b.Hosts)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("HTTPBinds missing bind for %s; binds: %+v", synVar, got.HTTPBinds)
+	}
+
+	// Token must not appear in the full marshaled Servers map.
+	fullMap, _ := json.Marshal(got.Servers)
+	if strings.Contains(string(fullMap), realToken) {
+		t.Errorf("SECURITY: real OAuth token found in full Servers marshal: %s", fullMap)
+	}
+}
+
+// TestBuildSharedMCPServers_OAuthSynthesizesAbsentServer verifies that a server
+// present in mcpOAuth but absent from the host config gets a synthesized guest
+// entry with the placeholder header.
+func TestBuildSharedMCPServers_OAuthSynthesizesAbsentServer(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+
+	// No MCP servers in config at all.
+	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{})
+
+	injectOAuthFn(t, func(_ string) ([]MCPOAuthBind, []MCPOAuthRefreshConfig, error) {
+		return []MCPOAuthBind{linearOAuthBind()}, nil, nil
+	})
+
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	raw, ok := got.Servers["linear-server"]
+	if !ok {
+		t.Fatal("want synthesized 'linear-server' in Servers map")
+	}
+	rawStr := string(raw)
+
+	const synVar = "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION"
+	if !strings.Contains(rawStr, "${"+synVar+"}") {
+		t.Errorf("want ${%s} in synthesized entry, got: %s", synVar, rawStr)
+	}
+	if strings.Contains(rawStr, "real-linear-access-token") {
+		t.Errorf("SECURITY: real token in synthesized Servers entry: %s", rawStr)
+	}
+	// Must be http type.
+	if !strings.Contains(rawStr, `"http"`) {
+		t.Errorf("synthesized entry should have type=http, got: %s", rawStr)
+	}
+}
+
+// TestBuildSharedMCPServers_OAuthProfileGateOff verifies that when the profile
+// format is not ClaudeJSON, no OAuth binds are added even when the injectable
+// would return them.
+func TestBuildSharedMCPServers_OAuthProfileGateOff(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+
+	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{
+		"linear-server": map[string]any{
+			"type": "http",
+			"url":  "https://mcp.linear.app/mcp",
+		},
+	})
+
+	injectOAuthFn(t, func(_ string) ([]MCPOAuthBind, []MCPOAuthRefreshConfig, error) {
+		return []MCPOAuthBind{linearOAuthBind()}, nil, nil
+	})
+
+	noopProfile := cred.ClaudeCodeProfile
+	noopProfile.MCPConfigFormat = cred.MCPConfigFormatNone
+
+	got, err := BuildSharedMCPServers(noopProfile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Profile gate fires before OAuth — nothing should be in the result.
+	if got.Servers != nil || got.HTTPBinds != nil || got.StdioEnv != nil {
+		t.Errorf("want zero-value result for non-claude-json format, got: %+v", got)
+	}
+}
+
+// TestBuildSharedMCPServers_OAuthDeduplicatesBind verifies that an OAuth bind
+// is not duplicated when the same server already has a literal header that
+// produced a bind via the normal sanitizeHTTPEntry path.
+func TestBuildSharedMCPServers_OAuthDeduplicatesBind(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+
+	const synVar = "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION"
+
+	// Server already has the Authorization header as a literal — sanitizeHTTPEntry
+	// will produce a bind for synVar. The OAuth bind has the same Env name.
+	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{
+		"linear-server": map[string]any{
+			"type": "http",
+			"url":  "https://mcp.linear.app/mcp",
+			"headers": map[string]any{
+				"Authorization": "Bearer literal-token",
+			},
+		},
+	})
+
+	injectOAuthFn(t, func(_ string) ([]MCPOAuthBind, []MCPOAuthRefreshConfig, error) {
+		return []MCPOAuthBind{linearOAuthBind()}, nil, nil
+	})
+
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Count how many binds have the synVar Env name.
+	count := 0
+	for _, b := range got.HTTPBinds {
+		if b.Env == synVar {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("want exactly 1 bind for %s, got %d; binds: %+v", synVar, count, got.HTTPBinds)
+	}
+}
