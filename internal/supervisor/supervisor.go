@@ -897,11 +897,6 @@ var seedAgentOnboardingFn = service.SeedGuestAgentOnboarding
 // service.SeedGuestBypassConsent; tests replace it with a spy (D-J12 mutation guard).
 var seedBypassConsentFn = service.SeedGuestBypassConsent
 
-// seedMCPServersFn is the function called by probeAndSeedGuest to merge the
-// MCP servers map into /root/.claude.json. Default is service.SeedGuestMCPServers;
-// tests may replace it.
-var seedMCPServersFn = service.SeedGuestMCPServers
-
 // seedUserMountsFn is the function called by probeAndSeedGuest to apply the
 // operator tool-dir overlay mounts and home symlink inside the guest. Default
 // is service.SeedGuestUserMounts; tests replace it with a spy.
@@ -1028,28 +1023,27 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 
 	// Claude CLI onboarding seed (D-J10). Writes ~/.claude.json so an
 	// interactively started claude skips the theme-picker, login, and
-	// folder-trust wizards and reaches its prompt directly. Non-fatal:
-	// the agent still works, it just opens first-run wizards.
-	if onbErr := seedAgentOnboardingFn(ctx, id, in.ProjectDir, in.Execer); onbErr != nil {
+	// folder-trust wizards and reaches its prompt directly. Also carries the
+	// mcpServers map (host-side Go merge, no in-guest node dependency) so
+	// shared host MCP server definitions are immediately available. Non-fatal:
+	// the agent still works without the seed, it just opens first-run wizards
+	// and loses shared MCP server definitions.
+	if onbErr := seedAgentOnboardingFn(ctx, id, in.ProjectDir, in.MCPServers, in.Execer); onbErr != nil {
 		slog.Warn("supervisor.agent_onboarding_seed_failed",
 			"sandbox", id, "path", service.GuestAgentOnboardingPath, "err", onbErr,
-			"action", "an interactively started agent in this guest will open first-run wizards")
+			"action", "interactively started agent will open first-run wizards and shared MCP servers will be absent")
 	} else {
 		slog.Info("supervisor.agent_onboarding_seeded",
-			"sandbox", id, "path", service.GuestAgentOnboardingPath)
+			"sandbox", id, "path", service.GuestAgentOnboardingPath,
+			"mcp_servers_count", len(in.MCPServers))
 	}
 
-	// MCP servers injection (mcp-defs-inject). Merges the sanitized
-	// mcpServers map into /root/.claude.json so the agent sees shared host
-	// MCP server definitions. Must run AFTER onboarding so the file exists.
-	// Gated on the same A-MOUNT share-settings signal (MCPServers non-nil).
-	// Non-fatal: the agent still works, it just loses host MCP definitions.
-	if mcpErr := seedMCPServersFn(ctx, id, in.MCPServers, in.Execer); mcpErr != nil {
-		slog.Warn("supervisor.mcp_servers_seed_failed",
-			"sandbox", id, "err", mcpErr,
-			"action", "guest claude will not see shared host MCP server definitions")
-	} else if len(in.MCPServers) > 0 {
-		slog.Info("supervisor.mcp_servers_seeded", "sandbox", id, "count", len(in.MCPServers))
+	// MCP servers are written host-side inside seedAgentOnboardingFn as part of
+	// the initial /root/.claude.json payload. Log when servers were requested so
+	// the supervisor trace shows the intent.
+	if len(in.MCPServers) > 0 {
+		slog.Info("supervisor.mcp_servers_included_in_onboarding",
+			"sandbox", id, "count", len(in.MCPServers))
 	}
 
 	// User-mount seed (usermount-guest-seed): home symlink, PATH drop-in, and

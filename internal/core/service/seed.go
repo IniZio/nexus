@@ -777,6 +777,13 @@ type claudeOnboardingConfig struct {
 	HasCompletedOnboarding bool                          `json:"hasCompletedOnboarding"`
 	Theme                  string                        `json:"theme"`
 	Projects               map[string]claudeProjectEntry `json:"projects,omitempty"`
+	// MCPServers is merged into the top-level mcpServers key so Claude Code reads
+	// shared host MCP server definitions without requiring any in-guest toolchain
+	// (the previous node-based merge exited 127 because node is absent from the
+	// guest image PATH). Values are json.RawMessage so placeholder refs like
+	// "${NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION}" are preserved verbatim for the
+	// MITM/refresher to swap at request time. Omitted when nil.
+	MCPServers map[string]json.RawMessage `json:"mcpServers,omitempty"`
 }
 
 type claudeProjectEntry struct {
@@ -798,13 +805,20 @@ type claudeProjectEntry struct {
 // skip the global wizards but will stop at the folder-trust dialog for
 // whichever directory it is started in.
 //
+// servers, when non-nil, is merged into the top-level mcpServers key of the
+// written JSON so Claude Code sees shared host MCP server definitions without
+// any in-guest toolchain dependency. Values are preserved verbatim
+// (json.RawMessage) so Authorization placeholder refs survive for the MITM
+// refresher. This replaces the previous in-guest node-based merge that exited
+// 127 because node is absent from the guest image PATH.
+//
 // The write is idempotent: if GuestAgentOnboardingPath already exists the
 // guest script exits 0 immediately, so real agent state accumulated after
 // first launch (project history, operator-granted allowedTools, userID) is
 // never clobbered.
 //
 // If execer is nil this is a no-op, matching SeedGuestShellProfile.
-func SeedGuestAgentOnboarding(ctx context.Context, id domain.SandboxID, projectDir string, execer GuestExecer) error {
+func SeedGuestAgentOnboarding(ctx context.Context, id domain.SandboxID, projectDir string, servers map[string]json.RawMessage, execer GuestExecer) error {
 	if execer == nil {
 		return nil
 	}
@@ -812,6 +826,7 @@ func SeedGuestAgentOnboarding(ctx context.Context, id domain.SandboxID, projectD
 	cfg := claudeOnboardingConfig{
 		HasCompletedOnboarding: true,
 		Theme:                  "dark",
+		MCPServers:             servers,
 	}
 	if projectDir != "" {
 		cfg.Projects = map[string]claudeProjectEntry{
@@ -846,37 +861,30 @@ func SeedGuestAgentOnboarding(ctx context.Context, id domain.SandboxID, projectD
 	return nil
 }
 
-// GuestBypassConsentScript merges skipDangerousModePermissionPrompt:true into
-// the guest's ~/.claude/settings.json.
+// GuestBypassConsentScript writes skipDangerousModePermissionPrompt:true into
+// the guest's ~/.claude/settings.json, reading the JSON payload from stdin.
 //
-// It MERGES rather than overwrites: settings.json is co-owned by the agent and
-// the operator; clobbering it would silently drop settings accumulated at
-// runtime (allowedTools, etc.).
+// The payload is built host-side (pure Go, no in-guest toolchain) and piped in
+// via stdin. This replaces the previous node-based implementation that exited
+// 127 because node is absent from the guest image PATH (claude 2.1.x is a
+// native ELF binary, not a Node.js program).
 //
-// The script runs under node, not python3/python/jq: all three are absent from
-// the claude agent image. node is at /usr/local/bin/node and is guaranteed
-// present because claude is itself a node program.
+// The write uses an atomic temp-file rename. The upper layer of the /root/.claude
+// overlayfs (fresh tmpfs per boot) starts empty, so there is no prior
+// settings.json to merge at seed time; writing the required key is sufficient.
+// The lower-layer (host-curated) settings.json is shadowed for the session but
+// is never modified on disk.
 //
-// Idempotent: re-running sets the same key to the same value; existing settings
-// are unaffected.
+// Idempotent within a session: re-running overwrites to the same value.
 const GuestBypassConsentScript = `set -e
 mkdir -p /root/.claude
-node -e '
-const fs = require("fs");
-const path = "/root/.claude/settings.json";
-let cfg = {};
-try {
-  const parsed = JSON.parse(fs.readFileSync(path, "utf8"));
-  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) cfg = parsed;
-} catch (e) { /* absent or unparseable: start from an empty object */ }
-cfg.skipDangerousModePermissionPrompt = true;
-const tmp = path + ".nexus3.tmp";
-fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2));
-fs.renameSync(tmp, path);
-'
+dst=/root/.claude/settings.json
+tmp="${dst}.nexus3.tmp.$$"
+cat > "$tmp"
+mv "$tmp" "$dst"
 `
 
-// SeedGuestBypassConsent merges skipDangerousModePermissionPrompt:true into
+// SeedGuestBypassConsent writes skipDangerousModePermissionPrompt:true into
 // the guest's ~/.claude/settings.json so that a `claude` invocation (via the
 // shell function added by SeedGuestShellProfile) does not block on the
 // bypass-permissions consent wizard.
@@ -890,72 +898,13 @@ func SeedGuestBypassConsent(ctx context.Context, id domain.SandboxID, execer Gue
 	if execer == nil {
 		return nil
 	}
-	code, err := execer(ctx, id, []string{"/bin/sh", "-c", GuestBypassConsentScript}, nil)
+	payload := []byte(`{"skipDangerousModePermissionPrompt":true}`)
+	code, err := execer(ctx, id, []string{"/bin/sh", "-c", GuestBypassConsentScript}, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("seed guest bypass consent: exec script: %w", err)
 	}
 	if code != 0 {
 		return fmt.Errorf("seed guest bypass consent: script exited %d", code)
-	}
-	return nil
-}
-
-// guestMCPServersScript merges an incoming mcpServers map into the guest's
-// /root/.claude.json top-level mcpServers key. It reads the merge-payload
-// ({"mcpServers":{...}}) from stdin via a temp file, then uses node to
-// deep-merge into the existing config without clobbering unrelated keys or
-// servers. Atomic write via temp-file rename.
-//
-// node is the only JSON-capable tool guaranteed present in the guest image
-// (/usr/local/bin/node); python3/jq are absent.
-const guestMCPServersScript = `set -e
-payload_tmp="/tmp/.nexus3-mcpservers.$$"
-cat > "$payload_tmp"
-PAYLOAD_PATH="$payload_tmp" node -e '
-const fs = require("fs");
-const payloadPath = process.env.PAYLOAD_PATH;
-const payload = JSON.parse(fs.readFileSync(payloadPath, "utf8"));
-const dst = "/root/.claude.json";
-let cfg = {};
-try {
-  const parsed = JSON.parse(fs.readFileSync(dst, "utf8"));
-  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) cfg = parsed;
-} catch (e) { /* absent or unparseable: start from empty */ }
-if (!cfg.mcpServers || typeof cfg.mcpServers !== "object" || Array.isArray(cfg.mcpServers)) {
-  cfg.mcpServers = {};
-}
-Object.assign(cfg.mcpServers, payload.mcpServers || {});
-const tmp = dst + ".nexus3.tmp";
-fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2));
-fs.renameSync(tmp, dst);
-'
-rm -f "$payload_tmp"
-`
-
-// SeedGuestMCPServers merges the given MCP servers map into the guest's
-// /root/.claude.json top-level mcpServers key. Claude Code reads user-scope
-// MCP definitions exclusively from that location.
-//
-// The merge is additive: existing servers under other names are left untouched;
-// per-server keys from servers overwrite same-named guests entries (idempotent
-// re-run produces identical output).
-//
-// Must be called AFTER SeedGuestAgentOnboarding so /root/.claude.json already
-// exists. If servers is empty or execer is nil this is a no-op.
-func SeedGuestMCPServers(ctx context.Context, id domain.SandboxID, servers map[string]json.RawMessage, execer GuestExecer) error {
-	if execer == nil || len(servers) == 0 {
-		return nil
-	}
-	payload, err := json.Marshal(map[string]any{"mcpServers": servers})
-	if err != nil {
-		return fmt.Errorf("seed guest mcp servers: marshal payload: %w", err)
-	}
-	code, err := execer(ctx, id, []string{"/bin/sh", "-c", guestMCPServersScript}, bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("seed guest mcp servers: exec script: %w", err)
-	}
-	if code != 0 {
-		return fmt.Errorf("seed guest mcp servers: script exited %d", code)
 	}
 	return nil
 }

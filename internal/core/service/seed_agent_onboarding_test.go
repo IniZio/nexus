@@ -73,7 +73,7 @@ type spyExecRecord struct {
 // convention established by SeedGuestShellProfile and SeedGuest.
 func TestSeedGuestAgentOnboarding_NilExecerIsNoOp(t *testing.T) {
 	var id domain.SandboxID
-	if err := SeedGuestAgentOnboarding(context.Background(), id, "/work", nil); err != nil {
+	if err := SeedGuestAgentOnboarding(context.Background(), id, "/work", nil, nil); err != nil {
 		t.Errorf("nil execer must be a no-op, got %v", err)
 	}
 }
@@ -85,7 +85,7 @@ func TestSeedGuestAgentOnboarding_WritesValidJSON(t *testing.T) {
 	spy, rec := newSpyExecer(t, dir)
 
 	var id domain.SandboxID
-	if err := SeedGuestAgentOnboarding(context.Background(), id, "/work", spy); err != nil {
+	if err := SeedGuestAgentOnboarding(context.Background(), id, "/work", nil, spy); err != nil {
 		t.Fatalf("SeedGuestAgentOnboarding: %v", err)
 	}
 	if !rec.Called {
@@ -139,7 +139,7 @@ func TestSeedGuestAgentOnboarding_ExistingFileIsUntouched(t *testing.T) {
 
 	spy, _ := newSpyExecer(t, dir)
 	var id domain.SandboxID
-	if err := SeedGuestAgentOnboarding(context.Background(), id, "/work", spy); err != nil {
+	if err := SeedGuestAgentOnboarding(context.Background(), id, "/work", nil, spy); err != nil {
 		t.Fatalf("SeedGuestAgentOnboarding: %v", err)
 	}
 
@@ -158,7 +158,7 @@ func TestSeedGuestAgentOnboarding_EmptyProjectDir(t *testing.T) {
 	spy, rec := newSpyExecer(t, dir)
 
 	var id domain.SandboxID
-	if err := SeedGuestAgentOnboarding(context.Background(), id, "", spy); err != nil {
+	if err := SeedGuestAgentOnboarding(context.Background(), id, "", nil, spy); err != nil {
 		t.Fatalf("SeedGuestAgentOnboarding: %v", err)
 	}
 	if !rec.Called {
@@ -199,7 +199,7 @@ func TestSeedGuestAgentOnboarding_SpecialCharsInProjectDir(t *testing.T) {
 			dir := t.TempDir()
 			spy, rec := newSpyExecer(t, dir)
 			var id domain.SandboxID
-			if err := SeedGuestAgentOnboarding(context.Background(), id, projectDir, spy); err != nil {
+			if err := SeedGuestAgentOnboarding(context.Background(), id, projectDir, nil, spy); err != nil {
 				t.Fatalf("SeedGuestAgentOnboarding(%q): %v", projectDir, err)
 			}
 			if !rec.Called {

@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -88,7 +89,7 @@ func TestProbeAndSeedGuest_LiveProberSeedIsInvoked(t *testing.T) {
 func TestProbeAndSeedGuest_AgentOnboardingIsInvoked(t *testing.T) {
 	onboardCalled := false
 	old := seedAgentOnboardingFn
-	seedAgentOnboardingFn = func(_ context.Context, _ domain.SandboxID, _ string, _ service.GuestExecer) error {
+	seedAgentOnboardingFn = func(_ context.Context, _ domain.SandboxID, _ string, _ map[string]json.RawMessage, _ service.GuestExecer) error {
 		onboardCalled = true
 		return nil
 	}
