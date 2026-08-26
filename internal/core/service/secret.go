@@ -215,11 +215,17 @@ func SeedGuestSecrets(ctx context.Context, broker *cred.Broker, id domain.Sandbo
 
 
 
-// applySecrets mints placeholders for each bind, wires real tokens into the
-// broker, and returns KEY=VALUE lines that the caller writes as the guest
-// cred.env (whole-file overwrite, not an append — the seeder owns the write).
-// The first host of each bind owns the placeholder emitted as Env (and, for
-// GH_TOKEN, also as GITHUB_TOKEN).
+// applySecrets mints ONE placeholder per bind, extends it to all hosts in the
+// bind via [cred.Broker.RegisterPlaceholderForHost], and returns KEY=VALUE lines
+// for the guest cred.env (whole-file overwrite — the seeder owns the write).
+//
+// Bug fix (multi-host bind): previously RegisterPlaceholder was called once per
+// host, minting a distinct placeholder per host. Only the first host's
+// placeholder was emitted as Env. ResolveScoped(emittedPH, id, "api.github.com")
+// returned ("", false) because emittedPH was registered under "github.com" only
+// → HTTP 401 on gh CLI and GraphQL calls. Now a single placeholder is minted for
+// the first host and then aliased to all remaining hosts so that
+// ResolveScoped(emittedPH, id, h) succeeds for every h in Hosts.
 func applySecrets(broker *cred.Broker, id domain.SandboxID, binds []SecretBind) (extra []byte, hosts []string, err error) {
 	if broker == nil || len(binds) == 0 {
 		return nil, nil, nil
@@ -230,15 +236,22 @@ func applySecrets(broker *cred.Broker, id domain.SandboxID, binds []SecretBind) 
 		if b.Env == "" || len(b.Hosts) == 0 {
 			return nil, nil, fmt.Errorf("secret: %q: env and at least one host required", b.Env)
 		}
-		var primary string
-		for i, h := range b.Hosts {
-			rec, regErr := broker.RegisterPlaceholder(id, h, b.Token)
-			if regErr != nil {
-				return nil, nil, fmt.Errorf("secret: register %s@%s: %w", b.Env, h, regErr)
+		// Mint ONE placeholder for the first host; this is the value emitted as Env.
+		rec, regErr := broker.RegisterPlaceholder(id, b.Hosts[0], b.Token)
+		if regErr != nil {
+			return nil, nil, fmt.Errorf("secret: register %s@%s: %w", b.Env, b.Hosts[0], regErr)
+		}
+		primary := rec.Placeholder
+		// Extend the same placeholder to every additional host so that
+		// ResolveScoped(primary, id, h) succeeds for all h in Hosts — not only
+		// the first. The host-boundary check in ResolveScoped is preserved: only
+		// hosts in this bind's Hosts set resolve; any other host returns ("", false).
+		for _, h := range b.Hosts[1:] {
+			if aliasErr := broker.RegisterPlaceholderForHost(id, primary, h); aliasErr != nil {
+				return nil, nil, fmt.Errorf("secret: alias %s@%s: %w", b.Env, h, aliasErr)
 			}
-			if i == 0 {
-				primary = rec.Placeholder
-			}
+		}
+		for _, h := range b.Hosts {
 			if _, ok := seenHost[h]; !ok {
 				seenHost[h] = struct{}{}
 				hosts = append(hosts, h)

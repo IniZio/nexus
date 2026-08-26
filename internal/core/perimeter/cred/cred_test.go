@@ -281,3 +281,134 @@ func TestEmptyHostRejected(t *testing.T) {
 		t.Error("RegisterPlaceholder with empty host: expected error, got nil")
 	}
 }
+
+// TestRegisterPlaceholderForHost_SharedPlaceholderResolvesAllHosts verifies that
+// a placeholder extended to multiple hosts resolves correctly for every host in
+// the set, and that the same placeholder value is returned by Placeholder() for
+// all of them.
+func TestRegisterPlaceholderForHost_SharedPlaceholderResolvesAllHosts(t *testing.T) {
+	t.Parallel()
+
+	b := cred.NewBroker()
+	sid := newSandboxID(40)
+	const realToken = "shared-real-token"
+	hosts := []string{"github.com", "api.github.com", "uploads.github.com"}
+
+	rec, err := b.RegisterPlaceholder(sid, hosts[0], realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+	primary := rec.Placeholder
+
+	for _, h := range hosts[1:] {
+		if err := b.RegisterPlaceholderForHost(sid, primary, h); err != nil {
+			t.Fatalf("RegisterPlaceholderForHost(%q): %v", h, err)
+		}
+	}
+
+	for _, h := range hosts {
+		// Placeholder() must return the shared placeholder for every host.
+		ph, ok := b.Placeholder(sid, h)
+		if !ok {
+			t.Errorf("Placeholder(id, %q): not found", h)
+			continue
+		}
+		if ph != primary {
+			t.Errorf("Placeholder(id, %q) = %q; want primary %q", h, ph, primary)
+		}
+
+		// ResolveScoped must resolve to the real token for every host.
+		got, ok := b.ResolveScoped(primary, sid, h)
+		if !ok || got != realToken {
+			t.Errorf("ResolveScoped(primary, id, %q): ok=%v tok=%q; want (%q, true)", h, ok, got, realToken)
+		}
+	}
+}
+
+// TestRegisterPlaceholderForHost_DoesNotResolveUnregisteredHost verifies that
+// the host-boundary security property is preserved after RegisterPlaceholderForHost:
+// a host NOT in the registered set must not resolve.
+func TestRegisterPlaceholderForHost_DoesNotResolveUnregisteredHost(t *testing.T) {
+	t.Parallel()
+
+	b := cred.NewBroker()
+	sid := newSandboxID(41)
+	rec, err := b.RegisterPlaceholder(sid, "github.com", "token")
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+	if err := b.RegisterPlaceholderForHost(sid, rec.Placeholder, "api.github.com"); err != nil {
+		t.Fatalf("RegisterPlaceholderForHost: %v", err)
+	}
+
+	// Unrelated host must not resolve.
+	tok, ok := b.ResolveScoped(rec.Placeholder, sid, "evil.example.com")
+	if ok {
+		t.Errorf("ResolveScoped(unrelated host): got (%q, true); want (\"\", false) — host-boundary breach", tok)
+	}
+}
+
+// TestRegisterPlaceholderForHost_CrossSandboxRejected verifies that a different
+// sandbox cannot alias a placeholder it does not own.
+func TestRegisterPlaceholderForHost_CrossSandboxRejected(t *testing.T) {
+	t.Parallel()
+
+	b := cred.NewBroker()
+	sidA := newSandboxID(42)
+	sidB := newSandboxID(43)
+
+	rec, err := b.RegisterPlaceholder(sidA, "github.com", "token-a")
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
+	// Sandbox B must not be able to extend sandbox A's placeholder.
+	if err := b.RegisterPlaceholderForHost(sidB, rec.Placeholder, "api.github.com"); err == nil {
+		t.Error("RegisterPlaceholderForHost with wrong sandboxID: expected error, got nil")
+	}
+
+	// And the placeholder must still not resolve for api.github.com under sandbox A
+	// (it was not extended successfully).
+	if _, ok := b.ResolveScoped(rec.Placeholder, sidA, "api.github.com"); ok {
+		t.Error("ResolveScoped after failed cross-sandbox extend: expected false")
+	}
+}
+
+// TestRevokeOneHostKeepsPlaceholderAliveForOthers verifies that revoking one host
+// from a multi-host bind does not remove the placeholder from byPlaceholder —
+// Resolve still works for the remaining hosts.
+func TestRevokeOneHostKeepsPlaceholderAliveForOthers(t *testing.T) {
+	t.Parallel()
+
+	b := cred.NewBroker()
+	sid := newSandboxID(44)
+	rec, err := b.RegisterPlaceholder(sid, "github.com", "token")
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+	if err := b.RegisterPlaceholderForHost(sid, rec.Placeholder, "api.github.com"); err != nil {
+		t.Fatalf("RegisterPlaceholderForHost: %v", err)
+	}
+
+	// Revoke only the first host.
+	b.Revoke(sid, "github.com")
+
+	// Placeholder must still resolve (api.github.com is still registered).
+	if _, ok := b.Resolve(rec.Placeholder); !ok {
+		t.Error("Resolve after single-host revoke: want ok=true (other host still live)")
+	}
+	// Revoked host must no longer resolve via ResolveScoped.
+	if _, ok := b.ResolveScoped(rec.Placeholder, sid, "github.com"); ok {
+		t.Error("ResolveScoped(revoked host): want false")
+	}
+	// Remaining host must still resolve.
+	if _, ok := b.ResolveScoped(rec.Placeholder, sid, "api.github.com"); !ok {
+		t.Error("ResolveScoped(remaining host): want true")
+	}
+
+	// Revoke the last host; now placeholder must be fully gone.
+	b.Revoke(sid, "api.github.com")
+	if _, ok := b.Resolve(rec.Placeholder); ok {
+		t.Error("Resolve after all-hosts revoke: want false")
+	}
+}

@@ -42,6 +42,62 @@ func TestMergeSecrets_ExplicitWinsOverBuiltin(t *testing.T) {
 	}
 }
 
+// TestApplySecrets_EmittedGHTokenResolvesAllGitHubHosts is the regression test
+// for the multi-host bind bug: the placeholder emitted as GH_TOKEN must resolve
+// via ResolveScoped for EVERY host in GitHubSecretHosts, not only github.com.
+//
+// Bug: previously RegisterPlaceholder was called once per host, minting a distinct
+// placeholder per host. Only the first host's placeholder was emitted as GH_TOKEN.
+// ResolveScoped(GH_TOKEN, id, "api.github.com") returned ("", false) because
+// GH_TOKEN was registered under "github.com" only → HTTP 401 on gh CLI / GraphQL.
+func TestApplySecrets_EmittedGHTokenResolvesAllGitHubHosts(t *testing.T) {
+	t.Parallel()
+	broker := cred.NewBroker()
+	id := seedTestID(0x53)
+	const real = "ghs_shared_regression_token"
+	extra, _, err := applySecrets(broker, id, []SecretBind{{
+		Env:   BuiltinGitHubEnv,
+		Hosts: GitHubSecretHosts,
+		Token: real,
+	}})
+	if err != nil {
+		t.Fatalf("applySecrets: %v", err)
+	}
+
+	// Extract the emitted GH_TOKEN placeholder from the env output.
+	var emittedPH string
+	for _, line := range bytes.Split(extra, []byte("\n")) {
+		if bytes.HasPrefix(line, []byte("GH_TOKEN=")) {
+			emittedPH = string(bytes.TrimPrefix(line, []byte("GH_TOKEN=")))
+			break
+		}
+	}
+	if emittedPH == "" {
+		t.Fatal("GH_TOKEN not found in applySecrets output")
+	}
+
+	// The emitted placeholder MUST resolve to the real token for EVERY host in
+	// the bind — this is the exact call the MITM proxy makes on each request.
+	for _, h := range GitHubSecretHosts {
+		got, ok := broker.ResolveScoped(emittedPH, id, h)
+		if !ok || got != real {
+			t.Errorf("ResolveScoped(emittedGHToken, id, %q): ok=%v tok=%q; want (%q, true) — MITM would return 401", h, ok, got, real)
+		}
+	}
+
+	// Host-boundary: emitted placeholder must NOT resolve for an unrelated host.
+	if tok, ok := broker.ResolveScoped(emittedPH, id, "unrelated.example.com"); ok {
+		t.Errorf("ResolveScoped(unrelated host): got (%q, true); want (\"\", false) — host-boundary breach", tok)
+	}
+
+	// Sandbox-boundary: emitted placeholder must NOT resolve for a different sandbox.
+	var otherID domain.SandboxID
+	otherID[0] = 0xDE
+	if tok, ok := broker.ResolveScoped(emittedPH, otherID, GitHubSecretHosts[0]); ok {
+		t.Errorf("ResolveScoped(other sandbox): got (%q, true); want (\"\", false) — sandbox-boundary breach", tok)
+	}
+}
+
 func TestApplySecrets_PlaceholderNotRealToken(t *testing.T) {
 	t.Parallel()
 	broker := cred.NewBroker()

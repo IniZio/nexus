@@ -52,10 +52,15 @@ type scope struct {
 }
 
 // entry is the host-side record for one registered placeholder.
+// A single entry may cover multiple hosts (e.g. github.com and api.github.com
+// sharing one GH_TOKEN placeholder). All hosts in the set are stored in hosts;
+// byScope points each (sandboxID, host) key to the same *entry so that
+// SetRealToken, Placeholder, and Revoke still work per-host.
 type entry struct {
 	realToken   string
 	placeholder string
-	sc          scope
+	sandboxID   domain.SandboxID
+	hosts       map[string]bool // every host this placeholder resolves for
 }
 
 // PlaceholderRecord is the guest-facing credential record. It carries only
@@ -117,19 +122,25 @@ func (b *Broker) RegisterPlaceholder(sandboxID domain.SandboxID, host, realToken
 		return PlaceholderRecord{}, fmt.Errorf("cred: generating placeholder: %w", err)
 	}
 
-	sc := scope{sandboxID: sandboxID, host: host}
 	e := &entry{
 		realToken:   realToken,
 		placeholder: ph,
-		sc:          sc,
+		sandboxID:   sandboxID,
+		hosts:       map[string]bool{host: true},
 	}
+
+	sc := scope{sandboxID: sandboxID, host: host}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	// Revoke any existing placeholder for this scope.
+	// If the old entry still covers other hosts, keep it in byPlaceholder.
 	if old, ok := b.byScope[sc]; ok {
-		delete(b.byPlaceholder, old.placeholder)
+		delete(old.hosts, host)
+		if len(old.hosts) == 0 {
+			delete(b.byPlaceholder, old.placeholder)
+		}
 	}
 
 	b.byScope[sc] = e
@@ -168,14 +179,20 @@ func (b *Broker) Resolve(placeholder string) (realToken string, ok bool) {
 // ResolveScoped is like [Broker.Resolve] but additionally checks that the
 // placeholder belongs to sandboxID AND was registered for host. It returns
 // ("", false) if the placeholder is unknown, belongs to a different sandbox,
-// or was registered for a different host.
+// or was not registered for host.
 //
 // The host check closes the cross-credential exfiltration gap: without it, a
 // placeholder registered for (sandbox S, hostA) could be resolved for a
 // request targeting hostB — allowing a prompt-injected agent to present MCP-A's
 // real token to MCP-B's endpoint.
 //
-// host comparison is performed against the stored scope host exactly as
+// A single placeholder may cover multiple hosts (e.g. github.com and
+// api.github.com sharing one GH_TOKEN) when the caller registered them via
+// [Broker.RegisterPlaceholderForHost]. ResolveScoped returns true for any host
+// in the registered set, and false for any host outside it — the host-boundary
+// invariant is preserved; only explicitly registered hosts resolve.
+//
+// host comparison is performed against the stored host set exactly as
 // registered; callers are responsible for normalising both sides consistently
 // (e.g. lowercase, no port) before calling.
 //
@@ -186,10 +203,57 @@ func (b *Broker) ResolveScoped(placeholder string, sandboxID domain.SandboxID, h
 	defer b.mu.RUnlock()
 
 	e, found := b.byPlaceholder[placeholder]
-	if !found || e.sc.sandboxID != sandboxID || e.sc.host != host {
+	if !found || e.sandboxID != sandboxID || !e.hosts[host] {
 		return "", false
 	}
 	return e.realToken, true
+}
+
+// RegisterPlaceholderForHost extends an existing placeholder to cover an
+// additional host within the same sandbox. After this call,
+// ResolveScoped(placeholder, sandboxID, host) returns the real token that was
+// supplied at [Broker.RegisterPlaceholder] time.
+//
+// Use this when one credential (e.g. GH_TOKEN) must be swapped for requests to
+// multiple hostnames — for example github.com and api.github.com both belong to
+// the same bind and share one placeholder emitted as GH_TOKEN. Without this,
+// the caller would mint a separate placeholder per host, but only one can be
+// emitted as the env var, leaving the others unreachable via ResolveScoped.
+//
+// Security invariants preserved:
+//   - Only the sandbox that originally registered the placeholder may extend it
+//     (the sandboxID equality check prevents cross-sandbox aliasing).
+//   - ResolveScoped still checks both sandboxID and the exact host set: a host
+//     not added via RegisterPlaceholder or this method resolves to ("", false).
+//   - The host-boundary exfiltration guard (see ResolveScoped) is not weakened:
+//     the placeholder only resolves for hosts the caller explicitly registers.
+func (b *Broker) RegisterPlaceholderForHost(sandboxID domain.SandboxID, placeholder, host string) error {
+	if host == "" {
+		return fmt.Errorf("cred: host must not be empty")
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	e, found := b.byPlaceholder[placeholder]
+	if !found {
+		return fmt.Errorf("cred: RegisterPlaceholderForHost: unknown placeholder")
+	}
+	if e.sandboxID != sandboxID {
+		return fmt.Errorf("cred: RegisterPlaceholderForHost: placeholder belongs to a different sandbox")
+	}
+
+	sc := scope{sandboxID: sandboxID, host: host}
+	// If another placeholder already covers this (sandboxID, host) scope, evict it.
+	if old, ok := b.byScope[sc]; ok && old != e {
+		delete(old.hosts, host)
+		if len(old.hosts) == 0 {
+			delete(b.byPlaceholder, old.placeholder)
+		}
+	}
+	e.hosts[host] = true
+	b.byScope[sc] = e
+	return nil
 }
 
 // Placeholder returns the placeholder currently registered for the
@@ -246,8 +310,14 @@ func (b *Broker) Revoke(sandboxID domain.SandboxID, host string) {
 	if !ok {
 		return
 	}
-	delete(b.byPlaceholder, e.placeholder)
+	delete(e.hosts, host)
 	delete(b.byScope, sc)
+	// Only remove from byPlaceholder when no host remains — the placeholder may
+	// still be active for other hosts in the same bind (e.g. api.github.com after
+	// revoking github.com).
+	if len(e.hosts) == 0 {
+		delete(b.byPlaceholder, e.placeholder)
+	}
 }
 
 // mintPlaceholder generates a cryptographically random, hex-encoded placeholder
