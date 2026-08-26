@@ -629,6 +629,10 @@ func RunDetached(cfg Config) error {
 			AgentCfgLowerGuestPath: agentCfgLowerGuestPath,
 			MCPServers:             mcpServersForSeed,
 			UserMounts:             userMountsForSeed,
+			// IsHumanGitVM: true for human git-VM sandboxes (no agent). Enables
+			// the SSH→HTTPS remote rewrite in probeAndSeedGuest so "git push"
+			// routes through the MITM proxy on this boot and every restart.
+			IsHumanGitVM: sb.AgentName == "",
 		}
 		if checkErr := probeAndSeedGuest(ctx, agentClient, seedInputs); checkErr != nil {
 			slog.Error("supervisor.guest_agent_unreachable",
@@ -972,6 +976,11 @@ type guestSeedInputs struct {
 	// Read from usermounts.json inside the agentcfg staging dir. Nil when
 	// sharing is disabled or the file is absent.
 	UserMounts *service.UserMountManifest
+	// IsHumanGitVM is true when the sandbox is the human git-VM (AgentName ==
+	// ""). When set, probeAndSeedGuest rewrites the "origin" remote of the
+	// workspace from SSH form to HTTPS form so that "git push" routes through
+	// the MITM proxy, which intercepts HTTPS traffic only.
+	IsHumanGitVM bool
 }
 
 // probeAndSeedGuest runs the liveness probe (D-J14), login-shell credential
@@ -1125,6 +1134,22 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 		} else {
 			slog.Info("supervisor.git_identity_seeded",
 				"sandbox", id, "path", service.GuestGitconfigPath, "sources", in.SourcePaths)
+		}
+		// Remote rewrite (SSH→HTTPS): human git-VM only. Rewrites the "origin"
+		// remote from SSH form (git@ or ssh://) to HTTPS so that "git push"
+		// travels through the MITM proxy, which intercepts HTTPS traffic only.
+		// Co-located with git identity seeding so both git configuration steps
+		// happen in one place. Non-fatal: a missing or already-HTTPS remote is
+		// silently accepted; a rewrite failure logs and continues boot.
+		if in.IsHumanGitVM {
+			if remErr := service.SeedGitRemoteHTTPS(ctx, id, in.SourcePaths[0], in.Execer); remErr != nil {
+				slog.Warn("supervisor.git_remote_https_rewrite_failed",
+					"sandbox", id, "path", in.SourcePaths[0], "err", remErr,
+					"action", "git push may not route through the MITM proxy")
+			} else {
+				slog.Info("supervisor.git_remote_https_rewritten",
+					"sandbox", id, "path", in.SourcePaths[0])
+			}
 		}
 	}
 
