@@ -801,12 +801,13 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 	if SandboxHasMITMProxy(sb) {
 		var err error
 		proxy, err = mitm.New(mitm.Config{
-			SandboxID:    sb.ID,
-			AllowedHosts: sb.Envelope.AllowedHosts,
-			SecretHosts:  sb.Envelope.SecretHosts,
-			Broker:       s.broker,
-			AllowAll:     allowAll && (len(sb.Envelope.SecretHosts) > 0 || sb.AgentName != ""),
-			AllowedRepo:  sb.Envelope.AllowedRepo, // D-PD-36: per-repo path allowlist
+			SandboxID:       sb.ID,
+			AllowedHosts:    sb.Envelope.AllowedHosts,
+			SecretHosts:     sb.Envelope.SecretHosts,
+			Broker:          s.broker,
+			AllowAll:        allowAll && (len(sb.Envelope.SecretHosts) > 0 || sb.AgentName != ""),
+			AllowedRepo:     sb.Envelope.AllowedRepo,                    // D-PD-36: per-repo path allowlist
+			AllowedBranches: sb.Envelope.ResolvedAllowedBranches(),      // S0: default applied here
 		})
 		if err != nil {
 			fd.Close()

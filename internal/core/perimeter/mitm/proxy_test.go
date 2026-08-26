@@ -1,15 +1,18 @@
 package mitm_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -1703,5 +1706,523 @@ func TestProxy_AllowAll_SecretHostSwapsGitHub(t *testing.T) {
 	got := receiveWithTimeout(t, authCh)
 	if want := "Bearer " + realToken; got != want {
 		t.Errorf("upstream Authorization = %q, want %q", got, want)
+	}
+}
+
+// ============================================================
+// D-PD-38 tests: branch policy, gh-stack REST allowlist, GraphQL body policy
+// ============================================================
+
+// buildPktLines constructs a valid git pkt-line sequence for a push (ref update
+// commands) followed by a flush packet "0000". Each ref uses old-sha = 40 zeros,
+// new-sha = 40 'a' chars, matching the format the proxy branch-policy parser expects.
+func buildPktLines(refs []string) []byte {
+	var buf bytes.Buffer
+	oldSHA := strings.Repeat("0", 40)
+	newSHA := strings.Repeat("a", 40)
+	for _, ref := range refs {
+		data := oldSHA + " " + newSHA + " " + ref + "\n"
+		total := 4 + len(data)
+		fmt.Fprintf(&buf, "%04x%s", total, data) //nolint:errcheck
+	}
+	buf.WriteString("0000") //nolint:errcheck
+	return buf.Bytes()
+}
+
+// TestD38_BranchPolicy_DeniedBeforeCredSwap verifies that a push to a ref not
+// matching AllowedBranches is rejected with 403 and that the real credential is
+// never forwarded to the upstream — denial fires before the swap.
+//
+// Mutation evidence: remove the branch-policy deny path (return allowed instead
+// of denyResponse) → upstream receives the request and the real token is emitted,
+// causing the credential-leak assertion to fail.
+func TestD38_BranchPolicy_DeniedBeforeCredSwap(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(60)
+	const realToken = "ghp_branch_real_token"
+	rec, err := broker.RegisterPlaceholder(sid, "github.com", realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:       sid,
+		AllowedHosts:    []string{"github.com"},
+		Broker:          broker,
+		AllowedRepo:     "acme/myrepo",
+		AllowedBranches: []string{"refs/heads/nexus3/*"},
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	body := buildPktLines([]string{"refs/heads/main"}) // denied ref
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://github.com/acme/myrepo.git/git-receive-pack",
+		bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+
+	resp, err := proxyClient(proxyServer.URL).Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("denied branch push: want 403, got %d", resp.StatusCode)
+	}
+	// Upstream must not receive the real token — denial fires before forwarding.
+	if got, ok := receiveOrTimeout(authCh); ok {
+		if got == "Bearer "+realToken {
+			t.Errorf("real token reached upstream for denied branch push (credential leaked before push deny): Authorization=%q", got)
+		}
+	}
+}
+
+// TestD38_BranchPolicy_AllowedStreamsThrough verifies that a push to a ref
+// matching AllowedBranches is forwarded to upstream with the body intact.
+//
+// Mutation evidence: change the glob match to always return false → proxy returns
+// 403 instead of 200 and upstream never receives the body, failing both assertions.
+func TestD38_BranchPolicy_AllowedStreamsThrough(t *testing.T) {
+	t.Parallel()
+
+	bodyCh := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodyCh <- b
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(61)
+	const realToken = "ghp_allowed_branch_token"
+	rec, err := broker.RegisterPlaceholder(sid, "github.com", realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:       sid,
+		AllowedHosts:    []string{"github.com"},
+		Broker:          broker,
+		AllowedRepo:     "acme/myrepo",
+		AllowedBranches: []string{"refs/heads/nexus3/*"},
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	pktBody := buildPktLines([]string{"refs/heads/nexus3/feat-1"}) // allowed ref
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://github.com/acme/myrepo.git/git-receive-pack",
+		bytes.NewReader(pktBody))
+	req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+
+	resp, err := proxyClient(proxyServer.URL).Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("allowed branch push: want 200, got %d", resp.StatusCode)
+	}
+	select {
+	case got := <-bodyCh:
+		if !strings.Contains(string(got), "nexus3/feat-1") {
+			t.Errorf("upstream body does not contain allowed ref name: %q", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for upstream to receive push body")
+	}
+}
+
+// TestD38_BranchPolicy_NoEnforcementWhenEmpty verifies that when AllowedBranches
+// is nil, no branch enforcement runs — a push to any ref reaches the upstream.
+//
+// Mutation evidence: remove the `if len(cfg.AllowedBranches) == 0 { return req, nil }`
+// guard → proxy applies enforcement using an empty pattern set, which matches nothing,
+// and returns 403 instead of 200.
+func TestD38_BranchPolicy_NoEnforcementWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:    newSandboxID(62),
+		AllowedHosts: []string{"github.com"},
+		Broker:       cred.NewBroker(),
+		AllowedRepo:  "acme/myrepo",
+		// AllowedBranches intentionally nil — no enforcement.
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	body := buildPktLines([]string{"refs/heads/main"}) // would be denied if enforcement active
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://github.com/acme/myrepo.git/git-receive-pack",
+		bytes.NewReader(body))
+
+	resp, err := proxyClient(proxyServer.URL).Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("no branch enforcement: want 200, got %d (false denial)", resp.StatusCode)
+	}
+}
+
+// TestD38_GhStack_RESTAllowed verifies that the gh-stack REST paths for the
+// configured repo are permitted through the proxy.
+//
+// Mutation evidence: remove any of the gh-stack cases from gitHubPathAllowed →
+// the corresponding sub-test receives 403 instead of 200.
+func TestD38_GhStack_RESTAllowed(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:    newSandboxID(63),
+		AllowedHosts: []string{"api.github.com"},
+		Broker:       cred.NewBroker(),
+		AllowedRepo:  "acme/myrepo",
+	}, upstream.Listener.Addr().String())
+	t.Cleanup(proxyServer.Close)
+
+	client := proxyClient(proxyServer.URL)
+
+	cases := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/repos/acme/myrepo/stacks"},
+		{http.MethodPost, "/repos/acme/myrepo/stacks"},
+		{http.MethodPost, "/stacks/42/add"},
+		{http.MethodPost, "/stacks/42/unstack"},
+		{http.MethodPatch, "/repos/acme/myrepo/pulls/42"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			t.Parallel()
+			req, _ := http.NewRequest(tc.method, "http://api.github.com"+tc.path, http.NoBody)
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("client.Do: %v", err)
+			}
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("gh-stack %s %s: want 200, got %d", tc.method, tc.path, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestD38_GhStack_NonNumericPRRejected verifies that PATCH /repos/owner/repo/pulls/{non-numeric}
+// is denied with 403 — only all-digit PR numbers are allowed by the path policy.
+//
+// Mutation evidence: remove the allDigits check for the PATCH pulls case → the
+// proxy returns 200 instead of 403 for the non-numeric segment.
+func TestD38_GhStack_NonNumericPRRejected(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:    newSandboxID(64),
+		AllowedHosts: []string{"api.github.com"},
+		Broker:       cred.NewBroker(),
+		AllowedRepo:  "acme/myrepo",
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	req, _ := http.NewRequest(http.MethodPatch,
+		"http://api.github.com/repos/acme/myrepo/pulls/abc", // non-numeric PR number
+		http.NoBody)
+
+	resp, err := proxyClient(proxyServer.URL).Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("non-numeric PR number: want 403, got %d", resp.StatusCode)
+	}
+}
+
+// TestD38_GraphQL_OwnerNameMismatchDenied verifies that a GraphQL request whose
+// variables contain owner/name that don't match the configured repo is denied.
+//
+// Mutation evidence: remove the owner/name variable check from the GraphQL
+// OnRequest handler → the proxy returns 200 instead of 403, allowing cross-repo
+// data access.
+func TestD38_GraphQL_OwnerNameMismatchDenied(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:    newSandboxID(65),
+		AllowedHosts: []string{"api.github.com"},
+		Broker:       cred.NewBroker(),
+		AllowedRepo:  "acme/myrepo",
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	body := strings.NewReader(`{"query":"query { repository(owner: \"other\", name: \"repo\") { id } }","variables":{"owner":"other","name":"repo"}}`)
+	req, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql", body)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := proxyClient(proxyServer.URL).Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("graphql owner/name mismatch: want 403, got %d", resp.StatusCode)
+	}
+}
+
+// TestD38_GraphQL_MutationWithWrongRepoIDDenied verifies that a GraphQL mutation
+// specifying a repositoryId that doesn't match the allowed repo is denied with 403.
+//
+// Updated for the S1c default-deny stub (advisor CORRECTION, TBR-GRAPHQL/R5):
+// ALL GraphQL requests are now denied — both the probe query and the mutation
+// return 403. The old two-step pin-then-check logic is gone; the deny fires
+// unconditionally at the OnRequest layer before any credential swap or upstream
+// call occurs.
+func TestD38_GraphQL_MutationWithWrongRepoIDDenied(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:    newSandboxID(66),
+		AllowedHosts: []string{"api.github.com"},
+		Broker:       cred.NewBroker(),
+		AllowedRepo:  "acme/myrepo",
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	client := proxyClient(proxyServer.URL)
+
+	// S1c deny-all: even a query with correct owner/name is denied.
+	pinBody := strings.NewReader(`{"query":"query { repository(owner: \"acme\", name: \"myrepo\") { id } }","variables":{"owner":"acme","name":"myrepo"}}`)
+	pinReq, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql", pinBody)
+	pinReq.Header.Set("Content-Type", "application/json")
+	pinResp, err := client.Do(pinReq)
+	if err != nil {
+		t.Fatalf("probe query: client.Do: %v", err)
+	}
+	io.Copy(io.Discard, pinResp.Body) //nolint:errcheck
+	pinResp.Body.Close()
+	if pinResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("probe query: want 403 (S1c default-deny stub), got %d", pinResp.StatusCode)
+	}
+
+	// Mutation with wrong repositoryId is also denied by the same deny-all.
+	mutBody := strings.NewReader(`{"query":"mutation CreatePR($input: CreatePullRequestInput!) { createPullRequest(input: $input) { pullRequest { id } } }","variables":{"input":{"repositoryId":"R_WRONG","title":"test"}}}`)
+	mutReq, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql", mutBody)
+	mutReq.Header.Set("Content-Type", "application/json")
+	mutResp, err := client.Do(mutReq)
+	if err != nil {
+		t.Fatalf("mutation: client.Do: %v", err)
+	}
+	io.Copy(io.Discard, mutResp.Body) //nolint:errcheck
+	mutResp.Body.Close()
+
+	if mutResp.StatusCode != http.StatusForbidden {
+		t.Errorf("mutation wrong repoID: want 403, got %d", mutResp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R2-branch-glob-depth: refMatchesGlob unit tests
+// ---------------------------------------------------------------------------
+
+// refMatchesGlobForTest wraps the unexported refMatchesGlob via the exported
+// surface: build a minimal proxy config with a single-entry AllowedBranches
+// list and exercise the D-PD-38 branch-policy path through the full proxy
+// handler.  Because refMatchesGlob is package-private, we test it indirectly
+// through a git push request; a 403 response means the pattern denied the ref
+// and a 200/non-403 means it was allowed (the upstream being absent causes the
+// proxy to 502, which is not 403 — still "allowed by policy").
+//
+// To keep the test surface small and deterministic we test refMatchesGlob
+// directly via a thin exported shim defined in export_test.go.  If no such
+// shim exists yet we fall back to the black-box approach above — but for
+// isolation the shim approach is preferred.  Since this file is in package
+// mitm_test we call through the exported wrapper below.
+
+// TestRefMatchesGlob_DoubleStarNamespace verifies that a "/**" pattern matches
+// refs at any depth under the namespace prefix, and denies refs outside it.
+// This is the D-PD-03 fix: refs/heads/nexus3/** must cover
+// refs/heads/nexus3/<slug>/<id> (2 levels deep).
+func TestRefMatchesGlob_DoubleStarNamespace(t *testing.T) {
+	pattern := "refs/heads/nexus3/**"
+	cases := []struct {
+		ref  string
+		want bool
+		desc string
+	}{
+		{"refs/heads/nexus3/my-motive/abc123", true, "2-level nexus3 ref (D-PD-03 convention)"},
+		{"refs/heads/nexus3/foo", true, "1-level nexus3 ref"},
+		{"refs/heads/nexus3/a/b/c", true, "3-level nexus3 ref"},
+		{"refs/heads/main", false, "non-namespace ref"},
+		{"refs/heads/rogue", false, "rogue ref"},
+		{"refs/heads/nexus3-evil/foo", false, "lookalike prefix, no slash boundary"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			got := mitm.RefMatchesGlobForTest(pattern, tc.ref)
+			if got != tc.want {
+				t.Errorf("refMatchesGlob(%q, %q) = %v; want %v", pattern, tc.ref, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRefMatchesGlob_SingleStarKeptPathMatchSemantics verifies that an
+// explicit single-segment "*" pattern retains path.Match behaviour (no
+// cross-slash matching) so operator overrides like
+// "refs/heads/nexus3/e2e/*" still work correctly.
+func TestRefMatchesGlob_SingleStarKeptPathMatchSemantics(t *testing.T) {
+	pattern := "refs/heads/nexus3/e2e/*"
+	cases := []struct {
+		ref  string
+		want bool
+		desc string
+	}{
+		{"refs/heads/nexus3/e2e/run1", true, "single-segment match"},
+		{"refs/heads/nexus3/e2e/run1/sub", false, "two-segment: * must not cross /"},
+		{"refs/heads/nexus3/other/run1", false, "wrong namespace segment"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			got := mitm.RefMatchesGlobForTest(pattern, tc.ref)
+			if got != tc.want {
+				t.Errorf("refMatchesGlob(%q, %q) = %v; want %v", pattern, tc.ref, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestProxy_GraphQL_DefaultDeny verifies the S1c safe default-deny stub
+// (advisor CORRECTION): any POST to a /graphql path on api.github.com or
+// github.com is denied with 403 and NO credential swap occurs — regardless of
+// whether the body targets a cross-repo or same-repo operation.
+//
+// Mutation-proof rationale: if the return in the GraphQL OnRequest handler is
+// changed back to (req, nil), the proxy forwards the request to the upstream
+// and swaps the credential; authCh receives a value, and the "upstream must
+// not be called" assertion fails. The test is therefore mutation-proven.
+func TestProxy_GraphQL_DefaultDeny(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(99)
+	const realToken = "real-github-token-gql"
+
+	rec, err := broker.RegisterPlaceholder(sid, "api.github.com", realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:       sid,
+		SecretHosts:     []string{"api.github.com"},
+		AllowedRepo:     "owner/repo",
+		AllowedBranches: []string{"refs/heads/main"},
+		Broker:          broker,
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	client := proxyClient(proxyServer.URL)
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			// Cross-repo GraphQL mutation: repositoryId points at a foreign repo.
+			// The old partial guards would only deny if repositoryId mismatched the
+			// pinned ID, but the pin was empty (no prior query), so this passed the
+			// old check and reached the credential swap. The new deny-all blocks it.
+			name: "cross-repo mutation (createCommitOnBranch)",
+			body: `{"query":"mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}","variables":{"input":{"repositoryId":"MDEwOlJlcG9zaXRvcnk5OTk5OTk=","branch":{"repositoryNameWithOwner":"evil/evil","branchName":"main"},"expectedHeadOid":"abc123","fileChanges":{},"message":{"headline":"pwn"}}}}`,
+		},
+		{
+			// Same-repo query with matching owner/name variables: the old owner/name
+			// guard would ALLOW this through because owner=="owner" and name=="repo"
+			// match the configured AllowedRepo. The new deny-all blocks it.
+			name: "same-repo query with matching owner/name variables",
+			body: `{"query":"query($owner:String!,$name:String!){repository(owner:$owner,name:$name){id}}","variables":{"owner":"owner","name":"repo"}}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql",
+				strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("client.Do: %v", err)
+			}
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
+
+			// Assert 403 — the deny must be real, not advisory.
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("S1c-GQL %s: status = %d, want 403 (default-deny stub broken)", tc.name, resp.StatusCode)
+			}
+
+			// Assert no credential swap: upstream must never have been called.
+			// If the OnRequest handler returned (req, nil) instead of (req, denyResponse),
+			// goproxy forwards the request, the swap handler fires, and authCh receives
+			// a value here — failing this assertion.
+			select {
+			case auth := <-authCh:
+				if auth == "Bearer "+realToken {
+					t.Errorf("S1c-GQL %s: real token leaked to upstream — credential swap occurred despite GraphQL deny", tc.name)
+				} else {
+					t.Errorf("S1c-GQL %s: upstream was called (auth=%q) — GraphQL deny did not short-circuit the proxy pipeline", tc.name, auth)
+				}
+			case <-time.After(200 * time.Millisecond):
+				// Good: upstream was not called; no swap occurred.
+			}
+		})
 	}
 }

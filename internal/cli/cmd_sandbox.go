@@ -366,6 +366,7 @@ type sandboxCreateFlags struct {
 	agentName       string
 	allowHosts      []string // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
 	allowedRepo     string   // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
+	allowedBranches []string // --branches <ref>[,ref…]: git-push branch allowlist; default refs/heads/nexus3/*
 	mountNamed      []string // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
 	mountLive       []string // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
 	noShareSettings bool     // --no-share-settings: skip curated host agent config overlay (A-MOUNT)
@@ -744,6 +745,21 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --repo %q is not in owner/name format", args[i])}
 			}
 			f.allowedRepo = args[i]
+		case "--branches":
+			// S0: git-push branch allowlist. Repeatable; also accepts comma-separated
+			// patterns in a single value. Default (when omitted) is
+			// refs/heads/nexus3/* applied at perimeter start via
+			// Envelope.ResolvedAllowedBranches. Only meaningful on the git-VM
+			// create path (--workspace / --file).
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --branches requires a ref pattern"}
+			}
+			i++
+			for _, b := range strings.Split(args[i], ",") {
+				if b = strings.TrimSpace(b); b != "" {
+					f.allowedBranches = append(f.allowedBranches, b)
+				}
+			}
 		case "--mount-named":
 			// SD2-6-MOUNT: <volume-name>:<guest-path>[:ro|kind=dir|size=Xg]
 			// guest-path must not contain a .git component (hard refusal, design line 63).
@@ -1159,7 +1175,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--repo <owner>/<name>] [--no-builtin-gh] [--no-share-settings] [--no-user-mounts] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--repo <owner>/<name>] [--branches <ref>[,ref…]] [--no-builtin-gh] [--no-share-settings] [--no-user-mounts] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])
@@ -1928,7 +1944,8 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			OpenEgress:        openEgress,
 			ExtraSecretHosts:  agentDevEgressSecretHosts(agentProfile, openEgress),
 			AgentProfile:      agentProfile,  // zero value when --agent was not passed
-			AllowedRepo:       f.allowedRepo, // D-PD-36: set by --repo; empty for open-egress sandboxes
+			AllowedRepo:       f.allowedRepo,     // D-PD-36: set by --repo; empty for open-egress sandboxes
+			AllowedBranches:   f.allowedBranches, // S0: nil = default refs/heads/nexus3/* via ResolvedAllowedBranches
 			Volumes:           namedVS,       // SD2-6-MOUNT: nil when --mount-named not used
 			NamedVolumeMounts: namedMounts,
 			LiveMounts:        bootLiveMounts, // D-PD-53: populated from --mount flags

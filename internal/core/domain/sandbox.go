@@ -240,6 +240,31 @@ type Envelope struct {
 	// An empty string disables the repo-scoped path check (human sandboxes
 	// with AllowAll egress do not need path restriction).
 	AllowedRepo string `json:"allowed_repo,omitempty"`
+
+	// AllowedBranches is the list of git ref patterns the sandbox may push to
+	// through the host-side git MITM. Patterns support a trailing "/**" for
+	// namespace-prefix matching at any depth (e.g. "refs/heads/nexus3/**"),
+	// or standard path.Match single-segment "*" for explicit patterns
+	// (e.g. "refs/heads/nexus3/e2e/*"). When empty, ResolvedAllowedBranches
+	// returns the project default ["refs/heads/nexus3/**"]. Set by
+	// --branches on the human git-VM create path; agent sandboxes receive the
+	// default implicitly.
+	AllowedBranches []string `json:"allowed_branches,omitempty"`
+}
+
+// ResolvedAllowedBranches returns AllowedBranches with the project default
+// applied when the field is empty. The default is ["refs/heads/nexus3/**"],
+// which permits any ref under the nexus3/ namespace at any depth — matching
+// the D-PD-03 convention nexus3/<motive-slug>/<sandbox-short-id>.
+// This is the single resolution site; callers must use this method rather
+// than reading AllowedBranches directly.
+func (e Envelope) ResolvedAllowedBranches() []string {
+	if len(e.AllowedBranches) == 0 {
+		return []string{"refs/heads/nexus3/**"}
+	}
+	out := make([]string, len(e.AllowedBranches))
+	copy(out, e.AllowedBranches)
+	return out
 }
 
 // Handle returns the human handle for the sandbox in "<project>/<name>" form.

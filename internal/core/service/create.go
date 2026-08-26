@@ -173,6 +173,13 @@ type CreateAndBootOptions struct {
 	// the Envelope; validated at create time (D-PD-36).
 	AllowedRepo string
 
+	// AllowedBranches is the list of git ref patterns the sandbox may push to
+	// through the host-side git MITM. Set by --branches on the human git-VM
+	// create path. When nil the Envelope stores nil and
+	// Envelope.ResolvedAllowedBranches returns the project default
+	// ["refs/heads/nexus3/*"] at runtime. Agent sandboxes do not set this.
+	AllowedBranches []string
+
 	// ExtraSecretHosts lists additional hostnames to include in
 	// Envelope.SecretHosts without creating a corresponding SecretSpecs entry.
 	// Use this for agent open-egress sandboxes (D-PD-33 dev-egress posture):
@@ -757,8 +764,9 @@ func CreateAndBoot(
 			SSHPublicKey: opts.SSHPublicKey, // frozen at creation (ORCA-S1)
 			SecretHosts:  append(secretHostsFromBinds(opts.Secrets), opts.ExtraSecretHosts...),
 			SecretSpecs:  secretSpecsFromBinds(opts.Secrets),
-			OpenEgress:   opts.OpenEgress,  // D-PD-33: explicit opt-in; never inferred from empty AllowedHosts
-			AllowedRepo:  opts.AllowedRepo, // D-PD-36: per-repo path allowlist; enforced below
+			OpenEgress:      opts.OpenEgress,      // D-PD-33: explicit opt-in; never inferred from empty AllowedHosts
+			AllowedRepo:     opts.AllowedRepo,     // D-PD-36: per-repo path allowlist; enforced below
+			AllowedBranches: opts.AllowedBranches, // S0: nil = use default at runtime via ResolvedAllowedBranches
 		},
 		RemoveOnExit:   opts.RemoveOnExit,
 		BaseRef:        opts.BaseRef, // G1: shallow-clone boundary SHA (D-PD-19); empty if no git workspace

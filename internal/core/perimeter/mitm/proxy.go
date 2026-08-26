@@ -21,6 +21,7 @@
 package mitm
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -28,6 +29,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -36,6 +38,7 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/elazarl/goproxy"
@@ -100,6 +103,14 @@ type Config struct {
 	// for agent sandboxes. Leave empty only for human sandboxes (AllowAll
 	// egress) that have no per-repo restriction requirement.
 	AllowedRepo string
+
+	// AllowedBranches is the list of git ref patterns the proxy will permit
+	// on git-push receive-pack requests. Patterns follow git refspec glob
+	// syntax (e.g. "refs/heads/nexus3/*"). Enforcement is implemented in
+	// slice S1; this field is plumbing only — no filtering occurs here.
+	// The resolved default (when empty at the call site) is
+	// ["refs/heads/nexus3/*"] via domain.Envelope.ResolvedAllowedBranches.
+	AllowedBranches []string
 
 	// Logger is used for audit events (allow/deny decisions). If nil,
 	// slog.Default() is used. The real token is NEVER passed to the logger.
@@ -169,6 +180,11 @@ func New(cfg Config) (*Proxy, error) {
 		repoName = name
 		repoSet = true
 	}
+
+	// pinnedRepoNodeID holds the GitHub repository node ID discovered from the
+	// first GraphQL response that returns data.repository.id. Once pinned,
+	// mutations bearing a different repositoryId are denied.
+	var pinnedRepoNodeID atomic.Value // stores string; zero-value = not yet pinned
 
 	// HandleConnect: broad-allow + selective MITM.
 	//
@@ -254,6 +270,163 @@ func New(cfg Config) (*Proxy, error) {
 				return req, denyResponse(req)
 			}
 			return req, nil
+		})
+
+		// D-PD-38: branch policy — reject pushes to refs not in AllowedBranches.
+		// Fires BEFORE the credential swap so rejected pushes never see the real token.
+		inner.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+			if len(cfg.AllowedBranches) == 0 {
+				return req, nil
+			}
+			if reqHost(req) != "github.com" {
+				return req, nil
+			}
+			if req.Method != http.MethodPost || !strings.HasSuffix(req.URL.Path, "/git-receive-pack") {
+				return req, nil
+			}
+			if req.Body == nil {
+				return req, nil
+			}
+			// Parse pkt-line ref update commands from the push body (max 64KB).
+			const maxPkt = 64 * 1024
+			buf := &bytes.Buffer{}
+			malformed := false
+			var deniedRef string
+			for buf.Len() <= maxPkt {
+				var lenBuf [4]byte
+				if _, err := io.ReadFull(req.Body, lenBuf[:]); err != nil {
+					break // body ended cleanly
+				}
+				buf.Write(lenBuf[:])
+				pktLen, ok := parseHex4(lenBuf[:])
+				if !ok {
+					malformed = true
+					break
+				}
+				// Flush packet (0000) and delimiter packets (0001, 0002): stop.
+				if pktLen == 0 || pktLen == 1 || pktLen == 2 {
+					break
+				}
+				dataLen := pktLen - 4
+				if dataLen <= 0 {
+					continue // keep-alive: length field exactly 4, zero data bytes
+				}
+				if buf.Len()+dataLen > maxPkt {
+					malformed = true
+					break
+				}
+				data := make([]byte, dataLen)
+				if _, err := io.ReadFull(req.Body, data); err != nil {
+					buf.Write(data)
+					break
+				}
+				buf.Write(data)
+				// Parse ref update command: "<old-sha1> <new-sha1> <refname>\n"
+				line := strings.TrimRight(string(data), "\n")
+				parts := strings.SplitN(line, " ", 3)
+				if len(parts) < 3 {
+					continue // capability advertisement or keep-alive
+				}
+				ref := parts[2]
+				// Strip NUL-separated capabilities (present on first pkt-line only).
+				if idx := strings.IndexByte(ref, 0); idx >= 0 {
+					ref = ref[:idx]
+				}
+				ref = strings.TrimSpace(ref)
+				if ref == "" {
+					continue
+				}
+				matched := false
+				for _, pattern := range cfg.AllowedBranches {
+					if refMatchesGlob(pattern, ref) {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					deniedRef = ref
+					break
+				}
+			}
+			// Re-attach all bytes consumed from the original body.
+			req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf.Bytes()), req.Body))
+			if malformed {
+				const body = "D-PD-38: push pkt-line header malformed or too large\n"
+				log.Info("mitm: D-PD-38 push denied (malformed pkt-line)", "sandbox", sandboxID)
+				return req, &http.Response{
+					StatusCode: http.StatusForbidden, Status: "403 Forbidden",
+					Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+					Header:        http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+					Body:          io.NopCloser(strings.NewReader(body)),
+					ContentLength: int64(len(body)), Request: req,
+				}
+			}
+			if deniedRef != "" {
+				const body = "D-PD-38: push target ref not in AllowedBranches\n"
+				log.Info("mitm: D-PD-38 push denied (branch not in AllowedBranches)",
+					"sandbox", sandboxID, "ref", deniedRef)
+				return req, &http.Response{
+					StatusCode: http.StatusForbidden, Status: "403 Forbidden",
+					Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+					Header:        http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+					Body:          io.NopCloser(strings.NewReader(body)),
+					ContentLength: int64(len(body)), Request: req,
+				}
+			}
+			return req, nil
+		})
+
+		// S1c SAFE default-deny stub (advisor CORRECTION) — full gh/gh-stack
+		// GraphQL allowlist is TBR-GRAPHQL/R5; until then all GraphQL is denied
+		// and gh pr create over GraphQL will 403. The bypassable owner/name and
+		// pinned-id partial guards from the prior D-PD-38-GQL implementation are
+		// replaced by this clean deny-all: any POST to a /graphql path on
+		// api.github.com or github.com is denied before any credential swap.
+		inner.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+			h := reqHost(req)
+			if (h != "api.github.com" && h != "github.com") || !strings.HasPrefix(req.URL.Path, "/graphql") {
+				return req, nil
+			}
+			log.Info("mitm: S1c-GQL default-deny stub (R5 pending) — GraphQL denied before any credential swap",
+				"sandbox", sandboxID, "host", h, "path", req.URL.Path)
+			return req, denyResponse(req)
+		})
+
+		// Pin the repository node ID from GraphQL responses for mutation enforcement.
+		inner.OnResponse().DoFunc(func(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
+			if resp == nil || resp.Request == nil || resp.Body == nil {
+				return resp
+			}
+			if reqHost(resp.Request) != "api.github.com" {
+				return resp
+			}
+			if !strings.HasPrefix(resp.Request.URL.Path, "/graphql") {
+				return resp
+			}
+			bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+			if err != nil {
+				resp.Body = io.NopCloser(strings.NewReader(""))
+				return resp
+			}
+			resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			// Only pin once; never override an established pinned ID.
+			v := pinnedRepoNodeID.Load()
+			if existing, _ := v.(string); existing == "" {
+				var gqlResp struct {
+					Data struct {
+						Repository struct {
+							ID string `json:"id"`
+						} `json:"repository"`
+					} `json:"data"`
+				}
+				if err := json.Unmarshal(bodyBytes, &gqlResp); err == nil {
+					if id := gqlResp.Data.Repository.ID; id != "" {
+						pinnedRepoNodeID.Store(id)
+						log.Info("mitm: D-PD-38-GQL pinned repository node ID", "sandbox", sandboxID)
+					}
+				}
+			}
+			return resp
 		})
 	}
 
@@ -530,10 +703,7 @@ func gitHubPathAllowed(host, method, path, owner, repo string) bool {
 		return false
 
 	case "api.github.com":
-		// /graphql is unconditionally denied: target repo lives in POST body.
-		if strings.HasPrefix(path, "/graphql") {
-			return false
-		}
+		// /graphql body validation is enforced by the graphql policy handler (see New).
 		repoBase := "/repos/" + owner + "/" + repo
 		relBase := repoBase + "/releases"
 		switch {
@@ -559,6 +729,26 @@ func gitHubPathAllowed(host, method, path, owner, repo string) bool {
 			// Get a release by tag name. GitHub allows "/" in tag names so a
 			// prefix match is correct; isCanonicalPath above ensures no traversal
 			// sequences are present before this point.
+			return true
+		case method == http.MethodGet && path == repoBase+"/stacks":
+			// gh-stack list.
+			return true
+		case method == http.MethodPost && path == repoBase+"/stacks":
+			// gh-stack create.
+			return true
+		case method == http.MethodPost && strings.HasPrefix(path, "/stacks/"):
+			// gh-stack add/unstack: POST /stacks/{numeric_id}/{add|unstack}.
+			rest, _ := strings.CutPrefix(path, "/stacks/")
+			parts := strings.SplitN(rest, "/", 2)
+			return len(parts) == 2 && allDigits(parts[0]) && (parts[1] == "add" || parts[1] == "unstack")
+		case method == http.MethodPatch && strings.HasPrefix(path, repoBase+"/pulls/"):
+			// gh-stack sync: PATCH /repos/{owner}/{repo}/pulls/{n}.
+			prNum, _ := strings.CutPrefix(path, repoBase+"/pulls/")
+			return allDigits(prNum)
+		case strings.HasPrefix(path, "/graphql"):
+			// /graphql passes the path allowlist; owner/name and pinned
+			// repository ID enforcement is handled by the GraphQL body-policy
+			// handler registered in New (see D-PD-38-GQL).
 			return true
 		}
 		// Remaining shapes require a suffix after /releases/.
@@ -616,6 +806,53 @@ func denyResponse(req *http.Request) *http.Response {
 		ContentLength: int64(len(body)),
 		Request:       req,
 	}
+}
+
+// parseHex4 parses a 4-character ASCII hexadecimal byte slice and returns the
+// integer value. Returns (0, false) if any character is not a valid hex digit or
+// if len(b) != 4.
+func parseHex4(b []byte) (int, bool) {
+	if len(b) != 4 {
+		return 0, false
+	}
+	val := 0
+	for _, c := range b {
+		val <<= 4
+		switch {
+		case c >= '0' && c <= '9':
+			val |= int(c - '0')
+		case c >= 'a' && c <= 'f':
+			val |= int(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			val |= int(c-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	return val, true
+}
+
+// refMatchesGlob reports whether ref matches the glob pattern.
+//
+// Two modes:
+//   - Trailing "/**": namespace-prefix match. The pattern
+//     "refs/heads/nexus3/**" matches "refs/heads/nexus3/foo",
+//     "refs/heads/nexus3/foo/bar", and any deeper path — i.e. any ref
+//     whose path starts with the prefix "refs/heads/nexus3/".  This is
+//     the D-PD-03 convention where sandbox refs live under the nexus3/
+//     namespace at arbitrary depth.
+//   - All other patterns: path.Match semantics. A bare '*' never crosses
+//     a '/'.  "refs/heads/nexus3/*" matches "refs/heads/nexus3/foo" but
+//     NOT "refs/heads/nexus3/foo/bar".
+func refMatchesGlob(pattern, ref string) bool {
+	const doubleStarSuffix = "/**"
+	if strings.HasSuffix(pattern, doubleStarSuffix) {
+		prefix := strings.TrimSuffix(pattern, doubleStarSuffix)
+		// Allow refs that equal the prefix itself or are strictly under it.
+		return ref == prefix || strings.HasPrefix(ref, prefix+"/")
+	}
+	matched, err := path.Match(pattern, ref)
+	return err == nil && matched
 }
 
 // Compile-time assertion: Proxy satisfies http.Handler.
