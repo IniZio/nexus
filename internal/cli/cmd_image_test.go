@@ -36,7 +36,7 @@ func fakeDigest(content string) (domain.Digest, *bytes.Reader) {
 	return d, bytes.NewReader([]byte(content))
 }
 
-// seedCache writes one image record to cache c for testing. Returns the stored image.
+// seedCache writes one KindBase image record to cache c for testing. Returns the stored image.
 func seedCache(t *testing.T, c *image.Cache, content, ref string) domain.Image {
 	t.Helper()
 	d, r := fakeDigest(content)
@@ -44,6 +44,24 @@ func seedCache(t *testing.T, c *image.Cache, content, ref string) domain.Image {
 		Digest: d,
 		Ref:    ref,
 		Kind:   domain.KindBase,
+		Size:   int64(len(content)),
+	}
+	if err := c.Put(context.Background(), img, r); err != nil {
+		t.Fatalf("cache.Put: %v", err)
+	}
+	return img
+}
+
+// seedBuilderCache writes one KindBuilder image record to cache c for testing.
+// Use this in prune tests where the image should be eligible for GC (KindBase
+// images are always retained by PruneImages; KindBuilder orphans are pruned).
+func seedBuilderCache(t *testing.T, c *image.Cache, content, ref string) domain.Image {
+	t.Helper()
+	d, r := fakeDigest(content)
+	img := domain.Image{
+		Digest: d,
+		Ref:    ref,
+		Kind:   domain.KindBuilder,
 		Size:   int64(len(content)),
 	}
 	if err := c.Put(context.Background(), img, r); err != nil {
@@ -164,8 +182,11 @@ func TestImagePrune_JSON_EmptyCache(t *testing.T) {
 
 func TestImagePrune_JSON_RemovesUnreferenced(t *testing.T) {
 	svc, c := newTestImageService(t, nil)
-	seedCache(t, c, "rootfs content one", "test:one")
-	seedCache(t, c, "rootfs content two", "test:two")
+	// Seed KindBuilder images (orphan builder artifacts) — these are the images
+	// that accumulate from repeated --file builds and must be pruned by GC.
+	// KindBase images are always retained (the base rootfs must never be removed).
+	seedBuilderCache(t, c, "rootfs content one", "test:one")
+	seedBuilderCache(t, c, "rootfs content two", "test:two")
 
 	// Verify both images are present before prune.
 	imgs, err := c.List(context.Background())
@@ -204,7 +225,8 @@ func TestImagePrune_JSON_RemovesUnreferenced(t *testing.T) {
 
 func TestImagePrune_Human_ReportsCount(t *testing.T) {
 	svc, c := newTestImageService(t, nil)
-	seedCache(t, c, "rootfs content gamma", "test:gamma")
+	// KindBuilder orphan — eligible for GC; KindBase images are always retained.
+	seedBuilderCache(t, c, "rootfs content gamma", "test:gamma")
 
 	out, stdout, _ := capture(false)
 	if err := runImageWithService(context.Background(), []string{"prune"}, out, svc); err != nil {

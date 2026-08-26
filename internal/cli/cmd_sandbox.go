@@ -1342,6 +1342,22 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				slog.Info("build-cache: miss — starting builder VM", "fp", fp[:12])
 			}
 
+			// Image GC pre-flight: if free space on the nexus3 state filesystem is below
+			// the configured floor, prune orphan images first. This prevents buildkit from
+			// hitting a cryptic "disk full" error when stale builder artifacts have
+			// accumulated (the root cause of 16 ~4G artifacts → 69G → 92% host disk).
+			{
+				gcFloorBytes := uint64(service.DefaultGCFreeSpaceFloorGiB) * (1 << 30)
+				if ugCfg, ugErr := config.LoadUserGlobal(); ugErr == nil && ugCfg.Image.FreeSpaceFloorGiB > 0 {
+					gcFloorBytes = uint64(ugCfg.Image.FreeSpaceFloorGiB) * (1 << 30)
+				}
+				if gcStore, gcStoreErr := store.NewFileStore(storeRoot); gcStoreErr == nil {
+					if preErr := service.BuildPreflight(buildCtx, storeRoot, gcFloorBytes, imgCache, gcStore); preErr != nil {
+						return errSandbox("sandbox create", preErr)
+					}
+				}
+			}
+
 			// Ensure the builder rootfs image (moby/buildkit) is available.
 			builderRootfs, err := builderimage.EnsureBuilderImage(buildCtx, storeRoot, agentBytes)
 			if err != nil {
@@ -1511,6 +1527,25 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 
 			// Feed the built image into the normal boot path.
 			f.imageRef = digest
+
+			// Image GC post-build: prune orphan images now that we have the new digest.
+			// The just-built image is pinned via newDigest so it is never pruned.
+			// Images referenced by any sandbox record (running, stopped, or paused) are
+			// always preserved — the referenced set always resolves to KEEP.
+			// Non-fatal: a GC failure must not prevent the sandbox from booting.
+			{
+				keepNewest := 0
+				if ugCfg, ugErr := config.LoadUserGlobal(); ugErr == nil {
+					keepNewest = ugCfg.Image.KeepNewestBuilderImages
+				}
+				if newDigest, parseErr := domain.ParseDigest(f.imageRef); parseErr == nil {
+					if pruned, gcErr := service.AutoPruneAfterBuild(buildCtx, imgCache, builderStore, keepNewest, newDigest); gcErr != nil {
+						slog.Warn("image gc: post-build prune failed (non-fatal)", "err", gcErr)
+					} else if pruned > 0 {
+						slog.Info("image gc: pruned orphan builder images", "count", pruned)
+					}
+				}
+			}
 		}
 	}
 

@@ -24,12 +24,20 @@ type ImageBuilder interface {
 type ImageService struct {
 	cache   *image.Cache
 	builder ImageBuilder
+	store   SandboxImageLister
 }
 
 // NewImageService returns an ImageService backed by the given cache and builder.
 // b may be nil when only listing or pruning images (build is unavailable then).
 func NewImageService(c *image.Cache, b ImageBuilder) *ImageService {
 	return &ImageService{cache: c, builder: b}
+}
+
+// WithStore wires in a SandboxImageLister so PruneImages can retain images
+// referenced by live sandbox records. Without this, only KindBase images are
+// kept during pruning.
+func (s *ImageService) WithStore(sl SandboxImageLister) {
+	s.store = sl
 }
 
 // BuildImage drives the builder to produce a bootable rootfs from req, stores
@@ -56,20 +64,18 @@ func (s *ImageService) ListImages(ctx context.Context) ([]domain.Image, error) {
 	return imgs, nil
 }
 
-// PruneImages removes cache entries that are not referenced by any sandbox or
-// pinned base image.
+// PruneImages removes cache entries not referenced by any sandbox or base image.
 //
-// Conservative default: until sandbox→image references are tracked in the
-// store, PruneImages treats every image as unreferenced and passes an empty
-// pinned set to the cache, removing all entries. Callers that need selective
-// pruning should extend this method with a referenced-digest set once the
-// store tracks image usage.
+// With a store wired in via WithStore, only true orphans are removed.
+// Without a store, only KindBase images are preserved and all others are removed.
 //
 // Returns the number of entries removed.
 func (s *ImageService) PruneImages(ctx context.Context) (int, error) {
-	// No sandbox-image references are tracked yet. Pass nil (empty set) so
-	// every image is considered unreferenced and eligible for removal.
-	n, err := s.cache.Prune(ctx, nil)
+	ref, err := ReferencedDigests(ctx, s.cache, s.store)
+	if err != nil {
+		return 0, fmt.Errorf("image: prune: compute refs: %w", err)
+	}
+	n, err := s.cache.Prune(ctx, ref)
 	if err != nil {
 		return 0, fmt.Errorf("image: prune: %w", err)
 	}
