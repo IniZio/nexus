@@ -217,6 +217,11 @@ func toImageInfoJSON(img domain.Image) imageInfoJSON {
 // Cache root: $XDG_STATE_HOME/nexus3/images (via store.DefaultRoot).
 // Builder: nil — buildkitd connectivity is wired in a separate integration
 // slice. BuildImage returns service.ErrNoBuilder until that slice is merged.
+//
+// The sandbox store is always wired (fail-closed): if it cannot be opened,
+// the function returns an error so that "image prune" never proceeds with a
+// nil store — a nil store causes PruneImages to delete every KindBuilder
+// image referenced by existing sandboxes.
 func newImageService() (*service.ImageService, error) {
 	root, err := store.DefaultRoot()
 	if err != nil {
@@ -227,6 +232,16 @@ func newImageService() (*service.ImageService, error) {
 	if err != nil {
 		return nil, fmt.Errorf("image: open cache: %w", err)
 	}
-	// Builder is nil: the builder VM integration slice wires it.
-	return service.NewImageService(c, nil), nil
+	// Wire the sandbox store so PruneImages retains images referenced by
+	// existing sandbox records. Fail-closed: refuse to proceed if the store
+	// cannot be opened — a nil store silently deletes every KindBuilder image
+	// referenced by running or stopped sandboxes. Builder is nil: the builder
+	// VM integration slice wires it.
+	fs, err := store.NewFileStore(root)
+	if err != nil {
+		return nil, fmt.Errorf("image: open sandbox store: %w", err)
+	}
+	svc := service.NewImageService(c, nil)
+	svc.WithStore(fs)
+	return svc, nil
 }

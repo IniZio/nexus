@@ -13,19 +13,28 @@ import (
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus3/internal/core/store"
 )
 
 // ── test helpers ──────────────────────────────────────────────────────────────
 
-// newTestImageService builds an ImageService backed by a real Cache in a temp
-// dir and an optional fake builder (may be nil for list/prune-only tests).
+// newTestImageService builds an ImageService backed by a real Cache and a real
+// (empty) sandbox FileStore in temp dirs, with an optional fake builder (may
+// be nil for list/prune-only tests). The store is always wired so tests
+// exercise the same store-wired code path as production newImageService.
 func newTestImageService(t *testing.T, b service.ImageBuilder) (*service.ImageService, *image.Cache) {
 	t.Helper()
 	c, err := image.NewCache(t.TempDir())
 	if err != nil {
 		t.Fatalf("image.NewCache: %v", err)
 	}
-	return service.NewImageService(c, b), c
+	fs, err := store.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.NewFileStore: %v", err)
+	}
+	svc := service.NewImageService(c, b)
+	svc.WithStore(fs)
+	return svc, c
 }
 
 // fakeDigest computes a sha256:<hex> digest of content, returning a valid
@@ -236,6 +245,81 @@ func TestImagePrune_Human_ReportsCount(t *testing.T) {
 	if !strings.Contains(stdout.String(), "pruned 1 image(s)") {
 		t.Errorf("human output: got %q, want to contain 'pruned 1 image(s)'", stdout.String())
 	}
+}
+
+// TestImagePrune_SandboxReferencedBuilderSurvives is the mutation-proven guard
+// for the newImageService WithStore wiring (G3-manual-prune-safe).
+//
+// It seeds the image cache with two KindBuilder images, creates a sandbox
+// record in a real FileStore whose ImageDigest points at one of them, wires
+// the store into the ImageService, and runs the manual prune verb. Only the
+// unreferenced orphan must be removed; the sandbox-referenced builder image
+// must survive.
+//
+// Mutation proof: reverting svc.WithStore(fs) (or passing nil instead of fs)
+// causes ReferencedDigests to keep only KindBase images, so both builder
+// images are deleted and the final assertion ("referenced image survived")
+// fails.
+func TestImagePrune_SandboxReferencedBuilderSurvives(t *testing.T) {
+	ctx := context.Background()
+
+	// Real sandbox store with one record referencing a builder image.
+	fs, err := store.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.NewFileStore: %v", err)
+	}
+
+	// Real image cache seeded with two KindBuilder images.
+	c, err := image.NewCache(t.TempDir())
+	if err != nil {
+		t.Fatalf("image.NewCache: %v", err)
+	}
+	referencedImg := seedBuilderCache(t, c, "builder image referenced by sandbox", "builder:referenced")
+	_ = seedBuilderCache(t, c, "builder image orphan", "builder:orphan")
+
+	// Sandbox record whose ImageDigest points at the referenced builder image.
+	sb := domain.Sandbox{
+		ID:      domain.NewSandboxID(),
+		Project: "test",
+		Name:    "prune-guard",
+		State:   domain.Stopped,
+		Envelope: domain.Envelope{
+			ImageDigest: referencedImg.Digest.String(),
+		},
+	}
+	if err := fs.Create(ctx, sb); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+
+	// Wire the store — this is the path under test; mirrors newImageService.
+	svc := service.NewImageService(c, nil)
+	svc.WithStore(fs)
+
+	out, stdout, _ := capture(true)
+	if err := runImageWithService(ctx, []string{"prune"}, out, svc); err != nil {
+		t.Fatalf("image prune: %v", err)
+	}
+
+	var env map[string]any
+	decodeOne(t, stdout, &env)
+	data := env["data"].(map[string]any)
+	// Only the orphan image must be removed (removed == 1).
+	// If removed == 2, the store was not wired and the referenced image was deleted.
+	if data["removed"] != float64(1) {
+		t.Errorf("removed: got %v, want 1 (only orphan; sandbox-referenced image must survive — WithStore not wired?)", data["removed"])
+	}
+
+	// Confirm the referenced builder image is still in the cache.
+	remaining, listErr := c.List(ctx)
+	if listErr != nil {
+		t.Fatalf("post-prune List: %v", listErr)
+	}
+	for _, img := range remaining {
+		if img.Digest == referencedImg.Digest {
+			return // PASS
+		}
+	}
+	t.Errorf("sandbox-referenced builder image %s was deleted by prune; check that svc.WithStore is called in newImageService", referencedImg.Digest)
 }
 
 // ── image build tests ─────────────────────────────────────────────────────────
