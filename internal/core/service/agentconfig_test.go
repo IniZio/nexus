@@ -332,6 +332,113 @@ func TestAssembleCuratedConfig_MissingSourceSkipped(t *testing.T) {
 	}
 }
 
+// TestAssembleCuratedConfig_BypassConsentPreservesLowerLayerKeys is the
+// regression test for the overlayfs file-granular shadow defect (commit
+// 6a24c6a). The defect: SeedGuestBypassConsent wrote a single-key
+// {"skipDangerousModePermissionPrompt":true} into the UPPER overlayfs layer.
+// Because overlayfs is file-granular (not key-granular), that upper file wholly
+// shadows the lower curated settings.json, dropping enabledPlugins and
+// extraKnownMarketplaces. Plugins (groundwork, handbook) disappear in every
+// fresh sandbox.
+//
+// Fix: AssembleCuratedConfig injects the bypass key INTO the staged lower
+// settings.json, so both the plugin keys AND the bypass key coexist in a single
+// layer. The supervisor skips the upper write when sharing is ON.
+//
+// RED → GREEN evidence (run manually to confirm):
+//
+//	# RED: revert copyFilteredSettings to NOT force the bypass key and
+//	#      AssembleCuratedConfig to NOT call ensureStagedBypassConsentKey.
+//	#      This test fails: staged settings.json missing 'skipDangerousModePermissionPrompt'.
+//	#
+//	# GREEN: with the fix applied this test passes.
+//
+// The test simulates a host settings.json that carries enabledPlugins +
+// extraKnownMarketplaces (the two keys that the overlay was dropping) and
+// asserts that after AssembleCuratedConfig the staged lower settings.json
+// contains ALL THREE keys: enabledPlugins, extraKnownMarketplaces, AND
+// skipDangerousModePermissionPrompt.
+func TestAssembleCuratedConfig_BypassConsentPreservesLowerLayerKeys(t *testing.T) {
+	srcDir := t.TempDir()
+	destDir := t.TempDir()
+
+	// Build a host settings.json with enabledPlugins and extraKnownMarketplaces —
+	// exactly the keys that were lost when the bypass consent write shadowed the
+	// lower layer.
+	hostSettings := map[string]any{
+		"enabledPlugins": []string{
+			"groundwork@groundwork",
+			"handbook@example-handbook",
+		},
+		"extraKnownMarketplaces": []map[string]string{
+			{"name": "groundwork", "url": "https://marketplace.groundwork.invalid"},
+		},
+		"model": "claude-opus-4-5",
+		// Deliberately omit skipDangerousModePermissionPrompt to prove
+		// AssembleCuratedConfig injects it regardless of the host value.
+	}
+	b, err := json.Marshal(hostSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(srcDir, "settings.json")
+	if err := os.WriteFile(settingsPath, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.AssembleCuratedConfig(cred.ClaudeCodeProfile, srcDir, destDir); err != nil {
+		t.Fatalf("AssembleCuratedConfig: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(destDir, "settings.json"))
+	if err != nil {
+		t.Fatalf("staged settings.json not written: %v", err)
+	}
+	var staged map[string]json.RawMessage
+	if err := json.Unmarshal(data, &staged); err != nil {
+		t.Fatalf("staged settings.json is not valid JSON: %v\nraw: %s", err, data)
+	}
+
+	// All three keys must coexist in the lower layer so the overlay presents
+	// them together without any upper-layer shadow write.
+	for _, key := range []string{"enabledPlugins", "extraKnownMarketplaces", "skipDangerousModePermissionPrompt"} {
+		if _, ok := staged[key]; !ok {
+			t.Errorf("staged lower settings.json missing key %q (overlayfs regression: would be absent in effective guest settings.json)", key)
+		}
+	}
+	// The bypass key must be true.
+	var bypass bool
+	if err := json.Unmarshal(staged["skipDangerousModePermissionPrompt"], &bypass); err != nil || !bypass {
+		t.Errorf("skipDangerousModePermissionPrompt is not true in staged settings.json; got raw: %s", staged["skipDangerousModePermissionPrompt"])
+	}
+}
+
+// TestAssembleCuratedConfig_BypassConsentPresentWhenNoHostSettings verifies
+// that the bypass key is injected into the lower layer even when the host has
+// no settings.json at all (e.g. a fresh install). Without this, a fresh host
+// would produce a lower layer with no settings.json; the supervisor would need
+// an upper write, which re-introduces the shadow risk for future installs.
+func TestAssembleCuratedConfig_BypassConsentPresentWhenNoHostSettings(t *testing.T) {
+	srcDir := t.TempDir() // empty — no settings.json
+	destDir := t.TempDir()
+
+	if err := service.AssembleCuratedConfig(cred.ClaudeCodeProfile, srcDir, destDir); err != nil {
+		t.Fatalf("AssembleCuratedConfig: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(destDir, "settings.json"))
+	if err != nil {
+		t.Fatalf("settings.json not present in lower layer even with no host settings.json: %v", err)
+	}
+	var staged map[string]json.RawMessage
+	if err := json.Unmarshal(data, &staged); err != nil {
+		t.Fatalf("staged settings.json is not valid JSON: %v", err)
+	}
+	if _, ok := staged["skipDangerousModePermissionPrompt"]; !ok {
+		t.Error("skipDangerousModePermissionPrompt missing when host has no settings.json")
+	}
+}
+
 // TestAssembleCuratedConfig_GitDirExcluded verifies that a .git directory
 // accidentally inside the source tree is never staged.
 func TestAssembleCuratedConfig_GitDirExcluded(t *testing.T) {

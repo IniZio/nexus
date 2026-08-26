@@ -105,31 +105,64 @@ func TestProbeAndSeedGuest_AgentOnboardingIsInvoked(t *testing.T) {
 }
 
 // TestProbeAndSeedGuest_BypassConsentIsSeeded is the mutation guard for the
-// seedBypassConsentFn call inside probeAndSeedGuest (D-J12):
+// seedBypassConsentFn call inside probeAndSeedGuest (D-J12). The call is
+// conditional on AgentCfgLowerGuestPath being empty (sharing OFF). When sharing
+// is ON, the bypass key is already in the staged lower settings.json and an
+// upper-layer write would shadow the entire file, dropping enabledPlugins.
 //
-//	Delete seedBypassConsentFn(…) from probeAndSeedGuest → this test fails RED.
+// Mutation guards:
 //
-// With the shell-function `claude` adding --dangerously-skip-permissions
-// automatically, every guest shell is now autonomous. The bypass-permissions
-// consent dialog (skipDangerousModePermissionPrompt in settings.json) must be
-// pre-answered at boot so the wizard does not stall an interactively started
-// agent.
+//	Delete the seedBypassConsentFn call → sharing-OFF sub-test fails RED.
+//	Keep calling it unconditionally → sharing-ON sub-test fails RED (upper shadows lower).
 func TestProbeAndSeedGuest_BypassConsentIsSeeded(t *testing.T) {
-	called := false
-	old := seedBypassConsentFn
-	seedBypassConsentFn = func(_ context.Context, _ domain.SandboxID, _ service.GuestExecer) error {
-		called = true
-		return nil
-	}
-	t.Cleanup(func() { seedBypassConsentFn = old })
+	t.Run("sharing_off_calls_bypass_seed", func(t *testing.T) {
+		called := false
+		old := seedBypassConsentFn
+		seedBypassConsentFn = func(_ context.Context, _ domain.SandboxID, _ service.GuestExecer) error {
+			called = true
+			return nil
+		}
+		t.Cleanup(func() { seedBypassConsentFn = old })
 
-	err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{})
-	if err != nil {
-		t.Fatalf("probeAndSeedGuest with live prober: unexpected error %v", err)
-	}
-	if !called {
-		t.Fatal("seedBypassConsentFn was not called — SeedGuestBypassConsent wiring missing from probeAndSeedGuest (D-J12 mutation guard)")
-	}
+		// AgentCfgLowerGuestPath == "" → sharing OFF → seedBypassConsentFn must be called.
+		err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{})
+		if err != nil {
+			t.Fatalf("probeAndSeedGuest: %v", err)
+		}
+		if !called {
+			t.Fatal("seedBypassConsentFn was not called when sharing is OFF — bypass consent will be missing (D-J12 mutation guard)")
+		}
+	})
+
+	t.Run("sharing_on_skips_bypass_seed", func(t *testing.T) {
+		called := false
+		old := seedBypassConsentFn
+		seedBypassConsentFn = func(_ context.Context, _ domain.SandboxID, _ service.GuestExecer) error {
+			called = true
+			return nil
+		}
+		t.Cleanup(func() { seedBypassConsentFn = old })
+
+		// Stub seedOverlayClaudeConfigFn so the test doesn't need a live VM.
+		oldOvl := seedOverlayClaudeConfigFn
+		seedOverlayClaudeConfigFn = func(_ context.Context, _ domain.SandboxID, _ string, _ service.GuestExecer) error {
+			return nil
+		}
+		t.Cleanup(func() { seedOverlayClaudeConfigFn = oldOvl })
+
+		// AgentCfgLowerGuestPath != "" → sharing ON → bypass key is in the lower
+		// layer; seedBypassConsentFn must NOT be called (upper write would shadow
+		// the entire lower settings.json, dropping enabledPlugins).
+		err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{
+			AgentCfgLowerGuestPath: "/run/nexus3/agentcfg-lower",
+		})
+		if err != nil {
+			t.Fatalf("probeAndSeedGuest: %v", err)
+		}
+		if called {
+			t.Fatal("seedBypassConsentFn was called when sharing is ON — upper write would shadow lower settings.json, dropping enabledPlugins (overlayfs file-granular regression)")
+		}
+	})
 }
 
 // TestProbeAndSeedGuest_GitIdentitySeededForAnySourcePaths is the mutation

@@ -1060,17 +1060,32 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 		}
 	}
 
-	// Bypass-permissions consent seed (D-J12). Merges
-	// skipDangerousModePermissionPrompt:true into ~/.claude/settings.json so
-	// the shell-function `claude` (which always adds --dangerously-skip-permissions)
-	// does not stop on the bypass-permissions wizard. Non-fatal: the agent
-	// reaches its prompt after the wizard, it just blocks for operator input.
-	if bypassErr := seedBypassConsentFn(ctx, id, in.Execer); bypassErr != nil {
-		slog.Warn("supervisor.bypass_consent_seed_failed",
-			"sandbox", id, "err", bypassErr,
-			"action", "guest claude will stop on bypass-permissions consent dialog")
+	// Bypass-permissions consent seed (D-J12). skipDangerousModePermissionPrompt
+	// must reach ~/.claude/settings.json so the shell-function `claude` (which
+	// always adds --dangerously-skip-permissions) does not stall on the consent
+	// wizard. Two paths:
+	//
+	//  • Sharing ON (AgentCfgLowerGuestPath != ""): AssembleCuratedConfig already
+	//    injected the key into the staged lower settings.json, which the overlay
+	//    presents as the effective file. Writing an upper-layer file here would
+	//    shadow the ENTIRE lower settings.json, silently dropping enabledPlugins
+	//    and extraKnownMarketplaces (overlayfs is file-granular, not key-granular).
+	//    Skip the upper write; the lower layer is sufficient.
+	//
+	//  • Sharing OFF (AgentCfgLowerGuestPath == ""): no lower settings.json
+	//    exists, so the upper write is the only source of the key and is required.
+	if in.AgentCfgLowerGuestPath == "" {
+		if bypassErr := seedBypassConsentFn(ctx, id, in.Execer); bypassErr != nil {
+			slog.Warn("supervisor.bypass_consent_seed_failed",
+				"sandbox", id, "err", bypassErr,
+				"action", "guest claude will stop on bypass-permissions consent dialog")
+		} else {
+			slog.Info("supervisor.bypass_consent_seeded", "sandbox", id)
+		}
 	} else {
-		slog.Info("supervisor.bypass_consent_seeded", "sandbox", id)
+		slog.Info("supervisor.bypass_consent_in_lower_layer",
+			"sandbox", id, "lower", in.AgentCfgLowerGuestPath,
+			"action", "skipDangerousModePermissionPrompt carried in staged settings.json; no upper write needed")
 	}
 	// Guest gitconfig (D-PD-29 + safe.directory). Seeded here, unconditionally,
 	// rather than on the human-secrets branch it used to live on.

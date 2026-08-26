@@ -43,6 +43,12 @@ var portableSettingsTopKeys = map[string]bool{
 	"effortLevel":          true,
 	"autoUpdatesChannel":   true,
 	"enableWorkflows":      true,
+	// Bypass-permissions consent: always carried into the lower overlayfs layer
+	// so plugins (enabledPlugins) and this key coexist. The overlay is
+	// file-granular: an upper-layer write of a single-key settings.json would
+	// shadow the entire lower file, dropping enabledPlugins and
+	// extraKnownMarketplaces. Carrying the key here keeps them all in one layer.
+	"skipDangerousModePermissionPrompt": true,
 }
 
 // AssembleCuratedConfig stages a curated, secret-free subset of the agent's
@@ -72,7 +78,15 @@ func AssembleCuratedConfig(profile cred.AgentProfile, agentConfigDir string, des
 			return err
 		}
 	}
-	return nil
+	// Guarantee the bypass-consent key is present in the lower overlayfs layer
+	// even when the host has no settings.json. Without this, a fresh host with no
+	// settings.json produces a lower layer with no settings.json at all; the
+	// supervisor's upper-layer single-key write would then still be needed — but
+	// once the lower DOES have a settings.json (e.g. enabledPlugins present), an
+	// upper-layer write shadows the whole file and silently drops enabledPlugins.
+	// Ensuring the key is in the lower layer lets the supervisor skip the upper
+	// write entirely when sharing is on.
+	return ensureStagedBypassConsentKey(destDir)
 }
 
 // expandTilde expands a leading "~/" to the user's home directory.
@@ -256,6 +270,12 @@ func copyRaw(src, dst string) error {
 // portable top-level keys to dstPath at mode 0444. Any key not in
 // portableSettingsTopKeys — including unrecognised/future keys — is dropped, so
 // a secret can never ride in on a key we have not vetted.
+//
+// skipDangerousModePermissionPrompt is always forced to true in the output
+// regardless of the host value, so the staged lower overlayfs layer always
+// carries the bypass key alongside enabledPlugins and extraKnownMarketplaces.
+// (An upper-layer write of a single-key file would shadow the entire lower
+// file, silently dropping plugins — see the overlay file-granularity caveat.)
 func copyFilteredSettings(src, dst string) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
@@ -276,10 +296,58 @@ func copyFilteredSettings(src, dst string) error {
 			delete(raw, key)
 		}
 	}
+	// Always force the bypass key so the lower layer needs no upper shadow.
+	raw["skipDangerousModePermissionPrompt"] = json.RawMessage("true")
 
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(dst, out, 0o444)
+}
+
+// ensureStagedBypassConsentKey guarantees that destDir/settings.json exists
+// and carries skipDangerousModePermissionPrompt:true. Called by
+// AssembleCuratedConfig after the copyGlob pass so the bypass key is present
+// even when the host has no settings.json (in which case copyFilteredSettings
+// is never invoked and the file would otherwise be absent from the lower layer).
+//
+// The file may have been written at mode 0o444 by copyFilteredSettings; we
+// write via a sibling temp file + rename to avoid a permission-denied overwrite.
+func ensureStagedBypassConsentKey(destDir string) error {
+	p := filepath.Join(destDir, "settings.json")
+	var raw map[string]json.RawMessage
+	data, err := os.ReadFile(p)
+	switch {
+	case err == nil:
+		if jsonErr := json.Unmarshal(data, &raw); jsonErr != nil {
+			raw = nil
+		}
+	case os.IsNotExist(err):
+		// No settings.json staged yet — start from empty object.
+	default:
+		return err
+	}
+	if raw == nil {
+		raw = make(map[string]json.RawMessage)
+	}
+	raw["skipDangerousModePermissionPrompt"] = json.RawMessage("true")
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	// Write via temp-file rename so we can replace a read-only file (0o444)
+	// without needing to chmod it first. The rename atomically replaces the
+	// existing file; the new file is created writable and the caller's process
+	// umask applies to the temp, but we set the final mode explicitly via
+	// os.Chmod after rename.
+	tmp := p + ".nexus3tmp"
+	if err := os.WriteFile(tmp, out, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Chmod(p, 0o444)
 }
