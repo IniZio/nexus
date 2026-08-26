@@ -234,6 +234,17 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 	}
 	log.Printf("in-guest build: rootfs at %s", rootfsDir)
 
+	// ── Integrity gate: reject a hollow export before it becomes an image ─────
+	// A buildkit export that yields correct directory structure but empty
+	// regular-file contents (observed intermittently: ~99.96% of files
+	// zero-length) must not be silently converted to an ext4 image, cached, and
+	// booted — that only surfaces later as "exec format error" at runtime. Fail
+	// the build here so it is retried instead.
+	if err := verifyRootfsPopulated(rootfsDir); err != nil {
+		fmt.Fprintf(os.Stderr, "in-guest build: %v\n", err)
+		return fmt.Errorf("in-guest build: %w", err)
+	}
+
 	// ── Step 7: rootfs directory → raw ext4 image ────────────────────────────
 	if err := runMke2fsInGuest(ctx, rootfsDir, opts.OutputExt4, imgSize); err != nil {
 		return fmt.Errorf("in-guest build: mke2fs: %w", err)
