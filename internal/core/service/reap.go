@@ -450,14 +450,28 @@ func classifyResource(
 	return entry
 }
 
-// socketPathForID returns the API socket path to probe for the given resource.
-// For KindSocketAPI resources the resource's own path is used. For other
-// resource kinds the socket is derived from the socket directory.
+// socketPathForID returns the socket path to probe for the given resource's
+// liveness check.
+//
+// For a socket-kind resource the probe target is the socket file itself, and
+// resource_index.go populates res.Path with its real path for every socket
+// kind (.sock, .vsock, .iid) — so return that directly. The earlier code
+// fabricated "<socketDir>/<id>.sock" for the .vsock/.iid kinds, probing a path
+// that never exists (TBD-PD-23).
+//
+// For a NON-socket resource (a raw disk, a create-intent, etc.) res.Path is
+// that resource's own file, not a socket. The liveness gate still wants to
+// probe the owner sandbox's API socket, so derive it from the socket directory
+// and the owner id. Returning res.Path here would make the probe target the
+// resource's own file (e.g. the .create-intent.json), which exists and thus
+// wrongly reads as "live", stranding the resource from reclamation.
 func socketPathForID(res HostResource, socketDir string) string {
-	if res.Kind == KindSocketAPI {
+	switch res.Kind {
+	case KindSocketAPI, KindSocketVSock, KindSocketIID:
 		return res.Path
+	default:
+		return filepath.Join(socketDir, res.OwnerID.String()+".sock")
 	}
-	return filepath.Join(socketDir, res.OwnerID.String()+".sock")
 }
 
 // deleteResourceFn is the indirection point for removal. Production always

@@ -713,3 +713,47 @@ func TestReap_ConcurrentCreateInFlight(t *testing.T) {
 		t.Errorf("Deleted should be empty for in-flight create, got %v", report.Deleted)
 	}
 }
+
+// TestSocketPathForID_AllSocketKindsUseRealPath verifies that socketPathForID
+// returns res.Path for every socket kind — not a fabricated .sock path.
+//
+// Mutation proof: reverting socketPathForID to fabricate a .sock path for
+// non-API kinds causes this test to fail with:
+//
+//	kind KindSocketVSock: got /state/sockets/<id>.sock, want /state/sockets/<id>.vsock
+//	kind KindSocketIID: got /state/sockets/<id>.sock, want /state/sockets/<id>.iid
+//
+// @verifies TBD-PD-23
+func TestSocketPathForID_AllSocketKindsUseRealPath(t *testing.T) {
+	id := domain.NewSandboxID()
+	sockDir := "/state/sockets"
+
+	cases := []struct {
+		kind    service.ResourceKind
+		suffix  string
+	}{
+		{service.KindSocketAPI, ".sock"},
+		{service.KindSocketVSock, ".vsock"},
+		{service.KindSocketIID, ".iid"},
+	}
+
+	for _, tc := range cases {
+		realPath := filepath.Join(sockDir, id.String()+tc.suffix)
+		res := service.HostResource{
+			Kind:    tc.kind,
+			Path:    realPath,
+			OwnerID: id,
+		}
+		got := service.SocketPathForID(res, sockDir)
+		if got != realPath {
+			t.Errorf("kind %s: got %s, want %s", tc.kind, got, realPath)
+		}
+		// Confirm the returned path carries the correct extension, NOT .sock.
+		if tc.kind != service.KindSocketAPI {
+			fabricated := filepath.Join(sockDir, id.String()+".sock")
+			if got == fabricated {
+				t.Errorf("kind %s: returned fabricated .sock path %s instead of real path %s", tc.kind, got, realPath)
+			}
+		}
+	}
+}

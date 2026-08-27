@@ -205,7 +205,11 @@ func (d *CHDriver) spawnVirtiofsdForMounts(ctx context.Context, id domain.Sandbo
 	fsCfgs := make([]vmFsConfig, 0, len(mounts))
 	for i, lm := range mounts {
 		sockPath := virtiofsdSockPath(d.cfg.SocketDir, id, i)
-		vp, err := spawnVirtiofsd(ctx, d.cfg.VirtiofsdPath, sockPath, lm.HostPath, lm.ReadOnly)
+		spawnFn := d.spawnVirtiofsdFn
+		if spawnFn == nil {
+			spawnFn = spawnVirtiofsd
+		}
+		vp, err := spawnFn(ctx, d.cfg.VirtiofsdPath, sockPath, lm.HostPath, lm.ReadOnly)
 		if err != nil {
 			return nil, fmt.Errorf("cloudhypervisor: virtiofsd[%d] for %s: %w", i, lm.HostPath, err)
 		}

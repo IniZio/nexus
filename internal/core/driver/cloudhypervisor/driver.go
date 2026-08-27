@@ -321,6 +321,10 @@ type CHDriver struct {
 	virtiofsdProcs  map[domain.SandboxID][]*managedProcess    // per-sandbox virtiofsd processes; see ch_virtiofs.go
 
 	snapshotStore *artifact.Store
+
+	// spawnVirtiofsdFn is the per-mount spawn call used by spawnVirtiofsdForMounts.
+	// Defaults to the real spawnVirtiofsd; overridable in tests for deterministic failure injection.
+	spawnVirtiofsdFn func(ctx context.Context, binaryPath, socketPath, sharedDir string, readOnly bool) (*managedProcess, error)
 }
 
 // New validates cfg, creates the socket directory if necessary, and returns a
@@ -402,6 +406,7 @@ func New(cfg Config) (*CHDriver, error) {
 		nets:               make(map[domain.SandboxID]*netState),
 		virtiofsdProcs:     make(map[domain.SandboxID][]*managedProcess),
 		snapshotStore:      snapshotStore,
+		spawnVirtiofsdFn:   spawnVirtiofsd,
 	}, nil
 }
 

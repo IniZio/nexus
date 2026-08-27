@@ -740,8 +740,32 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 	if s.volumes != nil {
 		detachCtx, detachCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer detachCancel()
+
+		// Primary path: detach volumes listed in the sandbox record.
+		mountedNames := make(map[string]bool, len(sb.MountedVolumes))
 		for _, va := range sb.MountedVolumes {
+			mountedNames[va.Name] = true
 			_ = detachVolumeLocked(detachCtx, s.volumes, va.Name, sb.ID.String())
+		}
+
+		// TBD-PD-22: also sweep every volume whose meta.json Attachments list
+		// names this sandbox id, covering stale records that diverged from
+		// sb.MountedVolumes (e.g. a crash between Attach write and sandbox
+		// record commit). Without this sweep, VolumeStore.Rm refuses with
+		// "volume in use: attached to <removed-sandbox-id>".
+		if recs, listErr := s.volumes.List(); listErr == nil {
+			sbIDStr := sb.ID.String()
+			for _, rec := range recs {
+				if mountedNames[rec.Name] {
+					continue // already handled above
+				}
+				for _, att := range rec.Attachments {
+					if att.SandboxID == sbIDStr {
+						_ = detachVolumeLocked(detachCtx, s.volumes, rec.Name, sbIDStr)
+						break
+					}
+				}
+			}
 		}
 	}
 

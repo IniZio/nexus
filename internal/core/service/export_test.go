@@ -71,3 +71,10 @@ func HoldCreateIntentForTest(diskDir string, id domain.SandboxID) (release func(
 func DetachVolumeLocked(ctx context.Context, vs *volumestore.VolumeStore, name, sandboxID string) error {
 	return detachVolumeLocked(ctx, vs, name, sandboxID)
 }
+
+// SocketPathForID is exported for testing only. It wraps the internal
+// socketPathForID so tests can verify that every socket kind resolves to
+// res.Path rather than a fabricated .sock path.
+func SocketPathForID(res HostResource, socketDir string) string {
+	return socketPathForID(res, socketDir)
+}

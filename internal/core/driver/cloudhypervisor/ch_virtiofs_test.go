@@ -13,7 +13,6 @@
 package cloudhypervisor
 
 import (
-	"time"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -44,17 +43,6 @@ sleep 300
 `
 	if err := os.WriteFile(script, []byte(src), 0o755); err != nil {
 		t.Fatalf("write fake virtiofsd: %v", err)
-	}
-	return script
-}
-
-// fakeVirtiofsdBad writes a script that exits immediately without creating
-// the socket, so spawnVirtiofsd times out waiting for it.
-func fakeVirtiofsdBad(t *testing.T) string {
-	t.Helper()
-	script := filepath.Join(t.TempDir(), "virtiofsd-bad")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-		t.Fatalf("write bad virtiofsd: %v", err)
 	}
 	return script
 }
@@ -118,8 +106,8 @@ func TestSpawnVirtiofsdForMounts_TagsAndCount(t *testing.T) {
 
 // TestSpawnVirtiofsdForMounts_FailureKillsOrphans proves AC #4 via the real
 // production wiring path:
-//   1. Mount[0] is spawned with the good binary and registered in virtiofsdProcs[id].
-//   2. Mount[1] spawn uses a bad binary and fails (context cancelled quickly).
+//   1. Mount[0] spawn succeeds (seam calls real spawnVirtiofsd with the good binary).
+//   2. Mount[1] spawn fails synchronously via the injected seam (no timing dependency).
 //   3. clearState (called explicitly, as Start's cleanup() calls it on failure) kills
 //      mount[0]'s process group and unlinks its socket.
 //
@@ -129,9 +117,31 @@ func TestSpawnVirtiofsdForMounts_FailureKillsOrphans(t *testing.T) {
 	goodBin := fakeVirtiofsd(t)
 	shared := t.TempDir()
 
-	// Build driver with good binary but set cfg.VirtiofsdPath to bad after pre-registering mount[0].
 	socketDir := testSocketDir(t)
 	var id domain.SandboxID
+
+	// pid0 is captured by the seam closure once mount[0] spawns successfully.
+	var pid0 int
+
+	// callCount tracks how many times the seam has been invoked.
+	// Call 0 (mount[0]): delegate to the real spawnVirtiofsd so a live process
+	//   exists in virtiofsdProcs[id] — it becomes the "orphan" under test.
+	// Call 1 (mount[1]): return a deterministic error synchronously, with no
+	//   timing dependency, so the test never flakes under load.
+	var callCount int
+	seam := func(ctx context.Context, binaryPath, socketPath, sharedDir string, readOnly bool) (*managedProcess, error) {
+		n := callCount
+		callCount++
+		if n == 0 {
+			vp, err := spawnVirtiofsd(ctx, goodBin, socketPath, sharedDir, readOnly)
+			if err != nil {
+				return nil, err
+			}
+			pid0 = vp.pid
+			return vp, nil
+		}
+		return nil, fmt.Errorf("injected failure for mount[%d]", n)
+	}
 
 	d := &CHDriver{
 		cfg: Config{
@@ -142,37 +152,25 @@ func TestSpawnVirtiofsdForMounts_FailureKillsOrphans(t *testing.T) {
 				{HostPath: shared, GuestPath: "/bad"},
 			},
 		},
-		procs:          make(map[domain.SandboxID]*managedProcess),
-		nets:           make(map[domain.SandboxID]*netState),
-		virtiofsdProcs: make(map[domain.SandboxID][]*managedProcess),
+		procs:            make(map[domain.SandboxID]*managedProcess),
+		nets:             make(map[domain.SandboxID]*netState),
+		virtiofsdProcs:   make(map[domain.SandboxID][]*managedProcess),
+		spawnVirtiofsdFn: seam,
 	}
 
-	// Spawn mount[0] successfully with the good binary and register it
-	// (this mirrors what spawnVirtiofsdForMounts does on first iteration).
-	sock0 := virtiofsdSockPath(socketDir, id, 0)
-	vp0, err := spawnVirtiofsd(t.Context(), goodBin, sock0, shared, false)
-	if err != nil {
-		t.Fatalf("pre-spawn mount[0]: %v", err)
-	}
-	pid0 := vp0.pid
-	d.mu.Lock()
-	d.virtiofsdProcs[id] = append(d.virtiofsdProcs[id], vp0)
-	d.mu.Unlock()
-
-	// Now call spawnVirtiofsdForMounts with a context that cancels almost immediately
-	// — this causes mount[0]'s spawn attempt to fail (context cancelled before socket
-	// appears). In real failure scenarios the bad binary exits without creating the socket.
-	// Either way the function returns an error with mount[0] already registered.
-	cancelCtx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-	defer cancel()
-	_, spawnErr := d.spawnVirtiofsdForMounts(cancelCtx, id)
+	_, spawnErr := d.spawnVirtiofsdForMounts(t.Context(), id)
 	if spawnErr == nil {
 		t.Fatal("expected spawnVirtiofsdForMounts to fail, got nil")
 	}
 	t.Logf("spawn error (expected): %v", spawnErr)
 
+	if pid0 == 0 {
+		t.Fatal("seam for mount[0] was never called — test wiring is broken")
+	}
+
 	// Simulate Start's cleanup() call. clearState kills virtiofsdProcs[id] and
-	// removes their sockets. The pre-registered vp0 is the "orphan" to be killed.
+	// removes their sockets. The registered vp0 is the "orphan" to be killed.
+	sock0 := virtiofsdSockPath(socketDir, id, 0)
 	d.clearState(id)
 
 	// Assert: vp0 must be dead.
