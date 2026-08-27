@@ -455,6 +455,48 @@ anything about credentials.
 
 ---
 
+## Creating a GitHub pull request from inside a sandbox
+
+The MITM perimeter is the only egress boundary for in-guest GitHub traffic.
+It allowlists REST endpoints and **denies GraphQL** fail-closed (HTTP 403).
+
+**`gh pr create` uses a GraphQL mutation. Do not use it — it returns 403.**
+
+Other `gh` subcommands that use GraphQL are also blocked. Notably, `gh repo view --json` returns 403; to read repo context over REST use `gh api repos/{owner}/{repo}` instead (e.g. `gh api repos/{owner}/{repo} --jq .default_branch` to read the default branch, or `--jq .owner.login` / `--jq .name` for owner and repo name).
+
+### Push first
+
+The branch must exist on the remote before opening the PR. Branch names must
+match the perimeter's push allowlist (typically `nexus3/<project>/<name>` or
+the pattern the operator configured); the perimeter denies any push to a
+disallowed ref pattern.
+
+```sh
+git push origin HEAD
+```
+
+### Create the PR over REST
+
+```sh
+gh api -X POST repos/{owner}/{repo}/pulls \
+  -f title="<title>" \
+  -f head="<branch>" \
+  -f base="<base-branch>" \
+  -f body="<body>"
+```
+
+`gh api` expands `{owner}` and `{repo}` from the local git remote automatically.
+A successful call returns HTTP 201 with an `html_url` field pointing to the new PR.
+
+**Draft PRs**: add `-F draft=true` only if the target repo supports drafts.
+Some private repos do not — a hardcoded `draft=true` returns HTTP 422 there.
+Omit it for a regular PR.
+
+### Stacked PRs
+
+`gh stack submit` works if the `gh-stack` extension is present — it creates
+PRs over REST, not GraphQL, so the perimeter allows it.
+
 ## Sharing your host agent setup into sandboxes (user mounts)
 
 nexus3 has **no built-in default mounts** — it ships no hardcoded tool list. All host-to-guest sharing is driven entirely by user config. Pass `--no-user-mounts` on a `create` call to suppress all user-global mounts for that sandbox.
