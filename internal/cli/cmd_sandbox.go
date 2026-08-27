@@ -354,8 +354,9 @@ type sandboxCreateFlags struct {
 	// unconditional (no opt-out; D-DC-30 revised 2026-08-14).
 	memoryMaxMiB uint32   // --memory-max <MiB>: RAM ceiling for hotplug region
 	vcpusMax     uint32   // --vcpus-max <n>:    vCPU ceiling for hotplug
-	diskMaxGiB   uint32   // --disk-max <GiB>:   disk grow ceiling
-	secrets      []string // --secret ENV@host[,host…] (repeatable)
+	diskMaxGiB       uint32   // --disk-max <GiB>:   disk grow ceiling
+	builderMemoryMiB uint32   // --builder-memory <MiB>: builder VM RAM (0 = use default 8192 MiB; min 1024 when set)
+	secrets          []string // --secret ENV@host[,host…] (repeatable)
 	noBuiltinGH  bool     // --no-builtin-gh: skip host gh auth token bind
 	egressClosed bool     // --egress closed: disable open egress (D-PD-33)
 	// egressExplicit records that --egress was actually passed, so that
@@ -561,6 +562,11 @@ func applyUserGlobalConfig(f *sandboxCreateFlags) error {
 				"sandbox create: --memory-max %d MiB is less than --memory %d MiB; ceiling must exceed boot size",
 				f.memoryMaxMiB, f.memoryMiB)}
 		}
+	}
+
+	// BuilderMemory: explicit --builder-memory flag wins; user-global config provides a fallback.
+	if f.builderMemoryMiB == 0 && userCfg.Builder.MemoryMiB > 0 {
+		f.builderMemoryMiB = uint32(userCfg.Builder.MemoryMiB)
 	}
 
 	return nil
@@ -777,6 +783,19 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 			}
 			i++
 			f.mountLive = append(f.mountLive, args[i])
+		case "--builder-memory":
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --builder-memory requires an argument"}
+			}
+			i++
+			v, err := strconv.ParseUint(args[i], 10, 32)
+			if err != nil {
+				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --builder-memory %q: invalid MiB value", args[i])}
+			}
+			if v > 0 && v < 1024 {
+				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --builder-memory %d MiB is below the minimum of 1024 MiB", v)}
+			}
+			f.builderMemoryMiB = uint32(v)
 		default:
 			if len(arg) > 1 && arg[0] == '-' {
 				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: unknown flag %q", arg)}
@@ -1175,7 +1194,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--repo <owner>/<name>] [--branches <ref>[,ref…]] [--no-builtin-gh] [--no-share-settings] [--no-user-mounts] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--builder-memory <MiB>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--repo <owner>/<name>] [--branches <ref>[,ref…]] [--no-builtin-gh] [--no-share-settings] [--no-user-mounts] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])
@@ -1420,6 +1439,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				ContextDiskPath:  ctxDiskPath,
 				ArtifactDiskPath: artifactDiskPath,
 				CacheDisks:       cacheDisks,
+				MemoryMiB:        uint16(f.builderMemoryMiB),
 			}
 
 			// Sizing is derived from the spec via exported helpers so

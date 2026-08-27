@@ -69,6 +69,31 @@ func TestLoadUserGlobal_ImageGCKnobs(t *testing.T) {
 	}
 }
 
+// TestLoadUserGlobal_BuilderMemoryKnob guards against the parse() wiring gap
+// where the builder.* block is read into fileConfig but dropped from the
+// returned Config (mirrors BUG-1 for the builder knob). The value below must
+// survive the full YAML→fileConfig→Config path.
+func TestLoadUserGlobal_BuilderMemoryKnob(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	cfgDir := filepath.Join(dir, "nexus3")
+	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("version: 1\nbuilder:\n  memory_mib: 4096\n")
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.LoadUserGlobal()
+	if err != nil {
+		t.Fatalf("valid file: %v", err)
+	}
+	if cfg.Builder.MemoryMiB != 4096 {
+		t.Errorf("Builder.MemoryMiB = %d, want 4096 (builder knob dropped by parse())", cfg.Builder.MemoryMiB)
+	}
+}
+
 func TestLoadUserGlobal_MalformedFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)

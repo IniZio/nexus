@@ -141,12 +141,22 @@ type ImageGCConfig struct {
 	KeepNewestBuilderImages int `yaml:"keep_newest_builder_images"`
 }
 
+// BuilderConfig holds per-build builder VM settings.
+type BuilderConfig struct {
+	// MemoryMiB is the builder VM guest memory in mebibytes. Zero means
+	// "use the built-in default" (builder.DefaultBuilderMemMiB = 8192 MiB).
+	// Must be at least 1024 MiB when set. CLI --builder-memory always takes
+	// precedence over this setting.
+	MemoryMiB int `yaml:"memory_mib"`
+}
+
 // Config is the in-memory representation of a nexus3.yaml file.
 // A zero Config is valid and means "no project-level overrides".
 type Config struct {
 	Egress  EgressConfig  `yaml:"egress"`
 	Sandbox SandboxConfig `yaml:"sandbox"`
 	Image   ImageGCConfig `yaml:"image"`
+	Builder BuilderConfig `yaml:"builder"`
 }
 
 // fileConfig is the on-disk YAML shape, including the required version field.
@@ -158,6 +168,7 @@ type fileConfig struct {
 	Egress  EgressConfig  `yaml:"egress"`
 	Sandbox SandboxConfig `yaml:"sandbox"`
 	Image   ImageGCConfig `yaml:"image"`
+	Builder BuilderConfig `yaml:"builder"`
 }
 
 // configFileName is the well-known name discovered during Load.
@@ -246,6 +257,7 @@ func parse(data []byte) (Config, error) {
 		Egress:  fc.Egress,
 		Sandbox: fc.Sandbox,
 		Image:   fc.Image,
+		Builder: fc.Builder,
 	}, nil
 }
 
