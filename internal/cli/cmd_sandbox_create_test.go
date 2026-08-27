@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
@@ -646,21 +649,37 @@ func TestSandboxCreate_SecretFlagParsing(t *testing.T) {
 		"p/n", "--image", "base",
 		"--secret", "GH_TOKEN@github.com,api.github.com",
 		"--secret", "NPM_TOKEN@registry.npmjs.org",
-		"--no-builtin-gh",
 	})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
-	}
-	if !f.noBuiltinGH {
-		t.Error("noBuiltinGH = false")
 	}
 	if len(f.secrets) != 2 || f.secrets[0] != "GH_TOKEN@github.com,api.github.com" {
 		t.Errorf("secrets = %v", f.secrets)
 	}
 }
 
-func TestResolveCreateSecrets_NoBuiltinKeepsExplicit(t *testing.T) {
-	f := sandboxCreateFlags{secrets: []string{"NPM_TOKEN@registry.npmjs.org"}, noBuiltinGH: true}
+// TestResolveCreateSecrets_RepoAloneAttachesNoGitHubSecret is a regression test
+// for D-PDE-02: `sandbox create --repo X` alone must NOT attach any GitHub
+// secret. The builtin auto-append has been removed; only an explicit
+// --secret GH_TOKEN@... will produce a GitHub bind.
+//
+// Mutation evidence: if the auto-append block were re-added to
+// resolveCreateSecrets, this test fails because binds would be non-empty.
+func TestResolveCreateSecrets_RepoAloneAttachesNoGitHubSecret(t *testing.T) {
+	f := sandboxCreateFlags{allowedRepo: "owner/repo"} // no --secret flags
+	binds, err := resolveCreateSecrets(context.Background(), f)
+	if err != nil {
+		t.Fatalf("resolveCreateSecrets: %v", err)
+	}
+	if len(binds) != 0 {
+		t.Errorf("want 0 binds for --repo only, got %d: %+v", len(binds), binds)
+	}
+}
+
+// TestResolveCreateSecrets_ExplicitSecretKept verifies that an explicit
+// non-GitHub --secret bind is still passed through unchanged.
+func TestResolveCreateSecrets_ExplicitSecretKept(t *testing.T) {
+	f := sandboxCreateFlags{secrets: []string{"NPM_TOKEN@registry.npmjs.org"}}
 	binds, err := resolveCreateSecrets(context.Background(), f)
 	if err != nil {
 		t.Fatalf("resolveCreateSecrets: %v", err)
@@ -683,7 +702,6 @@ func TestResolveCreateSecrets_NoBuiltinKeepsExplicit(t *testing.T) {
 func TestD36_ExplicitGitHubSecretWithoutRepo_Refused(t *testing.T) {
 	f := sandboxCreateFlags{
 		secrets:     []string{"GH_TOKEN@github.com,api.github.com"},
-		noBuiltinGH: true, // skip builtin so only the explicit bind is in play
 		allowedRepo: "",
 	}
 	_, err := resolveCreateSecrets(context.Background(), f)
@@ -700,7 +718,6 @@ func TestD36_ExplicitGitHubSecretWithoutRepo_Refused(t *testing.T) {
 func TestD36_ExplicitGitHubSecretWithRepo_Allowed(t *testing.T) {
 	f := sandboxCreateFlags{
 		secrets:     []string{"GH_TOKEN@github.com,api.github.com"},
-		noBuiltinGH: true,
 		allowedRepo: "acme/myrepo",
 	}
 	binds, err := resolveCreateSecrets(context.Background(), f)
@@ -712,13 +729,11 @@ func TestD36_ExplicitGitHubSecretWithRepo_Allowed(t *testing.T) {
 	}
 }
 
-// TestD36_NoBuiltinGH_NoGitHubBind_NoRepo_OK verifies that --no-builtin-gh
-// with no explicit GitHub secret and no --repo is accepted. There is no GitHub
-// token to bound, so D-PD-36 is not triggered.
-func TestD36_NoBuiltinGH_NoGitHubBind_NoRepo_OK(t *testing.T) {
+// TestD36_NonGitHubSecretNoRepo_OK verifies that a non-GitHub secret without
+// --repo is accepted. D-PD-36 is not triggered when no GitHub host is touched.
+func TestD36_NonGitHubSecretNoRepo_OK(t *testing.T) {
 	f := sandboxCreateFlags{
 		secrets:     []string{"NPM_TOKEN@registry.npmjs.org"},
-		noBuiltinGH: true,
 		allowedRepo: "",
 	}
 	binds, err := resolveCreateSecrets(context.Background(), f)
@@ -829,75 +844,6 @@ func TestD36_AllowedRepoWiredToOptions(t *testing.T) {
 	if f.allowedRepo != "acme/myrepo" {
 		t.Errorf("f.allowedRepo = %q, want %q (AllowedRepo would be empty in CreateAndBootOptions)",
 			f.allowedRepo, "acme/myrepo")
-	}
-}
-
-// TestAgentBuiltinGitHubSuppression pins the CLI-side half of D-SHL-05.
-//
-// The rule "an agent sandbox never carries a GitHub secret" (D-PD-23) was
-// implemented in three places: a pre-boot service guard, a post-boot service
-// guard, and a CLI suppression of the builtin `gh auth token` bind. D-SHL-05
-// reverses that rule for repo-scoped sandboxes. Lifting only the service
-// guards left this suppression enforcing the reversed decision, and a live
-// run produced an agent sandbox with --repo set, the service layer willing,
-// the supervisor ready to seed — and no GitHub credential anywhere, because
-// the bind was discarded before it was ever built.
-//
-// Nothing in the service package could catch that: from its side the caller
-// simply passed no secrets. So the assertion belongs here, on the flags.
-//
-// Mutation: drop the `&& allowedRepo == ""` clause from suppressBuiltinGitHub
-// -> the repo-scoped case goes RED.
-func TestAgentBuiltinGitHubSuppression(t *testing.T) {
-	cases := []struct {
-		name         string
-		agentName    string
-		allowedRepo  string
-		wantSuppress bool
-	}{
-		{
-			// The capability D-SHL-05 exists to enable. This is the case that
-			// silently failed live.
-			name:         "agent with --repo keeps the builtin GitHub bind",
-			agentName:    "claude-code",
-			allowedRepo:  "owner/repo",
-			wantSuppress: false,
-		},
-		{
-			// Convenience, deliberately preserved: an agent sandbox that never
-			// asked for GitHub must not be refused a create over a credential
-			// the operator did not request.
-			name:         "agent without --repo suppresses the builtin",
-			agentName:    "claude-code",
-			allowedRepo:  "",
-			wantSuppress: true,
-		},
-		{
-			name:         "non-agent with --repo keeps the builtin",
-			agentName:    "",
-			allowedRepo:  "owner/repo",
-			wantSuppress: false,
-		},
-		{
-			name:         "non-agent without --repo keeps the builtin",
-			agentName:    "",
-			allowedRepo:  "",
-			wantSuppress: false,
-		},
-	}
-
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			// Calls the production condition. Restating it here instead would
-			// assert a copy, and would stay green through any change to the
-			// real one — the drift this whole slice exists to close.
-			got := suppressBuiltinGitHub(c.agentName, c.allowedRepo)
-
-			if got != c.wantSuppress {
-				t.Errorf("suppressBuiltinGitHub(%q, %q) = %v, want %v",
-					c.agentName, c.allowedRepo, got, c.wantSuppress)
-			}
-		})
 	}
 }
 
@@ -1059,5 +1005,169 @@ func TestDevEgress_AgentDevEgressSecretHosts_NoAgent(t *testing.T) {
 	hosts := agentDevEgressSecretHosts(cred.AgentProfile{}, true)
 	if len(hosts) != 0 {
 		t.Errorf("agentDevEgressSecretHosts: got %v for zero profile; want nil", hosts)
+	}
+}
+
+// TestResolveCreateSecrets_PathPolicies verifies the D-PD-36 guard change:
+// a GitHub secret is ACCEPTED when covered by a path policy (--egress-policy-json
+// channel), even when --repo is absent; refused only when NEITHER is present.
+func TestResolveCreateSecrets_PathPolicies(t *testing.T) {
+	ctx := context.Background()
+	pp := domain.EgressPathPolicies{
+		"": {"api.github.com": domain.EgressHostPolicy{Paths: []string{"GET /repos/**"}}},
+	}
+
+	t.Run("github secret + covering pathPolicies + no --repo → accepted", func(t *testing.T) {
+		f := sandboxCreateFlags{
+			secrets:      []string{"GH_TOKEN@api.github.com"},
+			pathPolicies: pp,
+		}
+		_, err := resolveCreateSecrets(ctx, f)
+		if err != nil {
+			t.Errorf("expected nil error; got %v", err)
+		}
+	})
+
+	t.Run("github secret + no pathPolicies + no --repo → refused (D-PD-36)", func(t *testing.T) {
+		f := sandboxCreateFlags{
+			secrets: []string{"GH_TOKEN@api.github.com"},
+		}
+		_, err := resolveCreateSecrets(ctx, f)
+		if err == nil {
+			t.Error("expected D-PD-36 error; got nil")
+		}
+	})
+
+	t.Run("github secret + allowedRepo + no pathPolicies → accepted (shim)", func(t *testing.T) {
+		f := sandboxCreateFlags{
+			secrets:     []string{"GH_TOKEN@github.com"},
+			allowedRepo: "owner/repo",
+		}
+		_, err := resolveCreateSecrets(ctx, f)
+		if err != nil {
+			t.Errorf("expected nil error; got %v", err)
+		}
+	})
+
+	t.Run("non-github secret + no policy + no --repo → accepted", func(t *testing.T) {
+		f := sandboxCreateFlags{
+			secrets: []string{"GITLAB_TOKEN@gitlab.com"},
+		}
+		_, err := resolveCreateSecrets(ctx, f)
+		if err != nil {
+			t.Errorf("expected nil error for non-github secret; got %v", err)
+		}
+	})
+}
+
+// TestParseSandboxCreateArgs_EgressPolicyJSON verifies that --egress-policy-json
+// round-trips EgressPathPolicies into sandboxCreateFlags.pathPolicies.
+func TestParseSandboxCreateArgs_EgressPolicyJSON(t *testing.T) {
+	pp := domain.EgressPathPolicies{
+		"": {"api.github.com": domain.EgressHostPolicy{Paths: []string{"GET /repos/**"}}},
+	}
+	ppJSON, err := json.Marshal(pp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	f, err := parseSandboxCreateArgs([]string{"--image", "myimage", "--egress-policy-json", string(ppJSON), "proj/name"})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", err)
+	}
+	if !reflect.DeepEqual(f.pathPolicies, pp) {
+		t.Errorf("pathPolicies round-trip mismatch:\n  want %#v\n   got %#v", pp, f.pathPolicies)
+	}
+}
+
+// ── D-PD-36-BYPASS regression tests ──────────────────────────────────────────
+//
+// The BELT and guard tests below are the regression suite for the sole-bound
+// bypass: a PathPolicies map with a non-"" top-level key (e.g. "x") looks
+// like a covering policy to an all-keys guard but is NEVER enforced by
+// lookupPolicy (which consults pp[placeholder] then pp[""]). The real
+// placeholder is minted AFTER PathPolicies is frozen at create time, so ""
+// is the only key enforcement will ever honour from a user-supplied map.
+
+// TestBelt_EgressPolicyJSON_BogusKey_Refused verifies the BELT (parse-time
+// rejection): --egress-policy-json with any non-"" top-level key is refused
+// as a usage error before reaching any guard.
+//
+// Mutation evidence: remove the for-range key check in parseSandboxCreateArgs →
+// parseSandboxCreateArgs returns nil error and the bogus-key policy silently
+// reaches resolveCreateSecrets, where the pre-fix guard would have accepted it.
+func TestBelt_EgressPolicyJSON_BogusKey_Refused(t *testing.T) {
+	// "x" is a non-"" key: never enforceable at create time.
+	pp := domain.EgressPathPolicies{
+		"x": {"api.github.com": domain.EgressHostPolicy{Paths: []string{"/**"}}},
+	}
+	ppJSON, err := json.Marshal(pp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	_, err = parseSandboxCreateArgs([]string{
+		"--image", "myimage",
+		"--egress-policy-json", string(ppJSON),
+		"proj/name",
+	})
+	if err == nil {
+		t.Fatal("expected usage error for bogus-key --egress-policy-json; got nil")
+	}
+	var ue *UsageError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UsageError; got %T: %v", err, err)
+	}
+}
+
+// TestGuard_BogusKeyGitHubSecret_Refused verifies the guard fix at
+// resolveCreateSecrets: a GitHub secret with a PathPolicies map whose ONLY
+// entry is under a non-"" key is refused as unbounded (D-PD-36).
+//
+// NOTE: This test bypasses the BELT (parseSandboxCreateArgs) by constructing
+// sandboxCreateFlags directly — it exercises the guard predicate githubHostBoundCLI
+// in isolation to prove the predicate fix is correct independent of the BELT.
+//
+// Mutation evidence: revert githubHostBoundCLI to an all-keys loop →
+// resolveCreateSecrets returns nil (bogus-key policy appears to cover the host)
+// and this test fails.
+func TestGuard_BogusKeyGitHubSecret_Refused(t *testing.T) {
+	ctx := context.Background()
+	// "x" key: never reached by lookupPolicy at enforcement time.
+	pp := domain.EgressPathPolicies{
+		"x": {"api.github.com": domain.EgressHostPolicy{Paths: []string{"/**"}}},
+	}
+	f := sandboxCreateFlags{
+		secrets:      []string{"GH_TOKEN@api.github.com"},
+		pathPolicies: pp,
+		// allowedRepo: "",  // not set
+	}
+	_, err := resolveCreateSecrets(ctx, f)
+	if err == nil {
+		t.Fatal("expected D-PD-36 refusal for bogus-key PathPolicies; got nil")
+	}
+	var ue *UsageError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UsageError; got %T: %v", err, err)
+	}
+}
+
+// TestGuard_WildcardKeyGitHubSecret_Accepted verifies the positive ("" key)
+// path still works: a PathPolicies entry under "" covers the host and the
+// github secret is accepted without --repo.
+//
+// Mutation evidence: change githubHostBoundCLI to only accept allowedRepo
+// (removing the pp[""] check) → resolveCreateSecrets refuses this valid
+// configuration.
+func TestGuard_WildcardKeyGitHubSecret_Accepted(t *testing.T) {
+	ctx := context.Background()
+	pp := domain.EgressPathPolicies{
+		"": {"api.github.com": domain.EgressHostPolicy{Paths: []string{"GET /repos/**"}}},
+	}
+	f := sandboxCreateFlags{
+		secrets:      []string{"GH_TOKEN@api.github.com"},
+		pathPolicies: pp,
+	}
+	_, err := resolveCreateSecrets(ctx, f)
+	if err != nil {
+		t.Fatalf("expected nil for wildcard-key PathPolicies; got %v", err)
 	}
 }

@@ -155,10 +155,9 @@ func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
 	// so the in-guest claude can call the API. Without it the agent says "Not
 	// logged in" and cannot process any brief.
 	//
-	// --no-builtin-gh is mandatory: without it the D-PD-36 guard refuses to
-	// create because an unscoped GitHub credential would be unbounded. The
-	// claude-code profile only needs Anthropic egress (api.anthropic.com +
-	// platform.claude.com); no GitHub access is required.
+	// No GitHub flags: the claude-code profile only needs Anthropic egress
+	// (api.anthropic.com + platform.claude.com); no GitHub access is required.
+	// Fail-closed default (no --repo, no --secret) is correct (D-PDE-02).
 	//
 	// Reuses NEXUS3_AC6_IMAGE so the operator pins the same image for both
 	// AC-6 and AC-4.
@@ -170,7 +169,6 @@ func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
 		"--image", image,
 		"--agent", "claude-code",
 		"--mount", srcDir+":"+guestMount+":ro",
-		"--no-builtin-gh",
 	).CombinedOutput()
 	if err != nil {
 		t.Fatalf("nexus3 create: %v\n%s\n(check NEXUS3_KERNEL_PATH is set and %q is a cached image)",

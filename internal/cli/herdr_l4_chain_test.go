@@ -226,13 +226,11 @@ func TestHerdrPlugin_L4_AC6Chain(t *testing.T) {
 	if image == "" {
 		image = herdrDefaultImage
 	}
-	// --no-builtin-gh is mandatory, not incidental: without it the D-PD-36
-	// guard refuses to create, because an unscoped GitHub credential would be
-	// unbounded. This test needs no forge access at all.
+	// No GitHub flags: this test needs no forge access at all and the
+	// fail-closed default (no --repo, no --secret) is correct (D-PDE-02).
 	createOut, err := ac6Cmd(binary, "create", handle,
 		"--image", image,
 		"--mount", srcDir+":"+guestMount+":ro",
-		"--no-builtin-gh",
 	).CombinedOutput()
 	if err != nil {
 		t.Fatalf("nexus3 create --mount: %v\n%s\n(check NEXUS3_KERNEL_PATH is set and %q is a cached image)",

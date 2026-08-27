@@ -78,7 +78,7 @@ nexus3 doctor
 
 A named secret store lets you bind secrets to sandboxes by name rather than by env var value, so rotation happens in one place.
 
-**What works today:** the `--secret ENV@host[,host...]` flag on `nexus3 create` reads the value of the named host environment variable and injects it as a per-host credential. The binding is evaluated at creation time — the env var must be set when you run `create`. By default, sandboxes also receive the built-in GitHub token binding (the host `gh auth token`, gated by the `--repo` allowlist guard); pass `--no-builtin-gh` to opt out.
+**What works today:** the `--secret ENV@host[,host...]` flag on `nexus3 create` reads the value of the named host environment variable and injects it as a per-host credential. The binding is evaluated at creation time — the env var must be set when you run `create`. To attach a GitHub token, pass `--repo owner/name` (scopes the push allowlist) together with `--secret GH_TOKEN@github.com,api.github.com,uploads.github.com`. Sandboxes with no `--repo` receive no GitHub credential (fail-closed).
 
 **Target interface (not built):**
 

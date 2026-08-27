@@ -18,7 +18,10 @@ import (
 //   - Drop the agent payload half from seedGuestAgentAndSecrets → this test fails RED.
 //   - Drop the secret payload half from seedGuestAgentAndSecrets → this test fails RED.
 func TestSeedGuestAgentAndSecrets_ContainsBothCredSets(t *testing.T) {
-	t.Parallel()
+	// NOT t.Parallel: this test swaps the package-level lookupGitHubToken global.
+	// Running it in parallel with the other global-swapping tests races their
+	// t.Cleanup restore against this test's in-flight lookup — in CI (no `gh`)
+	// the restored real lookup returns empty and the GH_TOKEN half is dropped.
 	ctx := context.Background()
 
 	// Stub out GitHub token resolution so the test does not require `gh`.
@@ -59,7 +62,8 @@ func TestSeedGuestAgentAndSecrets_ContainsBothCredSets(t *testing.T) {
 // seeder exactly once. Two writes would mean the second silently overwrites the
 // first credential set.
 func TestSeedGuestAgentAndSecrets_OneWrite(t *testing.T) {
-	t.Parallel()
+	// NOT t.Parallel: swaps the package-level lookupGitHubToken global (see
+	// TestSeedGuestAgentAndSecrets_ContainsBothCredSets).
 	ctx := context.Background()
 
 	orig := lookupGitHubToken
@@ -88,7 +92,8 @@ func TestSeedGuestAgentAndSecrets_OneWrite(t *testing.T) {
 // Mutation guard: remove the placeholder-only constraint from buildSeedPayload
 // or buildAgentSeedPayload → this test fails RED.
 func TestSeedGuestAgentAndSecrets_NoRealToken(t *testing.T) {
-	t.Parallel()
+	// NOT t.Parallel: swaps the package-level lookupGitHubToken global (see
+	// TestSeedGuestAgentAndSecrets_ContainsBothCredSets).
 	ctx := context.Background()
 
 	orig := lookupGitHubToken

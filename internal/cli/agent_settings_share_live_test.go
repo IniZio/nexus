@@ -208,7 +208,6 @@ func TestAgentSettingsShareLive(t *testing.T) {
 		"create", handle,
 		"--agent", "claude-code",
 		"--image", image,
-		"--no-builtin-gh",
 	).CombinedOutput()
 	if createErr != nil {
 		t.Fatalf("nexus3 create: %v\n%s\n(check NEXUS3_KERNEL_PATH and that %q is cached)", createErr, createOut, image)
@@ -283,7 +282,6 @@ echo ` + tracerToken + `
 		"create", noShareHandle,
 		"--agent", "claude-code",
 		"--image", image,
-		"--no-builtin-gh",
 		"--no-share-settings",
 	).CombinedOutput()
 	if noShareErr != nil {

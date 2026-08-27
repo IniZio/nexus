@@ -66,8 +66,18 @@ func TestSandboxCreateUsage_ListsEveryAcceptedFlag(t *testing.T) {
 		inUsage[tok] = true
 	}
 
+	// internalFlags lists flags that are intentionally omitted from the
+	// human-facing usage string because they are subprocess-only channels
+	// consumed exclusively by the nexus3 worktree create path, not by operators.
+	internalFlags := map[string]bool{
+		"--egress-policy-json": true, // conveyed by herdrWorktreeSandboxCreateArgs; not for human use
+	}
+
 	var missing []string
 	for _, f := range accepted {
+		if internalFlags[f] {
+			continue
+		}
 		if !inUsage[f] {
 			missing = append(missing, f)
 		}

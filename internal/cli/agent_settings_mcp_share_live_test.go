@@ -148,7 +148,6 @@ func TestAgentSettingsMCPShareLive(t *testing.T) {
 		"create", handle,
 		"--agent", "claude-code",
 		"--image", image,
-		"--no-builtin-gh",
 	)
 	// Filter ambient PROBE_TOKEN and CLAUDE_CONFIG_DIR; inject fixture values.
 	filteredEnv := make([]string, 0, len(createCmd.Env)+1)
@@ -304,7 +303,6 @@ echo ` + tracerToken + `
 		"create", noShareHandle,
 		"--agent", "claude-code",
 		"--image", image,
-		"--no-builtin-gh",
 		"--no-share-settings",
 	)
 	// Same env cleanup as positive leg: strip CLAUDE_CONFIG_DIR + inject PROBE_TOKEN.

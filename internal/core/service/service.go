@@ -403,15 +403,16 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 		return domain.Sandbox{}, fmt.Errorf("service: start %s: %w", sb.ID, err)
 	}
 
-	// D-PD-36 boot-time invariant: a GitHub secret host without a per-repo
-	// path allowlist is a forbidden configuration. CreateAndBoot enforces this
-	// at creation time, but a record written before that guard existed (or one
-	// that survived a failed rollback) must not be allowed to boot. Failing the
-	// entire boot — rather than silently skipping or degrading the credential
-	// swap — makes the misconfiguration immediately visible to the operator.
-	// The sandbox must be deleted and recreated with a valid AllowedRepo.
+	// D-PD-36 / D-PDE-16 boot-time invariant: a GitHub secret host without a
+	// path policy (AllowedRepo shim or PathPolicies entry) is a forbidden
+	// configuration. CreateAndBoot enforces this at creation time, but a record
+	// written before the guard existed (or surviving a failed rollback) must not
+	// boot. Failing the entire boot makes the misconfiguration immediately
+	// visible. The sandbox must be deleted and recreated with a valid policy.
+	// Non-GitHub secret hosts with no path policy are permitted (D-PDE-16
+	// asymmetry: host-only bound is legal for non-GitHub hosts).
 	for _, h := range sb.Envelope.SecretHosts {
-		if isGitHubHost(h) && sb.Envelope.AllowedRepo == "" {
+		if isGitHubHost(h) && !githubHostBoundByPolicy(h, sb.Envelope.AllowedRepo, sb.Envelope.PathPolicies) {
 			return domain.Sandbox{}, fmt.Errorf("service: start %s: %w", sb.ID, ErrUnboundGitHubSecret)
 		}
 	}
@@ -784,13 +785,13 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 	// D-PD-36 redundant backstop: also guard here so fork/restore children
 	// are covered if any future code path copies SecretHosts onto children.
 	// fd and al have been acquired; clean them up if we bail out.
-	if sb.Envelope.AllowedRepo == "" {
-		for _, h := range sb.Envelope.SecretHosts {
-			if isGitHubHost(h) {
-				fd.Close()
-				al.Stop()
-				return fmt.Errorf("service: sandbox %s: %w", sb.ID, ErrUnboundGitHubSecret)
-			}
+	// Non-GitHub secret hosts with no path policy are permitted (D-PDE-16
+	// asymmetry: host-only bound is legal for non-GitHub hosts).
+	for _, h := range sb.Envelope.SecretHosts {
+		if isGitHubHost(h) && !githubHostBoundByPolicy(h, sb.Envelope.AllowedRepo, sb.Envelope.PathPolicies) {
+			fd.Close()
+			al.Stop()
+			return fmt.Errorf("service: sandbox %s: %w", sb.ID, ErrUnboundGitHubSecret)
 		}
 	}
 
@@ -807,6 +808,7 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 			Broker:          s.broker,
 			AllowAll:        allowAll && (len(sb.Envelope.SecretHosts) > 0 || sb.AgentName != ""),
 			AllowedRepo:     sb.Envelope.AllowedRepo,                    // D-PD-36: per-repo path allowlist
+			PathPolicies:    buildMITMPathPolicies(sb.Envelope.PathPolicies), // T4: per-secret path policies
 			AllowedBranches: sb.Envelope.ResolvedAllowedBranches(),      // S0: default applied here
 		})
 		if err != nil {
@@ -1523,4 +1525,69 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 	}
 
 	return children, nil
+}
+
+// githubHostBoundByPolicy reports whether a GitHub host appearing in a secret
+// bind is covered by a path policy. Coverage means either:
+//
+//   - allowedRepo is non-empty (the AllowedRepo shim, D-PD-36), OR
+//   - pp contains an entry for h (case-insensitive) under any placeholder key,
+//     including the wildcard key "".
+//
+// Rationale (load-bearing): the operator github credential is an unrotated
+// FULL-SCOPE PAT auto-sourced from `gh auth token`; host-bounding does not
+// bound it across repos — only the positive path policy does (denylist
+// enumeration failed twice; only the positive allowlist held). D-PDE-16.
+// Non-GitHub host binds without a path policy are permitted (D-PDE-16
+// asymmetry: host-only bound is legal for non-GitHub hosts).
+// githubHostBoundByPolicy reports whether the GitHub host h is bounded.
+//
+// SECURITY: Only the wildcard key "" is checked — not all top-level keys.
+// lookupPolicy (proxy.go) consults pp[<real-placeholder>] then pp[""].
+// The real placeholder is minted AFTER PathPolicies is frozen at create time,
+// so "" is the ONLY key enforcement will ever honour from a user-supplied map.
+// A policy stored under any other top-level key passes an all-keys guard but
+// is NEVER enforced by the MITM, leaving the full-scope PAT unbounded.
+// Revert this to an all-keys loop and TestT6_BogusKeyGitHubPolicy_Refused fails.
+func githubHostBoundByPolicy(h, allowedRepo string, pp domain.EgressPathPolicies) bool {
+	if allowedRepo != "" {
+		return true
+	}
+	if hostMap, ok := pp[""]; ok {
+		if _, ok := hostMap[strings.ToLower(h)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// buildMITMPathPolicies converts the domain-layer EgressPathPolicies (frozen at
+// create time without importing mitm) to the mitm.PathPolicies type used at
+// sandbox start time. Raw glob patterns are compiled via mitm.CompileGlobPattern;
+// any malformed pattern is silently skipped (patterns were validated at create).
+// Returns nil when pp is empty (caller retains the AllowedRepo shim path).
+func buildMITMPathPolicies(pp domain.EgressPathPolicies) mitm.PathPolicies {
+	if len(pp) == 0 {
+		return nil
+	}
+	out := make(mitm.PathPolicies, len(pp))
+	for placeholder, hostMap := range pp {
+		hm := make(map[string]mitm.HostPolicy, len(hostMap))
+		for host, pol := range hostMap {
+			mp := mitm.HostPolicy{}
+			if pol.GitHub != nil {
+				mp.GitHub = &mitm.GitHubPolicy{Owner: pol.GitHub.Owner, Name: pol.GitHub.Name}
+			}
+			for _, pat := range pol.Paths {
+				gp, err := mitm.CompileGlobPattern(pat)
+				if err != nil {
+					continue // malformed patterns are rejected at create time; skip defensively
+				}
+				mp.Patterns = append(mp.Patterns, gp)
+			}
+			hm[host] = mp
+		}
+		out[placeholder] = hm
+	}
+	return out
 }

@@ -48,7 +48,6 @@ nexus3 create <project>/<name> [flags]
 | `--label KEY=VALUE` | string | — | Metadata label; repeatable |
 | `--nested` | bool | false | Enable nested KVM inside the guest |
 | `--secret ENV@host[,host...]` | string | — | Inject a host environment variable as a secret; repeatable. See [Named secrets](/cli/auth-mcp-reap#named-secrets) to manage secrets by name. |
-| `--no-builtin-gh` | bool | false | Disable the built-in GitHub secret injection |
 | `--egress <mode>` | string | — | Egress policy (`open` or `github-only`) |
 | `--allow-host <host>` | string | — | Add a host to the egress allowlist; repeatable |
 | `--repo <owner/repo>` | string | — | Add a GitHub repo to the MITM allowlist; repeatable |

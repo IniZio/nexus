@@ -29,7 +29,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -38,7 +37,6 @@ import (
 	"net/http"
 	"path"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/elazarl/goproxy"
@@ -53,6 +51,7 @@ import (
 //   - A HandleConnect handler that enforces the hostname allowlist.
 //   - An OnRequest handler that swaps placeholder tokens in Authorization
 //     Bearer (gh) and Basic (git HTTPS) headers with the real broker token.
+//
 // Proxy implements [http.Handler]; run it behind an httptest.Server in tests
 // or a standard net/http server in production.
 //
@@ -93,6 +92,15 @@ type Config struct {
 	// agent sandboxes where a curated allowlist is the safeguard.
 	AllowAll bool
 
+	// PathPolicies is the per-(placeholder, host) path allowlist (D-PDE-16).
+	// Key: placeholder token → host → HostPolicy. At enforcement time the
+	// placeholder is extracted from the Authorization header (Bearer/token/
+	// Basic). If no entry exists for (placeholder, host) the request is
+	// allowed (host-only bind). PathPolicies entries take precedence over
+	// AllowedRepo for any (placeholder, host) pair they cover.
+	// Build HostPolicy values with CompileGlobPattern or GitHubPolicy.
+	PathPolicies PathPolicies
+
 	// AllowedRepo, when non-empty, enables the D-PD-36 per-request path
 	// allowlist for GitHub hosts (github.com, api.github.com,
 	// uploads.github.com). Only method+path combinations needed for the PR
@@ -102,6 +110,10 @@ type Config struct {
 	// This is the ONLY control bounding the operator's full-scope GitHub token
 	// for agent sandboxes. Leave empty only for human sandboxes (AllowAll
 	// egress) that have no per-repo restriction requirement.
+	//
+	// Deprecated: prefer PathPolicies with GitHubPolicy for new callers.
+	// New() folds AllowedRepo into PathPolicies under the wildcard placeholder
+	// key "" so all existing call sites compile unchanged. TODO(T4/T6): migrate.
 	AllowedRepo string
 
 	// AllowedBranches is the list of git ref patterns the proxy will permit
@@ -121,6 +133,49 @@ type Config struct {
 	// custom Transport with a DialContext that redirects to a stub server.
 	Transport *http.Transport
 }
+
+// GitHubPolicy pins all requests to one GitHub repository.
+// Enforcement uses gitHubPathAllowed verbatim (method-aware, allDigits guard,
+// canonical prefixes, /stacks numeric). NOT a glob rewrite — the full
+// method+path intelligence is preserved.
+type GitHubPolicy struct {
+	Owner string // case-sensitive GitHub owner name
+	Name  string // case-sensitive GitHub repository name
+}
+
+// GlobPattern is a compiled path glob for the generic HostPolicy.
+// Pattern format: optional "METHOD " prefix (e.g. "GET "), then an absolute
+// path where "*" as a whole segment matches exactly one path segment and "**"
+// as a whole segment matches zero or more path segments. All other segments
+// must be valid per segmentOK (ASCII letters, digits, dot, underscore, tilde,
+// hyphen). Construct via CompileGlobPattern.
+type GlobPattern struct {
+	method string   // empty = any method; stored uppercase
+	segs   []string // path split on "/", includes leading "" from "/x" → ["","x"]
+}
+
+// HostPolicy is the path restriction for one (placeholder, host) pair.
+// Exactly one of GitHub or Patterns should be set.
+//
+// Enforcement order (always applied before the credential swap):
+//  1. isCanonicalPath is checked first; non-canonical paths are denied.
+//  2. Default-deny: the request must match the active policy; mismatches
+//     receive HTTP 403 before any credential swap occurs.
+type HostPolicy struct {
+	GitHub   *GitHubPolicy // non-nil: GitHub built-in method-aware enforcement
+	Patterns []GlobPattern // non-empty: generic default-deny glob matching
+}
+
+// PathPolicies maps a placeholder token → host → HostPolicy.
+//
+// At enforcement time the placeholder is extracted from the Authorization
+// header (Bearer/token/Basic schemes). If no entry exists for (placeholder,
+// host) the request is allowed (host-only bind; the swap handler may still fire).
+//
+// The wildcard key "" matches any placeholder and is used only by the
+// AllowedRepo compatibility shim in New; production callers key on the exact
+// placeholder string returned by the broker (one per secret bind).
+type PathPolicies map[string]map[string]HostPolicy
 
 // New creates a Proxy for a single sandbox. It generates a fresh per-sandbox
 // CA; call [Proxy.CACert] to obtain the trust anchor and seed it into the guest.
@@ -165,26 +220,27 @@ func New(cfg Config) (*Proxy, error) {
 	broker := cfg.Broker
 	allowAll := cfg.AllowAll
 
-	// D-PD-36: parse AllowedRepo at construction time; no per-request parsing.
-	var (
-		repoOwner string
-		repoName  string
-		repoSet   bool
-	)
-	if cfg.AllowedRepo != "" {
-		owner, name, ok := strings.Cut(cfg.AllowedRepo, "/")
-		if !ok || owner == "" || name == "" {
-			return nil, fmt.Errorf("mitm: AllowedRepo %q is not in owner/repo format", cfg.AllowedRepo)
-		}
-		repoOwner = owner
-		repoName = name
-		repoSet = true
+	// D-PDE-16: build active path-policy map at construction time.
+	// AllowedRepo compat shim is folded in under the wildcard placeholder key "".
+	policies, err := buildPathPolicies(cfg.PathPolicies, cfg.AllowedRepo)
+	if err != nil {
+		return nil, err
 	}
 
-	// pinnedRepoNodeID holds the GitHub repository node ID discovered from the
-	// first GraphQL response that returns data.repository.id. Once pinned,
-	// mutations bearing a different repositoryId are denied.
-	var pinnedRepoNodeID atomic.Value // stores string; zero-value = not yet pinned
+	// hasAnyGitHubPolicy is true when at least one HostPolicy.GitHub is set;
+	// used to gate the belt-and-suspenders GraphQL deny-all handler.
+	hasAnyGitHubPolicy := false
+	for _, hostMap := range policies {
+		for _, pol := range hostMap {
+			if pol.GitHub != nil {
+				hasAnyGitHubPolicy = true
+				break
+			}
+		}
+		if hasAnyGitHubPolicy {
+			break
+		}
+	}
 
 	// HandleConnect: broad-allow + selective MITM.
 	//
@@ -219,52 +275,61 @@ func New(cfg Config) (*Proxy, error) {
 		return goproxy.RejectConnect, host
 	}))
 
-	// D-PD-36: path allowlist — fires BEFORE the credential swap handler.
-	// Requests to GitHub hosts that are not in the explicit allowlist are
-	// refused with 403 without forwarding or swapping any credential.
+	// D-PDE-16: generic per-(placeholder, host) path policy enforcer.
+	//
+	// Fires BEFORE the credential swap handler — the 403 is emitted before any
+	// real token is injected (ordering invariant: this DoFunc is registered
+	// earlier than the swap DoFunc below).
 	//
 	// Redirect handling: goproxy does not follow redirects autonomously. A 3xx
-	// from upstream is forwarded to the guest; the guest's HTTP client issues
-	// the redirected request through this proxy again, where it is
-	// re-evaluated by this handler. No Location-rewriting is needed — a
-	// redirect to a different repo or host fails the next pass automatically.
-	// goproxy neither rewrites Location headers nor follows them; if an upstream
-	// 3xx points outside the allowlist, the re-submitted request fails the next
-	// pass, so no Location-rewriting or hop-counting is needed here.
+	// from upstream is forwarded to the guest; the guest's HTTP client
+	// re-submits the redirected request through this proxy, where it is
+	// re-evaluated here. No Location-rewriting is needed — a redirect to a
+	// different repo or host fails the next pass automatically.
 	//
-	// Body buffering: path matching uses only method+URL.Path; no body
-	// buffering is performed. There is nothing to size-cap. The only
-	// request property this handler reads is the URL path and method; the
-	// body is neither inspected nor buffered, consistent with D-PD-36 §2.
+	// Body buffering: only method+URL.Path are inspected; no body buffering.
 	//
-	// Path canonicalisation: Go's HTTP layer does NOT normalise "." or ".."
-	// segments, semicolons, backslashes, or non-ASCII lookalikes. isCanonicalPath
-	// applies two independent checks before any prefix rule fires:
+	// Path canonicalisation: isCanonicalPath applies two independent checks
+	// before any policy rule fires:
 	//   1. path.Clean(URL.Path) == URL.Path — traversal segments and double
 	//      slashes are absent from the decoded form.
 	//   2. Every segment of EscapedPath matches [A-Za-z0-9._~-] — no percent-
-	//      encoded bytes (%xx), semicolons, backslashes, or non-ASCII characters
-	//      that a downstream server might re-interpret as path separators.
-	// Together these block all known bypass spellings including "..;", backslash
-	// separators, overlong UTF-8 dots (%c0%ae), and fullwidth lookalikes (U+FF0E).
+	//      encoded bytes (%xx), semicolons, backslashes, or non-ASCII characters.
+	// Together these block all known bypass spellings.
 	// The real token is therefore never emitted upstream for any traversal attempt.
-	if repoSet {
+	if len(policies) > 0 {
 		inner.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
 			host := strings.ToLower(reqHost(req))
-			if !domain.IsGitHubHost(host) {
-				return req, nil // non-GitHub allowed host: no path restriction
+			placeholder := extractPlaceholder(req.Header.Get("Authorization"))
+			pol, ok := lookupPolicy(policies, placeholder, host)
+			if !ok {
+				return req, nil // no policy for (placeholder, host): allow
 			}
-			// Reject any non-canonical path before the allowlist rules run.
-			// isCanonicalPath checks both the decoded and raw (escaped) forms
-			// to catch all known traversal spellings.
+			// isCanonicalPath pre-check — reused verbatim, never relaxed.
+			// Checks decoded (path.Clean traversal) and escaped (charset) forms.
 			if !isCanonicalPath(req.URL.Path, req.URL.EscapedPath()) {
-				log.Info("mitm: D-PD-36 request denied (non-canonical path)",
+				log.Info("mitm: D-PDE-16 request denied (non-canonical path)",
 					"sandbox", sandboxID, "host", host,
 					"method", req.Method, "path", req.URL.Path)
 				return req, denyResponse(req)
 			}
-			if !gitHubPathAllowed(host, req.Method, req.URL.Path, repoOwner, repoName) {
-				log.Info("mitm: D-PD-36 request denied",
+			// Default-deny: request must satisfy the policy.
+			allowed := false
+			switch {
+			case pol.GitHub != nil:
+				// GitHub built-in: method-aware, allDigits, canonical prefixes.
+				// gitHubPathAllowed is called verbatim — NOT rewritten as a glob.
+				allowed = gitHubPathAllowed(host, req.Method, req.URL.Path, pol.GitHub.Owner, pol.GitHub.Name)
+			default:
+				for _, gp := range pol.Patterns {
+					if gp.matchPath(req.Method, req.URL.Path) {
+						allowed = true
+						break
+					}
+				}
+			}
+			if !allowed {
+				log.Info("mitm: D-PDE-16 request denied",
 					"sandbox", sandboxID, "host", host,
 					"method", req.Method, "path", req.URL.Path)
 				return req, denyResponse(req)
@@ -375,13 +440,15 @@ func New(cfg Config) (*Proxy, error) {
 			}
 			return req, nil
 		})
+	}
 
-		// S1c SAFE default-deny stub (advisor CORRECTION) — full gh/gh-stack
-		// GraphQL allowlist is TBR-GRAPHQL/R5; until then all GraphQL is denied
-		// and gh pr create over GraphQL will 403. The bypassable owner/name and
-		// pinned-id partial guards from the prior D-PD-38-GQL implementation are
-		// replaced by this clean deny-all: any POST to a /graphql path on
-		// api.github.com or github.com is denied before any credential swap.
+	if hasAnyGitHubPolicy {
+		// S1c SAFE default-deny stub (advisor CORRECTION, belt-and-suspenders).
+		// gitHubPathAllowed returns true for /graphql to preserve its existing
+		// call structure; this handler catches it afterwards and denies it.
+		// Together they ensure /graphql is denied before any credential swap
+		// even if the path policy handler passes it through.
+		// Full gh/gh-stack GraphQL allowlist is TBR-GRAPHQL/R5.
 		inner.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
 			h := reqHost(req)
 			if (h != "api.github.com" && h != "github.com") || !strings.HasPrefix(req.URL.Path, "/graphql") {
@@ -390,43 +457,6 @@ func New(cfg Config) (*Proxy, error) {
 			log.Info("mitm: S1c-GQL default-deny stub (R5 pending) — GraphQL denied before any credential swap",
 				"sandbox", sandboxID, "host", h, "path", req.URL.Path)
 			return req, denyResponse(req)
-		})
-
-		// Pin the repository node ID from GraphQL responses for mutation enforcement.
-		inner.OnResponse().DoFunc(func(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
-			if resp == nil || resp.Request == nil || resp.Body == nil {
-				return resp
-			}
-			if reqHost(resp.Request) != "api.github.com" {
-				return resp
-			}
-			if !strings.HasPrefix(resp.Request.URL.Path, "/graphql") {
-				return resp
-			}
-			bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-			if err != nil {
-				resp.Body = io.NopCloser(strings.NewReader(""))
-				return resp
-			}
-			resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			// Only pin once; never override an established pinned ID.
-			v := pinnedRepoNodeID.Load()
-			if existing, _ := v.(string); existing == "" {
-				var gqlResp struct {
-					Data struct {
-						Repository struct {
-							ID string `json:"id"`
-						} `json:"repository"`
-					} `json:"data"`
-				}
-				if err := json.Unmarshal(bodyBytes, &gqlResp); err == nil {
-					if id := gqlResp.Data.Repository.ID; id != "" {
-						pinnedRepoNodeID.Store(id)
-						log.Info("mitm: D-PD-38-GQL pinned repository node ID", "sandbox", sandboxID)
-					}
-				}
-			}
-			return resp
 		})
 	}
 
@@ -589,7 +619,7 @@ func reqHost(req *http.Request) string {
 }
 
 // isCanonicalPath reports whether a request path is safe to forward to the
-// D-PD-36 allowlist rules. It applies two independent invariants:
+// D-PDE-16 policy rules. It applies two independent invariants:
 //
 //  1. path.Clean(decoded) == decoded: the decoded path is already in canonical
 //     form — no ".." traversal, no "." self-references, no double slashes.
@@ -641,7 +671,7 @@ func isCanonicalPath(decoded, escaped string) bool {
 // that are safe in GitHub API paths: ASCII letters, digits, dot, underscore,
 // tilde, and hyphen. Percent-encoded bytes (%xx), semicolons, backslashes, and
 // any non-ASCII are rejected. This covers the full set of characters needed by
-// every path in the D-PD-36 allowlist (owner names, repo names, numeric IDs,
+// every path in the D-PDE-16 allowlist (owner names, repo names, numeric IDs,
 // tag names like "v1.0.0", and git path segments like "git-upload-pack").
 func segmentOK(s string) bool {
 	for i := 0; i < len(s); i++ {
@@ -670,11 +700,10 @@ func allDigits(s string) bool {
 }
 
 // gitHubPathAllowed reports whether a request to a GitHub host is permitted
-// by the D-PD-36 allowlist for the given owner/repo.
+// by the D-PDE-16 GitHub built-in policy for the given owner/repo.
 //
-// §3 of D-PD-36: /graphql is always denied regardless of method — the target
-// repo is encoded in the POST body and cannot be validated without a GraphQL
-// parser.
+// §3 of D-PD-36: /graphql passes this function (returns true) and is caught
+// by the belt-and-suspenders GraphQL deny-all handler registered in New.
 //
 // Permitted paths are the minimal set for the PR and release flow:
 //
@@ -754,9 +783,8 @@ func gitHubPathAllowed(host, method, path, owner, repo string) bool {
 			prNum, _ := strings.CutPrefix(path, repoBase+"/pulls/")
 			return allDigits(prNum)
 		case strings.HasPrefix(path, "/graphql"):
-			// /graphql passes the path allowlist; owner/name and pinned
-			// repository ID enforcement is handled by the GraphQL body-policy
-			// handler registered in New (see D-PD-38-GQL).
+			// /graphql passes the path allowlist; the belt-and-suspenders
+			// GraphQL deny-all handler registered in New catches it afterwards.
 			return true
 		}
 		// Remaining shapes require a suffix after /releases/.
@@ -792,12 +820,12 @@ func gitHubPathAllowed(host, method, path, owner, repo string) bool {
 		return hasSub && allDigits(id) && sub == "assets"
 
 	default:
-		// Should not be reached; isGitHubHost guards the call site.
+		// Should not be reached; policy map keys guard the call site.
 		return false
 	}
 }
 
-// denyResponse builds an HTTP 403 response for a D-PD-36 denied request.
+// denyResponse builds an HTTP 403 response for a D-PDE-16 denied request.
 // It is returned by the OnRequest deny handler to stop proxy processing and
 // send the denial to the guest without forwarding the request or swapping
 // any credential.
@@ -861,6 +889,168 @@ func refMatchesGlob(pattern, ref string) bool {
 	}
 	matched, err := path.Match(pattern, ref)
 	return err == nil && matched
+}
+
+// githubWildcardHost is the sentinel host key stored by buildPathPolicies under
+// the wildcard placeholder "" when AllowedRepo is set. lookupPolicy matches it
+// via domain.IsGitHubHost so that ANY *.github.com host (including
+// codeload.github.com) is subject to the path policy — preserving the broad
+// coverage the old `domain.IsGitHubHost` check provided.
+const githubWildcardHost = "*.github.com"
+
+// buildPathPolicies returns the merged PathPolicies used at enforcement time.
+// If allowedRepo is non-empty it is validated and folded in under wildcard key
+// "" — the AllowedRepo compat shim. Entries from pp take precedence because
+// lookupPolicy checks the exact placeholder before falling back to the wildcard.
+func buildPathPolicies(pp PathPolicies, allowedRepo string) (PathPolicies, error) {
+	if allowedRepo == "" {
+		return pp, nil
+	}
+	owner, name, ok := strings.Cut(allowedRepo, "/")
+	if !ok || owner == "" || name == "" {
+		return nil, fmt.Errorf("mitm: AllowedRepo %q is not in owner/repo format", allowedRepo)
+	}
+	merged := make(PathPolicies, len(pp)+1)
+	for k, v := range pp {
+		merged[k] = v
+	}
+	// githubWildcardHost sentinel covers all *.github.com hosts via IsGitHubHost
+	// in lookupPolicy (e.g. codeload.github.com, api.github.com, github.com).
+	merged[""] = map[string]HostPolicy{
+		githubWildcardHost: {GitHub: &GitHubPolicy{Owner: owner, Name: name}},
+	}
+	return merged, nil
+}
+
+// lookupPolicy finds the HostPolicy for (placeholder, host) in pp.
+// It checks the exact placeholder key first, then the wildcard "" key
+// (AllowedRepo compat shim). Returns (HostPolicy{}, false) if neither matches.
+func lookupPolicy(pp PathPolicies, placeholder, host string) (HostPolicy, bool) {
+	// lookupInMap checks an exact host key then the *.github.com sentinel.
+	lookupInMap := func(hostMap map[string]HostPolicy) (HostPolicy, bool) {
+		if pol, ok := hostMap[host]; ok {
+			return pol, true
+		}
+		if domain.IsGitHubHost(host) {
+			if pol, ok := hostMap[githubWildcardHost]; ok {
+				return pol, true
+			}
+		}
+		return HostPolicy{}, false
+	}
+
+	if hostMap, ok := pp[placeholder]; ok {
+		if pol, ok := lookupInMap(hostMap); ok {
+			return pol, true
+		}
+	}
+	// Wildcard key "" is the AllowedRepo compat shim.  Fall back to it only
+	// when the request has a non-empty placeholder (i.e. it has auth) that
+	// did not produce a direct hit — prevents unauthenticated requests from
+	// matching per-placeholder entries stored under a real placeholder key.
+	if placeholder != "" {
+		if hostMap, ok := pp[""]; ok {
+			if pol, ok := lookupInMap(hostMap); ok {
+				return pol, true
+			}
+		}
+	}
+	return HostPolicy{}, false
+}
+
+// extractPlaceholder returns the raw placeholder token from an Authorization
+// header. Handles Bearer, token (GitHub CLI classic PAT form), and Basic
+// (git HTTPS) schemes — the same set as swapAuthorization. Returns "" when
+// the header is absent, empty, or in an unrecognized scheme.
+func extractPlaceholder(authHeader string) string {
+	switch {
+	case strings.HasPrefix(authHeader, "Bearer "):
+		return strings.TrimPrefix(authHeader, "Bearer ")
+	case strings.HasPrefix(authHeader, "token "):
+		return strings.TrimPrefix(authHeader, "token ")
+	case strings.HasPrefix(authHeader, "Basic "):
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(authHeader, "Basic "))
+		if err != nil {
+			return ""
+		}
+		_, pass, ok := strings.Cut(string(raw), ":")
+		if !ok {
+			return ""
+		}
+		return pass
+	}
+	return ""
+}
+
+// CompileGlobPattern parses a pattern string into a GlobPattern.
+//
+// Format: optional "METHOD " prefix (e.g. "GET ", "POST "), then an absolute
+// path. Within a path:
+//   - "*"  as a whole segment matches exactly one path segment.
+//   - "**" as a whole segment matches zero or more path segments.
+//   - All other segments must pass segmentOK (ASCII letters, digits, dot,
+//     underscore, tilde, hyphen) — the same charset isCanonicalPath enforces
+//     on incoming requests, so a pattern can only permit paths the pre-check
+//     already passes.
+func CompileGlobPattern(pattern string) (GlobPattern, error) {
+	method := ""
+	p := pattern
+	if idx := strings.IndexByte(p, ' '); idx > 0 {
+		method = strings.ToUpper(p[:idx])
+		p = p[idx+1:]
+	}
+	if !strings.HasPrefix(p, "/") {
+		return GlobPattern{}, fmt.Errorf("mitm: glob pattern %q must start with /", pattern)
+	}
+	segs := strings.Split(p, "/")
+	for i, s := range segs {
+		if i == 0 || s == "*" || s == "**" {
+			continue // leading empty element; wildcards are always valid
+		}
+		if !segmentOK(s) {
+			return GlobPattern{}, fmt.Errorf("mitm: glob pattern segment %q contains invalid characters in %q", s, pattern)
+		}
+	}
+	return GlobPattern{method: method, segs: segs}, nil
+}
+
+// matchPath reports whether gp matches the given HTTP method and request path.
+// Method comparison is case-insensitive; an empty method in the pattern matches any.
+func (gp GlobPattern) matchPath(method, reqPath string) bool {
+	if gp.method != "" && !strings.EqualFold(gp.method, method) {
+		return false
+	}
+	return matchGlobSegs(gp.segs, strings.Split(reqPath, "/"))
+}
+
+// matchGlobSegs recursively matches compiled pattern segments against path
+// segments. Both slices contain a leading "" element from splitting "/x" on "/".
+// "*" matches exactly one segment; "**" matches zero or more segments.
+func matchGlobSegs(pat, segs []string) bool {
+	for {
+		if len(pat) == 0 {
+			return len(segs) == 0
+		}
+		p := pat[0]
+		if p == "**" {
+			// Try matching the remaining pattern against every suffix of segs.
+			for k := 0; k <= len(segs); k++ {
+				if matchGlobSegs(pat[1:], segs[k:]) {
+					return true
+				}
+			}
+			return false
+		}
+		if len(segs) == 0 {
+			return false
+		}
+		s := segs[0]
+		if p != "*" && p != s {
+			return false
+		}
+		pat = pat[1:]
+		segs = segs[1:]
+	}
 }
 
 // Compile-time assertion: Proxy satisfies http.Handler.

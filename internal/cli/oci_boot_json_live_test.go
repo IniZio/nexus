@@ -150,7 +150,6 @@ func TestOCIBootJSON_Live_BootspecSurvivesAndExecutes(t *testing.T) {
 	createOut, createErr := ociBootCmd(binary,
 		"create", handle,
 		"--file", workspace,
-		"--no-builtin-gh",
 	).CombinedOutput()
 	t.Logf("nexus3 create --file:\n%s", createOut)
 	if createErr != nil {

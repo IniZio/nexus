@@ -164,9 +164,36 @@ func MergeSecrets(explicit []SecretBind, extra ...SecretBind) []SecretBind {
 	return out
 }
 
+// allGitHubHosts reports whether every host in hosts is a GitHub host.
+//
+// Brokering invariant (D-PDE-12): a credential is only materialized for the
+// exact hosts it was declared against. Any future per-provider auto-sourcing
+// MUST pass through an equivalent host-set gate before materializing a real
+// token — the value and the allowlist are bound at sourcing time.
+func allGitHubHosts(hosts []string) bool {
+	if len(hosts) == 0 {
+		return false
+	}
+	for _, h := range hosts {
+		if !isGitHubHost(h) {
+			return false
+		}
+	}
+	return true
+}
+
 // ResolveEnvelopeSecrets rebuilds SecretBinds from frozen ENV@hosts specs.
 // Tokens are re-resolved at call time: GH_TOKEN from host `gh auth token`,
 // every other env from the process environment. The store never holds tokens.
+//
+// Host-gate invariant (D-PDE-12): a github-named token (GH_TOKEN/GITHUB_TOKEN)
+// is sourced from `gh auth token` ONLY when ALL declared hosts are GitHub hosts.
+// A bind with any non-GitHub host (e.g. GH_TOKEN@evil.com) is VOIDED — the bind
+// is skipped and no credential is emitted — rather than returning an error.
+// Rationale: voiding is consistent with the "no token → skip" convention already
+// used here, and fail-closed from the exfil perspective. The upstream
+// ErrMixedGitHubSecret gate (CreateAndBoot) prevents mixed binds from reaching
+// this path via the CLI; this gate is defense-in-depth for non-CLI callers.
 func ResolveEnvelopeSecrets(ctx context.Context, specs []string) ([]SecretBind, error) {
 	var binds []SecretBind
 	for _, spec := range specs {
@@ -175,6 +202,12 @@ func ResolveEnvelopeSecrets(ctx context.Context, specs []string) ([]SecretBind, 
 			return nil, err
 		}
 		if b.Env == BuiltinGitHubEnv || b.Env == "GITHUB_TOKEN" {
+			// Host-gate: only source the operator's gh token when every declared
+			// host is a GitHub host. A non-GitHub host in the list voids the bind
+			// (fail closed — no token emitted, no exfil path opened).
+			if !allGitHubHosts(b.Hosts) {
+				continue // void: skip this bind entirely
+			}
 			tok, lerr := lookupGitHubToken(ctx)
 			if lerr != nil {
 				return nil, lerr

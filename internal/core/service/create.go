@@ -173,6 +173,12 @@ type CreateAndBootOptions struct {
 	// the Envelope; validated at create time (D-PD-36).
 	AllowedRepo string
 
+	// PathPolicies carries per-(placeholder, host) path restrictions to freeze
+	// into the Envelope. Built from config.EgressSecret entries by the worktree
+	// path; CLI callers use AllowedRepo (the coarser shim) for GitHub.
+	// See domain.EgressPathPolicies for the key structure.
+	PathPolicies domain.EgressPathPolicies
+
 	// AllowedBranches is the list of git ref patterns the sandbox may push to
 	// through the host-side git MITM. Set by --branches on the human git-VM
 	// create path. When nil the Envelope stores nil and
@@ -767,6 +773,7 @@ func CreateAndBoot(
 			OpenEgress:      opts.OpenEgress,      // D-PD-33: explicit opt-in; never inferred from empty AllowedHosts
 			AllowedRepo:     opts.AllowedRepo,     // D-PD-36: per-repo path allowlist; enforced below
 			AllowedBranches: opts.AllowedBranches, // S0: nil = use default at runtime via ResolvedAllowedBranches
+			PathPolicies:    opts.PathPolicies,    // T4: per-secret path policies; converted to mitm.PathPolicies at start
 		},
 		RemoveOnExit:   opts.RemoveOnExit,
 		BaseRef:        opts.BaseRef, // G1: shallow-clone boundary SHA (D-PD-19); empty if no git workspace
@@ -786,32 +793,34 @@ func CreateAndBoot(
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, ErrMixedGitHubSecret)
 		}
 	}
-	// 6b. D-PD-36 invariant: GitHub secret requires a per-repo allowlist
-	//
-	// Enforced here (service layer) so every caller — CLI, MCP, orca, herdr —
-	// is covered. A GitHub host in SecretHosts without AllowedRepo means the
-	// full-scope token is unbounded; that configuration must never be persisted.
-	//
-	// D-SHL-05: agent sandboxes MAY bind a GitHub secret when AllowedRepo is
-	// set — the guest holds only a 64-hex placeholder; the host-side MITM proxy
-	// swaps the real token restricted to the single repo named by AllowedRepo.
+	// 6b. D-PD-36 / D-PDE-16 invariant: every secret bind touching a GitHub
+	// host MUST carry a path policy (AllowedRepo shim OR a PathPolicies entry
+	// for that host). Non-GitHub host binds without a path policy are permitted
+	// — host-only bound is legal for non-GitHub hosts (D-PDE-16 asymmetry).
 	// This guard runs before store.Create and before boot, so a violating
-	// sandbox cannot be persisted or started. It is the primary enforcement
-	// point for ALL callers (CLI, MCP, orca, herdr).
+	// sandbox cannot be persisted or started. Primary enforcement point for
+	// ALL callers (CLI, MCP, orca, herdr).
+	//
+	// Rationale (load-bearing): operator github credential is an unrotated
+	// FULL-SCOPE PAT auto-sourced from `gh auth token`; host-bounding does not
+	// bound it across repos — only the positive path policy does (denylist
+	// enumeration failed twice; only the positive allowlist held). Do NOT add
+	// an opt-in flag — that makes a safety guard on a full-scope PAT opt-out.
+	//
+	// D-SHL-05: agent sandboxes MAY bind a GitHub secret when a path policy is
+	// set — the guest holds only a 64-hex placeholder; the host-side MITM proxy
+	// enforces the policy before forwarding.
 	//
 	// The post-boot ErrAgentGitHubSecret guard that previously rejected agent
 	// sandboxes with any GitHub secret has been removed as an intentional
-	// reversal of D-PD-23 under D-SHL-05 — NOT as dead-code cleanup. That
-	// guard fired on UseAgentSeed/AgentProfile regardless of AllowedRepo, so
-	// it was reachable for the agent+AllowedRepo combination D-SHL-05 permits.
-	// Its removal is a deliberate policy change, not a refactoring.
+	// reversal of D-PD-23 under D-SHL-05 — NOT as dead-code cleanup.
 	//
 	// Independent backstops for records already on disk:
-	//   - service.go Start (line ~407): rejects a boot if GitHub secret lacks AllowedRepo
-	//   - service.go startSupervisor (line ~780): same check before the proxy starts
-	if opts.AllowedRepo == "" {
-		for _, b := range opts.Secrets {
-			if SecretTouchesGitHub(b) {
+	//   - service.go Start (~line 413): same guard at boot time
+	//   - service.go startSupervisor (~line 787): same guard before proxy starts
+	for _, b := range opts.Secrets {
+		for _, h := range b.Hosts {
+			if isGitHubHost(h) && !githubHostBoundByPolicy(h, opts.AllowedRepo, opts.PathPolicies) {
 				return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, ErrUnboundGitHubSecret)
 			}
 		}

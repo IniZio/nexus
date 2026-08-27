@@ -25,6 +25,59 @@
             "description": "Hostname, e.g. \"proxy.golang.org\"."
           },
           "default": []
+        },
+        "policy": {
+          "type": "array",
+          "description": "Destination-scoped path-policy entries. Each entry restricts what URL paths are reachable on a specific host. A path policy is required for any GitHub host that receives a secret (D-PDE-16).",
+          "items": {
+            "type": "object",
+            "description": "Path-policy entry for one destination host. All listed paths use default-deny: only matching paths are allowed; all others are rejected.",
+            "required": ["host", "paths"],
+            "additionalProperties": false,
+            "properties": {
+              "host": {
+                "type": "string",
+                "description": "Target hostname, e.g. \"api.github.com\"."
+              },
+              "paths": {
+                "type": "array",
+                "description": "Positive path allowlist. Anchored globs; optional leading \"METHOD \" (e.g. \"GET /repos/**\" or \"/repos/**\" for any method). At least one entry required.",
+                "items": { "type": "string" },
+                "minItems": 1
+              }
+            }
+          },
+          "default": []
+        },
+        "secrets": {
+          "type": "array",
+          "description": "Host+credential bindings. Each entry attaches one env var (from the host environment) to one or more target hostnames. Security-critical: read from the trusted base ref only.",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Short form: \"ENV@host1,host2\"."
+              },
+              {
+                "type": "object",
+                "description": "Long form: {env, hosts}. Path policies belong in egress.policy, not here.",
+                "required": ["env", "hosts"],
+                "additionalProperties": false,
+                "properties": {
+                  "env": {
+                    "type": "string",
+                    "description": "Name of the host env var whose value is injected as a credential."
+                  },
+                  "hosts": {
+                    "type": "array",
+                    "description": "Hostnames the credential is forwarded to.",
+                    "items": { "type": "string" }
+                  }
+                }
+              }
+            ]
+          },
+          "default": []
         }
       }
     },
@@ -77,7 +130,15 @@
     {
       "version": 1,
       "egress": {
-        "allow": ["proxy.golang.org", "sum.golang.org", "storage.googleapis.com"]
+        "allow": ["proxy.golang.org", "sum.golang.org", "storage.googleapis.com"],
+        "policy": [
+          {"host": "api.github.com", "paths": ["/repos/owner/myrepo/**", "/repos/owner/myrepo", "/user"]},
+          {"host": "api.example.com", "paths": ["GET /v4/projects/123/**"]}
+        ],
+        "secrets": [
+          {"env": "GH_TOKEN", "hosts": ["github.com", "api.github.com", "uploads.github.com"]},
+          {"env": "API_TOKEN", "hosts": ["api.example.com"]}
+        ]
       },
       "sandbox": {
         "image": "nexus3-agent-base",

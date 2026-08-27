@@ -249,9 +249,9 @@ func TestSeedGitIdentity_MissingHostConfig_FailsCreate(t *testing.T) {
 // carries a real GitHub credential. This is enforced by three independent guards,
 // each of which must hold independently:
 //
-//  1. suppressBuiltinGitHub (cmd_sandbox.go): suppresses the builtin `gh auth
-//     token` bind for agent sandboxes without --repo, so the operator's GitHub
-//     token never enters Secrets for an ordinary agent run.
+//  1. No auto-append (cmd_sandbox.go D-PDE-02): the builtin `gh auth token`
+//     bind is never added automatically; only explicit --secret GH_TOKEN@...
+//     flags introduce a GitHub credential, and those require --repo (D-PD-36).
 //  2. ErrUnboundGitHubSecret (create.go): rejects any GitHub secret bind that
 //     lacks an AllowedRepo scope. Covers all callers (CLI, orca, herdr, MCP).
 //  3. Agent seeding (seed.go prepareAgentCredPayload): mints placeholders from

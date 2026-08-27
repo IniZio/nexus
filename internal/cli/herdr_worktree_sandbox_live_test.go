@@ -218,7 +218,7 @@ func TestHerdrWorktreeSandbox_Live_ResolvesBaseImageAndBoots(t *testing.T) {
 
 	handle := herdrWorktreeSandboxHandle("repo", branch)
 	mountSpec := wtDir + ":/workspace"
-	args := herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal, extraMounts)
+	args := herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal, extraMounts, nil, "", nil)
 
 	t.Cleanup(func() {
 		rmOut, rmErr := worktreeLiveCmd(binary, "rm", handle).CombinedOutput()

@@ -227,19 +227,6 @@ func TestBuiltinGitHubSecret_MissingGh(t *testing.T) {
 	}
 }
 
-func TestBuiltinGitHubSecret_Present(t *testing.T) {
-	orig := lookupGitHubToken
-	t.Cleanup(func() { lookupGitHubToken = orig })
-	lookupGitHubToken = func(context.Context) (string, error) { return "ghs_from_gh", nil }
-	b, ok, err := BuiltinGitHubSecret(context.Background())
-	if err != nil || !ok {
-		t.Fatalf("ok=%v err=%v", ok, err)
-	}
-	if b.Env != BuiltinGitHubEnv || b.Token != "ghs_from_gh" {
-		t.Errorf("bind = %+v", b)
-	}
-}
-
 // TestCreateAndBoot_MixedHostSecretRefused verifies that a secret bind mixing
 // GitHub hosts with a non-GitHub host is rejected at create time with
 // ErrMixedGitHubSecret. This drives the real validation path in create.go so
@@ -283,6 +270,83 @@ func TestResolveEnvelopeSecrets_GitHubFromGh(t *testing.T) {
 	}
 	if len(binds) != 1 || binds[0].Token != "ghs_resolved" {
 		t.Fatalf("binds = %+v", binds)
+	}
+}
+
+// TestResolveEnvelopeSecrets_HostGate_GHTokenNonGitHubVoided is the key
+// negative control for T9-AC2. GH_TOKEN bound to a non-GitHub host must NOT
+// source the operator's gh token — the exfil path must be closed.
+//
+// Mutation evidence: removing the allGitHubHosts gate in ResolveEnvelopeSecrets
+// causes this test to return a non-empty bind with the faked gh token instead of
+// an empty slice, breaking the assertion. The test FAILS if the gate is removed.
+func TestResolveEnvelopeSecrets_HostGate_GHTokenNonGitHubVoided(t *testing.T) {
+	orig := lookupGitHubToken
+	t.Cleanup(func() { lookupGitHubToken = orig })
+	lookupGitHubToken = func(context.Context) (string, error) { return "ghs_operator_full_scope", nil }
+
+	// T9-AC2: GH_TOKEN@evil.com must produce NO bind (exfil path closed).
+	binds, err := ResolveEnvelopeSecrets(context.Background(), []string{"GH_TOKEN@evil.com"})
+	if err != nil {
+		t.Fatalf("ResolveEnvelopeSecrets: unexpected error: %v", err)
+	}
+	if len(binds) != 0 {
+		t.Fatalf("GH_TOKEN@evil.com: want 0 binds (exfil gate), got %d: %+v", len(binds), binds)
+	}
+}
+
+// TestResolveEnvelopeSecrets_HostGate_GHTokenAllGitHubSourced verifies the
+// legitimate flow: GH_TOKEN bound exclusively to GitHub hosts still sources
+// the gh token.
+func TestResolveEnvelopeSecrets_HostGate_GHTokenAllGitHubSourced(t *testing.T) {
+	orig := lookupGitHubToken
+	t.Cleanup(func() { lookupGitHubToken = orig })
+	const want = "ghs_legit_token"
+	lookupGitHubToken = func(context.Context) (string, error) { return want, nil }
+
+	binds, err := ResolveEnvelopeSecrets(context.Background(), []string{"GH_TOKEN@github.com,api.github.com"})
+	if err != nil {
+		t.Fatalf("ResolveEnvelopeSecrets: %v", err)
+	}
+	if len(binds) != 1 || binds[0].Token != want {
+		t.Fatalf("GH_TOKEN@github.com,api.github.com: want 1 bind with token %q, got %+v", want, binds)
+	}
+}
+
+// TestResolveEnvelopeSecrets_HostGate_NonGitHubEnvFromProcessEnv verifies that
+// a non-GitHub env var (e.g. GITLAB_TOKEN) is still sourced from the process
+// environment, not from gh auth token.
+func TestResolveEnvelopeSecrets_HostGate_NonGitHubEnvFromProcessEnv(t *testing.T) {
+	orig := lookupGitHubToken
+	t.Cleanup(func() { lookupGitHubToken = orig })
+	lookupGitHubToken = func(context.Context) (string, error) {
+		t.Error("lookupGitHubToken must not be called for non-GitHub env var")
+		return "", nil
+	}
+	t.Setenv("GITLAB_TOKEN", "glpat_test_value")
+
+	binds, err := ResolveEnvelopeSecrets(context.Background(), []string{"GITLAB_TOKEN@gitlab.com"})
+	if err != nil {
+		t.Fatalf("ResolveEnvelopeSecrets: %v", err)
+	}
+	if len(binds) != 1 || binds[0].Token != "glpat_test_value" {
+		t.Fatalf("GITLAB_TOKEN@gitlab.com: want 1 bind from process env, got %+v", binds)
+	}
+}
+
+// TestResolveEnvelopeSecrets_HostGate_MixedGHHostVoided verifies that a
+// GH_TOKEN bind with a mix of GitHub and non-GitHub hosts is voided (not sourced).
+func TestResolveEnvelopeSecrets_HostGate_MixedGHHostVoided(t *testing.T) {
+	orig := lookupGitHubToken
+	t.Cleanup(func() { lookupGitHubToken = orig })
+	lookupGitHubToken = func(context.Context) (string, error) { return "ghs_should_not_appear", nil }
+
+	binds, err := ResolveEnvelopeSecrets(context.Background(), []string{"GH_TOKEN@github.com,evil.com"})
+	if err != nil {
+		t.Fatalf("ResolveEnvelopeSecrets: unexpected error: %v", err)
+	}
+	if len(binds) != 0 {
+		t.Fatalf("GH_TOKEN@github.com,evil.com: want 0 binds (mixed-host gate), got %d: %+v", len(binds), binds)
 	}
 }
 

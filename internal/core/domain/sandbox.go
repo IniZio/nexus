@@ -250,7 +250,39 @@ type Envelope struct {
 	// --branches on the human git-VM create path; agent sandboxes receive the
 	// default implicitly.
 	AllowedBranches []string `json:"allowed_branches,omitempty"`
+
+	// PathPolicies carries per-(placeholder, host) path restrictions frozen at
+	// create time. The "" placeholder key acts as a wildcard covering any
+	// authenticated request to the keyed host. Converted to mitm.PathPolicies at
+	// sandbox start by the service layer. Empty means no per-secret path
+	// restriction beyond what AllowedRepo provides via its wildcard shim.
+	// Populated by the worktree-sandbox path for generic egress.secrets entries.
+	PathPolicies EgressPathPolicies `json:"path_policies,omitempty"`
 }
+
+// EgressGitHubPolicy pins MITM enforcement to one GitHub repository.
+// The MITM proxy applies the built-in method-aware GitHub path allowlist
+// (D-PDE-16) rather than a generic glob.
+type EgressGitHubPolicy struct {
+	Owner string // case-sensitive GitHub owner name
+	Name  string // case-sensitive GitHub repository name
+}
+
+// EgressHostPolicy is the path restriction for one (placeholder, host) pair
+// frozen in the Envelope at create time. Exactly one of GitHub or Paths
+// should be set. Paths holds raw glob patterns compiled by the MITM proxy at
+// sandbox start time via mitm.CompileGlobPattern.
+type EgressHostPolicy struct {
+	GitHub *EgressGitHubPolicy
+	Paths  []string // raw glob patterns; compiled by mitm at start time
+}
+
+// EgressPathPolicies is the frozen path-policy map stored in the Envelope.
+// Outer key: placeholder token identifier; "" is the wildcard key, applying
+// to all authenticated requests that lack a specific per-placeholder entry.
+// Inner key: hostname.
+// Converted to mitm.PathPolicies at sandbox start by the service layer.
+type EgressPathPolicies map[string]map[string]EgressHostPolicy
 
 // ResolvedAllowedBranches returns AllowedBranches with the project default
 // applied when the field is empty. The default is ["refs/heads/nexus3/**"],

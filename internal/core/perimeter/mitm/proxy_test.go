@@ -2243,3 +2243,747 @@ func TestProxy_GraphQL_DefaultDeny(t *testing.T) {
 		})
 	}
 }
+
+// ============================================================
+// D-PDE-16 tests: per-(placeholder, host) PathPolicies API
+//
+// These tests exercise the new generic path policy framework directly via
+// Config.PathPolicies (not the AllowedRepo compat shim). They are mutation-
+// proof: negative controls verify that disabling or inverting the matcher
+// breaks the expected outcome, and positive controls verify that real tokens
+// are NOT emitted on denied requests.
+// ============================================================
+
+// TestD_PDE16_PerBindKeying verifies that PathPolicies entries are keyed on
+// the exact placeholder: two GitHub binds for different repos are each denied
+// on the other's repo path (no global AllowedRepo bottleneck).
+//
+// Mutation evidence:
+//   - Change lookupPolicy to return the first matching host entry regardless
+//     of placeholder → both placeholders would see the same policy → test
+//     fails because each placeholder's denied case returns 200 instead of 403.
+//   - Remove the exact-placeholder check in lookupPolicy and fall back only to
+//     the wildcard → same failure.
+func TestD_PDE16_PerBindKeying(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(90)
+
+	const realTokenA = "ghp_bind_a_secret"
+	const realTokenB = "ghp_bind_b_secret"
+
+	recA, err := broker.RegisterPlaceholder(sid, "api.github.com", realTokenA)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder A: %v", err)
+	}
+	recB, err := broker.RegisterPlaceholder(sid, "api.github.com", realTokenB)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder B: %v", err)
+	}
+
+	// Two disjoint per-bind policies keyed on the exact placeholder.
+	policies := mitm.PathPolicies{
+		recA.Placeholder: {
+			"api.github.com": {GitHub: &mitm.GitHubPolicy{Owner: "orgA", Name: "repoA"}},
+		},
+		recB.Placeholder: {
+			"api.github.com": {GitHub: &mitm.GitHubPolicy{Owner: "orgB", Name: "repoB"}},
+		},
+	}
+
+	srv := newTestProxy(t, mitm.Config{
+		SandboxID:    sid,
+		AllowedHosts: []string{"api.github.com"},
+		Broker:       broker,
+		PathPolicies: policies,
+	}, upstream.Listener.Addr().String())
+	client := proxyClient(srv.URL)
+
+	type tcase struct {
+		name        string
+		placeholder string
+		path        string
+		wantStatus  int
+	}
+	cases := []tcase{
+		// A's placeholder on A's path → allowed.
+		{"A-on-A-allowed", recA.Placeholder, "/repos/orgA/repoA/pulls", http.StatusOK},
+		// A's placeholder on B's path → denied (per-bind default-deny).
+		{"A-on-B-denied", recA.Placeholder, "/repos/orgB/repoB/pulls", http.StatusForbidden},
+		// B's placeholder on B's path → allowed.
+		{"B-on-B-allowed", recB.Placeholder, "/repos/orgB/repoB/pulls", http.StatusOK},
+		// B's placeholder on A's path → denied.
+		{"B-on-A-denied", recB.Placeholder, "/repos/orgA/repoA/pulls", http.StatusForbidden},
+	}
+
+	// Sequential — authCh buffer=1; parallel allowed cases would both write to it
+	// and the second write would block the upstream handler, hanging client.Do.
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, "http://api.github.com"+tc.path, http.NoBody)
+			req.Header.Set("Authorization", "Bearer "+tc.placeholder)
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("client.Do: %v", err)
+			}
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
+
+			if resp.StatusCode != tc.wantStatus {
+				t.Errorf("%s: want %d, got %d", tc.name, tc.wantStatus, resp.StatusCode)
+			}
+			if tc.wantStatus == http.StatusOK {
+				receiveOrTimeout(authCh) // drain so next allowed case doesn't block
+			}
+		})
+	}
+	// Verify that the no-token invariant holds for the cross-repo denied case
+	// using a dedicated sequential request (avoids parallel authCh race).
+	t.Run("cross-bind-deny-no-token", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, "http://api.github.com/repos/orgB/repoB/pulls", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+recA.Placeholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-bind: want 403, got %d", resp.StatusCode)
+		}
+		if got, ok := receiveOrTimeout(authCh); ok {
+			t.Errorf("cross-bind: real token reached upstream on denied path; Authorization=%q", got)
+		}
+	})
+}
+
+// TestD_PDE16_HostNoPolicyAllowed verifies that a host with NO PathPolicies
+// entry is allowed through unrestricted and that the credential swap fires.
+//
+// Mutation evidence: change lookupPolicy to return (HostPolicy{}, true) for
+// any host regardless of whether an entry exists → the default-deny handler
+// fires for the unconstrained host and returns 403, failing the 200 assertion.
+func TestD_PDE16_HostNoPolicyAllowed(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(91)
+	const realToken = "ghp_unconstrained_host_token"
+
+	// Register on api.github.com (has a policy) AND on other.example.com (no policy).
+	recGH, err := broker.RegisterPlaceholder(sid, "api.github.com", realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder github: %v", err)
+	}
+	recOther, err := broker.RegisterPlaceholder(sid, "other.example.com", realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder other: %v", err)
+	}
+
+	// Only api.github.com has a path policy; other.example.com has none.
+	policies := mitm.PathPolicies{
+		recGH.Placeholder: {
+			"api.github.com": {GitHub: &mitm.GitHubPolicy{Owner: "org", Name: "repo"}},
+		},
+	}
+
+	srv := newTestProxy(t, mitm.Config{
+		SandboxID:    sid,
+		AllowedHosts: []string{"api.github.com", "other.example.com"},
+		Broker:       broker,
+		PathPolicies: policies,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
+			},
+		},
+	}, upstream.Listener.Addr().String())
+	client := proxyClient(srv.URL)
+
+	// Request to other.example.com (no policy) with its placeholder → must pass through.
+	req, _ := http.NewRequest(http.MethodGet, "http://other.example.com/arbitrary/path/anything", http.NoBody)
+	req.Header.Set("Authorization", "Bearer "+recOther.Placeholder)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("no-policy host: want 200 (unrestricted), got %d", resp.StatusCode)
+	}
+	// Swap must fire: upstream receives the real token.
+	got, ok := receiveOrTimeout(authCh)
+	if !ok {
+		t.Fatal("upstream never received request; host with no policy must pass through")
+	}
+	if want := "Bearer " + realToken; got != want {
+		t.Errorf("swap did not fire for no-policy host: upstream Authorization = %q, want %q", got, want)
+	}
+}
+
+// TestD_PDE16_GenericGlobPolicy verifies the generic paths: [] HostPolicy
+// on a non-GitHub host: allowed patterns pass, denied patterns 403, non-canonical
+// paths 403, and method-specific patterns correctly gate on method.
+//
+// Mutation evidence:
+//   - Replace matchGlobSegs with always-true → all denied cases return 200 (fail).
+//   - Replace matchGlobSegs with always-false → all allowed cases return 403 (fail).
+//   - Remove isCanonicalPath check → non-canonical case returns 200 (fail).
+//   - Flip method comparison to EqualFold(method, gp.method) being inverted
+//     → method-mismatch case returns 200 (fail).
+func TestD_PDE16_GenericGlobPolicy(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(92)
+	const realToken = "gl_personal_token"
+
+	rec, err := broker.RegisterPlaceholder(sid, "gitlab.example.com", realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
+	// Two method-specific patterns to test method enforcement and default-deny.
+	// No ** wildcard so that method-denied cases stay denied.
+	p1, err := mitm.CompileGlobPattern("GET /v4/projects/*/merge_requests")
+	if err != nil {
+		t.Fatalf("CompileGlobPattern p1: %v", err)
+	}
+	p2, err := mitm.CompileGlobPattern("POST /v4/projects/*/statuses")
+	if err != nil {
+		t.Fatalf("CompileGlobPattern p2: %v", err)
+	}
+
+	policies := mitm.PathPolicies{
+		rec.Placeholder: {
+			"gitlab.example.com": {Patterns: []mitm.GlobPattern{p1, p2}},
+		},
+	}
+
+	srv := newTestProxy(t, mitm.Config{
+		SandboxID:    sid,
+		AllowedHosts: []string{"gitlab.example.com"},
+		Broker:       broker,
+		PathPolicies: policies,
+	}, upstream.Listener.Addr().String())
+	client := proxyClient(srv.URL)
+
+	// Allowed cases: run sequentially (separate requests, drain authCh after each).
+	t.Run("merge-requests-GET-allowed", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, "http://gitlab.example.com/v4/projects/123/merge_requests", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("merge-requests GET: want 200, got %d", resp.StatusCode)
+		}
+		if _, ok := receiveOrTimeout(authCh); !ok {
+			t.Error("merge-requests GET: upstream never received request")
+		}
+	})
+
+	t.Run("statuses-POST-allowed", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, "http://gitlab.example.com/v4/projects/456/statuses", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("statuses POST: want 200, got %d", resp.StatusCode)
+		}
+		if _, ok := receiveOrTimeout(authCh); !ok {
+			t.Error("statuses POST: upstream never received request")
+		}
+	})
+
+	// Denied cases: sequential, so authCh is clean from prior allowed requests.
+	deniedCases := []struct {
+		name   string
+		method string
+		path   string
+		raw    bool // bypass url.Parse for traversal tests
+	}{
+		// Wrong method for p1 (GET-only): POST denied.
+		{"merge-requests-POST-denied", http.MethodPost, "/v4/projects/123/merge_requests", false},
+		// Wrong method for p2 (POST-only): GET denied.
+		{"statuses-GET-denied", http.MethodGet, "/v4/projects/123/statuses", false},
+		// Path outside any pattern — default-deny.
+		{"outside-deny", http.MethodGet, "/v4/users/1", false},
+		// Non-canonical traversal — rejected by isCanonicalPath pre-check.
+		{"traversal-denied", http.MethodGet, "/v4/projects/../users/1", true},
+	}
+	for _, tc := range deniedCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var req *http.Request
+			if tc.raw {
+				req = newRawURLRequest(tc.method, "gitlab.example.com", tc.path, "", "Bearer "+rec.Placeholder)
+			} else {
+				req, _ = http.NewRequest(tc.method, "http://gitlab.example.com"+tc.path, http.NoBody)
+				req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("client.Do: %v", err)
+			}
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("%s: want 403, got %d", tc.name, resp.StatusCode)
+			}
+			if got, ok := receiveOrTimeout(authCh); ok {
+				t.Errorf("%s: upstream received denied request; Authorization=%q", tc.name, got)
+			}
+		})
+	}
+}
+
+// TestD_PDE16_DenyBeforeSwap is the security-critical ordering assertion:
+// for a request denied by PathPolicies, the real token must NEVER be injected
+// into the request — the deny handler fires BEFORE the credential swap handler.
+//
+// This test uses PathPolicies directly (not the AllowedRepo shim) to assert
+// the ordering invariant on the new enforcement path.
+//
+// Mutation evidence: register the deny DoFunc AFTER the swap DoFunc in New()
+// → the swap fires first, the denied path receives the real token, authCh
+// receives a value, and both assertions below fail.
+func TestD_PDE16_DenyBeforeSwap(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(93)
+	const realToken = "ghp_must_never_reach_upstream"
+
+	rec, err := broker.RegisterPlaceholder(sid, "api.github.com", realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
+	policies := mitm.PathPolicies{
+		rec.Placeholder: {
+			"api.github.com": {GitHub: &mitm.GitHubPolicy{Owner: "secorg", Name: "secrepo"}},
+		},
+	}
+
+	srv := newTestProxy(t, mitm.Config{
+		SandboxID:    sid,
+		AllowedHosts: []string{"api.github.com"},
+		Broker:       broker,
+		PathPolicies: policies,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
+			},
+		},
+	}, upstream.Listener.Addr().String())
+	client := proxyClient(srv.URL)
+
+	// /user/repos is not in the GitHub allowlist for secorg/secrepo.
+	// The real token must never be forwarded to upstream.
+	req, _ := http.NewRequest(http.MethodGet, "http://api.github.com/user/repos", http.NoBody)
+	req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("deny-before-swap: want 403 on denied path, got %d", resp.StatusCode)
+	}
+	// Critical: upstream must never receive the request — the deny intercepted it.
+	if got, ok := receiveOrTimeout(authCh); ok {
+		if got == "Bearer "+realToken {
+			t.Errorf("deny-before-swap: REAL TOKEN reached upstream on denied path — swap fired before deny (ordering invariant violated)")
+		} else {
+			t.Errorf("deny-before-swap: upstream received request on denied path (auth=%q) — deny did not fire", got)
+		}
+	}
+}
+
+// TestD_PDE16_CompileGlobPatternValidation verifies that CompileGlobPattern
+// rejects patterns with invalid segment characters (enforcing segmentOK rigor).
+//
+// Mutation evidence: remove the segmentOK check from CompileGlobPattern →
+// the invalid-segment case returns nil error (fail).
+func TestD_PDE16_CompileGlobPatternValidation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		pattern string
+		wantErr bool
+	}{
+		{"/v4/projects/*/issues", false},    // valid
+		{"GET /v4/repos/**", false},         // valid with method prefix
+		{"/v4/**", false},                   // valid double-star
+		{"noslash", true},                   // must start with /
+		{"/v4/pro%jects/issues", true},      // % not in segmentOK
+		{"/v4/projects/issues;extra", true}, // ; not in segmentOK
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.pattern, func(t *testing.T) {
+			t.Parallel()
+			_, err := mitm.CompileGlobPattern(tc.pattern)
+			if tc.wantErr && err == nil {
+				t.Errorf("CompileGlobPattern(%q): want error, got nil", tc.pattern)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("CompileGlobPattern(%q): want nil error, got %v", tc.pattern, err)
+			}
+		})
+	}
+}
+
+// TestD_PDE16_GitHubAllDigitsAndMethodPreserved verifies that the GitHub
+// built-in policy (via PathPolicies) still enforces the allDigits guard on
+// /stacks/{id} and method-scoping on /repos paths — proving gitHubPathAllowed
+// is called verbatim, not replaced by a laxer glob.
+//
+// Mutation evidence: replace the gitHubPathAllowed call with a trivial
+// strings.HasPrefix check → /stacks/notanumber and wrong-method cases return
+// 200 instead of 403 (fail).
+func TestD_PDE16_GitHubAllDigitsAndMethodPreserved(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(94)
+	const realToken = "ghp_method_guard_token"
+
+	rec, err := broker.RegisterPlaceholder(sid, "api.github.com", realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
+	policies := mitm.PathPolicies{
+		rec.Placeholder: {
+			"api.github.com": {GitHub: &mitm.GitHubPolicy{Owner: "acme", Name: "myrepo"}},
+		},
+	}
+
+	srv := newTestProxy(t, mitm.Config{
+		SandboxID:    sid,
+		AllowedHosts: []string{"api.github.com"},
+		Broker:       broker,
+		PathPolicies: policies,
+	}, upstream.Listener.Addr().String())
+	client := proxyClient(srv.URL)
+
+	// Run sequentially so authCh is clean between requests.
+	// allDigits guard: non-numeric stack ID must be denied.
+	t.Run("stacks-non-digit-denied", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, "http://api.github.com/stacks/notanumber/add", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("stacks-non-digit: want 403, got %d", resp.StatusCode)
+		}
+		if got, ok := receiveOrTimeout(authCh); ok {
+			t.Errorf("stacks-non-digit: upstream received denied request; Authorization=%q", got)
+		}
+	})
+
+	// allDigits guard: numeric stack ID allowed.
+	t.Run("stacks-digit-allowed", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, "http://api.github.com/stacks/42/add", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("stacks-digit: want 200, got %d", resp.StatusCode)
+		}
+		receiveOrTimeout(authCh) // drain
+	})
+
+	// Method guard: DELETE on /repos/{owner}/{repo}/pulls is not allowed.
+	t.Run("pulls-DELETE-denied", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodDelete, "http://api.github.com/repos/acme/myrepo/pulls", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("pulls-DELETE: want 403, got %d", resp.StatusCode)
+		}
+		if got, ok := receiveOrTimeout(authCh); ok {
+			t.Errorf("pulls-DELETE: upstream received denied request; Authorization=%q", got)
+		}
+	})
+
+	// Method guard: GET on /repos/{owner}/{repo}/releases is allowed.
+	t.Run("releases-GET-allowed", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, "http://api.github.com/repos/acme/myrepo/releases", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("releases-GET: want 200, got %d", resp.StatusCode)
+		}
+		receiveOrTimeout(authCh) // drain
+	})
+
+	// Method guard: DELETE on /repos/{owner}/{repo}/releases (list) is not allowed.
+	t.Run("releases-list-DELETE-denied", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodDelete, "http://api.github.com/repos/acme/myrepo/releases", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("releases-DELETE: want 403, got %d", resp.StatusCode)
+		}
+		if got, ok := receiveOrTimeout(authCh); ok {
+			t.Errorf("releases-DELETE: upstream received denied request; Authorization=%q", got)
+		}
+	})
+}
+
+// TestD_PDE16_GlobStarStar verifies that ** as a whole segment matches zero or
+// more segments — exercising the recursive matchGlobSegs path.
+//
+// Mutation evidence: replace ** handling in matchGlobSegs with single-segment
+// match → deep-path case returns 403 instead of 200 (fail).
+func TestD_PDE16_GlobStarStar(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+	broker := cred.NewBroker()
+	sid := newSandboxID(96)
+	const realToken = "gl_star_star_token"
+
+	rec, err := broker.RegisterPlaceholder(sid, "gitlab.example.com", realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
+	pStar, err := mitm.CompileGlobPattern("/v4/projects/**")
+	if err != nil {
+		t.Fatalf("CompileGlobPattern: %v", err)
+	}
+
+	policies := mitm.PathPolicies{
+		rec.Placeholder: {"gitlab.example.com": {Patterns: []mitm.GlobPattern{pStar}}},
+	}
+	srv := newTestProxy(t, mitm.Config{
+		SandboxID:    sid,
+		AllowedHosts: []string{"gitlab.example.com"},
+		Broker:       broker,
+		PathPolicies: policies,
+	}, upstream.Listener.Addr().String())
+	client := proxyClient(srv.URL)
+
+	// ** matches deep paths.
+	for _, p := range []string{
+		"/v4/projects/123",
+		"/v4/projects/123/issues",
+		"/v4/projects/123/issues/1/notes",
+	} {
+		p := p
+		t.Run(p, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, "http://gitlab.example.com"+p, http.NoBody)
+			req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("client.Do: %v", err)
+			}
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("%s: want 200 (**-matched), got %d", p, resp.StatusCode)
+			}
+			receiveOrTimeout(authCh) // drain
+		})
+	}
+
+	// Outside /v4/projects/ — default-deny.
+	t.Run("outside-deny", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, "http://gitlab.example.com/v4/users/1", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("outside /v4/projects/: want 403, got %d", resp.StatusCode)
+		}
+		if got, ok := receiveOrTimeout(authCh); ok {
+			t.Errorf("outside: upstream received denied request; Authorization=%q", got)
+		}
+	})
+}
+
+// TestD_PDE16_GraphQLClosedViaPathPolicies verifies that /graphql is denied
+// when using the PathPolicies GitHub policy (belt-and-suspenders closure):
+// gitHubPathAllowed returns true for /graphql, but the subsequent GraphQL
+// deny-all handler catches it before the credential swap.
+//
+// Mutation evidence: remove the hasAnyGitHubPolicy guard that registers the
+// GraphQL deny-all handler → /graphql returns 200 and upstream receives the
+// request (fail).
+func TestD_PDE16_GraphQLClosedViaPathPolicies(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(95)
+	const realToken = "ghp_graphql_via_policies_token"
+
+	rec, err := broker.RegisterPlaceholder(sid, "api.github.com", realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
+	policies := mitm.PathPolicies{
+		rec.Placeholder: {
+			"api.github.com": {GitHub: &mitm.GitHubPolicy{Owner: "org", Name: "repo"}},
+		},
+	}
+
+	srv := newTestProxy(t, mitm.Config{
+		SandboxID:    sid,
+		AllowedHosts: []string{"api.github.com"},
+		Broker:       broker,
+		PathPolicies: policies,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
+			},
+		},
+	}, upstream.Listener.Addr().String())
+	client := proxyClient(srv.URL)
+
+	req, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql", http.NoBody)
+	req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("graphql via PathPolicies: want 403, got %d", resp.StatusCode)
+	}
+	if got, ok := receiveOrTimeout(authCh); ok {
+		t.Errorf("graphql via PathPolicies: upstream received request; Authorization=%q (must be denied before swap)", got)
+	}
+}
+
+// TestD_PDE16_AllowedRepoShimCompatibility confirms the AllowedRepo shim
+// still works (wildcard placeholder key "") so all existing callers compile
+// and behave identically to before D-PDE-16. This is regression-coverage for
+// the compat bridge.
+//
+// Mutation evidence: remove the wildcard key "" fallback from lookupPolicy →
+// the shim path never finds a policy, AllowedRepo is effectively disabled,
+// /user/repos returns 200 instead of 403 (fail).
+func TestD_PDE16_AllowedRepoShimCompatibility(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+	// newGitHubAllowedRepoProxy uses AllowedRepo (the compat shim path).
+	proxy, _, recAPI, _ := newGitHubAllowedRepoProxy(t, upstream.Listener.Addr().String())
+	client := proxyClient(proxy.URL)
+
+	// Denied path — must still 403 via the shim.
+	req, _ := http.NewRequest(http.MethodGet, "http://api.github.com/user/repos", http.NoBody)
+	req.Header.Set("Authorization", "Bearer "+recAPI.Placeholder)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("shim compat: want 403 on /user/repos (AllowedRepo still restricts), got %d", resp.StatusCode)
+	}
+	if got, ok := receiveOrTimeout(authCh); ok {
+		t.Errorf("shim compat: upstream received request on denied path; Authorization=%q", got)
+	}
+}
+
+// TestLookupPolicy_BogusPlaceholderKeyNotFound verifies that a PathPolicies
+// map whose ONLY entry is stored under a non-"" placeholder key (e.g. "x")
+// does NOT match a request carrying a DIFFERENT placeholder.
+//
+// This is the MITM-level proof that the guard==enforcement equivalence holds:
+// if the guard were still an all-keys loop it would accept "x"-keyed configs,
+// but lookupPolicy would still return not-found for them — confirming that the
+// all-keys guard was the lie, not the enforcement.
+//
+// Mutation evidence: if the MITM lookupPolicy were changed to search all keys
+// (not just pp[placeholder] then pp[""]), this test would return found=true,
+// which would be a new MITM-level bypass — so the test also guards lookupPolicy
+// against that direction of regression.
+func TestLookupPolicy_BogusPlaceholderKeyNotFound(t *testing.T) {
+	// A policy stored under "x" — as an attacker would supply.
+	pp := mitm.PathPolicies{
+		"x": {"api.github.com": mitm.HostPolicy{
+			Patterns: nil, // just needs to be present
+		}},
+	}
+	// A request arrives with placeholder "deadbeef1234" (a different key).
+	_, found := mitm.LookupPolicyForTest(pp, "deadbeef1234", "api.github.com")
+	if found {
+		t.Fatal("lookupPolicy: bogus-key policy matched a different placeholder — enforcement gap detected")
+	}
+
+	// Also verify that "" key (wildcard) IS found when present.
+	pp2 := mitm.PathPolicies{
+		"": {"api.github.com": mitm.HostPolicy{}},
+	}
+	_, found2 := mitm.LookupPolicyForTest(pp2, "deadbeef1234", "api.github.com")
+	if !found2 {
+		t.Fatal("lookupPolicy: wildcard key \"\" should match any placeholder but did not")
+	}
+}

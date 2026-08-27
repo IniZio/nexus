@@ -41,6 +41,9 @@ func TestLoad_ValidFile_Parsed(t *testing.T) {
 	content := `version: 1
 egress:
   allow: ["proxy.golang.org", "sum.golang.org"]
+  policy:
+    - host: api.github.com
+      paths: ["/repos/owner/myrepo/**", "/user"]
 sandbox:
   image: nexus3-agent-base
   memory: 8192
@@ -64,6 +67,15 @@ sandbox:
 	}
 	if cfg.Egress.Allow[0] != "proxy.golang.org" {
 		t.Fatalf("egress.allow[0]: want proxy.golang.org, got %q", cfg.Egress.Allow[0])
+	}
+	if len(cfg.Egress.Policy) != 1 {
+		t.Fatalf("egress.policy: want 1 entry, got %v", cfg.Egress.Policy)
+	}
+	if cfg.Egress.Policy[0].Host != "api.github.com" {
+		t.Fatalf("egress.policy[0].host: want api.github.com, got %q", cfg.Egress.Policy[0].Host)
+	}
+	if len(cfg.Egress.Policy[0].Paths) == 0 {
+		t.Fatalf("egress.policy[0].paths: want non-empty, got empty")
 	}
 	if cfg.Sandbox.Image != "nexus3-agent-base" {
 		t.Fatalf("sandbox.image: want nexus3-agent-base, got %q", cfg.Sandbox.Image)
@@ -652,6 +664,195 @@ func TestMounts_MissingTarget(t *testing.T) {
 	_, err := loadFromYAML(t, data)
 	if err == nil {
 		t.Fatal("expected error for missing target, got nil")
+	}
+}
+
+// ---- egress.secrets tests ----
+
+// parseBytes is a helper that calls config.Parse on the given bytes.
+func parseBytes(t *testing.T, data []byte) (config.Config, error) {
+	t.Helper()
+	return config.Parse(data)
+}
+
+func TestEgressSecrets_ShortForm(t *testing.T) {
+	data := []byte("version: 1\negress:\n  secrets:\n    - GH_TOKEN@api.github.com,uploads.github.com\n")
+	cfg, err := parseBytes(t, data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(cfg.Egress.Secrets) != 1 {
+		t.Fatalf("want 1 secret, got %d", len(cfg.Egress.Secrets))
+	}
+	s := cfg.Egress.Secrets[0]
+	if s.Env != "GH_TOKEN" {
+		t.Errorf("Env: want GH_TOKEN, got %q", s.Env)
+	}
+	if len(s.Hosts) != 2 || s.Hosts[0] != "api.github.com" || s.Hosts[1] != "uploads.github.com" {
+		t.Errorf("Hosts: want [api.github.com uploads.github.com], got %v", s.Hosts)
+	}
+}
+
+// TestEgressSecrets_UnknownKey_HardError verifies AC T2-AC3:
+// an unknown key inside egress.secrets[] is a hard error (fail-closed on typo).
+func TestEgressSecrets_UnknownKey_HardError(t *testing.T) {
+	data := []byte("version: 1\negress:\n  secrets:\n    - env: GH_TOKEN\n      hosts: [api.github.com]\n      typo_key: oops\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for unknown key inside egress.secrets entry, got nil")
+	}
+}
+
+// TestEgressSecrets_OldRepoField_UnknownKeyError verifies that the old `repo:`
+// field under egress.secrets is rejected as an unknown key. The field has been
+// removed from the schema entirely — path policies belong in egress.policy.paths.
+func TestEgressSecrets_OldRepoField_UnknownKeyError(t *testing.T) {
+	data := []byte("version: 1\negress:\n  secrets:\n    - env: GH_TOKEN\n      hosts: [api.github.com]\n      repo: owner/myrepo\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for old repo: field under egress.secrets, got nil — field must now be under egress.policy")
+	}
+}
+
+// TestEgressSecrets_OldPathsField_UnknownKeyError verifies that the old `paths:`
+// field under egress.secrets is now rejected as an unknown key (it has moved to
+// egress.policy).
+func TestEgressSecrets_OldPathsField_UnknownKeyError(t *testing.T) {
+	data := []byte("version: 1\negress:\n  secrets:\n    - env: GITLAB_TOKEN\n      hosts: [gitlab.com]\n      paths: [\"/v4/projects/123/**\"]\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for old paths: field under egress.secrets, got nil — field must now be under egress.policy")
+	}
+}
+
+// TestEgressPolicy_GenericPaths_Parsed verifies that a generic paths policy entry
+// (no preset) parses correctly.
+func TestEgressPolicy_GenericPaths_Parsed(t *testing.T) {
+	data := []byte("version: 1\negress:\n  policy:\n    - host: api.example.com\n      paths: [\"/v4/projects/123/**\"]\n")
+	cfg, err := parseBytes(t, data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(cfg.Egress.Policy) != 1 {
+		t.Fatalf("want 1 policy entry, got %d", len(cfg.Egress.Policy))
+	}
+	p := cfg.Egress.Policy[0]
+	if p.Host != "api.example.com" {
+		t.Errorf("Host: want api.example.com, got %q", p.Host)
+	}
+	if len(p.Paths) != 1 || p.Paths[0] != "/v4/projects/123/**" {
+		t.Errorf("Paths: want [\"/v4/projects/123/**\"], got %v", p.Paths)
+	}
+}
+
+// TestEgressPolicy_MissingHost_Error verifies that a policy entry without a
+// host field is a hard error.
+func TestEgressPolicy_MissingHost_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  policy:\n    - paths: [\"/repos/**\"]\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for policy entry missing host, got nil")
+	}
+}
+
+// TestEgressPolicy_UnknownKey_HardError verifies that an unknown key inside
+// egress.policy[] is a hard error.
+func TestEgressPolicy_UnknownKey_HardError(t *testing.T) {
+	data := []byte("version: 1\negress:\n  policy:\n    - host: api.github.com\n      paths: [\"/repos/**\"]\n      typo_key: oops\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for unknown key in egress.policy entry, got nil")
+	}
+}
+
+// TestEgressPolicy_EmptyPaths_Error verifies that a policy entry with no paths
+// entries is a hard error (paths is required — an empty allowlist would silently
+// default-deny everything, which is almost certainly a misconfiguration).
+func TestEgressPolicy_EmptyPaths_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  policy:\n    - host: api.github.com\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for policy entry with no paths, got nil")
+	}
+}
+
+// TestEgressPolicy_Absent_ZeroValue verifies that an absent egress.policy is
+// not an error and produces a zero-length slice.
+func TestEgressPolicy_Absent_ZeroValue(t *testing.T) {
+	data := []byte("version: 1\negress:\n  allow: [proxy.golang.org]\n")
+	cfg, err := parseBytes(t, data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(cfg.Egress.Policy) != 0 {
+		t.Fatalf("want zero policy entries when absent, got %d", len(cfg.Egress.Policy))
+	}
+}
+
+func TestEgressSecrets_MissingEnv_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  secrets:\n    - hosts: [api.github.com]\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for missing 'env' field, got nil")
+	}
+}
+
+func TestEgressSecrets_MissingHosts_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  secrets:\n    - env: GH_TOKEN\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for missing 'hosts' field, got nil")
+	}
+}
+
+func TestEgressSecrets_Absent_ZeroValue(t *testing.T) {
+	data := []byte("version: 1\negress:\n  allow: [proxy.golang.org]\n")
+	cfg, err := parseBytes(t, data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(cfg.Egress.Secrets) != 0 {
+		t.Fatalf("want zero secrets when absent, got %d", len(cfg.Egress.Secrets))
+	}
+}
+
+// TestParse_EqualsLoad_ForIdenticalBytes verifies that config.Parse and config.Load
+// produce the same result when given the same YAML content.
+func TestParse_EqualsLoad_ForIdenticalBytes(t *testing.T) {
+	data := []byte("version: 1\negress:\n  allow: [proxy.golang.org]\n  secrets:\n    - GH_TOKEN@api.github.com\n")
+
+	parsedCfg, err := config.Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "nexus3.yaml"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	loadedCfg, _, err := config.Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Compare Allow.
+	if len(parsedCfg.Egress.Allow) != len(loadedCfg.Egress.Allow) {
+		t.Errorf("Egress.Allow len: Parse=%d Load=%d", len(parsedCfg.Egress.Allow), len(loadedCfg.Egress.Allow))
+	}
+	// Compare Secrets.
+	if len(parsedCfg.Egress.Secrets) != len(loadedCfg.Egress.Secrets) {
+		t.Errorf("Egress.Secrets len: Parse=%d Load=%d", len(parsedCfg.Egress.Secrets), len(loadedCfg.Egress.Secrets))
+	} else if len(parsedCfg.Egress.Secrets) > 0 {
+		p, l := parsedCfg.Egress.Secrets[0], loadedCfg.Egress.Secrets[0]
+		if p.Env != l.Env {
+			t.Errorf("Secrets[0].Env: Parse=%q Load=%q", p.Env, l.Env)
+		}
+		if len(p.Hosts) != len(l.Hosts) {
+			t.Errorf("Secrets[0].Hosts: Parse=%v Load=%v", p.Hosts, l.Hosts)
+		}
 	}
 }
 

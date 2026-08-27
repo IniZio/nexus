@@ -145,7 +145,6 @@ func TestOverlayOnVirtiofs(t *testing.T) {
 	createOut, err := overlayCmd(binary, "create", handle,
 		"--image", image,
 		"--mount", curatedDir+":"+guestMount+":ro",
-		"--no-builtin-gh",
 	).CombinedOutput()
 	if err != nil {
 		t.Fatalf("nexus3 create: %v\n%s\n(check NEXUS3_KERNEL_PATH and that %q is a cached image)", err, createOut, image)
