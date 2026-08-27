@@ -405,15 +405,18 @@ var _ io.Writer = (*sbuilder)(nil)
 // Matched signatures (case-insensitive):
 //   - "no space left on device"  — kernel ENOSPC surfaced by runc or the overlay
 //   - "ResourceExhausted"        — gRPC status code buildkit returns for ENOSPC
-//   - "/var/lib/buildkit"        — buildkit snapshots path (confirms the disk)
+//
+// The bare "/var/lib/buildkit" path clause was removed: the export scratch path
+// is now /var/lib/buildkit/nexus3-export, so any error mentioning that path
+// (including ErrRootfsHollow) would have been mislabeled "cache disk full".
+// The two genuine ENOSPC signals above cover all real disk-full cases.
 func wrapOutOfSpaceErr(err error) error {
 	if err == nil {
 		return nil
 	}
 	s := strings.ToLower(err.Error())
 	if strings.Contains(s, "no space left on device") ||
-		strings.Contains(s, "resourceexhausted") ||
-		strings.Contains(strings.ToLower(err.Error()), "/var/lib/buildkit") {
+		strings.Contains(s, "resourceexhausted") {
 		return fmt.Errorf(
 			"builder vm: buildkit cache disk (/var/lib/buildkit) is full — "+
 				"the auto-grow ceiling was reached or growth is disabled; "+
