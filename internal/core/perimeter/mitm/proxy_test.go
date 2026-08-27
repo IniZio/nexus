@@ -844,6 +844,10 @@ func TestD36_AllowedAPIPaths(t *testing.T) {
 		{http.MethodGet, "/repos/acme/myrepo/releases/12345"},
 		{http.MethodPatch, "/repos/acme/myrepo/releases/12345"},
 		{http.MethodDelete, "/repos/acme/myrepo/releases/12345"},
+		// Babysit-loop PR reads (D-BABYSIT-1).
+		{http.MethodGet, "/repos/acme/myrepo/pulls/1"},
+		{http.MethodGet, "/repos/acme/myrepo/pulls/1/reviews"},
+		{http.MethodGet, "/repos/acme/myrepo/pulls/1/comments"},
 	}
 
 	for _, tc := range cases {
@@ -895,8 +899,21 @@ func TestD36_DeniedPaths(t *testing.T) {
 		{"api.github.com", http.MethodGet, "/user/repos", recAPI.Placeholder},
 		{"api.github.com", http.MethodGet, "/search/repositories", recAPI.Placeholder},
 		{"api.github.com", http.MethodGet, "/repos/acme/otherrepo/pulls", recAPI.Placeholder},
+		{"api.github.com", http.MethodPost, "/repos/acme/otherrepo/pulls", recAPI.Placeholder},
 		{"api.github.com", http.MethodPost, "/repos/evil/myrepo/releases", recAPI.Placeholder},
 		{"uploads.github.com", http.MethodPost, "/repos/acme/otherrepo/releases/1/assets", recUploads.Placeholder},
+		// Babysit-loop PR reads: denials (D-BABYSIT-1).
+		// Non-numeric PR slug must be denied (proves allDigits guard is load-bearing).
+		{"api.github.com", http.MethodGet, "/repos/acme/myrepo/pulls/abc", recAPI.Placeholder},
+		// Unknown sub-path must be denied (proves sub-path scoping is load-bearing).
+		{"api.github.com", http.MethodGet, "/repos/acme/myrepo/pulls/1/files", recAPI.Placeholder},
+		{"api.github.com", http.MethodGet, "/repos/acme/myrepo/pulls/1/merge", recAPI.Placeholder},
+		// Deeper sub-path (reviews/{id}) must be denied (proves depth scoping is load-bearing).
+		{"api.github.com", http.MethodGet, "/repos/acme/myrepo/pulls/1/reviews/9", recAPI.Placeholder},
+		// Wrong method on allowed path must be denied (proves GET-only scoping is load-bearing).
+		{"api.github.com", http.MethodPost, "/repos/acme/myrepo/pulls/1", recAPI.Placeholder},
+		// Wrong repo must be denied (proves repo-pinning is load-bearing).
+		{"api.github.com", http.MethodGet, "/repos/otherowner/otherrepo/pulls/1", recAPI.Placeholder},
 	}
 
 	for _, tc := range cases {

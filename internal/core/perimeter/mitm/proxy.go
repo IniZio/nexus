@@ -741,6 +741,14 @@ func gitHubPathAllowed(host, method, path, owner, repo string) bool {
 			rest, _ := strings.CutPrefix(path, "/stacks/")
 			parts := strings.SplitN(rest, "/", 2)
 			return len(parts) == 2 && allDigits(parts[0]) && (parts[1] == "add" || parts[1] == "unstack")
+		case method == http.MethodGet && strings.HasPrefix(path, repoBase+"/pulls/"):
+			// Babysit reads: GET /repos/{owner}/{repo}/pulls/{n}[/reviews|/comments].
+			rest, _ := strings.CutPrefix(path, repoBase+"/pulls/")
+			prNum, sub, hasSub := strings.Cut(rest, "/")
+			if !allDigits(prNum) {
+				return false
+			}
+			return !hasSub || sub == "reviews" || sub == "comments"
 		case method == http.MethodPatch && strings.HasPrefix(path, repoBase+"/pulls/"):
 			// gh-stack sync: PATCH /repos/{owner}/{repo}/pulls/{n}.
 			prNum, _ := strings.CutPrefix(path, repoBase+"/pulls/")
