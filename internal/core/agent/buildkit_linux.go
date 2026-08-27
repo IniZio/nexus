@@ -184,21 +184,28 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 		return fmt.Errorf("in-guest build: create buildkit client: %w", err)
 	}
 
-	// Mount a dedicated tmpfs for the rootfs export directory.
-	// Large images (e.g. ubuntu:24.04 + docker.io ≈ 1.5 GiB uncompressed) exhaust
-	// the builder VM's rootfs /tmp (~400 MiB free) and fail with ENOSPC. A
-	// separate 4 GiB tmpfs (backed by the 8 GiB guest RAM) gives enough room for
-	// any current sandbox image. Non-fatal: if the mount fails we fall back to the
-	// rootfs /tmp (original behaviour, adequate for small Alpine/Debian-slim bases).
-	const exportTmpfs = "/tmp/nexus3-export"
+	// Back the rootfs export scratch on the buildkit cache DISK rather than a
+	// RAM tmpfs. The cache disk (/var/lib/buildkit) is a large auto-growing ext4
+	// volume mounted before BuildInGuestImage is called (G5 EnsureCacheDisk +
+	// builder_role_linux.go mountCacheDisk). Using disk capacity decouples export
+	// headroom from builder VM RAM — a right-sized builder (e.g. 4 GiB) can
+	// export a 2+ GiB rootfs without exhausting guest memory pages.
+	//
+	// The previous approach (4 GiB RAM-backed tmpfs) caused hollow exports
+	// (files present but zero-length) on small builders because the tmpfs +
+	// buildkitd working set together exceeded available guest RAM.
+	//
+	// Fallback: if the cache disk dir can't be created (e.g. disk not mounted),
+	// we fall back to the rootfs /tmp. We do NOT fall back to the RAM tmpfs —
+	// that is the thing we are removing.
+	const buildkitCacheMountPath = "/var/lib/buildkit"
+	const exportScratchDir = buildkitCacheMountPath + "/nexus3-export"
 	exportBase := "" // empty → os.TempDir() = rootfs /tmp (fallback)
-	if mkErr := os.MkdirAll(exportTmpfs, 0o700); mkErr == nil {
-		if mntErr := unix.Mount("tmpfs", exportTmpfs, "tmpfs", 0, "size=4g"); mntErr == nil {
-			exportBase = exportTmpfs
-			defer unix.Unmount(exportTmpfs, unix.MNT_DETACH) //nolint:errcheck
-		} else {
-			log.Printf("in-guest build: WARNING: tmpfs for rootfs export failed (%v); using builder rootfs /tmp", mntErr)
-		}
+	if mkErr := os.MkdirAll(exportScratchDir, 0o700); mkErr == nil {
+		exportBase = exportScratchDir
+		defer os.RemoveAll(exportScratchDir) //nolint:errcheck
+	} else {
+		log.Printf("in-guest build: WARNING: cannot create export scratch on cache disk (%v); falling back to rootfs /tmp", mkErr)
 	}
 
 	rootfsDir, err := os.MkdirTemp(exportBase, "nexus3-inguestbuild-rootfs-")
