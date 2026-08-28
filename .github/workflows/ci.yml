@@ -75,3 +75,32 @@ jobs:
 
       - name: Build docs
         run: pnpm build
+
+  # ── Example: nexus3-in-docker build smoke ─────────────────────────────────
+  # Verifies that the CI-feasible Dockerfile stages still build correctly.
+  # The full image cannot be built in CI because the virtiofsd-stage COPY
+  # requires a host-staged binary absent on ubuntu-latest (virtiofsd has no
+  # pre-built GitLab binary releases).  Full boot is covered separately by the
+  # KVM-gated Go test (internal/test/selfhost/docker_host_image_test.go, build
+  # tag: integration) which runs only on dev/KVM machines.
+  example-image-smoke:
+    name: Example image smoke (nexus3-in-docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Smoke — go-builder stage (proves nexus3 binary compiles)
+        run: |
+          docker build \
+            -f examples/nexus3-in-docker/Dockerfile \
+            --target go-builder \
+            -t n3-smoke-go \
+            .
+
+      - name: Smoke — downloader stage (proves CH download URL + SHA-256 pin)
+        run: |
+          docker build \
+            -f examples/nexus3-in-docker/Dockerfile \
+            --target downloader \
+            -t n3-smoke-dl \
+            .
