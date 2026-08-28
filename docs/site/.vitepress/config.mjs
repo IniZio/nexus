@@ -11,11 +11,17 @@
 
 import { withMermaid } from 'vitepress-plugin-mermaid'
 
+// The site is published to GitHub Pages at https://inizio.github.io/nexus3/,
+// so every asset URL has to be prefixed with the repository name. Overridable
+// via DOCS_BASE for a different host (a custom domain would use '/').
+const base = process.env.DOCS_BASE ?? '/nexus3/'
+
 export default withMermaid({
   title: 'nexus3',
   description: 'MicroVM sandboxes for parallel agent development',
   lang: 'en-US',
   cleanUrls: true,
+  base,
 
   // Build output and cache live outside the source tree and are gitignored.
   outDir: '.vitepress/dist',
@@ -25,9 +31,10 @@ export default withMermaid({
   ignoreDeadLinks: false,
 
   // Favicon served from docs/site/public/favicon.svg (VitePress copies public/
-  // to the site root at both build and dev time).
+  // to the site root at both build and dev time). head[] hrefs are emitted
+  // verbatim — VitePress does not prefix them — so `base` is applied by hand.
   head: [
-    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: `${base}favicon.svg` }],
   ],
 
   // Pin the dev server to a fixed port so the URL is always predictable.

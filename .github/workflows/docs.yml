@@ -1,0 +1,78 @@
+name: Docs
+
+# Publishes the VitePress site under docs/site to GitHub Pages at
+# https://inizio.github.io/nexus3/.
+#
+# CI already builds the docs on every PR (ci.yml, job `docs-build`) — that job
+# is the gate. This workflow exists only to publish what landed on main, so it
+# is deliberately narrow: main pushes that touch the docs, plus manual dispatch.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/site/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch: {}
+
+# pages:write + id-token:write are what actions/deploy-pages needs to publish.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two publishes at once, but do not cancel one mid-upload: a cancelled
+# deploy-pages can leave the Pages environment pointing at a partial artifact.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs/site
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          # Pinned for the same reason as ci.yml: pnpm 11.x requires Node
+          # >=22.13 and fails the install on ERR_PNPM_IGNORED_BUILDS (esbuild).
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: docs/site/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build docs
+        run: pnpm build
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/site/.vitepress/dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
