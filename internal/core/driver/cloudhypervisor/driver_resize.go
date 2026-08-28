@@ -55,10 +55,24 @@ func NewSandboxResizer(d *CHDriver, id domain.SandboxID, bounds resize.Bounds, b
 	return r
 }
 
+// memHotplugAlignBytes is Cloud Hypervisor's memory-hotplug block granularity.
+// Every desired_ram sent to PUT /api/v1/vm.resize MUST be an exact multiple of
+// this value; CH rejects an unaligned target with HTTP 500. This was proven on
+// a live sandbox: unaligned deficit-computed targets (e.g. 1091000320,
+// 843703500) all 500'd while every 256-MiB multiple succeeded, so after an
+// idle-shrink to the floor the guest could never regrow and was OOM-killed.
+//
+// The governor (internal/core/govern) aligns before it ever calls here; this
+// constant makes the driver enforce CH's own constraint so that no caller —
+// present or future, correct or buggy — can emit an unaligned desired_ram.
+const memHotplugAlignBytes int64 = 256 * 1024 * 1024
+
 // ResizeMemory adjusts guest RAM to targetBytes via PUT /api/v1/vm.resize and
 // returns the new current allocation. targetBytes is clamped to
-// [Bounds.MemMinBytes, Bounds.MemMaxBytes]. Calls VMResize(desired_ram) —
-// never the balloon path (D-DC-08: balloon is host reclaim only).
+// [Bounds.MemMinBytes, Bounds.MemMaxBytes] and snapped to a memHotplugAlignBytes
+// multiple (CH rejects unaligned desired_ram with HTTP 500). Calls
+// VMResize(desired_ram) — never the balloon path (D-DC-08: balloon is host
+// reclaim only).
 //
 // Implements [resize.MemoryResizer].
 func (r *SandboxResizer) ResizeMemory(ctx context.Context, targetBytes int64) (int64, error) {
@@ -68,6 +82,17 @@ func (r *SandboxResizer) ResizeMemory(ctx context.Context, targetBytes int64) (i
 	}
 	if targetBytes > r.bounds.MemMaxBytes {
 		targetBytes = r.bounds.MemMaxBytes
+	}
+
+	// Defensive alignment to CH's hotplug block size. The bounds are themselves
+	// block-aligned, so round UP toward more memory and only fall back to
+	// rounding DOWN when rounding up would breach the (aligned) ceiling. The
+	// result is always a block multiple within [MemMinBytes, MemMaxBytes].
+	if rem := targetBytes % memHotplugAlignBytes; rem != 0 {
+		targetBytes += memHotplugAlignBytes - rem // round up
+		if targetBytes > r.bounds.MemMaxBytes {
+			targetBytes -= memHotplugAlignBytes // ceiling breached: round down instead
+		}
 	}
 
 	desiredRAM := uint64(targetBytes)

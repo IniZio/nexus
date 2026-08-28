@@ -248,7 +248,7 @@ func TestGrowDisk_atomicRollback(t *testing.T) {
 // tmpfs on certain kernels) the test skips rather than failing.
 func TestGrowDisk_sparseAccountsForActual(t *testing.T) {
 	const apparentSize = 16 * 1024 * 1024 // 16 MiB apparent (fully sparse)
-	const writeSize = 4096                  // 4 KiB actually written at offset 0
+	const writeSize = 4096                // 4 KiB actually written at offset 0
 
 	dir := t.TempDir()
 	diskPath := filepath.Join(dir, "sparse.raw")
@@ -414,6 +414,70 @@ func TestResizeMemory_clamp(t *testing.T) {
 	}
 }
 
+// TestResizeMemory_alignsUnaligned is the driver-side regression guard for the
+// CH hotplug-alignment bug. A caller that hands ResizeMemory an unaligned
+// target (1091000320 B ≈ 1040.5 MiB — one of the exact values that 500'd on the
+// live sandbox) must have it snapped to a memHotplugAlignBytes multiple within
+// bounds before the desired_ram reaches CH.
+//
+// Fails before the fix (desired_ram sent = 1091000320, not a 256 MiB multiple);
+// passes after (rounded up to 1342177280 = 1.25 GiB).
+func TestResizeMemory_alignsUnaligned(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	const bootMem int64 = 512 * 1024 * 1024
+	const maxMem int64 = 4 * 1024 * 1024 * 1024
+	const unaligned int64 = 1091000320   // ~1040.5 MiB — a real live 500'ing target
+	const wantAligned int64 = 1342177280 // 1.25 GiB, next 256 MiB block up
+
+	var mu sync.Mutex
+	var gotRAM uint64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/vm.resize", func(w http.ResponseWriter, r *http.Request) {
+		var req vmResizeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		if req.DesiredRAM != nil {
+			gotRAM = *req.DesiredRAM
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	fakeSockListenerMux(t, d.socketPath(id), mux)
+
+	bounds := resize.Bounds{MemMinBytes: bootMem, MemMaxBytes: maxMem}
+	resizer := NewSandboxResizer(d, id, bounds, bootMem, 1)
+
+	got, err := resizer.ResizeMemory(context.Background(), unaligned)
+	if err != nil {
+		t.Fatalf("ResizeMemory: %v", err)
+	}
+	if got%memHotplugAlignBytes != 0 {
+		t.Errorf("ResizeMemory returned %d, not a multiple of memHotplugAlignBytes %d", got, memHotplugAlignBytes)
+	}
+	if got != wantAligned {
+		t.Errorf("ResizeMemory returned %d, want %d (unaligned target snapped up to a block multiple)", got, wantAligned)
+	}
+	if resizer.CurrentMemoryBytes() != wantAligned {
+		t.Errorf("CurrentMemoryBytes = %d, want %d", resizer.CurrentMemoryBytes(), wantAligned)
+	}
+
+	mu.Lock()
+	ramSent := gotRAM
+	mu.Unlock()
+	if ramSent%uint64(memHotplugAlignBytes) != 0 {
+		t.Errorf("desired_ram sent to CH = %d, not a 256 MiB multiple (CH would reject with HTTP 500)", ramSent)
+	}
+	if ramSent != uint64(wantAligned) {
+		t.Errorf("desired_ram sent = %d, want %d", ramSent, uint64(wantAligned))
+	}
+}
+
 // TestResizeCPU verifies that ResizeCPU calls PUT /api/v1/vm.resize with the
 // correct desired_vcpus and updates CurrentVCPUs. Also verifies desired_ram
 // and desired_balloon are absent (not other dimensions polluted).
@@ -561,10 +625,10 @@ func TestNewConfig_validation(t *testing.T) {
 //
 // Cases:
 //
-//	1. auto-resize off, no " --" boundary → base unchanged (AR-N-AC1)
-//	2. auto-resize off, " --" boundary present → base unchanged (AR-N-AC1)
-//	3. auto-resize on,  no " --" boundary → hotplug tokens appended at end
-//	4. auto-resize on,  " --" boundary present → hotplug tokens inserted BEFORE boundary
+//  1. auto-resize off, no " --" boundary → base unchanged (AR-N-AC1)
+//  2. auto-resize off, " --" boundary present → base unchanged (AR-N-AC1)
+//  3. auto-resize on,  no " --" boundary → hotplug tokens appended at end
+//  4. auto-resize on,  " --" boundary present → hotplug tokens inserted BEFORE boundary
 func TestBuildCmdline_HotplugPlacement(t *testing.T) {
 	// baseNoBoundary is diskBootCmdline: no PID-1 args, no " --".
 	baseNoBoundary := diskBootCmdline

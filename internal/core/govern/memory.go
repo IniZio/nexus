@@ -83,6 +83,48 @@ const (
 	// minShrinkStepBytes: floor on each shrink increment (512 MiB).
 	// Source: OLD memory_resize.go:71.
 	minShrinkStepBytes int64 = 512 * 1024 * 1024
+
+	// memHotplugAlignBytes is Cloud Hypervisor's memory-hotplug block
+	// granularity: every desired_ram passed to PUT /api/v1/vm.resize MUST be an
+	// exact multiple of this value or CH rejects the call with HTTP 500.
+	//
+	// Root cause (live evidence, sandbox sb-06G4EHTE1NZR56F89BJK6N3E90): the
+	// deficit-scaled growStep/shrinkStep produce arbitrary byte targets. Every
+	// SUCCESSFUL resize observed on the wire was an exact multiple of 256 MiB
+	// (805306368, 1073741824, 1342177280, 1610612736, 2147483648, 4294967296);
+	// every FAILING resize was a non-256-MiB deficit target (1091000320,
+	// 1112324096, 843703500, 1116993536, 1373887283 → all "vm.resize:
+	// unexpected status 500"). After an idle-shrink to the 512 MiB floor every
+	// unaligned regrow 500'd, the guest never got memory back, and the in-guest
+	// process was OOM-killed. Aligning every resize target to this block size is
+	// the fix.
+	//
+	// 256 MiB is deliberately NOT reusing minGrowStepBytes (which happens to be
+	// the same value); the two constants encode different constraints (grow-step
+	// floor vs. hotplug alignment) and must be free to diverge.
+	//
+	// EMPIRICAL, not read from CH: CH exposes no block-granularity field in the
+	// vm.info / VmConfig subset nexus3 parses (see driver client.go —
+	// vmInfoResponse carries only "state"). 256 MiB is the observed floor at
+	// which every live resize succeeded; if a rebuilt CH advertises a different
+	// section size this constant is the single point to adjust.
+	memHotplugAlignBytes int64 = 256 * 1024 * 1024
+
+	// safeMemFloorBytes is the memory level the governor jumps to in ONE hotplug
+	// when the guest is critically low (PSI-full ≥ 10 or MemAvailable < 8%) and
+	// current RAM is below this floor. This converts a multi-step deficit
+	// staircase (512→768→~1.1G→~1.6G over ~15 s) into a single ~5 s poll, so a
+	// Claude Code launch (~1.6 GiB cold) is absorbed before ZRAM swap saturates.
+	//
+	// This is a CEILING on the rescue, not a boot floor: the idle shrink path
+	// remains aggressive and will reclaim back to minBytes when pressure clears,
+	// preserving fine-grained control at steady state. The jump fires on BOTH
+	// cold-start AND post-idle-shrink spikes — it is gated on
+	// critical && current < safeMemFloorBytes, not on "first-ever grow".
+	//
+	// 2 GiB is a multiple of memHotplugAlignBytes (8 × 256 MiB), so no extra
+	// alignment block is consumed by the jump itself.
+	safeMemFloorBytes int64 = 2 * 1024 * 1024 * 1024
 )
 
 // sampleWantsGrow reports whether s indicates the sandbox needs more memory.
@@ -211,6 +253,40 @@ func shrinkStep(minBytes, maxBytes int64) int64 {
 	return step
 }
 
+// alignUp rounds n UP to the nearest multiple of align (align > 0). Used for
+// grow targets: a grow must never round to LESS memory than requested.
+func alignUp(n, align int64) int64 {
+	if align <= 0 {
+		return n
+	}
+	rem := n % align
+	if rem == 0 {
+		return n
+	}
+	if rem < 0 {
+		// n is negative; rounding "up" (toward +inf) drops the fractional block.
+		return n - rem
+	}
+	return n + (align - rem)
+}
+
+// alignDown rounds n DOWN to the nearest multiple of align (align > 0). Used
+// for shrink targets: a shrink must never round to MORE memory than requested.
+func alignDown(n, align int64) int64 {
+	if align <= 0 {
+		return n
+	}
+	rem := n % align
+	if rem == 0 {
+		return n
+	}
+	if rem < 0 {
+		// n is negative; rounding "down" (toward -inf) subtracts a full block.
+		return n - rem - align
+	}
+	return n - rem
+}
+
 // evaluate inspects the latest telemetry sample recorded in g and issues a
 // ResizeMemory call when the control law warrants one.
 //
@@ -290,7 +366,16 @@ func (g *Governor) evaluate(ctx context.Context) {
 			g.growCount = 0
 			return
 		}
-		target = current + growStep(minBytes, maxBytes, current, g.latest)
+		if critical && current < safeMemFloorBytes {
+			// Jump-to-floor: one hotplug to safeMemFloorBytes instead of the
+			// multi-step deficit staircase. Fires on cold-start AND
+			// post-idle-shrink spikes — gated on current < safeMemFloorBytes,
+			// NOT on "first-ever grow only". The bounds clamp below handles
+			// maxBytes < safeMemFloorBytes conservatively.
+			target = safeMemFloorBytes
+		} else {
+			target = current + growStep(minBytes, maxBytes, current, g.latest)
+		}
 
 	case sampleWantsShrink(g.latest) && g.shrinkCount >= memoryShrinkConsecutive:
 		if current <= minBytes {
@@ -303,7 +388,30 @@ func (g *Governor) evaluate(ctx context.Context) {
 		return
 	}
 
+	// Align to CH's memory-hotplug block granularity BEFORE clamping.
+	//
+	// growStep/shrinkStep are deficit/range-scaled and produce arbitrary byte
+	// targets; an unaligned desired_ram is rejected by CH with HTTP 500 (see
+	// memHotplugAlignBytes). Grow rounds UP (never round to less memory than the
+	// deficit demands); shrink rounds DOWN (never round to more). The
+	// forward-progress guards keep a grow moving up by at least one block and a
+	// shrink moving down by at least one block even after rounding, so alignment
+	// can never turn a resize into a no-op or a backwards move.
+	if isShrink {
+		target = alignDown(target, memHotplugAlignBytes)
+		if target >= current {
+			target = current - memHotplugAlignBytes
+		}
+	} else {
+		target = alignUp(target, memHotplugAlignBytes)
+		if target <= current {
+			target = current + memHotplugAlignBytes
+		}
+	}
+
 	// Clamp to bounds (belt-and-suspenders; MemoryResizer also clamps).
+	// MemMinBytes and MemMaxBytes are themselves block-aligned, so clamping a
+	// block-aligned target keeps it aligned.
 	if target < minBytes {
 		target = minBytes
 	}

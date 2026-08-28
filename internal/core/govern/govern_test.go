@@ -55,9 +55,9 @@ func (c *fakeClock) Advance(d time.Duration) {
 // fakeResizer records ResizeMemory calls and returns the target as the new
 // current value (simulates a successful resize).
 type fakeResizer struct {
-	current  int64
-	calls    []int64 // ordered list of targets passed to ResizeMemory
-	resizeErr error  // if non-nil, ResizeMemory returns this error
+	current   int64
+	calls     []int64 // ordered list of targets passed to ResizeMemory
+	resizeErr error   // if non-nil, ResizeMemory returns this error
 }
 
 func newFakeResizer(bootBytes int64) *fakeResizer {
@@ -678,5 +678,273 @@ func TestReadMeminfo(t *testing.T) {
 	}
 	if avail != wantAvail {
 		t.Errorf("MemAvailable = %d, want %d", avail, wantAvail)
+	}
+}
+
+// TestGrowTargetAligned is the regression guard for the CH hotplug-alignment
+// bug: growStep is deficit-scaled and produces arbitrary byte targets, which CH
+// rejects with HTTP 500 unless they are a multiple of memHotplugAlignBytes.
+//
+// Bounds min=512 MiB, max=4 GiB (both block-aligned), current=512 MiB. With a
+// growSample over a 1 GiB total the deficit-scaled raw target is 912680550 B
+// (~870.4 MiB) — NOT a 256 MiB multiple. Before the fix evaluate issued that
+// value verbatim and CH 500'd; after the fix it must be rounded UP to the next
+// block multiple (1073741824 = 1 GiB) and stay > current.
+//
+// Fails before the fix (912680550 % 256 MiB != 0); passes after.
+func TestGrowTargetAligned(t *testing.T) {
+	t.Parallel()
+	const minBytes int64 = 512 * 1024 * 1024
+	const maxBytes int64 = 4 * 1024 * 1024 * 1024
+	resizer := newFakeResizer(minBytes)
+	g, clk := newTestGovernorMinMax(t, minBytes, maxBytes, resizer, nil)
+
+	injectSample(g, clk, growSample(uint64(gib))) // 1 GiB total
+	g.evaluate(context.Background())
+
+	if len(resizer.calls) != 1 {
+		t.Fatalf("expected 1 ResizeMemory call, got %d (%v)", len(resizer.calls), resizer.calls)
+	}
+	got := resizer.calls[0]
+	if got%memHotplugAlignBytes != 0 {
+		t.Errorf("grow target %d is not a multiple of memHotplugAlignBytes %d (CH would reject with HTTP 500)",
+			got, memHotplugAlignBytes)
+	}
+	if got <= minBytes {
+		t.Errorf("grow target %d must make forward progress above current %d", got, minBytes)
+	}
+	// Worked example pinned so the rounding direction cannot silently regress:
+	// raw deficit target 912680550 must round UP to 1 GiB, never stay unaligned.
+	const wantAligned int64 = 1073741824 // 1 GiB, the next 256 MiB multiple
+	if got != wantAligned {
+		t.Errorf("grow target = %d, want %d (raw 912680550 rounded up to the next 256 MiB block)", got, wantAligned)
+	}
+}
+
+// TestShrinkTargetAligned is the shrink-side regression guard. With an unaligned
+// current (5.1 GiB) the shrink target current-shrinkStep is unaligned; evaluate
+// must round it DOWN to a block multiple that stays < current and >= min.
+//
+// Fails before the fix (unaligned target 1447034880 % 256 MiB != 0); passes after.
+func TestShrinkTargetAligned(t *testing.T) {
+	t.Parallel()
+	const minBytes int64 = 512 * 1024 * 1024
+	const maxBytes int64 = 8 * 1024 * 1024 * 1024
+	// current = 5 GiB + 100 MiB: deliberately NOT a 256 MiB multiple.
+	current := int64(5*gib) + 100*1024*1024
+	resizer := newFakeResizer(current)
+	g, clk := newTestGovernorMinMax(t, minBytes, maxBytes, resizer, nil)
+
+	for i := 0; i < memoryShrinkConsecutive; i++ {
+		injectSample(g, clk, shrinkSample(uint64(maxBytes)))
+		g.evaluate(context.Background())
+	}
+
+	if len(resizer.calls) != 1 {
+		t.Fatalf("expected 1 ResizeMemory call after %d shrink samples, got %d (%v)",
+			memoryShrinkConsecutive, len(resizer.calls), resizer.calls)
+	}
+	got := resizer.calls[0]
+	if got%memHotplugAlignBytes != 0 {
+		t.Errorf("shrink target %d is not a multiple of memHotplugAlignBytes %d (CH would reject with HTTP 500)",
+			got, memHotplugAlignBytes)
+	}
+	if got >= current {
+		t.Errorf("shrink target %d must be strictly below current %d", got, current)
+	}
+	if got < minBytes {
+		t.Errorf("shrink target %d must not underflow the floor %d", got, minBytes)
+	}
+	// Worked example: raw target 1447034880 rounds DOWN to 1342177280 (1.25 GiB).
+	const wantAligned int64 = 1342177280
+	if got != wantAligned {
+		t.Errorf("shrink target = %d, want %d (raw 1447034880 rounded down to a 256 MiB block)", got, wantAligned)
+	}
+}
+
+// ── Jump-to-safe-floor tests (D-DC-?? cold-start OOM fix) ────────────────────
+
+// criticalGrowSample returns a sample that is BOTH wantsGrow AND critical via
+// MemAvailable < criticalGrowThreshold (0.08). Available = 5% of total.
+func criticalGrowSample(total uint64) resize.Sample {
+	return resize.Sample{
+		Timestamp:         time.Now(),
+		MemTotalBytes:     total,
+		MemAvailableBytes: uint64(float64(total) * 0.05), // 5% < 8% → critical
+		MemPSISupported:   true,
+	}
+}
+
+// TestCriticalColdStart_JumpsToSafeFloor: from a 512 MiB boot, a single
+// critical sample must produce a target of safeMemFloorBytes (2 GiB) in ONE
+// evaluate() call — not the 256 MiB deficit step.
+func TestCriticalColdStart_JumpsToSafeFloor(t *testing.T) {
+	t.Parallel()
+	const boot int64 = 512 * 1024 * 1024
+
+	cases := []struct {
+		name    string
+		maxBytes int64
+		want    int64
+	}{
+		{"max_4GiB", 4 * gib, safeMemFloorBytes},
+		{"max_8GiB", 8 * gib, safeMemFloorBytes},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			resizer := newFakeResizer(boot)
+			g, clk := newTestGovernorMinMax(t, boot, tc.maxBytes, resizer, nil)
+
+			injectSample(g, clk, criticalGrowSample(uint64(boot)))
+			g.evaluate(context.Background())
+
+			if len(resizer.calls) != 1 {
+				t.Fatalf("expected 1 ResizeMemory call, got %d (%v)", len(resizer.calls), resizer.calls)
+			}
+			got := resizer.calls[0]
+			if got != tc.want {
+				t.Errorf("jump-to-floor target = %d (%d MiB), want %d (%d MiB)",
+					got, got>>20, tc.want, tc.want>>20)
+			}
+			if got%memHotplugAlignBytes != 0 {
+				t.Errorf("target %d is not a multiple of memHotplugAlignBytes %d", got, memHotplugAlignBytes)
+			}
+		})
+	}
+}
+
+// TestCriticalPostShrink_JumpsToSafeFloor: lastResizeTime is NON-zero (the
+// governor already shrank back to boot RAM), but a fresh critical sample must
+// still jump to safeMemFloorBytes — proves the branch is NOT gated on
+// "first-ever grow only".
+func TestCriticalPostShrink_JumpsToSafeFloor(t *testing.T) {
+	t.Parallel()
+	const boot int64 = 512 * 1024 * 1024
+
+	resizer := newFakeResizer(boot)
+	g, clk := newTestGovernorMinMax(t, boot, 4*gib, resizer, nil)
+
+	// Simulate a prior shrink: set lastResizeTime to "just now" (within cooldown)
+	// and lastResizeWasShrink=true. Without the critical bypass the cooldown
+	// (memoryShrinkCooldown = 120s) would block the next grow.
+	g.lastResizeTime = clk.Now()
+	g.lastResizeWasShrink = true
+
+	injectSample(g, clk, criticalGrowSample(uint64(boot)))
+	g.evaluate(context.Background())
+
+	if len(resizer.calls) != 1 {
+		t.Fatalf("post-shrink critical: expected 1 ResizeMemory call, got %d (%v)", len(resizer.calls), resizer.calls)
+	}
+	got := resizer.calls[0]
+	if got != safeMemFloorBytes {
+		t.Errorf("post-shrink critical jump = %d (%d MiB), want safeMemFloorBytes %d (%d MiB)",
+			got, got>>20, safeMemFloorBytes, safeMemFloorBytes>>20)
+	}
+}
+
+// TestCriticalJump_ClampedByLowMax: when maxBytes < safeMemFloorBytes the
+// jump must clamp to maxBytes, never exceed it.
+func TestCriticalJump_ClampedByLowMax(t *testing.T) {
+	t.Parallel()
+	const boot int64 = 512 * 1024 * 1024
+	const maxBytes int64 = 1 * gib // 1 GiB < 2 GiB safeMemFloorBytes
+
+	resizer := newFakeResizer(boot)
+	g, clk := newTestGovernorMinMax(t, boot, maxBytes, resizer, nil)
+
+	injectSample(g, clk, criticalGrowSample(uint64(boot)))
+	g.evaluate(context.Background())
+
+	if len(resizer.calls) != 1 {
+		t.Fatalf("expected 1 ResizeMemory call, got %d (%v)", len(resizer.calls), resizer.calls)
+	}
+	got := resizer.calls[0]
+	if got > maxBytes {
+		t.Errorf("clamped jump target %d exceeds maxBytes %d", got, maxBytes)
+	}
+	if got != maxBytes {
+		t.Errorf("jump target = %d, want %d (clamped to maxBytes)", got, maxBytes)
+	}
+	if got%memHotplugAlignBytes != 0 {
+		t.Errorf("target %d is not a multiple of memHotplugAlignBytes %d", got, memHotplugAlignBytes)
+	}
+}
+
+// TestCriticalJump_RespectsHeadroom: when host headroom is insufficient the
+// jump-to-floor must be refused even under critical pressure.
+func TestCriticalJump_RespectsHeadroom(t *testing.T) {
+	t.Parallel()
+	const boot int64 = 512 * 1024 * 1024
+
+	resizer := newFakeResizer(boot)
+	g, clk := newTestGovernorMinMax(t, boot, 4*gib, resizer, &fakeHeadroom{ok: false})
+
+	injectSample(g, clk, criticalGrowSample(uint64(boot)))
+	g.evaluate(context.Background())
+
+	if len(resizer.calls) != 0 {
+		t.Errorf("critical jump must be refused when host headroom is insufficient; calls=%v", resizer.calls)
+	}
+}
+
+// TestNonCriticalGrow_UnchangedDeficitStep: a non-critical grow (MemAvailable
+// between 8% and 20%) must still use the deficit-scaled staircase, not the
+// jump-to-floor. Regression guard for the critical branch.
+func TestNonCriticalGrow_UnchangedDeficitStep(t *testing.T) {
+	t.Parallel()
+	const boot int64 = 512 * 1024 * 1024
+
+	resizer := newFakeResizer(boot)
+	g, clk := newTestGovernorMinMax(t, boot, 4*gib, resizer, nil)
+
+	// growSample at 512 MiB total: MemAvailable=10% (above criticalGrowThreshold
+	// 8%) and PSI full=0 → NOT critical. Must use deficit step, not floor jump.
+	injectSample(g, clk, growSample(uint64(boot)))
+	g.evaluate(context.Background())
+
+	if len(resizer.calls) != 1 {
+		t.Fatalf("non-critical grow: expected 1 resize call, got %d", len(resizer.calls))
+	}
+	got := resizer.calls[0]
+	if got == safeMemFloorBytes {
+		t.Errorf("non-critical grow produced safeMemFloorBytes %d; want deficit-scaled step (e.g. 768 MiB)", got)
+	}
+	// Deficit-scaled result from 512 MiB boot with growSample(512MiB):
+	// deficit=179.2MiB < minGrowStepBytes=256MiB → step=256MiB →
+	// alignUp(512MiB+256MiB, 256MiB) = 768MiB = 805306368.
+	const wantStep int64 = 805306368 // 768 MiB
+	if got != wantStep {
+		t.Errorf("non-critical grow target = %d (%d MiB), want %d (%d MiB) (deficit-scaled step)",
+			got, got>>20, wantStep, wantStep>>20)
+	}
+}
+
+// TestAlignUpDown covers the alignment helpers directly, including the negative
+// inputs that a shrink target below zero can produce before clamping.
+func TestAlignUpDown(t *testing.T) {
+	t.Parallel()
+	const a = 256 * 1024 * 1024
+	cases := []struct {
+		n              int64
+		wantUp, wantDn int64
+	}{
+		{0, 0, 0},
+		{a, a, a},
+		{a + 1, 2 * a, a},
+		{2*a - 1, 2 * a, a},
+		{912680550, 1073741824, 805306368}, // ~870.4 MiB
+		{-1, 0, -a},                        // negative: up→0, down→one block below
+		{-a, -a, -a},
+	}
+	for _, tc := range cases {
+		if got := alignUp(tc.n, a); got != tc.wantUp {
+			t.Errorf("alignUp(%d) = %d, want %d", tc.n, got, tc.wantUp)
+		}
+		if got := alignDown(tc.n, a); got != tc.wantDn {
+			t.Errorf("alignDown(%d) = %d, want %d", tc.n, got, tc.wantDn)
+		}
 	}
 }
