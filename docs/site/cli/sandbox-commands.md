@@ -185,12 +185,22 @@ Resume a paused sandbox.
 nexus3 resume <id|prefix|project/name>
 ```
 
-## nexus3 run
+## nexus3 run <Badge type="tip" text="built" />
 
 Create a sandbox, run a command, and remove the sandbox on exit. Cleanup is guaranteed even on SIGINT or exec error.
 
 ```
 nexus3 run [flags] <image-ref> -- <command> [args...]
+```
+
+`<image-ref>` may be a local image reference (built with `nexus3 image build`) **or** a standard OCI/Docker Hub reference such as `alpine:3.20` or `debian:bookworm-slim`. The local image store is checked first; if no match is found, the image is pulled from the registry on demand and cached by ref. Subsequent invocations with the same ref hit the cache — no re-pull.
+
+```
+nexus3 run debian:bookworm-slim -- cat /etc/debian_version
+```
+
+```
+nexus3 run alpine:3.20 -- sh -c 'echo hello; uname -r'
 ```
 
 | Flag | Type | Default | Description |
@@ -199,6 +209,8 @@ nexus3 run [flags] <image-ref> -- <command> [args...]
 | `--vcpus <n>` | int | — | vCPU count |
 | `--name <name>` | string | — | Sandbox name (auto-generated if omitted) |
 | `--project <project>` | string | — | Project to create the sandbox under |
+
+> **Egress note:** pulling a registry image requires outbound HTTPS to the registry (e.g. `registry-1.docker.io`). Ensure the host's egress policy allows it or pass the registry host in `nexus3.yaml` `egress.policy`.
 
 ## Labels and selectors
 

@@ -286,7 +286,7 @@ func TestOAuthRotationDogfood(t *testing.T) {
 	}
 
 	// Confirm placeholder unchanged and broker maps it to T0.
-	if resolved, ok := broker.ResolveScoped(claudePlaceholder, sb.ID); !ok {
+	if resolved, ok := broker.ResolveScoped(claudePlaceholder, sb.ID, service.AnthropicAPIHost); !ok {
 		t.Fatalf("broker.ResolveScoped post-T0-plant: placeholder not found")
 	} else if resolved != t0 {
 		t.Fatalf("broker.ResolveScoped post-T0-plant: got %q, want T0", maskToken(resolved))
@@ -420,7 +420,7 @@ func TestOAuthRotationDogfood(t *testing.T) {
 	}
 
 	// Assert: placeholder unchanged, broker now maps it to T1.
-	if resolved, ok := broker.ResolveScoped(claudePlaceholder, sb.ID); !ok {
+	if resolved, ok := broker.ResolveScoped(claudePlaceholder, sb.ID, service.AnthropicAPIHost); !ok {
 		t.Fatalf("broker.ResolveScoped post-rotation: placeholder not found (scope revoked prematurely?)")
 	} else if resolved != t1 {
 		t.Fatalf("broker.ResolveScoped post-rotation: got %s, want T1 (%s)", maskToken(resolved), maskToken(t1))

@@ -197,17 +197,27 @@ func unixgramPair() (net.Conn, net.Conn, error) {
 //
 // The global /proc/sys/net/ipv4/ip_forward is NEVER written — that is
 // host-wide state owned by the host network stack.
+//
+// Both writes are best-effort: when running inside a Docker container without
+// --privileged, /proc/sys is a read-only bind mount from the host that the
+// netns child cannot remount (the kernel blocks it even in a user namespace).
+// The Linux defaults are safe: forwarding defaults to 0 (no routing), and
+// IPv6 link-local addresses in an isolated netns do not leak to the host.
+// A warning is printed to stderr; the VM boot continues normally.
 func applySandboxNetSysctls(guestTap, hostTap, bridge string) error {
 	for _, iface := range []string{guestTap, hostTap, bridge} {
 		// Disable IPv6 before the interface is brought up.
 		v6path := fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/disable_ipv6", iface)
 		if err := os.WriteFile(v6path, []byte("1\n"), 0o644); err != nil {
-			return fmt.Errorf("disable_ipv6 for %s: %w", iface, err)
+			// Best-effort: /proc/sys is read-only in unprivileged containers;
+			// the default (IPv6 enabled but contained in the netns) is harmless.
+			fmt.Fprintf(os.Stderr, "warning: disable_ipv6 for %s: %v (continuing)\n", iface, err)
 		}
 		// Per-interface forwarding=0 (NOT the global ip_forward knob).
 		fwdpath := fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/forwarding", iface)
 		if err := os.WriteFile(fwdpath, []byte("0\n"), 0o644); err != nil {
-			return fmt.Errorf("per-iface forwarding=0 for %s: %w", iface, err)
+			// Best-effort: Linux default is 0 (no forwarding) so this is safe.
+			fmt.Fprintf(os.Stderr, "warning: per-iface forwarding=0 for %s: %v (continuing)\n", iface, err)
 		}
 	}
 	return nil

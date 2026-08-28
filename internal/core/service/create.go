@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/builder"
+	"github.com/IniZio/nexus3/internal/core/builder/builderimage"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/image"
@@ -148,6 +149,13 @@ type CreateAndBootOptions struct {
 	// CacheRoot is the filesystem root of the image cache. Required when
 	// Image.Digest or Image.Ref is set; ignored when Image.RootfsPath is set.
 	CacheRoot string
+
+	// AgentBytes is the raw content of the nexus3-agent binary. Required only
+	// when Image.Ref names an OCI image that is not yet in the cache; in that
+	// case resolveExt4 pulls the image from the registry and injects the agent
+	// binary as /sbin/nexus3-agent (PID 1). For cached images this field may
+	// be nil (the agent was already injected when the image was first cached).
+	AgentBytes []byte
 
 	// ReachabilityTimeout is the maximum time to wait for the guest agent to
 	// become reachable after the VM starts. Defaults to 30 seconds.
@@ -418,7 +426,7 @@ func CreateAndBoot(
 	opts CreateAndBootOptions,
 ) (domain.Sandbox, error) {
 	// 1. Resolve ext4 path from the image spec
-	ext4Path, resolvedDigest, err := resolveExt4(ctx, opts.Image, cache, opts.CacheRoot)
+	ext4Path, resolvedDigest, err := resolveExt4(ctx, opts.Image, cache, opts.CacheRoot, opts.AgentBytes)
 	if err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, err)
 	}
@@ -1086,11 +1094,17 @@ func cowExt4(src, diskDir string, id domain.SandboxID) (string, error) {
 // resolveExt4 determines the path to a bootable ext4 artifact from spec.
 // Returns the path and the digest string to store in Envelope.ImageDigest.
 // When spec.RootfsPath is set the digest is empty (no cache entry).
+//
+// agentBytes is required only on an OCI cache miss: if spec.Ref names a
+// public OCI image that is not yet in the cache, resolveExt4 pulls and
+// converts it (injecting agentBytes as PID 1) before returning. For cached
+// images agentBytes may be nil.
 func resolveExt4(
 	ctx context.Context,
 	spec ImageSpec,
 	cache *image.Cache,
 	cacheRoot string,
+	agentBytes []byte,
 ) (ext4Path, imageDigest string, err error) {
 	switch {
 	case spec.RootfsPath != "":
@@ -1128,7 +1142,17 @@ func resolveExt4(
 		}
 		switch len(matches) {
 		case 0:
-			return "", "", fmt.Errorf("resolve image: no cached image with ref %q", spec.Ref)
+			// Cache miss: pull from the OCI registry, convert to an ext4 rootfs,
+			// inject the nexus3-agent binary, and store in the image cache. Then
+			// recurse by digest so the path is returned from the single-match branch.
+			if len(agentBytes) == 0 {
+				return "", "", fmt.Errorf("resolve image: no cached image with ref %q and no agent binary available for OCI pull (set AgentBytes in CreateAndBootOptions)", spec.Ref)
+			}
+			digest, pullErr := builderimage.PullAndCacheOCI(ctx, spec.Ref, cache, agentBytes)
+			if pullErr != nil {
+				return "", "", fmt.Errorf("resolve image: pull OCI %q: %w", spec.Ref, pullErr)
+			}
+			return resolveExt4(ctx, ImageSpec{Digest: digest}, cache, cacheRoot, nil)
 		case 1:
 			d := matches[0].Digest
 			return filepath.Join(cacheRoot, d.Algo(), d.Hex(), "artifact"), string(d), nil

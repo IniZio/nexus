@@ -27,6 +27,8 @@ func RunEphemeral(
 	project, name string,
 	opts CreateAndBootOptions,
 	argv []string,
+	env map[string]string,
+	cwd string,
 	stdin io.Reader,
 	stdout, stderr io.Writer,
 ) (exitCode int32, err error) {
@@ -54,6 +56,8 @@ func RunEphemeral(
 
 	execOpts := agent.ExecOptions{
 		Argv:   argv,
+		Env:    env,
+		Cwd:    cwd,
 		Stdin:  stdin,
 		Stdout: stdout,
 		Stderr: stderr,

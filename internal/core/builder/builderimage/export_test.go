@@ -16,11 +16,13 @@ func BuildExt4ForTest(ctx context.Context, srcDir, dstPath string) error {
 	return buildExt4(ctx, srcDir, dstPath)
 }
 
-// origResolveDigest and origPullRemoteImage hold the real network
-// implementations so ResetTestOverrides can restore them after a test override.
+// origResolveDigest, origPullRemoteImage, and origPullAmd64RemoteImage hold the
+// real network implementations so ResetTestOverrides can restore them after a
+// test override.
 var (
-	origResolveDigest   = resolveDigest
-	origPullRemoteImage = pullRemoteImage
+	origResolveDigest      = resolveDigest
+	origPullRemoteImage    = pullRemoteImage
+	origPullAmd64RemoteImage = pullAmd64RemoteImage
 )
 
 // SetResolveDigestForTest replaces the resolveDigest function variable for the
@@ -35,11 +37,20 @@ func SetPullRemoteImageForTest(fn func(ctx context.Context, ociRef string) (v1.I
 	pullRemoteImage = fn
 }
 
-// ResetTestOverrides restores the real network implementations of resolveDigest
-// and pullRemoteImage. Call via t.Cleanup after any Set*ForTest call.
+// SetPullAmd64RemoteImageForTest replaces the pullAmd64RemoteImage function
+// variable for the duration of a test (covers PullAndCacheOCI).
+// Call ResetTestOverrides in t.Cleanup to restore defaults.
+func SetPullAmd64RemoteImageForTest(fn func(ctx context.Context, ociRef string) (v1.Image, error)) {
+	pullAmd64RemoteImage = fn
+}
+
+// ResetTestOverrides restores the real network implementations of resolveDigest,
+// pullRemoteImage, and pullAmd64RemoteImage. Call via t.Cleanup after any
+// Set*ForTest call.
 func ResetTestOverrides() {
 	resolveDigest = origResolveDigest
 	pullRemoteImage = origPullRemoteImage
+	pullAmd64RemoteImage = origPullAmd64RemoteImage
 }
 
 // BuilderImageCachePathForTest returns the full host path EnsureBuilderImage

@@ -45,6 +45,33 @@ type stubService struct {
 	// Remove
 	removeRef string
 	removeErr error
+
+	// Exec
+	execCalledWith struct {
+		ref   string
+		argv  []string
+		env   map[string]string
+		cwd   string
+		stdin string
+	}
+	execExitCode int32
+	execStdout   string
+	execStderr   string
+	execErr      error
+
+	// RunEphemeral
+	runEphemeralCalledWith struct {
+		project, name string
+		opts          service.CreateAndBootOptions
+		argv          []string
+		env           map[string]string
+		cwd           string
+		stdin         string
+	}
+	runEphemeralExitCode int32
+	runEphemeralStdout   string
+	runEphemeralStderr   string
+	runEphemeralErr      error
 }
 
 func (s *stubService) Create(_ context.Context, project, name string, opts service.CreateOptions) (domain.Sandbox, error) {
@@ -88,6 +115,26 @@ func (s *stubService) Resume(_ context.Context, ref string) (domain.Sandbox, err
 func (s *stubService) Remove(_ context.Context, ref string) error {
 	s.removeRef = ref
 	return s.removeErr
+}
+
+func (s *stubService) Exec(_ context.Context, ref string, argv []string, env map[string]string, cwd, stdin string) (int32, string, string, error) {
+	s.execCalledWith.ref = ref
+	s.execCalledWith.argv = argv
+	s.execCalledWith.env = env
+	s.execCalledWith.cwd = cwd
+	s.execCalledWith.stdin = stdin
+	return s.execExitCode, s.execStdout, s.execStderr, s.execErr
+}
+
+func (s *stubService) RunEphemeral(_ context.Context, project, name string, opts service.CreateAndBootOptions, argv []string, env map[string]string, cwd, stdin string) (int32, string, string, error) {
+	s.runEphemeralCalledWith.project = project
+	s.runEphemeralCalledWith.name = name
+	s.runEphemeralCalledWith.opts = opts
+	s.runEphemeralCalledWith.argv = argv
+	s.runEphemeralCalledWith.env = env
+	s.runEphemeralCalledWith.cwd = cwd
+	s.runEphemeralCalledWith.stdin = stdin
+	return s.runEphemeralExitCode, s.runEphemeralStdout, s.runEphemeralStderr, s.runEphemeralErr
 }
 
 // ── test helpers ──────────────────────────────────────────────────────────────
@@ -458,6 +505,8 @@ func TestToolsRegistered(t *testing.T) {
 		"sandbox_pause":  false,
 		"sandbox_resume": false,
 		"sandbox_remove": false,
+		"sandbox_exec":   false,
+		"sandbox_run":    false,
 	}
 	for tool, err := range cs.Tools(context.Background(), nil) {
 		if err != nil {
@@ -680,5 +729,163 @@ func TestSandboxList_truncation(t *testing.T) {
 	}
 	if len(items) >= n {
 		t.Errorf("truncated list has %d items, expected fewer than %d", len(items), n)
+	}
+}
+
+// ── sandbox_exec ──────────────────────────────────────────────────────────────
+
+func TestSandboxExec_invokesService(t *testing.T) {
+	stub := &stubService{
+		execExitCode: 0,
+		execStdout:   "hello\n",
+		execStderr:   "",
+	}
+	cs, close := connectPair(t, stub)
+	defer close()
+
+	res := callTool(t, cs, "sandbox_exec", map[string]any{
+		"ref":  "proj/sb",
+		"argv": []any{"echo", "hello"},
+		"cwd":  "/tmp",
+	})
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(t, res))
+	}
+
+	// Verify the stub was called with the right args.
+	if stub.execCalledWith.ref != "proj/sb" {
+		t.Errorf("Exec ref: want %q, got %q", "proj/sb", stub.execCalledWith.ref)
+	}
+	if len(stub.execCalledWith.argv) != 2 || stub.execCalledWith.argv[0] != "echo" {
+		t.Errorf("Exec argv: want [echo hello], got %v", stub.execCalledWith.argv)
+	}
+	if stub.execCalledWith.cwd != "/tmp" {
+		t.Errorf("Exec cwd: want %q, got %q", "/tmp", stub.execCalledWith.cwd)
+	}
+
+	// Verify the response contains exit_code and stdout.
+	var got execResult
+	if err := json.Unmarshal(resultData(t, res), &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if got.ExitCode != 0 {
+		t.Errorf("exit_code: want 0, got %d", got.ExitCode)
+	}
+	if got.Stdout != "hello\n" {
+		t.Errorf("stdout: want %q, got %q", "hello\n", got.Stdout)
+	}
+}
+
+func TestSandboxExec_missingRef(t *testing.T) {
+	stub := &stubService{}
+	cs, close := connectPair(t, stub)
+	defer close()
+
+	res := callTool(t, cs, "sandbox_exec", map[string]any{
+		"ref":  "",
+		"argv": []any{"echo"},
+	})
+	if !res.IsError {
+		t.Fatal("expected error for missing ref, got success")
+	}
+}
+
+func TestSandboxExec_missingArgv(t *testing.T) {
+	stub := &stubService{}
+	cs, close := connectPair(t, stub)
+	defer close()
+
+	res := callTool(t, cs, "sandbox_exec", map[string]any{
+		"ref":  "proj/sb",
+		"argv": []any{},
+	})
+	if !res.IsError {
+		t.Fatal("expected error for missing argv, got success")
+	}
+}
+
+func TestSandboxExec_serviceError(t *testing.T) {
+	stub := &stubService{execErr: errors.New("guest not reachable")}
+	cs, close := connectPair(t, stub)
+	defer close()
+
+	res := callTool(t, cs, "sandbox_exec", map[string]any{
+		"ref":  "proj/sb",
+		"argv": []any{"echo"},
+	})
+	if !res.IsError {
+		t.Fatal("expected error result, got success")
+	}
+}
+
+// ── sandbox_run ───────────────────────────────────────────────────────────────
+
+func TestSandboxRun_invokesService(t *testing.T) {
+	stub := &stubService{
+		runEphemeralExitCode: 0,
+		runEphemeralStdout:   "done\n",
+		runEphemeralStderr:   "",
+	}
+	cs, close := connectPair(t, stub)
+	defer close()
+
+	res := callTool(t, cs, "sandbox_run", map[string]any{
+		"project":    "myproj",
+		"name":       "mysb",
+		"rootfs_path": "/fake/rootfs.ext4",
+		"argv":       []any{"sh", "-c", "echo done"},
+	})
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(t, res))
+	}
+
+	re := stub.runEphemeralCalledWith
+	if re.project != "myproj" {
+		t.Errorf("RunEphemeral project: want %q, got %q", "myproj", re.project)
+	}
+	if re.name != "mysb" {
+		t.Errorf("RunEphemeral name: want %q, got %q", "mysb", re.name)
+	}
+	if re.opts.Image.RootfsPath != "/fake/rootfs.ext4" {
+		t.Errorf("RunEphemeral RootfsPath: want %q, got %q", "/fake/rootfs.ext4", re.opts.Image.RootfsPath)
+	}
+
+	var got execResult
+	if err := json.Unmarshal(resultData(t, res), &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if got.Stdout != "done\n" {
+		t.Errorf("stdout: want %q, got %q", "done\n", got.Stdout)
+	}
+}
+
+func TestSandboxRun_missingProjectOrName(t *testing.T) {
+	stub := &stubService{}
+	cs, close := connectPair(t, stub)
+	defer close()
+
+	res := callTool(t, cs, "sandbox_run", map[string]any{
+		"project": "",
+		"name":    "sb",
+		"argv":    []any{"echo"},
+	})
+	if !res.IsError {
+		t.Fatal("expected error for missing project, got success")
+	}
+}
+
+func TestSandboxRun_missingArgv(t *testing.T) {
+	stub := &stubService{}
+	cs, close := connectPair(t, stub)
+	defer close()
+
+	res := callTool(t, cs, "sandbox_run", map[string]any{
+		"project":    "p",
+		"name":       "sb",
+		"rootfs_path": "/rootfs.ext4",
+		"argv":       []any{},
+	})
+	if !res.IsError {
+		t.Fatal("expected error for missing argv, got success")
 	}
 }

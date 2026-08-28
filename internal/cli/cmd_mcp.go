@@ -1,14 +1,17 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/IniZio/nexus3/internal/core/agent"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
@@ -92,6 +95,77 @@ func (m *mcpService) CreateAndBoot(ctx context.Context, project, name string, op
 	}
 
 	return service.CreateAndBoot(ctx, m.Service, imgCache, newDriver, probe, project, name, opts)
+}
+
+// Exec implements mcpsrv.SandboxService.Exec. It captures stdout and stderr
+// into in-memory buffers and returns them as strings along with the exit code.
+// stdin, when non-empty, is piped to the guest process via strings.NewReader.
+func (m *mcpService) Exec(ctx context.Context, ref string, argv []string, env map[string]string, cwd, stdin string) (int32, string, string, error) {
+	var outBuf, errBuf bytes.Buffer
+	execOpts := agent.ExecOptions{
+		Argv:   argv,
+		Env:    env,
+		Cwd:    cwd,
+		Stdin:  strings.NewReader(stdin),
+		Stdout: &outBuf,
+		Stderr: &errBuf,
+	}
+	code, err := m.Service.Exec(ctx, ref, execOpts)
+	return code, outBuf.String(), errBuf.String(), err
+}
+
+// RunEphemeral implements mcpsrv.SandboxService.RunEphemeral. It performs the
+// same driver-setup as CreateAndBoot, delegates to service.RunEphemeral, and
+// returns captured output as strings.
+func (m *mcpService) RunEphemeral(ctx context.Context, project, name string, opts service.CreateAndBootOptions, argv []string, env map[string]string, cwd, stdin string) (int32, string, string, error) {
+	kernelPath, err := resolveKernelPath()
+	if err != nil {
+		return 0, "", "", fmt.Errorf("sandbox run (mcp): %w", err)
+	}
+
+	opts.CacheRoot = m.cacheRoot
+
+	imgCache, err := image.NewCache(m.cacheRoot)
+	if err != nil {
+		return 0, "", "", fmt.Errorf("open image cache: %w", err)
+	}
+	newDriver := func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
+		cfg := buildCHConfig(kernelPath, ext4Path, opts.MemoryMiB, opts.VCPUs)
+		cfg.NestedVirt = opts.NestedVirt
+		for _, ed := range extraDisks {
+			cfg.ExtraDisks = append(cfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: ed.Path})
+		}
+		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
+			cfg.BinaryPath = p
+		}
+		return cloudhypervisor.New(cfg)
+	}
+
+	probe := func(ctx context.Context, drv driver.Driver, id domain.SandboxID) error {
+		gd, ok := drv.(driver.GuestDialer)
+		if !ok {
+			return nil
+		}
+		for {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			conn, err := gd.DialGuest(dialCtx, id, driver.AgentControlPort)
+			cancel()
+			if err == nil {
+				_ = conn.Close()
+				return nil
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
+
+	var outBuf, errBuf bytes.Buffer
+	code, err := service.RunEphemeral(ctx, m.Service, imgCache, newDriver, probe,
+		project, name, opts, argv, env, cwd,
+		strings.NewReader(stdin), &outBuf, &errBuf)
+	return code, outBuf.String(), errBuf.String(), err
 }
 
 // runMCP is the registered Run function for the "mcp" subcommand.

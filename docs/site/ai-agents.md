@@ -29,9 +29,9 @@ Register it with Claude Code once; it persists across sessions:
 claude mcp add --transport stdio nexus3 -- nexus3 mcp
 ```
 
-### Tools
+### Tools <Badge type="tip" text="built" />
 
-The server exposes 7 tools that map directly to sandbox lifecycle operations:
+The server exposes 9 tools covering sandbox lifecycle and execution:
 
 | Tool | Description |
 |---|---|
@@ -42,6 +42,8 @@ The server exposes 7 tools that map directly to sandbox lifecycle operations:
 | `sandbox_pause` | Pause a running sandbox |
 | `sandbox_resume` | Resume a paused sandbox |
 | `sandbox_remove` | Remove a sandbox record |
+| `sandbox_exec` | Run a command inside an existing sandbox; returns `{exit_code, stdout, stderr, stdout_bytes, stderr_bytes}` with truncation metadata for output exceeding 64 KiB |
+| `sandbox_run` | Ephemeral create+boot+exec+remove in one call; args `{image, argv, memory?, vcpus?, project?, name?}`; the sandbox is removed unconditionally on completion |
 
 ### MCP gaps <Badge type="danger" text="not built" />
 
