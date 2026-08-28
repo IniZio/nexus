@@ -59,6 +59,7 @@ set -euo pipefail
 NEXUS3="${NEXUS3:-nexus3}"
 ITERATIONS="${1:-10}"
 PRESSURE=0
+SKIP_PHASE2="${SKIP_PHASE2:-0}"
 for arg in "$@"; do [[ "$arg" == "--pressure" ]] && PRESSURE=1; done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -398,18 +399,19 @@ write_heavy_containerfile() {
     local uid; uid="$(date +%s%N)-heavy${iter}"
     mkdir -p "$WORKSPACE/.nexus"
     cat > "$WORKSPACE/.nexus/Containerfile" << EOF
-# repro: heavy-build variant — targets ~20 min profile (CPU+IO pressure)
+# repro: heavy-build variant — CPU+IO pressure without apt-get
+# (apt-get stripped: previous attempt exhausted buildkit cache disk with no space
+#  left on device before reaching the export seam; buildkit.ext4 was reset and
+#  apt-get removed so the cache disk stays healthy for concurrent + heavy phases.
+#  Files >32MiB are still present via COPY — the export-seam truncation target
+#  is unchanged. CPU loop simulates sustained pressure during export.)
 FROM debian:bookworm-slim
 RUN echo "repro-heavy-uid=${uid}" > /dev/null
-# Simulate compute-heavy build: install build toolchain then compile
-# a trivial C program in a tight loop to pin CPU for an extended period,
-# while also writing large test files (the truncation target).
-RUN apt-get update -qq && apt-get install -y --no-install-recommends gcc make 2>/dev/null || true
-# Write test files while CPU is busy — mimics the original fault scenario
-# where nexus3-agent was exported mid-build under sustained CPU pressure.
+# Write incompressible large test files — these are the truncation targets.
 COPY testfiles/ /testfiles/
-# CPU pressure loop alongside the already-written test files.
-RUN i=0; while [ \$i -lt 300 ]; do \
+# CPU pressure loop: 500 md5sum passes over file_200m (~100s CPU-bound).
+# Mimics sustained compute pressure while the rootfs export seam is active.
+RUN i=0; while [ \$i -lt 500 ]; do \
       md5sum /testfiles/file_200m > /dev/null 2>&1 || true; \
       i=\$(( i + 1 )); \
     done || true
@@ -678,11 +680,16 @@ if [[ $PRESSURE -eq 1 ]]; then
     # Mimics the original fault scenario: guest memory climbed 3.0→4.5 GB under
     # sustained pressure. --builder-memory 2048 forces the builder VM to operate
     # below its default headroom, triggering balloon inflate/deflate cycles.
+    # Set SKIP_PHASE2=1 to bypass (when Phase 2 evidence is already on record).
+    if [[ "$SKIP_PHASE2" == "1" ]]; then
+        log "--- Phase 2: SKIPPED (SKIP_PHASE2=1) ---"
+    else
     log "--- Phase 2: 5 sequential builds with --builder-memory 2048 (constrained memory) ---"
     for (( i = 1; i <= 5; i++ )); do
         run_one_iteration "mem-$(printf '%02d' "$i")" "$i" "$WORKSPACE" "--builder-memory 2048"
         log ""
     done
+    fi
 
     # ── Phase 3: concurrent pressure builds ───────────────────────────────────
     # FLAW 2 FIX: now uses COPY of incompressible files (was /dev/zero before).
