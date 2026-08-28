@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/image"
@@ -113,13 +114,47 @@ func runRun(ctx context.Context, args []string, out *Output) error {
 		return cloudhypervisor.New(cfg)
 	}
 
+	// Locate the nexus3-agent binary to inject into OCI images on a cache miss.
+	// mirrors cmd_sandbox.go's lookup; best-effort — a nil slice is fine for
+	// images already in the cache and will produce a clear error on a cache miss.
+	var agentBytes []byte
+	if agentBin, lookErr := exec.LookPath("nexus3-agent"); lookErr == nil {
+		agentBytes, _ = os.ReadFile(agentBin)
+	}
+
 	opts := service.CreateAndBootOptions{
 		Image:               service.ImageSpec{Ref: imageRef},
 		CacheRoot:           cacheRoot,
+		AgentBytes:          agentBytes,
 		MemoryMiB:           memoryMiB,
 		VCPUs:               vcpus,
 		ReachabilityTimeout: 30 * time.Second,
 		ForceDiskSpace:      *forceFlag,
+	}
+
+	// probe polls vsock until the guest agent is listening or ReachabilityTimeout
+	// expires. A single-shot attempt is not enough: CH's vsock multiplexer returns
+	// EOF while the virtio-vsock device is still being negotiated by the guest
+	// (typically < 1 s after vm.boot returns), so a retry loop is required.
+	// Mirrors cmd_sandbox.go's probe closure exactly.
+	probe := func(ctx context.Context, drv driver.Driver, id domain.SandboxID) error {
+		gd, ok := drv.(driver.GuestDialer)
+		if !ok {
+			return nil
+		}
+		for {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			conn, err := gd.DialGuest(dialCtx, id, driver.AgentControlPort)
+			cancel()
+			if err == nil {
+				_ = conn.Close()
+				return nil
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
 	}
 
 	exitCode, runErr := service.RunEphemeral(
@@ -127,7 +162,7 @@ func runRun(ctx context.Context, args []string, out *Output) error {
 		svc,
 		imgCache,
 		newDriver,
-		nil, // no reachability probe: pass nil so CreateAndBoot skips step 8
+		probe,
 		*projectFlag,
 		name,
 		opts,

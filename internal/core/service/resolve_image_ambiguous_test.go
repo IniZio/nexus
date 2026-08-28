@@ -74,7 +74,7 @@ func TestResolveExt4_AmbiguousRefIsRefused(t *testing.T) {
 	// by re-tagging the older entry directly.
 	retag(t, root, oldest, "agent-base")
 
-	_, _, err = resolveExt4(context.Background(), ImageSpec{Ref: "agent-base"}, c, root)
+	_, _, err = resolveExt4(context.Background(), ImageSpec{Ref: "agent-base"}, c, root, nil)
 	if err == nil {
 		t.Fatal("resolveExt4 returned no error for an ambiguous ref; it picked one silently")
 	}
@@ -102,7 +102,7 @@ func TestResolveExt4_SingleRefStillResolves(t *testing.T) {
 	}
 	d := seedRef(t, c, "agent-base", "only build", time.Now().UTC())
 
-	path, digest, err := resolveExt4(context.Background(), ImageSpec{Ref: "agent-base"}, c, root)
+	path, digest, err := resolveExt4(context.Background(), ImageSpec{Ref: "agent-base"}, c, root, nil)
 	if err != nil {
 		t.Fatalf("resolveExt4: %v", err)
 	}
