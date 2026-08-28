@@ -889,3 +889,68 @@ func TestSandboxRun_missingArgv(t *testing.T) {
 		t.Fatal("expected error for missing argv, got success")
 	}
 }
+
+// ── env/stdin flow tests ──────────────────────────────────────────────────────
+
+// TestSandboxExec_envAndStdinFlow verifies that env and stdin passed to the
+// sandbox_exec tool are threaded through to svc.Exec unchanged.
+// Mutation: if the handler drops env (nil map) or clears stdin (""), these
+// assertions go RED, exposing the regression immediately.
+func TestSandboxExec_envAndStdinFlow(t *testing.T) {
+	stub := &stubService{execExitCode: 0, execStdout: "ok"}
+	cs, close := connectPair(t, stub)
+	defer close()
+
+	res := callTool(t, cs, "sandbox_exec", map[string]any{
+		"ref":   "proj/sb",
+		"argv":  []any{"cat"},
+		"env":   map[string]any{"FOO": "bar", "BAZ": "qux"},
+		"stdin": "hello stdin",
+	})
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(t, res))
+	}
+
+	got := stub.execCalledWith
+	if got.env["FOO"] != "bar" {
+		t.Errorf("env[FOO]: want %q, got %q", "bar", got.env["FOO"])
+	}
+	if got.env["BAZ"] != "qux" {
+		t.Errorf("env[BAZ]: want %q, got %q", "qux", got.env["BAZ"])
+	}
+	if got.stdin != "hello stdin" {
+		t.Errorf("stdin: want %q, got %q", "hello stdin", got.stdin)
+	}
+}
+
+// TestSandboxRun_envAndStdinFlow verifies that env and stdin passed to the
+// sandbox_run tool are threaded through to svc.RunEphemeral unchanged.
+// Mutation: if the handler drops env or stdin, these assertions go RED.
+func TestSandboxRun_envAndStdinFlow(t *testing.T) {
+	stub := &stubService{runEphemeralExitCode: 0, runEphemeralStdout: "ok"}
+	cs, close := connectPair(t, stub)
+	defer close()
+
+	res := callTool(t, cs, "sandbox_run", map[string]any{
+		"project":    "myproj",
+		"name":       "mysb",
+		"rootfs_path": "/fake/rootfs.ext4",
+		"argv":       []any{"cat"},
+		"env":        map[string]any{"FOO": "bar", "BAZ": "qux"},
+		"stdin":      "hello stdin",
+	})
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(t, res))
+	}
+
+	got := stub.runEphemeralCalledWith
+	if got.env["FOO"] != "bar" {
+		t.Errorf("env[FOO]: want %q, got %q", "bar", got.env["FOO"])
+	}
+	if got.env["BAZ"] != "qux" {
+		t.Errorf("env[BAZ]: want %q, got %q", "qux", got.env["BAZ"])
+	}
+	if got.stdin != "hello stdin" {
+		t.Errorf("stdin: want %q, got %q", "hello stdin", got.stdin)
+	}
+}
