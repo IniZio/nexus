@@ -29,3 +29,10 @@ docs/site/node_modules/
 docs/site/.vitepress/dist/
 docs/site/.vitepress/cache/
 __pycache__/
+
+# repro harness generated blobs and build logs (~450 MB of binary test files
+# and per-run log files). run.sh and any Containerfile templates remain tracked.
+# These paths are produced by internal/test/repro/run.sh and must not be committed.
+internal/test/repro/logs/
+internal/test/repro/workspace/
+internal/test/repro/workspace_pressure_*/

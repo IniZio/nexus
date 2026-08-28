@@ -241,6 +241,21 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 	}
 	log.Printf("in-guest build: rootfs at %s", rootfsDir)
 
+	// ── Diagnostic: size manifest at the export seam ──────────────────────────
+	// Walk rootfsDir and log every regular file >= 1 MiB IMMEDIATELY after Solve
+	// returns and BEFORE any integrity gate that may abort the build. Ordering is
+	// critical: both verifyRootfsPopulated and verifyAgentIntegrity are
+	// fail-closed and return errors; if the manifest call were placed after them
+	// it would never execute on the truncation builds we most need to diagnose.
+	//
+	// The output reaches the host via the exec-pipe ring reader (stderr →
+	// ring buffer → host execBuf) — the same channel as all other builder-VM log
+	// output. log.Printf writes are synchronous to stderr; the ring reader drains
+	// until process exit, so manifest lines emitted here are delivered to the host
+	// even when the build subsequently fails the integrity gate and returns an
+	// error. Non-fatal: a walk error is logged and the build continues.
+	logRootfsSizeManifest(rootfsDir)
+
 	// ── Integrity gate: reject a hollow export before it becomes an image ─────
 	// A buildkit export that yields correct directory structure but empty
 	// regular-file contents (observed intermittently: ~99.96% of files
