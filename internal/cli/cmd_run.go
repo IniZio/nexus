@@ -10,9 +10,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
@@ -96,30 +93,28 @@ func runRun(ctx context.Context, args []string, out *Output) error {
 		BootVCPUs:  vcpus,
 	})
 
-	// newDriver constructs a CHDriver instance for the resolved ext4 path.
-	// Mirrors the closure in cmd_sandbox.go:runSandboxCreate exactly:
-	// buildCHConfig is called, auto-resize ceilings are stamped, extra disks
-	// are forwarded, and cloud-hypervisor is located in PATH.
-	newDriver := func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
-		cfg := buildCHConfig(kernelPath, ext4Path, memoryMiB, vcpus)
-		cfg.MemoryMaxMiB = ar.MemoryMaxMiB
-		cfg.VCPUMax = ar.VCPUMax
-		cfg.Cmdline = diskBootCmdlineBase + " --" + ar.PID1Args
-		for _, ed := range extraDisks {
-			cfg.ExtraDisks = append(cfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: ed.Path})
-		}
-		if p, binErr := exec.LookPath("cloud-hypervisor"); binErr == nil {
-			cfg.BinaryPath = p
-		}
-		return cloudhypervisor.New(cfg)
-	}
+	// buildSandboxDriverFactory wires MemoryMaxMiB, VCPUMax, cmdline, and
+	// orcaSocketDir — identical to the sandbox-create path. No live mounts or
+	// SBHandle are needed for ephemeral run sandboxes.
+	newDriver := buildSandboxDriverFactory(sandboxDriverSpec{
+		KernelPath:   kernelPath,
+		MemoryMiB:    memoryMiB,
+		VCPUs:        vcpus,
+		MemoryMaxMiB: ar.MemoryMaxMiB,
+		VCPUMax:      ar.VCPUMax,
+		PID1Args:     ar.PID1Args,
+	}, nil)
 
 	// Locate the nexus3-agent binary to inject into OCI images on a cache miss.
-	// mirrors cmd_sandbox.go's lookup; best-effort — a nil slice is fine for
-	// images already in the cache and will produce a clear error on a cache miss.
+	// D2: a present-but-unreadable binary must surface a clear error rather than
+	// silently passing a nil slice (which produces a misleading "no agent binary"
+	// error downstream on a cache miss).
 	var agentBytes []byte
 	if agentBin, lookErr := exec.LookPath("nexus3-agent"); lookErr == nil {
-		agentBytes, _ = os.ReadFile(agentBin)
+		agentBytes, err = os.ReadFile(agentBin)
+		if err != nil {
+			return errSandbox("run", fmt.Errorf("found nexus3-agent but cannot read %s: %w", agentBin, err))
+		}
 	}
 
 	opts := service.CreateAndBootOptions{
@@ -132,43 +127,18 @@ func runRun(ctx context.Context, args []string, out *Output) error {
 		ForceDiskSpace:      *forceFlag,
 	}
 
-	// probe polls vsock until the guest agent is listening or ReachabilityTimeout
-	// expires. A single-shot attempt is not enough: CH's vsock multiplexer returns
-	// EOF while the virtio-vsock device is still being negotiated by the guest
-	// (typically < 1 s after vm.boot returns), so a retry loop is required.
-	// Mirrors cmd_sandbox.go's probe closure exactly.
-	probe := func(ctx context.Context, drv driver.Driver, id domain.SandboxID) error {
-		gd, ok := drv.(driver.GuestDialer)
-		if !ok {
-			return nil
-		}
-		for {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			conn, err := gd.DialGuest(dialCtx, id, driver.AgentControlPort)
-			cancel()
-			if err == nil {
-				_ = conn.Close()
-				return nil
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
-	}
-
+	// vsockProbe polls until the guest agent is listening or ReachabilityTimeout
+	// expires — shared with MCP and sandbox-create paths via cmd_seam.go.
 	exitCode, runErr := service.RunEphemeral(
 		ctx,
 		svc,
 		imgCache,
 		newDriver,
-		probe,
+		vsockProbe,
 		*projectFlag,
 		name,
 		opts,
-		argv,
-		nil,
-		"",
+		service.ExecOptions{Argv: argv},
 		os.Stdin,
 		os.Stdout,
 		os.Stderr,

@@ -1582,12 +1582,9 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// the value that is set after CreateAndBoot calls it.
 	var bootGuestMounts []agent.GuestMount
 	var bootLiveMounts []domain.LiveMount // D-PD-53: captured by newDriver closure
-	var capturedDiskPath string
-	var capturedExtraDisks []string
-	var capturedCmdline string
-	var capturedCHBin string
-	var capturedSocketDir string
-	var capturedVirtiofsdPath string
+	// caps is populated by buildSandboxDriverFactory on each factory invocation
+	// and forwarded to the supervisor handoff (handoffHumanSupervisor).
+	var caps sandboxDriverCaptures
 
 	// Resolve auto-resize bounds early via vmcfg so the values are available
 	// to both the newDriver closure (for driver config) and the log below.
@@ -1614,80 +1611,40 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		"disk_max_gib", govBounds.DiskMaxBytes/(1024*1024*1024),
 	)
 
-	// newDriver constructs a CHDriver instance for the resolved ext4.
-	// Each sandbox gets its own instance because DiskImagePath is static in
-	// cloudhypervisor.Config. Socket/log paths use default locations so that
-	// svc.Stop (using svc.driver) can find the socket after this call returns.
+	// newDriver constructs a CHDriver instance for the resolved ext4 via the
+	// shared buildSandboxDriverFactory seam. The spec is assembled at invocation
+	// time (not at closure-creation time) so that bootLiveMounts and
+	// bootGuestMounts — which are set by the workspace block after this closure
+	// is defined but before CreateAndBoot calls it — are captured by reference
+	// and read with their final values. caps is populated for supervisor handoff.
 	newDriver := func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
-		cfg := buildCHConfig(kernelPath, ext4Path, f.memoryMiB, f.vcpus)
-		cfg.NestedVirt = f.nestedVirt
-		cfg.MemoryMaxMiB = ar.MemoryMaxMiB
-		cfg.VCPUMax = ar.VCPUMax
-		capturedExtraDisks = nil
-		for _, ed := range extraDisks {
-			cfg.ExtraDisks = append(cfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: ed.Path})
-			capturedExtraDisks = append(capturedExtraDisks, ed.Path)
-		}
-		// Wire live virtiofs mounts into the driver Config. VirtiofsTag is the
-		// SINGLE SOURCE OF TRUTH for the per-mount tag; we call it here (for the
-		// guest --workspace-mount arg) and the driver calls it again with the same
-		// index when it starts virtiofsd — both derive the same string, so they
-		// cannot silently diverge (D-PD-53).
-		vp, verr := wireLiveMountsToConfig(&cfg, bootLiveMounts)
-		if verr != nil {
-			return nil, verr
-		}
-		capturedVirtiofsdPath = vp
-		liveGuestMounts := liveMountsToGuestMounts(bootLiveMounts)
-		// Combine disk-based mounts (workspace + shadow) with virtiofs live mounts
-		// so workspaceMountCmdline emits one --workspace-mount arg per share.
+		// Combine disk-based mounts (workspace + shadow) with virtiofs live mounts.
 		// Named kind=disk volume mounts occupy the lowest device indices
 		// (ExtraDisks[0..k-1] → /dev/vdb..), so they lead; shadow/workspace disks
 		// were offset past them above, and live virtiofs mounts use tags. Agent
 		// planMountOrder re-sorts by depth, so cmdline order is cosmetic — only the
 		// per-mount device index must match the ExtraDisks layout.
+		// VirtiofsTag is the SINGLE SOURCE OF TRUTH for the per-mount tag (D-PD-53).
+		liveGuestMounts := liveMountsToGuestMounts(bootLiveMounts)
 		allGuestMounts := append(append([]agent.GuestMount{}, namedDiskMounts...),
 			append(bootGuestMounts, liveGuestMounts...)...)
-		cfg.Cmdline = guestBootCmdline(allGuestMounts, ar.PID1Args, project+"/"+name)
-		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
-			cfg.BinaryPath = p
+		spec := sandboxDriverSpec{
+			KernelPath:   kernelPath,
+			MemoryMiB:    f.memoryMiB,
+			VCPUs:        f.vcpus,
+			MemoryMaxMiB: ar.MemoryMaxMiB,
+			VCPUMax:      ar.VCPUMax,
+			NestedVirt:   f.nestedVirt,
+			PID1Args:     ar.PID1Args,
+			SBHandle:     project + "/" + name,
+			LiveMounts:   bootLiveMounts,
+			GuestMounts:  allGuestMounts,
 		}
-		if socketDir, serr := orcaSocketDir(); serr == nil {
-			cfg.SocketDir = socketDir
-			capturedSocketDir = socketDir
-		}
-		capturedDiskPath = ext4Path
-		capturedCmdline = cfg.Cmdline
-		capturedCHBin = cfg.BinaryPath
-		return cloudhypervisor.New(cfg)
+		return buildSandboxDriverFactory(spec, &caps)(ext4Path, extraDisks)
 	}
 
-	// probe verifies reachability via GuestDialer (vsock connect).
-	// It polls with a 300 ms back-off until the guest agent's vsock listener
-	// accepts the connection or the context (ReachabilityTimeout) expires.
-	// A single-shot attempt is not enough: CH's vsock multiplexer returns EOF
-	// while the virtio-vsock device is still being negotiated by the guest
-	// (typically < 1 s after vm.boot returns), so a retry loop is required.
-	probe := func(ctx context.Context, drv driver.Driver, id domain.SandboxID) error {
-		gd, ok := drv.(driver.GuestDialer)
-		if !ok {
-			// Driver doesn't implement DialGuest; skip reachability check.
-			return nil
-		}
-		for {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			conn, err := gd.DialGuest(dialCtx, id, driver.AgentControlPort)
-			cancel()
-			if err == nil {
-				_ = conn.Close()
-				return nil
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
-	}
+	// vsockProbe is the shared vsock back-off probe from cmd_seam.go.
+	probe := vsockProbe
 
 	spec := service.ImageSpec{
 		Ref:        f.imageRef,
@@ -2030,8 +1987,8 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if handoffErr := handoffHumanSupervisor(ctx, svc, sb, storeRoot, kernelPath, govBounds, f.memoryMiB, f.vcpus,
-		capturedDiskPath, capturedExtraDisks, capturedCmdline, capturedCHBin, capturedSocketDir, bootWorkspace != nil, len(bootExtraDisks),
-		workspaceGuestPathFor(bootWorkspace), bootLiveMounts, capturedVirtiofsdPath,
+		caps.DiskPath, caps.ExtraDisks, caps.Cmdline, caps.CHBin, caps.SocketDir, bootWorkspace != nil, len(bootExtraDisks),
+		workspaceGuestPathFor(bootWorkspace), bootLiveMounts, caps.VirtiofsdPath,
 		mcpOAuthRefreshConfigs); handoffErr != nil {
 		slog.Warn("sandbox create: supervisor handoff failed; broker will not survive CLI exit",
 			"sandbox", sb.ID, "err", handoffErr)
