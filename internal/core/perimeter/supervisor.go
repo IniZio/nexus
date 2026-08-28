@@ -207,6 +207,37 @@ func Start(
 	return s, nil
 }
 
+// AllowEgress opens host in both the L7 MITM allowlist and the L3/L4 netfilter
+// AllowList. It is the single runtime mutation point for adding a host to a
+// running sandbox's egress perimeter.
+//
+// Behaviour by mode:
+//   - Full MITM mode (proxy != nil, al != nil): calls proxy.AllowHost and al.AddDomain.
+//   - AllowAll mode (proxy == nil): the L7 gate is absent, so only al.AddDomain is
+//     called. In AllowAll mode all HTTPS traffic already flows through unfiltered;
+//     AddDomain ensures the L3/L4 forwarder also permits the destination.
+//   - No perimeter (both nil): returns an error — there is nothing to open.
+//
+// host must be a non-empty domain name (e.g. "registry.npmjs.org"). Empty host
+// is rejected before any layer is mutated.
+func (s *PerimeterSupervisor) AllowEgress(host string) error {
+	if host == "" {
+		return fmt.Errorf("perimeter: AllowEgress: host is required")
+	}
+	if s.proxy == nil && s.al == nil {
+		return fmt.Errorf("perimeter: AllowEgress: no perimeter layers configured")
+	}
+	if s.proxy != nil {
+		s.proxy.AllowHost(host)
+	}
+	if s.al != nil {
+		if err := s.al.AddDomain(host); err != nil {
+			return fmt.Errorf("perimeter: AllowEgress: netfilter: %w", err)
+		}
+	}
+	return nil
+}
+
 // MitmAddr returns the "host:port" address of the MITM proxy listener.
 // The address is stable for the lifetime of the supervisor.
 func (s *PerimeterSupervisor) MitmAddr() string { return s.mitmAddr }

@@ -26,9 +26,12 @@ package service
 import (
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -793,6 +796,37 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 		return fmt.Errorf("allow list: %w", err)
 	}
 
+	// Wire the egress decisions log so `nexus3 egress log` can stream verdicts.
+	// The file path mirrors supervisor.DefaultStateDir (supervisor package cannot
+	// be imported here — it imports service). Errors are non-fatal: the perimeter
+	// still enforces policy; we just lose the decisions log for this run.
+	//
+	// A single mutex+encoder is shared between the netfilter and MITM sinks so
+	// concurrent writes from both sources never interleave JSON lines.
+	var mitmOnEgress func(host, verdict, reason string, ts time.Time)
+	if storeRoot, sdErr := store.DefaultRoot(); sdErr == nil {
+		decisionsDir := filepath.Join(storeRoot, "supervisors", sb.ID.String())
+		_ = os.MkdirAll(decisionsDir, 0o755)
+		decisionsPath := filepath.Join(decisionsDir, "egress-decisions.jsonl")
+		if df, dfErr := os.OpenFile(decisionsPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); dfErr == nil {
+			var egressMu sync.Mutex
+			egressEnc := json.NewEncoder(df)
+			type egressRec struct {
+				Host      string    `json:"host"`
+				Verdict   string    `json:"verdict"`
+				Reason    string    `json:"reason"`
+				Timestamp time.Time `json:"timestamp"`
+			}
+			emit := func(host, verdict, reason string, ts time.Time) {
+				egressMu.Lock()
+				defer egressMu.Unlock()
+				_ = egressEnc.Encode(egressRec{Host: host, Verdict: verdict, Reason: reason, Timestamp: ts})
+			}
+			al.OnEgress = emit
+			mitmOnEgress = emit
+		}
+	}
+
 	// D-PD-33: open egress is an explicit opt-in stored in the Envelope. An
 	// empty AllowedHosts is no longer treated as an AllowAll sentinel — a
 	// sandbox with empty AllowedHosts and OpenEgress=false gets NO egress.
@@ -833,7 +867,9 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 			AllowAll:        allowAll && (len(sb.Envelope.SecretHosts) > 0 || sb.AgentName != ""),
 			AllowedRepo:     sb.Envelope.AllowedRepo,                    // D-PD-36: per-repo path allowlist
 			PathPolicies:    buildMITMPathPolicies(sb.Envelope.PathPolicies), // T4: per-secret path policies
-			AllowedBranches: sb.Envelope.ResolvedAllowedBranches(),      // S0: default applied here
+			AllowedBranches:   sb.Envelope.ResolvedAllowedBranches(),      // S0: default applied here
+			ProtectedBranches: sb.Envelope.ResolvedProtectedBranches(),    // T2: protected-branch denylist
+			OnEgress:          mitmOnEgress,                               // T2: shared egress-decisions sink
 		})
 		if err != nil {
 			fd.Close()

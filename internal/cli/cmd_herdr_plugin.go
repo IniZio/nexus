@@ -480,8 +480,8 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if exeErr != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin worktree-sandbox: resolve executable: " + exeErr.Error(), Err: exeErr}
 		}
-		createFn := func(ctx context.Context, handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies) error {
-			args := herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal, extraMounts, secrets, allowedRepo, pathPolicies)
+		createFn := func(ctx context.Context, handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, allowedBranches, protectedBranches []string) error {
+			args := herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal, extraMounts, secrets, allowedRepo, pathPolicies, allowedBranches, protectedBranches)
 			cmd := herdrExecCommandContext(ctx, exe, append([]string{"sandbox", "create"}, args...)...)
 			cmd.Stdout = out.w
 			cmd.Stderr = out.w
@@ -2886,7 +2886,7 @@ func herdrWorkspaceRename(ctx context.Context, herdrBin, workspaceID, label stri
 // the main repo's .git directory so git is fully functional inside the guest
 // (D-PD-99-git: worktree .git resolution requires the main .git to be
 // reachable at its host absolute path inside the VM).
-func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies) []string {
+func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, allowedBranches, protectedBranches []string) []string {
 	args := []string{imageFlag, imageVal, "--mount", mountSpec}
 	for _, m := range extraMounts {
 		args = append(args, "--mount", m)
@@ -2921,6 +2921,16 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 		if err == nil {
 			args = append(args, "--egress-policy-json", string(ppJSON))
 		}
+	}
+	// Branch policy from trusted base-ref config (T1 plumbing / D-PDE-17).
+	// --branches conveys the allowed-ref list; --protected-branches the deny list.
+	// Both are omitted when nil (service-layer defaults apply for allowed;
+	// no protection for protected).
+	if len(allowedBranches) > 0 {
+		args = append(args, "--branches", strings.Join(allowedBranches, ","))
+	}
+	if len(protectedBranches) > 0 {
+		args = append(args, "--protected-branches", strings.Join(protectedBranches, ","))
 	}
 	args = append(args, "--agent", "claude-code", "--egress", "open", handle)
 	return args
@@ -3132,6 +3142,26 @@ func buildWorktreeEgressArgs(cfg config.Config) (secrets []string, allowedRepo s
 	}
 
 	return secrets, allowedRepo, pathPolicies, nil
+}
+
+// buildWorktreeBranchArgs derives the allowed and protected branch ref patterns
+// from the branches section of the nexus3.yaml read from the trusted base ref.
+// This is the ONLY branch-policy extraction path for agent (herdr) sandboxes;
+// it ensures that branches.protected is always sourced from the trusted ref and
+// never from the in-guest working tree (D-PDE-17 / AC-A3).
+//
+// Returns nil slices when the section is absent or empty. Callers must treat
+// nil allowedBranches as "use the service-layer default" (refs/heads/nexus3/**)
+// via Envelope.ResolvedAllowedBranches. Nil protectedBranches means no
+// protected-branch enforcement for this sandbox.
+func buildWorktreeBranchArgs(cfg config.Config) (allowedBranches, protectedBranches []string) {
+	if len(cfg.Branches.Allowed) > 0 {
+		allowedBranches = append([]string{}, cfg.Branches.Allowed...)
+	}
+	if len(cfg.Branches.Protected) > 0 {
+		protectedBranches = append([]string{}, cfg.Branches.Protected...)
+	}
+	return allowedBranches, protectedBranches
 }
 
 // egressGitHubHostBound is the D-PDE-16 CLI-time check: is h covered by
@@ -3357,7 +3387,7 @@ func herdrWorktreeSandbox(
 	openPane bool,
 	conditional bool,
 	auto bool,
-	createFn func(context.Context, string, string, string, string, []string, []string, string, domain.EgressPathPolicies) error,
+	createFn func(context.Context, string, string, string, string, []string, []string, string, domain.EgressPathPolicies, []string, []string) error,
 	getFn func(context.Context, string) (domain.Sandbox, error),
 ) error {
 	// Step 1: idempotency.
@@ -3518,9 +3548,11 @@ func herdrWorktreeSandbox(
 	// D-PDE-17). Never read from the worktree branch or working tree bytes.
 	// Fail closed: no trusted ref or absent nexus3.yaml → no auto-grant.
 	var (
-		egressSecrets     []string
-		egressAllowedRepo string
+		egressSecrets      []string
+		egressAllowedRepo  string
 		egressPathPolicies domain.EgressPathPolicies
+		allowedBranches    []string
+		protectedBranches  []string
 	)
 	commonGitDir := worktreeCommonGitDir(info.Path)
 	if commonGitDir != "" {
@@ -3549,6 +3581,10 @@ func herdrWorktreeSandbox(
 				}
 				return nil
 			}
+			// Branch policy: read from the SAME trusted base-ref parse (D-PDE-17).
+			// This is the ONLY branch-policy extraction for agent sandboxes; the
+			// in-guest working-tree nexus3.yaml is never consulted for this field.
+			allowedBranches, protectedBranches = buildWorktreeBranchArgs(parsedCfg)
 		}
 	}
 	// Step 7: create sandbox. A 90 s context covers image pull, ext4 setup,
@@ -3558,7 +3594,7 @@ func herdrWorktreeSandbox(
 	// so the generic policy reaches MITM enforcement (D-PDE-16 worktree gap fix).
 	createCtx, createCancel := context.WithTimeout(ctx, herdrWorktreeCreateTimeout)
 	defer createCancel()
-	if err := createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts, egressSecrets, egressAllowedRepo, egressPathPolicies); err != nil {
+	if err := createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts, egressSecrets, egressAllowedRepo, egressPathPolicies, allowedBranches, protectedBranches); err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: sandbox create: %v\n", err)
 		if !failSafe {
 			return fmt.Errorf("worktree-sandbox: sandbox create: %w", err)

@@ -198,6 +198,15 @@ type CreateAndBootOptions struct {
 	// ["refs/heads/nexus3/*"] at runtime. Agent sandboxes do not set this.
 	AllowedBranches []string
 
+	// ProtectedBranches is the list of git ref patterns that are always denied
+	// by the host-side git MITM regardless of AllowedBranches. Populated from
+	// branches.protected in nexus3.yaml read from the trusted base ref (via the
+	// herdr worktree path) or from --protected-branches on the human create path.
+	// When nil, protected-branch enforcement is disabled (see
+	// Envelope.ResolvedProtectedBranches). Agent sandboxes receive this from the
+	// base-ref config parse in buildWorktreeBranchArgs (T1 plumbing).
+	ProtectedBranches []string
+
 	// ExtraSecretHosts lists additional hostnames to include in
 	// Envelope.SecretHosts without creating a corresponding SecretSpecs entry.
 	// Use this for agent open-egress sandboxes (D-PD-33 dev-egress posture):
@@ -784,7 +793,8 @@ func CreateAndBoot(
 			SecretSpecs:  secretSpecsFromBinds(opts.Secrets),
 			OpenEgress:      opts.OpenEgress,      // D-PD-33: explicit opt-in; never inferred from empty AllowedHosts
 			AllowedRepo:     opts.AllowedRepo,     // D-PD-36: per-repo path allowlist; enforced below
-			AllowedBranches: opts.AllowedBranches, // S0: nil = use default at runtime via ResolvedAllowedBranches
+			AllowedBranches:   opts.AllowedBranches,   // S0: nil = use default at runtime via ResolvedAllowedBranches
+			ProtectedBranches: opts.ProtectedBranches, // T1: nil = no protected-branch enforcement
 			PathPolicies:    opts.PathPolicies,    // T4: per-secret path policies; converted to mitm.PathPolicies at start
 		},
 		RemoveOnExit:   opts.RemoveOnExit,

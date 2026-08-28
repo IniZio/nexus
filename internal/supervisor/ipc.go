@@ -11,6 +11,10 @@ import (
 	"github.com/IniZio/nexus3/internal/core/service"
 )
 
+// allowEgressFunc is the callback type the IPC egress-allow handler uses to
+// mutate the live perimeter. It is nil until the perimeter supervisor is ready.
+type allowEgressFunc func(host string) error
+
 // ipcStopPath is the HTTP path for the graceful-stop request.
 const ipcStopPath = "/supervisor/stop"
 
@@ -27,7 +31,11 @@ type stopResponse struct {
 // endpoint); the stop handler does not call svc.Stop directly — it signals
 // the RunDetached select loop, which then calls svc.Stop after releasing the
 // goroutine.
-func serveIPC(ctx context.Context, sockPath string, _ *service.Service, _ string) (<-chan struct{}, error) {
+//
+// allowEgress is a late-bound callback invoked by the /supervisor/egress-allow
+// handler. It may be nil at call time (IPC starts before the perimeter
+// supervisor is ready); a nil allowEgress causes the handler to return 503.
+func serveIPC(ctx context.Context, sockPath string, _ *service.Service, _ string, allowEgress allowEgressFunc) (<-chan struct{}, error) {
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
 		return nil, fmt.Errorf("ipc: listen %s: %w", sockPath, err)
@@ -50,6 +58,37 @@ func serveIPC(ctx context.Context, sockPath string, _ *service.Service, _ string
 		default:
 			close(stopCh)
 		}
+	})
+
+	mux.HandleFunc(ipcEgressAllowPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		req, err := DecodeEgressAllowRequest(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(EgressAllowResponse{OK: false, Error: err.Error()})
+			return
+		}
+
+		fn := allowEgress
+		if fn == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(EgressAllowResponse{OK: false, Error: "perimeter not yet ready"})
+			return
+		}
+
+		if mutErr := fn(req.Host); mutErr != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(EgressAllowResponse{OK: false, Error: mutErr.Error()})
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(EgressAllowResponse{OK: true})
 	})
 
 	srv := &http.Server{Handler: mux}

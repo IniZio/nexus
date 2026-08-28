@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1898,6 +1899,244 @@ func TestD38_BranchPolicy_NoEnforcementWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestT2_AC1_ProtectedBranchDeniedAllowedPasses verifies D-1 semantics:
+// under protected:[refs/heads/main], allowed:[refs/heads/**]
+//   - push to refs/heads/feat/x → 200 (allowed, not protected)
+//   - push to refs/heads/main   → 403 with the protected-branch reason
+//
+// Mutation evidence: swap the protected/allowed check order so allowed is
+// evaluated first → refs/heads/main passes the allowlist and reaches
+// upstream instead of being denied, causing the 403 assertion to fail.
+func TestT2_AC1_ProtectedBranchDeniedAllowedPasses(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(200)
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:         sid,
+		AllowedHosts:      []string{"github.com"},
+		Broker:            broker,
+		AllowedRepo:       "acme/myrepo",
+		AllowedBranches:   []string{"refs/heads/**"},
+		ProtectedBranches: []string{"refs/heads/main"},
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	t.Run("allowed_ref_passes", func(t *testing.T) {
+		body := buildPktLines([]string{"refs/heads/feat/x"})
+		req, _ := http.NewRequest(http.MethodPost,
+			"http://github.com/acme/myrepo.git/git-receive-pack",
+			bytes.NewReader(body))
+		resp, err := proxyClient(proxyServer.URL).Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("allowed ref: want 200, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("protected_ref_denied", func(t *testing.T) {
+		body := buildPktLines([]string{"refs/heads/main"})
+		req, _ := http.NewRequest(http.MethodPost,
+			"http://github.com/acme/myrepo.git/git-receive-pack",
+			bytes.NewReader(body))
+		resp, err := proxyClient(proxyServer.URL).Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("protected branch: want 403, got %d", resp.StatusCode)
+		}
+		if !strings.Contains(string(respBody), "protected branch") {
+			t.Errorf("protected branch: response body missing protected-branch reason: %q", string(respBody))
+		}
+	})
+}
+
+// TestT2_AC2_UnconfiguredDefaultAllowsOnlyNexus3 verifies that when
+// AllowedBranches/ProtectedBranches are nil, the proxy still enforces the
+// resolved default refs/heads/nexus3/* (supplied by the caller) and denies
+// others. This mirrors the existing AC2 requirement without requiring
+// domain resolver involvement.
+func TestT2_AC2_UnconfiguredDefaultAllowsOnlyNexus3(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	// Simulate the resolved default: ["refs/heads/nexus3/**"].
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:    newSandboxID(201),
+		AllowedHosts: []string{"github.com"},
+		Broker:       cred.NewBroker(),
+		AllowedRepo:  "acme/myrepo",
+		AllowedBranches: []string{"refs/heads/nexus3/**"},
+		// ProtectedBranches intentionally nil.
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	t.Run("nexus3_ref_passes", func(t *testing.T) {
+		body := buildPktLines([]string{"refs/heads/nexus3/my-feature"})
+		req, _ := http.NewRequest(http.MethodPost,
+			"http://github.com/acme/myrepo.git/git-receive-pack",
+			bytes.NewReader(body))
+		resp, err := proxyClient(proxyServer.URL).Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("nexus3 ref: want 200, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("main_ref_denied", func(t *testing.T) {
+		body := buildPktLines([]string{"refs/heads/main"})
+		req, _ := http.NewRequest(http.MethodPost,
+			"http://github.com/acme/myrepo.git/git-receive-pack",
+			bytes.NewReader(body))
+		resp, err := proxyClient(proxyServer.URL).Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("non-nexus3 ref: want 403, got %d", resp.StatusCode)
+		}
+	})
+}
+
+// TestT2_AC3_OnEgressEmitsRecords verifies that denied pushes and denied hosts
+// each emit an egress record with the expected shape to the OnEgress hook.
+//
+// Host-deny is exercised via HTTPS CONNECT (the HandleConnect path that fires
+// goproxy.RejectConnect) — plain HTTP requests to unlisted hosts bypass that
+// path, so the upstream must be an httptest.NewTLSServer.
+//
+// Mutation evidence: remove the cfg.OnEgress call from any deny path → the
+// corresponding record is missing from the collected slice, failing the
+// assertion.
+func TestT2_AC3_OnEgressEmitsRecords(t *testing.T) {
+	t.Parallel()
+
+	type egressRecord struct {
+		host    string
+		verdict string
+		reason  string
+	}
+
+	// Use a TLS server as the redirect target so the CONNECT host-deny path
+	// is reachable (the client sends CONNECT for https:// targets).
+	tlsUpstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(tlsUpstream.Close)
+
+	plainUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(plainUpstream.Close)
+
+	var mu sync.Mutex
+	var records []egressRecord
+	collect := func(host, verdict, reason string, _ time.Time) {
+		mu.Lock()
+		defer mu.Unlock()
+		records = append(records, egressRecord{host: host, verdict: verdict, reason: reason})
+	}
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(202)
+
+	// Build the proxy directly (not via newTestProxy) so we can supply a
+	// custom Transport that redirects to our stub server.
+	p, err := mitm.New(mitm.Config{
+		SandboxID:         sid,
+		AllowedHosts:      []string{"github.com"},
+		Broker:            broker,
+		AllowedRepo:       "acme/myrepo",
+		AllowedBranches:   []string{"refs/heads/nexus3/**"},
+		ProtectedBranches: []string{"refs/heads/main"},
+		OnEgress:          collect,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, plainUpstream.Listener.Addr().String())
+			},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test-only redirect
+		},
+	})
+	if err != nil {
+		t.Fatalf("mitm.New: %v", err)
+	}
+	proxyServer := httptest.NewServer(p)
+	t.Cleanup(proxyServer.Close)
+
+	proxyURL, _ := url.Parse(proxyServer.URL)
+	pool := x509.NewCertPool()
+	pool.AddCert(p.CACert())
+	httpsClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{RootCAs: pool},
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	// Trigger a protected-branch deny (plain HTTP through the proxy).
+	plainClient := proxyClient(proxyServer.URL)
+	body := buildPktLines([]string{"refs/heads/main"})
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://github.com/acme/myrepo.git/git-receive-pack",
+		bytes.NewReader(body))
+	resp, err := plainClient.Do(req)
+	if err != nil {
+		t.Fatalf("branch deny client.Do: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("want 403 for protected branch, got %d", resp.StatusCode)
+	}
+
+	// Trigger a host-not-in-allowlist deny via HTTPS CONNECT (HandleConnect path).
+	_, _ = httpsClient.Get("https://notallowed.example.com/ping")
+
+	mu.Lock()
+	got := records
+	mu.Unlock()
+
+	var foundBranchDeny, foundHostDeny bool
+	for _, r := range got {
+		if r.verdict == "deny" && strings.Contains(r.reason, "protected branch") {
+			foundBranchDeny = true
+		}
+		if r.verdict == "deny" && strings.Contains(r.reason, "allowlist") {
+			foundHostDeny = true
+		}
+	}
+	if !foundBranchDeny {
+		t.Errorf("OnEgress: no deny record emitted for protected-branch push; records=%v", got)
+	}
+	if !foundHostDeny {
+		t.Errorf("OnEgress: no deny record emitted for blocked host; records=%v", got)
+	}
+}
+
 // TestD38_GhStack_RESTAllowed verifies that the gh-stack REST paths for the
 // configured repo are permitted through the proxy.
 //
@@ -2985,5 +3224,157 @@ func TestLookupPolicy_BogusPlaceholderKeyNotFound(t *testing.T) {
 	_, found2 := mitm.LookupPolicyForTest(pp2, "deadbeef1234", "api.github.com")
 	if !found2 {
 		t.Fatal("lookupPolicy: wildcard key \"\" should match any placeholder but did not")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// T7: runtime AllowHost — MutableAllowSet plumbing
+// ---------------------------------------------------------------------------
+
+// TestT7_AC1_AllowHostAdmitsDynamicHost verifies that a host added via
+// Proxy.AllowHost after New() transitions from denied to allowed without
+// rebuilding the proxy or dropping any in-flight connections.
+//
+// Mutation evidence: comment out the allowSet.Has(lh) branch in HandleConnect
+// so it always falls through to RejectConnect → the "before Add" assertion
+// no longer sees a 403 and the test fails.
+func TestT7_AC1_AllowHostAdmitsDynamicHost(t *testing.T) {
+	t.Parallel()
+
+	// TLS upstream — the MITM proxy mints a leaf cert and the outbound
+	// connection uses InsecureSkipVerify (same pattern as TestT2_AC3).
+	tlsUpstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(tlsUpstream.Close)
+
+	var mu sync.Mutex
+	var egressDenials []string
+	collect := func(host, verdict, _ string, _ time.Time) {
+		if verdict == "deny" {
+			mu.Lock()
+			egressDenials = append(egressDenials, host)
+			mu.Unlock()
+		}
+	}
+
+	p, err := mitm.New(mitm.Config{
+		SandboxID:    newSandboxID(207),
+		AllowedHosts: []string{"static.example.com"}, // dynamic host intentionally absent
+		Broker:       cred.NewBroker(),
+		OnEgress:     collect,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, tlsUpstream.Listener.Addr().String())
+			},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test-only
+		},
+	})
+	if err != nil {
+		t.Fatalf("mitm.New: %v", err)
+	}
+	proxyServer := httptest.NewServer(p)
+	t.Cleanup(proxyServer.Close)
+
+	proxyURL, _ := url.Parse(proxyServer.URL)
+	pool := x509.NewCertPool()
+	pool.AddCert(p.CACert())
+	httpsClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{RootCAs: pool},
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	const dynamicHost = "dynamic.example.com"
+
+	// Before AllowHost: CONNECT to dynamic host must be rejected; the client
+	// sees an error (goproxy closes the connection after 403, which Go's
+	// http.Client surfaces as a non-nil error).
+	_, err = httpsClient.Get("https://" + dynamicHost + "/ping")
+	if err == nil {
+		t.Fatal("T7-AC1: expected CONNECT rejection before AllowHost, got nil error")
+	}
+
+	// Verify OnEgress recorded the denial.
+	mu.Lock()
+	denialsBefore := len(egressDenials)
+	mu.Unlock()
+	if denialsBefore == 0 {
+		t.Error("T7-AC1: OnEgress did not record a deny before AllowHost")
+	}
+
+	// Admit the host at runtime — no proxy rebuild.
+	p.AllowHost(dynamicHost)
+
+	// After AllowHost: CONNECT must be accepted. The TLS handshake may fail
+	// (stub upstream is not serving the right SNI) but the proxy itself must
+	// not emit a new deny record for dynamic.example.com.
+	_, _ = httpsClient.Get("https://" + dynamicHost + "/ping") // error expected (TLS), not CONNECT 403
+
+	mu.Lock()
+	newDenials := egressDenials[denialsBefore:]
+	mu.Unlock()
+	for _, h := range newDenials {
+		if h == dynamicHost {
+			t.Errorf("T7-AC1: proxy emitted a deny for %q after AllowHost — host not admitted", dynamicHost)
+		}
+	}
+}
+
+// TestT7_AC2_AllowHostDoesNotRebuildProxy verifies that AllowHost is a pure
+// set mutation: the CA certificate pointer is identical before and after the
+// call, and pre-existing allowed hosts continue to work across the Add.
+//
+// Mutation evidence: replace p.allowSet.Add with mitm.New reconstruction →
+// CACert() returns a different pointer and the equality assertion fails.
+func TestT7_AC2_AllowHostDoesNotRebuildProxy(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	p, err := mitm.New(mitm.Config{
+		SandboxID:    newSandboxID(208),
+		AllowedHosts: []string{"pre-existing.example.com"},
+		Broker:       cred.NewBroker(),
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("mitm.New: %v", err)
+	}
+
+	// Capture CA pointer before Add.
+	caBefore := p.CACert()
+
+	// Add a new host.
+	p.AllowHost("newly-added.example.com")
+
+	// CA pointer must be unchanged — no proxy rebuild.
+	caAfter := p.CACert()
+	if caBefore != caAfter {
+		t.Error("T7-AC2: CACert() pointer changed after AllowHost — proxy was rebuilt unexpectedly")
+	}
+
+	// Pre-existing allowed host must still work (plain HTTP through proxy).
+	proxyServer := httptest.NewServer(p)
+	t.Cleanup(proxyServer.Close)
+
+	req, _ := http.NewRequest(http.MethodGet, "http://pre-existing.example.com/check", nil)
+	resp, err := proxyClient(proxyServer.URL).Do(req)
+	if err != nil {
+		t.Fatalf("T7-AC2: pre-existing host request failed after AllowHost: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("T7-AC2: pre-existing host: want 200, got %d", resp.StatusCode)
 	}
 }

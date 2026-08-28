@@ -40,6 +40,7 @@ var surfaceMap = []surfaceEntry{
 	{CLIVerb: "config-ssh", CanonicalMethods: []string{"service.SSHConn"}, MCPTools: nil},
 	{CLIVerb: "cp", CanonicalMethods: []string{"service.Copy"}, MCPTools: nil},
 	{CLIVerb: "doctor", CLIOnly: true},
+	{CLIVerb: "egress", CanonicalMethods: []string{"service.ResolveRef"}, MCPTools: nil},
 	{CLIVerb: "exec", CanonicalMethods: []string{"service.Exec"}, MCPTools: []string{"sandbox_exec"}},
 	{CLIVerb: "fork", CanonicalMethods: []string{"service.Fork"}, MCPTools: nil},
 	{CLIVerb: "forward", CanonicalMethods: []string{"service.Forward"}, MCPTools: nil},

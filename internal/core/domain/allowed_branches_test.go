@@ -71,3 +71,58 @@ func TestResolvedAllowedBranches_ReturnsCopy(t *testing.T) {
 		t.Error("ResolvedAllowedBranches() returned an alias of AllowedBranches; want a copy")
 	}
 }
+
+// ---- ResolvedProtectedBranches tests (T1-AC2) ----
+
+// TestResolvedProtectedBranches_Unconfigured verifies that an Envelope with no
+// ProtectedBranches set returns nil (no protection configured — not "protect all").
+func TestResolvedProtectedBranches_Unconfigured(t *testing.T) {
+	e := domain.Envelope{}
+	got := e.ResolvedProtectedBranches()
+	if got != nil {
+		t.Errorf("ResolvedProtectedBranches() on empty Envelope = %v; want nil", got)
+	}
+}
+
+// TestResolvedProtectedBranches_NilField is the same as Unconfigured but makes
+// the nil vs empty-slice distinction explicit.
+func TestResolvedProtectedBranches_NilField(t *testing.T) {
+	e := domain.Envelope{ProtectedBranches: nil}
+	got := e.ResolvedProtectedBranches()
+	if got != nil {
+		t.Errorf("ResolvedProtectedBranches() on nil ProtectedBranches = %v; want nil", got)
+	}
+}
+
+// TestResolvedProtectedBranches_Configured verifies that an explicit
+// ProtectedBranches value is returned as-is (copied).
+func TestResolvedProtectedBranches_Configured(t *testing.T) {
+	e := domain.Envelope{ProtectedBranches: []string{"refs/heads/main", "refs/heads/release/**"}}
+	got := e.ResolvedProtectedBranches()
+	want := []string{"refs/heads/main", "refs/heads/release/**"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ResolvedProtectedBranches() = %v; want %v", got, want)
+	}
+}
+
+// TestResolvedProtectedBranches_ReturnsCopy verifies no aliasing.
+func TestResolvedProtectedBranches_ReturnsCopy(t *testing.T) {
+	e := domain.Envelope{ProtectedBranches: []string{"refs/heads/main"}}
+	got := e.ResolvedProtectedBranches()
+	got[0] = "mutated"
+	if e.ProtectedBranches[0] == "mutated" {
+		t.Error("ResolvedProtectedBranches() returned an alias of ProtectedBranches; want a copy")
+	}
+}
+
+// TestResolvedAllowedBranches_DefaultUnchanged verifies that adding
+// ProtectedBranches does NOT alter the ResolvedAllowedBranches default.
+// Regression guard: the default must remain ["refs/heads/nexus3/**"].
+func TestResolvedAllowedBranches_DefaultUnchanged(t *testing.T) {
+	e := domain.Envelope{ProtectedBranches: []string{"refs/heads/main"}}
+	got := e.ResolvedAllowedBranches()
+	want := []string{"refs/heads/nexus3/**"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ResolvedAllowedBranches() with ProtectedBranches set = %v; want %v (default unchanged)", got, want)
+	}
+}

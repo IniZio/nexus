@@ -61,6 +61,10 @@ type Proxy struct {
 	// Exported via CACert for the sandbox bootstrap path to seed into the guest.
 	ca    tls.Certificate
 	inner *goproxy.ProxyHttpServer
+	// allowSet is the mutable runtime allowlist of MITM-permitted hosts.
+	// Seeded from Config.AllowedHosts ∪ Config.SecretHosts at construction.
+	// T5/T6 callers use AllowHost to admit new hosts without rebuilding the proxy.
+	allowSet *MutableAllowSet
 }
 
 // Config configures a new [Proxy].
@@ -124,6 +128,20 @@ type Config struct {
 	// ["refs/heads/nexus3/*"] via domain.Envelope.ResolvedAllowedBranches.
 	AllowedBranches []string
 
+	// ProtectedBranches is a denylist of git ref patterns that are ALWAYS
+	// refused on git-receive-pack pushes, regardless of AllowedBranches
+	// (D-PD-38 extension, D-1: protected beats allowed). Nil means no
+	// protected-branch enforcement. Patterns use the same refspec glob
+	// syntax as AllowedBranches (refMatchesGlob).
+	ProtectedBranches []string
+
+	// OnEgress, when non-nil, is called for every L7 egress verdict emitted
+	// by this proxy. Wire it to the shared egress-decisions sink so
+	// `nexus3 egress log` shows a unified MITM+netfilter stream. The hook is
+	// called without any lock held; the caller is responsible for
+	// concurrent-write safety (e.g. a sync.Mutex in the closure).
+	OnEgress func(host, verdict, reason string, ts time.Time)
+
 	// Logger is used for audit events (allow/deny decisions). If nil,
 	// slog.Default() is used. The real token is NEVER passed to the logger.
 	Logger *slog.Logger
@@ -185,15 +203,12 @@ func New(cfg Config) (*Proxy, error) {
 		return nil, fmt.Errorf("mitm: generate per-sandbox CA: %w", err)
 	}
 
-	allowSet := make(map[string]struct{}, len(cfg.AllowedHosts)+len(cfg.SecretHosts))
-	for _, h := range cfg.AllowedHosts {
-		allowSet[strings.ToLower(h)] = struct{}{}
-	}
+	allowSet := NewMutableAllowSet(cfg.AllowedHosts...)
 	secretSet := make(map[string]struct{}, len(cfg.SecretHosts))
 	for _, h := range cfg.SecretHosts {
 		lh := strings.ToLower(h)
 		secretSet[lh] = struct{}{}
-		allowSet[lh] = struct{}{}
+		allowSet.Add(lh)
 	}
 
 	log := cfg.Logger
@@ -267,11 +282,14 @@ func New(cfg Config) (*Proxy, error) {
 			log.Info("mitm: CONNECT tunneled (allow-all)", "sandbox", sandboxID, "host", hostname)
 			return goproxy.OkConnect, host
 		}
-		if _, ok := allowSet[lh]; ok {
+		if allowSet.Has(lh) {
 			log.Info("mitm: CONNECT allowed", "sandbox", sandboxID, "host", hostname)
 			return mitmAction, host
 		}
 		log.Info("mitm: CONNECT rejected", "sandbox", sandboxID, "host", hostname)
+		if cfg.OnEgress != nil {
+			cfg.OnEgress(hostname, "deny", "host not in MITM allowlist", time.Now())
+		}
 		return goproxy.RejectConnect, host
 	}))
 
@@ -337,70 +355,90 @@ func New(cfg Config) (*Proxy, error) {
 			return req, nil
 		})
 
-		// D-PD-38: branch policy — reject pushes to refs not in AllowedBranches.
-		// Fires BEFORE the credential swap so rejected pushes never see the real token.
-		inner.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-			if len(cfg.AllowedBranches) == 0 {
-				return req, nil
+	}
+
+	// D-PD-38: branch policy — protected-branch denylist (wins over allowlist)
+	// and allowlist enforcement. Fires BEFORE the credential swap so rejected
+	// pushes never see the real token. Registered unconditionally; guards itself
+	// internally so it is a no-op when neither list is configured.
+	inner.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+		hasAllowed := len(cfg.AllowedBranches) > 0
+		hasProtected := len(cfg.ProtectedBranches) > 0
+		if !hasAllowed && !hasProtected {
+			return req, nil // nothing to enforce; preserve pre-T2 behaviour
+		}
+		if reqHost(req) != "github.com" {
+			return req, nil
+		}
+		if req.Method != http.MethodPost || !strings.HasSuffix(req.URL.Path, "/git-receive-pack") {
+			return req, nil
+		}
+		if req.Body == nil {
+			return req, nil
+		}
+		// Parse pkt-line ref update commands from the push body (max 64KB).
+		const maxPkt = 64 * 1024
+		buf := &bytes.Buffer{}
+		malformed := false
+		var deniedRef, protectedRef string
+		for buf.Len() <= maxPkt {
+			var lenBuf [4]byte
+			if _, err := io.ReadFull(req.Body, lenBuf[:]); err != nil {
+				break // body ended cleanly
 			}
-			if reqHost(req) != "github.com" {
-				return req, nil
+			buf.Write(lenBuf[:])
+			pktLen, ok := parseHex4(lenBuf[:])
+			if !ok {
+				malformed = true
+				break
 			}
-			if req.Method != http.MethodPost || !strings.HasSuffix(req.URL.Path, "/git-receive-pack") {
-				return req, nil
+			// Flush packet (0000) and delimiter packets (0001, 0002): stop.
+			if pktLen == 0 || pktLen == 1 || pktLen == 2 {
+				break
 			}
-			if req.Body == nil {
-				return req, nil
+			dataLen := pktLen - 4
+			if dataLen <= 0 {
+				continue // keep-alive: length field exactly 4, zero data bytes
 			}
-			// Parse pkt-line ref update commands from the push body (max 64KB).
-			const maxPkt = 64 * 1024
-			buf := &bytes.Buffer{}
-			malformed := false
-			var deniedRef string
-			for buf.Len() <= maxPkt {
-				var lenBuf [4]byte
-				if _, err := io.ReadFull(req.Body, lenBuf[:]); err != nil {
-					break // body ended cleanly
-				}
-				buf.Write(lenBuf[:])
-				pktLen, ok := parseHex4(lenBuf[:])
-				if !ok {
-					malformed = true
-					break
-				}
-				// Flush packet (0000) and delimiter packets (0001, 0002): stop.
-				if pktLen == 0 || pktLen == 1 || pktLen == 2 {
-					break
-				}
-				dataLen := pktLen - 4
-				if dataLen <= 0 {
-					continue // keep-alive: length field exactly 4, zero data bytes
-				}
-				if buf.Len()+dataLen > maxPkt {
-					malformed = true
-					break
-				}
-				data := make([]byte, dataLen)
-				if _, err := io.ReadFull(req.Body, data); err != nil {
-					buf.Write(data)
-					break
-				}
+			if buf.Len()+dataLen > maxPkt {
+				malformed = true
+				break
+			}
+			data := make([]byte, dataLen)
+			if _, err := io.ReadFull(req.Body, data); err != nil {
 				buf.Write(data)
-				// Parse ref update command: "<old-sha1> <new-sha1> <refname>\n"
-				line := strings.TrimRight(string(data), "\n")
-				parts := strings.SplitN(line, " ", 3)
-				if len(parts) < 3 {
-					continue // capability advertisement or keep-alive
+				break
+			}
+			buf.Write(data)
+			// Parse ref update command: "<old-sha1> <new-sha1> <refname>\n"
+			line := strings.TrimRight(string(data), "\n")
+			parts := strings.SplitN(line, " ", 3)
+			if len(parts) < 3 {
+				continue // capability advertisement or keep-alive
+			}
+			ref := parts[2]
+			// Strip NUL-separated capabilities (present on first pkt-line only).
+			if idx := strings.IndexByte(ref, 0); idx >= 0 {
+				ref = ref[:idx]
+			}
+			ref = strings.TrimSpace(ref)
+			if ref == "" {
+				continue
+			}
+			// D-1: protected check FIRST — wins over the allowlist.
+			if hasProtected {
+				for _, pattern := range cfg.ProtectedBranches {
+					if refMatchesGlob(pattern, ref) {
+						protectedRef = ref
+						break
+					}
 				}
-				ref := parts[2]
-				// Strip NUL-separated capabilities (present on first pkt-line only).
-				if idx := strings.IndexByte(ref, 0); idx >= 0 {
-					ref = ref[:idx]
+				if protectedRef != "" {
+					break
 				}
-				ref = strings.TrimSpace(ref)
-				if ref == "" {
-					continue
-				}
+			}
+			// Allowlist check (skipped when no allowlist is configured).
+			if hasAllowed {
 				matched := false
 				for _, pattern := range cfg.AllowedBranches {
 					if refMatchesGlob(pattern, ref) {
@@ -413,34 +451,55 @@ func New(cfg Config) (*Proxy, error) {
 					break
 				}
 			}
-			// Re-attach all bytes consumed from the original body.
-			req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf.Bytes()), req.Body))
-			if malformed {
-				const body = "D-PD-38: push pkt-line header malformed or too large\n"
-				log.Info("mitm: D-PD-38 push denied (malformed pkt-line)", "sandbox", sandboxID)
-				return req, &http.Response{
-					StatusCode: http.StatusForbidden, Status: "403 Forbidden",
-					Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
-					Header:        http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
-					Body:          io.NopCloser(strings.NewReader(body)),
-					ContentLength: int64(len(body)), Request: req,
-				}
+		}
+		// Re-attach all bytes consumed from the original body.
+		req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf.Bytes()), req.Body))
+		if malformed {
+			const body = "D-PD-38: push pkt-line header malformed or too large\n"
+			log.Info("mitm: D-PD-38 push denied (malformed pkt-line)", "sandbox", sandboxID)
+			if cfg.OnEgress != nil {
+				cfg.OnEgress(reqHost(req), "deny", "D-PD-38: malformed pkt-line", time.Now())
 			}
-			if deniedRef != "" {
-				const body = "D-PD-38: push target ref not in AllowedBranches\n"
-				log.Info("mitm: D-PD-38 push denied (branch not in AllowedBranches)",
-					"sandbox", sandboxID, "ref", deniedRef)
-				return req, &http.Response{
-					StatusCode: http.StatusForbidden, Status: "403 Forbidden",
-					Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
-					Header:        http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
-					Body:          io.NopCloser(strings.NewReader(body)),
-					ContentLength: int64(len(body)), Request: req,
-				}
+			return req, &http.Response{
+				StatusCode: http.StatusForbidden, Status: "403 Forbidden",
+				Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+				Header:        http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+				Body:          io.NopCloser(strings.NewReader(body)),
+				ContentLength: int64(len(body)), Request: req,
 			}
-			return req, nil
-		})
-	}
+		}
+		if protectedRef != "" {
+			const body = "D-PD-38: push target ref is a protected branch\n"
+			log.Info("mitm: D-PD-38 push denied (protected branch)",
+				"sandbox", sandboxID, "ref", protectedRef)
+			if cfg.OnEgress != nil {
+				cfg.OnEgress(reqHost(req), "deny", "D-PD-38: protected branch: "+protectedRef, time.Now())
+			}
+			return req, &http.Response{
+				StatusCode: http.StatusForbidden, Status: "403 Forbidden",
+				Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+				Header:        http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+				Body:          io.NopCloser(strings.NewReader(body)),
+				ContentLength: int64(len(body)), Request: req,
+			}
+		}
+		if deniedRef != "" {
+			const body = "D-PD-38: push target ref not in AllowedBranches\n"
+			log.Info("mitm: D-PD-38 push denied (branch not in AllowedBranches)",
+				"sandbox", sandboxID, "ref", deniedRef)
+			if cfg.OnEgress != nil {
+				cfg.OnEgress(reqHost(req), "deny", "D-PD-38: ref not in AllowedBranches: "+deniedRef, time.Now())
+			}
+			return req, &http.Response{
+				StatusCode: http.StatusForbidden, Status: "403 Forbidden",
+				Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+				Header:        http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+				Body:          io.NopCloser(strings.NewReader(body)),
+				ContentLength: int64(len(body)), Request: req,
+			}
+		}
+		return req, nil
+	})
 
 	if hasAnyGitHubPolicy {
 		// S1c SAFE default-deny stub (advisor CORRECTION, belt-and-suspenders).
@@ -468,7 +527,7 @@ func New(cfg Config) (*Proxy, error) {
 	// allowSet at construction, so the swap fires for them under AllowAll too.
 	inner.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
 		host := reqHost(req)
-		if _, ok := allowSet[strings.ToLower(host)]; !ok {
+		if !allowSet.Has(host) {
 			return req, nil
 		}
 		swapped, ok := swapAuthorization(req.Header.Get("Authorization"), sandboxID, host, broker)
@@ -481,7 +540,7 @@ func New(cfg Config) (*Proxy, error) {
 		return req2, nil
 	})
 
-	return &Proxy{ca: ca, inner: inner}, nil
+	return &Proxy{ca: ca, inner: inner, allowSet: allowSet}, nil
 }
 
 // CACert returns the parsed CA certificate that the guest trust store must
@@ -493,6 +552,16 @@ func New(cfg Config) (*Proxy, error) {
 // tls.Certificate; it is safe to read concurrently but must not be modified.
 func (p *Proxy) CACert() *x509.Certificate {
 	return p.ca.Leaf
+}
+
+// AllowHost admits host to this running proxy's MITM allowlist at runtime,
+// without rebuilding the proxy or dropping in-flight connections. Safe for
+// concurrent use. Returns nothing (idempotent add).
+//
+// This is the plumbing for the supervisor IPC egress-allow verb (T5) and the
+// `nexus3 egress allow` CLI (T6).
+func (p *Proxy) AllowHost(host string) {
+	p.allowSet.Add(host)
 }
 
 // ServeHTTP implements [http.Handler] by delegating to the goproxy server.

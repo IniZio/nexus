@@ -202,6 +202,25 @@ func (p *EgressPolicies) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+// BranchesConfig holds per-repo git push branch policy.
+// Both lists apply to the host-side git MITM (D-PD-38 / AC-A2).
+// Protected patterns are evaluated first (deny); allowed patterns follow.
+// An empty Allowed list causes the service layer to fall back to the
+// project default ["refs/heads/nexus3/**"] via ResolvedAllowedBranches.
+type BranchesConfig struct {
+	// Allowed lists git ref patterns the sandbox may push to. Supports
+	// trailing "/**" for namespace-prefix matching (e.g. "refs/heads/nexus3/**")
+	// or standard path.Match single-segment "*". When empty the service layer
+	// applies the project default via Envelope.ResolvedAllowedBranches.
+	Allowed []string `yaml:"allowed"`
+
+	// Protected lists git ref patterns that are always denied even if they
+	// also match an Allowed pattern. An empty list disables protected-branch
+	// enforcement. Read from the trusted base ref only (D-PDE-17 security
+	// invariant); never from the in-guest working tree.
+	Protected []string `yaml:"protected"`
+}
+
 // EgressConfig holds per-repo egress allow rules.
 type EgressConfig struct {
 	// Allow lists additional hostnames the sandbox may reach.
@@ -337,10 +356,11 @@ type BuilderConfig struct {
 // Config is the in-memory representation of a nexus3.yaml file.
 // A zero Config is valid and means "no project-level overrides".
 type Config struct {
-	Egress  EgressConfig  `yaml:"egress"`
-	Sandbox SandboxConfig `yaml:"sandbox"`
-	Image   ImageGCConfig `yaml:"image"`
-	Builder BuilderConfig `yaml:"builder"`
+	Egress   EgressConfig   `yaml:"egress"`
+	Branches BranchesConfig `yaml:"branches"`
+	Sandbox  SandboxConfig  `yaml:"sandbox"`
+	Image    ImageGCConfig  `yaml:"image"`
+	Builder  BuilderConfig  `yaml:"builder"`
 }
 
 // fileConfig is the on-disk YAML shape, including the required version field.
@@ -348,11 +368,12 @@ type Config struct {
 type fileConfig struct {
 	// Version is a *int so that nil (field absent from file) is distinguishable
 	// from 0 (field present but set to zero). A missing version is a hard error.
-	Version *int          `yaml:"version"`
-	Egress  EgressConfig  `yaml:"egress"`
-	Sandbox SandboxConfig `yaml:"sandbox"`
-	Image   ImageGCConfig `yaml:"image"`
-	Builder BuilderConfig `yaml:"builder"`
+	Version  *int           `yaml:"version"`
+	Egress   EgressConfig   `yaml:"egress"`
+	Branches BranchesConfig `yaml:"branches"`
+	Sandbox  SandboxConfig  `yaml:"sandbox"`
+	Image    ImageGCConfig  `yaml:"image"`
+	Builder  BuilderConfig  `yaml:"builder"`
 }
 
 // configFileName is the well-known name discovered during Load.
@@ -438,10 +459,11 @@ func parse(data []byte) (Config, error) {
 		)
 	}
 	return Config{
-		Egress:  fc.Egress,
-		Sandbox: fc.Sandbox,
-		Image:   fc.Image,
-		Builder: fc.Builder,
+		Egress:   fc.Egress,
+		Branches: fc.Branches,
+		Sandbox:  fc.Sandbox,
+		Image:    fc.Image,
+		Builder:  fc.Builder,
 	}, nil
 }
 

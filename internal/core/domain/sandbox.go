@@ -251,6 +251,14 @@ type Envelope struct {
 	// default implicitly.
 	AllowedBranches []string `json:"allowed_branches,omitempty"`
 
+	// ProtectedBranches is the list of git ref patterns that are ALWAYS denied
+	// by the host-side git MITM even if they also match AllowedBranches. Populated
+	// from branches.protected in nexus3.yaml read from the trusted base ref only
+	// (D-PDE-17: never from the in-guest working tree). When empty,
+	// ResolvedProtectedBranches returns nil and protected-branch enforcement is
+	// skipped. T2 (proxy enforcement) reads this field via ResolvedProtectedBranches.
+	ProtectedBranches []string `json:"protected_branches,omitempty"`
+
 	// PathPolicies carries per-(placeholder, host) path restrictions frozen at
 	// create time. The "" placeholder key acts as a wildcard covering any
 	// authenticated request to the keyed host. Converted to mitm.PathPolicies at
@@ -296,6 +304,23 @@ func (e Envelope) ResolvedAllowedBranches() []string {
 	}
 	out := make([]string, len(e.AllowedBranches))
 	copy(out, e.AllowedBranches)
+	return out
+}
+
+// ResolvedProtectedBranches returns ProtectedBranches as-is. When the field is
+// empty (unconfigured) it returns nil, which signals to T2 (proxy enforcement)
+// that protected-branch enforcement is disabled for this sandbox. Unlike
+// ResolvedAllowedBranches, there is no non-empty fallback: a missing
+// ProtectedBranches is NOT the same as "protect everything" — it simply means
+// no protection was configured.
+// This is the single resolution site; callers must use this method rather than
+// reading ProtectedBranches directly.
+func (e Envelope) ResolvedProtectedBranches() []string {
+	if len(e.ProtectedBranches) == 0 {
+		return nil
+	}
+	out := make([]string, len(e.ProtectedBranches))
+	copy(out, e.ProtectedBranches)
 	return out
 }
 

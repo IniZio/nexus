@@ -48,6 +48,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -56,6 +57,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/govern"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
+	"github.com/IniZio/nexus3/internal/core/perimeter"
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/service"
@@ -402,7 +404,18 @@ func RunDetached(cfg Config) error {
 	// ── 4. Bind IPC socket (before VM boot so early stop requests are handled) ─
 	sockPath := SockPath(cfg.StateDir)
 	_ = os.Remove(sockPath) // remove stale socket from a crash
-	stopCh, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef)
+	// perimSupPtr is set after svc.Start returns and the perimeter supervisor is
+	// live. The IPC egress-allow handler reads it atomically; a nil load means
+	// the perimeter is not yet ready and the handler returns 503.
+	var perimSupPtr atomic.Pointer[perimeter.PerimeterSupervisor]
+	allowEgressFn := allowEgressFunc(func(host string) error {
+		sup := perimSupPtr.Load()
+		if sup == nil {
+			return fmt.Errorf("perimeter not yet ready")
+		}
+		return sup.AllowEgress(host)
+	})
+	stopCh, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef, allowEgressFn)
 	if err != nil {
 		return fmt.Errorf("supervisor: bind IPC socket %s: %w", sockPath, err)
 	}
@@ -440,6 +453,13 @@ func RunDetached(cfg Config) error {
 		return fmt.Errorf("supervisor: start sandbox %s: %w", cfg.SandboxRef, err)
 	}
 	slog.Info("supervisor.vm_running", "sandboxRef", cfg.SandboxRef)
+
+	// Wire the perimeter supervisor into the IPC egress-allow handler. The
+	// supervisor was created inside svc.Start; retrieve it via GetPerimeterSupervisor.
+	// nil means AllowAll / no-perimeter mode — AllowEgress handles that case.
+	if sup := svc.GetPerimeterSupervisor(sb.ID); sup != nil {
+		perimSupPtr.Store(sup)
+	}
 
 	// ── 5a. Start auto-resize governor ───────────────────────────────────────
 	// The governor is single-tenant (D-DC-12): one per supervisor, for this
