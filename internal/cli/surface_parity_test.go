@@ -40,7 +40,7 @@ var surfaceMap = []surfaceEntry{
 	{CLIVerb: "config-ssh", CanonicalMethods: []string{"service.SSHConn"}, MCPTools: nil},
 	{CLIVerb: "cp", CanonicalMethods: []string{"service.Copy"}, MCPTools: nil},
 	{CLIVerb: "doctor", CLIOnly: true},
-	{CLIVerb: "exec", CanonicalMethods: []string{"service.Exec"}, MCPTools: nil},
+	{CLIVerb: "exec", CanonicalMethods: []string{"service.Exec"}, MCPTools: []string{"sandbox_exec"}},
 	{CLIVerb: "fork", CanonicalMethods: []string{"service.Fork"}, MCPTools: nil},
 	{CLIVerb: "forward", CanonicalMethods: []string{"service.Forward"}, MCPTools: nil},
 	{CLIVerb: "harvest", CanonicalMethods: []string{"service.Harvest"}, MCPTools: nil},
@@ -51,7 +51,7 @@ var surfaceMap = []surfaceEntry{
 	{CLIVerb: "reap", CanonicalMethods: []string{"service.Reap"}, MCPTools: nil},
 	{CLIVerb: "recover", CanonicalMethods: []string{"service.Recover"}, MCPTools: nil},
 	{CLIVerb: "restore", CanonicalMethods: []string{"service.RestoreFromSnapshot"}, MCPTools: nil},
-	{CLIVerb: "run", CanonicalMethods: []string{"service.RunEphemeral"}, MCPTools: nil},
+	{CLIVerb: "run", CanonicalMethods: []string{"service.RunEphemeral"}, MCPTools: []string{"sandbox_run"}},
 	{CLIVerb: "sandbox", CanonicalMethods: []string{"service.Create", "service.List", "service.Start", "service.Stop", "service.Pause", "service.Resume", "service.Remove"}, MCPTools: []string{"sandbox_create", "sandbox_list", "sandbox_start", "sandbox_stop", "sandbox_pause", "sandbox_resume", "sandbox_remove"}},
 	// Flat lifecycle verbs (cmd_flat_verbs.go). Each delegates to runSandbox
 	// with the grouped subcommand prepended, so it is backed by exactly the

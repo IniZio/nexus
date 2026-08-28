@@ -167,6 +167,8 @@ func runRun(ctx context.Context, args []string, out *Output) error {
 		name,
 		opts,
 		argv,
+		nil,
+		"",
 		os.Stdin,
 		os.Stdout,
 		os.Stderr,

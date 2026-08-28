@@ -109,6 +109,8 @@ func TestRunEphemeral_ZeroLeftoversOnFault(t *testing.T) {
 			DiskDir:   diskDir, // inside storeRoot so ResourceIndex can see disks/
 		},
 		[]string{"echo", "hello"},
+		nil, // env
+		"",  // cwd
 		nil,        // stdin
 		io.Discard, // stdout
 		&errBuf,    // stderr

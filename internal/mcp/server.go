@@ -27,6 +27,8 @@
 //   - sandbox_pause   – pause a running sandbox (ref)
 //   - sandbox_resume  – resume a paused sandbox (ref)
 //   - sandbox_remove  – remove a sandbox (ref)
+//   - sandbox_exec    – exec a command in an existing running sandbox
+//   - sandbox_run     – ephemeral create+boot+exec+remove in one call
 package mcp
 
 import (
@@ -54,6 +56,14 @@ type SandboxService interface {
 	Pause(ctx context.Context, ref string) (domain.Sandbox, error)
 	Resume(ctx context.Context, ref string) (domain.Sandbox, error)
 	Remove(ctx context.Context, ref string) error
+	// Exec runs argv inside an existing running sandbox. stdout and stderr are
+	// captured and returned as strings. stdin, when non-empty, is piped to the
+	// guest process. The adapter builds an agent.Client from its driver.
+	Exec(ctx context.Context, ref string, argv []string, env map[string]string, cwd, stdin string) (exitCode int32, stdout, stderr string, err error)
+	// RunEphemeral creates a sandbox, boots it, runs argv, captures output,
+	// and removes the sandbox — all in one call. opts drives image selection and
+	// resource limits. The adapter uses the same driver factory as CreateAndBoot.
+	RunEphemeral(ctx context.Context, project, name string, opts service.CreateAndBootOptions, argv []string, env map[string]string, cwd, stdin string) (exitCode int32, stdout, stderr string, err error)
 }
 
 // sandboxJSON is the wire representation of a sandbox returned by MCP tools.
@@ -120,6 +130,41 @@ type refArgs struct {
 // noArgs is used for tools that accept no arguments (sandbox_list).
 type noArgs struct{}
 
+// execArgs holds arguments for the sandbox_exec tool.
+type execArgs struct {
+	Ref   string            `json:"ref"             jsonschema:"sandbox reference: exact ID, ID prefix, or project/name handle (required)"`
+	Argv  []string          `json:"argv"            jsonschema:"command and arguments to run in the guest (required)"`
+	Env   map[string]string `json:"env,omitempty"   jsonschema:"additional environment variables as key→value map (optional)"`
+	Cwd   string            `json:"cwd,omitempty"   jsonschema:"working directory inside the guest (optional; default: agent default)"`
+	Stdin string            `json:"stdin,omitempty" jsonschema:"data to pipe to the command's stdin (optional)"`
+}
+
+// runArgs holds arguments for the sandbox_run tool (ephemeral create+exec+remove).
+type runArgs struct {
+	Project string `json:"project" jsonschema:"project name (required)"`
+	Name    string `json:"name"    jsonschema:"sandbox name (required)"`
+	// Image selection — exactly one of rootfs_path, digest, or ref is recommended.
+	RootfsPath string `json:"rootfs_path,omitempty" jsonschema:"direct path to a raw ext4 rootfs file on the server (optional)"`
+	Digest     string `json:"digest,omitempty"      jsonschema:"sha256:<hex> image digest in the server image cache (optional)"`
+	Ref        string `json:"ref,omitempty"         jsonschema:"image tag or digest string in the server image cache (optional)"`
+	// Resource overrides.
+	MemoryMiB  uint32 `json:"memory_mib,omitempty"  jsonschema:"guest RAM in MiB (optional; 0 = driver default 512 MiB)"`
+	VCPUs      uint32 `json:"vcpus,omitempty"       jsonschema:"number of virtual CPUs (optional; 0 = driver default 1)"`
+	NestedVirt bool   `json:"nested_virt,omitempty" jsonschema:"expose /dev/kvm inside guest (optional; default false)"`
+	// Exec parameters.
+	Argv  []string          `json:"argv"            jsonschema:"command and arguments to run in the guest (required)"`
+	Env   map[string]string `json:"env,omitempty"   jsonschema:"additional environment variables as key→value map (optional)"`
+	Cwd   string            `json:"cwd,omitempty"   jsonschema:"working directory inside the guest (optional)"`
+	Stdin string            `json:"stdin,omitempty" jsonschema:"data to pipe to the command's stdin (optional)"`
+}
+
+// execResult is the wire response for sandbox_exec and sandbox_run.
+type execResult struct {
+	ExitCode int32  `json:"exit_code"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+}
+
 // NewServer creates and returns an MCP server with the sandbox lifecycle tools
 // registered. The caller runs the server with:
 //
@@ -147,6 +192,8 @@ func KnownTools() []string {
 		"sandbox_pause",
 		"sandbox_resume",
 		"sandbox_remove",
+		"sandbox_exec",
+		"sandbox_run",
 	}
 }
 
@@ -322,5 +369,56 @@ func registerTools(srv *gosdk.Server, svc SandboxService) {
 			return errorResult(err), nil, nil
 		}
 		return successResult(map[string]bool{"removed": true}), nil, nil
+	})
+
+	// sandbox_exec — run a command inside an existing running sandbox.
+	// stdout and stderr are captured and returned in the response; stdin may be
+	// supplied as a string. The sandbox must already be in state=running.
+	gosdk.AddTool(srv, &gosdk.Tool{
+		Name: "sandbox_exec",
+		Description: "Execute a command in an existing running sandbox. " +
+			"Returns {exit_code, stdout, stderr}.",
+	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args execArgs) (*gosdk.CallToolResult, any, error) {
+		if args.Ref == "" {
+			return nil, nil, fmt.Errorf("ref is required")
+		}
+		if len(args.Argv) == 0 {
+			return nil, nil, fmt.Errorf("argv is required")
+		}
+		code, stdout, stderr, err := svc.Exec(ctx, args.Ref, args.Argv, args.Env, args.Cwd, args.Stdin)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		return successResult(execResult{ExitCode: code, Stdout: stdout, Stderr: stderr}), nil, nil
+	})
+
+	// sandbox_run — ephemeral create+boot+exec+remove in a single call.
+	// The sandbox is removed unconditionally after the command exits, even on error.
+	gosdk.AddTool(srv, &gosdk.Tool{
+		Name: "sandbox_run",
+		Description: "Create a sandbox, boot it, execute a command, remove it. " +
+			"Returns {exit_code, stdout, stderr}. The sandbox is removed even on error.",
+	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args runArgs) (*gosdk.CallToolResult, any, error) {
+		if args.Project == "" || args.Name == "" {
+			return nil, nil, fmt.Errorf("project and name are required")
+		}
+		if len(args.Argv) == 0 {
+			return nil, nil, fmt.Errorf("argv is required")
+		}
+		opts := service.CreateAndBootOptions{
+			Image: service.ImageSpec{
+				RootfsPath: args.RootfsPath,
+				Digest:     args.Digest,
+				Ref:        args.Ref,
+			},
+			MemoryMiB:  args.MemoryMiB,
+			VCPUs:      args.VCPUs,
+			NestedVirt: args.NestedVirt,
+		}
+		code, stdout, stderr, err := svc.RunEphemeral(ctx, args.Project, args.Name, opts, args.Argv, args.Env, args.Cwd, args.Stdin)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		return successResult(execResult{ExitCode: code, Stdout: stdout, Stderr: stderr}), nil, nil
 	})
 }
