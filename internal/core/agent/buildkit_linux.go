@@ -252,6 +252,15 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 		return fmt.Errorf("in-guest build: %w", err)
 	}
 
+	// ── Integrity gate: reject a truncated agent export before it becomes an image ──
+	// An intermittent export bug silently caps files > 32 MiB to exactly 32 MiB.
+	// The agent binary is the ideal canary: its exact source size is known and
+	// any mismatch proves corruption. Fail the build here so it is retried.
+	if err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus3-agent", opts.AgentPath); err != nil {
+		fmt.Fprintf(os.Stderr, "in-guest build: %v\n", err)
+		return fmt.Errorf("in-guest build: %w", err)
+	}
+
 	// ── Step 7: rootfs directory → raw ext4 image ────────────────────────────
 	if err := runMke2fsInGuest(ctx, rootfsDir, opts.OutputExt4, imgSize); err != nil {
 		return fmt.Errorf("in-guest build: mke2fs: %w", err)

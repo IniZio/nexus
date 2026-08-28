@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 )
 
@@ -48,6 +49,59 @@ func (e *ErrRootfsHollow) Error() string {
 			"'exec format error'); retry the build",
 		e.ZeroFiles, e.TotalFiles, pct,
 	)
+}
+
+// ErrRootfsTruncated reports that an exported rootfs file is shorter than its
+// source — the signature of a 32 MiB truncation observed intermittently in
+// the in-guest buildkit export path (files > 32 MiB silently capped to exactly
+// 33554432 bytes). The agent binary is the canary: nexus3 knows its exact
+// source size and can detect a mismatch before mke2fs packs the image.
+type ErrRootfsTruncated struct {
+	InRootfsPath string
+	GotBytes     int64
+	WantBytes    int64
+}
+
+func (e *ErrRootfsTruncated) Error() string {
+	return fmt.Sprintf(
+		"rootfs export truncated: %s is %d bytes, expected %d — "+
+			"build corrupted, retrying",
+		e.InRootfsPath, e.GotBytes, e.WantBytes,
+	)
+}
+
+// verifyAgentIntegrity checks that the exported agent binary at
+// filepath.Join(rootfsDir, agentInstallPath) has exactly the same byte count
+// as the source binary at agentSourcePath. A size mismatch is the signature
+// of the 32 MiB export truncation: converting the silent corruption to a hard,
+// retryable build error prevents a segfaulting ext4 image from being cached
+// and booted.
+//
+// If agentSourcePath or agentInstallPath is empty the check is skipped (no
+// agent was requested). If the source or destination cannot be stat'd the
+// check is also skipped — a missing exported binary is caught by
+// verifyRootfsPopulated or at boot time.
+func verifyAgentIntegrity(rootfsDir, agentInstallPath, agentSourcePath string) error {
+	if agentSourcePath == "" || agentInstallPath == "" {
+		return nil
+	}
+	srcInfo, err := os.Stat(agentSourcePath)
+	if err != nil {
+		return nil // source not accessible; skip
+	}
+	exportedPath := filepath.Join(rootfsDir, agentInstallPath)
+	dstInfo, err := os.Stat(exportedPath)
+	if err != nil {
+		return nil // missing export caught elsewhere
+	}
+	if srcInfo.Size() != dstInfo.Size() {
+		return &ErrRootfsTruncated{
+			InRootfsPath: agentInstallPath,
+			GotBytes:     dstInfo.Size(),
+			WantBytes:    srcInfo.Size(),
+		}
+	}
+	return nil
 }
 
 // verifyRootfsPopulated walks the exported rootfs at dir and fails when the

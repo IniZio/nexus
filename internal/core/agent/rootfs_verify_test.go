@@ -90,3 +90,65 @@ func TestVerifyRootfsPopulated_JustBelowThresholdPasses(t *testing.T) {
 		t.Fatalf("expected 89%% empty to pass, got: %v", err)
 	}
 }
+
+// makeAgentFixture creates a source binary and an exported copy in a fake
+// rootfs under rootfsDir/sbin/nexus3-agent. srcSize and dstSize control byte
+// counts so callers can exercise truncation scenarios.
+func makeAgentFixture(t *testing.T, rootfsDir string, srcSize, dstSize int) (srcPath string) {
+	t.Helper()
+	sbin := filepath.Join(rootfsDir, "sbin")
+	if err := os.MkdirAll(sbin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srcPath = filepath.Join(t.TempDir(), "nexus3-agent-src")
+	if err := os.WriteFile(srcPath, make([]byte, srcSize), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(sbin, "nexus3-agent")
+	if err := os.WriteFile(dst, make([]byte, dstSize), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return srcPath
+}
+
+// TestVerifyAgentIntegrity_TruncatedFails is the bite test: the exported agent
+// is shorter than the source (the 32 MiB truncation signature). Without
+// verifyAgentIntegrity this passes silently and bakes a segfaulting binary into
+// the image. With it present the build is rejected with ErrRootfsTruncated.
+func TestVerifyAgentIntegrity_TruncatedFails(t *testing.T) {
+	rootfsDir := t.TempDir()
+	// Source 1000 B, export 512 B — mimics the >32 MiB → 32 MiB truncation.
+	srcPath := makeAgentFixture(t, rootfsDir, 1000, 512)
+
+	err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus3-agent", srcPath)
+	if err == nil {
+		t.Fatal("expected truncated agent to be rejected, got nil")
+	}
+	var truncErr *ErrRootfsTruncated
+	if !errors.As(err, &truncErr) {
+		t.Fatalf("expected *ErrRootfsTruncated, got %T: %v", err, err)
+	}
+	if truncErr.GotBytes != 512 || truncErr.WantBytes != 1000 {
+		t.Fatalf("unexpected sizes: got=%d want=%d", truncErr.GotBytes, truncErr.WantBytes)
+	}
+}
+
+// TestVerifyAgentIntegrity_MatchingPasses is the control: when the exported
+// agent matches the source byte-for-byte the guard passes.
+func TestVerifyAgentIntegrity_MatchingPasses(t *testing.T) {
+	rootfsDir := t.TempDir()
+	srcPath := makeAgentFixture(t, rootfsDir, 1000, 1000)
+
+	if err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus3-agent", srcPath); err != nil {
+		t.Fatalf("expected matching agent to pass, got: %v", err)
+	}
+}
+
+// TestVerifyAgentIntegrity_EmptySourceSkips asserts the guard is a no-op when
+// agentSourcePath is empty (no agent was requested in the build).
+func TestVerifyAgentIntegrity_EmptySourceSkips(t *testing.T) {
+	rootfsDir := t.TempDir()
+	if err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus3-agent", ""); err != nil {
+		t.Fatalf("expected skip on empty source, got: %v", err)
+	}
+}
