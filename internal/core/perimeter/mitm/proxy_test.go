@@ -970,6 +970,91 @@ func TestD36_NoTokenEmittedOnDenied(t *testing.T) {
 	}
 }
 
+// TestS1c_GraphQLTokenValidationQuery is the regression guard for the
+// `gh auth status` false-negative: gh validates GH_TOKEN with the read-only
+// GraphQL POST `query UserCurrent{viewer{login}}`. Before the carve-out this
+// was default-denied (403) → gh reported "The token in GH_TOKEN is invalid"
+// even though the token was valid (REST GET /user succeeded and swapped).
+//
+// The allowed sub-test bites: revert the isGitHubTokenValidationQuery carve-out
+// in New's S1c handler → the request is 403'd, upstream never receives it, and
+// the real-token assertion fails. The denied sub-tests bite in the opposite
+// direction: widen the carve-out to any /graphql body → they start returning
+// 200 and leaking the real token upstream.
+func TestS1c_GraphQLTokenValidationQuery(t *testing.T) {
+	t.Parallel()
+
+	t.Run("allowed viewer.login validates and swaps", func(t *testing.T) {
+		t.Parallel()
+		upstream, authCh := captureAuthUpstream(t)
+		proxy, _, recAPI, _ := newGitHubAllowedRepoProxy(t, upstream.Listener.Addr().String())
+		client := proxyClient(proxy.URL)
+
+		// Exact document gh 2.x sends, with gh's real formatting.
+		body := `{"query":"query UserCurrent{viewer{login}}"}`
+		req, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+recAPI.Placeholder)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("token-validation query: want 200 (allowed), got %d", resp.StatusCode)
+		}
+		got, ok := receiveOrTimeout(authCh)
+		if !ok {
+			t.Fatalf("upstream never received the token-validation query (denied before forwarding)")
+		}
+		if want := "Bearer ghp_real_secret_token"; got != want {
+			t.Errorf("upstream Authorization = %q, want %q (real token swap must fire for the validation query)", got, want)
+		}
+	})
+
+	// Every non-validation GraphQL document must stay default-denied and never
+	// emit the real token — the GraphQL allowlist is otherwise TBR-GRAPHQL/R5.
+	denied := []struct {
+		name string
+		body string
+	}{
+		{"empty body", ""},
+		{"mutation", `{"query":"mutation{deleteRepository(input:{repositoryId:\"x\"}){clientMutationId}}"}`},
+		{"extra fields beyond login", `{"query":"query{viewer{login repositories(first:100){nodes{nameWithOwner}}}}"}`},
+		{"viewer with variables", `{"query":"query UserCurrent{viewer{login}}","variables":{"x":1}}`},
+		{"aliased viewer", `{"query":"query{me:viewer{login}}"}`},
+		// Duplicate top-level key: Go's json.Unmarshal would see the second (allowlisted)
+		// query, but a differently-behaving parser might execute the first (malicious) one.
+		// The duplicate-key check must fire and deny before any value is trusted.
+		{"duplicate query key", `{"query":"mutation{evil}","query":"query UserCurrent{viewer{login}}"}`},
+	}
+	for _, tc := range denied {
+		t.Run("denied "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			upstream, authCh := captureAuthUpstream(t)
+			proxy, _, recAPI, _ := newGitHubAllowedRepoProxy(t, upstream.Listener.Addr().String())
+			client := proxyClient(proxy.URL)
+
+			req, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql", strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer "+recAPI.Placeholder)
+
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("client.Do: %v", err)
+			}
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("%s: want 403 (denied), got %d", tc.name, resp.StatusCode)
+			}
+			if got, ok := receiveOrTimeout(authCh); ok {
+				t.Errorf("%s: upstream received denied GraphQL request; Authorization = %q (real token must not be emitted)", tc.name, got)
+			}
+		})
+	}
+}
+
 // TestD36_AllowedUploadsPath verifies that release-asset upload to the target
 // repo is permitted through uploads.github.com.
 //
@@ -1859,13 +1944,14 @@ func TestD38_BranchPolicy_AllowedStreamsThrough(t *testing.T) {
 	}
 }
 
-// TestD38_BranchPolicy_NoEnforcementWhenEmpty verifies that when AllowedBranches
-// is nil, no branch enforcement runs — a push to any ref reaches the upstream.
+// TestD38_BranchPolicy_EmptyAllowlistDeniesAll verifies that when AllowedBranches
+// is nil/empty, the proxy DENIES all pushes (fail-closed). An empty allowlist
+// signals misconfiguration — domain.Envelope.ResolvedAllowedBranches() always
+// supplies the hardcoded default, so empty can only occur via a misconfigured caller.
 //
-// Mutation evidence: remove the `if len(cfg.AllowedBranches) == 0 { return req, nil }`
-// guard → proxy applies enforcement using an empty pattern set, which matches nothing,
-// and returns 403 instead of 200.
-func TestD38_BranchPolicy_NoEnforcementWhenEmpty(t *testing.T) {
+// Mutation evidence: revert the fail-closed guard to the old fail-open
+// `return req, nil` → the test fails because the proxy returns 200 instead of 403.
+func TestD38_BranchPolicy_EmptyAllowlistDeniesAll(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1882,7 +1968,7 @@ func TestD38_BranchPolicy_NoEnforcementWhenEmpty(t *testing.T) {
 	}, upstream.Listener.Addr().String())
 	defer proxyServer.Close()
 
-	body := buildPktLines([]string{"refs/heads/main"}) // would be denied if enforcement active
+	body := buildPktLines([]string{"refs/heads/main"}) // denied because allowlist is empty (fail-closed)
 	req, _ := http.NewRequest(http.MethodPost,
 		"http://github.com/acme/myrepo.git/git-receive-pack",
 		bytes.NewReader(body))
@@ -1894,81 +1980,14 @@ func TestD38_BranchPolicy_NoEnforcementWhenEmpty(t *testing.T) {
 	io.Copy(io.Discard, resp.Body) //nolint:errcheck
 	resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("no branch enforcement: want 200, got %d (false denial)", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("empty AllowedBranches: want 403 (fail-closed), got %d", resp.StatusCode)
 	}
 }
 
-// TestT2_AC1_ProtectedBranchDeniedAllowedPasses verifies D-1 semantics:
-// under protected:[refs/heads/main], allowed:[refs/heads/**]
-//   - push to refs/heads/feat/x → 200 (allowed, not protected)
-//   - push to refs/heads/main   → 403 with the protected-branch reason
-//
-// Mutation evidence: swap the protected/allowed check order so allowed is
-// evaluated first → refs/heads/main passes the allowlist and reaches
-// upstream instead of being denied, causing the 403 assertion to fail.
-func TestT2_AC1_ProtectedBranchDeniedAllowedPasses(t *testing.T) {
-	t.Parallel()
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(upstream.Close)
-
-	broker := cred.NewBroker()
-	sid := newSandboxID(200)
-
-	proxyServer := newTestProxy(t, mitm.Config{
-		SandboxID:         sid,
-		AllowedHosts:      []string{"github.com"},
-		Broker:            broker,
-		AllowedRepo:       "acme/myrepo",
-		AllowedBranches:   []string{"refs/heads/**"},
-		ProtectedBranches: []string{"refs/heads/main"},
-	}, upstream.Listener.Addr().String())
-	defer proxyServer.Close()
-
-	t.Run("allowed_ref_passes", func(t *testing.T) {
-		body := buildPktLines([]string{"refs/heads/feat/x"})
-		req, _ := http.NewRequest(http.MethodPost,
-			"http://github.com/acme/myrepo.git/git-receive-pack",
-			bytes.NewReader(body))
-		resp, err := proxyClient(proxyServer.URL).Do(req)
-		if err != nil {
-			t.Fatalf("client.Do: %v", err)
-		}
-		io.Copy(io.Discard, resp.Body) //nolint:errcheck
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("allowed ref: want 200, got %d", resp.StatusCode)
-		}
-	})
-
-	t.Run("protected_ref_denied", func(t *testing.T) {
-		body := buildPktLines([]string{"refs/heads/main"})
-		req, _ := http.NewRequest(http.MethodPost,
-			"http://github.com/acme/myrepo.git/git-receive-pack",
-			bytes.NewReader(body))
-		resp, err := proxyClient(proxyServer.URL).Do(req)
-		if err != nil {
-			t.Fatalf("client.Do: %v", err)
-		}
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusForbidden {
-			t.Errorf("protected branch: want 403, got %d", resp.StatusCode)
-		}
-		if !strings.Contains(string(respBody), "protected branch") {
-			t.Errorf("protected branch: response body missing protected-branch reason: %q", string(respBody))
-		}
-	})
-}
-
 // TestT2_AC2_UnconfiguredDefaultAllowsOnlyNexus3 verifies that when
-// AllowedBranches/ProtectedBranches are nil, the proxy still enforces the
-// resolved default refs/heads/nexus3/* (supplied by the caller) and denies
-// others. This mirrors the existing AC2 requirement without requiring
-// domain resolver involvement.
+// AllowedBranches is set to the resolved default refs/heads/nexus3/**, the proxy
+// allows nexus3/ refs and denies others (e.g. refs/heads/main).
 func TestT2_AC2_UnconfiguredDefaultAllowsOnlyNexus3(t *testing.T) {
 	t.Parallel()
 
@@ -1984,7 +2003,6 @@ func TestT2_AC2_UnconfiguredDefaultAllowsOnlyNexus3(t *testing.T) {
 		Broker:       cred.NewBroker(),
 		AllowedRepo:  "acme/myrepo",
 		AllowedBranches: []string{"refs/heads/nexus3/**"},
-		// ProtectedBranches intentionally nil.
 	}, upstream.Listener.Addr().String())
 	defer proxyServer.Close()
 
@@ -2066,13 +2084,12 @@ func TestT2_AC3_OnEgressEmitsRecords(t *testing.T) {
 	// Build the proxy directly (not via newTestProxy) so we can supply a
 	// custom Transport that redirects to our stub server.
 	p, err := mitm.New(mitm.Config{
-		SandboxID:         sid,
-		AllowedHosts:      []string{"github.com"},
-		Broker:            broker,
-		AllowedRepo:       "acme/myrepo",
-		AllowedBranches:   []string{"refs/heads/nexus3/**"},
-		ProtectedBranches: []string{"refs/heads/main"},
-		OnEgress:          collect,
+		SandboxID:   sid,
+		AllowedHosts: []string{"github.com"},
+		Broker:       broker,
+		AllowedRepo:  "acme/myrepo",
+		AllowedBranches: []string{"refs/heads/nexus3/**"},
+		OnEgress:     collect,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, network, plainUpstream.Listener.Addr().String())
@@ -2097,7 +2114,7 @@ func TestT2_AC3_OnEgressEmitsRecords(t *testing.T) {
 		Timeout: 5 * time.Second,
 	}
 
-	// Trigger a protected-branch deny (plain HTTP through the proxy).
+	// Trigger a branch allowlist deny (refs/heads/main is not in refs/heads/nexus3/**).
 	plainClient := proxyClient(proxyServer.URL)
 	body := buildPktLines([]string{"refs/heads/main"})
 	req, _ := http.NewRequest(http.MethodPost,
@@ -2110,7 +2127,7 @@ func TestT2_AC3_OnEgressEmitsRecords(t *testing.T) {
 	io.Copy(io.Discard, resp.Body) //nolint:errcheck
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("want 403 for protected branch, got %d", resp.StatusCode)
+		t.Fatalf("want 403 for branch not in AllowedBranches, got %d", resp.StatusCode)
 	}
 
 	// Trigger a host-not-in-allowlist deny via HTTPS CONNECT (HandleConnect path).
@@ -2122,7 +2139,7 @@ func TestT2_AC3_OnEgressEmitsRecords(t *testing.T) {
 
 	var foundBranchDeny, foundHostDeny bool
 	for _, r := range got {
-		if r.verdict == "deny" && strings.Contains(r.reason, "protected branch") {
+		if r.verdict == "deny" && strings.Contains(r.reason, "AllowedBranches") {
 			foundBranchDeny = true
 		}
 		if r.verdict == "deny" && strings.Contains(r.reason, "allowlist") {
@@ -2130,7 +2147,7 @@ func TestT2_AC3_OnEgressEmitsRecords(t *testing.T) {
 		}
 	}
 	if !foundBranchDeny {
-		t.Errorf("OnEgress: no deny record emitted for protected-branch push; records=%v", got)
+		t.Errorf("OnEgress: no deny record emitted for branch-not-in-allowlist push; records=%v", got)
 	}
 	if !foundHostDeny {
 		t.Errorf("OnEgress: no deny record emitted for blocked host; records=%v", got)

@@ -29,6 +29,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -127,13 +128,6 @@ type Config struct {
 	// The resolved default (when empty at the call site) is
 	// ["refs/heads/nexus3/*"] via domain.Envelope.ResolvedAllowedBranches.
 	AllowedBranches []string
-
-	// ProtectedBranches is a denylist of git ref patterns that are ALWAYS
-	// refused on git-receive-pack pushes, regardless of AllowedBranches
-	// (D-PD-38 extension, D-1: protected beats allowed). Nil means no
-	// protected-branch enforcement. Patterns use the same refspec glob
-	// syntax as AllowedBranches (refMatchesGlob).
-	ProtectedBranches []string
 
 	// OnEgress, when non-nil, is called for every L7 egress verdict emitted
 	// by this proxy. Wire it to the shared egress-decisions sink so
@@ -357,16 +351,13 @@ func New(cfg Config) (*Proxy, error) {
 
 	}
 
-	// D-PD-38: branch policy — protected-branch denylist (wins over allowlist)
-	// and allowlist enforcement. Fires BEFORE the credential swap so rejected
-	// pushes never see the real token. Registered unconditionally; guards itself
-	// internally so it is a no-op when neither list is configured.
+	// D-PD-38: branch allowlist enforcement. Fires BEFORE the credential swap so
+	// rejected pushes never see the real token. Registered unconditionally.
+	// INVARIANT: AllowedBranches must never be empty in production —
+	// domain.Envelope.ResolvedAllowedBranches() always supplies the hardcoded default
+	// ["refs/heads/nexus3/**"]. An empty list here means misconfiguration and is
+	// therefore DENIED (fail-closed) to prevent silently allowing pushes to main.
 	inner.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-		hasAllowed := len(cfg.AllowedBranches) > 0
-		hasProtected := len(cfg.ProtectedBranches) > 0
-		if !hasAllowed && !hasProtected {
-			return req, nil // nothing to enforce; preserve pre-T2 behaviour
-		}
 		if reqHost(req) != "github.com" {
 			return req, nil
 		}
@@ -377,10 +368,14 @@ func New(cfg Config) (*Proxy, error) {
 			return req, nil
 		}
 		// Parse pkt-line ref update commands from the push body (max 64KB).
+		// Fail-closed note: if AllowedBranches is empty the inner match loop below
+		// iterates 0 times → matched stays false → deniedRef is set → 403. In
+		// production domain.Envelope.ResolvedAllowedBranches() always supplies the
+		// hardcoded default, so empty here means misconfiguration, correctly denied.
 		const maxPkt = 64 * 1024
 		buf := &bytes.Buffer{}
 		malformed := false
-		var deniedRef, protectedRef string
+		var deniedRef string
 		for buf.Len() <= maxPkt {
 			var lenBuf [4]byte
 			if _, err := io.ReadFull(req.Body, lenBuf[:]); err != nil {
@@ -425,31 +420,17 @@ func New(cfg Config) (*Proxy, error) {
 			if ref == "" {
 				continue
 			}
-			// D-1: protected check FIRST — wins over the allowlist.
-			if hasProtected {
-				for _, pattern := range cfg.ProtectedBranches {
-					if refMatchesGlob(pattern, ref) {
-						protectedRef = ref
-						break
-					}
-				}
-				if protectedRef != "" {
+			// Allowlist check.
+			matched := false
+			for _, pattern := range cfg.AllowedBranches {
+				if refMatchesGlob(pattern, ref) {
+					matched = true
 					break
 				}
 			}
-			// Allowlist check (skipped when no allowlist is configured).
-			if hasAllowed {
-				matched := false
-				for _, pattern := range cfg.AllowedBranches {
-					if refMatchesGlob(pattern, ref) {
-						matched = true
-						break
-					}
-				}
-				if !matched {
-					deniedRef = ref
-					break
-				}
+			if !matched {
+				deniedRef = ref
+				break
 			}
 		}
 		// Re-attach all bytes consumed from the original body.
@@ -459,21 +440,6 @@ func New(cfg Config) (*Proxy, error) {
 			log.Info("mitm: D-PD-38 push denied (malformed pkt-line)", "sandbox", sandboxID)
 			if cfg.OnEgress != nil {
 				cfg.OnEgress(reqHost(req), "deny", "D-PD-38: malformed pkt-line", time.Now())
-			}
-			return req, &http.Response{
-				StatusCode: http.StatusForbidden, Status: "403 Forbidden",
-				Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
-				Header:        http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
-				Body:          io.NopCloser(strings.NewReader(body)),
-				ContentLength: int64(len(body)), Request: req,
-			}
-		}
-		if protectedRef != "" {
-			const body = "D-PD-38: push target ref is a protected branch\n"
-			log.Info("mitm: D-PD-38 push denied (protected branch)",
-				"sandbox", sandboxID, "ref", protectedRef)
-			if cfg.OnEgress != nil {
-				cfg.OnEgress(reqHost(req), "deny", "D-PD-38: protected branch: "+protectedRef, time.Now())
 			}
 			return req, &http.Response{
 				StatusCode: http.StatusForbidden, Status: "403 Forbidden",
@@ -511,6 +477,20 @@ func New(cfg Config) (*Proxy, error) {
 		inner.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
 			h := reqHost(req)
 			if (h != "api.github.com" && h != "github.com") || !strings.HasPrefix(req.URL.Path, "/graphql") {
+				return req, nil
+			}
+			// Narrow carve-out: the read-only token-validation query that
+			// `gh auth status` sends (query UserCurrent{viewer{login}}) is
+			// permitted. Its selection set is exactly viewer.login — strictly a
+			// subset of the already-allowed REST GET /user — so allowing it
+			// grants NO capability beyond the existing D-PDE-16 allowlist and
+			// does not widen the full-scope token's blast radius. The body is
+			// read (capped) and restored so the swap handler and upstream still
+			// see it. Every other GraphQL document remains default-denied; the
+			// general gh/gh-stack GraphQL allowlist is still TBR-GRAPHQL/R5.
+			if isGitHubTokenValidationQuery(req) {
+				log.Info("mitm: S1c-GQL token-validation query allowed (viewer.login; ⊆ GET /user)",
+					"sandbox", sandboxID, "host", h)
 				return req, nil
 			}
 			log.Info("mitm: S1c-GQL default-deny stub (R5 pending) — GraphQL denied before any credential swap",
@@ -892,6 +872,115 @@ func gitHubPathAllowed(host, method, path, owner, repo string) bool {
 		// Should not be reached; policy map keys guard the call site.
 		return false
 	}
+}
+
+// githubTokenValidationQueries is the exact set of GraphQL documents permitted
+// through the otherwise default-denied /graphql endpoint. Each selects only the
+// authenticated viewer's login — a strict subset of the already-allowed REST
+// GET /user — so admitting them grants no capability beyond the existing
+// allowlist. Comparison is against the whitespace-stripped request document, so
+// formatting variations of the same query match. `gh auth status` (gh ≥ 2) sends
+// the first form to validate GH_TOKEN. The list is an explicit, auditable
+// allowlist — NOT a general GraphQL parser (that is TBR-GRAPHQL/R5).
+var githubTokenValidationQueries = map[string]struct{}{
+	"queryUserCurrent{viewer{login}}": {}, // gh auth status
+	"query{viewer{login}}":            {}, // anonymous named-op-free variant
+	"{viewer{login}}":                 {}, // bare shorthand query
+}
+
+// stripASCIIWhitespace removes spaces, tabs, newlines, and carriage returns.
+// GraphQL treats these (plus commas) as insignificant between tokens; removing
+// them canonicalises formatting variants of the same document for exact-match
+// comparison against githubTokenValidationQueries.
+func stripASCIIWhitespace(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case ' ', '\t', '\n', '\r', ',':
+			// skip
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
+}
+
+// isGitHubTokenValidationQuery reports whether req is the read-only GraphQL
+// token-validation POST that `gh auth status` issues. It reads req.Body (capped
+// at maxGraphQLValidationBody bytes) and ALWAYS restores it so the swap handler
+// and upstream see the original body regardless of the verdict. Returns false —
+// keeping the GraphQL default-deny intact — for any body that is not exactly one
+// of githubTokenValidationQueries after whitespace stripping, is too large, is
+// not valid JSON, or carries GraphQL variables.
+func isGitHubTokenValidationQuery(req *http.Request) bool {
+	if req.Method != http.MethodPost || req.Body == nil {
+		return false
+	}
+	const maxGraphQLValidationBody = 4 << 10 // 4 KiB: the validation query is ~40 bytes.
+	limited := io.LimitReader(req.Body, maxGraphQLValidationBody+1)
+	buf, err := io.ReadAll(limited)
+	// Restore the consumed bytes plus any unread remainder unconditionally.
+	req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), req.Body))
+	if err != nil || int64(len(buf)) > maxGraphQLValidationBody {
+		return false
+	}
+	// Reject bodies with duplicate top-level JSON keys. Go's encoding/json is
+	// last-wins on duplicates, so {"query":"mutation{evil}","query":"{viewer{login}}"}
+	// would pass the gate (the second value wins) while a differently-behaving parser
+	// could execute the first. Detect and deny before any key is trusted.
+	if hasDuplicateTopLevelJSONKeys(buf) {
+		return false
+	}
+	var body struct {
+		Query     string          `json:"query"`
+		Variables json.RawMessage `json:"variables"`
+	}
+	if err := json.Unmarshal(buf, &body); err != nil {
+		return false
+	}
+	// Reject any request that carries variables: the validation query has none,
+	// and non-empty variables signal a different (unvetted) document.
+	if v := strings.TrimSpace(string(body.Variables)); v != "" && v != "null" && v != "{}" {
+		return false
+	}
+	_, ok := githubTokenValidationQueries[stripASCIIWhitespace(body.Query)]
+	return ok
+}
+
+// hasDuplicateTopLevelJSONKeys reports whether data contains repeated keys at
+// the top level of a JSON object. Go's encoding/json is last-wins on duplicates,
+// so a body like {"query":"mutation{evil}","query":"{viewer{login}}"} would pass a
+// gate that only inspects the decoded value. Scanning the token stream catches the
+// duplication before any key is trusted. Returns false (no duplicates detected) for
+// non-object JSON or parse errors — the caller's own Unmarshal handles those.
+func hasDuplicateTopLevelJSONKeys(data []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('{') {
+		return false
+	}
+	seen := make(map[string]bool)
+	for dec.More() {
+		tok, err = dec.Token()
+		if err != nil {
+			return false
+		}
+		key, ok := tok.(string)
+		if !ok {
+			return false
+		}
+		if seen[key] {
+			return true
+		}
+		seen[key] = true
+		// Skip the value at any nesting depth.
+		var raw json.RawMessage
+		if err = dec.Decode(&raw); err != nil {
+			return false
+		}
+	}
+	return false
 }
 
 // denyResponse builds an HTTP 403 response for a D-PDE-16 denied request.

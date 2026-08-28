@@ -867,9 +867,8 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 			AllowAll:        allowAll && (len(sb.Envelope.SecretHosts) > 0 || sb.AgentName != ""),
 			AllowedRepo:     sb.Envelope.AllowedRepo,                    // D-PD-36: per-repo path allowlist
 			PathPolicies:    buildMITMPathPolicies(sb.Envelope.PathPolicies), // T4: per-secret path policies
-			AllowedBranches:   sb.Envelope.ResolvedAllowedBranches(),      // S0: default applied here
-			ProtectedBranches: sb.Envelope.ResolvedProtectedBranches(),    // T2: protected-branch denylist
-			OnEgress:          mitmOnEgress,                               // T2: shared egress-decisions sink
+			AllowedBranches: sb.Envelope.ResolvedAllowedBranches(), // S0: default applied here
+			OnEgress:        mitmOnEgress,                          // shared egress-decisions sink
 		})
 		if err != nil {
 			fd.Close()

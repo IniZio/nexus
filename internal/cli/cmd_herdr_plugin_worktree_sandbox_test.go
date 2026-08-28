@@ -144,12 +144,12 @@ func stubSandboxGet(sb domain.Sandbox, err error) func(context.Context, string) 
 }
 
 // noopCreate is a createSandbox stub that always succeeds.
-func noopCreate(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ []string, _ []string) error {
+func noopCreate(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies) error {
 	return nil
 }
 
 // errCreate is a createSandbox stub that always fails.
-func errCreate(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ []string, _ []string) error {
+func errCreate(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies) error {
 	return errors.New("create failed")
 }
 
@@ -184,7 +184,7 @@ func callHerdrWorktreeSandbox(
 	storeRoot string,
 	conditional bool,
 	auto bool,
-	create func(context.Context, string, string, string, string, []string, []string, string, domain.EgressPathPolicies, []string, []string) error,
+	create func(context.Context, string, string, string, string, []string, []string, string, domain.EgressPathPolicies) error,
 	get func(context.Context, string) (domain.Sandbox, error),
 ) error {
 	t.Helper()
@@ -244,7 +244,7 @@ func TestHerdrWorktreeSandbox_alreadyBound_noOp(t *testing.T) {
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-already", root, false, false, /*auto*/
-		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ []string, _ []string) error {
+		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies) error {
 				createCalled = true
 				return nil
 			},
@@ -277,7 +277,7 @@ func TestHerdrWorktreeSandbox_mainCheckout_notBound(t *testing.T) {
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w8", root, false, false, /*auto*/
-		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ []string, _ []string) error {
+		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies) error {
 				createCalled = true
 				return nil
 			},
@@ -333,7 +333,7 @@ func TestHerdrWorktreeSandbox_conditional_sourceNotBound_staysHost(t *testing.T)
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-worktree", root, true, false, /*auto*/
-		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ []string, _ []string) error {
+		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies) error {
 				createCalled = true
 				return nil
 			},
@@ -373,7 +373,7 @@ func TestHerdrWorktreeSandbox_conditional_sourceBound_binds(t *testing.T) {
 	const wantHandle = "repo/worktree-feat"
 	var gotHandle, gotMount string
 	err := callHerdrWorktreeSandbox(t, "w-new", root, true, false, /*auto*/
-		func(_ context.Context, handle, mountSpec, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ []string, _ []string) error {
+		func(_ context.Context, handle, mountSpec, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies) error {
 			gotHandle = handle
 			gotMount = mountSpec
 			return nil
@@ -424,7 +424,7 @@ func TestHerdrWorktreeSandbox_conditional_sourceUnknown_failSafe(t *testing.T) {
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-new", root, true, false, /*auto*/
-		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ []string, _ []string) error {
+		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies) error {
 				createCalled = true
 				return nil
 			},
@@ -577,7 +577,7 @@ func TestHerdrWorktreeSandbox_createArgs(t *testing.T) {
 
 	var gotHandle, gotMount string
 	_ = callHerdrWorktreeSandbox(t, "w-c", root, false, false, /*auto*/
-		func(_ context.Context, h, m, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ []string, _ []string) error {
+		func(_ context.Context, h, m, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies) error {
 			gotHandle = h
 			gotMount = m
 			return nil
@@ -614,13 +614,13 @@ func argsContainPair(args []string, flag, val string) bool {
 // herdrWorktreeSandboxCreateArgs → the --file subtest goes RED. Change the guard
 // to always-append → the --image subtest goes RED.
 func TestHerdrWorktreeSandboxCreateArgs_dockerDiskOnFileBuild(t *testing.T) {
-	fileArgs := herdrWorktreeSandboxCreateArgs("example-app/EX-871", "/wt:/workspace", "--file", "/wt", nil, nil, "", nil, nil, nil)
+	fileArgs := herdrWorktreeSandboxCreateArgs("example-app/EX-871", "/wt:/workspace", "--file", "/wt", nil, nil, "", nil)
 	wantVol := "example-app-ex-871-docker:/var/lib/docker:size=20g"
 	if !argsContainPair(fileArgs, "--mount-named", wantVol) {
 		t.Errorf("--file build: missing docker disk mount --mount-named %q\ngot: %v", wantVol, fileArgs)
 	}
 
-	imgArgs := herdrWorktreeSandboxCreateArgs("example-app/EX-871", "/wt:/workspace", "--image", herdrDefaultImage, nil, nil, "", nil, nil, nil)
+	imgArgs := herdrWorktreeSandboxCreateArgs("example-app/EX-871", "/wt:/workspace", "--image", herdrDefaultImage, nil, nil, "", nil)
 	for _, a := range imgArgs {
 		if strings.Contains(a, "/var/lib/docker") {
 			t.Errorf("--image build must not attach a docker disk (base image ships none); got: %v", imgArgs)
@@ -658,7 +658,7 @@ func TestHerdrWorktreeSandboxCreateArgs_containsNoBuiltinGh(t *testing.T) {
 	// --secret / --repo flags derived from the operator-controlled trusted ref
 	// (D-PDE-17). Verify the flag is NOT present so a regression cannot
 	// re-introduce the old unconditional grant-blocking flag.
-	args := herdrWorktreeSandboxCreateArgs("myrepo/my-branch", "/repo:/workspace", "--image", herdrDefaultImage, nil, nil, "", nil, nil, nil)
+	args := herdrWorktreeSandboxCreateArgs("myrepo/my-branch", "/repo:/workspace", "--image", herdrDefaultImage, nil, nil, "", nil)
 	for _, a := range args {
 		if a == "--no-builtin-gh" {
 			t.Errorf("--no-builtin-gh must NOT be present in args (removed in T4): %v", args)
@@ -676,7 +676,7 @@ func TestHerdrWorktreeSandboxCreateArgs_containsNoBuiltinGh(t *testing.T) {
 // npm/apt inside the worktree sandbox.
 // MUTATION PROOF: drop either flag from herdrWorktreeSandboxCreateArgs → RED.
 func TestHerdrWorktreeSandboxCreateArgs_containsAgentOpenEgress(t *testing.T) {
-	args := herdrWorktreeSandboxCreateArgs("myrepo/my-branch", "/repo:/workspace", "--image", herdrDefaultImage, nil, nil, "", nil, nil, nil)
+	args := herdrWorktreeSandboxCreateArgs("myrepo/my-branch", "/repo:/workspace", "--image", herdrDefaultImage, nil, nil, "", nil)
 	// --agent claude-code
 	agentOK := false
 	for i := 0; i+1 < len(args); i++ {
@@ -718,7 +718,7 @@ func TestHerdrWorktreeSandboxCreateArgs_isBootableShaped(t *testing.T) {
 		{"file flag", "--file", "/some/checkout"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := herdrWorktreeSandboxCreateArgs("myrepo/branch", "/repo:/workspace", tc.imageFlag, tc.imageVal, nil, nil, "", nil, nil, nil)
+			args := herdrWorktreeSandboxCreateArgs("myrepo/branch", "/repo:/workspace", tc.imageFlag, tc.imageVal, nil, nil, "", nil)
 			bootableFlags := []string{"--image", "--rootfs", "--file"}
 			count := 0
 			for i, a := range args {
@@ -969,7 +969,7 @@ func TestHerdrWorktreeSandbox_explicitMode_createError_returnsError(t *testing.T
 
 	createErr := errors.New("create failed: explicit test")
 	err := callHerdrWorktreeSandbox(t, "w-exp", root, false, false, /*auto*/
-		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ []string, _ []string) error {
+		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies) error {
 			return createErr
 		},
 		nil,
@@ -992,7 +992,7 @@ func TestHerdrWorktreeSandbox_conditionalMode_createError_returnsNil(t *testing.
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
 	err := callHerdrWorktreeSandbox(t, "w-cond", root, true, false, /*auto*/
-		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ []string, _ []string) error {
+		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies) error {
 			return errors.New("create failed")
 		},
 		nil,
@@ -1274,7 +1274,7 @@ func TestHerdrWorktreeSandbox_auto_noRepoBound_staysHost(t *testing.T) {
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-new", root, false, true, /*auto*/
-		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ []string, _ []string) error {
+		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies) error {
 				createCalled = true
 				return nil
 			},
@@ -1312,7 +1312,7 @@ func TestHerdrWorktreeSandbox_auto_repoKeyEmpty_staysHost(t *testing.T) {
 
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-new", root, false, true, /*auto*/
-		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ []string, _ []string) error {
+		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies) error {
 				createCalled = true
 				return nil
 			},
@@ -1368,7 +1368,7 @@ func TestHerdrWorktreeSandbox_auto_notLinkedWorktree_noSideEffects(t *testing.T)
 	var w strings.Builder
 	err := herdrWorktreeSandbox(context.Background(), "w-new", &w, root,
 		false /*openPane*/, false /*conditional*/, true, /*auto*/
-		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ []string, _ []string) error {
+		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies) error {
 				createCalled = true
 				return nil
 			},
@@ -1427,7 +1427,7 @@ func TestHerdrWorktreeSandbox_auto_concurrent_secondIsNoOp(t *testing.T) {
 	// Second call (simulates a second pane opening concurrently).
 	createCalledSecond := false
 	err = callHerdrWorktreeSandbox(t, "w-new", root, false, true, /*auto*/
-		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ []string, _ []string) error {
+		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies) error {
 			createCalledSecond = true
 			return nil
 		},
@@ -1553,7 +1553,7 @@ func TestHerdrWorktreeSandboxCreateArgs_extraMountsAddedAfterPrimary(t *testing.
 	// MUTATION PROOF: remove the extraMounts loop from herdrWorktreeSandboxCreateArgs
 	// → the extra --mount entry is absent → RED ("want 2 --mount pairs; got 1").
 	extra := []string{"/main/.git:/main/.git"}
-	args := herdrWorktreeSandboxCreateArgs("myrepo/branch", "/checkout:/workspace", "--image", "base", extra, nil, "", nil, nil, nil)
+	args := herdrWorktreeSandboxCreateArgs("myrepo/branch", "/checkout:/workspace", "--image", "base", extra, nil, "", nil)
 
 	// Count --mount pairs and collect their values.
 	var mounts []string
@@ -1604,7 +1604,7 @@ func TestHerdrWorktreeSandbox_linkedWorktree_gitDirMountPassedToCreate(t *testin
 
 	var gotExtraMounts []string
 	err := callHerdrWorktreeSandbox(t, "w-gitproof", root, false, false, /*auto*/
-		func(_ context.Context, _, _, _, _ string, extraMounts []string, _ []string, _ string, _ domain.EgressPathPolicies, _ []string, _ []string) error {
+		func(_ context.Context, _, _, _, _ string, extraMounts []string, _ []string, _ string, _ domain.EgressPathPolicies) error {
 			gotExtraMounts = extraMounts
 			return nil
 		},

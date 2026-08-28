@@ -367,8 +367,6 @@ type sandboxCreateFlags struct {
 	allowHosts      []string // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
 	allowedRepo     string                    // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
 	pathPolicies    domain.EgressPathPolicies // --egress-policy-json: JSON-encoded generic path policies (worktree subprocess channel)
-	allowedBranches   []string // --branches <ref>[,ref…]: git-push branch allowlist; default refs/heads/nexus3/*
-	protectedBranches []string // --protected-branches <ref>[,ref…]: git-push branch deny list (enforced before allowlist)
 	mountNamed      []string // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
 	mountLive       []string // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
 	noShareSettings bool     // --no-share-settings: skip curated host agent config overlay (A-MOUNT)
@@ -480,20 +478,6 @@ func applyProjectConfig(f *sandboxCreateFlags) error {
 			return fmt.Errorf("sandbox create: nexus3.yaml: %w", resolveErr)
 		}
 		f.mountLive = resolvedMounts
-	}
-
-	// AllowedBranches: config provides a default when no --branches flag was given.
-	// Flag > config: an explicit --branches value is never overwritten here.
-	if len(f.allowedBranches) == 0 && len(resolved.AllowedBranches) > 0 {
-		f.allowedBranches = resolved.AllowedBranches
-	}
-
-	// ProtectedBranches: config provides the deny list when no --protected-branches
-	// flag was given. On the human sandbox path this reads the working-tree
-	// nexus3.yaml; on the agent (herdr) path the trusted base-ref parse overwrites
-	// this via CreateOptions (D-PDE-17 security invariant).
-	if len(f.protectedBranches) == 0 && len(resolved.ProtectedBranches) > 0 {
-		f.protectedBranches = resolved.ProtectedBranches
 	}
 
 	// Agent: explicit --agent flag wins; project config provides a per-repo
@@ -793,34 +777,6 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 				}
 			}
 			f.pathPolicies = pp
-		case "--branches":
-			// S0: git-push branch allowlist. Repeatable; also accepts comma-separated
-			// patterns in a single value. Default (when omitted) is
-			// refs/heads/nexus3/* applied at perimeter start via
-			// Envelope.ResolvedAllowedBranches. Only meaningful on the git-VM
-			// create path (--workspace / --file).
-			if i+1 >= len(args) {
-				return f, &UsageError{Msg: "sandbox create: --branches requires a ref pattern"}
-			}
-			i++
-			for _, b := range strings.Split(args[i], ",") {
-				if b = strings.TrimSpace(b); b != "" {
-					f.allowedBranches = append(f.allowedBranches, b)
-				}
-			}
-		case "--protected-branches":
-			// Comma-separated list of git ref patterns that are ALWAYS denied at
-			// the host-side git MITM even if they match --branches. Evaluated before
-			// the allowlist (T2 enforcement). Only meaningful on git-VM create path.
-			if i+1 >= len(args) {
-				return f, &UsageError{Msg: "sandbox create: --protected-branches requires a ref pattern"}
-			}
-			i++
-			for _, b := range strings.Split(args[i], ",") {
-				if b = strings.TrimSpace(b); b != "" {
-					f.protectedBranches = append(f.protectedBranches, b)
-				}
-			}
 		case "--mount-named":
 			// SD2-6-MOUNT: <volume-name>:<guest-path>[:ro|kind=dir|size=Xg]
 			// guest-path must not contain a .git component (hard refusal, design line 63).
@@ -1229,7 +1185,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--builder-memory <MiB>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--repo <owner>/<name>] [--branches <ref>[,ref…]] [--protected-branches <ref>[,ref…]] [--no-share-settings] [--no-user-mounts] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--builder-memory <MiB>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--repo <owner>/<name>] [--no-share-settings] [--no-user-mounts] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])
@@ -1973,11 +1929,9 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			OpenEgress:        openEgress,
 			ExtraSecretHosts:  agentDevEgressSecretHosts(agentProfile, openEgress),
 			AgentProfile:      agentProfile,  // zero value when --agent was not passed
-			AllowedRepo:       f.allowedRepo,     // D-PD-36: set by --repo; empty for open-egress sandboxes
-			PathPolicies:      f.pathPolicies,    // conveyed via --egress-policy-json on the worktree subprocess path
-			AllowedBranches:   f.allowedBranches,   // S0: nil = default refs/heads/nexus3/* via ResolvedAllowedBranches
-			ProtectedBranches: f.protectedBranches, // T1: nil = no protected-branch enforcement
-			Volumes:           namedVS,       // SD2-6-MOUNT: nil when --mount-named not used
+			AllowedRepo:  f.allowedRepo,  // D-PD-36: set by --repo; empty for open-egress sandboxes
+			PathPolicies: f.pathPolicies, // conveyed via --egress-policy-json on the worktree subprocess path
+			Volumes:      namedVS,        // SD2-6-MOUNT: nil when --mount-named not used
 			NamedVolumeMounts: namedMounts,
 			LiveMounts:        bootLiveMounts, // D-PD-53: populated from --mount flags
 		},

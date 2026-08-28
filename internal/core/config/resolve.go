@@ -41,20 +41,11 @@ type Flags struct {
 // Resolved is the final, merged sandbox configuration after applying the
 // precedence chain: explicit CLI flag > project config > built-in default.
 type Resolved struct {
-	Image             string
-	MemoryMiB         int
-	VCPUs             int
-	EgressAllow       []string
-	Mounts            []string
-	// AllowedBranches holds branches.allowed from the project config.
-	// Empty means "use the service-layer default" (refs/heads/nexus3/**).
-	// The human sandbox create path applies this when no --branches flag was given.
-	AllowedBranches   []string
-	// ProtectedBranches holds branches.protected from the project config.
-	// Empty means no protected-branch enforcement. Populated from the working-tree
-	// config on the human sandbox path; on the agent (herdr) path it is populated
-	// from the trusted base-ref parse via buildWorktreeBranchArgs (D-PDE-17).
-	ProtectedBranches []string
+	Image       string
+	MemoryMiB   int
+	VCPUs       int
+	EgressAllow []string
+	Mounts      []string
 }
 
 // Resolve merges f (CLI flags), cfg (project config), and d (built-in
@@ -112,21 +103,6 @@ func Resolve(f Flags, cfg Config, d Defaults) Resolved {
 	// No built-in default: the built-in allowlist lives in the perimeter layer
 	// and the agent profile, and is applied on top of this by resolveAgentPosture.
 	r.EgressAllow = append(append([]string{}, f.EgressAllow...), cfg.Egress.Allow...)
-
-	// AllowedBranches: from config only (no CLI flag here — the flag is handled
-	// at the call site). When unconfigured, the service layer default applies via
-	// Envelope.ResolvedAllowedBranches. No built-in default is applied here.
-	if len(cfg.Branches.Allowed) > 0 {
-		r.AllowedBranches = append([]string{}, cfg.Branches.Allowed...)
-	}
-
-	// ProtectedBranches: from config only. On the human sandbox path this reads
-	// the working-tree nexus3.yaml; on the agent (herdr) path, the trusted
-	// base-ref parse (buildWorktreeBranchArgs) overwrites this via CreateOptions
-	// before reaching the Envelope (D-PDE-17).
-	if len(cfg.Branches.Protected) > 0 {
-		r.ProtectedBranches = append([]string{}, cfg.Branches.Protected...)
-	}
 
 	// Mounts: flag > config. No built-in default.
 	switch {

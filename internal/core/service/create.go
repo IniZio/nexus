@@ -192,20 +192,10 @@ type CreateAndBootOptions struct {
 	PathPolicies domain.EgressPathPolicies
 
 	// AllowedBranches is the list of git ref patterns the sandbox may push to
-	// through the host-side git MITM. Set by --branches on the human git-VM
-	// create path. When nil the Envelope stores nil and
-	// Envelope.ResolvedAllowedBranches returns the project default
-	// ["refs/heads/nexus3/*"] at runtime. Agent sandboxes do not set this.
+	// through the host-side git MITM. When nil the Envelope stores nil and
+	// Envelope.ResolvedAllowedBranches returns the hardcoded default
+	// ["refs/heads/nexus3/**"] at runtime.
 	AllowedBranches []string
-
-	// ProtectedBranches is the list of git ref patterns that are always denied
-	// by the host-side git MITM regardless of AllowedBranches. Populated from
-	// branches.protected in nexus3.yaml read from the trusted base ref (via the
-	// herdr worktree path) or from --protected-branches on the human create path.
-	// When nil, protected-branch enforcement is disabled (see
-	// Envelope.ResolvedProtectedBranches). Agent sandboxes receive this from the
-	// base-ref config parse in buildWorktreeBranchArgs (T1 plumbing).
-	ProtectedBranches []string
 
 	// ExtraSecretHosts lists additional hostnames to include in
 	// Envelope.SecretHosts without creating a corresponding SecretSpecs entry.
@@ -793,8 +783,7 @@ func CreateAndBoot(
 			SecretSpecs:  secretSpecsFromBinds(opts.Secrets),
 			OpenEgress:      opts.OpenEgress,      // D-PD-33: explicit opt-in; never inferred from empty AllowedHosts
 			AllowedRepo:     opts.AllowedRepo,     // D-PD-36: per-repo path allowlist; enforced below
-			AllowedBranches:   opts.AllowedBranches,   // S0: nil = use default at runtime via ResolvedAllowedBranches
-			ProtectedBranches: opts.ProtectedBranches, // T1: nil = no protected-branch enforcement
+			AllowedBranches: opts.AllowedBranches, // S0: nil = use default at runtime via ResolvedAllowedBranches
 			PathPolicies:    opts.PathPolicies,    // T4: per-secret path policies; converted to mitm.PathPolicies at start
 		},
 		RemoveOnExit:   opts.RemoveOnExit,
