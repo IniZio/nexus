@@ -12,12 +12,16 @@
 // the HostTAP fd and one end of an AF_UNIX SOCK_DGRAM socketpair. The other
 // end is returned to the perimeter layer via GuestNetworkFD.
 //
-// # LEAK-TIGHT invariant
+// # Sysctl invariants
 //
 // No interface ever receives an IPv4 or IPv6 address:
-//   - disable_ipv6=1 is written BEFORE each interface is brought up
-//   - per-interface forwarding=0 (never the global /proc/sys/net/ipv4/ip_forward)
 //   - No "ip addr add" is ever called (enforced by omission)
+//   - per-interface forwarding=0: HARD FAIL if write fails. Container runtimes
+//     (Docker) set net.ipv4.conf.default.forwarding=1 in the parent netns and
+//     new TAP/bridge interfaces inherit that template, so forwarding is not
+//     proven-zero without an explicit successful write.
+//   - disable_ipv6=1: best-effort. IPv6 link-local cannot cross a CLONE_NEWNET
+//     boundary, so a read-only /proc/sys in unprivileged containers is harmless.
 //
 // These sysctl writes happen in applySandboxNetSysctls, called from createTapBridge.
 package cloudhypervisor
@@ -36,6 +40,12 @@ import (
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 )
+
+// sysctlWrite is the function used to write sysctl values.
+// It is a package-level variable so tests can inject failures without root.
+var sysctlWrite = func(path string, data []byte, perm os.FileMode) error {
+	return os.WriteFile(path, data, perm)
+}
 
 const (
 	// tapBufSize is the read buffer for the pump goroutines.
@@ -189,35 +199,37 @@ func unixgramPair() (net.Conn, net.Conn, error) {
 	return a, b, nil
 }
 
-// applySandboxNetSysctls enforces the LEAK-TIGHT invariant on all three
-// sandbox interfaces. Must be called BEFORE ip link set <iface> up.
+// applySandboxNetSysctls writes per-interface sysctls on all three sandbox
+// interfaces. Must be called BEFORE ip link set <iface> up.
 //
-//   - disable_ipv6=1: prevents link-local RA autoconfiguration
-//   - per-interface forwarding=0: no routing through this interface
+// Hard-fail sysctls (returns a wrapped error on write failure):
+//   - net.ipv4.conf.<iface>.forwarding=0: container runtimes (Docker) set
+//     net.ipv4.conf.default.forwarding=1 in the parent netns; new TAP/bridge
+//     interfaces inherit that template. Forwarding is not proven-zero without
+//     an explicit successful write, so failure is fatal.
+//
+// Best-effort sysctls (warn + continue on write failure):
+//   - net.ipv6.conf.<iface>.disable_ipv6=1: IPv6 link-local cannot cross a
+//     CLONE_NEWNET boundary, so failure in unprivileged containers (read-only
+//     /proc/sys) is harmless. A warning is printed; boot continues.
 //
 // The global /proc/sys/net/ipv4/ip_forward is NEVER written — that is
 // host-wide state owned by the host network stack.
-//
-// Both writes are best-effort: when running inside a Docker container without
-// --privileged, /proc/sys is a read-only bind mount from the host that the
-// netns child cannot remount (the kernel blocks it even in a user namespace).
-// The Linux defaults are safe: forwarding defaults to 0 (no routing), and
-// IPv6 link-local addresses in an isolated netns do not leak to the host.
-// A warning is printed to stderr; the VM boot continues normally.
 func applySandboxNetSysctls(guestTap, hostTap, bridge string) error {
 	for _, iface := range []string{guestTap, hostTap, bridge} {
-		// Disable IPv6 before the interface is brought up.
-		v6path := fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/disable_ipv6", iface)
-		if err := os.WriteFile(v6path, []byte("1\n"), 0o644); err != nil {
-			// Best-effort: /proc/sys is read-only in unprivileged containers;
-			// the default (IPv6 enabled but contained in the netns) is harmless.
-			fmt.Fprintf(os.Stderr, "warning: disable_ipv6 for %s: %v (continuing)\n", iface, err)
-		}
 		// Per-interface forwarding=0 (NOT the global ip_forward knob).
+		// HARD FAIL: Docker sets default.forwarding=1 in the parent netns;
+		// new interfaces inherit it, so we cannot skip this write.
 		fwdpath := fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/forwarding", iface)
-		if err := os.WriteFile(fwdpath, []byte("0\n"), 0o644); err != nil {
-			// Best-effort: Linux default is 0 (no forwarding) so this is safe.
-			fmt.Fprintf(os.Stderr, "warning: per-iface forwarding=0 for %s: %v (continuing)\n", iface, err)
+		if err := sysctlWrite(fwdpath, []byte("0\n"), 0o644); err != nil {
+			return fmt.Errorf("applySandboxNetSysctls: forwarding=0 for %s: %w", iface, err)
+		}
+		// Disable IPv6 before the interface is brought up. Best-effort:
+		// /proc/sys is read-only in unprivileged containers, but IPv6
+		// link-local cannot cross a CLONE_NEWNET boundary — harmless to skip.
+		v6path := fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/disable_ipv6", iface)
+		if err := sysctlWrite(v6path, []byte("1\n"), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: disable_ipv6 for %s: %v (continuing)\n", iface, err)
 		}
 	}
 	return nil
@@ -230,11 +242,11 @@ func applySandboxNetSysctls(guestTap, hostTap, bridge string) error {
 //  1. Create bridge interface
 //  2. Create guestTap (CH will TUNSETIFF this at vm.boot)
 //  3. Create hostTap (nexus3 opens this via openHostTap)
-//  4. Apply LEAK-TIGHT sysctls BEFORE bringing interfaces up
+//  4. Apply sysctls BEFORE bringing interfaces up (forwarding hard-fail; disable_ipv6 best-effort)
 //  5. Enslave both taps to the bridge
 //  6. Bring all three interfaces up
 //
-// No IP address is ever assigned to any interface (LEAK-TIGHT invariant).
+// No IP address is ever assigned to any interface.
 func createTapBridge(guestTap, hostTap, bridge string) error {
 	run := func(args ...string) error {
 		out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
@@ -257,7 +269,7 @@ func createTapBridge(guestTap, hostTap, bridge string) error {
 		return err
 	}
 
-	// LEAK-TIGHT: apply sysctls BEFORE bringing interfaces up.
+	// Apply sysctls BEFORE bringing interfaces up (forwarding hard-fail; disable_ipv6 best-effort).
 	if err := applySandboxNetSysctls(guestTap, hostTap, bridge); err != nil {
 		_ = run("ip", "tuntap", "del", hostTap, "mode", "tap")
 		_ = run("ip", "tuntap", "del", guestTap, "mode", "tap")

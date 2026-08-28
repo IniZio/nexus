@@ -167,7 +167,7 @@ func PullAndCacheOCI(ctx context.Context, ociRef string, c *image.Cache, agentBy
 //  4. /etc/securetty — ttyS0 appended for serial console login
 //  5. /etc/resolv.conf — seeded with public DNS; guest agent overwrites after boot
 func addUserRunLayers(stagingDir string, agentBytes []byte, img v1.Image) error {
-	// 1 + 2. nexus3-agent binary at /sbin/ and /usr/local/bin/.
+	// nexus3-agent binary at /sbin/ and /usr/local/bin/.
 	for _, rel := range []string{"sbin/nexus3-agent", "usr/local/bin/nexus3-agent"} {
 		dst := filepath.Join(stagingDir, rel)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
@@ -179,7 +179,7 @@ func addUserRunLayers(stagingDir string, agentBytes []byte, img v1.Image) error 
 		}
 	}
 
-	// 3. /etc/nexus3/boot.json from the OCI image config.
+	// /etc/nexus3/boot.json from the OCI image config.
 	cf, err := img.ConfigFile()
 	if err != nil {
 		return fmt.Errorf("read OCI config file: %w", err)
@@ -204,7 +204,7 @@ func addUserRunLayers(stagingDir string, agentBytes []byte, img v1.Image) error 
 		}
 	}
 
-	// 4. /etc/securetty — add ttyS0 for serial console login.
+	// /etc/securetty — add ttyS0 for serial console login.
 	securetty := filepath.Join(stagingDir, "etc", "securetty")
 	if err := os.MkdirAll(filepath.Dir(securetty), 0o755); err != nil {
 		return fmt.Errorf("mkdir /etc for securetty: %w", err)
@@ -215,11 +215,16 @@ func addUserRunLayers(stagingDir string, agentBytes []byte, img v1.Image) error 
 		if err != nil {
 			return fmt.Errorf("open /etc/securetty: %w", err)
 		}
-		_, _ = f.WriteString("ttyS0\n")
-		_ = f.Close()
+		if _, err := f.WriteString("ttyS0\n"); err != nil {
+			f.Close()
+			return fmt.Errorf("securetty: write ttyS0: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("securetty: close: %w", err)
+		}
 	}
 
-	// 5. /etc/resolv.conf — replace any symlink with a real file (some images
+	// /etc/resolv.conf — replace any symlink with a real file (some images
 	// use a symlink that points to a path that only exists inside the running
 	// container, not in the offline ext4 image).
 	etcDir := filepath.Join(stagingDir, "etc")

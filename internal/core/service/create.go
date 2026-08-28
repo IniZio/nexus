@@ -29,6 +29,10 @@ import (
 // guest agent does not become reachable within the configured timeout.
 var ErrAgentUnreachable = errors.New("service: guest agent did not answer after VM boot")
 
+// ErrAgentBytesRequired is returned by CreateAndBoot when an OCI pull is
+// required but no agent binary was supplied in CreateAndBootOptions.
+var ErrAgentBytesRequired = errors.New("no agent binary available for OCI pull (set AgentBytes in CreateAndBootOptions)")
+
 // testHookBeforeStoreCreate is called inside CreateAndBoot immediately before
 // svc.store.Create commits the sandbox record. It is nil in production and is
 // set only by tests that need to observe the volume-lease state in the D2
@@ -1146,7 +1150,7 @@ func resolveExt4(
 			// inject the nexus3-agent binary, and store in the image cache. Then
 			// recurse by digest so the path is returned from the single-match branch.
 			if len(agentBytes) == 0 {
-				return "", "", fmt.Errorf("resolve image: no cached image with ref %q and no agent binary available for OCI pull (set AgentBytes in CreateAndBootOptions)", spec.Ref)
+				return "", "", fmt.Errorf("resolve image: no cached image with ref %q: %w", spec.Ref, ErrAgentBytesRequired)
 			}
 			digest, pullErr := builderimage.PullAndCacheOCI(ctx, spec.Ref, cache, agentBytes)
 			if pullErr != nil {

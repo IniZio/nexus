@@ -5,19 +5,16 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/IniZio/nexus3/internal/core/agent"
 	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus3/internal/core/vmcfg"
 	mcpsrv "github.com/IniZio/nexus3/internal/mcp"
 )
 
@@ -41,10 +38,10 @@ type mcpService struct {
 }
 
 // CreateAndBoot implements mcpsrv.SandboxService. It opens the image cache,
-// builds a per-call cloud-hypervisor driver factory, and delegates to the
-// package-level service.CreateAndBoot — identical to runSandboxCreate's boot
-// path. opts.CacheRoot is always set from m.cacheRoot (the tool does not
-// expose cache_root as a parameter).
+// builds a per-call cloud-hypervisor driver factory via the shared
+// buildSandboxDriverFactory seam, and delegates to service.CreateAndBoot.
+// opts.CacheRoot is always set from m.cacheRoot (the tool does not expose
+// cache_root as a parameter).
 func (m *mcpService) CreateAndBoot(ctx context.Context, project, name string, opts service.CreateAndBootOptions) (domain.Sandbox, error) {
 	// Preflight: validate the kernel path before image-cache or driver setup so
 	// that a missing/misconfigured NEXUS3_KERNEL_PATH surfaces immediately with
@@ -60,41 +57,23 @@ func (m *mcpService) CreateAndBoot(ctx context.Context, project, name string, op
 	if err != nil {
 		return domain.Sandbox{}, fmt.Errorf("open image cache: %w", err)
 	}
-	newDriver := func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
-		cfg := buildCHConfig(kernelPath, ext4Path, opts.MemoryMiB, opts.VCPUs)
-		cfg.NestedVirt = opts.NestedVirt
-		for _, ed := range extraDisks {
-			cfg.ExtraDisks = append(cfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: ed.Path})
-		}
-		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
-			cfg.BinaryPath = p
-		}
-		return cloudhypervisor.New(cfg)
-	}
 
-	probe := func(ctx context.Context, drv driver.Driver, id domain.SandboxID) error {
-		gd, ok := drv.(driver.GuestDialer)
-		if !ok {
-			return nil
-		}
-		// Poll with 300 ms back-off: CH's vsock multiplexer returns EOF while
-		// the virtio-vsock device is still being negotiated by the guest.
-		for {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			conn, err := gd.DialGuest(dialCtx, id, driver.AgentControlPort)
-			cancel()
-			if err == nil {
-				_ = conn.Close()
-				return nil
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
-	}
+	// Resolve auto-resize bounds so MCP-created sandboxes carry the same
+	// MemoryMaxMiB / VCPUMax hotplug configuration as CLI-created ones.
+	ar := vmcfg.Resolve(vmcfg.Config{BootMemMiB: opts.MemoryMiB, BootVCPUs: opts.VCPUs})
 
-	return service.CreateAndBoot(ctx, m.Service, imgCache, newDriver, probe, project, name, opts)
+	newDriver := buildSandboxDriverFactory(sandboxDriverSpec{
+		KernelPath:   kernelPath,
+		MemoryMiB:    opts.MemoryMiB,
+		VCPUs:        opts.VCPUs,
+		MemoryMaxMiB: ar.MemoryMaxMiB,
+		VCPUMax:      ar.VCPUMax,
+		NestedVirt:   opts.NestedVirt,
+		PID1Args:     ar.PID1Args,
+		SBHandle:     project + "/" + name,
+	}, nil)
+
+	return service.CreateAndBoot(ctx, m.Service, imgCache, newDriver, vsockProbe, project, name, opts)
 }
 
 // Exec implements mcpsrv.SandboxService.Exec. It captures stdout and stderr
@@ -114,9 +93,9 @@ func (m *mcpService) Exec(ctx context.Context, ref string, argv []string, env ma
 	return code, outBuf.String(), errBuf.String(), err
 }
 
-// RunEphemeral implements mcpsrv.SandboxService.RunEphemeral. It performs the
-// same driver-setup as CreateAndBoot, delegates to service.RunEphemeral, and
-// returns captured output as strings.
+// RunEphemeral implements mcpsrv.SandboxService.RunEphemeral. It uses the
+// shared buildSandboxDriverFactory seam (identical wiring as CreateAndBoot),
+// delegates to service.RunEphemeral, and returns captured output as strings.
 func (m *mcpService) RunEphemeral(ctx context.Context, project, name string, opts service.CreateAndBootOptions, argv []string, env map[string]string, cwd, stdin string) (int32, string, string, error) {
 	kernelPath, err := resolveKernelPath()
 	if err != nil {
@@ -129,41 +108,26 @@ func (m *mcpService) RunEphemeral(ctx context.Context, project, name string, opt
 	if err != nil {
 		return 0, "", "", fmt.Errorf("open image cache: %w", err)
 	}
-	newDriver := func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
-		cfg := buildCHConfig(kernelPath, ext4Path, opts.MemoryMiB, opts.VCPUs)
-		cfg.NestedVirt = opts.NestedVirt
-		for _, ed := range extraDisks {
-			cfg.ExtraDisks = append(cfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: ed.Path})
-		}
-		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
-			cfg.BinaryPath = p
-		}
-		return cloudhypervisor.New(cfg)
-	}
 
-	probe := func(ctx context.Context, drv driver.Driver, id domain.SandboxID) error {
-		gd, ok := drv.(driver.GuestDialer)
-		if !ok {
-			return nil
-		}
-		for {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			conn, err := gd.DialGuest(dialCtx, id, driver.AgentControlPort)
-			cancel()
-			if err == nil {
-				_ = conn.Close()
-				return nil
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
-	}
+	// Resolve auto-resize bounds so MCP-run sandboxes carry MemoryMaxMiB /
+	// VCPUMax hotplug configuration identical to the sandbox-create path.
+	ar := vmcfg.Resolve(vmcfg.Config{BootMemMiB: opts.MemoryMiB, BootVCPUs: opts.VCPUs})
+
+	newDriver := buildSandboxDriverFactory(sandboxDriverSpec{
+		KernelPath:   kernelPath,
+		MemoryMiB:    opts.MemoryMiB,
+		VCPUs:        opts.VCPUs,
+		MemoryMaxMiB: ar.MemoryMaxMiB,
+		VCPUMax:      ar.VCPUMax,
+		NestedVirt:   opts.NestedVirt,
+		PID1Args:     ar.PID1Args,
+		SBHandle:     project + "/" + name,
+	}, nil)
 
 	var outBuf, errBuf bytes.Buffer
-	code, err := service.RunEphemeral(ctx, m.Service, imgCache, newDriver, probe,
-		project, name, opts, argv, env, cwd,
+	code, err := service.RunEphemeral(ctx, m.Service, imgCache, newDriver, vsockProbe,
+		project, name, opts,
+		service.ExecOptions{Argv: argv, Env: env, Cwd: cwd},
 		strings.NewReader(stdin), &outBuf, &errBuf)
 	return code, outBuf.String(), errBuf.String(), err
 }

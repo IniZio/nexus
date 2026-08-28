@@ -2,8 +2,10 @@ package cloudhypervisor
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -337,6 +339,59 @@ func TestGuestNetworkFD_NoState(t *testing.T) {
 	_, err := d.GuestNetworkFD(context.Background(), id)
 	if err == nil {
 		t.Fatal("expected error for unknown sandbox, got nil")
+	}
+}
+
+// TestApplySandboxNetSysctls_ForwardingHardFail verifies that a write failure
+// on net.ipv4.conf.<iface>.forwarding causes applySandboxNetSysctls to return
+// a non-nil error. This is the hard-fail path: Docker sets default.forwarding=1
+// in the parent netns, so new interfaces may inherit it; the write must succeed.
+//
+// Mutation proof: reverting the forwarding branch to best-effort (log + continue)
+// makes this test go RED because applySandboxNetSysctls would return nil.
+func TestApplySandboxNetSysctls_ForwardingHardFail(t *testing.T) {
+	injected := errors.New("injected: read-only filesystem")
+	orig := sysctlWrite
+	t.Cleanup(func() { sysctlWrite = orig })
+
+	sysctlWrite = func(path string, data []byte, perm os.FileMode) error {
+		// Fail all forwarding writes; succeed on everything else.
+		if len(path) > 0 && path[len(path)-len("forwarding"):] == "forwarding" {
+			return injected
+		}
+		return nil
+	}
+
+	err := applySandboxNetSysctls("nx3g-test", "nx3h-test", "nx3b-test")
+	if err == nil {
+		t.Fatal("expected non-nil error from forwarding hard-fail, got nil")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("error chain does not contain injected error: %v", err)
+	}
+}
+
+// TestApplySandboxNetSysctls_DisableIPv6BestEffort verifies that a write
+// failure on net.ipv6.conf.<iface>.disable_ipv6 does NOT cause
+// applySandboxNetSysctls to return an error. IPv6 link-local cannot cross a
+// CLONE_NEWNET boundary, so a read-only /proc/sys in unprivileged containers
+// is harmless; the 697de17 best-effort reasoning stands for this sysctl.
+func TestApplySandboxNetSysctls_DisableIPv6BestEffort(t *testing.T) {
+	orig := sysctlWrite
+	t.Cleanup(func() { sysctlWrite = orig })
+
+	sysctlWrite = func(path string, data []byte, perm os.FileMode) error {
+		// Fail all disable_ipv6 writes; succeed on forwarding.
+		if len(path) > len("disable_ipv6") &&
+			path[len(path)-len("disable_ipv6"):] == "disable_ipv6" {
+			return errors.New("injected: read-only filesystem")
+		}
+		return nil
+	}
+
+	err := applySandboxNetSysctls("nx3g-test", "nx3h-test", "nx3b-test")
+	if err != nil {
+		t.Fatalf("expected nil error for best-effort disable_ipv6 failure, got: %v", err)
 	}
 }
 
