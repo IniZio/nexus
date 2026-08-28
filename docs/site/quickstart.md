@@ -77,13 +77,21 @@ nexus3 doctor
 
 ## Your first sandbox
 
-The examples below use `nexus3-base:20260807`. Build it first if you don't have it:
+**Option A — run a stock OCI image directly (no build needed):**
+
+```
+nexus3 run alpine:3.20 -- sh -c 'echo hello; cat /etc/os-release | head -1'
+```
+
+Standard Docker Hub / OCI images are pulled on demand and cached by ref. Second run hits the cache.
+
+**Option B — build a custom image first:**
 
 ```
 nexus3 image build --workspace . --ref nexus3-base:20260807
 ```
 
-`--workspace` is the directory containing `.nexus/Containerfile`. See [Building images](/recipes/building-images) for Containerfile details.
+`--workspace` is the directory containing `.nexus/Containerfile`. See [Building images](/recipes/building-images) for Containerfile details. The examples below use `nexus3-base:20260807`.
 
 ### 1. Create and boot
 
@@ -130,13 +138,21 @@ nexus3 rm myproject/hello
 
 ---
 
-## Ephemeral one-shot with `run`
+## Ephemeral one-shot with `run` <Badge type="tip" text="built" />
+
+`run` creates, boots, runs, and removes the sandbox unconditionally on exit — including on Ctrl-C or a crash. The sandbox is gone when `run` returns.
+
+Run a stock OCI image directly — no pre-build required:
+
+```
+nexus3 run alpine:3.20 -- sh -c 'echo hello; uname -r'
+```
+
+Or run against a custom-built image:
 
 ```
 nexus3 run --memory 2048 nexus3-base:20260807 -- go test ./...
 ```
-
-`run` creates, boots, runs, and removes the sandbox unconditionally on exit — including on Ctrl-C or a crash. The sandbox is gone when `run` returns.
 
 ---
 

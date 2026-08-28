@@ -7,8 +7,34 @@ description: "Build custom guest images from a Containerfile and boot a sandbox 
 
 > Produce a custom ext4 guest image from a Containerfile and boot a sandbox against it — using the in-VM buildkitd, no external Docker daemon required.
 
-nexus3 sandboxes boot from ext4 guest images. Build a custom one from a Containerfile or use a
-pre-built base image directly.
+nexus3 sandboxes boot from ext4 guest images. You have two paths: run a stock OCI image directly (no build step), or build a custom image from a Containerfile.
+
+---
+
+## Run a stock OCI image directly <Badge type="tip" text="built" />
+
+For unmodified Docker Hub / OCI images, no build step is needed. Pass the registry ref directly to `nexus3 run` or `nexus3 create --image`:
+
+```sh
+nexus3 run alpine:3.20 -- sh -c 'echo hello; cat /etc/os-release | head -1'
+nexus3 run debian:bookworm-slim -- cat /etc/debian_version
+nexus3 run python:3.12 -- python3 -c 'import sys; print(sys.version)'
+```
+
+nexus3 checks its local image store first. On a cache miss the image is pulled from the registry, converted to a bootable ext4 rootfs, and cached by ref. Subsequent runs of the same ref skip the pull.
+
+> **Egress requirement:** the initial pull needs outbound HTTPS to the registry (e.g. `registry-1.docker.io`). Ensure the host's egress policy allows the registry host, or add it to `egress.policy` in `nexus3.yaml`.
+
+Use this path when:
+- You want to try a stock runtime quickly.
+- The image needs no customisation.
+- You do not want to manage a Containerfile.
+
+For iterative development or custom tooling, build a custom image (below) so you control the dependency set and avoid repeated network pulls.
+
+---
+
+## Build a custom image from a Containerfile
 
 **1. Write a Containerfile**
 

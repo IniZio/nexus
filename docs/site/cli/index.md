@@ -84,7 +84,7 @@ There are two envelope shapes, deliberately kept separate.
 
 `truncated` is non-null only when a response was cut; currently wired for `sandbox_list` only (64 KiB cap). The two shapes are kept separate because shell and CI pipelines need `kind` routing and forward-compatible versioning, while MCP tool-call handlers need a minimal success/failure shape with truncation signalling.
 
-**MCP scope is deliberately lifecycle-only.** The MCP server exposes exactly 7 tools: `sandbox_create`, `sandbox_list`, `sandbox_start`, `sandbox_stop`, `sandbox_pause`, `sandbox_resume`, and `sandbox_remove`. Snapshot, fork, restore, exec, forward, image build, and auth operations are CLI-only. The `sandbox_` prefix is kept across all tool names because MCP tool names live in a single flat namespace shared with every other MCP server an orchestrator may load; namespacing by noun avoids collisions without requiring a per-server prefix convention.
+**MCP scope covers lifecycle and execution.** The MCP server exposes 9 tools: the 7 lifecycle tools (`sandbox_create`, `sandbox_list`, `sandbox_start`, `sandbox_stop`, `sandbox_pause`, `sandbox_resume`, `sandbox_remove`) plus `sandbox_exec` (run a command in an existing sandbox) and `sandbox_run` (ephemeral create+boot+exec+remove in one call). Snapshot, fork, restore, forward, image build, and auth operations remain CLI-only. The `sandbox_` prefix is kept across all tool names because MCP tool names live in a single flat namespace shared with every other MCP server an orchestrator may load; namespacing by noun avoids collisions without requiring a per-server prefix convention.
 
 ## Target surface gaps
 
