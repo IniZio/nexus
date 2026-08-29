@@ -5,7 +5,8 @@
 # or runs run.sh itself — no proof re-implements the behaviour under test.
 # Each proof shows the test FAILS against a pre-fix version (confirms the bug)
 # and PASSES against the current run.sh (confirms the fix).
-# Pre-fix refs: 0bbb84f (proofs a–e), 6568d2b (proof f / FIX 1), 0c773bd (proof g / W17 over-report).
+# Pre-fix refs: 0bbb84f (proofs a–e), 6568d2b (proof f / FIX 1), 0c773bd (proof g / W17 over-report),
+#               7f9208f (proof h / W18 freespace-failopen), 7f9208f (proof i / digest-check isolation).
 #
 # Usage: bash internal/test/repro/mutation_proofs.sh
 # Requirements: debugfs, mkfs.ext4 (e2fsprogs), git (for pre-fix extraction)
@@ -387,6 +388,169 @@ assert_contains     "g/post: post-fix dead probe → HARNESS INTEGRITY FAILURE" 
     "$verdict_g_post" "HARNESS INTEGRITY FAILURE"
 assert_not_contains "g/post: post-fix NOT TRUNCATION REPRODUCED" \
     "$verdict_g_post" "TRUNCATION REPRODUCED"
+
+# ── PROOF (h): dead ext4_free_mb (stats yields nothing) → HARNESS_INTEGRITY_FAIL(FREESPACE_PROBE_DEAD ──
+# Bug: pre-fix ext4_free_mb coerces empty stats to integer 0 via bash arithmetic.
+# fill_ext4_pressure then computes fill_mb=(0-target)<0, silently returns 1, and
+# the Phase 5 caller logs "fill skipped (already at/below target)" — zero builds
+# run, zero failures emitted, exit 0. A dead instrument reports clean.
+# Post-fix: ext4_free_mb returns DEBUGFS_ERR, fill_ext4_pressure emits
+# HARNESS_INTEGRITY_FAIL(FREESPACE_PROBE_DEAD and increments TOTAL_FAIL, the
+# Phase 5 caller logs "fill aborted due to error", and the verdict is
+# HARNESS INTEGRITY FAILURE — never NO TRUNCATION OBSERVED.
+# PROOF: run the full script with --disk-pressure and a debugfs stub that yields
+# nothing for stats (simulating absent/unclean/held buildkit.ext4).
+echo ""
+echo "=== PROOF (h): dead ext4_free_mb probe → HARNESS_INTEGRITY_FAIL(FREESPACE_PROBE_DEAD + HARNESS INTEGRITY FAILURE ==="
+
+PRE7F="$SCRATCHPAD/run_7f9208f.sh"
+git show 7f9208f:internal/test/repro/run.sh > "$PRE7F"
+
+# Override debugfs stub: returns nothing for any command (including stats).
+STUB_DIR_H="$SCRATCHPAD/stubs_h"
+cp -r "$STUB_DIR/." "$STUB_DIR_H/"
+cat > "$STUB_DIR_H/debugfs" << 'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$STUB_DIR_H/debugfs"
+
+run_h_script() {
+    local src="$1"
+    PATH="$STUB_DIR_H:$PATH" \
+    NEXUS3="nexus3" \
+    NEXUS3_STATE_DIR="$NEXUS3_STATE" \
+    NEXUS3_BUILD_TASK_TIMEOUT="5s" \
+    BASH_BUILD_TIMEOUT=10 \
+    bash "$src" 1 --disk-pressure 2>&1 || true
+}
+
+pre_h=$(run_h_script "$PRE7F")
+post_h=$(run_h_script "$POST_RUN")
+
+pre_h_result=$(echo "$pre_h" | grep 'RESULT:' | tail -1)
+post_h_result=$(echo "$post_h" | grep 'RESULT:' | tail -1)
+echo "  PRE-FIX  (7f9208f) RESULT: $pre_h_result"
+echo "  POST-FIX RESULT: $post_h_result"
+
+# Pre-fix: dead probe silently coerces to 0 → fill skipped → no FREESPACE_PROBE_DEAD token.
+assert_not_contains \
+    "h/pre: pre-fix does NOT emit HARNESS_INTEGRITY_FAIL(FREESPACE_PROBE_DEAD (confirms bug; proof valid)" \
+    "$pre_h" "HARNESS_INTEGRITY_FAIL(FREESPACE_PROBE_DEAD"
+
+# Post-fix: dead probe produces FREESPACE_PROBE_DEAD token, verdict is HARNESS INTEGRITY FAILURE.
+assert_contains \
+    "h/post: post-fix emits HARNESS_INTEGRITY_FAIL(FREESPACE_PROBE_DEAD" \
+    "$post_h" "HARNESS_INTEGRITY_FAIL(FREESPACE_PROBE_DEAD"
+assert_contains \
+    "h/post: verdict is HARNESS INTEGRITY FAILURE" \
+    "$post_h_result" "HARNESS INTEGRITY FAILURE"
+assert_not_contains \
+    "h/post: verdict is NOT NO TRUNCATION OBSERVED" \
+    "$post_h_result" "NO TRUNCATION OBSERVED"
+
+# ── PROOF (i): digest-check unique case — non-empty dump with invalid sha256 output ──
+# Covers the ^[0-9a-f]{64}$ guard's unique case: a file that passes [[ ! -s ]] (non-empty
+# dump output exists) but whose sha256sum output is NOT a valid 64-hex digest.
+# Without this guard the function would try to compare a garbage got_hash against
+# exp_hash, and the [[ != ]] branch would emit HASH_FAIL( (counting as truncation
+# evidence), fabricating a reproduction. The guard routes it through emit_fail instead.
+# PROOF: stub sha256sum to produce "ABC" (non-hex, non-64-char) and debugfs to write
+# a 1-byte file to simulate a non-empty dump. Confirm post-fix emits
+# HARNESS_INTEGRITY_FAIL(sha256_failed and NOT HASH_FAIL(. Mutation: delete the
+# digest-check block from a scratch copy and confirm the proof fails.
+echo ""
+echo "=== PROOF (i): non-empty dump with invalid sha256 output → HARNESS_INTEGRITY_FAIL(sha256_failed, not HASH_FAIL( ==="
+
+STUB_DIR_I="$SCRATCHPAD/stubs_i"
+mkdir -p "$STUB_DIR_I"
+# sha256sum stub: always outputs "ABC  filename" (non-hex, 3 chars — fails ^[0-9a-f]{64}$).
+cat > "$STUB_DIR_I/sha256sum" << 'STUB'
+#!/usr/bin/env bash
+echo "ABC  $1"
+STUB
+chmod +x "$STUB_DIR_I/sha256sum"
+# debugfs stub: for dump writes a 1-byte file to the output path (non-empty → passes [[ ! -s ]]).
+STUB_DIR_I_DBFS="$STUB_DIR_I/debugfs"
+cat > "$STUB_DIR_I_DBFS" << 'STUBEOF'
+#!/usr/bin/env bash
+# Parse: debugfs -R "dump /testfiles/FILE OUTPATH" IMG
+# Extract OUTPATH from the -R argument.
+for arg in "$@"; do
+    if [[ "$arg" =~ ^dump[[:space:]] ]]; then
+        out_path=$(echo "$arg" | awk '{print $3}')
+        echo "x" > "$out_path"
+        break
+    fi
+done
+exit 0
+STUBEOF
+chmod +x "$STUB_DIR_I_DBFS"
+
+_run_digest_check() {
+    local src="$1"
+    local iscript="$SCRATCHPAD/proof_i_$$.sh"
+    local i_verify="$SCRATCHPAD/i_verify_$$"
+    {
+        _extract_func "$src" "emit_fail"
+        _extract_func "$src" "stage_b_verify_hashes"
+        _extract_func "$src" "count_trunc_evidence"
+        printf 'log() { echo "$*"; }\n'
+        printf 'VERIFY_TMPDIR="%s"\n' "$i_verify"
+        printf 'mkdir -p "$VERIFY_TMPDIR"\n'
+        printf 'HASH_VERIFIED_FILES=(file_elf)\n'
+        printf 'declare -A EXPECTED_HASHES=([file_elf]="%s")\n' \
+            "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344"
+        printf 'TOTAL_FAIL=0\n'
+        printf 'TOTAL_TRUNC=0\n'
+        printf 'hash_line=$(PATH="%s:$PATH" stage_b_verify_hashes "dummy.img") || (( TOTAL_FAIL++ )) || true\n' "$STUB_DIR_I"
+        printf '_th=$(count_trunc_evidence "$hash_line")\n'
+        printf '(( TOTAL_TRUNC += _th )) || true\n'
+        printf 'echo "hash_line=${hash_line}"\n'
+        _extract_verdict "$src"
+    } > "$iscript"
+    PATH="$STUB_DIR_I:$PATH" bash "$iscript" 2>/dev/null || true
+    rm -f "$iscript"
+    rm -rf "$i_verify"
+}
+
+# Scratch copy for mutation: delete the digest-check block.
+MUTANT_I="$SCRATCHPAD/run_mutant_i.sh"
+cp "$POST_RUN" "$MUTANT_I"
+# Delete the 5-line digest-check block (from the regex guard through the continue).
+python3 - "$MUTANT_I" << 'PYEOF'
+import sys, re
+src = open(sys.argv[1]).read()
+# Remove the digest-check block: if [[ ! "$got_hash" =~ ... ]]; then ... continue\n    fi
+patched = re.sub(
+    r"        # A real sha256 digest.*?        fi\n",
+    "",
+    src,
+    flags=re.DOTALL
+)
+open(sys.argv[1], 'w').write(patched)
+PYEOF
+
+post_i=$(_run_digest_check "$POST_RUN")
+mutant_i=$(_run_digest_check "$MUTANT_I")
+
+echo "  POST-FIX result (last 3 lines): $(echo "$post_i" | tail -3)"
+echo "  MUTANT   result (last 3 lines): $(echo "$mutant_i" | tail -3)"
+
+assert_contains \
+    "i/post: post-fix emits HARNESS_INTEGRITY_FAIL(sha256_failed" \
+    "$post_i" "HARNESS_INTEGRITY_FAIL(sha256_failed"
+assert_not_contains \
+    "i/post: post-fix does NOT emit HASH_FAIL(" \
+    "$post_i" "HASH_FAIL("
+# Mutation: without the digest-check block, invalid sha256 output falls through to
+# the [[ != ]] comparison and emits HASH_FAIL( instead of sha256_failed.
+assert_contains \
+    "i/mutant: without digest check, emits HASH_FAIL( (confirms proof has bite)" \
+    "$mutant_i" "HASH_FAIL("
+assert_not_contains \
+    "i/mutant: without digest check, does NOT emit sha256_failed" \
+    "$mutant_i" "HARNESS_INTEGRITY_FAIL(sha256_failed"
 
 # ── Final syntax checks ────────────────────────────────────────────────────────
 echo ""
