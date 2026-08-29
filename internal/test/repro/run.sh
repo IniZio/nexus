@@ -196,14 +196,32 @@ stage_b_verify_hashes() {
         fi
         local tmp_path="${VERIFY_TMPDIR}/${f}"
         # debugfs dump extracts the file from the ext4 image.
+        # NOTE: debugfs is fail-open — it exits 0 even for a missing path and
+        # creates no output file. Never trust the exit code alone.
         debugfs -R "dump /testfiles/${f} ${tmp_path}" "$img" 2>/dev/null || {
-            hash_results+=("${f}=HASH_DUMP_FAIL(file=${f})")
+            hash_results+=("${f}=$(emit_fail "dump_cmd_fail,file=${f}")")
             any_fail=1
             continue
         }
+        # Confirm the dump produced a non-empty file. A missing path exits 0 and
+        # creates nothing — that is a harness integrity failure, not truncation evidence.
+        if [[ ! -s "$tmp_path" ]]; then
+            rm -f "$tmp_path"
+            hash_results+=("${f}=$(emit_fail "dump_no_output,file=${f}")")
+            any_fail=1
+            continue
+        fi
         local got_hash
-        got_hash=$(sha256sum "$tmp_path" 2>/dev/null | cut -d' ' -f1) || got_hash="SHA256_FAILED"
+        got_hash=$(sha256sum "$tmp_path" 2>/dev/null | cut -d' ' -f1) || got_hash=""
         rm -f "$tmp_path"
+        # A real sha256 digest is exactly 64 lowercase hex characters. Anything
+        # else (empty string, truncated output) is a harness integrity failure —
+        # route through emit_fail, never count as truncation evidence.
+        if [[ ! "$got_hash" =~ ^[0-9a-f]{64}$ ]]; then
+            hash_results+=("${f}=$(emit_fail "sha256_failed,file=${f},got=${got_hash:0:12}")")
+            any_fail=1
+            continue
+        fi
         if [[ "$got_hash" == "$exp_hash" ]]; then
             hash_results+=("${f}=HASH_PASS")
         else
@@ -229,9 +247,10 @@ TOTAL_PASS_P3=0   # Phase 3 Stage-B-only passes (Stage-A never captured in concu
 # Counts TRUNCATED_AT_32MiB + FAIL(exp=N,got=M) + HASH_FAIL( (content-hash mismatch).
 # HASH_FAIL( is the sole detector for file_32m (whose correct size equals the truncation
 # boundary — a size check alone cannot distinguish truncation from intact content).
-# Does NOT count HASH_DUMP_FAIL( (a harness fault, not truncation evidence) or
-# HARNESS_INTEGRITY_FAIL( tokens. HASH_DUMP_FAIL( does not contain HASH_FAIL( as a
-# substring, so grep -oF 'HASH_FAIL(' is unambiguous and excludes it correctly.
+# HASH_FAIL( is emitted ONLY when got_hash is a valid 64-hex-char sha256 digest that
+# differs from expected. Dead probes (missing dump output, sha256 failures) are routed
+# through emit_fail and produce HARNESS_INTEGRITY_FAIL(, never counted here.
+# Does NOT count HARNESS_INTEGRITY_FAIL( tokens.
 count_trunc_evidence() {
     local line="$1"
     local t m h
