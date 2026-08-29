@@ -142,9 +142,17 @@ emit_fail() {
 }
 
 list_digests_sorted() {
-    "$NEXUS3" --json image ls 2>/dev/null \
-        | jq -r '.data.images[].digest' 2>/dev/null \
-        | sort || true
+    # FIX 4(c): Capture nexus3 exit code separately so a command failure
+    # returns a sentinel instead of empty string. Empty string is silently
+    # coerced to "no images" by comm -13, turning every pre-existing digest
+    # into a "new" one — before-only-dead is NOT caught by NO_NEW_IMAGE.
+    local _out _ec=0
+    _out=$("$NEXUS3" --json image ls 2>/dev/null) || _ec=$?
+    if [[ $_ec -ne 0 ]]; then
+        echo "LIST_DIGESTS_FAILED"
+        return 0
+    fi
+    echo "$_out" | jq -r '.data.images[].digest' 2>/dev/null | sort || true
 }
 
 BUILDER_SUPERVISORS_DIR="${NEXUS3_STATE_DIR:-$HOME/.local/state/nexus3}/builder-supervisors"
@@ -425,6 +433,16 @@ setup_test_files() {
     for f in "${HASH_VERIFIED_FILES[@]}"; do
         local fp="${tf_dir}/${f}"
         local h; h=$(sha256sum "$fp" | cut -d' ' -f1)
+        # FIX 4(a): Guard the EXPECTED side with the same ^[0-9a-f]{64}$ check
+        # that :220 applies to the observed side. A malformed expected hash would
+        # make every valid got_hash mismatch → HASH_FAIL( → counted as truncation
+        # evidence → fabricated "TRUNCATION REPRODUCED". Leave the hash unset so
+        # stage_b_verify_hashes' no_expected_hash guard fires (HARNESS_INTEGRITY_FAIL),
+        # not HASH_FAIL.
+        if [[ ! "$h" =~ ^[0-9a-f]{64}$ ]]; then
+            log "  ${f}: sha256sum returned invalid digest '${h:0:12}' — expected hash NOT stored"
+            continue
+        fi
         EXPECTED_HASHES["$f"]="$h"
         log "  ${f}: sha256=${h:0:16}… size=${EXPECTED_SIZES[$f]}"
     done
@@ -789,7 +807,13 @@ parse_manifest_stage_a() {
     # Check nexus3-agent binary (original fault seam).
     local agent_msize="${msizes[usr/sbin/nexus3-agent]:-}"
     local agent_exp; agent_exp=$(stat -c '%s' "$AGENT_BIN" 2>/dev/null || echo 0)
-    if [[ -z "$agent_msize" ]]; then
+    # FIX 4(b): Guard agent_exp==0 (missing reference binary) the same way
+    # stage_b_check_agent_size does at :290-296. Without this guard,
+    # MANIFEST_FAIL(exp=0,got=N) would count as truncation evidence —
+    # fabricated "TRUNCATION REPRODUCED" when the harness is misconfigured.
+    if [[ "$agent_exp" -eq 0 ]]; then
+        tokens+=("nexus3-agent=$(emit_fail "no_host_ref,AGENT_BIN=${AGENT_BIN}")")
+    elif [[ -z "$agent_msize" ]]; then
         tokens+=("nexus3-agent=$(emit_fail "manifest_absent,file=nexus3-agent")")
     elif [[ "$agent_msize" == "$agent_exp" ]]; then
         tokens+=("nexus3-agent=OK(${agent_msize}B)")
@@ -834,6 +858,17 @@ run_one_iteration() {
 
     log "=== ${label}: pre-build image list ==="
     local before; before=$(list_digests_sorted)
+    # FIX 4(c): before-only-dead guard. If nexus3 image ls fails BEFORE the
+    # build, comm -13 returns every AFTER digest as "new" — Stage B then
+    # measures a pre-existing image and can report all-PASS. Detect the
+    # sentinel and count as harness integrity failure.
+    if [[ "$before" == "LIST_DIGESTS_FAILED" ]]; then
+        local _blf_tok; _blf_tok=$(emit_fail "IMAGE_LIST_FAILED,stage=before,label=${label}")
+        log "=== ${label}: ${_blf_tok} — cannot establish baseline; skipping iteration ==="
+        (( TOTAL_FAIL++ )) || true
+        ALL_RESULTS+=("${label} | Stage_A:list_failed | Stage_B:${_blf_tok} | elapsed=0s")
+        return
+    fi
 
     # DEFECT-2 FIX: write a per-iteration sentinel into testfiles/ so the COPY
     # layer's content hash changes each iteration, guaranteeing a content-
@@ -1102,6 +1137,17 @@ if [[ $PRESSURE -eq 1 ]]; then
     # Three concurrent builds maximize ExporterLocal / fsutil DiffCopy contention.
     log "--- Phase 3: 3 concurrent builds (parallel ExporterLocal I/O pressure) ---"
     local_before=$(list_digests_sorted)
+    # FIX 4(c): Phase 3 before-only-dead guard (same class as run_one_iteration).
+    # If nexus3 image ls fails BEFORE the builds, comm -13 returns every
+    # post-build digest as "new" — Stage B would measure a pre-existing image.
+    p3_before_failed=0
+    if [[ "$local_before" == "LIST_DIGESTS_FAILED" ]]; then
+        p3_blf=$(emit_fail "IMAGE_LIST_FAILED,stage=before,phase=3")
+        log "Phase 3: ${p3_blf} — cannot establish before-snapshot; Stage-B measurement will be skipped"
+        (( TOTAL_FAIL++ )) || true
+        ALL_RESULTS+=("pressure-phase3-before-list-failed | Stage_A:concurrent_not_captured | Stage_B:${p3_blf} | concurrent")
+        p3_before_failed=1
+    fi
     pids=()
 
     for slot in A B C; do
@@ -1143,7 +1189,14 @@ if [[ $PRESSURE -eq 1 ]]; then
 
     # Stage B for concurrent pressure images.
     local_after=$(list_digests_sorted)
+    # FIX 4(c): if before-snapshot failed, comm would return all after-digests
+    # as "new" (pre-existing images). Skip Stage B measurement entirely.
+    if [[ $p3_before_failed -eq 1 ]]; then
+        log "Phase 3: before-snapshot failed — Stage B measurement skipped to avoid false PASS on old images"
+        new_digests=""
+    else
     new_digests=$(comm -13 <(echo "$local_before") <(echo "$local_after") || true)
+    fi
     p3_launch_count=${#pids[@]}
     p3_image_count=0
     [[ -n "$new_digests" ]] && p3_image_count=$(echo "$new_digests" | wc -l)
@@ -1203,7 +1256,10 @@ if [[ $PRESSURE -eq 1 ]]; then
             (( TOTAL_FAIL += p3_hfail_count )) || true
             p3_iter_has_fail=1
         fi
-        local _tp _th
+        # FIX 1: `local` is illegal outside a function. This loop is top-level
+        # (inside `if [[ $PRESSURE -eq 1 ]]`). Under set -e, bash aborts with
+        # "local: can only be used in a function" — Phase 3 never completes,
+        # counters are zero, Phases 4/5/6 never run. bash -n does NOT catch this.
         _tp=$(count_trunc_evidence "$pb_line")
         _th=$(count_trunc_evidence "$hash_line")
         (( TOTAL_TRUNC += _tp + _th )) || true
@@ -1250,7 +1306,20 @@ if [[ $DISK_PRESSURE -eq 1 ]]; then
 
     HOST_FREE_MIN_GIB=15
     check_host_free() {
-        local avail_kb; avail_kb=$(df "$HOME" | awk 'NR==2{print $4}')
+        # FIX 2: use df -P (POSIX format) so NR==2 is always the data row even
+        # when the device path wraps. Validate the output is numeric — an empty
+        # avail_kb is silently coerced to 0, arithmetic (( 0 < 15 )) → abort,
+        # DP_ABORTED=1, zero builds run, exit 0 "NO TRUNCATION OBSERVED".
+        local avail_kb; avail_kb=$(df -P "$HOME" | awk 'NR==2{print $4}')
+        if [[ ! "$avail_kb" =~ ^[0-9]+$ ]]; then
+            local _tok; _tok=$(emit_fail "HOST_FREE_PROBE_DEAD,got=${avail_kb:0:30}")
+            log "check_host_free: dead probe — ${_tok}"
+            (( TOTAL_FAIL++ )) || true
+            # Return 0 so caller's (( hfree < HOST_FREE_MIN_GIB )) fires and aborts
+            # Phase 5 rather than proceeding with an unknown free-space value.
+            echo 0
+            return 0
+        fi
         echo $(( avail_kb / 1024 / 1024 ))
     }
 
@@ -1263,7 +1332,12 @@ if [[ $DISK_PRESSURE -eq 1 ]]; then
 
         hfree=$(check_host_free)
         if (( hfree < HOST_FREE_MIN_GIB )); then
-            log "Phase 5 ABORT: host free ${hfree} GiB < ${HOST_FREE_MIN_GIB} GiB threshold"
+            # FIX 2: DP_ABORTED=1 without a counted FAIL let Phase 5 exit 0
+            # "NO TRUNCATION OBSERVED" while running zero builds. Emit a counted
+            # FAIL so an aborted Phase 5 can never produce a clean verdict.
+            local _abtok; _abtok=$(emit_fail "PHASE5_ABORT,host_free=${hfree}GiB,min=${HOST_FREE_MIN_GIB}GiB")
+            log "Phase 5 ABORT: host free ${hfree} GiB < ${HOST_FREE_MIN_GIB} GiB threshold — ${_abtok}"
+            (( TOTAL_FAIL++ )) || true
             DP_ABORTED=1
             break
         fi
@@ -1272,8 +1346,13 @@ if [[ $DISK_PRESSURE -eq 1 ]]; then
         _fill_rc=0
         fill_ext4_pressure "$target_free_mb" "$PRESSURE_TMP_FILL" || _fill_rc=$?
         if (( _fill_rc == 1 )); then
-            log "Phase 5 Level ${level_tag}: fill skipped (already at/below target)"
-            continue
+            # FIX 3: _fill_rc==1 means the disk is ALREADY at/below the target
+            # free-space level — the pressure condition is already satisfied.
+            # Previous code `continue`d here, skipping all builds. The more
+            # pressured the disk, the fewer builds ran, and Phase 5 could report
+            # "complete" with zero builds. Run the builds — already-pressured
+            # is a better test condition, not a reason to skip.
+            log "Phase 5 Level ${level_tag}: already at/below target — running builds at current pressure"
         elif (( _fill_rc != 0 )); then
             # TOTAL_FAIL already incremented inside fill_ext4_pressure.
             log "Phase 5 Level ${level_tag}: fill aborted due to error (see above)"
@@ -1285,7 +1364,10 @@ if [[ $DISK_PRESSURE -eq 1 ]]; then
         for (( pi = 1; pi <= iters; pi++ )); do
             hfree=$(check_host_free)
             if (( hfree < HOST_FREE_MIN_GIB )); then
-                log "Phase 5 ABORT mid-level: host free ${hfree} GiB < ${HOST_FREE_MIN_GIB} GiB"
+                # FIX 2: same as outer abort — emit counted FAIL.
+                local _abtok2; _abtok2=$(emit_fail "PHASE5_ABORT_MID,host_free=${hfree}GiB,min=${HOST_FREE_MIN_GIB}GiB")
+                log "Phase 5 ABORT mid-level: host free ${hfree} GiB < ${HOST_FREE_MIN_GIB} GiB — ${_abtok2}"
+                (( TOTAL_FAIL++ )) || true
                 DP_ABORTED=1
                 break
             fi
