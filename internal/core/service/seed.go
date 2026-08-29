@@ -93,10 +93,12 @@ type GuestSeeder func(ctx context.Context, id domain.SandboxID, payload []byte) 
 // validation slice; this seeder requires a running guest agent.
 func NewAgentCopySeeder(c *agent.Client) GuestSeeder {
 	return func(ctx context.Context, _ domain.SandboxID, payload []byte) error {
+		eb := int64(len(payload))
 		return c.Copy(ctx, agent.CopyOptions{
-			Direction: agentpb.CopyDirection_COPY_DIRECTION_PUSH,
-			GuestPath: GuestCredEnvPath,
-			Src:       bytes.NewReader(payload),
+			Direction:     agentpb.CopyDirection_COPY_DIRECTION_PUSH,
+			GuestPath:     GuestCredEnvPath,
+			Src:           bytes.NewReader(payload),
+			ExpectedBytes: &eb,
 		})
 	}
 }
@@ -109,10 +111,12 @@ func NewAgentCopySeeder(c *agent.Client) GuestSeeder {
 // The path must be absolute. The bytes are written verbatim (IsDirectory=false).
 func NewGuestFileSeeder(c *agent.Client, guestPath string) GuestSeeder {
 	return func(ctx context.Context, _ domain.SandboxID, payload []byte) error {
+		eb := int64(len(payload))
 		return c.Copy(ctx, agent.CopyOptions{
-			Direction: agentpb.CopyDirection_COPY_DIRECTION_PUSH,
-			GuestPath: guestPath,
-			Src:       bytes.NewReader(payload),
+			Direction:     agentpb.CopyDirection_COPY_DIRECTION_PUSH,
+			GuestPath:     guestPath,
+			Src:           bytes.NewReader(payload),
+			ExpectedBytes: &eb,
 		})
 	}
 }
@@ -201,10 +205,12 @@ func hostToEnvKey(host string) string {
 // (claude) trusts it via NODE_EXTRA_CA_CERTS without update-ca-certificates.
 func NewAgentCACopySeeder(c *agent.Client) GuestSeeder {
 	return func(ctx context.Context, _ domain.SandboxID, payload []byte) error {
+		eb := int64(len(payload))
 		return c.Copy(ctx, agent.CopyOptions{
-			Direction: agentpb.CopyDirection_COPY_DIRECTION_PUSH,
-			GuestPath: GuestCACertPath,
-			Src:       bytes.NewReader(payload),
+			Direction:     agentpb.CopyDirection_COPY_DIRECTION_PUSH,
+			GuestPath:     GuestCACertPath,
+			Src:           bytes.NewReader(payload),
+			ExpectedBytes: &eb,
 		})
 	}
 }

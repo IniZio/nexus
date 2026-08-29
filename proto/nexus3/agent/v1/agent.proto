@@ -132,6 +132,13 @@ message CopyRequest {
   string guest_path = 2;
   // When true the agent archives the directory tree before transfer.
   bool is_directory = 3;
+  // Expected byte count of the raw payload (non-directory PUSH only).
+  // Declared as optional (proto3 field presence) so nil/absent is
+  // distinguishable from the value 0 (a legitimately empty file). The guest
+  // fails closed when the field is absent — the host must always set this for
+  // single-file PUSH. A pointer to 0 is valid and means an empty file.
+  // Not set for directory PUSH transfers.
+  optional int64 expected_bytes = 4;
 }
 
 // CopyResponse carries the transfer handle the caller uses to open the
@@ -139,6 +146,17 @@ message CopyRequest {
 message CopyResponse {
   // Opaque token identifying the data-plane transfer slot.
   string transfer_id = 1;
+  // Authoritative byte count of the payload for single-file PULL transfers.
+  // The receiving host rejects the transfer if the received byte count does not
+  // match — a fail-closed guard against transport truncation (e.g. the 32 MiB
+  // vsock cap observed in in-guest buildkit exports).
+  //
+  // Declared as optional (proto3 field presence) so nil/absent is
+  // distinguishable from the value 0 (a legitimately empty file). For
+  // single-file PULL the host fails closed when the field is absent — the
+  // agent must always stat and set this field. Not set for directory PULL or
+  // any PUSH transfer.
+  optional int64 declared_bytes = 2;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

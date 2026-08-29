@@ -23,10 +23,11 @@ import (
 // pendingCopy is a negotiated file-transfer operation waiting for a
 // data-plane connection to arrive carrying the transfer_id as its SessionID.
 type pendingCopy struct {
-	transferID  string
-	direction   agentpb.CopyDirection
-	guestPath   string
-	isDirectory bool
+	transferID    string
+	direction     agentpb.CopyDirection
+	guestPath     string
+	isDirectory   bool
+	expectedBytes *int64 // nil = not declared (fail closed); &0 = declared empty file
 }
 
 // CopyTable stores pending copy operations keyed by transfer_id.
@@ -60,22 +61,43 @@ func (t *CopyTable) delete(id string) {
 
 // Copy negotiates a file-transfer operation (control-plane RPC only).
 // The returned transfer_id is used as the SessionID in the data-plane handshake.
+//
+// For single-file PULL, the agent stats the file before minting the transfer
+// handle so that it can declare the authoritative size in DeclaredBytes. The
+// host rejects the transfer if the received byte count differs — a fail-closed
+// guard against transport truncation.
 func (cs *controlServer) Copy(_ context.Context, req *agentpb.CopyRequest) (*agentpb.CopyResponse, error) {
 	if req.GuestPath == "" {
 		return nil, status.Error(codes.InvalidArgument, "guest_path required")
 	}
+
+	// Stat before minting the transfer handle so that an ENOENT returns an
+	// error immediately rather than leaving an orphaned pending-copy slot.
+	// DeclaredBytes is left nil for directory PULL and all PUSH transfers;
+	// the host distinguishes nil (not declared) from 0 (empty file declared).
+	var declaredBytes *int64
+	if req.Direction == agentpb.CopyDirection_COPY_DIRECTION_PULL && !req.IsDirectory {
+		fi, err := os.Stat(req.GuestPath)
+		if err != nil {
+			return nil, status.Errorf(codes.NotFound, "copy pull: stat %s: %v", req.GuestPath, err)
+		}
+		size := fi.Size()
+		declaredBytes = &size
+	}
+
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		return nil, status.Errorf(codes.Internal, "rand: %v", err)
 	}
 	transferID := hex.EncodeToString(b)
 	cs.a.copies.add(&pendingCopy{
-		transferID:  transferID,
-		direction:   req.Direction,
-		guestPath:   req.GuestPath,
-		isDirectory: req.IsDirectory,
+		transferID:    transferID,
+		direction:     req.Direction,
+		guestPath:     req.GuestPath,
+		isDirectory:   req.IsDirectory,
+		expectedBytes: req.ExpectedBytes,
 	})
-	return &agentpb.CopyResponse{TransferId: transferID}, nil
+	return &agentpb.CopyResponse{TransferId: transferID, DeclaredBytes: declaredBytes}, nil
 }
 
 // handleCopyTransfer handles a data-plane connection for a file transfer.
@@ -90,7 +112,7 @@ func (a *Agent) handleCopyTransfer(_ net.Conn, r *wire.Reader, w *wire.Writer, c
 	case agentpb.CopyDirection_COPY_DIRECTION_PULL:
 		transferErr = pullTransfer(cp.guestPath, cp.isDirectory, w)
 	case agentpb.CopyDirection_COPY_DIRECTION_PUSH:
-		transferErr = pushTransfer(cp.guestPath, cp.isDirectory, r)
+		transferErr = pushTransfer(cp.guestPath, cp.isDirectory, r, cp.expectedBytes)
 	}
 
 	code := int32(0)
@@ -104,7 +126,10 @@ func (a *Agent) handleCopyTransfer(_ net.Conn, r *wire.Reader, w *wire.Writer, c
 // frames terminated by an Exit frame) and writes or extracts it to guestPath.
 // For a single file the raw bytes are written directly; for a directory the
 // stream is expected to be a tar archive that is extracted under guestPath.
-func pushTransfer(guestPath string, isDir bool, r *wire.Reader) error {
+// expectedBytes, when non-nil, is a fail-closed size guard for single-file
+// pushes: the transfer is rejected if the received byte count differs.
+// nil = host did not declare the size — fail closed (rejected immediately).
+func pushTransfer(guestPath string, isDir bool, r *wire.Reader, expectedBytes *int64) error {
 	pr, pw := io.Pipe()
 	go func() {
 		for {
@@ -131,12 +156,19 @@ func pushTransfer(guestPath string, isDir bool, r *wire.Reader) error {
 	if isDir {
 		return pushDir(guestPath, pr)
 	}
-	return pushFile(guestPath, pr)
+	return pushFile(guestPath, pr, expectedBytes)
 }
 
 // pushFile creates (or truncates) guestPath and writes r into it, creating
-// parent directories as needed.
-func pushFile(guestPath string, r io.Reader) error {
+// parent directories as needed. expectedBytes must be non-nil: it is a
+// fail-closed guard against transport truncation (e.g. the 32 MiB vsock cap
+// observed in in-guest buildkit exports). nil means the host did not declare
+// the size — the guest fails closed immediately so the guard cannot be silently
+// disabled. A pointer to 0 is valid and means an empty file.
+func pushFile(guestPath string, r io.Reader, expectedBytes *int64) error {
+	if expectedBytes == nil {
+		return fmt.Errorf("push file: expectedBytes absent — host must declare authoritative source size for single-file PUSH")
+	}
 	if err := os.MkdirAll(filepath.Dir(guestPath), 0o755); err != nil {
 		return fmt.Errorf("push file: mkdir parent: %w", err)
 	}
@@ -145,8 +177,12 @@ func pushFile(guestPath string, r io.Reader) error {
 		return fmt.Errorf("push file: create: %w", err)
 	}
 	defer f.Close()
-	if _, err := io.Copy(f, r); err != nil {
+	n, err := io.Copy(f, r)
+	if err != nil {
 		return fmt.Errorf("push file: write: %w", err)
+	}
+	if n != *expectedBytes {
+		return fmt.Errorf("push file: received %d bytes, expected %d — transfer truncated", n, *expectedBytes)
 	}
 	return nil
 }

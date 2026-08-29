@@ -65,12 +65,15 @@ func (d *copyTestDialer) pushDataPipe() net.Conn {
 
 // copyCapServer is a minimal AgentServiceServer whose Copy handler returns a
 // fixed transfer ID, letting the test control the data-plane handshake.
+// lastReq captures the most recent CopyRequest for call-site assertions.
 type copyCapServer struct {
 	agentpb.UnimplementedAgentServiceServer
 	transferID string
+	lastReq    *agentpb.CopyRequest
 }
 
-func (s *copyCapServer) Copy(_ context.Context, _ *agentpb.CopyRequest) (*agentpb.CopyResponse, error) {
+func (s *copyCapServer) Copy(_ context.Context, req *agentpb.CopyRequest) (*agentpb.CopyResponse, error) {
+	s.lastReq = req
 	return &agentpb.CopyResponse{TransferId: s.transferID}, nil
 }
 
@@ -180,4 +183,121 @@ func TestNewAgentCACopySeeder_RawBytesNotTar(t *testing.T) {
 	<-done
 
 	assertRawNotTar(t, "NewAgentCACopySeeder", received.Bytes(), input)
+}
+
+// TestNewAgentCopySeeder_SetsExpectedBytes is the call-site mutation proof for
+// Defect 2: it asserts that NewAgentCopySeeder sets ExpectedBytes == len(payload)
+// on the CopyRequest it sends to the guest.
+//
+// Without this wiring the guard in pushFile is dead code: expectedBytes == 0
+// causes pushFile to immediately return an error (fail-closed), so any transfer
+// that reaches pushFile with a zero expectedBytes is already caught. But the
+// proof here is at the call-site level: removing `ExpectedBytes: int64(len(payload))`
+// from NewAgentCopySeeder makes this test fail because lastReq.ExpectedBytes == 0
+// while we assert it equals len(payload).
+func TestNewAgentCopySeeder_SetsExpectedBytes(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte("CLAUDE_CODE_OAUTH_TOKEN=placeholder-abc\nNODE_EXTRA_CA_CERTS=/path\n")
+
+	srv := &copyCapServer{transferID: "xfer-eb1"}
+	td := newCopyTestDialer()
+	startCopyMockServer(t, td.lis, srv)
+
+	var received bytes.Buffer
+	done := make(chan struct{})
+	guestConn := td.pushDataPipe()
+	runGuestCapture(guestConn, &received, done)
+
+	c := agent.NewClient(td, seedTestID(0xd2))
+	seeder := NewAgentCopySeeder(c)
+	if err := seeder(context.Background(), seedTestID(0xd2), payload); err != nil {
+		t.Fatalf("NewAgentCopySeeder: %v", err)
+	}
+	<-done
+
+	if srv.lastReq == nil {
+		t.Fatal("Copy RPC was never called")
+	}
+	if srv.lastReq.ExpectedBytes == nil {
+		t.Fatal("ExpectedBytes is nil — host must declare authoritative size for single-file PUSH (even for empty files)")
+	}
+	want := int64(len(payload))
+	if *srv.lastReq.ExpectedBytes != want {
+		t.Fatalf("*ExpectedBytes = %d, want %d — wiring removed at call site leaves guard dead",
+			*srv.lastReq.ExpectedBytes, want)
+	}
+}
+
+// TestNewAgentCACopySeeder_SetsExpectedBytes is the call-site mutation proof for
+// NewAgentCACopySeeder: removing ExpectedBytes wiring makes this test fail.
+func TestNewAgentCACopySeeder_SetsExpectedBytes(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte("-----BEGIN CERTIFICATE-----\nZmFrZWNlcnQ=\n-----END CERTIFICATE-----\n")
+
+	srv := &copyCapServer{transferID: "xfer-eb2"}
+	td := newCopyTestDialer()
+	startCopyMockServer(t, td.lis, srv)
+
+	var received bytes.Buffer
+	done := make(chan struct{})
+	guestConn := td.pushDataPipe()
+	runGuestCapture(guestConn, &received, done)
+
+	c := agent.NewClient(td, seedTestID(0xd3))
+	seeder := NewAgentCACopySeeder(c)
+	if err := seeder(context.Background(), seedTestID(0xd3), payload); err != nil {
+		t.Fatalf("NewAgentCACopySeeder: %v", err)
+	}
+	<-done
+
+	if srv.lastReq == nil {
+		t.Fatal("Copy RPC was never called")
+	}
+	if srv.lastReq.ExpectedBytes == nil {
+		t.Fatal("ExpectedBytes is nil — host must declare authoritative size for single-file PUSH (even for empty files)")
+	}
+	want := int64(len(payload))
+	if *srv.lastReq.ExpectedBytes != want {
+		t.Fatalf("*ExpectedBytes = %d, want %d — wiring removed at call site leaves guard dead",
+			*srv.lastReq.ExpectedBytes, want)
+	}
+}
+
+// TestNewAgentCopySeeder_EmptyPayload_SetsExpectedBytesZero proves that an
+// empty payload (len=0) still sets ExpectedBytes to a non-nil pointer with value
+// 0. Before the optional-field fix, &0 and nil were collapsed and empty payloads
+// caused a false-positive failure in pushFile.
+func TestNewAgentCopySeeder_EmptyPayload_SetsExpectedBytesZero(t *testing.T) {
+	t.Parallel()
+
+	// Empty payload — legitimate use case (e.g. zero-byte credential file).
+	payload := []byte{}
+
+	srv := &copyCapServer{transferID: "xfer-eb3"}
+	td := newCopyTestDialer()
+	startCopyMockServer(t, td.lis, srv)
+
+	var received bytes.Buffer
+	done := make(chan struct{})
+	guestConn := td.pushDataPipe()
+	runGuestCapture(guestConn, &received, done)
+
+	c := agent.NewClient(td, seedTestID(0xd4))
+	seeder := NewAgentCopySeeder(c)
+	if err := seeder(context.Background(), seedTestID(0xd4), payload); err != nil {
+		t.Fatalf("NewAgentCopySeeder (empty payload): %v", err)
+	}
+	<-done
+
+	if srv.lastReq == nil {
+		t.Fatal("Copy RPC was never called")
+	}
+	if srv.lastReq.ExpectedBytes == nil {
+		t.Fatal("ExpectedBytes is nil for empty payload — must be &0, not nil (nil = undeclared = fail closed)")
+	}
+	if *srv.lastReq.ExpectedBytes != 0 {
+		t.Fatalf("*ExpectedBytes = %d, want 0 for empty payload", *srv.lastReq.ExpectedBytes)
+	}
 }

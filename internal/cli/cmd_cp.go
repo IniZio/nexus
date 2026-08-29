@@ -9,7 +9,6 @@ import (
 
 	"github.com/IniZio/nexus3/internal/core/agent"
 	"github.com/IniZio/nexus3/internal/core/agent/agentpb"
-	"github.com/IniZio/nexus3/internal/core/service"
 )
 
 const guestPrefix = "guest:"
@@ -86,9 +85,15 @@ func parseCpArgs(src, dst string) (direction agentpb.CopyDirection, guestPath, l
 	}
 }
 
+// cpService is the subset of [service.Service] required by [runCpWithSvc].
+// Defined as an interface so tests can inject a fake without a real store or driver.
+type cpService interface {
+	Copy(ctx context.Context, ref string, opts agent.CopyOptions) error
+}
+
 // runCpWithSvc performs the file transfer.
 // Extracted for testability.
-func runCpWithSvc(ctx context.Context, ref string, direction agentpb.CopyDirection, guestPath, localPath string, isDir bool, out *Output, svc *service.Service) error {
+func runCpWithSvc(ctx context.Context, ref string, direction agentpb.CopyDirection, guestPath, localPath string, isDir bool, out *Output, svc cpService) error {
 	var opts agent.CopyOptions
 	opts.Direction = direction
 	opts.GuestPath = guestPath
@@ -120,6 +125,23 @@ func runCpWithSvc(ctx context.Context, ref string, direction agentpb.CopyDirecti
 		}
 		defer f.Close()
 		opts.Src = f
+		// Set ExpectedBytes for single-file pushes so the guest can detect
+		// transport truncation (fail-closed: nil is rejected by pushFile;
+		// &0 is valid and means an empty file).
+		// Directory pushes (isDir=true) go through pushDir which has no size
+		// guard — the tar header provides per-file integrity there.
+		if !isDir {
+			fi, err := f.Stat()
+			if err != nil {
+				return &CodedError{
+					Code: ErrCodeInternalError,
+					Msg:  fmt.Sprintf("cp: stat local path %q: %v", localPath, err),
+					Err:  err,
+				}
+			}
+			sz := fi.Size()
+			opts.ExpectedBytes = &sz
+		}
 	}
 
 	if err := svc.Copy(ctx, ref, opts); err != nil {

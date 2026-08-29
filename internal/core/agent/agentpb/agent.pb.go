@@ -727,7 +727,14 @@ type CopyRequest struct {
 	// Absolute path inside the guest.
 	GuestPath string `protobuf:"bytes,2,opt,name=guest_path,json=guestPath,proto3" json:"guest_path,omitempty"`
 	// When true the agent archives the directory tree before transfer.
-	IsDirectory   bool `protobuf:"varint,3,opt,name=is_directory,json=isDirectory,proto3" json:"is_directory,omitempty"`
+	IsDirectory bool `protobuf:"varint,3,opt,name=is_directory,json=isDirectory,proto3" json:"is_directory,omitempty"`
+	// Expected byte count of the raw payload (non-directory PUSH only).
+	// Declared as optional (proto3 field presence) so nil/absent is
+	// distinguishable from the value 0 (a legitimately empty file). The guest
+	// fails closed when the field is absent — the host must always set this for
+	// single-file PUSH. A pointer to 0 is valid and means an empty file.
+	// Not set for directory PUSH transfers.
+	ExpectedBytes *int64 `protobuf:"varint,4,opt,name=expected_bytes,json=expectedBytes,proto3,oneof" json:"expected_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -783,12 +790,30 @@ func (x *CopyRequest) GetIsDirectory() bool {
 	return false
 }
 
+func (x *CopyRequest) GetExpectedBytes() int64 {
+	if x != nil && x.ExpectedBytes != nil {
+		return *x.ExpectedBytes
+	}
+	return 0
+}
+
 // CopyResponse carries the transfer handle the caller uses to open the
 // data-plane side-channel for the actual byte transfer.
 type CopyResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Opaque token identifying the data-plane transfer slot.
-	TransferId    string `protobuf:"bytes,1,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
+	TransferId string `protobuf:"bytes,1,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
+	// Authoritative byte count of the payload for single-file PULL transfers.
+	// The receiving host rejects the transfer if the received byte count does not
+	// match — a fail-closed guard against transport truncation (e.g. the 32 MiB
+	// vsock cap observed in in-guest buildkit exports).
+	//
+	// Declared as optional (proto3 field presence) so nil/absent is
+	// distinguishable from the value 0 (a legitimately empty file). For
+	// single-file PULL the host fails closed when the field is absent — the
+	// agent must always stat and set this field. Not set for directory PULL or
+	// any PUSH transfer.
+	DeclaredBytes *int64 `protobuf:"varint,2,opt,name=declared_bytes,json=declaredBytes,proto3,oneof" json:"declared_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -828,6 +853,13 @@ func (x *CopyResponse) GetTransferId() string {
 		return x.TransferId
 	}
 	return ""
+}
+
+func (x *CopyResponse) GetDeclaredBytes() int64 {
+	if x != nil && x.DeclaredBytes != nil {
+		return *x.DeclaredBytes
+	}
+	return 0
 }
 
 var File_nexus3_agent_v1_agent_proto protoreflect.FileDescriptor
@@ -874,15 +906,19 @@ const file_nexus3_agent_v1_agent_proto_rawDesc = "" +
 	"\x04info\x18\x01 \x01(\v2\x1c.nexus3.agent.v1.SessionInfoR\x04info\"\x15\n" +
 	"\x13ListSessionsRequest\"P\n" +
 	"\x14ListSessionsResponse\x128\n" +
-	"\bsessions\x18\x01 \x03(\v2\x1c.nexus3.agent.v1.SessionInfoR\bsessions\"\x8d\x01\n" +
+	"\bsessions\x18\x01 \x03(\v2\x1c.nexus3.agent.v1.SessionInfoR\bsessions\"\xcc\x01\n" +
 	"\vCopyRequest\x12<\n" +
 	"\tdirection\x18\x01 \x01(\x0e2\x1e.nexus3.agent.v1.CopyDirectionR\tdirection\x12\x1d\n" +
 	"\n" +
 	"guest_path\x18\x02 \x01(\tR\tguestPath\x12!\n" +
-	"\fis_directory\x18\x03 \x01(\bR\visDirectory\"/\n" +
+	"\fis_directory\x18\x03 \x01(\bR\visDirectory\x12*\n" +
+	"\x0eexpected_bytes\x18\x04 \x01(\x03H\x00R\rexpectedBytes\x88\x01\x01B\x11\n" +
+	"\x0f_expected_bytes\"n\n" +
 	"\fCopyResponse\x12\x1f\n" +
 	"\vtransfer_id\x18\x01 \x01(\tR\n" +
-	"transferId*b\n" +
+	"transferId\x12*\n" +
+	"\x0edeclared_bytes\x18\x02 \x01(\x03H\x00R\rdeclaredBytes\x88\x01\x01B\x11\n" +
+	"\x0f_declared_bytes*b\n" +
 	"\fSessionState\x12\x1d\n" +
 	"\x19SESSION_STATE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15SESSION_STATE_RUNNING\x10\x01\x12\x18\n" +
@@ -960,6 +996,8 @@ func file_nexus3_agent_v1_agent_proto_init() {
 	if File_nexus3_agent_v1_agent_proto != nil {
 		return
 	}
+	file_nexus3_agent_v1_agent_proto_msgTypes[11].OneofWrappers = []any{}
+	file_nexus3_agent_v1_agent_proto_msgTypes[12].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
