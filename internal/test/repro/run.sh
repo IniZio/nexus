@@ -259,7 +259,7 @@ stage_b_check_run_produced_size() {
     local expected=41943040  # 40 * 1048576
     local got; got=$(debugfs_size "$img" "/usr/local/bin/run-produced-40m")
     if [[ "$got" == "DEBUGFS_ERR" ]]; then
-        echo "run-produced-40m:ABSENT_OR_ERR"
+        echo "run-produced-40m:HARNESS_INTEGRITY_FAIL(absent,path=/usr/local/bin/run-produced-40m)"
         return
     fi
     if [[ "$got" == "$expected" ]]; then
@@ -280,7 +280,7 @@ stage_b_check_dc_size() {
     local dc_path="/usr/libexec/docker/cli-plugins/docker-compose"
     local got; got=$(debugfs_size "$img" "$dc_path")
     if [[ "$got" == "DEBUGFS_ERR" ]]; then
-        echo "docker-compose:ABSENT_OR_ERR(path=${dc_path})"
+        echo "docker-compose:HARNESS_INTEGRITY_FAIL(absent,path=${dc_path})"
         return
     fi
     if [[ "$got" == "33554432" ]]; then
@@ -384,14 +384,17 @@ write_containerfile() {
     mkdir -p "$WORKSPACE/.nexus"
     cat > "$WORKSPACE/.nexus/Containerfile" << EOF
 # repro: 32 MiB truncation harness — iteration ${iter}
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 # Unique marker: BEFORE apt-get so apt layers are also genuine cache misses,
 # exercising the runc->overlay snapshotter write path on every iteration.
 RUN echo "repro-uid=${uid}" > /dev/null
 # DEFECT-1 FIX: install docker-compose-v2 via apt (faithful reproduction --
 # original incident truncated docker-compose, an apt-installed binary written
 # by runc into the snapshot upper dir, NOT by COPY from build context).
-RUN apt-get update && apt-get install -y --no-install-recommends docker-compose-v2 && rm -rf /var/lib/apt/lists/*
+RUN echo "=== apt: installing docker-compose-v2 ===" && \
+    DEBIAN_FRONTEND=noninteractive apt-get update 2>&1 && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-v2 2>&1 && \
+    rm -rf /var/lib/apt/lists/*
 # Guaranteed >32MiB RUN-produced truncation target: docker-compose-v2 from
 # debian:bookworm may be <32MiB (version-dependent). This dd file ensures
 # at least one RUN-produced file crosses the 32 MiB boundary each iteration.
@@ -412,9 +415,12 @@ write_pressure_containerfile() {
     mkdir -p "${ws}/.nexus"
     cat > "${ws}/.nexus/Containerfile" << EOF
 # repro: pressure slot ${slot}
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 RUN echo "repro-pressure-uid=${uid}" > /dev/null
-RUN apt-get update && apt-get install -y --no-install-recommends docker-compose-v2 && rm -rf /var/lib/apt/lists/*
+RUN echo "=== apt: installing docker-compose-v2 ===" && \
+    DEBIAN_FRONTEND=noninteractive apt-get update 2>&1 && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-v2 2>&1 && \
+    rm -rf /var/lib/apt/lists/*
 RUN dd if=/dev/urandom of=/usr/local/bin/run-produced-40m bs=1M count=40 2>/dev/null
 COPY testfiles/ /testfiles/
 RUN sha256sum /testfiles/file_32m /testfiles/file_elf > /testfiles/.HASHES || true
@@ -430,9 +436,12 @@ write_heavy_containerfile() {
 # (DEFECT-1 FIX: apt-get was previously stripped because it exhausted the
 #  buildkit cache disk; the cache disk is now grown to 20 GiB to accommodate
 #  repeated apt layers -- see ensure_buildkit_disk_size.)
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 RUN echo "repro-heavy-uid=${uid}" > /dev/null
-RUN apt-get update && apt-get install -y --no-install-recommends docker-compose-v2 && rm -rf /var/lib/apt/lists/*
+RUN echo "=== apt: installing docker-compose-v2 ===" && \
+    DEBIAN_FRONTEND=noninteractive apt-get update 2>&1 && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-v2 2>&1 && \
+    rm -rf /var/lib/apt/lists/*
 RUN dd if=/dev/urandom of=/usr/local/bin/run-produced-40m bs=1M count=40 2>/dev/null
 # Write incompressible large test files -- these are the truncation targets.
 COPY testfiles/ /testfiles/
@@ -629,7 +638,7 @@ restore_nexus_export_blocker() {
 parse_manifest_stage_a() {
     local blog="$1"
     if [[ ! -f "$blog" ]]; then
-        echo "Stage_A_manifest:NO_LOG"
+        echo "Stage_A_manifest:HARNESS_INTEGRITY_FAIL(NO_LOG)"
         return
     fi
     # Entry lines have 3 spaces after the colon:
@@ -645,7 +654,7 @@ parse_manifest_stage_a() {
     done < <(grep "rootfs-size-manifest:   " "$blog" 2>/dev/null || true)
 
     if [[ ${#msizes[@]} -eq 0 ]]; then
-        echo "Stage_A_manifest:NO_MANIFEST_LINES"
+        echo "Stage_A_manifest:HARNESS_INTEGRITY_FAIL(NO_MANIFEST_LINES)"
         return
     fi
 
@@ -790,12 +799,15 @@ run_one_iteration() {
         stage_a_line="${stage_a_line}|CACHE_HIT_SUSPECTED(${elapsed}s<45s)"
     fi
 
-    # Count Stage A manifest failures in the parent shell (parse_manifest_stage_a
-    # runs in a subshell and cannot update globals).
-    if echo "$stage_a_line" | grep -qF "MANIFEST_FAIL("; then
+    # Count Stage A failures in the parent shell; track across both stages so a
+    # Stage-A failure blocks TOTAL_PASS even when Stage-B is clean.
+    # FAIL( matches MANIFEST_FAIL( and HARNESS_INTEGRITY_FAIL( (both contain FAIL().
+    local iter_has_fail=0
+    if echo "$stage_a_line" | grep -qF "FAIL("; then
         local a_fail_count
-        a_fail_count=$(echo "$stage_a_line" | grep -oF "MANIFEST_FAIL(" | wc -l)
+        a_fail_count=$(echo "$stage_a_line" | grep -oF "FAIL(" | wc -l)
         (( TOTAL_FAIL += a_fail_count )) || true
+        iter_has_fail=1
     fi
 
     if [[ $build_exit -ne 0 ]]; then
@@ -866,15 +878,17 @@ run_one_iteration() {
     fi
 
     # ── Per-iteration counters (Stage A manifest + Stage B) ───────────────────
-    # Stage A manifest failures are counted above immediately after parsing.
-    # Stage B FAIL entries are counted here in the parent shell (format_result
-    # runs in a subshell and cannot update globals). TOTAL_PASS increments only
-    # when Stage B finds all expected file sizes correct.
+    # Stage A failures were counted above; iter_has_fail carries that signal here.
+    # Stage B FAIL( covers truncation FAILs and HARNESS_INTEGRITY_FAILs (both
+    # contain FAIL(). TOTAL_PASS increments ONLY when the entire iteration is
+    # clean — a Stage-A failure must not be masked by a clean Stage-B report.
     if echo "$stage_b_line" | grep -qF "FAIL("; then
         local fail_count
         fail_count=$(echo "$stage_b_line" | grep -oF "FAIL(" | wc -l)
         (( TOTAL_FAIL += fail_count )) || true
-    elif echo "$stage_b_line" | grep -qF "=PASS"; then
+        iter_has_fail=1
+    fi
+    if [[ $iter_has_fail -eq 0 ]] && echo "$stage_b_line" | grep -qF "=PASS"; then
         (( TOTAL_PASS++ )) || true
     fi
 
@@ -1159,8 +1173,8 @@ fi
 # ── Summary ───────────────────────────────────────────────────────────────────
 log "=========================================="
 log "SUMMARY"
-log "  Build iterations with all files intact: ${TOTAL_PASS}"
-log "  Total file-size/hash failures:          ${TOTAL_FAIL}"
+log "  Build iterations fully intact (Stage-A+Stage-B, zero FAIL): ${TOTAL_PASS}"
+log "  Total failures (truncation+hash+harness-integrity):        ${TOTAL_FAIL}"
 log ""
 log "Per-iteration results (label | Stage_A | Stage_B | HashVerify):"
 for r in "${ALL_RESULTS[@]}"; do
