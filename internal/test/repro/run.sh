@@ -236,8 +236,9 @@ stage_b_verify_hashes() {
 # Compare token list against EXPECTED_SIZES. Returns a formatted result line.
 # NOTE: this function runs in a subshell via $(...) — it MUST NOT update global
 # counters (they would be silently lost). Counters are updated by the CALLER in
-# the parent shell, for Stage B results only. Stage A is a mid-export/racy
-# snapshot whose sizes reflect in-flight writes, not finished truncation events.
+# the parent shell for both Stage A (manifest) and Stage B results. Stage A feeds
+# TOTAL_TRUNC via count_trunc_evidence; the manifest is written synchronously by
+# the agent after Solve() completes and is not a racy snapshot.
 TOTAL_PASS=0
 TOTAL_FAIL=0
 TOTAL_TRUNC=0     # Genuine truncation evidence only (TRUNCATED_AT_32MiB + real size mismatches)
@@ -558,10 +559,10 @@ repair_ext4() {
 }
 
 ext4_free_mb() {
-    local free_blocks
-    free_blocks=$(debugfs -R "stats" "$CACHE_EXT4" 2>/dev/null \
+    local _out
+    _out=$(debugfs -R "stats" "$CACHE_EXT4" 2>/dev/null \
         | grep "Free blocks" | grep -oP '\d+' | head -1)
-    echo $(( free_blocks * 4096 / 1024 / 1024 ))
+    if [[ -z "$_out" ]]; then echo "DEBUGFS_ERR"; else echo $(( _out * 4096 / 1024 / 1024 )); fi
 }
 
 # ensure_buildkit_disk_size MIN_GIB
@@ -598,17 +599,32 @@ ensure_buildkit_disk_size() {
         return 1
     }
     local new_bytes; new_bytes=$(stat -c '%s' "$CACHE_EXT4")
-    local free_mb; free_mb=$(ext4_free_mb 2>/dev/null || echo "?")
+    local free_mb; free_mb=$(ext4_free_mb)
     log "ensure_buildkit_disk_size: done -- new size=${new_bytes}B, ext4 free=${free_mb}MiB"
 }
 
 # fill_ext4_pressure target_free_mb host_tmp_fill_path
 # Returns 0 if fill written, 1 if already at/below target or write failed.
+# fill_ext4_pressure target_free_mb host_tmp_fill_path
+# Returns 0 if fill written, 1 if already at/below target (benign skip),
+# 2 if a hard error occurred (dead probe / repair fail / write fail);
+# exit code 2 callers: TOTAL_FAIL already incremented inside this function.
 fill_ext4_pressure() {
     local target_free_mb="$1" fill_path="$2"
     # Repair dirty state left by the previous builder VM before reading stats.
-    repair_ext4 || { log "fill_ext4_pressure: repair_ext4 failed — aborting fill"; return 1; }
+    repair_ext4 || {
+        local _rtok; _rtok=$(emit_fail "REPAIR_FAILED,fill,img=${CACHE_EXT4}")
+        log "fill_ext4_pressure: repair_ext4 failed — aborting fill — ${_rtok}"
+        (( TOTAL_FAIL++ )) || true
+        return 2
+    }
     local free_mb; free_mb=$(ext4_free_mb)
+    if [[ "$free_mb" == "DEBUGFS_ERR" ]]; then
+        local _tok; _tok=$(emit_fail "FREESPACE_PROBE_DEAD,fill,img=${CACHE_EXT4}")
+        log "fill_ext4_pressure: dead free-space probe — ${_tok}"
+        (( TOTAL_FAIL++ )) || true
+        return 2
+    fi
     local fill_mb=$(( free_mb - target_free_mb ))
     if (( fill_mb <= 0 )); then
         log "fill_ext4_pressure: already at/below target (free=${free_mb} MiB, target=${target_free_mb} MiB)"
@@ -625,13 +641,19 @@ fill_ext4_pressure() {
     log "fill_ext4_pressure: writing fill into buildkit.ext4 (debugfs) ..."
     local dout
     if ! dout=$(debugfs -w "$CACHE_EXT4" -R "write $fill_path /PRESSURE_FILL" 2>&1); then
-        log "fill_ext4_pressure: debugfs write failed: ${dout}"
+        local _wtok; _wtok=$(emit_fail "FILL_WRITE_FAILED,img=${CACHE_EXT4}")
+        log "fill_ext4_pressure: debugfs write failed: ${dout} — ${_wtok}"
+        (( TOTAL_FAIL++ )) || true
         rm -f "$fill_path"
-        return 1
+        return 2
     fi
     rm -f "$fill_path"
     local new_free_mb; new_free_mb=$(ext4_free_mb)
-    log "fill_ext4_pressure: done — ext4 free now ${new_free_mb} MiB (target ${target_free_mb} MiB)"
+    if [[ "$new_free_mb" == "DEBUGFS_ERR" ]]; then
+        log "fill_ext4_pressure: done — post-fill free-space probe dead (fill write succeeded)"
+    else
+        log "fill_ext4_pressure: done — ext4 free now ${new_free_mb} MiB (target ${target_free_mb} MiB)"
+    fi
     return 0
 }
 
@@ -640,7 +662,13 @@ restore_ext4_pressure() {
     log "restore_ext4_pressure: removing /PRESSURE_FILL from buildkit.ext4 ..."
     debugfs -w "$CACHE_EXT4" -R "rm /PRESSURE_FILL" 2>&1 || true
     local free_mb; free_mb=$(ext4_free_mb)
-    log "restore_ext4_pressure: restored — ext4 free now ${free_mb} MiB"
+    if [[ "$free_mb" == "DEBUGFS_ERR" ]]; then
+        local _tok; _tok=$(emit_fail "FREESPACE_PROBE_DEAD,restore,img=${CACHE_EXT4}")
+        log "restore_ext4_pressure: dead free-space probe — ${_tok}"
+        (( TOTAL_FAIL++ )) || true
+    else
+        log "restore_ext4_pressure: restored — ext4 free now ${free_mb} MiB"
+    fi
 }
 
 # ── Fallback-branch helpers (Phase 6) ────────────────────────────────────────
@@ -1241,8 +1269,14 @@ if [[ $DISK_PRESSURE -eq 1 ]]; then
         fi
 
         log "=== Phase 5 Level ${level_tag}: filling ext4 to ${target_free_mb} MiB free (host free: ${hfree} GiB) ==="
-        if ! fill_ext4_pressure "$target_free_mb" "$PRESSURE_TMP_FILL"; then
-            log "Phase 5 Level ${level_tag}: fill skipped (already at/below target or write error)"
+        _fill_rc=0
+        fill_ext4_pressure "$target_free_mb" "$PRESSURE_TMP_FILL" || _fill_rc=$?
+        if (( _fill_rc == 1 )); then
+            log "Phase 5 Level ${level_tag}: fill skipped (already at/below target)"
+            continue
+        elif (( _fill_rc != 0 )); then
+            # TOTAL_FAIL already incremented inside fill_ext4_pressure.
+            log "Phase 5 Level ${level_tag}: fill aborted due to error (see above)"
             continue
         fi
 
