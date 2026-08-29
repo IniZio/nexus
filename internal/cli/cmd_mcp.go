@@ -57,6 +57,12 @@ func (m *mcpService) CreateAndBoot(ctx context.Context, project, name string, op
 	if err != nil {
 		return domain.Sandbox{}, fmt.Errorf("open image cache: %w", err)
 	}
+	// This is a long-lived server: a Cache holds one open flock per image it
+	// writes, so a per-request Cache that is never closed leaks a descriptor
+	// per request AND leaves those digests uncollectable by every other
+	// process. Nothing between here and the return prunes, so releasing the
+	// pins on the way out is safe.
+	defer imgCache.Close() //nolint:errcheck
 
 	// Resolve auto-resize bounds so MCP-created sandboxes carry the same
 	// MemoryMaxMiB / VCPUMax hotplug configuration as CLI-created ones.
@@ -108,6 +114,9 @@ func (m *mcpService) RunEphemeral(ctx context.Context, project, name string, opt
 	if err != nil {
 		return 0, "", "", fmt.Errorf("open image cache: %w", err)
 	}
+	// See CreateAndBoot: per-request Cache in a long-lived server must be
+	// closed or its pins outlive the request.
+	defer imgCache.Close() //nolint:errcheck
 
 	// Resolve auto-resize bounds so MCP-run sandboxes carry MemoryMaxMiB /
 	// VCPUMax hotplug configuration identical to the sandbox-create path.
