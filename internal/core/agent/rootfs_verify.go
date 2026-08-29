@@ -79,20 +79,20 @@ func (e *ErrRootfsTruncated) Error() string {
 //
 // If agentSourcePath or agentInstallPath is empty the check is skipped (no
 // agent was requested). If the source or destination cannot be stat'd the
-// check is also skipped — a missing exported binary is caught by
-// verifyRootfsPopulated or at boot time.
+// check fails closed — an inaccessible source or missing export is a build
+// error, not a reason to skip integrity verification.
 func verifyAgentIntegrity(rootfsDir, agentInstallPath, agentSourcePath string) error {
 	if agentSourcePath == "" || agentInstallPath == "" {
 		return nil
 	}
 	srcInfo, err := os.Stat(agentSourcePath)
 	if err != nil {
-		return nil // source not accessible; skip
+		return fmt.Errorf("verifyAgentIntegrity: stat source %s: %w", agentSourcePath, err)
 	}
 	exportedPath := filepath.Join(rootfsDir, agentInstallPath)
 	dstInfo, err := os.Stat(exportedPath)
 	if err != nil {
-		return nil // missing export caught elsewhere
+		return fmt.Errorf("verifyAgentIntegrity: stat exported agent %s: %w", exportedPath, err)
 	}
 	if srcInfo.Size() != dstInfo.Size() {
 		return &ErrRootfsTruncated{

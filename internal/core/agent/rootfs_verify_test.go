@@ -152,3 +152,33 @@ func TestVerifyAgentIntegrity_EmptySourceSkips(t *testing.T) {
 		t.Fatalf("expected skip on empty source, got: %v", err)
 	}
 }
+
+// TestVerifyAgentIntegrity_SourceStatErrorFails is the bite for Defect 1 (source
+// stat path): before the fix, a nonexistent source returned nil (fail-open).
+// With the fix, any source-stat failure must return an error (fail-closed).
+func TestVerifyAgentIntegrity_SourceStatErrorFails(t *testing.T) {
+	rootfsDir := t.TempDir()
+	// Place an exported binary so only the source stat can fail.
+	makeAgentFixture(t, rootfsDir, 100, 100)
+
+	err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus3-agent", "/nonexistent/path/nexus3-agent")
+	if err == nil {
+		t.Fatal("expected source stat error to fail closed (return non-nil), got nil")
+	}
+}
+
+// TestVerifyAgentIntegrity_ExportStatErrorFails is the bite for Defect 1 (export
+// stat path): before the fix, a missing exported binary returned nil (fail-open).
+// With the fix, any export-stat failure must return an error (fail-closed).
+func TestVerifyAgentIntegrity_ExportStatErrorFails(t *testing.T) {
+	srcPath := filepath.Join(t.TempDir(), "nexus3-agent-src")
+	if err := os.WriteFile(srcPath, make([]byte, 100), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// rootfsDir has no sbin/nexus3-agent so the export stat will fail.
+	rootfsDir := t.TempDir()
+	err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus3-agent", srcPath)
+	if err == nil {
+		t.Fatal("expected export stat error to fail closed (return non-nil), got nil")
+	}
+}
