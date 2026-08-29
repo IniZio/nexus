@@ -114,24 +114,15 @@ func runCpWithSvc(ctx context.Context, ref string, direction agentpb.CopyDirecti
 		opts.Dst = f
 
 	case agentpb.CopyDirection_COPY_DIRECTION_PUSH:
-		// Host → guest: open local file for reading.
-		f, err := os.Open(localPath)
-		if err != nil {
-			return &CodedError{
-				Code: ErrCodeInternalError,
-				Msg:  fmt.Sprintf("cp: open local path %q: %v", localPath, err),
-				Err:  err,
-			}
-		}
-		defer f.Close()
-		opts.Src = f
-		// Set ExpectedBytes for single-file pushes so the guest can detect
-		// transport truncation (fail-closed: nil is rejected by pushFile;
-		// &0 is valid and means an empty file).
-		// Directory pushes (isDir=true) go through pushDir which has no size
-		// guard — the tar header provides per-file integrity there.
+		// For single-file pushes, stat before opening so ExpectedBytes can be
+		// declared. The guest's pushFile guard rejects the transfer if the
+		// received byte count differs (fail-closed: nil → immediate rejection;
+		// &0 → valid empty file). Directory pushes leave ExpectedBytes nil;
+		// the tar header provides per-entry integrity in pushDir (symmetric
+		// with pull, where declaredBytes is nil for dirs and validateTarStream
+		// is the guard on the host side).
 		if !isDir {
-			fi, err := f.Stat()
+			fi, err := os.Stat(localPath)
 			if err != nil {
 				return &CodedError{
 					Code: ErrCodeInternalError,
@@ -142,6 +133,20 @@ func runCpWithSvc(ctx context.Context, ref string, direction agentpb.CopyDirecti
 			sz := fi.Size()
 			opts.ExpectedBytes = &sz
 		}
+		// NewPushReader opens a plain file or walks a directory into a tar
+		// stream. The previous os.Open path caused EISDIR when the guest tried
+		// to Read from a directory fd; NewPushReader returns a pipe-backed tar
+		// reader for directories, matching how pull uses pullDir.
+		src, err := agent.NewPushReader(localPath, isDir)
+		if err != nil {
+			return &CodedError{
+				Code: ErrCodeInternalError,
+				Msg:  fmt.Sprintf("cp: open local path %q: %v", localPath, err),
+				Err:  err,
+			}
+		}
+		defer src.Close()
+		opts.Src = src
 	}
 
 	if err := svc.Copy(ctx, ref, opts); err != nil {
