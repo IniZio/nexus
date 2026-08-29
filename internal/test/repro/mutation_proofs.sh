@@ -6,7 +6,11 @@
 # Each proof shows the test FAILS against a pre-fix version (confirms the bug)
 # and PASSES against the current run.sh (confirms the fix).
 # Pre-fix refs: 0bbb84f (proofs a–e), 6568d2b (proof f / FIX 1), 0c773bd (proof g / W17 over-report),
-#               7f9208f (proof h / W18 freespace-failopen), 7f9208f (proof i / digest-check isolation).
+#               7f9208f (proof h / W18 freespace-failopen).
+# FIX 6(c): proof (i) has NO genuine pre-fix ref — ^[0-9a-f]{64}$ is already
+# present in 7f9208f and 2ce75ea. Proof (i) is MUTANT-ONLY: it demonstrates
+# that deleting the digest-check block makes invalid sha256 output fall through
+# to HASH_FAIL( (fabricated truncation). 7f9208f is NOT listed as its pre-fix ref.
 #
 # Usage: bash internal/test/repro/mutation_proofs.sh
 # Requirements: debugfs, mkfs.ext4 (e2fsprogs), git (for pre-fix extraction)
@@ -448,6 +452,99 @@ assert_contains \
 assert_not_contains \
     "h/post: verdict is NOT NO TRUNCATION OBSERVED" \
     "$post_h_result" "NO TRUNCATION OBSERVED"
+
+# FIX 6(a): extend (h) to cover the restore_ext4_pressure call site.
+# Deleting the DEBUGFS_ERR guard from restore_ext4_pressure left the suite green
+# because the existing assertion matched FREESPACE_PROBE_DEAD from the fill path.
+# The restore path emits "FREESPACE_PROBE_DEAD,restore" — assert it specifically.
+assert_contains \
+    "h/post: restore path emits FREESPACE_PROBE_DEAD,restore" \
+    "$post_h" "FREESPACE_PROBE_DEAD,restore"
+
+# Restore-mutant: delete the DEBUGFS_ERR guard from restore_ext4_pressure,
+# confirm the restore-specific assertion fails (proof has bite on this call site).
+# Uses targeted string-search (not fragile regex) to find and remove only the
+# restore guard block identified by its unique FREESPACE_PROBE_DEAD,restore anchor.
+MUTANT_H_RESTORE="$SCRATCHPAD/run_mutant_h_restore.sh"
+cp "$POST_RUN" "$MUTANT_H_RESTORE"
+python3 - "$MUTANT_H_RESTORE" << 'PYEOF'
+import sys
+src = open(sys.argv[1]).read()
+# Locate the FREESPACE_PROBE_DEAD,restore anchor — unique to the restore block.
+anchor = 'FREESPACE_PROBE_DEAD,restore'
+idx = src.find(anchor)
+if idx == -1:
+    print("ERROR: anchor not found in mutant target", file=sys.stderr)
+    sys.exit(1)
+# Find the start of the enclosing if block (look backwards for the if line).
+if_start = src.rfind('    if [[ "$free_mb" == "DEBUGFS_ERR" ]]', 0, idx)
+if if_start == -1:
+    print("ERROR: if-block start not found", file=sys.stderr)
+    sys.exit(1)
+# Find the else line and fi line after the anchor.
+else_idx = src.find('    else\n', idx)
+if else_idx == -1:
+    print("ERROR: else branch not found", file=sys.stderr)
+    sys.exit(1)
+else_content_start = else_idx + len('    else\n')
+fi_idx = src.find('    fi\n', else_content_start)
+if fi_idx == -1:
+    print("ERROR: fi not found", file=sys.stderr)
+    sys.exit(1)
+fi_end = fi_idx + len('    fi\n')
+# Replace the whole if/else/fi with just the else-branch content (guard deleted).
+else_content = src[else_content_start:fi_idx]
+patched = src[:if_start] + else_content + src[fi_end:]
+open(sys.argv[1], 'w').write(patched)
+PYEOF
+mutant_h_restore=$(run_h_script "$MUTANT_H_RESTORE")
+echo "  RESTORE-MUTANT result (last 2 lines): $(echo "$mutant_h_restore" | tail -2)"
+assert_not_contains \
+    "h/restore-mutant: deleting restore guard removes FREESPACE_PROBE_DEAD,restore (proof has bite)" \
+    "$mutant_h_restore" "FREESPACE_PROBE_DEAD,restore"
+
+# FIX 6(b): explicit fill-call-site mutation proof — assert the failure mode
+# rather than relying on a set -u abort. Prior behaviour: deleting the
+# [[ "$free_mb" == "DEBUGFS_ERR" ]] guard from fill_ext4_pressure caused
+# $(( DEBUGFS_ERR - target )) to expand "DEBUGFS_ERR" as a variable name →
+# set -u abort → proof passed for the wrong reason (crash, not bug assertion).
+#
+# Correct mutant: change ext4_free_mb to return arithmetic 0 when probe is dead
+# (the pre-fix behaviour) — the fill guard [[ "0" == "DEBUGFS_ERR" ]] never
+# fires, fill_mb becomes negative, return 1 → builds skipped → NO TRUNCATION.
+# This avoids the crash and produces a deterministic assertion.
+MUTANT_H_FILL="$SCRATCHPAD/run_mutant_h_fill.sh"
+cp "$POST_RUN" "$MUTANT_H_FILL"
+python3 - "$MUTANT_H_FILL" << 'PYEOF'
+import sys
+src = open(sys.argv[1]).read()
+# Change ext4_free_mb to return arithmetic result even when _out is empty
+# (pre-fix behavior: 0 instead of "DEBUGFS_ERR"). The fill guard checking
+# [[ "$free_mb" == "DEBUGFS_ERR" ]] never fires → dead instrument reports clean.
+old = '    if [[ -z "$_out" ]]; then echo "DEBUGFS_ERR"; else echo $(( _out * 4096 / 1024 / 1024 )); fi'
+new = '    echo $(( _out * 4096 / 1024 / 1024 ))'
+if old not in src:
+    print("ERROR: ext4_free_mb guard not found in mutant target", file=sys.stderr)
+    sys.exit(1)
+open(sys.argv[1], 'w').write(src.replace(old, new, 1))
+PYEOF
+mutant_h_fill=$(run_h_script "$MUTANT_H_FILL")
+mutant_h_fill_result=$(echo "$mutant_h_fill" | grep 'RESULT:' | tail -1)
+echo "  FILL-MUTANT RESULT: $mutant_h_fill_result"
+# Key assertion: without the fill guard, a dead ext4_free_mb probe is SILENT —
+# the operator never learns the disk condition was unknown during Phase 5.
+# Note: FIX 3 (fill_rc==1 runs builds) means stubs produce NO_NEW_IMAGE →
+# HARNESS INTEGRITY FAILURE via a different path, NOT "NO TRUNCATION OBSERVED".
+# The critical property this assertion covers: FREESPACE_PROBE_DEAD,fill is absent
+# (the harness cannot distinguish a real "already pressured" from a dead probe).
+assert_not_contains \
+    "h/fill-mutant: dead probe returns 0 → FREESPACE_PROBE_DEAD,fill absent (probe dead is silent)" \
+    "$mutant_h_fill" "FREESPACE_PROBE_DEAD,fill"
+# Confirm the post-fix (with guard intact) DOES emit FREESPACE_PROBE_DEAD,fill
+# with the same dead debugfs stub — this gives the mutant assertion its bite.
+assert_contains \
+    "h/fill-mutant (post-fix control): guard intact → FREESPACE_PROBE_DEAD,fill emitted" \
+    "$post_h" "FREESPACE_PROBE_DEAD,fill"
 
 # ── PROOF (i): digest-check unique case — non-empty dump with invalid sha256 output ──
 # Covers the ^[0-9a-f]{64}$ guard's unique case: a file that passes [[ ! -s ]] (non-empty
