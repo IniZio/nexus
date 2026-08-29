@@ -12,9 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	ctdarchive "github.com/containerd/containerd/archive"
 	bkclient "github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
+	"github.com/tonistiigi/fsutil"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/IniZio/nexus3/internal/core/bootspec"
 )
@@ -100,6 +103,79 @@ type realBuildkitClient struct {
 	addr string
 }
 
+// exportAndUnpack drives a buildkit solve function and unpacks the resulting tar
+// stream into outDir concurrently via an errgroup.
+//
+// # Concurrency
+//
+// Two goroutines run simultaneously:
+//   - The solve goroutine calls solveFn, which must write the complete tar stream
+//     into pw and then return. exportAndUnpack closes pw on success, or closes it
+//     with the error on failure, so that the unpack goroutine always sees EOF or an
+//     error and cannot deadlock.
+//   - The unpack goroutine calls containerd/archive.Apply, which reads from pr and
+//     applies each tar entry to outDir.
+//
+// # Fail-closed guarantee
+//
+// containerd/archive.Apply uses stdlib archive/tar internally. A tar entry whose
+// body is shorter than hdr.Size causes an io.ErrUnexpectedEOF on the body read,
+// which Apply returns as a hard error — never silently truncated output.
+// Additionally, Apply returns an error on EPERM when setting security.* xattrs
+// (e.g. security.capability), so a host that lacks the required privilege will
+// produce a hard build failure rather than a bootable image missing capabilities.
+//
+// # solveFn contract
+//
+// solveFn receives the errgroup-derived context (egCtx) and the pipe writer pw.
+// solveFn MUST NOT close pw — exportAndUnpack closes it after solveFn returns.
+// solveFn SHOULD use egCtx so that an unpack failure (which cancels egCtx)
+// interrupts the build and avoids deadlock.
+func exportAndUnpack(ctx context.Context, outDir string, solveFn func(egCtx context.Context, pw io.WriteCloser) error) error {
+	pr, pw := io.Pipe()
+
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	// Unpack goroutine: reads the tar stream from pr and applies it to outDir.
+	// WithNoSameOwner matches the parity of the old ExporterLocal path: buildkit's
+	// client-side receive filter (session/filesync/diffcopy.go:119-124) rewrote
+	// every uid/gid to the current user before writing, so the old outDir was
+	// entirely owned by the builder uid. We preserve that behaviour by skipping
+	// lchown. Security xattrs (security.capability etc.) are left at Apply's
+	// default: user.* EPERM is warned-and-skipped; security.* EPERM is an error.
+	// Neither appears in real exports: rootless buildkitd strips device nodes and
+	// security xattrs from the tar entirely (confirmed by inspection of a live
+	// alpine export: 0 TypeChar/Block entries, 0 security.* PAX headers).
+	// On failure, CloseWithError signals the solve side to stop writing (prevents
+	// deadlock if Apply returns early before the full stream is consumed).
+	eg.Go(func() error {
+		n, err := ctdarchive.Apply(egCtx, outDir, pr, ctdarchive.WithNoSameOwner())
+		if err != nil {
+			pw.CloseWithError(err)
+			return fmt.Errorf("buildkit: unpack tar to %s: %w", outDir, err)
+		}
+		slog.Info("buildkit: exportAndUnpack: tar unpacked", "outDir", outDir, "bytesWritten", n)
+		return nil
+	})
+
+	// Solve goroutine: calls the user-supplied function that writes the tar stream
+	// into pw. On completion, close pw so Apply's reader sees EOF (or the error).
+	eg.Go(func() error {
+		slog.Debug("buildkit: exportAndUnpack: streaming tar export to unpack goroutine", "outDir", outDir)
+		err := solveFn(egCtx, pw)
+		if err != nil {
+			pw.CloseWithError(err)
+			return err
+		}
+		pw.Close()
+		return nil
+	})
+
+	// Join both goroutines. Returns the first non-nil error from either side,
+	// which includes unpack errors propagated back to the caller.
+	return eg.Wait()
+}
+
 // NewBuildkitClient constructs a [BuildkitClient] that connects to buildkitd
 // at addr on each Solve call. addr must be in the form accepted by
 // github.com/moby/buildkit/client.New, e.g.
@@ -110,6 +186,23 @@ func NewBuildkitClient(addr string) (BuildkitClient, error) {
 		return nil, fmt.Errorf("buildkit: addr is required")
 	}
 	return &realBuildkitClient{addr: addr}, nil
+}
+
+// buildLocalMounts constructs the three LocalMounts entries used by every
+// Solve call, wrapping EVERY FS with the supplied sizeVerifiedSet so that a
+// truncated read on any mount — including the nexus3agent binary (the artifact
+// class that triggered the 32 MiB production truncation) — immediately cancels
+// the Solve context.
+//
+// Keeping the map construction in one place is the regression guard: a future
+// edit that replaces one Wrap call with a raw FS will be caught by
+// TestBuildLocalMounts_AllWrapped in plain `go test`, without a live buildkitd.
+func buildLocalMounts(set *sizeVerifiedSet, ctxFS, dfFS, agentFS fsutil.FS) map[string]fsutil.FS {
+	return map[string]fsutil.FS{
+		"context":     set.Wrap(ctxFS),
+		"dockerfile":  set.Wrap(dfFS),
+		"nexus3agent": set.Wrap(agentFS),
+	}
 }
 
 // Solve implements [BuildkitClient].
@@ -191,32 +284,72 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 		ctxDir = dfDir
 	}
 
-	_, err = bk.Solve(ctx, nil, bkclient.SolveOpt{
-		// LocalDirs is deprecated in favour of LocalMounts, but it remains
-		// fully supported in moby/buildkit v0.18 and its replacement
-		// (fsutil.FS) would add a heavier import for no benefit here.
-		LocalDirs: map[string]string{
-			"context":     ctxDir,
-			"dockerfile":  dfDir,
-			"nexus3agent": agentDir,
-		},
-		FrontendAttrs: map[string]string{
-			// Tell the Dockerfile frontend which file to use.
-			"filename": "Dockerfile",
-			// Register the agent binary dir as a named build context so
-			// the final-layer COPY --from=nexus3agent resolves correctly.
-			"context:nexus3agent": "local:nexus3agent",
-		},
-		Frontend: "dockerfile.v0",
-		Exports: []bkclient.ExportEntry{
-			{
-				Type:      bkclient.ExporterLocal,
-				OutputDir: outDir,
-			},
-		},
-	}, nil)
+	// Build FS handles for the three local build contexts. ctxFS is wrapped
+	// inside the exportAndUnpack closure where the Solve cancel-cause is
+	// available (D-8: see sizedfs.go for the mechanism).
+	ctxFS, err := fsutil.NewFS(ctxDir)
 	if err != nil {
-		return fmt.Errorf("buildkit: solve: %w", err)
+		return fmt.Errorf("buildkit: create context FS: %w", err)
+	}
+	dfFS, err := fsutil.NewFS(dfDir)
+	if err != nil {
+		return fmt.Errorf("buildkit: create dockerfile FS: %w", err)
+	}
+	agentFS, err := fsutil.NewFS(agentDir)
+	if err != nil {
+		return fmt.Errorf("buildkit: create agent FS: %w", err)
+	}
+
+	// Export via tar exporter + host-side unpack. ExporterTar is fail-closed:
+	// stdlib archive/tar reports a hard error if any entry body is shorter than
+	// its declared size, unlike ExporterLocal (tonistiigi/fsutil sendFile) which
+	// silently produces a truncated file on a short source read.
+	err = exportAndUnpack(ctx, outDir, func(egCtx context.Context, pw io.WriteCloser) error {
+		// solveCtx is cancelled by the first size violation across ANY of the
+		// three local mounts so bk.Solve tears down within seconds (sizedfs.go
+		// explains why the default deadline-wait behaviour masks the fault as a
+		// flaky timeout).  All three mounts share one sizeVerifiedSet so a
+		// truncated read on the nexus3agent binary (the artifact class that
+		// triggered the 32 MiB production truncation) is caught as quickly as
+		// a violation on the build context.
+		solveCtx, cancelCause := context.WithCancelCause(egCtx)
+		defer cancelCause(nil)
+		sfsSet := newSizeVerifiedSet(cancelCause)
+		_, solveErr := bk.Solve(solveCtx, nil, bkclient.SolveOpt{
+			LocalMounts: buildLocalMounts(sfsSet, ctxFS, dfFS, agentFS),
+			FrontendAttrs: map[string]string{
+				// Tell the Dockerfile frontend which file to use.
+				"filename": "Dockerfile",
+				// Register the agent binary dir as a named build context so
+				// the final-layer COPY --from=nexus3agent resolves correctly.
+				"context:nexus3agent": "local:nexus3agent",
+			},
+			Frontend: "dockerfile.v0",
+			Exports: []bkclient.ExportEntry{
+				{
+					// ExporterTar streams the rootfs as a tar archive into pw.
+					// Output is a func returning pw so buildkit can open the
+					// writer after negotiating export metadata with the daemon.
+					Type: bkclient.ExporterTar,
+					Output: func(_ map[string]string) (io.WriteCloser, error) {
+						return pw, nil
+					},
+				},
+			},
+		}, nil)
+		// A size violation cancels solveCtx, making solveErr a context error.
+		// Return our descriptive error in preference so the caller sees the
+		// path, got-bytes, and expected-bytes rather than "context canceled".
+		if fsErr := sfsSet.Err(); fsErr != nil {
+			return fmt.Errorf("buildkit: solve: %w", fsErr)
+		}
+		if solveErr != nil {
+			return fmt.Errorf("buildkit: solve: %w", solveErr)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	// Parse the Containerfile directly and write boot.json into the exported

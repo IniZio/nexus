@@ -18,3 +18,20 @@ var CopyDirIntoContext = copyDirIntoContext
 // white-box tests that verify the Containerfile-parse → boot.json path.
 // The first argument is the raw content of a .nexus/Containerfile.
 var CaptureBootSpecFromContainerfile = captureBootSpecFromContainerfile
+
+// ExportAndUnpack exposes exportAndUnpack for white-box tests that verify the
+// tar-exporter unpack path's fail-closed behaviour and errgroup join semantics.
+var ExportAndUnpack = exportAndUnpack
+
+// NewSizeVerifiedFS exposes newSizeVerifiedFS for integration tests that need
+// to inject a custom inner FS and verify that the truncation guard fires.
+var NewSizeVerifiedFS = newSizeVerifiedFS
+
+// NewSizeVerifiedSet exposes newSizeVerifiedSet for integration tests that need
+// to group multiple mounts under a shared cancel-cause and verify that a
+// violation in any member cancels the Solve context.
+var NewSizeVerifiedSet = newSizeVerifiedSet
+
+// BuildLocalMounts exposes buildLocalMounts for tests that assert every entry
+// in the LocalMounts map is set-wrapped (CI-visible regression guard).
+var BuildLocalMounts = buildLocalMounts
