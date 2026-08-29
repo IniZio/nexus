@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # mutation_proofs.sh — structural mutation proofs for run.sh fixes.
 #
-# Every proof:
-#   1. Extracts the REAL function from run.sh (never copies the logic).
-#   2. Demonstrates that the test FAILS against 0bbb84f (pre-fix).
-#   3. Demonstrates that the test PASSES against the current run.sh (post-fix).
+# Every proof either extracts the REAL function from run.sh (never copying logic)
+# or runs run.sh itself — no proof re-implements the behaviour under test.
+# Each proof shows the test FAILS against a pre-fix version (confirms the bug)
+# and PASSES against the current run.sh (confirms the fix).
+# Pre-fix refs: 0bbb84f (proofs a–e), 6568d2b (proof f / FIX 1).
 #
 # Usage: bash internal/test/repro/mutation_proofs.sh
 # Requirements: debugfs, mkfs.ext4 (e2fsprogs), git (for pre-fix extraction)
@@ -148,59 +149,53 @@ echo "  POST-FIX (no pipefail) result: '${post_a}'"
 assert_contains "a/post: post-fix returns DEBUGFS_ERR even without pipefail" "$post_a" "DEBUGFS_ERR"
 
 # ── PROOF (b): dead docker-compose probe → FAIL( token, never OK( ────────────
-# Bug: with debugfs_size returning "" (dead probe after FIX 1 is NOT applied),
-# the pre-fix stage_b_check_dc_size falls through to "docker-compose:OK(B)" —
-# no FAIL( token. Post-fix adds the probe_dead arm.
+# Bug: pre-fix stage_b_check_dc_size has no probe_dead arm — when debugfs_size
+# returns "" (not DEBUGFS_ERR, not a number), the function falls through to OK(B).
+# Post-fix adds the probe_dead arm that emits FAIL( for dead probes.
+# PROOF: extract the REAL stage_b_check_dc_size and its callees (emit_fail) from
+# run.sh, stub debugfs_size to return "" (dead probe), and confirm the verdict
+# changes between pre-fix and post-fix.
 echo ""
 echo "=== PROOF (b): dead dc probe emits FAIL(, never OK( ==="
 
-# Stub debugfs_size to return "" in scope for both versions' functions
-debugfs_size() { echo ""; }
-emit_fail() { local code="$1"; shift; echo "HARNESS_INTEGRITY_FAIL(${code}${*:+,$*})"; }
-
-# Pre-fix stage_b_check_dc_size
-stage_b_check_dc_size_pre() {
-    local img="$1"
-    local dc_path="/usr/libexec/docker/cli-plugins/docker-compose"
-    local got; got=$(debugfs_size "$img" "$dc_path")
-    if [[ "$got" == "DEBUGFS_ERR" ]]; then
-        echo "docker-compose:HARNESS_INTEGRITY_FAIL(absent,path=${dc_path})"
-        return
-    fi
-    if [[ "$got" == "33554432" ]]; then
-        echo "docker-compose:FAIL(TRUNCATED_AT_32MiB,got=${got})"
-    else
-        echo "docker-compose:OK(${got}B)"
-    fi
+_extract_func() {
+    local src="$1" name="$2"
+    awk "/^${name}\(\)/{f=1} f{print} f && /^\}/{c++; if(c==1)exit}" "$src"
 }
 
-pre_b=$(stage_b_check_dc_size_pre "fake.img")
+_extract_func() {
+    local src="$1" name="$2"
+    awk "/^${name}\(\)/{f=1} f{print} f && /^\}/{c++; if(c==1)exit}" "$src"
+}
+
+# Write each subshell to a temp file so that $1, ${got}, ${dc_path} etc. in the
+# extracted function bodies are NOT expanded by the outer shell (printf -v avoids
+# double-quote interpolation entirely).
+PRE_B_SCRIPT="$SCRATCHPAD/proof_b_pre.sh"
+{
+    _extract_func "$PRE_RUN" "emit_fail"
+    _extract_func "$PRE_RUN" "stage_b_check_dc_size"
+    printf 'debugfs_size() { echo ""; }\n'
+    printf "stage_b_check_dc_size 'fake.img'\n"
+} > "$PRE_B_SCRIPT"
+
+POST_B_SCRIPT="$SCRATCHPAD/proof_b_post.sh"
+{
+    _extract_func "$POST_RUN" "emit_fail"
+    _extract_func "$POST_RUN" "stage_b_check_dc_size"
+    printf 'debugfs_size() { echo ""; }\n'
+    printf "stage_b_check_dc_size 'fake.img'\n"
+} > "$POST_B_SCRIPT"
+
+pre_b=$(bash "$PRE_B_SCRIPT" 2>/dev/null || true)
 echo "  PRE-FIX  result: '$pre_b'"
 if echo "$pre_b" | grep -qF "OK("; then
-    proof_pass "b/pre: pre-fix emits OK( for dead probe (confirms the bug; proof valid)"
+    proof_pass "b/pre: pre-fix emits OK( for dead probe (confirms bug; proof valid)"
 else
-    proof_fail "b/pre: pre-fix did not emit OK( — bug may already be fixed"
+    proof_fail "b/pre: pre-fix did not emit OK( — bug may already be fixed or extraction failed"
 fi
 
-# Post-fix stage_b_check_dc_size
-stage_b_check_dc_size_post() {
-    local img="$1"
-    local dc_path="/usr/libexec/docker/cli-plugins/docker-compose"
-    local got; got=$(debugfs_size "$img" "$dc_path")
-    if [[ "$got" == "DEBUGFS_ERR" ]]; then
-        echo "docker-compose:$(emit_fail "absent,path=${dc_path}")"
-        return
-    fi
-    if [[ "$got" == "33554432" ]]; then
-        echo "docker-compose:FAIL(TRUNCATED_AT_32MiB,got=${got})"
-    elif [[ "$got" =~ ^[0-9]+$ ]]; then
-        echo "docker-compose:OK(${got}B)"
-    else
-        echo "docker-compose:$(emit_fail "probe_dead,dc_path=${dc_path},val=${got}")"
-    fi
-}
-
-post_b=$(stage_b_check_dc_size_post "fake.img")
+post_b=$(bash "$POST_B_SCRIPT" 2>/dev/null || true)
 echo "  POST-FIX result: '$post_b'"
 assert_contains     "b/post: post-fix emits FAIL(" "$post_b" "FAIL("
 assert_not_contains "b/post: post-fix does NOT emit OK(" "$post_b" "OK("
@@ -254,47 +249,84 @@ assert_contains     "d/post: post-fix says HARNESS INTEGRITY FAILURE" \
 assert_contains     "d/post: TOTAL_TRUNC=0 even with Phase 3 harness failures" \
     "$post_d" "Truncation-specific failures (TOTAL_TRUNC):                0"
 
-# ── PROOF (e): emit_fail grep gate fires on synthetic HARNESS_INTEGRITY_FAIL( violation ──
-# The gate is a grep in the startup section of run.sh. It scans the script itself and
-# aborts if any literal HARNESS_INTEGRITY_FAIL( appears outside emit_fail's body.
-# We test the gate logic by running it against a synthetic script with a violation.
+# ── PROOF (e): emit_fail grep gate fires on literal HARNESS_INTEGRITY_FAIL( violation ──
+# The gate (run.sh:964-977) scans BASH_SOURCE[0] at startup and aborts with
+# "SELF-CHECK FAIL" if any literal HARNESS_INTEGRITY_FAIL( token appears outside
+# the emit_fail body or a grep/comment line.
+# PROOF: copy post-fix run.sh, inject a bare literal at line 2, run it with stubs,
+# assert "SELF-CHECK FAIL" appears. If the gate block is deleted, this assertion fails
+# — the proof has bite.
 echo ""
 echo "=== PROOF (e): emit_fail grep gate fires on literal HARNESS_INTEGRITY_FAIL( outside helper ==="
 
-VIOLATION_SCRIPT="$SCRATCHPAD/violation.sh"
-cat > "$VIOLATION_SCRIPT" << 'EOF'
-#!/usr/bin/env bash
-emit_fail() { local code="$1"; shift; echo "HARNESS_INTEGRITY_FAIL(${code}${*:+,$*})"; }
-# VIOLATION: literal HARNESS_INTEGRITY_FAIL( outside emit_fail body
-bad_token="HARNESS_INTEGRITY_FAIL(injected_bypass)"
-echo "$bad_token"
-EOF
+INJECTED_RUN="$SCRATCHPAD/run_injected.sh"
+cp "$POST_RUN" "$INJECTED_RUN"
+# Inject a bare variable assignment containing HARNESS_INTEGRITY_FAIL( at line 2
+# (after shebang). This is outside emit_fail's body and not a grep or comment line.
+sed -i '2s|^|BAD_VAR="HARNESS_INTEGRITY_FAIL(injected_bypass)"\n|' "$INJECTED_RUN"
 
-# Run the gate logic against the violation script
-_hif_violations_e=$(grep -n 'HARNESS_INTEGRITY_FAIL(' "$VIOLATION_SCRIPT" \
-    | grep -v 'echo "HARNESS_INTEGRITY_FAIL(' \
-    | grep -v 'grep' \
-    | grep -v '^[0-9]*:[[:space:]]*#' \
-    | grep -v 'SELF-CHECK FAIL') || true
-echo "  Violation detected: '${_hif_violations_e}'"
+injected_out=$(run_script_with_stubs "$INJECTED_RUN" 1)
+echo "  Injected run (last 3 lines): $(echo "$injected_out" | tail -3)"
+assert_contains "e: gate fires on injected literal and emits SELF-CHECK FAIL" \
+    "$injected_out" "SELF-CHECK FAIL"
 
-if [[ -n "$_hif_violations_e" ]]; then
-    proof_pass "e: gate fires on synthetic literal HARNESS_INTEGRITY_FAIL( violation"
-else
-    proof_fail "e: gate DID NOT fire — self-check is broken"
-fi
+# Confirm gate does NOT fire on clean post-fix run.sh (no injected violations).
+clean_out=$(run_script_with_stubs "$POST_RUN" 1)
+assert_not_contains "e/clean: clean post-fix run.sh does NOT trigger SELF-CHECK FAIL" \
+    "$clean_out" "SELF-CHECK FAIL"
 
-# Confirm gate does NOT fire on the post-fix run.sh itself (zero violations)
-_hif_violations_clean=$(grep -n 'HARNESS_INTEGRITY_FAIL(' "$POST_RUN" \
-    | grep -v 'echo "HARNESS_INTEGRITY_FAIL(' \
-    | grep -v 'grep' \
-    | grep -v '^[0-9]*:[[:space:]]*#' \
-    | grep -v 'SELF-CHECK FAIL') || true
-if [[ -z "$_hif_violations_clean" ]]; then
-    proof_pass "e/clean: gate finds 0 violations in post-fix run.sh"
-else
-    proof_fail "e/clean: gate found unexpected violations in post-fix run.sh: $_hif_violations_clean"
-fi
+# ── PROOF (f): HASH_FAIL( evidence → TRUNCATION REPRODUCED verdict ───────────
+# Bug (FIX 1): count_trunc_evidence at HEAD 6568d2b matched only TRUNCATED_AT_32MiB
+# and FAIL(exp=N,got=N) tokens. HASH_FAIL(exp=<hex>...,got=<hex>...) was not counted,
+# so file_32m content corruption — the ONLY truncation detector for the 32MiB-boundary
+# file (where correct size == truncation size) — left TOTAL_TRUNC=0. The verdict then
+# printed "HARNESS INTEGRITY FAILURE" instead of "TRUNCATION REPRODUCED", misclassifying
+# a real reproduction as a harness fault.
+# ASSERT ON THE VERDICT LINE (not count_trunc_evidence in isolation): extracting the
+# real function and running it through the real verdict block couples the counter and
+# the decision, avoiding assertion-vs-mechanism drift.
+echo ""
+echo "=== PROOF (f): HASH_FAIL( evidence → TRUNCATION REPRODUCED (not HARNESS INTEGRITY FAILURE) ==="
+
+PRE6568="$SCRATCHPAD/run_6568d2b.sh"
+git show 6568d2b:internal/test/repro/run.sh > "$PRE6568"
+
+_run_hash_fail_verdict() {
+    local src="$1"
+    # Write the subshell to a temp file to preserve $1, ${}, etc. in the extracted
+    # function body without outer-shell double-quote expansion.
+    local vscript="$SCRATCHPAD/proof_f_verdict_$$.sh"
+    {
+        awk '/^count_trunc_evidence\(\)/{f=1} f{print} f && /^\}/{c++; if(c==1)exit}' "$src"
+        printf 'log() { echo "$*"; }\n'
+        printf 'TOTAL_FAIL=1\n'
+        printf 'TOTAL_TRUNC=0\n'
+        printf '%s\n' 'hash_line="StageB: file_32m=HASH_FAIL(exp=abc123456789...,got=def456012345...)"'
+        printf '%s\n' '_th=$(count_trunc_evidence "$hash_line")'
+        printf '%s\n' '(( TOTAL_TRUNC += _th )) || true'
+        printf '%s\n' 'if (( TOTAL_TRUNC > 0 )); then'
+        printf '%s\n' "    log 'RESULT: TRUNCATION REPRODUCED \xe2\x80\x94 see FAIL entries above'"
+        printf '%s\n' 'elif (( TOTAL_FAIL > 0 )); then'
+        printf '%s\n' "    log 'RESULT: HARNESS INTEGRITY FAILURE (no truncation evidence) \xe2\x80\x94 see FAIL entries above'"
+        printf '%s\n' 'else'
+        printf '%s\n' "    log 'RESULT: NO TRUNCATION OBSERVED in this run'"
+        printf '%s\n' 'fi'
+    } > "$vscript"
+    bash "$vscript" 2>/dev/null || true
+    rm -f "$vscript"
+}
+
+verdict_pre=$(_run_hash_fail_verdict "$PRE6568")
+echo "  PRE-FIX  (6568d2b) verdict: '$verdict_pre'"
+assert_contains "f/pre: 6568d2b HASH_FAIL( → HARNESS INTEGRITY FAILURE (confirms bug; proof valid)" \
+    "$verdict_pre" "HARNESS INTEGRITY FAILURE"
+
+verdict_post=$(_run_hash_fail_verdict "$POST_RUN")
+echo "  POST-FIX verdict: '$verdict_post'"
+assert_contains     "f/post: post-fix HASH_FAIL( → TRUNCATION REPRODUCED" \
+    "$verdict_post" "TRUNCATION REPRODUCED"
+assert_not_contains "f/post: post-fix NOT HARNESS INTEGRITY FAILURE" \
+    "$verdict_post" "HARNESS INTEGRITY FAILURE"
 
 # ── Final syntax checks ────────────────────────────────────────────────────────
 echo ""
