@@ -3,6 +3,8 @@ package builder
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,10 +24,87 @@ import (
 	"github.com/IniZio/nexus3/internal/core/bootspec"
 )
 
-// agentContextFilename is the reserved name used for the nexus3-agent binary
-// inside the buildkit context directory. Using a leading underscore avoids
-// collisions with typical workspace filenames.
-const agentContextFilename = "_nexus3-agent"
+// agentContextFilenamePrefix is the reserved name prefix used for the
+// nexus3-agent binary inside the buildkit "nexus3agent" named context. Using a
+// leading underscore avoids collisions with typical workspace filenames.
+const agentContextFilenamePrefix = "_nexus3-agent"
+
+// newAgentContextFilename returns a per-Solve unique name for the agent binary
+// inside the "nexus3agent" named build context.
+//
+// # Why the name must be unique per Solve
+//
+// buildkitd caches the RESULT SNAPSHOT of the final
+// `COPY --from=nexus3agent` under a cache key derived from the copied file's
+// contenthash (buildkit cache/contenthash/filehash.go NewFromStat → tarsum v1,
+// which excludes mtime). The agent binary's path, size, mode and content are
+// identical from one build to the next, so that key is STABLE across builds —
+// and a result snapshot that was written with a CORRUPT (zero-byte) agent is
+// therefore returned forever.
+//
+// That is not hypothetical. On cache-disk slot 0
+// (~/.local/state/nexus3/caches/buildkit.ext4), snapshot 61 held a zero-byte
+// /usr/sbin/nexus3-agent written at 15:05 on 2026-08-29. Every later build of
+// the same Containerfile cache-hit that snapshot, finished the whole solve in
+// ~7 s without re-executing a single layer, and then failed the
+// verifyAgentIntegrity canary with "/sbin/nexus3-agent is 0 bytes, expected
+// 36329665". The canary is fail-closed, so the poisoned layer never shipped —
+// but it also never healed: the only escape was deleting the operator's warm
+// cache disk. sizeVerifiedFS (sizedfs.go) cannot help here, because it guards
+// the context STREAM and the stream is healthy; the corruption lives in a
+// persisted buildkitd snapshot.
+//
+// Putting a fresh nonce in the COPY source path makes the agent layer's cache
+// key unique per build, so a poisoned agent layer can never be served a second
+// time. Only this final layer re-executes; every Containerfile layer above it
+// still cache-hits, preserving the layer ordering rationale documented on
+// [realBuildkitClient.Solve].
+//
+// A crypto/rand failure is FATAL, not degraded: any process-local fallback
+// (a counter) restarts in every new process and so collides across
+// processes, silently reinstating the stable-key poisoned-snapshot class
+// this function exists to eliminate.
+func newAgentContextFilename() (string, error) {
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", fmt.Errorf("buildkit: agent layer nonce: crypto/rand: %w", err)
+	}
+	return fmt.Sprintf("%s-%s", agentContextFilenamePrefix, hex.EncodeToString(nonce[:])), nil
+}
+
+// stageAgentContext copies the agent binary at agentPath into agentDir under a
+// fresh per-Solve nonce name and returns that name. The returned name is the
+// ONLY thing [synthesizeDockerfile] may use as the COPY source: the write and
+// the COPY line are coupled through this single return value, so they cannot
+// silently diverge (which would fail every build with "file not found").
+func stageAgentContext(agentDir, agentPath string) (string, error) {
+	agentFile, err := newAgentContextFilename()
+	if err != nil {
+		return "", err
+	}
+	agentBytes, err := os.ReadFile(agentPath)
+	if err != nil {
+		return "", fmt.Errorf("buildkit: read agent binary %s: %w", agentPath, err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, agentFile), agentBytes, 0755); err != nil {
+		return "", fmt.Errorf("buildkit: write agent to agent dir: %w", err)
+	}
+	return agentFile, nil
+}
+
+// synthesizeDockerfile returns the combined Dockerfile handed to the
+// dockerfile.v0 frontend: the user's Containerfile followed by the final layer
+// that installs the agent binary from the "nexus3agent" named context.
+//
+// agentFile must come from [newAgentContextFilename] — the name is what makes
+// the agent layer's buildkit cache key unique per build.
+func synthesizeDockerfile(containerfileBytes []byte, agentFile, installPath string) []byte {
+	finalLayer := fmt.Sprintf(
+		"\n\n# Final layer: bake the nexus3-agent (boot contract: init=%s)\nCOPY --chmod=0755 --from=nexus3agent %s %s\n",
+		installPath, agentFile, installPath,
+	)
+	return append(append([]byte(nil), containerfileBytes...), []byte(finalLayer)...)
+}
 
 // SolveRequest is the fully-resolved build specification handed to a
 // [BuildkitClient]. It carries everything needed to describe one complete
@@ -217,10 +296,13 @@ func buildLocalMounts(set *sizeVerifiedSet, ctxFS, dfFS, agentFS fsutil.FS) map[
 //	<content of req.ContainerfileBytes>
 //
 //	# Final layer: bake the nexus3-agent (boot contract: init=/sbin/nexus3-agent)
-//	COPY --chmod=0755 --from=_nexus3_agent _nexus3-agent <req.AgentInstallPath>
+//	COPY --chmod=0755 --from=nexus3agent _nexus3-agent-<nonce> <req.AgentInstallPath>
 //
 // Placing the agent COPY last means an agent version bump only invalidates
 // that single layer; all Containerfile layers above are cache-hits in buildkitd.
+// The <nonce> in the source filename ([newAgentContextFilename]) makes that
+// last layer a deliberate cache MISS on every build, so a corrupt agent layer
+// can never be served from buildkitd's persisted snapshot cache.
 //
 // # Context layout
 //
@@ -243,12 +325,21 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 
 	// Synthesise a combined Dockerfile: user instructions + agent final layer.
 	// The agent COPY uses a named build context (nexus3agent) so the agent
-	// binary does not need to reside in the workspace context.
-	finalLayer := fmt.Sprintf(
-		"\n\n# Final layer: bake the nexus3-agent (boot contract: init=%s)\nCOPY --chmod=0755 --from=nexus3agent %s %s\n",
-		req.AgentInstallPath, agentContextFilename, req.AgentInstallPath,
-	)
-	synthDF := append(append([]byte(nil), req.ContainerfileBytes...), []byte(finalLayer)...)
+	// binary does not need to reside in the workspace context. The source
+	// filename carries a per-Solve nonce so the agent layer is never served
+	// from a stale buildkitd result snapshot — see [newAgentContextFilename].
+	// Small temp dir for the agent binary, used as the "nexus3agent" named
+	// build context. This avoids writing nexus3 internals into the workspace.
+	agentDir, err := os.MkdirTemp("", "nexus3-bkagent-*")
+	if err != nil {
+		return fmt.Errorf("buildkit: create agent dir: %w", err)
+	}
+	defer os.RemoveAll(agentDir)
+	agentFile, err := stageAgentContext(agentDir, req.AgentPath)
+	if err != nil {
+		return err
+	}
+	synthDF := synthesizeDockerfile(req.ContainerfileBytes, agentFile, req.AgentInstallPath)
 
 	// Small temp dir for the synthetic Dockerfile only.
 	dfDir, err := os.MkdirTemp("", "nexus3-bkdf-*")
@@ -258,21 +349,6 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 	defer os.RemoveAll(dfDir)
 	if err := os.WriteFile(filepath.Join(dfDir, "Dockerfile"), synthDF, 0600); err != nil {
 		return fmt.Errorf("buildkit: write Dockerfile: %w", err)
-	}
-
-	// Small temp dir for the agent binary, used as the "nexus3agent" named
-	// build context. This avoids writing nexus3 internals into the workspace.
-	agentDir, err := os.MkdirTemp("", "nexus3-bkagent-*")
-	if err != nil {
-		return fmt.Errorf("buildkit: create agent dir: %w", err)
-	}
-	defer os.RemoveAll(agentDir)
-	agentBytes, err := os.ReadFile(req.AgentPath)
-	if err != nil {
-		return fmt.Errorf("buildkit: read agent binary %s: %w", req.AgentPath, err)
-	}
-	if err := os.WriteFile(filepath.Join(agentDir, agentContextFilename), agentBytes, 0755); err != nil {
-		return fmt.Errorf("buildkit: write agent to agent dir: %w", err)
 	}
 
 	// Wire build context: workspace is passed to buildkitd directly (no
@@ -494,7 +570,7 @@ func captureBootSpecFromContainerfile(containerfileBytes []byte, outDir string) 
 // copyDirIntoContext recursively copies all files from src into dst, preserving
 // relative paths. Symlinks are resolved; if a symlink target escapes src (i.e.
 // its real path is not rooted at src), the symlink is skipped to prevent
-// workspace-escape attacks. Reserved filenames (Dockerfile, agentContextFilename)
+// workspace-escape attacks. Reserved filenames (Dockerfile, agentContextFilenamePrefix)
 // are not skipped here — the caller overwrites them after this function returns.
 func copyDirIntoContext(src, dst string) error {
 	// Resolve src to a canonical path for escape detection.
