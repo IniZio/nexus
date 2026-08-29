@@ -226,14 +226,19 @@ TOTAL_TRUNC=0     # Genuine truncation evidence only (TRUNCATED_AT_32MiB + real 
 TOTAL_PASS_P3=0   # Phase 3 Stage-B-only passes (Stage-A never captured in concurrent path)
 
 # count_trunc_evidence: count genuine truncation tokens in a result line.
-# Counts TRUNCATED_AT_32MiB occurrences + FAIL(exp=N,got=M) with real numbers.
-# Does NOT count HARNESS_INTEGRITY_FAIL( tokens (those are harness faults, not truncations).
+# Counts TRUNCATED_AT_32MiB + FAIL(exp=N,got=M) + HASH_FAIL( (content-hash mismatch).
+# HASH_FAIL( is the sole detector for file_32m (whose correct size equals the truncation
+# boundary — a size check alone cannot distinguish truncation from intact content).
+# Does NOT count HASH_DUMP_FAIL( (a harness fault, not truncation evidence) or
+# HARNESS_INTEGRITY_FAIL( tokens. HASH_DUMP_FAIL( does not contain HASH_FAIL( as a
+# substring, so grep -oF 'HASH_FAIL(' is unambiguous and excludes it correctly.
 count_trunc_evidence() {
     local line="$1"
-    local t m
+    local t m h
     t=$(echo "$line" | grep -oF 'TRUNCATED_AT_32MiB' | wc -l)
     m=$(echo "$line" | grep -oE 'FAIL\(exp=[0-9]+,got=[0-9]+' | wc -l)
-    echo $(( t + m ))
+    h=$(echo "$line" | grep -oF 'HASH_FAIL(' | wc -l)
+    echo $(( t + m + h ))
 }
 format_result() {
     local stage="$1"; shift
