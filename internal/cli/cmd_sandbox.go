@@ -1204,6 +1204,13 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		// Resolve agent posture so the config-default agent (from applyUserGlobalConfig
 		// or applyProjectConfig) is persisted on the record even when no image is given.
 		noBootProfile, _, _ := resolveAgentPosture(f)
+		// Agent-settings / MCP sharing (A-MOUNT) requires a booted VM: the
+		// agentcfg-lower overlay is wired into the driver config at CreateAndBoot
+		// time and is never read for a store-only record (no rootfs, no guest).
+		// Inform the operator so the omission is visible rather than silent.
+		if !f.noShareSettings && len(noBootProfile.MountAllowlist) > 0 {
+			slog.Warn("sandbox create: agent settings / MCP sharing requires a booted sandbox; skipped for store-only record (use --image, --rootfs, or --file to enable)")
+		}
 		sb, err := svc.Create(ctx, project, name, service.CreateOptions{
 			RemoveOnExit: f.rm,
 			AgentName:    noBootProfile.Name,
