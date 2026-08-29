@@ -222,8 +222,10 @@ func TestManifestBeforeIntegrityGate_OrderingProtection(t *testing.T) {
 			manifestPos, integrityPos)
 	}
 
-	t.Logf("ordering OK: logRootfsSizeManifest@%d < verifyRootfsPopulated@%d, verifyAgentIntegrity@%d",
-		manifestPos, populatedPos, integrityPos)
+	if !t.Failed() {
+		t.Logf("ordering OK: logRootfsSizeManifest@%d < verifyRootfsPopulated@%d, verifyAgentIntegrity@%d",
+			manifestPos, populatedPos, integrityPos)
+	}
 }
 
 // TestManifestBeforeIntegrityGate_ScenarioProof verifies that in the truncation
