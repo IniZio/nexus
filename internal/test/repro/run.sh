@@ -2,13 +2,21 @@
 # run.sh — repro harness for the buildkit 32 MiB export-truncation bug.
 #
 # USAGE
-#   bash internal/test/repro/run.sh [ITERATIONS] [--pressure]
+#   bash internal/test/repro/run.sh [ITERATIONS] [--pressure] [--disk-pressure] [--fallback-branch]
 #
-#   ITERATIONS  sequential baseline build iterations (default 10)
-#   --pressure  after sequential baseline, run all pressure variants:
-#                 Phase 2 — constrained builder memory (--builder-memory 2048)
-#                 Phase 3 — 3 concurrent builds
-#                 Phase 4 — heavy/long build (~20 min workload profile)
+#   ITERATIONS       sequential baseline build iterations (default 10)
+#   --pressure       after sequential baseline, run all pressure variants:
+#                      Phase 2 — constrained builder memory (--builder-memory 2048)
+#                      Phase 3 — 3 concurrent builds
+#                      Phase 4 — heavy/long build (~20 min workload profile)
+#   --disk-pressure  Phase 5 — export-scratch free-space exhaustion (CONDITION 1 / AC-2):
+#                      fills buildkit.ext4 to 800/400/100 MiB free via debugfs,
+#                      runs builds, observes whether buildkit silently truncates
+#                      or propagates ENOSPC. Restores ext4 after each level.
+#   --fallback-branch Phase 6 — exportBase="" fallback branch (CONDITION 2 / AC-2):
+#                      injects /nexus3-export as a regular file in buildkit.ext4
+#                      so os.MkdirAll fails and the export lands on /tmp instead.
+#                      Restores ext4 after all builds.
 #
 # FLAW CORRECTIONS vs. prior run (both required for a valid negative result)
 #
@@ -59,8 +67,14 @@ set -euo pipefail
 NEXUS3="${NEXUS3:-nexus3}"
 ITERATIONS="${1:-10}"
 PRESSURE=0
+DISK_PRESSURE=0
+FALLBACK_BRANCH=0
 SKIP_PHASE2="${SKIP_PHASE2:-0}"
-for arg in "$@"; do [[ "$arg" == "--pressure" ]] && PRESSURE=1; done
+for arg in "$@"; do
+    [[ "$arg" == "--pressure" ]] && PRESSURE=1
+    [[ "$arg" == "--disk-pressure" ]] && DISK_PRESSURE=1
+    [[ "$arg" == "--fallback-branch" ]] && FALLBACK_BRANCH=1
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE="$SCRIPT_DIR/workspace"
@@ -436,6 +450,123 @@ cleanup_sandbox() {
     "$NEXUS3" rm "$sb_id" 2>/dev/null || true
 }
 
+# ── Disk-pressure helpers (Phase 5) ──────────────────────────────────────────
+# Writes a dense fill file into buildkit.ext4 via debugfs so the guest sees
+# only target_free_mb of free space at /var/lib/buildkit. No root required —
+# debugfs opens the image file as the owning user.
+#
+# The fill file is written to /PRESSURE_FILL in the ext4 root. Multiple calls
+# overwrite the previous fill (rm first). Restore via restore_ext4_pressure.
+CACHE_EXT4="${NEXUS3_STATE_DIR:-$HOME/.local/state/nexus3}/caches/buildkit.ext4"
+
+# repair_ext4: run e2fsck to fix dirty/inconsistent state left by a builder VM
+# that was killed without cleanly unmounting the filesystem. Must be called
+# before any debugfs manipulation when a VM has recently used the ext4.
+# e2fsck exit codes: 0=clean, 1/2=errors corrected, 4+=uncorrected.
+repair_ext4() {
+    local out ec
+    log "repair_ext4: running e2fsck -p -f on buildkit.ext4..."
+    out=$(e2fsck -p -f "$CACHE_EXT4" 2>&1) && ec=$? || ec=$?
+    log "repair_ext4: e2fsck exit=${ec}: ${out:0:120}"
+    if (( ec >= 4 )); then
+        log "repair_ext4: WARN uncorrected errors (ec=${ec}) — debugfs may still fail"
+        return 1
+    fi
+    return 0
+}
+
+ext4_free_mb() {
+    local free_blocks
+    free_blocks=$(debugfs -R "stats" "$CACHE_EXT4" 2>/dev/null \
+        | grep "Free blocks" | grep -oP '\d+' | head -1)
+    echo $(( free_blocks * 4096 / 1024 / 1024 ))
+}
+
+# fill_ext4_pressure target_free_mb host_tmp_fill_path
+# Returns 0 if fill written, 1 if already at/below target or write failed.
+fill_ext4_pressure() {
+    local target_free_mb="$1" fill_path="$2"
+    # Repair dirty state left by the previous builder VM before reading stats.
+    repair_ext4 || { log "fill_ext4_pressure: repair_ext4 failed — aborting fill"; return 1; }
+    local free_mb; free_mb=$(ext4_free_mb)
+    local fill_mb=$(( free_mb - target_free_mb ))
+    if (( fill_mb <= 0 )); then
+        log "fill_ext4_pressure: already at/below target (free=${free_mb} MiB, target=${target_free_mb} MiB)"
+        return 1
+    fi
+    log "fill_ext4_pressure: free=${free_mb} MiB → leaving ${target_free_mb} MiB free; fill=${fill_mb} MiB"
+    # Defensive: remove any prior /PRESSURE_FILL before writing the new one.
+    debugfs -w "$CACHE_EXT4" -R "rm /PRESSURE_FILL" 2>&1 || true
+    # IMPORTANT: must use /dev/urandom (not /dev/zero). debugfs writes zero-data
+    # files as sparse (no block allocation), so all-zeros fill consumes no
+    # ext4 blocks and the free-space test condition is never reached.
+    log "fill_ext4_pressure: creating ${fill_mb} MiB fill file (urandom — sparse-proof)..."
+    dd if=/dev/urandom of="$fill_path" bs=1048576 count="$fill_mb" status=none
+    log "fill_ext4_pressure: writing fill into buildkit.ext4 (debugfs) ..."
+    local dout
+    if ! dout=$(debugfs -w "$CACHE_EXT4" -R "write $fill_path /PRESSURE_FILL" 2>&1); then
+        log "fill_ext4_pressure: debugfs write failed: ${dout}"
+        rm -f "$fill_path"
+        return 1
+    fi
+    rm -f "$fill_path"
+    local new_free_mb; new_free_mb=$(ext4_free_mb)
+    log "fill_ext4_pressure: done — ext4 free now ${new_free_mb} MiB (target ${target_free_mb} MiB)"
+    return 0
+}
+
+restore_ext4_pressure() {
+    repair_ext4 || true  # best-effort; debugfs rm may still work
+    log "restore_ext4_pressure: removing /PRESSURE_FILL from buildkit.ext4 ..."
+    debugfs -w "$CACHE_EXT4" -R "rm /PRESSURE_FILL" 2>&1 || true
+    local free_mb; free_mb=$(ext4_free_mb)
+    log "restore_ext4_pressure: restored — ext4 free now ${free_mb} MiB"
+}
+
+# ── Fallback-branch helpers (Phase 6) ────────────────────────────────────────
+# Injects a regular FILE named /nexus3-export into buildkit.ext4 so that when
+# the guest tries os.MkdirAll("/var/lib/buildkit/nexus3-export", 0o700) it
+# gets ENOTDIR and falls back to os.TempDir() (/tmp on the guest rootfs).
+inject_nexus_export_blocker() {
+    repair_ext4 || { log "inject_nexus_export_blocker: repair_ext4 failed — aborting"; return 1; }
+    # Remove any pre-existing /nexus3-export (file OR directory). debugfs rm
+    # refuses to remove a non-empty directory; use unlink instead — it removes
+    # the directory entry from the parent regardless of contents (orphans the
+    # inode). A subsequent e2fsck -y cleans up the orphaned inode.
+    debugfs -w "$CACHE_EXT4" -R "unlink /nexus3-export" 2>&1 || true
+    # Clean up orphaned inodes (including the unlinked dir tree) so the ext4
+    # is in a consistent state before the write.
+    e2fsck -y -f "$CACHE_EXT4" 2>&1 | tail -2 || true
+    local tmp_blocker; tmp_blocker=$(mktemp)
+    echo "NEXUS3_EXPORT_BLOCKER" > "$tmp_blocker"
+    local dout
+    if ! dout=$(debugfs -w "$CACHE_EXT4" -R "write $tmp_blocker /nexus3-export" 2>&1); then
+        log "inject_nexus_export_blocker: debugfs write failed: ${dout}"
+        rm -f "$tmp_blocker"
+        return 1
+    fi
+    rm -f "$tmp_blocker"
+    # Verify the blocker is a regular file (Type: regular), not a directory.
+    # || true: grep exits 1 if no "Type:" match; without || true, set -e kills the script.
+    local ftype
+    ftype=$(debugfs -R "stat /nexus3-export" "$CACHE_EXT4" 2>&1 | grep "Type:") || true
+    if echo "$ftype" | grep -q "regular"; then
+        log "inject_nexus_export_blocker: injected — type: regular; MkdirAll will return ENOTDIR"
+    else
+        log "inject_nexus_export_blocker: WARN blocker not a regular file: ${ftype:-not found}"
+        return 1
+    fi
+}
+
+restore_nexus_export_blocker() {
+    repair_ext4 || true
+    # Use unlink (not rm) — handles both regular file and directory cases.
+    debugfs -w "$CACHE_EXT4" -R "unlink /nexus3-export" 2>&1 || true
+    # Clean up orphaned inodes left by unlink.
+    e2fsck -y -f "$CACHE_EXT4" 2>&1 | tail -2 || true
+    log "restore_nexus_export_blocker: /nexus3-export removed and ext4 repaired"
+}
+
 # ── Core build+measure function ───────────────────────────────────────────────
 ALL_RESULTS=()
 
@@ -762,6 +893,121 @@ if [[ $PRESSURE -eq 1 ]]; then
     done
 
 fi  # PRESSURE
+
+# ── Phase 5: export-scratch disk-pressure builds ─────────────────────────────
+# CONDITION 1 from AC-2 sweep: fill the buildkit cache disk to within a target
+# free space, then run builds that export >32 MiB files. Sweeps three regimes:
+#   Level A: ~800 MiB free  — enough to start, might complete (some headroom)
+#   Level B: ~400 MiB free  — borderline: export runs ~550 MiB rootfs → ENOSPC
+#   Level C: ~100 MiB free  — very little: export fails early
+#
+# The key question: does buildkit's ExporterLocal propagate ENOSPC (Solve()
+# returns an error) or silently truncate files (Solve() returns nil, files
+# wrong size)? The Stage-A manifest localizes which.
+#
+# IMPORTANT: host free space is watched. If it drops below 15 GiB this phase
+# aborts and restores. (Fill goes INTO the ext4 image, not to new host files,
+# but the host file may grow if it was previously sparse.)
+if [[ $DISK_PRESSURE -eq 1 ]]; then
+    log "--- Phase 5: disk-pressure builds (CONDITION 1) ---"
+
+    HOST_FREE_MIN_GIB=15
+    check_host_free() {
+        local avail_kb; avail_kb=$(df "$HOME" | awk 'NR==2{print $4}')
+        echo $(( avail_kb / 1024 / 1024 ))
+    }
+
+    PRESSURE_TMP_FILL="${SCRIPT_DIR}/logs/pressure_fill_$$.bin"
+    DP_ABORTED=0
+
+    for level_spec in "800:A" "400:B" "100:C"; do
+        target_free_mb="${level_spec%%:*}"
+        level_tag="${level_spec##*:}"
+
+        hfree=$(check_host_free)
+        if (( hfree < HOST_FREE_MIN_GIB )); then
+            log "Phase 5 ABORT: host free ${hfree} GiB < ${HOST_FREE_MIN_GIB} GiB threshold"
+            DP_ABORTED=1
+            break
+        fi
+
+        log "=== Phase 5 Level ${level_tag}: filling ext4 to ${target_free_mb} MiB free (host free: ${hfree} GiB) ==="
+        if ! fill_ext4_pressure "$target_free_mb" "$PRESSURE_TMP_FILL"; then
+            log "Phase 5 Level ${level_tag}: fill skipped (already at/below target or write error)"
+            continue
+        fi
+
+        # Run 2 builds at this pressure level (Level C = 1 build — fails early).
+        iters=2; [[ "$level_tag" == "C" ]] && iters=1
+        for (( pi = 1; pi <= iters; pi++ )); do
+            hfree=$(check_host_free)
+            if (( hfree < HOST_FREE_MIN_GIB )); then
+                log "Phase 5 ABORT mid-level: host free ${hfree} GiB < ${HOST_FREE_MIN_GIB} GiB"
+                DP_ABORTED=1
+                break
+            fi
+            run_one_iteration "dp-${level_tag}-$(printf '%02d' "$pi")" "$pi"
+            log ""
+        done
+        [[ $DP_ABORTED -eq 1 ]] && break
+
+        restore_ext4_pressure
+        log ""
+    done
+
+    # Final restore (covers abort path where restore wasn't reached).
+    restore_ext4_pressure
+
+    if [[ $DP_ABORTED -eq 1 ]]; then
+        log "Phase 5: ABORTED due to host free-space guard — partial results above"
+    else
+        log "Phase 5: complete"
+    fi
+    log ""
+fi
+
+# ── Phase 6: exportBase="" fallback branch ────────────────────────────────────
+# CONDITION 2 from AC-2 sweep: force os.MkdirAll(exportScratchDir) to fail by
+# pre-creating /nexus3-export as a regular FILE in the buildkit.ext4. The agent
+# logs the warning and falls back to os.TempDir() = /tmp on the guest rootfs
+# (a DIFFERENT filesystem from the cache disk). This branch is exercised for the
+# first time here — every prior sweep took the happy path.
+#
+# After each build the blocker is re-injected because the guest agent may remove
+# and recreate /nexus3-export. (The defer RemoveAll removes the dir; it cannot
+# affect a pre-existing regular file, so re-injection is needed to be safe.)
+if [[ $FALLBACK_BRANCH -eq 1 ]]; then
+    log "--- Phase 6: exportBase=fallback branch (CONDITION 2) ---"
+    log "Phase 6: injecting /nexus3-export regular-file blocker into buildkit.ext4"
+    inject_nexus_export_blocker
+
+    # Verify blocker is in place (|| true: grep exits 1 if "Type:" not found; with
+    # set -e + pipefail that would kill the script without || true).
+    blocker_check=$(debugfs -R "stat /nexus3-export" "$CACHE_EXT4" 2>&1 | grep "Type:" | head -1) || true
+    log "Phase 6: blocker check: ${blocker_check:-not found}"
+
+    FB_TRAP_SET=0
+    cleanup_fallback() {
+        log "Phase 6 cleanup trap: restoring nexus3-export blocker..."
+        restore_nexus_export_blocker
+    }
+    trap cleanup_fallback EXIT
+
+    for (( fbi = 1; fbi <= 2; fbi++ )); do
+        log "=== Phase 6 build ${fbi}: fallback to /tmp (exportBase='') ==="
+        # Re-inject before each build: the previous build's agent may have
+        # removed /nexus3-export (via deferred RemoveAll on the *dir*, not the
+        # file — but injecting fresh is cheap and safe).
+        inject_nexus_export_blocker
+        run_one_iteration "fb-$(printf '%02d' "$fbi")" "$fbi"
+        log ""
+    done
+
+    restore_nexus_export_blocker
+    trap - EXIT
+    log "Phase 6: complete"
+    log ""
+fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 log "=========================================="
