@@ -179,13 +179,14 @@ stage_b_verify_hashes() {
     for f in "${HASH_VERIFIED_FILES[@]}"; do
         local exp_hash="${EXPECTED_HASHES[$f]:-}"
         if [[ -z "$exp_hash" ]]; then
-            hash_results+=("${f}=HASH_SKIP(no_expected)")
+            hash_results+=("${f}=HARNESS_INTEGRITY_FAIL(no_expected_hash,file=${f})")
+            any_fail=1
             continue
         fi
         local tmp_path="${VERIFY_TMPDIR}/${f}"
         # debugfs dump extracts the file from the ext4 image.
         debugfs -R "dump /testfiles/${f} ${tmp_path}" "$img" 2>/dev/null || {
-            hash_results+=("${f}=HASH_DUMP_FAILED")
+            hash_results+=("${f}=HASH_DUMP_FAIL(file=${f})")
             any_fail=1
             continue
         }
@@ -217,13 +218,13 @@ format_result() {
         local f="${token%%=*}" v="${token#*=}"
         local exp="${EXPECTED_SIZES[$f]:-}"
         if [[ -z "$exp" ]]; then
-            line+=" ${f}=${v}(NO_EXPECTED)"
+            line+=" ${f}=HARNESS_INTEGRITY_FAIL(no_expected,file=${f},val=${v})"
         elif [[ "$v" == "$exp" ]]; then
             line+=" ${f}=PASS"
         elif [[ "$v" =~ ^[0-9]+$ ]]; then
             line+=" ${f}=FAIL(exp=${exp},got=${v})"
         else
-            line+=" ${f}=${v}"   # EXEC_FAILED / DEBUGFS_ERR / etc.
+            line+=" ${f}=HARNESS_INTEGRITY_FAIL(probe_dead,file=${f},val=${v})"
         fi
     done
     echo "$line"
@@ -240,7 +241,7 @@ stage_b_check_agent_size() {
     local host_size; host_size=$(stat -c '%s' "$host_agent" 2>/dev/null || echo 0)
     local guest_size; guest_size=$(debugfs_size "$img" "/sbin/nexus3-agent")
     if [[ "$guest_size" == "DEBUGFS_ERR" ]]; then
-        echo "agent-size:DEBUGFS_ERR(host=${host_size})"
+        echo "agent-size:HARNESS_INTEGRITY_FAIL(absent,path=/sbin/nexus3-agent,host=${host_size})"
         return
     fi
     if [[ "$guest_size" == "$host_size" ]]; then
@@ -396,7 +397,7 @@ RUN echo "=== apt: installing docker-compose-v2 ===" && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-v2 2>&1 && \
     rm -rf /var/lib/apt/lists/*
 # Guaranteed >32MiB RUN-produced truncation target: docker-compose-v2 from
-# debian:bookworm may be <32MiB (version-dependent). This dd file ensures
+# ubuntu:24.04 may be <32MiB (version-dependent). This dd file ensures
 # at least one RUN-produced file crosses the 32 MiB boundary each iteration.
 RUN dd if=/dev/urandom of=/usr/local/bin/run-produced-40m bs=1M count=40 2>/dev/null
 # COPY incompressible test files from build context (pre-generated from
@@ -664,22 +665,22 @@ parse_manifest_stage_a() {
         local msize="${msizes[$rp]:-}"
         local exp="${EXPECTED_SIZES[$f]:-}"
         if [[ -z "$msize" ]]; then
-            tokens+=("${f}=ABSENT")
+            tokens+=("${f}=HARNESS_INTEGRITY_FAIL(manifest_absent,file=${f})")
         elif [[ -z "$exp" ]]; then
-            tokens+=("${f}=${msize}(NO_EXPECTED)")
+            tokens+=("${f}=HARNESS_INTEGRITY_FAIL(no_expected,file=${f},manifest_val=${msize})")
         elif [[ "$msize" == "$exp" ]]; then
             tokens+=("${f}=OK")
         elif [[ "$msize" =~ ^[0-9]+$ ]]; then
             tokens+=("${f}=MANIFEST_FAIL(exp=${exp},got=${msize})")
         else
-            tokens+=("${f}=ERR(${msize})")
+            tokens+=("${f}=HARNESS_INTEGRITY_FAIL(manifest_err,file=${f},val=${msize})")
         fi
     done
 
     # Check RUN-produced synthetic 40 MiB file (DEFECT-1 FIX target).
     local rp40m="${msizes[usr/local/bin/run-produced-40m]:-}"
     if [[ -z "$rp40m" ]]; then
-        tokens+=("run-produced-40m=ABSENT")
+        tokens+=("run-produced-40m=HARNESS_INTEGRITY_FAIL(manifest_absent,file=run-produced-40m)")
     elif [[ "$rp40m" == "41943040" ]]; then
         tokens+=("run-produced-40m=OK(${rp40m}B)")
     elif [[ "$rp40m" == "33554432" ]]; then
@@ -691,7 +692,7 @@ parse_manifest_stage_a() {
     # Check docker-compose binary (apt-installed, faithful to original incident).
     local dc_msize="${msizes[usr/libexec/docker/cli-plugins/docker-compose]:-}"
     if [[ -z "$dc_msize" ]]; then
-        tokens+=("docker-compose=ABSENT")
+        tokens+=("docker-compose=HARNESS_INTEGRITY_FAIL(manifest_absent,file=docker-compose)")
     elif [[ "$dc_msize" == "33554432" ]]; then
         tokens+=("docker-compose=MANIFEST_FAIL(TRUNCATED_AT_32MiB,got=${dc_msize})")
     else
@@ -702,7 +703,7 @@ parse_manifest_stage_a() {
     local agent_msize="${msizes[usr/sbin/nexus3-agent]:-}"
     local agent_exp; agent_exp=$(stat -c '%s' "$AGENT_BIN" 2>/dev/null || echo 0)
     if [[ -z "$agent_msize" ]]; then
-        tokens+=("nexus3-agent=ABSENT")
+        tokens+=("nexus3-agent=HARNESS_INTEGRITY_FAIL(manifest_absent,file=nexus3-agent)")
     elif [[ "$agent_msize" == "$agent_exp" ]]; then
         tokens+=("nexus3-agent=OK(${agent_msize}B)")
     elif [[ "$agent_msize" == "33554432" ]]; then
@@ -826,13 +827,13 @@ run_one_iteration() {
 
     if [[ -z "$new_digest" ]]; then
         log "WARN: ${label} — no new image digest (build-cache hit?)"
-        stage_b_line="Stage_B:NO_NEW_IMAGE(cache_hit)"
+        stage_b_line="Stage_B:HARNESS_INTEGRITY_FAIL(NO_NEW_IMAGE,cache_hit)"
     else
         local short="${new_digest#sha256:}"
         local img="${IMAGE_STORE}/${short}/artifact"
         if [[ ! -f "$img" ]]; then
             log "ERROR: ${label} — image file missing: ${img}"
-            stage_b_line="Stage_B:IMAGE_FILE_MISSING"
+            stage_b_line="Stage_B:HARNESS_INTEGRITY_FAIL(IMAGE_FILE_MISSING)"
         else
             log "=== ${label}: Stage B — debugfs size check on ${short:0:16}... ==="
             local raw_b; raw_b=$(stage_b_measure "$img")
@@ -842,7 +843,7 @@ run_one_iteration() {
 
             # Hash verification for file_32m and file_elf.
             log "=== ${label}: Stage B — hash verification (file_32m, file_elf) ==="
-            local hash_line; hash_line=$(stage_b_verify_hashes "$img")
+            local hash_line; hash_line=$(stage_b_verify_hashes "$img") || iter_has_fail=1
             log "  HashVerify: ${hash_line}"
             stage_b_line="${stage_b_line} | HashVerify:${hash_line}"
 
@@ -1033,9 +1034,27 @@ if [[ $PRESSURE -eq 1 ]]; then
         # shellcheck disable=SC2086
         pb_line=$(format_result "Stage_B" $raw_b)
         log "$pb_line"
-        hash_line=$(stage_b_verify_hashes "$img")
+        p3_iter_has_fail=0
+        hash_line=$(stage_b_verify_hashes "$img") || p3_iter_has_fail=1
         log "  HashVerify: ${hash_line}"
         ALL_RESULTS+=("${plabel} | Stage_A:concurrent_not_captured | ${pb_line} | HashVerify:${hash_line}")
+
+        # Feed Phase 3 results into summary counters — same FAIL( discipline as
+        # sequential phases. Loop runs in parent shell (after wait) so counter
+        # updates propagate directly without file-based collection.
+        if echo "$pb_line" | grep -qF "FAIL("; then
+            p3_fail_count=$(echo "$pb_line" | grep -oF "FAIL(" | wc -l)
+            (( TOTAL_FAIL += p3_fail_count )) || true
+            p3_iter_has_fail=1
+        fi
+        if echo "$hash_line" | grep -qF "FAIL("; then
+            p3_hfail_count=$(echo "$hash_line" | grep -oF "FAIL(" | wc -l)
+            (( TOTAL_FAIL += p3_hfail_count )) || true
+            p3_iter_has_fail=1
+        fi
+        if [[ $p3_iter_has_fail -eq 0 ]] && echo "$pb_line" | grep -qF "=PASS"; then
+            (( TOTAL_PASS++ )) || true
+        fi
     done
 
     for slot in A B C; do
