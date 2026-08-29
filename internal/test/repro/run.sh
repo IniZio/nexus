@@ -163,8 +163,10 @@ find_new_builder_sandbox() {
 
 debugfs_size() {
     local img="$1" path="$2"
-    debugfs -R "stat ${path}" "$img" 2>/dev/null \
-        | grep -oP '(?<=Size: )\d+' | head -1 || echo "DEBUGFS_ERR"
+    local _out
+    _out=$(debugfs -R "stat ${path}" "$img" 2>/dev/null \
+        | grep -oP '(?<=Size: )\d+' | head -1)
+    if [[ -z "$_out" ]]; then echo "DEBUGFS_ERR"; else echo "$_out"; fi
 }
 
 stage_b_measure() {
@@ -188,7 +190,7 @@ stage_b_verify_hashes() {
     for f in "${HASH_VERIFIED_FILES[@]}"; do
         local exp_hash="${EXPECTED_HASHES[$f]:-}"
         if [[ -z "$exp_hash" ]]; then
-            hash_results+=("${f}=HARNESS_INTEGRITY_FAIL(no_expected_hash,file=${f})")
+            hash_results+=("${f}=$(emit_fail "no_expected_hash,file=${f}")")
             any_fail=1
             continue
         fi
@@ -220,7 +222,19 @@ stage_b_verify_hashes() {
 # snapshot whose sizes reflect in-flight writes, not finished truncation events.
 TOTAL_PASS=0
 TOTAL_FAIL=0
+TOTAL_TRUNC=0     # Genuine truncation evidence only (TRUNCATED_AT_32MiB + real size mismatches)
 TOTAL_PASS_P3=0   # Phase 3 Stage-B-only passes (Stage-A never captured in concurrent path)
+
+# count_trunc_evidence: count genuine truncation tokens in a result line.
+# Counts TRUNCATED_AT_32MiB occurrences + FAIL(exp=N,got=M) with real numbers.
+# Does NOT count HARNESS_INTEGRITY_FAIL( tokens (those are harness faults, not truncations).
+count_trunc_evidence() {
+    local line="$1"
+    local t m
+    t=$(echo "$line" | grep -oF 'TRUNCATED_AT_32MiB' | wc -l)
+    m=$(echo "$line" | grep -oE 'FAIL\(exp=[0-9]+,got=[0-9]+' | wc -l)
+    echo $(( t + m ))
+}
 format_result() {
     local stage="$1"; shift
     local line="${stage}:"
@@ -228,13 +242,13 @@ format_result() {
         local f="${token%%=*}" v="${token#*=}"
         local exp="${EXPECTED_SIZES[$f]:-}"
         if [[ -z "$exp" ]]; then
-            line+=" ${f}=HARNESS_INTEGRITY_FAIL(no_expected,file=${f},val=${v})"
+            line+=" ${f}=$(emit_fail "no_expected,file=${f},val=${v}")"
         elif [[ "$v" == "$exp" ]]; then
             line+=" ${f}=PASS"
         elif [[ "$v" =~ ^[0-9]+$ ]]; then
             line+=" ${f}=FAIL(exp=${exp},got=${v})"
         else
-            line+=" ${f}=HARNESS_INTEGRITY_FAIL(probe_dead,file=${f},val=${v})"
+            line+=" ${f}=$(emit_fail "probe_dead,file=${f},val=${v}")"
         fi
     done
     echo "$line"
@@ -277,7 +291,7 @@ stage_b_check_run_produced_size() {
     local expected=41943040  # 40 * 1048576
     local got; got=$(debugfs_size "$img" "/usr/local/bin/run-produced-40m")
     if [[ "$got" == "DEBUGFS_ERR" ]]; then
-        echo "run-produced-40m:HARNESS_INTEGRITY_FAIL(absent,path=/usr/local/bin/run-produced-40m)"
+        echo "run-produced-40m:$(emit_fail "absent,path=/usr/local/bin/run-produced-40m")"
         return
     fi
     if [[ "$got" == "$expected" ]]; then
@@ -298,13 +312,17 @@ stage_b_check_dc_size() {
     local dc_path="/usr/libexec/docker/cli-plugins/docker-compose"
     local got; got=$(debugfs_size "$img" "$dc_path")
     if [[ "$got" == "DEBUGFS_ERR" ]]; then
-        echo "docker-compose:HARNESS_INTEGRITY_FAIL(absent,path=${dc_path})"
+        echo "docker-compose:$(emit_fail "absent,path=${dc_path}")"
         return
     fi
     if [[ "$got" == "33554432" ]]; then
         echo "docker-compose:FAIL(TRUNCATED_AT_32MiB,got=${got})"
-    else
+    elif [[ "$got" =~ ^[0-9]+$ ]]; then
         echo "docker-compose:OK(${got}B)"
+    else
+        # probe_dead: debugfs_size returned neither DEBUGFS_ERR nor a number —
+        # the probe is dead and must never silently count as OK.
+        echo "docker-compose:$(emit_fail "probe_dead,dc_path=${dc_path},val=${got}")"
     fi
 }
 
@@ -656,7 +674,7 @@ restore_nexus_export_blocker() {
 parse_manifest_stage_a() {
     local blog="$1"
     if [[ ! -f "$blog" ]]; then
-        echo "Stage_A_manifest:HARNESS_INTEGRITY_FAIL(NO_LOG)"
+        echo "Stage_A_manifest:$(emit_fail "NO_LOG")"
         return
     fi
     # Entry lines have 3 spaces after the colon:
@@ -672,7 +690,7 @@ parse_manifest_stage_a() {
     done < <(grep "rootfs-size-manifest:   " "$blog" 2>/dev/null || true)
 
     if [[ ${#msizes[@]} -eq 0 ]]; then
-        echo "Stage_A_manifest:HARNESS_INTEGRITY_FAIL(NO_MANIFEST_LINES)"
+        echo "Stage_A_manifest:$(emit_fail "NO_MANIFEST_LINES")"
         return
     fi
 
@@ -682,22 +700,22 @@ parse_manifest_stage_a() {
         local msize="${msizes[$rp]:-}"
         local exp="${EXPECTED_SIZES[$f]:-}"
         if [[ -z "$msize" ]]; then
-            tokens+=("${f}=HARNESS_INTEGRITY_FAIL(manifest_absent,file=${f})")
+            tokens+=("${f}=$(emit_fail "manifest_absent,file=${f}")")
         elif [[ -z "$exp" ]]; then
-            tokens+=("${f}=HARNESS_INTEGRITY_FAIL(no_expected,file=${f},manifest_val=${msize})")
+            tokens+=("${f}=$(emit_fail "no_expected,file=${f},manifest_val=${msize}")")
         elif [[ "$msize" == "$exp" ]]; then
             tokens+=("${f}=OK")
         elif [[ "$msize" =~ ^[0-9]+$ ]]; then
             tokens+=("${f}=MANIFEST_FAIL(exp=${exp},got=${msize})")
         else
-            tokens+=("${f}=HARNESS_INTEGRITY_FAIL(manifest_err,file=${f},val=${msize})")
+            tokens+=("${f}=$(emit_fail "manifest_err,file=${f},val=${msize}")")
         fi
     done
 
     # Check RUN-produced synthetic 40 MiB file (DEFECT-1 FIX target).
     local rp40m="${msizes[usr/local/bin/run-produced-40m]:-}"
     if [[ -z "$rp40m" ]]; then
-        tokens+=("run-produced-40m=HARNESS_INTEGRITY_FAIL(manifest_absent,file=run-produced-40m)")
+        tokens+=("run-produced-40m=$(emit_fail "manifest_absent,file=run-produced-40m")")
     elif [[ "$rp40m" == "41943040" ]]; then
         tokens+=("run-produced-40m=OK(${rp40m}B)")
     elif [[ "$rp40m" == "33554432" ]]; then
@@ -709,7 +727,7 @@ parse_manifest_stage_a() {
     # Check docker-compose binary (apt-installed, faithful to original incident).
     local dc_msize="${msizes[usr/libexec/docker/cli-plugins/docker-compose]:-}"
     if [[ -z "$dc_msize" ]]; then
-        tokens+=("docker-compose=HARNESS_INTEGRITY_FAIL(manifest_absent,file=docker-compose)")
+        tokens+=("docker-compose=$(emit_fail "manifest_absent,file=docker-compose")")
     elif [[ "$dc_msize" == "33554432" ]]; then
         tokens+=("docker-compose=MANIFEST_FAIL(TRUNCATED_AT_32MiB,got=${dc_msize})")
     else
@@ -720,7 +738,7 @@ parse_manifest_stage_a() {
     local agent_msize="${msizes[usr/sbin/nexus3-agent]:-}"
     local agent_exp; agent_exp=$(stat -c '%s' "$AGENT_BIN" 2>/dev/null || echo 0)
     if [[ -z "$agent_msize" ]]; then
-        tokens+=("nexus3-agent=HARNESS_INTEGRITY_FAIL(manifest_absent,file=nexus3-agent)")
+        tokens+=("nexus3-agent=$(emit_fail "manifest_absent,file=nexus3-agent")")
     elif [[ "$agent_msize" == "$agent_exp" ]]; then
         tokens+=("nexus3-agent=OK(${agent_msize}B)")
     elif [[ "$agent_msize" == "33554432" ]]; then
@@ -830,6 +848,8 @@ run_one_iteration() {
         (( TOTAL_FAIL += a_fail_count )) || true
         iter_has_fail=1
     fi
+    local _ta; _ta=$(count_trunc_evidence "$stage_a_line")
+    (( TOTAL_TRUNC += _ta )) || true
 
     if [[ $build_exit -ne 0 ]]; then
         log "BUILD FAILED (exit=${build_exit}): ${label}"
@@ -851,13 +871,13 @@ run_one_iteration() {
 
     if [[ -z "$new_digest" ]]; then
         log "WARN: ${label} — no new image digest (build-cache hit?)"
-        stage_b_line="Stage_B:HARNESS_INTEGRITY_FAIL(NO_NEW_IMAGE,cache_hit)"
+        stage_b_line="Stage_B:$(emit_fail "NO_NEW_IMAGE,cache_hit")"
     else
         local short="${new_digest#sha256:}"
         local img="${IMAGE_STORE}/${short}/artifact"
         if [[ ! -f "$img" ]]; then
             log "ERROR: ${label} — image file missing: ${img}"
-            stage_b_line="Stage_B:HARNESS_INTEGRITY_FAIL(IMAGE_FILE_MISSING)"
+            stage_b_line="Stage_B:$(emit_fail "IMAGE_FILE_MISSING")"
         else
             log "=== ${label}: Stage B — debugfs size check on ${short:0:16}... ==="
             local raw_b; raw_b=$(stage_b_measure "$img")
@@ -913,6 +933,8 @@ run_one_iteration() {
         (( TOTAL_FAIL += fail_count )) || true
         iter_has_fail=1
     fi
+    local _tb; _tb=$(count_trunc_evidence "$stage_b_line")
+    (( TOTAL_TRUNC += _tb )) || true
     if [[ $iter_has_fail -eq 0 ]] && echo "$stage_b_line" | grep -qF "=PASS"; then
         (( TOTAL_PASS++ )) || true
     fi
@@ -938,6 +960,21 @@ for req in "$NEXUS3" debugfs jq sha256sum strings resize2fs; do
         exit 1
     }
 done
+
+# ── Structural self-check: emit_fail is the sole HARNESS_INTEGRITY_FAIL( emitter ────
+# Any literal HARNESS_INTEGRITY_FAIL( outside the emit_fail body is a regression.
+# This gate converts the convention into a compile-time guarantee — it fires before
+# any build so a future edit that bypasses emit_fail is caught immediately.
+_hif_violations=$(grep -n 'HARNESS_INTEGRITY_FAIL(' "${BASH_SOURCE[0]}" \
+    | grep -v 'echo "HARNESS_INTEGRITY_FAIL(' \
+    | grep -v 'grep' \
+    | grep -v '^[0-9]*:[[:space:]]*#' \
+    | grep -v 'SELF-CHECK FAIL') || true
+if [[ -n "$_hif_violations" ]]; then
+    echo "SELF-CHECK FAIL: literal HARNESS_INTEGRITY_FAIL( found outside emit_fail body:" >&2
+    echo "$_hif_violations" >&2
+    exit 1
+fi
 
 # ── Agent-freshness precondition ──────────────────────────────────────────────
 # The builder image cache key is sha256(agentBytes)[:8]: a stale on-PATH
@@ -1114,6 +1151,10 @@ if [[ $PRESSURE -eq 1 ]]; then
             (( TOTAL_FAIL += p3_hfail_count )) || true
             p3_iter_has_fail=1
         fi
+        local _tp _th
+        _tp=$(count_trunc_evidence "$pb_line")
+        _th=$(count_trunc_evidence "$hash_line")
+        (( TOTAL_TRUNC += _tp + _th )) || true
         # Fix 4: Phase 3 never captures Stage_A — counting into TOTAL_PASS makes the
         # summary label "Stage-A+Stage-B, zero FAIL" false. Use a separate counter.
         if [[ $p3_iter_has_fail -eq 0 ]] && echo "$pb_line" | grep -qF "=PASS"; then
@@ -1259,6 +1300,7 @@ log "SUMMARY"
 log "  Build iterations fully intact (Stage-A+Stage-B, zero FAIL): ${TOTAL_PASS}"
 log "  Phase 3 Stage-B-only passes (Stage-A not captured):        ${TOTAL_PASS_P3}"
 log "  Total failures (truncation+hash+harness-integrity):        ${TOTAL_FAIL}"
+log "  Truncation-specific failures (TOTAL_TRUNC):                ${TOTAL_TRUNC}"
 log ""
 log "Per-iteration results (label | Stage_A | Stage_B | HashVerify):"
 for r in "${ALL_RESULTS[@]}"; do
@@ -1270,8 +1312,11 @@ log "Updated harness: ${SCRIPT_DIR}/run.sh"
 log "Run command:     bash ${SCRIPT_DIR}/run.sh [ITERATIONS] [--pressure]"
 log "Pressure run:    bash ${SCRIPT_DIR}/run.sh 5 --pressure"
 
-if (( TOTAL_FAIL > 0 )); then
+if (( TOTAL_TRUNC > 0 )); then
     log "RESULT: TRUNCATION REPRODUCED — see FAIL entries above"
+    exit 1
+elif (( TOTAL_FAIL > 0 )); then
+    log "RESULT: HARNESS INTEGRITY FAILURE (no truncation evidence) — see FAIL entries above"
     exit 1
 else
     log "RESULT: NO TRUNCATION OBSERVED in this run"
