@@ -151,48 +151,6 @@ find_new_builder_sandbox() {
     comm -13 <(echo "$before_snapshot") <(echo "$current") | tail -1 || true
 }
 
-wait_for_builder_sandbox() {
-    local before_snapshot="$1" timeout_s="$2" elapsed=0
-    while (( elapsed < timeout_s )); do
-        local id; id=$(find_new_builder_sandbox "$before_snapshot")
-        [[ -n "$id" ]] && { echo "$id"; return 0; }
-        sleep 1; (( elapsed += 1 )) || true
-    done
-    return 1
-}
-
-guest_exec() {
-    local sb_id="$1"; shift
-    # Bounded exec — builder VM agent may be unresponsive under heavy I/O.
-    # Without a timeout, a hung exec blocks the entire poll loop forever.
-    timeout 15 "$NEXUS3" exec "$sb_id" -- "$@" 2>/dev/null
-}
-
-wait_for_export_files() {
-    local sb_id="$1" timeout_s="$2" elapsed=0
-    while (( elapsed < timeout_s )); do
-        local rd
-        rd=$(guest_exec "$sb_id" \
-            sh -c "d=\$(ls -d ${GUEST_ROOTFS_GLOB} 2>/dev/null | head -1); \
-                   [ -f \"\$d/testfiles/file_200m\" ] && echo \$d" \
-            2>/dev/null) || true
-        [[ -n "$rd" ]] && { echo "$rd"; return 0; }
-        sleep 3; (( elapsed += 3 )) || true
-    done
-    return 1
-}
-
-stage_a_measure() {
-    local sb_id="$1" rootfs_dir="$2"
-    local tokens=()
-    for f in "${TEST_FILES[@]}"; do
-        local sz
-        sz=$(guest_exec "$sb_id" stat -c '%s' "${rootfs_dir}/testfiles/${f}" 2>/dev/null \
-            | tr -d '[:space:]') || sz="EXEC_FAILED"
-        tokens+=("${f}=${sz}")
-    done
-    echo "${tokens[*]}"
-}
 
 debugfs_size() {
     local img="$1" path="$2"
@@ -292,6 +250,46 @@ stage_b_check_agent_size() {
     fi
 }
 
+# stage_b_check_run_produced_size probes /usr/local/bin/run-produced-40m —
+# a synthetic 40 MiB file created by "RUN dd" in the Containerfile.
+# This is the DEFECT-1 FIX: a RUN-produced >32MiB file whose size is known
+# exactly, making truncation unambiguously detectable in Stage B.
+stage_b_check_run_produced_size() {
+    local img="$1"
+    local expected=41943040  # 40 * 1048576
+    local got; got=$(debugfs_size "$img" "/usr/local/bin/run-produced-40m")
+    if [[ "$got" == "DEBUGFS_ERR" ]]; then
+        echo "run-produced-40m:ABSENT_OR_ERR"
+        return
+    fi
+    if [[ "$got" == "$expected" ]]; then
+        echo "run-produced-40m:PASS(${got}B)"
+    elif [[ "$got" == "33554432" ]]; then
+        echo "run-produced-40m:FAIL(TRUNCATED_AT_32MiB,exp=${expected},got=${got})"
+    else
+        echo "run-produced-40m:FAIL(exp=${expected},got=${got})"
+    fi
+}
+
+# stage_b_check_dc_size probes the docker-compose-v2 binary installed by apt.
+# Truncation to exactly 33554432 is the signature of the original bug.
+# The expected size is unknown ahead of time (version-dependent), so only the
+# truncation sentinel is checked definitively.
+stage_b_check_dc_size() {
+    local img="$1"
+    local dc_path="/usr/libexec/docker/cli-plugins/docker-compose"
+    local got; got=$(debugfs_size "$img" "$dc_path")
+    if [[ "$got" == "DEBUGFS_ERR" ]]; then
+        echo "docker-compose:ABSENT_OR_ERR(path=${dc_path})"
+        return
+    fi
+    if [[ "$got" == "33554432" ]]; then
+        echo "docker-compose:FAIL(TRUNCATED_AT_32MiB,got=${got})"
+    else
+        echo "docker-compose:OK(${got}B)"
+    fi
+}
+
 # ── Test-file setup ───────────────────────────────────────────────────────────
 # FLAW 1 FIX: Pre-generate incompressible test files from /dev/urandom.
 # Using COPY in Containerfile so file content is identical source→image.
@@ -374,8 +372,12 @@ setup_test_files() {
 }
 
 # ── Containerfile writer ───────────────────────────────────────────────────────
-# FLAW 1 FIX: Uses COPY instead of RUN dd so content is the pre-generated
-# /dev/urandom files, not zero-filled. A unique marker busts buildkit cache.
+# DEFECT-1 FIX (restored apt-get RUN step): the original incident truncated
+# docker-compose, written by runc into the overlay upper dir during a RUN step.
+# A COPY-only Containerfile cannot reach that write path. apt-get is placed
+# AFTER the uid marker so it is a genuine cache miss every iteration, exercising
+# the runc->overlay write path each time. The cache disk is grown to 20 GiB
+# (ensure_buildkit_disk_size) to accommodate repeated apt layers.
 write_containerfile() {
     local iter="$1" extra_runs="${2:-}"
     local uid; uid="$(date +%s%N)-iter${iter}"
@@ -383,10 +385,19 @@ write_containerfile() {
     cat > "$WORKSPACE/.nexus/Containerfile" << EOF
 # repro: 32 MiB truncation harness — iteration ${iter}
 FROM debian:bookworm-slim
-# Unique marker busts buildkit layer cache so every iteration re-exports.
+# Unique marker: BEFORE apt-get so apt layers are also genuine cache misses,
+# exercising the runc->overlay snapshotter write path on every iteration.
 RUN echo "repro-uid=${uid}" > /dev/null
+# DEFECT-1 FIX: install docker-compose-v2 via apt (faithful reproduction --
+# original incident truncated docker-compose, an apt-installed binary written
+# by runc into the snapshot upper dir, NOT by COPY from build context).
+RUN apt-get update && apt-get install -y --no-install-recommends docker-compose-v2 && rm -rf /var/lib/apt/lists/*
+# Guaranteed >32MiB RUN-produced truncation target: docker-compose-v2 from
+# debian:bookworm may be <32MiB (version-dependent). This dd file ensures
+# at least one RUN-produced file crosses the 32 MiB boundary each iteration.
+RUN dd if=/dev/urandom of=/usr/local/bin/run-produced-40m bs=1M count=40 2>/dev/null
 # COPY incompressible test files from build context (pre-generated from
-# /dev/urandom). file_elf is a real ELF binary — matching the original
+# /dev/urandom). file_elf is a real ELF binary -- matching the original
 # fault's nexus3-agent file type.
 COPY testfiles/ /testfiles/
 # Store sha256 inside the image so Stage B can cross-reference.
@@ -403,6 +414,8 @@ write_pressure_containerfile() {
 # repro: pressure slot ${slot}
 FROM debian:bookworm-slim
 RUN echo "repro-pressure-uid=${uid}" > /dev/null
+RUN apt-get update && apt-get install -y --no-install-recommends docker-compose-v2 && rm -rf /var/lib/apt/lists/*
+RUN dd if=/dev/urandom of=/usr/local/bin/run-produced-40m bs=1M count=40 2>/dev/null
 COPY testfiles/ /testfiles/
 RUN sha256sum /testfiles/file_32m /testfiles/file_elf > /testfiles/.HASHES || true
 EOF
@@ -413,15 +426,15 @@ write_heavy_containerfile() {
     local uid; uid="$(date +%s%N)-heavy${iter}"
     mkdir -p "$WORKSPACE/.nexus"
     cat > "$WORKSPACE/.nexus/Containerfile" << EOF
-# repro: heavy-build variant — CPU+IO pressure without apt-get
-# (apt-get stripped: previous attempt exhausted buildkit cache disk with no space
-#  left on device before reaching the export seam; buildkit.ext4 was reset and
-#  apt-get removed so the cache disk stays healthy for concurrent + heavy phases.
-#  Files >32MiB are still present via COPY — the export-seam truncation target
-#  is unchanged. CPU loop simulates sustained pressure during export.)
+# repro: heavy-build variant -- CPU+IO pressure with apt-get restored
+# (DEFECT-1 FIX: apt-get was previously stripped because it exhausted the
+#  buildkit cache disk; the cache disk is now grown to 20 GiB to accommodate
+#  repeated apt layers -- see ensure_buildkit_disk_size.)
 FROM debian:bookworm-slim
 RUN echo "repro-heavy-uid=${uid}" > /dev/null
-# Write incompressible large test files — these are the truncation targets.
+RUN apt-get update && apt-get install -y --no-install-recommends docker-compose-v2 && rm -rf /var/lib/apt/lists/*
+RUN dd if=/dev/urandom of=/usr/local/bin/run-produced-40m bs=1M count=40 2>/dev/null
+# Write incompressible large test files -- these are the truncation targets.
 COPY testfiles/ /testfiles/
 # CPU pressure loop: 500 md5sum passes over file_200m (~100s CPU-bound).
 # Mimics sustained compute pressure while the rootfs export seam is active.
@@ -480,6 +493,44 @@ ext4_free_mb() {
     free_blocks=$(debugfs -R "stats" "$CACHE_EXT4" 2>/dev/null \
         | grep "Free blocks" | grep -oP '\d+' | head -1)
     echo $(( free_blocks * 4096 / 1024 / 1024 ))
+}
+
+# ensure_buildkit_disk_size MIN_GIB
+# Grows buildkit.ext4 to at least MIN_GIB using truncate + resize2fs if the
+# current image is smaller. The image is sparse — truncate costs no additional
+# host disk space until new blocks are actually written. Must be called while
+# no builder VM is running (ext4 must not be mounted).
+# DEFECT-1 FIX: apt-get install layers exhausted the original 10 GiB disk;
+# growing to 20 GiB provides ~10 GiB headroom for repeated apt layers across
+# multiple sweep iterations.
+ensure_buildkit_disk_size() {
+    local min_gib="$1"
+    local min_bytes=$(( min_gib * 1024 * 1024 * 1024 ))
+    if [[ ! -f "$CACHE_EXT4" ]]; then
+        log "ensure_buildkit_disk_size: buildkit.ext4 not present -- skip (created on first nexus3 build)"
+        return 0
+    fi
+    local current_bytes; current_bytes=$(stat -c '%s' "$CACHE_EXT4" 2>/dev/null || echo 0)
+    if (( current_bytes >= min_bytes )); then
+        log "ensure_buildkit_disk_size: size=${current_bytes}B >= ${min_gib}GiB target -- skip"
+        return 0
+    fi
+    log "ensure_buildkit_disk_size: growing buildkit.ext4 from ${current_bytes}B to ${min_gib}GiB..."
+    truncate -s "${min_gib}G" "$CACHE_EXT4"
+    local ec=0
+    e2fsck -f -p "$CACHE_EXT4" 2>/dev/null || ec=$?
+    # e2fsck exits: 0=clean, 1=corrected, 2=corrected+reboot; 4+=uncorrected errors.
+    if (( ec >= 4 )); then
+        log "ensure_buildkit_disk_size: e2fsck exit=${ec} -- WARN: uncorrected errors; resize2fs skipped"
+        return 1
+    fi
+    resize2fs "$CACHE_EXT4" 2>/dev/null || {
+        log "ensure_buildkit_disk_size: resize2fs failed"
+        return 1
+    }
+    local new_bytes; new_bytes=$(stat -c '%s' "$CACHE_EXT4")
+    local free_mb; free_mb=$(ext4_free_mb 2>/dev/null || echo "?")
+    log "ensure_buildkit_disk_size: done -- new size=${new_bytes}B, ext4 free=${free_mb}MiB"
 }
 
 # fill_ext4_pressure target_free_mb host_tmp_fill_path
@@ -567,6 +618,93 @@ restore_nexus_export_blocker() {
     log "restore_nexus_export_blocker: /nexus3-export removed and ext4 repaired"
 }
 
+# ── Stage A: build-stderr manifest parser ────────────────────────────────────
+# parse_manifest_stage_a <build_log>
+# Parses "rootfs-size-manifest" lines emitted to build stderr by
+# logRootfsSizeManifest (internal/core/agent/rootfs_manifest.go). The manifest
+# is written synchronously after Solve() and before the integrity gates — making
+# it non-racy and reachable even on builds that subsequently fail the gate.
+# This is the AUTHORITATIVE Stage-A instrument (replaces the dead exec probe).
+# Called in a subshell via $(...); must not update global counters.
+parse_manifest_stage_a() {
+    local blog="$1"
+    if [[ ! -f "$blog" ]]; then
+        echo "Stage_A_manifest:NO_LOG"
+        return
+    fi
+    # Entry lines have 3 spaces after the colon:
+    #   "...rootfs-size-manifest:   <relpath padded to 60>  <size>"
+    # The header line has 1 space ("rootfs-size-manifest: N file(s)...") and is
+    # excluded by the 3-space filter.
+    declare -A msizes
+    while IFS= read -r mline; do
+        local relpath msize
+        relpath=$(echo "$mline" | awk '{print $(NF-1)}')
+        msize=$(echo "$mline" | awk '{print $NF}')
+        [[ -n "$relpath" ]] && [[ -n "$msize" ]] && msizes["$relpath"]="$msize"
+    done < <(grep "rootfs-size-manifest:   " "$blog" 2>/dev/null || true)
+
+    if [[ ${#msizes[@]} -eq 0 ]]; then
+        echo "Stage_A_manifest:NO_MANIFEST_LINES"
+        return
+    fi
+
+    local tokens=()
+    for f in "${TEST_FILES[@]}"; do
+        local rp="testfiles/${f}"
+        local msize="${msizes[$rp]:-}"
+        local exp="${EXPECTED_SIZES[$f]:-}"
+        if [[ -z "$msize" ]]; then
+            tokens+=("${f}=ABSENT")
+        elif [[ -z "$exp" ]]; then
+            tokens+=("${f}=${msize}(NO_EXPECTED)")
+        elif [[ "$msize" == "$exp" ]]; then
+            tokens+=("${f}=OK")
+        elif [[ "$msize" =~ ^[0-9]+$ ]]; then
+            tokens+=("${f}=MANIFEST_FAIL(exp=${exp},got=${msize})")
+        else
+            tokens+=("${f}=ERR(${msize})")
+        fi
+    done
+
+    # Check RUN-produced synthetic 40 MiB file (DEFECT-1 FIX target).
+    local rp40m="${msizes[usr/local/bin/run-produced-40m]:-}"
+    if [[ -z "$rp40m" ]]; then
+        tokens+=("run-produced-40m=ABSENT")
+    elif [[ "$rp40m" == "41943040" ]]; then
+        tokens+=("run-produced-40m=OK(${rp40m}B)")
+    elif [[ "$rp40m" == "33554432" ]]; then
+        tokens+=("run-produced-40m=MANIFEST_FAIL(TRUNCATED_AT_32MiB,got=${rp40m})")
+    else
+        tokens+=("run-produced-40m=MANIFEST_FAIL(exp=41943040,got=${rp40m})")
+    fi
+
+    # Check docker-compose binary (apt-installed, faithful to original incident).
+    local dc_msize="${msizes[usr/libexec/docker/cli-plugins/docker-compose]:-}"
+    if [[ -z "$dc_msize" ]]; then
+        tokens+=("docker-compose=ABSENT")
+    elif [[ "$dc_msize" == "33554432" ]]; then
+        tokens+=("docker-compose=MANIFEST_FAIL(TRUNCATED_AT_32MiB,got=${dc_msize})")
+    else
+        tokens+=("docker-compose=OK(${dc_msize}B)")
+    fi
+
+    # Check nexus3-agent binary (original fault seam).
+    local agent_msize="${msizes[usr/sbin/nexus3-agent]:-}"
+    local agent_exp; agent_exp=$(stat -c '%s' "$AGENT_BIN" 2>/dev/null || echo 0)
+    if [[ -z "$agent_msize" ]]; then
+        tokens+=("nexus3-agent=ABSENT")
+    elif [[ "$agent_msize" == "$agent_exp" ]]; then
+        tokens+=("nexus3-agent=OK(${agent_msize}B)")
+    elif [[ "$agent_msize" == "33554432" ]]; then
+        tokens+=("nexus3-agent=MANIFEST_FAIL(TRUNCATED_AT_32MiB,exp=${agent_exp})")
+    else
+        tokens+=("nexus3-agent=MANIFEST_FAIL(exp=${agent_exp},got=${agent_msize})")
+    fi
+
+    echo "Stage_A_manifest: ${tokens[*]}"
+}
+
 # ── Core build+measure function ───────────────────────────────────────────────
 ALL_RESULTS=()
 
@@ -597,12 +735,19 @@ run_one_iteration() {
         done
     fi
 
-    log "=== ${label}: pre-build image list + builder-supervisors snapshot ==="
+    log "=== ${label}: pre-build image list ==="
     local before; before=$(list_digests_sorted)
-    local sb_snapshot; sb_snapshot=$(snapshot_builder_supervisors)
+
+    # DEFECT-2 FIX: write a per-iteration sentinel into testfiles/ so the COPY
+    # layer's content hash changes each iteration, guaranteeing a content-
+    # addressable cache miss for COPY even if buildkit uses file-content rather
+    # than parent-snapshot-ID as the COPY cache key.
+    local iter_uid; iter_uid="$(date +%s%N)-${label}"
+    echo "${iter_uid}" > "${WORKSPACE}/testfiles/.repro-uid"
 
     # shellcheck disable=SC2086
     log "=== ${label}: starting build (timeout=${NEXUS3_BUILD_TASK_TIMEOUT}) build_flags='${extra_build_flags}' ==="
+    local t0; t0=$(date +%s)
     # shellcheck disable=SC2086
     timeout "$BASH_BUILD_TIMEOUT" "$NEXUS3" create \
         "${REPRO_PROJECT}/${sandbox_name}" \
@@ -613,69 +758,53 @@ run_one_iteration() {
     local build_pid=$!
     log "=== ${label}: build pid=${build_pid} ==="
 
-    # ── Stage A: in-guest measurement (best-effort) ───────────────────────────
-    log "=== ${label}: Stage A — polling builder-supervisors dir ==="
-    local sb_id=""
-    if sb_id=$(wait_for_builder_sandbox "$sb_snapshot" "$BUILDER_SANDBOX_POLL_TIMEOUT" 2>/dev/null); then
-        log "=== ${label}: Stage A — builder sandbox=${sb_id}; trying nexus3 exec ==="
-        local rootfs_dir=""
-        if rootfs_dir=$(wait_for_export_files "$sb_id" "$FILE_POLL_TIMEOUT" 2>/dev/null); then
-            log "=== ${label}: Stage A — measuring in ${rootfs_dir} ==="
-            local raw_a; raw_a=$(stage_a_measure "$sb_id" "$rootfs_dir")
-            # shellcheck disable=SC2086
-            # Label explicitly as mid-export/racy: sizes are sampled while buildkit
-            # is still writing the rootfsDir. Values like FAIL(exp=41943040,got=11829248)
-            # reflect an in-flight write, not a truncation event. Do NOT read these
-            # as failures — Stage B (packed ext4) is the authoritative measurement.
-            stage_a_line=$(format_result "Stage_A[mid-export/racy]" $raw_a)
-            log "$stage_a_line"
-        else
-            local exec_test_err
-            exec_test_err=$(guest_exec "$sb_id" ls /var/lib/buildkit/ 2>&1) || true
-            log "=== ${label}: Stage A — file_200m not seen (exec: ${exec_test_err:0:80}) ==="
-            stage_a_line="Stage_A:exec_unavailable(${exec_test_err:0:60})"
-        fi
-    else
-        log "=== ${label}: Stage A — no new builder-supervisors entry in ${BUILDER_SANDBOX_POLL_TIMEOUT}s ==="
-        stage_a_line="Stage_A:no_builder_vm_seen"
-    fi
-
-    # ── Wait for build to finish ───────────────────────────────────────────────
+    # ── Wait for build + Stage A (build-stderr manifest) ─────────────────────
+    # DEFECT-3 FIX: the live nexus3 exec probe is DELETED. Every historical run
+    # shows "Stage A -- file_200m not seen (exec: )" with empty exec output;
+    # nexus3 exec never worked against builder-VM sandboxes and produced zero
+    # evidence across all sweeps. The probe is replaced with manifest parsing:
+    # logRootfsSizeManifest (rootfs_manifest.go) writes file sizes to build
+    # stderr immediately after Solve() and before the integrity gates -- non-racy
+    # and reachable even on builds that subsequently fail the integrity gate.
     log "=== ${label}: waiting for build pid=${build_pid} ==="
     local build_exit=0
     wait "$build_pid" || build_exit=$?
+    local t1; t1=$(date +%s)
+    local elapsed=$(( t1 - t0 ))
 
     if [[ $build_exit -eq 124 ]]; then
-        log "TIMEOUT: ${label} — bash timeout ${BASH_BUILD_TIMEOUT}s exceeded"
-        ALL_RESULTS+=("${label} | ${stage_a_line} | Stage_B:TIMEOUT")
+        log "TIMEOUT: ${label} -- bash timeout ${BASH_BUILD_TIMEOUT}s exceeded (${elapsed}s)"
+        ALL_RESULTS+=("${label} | Stage_A_manifest:TIMEOUT | Stage_B:TIMEOUT | elapsed=${elapsed}s")
         return
     fi
+
+    # Parse manifest from build log (authoritative Stage A).
+    local stage_a_line; stage_a_line=$(parse_manifest_stage_a "$build_log")
+    log "=== ${label}: Stage A manifest (elapsed=${elapsed}s) -- ${stage_a_line} ==="
+
+    # DEFECT-2 FIX: if elapsed < 45s on a successful build, warn that layer-cache
+    # hits may have skipped the snapshotter materialization we need to exercise.
+    # (apt-get + dd + COPY over 500 MiB should take >45s on a real cache miss.)
+    if (( elapsed < 45 )) && [[ $build_exit -eq 0 ]]; then
+        log "WARN: ${label} -- build completed in ${elapsed}s; potential layer-cache hit (apt+COPY expected >45s)"
+        stage_a_line="${stage_a_line}|CACHE_HIT_SUSPECTED(${elapsed}s<45s)"
+    fi
+
+    # Count Stage A manifest failures in the parent shell (parse_manifest_stage_a
+    # runs in a subshell and cannot update globals).
+    if echo "$stage_a_line" | grep -qF "MANIFEST_FAIL("; then
+        local a_fail_count
+        a_fail_count=$(echo "$stage_a_line" | grep -oF "MANIFEST_FAIL(" | wc -l)
+        (( TOTAL_FAIL += a_fail_count )) || true
+    fi
+
     if [[ $build_exit -ne 0 ]]; then
         log "BUILD FAILED (exit=${build_exit}): ${label}"
         tail -20 "$build_log" | sed 's/^/  /' || true
-        ALL_RESULTS+=("${label} | ${stage_a_line} | Stage_B:BUILD_FAILED:${build_exit}")
+        ALL_RESULTS+=("${label} | ${stage_a_line} | Stage_B:BUILD_FAILED:${build_exit} | elapsed=${elapsed}s")
         local partial_sb; partial_sb=$(find_sandbox_by_name "$sandbox_name")
         cleanup_sandbox "$partial_sb"
         return
-    fi
-
-    # ── Stage A (post-build ext4 probe) ──────────────────────────────────────
-    if [[ "$stage_a_line" == "Stage_A:no_builder_vm_seen" || "$stage_a_line" == "Stage_A:not_captured" ]]; then
-        local cache_ext4="${HOME}/.local/state/nexus3/caches/buildkit.ext4"
-        if [[ -f "$cache_ext4" ]]; then
-            local export_ls
-            export_ls=$(debugfs -R "ls -l /nexus3-export" "$cache_ext4" 2>&1) || true
-            if echo "$export_ls" | grep -q "File not found"; then
-                stage_a_line="Stage_A:unobtainable(buildkit.ext4:/nexus3-export_absent_post_build)"
-            elif [[ -z "$export_ls" ]]; then
-                stage_a_line="Stage_A:unobtainable(buildkit.ext4:/nexus3-export_empty_post_build)"
-            else
-                stage_a_line="Stage_A:unobtainable(buildkit.ext4:/nexus3-export_present_but_no_exec)"
-            fi
-        else
-            stage_a_line="Stage_A:unobtainable(buildkit.ext4_not_found)"
-        fi
-        log "=== ${label}: Stage A (post-build-ext4): ${stage_a_line} ==="
     fi
 
     # ── Stage B: packed ext4 measurement + hash verification ──────────────────
@@ -714,6 +843,17 @@ run_one_iteration() {
             log "  AgentSize: ${agent_check}"
             stage_b_line="${stage_b_line} | AgentSize:${agent_check}"
 
+            # DEFECT-1 FIX: RUN-produced file checks.
+            log "=== ${label}: Stage B — run-produced-40m size check ==="
+            local rp_check; rp_check=$(stage_b_check_run_produced_size "$img")
+            log "  RunProduced: ${rp_check}"
+            stage_b_line="${stage_b_line} | RunProduced:${rp_check}"
+
+            log "=== ${label}: Stage B — docker-compose-v2 size check ==="
+            local dc_check; dc_check=$(stage_b_check_dc_size "$img")
+            log "  DockerCompose: ${dc_check}"
+            stage_b_line="${stage_b_line} | DockerCompose:${dc_check}"
+
             # Log buildkit cache disk block stats.
             local cache_disk="${HOME}/.local/state/nexus3/caches/buildkit.ext4"
             if [[ -f "$cache_disk" ]]; then
@@ -725,9 +865,11 @@ run_one_iteration() {
         fi
     fi
 
-    # ── Per-iteration counters (Stage B only; Stage A is mid-export/racy) ─────
-    # format_result runs in a subshell — its internal counter writes are lost.
-    # Parse stage_b_line here in the parent shell for reliable accounting.
+    # ── Per-iteration counters (Stage A manifest + Stage B) ───────────────────
+    # Stage A manifest failures are counted above immediately after parsing.
+    # Stage B FAIL entries are counted here in the parent shell (format_result
+    # runs in a subshell and cannot update globals). TOTAL_PASS increments only
+    # when Stage B finds all expected file sizes correct.
     if echo "$stage_b_line" | grep -qF "FAIL("; then
         local fail_count
         fail_count=$(echo "$stage_b_line" | grep -oF "FAIL(" | wc -l)
@@ -736,7 +878,7 @@ run_one_iteration() {
         (( TOTAL_PASS++ )) || true
     fi
 
-    ALL_RESULTS+=("${label} | ${stage_a_line} | ${stage_b_line}")
+    ALL_RESULTS+=("${label} | ${stage_a_line} | ${stage_b_line} | elapsed=${elapsed}s")
 
     log "=== ${label}: cleaning up sandbox ${sandbox_name} ==="
     local created_sb; created_sb=$(find_sandbox_by_name "$sandbox_name")
@@ -751,7 +893,7 @@ log "real ELF source: ${REAL_ELF_SRC} ($(stat -c '%s' "$REAL_ELF_SRC" 2>/dev/nul
 log "workspace: ${WORKSPACE}"
 log "image store: ${IMAGE_STORE}"
 
-for req in "$NEXUS3" debugfs jq sha256sum strings; do
+for req in "$NEXUS3" debugfs jq sha256sum strings resize2fs; do
     command -v "$req" > /dev/null 2>&1 || {
         echo "ERROR: required tool not found: ${req}"
         exit 1
@@ -788,6 +930,11 @@ log "agent-freshness: OK — both guard strings present in ${AGENT_BIN} ($(stat 
 
 mkdir -p "$BUILD_LOG_DIR" "$WORKSPACE/.nexus" "$VERIFY_TMPDIR"
 trap 'rm -rf "$VERIFY_TMPDIR"' EXIT
+
+# DEFECT-1 FIX: grow buildkit.ext4 to 20 GiB minimum before any builds.
+# apt-get install layers (~30-80 MiB each) exhausted the original 10 GiB disk;
+# the sparse ext4 is extended in-place at no real host-disk cost.
+ensure_buildkit_disk_size 20
 
 # Setup incompressible test files (idempotent — skips regeneration if sizes match).
 setup_test_files
