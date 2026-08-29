@@ -15,7 +15,7 @@ package main
 //   - disk.grow handler refusing a non-ext4 device.
 //   - ZRAM: setup on a normal fixture; second invocation proves idempotence;
 //     CONFIG_ZRAM-absent fixture proves best-effort (no boot failure);
-//     computed size clamped to [1 GiB, 4 GiB].
+//     computed size clamped to [zramMinBytes, zramMaxBytes] (2 GiB, 4 GiB).
 //   - /tmp resize: no remount within hysteresis; remount when MemTotal grows;
 //     2 GiB cap honoured; live MemTotal used as sizing base (not ceiling).
 //   - Always-on: startResizeServices is called unconditionally from main.go;
@@ -26,6 +26,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -478,7 +479,8 @@ func TestSetupZRAMSwap_AbsentKernelContinues(t *testing.T) {
 }
 
 func TestZRAMSizeClamp_BelowFloor(t *testing.T) {
-	// MemTotal = 1 GiB → half = 512 MiB → clamped to zramMinBytes (1 GiB).
+	// MemTotal = 1 GiB → half = 512 MiB → clamped to zramMinBytes (2 GiB,
+	// raised in db4bc61 to match safeMemFloorBytes).
 	dir := t.TempDir()
 	mi := filepath.Join(dir, "meminfo")
 	writeTestFile(t, mi, "MemTotal: 1048576 kB\nMemAvailable: 900000 kB\n")
@@ -487,8 +489,9 @@ func TestZRAMSizeClamp_BelowFloor(t *testing.T) {
 	fix.install(t)
 	setupZRAMSwap(nil)
 
-	if fix.sizeArg != "1073741824" { // 1 GiB
-		t.Errorf("ZRAM size = %s, want 1073741824 (1 GiB floor)", fix.sizeArg)
+	want := strconv.FormatInt(zramMinBytes, 10)
+	if fix.sizeArg != want {
+		t.Errorf("ZRAM size = %s, want %s (zramMinBytes floor)", fix.sizeArg, want)
 	}
 }
 
