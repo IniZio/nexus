@@ -5,7 +5,7 @@
 # or runs run.sh itself — no proof re-implements the behaviour under test.
 # Each proof shows the test FAILS against a pre-fix version (confirms the bug)
 # and PASSES against the current run.sh (confirms the fix).
-# Pre-fix refs: 0bbb84f (proofs a–e), 6568d2b (proof f / FIX 1).
+# Pre-fix refs: 0bbb84f (proofs a–e), 6568d2b (proof f / FIX 1), 0c773bd (proof g / W17 over-report).
 #
 # Usage: bash internal/test/repro/mutation_proofs.sh
 # Requirements: debugfs, mkfs.ext4 (e2fsprogs), git (for pre-fix extraction)
@@ -163,9 +163,12 @@ _extract_func() {
     awk "/^${name}\(\)/{f=1} f{print} f && /^\}/{c++; if(c==1)exit}" "$src"
 }
 
-_extract_func() {
-    local src="$1" name="$2"
-    awk "/^${name}\(\)/{f=1} f{print} f && /^\}/{c++; if(c==1)exit}" "$src"
+_extract_verdict() {
+    # Extract the real verdict if/elif/else/fi block from run.sh — identified by
+    # the unique "if (( TOTAL_TRUNC > 0 ))" guard. Using the real block (not a
+    # hand-written replica) means deleting this block from run.sh breaks the proof.
+    local src="$1"
+    awk '/^if \(\( TOTAL_TRUNC > 0 \)\); then/{p=1} p{print} p && /^fi$/{exit}' "$src"
 }
 
 # Write each subshell to a temp file so that $1, ${got}, ${dc_path} etc. in the
@@ -297,20 +300,17 @@ _run_hash_fail_verdict() {
     # function body without outer-shell double-quote expansion.
     local vscript="$SCRATCHPAD/proof_f_verdict_$$.sh"
     {
-        awk '/^count_trunc_evidence\(\)/{f=1} f{print} f && /^\}/{c++; if(c==1)exit}' "$src"
+        _extract_func "$src" "count_trunc_evidence"
         printf 'log() { echo "$*"; }\n'
         printf 'TOTAL_FAIL=1\n'
         printf 'TOTAL_TRUNC=0\n'
+        # A genuine hash mismatch: got_hash is a valid 64-hex-char digest differing from expected.
         printf '%s\n' 'hash_line="StageB: file_32m=HASH_FAIL(exp=abc123456789...,got=def456012345...)"'
         printf '%s\n' '_th=$(count_trunc_evidence "$hash_line")'
         printf '%s\n' '(( TOTAL_TRUNC += _th )) || true'
-        printf '%s\n' 'if (( TOTAL_TRUNC > 0 )); then'
-        printf '%s\n' "    log 'RESULT: TRUNCATION REPRODUCED \xe2\x80\x94 see FAIL entries above'"
-        printf '%s\n' 'elif (( TOTAL_FAIL > 0 )); then'
-        printf '%s\n' "    log 'RESULT: HARNESS INTEGRITY FAILURE (no truncation evidence) \xe2\x80\x94 see FAIL entries above'"
-        printf '%s\n' 'else'
-        printf '%s\n' "    log 'RESULT: NO TRUNCATION OBSERVED in this run'"
-        printf '%s\n' 'fi'
+        # Extract the REAL verdict block from run.sh. Deleting that block from run.sh
+        # causes f/post to fail — this is the proof's mutation bite.
+        _extract_verdict "$src"
     } > "$vscript"
     bash "$vscript" 2>/dev/null || true
     rm -f "$vscript"
@@ -327,6 +327,66 @@ assert_contains     "f/post: post-fix HASH_FAIL( → TRUNCATION REPRODUCED" \
     "$verdict_post" "TRUNCATION REPRODUCED"
 assert_not_contains "f/post: post-fix NOT HARNESS INTEGRITY FAILURE" \
     "$verdict_post" "HARNESS INTEGRITY FAILURE"
+
+# ── PROOF (g): dead hash probe (no /testfiles) → HARNESS INTEGRITY FAILURE ────
+# Bug (W17 / FIX 1 over-report): debugfs exits 0 for a missing path and creates no
+# output file. HEAD 0c773bd: sha256sum runs on the absent file → fails → got_hash set
+# to "SHA256_FAILED" (a non-digest string) → HASH_FAIL(exp=…,got=SHA256_FAILE…)
+# emitted → count_trunc_evidence counts HASH_FAIL( → TOTAL_TRUNC ≥ 1 →
+# "TRUNCATION REPRODUCED". A dead probe fabricates a reproduction.
+# Post-fix: !-s guard fires before sha256sum → emit_fail("dump_no_output,…") →
+# HARNESS_INTEGRITY_FAIL(…) → count_trunc_evidence returns 0 → TOTAL_TRUNC=0,
+# TOTAL_FAIL=1 → "HARNESS INTEGRITY FAILURE".
+echo ""
+echo "=== PROOF (g): dead hash probe (no /testfiles in ext4) → HARNESS INTEGRITY FAILURE, not TRUNCATION REPRODUCED ==="
+
+# EXT4_IMG (created at top, no /testfiles) simulates a missing-path dead probe.
+PRE_HEAD="$SCRATCHPAD/run_head.sh"
+git show 0c773bd:internal/test/repro/run.sh > "$PRE_HEAD"
+
+_run_dead_probe_verdict() {
+    local src="$1"
+    local gscript="$SCRATCHPAD/proof_g_$$.sh"
+    local g_verify="$SCRATCHPAD/g_verify_$$"
+    {
+        _extract_func "$src" "emit_fail"
+        _extract_func "$src" "stage_b_verify_hashes"
+        _extract_func "$src" "count_trunc_evidence"
+        printf 'log() { echo "$*"; }\n'
+        printf 'VERIFY_TMPDIR="%s"\n' "$g_verify"
+        printf 'mkdir -p "$VERIFY_TMPDIR"\n'
+        printf 'HASH_VERIFIED_FILES=(file_32m file_elf)\n'
+        # 64-hex-char expected hashes — arbitrary but format-valid
+        printf 'declare -A EXPECTED_HASHES=([file_32m]="%s" [file_elf]="%s")\n' \
+            "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344" \
+            "11223344aabbccddaabbccdd1122334411223344aabbccdd11223344aabbccdd"
+        printf 'TOTAL_FAIL=0\n'
+        printf 'TOTAL_TRUNC=0\n'
+        # stage_b_verify_hashes returns 1 when any_fail=1; capture both output and failure.
+        printf 'hash_line=$(stage_b_verify_hashes "%s") || (( TOTAL_FAIL++ )) || true\n' "$EXT4_IMG"
+        printf '_th=$(count_trunc_evidence "$hash_line")\n'
+        printf '(( TOTAL_TRUNC += _th )) || true\n'
+        # Real verdict block — extracted so deleting it from run.sh breaks this proof.
+        _extract_verdict "$src"
+    } > "$gscript"
+    bash "$gscript" 2>/dev/null || true
+    rm -f "$gscript"
+    rm -rf "$g_verify"
+}
+
+verdict_g_pre=$(_run_dead_probe_verdict "$PRE_HEAD")
+echo "  PRE-FIX  (HEAD 0c773bd) verdict: '$verdict_g_pre'"
+assert_contains     "g/pre: HEAD dead probe → TRUNCATION REPRODUCED (confirms bug; proof valid)" \
+    "$verdict_g_pre" "TRUNCATION REPRODUCED"
+assert_not_contains "g/pre: HEAD does NOT emit HARNESS INTEGRITY FAILURE" \
+    "$verdict_g_pre" "HARNESS INTEGRITY FAILURE"
+
+verdict_g_post=$(_run_dead_probe_verdict "$POST_RUN")
+echo "  POST-FIX verdict: '$verdict_g_post'"
+assert_contains     "g/post: post-fix dead probe → HARNESS INTEGRITY FAILURE" \
+    "$verdict_g_post" "HARNESS INTEGRITY FAILURE"
+assert_not_contains "g/post: post-fix NOT TRUNCATION REPRODUCED" \
+    "$verdict_g_post" "TRUNCATION REPRODUCED"
 
 # ── Final syntax checks ────────────────────────────────────────────────────────
 echo ""
