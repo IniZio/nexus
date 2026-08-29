@@ -241,7 +241,11 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 			if reason, readErr := os.ReadFile(filepath.Join(cfg.StateDir, supervisorErrFile)); readErr == nil && len(reason) > 0 {
 				return 0, nil, fmt.Errorf("spawn supervisor: %s", string(reason))
 			}
-			return 0, nil, fmt.Errorf("spawn supervisor: process exited before writing pidfile (pid %d); see %s/supervisor.log", spawnPid, cfg.StateDir)
+			// Name the log file actually in use: cfg.LogPath may redirect it
+			// away from the sandbox's state dir, and pointing at a path that
+			// was never written sends the reader hunting for evidence that
+			// does not exist.
+			return 0, nil, fmt.Errorf("spawn supervisor: process exited before writing pidfile (pid %d); see %s", spawnPid, logPath)
 		}
 		data, readErr := os.ReadFile(pidfile)
 		if readErr == nil && len(data) > 0 {

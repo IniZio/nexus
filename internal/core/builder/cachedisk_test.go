@@ -100,10 +100,11 @@ func TestSelectCacheDisks_ExactSet(t *testing.T) {
 	dataDir := t.TempDir()
 
 	keys := []string{"pip", "cargo"}
-	specs, err := SelectCacheDisks(ctx, dataDir, keys)
+	specs, release, err := SelectCacheDisks(ctx, dataDir, keys)
 	if err != nil {
 		t.Fatalf("SelectCacheDisks: %v", err)
 	}
+	defer release()
 	if len(specs) != len(keys) {
 		t.Fatalf("got %d specs, want %d", len(specs), len(keys))
 	}
@@ -120,7 +121,7 @@ func TestSelectCacheDisks_ExactSet(t *testing.T) {
 	}
 
 	// Unknown key must error.
-	_, err = SelectCacheDisks(ctx, dataDir, []string{"ruby"})
+	_, _, err = SelectCacheDisks(ctx, dataDir, []string{"ruby"})
 	if err == nil {
 		t.Fatal("expected error for unknown key 'ruby', got nil")
 	}

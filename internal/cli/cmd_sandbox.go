@@ -1369,7 +1369,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			}
 
 			// Ensure the builder rootfs image (moby/buildkit) is available.
-			builderRootfs, err := builderimage.EnsureBuilderImage(buildCtx, storeRoot, agentBytes)
+			builderRootfsTemplate, err := builderimage.EnsureBuilderImage(buildCtx, storeRoot, agentBytes)
 			if err != nil {
 				return errSandbox("sandbox create", fmt.Errorf("--file: builder image: %w", err))
 			}
@@ -1380,6 +1380,18 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				return errSandbox("sandbox create", fmt.Errorf("--file: build workdir: %w", err))
 			}
 			defer os.RemoveAll(buildWorkDir)
+
+			// vda — the builder VM boots root=/dev/vda rw, so cloud-hypervisor
+			// takes an exclusive write lock on the rootfs image. The cached
+			// template is shared by every build on the host, so concurrent
+			// builder VMs would collide on that lock and every VM after the
+			// first would be refused at vm.boot ("The file is already locked"),
+			// killing its supervisor before it wrote supervisor.pid. Clone the
+			// template into the ephemeral work dir so each build owns its rootfs.
+			builderRootfs, err := builder.PrivateRootfs(buildCtx, builderRootfsTemplate, buildWorkDir)
+			if err != nil {
+				return errSandbox("sandbox create", fmt.Errorf("--file: %w", err))
+			}
 
 			// vdb — Pack the build context into an ext4 image using the full
 			// working-tree capture (D-DC-08). builder.WorktreeToDisk reads
@@ -1417,10 +1429,15 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			}
 
 			// vdd+ — Attach buildkit (and any future) persistent cache disks.
-			cacheDisks, err := builder.SelectCacheDisks(buildCtx, storeRoot, []string{"buildkit"})
+			// The lease guarantees no other builder VM holds the same image;
+			// cloud-hypervisor's exclusive write lock on every attached image
+			// would otherwise refuse this VM's boot. Released after the builder
+			// VM has stopped (BuildInVM returns only once it has).
+			cacheDisks, releaseCacheDisks, err := builder.SelectCacheDisks(buildCtx, storeRoot, []string{"buildkit"})
 			if err != nil {
 				return errSandbox("sandbox create", fmt.Errorf("--file: cache disks: %w", err))
 			}
+			defer releaseCacheDisks()
 
 			// Assemble the BuilderVMSpec first so that sizing helpers
 			// (VCPUs/MemMiB) can derive the production defaults before the
@@ -1489,17 +1506,22 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			// supervisorBuilderDriver routes Start/Stop through SpawnDetached so
 			// the builder VM survives CLI exit. DialGuest delegates to dialerDrv.
 			bdrv := &supervisorBuilderDriver{
-				dialerDrv:           dialerDrv,
-				storeRoot:           storeRoot,
-				stateBase:           filepath.Join(storeRoot, "builder-supervisors"),
-				socketDir:           builderSocketDir,
-				kernelPath:          kernelPath,
-				diskPath:            builderRootfs,
-				extraDisks:          builderExtraDisks,
-				ar:                  builderAR,
-				bootMemMiB:          builderBootMemMiB,
-				bootVCPUs:           builderBootVCPUs,
-				logPath:             "/tmp/nexus3-builder-supervisor.log",
+				dialerDrv:  dialerDrv,
+				storeRoot:  storeRoot,
+				stateBase:  filepath.Join(storeRoot, "builder-supervisors"),
+				socketDir:  builderSocketDir,
+				kernelPath: kernelPath,
+				diskPath:   builderRootfs,
+				extraDisks: builderExtraDisks,
+				ar:         builderAR,
+				bootMemMiB: builderBootMemMiB,
+				bootVCPUs:  builderBootVCPUs,
+				// logPath empty → SpawnDetached logs to <stateDir>/supervisor.log,
+				// which is per-build. A single shared host-wide log interleaved
+				// concurrent builders' output and, worse, left the sandbox's own
+				// supervisor dir empty, so the spawn error's "see …/supervisor.log"
+				// pointed at a file that never existed.
+				logPath:             "",
 				cacheDiskMountPaths: cacheDiskMountPaths,
 			}
 			execFn := func(ctx context.Context, argv []string, stderr io.Writer) (int32, error) {

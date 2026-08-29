@@ -8,8 +8,8 @@ package selfhost
 // # What this test proves
 //
 //  1. The REAL production chain works:
-//     builderimage.EnsureBuilderImage → builder.ContextToDisk →
-//     builder.SelectCacheDisks → builder.BuildInVM →
+//     builderimage.EnsureBuilderImage → builder.PrivateRootfs →
+//     builder.ContextToDisk → builder.SelectCacheDisks → builder.BuildInVM →
 //     (guest) nexus3-agent --builder-role → RunBuilderRole → BuildInGuestImage
 //     (buildkitd solve) → artifact ext4 → boot sandbox.
 //
@@ -181,6 +181,17 @@ func buildOneImage(
 	}
 	t.Cleanup(func() { os.RemoveAll(buildWorkDir) })
 
+	// vda — clone the shared builder rootfs template into this build's work
+	// dir, exactly as the production path does. The template is shared by
+	// every build on the host and the VM boots it `rw`, so cloud-hypervisor's
+	// exclusive write lock makes concurrent builder VMs impossible without
+	// this. Booting the template directly would leave this "production chain"
+	// proof exercising a path production no longer takes.
+	privateRootfs, err := builder.PrivateRootfs(ctx, builderRootfs, buildWorkDir)
+	if err != nil {
+		t.Fatalf("%s: PrivateRootfs: %v", label, err)
+	}
+
 	// vdb — pack build context
 	ctxDiskPath := filepath.Join(buildWorkDir, "ctx.ext4")
 	t.Logf("%s: packing context disk …", label)
@@ -206,7 +217,7 @@ func buildOneImage(
 		BinaryPath:       chBin,
 		SocketDir:        socketDir,
 		KernelPath:       kernelPath,
-		DiskImagePath:    builderRootfs,
+		DiskImagePath:    privateRootfs,
 		MemoryMiB:        uint32(builder.DefaultBuilderMemMiB),
 		VCPUs:            uint32(builder.DefaultBuilderVCPUs),
 		StartTimeout:     90 * time.Second,
@@ -238,7 +249,7 @@ func buildOneImage(
 	}
 
 	spec := builder.BuilderVMSpec{
-		RootfsDiskPath:   builderRootfs,
+		RootfsDiskPath:   privateRootfs,
 		ContextDiskPath:  ctxDiskPath,
 		ArtifactDiskPath: artifactDiskPath,
 		CacheDisks:       cacheDisks,
@@ -361,7 +372,7 @@ func TestBuilderVME2E(t *testing.T) {
 	//   nexus3-agent --builder-role → RunBuilderRole → BuildInGuestImage → buildkitd
 	t.Log("=== PROOF 1: debian:stable-slim build (proves builder-role + buildkitd) ===")
 
-	debianCacheDisks, err := builder.SelectCacheDisks(mainCtx, storeRoot, []string{"buildkit"})
+	debianCacheDisks, releaseDebianCacheDisks, err := builder.SelectCacheDisks(mainCtx, storeRoot, []string{"buildkit"})
 	if err != nil {
 		t.Fatalf("SelectCacheDisks (debian): %v", err)
 	}
@@ -372,6 +383,9 @@ func TestBuilderVME2E(t *testing.T) {
 		t, mainCtx, chBin, kernelPath, builderRootfs, imgCache,
 		storeRoot, debWorkspace, debianCacheDisks, "debian",
 	)
+	// Release the slot as soon as the debian builder VM is gone, so the npm
+	// build below leases the SAME slot 0 and sees its warm buildkit cache.
+	releaseDebianCacheDisks()
 	debDur := time.Since(debStart)
 	t.Logf("debian build: digest=%s elapsed=%.1fs", debianDigest, debDur.Seconds())
 
@@ -491,10 +505,11 @@ func TestBuilderVME2E(t *testing.T) {
 	// Both are attached as extra virtio-blk disks (vdd=buildkit, vde=npm).
 	// With the G8 production fix (--cache-disk args → RunBuilderRole mounting),
 	// buildkit's /var/lib/buildkit will be persistent across cold→warm.
-	npmCacheDisks, err := builder.SelectCacheDisks(mainCtx, storeRoot, []string{"buildkit", "npm"})
+	npmCacheDisks, releaseNpmCacheDisks, err := builder.SelectCacheDisks(mainCtx, storeRoot, []string{"buildkit", "npm"})
 	if err != nil {
 		t.Fatalf("SelectCacheDisks (npm): %v", err)
 	}
+	defer releaseNpmCacheDisks()
 	t.Logf("npm cache disks: buildkit=%s npm=%s",
 		npmCacheDisks[0].ImagePath, npmCacheDisks[1].ImagePath)
 
@@ -572,7 +587,7 @@ func TestBuilderVME2E(t *testing.T) {
 
 	// Summary
 	t.Logf("=== G8 SUMMARY ===")
-	t.Logf("Production path: EnsureBuilderImage → ContextToDisk → SelectCacheDisks → BuildInVM")
+	t.Logf("Production path: EnsureBuilderImage → PrivateRootfs → ContextToDisk → SelectCacheDisks → BuildInVM")
 	t.Logf("  → nexus3-agent --builder-role → RunBuilderRole → BuildInGuestImage → buildkitd solve")
 	t.Logf("BUILDKIT_HOST: unset (verified)")
 	t.Logf("Host buildkitd socket: %v", func() string {
