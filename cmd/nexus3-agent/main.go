@@ -54,6 +54,12 @@ func main() {
 		defer con.Close()
 	}
 
+	// Wire slog to log.Writer() so slog.* calls in builder/buildkit.go reach
+	// the same sink as log.Printf — the vsock exec pipe in the builder-role
+	// subprocess, or the serial console in the PID-1 agent. Must be installed
+	// before the build code (RunBuilderRole → BuildInGuestImage → Solve) runs.
+	initSlogHandler()
+
 	consoleLog(con, "nexus3-agent: starting (pid=%d build=%s)\n", os.Getpid(), agentBuildTag)
 	if isPid1 {
 		// /tmp is unconditionally RAM-backed: 32 MiB seed; resizer grows it to

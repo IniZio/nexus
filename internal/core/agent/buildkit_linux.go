@@ -65,6 +65,8 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 		if err := mountTmpFS(inGuestBuildkitState, "4g"); err != nil {
 			log.Printf("in-guest build: WARNING: tmpfs on %s failed (%v); state will be on virtiofs",
 				inGuestBuildkitState, err)
+		} else {
+			log.Printf("in-guest build: WARNING: /var/lib/buildkit is a 4 GiB RAM tmpfs — no cache disk attached; layer cache will not persist and large COPYs are bounded by guest RAM")
 		}
 	}
 

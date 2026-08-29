@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"strings"
@@ -348,6 +349,27 @@ func guestBuild(ctx context.Context, execFn GuestExecFn, cacheDisks []CacheDiskS
 	}
 	if exitCode != 0 {
 		return fmt.Errorf("builder role exited %d: %s", exitCode, stderr.String())
+	}
+
+	// Manifest-channel (mechanism a): forward the collected in-guest stderr
+	// to the host log on the success path.
+	//
+	// The in-guest logRootfsSizeManifest call (buildkit_linux.go) emits
+	// rootfs-size-manifest lines BEFORE the integrity gates; they arrive here
+	// via the vsock exec pipe into the sbuilder buffer, but guestBuild
+	// previously discarded that buffer on success. Forwarding it lets
+	// ParseManifestStageA (internal/test/repro/probes.go) produce real per-file
+	// probes on a successful build.
+	//
+	// The sentinel line "manifest-channel: active" lets ParseManifestStageA
+	// distinguish two cases that both produce no manifest data entries:
+	//   - channel active, logRootfsSizeManifest suppressed → HarnessIntegrityFailure
+	//   - channel not deployed (old binary, or build failed) → not_collected
+	//
+	// W29 owns internal/core/builder/buildkit.go; this file does not overlap.
+	log.Printf("in-guest build: manifest-channel: active")
+	if s := stderr.String(); s != "" {
+		fmt.Fprint(log.Writer(), s) //nolint:errcheck
 	}
 	return nil
 }
