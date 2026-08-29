@@ -132,6 +132,15 @@ GUEST_ROOTFS_GLOB="${GUEST_EXPORT_DIR}/nexus3-inguestbuild-rootfs-*"
 # ── Helpers ───────────────────────────────────────────────────────────────────
 log() { echo "[$(date +'%H:%M:%S')] $*"; }
 
+# emit_fail CODE [key=value ...]
+# Always produces HARNESS_INTEGRITY_FAIL(CODE,...) — the name structurally
+# guarantees the mandatory FAIL( substring is present. Every integrity/failure
+# token must go through this helper so a future edit cannot accidentally omit FAIL(.
+emit_fail() {
+    local code="$1"; shift
+    echo "HARNESS_INTEGRITY_FAIL(${code}${*:+,$*})"
+}
+
 list_digests_sorted() {
     "$NEXUS3" --json image ls 2>/dev/null \
         | jq -r '.data.images[].digest' 2>/dev/null \
@@ -211,6 +220,7 @@ stage_b_verify_hashes() {
 # snapshot whose sizes reflect in-flight writes, not finished truncation events.
 TOTAL_PASS=0
 TOTAL_FAIL=0
+TOTAL_PASS_P3=0   # Phase 3 Stage-B-only passes (Stage-A never captured in concurrent path)
 format_result() {
     local stage="$1"; shift
     local line="${stage}:"
@@ -239,9 +249,16 @@ format_result() {
 stage_b_check_agent_size() {
     local img="$1" host_agent="$2"
     local host_size; host_size=$(stat -c '%s' "$host_agent" 2>/dev/null || echo 0)
+    # Fix 5: host_size==0 means the reference binary is absent. Do NOT compare
+    # against zero — that would emit FAIL(exp=0,got=N) and falsely trigger
+    # "TRUNCATION REPRODUCED" when the harness itself is misconfigured.
+    if [[ "$host_size" -eq 0 ]]; then
+        echo "agent-size:$(emit_fail "no_host_ref,agent=${host_agent}")"
+        return
+    fi
     local guest_size; guest_size=$(debugfs_size "$img" "/sbin/nexus3-agent")
     if [[ "$guest_size" == "DEBUGFS_ERR" ]]; then
-        echo "agent-size:HARNESS_INTEGRITY_FAIL(absent,path=/sbin/nexus3-agent,host=${host_size})"
+        echo "agent-size:$(emit_fail "absent,path=/sbin/nexus3-agent,host=${host_size}")"
         return
     fi
     if [[ "$guest_size" == "$host_size" ]]; then
@@ -797,7 +814,10 @@ run_one_iteration() {
     # (apt-get + dd + COPY over 500 MiB should take >45s on a real cache miss.)
     if (( elapsed < 45 )) && [[ $build_exit -eq 0 ]]; then
         log "WARN: ${label} -- build completed in ${elapsed}s; potential layer-cache hit (apt+COPY expected >45s)"
-        stage_a_line="${stage_a_line}|CACHE_HIT_SUSPECTED(${elapsed}s<45s)"
+        # Fix 7(a): CACHE_HIT_SUSPECTED is an impossible measurement — the snapshotter
+        # materialization may not have run. Use emit_fail so it flows into TOTAL_FAIL
+        # and cannot silently count as TOTAL_PASS.
+        stage_a_line="${stage_a_line}|$(emit_fail "CACHE_HIT_SUSPECTED,${elapsed}s<45s")"
     fi
 
     # Count Stage A failures in the parent shell; track across both stages so a
@@ -814,7 +834,11 @@ run_one_iteration() {
     if [[ $build_exit -ne 0 ]]; then
         log "BUILD FAILED (exit=${build_exit}): ${label}"
         tail -20 "$build_log" | sed 's/^/  /' || true
-        ALL_RESULTS+=("${label} | ${stage_a_line} | Stage_B:BUILD_FAILED:${build_exit} | elapsed=${elapsed}s")
+        # Fix 6: BUILD_FAILED formerly had no FAIL( and no counter increment, so a
+        # failed build was neither PASS nor FAIL and TOTAL_PASS+TOTAL_FAIL undercounted.
+        local bf_tok; bf_tok=$(emit_fail "build_exit=${build_exit}")
+        (( TOTAL_FAIL++ )) || true
+        ALL_RESULTS+=("${label} | ${stage_a_line} | Stage_B:${bf_tok} | elapsed=${elapsed}s")
         local partial_sb; partial_sb=$(find_sandbox_by_name "$sandbox_name")
         cleanup_sandbox "$partial_sb"
         return
@@ -1015,19 +1039,57 @@ if [[ $PRESSURE -eq 1 ]]; then
 
     log "waiting for ${#pids[@]} concurrent builds..."
     for pid in "${pids[@]}"; do
-        wait "$pid" || log "WARN: pid ${pid} exited non-zero (check pressure-*.log)"
+        p3_build_ec=0
+        wait "$pid" || p3_build_ec=$?
+        if [[ $p3_build_ec -ne 0 ]]; then
+            # Fix 3: a failed concurrent build was only a log line; it must be a
+            # counted FAIL so the concurrency axis is observable.
+            p3_wait_tok=$(emit_fail "build_exit=${p3_build_ec},pid=${pid}")
+            log "Phase 3: concurrent build pid=${pid} exit=${p3_build_ec}: ${p3_wait_tok}"
+            (( TOTAL_FAIL++ )) || true
+            ALL_RESULTS+=("pressure-pid${pid} | Stage_A:concurrent_not_captured | Stage_B:${p3_wait_tok} | concurrent")
+        fi
     done
     log "all concurrent builds finished"
 
     # Stage B for concurrent pressure images.
     local_after=$(list_digests_sorted)
     new_digests=$(comm -13 <(echo "$local_before") <(echo "$local_after") || true)
+    p3_launch_count=${#pids[@]}
+    p3_image_count=0
+    [[ -n "$new_digests" ]] && p3_image_count=$(echo "$new_digests" | wc -l)
+
+    # Fix 2: guard against empty/short new_digests — silence reads as "no truncation".
+    # Emit one counted HARNESS_INTEGRITY_FAIL per build that produced no image.
+    if [[ $p3_image_count -eq 0 ]]; then
+        p3_tok=$(emit_fail "NO_NEW_IMAGE,phase=3,launches=${p3_launch_count}")
+        log "Phase 3: no new images after ${p3_launch_count} concurrent builds — ${p3_tok}"
+        (( TOTAL_FAIL++ )) || true
+        ALL_RESULTS+=("pressure-phase3 | Stage_A:concurrent_not_captured | Stage_B:${p3_tok} | concurrent")
+    elif [[ $p3_image_count -lt $p3_launch_count ]]; then
+        p3_missing=$(( p3_launch_count - p3_image_count ))
+        for (( _m = 1; _m <= p3_missing; _m++ )); do
+            p3_tok=$(emit_fail "NO_NEW_IMAGE,phase=3,launches=${p3_launch_count},images=${p3_image_count}")
+            log "Phase 3: missing image ${_m}/${p3_missing}: ${p3_tok}"
+            (( TOTAL_FAIL++ )) || true
+            ALL_RESULTS+=("pressure-phase3-missing${_m} | Stage_A:concurrent_not_captured | Stage_B:${p3_tok} | concurrent")
+        done
+    fi
+
     pidx=0
     for nd in $new_digests; do
         (( pidx++ )) || true
         short="${nd#sha256:}"
         img="${IMAGE_STORE}/${short}/artifact"
-        [[ ! -f "$img" ]] && { log "WARN: image missing: $img"; continue; }
+        if [[ ! -f "$img" ]]; then
+            # Fix 1: image file absent was a WARN+continue with no FAIL(, no counter,
+            # no ALL_RESULTS row — identical to the sequential path bug at :834.
+            p3_img_tok=$(emit_fail "IMAGE_FILE_MISSING,digest=${short:0:16}")
+            log "Phase 3: ${p3_img_tok}"
+            (( TOTAL_FAIL++ )) || true
+            ALL_RESULTS+=("pressure-img${pidx} | Stage_A:concurrent_not_captured | Stage_B:${p3_img_tok} | concurrent")
+            continue
+        fi
         plabel="pressure-img${pidx}"
         log "=== ${plabel}: Stage B — debugfs on ${short:0:16}... ==="
         raw_b=$(stage_b_measure "$img")
@@ -1052,8 +1114,10 @@ if [[ $PRESSURE -eq 1 ]]; then
             (( TOTAL_FAIL += p3_hfail_count )) || true
             p3_iter_has_fail=1
         fi
+        # Fix 4: Phase 3 never captures Stage_A — counting into TOTAL_PASS makes the
+        # summary label "Stage-A+Stage-B, zero FAIL" false. Use a separate counter.
         if [[ $p3_iter_has_fail -eq 0 ]] && echo "$pb_line" | grep -qF "=PASS"; then
-            (( TOTAL_PASS++ )) || true
+            (( TOTAL_PASS_P3++ )) || true
         fi
     done
 
@@ -1193,6 +1257,7 @@ fi
 log "=========================================="
 log "SUMMARY"
 log "  Build iterations fully intact (Stage-A+Stage-B, zero FAIL): ${TOTAL_PASS}"
+log "  Phase 3 Stage-B-only passes (Stage-A not captured):        ${TOTAL_PASS_P3}"
 log "  Total failures (truncation+hash+harness-integrity):        ${TOTAL_FAIL}"
 log ""
 log "Per-iteration results (label | Stage_A | Stage_B | HashVerify):"
