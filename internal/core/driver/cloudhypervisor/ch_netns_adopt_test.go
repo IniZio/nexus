@@ -7,7 +7,9 @@
 package cloudhypervisor
 
 import (
+	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"syscall"
 	"testing"
@@ -27,7 +29,8 @@ func TestAdoptNetnsRuntime_Rebuilds(t *testing.T) {
 	}
 	t.Cleanup(func() { pumpFile.Close() })
 
-	rt, err := AdoptNetnsRuntime(4242, 4242, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
+	// childStartTime=0: skip the identity check for this fake pid.
+	rt, err := AdoptNetnsRuntime(4242, 4242, 0, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
 	if err != nil {
 		t.Fatalf("AdoptNetnsRuntime: %v", err)
 	}
@@ -69,7 +72,7 @@ func TestAdoptNetnsRuntime_Rebuilds(t *testing.T) {
 // accepted into a NetnsRuntime with a nil PerimConn (which would panic or
 // hang the first time a caller reads guest frames).
 func TestAdoptNetnsRuntime_RejectsMissingPerimFile(t *testing.T) {
-	_, err := AdoptNetnsRuntime(100, 100, "nx3g-test", "/tmp/nx3-test.sock", nil)
+	_, err := AdoptNetnsRuntime(100, 100, 0, "nx3g-test", "/tmp/nx3-test.sock", nil)
 	if err == nil {
 		t.Fatal("expected error for nil perimFile, got nil")
 	}
@@ -79,20 +82,124 @@ func TestAdoptNetnsRuntime_RejectsMissingPerimFile(t *testing.T) {
 // passing zero-value persisted fields (e.g. a Sandbox record predating
 // NetnsChildPID) into AdoptNetnsRuntime, which would otherwise construct a
 // NetnsRuntime whose Stop() sends kill(-0, SIGKILL) — the whole host's
-// process group.
+// process group — or kill(0, SIGKILL) — the whole caller's process group.
+//
+// FIX 3(a): exercise childPGID <= 0 in addition to childPID <= 0.
 func TestAdoptNetnsRuntime_RejectsNonPositivePIDs(t *testing.T) {
-	perimFile, pumpFile, err := netnsSocketpairFiles()
-	if err != nil {
-		t.Fatalf("netnsSocketpairFiles: %v", err)
+	cases := []struct {
+		name      string
+		childPID  int
+		childPGID int
+	}{
+		{name: "childPID=0", childPID: 0, childPGID: 100},
+		{name: "childPGID=0", childPID: 100, childPGID: 0},
+		{name: "childPGID=-1", childPID: 100, childPGID: -1},
 	}
-	defer pumpFile.Close()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			perimFile, pumpFile, err := netnsSocketpairFiles()
+			if err != nil {
+				t.Fatalf("netnsSocketpairFiles: %v", err)
+			}
+			defer pumpFile.Close()
+			_, err = AdoptNetnsRuntime(tc.childPID, tc.childPGID, 0, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
+			perimFile.Close()
+			if err == nil {
+				t.Errorf("expected error for %s, got nil", tc.name)
+			}
+		})
+	}
+}
 
-	if _, err := AdoptNetnsRuntime(0, 100, "nx3g-test", "/tmp/nx3-test.sock", perimFile); err == nil {
+// TestAdoptNetnsRuntime_RejectsStaleStartTime is the FIX-1 identity-check
+// test: adoption must be REFUSED when the persisted starttime does not match
+// the current /proc/<pid>/stat value, which means the pid was recycled between
+// the previous supervisor exit and the current adoption.
+//
+// The test spawns a real short-lived process, records its pid and starttime,
+// lets it exit (so the pid may be recycled), then passes a deliberately wrong
+// starttime to AdoptNetnsRuntime and asserts it returns an error.
+//
+// Two sub-cases:
+//  (a) pid still exists (as a zombie or newly recycled): wrong starttime → reject.
+//  (b) pid no longer exists at all (dead and reaped): adopt must also reject,
+//      because we cannot verify identity of a vanished pid.
+func TestAdoptNetnsRuntime_RejectsStaleStartTime(t *testing.T) {
+	// Sub-case (a): pid exists but starttime is wrong.
+	t.Run("wrong_starttime", func(t *testing.T) {
+		cmd := exec.Command("sleep", "30")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start sleep: %v", err)
+		}
+		pid := cmd.Process.Pid
+		t.Cleanup(func() {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			_ = cmd.Wait()
+		})
+
+		realST, err := readProcStartTime(pid)
+		if err != nil {
+			t.Fatalf("readProcStartTime(%d): %v", pid, err)
+		}
+		wrongST := realST + 12345 // deliberately wrong
+
+		perimFile, pumpFile, err := netnsSocketpairFiles()
+		if err != nil {
+			t.Fatalf("netnsSocketpairFiles: %v", err)
+		}
+		defer pumpFile.Close()
+
+		_, err = AdoptNetnsRuntime(pid, pid, wrongST, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
 		perimFile.Close()
-		t.Error("expected error for childPID=0, got nil")
-	} else {
+		if err == nil {
+			t.Errorf("expected error for starttime mismatch (real=%d, passed=%d), got nil", realST, wrongST)
+		} else {
+			t.Logf("correctly rejected: %v", err)
+		}
+	})
+
+	// Sub-case (b): pid no longer exists — cannot verify identity.
+	t.Run("pid_vanished", func(t *testing.T) {
+		// Start a process, capture its pid + starttime, then kill+reap it so
+		// the pid is gone from /proc before we call AdoptNetnsRuntime.
+		cmd := exec.Command("sleep", "0.05")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start sleep: %v", err)
+		}
+		pid := cmd.Process.Pid
+		savedST, err := readProcStartTime(pid)
+		if err != nil {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			_ = cmd.Wait()
+			t.Fatalf("readProcStartTime(%d): %v", pid, err)
+		}
+
+		// Kill and reap so the pid disappears from /proc.
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = cmd.Wait()
+
+		// Confirm the pid is gone.
+		if _, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+			t.Skip("pid still present in /proc after reap (kernel recycled it too fast); skipping sub-case")
+		}
+
+		perimFile, pumpFile, err := netnsSocketpairFiles()
+		if err != nil {
+			t.Fatalf("netnsSocketpairFiles: %v", err)
+		}
+		defer pumpFile.Close()
+
+		// Even with the correct savedST, the pid is gone → must be rejected.
+		_, err = AdoptNetnsRuntime(pid, pid, savedST, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
 		perimFile.Close()
-	}
+		if err == nil {
+			t.Errorf("expected error for vanished pid %d (st=%d), got nil", pid, savedST)
+		} else {
+			t.Logf("correctly rejected: %v", err)
+		}
+	})
 }
 
 // ── waitForGroupExit: the non-parent Stop confirmation mechanism ───────────
@@ -162,6 +269,16 @@ func TestWaitForGroupExit_TimesOutWhileAlive(t *testing.T) {
 // AND block until waitForGroupExit confirms it is gone, then close
 // PerimConn. This is the same shape as TestLifecycle_NormalStop_NoLeaks for
 // the parent-owned path, but hermetic (plain "sleep", no CH/KVM).
+//
+// FIX 3(b): race fix. The previous version started a background cmd.Wait()
+// goroutine BEFORE rt.Stop(), creating a race: if the goroutine won and reaped
+// the zombie before the ESRCH assertion, a mutation that skips waitForGroupExit
+// would still pass the ESRCH check (4/20 passes). Fixed by:
+//  1. Synchronising: wait for the background reaper to complete via a channel
+//     before checking ESRCH, so the ESRCH assertion is deterministic regardless
+//     of goroutine scheduling.
+//  2. Asserting elapsed time: Stop must not return faster than a single poll
+//     interval (netnsGroupExitPollInterval), catching "no poll at all" mutations.
 func TestStop_AdoptedRuntime_KillsAndConfirms(t *testing.T) {
 	cmd := exec.Command("sleep", "30")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -169,12 +286,19 @@ func TestStop_AdoptedRuntime_KillsAndConfirms(t *testing.T) {
 		t.Fatalf("start sleep: %v", err)
 	}
 	pgid := cmd.Process.Pid
+
 	// Reap in the background as soon as the kill lands, standing in for the
 	// kernel's subreaper/init in the real non-parent scenario (in-process,
 	// this Go test IS the OS parent of "sleep" since it used exec.Command —
 	// but AdoptNetnsRuntime's cmd field is still nil, so Stop() takes the
 	// non-parent branch regardless of who the OS parent actually is).
-	go func() { _ = cmd.Wait() }()
+	// reaped is closed once cmd.Wait() returns so we can synchronise the
+	// ESRCH assertion to happen only after the zombie is reaped.
+	reaped := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(reaped)
+	}()
 
 	perimFile, pumpFile, err := netnsSocketpairFiles()
 	if err != nil {
@@ -182,7 +306,13 @@ func TestStop_AdoptedRuntime_KillsAndConfirms(t *testing.T) {
 	}
 	t.Cleanup(func() { pumpFile.Close() })
 
-	rt, err := AdoptNetnsRuntime(pgid, pgid, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
+	// Use the real starttime so the identity check is exercised.
+	childST, err := readProcStartTime(pgid)
+	if err != nil {
+		t.Fatalf("readProcStartTime(%d): %v", pgid, err)
+	}
+
+	rt, err := AdoptNetnsRuntime(pgid, pgid, childST, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
 	if err != nil {
 		t.Fatalf("AdoptNetnsRuntime: %v", err)
 	}
@@ -192,6 +322,7 @@ func TestStop_AdoptedRuntime_KillsAndConfirms(t *testing.T) {
 	}
 
 	done := make(chan struct{})
+	startStop := time.Now()
 	go func() {
 		rt.Stop()
 		close(done)
@@ -199,18 +330,35 @@ func TestStop_AdoptedRuntime_KillsAndConfirms(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("rt.Stop() did not return within 5s")
+	case <-time.After(netnsAdoptStopTimeout + 2*time.Second):
+		t.Fatalf("rt.Stop() did not return within %v", netnsAdoptStopTimeout+2*time.Second)
+	}
+	elapsed := time.Since(startStop)
+
+	// Wait for the reaper to complete so the ESRCH check is deterministic —
+	// not racy on goroutine scheduling.
+	select {
+	case <-reaped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background reaper did not complete within 2s after Stop — sleep may still be alive")
 	}
 
 	if e := syscall.Kill(-pgid, 0); e != syscall.ESRCH {
-		t.Errorf("group pgid=%d not confirmed gone after Stop() returned: kill(-pgid,0) = %v, want ESRCH", pgid, e)
+		t.Errorf("group pgid=%d not confirmed gone after Stop()+reap: kill(-pgid,0) = %v, want ESRCH", pgid, e)
 	}
 
 	// PerimConn must be closed: a further read must fail (EOF/closed).
 	buf := make([]byte, 8)
 	if _, err := rt.PerimConn.Read(buf); err == nil {
 		t.Error("rt.PerimConn.Read succeeded after Stop(); want closed connection")
+	}
+
+	// Stop must have polled at least once before returning. A mutation that
+	// skips waitForGroupExit entirely returns in ~0 µs; one poll interval
+	// (netnsGroupExitPollInterval = 20 ms) is a conservative lower bound.
+	if elapsed < netnsGroupExitPollInterval {
+		t.Errorf("Stop returned in %v — faster than one poll interval (%v); "+
+			"suspect waitForGroupExit was not called (mutation?)", elapsed, netnsGroupExitPollInterval)
 	}
 }
 

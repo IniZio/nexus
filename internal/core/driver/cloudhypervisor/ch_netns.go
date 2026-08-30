@@ -34,10 +34,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -103,6 +105,18 @@ type NetnsRuntime struct {
 	// Exported for the same persistence reason as ChildPID (see
 	// domain.Sandbox.NetnsChildPGID).
 	ChildPGID int
+
+	// ChildStartTime is the kernel's starttime for the netns child process
+	// (field 22 of /proc/<ChildPID>/stat, clock ticks since boot). It is
+	// populated by StartNetnsRuntime immediately after the child is spawned
+	// and must be persisted alongside ChildPID/ChildPGID so that
+	// AdoptNetnsRuntime can verify the pid has not been recycled.
+	//
+	// NOTE: domain.Sandbox needs a NetnsChildStartTime uint64 field to carry
+	// this value between supervisor instances. Until that field exists, callers
+	// pass childStartTime=0 to AdoptNetnsRuntime which skips the identity check
+	// (backward-compatible, but leaves the pid-reuse guard inactive).
+	ChildStartTime uint64
 
 	// cmd is the child process running inside the user+network namespace.
 	// nil when this NetnsRuntime was built by [AdoptNetnsRuntime] rather
@@ -262,15 +276,52 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 		return nil, fmt.Errorf("cloudhypervisor: StartNetnsRuntime: net.FileConn(perim): %w", err)
 	}
 
+	// Capture the child's starttime from /proc for use by AdoptNetnsRuntime
+	// on the next supervisor start. The read is best-effort: if /proc is
+	// unavailable the field is zero (adoption will skip the identity check).
+	childStartTime, _ := readProcStartTime(childPgid)
+
 	return &NetnsRuntime{
-		PerimConn: perimConn,
-		APISocket: socketPath,
-		GuestTap:  guestTap,
-		ChildPID:  childPgid,
-		ChildPGID: childPgid,
-		cmd:       cmd,
-		stderrBuf: stderrBuf,
+		PerimConn:      perimConn,
+		APISocket:      socketPath,
+		GuestTap:       guestTap,
+		ChildPID:       childPgid,
+		ChildPGID:      childPgid,
+		ChildStartTime: childStartTime,
+		cmd:            cmd,
+		stderrBuf:      stderrBuf,
 	}, nil
+}
+
+// readProcStartTime reads field 22 (starttime) from /proc/<pid>/stat and
+// returns it as a uint64. The starttime is the number of clock ticks since
+// boot at which the process was created; the kernel never reuses it for a
+// recycled pid, making it a reliable identity token alongside the pid.
+//
+// Parsing is robust against a comm field (field 2) containing spaces or
+// parentheses: the suffix after the LAST ')' in the line contains the
+// remaining fields starting at field 3 (state). Field 22 (starttime) is at
+// 0-indexed position 19 in that suffix.
+func readProcStartTime(pid int) (uint64, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, fmt.Errorf("read /proc/%d/stat: %w", pid, err)
+	}
+	line := strings.TrimRight(string(data), "\n")
+	idx := strings.LastIndex(line, ")")
+	if idx < 0 {
+		return 0, fmt.Errorf("parse /proc/%d/stat: no ')' found in %q", pid, line)
+	}
+	// fields[0] = state (field 3), fields[19] = starttime (field 22).
+	fields := strings.Fields(line[idx+1:])
+	if len(fields) < 20 {
+		return 0, fmt.Errorf("parse /proc/%d/stat: too few fields after ')': got %d, want ≥20", pid, len(fields))
+	}
+	st, err := strconv.ParseUint(fields[19], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse /proc/%d/stat: starttime: %w", pid, err)
+	}
+	return st, nil
 }
 
 // AdoptNetnsRuntime rebuilds a NetnsRuntime for a netns child this process
@@ -286,10 +337,19 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 // does not close it on the error paths, mirroring Accept's own contract that
 // a rejected fd is the caller's to dispose of).
 //
+// childStartTime is field 22 of /proc/<childPID>/stat (clock ticks since
+// boot) as persisted by the previous supervisor via NetnsRuntime.ChildStartTime.
+// When non-zero, AdoptNetnsRuntime reads the live value from /proc and refuses
+// the adoption if the pid's identity has changed — protecting against pid reuse
+// where Stop() would otherwise send Kill(-ChildPGID, SIGKILL) to an arbitrary
+// host process group. Pass 0 to skip the check (backward compatibility with
+// Sandbox records predating NetnsChildStartTime; see the ChildStartTime comment
+// on NetnsRuntime for the pending domain.Sandbox field note).
+//
 // The returned NetnsRuntime has cmd == nil: it was not produced by
 // exec.Command in this process, so Stop() cannot cmd.Wait() on it and takes
 // the non-parent confirmation path instead (see Stop).
-func AdoptNetnsRuntime(childPID, childPGID int, guestTap, apiSocket string, perimFile *os.File) (*NetnsRuntime, error) {
+func AdoptNetnsRuntime(childPID, childPGID int, childStartTime uint64, guestTap, apiSocket string, perimFile *os.File) (*NetnsRuntime, error) {
 	if perimFile == nil {
 		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: perimFile is nil")
 	}
@@ -306,6 +366,20 @@ func AdoptNetnsRuntime(childPID, childPGID int, guestTap, apiSocket string, peri
 		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: guestTap is empty")
 	}
 
+	// PID-reuse guard: verify the process at childPID is still the same
+	// process whose starttime was persisted. If childStartTime is 0, the
+	// check is skipped (backward compatibility — see ChildStartTime note).
+	if childStartTime != 0 {
+		currentST, err := readProcStartTime(childPID)
+		if err != nil {
+			// /proc/<pid>/stat absent: the process died (or was never this pid).
+			return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: pid %d no longer exists (died or pid recycled): %w", childPID, err)
+		}
+		if currentST != childStartTime {
+			return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: pid %d starttime mismatch: persisted=%d current=%d — pid was recycled", childPID, childStartTime, currentST)
+		}
+	}
+
 	// net.FileConn dups the fd internally; close our wrapper once dup'd,
 	// same ordering StartNetnsRuntime uses for perimFile.
 	perimConn, err := net.FileConn(perimFile)
@@ -315,11 +389,12 @@ func AdoptNetnsRuntime(childPID, childPGID int, guestTap, apiSocket string, peri
 	perimFile.Close()
 
 	return &NetnsRuntime{
-		PerimConn: perimConn,
-		APISocket: apiSocket,
-		GuestTap:  guestTap,
-		ChildPID:  childPID,
-		ChildPGID: childPGID,
+		PerimConn:      perimConn,
+		APISocket:      apiSocket,
+		GuestTap:       guestTap,
+		ChildPID:       childPID,
+		ChildPGID:      childPGID,
+		ChildStartTime: childStartTime,
 		// cmd is deliberately left nil: this process did not fork the
 		// child, so it has no *exec.Cmd to Wait() on.
 	}, nil
@@ -387,7 +462,18 @@ func (rt *NetnsRuntime) Stop() {
 		if rt.cmd != nil {
 			_ = rt.cmd.Wait()
 		} else if rt.ChildPGID != 0 {
-			waitForGroupExit(rt.ChildPGID, netnsAdoptStopTimeout)
+			// FIX-2: propagate the group-exit result. Changing Stop's return
+			// type would require updating all callers (t.Cleanup, goroutines,
+			// ch_net.go teardownSandboxNet) which span multiple slices; instead
+			// we log at warn so operators can detect a group that failed to
+			// reap within the timeout — which means TAP names, the socket path,
+			// and cache-disk slot may be transiently unavailable.
+			if !waitForGroupExit(rt.ChildPGID, netnsAdoptStopTimeout) {
+				slog.Warn("cloudhypervisor: Stop: process group did not confirm exit within timeout; "+
+					"socket, TAP, and cache-disk slot may be transiently unavailable",
+					"pgid", rt.ChildPGID,
+					"timeout", netnsAdoptStopTimeout)
+			}
 		}
 		if rt.PerimConn != nil {
 			_ = rt.PerimConn.Close()
