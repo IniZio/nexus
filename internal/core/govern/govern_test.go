@@ -637,9 +637,53 @@ func TestShrinkStep(t *testing.T) {
 	t.Parallel()
 	const minBytes = 1 * gib
 	const maxBytes = 4 * gib
-	step := shrinkStep(minBytes, maxBytes)
+	const current = 4 * gib
+	step := shrinkStep(minBytes, maxBytes, current, shrinkSample(uint64(maxBytes)))
 	if step < minShrinkStepBytes {
 		t.Errorf("shrink step %d should be >= minShrinkStepBytes %d", step, minShrinkStepBytes)
+	}
+}
+
+// TestShrinkStep_DemandScaled_NotFixedRangeFraction is the regression test
+// for the live oscillation (D-DC-?? 2026-08-30): the OLD shrinkStep computed
+// (maxBytes-minBytes)/2 unconditionally — 3.75 GiB for min=512MiB/max=8GiB —
+// which from a healthy current of 2 GiB overshoots past zero and clamps to
+// the 512 MiB floor even though the guest was actively using its memory. The
+// fixed shrinkStep must scale off the actual surplus in the sample and
+// return a step that lands current-step somewhere well above the floor.
+//
+// Fails before the fix: old shrinkStep(minBytes, maxBytes) = 3,750,000,000-ish
+// bytes regardless of current, so current(2GiB) - step clamps to minBytes
+// (536870912) — exactly the floor, not "a modest step below 2GiB".
+func TestShrinkStep_DemandScaled_NotFixedRangeFraction(t *testing.T) {
+	t.Parallel()
+	const minBytes int64 = 512 * 1024 * 1024
+	const maxBytes int64 = 8 * 1024 * 1024 * 1024
+	const current int64 = 2 * 1024 * 1024 * 1024 // healthy 2 GiB, actively used
+
+	// shrinkSample gives 60% MemAvailable of the SAMPLE's total — this test
+	// samples telemetry from the guest's actual current size (2 GiB), not
+	// the configured maxBytes, matching what a live poll during steady
+	// demand actually reports.
+	s := shrinkSample(uint64(current))
+
+	step := shrinkStep(minBytes, maxBytes, current, s)
+	target := current - step
+
+	const floor = minBytes
+	if target <= floor {
+		t.Fatalf("shrink target %d landed at or below the floor %d — shrinkStep is still range-scaled, "+
+			"not demand-scaled: step=%d from current=%d", target, floor, step, current)
+	}
+	// "Modest step below 2GiB": must move down, but nowhere near the full
+	// 3.75GiB range-scaled step the old formula would have produced.
+	if target >= current {
+		t.Fatalf("shrink target %d did not decrease from current %d", target, current)
+	}
+	const oldRangeScaledStep = (maxBytes - minBytes) / 2 // 3.75 GiB — the bug's step size
+	if step >= oldRangeScaledStep {
+		t.Fatalf("shrink step %d is still the old range-scaled magnitude (>= %d); expected a modest, "+
+			"demand-scaled step", step, oldRangeScaledStep)
 	}
 }
 
@@ -725,7 +769,14 @@ func TestGrowTargetAligned(t *testing.T) {
 // current (5.1 GiB) the shrink target current-shrinkStep is unaligned; evaluate
 // must round it DOWN to a block multiple that stays < current and >= min.
 //
-// Fails before the fix (unaligned target 1447034880 % 256 MiB != 0); passes after.
+// Fails before the fix (unaligned target % 256 MiB != 0); passes after. The
+// pinned worked example (4026531840) is for the demand-scaled shrinkStep
+// (2026-08-30 thrash fix): surplus = 60%*8GiB - 45%*8GiB = 1288490189 B,
+// raw target = current(5473566720) - surplus = 4185076531, rounded DOWN to
+// the next 256 MiB block = 4026531840 (3.75 GiB). This replaces an earlier
+// pinned value (1342177280) computed against the range-scaled shrinkStep
+// this same fix removed — that formula is exactly the live-thrash bug, so a
+// worked example built on it cannot be preserved.
 func TestShrinkTargetAligned(t *testing.T) {
 	t.Parallel()
 	const minBytes int64 = 512 * 1024 * 1024
@@ -755,10 +806,10 @@ func TestShrinkTargetAligned(t *testing.T) {
 	if got < minBytes {
 		t.Errorf("shrink target %d must not underflow the floor %d", got, minBytes)
 	}
-	// Worked example: raw target 1447034880 rounds DOWN to 1342177280 (1.25 GiB).
-	const wantAligned int64 = 1342177280
+	// Worked example: raw target 4185076531 rounds DOWN to 4026531840 (3.75 GiB).
+	const wantAligned int64 = 4026531840
 	if got != wantAligned {
-		t.Errorf("shrink target = %d, want %d (raw 1447034880 rounded down to a 256 MiB block)", got, wantAligned)
+		t.Errorf("shrink target = %d, want %d (raw 4185076531 rounded down to a 256 MiB block)", got, wantAligned)
 	}
 }
 
@@ -946,5 +997,93 @@ func TestAlignUpDown(t *testing.T) {
 		if got := alignDown(tc.n, a); got != tc.wantDn {
 			t.Errorf("alignDown(%d) = %d, want %d", tc.n, got, tc.wantDn)
 		}
+	}
+}
+
+// ── Live thrash regression: shrink/grow oscillation (D-DC-?? 2026-08-30) ────
+
+// TestMemoryLoop_ConvergesInsteadOfOscillating drives the REAL evaluate()
+// control loop across many rounds with telemetry that reflects a steady,
+// non-idle workload — the guest uses a roughly constant ~1 GiB throughout,
+// exactly the live log's "the guest is actively using its memory throughout
+// — it is not idle" — and asserts the governor settles instead of
+// alternating shrink/grow forever.
+//
+// TestShrinkStep_DemandScaled_NotFixedRangeFraction only proves shrinkStep in
+// isolation; a version of that test written to check nothing but the
+// function's return value would have passed both before and after the bug
+// existed if evaluate's round-to-round cadence didn't actually chase it.
+// This test drives evaluate() itself, the way the live supervisor's governor
+// goroutine does, so it fails if the OSCILLATION exists regardless of which
+// function produces it.
+//
+// Before the fix: shrinkStep ignores current and the sample, always
+// returning ~(maxBytes-minBytes)/2 = 3.75 GiB for these bounds. From a
+// healthy 2 GiB that overshoots past zero and clamps to the 512 MiB floor;
+// the guest (still using ~1 GiB) then reads as critically starved, the
+// safeMemFloorBytes rescue jumps back to 2 GiB, and the cycle repeats
+// indefinitely — sizes alternate 2 GiB/512 MiB/2 GiB/512 MiB... forever.
+// After the fix: shrink returns to roughly the shrink-threshold size above
+// the guest's actual usage and stays there.
+func TestMemoryLoop_ConvergesInsteadOfOscillating(t *testing.T) {
+	t.Parallel()
+	const minBytes int64 = 512 * 1024 * 1024
+	const maxBytes int64 = 8 * 1024 * 1024 * 1024
+	const startCurrent int64 = 2 * 1024 * 1024 * 1024
+	// The guest steadily uses ~1 GiB throughout every round below — never
+	// idle, never so much that it needs more than ~2 GiB.
+	const usedBytes int64 = 1 * 1024 * 1024 * 1024
+
+	resizer := newFakeResizer(startCurrent)
+	g, clk := newTestGovernorMinMax(t, minBytes, maxBytes, resizer, nil)
+
+	// sampleFor reports telemetry for a VM of size total with the guest's
+	// usage held constant at usedBytes — MemAvailable shrinks and grows only
+	// because total does, exactly as real telemetry would after a resize.
+	sampleFor := func(total int64) resize.Sample {
+		avail := total - usedBytes
+		if avail < 0 {
+			avail = 0
+		}
+		return resize.Sample{
+			MemTotalBytes:     uint64(total),
+			MemAvailableBytes: uint64(avail),
+			MemPSISupported:   true,
+		}
+	}
+
+	// Advance well past BOTH cooldowns (grow 60s, shrink 120s) every round so
+	// no round is silently skipped by cooldown gating — this test is about
+	// whether the control law converges, not about cooldown timing.
+	const roundAdvance = 130 * time.Second
+	const rounds = 20
+
+	sizes := make([]int64, 0, rounds)
+	for range rounds {
+		clk.Advance(roundAdvance)
+		injectSample(g, clk, sampleFor(resizer.current))
+		g.evaluate(context.Background())
+		sizes = append(sizes, resizer.current)
+	}
+
+	// Convergence: in the tail of the run the size must stop changing.
+	// Oscillation shows up as repeated flips between a low and a high value
+	// forever; convergence shows up as the tail settling on one value.
+	tail := sizes[rounds/2:]
+	flips := 0
+	for i := 1; i < len(tail); i++ {
+		if tail[i] != tail[i-1] {
+			flips++
+		}
+	}
+	if flips > 1 {
+		t.Fatalf("governor did not converge over %d rounds of steady ~1GiB demand: %d size changes in the tail (full sequence: %v) — "+
+			"this is the oscillation signature (repeated shrink-to-floor / grow-back)", rounds, flips, sizes)
+	}
+
+	finalSize := sizes[len(sizes)-1]
+	if finalSize <= minBytes {
+		t.Fatalf("governor settled at or below the floor (%d) despite steady ~1GiB demand over %d rounds (full sequence: %v) — shrink is still overshooting",
+			finalSize, rounds, sizes)
 	}
 }
