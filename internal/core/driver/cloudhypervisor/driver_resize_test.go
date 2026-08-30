@@ -782,6 +782,77 @@ func TestGrowDisk_guestUnreachable_bestEffort(t *testing.T) {
 	}
 }
 
+// --- buildVolumePostGrowHooks tests ------------------------------------------
+
+// TestBuildVolumePostGrowHooks_NamedVolumeDiskIndexWired verifies that
+// buildVolumePostGrowHooks registers a hook at the correct 0-based ExtraDisks
+// index for a named-volume disk.ext4 path and that non-volume disks get no hook.
+//
+// MUTATION PROOF (index wiring): if the loop in buildVolumePostGrowHooks uses
+// the wrong index (e.g. always 0), this test fails for the non-zero-index case.
+// If the disk.ext4 filename check is removed, the workspace disk path also gets
+// a hook, causing len(hooks) == 2 and the second assertion to fail.
+func TestBuildVolumePostGrowHooks_NamedVolumeDiskIndexWired(t *testing.T) {
+	dir := t.TempDir()
+
+	// ExtraDisks layout: [named-vol at index 0, shadow at index 1, workspace at index 2]
+	extraDisks := []ExtraDisk{
+		{Path: filepath.Join(dir, "volumes", "myrepo-main-docker", "disk.ext4")},
+		{Path: filepath.Join(dir, "disks", "shadow.raw")}, // shadow disk: not a volume
+		{Path: filepath.Join(dir, "disks", "ws.raw")},     // workspace disk: not a volume
+	}
+
+	hooks := buildVolumePostGrowHooks(extraDisks)
+
+	if len(hooks) != 1 {
+		t.Fatalf("expected 1 hook (named-vol only), got %d: hooks for indices %v",
+			len(hooks), hookKeys(hooks))
+	}
+	if _, ok := hooks[0]; !ok {
+		t.Errorf("hook missing for index 0 (named-vol disk); registered indices: %v", hookKeys(hooks))
+	}
+	if _, ok := hooks[1]; ok {
+		t.Errorf("unexpected hook at index 1 (shadow disk should not have a hook)")
+	}
+}
+
+// TestBuildVolumePostGrowHooks_MultipleNamedDisks verifies that two named-volume
+// disks in ExtraDisks[0] and ExtraDisks[2] each get their own hook with the
+// correct index, while a shadow disk at ExtraDisks[1] gets none.
+func TestBuildVolumePostGrowHooks_MultipleNamedDisks(t *testing.T) {
+	dir := t.TempDir()
+
+	extraDisks := []ExtraDisk{
+		{Path: filepath.Join(dir, "volumes", "docker-vol", "disk.ext4")},   // index 0 → named
+		{Path: filepath.Join(dir, "disks", "shadow.raw")},                   // index 1 → shadow
+		{Path: filepath.Join(dir, "volumes", "cache-vol", "disk.ext4")},    // index 2 → named
+	}
+
+	hooks := buildVolumePostGrowHooks(extraDisks)
+
+	if len(hooks) != 2 {
+		t.Fatalf("expected 2 hooks, got %d: %v", len(hooks), hookKeys(hooks))
+	}
+	if _, ok := hooks[0]; !ok {
+		t.Errorf("hook missing at index 0 (docker-vol)")
+	}
+	if _, ok := hooks[2]; !ok {
+		t.Errorf("hook missing at index 2 (cache-vol)")
+	}
+	if _, ok := hooks[1]; ok {
+		t.Errorf("unexpected hook at index 1 (shadow disk)")
+	}
+}
+
+// hookKeys returns the sorted indices of entries in hooks, for test diagnostics.
+func hookKeys(hooks map[int]func(context.Context, int64)) []int {
+	keys := make([]int, 0, len(hooks))
+	for k := range hooks {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // --- helpers -----------------------------------------------------------------
 
 // fakeSockListener starts an httptest server on a Unix socket at path,

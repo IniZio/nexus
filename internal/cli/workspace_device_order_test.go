@@ -95,15 +95,35 @@ func TestWorkspaceMountCmdline_Empty(t *testing.T) {
 }
 
 // TestWorkspaceMountCmdline_SingleMount verifies encoding for a single workspace mount.
-// The format is now 5 fields: device:target:fstype:readonly:workspace.
+// The format is now 6 fields: device:target:fstype:readonly:workspace:resizable.
 func TestWorkspaceMountCmdline_SingleMount(t *testing.T) {
 	mounts := []agent.GuestMount{
 		{Device: "/dev/vdb", Target: "/workspace/repo", FSType: "ext4", ReadOnly: false, IsWorkspace: false},
 	}
 	got := workspaceMountCmdline(mounts)
-	want := diskBootCmdlineBase + " -- --workspace-mount=/dev/vdb:/workspace/repo:ext4:false:false"
+	want := diskBootCmdlineBase + " -- --workspace-mount=/dev/vdb:/workspace/repo:ext4:false:false:false"
 	if got != want {
 		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}
+
+// TestWorkspaceMountCmdline_ResizableField verifies that Resizable=true is
+// encoded as the 6th field "true" for named-volume mounts.
+func TestWorkspaceMountCmdline_ResizableField(t *testing.T) {
+	mounts := []agent.GuestMount{
+		{Device: "/dev/vdb", Target: "/var/lib/docker", FSType: "ext4", Resizable: true},
+		{Device: "/dev/vdc", Target: "/workspace/repo", FSType: "ext4", IsWorkspace: true},
+	}
+	got := workspaceMountCmdline(mounts)
+	// Docker disk: 6th field must be "true".
+	dockerToken := "--workspace-mount=/dev/vdb:/var/lib/docker:ext4:false:false:true"
+	if !strings.Contains(got, dockerToken) {
+		t.Errorf("docker resizable token %q not found in: %q", dockerToken, got)
+	}
+	// Workspace disk: 6th field must be "false".
+	wsToken := "--workspace-mount=/dev/vdc:/workspace/repo:ext4:false:true:false"
+	if !strings.Contains(got, wsToken) {
+		t.Errorf("workspace token %q not found in: %q", wsToken, got)
 	}
 }
 
@@ -135,15 +155,15 @@ func TestWorkspaceMountCmdline_DefaultLayout(t *testing.T) {
 	}
 
 	// Workspace disk must be on /dev/vdf (4 shadows + 1 workspace).
-	// ReadOnly=false → ":false"; IsWorkspace=true → ":true" (5th field).
-	wsMountToken := "--workspace-mount=/dev/vdf:" + guestPath + ":ext4:false:true"
+	// ReadOnly=false → ":false"; IsWorkspace=true → ":true" (5th); Resizable=false → ":false" (6th).
+	wsMountToken := "--workspace-mount=/dev/vdf:" + guestPath + ":ext4:false:true:false"
 	if !strings.Contains(got, wsMountToken) {
 		t.Errorf("workspace mount token %q not found in cmdline: %q", wsMountToken, got)
 	}
 
 	// Shadow for node_modules must be on /dev/vdb (index 0).
-	// ReadOnly=false → ":false"; IsWorkspace=false → ":false" (5th field).
-	shadowToken := "--workspace-mount=/dev/vdb:" + guestPath + "/node_modules:ext4:false:false"
+	// ReadOnly=false → ":false"; IsWorkspace=false → ":false" (5th); Resizable=false → ":false" (6th).
+	shadowToken := "--workspace-mount=/dev/vdb:" + guestPath + "/node_modules:ext4:false:false:false"
 	if !strings.Contains(got, shadowToken) {
 		t.Errorf("shadow mount token %q not found in cmdline: %q", shadowToken, got)
 	}

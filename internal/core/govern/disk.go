@@ -66,6 +66,8 @@ const (
 
 	// diskDefaultMax: hard ceiling when Bounds.DiskMaxBytes is zero.
 	// Source: OLD disk_resize.go:40 (diskMaxBytes = 100 GiB).
+	// This ceiling applies PER AXIS: each named-volume disk and the workspace
+	// disk each independently cap at 100 GiB (or Bounds.DiskMaxBytes when set).
 	diskDefaultMax = 100 * diskGiB
 
 	// diskGrowCooldown: minimum interval between grow events.
@@ -138,18 +140,45 @@ func NewDiskAxis(g *Governor, resizer resize.DiskResizer, diskIndex int) *DiskAx
 func (a *DiskAxis) Evaluate(ctx context.Context) {
 	s := a.g.latest
 
-	// Per-disk sample lookup: prefer DiskStats entry for this disk index;
-	// fall back to the legacy single-disk fields for old guest agents that
-	// have not yet populated DiskStats.
+	// Per-disk sample lookup. Two paths:
+	//
+	// (A) DiskStats populated (new guest agent, ≥2 disks): find the entry whose
+	//     Index matches a.diskIndex. If DiskStats is non-empty but no entry
+	//     matches, the host registered a disk index the guest didn't report —
+	//     either the Resizable flag wasn't emitted (old host→new guest skew) or
+	//     the index is wrong. Treat as "telemetry unavailable" (no grow) and log
+	//     once to aid diagnosis. The log-once latch reuses growErrLogged so no
+	//     new state is needed; it is cleared on the next successful grow.
+	//
+	// (B) DiskStats empty (old guest agent): fall back to the legacy single-disk
+	//     fields. Only the workspace disk is reported this way; named-volume axes
+	//     at other indices are silently idle (safe: no spurious grow).
 	used := s.DiskUsedBytes
 	total := s.DiskTotalBytes
 	supported := s.DiskSupported
-	for _, ds := range s.DiskStats {
-		if ds.Index == a.diskIndex {
-			used = ds.UsedBytes
-			total = ds.TotalBytes
-			supported = ds.Supported
-			break
+	if len(s.DiskStats) > 0 {
+		found := false
+		for _, ds := range s.DiskStats {
+			if ds.Index == a.diskIndex {
+				used = ds.UsedBytes
+				total = ds.TotalBytes
+				supported = ds.Supported
+				found = true
+				break
+			}
+		}
+		if !found {
+			// DiskStats non-empty but our index absent: guest didn't report this
+			// disk (e.g. old guest agent without Resizable support, or index skew).
+			// Treat as unsupported — suppress grow, log once.
+			if !a.growErrLogged {
+				a.growErrLogged = true
+				slog.Warn("govern.disk.index_not_in_sample",
+					"diskIndex", a.diskIndex,
+					"diskStatsLen", len(s.DiskStats),
+				)
+			}
+			return
 		}
 	}
 

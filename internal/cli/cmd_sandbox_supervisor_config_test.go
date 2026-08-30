@@ -77,7 +77,8 @@ func TestBuildHumanSupervisorConfig_AllFieldsPopulated(t *testing.T) {
 		"/usr/bin/cloud-hypervisor",              // chBin
 		"/tmp/sockets",                           // socketDir
 		true,                                     // hasWorkspace
-		1,                                        // workspaceDiskIndex (non-zero)
+		1,                                        // workspaceDiskIndex (non-zero, = 1 shadow disk)
+		1,                                        // numNamedDisks (non-zero, = 1 docker named volume)
 		"/workspace/proj",                        // workspaceGuestPath
 		[]domain.LiveMount{{HostPath: "/src", GuestPath: "/work"}}, // liveMounts
 		"/usr/bin/virtiofsd",                     // virtiofsdPath
@@ -122,7 +123,7 @@ func TestBuildHumanSupervisorConfig_CredsFilePopulated(t *testing.T) {
 		512, 1,
 		"/disks/sb.raw", nil,
 		"root=/dev/vda rw", "/usr/bin/cloud-hypervisor", "/tmp/sockets",
-		false, 0, "",
+		false, 0, 0, "",
 		nil, "",
 		nil, // mcpOAuthRefreshConfigs — optional
 	)
@@ -133,5 +134,74 @@ func TestBuildHumanSupervisorConfig_CredsFilePopulated(t *testing.T) {
 	}
 	if cfg.CredsFile != "/fake/creds.json" {
 		t.Errorf("CredsFile = %q, want /fake/creds.json", cfg.CredsFile)
+	}
+}
+
+// TestBuildHumanSupervisorConfig_NamedDiskResizableIndices verifies that named
+// kind=disk volume disks appear in ResizableDiskIndices at the correct absolute
+// ExtraDisks indices, preceding the workspace disk index.
+//
+// MUTATION PROOF (index wiring): the docker volume index MUST appear in
+// ResizableDiskIndices. This test fails if the named-disk loop in
+// buildHumanSupervisorConfig is removed or the index formula is wrong.
+func TestBuildHumanSupervisorConfig_NamedDiskResizableIndices(t *testing.T) {
+	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", "/fake/creds.json")
+
+	cases := []struct {
+		name               string
+		numNamedDisks      int
+		numShadowDisks     int // workspaceDiskIndex passed in (shadow count)
+		hasWorkspace       bool
+		wantResizable      []int
+	}{
+		{
+			name:          "one docker disk no shadow no workspace",
+			numNamedDisks: 1, numShadowDisks: 0, hasWorkspace: false,
+			wantResizable: []int{0},
+		},
+		{
+			name:          "one docker disk one shadow with workspace",
+			numNamedDisks: 1, numShadowDisks: 1, hasWorkspace: true,
+			// ExtraDisks: [docker(0), shadow(1), workspace(2)]
+			// named: [0], workspace: 1+1=2
+			wantResizable: []int{0, 2},
+		},
+		{
+			name:          "no named disks with workspace",
+			numNamedDisks: 0, numShadowDisks: 0, hasWorkspace: true,
+			wantResizable: []int{0},
+		},
+		{
+			name:          "two named disks no shadow with workspace",
+			numNamedDisks: 2, numShadowDisks: 0, hasWorkspace: true,
+			// ExtraDisks: [named0(0), named1(1), workspace(2)]
+			// named: [0, 1], workspace: 2+0=2
+			wantResizable: []int{0, 1, 2},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := buildHumanSupervisorConfig(
+				"aabbccddeeff1122", "/store", "/store/supervisors/aabb",
+				"/kernel/vmlinux",
+				resize.Bounds{MemMinBytes: 1, MemMaxBytes: 2, DiskMaxBytes: 100 << 30},
+				512, 1,
+				"/disks/sb.raw", nil,
+				"root=/dev/vda rw", "/usr/bin/cloud-hypervisor", "/tmp/sockets",
+				tc.hasWorkspace, tc.numShadowDisks, tc.numNamedDisks, "",
+				nil, "",
+				nil,
+			)
+			got := cfg.ResizableDiskIndices
+			if len(got) != len(tc.wantResizable) {
+				t.Fatalf("ResizableDiskIndices = %v, want %v", got, tc.wantResizable)
+			}
+			for i, idx := range tc.wantResizable {
+				if got[i] != idx {
+					t.Errorf("ResizableDiskIndices[%d] = %d, want %d (full: %v)", i, got[i], idx, got)
+				}
+			}
+		})
 	}
 }

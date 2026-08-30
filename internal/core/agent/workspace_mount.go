@@ -33,4 +33,15 @@ type GuestMount struct {
 	// The agent selects the telemetry target by this marker, never by position or
 	// ReadOnly inference.
 	IsWorkspace bool
+
+	// Resizable marks non-workspace ext4 block-device mounts (e.g. named-volume
+	// docker disks) whose statfs usage the guest should include in DiskStats
+	// telemetry so the host governor can auto-grow them independently.
+	//
+	// Exactly one mount carries IsWorkspace=true (the primary workspace disk);
+	// Resizable=true is used for ALL OTHER kind=disk mounts that also need
+	// governor-managed auto-resize (e.g. /var/lib/docker). The two fields are
+	// orthogonal: a workspace mount never needs Resizable (IsWorkspace already
+	// implies it); a named-volume mount uses Resizable instead.
+	Resizable bool
 }

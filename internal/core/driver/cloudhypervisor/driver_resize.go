@@ -6,12 +6,26 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"syscall"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/IniZio/nexus3/internal/core/volumestore"
 )
+
+// namedVolumeDiskFile is the filename used for every kind=disk named-volume
+// backing file. GrowDisk uses it to recognise which ExtraDisks are named
+// volumes and registers a post-grow hook to keep the volume record truthful.
+//
+// Convention relied upon: volumestore.New roots its volumes at
+// <storeRoot>/volumes/ and each kind=disk volume's backing file is always
+// named "disk.ext4" inside its <name>/ sub-directory.  The post-grow hook in
+// buildVolumePostGrowHooks derives the store root and volume name from the
+// backing-file path using this layout assumption.  If this naming convention
+// ever changes, buildVolumePostGrowHooks must be updated in lockstep.
+const namedVolumeDiskFile = "disk.ext4"
 
 // SandboxResizer implements [resize.MemoryResizer], [resize.CPUResizer], and
 // [resize.DiskResizer] for a single running sandbox via the CH REST API.
@@ -42,17 +56,64 @@ type SandboxResizer struct {
 
 	memBytes atomic.Int64 // current desired memory in bytes; updated on each successful ResizeMemory
 	vcpus    atomic.Int32 // current desired vCPU count; updated on each successful ResizeCPU
+
+	// postGrowHooks maps 0-based ExtraDisks index to a best-effort callback
+	// invoked after a successful GrowDisk. Populated by NewSandboxResizer for
+	// named-volume disks (disk.ext4 backing files); nil map = no hooks.
+	postGrowHooks map[int]func(ctx context.Context, targetBytes int64)
 }
 
 // NewSandboxResizer returns a SandboxResizer for the given sandbox.
 // bootMemBytes and bootVCPUs must reflect the values used at vm.create so that
 // CurrentMemoryBytes and CurrentVCPUs return correct values before the first
 // resize call.
+//
+// Post-grow hooks: for each ExtraDisk whose backing file is named "disk.ext4"
+// (the convention for named-volume kind=disk volumes), NewSandboxResizer
+// registers a best-effort hook that updates the volume record's SizeBytes
+// after a successful GrowDisk. This keeps "nexus3 volume ls" truthful after an
+// online grow without requiring any change at the supervisor call site.
 func NewSandboxResizer(d *CHDriver, id domain.SandboxID, bounds resize.Bounds, bootMemBytes int64, bootVCPUs int32) *SandboxResizer {
 	r := &SandboxResizer{d: d, id: id, bounds: bounds, dialGuest: d.DialGuest}
 	r.memBytes.Store(bootMemBytes)
 	r.vcpus.Store(bootVCPUs)
+	r.postGrowHooks = buildVolumePostGrowHooks(d.cfg.ExtraDisks)
 	return r
+}
+
+// buildVolumePostGrowHooks inspects extraDisks and returns a map from
+// 0-based ExtraDisks index to a post-grow hook for each entry whose backing
+// file is named "disk.ext4" (the volumestore naming convention). The hook
+// calls volumestore.UpdateSizeBytes with a 5-second timeout so a wedged lock
+// does not stall the governor loop.
+func buildVolumePostGrowHooks(extraDisks []ExtraDisk) map[int]func(context.Context, int64) {
+	var hooks map[int]func(context.Context, int64)
+	for i, ed := range extraDisks {
+		if filepath.Base(ed.Path) != namedVolumeDiskFile {
+			continue
+		}
+		// Derive: <storeRoot>/volumes/<name>/disk.ext4
+		// → name = filepath.Base(filepath.Dir(ed.Path))
+		// → volRoot = filepath.Dir(filepath.Dir(ed.Path))
+		name := filepath.Base(filepath.Dir(ed.Path))
+		volRoot := filepath.Dir(filepath.Dir(ed.Path))
+		vs := volumestore.New(volRoot)
+		idx := i
+		if hooks == nil {
+			hooks = make(map[int]func(context.Context, int64))
+		}
+		hooks[idx] = func(ctx context.Context, targetBytes int64) {
+			if err := vs.UpdateSizeBytes(ctx, name, targetBytes); err != nil {
+				slog.Warn("cloudhypervisor.disk.grow_volume_record_update_failed",
+					"diskIndex", idx,
+					"volumeName", name,
+					"targetBytes", targetBytes,
+					"err", err,
+				)
+			}
+		}
+	}
+	return hooks
 }
 
 // memHotplugAlignBytes is Cloud Hypervisor's memory-hotplug block granularity.
@@ -273,6 +334,14 @@ func (r *SandboxResizer) GrowDisk(ctx context.Context, diskIndex int, targetByte
 			"targetBytes", targetBytes,
 			"err", growErr,
 		)
+	}
+
+	// Best-effort: update the named-volume record's SizeBytes so that
+	// "nexus3 volume ls" reports the post-grow logical size. Errors are
+	// logged but never surfaced to the caller — the host truncate and CH
+	// resize have already committed; this is metadata bookkeeping only.
+	if fn, ok := r.postGrowHooks[diskIndex]; ok {
+		fn(ctx, targetBytes)
 	}
 	return nil
 }

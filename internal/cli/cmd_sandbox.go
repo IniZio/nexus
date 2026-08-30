@@ -907,11 +907,14 @@ func sandboxHandleHostname(handle string) string {
 // The Linux kernel delivers tokens after "--" in the cmdline directly to PID 1
 // as os.Args[1:], so the agent reads them via parseWorkspaceMountArg.
 //
-// Format per mount: --workspace-mount=<device>:<target>:<fstype>:<readonly>:<workspace>
+// Format per mount: --workspace-mount=<device>:<target>:<fstype>:<readonly>:<workspace>:<resizable>
 // The "readonly" field is "true" when m.ReadOnly is true, "false" otherwise.
 // The "workspace" field is "true" when m.IsWorkspace is true, "false" otherwise.
+// The "resizable" field is "true" when m.Resizable is true, "false" otherwise.
 // Exactly one mount in a well-formed set carries workspace=true; the agent selects
 // the disk-telemetry target by this field (never by position or ReadOnly inference).
+// Non-workspace mounts that need independent governor-managed auto-resize carry
+// resizable=true (e.g. named-volume /var/lib/docker disks).
 //
 // Callers must pass a non-empty slice; calling with an empty slice is a no-op
 // that is caught by the if-guard in newDriver rather than here to keep the hot
@@ -927,7 +930,11 @@ func workspaceMountCmdline(mounts []agent.GuestMount) string {
 		if m.IsWorkspace {
 			ws = "true"
 		}
-		b += fmt.Sprintf(" --workspace-mount=%s:%s:%s:%s:%s", m.Device, m.Target, m.FSType, ro, ws)
+		rs := "false"
+		if m.Resizable {
+			rs = "true"
+		}
+		b += fmt.Sprintf(" --workspace-mount=%s:%s:%s:%s:%s:%s", m.Device, m.Target, m.FSType, ro, ws, rs)
 	}
 	return b
 }
@@ -2000,6 +2007,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 
 	if handoffErr := handoffHumanSupervisor(ctx, svc, sb, storeRoot, kernelPath, govBounds, f.memoryMiB, f.vcpus,
 		caps.DiskPath, caps.ExtraDisks, caps.Cmdline, caps.CHBin, caps.SocketDir, bootWorkspace != nil, len(bootExtraDisks),
+		len(namedDiskMounts),
 		workspaceGuestPathFor(bootWorkspace), bootLiveMounts, caps.VirtiofsdPath,
 		mcpOAuthRefreshConfigs); handoffErr != nil {
 		slog.Warn("sandbox create: supervisor handoff failed; broker will not survive CLI exit",
@@ -2084,6 +2092,7 @@ func handoffHumanSupervisor(
 	cmdline, chBin, socketDir string,
 	hasWorkspace bool,
 	workspaceDiskIndex int,
+	numNamedDisks int,
 	workspaceGuestPath string,
 	liveMounts []domain.LiveMount,
 	virtiofsdPath string,
@@ -2107,7 +2116,7 @@ func handoffHumanSupervisor(
 		sb.ID.String(), storeRoot, stateDir,
 		kernelPath, govBounds, memoryMiB, bootVCPUs,
 		diskPath, extraDisks, cmdline, chBin, socketDir,
-		hasWorkspace, workspaceDiskIndex, workspaceGuestPath,
+		hasWorkspace, workspaceDiskIndex, numNamedDisks, workspaceGuestPath,
 		liveMounts, virtiofsdPath,
 		mcpOAuthRefreshConfigs,
 	)
@@ -2160,14 +2169,24 @@ func buildHumanSupervisorConfig(
 	cmdline, chBin, socketDir string,
 	hasWorkspace bool,
 	workspaceDiskIndex int,
+	numNamedDisks int, // number of kind=disk named volumes prepended to ExtraDisks[0..n-1]
 	workspaceGuestPath string, // GIT-SEED: git identity seed target
 	liveMounts []domain.LiveMount,
 	virtiofsdPath string,
 	mcpOAuthRefreshConfigs []service.MCPOAuthRefreshConfig,
 ) supervisor.Config {
+	// ResizableDiskIndices: named-volume disks occupy ExtraDisks[0..numNamedDisks-1]
+	// (prepended by create.go step 4.7 in declaration order). The workspace disk
+	// follows at ExtraDisks[numNamedDisks+workspaceDiskIndex] (workspaceDiskIndex
+	// is the count of shadow disks that precede the workspace in the caller's
+	// original ExtraDisks, before named-disk prepend). Both groups are registered
+	// so the governor can auto-grow any disk that hits the 80% threshold.
 	var resizableDiskIndices []int
+	for i := range numNamedDisks {
+		resizableDiskIndices = append(resizableDiskIndices, i)
+	}
 	if hasWorkspace {
-		resizableDiskIndices = []int{workspaceDiskIndex}
+		resizableDiskIndices = append(resizableDiskIndices, numNamedDisks+workspaceDiskIndex)
 	}
 
 	return supervisor.Config{
@@ -2182,7 +2201,7 @@ func buildHumanSupervisorConfig(
 		MemoryMiB:          memoryMiB,
 		BootVCPUs:          bootVCPUs,
 		HasWorkspaceDisk:   hasWorkspace,
-		WorkspaceDiskIndex: workspaceDiskIndex,
+		WorkspaceDiskIndex: numNamedDisks + workspaceDiskIndex,
 		ResizableDiskIndices: resizableDiskIndices,
 		WorkspaceGuestPath: workspaceGuestPath,
 		GovBounds:          govBounds,
@@ -2722,10 +2741,11 @@ func namedDiskGuestMounts(mounts []service.NamedVolumeMount) []agent.GuestMount 
 			continue
 		}
 		out = append(out, agent.GuestMount{
-			Device:   shadowDevicePath(len(out)), // ExtraDisks[len(out)] → /dev/vd{b+len(out)}
-			Target:   m.GuestPath,
-			FSType:   "ext4",
-			ReadOnly: m.ReadOnly,
+			Device:    shadowDevicePath(len(out)), // ExtraDisks[len(out)] → /dev/vd{b+len(out)}
+			Target:    m.GuestPath,
+			FSType:    "ext4",
+			ReadOnly:  m.ReadOnly,
+			Resizable: true, // named kind=disk volumes are governor-managed (independent of IsWorkspace)
 		})
 	}
 	return out

@@ -50,7 +50,7 @@ func TestDiskIndexFromDevice(t *testing.T) {
 
 func TestResizableDisksFromWorkspaceMounts_ExtractWorkspaceOnly(t *testing.T) {
 	mounts := []agent.GuestMount{
-		// shadow disk — must be skipped
+		// shadow disk — must be skipped (not workspace, not resizable)
 		{Device: "/dev/vdb", Target: "/workspace/shadow", FSType: "ext4", ReadOnly: false, IsWorkspace: false},
 		// workspace disk at vdc (index 1)
 		{Device: "/dev/vdc", Target: "/workspace/repo", FSType: "ext4", ReadOnly: false, IsWorkspace: true},
@@ -84,7 +84,49 @@ func TestResizableDisksFromWorkspaceMounts_NoWorkspaceMount(t *testing.T) {
 	}
 	got := resizableDisksFromWorkspaceMounts(mounts)
 	if len(got) != 0 {
-		t.Errorf("len = %d, want 0 (no IsWorkspace=true)", len(got))
+		t.Errorf("len = %d, want 0 (not workspace, not resizable)", len(got))
+	}
+}
+
+// TestResizableDisksFromWorkspaceMounts_ResizableNamedDisk verifies that a
+// Resizable=true named-volume mount (e.g. /var/lib/docker) is included in the
+// telemetry list at its correct device index, independent of IsWorkspace.
+//
+// MUTATION PROOF: removing `|| m.Resizable` from the filter in
+// resizableDisksFromWorkspaceMounts causes this test to return 1 entry
+// (workspace only) instead of 2, failing the len assertion.
+func TestResizableDisksFromWorkspaceMounts_ResizableNamedDisk(t *testing.T) {
+	// Sandbox layout: docker vol (vdb=0, Resizable), workspace (vdc=1, IsWorkspace).
+	mounts := []agent.GuestMount{
+		{Device: "/dev/vdb", Target: "/var/lib/docker", FSType: "ext4", Resizable: true},
+		{Device: "/dev/vdc", Target: "/workspace/repo", FSType: "ext4", IsWorkspace: true},
+	}
+	got := resizableDisksFromWorkspaceMounts(mounts)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (docker + workspace)", len(got))
+	}
+	// Verify each entry by index (order may vary by implementation).
+	byIdx := map[int]string{}
+	for _, d := range got {
+		byIdx[d.Index] = d.MountPath
+	}
+	if byIdx[0] != "/var/lib/docker" {
+		t.Errorf("index 0 MountPath = %q, want /var/lib/docker", byIdx[0])
+	}
+	if byIdx[1] != "/workspace/repo" {
+		t.Errorf("index 1 MountPath = %q, want /workspace/repo", byIdx[1])
+	}
+}
+
+// TestResizableDisksFromWorkspaceMounts_ResizableVirtiofsSkipped verifies that
+// a Resizable=true virtiofs mount is silently skipped (index cannot be derived).
+func TestResizableDisksFromWorkspaceMounts_ResizableVirtiofsSkipped(t *testing.T) {
+	mounts := []agent.GuestMount{
+		{Device: "some-tag", Target: "/mnt/dir", FSType: "virtiofs", Resizable: true},
+	}
+	got := resizableDisksFromWorkspaceMounts(mounts)
+	if len(got) != 0 {
+		t.Errorf("len = %d, want 0 (virtiofs Resizable mount has no derivable index)", len(got))
 	}
 }
 

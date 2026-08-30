@@ -938,8 +938,8 @@ func TestAutoResize_Cmdline(t *testing.T) {
 	})
 
 	t.Run("with workspace: PID-1 args appended after workspace-mount", func(t *testing.T) {
-		// Simulate workspaceMountCmdline output.
-		fakeWorkspaceCmdline := diskBootCmdlineBase + " -- --workspace-mount=/dev/vdb:/workspace/repo:ext4:false:true"
+		// Simulate workspaceMountCmdline output (6-field: device:target:fstype:readonly:workspace:resizable).
+		fakeWorkspaceCmdline := diskBootCmdlineBase + " -- --workspace-mount=/dev/vdb:/workspace/repo:ext4:false:true:false"
 		cmdline := fakeWorkspaceCmdline + arArgs
 
 		// Must NOT contain --auto-resize (wire contract).

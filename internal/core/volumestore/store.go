@@ -523,6 +523,41 @@ func (s *VolumeStore) AttachLocked(ctx context.Context, name, sandboxID string) 
 	return lk, nil
 }
 
+// UpdateSizeBytes records the new logical size of a kind=disk volume after an
+// online grow. It is a no-op if the volume no longer exists (the sandbox that
+// triggered the grow may have been removed concurrently).
+//
+// Callers (GrowDisk post-grow hook): best-effort — errors should be logged but
+// not propagated; the host-side truncate and CH resize have already committed.
+//
+// Locking: the per-volume advisory flock is held across the read-update-write
+// sequence, serialising UpdateSizeBytes with concurrent Create, Attach, and
+// Prune calls.
+func (s *VolumeStore) UpdateSizeBytes(ctx context.Context, name string, newSizeBytes int64) error {
+	lk, err := store.OpenLock(s.LockPath(name))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // volume gone — nothing to update
+		}
+		return fmt.Errorf("volume %s: update-size: open lock: %w", name, err)
+	}
+	defer lk.Close() //nolint:errcheck
+	if err := lk.TryExclusive(ctx); err != nil {
+		return fmt.Errorf("volume %s: update-size: acquire lock: %w", name, err)
+	}
+	defer lk.Unlock() //nolint:errcheck
+
+	rec, err := s.readRecord(name)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // volume gone — nothing to update
+		}
+		return fmt.Errorf("volume %s: update-size: %w", name, err)
+	}
+	rec.SizeBytes = newSizeBytes
+	return s.writeRecord(rec)
+}
+
 // Detach removes sandboxID from the volume's attachment list.
 // It is a no-op if sandboxID is not present or the volume no longer exists.
 //
