@@ -18,6 +18,8 @@ import (
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/IniZio/nexus3/internal/core/service"
 )
 
 // ── herdrWorktreeSandboxHandle ────────────────────────────────────────────────
@@ -648,6 +650,139 @@ func TestHerdrDockerDiskVolumeName(t *testing.T) {
 				t.Errorf("herdrDockerDiskVolumeName(%q)=%q: first char %q not [a-z0-9]", handle, got, string(got[0]))
 			}
 		}
+	}
+}
+
+// ── herdrWorktreeSandboxCreateArgs — go build-cache disks ────────────────────
+
+// TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksAlwaysAttached proves every
+// worktree sandbox — --image AND --file alike — gets its own governor-visible
+// ext4 disks at /root/.cache and /root/go. Unlike the docker disk, this is NOT
+// gated on --file: every worktree agent runs `go build`/`go test` against this
+// repo regardless of image mode, and Go defaults GOCACHE/GOPATH/GOMODCACHE
+// under /root, which otherwise sits entirely on the ungrowable 4 GiB root disk
+// (ticket: cmd/nexus3-agent/resize_disks.go diskIndexFromDevice rejects any
+// device letter below 'b', so /dev/vda has no ExtraDisks index and the disk
+// governor can never see or grow it).
+//
+// MUTATION PROOF: gate either append behind `if imageFlag == "--file"` (the
+// docker-disk pattern) → the --image subtest goes RED because the mount is
+// missing there. Delete either append entirely → both subtests go RED.
+func TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksAlwaysAttached(t *testing.T) {
+	wantGoCache := "example-app-ex-871-gocache:/root/.cache:size=10g"
+	wantGoPath := "example-app-ex-871-gopath:/root/go:size=10g"
+
+	for _, tc := range []struct {
+		name              string
+		imageFlag, imageVal string
+	}{
+		{"file-build", "--file", "/wt"},
+		{"image-build", "--image", herdrDefaultImage},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := herdrWorktreeSandboxCreateArgs("example-app/EX-871", "/wt:/workspace", tc.imageFlag, tc.imageVal, nil, nil, "", nil, false)
+			if !argsContainPair(args, "--mount-named", wantGoCache) {
+				t.Errorf("missing go-cache disk mount --mount-named %q\ngot: %v", wantGoCache, args)
+			}
+			if !argsContainPair(args, "--mount-named", wantGoPath) {
+				t.Errorf("missing gopath disk mount --mount-named %q\ngot: %v", wantGoPath, args)
+			}
+		})
+	}
+}
+
+// TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksReachResizableDiskIndices is
+// the end-to-end proof that closes the ticket's actual gap: it invokes the REAL
+// herdrWorktreeSandboxCreateArgs, parses the resulting --mount-named specs with
+// the REAL parseMountNamed (the same function `sandbox create` uses), derives
+// numNamedDisks from the REAL namedDiskGuestMounts kind=disk filter, and feeds
+// that into the REAL buildHumanSupervisorConfig — the exact construction site
+// wireGovernorAxes (internal/supervisor) reads ResizableDiskIndices from to
+// decide which disks get a DiskAxis at all.
+//
+// This is the "selection predicate" the ticket asks to mutation-prove: it is
+// not axis arithmetic (already covered by govern/disk_test.go and
+// supervisor_test.go's TestWireGovernorAxes_MultiDisk — neither of which could
+// have caught this bug, because both assume ResizableDiskIndices is already
+// correct). The actual historical bug was that NOTHING ever put the disk under
+// pressure into that list. This test proves the CLI→config chain now does.
+//
+// MUTATION PROOF: revert the unconditional appends in
+// herdrWorktreeSandboxCreateArgs to the --file-gated docker pattern (or delete
+// them) → numNamedDisks drops from 2 to 0 for an --image build → the assertion
+// on ResizableDiskIndices goes RED (missing indices 0 and 1).
+func TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksReachResizableDiskIndices(t *testing.T) {
+	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", "/fake/creds.json")
+
+	args := herdrWorktreeSandboxCreateArgs("example-app/EX-871", "/wt:/workspace", "--image", herdrDefaultImage, nil, nil, "", nil, false)
+
+	var namedMounts []service.NamedVolumeMount
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] != "--mount-named" {
+			continue
+		}
+		m, err := parseMountNamed(args[i+1])
+		if err != nil {
+			t.Fatalf("parseMountNamed(%q): %v", args[i+1], err)
+		}
+		namedMounts = append(namedMounts, m)
+	}
+	if len(namedMounts) != 2 {
+		t.Fatalf("--image build: got %d --mount-named specs, want 2 (gocache, gopath); args=%v", len(namedMounts), args)
+	}
+
+	numNamedDisks := len(namedDiskGuestMounts(namedMounts))
+	if numNamedDisks != 2 {
+		t.Fatalf("namedDiskGuestMounts: got %d kind=disk mounts, want 2", numNamedDisks)
+	}
+
+	cfg := buildHumanSupervisorConfig(
+		"aabbccddeeff1122", "/store", "/store/supervisors/aabb",
+		"/kernel/vmlinux",
+		resize.Bounds{MemMinBytes: 1, MemMaxBytes: 2, DiskMaxBytes: 100 << 30},
+		2048, 2,
+		"/disks/sb.raw",
+		[]string{"/disks/gocache.raw", "/disks/gopath.raw", "/disks/ws.raw"},
+		"root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0",
+		"/usr/bin/cloud-hypervisor", "/tmp/sockets",
+		true,           // hasWorkspace
+		0,              // workspaceDiskIndex
+		numNamedDisks,  // real value derived above, not hand-picked
+		"/workspace/proj",
+		nil, "", false, nil,
+	)
+
+	wantIndices := map[int]bool{0: true, 1: true, numNamedDisks: true} // gocache, gopath, workspace
+	got := map[int]bool{}
+	for _, idx := range cfg.ResizableDiskIndices {
+		got[idx] = true
+	}
+	for idx := range wantIndices {
+		if !got[idx] {
+			t.Errorf("ResizableDiskIndices=%v missing index %d (the disk under write pressure)", cfg.ResizableDiskIndices, idx)
+		}
+	}
+}
+
+// TestHerdrGoCacheAndGoPathDiskVolumeName proves the handle→volume-name mapping
+// for the two build-cache disks is D-PD-84-legal and distinct from the docker
+// disk name and from each other, so two worktree sandboxes of the same repo
+// never contend on one disk (D-PD-93 attach guard) and the three per-sandbox
+// disks never collide with each other.
+func TestHerdrGoCacheAndGoPathDiskVolumeName(t *testing.T) {
+	handle := "example-app/EX-871"
+	gocache := herdrGoCacheDiskVolumeName(handle)
+	gopath := herdrGoPathDiskVolumeName(handle)
+	docker := herdrDockerDiskVolumeName(handle)
+
+	if want := "example-app-ex-871-gocache"; gocache != want {
+		t.Errorf("herdrGoCacheDiskVolumeName(%q) = %q, want %q", handle, gocache, want)
+	}
+	if want := "example-app-ex-871-gopath"; gopath != want {
+		t.Errorf("herdrGoPathDiskVolumeName(%q) = %q, want %q", handle, gopath, want)
+	}
+	if gocache == gopath || gocache == docker || gopath == docker {
+		t.Errorf("build-cache disk names must be pairwise distinct: gocache=%q gopath=%q docker=%q", gocache, gopath, docker)
 	}
 }
 
