@@ -114,7 +114,7 @@ func lcBootCH(t *testing.T, chBin, kernelPath string, id domain.SandboxID, socke
 		pingErr := c.Ping(pingCtx)
 		pingCancel()
 		if pingErr == nil {
-			t.Logf("CH API ready in %v (childPgid=%d)", time.Since(start), rt.childPgid)
+			t.Logf("CH API ready in %v (childPgid=%d)", time.Since(start), rt.ChildPGID)
 			return rt
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -265,7 +265,7 @@ func TestLifecycle_NormalStop_NoLeaks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("findCHPidForSocket before Stop: %v", err)
 	}
-	childPgid := rt.childPgid
+	childPgid := rt.ChildPGID
 	t.Logf("pre-stop: chPID=%d childPgid=%d", chPID, childPgid)
 
 	// Verify both alive before Stop.
@@ -411,7 +411,7 @@ func TestLifecycle_Crash_MemoryLost(t *testing.T) {
 	t.Logf("persisted sandbox id=%s state=running", id)
 
 	// SIGKILL the CH grandchild (substrate loss event).
-	childPgid := rt.childPgid
+	childPgid := rt.ChildPGID
 	_ = lcKillCHGrandchild(t, socketPath)
 
 	// Brief settle: ensure ENOENT/ECONNREFUSED on the socket before Observe.
@@ -523,7 +523,7 @@ func TestLifecycle_StopBounded(t *testing.T) {
 	// Safety cleanup: force-kill the group in case rt.Stop hangs (bug scenario).
 	// Do NOT use t.Cleanup(rt.Stop) — if Stop blocks, sync.Once.Do would
 	// deadlock the cleanup goroutine behind the hung call.
-	childPgid := rt.childPgid
+	childPgid := rt.ChildPGID
 	t.Cleanup(func() {
 		_ = syscall.Kill(-childPgid, syscall.SIGKILL)
 	})
@@ -572,7 +572,7 @@ func TestLifecycle_ExplicitKillNoPdeathsig(t *testing.T) {
 	rt := lcBootCH(t, chBin, kernelPath, id, socketPath)
 	t.Cleanup(func() { rt.Stop() })
 
-	childPgid := rt.childPgid
+	childPgid := rt.ChildPGID
 	t.Logf("netns child pgid=%d", childPgid)
 
 	// Verify child is alive before crash.
@@ -667,25 +667,25 @@ func TestStartCtxCancelDoesNotKillChild(t *testing.T) {
 	//
 	// /proc/<pid>/stat format: "<pid> (<comm>) <state> <rest>"
 	// State is the character immediately after the closing ')'.
-	statPath := fmt.Sprintf("/proc/%d/stat", rt.childPgid)
+	statPath := fmt.Sprintf("/proc/%d/stat", rt.ChildPGID)
 	statBytes, readErr := os.ReadFile(statPath)
 	if readErr != nil {
 		t.Fatalf("FAIL S-PERIM-TIMEOUT: child (pgid=%d) has no /proc entry after "+
 			"startCtx cancel — child exited (exec.CommandContext killed it): %v",
-			rt.childPgid, readErr)
+			rt.ChildPGID, readErr)
 	}
 	stat := string(statBytes)
 	closeParenIdx := strings.LastIndex(stat, ")")
 	if closeParenIdx < 0 || closeParenIdx+2 >= len(stat) {
-		t.Fatalf("cannot parse /proc/%d/stat: %q", rt.childPgid, stat)
+		t.Fatalf("cannot parse /proc/%d/stat: %q", rt.ChildPGID, stat)
 	}
 	state := stat[closeParenIdx+2]
 	if state == 'Z' {
 		t.Fatalf("FAIL S-PERIM-TIMEOUT: child (pgid=%d) is a zombie after startCtx "+
 			"cancel — exec.CommandContext killed it. Fix: use exec.Command, not "+
 			"exec.CommandContext. /proc stat: %s",
-			rt.childPgid, strings.TrimSpace(stat))
+			rt.ChildPGID, strings.TrimSpace(stat))
 	}
 	t.Logf("PASS S-PERIM-TIMEOUT: child (pgid=%d) state=%c after startCtx cancel — "+
-		"survived context cancellation (not a zombie)", rt.childPgid, state)
+		"survived context cancellation (not a zombie)", rt.ChildPGID, state)
 }
