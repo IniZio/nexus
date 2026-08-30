@@ -507,7 +507,23 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 				rec.NetnsChildStartTime = startTime
 				rec.GuestTapName = tap
 				rec.CHAPISocket = sock
+			} else {
+				// Driver reported no active netns runtime: clear any stale
+				// values from a previous Start so AdoptNetnsRuntime cannot
+				// target a recycled pid.
+				rec.NetnsChildPID = 0
+				rec.NetnsChildPGID = 0
+				rec.NetnsChildStartTime = 0
+				rec.GuestTapName = ""
+				rec.CHAPISocket = ""
 			}
+		} else {
+			// Driver does not use netns runtime at all: clear the fields.
+			rec.NetnsChildPID = 0
+			rec.NetnsChildPGID = 0
+			rec.NetnsChildStartTime = 0
+			rec.GuestTapName = ""
+			rec.CHAPISocket = ""
 		}
 		updated = *rec
 		return nil

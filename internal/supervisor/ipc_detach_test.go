@@ -228,6 +228,8 @@ func TestHandoffVerb_RefusalDoesNotDetach(t *testing.T) {
 		return handoff.Payload{
 			Version:   handoff.CurrentVersion,
 			Perimeter: handoff.PerimeterHandle{Present: true},
+			// CA must be populated so Validate() passes and the offer reaches the wire.
+			CA: handoff.CAMaterial{CertPEM: []byte("cert"), KeyPEM: []byte("key")},
 		}, f, nil
 	})
 
@@ -284,6 +286,8 @@ func TestHandoffVerb_SuccessReportsOK(t *testing.T) {
 		return handoff.Payload{
 			Version:   handoff.CurrentVersion,
 			Perimeter: handoff.PerimeterHandle{Present: true},
+			// CA must be populated so Validate() passes and the offer reaches the wire.
+			CA: handoff.CAMaterial{CertPEM: []byte("cert"), KeyPEM: []byte("key")},
 		}, f, nil
 	})
 
