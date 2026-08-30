@@ -19,6 +19,15 @@ var CopyDirIntoContext = copyDirIntoContext
 // The first argument is the raw content of a .nexus/Containerfile.
 var CaptureBootSpecFromContainerfile = captureBootSpecFromContainerfile
 
+// CaptureBootSpec exposes captureBootSpec for white-box tests that verify the
+// OCI-config-merge → boot.json path (D-DC-31).
+// ociCfg is the effective merged OCI image config (nil = Containerfile fallback).
+var CaptureBootSpec = captureBootSpec
+
+// ParseOCIConfigFromTar exposes parseOCIConfigFromTar for white-box tests that
+// verify the OCI layout tar → image config extraction path.
+var ParseOCIConfigFromTar = parseOCIConfigFromTar
+
 // ExportAndUnpack exposes exportAndUnpack for white-box tests that verify the
 // tar-exporter unpack path's fail-closed behaviour and errgroup join semantics.
 var ExportAndUnpack = exportAndUnpack

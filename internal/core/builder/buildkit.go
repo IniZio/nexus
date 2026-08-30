@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -376,6 +375,25 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 		return fmt.Errorf("buildkit: create agent FS: %w", err)
 	}
 
+	// Set up an OCI layout export alongside the tar rootfs export so that the
+	// effective (merged) image config — including ENTRYPOINT/CMD/WORKDIR/ENV
+	// inherited from the FROM base image — is available for boot.json generation.
+	// The OCI layout tar is parsed in a goroutine; layer blobs are discarded via
+	// io.Discard so only the small config/manifest blobs are buffered.
+	// D-DC-31: this resolves inherited config that captureBootSpecFromContainerfile
+	// (D-DC-30) could not see, because Dockerfile parse is limited to instructions
+	// declared in the user's .nexus/Containerfile.
+	ociPR, ociPW := io.Pipe()
+	type ociResult struct {
+		cfg   bootspec.OCIImageConfig
+		found bool
+	}
+	ociCh := make(chan ociResult, 1)
+	go func() {
+		cfg, found, _ := parseOCIConfigFromTar(ociPR)
+		ociCh <- ociResult{cfg, found}
+	}()
+
 	// Export via tar exporter + host-side unpack. ExporterTar is fail-closed:
 	// stdlib archive/tar reports a hard error if any entry body is shorter than
 	// its declared size, unlike ExporterLocal (tonistiigi/fsutil sendFile) which
@@ -411,8 +429,24 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 						return pw, nil
 					},
 				},
+				{
+					// ExporterOCI streams the OCI image layout (including the
+					// merged image config blob) into ociPW. The goroutine above
+					// reads ociPR to extract the config; layer blobs are discarded.
+					// Non-fatal: build failure on OCI export is handled below.
+					Type: bkclient.ExporterOCI,
+					Output: func(_ map[string]string) (io.WriteCloser, error) {
+						return ociPW, nil
+					},
+				},
 			},
 		}, nil)
+		// Ensure ociPW is closed so the goroutine unblocks on error.
+		// On success buildkit closes ociPW itself; CloseWithError on a closed
+		// pipe is a no-op (io.Pipe uses sync.Once).
+		if solveErr != nil {
+			ociPW.CloseWithError(solveErr)
+		}
 		// A size violation cancels solveCtx, making solveErr a context error.
 		// Return our descriptive error in preference so the caller sees the
 		// path, got-bytes, and expected-bytes rather than "context canceled".
@@ -425,14 +459,24 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 		return nil
 	})
 	if err != nil {
+		ociPW.CloseWithError(err) // unblock goroutine if not already closed
+		<-ociCh                   // drain to avoid goroutine leak
 		return err
 	}
 
-	// Parse the Containerfile directly and write boot.json into the exported
-	// rootfs. This is the authoritative path: it does not depend on buildkitd
-	// version, exporter type, or gateway metadata availability.
-	// Non-fatal: a parse error must never fail the build (rootfs export succeeded).
-	captureBootSpecFromContainerfile(req.ContainerfileBytes, outDir)
+	// Collect the OCI config result (goroutine has already received EOF since
+	// bk.Solve closed ociPW before exportAndUnpack returned).
+	ociRes := <-ociCh
+	var ociCfg *bootspec.OCIImageConfig
+	if ociRes.found {
+		cfg := ociRes.cfg
+		ociCfg = &cfg
+	}
+
+	// Write boot.json using the effective OCI config (primary) or the
+	// Containerfile parse (fallback when OCI export was unavailable).
+	// Non-fatal: a missing boot.json must never fail the build.
+	captureBootSpec(req.ContainerfileBytes, ociCfg, outDir)
 
 	return nil
 }
@@ -537,34 +581,18 @@ func captureBootSpecFromContainerfile(containerfileBytes []byte, outDir string) 
 		}
 	}
 
-	ociCfg := bootspec.OCIImageConfig{
+	cfCfg := bootspec.OCIImageConfig{
 		Entrypoint: entrypointArgv,
 		Cmd:        cmdArgv,
 		WorkingDir: workdir,
 		Env:        envPairs,
 	}
-	spec := bootspec.FromOCIImageConfig(ociCfg)
+	spec := bootspec.FromOCIImageConfig(cfCfg)
 	if len(spec.Tasks) == 0 {
 		slog.Debug("buildkit: captureBootSpecFromContainerfile: no entrypoint/cmd declared, skipping boot.json")
 		return
 	}
-
-	specJSON, err := json.Marshal(spec)
-	if err != nil {
-		slog.Warn("buildkit: captureBootSpecFromContainerfile: failed to marshal boot spec, skipping boot.json", "err", err)
-		return
-	}
-
-	bootJSONPath := filepath.Join(outDir, "etc", "nexus3", "boot.json")
-	if err := os.MkdirAll(filepath.Dir(bootJSONPath), 0755); err != nil {
-		slog.Warn("buildkit: captureBootSpecFromContainerfile: failed to create boot.json parent dirs, skipping", "err", err)
-		return
-	}
-	if err := os.WriteFile(bootJSONPath, specJSON, 0644); err != nil {
-		slog.Warn("buildkit: captureBootSpecFromContainerfile: failed to write boot.json, skipping", "err", err)
-		return
-	}
-	slog.Info("buildkit: captureBootSpecFromContainerfile: wrote boot.json", "path", bootJSONPath, "tasks", len(spec.Tasks))
+	writeBootJSON(spec, outDir, "Containerfile")
 }
 
 // copyDirIntoContext recursively copies all files from src into dst, preserving

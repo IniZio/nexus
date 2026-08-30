@@ -16,6 +16,8 @@ package builder_test
 // never written in-guest. A live VM-boot e2e confirmed the failure.
 
 import (
+	"archive/tar"
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -337,5 +339,259 @@ CMD ["hello","world"]
 	}
 	if !task.Background {
 		t.Errorf("expected task.Background=true")
+	}
+}
+
+// ── D-DC-31: OCI-config-merge tests ──────────────────────────────────────────
+//
+// The following tests verify that captureBootSpec uses the effective OCI image
+// config (which includes values inherited from the FROM base image) when it is
+// available, and falls back to captureBootSpecFromContainerfile otherwise.
+
+// buildOCITar constructs a minimal OCI image layout tar containing the
+// provided image config JSON. Layers are omitted; only the mandatory
+// index.json, manifest blob, and config blob are included.
+func buildOCITar(t *testing.T, configJSON []byte) []byte {
+	t.Helper()
+
+	// 64-char hex digests (fake but valid hex length for sha256 paths).
+	configDigest := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	manifestDigest := "cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe0"
+
+	manifestObj := map[string]interface{}{
+		"schemaVersion": 2,
+		"mediaType":     "application/vnd.oci.image.manifest.v1+json",
+		"config": map[string]interface{}{
+			"mediaType": "application/vnd.oci.image.config.v1+json",
+			"size":      len(configJSON),
+			"digest":    "sha256:" + configDigest,
+		},
+		"layers": []interface{}{},
+	}
+	manifestJSON, err := json.Marshal(manifestObj)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+
+	indexObj := map[string]interface{}{
+		"schemaVersion": 2,
+		"mediaType":     "application/vnd.oci.image.index.v1+json",
+		"manifests": []map[string]interface{}{
+			{
+				"mediaType": "application/vnd.oci.image.manifest.v1+json",
+				"size":      len(manifestJSON),
+				"digest":    "sha256:" + manifestDigest,
+			},
+		},
+	}
+	indexJSON, err := json.Marshal(indexObj)
+	if err != nil {
+		t.Fatalf("marshal index: %v", err)
+	}
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	entries := []struct {
+		name string
+		data []byte
+	}{
+		{"oci-layout", []byte(`{"imageLayoutVersion":"1.0.0"}`)},
+		{"index.json", indexJSON},
+		{"blobs/sha256/" + manifestDigest, manifestJSON},
+		{"blobs/sha256/" + configDigest, configJSON},
+	}
+	for _, e := range entries {
+		hdr := &tar.Header{
+			Name: e.name,
+			Mode: 0644,
+			Size: int64(len(e.data)),
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("tar write header %s: %v", e.name, err)
+		}
+		if _, err := tw.Write(e.data); err != nil {
+			t.Fatalf("tar write %s: %v", e.name, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// buildOCIConfigJSON constructs an OCI image config JSON blob with the given
+// Entrypoint, Cmd, WorkingDir, and Env.
+func buildOCIConfigJSON(t *testing.T, entrypoint, cmd []string, workingDir string, env []string) []byte {
+	t.Helper()
+	raw := map[string]interface{}{
+		"config": map[string]interface{}{
+			"Entrypoint": entrypoint,
+			"Cmd":        cmd,
+			"WorkingDir": workingDir,
+			"Env":        env,
+		},
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("marshal OCI config JSON: %v", err)
+	}
+	return b
+}
+
+// TestCaptureBootSpec_InheritedFromBase is the primary D-DC-31 regression test.
+// It simulates a Containerfile WITHOUT an ENTRYPOINT directive, paired with a
+// fixture OCI image config that carries an entrypoint inherited from the base image.
+//
+// The test proves that captureBootSpec produces a boot task from the OCI config
+// even though the Containerfile alone would yield no boot task. This is the
+// exact gap that D-DC-31 fixes: `FROM nginx` (no ENTRYPOINT line) must produce
+// a boot task for nginx's declared entrypoint.
+//
+// Mutation proof: removing the `if ociCfg != nil` branch in captureBootSpec
+// causes this test to fail (no boot.json written → readBootJSON fatal).
+func TestCaptureBootSpec_InheritedFromBase(t *testing.T) {
+	outDir := t.TempDir()
+
+	// Containerfile declares NO ENTRYPOINT or CMD — it would produce no boot task
+	// if parsed alone (verified by TestCaptureBootSpec_NoEntrypointOrCmd).
+	cf := []byte(`FROM docker.io/library/nginx:1.27
+RUN echo "configured"
+WORKDIR /app
+`)
+
+	// The effective OCI image config for the built image carries the inherited
+	// ENTRYPOINT from nginx's base image.
+	ociCfg := &bootspec.OCIImageConfig{
+		Entrypoint: []string{"/docker-entrypoint.sh"},
+		Cmd:        []string{"nginx", "-g", "daemon off;"},
+		WorkingDir: "/app",
+		Env:        []string{"INHERITED_ENV=from_base"},
+	}
+
+	builder.CaptureBootSpec(cf, ociCfg, outDir)
+
+	spec := readBootJSON(t, outDir)
+	if len(spec.Tasks) != 1 {
+		t.Fatalf("expected 1 task from inherited OCI entrypoint, got %d", len(spec.Tasks))
+	}
+	task := spec.Tasks[0]
+
+	wantArgv := []string{"/docker-entrypoint.sh", "nginx", "-g", "daemon off;"}
+	if len(task.Argv) != len(wantArgv) {
+		t.Fatalf("argv: got %v, want %v", task.Argv, wantArgv)
+	}
+	for i, a := range wantArgv {
+		if task.Argv[i] != a {
+			t.Errorf("argv[%d]: got %q, want %q", i, task.Argv[i], a)
+		}
+	}
+	if task.Cwd != "/app" {
+		t.Errorf("Cwd: got %q, want /app", task.Cwd)
+	}
+	foundEnv := false
+	for _, e := range task.Env {
+		if e == "INHERITED_ENV=from_base" {
+			foundEnv = true
+		}
+	}
+	if !foundEnv {
+		t.Errorf("INHERITED_ENV=from_base not in Env: %v", task.Env)
+	}
+	if !task.Background {
+		t.Errorf("expected task.Background=true (OCI entrypoint is always background)")
+	}
+}
+
+// TestCaptureBootSpec_NilOCICfgFallsBackToContainerfile verifies that when
+// ociCfg is nil (OCI export unavailable), captureBootSpec falls back to
+// captureBootSpecFromContainerfile and still produces a correct boot.json from
+// an explicit ENTRYPOINT in the Containerfile.
+func TestCaptureBootSpec_NilOCICfgFallsBackToContainerfile(t *testing.T) {
+	outDir := t.TempDir()
+
+	cf := []byte(`FROM docker.io/library/alpine:3.19
+ENTRYPOINT ["/bin/myapp"]
+CMD ["--debug"]
+`)
+
+	builder.CaptureBootSpec(cf, nil, outDir) // nil ociCfg → Containerfile fallback
+
+	spec := readBootJSON(t, outDir)
+	if len(spec.Tasks) != 1 {
+		t.Fatalf("expected 1 task from Containerfile fallback, got %d", len(spec.Tasks))
+	}
+	wantArgv := []string{"/bin/myapp", "--debug"}
+	if len(spec.Tasks[0].Argv) != len(wantArgv) {
+		t.Fatalf("argv: got %v, want %v", spec.Tasks[0].Argv, wantArgv)
+	}
+	for i, a := range wantArgv {
+		if spec.Tasks[0].Argv[i] != a {
+			t.Errorf("argv[%d]: got %q, want %q", i, spec.Tasks[0].Argv[i], a)
+		}
+	}
+}
+
+// TestCaptureBootSpec_OCINoEntrypointNoBootJSON verifies that when the OCI
+// config has no Entrypoint and no Cmd (base image has no boot process and
+// Containerfile declares none), no boot.json is written.
+func TestCaptureBootSpec_OCINoEntrypointNoBootJSON(t *testing.T) {
+	outDir := t.TempDir()
+
+	ociCfg := &bootspec.OCIImageConfig{
+		// No Entrypoint, no Cmd.
+	}
+	cf := []byte(`FROM docker.io/library/ubuntu:24.04
+RUN apt-get update
+`)
+
+	builder.CaptureBootSpec(cf, ociCfg, outDir)
+
+	if _, err := os.Stat(filepath.Join(outDir, "etc", "nexus3", "boot.json")); !os.IsNotExist(err) {
+		t.Errorf("expected no boot.json when OCI config has no entrypoint/cmd, got err=%v", err)
+	}
+}
+
+// TestParseOCIConfigFromTar verifies the OCI layout tar parser end-to-end:
+// a well-formed OCI tar with an entrypoint config is parsed correctly.
+func TestParseOCIConfigFromTar(t *testing.T) {
+	configJSON := buildOCIConfigJSON(t,
+		[]string{"/docker-entrypoint.sh"},
+		[]string{"nginx", "-g", "daemon off;"},
+		"/usr/share/nginx/html",
+		[]string{"NGINX_VERSION=1.27", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+	)
+	ociTar := buildOCITar(t, configJSON)
+
+	cfg, found, err := builder.ParseOCIConfigFromTar(bytes.NewReader(ociTar))
+	if err != nil {
+		t.Fatalf("ParseOCIConfigFromTar: %v", err)
+	}
+	if !found {
+		t.Fatal("ParseOCIConfigFromTar: found=false, expected config to be found")
+	}
+	if len(cfg.Entrypoint) != 1 || cfg.Entrypoint[0] != "/docker-entrypoint.sh" {
+		t.Errorf("Entrypoint: got %v, want [/docker-entrypoint.sh]", cfg.Entrypoint)
+	}
+	if len(cfg.Cmd) != 3 || cfg.Cmd[0] != "nginx" {
+		t.Errorf("Cmd: got %v, want [nginx -g daemon off;]", cfg.Cmd)
+	}
+	if cfg.WorkingDir != "/usr/share/nginx/html" {
+		t.Errorf("WorkingDir: got %q, want /usr/share/nginx/html", cfg.WorkingDir)
+	}
+	if len(cfg.Env) != 2 {
+		t.Errorf("Env: got %v, want 2 entries", cfg.Env)
+	}
+}
+
+// TestParseOCIConfigFromTar_EmptyReader verifies that an empty reader returns
+// found=false without error (non-fatal; caller falls back).
+func TestParseOCIConfigFromTar_EmptyReader(t *testing.T) {
+	_, found, err := builder.ParseOCIConfigFromTar(bytes.NewReader(nil))
+	if err != nil {
+		t.Fatalf("ParseOCIConfigFromTar empty: unexpected error: %v", err)
+	}
+	if found {
+		t.Error("ParseOCIConfigFromTar empty: found=true, want false")
 	}
 }
