@@ -931,23 +931,41 @@ var seedUserMountsFn = service.SeedGuestUserMounts
 // tests replace it with a spy to verify the call without a live VM (A-MOUNT).
 var seedOverlayClaudeConfigFn = seedOverlayClaudeConfig
 
+// agentCfgUpperDir is the persistent overlayfs upper dir for the /root/.claude
+// overlay. It lives on the root ext4 disk so it survives sandbox stop/start
+// and crash+recover. Only removed when the sandbox itself is removed.
+const agentCfgUpperDir = "/var/lib/nexus3/agentcfg-upper"
+
+// agentCfgWorkDir is the overlayfs work dir for the /root/.claude overlay.
+// It must be on the same filesystem as agentCfgUpperDir (root ext4) and must
+// be empty at mount time. It is recreated fresh on every boot — it holds only
+// kernel-internal overlayfs state, not user data.
+const agentCfgWorkDir = "/var/lib/nexus3/agentcfg-work"
+
 // seedOverlayClaudeConfig mounts a writable overlay onto /root/.claude in the
 // guest. lowerGuestPath is the guest path of the RO virtiofs share (the curated
-// host config staged by AssembleCuratedConfig). Upper and work dirs land on a
-// tmpfs so all writes are discarded on sandbox exit.
+// host config staged by AssembleCuratedConfig). The upper dir lives on the root
+// ext4 disk (agentCfgUpperDir) so Claude session transcripts, todos, and stats
+// written by the in-guest agent survive sandbox stop/start and crash+recover.
+// The work dir (agentCfgWorkDir) is recreated empty on every boot — overlayfs
+// requires it empty at mount time and uses it only for internal kernel state.
 //
 // Must be the FIRST seed step so onboarding writes (seedAgentOnboarding,
-// seedBypassConsent) land in the tmpfs upper rather than failing against the
+// seedBypassConsent) land in the upper layer rather than failing against the
 // RO lower.
 func seedOverlayClaudeConfig(ctx context.Context, id domain.SandboxID, lowerGuestPath string, execer service.GuestExecer) error {
 	// Use bash; /bin/sh in the base image is dash which does not support pipefail.
 	script := fmt.Sprintf(`set -eu
 mkdir -p /root/.claude
-mkdir -p /run/nexus3/ovl
-mount -t tmpfs tmpfs /run/nexus3/ovl
-mkdir -p /run/nexus3/ovl/upper /run/nexus3/ovl/work
-mount -t overlay overlay -o lowerdir=%s,upperdir=/run/nexus3/ovl/upper,workdir=/run/nexus3/ovl/work /root/.claude
-`, lowerGuestPath)
+# Persistent upper: carries Claude session state across stop/start and crashes.
+# Both upper and work must be on the same filesystem — root ext4 satisfies this.
+mkdir -p %s
+# Work dir must be empty at mount time (overlayfs kernel-internal state only;
+# not user data). Recreate it fresh on every boot.
+rm -rf %s
+mkdir %s
+mount -t overlay overlay -o lowerdir=%s,upperdir=%s,workdir=%s /root/.claude
+`, agentCfgUpperDir, agentCfgWorkDir, agentCfgWorkDir, lowerGuestPath, agentCfgUpperDir, agentCfgWorkDir)
 	code, err := execer(ctx, id, []string{"/bin/bash", "-c", script}, nil)
 	if err != nil {
 		return fmt.Errorf("overlay mount: %w", err)
