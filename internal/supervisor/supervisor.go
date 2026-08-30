@@ -62,6 +62,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus3/internal/supervisor/handoff"
 )
 
 // HiddenSubcommand is the argv[1] token that runs a detached supervisor inside
@@ -416,9 +417,14 @@ func RunDetached(cfg Config) error {
 	sockPath := SockPath(cfg.StateDir)
 	_ = os.Remove(sockPath) // remove stale socket from a crash
 	// perimSupPtr is set after svc.Start returns and the perimeter supervisor is
-	// live. The IPC egress-allow handler reads it atomically; a nil load means
-	// the perimeter is not yet ready and the handler returns 503.
+	// live. The IPC egress-allow and /supervisor/handoff handlers read it
+	// atomically; a nil load means the perimeter is not yet ready.
 	var perimSupPtr atomic.Pointer[perimeter.PerimeterSupervisor]
+	// sbPtr is set after svc.Start returns. The /supervisor/handoff handler
+	// needs sb.ID's boot bounds for Payload.Governor; a nil load means the
+	// sandbox is not yet running and handoff must refuse rather than offer a
+	// payload describing a VM that does not exist yet.
+	var sbPtr atomic.Pointer[domain.Sandbox]
 	allowEgressFn := allowEgressFunc(func(host string) error {
 		sup := perimSupPtr.Load()
 		if sup == nil {
@@ -426,11 +432,50 @@ func RunDetached(cfg Config) error {
 		}
 		return sup.AllowEgress(host)
 	})
-	stopCh, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef, allowEgressFn)
+	handoffFn := handoffFunc(func(hctx context.Context, peerSock string) (bool, string, error) {
+		sup := perimSupPtr.Load()
+		if sup == nil || sbPtr.Load() == nil {
+			return false, "perimeter not yet ready", nil
+		}
+		bootVCPUs := cfg.BootVCPUs
+		if bootVCPUs == 0 {
+			bootVCPUs = 1 // matches cloudhypervisor driver default
+		}
+		build := payloadBuilder(func() (handoff.Payload, *os.File, error) {
+			var fdFile *os.File
+			present := false
+			if f, ferr := sup.PerimeterFD(); ferr == nil {
+				fdFile = f
+				present = true
+			} else {
+				slog.Warn("supervisor.handoff_no_perimeter_fd", "sandboxRef", cfg.SandboxRef, "err", ferr)
+			}
+			payload := handoff.Payload{
+				Version:   handoff.CurrentVersion,
+				Perimeter: handoff.PerimeterHandle{Present: present},
+				Governor: handoff.GovernorConfig{
+					VCPUCount: int(bootVCPUs),
+					MemoryMB:  uint64(cfg.MemoryMiB),
+				},
+				// CA, Credentials and Virtiofs are intentionally NOT populated
+				// in this slice — see payloadBuilder's doc comment for the
+				// missing accessors this depends on (open item, ticket 04).
+			}
+			return payload, fdFile, nil
+		})
+		return performHandoff(hctx, peerSock, build)
+	})
+	ipcH, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef, allowEgressFn, handoffFn)
 	if err != nil {
 		return fmt.Errorf("supervisor: bind IPC socket %s: %w", sockPath, err)
 	}
-	defer os.Remove(sockPath)
+	stopCh := ipcH.StopCh
+	detachCh := ipcH.DetachCh
+	// removeOwnSocket (not a bare os.Remove) fixes D-HSH-09: a replacement
+	// supervisor can rebind sockPath before this process's defers run, and an
+	// unconditional Remove would unlink the replacement's freshly bound
+	// socket instead of this process's now-stale one.
+	defer removeOwnSocket(sockPath, ipcH.BindStat)
 
 	// ── 4b. Parent watchdog (ephemeral mode only) ─────────────────────────────
 	// In ephemeral (builder) mode the supervisor is expected to exit when the
@@ -464,6 +509,7 @@ func RunDetached(cfg Config) error {
 		return fmt.Errorf("supervisor: start sandbox %s: %w", cfg.SandboxRef, err)
 	}
 	slog.Info("supervisor.vm_running", "sandboxRef", cfg.SandboxRef)
+	sbPtr.Store(&sb)
 
 	// Wire the perimeter supervisor into the IPC egress-allow handler. The
 	// supervisor was created inside svc.Start; retrieve it via GetPerimeterSupervisor.
@@ -769,7 +815,8 @@ func RunDetached(cfg Config) error {
 	)
 
 	// ── 7. Block until shutdown ───────────────────────────────────────────────
-	switch cause := awaitShutdown(ctx, stopCh); {
+	cause := awaitShutdown(ctx, stopCh, detachCh)
+	switch {
 	case cfg.Ephemeral && cause == shutdownByStopVerb:
 		// Builder finished: the caller sent POST /supervisor/stop to signal
 		// that the build is complete. This is the normal exit path in ephemeral
@@ -777,8 +824,23 @@ func RunDetached(cfg Config) error {
 		slog.Info("supervisor.build_complete", "sandboxRef", cfg.SandboxRef)
 	case cause == shutdownByStopVerb:
 		slog.Info("supervisor.stop_requested", "sandboxRef", cfg.SandboxRef)
+	case cause == shutdownByDetach:
+		slog.Info("supervisor.detach_requested", "sandboxRef", cfg.SandboxRef)
 	default:
 		slog.Info("supervisor.signal_received", "sandboxRef", cfg.SandboxRef)
+	}
+
+	// shutdownByDetach: exit WITHOUT tearing the VM down. This is the entire
+	// point of /supervisor/detach and a confirmed /supervisor/handoff — the VM
+	// and perimeter must keep running for a replacement supervisor to adopt.
+	// Deliberately returns before the UNI-TEARDOWN block below: svc.Stop and
+	// svc.Remove both call driver.Stop, which is exactly what must NOT happen
+	// here. Only defers already registered above (pidfile, IPC socket via
+	// removeOwnSocket, signal context cancel) run on the way out.
+	if cause == shutdownByDetach {
+		slog.Info("supervisor.detached", "sandboxRef", cfg.SandboxRef,
+			"action", "VM and perimeter left running for a replacement supervisor")
+		return nil
 	}
 
 	// ── 8. Graceful shutdown ──────────────────────────────────────────────────
@@ -837,16 +899,30 @@ const (
 	shutdownBySignal shutdownCause = iota
 	// shutdownByStopVerb means a POST /supervisor/stop IPC request closed
 	// stopCh. In ephemeral mode this is the normal "build finished" path.
+	// Stop means "tear the VM down" — see ipcStopPath's doc comment.
 	shutdownByStopVerb
+	// shutdownByDetach means a POST /supervisor/detach request, or a
+	// POST /supervisor/handoff request whose replacement confirmed, closed
+	// detachCh. Detach means "exit WITHOUT tearing the VM down" — the VM and
+	// perimeter are left running for a replacement supervisor to adopt. This
+	// must never be treated the same as shutdownByStopVerb; RunDetached's
+	// teardown switch skips svc.Stop/svc.Remove entirely for this cause.
+	shutdownByDetach
 )
 
-// awaitShutdown blocks until either the OS signal context is cancelled
-// (SIGTERM / SIGINT) or a /supervisor/stop IPC request closes stopCh.
-// It is extracted from RunDetached for unit-testability.
-func awaitShutdown(ctx context.Context, stopCh <-chan struct{}) shutdownCause {
+// awaitShutdown blocks until the OS signal context is cancelled (SIGTERM /
+// SIGINT), a /supervisor/stop IPC request closes stopCh, or a
+// /supervisor/detach (or confirmed /supervisor/handoff) request closes
+// detachCh. It is extracted from RunDetached for unit-testability.
+//
+// detachCh may be nil (a nil channel never becomes ready in a select, so this
+// degrades to the pre-detach two-way select used by existing tests/callers).
+func awaitShutdown(ctx context.Context, stopCh, detachCh <-chan struct{}) shutdownCause {
 	select {
 	case <-stopCh:
 		return shutdownByStopVerb
+	case <-detachCh:
+		return shutdownByDetach
 	case <-ctx.Done():
 		return shutdownBySignal
 	}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -250,6 +251,30 @@ func (s *PerimeterSupervisor) CACert() *x509.Certificate {
 		return nil
 	}
 	return s.proxy.CACert()
+}
+
+// PerimeterFD returns a dup'd *os.File wrapping R1, the perimeter-facing
+// network connection, for handoff to a replacement supervisor via SCM_RIGHTS
+// (motive nexus3-host-supervisor-hotswap, slice 04).
+//
+// The returned File is an independent duplicate (via (*net.UnixConn).File):
+// closing it, or the caller's use of it, has no effect on this
+// PerimeterSupervisor's own ongoing operation. This is what makes a handoff
+// attempt safe to abandon — the caller can discard the dup on any failure
+// without touching the live connection the frame pump is reading from.
+//
+// Returns an error if the underlying connection's dynamic type is not
+// *net.UnixConn (the only transport this driver's netns path produces today).
+func (s *PerimeterSupervisor) PerimeterFD() (*os.File, error) {
+	uc, ok := s.fd.(*net.UnixConn)
+	if !ok {
+		return nil, fmt.Errorf("perimeter: PerimeterFD: underlying conn is %T, not *net.UnixConn", s.fd)
+	}
+	f, err := uc.File()
+	if err != nil {
+		return nil, fmt.Errorf("perimeter: PerimeterFD: dup: %w", err)
+	}
+	return f, nil
 }
 
 // Close shuts down all supervisor goroutines and releases resources.

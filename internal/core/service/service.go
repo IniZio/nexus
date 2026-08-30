@@ -495,6 +495,20 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 		rec.State = tr.NextState
 		rec.InstanceID = instanceID
 		rec.StopReason = "" // cleared: sandbox is running; StopReason only qualifies stopped
+		// Persist the netns adoption identity fields so a replacement supervisor
+		// can call AdoptNetnsRuntime without consulting ps/nsenter. The optional
+		// NetnsStateProvider interface is implemented only by drivers that use
+		// StartNetnsRuntime; other drivers leave these fields zero/empty.
+		if nsp, ok := s.driver.(driver.NetnsStateProvider); ok {
+			pid, pgid, startTime, tap, sock, hasNetns := nsp.NetnsState(rec.ID)
+			if hasNetns {
+				rec.NetnsChildPID = pid
+				rec.NetnsChildPGID = pgid
+				rec.NetnsChildStartTime = startTime
+				rec.GuestTapName = tap
+				rec.CHAPISocket = sock
+			}
+		}
 		updated = *rec
 		return nil
 	}); err != nil {
@@ -551,6 +565,15 @@ func (s *Service) Stop(ctx context.Context, ref string) (domain.Sandbox, error) 
 		rec.State = tr.NextState
 		rec.InstanceID = ""
 		rec.StopReason = domain.StopReasonClean // user-requested clean stop
+		// Clear the netns adoption fields so a stale record cannot cause a
+		// future AdoptNetnsRuntime to target a recycled pid. The fail-closed
+		// starttime guard is the backstop, but a cleared record should not
+		// reach that far.
+		rec.NetnsChildPID = 0
+		rec.NetnsChildPGID = 0
+		rec.NetnsChildStartTime = 0
+		rec.GuestTapName = ""
+		rec.CHAPISocket = ""
 		updated = *rec
 		return nil
 	}); err != nil {

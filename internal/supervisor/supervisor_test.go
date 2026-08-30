@@ -315,7 +315,7 @@ func TestAwaitShutdown_StopVerb(t *testing.T) {
 	// Close the stop channel to simulate POST /supervisor/stop.
 	close(stopCh)
 
-	got := awaitShutdown(ctx, stopCh)
+	got := awaitShutdown(ctx, stopCh, nil)
 	if got != shutdownByStopVerb {
 		t.Errorf("awaitShutdown with closed stopCh = %v, want shutdownByStopVerb (%v)", got, shutdownByStopVerb)
 	}
@@ -331,7 +331,7 @@ func TestAwaitShutdown_Signal(t *testing.T) {
 	// Simulate SIGTERM by cancelling the context.
 	cancel()
 
-	got := awaitShutdown(ctx, stopCh)
+	got := awaitShutdown(ctx, stopCh, nil)
 	if got != shutdownBySignal {
 		t.Errorf("awaitShutdown with cancelled ctx = %v, want shutdownBySignal (%v)", got, shutdownBySignal)
 	}
@@ -349,9 +349,45 @@ func TestAwaitShutdown_BothReadyNoDeadlock(t *testing.T) {
 	close(stopCh)
 	cancel()
 
-	got := awaitShutdown(ctx, stopCh)
+	got := awaitShutdown(ctx, stopCh, nil)
 	if got != shutdownByStopVerb && got != shutdownBySignal {
 		t.Errorf("awaitShutdown with both ready = %v, want shutdownByStopVerb or shutdownBySignal", got)
+	}
+}
+
+// TestAwaitShutdown_Detach verifies that closing detachCh (i.e. the caller
+// sends POST /supervisor/detach, or a /supervisor/handoff replacement
+// confirmed) returns shutdownByDetach — strictly distinct from
+// shutdownByStopVerb. This pins the hard constraint that detach and stop must
+// never be conflated: RunDetached's teardown switch relies on this
+// distinction to skip svc.Stop/svc.Remove only for shutdownByDetach.
+func TestAwaitShutdown_Detach(t *testing.T) {
+	stopCh := make(chan struct{})   // never closed — stop verb not sent
+	detachCh := make(chan struct{}) // closed — detach verb sent
+	ctx := context.Background()
+
+	close(detachCh)
+
+	got := awaitShutdown(ctx, stopCh, detachCh)
+	if got != shutdownByDetach {
+		t.Errorf("awaitShutdown with closed detachCh = %v, want shutdownByDetach (%v)", got, shutdownByDetach)
+	}
+	if got == shutdownByStopVerb {
+		t.Errorf("awaitShutdown with closed detachCh must NOT report shutdownByStopVerb: detach and stop are distinct causes")
+	}
+}
+
+// TestAwaitShutdown_NilDetachChDegradesToTwoWay verifies that a nil detachCh
+// (the shape every pre-detach caller and test used) does not participate in
+// the select — the two-way stopCh/ctx behaviour is unchanged.
+func TestAwaitShutdown_NilDetachChDegradesToTwoWay(t *testing.T) {
+	stopCh := make(chan struct{})
+	ctx := context.Background()
+	close(stopCh)
+
+	got := awaitShutdown(ctx, stopCh, nil)
+	if got != shutdownByStopVerb {
+		t.Errorf("awaitShutdown with nil detachCh and closed stopCh = %v, want shutdownByStopVerb", got)
 	}
 }
 
@@ -619,8 +655,8 @@ func TestBuildSupervisorDriverConfig_FreePageReportingEnabled(t *testing.T) {
 	got := buildSupervisorDriverConfig(cfg, 16384, 8, nil)
 
 	if !got.FreePageReporting {
-		t.Errorf("driver FreePageReporting = false, want true — "+
-			"without this the guest has no virtio-balloon device and idle "+
+		t.Errorf("driver FreePageReporting = false, want true — " +
+			"without this the guest has no virtio-balloon device and idle " +
 			"sandboxes cannot return RAM to the host (regression: balloon:null, ~5%% reclaim)")
 	}
 }
