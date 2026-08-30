@@ -204,7 +204,25 @@ func TestSupervisorUpgrade_IncompleteNetnsIdentity_Refuses(t *testing.T) {
 
 // TestSupervisorUpgrade_PartialNetnsIdentity_EachFieldAloneRefuses proves the
 // guard checks all five fields independently, not just "all zero vs all
-// set" — a record with four of the five fields populated must still refuse.
+// set". Two families of row, per field:
+//
+//   - "only X set": every other field is zero. This refuses trivially — the
+//     other four zero fields are enough to trip the guard on their own — so
+//     it exercises the compound condition, not the individual conjunct for
+//     X. Cheap to keep (catches wholesale guard deletion), but NOT
+//     sufficient on its own: disabling any single conjunct except the last
+//     one in source order still passes every "only X set" row, because the
+//     other conjuncts are still zero and still refuse.
+//   - "missing only X": every field EXCEPT X is populated with a valid
+//     value; X alone is zero/empty. This is the row that actually pins
+//     conjunct X — if X's check is deleted, this is the only row that goes
+//     GREEN incorrectly, because it is the only row where every other
+//     conjunct is satisfied.
+//
+// A prior version of this table had only one "missing only X" row (for
+// CHAPISocket) — an advisor gate found that disabling any of the other four
+// conjuncts individually left every remaining row green, so four of five
+// checks were asserted but never actually exercised.
 func TestSupervisorUpgrade_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing.T) {
 	cases := []struct {
 		name string
@@ -215,6 +233,30 @@ func TestSupervisorUpgrade_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing
 		{"only StartTime", func(rec *domain.Sandbox) { rec.NetnsChildStartTime = 123456 }},
 		{"only GuestTapName", func(rec *domain.Sandbox) { rec.GuestTapName = "nx3g-test" }},
 		{"only CHAPISocket", func(rec *domain.Sandbox) { rec.CHAPISocket = "/tmp/fake.sock" }},
+		{"missing only PID", func(rec *domain.Sandbox) {
+			rec.NetnsChildPGID = 4242
+			rec.NetnsChildStartTime = 123456
+			rec.GuestTapName = "nx3g-test"
+			rec.CHAPISocket = "/tmp/fake.sock"
+		}},
+		{"missing only PGID", func(rec *domain.Sandbox) {
+			rec.NetnsChildPID = 4242
+			rec.NetnsChildStartTime = 123456
+			rec.GuestTapName = "nx3g-test"
+			rec.CHAPISocket = "/tmp/fake.sock"
+		}},
+		{"missing only StartTime", func(rec *domain.Sandbox) {
+			rec.NetnsChildPID = 4242
+			rec.NetnsChildPGID = 4242
+			rec.GuestTapName = "nx3g-test"
+			rec.CHAPISocket = "/tmp/fake.sock"
+		}},
+		{"missing only GuestTapName", func(rec *domain.Sandbox) {
+			rec.NetnsChildPID = 4242
+			rec.NetnsChildPGID = 4242
+			rec.NetnsChildStartTime = 123456
+			rec.CHAPISocket = "/tmp/fake.sock"
+		}},
 		{"missing only CHAPISocket", func(rec *domain.Sandbox) {
 			rec.NetnsChildPID = 4242
 			rec.NetnsChildPGID = 4242

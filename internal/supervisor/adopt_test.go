@@ -67,8 +67,15 @@ func TestRunAdopt_IncompleteNetnsIdentity_Refuses(t *testing.T) {
 }
 
 // TestRunAdopt_PartialNetnsIdentity_EachFieldAloneRefuses mirrors the CLI-side
-// guard test: any single missing field among the five must refuse, not just
-// the all-zero case.
+// guard test. Two families of row, per field — see the CLI-side
+// TestSupervisorUpgrade_PartialNetnsIdentity_EachFieldAloneRefuses for the
+// full rationale: "only X set" (every other field zero) refuses trivially
+// off the other four zero fields and does NOT pin conjunct X on its own;
+// "missing only X" (every field except X populated) is the row that
+// actually pins X — it is the only row that would go green if X's check
+// were deleted. A prior version of this table had only one "missing only X"
+// row (CHAPISocket), so four of the five conjuncts were asserted but never
+// exercised.
 func TestRunAdopt_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing.T) {
 	cases := []struct {
 		name string
@@ -79,6 +86,30 @@ func TestRunAdopt_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing.T) {
 		{"only StartTime", func(sb *domain.Sandbox) { sb.NetnsChildStartTime = 123456 }},
 		{"only GuestTapName", func(sb *domain.Sandbox) { sb.GuestTapName = "nx3g-test" }},
 		{"only CHAPISocket", func(sb *domain.Sandbox) { sb.CHAPISocket = "/tmp/fake.sock" }},
+		{"missing only PID", func(sb *domain.Sandbox) {
+			sb.NetnsChildPGID = 4242
+			sb.NetnsChildStartTime = 123456
+			sb.GuestTapName = "nx3g-test"
+			sb.CHAPISocket = "/tmp/fake.sock"
+		}},
+		{"missing only PGID", func(sb *domain.Sandbox) {
+			sb.NetnsChildPID = 4242
+			sb.NetnsChildStartTime = 123456
+			sb.GuestTapName = "nx3g-test"
+			sb.CHAPISocket = "/tmp/fake.sock"
+		}},
+		{"missing only StartTime", func(sb *domain.Sandbox) {
+			sb.NetnsChildPID = 4242
+			sb.NetnsChildPGID = 4242
+			sb.GuestTapName = "nx3g-test"
+			sb.CHAPISocket = "/tmp/fake.sock"
+		}},
+		{"missing only GuestTapName", func(sb *domain.Sandbox) {
+			sb.NetnsChildPID = 4242
+			sb.NetnsChildPGID = 4242
+			sb.NetnsChildStartTime = 123456
+			sb.CHAPISocket = "/tmp/fake.sock"
+		}},
 		{"missing only CHAPISocket", func(sb *domain.Sandbox) {
 			sb.NetnsChildPID = 4242
 			sb.NetnsChildPGID = 4242
