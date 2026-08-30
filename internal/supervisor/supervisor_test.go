@@ -624,3 +624,96 @@ func TestBuildSupervisorDriverConfig_FreePageReportingEnabled(t *testing.T) {
 			"sandboxes cannot return RAM to the host (regression: balloon:null, ~5%% reclaim)")
 	}
 }
+
+// TestBuildSupervisorDriverConfig_NestedVirt asserts that NestedVirt=true in the
+// supervisor.Config reaches the cloudhypervisor.Config, and that false maps to
+// false. This is the effect assertion (transport is separately tested by
+// TestBuildSupervisorArgv_NestedVirtForwarded).
+//
+// Security contract D-N3N-02: the driver sends CpusConfig.Nested=false
+// EXPLICITLY when NestedVirt is false — it is never omitted.
+//
+// MUTATION PROOF: remove the NestedVirt assignment in buildSupervisorDriverConfig
+// and both cases fail.
+func TestBuildSupervisorDriverConfig_NestedVirt(t *testing.T) {
+	base := Config{
+		CHBin:      "/usr/bin/cloud-hypervisor",
+		SocketDir:  "/run/user/1000/n3",
+		KernelPath: "/k",
+		DiskPath:   "/d",
+		MemoryMiB:  4096,
+		BootVCPUs:  2,
+	}
+
+	t.Run("true reaches driver", func(t *testing.T) {
+		cfg := base
+		cfg.NestedVirt = true
+		got := buildSupervisorDriverConfig(cfg, 16384, 8, nil)
+		if !got.NestedVirt {
+			t.Errorf("driver NestedVirt = false, want true — "+
+				"--nested was requested but KVM nested virt is disabled in the VM "+
+				"(D-N3N-02: NestedVirt must flow Config→buildSupervisorDriverConfig→cloudhypervisor.Config)")
+		}
+	})
+
+	t.Run("false produces false (default-off)", func(t *testing.T) {
+		cfg := base
+		cfg.NestedVirt = false
+		got := buildSupervisorDriverConfig(cfg, 16384, 8, nil)
+		if got.NestedVirt {
+			t.Errorf("driver NestedVirt = true for Config.NestedVirt=false — "+
+				"nested-ON must never be the default (D-N3N-02 security contract)")
+		}
+	})
+}
+
+// TestBuildSupervisorArgv_NestedVirtForwarded verifies that NestedVirt=true
+// produces --nested in the supervisor argv.
+//
+// MUTATION PROOF: remove the NestedVirt block from BuildSupervisorArgv and this
+// test fails.
+func TestBuildSupervisorArgv_NestedVirtForwarded(t *testing.T) {
+	cfg := SpawnConfig{
+		Config: Config{
+			SandboxRef: "abc123",
+			StoreRoot:  "/store",
+			StateDir:   "/state",
+			CHBin:      "/usr/bin/cloud-hypervisor",
+			SocketDir:  "/run/nexus3",
+			KernelPath: "/boot/vmlinux",
+			DiskPath:   "/data/sb.raw",
+			NestedVirt: true,
+		},
+	}
+	argv := BuildSupervisorArgv(cfg)
+	if !slices.Contains(argv, "--nested") {
+		t.Error("argv does not contain --nested for NestedVirt=true — "+
+			"--nested create sandboxes will boot without KVM nested virt "+
+			"(D-N3N-02: NestedVirt must flow Config→BuildSupervisorArgv→supervisor argv)")
+	}
+}
+
+// TestBuildSupervisorArgv_NotNestedOmitsFlag verifies that NestedVirt=false does
+// NOT emit --nested in argv, preserving the default-off security contract.
+//
+// MUTATION PROOF: hardcode cfg.NestedVirt = true in BuildSupervisorArgv and this
+// test fails (--nested appears when it must not).
+func TestBuildSupervisorArgv_NotNestedOmitsFlag(t *testing.T) {
+	cfg := SpawnConfig{
+		Config: Config{
+			SandboxRef: "abc123",
+			StoreRoot:  "/store",
+			StateDir:   "/state",
+			CHBin:      "/usr/bin/cloud-hypervisor",
+			SocketDir:  "/run/nexus3",
+			KernelPath: "/boot/vmlinux",
+			DiskPath:   "/data/sb.raw",
+			NestedVirt: false,
+		},
+	}
+	argv := BuildSupervisorArgv(cfg)
+	if slices.Contains(argv, "--nested") {
+		t.Error("argv contains --nested for NestedVirt=false — "+
+			"nested-ON must never be the default (D-N3N-02 security contract)")
+	}
+}

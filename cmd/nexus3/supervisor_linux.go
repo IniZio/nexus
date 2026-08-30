@@ -139,6 +139,9 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 		// bootVCPUs: seeds SandboxResizer.CurrentVCPUs() before the first resize.
 		// 0 means the supervisor applies the driver default (1 vCPU).
 		bootVCPUs = fs.Uint("boot-vcpus", 0, "vCPU count at VM boot (0 = driver default = 1)")
+		// nestedVirt: enables KVM nested virtualisation (D-N3N-02). Default
+		// false. Absent flag means nested-OFF — never nested-ON.
+		nestedVirt = fs.Bool("nested", false, "enable KVM nested virtualisation (D-N3N-02: opt-in only, default-off)")
 		// ephemeral: one-shot/builder mode — exit on POST /supervisor/stop
 		// (the build-complete signal) rather than waiting indefinitely for SIGTERM.
 		ephemeral = fs.Bool("ephemeral", false, "one-shot mode: terminate on /supervisor/stop completion signal")
@@ -214,6 +217,7 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 		CredsFile:  *credsFile,
 		MemoryMiB:  uint32(*memoryMiB),
 		BootVCPUs:  uint32(*bootVCPUs), //nolint:gosec // range-checked by flag.Uint; vCPUs fit uint32
+		NestedVirt: *nestedVirt,
 		// HasWorkspaceDisk / WorkspaceDiskIndex: the workspace disk index is
 		// meaningful only when the flag was explicitly passed (>= 0). The -1
 		// default means no workspace disk is attached; the disk axis is skipped.

@@ -82,6 +82,7 @@ func TestBuildHumanSupervisorConfig_AllFieldsPopulated(t *testing.T) {
 		"/workspace/proj",                        // workspaceGuestPath
 		[]domain.LiveMount{{HostPath: "/src", GuestPath: "/work"}}, // liveMounts
 		"/usr/bin/virtiofsd",                     // virtiofsdPath
+		true,                                     // nestedVirt — non-zero for AllFieldsPopulated
 		nil,                                      // mcpOAuthRefreshConfigs (optional; nil = none)
 	)
 
@@ -125,7 +126,8 @@ func TestBuildHumanSupervisorConfig_CredsFilePopulated(t *testing.T) {
 		"root=/dev/vda rw", "/usr/bin/cloud-hypervisor", "/tmp/sockets",
 		false, 0, 0, "",
 		nil, "",
-		nil, // mcpOAuthRefreshConfigs — optional
+		false, // nestedVirt
+		nil,   // mcpOAuthRefreshConfigs — optional
 	)
 	if cfg.CredsFile == "" {
 		t.Error("supervisor.Config.CredsFile is empty — the detached supervisor " +
@@ -191,6 +193,7 @@ func TestBuildHumanSupervisorConfig_NamedDiskResizableIndices(t *testing.T) {
 				"root=/dev/vda rw", "/usr/bin/cloud-hypervisor", "/tmp/sockets",
 				tc.hasWorkspace, tc.numShadowDisks, tc.numNamedDisks, "",
 				nil, "",
+				false, // nestedVirt
 				nil,
 			)
 			got := cfg.ResizableDiskIndices
