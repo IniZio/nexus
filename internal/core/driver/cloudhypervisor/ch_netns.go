@@ -63,6 +63,16 @@ const (
 	netnsEnvCHBin         = "NEXUS3_NETNS_CH_BIN"
 	netnsEnvStartTimeoutMS = "NEXUS3_NETNS_START_TIMEOUT_MS"
 
+	// NetnsEnvGuestTap and NetnsEnvAPISocket are exported aliases of the
+	// unexported env-var names above, for ticket 11's netns identity
+	// backfill (internal/supervisor/netns_backfill.go). The backfill reads
+	// these two vars — plus NetnsRunEnv — from a live candidate child's
+	// /proc/<pid>/environ, verbatim from the same env StartNetnsRuntime set
+	// at spawn time (ch_netns.go:217-232), rather than inferring them from
+	// the process tree's shape.
+	NetnsEnvGuestTap  = netnsEnvGuestTap
+	NetnsEnvAPISocket = netnsEnvAPISocket
+
 	// netnsEnvRestoreURL carries the "file://<dir>" URL the child should pass
 	// to vm.restore after spawning CH. When absent (empty), the child runs in
 	// boot mode: it just spawns CH and pumps frames; the parent issues
@@ -312,25 +322,61 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 // remaining fields starting at field 3 (state). Field 22 (starttime) is at
 // 0-indexed position 19 in that suffix.
 func readProcStartTime(pid int) (uint64, error) {
+	st, err := ReadProcStat(pid)
+	if err != nil {
+		return 0, err
+	}
+	return st.StartTime, nil
+}
+
+// ProcStat holds the /proc/<pid>/stat fields needed to identify and adopt a
+// netns child: PPID (field 4), PGID (field 5), and StartTime (field 22).
+// Exported for reuse by internal/supervisor's netns identity backfill
+// (ticket 11), which must settle a candidate pid's pgid and starttime from
+// ONE /proc read taken after it has picked that pid — not from two separate
+// reads that could race a pid-reuse window between them.
+type ProcStat struct {
+	PPID      int
+	PGID      int
+	StartTime uint64
+}
+
+// ReadProcStat reads and parses /proc/<pid>/stat.
+//
+// Parsing is robust against a comm field (field 2) containing spaces or
+// parentheses: the suffix after the LAST ')' in the line contains the
+// remaining fields starting at field 3 (state). Field 4 (ppid), field 5
+// (pgid), and field 22 (starttime) are at 0-indexed positions 1, 2, and 19
+// in that suffix, respectively.
+func ReadProcStat(pid int) (ProcStat, error) {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
-		return 0, fmt.Errorf("read /proc/%d/stat: %w", pid, err)
+		return ProcStat{}, fmt.Errorf("read /proc/%d/stat: %w", pid, err)
 	}
 	line := strings.TrimRight(string(data), "\n")
 	idx := strings.LastIndex(line, ")")
 	if idx < 0 {
-		return 0, fmt.Errorf("parse /proc/%d/stat: no ')' found in %q", pid, line)
+		return ProcStat{}, fmt.Errorf("parse /proc/%d/stat: no ')' found in %q", pid, line)
 	}
-	// fields[0] = state (field 3), fields[19] = starttime (field 22).
+	// fields[0] = state (field 3), fields[1] = ppid (field 4),
+	// fields[2] = pgid (field 5), fields[19] = starttime (field 22).
 	fields := strings.Fields(line[idx+1:])
 	if len(fields) < 20 {
-		return 0, fmt.Errorf("parse /proc/%d/stat: too few fields after ')': got %d, want ≥20", pid, len(fields))
+		return ProcStat{}, fmt.Errorf("parse /proc/%d/stat: too few fields after ')': got %d, want ≥20", pid, len(fields))
+	}
+	ppid, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return ProcStat{}, fmt.Errorf("parse /proc/%d/stat: ppid: %w", pid, err)
+	}
+	pgid, err := strconv.Atoi(fields[2])
+	if err != nil {
+		return ProcStat{}, fmt.Errorf("parse /proc/%d/stat: pgid: %w", pid, err)
 	}
 	st, err := strconv.ParseUint(fields[19], 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("parse /proc/%d/stat: starttime: %w", pid, err)
+		return ProcStat{}, fmt.Errorf("parse /proc/%d/stat: starttime: %w", pid, err)
 	}
-	return st, nil
+	return ProcStat{PPID: ppid, PGID: pgid, StartTime: st}, nil
 }
 
 // AdoptNetnsRuntime rebuilds a NetnsRuntime for a netns child this process
