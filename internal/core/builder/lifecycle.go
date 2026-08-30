@@ -22,7 +22,7 @@ import (
 //	// ... boot VM ...
 //
 //	buildErr := runBuild(...)
-//	tearErr  := lc.SyncAndStop(ctx)  // explicit: success AND build-error path
+//	tearErr  := lc.SyncAndStop()  // explicit: success AND build-error path
 //
 // The defer is a no-op if SyncAndStop was already called (idempotent).
 type Lifecycle struct {
@@ -47,13 +47,17 @@ func newLifecycle(
 // SyncAndStop flushes all guest persistent disk writes then stops the VMM.
 // It is idempotent: subsequent calls are no-ops and return nil.
 //
-// The guest sync uses ctx bounded to guestSyncTimeout. The VMM stop always
-// uses context.Background() so a cancelled caller context cannot leave an
-// orphaned VMM process.
-func (lc *Lifecycle) SyncAndStop(ctx context.Context) (retErr error) {
+// Both the guest sync and the VMM stop always run from context.Background(),
+// bounded only by their own internal timeouts (guestSyncTimeout for sync) —
+// never from a caller-supplied context. TBD-1 requires the guest sync to be
+// attempted on every exit path, including one where the caller's context is
+// already cancelled; deriving the sync's deadline from that context would
+// make context.WithTimeout return an already-Done context and skip the sync
+// exec entirely on exactly the paths this must cover.
+func (lc *Lifecycle) SyncAndStop() (retErr error) {
 	lc.once.Do(func() {
 		// Guest sync — best-effort; a sync failure must not prevent stop.
-		syncCtx, cancel := context.WithTimeout(ctx, guestSyncTimeout)
+		syncCtx, cancel := context.WithTimeout(context.Background(), guestSyncTimeout)
 		defer cancel()
 		if err := lc.syncFn(syncCtx); err != nil {
 			// Record sync error but do not return early.
@@ -78,5 +82,5 @@ func (lc *Lifecycle) SyncAndStop(ctx context.Context) (retErr error) {
 // It swallows errors because we are already unwinding; callers that care about
 // errors should call SyncAndStop before returning.
 func (lc *Lifecycle) panicSafeStop() {
-	_ = lc.SyncAndStop(context.Background())
+	_ = lc.SyncAndStop()
 }

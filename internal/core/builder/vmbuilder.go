@@ -276,8 +276,26 @@ func BuildInVM(
 	buildErr := guestBuild(ctx, execFn, spec.CacheDisks)
 
 	// ── 3. Sync + Stop — always, even when build failed ───────────────────────
-	tearErr := lc.SyncAndStop(ctx)
+	tearErr := lc.SyncAndStop()
 	started = false // prevent double-stop in the defer above
+
+	// ── 3.5. Clear the cache-disk fencing marker on confirmed clean sync ──────
+	// tearErr == nil means the guest "sync" exec succeeded AND the VMM
+	// stopped: a positive confirmation that every attached cache disk's
+	// writes reached the host. Only then is it safe to clear the marker
+	// ensureCacheDiskAt set before this VM booted (TBD-1). This runs
+	// regardless of buildErr: a failed build can still have flushed valid,
+	// crash-consistent cache state. If tearErr != nil — most importantly the
+	// guest-SIGKILL case, where guestSync could not even be issued — the
+	// marker is left set, and the next lease wipes the disk instead of
+	// risking a poisoned reuse.
+	if tearErr == nil {
+		for _, cd := range spec.CacheDisks {
+			if err := markCacheDiskClean(cd.ImagePath); err != nil {
+				log.Printf("builder vm: mark cache disk clean %s: %v", cd.ImagePath, err)
+			}
+		}
+	}
 
 	if buildErr != nil {
 		return "", fmt.Errorf("builder vm: in-guest build: %w", wrapOutOfSpaceErr(buildErr))

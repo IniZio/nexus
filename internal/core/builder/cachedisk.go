@@ -3,6 +3,7 @@ package builder
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -101,13 +102,35 @@ func ensureCacheDiskAt(ctx context.Context, cacheDir, ecosystemKey string, entry
 		Subpaths:     entry.subpaths,
 	}
 
-	// Reuse: if the image already exists, return immediately — do NOT recreate.
 	if _, err := os.Stat(imgPath); err == nil {
-		return spec, nil
+		if !cacheDiskIsDirty(imgPath) {
+			// Clean reuse: fence the disk dirty before handing the spec to
+			// its new occupant. The marker is cleared only once that
+			// occupant's builder VM confirms a clean sync (BuildInVM, on
+			// lifecycle.SyncAndStop success). An unclean death — including
+			// guest SIGKILL, which runs no in-guest or host teardown code
+			// at all — leaves the marker set for the next lease to see.
+			if err := markCacheDiskDirty(imgPath); err != nil {
+				return CacheDiskSpec{}, fmt.Errorf("cachedisk: %w", err)
+			}
+			return spec, nil
+		}
+		// Fenced dirty: the prior occupant of this slot never confirmed a
+		// clean sync. The image may hold a committed buildkitd record whose
+		// backing snapshot data never reached disk (D-DC-31 debugfs
+		// forensics on caches/buildkit.ext4: a 0-byte agent layer was later
+		// served as a cache HIT). Wipe rather than risk reuse — losing a
+		// warm cache is cheap; serving poisoned layer data as good is not.
+		log.Printf("cachedisk: %s slot %d left dirty by a prior unclean death; wiping cache (%s)",
+			ecosystemKey, slot, imgPath)
+		if err := os.Remove(imgPath); err != nil {
+			return CacheDiskSpec{}, fmt.Errorf("cachedisk: wipe dirty %s: %w", ecosystemKey, err)
+		}
 	}
 
-	// First use: create a sparse ext4 disk from an empty temp directory so
-	// mke2fs has a valid source tree to populate the image from.
+	// First use, or reuse after a wipe: create a sparse ext4 disk from an
+	// empty temp directory so mke2fs has a valid source tree to populate the
+	// image from.
 	tmpSrc, err := os.MkdirTemp("", "nexus3-cachedisk-src-*")
 	if err != nil {
 		return CacheDiskSpec{}, fmt.Errorf("cachedisk: create src tmpdir: %w", err)
@@ -119,7 +142,84 @@ func ensureCacheDiskAt(ctx context.Context, cacheDir, ecosystemKey string, entry
 		_ = os.Remove(imgPath)
 		return CacheDiskSpec{}, fmt.Errorf("cachedisk: create ext4 for %q: %w", ecosystemKey, err)
 	}
+	if err := markCacheDiskDirty(imgPath); err != nil {
+		return CacheDiskSpec{}, fmt.Errorf("cachedisk: %w", err)
+	}
 	return spec, nil
+}
+
+// dirtyMarkerPath returns the sidecar fencing-marker path for a cache disk
+// image. The marker is a plain file, not data inside the ext4 image, so
+// checking and clearing it never requires mounting or otherwise touching the
+// image's filesystem contents on the host.
+func dirtyMarkerPath(imgPath string) string {
+	return imgPath + ".dirty"
+}
+
+// cacheDiskIsDirty reports whether imgPath is currently fenced dirty: leased
+// to a builder VM that has not yet confirmed a clean sync.
+func cacheDiskIsDirty(imgPath string) bool {
+	_, err := os.Stat(dirtyMarkerPath(imgPath))
+	return err == nil
+}
+
+// markCacheDiskDirty writes the fencing marker for imgPath before a builder
+// VM is allowed to attach it. If the process now dies without the marker
+// being cleared — including via a guest SIGKILL, where no in-guest or host
+// cleanup code runs at all — the marker persists on disk and the next lease
+// (ensureCacheDiskAt) detects the unclean death and wipes the image before
+// reuse. This is the only mechanism in this file that needs no cooperation
+// from the guest, so it is the only one that covers the SIGKILL case.
+//
+// The marker file itself is fsynced, and its directory entry is fsynced
+// separately, so the marker's own presence is crash-durable.
+func markCacheDiskDirty(imgPath string) error {
+	markerPath := dirtyMarkerPath(imgPath)
+	f, err := os.OpenFile(markerPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("write dirty marker %s: %w", markerPath, err)
+	}
+	if _, writeErr := f.WriteString("leased, sync not yet confirmed\n"); writeErr != nil {
+		_ = f.Close()
+		return fmt.Errorf("write dirty marker %s: %w", markerPath, writeErr)
+	}
+	if syncErr := f.Sync(); syncErr != nil {
+		_ = f.Close()
+		return fmt.Errorf("fsync dirty marker %s: %w", markerPath, syncErr)
+	}
+	if closeErr := f.Close(); closeErr != nil {
+		return fmt.Errorf("close dirty marker %s: %w", markerPath, closeErr)
+	}
+	return fsyncDir(filepath.Dir(markerPath))
+}
+
+// markCacheDiskClean clears the fencing marker for imgPath. Callers must only
+// do this once they have positive confirmation that the guest's writes to
+// imgPath were flushed to the host (lifecycle.SyncAndStop returning nil). It
+// is a no-op if no marker is present.
+func markCacheDiskClean(imgPath string) error {
+	markerPath := dirtyMarkerPath(imgPath)
+	if err := os.Remove(markerPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("clear dirty marker %s: %w", markerPath, err)
+	}
+	return fsyncDir(filepath.Dir(markerPath))
+}
+
+// fsyncDir fsyncs a directory so that a prior create/remove of an entry
+// within it is crash-durable, not just visible to readers.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open %s for fsync: %w", dir, err)
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		return fmt.Errorf("fsync dir %s: %w", dir, err)
+	}
+	return nil
 }
 
 // SelectCacheDisks leases one free cache-disk slot per requested ecosystem key
