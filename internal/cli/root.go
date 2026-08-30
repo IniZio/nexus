@@ -44,8 +44,7 @@ func Run(args []string) int {
 		return 2
 	}
 
-	name := rest[0]
-	cmdArgs := rest[1:]
+	name, cmdArgs := resolveCommandName(rest)
 
 	cmd, ok := Lookup(name)
 	if !ok {
