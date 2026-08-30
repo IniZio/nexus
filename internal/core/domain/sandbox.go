@@ -91,6 +91,49 @@ type Sandbox struct {
 	// IPC socket. Empty when SupervisorPID is zero.
 	SupervisorSock string `json:"supervisor_sock,omitempty"`
 
+	// NetnsChildPID is the OS PID of the netns-runtime child process (the
+	// re-exec'd binary running inside the per-sandbox user+network namespace
+	// that hosts the CH VMM and frame pump — see
+	// cloudhypervisor.NetnsRuntime). Zero means no netns child is running
+	// (in-process perimeter, or the sandbox predates this field).
+	//
+	// A supervisor that did not fork this child cannot signal it by PID
+	// alone: killing a single process in a process group started with
+	// Setpgid:true does not reach the rest of the group, and the child's own
+	// children (CH) are only reachable via the group. See NetnsChildPGID.
+	NetnsChildPID int `json:"netns_child_pid,omitempty"`
+
+	// NetnsChildPGID is the process group ID of the netns child. Because the
+	// netns child is spawned with Setpgid:true and CH inherits that pgid
+	// (Setpgid:false), a non-parent process that wants to cleanly stop the
+	// VM must target the group (kill(-PGID, ...)), not just NetnsChildPID —
+	// signalling the PID alone leaves CH (and any grandchildren) running.
+	// Zero when NetnsChildPID is zero.
+	NetnsChildPGID int `json:"netns_child_pgid,omitempty"`
+
+	// GuestTapName is the guest-facing TAP interface name passed to CH's
+	// vm.create for this sandbox's network device. A non-parent adopter
+	// needs this to re-derive the network device configuration without
+	// re-deriving it from scratch or re-reading netns-internal state it did
+	// not create. Empty when no netns child is running.
+	GuestTapName string `json:"guest_tap_name,omitempty"`
+
+	// CHAPISocket is the absolute path of the cloud-hypervisor REST API
+	// Unix socket for this sandbox's VM (NetnsRuntime.APISocket). A
+	// non-parent adopter dials this socket directly; it does not need to be
+	// the process that started CH to control it. Empty when no VM is
+	// running under a netns child.
+	CHAPISocket string `json:"ch_api_socket,omitempty"`
+
+	// CacheDiskSlot is the ImagePath of the leased builder cache-disk slot
+	// backing this sandbox's VM, if any (builder.CacheDiskSpec.ImagePath;
+	// see internal/core/builder/cachedisk.go). A non-parent adopter must
+	// know which slot it now owns so it can release the lease on stop
+	// instead of leaking it, and so two adopters can never believe they
+	// hold the same slot. Empty means no cache disk is leased (e.g. a
+	// non-builder sandbox).
+	CacheDiskSlot string `json:"cache_disk_slot,omitempty"`
+
 	// CreatorPID is the OS PID of the process that created this sandbox record.
 	// It is non-zero only for transient __builder records created by BuildInVM.
 	// The service uses kill(CreatorPID, 0) to detect stale orphans: ESRCH means
