@@ -2964,6 +2964,30 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 	if imageFlag == "--file" {
 		args = append(args, "--mount-named", herdrDockerDiskVolumeName(handle)+":/var/lib/docker:size=20g")
 	}
+	// Go build-cache disks. Unconditional (unlike the docker disk above): every
+	// worktree sandbox agent runs `go build`/`go test` against this repo, and Go
+	// defaults GOCACHE to $HOME/.cache/go-build and GOPATH/GOMODCACHE under
+	// $HOME/go — both under /root, which otherwise sits entirely on the 4 GiB
+	// root disk (/dev/vda). Root is NOT governor-visible: diskIndexFromDevice
+	// rejects any device letter below 'b', so /dev/vda has no ExtraDisks index
+	// and can never be grown by the disk governor no matter how full it gets.
+	// Giving these two paths their own kind=disk volumes moves the write
+	// pressure onto disks that ARE governor-visible (same ResizableDiskIndices
+	// mechanism as the docker disk above), so the axis that was never handed
+	// the disk that matters now is.
+	//
+	// Two disks, not one, because /root/go and /root/.cache are not nested and
+	// a single ext4 volume can only be mounted at one guest path. Both stay
+	// clear of /root/.claude, /root/.claude.json, and /root/.ssh — the paths
+	// the agent's onboarding/credential seeding writes into (seed.go,
+	// usermount.go) — so this does not disturb agent config sync.
+	//
+	// What still cannot grow after this: everything else on root (installed
+	// packages, /tmp, anything outside $HOME/go and $HOME/.cache) remains on
+	// the ungrowable 4 GiB /dev/vda. That is an accepted, explicit gap — see
+	// the ticket's Decision section — not a silent reproduction of the bug.
+	args = append(args, "--mount-named", herdrGoCacheDiskVolumeName(handle)+":/root/.cache:size=10g")
+	args = append(args, "--mount-named", herdrGoPathDiskVolumeName(handle)+":/root/go:size=10g")
 	for _, s := range secrets {
 		args = append(args, "--secret", s)
 	}
@@ -2995,6 +3019,29 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 // maps every out-of-grammar byte (including "/") to a single "-", trims to a
 // legal leading char, and appends "-docker".
 func herdrDockerDiskVolumeName(handle string) string {
+	return herdrHandleSlug(handle) + "-docker"
+}
+
+// herdrGoCacheDiskVolumeName derives the per-sandbox volume name for the
+// /root/.cache build-cache disk (GOCACHE lives under here), following the same
+// D-PD-84 slug rule as herdrDockerDiskVolumeName.
+func herdrGoCacheDiskVolumeName(handle string) string {
+	return herdrHandleSlug(handle) + "-gocache"
+}
+
+// herdrGoPathDiskVolumeName derives the per-sandbox volume name for the
+// /root/go disk (GOPATH/GOMODCACHE live under here), following the same
+// D-PD-84 slug rule as herdrDockerDiskVolumeName.
+func herdrGoPathDiskVolumeName(handle string) string {
+	return herdrHandleSlug(handle) + "-gopath"
+}
+
+// herdrHandleSlug lower-cases handle and collapses every byte outside
+// [a-z0-9._-] (including the "<repo>/<branch>" separator) to a single "-",
+// then trims to a VolumeStore-legal leading/trailing character (D-PD-84:
+// [a-z0-9][a-z0-9._-]*). Returns "wt" for a degenerate handle that collapses
+// to nothing, so callers always get a non-empty stem to append a suffix to.
+func herdrHandleSlug(handle string) string {
 	var b strings.Builder
 	prev := byte('-')
 	for i := 0; i < len(handle); i++ {
@@ -3020,7 +3067,7 @@ func herdrDockerDiskVolumeName(handle string) string {
 	if slug == "" {
 		slug = "wt"
 	}
-	return slug + "-docker"
+	return slug
 }
 
 // herdrWorktreeGitDirMount returns the extra --mount spec needed to make git
