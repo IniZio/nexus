@@ -193,6 +193,15 @@ func BuildInVM(
 	// ── 1. Boot the builder VM ────────────────────────────────────────────────
 	instanceID, startErr := drv.Start(ctx, driver.StartRequest{SandboxID: id})
 	if startErr != nil {
+		// The cache disks were never attached to the VM, so no guest writes
+		// could be in flight. The dirty markers set by ensureCacheDiskAt are
+		// a false alarm — clear them so the next build can reuse warm cache
+		// rather than wiping a healthy disk.
+		for _, cd := range spec.CacheDisks {
+			if err := markCacheDiskClean(cd.ImagePath); err != nil {
+				log.Printf("builder vm: clear dirty marker after start failure %s: %v", cd.ImagePath, err)
+			}
+		}
 		return "", fmt.Errorf("builder vm: start: %w", startErr)
 	}
 	started = true
@@ -265,6 +274,15 @@ func BuildInVM(
 	// connections. Attempting the exec RPC before the listener is up causes an
 	// immediate EOF. Poll until the agent is reachable or the context expires.
 	if waitErr := waitForBuilderAgent(ctx, drv, id); waitErr != nil {
+		// The cache disks were attached to the VMM but the guest agent never
+		// responded — no build commands were issued, so no cache writes could
+		// be pending. Clear the dirty markers so the next build reuses the
+		// warm disk instead of wiping it.
+		for _, cd := range spec.CacheDisks {
+			if err := markCacheDiskClean(cd.ImagePath); err != nil {
+				log.Printf("builder vm: clear dirty marker after agent wait failure %s: %v", cd.ImagePath, err)
+			}
+		}
 		return "", fmt.Errorf("builder vm: wait for agent: %w", waitErr)
 	}
 
@@ -402,14 +420,22 @@ func guestSync(ctx context.Context, execFn GuestExecFn) error {
 	// Try absolute paths first (avoids exec.LookPath relying on os.Getenv("PATH")
 	// which is empty when nexus3-agent is PID 1).
 	for _, syncBin := range []string{"/bin/sync", "/usr/bin/sync", "sync"} {
-		_, err := execFn(ctx, []string{syncBin}, nil)
-		if err == nil {
-			return nil
-		}
-		// If not found, try the next candidate; otherwise propagate the error.
-		if !isExecNotFound(err) {
+		exitCode, err := execFn(ctx, []string{syncBin}, nil)
+		if err != nil {
+			// If not found, try the next candidate; otherwise propagate the error.
+			if isExecNotFound(err) {
+				continue
+			}
 			return err
 		}
+		if exitCode != 0 {
+			// A non-zero exit from sync means writes did NOT reach the host
+			// (e.g. EIO on the virtio-blk device). Treat this as a hard error
+			// so the caller does NOT clear the dirty marker and serve a poisoned
+			// cache disk as warm.
+			return fmt.Errorf("sync exited %d: data may not have reached host", exitCode)
+		}
+		return nil
 	}
 	return fmt.Errorf("sync: not found in common paths or PATH")
 }

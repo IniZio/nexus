@@ -58,29 +58,6 @@ var ecosystemRegistry = map[string]ecosystemEntry{
 // existing warm caches are not orphaned; slot i>0 uses <key>-<i>.ext4.
 const MaxCacheDiskSlots = 8
 
-// EnsureCacheDisk returns a CacheDiskSpec for the given ecosystemKey. On first
-// call it creates a sparse ext4 image at {dataDir}/caches/<key>.ext4; on
-// subsequent calls it reuses the existing image without recreating it.
-//
-// The returned spec carries ImagePath, MountPath, and Subpaths as needed by G3
-// to attach and (on teardown) sync the disk.
-//
-// EnsureCacheDisk takes NO lease: it always names slot 0. Callers that attach
-// the disk to a VM must use SelectCacheDisks, which leases an unused slot —
-// cloud-hypervisor takes an exclusive write lock on every attached image, so
-// two VMs holding the same cache image cannot both boot.
-func EnsureCacheDisk(ctx context.Context, dataDir, ecosystemKey string) (CacheDiskSpec, error) {
-	entry, ok := ecosystemRegistry[ecosystemKey]
-	if !ok {
-		return CacheDiskSpec{}, fmt.Errorf("cachedisk: unknown ecosystem key %q (valid: npm pnpm yarn pip cargo go apt buildkit)", ecosystemKey)
-	}
-	cacheDir := filepath.Join(dataDir, "caches")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return CacheDiskSpec{}, fmt.Errorf("cachedisk: mkdir %s: %w", cacheDir, err)
-	}
-	return ensureCacheDiskAt(ctx, cacheDir, ecosystemKey, entry, 0)
-}
-
 // slotImagePath returns the image path for slot i of ecosystemKey. Slot 0 is
 // the historical unsuffixed name.
 func slotImagePath(cacheDir, ecosystemKey string, slot int) string {
