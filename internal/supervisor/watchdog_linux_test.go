@@ -115,7 +115,7 @@ func runWatchdogHelper() {
 		// depends on before tearing down the VM.
 		stopCh := make(chan struct{}) // never closed (no IPC in this helper)
 		result := make(chan shutdownCause, 1)
-		go func() { result <- awaitShutdown(ctx, stopCh) }()
+		go func() { result <- awaitShutdown(ctx, stopCh, nil) }()
 
 		select {
 		case cause := <-result:
