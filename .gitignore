@@ -21,6 +21,8 @@ coverage.html
 !.claude/
 .claude/*
 !.claude/skills/
+# ...but not eval scratch output, which is throwaway run artefacts.
+.claude/skills/*-workspace/
 .codegraph/
 .groundwork/
 

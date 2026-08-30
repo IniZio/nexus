@@ -1,9 +1,0 @@
-{
-  "expectations": [
-    {"text": "Identifies that `make build` runs `go build ./...` which writes no binary", "passed": true, "evidence": "go build ./... compiles every package and checks for errors, but it does not write a nexus3 binary anywhere on your PATH."},
-    {"text": "States that ./nexus3 in the repo root is therefore stale", "passed": false, "evidence": "Answer identifies 'the previously installed version' (e.g. /home/you/.local/bin/nexus3) as stale — it does not specifically say ./nexus3 in the repo root is the stale binary. The diagnostic points at the PATH-installed binary, not the repo-root artifact."},
-    {"text": "Recommends `go build -o nexus3 ./cmd/nexus3`", "passed": false, "evidence": "Recommends 'go build -o $(which nexus3) ./cmd/nexus3' or 'go build -o ~/.local/bin/nexus3 ./cmd/nexus3' — writes directly to the install path. The specific two-step 'go build -o nexus3 ... then atomic rename' form is absent."},
-    {"text": "Mentions the atomic-rename install because a plain cp hits 'Text file busy'", "passed": false, "evidence": "No atomic-rename or 'Text file busy' mention found. The fix installs directly with go build -o <path> which bypasses the rename issue."},
-    {"text": "Does NOT send the user back to re-read the flag parser", "passed": true, "evidence": "Your edit is real. The build succeeded. The binary being invoked is stale. — primary diagnosis is the stale binary; the parser section explains the symptom as context, not as an invitation to re-examine the parser."}
-  ]
-}
