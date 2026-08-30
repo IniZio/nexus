@@ -381,3 +381,23 @@ func (d *CHDriver) GuestNetworkFD(ctx context.Context, id domain.SandboxID) (io.
 // (Driver/PauseResumer/Snapshotter/Forker assertions are in driver.go;
 // GuestDialer assertion is in ch_vsock.go.)
 var _ driver.NetworkHook = (*CHDriver)(nil)
+
+// NetnsState implements driver.NetnsStateProvider. It returns the five netns
+// identity fields captured by the most recent successful StartNetnsRuntime call
+// for id. Returns ok=false when no netns runtime is registered for id (e.g. the
+// VM has not started yet, has been stopped, or was started on the in-process path).
+//
+// This method is read-only and acquires only d.mu (an in-memory lock), so it is
+// safe to call from inside a store.Update callback.
+func (d *CHDriver) NetnsState(id domain.SandboxID) (childPID, childPGID int, childStartTime uint64, guestTap, apiSocket string, ok bool) {
+	d.mu.Lock()
+	ns := d.nets[id]
+	d.mu.Unlock()
+	if ns == nil || ns.rt == nil {
+		return 0, 0, 0, "", "", false
+	}
+	rt := ns.rt
+	return rt.ChildPID, rt.ChildPGID, rt.ChildStartTime, rt.GuestTap, rt.APISocket, true
+}
+
+var _ driver.NetnsStateProvider = (*CHDriver)(nil)

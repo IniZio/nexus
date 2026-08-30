@@ -27,17 +27,19 @@ const currentSchemaVersion = 1
 //  3. The encoding contract is explicit and reviewable in one place.
 //
 // Durable fields (exactly these, nothing more):
-//   - identity:       ID, Name, Project
-//   - labels:         Labels (map[string]string; omitted when empty)
-//   - legacy motive:  MotiveID (read-only backward compat; migrated to Labels["motive"] on load)
-//   - frozen config:  Envelope
-//   - state cache:    State
-//   - run identity:   InstanceID
-//   - policy:         RemoveOnExit
-//   - WAL marker:     RemovalMarker
-//   - stop qualifier: StopReason (omitted when empty for backward compatibility)
-//   - fork lineage:   Provenance (omitted for non-fork sandboxes)
-//   - git anchor:     BaseRef (40-hex SHA; omitted for sandboxes without a git workspace)
+//   - identity:         ID, Name, Project
+//   - labels:           Labels (map[string]string; omitted when empty)
+//   - legacy motive:    MotiveID (read-only backward compat; migrated to Labels["motive"] on load)
+//   - frozen config:    Envelope
+//   - state cache:      State
+//   - run identity:     InstanceID
+//   - policy:           RemoveOnExit
+//   - WAL marker:       RemovalMarker
+//   - stop qualifier:   StopReason (omitted when empty for backward compatibility)
+//   - fork lineage:     Provenance (omitted for non-fork sandboxes)
+//   - git anchor:       BaseRef (40-hex SHA; omitted for sandboxes without a git workspace)
+//   - netns adoption:   NetnsChildPID, NetnsChildPGID, NetnsChildStartTime,
+//                       GuestTapName, CHAPISocket (all omitted when zero/empty)
 type record struct {
 	SchemaVersion int              `json:"schema_version"`
 	ID            domain.SandboxID `json:"id"`
@@ -74,6 +76,15 @@ type record struct {
 	// AgentName records the agent profile the sandbox was created for (TBD-PD-32).
 	// Empty for plain sandboxes and for records written before the field existed.
 	AgentName string `json:"agent_name,omitempty"`
+	// Netns adoption fields — five values the supervisor captures from
+	// StartNetnsRuntime so a replacement supervisor can call AdoptNetnsRuntime
+	// without re-deriving them from ps/nsenter. All omitted when zero/empty
+	// (i.e. when no netns child is running).
+	NetnsChildPID       int    `json:"netns_child_pid,omitempty"`
+	NetnsChildPGID      int    `json:"netns_child_pgid,omitempty"`
+	NetnsChildStartTime uint64 `json:"netns_child_start_time,omitempty"`
+	GuestTapName        string `json:"guest_tap_name,omitempty"`
+	CHAPISocket         string `json:"ch_api_socket,omitempty"`
 }
 
 // provenanceRecord is the on-disk form of domain.Provenance. Kept separate
@@ -101,9 +112,14 @@ func toRecord(sb domain.Sandbox) record {
 		SupervisorSock: sb.SupervisorSock,
 		CreatorPID:     sb.CreatorPID,
 		BaseRef:        sb.BaseRef,
-		MountedVolumes: sb.MountedVolumes,
-		LiveMounts:     sb.LiveMounts,
-		AgentName:      sb.AgentName,
+		MountedVolumes:      sb.MountedVolumes,
+		LiveMounts:          sb.LiveMounts,
+		AgentName:           sb.AgentName,
+		NetnsChildPID:       sb.NetnsChildPID,
+		NetnsChildPGID:      sb.NetnsChildPGID,
+		NetnsChildStartTime: sb.NetnsChildStartTime,
+		GuestTapName:        sb.GuestTapName,
+		CHAPISocket:         sb.CHAPISocket,
 		// MotiveID intentionally omitted: new records never write this field.
 	}
 	if sb.Provenance != nil {
@@ -146,9 +162,14 @@ func (r record) toDomain() domain.Sandbox {
 		SupervisorSock: r.SupervisorSock,
 		CreatorPID:     r.CreatorPID,
 		BaseRef:        r.BaseRef,
-		MountedVolumes: r.MountedVolumes,
-		LiveMounts:     r.LiveMounts,
-		AgentName:      r.AgentName,
+		MountedVolumes:      r.MountedVolumes,
+		LiveMounts:          r.LiveMounts,
+		AgentName:           r.AgentName,
+		NetnsChildPID:       r.NetnsChildPID,
+		NetnsChildPGID:      r.NetnsChildPGID,
+		NetnsChildStartTime: r.NetnsChildStartTime,
+		GuestTapName:        r.GuestTapName,
+		CHAPISocket:         r.CHAPISocket,
 	}
 	if r.Provenance != nil {
 		sb.Provenance = &domain.Provenance{

@@ -877,6 +877,17 @@ func CreateAndBoot(
 		rec.State = tr.NextState
 		rec.InstanceID = instanceID
 		rec.StopReason = "" // cleared: sandbox is running
+		// Persist netns adoption identity fields (same as service.Start).
+		if nsp, ok := bootDrv.(driver.NetnsStateProvider); ok {
+			pid, pgid, startTime, tap, sock, hasNetns := nsp.NetnsState(rec.ID)
+			if hasNetns {
+				rec.NetnsChildPID = pid
+				rec.NetnsChildPGID = pgid
+				rec.NetnsChildStartTime = startTime
+				rec.GuestTapName = tap
+				rec.CHAPISocket = sock
+			}
+		}
 		booted = *rec
 		return nil
 	})

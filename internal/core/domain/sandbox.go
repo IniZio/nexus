@@ -125,6 +125,16 @@ type Sandbox struct {
 	// running under a netns child.
 	CHAPISocket string `json:"ch_api_socket,omitempty"`
 
+	// NetnsChildStartTime is the kernel starttime of the netns child process
+	// (field 22 of /proc/<NetnsChildPID>/stat, in clock ticks since boot),
+	// persisted by the supervisor immediately after StartNetnsRuntime returns.
+	// A replacement supervisor passes this value to AdoptNetnsRuntime, which
+	// reads the live starttime from /proc and refuses adoption if the two
+	// values differ — guarding against pid recycling. Zero means no netns
+	// child is running; AdoptNetnsRuntime refuses adoption when this field is
+	// zero rather than proceeding unguarded.
+	NetnsChildStartTime uint64 `json:"netns_child_start_time,omitempty"`
+
 	// CacheDiskSlot is the ImagePath of the leased builder cache-disk slot
 	// backing this sandbox's VM, if any (builder.CacheDiskSpec.ImagePath;
 	// see internal/core/builder/cachedisk.go). A non-parent adopter must
