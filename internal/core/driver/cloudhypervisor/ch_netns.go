@@ -32,6 +32,7 @@ package cloudhypervisor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -87,13 +88,27 @@ type NetnsRuntime struct {
 	// GuestTap is the guest-side TAP interface name to include in vm.create.
 	GuestTap string
 
-	// childPgid is the process group ID of the netns child. Because
-	// netnsChildAttr sets Setpgid:true, pgid == child.pid. CH runs with
-	// Setpgid:false (spawnVMMInGroup) so it inherits this pgid. Stop() sends
-	// Kill(-childPgid, SIGKILL) to reach both the child and CH in one call.
-	childPgid int
+	// ChildPID is the OS pid of the netns child process (the re-exec'd
+	// binary running inside the isolated user+network namespace). Exported
+	// so the caller (the per-sandbox supervisor) can persist it onto
+	// domain.Sandbox.NetnsChildPID for a future process to adopt via
+	// [AdoptNetnsRuntime].
+	ChildPID int
+
+	// ChildPGID is the process group ID of the netns child. Because
+	// netnsChildAttr sets Setpgid:true, pgid == child.pid — so at creation
+	// time ChildPGID == ChildPID. CH runs with Setpgid:false
+	// (spawnVMMInGroup) so it inherits this pgid. Stop() sends
+	// Kill(-ChildPGID, SIGKILL) to reach both the child and CH in one call.
+	// Exported for the same persistence reason as ChildPID (see
+	// domain.Sandbox.NetnsChildPGID).
+	ChildPGID int
 
 	// cmd is the child process running inside the user+network namespace.
+	// nil when this NetnsRuntime was built by [AdoptNetnsRuntime] rather
+	// than [StartNetnsRuntime] — this process did not fork the child, so it
+	// cannot cmd.Wait() on it. Stop() branches on this to choose its
+	// confirmation strategy; see the non-parent path there.
 	cmd *exec.Cmd
 
 	// stderrBuf captures the child's stderr for diagnostics.
@@ -251,9 +266,62 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 		PerimConn: perimConn,
 		APISocket: socketPath,
 		GuestTap:  guestTap,
-		childPgid: childPgid,
+		ChildPID:  childPgid,
+		ChildPGID: childPgid,
 		cmd:       cmd,
 		stderrBuf: stderrBuf,
+	}, nil
+}
+
+// AdoptNetnsRuntime rebuilds a NetnsRuntime for a netns child this process
+// did NOT fork, from state persisted by the process that did — the four
+// values [StartNetnsRuntime] captures on domain.Sandbox (NetnsChildPID,
+// NetnsChildPGID, GuestTapName, CHAPISocket) — plus the perimeter fd
+// transferred over the handoff transport.
+//
+// perimFile is the *os.File returned by internal/supervisor/handoff.Accept
+// when Payload.Perimeter.Present is true. AdoptNetnsRuntime takes ownership
+// of it: on success it is wrapped (and closed) via net.FileConn; on failure
+// the caller retains ownership and must close it itself (AdoptNetnsRuntime
+// does not close it on the error paths, mirroring Accept's own contract that
+// a rejected fd is the caller's to dispose of).
+//
+// The returned NetnsRuntime has cmd == nil: it was not produced by
+// exec.Command in this process, so Stop() cannot cmd.Wait() on it and takes
+// the non-parent confirmation path instead (see Stop).
+func AdoptNetnsRuntime(childPID, childPGID int, guestTap, apiSocket string, perimFile *os.File) (*NetnsRuntime, error) {
+	if perimFile == nil {
+		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: perimFile is nil")
+	}
+	if childPID <= 0 {
+		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: childPID=%d must be positive", childPID)
+	}
+	if childPGID <= 0 {
+		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: childPGID=%d must be positive", childPGID)
+	}
+	if apiSocket == "" {
+		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: apiSocket is empty")
+	}
+	if guestTap == "" {
+		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: guestTap is empty")
+	}
+
+	// net.FileConn dups the fd internally; close our wrapper once dup'd,
+	// same ordering StartNetnsRuntime uses for perimFile.
+	perimConn, err := net.FileConn(perimFile)
+	if err != nil {
+		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: net.FileConn(perim): %w", err)
+	}
+	perimFile.Close()
+
+	return &NetnsRuntime{
+		PerimConn: perimConn,
+		APISocket: apiSocket,
+		GuestTap:  guestTap,
+		ChildPID:  childPID,
+		ChildPGID: childPGID,
+		// cmd is deliberately left nil: this process did not fork the
+		// child, so it has no *exec.Cmd to Wait() on.
 	}, nil
 }
 
@@ -266,10 +334,10 @@ func (rt *NetnsRuntime) ChildStderr() string {
 	return rt.stderrBuf.Tail()
 }
 
-// Stop kills the child process group (child + CH grandchild), waits for the
-// child to exit, and closes PerimConn. Idempotent.
+// Stop kills the child process group (child + CH grandchild), confirms the
+// group is gone, and closes PerimConn. Idempotent.
 //
-// Kill(-childPgid, SIGKILL) sends SIGKILL to every process in the group:
+// Kill(-ChildPGID, SIGKILL) sends SIGKILL to every process in the group:
 //   - the netns child itself
 //   - CH (spawned with Setpgid:false via spawnVMMInGroup, so it inherits the
 //     child's pgid rather than starting its own group)
@@ -277,18 +345,81 @@ func (rt *NetnsRuntime) ChildStderr() string {
 // This is reliable and explicit, unlike Pdeathsig alone (which can be lost
 // when Go retires OS threads). Pdeathsig remains in spawnVMMInGroup as
 // defense-in-depth (CH dies if the child dies before Stop is called).
+//
+// # Parent vs. non-parent confirmation (TBD-3)
+//
+// Sending the kill is not enough: the caller needs to know the VM is
+// actually gone before it can safely reuse the sandbox's resources (socket
+// path, TAP names, cache-disk slot). A NetnsRuntime built by
+// [StartNetnsRuntime] can cmd.Wait() to get that confirmation, because this
+// process is cmd's parent. A NetnsRuntime built by [AdoptNetnsRuntime]
+// (cmd == nil) is not the child's parent — wait(2) only works on your own
+// children, so cmd.Wait() is not available here, and the two remaining ways
+// to confirm death are:
+//
+//   - pidfd_open(2) on ChildPID, then poll/wait on the pidfd for exit. This
+//     is race-free against pid reuse and doesn't require being the parent —
+//     but it only confirms ChildPID itself has exited, not the process
+//     group. This runtime never persists CH's own pid (only the netns
+//     child's PID/PGID and CH's API socket path are in domain.Sandbox), so a
+//     pidfd on ChildPID alone cannot attest that CH — a separate process in
+//     the same group — is also gone. Confirming the child dead while CH
+//     lingers is exactly the orphan this mechanism exists to prevent.
+//   - Poll the process group via kill(-ChildPGID, 0) until it returns ESRCH.
+//     ESRCH on a pgid means literally nobody is left in that group — it
+//     covers the netns child, CH, and any future group member, with no need
+//     to track individual pids. It also reuses the exact mechanism the
+//     parent-owned path already uses to signal the group, so both Stop
+//     paths reason about the same unit (the pgid), not two different units.
+//
+// This chose the pgid-poll: it is the only one of the two that answers the
+// question Stop actually needs answered ("is the whole group gone"), not
+// just "is this one pid gone". The cost is a bounded busy-poll instead of a
+// blocking wait; netnsAdoptStopTimeout caps it so a group that never fully
+// reaps (e.g. no subreaper present) cannot hang Stop forever — the same
+// bounded-return contract TestLifecycle_StopBounded already holds the
+// parent-owned path to.
 func (rt *NetnsRuntime) Stop() {
 	rt.stopOnce.Do(func() {
-		if rt.childPgid != 0 {
-			_ = syscall.Kill(-rt.childPgid, syscall.SIGKILL)
+		if rt.ChildPGID != 0 {
+			_ = syscall.Kill(-rt.ChildPGID, syscall.SIGKILL)
 		}
 		if rt.cmd != nil {
 			_ = rt.cmd.Wait()
+		} else if rt.ChildPGID != 0 {
+			waitForGroupExit(rt.ChildPGID, netnsAdoptStopTimeout)
 		}
 		if rt.PerimConn != nil {
 			_ = rt.PerimConn.Close()
 		}
 	})
+}
+
+// netnsAdoptStopTimeout bounds the non-parent confirmation poll in Stop.
+// Reaping an orphaned group is normally near-instant (the kernel's nearest
+// subreaper, or init, reaps as soon as the kill is delivered) — this is a
+// safety net against a group that never gets reaped, not the expected path.
+const netnsAdoptStopTimeout = 5 * time.Second
+
+// netnsGroupExitPollInterval is the sleep between waitForGroupExit's
+// kill(-pgid, 0) probes.
+const netnsGroupExitPollInterval = 20 * time.Millisecond
+
+// waitForGroupExit polls kill(-pgid, 0) until it returns ESRCH (no process
+// in the group remains — including zombies still awaiting reap, which are
+// still valid kill(2) targets and so keep this loop from returning early) or
+// timeout elapses. Returns true iff ESRCH was observed before the deadline.
+func waitForGroupExit(pgid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if err := syscall.Kill(-pgid, 0); errors.Is(err, syscall.ESRCH) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(netnsGroupExitPollInterval)
+	}
 }
 
 // RunNetnsChild is the exported child-side entry point for the netns-runtime.
