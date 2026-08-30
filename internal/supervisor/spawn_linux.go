@@ -78,6 +78,11 @@ func BuildSupervisorArgv(cfg SpawnConfig) []string {
 	if cfg.BootVCPUs != 0 {
 		args = append(args, "--boot-vcpus", strconv.Itoa(int(cfg.BootVCPUs)))
 	}
+	// NestedVirt: forward when true; omit otherwise so the flag default (false)
+	// preserves nested-OFF without flag-presence checks (D-N3N-02).
+	if cfg.NestedVirt {
+		args = append(args, "--nested")
+	}
 	if cfg.HasWorkspaceDisk {
 		args = append(args, "--workspace-disk-index", strconv.Itoa(cfg.WorkspaceDiskIndex))
 	}

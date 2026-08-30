@@ -1,0 +1,10 @@
+version: 1
+
+sandbox:
+  # nexus3's own worktree sandboxes need nested KVM so inner nexus3 VMs can
+  # boot for hot-swap and self-hosting work (D-N3N-02).
+  #
+  # This setting takes effect ONLY once it reaches the trusted ref
+  # (refs/remotes/origin/HEAD, i.e. origin/main). That is the intended security
+  # property: a worktree branch must not be able to grant itself /dev/kvm.
+  nested: true

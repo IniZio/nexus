@@ -496,7 +496,7 @@ func TestNetnsRuntime_CHOrphanKill(t *testing.T) {
 	}
 	t.Cleanup(func() { rt.Stop() }) // safety net; test calls Stop explicitly below
 
-	t.Logf("netns child pid/pgid: %d", rt.childPgid)
+	t.Logf("netns child pid/pgid: %d", rt.ChildPGID)
 
 	// poll CH API until ready
 	c := newClient(socketPath)
@@ -523,7 +523,7 @@ func TestNetnsRuntime_CHOrphanKill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not locate CH pid: %v", err)
 	}
-	t.Logf("CH pid: %d (expected in pgid %d)", chPID, rt.childPgid)
+	t.Logf("CH pid: %d (expected in pgid %d)", chPID, rt.ChildPGID)
 
 	// Verify CH is alive before Stop.
 	if killErr := syscall.Kill(chPID, 0); killErr != nil {

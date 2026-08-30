@@ -511,6 +511,13 @@ func applyProjectConfig(f *sandboxCreateFlags) error {
 		}
 	}
 
+	// Nested: explicit --nested flag wins (security contract D-N3N-02: nested
+	// must be opt-in). Config provides a per-repo default when the flag was
+	// absent. Once set, it is never cleared: f.nestedVirt is a one-way latch.
+	if !f.nestedVirt && cfg.Sandbox.Nested {
+		f.nestedVirt = true
+	}
+
 	return nil
 }
 
@@ -2009,6 +2016,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		caps.DiskPath, caps.ExtraDisks, caps.Cmdline, caps.CHBin, caps.SocketDir, bootWorkspace != nil, len(bootExtraDisks),
 		len(namedDiskMounts),
 		workspaceGuestPathFor(bootWorkspace), bootLiveMounts, caps.VirtiofsdPath,
+		f.nestedVirt,
 		mcpOAuthRefreshConfigs); handoffErr != nil {
 		slog.Warn("sandbox create: supervisor handoff failed; broker will not survive CLI exit",
 			"sandbox", sb.ID, "err", handoffErr)
@@ -2096,6 +2104,7 @@ func handoffHumanSupervisor(
 	workspaceGuestPath string,
 	liveMounts []domain.LiveMount,
 	virtiofsdPath string,
+	nestedVirt bool,
 	mcpOAuthRefreshConfigs []service.MCPOAuthRefreshConfig,
 ) error {
 	if diskPath == "" {
@@ -2118,6 +2127,7 @@ func handoffHumanSupervisor(
 		diskPath, extraDisks, cmdline, chBin, socketDir,
 		hasWorkspace, workspaceDiskIndex, numNamedDisks, workspaceGuestPath,
 		liveMounts, virtiofsdPath,
+		nestedVirt,
 		mcpOAuthRefreshConfigs,
 	)
 	if err := supervisor.WriteSpawnSpec(stateDir, cfg); err != nil {
@@ -2173,6 +2183,7 @@ func buildHumanSupervisorConfig(
 	workspaceGuestPath string, // GIT-SEED: git identity seed target
 	liveMounts []domain.LiveMount,
 	virtiofsdPath string,
+	nestedVirt bool,
 	mcpOAuthRefreshConfigs []service.MCPOAuthRefreshConfig,
 ) supervisor.Config {
 	// ResizableDiskIndices: named-volume disks occupy ExtraDisks[0..numNamedDisks-1]
@@ -2215,6 +2226,7 @@ func buildHumanSupervisorConfig(
 		// when the store is absent the supervisor logs creds_absent and
 		// carries on, so there is no cost for sandboxes that need no cred.
 		CredsFile:              service.DefaultDedicatedCredStorePath(),
+		NestedVirt:             nestedVirt,
 		MCPOAuthRefreshConfigs: mcpOAuthRefreshConfigs,
 	}
 }

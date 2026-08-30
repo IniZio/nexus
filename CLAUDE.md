@@ -27,3 +27,43 @@ Need a single package? Wrap it the same way rather than dropping the guards:
 Have real headroom and want speed? Raise the caps explicitly:
 
     make test GOTEST_P=6 GOTEST_MEM_MAX=24G
+
+### `make build` produces no binary
+
+`make build` runs `go build ./...`, which type-checks every package and
+**discards the results**. It never writes a CLI binary. The `./nexus3` file in
+the repo root is a leftover from some earlier explicit build and can be
+arbitrarily old, so installing it after `make build` silently ships stale code —
+your change appears to have no effect and the bug looks like it is in your new
+code.
+
+To produce a runnable CLI:
+
+    go build -o nexus3 ./cmd/nexus3
+
+Install it with an atomic rename. A plain `cp` over the live path fails with
+`Text file busy`, because running supervisors are executing that binary; the
+rename leaves them on their old inode, which is what you want:
+
+    cp nexus3 ~/.local/bin/nexus3.new && mv -f ~/.local/bin/nexus3.new ~/.local/bin/nexus3
+
+`make vet` and `make test` remain the right way to check and test — only the
+binary-producing step needs the explicit `-o`.
+
+## Developing nexus3 inside nexus3
+
+nexus3 is developed in its own product: a unit of work gets a git worktree, a
+herdr workspace, and a nexus3 VM with an agent running inside it. That workflow —
+the herdr verbs, nested virtualisation, guest toolchain, agent briefs, and the
+traps peculiar to a self-hosting sandbox — is documented in the
+`nexus3-slice-sandbox` skill (`.claude/skills/nexus3-slice-sandbox/`), which is
+the authoritative source. Consult it before delegating work to a sandbox or
+diagnosing a sandbox that came up wrong, rather than reconstructing the workflow
+from the code.
+
+One fact from there is worth stating here because it decides whether the rule
+above can be followed at all: **the guest image may not ship `make` or `gcc`.**
+When it does not, `make test` is unavailable and `-race` cannot work, since the
+race detector needs cgo. Install them (`apt-get install -y build-essential`)
+rather than falling back to bare `go` commands — the fallback drops the guards
+described above and silently disables the race detector.

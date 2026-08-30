@@ -130,6 +130,17 @@ type Config struct {
 	// applies the cloudhypervisor driver default (1 vCPU).
 	BootVCPUs uint32
 
+	// NestedVirt enables KVM nested virtualisation in the guest VM so the
+	// guest can itself run hardware-accelerated VMs (e.g. `nexus3 create
+	// --nested` inside a sandbox). The zero value (false) means nested-OFF.
+	//
+	// Security contract D-N3N-02: nested MUST be explicitly opt-in and
+	// default-off at every hop. The CH driver sends CpusConfig.Nested=false
+	// EXPLICITLY when this is false — it is never omitted — because CH v53
+	// treats a missing Nested field as nested-ON by default. Absent or zero
+	// at any point in the chain must mean nested-OFF, never nested-ON.
+	NestedVirt bool
+
 	// HasWorkspaceDisk indicates the supervisor's CHDriver was constructed with a
 	// workspace disk in ExtraDisks. When false, the disk auto-resize axis is not
 	// registered regardless of GovBounds.DiskMaxBytes — preventing GrowDisk from
@@ -1612,5 +1623,6 @@ func buildSupervisorDriverConfig(
 		LiveMounts:        cfg.LiveMounts,
 		VirtiofsdPath:     cfg.VirtiofsdPath,
 		FreePageReporting: true,
+		NestedVirt:        cfg.NestedVirt,
 	}
 }

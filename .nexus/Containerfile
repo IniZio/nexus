@@ -19,7 +19,15 @@ LABEL description="nexus3 guest image with inner-VM substrate (cloud-hypervisor,
 # virtiofsd: virtio-fs daemon for guest<->host filesystem sharing
 # iproute2: ip/tc tools expected by network setup scripts
 # xz-utils: decompressing Go tarball and other archives
+# build-essential: make + gcc. CLAUDE.md requires this repo be built and tested
+#   through `make build` / `make vet` / `make test` rather than bare go commands,
+#   and `make test` runs `-race`, which needs cgo and therefore a C toolchain.
+#   Without these an in-guest agent cannot follow the repo's own build rule and
+#   silently falls back to bare go commands — or apt-installs them itself, which
+#   is how two sandboxes built from this same file ended up with different
+#   toolchains and validated against different test configurations.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
         ca-certificates \
         curl \
         git \

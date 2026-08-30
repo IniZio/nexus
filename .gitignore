@@ -16,6 +16,13 @@ coverage.html
 
 # Development metadata
 .claude/
+# ...except repo-scoped skills, which describe how this repo is developed and
+# are useless to a collaborator if they do not survive a clone.
+!.claude/
+.claude/*
+!.claude/skills/
+# ...but not eval scratch output, which is throwaway run artefacts.
+.claude/skills/*-workspace/
 .codegraph/
 .groundwork/
 

@@ -29,9 +29,10 @@ func skipIfInGuest(t *testing.T) {
 	}
 }
 
-// TestEnsureCacheDisk_CreateThenReuse verifies that EnsureCacheDisk creates
-// the ext4 image on the first call and reuses it (without recreating) on the
-// second call, confirmed via inode stability.
+// TestEnsureCacheDisk_CreateThenReuse verifies that SelectCacheDisks creates
+// the ext4 image on first call and reuses it (without recreating) on the
+// second call when the prior sync was confirmed clean. Inode stability is the
+// proof that no recreation occurred.
 func TestEnsureCacheDisk_CreateThenReuse(t *testing.T) {
 	skipIfInGuest(t)
 	if _, err := exec.LookPath("mke2fs"); err != nil {
@@ -41,10 +42,12 @@ func TestEnsureCacheDisk_CreateThenReuse(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
 
-	spec1, err := EnsureCacheDisk(ctx, dataDir, "npm")
+	// First lease: creates the ext4 image.
+	specs1, release1, err := SelectCacheDisks(ctx, dataDir, []string{"npm"})
 	if err != nil {
-		t.Fatalf("first EnsureCacheDisk: %v", err)
+		t.Fatalf("first SelectCacheDisks: %v", err)
 	}
+	spec1 := specs1[0]
 
 	if spec1.EcosystemKey != "npm" {
 		t.Errorf("EcosystemKey: got %q want %q", spec1.EcosystemKey, "npm")
@@ -56,6 +59,12 @@ func TestEnsureCacheDisk_CreateThenReuse(t *testing.T) {
 		t.Fatal("ImagePath is empty")
 	}
 
+	// Simulate BuildInVM's confirmed-clean-sync signal so the next lease
+	// reuses rather than wipes.
+	if err := markCacheDiskClean(spec1.ImagePath); err != nil {
+		t.Fatalf("markCacheDiskClean: %v", err)
+	}
+
 	// Capture inode and mtime to detect any recreation.
 	fi1, err := os.Stat(spec1.ImagePath)
 	if err != nil {
@@ -64,11 +73,17 @@ func TestEnsureCacheDisk_CreateThenReuse(t *testing.T) {
 	ino1 := fi1.Sys().(*syscall.Stat_t).Ino
 	mtime1 := fi1.ModTime()
 
-	// Second call must reuse the existing image.
-	spec2, err := EnsureCacheDisk(ctx, dataDir, "npm")
+	// Release the first lease before taking the second.
+	release1()
+
+	// Second lease: must reuse the existing image (same inode, same mtime).
+	specs2, release2, err := SelectCacheDisks(ctx, dataDir, []string{"npm"})
 	if err != nil {
-		t.Fatalf("second EnsureCacheDisk: %v", err)
+		t.Fatalf("second SelectCacheDisks: %v", err)
 	}
+	defer release2()
+	spec2 := specs2[0]
+
 	if spec2.ImagePath != spec1.ImagePath {
 		t.Errorf("ImagePath changed between calls: %q vs %q", spec1.ImagePath, spec2.ImagePath)
 	}
@@ -127,12 +142,12 @@ func TestSelectCacheDisks_ExactSet(t *testing.T) {
 	}
 }
 
-// TestSelectCacheDisks_UnknownKey verifies that EnsureCacheDisk also errors
-// for an unknown key directly.
+// TestSelectCacheDisks_UnknownKey verifies that SelectCacheDisks errors for
+// an unknown ecosystem key.
 func TestSelectCacheDisks_UnknownKey(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
-	_, err := EnsureCacheDisk(ctx, dataDir, "maven")
+	_, _, err := SelectCacheDisks(ctx, dataDir, []string{"maven"})
 	if err == nil {
 		t.Fatal("expected error for unknown key 'maven', got nil")
 	}
@@ -171,10 +186,183 @@ func TestAllEcosystemKeys(t *testing.T) {
 	}
 }
 
+// TestCacheDiskDirtyMarker_RoundTrip is a fast, mke2fs-free unit test of the
+// fencing-marker primitives themselves: a fresh path is not dirty, marking it
+// dirty makes cacheDiskIsDirty true, and marking it clean clears it again.
+func TestCacheDiskDirtyMarker_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	imgPath := filepath.Join(dir, "fake.ext4")
+	if err := os.WriteFile(imgPath, []byte("not a real ext4 image"), 0o644); err != nil {
+		t.Fatalf("write fake image: %v", err)
+	}
+
+	if cacheDiskIsDirty(imgPath) {
+		t.Fatal("fresh image path reported dirty before any marker was written")
+	}
+
+	if err := markCacheDiskDirty(imgPath); err != nil {
+		t.Fatalf("markCacheDiskDirty: %v", err)
+	}
+	if !cacheDiskIsDirty(imgPath) {
+		t.Fatal("cacheDiskIsDirty false after markCacheDiskDirty")
+	}
+	if _, err := os.Stat(dirtyMarkerPath(imgPath)); err != nil {
+		t.Fatalf("dirty marker file missing on disk: %v", err)
+	}
+
+	if err := markCacheDiskClean(imgPath); err != nil {
+		t.Fatalf("markCacheDiskClean: %v", err)
+	}
+	if cacheDiskIsDirty(imgPath) {
+		t.Fatal("cacheDiskIsDirty true after markCacheDiskClean")
+	}
+
+	// markCacheDiskClean must be a no-op (not an error) when no marker is
+	// present — e.g. a second, redundant clean-teardown call.
+	if err := markCacheDiskClean(imgPath); err != nil {
+		t.Fatalf("markCacheDiskClean on already-clean image: %v", err)
+	}
+}
+
+// TestCacheDisk_DirtyLease_WipesOnNextReuse is the TBD-1 mutation-proof
+// regression test. It reproduces the exact scenario from the D-DC-31 debugfs
+// forensics: a builder VM writes real data into an ecosystem cache disk, then
+// dies without ever confirming a clean sync (the guest-SIGKILL case — no
+// in-guest or host teardown code runs). The NEXT lease of that same slot must
+// detect the fencing marker left dirty and wipe the disk rather than reuse it,
+// so a later build can never observe the poisoned pre-crash state as a warm
+// cache.
+//
+// The contrasting clean-teardown case is exercised in the same test to prove
+// the mechanism does not simply wipe on every reuse (which would defeat
+// caching and pass trivially): once markCacheDiskClean is called — the signal
+// BuildInVM only sends after lifecycle.SyncAndStop confirms success — the next
+// lease must preserve the existing data.
+func TestCacheDisk_DirtyLease_WipesOnNextReuse(t *testing.T) {
+	skipIfInGuest(t)
+	if _, err := exec.LookPath("mke2fs"); err != nil {
+		t.Skip("mke2fs not available; skipping cache disk wipe test")
+	}
+	if _, err := exec.LookPath("debugfs"); err != nil {
+		t.Skip("debugfs not available (install e2fsprogs)")
+	}
+
+	ctx := context.Background()
+	writeMarker := func(t *testing.T, imgPath string) {
+		t.Helper()
+		markerHost := filepath.Join(t.TempDir(), "payload.txt")
+		if err := os.WriteFile(markerHost, []byte("pre-crash cache payload"), 0o644); err != nil {
+			t.Fatalf("write marker payload: %v", err)
+		}
+		cmd := exec.CommandContext(ctx, "debugfs", "-w", "-R",
+			"write "+markerHost+" payload.txt", imgPath)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("debugfs write: %v\n%s", err, out)
+		}
+	}
+	markerPresent := func(t *testing.T, imgPath string) bool {
+		t.Helper()
+		cmd := exec.CommandContext(ctx, "debugfs", "-R", "cat payload.txt", imgPath)
+		out, _ := cmd.CombinedOutput()
+		return strings.Contains(string(out), "pre-crash cache payload")
+	}
+
+	t.Run("dirty lease is wiped on next reuse", func(t *testing.T) {
+		dataDir := t.TempDir()
+
+		specs, release, err := SelectCacheDisks(ctx, dataDir, []string{"npm"})
+		if err != nil {
+			t.Fatalf("SelectCacheDisks (create): %v", err)
+		}
+		spec := specs[0]
+		// SelectCacheDisks' first-use path leaves the disk fenced dirty until
+		// a clean sync is confirmed.
+		if !cacheDiskIsDirty(spec.ImagePath) {
+			t.Fatal("newly created cache disk must be fenced dirty until a clean sync is confirmed")
+		}
+
+		writeMarker(t, spec.ImagePath)
+		if !markerPresent(t, spec.ImagePath) {
+			t.Fatal("test setup failed: marker payload not readable back")
+		}
+
+		fi1, err := os.Stat(spec.ImagePath)
+		if err != nil {
+			t.Fatalf("stat before reuse: %v", err)
+		}
+		ino1 := fi1.Sys().(*syscall.Stat_t).Ino
+
+		// Simulate the guest-SIGKILL exit path: markCacheDiskClean is never
+		// called. Release the lease WITHOUT clearing the dirty marker so the
+		// next lease sees the dirty fence and wipes.
+		release()
+
+		specs2, release2, err := SelectCacheDisks(ctx, dataDir, []string{"npm"})
+		if err != nil {
+			t.Fatalf("SelectCacheDisks (reuse after unclean death): %v", err)
+		}
+		defer release2()
+		spec2 := specs2[0]
+
+		if spec2.ImagePath != spec.ImagePath {
+			t.Fatalf("ImagePath changed: %q vs %q", spec.ImagePath, spec2.ImagePath)
+		}
+		fi2, err := os.Stat(spec2.ImagePath)
+		if err != nil {
+			t.Fatalf("stat after reuse: %v", err)
+		}
+		ino2 := fi2.Sys().(*syscall.Stat_t).Ino
+		if ino2 == ino1 {
+			t.Error("image inode unchanged: dirty lease was NOT wiped on next reuse")
+		}
+		if markerPresent(t, spec2.ImagePath) {
+			t.Error("pre-crash payload survived reuse: dirty lease was not wiped — poisoned cache would be served as a hit")
+		}
+		// The fresh lease handed out by the wipe path must itself be fenced
+		// dirty again, not silently treated as already clean.
+		if !cacheDiskIsDirty(spec2.ImagePath) {
+			t.Error("re-created disk after wipe must be fenced dirty until its own clean sync is confirmed")
+		}
+	})
+
+	t.Run("clean lease is preserved on next reuse", func(t *testing.T) {
+		dataDir := t.TempDir()
+
+		specs, release, err := SelectCacheDisks(ctx, dataDir, []string{"npm"})
+		if err != nil {
+			t.Fatalf("SelectCacheDisks (create): %v", err)
+		}
+		spec := specs[0]
+		writeMarker(t, spec.ImagePath)
+
+		// Simulate BuildInVM's confirmed-clean-sync signal.
+		if err := markCacheDiskClean(spec.ImagePath); err != nil {
+			t.Fatalf("markCacheDiskClean: %v", err)
+		}
+		release()
+
+		specs2, release2, err := SelectCacheDisks(ctx, dataDir, []string{"npm"})
+		if err != nil {
+			t.Fatalf("SelectCacheDisks (reuse after clean sync): %v", err)
+		}
+		defer release2()
+		spec2 := specs2[0]
+
+		if spec2.ImagePath != spec.ImagePath {
+			t.Fatalf("ImagePath changed: %q vs %q", spec.ImagePath, spec2.ImagePath)
+		}
+		if !markerPresent(t, spec2.ImagePath) {
+			t.Error("cache payload lost on reuse after a confirmed clean sync — should have been preserved")
+		}
+	})
+}
+
 // TestWarmReuse_MarkerSurvives is the warm-reuse proof: it writes a marker
-// file into the ext4 cache disk via debugfs (offline), then a second
-// EnsureCacheDisk call returns the same disk, and we verify the marker is
-// still present. This proves that consecutive runs reuse disk state.
+// file into the ext4 cache disk via debugfs (offline), simulates a confirmed-
+// clean-sync via markCacheDiskClean, then a second SelectCacheDisks call
+// returns the same disk, and we verify the marker is still present. This
+// proves that consecutive runs with a confirmed clean sync reuse disk state
+// rather than wiping it.
 func TestWarmReuse_MarkerSurvives(t *testing.T) {
 	skipIfInGuest(t)
 	if _, err := exec.LookPath("mke2fs"); err != nil {
@@ -187,21 +375,20 @@ func TestWarmReuse_MarkerSurvives(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
 
-	// First call: create the go cache disk.
-	spec, err := EnsureCacheDisk(ctx, dataDir, "go")
+	// First lease: create the go cache disk.
+	specs, release, err := SelectCacheDisks(ctx, dataDir, []string{"go"})
 	if err != nil {
-		t.Fatalf("EnsureCacheDisk (create): %v", err)
+		t.Fatalf("SelectCacheDisks (create): %v", err)
 	}
+	spec := specs[0]
 
 	// Write a marker file into the ext4 image using debugfs write command.
-	// We create a temp marker file on the host, then inject it into the image.
 	markerHost := filepath.Join(t.TempDir(), "g5-marker.txt")
 	markerContent := "g5-warm-reuse-proof"
 	if err := os.WriteFile(markerHost, []byte(markerContent), 0o644); err != nil {
 		t.Fatalf("write marker file: %v", err)
 	}
 
-	// debugfs -w -R "write <host> <guest>" <image>
 	writeCmd := exec.CommandContext(ctx, "debugfs", "-w", "-R",
 		"write "+markerHost+" g5-marker.txt",
 		spec.ImagePath,
@@ -210,11 +397,21 @@ func TestWarmReuse_MarkerSurvives(t *testing.T) {
 		t.Fatalf("debugfs write marker: %v\n%s", err, out)
 	}
 
-	// Second call: must reuse the same disk (no recreation).
-	spec2, err := EnsureCacheDisk(ctx, dataDir, "go")
-	if err != nil {
-		t.Fatalf("EnsureCacheDisk (reuse): %v", err)
+	// Simulate BuildInVM's confirmed-clean-sync signal — only then is it safe
+	// to reuse the disk. Without this call the next lease would wipe the disk.
+	if err := markCacheDiskClean(spec.ImagePath); err != nil {
+		t.Fatalf("markCacheDiskClean: %v", err)
 	}
+	release()
+
+	// Second lease: must reuse the same disk (no recreation).
+	specs2, release2, err := SelectCacheDisks(ctx, dataDir, []string{"go"})
+	if err != nil {
+		t.Fatalf("SelectCacheDisks (reuse): %v", err)
+	}
+	defer release2()
+	spec2 := specs2[0]
+
 	if spec2.ImagePath != spec.ImagePath {
 		t.Fatalf("ImagePath changed: %q → %q", spec.ImagePath, spec2.ImagePath)
 	}
@@ -228,12 +425,8 @@ func TestWarmReuse_MarkerSurvives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("debugfs cat marker: %v\n%s", err, out)
 	}
-	// debugfs prefixes output with a version banner line; strip it.
-	got := strings.TrimPrefix(string(out), "debugfs "+strings.SplitN(string(out), "\n", 2)[0]+"\n")
-	// More robust: find the last line that contains the marker content.
 	outStr := string(out)
 	if !strings.Contains(outStr, markerContent) {
 		t.Errorf("warm-reuse marker not found in debugfs output: got %q want to contain %q", outStr, markerContent)
 	}
-	_ = got
 }

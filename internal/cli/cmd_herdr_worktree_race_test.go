@@ -72,7 +72,7 @@ func TestHerdrWorktreeSandboxConcurrentCreateConverges(t *testing.T) {
 	// Use a real ULID sandbox ID so HerdrSpaceGetByHandle succeeds after create.
 	stubID := domain.NewSandboxID()
 
-	createFn := func(_ context.Context, h, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies) error {
+	createFn := func(_ context.Context, h, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
 		createCount.Add(1)
 		started <- struct{}{}
 		<-release // block until test releases
@@ -100,7 +100,7 @@ func TestHerdrWorktreeSandboxConcurrentCreateConverges(t *testing.T) {
 		defer wg.Done()
 		var buf bytes.Buffer
 		errA = herdrWorktreeSandbox(ctx, "wA", &buf, storeRoot,
-			false, false, false, createFn, getFn)
+			false, false, false, false /*nestedFlag*/, createFn, getFn)
 	}()
 
 	// Wait until caller 1 has started its create (holds the lock).
@@ -115,7 +115,7 @@ func TestHerdrWorktreeSandboxConcurrentCreateConverges(t *testing.T) {
 		defer wg.Done()
 		var buf bytes.Buffer
 		errB = herdrWorktreeSandbox(ctx, "wB", &buf, storeRoot,
-			false, false, false, createFn, getFn)
+			false, false, false, false /*nestedFlag*/, createFn, getFn)
 	}()
 
 	// Give caller 2 a moment to reach the lock acquire and block.

@@ -1,0 +1,26 @@
+{
+  "skill_name": "nexus3-slice-sandbox",
+  "evals": [
+    {
+      "id": 0,
+      "name": "dispatch-new-slice",
+      "prompt": "I want to work on the buildkit crash-consistency thing in a separate VM so it doesn't disturb what I've got running. Set up a worktree sandbox for it off develop and get an agent going on it. The motive is nexus3-buildkit-poisoned-snapshot-on-vm-death. Don't actually leave it running, just show me the exact commands you'd run in order and what you'd check after each one.",
+      "expected_output": "Uses herdr worktree create (not workspace create --cwd), reads ids from JSON rather than predicting, verifies is_linked_worktree, knows the auto-provision hook binds the sandbox, dispatches via nexus3 herdr agent, and points the brief at the .groundwork absolute path.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "diagnose-missing-make",
+      "prompt": "the agent i started in one of the nexus3 worktree sandboxes just told me it couldn't run `make test` so it ran go build and go vet by hand instead. is that ok? and why is make missing, i thought the containerfile installs everything",
+      "expected_output": "Identifies that the guest image ships no make/gcc, that -race needs cgo so it was silently off, that this causes toolchain divergence between sandboxes, and recommends apt-get install build-essential in the brief. Should NOT say it is fine.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "diagnose-stale-binary",
+      "prompt": "im going mad here. i added a --dry-run flag to sandbox create in cmd_sandbox.go, ran make build, and the flag just gets treated like a positional arg. ive reread the parser like four times and the case statement is definitely there. what am i missing",
+      "expected_output": "Recognises the stale-binary trap: make build runs go build ./... which writes no binary, so ./nexus3 is stale. Recommends go build -o nexus3 ./cmd/nexus3 and the atomic-rename install because of Text file busy.",
+      "files": []
+    }
+  ]
+}

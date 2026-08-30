@@ -44,6 +44,26 @@ func Register(c Command) {
 	commands[c.Name] = c
 }
 
+// resolveCommandName picks the registry key the argument list addresses, and
+// returns it with the arguments that follow it.
+//
+// Command names are usually a single token, but a command may register a
+// two-token name ("sandbox agent-upgrade") to hang a subcommand off an existing
+// verb without editing that verb's dispatcher. Such a name is only reachable if
+// dispatch tries the two-token key BEFORE the one-token key — otherwise the
+// parent verb ("sandbox") wins, its own switch does not know the subcommand,
+// and the registered command is dead code that still prints in the usage
+// banner. Longest match first is what makes registration alone sufficient.
+func resolveCommandName(args []string) (name string, rest []string) {
+	if len(args) >= 2 {
+		two := args[0] + " " + args[1]
+		if _, ok := Lookup(two); ok {
+			return two, args[2:]
+		}
+	}
+	return args[0], args[1:]
+}
+
 // Lookup returns the command registered under name, if any.
 func Lookup(name string) (Command, bool) {
 	registryMu.RLock()

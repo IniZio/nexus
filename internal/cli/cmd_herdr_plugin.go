@@ -460,10 +460,11 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if len(rest) == 0 {
 			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: herdr workspace ID required"}
 		}
-		// Parse --auto / --conditional flags BEFORE the positional workspace ID.
-		// --auto activates the repo-level predicate (c); --conditional activates
-		// the legacy SourceWorkspaceID predicate. The two flags are distinct.
-		rest, conditional, auto := herdrWorktreeSandboxParseArgs(rest)
+		// Parse --auto / --conditional / --nested flags BEFORE the positional
+		// workspace ID. --auto activates the repo-level predicate (c);
+		// --conditional activates the legacy SourceWorkspaceID predicate;
+		// --nested is the operator opt-in for nested virtualisation (D-N3N-02).
+		rest, conditional, auto, nestedFlag := herdrWorktreeSandboxParseArgs(rest)
 		if len(rest) == 0 {
 			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: herdr workspace ID required"}
 		}
@@ -480,8 +481,8 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if exeErr != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin worktree-sandbox: resolve executable: " + exeErr.Error(), Err: exeErr}
 		}
-		createFn := func(ctx context.Context, handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies) error {
-			args := herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal, extraMounts, secrets, allowedRepo, pathPolicies)
+		createFn := func(ctx context.Context, handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, nested bool) error {
+			args := herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal, extraMounts, secrets, allowedRepo, pathPolicies, nested)
 			cmd := herdrExecCommandContext(ctx, exe, append([]string{"sandbox", "create"}, args...)...)
 			cmd.Stdout = out.w
 			cmd.Stderr = out.w
@@ -490,7 +491,7 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		getFn := func(ctx context.Context, handle string) (domain.Sandbox, error) {
 			return svc.Get(ctx, handle)
 		}
-		return herdrWorktreeSandbox(ctx, workspaceID, out.w, storeRoot, true, conditional, auto, createFn, getFn)
+		return herdrWorktreeSandbox(ctx, workspaceID, out.w, storeRoot, true, conditional, auto, nestedFlag, createFn, getFn)
 
 	case "backfill-repo-root":
 		storeRoot, err := store.DefaultRoot()
@@ -726,6 +727,50 @@ const herdrDefaultImage = "nexus3-agent-base"
 // always uses exec.CommandContext; tests override it to capture args without
 // spawning a real subprocess.
 var herdrExecCommandContext = exec.CommandContext
+
+// herdrPaneExistsFn is the injectable seam for checking whether a recorded
+// guest pane is still alive in a given workspace. Tests override it to avoid
+// spawning a real herdr process.
+//
+// Fail-safe direction: if herdr is unreachable or the response cannot be
+// parsed, the production implementation returns false (assume the pane is
+// gone), which causes the caller to open a new guest pane. This degrades to
+// the cosmetic extra-pane behaviour we have today rather than silently
+// dispatching the agent into a pane that no longer exists (a silent no-op
+// where the operator sees the agent start but nothing happens).
+var herdrPaneExistsFn = herdrPaneExists
+
+// herdrPaneExists reports whether paneID appears in `herdr pane list
+// --workspace workspaceID`. See herdrPaneExistsFn for the fail-safe rationale.
+func herdrPaneExists(ctx context.Context, herdrBin, workspaceID, paneID string) bool {
+	if herdrBin == "" || workspaceID == "" || paneID == "" {
+		return false
+	}
+	out, err := herdrExecCommandContext(ctx, herdrBin, "pane", "list", "--workspace", workspaceID).Output()
+	if err != nil {
+		slog.Warn("space-create: pane-exists: pane list failed; assuming pane gone",
+			"workspace_id", workspaceID, "pane_id", paneID, "err", err)
+		return false
+	}
+	var resp struct {
+		Result struct {
+			Panes []struct {
+				PaneID string `json:"pane_id"`
+			} `json:"panes"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		slog.Warn("space-create: pane-exists: parse pane list; assuming pane gone",
+			"workspace_id", workspaceID, "pane_id", paneID, "err", err)
+		return false
+	}
+	for _, p := range resp.Result.Panes {
+		if p.PaneID == paneID {
+			return true
+		}
+	}
+	return false
+}
 
 // worktreeGitRunner is the seam for running git subcommands in tests.
 // Production code uses exec.Command("git", "-C", dir, args...); tests override
@@ -1596,6 +1641,20 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc he
 	}
 	if reusable {
 		fmt.Fprintf(w, "reusing space: label=%s workspace_id=%s\n", existing.SpaceLabel, existing.HerdrWorkspaceID)
+		// If the binding records a guest pane that is still alive, adopt it
+		// rather than opening another. A stored pane ID is a pointer the
+		// operator can invalidate at any time (pane closed, workspace restarted).
+		// Nothing tells nexus3 when that happens, so we probe liveness first.
+		//
+		// Fail-safe: if the pane probe errors (herdr unreachable, unexpected
+		// shape), herdrPaneExistsFn returns false and we fall through to open a
+		// new pane. This degrades to the pre-fix cosmetic extra-pane behaviour
+		// rather than silently dispatching the agent into a pane that does not
+		// exist (a silent no-op where nothing visible happens).
+		if existing.GuestPaneID != "" && herdrPaneExistsFn(ctx, herdrBin, existing.HerdrWorkspaceID, existing.GuestPaneID) {
+			fmt.Fprintf(w, "pane already live: pane_id=%s\n", existing.GuestPaneID)
+			return nil
+		}
 		paneID, err := herdrOpenGuestShellPane(ctx, herdrBin, ref, existing.HerdrWorkspaceID, "", focus)
 		if err != nil {
 			return err
@@ -2886,7 +2945,7 @@ func herdrWorkspaceRename(ctx context.Context, herdrBin, workspaceID, label stri
 // the main repo's .git directory so git is fully functional inside the guest
 // (D-PD-99-git: worktree .git resolution requires the main .git to be
 // reachable at its host absolute path inside the VM).
-func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies) []string {
+func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, nested bool) []string {
 	args := []string{imageFlag, imageVal, "--mount", mountSpec}
 	for _, m := range extraMounts {
 		args = append(args, "--mount", m)
@@ -2921,6 +2980,9 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 		if err == nil {
 			args = append(args, "--egress-policy-json", string(ppJSON))
 		}
+	}
+	if nested {
+		args = append(args, "--nested")
 	}
 	args = append(args, "--agent", "claude-code", "--egress", "open", handle)
 	return args
@@ -3006,6 +3068,50 @@ func herdrWorktreeGitDirMount(worktreePath string) string {
 		return "" // unexpected structure; bail rather than mount the wrong dir
 	}
 	return gitDir + ":" + gitDir
+}
+
+// herdrWorktreeGroundworkMount returns a mount spec for the main repo's
+// .groundwork directory into a linked-worktree sandbox.
+//
+// .groundwork/ is gitignored and has no tracked files, so a linked worktree
+// never contains it. Without this mount, in-guest agents cannot read the motive
+// charter, tickets, or open items that drive their work.
+//
+// The spec is "<mainRepo>/.groundwork:<mainRepo>/.groundwork" — same absolute
+// path host and guest, read-write, so in-guest agents can record evidence into
+// ticket files. Mirrors the shape of herdrWorktreeGitDirMount.
+//
+// Returns "" when: (a) the worktreePath is not a linked worktree, (b) the
+// .git pointer structure is unexpected, or (c) the .groundwork directory does
+// not exist in the main repo root. Never mounts a path that is not present.
+func herdrWorktreeGroundworkMount(worktreePath string) string {
+	// Reuse the same gitdir-file parse that herdrWorktreeGitDirMount uses.
+	data, err := os.ReadFile(filepath.Join(worktreePath, ".git"))
+	if err != nil {
+		return "" // not a linked worktree or unreadable
+	}
+	line := strings.TrimSpace(string(data))
+	const prefix = "gitdir: "
+	if !strings.HasPrefix(line, prefix) {
+		return "" // main checkout (directory) or malformed file
+	}
+	target := strings.TrimPrefix(line, prefix)
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(worktreePath, target)
+	}
+	target = filepath.Clean(target)
+	worktreesDir := filepath.Dir(target)
+	gitDir := filepath.Dir(worktreesDir)
+	if filepath.Base(worktreesDir) != "worktrees" {
+		return "" // unexpected structure; bail
+	}
+	// gitDir is <mainRepo>/.git; its parent is the main repo root.
+	mainRepo := filepath.Dir(gitDir)
+	groundwork := filepath.Join(mainRepo, ".groundwork")
+	if _, statErr := os.Stat(groundwork); statErr != nil {
+		return "" // .groundwork does not exist; nothing to mount
+	}
+	return groundwork + ":" + groundwork
 }
 
 // worktreeCommonGitDir returns the main repo's common git directory from a
@@ -3281,8 +3387,9 @@ func isHerdrWorktreeHandle(handle string) bool {
 	return strings.HasPrefix(handle, herdrWorktreeHandlePrefix)
 }
 
-// herdrWorktreeSandboxParseArgs strips --auto / --conditional flags from the
-// beginning of args and returns the remaining positional args and mode flags.
+// herdrWorktreeSandboxParseArgs strips --auto / --conditional / --nested flags
+// from the beginning of args and returns the remaining positional args and mode
+// flags.
 //
 // --auto    activates the repo-level predicate (predicate c): at least one
 //
@@ -3294,10 +3401,16 @@ func isHerdrWorktreeHandle(handle string) bool {
 //	backward compatibility with any scripts that relied on the old
 //	behaviour; the two flags are mutually exclusive in practice.
 //
+// --nested is the operator opt-in for nested virtualisation (D-N3N-02). An
+//
+//	operator-supplied flag is safe because it is not branch-controlled.
+//	The effective nested value is (--nested flag) OR (sandbox.nested in
+//	the trusted-ref nexus3.yaml). See herdrWorktreeSandbox.
+//
 // Called by the "worktree-sandbox" case in runHerdrPlugin so flag parsing
 // happens before the workspace ID is read, preventing the flags from being
 // consumed as the workspace ID.
-func herdrWorktreeSandboxParseArgs(args []string) (rest []string, conditional bool, auto bool) {
+func herdrWorktreeSandboxParseArgs(args []string) (rest []string, conditional bool, auto bool, nested bool) {
 	for len(args) > 0 {
 		switch args[0] {
 		case "--auto":
@@ -3306,11 +3419,14 @@ func herdrWorktreeSandboxParseArgs(args []string) (rest []string, conditional bo
 		case "--conditional":
 			conditional = true
 			args = args[1:]
+		case "--nested":
+			nested = true
+			args = args[1:]
 		default:
-			return args, conditional, auto
+			return args, conditional, auto, nested
 		}
 	}
-	return args, conditional, auto
+	return args, conditional, auto, nested
 }
 
 // herdrWorktreeSandbox orchestrates the worktree-sandbox flow for one herdr workspace.
@@ -3357,7 +3473,11 @@ func herdrWorktreeSandbox(
 	openPane bool,
 	conditional bool,
 	auto bool,
-	createFn func(context.Context, string, string, string, string, []string, []string, string, domain.EgressPathPolicies) error,
+	// nestedFlag is the operator opt-in from the --nested CLI flag (D-N3N-02).
+	// The effective nested value is nestedFlag OR sandbox.nested from the
+	// trusted-ref nexus3.yaml. Either channel alone is sufficient.
+	nestedFlag bool,
+	createFn func(context.Context, string, string, string, string, []string, []string, string, domain.EgressPathPolicies, bool) error,
 	getFn func(context.Context, string) (domain.Sandbox, error),
 ) error {
 	// Step 1: idempotency.
@@ -3439,7 +3559,13 @@ func herdrWorktreeSandbox(
 	// inside the VM. Without this git fails with "not a git repository".
 	var extraMounts []string
 	if gitMount := herdrWorktreeGitDirMount(info.Path); gitMount != "" {
-		extraMounts = []string{gitMount}
+		extraMounts = append(extraMounts, gitMount)
+	}
+	// Mount the main repo's .groundwork dir (gitignored, never tracked) so
+	// in-guest agents can read motive charters, tickets, and open items.
+	// Read-write so agents can record evidence into their own ticket files.
+	if gwMount := herdrWorktreeGroundworkMount(info.Path); gwMount != "" {
+		extraMounts = append(extraMounts, gwMount)
 	}
 
 	// Step 6.1: per-handle create-intent lock.
@@ -3521,6 +3647,10 @@ func herdrWorktreeSandbox(
 		egressSecrets      []string
 		egressAllowedRepo  string
 		egressPathPolicies domain.EgressPathPolicies
+		// nestedCfg is the config channel opt-in (D-N3N-02). Read ONLY from the
+		// trusted ref — never from the worktree branch — so no branch can grant
+		// itself /dev/kvm. Effective nested = nestedFlag || nestedCfg.
+		nestedCfg bool
 	)
 	commonGitDir := worktreeCommonGitDir(info.Path)
 	if commonGitDir != "" {
@@ -3549,6 +3679,7 @@ func herdrWorktreeSandbox(
 				}
 				return nil
 			}
+			nestedCfg = parsedCfg.Sandbox.Nested
 		}
 	}
 	// Step 7: create sandbox. A 90 s context covers image pull, ext4 setup,
@@ -3558,7 +3689,7 @@ func herdrWorktreeSandbox(
 	// so the generic policy reaches MITM enforcement (D-PDE-16 worktree gap fix).
 	createCtx, createCancel := context.WithTimeout(ctx, herdrWorktreeCreateTimeout)
 	defer createCancel()
-	if err := createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts, egressSecrets, egressAllowedRepo, egressPathPolicies); err != nil {
+	if err := createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts, egressSecrets, egressAllowedRepo, egressPathPolicies, nestedFlag||nestedCfg); err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: sandbox create: %v\n", err)
 		if !failSafe {
 			return fmt.Errorf("worktree-sandbox: sandbox create: %w", err)
