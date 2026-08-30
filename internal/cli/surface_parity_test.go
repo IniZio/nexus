@@ -69,6 +69,14 @@ var surfaceMap = []surfaceEntry{
 	{CLIVerb: "shell", CanonicalMethods: []string{"service.Exec"}, MCPTools: nil},
 	{CLIVerb: "snapshot", CanonicalMethods: []string{"service.Snapshot", "service.SnapshotList", "service.SnapshotRemove"}, MCPTools: nil},
 	{CLIVerb: "ssh", CanonicalMethods: []string{"service.SSHConn"}, MCPTools: nil},
+	// supervisor-upgrade: replaces a running sandbox's supervisor with the
+	// current binary without rebooting the guest (motive
+	// nexus3-host-supervisor-hotswap, slice 07). Uses service.ResolveRef to
+	// find the sandbox and service.SetSupervisor to persist the replacement's
+	// identity; the handoff itself is driven by supervisor.RequestHandoff /
+	// supervisor.SpawnAdoptDetached, not a service.* method. CLI-only: no MCP
+	// tool exposes a planned supervisor swap.
+	{CLIVerb: "supervisor-upgrade", CanonicalMethods: []string{"service.ResolveRef", "service.SetSupervisor"}, MCPTools: nil},
 	{CLIVerb: "version", CLIOnly: true},
 	// volume noun manages named volumes directly via volumestore (not through
 	// service.*) — the canonical backing is the VolumeStore CRUD primitives.

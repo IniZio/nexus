@@ -17,7 +17,19 @@ import (
 // Mirrors newEgressTestSandbox in cmd_egress_test.go.
 func newSupervisorUpgradeTestSandbox(t *testing.T) (*service.Service, domain.Sandbox, string) {
 	t.Helper()
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// AF_UNIX sun_path is capped at 107 bytes. t.TempDir() embeds the full
+	// (sub)test name — e.g.
+	// ".../TestSupervisorUpgrade_PartialNetnsIdentity_EachFieldAloneRefuses/missing_only_CHAPISocket/001" —
+	// which, joined with "supervisors/<sandboxID>/supervisor.sock", blows the
+	// limit and net.Listen("unix", ...) fails with "bind: invalid argument"
+	// before the test ever reaches an assertion. A short, name-independent
+	// dir under /tmp keeps the eventual socket path well under the cap.
+	stateRoot, err := os.MkdirTemp("/tmp", "n3")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(stateRoot) })
+	t.Setenv("XDG_STATE_HOME", stateRoot)
 
 	svc, err := newSandboxService()
 	if err != nil {
