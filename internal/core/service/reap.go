@@ -2,18 +2,35 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/store"
+)
+
+// netnsRunEnv and netnsEnvAPISocket mirror
+// cloudhypervisor.NetnsRunEnv / the unexported netnsEnvAPISocket
+// (internal/core/driver/cloudhypervisor/ch_netns.go). They cannot be
+// imported directly: internal/core/driver/cloudhypervisor's test package
+// imports internal/core/recovery, which imports internal/core/service — so
+// service importing cloudhypervisor would close an import cycle at test-build
+// time. Values are the wire contract StartNetnsRuntime sets on every netns
+// child's own environ (ch_netns.go:227-233) and are effectively frozen ABI
+// between the two packages; NetnsEnvAPISocket is separately re-exported from
+// the same package for the same reason by internal/supervisor/netns_backfill.go.
+const (
+	netnsRunEnv       = "NEXUS3_NETNS_RUN"
+	netnsEnvAPISocket = "NEXUS3_NETNS_API_SOCKET"
 )
 
 // ReapStatus classifies a host resource for reclamation purposes.
@@ -29,6 +46,15 @@ const (
 	// ReapStatusOwned means a store record exists for this ULID: keep it
 	// (stale-record cleanup is R2's job).
 	ReapStatusOwned ReapStatus = "owned"
+	// ReapStatusSuspect means the resource could NOT be definitively
+	// classified as orphan, owned, or live — reap does not know enough to
+	// rule out that this is a live orphan. This is the fail-closed rail
+	// (ticket 10): "cannot determine" must be reported LOUDLY, not folded
+	// into a clean report. Distinct from ReapStatusLive (which means reap
+	// affirmatively confirmed liveness) and from ReapStatusOrphan (which
+	// means reap affirmatively confirmed no owner exists). --apply never
+	// touches a Suspect entry.
+	ReapStatusSuspect ReapStatus = "suspect"
 )
 
 // ReapEntry describes one host resource and its classification.
@@ -37,6 +63,13 @@ type ReapEntry struct {
 	Status         ReapStatus
 	Reason         string
 	AllocatedBytes int64 // syscall.Stat_t.Blocks * 512; 0 for dirs
+
+	// ProcessPID and ProcessPGID identify the live process behind a
+	// Resource.Kind == KindNetnsProcess entry (see sweepOrphanNetnsProcesses).
+	// Zero for every other kind. --apply reclaims these by killing the
+	// process group (ProcessPGID), not by removing a file.
+	ProcessPID  int
+	ProcessPGID int
 }
 
 // ReapFailure records an orphan that --apply tried and failed to reclaim.
@@ -62,6 +95,11 @@ type ReapReport struct {
 	// success while the path was still present on the verify pass. The second
 	// case exists because a reported success is not evidence of a removal.
 	Failed []ReapFailure
+
+	// KilledPIDs lists the process-group leader pids that --apply killed to
+	// reclaim a KindNetnsProcess orphan (see sweepOrphanNetnsProcesses).
+	// Empty when apply=false or no netns-process orphans were found.
+	KilledPIDs []int
 }
 
 // ReapOptions provides injectable overrides for Reap. All fields are optional;
@@ -242,6 +280,44 @@ func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, o
 						Reason: err.Error(),
 					})
 				}
+			}
+		}
+		report.Entries = append(report.Entries, entry)
+	}
+
+	// Independent process sweep (ticket 10: "reap is blind to exactly the
+	// class it exists to catch").
+	//
+	// Every entry above is discovered by iterating `resources`, which comes
+	// from idx.List() — a filesystem enumeration. That direction can only
+	// ever ask "is the owner of this FILE still alive?"; it structurally
+	// cannot see a process that owns no file at all. A netns child + CH pair
+	// that survives its own cleanup (e.g. the nested-virt preflight leak
+	// fixed in driver.go, or any future cleanup gap) has, by the time reap
+	// runs, had its disk copy and API socket file already removed by the
+	// create-path's own deferred cleanup — so it is invisible to every check
+	// above no matter how thorough.
+	//
+	// This sweep goes the OTHER direction: process -> record. It enumerates
+	// LIVE processes carrying the netns-child sentinel
+	// (cloudhypervisor.NetnsRunEnv=1, the same marker
+	// internal/supervisor/netns_backfill.go uses to identify a sandbox's own
+	// netns child) and asks "does any record or in-flight create claim this
+	// one?" — the reversed direction the ticket's hypothesis calls for.
+	netnsEntries, sweepErr := sweepOrphanNetnsProcesses(opt.ProcDir, recordMap, inFlight)
+	if sweepErr != nil {
+		return nil, fmt.Errorf("reap: sweep netns processes: %w", sweepErr)
+	}
+	for _, entry := range netnsEntries {
+		if entry.Status == ReapStatusOrphan && apply {
+			if err := killNetnsProcessFn(entry.ProcessPGID); err != nil {
+				report.Failed = append(report.Failed, ReapFailure{
+					Path:   entry.Resource.Path,
+					Kind:   entry.Resource.Kind,
+					Reason: err.Error(),
+				})
+			} else {
+				report.KilledPIDs = append(report.KilledPIDs, entry.ProcessPID)
 			}
 		}
 		report.Entries = append(report.Entries, entry)
@@ -663,6 +739,217 @@ func socketResponsive(ctx context.Context, path string) (alive bool, ambiguous b
 
 	// Any HTTP response (2xx or 4xx) means the socket is live.
 	return true, false
+}
+
+// killNetnsProcessFn is the indirection point for reclaiming a
+// KindNetnsProcess orphan. Production sends SIGKILL to the process group
+// (mirroring NetnsRuntime.Stop's Kill(-ChildPGID, SIGKILL)); tests replace it
+// to drive the Failed branch without actually killing a process.
+var killNetnsProcessFn = func(pgid int) error {
+	if pgid <= 0 {
+		return fmt.Errorf("reap: refusing to kill process group %d (non-positive pgid)", pgid)
+	}
+	if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("kill process group %d: %w", pgid, err)
+	}
+	return nil
+}
+
+// sweepOrphanNetnsProcesses independently enumerates LIVE processes carrying
+// the netns-child sentinel (cloudhypervisor.NetnsRunEnv=1) and classifies
+// each one against recordMap/inFlight — the reversed direction from every
+// other check in Reap (process -> record, not record -> process; see the
+// call site in Reap for why this direction is required).
+//
+// procDir is injectable for tests (mirrors scanProcForULID's ProcDir seam).
+//
+// Fail-closed rail (ticket 10): every ambiguity that cannot be definitively
+// resolved to "owned" or "orphan" is reported as ReapStatusSuspect, never
+// silently dropped:
+//   - /proc itself is unreadable: one Suspect entry naming the failure.
+//   - a candidate's /proc/<pid>/environ is unreadable for a reason other
+//     than the process having already exited (ENOENT): Suspect.
+//   - a candidate's socket path names a sandbox ID with a live record whose
+//     CHAPISocket does not match what this live process is actually using
+//     (e.g. a pre-backfill record with CHAPISocket unset): Suspect — reap
+//     cannot certify this process belongs to that record.
+//   - a candidate's socket path does not parse as a sandbox ID and no
+//     record claims it by any other means: Suspect, not silently ignored,
+//     because "no record claims this" only becomes confident ORPHAN when
+//     reap can also rule out an in-flight create — which requires the ID.
+//
+// A candidate is ReapStatusOrphan only when its socket names a parseable
+// sandbox ID, no live record's CHAPISocket matches it, and no in-flight
+// create-intent lease is held for that ID.
+func sweepOrphanNetnsProcesses(
+	procDir string,
+	recordMap map[domain.SandboxID]domain.Sandbox,
+	inFlight map[domain.SandboxID]string,
+) ([]ReapEntry, error) {
+	claimedSockets := make(map[string]domain.SandboxID, len(recordMap))
+	for _, sb := range recordMap {
+		if sb.CHAPISocket != "" {
+			claimedSockets[sb.CHAPISocket] = sb.ID
+		}
+	}
+
+	dirEntries, err := os.ReadDir(procDir)
+	if err != nil {
+		return []ReapEntry{{
+			Status: ReapStatusSuspect,
+			Reason: fmt.Sprintf("netns process sweep: cannot read %s: %v — cannot rule out a live orphan", procDir, err),
+		}}, nil
+	}
+
+	var out []ReapEntry
+	for _, e := range dirEntries {
+		if !isNumeric(e.Name()) {
+			continue
+		}
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+
+		env, envErr := readProcEnviron(procDir, pid)
+		if envErr != nil {
+			if os.IsNotExist(envErr) {
+				continue // vanished between ReadDir and read: ordinary churn, not our process
+			}
+			out = append(out, ReapEntry{
+				Status: ReapStatusSuspect,
+				Reason: fmt.Sprintf("pid %d: cannot read environ (%v) — cannot rule out this being an unrecorded netns child", pid, envErr),
+			})
+			continue
+		}
+		if env[netnsRunEnv] != "1" {
+			continue // not a netns child
+		}
+
+		apiSocket := env[netnsEnvAPISocket]
+		if ownerID, ok := claimedSockets[apiSocket]; ok {
+			_ = ownerID
+			continue // matches a live record's own socket — expected, not orphaned
+		}
+
+		id, idErr := sandboxIDFromSocketPath(apiSocket)
+		if idErr == nil {
+			if _, ok := inFlight[id]; ok {
+				continue // create in flight for this id — expected during the create window
+			}
+			if sb, ok := recordMap[id]; ok {
+				out = append(out, ReapEntry{
+					Status: ReapStatusSuspect,
+					Resource: HostResource{
+						Kind:    KindNetnsProcess,
+						Path:    apiSocket,
+						OwnerID: id,
+					},
+					Reason: fmt.Sprintf("pid %d: live netns child (api socket %s) names sandbox %s but the record's CHAPISocket=%q does not match — cannot verify ownership", pid, apiSocket, sb.ID, sb.CHAPISocket),
+				})
+				continue
+			}
+		}
+
+		// StartNetnsRuntime spawns the netns child with Setpgid:true, so
+		// pgid == pid at creation (ch_netns.go:257-259), and CH inherits that
+		// same group via spawnVMMInGroup's Setpgid:false — nothing later in
+		// either process's life calls setpgid again. pid doubles as pgid here
+		// without a second /proc read.
+		pgid := pid
+		if livePgid, statErr := readProcPGID(procDir, pid); statErr == nil && livePgid > 0 {
+			pgid = livePgid
+		}
+
+		if idErr != nil {
+			out = append(out, ReapEntry{
+				Status: ReapStatusSuspect,
+				Resource: HostResource{
+					Kind: KindNetnsProcess,
+					Path: apiSocket,
+				},
+				Reason:      fmt.Sprintf("pid %d: live netns child (api socket %q) does not parse as a sandbox id and matches no record — cannot verify ownership", pid, apiSocket),
+				ProcessPID:  pid,
+				ProcessPGID: pgid,
+			})
+			continue
+		}
+
+		out = append(out, ReapEntry{
+			Status: ReapStatusOrphan,
+			Resource: HostResource{
+				Kind:    KindNetnsProcess,
+				Path:    apiSocket,
+				OwnerID: id,
+			},
+			Reason:      fmt.Sprintf("pid %d: live netns child (api socket %s) matches no store record and no in-flight create intent — orphaned by a prior failed/retried create; holds memfd-backed guest RAM, a tap, and a netns", pid, apiSocket),
+			ProcessPID:  pid,
+			ProcessPGID: pgid,
+		})
+	}
+	return out, nil
+}
+
+// sandboxIDFromSocketPath extracts the sandbox ID embedded in a CH API
+// socket's filename (<socketDir>/<id>.sock — see cloudhypervisor.socketPath),
+// so a candidate process can be cross-checked against records and in-flight
+// leases even after its own resource files have already been removed.
+func sandboxIDFromSocketPath(path string) (domain.SandboxID, error) {
+	if path == "" {
+		return domain.SandboxID{}, fmt.Errorf("empty socket path")
+	}
+	stem := strings.TrimSuffix(filepath.Base(path), ".sock")
+	return domain.ParseSandboxID(stem)
+}
+
+// readProcEnviron reads /proc/<pid>/environ (NUL-separated KEY=VALUE
+// records) into a map. Mirrors internal/supervisor/netns_backfill.go's
+// unexported helper of the same shape; duplicated here (rather than
+// exported and imported) because that package's version is scoped to a
+// single already-known-alive supervisor's children, not a system-wide sweep,
+// and because internal/supervisor already depends on internal/core/service's
+// sibling packages in the other direction.
+func readProcEnviron(procDir string, pid int) (map[string]string, error) {
+	data, err := os.ReadFile(filepath.Join(procDir, strconv.Itoa(pid), "environ"))
+	if err != nil {
+		return nil, err
+	}
+	env := make(map[string]string)
+	for _, kv := range strings.Split(string(data), "\x00") {
+		if kv == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		env[k] = v
+	}
+	return env, nil
+}
+
+// readProcPGID reads field 5 (pgid) of /proc/<pid>/stat. It exists as a
+// belt-and-suspenders re-check alongside the pid==pgid assumption documented
+// at its call site; a read failure is non-fatal there (falls back to pid).
+//
+// This duplicates the field-5 slice of cloudhypervisor.ReadProcStat's
+// parsing rather than importing it, for the same import-cycle reason
+// documented at netnsRunEnv above.
+func readProcPGID(procDir string, pid int) (int, error) {
+	data, err := os.ReadFile(filepath.Join(procDir, strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, err
+	}
+	line := strings.TrimRight(string(data), "\n")
+	idx := strings.LastIndex(line, ")")
+	if idx < 0 {
+		return 0, fmt.Errorf("parse /proc/%d/stat: no ')' found", pid)
+	}
+	fields := strings.Fields(line[idx+1:])
+	if len(fields) < 3 {
+		return 0, fmt.Errorf("parse /proc/%d/stat: too few fields after ')': got %d, want >=3", pid, len(fields))
+	}
+	return strconv.Atoi(fields[2]) // fields[2] = pgid (field 5)
 }
 
 // isNumeric returns true if s consists entirely of ASCII digits.

@@ -786,6 +786,14 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 	}
 	if d.cfg.NestedVirt {
 		if err := nestedVirtPreflight(); err != nil {
+			// The netns child + CH have already been spawned and confirmed
+			// API-ready by the poll loop above. Every other post-spawn failure
+			// in this function calls cleanup() before returning; this branch
+			// must too, or the child+CH pair leaks with zero resource-file
+			// footprint (create.go's own cleanup only removes disk/socket
+			// files, and reap's file-driven enumeration can never see a
+			// process that never owned a file to begin with).
+			cleanup()
 			return "", err
 		}
 		cpusCfg.Nested = true

@@ -36,6 +36,9 @@ type reapReportJSON struct {
 	Deleted          []string          `json:"deleted"`
 	Failed           []reapFailureJSON `json:"failed"`
 	Apply            bool              `json:"apply"`
+	// KilledPIDs are process-group leader pids that --apply killed to
+	// reclaim a live netns-child orphan (no file was deleted for these).
+	KilledPIDs []int `json:"killed_pids"`
 }
 
 // ── command ───────────────────────────────────────────────────────────────────
@@ -127,17 +130,29 @@ func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex
 			Reason: f.Reason,
 		})
 	}
+	killedPIDs := report.KilledPIDs
+	if killedPIDs == nil {
+		killedPIDs = []int{}
+	}
 	data := reapReportJSON{
 		Entries:          entries,
 		ReclaimableBytes: report.ReclaimableBytes,
 		Deleted:          deleted,
 		Failed:           failed,
 		Apply:            apply,
+		KilledPIDs:       killedPIDs,
+	}
+
+	suspects := 0
+	for _, e := range report.Entries {
+		if e.Status == service.ReapStatusSuspect {
+			suspects++
+		}
 	}
 
 	if out.IsJSON() {
 		out.EmitSuccess("reap.report", data, "")
-		if len(report.Failed) > 0 {
+		if len(report.Failed) > 0 || suspects > 0 {
 			return &ExitCodeError{Code: 1}
 		}
 		return nil
@@ -151,7 +166,12 @@ func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex
 		}
 	}
 
-	if orphans == 0 {
+	// A SUSPECT entry means reap could not rule out a live orphan — this must
+	// never be folded into "No orphaned resources found." Silently omitting
+	// what reap could not classify is the fail-open shape this ticket exists
+	// to close (ticket 10 fail-closed rail): a degraded classification must
+	// be the LOUD path, not indistinguishable from a clean report.
+	if orphans == 0 && suspects == 0 {
 		fmt.Fprintln(out.w, "No orphaned resources found.")
 		return nil
 	}
@@ -160,8 +180,8 @@ func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex
 	if apply {
 		mode = "apply"
 	}
-	fmt.Fprintf(out.w, "Reap report (%s): %d orphan(s), %s reclaimable\n\n",
-		mode, orphans, formatBytes(report.ReclaimableBytes))
+	fmt.Fprintf(out.w, "Reap report (%s): %d orphan(s), %d suspect(s), %s reclaimable\n\n",
+		mode, orphans, suspects, formatBytes(report.ReclaimableBytes))
 
 	for _, e := range report.Entries {
 		if e.Status != service.ReapStatusOrphan {
@@ -170,14 +190,28 @@ func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex
 		fmt.Fprintf(out.w, "  ORPHAN  %s  (%s)\n", e.Resource.Path, formatBytes(e.AllocatedBytes))
 		fmt.Fprintf(out.w, "          %s\n", e.Reason)
 	}
+	for _, e := range report.Entries {
+		if e.Status != service.ReapStatusSuspect {
+			continue
+		}
+		fmt.Fprintf(out.w, "  SUSPECT %s\n", e.Resource.Path)
+		fmt.Fprintf(out.w, "          %s\n", e.Reason)
+	}
 
-	if apply && len(report.Deleted) > 0 {
+	if apply && (len(report.Deleted) > 0 || len(report.KilledPIDs) > 0) {
 		fmt.Fprintf(out.w, "\nDeleted %d resource(s):\n", len(report.Deleted))
 		for _, p := range report.Deleted {
 			fmt.Fprintf(out.w, "  %s\n", p)
 		}
-	} else if !apply && orphans > 0 {
+		if len(report.KilledPIDs) > 0 {
+			fmt.Fprintf(out.w, "Killed %d orphaned netns-child process group(s): %v\n", len(report.KilledPIDs), report.KilledPIDs)
+		}
+	} else if !apply && (orphans > 0 || suspects > 0) {
 		fmt.Fprintf(out.w, "\nRun with --apply to delete.\n")
+	}
+
+	if suspects > 0 {
+		fmt.Fprintf(out.Stderr(), "\n%d resource(s) could not be classified with confidence — treat as a possible orphan and inspect by hand; --apply never touches these.\n", suspects)
 	}
 
 	// Failures are printed AFTER the deleted list and to stderr, so a caller
@@ -190,6 +224,10 @@ func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex
 			fmt.Fprintf(out.Stderr(), "  %s\n          %s\n", f.Path, f.Reason)
 		}
 		fmt.Fprintf(out.Stderr(), "Re-run `nexus3 reap --apply`; if a path fails twice, inspect it by hand.\n")
+		return &ExitCodeError{Code: 1}
+	}
+
+	if suspects > 0 {
 		return &ExitCodeError{Code: 1}
 	}
 
