@@ -226,11 +226,23 @@ func exportAndUnpack(ctx context.Context, outDir string, solveFn func(egCtx cont
 	// alpine export: 0 TypeChar/Block entries, 0 security.* PAX headers).
 	// On failure, CloseWithError signals the solve side to stop writing (prevents
 	// deadlock if Apply returns early before the full stream is consumed).
+	//
+	// The SAME wrapped error goes to CloseWithError and to the errgroup. Apply
+	// typically fails partway through the stream, so the solve goroutine is
+	// blocked in pw.Write; CloseWithError unblocks it and io.Pipe hands that
+	// exact error back as the Write result, which the solve goroutine then
+	// reports to the errgroup as well. errgroup keeps whichever error is
+	// registered first, so closing with the *unwrapped* error made an unpack
+	// failure reach the caller stripped of its "unpack tar to <dir>" context
+	// roughly half the time, purely on goroutine scheduling. Wrapping once and
+	// sharing the value makes both racers report an identical, fully-contextual
+	// error.
 	eg.Go(func() error {
 		n, err := ctdarchive.Apply(egCtx, outDir, pr, ctdarchive.WithNoSameOwner())
 		if err != nil {
-			pw.CloseWithError(err)
-			return fmt.Errorf("buildkit: unpack tar to %s: %w", outDir, err)
+			unpackErr := fmt.Errorf("buildkit: unpack tar to %s: %w", outDir, err)
+			pw.CloseWithError(unpackErr)
+			return unpackErr
 		}
 		slog.Info("buildkit: exportAndUnpack: tar unpacked", "outDir", outDir, "bytesWritten", n)
 		return nil
