@@ -113,9 +113,10 @@ type NetnsRuntime struct {
 	// AdoptNetnsRuntime can verify the pid has not been recycled.
 	//
 	// NOTE: domain.Sandbox needs a NetnsChildStartTime uint64 field to carry
-	// this value between supervisor instances. Until that field exists, callers
-	// pass childStartTime=0 to AdoptNetnsRuntime which skips the identity check
-	// (backward-compatible, but leaves the pid-reuse guard inactive).
+	// this value between supervisor instances. Until that field exists there is
+	// no way to adopt at all: AdoptNetnsRuntime REFUSES a zero starttime rather
+	// than proceeding unguarded, so whichever change wires the record
+	// persistence for NetnsChildPID/NetnsChildPGID must write this field too.
 	ChildStartTime uint64
 
 	// cmd is the child process running inside the user+network namespace.
@@ -276,10 +277,18 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 		return nil, fmt.Errorf("cloudhypervisor: StartNetnsRuntime: net.FileConn(perim): %w", err)
 	}
 
-	// Capture the child's starttime from /proc for use by AdoptNetnsRuntime
-	// on the next supervisor start. The read is best-effort: if /proc is
-	// unavailable the field is zero (adoption will skip the identity check).
-	childStartTime, _ := readProcStartTime(childPgid)
+	// Capture the child's starttime from /proc for use by AdoptNetnsRuntime on
+	// the next supervisor start. A failure here is not fatal to THIS boot — the
+	// VM is up and this supervisor is the child's parent, so it can Stop() via
+	// cmd.Wait() without any identity token. It only costs the NEXT supervisor
+	// the ability to adopt: AdoptNetnsRuntime refuses a zero starttime rather
+	// than killing a possibly-recycled group. Log it so that later refusal is
+	// traceable to its cause instead of looking like corruption.
+	childStartTime, stErr := readProcStartTime(childPgid)
+	if stErr != nil {
+		slog.Warn("cloudhypervisor: could not read netns child starttime; this VM will not be adoptable by a replacement supervisor",
+			"pid", childPgid, "err", stErr)
+	}
 
 	return &NetnsRuntime{
 		PerimConn:      perimConn,
@@ -339,12 +348,12 @@ func readProcStartTime(pid int) (uint64, error) {
 //
 // childStartTime is field 22 of /proc/<childPID>/stat (clock ticks since
 // boot) as persisted by the previous supervisor via NetnsRuntime.ChildStartTime.
-// When non-zero, AdoptNetnsRuntime reads the live value from /proc and refuses
-// the adoption if the pid's identity has changed — protecting against pid reuse
-// where Stop() would otherwise send Kill(-ChildPGID, SIGKILL) to an arbitrary
-// host process group. Pass 0 to skip the check (backward compatibility with
-// Sandbox records predating NetnsChildStartTime; see the ChildStartTime comment
-// on NetnsRuntime for the pending domain.Sandbox field note).
+// AdoptNetnsRuntime reads the live value from /proc and refuses the adoption if
+// the pid's identity has changed — protecting against pid reuse where Stop()
+// would otherwise send Kill(-ChildPGID, SIGKILL) to an arbitrary host process
+// group. It is REQUIRED: zero is refused, not treated as "skip the check". See
+// the ChildStartTime comment on NetnsRuntime for the pending domain.Sandbox
+// field note.
 //
 // The returned NetnsRuntime has cmd == nil: it was not produced by
 // exec.Command in this process, so Stop() cannot cmd.Wait() on it and takes
@@ -366,18 +375,28 @@ func AdoptNetnsRuntime(childPID, childPGID int, childStartTime uint64, guestTap,
 		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: guestTap is empty")
 	}
 
-	// PID-reuse guard: verify the process at childPID is still the same
-	// process whose starttime was persisted. If childStartTime is 0, the
-	// check is skipped (backward compatibility — see ChildStartTime note).
-	if childStartTime != 0 {
-		currentST, err := readProcStartTime(childPID)
-		if err != nil {
-			// /proc/<pid>/stat absent: the process died (or was never this pid).
-			return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: pid %d no longer exists (died or pid recycled): %w", childPID, err)
-		}
-		if currentST != childStartTime {
-			return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: pid %d starttime mismatch: persisted=%d current=%d — pid was recycled", childPID, childStartTime, currentST)
-		}
+	// PID-reuse guard: verify the process at childPID is still the same process
+	// whose starttime was persisted. This gate is FAIL-CLOSED — a missing
+	// starttime refuses the adoption rather than proceeding unguarded.
+	//
+	// An earlier revision skipped the check when childStartTime was 0, for
+	// backward compatibility with records predating the field. There are no
+	// such records: nothing writes the adoption identity onto domain.Sandbox
+	// yet, so the compat path bought nothing and cost the guarantee — a zero
+	// reaching here means the identity was lost, which is exactly when Stop()'s
+	// Kill(-ChildPGID, SIGKILL) is most likely to hit a recycled group. Fail
+	// open on the signal that decides whether to send SIGKILL and the guard is
+	// decorative.
+	if childStartTime == 0 {
+		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: childStartTime is 0 for pid %d; refusing to adopt without a pid-reuse guard", childPID)
+	}
+	currentST, err := readProcStartTime(childPID)
+	if err != nil {
+		// /proc/<pid>/stat absent: the process died (or was never this pid).
+		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: pid %d no longer exists (died or pid recycled): %w", childPID, err)
+	}
+	if currentST != childStartTime {
+		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: pid %d starttime mismatch: persisted=%d current=%d — pid was recycled", childPID, childStartTime, currentST)
 	}
 
 	// net.FileConn dups the fd internally; close our wrapper once dup'd,

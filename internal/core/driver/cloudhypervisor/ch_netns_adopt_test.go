@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -29,18 +30,37 @@ func TestAdoptNetnsRuntime_Rebuilds(t *testing.T) {
 	}
 	t.Cleanup(func() { pumpFile.Close() })
 
-	// childStartTime=0: skip the identity check for this fake pid.
-	rt, err := AdoptNetnsRuntime(4242, 4242, 0, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
+	// A real live process, because the pid-reuse guard is fail-closed: there is
+	// no "skip the check" value to hand a made-up pid any more.
+	cmd := exec.Command("sleep", "30")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep: %v", err)
+	}
+	pid := cmd.Process.Pid
+	t.Cleanup(func() {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = cmd.Wait()
+	})
+	startTime, err := readProcStartTime(pid)
+	if err != nil {
+		t.Fatalf("readProcStartTime(%d): %v", pid, err)
+	}
+
+	rt, err := AdoptNetnsRuntime(pid, pid, startTime, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
 	if err != nil {
 		t.Fatalf("AdoptNetnsRuntime: %v", err)
 	}
 	t.Cleanup(func() { rt.PerimConn.Close() })
 
-	if rt.ChildPID != 4242 {
-		t.Errorf("ChildPID = %d, want 4242", rt.ChildPID)
+	if rt.ChildPID != pid {
+		t.Errorf("ChildPID = %d, want %d", rt.ChildPID, pid)
 	}
-	if rt.ChildPGID != 4242 {
-		t.Errorf("ChildPGID = %d, want 4242", rt.ChildPGID)
+	if rt.ChildPGID != pid {
+		t.Errorf("ChildPGID = %d, want %d", rt.ChildPGID, pid)
+	}
+	if rt.ChildStartTime != startTime {
+		t.Errorf("ChildStartTime = %d, want %d", rt.ChildStartTime, startTime)
 	}
 	if rt.GuestTap != "nx3g-test" {
 		t.Errorf("GuestTap = %q, want %q", rt.GuestTap, "nx3g-test")
@@ -108,6 +128,48 @@ func TestAdoptNetnsRuntime_RejectsNonPositivePIDs(t *testing.T) {
 				t.Errorf("expected error for %s, got nil", tc.name)
 			}
 		})
+	}
+}
+
+// TestAdoptNetnsRuntime_RejectsZeroStartTime pins the pid-reuse guard as
+// FAIL-CLOSED. A zero starttime means the identity was never persisted or was
+// lost, so there is nothing to verify the pid against — and that is precisely
+// when Stop()'s Kill(-ChildPGID, SIGKILL) is most likely to land on a recycled
+// group belonging to an unrelated host process.
+//
+// An earlier revision treated 0 as "skip the check" for backward compatibility
+// with Sandbox records predating the field. No such records exist — nothing
+// writes the adoption identity onto domain.Sandbox yet — so that path bought
+// nothing and silently disarmed the guard. This test exists to stop it coming
+// back: a guard that fails open on its own input signal is decorative.
+func TestAdoptNetnsRuntime_RejectsZeroStartTime(t *testing.T) {
+	// A real, live, verifiable pid — so the ONLY reason to refuse is the
+	// missing starttime, not a dead or bogus pid.
+	cmd := exec.Command("sleep", "30")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep: %v", err)
+	}
+	pid := cmd.Process.Pid
+	t.Cleanup(func() {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = cmd.Wait()
+	})
+
+	perimFile, pumpFile, err := netnsSocketpairFiles()
+	if err != nil {
+		t.Fatalf("netnsSocketpairFiles: %v", err)
+	}
+	defer pumpFile.Close()
+	defer perimFile.Close()
+
+	rt, err := AdoptNetnsRuntime(pid, pid, 0, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
+	if err == nil {
+		rt.PerimConn.Close()
+		t.Fatal("adoption with childStartTime=0 was ACCEPTED; the pid-reuse guard is disarmed")
+	}
+	if !strings.Contains(err.Error(), "childStartTime is 0") {
+		t.Errorf("error = %v, want it to name the missing starttime", err)
 	}
 }
 
