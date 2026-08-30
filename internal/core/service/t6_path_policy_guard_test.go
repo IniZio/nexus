@@ -170,7 +170,7 @@ func TestT6_SupervisorGuard_GitHubNoPolicy_Refused(t *testing.T) {
 			// PathPolicies: nil, // omitted
 		},
 	}
-	err := svc.startSupervisor(context.Background(), hook, sb)
+	err := svc.startSupervisor(context.Background(), hook, sb, nil)
 	if !errors.Is(err, ErrUnboundGitHubSecret) {
 		t.Fatalf("startSupervisor: got %v, want ErrUnboundGitHubSecret", err)
 	}
@@ -284,7 +284,7 @@ func TestT6_SupervisorGuard_GitHubWithPathPolicy_Allowed(t *testing.T) {
 			PathPolicies: pp, // satisfies the guard; AllowedRepo deliberately empty
 		},
 	}
-	err := svc.startSupervisor(context.Background(), hook, sb)
+	err := svc.startSupervisor(context.Background(), hook, sb, nil)
 	// Guard must not return ErrUnboundGitHubSecret. Other errors (e.g. from
 	// netstack/MITM setup without a real broker) are acceptable — only the
 	// path-policy guard is under test.
@@ -442,7 +442,7 @@ func TestT6_SupervisorGuard_BogusKeyGitHubPolicy_Refused(t *testing.T) {
 			PathPolicies: pp, // bogus key — never enforced
 		},
 	}
-	err := svc.startSupervisor(context.Background(), hook, sb)
+	err := svc.startSupervisor(context.Background(), hook, sb, nil)
 	if !errors.Is(err, ErrUnboundGitHubSecret) {
 		t.Fatalf("startSupervisor with bogus-key PathPolicies: got %v, want ErrUnboundGitHubSecret", err)
 	}
@@ -467,7 +467,7 @@ func TestT6_SupervisorGuard_NonGitHubNoPolicy_Allowed(t *testing.T) {
 			// No AllowedRepo, no PathPolicies — permitted for non-GitHub
 		},
 	}
-	err := svc.startSupervisor(context.Background(), hook, sb)
+	err := svc.startSupervisor(context.Background(), hook, sb, nil)
 	if errors.Is(err, ErrUnboundGitHubSecret) {
 		t.Fatalf("startSupervisor non-github host: got ErrUnboundGitHubSecret, want no guard error (asymmetry)")
 	}

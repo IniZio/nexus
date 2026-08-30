@@ -457,6 +457,12 @@ func RunDetached(cfg Config) error {
 			} else {
 				slog.Warn("supervisor.handoff_no_perimeter_fd", "sandboxRef", cfg.SandboxRef, "err", ferr)
 			}
+			var ca handoff.CAMaterial
+			if certPEM, keyPEM, caErr := sup.CAKeyPair(); caErr == nil {
+				ca = handoff.CAMaterial{CertPEM: certPEM, KeyPEM: keyPEM}
+			} else {
+				slog.Warn("supervisor.handoff_no_ca", "sandboxRef", cfg.SandboxRef, "err", caErr)
+			}
 			payload := handoff.Payload{
 				Version:   handoff.CurrentVersion,
 				Perimeter: handoff.PerimeterHandle{Present: present},
@@ -464,8 +470,9 @@ func RunDetached(cfg Config) error {
 					VCPUCount: int(bootVCPUs),
 					MemoryMB:  uint64(cfg.MemoryMiB),
 				},
-				// CA, Credentials and Virtiofs are intentionally NOT populated
-				// in this slice — see payloadBuilder's doc comment for the
+				CA: ca,
+				// Credentials and Virtiofs are intentionally NOT populated in
+				// this slice — see payloadBuilder's doc comment for the
 				// missing accessors this depends on (open item, ticket 04).
 			}
 			return payload, fdFile, nil

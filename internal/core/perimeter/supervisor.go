@@ -253,6 +253,17 @@ func (s *PerimeterSupervisor) CACert() *x509.Certificate {
 	return s.proxy.CACert()
 }
 
+// CAKeyPair PEM-encodes the MITM proxy's CA certificate and private key, for
+// inclusion in a handoff payload (motive nexus3-host-supervisor-hotswap).
+// Returns an error when the supervisor was started without a proxy (AllowAll
+// mode) — there is no CA to hand off.
+func (s *PerimeterSupervisor) CAKeyPair() (certPEM, keyPEM []byte, err error) {
+	if s.proxy == nil {
+		return nil, nil, fmt.Errorf("perimeter: CAKeyPair: no MITM proxy (AllowAll mode)")
+	}
+	return s.proxy.CAKeyPair()
+}
+
 // PerimeterFD returns a dup'd *os.File wrapping R1, the perimeter-facing
 // network connection, for handoff to a replacement supervisor via SCM_RIGHTS
 // (motive nexus3-host-supervisor-hotswap, slice 04).

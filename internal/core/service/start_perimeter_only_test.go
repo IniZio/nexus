@@ -42,7 +42,7 @@ func TestStartPerimeterOnly_RefusesWhenNotRunning(t *testing.T) {
 	}
 	// sb.State is domain.Created here — Create does not start the VM.
 
-	if err := svc.StartPerimeterOnly(context.Background(), sb); err == nil {
+	if err := svc.StartPerimeterOnly(context.Background(), sb, nil); err == nil {
 		t.Fatal("expected StartPerimeterOnly to refuse a non-running sandbox")
 	}
 
@@ -85,7 +85,7 @@ func TestStartPerimeterOnly_WiresPerimeterWhenRunning(t *testing.T) {
 	}
 	sb.State = domain.Running
 
-	if err := svc.StartPerimeterOnly(context.Background(), sb); err != nil {
+	if err := svc.StartPerimeterOnly(context.Background(), sb, nil); err != nil {
 		t.Fatalf("StartPerimeterOnly: %v", err)
 	}
 

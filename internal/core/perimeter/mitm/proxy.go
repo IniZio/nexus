@@ -30,6 +30,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log/slog"
@@ -144,6 +145,17 @@ type Config struct {
 	// If nil, goproxy's default transport is used. Tests may supply a
 	// custom Transport with a DialContext that redirects to a stub server.
 	Transport *http.Transport
+
+	// SeedCACertPEM and SeedCAKeyPEM, when both non-empty, seed this Proxy's
+	// CA from PEM-encoded material instead of minting a fresh one via
+	// generateCA. This is the seam a hot-swap adopt path uses to continue
+	// serving TLS interception with the SAME CA the guest already trusts —
+	// generating a fresh CA here would invalidate every certificate the
+	// guest has already pinned this boot (motive
+	// nexus3-host-supervisor-hotswap, handoff.Payload.CA). Either both must
+	// be set or both left empty; New returns an error for a partial pair.
+	SeedCACertPEM []byte
+	SeedCAKeyPEM  []byte
 }
 
 // GitHubPolicy pins all requests to one GitHub repository.
@@ -192,9 +204,24 @@ type PathPolicies map[string]map[string]HostPolicy
 // New creates a Proxy for a single sandbox. It generates a fresh per-sandbox
 // CA; call [Proxy.CACert] to obtain the trust anchor and seed it into the guest.
 func New(cfg Config) (*Proxy, error) {
-	ca, err := generateCA()
-	if err != nil {
-		return nil, fmt.Errorf("mitm: generate per-sandbox CA: %w", err)
+	var ca tls.Certificate
+	var err error
+	switch {
+	case len(cfg.SeedCACertPEM) == 0 && len(cfg.SeedCAKeyPEM) == 0:
+		ca, err = generateCA()
+		if err != nil {
+			return nil, fmt.Errorf("mitm: generate per-sandbox CA: %w", err)
+		}
+	case len(cfg.SeedCACertPEM) == 0 || len(cfg.SeedCAKeyPEM) == 0:
+		return nil, fmt.Errorf("mitm: SeedCACertPEM and SeedCAKeyPEM must both be set or both empty")
+	default:
+		ca, err = tls.X509KeyPair(cfg.SeedCACertPEM, cfg.SeedCAKeyPEM)
+		if err != nil {
+			return nil, fmt.Errorf("mitm: parse seeded CA: %w", err)
+		}
+		if ca.Leaf, err = x509.ParseCertificate(ca.Certificate[0]); err != nil {
+			return nil, fmt.Errorf("mitm: parse seeded CA leaf: %w", err)
+		}
 	}
 
 	allowSet := NewMutableAllowSet(cfg.AllowedHosts...)
@@ -532,6 +559,28 @@ func New(cfg Config) (*Proxy, error) {
 // tls.Certificate; it is safe to read concurrently but must not be modified.
 func (p *Proxy) CACert() *x509.Certificate {
 	return p.ca.Leaf
+}
+
+// CAKeyPair PEM-encodes this Proxy's CA certificate and private key. Used
+// only by the hot-swap handoff path (motive nexus3-host-supervisor-hotswap)
+// to carry the CA to a replacement supervisor so it can continue signing
+// leaf certificates the guest already trusts, instead of the replacement
+// minting a fresh CA that would invalidate every certificate the guest has
+// already pinned this boot. The private key never leaves the host process
+// tree except via this handoff's SCM_RIGHTS-free, host-only, direct
+// process-to-process transport.
+func (p *Proxy) CAKeyPair() (certPEM, keyPEM []byte, err error) {
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: p.ca.Certificate[0]})
+	key, ok := p.ca.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		return nil, nil, fmt.Errorf("mitm: CA private key is %T, want *ecdsa.PrivateKey", p.ca.PrivateKey)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("mitm: marshal CA private key: %w", err)
+	}
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return certPEM, keyPEM, nil
 }
 
 // AllowHost admits host to this running proxy's MITM allowlist at runtime,
