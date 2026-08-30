@@ -104,6 +104,91 @@ A `pane run` sent while the agent is working queues as its next prompt rather
 than interrupting — useful, but it means "no response yet" is ambiguous between
 busy and never-delivered.
 
+### 3b. Subscribe to the agent before you do anything else
+
+Dispatching is not the end of the step. An in-guest agent will stop and wait for
+a reply — it hits a question, an approval, a scope decision it cannot settle
+alone — and **nothing tells you when that happens.** herdr has no event bus, the
+agent is not addressable by `herdr agent` verbs, and the VM boundary means no
+notification reaches the orchestrator. A dispatched agent that stopped after
+ninety seconds looks exactly like one working hard for an hour.
+
+So start a watcher in the same turn you dispatch, as a background task, and let
+the harness re-invoke you when it exits:
+
+```bash
+scripts/watch-pane.sh <pane-id>      # run_in_background: true
+```
+
+The whole mechanism is `herdr pane read` in an until-loop, and all of its
+difficulty is in the exit condition.
+
+**Detect work by movement, not by matching a marker string.** A working agent
+repaints — the spinner animates and its elapsed timer ticks every second — so
+the pane text CHANGES between two reads a few seconds apart. A stopped agent
+renders a static pane. That signal holds no matter which indicator the current
+UI happens to use, which is what makes it survive the next layout change.
+
+This was learned the expensive way: four false stops in one session, each from a
+different pane layout, each "fixed" by a pattern the next layout defeated.
+
+1. A slash-command overlay repaints the footer, dropping `esc to interrupt`
+   *and* rendering `Enter to select` — a working agent read as idle, an
+   autocomplete list read as a question.
+2. An agent blocked on its own background subagent is working but is not itself
+   running a tool, so the footer loses `esc to interrupt` permanently. No amount
+   of re-sampling helps; the marker moved to the body.
+3. The start-grace loop held its own inlined copy of the working check, so it
+   still reported `AGENT_NEVER_STARTED` after `sample_state` learned that state.
+4. The background-agent roster switched from `Waiting for N background agents`
+   to a live subagent row — matching no marker at all.
+
+Every individual fix was correct. The *approach* was the defect. If you find
+yourself adding a fifth pattern, add it as a fast path only, and let movement
+remain the thing that actually decides.
+
+Two rules that fall out of this:
+
+- One definition of "working", called by every loop. Two copies drift the moment
+  one learns something new — that is bug 3 above.
+- Movement cannot tell a question from a stop, since both are static. Strings
+  are still the QUESTION discriminator, applied only once the pane has settled.
+
+Note the diagnostic asymmetry: a false `AGENT_IDLE` or `AGENT_NEVER_STARTED`
+sends you to review work that does not exist yet, while a missed stop only costs
+waiting. Bias every ambiguous case toward WORKING. And when you change this
+detection, test it against a known-working pane AND a known-idle one — "always
+WORKING" passes every positive test there is.
+
+`herdr pane wait-output <pane-id> --regex '<pattern>'` is the sharper primitive
+when you know the string you are waiting for: it blocks indefinitely, searches
+existing output first, then polls. It is what `nexus3 herdr agent` itself uses to
+wait for the guest shell and the Claude prompt. Reach for it when you are waiting
+on one specific marker, and the poll loop when you are waiting for "any stop at
+all", since idleness is an absence and a regex cannot match one.
+
+Watch the pane, not the clock. Do not sit in a foreground `sleep` and do not
+promise to "check back later" — a blocked agent burns a live VM's worth of
+resident guest RAM while it waits, and the slice makes no progress at all.
+
+When the watcher wakes you on a question, answer through the pane surface:
+
+```bash
+herdr pane send-keys <pane-id> 2      # numbered menu: picks option 2
+herdr pane run <pane-id> "<text>"     # free-text reply
+```
+
+Then **restart the watcher** — it exits on each stop, so an unreplaced watcher
+means the next question hangs silently just like the first.
+
+Treat a scope correction as a result, not an interruption. Briefs are written
+from the orchestrator's model of the code, which is most often wrong precisely
+where it matters; an agent that stops to say "your premise is false" has done the
+most valuable thing it can do, and it can only do it if someone is listening.
+Verify the correction against the code yourself before answering — `grep` for the
+call sites it claims are missing — because the answer you give redefines the
+slice.
+
 ### 4. Checkpoint before you tear anything down
 
 Worktrees are host-side, so a sandbox rebuild never loses committed files. It
@@ -216,6 +301,25 @@ Two habits, both learned from this repo biting back.
 cloud-hypervisor'` reports MISSING for tools that are installed, because the
 non-login shell has a different PATH. Use `bash -lc`. A false negative here sends
 you rebuilding an image that was already correct.
+
+**In-guest, `ok` can mean "skipped entirely".** `internal/cli` and
+`internal/core/service` have a `TestMain` that exits 0 when
+`/proc/1/comm == "nexus3-agent"` — true inside every sandbox. `go test`
+suppresses buffered output for passing packages, so the skip line never prints
+and the package reports a clean `ok`. A guest suite run is therefore blind to
+those two packages while looking fully green.
+
+Confirm before trusting an in-guest run: `go test ./internal/cli/... -v` prints
+the skip line. Better, gate on the **host** worktree, where nothing skips — that
+is where a regression like a missing surface-contract entry actually surfaces.
+An agent that needs a real run inside the guest can use
+`unshare --pid --mount-proc --fork`, which changes `/proc/1/comm` without
+touching the skip check.
+
+**Read the real exit code, never one through a pipe.** `make test | grep FAIL`
+reports *grep's* status, so a failing suite reads as success. Capture it
+directly (`make test > log 2>&1; echo $?`) or use `${PIPESTATUS[0]}`. This
+produced a confidently wrong "the repo's gate can't fail" finding in one session.
 
 **Re-run the mutation proof yourself on anything security- or
 correctness-critical.** A subagent reporting "mutation-proven" is a claim, not
