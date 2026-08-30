@@ -77,6 +77,15 @@ var surfaceMap = []surfaceEntry{
 	// supervisor.SpawnAdoptDetached, not a service.* method. CLI-only: no MCP
 	// tool exposes a planned supervisor swap.
 	{CLIVerb: "supervisor-upgrade", CanonicalMethods: []string{"service.ResolveRef", "service.SetSupervisor"}, MCPTools: nil},
+	// supervisor-backfill-netns-identity: reconstructs and persists the netns
+	// identity for a sandbox created before slice 04, so supervisor-upgrade
+	// can adopt it (ticket 11). Uses service.ResolveRef to find the sandbox
+	// and service.SetNetnsIdentity to persist the verified reconstruction;
+	// the reconstruction itself is driven by
+	// supervisor.BackfillNetnsIdentity, not a service.* method. CLI-only:
+	// deliberately a separate, explicit verb from supervisor-upgrade rather
+	// than a flag — see the ticket's Decision — so no MCP tool exposes it.
+	{CLIVerb: "supervisor-backfill-netns-identity", CanonicalMethods: []string{"service.ResolveRef", "service.SetNetnsIdentity"}, MCPTools: nil},
 	{CLIVerb: "version", CLIOnly: true},
 	// volume noun manages named volumes directly via volumestore (not through
 	// service.*) — the canonical backing is the VolumeStore CRUD primitives.
