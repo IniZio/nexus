@@ -449,33 +449,7 @@ func RunDetached(cfg Config) error {
 			bootVCPUs = 1 // matches cloudhypervisor driver default
 		}
 		build := payloadBuilder(func() (handoff.Payload, *os.File, error) {
-			var fdFile *os.File
-			present := false
-			if f, ferr := sup.PerimeterFD(); ferr == nil {
-				fdFile = f
-				present = true
-			} else {
-				slog.Warn("supervisor.handoff_no_perimeter_fd", "sandboxRef", cfg.SandboxRef, "err", ferr)
-			}
-			var ca handoff.CAMaterial
-			if certPEM, keyPEM, caErr := sup.CAKeyPair(); caErr == nil {
-				ca = handoff.CAMaterial{CertPEM: certPEM, KeyPEM: keyPEM}
-			} else {
-				slog.Warn("supervisor.handoff_no_ca", "sandboxRef", cfg.SandboxRef, "err", caErr)
-			}
-			payload := handoff.Payload{
-				Version:   handoff.CurrentVersion,
-				Perimeter: handoff.PerimeterHandle{Present: present},
-				Governor: handoff.GovernorConfig{
-					VCPUCount: int(bootVCPUs),
-					MemoryMB:  uint64(cfg.MemoryMiB),
-				},
-				CA: ca,
-				// Credentials and Virtiofs are intentionally NOT populated in
-				// this slice — see payloadBuilder's doc comment for the
-				// missing accessors this depends on (open item, ticket 04).
-			}
-			return payload, fdFile, nil
+			return buildHandoffPayload(sup, cfg.SandboxRef, bootVCPUs, cfg.MemoryMiB)
 		})
 		return performHandoff(hctx, peerSock, build)
 	})
