@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"slices"
 )
 
@@ -401,6 +402,65 @@ func TestGuestAgentLaunchCommand_DoesNotDependOnTheShellFunction(t *testing.T) {
 	// mode the command actually produces determines the footer that is matched.
 	if claudeReadyMatch(true) == claudeReadyMatch(false) {
 		t.Error("readiness tokens for the two modes collapsed; see claudeReadyMatch")
+	}
+}
+
+// TestGuestCursorLaunchCommand_ForceFlagAndNoRootEscape pins cursor's launch
+// command: --force is the skip-permissions equivalent (autonomous only), and
+// there is no IS_SANDBOX-style root escape because cursor-agent does not
+// refuse to run as root (confirmed empirically — see guestCursorLaunchCommand's
+// doc comment).
+func TestGuestCursorLaunchCommand_ForceFlagAndNoRootEscape(t *testing.T) {
+	autonomous := guestCursorLaunchCommand(true)
+	if !strings.Contains(autonomous, "--force") {
+		t.Errorf("autonomous cursor launch must pass --force; got %q", autonomous)
+	}
+	if strings.Contains(autonomous, "IS_SANDBOX") {
+		t.Errorf("cursor-agent needs no IS_SANDBOX escape (it does not refuse root); got %q", autonomous)
+	}
+
+	normal := guestCursorLaunchCommand(false)
+	if strings.Contains(normal, "--force") {
+		t.Errorf("non-autonomous cursor launch must not pass --force; got %q", normal)
+	}
+	// Unlike claude, cursor has no shell-function wrapper to bypass.
+	if strings.HasPrefix(normal, "command ") {
+		t.Errorf("cursor has no shell function to bypass with `command `; got %q", normal)
+	}
+}
+
+// TestResolveAgentLaunchDescriptor_DispatchesByName is the mutation guard for
+// the herdr dispatch seam: a sandbox's recorded AgentName must select the
+// matching agent's launch command and ready-match function, not always
+// claude's. This is what makes `nexus3 herdr agent` for a --agent cursor
+// sandbox launch cursor-agent instead of claude.
+func TestResolveAgentLaunchDescriptor_DispatchesByName(t *testing.T) {
+	cursor := resolveAgentLaunchDescriptor(cred.CursorAgentProfileName)
+	if got, want := cursor.command(true), guestCursorLaunchCommand(true); got != want {
+		t.Errorf("cursor descriptor command(true) = %q, want %q (guestAgentLaunchCommand leaked through)", got, want)
+	}
+	if got, want := cursor.readyMatch(true), cursorReadyMatch(true); got != want {
+		t.Errorf("cursor descriptor readyMatch(true) = %q, want %q", got, want)
+	}
+	// Mutation-relevant: cursor's descriptor must NOT resolve to claude's
+	// launch command, or a cursor sandbox would type "claude" into a pane with
+	// no claude binary.
+	if cursor.command(true) == guestAgentLaunchCommand(true) {
+		t.Error("cursor descriptor resolved to claude's launch command — dispatch is not agent-specific")
+	}
+
+	claude := resolveAgentLaunchDescriptor(cred.ClaudeCodeProfileName)
+	if got, want := claude.command(true), guestAgentLaunchCommand(true); got != want {
+		t.Errorf("claude descriptor command(true) = %q, want %q", got, want)
+	}
+
+	// Empty (plain sandbox) and unrecognised names fall back to claude's
+	// descriptor, matching cred.DefaultProfileName / pre-registry behaviour.
+	for _, name := range []string{"", "some-future-agent-not-yet-registered"} {
+		fallback := resolveAgentLaunchDescriptor(name)
+		if got, want := fallback.command(true), guestAgentLaunchCommand(true); got != want {
+			t.Errorf("resolveAgentLaunchDescriptor(%q) command(true) = %q, want claude's %q", name, got, want)
+		}
 	}
 }
 

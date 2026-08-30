@@ -58,7 +58,7 @@ func TestSeedLoop_GuestReachability(t *testing.T) {
 		})
 		c := cert
 		ok, guestEverResponded := supervisor.SeedLoop(context.Background(), id, &c,
-			failCA, okAgent, broker, nil, 3, 0, nil, true)
+			failCA, okAgent, broker, nil, 3, 0, nil, true, cred.ClaudeCodeProfile)
 		if ok {
 			t.Fatal("ok=true but CA seeder always failed")
 		}
@@ -80,7 +80,7 @@ func TestSeedLoop_GuestReachability(t *testing.T) {
 		})
 		c := cert
 		ok, guestEverResponded := supervisor.SeedLoop(context.Background(), id, &c,
-			okCA, failAgent, broker, nil, 3, 0, nil, true)
+			okCA, failAgent, broker, nil, 3, 0, nil, true, cred.ClaudeCodeProfile)
 		if ok {
 			t.Fatal("ok=true but agent seeder always failed")
 		}
@@ -172,7 +172,7 @@ func TestSeedLoop_AgentCredsOnlyForAgentSandboxes(t *testing.T) {
 			cert := &x509.Certificate{}
 			// nil svc is safe: cert is non-nil, so GetPerimeterCACert is never called.
 			done, _ := supervisor.SeedLoop(context.Background(), domain.NewSandboxID(), &cert,
-				caSeeder, agentSeeder, cred.NewBroker(), nil, 3, 0, nil, tc.seedAgentCreds)
+				caSeeder, agentSeeder, cred.NewBroker(), nil, 3, 0, nil, tc.seedAgentCreds, cred.ClaudeCodeProfile)
 
 			if !done {
 				t.Fatal("SeedLoop returned false although every seeder succeeded")

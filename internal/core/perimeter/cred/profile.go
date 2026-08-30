@@ -21,6 +21,19 @@ const (
 
 	// MCPConfigFormatOpencodeJSON is the format used by opencode.
 	MCPConfigFormatOpencodeJSON MCPConfigFormat = "opencode-json"
+
+	// MCPConfigFormatCursorJSON is the format used by cursor-agent:
+	// ~/.cursor/mcp.json (or .cursor/mcp.json), shape {"mcpServers": {...}}.
+	// Structurally identical to MCPConfigFormatClaudeJSON's mcpServers map, but
+	// kept as its own constant because the two agents' configs are declared
+	// independently and may diverge; nothing here assumes they stay identical.
+	//
+	// As with MCPConfigFormatOpencodeJSON, declaring this constant does not by
+	// itself wire up host-side MCP credential sanitization (mcpdefs.go /
+	// mcpcred.go): that machinery is gated to MCPConfigFormatClaudeJSON only
+	// and returns a zero value for every other format, cursor included. That
+	// gap predates this constant and is not specific to cursor.
+	MCPConfigFormatCursorJSON MCPConfigFormat = "cursor-json"
 )
 
 // AgentCapabilities describes host-enforced constraints for a specific agent
@@ -140,6 +153,36 @@ type AgentProfile struct {
 	//
 	// The zero value (nil or empty) means no files may be shared.
 	MountAllowlist []string
+
+	// SettingsAllowlist is the ALLOWLIST of top-level keys, in the settings
+	// file named by the basename of [AgentProfile.SettingsPath], that are safe
+	// to share into a guest. This is a deliberate allowlist, not a denylist: a
+	// key this profile has never vetted — including a FUTURE key that carries
+	// a credential — is dropped by default rather than leaked. Adding a key
+	// here is an explicit decision that it is non-secret and portable.
+	//
+	// This is the generalisation of what was, before cursor, a single
+	// package-level allowlist hardcoded to Claude's settings.json shape. It
+	// exists independently of which credential path (OAuth vs API-key) this
+	// agent's broker seeding uses: cursor's cli-config.json can carry an
+	// authInfo blob from an operator's own interactive `cursor-agent login`
+	// entirely independently of how nexus3 authenticates the guest, so this
+	// filter is required for every agent that has a SettingsPath, not just
+	// ones nexus3 brokers OAuth for.
+	//
+	// The zero value (nil) means every key is dropped: a profile that sets
+	// SettingsPath but forgets this field stages an empty settings file rather
+	// than leaking everything by default.
+	SettingsAllowlist map[string]bool
+
+	// BypassConsentKey, when non-empty, names a boolean settings key that
+	// AssembleCuratedConfig forces to true in the staged lower-overlay
+	// settings file, regardless of the host value, so the guest never blocks
+	// on a permission-bypass consent prompt. The zero value (empty string)
+	// means this agent has no such mechanism — its autonomous/skip-permissions
+	// posture is a launch-time flag instead (see the herdr dispatch launch
+	// descriptor), which is the case for cursor's --force/--yolo.
+	BypassConsentKey string
 }
 
 // Egress returns a fresh copy of the profile's egress allowlist. Callers may
@@ -185,6 +228,39 @@ var ClaudeCodeProfile = AgentProfile{
 		"skills/**",
 		"settings.json",
 	},
+	// portableSettingsTopKeys, generalized: the same allowlist previously
+	// hardcoded in internal/core/service/agentconfig.go now lives on the
+	// profile it describes. Deliberately EXCLUDED (dropped): apiKeyHelper/
+	// awsCredentialExport/gcpAuthRefresh/otelHeadersHelper (credential
+	// helpers), env (may hold secrets), hooks (reference host filesystem
+	// paths), permissions (host-specific allowlists), sandbox (its
+	// credentials subtree is secret and its network policy is irrelevant
+	// inside a nexus3 perimeter), and anything unrecognised.
+	SettingsAllowlist: map[string]bool{
+		"model":                  true,
+		"advisorModel":           true,
+		"availableModels":        true,
+		"theme":                  true,
+		"tui":                    true,
+		"defaultShell":           true,
+		"attribution":            true,
+		"enabledPlugins":         true,
+		"extraKnownMarketplaces": true,
+		"autoMode":               true,
+		"effortLevel":            true,
+		"autoUpdatesChannel":     true,
+		"enableWorkflows":        true,
+		// Bypass-permissions consent: always carried into the lower overlayfs
+		// layer so plugins (enabledPlugins) and this key coexist. The overlay
+		// is file-granular: an upper-layer write of a single-key settings.json
+		// would shadow the entire lower file, dropping enabledPlugins and
+		// extraKnownMarketplaces. Carrying the key here keeps them all in one
+		// layer.
+		"skipDangerousModePermissionPrompt": true,
+	},
+	// See SettingsAllowlist's skipDangerousModePermissionPrompt entry above:
+	// this is the key AssembleCuratedConfig forces to true in the lower layer.
+	BypassConsentKey: "skipDangerousModePermissionPrompt",
 }
 
 // ClaudeCodeProfileName is the registered name of [ClaudeCodeProfile]. It is
@@ -194,11 +270,102 @@ const ClaudeCodeProfileName = "claude-code"
 // DefaultProfileName is the agent used when a sandbox does not name one.
 const DefaultProfileName = ClaudeCodeProfileName
 
+// CursorAgentProfileName is the registered name of [CursorAgentProfile].
+const CursorAgentProfileName = "cursor"
+
+// CursorAgentProfile is the canonical AgentProfile for cursor-agent (the
+// `cursor-agent` / `agent` CLI) running inside a nexus3 sandbox.
+//
+// # Auth path: API key only, not OAuth
+//
+// cursor-agent has two auth paths: an interactive `cursor-agent login` device
+// flow that writes an `authInfo` blob into ~/.cursor/cli-config.json (mixed in
+// with ordinary, non-secret settings — there is no separate credentials file
+// the way Claude Code has .credentials.json), and a direct `--api-key` /
+// CURSOR_API_KEY env var path that requires no file at all.
+//
+// This profile brokers ONLY the second path (mirroring Claude's APIKeyEnvVar /
+// ANTHROPIC_AUTH_TOKEN direct-SDK path), and deliberately leaves
+// PlaceholderEnvVar empty: there is no OAuth-subscription placeholder for
+// cursor to broker. The OAuth device-flow path is out of scope for this
+// profile because its token lands inline in a general settings file with no
+// by-omission exclusion mechanism available (unlike Claude's separate
+// .credentials.json) — brokering it would mean minting a placeholder that has
+// nowhere safe to live in the guest's config tree. A cursor sandbox created
+// under this profile authenticates purely via the brokered CURSOR_API_KEY
+// placeholder; an operator's own interactive `cursor-agent login` session on
+// the host is never brokered or copied into the guest.
+//
+// Verified empirically (2026-08-30, cursor-agent 2026.08.25-3e8eec8): a fake
+// CURSOR_API_KEY, captured via a local CONNECT proxy, causes cursor-agent to
+// contact exactly one host — api2.cursor.sh (the documented default
+// CURSOR_API_ENDPOINT) — for both the one-shot (`-p`) and interactive paths.
+//
+// # Curated config still requires the settings filter regardless of auth path
+//
+// Choosing the API-key path removes the need to BROKER cursor's OAuth token.
+// It does NOT remove authInfo from cli-config.json on an operator's real host:
+// that file is copied into the guest by AssembleCuratedConfig for its portable
+// keys (model, approvalMode, display, editor, permissions, notifications,
+// etc.) regardless of which credential path this profile uses, and an
+// operator who has ALSO run `cursor-agent login` interactively for their own
+// use carries authInfo in that same file. SettingsAllowlist is therefore load-
+// bearing here independently of PlaceholderEnvVar/APIKeyEnvVar — removing it
+// as apparently-dead code would silently ship that operator's OAuth token into
+// every cursor sandbox.
+var CursorAgentProfile = AgentProfile{
+	Name:             CursorAgentProfileName,
+	CredentialedHost: "api2.cursor.sh",
+	EgressHosts:      []string{"api2.cursor.sh"},
+	APIKeyEnvVar:     "CURSOR_API_KEY",
+	// cursor-agent is Node.js-based (bundled index.js + native .node addons),
+	// so it reads NODE_EXTRA_CA_CERTS directly, same as Claude Code.
+	CACertEnvVars:   []string{"NODE_EXTRA_CA_CERTS"},
+	SettingsPath:    "~/.cursor/cli-config.json",
+	ConfigDirEnvVar: "CURSOR_CONFIG_DIR",
+	MountAllowlist: []string{
+		"cli-config.json",
+	},
+	// See the profile doc comment: required regardless of auth path.
+	// Deliberately excludes authInfo (the credential itself), privacyCache and
+	// serverConfigCache (host-specific caches), suggestNextPrompt (ephemeral
+	// UI state), network (ambiguous — may gain a host-specific proxy setting
+	// in a future release; excluded by default per the allowlist's own
+	// rationale), and sandbox (cursor's own local sandbox policy, irrelevant
+	// and potentially host-path-bearing inside a nexus3 perimeter — same
+	// rationale as ClaudeCodeProfile's sandbox exclusion).
+	SettingsAllowlist: map[string]bool{
+		"version":                           true,
+		"editor":                            true,
+		"display":                           true,
+		"notifications":                     true,
+		"hints":                             true,
+		"modelSlashCommands":                true,
+		"rewind":                            true,
+		"hasChangedDefaultModel":            true,
+		"exploreSubagentModel":              true,
+		"permissions":                       true,
+		"approvalMode":                      true,
+		"autoAcceptWebSearch":               true,
+		"attribution":                       true,
+		"model":                             true,
+		"maxMode":                           true,
+		"selectedModel":                     true,
+		"modelParameters":                   true,
+		"runEverythingSettingsPromptStreak": true,
+	},
+	// cursor-agent has no settings-file bypass-consent key: the skip-
+	// permissions posture is a launch-time flag (--force/--yolo), not a
+	// persisted setting. Zero value (empty string) is correct here.
+	MCPConfigFormat: MCPConfigFormatCursorJSON,
+}
+
 // profiles is the registry of every agent nexus3 can seed credentials for,
 // keyed by [AgentProfile.Name]. Adding an agent type means adding one entry
 // here; no call site branches on the name.
 var profiles = map[string]AgentProfile{
-	ClaudeCodeProfileName: ClaudeCodeProfile,
+	ClaudeCodeProfileName:  ClaudeCodeProfile,
+	CursorAgentProfileName: CursorAgentProfile,
 }
 
 // ProfileByName resolves a registered agent profile. The second return value

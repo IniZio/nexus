@@ -431,6 +431,23 @@ func SeedGuestAgent(
 	return seedGuestAgent(ctx, broker, id, seeder, cred.ClaudeCodeProfile, kindUnset)
 }
 
+// SeedGuestAgentForProfile is [SeedGuestAgent] generalized to an explicit
+// [cred.AgentProfile] instead of the Claude Code default. Callers outside this
+// package that must reseed a sandbox whose attached agent is not Claude Code —
+// e.g. the supervisor re-seed loop, which only knows the agent by the name
+// persisted on domain.Sandbox.AgentName — use this instead of SeedGuestAgent,
+// which would otherwise always emit Claude's env vars regardless of which
+// agent the sandbox actually runs.
+func SeedGuestAgentForProfile(
+	ctx context.Context,
+	broker *cred.Broker,
+	id domain.SandboxID,
+	seeder GuestSeeder,
+	profile cred.AgentProfile,
+) ([]cred.PlaceholderRecord, error) {
+	return seedGuestAgent(ctx, broker, id, seeder, profile, kindUnset)
+}
+
 // seedGuestAgent is the internal implementation of [SeedGuestAgent] that
 // accepts an explicit [cred.AgentProfile] and [agentCredKind] for per-sandbox
 // credential-kind resolution. The profile drives the placeholder env-var name
@@ -522,6 +539,21 @@ func SeedGuestAgentAndSecrets(
 	seeder GuestSeeder,
 ) ([]cred.PlaceholderRecord, error) {
 	return seedGuestAgentAndSecrets(ctx, broker, id, specs, seeder, cred.ClaudeCodeProfile, kindUnset)
+}
+
+// SeedGuestAgentAndSecretsForProfile is [SeedGuestAgentAndSecrets] generalized
+// to an explicit [cred.AgentProfile]. See [SeedGuestAgentForProfile] for why
+// this variant exists: the combined agent+human-secrets seed route must also
+// be able to seed a non-Claude agent's credential env var.
+func SeedGuestAgentAndSecretsForProfile(
+	ctx context.Context,
+	broker *cred.Broker,
+	id domain.SandboxID,
+	specs []string,
+	seeder GuestSeeder,
+	profile cred.AgentProfile,
+) ([]cred.PlaceholderRecord, error) {
+	return seedGuestAgentAndSecrets(ctx, broker, id, specs, seeder, profile, kindUnset)
 }
 
 func seedGuestAgentAndSecrets(

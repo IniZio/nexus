@@ -439,6 +439,107 @@ func TestAssembleCuratedConfig_BypassConsentPresentWhenNoHostSettings(t *testing
 	}
 }
 
+// TestAssembleCuratedConfig_CursorAuthInfoStripped is the mutation-proof
+// regression guard for the cursor slice's central finding: cursor-agent's
+// cli-config.json can carry an authInfo blob written by an operator's own
+// interactive `cursor-agent login`, entirely independently of whether nexus3
+// brokers cursor via the OAuth path or the API-key path (this profile brokers
+// only the API-key path — see cred.CursorAgentProfile's doc comment). The
+// curated-config filter must strip authInfo regardless.
+//
+// This calls the REAL AssembleCuratedConfig at its real call site — the exact
+// function `nexus3 sandbox create --agent cursor` invokes — not a
+// reimplementation, per the testing bar in the cursor slice brief.
+//
+// Mutation-proof RED evidence (verified by hand while implementing this test,
+// restored immediately after — see the commit message for the transcript):
+// temporarily replacing `profile.SettingsAllowlist[key]` in copyFilteredSettings
+// with `true` (i.e. disarming the allowlist into an unconditional pass-through)
+// makes this test FAIL with authInfo present in the staged file, exactly as
+// the mutation should be caught.
+func TestAssembleCuratedConfig_CursorAuthInfoStripped(t *testing.T) {
+	srcDir := t.TempDir()
+	destDir := t.TempDir()
+
+	cliConfig := map[string]any{
+		// Portable — must survive filtering.
+		"model":        "auto",
+		"approvalMode": "allowlist",
+		"display":      map[string]any{"mode": "zen"},
+		// The credential blob. An operator who has run `cursor-agent login`
+		// interactively carries this key in the SAME file nexus3 stages,
+		// regardless of which auth path nexus3 itself brokers.
+		"authInfo": map[string]any{
+			"accessToken":  "cursor-oauth-access-token-do-not-leak",
+			"refreshToken": "cursor-oauth-refresh-token-do-not-leak",
+			"email":        "operator@example.com",
+		},
+		// Two more non-allowlisted keys, so the count assertion below cannot
+		// pass via a no-op patch that happens to only strip one key.
+		"privacyCache":      map[string]any{"fingerprint": "host-specific-value"},
+		"suggestNextPrompt": true,
+	}
+	b, err := json.Marshal(cliConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "cli-config.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.AssembleCuratedConfig(cred.CursorAgentProfile, srcDir, destDir); err != nil {
+		t.Fatalf("AssembleCuratedConfig: %v", err)
+	}
+
+	stagedPath := filepath.Join(destDir, "cli-config.json")
+	data, err := os.ReadFile(stagedPath)
+	if err != nil {
+		t.Fatalf("staged cli-config.json not written: %v", err)
+	}
+	var staged map[string]json.RawMessage
+	if err := json.Unmarshal(data, &staged); err != nil {
+		t.Fatalf("staged cli-config.json is not valid JSON: %v\nraw: %s", err, data)
+	}
+
+	// The mutation-proof assertion: authInfo, and every other non-allowlisted
+	// key, must be ABSENT — not merely non-matching in value. Count the
+	// substitutions so a no-op patch (e.g. filtering nothing, or filtering only
+	// one of the three) cannot masquerade as a pass.
+	droppedKeys := []string{"authInfo", "privacyCache", "suggestNextPrompt"}
+	droppedCount := 0
+	for _, key := range droppedKeys {
+		if _, leaked := staged[key]; leaked {
+			t.Errorf("non-allowlisted key %q leaked into staged cli-config.json", key)
+		} else {
+			droppedCount++
+		}
+	}
+	if droppedCount != len(droppedKeys) {
+		t.Fatalf("expected all %d non-allowlisted keys dropped, only %d were", len(droppedKeys), droppedCount)
+	}
+
+	// Portable keys must survive — proves the filter is an allowlist doing real
+	// work, not a mechanism that happens to drop everything.
+	for _, key := range []string{"model", "approvalMode", "display"} {
+		if _, ok := staged[key]; !ok {
+			t.Errorf("portable key %q was dropped from staged cli-config.json", key)
+		}
+	}
+
+	// Belt-and-suspenders raw-bytes check: the literal secret values must not
+	// appear anywhere in the staged file, even under an unexpected key shape.
+	if strings.Contains(string(data), "cursor-oauth-access-token-do-not-leak") ||
+		strings.Contains(string(data), "cursor-oauth-refresh-token-do-not-leak") {
+		t.Error("raw oauth token bytes leaked into staged cli-config.json")
+	}
+
+	// cursor has no BypassConsentKey (skip-permissions is a launch-time flag,
+	// not a settings key) — the staged file must NOT gain one.
+	if _, ok := staged["skipDangerousModePermissionPrompt"]; ok {
+		t.Error("cursor profile has no BypassConsentKey; staged cli-config.json must not gain skipDangerousModePermissionPrompt")
+	}
+}
+
 // TestAssembleCuratedConfig_GitDirExcluded verifies that a .git directory
 // accidentally inside the source tree is never staged.
 func TestAssembleCuratedConfig_GitDirExcluded(t *testing.T) {

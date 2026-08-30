@@ -2817,6 +2817,104 @@ func guestAgentLaunchCommand(autonomous bool) string {
 	return "command claude"
 }
 
+// cursorReadyMatch is the substring in cursor-agent's TUI footer that means
+// the agent has finished starting and its input box is accepting text.
+//
+// Verified STATICALLY (2026-08-30) by grepping the cursor-agent
+// 2026.08.25-3e8eec8 bundle: the mode-cycling hint "(shift+tab to cycle)" is
+// attached to every execution mode's label — default, "Plan (shift+tab to
+// cycle)", "Ask (shift+tab to cycle)", "Debug (shift+tab to cycle)" — unlike
+// claude, where the equivalent token changes with the PERMISSION mode
+// (bypass vs manual; see claudeReadyMatch). cursor's --force/--yolo autonomy
+// flag appears to be orthogonal to which token the footer shows.
+//
+// What is NOT known: this was never confirmed against a live authenticated
+// pane. Doing so requires a real CURSOR_API_KEY, which was not available in
+// the environment this function was written in (a fake key gets rejected by
+// the backend before the TUI's ready state is ever reached). Unlike
+// claudeReadyMatch, this function carries no live-footer verbatim quote.
+// Before relying on this in an unattended flow, confirm it against one live
+// guest pane; if it turns out wrong, prefer widening (returning to a longer,
+// mode-agnostic wait) over narrowing to a token that only holds in one mode —
+// a timeout is loud, a false-ready silently delivers the brief into a
+// wizard or dialog that never receives it.
+func cursorReadyMatch(_ bool) string {
+	return "shift+tab to cycle"
+}
+
+// guestCursorLaunchCommand returns the shell command typed into the guest
+// pane to start cursor-agent.
+//
+// autonomous == true  → "cursor-agent --force" — --force (alias --yolo) is
+// cursor's skip-permissions equivalent ("Run Everything"), confirmed via
+// `cursor-agent --help` on a freshly installed 2026.08.25-3e8eec8 binary.
+//
+// autonomous == false → "cursor-agent" — default mode, which prompts for
+// approval per tool call.
+//
+// Unlike claude, cursor-agent does NOT refuse to run as root: confirmed
+// empirically by running it as root in the environment this slice was
+// implemented in, where it failed only on API-key validation, never on uid.
+// No IS_SANDBOX-style escape is needed or emitted here.
+//
+// cursor-agent has no shell-function equivalent of the `claude` wrapper that
+// SeedGuestShellProfile installs (see guestAgentLaunchCommand), so there is no
+// "command " prefix needed here to bypass one.
+func guestCursorLaunchCommand(autonomous bool) string {
+	if autonomous {
+		return "cursor-agent --force"
+	}
+	return "cursor-agent"
+}
+
+// agentLaunchDescriptor is the per-agent, declarative launch contract used by
+// herdr space-agent dispatch: how to start the agent in a guest shell pane,
+// and how to recognise it has reached its ready-for-input prompt.
+//
+// Unlike cred.AgentProfile (pure data, no logic branches — see profile.go's
+// own doc comment), this descriptor IS a pair of functions, and that is a
+// deliberate, stated design choice rather than an oversight: readiness
+// detection and launch invocation genuinely differ per agent in ways that do
+// not compress into declarative fields without losing load-bearing nuance
+// (claudeReadyMatch's permission-mode distinction; guestAgentLaunchCommand's
+// shell-function-bypass requirement). Putting agent-specific FUNCTIONS behind
+// a name-keyed registry, instead of hardcoding claude's, is the seam this
+// comment's presence marks as intentionally non-declarative: adding a third
+// dispatchable agent means adding one command()/readyMatch() pair and one
+// registry entry here, not modifying herdrPluginSpaceAgent.
+type agentLaunchDescriptor struct {
+	command    func(autonomous bool) string
+	readyMatch func(autonomous bool) string
+}
+
+// agentLaunchDescriptors is the dispatch registry. Adding an agent here does
+// NOT change any existing entry's behaviour: claude's functions are untouched
+// and this map is the only new call surface.
+var agentLaunchDescriptors = map[string]agentLaunchDescriptor{
+	cred.ClaudeCodeProfileName: {
+		command:    guestAgentLaunchCommand,
+		readyMatch: claudeReadyMatch,
+	},
+	cred.CursorAgentProfileName: {
+		command:    guestCursorLaunchCommand,
+		readyMatch: cursorReadyMatch,
+	},
+}
+
+// resolveAgentLaunchDescriptor returns the launch descriptor for agentName.
+// An empty or unrecognised name falls back to Claude Code's descriptor,
+// matching cred.DefaultProfileName: a plain sandbox created without --agent,
+// or one predating this registry, still gets the pre-existing claude
+// behaviour rather than a dispatch failure. An unregistered --agent name is
+// already refused at `sandbox create` time by cred.ProfileByName, so this
+// fallback is a defensive default, not the primary validation point.
+func resolveAgentLaunchDescriptor(agentName string) agentLaunchDescriptor {
+	if d, ok := agentLaunchDescriptors[agentName]; ok {
+		return d
+	}
+	return agentLaunchDescriptors[cred.ClaudeCodeProfileName]
+}
+
 // guestShellTimeoutMS bounds the wait for the pane's guest shell to attach.
 const guestShellTimeoutMS = 60_000
 
@@ -3262,21 +3360,33 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 				paneID, guestShellTimeoutMS/1000, err), Err: err}
 	}
 
-	// 6. Launch claude in the guest shell pane.
-	fmt.Fprintf(w, "space-agent: launching %s in pane %s ...\n", guestAgentLaunchCommand(autonomous), paneID)
-	if err := herdrPaneRun(ctx, herdrBin, paneID, guestAgentLaunchCommand(autonomous)); err != nil {
+	// 5b. Resolve which agent this sandbox runs. sb.AgentName was already
+	//     validated against cred.ProfileByName at `sandbox create` time; an
+	//     empty name (plain sandbox) or a name predating this registry falls
+	//     back to claude's descriptor via resolveAgentLaunchDescriptor.
+	sb, sbErr := svc.Get(ctx, ref)
+	if sbErr != nil {
 		return &CodedError{Code: ErrCodeInternalError,
-			Msg: "space-agent: launch claude: " + err.Error(), Err: err}
+			Msg: "space-agent: re-resolve sandbox for agent dispatch: " + sbErr.Error(), Err: sbErr}
+	}
+	launchDesc := resolveAgentLaunchDescriptor(sb.AgentName)
+	launchCmd := launchDesc.command(autonomous)
+
+	// 6. Launch the agent in the guest shell pane.
+	fmt.Fprintf(w, "space-agent: launching %s in pane %s ...\n", launchCmd, paneID)
+	if err := herdrPaneRun(ctx, herdrBin, paneID, launchCmd); err != nil {
+		return &CodedError{Code: ErrCodeInternalError,
+			Msg: "space-agent: launch agent: " + err.Error(), Err: err}
 	}
 
-	// 7. Wait for the claude prompt. See claudeReadyMatch for why this token
-	//    and not the ❯ glyph.
-	readyMatch := claudeReadyMatch(autonomous)
-	fmt.Fprintf(w, "space-agent: waiting for claude prompt (match=%q, timeout=%ds) ...\n",
+	// 7. Wait for the agent's prompt. See claudeReadyMatch/cursorReadyMatch for
+	//    why each agent's token is what it is.
+	readyMatch := launchDesc.readyMatch(autonomous)
+	fmt.Fprintf(w, "space-agent: waiting for agent prompt (match=%q, timeout=%ds) ...\n",
 		readyMatch, claudeReadyTimeoutMS/1000)
 	if err := herdrPaneWaitOutput(ctx, herdrBin, paneID, readyMatch, claudeReadyTimeoutMS); err != nil {
 		return &CodedError{Code: ErrCodeInternalError,
-			Msg: fmt.Sprintf("space-agent: claude did not reach its prompt within %ds: %v",
+			Msg: fmt.Sprintf("space-agent: agent did not reach its prompt within %ds: %v",
 				claudeReadyTimeoutMS/1000, err), Err: err}
 	}
 

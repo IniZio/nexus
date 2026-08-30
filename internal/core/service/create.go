@@ -817,7 +817,11 @@ func CreateAndBoot(
 	// the agent seed without naming a profile gets the default, matching the
 	// pre-TBD-PD-32 behaviour.
 	agentProfile := opts.AgentProfile
-	if opts.UseAgentSeed && agentProfile.PlaceholderEnvVar == "" {
+	// Name, not PlaceholderEnvVar, is the zero-value sentinel (see
+	// cred.AgentProfile.Name doc): a profile that legitimately has no OAuth
+	// placeholder path (e.g. an API-key-only agent like cursor) must not be
+	// silently swapped for Claude here just because that field is empty.
+	if opts.UseAgentSeed && agentProfile.Name == "" {
 		agentProfile = cred.ClaudeCodeProfile
 	}
 
@@ -1044,9 +1048,12 @@ func CreateAndBoot(
 				svc.storeDeregistrar(booted.ID, dr)
 			}
 		} else if realToken == "" {
+			hint := "configure NEXUS3_DEDICATED_CRED_STORE (OAuth path)"
+			if agentProfile.APIKeyEnvVar != "" {
+				hint = fmt.Sprintf("set %s (API-key path) or %s", agentProfile.APIKeyEnvVar, hint)
+			}
 			slog.Warn("create-and-boot: no real token for agent egress; egress will send placeholder",
-				"sandbox", booted.ID, "host", agentProfile.CredentialedHost,
-				"hint", "set ANTHROPIC_AUTH_TOKEN (auth-token path) or configure NEXUS3_DEDICATED_CRED_STORE (OAuth path)")
+				"sandbox", booted.ID, "host", agentProfile.CredentialedHost, "hint", hint)
 		}
 	} else {
 		var combined []byte

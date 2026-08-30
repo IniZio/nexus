@@ -354,14 +354,29 @@ func runSeedRoute(ctx context.Context, route seedRoute, in seedRouteInputs) (ok,
 			"reason", "no MITM proxy for this sandbox: open egress, no secrets, no agent")
 		return false, false
 	case routeCombined:
-		return seedAgentAndHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers, in.Svc)
+		return seedAgentAndHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers, in.Svc, resolveSeedProfile(in.SB))
 	case routeHumanSecrets:
 		return seedHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Svc)
 	default: // routeAgent
 		agentSandbox := in.SB.AgentName != ""
 		return seedLoopFn(ctx, in.SB.ID, &in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers,
-			maxSeedAttempts, 2*time.Second, in.Svc, agentSandbox)
+			maxSeedAttempts, 2*time.Second, in.Svc, agentSandbox, resolveSeedProfile(in.SB))
 	}
+}
+
+// resolveSeedProfile resolves the [cred.AgentProfile] the re-seed loop must
+// use for sb, from the agent name persisted on the sandbox at creation
+// (domain.Sandbox.AgentName). Falling back to [cred.ClaudeCodeProfile] for an
+// empty or unregistered name matches the pre-existing behaviour for agent
+// sandboxes created before per-agent profiles existed; the profile is only
+// actually read by the caller when the route seeds agent credentials at all
+// (seedAgentCreds / routeCombined), so this fallback is inert for sandboxes
+// with no attached agent.
+func resolveSeedProfile(sb domain.Sandbox) cred.AgentProfile {
+	if profile, ok := cred.ProfileByName(sb.AgentName); ok {
+		return profile
+	}
+	return cred.ClaudeCodeProfile
 }
 
 func RunDetached(cfg Config) error {
@@ -1535,6 +1550,7 @@ func seedAgentAndHumanSecrets(
 	broker *cred.Broker,
 	refreshers []*cred.Refresher,
 	svc PerimeterCAGetter,
+	profile cred.AgentProfile,
 ) (ok bool, guestEverResponded bool) {
 	for attempt := range maxSeedAttempts {
 		if ctx.Err() != nil {
@@ -1548,7 +1564,7 @@ func seedAgentAndHumanSecrets(
 				slog.Debug("supervisor.seed_ca_retry", "attempt", attempt, "err", caErr)
 			} else {
 				guestEverResponded = true
-				if _, combErr := service.SeedGuestAgentAndSecrets(ctx, broker, sb.ID, sb.Envelope.SecretSpecs, credSeeder); combErr != nil {
+				if _, combErr := service.SeedGuestAgentAndSecretsForProfile(ctx, broker, sb.ID, sb.Envelope.SecretSpecs, credSeeder, profile); combErr != nil {
 					slog.Debug("supervisor.seed_combined_retry", "attempt", attempt, "err", combErr)
 				} else {
 					slog.Info("supervisor.agent_and_secrets_complete", "sandbox", sb.ID,
@@ -1717,6 +1733,7 @@ func SeedLoop(
 	retryDelay time.Duration,
 	svc PerimeterCAGetter,
 	seedAgentCreds bool,
+	profile cred.AgentProfile,
 ) (ok bool, guestEverResponded bool) {
 	for attempt := range maxAttempts {
 		if ctx.Err() != nil {
@@ -1733,7 +1750,7 @@ func SeedLoop(
 			}
 			var agentErr error
 			if caErr == nil && seedAgentCreds {
-				_, agentErr = service.SeedGuestAgent(ctx, broker, id, agentSeeder)
+				_, agentErr = service.SeedGuestAgentForProfile(ctx, broker, id, agentSeeder, profile)
 			}
 			if caErr == nil && agentErr == nil {
 				slog.Info("supervisor.seeds_complete", "sandbox", id,
