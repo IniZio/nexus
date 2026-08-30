@@ -1,11 +1,12 @@
 # Spec Index
 
-_Generated: 2026-08-20T01:35:25.801Z_
+_Generated: 2026-08-29T17:11:25.616Z_
 
 ## Concepts
 
 | Concept | Summary | Status | Views |
 | --- | --- | --- | --- |
-| C-PDF | Requirements for the N-sandbox parallel development flow ending in GitHub PRs and a downloadable built-output preview artifact. *(no manifest)* | — | — |
-| C-RES | Requirements for deterministic resource ownership, leak-free reclamation, journaled creation, and substrate-first crash recovery. *(no manifest)* | — | — |
-| C-SUR | Requirements for a canonical API surface, uniform MCP envelope, ephemeral one-call exec, surface-parity enforcement, and MCP verb parity. *(no manifest)* | — | — |
+| C-PDF | Requirements for the N-sandbox parallel development flow ending in GitHub PRs and a downloadable built-output preview artifact. | — | — |
+| C-PER | Requirements for the per-sandbox detached supervisor that keeps the egress perimeter and credential broker alive after the spawning CLI exits. | — | — |
+| C-RES | Requirements for deterministic resource ownership, leak-free reclamation, journaled creation, and substrate-first crash recovery. | — | — |
+| C-SUR | Requirements for a canonical API surface, uniform MCP envelope, ephemeral one-call exec, surface-parity enforcement, and MCP verb parity. | — | — |

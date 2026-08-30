@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-20T01:35:25.797Z",
+  "generated_at": "2026-08-29T17:11:25.605Z",
   "nodes": {
     "C-NEXUS3": {
       "id": "C-NEXUS3",
@@ -13,6 +13,7 @@
       ],
       "inbound": [
         "C-PDF",
+        "C-PER",
         "C-RES",
         "C-SUR"
       ],
@@ -725,6 +726,212 @@
       ],
       "byteSize": 516,
       "relPath": "pdf/README.md",
+      "status": null,
+      "pattern": null,
+      "verification": null,
+      "criticality": "must",
+      "concept": null,
+      "parent": "C-NEXUS3",
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "PER-R-001": {
+      "id": "PER-R-001",
+      "type": "requirement",
+      "title": "Hidden nexus3 __supervisor subcommand runs as a detached per-sandbox process, boots and owns the VM, starts the network perimeter, starts a long-lived credential Broker, writes supervisor.pid and supervisor.sock, and blocks until signaled.",
+      "summary": "Hidden nexus3 __supervisor subcommand runs as a detached per-sandbox process, boots and owns the VM, starts the network perimeter, starts a long-lived credential Broker, writes supervisor.pid and supervisor.sock, and blocks until signaled.",
+      "refs": [
+        "C-PER"
+      ],
+      "inbound": [
+        "C-PER"
+      ],
+      "byteSize": 1584,
+      "relPath": "per/PER-R-001.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "automated",
+      "criticality": "must",
+      "concept": "C-PER",
+      "parent": null,
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "PER-R-002": {
+      "id": "PER-R-002",
+      "type": "requirement",
+      "title": "The detached supervisor keeps egress alive after the spawning CLI exits: the guest still reaches the gateway and DNS after the launcher process terminates.",
+      "summary": "The detached supervisor keeps egress alive after the spawning CLI exits: the guest still reaches the gateway and DNS after the launcher process terminates.",
+      "refs": [
+        "C-PER"
+      ],
+      "inbound": [],
+      "byteSize": 1210,
+      "relPath": "per/PER-R-002.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "automated",
+      "criticality": "must",
+      "concept": "C-PER",
+      "parent": null,
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "PER-R-003": {
+      "id": "PER-R-003",
+      "type": "requirement",
+      "title": "nexus3 orca create spawns the detached supervisor via double-fork/setsid, awaits its READY signal (supervisor.pid present), emits connection JSON; nexus3 orca destroy signals supervisor teardown.",
+      "summary": "nexus3 orca create spawns the detached supervisor via double-fork/setsid, awaits its READY signal (supervisor.pid present), emits connection JSON; nexus3 orca destroy signals supervisor teardown.",
+      "refs": [
+        "C-PER"
+      ],
+      "inbound": [],
+      "byteSize": 1634,
+      "relPath": "per/PER-R-003.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "automated",
+      "criticality": "must",
+      "concept": "C-PER",
+      "parent": null,
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "PER-R-004": {
+      "id": "PER-R-004",
+      "type": "requirement",
+      "title": "The supervisor's long-lived credential broker is fed by cred.Refresher (from DefaultDedicatedCredStorePath), not StaticCredentialSource, giving zero-cred auth with automatic token rotation; the MITM CA is seeded into the guest on the persistent path.",
+      "summary": "The supervisor's long-lived credential broker is fed by cred.Refresher (from DefaultDedicatedCredStorePath), not StaticCredentialSource, giving zero-cred auth with automatic token rotation; the MITM CA is seeded into the guest on the persistent path.",
+      "refs": [
+        "C-PER"
+      ],
+      "inbound": [],
+      "byteSize": 1709,
+      "relPath": "per/PER-R-004.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "automated",
+      "criticality": "must",
+      "concept": "C-PER",
+      "parent": null,
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "PER-R-005": {
+      "id": "PER-R-005",
+      "type": "requirement",
+      "title": "End-to-end live proof: supervisor survives CLI exit, in-VM claude receives a real 200 from api.anthropic.com, git clone egress succeeds, zero credentials appear on the guest disk, and orca destroy tears everything down.",
+      "summary": "End-to-end live proof: supervisor survives CLI exit, in-VM claude receives a real 200 from api.anthropic.com, git clone egress succeeds, zero credentials appear on the guest disk, and orca destroy tears everything down.",
+      "refs": [
+        "C-PER"
+      ],
+      "inbound": [],
+      "byteSize": 1945,
+      "relPath": "per/PER-R-005.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "manual",
+      "criticality": "must",
+      "concept": "C-PER",
+      "parent": null,
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "PER-R-006": {
+      "id": "PER-R-006",
+      "type": "requirement",
+      "title": "A stale supervisor (dead pid, leftover sock files) is detected and cleaned up; a live supervisor is re-adopted rather than duplicated.",
+      "summary": "A stale supervisor (dead pid, leftover sock files) is detected and cleaned up; a live supervisor is re-adopted rather than duplicated.",
+      "refs": [
+        "C-PER"
+      ],
+      "inbound": [],
+      "byteSize": 1467,
+      "relPath": "per/PER-R-006.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "automated",
+      "criticality": "must",
+      "concept": "C-PER",
+      "parent": null,
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "PER-R-007": {
+      "id": "PER-R-007",
+      "type": "requirement",
+      "title": "Only the credential proxy and network perimeter are ported; non-essential vsock proxies (ssh-agent, git-signing, docker-cred, notification-relay, PTY-host) are absent; the zero-cred-in-guest invariant is unbroken; default non-orca sandbox flows are unchanged.",
+      "summary": "Only the credential proxy and network perimeter are ported; non-essential vsock proxies (ssh-agent, git-signing, docker-cred, notification-relay, PTY-host) are absent; the zero-cred-in-guest invariant is unbroken; default non-orca sandbox flows are unchanged.",
+      "refs": [
+        "C-PER"
+      ],
+      "inbound": [
+        "C-PER"
+      ],
+      "byteSize": 2137,
+      "relPath": "per/PER-R-007.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "manual",
+      "criticality": "must",
+      "concept": "C-PER",
+      "parent": null,
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "C-PER": {
+      "id": "C-PER",
+      "type": "concept",
+      "title": "Persistent perimeter",
+      "summary": "Requirements for the per-sandbox detached supervisor that keeps the egress perimeter and credential broker alive after the spawning CLI exits.",
+      "refs": [
+        "C-NEXUS3",
+        "PER-R-001",
+        "PER-R-007"
+      ],
+      "inbound": [
+        "PER-R-001",
+        "PER-R-002",
+        "PER-R-003",
+        "PER-R-004",
+        "PER-R-005",
+        "PER-R-006",
+        "PER-R-007"
+      ],
+      "byteSize": 643,
+      "relPath": "per/README.md",
       "status": null,
       "pattern": null,
       "verification": null,

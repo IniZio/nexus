@@ -1,21 +1,29 @@
 {
-  "total": 44,
+  "total": 51,
   "by_source": {
-    "unknown": 44
+    "unknown": 51
   },
   "by_concept": {
     "C-PDF": 27,
+    "C-PER": 7,
     "C-RES": 12,
     "C-SUR": 5
   },
   "by_verification": {
-    "manual": 44
+    "manual": 46,
+    "automated": 5
   },
   "by_criticality": {
-    "must": 44
+    "must": 51
   },
   "verified": 0,
-  "unverified_automated": [],
+  "unverified_automated": [
+    "PER-R-001",
+    "PER-R-002",
+    "PER-R-003",
+    "PER-R-004",
+    "PER-R-006"
+  ],
   "by_requirement": {
     "PDF-R-001": {
       "declared": "manual",
@@ -148,6 +156,41 @@
       "tests": []
     },
     "PDF-R-028": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PER-R-001": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "PER-R-002": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "PER-R-003": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "PER-R-004": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "PER-R-005": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PER-R-006": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "PER-R-007": {
       "declared": "manual",
       "verified": false,
       "tests": []
