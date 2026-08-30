@@ -1,0 +1,12 @@
+{
+ "eval_id": 2,
+ "eval_name": "diagnose-stale-binary",
+ "prompt": "im going mad here. i added a --dry-run flag to sandbox create in cmd_sandbox.go, ran make build, and the flag just gets treated like a positional arg. ive reread the parser like four times and the case statement is definitely there. what am i missing",
+ "assertions": [
+  "Identifies that `make build` runs `go build ./...` which writes no binary",
+  "States that ./nexus3 in the repo root is therefore stale",
+  "Recommends `go build -o nexus3 ./cmd/nexus3`",
+  "Mentions the atomic-rename install because a plain cp hits 'Text file busy'",
+  "Does NOT send the user back to re-read the flag parser"
+ ]
+}

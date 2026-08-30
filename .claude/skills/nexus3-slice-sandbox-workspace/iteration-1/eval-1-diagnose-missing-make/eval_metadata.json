@@ -1,0 +1,12 @@
+{
+ "eval_id": 1,
+ "eval_name": "diagnose-missing-make",
+ "prompt": "the agent i started in one of the nexus3 worktree sandboxes just told me it couldn't run `make test` so it ran go build and go vet by hand instead. is that ok? and why is make missing, i thought the containerfile installs everything",
+ "assertions": [
+  "Answers that it is NOT ok, rather than reassuring the user",
+  "Identifies that -race was silently lost because it needs cgo and a C toolchain",
+  "Explains the guest image ships neither make nor gcc",
+  "Names toolchain divergence between sandboxes as the underlying risk",
+  "Recommends apt-get install -y build-essential as a brief instruction"
+ ]
+}

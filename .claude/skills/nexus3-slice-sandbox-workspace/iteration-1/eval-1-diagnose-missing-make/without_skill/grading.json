@@ -1,0 +1,10 @@
+{
+  "expectations": [
+    {"text": "Answers that it is NOT ok, rather than reassuring the user", "passed": true, "evidence": "No, it was not OK. The agent should have stopped and reported the problem rather than falling back to bare go build / go vet."},
+    {"text": "Identifies that -race was silently lost because it needs cgo and a C toolchain", "passed": true, "evidence": "Automated check confirmed -race and cgo/CGO both present in answer; without-skill explains the fallback silently loses race detection due to missing C toolchain (go test -race requires CGO which requires gcc)."},
+    {"text": "Explains the guest image ships neither make nor gcc", "passed": true, "evidence": "build-essential (which provides make and gcc) was added to .nexus/Containerfile only today, in commit 2ff72fc. The sandbox the agent is running in was built from an earlier image that predates that."},
+    {"text": "Names toolchain divergence between sandboxes as the underlying risk", "passed": true, "evidence": "produces a different (unguarded) test configuration — implies that different sandboxes at different image versions produce meaningfully different test behavior, i.e. toolchain divergence risk."},
+    {"text": "Recommends apt-get install -y build-essential as a brief instruction", "passed": false, "evidence": "No apt-get install command found in the answer. The without_skill explains the cause and references the Containerfile fix but does not give the user the short apt-get install -y build-essential instruction."},
+    {"text": "Correctly identifies .nexus/Containerfile as the guest image source for worktree sandboxes", "passed": true, "evidence": "build-essential (which provides make and gcc) was added to .nexus/Containerfile only today — correctly names .nexus/Containerfile as the guest image source."}
+  ]
+}

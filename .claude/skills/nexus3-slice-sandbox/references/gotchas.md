@@ -26,9 +26,10 @@ key is ignored. Re-reading the parser shows nothing wrong.
 
 **Cause:** `make build` runs `go build -p N ./...`. Building multiple packages
 type-checks and **discards the binaries**. The `./nexus3` file in the repo root is
-a leftover from some earlier explicit build and can be arbitrarily old. CLAUDE.md
-says to build through `make`, so the natural move — `make build` then copy
-`./nexus3` — silently installs stale code.
+a leftover from some earlier explicit build and can be arbitrarily old. The
+natural move — `make build`, then copy `./nexus3` — silently installs stale code.
+CLAUDE.md carries this rule for every session; it is repeated here because the
+symptom presents as a parser bug, not a build problem.
 
 **Do:**
 ```bash
@@ -100,7 +101,8 @@ without it.
 worktree never contains it. It is mounted into the sandbox at its host absolute
 path, not under `/workspace`.
 
-**Do:** point agents at `$HOME/nexus3/.groundwork/motives/<slug>/`.
+**Do:** point agents at `<main-repo-abs-path>/.groundwork/motives/<slug>/`, with
+the path expanded — `git rev-parse --show-toplevel` on the host gives it.
 If the mount is missing entirely, the sandbox predates the
 `herdrWorktreeGroundworkMount` fix — recreate it.
 
@@ -111,13 +113,29 @@ If the mount is missing entirely, the sandbox predates the
 **Symptom:** an agent's report mentions "manually-guarded go build/vet/test", or
 two slices disagree about whether `-race` was on.
 
-**Cause:** the guest image ships neither. `make test` runs `-race`, which needs
-cgo and a C toolchain. Agents either apt-install them or silently fall back, so
-sandboxes from the same Containerfile end up with different toolchains and
-validate against different configurations.
+**Which image is the guest?** Worktree sandboxes build from the repo's
+**`.nexus/Containerfile`**. `herdrResolveWorktreeImage`
+(`internal/cli/cmd_herdr_plugin.go`) resolves in this order: a `nexus3.yaml`
+anywhere up to the repo root wins; otherwise the presence of
+`.nexus/Containerfile` alone is enough, since it is a complete build definition;
+only with neither does it fall back to `--image <default>`, the minimal
+`images/base/Containerfile`. Do not confuse the two — `images/base/Containerfile`
+documents "NO gcc / build-essential" and ships none of the inner-VM substrate
+(cloud-hypervisor, virtiofsd, buildkitd, Go) that a nexus3 worktree sandbox
+plainly has. If your guest has cloud-hypervisor, it came from
+`.nexus/Containerfile`.
+
+**Cause:** `.nexus/Containerfile` did not install `build-essential` until
+commit `2ff72fc`, and an image built before that has neither `make` nor `gcc`.
+`make test` runs `-race`, which needs cgo and a C toolchain, so without them an
+agent either apt-installs them itself or silently falls back to bare `go` — which
+also drops the memory-safety guards described in CLAUDE.md. Two sandboxes built
+from the same Containerfile then end up with different toolchains and validate
+against different configurations. That divergence is the real damage: the
+results are no longer comparable, and neither agent reports the discrepancy.
 
 **Do:** `apt-get install -y build-essential` as the first instruction in the
-brief, until an image rebuild picks up the Containerfile fix.
+brief. It takes effect immediately in a running VM, with no image rebuild.
 
 ---
 

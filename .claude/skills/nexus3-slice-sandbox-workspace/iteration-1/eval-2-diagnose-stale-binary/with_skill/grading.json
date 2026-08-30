@@ -1,0 +1,9 @@
+{
+  "expectations": [
+    {"text": "Identifies that `make build` runs `go build ./...` which writes no binary", "passed": true, "evidence": "make build runs go build -p N ./... Passing ./... tells the Go toolchain to build every package, which it type-checks and discards. No output binary is written."},
+    {"text": "States that ./nexus3 in the repo root is therefore stale", "passed": true, "evidence": "The ./nexus3 file sitting in the repo root is a leftover from some previous explicit build and can be arbitrarily old."},
+    {"text": "Recommends `go build -o nexus3 ./cmd/nexus3`", "passed": true, "evidence": "go build -o nexus3 ./cmd/nexus3"},
+    {"text": "Mentions the atomic-rename install because a plain cp hits 'Text file busy'", "passed": true, "evidence": "Then install with an atomic rename to avoid 'Text file busy' on any running supervisor that has the old binary open: cp nexus3 ~/.local/bin/nexus3.new && mv -f ~/.local/bin/nexus3.new ~/.local/bin/nexus3"},
+    {"text": "Does NOT send the user back to re-read the flag parser", "passed": true, "evidence": "The case statement you've been re-reading is almost certainly fine. — explicitly reassures the parser is correct, directs fix at the binary not the code."}
+  ]
+}

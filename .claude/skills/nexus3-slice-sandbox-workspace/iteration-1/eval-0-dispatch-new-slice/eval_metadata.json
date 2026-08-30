@@ -1,0 +1,14 @@
+{
+ "eval_id": 0,
+ "eval_name": "dispatch-new-slice",
+ "prompt": "I want to work on the buildkit crash-consistency thing in a separate VM so it doesn't disturb what I've got running. Set up a worktree sandbox for it off develop and get an agent going on it. The motive is nexus3-buildkit-poisoned-snapshot-on-vm-death. Don't actually leave it running, just show me the exact commands you'd run in order and what you'd check after each one.",
+ "assertions": [
+  "Uses `herdr worktree create` or `herdr worktree open` rather than `herdr workspace create --cwd`",
+  "Reads workspace id and worktree path from the command's JSON output instead of predicting or hardcoding them",
+  "Verifies the workspace shows is_linked_worktree=true before proceeding",
+  "Recognises that the auto-provision hook binds the sandbox, rather than racing or fighting it",
+  "Points the in-guest agent at .groundwork via an absolute host path, not a /workspace-relative one",
+  "Brief instructs the agent to install build-essential before building",
+  "Contains no hardcoded /home/<user> paths"
+ ]
+}

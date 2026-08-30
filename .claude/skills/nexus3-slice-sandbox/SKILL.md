@@ -16,30 +16,45 @@ the host's intentions.
 
 ## The loop
 
-### 1. Worktree
+Nothing below hardcodes a path. Derive the two you need:
 
 ```bash
-git worktree add $HOME/.herdr/worktrees/nexus3/<name> -b nexus3/<branch> develop
+REPO=$(git rev-parse --show-toplevel)        # the main checkout
+MAIN_WS=$HERDR_WORKSPACE_ID                  # or find it in `herdr workspace list`
 ```
+
+Keep using those variables in every command you write down, including the ones
+you hand back to a person. A recipe that bakes in one machine's `/home/<user>/...`
+works exactly once; the same recipe written against `$REPO` and the ids returned
+by herdr works for anyone. This matters most in the places it is easiest to
+forget — the `git -C <worktree>` checks in step 4 and the `.groundwork` path
+inside the brief.
+
+### 1. Worktree and workspace, in one step
+
+```bash
+herdr worktree create --workspace "$MAIN_WS" --branch nexus3/<name> --base develop --no-focus
+```
+
+This creates the git worktree, picks its path, and opens it as a workspace that
+is properly associated with the repo. Read the path and workspace id from the
+JSON response rather than predicting them.
 
 Branch under `nexus3/**`. The sandbox git perimeter allowlists only
 `refs/heads/nexus3/**`, so a branch outside it cannot be pushed from inside a
 sandbox.
 
-### 2. Workspace — use `worktree open`, not `workspace create`
+For a worktree that already exists, the equivalent is
+`herdr worktree open --workspace "$MAIN_WS" --path <worktree-path> --no-focus`.
 
-```bash
-herdr worktree open --workspace <main-ws-id> --path <worktree-path> --no-focus
-```
-
-`herdr workspace create --cwd <path>` also produces a working workspace, and this
-is the trap: it is a *plain* workspace that merely happens to sit in that
-directory. It carries no worktree association, so `is_linked_worktree` is unset
-and the herdr UI floats it at top level instead of nesting it under the repo. The
-label gets rewritten later by `worktree-sandbox`, so a wrongly-created workspace
-*looks* identical in a list while being structurally different — and
-`herdrWorktreeInfo.SourceWorkspaceID`, which drives the auto-create predicates,
-is empty.
+**Do not reach for `herdr workspace create --cwd`.** It also produces a working
+workspace, which is the trap: it is a *plain* workspace that merely happens to
+sit in that directory. It carries no worktree association, so
+`is_linked_worktree` is unset and the herdr UI floats it at top level instead of
+nesting it under the repo. The label gets rewritten later by `worktree-sandbox`,
+so a wrongly-created workspace *looks* identical in a listing while being
+structurally different — and `SourceWorkspaceID`, which drives the auto-create
+predicates, is empty.
 
 Verify rather than assume:
 
@@ -47,7 +62,7 @@ Verify rather than assume:
 herdr workspace list   # the new workspace must show worktree.is_linked_worktree = true
 ```
 
-### 3. Sandbox
+### 2. Sandbox
 
 Creating the workspace fires an auto-provision hook that binds a sandbox. You
 usually do not need to call anything. To force it, or to pass flags:
@@ -66,7 +81,7 @@ remove sandbox → recreate with different flags" is therefore impossible.
 The way through is to change what the auto-provision *reads*, not to outrace it.
 See Nested virtualisation below.
 
-### 4. Dispatch the agent
+### 3. Dispatch the agent
 
 ```bash
 nexus3 herdr agent --autonomous --no-focus <handle> "<brief>"
@@ -89,7 +104,7 @@ A `pane run` sent while the agent is working queues as its next prompt rather
 than interrupting — useful, but it means "no response yet" is ambiguous between
 busy and never-delivered.
 
-### 5. Checkpoint before you tear anything down
+### 4. Checkpoint before you tear anything down
 
 Worktrees are host-side, so a sandbox rebuild never loses committed files. It
 *does* destroy the agent's session — the in-guest `~/.claude` upperdir is tmpfs.
@@ -108,7 +123,7 @@ Then wait on the commit, not on the pane:
 until [ -n "$(git -C <worktree> log --oneline develop..HEAD)" ]; do sleep 10; done
 ```
 
-### 6. Verify, then merge
+### 5. Verify, then merge
 
 Read the diff and re-run the agent's own mutation proofs yourself. Agents report
 tests as proven that are not — see Verification below.
@@ -157,6 +172,13 @@ have no test at the layer that decided it — flipping the default left the whol
 package green. The check is cheap: break the line, run the narrowed test, confirm
 RED, restore, confirm GREEN.
 
+## Answering a person, not a machine
+
+When you use this skill to answer someone, give them the finding and the fix.
+Do not cite this skill's own files back at them — `references/gotchas.md` is not
+a path they have, and naming it turns a clear answer into a puzzle. Cite things
+they can actually open: a repo file and line, a commit, a command they can run.
+
 ## Traps
 
 Full symptom-first catalogue in `references/gotchas.md`. Read it when something
@@ -172,7 +194,8 @@ reads in the code. The ones that cost the most time:
   `-race` off. Tell them to `apt-get install -y build-essential` first.
 - **`.groundwork/` is gitignored**, so a worktree never contains it. It is mounted
   at its host absolute path — point agents at
-  `$HOME/nexus3/.groundwork/...`, never a `/workspace`-relative path.
+  `$REPO/.groundwork/...` expanded to its real host path, never a
+  `/workspace`-relative one.
 - **herdr reuses workspace IDs**, and nexus3 bindings are not expired, so a new
   workspace can inherit a closed one's binding to a completely different repo's
   sandbox. Check `nexus3 herdr list` before believing an "already bound" refusal.

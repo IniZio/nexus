@@ -9,8 +9,9 @@ already tripped on them. Everything it needs has to be in the text you send.
 **Where the charter is, as an absolute path.** `.groundwork/` is gitignored and
 absent from the worktree; it is mounted at its host path. A brief that says "read
 `.groundwork/motives/<slug>/motive.md`" points at nothing. Say
-`$HOME/nexus3/.groundwork/motives/<slug>/`, and say explicitly that
-it is *not* under `/workspace`.
+`<main-repo-abs-path>/.groundwork/motives/<slug>/` with the path expanded
+(`git rev-parse --show-toplevel` gives it), and say explicitly that it is *not*
+under `/workspace`.
 
 **Environment facts it cannot infer.** Whether `/dev/kvm` is present. That
 `make` and `gcc` need installing first. That `make build` writes no binary. These
