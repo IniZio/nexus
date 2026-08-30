@@ -30,6 +30,14 @@ type SpawnConfig struct {
 	// ReadyTimeout is the maximum time to wait for supervisor.pid to appear.
 	// Defaults to 5 minutes when zero.
 	ReadyTimeout time.Duration
+
+	// AdoptHandoffSock, when non-empty, spawns the subprocess in adopt mode
+	// (nexus3 __supervisor --adopt-handoff-sock <path>) instead of boot mode.
+	// See [SpawnAdoptDetached], which is the entry point that waits for the
+	// adopt-mode readiness signal (the handoff socket appearing) rather than
+	// for supervisor.pid — the pidfile is written much later in adopt mode,
+	// only after a handoff has actually been offered and confirmed.
+	AdoptHandoffSock string
 }
 
 // BuildSupervisorArgv constructs the argv slice for `nexus3 __supervisor`
@@ -132,6 +140,11 @@ func BuildSupervisorArgv(cfg SpawnConfig) []string {
 	// Set by SpawnDetached when Ephemeral is true and a pipe was created.
 	if cfg.ParentPipeFD > 0 {
 		args = append(args, "--parent-pipe-fd", strconv.Itoa(cfg.ParentPipeFD))
+	}
+	// AdoptHandoffSock: selects adopt mode (RunAdopt) over boot mode
+	// (RunDetached) in runSupervisorMain. See SpawnAdoptDetached.
+	if cfg.AdoptHandoffSock != "" {
+		args = append(args, "--adopt-handoff-sock", cfg.AdoptHandoffSock)
 	}
 	return args
 }
@@ -264,6 +277,83 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 		pipeW.Close()
 	}
 	return 0, nil, fmt.Errorf("spawn supervisor: timed out waiting for %s (pid %d)", pidfile, spawnPid)
+}
+
+// SpawnAdoptDetached forks and detaches a supervisor process in adopt mode
+// (cfg.AdoptHandoffSock must be non-empty). Unlike [SpawnDetached], it does
+// NOT wait for supervisor.pid — in adopt mode that file is written only
+// after a handoff has actually been offered and confirmed, which has not
+// happened yet when this function is spawning the process. Instead it waits
+// for cfg.AdoptHandoffSock to exist: [net.Listen] creates the socket's
+// filesystem entry as soon as the adopt-mode process binds it, strictly
+// before it calls Accept, so polling for the path's existence (not dialing
+// it, which would consume the one Accept the caller's own handoff dial is
+// waiting to fill) is a safe, non-consuming readiness signal.
+//
+// The caller is responsible for the actual handoff request (RequestHandoff)
+// once this returns, and for terminating the spawned process if the handoff
+// does not succeed — a spawned adopt-mode process that never receives an
+// offer exits on its own once adoptHandoffAcceptTimeout elapses.
+func SpawnAdoptDetached(cfg SpawnConfig) (pid int, err error) {
+	if cfg.AdoptHandoffSock == "" {
+		return 0, fmt.Errorf("spawn adopt supervisor: AdoptHandoffSock is required")
+	}
+	_ = os.Remove(filepath.Join(cfg.StateDir, supervisorErrFile))
+
+	exe := cfg.Exe
+	if exe == "" {
+		exe, err = os.Executable()
+		if err != nil {
+			return 0, fmt.Errorf("spawn adopt supervisor: resolve executable: %w", err)
+		}
+	}
+
+	readyTimeout := cfg.ReadyTimeout
+	if readyTimeout == 0 {
+		readyTimeout = 30 * time.Second
+	}
+
+	args := BuildSupervisorArgv(cfg)
+
+	logPath := cfg.LogPath
+	if logPath == "" {
+		logPath = cfg.StateDir + "/supervisor-adopt.log"
+	}
+	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if logErr != nil {
+		return 0, fmt.Errorf("spawn adopt supervisor: open log file %s: %w", logPath, logErr)
+	}
+
+	cmd := exec.Command(exe, args...)
+	cmd.Stdin = nil
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if startErr := cmd.Start(); startErr != nil {
+		_ = logFile.Close()
+		return 0, fmt.Errorf("spawn adopt supervisor: exec: %w", startErr)
+	}
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
+	_ = logFile.Close()
+
+	spawnPid := cmd.Process.Pid
+	deadline := time.Now().Add(readyTimeout)
+	for time.Now().Before(deadline) {
+		if killErr := syscall.Kill(spawnPid, 0); killErr != nil {
+			if reason, readErr := os.ReadFile(filepath.Join(cfg.StateDir, supervisorErrFile)); readErr == nil && len(reason) > 0 {
+				return 0, fmt.Errorf("spawn adopt supervisor: %s", string(reason))
+			}
+			return 0, fmt.Errorf("spawn adopt supervisor: process exited before listening on handoff socket (pid %d); see %s", spawnPid, logPath)
+		}
+		if _, statErr := os.Stat(cfg.AdoptHandoffSock); statErr == nil {
+			return spawnPid, nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	terminateSupervisor(spawnPid, exited, terminateSupervisorGrace)
+	return 0, fmt.Errorf("spawn adopt supervisor: timed out waiting for handoff listener at %s (pid %d)", cfg.AdoptHandoffSock, spawnPid)
 }
 
 // terminateSupervisorGrace is how long terminateSupervisor waits for a SIGTERM'd

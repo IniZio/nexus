@@ -401,3 +401,32 @@ func (d *CHDriver) NetnsState(id domain.SandboxID) (childPID, childPGID int, chi
 }
 
 var _ driver.NetnsStateProvider = (*CHDriver)(nil)
+
+// AdoptRuntime installs an already-adopted [NetnsRuntime] into the driver's
+// in-memory state, so [CHDriver.Observe], [CHDriver.Stop], and
+// [CHDriver.GuestNetworkFD] operate on id exactly as they would if this
+// driver's own Start had produced rt. This is the seam a replacement
+// supervisor uses in place of Start when a VM predates the process and must
+// not be rebooted: the driver otherwise has no way to learn about a runtime
+// it did not create.
+//
+// Callers must have already validated rt via [AdoptNetnsRuntime] — this
+// method performs no pid-identity or fd validation of its own, only the
+// bookkeeping to make id observable and stoppable.
+//
+// Refuses (returns a non-nil error, leaves d unmodified) when a runtime is
+// already registered for id. On a freshly constructed driver (the only
+// intended caller) this should never happen; if it does, it signals a caller
+// bug rather than a race worth papering over.
+func (d *CHDriver) AdoptRuntime(id domain.SandboxID, rt *NetnsRuntime) error {
+	if rt == nil {
+		return fmt.Errorf("cloudhypervisor: AdoptRuntime %s: rt is nil", id)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, exists := d.nets[id]; exists {
+		return fmt.Errorf("cloudhypervisor: AdoptRuntime %s: a runtime is already registered for this sandbox", id)
+	}
+	d.nets[id] = &netState{rt: rt, perimConn: rt.PerimConn}
+	return nil
+}

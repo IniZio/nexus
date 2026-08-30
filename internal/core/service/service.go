@@ -538,7 +538,7 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 	// broker must be attached. An absent broker means the operator has not
 	// enabled egress enforcement; the supervisor is skipped silently.
 	if hook, ok := s.driver.(driver.NetworkHook); ok && s.broker != nil {
-		if err := s.startSupervisor(ctx, hook, updated); err != nil {
+		if err := s.startSupervisor(ctx, hook, updated, nil); err != nil {
 			return domain.Sandbox{}, fmt.Errorf("service: start %s: perimeter: %w", updated.ID, err)
 		}
 	}
@@ -817,7 +817,17 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 // startSupervisor assembles a PerimeterSupervisor for the running sandbox and
 // stores it. Called by Start after the store lock is released, and by Fork
 // and RestoreFromSnapshot for children persisted directly as Running.
-func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, sb domain.Sandbox) error {
+// CASeed carries a pre-existing MITM CA certificate+key to seed into a
+// freshly constructed proxy, instead of minting a fresh CA. Used by the
+// hot-swap adopt path so the replacement supervisor continues signing leaf
+// certificates the guest already trusts (motive
+// nexus3-host-supervisor-hotswap).
+type CASeed struct {
+	CertPEM []byte
+	KeyPEM  []byte
+}
+
+func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, sb domain.Sandbox, seedCA *CASeed) error {
 	fd, err := hook.GuestNetworkFD(ctx, sb.ID)
 	if err != nil {
 		return fmt.Errorf("guest network fd: %w", err)
@@ -898,16 +908,22 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 	var proxy *mitm.Proxy
 	if SandboxHasMITMProxy(sb) {
 		var err error
+		var seedCertPEM, seedKeyPEM []byte
+		if seedCA != nil {
+			seedCertPEM, seedKeyPEM = seedCA.CertPEM, seedCA.KeyPEM
+		}
 		proxy, err = mitm.New(mitm.Config{
 			SandboxID:       sb.ID,
 			AllowedHosts:    sb.Envelope.AllowedHosts,
 			SecretHosts:     sb.Envelope.SecretHosts,
 			Broker:          s.broker,
 			AllowAll:        allowAll && (len(sb.Envelope.SecretHosts) > 0 || sb.AgentName != ""),
-			AllowedRepo:     sb.Envelope.AllowedRepo,                    // D-PD-36: per-repo path allowlist
+			SeedCACertPEM:   seedCertPEM,
+			SeedCAKeyPEM:    seedKeyPEM,
+			AllowedRepo:     sb.Envelope.AllowedRepo,                         // D-PD-36: per-repo path allowlist
 			PathPolicies:    buildMITMPathPolicies(sb.Envelope.PathPolicies), // T4: per-secret path policies
-			AllowedBranches: sb.Envelope.ResolvedAllowedBranches(), // S0: default applied here
-			OnEgress:        mitmOnEgress,                          // shared egress-decisions sink
+			AllowedBranches: sb.Envelope.ResolvedAllowedBranches(),           // S0: default applied here
+			OnEgress:        mitmOnEgress,                                    // shared egress-decisions sink
 		})
 		if err != nil {
 			fd.Close()
@@ -946,6 +962,35 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 	// AllowAll mode: no MITM proxy; direct forwarding is used for port 443.
 
 	return nil
+}
+
+// StartPerimeterOnly wires the network perimeter (gvproxy/MITM/netfilter) for
+// a sandbox whose VM is already running under this Service's driver instance
+// — e.g. one installed via [driver.NetworkHook]-backed netns-runtime
+// adoption — without calling driver.Start or touching lifecycle state. It is
+// the seam the supervisor's adopt-mode entrypoint (RunAdopt) uses in place of
+// Start: the VM predates this process and must never be rebooted.
+//
+// Mirrors Start's own gating: silently returns nil when the driver does not
+// implement driver.NetworkHook or no credential broker is attached, the same
+// posture Start takes for "egress enforcement not configured".
+//
+// Refuses (returns a non-nil error, does nothing) when sb.State is not
+// domain.Running — this method must never be the thing that starts a
+// perimeter for a VM that is not actually up.
+// seedCA is optional: nil means the perimeter's MITM proxy (if any) mints a
+// fresh CA, matching Start's own behaviour. Pass a non-nil seedCA (as the
+// adopt path does) to continue serving TLS interception with the CA the
+// guest already trusts instead.
+func (s *Service) StartPerimeterOnly(ctx context.Context, sb domain.Sandbox, seedCA *CASeed) error {
+	if sb.State != domain.Running {
+		return fmt.Errorf("service: start perimeter only: sandbox %s is not running", sb.ID)
+	}
+	hook, ok := s.driver.(driver.NetworkHook)
+	if !ok || s.broker == nil {
+		return nil
+	}
+	return s.startSupervisor(ctx, hook, sb, seedCA)
 }
 
 // closeSupervisor looks up and closes the supervisor for id, removing it from
@@ -1418,7 +1463,7 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 	// (cloudhypervisor/fork.go); GuestNetworkFD claims it here.
 	if hook, ok := s.driver.(driver.NetworkHook); ok && s.broker != nil {
 		for i := range children {
-			if err := s.startSupervisor(ctx, hook, children[i]); err != nil {
+			if err := s.startSupervisor(ctx, hook, children[i], nil); err != nil {
 				return nil, fmt.Errorf("service: fork %s: perimeter child %s: %w", parent.ID, children[i].ID, err)
 			}
 		}
@@ -1616,7 +1661,7 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 
 	if hook, ok := s.driver.(driver.NetworkHook); ok && s.broker != nil {
 		for i := range children {
-			if err := s.startSupervisor(ctx, hook, children[i]); err != nil {
+			if err := s.startSupervisor(ctx, hook, children[i], nil); err != nil {
 				return nil, fmt.Errorf("service: restore %s: perimeter child %s: %w", snapID, children[i].ID, err)
 			}
 		}

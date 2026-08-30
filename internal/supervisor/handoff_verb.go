@@ -3,10 +3,12 @@ package supervisor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"time"
 
+	"github.com/IniZio/nexus3/internal/core/perimeter"
 	"github.com/IniZio/nexus3/internal/supervisor/handoff"
 )
 
@@ -22,21 +24,61 @@ const handoffDialTimeout = 5 * time.Second
 const handoffAckTimeout = 30 * time.Second
 
 // payloadBuilder assembles the [handoff.Payload] and the perimeter fd to
-// offer, using whatever live state RunDetached has at the moment
+// offer, using whatever live state RunDetached/RunAdopt has at the moment
 // /supervisor/handoff is called (the perimeter supervisor, credential broker,
 // governor bounds). Returns a nil *os.File when there is no perimeter fd to
 // transfer (Payload.Perimeter.Present is then false).
 //
-// Only Payload.Version, Payload.Perimeter and Payload.Governor are populated
-// by [defaultPayloadBuilder] in this slice. Payload.CA, Payload.Credentials
-// and Payload.Virtiofs require accessors this slice's owning packages
-// (mitm.Proxy CA key export, cred.Broker placeholder-map dump, virtiofsd pid
-// tracking) do not yet expose — see the ticket's "open items" section. A
-// handoff attempted today therefore hands over network egress and the
-// governor's boot bounds correctly, but the replacement must re-seed the MITM
-// CA, credentials, and any live virtiofs mounts itself until a follow-up
-// slice wires those fields.
+// Payload.Version, Payload.Perimeter, Payload.Governor and Payload.CA are
+// populated by [buildHandoffPayload]. Payload.Credentials and
+// Payload.Virtiofs still require accessors this motive's owning packages
+// (cred.Broker placeholder-map dump, virtiofsd pid tracking) do not yet
+// expose — see the ticket's "open items" section.
 type payloadBuilder func() (handoff.Payload, *os.File, error)
+
+// buildHandoffPayload is the ONE payload-construction implementation both
+// RunDetached and RunAdopt call. It exists as a named, directly-callable
+// function specifically so a test can invoke the exact code path a real
+// handoff uses — the class of bug that let a motive-long, always-refusing
+// handoff pass every unit suite was every test hand-rolling its own payload
+// instead of calling this (motive nexus3-host-supervisor-hotswap, ticket 08
+// gate finding). Any future field this function forgets to populate is a bug
+// that same test will catch; a hand-rolled payload in a test would not.
+//
+// sup must be non-nil and have a live MITM proxy (CAKeyPair returns an
+// error otherwise, which is logged and produces a payload with an empty CA —
+// exactly the shape [handoff.Payload.Validate] refuses, which is correct:
+// AllowAll sandboxes with no proxy have nothing to hand off account for
+// here, and any other supervisor without a proxy will simply have every
+// handoff attempt refused too).
+func buildHandoffPayload(sup *perimeter.PerimeterSupervisor, sandboxRef string, bootVCPUs uint32, memoryMiB uint32) (handoff.Payload, *os.File, error) {
+	var fdFile *os.File
+	present := false
+	if f, ferr := sup.PerimeterFD(); ferr == nil {
+		fdFile = f
+		present = true
+	} else {
+		slog.Warn("supervisor.handoff_no_perimeter_fd", "sandboxRef", sandboxRef, "err", ferr)
+	}
+	var ca handoff.CAMaterial
+	if certPEM, keyPEM, caErr := sup.CAKeyPair(); caErr == nil {
+		ca = handoff.CAMaterial{CertPEM: certPEM, KeyPEM: keyPEM}
+	} else {
+		slog.Warn("supervisor.handoff_no_ca", "sandboxRef", sandboxRef, "err", caErr)
+	}
+	return handoff.Payload{
+		Version:   handoff.CurrentVersion,
+		Perimeter: handoff.PerimeterHandle{Present: present},
+		Governor: handoff.GovernorConfig{
+			VCPUCount: int(bootVCPUs),
+			MemoryMB:  uint64(memoryMiB),
+		},
+		CA: ca,
+		// Credentials and Virtiofs are intentionally NOT populated in this
+		// slice — see this function's doc comment for the missing
+		// accessors this depends on (open item, ticket 04).
+	}, fdFile, nil
+}
 
 // performHandoff dials peerSock as a Unix STREAM socket (the replacement's
 // handoff socket — a plain net.ListenUnix("unix", ...), the same network type

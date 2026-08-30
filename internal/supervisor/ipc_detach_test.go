@@ -27,7 +27,7 @@ func serveTestIPCFull(t *testing.T, allowEgress allowEgressFunc, hf handoffFunc)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	h, err := serveIPC(ctx, sockPath, nil, "test-sandbox", allowEgress, hf)
+	h, err := serveIPC(ctx, sockPath, nil, "test-sandbox", allowEgress, hf, "test-hash")
 	if err != nil {
 		t.Fatalf("serveIPC: %v", err)
 	}
