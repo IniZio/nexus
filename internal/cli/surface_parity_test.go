@@ -73,6 +73,9 @@ var surfaceMap = []surfaceEntry{
 	// volume noun manages named volumes directly via volumestore (not through
 	// service.*) — the canonical backing is the VolumeStore CRUD primitives.
 	{CLIVerb: "volume", CanonicalMethods: []string{"volumestore.Create", "volumestore.List", "volumestore.Rm", "volumestore.Prune"}, MCPTools: nil},
+	// sandbox agent-upgrade: hot-swaps the in-guest binary via agent.AgentUpgrade
+	// (which calls Copy + RestartAgent + AgentInfo RPCs).  CLI-only: no MCP tool.
+	{CLIVerb: "sandbox agent-upgrade", CanonicalMethods: []string{"agent.AgentUpgrade", "agent.AgentInfo"}, MCPTools: nil},
 }
 
 // TestSurfaceParity verifies that every registered CLI verb and every MCP tool

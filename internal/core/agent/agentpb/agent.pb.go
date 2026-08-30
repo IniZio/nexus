@@ -862,6 +862,215 @@ func (x *CopyResponse) GetDeclaredBytes() int64 {
 	return 0
 }
 
+type AgentInfoRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgentInfoRequest) Reset() {
+	*x = AgentInfoRequest{}
+	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentInfoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentInfoRequest) ProtoMessage() {}
+
+func (x *AgentInfoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentInfoRequest.ProtoReflect.Descriptor instead.
+func (*AgentInfoRequest) Descriptor() ([]byte, []int) {
+	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{13}
+}
+
+// AgentInfoResponse carries the agent's build tag (the ldflags-stamped
+// value of agentBuildTag in cmd/nexus3-agent/main.go).
+type AgentInfoResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// build_tag is the value stamped by -ldflags "-X main.agentBuildTag=…"
+	// at image-build time.  "dev" means the binary was built without stamping.
+	BuildTag      string `protobuf:"bytes,1,opt,name=build_tag,json=buildTag,proto3" json:"build_tag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgentInfoResponse) Reset() {
+	*x = AgentInfoResponse{}
+	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentInfoResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentInfoResponse) ProtoMessage() {}
+
+func (x *AgentInfoResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentInfoResponse.ProtoReflect.Descriptor instead.
+func (*AgentInfoResponse) Descriptor() ([]byte, []int) {
+	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *AgentInfoResponse) GetBuildTag() string {
+	if x != nil {
+		return x.BuildTag
+	}
+	return ""
+}
+
+// RestartAgentRequest initiates an in-place binary swap.
+//
+// The host must have already pushed the replacement binary to staged_path
+// (via the Copy RPC with ExpectedBytes set) before calling RestartAgent.
+// The guest verifies the on-disk size of staged_path against expected_bytes,
+// renames it atomically over /sbin/nexus3-agent, then calls syscall.Exec to
+// replace PID 1's process image with the new binary.
+//
+// The vsock listener file descriptors (control port 1024 and data port 1025)
+// are inherited across execve — they do not have FD_CLOEXEC set — so the new
+// process image can rebind them without a window where the port is unbound.
+// The host-side connection to this RPC will be reset (the old gRPC server
+// dies); the host must treat the reset as "restart initiated" and poll Ping
+// until the new agent answers, then call AgentInfo to confirm the version.
+//
+// Running exec sessions (PTYs, pipes) are NOT preserved: they die with the
+// old process image. Callers must check ListSessions first and pass
+// force=true to override if active sessions exist.
+type RestartAgentRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Absolute path inside the guest of the staged replacement binary.
+	// Must have been written by a prior Copy PUSH with ExpectedBytes set.
+	StagedPath string `protobuf:"bytes,1,opt,name=staged_path,json=stagedPath,proto3" json:"staged_path,omitempty"`
+	// Expected byte count of staged_path. Fail-closed: the guest rejects the
+	// request if the on-disk size does not match.
+	ExpectedBytes int64 `protobuf:"varint,2,opt,name=expected_bytes,json=expectedBytes,proto3" json:"expected_bytes,omitempty"`
+	// If false (default) the guest rejects the request when active sessions
+	// exist.  Set true to force the swap even with live exec sessions; those
+	// sessions will be killed by the exec.
+	Force         bool `protobuf:"varint,3,opt,name=force,proto3" json:"force,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RestartAgentRequest) Reset() {
+	*x = RestartAgentRequest{}
+	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RestartAgentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RestartAgentRequest) ProtoMessage() {}
+
+func (x *RestartAgentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RestartAgentRequest.ProtoReflect.Descriptor instead.
+func (*RestartAgentRequest) Descriptor() ([]byte, []int) {
+	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *RestartAgentRequest) GetStagedPath() string {
+	if x != nil {
+		return x.StagedPath
+	}
+	return ""
+}
+
+func (x *RestartAgentRequest) GetExpectedBytes() int64 {
+	if x != nil {
+		return x.ExpectedBytes
+	}
+	return 0
+}
+
+func (x *RestartAgentRequest) GetForce() bool {
+	if x != nil {
+		return x.Force
+	}
+	return false
+}
+
+// RestartAgentResponse is returned only if the guest detects a pre-exec
+// error (size mismatch, active sessions without force, rename failure).
+// On a successful swap the guest calls syscall.Exec and this response is
+// never sent — the connection resets instead.
+type RestartAgentResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RestartAgentResponse) Reset() {
+	*x = RestartAgentResponse{}
+	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RestartAgentResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RestartAgentResponse) ProtoMessage() {}
+
+func (x *RestartAgentResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RestartAgentResponse.ProtoReflect.Descriptor instead.
+func (*RestartAgentResponse) Descriptor() ([]byte, []int) {
+	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{16}
+}
+
 var File_nexus3_agent_v1_agent_proto protoreflect.FileDescriptor
 
 const file_nexus3_agent_v1_agent_proto_rawDesc = "" +
@@ -918,7 +1127,16 @@ const file_nexus3_agent_v1_agent_proto_rawDesc = "" +
 	"\vtransfer_id\x18\x01 \x01(\tR\n" +
 	"transferId\x12*\n" +
 	"\x0edeclared_bytes\x18\x02 \x01(\x03H\x00R\rdeclaredBytes\x88\x01\x01B\x11\n" +
-	"\x0f_declared_bytes*b\n" +
+	"\x0f_declared_bytes\"\x12\n" +
+	"\x10AgentInfoRequest\"0\n" +
+	"\x11AgentInfoResponse\x12\x1b\n" +
+	"\tbuild_tag\x18\x01 \x01(\tR\bbuildTag\"s\n" +
+	"\x13RestartAgentRequest\x12\x1f\n" +
+	"\vstaged_path\x18\x01 \x01(\tR\n" +
+	"stagedPath\x12%\n" +
+	"\x0eexpected_bytes\x18\x02 \x01(\x03R\rexpectedBytes\x12\x14\n" +
+	"\x05force\x18\x03 \x01(\bR\x05force\"\x16\n" +
+	"\x14RestartAgentResponse*b\n" +
 	"\fSessionState\x12\x1d\n" +
 	"\x19SESSION_STATE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15SESSION_STATE_RUNNING\x10\x01\x12\x18\n" +
@@ -926,13 +1144,15 @@ const file_nexus3_agent_v1_agent_proto_rawDesc = "" +
 	"\rCopyDirection\x12\x1e\n" +
 	"\x1aCOPY_DIRECTION_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13COPY_DIRECTION_PUSH\x10\x01\x12\x17\n" +
-	"\x13COPY_DIRECTION_PULL\x10\x022\xa0\x03\n" +
+	"\x13COPY_DIRECTION_PULL\x10\x022\xd1\x04\n" +
 	"\fAgentService\x12C\n" +
 	"\x04Exec\x12\x1c.nexus3.agent.v1.ExecRequest\x1a\x1d.nexus3.agent.v1.ExecResponse\x12I\n" +
 	"\x06Signal\x12\x1e.nexus3.agent.v1.SignalRequest\x1a\x1f.nexus3.agent.v1.SignalResponse\x12^\n" +
 	"\rSessionStatus\x12%.nexus3.agent.v1.SessionStatusRequest\x1a&.nexus3.agent.v1.SessionStatusResponse\x12[\n" +
 	"\fListSessions\x12$.nexus3.agent.v1.ListSessionsRequest\x1a%.nexus3.agent.v1.ListSessionsResponse\x12C\n" +
-	"\x04Copy\x12\x1c.nexus3.agent.v1.CopyRequest\x1a\x1d.nexus3.agent.v1.CopyResponseB>Z<github.com/IniZio/nexus3/internal/core/agent/agentpb;agentpbb\x06proto3"
+	"\x04Copy\x12\x1c.nexus3.agent.v1.CopyRequest\x1a\x1d.nexus3.agent.v1.CopyResponse\x12R\n" +
+	"\tAgentInfo\x12!.nexus3.agent.v1.AgentInfoRequest\x1a\".nexus3.agent.v1.AgentInfoResponse\x12[\n" +
+	"\fRestartAgent\x12$.nexus3.agent.v1.RestartAgentRequest\x1a%.nexus3.agent.v1.RestartAgentResponseB>Z<github.com/IniZio/nexus3/internal/core/agent/agentpb;agentpbb\x06proto3"
 
 var (
 	file_nexus3_agent_v1_agent_proto_rawDescOnce sync.Once
@@ -947,7 +1167,7 @@ func file_nexus3_agent_v1_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_nexus3_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_nexus3_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_nexus3_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_nexus3_agent_v1_agent_proto_goTypes = []any{
 	(SessionState)(0),             // 0: nexus3.agent.v1.SessionState
 	(CopyDirection)(0),            // 1: nexus3.agent.v1.CopyDirection
@@ -964,11 +1184,15 @@ var file_nexus3_agent_v1_agent_proto_goTypes = []any{
 	(*ListSessionsResponse)(nil),  // 12: nexus3.agent.v1.ListSessionsResponse
 	(*CopyRequest)(nil),           // 13: nexus3.agent.v1.CopyRequest
 	(*CopyResponse)(nil),          // 14: nexus3.agent.v1.CopyResponse
-	nil,                           // 15: nexus3.agent.v1.ExecRequest.EnvEntry
+	(*AgentInfoRequest)(nil),      // 15: nexus3.agent.v1.AgentInfoRequest
+	(*AgentInfoResponse)(nil),     // 16: nexus3.agent.v1.AgentInfoResponse
+	(*RestartAgentRequest)(nil),   // 17: nexus3.agent.v1.RestartAgentRequest
+	(*RestartAgentResponse)(nil),  // 18: nexus3.agent.v1.RestartAgentResponse
+	nil,                           // 19: nexus3.agent.v1.ExecRequest.EnvEntry
 }
 var file_nexus3_agent_v1_agent_proto_depIdxs = []int32{
 	2,  // 0: nexus3.agent.v1.PtyOptions.initial_size:type_name -> nexus3.agent.v1.WinSize
-	15, // 1: nexus3.agent.v1.ExecRequest.env:type_name -> nexus3.agent.v1.ExecRequest.EnvEntry
+	19, // 1: nexus3.agent.v1.ExecRequest.env:type_name -> nexus3.agent.v1.ExecRequest.EnvEntry
 	3,  // 2: nexus3.agent.v1.ExecRequest.pty:type_name -> nexus3.agent.v1.PtyOptions
 	0,  // 3: nexus3.agent.v1.SessionInfo.state:type_name -> nexus3.agent.v1.SessionState
 	8,  // 4: nexus3.agent.v1.SessionStatusResponse.info:type_name -> nexus3.agent.v1.SessionInfo
@@ -979,13 +1203,17 @@ var file_nexus3_agent_v1_agent_proto_depIdxs = []int32{
 	9,  // 9: nexus3.agent.v1.AgentService.SessionStatus:input_type -> nexus3.agent.v1.SessionStatusRequest
 	11, // 10: nexus3.agent.v1.AgentService.ListSessions:input_type -> nexus3.agent.v1.ListSessionsRequest
 	13, // 11: nexus3.agent.v1.AgentService.Copy:input_type -> nexus3.agent.v1.CopyRequest
-	5,  // 12: nexus3.agent.v1.AgentService.Exec:output_type -> nexus3.agent.v1.ExecResponse
-	7,  // 13: nexus3.agent.v1.AgentService.Signal:output_type -> nexus3.agent.v1.SignalResponse
-	10, // 14: nexus3.agent.v1.AgentService.SessionStatus:output_type -> nexus3.agent.v1.SessionStatusResponse
-	12, // 15: nexus3.agent.v1.AgentService.ListSessions:output_type -> nexus3.agent.v1.ListSessionsResponse
-	14, // 16: nexus3.agent.v1.AgentService.Copy:output_type -> nexus3.agent.v1.CopyResponse
-	12, // [12:17] is the sub-list for method output_type
-	7,  // [7:12] is the sub-list for method input_type
+	15, // 12: nexus3.agent.v1.AgentService.AgentInfo:input_type -> nexus3.agent.v1.AgentInfoRequest
+	17, // 13: nexus3.agent.v1.AgentService.RestartAgent:input_type -> nexus3.agent.v1.RestartAgentRequest
+	5,  // 14: nexus3.agent.v1.AgentService.Exec:output_type -> nexus3.agent.v1.ExecResponse
+	7,  // 15: nexus3.agent.v1.AgentService.Signal:output_type -> nexus3.agent.v1.SignalResponse
+	10, // 16: nexus3.agent.v1.AgentService.SessionStatus:output_type -> nexus3.agent.v1.SessionStatusResponse
+	12, // 17: nexus3.agent.v1.AgentService.ListSessions:output_type -> nexus3.agent.v1.ListSessionsResponse
+	14, // 18: nexus3.agent.v1.AgentService.Copy:output_type -> nexus3.agent.v1.CopyResponse
+	16, // 19: nexus3.agent.v1.AgentService.AgentInfo:output_type -> nexus3.agent.v1.AgentInfoResponse
+	18, // 20: nexus3.agent.v1.AgentService.RestartAgent:output_type -> nexus3.agent.v1.RestartAgentResponse
+	14, // [14:21] is the sub-list for method output_type
+	7,  // [7:14] is the sub-list for method input_type
 	7,  // [7:7] is the sub-list for extension type_name
 	7,  // [7:7] is the sub-list for extension extendee
 	0,  // [0:7] is the sub-list for field type_name
@@ -1004,7 +1232,7 @@ func file_nexus3_agent_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_nexus3_agent_v1_agent_proto_rawDesc), len(file_nexus3_agent_v1_agent_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   14,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

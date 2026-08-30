@@ -160,6 +160,61 @@ message CopyResponse {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// AgentInfo — version query
+// ─────────────────────────────────────────────────────────────────────────────
+
+message AgentInfoRequest {}
+
+// AgentInfoResponse carries the agent's build tag (the ldflags-stamped
+// value of agentBuildTag in cmd/nexus3-agent/main.go).
+message AgentInfoResponse {
+  // build_tag is the value stamped by -ldflags "-X main.agentBuildTag=…"
+  // at image-build time.  "dev" means the binary was built without stamping.
+  string build_tag = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RestartAgent — hot-swap the in-guest binary (PID-1 self-exec)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// RestartAgentRequest initiates an in-place binary swap.
+//
+// The host must have already pushed the replacement binary to staged_path
+// (via the Copy RPC with ExpectedBytes set) before calling RestartAgent.
+// The guest verifies the on-disk size of staged_path against expected_bytes,
+// renames it atomically over /sbin/nexus3-agent, then calls syscall.Exec to
+// replace PID 1's process image with the new binary.
+//
+// The vsock listener file descriptors (control port 1024 and data port 1025)
+// are inherited across execve — they do not have FD_CLOEXEC set — so the new
+// process image can rebind them without a window where the port is unbound.
+// The host-side connection to this RPC will be reset (the old gRPC server
+// dies); the host must treat the reset as "restart initiated" and poll Ping
+// until the new agent answers, then call AgentInfo to confirm the version.
+//
+// Running exec sessions (PTYs, pipes) are NOT preserved: they die with the
+// old process image. Callers must check ListSessions first and pass
+// force=true to override if active sessions exist.
+message RestartAgentRequest {
+  // Absolute path inside the guest of the staged replacement binary.
+  // Must have been written by a prior Copy PUSH with ExpectedBytes set.
+  string staged_path = 1;
+  // Expected byte count of staged_path. Fail-closed: the guest rejects the
+  // request if the on-disk size does not match.
+  int64 expected_bytes = 2;
+  // If false (default) the guest rejects the request when active sessions
+  // exist.  Set true to force the swap even with live exec sessions; those
+  // sessions will be killed by the exec.
+  bool force = 3;
+}
+
+// RestartAgentResponse is returned only if the guest detects a pre-exec
+// error (size mismatch, active sessions without force, rename failure).
+// On a successful swap the guest calls syscall.Exec and this response is
+// never sent — the connection resets instead.
+message RestartAgentResponse {}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AgentService — nexus3.agent.v1 control-plane service
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -189,4 +244,13 @@ service AgentService {
   // side-channel identified by the returned transfer_id.
   // The agent archives directories itself (no guest tar).
   rpc Copy(CopyRequest) returns (CopyResponse);
+
+  // AgentInfo returns the agent's build tag for version comparison.
+  rpc AgentInfo(AgentInfoRequest) returns (AgentInfoResponse);
+
+  // RestartAgent initiates a hot-swap of the in-guest binary via
+  // syscall.Exec.  See RestartAgentRequest for the full protocol.
+  // The RPC may not return a response — a connection reset means the swap
+  // was initiated; the host should poll Ping then AgentInfo to confirm.
+  rpc RestartAgent(RestartAgentRequest) returns (RestartAgentResponse);
 }

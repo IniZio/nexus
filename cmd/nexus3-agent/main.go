@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -33,12 +34,22 @@ var agentBuildTag = "dev"
 func main() {
 	isPid1 := os.Getpid() == 1
 
-	// When running as PID 1 (in-guest init), mount the standard
+	// hotSwap is true when this binary was launched by a prior agent via
+	// syscall.Exec (the RestartAgent RPC).  All cold-boot init steps that would
+	// conflict with already-running services (filesystem mounts, network config,
+	// sshd, workspace disk mounts, boot tasks) are skipped when hotSwap=true.
+	// This MUST be checked at the very top — before any init that branches on it.
+	hotSwap := os.Getenv("NEXUS3_CTRL_FD") != ""
+
+	// When running as PID 1 (in-guest init) on a COLD boot, mount the standard
 	// pseudo-filesystems before doing anything else.  devtmpfs populates /dev
 	// (creating /dev/console, /dev/ptmx, …); proc and sysfs are expected by
 	// many userspace tools.  These are raw syscall.Mount calls — they succeed
 	// with a completely empty /dev directory.
-	if isPid1 {
+	//
+	// On hot-swap these filesystems are already mounted; re-mounting would
+	// either silently stack a second tmpfs on /tmp or fail with EBUSY.
+	if isPid1 && !hotSwap {
 		mountGuestFS()
 		// Apply /etc/environment and the hardcoded PATH fallback to the agent's
 		// own process environment. See initPid1Env for ordering rationale.
@@ -60,8 +71,12 @@ func main() {
 	// before the build code (RunBuilderRole → BuildInGuestImage → Solve) runs.
 	initSlogHandler()
 
-	consoleLog(con, "nexus3-agent: starting (pid=%d build=%s)\n", os.Getpid(), agentBuildTag)
-	if isPid1 {
+	if hotSwap {
+		consoleLog(con, "nexus3-agent: hot-swap boot (pid=%d build=%s); skipping cold-boot init\n", os.Getpid(), agentBuildTag)
+	} else {
+		consoleLog(con, "nexus3-agent: starting (pid=%d build=%s)\n", os.Getpid(), agentBuildTag)
+	}
+	if isPid1 && !hotSwap {
 		// /tmp is unconditionally RAM-backed: 32 MiB seed; resizer grows it to
 		// max(1 GiB, min(50%% MemTotal, 2 GiB)). The 1 GiB floor prevents scratch
 		// starvation on small sandboxes — tmpfs is sized, not preallocated, so
@@ -69,11 +84,10 @@ func main() {
 		consoleLog(con, "nexus3-agent: /tmp: RAM-backed tmpfs (32 MiB seed; resizer target = max(1 GiB, min(50%%%% MemTotal, 2 GiB)))\n")
 	}
 
-	// When running as PID 1 (in-guest init), configure the virtio-net interface
-	// with the static IP the nexus3 perimeter netstack reserves for the guest
-	// (192.168.127.2/24). Static assignment — not DHCP — keeps the agent lean;
-	// no DHCP client binary is required.
-	if isPid1 {
+	// When running as PID 1 (in-guest init) on a COLD boot, configure the
+	// virtio-net interface and start sshd.  On hot-swap the interface is already
+	// configured and sshd is already running.
+	if isPid1 && !hotSwap {
 		setupNetwork(con)
 		// Start sshd early so the vsock bridge (startSSHForward) has a live
 		// local sshd to connect to on 127.0.0.1:22.
@@ -166,17 +180,29 @@ func main() {
 		}
 	}
 
-	// Mount workspace and shadow disks when --workspace-mount= args were
-	// supplied in the kernel cmdline. This must happen before the vsock
-	// listeners start so no workload can access the workspace path before
-	// the disks are visible. Failure is fatal: a sandbox with unmounted
-	// workspace disks is the failure mode we are eliminating.
-	if len(wsMounts) > 0 {
-		consoleLog(con, "nexus3-agent: mounting workspace (%d mounts)\n", len(wsMounts))
-		if err := agent.MountWorkspace(wsMounts); err != nil {
-			consoleFatal(con, isPid1, "nexus3-agent: workspace mount failed: %v\n", err)
-		}
-		consoleLog(con, "nexus3-agent: workspace mounts complete\n")
+	// Cold-boot init: mount workspace disks, run boot tasks.
+	// On hot-swap (hotSwap=true) all of these are skipped — the disks are
+	// already mounted and the boot tasks already ran.  MountWorkspace on an
+	// already-mounted disk returns EBUSY → consoleFatal → kernel panic (PID 1).
+	// runColdBootInit enforces the hotSwap gate; boot_sequence_test.go
+	// mutation-proves that the guard cannot be removed.
+	coldBootCfg := bootConfig{
+		mountGuestFS: func() { /* already done above */ },
+		initPid1Env:  func() { /* already done above */ },
+		setupNetwork: func() { /* already done above */ },
+		startSSHD:    func() { /* already done above */ },
+		mountWorkspace: func(mounts []agent.GuestMount) error {
+			consoleLog(con, "nexus3-agent: mounting workspace (%d mounts)\n", len(mounts))
+			if err := agent.MountWorkspace(mounts); err != nil {
+				return err
+			}
+			consoleLog(con, "nexus3-agent: workspace mounts complete\n")
+			return nil
+		},
+		runBootTasks: func() { runBootTasks(con) },
+	}
+	if err := runColdBootInit(hotSwap, isPid1, wsMounts, coldBootCfg, nil); err != nil {
+		consoleFatal(con, isPid1, "nexus3-agent: workspace mount failed: %v\n", err)
 	}
 
 	// Derive the workspace mount path (for logging) and the per-disk telemetry
@@ -255,32 +281,36 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Image boot task: run /etc/nexus3/startup (if the image baked one) as a
-	// background, non-fatal task now that workspace/docker disks are mounted, the
-	// network is up, and the ZRAM swap safety net is running. This is how a
-	// project auto-starts in-sandbox services such as dockerd (declared in its
-	// .nexus/Containerfile). Only in a real guest boot (PID 1) does the hook path
-	// exist; PID 1 continues to the control plane below so the agent serves
-	// Exec/Copy while the task runs.
-	if isPid1 {
-		runBootTasks(con)
+	// Hot-swap path: when this process was launched by a prior agent via
+	// syscall.Exec (RestartAgent RPC), NEXUS3_CTRL_FD and NEXUS3_DATA_FD carry
+	// the already-bound vsock listener fds.  Reclaim them instead of rebinding
+	// so there is no window where the vsock ports are unbound.
+	var ctrlLis, dataLis net.Listener
+	inheritedCtrl, inheritedData, inheritErr := inheritedListeners()
+	if inheritErr != nil {
+		consoleFatal(con, isPid1, "nexus3-agent: inherited fd error: %v\n", inheritErr)
 	}
+	if inheritedCtrl != nil && inheritedData != nil {
+		ctrlLis = inheritedCtrl
+		dataLis = inheritedData
+		consoleLog(con, "nexus3-agent: hot-swap: reclaimed inherited vsock listeners (ctrl+data)\n")
+	} else {
+		// Normal (cold) boot: bind both vsock ports fresh.
+		consoleLog(con, "nexus3-agent: vsock.Listen port %d\n", driver.AgentControlPort)
+		var err error
+		ctrlLis, err = vsock.Listen(driver.AgentControlPort, nil)
+		if err != nil {
+			consoleFatal(con, isPid1, "nexus3-agent: control listener (port %d): %v\n",
+				driver.AgentControlPort, err)
+		}
+		consoleLog(con, "nexus3-agent: control plane listening\n")
 
-	// Bind control-plane vsock listener (port 1024).
-	consoleLog(con, "nexus3-agent: vsock.Listen port %d\n", driver.AgentControlPort)
-	ctrlLis, err := vsock.Listen(driver.AgentControlPort, nil)
-	if err != nil {
-		consoleFatal(con, isPid1, "nexus3-agent: control listener (port %d): %v\n",
-			driver.AgentControlPort, err)
-	}
-	consoleLog(con, "nexus3-agent: control plane listening\n")
-
-	// Bind data-plane vsock listener (port 1025).
-	consoleLog(con, "nexus3-agent: vsock.Listen port %d\n", wire.DataPort)
-	dataLis, err := vsock.Listen(wire.DataPort, nil)
-	if err != nil {
-		consoleFatal(con, isPid1, "nexus3-agent: data listener (port %d): %v\n",
-			wire.DataPort, err)
+		consoleLog(con, "nexus3-agent: vsock.Listen port %d\n", wire.DataPort)
+		dataLis, err = vsock.Listen(wire.DataPort, nil)
+		if err != nil {
+			consoleFatal(con, isPid1, "nexus3-agent: data listener (port %d): %v\n",
+				wire.DataPort, err)
+		}
 	}
 	consoleLog(con, "nexus3-agent: data plane listening; running agent\n")
 

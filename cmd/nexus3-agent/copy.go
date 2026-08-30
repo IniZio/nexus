@@ -59,6 +59,15 @@ func (t *CopyTable) delete(id string) {
 	t.mu.Unlock()
 }
 
+// count returns the number of currently pending copy transfers.
+// Used by the RestartAgent pre-flight to refuse a swap while copies are active.
+func (t *CopyTable) count() int {
+	t.mu.RLock()
+	n := len(t.pending)
+	t.mu.RUnlock()
+	return n
+}
+
 // Copy negotiates a file-transfer operation (control-plane RPC only).
 // The returned transfer_id is used as the SessionID in the data-plane handshake.
 //

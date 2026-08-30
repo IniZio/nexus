@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -15,6 +17,10 @@ import (
 
 	"github.com/IniZio/nexus3/internal/core/agent/agentpb"
 )
+
+// swapFunctions holds the injectable seams used by RestartAgent.
+// Tests replace these; production code uses defaultSwapFns.
+var swapFunctions = defaultSwapFns
 
 const ringCapacity = defaultRingCap // 16 MiB per session
 
@@ -346,6 +352,127 @@ func (cs *controlServer) ListSessions(_ context.Context, _ *agentpb.ListSessions
 		infos[i] = sessionInfo(s)
 	}
 	return &agentpb.ListSessionsResponse{Sessions: infos}, nil
+}
+
+// AgentInfo
+
+// AgentInfo returns the agent's build tag. This is the value stamped by
+// -ldflags "-X main.agentBuildTag=…" at build time ("dev" in local builds).
+func (cs *controlServer) AgentInfo(_ context.Context, _ *agentpb.AgentInfoRequest) (*agentpb.AgentInfoResponse, error) {
+	return &agentpb.AgentInfoResponse{BuildTag: agentBuildTag}, nil
+}
+
+// RestartAgent — hot-swap the agent binary via syscall.Exec.
+
+func (cs *controlServer) RestartAgent(_ context.Context, req *agentpb.RestartAgentRequest) (*agentpb.RestartAgentResponse, error) {
+	if req.StagedPath == "" {
+		return nil, status.Error(codes.InvalidArgument, "staged_path required")
+	}
+	if req.ExpectedBytes <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "expected_bytes must be > 0")
+	}
+
+	// ── Pre-flight: active exec sessions ─────────────────────────────────
+	sessions := cs.a.sessions.list()
+	var activeSessions []string
+	for _, s := range sessions {
+		if !s.exited.Load() {
+			activeSessions = append(activeSessions, s.id)
+		}
+	}
+	if !req.Force && len(activeSessions) > 0 {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"active exec sessions exist (%v); set force=true to override "+
+				"(WARNING: those sessions and their PTYs will be killed by exec)",
+			activeSessions)
+	}
+
+	// ── Pre-flight: in-flight copy transfers ─────────────────────────────
+	// An interrupted Copy leaves a truncated file in the guest.  Refuse unless
+	// force is set — the host should wait for copies to complete first.
+	activeCopies := cs.a.copies.count()
+	if !req.Force && activeCopies > 0 {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"%d in-flight copy transfer(s) active; wait for completion or set force=true",
+			activeCopies)
+	}
+
+	// ── Warn about orphaned children (best-effort) ────────────────────────
+	// After exec, any process with ppid==1 that is not tracked by cs.a.sessions
+	// (e.g. the boot task, sshd, or user-started daemons) becomes an orphan
+	// re-parented to the new agent's reap loop.  Log their PIDs so the operator
+	// can see them in the console capture.
+	if orphans := guestOrphanPIDs(activeSessions); len(orphans) > 0 {
+		slog.Warn("nexus3-agent: hot-swap: orphaned guest children will be re-parented",
+			"pids", orphans,
+			"force", req.Force)
+	}
+	if len(activeSessions) > 0 && req.Force {
+		slog.Warn("nexus3-agent: hot-swap: force=true; killing active sessions",
+			"sessions", activeSessions)
+	}
+
+	// ── Perform swap ──────────────────────────────────────────────────────
+	// performSwap verifies size, fsyncs, backs up old binary, renames,
+	// dups fds, then calls syscall.Exec.  On exec success it does not return.
+	// On any error the old binary is rolled back from the backup.
+	err := performSwap(
+		swapFunctions,
+		req.StagedPath,
+		req.ExpectedBytes,
+		agentInstallPath,
+		agentBackupPath,
+		cs.a.ctrlLis,
+		cs.a.dataLis,
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "agent swap: %v", err)
+	}
+
+	// Unreachable: performSwap either execs (replaces this image) or returns an error.
+	return &agentpb.RestartAgentResponse{}, nil
+}
+
+// guestOrphanPIDs scans /proc for processes whose parent is PID 1 (this
+// process when isPid1) but are not tracked in the session table.
+// Returns PIDs of untracked children; returns nil when not PID 1 or on error.
+func guestOrphanPIDs(trackedSessions []string) []int {
+	if os.Getpid() != 1 {
+		return nil
+	}
+	tracked := make(map[string]struct{}, len(trackedSessions))
+	for _, id := range trackedSessions {
+		tracked[id] = struct{}{}
+	}
+	// /proc/<pid>/status line "PPid:\t<n>" identifies the parent.
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var orphans []int
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		var pid int
+		if _, err := fmt.Sscanf(e.Name(), "%d", &pid); err != nil || pid <= 1 {
+			continue
+		}
+		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+		if err != nil {
+			continue
+		}
+		var ppid int
+		for _, line := range strings.Split(string(data), "\n") {
+			if _, err := fmt.Sscanf(line, "PPid:\t%d", &ppid); err == nil {
+				break
+			}
+		}
+		if ppid == 1 {
+			orphans = append(orphans, pid)
+		}
+	}
+	return orphans
 }
 
 func sessionInfo(s *Session) *agentpb.SessionInfo {
