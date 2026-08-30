@@ -120,6 +120,30 @@ type GovernorConfig struct {
 	MemoryMB uint64 `json:"memory_mb"`
 }
 
+// Validate returns a non-empty refusal reason when the payload is missing
+// fields that must be populated for a complete handoff. An incomplete handoff
+// is worse than no handoff: the replacement inherits some resources but not
+// others, producing an inconsistent supervisor. The caller must treat a
+// non-empty Validate() result as a clean refusal (ok=false) so the outgoing
+// supervisor stays alive and continues to own all resources (D-HSH-08).
+//
+// Specifically, [Payload.CA] must carry the MITM CA material (CertPEM and
+// KeyPEM). A replacement that lacks the CA cannot continue serving TLS
+// interception for the sandbox's egress perimeter — it would have to
+// regenerate a new CA, which breaks any in-flight TLS session and violates
+// the invariant that the perimeter is transparent across a hot-swap.
+//
+// [Payload.Credentials] and [Payload.Virtiofs] are allowed to be empty: a
+// sandbox with no brokered credentials and no live virtiofs mounts produces
+// a legitimately nil/empty slice for both.
+func (p Payload) Validate() string {
+	if len(p.CA.CertPEM) == 0 || len(p.CA.KeyPEM) == 0 {
+		return "handoff payload incomplete: CA.CertPEM and CA.KeyPEM must be populated " +
+			"(mitm.Proxy CA key export not yet wired — wire it to remove this check)"
+	}
+	return ""
+}
+
 // Ack is the incoming supervisor's response to a [Payload]. The sender MUST
 // NOT release or close any resource named in the payload until it has read
 // a positive Ack — that is what makes a refusal resumable (D-HSH-08).

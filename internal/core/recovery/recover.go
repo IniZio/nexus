@@ -493,6 +493,13 @@ func (r *Recoverer) applyAbsent(rec *domain.Sandbox, out *SandboxOutcome) (wrote
 		}
 		rec.State = tr.NextState
 		rec.StopReason = domain.StopReasonMemoryLost
+		// Clear netns identity fields: the VM is dead; a stale pid must not
+		// reach AdoptNetnsRuntime on a future Start.
+		rec.NetnsChildPID = 0
+		rec.NetnsChildPGID = 0
+		rec.NetnsChildStartTime = 0
+		rec.GuestTapName = ""
+		rec.CHAPISocket = ""
 		*out = SandboxOutcome{
 			ID:   rec.ID,
 			Kind: OutcomeResolvedStopped,
@@ -523,6 +530,13 @@ func (r *Recoverer) applyAbsent(rec *domain.Sandbox, out *SandboxOutcome) (wrote
 		}
 		rec.State = tr.NextState
 		rec.StopReason = domain.StopReasonMemoryLost
+		// Clear netns identity fields: the VM is dead; a stale pid must not
+		// reach AdoptNetnsRuntime on a future Start.
+		rec.NetnsChildPID = 0
+		rec.NetnsChildPGID = 0
+		rec.NetnsChildStartTime = 0
+		rec.GuestTapName = ""
+		rec.CHAPISocket = ""
 		*out = SandboxOutcome{
 			ID:   rec.ID,
 			Kind: OutcomeResolvedStopped,

@@ -380,13 +380,13 @@ func AdoptNetnsRuntime(childPID, childPGID int, childStartTime uint64, guestTap,
 	// starttime refuses the adoption rather than proceeding unguarded.
 	//
 	// An earlier revision skipped the check when childStartTime was 0, for
-	// backward compatibility with records predating the field. There are no
-	// such records: nothing writes the adoption identity onto domain.Sandbox
-	// yet, so the compat path bought nothing and cost the guarantee — a zero
-	// reaching here means the identity was lost, which is exactly when Stop()'s
-	// Kill(-ChildPGID, SIGKILL) is most likely to hit a recycled group. Fail
-	// open on the signal that decides whether to send SIGKILL and the guard is
-	// decorative.
+	// backward compatibility with records predating the field. This branch
+	// (nexus3-hotswap-04) wires service.Start to write the adoption identity
+	// onto domain.Sandbox, and recover.go to clear it on substrate loss — so
+	// a zero here means the identity was lost or never set, which is exactly
+	// when Stop()'s Kill(-ChildPGID, SIGKILL) is most likely to hit a
+	// recycled group. Fail open on the signal that decides whether to send
+	// SIGKILL and the guard is decorative.
 	if childStartTime == 0 {
 		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: childStartTime is 0 for pid %d; refusing to adopt without a pid-reuse guard", childPID)
 	}

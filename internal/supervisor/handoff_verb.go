@@ -80,6 +80,13 @@ func performHandoff(ctx context.Context, peerSock string, build payloadBuilder) 
 	if buildErr != nil {
 		return false, "", fmt.Errorf("handoff: build payload: %w", buildErr)
 	}
+	// Validate the payload before sending it. A partial handoff — where the
+	// replacement inherits the perimeter fd but not the MITM CA key — is
+	// worse than no handoff. The outgoing supervisor must stay alive until
+	// all fields are wired (D-HSH-08).
+	if reason := payload.Validate(); reason != "" {
+		return false, reason, nil
+	}
 	fd := -1
 	if fdFile != nil {
 		fd = int(fdFile.Fd())

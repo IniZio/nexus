@@ -389,6 +389,12 @@ func RequestHandoff(ctx context.Context, sockPath, peerSock string) (bool, error
 		return false, fmt.Errorf("request handoff: request: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		// A 500 from the hErr branch encodes to OK=false but is a transport /
+		// protocol error, not a clean refusal — surface the status code so the
+		// caller can distinguish the two.
+		return false, fmt.Errorf("request handoff: unexpected status %d", resp.StatusCode)
+	}
 	var result handoffResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return false, fmt.Errorf("request handoff: decode response (status %d): %w", resp.StatusCode, err)

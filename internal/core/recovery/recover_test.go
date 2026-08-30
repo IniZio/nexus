@@ -1353,3 +1353,95 @@ func TestRecover_MultiSandbox_NoGlobalLock(t *testing.T) {
 		t.Fatal("sandbox A timed out after gate opened")
 	}
 }
+
+// ── MAJOR 1 regression: netns fields zeroed on substrate-loss recovery ────────
+
+// setNetnsFields writes non-zero adoption identity onto a sandbox record so
+// the test can verify that recover.go clears them.
+func setNetnsFields(t *testing.T, ctx context.Context, st store.Store, id domain.SandboxID) {
+	t.Helper()
+	if err := st.Update(ctx, id, func(rec *domain.Sandbox) error {
+		rec.NetnsChildPID = 12345
+		rec.NetnsChildPGID = 12346
+		rec.NetnsChildStartTime = 999999
+		rec.GuestTapName = "tap0"
+		rec.CHAPISocket = "/run/ch.sock"
+		return nil
+	}); err != nil {
+		t.Fatalf("setNetnsFields: %v", err)
+	}
+}
+
+// assertNetnsFieldsZeroed confirms that all five netns identity fields on the
+// record are zero/empty after recovery.
+func assertNetnsFieldsZeroed(t *testing.T, sb domain.Sandbox) {
+	t.Helper()
+	if sb.NetnsChildPID != 0 {
+		t.Errorf("NetnsChildPID = %d, want 0", sb.NetnsChildPID)
+	}
+	if sb.NetnsChildPGID != 0 {
+		t.Errorf("NetnsChildPGID = %d, want 0", sb.NetnsChildPGID)
+	}
+	if sb.NetnsChildStartTime != 0 {
+		t.Errorf("NetnsChildStartTime = %d, want 0", sb.NetnsChildStartTime)
+	}
+	if sb.GuestTapName != "" {
+		t.Errorf("GuestTapName = %q, want empty", sb.GuestTapName)
+	}
+	if sb.CHAPISocket != "" {
+		t.Errorf("CHAPISocket = %q, want empty", sb.CHAPISocket)
+	}
+}
+
+// TestRecover_Running_SubstrateLost_ClearsNetnsFields is the MAJOR 1 regression
+// test for the Running→Stopped arm: recover.go must zero all five netns identity
+// fields when resolving a crashed running sandbox to stopped.
+//
+// Mutation proof: if any one of the clearing lines is removed from recover.go,
+// the corresponding assertNetnsFieldsZeroed check below turns RED.
+func TestRecover_Running_SubstrateLost_ClearsNetnsFields(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t)
+
+	sb := createSandbox(t, ctx, env.st, domain.Running)
+	// Pre-populate netns fields to simulate a previously adopted sandbox.
+	setNetnsFields(t, ctx, env.st, sb.ID)
+	// VM is absent (no driver entry) → substrate_lost → resolved to Stopped.
+
+	report, err := env.rec.Recover(ctx)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	out := findOutcome(t, report, sb.ID)
+	if out.Kind != OutcomeResolvedStopped {
+		t.Fatalf("want OutcomeResolvedStopped, got %s", out.Kind)
+	}
+
+	updated, err := env.st.Get(ctx, sb.ID)
+	if err != nil {
+		t.Fatalf("Get after recovery: %v", err)
+	}
+	assertNetnsFieldsZeroed(t, updated)
+}
+
+// TestRecover_Paused_SubstrateLost_ClearsNetnsFields mirrors the Running case
+// for the Paused→Stopped arm.
+func TestRecover_Paused_SubstrateLost_ClearsNetnsFields(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t)
+
+	sb := createSandbox(t, ctx, env.st, domain.Paused)
+	setNetnsFields(t, ctx, env.st, sb.ID)
+	env.drv.SimulateHostReboot() // all paused VMs become Absent.
+
+	_, err := env.rec.Recover(ctx)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+
+	updated, err := env.st.Get(ctx, sb.ID)
+	if err != nil {
+		t.Fatalf("Get after recovery: %v", err)
+	}
+	assertNetnsFieldsZeroed(t, updated)
+}

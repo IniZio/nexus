@@ -806,7 +806,24 @@ func RunDetached(cfg Config) error {
 	if err := os.WriteFile(pidfile, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
 		return fmt.Errorf("supervisor: write pidfile %s: %w", pidfile, err)
 	}
-	defer os.Remove(pidfile)
+	// removeOwnPidfile mirrors the inode-checked removeOwnSocket: a
+	// replacement supervisor may write its own PID to the same path before
+	// this process's defers run. Read the file at cleanup time and only
+	// unlink when it still names our own PID — not the replacement's.
+	defer func() {
+		data, readErr := os.ReadFile(pidfile)
+		if readErr != nil {
+			return // already gone
+		}
+		if !bytes.Equal(bytes.TrimRight(data, "\n"), []byte(strconv.Itoa(pid))) {
+			// A replacement supervisor has already written its own PID.
+			// Removing the file here would destroy its READY signal.
+			slog.Debug("supervisor.pidfile_not_ours", "sandboxRef", cfg.SandboxRef,
+				"pidfile", pidfile, "action", "skip removal")
+			return
+		}
+		_ = os.Remove(pidfile)
+	}()
 
 	slog.Info("supervisor.ready",
 		"sandboxRef", cfg.SandboxRef,
