@@ -728,6 +728,50 @@ const herdrDefaultImage = "nexus3-agent-base"
 // spawning a real subprocess.
 var herdrExecCommandContext = exec.CommandContext
 
+// herdrPaneExistsFn is the injectable seam for checking whether a recorded
+// guest pane is still alive in a given workspace. Tests override it to avoid
+// spawning a real herdr process.
+//
+// Fail-safe direction: if herdr is unreachable or the response cannot be
+// parsed, the production implementation returns false (assume the pane is
+// gone), which causes the caller to open a new guest pane. This degrades to
+// the cosmetic extra-pane behaviour we have today rather than silently
+// dispatching the agent into a pane that no longer exists (a silent no-op
+// where the operator sees the agent start but nothing happens).
+var herdrPaneExistsFn = herdrPaneExists
+
+// herdrPaneExists reports whether paneID appears in `herdr pane list
+// --workspace workspaceID`. See herdrPaneExistsFn for the fail-safe rationale.
+func herdrPaneExists(ctx context.Context, herdrBin, workspaceID, paneID string) bool {
+	if herdrBin == "" || workspaceID == "" || paneID == "" {
+		return false
+	}
+	out, err := herdrExecCommandContext(ctx, herdrBin, "pane", "list", "--workspace", workspaceID).Output()
+	if err != nil {
+		slog.Warn("space-create: pane-exists: pane list failed; assuming pane gone",
+			"workspace_id", workspaceID, "pane_id", paneID, "err", err)
+		return false
+	}
+	var resp struct {
+		Result struct {
+			Panes []struct {
+				PaneID string `json:"pane_id"`
+			} `json:"panes"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		slog.Warn("space-create: pane-exists: parse pane list; assuming pane gone",
+			"workspace_id", workspaceID, "pane_id", paneID, "err", err)
+		return false
+	}
+	for _, p := range resp.Result.Panes {
+		if p.PaneID == paneID {
+			return true
+		}
+	}
+	return false
+}
+
 // worktreeGitRunner is the seam for running git subcommands in tests.
 // Production code uses exec.Command("git", "-C", dir, args...); tests override
 // to drive trusted-ref resolution without a real git repo.
@@ -1597,6 +1641,20 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc he
 	}
 	if reusable {
 		fmt.Fprintf(w, "reusing space: label=%s workspace_id=%s\n", existing.SpaceLabel, existing.HerdrWorkspaceID)
+		// If the binding records a guest pane that is still alive, adopt it
+		// rather than opening another. A stored pane ID is a pointer the
+		// operator can invalidate at any time (pane closed, workspace restarted).
+		// Nothing tells nexus3 when that happens, so we probe liveness first.
+		//
+		// Fail-safe: if the pane probe errors (herdr unreachable, unexpected
+		// shape), herdrPaneExistsFn returns false and we fall through to open a
+		// new pane. This degrades to the pre-fix cosmetic extra-pane behaviour
+		// rather than silently dispatching the agent into a pane that does not
+		// exist (a silent no-op where nothing visible happens).
+		if existing.GuestPaneID != "" && herdrPaneExistsFn(ctx, herdrBin, existing.HerdrWorkspaceID, existing.GuestPaneID) {
+			fmt.Fprintf(w, "pane already live: pane_id=%s\n", existing.GuestPaneID)
+			return nil
+		}
 		paneID, err := herdrOpenGuestShellPane(ctx, herdrBin, ref, existing.HerdrWorkspaceID, "", focus)
 		if err != nil {
 			return err

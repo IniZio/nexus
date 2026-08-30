@@ -1124,3 +1124,264 @@ func TestHerdrPluginSpaceCreate_CloseRootPaneFailureDoesNotFailSpaceCreate(t *te
 		t.Error("pane close was not attempted — the function must try to close the root pane")
 	}
 }
+
+// ── Bug 2: reuse branch pane-liveness check ──────────────────────────────────
+//
+// These tests cover the four cases that herdrPaneExistsFn gates:
+//
+//  1. Recorded pane is LIVE  → no new pane opened; binding unchanged.
+//  2. Recorded pane is GONE  → new pane IS opened; binding updated.
+//  3. Recorded pane ID EMPTY → new pane opened (pre-existing behaviour).
+//  4. Pane-list probe ERRORS → fail-safe: assume dead → new pane opened.
+//
+// Each test uses fakeHerdrExec to control herdr responses without any live
+// herdr process, following the pattern established by
+// TestHerdrPluginSpaceCreate_LiveBindingReuses above.
+
+// fakePaneListCmd returns a command whose stdout is a canned
+// `herdr pane list --workspace` JSON response containing exactly the listed
+// pane IDs.
+func fakePaneListCmd(paneIDs ...string) *exec.Cmd {
+	panes := ""
+	for i, id := range paneIDs {
+		if i > 0 {
+			panes += ","
+		}
+		panes += fmt.Sprintf(`{"pane_id":%q}`, id)
+	}
+	body := fmt.Sprintf(`{"result":{"panes":[%s]}}`, panes)
+	return exec.Command("printf", "%s", body)
+}
+
+// TestHerdrPluginSpaceCreate_LivePane_NoNewPaneOpened verifies that when the
+// stored GuestPaneID is still alive in the workspace, no new pane is opened.
+//
+// MUTATION PROOF: remove the `if existing.GuestPaneID != "" &&
+// herdrPaneExistsFn(...)` guard so the code always opens a new pane →
+// paneOpenCalled becomes true → RED: "guest pane was opened despite live pane".
+func TestHerdrPluginSpaceCreate_LivePane_NoNewPaneOpened(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	storeRoot := t.TempDir()
+	ctx := context.Background()
+
+	sb := domain.Sandbox{ID: domain.NewSandboxID(), Project: "proj", Name: "livepane", State: domain.Running}
+	svc := &fakeSpaceCreateSvc{sb: sb}
+
+	const existingPaneID = "wLP:p1"
+	binding := HerdrSpaceBinding{
+		SpaceLabel: "nexus3:proj/livepane", HerdrWorkspaceID: "wLP",
+		SandboxHandle: "proj/livepane", SandboxID: sb.ID.String(),
+		GuestPaneID: existingPaneID,
+	}
+	if err := HerdrSpacePut(ctx, storeRoot, binding); err != nil {
+		t.Fatalf("HerdrSpacePut: %v", err)
+	}
+
+	paneOpenCalled := false
+	var calls [][]string
+	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd {
+		switch {
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "list":
+			return exec.Command("printf", "%s",
+				`{"result":{"workspaces":[{"workspace_id":"wLP"}]}}`)
+		case len(args) >= 3 && args[0] == "pane" && args[1] == "list":
+			// pane list --workspace wLP: return the existing pane as alive.
+			return fakePaneListCmd(existingPaneID)
+		case len(args) >= 2 && args[0] == "plugin" && args[1] == "pane":
+			paneOpenCalled = true
+			return fakePaneOpenCmd("wLP:p2") // would be a second pane — must not happen
+		default:
+			return exec.Command("/bin/true")
+		}
+	})
+
+	var out strings.Builder
+	if err := herdrPluginSpaceCreate(ctx, sb.Handle(), &out, svc, storeRoot, false); err != nil {
+		t.Fatalf("space-create: %v", err)
+	}
+
+	if paneOpenCalled {
+		t.Error("guest pane was opened despite live pane; must reuse existing pane")
+	}
+
+	// Binding must still point at the original pane.
+	all, _ := herdrSpaceReadAll(storeRoot)
+	for _, b := range all {
+		if b.HerdrWorkspaceID == "wLP" && b.GuestPaneID != existingPaneID {
+			t.Errorf("binding GuestPaneID = %q; want %q", b.GuestPaneID, existingPaneID)
+		}
+	}
+	_ = out.String() // "pane already live" must appear
+	if !strings.Contains(out.String(), "pane already live") {
+		t.Errorf("output should contain 'pane already live'; got: %q", out.String())
+	}
+}
+
+// TestHerdrPluginSpaceCreate_GonePane_NewPaneOpened verifies that when the
+// stored GuestPaneID is absent from the pane list, a new pane IS opened and
+// the binding is updated.
+//
+// MUTATION PROOF: always return true from herdrPaneExistsFn regardless of
+// response → paneOpenCalled stays false → RED: "no new pane opened despite
+// pane being gone".
+func TestHerdrPluginSpaceCreate_GonePane_NewPaneOpened(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	storeRoot := t.TempDir()
+	ctx := context.Background()
+
+	sb := domain.Sandbox{ID: domain.NewSandboxID(), Project: "proj", Name: "gonepane", State: domain.Running}
+	svc := &fakeSpaceCreateSvc{sb: sb}
+
+	const stalePane = "wGP:stale"
+	const newPane = "wGP:fresh"
+	binding := HerdrSpaceBinding{
+		SpaceLabel: "nexus3:proj/gonepane", HerdrWorkspaceID: "wGP",
+		SandboxHandle: "proj/gonepane", SandboxID: sb.ID.String(),
+		GuestPaneID: stalePane,
+	}
+	if err := HerdrSpacePut(ctx, storeRoot, binding); err != nil {
+		t.Fatalf("HerdrSpacePut: %v", err)
+	}
+
+	paneOpenCalled := false
+	var calls [][]string
+	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd {
+		switch {
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "list":
+			return exec.Command("printf", "%s",
+				`{"result":{"workspaces":[{"workspace_id":"wGP"}]}}`)
+		case len(args) >= 3 && args[0] == "pane" && args[1] == "list":
+			// stalePane is not in the list — it was closed.
+			return fakePaneListCmd("wGP:other")
+		case len(args) >= 2 && args[0] == "plugin" && args[1] == "pane":
+			paneOpenCalled = true
+			return fakePaneOpenCmd(newPane)
+		default:
+			return exec.Command("/bin/true")
+		}
+	})
+
+	var out strings.Builder
+	if err := herdrPluginSpaceCreate(ctx, sb.Handle(), &out, svc, storeRoot, false); err != nil {
+		t.Fatalf("space-create: %v", err)
+	}
+
+	if !paneOpenCalled {
+		t.Error("no new pane opened despite recorded pane being gone; must open a replacement")
+	}
+
+	// Binding must be updated to the new pane.
+	all, _ := herdrSpaceReadAll(storeRoot)
+	for _, b := range all {
+		if b.HerdrWorkspaceID == "wGP" && b.GuestPaneID != newPane {
+			t.Errorf("binding GuestPaneID = %q after update; want %q", b.GuestPaneID, newPane)
+		}
+	}
+}
+
+// TestHerdrPluginSpaceCreate_EmptyGuestPaneID_NewPaneOpened verifies that when
+// the stored binding has no GuestPaneID, the pre-existing behaviour is
+// unchanged: a new pane is opened unconditionally (pane liveness check is
+// skipped for an empty ID).
+//
+// MUTATION PROOF: change the guard to `existing.GuestPaneID == ""` (inverted)
+// → pane liveness is checked even for empty IDs → herdrPaneExistsFn returns
+// false → pane open still fires, but now via the liveness-dead path rather
+// than the unconditional path → test passes for wrong reasons; alternatively,
+// if herdrPaneExistsFn panics on empty input → RED.
+func TestHerdrPluginSpaceCreate_EmptyGuestPaneID_NewPaneOpened(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	storeRoot := t.TempDir()
+	ctx := context.Background()
+
+	sb := domain.Sandbox{ID: domain.NewSandboxID(), Project: "proj", Name: "nopane", State: domain.Running}
+	svc := &fakeSpaceCreateSvc{sb: sb}
+
+	// Binding with no GuestPaneID (the common case before J1 shipped).
+	binding := HerdrSpaceBinding{
+		SpaceLabel: "nexus3:proj/nopane", HerdrWorkspaceID: "wNP",
+		SandboxHandle: "proj/nopane", SandboxID: sb.ID.String(),
+		// GuestPaneID intentionally empty
+	}
+	if err := HerdrSpacePut(ctx, storeRoot, binding); err != nil {
+		t.Fatalf("HerdrSpacePut: %v", err)
+	}
+
+	paneOpenCalled := false
+	var calls [][]string
+	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd {
+		switch {
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "list":
+			return exec.Command("printf", "%s",
+				`{"result":{"workspaces":[{"workspace_id":"wNP"}]}}`)
+		case len(args) >= 2 && args[0] == "plugin" && args[1] == "pane":
+			paneOpenCalled = true
+			return fakePaneOpenCmd("wNP:p1")
+		default:
+			return exec.Command("/bin/true")
+		}
+	})
+
+	var out strings.Builder
+	if err := herdrPluginSpaceCreate(ctx, sb.Handle(), &out, svc, storeRoot, false); err != nil {
+		t.Fatalf("space-create: %v", err)
+	}
+
+	if !paneOpenCalled {
+		t.Error("no pane opened for binding with empty GuestPaneID; must open one")
+	}
+}
+
+// TestHerdrPluginSpaceCreate_PaneListError_FailSafeOpensNewPane verifies the
+// fail-safe direction: when the pane-list probe fails (herdr unreachable), the
+// code opens a new pane rather than assuming the old one is alive (which would
+// silently dispatch the agent nowhere).
+//
+// MUTATION PROOF: change herdrPaneExistsFn to return true on any error →
+// paneOpenCalled stays false → RED: "no new pane opened despite pane-list
+// error; fail-safe must open a new pane".
+func TestHerdrPluginSpaceCreate_PaneListError_FailSafeOpensNewPane(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	storeRoot := t.TempDir()
+	ctx := context.Background()
+
+	sb := domain.Sandbox{ID: domain.NewSandboxID(), Project: "proj", Name: "paneerr", State: domain.Running}
+	svc := &fakeSpaceCreateSvc{sb: sb}
+
+	const stalePane = "wPE:old"
+	binding := HerdrSpaceBinding{
+		SpaceLabel: "nexus3:proj/paneerr", HerdrWorkspaceID: "wPE",
+		SandboxHandle: "proj/paneerr", SandboxID: sb.ID.String(),
+		GuestPaneID: stalePane,
+	}
+	if err := HerdrSpacePut(ctx, storeRoot, binding); err != nil {
+		t.Fatalf("HerdrSpacePut: %v", err)
+	}
+
+	paneOpenCalled := false
+	var calls [][]string
+	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd {
+		switch {
+		case len(args) >= 2 && args[0] == "workspace" && args[1] == "list":
+			return exec.Command("printf", "%s",
+				`{"result":{"workspaces":[{"workspace_id":"wPE"}]}}`)
+		case len(args) >= 3 && args[0] == "pane" && args[1] == "list":
+			// Simulate herdr returning non-zero (unreachable / internal error).
+			return exec.Command("/bin/sh", "-c", "exit 1")
+		case len(args) >= 2 && args[0] == "plugin" && args[1] == "pane":
+			paneOpenCalled = true
+			return fakePaneOpenCmd("wPE:new")
+		default:
+			return exec.Command("/bin/true")
+		}
+	})
+
+	var out strings.Builder
+	if err := herdrPluginSpaceCreate(ctx, sb.Handle(), &out, svc, storeRoot, false); err != nil {
+		t.Fatalf("space-create: %v", err)
+	}
+
+	if !paneOpenCalled {
+		t.Error("no new pane opened despite pane-list error; fail-safe must open a new pane rather than silently adopting a potentially dead one")
+	}
+}
