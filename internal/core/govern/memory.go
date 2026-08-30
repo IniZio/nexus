@@ -237,18 +237,61 @@ func growStep(minBytes, maxBytes, current int64, s resize.Sample) int64 {
 	return step
 }
 
-// shrinkStep computes the shrink increment. Half the configurable range,
-// floored at minShrinkStepBytes.
+// shrinkStep computes the shrink increment. Demand-scaled (symmetric with
+// growStep, spec §4.3): shrinks by only the SURPLUS MemAvailable above
+// defaultShrinkThreshold, so a healthy current allocation returns to roughly
+// that threshold in one step instead of losing a fixed fraction of the
+// entire configured range. Floored at minShrinkStepBytes, capped at half the
+// hotplug range, and capped at the room remaining above minBytes so the
+// result can never go negative.
 //
-// Source: OLD memory_resize.go:555-568.
-func shrinkStep(minBytes, maxBytes int64) int64 {
+// D-DC-?? (2026-08-30 live thrash fix): the previous implementation was
+// `(maxBytes-minBytes)/2`, ignoring current and the sample entirely. With
+// min=512MiB/max=8GiB that is a fixed 3.75GiB step regardless of how much
+// memory the guest actually had allocated — from a healthy current of 2GiB
+// that overshoots past zero and clamps to the minBytes floor. The very next
+// eager sample (memoryGrowConsecutive=1) then finds the guest starved at
+// 512MiB and jumps back up (often via the safeMemFloorBytes rescue), and the
+// cycle repeats indefinitely: shrink and grow chasing a range-sized step
+// against a workload that never stopped needing roughly the same amount of
+// memory. Scaling off the actual surplus (mirroring growStep's deficit
+// scaling) makes shrink return to a size just above the threshold instead of
+// always undershooting to the floor, breaking the oscillation.
+//
+// Source: OLD memory_resize.go:555-568 (range-scaled formula superseded by
+// this demand-scaled one; OLD's "verified verbatim" header claim does not
+// cover this function post-fix).
+func shrinkStep(minBytes, maxBytes, current int64, s resize.Sample) int64 {
 	delta := maxBytes - minBytes
-	step := delta / 2
-	if step < minShrinkStepBytes {
-		step = minShrinkStepBytes
+
+	// Per-step ceiling: half the configurable range, but never below the floor.
+	stepCap := delta / 2
+	if stepCap < minShrinkStepBytes {
+		stepCap = minShrinkStepBytes
 	}
-	if step > delta {
-		step = delta
+	if stepCap > delta {
+		stepCap = delta
+	}
+
+	// Surplus: how far MemAvailable sits above the shrink threshold. Removing
+	// this many bytes of total RAM brings MemAvailable back down to roughly
+	// the threshold — the mirror image of growStep's deficit calculation.
+	step := minShrinkStepBytes
+	if s.MemTotalBytes > 0 {
+		targetAvail := int64(float64(s.MemTotalBytes) * defaultShrinkThreshold)
+		if surplus := int64(s.MemAvailableBytes) - targetAvail; surplus > step {
+			step = surplus
+		}
+	}
+	if step > stepCap {
+		step = stepCap
+	}
+	remaining := current - minBytes
+	if step > remaining {
+		step = remaining
+	}
+	if step < 0 {
+		step = 0
 	}
 	return step
 }
@@ -381,7 +424,7 @@ func (g *Governor) evaluate(ctx context.Context) {
 		if current <= minBytes {
 			return
 		}
-		target = current - shrinkStep(minBytes, maxBytes)
+		target = current - shrinkStep(minBytes, maxBytes, current, g.latest)
 		isShrink = true
 
 	default:
