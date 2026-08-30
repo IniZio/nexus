@@ -320,6 +320,17 @@ func TestPruneFull_dryRun_neverCallsRemove(t *testing.T) {
 // The removeErr parameter is retained for API compatibility but is unused now
 // that teardown is delegated to herdrWtTeardownFn (which swallows all errors
 // via failOpen:true).
+//
+// After the detached-reaper refactor, herdrWtSupervisedShell no longer calls
+// herdrWtTeardownFn directly — it calls herdrWtSpawnDetachedReapFn, which
+// re-execs this binary in a new session so herdr's SIGKILL cannot reach it.
+// In tests we stub herdrWtSpawnDetachedReapFn to call runHerdrWtDetachedReap
+// synchronously (with herdrWtReapSettle=0 to skip the settle sleep), so the
+// assertions on herdrWtTeardownFn remain valid.  The stubs are mutation-proven:
+//   - removing the herdrWtSpawnDetachedReapFn call from herdrWtSupervisedShell
+//     → stub never runs → teardown never called → RED
+//   - removing the teardown call inside runHerdrWtDetachedReap → RED
+//   - inverting the remaining>0 guard → teardown fires when panes remain → RED
 func setupWtSeams(
 	t *testing.T,
 	childErr error,
@@ -331,11 +342,17 @@ func setupWtSeams(
 	origChild := herdrWtChildRunnerFn
 	origPaner := herdrWtPaneListerFn
 	origTeardown := herdrWtTeardownFn
+	origSpawnDetached := herdrWtSpawnDetachedReapFn
+	origSettle := herdrWtReapSettle
 	t.Cleanup(func() {
 		herdrWtChildRunnerFn = origChild
 		herdrWtPaneListerFn = origPaner
 		herdrWtTeardownFn = origTeardown
+		herdrWtSpawnDetachedReapFn = origSpawnDetached
+		herdrWtReapSettle = origSettle
 	})
+
+	herdrWtReapSettle = 0 // skip settle sleep in tests
 
 	herdrWtChildRunnerFn = func(_ context.Context, _ string, _ []string) error {
 		return childErr
@@ -346,6 +363,12 @@ func setupWtSeams(
 	called := false
 	herdrWtTeardownFn = func(_ context.Context, _, _, _, _ string) {
 		called = true
+	}
+	// Stub the detached spawn to run teardown synchronously in-process so test
+	// assertions on herdrWtTeardownFn are not lost to a real detached process.
+	herdrWtSpawnDetachedReapFn = func(binding HerdrSpaceBinding) error {
+		runHerdrWtDetachedReap(context.Background(), binding)
+		return nil
 	}
 	return &called
 }

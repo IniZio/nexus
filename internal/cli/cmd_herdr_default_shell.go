@@ -426,6 +426,16 @@ func RunHerdrGuestShell() {
 	}()
 
 	ctx := context.Background()
+
+	// Detached-reaper mode: this process was re-exec'd by
+	// herdrWtSpawnDetachedReap in a new session to outlive herdr's pane-close
+	// SIGKILL.  Run teardown and exit — never open a shell.
+	if binding, ok := herdrWtReapBindingFromEnv(os.Getenv); ok {
+		runHerdrWtDetachedReap(ctx, binding)
+		herdrGuestShellExitFn(0)
+		return
+	}
+
 	storeRoot, err := store.DefaultRoot()
 	if err != nil {
 		storeRoot = ""
@@ -679,24 +689,47 @@ func herdrCopyBinary(src, dst string) error {
 
 // ── wt/ supervised shell (Mechanism 2) ───────────────────────────────────────
 
-// installParentSighupAbsorber arms a signal.Notify handler for SIGHUP and
-// returns a stop function the caller must defer.
+// herdrPaneCloseSignals is the set of signals herdr delivers to a pane's
+// process group when the pane (or its workspace) is closed.  The parent
+// nexus3-guest-shell must absorb ALL of them, or it dies at a default
+// disposition before it can hand off teardown.
+//
+// MEASURED (herdr 0.8.0, live probe 2026-08-29, two runs) for `pane close` on
+// the last pane of a workspace:
+//
+//	t+0ms    SIGHUP  → process group  (the child dies here)
+//	t+14ms   SIGHUP  → process group  (repeat)
+//	t+279ms  SIGTERM → process group  (killed the parent: only SIGHUP was armed)
+//	t+~515ms SIGKILL → process group  (uncatchable — see the detached reaper)
+//
+// SIGINT is included defensively: an interactive Ctrl-C reaches the group, and
+// a parent that dies there would abandon supervision while the child lives on.
+var herdrPaneCloseSignals = []os.Signal{syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT}
+
+// installParentSighupAbsorber arms a signal.Notify handler for every signal in
+// herdrPaneCloseSignals and returns a stop function the caller must defer.
 //
 // Why Notify, not signal.Ignore: signal.Ignore installs SIG_IGN in the
 // kernel's signal table.  SIG_IGN IS inherited across execve, so any child
-// the caller forks would also ignore SIGHUP and never exit when herdr sends
-// pane-close to the process group — cmd.Wait() would block forever and
+// the caller forks would also ignore the signal and never exit when herdr
+// sends pane-close to the process group — cmd.Wait() would block forever and
 // teardown would be unreachable.
 //
 // A handler installed via signal.Notify is reset to SIG_DFL at the child's
-// execve (Go/kernel semantics), so the child receives and dies on SIGHUP
+// execve (Go/kernel semantics), so the child receives and dies on pane-close
 // while the parent (which has the handler active) absorbs the signal and
-// proceeds to teardown.
+// proceeds to hand off teardown.
+//
+// Absorbing is necessary but NOT sufficient: herdr escalates to SIGKILL about
+// 515 ms after pane close, which no handler can absorb.  In-process teardown
+// (`svc.Remove` shuts a VM down — seconds, not milliseconds) would be killed
+// half-done.  That is why herdrWtSupervisedShell hands teardown to a detached
+// session instead of running it here.
 func installParentSighupAbsorber() (stop func()) {
 	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGHUP)
+	signal.Notify(ch, herdrPaneCloseSignals...)
 	go func() {
-		for range ch { /* absorb: keep parent alive to run teardown */ }
+		for range ch { /* absorb: keep parent alive to hand off teardown */ }
 	}()
 	return func() { signal.Stop(ch); close(ch) }
 }
@@ -726,24 +759,129 @@ func herdrWtSupervisedShell(ctx context.Context, nexus3Bin string, binding Herdr
 		slog.Warn("nexus3-guest-shell: wt/ child exited with error", "handle", binding.SandboxHandle, "err", err)
 	}
 
+	// Hand the last-pane check and teardown to a DETACHED session.
+	//
+	// Why not inline: herdr SIGKILLs this process group ~515 ms after pane
+	// close (see herdrPaneCloseSignals).  A VM shutdown takes seconds, so an
+	// in-process teardown is killed part-way — worse than not running at all,
+	// because the store record can be left mid-mutation.  A setsid'd child is
+	// in a different process group and session, so herdr's group-directed
+	// SIGKILL never reaches it.
+	//
+	// FAIL-OPEN: a spawn failure is logged and swallowed; the prune backstop
+	// (Mechanism 1) reaps the sandbox on its next run.
+	if err := herdrWtSpawnDetachedReapFn(binding); err != nil {
+		slog.Warn("nexus3-guest-shell: wt/ detached reap spawn failed; prune will catch it",
+			"handle", binding.SandboxHandle, "err", err)
+	}
+	return nil
+}
+
+// ── Detached wt/ reaper ──────────────────────────────────────────────────────
+
+// Environment keys that put an argv[0]-dispatched nexus3-guest-shell into
+// detached-reaper mode instead of shell mode.  The handle key doubles as the
+// mode flag: non-empty means "reap", not "open a shell".
+const (
+	herdrWtReapHandleEnv    = "NEXUS3_WT_REAP_HANDLE"
+	herdrWtReapWorkspaceEnv = "NEXUS3_WT_REAP_WORKSPACE"
+	herdrWtReapPaneEnv      = "NEXUS3_WT_REAP_PANE"
+	herdrWtReapSandboxIDEnv = "NEXUS3_WT_REAP_SANDBOX_ID"
+)
+
+// herdrWtReapSettle is how long the detached reaper waits before asking herdr
+// which panes remain.  herdr closes the workspace and reaps the pane
+// asynchronously around the signal burst, so an immediate `pane list` can still
+// see the pane that is on its way out.  The reaper is detached, so this delay
+// costs the operator nothing.
+var herdrWtReapSettle = 1500 * time.Millisecond
+
+// herdrWtSpawnDetachedReapFn spawns the detached reaper.  Replaced in tests.
+var herdrWtSpawnDetachedReapFn = herdrWtSpawnDetachedReap
+
+// herdrWtSpawnDetachedReap re-execs this binary in detached-reaper mode in a
+// NEW SESSION (Setsid), so herdr's process-group SIGKILL cannot reach it, and
+// returns without waiting.
+func herdrWtSpawnDetachedReap(binding HerdrSpaceBinding) error {
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("wt/ detached reap: resolve self: %w", err)
+	}
+	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("wt/ detached reap: open %s: %w", os.DevNull, err)
+	}
+	defer devNull.Close()
+
+	cmd := herdrWtDetachedReapCmd(self, binding, devNull)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("wt/ detached reap: start: %w", err)
+	}
+	// Do not Wait: the reaper outlives this process by design.
+	return nil
+}
+
+// herdrWtDetachedReapCmd builds the detached-reaper command.  Extracted so
+// tests can assert the two properties the fix depends on without spawning a
+// real reaper: Setsid (escapes herdr's process-group SIGKILL) and the binding
+// carried through the environment.
+func herdrWtDetachedReapCmd(self string, binding HerdrSpaceBinding, devNull *os.File) *osexec.Cmd {
+	return &osexec.Cmd{
+		Path: self,
+		// argv[0] must stay "nexus3-guest-shell" so main.go's argv[0]
+		// dispatch routes into RunHerdrGuestShell, where reaper mode is read.
+		Args: []string{"nexus3-guest-shell"},
+		Env: append(os.Environ(),
+			herdrWtReapHandleEnv+"="+binding.SandboxHandle,
+			herdrWtReapWorkspaceEnv+"="+binding.HerdrWorkspaceID,
+			herdrWtReapPaneEnv+"="+binding.GuestPaneID,
+			herdrWtReapSandboxIDEnv+"="+binding.SandboxID,
+		),
+		Stdin:  devNull,
+		Stdout: devNull,
+		Stderr: devNull,
+		// Setsid: new session AND new process group — out of herdr's kill scope.
+		SysProcAttr: &syscall.SysProcAttr{Setsid: true},
+	}
+}
+
+// herdrWtReapBindingFromEnv reconstructs the reaper's binding from the
+// environment, reporting false when this process is not in reaper mode.
+func herdrWtReapBindingFromEnv(getenv func(string) string) (HerdrSpaceBinding, bool) {
+	handle := getenv(herdrWtReapHandleEnv)
+	if handle == "" {
+		return HerdrSpaceBinding{}, false
+	}
+	return HerdrSpaceBinding{
+		SandboxHandle:    handle,
+		HerdrWorkspaceID: getenv(herdrWtReapWorkspaceEnv),
+		GuestPaneID:      getenv(herdrWtReapPaneEnv),
+		SandboxID:        getenv(herdrWtReapSandboxIDEnv),
+	}, true
+}
+
+// runHerdrWtDetachedReap is the detached reaper body: settle, last-pane check,
+// then teardown.  It runs in its own session, so it is free to take seconds.
+//
+// FAIL-OPEN throughout: every failure leaves the sandbox for the prune backstop.
+func runHerdrWtDetachedReap(ctx context.Context, binding HerdrSpaceBinding) {
+	time.Sleep(herdrWtReapSettle)
+
 	// Last-pane check: if other panes remain in this workspace, the user is
 	// still active — skip teardown.
 	remaining, err := herdrWtPaneListerFn(ctx, binding.HerdrWorkspaceID, binding.GuestPaneID)
 	if err != nil {
-		// FAIL-OPEN: herdr unreachable, parse error, etc.  The prune backstop
-		// (Mechanism 1) will reap the sandbox on its next run.
+		// FAIL-OPEN: herdr unreachable, parse error, etc.
 		slog.Warn("nexus3-guest-shell: wt/ pane-list failed; skipping teardown (prune will catch it)",
 			"handle", binding.SandboxHandle, "err", err)
-		return nil
+		return
 	}
 	if remaining > 0 {
 		// Other panes still alive — not the last one.
-		return nil
+		return
 	}
 
 	// Last pane: tear down the space (VM + workspace + binding) atomically.
-	// FAIL-OPEN: any error is logged by herdrSpaceTeardown (failOpen:true) and
-	// swallowed here — a teardown bug must never freeze a new pane.
 	storeRoot, storeErr := store.DefaultRoot()
 	herdrBin, _ := resolveHerdrBin()
 	if storeErr != nil {
@@ -754,10 +892,9 @@ func herdrWtSupervisedShell(ctx context.Context, nexus3Bin string, binding Herdr
 			slog.Warn("nexus3-guest-shell: wt/ sandbox rm failed; prune will catch it",
 				"handle", binding.SandboxHandle, "err", err)
 		}
-		return nil
+		return
 	}
 	herdrWtTeardownFn(ctx, storeRoot, binding.SandboxHandle, herdrBin, binding.SandboxID)
-	return nil
 }
 
 // herdrWtTeardownFn performs the atomic wt/ space teardown after the last pane
