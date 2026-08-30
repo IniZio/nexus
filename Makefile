@@ -10,8 +10,88 @@
 proto:
 	buf generate proto
 
+# MEMORY GUARDRAILS (build + test)
+#
+# `go test ./...` in this repo is not a normal Go test run. The integration
+# suites boot real cloud-hypervisor VMs whose guest RAM is memfd-backed
+# (vmMemoryConfig.Shared — see internal/core/driver/cloudhypervisor/client.go:195),
+# so it is resident and unswappable, and the builder leases up to
+# MaxCacheDiskSlots (8, internal/core/builder/cachedisk.go:58) concurrent builder
+# VMs. Combined with -race and one test binary per package at GOMAXPROCS (12)
+# parallelism, a full run has repeatedly exhausted host RAM and tripped the
+# GLOBAL OOM killer — which does not politely stop the test, it takes out
+# dbus/ssh-agent and with them the entire login session, including any coding
+# agent attached to it.
+#
+# Four guards, cheapest first:
+#   GOMAXPROCS         the only one that reaches NESTED toolchains. See below.
+#   *_P / *_PARALLEL   cap how many packages and tests run at once.
+#   choom -n 1000      makes the kernel pick THIS process tree first if memory
+#                      does run out, instead of the session infrastructure.
+#   systemd-run --scope bounds the whole tree with MemoryHigh/MemoryMax, so a
+#                      runaway suite is throttled and then killed inside its own
+#                      cgroup and never reaches a global OOM at all.
+#
+# GOMAXPROCS is load-bearing, not a tuning knob. Several tests shell out to the
+# Go toolchain themselves (TestHerdrPluginABI_binaryBoundary runs
+# `go build ./cmd/nexus3` into a temp dir), and a nested `go build` is a FRESH
+# toolchain whose default -p is GOMAXPROCS — it inherits nothing from the outer
+# `go test -p`. On 2026-08-30 `make test GOTEST_P=1 GOTEST_PARALLEL=1` — the
+# most conservative setting available — still reached 147 concurrent linkers at
+# ~195 MB each and exhausted all 30 GB plus 8 GB of swap. -p bounds test
+# PACKAGES; only GOMAXPROCS in the environment reaches what the tests spawn.
+#
+# ManagedOOMPreference=avoid is NOT optional. user@.service ships
+# ManagedOOMMemoryPressure=kill with a 60%/20s limit, and a transient scope
+# inherits it. MemoryHigh throttling is precisely what drives cgroup PSI over
+# that limit, so without this property the three guards fight each other:
+# MemoryHigh generates the pressure, systemd-oomd reads the pressure and kills
+# the whole scope, and choom -n 1000 guarantees this tree is the victim chosen.
+# Observed 2026-08-30 as `systemd-oomd killed 500 process(es) in this unit`
+# roughly 90s into `go test -race ./...`, at a 20G MemoryMax the suite never
+# came close to reaching. MemoryMax stays the real bound; oomd must stay out.
+#
+# Ceilings are sized for a 30G host that is also running several coding-agent
+# sessions. Raising GOTEST_MEM_MAX much past 12G leaves the rest of the machine
+# nothing and defeats the point of the cap.
+#
+# Override any of these on the command line when you have headroom, e.g.
+#   make test GOMAXPROCS=8 GOTEST_P=6 GOTEST_MEM_MAX=20G
+# Narrow a run with GOTEST_ARGS:
+#   make test GOTEST_ARGS='-run TestHerdrPluginABI'
+GOMAXPROCS      ?= 4
+GOBUILD_P       ?= 4
+GOTEST_P        ?= 2
+GOTEST_PARALLEL ?= 2
+GOTEST_MEM_HIGH ?= 8G
+GOTEST_MEM_MAX  ?= 10G
+GOTEST_ARGS     ?=
+
+# CAPPED runs a command inside a memory-bounded transient scope with a
+# maximally-OOM-preferred score, and with GOMAXPROCS exported so nested
+# toolchains inherit the cap.
+#
+# It FAILS CLOSED. An earlier version probed for a usable user manager and fell
+# back to an uncapped run when the probe failed. That is exactly backwards: the
+# probe only fails when the machine is already thrashing and systemd is slow to
+# answer — so the cap silently disappeared at the one moment it was needed, and
+# the warning went to stderr where an agent never saw it. On 2026-08-30 that
+# fallback let a run reach 28G in session-4.scope (memory.max=max) with swap
+# 100% full. If the scope cannot be created now, the run does not start.
+define CAPPED
+	@set -e; \
+	if [ -n "$$NEXUS3_ALLOW_UNCAPPED" ]; then \
+		echo "make: NEXUS3_ALLOW_UNCAPPED set — running WITHOUT a memory cap." >&2; \
+		exec choom -n 1000 -- env GOMAXPROCS=$(GOMAXPROCS) $(1); \
+	fi; \
+	exec systemd-run --user --scope -q \
+		-p MemoryHigh=$(GOTEST_MEM_HIGH) -p MemoryMax=$(GOTEST_MEM_MAX) \
+		-p ManagedOOMPreference=avoid \
+		-- choom -n 1000 -- env GOMAXPROCS=$(GOMAXPROCS) $(1)
+endef
+
 build:
-	go build ./...
+	$(call CAPPED,go build -p $(GOBUILD_P) ./...)
 
 # install-agent compiles the on-PATH nexus3-agent (CGO_ENABLED=0, static) and
 # installs it at NEXUS3_AGENT_INSTALL_DIR/nexus3-agent (default: ~/.local/bin).
@@ -38,10 +118,10 @@ install-agent:
 build-agent: install-agent
 
 vet:
-	go vet ./...
+	go vet -p $(GOBUILD_P) ./...
 
 test:
-	go test -race ./...
+	$(call CAPPED,go test -race -p $(GOTEST_P) -parallel $(GOTEST_PARALLEL) $(GOTEST_ARGS) ./...)
 
 # docs serves the documentation site locally with live reload.
 # docs-build renders it to docs/site/.vitepress/dist (gitignored).
