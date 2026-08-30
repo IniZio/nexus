@@ -1,6 +1,6 @@
 ---
 name: nexus3-slice-sandbox
-description: "Run a unit of nexus3 development inside a nexus3 VM: create a git worktree, open it as a herdr workspace, bind a sandbox (optionally with nested KVM), dispatch an in-guest Claude agent with a brief, then checkpoint, verify and merge its work. Use this whenever work on the nexus3 repo is going to be delegated to an agent in a sandbox, whenever a motive slice needs its own isolated environment, whenever someone says to fan out slices, run a slice in a VM, spin up a worktree sandbox, or dispatch an in-guest agent, and whenever a change needs to be proven against a real booted VM rather than unit tests. Also use it when diagnosing why a worktree sandbox came up wrong — missing /dev/kvm, a missing .groundwork, a stale binary, an unexpected 'already bound', or duplicate herdr tabs."
+description: "Run a unit of nexus3 development inside a nexus3 VM: create a git worktree, open it as a herdr workspace, bind a sandbox (optionally with nested KVM), dispatch an in-guest Claude agent with a brief, then checkpoint, verify, merge, and reclaim. Use this whenever work on the nexus3 repo is going to be delegated to an agent in a sandbox, whenever a motive slice needs its own isolated environment, whenever someone says to fan out slices, run a slice in a VM, spin up a worktree sandbox, or dispatch an in-guest agent, and whenever a change needs to be proven against a real booted VM rather than unit tests. Also use it when a slice is finished and its sandbox should be cleaned up or torn down, when asking which sandboxes are still needed, or when sandboxes are piling up and eating host memory. Also use it when diagnosing why a worktree sandbox came up wrong — missing /dev/kvm, a missing .groundwork, a stale binary, an unexpected 'already bound', or duplicate herdr tabs."
 ---
 
 # nexus3 slice sandboxes
@@ -127,6 +127,58 @@ until [ -n "$(git -C <worktree> log --oneline develop..HEAD)" ]; do sleep 10; do
 
 Read the diff and re-run the agent's own mutation proofs yourself. Agents report
 tests as proven that are not — see Verification below.
+
+### 6. Finish: reclaim the sandbox once the work has landed
+
+A slice sandbox is disposable. It is not free while it sits there: each one holds
+a live VM with memfd-backed guest RAM that is resident and unswappable, plus a
+docker disk and a herdr workspace. Sandboxes left running after their slice
+landed are the ordinary cause of host memory pressure here, and the reason a
+later `make test` trips the global OOM killer.
+
+The existing reapers do **not** cover this. Both are bound to herdr pane and
+workspace liveness — the detached reaper fires when the last pane closes, and
+`space-prune` is its backstop — so a sandbox whose work is finished but whose
+workspace is still open is invisible to both. Finishing is a step you take, not
+one that happens to you.
+
+nexus3 itself stays a primitive and takes no view on when work is "done": the
+verbs are `nexus3 rm` and `herdr worktree remove`, and the completion rule
+belongs to the repo being worked on. **For nexus3 the convention is: merged to
+`develop`.** Check it against git, not against the agent's report:
+
+```bash
+git -C "$WORKTREE" rev-list --count develop..HEAD   # 0 = every commit has landed
+git -C "$WORKTREE" status --porcelain               # empty = nothing uncommitted
+git -C "$WORKTREE" ls-files --others --exclude-standard   # empty = nothing untracked
+```
+
+All three must come back empty or zero. Both gates matter and they fail in
+opposite directions: unmerged commits mean the work is not done, and a dirty or
+untracked tree means work exists that was never committed at all — which no
+amount of merging will have saved. Reclaim only when every check passes:
+
+```bash
+herdr worktree remove --workspace <ws-id>            # workspace + worktree, FIRST
+nexus3 rm <handle>                                   # then the VM and its disks
+git -C "$REPO" branch -d nexus3/<name>               # -d, never -D
+```
+
+**The order matters.** `nexus3 rm` closes the herdr workspace as a side effect,
+so running it first leaves `herdr worktree remove` failing with
+`workspace_not_found` and the git worktree still on disk — you then have to
+finish by hand with `git worktree remove <path>`. Take the workspace down while
+it still exists.
+
+Use `git branch -d` deliberately: it refuses a branch that is not fully merged,
+so it is a second, independent check on the same claim — a `-d` that fails means
+the reclaim was wrong and something is about to be lost. Never reach for `-D` to
+get past it.
+
+Leave the sandbox alone when any check fails, and say which one and why. A slice
+that is blocked, half-finished, or waiting on review still needs its VM. If you
+only want the RAM back and intend to return, `nexus3 stop <handle>` keeps the
+disk and the record so the sandbox can be restarted.
 
 ## Nested virtualisation
 

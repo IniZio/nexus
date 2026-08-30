@@ -15,6 +15,50 @@ Each entry: the symptom, what is really happening, and what to do.
 - [`herdr agent prompt` says not an active named agent](#in-guest-agents-arent-addressable)
 - [A test fails only in the full suite](#parallelism-flake-hiding-a-real-defect)
 - [Subagent said "mutation-proven" but wasn't](#unverified-mutation-proofs)
+- [Host is out of memory / finished sandboxes still running](#finished-sandboxes-are-never-reaped)
+
+---
+
+## Finished sandboxes are never reaped
+
+**Symptom:** `nexus3 ps` shows sandboxes for slices that landed days ago. The
+host is under memory pressure, `make test` trips the global OOM killer, and
+nothing looks wrong with any individual sandbox.
+
+**What is really happening:** both existing reapers key on herdr pane and
+workspace liveness, not on whether the work is done. The detached reaper fires
+when a workspace's last pane closes; `space-prune` is its backstop for bindings
+whose workspace is already gone. A sandbox whose slice merged an hour ago but
+whose workspace is still open is invisible to both, forever. Guest RAM is
+memfd-backed, so it is resident and unswappable — five idle finished sandboxes
+cost as much as five busy ones.
+
+Note the inverse trap too: because `space-prune` judges staleness by whether the
+workspace is open, closing a workspace makes a sandbox with a live, dirty
+worktree look reapable. Do not `space-prune --apply` to solve this problem.
+
+**What to do:** run step 6 of the loop. Reclaim on the repo's own completion
+convention — for nexus3, merged to `develop` — and verify it against git rather
+than against an agent's report:
+
+```bash
+git -C "$WORKTREE" rev-list --count develop..HEAD          # must be 0
+git -C "$WORKTREE" status --porcelain                      # must be empty
+git -C "$WORKTREE" ls-files --others --exclude-standard    # must be empty
+```
+
+Then `herdr worktree remove --workspace <ws-id>` **first**, then
+`nexus3 rm <handle>`, then `git branch -d nexus3/<name>`.
+
+Two things about that sequence. `nexus3 rm` closes the herdr workspace as a side
+effect, so doing it first leaves `herdr worktree remove` reporting
+`workspace_not_found` with the git worktree still on disk — recover with
+`git worktree remove <path>`. And keep `git branch -d`: it refuses an unmerged
+branch, so it is an independent second check that the reclaim is safe. A `-d`
+that fails means something is about to be lost; never reach for `-D`.
+
+If you want the RAM back but intend to return, `nexus3 stop <handle>` instead —
+the disk and record survive.
 
 ---
 
