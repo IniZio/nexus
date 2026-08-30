@@ -904,10 +904,10 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 			SecretHosts:     sb.Envelope.SecretHosts,
 			Broker:          s.broker,
 			AllowAll:        allowAll && (len(sb.Envelope.SecretHosts) > 0 || sb.AgentName != ""),
-			AllowedRepo:     sb.Envelope.AllowedRepo,                    // D-PD-36: per-repo path allowlist
+			AllowedRepo:     sb.Envelope.AllowedRepo,                         // D-PD-36: per-repo path allowlist
 			PathPolicies:    buildMITMPathPolicies(sb.Envelope.PathPolicies), // T4: per-secret path policies
-			AllowedBranches: sb.Envelope.ResolvedAllowedBranches(), // S0: default applied here
-			OnEgress:        mitmOnEgress,                          // shared egress-decisions sink
+			AllowedBranches: sb.Envelope.ResolvedAllowedBranches(),           // S0: default applied here
+			OnEgress:        mitmOnEgress,                                    // shared egress-decisions sink
 		})
 		if err != nil {
 			fd.Close()
@@ -946,6 +946,31 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 	// AllowAll mode: no MITM proxy; direct forwarding is used for port 443.
 
 	return nil
+}
+
+// StartPerimeterOnly wires the network perimeter (gvproxy/MITM/netfilter) for
+// a sandbox whose VM is already running under this Service's driver instance
+// — e.g. one installed via [driver.NetworkHook]-backed netns-runtime
+// adoption — without calling driver.Start or touching lifecycle state. It is
+// the seam the supervisor's adopt-mode entrypoint (RunAdopt) uses in place of
+// Start: the VM predates this process and must never be rebooted.
+//
+// Mirrors Start's own gating: silently returns nil when the driver does not
+// implement driver.NetworkHook or no credential broker is attached, the same
+// posture Start takes for "egress enforcement not configured".
+//
+// Refuses (returns a non-nil error, does nothing) when sb.State is not
+// domain.Running — this method must never be the thing that starts a
+// perimeter for a VM that is not actually up.
+func (s *Service) StartPerimeterOnly(ctx context.Context, sb domain.Sandbox) error {
+	if sb.State != domain.Running {
+		return fmt.Errorf("service: start perimeter only: sandbox %s is not running", sb.ID)
+	}
+	hook, ok := s.driver.(driver.NetworkHook)
+	if !ok || s.broker == nil {
+		return nil
+	}
+	return s.startSupervisor(ctx, hook, sb)
 }
 
 // closeSupervisor looks up and closes the supervisor for id, removing it from

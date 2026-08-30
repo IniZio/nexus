@@ -416,6 +416,13 @@ func RunDetached(cfg Config) error {
 	// ── 4. Bind IPC socket (before VM boot so early stop requests are handled) ─
 	sockPath := SockPath(cfg.StateDir)
 	_ = os.Remove(sockPath) // remove stale socket from a crash
+	binaryHash, hashErr := computeBinaryHash()
+	if hashErr != nil {
+		// Non-fatal: `nexus3 supervisor-upgrade`'s "already on the current
+		// binary" check degrades to "unknown, proceed" rather than blocking
+		// every other IPC verb over a hash failure.
+		slog.Warn("supervisor.binary_hash_failed", "err", hashErr)
+	}
 	// perimSupPtr is set after svc.Start returns and the perimeter supervisor is
 	// live. The IPC egress-allow and /supervisor/handoff handlers read it
 	// atomically; a nil load means the perimeter is not yet ready.
@@ -465,7 +472,7 @@ func RunDetached(cfg Config) error {
 		})
 		return performHandoff(hctx, peerSock, build)
 	})
-	ipcH, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef, allowEgressFn, handoffFn)
+	ipcH, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef, allowEgressFn, handoffFn, binaryHash)
 	if err != nil {
 		return fmt.Errorf("supervisor: bind IPC socket %s: %w", sockPath, err)
 	}

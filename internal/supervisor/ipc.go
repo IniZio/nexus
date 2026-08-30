@@ -3,8 +3,11 @@ package supervisor
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -38,9 +41,48 @@ const ipcDetachPath = "/supervisor/detach"
 // of the VM and perimeter — nothing is released until Confirm is observed.
 const ipcHandoffPath = "/supervisor/handoff"
 
+// ipcVersionPath is the HTTP path for the read-only binary-identity request.
+// `nexus3 supervisor-upgrade` uses this to decide whether the running
+// supervisor already serves the same binary as the one it was invoked from —
+// in which case there is nothing to upgrade. The identity is a content hash
+// of the running process's own executable, not the ldflags-embedded version
+// string: the latter defaults to "0.0.0-dev" in unreleased builds and would
+// make every dev build compare equal to every other.
+const ipcVersionPath = "/supervisor/version"
+
 // stopResponse is the JSON body returned on a successful stop or detach request.
 type stopResponse struct {
 	OK bool `json:"ok"`
+}
+
+// versionResponse is the JSON body returned for a version request.
+type versionResponse struct {
+	// BinaryHash is the hex-encoded SHA-256 of the running supervisor's own
+	// executable file, computed once at process start.
+	BinaryHash string `json:"binary_hash"`
+}
+
+// computeBinaryHash returns the hex-encoded SHA-256 of the current process's
+// own executable, as resolved by os.Executable(). Both RunDetached and
+// RunAdopt call this once at startup to obtain the identity they serve over
+// ipcVersionPath, and `nexus3 supervisor-upgrade` calls it a second time
+// (over its own os.Executable()) to compare against the value the running
+// supervisor reports.
+func computeBinaryHash() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("binary hash: resolve executable: %w", err)
+	}
+	f, err := os.Open(exe)
+	if err != nil {
+		return "", fmt.Errorf("binary hash: open %s: %w", exe, err)
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("binary hash: read %s: %w", exe, err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // handoffRequest is the JSON body of a POST to ipcHandoffPath. PeerSock is the
@@ -108,7 +150,7 @@ type ipcHandles struct {
 // handoff is the late-bound callback invoked by the /supervisor/handoff
 // handler. It may be nil (e.g. before the perimeter/broker state needed to
 // build a payload exists); a nil handoff causes the handler to return 503.
-func serveIPC(ctx context.Context, sockPath string, _ *service.Service, _ string, allowEgress allowEgressFunc, handoff handoffFunc) (ipcHandles, error) {
+func serveIPC(ctx context.Context, sockPath string, _ *service.Service, _ string, allowEgress allowEgressFunc, handoff handoffFunc, binaryHash string) (ipcHandles, error) {
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
 		return ipcHandles{}, fmt.Errorf("ipc: listen %s: %w", sockPath, err)
@@ -205,6 +247,16 @@ func serveIPC(ctx context.Context, sockPath string, _ *service.Service, _ string
 		default:
 			close(detachCh)
 		}
+	})
+
+	mux.HandleFunc(ipcVersionPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(versionResponse{BinaryHash: binaryHash})
 	})
 
 	mux.HandleFunc(ipcEgressAllowPath, func(w http.ResponseWriter, r *http.Request) {
@@ -400,4 +452,43 @@ func RequestHandoff(ctx context.Context, sockPath, peerSock string) (bool, error
 		return false, fmt.Errorf("request handoff: decode response (status %d): %w", resp.StatusCode, err)
 	}
 	return result.OK, nil
+}
+
+// RequestSupervisorVersion sends a GET /supervisor/version to the supervisor
+// at sockPath and returns its binary-identity hash. Used by
+// `nexus3 supervisor-upgrade` to decide whether the running supervisor
+// already serves the same binary the CLI was invoked from.
+func RequestSupervisorVersion(ctx context.Context, sockPath string) (string, error) {
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", sockPath)
+			},
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost"+ipcVersionPath, nil)
+	if err != nil {
+		return "", fmt.Errorf("request version: build request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request version: request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("request version: unexpected status %d", resp.StatusCode)
+	}
+	var result versionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("request version: decode response: %w", err)
+	}
+	return result.BinaryHash, nil
+}
+
+// HashOwnBinary returns the hex-encoded SHA-256 of the calling process's own
+// executable. Exported so `nexus3 supervisor-upgrade` (in package cli) can
+// compute the same identity computeBinaryHash gives the running supervisor,
+// without duplicating the hashing logic.
+func HashOwnBinary() (string, error) {
+	return computeBinaryHash()
 }

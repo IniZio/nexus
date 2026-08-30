@@ -85,7 +85,7 @@ func (m *supervisorLiveMounts) Set(v string) error {
 // dispatched from main() before any CLI routing so the supervisor process
 // never touches cobra or the CLI command registry.
 func runSupervisorMain(args []string) {
-	cfg, err := parseSupervisorFlags(args)
+	cfg, adoptHandoffSock, err := parseSupervisorFlags(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -102,6 +102,17 @@ func runSupervisorMain(args []string) {
 	} else {
 		slog.Warn("supervisor: spawn spec unreadable; MCPOAuthRefreshConfigs will be absent", "err", specErr)
 	}
+	// adoptHandoffSock selects adopt mode: RunAdopt never boots a VM, unlike
+	// RunDetached, which always does (see cmd_supervisor_upgrade.go for the
+	// operator verb that drives this path).
+	if adoptHandoffSock != "" {
+		if err := supervisor.RunAdopt(cfg, adoptHandoffSock); err != nil {
+			slog.Error("supervisor: adopt run failed", "err", err)
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := supervisor.RunDetached(cfg); err != nil {
 		slog.Error("supervisor: run failed", "err", err)
 		fmt.Fprintln(os.Stderr, err)
@@ -115,7 +126,7 @@ func runSupervisorMain(args []string) {
 // (as happened with ExtraDisks on 2026-08-16 — the supervisor then attached
 // only the rootfs and the guest panicked mounting its workspace) is caught
 // by a round-trip test instead of a live boot.
-func parseSupervisorFlags(args []string) (supervisor.Config, error) {
+func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSock string, err error) {
 	fs := flag.NewFlagSet(supervisor.HiddenSubcommand, flag.ContinueOnError)
 	var (
 		sandboxRef = fs.String("sandbox-ref", "", "sandbox ID hex or <project>/<name> handle (required)")
@@ -164,6 +175,8 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 		// whenever --mount is passed; the driver refuses to boot with live
 		// mounts and an empty VirtiofsdPath.
 		virtiofsd = fs.String("virtiofsd", "", "virtiofsd binary path (required with --mount)")
+		// adoptHandoffSockFlag: selects adopt mode. See RunAdopt's doc comment.
+		adoptHandoffSockFlag = fs.String("adopt-handoff-sock", "", "adopt mode: Unix STREAM socket to listen on for the handoff offer (empty = boot mode)")
 	)
 	// liveMounts accumulates repeated --mount flags (one per virtiofs share).
 	// These must be re-attached on every supervisor boot: the guest cmdline
@@ -182,7 +195,7 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 	var resizableDiskIndices supervisorResizableDiskIndices
 	fs.Var(&resizableDiskIndices, "resizable-disk-index", "0-based ExtraDisks index for disk governor (repeatable)")
 	if err := fs.Parse(args); err != nil {
-		return supervisor.Config{}, err
+		return supervisor.Config{}, "", err
 	}
 
 	missing := ""
@@ -203,10 +216,10 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 		missing = "--disk"
 	}
 	if missing != "" {
-		return supervisor.Config{}, fmt.Errorf("supervisor: %s is required", missing)
+		return supervisor.Config{}, "", fmt.Errorf("supervisor: %s is required", missing)
 	}
 
-	cfg := supervisor.Config{
+	cfg = supervisor.Config{
 		SandboxRef: *sandboxRef,
 		StoreRoot:  *storeRoot,
 		StateDir:   *stateDir,
@@ -221,9 +234,9 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 		// HasWorkspaceDisk / WorkspaceDiskIndex: the workspace disk index is
 		// meaningful only when the flag was explicitly passed (>= 0). The -1
 		// default means no workspace disk is attached; the disk axis is skipped.
-		HasWorkspaceDisk:   *workspaceDiskIndex >= 0,
-		WorkspaceDiskIndex: *workspaceDiskIndex,
-		WorkspaceGuestPath: *workspaceGuestPath,
+		HasWorkspaceDisk:     *workspaceDiskIndex >= 0,
+		WorkspaceDiskIndex:   *workspaceDiskIndex,
+		WorkspaceGuestPath:   *workspaceGuestPath,
 		ExtraDisks:           []string(extraDisks),
 		ResizableDiskIndices: []int(resizableDiskIndices),
 		GovBounds: resize.Bounds{
@@ -239,5 +252,5 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 		Ephemeral:     *ephemeral,
 		ParentPipeFD:  *parentPipeFD,
 	}
-	return cfg, nil
+	return cfg, *adoptHandoffSockFlag, nil
 }
