@@ -298,16 +298,28 @@ func BuildInVM(
 	started = false // prevent double-stop in the defer above
 
 	// ── 3.5. Clear the cache-disk fencing marker on confirmed clean sync ──────
-	// tearErr == nil means the guest "sync" exec succeeded AND the VMM
-	// stopped: a positive confirmation that every attached cache disk's
-	// writes reached the host. Only then is it safe to clear the marker
-	// ensureCacheDiskAt set before this VM booted (TBD-1). This runs
-	// regardless of buildErr: a failed build can still have flushed valid,
-	// crash-consistent cache state. If tearErr != nil — most importantly the
-	// guest-SIGKILL case, where guestSync could not even be issued — the
+	// Both conditions must hold before the marker is cleared:
+	//
+	//   tearErr == nil  — the guest "sync" exec returned exit 0 AND the VMM
+	//                     stopped cleanly: a positive confirmation that every
+	//                     attached cache disk's writes reached the host.
+	//
+	//   ctx.Err() == nil — the caller's context was NOT cancelled. This is
+	//                      required because lc.SyncAndStop() deliberately runs
+	//                      guestSync on context.Background() (not on the
+	//                      caller's ctx), so tearErr alone cannot witness
+	//                      caller cancellation. When ctx is cancelled (create-
+	//                      timeout expiry or Ctrl-C), the guest may still be
+	//                      mid-write when the sync runs; even if sync returns
+	//                      exit 0 the flush is not trustworthy. Ratified
+	//                      operator decision D-4: "safety wins, a cancelled
+	//                      create may go cold."
+	//
+	// This runs regardless of buildErr: a failed build can still have flushed
+	// valid, crash-consistent cache state. If either condition fails the
 	// marker is left set, and the next lease wipes the disk instead of
 	// risking a poisoned reuse.
-	if tearErr == nil {
+	if tearErr == nil && ctx.Err() == nil {
 		for _, cd := range spec.CacheDisks {
 			if err := markCacheDiskClean(cd.ImagePath); err != nil {
 				log.Printf("builder vm: mark cache disk clean %s: %v", cd.ImagePath, err)

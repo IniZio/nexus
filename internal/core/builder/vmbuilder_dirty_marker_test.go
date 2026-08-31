@@ -178,36 +178,40 @@ func TestBuildInVM_SyncOK_DirtyMarkerCleared(t *testing.T) {
 }
 
 // TestBuildInVM_CancelledBuild_DirtyMarkerSurvives proves that when the build
-// context is cancelled mid-build (simulating a timeout/SIGKILL scenario) and
-// the subsequent guestSync cannot confirm a clean flush, the dirty marker is
-// NOT cleared. This directly targets the regression described in the advisor
-// gate: a SIGTERM grace window lets guestSync run while buildkitd is still
-// writing, sync returns 0, tearErr == nil, and the marker is falsely cleared.
-// After Task 1 revert (SIGKILL, no grace), sync fails with an exec error
-// — tearErr != nil — so the marker survives. This test pins that invariant.
+// context is cancelled while sync SUCCEEDS (exit 0, tearErr == nil), the dirty
+// marker is NOT cleared.
 //
-// Mutation proof (M4): changing "if tearErr == nil" to "if true" in BuildInVM
-// step 3.5 makes this test RED — the marker would be cleared despite the
-// sync failure, causing a poisoned cache disk to be served as warm cache.
+// This is the actual hole: lc.SyncAndStop() runs guestSync on
+// context.Background() (not on the caller's ctx), so tearErr alone cannot
+// witness caller cancellation. When ctx is cancelled (create-timeout expiry or
+// Ctrl-C), buildkitd may still be mid-write when the background-context sync
+// runs; sync returns exit 0, tearErr == nil, and — without the ctx.Err() guard
+// — the marker is falsely cleared, poisoning the cache disk for the next lease.
+//
+// Mutation proof (M4): reverting the fix to "if tearErr == nil" (removing
+// "&& ctx.Err() == nil") makes this test RED, because the condition is
+// satisfied by tearErr == nil alone and the marker is cleared.
 func TestBuildInVM_CancelledBuild_DirtyMarkerSurvives(t *testing.T) {
 	cd := makeFakeCacheDisk(t)
 	setDirtyMarker(t, cd)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	// execFn cancels the build context during the builder-role step (simulating
-	// a timeout kill) and then fails sync (simulating: guest was killed, no
-	// flush confirmation possible).
+	// execFn cancels the build ctx during the builder-role step (simulating a
+	// create-timeout expiry or Ctrl-C), but then reports sync as exit 0
+	// (simulating: guestSync ran on context.Background() and the guest's sync
+	// syscall happened to return 0 despite the build being torn down mid-write).
 	execFn := func(_ context.Context, argv []string, _ io.Writer) (int32, error) {
 		isSync := len(argv) == 1 &&
 			(argv[0] == "/bin/sync" || argv[0] == "/usr/bin/sync" || argv[0] == "sync")
 		if isSync {
-			// Sync fails: guest was killed mid-build, cannot confirm flush.
-			return 0, errors.New("exec: no such process (guest killed mid-build)")
+			// Sync reports success — this is the dangerous case.
+			return 0, nil
 		}
-		// Builder role: cancel the build context to simulate timeout/kill.
+		// Builder role: cancel the caller's context to simulate timeout/kill.
 		cancel()
-		return 0, context.Canceled
+		return 0, nil
 	}
 
 	drv := fake.New()
@@ -219,9 +223,10 @@ func TestBuildInVM_CancelledBuild_DirtyMarkerSurvives(t *testing.T) {
 
 	_ = runMarkerTest(ctx, drv, spec, execFn)
 
-	// CRITICAL: dirty marker must survive when sync fails after a cancelled build.
+	// CRITICAL: dirty marker must survive even when tearErr == nil, because
+	// ctx.Err() != nil means the flush is not trustworthy.
 	if !cacheDiskIsDirty(cd.ImagePath) {
-		t.Fatal("dirty marker was cleared despite sync failure after context cancellation — " +
+		t.Fatal("dirty marker was cleared despite ctx cancellation (tearErr nil, ctx cancelled) — " +
 			"false-clean: poisoned disk would be served as warm cache")
 	}
 }
