@@ -182,6 +182,7 @@ func lcWaitESRCH(pid int, timeout time.Duration) bool {
 	return false
 }
 
+
 // countOpenFDs returns the number of entries in /proc/self/fd.
 func countOpenFDs() int {
 	entries, _ := os.ReadDir("/proc/self/fd")
@@ -688,4 +689,85 @@ func TestStartCtxCancelDoesNotKillChild(t *testing.T) {
 	}
 	t.Logf("PASS S-PERIM-TIMEOUT: child (pgid=%d) state=%c after startCtx cancel — "+
 		"survived context cancellation (not a zombie)", rt.ChildPGID, state)
+}
+
+// ─── Test 5: Launcher exits on CH death (orphan-launcher reap) ───────────────
+
+// TestLifecycle_LauncherExitsOnCHDeath verifies that when the CH grandchild
+// exits (crashed or killed), the netns child (launcher) also exits rather
+// than lingering as an orphan with a zombie child.
+//
+// This covers the retry-leak pattern: a failed first boot leaves its launcher
+// behind (ppid 1, zombie CH child) while the retry's launcher runs alongside.
+// The fix is in RunNetnsChild: a goroutine calls syscall.Wait4(proc.pid) (which
+// returns as soon as CH exits, without waiting for pipe-draining io.Copy
+// goroutines) and then calls os.Exit(0), terminating the entire launcher
+// process — including the stuck TAP-read goroutine that would otherwise hold
+// tapPump open forever.
+//
+// Mutation proof: removing the goroutine (replacing it with _ = proc) means
+// syscall.Wait4 is never called; os.Exit(0) is never called; the launcher
+// stays stuck in tapPump until rt.Stop() kills it. rt.cmd.Wait() never returns.
+// The substitution count for the mutation is 1 (the single "_ = proc" line).
+func TestLifecycle_LauncherExitsOnCHDeath(t *testing.T) {
+	chBin, kernelPath := lcGuards(t)
+	socketDir := lcMakeSocketDir(t, "nx3-lc-orphan-")
+
+	id := domain.NewSandboxID()
+	socketPath := filepath.Join(socketDir, id.String()+".sock")
+
+	rt := lcBootCH(t, chBin, kernelPath, id, socketPath)
+	// Do NOT register t.Cleanup(rt.Stop) before the assertion: the test
+	// asserts the launcher exits on its own. defer below calls Stop() only
+	// after the check, cleaning up PerimConn so the test process does not leak.
+	defer rt.Stop() // idempotent via stopOnce; no-op if child already exited
+
+	childPID := rt.ChildPID
+	t.Logf("netns child pid=%d (pgid=%d)", childPID, rt.ChildPGID)
+
+	// Wait for the netns child to advance past spawnVMMInGroup and into tapPump.
+	//
+	// lcBootCH polls CH's API socket from the TEST process. When it returns
+	// "ready", the netns child's own spawnVMMInGroup polling loop may not have
+	// seen CH as ready yet (both poll at 50 ms intervals but are not synced).
+	// If we kill CH before the netns child exits spawnVMMInGroup, the reap
+	// goroutine never starts and the test races against the netns child's
+	// 20 s StartTimeout. 300 ms = 6 full 50 ms poll intervals — enough for
+	// the netns child to complete its own poll cycle and start the goroutine.
+	time.Sleep(300 * time.Millisecond)
+
+	// Kill the CH grandchild — simulates a CH crash or a failed first boot.
+	_ = lcKillCHGrandchild(t, socketPath)
+
+	// The launcher must exit within 5 s: the fix goroutine in RunNetnsChild
+	// calls syscall.Wait4 (waits for CH to exit) then os.Exit(0) to kill the
+	// entire process — including the stuck TAP-read goroutine inside tapPump.
+	//
+	// We wait via rt.cmd.Wait(), NOT via kill(childPID,0)/ESRCH polling:
+	//   - os.Exit(0) makes the netns child a zombie (parent = this test process
+	//     holding rt.cmd). A zombie's PID may be reused by a new process almost
+	//     immediately (Linux recycles PIDs aggressively), making kill(pid,0)
+	//     and /proc/<pid>/stat unreliable — they would show the NEW process.
+	//   - rt.cmd.Wait() is pinned to the specific exec.Cmd (uses the pidfd or
+	//     the child's internal waitpid token), so PID reuse cannot fool it.
+	//
+	// rt.cmd.Wait() is called here and will return immediately if the child has
+	// already exited (zombie), or block until it exits. defer rt.Stop() above
+	// also calls rt.cmd.Wait() — it ignores the "already called" error.
+	//
+	// Without the goroutine (mutation: replace goroutine with _ = proc),
+	// syscall.Wait4 is never called; os.Exit(0) is never called; the netns
+	// child is stuck in tapPump forever → waitDone never fires → test FAILS.
+	const timeout = 5 * time.Second
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- rt.cmd.Wait() }()
+	select {
+	case <-waitDone:
+		t.Logf("PASS orphan-launcher: netns child pid=%d exited after CH death", childPID)
+	case <-time.After(timeout):
+		t.Logf("child stderr:\n%s", rt.ChildStderr())
+		t.Fatalf("FAIL orphan-launcher: netns child pid=%d still alive %v after "+
+			"CH exited; launcher leaked as orphan (ppid 1, zombie CH child)",
+			childPID, timeout)
+	}
 }

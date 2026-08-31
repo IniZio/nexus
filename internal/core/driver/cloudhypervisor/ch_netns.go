@@ -659,7 +659,54 @@ func RunNetnsChild() {
 			os.Exit(1)
 		}
 	}
-	_ = proc // CH process; killed by parent's group-kill in rt.Stop()
+	// Reap CH and exit this process when CH dies.
+	//
+	// Without this, a CH crash or kill leaves a zombie grandchild and this
+	// process stuck in tapPump forever — an orphaned launcher with ppid 1 and
+	// a Z-state child.
+	//
+	// pumpConn.Close() alone is insufficient: tapPump has two goroutines and
+	// waits for BOTH to exit. Closing pumpConn unblocks the conn→TAP goroutine
+	// (net.Conn read returns an error). But the TAP→conn goroutine reads from
+	// hostTapFile which was opened with O_RDWR (no O_NONBLOCK) — a blocking fd
+	// that Go's netpoller does not manage. Closing hostTapFile from this
+	// goroutine does not interrupt the blocking read() in the TAP→conn
+	// goroutine, so tapPump never returns regardless.
+	//
+	// os.Exit(0) is the correct termination path: this process's sole purpose
+	// was to host CH and pump frames; once CH exits there is nothing left to do.
+	// All goroutines — including the stuck TAP read — are torn down by the
+	// process exit, and the kernel closes every fd.
+	//
+	// When rt.Stop() kills the whole process group first: this goroutine is
+	// killed with this process; CH is also killed by the group signal; CH's
+	// zombie (if any) is reparented to init which reaps it — no leak there.
+	go func() {
+		// Wait for CH to exit and reap its zombie.
+		//
+		// We use syscall.Wait4 directly instead of proc.cmd.Wait() because
+		// cmd.Wait() blocks in awaitGoroutines until ALL internal io.Copy
+		// goroutines finish draining their pipes. Those goroutines finish when
+		// the write ends of CH's stdout/stderr pipes close. In the user+network
+		// namespace context, an fd can leak across the fork boundary and prevent
+		// those write ends from closing, keeping cmd.Wait() blocked indefinitely.
+		//
+		// syscall.Wait4 is a direct syscall: it waits only for process exit and
+		// does not involve any pipe-draining machinery. It returns as soon as CH
+		// exits (or is already a zombie), which is the only signal we care about.
+		var ws syscall.WaitStatus
+		for {
+			wpid, err := syscall.Wait4(proc.pid, &ws, 0, nil)
+			if err == nil && wpid == proc.pid {
+				break // CH reaped
+			}
+			if errors.Is(err, syscall.EINTR) {
+				continue // interrupted by signal, retry
+			}
+			break // unexpected error (ECHILD if reaped elsewhere, etc.) — exit anyway
+		}
+		os.Exit(0) // exit this process: no reason to outlive CH
+	}()
 
 	// Step 5 (cont.): run the frame pump. Blocks until both fds are closed.
 	// tapPump copies Ethernet frames between the host TAP fd and the pump-end
