@@ -120,6 +120,12 @@ The detach is **incomplete**, which is why this section is badged. Observed live
 
 See [Volume commands](/cli/volume-commands) for the full volume lifecycle.
 
+### Agent config overlay volume <Badge type="tip" text="built" />
+
+`nexus3 create --agent <name>` silently provisions a 2 GiB named ext4 volume (`<proj>__<handle>__agentcfg`) and attaches it to the sandbox. The volume backs the writable upper layer of an overlayfs mounted at `/root/.claude` inside the guest. Moving the upper layer off the root disk makes it governor-visible (the root `/dev/vda` is never enrolled in `ResizableDiskIndices`). The lower layer is a read-only virtiofs share of the host's curated Claude config; it is host-backed and consumes zero guest disk.
+
+Boot **fails closed** (aborts with a hard error) when the volume is absent and no prior upper-layer data is found on the root disk. The fail-closed path prevents a new agent sandbox from silently losing session transcripts, todos, and stats to the ungrowable root disk. The sole exception is a pre-existing sandbox created before this provisioning was introduced: if root-disk data is found at the old path, boot degrades gracefully (D-RAM-11) and emits a structured `slog.Warn`; no non-destructive drain to a named volume exists yet (D-RAM-15).
+
 ## Creation: intent-before-materialize
 
 Every raw OS disk and workspace disk creation is journaled before the disk is materialized. **Shadow disks are journaled separately** — they are created in the CLI before `CreateAndBoot` writes the ULID intent, and `createIntent` has no field for them, so they carry their own handle-keyed shadow intent instead (RL-5, RL-17). Named volume backing files are not subject to the intent system — they are created inside the volume store under exclusive per-volume locks, not via the `disks/` intent path. The write sequence in `writeCreateIntent` (`internal/core/service/intent.go`):
