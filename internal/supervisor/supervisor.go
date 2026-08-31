@@ -453,7 +453,20 @@ func RunDetached(cfg Config) error {
 		})
 		return performHandoff(hctx, peerSock, build)
 	})
-	ipcH, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef, allowEgressFn, handoffFn, binaryHash)
+	// agentHealthFn probes the guest agent's control/data planes live, using
+	// the SAME drv this process dials every RPC through. resolveErr == nil is
+	// required for preSB.ID to be meaningful; a failed resolve degrades to
+	// AgentChannelUnknown (never to Healthy) rather than skipping the probe.
+	agentHealthFn := agentHealthFunc(func(hctx context.Context) AgentHealth {
+		if resolveErr != nil {
+			return AgentHealth{State: AgentChannelUnknown, ControlErr: fmt.Sprintf("sandbox not resolved: %v", resolveErr)}
+		}
+		// drv (*cloudhypervisor.CHDriver) implements driver.GuestDialer
+		// unconditionally (see ch_vsock.go's compile-time assertion) — no
+		// comma-ok needed here, unlike agentClientFor's interface-typed driver.
+		return checkAgentHealth(hctx, drv, preSB.ID)
+	})
+	ipcH, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef, allowEgressFn, handoffFn, agentHealthFn, binaryHash)
 	if err != nil {
 		return fmt.Errorf("supervisor: bind IPC socket %s: %w", sockPath, err)
 	}
