@@ -116,11 +116,15 @@ func (h AgentHealth) Healthy() bool {
 type agentHealthFunc func(ctx context.Context) AgentHealth
 
 // agentHealthProbeTimeout bounds each individual probe (control-plane Ping,
-// data-plane dial) inside [checkAgentHealth]. Short and deliberate: this
-// endpoint exists to be called when the caller ALREADY suspects a wedge, so
-// it must return a verdict quickly rather than hanging as long as the thing
-// it is diagnosing.
-const agentHealthProbeTimeout = 5 * time.Second
+// data-plane dial) inside [checkAgentHealth]. Each probe gets its own
+// independent budget, so a hung control-plane Ping cannot consume the
+// data-plane dial's deadline. Short and deliberate: this endpoint exists to
+// be called when the caller ALREADY suspects a wedge, so it must return a
+// verdict quickly rather than hanging as long as the thing it is diagnosing.
+//
+// Package-level var (not const) so tests can shrink it — mirrors
+// reconnectInterval's pattern for the same reason.
+var agentHealthProbeTimeout = 5 * time.Second
 
 // checkAgentHealth runs one live probe of the guest agent's control plane
 // (gRPC Ping over [driver.AgentControlPort]) and data plane (raw dial over
@@ -137,17 +141,24 @@ func checkAgentHealth(ctx context.Context, gd driver.GuestDialer, id domain.Sand
 		return AgentHealth{State: AgentChannelUnknown, ControlErr: "no guest dialer available"}
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, agentHealthProbeTimeout)
-	defer cancel()
+	// Each probe gets its own independent budget derived from the parent ctx.
+	// A hung control-plane Ping must not exhaust the data-plane dial's deadline:
+	// that would prevent AgentChannelDownGuestAlive from ever being detected,
+	// because both probes would time out and the ambiguous pair is Unknown.
+	controlCtx, controlCancel := context.WithTimeout(ctx, agentHealthProbeTimeout)
+	defer controlCancel()
 
 	client := agent.NewClient(gd, id)
-	controlErr := client.Ping(ctx)
+	controlErr := client.Ping(controlCtx)
 	if controlErr == nil {
 		return AgentHealth{State: AgentChannelHealthy}
 	}
 
+	dataCtx, dataCancel := context.WithTimeout(ctx, agentHealthProbeTimeout)
+	defer dataCancel()
+
 	var dataErr error
-	dataConn, dialErr := gd.DialGuest(ctx, id, wire.DataPort)
+	dataConn, dialErr := gd.DialGuest(dataCtx, id, wire.DataPort)
 	if dialErr == nil {
 		dataConn.Close()
 	} else {
@@ -706,8 +717,8 @@ func HashOwnBinary() (string, error) {
 // at sockPath and returns the live [AgentHealth] verdict. A non-nil error
 // means the request itself could not be completed (transport failure talking
 // to sockPath, or the supervisor predates this endpoint) — the caller MUST
-// NOT treat that as healthy; see [ReconnectAgent] and
-// runSupervisorUpgradeWith for the fail-closed handling this feeds.
+// NOT treat that as healthy; see runSupervisorUpgradeWith for the
+// fail-closed handling this feeds.
 func RequestAgentHealth(ctx context.Context, sockPath string) (AgentHealth, error) {
 	client := &http.Client{
 		Transport: &http.Transport{
@@ -740,66 +751,3 @@ func RequestAgentHealth(ctx context.Context, sockPath string) (AgentHealth, erro
 	return result, nil
 }
 
-// reconnectAttempts bounds [ReconnectAgent]'s retry loop: enough attempts to
-// ride out a transient vsock/CH hiccup without spinning forever against a
-// channel that will never recover.
-const reconnectAttempts = 6
-
-// reconnectInterval is the delay between ReconnectAgent's probe attempts.
-// Package-level var (not const) so tests can shrink it — mirrors
-// agent.pingRetryInterval's pattern for the same reason.
-var reconnectInterval = 2 * time.Second
-
-// ReconnectAgent asks the supervisor at sockPath to retry its agent-health
-// probe up to reconnectAttempts times, spaced reconnectInterval apart,
-// stopping early on the first [AgentChannelHealthy] result. It exists
-// because a single probe can catch the guest mid-recovery (e.g. immediately
-// after the transient condition that wedged the control plane clears) —
-// giving the channel a bounded number of fresh-dial attempts before reporting
-// failure is what makes this a "reconnect" rather than a single Ping that a
-// caller has to loop around itself.
-//
-// It returns the LAST probe's [AgentHealth] and, when every attempt failed to
-// reach [AgentChannelHealthy], a non-nil error summarising the final
-// classification. Per the fail-closed rail: if the supervisor can never even
-// be asked (every RequestAgentHealth call errors — e.g. talking to a
-// supervisor that predates this endpoint, or sockPath is unreachable),
-// ReconnectAgent returns AgentHealth{State: AgentChannelUnknown} and a
-// non-nil error — it never reports success on an unanswered probe.
-func ReconnectAgent(ctx context.Context, sockPath string) (AgentHealth, error) {
-	var last AgentHealth
-	var lastErr error
-	for attempt := 0; attempt < reconnectAttempts; attempt++ {
-		health, reqErr := RequestAgentHealth(ctx, sockPath)
-		if reqErr != nil {
-			last = AgentHealth{State: AgentChannelUnknown, ControlErr: reqErr.Error()}
-			lastErr = reqErr
-		} else {
-			last = health
-			lastErr = nil
-			if health.Healthy() {
-				return health, nil
-			}
-			if health.State == AgentChannelGuestGone {
-				// Do not keep retrying against a guest that is definitively
-				// gone — that would mask "the VM died" behind a reconnect
-				// loop that can never succeed. Report it immediately.
-				return health, fmt.Errorf("reconnect agent: guest is gone (control_err=%q data_err=%q)",
-					health.ControlErr, health.DataErr)
-			}
-		}
-
-		if attempt < reconnectAttempts-1 {
-			select {
-			case <-ctx.Done():
-				return last, ctx.Err()
-			case <-time.After(reconnectInterval):
-			}
-		}
-	}
-	if lastErr != nil {
-		return last, fmt.Errorf("reconnect agent: probe unreachable after %d attempts: %w", reconnectAttempts, lastErr)
-	}
-	return last, fmt.Errorf("reconnect agent: channel not healthy after %d attempts (state=%s control_err=%q data_err=%q)",
-		reconnectAttempts, last.State, last.ControlErr, last.DataErr)
-}

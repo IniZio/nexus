@@ -11,11 +11,13 @@ package supervisor
 import (
 	"context"
 	"errors"
+	"net"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/driver"
 )
 
 // ── classifyAgentHealth: pure fail-closed classification ──────────────────
@@ -209,104 +211,58 @@ func TestIPCAgentHealth_DownGuestAlive_RoundTrips(t *testing.T) {
 	}
 }
 
-// ── ReconnectAgent: bounded retry loop ─────────────────────────────────────
+// ── checkAgentHealth: split probe budget ───────────────────────────────────
 
-// TestReconnectAgent_RecoversWithinAttempts proves the retry loop returns
-// success as soon as a later attempt reports Healthy, without waiting out
-// all reconnectAttempts — the "recovers WITHOUT a reboot" shape the live
-// incident needs.
-func TestReconnectAgent_RecoversWithinAttempts(t *testing.T) {
-	calls := 0
-	sockPath := serveTestIPCWithHealth(t, func(ctx context.Context) AgentHealth {
-		calls++
-		if calls < 3 {
-			return AgentHealth{State: AgentChannelDownGuestAlive, ControlErr: "still wedged"}
-		}
-		return AgentHealth{State: AgentChannelHealthy}
-	})
+// silentControlDialer is a fake driver.GuestDialer for the split-probe-budget
+// test. For AgentControlPort it returns a net.Pipe whose server end never
+// sends any data — gRPC blocks on the HTTP/2 handshake until controlCtx
+// expires, producing a DeadlineExceeded error without hanging in DialGuest
+// itself (which would leak gRPC's background connection-management goroutines).
+// For DataPort it returns a live net.Pipe immediately so dataErr == nil.
+type silentControlDialer struct{ t *testing.T }
 
-	orig := reconnectInterval
-	reconnectInterval = time.Millisecond
-	defer func() { reconnectInterval = orig }()
-
-	health, err := ReconnectAgent(context.Background(), sockPath)
-	if err != nil {
-		t.Fatalf("ReconnectAgent: unexpected error: %v", err)
+func (d silentControlDialer) DialGuest(_ context.Context, _ domain.SandboxID, port uint32) (net.Conn, error) {
+	host, guest := net.Pipe()
+	d.t.Cleanup(func() { host.Close(); guest.Close() })
+	if port == driver.AgentControlPort {
+		// Server end (guest) holds open but never writes — gRPC waits for
+		// HTTP/2 SETTINGS frame that never arrives, blocking until controlCtx
+		// deadline fires.
+		return host, nil
 	}
-	if !health.Healthy() {
-		t.Fatalf("got %+v, want Healthy", health)
-	}
-	if calls != 3 {
-		t.Errorf("calls = %d, want exactly 3 (stop at first healthy result)", calls)
-	}
+	// DataPort: succeed immediately.
+	return host, nil
 }
 
-// TestReconnectAgent_GuestGone_StopsImmediately proves ReconnectAgent does
-// NOT keep retrying against a guest that is definitively gone — masking a
-// dead guest behind a reconnect loop is exactly the failure mode the brief
-// warns against. It must return the GuestGone verdict on the FIRST attempt.
-func TestReconnectAgent_GuestGone_StopsImmediately(t *testing.T) {
-	calls := 0
-	sockPath := serveTestIPCWithHealth(t, func(ctx context.Context) AgentHealth {
-		calls++
-		return AgentHealth{State: AgentChannelGuestGone, ControlErr: "refused", DataErr: "refused"}
-	})
+// TestCheckAgentHealth_HungControlProbe_DataPlaneAlive_GivesDownGuestAlive
+// proves the split-budget fix: when the control-plane Ping hangs for its full
+// per-probe budget and the data plane gets its own independent budget, the
+// result is AgentChannelDownGuestAlive, not Unknown.
+//
+// With the OLD shared budget (one context.WithTimeout for both probes), a
+// hung control probe exhausts the whole deadline; the data probe then sees an
+// already-expired context and fails with a timeout error. Both probes produce
+// ambiguous errors → classifyAgentHealth returns Unknown, and the real-world
+// incident shape (wedged gRPC channel over a live vsock) is invisible.
+//
+// Mutation proof for the fail-closed rule: changing classifyAgentHealth so
+// that a single definite refusal (or dataErr == nil) alone yields GuestGone
+// makes TestClassifyAgentHealth_AmbiguousFailure_NeverClaimsGuestGoneOrHealthy
+// RED — those tests cover the exact combination "refused + timeout = Unknown".
+func TestCheckAgentHealth_HungControlProbe_DataPlaneAlive_GivesDownGuestAlive(t *testing.T) {
+	orig := agentHealthProbeTimeout
+	agentHealthProbeTimeout = 50 * time.Millisecond
+	defer func() { agentHealthProbeTimeout = orig }()
 
-	health, err := ReconnectAgent(context.Background(), sockPath)
-	if err == nil {
-		t.Fatal("expected error for a definitively gone guest")
+	got := checkAgentHealth(context.Background(), silentControlDialer{t: t}, domain.SandboxID{})
+	if got.State != AgentChannelDownGuestAlive {
+		t.Fatalf("state = %q, want %q\n"+
+			"with a shared probe budget, a hung control probe would exhaust the\n"+
+			"whole timeout and the data probe would see an expired context,\n"+
+			"yielding Unknown instead of AgentChannelDownGuestAlive",
+			got.State, AgentChannelDownGuestAlive)
 	}
-	if health.State != AgentChannelGuestGone {
-		t.Fatalf("state = %q, want %q", health.State, AgentChannelGuestGone)
-	}
-	if calls != 1 {
-		t.Errorf("calls = %d, want exactly 1 (must not retry against a gone guest)", calls)
-	}
-}
-
-// TestReconnectAgent_NeverHealthy_FailsAfterAllAttempts proves the loop gives
-// up (rather than looping forever) when the channel never recovers, and that
-// the returned error is non-nil — a caller must not treat exhaustion as
-// success.
-func TestReconnectAgent_NeverHealthy_FailsAfterAllAttempts(t *testing.T) {
-	calls := 0
-	sockPath := serveTestIPCWithHealth(t, func(ctx context.Context) AgentHealth {
-		calls++
-		return AgentHealth{State: AgentChannelDownGuestAlive, ControlErr: "still wedged"}
-	})
-
-	orig := reconnectInterval
-	reconnectInterval = time.Millisecond
-	defer func() { reconnectInterval = orig }()
-
-	health, err := ReconnectAgent(context.Background(), sockPath)
-	if err == nil {
-		t.Fatal("expected error when the channel never recovers")
-	}
-	if health.Healthy() {
-		t.Fatal("Healthy() must be false when every attempt failed")
-	}
-	if calls != reconnectAttempts {
-		t.Errorf("calls = %d, want exactly reconnectAttempts (%d)", calls, reconnectAttempts)
-	}
-}
-
-// TestReconnectAgent_UnreachableSupervisor_FailsClosed proves that when the
-// supervisor cannot be asked AT ALL (transport failure — e.g. a supervisor
-// that predates this endpoint's socket even existing), ReconnectAgent
-// reports failure rather than treating "could not ask" as "must be fine".
-func TestReconnectAgent_UnreachableSupervisor_FailsClosed(t *testing.T) {
-	deadPath := filepath.Join(t.TempDir(), "nonexistent.sock")
-
-	orig := reconnectInterval
-	reconnectInterval = time.Millisecond
-	defer func() { reconnectInterval = orig }()
-
-	health, err := ReconnectAgent(context.Background(), deadPath)
-	if err == nil {
-		t.Fatal("expected error for an unreachable supervisor socket")
-	}
-	if health.Healthy() {
-		t.Fatal("Healthy() must be false when the supervisor could never be asked")
+	if got.ControlErr == "" {
+		t.Error("ControlErr must be populated so the operator can see why the control plane is considered down")
 	}
 }

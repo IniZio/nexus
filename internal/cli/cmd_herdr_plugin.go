@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/agent"
@@ -487,14 +486,6 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 			cmd := herdrExecCommandContext(ctx, exe, append([]string{"sandbox", "create"}, args...)...)
 			cmd.Stdout = out.w
 			cmd.Stderr = out.w
-			// TBD-3: on createCtx expiry, ask the subprocess to shut down
-			// cooperatively instead of SIGKILLing it outright. See the
-			// herdrWorktreeCreateGraceTimeout comment for why this matters:
-			// the default exec.CommandContext behaviour (Process.Kill, no
-			// grace) never lets BuildInVM's own SyncAndStop run, which is
-			// what left the buildkit cache-disk dirty marker permanently set
-			// after every timeout.
-			herdrArmCreateGracefulCancel(cmd)
 			return cmd.Run()
 		}
 		getFn := func(ctx context.Context, handle string) (domain.Sandbox, error) {
@@ -2852,67 +2843,18 @@ const herdrWorktreeListTimeout = 2 * time.Second
 //     not because it is a bad idea.
 //   - Removing the bound entirely was ruled out: it is the only thing that
 //     protects an operator's pane from a truly wedged daemon (as opposed to
-//     a slow one); see herdrWorktreeCreateGraceTimeout below for how the
-//     bound's ENFORCEMENT was fixed instead of just its VALUE.
+//     a slow one). Enforcement uses exec.CommandContext default behaviour
+//     (SIGKILL on expiry) — a clean teardown is not guaranteed on timeout.
 //
 // A fixed constant still cannot distinguish "legitimately slow" from
 // "wedged" — that limitation is inherent to any constant and is accepted for
 // this slice.
 const herdrWorktreeCreateTimeout = 240 * time.Second
 
-// herdrWorktreeCreateGraceTimeout bounds the extra time the create
-// subprocess is given to exit on its own AFTER herdrWorktreeCreateTimeout
-// expires, before it is forcibly killed.
-//
-// TBD-3 (nexus3-nonnexus3-repo-sandbox-blockers): without this, the
-// self-sustaining cache-poison loop described in the motive charter was not
-// caused by the wipe-on-dirty fence being wrong — that fence is correct and
-// is left untouched here — but by HOW the timeout was enforced.
-// herdrExecCommandContext is exec.CommandContext, and its default
-// ctx-expiry behaviour is an immediate cmd.Process.Kill() (SIGKILL) with no
-// grace period. SIGKILL cannot be caught: it destroys the "nexus3 sandbox
-// create" subprocess mid-instruction, so BuildInVM's own graceful teardown
-// (lifecycle.Lifecycle.SyncAndStop, which already runs unconditionally after
-// a build error/cancellation, attempts a guest sync, and only then clears
-// the cache-disk dirty marker on POSITIVE confirmation that sync succeeded)
-// never gets a chance to execute at all — every timeout was indistinguishable
-// from an unclean crash.
-//
-// herdrArmCreateGracefulCancel below replaces the default Kill with SIGTERM,
-// which the "nexus3 sandbox create" subprocess's own root context already
-// catches cooperatively (root.go's signal.NotifyContext(ctx, SIGINT,
-// SIGTERM), wired to every CLI subcommand). This grace window is what lets a
-// build that was going to finish soon anyway actually reach SyncAndStop and
-// leave the cache warm, instead of being executed on sight. A build that is
-// genuinely wedged still cannot be proven clean and is still killed — via
-// SIGKILL — once this grace period elapses; the fail-closed wipe on the next
-// lease is unchanged and still fires for that case.
-//
-// 60s was chosen to comfortably exceed guestSyncTimeout (15s, the bound
-// SyncAndStop's own guest-sync exec uses) plus VMM stop and process exit
-// overhead, without materially extending how long a truly wedged create
-// blocks a pane (herdrWorktreeCreateTimeout + herdrWorktreeCreateGraceTimeout
-// = 300s worst case, vs. an unbounded hang before this fix existed).
-const herdrWorktreeCreateGraceTimeout = 60 * time.Second
-
-// herdrArmCreateGracefulCancel configures cmd so that, when its context
-// expires, the process is asked to exit via SIGTERM and is only forcibly
-// SIGKILLed if it has not exited within herdrWorktreeCreateGraceTimeout. Must
-// be called before cmd.Run()/cmd.Start(); cmd.Cancel is invoked by the
-// os/exec package only after the process has started, so cmd.Process is
-// always non-nil when this fires.
-func herdrArmCreateGracefulCancel(cmd *exec.Cmd) {
-	cmd.Cancel = func() error {
-		return cmd.Process.Signal(syscall.SIGTERM)
-	}
-	cmd.WaitDelay = herdrWorktreeCreateGraceTimeout
-}
-
 // herdrWorktreeCreateLockTimeout bounds how long the second concurrent caller
 // waits for the per-handle create-intent lock. Must exceed the first caller's
-// worst-case total create time, herdrWorktreeCreateTimeout (240s) +
-// herdrWorktreeCreateGraceTimeout (60s) = 300s, so the first caller always
-// finishes (or is forcibly killed) before the waiter gives up.
+// worst-case total create time (herdrWorktreeCreateTimeout = 240s), so the
+// first caller always finishes (or is forcibly killed) before the waiter gives up.
 const herdrWorktreeCreateLockTimeout = 330 * time.Second
 
 // herdrWorktreeCreateLockPath returns the path to the per-handle create-intent
