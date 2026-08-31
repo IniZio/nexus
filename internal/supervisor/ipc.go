@@ -122,8 +122,9 @@ type agentHealthFunc func(ctx context.Context) AgentHealth
 // be called when the caller ALREADY suspects a wedge, so it must return a
 // verdict quickly rather than hanging as long as the thing it is diagnosing.
 //
-// Package-level var (not const) so tests can shrink it — mirrors
-// reconnectInterval's pattern for the same reason.
+// Package-level var (not const) so tests can shrink it without rebuilding:
+// a const cannot be assigned at runtime, but a var is directly assignable in
+// test setup (see TestCheckAgentHealth_HungControlProbe_*).
 var agentHealthProbeTimeout = 5 * time.Second
 
 // checkAgentHealth runs one live probe of the guest agent's control plane

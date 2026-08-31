@@ -221,7 +221,7 @@ func TestIPCAgentHealth_DownGuestAlive_RoundTrips(t *testing.T) {
 // For DataPort it returns a live net.Pipe immediately so dataErr == nil.
 type silentControlDialer struct{ t *testing.T }
 
-func (d silentControlDialer) DialGuest(_ context.Context, _ domain.SandboxID, port uint32) (net.Conn, error) {
+func (d silentControlDialer) DialGuest(ctx context.Context, _ domain.SandboxID, port uint32) (net.Conn, error) {
 	host, guest := net.Pipe()
 	d.t.Cleanup(func() { host.Close(); guest.Close() })
 	if port == driver.AgentControlPort {
@@ -230,8 +230,19 @@ func (d silentControlDialer) DialGuest(_ context.Context, _ domain.SandboxID, po
 		// deadline fires.
 		return host, nil
 	}
-	// DataPort: succeed immediately.
-	return host, nil
+	// DataPort: honour the caller's context deadline. If the context is
+	// already expired (shared-budget regression: dataCtx := controlCtx),
+	// the deadline has been consumed by the hung control probe and the data
+	// dial sees an expired context — return the error instead of a live pipe
+	// so the test goes RED when the shared-budget bug is reinstalled.
+	select {
+	case <-ctx.Done():
+		host.Close()
+		guest.Close()
+		return nil, ctx.Err()
+	default:
+		return host, nil
+	}
 }
 
 // TestCheckAgentHealth_HungControlProbe_DataPlaneAlive_GivesDownGuestAlive

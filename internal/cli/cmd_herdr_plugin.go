@@ -2860,7 +2860,7 @@ const herdrWorktreeCreateLockTimeout = 330 * time.Second
 // herdrWorktreeCreateLockPath returns the path to the per-handle create-intent
 // lock file.  The lock serialises concurrent auto-create attempts for the same
 // sandbox handle (e.g. two panes opening in the same worktree workspace within
-// the ~60 s create window).
+// the ~240 s create window — herdrWorktreeCreateTimeout above).
 //
 // Safe filename: "/" → "_".  After herdrWorktreeSandboxHandle's sanitisation,
 // handles contain only [A-Za-z0-9._-/] with at most one "/", so this mapping
@@ -3777,7 +3777,7 @@ func herdrWorktreeSandbox(
 			nestedCfg = parsedCfg.Sandbox.Nested
 		}
 	}
-	// Step 7: create sandbox. A 90 s context covers image pull, ext4 setup,
+	// Step 7: create sandbox. A 240 s context covers image pull, ext4 setup,
 	// and VM boot on typical hardware. Explicit mode failures are real errors;
 	// auto/conditional mode is fail-safe (workspace stays a host shell).
 	// egressPathPolicies is conveyed to the subprocess via --egress-policy-json
