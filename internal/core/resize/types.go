@@ -129,6 +129,20 @@ type Sample struct {
 	// Omitted from JSON when the guest agent has not populated it (old agents).
 	DiskStats []DiskSample `json:"disk_stats,omitempty"`
 
+	// SwapTotalBytes and SwapFreeBytes are from /proc/meminfo SwapTotal and
+	// SwapFree. When non-zero they indicate the guest has swap (typically zram)
+	// active. The governor uses SwapUsed (= SwapTotalBytes - SwapFreeBytes) as
+	// a pressure-aware grow signal: zram converts memory pressure into CPU cost
+	// and manufactures MemAvailable headroom by compressing pages inside guest
+	// RAM. MemAvailable structurally cannot observe this, so PSI avg10 drops to
+	// zero when zram is idle but loaded — leaving the governor blind.
+	//
+	// Zero values are safe for old guest agents that predate this field: the
+	// governor's swap-pressure term is gated on SwapTotalBytes > 0 to avoid
+	// treating a missing field as pressure.
+	SwapTotalBytes uint64 `json:"swap_total_bytes,omitempty"`
+	SwapFreeBytes  uint64 `json:"swap_free_bytes,omitempty"`
+
 	// VCPUCount is the total number of vCPUs the VM was created with
 	// (the MaxVCPUs ceiling set at vm.create). VCPUOnline is the number
 	// currently online from the guest's perspective (after any hotplug events).

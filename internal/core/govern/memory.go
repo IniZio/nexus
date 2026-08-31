@@ -76,6 +76,35 @@ const (
 	psiGrowPressure     = 10.0
 	psiCriticalPressure = 10.0
 
+	// defaultSwapPressureRatio = 0.20: SwapUsed/MemTotal ratio above which the
+	// grow signal fires when SwapUsed has ALSO INCREASED since the previous
+	// sample (D-RAM-07, flow-gated by D-RAM-10).
+	//
+	// zram converts memory pressure into CPU cost and manufactures MemAvailable
+	// headroom by compressing guest pages into guest RAM. MemAvailable cannot
+	// observe this; PSI avg10 drops to zero when zram is idle but loaded. The
+	// signal requires BOTH a ratio above this threshold AND an increase in
+	// SwapUsed since the previous sample (stock→flow conversion, D-RAM-10):
+	// a stable high SwapUsed is already accounted for in the guest's working
+	// set and does not warrant a further grow; only freshly accumulated swap
+	// indicates new pressure. The live measurement that motivated D-RAM-07
+	// showed 46% (710 MiB of 1.5 GiB), well above this threshold.
+	//
+	// D-RAM-10 (2026-08-31): the original stock-only check was a monotonic
+	// ratchet — every sample with SwapUsed > 20% fired a grow regardless of
+	// whether swap was accumulating or stable, driving unbounded 256 MiB/min
+	// growth. Chosen approach: prevSwapUsed tracking in Governor (stock→flow
+	// via sample delta) rather than /proc/vmstat pswpin/pswpout, because
+	// pswpin counts raw swap-in pages and does not distinguish zram from disk
+	// swap, while the delta of the SwapUsed field (derived from the same
+	// /proc/meminfo the rest of the governor already reads) is already in the
+	// Sample, requires no new kernel file, and directly measures the quantity
+	// the signal intends to track.
+	//
+	// Gated on SwapTotalBytes > 0 — pre-D-RAM-07 agents leave it zero.
+	defaultSwapPressureRatio = 0.20
+
+
 	// minGrowStepBytes: floor on each grow increment (256 MiB).
 	// Source: OLD spec §4.3, D-DC-23 corrected value.
 	minGrowStepBytes int64 = 256 * 1024 * 1024
@@ -129,35 +158,90 @@ const (
 
 // sampleWantsGrow reports whether s indicates the sandbox needs more memory.
 //
-// PSI (the leading signal) wins when present: any sustained stall (some_avg10
-// above the threshold) means grow. The PSI check is gated on MemPSISupported;
-// when PSI is absent the governor falls back to the lagging MemAvailable ratio.
-// An unsupported-PSI zero must NEVER be read as "healthy".
+// Three independent signals are checked in order:
+//
+//  1. PSI some_avg10 (leading): any sustained stall above psiGrowPressure means
+//     grow. Gated on MemPSISupported — an unsupported-PSI zero must NEVER be
+//     read as "healthy".
+//
+//  2. MemAvailable ratio (lagging backstop): ratio < defaultGrowThreshold (0.20)
+//     catches collapses that PSI misses when the kernel races the OOM path.
+//
+//  3. Swap-pressure term (flow-gated, D-RAM-07 + D-RAM-10): fires when zram is
+//     active, SwapUsed/MemTotal >= defaultSwapPressureRatio (0.20), AND
+//     SwapUsed has INCREASED since the previous sample. The increase guard
+//     (stock→flow conversion) prevents the monotonic ratchet that the original
+//     stock-only check caused: a stable high SwapUsed no longer triggers
+//     repeated grows. prevSwapUsed is the caller's previous sample's SwapUsed
+//     (Governor.prevSwapUsed); pass 0 on first sample (increase from 0 to any
+//     non-zero SwapUsed is treated as a genuine new-pressure event).
+//     Gated on SwapTotalBytes > 0 (pre-D-RAM-07 agents leave it zero).
 //
 // Source: OLD memory_resize.go:228-243.
-func sampleWantsGrow(s resize.Sample) bool {
+func sampleWantsGrow(s resize.Sample, prevSwapUsed uint64) bool {
 	if s.MemTotalBytes == 0 {
 		return false
 	}
+	// Signal 1: PSI — leading flow indicator.
 	if s.MemPSISupported && s.MemPSISomeAvg10 >= psiGrowPressure {
 		return true
 	}
+	// Signal 2: MemAvailable ratio — lagging backstop.
 	ratio := float64(s.MemAvailableBytes) / float64(s.MemTotalBytes)
-	return ratio < defaultGrowThreshold
+	if ratio < defaultGrowThreshold {
+		return true
+	}
+	// Signal 3: swap-pressure flow gate — zram indicator (D-RAM-07 + D-RAM-10).
+	// Fires only when SwapUsed has increased (new pressure accumulating), not on
+	// a stable stock. A static high SwapUsed is already part of the guest's
+	// working set and does not warrant a further grow.
+	if s.SwapTotalBytes > 0 && s.SwapFreeBytes <= s.SwapTotalBytes {
+		swapUsed := s.SwapTotalBytes - s.SwapFreeBytes
+		if swapUsed > prevSwapUsed &&
+			float64(swapUsed)/float64(s.MemTotalBytes) >= defaultSwapPressureRatio {
+			return true
+		}
+	}
+	return false
 }
 
 // sampleWantsShrink reports whether s indicates spare memory the VM can give
-// back. Requires BOTH plenty of MemAvailable AND (when PSI is present) no
-// meaningful stall — never shrink a VM that is actively stalling on memory.
-// PSI check is gated on MemPSISupported.
+// back. All three grow-trigger conditions must be absent before the governor
+// considers shrinking — never shrink a VM that any grow signal considers starved.
 //
+//   - PSI stall: active memory stall blocks shrink (gated on MemPSISupported).
+//   - Swap-flow gate (D-RAM-13): shrink is blocked only when SwapUsed has
+//     INCREASED since the previous sample, not on a stock ratio. A guest
+//     actively accumulating zram pages must not be shrunk; a guest with a stable
+//     (non-increasing) SwapUsed has found its working set and the MemAvailable
+//     ratio is the correct signal. This removes the pin floor that the
+//     defaultSwapShrinkBlockRatio = 0.10 check imposed (required MemTotal >
+//     10 × SwapUsed before shrink was allowed, pinning a 710 MiB swap guest
+//     at ≥7.1 GiB indefinitely — D-RAM-13).
+//     prevSwapUsed is the caller's previous sample's SwapUsed
+//     (Governor.prevSwapUsed); the zero value on first governor start causes the
+//     block to fire conservatively whenever any swap is present (non-zero
+//     SwapUsed > 0 = prevSwapUsed). Gated on SwapTotalBytes > 0.
+//   - MemAvailable ratio: only shrink when ratio > defaultShrinkThreshold (0.45).
+//
+// PSI check is gated on MemPSISupported.
 // Source: OLD memory_resize.go:245-256.
-func sampleWantsShrink(s resize.Sample) bool {
+func sampleWantsShrink(s resize.Sample, prevSwapUsed uint64) bool {
 	if s.MemTotalBytes == 0 {
 		return false
 	}
+	// Block shrink when PSI reports active stall.
 	if s.MemPSISupported && s.MemPSISomeAvg10 >= psiGrowPressure {
 		return false
+	}
+	// Block shrink when swap is actively increasing (D-RAM-13 flow gate).
+	// Symmetric with sampleWantsGrow: only a recent SwapUsed increase blocks,
+	// never a stock ratio. A stable high SwapUsed is part of the working set.
+	if s.SwapTotalBytes > 0 && s.SwapFreeBytes <= s.SwapTotalBytes {
+		swapUsed := s.SwapTotalBytes - s.SwapFreeBytes
+		if swapUsed > prevSwapUsed {
+			return false
+		}
 	}
 	ratio := float64(s.MemAvailableBytes) / float64(s.MemTotalBytes)
 	return ratio > defaultShrinkThreshold
@@ -370,10 +454,10 @@ func (g *Governor) evaluate(ctx context.Context) {
 	// when the cooldown expires the count is already built up. Matches OLD
 	// recordMemoryStatsSample behaviour (memory_resize.go:142-180).
 	switch {
-	case sampleWantsGrow(g.latest):
+	case sampleWantsGrow(g.latest, g.prevSwapUsed):
 		g.growCount++
 		g.shrinkCount = 0
-	case sampleWantsShrink(g.latest):
+	case sampleWantsShrink(g.latest, g.prevSwapUsed):
 		g.shrinkCount++
 		g.growCount = 0
 	default:
@@ -400,7 +484,7 @@ func (g *Governor) evaluate(ctx context.Context) {
 	isShrink := false
 
 	switch {
-	case sampleWantsGrow(g.latest) && g.growCount >= memoryGrowConsecutive:
+	case sampleWantsGrow(g.latest, g.prevSwapUsed) && g.growCount >= memoryGrowConsecutive:
 		if current >= maxBytes {
 			slog.Warn("govern.memory.hard_max",
 				"current", current,
@@ -420,7 +504,7 @@ func (g *Governor) evaluate(ctx context.Context) {
 			target = current + growStep(minBytes, maxBytes, current, g.latest)
 		}
 
-	case sampleWantsShrink(g.latest) && g.shrinkCount >= memoryShrinkConsecutive:
+	case sampleWantsShrink(g.latest, g.prevSwapUsed) && g.shrinkCount >= memoryShrinkConsecutive:
 		if current <= minBytes {
 			return
 		}

@@ -941,3 +941,74 @@ func TestCollectSampleDiskStats_EmptyDisksYieldsNilDiskStats(t *testing.T) {
 		t.Error("DiskSupported = true, want false when no disks")
 	}
 }
+
+// TestReadSwapInfoKB verifies the /proc/meminfo parser for SwapTotal and
+// SwapFree. Covers: normal swap, zero swap, missing swap lines, and a fixture
+// that includes a SwapCached line to confirm it does not collide with SwapTotal
+// (meminfoLineKB matches on exact prefix "SwapTotal:", not on "Swap").
+func TestReadSwapInfoKB(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		content   string
+		wantTotal uint64
+		wantFree  uint64
+	}{
+		{
+			name: "with_swap_and_cached",
+			// SwapCached must not be mistaken for SwapTotal.
+			content: "MemTotal:       1543912 kB\n" +
+				"MemFree:         100000 kB\n" +
+				"MemAvailable:    616516 kB\n" +
+				"SwapCached:       12345 kB\n" +
+				"SwapTotal:      2097148 kB\n" +
+				"SwapFree:       1386212 kB\n",
+			wantTotal: 2097148,
+			wantFree:  1386212,
+		},
+		{
+			name: "zero_swap",
+			content: "MemTotal:       1543912 kB\n" +
+				"MemAvailable:    616516 kB\n" +
+				"SwapTotal:             0 kB\n" +
+				"SwapFree:              0 kB\n",
+			wantTotal: 0,
+			wantFree:  0,
+		},
+		{
+			name: "missing_swap_lines",
+			content: "MemTotal:       1543912 kB\n" +
+				"MemAvailable:    616516 kB\n",
+			wantTotal: 0,
+			wantFree:  0,
+		},
+		{
+			name: "unreadable_path",
+			// Non-existent path: returns zeros without error.
+			content:   "", // not written — path will not exist
+			wantTotal: 0,
+			wantFree:  0,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var path string
+			if tc.name == "unreadable_path" {
+				path = filepath.Join(t.TempDir(), "nonexistent_meminfo")
+			} else {
+				path = filepath.Join(t.TempDir(), "meminfo")
+				writeTestFile(t, path, tc.content)
+			}
+			gotTotal, gotFree := readSwapInfoKB(path)
+			if gotTotal != tc.wantTotal {
+				t.Errorf("SwapTotal: got %d, want %d", gotTotal, tc.wantTotal)
+			}
+			if gotFree != tc.wantFree {
+				t.Errorf("SwapFree: got %d, want %d", gotFree, tc.wantFree)
+			}
+		})
+	}
+}
