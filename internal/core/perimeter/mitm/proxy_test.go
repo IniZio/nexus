@@ -1985,6 +1985,53 @@ func TestD38_BranchPolicy_EmptyAllowlistDeniesAll(t *testing.T) {
 	}
 }
 
+// TestD38_BranchPolicy_UnresolvedSentinelDeniesAll verifies that when
+// AllowedBranches is exactly [domain.UnresolvedBranchSentinel] — the value
+// service.resolveAllowedBranches stores when a bound workspace's branch
+// could not be derived (TBD-1 fail-closed path) — every push is denied, even
+// for a ref an operator might plausibly expect to be allowed (the sandbox's
+// own worktree branch name).
+//
+// Mutation evidence: replace the sentinel's NUL byte with an empty string
+// (making the pattern "refs/heads/unresolved", an ordinary matchable
+// pattern) → the test fails because a push to that literal ref now succeeds
+// with 200 instead of being denied for every ref including that one.
+func TestD38_BranchPolicy_UnresolvedSentinelDeniesAll(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:    newSandboxID(203),
+		AllowedHosts: []string{"github.com"},
+		Broker:       cred.NewBroker(),
+		AllowedRepo:  "acme/myrepo",
+		AllowedBranches: []string{domain.UnresolvedBranchSentinel},
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	for _, ref := range []string{"refs/heads/main", "refs/heads/newman/some-work", "refs/heads/nexus3/foo"} {
+		t.Run(ref, func(t *testing.T) {
+			body := buildPktLines([]string{ref})
+			req, _ := http.NewRequest(http.MethodPost,
+				"http://github.com/acme/myrepo.git/git-receive-pack",
+				bytes.NewReader(body))
+			resp, err := proxyClient(proxyServer.URL).Do(req)
+			if err != nil {
+				t.Fatalf("client.Do: %v", err)
+			}
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("sentinel allowlist: ref %q: want 403 (fail-closed), got %d", ref, resp.StatusCode)
+			}
+		})
+	}
+}
+
 // TestT2_AC2_UnconfiguredDefaultAllowsOnlyNexus3 verifies that when
 // AllowedBranches is set to the resolved default refs/heads/nexus3/**, the proxy
 // allows nexus3/ refs and denies others (e.g. refs/heads/main).

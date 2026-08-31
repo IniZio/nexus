@@ -380,10 +380,16 @@ func New(cfg Config) (*Proxy, error) {
 
 	// D-PD-38: branch allowlist enforcement. Fires BEFORE the credential swap so
 	// rejected pushes never see the real token. Registered unconditionally.
-	// INVARIANT: AllowedBranches must never be empty in production —
-	// domain.Envelope.ResolvedAllowedBranches() always supplies the hardcoded default
-	// ["refs/heads/nexus3/**"]. An empty list here means misconfiguration and is
-	// therefore DENIED (fail-closed) to prevent silently allowing pushes to main.
+	// INVARIANT: AllowedBranches must never be empty in production.
+	// domain.Envelope.ResolvedAllowedBranches() (the only production source —
+	// verified: mitm.New has exactly one call site, service.go's
+	// startSupervisor) always returns a non-empty list: the caller's explicit
+	// AllowedBranches, the worktree-derived single branch ref
+	// (service.resolveAllowedBranches, TBD-1), domain.UnresolvedBranchSentinel
+	// when that derivation failed, or the hardcoded ["refs/heads/nexus3/**"]
+	// default when no workspace was bound at all. An empty list here would mean
+	// misconfiguration and is therefore DENIED (fail-closed, see the loop
+	// below) to prevent silently allowing pushes to main.
 	inner.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
 		if reqHost(req) != "github.com" {
 			return req, nil
@@ -395,10 +401,13 @@ func New(cfg Config) (*Proxy, error) {
 			return req, nil
 		}
 		// Parse pkt-line ref update commands from the push body (max 64KB).
-		// Fail-closed note: if AllowedBranches is empty the inner match loop below
-		// iterates 0 times → matched stays false → deniedRef is set → 403. In
-		// production domain.Envelope.ResolvedAllowedBranches() always supplies the
-		// hardcoded default, so empty here means misconfiguration, correctly denied.
+		// Fail-closed note: if AllowedBranches is empty (or is the
+		// domain.UnresolvedBranchSentinel entry — a ref pattern no real push
+		// can match) the inner match loop below iterates 0 times or never
+		// matches → matched stays false → deniedRef is set → 403. In
+		// production ResolvedAllowedBranches never returns a truly empty
+		// list (see the INVARIANT comment above), so reaching 0 iterations
+		// here means misconfiguration, correctly denied either way.
 		const maxPkt = 64 * 1024
 		buf := &bytes.Buffer{}
 		malformed := false

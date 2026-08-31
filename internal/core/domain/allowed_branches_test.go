@@ -72,6 +72,25 @@ func TestResolvedAllowedBranches_ReturnsCopy(t *testing.T) {
 	}
 }
 
+// TestResolvedAllowedBranches_SentinelIsNotTreatedAsUnset verifies that
+// Envelope{AllowedBranches: [UnresolvedBranchSentinel]} is returned as-is
+// (len==1, non-empty) rather than being swallowed by the len==0 default
+// branch — the fail-closed create-path value must never silently widen back
+// to the nexus3 default.
+//
+// Mutation evidence: change the len(e.AllowedBranches) == 0 check to
+// len(e.AllowedBranches) <= 1 → the test fails because a one-element
+// sentinel slice would incorrectly return the nexus3/** default instead of
+// the sentinel.
+func TestResolvedAllowedBranches_SentinelIsNotTreatedAsUnset(t *testing.T) {
+	e := domain.Envelope{AllowedBranches: []string{domain.UnresolvedBranchSentinel}}
+	got := e.ResolvedAllowedBranches()
+	want := []string{domain.UnresolvedBranchSentinel}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ResolvedAllowedBranches() with sentinel = %v; want %v (unchanged, not the nexus3 default)", got, want)
+	}
+}
+
 // TestResolvedAllowedBranches_DefaultUnchanged verifies that an empty Envelope
 // (no AllowedBranches set) returns the hardcoded default ["refs/heads/nexus3/**"].
 // Regression guard: the default must remain stable.
