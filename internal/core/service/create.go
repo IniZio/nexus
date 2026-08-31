@@ -192,9 +192,13 @@ type CreateAndBootOptions struct {
 	PathPolicies domain.EgressPathPolicies
 
 	// AllowedBranches is the list of git ref patterns the sandbox may push to
-	// through the host-side git MITM. When nil the Envelope stores nil and
-	// Envelope.ResolvedAllowedBranches returns the hardcoded default
-	// ["refs/heads/nexus3/**"] at runtime.
+	// through the host-side git MITM. When left nil AND the create call also
+	// binds a workspace (Workspace, or a LiveMounts entry at /workspace),
+	// CreateAndBoot derives it automatically from that worktree's current
+	// branch — see resolveAllowedBranches. Set this explicitly only to
+	// override that derivation. With no workspace bound at all, nil is
+	// stored as-is and Envelope.ResolvedAllowedBranches returns the hardcoded
+	// default ["refs/heads/nexus3/**"] at runtime.
 	AllowedBranches []string
 
 	// ExtraSecretHosts lists additional hostnames to include in
@@ -776,15 +780,15 @@ func CreateAndBoot(
 		Labels:  opts.Labels,
 		State:   domain.Created,
 		Envelope: domain.Envelope{
-			ImageDigest:  resolvedDigest,
-			AllowedHosts: opts.AllowedHosts, // frozen at creation (P1-S6)
-			SSHPublicKey: opts.SSHPublicKey, // frozen at creation (ORCA-S1)
-			SecretHosts:  append(secretHostsFromBinds(opts.Secrets), opts.ExtraSecretHosts...),
-			SecretSpecs:  secretSpecsFromBinds(opts.Secrets),
-			OpenEgress:      opts.OpenEgress,      // D-PD-33: explicit opt-in; never inferred from empty AllowedHosts
-			AllowedRepo:     opts.AllowedRepo,     // D-PD-36: per-repo path allowlist; enforced below
-			AllowedBranches: opts.AllowedBranches, // S0: nil = use default at runtime via ResolvedAllowedBranches
-			PathPolicies:    opts.PathPolicies,    // T4: per-secret path policies; converted to mitm.PathPolicies at start
+			ImageDigest:     resolvedDigest,
+			AllowedHosts:    opts.AllowedHosts, // frozen at creation (P1-S6)
+			SSHPublicKey:    opts.SSHPublicKey, // frozen at creation (ORCA-S1)
+			SecretHosts:     append(secretHostsFromBinds(opts.Secrets), opts.ExtraSecretHosts...),
+			SecretSpecs:     secretSpecsFromBinds(opts.Secrets),
+			OpenEgress:      opts.OpenEgress,              // D-PD-33: explicit opt-in; never inferred from empty AllowedHosts
+			AllowedRepo:     opts.AllowedRepo,             // D-PD-36: per-repo path allowlist; enforced below
+			AllowedBranches: resolveAllowedBranches(opts), // TBD-1: derived from the bound worktree's branch; see resolveAllowedBranches
+			PathPolicies:    opts.PathPolicies,            // T4: per-secret path policies; converted to mitm.PathPolicies at start
 		},
 		RemoveOnExit:   opts.RemoveOnExit,
 		BaseRef:        opts.BaseRef, // G1: shallow-clone boundary SHA (D-PD-19); empty if no git workspace
@@ -1230,6 +1234,92 @@ func secretSpecsFromBinds(binds []SecretBind) []string {
 		return nil
 	}
 	return out
+}
+
+// hostWorkspacePath returns the host path bound to the sandbox's /workspace
+// mount, if any. A given CreateAndBoot call populates at most one of the two
+// mechanisms that carry a worktree host path:
+//   - opts.Workspace (the human `--workspace` ext4-capture path), or
+//   - an opts.LiveMounts entry at "/workspace" or "/workspace/<name>" (the
+//     worktree-sandbox live-virtiofs path built by herdrWorktreeSandbox).
+//
+// resolveAllowedBranches uses the result to derive a push allowlist from the
+// worktree's own branch (TBD-1). Returns ok=false when no workspace is
+// bound, in which case there is nothing to derive a branch from.
+func hostWorkspacePath(opts CreateAndBootOptions) (path string, ok bool) {
+	if opts.Workspace != nil && opts.Workspace.SourcePath != "" {
+		return opts.Workspace.SourcePath, true
+	}
+	for _, m := range opts.LiveMounts {
+		if m.GuestPath == "/workspace" || strings.HasPrefix(m.GuestPath, "/workspace/") {
+			return m.HostPath, true
+		}
+	}
+	return "", false
+}
+
+// hostWorktreeBranch returns the branch currently checked out at repoPath.
+// It fails (rather than guessing) on a detached HEAD, a repoPath that is not
+// a git worktree, or any other condition that prevents git from resolving a
+// symbolic ref — the caller (resolveAllowedBranches) must deny-closed on
+// error, not substitute a default.
+func hostWorktreeBranch(repoPath string) (string, error) {
+	out, err := exec.Command("git", "-C", repoPath, "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("service: create-and-boot: resolve branch in %s: %w", repoPath, err)
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "" {
+		return "", fmt.Errorf("service: create-and-boot: resolve branch in %s: git returned an empty branch name", repoPath)
+	}
+	return branch, nil
+}
+
+// resolveAllowedBranches derives the Envelope.AllowedBranches value for a
+// CreateAndBoot call (TBD-1: what should bound a sandbox's pushable
+// branches once the nexus3-only default no longer fits every repo).
+//
+// A caller-supplied opts.AllowedBranches always wins — it is an explicit
+// override and is returned unchanged.
+//
+// Otherwise, when the sandbox has a workspace bound (hostWorkspacePath finds
+// one), the sandbox is scoped to exactly that worktree's current branch: the
+// sandbox exists to do work on that branch, so a single exact
+// "refs/heads/<branch>" ref is both sufficient (AC-1: that branch can be
+// pushed) and no wider than necessary (AC-2: the repository's default branch
+// and any ref belonging to unrelated work are still denied — a single exact
+// ref matches nothing else). A namespace-style "<branch>/**" pattern was
+// considered and rejected: it would let a sandbox push siblings under its
+// own branch's prefix that it never touched, which is exactly the kind of
+// unrelated-ref widening AC-2 rules out.
+//
+// When a workspace IS bound but its branch cannot be derived (detached HEAD,
+// git unavailable, unreadable worktree), this fails closed: it returns
+// domain.UnresolvedBranchSentinel, a ref pattern that can never match a real
+// push, rather than falling back to the nexus3-only default (wrong for a
+// non-nexus3 repo, and would incorrectly widen access) or to an empty slice
+// (which Envelope.ResolvedAllowedBranches treats as "unset" and would apply
+// that same wrong default).
+//
+// When NO workspace is bound at all, nil is returned unchanged: there is no
+// worktree to derive a branch from, and this path is unrelated to the
+// worktree-sandbox defect this function fixes. Envelope.ResolvedAllowedBranches
+// applies its default at runtime in that case, same as before.
+func resolveAllowedBranches(opts CreateAndBootOptions) []string {
+	if len(opts.AllowedBranches) > 0 {
+		return opts.AllowedBranches
+	}
+	hostPath, ok := hostWorkspacePath(opts)
+	if !ok {
+		return opts.AllowedBranches
+	}
+	branch, err := hostWorktreeBranch(hostPath)
+	if err != nil {
+		slog.Warn("service: create-and-boot: could not derive pushable branch from bound workspace; denying all pushes (D-PD-38 fail-closed)",
+			"workspace", hostPath, "err", err)
+		return []string{domain.UnresolvedBranchSentinel}
+	}
+	return []string{"refs/heads/" + branch}
 }
 
 // namedVolumeAttachments converts NamedVolumeMount slice to domain.VolumeAttachment

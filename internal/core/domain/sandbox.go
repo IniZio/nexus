@@ -335,10 +335,27 @@ type EgressHostPolicy struct {
 // Converted to mitm.PathPolicies at sandbox start by the service layer.
 type EgressPathPolicies map[string]map[string]EgressHostPolicy
 
+// UnresolvedBranchSentinel is stored in Envelope.AllowedBranches by the
+// create path when a sandbox has a workspace bound (there is a worktree to
+// push from) but its branch could not be derived — detached HEAD, git
+// unavailable, or an unreadable worktree. It contains a NUL byte, which git
+// forbids in ref names, so it can never match a real push ref: every push is
+// denied (D-PD-38) until whatever broke branch derivation is fixed. This is
+// the fail-closed alternative to two unsafe options: falling back to the
+// nexus3-only default (wrong repo, and would incorrectly permit a push the
+// operator never scoped this sandbox for) or to an empty AllowedBranches
+// slice (which ResolvedAllowedBranches would treat as "unset" and again
+// apply the wrong default — see below).
+const UnresolvedBranchSentinel = "refs/heads/\x00unresolved"
+
 // ResolvedAllowedBranches returns AllowedBranches with the project default
 // applied when the field is empty. The default is ["refs/heads/nexus3/**"],
 // which permits any ref under the nexus3/ namespace at any depth — matching
-// the D-PD-03 convention nexus3/<motive-slug>/<sandbox-short-id>.
+// the D-PD-03 convention nexus3/<motive-slug>/<sandbox-short-id>. It applies
+// only to sandboxes with no workspace bound (nothing to derive a branch
+// from); the worktree-sandbox create path populates AllowedBranches
+// explicitly from the bound worktree's own branch (see
+// service.CreateAndBoot), so this default no longer governs those sandboxes.
 // This is the single resolution site; callers must use this method rather
 // than reading AllowedBranches directly.
 func (e Envelope) ResolvedAllowedBranches() []string {

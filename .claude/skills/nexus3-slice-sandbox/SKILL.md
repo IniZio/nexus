@@ -40,9 +40,15 @@ This creates the git worktree, picks its path, and opens it as a workspace that
 is properly associated with the repo. Read the path and workspace id from the
 JSON response rather than predicting them.
 
-Branch under `nexus3/**`. The sandbox git perimeter allowlists only
-`refs/heads/nexus3/**`, so a branch outside it cannot be pushed from inside a
-sandbox.
+`nexus3/<name>` here is just this repo's own branch-naming convention, not a
+push requirement. The sandbox git perimeter derives its push allowlist from
+the worktree's own branch at create time (D-PD-38 / TBD-1): whatever branch
+is checked out in `$MAIN_WS`'s worktree when the sandbox is created is the
+one ref the sandbox can push, regardless of its name or namespace. It cannot
+push any other branch, including the repo's default branch — create the
+worktree on the exact branch you intend to push from. If the worktree is in a
+detached-HEAD state (or its branch otherwise can't be resolved) at create
+time, the sandbox can push nothing at all; check out a real branch first.
 
 For a worktree that already exists, the equivalent is
 `herdr worktree open --workspace "$MAIN_WS" --path <worktree-path> --no-focus`.

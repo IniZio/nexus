@@ -922,7 +922,7 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 			SeedCAKeyPEM:    seedKeyPEM,
 			AllowedRepo:     sb.Envelope.AllowedRepo,                         // D-PD-36: per-repo path allowlist
 			PathPolicies:    buildMITMPathPolicies(sb.Envelope.PathPolicies), // T4: per-secret path policies
-			AllowedBranches: sb.Envelope.ResolvedAllowedBranches(),           // S0: default applied here
+			AllowedBranches: sb.Envelope.ResolvedAllowedBranches(),           // TBD-1: worktree-derived branch, or default/sentinel
 			OnEgress:        mitmOnEgress,                                    // shared egress-decisions sink
 		})
 		if err != nil {
