@@ -39,12 +39,13 @@ const (
 
 func runSupervisorUpgrade(ctx context.Context, args []string, out *Output) error {
 	fs := flag.NewFlagSet("supervisor-upgrade", flag.ContinueOnError)
+	forceFlag := fs.Bool("force", false, "upgrade even when the running supervisor already reports the current binary")
 	if err := fs.Parse(args); err != nil {
 		return &UsageError{Msg: err.Error()}
 	}
 	positionals := fs.Args()
 	if len(positionals) != 1 {
-		return &UsageError{Msg: "supervisor-upgrade: usage: supervisor-upgrade <sandbox>"}
+		return &UsageError{Msg: "supervisor-upgrade: usage: supervisor-upgrade [--force] <sandbox>"}
 	}
 	ref := positionals[0]
 
@@ -52,7 +53,7 @@ func runSupervisorUpgrade(ctx context.Context, args []string, out *Output) error
 	if err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "supervisor-upgrade: " + err.Error(), Err: err}
 	}
-	return runSupervisorUpgradeWith(ctx, ref, out, svc)
+	return runSupervisorUpgradeWith(ctx, ref, *forceFlag, out, svc)
 }
 
 // supervisorSockLooksAlive reports whether pid is alive AND sockPath accepts
@@ -100,14 +101,25 @@ func supervisorSockLooksAlive(pid int, sockPath string) bool {
 //     old records" branch — a sandbox whose record predates these fields
 //     looks identical to one where they were lost, and both must refuse.
 //   - the running supervisor already reports the same binary-identity hash
-//     as this CLI process's own executable (nothing to upgrade). If the
-//     running supervisor cannot be asked (predates /supervisor/version, or
-//     the request errors), this check degrades to "unknown, proceed" rather
-//     than refusing — an old supervisor is exactly the case this verb
-//     exists to upgrade.
+//     as this CLI process's own executable (nothing to upgrade) AND its agent
+//     RPC channel probes healthy. If the running supervisor cannot be asked
+//     (predates /supervisor/version, or the request errors), the
+//     binary-identity check degrades to "unknown, proceed" rather than
+//     refusing — an old supervisor is exactly the case this verb exists to
+//     upgrade. The health probe added by this slice does NOT get a
+//     symmetrical "predates the endpoint → assume healthy" escape hatch: a
+//     supervisor whose agent-health probe cannot be reached is treated as
+//     "not proven healthy", same as force, and the upgrade proceeds — a
+//     redundant upgrade against a healthy-but-old supervisor is harmless,
+//     while silently trusting an unreachable health probe would recreate
+//     exactly the "wedged supervisor with no escape but a reboot" defect
+//     this flag exists to fix.
+//   - forceFlag bypasses BOTH of the above and always proceeds — the
+//     explicit escape hatch for an operator who already knows the
+//     supervisor needs replacing.
 //   - no persisted spawn spec exists for the sandbox (spawnPersistedSupervisor
 //     already refuses the same way for a boot-mode respawn)
-func runSupervisorUpgradeWith(ctx context.Context, ref string, out *Output, svc *service.Service) error {
+func runSupervisorUpgradeWith(ctx context.Context, ref string, force bool, out *Output, svc *service.Service) error {
 	sb, err := svc.ResolveRef(ctx, ref)
 	if err != nil {
 		return errSandbox("supervisor-upgrade", err)
@@ -146,17 +158,36 @@ func runSupervisorUpgradeWith(ctx context.Context, ref string, out *Output, svc 
 		}
 	}
 
-	myHash, hashErr := supervisor.HashOwnBinary()
-	if hashErr == nil {
-		if runningHash, verErr := supervisor.RequestSupervisorVersion(ctx, sockPath); verErr == nil && runningHash == myHash {
-			return &CodedError{
-				Code: supervisorUpgradeNoopCode,
-				Msg:  fmt.Sprintf("supervisor-upgrade: sandbox %s is already served by the current binary; nothing to upgrade", sb.ID),
+	if !force {
+		myHash, hashErr := supervisor.HashOwnBinary()
+		if hashErr == nil {
+			if runningHash, verErr := supervisor.RequestSupervisorVersion(ctx, sockPath); verErr == nil && runningHash == myHash {
+				// Same binary by hash. That alone is not enough to call this a
+				// true no-op: a supervisor can be running the right binary and
+				// still have a dead agent RPC channel (D-HSH incident,
+				// 2026-08-31 — a transient vsock timeout left an adopted
+				// supervisor's control plane wedged with no reconnect path and
+				// no way to force a re-adopt). Ask the running supervisor to
+				// actually probe its own channel before trusting the hash
+				// match.
+				health, healthErr := supervisor.RequestAgentHealth(ctx, sockPath)
+				if healthErr == nil && health.Healthy() {
+					return &CodedError{
+						Code: supervisorUpgradeNoopCode,
+						Msg:  fmt.Sprintf("supervisor-upgrade: sandbox %s is already served by the current binary and its agent channel is healthy; nothing to upgrade", sb.ID),
+					}
+				}
+				// healthErr != nil (probe unreachable — old supervisor,
+				// transport failure) or health.Healthy() == false (probe ran
+				// and did NOT prove healthy, including AgentChannelUnknown):
+				// in both cases this is deliberately NOT treated as "assume
+				// healthy, refuse to upgrade" — proceed to replace the
+				// supervisor instead.
 			}
+			// verErr != nil: the running supervisor predates /supervisor/version
+			// or the request failed transiently. Proceed — refusing here would
+			// make an old, unresponsive supervisor permanently un-upgradeable.
 		}
-		// verErr != nil: the running supervisor predates /supervisor/version
-		// or the request failed transiently. Proceed — refusing here would
-		// make an old, unresponsive supervisor permanently un-upgradeable.
 	}
 
 	spawnSpec, err := supervisor.ReadSpawnSpec(stateDir)

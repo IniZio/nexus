@@ -315,9 +315,19 @@ func SpawnAdoptDetached(cfg SpawnConfig) (pid int, err error) {
 
 	args := BuildSupervisorArgv(cfg)
 
+	// Log to the SAME default path as a boot-mode spawn (supervisor.log), not
+	// a separate supervisor-adopt.log. An adopted supervisor is a
+	// continuation of the same sandbox's supervision, not a new one — an
+	// operator debugging a hotswap should find supervisor.adopted and
+	// supervisor.adopt.ready immediately after the outgoing side's last line
+	// in ONE file, rather than discovering the outgoing log "stops dead" and
+	// having to know a second, differently-named file exists. Both the
+	// outgoing and incoming processes append (O_APPEND) to this path
+	// concurrently for the brief window before the outgoing side exits; that
+	// is safe on Linux for writes of this size.
 	logPath := cfg.LogPath
 	if logPath == "" {
-		logPath = cfg.StateDir + "/supervisor-adopt.log"
+		logPath = cfg.StateDir + "/supervisor.log"
 	}
 	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if logErr != nil {

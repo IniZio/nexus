@@ -256,7 +256,16 @@ func RunAdopt(cfg Config, handoffSockPath string) error {
 		return performHandoff(hctx, peerSock, build)
 	})
 
-	ipcH, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef, allowEgressFn, handoffFn, binaryHash)
+	// agentHealthFn probes the guest agent's control/data planes live, using
+	// the same drv+sb.ID this adopted process dials the guest through for
+	// every other RPC (seeding, exec-forwarding, etc). RunAdopt already
+	// resolved sb successfully (above, before AdoptNetnsRuntime) so there is
+	// no resolve-failure branch to degrade here, unlike RunDetached's
+	// pre-boot resolve.
+	agentHealthFn := agentHealthFunc(func(hctx context.Context) AgentHealth {
+		return checkAgentHealth(hctx, drv, sb.ID)
+	})
+	ipcH, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef, allowEgressFn, handoffFn, agentHealthFn, binaryHash)
 	if err != nil {
 		return fmt.Errorf("supervisor: adopt: bind IPC socket %s: %w", sockPath, err)
 	}

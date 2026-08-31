@@ -11,8 +11,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/IniZio/nexus3/internal/core/agent"
+	"github.com/IniZio/nexus3/internal/core/agent/wire"
+	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/service"
 )
 
@@ -40,6 +45,185 @@ const ipcDetachPath = "/supervisor/detach"
 // D-HSH-08, any failure or refusal leaves this supervisor as the sole owner
 // of the VM and perimeter — nothing is released until Confirm is observed.
 const ipcHandoffPath = "/supervisor/handoff"
+
+// ipcAgentHealthPath is the HTTP path for the guest-agent-RPC liveness check.
+// It runs a LIVE, on-demand probe of both the gRPC control plane
+// ([driver.AgentControlPort], used by Exec/Attach/Copy) and the wire data
+// plane ([wire.DataPort], used by interactive PTY streams) every time it is
+// called — it never answers from a cached/remembered status, because a
+// remembered "healthy" is exactly the value that would paper over the defect
+// this endpoint exists to catch (a wedged control plane behind a perimeter
+// that still looks fine from the outside).
+//
+// `nexus3 supervisor-upgrade` uses this to decide whether a supervisor
+// reporting the current binary hash (nothing to upgrade, by version) is
+// nonetheless worth force-adopting because its agent channel is dead.
+const ipcAgentHealthPath = "/supervisor/agent-health"
+
+// AgentChannelState classifies the outcome of an agent-health probe. See
+// [checkAgentHealth] for how each value is derived and why "unknown" must
+// never be treated as healthy by a caller.
+type AgentChannelState string
+
+const (
+	// AgentChannelHealthy means the control-plane gRPC Ping succeeded. The
+	// guest agent is reachable end-to-end.
+	AgentChannelHealthy AgentChannelState = "healthy"
+
+	// AgentChannelDownGuestAlive means the control-plane Ping failed but a
+	// raw dial to the data-plane port succeeded — the VM and its vsock
+	// multiplexer are demonstrably up, so only the control-plane RPC path is
+	// wedged. This is the exact shape of the incident this check exists to
+	// catch: a reconnect (fresh dial/fresh grpc.ClientConn) is worth trying,
+	// and a caller may safely force a re-adopt or retry without rebooting.
+	AgentChannelDownGuestAlive AgentChannelState = "down_guest_alive"
+
+	// AgentChannelGuestGone means BOTH probes failed with a "nothing is
+	// listening" style error (connection refused, or the multiplexer socket
+	// itself is absent) — the substrate side is gone, not merely the guest
+	// agent's control-plane process. Reconnecting will not help; the caller
+	// needs a real recovery path (stop/start), not a redial.
+	AgentChannelGuestGone AgentChannelState = "guest_gone"
+
+	// AgentChannelUnknown means the probe could not reach a confident
+	// classification (e.g. both probes timed out without a definitive
+	// refusal signal, or a probe input was unavailable). Per the fail-closed
+	// rail, AgentChannelUnknown MUST be treated as "not proven healthy" by
+	// every caller — never silently upgraded to Healthy just because the
+	// probe didn't produce an outright refusal.
+	AgentChannelUnknown AgentChannelState = "unknown"
+)
+
+// AgentHealth is the result of one [checkAgentHealth] probe.
+type AgentHealth struct {
+	State AgentChannelState `json:"state"`
+	// ControlErr is the control-plane Ping error's message, empty on success.
+	ControlErr string `json:"control_err,omitempty"`
+	// DataErr is the data-plane dial error's message, empty on success.
+	DataErr string `json:"data_err,omitempty"`
+}
+
+// Healthy reports whether h proves the agent channel is usable. Only
+// [AgentChannelHealthy] counts — every other state (including Unknown) is
+// treated as "not proven healthy" by design (fail-closed rail).
+func (h AgentHealth) Healthy() bool {
+	return h.State == AgentChannelHealthy
+}
+
+// agentHealthFunc is the callback type the IPC agent-health handler uses to
+// run a live probe. It is nil until the driver/sandbox-id needed to build one
+// are available (mirrors allowEgressFunc/handoffFunc's late-binding pattern).
+type agentHealthFunc func(ctx context.Context) AgentHealth
+
+// agentHealthProbeTimeout bounds each individual probe (control-plane Ping,
+// data-plane dial) inside [checkAgentHealth]. Short and deliberate: this
+// endpoint exists to be called when the caller ALREADY suspects a wedge, so
+// it must return a verdict quickly rather than hanging as long as the thing
+// it is diagnosing.
+const agentHealthProbeTimeout = 5 * time.Second
+
+// checkAgentHealth runs one live probe of the guest agent's control plane
+// (gRPC Ping over [driver.AgentControlPort]) and data plane (raw dial over
+// [wire.DataPort]) and classifies the result. It never returns a cached
+// answer — every call re-dials both ports from scratch, which is what makes
+// it a real "is the channel usable right now" check rather than a memory of
+// some earlier success.
+//
+// gd or id being unusable (e.g. the driver does not implement GuestDialer)
+// is treated as [AgentChannelUnknown], never as healthy — an absent input to
+// a health check must never be read as "skip the check, assume fine".
+func checkAgentHealth(ctx context.Context, gd driver.GuestDialer, id domain.SandboxID) AgentHealth {
+	if gd == nil {
+		return AgentHealth{State: AgentChannelUnknown, ControlErr: "no guest dialer available"}
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, agentHealthProbeTimeout)
+	defer cancel()
+
+	client := agent.NewClient(gd, id)
+	controlErr := client.Ping(ctx)
+	if controlErr == nil {
+		return AgentHealth{State: AgentChannelHealthy}
+	}
+
+	var dataErr error
+	dataConn, dialErr := gd.DialGuest(ctx, id, wire.DataPort)
+	if dialErr == nil {
+		dataConn.Close()
+	} else {
+		dataErr = dialErr
+	}
+
+	return classifyAgentHealth(controlErr, dataErr)
+}
+
+// classifyAgentHealth is the pure decision function [checkAgentHealth] calls
+// after running both live probes. Split out so the fail-closed classification
+// rules can be mutation-tested directly, without standing up a real vsock
+// dialer or guest agent: every input this function can receive (a nil error,
+// a definite-refusal error, or an ambiguous error like a timeout) is
+// representable as a plain Go error value.
+//
+// controlErr must be non-nil when this is called (a nil controlErr means
+// Healthy and is handled by the caller before this function is reached).
+// dataErr is nil when the data-plane dial succeeded.
+func classifyAgentHealth(controlErr, dataErr error) AgentHealth {
+	if dataErr == nil {
+		// Data plane answered while control plane did not: the VM and its
+		// vsock multiplexer are demonstrably alive, so this is specifically a
+		// wedged control-plane channel, not a dead guest.
+		return AgentHealth{
+			State:      AgentChannelDownGuestAlive,
+			ControlErr: controlErr.Error(),
+		}
+	}
+
+	// Both probes failed. Distinguish "nothing is listening at all"
+	// (multiplexer socket refused/absent — the guest is gone) from a
+	// genuinely ambiguous result (e.g. both merely timed out, which does not
+	// prove absence) by inspecting the error text for the multiplexer's own
+	// refusal signatures. This is a text match on driver error wrapping, not
+	// on error text from the guest, so it is stable across guest versions.
+	//
+	// Fail-closed: BOTH must independently show a definite refusal before this
+	// classifies as guest_gone. A single definite refusal alongside an
+	// ambiguous timeout on the other port is NOT enough — that combination
+	// stays Unknown, never Healthy and never a false "gone" that would let a
+	// caller give up on a channel that might still recover.
+	if isDefiniteGuestGone(dataErr) && isDefiniteGuestGone(controlErr) {
+		return AgentHealth{
+			State:      AgentChannelGuestGone,
+			ControlErr: controlErr.Error(),
+			DataErr:    dataErr.Error(),
+		}
+	}
+
+	return AgentHealth{
+		State:      AgentChannelUnknown,
+		ControlErr: controlErr.Error(),
+		DataErr:    dataErr.Error(),
+	}
+}
+
+// isDefiniteGuestGone reports whether err carries one of the unambiguous
+// "nothing is there" signatures DialGuest/net produce when the vsock
+// multiplexer socket itself is absent or refusing connections — as opposed
+// to a timeout, which only proves "did not answer in time" and must not be
+// promoted to "gone".
+func isDefiniteGuestGone(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Deliberately narrow: only the host-side dial itself refusing outright
+	// (the AF_UNIX vsock multiplexer socket does not exist, or nothing is
+	// listening on it) counts as "gone". A timeout, an EOF mid-handshake, or
+	// "closed network connection" all mean "something answered/connected and
+	// then the exchange failed" — exactly the wedged-but-alive case this
+	// function must NOT misclassify as gone.
+	s := err.Error()
+	return strings.Contains(s, "no such file or directory") ||
+		strings.Contains(s, "connection refused")
+}
 
 // ipcVersionPath is the HTTP path for the read-only binary-identity request.
 // `nexus3 supervisor-upgrade` uses this to decide whether the running
@@ -150,7 +334,13 @@ type ipcHandles struct {
 // handoff is the late-bound callback invoked by the /supervisor/handoff
 // handler. It may be nil (e.g. before the perimeter/broker state needed to
 // build a payload exists); a nil handoff causes the handler to return 503.
-func serveIPC(ctx context.Context, sockPath string, _ *service.Service, _ string, allowEgress allowEgressFunc, handoff handoffFunc, binaryHash string) (ipcHandles, error) {
+//
+// agentHealth is the late-bound callback invoked by the /supervisor/agent-health
+// handler. It may be nil (e.g. the driver does not implement GuestDialer); a
+// nil agentHealth causes the handler to return 503 rather than guessing —
+// per the fail-closed rail, an absent health-check capability must never be
+// read by a caller as "assume healthy".
+func serveIPC(ctx context.Context, sockPath string, _ *service.Service, _ string, allowEgress allowEgressFunc, handoff handoffFunc, agentHealth agentHealthFunc, binaryHash string) (ipcHandles, error) {
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
 		return ipcHandles{}, fmt.Errorf("ipc: listen %s: %w", sockPath, err)
@@ -247,6 +437,25 @@ func serveIPC(ctx context.Context, sockPath string, _ *service.Service, _ string
 		default:
 			close(detachCh)
 		}
+	})
+
+	mux.HandleFunc(ipcAgentHealthPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		fn := agentHealth
+		if fn == nil {
+			// Fail closed: no way to run the probe is NOT the same as "healthy".
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(AgentHealth{State: AgentChannelUnknown, ControlErr: "agent health probe not available"})
+			return
+		}
+		health := fn(r.Context())
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(health)
 	})
 
 	mux.HandleFunc(ipcVersionPath, func(w http.ResponseWriter, r *http.Request) {
@@ -491,4 +700,106 @@ func RequestSupervisorVersion(ctx context.Context, sockPath string) (string, err
 // without duplicating the hashing logic.
 func HashOwnBinary() (string, error) {
 	return computeBinaryHash()
+}
+
+// RequestAgentHealth sends a GET /supervisor/agent-health to the supervisor
+// at sockPath and returns the live [AgentHealth] verdict. A non-nil error
+// means the request itself could not be completed (transport failure talking
+// to sockPath, or the supervisor predates this endpoint) — the caller MUST
+// NOT treat that as healthy; see [ReconnectAgent] and
+// runSupervisorUpgradeWith for the fail-closed handling this feeds.
+func RequestAgentHealth(ctx context.Context, sockPath string) (AgentHealth, error) {
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", sockPath)
+			},
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost"+ipcAgentHealthPath, nil)
+	if err != nil {
+		return AgentHealth{}, fmt.Errorf("request agent health: build request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return AgentHealth{}, fmt.Errorf("request agent health: request: %w", err)
+	}
+	defer resp.Body.Close()
+	var result AgentHealth
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return AgentHealth{}, fmt.Errorf("request agent health: decode response (status %d): %w", resp.StatusCode, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		// The 503 branch (no probe available) decodes to a well-formed
+		// AgentHealth{State: Unknown, ...} body — return it AS Unknown rather
+		// than converting the non-200 status into a transport error, so
+		// callers see one consistent "not proven healthy" signal instead of
+		// having to special-case this status code too.
+		return result, nil
+	}
+	return result, nil
+}
+
+// reconnectAttempts bounds [ReconnectAgent]'s retry loop: enough attempts to
+// ride out a transient vsock/CH hiccup without spinning forever against a
+// channel that will never recover.
+const reconnectAttempts = 6
+
+// reconnectInterval is the delay between ReconnectAgent's probe attempts.
+// Package-level var (not const) so tests can shrink it — mirrors
+// agent.pingRetryInterval's pattern for the same reason.
+var reconnectInterval = 2 * time.Second
+
+// ReconnectAgent asks the supervisor at sockPath to retry its agent-health
+// probe up to reconnectAttempts times, spaced reconnectInterval apart,
+// stopping early on the first [AgentChannelHealthy] result. It exists
+// because a single probe can catch the guest mid-recovery (e.g. immediately
+// after the transient condition that wedged the control plane clears) —
+// giving the channel a bounded number of fresh-dial attempts before reporting
+// failure is what makes this a "reconnect" rather than a single Ping that a
+// caller has to loop around itself.
+//
+// It returns the LAST probe's [AgentHealth] and, when every attempt failed to
+// reach [AgentChannelHealthy], a non-nil error summarising the final
+// classification. Per the fail-closed rail: if the supervisor can never even
+// be asked (every RequestAgentHealth call errors — e.g. talking to a
+// supervisor that predates this endpoint, or sockPath is unreachable),
+// ReconnectAgent returns AgentHealth{State: AgentChannelUnknown} and a
+// non-nil error — it never reports success on an unanswered probe.
+func ReconnectAgent(ctx context.Context, sockPath string) (AgentHealth, error) {
+	var last AgentHealth
+	var lastErr error
+	for attempt := 0; attempt < reconnectAttempts; attempt++ {
+		health, reqErr := RequestAgentHealth(ctx, sockPath)
+		if reqErr != nil {
+			last = AgentHealth{State: AgentChannelUnknown, ControlErr: reqErr.Error()}
+			lastErr = reqErr
+		} else {
+			last = health
+			lastErr = nil
+			if health.Healthy() {
+				return health, nil
+			}
+			if health.State == AgentChannelGuestGone {
+				// Do not keep retrying against a guest that is definitively
+				// gone — that would mask "the VM died" behind a reconnect
+				// loop that can never succeed. Report it immediately.
+				return health, fmt.Errorf("reconnect agent: guest is gone (control_err=%q data_err=%q)",
+					health.ControlErr, health.DataErr)
+			}
+		}
+
+		if attempt < reconnectAttempts-1 {
+			select {
+			case <-ctx.Done():
+				return last, ctx.Err()
+			case <-time.After(reconnectInterval):
+			}
+		}
+	}
+	if lastErr != nil {
+		return last, fmt.Errorf("reconnect agent: probe unreachable after %d attempts: %w", reconnectAttempts, lastErr)
+	}
+	return last, fmt.Errorf("reconnect agent: channel not healthy after %d attempts (state=%s control_err=%q data_err=%q)",
+		reconnectAttempts, last.State, last.ControlErr, last.DataErr)
 }

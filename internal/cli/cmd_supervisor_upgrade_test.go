@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus3/internal/supervisor"
 )
 
 // newSupervisorUpgradeTestSandbox creates a sandbox record in an isolated
@@ -100,6 +103,133 @@ func markRunningWithLiveSupervisor(t *testing.T, sb domain.Sandbox, sockPath str
 	}
 }
 
+// listenFakeSupervisorHTTP starts a real HTTP server (like the production
+// supervisor's IPC mux) over a Unix socket at stateDir/supervisor.sock,
+// serving GET /supervisor/version with versionHash and GET
+// /supervisor/agent-health with the given state. Used to drive
+// runSupervisorUpgradeWith's health-aware noop check through its REAL client
+// call (supervisor.RequestSupervisorVersion / supervisor.RequestAgentHealth)
+// against a REAL server, not a hand-rolled stand-in for the check itself.
+func listenFakeSupervisorHTTP(t *testing.T, stateDir, versionHash, healthState string) string {
+	t.Helper()
+	sockPath := filepath.Join(stateDir, "supervisor.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen fake supervisor http sock: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/supervisor/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"binary_hash":%q}`, versionHash)
+	})
+	mux.HandleFunc("/supervisor/agent-health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if healthState == string(supervisor.AgentChannelHealthy) {
+			w.WriteHeader(http.StatusOK)
+		} else {
+			w.WriteHeader(http.StatusOK) // handler always 200s a well-formed verdict
+		}
+		fmt.Fprintf(w, `{"state":%q,"control_err":"fake probe"}`, healthState)
+	})
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return sockPath
+}
+
+// setCompleteNetnsIdentity fills every field runSupervisorUpgradeWith's
+// incomplete-identity guard requires, so tests below reach the noop/health
+// check rather than refusing earlier for an unrelated reason.
+func setCompleteNetnsIdentity(t *testing.T, sb domain.Sandbox) {
+	t.Helper()
+	storeRoot, _ := store.DefaultRoot()
+	st, _ := store.NewFileStore(storeRoot)
+	if err := st.Update(context.Background(), sb.ID, func(rec *domain.Sandbox) error {
+		rec.NetnsChildPID = 4242
+		rec.NetnsChildPGID = 4242
+		rec.NetnsChildStartTime = 123456
+		rec.GuestTapName = "nx3g-test"
+		rec.CHAPISocket = "/tmp/fake.sock"
+		return nil
+	}); err != nil {
+		t.Fatalf("st.Update: %v", err)
+	}
+}
+
+// TestSupervisorUpgrade_SameBinaryHealthy_Noop proves the true no-op case:
+// same binary hash AND a live, healthy agent-health probe together refuse.
+func TestSupervisorUpgrade_SameBinaryHealthy_Noop(t *testing.T) {
+	svc, sb, stateDir := newSupervisorUpgradeTestSandbox(t)
+	myHash, err := supervisor.HashOwnBinary()
+	if err != nil {
+		t.Fatalf("HashOwnBinary: %v", err)
+	}
+	sockPath := listenFakeSupervisorHTTP(t, stateDir, myHash, string(supervisor.AgentChannelHealthy))
+	markRunningWithLiveSupervisor(t, sb, sockPath)
+	setCompleteNetnsIdentity(t, sb)
+
+	out, _, _ := capture(false)
+	err = runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, out, svc)
+	ce, ok := err.(*CodedError)
+	if !ok || ce.Code != supervisorUpgradeNoopCode {
+		t.Fatalf("expected %q, got %v", supervisorUpgradeNoopCode, err)
+	}
+}
+
+// TestSupervisorUpgrade_SameBinaryButChannelDown_ProceedsPastNoop is the
+// mutation-bearing proof for this slice's fix to secondary defect #1: a
+// supervisor reporting the CURRENT binary hash, whose agent-health probe
+// reports down_guest_alive, must NOT be treated as a no-op — the caller
+// needs a way to force a re-adopt of a wedged-but-same-binary supervisor.
+// It proceeds all the way to the next real refusal (no persisted spawn
+// spec), proving the noop code path was never taken.
+func TestSupervisorUpgrade_SameBinaryButChannelDown_ProceedsPastNoop(t *testing.T) {
+	svc, sb, stateDir := newSupervisorUpgradeTestSandbox(t)
+	myHash, err := supervisor.HashOwnBinary()
+	if err != nil {
+		t.Fatalf("HashOwnBinary: %v", err)
+	}
+	sockPath := listenFakeSupervisorHTTP(t, stateDir, myHash, string(supervisor.AgentChannelDownGuestAlive))
+	markRunningWithLiveSupervisor(t, sb, sockPath)
+	setCompleteNetnsIdentity(t, sb)
+
+	out, _, _ := capture(false)
+	err = runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, out, svc)
+	ce, ok := err.(*CodedError)
+	if !ok {
+		t.Fatalf("expected *CodedError, got %T: %v", err, err)
+	}
+	if ce.Code == supervisorUpgradeNoopCode {
+		t.Fatalf("got noop refusal despite an unhealthy agent channel — the health-aware check did not run")
+	}
+	if ce.Code != supervisorUpgradeNoSpawnSpecCode {
+		t.Fatalf("expected to proceed to %q, got %q (%v)", supervisorUpgradeNoSpawnSpecCode, ce.Code, err)
+	}
+}
+
+// TestSupervisorUpgrade_Force_SkipsNoopEvenWhenHealthy proves the explicit
+// --force escape hatch bypasses BOTH the binary-hash check and the
+// health-aware check, without even asking the fake server for agent-health
+// (the server here reports Healthy — if the health check ran, it would
+// refuse; force must prevent that check from running at all).
+func TestSupervisorUpgrade_Force_SkipsNoopEvenWhenHealthy(t *testing.T) {
+	svc, sb, stateDir := newSupervisorUpgradeTestSandbox(t)
+	myHash, err := supervisor.HashOwnBinary()
+	if err != nil {
+		t.Fatalf("HashOwnBinary: %v", err)
+	}
+	sockPath := listenFakeSupervisorHTTP(t, stateDir, myHash, string(supervisor.AgentChannelHealthy))
+	markRunningWithLiveSupervisor(t, sb, sockPath)
+	setCompleteNetnsIdentity(t, sb)
+
+	out, _, _ := capture(false)
+	err = runSupervisorUpgradeWith(context.Background(), sb.Handle(), true, out, svc)
+	ce, ok := err.(*CodedError)
+	if !ok || ce.Code != supervisorUpgradeNoSpawnSpecCode {
+		t.Fatalf("expected --force to proceed to %q, got %v", supervisorUpgradeNoSpawnSpecCode, err)
+	}
+}
+
 // TestSupervisorUpgrade_NotRunning_Refuses proves the state guard: a freshly
 // created (not-running) sandbox is refused before anything else is checked,
 // and the store record is untouched.
@@ -107,7 +237,7 @@ func TestSupervisorUpgrade_NotRunning_Refuses(t *testing.T) {
 	svc, sb, _ := newSupervisorUpgradeTestSandbox(t)
 
 	out, _, _ := capture(false)
-	err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), out, svc)
+	err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, out, svc)
 	if err == nil {
 		t.Fatal("expected error for a non-running sandbox")
 	}
@@ -144,7 +274,7 @@ func TestSupervisorUpgrade_NoSupervisor_Refuses(t *testing.T) {
 	_ = stateDir // no socket file created: supervisor looks absent
 
 	out, _, _ := capture(false)
-	err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), out, svc)
+	err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, out, svc)
 	if err == nil {
 		t.Fatal("expected error for a sandbox with no live supervisor")
 	}
@@ -172,7 +302,7 @@ func TestSupervisorUpgrade_IncompleteNetnsIdentity_Refuses(t *testing.T) {
 	// at their zero values — this is the incomplete-identity case.
 
 	out, _, _ := capture(false)
-	err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), out, svc)
+	err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, out, svc)
 	if err == nil {
 		t.Fatal("expected error for a sandbox with an incomplete netns identity")
 	}
@@ -280,7 +410,7 @@ func TestSupervisorUpgrade_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing
 			}
 
 			out, _, _ := capture(false)
-			err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), out, svc)
+			err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, out, svc)
 			ce, ok := err.(*CodedError)
 			if !ok || ce.Code != supervisorUpgradeIncompleteNetnsCode {
 				t.Fatalf("case %q: expected %q, got %v", tc.name, supervisorUpgradeIncompleteNetnsCode, err)
