@@ -24,6 +24,16 @@ const (
 	KindSocketVSock       ResourceKind = "socket_vsock"
 	KindSocketIID         ResourceKind = "socket_iid"
 	KindBuilderSupervisor ResourceKind = "builder_supervisor"
+
+	// KindNetnsProcess identifies a LIVE netns-runtime child process
+	// discovered by an independent /proc sweep (see reap.go:
+	// sweepOrphanNetnsProcesses), not by ResourceIndex.List(). Unlike every
+	// other kind, this one has no file on disk to enumerate — a process that
+	// survives cleanup() has, by construction, already had its socket and
+	// disk files removed (ticket 10, ch_2026-08-30). Its Path field carries
+	// the CH API socket path the process reported in its own environ (for
+	// identification/logging), not a file to stat or delete.
+	KindNetnsProcess ResourceKind = "netns_process"
 )
 
 // HostResource is a single resource enumerated directly from the filesystem.

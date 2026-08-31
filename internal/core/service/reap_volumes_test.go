@@ -70,7 +70,7 @@ func TestReap_NeverTouchesVolumes(t *testing.T) {
 	// Empty store: no sandbox records exist.
 	st := newEmptyStore(t)
 
-	report, err := service.Reap(context.Background(), st, idx, true /* apply */)
+	report, err := service.Reap(context.Background(), st, idx, true /* apply */, service.ReapOptions{ProcDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Reap: %v", err)
 	}
