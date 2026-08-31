@@ -2982,10 +2982,26 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 	// the agent's onboarding/credential seeding writes into (seed.go,
 	// usermount.go) — so this does not disturb agent config sync.
 	//
+	// Claude agentcfg overlay disk. The overlayfs upper and work dirs for
+	// /root/.claude live at /var/lib/nexus3/agentcfg/{upper,work} — both on
+	// this volume. Moving them off root makes the governor-visible: the root
+	// disk (/dev/vda) is never enrolled in ResizableDiskIndices, so it could
+	// never be grown no matter how full /root/.claude grew. This volume can.
+	// Both upper and work share one filesystem (the kernel requirement for
+	// overlayfs), satisfying the constraint without touching root ext4.
+	// 2 GiB: the upper layer stores only deltas from the RO lower — transcripts,
+	// todos, stats — not build artifacts. The real upper layer (agentcfg-upper
+	// on root ext4) measured live at 2.0 MB; the remainder of any apparently
+	// larger figure is the RO virtiofs lower, host-backed, consuming zero guest
+	// disk (D-RAM-12 retracts the earlier 442 MiB figure as a measurement
+	// error — it was the merged overlay view, not the writable upper). The
+	// operator ratified 2 GiB to give headroom for growth (D-RAM-13).
+	args = append(args, "--mount-named", herdrAgentCfgDiskVolumeName(handle)+":/var/lib/nexus3/agentcfg:size=2g")
 	// What still cannot grow after this: everything else on root (installed
-	// packages, /tmp, anything outside $HOME/go and $HOME/.cache) remains on
-	// the ungrowable 4 GiB /dev/vda. That is an accepted, explicit gap — see
-	// the ticket's Decision section — not a silent reproduction of the bug.
+	// packages, /tmp, /var/lib outside agentcfg, anything outside $HOME/go,
+	// $HOME/.cache, and $HOME/.claude) remains on the ungrowable 4 GiB
+	// /dev/vda. That is an accepted, explicit gap — see the ticket's Decision
+	// section — not a silent reproduction of the bug.
 	args = append(args, "--mount-named", herdrGoCacheDiskVolumeName(handle)+":/root/.cache:size=10g")
 	args = append(args, "--mount-named", herdrGoPathDiskVolumeName(handle)+":/root/go:size=10g")
 	for _, s := range secrets {
@@ -3034,6 +3050,15 @@ func herdrGoCacheDiskVolumeName(handle string) string {
 // D-PD-84 slug rule as herdrDockerDiskVolumeName.
 func herdrGoPathDiskVolumeName(handle string) string {
 	return herdrHandleSlug(handle) + "-gopath"
+}
+
+// herdrAgentCfgDiskVolumeName derives the per-sandbox volume name for the
+// /var/lib/nexus3/agentcfg disk. The overlayfs upper and work dirs for
+// /root/.claude live on this volume so the governor can grow the disk when
+// Claude session state grows (root /dev/vda is not governor-visible).
+// Follows the same D-PD-84 slug rule as herdrDockerDiskVolumeName.
+func herdrAgentCfgDiskVolumeName(handle string) string {
+	return herdrHandleSlug(handle) + "-agentcfg"
 }
 
 // herdrHandleSlug lower-cases handle and collapses every byte outside

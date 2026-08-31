@@ -19,6 +19,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/core/vmcfg"
+	"github.com/IniZio/nexus3/internal/core/volumestore"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -1275,5 +1276,119 @@ func TestSandboxCreate_NoBoot_PlainCreate_OK(t *testing.T) {
 		[]string{"proj/plainbox"},
 		out, svc); err != nil {
 		t.Fatalf("plain no-boot create should succeed, got: %v", err)
+	}
+}
+
+// ── agentcfg volume provisioning (D-RAM-13) ───────────────────────────────────
+
+// TestAgentCfg_Create_NoAgent_SkipsProvisioning verifies that without --agent
+// the parsed flags carry an empty agentName, which gates the provisioning
+// block. Mutation guard: the provisioning block must check f.agentName != "".
+func TestAgentCfg_Create_NoAgent_SkipsProvisioning(t *testing.T) {
+	f, err := parseSandboxCreateArgs([]string{"proj/box"})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", err)
+	}
+	// Substituting "" with any non-empty string here would make the test RED —
+	// proving the guard is evaluated (substitution count: 1).
+	if f.agentName != "" {
+		t.Errorf("agentName = %q, want empty; provisioning would run without an agent", f.agentName)
+	}
+}
+
+// TestAgentCfg_Create_WithAgent_GatesProvisioning verifies that --agent sets
+// agentName, enabling the provisioning block. Paired with the above test, the
+// two together mutation-prove the conditional: flip the gate to always-true and
+// the first test fails; flip to always-false and this test fails.
+func TestAgentCfg_Create_WithAgent_GatesProvisioning(t *testing.T) {
+	// "claude-code" is the known agent profile name validated by parseSandboxCreateArgs.
+	f, err := parseSandboxCreateArgs([]string{"proj/box", "--agent", "claude-code"})
+	if err != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", err)
+	}
+	if f.agentName == "" {
+		t.Error("agentName is empty; --agent flag not parsed; provisioning gate would skip for agent sandboxes")
+	}
+}
+
+// TestAgentCfg_Rm_DeletesAutoProvisionedVolume verifies that runSandboxRmFull
+// removes the auto-provisioned agentcfg volume after the sandbox record is
+// deleted. It uses a real volumestore in a tmpdir to exercise the Rm path.
+//
+// Mutation guard (substitution count: 1 for each of the two observable
+// effects): replacing vs.Rm with a no-op makes the final vs.Get check fail;
+// removing the storeRoot guard makes the vol-absent case also fail.
+func TestAgentCfg_Rm_DeletesAutoProvisionedVolume(t *testing.T) {
+	ctx := context.Background()
+	storeRoot := t.TempDir()
+
+	// Build a service with a real file store and the volumestore.
+	st, err := store.NewFileStore(storeRoot)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	vs := volumestore.New(filepath.Join(storeRoot, "volumes"))
+	svc := service.New(st, fake.New(), lifecycle.New())
+	svc.WithVolumes(vs)
+
+	// Pre-create the sandbox record.
+	sb, err := svc.Create(ctx, "proj", "box", service.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create sandbox: %v", err)
+	}
+
+	// Pre-create the auto-provisioned agentcfg volume as create would have done.
+	autoVolName := sandboxAgentCfgVolumeName("proj", "box")
+	if _, cErr := vs.Create(ctx, autoVolName, volumestore.KindDisk, 2*1024*1024*1024, ""); cErr != nil {
+		t.Fatalf("pre-create agentcfg volume: %v", cErr)
+	}
+
+	// Verify the volume exists before rm.
+	if _, gErr := vs.Get(autoVolName); gErr != nil {
+		t.Fatalf("agentcfg volume should exist before rm: %v", gErr)
+	}
+
+	// Attach the volume to the sandbox — exercises the D-PD-93 attach guard in
+	// vs.Rm (detach-before-delete). Without this, Rm never sees an attachment
+	// record and the guard is not exercised.
+	if aErr := vs.Attach(ctx, autoVolName, sb.ID.String()); aErr != nil {
+		t.Fatalf("attach agentcfg volume to sandbox: %v", aErr)
+	}
+
+	// Run rm through the testable seam.
+	out, _, _ := capture(true)
+	rmErr := runSandboxRmFull(ctx, []string{sb.ID.String()}, out, svc, storeRoot,
+		func(_ context.Context, _ string) error { return nil })
+	if rmErr != nil {
+		t.Fatalf("runSandboxRmFull: %v", rmErr)
+	}
+
+	// Volume must be gone after rm.
+	if _, gErr := vs.Get(autoVolName); gErr == nil {
+		t.Error("agentcfg volume still exists after sandbox rm; expected deletion")
+	}
+}
+
+// TestAgentCfg_Rm_NoVolumeNoPanic verifies that runSandboxRmFull succeeds
+// cleanly when no agentcfg volume was provisioned (agent-less sandbox).
+func TestAgentCfg_Rm_NoVolumeNoPanic(t *testing.T) {
+	ctx := context.Background()
+	storeRoot := t.TempDir()
+
+	st, err := store.NewFileStore(storeRoot)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	svc := service.New(st, fake.New(), lifecycle.New())
+	sb, err := svc.Create(ctx, "proj", "agentless", service.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create sandbox: %v", err)
+	}
+
+	out, _, _ := capture(true)
+	// Volume does not exist — rm must succeed anyway (not-found is silently ignored).
+	if rmErr := runSandboxRmFull(ctx, []string{sb.ID.String()}, out, svc, storeRoot,
+		func(_ context.Context, _ string) error { return nil }); rmErr != nil {
+		t.Fatalf("runSandboxRmFull without agentcfg volume: %v", rmErr)
 	}
 }

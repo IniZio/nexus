@@ -1271,6 +1271,36 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		}
 	}
 
+	// D-RAM-09 / D-RAM-13: auto-provision the agentcfg overlay disk only when
+	// the sandbox has an agent profile. Agent-less sandboxes never call
+	// seedOverlayClaudeConfig (AgentCfgLowerGuestPath is empty for them), so
+	// provisioning them unconditionally strands a 2 GiB ext4 image per create.
+	//
+	// Skip if the caller already supplied a --mount-named spec targeting
+	// /var/lib/nexus3/agentcfg — the herdr worktree path passes its own
+	// handle-keyed volume name so it is not double-mounted.
+	if f.agentName != "" {
+		hasAgentCfgDisk := false
+		for _, m := range namedMounts {
+			if m.GuestPath == "/var/lib/nexus3/agentcfg" {
+				hasAgentCfgDisk = true
+				break
+			}
+		}
+		if !hasAgentCfgDisk {
+			autoVolName := sandboxAgentCfgVolumeName(project, name)
+			autoMount, autoErr := parseMountNamed(autoVolName + ":/var/lib/nexus3/agentcfg:size=2g")
+			if autoErr != nil {
+				return errSandbox("sandbox create", fmt.Errorf("auto-provision agentcfg volume: %w", autoErr))
+			}
+			if namedVS == nil {
+				namedVS = volumestore.New(filepath.Join(storeRoot, "volumes"))
+				svc.WithVolumes(namedVS)
+			}
+			namedMounts = append(namedMounts, autoMount)
+		}
+	}
+
 	// Guest mounts for --mount-named kind=disk volumes. service.CreateAndBoot
 	// PREPENDS these volumes' ext4 images to ExtraDisks[0..k-1] in declaration
 	// order (create.go step 4.7), so named disk i maps to /dev/vd{b+i}. Without
@@ -2613,6 +2643,25 @@ func runSandboxRmFull(ctx context.Context, args []string, out *Output, svc *serv
 		})
 	}
 
+	// D-RAM-13: delete the auto-provisioned agentcfg volume after sandbox
+	// removal. The volume name is a pure function of the handle; if the sandbox
+	// had no agent (and therefore no auto-provisioned volume) vs.Rm returns
+	// "not found" which we ignore. vs.Rm enforces the D-PD-93 attach guard —
+	// it refuses to remove a volume still attached to another sandbox.
+	// We never touch user-supplied --mount-named volumes (different name).
+	if target != nil && storeRoot != "" {
+		proj, name, pErr := domain.ParseHandle(target.Handle())
+		if pErr == nil {
+			autoVolName := sandboxAgentCfgVolumeName(proj, name)
+			vs := volumestore.New(filepath.Join(storeRoot, "volumes"))
+			if rmErr := vs.Rm(ctx, autoVolName); rmErr != nil && !strings.HasSuffix(rmErr.Error(), ": not found") {
+				slog.Warn("sandbox.rm.agentcfg_volume_leak",
+					"sandbox", target.ID.String(), "volume", autoVolName, "err", rmErr,
+					"action", "auto-provisioned agentcfg volume not deleted; run: nexus3 volume rm "+autoVolName)
+			}
+		}
+	}
+
 	id := ref
 	handle := ref
 	if target != nil {
@@ -2761,6 +2810,14 @@ func namedDiskGuestMounts(mounts []service.NamedVolumeMount) []agent.GuestMount 
 		})
 	}
 	return out
+}
+
+// sandboxAgentCfgVolumeName derives the per-sandbox volume name for the
+// /var/lib/nexus3/agentcfg disk auto-provisioned on the plain sandbox create
+// path (D-RAM-09). Uses the same slug rule as herdrAgentCfgDiskVolumeName so
+// volume names are consistent across both paths.
+func sandboxAgentCfgVolumeName(project, name string) string {
+	return herdrHandleSlug(project+"/"+name) + "-agentcfg"
 }
 
 // parseMountNamed parses a --mount-named spec of the form:

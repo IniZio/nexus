@@ -709,8 +709,8 @@ func TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksAlwaysAttached(t *testing
 //
 // MUTATION PROOF: revert the unconditional appends in
 // herdrWorktreeSandboxCreateArgs to the --file-gated docker pattern (or delete
-// them) → numNamedDisks drops from 2 to 0 for an --image build → the assertion
-// on ResizableDiskIndices goes RED (missing indices 0 and 1).
+// them) → numNamedDisks drops from 3 to 0 for an --image build → the assertion
+// on ResizableDiskIndices goes RED (missing indices 0, 1, and 2).
 func TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksReachResizableDiskIndices(t *testing.T) {
 	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", "/fake/creds.json")
 
@@ -727,13 +727,15 @@ func TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksReachResizableDiskIndices
 		}
 		namedMounts = append(namedMounts, m)
 	}
-	if len(namedMounts) != 2 {
-		t.Fatalf("--image build: got %d --mount-named specs, want 2 (gocache, gopath); args=%v", len(namedMounts), args)
+	// --image: agentcfg + gocache + gopath = 3 unconditional named disks.
+	// (docker disk is --file only.)
+	if len(namedMounts) != 3 {
+		t.Fatalf("--image build: got %d --mount-named specs, want 3 (agentcfg, gocache, gopath); args=%v", len(namedMounts), args)
 	}
 
 	numNamedDisks := len(namedDiskGuestMounts(namedMounts))
-	if numNamedDisks != 2 {
-		t.Fatalf("namedDiskGuestMounts: got %d kind=disk mounts, want 2", numNamedDisks)
+	if numNamedDisks != 3 {
+		t.Fatalf("namedDiskGuestMounts: got %d kind=disk mounts, want 3", numNamedDisks)
 	}
 
 	cfg := buildHumanSupervisorConfig(
@@ -742,7 +744,7 @@ func TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksReachResizableDiskIndices
 		resize.Bounds{MemMinBytes: 1, MemMaxBytes: 2, DiskMaxBytes: 100 << 30},
 		2048, 2,
 		"/disks/sb.raw",
-		[]string{"/disks/gocache.raw", "/disks/gopath.raw", "/disks/ws.raw"},
+		[]string{"/disks/agentcfg.raw", "/disks/gocache.raw", "/disks/gopath.raw", "/disks/ws.raw"},
 		"root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0",
 		"/usr/bin/cloud-hypervisor", "/tmp/sockets",
 		true,           // hasWorkspace
@@ -752,7 +754,7 @@ func TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksReachResizableDiskIndices
 		nil, "", false, nil,
 	)
 
-	wantIndices := map[int]bool{0: true, 1: true, numNamedDisks: true} // gocache, gopath, workspace
+	wantIndices := map[int]bool{0: true, 1: true, 2: true, numNamedDisks: true} // agentcfg, gocache, gopath, workspace
 	got := map[int]bool{}
 	for _, idx := range cfg.ResizableDiskIndices {
 		got[idx] = true

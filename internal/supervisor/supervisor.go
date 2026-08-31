@@ -1024,48 +1024,125 @@ var seedUserMountsFn = service.SeedGuestUserMounts
 var seedOverlayClaudeConfigFn = seedOverlayClaudeConfig
 
 // agentCfgUpperDir is the persistent overlayfs upper dir for the /root/.claude
-// overlay. It lives on the root ext4 disk so it survives sandbox stop/start
-// and crash+recover. Only removed when the sandbox itself is removed.
-const agentCfgUpperDir = "/var/lib/nexus3/agentcfg-upper"
+// overlay. It lives on a sandbox-scoped named ext4 volume (mounted at
+// /var/lib/nexus3/agentcfg by herdrWorktreeSandboxCreateArgs) so it is
+// governor-visible and can grow when Claude session state fills the upper
+// layer. Only removed when the sandbox itself is removed.
+const agentCfgUpperDir = "/var/lib/nexus3/agentcfg/upper"
 
 // agentCfgWorkDir is the overlayfs work dir for the /root/.claude overlay.
-// It must be on the same filesystem as agentCfgUpperDir (root ext4) and must
-// be empty at mount time. It is recreated fresh on every boot — it holds only
+// The kernel requires upper and work to share ONE filesystem — both live on
+// the named ext4 volume mounted at /var/lib/nexus3/agentcfg, satisfying that
+// constraint without pinning either to the root ext4 disk. It must be empty
+// at mount time. It is recreated fresh on every boot — it holds only
 // kernel-internal overlayfs state, not user data.
-const agentCfgWorkDir = "/var/lib/nexus3/agentcfg-work"
+const agentCfgWorkDir = "/var/lib/nexus3/agentcfg/work"
+
+// agentCfgMountedMarker is a volume-independent sentinel written on the root
+// ext4 disk by Branch 1 of seedOverlayClaudeConfig on every successful named-
+// volume mount. Branch 3 reads it to distinguish "attach failure for a sandbox
+// that has successfully mounted before" from "brand-new sandbox without a
+// volume" — the former is a hard error; the latter is a configuration defect
+// (D-RAM-09 must have failed to provision).
+const agentCfgMountedMarker = "/var/lib/nexus3/.agentcfg-mounted"
+
+// errAgentCfgDegraded is returned by seedOverlayClaudeConfig when Branch 2
+// fires: the named volume is absent but pre-existing data was found on the
+// root ext4 disk (D-RAM-11). The caller emits a structured slog.Warn so an
+// operator can list affected sandboxes; boot continues. No non-destructive
+// drain exists: a real one requires an API to add a volume attachment to an
+// existing sandbox record, which does not exist today (D-RAM-15).
+var errAgentCfgDegraded = errors.New("agentcfg: degraded to root ext4 (D-RAM-11)")
 
 // seedOverlayClaudeConfig mounts a writable overlay onto /root/.claude in the
 // guest. lowerGuestPath is the guest path of the RO virtiofs share (the curated
-// host config staged by AssembleCuratedConfig). The upper dir lives on the root
-// ext4 disk (agentCfgUpperDir) so Claude session transcripts, todos, and stats
-// written by the in-guest agent survive sandbox stop/start and crash+recover.
+// host config staged by AssembleCuratedConfig). The upper dir lives on a named
+// ext4 volume (agentCfgUpperDir) so Claude session transcripts, todos, and
+// stats written by the in-guest agent survive sandbox stop/start and
+// crash+recover, and the governor can grow the volume if it fills.
 // The work dir (agentCfgWorkDir) is recreated empty on every boot — overlayfs
 // requires it empty at mount time and uses it only for internal kernel state.
+//
+// The named volume is provisioned on ALL bootable sandbox create paths
+// (D-RAM-09), so this function always runs against a governor-visible disk.
 //
 // Must be the FIRST seed step so onboarding writes (seedAgentOnboarding,
 // seedBypassConsent) land in the upper layer rather than failing against the
 // RO lower.
 func seedOverlayClaudeConfig(ctx context.Context, id domain.SandboxID, lowerGuestPath string, execer service.GuestExecer) error {
 	// Use bash; /bin/sh in the base image is dash which does not support pipefail.
+	// Three-way guard (D-RAM-08 / D-RAM-11):
+	//   Branch 1: named volume mounted → happy path; migrate legacy data if present.
+	//   Branch 2: volume absent but pre-existing data at old/root path → degrade
+	//             gracefully so pre-existing sandboxes keep their Claude session
+	//             state. Mounting from root ext4 violates D-RAM-08's memory-safety
+	//             goal but is preferable to losing user data on restart (D-RAM-11).
+	//   Branch 3: volume absent and no prior data → fail closed. This is a new
+	//             sandbox; the named volume must have been provisioned at create time
+	//             (D-RAM-09). Any other outcome is a configuration defect.
 	script := fmt.Sprintf(`set -eu
 mkdir -p /root/.claude
-# Persistent upper: carries Claude session state across stop/start and crashes.
-# Both upper and work must be on the same filesystem — root ext4 satisfies this.
-mkdir -p %s
-# Work dir must be empty at mount time (overlayfs kernel-internal state only;
-# not user data). Recreate it fresh on every boot.
-rm -rf %s
-mkdir %s
-mount -t overlay overlay -o lowerdir=%s,upperdir=%s,workdir=%s /root/.claude
-`, agentCfgUpperDir, agentCfgWorkDir, agentCfgWorkDir, lowerGuestPath, agentCfgUpperDir, agentCfgWorkDir)
+# D-RAM-08: detect whether the named ext4 volume is mounted at
+# /var/lib/nexus3/agentcfg. Use stat device-number comparison — more portable
+# than mountpoint(1), which may be absent in the base image.
+_mp_dev=$(stat -c '%%d' /var/lib/nexus3/agentcfg 2>/dev/null) || _mp_dev=""
+_par_dev=$(stat -c '%%d' /var/lib/nexus3 2>/dev/null) || { echo 'agentcfg: stat /var/lib/nexus3 failed' >&2; exit 1; }
+if [ -n "$_mp_dev" ] && [ "$_mp_dev" != "$_par_dev" ]; then
+    # Branch 1: named volume mounted — happy path.
+    mkdir -p %s
+    # D-RAM-09 one-shot migration: move legacy agentcfg-upper (root ext4) into
+    # the governor-visible named volume. Idempotent: old dir is removed after
+    # copy+sync so subsequent boots skip this block.
+    if [ -d /var/lib/nexus3/agentcfg-upper ]; then
+        cp -a /var/lib/nexus3/agentcfg-upper/. %s/
+        sync
+        rm -rf /var/lib/nexus3/agentcfg-upper
+    fi
+    # Work dir must be empty at mount time (overlayfs kernel-internal state).
+    rm -rf %s
+    mkdir %s
+    mount -t overlay overlay -o lowerdir=%s,upperdir=%s,workdir=%s /root/.claude
+    # D-RAM-13: write a volume-independent marker on the root disk so Branch 3
+    # can distinguish attach-failure (marker present) from a new sandbox (absent).
+    touch %s
+elif [ -d /var/lib/nexus3/agentcfg-upper ] || [ -d %s ]; then
+    # Branch 2: volume absent but pre-existing data found — degrade to root ext4.
+    # Pre-existing sandboxes created before D-RAM-09 have no named volume; losing
+    # their /root/.claude overlay on restart would silently strand session state.
+    if [ -d /var/lib/nexus3/agentcfg-upper ]; then
+        _fb_upper=/var/lib/nexus3/agentcfg-upper
+    else
+        _fb_upper=%s
+    fi
+    _fb_work=/var/lib/nexus3/agentcfg-work
+    rm -rf "$_fb_work"
+    mkdir -p "$_fb_upper" "$_fb_work"
+    echo "agentcfg: named volume absent; degrading to root ext4 at $_fb_upper (D-RAM-11)" >&2
+    mount -t overlay overlay -o lowerdir=%s,upperdir="$_fb_upper",workdir="$_fb_work" /root/.claude
+    exit 2
+else
+    # Branch 3: volume absent, no prior data.
+    if [ -f %s ]; then
+        echo 'agentcfg: named volume was previously mounted but is now absent — attach failed; refusing to boot without named volume' >&2
+    else
+        echo 'agentcfg: /var/lib/nexus3/agentcfg is not a mountpoint — named volume not attached; refusing to fall back to root ext4' >&2
+    fi
+    exit 1
+fi
+`, agentCfgUpperDir, agentCfgUpperDir, agentCfgWorkDir, agentCfgWorkDir, lowerGuestPath, agentCfgUpperDir, agentCfgWorkDir, agentCfgMountedMarker, agentCfgUpperDir, agentCfgUpperDir, lowerGuestPath, agentCfgMountedMarker)
 	code, err := execer(ctx, id, []string{"/bin/bash", "-c", script}, nil)
 	if err != nil {
 		return fmt.Errorf("overlay mount: %w", err)
 	}
-	if code != 0 {
+	switch code {
+	case 0:
+		return nil
+	case 2:
+		// Branch 2: degraded to root ext4 — non-fatal; caller emits slog.Warn.
+		return errAgentCfgDegraded
+	default:
 		return fmt.Errorf("overlay mount script exited %d", code)
 	}
-	return nil
 }
 
 // seedGitIdentityFn is the function called by probeAndSeedGuest to write the
@@ -1138,12 +1215,22 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 	// those seeds would either fail (writing to the RO lower) or be lost on
 	// sandbox exit.
 	if in.AgentCfgLowerGuestPath != "" {
-		if ovlErr := seedOverlayClaudeConfigFn(ctx, id, in.AgentCfgLowerGuestPath, in.Execer); ovlErr != nil {
-			slog.Warn("supervisor.overlay_claude_config_failed",
-				"sandbox", id, "lower", in.AgentCfgLowerGuestPath, "err", ovlErr,
-				"action", "agent will not see shared host config; /root/.claude is unshared")
-		} else {
+		ovlErr := seedOverlayClaudeConfigFn(ctx, id, in.AgentCfgLowerGuestPath, in.Execer)
+		switch {
+		case ovlErr == nil:
 			slog.Info("supervisor.overlay_claude_config_seeded", "sandbox", id, "lower", in.AgentCfgLowerGuestPath)
+		case errors.Is(ovlErr, errAgentCfgDegraded):
+			// D-RAM-11 Branch 2: named volume absent; degraded to root ext4.
+			// Non-fatal: pre-existing session state is preserved on the root disk.
+			// No non-destructive drain exists: a real one requires an API to add a
+			// volume attachment to an existing sandbox record, which does not exist
+			// today (D-RAM-15).
+			slog.Warn("supervisor.agentcfg_degraded",
+				"sandbox", id,
+				"action", "agentcfg volume absent; overlayfs on root ext4 (D-RAM-11); no non-destructive drain exists (D-RAM-15)")
+		default:
+			// D-RAM-13: Branch 3 or attach error — fail closed, boot aborts.
+			return fmt.Errorf("supervisor: agentcfg overlay mount failed (fail-closed): %w", ovlErr)
 		}
 	}
 

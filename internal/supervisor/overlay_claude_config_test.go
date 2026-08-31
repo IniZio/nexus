@@ -36,8 +36,10 @@ func captureOverlayScript(t *testing.T, lower string) string {
 //	Mutation: add "mount -t tmpfs" for the overlay → RED (tmpfs detected)
 //	Mutation: remove "rm -rf" of work dir → RED (work dir not cleaned)
 //
-// The upper dir must be on the root ext4 disk (/var/lib/nexus3/agentcfg-upper)
-// so Claude session transcripts survive sandbox stop/start and crash+recover.
+// The upper dir must be on the named ext4 volume mounted at
+// /var/lib/nexus3/agentcfg (not on root ext4, not on tmpfs) so Claude session
+// transcripts survive sandbox stop/start and crash+recover, and so the disk
+// governor can grow the volume when the upper layer fills.
 // Using tmpfs would discard all in-guest Claude state on every VM restart.
 func TestSeedOverlayClaudeConfig_PersistentUpperDir(t *testing.T) {
 	const lower = "/run/nexus3/agentcfg-lower"
@@ -97,5 +99,51 @@ func TestSeedOverlayClaudeConfig_NoPersistentTmpfsForOverlay(t *testing.T) {
 	script := captureOverlayScript(t, "/run/nexus3/agentcfg-lower")
 	if strings.Contains(script, "/run/nexus3/ovl") {
 		t.Errorf("script uses the old /run/nexus3/ovl tmpfs path — upper writes would be discarded on VM exit;\ngot script:\n%s", script)
+	}
+}
+
+// TestSeedOverlayClaudeConfig_UpperDirOnNamedVolume is the mutation guard for
+// the D-RAM-08 Option B decision: both the overlayfs upperdir and workdir must
+// live under the named ext4 volume mount point (/var/lib/nexus3/agentcfg/),
+// NOT under /var/lib/nexus3/ directly (which is root ext4 and not
+// governor-visible).
+//
+// Mutations that MUST turn this RED:
+//   - Change agentCfgUpperDir to /var/lib/nexus3/agentcfg-upper (reverts to root)
+//   - Change agentCfgWorkDir to /var/lib/nexus3/agentcfg-work (reverts to root)
+//   - Move workdir to a path that does not share the named volume prefix
+//     (violates the kernel's same-filesystem requirement for overlayfs)
+//
+// This test does NOT boot a VM — it checks path constants only.
+func TestSeedOverlayClaudeConfig_UpperDirOnNamedVolume(t *testing.T) {
+	const namedVolMount = "/var/lib/nexus3/agentcfg"
+
+	if !strings.HasPrefix(agentCfgUpperDir, namedVolMount+"/") {
+		t.Errorf("agentCfgUpperDir %q is not under the named volume mount point %q;\n"+
+			"moving upperdir off root ext4 (D-RAM-08 Option B) requires both upper and work\n"+
+			"to live under %q so the governor can grow the volume",
+			agentCfgUpperDir, namedVolMount, namedVolMount)
+	}
+
+	if !strings.HasPrefix(agentCfgWorkDir, namedVolMount+"/") {
+		t.Errorf("agentCfgWorkDir %q is not under the named volume mount point %q;\n"+
+			"overlayfs requires upper and work on the same filesystem — workdir must share\n"+
+			"the named volume at %q with upperdir %q",
+			agentCfgWorkDir, namedVolMount, namedVolMount, agentCfgUpperDir)
+	}
+
+	// upper and work must not be the same path.
+	if agentCfgUpperDir == agentCfgWorkDir {
+		t.Errorf("agentCfgUpperDir and agentCfgWorkDir must be distinct paths; both are %q", agentCfgUpperDir)
+	}
+
+	// The script must still use the (updated) constants — cross-check with the
+	// captured script so a hard-coded path in the format string would be caught.
+	script := captureOverlayScript(t, "/run/nexus3/agentcfg-lower")
+	if !strings.Contains(script, "upperdir="+agentCfgUpperDir) {
+		t.Errorf("script upperdir does not match agentCfgUpperDir %q;\ngot script:\n%s", agentCfgUpperDir, script)
+	}
+	if !strings.Contains(script, "workdir="+agentCfgWorkDir) {
+		t.Errorf("script workdir does not match agentCfgWorkDir %q;\ngot script:\n%s", agentCfgWorkDir, script)
 	}
 }
