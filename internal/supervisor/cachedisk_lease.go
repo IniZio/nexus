@@ -26,6 +26,31 @@
 //   - ADOPT (RunAdopt) and RE-ACQUIRE (RunReacquire): there is no descriptor to
 //     inherit, so the slot is read back off the record and re-acquired BY PATH.
 //     Same slot, new owner.
+//
+// # The lease must die with the supervisor, not with the VM
+//
+// D-HSH-07 ratified the SUPERVISOR as the lease owner, so the descriptor must
+// NOT travel one hop further into the netns child. It would travel there by
+// default: an inherited descriptor arrives with FD_CLOEXEC cleared, and
+// os/exec neither closes nor re-marks the descriptors a process already holds,
+// so the lease would survive the netns child's execve into cloud-hypervisor.
+// builder.AdoptCacheDiskLeaseFD therefore sets FD_CLOEXEC on adoption.
+//
+// With that in place the actual behaviour is:
+//
+//   - A supervisor SIGKILL closes these descriptors and the slot reads FREE,
+//     even though the netns child — and therefore cloud-hypervisor's write
+//     lock on the IMAGE — survives. `nexus3 recover` spawns a replacement
+//     supervisor which re-acquires the slot by path here, and it succeeds.
+//   - On a planned supervisor-upgrade the outgoing supervisor's
+//     `defer ReleaseCacheDiskLeases` frees the slot while the VM is
+//     deliberately kept alive, and the incoming supervisor takes it by path.
+//
+// Residual: between the outgoing supervisor's death and the incoming one's
+// acquisition the slot reads free while CH still holds the image write lock.
+// A third builder that selects the slot in that window fails to boot with CH's
+// "Error locking disk images". The window is the recover/upgrade turnaround,
+// not the VM's whole life, which is what the CLI-scoped lease used to be.
 package supervisor
 
 import (

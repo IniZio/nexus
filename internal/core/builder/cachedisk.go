@@ -531,6 +531,19 @@ func AdoptCacheDiskLeaseFD(fd int, imagePath string) (*CacheDiskLease, error) {
 			fd, lockPath, got.Dev, got.Ino, want.Dev, want.Ino)
 	}
 
+	// Set FD_CLOEXEC on the adopted descriptor. Leases taken BY PATH are
+	// already close-on-exec because os.OpenFile passes O_CLOEXEC; an inherited
+	// descriptor arrives with FD_CLOEXEC CLEARED, because that is exactly how
+	// os/exec hands ExtraFiles to a child. Leaving it clear lets the lease leak
+	// through the NEXT execve this process performs — the netns child, and
+	// thence cloud-hypervisor — so a supervisor SIGKILL would no longer free
+	// the slot and both `nexus3 recover` and `supervisor-upgrade` of a builder
+	// VM would block on a lock nothing living owns. This restores the symmetry
+	// with the by-path path rather than inventing a new rule.
+	if _, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_SETFD, syscall.FD_CLOEXEC); errno != 0 {
+		return nil, fmt.Errorf("cachedisk: adopt lease fd %d for %s: set FD_CLOEXEC: %w", fd, imagePath, errno)
+	}
+
 	pinMu.Lock()
 	defer pinMu.Unlock()
 	if p := pinned[lockPath]; p != nil {

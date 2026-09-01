@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -50,6 +51,45 @@ const cacheDiskHelperAcquiredFile = "acquired.txt"
 // cacheDiskHelperQuitFile, once created by the parent, tells the re-execed
 // "supervisor" to release its leases and exit.
 const cacheDiskHelperQuitFile = "quit"
+
+// cacheDiskHelperLeaseFDFile records the fd numbers the helper adopted, so the
+// two-generation test can assert it reproduced production's fd LAYOUT (with
+// Ephemeral=true the watchdog pipe takes fd 3 and leases start at fd 4). A
+// lease that landed on fd 3 would be dup2'd over by the grandchild's
+// ExtraFiles[0] and the test would report "free" for the wrong reason.
+const cacheDiskHelperLeaseFDFile = "leasefds.txt"
+
+// cacheDiskHelperNetnsChildEnv, when set, names the file into which the helper
+// writes the pid of a netns-SHAPED grandchild it spawns after taking its
+// leases. SpawnDetached sets no environment of its own, so the subprocess
+// inherits this from the test process.
+const cacheDiskHelperNetnsChildEnv = "NEXUS3_TEST_CACHEDISK_NETNS_CHILD_PIDFILE"
+
+// spawnNetnsShapedGrandchild reproduces, inside the helper "supervisor", the
+// second execve that ch_netns.go performs: exec.Cmd with a single pipe in
+// ExtraFiles (landing on fd 3 in the grandchild, like netns pumpFile) and its
+// own process group, running a long-lived program that stands in for the netns
+// child and the cloud-hypervisor it execs into. Go's os/exec clears FD_CLOEXEC
+// on ExtraFiles and closes nothing else, so any lease descriptor this process
+// still holds without FD_CLOEXEC is inherited by that program.
+func spawnNetnsShapedGrandchild(pidPath string, fail func(string, ...any)) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		fail("netns grandchild pipe: %v", err)
+	}
+	cmd := exec.Command("/bin/sleep", "600")
+	cmd.ExtraFiles = []*os.File{pr} // → fd 3 in the grandchild, as pumpFile is
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if startErr := cmd.Start(); startErr != nil {
+		fail("spawn netns grandchild: %v", startErr)
+	}
+	_ = pr.Close()
+	// pw stays open for this process's life, exactly as the netns pump does.
+	_ = pw
+	if writeErr := os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), 0o600); writeErr != nil {
+		fail("write netns grandchild pidfile: %v", writeErr)
+	}
+}
 
 // runCacheDiskLeaseHelper is the `__supervisor` subprocess role used by the
 // tests in this file. It performs the SAME acquisition the production
@@ -118,6 +158,17 @@ func runCacheDiskLeaseHelper() {
 	leases, err := acquireCacheDiskLeases(ctx, slots, fds, 5*time.Second)
 	if err != nil {
 		fail("acquire: %v", err)
+	}
+	fdStrs := make([]string, 0, len(fds))
+	for _, fd := range fds {
+		fdStrs = append(fdStrs, strconv.Itoa(fd))
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, cacheDiskHelperLeaseFDFile),
+		[]byte(strings.Join(fdStrs, ",")), 0o600); err != nil {
+		fail("write lease fd file: %v", err)
+	}
+	if pidPath := os.Getenv(cacheDiskHelperNetnsChildEnv); pidPath != "" {
+		spawnNetnsShapedGrandchild(pidPath, fail)
 	}
 	if err := os.WriteFile(filepath.Join(stateDir, cacheDiskHelperAcquiredFile),
 		[]byte(strings.Join(builder.CacheDiskSlotPaths(leases), "\n")), 0o600); err != nil {
@@ -404,6 +455,122 @@ func TestServeAdoptedSupervisor_RefusesWhenRecordedSlotIsHeld(t *testing.T) {
 	if !strings.Contains(err.Error(), "cache-disk slot") {
 		t.Fatalf("want a cache-disk slot refusal, got %v", err)
 	}
+}
+
+// TestCacheDiskLease_DiesWithTheSupervisorNotWithTheNetnsGrandchild is the
+// TWO-EXEC-GENERATION proof. Every other test in this file stops after ONE
+// execve (CLI → supervisor), which is why they all pass while the lease is
+// still leaking: the leak needs a SECOND execve to happen.
+//
+// Real shape reproduced here:
+//
+//	CLI (this test) --exec--> supervisor (helper) --exec--> netns child → CH
+//
+// The supervisor adopts the lease descriptor through ExtraFiles, which arrives
+// with FD_CLOEXEC CLEARED. It then execs a netns-shaped grandchild. Go's
+// os/exec neither closes nor re-marks descriptors the process already holds,
+// so without the FD_CLOEXEC set in builder.AdoptCacheDiskLeaseFD the flock
+// survives into the grandchild — and a supervisor SIGKILL leaves the slot
+// LOCKED by a process that is not a supervisor at all, wedging both
+// `nexus3 recover` and `supervisor-upgrade` of a builder VM.
+//
+// The assertion is on the LOCK STATE (a real LOCK_EX|LOCK_NB probe after the
+// supervisor is gone and while the grandchild is provably still alive), not on
+// any log line.
+//
+// Mutation guard: delete the F_SETFD/FD_CLOEXEC call from
+// builder.AdoptCacheDiskLeaseFD → the final probe never succeeds and this test
+// fails with "STILL LOCKED after the supervisor died".
+func TestCacheDiskLease_DiesWithTheSupervisorNotWithTheNetnsGrandchild(t *testing.T) {
+	// The lease lives on the sidecar lock file, so no ext4 image is needed.
+	slot := filepath.Join(t.TempDir(), "buildkit.ext4")
+
+	// ── 1. The CLI selects the slot and holds its flock ───────────────────
+	lease, err := builder.AcquireCacheDiskSlot(slot)
+	if err != nil {
+		t.Fatalf("AcquireCacheDiskSlot: %v", err)
+	}
+
+	// ── 2. Supervisor is spawned with the descriptor, and itself execs a
+	//       netns-shaped grandchild ─────────────────────────────────────────
+	stateDir := t.TempDir()
+	grandPidPath := filepath.Join(stateDir, "netns_child.pid")
+	t.Setenv(cacheDiskHelperNetnsChildEnv, grandPidPath)
+
+	cfg := baseHelperSpawnConfig(t, stateDir)
+	cfg.CacheDiskSlots = []string{slot}
+	cfg.CacheDiskLeaseFiles = []*os.File{lease.File()}
+	_, supPid := spawnLeaseHolder(t, cfg)
+
+	// ── 3. The CLI drops its own copy: the supervisor is the sole owner ───
+	lease.Release()
+
+	// The fd layout must match production, or this test proves nothing: with
+	// Ephemeral=true the watchdog pipe is fd 3, so the lease must be fd 4+.
+	// A lease on fd 3 would be dup2'd over by the grandchild's ExtraFiles[0],
+	// which reports "free" for a reason that has nothing to do with the fix.
+	fdRaw, err := os.ReadFile(filepath.Join(stateDir, cacheDiskHelperLeaseFDFile))
+	if err != nil {
+		t.Fatalf("read lease fd file: %v", err)
+	}
+	leaseFD, err := strconv.Atoi(strings.TrimSpace(string(fdRaw)))
+	if err != nil {
+		t.Fatalf("parse lease fd %q: %v", fdRaw, err)
+	}
+	if leaseFD < 4 {
+		t.Fatalf("lease landed on fd %d; production puts the watchdog pipe on fd 3 and leases on 4+, "+
+			"and an fd-3 lease is dup2'd over by the grandchild's ExtraFiles[0] (vacuous test)", leaseFD)
+	}
+
+	grandRaw, err := os.ReadFile(grandPidPath)
+	if err != nil {
+		t.Fatalf("read netns grandchild pidfile: %v", err)
+	}
+	grandPid, err := strconv.Atoi(strings.TrimSpace(string(grandRaw)))
+	if err != nil {
+		t.Fatalf("parse netns grandchild pid %q: %v", grandRaw, err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(grandPid, syscall.SIGKILL) })
+
+	// Sanity: while the supervisor lives the slot is genuinely held.
+	if l, aErr := builder.AcquireCacheDiskSlot(slot); aErr == nil {
+		l.Release()
+		t.Fatal("slot read FREE while the supervisor was alive and holding it")
+	}
+
+	// ── 4. The supervisor CRASHES. The VM — here the grandchild — lives on ─
+	if killErr := syscall.Kill(supPid, syscall.SIGKILL); killErr != nil {
+		t.Fatalf("kill supervisor: %v", killErr)
+	}
+	for i := 0; i < 500 && PidAlive(supPid); i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if PidAlive(supPid) {
+		t.Fatal("supervisor survived SIGKILL")
+	}
+
+	// ── 5. The slot must be reclaimable — this is what `nexus3 recover` and
+	//       `supervisor-upgrade` do next ───────────────────────────────────
+	deadline := time.Now().Add(10 * time.Second)
+	var reclaimed *builder.CacheDiskLease
+	for time.Now().Before(deadline) {
+		if l, aErr := builder.AcquireCacheDiskSlot(slot); aErr == nil {
+			reclaimed = l
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	// Check liveness BEFORE reporting: if the grandchild died on its own the
+	// slot would read free no matter what, and the test would be vacuous.
+	if !PidAlive(grandPid) {
+		t.Fatal("the netns-shaped grandchild died on its own; nothing was proven about fd inheritance")
+	}
+	if reclaimed == nil {
+		t.Fatalf("slot on fd %d is STILL LOCKED after the supervisor died, while the netns grandchild "+
+			"(pid %d) is alive: the lease was inherited across the second execve — `nexus3 recover` and "+
+			"`supervisor-upgrade` of a builder VM both block here", leaseFD, grandPid)
+	}
+	reclaimed.Release()
 }
 
 // TestBuildSupervisorArgv_ForwardsCacheDiskLease guards the argv contract the
