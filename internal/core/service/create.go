@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/builder"
@@ -32,14 +31,6 @@ var ErrAgentUnreachable = errors.New("service: guest agent did not answer after 
 // ErrAgentBytesRequired is returned by CreateAndBoot when an OCI pull is
 // required but no agent binary was supplied in CreateAndBootOptions.
 var ErrAgentBytesRequired = errors.New("no agent binary available for OCI pull (set AgentBytes in CreateAndBootOptions)")
-
-// testHookBeforeStoreCreate is called inside CreateAndBoot immediately before
-// svc.store.Create commits the sandbox record. It is nil in production and is
-// set only by tests that need to observe the volume-lease state in the D2
-// window (between vs.AttachLocked and store.Create). If the hook returns a
-// non-nil error, CreateAndBoot propagates it and aborts without writing the
-// record.
-var testHookBeforeStoreCreate atomic.Pointer[func() error]
 
 // ExtraDisk describes an additional raw ext4 disk image to attach to the
 // sandbox VM at boot time. The underlying driver maps them to virtio-blk
@@ -843,7 +834,7 @@ func CreateAndBoot(
 	// D2 test seam: fires while volumeLeases are still held (locks not yet
 	// released). Nil in production. Tests use this to call Prune inside the
 	// window and confirm the held lease blocks deletion.
-	if hookPtr := testHookBeforeStoreCreate.Load(); hookPtr != nil {
+	if hookPtr := svc.testHookBeforeStoreCreate.Load(); hookPtr != nil {
 		if hookErr := (*hookPtr)(); hookErr != nil {
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: testHookBeforeStoreCreate: %w", project, name, hookErr)
 		}

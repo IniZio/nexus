@@ -36,6 +36,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -98,6 +99,31 @@ type Service struct {
 	// dead sandbox.
 	deregistrarsMu sync.Mutex
 	deregistrars   map[domain.SandboxID]sandboxDeregistrar
+
+	// testHookBeforeStoreCreate is called inside CreateAndBoot immediately
+	// before svc.store.Create commits the sandbox record. It is nil in
+	// production and is set only by tests that need to observe the
+	// volume-lease state in the D2 window (between vs.AttachLocked and
+	// store.Create). If the hook returns a non-nil error, CreateAndBoot
+	// propagates it and aborts without writing the record.
+	//
+	// WHY IT IS A FIELD ON Service AND NOT A PACKAGE VAR: three tests in this
+	// package call t.Parallel() and drive CreateAndBoot
+	// (TestD2_DirVolumeLeaseHeldAcrossStoreCreate,
+	// TestNamedVolume_DeviceLetterOrder, TestNamedVolume_ABBADeadlock). While
+	// the hook was a package var, a parallel peer's create fired the D2 test's
+	// hook. Reproduced under -race by widening the installed-hook window: the
+	// hook fired 3 times in one D2 run, and the detector flagged writes to the
+	// D2 test's stack locals from the peers' goroutines. It also lets D2 go
+	// GREEN under the AttachLocked→Attach mutation it exists to catch, because
+	// a peer's fire can Prune the volume away before D2's own hook runs.
+	// Every test builds its own Service via New, so a field on Service scopes
+	// the hook to the creates its installer drove.
+	//
+	// Stored atomically: CreateAndBoot may read it from a goroutine other than
+	// the one that installed it. A plain field would race for the same reason
+	// a plain package var did (observed 1 in 6 under whole-package -race).
+	testHookBeforeStoreCreate atomic.Pointer[func() error]
 }
 
 // New returns a Service backed by the given store, driver, and machine.

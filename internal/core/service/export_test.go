@@ -38,17 +38,17 @@ func IsVolumeLiveRecord(sb domain.Sandbox) bool {
 	return isVolumeLiveRecord(sb)
 }
 
-// SetHookBeforeStoreCreate installs fn as testHookBeforeStoreCreate for the
-// duration of one test. Call the returned cleanup to clear the hook.
+// SetHookBeforeStoreCreate installs fn as svc's testHookBeforeStoreCreate for
+// the duration of one test. Call the returned cleanup to clear the hook.
 // This hook fires inside CreateAndBoot while all volumeLeases are still held
 // (the D2 window), letting tests run Prune and confirm the held lock prevents
 // deletion. fn is called on the goroutine that is executing CreateAndBoot.
-func SetHookBeforeStoreCreate(fn func() error) (cleanup func()) {
-	// Stored atomically: CreateAndBoot reads this hook from whatever goroutine
-	// is running a create, while other tests in the package set and clear it.
-	// A plain package var raced under whole-package -race (observed 1 in 6).
-	testHookBeforeStoreCreate.Store(&fn)
-	return func() { testHookBeforeStoreCreate.Store(nil) }
+func SetHookBeforeStoreCreate(svc *Service, fn func() error) (cleanup func()) {
+	// Scoped to svc, not to the package: only creates driven through this
+	// Service fire the hook. See the field comment on Service for the
+	// cross-test firing this scoping closes.
+	svc.testHookBeforeStoreCreate.Store(&fn)
+	return func() { svc.testHookBeforeStoreCreate.Store(nil) }
 }
 
 // HoldCreateIntentForTest writes a create-intent file for id in diskDir and holds
