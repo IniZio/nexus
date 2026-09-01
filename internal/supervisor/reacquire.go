@@ -357,6 +357,19 @@ func RunReacquire(cfg Config) error {
 		"sandboxRef", cfg.SandboxRef, "sandbox", sb.ID, "netnsChildPID", sb.NetnsChildPID,
 		"caLost", res.CALost)
 
+	// Record the CA outcome where the spawning CLI can read it back. This must
+	// happen BEFORE serveAdoptedSupervisor writes the pidfile, because the
+	// pidfile is the readiness signal SpawnReacquireDetached returns on: written
+	// after it, there would be a window in which `recover` sees a ready
+	// supervisor and no outcome, and would report "undetermined" for a
+	// re-acquisition that in fact succeeded.
+	//
+	// `recover` is a short-lived CLI that only SPAWNS this process; the CA
+	// decision is made here, in reacquireSeedInput, so this is the only place
+	// that can state it as fact. The alternative — the CLI re-running the load
+	// to guess the answer — would be a checker sharing the mechanism it checks,
+	// and would agree with itself even when the mechanism broke.
+	recordReacquireCAOutcome(cfg.StateDir, res.CALost)
 
 	// Persist this process's supervisor identity. recover cleared the dead
 	// supervisor's pid/socket when it classified the sandbox adoptable, so

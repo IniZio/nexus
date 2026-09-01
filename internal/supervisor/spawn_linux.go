@@ -458,6 +458,16 @@ func SpawnReacquireDetached(cfg SpawnConfig) (pid int, err error) {
 	}
 	cfg.Reacquire = true
 
+	// Clear any CA outcome left by a PREVIOUS re-acquisition of this sandbox.
+	// Without this, a second recovery would read the first run's answer and
+	// attribute it to the new supervisor. Failure to clear is fatal here (unlike
+	// the write side): reporting a stale outcome as this run's is precisely the
+	// stale-assertion defect being fixed, so a spawner that cannot guarantee
+	// freshness must not proceed to a state where the CLI trusts the file.
+	if err := ClearCAOutcome(cfg.StateDir); err != nil {
+		return 0, fmt.Errorf("spawn reacquire supervisor: clear stale CA outcome: %w", err)
+	}
+
 	pidfile := PidfilePath(cfg.StateDir)
 	if data, readErr := os.ReadFile(pidfile); readErr == nil {
 		if existing, convErr := strconv.Atoi(strings.TrimSpace(string(data))); convErr == nil && existing > 0 {

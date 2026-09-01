@@ -150,13 +150,28 @@ var recoverAdoptSpawner = spawnReplacementSupervisor
 // rather than re-deriving those values means the replacement supervises the
 // VM with exactly the configuration it was created under.
 //
-// Returns caLost=true always on success: the crashed supervisor's MITM CA
-// existed only in its memory, so the replacement necessarily mints a fresh
-// one. Recovery reports that to the operator.
-func spawnReplacementSupervisor(sb domain.Sandbox) (caLost bool, err error) {
+// # How the CA outcome is obtained (NOT re-derived here)
+//
+// Since s15-ca-persistence the crash path re-seeds the MITM CA persisted by
+// the perimeter that minted it, so a re-acquisition USUALLY keeps the guest's
+// TLS trust intact. This function must therefore not assert an outcome: it
+// only spawns the replacement, and the CA decision is made afterwards, inside
+// that detached process ([supervisor.RunReacquire] via reacquireSeedInput).
+//
+// The outcome is read back from the state dir the replacement wrote it to
+// ([supervisor.ReadCAOutcome]), which the replacement records strictly before
+// the pidfile this spawn waits on. Deliberately NOT re-loading the CA here to
+// work out the answer: a checker that re-derives a result by copying the
+// mechanism breaks identically when the mechanism breaks, and still agrees
+// with itself.
+//
+// An unwritten or unreadable outcome yields [recovery.CAUnknown] and is
+// reported as undetermined. It is never coerced to "recovered": claiming TLS
+// survived when it did not is worse than the mis-report this replaced.
+func spawnReplacementSupervisor(sb domain.Sandbox) (recovery.CAOutcome, error) {
 	storeRoot, err := store.DefaultRoot()
 	if err != nil {
-		return false, fmt.Errorf("resolve state directory: %w", err)
+		return recovery.CAUnknown, fmt.Errorf("resolve state directory: %w", err)
 	}
 	stateDir := supervisor.DefaultStateDir(storeRoot, sb.ID)
 
@@ -165,17 +180,38 @@ func spawnReplacementSupervisor(sb domain.Sandbox) (caLost bool, err error) {
 		// Without the original spawn spec the replacement would have to guess
 		// the kernel, disk and governor bounds. Refuse rather than boot a
 		// supervisor against a configuration the VM was not created with.
-		return false, fmt.Errorf("read spawn spec for %s: %w", sb.ID, err)
+		return recovery.CAUnknown, fmt.Errorf("read spawn spec for %s: %w", sb.ID, err)
 	}
 
 	if _, err := supervisor.SpawnReacquireDetached(supervisor.SpawnConfig{
 		Config:       spawnSpec,
 		ReadyTimeout: replacementSupervisorReadyTimeout,
 	}); err != nil {
-		return false, err
+		return recovery.CAUnknown, err
 	}
-	// The crash path never recovers the CA — see supervisor.RunReacquire.
-	return true, nil
+	// Read the outcome from the state dir the spawn config actually used, not
+	// from a separately re-derived path, so the reader and the writer cannot
+	// disagree about where the file lives.
+	return caOutcomeFromSupervisor(supervisor.ReadCAOutcome(spawnSpec.StateDir)), nil
+}
+
+// caOutcomeFromSupervisor maps the supervisor package's CA outcome onto the
+// recovery package's. Two enums exist only because internal/core/recovery must
+// not import internal/supervisor; this function is the single seam that owns
+// both imports.
+//
+// The default arm is CAUnknown, so an outcome value this build does not
+// recognise degrades to "could not determine" rather than to either definite
+// claim.
+func caOutcomeFromSupervisor(o supervisor.CAOutcome) recovery.CAOutcome {
+	switch o {
+	case supervisor.CAOutcomeRecovered:
+		return recovery.CARecovered
+	case supervisor.CAOutcomeLost:
+		return recovery.CALost
+	default:
+		return recovery.CAUnknown
+	}
 }
 
 // replacementSupervisorReadyTimeout bounds how long recovery waits for a

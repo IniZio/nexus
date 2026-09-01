@@ -13,6 +13,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
 	"github.com/IniZio/nexus3/internal/core/recovery"
 	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus3/internal/supervisor"
 )
 
 // newAdoptableTestFixture builds a store + fake driver with one sandbox
@@ -167,7 +168,7 @@ func newReacquirableTestFixture(t *testing.T) (store.Store, driver.Driver, domai
 
 // withStubAdoptSpawner swaps the production adopt-spawn callback for the
 // duration of a test and restores it afterwards.
-func withStubAdoptSpawner(t *testing.T, fn func(sb domain.Sandbox) (bool, error)) {
+func withStubAdoptSpawner(t *testing.T, fn func(sb domain.Sandbox) (recovery.CAOutcome, error)) {
 	t.Helper()
 	prev := recoverAdoptSpawner
 	recoverAdoptSpawner = fn
@@ -189,9 +190,9 @@ func TestRunRecoverWith_ProductionWiring_SpawnsReplacement(t *testing.T) {
 	st, drv, sb := newReacquirableTestFixture(t)
 
 	var spawnedFor []domain.SandboxID
-	withStubAdoptSpawner(t, func(got domain.Sandbox) (bool, error) {
+	withStubAdoptSpawner(t, func(got domain.Sandbox) (recovery.CAOutcome, error) {
 		spawnedFor = append(spawnedFor, got.ID)
-		return true, nil // caLost: the crash path never recovers the CA
+		return recovery.CALost, nil // the replacement reported a lost CA
 	})
 
 	var buf bytes.Buffer
@@ -229,9 +230,9 @@ func TestRunRecoverWith_NoControlSocket_ReportedButNotSpawned(t *testing.T) {
 	st, drv, sb := newAdoptableTestFixture(t)
 
 	spawnCalls := 0
-	withStubAdoptSpawner(t, func(domain.Sandbox) (bool, error) {
+	withStubAdoptSpawner(t, func(domain.Sandbox) (recovery.CAOutcome, error) {
 		spawnCalls++
-		return false, nil
+		return recovery.CARecovered, nil
 	})
 
 	var buf bytes.Buffer
@@ -279,9 +280,9 @@ func TestRunRecoverWith_HealthySandbox_NotSpawnedAgainst(t *testing.T) {
 	drv.SetRunning(sb.ID)
 
 	spawnCalls := 0
-	withStubAdoptSpawner(t, func(domain.Sandbox) (bool, error) {
+	withStubAdoptSpawner(t, func(domain.Sandbox) (recovery.CAOutcome, error) {
 		spawnCalls++
-		return true, nil
+		return recovery.CALost, nil
 	})
 
 	var buf bytes.Buffer
@@ -296,5 +297,113 @@ func TestRunRecoverWith_HealthySandbox_NotSpawnedAgainst(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), string(recovery.OutcomeAdoptable)) {
 		t.Errorf("a healthy sandbox was classified adoptable; got:\n%s", buf.String())
+	}
+}
+
+// TestRunRecoverWith_CAOutcome_OperatorWording is the guard for the reporting
+// defect proven live on sb-06G5RNMW0NWMD2P5RZ8NEMYGE0: `recover` told the
+// operator the MITM CA had been lost while the replacement supervisor's own
+// log said ca_recovered and in-guest TLS never broke.
+//
+// The wording IS the deliverable, so this asserts on the operator-visible text
+// emitted by the real runRecoverWith — not on the CAOutcome value, which would
+// pass just as happily with the message hardcoded. All three states are
+// covered, because reporting a definite answer in the third (unknown) case is
+// how the same class of defect returns.
+func TestRunRecoverWith_CAOutcome_OperatorWording(t *testing.T) {
+	cases := []struct {
+		name    string
+		ca      recovery.CAOutcome
+		want    []string
+		notWant []string
+	}{
+		{
+			name:    "recovered: no loss warning",
+			ca:      recovery.CARecovered,
+			want:    []string{"MITM CA was re-seeded", "TLS sessions continue uninterrupted"},
+			notWant: []string{"could not be recovered", "could not determine"},
+		},
+		{
+			name:    "lost: the loss warning stands",
+			ca:      recovery.CALost,
+			want:    []string{"could not be recovered", "will FAIL until the guest re-imports"},
+			notWant: []string{"re-seeded", "could not determine"},
+		},
+		{
+			name: "unknown: honest undetermined, never coerced either way",
+			ca:   recovery.CAUnknown,
+			want: []string{"could not determine whether the MITM CA survived"},
+			// Neither definite claim may appear: "recovered" would tell the
+			// operator TLS survived when it may not have, and "could not be
+			// recovered" is the false-loss report being fixed.
+			notWant: []string{"re-seeded", "could not be recovered"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st, drv, _ := newReacquirableTestFixture(t)
+			withStubAdoptSpawner(t, func(domain.Sandbox) (recovery.CAOutcome, error) {
+				return tc.ca, nil
+			})
+
+			var buf bytes.Buffer
+			out := NewOutput(&buf, &buf, false) // human mode: the operator surface
+			if err := runRecoverWith(ctx, st, drv, out); err != nil {
+				t.Fatalf("runRecoverWith: %v", err)
+			}
+			got := buf.String()
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("operator output is missing %q for CA outcome %v; got:\n%s", want, tc.ca, got)
+				}
+			}
+			for _, bad := range tc.notWant {
+				if strings.Contains(got, bad) {
+					t.Errorf("operator output wrongly contains %q for CA outcome %v; got:\n%s", bad, tc.ca, got)
+				}
+			}
+		})
+	}
+}
+
+// TestCAOutcomeFromSupervisor_UnknownIsNeverCoerced pins the seam the CLI owns
+// between the two enums. The default arm matters most: an unrecorded or
+// unrecognised outcome must degrade to CAUnknown, never to CARecovered — the
+// latter would report that in-guest TLS survived on the strength of a file
+// that was never written.
+func TestCAOutcomeFromSupervisor_UnknownIsNeverCoerced(t *testing.T) {
+	cases := map[supervisor.CAOutcome]recovery.CAOutcome{
+		supervisor.CAOutcomeRecovered: recovery.CARecovered,
+		supervisor.CAOutcomeLost:      recovery.CALost,
+		supervisor.CAOutcomeUnknown:   recovery.CAUnknown,
+		supervisor.CAOutcome("bogus"): recovery.CAUnknown,
+		supervisor.CAOutcome(""):      recovery.CAUnknown,
+	}
+	for in, want := range cases {
+		if got := caOutcomeFromSupervisor(in); got != want {
+			t.Errorf("caOutcomeFromSupervisor(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// TestSpawnReplacementSupervisor_ReadsOutcomeItDidNotDerive asserts that the
+// PRODUCTION adopt-spawn callback obtains the CA outcome from the state dir
+// rather than asserting one of its own. It drives the real function; the spawn
+// fails (no spawn.json for a synthetic sandbox), and the contract on that path
+// is CAUnknown plus an error — the fail-closed shape, since a spawn that never
+// happened cannot have recovered anything.
+func TestSpawnReplacementSupervisor_NoSpawnSpec_UnknownAndError(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	sb := domain.Sandbox{ID: domain.NewSandboxID(), Name: "nospec", Project: "hsh"}
+
+	ca, err := spawnReplacementSupervisor(sb)
+	if err == nil {
+		t.Fatalf("spawnReplacementSupervisor succeeded with no spawn.json; want a refusal")
+	}
+	if ca != recovery.CAUnknown {
+		t.Errorf("a spawn that never happened reported CA outcome %v; want CAUnknown — "+
+			"any definite answer here is invented, not observed", ca)
 	}
 }
