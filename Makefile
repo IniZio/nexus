@@ -120,8 +120,19 @@ build-agent: install-agent
 vet:
 	go vet -p $(GOBUILD_P) ./...
 
+# -count=1 is what makes this target evidence rather than a replay. Go caches
+# successful test results, and -race does NOT defeat that: it is a build flag,
+# consumed before the test binary runs, so it never reaches the -test.* scan
+# that decides cacheability. Without -count=1 this target can exit 0 having run
+# nothing — which is exactly what happened once, hiding a real cmd/nexus3-agent
+# failure behind a cached green (D-HSH-19, ticket 17).
+#
+# It sits before $(GOTEST_ARGS) so a caller CAN override it — `go test` takes
+# the last -count wins, with no error. That is deliberate: flake hunting wants
+# GOTEST_ARGS='-count=20', and the cache stays defeated either way, because
+# -count in any form is absent from Go's cacheable-flag allowlist.
 test:
-	$(call CAPPED,go test -race -p $(GOTEST_P) -parallel $(GOTEST_PARALLEL) $(GOTEST_ARGS) ./...)
+	$(call CAPPED,go test -race -p $(GOTEST_P) -parallel $(GOTEST_PARALLEL) -count=1 $(GOTEST_ARGS) ./...)
 
 # docs serves the documentation site locally with live reload.
 # docs-build renders it to docs/site/.vitepress/dist (gitignored).
