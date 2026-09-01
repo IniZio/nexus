@@ -833,7 +833,12 @@ func RunDetached(cfg Config) error {
 	)
 
 	// ── 7. Block until shutdown ───────────────────────────────────────────────
-	cause := awaitShutdown(ctx, stopCh, detachCh)
+	// Wire the VM-death channel: closed by watchParentOwnedDeath /
+	// watchAdoptedDeath in ch_netns.go when the netns child exits. A nil
+	// channel (returned when no runtime is registered yet) is safe — nil is
+	// never ready in a select.
+	vmDeadCh := drv.RuntimeDeathCh(sb.ID)
+	cause := awaitShutdown(ctx, stopCh, detachCh, vmDeadCh)
 	switch {
 	case cfg.Ephemeral && cause == shutdownByStopVerb:
 		// Builder finished: the caller sent POST /supervisor/stop to signal
@@ -844,6 +849,8 @@ func RunDetached(cfg Config) error {
 		slog.Info("supervisor.stop_requested", "sandboxRef", cfg.SandboxRef)
 	case cause == shutdownByDetach:
 		slog.Info("supervisor.detach_requested", "sandboxRef", cfg.SandboxRef)
+	case cause == shutdownByVMDeath:
+		slog.Warn("supervisor.vm_died", "sandboxRef", cfg.SandboxRef)
 	default:
 		slog.Info("supervisor.signal_received", "sandboxRef", cfg.SandboxRef)
 	}
@@ -858,6 +865,25 @@ func RunDetached(cfg Config) error {
 	if cause == shutdownByDetach {
 		slog.Info("supervisor.detached", "sandboxRef", cfg.SandboxRef,
 			"action", "VM and perimeter left running for a replacement supervisor")
+		return nil
+	}
+
+	// shutdownByVMDeath: the netns child exited unexpectedly — the VM is
+	// already gone. Reconcile the store record to Stopped/MemoryLost so that
+	// `nexus3 sandbox list` and `nexus3 recover` see the honest state rather
+	// than a forever-running ghost. Skip the UNI-TEARDOWN below (svc.Stop /
+	// svc.Remove) — calling driver.Stop on a dead pgid is a no-op but would
+	// overwrite StopReason with "clean". Defers (pidfile, socket, ctx cancel)
+	// still run on the way out.
+	if cause == shutdownByVMDeath {
+		slog.Warn("supervisor.vm_died", "sandboxRef", cfg.SandboxRef)
+		reconCtx, reconCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer reconCancel()
+		if err := reconcileVMDeath(reconCtx, st, sb.ID); err != nil {
+			slog.Warn("supervisor.vm_died_record_update_failed",
+				"sandboxRef", cfg.SandboxRef, "err", err)
+		}
+		slog.Info("supervisor.exited", "sandboxRef", cfg.SandboxRef, "cause", "vm_died")
 		return nil
 	}
 
@@ -926,24 +952,65 @@ const (
 	// must never be treated the same as shutdownByStopVerb; RunDetached's
 	// teardown switch skips svc.Stop/svc.Remove entirely for this cause.
 	shutdownByDetach
+	// shutdownByVMDeath means the netns child exited unexpectedly — the VM
+	// died without an operator stop request. The supervisor must reconcile
+	// the store record to Stopped/MemoryLost and exit without calling
+	// svc.Stop (the VM is already gone; calling driver.Stop on a dead pgid
+	// is a no-op but would overwrite StopReason with "clean"). This cause
+	// is distinct from shutdownBySignal so the teardown switch can skip the
+	// UNI-TEARDOWN driver call entirely and write the honest reason instead.
+	shutdownByVMDeath
 )
 
 // awaitShutdown blocks until the OS signal context is cancelled (SIGTERM /
-// SIGINT), a /supervisor/stop IPC request closes stopCh, or a
+// SIGINT), a /supervisor/stop IPC request closes stopCh, a
 // /supervisor/detach (or confirmed /supervisor/handoff) request closes
-// detachCh. It is extracted from RunDetached for unit-testability.
+// detachCh, or the netns child exits (vmDeadCh). It is extracted from
+// RunDetached for unit-testability.
 //
-// detachCh may be nil (a nil channel never becomes ready in a select, so this
-// degrades to the pre-detach two-way select used by existing tests/callers).
-func awaitShutdown(ctx context.Context, stopCh, detachCh <-chan struct{}) shutdownCause {
+// detachCh and vmDeadCh may be nil (a nil channel never becomes ready in a
+// select, so either degrades gracefully for callers that don't need them).
+func awaitShutdown(ctx context.Context, stopCh, detachCh, vmDeadCh <-chan struct{}) shutdownCause {
 	select {
 	case <-stopCh:
 		return shutdownByStopVerb
 	case <-detachCh:
 		return shutdownByDetach
+	case <-vmDeadCh:
+		return shutdownByVMDeath
 	case <-ctx.Done():
 		return shutdownBySignal
 	}
+}
+
+// vmDeathReconciler is the subset of store.Store used by reconcileVMDeath.
+// A narrow interface keeps reconcileVMDeath unit-testable without a full
+// store.Store fake implementation in tests.
+type vmDeathReconciler interface {
+	Update(ctx context.Context, id domain.SandboxID, fn func(*domain.Sandbox) error) error
+}
+
+// reconcileVMDeath writes State=Stopped/StopReasonMemoryLost to the store for
+// a sandbox whose VM died unexpectedly, and clears the netns adoption fields
+// so that a future AdoptNetnsRuntime cannot target a recycled pid group.
+//
+// It is extracted from RunDetached (and RunAdopt) so that tests can drive it
+// directly against a fake, proving the body itself — not a hand-copy of it.
+// The call site in RunDetached is not reached from unit tests (booting a VM
+// is required); that gap is acknowledged and accepted.
+func reconcileVMDeath(ctx context.Context, r vmDeathReconciler, id domain.SandboxID) error {
+	return r.Update(ctx, id, func(rec *domain.Sandbox) error {
+		rec.State = domain.Stopped
+		rec.StopReason = domain.StopReasonMemoryLost
+		// Clear netns adoption fields: a stale record must not cause a
+		// future AdoptNetnsRuntime to target a recycled pid group.
+		rec.NetnsChildPID = 0
+		rec.NetnsChildPGID = 0
+		rec.NetnsChildStartTime = 0
+		rec.GuestTapName = ""
+		rec.CHAPISocket = ""
+		return nil
+	})
 }
 
 // wireGovernorAxes attaches the CPU and disk AxisEvaluators to gov based on

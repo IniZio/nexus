@@ -141,6 +141,84 @@ type NetnsRuntime struct {
 
 	// stopOnce ensures Stop() is idempotent.
 	stopOnce sync.Once
+
+	// deathCh is closed exactly once when the netns child process (and its
+	// whole process group) has been confirmed dead and reaped. For a
+	// parent-owned runtime (cmd != nil) the goroutine started by
+	// StartNetnsRuntime calls cmd.Wait() — the single owner — and closes
+	// deathCh when Wait returns. For an adopted runtime (cmd == nil) a
+	// pgid-poll goroutine started by AdoptNetnsRuntime closes it when
+	// kill(-ChildPGID, 0) returns ESRCH. Callers that need to observe VM
+	// death without blocking Stop() read from this channel.
+	deathCh chan struct{}
+}
+
+// DeathCh returns a channel that is closed exactly once when the netns child
+// process group has been confirmed dead. The channel is ready for select from
+// the moment the runtime is returned by [StartNetnsRuntime] or
+// [AdoptNetnsRuntime]. It is never nil.
+func (rt *NetnsRuntime) DeathCh() <-chan struct{} { return rt.deathCh }
+
+// watchParentOwnedDeath is the single owner of cmd.Wait() for parent-owned
+// runtimes. It blocks until the netns child exits (and is reaped — no zombie
+// left), then closes rt.deathCh to signal observers. Must be started exactly
+// once, in a goroutine, after StartNetnsRuntime's readiness poll completes.
+func (rt *NetnsRuntime) watchParentOwnedDeath() {
+	_ = rt.cmd.Wait() // single owner: reaps the child, eliminating the zombie
+	close(rt.deathCh)
+}
+
+// watchAdoptedDeath polls kill(-ChildPGID, 0) until ESRCH, confirming the
+// entire process group is gone, then closes rt.deathCh. Used for adopted
+// runtimes where this process is not the child's parent and cmd.Wait() is
+// unavailable.
+//
+// There is intentionally NO deadline: a timeout that fires while the group is
+// still alive would close deathCh spuriously and cause the supervisor to mark
+// a running VM as stopped. waitForGroupExit's bounded variant belongs in
+// Stop(), where the group has already been signalled and a hang must be
+// escaped; here the job is liveness detection, not confirmed-exit waiting.
+//
+// For the ChildPGID == 0 case this runtime has no process-group identity to
+// watch, so it cannot detect death at all. It fails closed — deathCh is never
+// closed — so the supervisor does not exit leaving a running VM orphaned. The
+// other shutdown arms (stopCh, detachCh) handle the normal exit path.
+//
+// ctx cancellation exits the watcher without closing deathCh (the VM may
+// still be alive; the supervisor is shutting down for a different reason).
+func (rt *NetnsRuntime) watchAdoptedDeath(ctx context.Context) {
+	if rt.ChildPGID == 0 {
+		// No process group to poll: fail closed, never signal death.
+		<-ctx.Done()
+		return
+	}
+	for {
+		if err := syscall.Kill(-rt.ChildPGID, 0); errors.Is(err, syscall.ESRCH) {
+			close(rt.deathCh)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			// Supervisor is shutting down for another reason; exit without
+			// signalling VM death — the group may still be alive.
+			return
+		case <-time.After(netnsGroupExitPollInterval):
+		}
+	}
+}
+
+// RuntimeDeathCh returns the death channel for the sandbox id's active netns
+// runtime. Returns a nil channel (which never becomes ready in a select) if
+// no runtime is registered for id — this is safe for callers that embed it in
+// a select alongside other shutdown arms.
+func (d *CHDriver) RuntimeDeathCh(id domain.SandboxID) <-chan struct{} {
+	d.mu.Lock()
+	ns := d.nets[id]
+	d.mu.Unlock()
+	if ns == nil || ns.rt == nil {
+		return nil
+	}
+	return ns.rt.DeathCh()
 }
 
 // netnsSocketpairFiles creates an AF_UNIX SOCK_DGRAM socketpair and returns
@@ -300,7 +378,7 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 			"pid", childPgid, "err", stErr)
 	}
 
-	return &NetnsRuntime{
+	rt := &NetnsRuntime{
 		PerimConn:      perimConn,
 		APISocket:      socketPath,
 		GuestTap:       guestTap,
@@ -309,7 +387,14 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 		ChildStartTime: childStartTime,
 		cmd:            cmd,
 		stderrBuf:      stderrBuf,
-	}, nil
+		deathCh:        make(chan struct{}),
+	}
+	// Start the single owner of cmd.Wait(). The readiness poll above has
+	// already confirmed the VM is up, so we can now hand off Wait ownership
+	// to this goroutine. Stop() will wait on deathCh instead of calling
+	// cmd.Wait() directly, preserving the single-owner invariant (AC-12c).
+	go rt.watchParentOwnedDeath()
+	return rt, nil
 }
 
 // readProcStartTime reads field 22 (starttime) from /proc/<pid>/stat and
@@ -404,7 +489,7 @@ func ReadProcStat(pid int) (ProcStat, error) {
 // The returned NetnsRuntime has cmd == nil: it was not produced by
 // exec.Command in this process, so Stop() cannot cmd.Wait() on it and takes
 // the non-parent confirmation path instead (see Stop).
-func AdoptNetnsRuntime(childPID, childPGID int, childStartTime uint64, guestTap, apiSocket string, perimFile *os.File) (*NetnsRuntime, error) {
+func AdoptNetnsRuntime(ctx context.Context, childPID, childPGID int, childStartTime uint64, guestTap, apiSocket string, perimFile *os.File) (*NetnsRuntime, error) {
 	if perimFile == nil {
 		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: perimFile is nil")
 	}
@@ -453,16 +538,22 @@ func AdoptNetnsRuntime(childPID, childPGID int, childStartTime uint64, guestTap,
 	}
 	perimFile.Close()
 
-	return &NetnsRuntime{
+	rt := &NetnsRuntime{
 		PerimConn:      perimConn,
 		APISocket:      apiSocket,
 		GuestTap:       guestTap,
 		ChildPID:       childPID,
 		ChildPGID:      childPGID,
 		ChildStartTime: childStartTime,
+		deathCh:        make(chan struct{}),
 		// cmd is deliberately left nil: this process did not fork the
 		// child, so it has no *exec.Cmd to Wait() on.
-	}, nil
+	}
+	// Start the pgid-poll watcher for the adopted (non-parent) path. The
+	// pid-reuse guard above confirmed the child is still alive with the
+	// expected identity, so it is safe to begin watching now.
+	go rt.watchAdoptedDeath(ctx)
+	return rt, nil
 }
 
 // ChildStderr returns the buffered child stderr output as a string.
@@ -525,7 +616,17 @@ func (rt *NetnsRuntime) Stop() {
 			_ = syscall.Kill(-rt.ChildPGID, syscall.SIGKILL)
 		}
 		if rt.cmd != nil {
-			_ = rt.cmd.Wait()
+			if rt.deathCh != nil {
+				// watchParentOwnedDeath owns the single cmd.Wait() call and
+				// closes deathCh when it returns. Wait on that instead of
+				// calling cmd.Wait() again — a concurrent Wait would race it
+				// (AC-12c). Production runtimes always have a non-nil deathCh
+				// (StartNetnsRuntime initialises it); the nil fallback is for
+				// runtimes constructed directly in unit tests.
+				<-rt.deathCh
+			} else {
+				_ = rt.cmd.Wait()
+			}
 		} else if rt.ChildPGID != 0 {
 			// FIX-2: propagate the group-exit result. Changing Stop's return
 			// type would require updating all callers (t.Cleanup, goroutines,

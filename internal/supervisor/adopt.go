@@ -178,7 +178,7 @@ func RunAdopt(cfg Config, handoffSockPath string) error {
 		return fmt.Errorf("supervisor: adopt: %s", reason)
 	}
 
-	rt, err := cloudhypervisor.AdoptNetnsRuntime(
+	rt, err := cloudhypervisor.AdoptNetnsRuntime(ctx,
 		sb.NetnsChildPID, sb.NetnsChildPGID, sb.NetnsChildStartTime,
 		sb.GuestTapName, sb.CHAPISocket, fdFile,
 	)
@@ -338,9 +338,29 @@ func RunAdopt(cfg Config, handoffSockPath string) error {
 
 	slog.Info("supervisor.adopt.ready", "sandboxRef", cfg.SandboxRef, "pid", pid, "sock", sockPath)
 
-	cause := awaitShutdown(ctx, stopCh, detachCh)
+	// Wire the VM-death channel for the adopted runtime (AC-12a/b): if the
+	// adopted VM dies unexpectedly, awaitShutdown returns shutdownByVMDeath
+	// and the teardown block handles record reconciliation. nil is safe — a
+	// nil channel is never selected.
+	vmDeadCh := drv.RuntimeDeathCh(sb.ID)
+	cause := awaitShutdown(ctx, stopCh, detachCh, vmDeadCh)
 	if cause == shutdownByDetach {
 		slog.Info("supervisor.adopt.detached", "sandboxRef", cfg.SandboxRef)
+		return nil
+	}
+
+	// shutdownByVMDeath: the adopted VM died unexpectedly. Reconcile the store
+	// record to Stopped/MemoryLost without calling svc.Stop() — the VM is
+	// already gone and driver.Stop on a dead pgid would overwrite the reason.
+	if cause == shutdownByVMDeath {
+		slog.Warn("supervisor.adopt.vm_died", "sandboxRef", cfg.SandboxRef)
+		reconCtx, reconCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer reconCancel()
+		if err := reconcileVMDeath(reconCtx, st, sb.ID); err != nil {
+			slog.Warn("supervisor.adopt.vm_died_record_update_failed",
+				"sandboxRef", cfg.SandboxRef, "err", err)
+		}
+		slog.Info("supervisor.adopt.exited", "sandboxRef", cfg.SandboxRef, "cause", "vm_died")
 		return nil
 	}
 

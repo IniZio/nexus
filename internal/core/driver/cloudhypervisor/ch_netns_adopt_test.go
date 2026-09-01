@@ -7,6 +7,7 @@
 package cloudhypervisor
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -47,7 +48,7 @@ func TestAdoptNetnsRuntime_Rebuilds(t *testing.T) {
 		t.Fatalf("readProcStartTime(%d): %v", pid, err)
 	}
 
-	rt, err := AdoptNetnsRuntime(pid, pid, startTime, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
+	rt, err := AdoptNetnsRuntime(context.Background(), pid, pid, startTime, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
 	if err != nil {
 		t.Fatalf("AdoptNetnsRuntime: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestAdoptNetnsRuntime_Rebuilds(t *testing.T) {
 // accepted into a NetnsRuntime with a nil PerimConn (which would panic or
 // hang the first time a caller reads guest frames).
 func TestAdoptNetnsRuntime_RejectsMissingPerimFile(t *testing.T) {
-	_, err := AdoptNetnsRuntime(100, 100, 0, "nx3g-test", "/tmp/nx3-test.sock", nil)
+	_, err := AdoptNetnsRuntime(context.Background(), 100, 100, 0, "nx3g-test", "/tmp/nx3-test.sock", nil)
 	if err == nil {
 		t.Fatal("expected error for nil perimFile, got nil")
 	}
@@ -122,7 +123,7 @@ func TestAdoptNetnsRuntime_RejectsNonPositivePIDs(t *testing.T) {
 				t.Fatalf("netnsSocketpairFiles: %v", err)
 			}
 			defer pumpFile.Close()
-			_, err = AdoptNetnsRuntime(tc.childPID, tc.childPGID, 0, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
+			_, err = AdoptNetnsRuntime(context.Background(), tc.childPID, tc.childPGID, 0, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
 			perimFile.Close()
 			if err == nil {
 				t.Errorf("expected error for %s, got nil", tc.name)
@@ -163,7 +164,7 @@ func TestAdoptNetnsRuntime_RejectsZeroStartTime(t *testing.T) {
 	defer pumpFile.Close()
 	defer perimFile.Close()
 
-	rt, err := AdoptNetnsRuntime(pid, pid, 0, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
+	rt, err := AdoptNetnsRuntime(context.Background(), pid, pid, 0, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
 	if err == nil {
 		rt.PerimConn.Close()
 		t.Fatal("adoption with childStartTime=0 was ACCEPTED; the pid-reuse guard is disarmed")
@@ -212,7 +213,7 @@ func TestAdoptNetnsRuntime_RejectsStaleStartTime(t *testing.T) {
 		}
 		defer pumpFile.Close()
 
-		_, err = AdoptNetnsRuntime(pid, pid, wrongST, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
+		_, err = AdoptNetnsRuntime(context.Background(), pid, pid, wrongST, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
 		perimFile.Close()
 		if err == nil {
 			t.Errorf("expected error for starttime mismatch (real=%d, passed=%d), got nil", realST, wrongST)
@@ -254,7 +255,7 @@ func TestAdoptNetnsRuntime_RejectsStaleStartTime(t *testing.T) {
 		defer pumpFile.Close()
 
 		// Even with the correct savedST, the pid is gone → must be rejected.
-		_, err = AdoptNetnsRuntime(pid, pid, savedST, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
+		_, err = AdoptNetnsRuntime(context.Background(), pid, pid, savedST, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
 		perimFile.Close()
 		if err == nil {
 			t.Errorf("expected error for vanished pid %d (st=%d), got nil", pid, savedST)
@@ -374,7 +375,7 @@ func TestStop_AdoptedRuntime_KillsAndConfirms(t *testing.T) {
 		t.Fatalf("readProcStartTime(%d): %v", pgid, err)
 	}
 
-	rt, err := AdoptNetnsRuntime(pgid, pgid, childST, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
+	rt, err := AdoptNetnsRuntime(context.Background(), pgid, pgid, childST, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
 	if err != nil {
 		t.Fatalf("AdoptNetnsRuntime: %v", err)
 	}

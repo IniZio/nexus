@@ -315,7 +315,7 @@ func TestAwaitShutdown_StopVerb(t *testing.T) {
 	// Close the stop channel to simulate POST /supervisor/stop.
 	close(stopCh)
 
-	got := awaitShutdown(ctx, stopCh, nil)
+	got := awaitShutdown(ctx, stopCh, nil, nil)
 	if got != shutdownByStopVerb {
 		t.Errorf("awaitShutdown with closed stopCh = %v, want shutdownByStopVerb (%v)", got, shutdownByStopVerb)
 	}
@@ -331,7 +331,7 @@ func TestAwaitShutdown_Signal(t *testing.T) {
 	// Simulate SIGTERM by cancelling the context.
 	cancel()
 
-	got := awaitShutdown(ctx, stopCh, nil)
+	got := awaitShutdown(ctx, stopCh, nil, nil)
 	if got != shutdownBySignal {
 		t.Errorf("awaitShutdown with cancelled ctx = %v, want shutdownBySignal (%v)", got, shutdownBySignal)
 	}
@@ -349,7 +349,7 @@ func TestAwaitShutdown_BothReadyNoDeadlock(t *testing.T) {
 	close(stopCh)
 	cancel()
 
-	got := awaitShutdown(ctx, stopCh, nil)
+	got := awaitShutdown(ctx, stopCh, nil, nil)
 	if got != shutdownByStopVerb && got != shutdownBySignal {
 		t.Errorf("awaitShutdown with both ready = %v, want shutdownByStopVerb or shutdownBySignal", got)
 	}
@@ -368,7 +368,7 @@ func TestAwaitShutdown_Detach(t *testing.T) {
 
 	close(detachCh)
 
-	got := awaitShutdown(ctx, stopCh, detachCh)
+	got := awaitShutdown(ctx, stopCh, detachCh, nil)
 	if got != shutdownByDetach {
 		t.Errorf("awaitShutdown with closed detachCh = %v, want shutdownByDetach (%v)", got, shutdownByDetach)
 	}
@@ -385,9 +385,55 @@ func TestAwaitShutdown_NilDetachChDegradesToTwoWay(t *testing.T) {
 	ctx := context.Background()
 	close(stopCh)
 
-	got := awaitShutdown(ctx, stopCh, nil)
+	got := awaitShutdown(ctx, stopCh, nil, nil)
 	if got != shutdownByStopVerb {
 		t.Errorf("awaitShutdown with nil detachCh and closed stopCh = %v, want shutdownByStopVerb", got)
+	}
+}
+
+// TestAwaitShutdown_VMDeath verifies AC-12b: closing vmDeadCh (netns child
+// exited) returns shutdownByVMDeath, strictly distinct from the other causes.
+//
+// MUTATION PROOF target: in awaitShutdown, the arm
+//
+//	case <-vmDeadCh:
+//	    return shutdownByVMDeath
+//
+// Removing that arm (or changing the return to shutdownBySignal) causes this
+// test to hang or return the wrong cause — a genuine test FAILURE.
+func TestAwaitShutdown_VMDeath(t *testing.T) {
+	stopCh := make(chan struct{})    // never closed — no stop verb
+	vmDeadCh := make(chan struct{})  // closed — VM died
+	ctx := context.Background()
+
+	close(vmDeadCh)
+
+	got := awaitShutdown(ctx, stopCh, nil, vmDeadCh)
+	if got != shutdownByVMDeath {
+		t.Errorf("awaitShutdown with closed vmDeadCh = %v, want shutdownByVMDeath (%v)", got, shutdownByVMDeath)
+	}
+	if got == shutdownByStopVerb {
+		t.Error("shutdownByVMDeath must NOT equal shutdownByStopVerb")
+	}
+	if got == shutdownBySignal {
+		t.Error("shutdownByVMDeath must NOT equal shutdownBySignal")
+	}
+	if got == shutdownByDetach {
+		t.Error("shutdownByVMDeath must NOT equal shutdownByDetach")
+	}
+}
+
+// TestAwaitShutdown_NilVMDeadChDegradesToThreeWay verifies that a nil
+// vmDeadCh does not participate in the select — the stop/detach/signal
+// behaviour is unchanged when no VM-death channel is wired.
+func TestAwaitShutdown_NilVMDeadChDegradesToThreeWay(t *testing.T) {
+	stopCh := make(chan struct{})
+	ctx := context.Background()
+	close(stopCh)
+
+	got := awaitShutdown(ctx, stopCh, nil, nil)
+	if got != shutdownByStopVerb {
+		t.Errorf("awaitShutdown with nil vmDeadCh and closed stopCh = %v, want shutdownByStopVerb", got)
 	}
 }
 

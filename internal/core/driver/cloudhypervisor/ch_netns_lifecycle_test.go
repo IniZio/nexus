@@ -743,26 +743,22 @@ func TestLifecycle_LauncherExitsOnCHDeath(t *testing.T) {
 	// calls syscall.Wait4 (waits for CH to exit) then os.Exit(0) to kill the
 	// entire process — including the stuck TAP-read goroutine inside tapPump.
 	//
-	// We wait via rt.cmd.Wait(), NOT via kill(childPID,0)/ESRCH polling:
-	//   - os.Exit(0) makes the netns child a zombie (parent = this test process
-	//     holding rt.cmd). A zombie's PID may be reused by a new process almost
-	//     immediately (Linux recycles PIDs aggressively), making kill(pid,0)
-	//     and /proc/<pid>/stat unreliable — they would show the NEW process.
-	//   - rt.cmd.Wait() is pinned to the specific exec.Cmd (uses the pidfd or
-	//     the child's internal waitpid token), so PID reuse cannot fool it.
-	//
-	// rt.cmd.Wait() is called here and will return immediately if the child has
-	// already exited (zombie), or block until it exits. defer rt.Stop() above
-	// also calls rt.cmd.Wait() — it ignores the "already called" error.
+	// We observe exit via rt.deathCh (closed by watchParentOwnedDeath when
+	// cmd.Wait() returns), NOT by calling rt.cmd.Wait() directly. Rationale:
+	//   - watchParentOwnedDeath is the single owner of cmd.Wait() (AC-12c);
+	//     a concurrent call from this test would be a data race under -race.
+	//   - rt.deathCh is closed by the same cmd.Wait() call, so it fires on
+	//     exactly the same condition as a direct cmd.Wait() would — without
+	//     the zombie-PID-reuse hazard of kill(pid,0)/proc polling.
+	//   - A closed channel broadcasts: both rt.Stop() (which waits on
+	//     rt.deathCh) and this select can observe the close without conflict.
 	//
 	// Without the goroutine (mutation: replace goroutine with _ = proc),
 	// syscall.Wait4 is never called; os.Exit(0) is never called; the netns
-	// child is stuck in tapPump forever → waitDone never fires → test FAILS.
+	// child is stuck in tapPump forever → deathCh never closes → test FAILS.
 	const timeout = 5 * time.Second
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- rt.cmd.Wait() }()
 	select {
-	case <-waitDone:
+	case <-rt.deathCh:
 		t.Logf("PASS orphan-launcher: netns child pid=%d exited after CH death", childPID)
 	case <-time.After(timeout):
 		t.Logf("child stderr:\n%s", rt.ChildStderr())

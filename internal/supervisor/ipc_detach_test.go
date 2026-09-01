@@ -91,7 +91,7 @@ func TestAwaitShutdown_DetachDrivesShutdownByDetach(t *testing.T) {
 		t.Fatalf("DetachSupervisor: %v", err)
 	}
 
-	got := awaitShutdown(context.Background(), h.StopCh, h.DetachCh)
+	got := awaitShutdown(context.Background(), h.StopCh, h.DetachCh, nil)
 	if got != shutdownByDetach {
 		t.Fatalf("awaitShutdown after wire-level detach = %v, want shutdownByDetach", got)
 	}

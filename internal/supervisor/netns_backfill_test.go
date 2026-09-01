@@ -9,6 +9,7 @@
 package supervisor
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"syscall"
@@ -212,7 +213,7 @@ func TestBackfillNetnsIdentity_ThenAdopt_StarttimeMismatch_Refuses(t *testing.T)
 
 	perimFile := socketpairFile(t)
 
-	_, err = cloudhypervisor.AdoptNetnsRuntime(id.ChildPID, id.ChildPGID, corrupted, id.GuestTapName, id.APISocket, perimFile)
+	_, err = cloudhypervisor.AdoptNetnsRuntime(context.Background(), id.ChildPID, id.ChildPGID, corrupted, id.GuestTapName, id.APISocket, perimFile)
 	if err == nil {
 		t.Fatal("expected AdoptNetnsRuntime to refuse a backfilled identity whose starttime does not match /proc, got nil")
 	}
