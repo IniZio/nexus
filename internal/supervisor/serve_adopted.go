@@ -32,10 +32,11 @@ type serveAdoptedInput struct {
 
 	// seedCA is the MITM CA to hand StartPerimeterOnly. Non-nil on the
 	// HANDOFF path, where the outgoing supervisor's payload carried the CA
-	// that the guest already imported and pinned this boot. NIL on the CRASH
-	// path, where no payload exists and StartPerimeterOnly must mint a fresh
-	// CA — see RunReacquire, which logs the resulting TLS breakage rather
-	// than letting a caller believe TLS survived.
+	// that the guest already imported and pinned this boot, and on the CRASH
+	// path whenever the CA persisted by the perimeter could be loaded back
+	// (statedir.LoadCA, D-HSH-18). Nil only when there is genuinely no CA to
+	// seed, in which case StartPerimeterOnly mints a fresh one and the caller
+	// reports the loss loudly — see reacquireSeedInput.
 	seedCA *service.CASeed
 
 	// refreshers are the credential refreshers to register and keep warm.

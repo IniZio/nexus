@@ -31,11 +31,89 @@ type ReacquireResult struct {
 	Runtime *cloudhypervisor.NetnsRuntime
 
 	// CALost is true when the perimeter had to be brought up with a FRESH
-	// MITM CA because none could be recovered. On the crash path this is
-	// always true today: the CA lives only in the dead supervisor's memory
-	// and travels only in handoff.Payload.CA, which a crashed process never
-	// sent. See ReacquirePerimeterForSandbox's doc comment.
+	// MITM CA because none could be recovered, and every in-guest TLS session
+	// therefore breaks until the guest re-imports it.
+	//
+	// [ReacquirePerimeterForSandbox] leaves this at the FAIL-CLOSED value
+	// (true) because it does not read the CA; [RunReacquire] overwrites it
+	// from [reacquireSeedInput], which is the single place the CA decision is
+	// made. The default is deliberately the pessimistic one so any future
+	// caller that forgets to load a CA reports the truth rather than claiming
+	// a trust continuity it does not have.
 	CALost bool
+}
+
+// reacquireSeedInput loads the persisted MITM CA for sb and assembles the
+// [serveAdoptedInput] the crash path serves with. It returns the input and
+// whether the CA was LOST (i.e. could not be recovered and a fresh one will be
+// minted by StartPerimeterOnly).
+//
+// # Why the load and the wiring live in ONE function
+//
+// This slice exists because the crash path passed seedCA: nil while the whole
+// seeding mechanism sat there unused. A mechanism with no caller is the defect
+// class this motive has already shipped once (53ac4a8). Loading the CA in one
+// function and wiring it in another would leave a link that no test can reach,
+// so both happen here: this is the function whose output RunReacquire hands
+// straight to serveAdoptedSupervisor, and a test can assert on it.
+//
+// # Fail closed and loud
+//
+// Absent, corrupt, truncated, half-written, or expired CA material all take
+// the same path: seedCA stays nil, caLost is true, and a WARN names the cause
+// and the path. statedir.LoadCA validates the pair with exactly the checks
+// mitm.New applies to a seed, so a damaged file can never become a supervisor
+// start-up failure — a crash-recovery path that DIED on a truncated CA file
+// would turn a recoverable sandbox into an unrecoverable one, which is the
+// outcome this whole rail exists to prevent.
+func reacquireSeedInput(
+	cfg Config,
+	st store.Store,
+	svc *service.Service,
+	drv *cloudhypervisor.CHDriver,
+	sb domain.Sandbox,
+	refreshers []*cred.Refresher,
+) (serveAdoptedInput, bool) {
+	// cfg.StoreRoot is the same root the writer resolves: the CLI opens its
+	// FileStore at store.DefaultRoot() and passes that path down as StoreRoot,
+	// and service.startSupervisor — which runs INSIDE this process and does
+	// the writing — calls store.DefaultRoot() itself, inheriting the same
+	// XDG_STATE_HOME. Both ends also go through statedir.SupervisorDir, so the
+	// path cannot drift even if the roots ever did.
+	caDir := statedir.SupervisorDir(cfg.StoreRoot, sb.ID)
+
+	var seedCA *service.CASeed
+	certPEM, keyPEM, caErr := statedir.LoadCA(caDir)
+	switch {
+	case caErr != nil:
+		slog.Warn("supervisor.reacquire.ca_lost",
+			"sandboxRef", cfg.SandboxRef,
+			"sandbox", sb.ID,
+			"path", statedir.CAPath(caDir),
+			"cause", caErr.Error(),
+			"impact", "in-guest TLS sessions will FAIL until the guest re-imports the FRESH MITM CA; plain (non-TLS) guest networking is restored")
+	default:
+		seedCA = &service.CASeed{CertPEM: certPEM, KeyPEM: keyPEM}
+		slog.Info("supervisor.reacquire.ca_recovered",
+			"sandboxRef", cfg.SandboxRef,
+			"sandbox", sb.ID,
+			"path", statedir.CAPath(caDir),
+			"note", "the replacement perimeter keeps signing with the CA the guest already trusts; TLS survives this recovery")
+	}
+
+	return serveAdoptedInput{
+		cfg:        cfg,
+		st:         st,
+		svc:        svc,
+		drv:        drv,
+		sb:         sb,
+		seedCA:     seedCA,
+		refreshers: refreshers,
+		// waitForPID is 0: the previous supervisor is already dead — that is
+		// the premise of this whole mode — so there is no exit to wait for.
+		waitForPID: 0,
+		logPrefix:  "supervisor.reacquire",
+	}, seedCA == nil
 }
 
 // reacquirePreflight is the fail-closed gate that decides whether a crash-path
@@ -110,17 +188,18 @@ type runtimeAdopter interface {
 //
 // # CA / TLS (answers ticket 09 Q3)
 //
-// CALost is always true on this path. The MITM CA material exists only in
-// the crashed supervisor's memory and is transferred only via
-// handoff.Payload.CA (buildHandoffPayload reads it from the live
-// perimeter.PerimeterSupervisor via CAKeyPair); it is never written to disk.
-// A crashed supervisor sent no payload, so the replacement necessarily mints
-// a fresh CA. The guest has already imported and pinned the OLD CA this
-// boot, so every in-guest TLS session breaks until the guest re-imports.
-// Plain (non-TLS) guest networking is fully restored. Crash recovery is
-// therefore NON-DESTRUCTIVE but NOT TRANSPARENT — this is reported, not
-// papered over, because a caller that believes TLS survived would diagnose
-// the resulting failures as a network fault rather than as expected.
+// This function does not read the CA, so the CALost it returns is the
+// fail-closed default (true). The CA decision belongs to
+// [reacquireSeedInput], which loads the CA persisted by the perimeter when it
+// minted it (statedir.SaveCA, D-HSH-18 / ticket 13) and is the single place
+// that decides whether the guest's TLS trust survives; [RunReacquire]
+// overwrites CALost from it.
+//
+// Historical note, because it explains the shape of this rail: before
+// s15-ca-persistence the CA existed only in the crashed supervisor's memory
+// and travelled only via handoff.Payload.CA, which a crashed process never
+// sent — so CALost was unconditionally true and crash recovery was
+// non-destructive but never transparent.
 func ReacquirePerimeterForSandbox(ctx context.Context, sb domain.Sandbox, drv runtimeAdopter) (ReacquireResult, error) {
 	if err := reacquirePreflight(sb); err != nil {
 		return ReacquireResult{}, err
@@ -152,12 +231,12 @@ func ReacquirePerimeterForSandbox(ctx context.Context, sb domain.Sandbox, drv ru
 		return ReacquireResult{}, fmt.Errorf("supervisor: reacquire %s: install runtime: %w", sb.ID, err)
 	}
 
-	slog.Warn("supervisor.reacquired",
+	slog.Info("supervisor.reacquired",
 		"sandbox", sb.ID,
 		"childPID", sb.NetnsChildPID,
-		"caLost", true,
-		"note", "guest TLS sessions break until the guest re-imports the new MITM CA; plain networking is restored")
+		"note", "perimeter re-acquired without rebooting the guest; whether TLS trust survived is decided by reacquireSeedInput and logged separately")
 
+	// CALost defaults to the fail-closed value: this function never read a CA.
 	return ReacquireResult{Runtime: rt, CALost: true}, nil
 }
 
@@ -190,14 +269,23 @@ var _ runtimeAdopter = (*cloudhypervisor.CHDriver)(nil)
 // calling rt.Stop(), which would SIGKILL the process group of the only live
 // copy of the VM. See [ReacquirePerimeterForSandbox] for the full contract.
 //
-// # TLS is broken across this path
+// # TLS across this path
 //
-// There is no seed CA to pass: the crashed supervisor's CA existed only in
-// its memory. StartPerimeterOnly therefore mints a FRESH CA, and every
-// in-guest TLS session breaks until the guest re-imports it. Plain networking
-// is fully restored. This is logged at WARN rather than papered over — a
+// The MITM CA is persisted to the per-sandbox supervisor state dir when the
+// perimeter mints it (statedir.SaveCA, D-HSH-18 / ticket 13), so this mode
+// re-seeds it and the replacement perimeter keeps signing leaf certificates
+// the guest already trusts: recovery is transparent to a RUNNING in-guest
+// process, which is the whole point — a long-running Node process reads
+// NODE_EXTRA_CA_CERTS once at startup, so no guest-side re-import could have
+// reached it.
+//
+// If the CA cannot be recovered — absent, unreadable, corrupt, truncated,
+// half-written, or expired — this path FAILS CLOSED and LOUD: it mints a fresh
+// CA, reports CALost, and logs the cause at WARN, rather than papering over
+// it. In that case every in-guest TLS session breaks until the guest
+// re-imports, while plain networking is fully restored. Reported, because a
 // caller who believes TLS survived will diagnose the resulting failures as a
-// network fault instead of as the expected cost of crash recovery.
+// network fault instead of as the cost of a lost CA.
 func RunReacquire(cfg Config) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
@@ -260,16 +348,15 @@ func RunReacquire(cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("supervisor: reacquire: %w", err)
 	}
-	slog.Info("supervisor.reacquire.acquired",
-		"sandboxRef", cfg.SandboxRef, "sandbox", sb.ID, "netnsChildPID", sb.NetnsChildPID)
+	// Load the persisted MITM CA and build the serve input in one step. The
+	// WARN/INFO naming the CA outcome is emitted inside reacquireSeedInput.
+	in, caLost := reacquireSeedInput(cfg, st, svc, drv, sb, refreshers)
+	res.CALost = caLost
 
-	if res.CALost {
-		slog.Warn("supervisor.reacquire.ca_lost",
-			"sandboxRef", cfg.SandboxRef,
-			"sandbox", sb.ID,
-			"impact", "in-guest TLS sessions will FAIL until the guest re-imports the new MITM CA; plain (non-TLS) guest networking is restored",
-			"cause", "the crashed supervisor's CA existed only in its memory and travels only in handoff.Payload.CA, which a crashed process never sent")
-	}
+	slog.Info("supervisor.reacquire.acquired",
+		"sandboxRef", cfg.SandboxRef, "sandbox", sb.ID, "netnsChildPID", sb.NetnsChildPID,
+		"caLost", res.CALost)
+
 
 	// Persist this process's supervisor identity. recover cleared the dead
 	// supervisor's pid/socket when it classified the sandbox adoptable, so
@@ -280,17 +367,5 @@ func RunReacquire(cfg Config) error {
 		return fmt.Errorf("supervisor: reacquire: persist supervisor identity: %w", setErr)
 	}
 
-	// waitForPID is 0: the previous supervisor is already dead — that is the
-	// premise of this whole mode — so there is no exit to wait for.
-	return serveAdoptedSupervisor(ctx, serveAdoptedInput{
-		cfg:        cfg,
-		st:         st,
-		svc:        svc,
-		drv:        drv,
-		sb:         sb,
-		seedCA:     nil, // crash path: no payload, so no CA to seed (res.CALost)
-		refreshers: refreshers,
-		waitForPID: 0,
-		logPrefix:  "supervisor.reacquire",
-	})
+	return serveAdoptedSupervisor(ctx, in)
 }

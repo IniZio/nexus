@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -976,6 +977,31 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 			fd.Close()
 			al.Stop()
 			return fmt.Errorf("mitm proxy: %w", err)
+		}
+
+		// Persist the CA so a supervisor that replaces a CRASHED one can
+		// re-seed it and keep signing leaf certificates the guest already
+		// trusts (D-HSH-18 / ticket 13). Written unconditionally rather than
+		// only when the CA was freshly minted: writing back a seeded CA is
+		// idempotent (same bytes) and self-healing (it restores the file if it
+		// was deleted or damaged while the sandbox ran), whereas a
+		// "mint-only" branch would leave a sandbox that was adopted once with
+		// no persisted CA at all.
+		//
+		// Best-effort by design: a perimeter that enforces egress policy but
+		// whose CA will not survive a crash is strictly better than no
+		// perimeter. The failure is logged at WARN and names the path, so the
+		// later "CA lost" on recovery can be traced back to it rather than
+		// looking like a fresh bug.
+		if stateDir != "" {
+			if certPEM, keyPEM, kpErr := proxy.CAKeyPair(); kpErr != nil {
+				slog.Warn("perimeter.ca_persist_failed", "sandbox", sb.ID, "stage", "encode", "err", kpErr,
+					"impact", "a crash-path recovery of this sandbox will have to mint a fresh CA and break in-guest TLS")
+			} else if saveErr := statedir.SaveCA(stateDir, certPEM, keyPEM); saveErr != nil {
+				slog.Warn("perimeter.ca_persist_failed", "sandbox", sb.ID, "stage", "write",
+					"path", statedir.CAPath(stateDir), "err", saveErr,
+					"impact", "a crash-path recovery of this sandbox will have to mint a fresh CA and break in-guest TLS")
+			}
 		}
 	}
 
