@@ -4,7 +4,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"time"
 
+	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/recovery"
 	"github.com/IniZio/nexus3/internal/core/store"
@@ -86,7 +88,9 @@ func runRecover(ctx context.Context, args []string, out *Output) error {
 // (AC-8, OutcomeAdoptable) — that production runs, without needing a real
 // hypervisor.
 func runRecoverWith(ctx context.Context, st store.Store, drv driver.Driver, out *Output) error {
-	rec := recovery.New(st, drv).WithSupervisorCheck(supervisor.CheckAndReconcile)
+	rec := recovery.New(st, drv).
+		WithSupervisorCheck(supervisor.CheckAndReconcile).
+		WithAdoptSpawner(recoverAdoptSpawner)
 	report, err := rec.Recover(ctx)
 	if err != nil {
 		return &CodedError{
@@ -122,3 +126,61 @@ func runRecoverWith(ctx context.Context, st store.Store, drv driver.Driver, out 
 		fmt.Sprintf("recovery complete: examined %d sandbox(es)", len(report.Outcomes)))
 	return nil
 }
+
+// recoverAdoptSpawner is the adopt-spawn callback runRecoverWith wires into
+// recovery. It is a package-level variable, not a direct reference, purely so
+// tests can substitute a fake and assert that the PRODUCTION path reaches it
+// — forking a real supervisor in a unit test is not possible, but leaving the
+// wiring uncovered is how this motive shipped a mechanism with no caller in
+// the first place. Production never reassigns it.
+var recoverAdoptSpawner = spawnReplacementSupervisor
+
+// spawnReplacementSupervisor is the production adopt-spawn callback wired
+// into recovery: it starts a long-lived RunReacquire supervisor for a
+// sandbox whose VM is alive but whose supervisor died.
+//
+// It lives here, in the CLI, for the same reason supervisor.CheckAndReconcile
+// does: internal/core/recovery must not import internal/supervisor (that
+// closes an import cycle through the cloudhypervisor test package), and this
+// package already imports both without cycling.
+//
+// The spawn config is reconstructed from the sandbox's own spawn.json, which
+// the original create wrote — that is what carries the kernel, disk, ch-bin,
+// governor bounds and mount set the replacement must boot with. Reading it
+// rather than re-deriving those values means the replacement supervises the
+// VM with exactly the configuration it was created under.
+//
+// Returns caLost=true always on success: the crashed supervisor's MITM CA
+// existed only in its memory, so the replacement necessarily mints a fresh
+// one. Recovery reports that to the operator.
+func spawnReplacementSupervisor(sb domain.Sandbox) (caLost bool, err error) {
+	storeRoot, err := store.DefaultRoot()
+	if err != nil {
+		return false, fmt.Errorf("resolve state directory: %w", err)
+	}
+	stateDir := supervisor.DefaultStateDir(storeRoot, sb.ID)
+
+	spawnSpec, err := supervisor.ReadSpawnSpec(stateDir)
+	if err != nil {
+		// Without the original spawn spec the replacement would have to guess
+		// the kernel, disk and governor bounds. Refuse rather than boot a
+		// supervisor against a configuration the VM was not created with.
+		return false, fmt.Errorf("read spawn spec for %s: %w", sb.ID, err)
+	}
+
+	if _, err := supervisor.SpawnReacquireDetached(supervisor.SpawnConfig{
+		Config:       spawnSpec,
+		ReadyTimeout: replacementSupervisorReadyTimeout,
+	}); err != nil {
+		return false, err
+	}
+	// The crash path never recovers the CA — see supervisor.RunReacquire.
+	return true, nil
+}
+
+// replacementSupervisorReadyTimeout bounds how long recovery waits for a
+// spawned replacement to report ready (its pidfile appearing, which happens
+// only after it has re-acquired the perimeter and bound its IPC socket).
+// Generous: the re-acquisition itself is a socket round-trip, but the
+// perimeter bring-up behind it starts gvproxy and the MITM proxy.
+const replacementSupervisorReadyTimeout = 60 * time.Second
