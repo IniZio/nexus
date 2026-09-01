@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 
+	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/recovery"
 	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus3/internal/supervisor"
 )
 
 func init() {
@@ -73,12 +75,46 @@ func runRecover(ctx context.Context, args []string, out *Output) error {
 		}
 	}
 
-	rec := recovery.New(st, drv)
+	return runRecoverWith(ctx, st, drv, out)
+}
+
+// runRecoverWith is the testable entry point for "recover": it performs the
+// actual reconciliation against the given store and driver. runRecover is a
+// thin wrapper around this that resolves the real substrate and store root;
+// tests call runRecoverWith directly with a fake driver so they exercise the
+// exact same wiring — including the supervisor-liveness cross-check
+// (AC-8, OutcomeAdoptable) — that production runs, without needing a real
+// hypervisor.
+func runRecoverWith(ctx context.Context, st store.Store, drv driver.Driver, out *Output) error {
+	rec := recovery.New(st, drv).WithSupervisorCheck(supervisor.CheckAndReconcile)
 	report, err := rec.Recover(ctx)
 	if err != nil {
 		return &CodedError{
 			Code: ErrCodeInternalError,
 			Msg:  fmt.Sprintf("recover: %v", err),
+		}
+	}
+
+	// AC-8 requires a live-VM/dead-supervisor sandbox to be REPORTED as
+	// needing adoption, not merely classified correctly in the JSON envelope
+	// — --json is opt-in, so the default surface is human mode, and
+	// EmitSuccess's human-mode branch below prints only the bare summary
+	// count. Without this, an operator running plain `nexus3 recover` against
+	// the exact sandbox this ticket exists to fix sees only "examined 1
+	// sandbox(es)" — the literal symptom the ticket quotes — with the
+	// adoptable classification invisible unless they already know to pass
+	// --json. Print one line per outcome worth a human's attention (every
+	// kind except OutcomeUnchanged, the common case with nothing to act on)
+	// before the summary line. The JSON envelope is untouched: this block is
+	// skipped entirely in JSON mode, and out.Stdout() is never written to
+	// there (writing anything else to stdout in JSON mode breaks json.load
+	// per EmitSuccess's own doc comment).
+	if !out.IsJSON() {
+		for _, o := range report.Outcomes {
+			if o.Kind == recovery.OutcomeUnchanged {
+				continue
+			}
+			fmt.Fprintf(out.Stdout(), "%s: %s — %s\n", o.ID, o.Kind, o.Reason)
 		}
 	}
 
