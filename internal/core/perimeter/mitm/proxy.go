@@ -607,8 +607,31 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.inner.ServeHTTP(w, r)
 }
 
+// caLifetime bounds how long a minted per-sandbox MITM CA stays valid.
+//
+// It was 10 years, which was defensible only while the CA existed nowhere but
+// the supervisor's memory and therefore died with the process. From
+// s15-ca-persistence the private key is written to disk (statedir.SaveCA), so
+// the certificate's validity window is now the only thing that bounds how long
+// a leaked copy of that key is useful. D-HSH-18 asks for a "sandbox-scoped
+// bound"; 90 days is that bound:
+//
+//   - It is far longer than any observed sandbox lifetime. The 641 orphaned
+//     state dirs measured on the reference host for ticket 13 had an oldest
+//     entry 13 days old, so 90 days leaves roughly 7x headroom and no
+//     realistic sandbox meets expiry mid-session. Expiry mid-session is the
+//     one failure a short bound could introduce that persistence cannot
+//     recover from: the running proxy would keep signing with a dead anchor.
+//   - It is short enough that a key recovered from a stale disk image or a
+//     backup stops being a usable trust anchor within a quarter, instead of
+//     within a decade.
+//
+// A CA past this window is not silently reused: statedir.LoadCA rejects an
+// expired certificate, so recovery mints a fresh one and reports CALost.
+const caLifetime = 90 * 24 * time.Hour
+
 // generateCA mints a fresh ECDSA P-256 CA certificate suitable for use as a
-// goproxy MITM trust anchor. The CA is self-signed and valid for 10 years.
+// goproxy MITM trust anchor. The CA is self-signed and valid for [caLifetime].
 // The Leaf field of the returned tls.Certificate is always populated.
 func generateCA() (tls.Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -629,7 +652,7 @@ func generateCA() (tls.Certificate, error) {
 			CommonName:   "nexus3 per-sandbox MITM CA",
 		},
 		NotBefore:             now.Add(-time.Hour),
-		NotAfter:              now.Add(10 * 365 * 24 * time.Hour),
+		NotAfter:              now.Add(caLifetime),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,

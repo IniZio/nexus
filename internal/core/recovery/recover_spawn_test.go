@@ -83,9 +83,9 @@ func TestSpawn_CalledForAdoptableWithControlSocket(t *testing.T) {
 	var got []domain.Sandbox
 	rep, err := New(st, drv).
 		WithSupervisorCheck(deadSupervisor).
-		WithAdoptSpawner(func(s domain.Sandbox) (bool, error) {
+		WithAdoptSpawner(func(s domain.Sandbox) (CAOutcome, error) {
 			got = append(got, s)
-			return true, nil
+			return CALost, nil
 		}).
 		Recover(ctx)
 	if err != nil {
@@ -122,7 +122,7 @@ func TestSpawn_RefusedWithoutControlSocket(t *testing.T) {
 	calls := 0
 	rep, err := New(st, drv).
 		WithSupervisorCheck(deadSupervisor).
-		WithAdoptSpawner(func(domain.Sandbox) (bool, error) { calls++; return true, nil }).
+		WithAdoptSpawner(func(domain.Sandbox) (CAOutcome, error) { calls++; return CALost, nil }).
 		Recover(ctx)
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
@@ -148,8 +148,8 @@ func TestSpawn_FailureLeavesSandboxAdoptable(t *testing.T) {
 
 	rep, err := New(st, drv).
 		WithSupervisorCheck(deadSupervisor).
-		WithAdoptSpawner(func(domain.Sandbox) (bool, error) {
-			return false, errSpawnRefused
+		WithAdoptSpawner(func(domain.Sandbox) (CAOutcome, error) {
+			return CAUnknown, errSpawnRefused
 		}).
 		Recover(ctx)
 	if err != nil {
@@ -197,7 +197,7 @@ func TestSpawn_NotCalledForHealthySandbox(t *testing.T) {
 	calls := 0
 	rep, err := New(st, drv).
 		WithSupervisorCheck(func(int, string) (bool, error) { return true, nil }). // ALIVE
-		WithAdoptSpawner(func(domain.Sandbox) (bool, error) { calls++; return true, nil }).
+		WithAdoptSpawner(func(domain.Sandbox) (CAOutcome, error) { calls++; return CALost, nil }).
 		Recover(ctx)
 	if err != nil {
 		t.Fatalf("Recover: %v", err)

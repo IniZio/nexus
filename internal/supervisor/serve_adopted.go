@@ -16,6 +16,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter"
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus3/internal/core/statedir"
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/supervisor/handoff"
 )
@@ -31,10 +32,11 @@ type serveAdoptedInput struct {
 
 	// seedCA is the MITM CA to hand StartPerimeterOnly. Non-nil on the
 	// HANDOFF path, where the outgoing supervisor's payload carried the CA
-	// that the guest already imported and pinned this boot. NIL on the CRASH
-	// path, where no payload exists and StartPerimeterOnly must mint a fresh
-	// CA — see RunReacquire, which logs the resulting TLS breakage rather
-	// than letting a caller believe TLS survived.
+	// that the guest already imported and pinned this boot, and on the CRASH
+	// path whenever the CA persisted by the perimeter could be loaded back
+	// (statedir.LoadCA, D-HSH-18). Nil only when there is genuinely no CA to
+	// seed, in which case StartPerimeterOnly mints a fresh one and the caller
+	// reports the loss loudly — see reacquireSeedInput.
 	seedCA *service.CASeed
 
 	// refreshers are the credential refreshers to register and keep warm.
@@ -181,7 +183,7 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 
 	pid := os.Getpid()
 	pidfile := PidfilePath(cfg.StateDir)
-	if err := os.WriteFile(pidfile, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(pidfile, []byte(strconv.Itoa(pid)+"\n"), statedir.FileMode); err != nil {
 		return fmt.Errorf("supervisor: %s: write pidfile %s: %w", in.logPrefix, pidfile, err)
 	}
 	defer func() {

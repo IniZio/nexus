@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/IniZio/nexus3/internal/core/statedir"
 )
 
 // SpawnConfig carries the parameters for spawning a detached supervisor.
@@ -220,7 +222,7 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 	if logPath == "" {
 		logPath = cfg.StateDir + "/supervisor.log"
 	}
-	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, statedir.FileMode)
 	if logErr != nil {
 		if pipeR != nil {
 			pipeR.Close()
@@ -346,7 +348,7 @@ func SpawnAdoptDetached(cfg SpawnConfig) (pid int, err error) {
 	if logPath == "" {
 		logPath = cfg.StateDir + "/supervisor.log"
 	}
-	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, statedir.FileMode)
 	if logErr != nil {
 		return 0, fmt.Errorf("spawn adopt supervisor: open log file %s: %w", logPath, logErr)
 	}
@@ -455,6 +457,16 @@ func SpawnReacquireDetached(cfg SpawnConfig) (pid int, err error) {
 		return 0, fmt.Errorf("spawn reacquire supervisor: AdoptHandoffSock must be empty (adopt and re-acquire are mutually exclusive)")
 	}
 	cfg.Reacquire = true
+
+	// Clear any CA outcome left by a PREVIOUS re-acquisition of this sandbox.
+	// Without this, a second recovery would read the first run's answer and
+	// attribute it to the new supervisor. Failure to clear is fatal here (unlike
+	// the write side): reporting a stale outcome as this run's is precisely the
+	// stale-assertion defect being fixed, so a spawner that cannot guarantee
+	// freshness must not proceed to a state where the CLI trusts the file.
+	if err := ClearCAOutcome(cfg.StateDir); err != nil {
+		return 0, fmt.Errorf("spawn reacquire supervisor: clear stale CA outcome: %w", err)
+	}
 
 	pidfile := PidfilePath(cfg.StateDir)
 	if data, readErr := os.ReadFile(pidfile); readErr == nil {

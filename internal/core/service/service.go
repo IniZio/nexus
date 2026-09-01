@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -47,6 +48,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter/mitm"
 	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
 	"github.com/IniZio/nexus3/internal/core/perimeter/netstack"
+	"github.com/IniZio/nexus3/internal/core/statedir"
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/core/volumestore"
 )
@@ -777,6 +779,24 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 	_ = ReapDiskCopy(s.diskDir, sb.ID)
 	_ = ReapShadowDisks(s.diskDir, sb.Handle())
 
+	// Reap the per-sandbox supervisor state dir. It is the last durable thing
+	// keyed by this ULID, and nothing recreates it once the record is gone, so
+	// leaving it behind is a pure leak — 641 such dirs against 1 live sandbox
+	// had accumulated on the reference host before this call existed
+	// (D-HSH-18). It holds spawn.json, supervisor.log, the egress decisions log
+	// and (as of s15) the MITM CA private key, so it must not outlive the
+	// sandbox.
+	//
+	// Ordered AFTER store.Delete deliberately: while the record still exists a
+	// crashed Remove leaves a sandbox that `recover` can still reason about,
+	// and the state dir is exactly what a re-acquisition would need. Once the
+	// record is gone there is nothing left to re-acquire.
+	//
+	// Idempotent and non-fatal, matching the disk reapers above: a missing dir
+	// is not an error, and a failure here must not fail a Remove whose
+	// destructive work has already committed.
+	_ = removeSupervisorStateDir(sb.ID)
+
 	// Detach named volumes under the per-volume lock (D-PD-87: Remove
 	// NEVER deletes volume backing files — only the attachment record is cleared).
 	// Uses detachVolumeLocked so the write races neither against a concurrent
@@ -853,19 +873,39 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 		return fmt.Errorf("allow list: %w", err)
 	}
 
+	// stateDir is <storeRoot>/supervisors/<sandbox-id>: the egress decisions log
+	// and the persisted MITM CA further down both live in it. It stays empty
+	// when the store root cannot be resolved, in which case both are skipped.
+	//
+	// The path comes from statedir, which internal/supervisor also uses for
+	// DefaultStateDir (the supervisor package cannot be imported here — it
+	// imports service), so the two cannot drift apart on path OR on mode.
+	//
+	// NOTE (s15 builder-supervisor decision): the path is derived from the
+	// STORE ROOT and the SANDBOX ID, never from a supervisor's cfg.StateDir. A
+	// builder supervisor keeps its pidfile and socket under
+	// builder-supervisors/<id> at 0755, a tree Service.Remove does not clean —
+	// so keying secret material off cfg.StateDir would put a CA private key in
+	// a world-readable directory with no lifetime bound. Keying it off
+	// statedir.SupervisorDir puts every CA, builder or not, in the 0700 tree
+	// that Service.Remove deletes and service.Reap collects orphans from.
+	var stateDir string
+	if storeRoot, sdErr := store.DefaultRoot(); sdErr == nil {
+		stateDir = statedir.SupervisorDir(storeRoot, sb.ID)
+	}
+
 	// Wire the egress decisions log so `nexus3 egress log` can stream verdicts.
-	// The file path mirrors supervisor.DefaultStateDir (supervisor package cannot
-	// be imported here — it imports service). Errors are non-fatal: the perimeter
-	// still enforces policy; we just lose the decisions log for this run.
+	// Errors are non-fatal: the perimeter still enforces policy; we just lose
+	// the decisions log for this run.
 	//
 	// A single mutex+encoder is shared between the netfilter and MITM sinks so
 	// concurrent writes from both sources never interleave JSON lines.
 	var mitmOnEgress func(host, verdict, reason string, ts time.Time)
-	if storeRoot, sdErr := store.DefaultRoot(); sdErr == nil {
-		decisionsDir := filepath.Join(storeRoot, "supervisors", sb.ID.String())
-		_ = os.MkdirAll(decisionsDir, 0o755)
+	if stateDir != "" {
+		decisionsDir := stateDir
+		_ = statedir.Ensure(decisionsDir)
 		decisionsPath := filepath.Join(decisionsDir, "egress-decisions.jsonl")
-		if df, dfErr := os.OpenFile(decisionsPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); dfErr == nil {
+		if df, dfErr := os.OpenFile(decisionsPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, statedir.FileMode); dfErr == nil {
 			var egressMu sync.Mutex
 			egressEnc := json.NewEncoder(df)
 			type egressRec struct {
@@ -937,6 +977,31 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 			fd.Close()
 			al.Stop()
 			return fmt.Errorf("mitm proxy: %w", err)
+		}
+
+		// Persist the CA so a supervisor that replaces a CRASHED one can
+		// re-seed it and keep signing leaf certificates the guest already
+		// trusts (D-HSH-18 / ticket 13). Written unconditionally rather than
+		// only when the CA was freshly minted: writing back a seeded CA is
+		// idempotent (same bytes) and self-healing (it restores the file if it
+		// was deleted or damaged while the sandbox ran), whereas a
+		// "mint-only" branch would leave a sandbox that was adopted once with
+		// no persisted CA at all.
+		//
+		// Best-effort by design: a perimeter that enforces egress policy but
+		// whose CA will not survive a crash is strictly better than no
+		// perimeter. The failure is logged at WARN and names the path, so the
+		// later "CA lost" on recovery can be traced back to it rather than
+		// looking like a fresh bug.
+		if stateDir != "" {
+			if certPEM, keyPEM, kpErr := proxy.CAKeyPair(); kpErr != nil {
+				slog.Warn("perimeter.ca_persist_failed", "sandbox", sb.ID, "stage", "encode", "err", kpErr,
+					"impact", "a crash-path recovery of this sandbox will have to mint a fresh CA and break in-guest TLS")
+			} else if saveErr := statedir.SaveCA(stateDir, certPEM, keyPEM); saveErr != nil {
+				slog.Warn("perimeter.ca_persist_failed", "sandbox", sb.ID, "stage", "write",
+					"path", statedir.CAPath(stateDir), "err", saveErr,
+					"impact", "a crash-path recovery of this sandbox will have to mint a fresh CA and break in-guest TLS")
+			}
 		}
 	}
 

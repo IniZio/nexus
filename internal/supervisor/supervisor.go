@@ -61,6 +61,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus3/internal/core/statedir"
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/supervisor/handoff"
 )
@@ -332,7 +333,7 @@ func RunDetached(cfg Config) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	if err := os.MkdirAll(cfg.StateDir, 0o755); err != nil {
+	if err := statedir.Ensure(cfg.StateDir); err != nil {
 		return fmt.Errorf("supervisor: mkdir state dir %s: %w", cfg.StateDir, err)
 	}
 
@@ -804,7 +805,7 @@ func RunDetached(cfg Config) error {
 	// ── 6. Write pidfile (READY signal) ──────────────────────────────────────
 	pid := os.Getpid()
 	pidfile := PidfilePath(cfg.StateDir)
-	if err := os.WriteFile(pidfile, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(pidfile, []byte(strconv.Itoa(pid)+"\n"), statedir.FileMode); err != nil {
 		return fmt.Errorf("supervisor: write pidfile %s: %w", pidfile, err)
 	}
 	// removeOwnPidfile mirrors the inode-checked removeOwnSocket: a
@@ -1052,7 +1053,7 @@ const supervisorErrFile = "supervisor.err"
 // Errors are silently ignored — this is best-effort diagnostics.
 func writeFailureReason(stateDir string, err error) {
 	path := filepath.Join(stateDir, supervisorErrFile)
-	_ = os.WriteFile(path, []byte(err.Error()), 0o644)
+	_ = os.WriteFile(path, []byte(err.Error()), statedir.FileMode)
 }
 
 // GuestProber is the subset of *agent.Client needed by ProbeGuestAgent.

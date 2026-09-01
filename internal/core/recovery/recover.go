@@ -167,8 +167,33 @@ type Recoverer struct {
 	// with AC-8. The report is emitted either way — a sandbox that cannot be
 	// spawned against (no control socket, or no spawner) is still surfaced
 	// to the operator rather than silently skipped.
-	spawnAdopt func(sb domain.Sandbox) (caLost bool, err error)
+	spawnAdopt func(sb domain.Sandbox) (ca CAOutcome, err error)
 }
+
+// CAOutcome is what a spawned replacement supervisor did with the MITM CA,
+// as REPORTED BY THAT SUPERVISOR — not as guessed by the spawner.
+//
+// This package cannot import internal/supervisor (import cycle), so the
+// supervisor's own outcome type is mapped onto this one by the CLI adapter
+// that owns both imports. The three states are identical and deliberate: the
+// zero value is [CAUnknown], so a spawner that forgets to report, or a
+// supervisor whose outcome could not be read, produces an honest "could not
+// determine" rather than either definite claim.
+type CAOutcome int
+
+const (
+	// CAUnknown means the replacement's CA outcome could not be determined.
+	// It is the zero value so silence is never mistaken for good news.
+	CAUnknown CAOutcome = iota
+
+	// CARecovered means the replacement re-seeded the persisted CA, so the
+	// guest's existing TLS trust survived the recovery.
+	CARecovered
+
+	// CALost means the replacement had to mint a FRESH CA, so in-guest TLS
+	// sessions fail until the guest re-imports it.
+	CALost
+)
 
 // New constructs a Recoverer backed by the given store and driver. The
 // supervisor-liveness cross-check (OutcomeAdoptable) is unwired until the
@@ -200,7 +225,7 @@ func (r *Recoverer) WithSupervisorCheck(fn func(pid int, sockPath string) (bool,
 // Without this, recovery detects the live-VM/dead-supervisor class and stops
 // — which is exactly the gap this leaves: a mechanism with no caller. A nil
 // fn (the New default) preserves that report-only behaviour.
-func (r *Recoverer) WithAdoptSpawner(fn func(sb domain.Sandbox) (caLost bool, err error)) *Recoverer {
+func (r *Recoverer) WithAdoptSpawner(fn func(sb domain.Sandbox) (ca CAOutcome, err error)) *Recoverer {
 	r.spawnAdopt = fn
 	return r
 }
@@ -765,7 +790,7 @@ func (r *Recoverer) spawnReplacement(sb domain.Sandbox, out *SandboxOutcome) {
 		return
 	}
 
-	caLost, err := r.spawnAdopt(sb)
+	ca, err := r.spawnAdopt(sb)
 	if err != nil {
 		// The spawn refused or failed. The VM is untouched by contract (the
 		// re-acquisition path never calls rt.Stop() on a refusal), so the
@@ -776,8 +801,27 @@ func (r *Recoverer) spawnReplacement(sb domain.Sandbox, out *SandboxOutcome) {
 
 	out.Kind = OutcomeAdopted
 	out.Reason += " — a replacement supervisor was started and has rebuilt the perimeter"
-	if caLost {
+
+	// The CA outcome comes FROM the replacement supervisor, which is the only
+	// process that made the decision. All three states are reported distinctly:
+	// saying "lost" when the CA was recovered is the defect this reporting
+	// replaced, and saying "recovered" when it was actually lost would be worse
+	// — an operator told TLS survived diagnoses the resulting failures as a
+	// network fault instead of as a CA they need to re-import.
+	switch ca {
+	case CARecovered:
+		out.Reason += "; the MITM CA was re-seeded from its persisted copy, so in-guest TLS sessions continue uninterrupted"
+	case CALost:
 		out.Reason += "; NOTE: the MITM CA could not be recovered from the crashed supervisor, " +
 			"so in-guest TLS sessions will FAIL until the guest re-imports the new CA (plain networking is restored)"
+	default:
+		// Wording note: each of the three messages must be identifiable by a
+		// substring that appears in NO other one, or a test asserting "the
+		// recovered wording is absent" passes on a message that merely
+		// mentions recovery. Here that distinct substring is "could not
+		// determine"; the others are "re-seeded" and "could not be recovered".
+		out.Reason += "; NOTE: could not determine whether the MITM CA survived this recovery — " +
+			"check the replacement supervisor's log for supervisor.reacquire.ca_recovered or .ca_lost " +
+			"before assuming in-guest TLS still works"
 	}
 }
