@@ -2175,7 +2175,24 @@ func herdrPluginSpacePrune(ctx context.Context, args []string, w io.Writer, svc 
 			return fmt.Errorf("space-prune: removeSandbox not available (svc does not implement HerdrSpaceSandboxService)")
 		}
 	}
-	return herdrSpacePruneFull(ctx, w, storeRoot, herdrBin, sandboxExists, workspaceExists, closer, removeSandbox, *apply)
+	// Snapshot the bindings BEFORE the binding-indexed pass runs. The fallback
+	// sweep below must not treat a binding that THIS run deleted as evidence
+	// that its sandbox was never bound — the binding-indexed path owns anything
+	// it saw, for the whole run. A read failure here is not fatal to the main
+	// prune (herdrSpacePruneFull does its own read and reports it); it only
+	// disables the fallback.
+	bindingsBefore, bindingsErr := HerdrSpaceList(ctx, storeRoot)
+
+	if err := herdrSpacePruneFull(ctx, w, storeRoot, herdrBin, sandboxExists, workspaceExists, closer, removeSandbox, *apply); err != nil {
+		return err
+	}
+	if bindingsErr != nil {
+		slog.Warn("space-prune: bindingless sweep: read bindings", "err", bindingsErr)
+		fmt.Fprintln(w, "Bindingless sweep skipped: bindings could not be read.")
+		return nil
+	}
+	herdrSpacePruneBindinglessStep(ctx, w, herdrBin, svc, bindingsBefore, removeSandbox, *apply)
+	return nil
 }
 
 // herdrSpacePruneFull is the testable core of space-prune.
@@ -2332,6 +2349,364 @@ func herdrSpaceSweepOrphanWorkspaces(ctx context.Context, w io.Writer, storeRoot
 			continue
 		}
 		fmt.Fprintf(w, "  ORPHAN closed workspace=%s label=%s\n", ws.WorkspaceID, ws.Label)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bindingless worktree-sandbox fallback sweep
+// ---------------------------------------------------------------------------
+//
+// WHY THIS EXISTS, AND WHY IT IS A FALLBACK AND NOT A REPLACEMENT.
+//
+// herdrSpacePruneFull enumerates BINDINGS. That is deliberate: the binding
+// store is the index of what nexus3 is permitted to reap, and it is the reason
+// a reaper cannot classify a live developer's VM as an orphan. This repo has a
+// proven incident where exactly that happened, so nothing below widens what the
+// binding-indexed path reaps, and nothing below runs on a sandbox that HAS a
+// binding row.
+//
+// The gap this closes is narrow and real: a sandbox that never got a binding
+// row (create succeeded, the binding write did not) is structurally invisible
+// to a binding-indexed prune, forever. Three of five sandboxes examined on the
+// host at diagnosis were in exactly that state and leaked until they were
+// removed by hand.
+//
+// The sweep therefore derives collectability from the SANDBOX RECORD, and only
+// when all four of these are POSITIVELY established. Every one of them is an
+// affirmative observation; none is inferred from a missing input, and any
+// input that cannot be obtained aborts the whole sweep:
+//
+//	G1  the sandbox has NO binding row (handle and ID both absent from the
+//	    binding snapshot taken BEFORE the binding-indexed pass ran)
+//	G2  its live-mount set positively matches the shape herdrWorktreeSandbox
+//	    writes: exactly one /workspace mount, and exactly one self-mapped mount
+//	    that is a git common dir STILL PRESENT on disk with a worktrees/ subdir
+//	G3  the /workspace host path is positively absent (os.ErrNotExist — a
+//	    permission or I/O error is ambiguous and keeps the sandbox)
+//	G4  no live herdr workspace refers to it, established against a workspace
+//	    list that was actually obtained and was non-empty
+//
+// Ambiguity resolves to KEEP in every case. A wrong reap costs someone's
+// working VM; a missed reap costs disk.
+
+// herdrWorkspaceGuestPath is the guest mount point herdrWorktreeSandbox gives
+// the worktree checkout ("<checkout>:/workspace", see mountSpec there).
+const herdrWorkspaceGuestPath = "/workspace"
+
+// herdrWorkspaceRef is one live herdr workspace, reduced to the fields the
+// bindingless sweep needs to answer "does anything live still refer to this
+// checkout?".
+type herdrWorkspaceRef struct {
+	WorkspaceID string
+	Label       string
+	// CheckoutPath is worktree.checkout_path from herdr's WorkspaceInfo. It is
+	// empty when the workspace is not a worktree workspace (herdr models the
+	// whole `worktree` object as nullable).
+	CheckoutPath string
+}
+
+// herdrListWorkspaceRefs runs `herdr workspace list` and returns every live
+// workspace with its label and worktree checkout path.
+//
+// An error is returned — never a partial or empty success — when herdr is
+// unavailable, the call fails, or the response does not parse. The caller must
+// treat that as "guard G4 cannot be established" and skip the sweep entirely.
+func herdrListWorkspaceRefs(ctx context.Context, herdrBin string) ([]herdrWorkspaceRef, error) {
+	if herdrBin == "" {
+		return nil, fmt.Errorf("herdr workspace list: no herdr binary")
+	}
+	out, err := herdrExecCommandContext(ctx, herdrBin, "workspace", "list").Output()
+	if err != nil {
+		return nil, fmt.Errorf("herdr workspace list: %w", err)
+	}
+	return herdrParseWorkspaceRefs(out)
+}
+
+// herdrParseWorkspaceRefs parses a `herdr workspace list` response body.
+// Split out from herdrListWorkspaceRefs so the parse is testable without exec.
+func herdrParseWorkspaceRefs(data []byte) ([]herdrWorkspaceRef, error) {
+	var resp struct {
+		Result struct {
+			Workspaces []struct {
+				WorkspaceID string `json:"workspace_id"`
+				Label       string `json:"label"`
+				Worktree    *struct {
+					CheckoutPath string `json:"checkout_path"`
+				} `json:"worktree"`
+			} `json:"workspaces"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("herdr workspace list: parse response: %w", err)
+	}
+	refs := make([]herdrWorkspaceRef, 0, len(resp.Result.Workspaces))
+	for _, ws := range resp.Result.Workspaces {
+		ref := herdrWorkspaceRef{WorkspaceID: ws.WorkspaceID, Label: ws.Label}
+		if ws.Worktree != nil {
+			ref.CheckoutPath = ws.Worktree.CheckoutPath
+		}
+		refs = append(refs, ref)
+	}
+	return refs, nil
+}
+
+// herdrWorktreeMountShape is the live-mount signature herdrWorktreeSandbox
+// writes into every worktree sandbox record.
+type herdrWorktreeMountShape struct {
+	// CheckoutPath is the host path of the linked worktree checkout, mounted
+	// at /workspace.
+	CheckoutPath string
+	// CommonGitDir is the main repo's git common directory, mounted
+	// self-mapped ("<dir>:<dir>") so the checkout's gitdir: pointer resolves
+	// inside the guest (herdrWorktreeGitDirMount).
+	CommonGitDir string
+}
+
+// herdrIsGitCommonDir positively identifies dir as a git common directory that
+// hosts linked worktrees, by requiring dir/worktrees to exist on disk as a
+// directory. "worktrees" is the structural marker git guarantees — the same
+// anchor herdrWorktreeGitDirMount uses when it builds the mount.
+//
+// This is an affirmative on-disk check: it is satisfiable only while the MAIN
+// repo still exists, which is what makes it usable as evidence after the linked
+// worktree itself has been deleted.
+func herdrIsGitCommonDir(dir string) bool {
+	fi, err := os.Stat(filepath.Join(dir, "worktrees"))
+	return err == nil && fi.IsDir()
+}
+
+// herdrWorktreeMountShapeOf reports whether sb's record positively identifies
+// it as a worktree-managed sandbox, and if so returns the paths involved.
+//
+// It requires EXACTLY ONE /workspace mount and EXACTLY ONE self-mapped git
+// common-dir mount. "Exactly one" and not "at least one" on purpose: a record
+// carrying two candidates is a record this function does not understand, and a
+// record this function does not understand must not authorise a reap.
+//
+// The .groundwork mount herdrWorktreeSandbox also adds is self-mapped too, but
+// it is not a git common dir (no worktrees/ subdir), so it is not a candidate.
+func herdrWorktreeMountShapeOf(sb domain.Sandbox) (herdrWorktreeMountShape, bool) {
+	var checkouts, commons []string
+	for _, m := range sb.LiveMounts {
+		if !filepath.IsAbs(m.HostPath) {
+			continue
+		}
+		if m.GuestPath == herdrWorkspaceGuestPath {
+			checkouts = append(checkouts, filepath.Clean(m.HostPath))
+			continue
+		}
+		if m.HostPath == m.GuestPath && herdrIsGitCommonDir(m.HostPath) {
+			commons = append(commons, filepath.Clean(m.HostPath))
+		}
+	}
+	if len(checkouts) != 1 || len(commons) != 1 {
+		return herdrWorktreeMountShape{}, false
+	}
+	shape := herdrWorktreeMountShape{CheckoutPath: checkouts[0], CommonGitDir: commons[0]}
+	// A linked worktree is never the main checkout. If the /workspace mount IS
+	// the main repo root, this is a main-checkout sandbox wearing a similar
+	// mount set — refuse it rather than reap someone's primary checkout VM.
+	//
+	// Defence in depth, and deliberately kept as such: today G3 already covers
+	// this case, because herdrIsGitCommonDir only succeeds while CommonGitDir
+	// exists on disk, and the parent of an existing directory necessarily
+	// exists too — so a main-checkout /workspace path is never "positively
+	// gone". That makes this refusal unreachable THROUGH
+	// herdrClassifyBindinglessSandbox, which is why it is pinned by a test
+	// against this function directly (TestWorktreeMountShapeOf_RefusesMainCheckout)
+	// rather than through the classifier. Do not delete it on the strength of
+	// that reachability argument: it holds only as long as the common-dir probe
+	// stays an on-disk one.
+	if shape.CheckoutPath == filepath.Dir(shape.CommonGitDir) {
+		return herdrWorktreeMountShape{}, false
+	}
+	return shape, true
+}
+
+// herdrPathPositivelyGone reports whether p is affirmatively absent from the
+// filesystem. Only os.ErrNotExist counts. A permission error, an I/O error, or
+// any other stat failure means "cannot tell" — which is ambiguity, and
+// ambiguity keeps the sandbox.
+//
+// Lstat, not Stat: a dangling symlink at the checkout path is a thing that
+// still EXISTS, and must not read as gone.
+func herdrPathPositivelyGone(p string) bool {
+	if p == "" {
+		return false
+	}
+	_, err := os.Lstat(p)
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// herdrBindinglessVerdict is the classification of one sandbox by the
+// bindingless sweep. Reason is populated in both directions so a dry-run can
+// explain a KEEP as well as a COLLECT.
+type herdrBindinglessVerdict struct {
+	Handle   string
+	Checkout string
+	Collect  bool
+	Reason   string
+}
+
+// herdrClassifyBindinglessSandbox applies guards G1..G4 to a single sandbox.
+// It is pure apart from the filesystem probes in G2/G3, and it never mutates
+// anything — the caller decides what to do with the verdict.
+//
+// workspaces MUST be a list that was actually obtained from a live herdr; the
+// caller is responsible for not calling this at all when it could not be. This
+// function cannot distinguish "herdr says there are no workspaces" from "herdr
+// could not be reached", which is precisely why that decision lives upstream.
+func herdrClassifyBindinglessSandbox(
+	sb domain.Sandbox,
+	bindings []HerdrSpaceBinding,
+	workspaces []herdrWorkspaceRef,
+) herdrBindinglessVerdict {
+	v := herdrBindinglessVerdict{}
+	if sb.Project == "" || sb.Name == "" {
+		v.Reason = "sandbox record carries no usable handle"
+		return v
+	}
+	v.Handle = sb.Project + "/" + sb.Name
+
+	// G1 — no binding row. If there is one, the binding-indexed path owns this
+	// sandbox and the fallback stays out of it.
+	sbID := sb.ID.String()
+	for _, b := range bindings {
+		if b.SandboxHandle == v.Handle || (b.SandboxID != "" && b.SandboxID == sbID) {
+			v.Reason = "has a binding row; owned by the binding-indexed prune path"
+			return v
+		}
+	}
+
+	// G2 — positively worktree-managed, from the record's live mounts.
+	shape, ok := herdrWorktreeMountShapeOf(sb)
+	if !ok {
+		v.Reason = "record does not positively identify a worktree sandbox"
+		return v
+	}
+	v.Checkout = shape.CheckoutPath
+
+	// G3 — the worktree checkout is positively gone.
+	if !herdrPathPositivelyGone(shape.CheckoutPath) {
+		v.Reason = "worktree checkout still present, or its absence could not be established"
+		return v
+	}
+
+	// G4 — nothing live in herdr still refers to it.
+	label := herdrSpaceLabelForRef(v.Handle)
+	for _, ws := range workspaces {
+		if ws.CheckoutPath != "" && filepath.Clean(ws.CheckoutPath) == shape.CheckoutPath {
+			v.Reason = "live herdr workspace " + ws.WorkspaceID + " still opens this checkout"
+			return v
+		}
+		if ws.Label != "" && ws.Label == label {
+			v.Reason = "live herdr workspace " + ws.WorkspaceID + " is labelled for this sandbox"
+			return v
+		}
+	}
+
+	v.Collect = true
+	v.Reason = "no binding, worktree-managed, checkout gone, no live workspace"
+	return v
+}
+
+// herdrSpaceSweepBindinglessSandboxes classifies every sandbox and, under
+// --apply, reaps the ones all four guards clear.
+//
+// It returns how many sandboxes cleared every guard, and how many were ACTUALLY
+// reaped. The two are reported separately because they differ in the cases that
+// matter: a dry run reaps nothing, and a removeSandbox failure leaves the
+// sandbox for the next run. Only real removals are counted as reaped.
+//
+// With apply=false this function is read-only: it prints and stats, and calls
+// nothing that mutates.
+func herdrSpaceSweepBindinglessSandboxes(
+	ctx context.Context,
+	w io.Writer,
+	bindings []HerdrSpaceBinding,
+	sandboxes []domain.Sandbox,
+	workspaces []herdrWorkspaceRef,
+	removeSandbox func(context.Context, string) error,
+	apply bool,
+) (collectable, reaped int) {
+	for _, sb := range sandboxes {
+		v := herdrClassifyBindinglessSandbox(sb, bindings, workspaces)
+		if !v.Collect {
+			continue
+		}
+		collectable++
+		if !apply {
+			fmt.Fprintf(w, "  BINDINGLESS sandbox=%s worktree=%s (%s; would be reaped)\n",
+				v.Handle, v.Checkout, v.Reason)
+			continue
+		}
+		if err := removeSandbox(ctx, v.Handle); err != nil {
+			slog.Warn("space-prune: bindingless sweep: reap failed; sandbox retained for next run",
+				"handle", v.Handle, "worktree", v.Checkout, "err", err)
+			fmt.Fprintf(w, "  BINDINGLESS reap FAILED sandbox=%s: %v\n", v.Handle, err)
+			continue
+		}
+		fmt.Fprintf(w, "  BINDINGLESS reaped sandbox=%s worktree=%s\n", v.Handle, v.Checkout)
+		reaped++
+	}
+	return collectable, reaped
+}
+
+// herdrSpacePruneBindinglessStep is the wiring between herdrPluginSpacePrune and
+// the sweep. It gathers the two inputs the sweep cannot establish for itself —
+// the live sandbox list and the live herdr workspace list — and REFUSES to run
+// the sweep if either is missing, rather than letting a missing input read as
+// "nothing refers to this sandbox".
+//
+// bindings is the snapshot taken BEFORE the binding-indexed pass, so a binding
+// that pass deleted during this same run cannot make its sandbox look
+// bindingless to the fallback.
+func herdrSpacePruneBindinglessStep(
+	ctx context.Context,
+	w io.Writer,
+	herdrBin string,
+	svc herdrSpacePruneLister,
+	bindings []HerdrSpaceBinding,
+	removeSandbox func(context.Context, string) error,
+	apply bool,
+) {
+	skip := func(reason string) {
+		fmt.Fprintf(w, "Bindingless sweep skipped: %s.\n", reason)
+	}
+	workspaces, err := herdrListWorkspaceRefs(ctx, herdrBin)
+	if err != nil {
+		slog.Warn("space-prune: bindingless sweep: workspace list", "err", err)
+		skip("live herdr workspaces could not be listed")
+		return
+	}
+	// An empty workspace list is indistinguishable from an unexpected response
+	// shape, and it is the single input whose emptiness would clear G4 for
+	// EVERY sandbox at once. Refuse it. This mirrors the same refusal in
+	// herdrSpacePruneWorkspaceExistsFn.
+	if len(workspaces) == 0 {
+		skip("herdr reported no workspaces (indistinguishable from an unexpected response shape)")
+		return
+	}
+	sandboxes, err := svc.List(ctx)
+	if err != nil {
+		slog.Warn("space-prune: bindingless sweep: sandbox list", "err", err)
+		skip("sandbox list unavailable")
+		return
+	}
+	collectable, reaped := herdrSpaceSweepBindinglessSandboxes(ctx, w, bindings, sandboxes, workspaces, removeSandbox, apply)
+	// Always report, including the all-clear. A sweep that prints nothing when
+	// it finds nothing is indistinguishable from a sweep that never ran — and
+	// "the reaper silently never ran" is the defect this whole path exists to
+	// close. The operator must be able to see that it looked.
+	if apply {
+		fmt.Fprintf(w, "Bindingless sweep (apply): %d sandbox(es) examined, %d collectable, %d reaped.\n",
+			len(sandboxes), collectable, reaped)
+		return
+	}
+	fmt.Fprintf(w, "Bindingless sweep (dry-run): %d sandbox(es) examined, %d collectable.\n",
+		len(sandboxes), collectable)
+	if collectable > 0 {
+		fmt.Fprintln(w, "Run with --apply to reap them.")
 	}
 }
 
