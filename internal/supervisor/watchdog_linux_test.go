@@ -51,6 +51,14 @@ import (
 // Go test runner. When the binary is re-execed as a helper subprocess it
 // dispatches to runWatchdogHelper and exits without running any tests.
 func TestMain(m *testing.M) {
+	// Cache-disk lease helper (cachedisk_lease_test.go). It is dispatched on
+	// argv, not on an env var, because it is spawned through the production
+	// SpawnDetached, which sets no environment of its own — and because
+	// dispatching on HiddenSubcommand is exactly what the real binary does.
+	if len(os.Args) > 1 && os.Args[1] == HiddenSubcommand {
+		runCacheDiskLeaseHelper()
+		panic("runCacheDiskLeaseHelper returned")
+	}
 	if os.Getenv("GO_WANT_HELPER_PROCESS") == "1" {
 		runWatchdogHelper()
 		// runWatchdogHelper always calls os.Exit; this is unreachable.

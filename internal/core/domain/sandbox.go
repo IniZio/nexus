@@ -156,6 +156,13 @@ type Sandbox struct {
 	// instead of leaking it, and so two adopters can never believe they
 	// hold the same slot. Empty means no cache disk is leased (e.g. a
 	// non-builder sandbox).
+	//
+	// It is written by the supervisor that owns the VM (D-HSH-07) and read
+	// back by an adopting or re-acquiring supervisor, which takes the SAME
+	// slot by path (builder.AcquireCacheDiskSlot) rather than selecting a
+	// new one. When a VM leases more than one slot the image paths are
+	// comma-separated, in ExtraDisks order; decode with
+	// builder.DecodeCacheDiskSlots.
 	CacheDiskSlot string `json:"cache_disk_slot,omitempty"`
 
 	// CreatorPID is the OS PID of the process that created this sandbox record.

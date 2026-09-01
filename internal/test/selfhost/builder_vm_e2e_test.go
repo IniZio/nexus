@@ -372,7 +372,7 @@ func TestBuilderVME2E(t *testing.T) {
 	//   nexus3-agent --builder-role → RunBuilderRole → BuildInGuestImage → buildkitd
 	t.Log("=== PROOF 1: debian:stable-slim build (proves builder-role + buildkitd) ===")
 
-	debianCacheDisks, releaseDebianCacheDisks, err := builder.SelectCacheDisks(mainCtx, storeRoot, []string{"buildkit"})
+	debianCacheDisks, leasesDebianCacheDisks, err := builder.SelectCacheDisks(mainCtx, storeRoot, []string{"buildkit"})
 	if err != nil {
 		t.Fatalf("SelectCacheDisks (debian): %v", err)
 	}
@@ -385,7 +385,7 @@ func TestBuilderVME2E(t *testing.T) {
 	)
 	// Release the slot as soon as the debian builder VM is gone, so the npm
 	// build below leases the SAME slot 0 and sees its warm buildkit cache.
-	releaseDebianCacheDisks()
+	builder.ReleaseCacheDiskLeases(leasesDebianCacheDisks)
 	debDur := time.Since(debStart)
 	t.Logf("debian build: digest=%s elapsed=%.1fs", debianDigest, debDur.Seconds())
 
@@ -505,11 +505,11 @@ func TestBuilderVME2E(t *testing.T) {
 	// Both are attached as extra virtio-blk disks (vdd=buildkit, vde=npm).
 	// With the G8 production fix (--cache-disk args → RunBuilderRole mounting),
 	// buildkit's /var/lib/buildkit will be persistent across cold→warm.
-	npmCacheDisks, releaseNpmCacheDisks, err := builder.SelectCacheDisks(mainCtx, storeRoot, []string{"buildkit", "npm"})
+	npmCacheDisks, leasesNpmCacheDisks, err := builder.SelectCacheDisks(mainCtx, storeRoot, []string{"buildkit", "npm"})
 	if err != nil {
 		t.Fatalf("SelectCacheDisks (npm): %v", err)
 	}
-	defer releaseNpmCacheDisks()
+	defer builder.ReleaseCacheDiskLeases(leasesNpmCacheDisks)
 	t.Logf("npm cache disks: buildkit=%s npm=%s",
 		npmCacheDisks[0].ImagePath, npmCacheDisks[1].ImagePath)
 

@@ -1482,13 +1482,22 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			// vdd+ — Attach buildkit (and any future) persistent cache disks.
 			// The lease guarantees no other builder VM holds the same image;
 			// cloud-hypervisor's exclusive write lock on every attached image
-			// would otherwise refuse this VM's boot. Released after the builder
-			// VM has stopped (BuildInVM returns only once it has).
-			cacheDisks, releaseCacheDisks, err := builder.SelectCacheDisks(buildCtx, storeRoot, []string{"buildkit"})
+			// would otherwise refuse this VM's boot.
+			//
+			// D-HSH-07: the CLI only SELECTS the slot. The lock descriptors go
+			// to the supervisor that owns the builder VM (via ExtraFiles, see
+			// supervisorBuilderDriver.Start), whose lifetime matches the VM's;
+			// this defer then drops only the CLI's own copies of an open file
+			// description the supervisor still holds. Holding the lease here
+			// for the VM's lifetime — as this call site did before — made the
+			// slot read FREE whenever a VM outlived its CLI (spawn timeout →
+			// SIGKILL → orphaned VM), while the CH write lock on the image
+			// lived on, and the next build failed to boot opaquely.
+			cacheDisks, cacheDiskLeases, err := builder.SelectCacheDisks(buildCtx, storeRoot, []string{"buildkit"})
 			if err != nil {
 				return errSandbox("sandbox create", fmt.Errorf("--file: cache disks: %w", err))
 			}
-			defer releaseCacheDisks()
+			defer builder.ReleaseCacheDiskLeases(cacheDiskLeases)
 
 			// Assemble the BuilderVMSpec first so that sizing helpers
 			// (VCPUs/MemMiB) can derive the production defaults before the
@@ -1574,6 +1583,9 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				// pointed at a file that never existed.
 				logPath:             "",
 				cacheDiskMountPaths: cacheDiskMountPaths,
+				// D-HSH-07: hand the slot leases to the supervisor process,
+				// which outlives this CLI exactly as the VM does.
+				cacheDiskLeases: cacheDiskLeases,
 			}
 			execFn := func(ctx context.Context, argv []string, stderr io.Writer) (int32, error) {
 				// StartedID is set by bdrv.Start (called inside BuildInVM before

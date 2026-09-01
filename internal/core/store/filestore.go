@@ -87,6 +87,11 @@ type record struct {
 	CHAPISocket         string `json:"ch_api_socket,omitempty"`
 	NetnsControlSocket  string `json:"netns_control_socket,omitempty"`
 	NetnsControlToken   string `json:"netns_control_token,omitempty"`
+	// CacheDiskSlot persists domain.Sandbox.CacheDiskSlot (D-HSH-07). Without
+	// it the field would be set in memory by the booting supervisor and lost
+	// on the next read, so an adopting or re-acquiring supervisor could never
+	// take back the SAME builder cache-disk slot.
+	CacheDiskSlot string `json:"cache_disk_slot,omitempty"`
 }
 
 // provenanceRecord is the on-disk form of domain.Provenance. Kept separate
@@ -124,6 +129,7 @@ func toRecord(sb domain.Sandbox) record {
 		CHAPISocket:         sb.CHAPISocket,
 		NetnsControlSocket:  sb.NetnsControlSocket,
 		NetnsControlToken:   sb.NetnsControlToken,
+		CacheDiskSlot:       sb.CacheDiskSlot,
 		// MotiveID intentionally omitted: new records never write this field.
 	}
 	if sb.Provenance != nil {
@@ -176,6 +182,7 @@ func (r record) toDomain() domain.Sandbox {
 		CHAPISocket:         r.CHAPISocket,
 		NetnsControlSocket:  r.NetnsControlSocket,
 		NetnsControlToken:   r.NetnsControlToken,
+		CacheDiskSlot:       r.CacheDiskSlot,
 	}
 	if r.Provenance != nil {
 		sb.Provenance = &domain.Provenance{

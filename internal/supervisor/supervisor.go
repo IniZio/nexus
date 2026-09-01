@@ -53,6 +53,7 @@ import (
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/agent"
+	"github.com/IniZio/nexus3/internal/core/builder"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/govern"
@@ -164,6 +165,30 @@ type Config struct {
 	// backward compatibility; later slices will bridge the two representations
 	// inside wireGovernorAxes.
 	ResizableDiskIndices []int
+
+	// CacheDiskSlots are the builder cache-disk slot image paths whose leases
+	// this supervisor owns for the lifetime of its VM (D-HSH-07). Empty for
+	// every non-builder sandbox.
+	//
+	// The lease used to be released by a `defer` in the CLI, so it was
+	// CLI-scoped while cloud-hypervisor's write lock on the image is
+	// VM-scoped. A VM that outlived its CLI left the slot reading free while
+	// the image was still locked, and the next build failed to boot with an
+	// opaque CH error. Ownership therefore belongs here, with the process
+	// whose lifetime matches the VM's.
+	CacheDiskSlots []string
+
+	// CacheDiskLeaseFDs are inherited descriptors — one per CacheDiskSlots
+	// entry, in the same order — that ALREADY hold the slot's flock, passed
+	// down by the spawning CLI through exec.Cmd.ExtraFiles. Inheriting the
+	// open file description means the lease is never momentarily free
+	// between the selecting process and this one, so a concurrent build
+	// cannot steal the slot mid-handoff.
+	//
+	// Empty on the adopt and re-acquire paths: there is no live sender to
+	// pass a descriptor, so those paths take the slot by path instead
+	// (builder.AcquireCacheDiskSlot), reading it from the sandbox record.
+	CacheDiskLeaseFDs []int
 
 	// GovBounds configures the auto-resize governor. When MemMinBytes or
 	// MemMaxBytes is zero, the governor runs in passive mode (polls but
@@ -343,6 +368,17 @@ func RunDetached(cfg Config) error {
 		return fmt.Errorf("supervisor: open store at %s: %w", cfg.StoreRoot, err)
 	}
 
+	// ── 1b. Take ownership of the builder cache-disk slot leases ─────────────
+	// D-HSH-07: the lease must expire with the VM, not with the CLI that
+	// selected the slot. On this path the CLI passed the already-locked
+	// descriptors through ExtraFiles, so adopting them is instantaneous and
+	// leaves no window in which the slot reads free. See cachedisk_lease.go.
+	cacheLeases, err := acquireCacheDiskLeases(ctx, cfg.CacheDiskSlots, cfg.CacheDiskLeaseFDs, cacheDiskAdoptLeaseTimeout)
+	if err != nil {
+		return fmt.Errorf("supervisor: %w", err)
+	}
+	defer builder.ReleaseCacheDiskLeases(cacheLeases)
+
 	// ── 2. Construct per-sandbox driver ───────────────────────────────────────
 	extraDisks := make([]cloudhypervisor.ExtraDisk, 0, len(cfg.ExtraDisks))
 	for _, p := range cfg.ExtraDisks {
@@ -412,6 +448,19 @@ func RunDetached(cfg Config) error {
 		// CHDriver implements driver.GuestDialer; pass drv directly.
 		agentClient = agent.NewClient(drv, preSB.ID)
 		slog.Info("supervisor.agent_client_ready", "sandboxID", preSB.ID)
+
+		// Record which cache-disk slot(s) this VM occupies BEFORE it boots, so
+		// a supervisor that dies mid-boot still leaves behind the one fact an
+		// adopting or re-acquiring supervisor needs in order to take the SAME
+		// slot back (D-HSH-07). Without this the replacement would select a
+		// fresh slot and collide with the CH write lock the live VM still
+		// holds on the old one.
+		if len(cacheLeases) > 0 {
+			slots := builder.EncodeCacheDiskSlots(builder.CacheDiskSlotPaths(cacheLeases))
+			if setErr := svc.SetCacheDiskSlot(ctx, preSB.ID, slots); setErr != nil {
+				return fmt.Errorf("supervisor: persist cache-disk slot: %w", setErr)
+			}
+		}
 	}
 
 	// ── 4. Bind IPC socket (before VM boot so early stop requests are handled) ─
