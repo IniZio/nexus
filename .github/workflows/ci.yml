@@ -76,6 +76,76 @@ jobs:
       - name: Build docs
         run: pnpm build
 
+  # ── herdr-live Tier 1: manifest event name validation ─────────────────────
+  # Runs the //go:build herdr_live suite filtered to Tier 1 tests only.
+  # Tier 1 = tests that require the herdr binary but boot no VM and need no
+  # running herdr daemon. Tier 2 (VM-booting) tests are excluded because CI
+  # has no /dev/kvm and the host safety note in CLAUDE.md applies.
+  #
+  # Herdr is installed at a pinned version with SHA-256 verification. The install
+  # step FAILS loudly on any error — a skip would recreate the exact never-runs
+  # problem this job exists to fix (AC-19c).
+  #
+  # After this job, `grep -rn "herdr_live" Makefile .github/` returns non-empty
+  # (AC-19b), satisfying the cheapest possible check that this ticket landed.
+  herdr-live:
+    name: herdr-live (Tier 1 — manifest event names)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      # Install herdr at a pinned version with SHA-256 verification.
+      # The version is pinned to 0.8.0 — the version validated on this host.
+      # Update the pin (and SHA) when upgrading herdr; do not float to "latest"
+      # because a schema change in the Subscription oneOf would silently break
+      # the oracle this test depends on.
+      #
+      # FAIL POLICY: every curl and sha256sum call uses set -eu and --fail.
+      # Any error in this step aborts the job with a non-zero exit — the test
+      # step never runs, and CI is red. A missing herdr binary must NOT result
+      # in a skipped test (that is the fourth way to be green without testing).
+      - name: Install herdr 0.8.0 (pinned)
+        run: |
+          set -eu
+          HERDR_VERSION="0.8.0"
+          HERDR_URL="https://github.com/herdrdev/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-x86_64"
+          HERDR_SHA256="b872ea7e40fa2cb17e857ac9b62b1bf26db7b403c622f5d2f3f5b35f6e9acd28"
+          mkdir -p "${HOME}/.local/bin"
+          curl --fail --location --silent --show-error \
+            -o "${HOME}/.local/bin/herdr" \
+            "${HERDR_URL}"
+          echo "${HERDR_SHA256}  ${HOME}/.local/bin/herdr" | sha256sum --check
+          chmod +x "${HOME}/.local/bin/herdr"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Verify herdr version
+        run: herdr --version
+
+      # Run only Tier 1 tests (TestHerdrPluginManifest*). Tier 2 tests in this
+      # tag (herdr_l4_live_test.go, herdr_l4_contract_test.go, etc.) require a
+      # running herdr daemon or /dev/kvm and are excluded by the -run filter.
+      #
+      # NEXUS3_ALLOW_UNCAPPED=1: GitHub Actions does not provide a user systemd
+      # instance, so systemd-run --user --scope fails. The CAPPED wrapper falls
+      # back to choom-only when this variable is set. The memory concern that
+      # motivates CAPPED on the dev host does not apply here because Tier 1 tests
+      # boot no VMs.
+      #
+      # NEXUS3_LIVE_REQUIRED=1: any liveSkip call in the Tier 1 tests converts to
+      # t.Fatalf, ensuring a precondition failure is a red job, not a silent pass.
+      - name: Run herdr-live Tier 1 tests
+        env:
+          TMPDIR: /tmp
+          NEXUS3_ALLOW_UNCAPPED: "1"
+          NEXUS3_LIVE_REQUIRED: "1"
+        run: make test-herdr-live GOTEST_ARGS='-run TestHerdrPluginManifest'
+
   # ── Example: nexus3-in-docker build smoke ─────────────────────────────────
   # Verifies that the CI-feasible Dockerfile stages still build correctly.
   # The full image cannot be built in CI because the virtiofsd-stage COPY

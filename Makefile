@@ -134,6 +134,23 @@ vet:
 test:
 	$(call CAPPED,go test -race -p $(GOTEST_P) -parallel $(GOTEST_PARALLEL) -count=1 $(GOTEST_ARGS) ./...)
 
+# test-herdr-live runs the //go:build herdr_live suite against the REAL herdr
+# binary (no VM, no daemon — Tier 1 only by default; Tier 2 tests in this tag
+# require a running herdr daemon + /dev/kvm and are excluded from default CI).
+#
+# Requires herdr in PATH. Install once with:
+#   curl -fsSL https://herdr.dev/install.sh | sh
+#
+# To narrow to a specific test:
+#   make test-herdr-live GOTEST_ARGS='-run TestHerdrPluginManifest'
+#
+# In CI, set NEXUS3_ALLOW_UNCAPPED=1 to skip systemd-run (GitHub Actions does
+# not provide a user systemd instance). The memory cap falls back to choom only.
+# Tier 2 tests (VM-booting) are excluded from CI via -run filter; see
+# .github/workflows/ci.yml herdr-live job.
+test-herdr-live:
+	$(call CAPPED,go test -race -p $(GOTEST_P) -parallel $(GOTEST_PARALLEL) -count=1 -tags herdr_live $(GOTEST_ARGS) ./internal/cli/)
+
 # docs serves the documentation site locally with live reload.
 # docs-build renders it to docs/site/.vitepress/dist (gitignored).
 #

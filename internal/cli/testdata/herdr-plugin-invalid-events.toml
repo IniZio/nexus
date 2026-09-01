@@ -1,0 +1,18 @@
+# Fixture for mutation-proof testing of TestHerdrPluginManifest_EventNamesValid.
+#
+# This file deliberately uses the WRONG event name: worktree_removed (underscore),
+# where herdr's registry uses worktree.removed (dot). This is the exact bug that
+# D-HSH-20 recorded — the typo that sat undetected for months because no test
+# exercised event names against the real herdr binary.
+#
+# Expected outcome: TestHerdrPluginManifest_EventNamesValid FAILS (RED) against
+# this fixture. If it passes, the test is not sensitive enough to catch D-HSH-20.
+id = "nexus3-test-fixture"
+name = "nexus3-test-fixture"
+version = "0.0.0"
+min_herdr_version = "0.7.4"
+description = "Mutation-proof fixture — invalid event name (underscore)."
+
+[[events]]
+on = "worktree_removed"
+command = ["sh", "-c", "echo mutation-probe-invalid"]
