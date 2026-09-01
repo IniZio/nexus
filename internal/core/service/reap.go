@@ -151,6 +151,21 @@ type ReapOptions struct {
 	// clear error instead of silently sending SIGKILL to live host processes.
 	// The production CLI path (runReapWith) sets this; tests must not.
 	AllowRealProcKill bool
+
+	// NetnsKillFn, when non-nil, is called in place of the package-level
+	// killNetnsProcessFn when reclaiming a KindNetnsProcess orphan. It MUST be
+	// set whenever ProcDir is not "/proc" (a synthetic ProcDir). This is the
+	// structural guard that prevents a test from accidentally reaching the real
+	// syscall.Kill via a pgid read from a synthetic /proc entry that happens to
+	// match a live host process group: with a synthetic ProcDir the only path to
+	// killing is through the fn the caller explicitly provides. Tests that need
+	// to exercise a real kill (e.g. against their own spawned child) pass their
+	// own syscall.Kill wrapper here. Tests that only need to prove the Orphan
+	// classification path use a no-op or recording stub.
+	//
+	// When nil and ProcDir == "/proc" the package-level killNetnsProcessFn
+	// (which calls syscall.Kill) is used — that is the production path.
+	NetnsKillFn func(pgid int) error
 }
 
 // defaultProcPIDOwnerUID stats /proc/<pid> and returns its owner uid, which
@@ -362,9 +377,28 @@ func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, o
 	}
 	report.ZombieProcesses = zombies
 	report.UninspectableProcesses = inaccessible
+	// Resolve the effective kill function: opt.NetnsKillFn when the caller
+	// provided one (required for synthetic ProcDir; optional for real /proc),
+	// otherwise the package-level killNetnsProcessFn (production default).
+	effectiveKillFn := killNetnsProcessFn
+	if opt.NetnsKillFn != nil {
+		effectiveKillFn = opt.NetnsKillFn
+	}
 	for _, entry := range netnsEntries {
 		if entry.Status == ReapStatusOrphan && apply {
-			if err := killNetnsProcessFn(entry.ProcessPGID); err != nil {
+			// Guard: a synthetic ProcDir must supply its own kill function.
+			// Without this check, the package-level killNetnsProcessFn (real
+			// syscall.Kill) is reachable from any test that plants a directory
+			// named after a live host pid under a temp dir, silently signaling
+			// that process group. Requiring NetnsKillFn when ProcDir != "/proc"
+			// makes the hazard structurally unreachable at the kill site: the
+			// caller cannot reach the real Kill without explicitly providing it.
+			// The guard fires here (not at Reap entry) so a synthetic ProcDir
+			// with NO netns entries (common in non-netns tests) is not rejected.
+			if opt.ProcDir != "/proc" && opt.NetnsKillFn == nil {
+				return nil, fmt.Errorf("reap: apply=true with a synthetic ProcDir requires NetnsKillFn in ReapOptions; prevents accidentally reaching the real syscall.Kill via a pgid discovered from a synthetic /proc entry")
+			}
+			if err := effectiveKillFn(entry.ProcessPGID); err != nil {
 				report.Failed = append(report.Failed, ReapFailure{
 					Path:   entry.Resource.Path,
 					Kind:   entry.Resource.Kind,

@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -303,7 +304,21 @@ func TestReap_ApplyKillsOrphanedNetnsChild(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	report, err := service.Reap(ctx, st, idx, true /*apply*/, service.ReapOptions{ProcDir: procDir})
+	report, err := service.Reap(ctx, st, idx, true /*apply*/, service.ReapOptions{
+		ProcDir: procDir,
+		// NetnsKillFn is required when ProcDir is synthetic (not "/proc"); we
+		// pass a real kill wrapper here because this test's whole point is to
+		// prove the process actually dies — not merely that Reap reports it.
+		NetnsKillFn: func(pgid int) error {
+			if pgid <= 0 {
+				return fmt.Errorf("reap test: refusing to kill non-positive pgid %d", pgid)
+			}
+			if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+				return fmt.Errorf("reap test: kill process group %d: %w", pgid, err)
+			}
+			return nil
+		},
+	})
 	if err != nil {
 		t.Fatalf("Reap: %v", err)
 	}
@@ -313,6 +328,66 @@ func TestReap_ApplyKillsOrphanedNetnsChild(t *testing.T) {
 
 	if err := waitForProcessExit(pid); err != nil {
 		t.Errorf("process %d still alive after --apply: %v", pid, err)
+	}
+}
+
+// TestReap_SyntheticProcDir_RequiresNetnsKillFn verifies the structural guard
+// that prevents a test from accidentally reaching the real syscall.Kill via a
+// pgid discovered from a synthetic /proc entry.
+//
+// Hazard shape: a test sets ProcDir to a temp dir, plants a directory named
+// after a live host pid, and calls Reap with apply=true but no NetnsKillFn.
+// Without this guard the package-level killNetnsProcessFn (real syscall.Kill)
+// would send SIGKILL to that process group. The guard makes the hazard
+// structurally unreachable: any apply attempt against a synthetic-ProcDir
+// orphan must supply NetnsKillFn, so the real Kill is never reached by accident.
+//
+// The test uses a SPAWNED child (not os.Getpid()) so that if the guard is
+// accidentally removed during mutation testing the real Kill hits only this
+// test's own child — not the test binary or a live developer sandbox.
+//
+// Mutation proof: remove the "ProcDir != /proc && NetnsKillFn == nil" guard
+// in Reap (reap.go, the line `if opt.ProcDir != "/proc" && opt.NetnsKillFn == nil`)
+// → Reap succeeds (returns nil error, kills the child) → this test goes RED
+// at the `err == nil` check. Restore → GREEN.
+func TestReap_SyntheticProcDir_RequiresNetnsKillFn(t *testing.T) {
+	stateRoot := t.TempDir()
+	sockDir := t.TempDir()
+	procDir := t.TempDir()
+
+	// Spawn a real child so the guard has a genuine orphan to evaluate.
+	// If the guard is removed, the real killNetnsProcessFn sends SIGKILL to
+	// this child — which is safe because it belongs to this test.
+	cmd := spawnSleeperForTest(t)
+	pid := cmd.Process.Pid
+
+	orphanID := domain.NewSandboxID()
+	orphanSocket := filepath.Join(sockDir, orphanID.String()+".sock")
+	writeSyntheticNetnsProcess(t, procDir, pid, orphanSocket)
+	writeSyntheticStat(t, procDir, pid, pid)
+
+	st := newEmptyStore(t)
+	idx := service.NewResourceIndex(service.IndexConfig{
+		StateRoot: stateRoot,
+		SocketDir: sockDir,
+	})
+
+	ctx := context.Background()
+	// Deliberately omit NetnsKillFn — the guard must reject this.
+	_, err := service.Reap(ctx, st, idx, true /*apply*/, service.ReapOptions{
+		ProcDir: procDir,
+		// NetnsKillFn intentionally absent — that is the unsafe shape being guarded.
+	})
+	if err == nil {
+		t.Fatal("Reap succeeded with synthetic ProcDir and no NetnsKillFn; guard must refuse to prevent real syscall.Kill on an unknown pid")
+	}
+	if !strings.Contains(err.Error(), "NetnsKillFn") {
+		t.Errorf("guard error %q does not mention NetnsKillFn (wrong guard fired?)", err)
+	}
+
+	// The child must still be alive — the guard blocked the kill.
+	if pgErr := cmd.Process.Signal(syscall.Signal(0)); pgErr != nil {
+		t.Errorf("child pid %d is dead after guarded Reap; guard did not prevent the kill", pid)
 	}
 }
 
