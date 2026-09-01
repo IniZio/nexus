@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -38,6 +39,17 @@ type SpawnConfig struct {
 	// for supervisor.pid — the pidfile is written much later in adopt mode,
 	// only after a handoff has actually been offered and confirmed.
 	AdoptHandoffSock string
+
+	// Reacquire, when true, spawns the subprocess in RE-ACQUIRE mode
+	// (nexus3 __supervisor --reacquire) instead of boot mode: it never boots
+	// a VM, and instead rebuilds the perimeter for an already-running VM
+	// through the surviving netns child's control socket. See
+	// [RunReacquire] and [SpawnReacquireDetached].
+	//
+	// Mutually exclusive with AdoptHandoffSock: adopt mode receives the
+	// perimeter fd from a LIVE outgoing supervisor, re-acquire mode exists
+	// precisely because there is no live supervisor to receive it from.
+	Reacquire bool
 }
 
 // BuildSupervisorArgv constructs the argv slice for `nexus3 __supervisor`
@@ -145,6 +157,11 @@ func BuildSupervisorArgv(cfg SpawnConfig) []string {
 	// (RunDetached) in runSupervisorMain. See SpawnAdoptDetached.
 	if cfg.AdoptHandoffSock != "" {
 		args = append(args, "--adopt-handoff-sock", cfg.AdoptHandoffSock)
+	}
+	// Reacquire: selects re-acquire mode (RunReacquire) over boot mode
+	// (RunDetached) in runSupervisorMain. See SpawnReacquireDetached.
+	if cfg.Reacquire {
+		args = append(args, "--reacquire")
 	}
 	return args
 }
@@ -410,4 +427,52 @@ func terminateSupervisor(pid int, exited <-chan struct{}, grace time.Duration) {
 	case <-time.After(grace):
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
+}
+
+// SpawnReacquireDetached forks and detaches a supervisor in RE-ACQUIRE mode
+// for a sandbox whose VM is alive but whose supervisor is dead.
+//
+// It is the spawn half of the crash-recovery path: recovery classifies a
+// sandbox [recovery.OutcomeAdoptable] and calls this, which starts a
+// long-lived [RunReacquire] process that rebuilds the perimeter through the
+// surviving netns child's control socket.
+//
+// # The stale-pidfile hazard
+//
+// Readiness is the pidfile appearing, exactly as in [SpawnDetached]. But the
+// supervisor this replaces was SIGKILLed, so its deferred pidfile cleanup
+// never ran and a STALE pidfile is almost always still present. Left alone,
+// SpawnDetached would read that stale file immediately and report the new
+// process ready before it had acquired anything.
+//
+// So the pidfile is cleared first — but only after confirming it does not
+// name a LIVE process. A live pid there means something is already
+// supervising this sandbox, and spawning a second supervisor over a live one
+// creates two owners for the same VM: worse than the bug being fixed. That
+// case REFUSES and touches nothing.
+func SpawnReacquireDetached(cfg SpawnConfig) (pid int, err error) {
+	if cfg.AdoptHandoffSock != "" {
+		return 0, fmt.Errorf("spawn reacquire supervisor: AdoptHandoffSock must be empty (adopt and re-acquire are mutually exclusive)")
+	}
+	cfg.Reacquire = true
+
+	pidfile := PidfilePath(cfg.StateDir)
+	if data, readErr := os.ReadFile(pidfile); readErr == nil {
+		if existing, convErr := strconv.Atoi(strings.TrimSpace(string(data))); convErr == nil && existing > 0 {
+			if PidAlive(existing) {
+				return 0, fmt.Errorf("spawn reacquire supervisor: pidfile %s names live pid %d; refusing to spawn a second supervisor for this sandbox", pidfile, existing)
+			}
+		}
+		// Stale (the SIGKILLed supervisor's own pidfile): clear it so the
+		// readiness poll below observes the NEW process, not the dead one.
+		if rmErr := os.Remove(pidfile); rmErr != nil && !os.IsNotExist(rmErr) {
+			return 0, fmt.Errorf("spawn reacquire supervisor: remove stale pidfile %s: %w", pidfile, rmErr)
+		}
+	}
+
+	spawnPid, _, spawnErr := SpawnDetached(cfg)
+	if spawnErr != nil {
+		return 0, spawnErr
+	}
+	return spawnPid, nil
 }

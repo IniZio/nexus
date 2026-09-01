@@ -85,7 +85,7 @@ func (m *supervisorLiveMounts) Set(v string) error {
 // dispatched from main() before any CLI routing so the supervisor process
 // never touches cobra or the CLI command registry.
 func runSupervisorMain(args []string) {
-	cfg, adoptHandoffSock, err := parseSupervisorFlags(args)
+	cfg, adoptHandoffSock, reacquire, err := parseSupervisorFlags(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -113,6 +113,18 @@ func runSupervisorMain(args []string) {
 		}
 		return
 	}
+	// reacquire selects re-acquire mode: like adopt mode it never boots a VM,
+	// but there is no live outgoing supervisor to receive a handoff from —
+	// the perimeter is rebuilt through the surviving netns child's control
+	// socket. Spawned by recovery when it classifies a sandbox adoptable.
+	if reacquire {
+		if err := supervisor.RunReacquire(cfg); err != nil {
+			slog.Error("supervisor: reacquire run failed", "err", err)
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := supervisor.RunDetached(cfg); err != nil {
 		slog.Error("supervisor: run failed", "err", err)
 		fmt.Fprintln(os.Stderr, err)
@@ -126,7 +138,7 @@ func runSupervisorMain(args []string) {
 // (as happened with ExtraDisks on 2026-08-16 — the supervisor then attached
 // only the rootfs and the guest panicked mounting its workspace) is caught
 // by a round-trip test instead of a live boot.
-func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSock string, err error) {
+func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSock string, reacquire bool, err error) {
 	fs := flag.NewFlagSet(supervisor.HiddenSubcommand, flag.ContinueOnError)
 	var (
 		sandboxRef = fs.String("sandbox-ref", "", "sandbox ID hex or <project>/<name> handle (required)")
@@ -177,6 +189,8 @@ func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSoc
 		virtiofsd = fs.String("virtiofsd", "", "virtiofsd binary path (required with --mount)")
 		// adoptHandoffSockFlag: selects adopt mode. See RunAdopt's doc comment.
 		adoptHandoffSockFlag = fs.String("adopt-handoff-sock", "", "adopt mode: Unix STREAM socket to listen on for the handoff offer (empty = boot mode)")
+		// reacquireFlag: selects re-acquire mode. See RunReacquire's doc comment.
+		reacquireFlag = fs.Bool("reacquire", false, "re-acquire mode: rebuild the perimeter for a live VM whose supervisor died (no handoff; empty = boot mode)")
 	)
 	// liveMounts accumulates repeated --mount flags (one per virtiofs share).
 	// These must be re-attached on every supervisor boot: the guest cmdline
@@ -195,7 +209,7 @@ func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSoc
 	var resizableDiskIndices supervisorResizableDiskIndices
 	fs.Var(&resizableDiskIndices, "resizable-disk-index", "0-based ExtraDisks index for disk governor (repeatable)")
 	if err := fs.Parse(args); err != nil {
-		return supervisor.Config{}, "", err
+		return supervisor.Config{}, "", false, err
 	}
 
 	missing := ""
@@ -216,7 +230,7 @@ func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSoc
 		missing = "--disk"
 	}
 	if missing != "" {
-		return supervisor.Config{}, "", fmt.Errorf("supervisor: %s is required", missing)
+		return supervisor.Config{}, "", false, fmt.Errorf("supervisor: %s is required", missing)
 	}
 
 	cfg = supervisor.Config{
@@ -252,5 +266,5 @@ func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSoc
 		Ephemeral:     *ephemeral,
 		ParentPipeFD:  *parentPipeFD,
 	}
-	return cfg, *adoptHandoffSockFlag, nil
+	return cfg, *adoptHandoffSockFlag, *reacquireFlag, nil
 }

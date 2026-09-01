@@ -58,7 +58,7 @@ func TestParseSupervisorFlags_RoundTrip(t *testing.T) {
 	// BuildSupervisorArgv includes the leading HiddenSubcommand token; the
 	// CLI dispatch strips it before runSupervisorMain (os.Args[2:]).
 	argv := supervisor.BuildSupervisorArgv(supervisor.SpawnConfig{Config: in})[1:]
-	got, _, err := parseSupervisorFlags(argv)
+	got, _, _, err := parseSupervisorFlags(argv)
 	if err != nil {
 		t.Fatalf("parseSupervisorFlags: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestParseSupervisorFlags_EveryConfigFieldSurvives(t *testing.T) {
 	// zeroed on both sides before the DeepEqual. Its own round-trip is
 	// asserted by TestMCPOAuthRefreshConfigs_SpawnSpecRoundTrip.
 	argv := supervisor.BuildSupervisorArgv(supervisor.SpawnConfig{Config: in})[1:]
-	got, _, err := parseSupervisorFlags(argv)
+	got, _, _, err := parseSupervisorFlags(argv)
 	if err != nil {
 		t.Fatalf("parseSupervisorFlags: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestMCPOAuthRefreshConfigs_SpawnSpecRoundTrip(t *testing.T) {
 // TestParseSupervisorFlags_MissingRequired asserts the required-flag guard
 // fires with the first missing flag name.
 func TestParseSupervisorFlags_MissingRequired(t *testing.T) {
-	_, _, err := parseSupervisorFlags([]string{"--sandbox-ref", "sb-x"})
+	_, _, _, err := parseSupervisorFlags([]string{"--sandbox-ref", "sb-x"})
 	if err == nil || err.Error() != "supervisor: --store-root is required" {
 		t.Fatalf("err = %v, want --store-root required", err)
 	}
@@ -380,7 +380,7 @@ func TestParseSupervisorFlags_NestedDefaultsOffWhenFlagAbsent(t *testing.T) {
 		}
 	}
 
-	cfg, _, err := parseSupervisorFlags(argv)
+	cfg, _, _, err := parseSupervisorFlags(argv)
 	if err != nil {
 		t.Fatalf("parseSupervisorFlags: %v", err)
 	}

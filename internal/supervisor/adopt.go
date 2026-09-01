@@ -1,7 +1,6 @@
 package supervisor
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,15 +8,11 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"strconv"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/govern"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter"
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
@@ -199,176 +194,28 @@ func RunAdopt(cfg Config, handoffSockPath string) error {
 	}
 	slog.Info("supervisor.adopted", "sandboxRef", cfg.SandboxRef, "sandbox", sb.ID)
 
-	// ── Wait for the outgoing supervisor to actually exit before binding the
-	// canonical IPC socket path — it still owns that inode until its own
-	// shutdown path unlinks it (removeOwnSocket). ────────────────────────
-	sockPath := SockPath(cfg.StateDir)
-	if sb.SupervisorPID > 0 {
-		deadline := time.Now().Add(adoptWaitOldExitTimeout)
-		for PidAlive(sb.SupervisorPID) && time.Now().Before(deadline) {
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
-	_ = os.Remove(sockPath) // best-effort: only relevant if the old process left a stale file
-
 	// Seed the new perimeter's MITM proxy with the SAME CA the outgoing
 	// supervisor's payload carried, rather than letting StartPerimeterOnly
 	// mint a fresh one: the guest already imported and pinned the outgoing
 	// CA this boot, and a fresh CA would invalidate that trust without a
-	// guest reboot to re-seed it.
+	// guest reboot to re-seed it. (Found and fixed live during ticket 08's
+	// proof — see handoff.Payload.Validate, which refuses any payload with
+	// an empty CA and was previously unreachable because no payloadBuilder
+	// populated it.)
 	var seedCA *service.CASeed
 	if len(payload.CA.CertPEM) > 0 && len(payload.CA.KeyPEM) > 0 {
 		seedCA = &service.CASeed{CertPEM: payload.CA.CertPEM, KeyPEM: payload.CA.KeyPEM}
 	}
-	if err := svc.StartPerimeterOnly(ctx, sb, seedCA); err != nil {
-		return fmt.Errorf("supervisor: adopt: start perimeter: %w", err)
-	}
 
-	var perimSupPtr atomic.Pointer[perimeter.PerimeterSupervisor]
-	if sup := svc.GetPerimeterSupervisor(sb.ID); sup != nil {
-		perimSupPtr.Store(sup)
-	}
-
-	binaryHash, hashErr := computeBinaryHash()
-	if hashErr != nil {
-		slog.Warn("supervisor.adopt.binary_hash_failed", "err", hashErr)
-	}
-
-	allowEgressFn := allowEgressFunc(func(host string) error {
-		sup := perimSupPtr.Load()
-		if sup == nil {
-			return fmt.Errorf("perimeter not yet ready")
-		}
-		return sup.AllowEgress(host)
+	return serveAdoptedSupervisor(ctx, serveAdoptedInput{
+		cfg:        cfg,
+		st:         st,
+		svc:        svc,
+		drv:        drv,
+		sb:         sb,
+		seedCA:     seedCA,
+		refreshers: refreshers,
+		waitForPID: sb.SupervisorPID,
+		logPrefix:  "supervisor.adopt",
 	})
-	handoffFn := handoffFunc(func(hctx context.Context, peerSock string) (bool, string, error) {
-		sup := perimSupPtr.Load()
-		if sup == nil {
-			return false, "perimeter not yet ready", nil
-		}
-		bootVCPUs := cfg.BootVCPUs
-		if bootVCPUs == 0 {
-			bootVCPUs = 1
-		}
-		build := payloadBuilder(func() (handoff.Payload, *os.File, error) {
-			return buildHandoffPayload(sup, cfg.SandboxRef, bootVCPUs, cfg.MemoryMiB)
-		})
-		return performHandoff(hctx, peerSock, build)
-	})
-
-	// agentHealthFn probes the guest agent's control/data planes live, using
-	// the same drv+sb.ID this adopted process dials the guest through for
-	// every other RPC (seeding, exec-forwarding, etc). RunAdopt already
-	// resolved sb successfully (above, before AdoptNetnsRuntime) so there is
-	// no resolve-failure branch to degrade here, unlike RunDetached's
-	// pre-boot resolve.
-	agentHealthFn := agentHealthFunc(func(hctx context.Context) AgentHealth {
-		return checkAgentHealth(hctx, drv, sb.ID)
-	})
-	ipcH, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef, allowEgressFn, handoffFn, agentHealthFn, binaryHash)
-	if err != nil {
-		return fmt.Errorf("supervisor: adopt: bind IPC socket %s: %w", sockPath, err)
-	}
-	stopCh := ipcH.StopCh
-	detachCh := ipcH.DetachCh
-	defer removeOwnSocket(sockPath, ipcH.BindStat)
-
-	bootVCPUs := int32(cfg.BootVCPUs) //nolint:gosec // uint32→int32; vCPU counts always fit int32
-	if bootVCPUs == 0 {
-		bootVCPUs = 1
-	}
-	resizer := cloudhypervisor.NewSandboxResizer(drv, sb.ID, cfg.GovBounds, int64(cfg.MemoryMiB)*1024*1024, bootVCPUs)
-	gov := govern.New(govern.Config{
-		Resizer:   resizer,
-		Telemetry: govern.NewVsockTelemetry(drv, sb.ID),
-		Bounds:    cfg.GovBounds,
-	})
-	diskIndices := cfg.ResizableDiskIndices
-	if len(diskIndices) == 0 && cfg.HasWorkspaceDisk {
-		diskIndices = []int{cfg.WorkspaceDiskIndex}
-	}
-	wireGovernorAxes(gov, resizer, resizer, cfg.GovBounds, diskIndices)
-	go gov.Run(ctx)
-
-	for _, r := range refreshers {
-		r.Register(sb.ID)
-	}
-	for _, r := range refreshers {
-		go func(r *cred.Refresher) {
-			ticker := time.NewTicker(time.Minute)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					if _, _, tokErr := r.Token(ctx); tokErr != nil {
-						slog.Warn("supervisor.adopt.token_refresh_failed", "host", r.Host(), "err", tokErr)
-					}
-				}
-			}
-		}(r)
-	}
-
-	// NOTE: unlike RunDetached, RunAdopt does not re-seed the guest agent
-	// placeholder credentials — the guest was never rebooted, so it already
-	// holds its placeholder. The MITM CA itself IS transferred: seedCA above
-	// carries the outgoing supervisor's CA key material into the new
-	// mitm.Proxy StartPerimeterOnly constructs, so the guest's already-
-	// pinned CA continues to sign leaf certificates correctly (found and
-	// fixed live during ticket 08's proof — see handoff.Payload.Validate,
-	// which refuses any payload with an empty CA and was previously
-	// unreachable because no payloadBuilder populated it).
-
-	pid := os.Getpid()
-	pidfile := PidfilePath(cfg.StateDir)
-	if err := os.WriteFile(pidfile, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
-		return fmt.Errorf("supervisor: adopt: write pidfile %s: %w", pidfile, err)
-	}
-	defer func() {
-		data, readErr := os.ReadFile(pidfile)
-		if readErr != nil {
-			return
-		}
-		if !bytes.Equal(bytes.TrimRight(data, "\n"), []byte(strconv.Itoa(pid))) {
-			return
-		}
-		_ = os.Remove(pidfile)
-	}()
-
-	slog.Info("supervisor.adopt.ready", "sandboxRef", cfg.SandboxRef, "pid", pid, "sock", sockPath)
-
-	// Wire the VM-death channel for the adopted runtime (AC-12a/b): if the
-	// adopted VM dies unexpectedly, awaitShutdown returns shutdownByVMDeath
-	// and the teardown block handles record reconciliation. nil is safe — a
-	// nil channel is never selected.
-	vmDeadCh := drv.RuntimeDeathCh(sb.ID)
-	cause := awaitShutdown(ctx, stopCh, detachCh, vmDeadCh)
-	if cause == shutdownByDetach {
-		slog.Info("supervisor.adopt.detached", "sandboxRef", cfg.SandboxRef)
-		return nil
-	}
-
-	// shutdownByVMDeath: the adopted VM died unexpectedly. Reconcile the store
-	// record to Stopped/MemoryLost without calling svc.Stop() — the VM is
-	// already gone and driver.Stop on a dead pgid would overwrite the reason.
-	if cause == shutdownByVMDeath {
-		slog.Warn("supervisor.adopt.vm_died", "sandboxRef", cfg.SandboxRef)
-		reconCtx, reconCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer reconCancel()
-		if err := reconcileVMDeath(reconCtx, st, sb.ID); err != nil {
-			slog.Warn("supervisor.adopt.vm_died_record_update_failed",
-				"sandboxRef", cfg.SandboxRef, "err", err)
-		}
-		slog.Info("supervisor.adopt.exited", "sandboxRef", cfg.SandboxRef, "cause", "vm_died")
-		return nil
-	}
-
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer stopCancel()
-	if _, stopErr := svc.Stop(stopCtx, cfg.SandboxRef); stopErr != nil {
-		slog.Warn("supervisor.adopt.stop_failed", "sandboxRef", cfg.SandboxRef, "err", stopErr)
-	}
-	slog.Info("supervisor.adopt.exited", "sandboxRef", cfg.SandboxRef)
-	return nil
 }
