@@ -49,8 +49,24 @@
 // Residual: between the outgoing supervisor's death and the incoming one's
 // acquisition the slot reads free while CH still holds the image write lock.
 // A third builder that selects the slot in that window fails to boot with CH's
-// "Error locking disk images". The window is the recover/upgrade turnaround,
-// not the VM's whole life, which is what the CLI-scoped lease used to be.
+// "Error locking disk images".
+//
+// How long that window lasts depends on WHY the supervisor went away, and the
+// two cases are not close to each other:
+//
+//   - Planned supervisor-upgrade: the window is just the turnaround, because
+//     the same operation that ends the outgoing supervisor starts the incoming
+//     one.
+//   - Crash (SIGKILL): the window stays open until an operator runs
+//     `nexus3 recover`. NOTHING triggers that automatically — recovery.New has
+//     exactly one non-test call site, internal/cli/cmd_recover.go, reached only
+//     from the operator-run verb. So on an unattended host this window can span
+//     the VM's whole remaining life.
+//
+// Do not read this as "just a turnaround" and skip guarding the orphan case.
+// What the motive actually removed is the CLI-scoped lease, which opened this
+// window on EVERY VM that outlived its CLI; it is now opened only by a
+// supervisor that dies abnormally.
 package supervisor
 
 import (
