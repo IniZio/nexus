@@ -77,15 +77,16 @@ func TestTapPump_GuestToHost(t *testing.T) {
 	// perimA/B simulate the socketpair ends the pump uses internally.
 	fakeTapA, fakeTapB := newTestSocketpair(t)
 	perimA, perimB := newTestSocketpair(t)
+	testPump := newSwappableConn(perimA)
 
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
-		tapPump(fakeTapA, perimA) // bridge: fakeTapA ↔ perimA
+		tapPump(fakeTapA, testPump) // bridge: fakeTapA ↔ perimA
 	}()
 	t.Cleanup(func() {
 		fakeTapA.Close()
-		perimA.Close()
+		testPump.closePermanently()
 		select {
 		case <-pumpDone:
 		case <-time.After(2 * time.Second):
@@ -114,15 +115,16 @@ func TestTapPump_GuestToHost(t *testing.T) {
 func TestTapPump_HostToGuest(t *testing.T) {
 	fakeTapA, fakeTapB := newTestSocketpair(t)
 	perimA, perimB := newTestSocketpair(t)
+	testPump := newSwappableConn(perimA)
 
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
-		tapPump(fakeTapA, perimA)
+		tapPump(fakeTapA, testPump)
 	}()
 	t.Cleanup(func() {
 		fakeTapA.Close()
-		perimA.Close()
+		testPump.closePermanently()
 		select {
 		case <-pumpDone:
 		case <-time.After(2 * time.Second):
@@ -151,15 +153,16 @@ func TestTapPump_HostToGuest(t *testing.T) {
 func TestTapPump_Bidirectional(t *testing.T) {
 	fakeTapA, fakeTapB := newTestSocketpair(t)
 	perimA, perimB := newTestSocketpair(t)
+	testPump := newSwappableConn(perimA)
 
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
-		tapPump(fakeTapA, perimA)
+		tapPump(fakeTapA, testPump)
 	}()
 	t.Cleanup(func() {
 		fakeTapA.Close()
-		perimA.Close()
+		testPump.closePermanently()
 		select {
 		case <-pumpDone:
 		case <-time.After(2 * time.Second):
@@ -247,15 +250,16 @@ func TestTapPump_Bidirectional(t *testing.T) {
 func TestTapPump_FrameBoundary(t *testing.T) {
 	fakeTapA, fakeTapB := newTestSocketpair(t)
 	perimA, perimB := newTestSocketpair(t)
+	testPump := newSwappableConn(perimA)
 
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
-		tapPump(fakeTapA, perimA)
+		tapPump(fakeTapA, testPump)
 	}()
 	t.Cleanup(func() {
 		fakeTapA.Close()
-		perimA.Close()
+		testPump.closePermanently()
 		select {
 		case <-pumpDone:
 		case <-time.After(2 * time.Second):
@@ -309,17 +313,18 @@ func TestTapPump_CloseUnblocks(t *testing.T) {
 	fakeTapA, fakeTapB := newTestSocketpair(t)
 	defer fakeTapB.Close()
 	perimA, perimB := newTestSocketpair(t)
+	testPump := newSwappableConn(perimA)
 	defer perimB.Close()
 
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
-		tapPump(fakeTapA, perimA)
+		tapPump(fakeTapA, testPump)
 	}()
 
 	// Close both sides to unblock both goroutines.
 	fakeTapA.Close()
-	perimA.Close()
+	testPump.closePermanently()
 
 	select {
 	case <-pumpDone:

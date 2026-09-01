@@ -39,7 +39,7 @@ const currentSchemaVersion = 1
 //   - fork lineage:     Provenance (omitted for non-fork sandboxes)
 //   - git anchor:       BaseRef (40-hex SHA; omitted for sandboxes without a git workspace)
 //   - netns adoption:   NetnsChildPID, NetnsChildPGID, NetnsChildStartTime,
-//                       GuestTapName, CHAPISocket (all omitted when zero/empty)
+//     GuestTapName, CHAPISocket (all omitted when zero/empty)
 type record struct {
 	SchemaVersion int              `json:"schema_version"`
 	ID            domain.SandboxID `json:"id"`
@@ -85,6 +85,8 @@ type record struct {
 	NetnsChildStartTime uint64 `json:"netns_child_start_time,omitempty"`
 	GuestTapName        string `json:"guest_tap_name,omitempty"`
 	CHAPISocket         string `json:"ch_api_socket,omitempty"`
+	NetnsControlSocket  string `json:"netns_control_socket,omitempty"`
+	NetnsControlToken   string `json:"netns_control_token,omitempty"`
 }
 
 // provenanceRecord is the on-disk form of domain.Provenance. Kept separate
@@ -97,21 +99,21 @@ type provenanceRecord struct {
 
 func toRecord(sb domain.Sandbox) record {
 	r := record{
-		SchemaVersion:  currentSchemaVersion,
-		ID:             sb.ID,
-		Name:           sb.Name,
-		Project:        sb.Project,
-		Labels:         sb.Labels,
-		State:          sb.State,
-		Envelope:       sb.Envelope,
-		InstanceID:     sb.InstanceID,
-		RemoveOnExit:   sb.RemoveOnExit,
-		RemovalMarker:  sb.RemovalMarker,
-		StopReason:     sb.StopReason,
-		SupervisorPID:  sb.SupervisorPID,
-		SupervisorSock: sb.SupervisorSock,
-		CreatorPID:     sb.CreatorPID,
-		BaseRef:        sb.BaseRef,
+		SchemaVersion:       currentSchemaVersion,
+		ID:                  sb.ID,
+		Name:                sb.Name,
+		Project:             sb.Project,
+		Labels:              sb.Labels,
+		State:               sb.State,
+		Envelope:            sb.Envelope,
+		InstanceID:          sb.InstanceID,
+		RemoveOnExit:        sb.RemoveOnExit,
+		RemovalMarker:       sb.RemovalMarker,
+		StopReason:          sb.StopReason,
+		SupervisorPID:       sb.SupervisorPID,
+		SupervisorSock:      sb.SupervisorSock,
+		CreatorPID:          sb.CreatorPID,
+		BaseRef:             sb.BaseRef,
 		MountedVolumes:      sb.MountedVolumes,
 		LiveMounts:          sb.LiveMounts,
 		AgentName:           sb.AgentName,
@@ -120,6 +122,8 @@ func toRecord(sb domain.Sandbox) record {
 		NetnsChildStartTime: sb.NetnsChildStartTime,
 		GuestTapName:        sb.GuestTapName,
 		CHAPISocket:         sb.CHAPISocket,
+		NetnsControlSocket:  sb.NetnsControlSocket,
+		NetnsControlToken:   sb.NetnsControlToken,
 		// MotiveID intentionally omitted: new records never write this field.
 	}
 	if sb.Provenance != nil {
@@ -148,20 +152,20 @@ func (r record) toDomain() domain.Sandbox {
 	}
 
 	sb := domain.Sandbox{
-		ID:             r.ID,
-		Name:           r.Name,
-		Project:        r.Project,
-		Labels:         labels,
-		State:          r.State,
-		Envelope:       r.Envelope,
-		InstanceID:     r.InstanceID,
-		RemoveOnExit:   r.RemoveOnExit,
-		RemovalMarker:  r.RemovalMarker,
-		StopReason:     r.StopReason,
-		SupervisorPID:  r.SupervisorPID,
-		SupervisorSock: r.SupervisorSock,
-		CreatorPID:     r.CreatorPID,
-		BaseRef:        r.BaseRef,
+		ID:                  r.ID,
+		Name:                r.Name,
+		Project:             r.Project,
+		Labels:              labels,
+		State:               r.State,
+		Envelope:            r.Envelope,
+		InstanceID:          r.InstanceID,
+		RemoveOnExit:        r.RemoveOnExit,
+		RemovalMarker:       r.RemovalMarker,
+		StopReason:          r.StopReason,
+		SupervisorPID:       r.SupervisorPID,
+		SupervisorSock:      r.SupervisorSock,
+		CreatorPID:          r.CreatorPID,
+		BaseRef:             r.BaseRef,
 		MountedVolumes:      r.MountedVolumes,
 		LiveMounts:          r.LiveMounts,
 		AgentName:           r.AgentName,
@@ -170,6 +174,8 @@ func (r record) toDomain() domain.Sandbox {
 		NetnsChildStartTime: r.NetnsChildStartTime,
 		GuestTapName:        r.GuestTapName,
 		CHAPISocket:         r.CHAPISocket,
+		NetnsControlSocket:  r.NetnsControlSocket,
+		NetnsControlToken:   r.NetnsControlToken,
 	}
 	if r.Provenance != nil {
 		sb.Provenance = &domain.Provenance{

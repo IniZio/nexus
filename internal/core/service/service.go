@@ -500,13 +500,15 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 		// NetnsStateProvider interface is implemented only by drivers that use
 		// StartNetnsRuntime; other drivers leave these fields zero/empty.
 		if nsp, ok := s.driver.(driver.NetnsStateProvider); ok {
-			pid, pgid, startTime, tap, sock, hasNetns := nsp.NetnsState(rec.ID)
+			ns, hasNetns := nsp.NetnsState(rec.ID)
 			if hasNetns {
-				rec.NetnsChildPID = pid
-				rec.NetnsChildPGID = pgid
-				rec.NetnsChildStartTime = startTime
-				rec.GuestTapName = tap
-				rec.CHAPISocket = sock
+				rec.NetnsChildPID = ns.ChildPID
+				rec.NetnsChildPGID = ns.ChildPGID
+				rec.NetnsChildStartTime = ns.ChildStartTime
+				rec.GuestTapName = ns.GuestTap
+				rec.CHAPISocket = ns.APISocket
+				rec.NetnsControlSocket = ns.ControlSocket
+				rec.NetnsControlToken = ns.ControlToken
 			} else {
 				// Driver reported no active netns runtime: clear any stale
 				// values from a previous Start so AdoptNetnsRuntime cannot
@@ -516,6 +518,8 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 				rec.NetnsChildStartTime = 0
 				rec.GuestTapName = ""
 				rec.CHAPISocket = ""
+				rec.NetnsControlSocket = ""
+				rec.NetnsControlToken = ""
 			}
 		} else {
 			// Driver does not use netns runtime at all: clear the fields.
@@ -524,6 +528,8 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 			rec.NetnsChildStartTime = 0
 			rec.GuestTapName = ""
 			rec.CHAPISocket = ""
+			rec.NetnsControlSocket = ""
+			rec.NetnsControlToken = ""
 		}
 		updated = *rec
 		return nil
@@ -590,6 +596,8 @@ func (s *Service) Stop(ctx context.Context, ref string) (domain.Sandbox, error) 
 		rec.NetnsChildStartTime = 0
 		rec.GuestTapName = ""
 		rec.CHAPISocket = ""
+		rec.NetnsControlSocket = ""
+		rec.NetnsControlToken = ""
 		updated = *rec
 		return nil
 	}); err != nil {

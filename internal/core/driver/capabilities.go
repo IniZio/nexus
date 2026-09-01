@@ -160,9 +160,32 @@ func Capabilities(drv Driver) []string {
 // safe to call from inside the store.Update callback despite the reentrancy
 // prohibition on store methods (it does not acquire the per-sandbox flock).
 type NetnsStateProvider interface {
-	// NetnsState returns the five netns identity values written by the most
-	// recent successful Start call for id. Returns ok=false when the driver
-	// did not use a netns runtime for this sandbox (e.g. an in-process
-	// perimeter path or a fake driver in tests).
-	NetnsState(id domain.SandboxID) (childPID, childPGID int, childStartTime uint64, guestTap, apiSocket string, ok bool)
+	// NetnsState returns the netns identity written by the most recent
+	// successful Start call for id. Returns ok=false when the driver did not
+	// use a netns runtime for this sandbox (e.g. an in-process perimeter
+	// path or a fake driver in tests).
+	NetnsState(id domain.SandboxID) (st NetnsIdentity, ok bool)
+}
+
+// NetnsIdentity is everything a replacement supervisor needs to re-acquire a
+// running VM whose supervisor is gone, without rebooting the guest.
+//
+// ChildPID/ChildPGID/ChildStartTime/GuestTap/APISocket support the PLANNED
+// path: the outgoing supervisor is alive and passes the perimeter fd over
+// SCM_RIGHTS, and the incoming one uses these to verify the child it is
+// adopting has not been pid-recycled.
+//
+// ControlSocket/ControlToken support the CRASH path, where no live sender
+// exists: the incoming supervisor asks the surviving netns child for a fresh
+// perimeter end over its control socket. They are empty for a child started
+// without a control socket, which is recoverable at the record level but not
+// at the network level.
+type NetnsIdentity struct {
+	ChildPID       int
+	ChildPGID      int
+	ChildStartTime uint64
+	GuestTap       string
+	APISocket      string
+	ControlSocket  string
+	ControlToken   string
 }
