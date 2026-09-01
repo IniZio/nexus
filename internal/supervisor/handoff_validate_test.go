@@ -14,6 +14,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/IniZio/nexus3/internal/supervisor/handoff"
 )
@@ -108,7 +109,6 @@ func TestHandoff_NoMITMProxy_EmptyCA_ProceedsToWire(t *testing.T) {
 
 	// hasMITMProxy=false: CA is not required; Validate must not reject.
 	ok, _, err := performHandoff(context.Background(), peerPath, build, false)
-	<-peerDone
 
 	if err != nil {
 		t.Fatalf("performHandoff: unexpected error: %v", err)
@@ -119,13 +119,13 @@ func TestHandoff_NoMITMProxy_EmptyCA_ProceedsToWire(t *testing.T) {
 		t.Fatal("performHandoff: ok = true after peer refusal; want false")
 	}
 
-	// The key assertion: peerDone must be closed, proving the goroutine ran
-	// and accepted a connection — i.e. Validate did NOT short-circuit the
-	// no-MITM empty-CA payload.
+	// The key assertion: peerDone must close within a bounded wait, proving
+	// the goroutine ran and accepted a connection — i.e. Validate did NOT
+	// short-circuit the no-MITM empty-CA payload.
 	select {
 	case <-peerDone:
-	default:
-		t.Fatal("peer goroutine did not complete — Validate incorrectly rejected a no-MITM payload with no CA")
+	case <-time.After(5 * time.Second):
+		t.Fatal("peer goroutine timed out — Validate incorrectly rejected a no-MITM payload with no CA")
 	}
 }
 
@@ -171,7 +171,6 @@ func TestHandoff_CompletePayload_ProceedsToWire(t *testing.T) {
 	})
 
 	ok, _, err := performHandoff(context.Background(), peerPath, build, true)
-	<-peerDone
 
 	if err != nil {
 		t.Fatalf("performHandoff: unexpected error: %v", err)
@@ -182,12 +181,13 @@ func TestHandoff_CompletePayload_ProceedsToWire(t *testing.T) {
 		t.Fatal("performHandoff: ok = true after peer refusal; want false")
 	}
 
-	// The key assertion: the peer goroutine must have accepted the connection,
-	// proving performHandoff reached the wire (i.e. validation passed).
+	// The key assertion: the peer goroutine must have accepted the connection
+	// within a bounded wait, proving performHandoff reached the wire (i.e.
+	// validation passed).
 	select {
 	case <-peerDone:
-	default:
-		t.Fatal("peer goroutine did not complete — connection was never accepted; " +
+	case <-time.After(5 * time.Second):
+		t.Fatal("peer goroutine timed out — connection was never accepted; " +
 			"validate may have incorrectly rejected a complete payload")
 	}
 }
