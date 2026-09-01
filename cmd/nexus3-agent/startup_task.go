@@ -54,18 +54,25 @@ func startupHookAction(fi os.FileInfo, statErr error) startupHookDecision {
 // returns immediately; the hook runs in a goroutine so the caller (PID 1) can
 // proceed to bind the control plane while the hook (e.g. dockerd bring-up) runs.
 func runStartupHook(con *os.File) {
-	fi, statErr := os.Stat(startupHookPath)
+	// Snapshot the package var on the caller's goroutine. The spawned goroutine
+	// must never read startupHookPath itself: it outlives this call, so a test
+	// that restores the var (t.Cleanup, or a second case in the same test) would
+	// race the goroutine's read. Reading once here also makes the stat and the
+	// exec provably refer to the same path.
+	path := startupHookPath
+
+	fi, statErr := os.Stat(path)
 	switch startupHookAction(fi, statErr) {
 	case startupSkipAbsent:
 		return
 	case startupSkipNonExecutable:
-		consoleLog(con, "nexus3-agent: startup hook %s present but not executable; skipping\n", startupHookPath)
+		consoleLog(con, "nexus3-agent: startup hook %s present but not executable; skipping\n", path)
 		return
 	}
 
-	consoleLog(con, "nexus3-agent: startup hook %s: running (background, non-fatal)\n", startupHookPath)
+	consoleLog(con, "nexus3-agent: startup hook %s: running (background, non-fatal)\n", path)
 	go func() {
-		cmd := exec.Command(startupHookPath)
+		cmd := exec.Command(path)
 		// guestBaselineEnv supplies a correct HOME=/root and PATH; PID 1 gets no
 		// environment from the kernel, so without this the hook's exec of docker,
 		// dockerd, etc. would fail with "executable file not found in $PATH".
