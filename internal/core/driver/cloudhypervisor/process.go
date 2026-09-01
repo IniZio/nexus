@@ -63,11 +63,23 @@ func (b *vmmStderrBuf) Tail() string {
 	return string(b.data)
 }
 
-// managedProcess tracks a running cloud-hypervisor VMM process.
+// killFn is the function used by kill() to signal a process group. It is a
+// package-level variable so tests can inject a stub to assert signal counts
+// without affecting any real process.
+var killFn func(int, syscall.Signal) error = syscall.Kill
+
+// managedProcess tracks a running cloud-hypervisor VMM or virtiofsd process.
 type managedProcess struct {
 	cmd       *exec.Cmd
 	pid       int
 	stderrBuf *vmmStderrBuf // bounded ring of VMM stderr; nil only in tests that bypass spawnVMM
+	// deathCh is closed exactly once by reapWatcher when the child has been
+	// reaped. kill() checks it before signalling (a closed deathCh means the
+	// PID slot may have been recycled) and drains it after signalling (so
+	// kill() returns only after the zombie is gone). nil only for
+	// managedProcess values constructed directly in tests that bypass
+	// newManagedProcess.
+	deathCh chan struct{}
 	// PID alone is unsafe as a process identity across reuse. If the VMM
 	// crashes and the OS recycles its PID before nexus3 restarts, a different
 	// process could appear as the old VMM. The established pattern in this
@@ -78,20 +90,97 @@ type managedProcess struct {
 	// restart; it does not rely on the in-memory proc table across restarts.
 }
 
-// kill sends SIGKILL to the VMM's entire process group and waits for the
-// process to exit, reaping the zombie.
+// newManagedProcess constructs a managedProcess and starts the reapWatcher
+// goroutine. Must be called only AFTER the process's readiness check has
+// passed: the failure-path cleanup() closure calls cmd.Wait() directly, and
+// starting a concurrent reapWatcher before that call would race it.
+func newManagedProcess(cmd *exec.Cmd, pid int, stderrBuf *vmmStderrBuf) *managedProcess {
+	p := &managedProcess{
+		cmd:       cmd,
+		pid:       pid,
+		stderrBuf: stderrBuf,
+		deathCh:   make(chan struct{}),
+	}
+	go p.reapWatcher()
+	return p
+}
+
+// reapWatcher blocks until the child exits, reaps the zombie, and closes
+// deathCh. It uses syscall.Wait4 directly instead of cmd.Wait() for two
+// reasons:
 //
-// SysProcAttr.Setpgid: true (set in spawnVMM) makes the child a process
-// group leader with pgid == pid, so syscall.Kill(-pid, SIGKILL) sends
-// SIGKILL to the whole group — catching any child processes the VMM may have
-// spawned. cmd.Process.Kill() and exec.CommandContext's cancel both signal
-// only the leader; using -pgid is intentional here.
+//  1. cmd.Wait() blocks in awaitGoroutines until every internal io.Copy
+//     goroutine drains its pipe. In the netns child path (spawnVMMInGroup /
+//     RunNetnsChild) an fd can leak across the fork boundary and prevent
+//     pipe write-ends from closing, keeping cmd.Wait() blocked indefinitely.
+//     See ch_netns.go's goroutine at the Wait4 loop for the same rationale.
+//
+//  2. RunNetnsChild already has its own goroutine calling syscall.Wait4 on
+//     the same pid (ch_netns.go). If reapWatcher gets there first, the
+//     netns loop receives ECHILD and breaks safely (see that loop's comment).
+//     If the netns loop gets there first, reapWatcher receives ECHILD and
+//     breaks here. Both orders converge correctly.
+func (p *managedProcess) reapWatcher() {
+	var ws syscall.WaitStatus
+	for {
+		_, err := syscall.Wait4(p.pid, &ws, 0, nil)
+		if err == nil {
+			break // reaped
+		}
+		if errors.Is(err, syscall.EINTR) {
+			continue // interrupted by signal; retry
+		}
+		break // ECHILD (reaped by concurrent waiter) or unexpected error
+	}
+	close(p.deathCh)
+}
+
+// kill sends SIGKILL to the process group and waits for the child to be reaped.
+//
+// SysProcAttr.Setpgid: true (set in spawnVMM / spawnVirtiofsd) makes the child
+// a process group leader with pgid == pid, so Kill(-pid, SIGKILL) sends SIGKILL
+// to the whole group — catching any child processes the VMM may have spawned.
+//
+// GUARD: if deathCh is already closed the process has been reaped and its PID
+// slot may have been recycled. Never signal a recycled PID — return immediately.
+// This window matters because mid-life death is the scenario this ticket exists
+// to handle: a VM dies at 14:09, d.procs[id] still holds the entry, and Stop()
+// calls kill() hours later.
+//
+// For managedProcess values constructed without newManagedProcess (nil deathCh),
+// kill() falls back to a direct Wait to preserve backward compatibility.
 func (p *managedProcess) kill() {
 	if p.cmd.Process == nil {
 		return
 	}
-	_ = syscall.Kill(-p.pid, syscall.SIGKILL)
-	_ = p.cmd.Wait() // reap the zombie; ignore error (process may already be gone)
+	// Check before signalling: if already reaped, the PID may be recycled.
+	//
+	// Declining to signal also declines to sweep any group member that outlived
+	// the leader. That is the correct trade: the obvious alternative — probe
+	// kill(-pid, 0) and signal only if the group answers — is UNSAFE, because a
+	// recycled PID that has become a new group leader answers that probe too.
+	// This guard is safe in both directions. The residual is near-empty in
+	// practice: virtiofsd runs --sandbox none (threads, not forked children),
+	// cloud-hypervisor is threaded, and CH additionally carries Pdeathsig.
+	if p.deathCh != nil {
+		select {
+		case <-p.deathCh:
+			// Release the process handle so the pidfd is closed now rather than
+			// at the next GC. Release neither waits nor signals, so it keeps the
+			// Wait4 ownership semantics intact. cmd.Wait() must NOT be used here
+			// — it would reintroduce the pipe-drain block the Wait4 switch exists
+			// to avoid.
+			_ = p.cmd.Process.Release()
+			return // already reaped — never signal a recycled PID
+		default:
+		}
+	}
+	_ = killFn(-p.pid, syscall.SIGKILL)
+	if p.deathCh != nil {
+		<-p.deathCh // wait for reapWatcher to finish (returns only after zombie gone)
+	} else {
+		_ = p.cmd.Wait() // legacy path: tests that construct managedProcess directly
+	}
 }
 
 // spawnVMM spawns a cloud-hypervisor process with --api-socket socketPath,
@@ -208,8 +297,9 @@ func spawnVMMWithAttr(ctx context.Context, cfg Config, socketPath string, attr *
 
 		pingErr := c.Ping(pollCtx)
 		if pingErr == nil {
-			// API is up.
-			return &managedProcess{cmd: cmd, pid: pid, stderrBuf: stderrBuf}, nil
+			// API is up. Start the reapWatcher goroutine now — after readiness
+			// is confirmed — so it does not race the failure-path cleanup().
+			return newManagedProcess(cmd, pid, stderrBuf), nil
 		}
 
 		// Wait 50 ms before the next poll, but wake immediately if either

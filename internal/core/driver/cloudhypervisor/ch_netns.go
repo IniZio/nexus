@@ -795,6 +795,10 @@ func RunNetnsChild() {
 		// syscall.Wait4 is a direct syscall: it waits only for process exit and
 		// does not involve any pipe-draining machinery. It returns as soon as CH
 		// exits (or is already a zombie), which is the only signal we care about.
+		// NOTE (AC-12c): managedProcess.reapWatcher also calls syscall.Wait4
+		// on proc.pid. Whichever waiter fires first gets the exit status; the
+		// other receives ECHILD and breaks via the clause below. Both orders
+		// converge to os.Exit(0) without blocking or leaking a zombie.
 		var ws syscall.WaitStatus
 		for {
 			wpid, err := syscall.Wait4(proc.pid, &ws, 0, nil)
