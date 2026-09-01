@@ -142,10 +142,18 @@ title = "nexus3: sandbox this worktree"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "worktree-sandbox"]
 
-# No [[events]] hook: herdr 0.8.0 parses the table but its event registry is
-# empty -- startup, workspace_created, tab_created, worktree_created and
-# pane_created are all rejected as "unknown event", which leaves a permanent
-# warning on the plugin and fires nothing. Wire a worktree_created hook
-# (invoking `nexus3 herdr worktree-sandbox --auto <ws>`) when herdr ships
-# event support; --auto implements the conditional rule (sandbox only when the
-# source workspace is nexus3-bound).
+# worktree.removed — tear down the sandbox that was bound to the removed worktree.
+# Resolved through the existing binding store via `nexus3 herdr prune --apply`.
+# A sandbox with no binding row is NOT collectible here (see ticket 18 AC-18h);
+# space-prune remains the required backstop for git-worktree-remove paths that
+# bypass herdr (OQ-1: worktree.removed fires ONLY when herdr drives the removal).
+[[events]]
+on = "worktree.removed"
+command = ["sh", "bin/on-worktree-removed.sh"]
+
+# worktree.created — auto-provision a sandbox for the new worktree workspace.
+# The --auto flag in herdrWorktreeSandbox applies the conditional rule: sandbox
+# is created only when the source (parent) workspace is already nexus3-bound.
+[[events]]
+on = "worktree.created"
+command = ["sh", "bin/on-worktree-created.sh"]
