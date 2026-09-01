@@ -95,6 +95,17 @@ const (
 	// OutcomeUnchanged means the sandbox required no action (e.g. already
 	// stopped with no running VM, or already in the correct state).
 	OutcomeUnchanged OutcomeKind = "unchanged"
+
+	// OutcomeAdoptable means the VM was found alive (running or paused) but
+	// its recorded supervisor is dead: [supervisor.CheckAndReconcile] found
+	// the persisted (SupervisorPID, SupervisorSock) pair does not answer.
+	// This is the live-VM/dead-supervisor class (AC-8): the sandbox needs a
+	// replacement supervisor, and is reported as such rather than as plainly
+	// running. The stale SupervisorPID/SupervisorSock are cleared from the
+	// record (per CheckAndReconcile's documented caller contract) but the VM
+	// itself is never touched — recovery may adopt, never stop, a live VM
+	// (D-HSH-04).
+	OutcomeAdoptable OutcomeKind = "adoptable"
 )
 
 // SandboxOutcome is the result of recovering a single sandbox.
@@ -122,15 +133,47 @@ type Recoverer struct {
 	drv     driver.Driver
 	mach    lifecycle.Machine
 	diskDir string // durable dir for per-sandbox ext4 copies (S-COW); empty = defaultDiskDir()
+
+	// checkSupervisor determines whether the supervisor recorded as
+	// (pid, sockPath) is alive. nil (the New default) means "not wired" and
+	// the supervisor-liveness cross-check (OutcomeAdoptable, AC-8) is
+	// skipped entirely — recovery falls back to today's record-level-only
+	// behaviour.
+	//
+	// This package deliberately does NOT import internal/supervisor and
+	// default-wire [supervisor.CheckAndReconcile] itself:
+	// internal/core/driver/cloudhypervisor's test package imports
+	// internal/core/recovery (ch_netns_lifecycle_test.go), and
+	// internal/supervisor imports internal/core/driver/cloudhypervisor
+	// (adopt.go) — a direct import here closes that into an import cycle.
+	// The real production callback is wired one layer up, in the CLI
+	// package, which already imports both without cycling. Set with
+	// [Recoverer.WithSupervisorCheck]; the same primitive the orphan-sweep
+	// path uses (signal 0 plus a 500 ms socket dial) so recovery does not
+	// re-derive liveness with a looser check of its own.
+	checkSupervisor func(pid int, sockPath string) (alive bool, err error)
 }
 
-// New constructs a Recoverer backed by the given store and driver.
+// New constructs a Recoverer backed by the given store and driver. The
+// supervisor-liveness cross-check (OutcomeAdoptable) is unwired until the
+// caller supplies one via [Recoverer.WithSupervisorCheck] — see that field's
+// doc comment for why New cannot default-wire it itself.
 func New(st store.Store, drv driver.Driver) *Recoverer {
 	return &Recoverer{
 		st:   st,
 		drv:  drv,
 		mach: lifecycle.New(),
 	}
+}
+
+// WithSupervisorCheck wires the supervisor-liveness primitive used to detect
+// the live-VM/dead-supervisor class (AC-8, OutcomeAdoptable). Production
+// callers (internal/cli) pass [supervisor.CheckAndReconcile]; tests pass a
+// fake to simulate a dead supervisor without a real process and Unix-domain
+// socket. A nil fn (the New default) disables the cross-check.
+func (r *Recoverer) WithSupervisorCheck(fn func(pid int, sockPath string) (bool, error)) *Recoverer {
+	r.checkSupervisor = fn
+	return r
 }
 
 // WithDiskDir sets the directory where per-sandbox ext4 disk copies are reaped
@@ -237,12 +280,14 @@ func (r *Recoverer) recoverByID(ctx context.Context, id domain.SandboxID) Sandbo
 		switch obs.State {
 		case driver.Running:
 			wrote := r.applyAdopt(rec, domain.Running, obs.InstanceID, &outcome)
-			if !wrote {
+			wroteSup := r.applySupervisorLiveness(rec, &outcome)
+			if !wrote && !wroteSup {
 				return errSkipWrite
 			}
 		case driver.Paused:
 			wrote := r.applyAdopt(rec, domain.Paused, obs.InstanceID, &outcome)
-			if !wrote {
+			wroteSup := r.applySupervisorLiveness(rec, &outcome)
+			if !wrote && !wroteSup {
 				return errSkipWrite
 			}
 		case driver.Absent:
@@ -377,6 +422,70 @@ func (r *Recoverer) applyAdopt(rec *domain.Sandbox, observed domain.State, insta
 	rec.StopReason = "" // cleared: VM is alive; StopReason only qualifies stopped
 
 	*out = SandboxOutcome{ID: rec.ID, Kind: OutcomeAdopted, Reason: reason}
+	return true
+}
+
+// applySupervisorLiveness cross-checks the sandbox's persisted supervisor
+// identity against the live substrate and reclassifies a healthy-VM outcome
+// as [OutcomeAdoptable] when the VM is alive but its supervisor is not (AC-8:
+// the live-VM/dead-supervisor class).
+//
+// Called after [Recoverer.applyAdopt], and only takes effect when applyAdopt
+// classified the sandbox as [OutcomeAdopted] — a supervisor cross-check on
+// top of an indeterminate or unresolved state correction would either mask
+// that problem or misreport a sandbox recovery already declined to touch.
+//
+// # Never a false positive (the dangerous direction)
+//
+// A slow-to-answer supervisor is not a dead one — spawning a second
+// supervisor over a live one creates two owners for the same VM, which is
+// worse than the bug this ticket exists to fix. This delegates the liveness
+// verdict entirely to r.checkSupervisor (production:
+// [supervisor.CheckAndReconcile], the same signal-0-plus-500ms-socket-dial
+// primitive the orphan sweep uses, which already treats "PID alive but
+// socket not connectable" as stale rather than live and "PID alive with no
+// recorded socket" as live) rather than re-deriving liveness with a looser
+// check here.
+//
+// Returns true when *rec was mutated (SupervisorPID/SupervisorSock cleared)
+// and must be written.
+func (r *Recoverer) applySupervisorLiveness(rec *domain.Sandbox, out *SandboxOutcome) (wrote bool) {
+	if out.Kind != OutcomeAdopted {
+		return false
+	}
+	if r.checkSupervisor == nil {
+		// Not wired (see the checkSupervisor field doc for why New cannot
+		// default it): the cross-check is a no-op, not a false positive.
+		return false
+	}
+	if rec.SupervisorPID <= 0 {
+		// No supervisor was ever recorded for this sandbox (predates the
+		// field, or a lifecycle — e.g. the fork path, TBR-5 — that never
+		// records one). Nothing to cross-check; leave the Adopted outcome.
+		return false
+	}
+	alive, err := r.checkSupervisor(rec.SupervisorPID, rec.SupervisorSock)
+	if err != nil {
+		// Auxiliary check only: a failure here must never downgrade or
+		// mutate an already-correct record-level adoption.
+		out.Reason += fmt.Sprintf(" (supervisor liveness check error: %v; supervisor status not determined)", err)
+		return false
+	}
+	if alive {
+		return false
+	}
+
+	// VM alive (we are inside the OutcomeAdopted branch, so the substrate
+	// reported Running or Paused), supervisor dead: adoptable rather than
+	// plainly running. Clear the stale supervisor identity per
+	// CheckAndReconcile's documented caller contract, so a future Start does
+	// not attempt to reuse a dead pid/socket. The VM itself is left
+	// completely alone (D-HSH-04: recovery may adopt, never stop).
+	prevPID := rec.SupervisorPID
+	rec.SupervisorPID = 0
+	rec.SupervisorSock = ""
+	out.Kind = OutcomeAdoptable
+	out.Reason = fmt.Sprintf("VM %s but supervisor pid %d is dead; sandbox needs a replacement supervisor", rec.State, prevPID)
 	return true
 }
 
