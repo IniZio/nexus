@@ -43,3 +43,6 @@ __pycache__/
 internal/test/repro/logs/
 internal/test/repro/workspace/
 internal/test/repro/workspace_pressure_*/
+
+# test leakage: netns control sockets + auth tokens written relative to CWD
+internal/core/driver/cloudhypervisor/netns-control/
