@@ -55,12 +55,12 @@ const (
 	// S1: wire this sentinel dispatch into cmd/nexus3/main.go
 	NetnsRunEnv = "NEXUS3_NETNS_RUN"
 
-	netnsEnvPumpFD        = "NEXUS3_NETNS_PUMP_FD"
-	netnsEnvGuestTap      = "NEXUS3_NETNS_GUEST_TAP"
-	netnsEnvHostTap       = "NEXUS3_NETNS_HOST_TAP"
-	netnsEnvBridge        = "NEXUS3_NETNS_BRIDGE"
-	netnsEnvAPISocket     = "NEXUS3_NETNS_API_SOCKET"
-	netnsEnvCHBin         = "NEXUS3_NETNS_CH_BIN"
+	netnsEnvPumpFD         = "NEXUS3_NETNS_PUMP_FD"
+	netnsEnvGuestTap       = "NEXUS3_NETNS_GUEST_TAP"
+	netnsEnvHostTap        = "NEXUS3_NETNS_HOST_TAP"
+	netnsEnvBridge         = "NEXUS3_NETNS_BRIDGE"
+	netnsEnvAPISocket      = "NEXUS3_NETNS_API_SOCKET"
+	netnsEnvCHBin          = "NEXUS3_NETNS_CH_BIN"
 	netnsEnvStartTimeoutMS = "NEXUS3_NETNS_START_TIMEOUT_MS"
 
 	// NetnsEnvGuestTap and NetnsEnvAPISocket are exported aliases of the
@@ -72,6 +72,16 @@ const (
 	// the process tree's shape.
 	NetnsEnvGuestTap  = netnsEnvGuestTap
 	NetnsEnvAPISocket = netnsEnvAPISocket
+
+	// netnsEnvControlDir and netnsEnvSandboxID carry what the child needs to
+	// bind its control socket (ch_netns_control.go): the directory to place
+	// the socket and token file in, and the sandbox ID that names them and
+	// that a re-acquiring supervisor must present. When netnsEnvControlDir is
+	// empty the child runs without a control socket, which is the pre-D-HSH-17
+	// behaviour: the VM boots and pumps normally but cannot be re-acquired
+	// after a supervisor crash.
+	netnsEnvControlDir = "NEXUS3_NETNS_CONTROL_DIR"
+	netnsEnvSandboxID  = "NEXUS3_NETNS_SANDBOX_ID"
 
 	// netnsEnvRestoreURL carries the "file://<dir>" URL the child should pass
 	// to vm.restore after spawning CH. When absent (empty), the child runs in
@@ -128,6 +138,20 @@ type NetnsRuntime struct {
 	// than proceeding unguarded, so whichever change wires the record
 	// persistence for NetnsChildPID/NetnsChildPGID must write this field too.
 	ChildStartTime uint64
+
+	// ControlSocket and ControlToken are the paths of the netns child's
+	// control socket and its shared-secret token file (ch_netns_control.go).
+	// A replacement supervisor whose predecessor CRASHED — leaving no live
+	// sender to pass the perimeter fd over SCM_RIGHTS — passes these to
+	// [ReacquirePerimeter] to obtain a fresh perimeter end from the child
+	// itself. Empty when the child was started without a control socket, in
+	// which case that VM is not re-acquirable after a supervisor crash.
+	//
+	// Persisted onto domain.Sandbox alongside the other netns identity
+	// fields, for the same reason: a replacement process has no other way to
+	// learn them.
+	ControlSocket string
+	ControlToken  string
 
 	// cmd is the child process running inside the user+network namespace.
 	// nil when this NetnsRuntime was built by [AdoptNetnsRuntime] rather
@@ -301,6 +325,15 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 	//
 	// The ctx here is used only to detect cancellation that happened BEFORE or
 	// DURING cmd.Start(); see the explicit ctx.Err() check below.
+	// The control socket lives in its own 0700 subdirectory of the CH socket
+	// directory rather than in that directory itself: the child asserts 0700
+	// on the directory it binds in, and the socket directory is shared with
+	// the CH API sockets, whose permissions are not this mechanism's to
+	// tighten. Deriving it from an already-shared path keeps it reachable
+	// from both the child (bind) and the host (connect) with no extra
+	// configuration, exactly as the API socket already is.
+	controlDir := netnsControlDir(cfg.SocketDir)
+
 	cmd := exec.Command(self)
 	cmd.Env = []string{
 		NetnsRunEnv + "=1",
@@ -311,6 +344,8 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 		fmt.Sprintf("%s=%s", netnsEnvAPISocket, socketPath),
 		fmt.Sprintf("%s=%s", netnsEnvCHBin, cfg.BinaryPath),
 		fmt.Sprintf("%s=%d", netnsEnvStartTimeoutMS, startTimeoutMS),
+		fmt.Sprintf("%s=%s", netnsEnvControlDir, controlDir),
+		fmt.Sprintf("%s=%s", netnsEnvSandboxID, id.String()),
 		pathEnv,
 	}
 	// Restore mode: pass the snapshot URL so RunNetnsChild issues vm.restore
@@ -385,6 +420,8 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 		ChildPID:       childPgid,
 		ChildPGID:      childPgid,
 		ChildStartTime: childStartTime,
+		ControlSocket:  ControlSocketPath(controlDir, id.String()),
+		ControlToken:   ControlTokenPath(controlDir, id.String()),
 		cmd:            cmd,
 		stderrBuf:      stderrBuf,
 		deathCh:        make(chan struct{}),
@@ -813,9 +850,30 @@ func RunNetnsChild() {
 		os.Exit(0) // exit this process: no reason to outlive CH
 	}()
 
+	// Wrap the pump end so a replacement supervisor can swap a fresh one in
+	// after the original supervisor dies, WITHOUT tapPump ever returning
+	// (returning here falls through to the os.Exit(0) above, which takes CH
+	// and the VM down via Pdeathsig — see the tapPump doc comment).
+	pump := newSwappableConn(pumpConn)
+
+	// Serve the control socket for the life of this child. Without it the VM
+	// still boots and pumps exactly as before, but is unrecoverable after a
+	// supervisor crash — so a bind failure is logged and survived rather than
+	// being made fatal to a VM that is otherwise perfectly healthy.
+	if controlDir := os.Getenv(netnsEnvControlDir); controlDir != "" {
+		sandboxID := os.Getenv(netnsEnvSandboxID)
+		ctrl, cerr := startNetnsControlServer(controlDir, sandboxID, pump)
+		if cerr != nil {
+			fmt.Fprintf(os.Stderr, "netns child: control socket unavailable, VM will not be re-acquirable: %v\n", cerr)
+		} else {
+			defer ctrl.Close()
+			go ctrl.Serve()
+		}
+	}
+
 	// Step 5 (cont.): run the frame pump. Blocks until both fds are closed.
 	// tapPump copies Ethernet frames between the host TAP fd and the pump-end
 	// of the socketpair. The parent reads frames from the perimeter end.
-	tapPump(hostTapFile, pumpConn)
+	tapPump(hostTapFile, pump)
 	// tapPump returned; both goroutines exited. Child exits cleanly.
 }

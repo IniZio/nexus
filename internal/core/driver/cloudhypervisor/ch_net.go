@@ -35,6 +35,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sync"
 	"syscall"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
@@ -123,25 +124,136 @@ type netState struct {
 	claimed   bool          // true after GuestNetworkFD has been called once
 }
 
-// tapPump copies raw Ethernet frames in both directions between tapFd and conn.
+// errPumpClosed is returned by swappableConn.swap when the pump has already
+// been permanently closed (closePermanently called) — swapping in a fresh
+// conn after real teardown has begun would leak it forever, since nothing
+// will ever read or write it again.
+var errPumpClosed = fmt.Errorf("cloudhypervisor: netns pump: permanently closed")
+
+// swappableConn lets a live tapPump replace its underlying conn without
+// either pump goroutine ever returning — see the tapPump doc comment for why
+// that invariant is load-bearing (D-HSH-17: a returned tapPump falls through
+// to os.Exit(0) in RunNetnsChild, which takes the guest VM down via
+// Pdeathsig).
+//
+// A generation channel (gen) is closed exactly once per swap (or on
+// permanent close) to wake a goroutine that is blocked because its current
+// conn errored: the swap already closed the OLD conn (that is what unblocks
+// a pending Read on it), and closing gen tells the blocked goroutine why —
+// "a new conn is ready, retry" versus "shut down for real, exit".
+//
+// All methods are safe for concurrent use.
+type swappableConn struct {
+	mu     sync.Mutex
+	conn   io.ReadWriteCloser
+	gen    chan struct{}
+	closed bool
+}
+
+// newSwappableConn wraps c as the initial (generation 0) conn.
+func newSwappableConn(c io.ReadWriteCloser) *swappableConn {
+	return &swappableConn{conn: c, gen: make(chan struct{})}
+}
+
+// current returns the live conn, its generation-change channel (closed when
+// this conn is replaced or the pump is permanently closed), and whether the
+// pump has been permanently closed.
+func (s *swappableConn) current() (conn io.ReadWriteCloser, gen <-chan struct{}, closed bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.conn, s.gen, s.closed
+}
+
+// write sends p on whatever conn is current at the moment of the call.
+// Errors are discarded — this preserves the pre-existing asymmetry
+// (ch_net.go tapPump doc): the guest→host direction never blocks or exits on
+// a write failure, so a dead or not-yet-installed conn silently drops frames
+// instead of taking the pump down.
+func (s *swappableConn) write(p []byte) {
+	s.mu.Lock()
+	c := s.conn
+	s.mu.Unlock()
+	_, _ = c.Write(p)
+}
+
+// swap installs newConn as the current conn, wakes any goroutine blocked on
+// the previous generation (by closing the old gen channel), and closes the
+// previous conn. Returns errPumpClosed without installing newConn if the
+// pump has already been permanently closed — the caller must close newConn
+// itself in that case.
+func (s *swappableConn) swap(newConn io.ReadWriteCloser) error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return errPumpClosed
+	}
+	old := s.conn
+	oldGen := s.gen
+	s.conn = newConn
+	s.gen = make(chan struct{})
+	s.mu.Unlock()
+
+	close(oldGen)
+	_ = old.Close()
+	return nil
+}
+
+// closePermanently marks the pump for real shutdown: the conn→tapFd
+// goroutine, if currently blocked waiting for a swap, wakes and exits
+// (sending to tapPump's done channel) instead of waiting forever. Idempotent.
+func (s *swappableConn) closePermanently() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
+	old := s.conn
+	oldGen := s.gen
+	s.mu.Unlock()
+
+	close(oldGen)
+	_ = old.Close()
+}
+
+// tapPump copies raw Ethernet frames in both directions between tapFd and
+// pump's current conn.
 //
 // Both sides are packet-mode (one Read = one complete frame):
 //   - tapFd is a TAP device fd opened with IFF_NO_PI — one Read = one Ethernet frame
-//   - conn is an AF_UNIX SOCK_DGRAM connection — one Read = one datagram = one frame
+//   - pump's conn is an AF_UNIX SOCK_DGRAM connection — one Read = one datagram = one frame
 //
-// tapPump blocks until both goroutines exit. A goroutine exits when its source
-// returns a read error (typically io.EOF or a closed-fd error from teardown).
-// tapPump does NOT close tapFd or conn; callers are responsible for cleanup.
-func tapPump(tapFd io.ReadWriteCloser, conn io.ReadWriteCloser) {
+// tapPump blocks until both goroutines exit. tapPump does NOT close tapFd or
+// pump's conn; callers are responsible for cleanup.
+//
+// # Never-terminate invariant (D-HSH-17)
+//
+// The guest→host goroutine (tapFd.Read) exits, as before, on a tapFd read
+// error — that only happens when the process is really tearing down (the fd
+// itself is being closed), so its exit behaviour is unchanged.
+//
+// The host→guest goroutine (pump.current().Read) used to exit on ANY read
+// error, including the error produced when a dead supervisor's end of the
+// socketpair is gone. That was correct when nothing could ever replace the
+// conn — but a goroutine that already returned cannot be "swapped into"
+// later; there is no stack left to resume. So this goroutine now BLOCKS on
+// pump's generation channel instead of exiting when its current conn errors,
+// and retries with whatever conn pump.swap installs next. It only truly
+// exits when pump.closePermanently has been called (checked at the top of
+// each loop iteration, including the one after waking from a swap wait).
+func tapPump(tapFd io.ReadWriteCloser, pump *swappableConn) {
 	done := make(chan struct{}, 2)
 
-	// tapFd → conn (guest → host / gvproxy direction)
+	// tapFd → pump (guest → host / gvproxy direction). Unchanged: writes are
+	// always attempted against whatever conn is current and errors are
+	// discarded, so this goroutine automatically starts reaching a newly
+	// swapped-in conn on its next iteration with no special-casing needed.
 	go func() {
 		buf := make([]byte, tapBufSize)
 		for {
 			n, err := tapFd.Read(buf)
 			if n > 0 {
-				_, _ = conn.Write(buf[:n])
+				pump.write(buf[:n])
 			}
 			if err != nil {
 				break
@@ -150,16 +262,25 @@ func tapPump(tapFd io.ReadWriteCloser, conn io.ReadWriteCloser) {
 		done <- struct{}{}
 	}()
 
-	// conn → tapFd (host / gvproxy → guest direction)
+	// pump → tapFd (host / gvproxy → guest direction).
 	go func() {
 		buf := make([]byte, tapBufSize)
 		for {
-			n, err := conn.Read(buf)
+			c, gen, closed := pump.current()
+			if closed {
+				break
+			}
+			n, err := c.Read(buf)
 			if n > 0 {
 				_, _ = tapFd.Write(buf[:n])
 			}
 			if err != nil {
-				break
+				// Do NOT exit: block until pump.swap (retry with the new
+				// conn) or pump.closePermanently (re-check closed, exit)
+				// wakes us. This is what lets a crashed supervisor's dead
+				// conn be replaced without ever letting tapPump return.
+				<-gen
+				continue
 			}
 		}
 		done <- struct{}{}
@@ -389,15 +510,23 @@ var _ driver.NetworkHook = (*CHDriver)(nil)
 //
 // This method is read-only and acquires only d.mu (an in-memory lock), so it is
 // safe to call from inside a store.Update callback.
-func (d *CHDriver) NetnsState(id domain.SandboxID) (childPID, childPGID int, childStartTime uint64, guestTap, apiSocket string, ok bool) {
+func (d *CHDriver) NetnsState(id domain.SandboxID) (driver.NetnsIdentity, bool) {
 	d.mu.Lock()
 	ns := d.nets[id]
 	d.mu.Unlock()
 	if ns == nil || ns.rt == nil {
-		return 0, 0, 0, "", "", false
+		return driver.NetnsIdentity{}, false
 	}
 	rt := ns.rt
-	return rt.ChildPID, rt.ChildPGID, rt.ChildStartTime, rt.GuestTap, rt.APISocket, true
+	return driver.NetnsIdentity{
+		ChildPID:       rt.ChildPID,
+		ChildPGID:      rt.ChildPGID,
+		ChildStartTime: rt.ChildStartTime,
+		GuestTap:       rt.GuestTap,
+		APISocket:      rt.APISocket,
+		ControlSocket:  rt.ControlSocket,
+		ControlToken:   rt.ControlToken,
+	}, true
 }
 
 var _ driver.NetnsStateProvider = (*CHDriver)(nil)

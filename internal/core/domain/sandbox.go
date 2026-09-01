@@ -135,6 +135,20 @@ type Sandbox struct {
 	// zero rather than proceeding unguarded.
 	NetnsChildStartTime uint64 `json:"netns_child_start_time,omitempty"`
 
+	// NetnsControlSocket and NetnsControlToken are the paths of the netns
+	// child's control socket and its shared-secret token file. They are what
+	// makes CRASH recovery possible at the network level: after a supervisor
+	// is SIGKILLed there is no live sender to pass the perimeter fd over
+	// SCM_RIGHTS, but the netns child survives, and a replacement supervisor
+	// uses these two paths to ask that child for a fresh perimeter end
+	// instead (cloudhypervisor.ReacquirePerimeter).
+	//
+	// Both empty when the netns child was started without a control socket,
+	// in which case the VM is recoverable at the record level but NOT at the
+	// network level — the distinction the charter originally conflated.
+	NetnsControlSocket string `json:"netns_control_socket,omitempty"`
+	NetnsControlToken  string `json:"netns_control_token,omitempty"`
+
 	// CacheDiskSlot is the ImagePath of the leased builder cache-disk slot
 	// backing this sandbox's VM, if any (builder.CacheDiskSpec.ImagePath;
 	// see internal/core/builder/cachedisk.go). A non-parent adopter must
