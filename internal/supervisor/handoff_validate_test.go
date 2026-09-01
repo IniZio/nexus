@@ -54,7 +54,7 @@ func TestHandoff_IncompletePayload_Refuses(t *testing.T) {
 		}, nil, nil
 	})
 
-	ok, reason, err := performHandoff(context.Background(), peerPath, build)
+	ok, reason, err := performHandoff(context.Background(), peerPath, build, true)
 	if err != nil {
 		t.Fatalf("performHandoff: unexpected error: %v", err)
 	}
@@ -65,6 +65,67 @@ func TestHandoff_IncompletePayload_Refuses(t *testing.T) {
 	if reason == "" {
 		t.Error("performHandoff with incomplete payload: reason is empty; " +
 			"the refusal must name the incomplete payload")
+	}
+}
+
+// TestHandoff_NoMITMProxy_EmptyCA_ProceedsToWire proves that a sandbox with
+// no MITM proxy (AllowAll mode) does not require CA material in the payload.
+// Validate must pass, and performHandoff must reach the wire.
+func TestHandoff_NoMITMProxy_EmptyCA_ProceedsToWire(t *testing.T) {
+	peerPath, acceptedCh := listenHandoffPeer(t)
+
+	peerDone := make(chan struct{})
+	go func() {
+		defer close(peerDone)
+		peerConn, chOK := <-acceptedCh
+		if !chOK {
+			t.Error("fake peer: connection never accepted — validate must have short-circuited a no-MITM payload")
+			return
+		}
+		defer peerConn.Close()
+		_, fd, err := handoff.Accept(peerConn)
+		if err != nil {
+			t.Errorf("fake peer: Accept: %v", err)
+			return
+		}
+		if fd != nil {
+			fd.Close()
+		}
+		// Refuse at the handoff level to keep the test simple.
+		if err := handoff.Refuse(peerConn, "test refusal"); err != nil {
+			t.Errorf("fake peer: Refuse: %v", err)
+		}
+	}()
+
+	build := payloadBuilder(func() (handoff.Payload, *os.File, error) {
+		// No CA — this is the AllowAll / no-MITM-proxy shape.
+		return handoff.Payload{
+			Version:   handoff.CurrentVersion,
+			Perimeter: handoff.PerimeterHandle{Present: false},
+			// CA is zero-value: CertPEM and KeyPEM are nil.
+		}, nil, nil
+	})
+
+	// hasMITMProxy=false: CA is not required; Validate must not reject.
+	ok, _, err := performHandoff(context.Background(), peerPath, build, false)
+	<-peerDone
+
+	if err != nil {
+		t.Fatalf("performHandoff: unexpected error: %v", err)
+	}
+	// Peer refused at the handoff level, so ok must be false — but for the
+	// right reason (peer refusal, not payload validation).
+	if ok {
+		t.Fatal("performHandoff: ok = true after peer refusal; want false")
+	}
+
+	// The key assertion: peerDone must be closed, proving the goroutine ran
+	// and accepted a connection — i.e. Validate did NOT short-circuit the
+	// no-MITM empty-CA payload.
+	select {
+	case <-peerDone:
+	default:
+		t.Fatal("peer goroutine did not complete — Validate incorrectly rejected a no-MITM payload with no CA")
 	}
 }
 
@@ -109,7 +170,7 @@ func TestHandoff_CompletePayload_ProceedsToWire(t *testing.T) {
 		}, nil, nil
 	})
 
-	ok, _, err := performHandoff(context.Background(), peerPath, build)
+	ok, _, err := performHandoff(context.Background(), peerPath, build, true)
 	<-peerDone
 
 	if err != nil {
@@ -131,16 +192,16 @@ func TestHandoff_CompletePayload_ProceedsToWire(t *testing.T) {
 	}
 }
 
-// TestPayloadValidate_EmptyCA returns a refusal reason.
-func TestPayloadValidate_EmptyCA(t *testing.T) {
+// TestPayloadValidate_MITMProxy_EmptyCA_Refuses proves MITM+no-CA is rejected.
+func TestPayloadValidate_MITMProxy_EmptyCA_Refuses(t *testing.T) {
 	p := handoff.Payload{Version: handoff.CurrentVersion}
-	if reason := p.Validate(); reason == "" {
-		t.Error("Validate with empty CA: got empty reason, want a non-empty refusal")
+	if reason := p.Validate(true); reason == "" {
+		t.Error("Validate(hasMITMProxy=true) with empty CA: got empty reason, want a non-empty refusal")
 	}
 }
 
-// TestPayloadValidate_PopulatedCA returns empty (no refusal).
-func TestPayloadValidate_PopulatedCA(t *testing.T) {
+// TestPayloadValidate_MITMProxy_PopulatedCA_Accepts proves MITM+CA passes.
+func TestPayloadValidate_MITMProxy_PopulatedCA_Accepts(t *testing.T) {
 	p := handoff.Payload{
 		Version: handoff.CurrentVersion,
 		CA: handoff.CAMaterial{
@@ -148,8 +209,18 @@ func TestPayloadValidate_PopulatedCA(t *testing.T) {
 			KeyPEM:  []byte("key"),
 		},
 	}
-	if reason := p.Validate(); reason != "" {
-		t.Errorf("Validate with populated CA: got reason %q, want empty", reason)
+	if reason := p.Validate(true); reason != "" {
+		t.Errorf("Validate(hasMITMProxy=true) with populated CA: got reason %q, want empty", reason)
+	}
+}
+
+// TestPayloadValidate_NoMITMProxy_EmptyCA_Accepts proves no-MITM+no-CA passes.
+// An AllowAll sandbox has no proxy and legitimately carries no CA material.
+func TestPayloadValidate_NoMITMProxy_EmptyCA_Accepts(t *testing.T) {
+	p := handoff.Payload{Version: handoff.CurrentVersion}
+	if reason := p.Validate(false); reason != "" {
+		t.Errorf("Validate(hasMITMProxy=false) with empty CA: got reason %q, want empty — "+
+			"AllowAll sandboxes have no proxy and require no CA", reason)
 	}
 }
 

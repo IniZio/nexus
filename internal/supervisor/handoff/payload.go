@@ -127,19 +127,23 @@ type GovernorConfig struct {
 // non-empty Validate() result as a clean refusal (ok=false) so the outgoing
 // supervisor stays alive and continues to own all resources (D-HSH-08).
 //
-// Specifically, [Payload.CA] must carry the MITM CA material (CertPEM and
-// KeyPEM). A replacement that lacks the CA cannot continue serving TLS
-// interception for the sandbox's egress perimeter — it would have to
-// regenerate a new CA, which breaks any in-flight TLS session and violates
+// hasMITMProxy must reflect whether the sandbox runs with an MITM proxy (see
+// [service.SandboxHasMITMProxy] for the predicate). Only a sandbox with an
+// MITM proxy requires CA material in the payload — an AllowAll sandbox with
+// no proxy has no CA and legitimately produces an empty [Payload.CA].
+//
+// When hasMITMProxy is true, [Payload.CA] must carry the MITM CA material
+// (CertPEM and KeyPEM). A replacement that lacks the CA cannot continue
+// serving TLS interception for the sandbox's egress perimeter — it would have
+// to regenerate a new CA, which breaks any in-flight TLS session and violates
 // the invariant that the perimeter is transparent across a hot-swap.
 //
 // [Payload.Credentials] and [Payload.Virtiofs] are allowed to be empty: a
 // sandbox with no brokered credentials and no live virtiofs mounts produces
 // a legitimately nil/empty slice for both.
-func (p Payload) Validate() string {
-	if len(p.CA.CertPEM) == 0 || len(p.CA.KeyPEM) == 0 {
-		return "handoff payload incomplete: CA.CertPEM and CA.KeyPEM must be populated " +
-			"(mitm.Proxy CA key export not yet wired — wire it to remove this check)"
+func (p Payload) Validate(hasMITMProxy bool) string {
+	if hasMITMProxy && (len(p.CA.CertPEM) == 0 || len(p.CA.KeyPEM) == 0) {
+		return "handoff payload incomplete: CA.CertPEM and CA.KeyPEM must be populated for a sandbox with an MITM proxy"
 	}
 	return ""
 }

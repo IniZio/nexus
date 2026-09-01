@@ -103,7 +103,7 @@ func buildHandoffPayload(sup *perimeter.PerimeterSupervisor, sandboxRef string, 
 // never mutates the broker, and never touches detachCh itself (the caller
 // does that only after this function reports success). This is what makes a
 // refused or failed handoff resumable per D-HSH-08.
-func performHandoff(ctx context.Context, peerSock string, build payloadBuilder) (ok bool, reason string, err error) {
+func performHandoff(ctx context.Context, peerSock string, build payloadBuilder, hasMITMProxy bool) (ok bool, reason string, err error) {
 	dialCtx, cancel := context.WithTimeout(ctx, handoffDialTimeout)
 	defer cancel()
 
@@ -126,7 +126,7 @@ func performHandoff(ctx context.Context, peerSock string, build payloadBuilder) 
 	// replacement inherits the perimeter fd but not the MITM CA key — is
 	// worse than no handoff. The outgoing supervisor must stay alive until
 	// all fields are wired (D-HSH-08).
-	if reason := payload.Validate(); reason != "" {
+	if reason := payload.Validate(hasMITMProxy); reason != "" {
 		return false, reason, nil
 	}
 	fd := -1

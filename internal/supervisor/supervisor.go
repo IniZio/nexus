@@ -491,7 +491,8 @@ func RunDetached(cfg Config) error {
 	})
 	handoffFn := handoffFunc(func(hctx context.Context, peerSock string) (bool, string, error) {
 		sup := perimSupPtr.Load()
-		if sup == nil || sbPtr.Load() == nil {
+		sb := sbPtr.Load()
+		if sup == nil || sb == nil {
 			return false, "perimeter not yet ready", nil
 		}
 		bootVCPUs := cfg.BootVCPUs
@@ -501,7 +502,7 @@ func RunDetached(cfg Config) error {
 		build := payloadBuilder(func() (handoff.Payload, *os.File, error) {
 			return buildHandoffPayload(sup, cfg.SandboxRef, bootVCPUs, cfg.MemoryMiB)
 		})
-		return performHandoff(hctx, peerSock, build)
+		return performHandoff(hctx, peerSock, build, service.SandboxHasMITMProxy(*sb))
 	})
 	// agentHealthFn probes the guest agent's control/data planes live, using
 	// the SAME drv this process dials every RPC through. resolveErr == nil is

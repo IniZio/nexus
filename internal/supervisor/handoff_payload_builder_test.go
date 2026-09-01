@@ -88,7 +88,7 @@ func TestBuildHandoffPayload_RealBuilder_PopulatesCAAndPassesValidate(t *testing
 		defer fdFile.Close()
 	}
 
-	if reason := payload.Validate(); reason != "" {
+	if reason := payload.Validate(true); reason != "" {
 		t.Fatalf("the REAL payload builder produced a payload that fails Validate(): %q — "+
 			"this is the exact defect that made every handoff refuse for the whole motive", reason)
 	}

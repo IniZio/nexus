@@ -141,7 +141,7 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 		build := payloadBuilder(func() (handoff.Payload, *os.File, error) {
 			return buildHandoffPayload(sup, cfg.SandboxRef, bootVCPUs, cfg.MemoryMiB)
 		})
-		return performHandoff(hctx, peerSock, build)
+		return performHandoff(hctx, peerSock, build, service.SandboxHasMITMProxy(sb))
 	})
 
 	// agentHealthFn probes the guest agent's control/data planes live, using

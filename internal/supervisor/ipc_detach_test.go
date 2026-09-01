@@ -233,7 +233,7 @@ func TestHandoffVerb_RefusalDoesNotDetach(t *testing.T) {
 		}, f, nil
 	})
 
-	ok, reason, err := performHandoff(context.Background(), peerPath, build)
+	ok, reason, err := performHandoff(context.Background(), peerPath, build, true)
 	<-refuseDone
 
 	if err != nil {
@@ -291,7 +291,7 @@ func TestHandoffVerb_SuccessReportsOK(t *testing.T) {
 		}, f, nil
 	})
 
-	ok, reason, err := performHandoff(context.Background(), peerPath, build)
+	ok, reason, err := performHandoff(context.Background(), peerPath, build, true)
 	<-confirmDone
 
 	if err != nil {
