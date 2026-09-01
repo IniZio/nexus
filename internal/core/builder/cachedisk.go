@@ -2,11 +2,15 @@ package builder
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"syscall"
+	"time"
 )
 
 // cacheDiskSizeBytes is the default sparse size for a new per-ecosystem cache
@@ -236,7 +240,19 @@ func fsyncDir(dir string) error {
 //
 // Unknown keys cause an immediate error; the caller receives no partial
 // results and no held leases.
-func SelectCacheDisks(ctx context.Context, dataDir string, keys []string) ([]CacheDiskSpec, func(), error) {
+// # Who owns the lease (D-HSH-07)
+//
+// SelectCacheDisks only SELECTS a free slot and takes the first lease on it.
+// The returned [CacheDiskLease] values are handed to the supervisor process
+// that owns the builder VM, and the CLI's own copies are dropped once that
+// handoff has happened. Before D-HSH-07 the lease was released by a `defer`
+// in the CLI, so it was CLI-scoped while cloud-hypervisor's write lock on the
+// image is VM-scoped: a VM that outlived its CLI (spawn timeout escalating to
+// SIGKILL) left the slot reading free while the image was still locked, and
+// the next build failed to boot with an opaque CH "file is already locked"
+// error. That mismatch is what the lease handoff closes — see
+// [CacheDiskLease.File] and internal/supervisor's acquireCacheDiskLeases.
+func SelectCacheDisks(ctx context.Context, dataDir string, keys []string) ([]CacheDiskSpec, []*CacheDiskLease, error) {
 	// Validate all keys upfront so the caller gets a clean error before any
 	// disk creation occurs.
 	for _, k := range keys {
@@ -250,51 +266,304 @@ func SelectCacheDisks(ctx context.Context, dataDir string, keys []string) ([]Cac
 		return nil, nil, fmt.Errorf("cachedisk: mkdir %s: %w", cacheDir, err)
 	}
 
-	var held []*os.File
-	release := func() {
-		for _, f := range held {
-			_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-			_ = f.Close()
-		}
-		held = nil
-	}
-
+	var held []*CacheDiskLease
 	specs := make([]CacheDiskSpec, 0, len(keys))
 	for _, k := range keys {
 		entry := ecosystemRegistry[k]
-		spec, lockFile, err := leaseCacheDiskSlot(ctx, cacheDir, k, entry)
+		spec, lease, err := leaseCacheDiskSlot(ctx, cacheDir, k, entry)
 		if err != nil {
-			release() // never return partially held leases
+			ReleaseCacheDiskLeases(held) // never return partially held leases
 			return nil, nil, err
 		}
-		held = append(held, lockFile)
+		held = append(held, lease)
 		specs = append(specs, spec)
 	}
-	return specs, release, nil
+	return specs, held, nil
 }
 
 // leaseCacheDiskSlot finds the lowest slot for ecosystemKey whose sidecar lock
-// is free, creates the slot's image if needed, and returns the held lock file.
-func leaseCacheDiskSlot(ctx context.Context, cacheDir, ecosystemKey string, entry ecosystemEntry) (CacheDiskSpec, *os.File, error) {
+// is free, creates the slot's image if needed, and returns the held lease.
+func leaseCacheDiskSlot(ctx context.Context, cacheDir, ecosystemKey string, entry ecosystemEntry) (CacheDiskSpec, *CacheDiskLease, error) {
 	for slot := 0; slot < MaxCacheDiskSlots; slot++ {
-		lockPath := slotImagePath(cacheDir, ecosystemKey, slot) + ".lock"
-		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
-		if err != nil {
-			return CacheDiskSpec{}, nil, fmt.Errorf("cachedisk: open lease file %s: %w", lockPath, err)
+		imagePath := slotImagePath(cacheDir, ecosystemKey, slot)
+		// allowOwnPin=false: SELECTION must treat a slot this process already
+		// leases as busy and move on, otherwise two concurrent builds inside
+		// one process would be handed the same image.
+		lease, err := acquireCacheDiskSlot(imagePath, false)
+		if errors.Is(err, ErrCacheDiskSlotBusy) {
+			continue // slot busy: another builder VM holds this image
 		}
-		if flockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); flockErr != nil {
-			_ = f.Close() // slot busy: another builder VM holds this image
-			continue
+		if err != nil {
+			return CacheDiskSpec{}, nil, err
 		}
 		spec, ensureErr := ensureCacheDiskAt(ctx, cacheDir, ecosystemKey, entry, slot)
 		if ensureErr != nil {
-			_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-			_ = f.Close()
+			lease.Release()
 			return CacheDiskSpec{}, nil, ensureErr
 		}
-		return spec, f, nil
+		return spec, lease, nil
 	}
 	return CacheDiskSpec{}, nil, fmt.Errorf(
 		"cachedisk: all %d %q cache-disk slots are in use by concurrent builds; wait for one to finish",
 		MaxCacheDiskSlots, ecosystemKey)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Slot leases (D-HSH-07)
+//
+// A lease is an flock(LOCK_EX) on the slot's <image>.lock sidecar. Two rules
+// govern this file and were both learned the hard way in motive
+// nexus3-builder-supervisor-spawn-race (fixes b4489a5 / 95ba583):
+//
+//  1. NEVER unlink a lease file. flock is attached to the inode; unlinking a
+//     lock file another process holds lets the next opener create a fresh
+//     inode and "hold" the same slot at the same time. Release therefore only
+//     ever CLOSEs the descriptor — see CacheDiskLease.Release for why an
+//     explicit LOCK_UN is wrong on a shared open file description.
+//  2. OWN-PIN BEFORE PROBE. flock locks belong to the open file description,
+//     not the process, so a second open(2)+LOCK_NB of a file THIS process
+//     already holds fails with EWOULDBLOCK and reads as "another process has
+//     it". Every acquisition consults the in-process pin registry below first.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ErrCacheDiskSlotBusy reports that a slot's lease is held by someone else —
+// another process, or (when own-pins are not allowed) this process itself.
+var ErrCacheDiskSlotBusy = errors.New("cachedisk: slot lease is held")
+
+// slotPin is the process-wide record of one held lease. refs counts the
+// outstanding CacheDiskLease values sharing it; the flock is dropped only when
+// the last one is released.
+type slotPin struct {
+	f    *os.File
+	refs int
+}
+
+var (
+	pinMu sync.Mutex
+	// pinned maps lock-file path → the lease this process holds on it. This
+	// is the own-pin registry required by rule 2 above.
+	pinned = map[string]*slotPin{}
+)
+
+// CacheDiskLease is a held lease on one cache-disk slot. Its lifetime — not
+// the lifetime of whoever selected the slot — is what keeps a second builder
+// VM off the same image, so it must be owned by the process whose lifetime
+// matches the VM's.
+type CacheDiskLease struct {
+	imagePath string
+	lockPath  string
+	released  bool
+}
+
+// CacheDiskLockPath returns the sidecar lock path guarding a slot image.
+func CacheDiskLockPath(imagePath string) string { return imagePath + ".lock" }
+
+// ImagePath is the cache-disk image this lease guards.
+func (l *CacheDiskLease) ImagePath() string {
+	if l == nil {
+		return ""
+	}
+	return l.imagePath
+}
+
+// File returns the open lock file whose flock this lease holds.
+//
+// It exists for ONE purpose: passing the descriptor to a child process via
+// exec.Cmd.ExtraFiles. flock ownership follows the open file description, and
+// an inherited descriptor refers to the SAME description — so the child holds
+// the identical lock with no unlock/relock window in which a concurrent build
+// could steal the slot. The lock survives until every descriptor referring to
+// that description is closed, which is why the parent may (and should) drop
+// its own copy afterwards. Callers must not Close or flock this file directly;
+// use Release.
+func (l *CacheDiskLease) File() *os.File {
+	if l == nil {
+		return nil
+	}
+	pinMu.Lock()
+	defer pinMu.Unlock()
+	if p := pinned[l.lockPath]; p != nil {
+		return p.f
+	}
+	return nil
+}
+
+// Release drops this reference to the lease. The underlying flock is released
+// only when the last reference goes; the lock FILE is never unlinked (rule 1).
+// Release is idempotent and nil-safe.
+func (l *CacheDiskLease) Release() {
+	if l == nil || l.released {
+		return
+	}
+	l.released = true
+	pinMu.Lock()
+	defer pinMu.Unlock()
+	p := pinned[l.lockPath]
+	if p == nil {
+		return
+	}
+	p.refs--
+	if p.refs > 0 {
+		return
+	}
+	delete(pinned, l.lockPath)
+	// CLOSE, never LOCK_UN. flock belongs to the open file description, and
+	// after a lease has been handed to a child through ExtraFiles the parent
+	// and the child share that ONE description: an explicit LOCK_UN here would
+	// unlock the slot out from under the supervisor that now owns it, which is
+	// precisely the CLI-scoped behaviour D-HSH-07 removes. Closing is the
+	// correct operation — the lock survives until EVERY descriptor referring
+	// to the description is closed, so this drops only this process's claim.
+	//
+	// The lock FILE is deliberately not unlinked; see rule 1 above.
+	_ = p.f.Close()
+}
+
+// ReleaseCacheDiskLeases releases every lease in ls.
+func ReleaseCacheDiskLeases(ls []*CacheDiskLease) {
+	for _, l := range ls {
+		l.Release()
+	}
+}
+
+// CacheDiskSlotPaths returns the image paths of the leased slots, in order.
+func CacheDiskSlotPaths(ls []*CacheDiskLease) []string {
+	out := make([]string, 0, len(ls))
+	for _, l := range ls {
+		out = append(out, l.ImagePath())
+	}
+	return out
+}
+
+// AcquireCacheDiskSlot takes the lease for one SPECIFIC slot image path.
+//
+// This is the re-acquisition entry point: a supervisor that did not perform
+// the original selection — an adopting one, or one spawned by `nexus3 recover`
+// after the previous supervisor was SIGKILLed — takes back the exact slot
+// recorded on the sandbox (domain.Sandbox.CacheDiskSlot) rather than picking a
+// new one and colliding with cloud-hypervisor's still-live write lock.
+//
+// Own-pinned slots succeed (returning an additional reference) instead of
+// reporting busy; see rule 2 above.
+func AcquireCacheDiskSlot(imagePath string) (*CacheDiskLease, error) {
+	return acquireCacheDiskSlot(imagePath, true)
+}
+
+// AcquireCacheDiskSlotWait is AcquireCacheDiskSlot with a bounded retry. The
+// adopt path needs it: the outgoing supervisor still holds the lease until its
+// own shutdown runs, so a single LOCK_NB probe would lose a race it is
+// guaranteed to win a moment later.
+func AcquireCacheDiskSlotWait(ctx context.Context, imagePath string, timeout time.Duration) (*CacheDiskLease, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		lease, err := acquireCacheDiskSlot(imagePath, true)
+		if err == nil || !errors.Is(err, ErrCacheDiskSlotBusy) {
+			return lease, err
+		}
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func acquireCacheDiskSlot(imagePath string, allowOwnPin bool) (*CacheDiskLease, error) {
+	lockPath := CacheDiskLockPath(imagePath)
+	pinMu.Lock()
+	defer pinMu.Unlock()
+
+	// OWN-PIN BEFORE PROBE. Probing first would flock-fail on our own lease.
+	if p := pinned[lockPath]; p != nil {
+		if !allowOwnPin {
+			return nil, fmt.Errorf("%w: %s (held by this process)", ErrCacheDiskSlotBusy, imagePath)
+		}
+		p.refs++
+		return &CacheDiskLease{imagePath: imagePath, lockPath: lockPath}, nil
+	}
+
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("cachedisk: open lease file %s: %w", lockPath, err)
+	}
+	if flockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); flockErr != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("%w: %s (%v)", ErrCacheDiskSlotBusy, imagePath, flockErr)
+	}
+	pinned[lockPath] = &slotPin{f: f, refs: 1}
+	return &CacheDiskLease{imagePath: imagePath, lockPath: lockPath}, nil
+}
+
+// AdoptCacheDiskLeaseFD takes ownership of an INHERITED descriptor that
+// already holds the slot's flock, as passed through exec.Cmd.ExtraFiles by the
+// process that selected the slot. No flock call is made: the lock is already
+// held on this open file description and re-locking is neither needed nor
+// possible without a window.
+//
+// It fails closed if fd does not refer to the slot's lock file — a wrong fd
+// number would otherwise leave the supervisor believing it owns a slot it does
+// not, which is exactly the silent-mismatch class this decision exists to end.
+func AdoptCacheDiskLeaseFD(fd int, imagePath string) (*CacheDiskLease, error) {
+	if fd < 0 {
+		return nil, fmt.Errorf("cachedisk: adopt lease fd for %s: invalid fd %d", imagePath, fd)
+	}
+	lockPath := CacheDiskLockPath(imagePath)
+
+	// Validate on the RAW fd, before wrapping it in an *os.File. os.NewFile
+	// takes ownership: the returned value carries a finalizer that closes the
+	// descriptor, so building one on a path that then returns an error would
+	// close a descriptor this function does not own — silently breaking
+	// whatever else in the process is using that fd number.
+	var got, want syscall.Stat_t
+	if err := syscallFstat(fd, &got); err != nil {
+		return nil, fmt.Errorf("cachedisk: adopt lease fd %d for %s: fstat: %w", fd, imagePath, err)
+	}
+	if err := syscall.Stat(lockPath, &want); err != nil {
+		return nil, fmt.Errorf("cachedisk: adopt lease fd %d for %s: stat %s: %w", fd, imagePath, lockPath, err)
+	}
+	if got.Dev != want.Dev || got.Ino != want.Ino {
+		return nil, fmt.Errorf(
+			"cachedisk: adopt lease fd %d does not refer to %s (inherited inode %d:%d, on-disk %d:%d)",
+			fd, lockPath, got.Dev, got.Ino, want.Dev, want.Ino)
+	}
+
+	pinMu.Lock()
+	defer pinMu.Unlock()
+	if p := pinned[lockPath]; p != nil {
+		// Already pinned here (the same lock reached this process twice).
+		// Close the surplus descriptor rather than leaking it; the flock
+		// stays held by the description already in the registry.
+		_ = syscall.Close(fd)
+		p.refs++
+		return &CacheDiskLease{imagePath: imagePath, lockPath: lockPath}, nil
+	}
+	pinned[lockPath] = &slotPin{f: os.NewFile(uintptr(fd), lockPath), refs: 1} //nolint:gosec // validated above
+	return &CacheDiskLease{imagePath: imagePath, lockPath: lockPath}, nil
+}
+
+// syscallFstat is a var so tests can exercise the fail-closed inode check.
+var syscallFstat = syscall.Fstat
+
+// EncodeCacheDiskSlots renders slot image paths for domain.Sandbox.CacheDiskSlot.
+func EncodeCacheDiskSlots(paths []string) string { return strings.Join(paths, ",") }
+
+// DecodeCacheDiskSlots parses domain.Sandbox.CacheDiskSlot back into paths.
+// An empty record field decodes to no slots, which every caller must treat as
+// "this VM leases no cache disk" rather than as an error.
+func DecodeCacheDiskSlots(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

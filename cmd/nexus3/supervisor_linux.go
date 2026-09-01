@@ -49,7 +49,10 @@ func (r *supervisorResizableDiskIndices) String() string {
 func (r *supervisorResizableDiskIndices) Set(v string) error {
 	idx, err := strconv.Atoi(v)
 	if err != nil {
-		return fmt.Errorf("--resizable-disk-index: %w", err)
+		// Generic message: this flag.Value type backs more than one integer
+		// list flag (--resizable-disk-index, --cache-disk-lease-fd) and the
+		// flag package already prefixes the offending flag name.
+		return fmt.Errorf("expected an integer, got %q: %w", v, err)
 	}
 	*r = append(*r, idx)
 	return nil
@@ -208,6 +211,15 @@ func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSoc
 	// workspace disk index and forwarded via HasWorkspaceDisk/WorkspaceDiskIndex.
 	var resizableDiskIndices supervisorResizableDiskIndices
 	fs.Var(&resizableDiskIndices, "resizable-disk-index", "0-based ExtraDisks index for disk governor (repeatable)")
+	// cacheDiskSlots / cacheDiskLeaseFDs accumulate the builder cache-disk slot
+	// leases this supervisor owns for its VM's lifetime (D-HSH-07). The fd list
+	// is index-parallel to the slot list; each fd was inherited via ExtraFiles
+	// and already holds the slot's flock. An absent fd means "acquire this slot
+	// by path" — the adopt and crash-recovery paths, which have no live sender.
+	var cacheDiskSlots supervisorExtraDisks
+	fs.Var(&cacheDiskSlots, "cache-disk-slot", "builder cache-disk slot image path leased for this VM (repeatable, order-preserving)")
+	var cacheDiskLeaseFDs supervisorResizableDiskIndices
+	fs.Var(&cacheDiskLeaseFDs, "cache-disk-lease-fd", "inherited fd already holding the flock for the same-index --cache-disk-slot (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return supervisor.Config{}, "", false, err
 	}
@@ -253,6 +265,8 @@ func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSoc
 		WorkspaceGuestPath:   *workspaceGuestPath,
 		ExtraDisks:           []string(extraDisks),
 		ResizableDiskIndices: []int(resizableDiskIndices),
+		CacheDiskSlots:       []string(cacheDiskSlots),
+		CacheDiskLeaseFDs:    []int(cacheDiskLeaseFDs),
 		GovBounds: resize.Bounds{
 			MemMinBytes:  *govMemMin,
 			MemMaxBytes:  *govMemMax,

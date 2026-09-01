@@ -42,6 +42,15 @@ type SpawnConfig struct {
 	// only after a handoff has actually been offered and confirmed.
 	AdoptHandoffSock string
 
+	// CacheDiskLeaseFiles are open lock files whose flocks are already held by
+	// the caller (builder.CacheDiskLease.File), index-parallel to
+	// Config.CacheDiskSlots. SpawnDetached passes them to the subprocess via
+	// ExtraFiles and fills Config.CacheDiskLeaseFDs with the fd numbers they
+	// land on. Because flock ownership follows the open file description, the
+	// child holds the SAME lock with no window in which the slot reads free —
+	// the caller may (and should) release its own copies afterwards.
+	CacheDiskLeaseFiles []*os.File
+
 	// Reacquire, when true, spawns the subprocess in RE-ACQUIRE mode
 	// (nexus3 __supervisor --reacquire) instead of boot mode: it never boots
 	// a VM, and instead rebuilds the perimeter for an already-running VM
@@ -127,6 +136,16 @@ func BuildSupervisorArgv(cfg SpawnConfig) []string {
 	// caused the autogrow feature to be silently dead.
 	for _, idx := range cfg.ResizableDiskIndices {
 		args = append(args, "--resizable-disk-index", strconv.Itoa(idx))
+	}
+	// CacheDiskSlots / CacheDiskLeaseFDs: the builder cache-disk slot leases
+	// this supervisor owns for its VM's lifetime (D-HSH-07). The fd list is
+	// index-parallel to the slot list and is populated by SpawnDetached after
+	// it has placed the inherited descriptors in ExtraFiles.
+	for _, p := range cfg.CacheDiskSlots {
+		args = append(args, "--cache-disk-slot", p)
+	}
+	for _, fd := range cfg.CacheDiskLeaseFDs {
+		args = append(args, "--cache-disk-lease-fd", strconv.Itoa(fd))
 	}
 	// LiveMounts / VirtiofsdPath: forwarded so the supervisor re-attaches the
 	// virtiofs shares on every boot. Without these the supervisor boots the VM
@@ -215,6 +234,24 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 		cfg.ParentPipeFD = 3 // first ExtraFiles entry → fd 3 in child
 	}
 
+	// ExtraFiles[i] lands on fd 3+i in the child (0/1/2 are stdio). The
+	// watchdog pipe, when present, always takes the first slot; the
+	// cache-disk lease descriptors follow. Their fd numbers are computed here
+	// and written into cfg BEFORE BuildSupervisorArgv so the flags the child
+	// parses and the descriptors it actually inherits cannot drift apart.
+	var extraFiles []*os.File
+	if pipeR != nil {
+		extraFiles = append(extraFiles, pipeR)
+	}
+	cfg.CacheDiskLeaseFDs = nil
+	for _, lf := range cfg.CacheDiskLeaseFiles {
+		if lf == nil {
+			continue
+		}
+		extraFiles = append(extraFiles, lf)
+		cfg.CacheDiskLeaseFDs = append(cfg.CacheDiskLeaseFDs, 3+len(extraFiles)-1)
+	}
+
 	args := BuildSupervisorArgv(cfg)
 
 	// Set up log file for supervisor stdout/stderr.
@@ -238,9 +275,7 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if pipeR != nil {
-		cmd.ExtraFiles = []*os.File{pipeR} // becomes fd 3 in supervisor
-	}
+	cmd.ExtraFiles = extraFiles // pipeR (if any) → fd 3, then lease fds
 
 	if startErr := cmd.Start(); startErr != nil {
 		_ = logFile.Close()

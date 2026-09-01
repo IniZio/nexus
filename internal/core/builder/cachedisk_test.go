@@ -43,7 +43,7 @@ func TestEnsureCacheDisk_CreateThenReuse(t *testing.T) {
 	dataDir := t.TempDir()
 
 	// First lease: creates the ext4 image.
-	specs1, release1, err := SelectCacheDisks(ctx, dataDir, []string{"npm"})
+	specs1, leases1, err := SelectCacheDisks(ctx, dataDir, []string{"npm"})
 	if err != nil {
 		t.Fatalf("first SelectCacheDisks: %v", err)
 	}
@@ -74,14 +74,14 @@ func TestEnsureCacheDisk_CreateThenReuse(t *testing.T) {
 	mtime1 := fi1.ModTime()
 
 	// Release the first lease before taking the second.
-	release1()
+	ReleaseCacheDiskLeases(leases1)
 
 	// Second lease: must reuse the existing image (same inode, same mtime).
-	specs2, release2, err := SelectCacheDisks(ctx, dataDir, []string{"npm"})
+	specs2, leases2, err := SelectCacheDisks(ctx, dataDir, []string{"npm"})
 	if err != nil {
 		t.Fatalf("second SelectCacheDisks: %v", err)
 	}
-	defer release2()
+	defer ReleaseCacheDiskLeases(leases2)
 	spec2 := specs2[0]
 
 	if spec2.ImagePath != spec1.ImagePath {
@@ -119,7 +119,7 @@ func TestSelectCacheDisks_ExactSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SelectCacheDisks: %v", err)
 	}
-	defer release()
+	defer ReleaseCacheDiskLeases(release)
 	if len(specs) != len(keys) {
 		t.Fatalf("got %d specs, want %d", len(specs), len(keys))
 	}
@@ -295,13 +295,13 @@ func TestCacheDisk_DirtyLease_WipesOnNextReuse(t *testing.T) {
 		// Simulate the guest-SIGKILL exit path: markCacheDiskClean is never
 		// called. Release the lease WITHOUT clearing the dirty marker so the
 		// next lease sees the dirty fence and wipes.
-		release()
+		ReleaseCacheDiskLeases(release)
 
-		specs2, release2, err := SelectCacheDisks(ctx, dataDir, []string{"npm"})
+		specs2, leases2, err := SelectCacheDisks(ctx, dataDir, []string{"npm"})
 		if err != nil {
 			t.Fatalf("SelectCacheDisks (reuse after unclean death): %v", err)
 		}
-		defer release2()
+		defer ReleaseCacheDiskLeases(leases2)
 		spec2 := specs2[0]
 
 		if spec2.ImagePath != spec.ImagePath {
@@ -339,13 +339,13 @@ func TestCacheDisk_DirtyLease_WipesOnNextReuse(t *testing.T) {
 		if err := markCacheDiskClean(spec.ImagePath); err != nil {
 			t.Fatalf("markCacheDiskClean: %v", err)
 		}
-		release()
+		ReleaseCacheDiskLeases(release)
 
-		specs2, release2, err := SelectCacheDisks(ctx, dataDir, []string{"npm"})
+		specs2, leases2, err := SelectCacheDisks(ctx, dataDir, []string{"npm"})
 		if err != nil {
 			t.Fatalf("SelectCacheDisks (reuse after clean sync): %v", err)
 		}
-		defer release2()
+		defer ReleaseCacheDiskLeases(leases2)
 		spec2 := specs2[0]
 
 		if spec2.ImagePath != spec.ImagePath {
@@ -402,14 +402,14 @@ func TestWarmReuse_MarkerSurvives(t *testing.T) {
 	if err := markCacheDiskClean(spec.ImagePath); err != nil {
 		t.Fatalf("markCacheDiskClean: %v", err)
 	}
-	release()
+	ReleaseCacheDiskLeases(release)
 
 	// Second lease: must reuse the same disk (no recreation).
-	specs2, release2, err := SelectCacheDisks(ctx, dataDir, []string{"go"})
+	specs2, leases2, err := SelectCacheDisks(ctx, dataDir, []string{"go"})
 	if err != nil {
 		t.Fatalf("SelectCacheDisks (reuse): %v", err)
 	}
-	defer release2()
+	defer ReleaseCacheDiskLeases(leases2)
 	spec2 := specs2[0]
 
 	if spec2.ImagePath != spec.ImagePath {

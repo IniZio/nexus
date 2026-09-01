@@ -95,13 +95,13 @@ func TestSelectCacheDisks_ConcurrentLeasesAreDistinct(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
 
-	first, releaseFirst, err := SelectCacheDisks(ctx, dataDir, []string{"buildkit"})
+	first, leasesFirst, err := SelectCacheDisks(ctx, dataDir, []string{"buildkit"})
 	if err != nil {
 		t.Fatalf("first SelectCacheDisks: %v", err)
 	}
-	defer releaseFirst()
+	defer ReleaseCacheDiskLeases(leasesFirst)
 
-	second, releaseSecond, err := SelectCacheDisks(ctx, dataDir, []string{"buildkit"})
+	second, leasesSecond, err := SelectCacheDisks(ctx, dataDir, []string{"buildkit"})
 	if err != nil {
 		t.Fatalf("second SelectCacheDisks while first held: %v", err)
 	}
@@ -121,12 +121,12 @@ func TestSelectCacheDisks_ConcurrentLeasesAreDistinct(t *testing.T) {
 	}
 
 	// Releasing the second lease must free its slot for the next build.
-	releaseSecond()
-	third, releaseThird, err := SelectCacheDisks(ctx, dataDir, []string{"buildkit"})
+	ReleaseCacheDiskLeases(leasesSecond)
+	third, leasesThird, err := SelectCacheDisks(ctx, dataDir, []string{"buildkit"})
 	if err != nil {
 		t.Fatalf("third SelectCacheDisks after release: %v", err)
 	}
-	defer releaseThird()
+	defer ReleaseCacheDiskLeases(leasesThird)
 	if third[0].ImagePath != second[0].ImagePath {
 		t.Errorf("released slot not reused: third = %s, want %s",
 			third[0].ImagePath, second[0].ImagePath)

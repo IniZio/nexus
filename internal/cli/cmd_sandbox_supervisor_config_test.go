@@ -29,6 +29,14 @@ var knownOptionalSupervisorConfigFields = map[string]string{
 	// configured. The field is populated only when BuildMCPOAuthBinds finds
 	// OAuth entries in ~/.claude/.credentials.json; its absence is never a bug.
 	"MCPOAuthRefreshConfigs": "nil = no OAuth MCP servers; populated on demand by BuildMCPOAuthBinds",
+	// CacheDiskSlots / CacheDiskLeaseFDs: nil is correct for a human sandbox.
+	// Builder cache-disk slots exist only for the ephemeral builder VM that
+	// `sandbox create --file` boots; a persistent human sandbox attaches no
+	// cache disk and therefore leases no slot (D-HSH-07). The builder path
+	// sets both — see supervisorBuilderDriver.buildSpawnConfig, guarded by
+	// TestBuilderSupervisorDriver_HandsCacheDiskLeasesToTheSupervisor.
+	"CacheDiskSlots":    "nil = no builder cache disk on a human sandbox; builder mode sets it",
+	"CacheDiskLeaseFDs": "nil = no inherited lease descriptors; builder mode sets it via SpawnDetached",
 }
 
 // TestBuildHumanSupervisorConfig_AllFieldsPopulated verifies that
@@ -71,19 +79,19 @@ func TestBuildHumanSupervisorConfig_AllFieldsPopulated(t *testing.T) {
 			DiskMaxBytes: 20 << 30,
 		},
 		2048, 2, // memoryMiB, bootVCPUs
-		"/disks/sb.raw",                         // diskPath
-		[]string{"/disks/shd.raw", "/disks/ws.raw"}, // extraDisks (non-nil)
+		"/disks/sb.raw", // diskPath
+		[]string{"/disks/shd.raw", "/disks/ws.raw"},              // extraDisks (non-nil)
 		"root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0", // cmdline
-		"/usr/bin/cloud-hypervisor",              // chBin
-		"/tmp/sockets",                           // socketDir
-		true,                                     // hasWorkspace
-		1,                                        // workspaceDiskIndex (non-zero, = 1 shadow disk)
-		1,                                        // numNamedDisks (non-zero, = 1 docker named volume)
-		"/workspace/proj",                        // workspaceGuestPath
+		"/usr/bin/cloud-hypervisor",                              // chBin
+		"/tmp/sockets",                                           // socketDir
+		true,                                                     // hasWorkspace
+		1,                                                        // workspaceDiskIndex (non-zero, = 1 shadow disk)
+		1,                                                        // numNamedDisks (non-zero, = 1 docker named volume)
+		"/workspace/proj",                                        // workspaceGuestPath
 		[]domain.LiveMount{{HostPath: "/src", GuestPath: "/work"}}, // liveMounts
-		"/usr/bin/virtiofsd",                     // virtiofsdPath
-		true,                                     // nestedVirt — non-zero for AllFieldsPopulated
-		nil,                                      // mcpOAuthRefreshConfigs (optional; nil = none)
+		"/usr/bin/virtiofsd", // virtiofsdPath
+		true,                 // nestedVirt — non-zero for AllFieldsPopulated
+		nil,                  // mcpOAuthRefreshConfigs (optional; nil = none)
 	)
 
 	rv := reflect.ValueOf(cfg)
@@ -150,11 +158,11 @@ func TestBuildHumanSupervisorConfig_NamedDiskResizableIndices(t *testing.T) {
 	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", "/fake/creds.json")
 
 	cases := []struct {
-		name               string
-		numNamedDisks      int
-		numShadowDisks     int // workspaceDiskIndex passed in (shadow count)
-		hasWorkspace       bool
-		wantResizable      []int
+		name           string
+		numNamedDisks  int
+		numShadowDisks int // workspaceDiskIndex passed in (shadow count)
+		hasWorkspace   bool
+		wantResizable  []int
 	}{
 		{
 			name:          "one docker disk no shadow no workspace",

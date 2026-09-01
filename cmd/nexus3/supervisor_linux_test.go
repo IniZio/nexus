@@ -24,19 +24,19 @@ import (
 // speed instead of after a 4-minute live boot.
 func TestParseSupervisorFlags_RoundTrip(t *testing.T) {
 	in := supervisor.Config{
-		SandboxRef:         "sb-roundtrip",
-		StoreRoot:          "/store",
-		StateDir:           "/state",
-		CHBin:              "/usr/bin/cloud-hypervisor",
-		SocketDir:          "/run/nexus3",
-		KernelPath:         "/boot/vmlinux",
-		DiskPath:           "/data/sb.raw",
-		CredsFile:          "/creds.json",
-		MemoryMiB:          2048,
-		BootVCPUs:          2,
-		HasWorkspaceDisk:   true,
-		WorkspaceDiskIndex: 4,
-		WorkspaceGuestPath: "/workspace/proj",
+		SandboxRef:           "sb-roundtrip",
+		StoreRoot:            "/store",
+		StateDir:             "/state",
+		CHBin:                "/usr/bin/cloud-hypervisor",
+		SocketDir:            "/run/nexus3",
+		KernelPath:           "/boot/vmlinux",
+		DiskPath:             "/data/sb.raw",
+		CredsFile:            "/creds.json",
+		MemoryMiB:            2048,
+		BootVCPUs:            2,
+		HasWorkspaceDisk:     true,
+		WorkspaceDiskIndex:   4,
+		WorkspaceGuestPath:   "/workspace/proj",
 		ExtraDisks:           []string{"/d1.ext4", "/d2.ext4", "/d3.ext4", "/d4.ext4", "/d5.ext4"},
 		ResizableDiskIndices: []int{2},
 		GovBounds: resize.Bounds{
@@ -126,21 +126,21 @@ func TestParseSupervisorFlags_RoundTrip(t *testing.T) {
 //     parseSupervisorFlags both carry it.
 func TestParseSupervisorFlags_EveryConfigFieldSurvives(t *testing.T) {
 	in := supervisor.Config{
-		SandboxRef:         "sb-allfields",
-		StoreRoot:          "/store",
-		StateDir:           "/state",
-		CHBin:              "/usr/bin/cloud-hypervisor",
-		SocketDir:          "/run/nexus3",
-		KernelPath:         "/boot/vmlinux",
-		DiskPath:           "/data/sb.raw",
+		SandboxRef:           "sb-allfields",
+		StoreRoot:            "/store",
+		StateDir:             "/state",
+		CHBin:                "/usr/bin/cloud-hypervisor",
+		SocketDir:            "/run/nexus3",
+		KernelPath:           "/boot/vmlinux",
+		DiskPath:             "/data/sb.raw",
 		ExtraDisks:           []string{"/d1.ext4"},
 		ResizableDiskIndices: []int{2},
 		WorkspaceGuestPath:   "/workspace/proj",
-		CredsFile:          "/creds.json",
-		MemoryMiB:          2048,
-		BootVCPUs:          2,
-		HasWorkspaceDisk:   true,
-		WorkspaceDiskIndex: 0,
+		CredsFile:            "/creds.json",
+		MemoryMiB:            2048,
+		BootVCPUs:            2,
+		HasWorkspaceDisk:     true,
+		WorkspaceDiskIndex:   0,
 		GovBounds: resize.Bounds{
 			MemMinBytes:  512 << 20,
 			MemMaxBytes:  4096 << 20,
@@ -154,6 +154,11 @@ func TestParseSupervisorFlags_EveryConfigFieldSurvives(t *testing.T) {
 		NestedVirt:    true,
 		Ephemeral:     true,
 		ParentPipeFD:  7,
+		// CacheDiskSlots / CacheDiskLeaseFDs: the builder cache-disk slot
+		// lease this supervisor owns for its VM's lifetime (D-HSH-07). Both
+		// travel in argv; the fd list is index-parallel to the slot list.
+		CacheDiskSlots:    []string{"/var/lib/nexus3/caches/buildkit.ext4"},
+		CacheDiskLeaseFDs: []int{4},
 		// MCPOAuthRefreshConfigs: spawn.json-only field (refresh tokens must NOT
 		// appear in argv because argv is ps-visible). Populated here so Step 1
 		// (no-zero-field guard) passes; excluded from Step 2's argv DeepEqual
@@ -309,8 +314,8 @@ func TestNestedVirt_SpawnSpecRoundTrip(t *testing.T) {
 		t.Fatalf("ReadSpawnSpec: %v", err)
 	}
 	if !got.NestedVirt {
-		t.Errorf("NestedVirt did not survive spawn.json round-trip: got false, want true — "+
-			"stopped --nested sandboxes will boot without KVM nested virt after restart "+
+		t.Errorf("NestedVirt did not survive spawn.json round-trip: got false, want true — " +
+			"stopped --nested sandboxes will boot without KVM nested virt after restart " +
 			"(D-N3N-02: NestedVirt must persist in spawn.json)")
 	}
 }
@@ -323,7 +328,7 @@ func TestNestedVirt_SpawnSpecRoundTrip(t *testing.T) {
 // missing key leaves the bool at its zero value (false), which is correct.
 // This test proves it cannot silently flip to true.
 //
-// MUTATION PROOF: add `NestedVirt bool \`json:"...,omitempty"\`` or default the
+// MUTATION PROOF: add `NestedVirt bool \`json:"...,omitempty"\“ or default the
 // field to true and this test fails.
 func TestNestedVirt_DefaultOff_AbsentKey(t *testing.T) {
 	stateDir := t.TempDir()
@@ -348,7 +353,7 @@ func TestNestedVirt_DefaultOff_AbsentKey(t *testing.T) {
 		t.Fatalf("ReadSpawnSpec: %v", err)
 	}
 	if got.NestedVirt {
-		t.Errorf("NestedVirt = true for spawn.json with no nested_virt key — "+
+		t.Errorf("NestedVirt = true for spawn.json with no nested_virt key — " +
 			"absent must mean nested-OFF, never nested-ON (D-N3N-02 security contract)")
 	}
 }

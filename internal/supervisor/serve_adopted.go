@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/IniZio/nexus3/internal/core/builder"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/govern"
@@ -88,6 +89,24 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 		}
 	}
 	_ = os.Remove(sockPath) // best-effort: only relevant if the old process left a stale file
+
+	// ── Re-acquire the builder cache-disk slot(s) this VM occupies ───────
+	// D-HSH-07. Neither acquisition path has a live sender to inherit a lock
+	// descriptor from — a planned handoff carries only the perimeter fd, and a
+	// crash path has no sender at all — so the slot is read back off the
+	// record and taken BY PATH. Taking the same slot is the point: a fresh
+	// selection would collide with the write lock cloud-hypervisor still holds
+	// on the image of the VM this process just adopted.
+	//
+	// Ordering: after the outgoing supervisor's exit has been observed above,
+	// because until then it still holds the lease. AcquireCacheDiskSlotWait
+	// retries anyway rather than trusting that wait to have been exact.
+	cacheSlots := builder.DecodeCacheDiskSlots(sb.CacheDiskSlot)
+	cacheLeases, err := acquireCacheDiskLeases(ctx, cacheSlots, nil, cacheDiskAdoptLeaseTimeout)
+	if err != nil {
+		return fmt.Errorf("supervisor: %s: %w", in.logPrefix, err)
+	}
+	defer builder.ReleaseCacheDiskLeases(cacheLeases)
 
 	if err := svc.StartPerimeterOnly(ctx, sb, in.seedCA); err != nil {
 		return fmt.Errorf("supervisor: %s: start perimeter: %w", in.logPrefix, err)

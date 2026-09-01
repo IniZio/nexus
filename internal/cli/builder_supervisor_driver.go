@@ -38,6 +38,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/IniZio/nexus3/internal/core/builder"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
@@ -84,6 +85,14 @@ type supervisorBuilderDriver struct {
 	// needing the builder-role child to bind a second telemetry server.
 	cacheDiskMountPaths []string
 
+	// cacheDiskLeases are the builder cache-disk slot leases this CLI selected
+	// (builder.SelectCacheDisks). Start passes their open lock descriptors to
+	// the supervisor subprocess via ExtraFiles so the lease's owner becomes the
+	// process whose lifetime matches the VM's (D-HSH-07). flock ownership
+	// follows the open file description, so the handoff has no window in which
+	// the slot reads free, and the CLI's own copies may be dropped afterwards.
+	cacheDiskLeases []*builder.CacheDiskLease
+
 	// ── state set by Start ───────────────────────────────────────────────────
 	mu        sync.Mutex
 	lastID    domain.SandboxID // captured from StartRequest; read by StartedID
@@ -113,6 +122,26 @@ func (d *supervisorBuilderDriver) Start(_ context.Context, req driver.StartReque
 		return "", fmt.Errorf("builder supervisor: create state dir: %w", err)
 	}
 
+	spawnCfg := d.buildSpawnConfig(req.SandboxID, stateDir)
+	pid, watchdogW, err := supervisor.SpawnDetached(spawnCfg)
+	if err != nil {
+		return "", fmt.Errorf("builder supervisor: spawn: %w", err)
+	}
+	d.mu.Lock()
+	d.lastID = req.SandboxID
+	d.sockPath = supervisor.SockPath(stateDir)
+	d.watchdogW = watchdogW // non-nil: supervisor reads EOF when CLI exits
+	d.mu.Unlock()
+	return fmt.Sprintf("supervisor-pid-%d", pid), nil
+}
+
+// buildSpawnConfig assembles the SpawnConfig for one builder VM. Extracted
+// from Start for unit-testability (same rationale as
+// supervisor.BuildSupervisorArgv): the cache-disk lease handoff it performs
+// has no observable effect until a real supervisor is spawned, and a slice
+// that ships a handoff no caller performs is the defect class this motive has
+// already shipped once.
+func (d *supervisorBuilderDriver) buildSpawnConfig(sandboxID domain.SandboxID, stateDir string) supervisor.SpawnConfig {
 	chBin, _ := exec.LookPath("cloud-hypervisor")
 
 	// The builder declares its cache disk(s) as resizable via the same generic
@@ -132,39 +161,41 @@ func (d *supervisorBuilderDriver) Start(_ context.Context, req driver.StartReque
 		cacheDiskCmdline += fmt.Sprintf(" --cache-disk=%s:%s", dev, mountPath)
 	}
 
+	// Cache-disk slot leases: forward the slot paths AND the open lock
+	// descriptors. SpawnDetached places the descriptors in ExtraFiles and fills
+	// Config.CacheDiskLeaseFDs with the fd numbers they land on in the child.
+	cacheSlotPaths := builder.CacheDiskSlotPaths(d.cacheDiskLeases)
+	cacheLeaseFiles := make([]*os.File, 0, len(d.cacheDiskLeases))
+	for _, l := range d.cacheDiskLeases {
+		cacheLeaseFiles = append(cacheLeaseFiles, l.File())
+	}
+
 	spawnCfg := supervisor.SpawnConfig{
 		Config: supervisor.Config{
-			SandboxRef: req.SandboxID.String(),
-			StoreRoot:  d.storeRoot,
-			StateDir:   stateDir,
-			CHBin:      chBin,
-			SocketDir:  d.socketDir,
-			KernelPath: d.kernelPath,
-			DiskPath:   d.diskPath,
-			ExtraDisks: d.extraDisks,
-			GovBounds:  d.ar.Bounds,
-			MemoryMiB:  d.bootMemMiB,
-			BootVCPUs:  d.bootVCPUs,
+			SandboxRef:           sandboxID.String(),
+			StoreRoot:            d.storeRoot,
+			StateDir:             stateDir,
+			CHBin:                chBin,
+			SocketDir:            d.socketDir,
+			KernelPath:           d.kernelPath,
+			DiskPath:             d.diskPath,
+			ExtraDisks:           d.extraDisks,
+			GovBounds:            d.ar.Bounds,
+			MemoryMiB:            d.bootMemMiB,
+			BootVCPUs:            d.bootVCPUs,
 			ResizableDiskIndices: cacheDiskIndices,
 			// Cmdline: full kernel cmdline. The supervisor's CHDriver inserts
 			// memhp kernel params before "--" when MemoryMaxMiB > 0; the
 			// PID-1 auto-resize section (--mem-ceiling=<bytes> and
 			// --cache-disk=<dev>:<path> entries) comes after.
-			Cmdline:   diskBootCmdlineBase + " --" + d.ar.PID1Args + cacheDiskCmdline,
-			Ephemeral: true,
+			Cmdline:        diskBootCmdlineBase + " --" + d.ar.PID1Args + cacheDiskCmdline,
+			Ephemeral:      true,
+			CacheDiskSlots: cacheSlotPaths,
 		},
-		LogPath: d.logPath,
+		LogPath:             d.logPath,
+		CacheDiskLeaseFiles: cacheLeaseFiles,
 	}
-	pid, watchdogW, err := supervisor.SpawnDetached(spawnCfg)
-	if err != nil {
-		return "", fmt.Errorf("builder supervisor: spawn: %w", err)
-	}
-	d.mu.Lock()
-	d.lastID = req.SandboxID
-	d.sockPath = supervisor.SockPath(stateDir)
-	d.watchdogW = watchdogW // non-nil: supervisor reads EOF when CLI exits
-	d.mu.Unlock()
-	return fmt.Sprintf("supervisor-pid-%d", pid), nil
+	return spawnCfg
 }
 
 // Stop sends POST /supervisor/stop to the ephemeral supervisor, then waits
