@@ -64,7 +64,6 @@ import (
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/statedir"
 	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor/handoff"
 )
 
 // HiddenSubcommand is the argv[1] token that runs a detached supervisor inside
@@ -499,10 +498,10 @@ func RunDetached(cfg Config) error {
 		if bootVCPUs == 0 {
 			bootVCPUs = 1 // matches cloudhypervisor driver default
 		}
-		build := payloadBuilder(func() (handoff.Payload, *os.File, error) {
-			return buildHandoffPayload(sup, cfg.SandboxRef, bootVCPUs, cfg.MemoryMiB)
-		})
-		return performHandoff(hctx, peerSock, build, service.SandboxHasMITMProxy(*sb))
+		// Payload AND the "is CA mandatory" predicate both come from the LIVE
+		// supervisor, never from the store record — see
+		// [handoffFromLiveSupervisor] (ticket 14).
+		return handoffFromLiveSupervisor(hctx, peerSock, sup, cfg.SandboxRef, bootVCPUs, cfg.MemoryMiB)
 	})
 	// agentHealthFn probes the guest agent's control/data planes live, using
 	// the SAME drv this process dials every RPC through. resolveErr == nil is

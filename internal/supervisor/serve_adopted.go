@@ -19,7 +19,6 @@ import (
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/statedir"
 	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor/handoff"
 )
 
 // serveAdoptedInput carries what serveAdoptedSupervisor needs from whichever
@@ -138,10 +137,9 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 		if bootVCPUs == 0 {
 			bootVCPUs = 1
 		}
-		build := payloadBuilder(func() (handoff.Payload, *os.File, error) {
-			return buildHandoffPayload(sup, cfg.SandboxRef, bootVCPUs, cfg.MemoryMiB)
-		})
-		return performHandoff(hctx, peerSock, build, service.SandboxHasMITMProxy(sb))
+		// Runtime-derived, not record-derived — see
+		// [handoffFromLiveSupervisor] (ticket 14).
+		return handoffFromLiveSupervisor(hctx, peerSock, sup, cfg.SandboxRef, bootVCPUs, cfg.MemoryMiB)
 	})
 
 	// agentHealthFn probes the guest agent's control/data planes live, using

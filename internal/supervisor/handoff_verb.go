@@ -45,12 +45,15 @@ type payloadBuilder func() (handoff.Payload, *os.File, error)
 // gate finding). Any future field this function forgets to populate is a bug
 // that same test will catch; a hand-rolled payload in a test would not.
 //
-// sup must be non-nil and have a live MITM proxy (CAKeyPair returns an
-// error otherwise, which is logged and produces a payload with an empty CA —
-// exactly the shape [handoff.Payload.Validate] refuses, which is correct:
-// AllowAll sandboxes with no proxy have nothing to hand off account for
-// here, and any other supervisor without a proxy will simply have every
-// handoff attempt refused too).
+// sup must be non-nil. When sup.CAKeyPair returns an error the error is
+// logged and the payload carries an empty CA; whether that payload is then
+// accepted is decided by performHandoff's hasMITMProxy argument, which the
+// callers derive from [perimeter.PerimeterSupervisor.HasMITMProxy] — the same
+// live supervisor, asked separately about the proxy's existence. So an
+// AllowAll sandbox (no proxy) hands off with an empty CA, while a supervisor
+// that HAS a proxy whose CA cannot be encoded produces the same empty CA and
+// is refused. That split is the whole point of not reusing CAKeyPair's error
+// as the predicate (ticket 14).
 func buildHandoffPayload(sup *perimeter.PerimeterSupervisor, sandboxRef string, bootVCPUs uint32, memoryMiB uint32) (handoff.Payload, *os.File, error) {
 	var fdFile *os.File
 	present := false
@@ -78,6 +81,31 @@ func buildHandoffPayload(sup *perimeter.PerimeterSupervisor, sandboxRef string, 
 		// slice — see this function's doc comment for the missing
 		// accessors this depends on (open item, ticket 04).
 	}, fdFile, nil
+}
+
+// handoffFromLiveSupervisor is the ONE wiring of a live perimeter supervisor
+// into a handoff attempt, shared by RunDetached (supervisor.go) and
+// serveAdoptedSupervisor (serve_adopted.go). Both previously repeated the
+// payload closure and the hasMITMProxy expression inline, which is precisely
+// the duplication that lets two call sites drift apart — the same failure mode
+// service.SandboxHasMITMProxy was itself introduced to end.
+//
+// It reads BOTH facts from the same live sup: the CA that goes into the
+// payload ([buildHandoffPayload] via sup.CAKeyPair) and whether that CA is
+// mandatory (sup.HasMITMProxy). Deriving the predicate from the running
+// process rather than from the store record makes record/runtime divergence
+// structurally impossible instead of merely unreachable-by-inspection
+// (motive nexus3-host-supervisor-hotswap, ticket 14). Note the predicate is
+// deliberately NOT `CAKeyPair() == nil`: see
+// [perimeter.PerimeterSupervisor.HasMITMProxy] for why that probe is a
+// security regression.
+//
+// sup must be non-nil; both call sites guard it immediately above.
+func handoffFromLiveSupervisor(ctx context.Context, peerSock string, sup *perimeter.PerimeterSupervisor, sandboxRef string, bootVCPUs, memoryMiB uint32) (ok bool, reason string, err error) {
+	build := payloadBuilder(func() (handoff.Payload, *os.File, error) {
+		return buildHandoffPayload(sup, sandboxRef, bootVCPUs, memoryMiB)
+	})
+	return performHandoff(ctx, peerSock, build, sup.HasMITMProxy())
 }
 
 // performHandoff dials peerSock as a Unix STREAM socket (the replacement's

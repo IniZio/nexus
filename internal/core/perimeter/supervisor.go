@@ -253,10 +253,37 @@ func (s *PerimeterSupervisor) CACert() *x509.Certificate {
 	return s.proxy.CACert()
 }
 
+// HasMITMProxy reports whether this supervisor is actually running a MITM
+// proxy right now. It is the runtime counterpart of
+// service.SandboxHasMITMProxy, which answers the same question from the store
+// record; the handoff path uses THIS one so a record that disagrees with the
+// process cannot decide whether CA material is required
+// (motive nexus3-host-supervisor-hotswap, ticket 14).
+//
+// It deliberately does not touch the CA. [PerimeterSupervisor.CAKeyPair]
+// returns an error in three distinct situations — no proxy at all, a CA
+// private key that is not an *ecdsa.PrivateKey, and a failed DER marshal
+// (internal/core/perimeter/mitm.Proxy.CAKeyPair) — and only the first means
+// "no proxy". Deriving the predicate from `CAKeyPair() == nil` would read the
+// other two, which mean *a proxy exists whose CA is unusable*, as "no MITM
+// proxy", drop the CA requirement in [handoff.Payload.Validate], and convert a
+// correct refusal into a wrong acceptance. Asking about the proxy's existence
+// separately from the CA's encodability keeps those two facts from being
+// confused: a proxy with an unusable CA answers true here, the payload's CA
+// comes out empty, and the handoff is refused — fail-closed.
+//
+// s.proxy is written once in [Start] and never reassigned, so this is stable
+// for the supervisor's lifetime and safe for concurrent use.
+func (s *PerimeterSupervisor) HasMITMProxy() bool { return s.proxy != nil }
+
 // CAKeyPair PEM-encodes the MITM proxy's CA certificate and private key, for
 // inclusion in a handoff payload (motive nexus3-host-supervisor-hotswap).
 // Returns an error when the supervisor was started without a proxy (AllowAll
 // mode) — there is no CA to hand off.
+//
+// A non-nil error does NOT imply there is no proxy: see
+// [PerimeterSupervisor.HasMITMProxy] for why callers deciding whether CA
+// material is mandatory must ask that method instead of this one.
 func (s *PerimeterSupervisor) CAKeyPair() (certPEM, keyPEM []byte, err error) {
 	if s.proxy == nil {
 		return nil, nil, fmt.Errorf("perimeter: CAKeyPair: no MITM proxy (AllowAll mode)")
