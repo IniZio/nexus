@@ -8,6 +8,7 @@ import (
 
 	"github.com/IniZio/nexus3/internal/core/diskname"
 	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/statedir"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
 
@@ -24,6 +25,18 @@ const (
 	KindSocketVSock       ResourceKind = "socket_vsock"
 	KindSocketIID         ResourceKind = "socket_iid"
 	KindBuilderSupervisor ResourceKind = "builder_supervisor"
+
+	// KindSupervisorState identifies a per-sandbox supervisor state directory,
+	// <stateRoot>/supervisors/<ULID>/ (see internal/core/statedir). It holds
+	// spawn.json, supervisor.log, egress-decisions.jsonl and — as of the CA
+	// persistence slice — the MITM CA private key.
+	//
+	// Nothing removed these before Service.Remove learned to (D-HSH-18), so
+	// every host that has ever run nexus3 carries one per sandbox it has ever
+	// created; the reference host had 641 against 1 live sandbox. They are
+	// enumerated here so `nexus3 reap` can collect the pre-existing backlog
+	// through exactly the same classify-then-apply rail as every other kind.
+	KindSupervisorState ResourceKind = "supervisor_state"
 
 	// KindNetnsProcess identifies a LIVE netns-runtime child process
 	// discovered by an independent /proc sweep (see reap.go:
@@ -225,6 +238,29 @@ func (x *ResourceIndex) List() ([]HostResource, error) {
 		resources = append(resources, HostResource{
 			Kind:    KindBuilderSupervisor,
 			Path:    filepath.Join(bsDir, e.Name()),
+			OwnerID: id,
+		})
+	}
+
+	// ── supervisors/ ─────────────────────────────────────────────────────────
+	// Per-sandbox supervisor state dirs. Same shape as builder-supervisors/
+	// above: one ULID-named directory per sandbox.
+	supDir := statedir.SupervisorsRoot(stateRoot)
+	supEntries, err := os.ReadDir(supDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("resource index: read supervisors dir %s: %w", supDir, err)
+	}
+	for _, e := range supEntries {
+		if !e.IsDir() {
+			continue
+		}
+		id, err := domain.ParseSandboxID(e.Name())
+		if err != nil {
+			continue
+		}
+		resources = append(resources, HostResource{
+			Kind:    KindSupervisorState,
+			Path:    filepath.Join(supDir, e.Name()),
 			OwnerID: id,
 		})
 	}

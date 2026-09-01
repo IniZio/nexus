@@ -239,8 +239,20 @@ func NewFileStore(root string) (*FileStore, error) {
 	return &FileStore{root: root}, nil
 }
 
+// RecordDir returns the per-sandbox record directory <root>/sandboxes/<id>.
+//
+// It is exported because the reaper must be able to ask "does this sandbox's
+// record directory EXIST on disk" without decoding the record — List silently
+// skips records it cannot decode (corrupt, half-written, or written by a newer
+// schema), so absence from List is not evidence of absence on disk. Sharing
+// this path constructor is what keeps that check from drifting away from the
+// layout FileStore actually writes.
+func RecordDir(root string, id domain.SandboxID) string {
+	return filepath.Join(root, "sandboxes", id.String())
+}
+
 func (s *FileStore) sandboxDir(id domain.SandboxID) string {
-	return filepath.Join(s.root, "sandboxes", id.String())
+	return RecordDir(s.root, id)
 }
 
 func (s *FileStore) recordPath(id domain.SandboxID) string {

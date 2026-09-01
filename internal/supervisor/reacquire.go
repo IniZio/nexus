@@ -14,6 +14,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus3/internal/core/statedir"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
 
@@ -201,7 +202,7 @@ func RunReacquire(cfg Config) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	if err := os.MkdirAll(cfg.StateDir, 0o755); err != nil {
+	if err := statedir.Ensure(cfg.StateDir); err != nil {
 		return fmt.Errorf("supervisor: reacquire: mkdir state dir %s: %w", cfg.StateDir, err)
 	}
 

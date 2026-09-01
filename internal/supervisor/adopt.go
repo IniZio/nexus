@@ -15,6 +15,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus3/internal/core/statedir"
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/supervisor/handoff"
 )
@@ -66,7 +67,7 @@ func RunAdopt(cfg Config, handoffSockPath string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	if err := os.MkdirAll(cfg.StateDir, 0o755); err != nil {
+	if err := statedir.Ensure(cfg.StateDir); err != nil {
 		return fmt.Errorf("supervisor: adopt: mkdir state dir %s: %w", cfg.StateDir, err)
 	}
 

@@ -16,6 +16,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter"
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus3/internal/core/statedir"
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/supervisor/handoff"
 )
@@ -181,7 +182,7 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 
 	pid := os.Getpid()
 	pidfile := PidfilePath(cfg.StateDir)
-	if err := os.WriteFile(pidfile, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(pidfile, []byte(strconv.Itoa(pid)+"\n"), statedir.FileMode); err != nil {
 		return fmt.Errorf("supervisor: %s: write pidfile %s: %w", in.logPrefix, pidfile, err)
 	}
 	defer func() {

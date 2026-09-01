@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/IniZio/nexus3/internal/core/statedir"
 )
 
 // SpawnConfig carries the parameters for spawning a detached supervisor.
@@ -220,7 +222,7 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 	if logPath == "" {
 		logPath = cfg.StateDir + "/supervisor.log"
 	}
-	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, statedir.FileMode)
 	if logErr != nil {
 		if pipeR != nil {
 			pipeR.Close()
@@ -346,7 +348,7 @@ func SpawnAdoptDetached(cfg SpawnConfig) (pid int, err error) {
 	if logPath == "" {
 		logPath = cfg.StateDir + "/supervisor.log"
 	}
-	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, statedir.FileMode)
 	if logErr != nil {
 		return 0, fmt.Errorf("spawn adopt supervisor: open log file %s: %w", logPath, logErr)
 	}

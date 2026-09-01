@@ -316,6 +316,15 @@ func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, o
 		return nil, fmt.Errorf("reap: resolve socket dir: %w", err)
 	}
 
+	// The state root IS the store root (IndexConfig.StateRoot defaults to
+	// store.DefaultRoot(), the same resolver the FileStore is opened with on
+	// the CLI path). classifySupervisorState needs it to answer "does this
+	// sandbox's record DIRECTORY exist" without decoding the record.
+	storeRoot, err := idx.stateRoot()
+	if err != nil {
+		return nil, fmt.Errorf("reap: resolve state root: %w", err)
+	}
+
 	report := &ReapReport{
 		Entries: make([]ReapEntry, 0, len(resources)),
 	}
@@ -326,6 +335,8 @@ func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, o
 			// Shadow disks and their intents use handle-based correlation,
 			// not ULID/liveness.
 			entry = classifyShadowDisk(res, shadowHandleMap, recordMap, inFlightShadow)
+		} else if res.Kind == KindSupervisorState {
+			entry = classifySupervisorState(ctx, res, recordMap, inFlight, socketDir, opt.ProcDir, storeRoot)
 		} else {
 			entry = classifyResource(ctx, res, recordMap, inFlight, socketDir, opt.ProcDir)
 		}
@@ -541,6 +552,127 @@ func forkChildShadowOwner(safeHandle string) (domain.SandboxID, bool) {
 	return domain.SandboxID{}, false
 }
 
+// supervisorSockFile is the name of the supervisor's own control socket inside
+// its state dir. It mirrors supervisor.SockPath (supervisor.go:246), which
+// cannot be imported here: internal/supervisor imports internal/core/service.
+// This is the same one-way dependency that keeps the state dir PATH in
+// internal/core/statedir, and the same reason it is a frozen name rather than
+// a shared constant — the socket name is wire contract between the supervisor
+// and every CLI verb that dials it.
+const supervisorSockFile = "supervisor.sock"
+
+// classifySupervisorState classifies a KindSupervisorState directory
+// (<stateRoot>/supervisors/<ULID>/).
+//
+// This is the fail-closed rail for D-HSH-18. The directory holds the state a
+// future re-acquisition needs — spawn.json, and from the CA-persistence slice
+// the MITM CA private key — so deleting one belonging to a sandbox that is
+// live, or that `nexus3 recover` would classify adoptable, destroys the very
+// thing recovery exists to use. When in doubt this KEEPS.
+//
+// # Why this reuses the reap classification instead of internal/core/recovery
+//
+// The ticket asks for the recover/adopt judgement, not a second weaker one.
+// That judgement cannot be called from here — internal/core/recovery imports
+// internal/core/service, so the dependency only runs one way — but it also
+// does not need to be, because of what it is made of:
+//
+//   - recovery classifies STORE RECORDS. Recoverer.Recover iterates st.List
+//     and every outcome kind, OutcomeAdoptable included, is reached only from
+//     a record (recover.go: recoverByID → applySupervisorLiveness). An
+//     adoptable sandbox therefore always HAS a record, and a record here is
+//     already ReapStatusOwned — kept, unconditionally, before any liveness
+//     question is asked. The live-VM/dead-supervisor class is covered by that
+//     branch alone.
+//   - the converse — a live VM whose record has been lost — is outside what
+//     recovery can classify at all (no record, nothing to iterate), and is
+//     covered by the liveness gates classifyResource already applies: the
+//     ULID appears in the cloud-hypervisor process cmdline, and its API socket
+//     answers.
+//
+// So the delegation below is the recover judgement, expressed in the terms
+// this package can observe, plus two gates recovery has no analogue for.
+//
+// # Extra gate 1: the record directory on disk
+//
+// classifyResource's R1 asks "is this ULID in recordMap", and recordMap is
+// built from store.List — which SILENTLY SKIPS every record it cannot decode:
+// corrupt, half-written by an interrupted Create, or ErrSchemaTooNew
+// (filestore.go, List). So R1 alone reads "cannot read the record" as "there
+// is no record", which is fail-OPEN, and the failure is not rare: an older
+// binary — this repo keeps a stale ./nexus3 in the tree — gets ErrSchemaTooNew
+// for EVERY record, so a single `reap --apply` under it would collect the
+// state dir of every stopped sandbox on the host at once.
+//
+// A stopped sandbox has no VM in /proc and no responsive socket, so none of
+// the liveness gates catch that. This one does: if the record DIRECTORY exists
+// under the store root, the owner record is present and merely unreadable by
+// this binary, and a correct-version binary will read it fine. That is a KEEP.
+// A stat error other than "not exist" (EACCES, EIO) is ambiguity, and
+// ambiguity keeps too.
+//
+// This gate lives here rather than in the shared classifyResource on purpose:
+// other resource kinds have their own risk calculus and are out of scope for
+// D-HSH-18.
+//
+// # Extra gate 2: the supervisor control socket
+//
+// A supervisor can outlive its own VM socket — that is precisely the wedged
+// state ticket 09 exists for. Its control socket lives INSIDE this directory,
+// so a responsive supervisor.sock proves a live process is using this exact
+// directory even when every ULID-keyed check has gone quiet. Removing the
+// directory out from under it would strand a running supervisor. Ambiguity
+// (timeout, unexpected error) resolves to KEEP, matching N-AC2 everywhere else
+// in this file.
+//
+// With both gates in place the "ambiguity resolves to KEEP" claim holds of
+// EVERY gate this function applies, the record gate included.
+func classifySupervisorState(
+	ctx context.Context,
+	res HostResource,
+	recordMap map[domain.SandboxID]domain.Sandbox,
+	inFlight map[domain.SandboxID]string,
+	socketDir string,
+	procDir string,
+	storeRoot string,
+) ReapEntry {
+	entry := classifyResource(ctx, res, recordMap, inFlight, socketDir, procDir)
+	if entry.Status != ReapStatusOrphan {
+		return entry
+	}
+
+	recordDir := store.RecordDir(storeRoot, res.OwnerID)
+	switch _, err := os.Stat(recordDir); {
+	case err == nil:
+		entry.Status = ReapStatusLive
+		entry.Reason = fmt.Sprintf(
+			"owner record present but unreadable — keeping; record dir %s exists "+
+				"(corrupt, half-written, or written by a newer schema than this binary)", recordDir)
+		return entry
+	case !os.IsNotExist(err):
+		entry.Status = ReapStatusLive
+		entry.Reason = fmt.Sprintf(
+			"owner record dir %s could not be stat'd (%v) — cannot rule out a record, keeping", recordDir, err)
+		return entry
+	}
+
+	sockPath := filepath.Join(res.Path, supervisorSockFile)
+	alive, ambiguous := socketResponsive(ctx, sockPath)
+	if ambiguous {
+		entry.Status = ReapStatusLive
+		entry.Reason = fmt.Sprintf("supervisor control socket %s check ambiguous — keeping", sockPath)
+		return entry
+	}
+	if alive {
+		entry.Status = ReapStatusLive
+		entry.Reason = fmt.Sprintf("supervisor control socket %s is responsive", sockPath)
+		return entry
+	}
+
+	entry.Reason = "supervisor state dir: no record dir on disk, no live process, no responsive VM or supervisor socket"
+	return entry
+}
+
 // classifyResource determines the ReapStatus of a single host resource.
 func classifyResource(
 	ctx context.Context,
@@ -647,7 +779,9 @@ var deleteResourceFn = deleteResource
 
 // deleteResource removes a resource from disk.
 func deleteResource(res HostResource) error {
-	if res.Kind == KindBuilderSupervisor {
+	switch res.Kind {
+	case KindBuilderSupervisor, KindSupervisorState:
+		// Directories with contents; os.Remove would fail with ENOTEMPTY.
 		return os.RemoveAll(res.Path)
 	}
 	return os.Remove(res.Path)

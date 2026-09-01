@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/statedir"
 )
 
 // SpecFile is the durable spawn.json name written next to supervisor.pid.
@@ -15,8 +16,12 @@ const SpecFile = "spawn.json"
 // DefaultStateDir is the durable per-sandbox supervisor directory.
 // Unlike orca's /tmp state dir this survives reboot so start/stop can
 // re-own the broker the same way the supervisor re-owns the VM.
+//
+// The path lives in internal/core/statedir so internal/core/service — which
+// this package imports, and which therefore cannot import back — computes the
+// identical path instead of duplicating the literal.
 func DefaultStateDir(storeRoot string, id domain.SandboxID) string {
-	return filepath.Join(storeRoot, "supervisors", id.String())
+	return statedir.SupervisorDir(storeRoot, id)
 }
 
 // SpecPath returns <stateDir>/spawn.json.
@@ -28,7 +33,7 @@ func SpecPath(stateDir string) string {
 // without the original CLI process. ParentPipeFD is zeroed — persisted
 // supervisors are never ephemeral watchdogs.
 func WriteSpawnSpec(stateDir string, cfg Config) error {
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+	if err := statedir.Ensure(stateDir); err != nil {
 		return fmt.Errorf("supervisor: mkdir state dir %s: %w", stateDir, err)
 	}
 	cfg.ParentPipeFD = 0
