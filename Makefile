@@ -1,4 +1,4 @@
-.PHONY: proto build vet test check-agent-fresh install-agent build-agent docs docs-build
+.PHONY: proto build vet test test-integration vet-integration check-agent-fresh install-agent build-agent docs docs-build
 
 # proto regenerates the Go stubs from proto/nexus3/agent/v1/agent.proto.
 # Running this target twice must leave the tree byte-identical (deterministic).
@@ -150,6 +150,45 @@ test:
 # .github/workflows/ci.yml herdr-live job.
 test-herdr-live:
 	$(call CAPPED,go test -race -p $(GOTEST_P) -parallel $(GOTEST_PARALLEL) -count=1 -tags herdr_live $(GOTEST_ARGS) ./internal/cli/)
+
+# test-integration runs the //go:build integration suite. That tag guards 44
+# files that, until this target existed, had NEVER been run: `grep -rn "tags
+# integration" Makefile .github/` returned nothing. "The suite is green" did not
+# include a single one of them.
+#
+# TIERS (see doc/integration-test-triage.md for the per-file table):
+#   Tier 1 — needs nothing but a Go toolchain. Exactly ONE file qualifies:
+#            internal/core/perimeter/netstack (pure-userspace gvisor netstack).
+#            This is what the target runs by default, and what CI runs.
+#   Tier 2 — needs /dev/kvm + cloud-hypervisor + a kernel image, and most also
+#            need docker to bake a rootfs. Run explicitly with GOTEST_PKGS.
+#   Tier 3 — does not compile under the tag (2 packages; see the doc).
+#
+# The default package set is Tier 1 ONLY, deliberately. Pointing this at ./...
+# would boot VMs, and on a host without docker it would report a green built
+# almost entirely from t.Skip — the same false-confidence shape this target
+# exists to eliminate.
+#
+# -count=1 is load-bearing here for the same reason as in `test` above: without
+# it Go can cache-serve a green for a suite that has never executed.
+#
+# Run a Tier 2 package explicitly (needs /dev/kvm, CH, and usually docker):
+#   make test-integration GOTEST_PKGS=./internal/test/selfhost/ \
+#     GOTEST_ARGS='-run TestSelfHostE2E -timeout 30m'
+GOTEST_PKGS ?= ./internal/core/perimeter/netstack/
+
+test-integration:
+	$(call CAPPED,go test -race -p $(GOTEST_P) -parallel $(GOTEST_PARALLEL) -count=1 -tags integration $(GOTEST_ARGS) $(GOTEST_PKGS))
+
+# vet-integration type-checks EVERY integration-tagged file, including the Tier 2
+# ones this machine cannot run. It is the cheap guard against the bit-rot that
+# accumulated while the tag was unreferenced: code moved, and nothing noticed
+# that these files no longer compiled.
+#
+# NOT wired into CI yet — 2 packages are currently RED (see the triage doc).
+# Wiring a known-red target into CI is how a gate gets ignored.
+vet-integration:
+	go vet -p $(GOBUILD_P) -tags integration ./...
 
 # docs serves the documentation site locally with live reload.
 # docs-build renders it to docs/site/.vitepress/dist (gitignored).

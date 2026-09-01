@@ -146,6 +146,47 @@ jobs:
           NEXUS3_LIVE_REQUIRED: "1"
         run: make test-herdr-live GOTEST_ARGS='-run TestHerdrPluginManifest'
 
+  # ── Integration tag, Tier 1 ────────────────────────────────────────────────
+  # The //go:build integration tag guarded 44 files that had NEVER run: before
+  # this job, `grep -rn "tags integration" Makefile .github/` returned nothing.
+  #
+  # This job runs the ONE file that is genuinely runnable in ordinary CI:
+  # internal/core/perimeter/netstack. Its VirtualNetwork is pure userspace, so
+  # it needs no /dev/kvm, no cloud-hypervisor, no docker, and no boot artifacts.
+  #
+  # Everything else under the tag is Tier 2 (needs /dev/kvm + cloud-hypervisor,
+  # and usually docker to bake a rootfs) or Tier 3 (does not compile). Those are
+  # deliberately NOT wired here — see doc/integration-test-triage.md for the
+  # per-file table and the evidence behind each tier.
+  #
+  # Do not "improve" this job by pointing it at ./... . On a runner without
+  # docker and /dev/kvm the tag's tests t.Skip rather than fail, so ./... would
+  # report a green assembled almost entirely from skips — the exact false
+  # confidence that let these 44 files rot unnoticed in the first place.
+  integration-tier1:
+    name: integration (Tier 1 — netstack, no KVM/docker)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      # NEXUS3_ALLOW_UNCAPPED=1: GitHub Actions provides no user systemd
+      # instance, so `systemd-run --user --scope` fails and CAPPED fails closed.
+      # The wrapper falls back to choom-only when this is set. The memory
+      # concern behind CAPPED does not apply here: Tier 1 boots no VMs.
+      #
+      # The make target carries -count=1, so this green cannot be cache-served.
+      - name: Run integration Tier 1
+        env:
+          TMPDIR: /tmp
+          NEXUS3_ALLOW_UNCAPPED: "1"
+        run: make test-integration
+
   # ── Example: nexus3-in-docker build smoke ─────────────────────────────────
   # Verifies that the CI-feasible Dockerfile stages still build correctly.
   # The full image cannot be built in CI because the virtiofsd-stage COPY
