@@ -224,3 +224,63 @@ func TestBootScratchDiskPresent_CmdlineIntegration(t *testing.T) {
 		t.Errorf("worktree-shape cmdline must contain --scratch-disk=/dev/vdb; got %q", cmdline)
 	}
 }
+
+// TestBuildSandboxDriverFactory_WorktreeShape_ScratchDiskInCmdline drives
+// buildSandboxDriverFactory end-to-end for the herdr worktree-sandbox shape
+// (no --workspace, workspace arrives as a virtiofs LiveMount, scratch is the
+// sole ExtraDisk) and asserts --scratch-disk=/dev/vd<N> appears in the
+// assembled kernel cmdline.
+//
+// This test kills Mutant B (cmd_seam.go:112-114 — force scratchIdx=-1):
+// with that mutant active, scratchDiskCmdlineArg returns "" and the assertion
+// fails. Both the previous helper-level tests (TestBootScratchDiskPresent_*
+// and TestBootScratchDiskPresent_CmdlineIntegration) are immune to Mutant B
+// because they call guestBootCmdline with a hardcoded scratchIdx — they never
+// go through the ExtraDisks-length derivation inside the factory.
+//
+// Mutant A (cmd_sandbox.go:1742 — pass nil for liveMounts to bootScratchDiskPresent)
+// is NOT killable from this test: Mutant A is inside the newDriver closure in
+// the CLI command handler, which is one call-stack level above buildSandboxDriverFactory.
+// Our test constructs the spec directly, so HasScratchDisk is computed in test
+// code, not via line 1742. The smallest seam that would make Mutant A reachable
+// is extracting the spec assembly from newDriver into a standalone function
+// (e.g. buildLiveMountDriverSpec) that can be unit-tested independently.
+func TestBuildSandboxDriverFactory_WorktreeShape_ScratchDiskInCmdline(t *testing.T) {
+	t.Parallel()
+
+	// Mirror the production derivation at cmd_sandbox.go:1742.
+	// workspacePath is "" (worktree shape uses a LiveMount, not --workspace).
+	liveMounts := []domain.LiveMount{
+		{HostPath: "/host/repo", GuestPath: "/workspace/repo"},
+	}
+	hasScratch := bootScratchDiskPresent("", liveMounts)
+	if !hasScratch {
+		t.Fatal("precondition: bootScratchDiskPresent must be true for /workspace LiveMount with empty workspacePath")
+	}
+
+	spec := sandboxDriverSpec{
+		// SBHandle non-empty triggers the guestBootCmdline path in cmd_seam.go.
+		SBHandle: "proj/wt-regression",
+		// HasScratchDisk is the value production sets at line 1742. Set it here
+		// via the same helper so the production logic is mirrored, not bypassed.
+		HasScratchDisk: hasScratch,
+		// LiveMounts nil: avoids resolveVirtiofsdPath() in test environment where
+		// virtiofsd is absent. HasScratchDisk is already computed above via
+		// bootScratchDiskPresent, so the nil here does not affect the assertion.
+		LiveMounts:  nil,
+		GuestMounts: nil, // SBHandle suffices to select guestBootCmdline
+	}
+
+	var caps sandboxDriverCaptures
+	factory := buildSandboxDriverFactory(spec, &caps)
+
+	// One ExtraDisk: the scratch disk. Virtiofs mounts do not consume ExtraDisks
+	// slots (they use tags), so the scratch disk is index 0 → /dev/vdb.
+	// The factory populates caps.Cmdline before calling cloudhypervisor.New, so
+	// the driver-creation error (binary absent in test env) is irrelevant here.
+	_, _ = factory("/dev/null", []service.ExtraDisk{{Path: "/dev/null"}})
+
+	if !strings.Contains(caps.Cmdline, "--scratch-disk=/dev/vdb") {
+		t.Errorf("worktree-shape cmdline must contain --scratch-disk=/dev/vdb; got %q", caps.Cmdline)
+	}
+}
