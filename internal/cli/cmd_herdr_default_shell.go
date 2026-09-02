@@ -193,9 +193,18 @@ func herdrDefaultShellAutoCreate(ctx context.Context, storeRoot, wsID, nexus3Bin
 	cmd := herdrExecCommandContext(autoCtx, nexus3Bin, "herdr", "worktree-sandbox", "--auto", wsID)
 	cmd.Stdout = w
 	cmd.Stderr = w
+	// A non-zero exit is REPORTED but is not by itself a verdict, because
+	// worktree-sandbox writes the binding BEFORE it opens the guest pane and now
+	// returns non-zero when only the pane fails (see the openPane block in
+	// herdrWorktreeSandbox: a pane failure must surface so the provisioning pane
+	// holds itself open). The sandbox is live and the binding is committed in
+	// that case, so discarding it here would drop the operator into a host shell
+	// for a sandbox that is perfectly usable.
+	//
+	// The binding lookup is the actual predicate, and it FAILS CLOSED on its own
+	// terms: no binding → (zero, false) → execHostShell, exactly as before.
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(w, "nexus3-guest-shell: auto-create: %v\n", err)
-		return HerdrSpaceBinding{}, false
 	}
 	b, ok, _ := herdrDefaultShellLookup(storeRoot, wsID)
 	return b, ok

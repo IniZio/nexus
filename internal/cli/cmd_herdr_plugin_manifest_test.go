@@ -159,13 +159,21 @@ func TestHerdrManifestDispatch(t *testing.T) {
 	// MUTATION PROOF: delete an arm from open-pane.sh (e.g. rename the
 	// space-pause arm so space-pause falls to the generic herdr path).
 	// That verb disappears from seen → the set check fires → RED.
+	//
+	// "worktree-sandbox" is deliberately ABSENT. It used to be a direct arm:
+	// open-pane.sh called `nexus3 herdr worktree-sandbox` inline, in the action
+	// process, with no pane. That is the pane-first defect — a minutes-long VM
+	// build with no visible surface, and a failure that reached only the plugin
+	// log. The action now opens the worktree-sandbox PANE, and the direct nexus3
+	// call lives in pane.sh instead. The routing invariant this set protects did
+	// not go away; it moved, and TestPaneScript_WorktreeSandboxRoutesToNexus3Verb
+	// (cmd_herdr_worktree_pane_test.go) enforces it at its new home.
 	expectedDirectVerbs := map[string]bool{
-		"space-open-pane":  true,
-		"new-tab":          true,
-		"pause":            true,
-		"resume":           true,
-		"remove":           true,
-		"worktree-sandbox": true,
+		"space-open-pane": true,
+		"new-tab":         true,
+		"pause":           true,
+		"resume":          true,
+		"remove":          true,
 	}
 
 	env := newScriptEnv(t)

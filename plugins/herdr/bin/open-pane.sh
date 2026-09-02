@@ -7,15 +7,21 @@ SHIM="$(dirname "$0")/../nexus3-shim.sh"
 case "$ENTRYPOINT" in
     worktree-sandbox)
         # Bind the focused worktree workspace to a new nexus3 sandbox.
-        # Resolves via HERDR_WORKSPACE_ID — no sandbox ref needed from the caller.
-        # Wire a worktree_created hook here when herdr ships event support; the
-        # nexus3 CLI accepts --auto for conditional bind (source must be nexus3-bound).
-        "$SHIM" herdr worktree-sandbox "$HERDR_WORKSPACE_ID"
-        STATUS=$?
-        if [ "$STATUS" -ne 0 ]; then
-            echo "nexus3: $ENTRYPOINT failed (status $STATUS)" >&2
-        fi
-        exit "$STATUS"
+        #
+        # PANE-FIRST: open the worktree-sandbox pane and let the provisioning run
+        # INSIDE it (see pane.sh's worktree-sandbox case).  This used to run the
+        # build inline in the action process, which meant two things, both bad:
+        # the operator watched a minutes-long VM build with no output anywhere,
+        # and a failure went only to `herdr plugin log list`.
+        #
+        # The pane is the surface the operator is already looking at, and pane.sh
+        # holds it open on a non-zero exit so the error survives to be read.
+        exec "$HERDR_BIN_PATH" plugin pane open \
+            --plugin nexus3 \
+            --entrypoint worktree-sandbox \
+            --placement tab \
+            --focus \
+            --workspace "$HERDR_WORKSPACE_ID"
         ;;
     space-pause|space-resume|space-remove)
         # Lifecycle control on the sandbox bound to the focused herdr workspace.

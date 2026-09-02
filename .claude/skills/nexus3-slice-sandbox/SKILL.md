@@ -96,6 +96,17 @@ nexus3 herdr agent --autonomous --no-focus <handle> "<brief>"
 See `references/briefs.md` for what a brief must contain — the constraints that
 are not discoverable from inside the guest are the ones that matter.
 
+**A zero exit now means the brief was CONFIRMED submitted, and a non-zero exit
+means it was not.** Dispatch used to paste the brief, press Enter, and report
+success — but the thing it waited on was claude's prompt APPEARING, which
+happens before submission and stays true after a brief strands in the input box.
+Observed rate: one stranded brief in three, all three reported as running. The
+command now reads the pane back and requires positive evidence (the input box
+emptied, or the pane repainting) before it says the agent is running; it retries
+Enter and then fails loudly. Treat a non-zero exit as *the slice did not start* —
+the VM is up and the pane is live, but nobody has read the brief. An unreadable
+pane also fails, deliberately: a check that cannot decide must refuse.
+
 In-guest agents are **not addressable by `herdr agent` verbs**. `herdr agent
 prompt <pane>` returns `agent_not_ready: not an active named agent`, because
 herdr sees the pane but cannot bind an agent identity through the VM boundary.
@@ -105,6 +116,11 @@ Drive them through the pane surface instead:
 herdr pane run <pane-id> "<text>"          # sends text + Enter
 herdr pane read <pane-id> --source recent-unwrapped --lines 60
 ```
+
+`--source recent-unwrapped` returns EMPTY on a pane that has not scrolled yet —
+the normal state of a freshly dispatched agent. Fall back to `--source visible`
+rather than reading the empty string as an empty pane; empty compares equal to
+empty, which reads as "no movement", which reads as a stop.
 
 A `pane run` sent while the agent is working queues as its next prompt rather
 than interrupting — useful, but it means "no response yet" is ambiguous between
@@ -148,6 +164,12 @@ different pane layout, each "fixed" by a pattern the next layout defeated.
    still reported `AGENT_NEVER_STARTED` after `sample_state` learned that state.
 4. The background-agent roster switched from `Waiting for N background agents`
    to a live subagent row — matching no marker at all.
+5. A pane SCROLLED UP puts the ticking spinner outside the read window, so a
+   busy agent reads as static and movement itself stops working. `herdr pane get
+   <pane-id>` reports `scroll.offset_from_bottom`; an indeterminate answer —
+   herdr unreachable, field absent, non-numeric — must read as SCROLLED, and
+   therefore as WORKING. Do NOT reach for `herdr workspace list` here: it reports
+   only each workspace's ROOT pane, so it cannot see a guest pane like `w7M:p2`.
 
 Every individual fix was correct. The *approach* was the defect. If you find
 yourself adding a fifth pattern, add it as a fast path only, and let movement

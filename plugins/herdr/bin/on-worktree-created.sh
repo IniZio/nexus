@@ -24,4 +24,32 @@ if [ -z "$WS" ]; then
     echo "on-worktree-created.sh: no workspace ID (HERDR_WORKSPACE_ID unset, jq fallback failed)" >&2
     exit 0
 fi
+# PANE-FIRST.  Open the provisioning pane and let the build run inside it,
+# rather than running it here in the hook process where it has no surface.
+#
+# This is the path the defect was reported on: herdr fires worktree.created, the
+# hook builds a VM for minutes, and until it finishes the operator's brand-new
+# worktree workspace shows only a host-path shell with no indication that
+# anything is happening.  If the build then fails, the error goes to the plugin
+# log and nowhere else.  Opening the pane first fixes both halves: the build is
+# visible while it runs, and pane.sh holds the pane open on failure.
+#
+# NEXUS3_WORKTREE_AUTO=1 carries the --auto predicate through to pane.sh, which
+# is what keeps this hook conditional (bind only when a sibling workspace in the
+# same repo is already nexus3-bound).
+#
+# Fail-open is preserved: if the pane cannot be opened we fall back to the old
+# inline run rather than leaving the worktree unprovisioned.  A missing pane is
+# a missing SIGNAL, not a reason to skip the work.
+HERDR="${HERDR_BIN_PATH:-herdr}"
+if "$HERDR" plugin pane open \
+    --plugin nexus3 \
+    --entrypoint worktree-sandbox \
+    --placement tab \
+    --no-focus \
+    --workspace "$WS" \
+    --env "NEXUS3_WORKTREE_AUTO=1"; then
+    exit 0
+fi
+echo "on-worktree-created.sh: could not open the provisioning pane; provisioning inline (no progress will be visible)" >&2
 exec "$SHIM" herdr worktree-sandbox --auto "$WS"

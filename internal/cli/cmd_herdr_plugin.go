@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -2856,10 +2857,226 @@ func herdrPaneSubmitToAgent(ctx context.Context, herdrBin, paneID, text string) 
 	case <-time.After(briefSettleDelay):
 	}
 
+	return herdrPaneSendEnter(ctx, herdrBin, paneID)
+}
+
+// herdrPaneSendEnter presses Enter in paneID. Extracted from
+// herdrPaneSubmitToAgent so the submission-confirmation loop can re-press it
+// without re-pasting the brief (a second send-text would APPEND to a buffer
+// that already holds the brief, producing a doubled prompt).
+func herdrPaneSendEnter(ctx context.Context, herdrBin, paneID string) error {
 	enter := herdrExecCommandContext(ctx, herdrBin, "pane", "send-keys", paneID, "Enter")
 	enter.Stdout = os.Stderr
 	enter.Stderr = os.Stderr
 	return enter.Run()
+}
+
+// herdrPaneReadText reads paneID's rendered text.
+//
+// `--source recent-unwrapped` is the sharper source — it excludes the wrapping
+// artefacts that make naive diffing noisy — but it returns an EMPTY string on a
+// pane that has not scrolled yet, which is the normal state of a freshly
+// dispatched agent. Falling through on that empty answer makes a live pane read
+// as blank, and blank compares equal to blank, so a working agent reads as
+// static. Fall back to `--source visible`, which always renders something for a
+// live pane.
+//
+// A read that produces no text from EITHER source returns ok=false rather than
+// an empty string, so callers cannot mistake "could not read" for "read an
+// empty pane". Every caller here treats ok=false as undecidable, never as a
+// negative answer.
+func herdrPaneReadText(ctx context.Context, herdrBin, paneID string) (text string, ok bool) {
+	for _, source := range []string{"recent-unwrapped", "visible"} {
+		var buf strings.Builder
+		cmd := herdrExecCommandContext(ctx, herdrBin, "pane", "read", paneID, "--source", source)
+		cmd.Stdout = &buf
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			continue
+		}
+		if strings.TrimSpace(buf.String()) != "" {
+			return buf.String(), true
+		}
+	}
+	return "", false
+}
+
+// herdrPaneReadFn is the pane-read seam. Production reads a live pane; tests
+// swap in a scripted transcript sequence so the confirmation loop can be driven
+// without herdr.
+var herdrPaneReadFn = herdrPaneReadText
+
+// briefSubmissionVerdict is the outcome of asking "did the brief actually leave
+// claude's input box?".
+//
+// There are three answers and not two. The dispatch defect this type exists to
+// close was reported as success precisely because the code had only two states
+// and mapped "no evidence" onto the good one.
+type briefSubmissionVerdict int
+
+const (
+	// briefSubmissionUnknown — the pane could not be read, or it could be read
+	// and carries no evidence either way. This is a REFUSAL, never a pass. See
+	// herdrDeliverBriefConfirmed.
+	briefSubmissionUnknown briefSubmissionVerdict = iota
+	// briefSubmissionStranded — positive evidence the brief is still sitting in
+	// the input box unsent.
+	briefSubmissionStranded
+	// briefSubmissionSubmitted — positive evidence the brief left the box.
+	briefSubmissionSubmitted
+)
+
+func (v briefSubmissionVerdict) String() string {
+	switch v {
+	case briefSubmissionStranded:
+		return "STRANDED"
+	case briefSubmissionSubmitted:
+		return "SUBMITTED"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// briefStrandedMarkers are the input-box residues observed on a pane whose
+// brief was pasted but never submitted.
+//
+// Captured live 2026-09-02 while dispatching a three-slice wave: two briefs
+// submitted, the third sat in the box rendering as
+//
+//	[Pasted text #1 +79 lines]
+//
+// with the footer offering "paste again to expand" and NO working indicator,
+// while the CLI printed "space-agent: agent running in pane w7P:p2" and exited
+// 0. A single `herdr pane send-keys <pane> Enter` submitted it.
+//
+// These markers are the STRANDED discriminator, not the submitted one. They are
+// only meaningful in the positive: their presence proves the buffer still holds
+// the brief; their absence proves nothing, because a pane can be unreadable,
+// mid-repaint, or rendering a layout nobody has seen yet.
+var briefStrandedMarkers = []*regexp.Regexp{
+	regexp.MustCompile(`\[Pasted text #\d+`),
+	regexp.MustCompile(`paste again to expand`),
+}
+
+// briefWorkingMarkers are working-agent affordances. FAST PATH ONLY.
+//
+// The same rule the pane watcher lives by applies here: movement decides, and a
+// marker's ABSENCE proves nothing — every one of these has been observed to
+// vanish from a pane whose agent was working (a slash-command overlay repaints
+// the footer away; an agent blocked on its own subagent stops running a tool and
+// loses the interrupt affordance permanently). They are listed so an obviously
+// working pane is confirmed on the first read instead of waiting out a repaint,
+// and for no other purpose.
+//
+// NOTE what is deliberately NOT here: "shift+tab to cycle" and "? for
+// shortcuts". Those are claudeReadyMatch's tokens — permission-mode footers
+// present BEFORE and AFTER submission alike. Matching on them is what made the
+// original dispatch report success on a stranded brief.
+var briefWorkingMarkers = []string{
+	"esc to interrupt",
+	"ctrl+b to run in background",
+}
+
+// classifyBriefSubmission decides whether a brief left the input box, from two
+// pane reads taken a beat apart.
+//
+// Precedence, and why each step is in this order:
+//
+//  1. Either read unobtainable → UNKNOWN. Refusing here is the whole point: a
+//     pane we cannot read is a pane we cannot vouch for.
+//  2. A stranded marker in the LATER read → STRANDED. Positive evidence beats
+//     movement, because a stranded pane still repaints (the placeholder blinks,
+//     the footer cycles) and would otherwise pass step 3.
+//  3. The pane changed between the two reads → SUBMITTED. Movement is the
+//     decider: a working agent repaints, a pane holding an unsent buffer that
+//     shows no stranded marker at all is not a shape that has been observed.
+//  4. A working affordance in the later read → SUBMITTED (fast path).
+//  5. Otherwise → UNKNOWN. Static, no markers, nothing to go on. NOT a pass.
+func classifyBriefSubmission(before, after string, beforeOK, afterOK bool) (briefSubmissionVerdict, string) {
+	if !beforeOK || !afterOK {
+		return briefSubmissionUnknown, "pane read returned no text (both --source recent-unwrapped and --source visible were empty or failed)"
+	}
+	for _, re := range briefStrandedMarkers {
+		if re.MatchString(after) {
+			return briefSubmissionStranded, "input box still holds the pasted brief (matched " + re.String() + ")"
+		}
+	}
+	if before != after {
+		return briefSubmissionSubmitted, "pane repainted between reads (agent is working)"
+	}
+	for _, m := range briefWorkingMarkers {
+		if strings.Contains(after, m) {
+			return briefSubmissionSubmitted, "working indicator present (" + m + ")"
+		}
+	}
+	return briefSubmissionUnknown, "pane is static, shows no working indicator, and shows no stranded-input marker"
+}
+
+// briefConfirmSettle is the gap between the two reads classifyBriefSubmission
+// compares. It must exceed claude's repaint period — the spinner's elapsed
+// timer ticks once a second — or a working agent reads as static.
+const briefConfirmSettle = 1500 * time.Millisecond
+
+// briefSubmitAttempts is how many times Enter is pressed in total before the
+// dispatch is failed. The first press happens in herdrPaneSubmitToAgent; each
+// unconfirmed round after that presses again.
+const briefSubmitAttempts = 3
+
+// herdrDeliverBriefConfirmed pastes the brief, submits it, and then CONFIRMS it
+// was submitted — retrying Enter and finally failing loudly rather than
+// reporting a success it did not observe.
+//
+// Reporting success at the point the system stopped looking is the defect this
+// closes. The old path waited for claude's prompt to APPEAR (which happens
+// before submission, and stays true after it), pressed Enter, and returned nil.
+// Observed rate: one stranded brief in three dispatches.
+//
+// FAIL-CLOSED: both non-success verdicts — STRANDED and UNKNOWN — exhaust the
+// retries and then return an error. An unreadable pane does not "skip the
+// check"; it fails the dispatch. The operator can then look at the pane, which
+// is cheap, instead of discovering an hour later that a slice never started.
+func herdrDeliverBriefConfirmed(ctx context.Context, herdrBin, paneID, brief string, w io.Writer) error {
+	if err := herdrPaneSubmitToAgent(ctx, herdrBin, paneID, brief); err != nil {
+		return &CodedError{Code: ErrCodeInternalError,
+			Msg: "space-agent: deliver brief: " + err.Error(), Err: err}
+	}
+
+	var lastVerdict briefSubmissionVerdict
+	var lastReason string
+	for attempt := 1; attempt <= briefSubmitAttempts; attempt++ {
+		before, beforeOK := herdrPaneReadFn(ctx, herdrBin, paneID)
+		select {
+		case <-ctx.Done():
+			return &CodedError{Code: ErrCodeInternalError,
+				Msg: "space-agent: confirm brief submitted: " + ctx.Err().Error(), Err: ctx.Err()}
+		case <-time.After(briefConfirmSettle):
+		}
+		after, afterOK := herdrPaneReadFn(ctx, herdrBin, paneID)
+
+		lastVerdict, lastReason = classifyBriefSubmission(before, after, beforeOK, afterOK)
+		if lastVerdict == briefSubmissionSubmitted {
+			fmt.Fprintf(w, "space-agent: brief submitted (confirmed on attempt %d/%d: %s)\n",
+				attempt, briefSubmitAttempts, lastReason)
+			return nil
+		}
+		if attempt == briefSubmitAttempts {
+			break
+		}
+		fmt.Fprintf(w, "space-agent: brief not confirmed submitted (%s: %s); pressing Enter again (attempt %d/%d)\n",
+			lastVerdict, lastReason, attempt+1, briefSubmitAttempts)
+		if err := herdrPaneSendEnter(ctx, herdrBin, paneID); err != nil {
+			return &CodedError{Code: ErrCodeInternalError,
+				Msg: "space-agent: re-submit brief: " + err.Error(), Err: err}
+		}
+	}
+
+	return &CodedError{
+		Code: ErrCodeInternalError,
+		Msg: fmt.Sprintf("space-agent: brief was NOT confirmed submitted in pane %s after %d Enter presses "+
+			"(final verdict %s: %s); the agent is running but its brief may still be sitting unsent in the "+
+			"input box — inspect with: herdr pane read %s --source visible",
+			paneID, briefSubmitAttempts, lastVerdict, lastReason, paneID),
+	}
 }
 
 // herdrPaneRun sends text to a herdr pane and simulates Enter, equivalent to
@@ -3063,11 +3280,16 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 				claudeReadyTimeoutMS/1000, err), Err: err}
 	}
 
-	// 8. Deliver the slice brief.
+	// 8. Deliver the slice brief AND confirm it was actually submitted.
+	//
+	//    Step 7's wait is not evidence of delivery. claudeReadyMatch's token is
+	//    a permission-mode footer that is present before the brief is pasted and
+	//    still present after it strands in the input box — it cannot distinguish
+	//    the two states, so a dispatch that stopped looking here reported success
+	//    on a brief that was never sent. See herdrDeliverBriefConfirmed.
 	fmt.Fprintf(w, "space-agent: delivering brief ...\n")
-	if err := herdrPaneSubmitToAgent(ctx, herdrBin, paneID, brief); err != nil {
-		return &CodedError{Code: ErrCodeInternalError,
-			Msg: "space-agent: deliver brief: " + err.Error(), Err: err}
+	if err := herdrDeliverBriefConfirmed(ctx, herdrBin, paneID, brief, w); err != nil {
+		return err
 	}
 
 	// 9. Report the agent in herdr's agent tracker (non-fatal).
@@ -3649,7 +3871,7 @@ func readTrustedRefBytes(commonGitDir string) ([]byte, error) {
 //
 //  1. Build pathPolicies and allowedRepo from egress.policy:
 //     - preset:github(+repo) → EgressGitHubPolicy keyed under [""][host].
-//       repo is derived from the origin remote when absent.
+//     repo is derived from the origin remote when absent.
 //     - paths → EgressHostPolicy{Paths} keyed under [""][host].
 //
 //  2. Build secrets from egress.secrets (env→hosts only; no path info).
@@ -4163,7 +4385,7 @@ func herdrWorktreeSandbox(
 	// and the normal path (step 7 success + step 8 getFn) both feed the shared
 	// binding-write block below without re-declaring.
 	var sb domain.Sandbox
-	if createErr := createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts, egressSecrets, egressAllowedRepo, egressPathPolicies, nestedFlag||nestedCfg); createErr != nil {
+	if createErr := createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts, egressSecrets, egressAllowedRepo, egressPathPolicies, nestedFlag || nestedCfg); createErr != nil {
 		// Create failed. Probe getFn: a prior run may have committed the sandbox
 		// store record (e.g. crashed after store.Create but before HerdrSpacePut),
 		// leaving an orphaned sandbox with no binding. If getFn confirms the
@@ -4275,15 +4497,34 @@ func herdrWorktreeSandbox(
 	// auto/conditional mode continues because the binding committed and the workspace is usable.
 	if openPane {
 		paneID, paneErr := herdrOpenGuestShellPane(ctx, herdrBin, handle, workspaceID, "", false)
-		if paneErr != nil {
-			fmt.Fprintf(w, "worktree-sandbox: open guest pane: %v\n", paneErr)
-			if !failSafe {
-				return fmt.Errorf("worktree-sandbox: open guest pane: %w", paneErr)
-			}
-		}
 		if paneID != "" {
 			binding.GuestPaneID = paneID
 			_ = HerdrSpacePut(ctx, storeRoot, binding) // best-effort patch
+		}
+		if paneErr != nil {
+			// A pane failure is REPORTED IN EVERY MODE, auto/conditional
+			// included. This used to return nil under failSafe, and the
+			// consequence was the exact shape this slice exists to close: a live
+			// VM, a committed binding, no guest pane, and the only trace of it a
+			// line in `herdr plugin log list` —
+			//
+			//   exit 1  workspace_not_found
+			//   worktree-sandbox: open guest pane: space-create: open shell pane: exit status 1
+			//
+			// — which is nowhere an operator looks. The provisioning now runs
+			// inside a pane (plugins/herdr/bin/pane.sh, worktree-sandbox case)
+			// that blocks on Enter for a non-zero exit, so returning the error
+			// is what keeps the failure ON SCREEN. Returning nil here closes the
+			// pane and buries it again.
+			//
+			// This is safe for the guest-shell dispatcher, the one caller that
+			// used to depend on the nil: herdrDefaultShellAutoCreate now re-reads
+			// the binding regardless of exit status, because the binding is
+			// written BEFORE this step and a missing pane does not invalidate it.
+			fmt.Fprintf(w, "worktree-sandbox: open guest pane: %v\n", paneErr)
+			fmt.Fprintf(w, "worktree-sandbox: the sandbox %s and its binding are committed and reusable; "+
+				"only the pane failed. Retry with: nexus3 herdr space-open-pane %s\n", handle, workspaceID)
+			return fmt.Errorf("worktree-sandbox: open guest pane: %w", paneErr)
 		}
 	}
 
