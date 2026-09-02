@@ -135,15 +135,21 @@ func listenFakeSupervisorHTTP(t *testing.T, stateDir, versionHash, healthState s
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
-	// stopFakeSupervisor lets a test simulate the socket going away mid-verb —
-	// the supervisor.sock rebind window during a handoff.
-	stopFakeSupervisor = func() { _ = srv.Close(); _ = ln.Close(); _ = os.Remove(sockPath) }
 	return sockPath
 }
 
-// stopFakeSupervisor tears down the most recently started fake supervisor.
-// Set by listenFakeSupervisorHTTP; only meaningful to the test that started it.
-var stopFakeSupervisor = func() {}
+// listenFakeSupervisorHTTPStoppable is listenFakeSupervisorHTTP plus a stop
+// func, for a test that needs the socket to GO AWAY mid-verb — the
+// supervisor.sock rebind window during a handoff.
+//
+// The stopper is returned rather than parked in a package global: a global
+// assigned by every call and restored by none is safe only while no two tests
+// overlap, which is a property of today's file rather than of the helper.
+func listenFakeSupervisorHTTPStoppable(t *testing.T, stateDir, versionHash, healthState string) (sockPath string, stop func()) {
+	t.Helper()
+	sockPath = listenFakeSupervisorHTTP(t, stateDir, versionHash, healthState)
+	return sockPath, func() { _ = os.Remove(sockPath) }
+}
 
 // setCompleteNetnsIdentity fills every field runSupervisorUpgradeWith's
 // incomplete-identity guard requires, so tests below reach the noop/health
@@ -447,7 +453,7 @@ func TestSupervisorUpgrade_SuccessLineNamesTheBinary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HashOwnBinary: %v", err)
 	}
-	sockPath := listenFakeSupervisorHTTP(t, stateDir, myHash, string(supervisor.AgentChannelDownGuestAlive))
+	sockPath, stopFake := listenFakeSupervisorHTTPStoppable(t, stateDir, myHash, string(supervisor.AgentChannelDownGuestAlive))
 	markRunningWithLiveSupervisor(t, sb, sockPath)
 	setCompleteNetnsIdentity(t, sb)
 
@@ -472,7 +478,7 @@ func TestSupervisorUpgrade_SuccessLineNamesTheBinary(t *testing.T) {
 		// makes the pre-fix code return a correct hash, and the test passes
 		// with and without the fix. It was written that way first, and the
 		// mutation proof is what caught it.
-		stopFakeSupervisor()
+		stopFake()
 		return true, nil
 	}
 
