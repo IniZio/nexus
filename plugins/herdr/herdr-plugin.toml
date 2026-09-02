@@ -64,6 +64,24 @@ title = "nexus3 launch agent in sandbox"
 placement = "tab"
 command = ["sh", "bin/pane.sh", "space-agent"]
 
+# worktree-sandbox — provisioning runs INSIDE this pane, not in the action that
+# opens it.  Building a worktree sandbox pulls an image, lays down an ext4 disk,
+# and boots a VM; on a cold cache that is minutes during which the operator's
+# new worktree workspace previously showed nothing but a host-path shell, with
+# no signal that anything was happening at all.
+#
+# Opening the pane FIRST and running the build in it means the operator watches
+# it happen, and — because pane.sh blocks on Enter for a non-zero exit — a
+# failure STAYS ON SCREEN instead of going only to `herdr plugin log list`,
+# which is nowhere anyone looks.  There is a real instance of that in the log:
+# exit 1, workspace_not_found, "worktree-sandbox: open guest pane: space-create:
+# open shell pane: exit status 1", with the VM already built and running.
+[[panes]]
+id = "worktree-sandbox"
+title = "nexus3 sandbox this worktree"
+placement = "tab"
+command = ["sh", "bin/pane.sh", "worktree-sandbox"]
+
 [[actions]]
 id = "workspaces"
 title = "nexus3: list sandboxes"

@@ -64,6 +64,43 @@ case "$1" in
         read -r _
         exit "$STATUS"
         ;;
+    worktree-sandbox)
+        # Pane-FIRST provisioning.  The pane exists before the VM does, so the
+        # build streams into a surface the operator is already looking at, and a
+        # failure is legible where it happened instead of only in the plugin log.
+        #
+        # Resolved via HERDR_WORKSPACE_ID, exactly like the old inline action —
+        # no sandbox ref is needed from the caller.
+        WS="${HERDR_WORKSPACE_ID:-}"
+        if [ -z "$WS" ]; then
+            printf "pane.sh worktree-sandbox: HERDR_WORKSPACE_ID not set; cannot tell which worktree to sandbox.\n"
+            printf "Press Enter to close this pane.\n"
+            read -r _
+            exit 1
+        fi
+        # NEXUS3_WORKTREE_AUTO=1 selects --auto (the repo-level conditional rule:
+        # bind only when some sibling workspace in this repo is already
+        # nexus3-bound). The worktree.created event hook sets it; the explicit
+        # "sandbox this worktree" action does not, because an operator who asked
+        # for a sandbox by name has already made the decision the predicate exists
+        # to make.
+        set -- "$WS"
+        if [ "${NEXUS3_WORKTREE_AUTO:-}" = "1" ]; then
+            set -- --auto "$WS"
+        fi
+        printf "nexus3: provisioning a sandbox for this worktree (image pull + disk + VM boot; can take a few minutes on a cold cache)...\n\n"
+        "$SHIM" herdr worktree-sandbox "$@"
+        STATUS=$?
+        if [ "$STATUS" -eq 0 ]; then
+            exit 0
+        fi
+        # Non-zero: HOLD THE PANE OPEN.  This is the whole point of running the
+        # build here.  Closing on failure is what buried the last one.
+        printf "\nnexus3: worktree-sandbox FAILED (exit %d). The error is above.\n" "$STATUS"
+        printf "Press Enter to close this pane.\n"
+        read -r _
+        exit "$STATUS"
+        ;;
     create|logs|doctor|launch)
         # Short-lived panes: run and then pause so errors stay visible.
         "$SHIM" herdr "$@"

@@ -247,9 +247,9 @@ func TestHerdrWorktreeSandbox_alreadyBound_noOp(t *testing.T) {
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-already", root, false, false, /*auto*/
 		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
-				createCalled = true
-				return nil
-			},
+			createCalled = true
+			return nil
+		},
 		nil,
 	)
 	if err != nil {
@@ -280,9 +280,9 @@ func TestHerdrWorktreeSandbox_mainCheckout_notBound(t *testing.T) {
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w8", root, false, false, /*auto*/
 		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
-				createCalled = true
-				return nil
-			},
+			createCalled = true
+			return nil
+		},
 		nil,
 	)
 	if err != nil {
@@ -336,9 +336,9 @@ func TestHerdrWorktreeSandbox_conditional_sourceNotBound_staysHost(t *testing.T)
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-worktree", root, true, false, /*auto*/
 		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
-				createCalled = true
-				return nil
-			},
+			createCalled = true
+			return nil
+		},
 		nil,
 	)
 	if err != nil {
@@ -427,9 +427,9 @@ func TestHerdrWorktreeSandbox_conditional_sourceUnknown_failSafe(t *testing.T) {
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-new", root, true, false, /*auto*/
 		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
-				createCalled = true
-				return nil
-			},
+			createCalled = true
+			return nil
+		},
 		nil,
 	)
 	if err != nil {
@@ -683,7 +683,7 @@ func TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksAlwaysAttached(t *testing
 	wantGoPath := "example-app-ex-871-gopath:/root/go:size=10g"
 
 	for _, tc := range []struct {
-		name              string
+		name                string
 		imageFlag, imageVal string
 	}{
 		{"file-build", "--file", "/wt"},
@@ -757,9 +757,9 @@ func TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksReachResizableDiskIndices
 		[]string{"/disks/agentcfg.raw", "/disks/gocache.raw", "/disks/gopath.raw", "/disks/ws.raw"},
 		"root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0",
 		"/usr/bin/cloud-hypervisor", "/tmp/sockets",
-		true,           // hasWorkspace
-		0,              // workspaceDiskIndex
-		numNamedDisks,  // real value derived above, not hand-picked
+		true,          // hasWorkspace
+		0,             // workspaceDiskIndex
+		numNamedDisks, // real value derived above, not hand-picked
 		"/workspace/proj",
 		nil, "", false, nil,
 	)
@@ -1224,7 +1224,7 @@ func TestHerdrWorktreeSandbox_reconcile_orphanedSandbox_writesBinding(t *testing
 		return existingSB, nil
 	}
 
-	err := callHerdrWorktreeSandbox(t, wantWorkspaceID, root, false /*conditional*/, false /*auto*/,
+	err := callHerdrWorktreeSandbox(t, wantWorkspaceID, root, false /*conditional*/, false, /*auto*/
 		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
 			return errors.New("sandbox create: sandbox already exists: store: sandbox already exists")
 		},
@@ -1275,7 +1275,7 @@ func TestHerdrWorktreeSandbox_reconcile_workspaceMismatch_explicitReturnsError(t
 			{HostPath: "$HOME/magic/OLD-nexus3", GuestPath: "/workspace"},
 		},
 	}
-	err := callHerdrWorktreeSandbox(t, "w-mismatch-exp", root, false /*conditional*/, false /*auto*/,
+	err := callHerdrWorktreeSandbox(t, "w-mismatch-exp", root, false /*conditional*/, false, /*auto*/
 		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
 			return errors.New("sandbox already exists")
 		},
@@ -1308,7 +1308,7 @@ func TestHerdrWorktreeSandbox_reconcile_workspaceMismatch_autoReturnsNil(t *test
 			{HostPath: "$HOME/magic/OLD-nexus3", GuestPath: "/workspace"},
 		},
 	}
-	err := callHerdrWorktreeSandbox(t, "w-mismatch-auto", root, false /*conditional*/, true /*auto*/,
+	err := callHerdrWorktreeSandbox(t, "w-mismatch-auto", root, false /*conditional*/, true, /*auto*/
 		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
 			return errors.New("sandbox already exists")
 		},
@@ -1353,7 +1353,7 @@ func TestHerdrWorktreeSandbox_reconcile_trailingSlashPath_adopts(t *testing.T) {
 			{HostPath: "$HOME/nexus3/", GuestPath: "/workspace"},
 		},
 	}
-	err := callHerdrWorktreeSandbox(t, "w-trailing", root, false /*conditional*/, true /*auto*/,
+	err := callHerdrWorktreeSandbox(t, "w-trailing", root, false /*conditional*/, true, /*auto*/
 		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
 			return errors.New("sandbox already exists")
 		},
@@ -1397,7 +1397,7 @@ func TestHerdrWorktreeSandbox_reconcile_badState_failSafe(t *testing.T) {
 			{HostPath: "$HOME/nexus3", GuestPath: "/workspace"},
 		},
 	}
-	err := callHerdrWorktreeSandbox(t, "w-badstate", root, false /*conditional*/, true /*auto*/,
+	err := callHerdrWorktreeSandbox(t, "w-badstate", root, false /*conditional*/, true, /*auto*/
 		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
 			return errors.New("sandbox already exists")
 		},
@@ -1440,7 +1440,7 @@ func TestHerdrWorktreeSandbox_reconcile_auto_siblingBound_writesBinding(t *testi
 	}
 	wantID := existingSB.ID.String()
 
-	err := callHerdrWorktreeSandbox(t, "w-auto-reconcile", root, false /*conditional*/, true /*auto*/,
+	err := callHerdrWorktreeSandbox(t, "w-auto-reconcile", root, false /*conditional*/, true, /*auto*/
 		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
 			return errors.New("sandbox create: sandbox already exists: store: sandbox already exists")
 		},
@@ -1629,17 +1629,35 @@ func TestHerdrWorktreeSandbox_explicitMode_paneError_returnsError(t *testing.T) 
 	}
 }
 
-func TestHerdrWorktreeSandbox_conditionalMode_paneError_returnsNil(t *testing.T) {
-	// When conditional=true and herdrOpenGuestShellPane fails (step 9),
-	// herdrWorktreeSandbox must return nil — binding exists, workspace is usable.
+func TestHerdrWorktreeSandbox_conditionalMode_paneError_returnsError(t *testing.T) {
+	// CONTRACT CHANGE (pane-first provisioning). This test previously asserted
+	// that conditional mode returns NIL on a pane-open failure, on the reasoning
+	// that the binding is committed and the workspace is usable. Both halves of
+	// that are still true and it was still the wrong answer: the operator got a
+	// live VM, no guest pane, and the only record of it a line in
+	// `herdr plugin log list` —
 	//
-	// MUTATION PROOF: always return paneErr regardless of conditional →
-	// this test gets non-nil → RED.
+	//   exit 1  workspace_not_found
+	//   worktree-sandbox: open guest pane: space-create: open shell pane: exit status 1
+	//
+	// Provisioning now runs inside a pane that holds itself open on a non-zero
+	// exit (plugins/herdr/bin/pane.sh), so returning the error is what puts that
+	// message in front of someone.
+	//
+	// IT WAS ALSO VACUOUS. With no binding seeded for the source workspace, step
+	// 5's conditional check returns nil BEFORE step 9 ever runs, so the exec stub
+	// that was supposed to fail the pane open was never reached and the assertion
+	// held no matter what step 9 did. Proof: the contract was inverted in
+	// herdrWorktreeSandbox and this test kept passing. The seed below is what
+	// makes it bite.
 	root := t.TempDir()
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfo("w-panefail-cond", "w-src", "feature/panefail-cond", "/work/pfc"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+
+	// Make the source workspace nexus3-bound so step 5 passes and step 9 runs.
+	seedBindingWithRepoRoot(t, root, "w-src", "repo/src-sandbox", "/repo")
 
 	t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
 	old := herdrExecCommandContext
@@ -1651,8 +1669,14 @@ func TestHerdrWorktreeSandbox_conditionalMode_paneError_returnsNil(t *testing.T)
 	ctx := context.Background()
 	var w strings.Builder
 	err := herdrWorktreeSandbox(ctx, "w-panefail-cond", &w, root, true /*openPane*/, true /*conditional*/, false /*auto*/, false /*nestedFlag*/, noopCreate, stubSandboxGet(domain.Sandbox{}, nil))
-	if err != nil {
-		t.Errorf("conditional mode: pane open error must return nil (fail-safe); got %v", err)
+
+	// Guard against the vacuity that hid the old assertion: if step 5 short-
+	// circuited we are not testing step 9 at all, whatever the verdict.
+	if strings.Contains(w.String(), "not nexus3-bound, skipping") {
+		t.Fatalf("step 5 short-circuited — step 9 never ran, so this test proves nothing:\n%s", w.String())
+	}
+	if err == nil {
+		t.Errorf("conditional mode: pane open error must surface; got nil\noutput:\n%s", w.String())
 	}
 }
 
@@ -1737,9 +1761,9 @@ func TestHerdrWorktreeSandbox_auto_noRepoBound_staysHost(t *testing.T) {
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-new", root, false, true, /*auto*/
 		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
-				createCalled = true
-				return nil
-			},
+			createCalled = true
+			return nil
+		},
 		nil)
 	if err != nil {
 		t.Fatalf("unexpected error (auto mode is fail-safe): %v", err)
@@ -1775,9 +1799,9 @@ func TestHerdrWorktreeSandbox_auto_repoKeyEmpty_staysHost(t *testing.T) {
 	createCalled := false
 	err := callHerdrWorktreeSandbox(t, "w-new", root, false, true, /*auto*/
 		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
-				createCalled = true
-				return nil
-			},
+			createCalled = true
+			return nil
+		},
 		nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1829,11 +1853,11 @@ func TestHerdrWorktreeSandbox_auto_notLinkedWorktree_noSideEffects(t *testing.T)
 	createCalled := false
 	var w strings.Builder
 	err := herdrWorktreeSandbox(context.Background(), "w-new", &w, root,
-		false /*openPane*/, false /*conditional*/, true /*auto*/, false /*nestedFlag*/,
+		false /*openPane*/, false /*conditional*/, true /*auto*/, false, /*nestedFlag*/
 		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
-				createCalled = true
-				return nil
-			},
+			createCalled = true
+			return nil
+		},
 		stubSandboxGet(domain.Sandbox{}, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
