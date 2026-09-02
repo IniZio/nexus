@@ -46,3 +46,8 @@ internal/test/repro/workspace_pressure_*/
 
 # test leakage: netns control sockets + auth tokens written relative to CWD
 internal/core/driver/cloudhypervisor/netns-control/
+
+# slice-sandbox agent reports: an in-guest agent writes its narrative report
+# here because the pane transcript can become unreachable (SKILL.md mode 6).
+# It is a working artefact of one slice, never part of the tree.
+.slice-report.md

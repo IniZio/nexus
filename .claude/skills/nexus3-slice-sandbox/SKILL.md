@@ -182,6 +182,33 @@ different pane layout, each "fixed" by a pattern the next layout defeated.
    unavailable) must read as SCROLLED and therefore WORKING, consistent with
    the bias stated below.
 
+6. The terminal is genuinely at its bottom — `herdr pane get` reports
+   `scroll.offset_from_bottom: 0` and movement detection is not blind —
+   but the Claude app maintains its own in-transcript scroll state and is
+   holding content back. The symptom is `N new messages (ctrl+End) ↓`
+   above the input box; `--source recent-unwrapped` and `--source visible`
+   both return mid-transcript text while the final report sits below the
+   fold. `ctrl+End` is not in herdr's key vocabulary (`send-keys` refuses
+   it with `invalid_key`), so the obvious recovery is unavailable. This
+   mode does not cause a false stop — the watcher correctly reads the pane
+   as idle — but it hides the deliverable entirely.
+
+   This failure is structurally different from mode 5: mode 5 is about
+   movement detection going blind because the terminal is scrolled up; mode
+   6 is about the terminal being at the bottom while the application's own
+   layer withholds content. `herdr pane get` cannot distinguish them.
+
+   The fix is not to fight the pane. The diff is always reachable:
+
+   ```bash
+   git -C <worktree> diff develop...HEAD
+   git -C <worktree> log develop..HEAD
+   ```
+
+   These are never truncated by a UI. Treat the diff as the primary
+   deliverable. For the narrative report, require the agent to write it to
+   a file — see "What to ask for in the report" in `references/briefs.md`.
+
 Every individual fix was correct. The *approach* was the defect. If you find
 yourself adding a new string pattern for a sixth case, add it as a fast path
 only, and let movement remain the thing that actually decides. Mode 5 is not a

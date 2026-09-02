@@ -99,6 +99,20 @@ func TestReap_InFlightCreate_DiskSurvivesConcurrentReap(t *testing.T) {
 			DiskDir:           diskDir,
 			Workspace:         &WorkspaceSpec{SourcePath: "/repo", GuestPath: "/workspace/repo"},
 			WorkspaceCapturer: capturer,
+			// Skip rather than fatal when the host genuinely lacks the disk space
+			// this test needs. The skip fires only on measured insufficient space;
+			// hosts with enough space run and pass normally.
+			DiskPreflight: func(dir string, projected int64, _ string) (*DiskPreflightResult, error) {
+				free, fErr := DiskStatfs(dir)
+				if fErr != nil {
+					return nil, fmt.Errorf("statfs %s: %w", dir, fErr)
+				}
+				if projected > free {
+					t.Skipf("insufficient disk space at %s: need %.2f GiB (%d bytes), only %.2f GiB (%d bytes) free",
+						dir, float64(projected)/(1<<30), projected, float64(free)/(1<<30), free)
+				}
+				return &DiskPreflightResult{ProjectedBytes: projected, FreeBytes: free}, nil
+			},
 		},
 	)
 	if err != nil {

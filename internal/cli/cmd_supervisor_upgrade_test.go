@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
@@ -134,8 +135,15 @@ func listenFakeSupervisorHTTP(t *testing.T, stateDir, versionHash, healthState s
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
+	// stopFakeSupervisor lets a test simulate the socket going away mid-verb —
+	// the supervisor.sock rebind window during a handoff.
+	stopFakeSupervisor = func() { _ = srv.Close(); _ = ln.Close(); _ = os.Remove(sockPath) }
 	return sockPath
 }
+
+// stopFakeSupervisor tears down the most recently started fake supervisor.
+// Set by listenFakeSupervisorHTTP; only meaningful to the test that started it.
+var stopFakeSupervisor = func() {}
 
 // setCompleteNetnsIdentity fills every field runSupervisorUpgradeWith's
 // incomplete-identity guard requires, so tests below reach the noop/health
@@ -416,5 +424,72 @@ func TestSupervisorUpgrade_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing
 				t.Fatalf("case %q: expected %q, got %v", tc.name, supervisorUpgradeIncompleteNetnsCode, err)
 			}
 		})
+	}
+}
+
+// TestSupervisorUpgrade_SuccessLineNamesTheBinary is the regression proof for
+// the empty binary field. On 2026-09-02 three live upgrades in a row printed
+//
+//	sandbox sb-… now served by supervisor pid 469380 (binary )
+//
+// including one where the binary demonstrably CHANGED (a sandbox created by
+// one build, upgraded by another). The value was read from
+// RequestSupervisorVersion against a socket the replacement was still
+// rebinding, and its error was discarded into `_`, so a racing failure
+// rendered as a legitimately-blank field.
+//
+// The field's whole job is to say WHICH binary now serves the sandbox, so a
+// blank is worse than useless: it reads as an answer. This asserts the success
+// line names a non-empty binary, and that the machine-readable payload agrees.
+func TestSupervisorUpgrade_SuccessLineNamesTheBinary(t *testing.T) {
+	svc, sb, stateDir := newSupervisorUpgradeTestSandbox(t)
+	myHash, err := supervisor.HashOwnBinary()
+	if err != nil {
+		t.Fatalf("HashOwnBinary: %v", err)
+	}
+	sockPath := listenFakeSupervisorHTTP(t, stateDir, myHash, string(supervisor.AgentChannelDownGuestAlive))
+	markRunningWithLiveSupervisor(t, sb, sockPath)
+	setCompleteNetnsIdentity(t, sb)
+
+	if err := supervisor.WriteSpawnSpec(stateDir, supervisor.Config{SandboxRef: sb.ID.String(), StateDir: stateDir}); err != nil {
+		t.Fatalf("WriteSpawnSpec: %v", err)
+	}
+
+	// Stub the two mutating steps: this test is about what the success line
+	// SAYS, not about really spawning a supervisor or really moving fds.
+	origSpawn, origHandoff := doSpawnAdoptDetached, doRequestHandoff
+	t.Cleanup(func() { doSpawnAdoptDetached, doRequestHandoff = origSpawn, origHandoff })
+	doSpawnAdoptDetached = func(supervisor.SpawnConfig) (int, error) { return 99001, nil }
+	doRequestHandoff = func(context.Context, string, string) (bool, error) {
+		// REPRODUCE THE LIVE CONDITION. Handoff is the moment ownership moves:
+		// the outgoing supervisor lets go of supervisor.sock and the incoming
+		// one has not finished rebinding it. Tearing the fake server down here
+		// is what makes a post-handoff RequestSupervisorVersion FAIL, which is
+		// precisely the race that was silently discarded into `_` and rendered
+		// as "(binary )".
+		//
+		// Without this the test is VACUOUS: a fake server that keeps answering
+		// makes the pre-fix code return a correct hash, and the test passes
+		// with and without the fix. It was written that way first, and the
+		// mutation proof is what caught it.
+		stopFakeSupervisor()
+		return true, nil
+	}
+
+	out, stdout, _ := capture(false)
+	if err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, out, svc); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+
+	line := stdout.String()
+	if !strings.Contains(line, "now served by supervisor pid 99001") {
+		t.Fatalf("success line did not name the new pid: %q", line)
+	}
+	// The bug, stated as the assertion: an empty pair of parentheses.
+	if strings.Contains(line, "(binary )") {
+		t.Fatalf("REGRESSION: success line reports an EMPTY binary field: %q", line)
+	}
+	if !strings.Contains(line, "(binary "+myHash+")") {
+		t.Fatalf("success line should name this process's binary hash %q, got %q", myHash, line)
 	}
 }

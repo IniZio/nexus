@@ -23,6 +23,12 @@ func init() {
 	})
 }
 
+// These are package-level variables so unit tests can replace them with stubs
+// that avoid spawning a real supervisor process. The production paths always
+// use the real supervisor package implementations.
+var doSpawnAdoptDetached = supervisor.SpawnAdoptDetached
+var doRequestHandoff = supervisor.RequestHandoff
+
 // Error codes for the refusal paths below. Each one is returned before any
 // mutation — no store write, no process spawn, no IPC call that could change
 // ownership of anything.
@@ -158,9 +164,14 @@ func runSupervisorUpgradeWith(ctx context.Context, ref string, force bool, out *
 		}
 	}
 
+	// HashOwnBinary is called unconditionally so myHash is available for the
+	// success line below: SpawnAdoptDetached always installs the current binary,
+	// so its hash IS the post-upgrade answer regardless of what the new
+	// supervisor reports back (which may race with socket rebind).
+	myHash, myHashErr := supervisor.HashOwnBinary()
+
 	if !force {
-		myHash, hashErr := supervisor.HashOwnBinary()
-		if hashErr == nil {
+		if myHashErr == nil {
 			if runningHash, verErr := supervisor.RequestSupervisorVersion(ctx, sockPath); verErr == nil && runningHash == myHash {
 				// Same binary by hash. That alone is not enough to call this a
 				// true no-op: a supervisor can be running the right binary and
@@ -201,7 +212,7 @@ func runSupervisorUpgradeWith(ctx context.Context, ref string, force bool, out *
 	// ── Everything above is read-only. Mutation starts here. ──────────────
 
 	handoffSock := filepath.Join(stateDir, fmt.Sprintf("handoff-%d.sock", os.Getpid()))
-	newPid, spawnErr := supervisor.SpawnAdoptDetached(supervisor.SpawnConfig{
+	newPid, spawnErr := doSpawnAdoptDetached(supervisor.SpawnConfig{
 		Config:           spawnSpec,
 		ReadyTimeout:     30 * time.Second,
 		AdoptHandoffSock: handoffSock,
@@ -213,7 +224,7 @@ func runSupervisorUpgradeWith(ctx context.Context, ref string, force bool, out *
 		}
 	}
 
-	ok, reqErr := supervisor.RequestHandoff(ctx, sockPath, handoffSock)
+	ok, reqErr := doRequestHandoff(ctx, sockPath, handoffSock)
 	if reqErr != nil {
 		// Transport/protocol failure talking to the OUTGOING supervisor — it
 		// never received (or never answered) the handoff request, so it is
@@ -245,7 +256,16 @@ func runSupervisorUpgradeWith(ctx context.Context, ref string, force bool, out *
 		return &CodedError{Code: ErrCodeInternalError, Msg: "supervisor-upgrade: persist new supervisor: " + setErr.Error(), Err: setErr}
 	}
 
-	newHash, _ := supervisor.RequestSupervisorVersion(ctx, sockPath)
+	// myHash is the hash of THIS process's binary — the one SpawnAdoptDetached
+	// just installed. Asking the new supervisor to identify itself via
+	// RequestSupervisorVersion races with its socket rebind and the error was
+	// previously silently discarded, leaving the field blank. Use the known
+	// value instead; fall back to "unknown" only if HashOwnBinary itself
+	// failed (fail-closed rail: never render a legitimately-blank value).
+	newHash := myHash
+	if myHashErr != nil {
+		newHash = "unknown"
+	}
 
 	out.EmitSuccess("supervisor.upgrade",
 		map[string]string{"sandbox": sb.ID.String(), "pid": fmt.Sprintf("%d", newPid), "binary_hash": newHash},

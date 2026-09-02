@@ -114,6 +114,14 @@ Name the outputs you need, or you will get a narrative:
 - every input the slice's guards can fail to obtain, and what each one does when
   it cannot — asking for this list surfaces a fail-open path that the narrative
   would have described as "handled"
+- the final report written to `.slice-report.md` at the worktree root (gitignored). After a
+  long run the Claude app can hold content back in its own in-transcript scroll
+  layer while the terminal reads as idle and at the bottom; when that happens
+  `--source recent-unwrapped` and `--source visible` both return mid-transcript
+  text and the pane report is unreachable. A file in the worktree survives that
+  entirely. The orchestrator reads it with `cat <worktree>/.slice-report.md`.
+  It is gitignored (`.gitignore`), so it cannot reach a commit by accident —
+  an instruction not to commit can be forgotten; the ignore rule cannot.
 
 Treat the report as a claim, not a result. Every gate run on 2026-08-30 — four
 for four — found a real defect in work an agent had reported as complete and
