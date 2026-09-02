@@ -50,7 +50,21 @@ func TestNegativeScope_HerdrPluginTomlTablesOnly(t *testing.T) {
 	content := string(data)
 
 	// Permitted table headers (the full set agreed in the spec).
-	permitted := []string{"[[build]]", "[[panes]]", "[[actions]]"}
+	//
+	// [[events]] was added by D-HSH-20. It was absent from this list because
+	// the manifest carried a comment asserting herdr's event registry was
+	// empty — a premise that was FALSE: the names it tested used underscores
+	// (worktree_removed) where the registry is keyed by dots
+	// (worktree.removed). Proven on the installed herdr 0.8.0, where the dot
+	// form validates clean and the underscore form yields
+	// "warning: unknown event". The hook is what stops a removed worktree
+	// leaking its sandbox, so the table is intended scope, not scope creep.
+	//
+	// This guard stays narrow on purpose: it exists so a new table cannot be
+	// added to the manifest without someone deciding it belongs.
+	// Event NAMES are validated separately, against the real binary's own
+	// registry, by TestHerdrPluginManifest_EventNamesValid.
+	permitted := []string{"[[build]]", "[[panes]]", "[[actions]]", "[[events]]"}
 
 	// Collect all [[...]] table headers present in the file.
 	for _, line := range strings.Split(content, "\n") {
