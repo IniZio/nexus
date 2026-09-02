@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -61,6 +62,105 @@ func (b *vmmStderrBuf) Tail() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return string(b.data)
+}
+
+// maxConsoleSizeBytes is the per-file cap for guest console output.
+// When console.log reaches this size it is atomically renamed to console.log.1
+// and a fresh console.log is opened. Total on-disk usage is bounded at
+// 2 × maxConsoleSizeBytes (32 MiB). The most recent maxConsoleSizeBytes of
+// output are always in console.log; the previous segment is in console.log.1.
+//
+// 16 MiB per file is sufficient for hundreds of thousands of log lines and
+// avoids exhausting storage on long-running sandboxes.
+const maxConsoleSizeBytes = 16 * 1024 * 1024
+
+// cappedConsoleWriter routes CH stdout (guest virtio-console output) to a file
+// using two-file rotation to retain the most recent output.
+//
+// Rotation: when console.log reaches maxConsoleSizeBytes, it is renamed to
+// console.log.1 (overwriting any previous .1) and a fresh console.log is opened.
+// This keeps total growth at ≤ 2 × maxConsoleSizeBytes while always keeping the
+// newest bytes in console.log.
+//
+// Write always returns (len(p), nil) — even on rotation or write errors — so the
+// exec.Cmd drain goroutine never stops: a stopped drain fills the pipe and
+// eventually blocks CH itself (requirement 3).
+type cappedConsoleWriter struct {
+	mu      sync.Mutex
+	f       *os.File // current console.log; nil when permanently fallen back to discard
+	written int64    // bytes written to the current file
+	path    string   // absolute path of console.log
+}
+
+// newCappedConsoleWriter opens path (console.log) for appending and returns a
+// rotating writer. The existing file size is used to seed written so that a
+// supervisor restart does not reset the rotation accounting.
+// On open failure the caller should fall back to io.Discard and log the error.
+func newCappedConsoleWriter(path string) (*cappedConsoleWriter, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("console log dir: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	// Seed written from the current file size so a supervisor restart that
+	// reopens an existing file does not restart the rotation accounting from 0
+	// (which would allow unbounded growth across restarts).
+	var written int64
+	if fi, statErr := f.Stat(); statErr == nil {
+		written = fi.Size()
+	}
+	return &cappedConsoleWriter{f: f, written: written, path: path}, nil
+}
+
+// rotate renames console.log → console.log.1 and opens a fresh console.log.
+// Called with w.mu held. On any error the file is closed and w.f is set to nil,
+// permanently falling back to discard — requirement 3 is preserved either way.
+func (w *cappedConsoleWriter) rotate() {
+	_ = w.f.Close()
+	w.f = nil
+	_ = os.Rename(w.path, w.path+".1") // best-effort; ignore error
+	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return // stay nil → discard
+	}
+	w.f = f
+	w.written = 0
+}
+
+// Write implements io.Writer. It drains all of p, rotating as needed to keep
+// the most recent data in console.log. Always returns (len(p), nil) so the
+// exec.Cmd goroutine never interprets a rotation or write failure as a signal
+// to stop draining CH's stdout pipe.
+func (w *cappedConsoleWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	offset := 0
+	for offset < len(p) && w.f != nil {
+		// Rotate when the current file is at cap.
+		if w.written >= int64(maxConsoleSizeBytes) {
+			w.rotate()
+			if w.f == nil {
+				break // rotation failed; discard the rest
+			}
+		}
+		canWrite := int64(maxConsoleSizeBytes) - w.written
+		chunk := p[offset:]
+		if int64(len(chunk)) > canWrite {
+			chunk = chunk[:canWrite]
+		}
+		n, err := w.f.Write(chunk)
+		w.written += int64(n)
+		offset += n
+		if err != nil {
+			_ = w.f.Close()
+			w.f = nil
+			break // write error; discard remaining bytes
+		}
+	}
+	return len(p), nil // always report success to keep the drain goroutine alive
 }
 
 // killFn is the function used by kill() to signal a process group. It is a
@@ -204,7 +304,7 @@ func (p *managedProcess) kill() {
 func spawnVMM(ctx context.Context, cfg Config, socketPath string) (*managedProcess, error) {
 	attr := &syscall.SysProcAttr{Setpgid: true}
 	setPdeathsig(attr)
-	return spawnVMMWithAttr(ctx, cfg, socketPath, attr)
+	return spawnVMMWithAttr(ctx, cfg, socketPath, attr, io.Discard)
 }
 
 // spawnVMMInGroup is like spawnVMM but with Setpgid:false so the spawned CH
@@ -212,16 +312,25 @@ func spawnVMM(ctx context.Context, cfg Config, socketPath string) (*managedProce
 // the child is a process group leader (Setpgid set in netnsChildAttr) and CH
 // must be in the same group so that rt.Stop()'s group-kill
 // (Kill(-childPgid, SIGKILL)) reaches CH.
-func spawnVMMInGroup(ctx context.Context, cfg Config, socketPath string) (*managedProcess, error) {
+//
+// consoleOut receives CH stdout (guest virtio-console output); pass io.Discard
+// to discard it. The drain goroutine must always keep running regardless of
+// write errors — stopping it fills the pipe and blocks CH.
+func spawnVMMInGroup(ctx context.Context, cfg Config, socketPath string, consoleOut io.Writer) (*managedProcess, error) {
 	attr := &syscall.SysProcAttr{Setpgid: false}
 	setPdeathsig(attr) // defense-in-depth: CH dies if child dies unexpectedly (Linux-only)
-	return spawnVMMWithAttr(ctx, cfg, socketPath, attr)
+	if consoleOut == nil {
+		consoleOut = io.Discard
+	}
+	return spawnVMMWithAttr(ctx, cfg, socketPath, attr, consoleOut)
 }
 
 // spawnVMMWithAttr is the shared implementation of spawnVMM and spawnVMMInGroup,
-// parameterized by SysProcAttr. Callers choose Setpgid:true (host path, CH owns
-// its group) or Setpgid:false (netns child path, CH inherits child's group).
-func spawnVMMWithAttr(ctx context.Context, cfg Config, socketPath string, attr *syscall.SysProcAttr) (*managedProcess, error) {
+// parameterized by SysProcAttr and stdout. Callers choose Setpgid:true (host
+// path, CH owns its group) or Setpgid:false (netns child path, CH inherits
+// child's group). stdout drains CH stdout; it must always return success so the
+// exec.Cmd goroutine never stops draining the pipe.
+func spawnVMMWithAttr(ctx context.Context, cfg Config, socketPath string, attr *syscall.SysProcAttr, stdout io.Writer) (*managedProcess, error) {
 	// Pre-flight: probe the socket before spawning.
 	//
 	// Drop the os.Stat pre-check: the dial result already distinguishes all
@@ -256,7 +365,7 @@ func spawnVMMWithAttr(ctx context.Context, cfg Config, socketPath string, attr *
 
 	cmd := exec.Command(cfg.BinaryPath, "--api-socket", socketPath)
 	cmd.SysProcAttr = attr
-	cmd.Stdout = io.Discard
+	cmd.Stdout = stdout
 	cmd.Stderr = stderrBuf
 
 	if err := cmd.Start(); err != nil {

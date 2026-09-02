@@ -707,6 +707,37 @@ func TestBuildSupervisorDriverConfig_FreePageReportingEnabled(t *testing.T) {
 	}
 }
 
+// TestBuildSupervisorDriverConfig_WiresConsoleLogPath is the mutation-proof
+// guard for the S1-durable-console slice. It asserts that the cloudhypervisor
+// driver config produced by buildSupervisorDriverConfig carries ConsoleLogPath
+// set to <stateDir>/console.log so the netns child receives
+// NEXUS3_NETNS_CONSOLE_LOG and persists guest virtio-console output next to
+// supervisor.log.
+//
+// MUTATION PROOF: remove ConsoleLogPath from buildSupervisorDriverConfig and
+// the test fails with an empty ConsoleLogPath — the netns child discards all
+// guest console output, exactly the broken pre-fix state.
+func TestBuildSupervisorDriverConfig_WiresConsoleLogPath(t *testing.T) {
+	const stateDir = "/run/test/supervisor/sb-TESTID"
+	cfg := Config{
+		CHBin:     "/usr/bin/cloud-hypervisor",
+		SocketDir: "/run/user/1000/n3",
+		StateDir:  stateDir,
+		KernelPath: "/k",
+		DiskPath:  "/d",
+		MemoryMiB: 512,
+		BootVCPUs: 1,
+	}
+	got := buildSupervisorDriverConfig(cfg, 4096, 1, nil)
+	want := stateDir + "/console.log"
+	if got.ConsoleLogPath != want {
+		t.Errorf("ConsoleLogPath = %q, want %q\n"+
+			"Without this the netns child never opens console.log and every line "+
+			"the in-guest nexus3-agent writes via consoleLog(...) is lost.",
+			got.ConsoleLogPath, want)
+	}
+}
+
 // TestBuildSupervisorDriverConfig_NestedVirt asserts that NestedVirt=true in the
 // supervisor.Config reaches the cloudhypervisor.Config, and that false maps to
 // false. This is the effect assertion (transport is separately tested by

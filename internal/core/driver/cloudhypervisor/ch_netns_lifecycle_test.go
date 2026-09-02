@@ -709,6 +709,95 @@ func TestStartCtxCancelDoesNotKillChild(t *testing.T) {
 //
 // Mutation proof: removing the goroutine (replacing it with _ = proc) means
 // syscall.Wait4 is never called; os.Exit(0) is never called; the launcher
+// TestLifecycle_ConsoleLogCreated verifies the R1-serial-console slice
+// end-to-end on the real production path:
+//
+//	CHDriver.Start (ConsoleLogPath set, no SerialOutputPath)
+//	  → driver.go injects serial:{mode:"Tty"} into vm.create
+//	  → CH maps guest ttyS0 → CH stdout
+//	  → netns child reads NEXUS3_NETNS_CONSOLE_LOG
+//	  → newCappedConsoleWriter drains CH stdout → console.log
+//	  → "Linux version" kernel line appears in console.log
+//
+// Mutation proof: removing the serial:{mode:"Tty"} else-branch in driver.go
+// (1 substitution — replace else block with an empty block) causes CH to
+// create NO serial device, so guest ttyS0 output is silently discarded; the
+// test fails with "console.log does not contain 'Linux version'".
+func TestLifecycle_ConsoleLogCreated(t *testing.T) {
+	chBin, kernelPath := lcGuards(t)
+	initramfsPath := netnsSkipUnlessArtifact(t, "alpine-initramfs.cpio.gz")
+	socketDir := lcMakeSocketDir(t, "nx3-lc-consolelog-")
+	consolePath := filepath.Join(socketDir, "console.log")
+
+	drv, err := New(Config{
+		BinaryPath:     chBin,
+		SocketDir:      socketDir,
+		KernelPath:     kernelPath,
+		InitramfsPath:  initramfsPath,
+		Cmdline:        "console=ttyS0 panic=5",
+		ConsoleLogPath: consolePath,
+		VCPUs:          1,
+		MemoryMiB:      256,
+		StartTimeout:   30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New CHDriver: %v", err)
+	}
+
+	id := domain.NewSandboxID()
+	var vmmPID int
+	t.Cleanup(func() {
+		// Log console.log so the content is visible in -v mode and on failure.
+		if content, readErr := os.ReadFile(consolePath); readErr == nil && len(content) > 0 {
+			t.Logf("console.log (%d bytes):\n%s", len(content), content)
+		}
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		_ = drv.Stop(stopCtx, id)
+		if vmmPID != 0 {
+			_ = syscall.Kill(-vmmPID, syscall.SIGKILL)
+		}
+		drv.clearState(id)
+		// socketDir is cleaned up by lcMakeSocketDir's t.Cleanup.
+	})
+
+	startCtx, startCancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer startCancel()
+
+	if _, err := drv.Start(startCtx, driver.StartRequest{SandboxID: id}); err != nil {
+		t.Fatalf("drv.Start: %v", err)
+	}
+
+	drv.mu.Lock()
+	if proc := drv.procs[id]; proc != nil {
+		vmmPID = proc.pid
+	}
+	drv.mu.Unlock()
+
+	// Poll console.log for a string the guest kernel reliably emits on ttyS0.
+	// "Linux version" is the first line emitted by every Linux kernel on the
+	// console device; it arrives within milliseconds of the VM booting.
+	// If this string is absent, serial output is not reaching CH stdout —
+	// the serial:{mode:"Tty"} config in driver.go is missing or wrong.
+	const wantStr = "Linux version"
+	const pollTimeout = 30 * time.Second
+	pollStart := time.Now()
+	for time.Since(pollStart) < pollTimeout {
+		content, _ := os.ReadFile(consolePath)
+		if strings.Contains(string(content), wantStr) {
+			t.Logf("console.log contains %q after %v", wantStr, time.Since(pollStart))
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	content, _ := os.ReadFile(consolePath)
+	t.Errorf("console.log does not contain %q after %v — serial→CH-stdout wiring broken\n"+
+		"(driver.go serial:{mode:Tty} not injected, or cappedConsoleWriter not draining)\n"+
+		"console.log (%d bytes):\n%.4000s",
+		wantStr, pollTimeout, len(content), content)
+}
+
 // stays stuck in tapPump until rt.Stop() kills it. rt.cmd.Wait() never returns.
 // The substitution count for the mutation is 1 (the single "_ = proc" line).
 func TestLifecycle_LauncherExitsOnCHDeath(t *testing.T) {

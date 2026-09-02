@@ -34,6 +34,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -82,6 +83,11 @@ const (
 	// after a supervisor crash.
 	netnsEnvControlDir = "NEXUS3_NETNS_CONTROL_DIR"
 	netnsEnvSandboxID  = "NEXUS3_NETNS_SANDBOX_ID"
+
+	// netnsEnvConsoleLog carries the absolute path where the child should write
+	// guest virtio-console output (CH stdout). When absent or empty the child
+	// discards the stream while still draining the pipe (pipe-buffer safety).
+	netnsEnvConsoleLog = "NEXUS3_NETNS_CONSOLE_LOG"
 
 	// netnsEnvRestoreURL carries the "file://<dir>" URL the child should pass
 	// to vm.restore after spawning CH. When absent (empty), the child runs in
@@ -352,6 +358,11 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 	// after spawning CH instead of waiting for the parent to call vm.create+boot.
 	if restoreURL != "" {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", netnsEnvRestoreURL, restoreURL))
+	}
+	// Console log: tell the child where to write CH stdout (guest virtio-console).
+	// When empty the child falls back to io.Discard while still draining the pipe.
+	if cfg.ConsoleLogPath != "" {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", netnsEnvConsoleLog, cfg.ConsoleLogPath))
 	}
 	cmd.SysProcAttr = netnsChildAttr()
 	// ExtraFiles[0] becomes fd 3 in the child (after stdin/stdout/stderr).
@@ -773,8 +784,21 @@ func RunNetnsChild() {
 		BinaryPath:   chBin,
 		StartTimeout: time.Duration(timeoutMS) * time.Millisecond,
 	}
+
+	// Open the console log writer. Fall back to io.Discard on any error so
+	// CH stdout is always drained — a stopped drain fills the pipe and
+	// eventually blocks CH (requirement 3).
+	var consoleOut io.Writer = io.Discard
+	if consolePath := os.Getenv(netnsEnvConsoleLog); consolePath != "" {
+		if cw, cerr := newCappedConsoleWriter(consolePath); cerr == nil {
+			consoleOut = cw
+		} else {
+			fmt.Fprintf(os.Stderr, "netns child: open console log %s: %v (discarding)\n", consolePath, cerr)
+		}
+	}
+
 	ctx := context.Background()
-	proc, err := spawnVMMInGroup(ctx, cfg, socketPath)
+	proc, err := spawnVMMInGroup(ctx, cfg, socketPath, consoleOut)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "netns child: spawnVMMInGroup: %v\n", err)
 		os.Exit(1)

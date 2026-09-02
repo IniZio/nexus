@@ -1857,5 +1857,9 @@ func buildSupervisorDriverConfig(
 		VirtiofsdPath:     cfg.VirtiofsdPath,
 		FreePageReporting: true,
 		NestedVirt:        cfg.NestedVirt,
+		// ConsoleLogPath persists guest virtio-console output alongside supervisor.log.
+		// The netns child receives this via NEXUS3_NETNS_CONSOLE_LOG and drains CH
+		// stdout to this file, capped at 16 MiB to prevent unbounded growth.
+		ConsoleLogPath: filepath.Join(cfg.StateDir, "console.log"),
 	}
 }
