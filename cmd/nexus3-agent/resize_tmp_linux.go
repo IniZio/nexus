@@ -48,9 +48,10 @@ package main
 // DORMANT rather than away, and a sandbox with no scratch disk behaves
 // exactly as it does today.
 //
-// Policy (from motive.md §Axis-1 item 6 and the ticket):
+// Policy (from motive.md §Axis-1 item 6, the ticket, and D-SD-04):
 //   - Size /tmp at 50% of current live MemTotal (not the boot ceiling).
-//   - Hard cap: 2 GiB (tmpfsAbsoluteCapBytes).
+//   - Hard cap: 512 MiB (tmpfsAbsoluteCapBytes; was 2 GiB before D-SD-04).
+//   - Hard floor: 256 MiB (tmpfsAbsoluteFloorBytes; was 1 GiB before D-SD-04).
 //   - Grow-only: remount only when the target exceeds the current cap by ≥ 64 MiB.
 //   - Poll interval: 10 s.
 //
@@ -85,18 +86,24 @@ const (
 	tmpfsMemFractionDen uint64 = 100
 
 	// tmpfsAbsoluteCapBytes: hard upper bound on /tmp regardless of MemTotal.
-	// A RAM-backed tmpfs tracking the ceiling would consume 4 GiB+ of the RAM
-	// the governor is protecting; cap it here.
-	tmpfsAbsoluteCapBytes uint64 = 2 << 30 // 2 GiB
+	// D-SD-04 (wave 2, operator sign-off): lowered from 2 GiB → 512 MiB.
+	// Rationale: wave-1 measurement on example-app/ex-802-worktree
+	// showed MemTotal 740 MiB against a /tmp cap of 1024 MiB (138% of total RAM)
+	// because the old 1 GiB floor exceeded the whole guest. Under the new pair
+	// (cap 512 MiB, floor 256 MiB) the same guest gets a 256 MiB /tmp — 34% of
+	// total RAM — which is protective without being absurd.
+	// WARNING: a cap-only change (this constant lowered, floor left at 1 GiB) is a
+	// silent no-op: the floor clamps every result back up over the cap. Both
+	// constants must move together.
+	tmpfsAbsoluteCapBytes uint64 = 512 << 20 // 512 MiB (was 2 GiB; D-SD-04)
 
 	// tmpfsAbsoluteFloorBytes: minimum /tmp size regardless of MemTotal.
-	// The base-image disk-backed /tmp was ≈5959 MiB; the 50%-of-MemTotal formula
-	// on a 512 MiB sandbox would yield only ≈242 MiB — a 24× scratch regression.
-	// The floor prevents this starvation on small sandboxes.
-	// IMPORTANT: tmpfs is sized, not preallocated. A 1 GiB floor on a 512 MiB
+	// D-SD-04 (wave 2, operator sign-off): lowered from 1 GiB → 256 MiB.
+	// IMPORTANT: tmpfs is SIZED, NOT PREALLOCATED. A 256 MiB floor on a 512 MiB
 	// guest costs nothing until bytes are actually written into /tmp. Do NOT
-	// remove this floor to "fix" apparent over-sizing on small guests.
-	tmpfsAbsoluteFloorBytes uint64 = 1 << 30 // 1 GiB
+	// remove this floor to "fix" apparent over-sizing on small guests — the floor
+	// is a minimum reservation guarantee, not a RAM charge.
+	tmpfsAbsoluteFloorBytes uint64 = 256 << 20 // 256 MiB (was 1 GiB; D-SD-04)
 
 	// tmpResizeGrowMarginBytes: minimum delta needed to trigger a remount.
 	// Avoids churn when the ceiling and current cap are already close.
@@ -121,7 +128,7 @@ var (
 
 // startTmpfsResizer spawns a panic-guarded goroutine that runs resizeTmpfsOnce
 // immediately, then repeats on tmpResizeInterval until ctx is cancelled.
-// Because the 2 GiB cap is usually reached quickly, subsequent ticks are cheap
+// Because the 512 MiB cap is usually reached quickly, subsequent ticks are cheap
 // no-ops. The loop also handles the case where MemTotal is not yet stable
 // immediately at boot.
 //
