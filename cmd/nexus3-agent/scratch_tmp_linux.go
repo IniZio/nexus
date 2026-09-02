@@ -12,6 +12,12 @@ import (
 
 const scratchDiskGuestMount = "/tmp"
 
+// agentScratchDisk is set by main() once — before any goroutines call
+// guestBaselineEnv — to record whether a scratch disk was provided via the
+// --scratch-disk= kernel cmdline argument. It controls the TMPDIR rider
+// emitted by guestBaselineEnv (D-SD-04).
+var agentScratchDisk bool
+
 // parseScratchDiskArg parses a "--scratch-disk=<dev>" kernel cmdline token.
 // Returns the device path and true on success, ("", false) when absent or malformed.
 func parseScratchDiskArg(arg string) (dev string, ok bool) {

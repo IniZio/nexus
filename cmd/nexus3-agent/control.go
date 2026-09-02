@@ -50,7 +50,7 @@ func (cs *controlServer) Exec(_ context.Context, req *agentpb.ExecRequest) (*age
 	// supplies correct sane defaults (HOME=/root, PATH), then let the caller's
 	// req.Env override anything. All useful agent-level env (credentials,
 	// NODE_EXTRA_CA_CERTS, etc.) is injected through req.Env by the host.
-	env := mergeEnv(guestBaselineEnv(), req.Env)
+	env := mergeEnv(guestBaselineEnv(agentScratchDisk), req.Env)
 
 	// Use exec.Command (not CommandContext): the process must outlive the RPC.
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
@@ -241,7 +241,7 @@ func readEtcEnvironment() []string {
 // variables (GOPATH, GOMODCACHE, CGO_ENABLED, …). OCI ENV metadata is not read
 // here — it lives only in the image config and is never visible to the agent,
 // which boots as init= directly from the ext4 rootfs.
-func guestBaselineEnv() []string {
+func guestBaselineEnv(scratchDiskPresent bool) []string {
 	base := []string{
 		// uid 0 always maps to /root in the guest's /etc/passwd. Without HOME,
 		// login shells start at "/" and "~" expands to "/".
@@ -251,6 +251,15 @@ func guestBaselineEnv() []string {
 		// Images that extend PATH (e.g. adding /usr/local/go/bin) write their
 		// canonical PATH to /etc/environment; the merge below picks it up.
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+	}
+	// TMPDIR rider (D-SD-04): when a scratch disk is present it is mounted at
+	// scratchDiskGuestMount (/tmp). Emitting TMPDIR pointing there lets
+	// well-behaved tools redirect large temporaries onto the scratch device.
+	// This is a courtesy only — the mount itself is the real mechanism. A tool
+	// that writes a literal /tmp/... path still lands on the scratch device
+	// regardless of TMPDIR, because /tmp IS the scratch mount point.
+	if scratchDiskPresent {
+		base = append(base, "TMPDIR="+scratchDiskGuestMount)
 	}
 	etcEnv := readEtcEnvironment()
 	if len(etcEnv) == 0 {

@@ -169,6 +169,10 @@ func main() {
 		}
 	}
 
+	// Record scratch-disk presence for guestBaselineEnv (TMPDIR rider, D-SD-04).
+	// Must be set before any goroutine calls guestBaselineEnv.
+	agentScratchDisk = scratchDev != ""
+
 	// Set the guest hostname. When --sandbox-handle= was supplied on the kernel
 	// cmdline the sandbox's human-readable handle becomes the hostname so that
 	// the shell prompt reads "root@<handle>:/#" instead of "root@(none):/#".

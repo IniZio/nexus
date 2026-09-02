@@ -10,7 +10,7 @@ import (
 // TestGuestBaselineEnv verifies that guestBaselineEnv returns a sensible default
 // environment suitable for exec'd processes when the agent runs as PID 1.
 func TestGuestBaselineEnv(t *testing.T) {
-	env := guestBaselineEnv()
+	env := guestBaselineEnv(false)
 
 	first := envFirstValues(env)
 
@@ -41,7 +41,7 @@ func TestGuestBaselineEnv(t *testing.T) {
 // still override via req.Env.
 func TestEnvBaselineCallerWins(t *testing.T) {
 	// Simulate: caller sets HOME to a custom value that overrides the baseline.
-	env := mergeEnv(guestBaselineEnv(), map[string]string{"HOME": "/custom"})
+	env := mergeEnv(guestBaselineEnv(false), map[string]string{"HOME": "/custom"})
 
 	first := envFirstValues(env)
 	if got := first["HOME"]; got != "/custom" {
@@ -57,7 +57,7 @@ func TestEnvBaselineKernelHomeIgnored(t *testing.T) {
 	// The kernel HOME=/ must NOT make it into exec'd processes. The Exec path
 	// uses only guestBaselineEnv() + req.Env; os.Environ() is excluded.
 	// Verify: mergeEnv(baseline, nil) — simulating no caller req.Env — gives /root.
-	env := mergeEnv(guestBaselineEnv(), nil)
+	env := mergeEnv(guestBaselineEnv(false), nil)
 	first := envFirstValues(env)
 	if got := first["HOME"]; got != "/root" {
 		t.Errorf("HOME = %q; baseline /root should hold when no caller override provided", got)
@@ -130,7 +130,7 @@ func TestGuestBaselineEtcEnvironment(t *testing.T) {
 	etcEnvironmentPath = f.Name()
 	defer func() { etcEnvironmentPath = orig }()
 
-	env := guestBaselineEnv()
+	env := guestBaselineEnv(false)
 	m := envFirstValues(env)
 
 	for key, want := range map[string]string{
@@ -151,6 +151,65 @@ func TestGuestBaselineEtcEnvironment(t *testing.T) {
 	// PATH must include the Go bin dir from /etc/environment.
 	if path := m["PATH"]; !strings.Contains(path, "/usr/local/go/bin") {
 		t.Errorf("PATH %q does not contain /usr/local/go/bin — readEtcEnvironment propagation broken", path)
+	}
+}
+
+// TestGuestBaselineEnvScratchPresent verifies that guestBaselineEnv emits
+// TMPDIR pointing at the scratch-disk mount point when scratchDiskPresent is true
+// (SD-AC4).
+func TestGuestBaselineEnvScratchPresent(t *testing.T) {
+	env := guestBaselineEnv(true)
+	first := envFirstValues(env)
+	tmpdir, ok := first["TMPDIR"]
+	if !ok {
+		t.Fatal("TMPDIR missing from guestBaselineEnv(scratchDiskPresent=true) — TMPDIR rider not emitted")
+	}
+	if tmpdir != scratchDiskGuestMount {
+		t.Errorf("TMPDIR = %q; want scratchDiskGuestMount = %q", tmpdir, scratchDiskGuestMount)
+	}
+}
+
+// TestGuestBaselineEnvNoScratchByteIdentical verifies that without a scratch
+// disk, guestBaselineEnv produces an environment byte-identical to the
+// pre-motive output: TMPDIR must be absent (SD-AC4 negative, D-SD-02).
+func TestGuestBaselineEnvNoScratchByteIdentical(t *testing.T) {
+	env := guestBaselineEnv(false)
+	for _, e := range env {
+		if strings.HasPrefix(e, "TMPDIR=") {
+			t.Errorf("TMPDIR present in no-scratch environment: %q — sandbox without scratch disk must be byte-identical to pre-motive baseline", e)
+		}
+	}
+}
+
+// TestScratchTMPDIRMatchesMountPoint proves that the TMPDIR rider does NOT
+// substitute for the mount — it is a courtesy on top (SD-AC4 proof of
+// distinction). The scratch disk is mounted at scratchDiskGuestMount (/tmp);
+// TMPDIR is set to the same path. Therefore a literal /tmp/... write reaches
+// the scratch device regardless of whether the caller consults TMPDIR.
+//
+// Mutation guard: if the "TMPDIR="+scratchDiskGuestMount append is removed from
+// guestBaselineEnv, TestGuestBaselineEnvScratchPresent goes RED. If
+// scratchDiskGuestMount is changed away from "/tmp", this test goes RED,
+// catching a contract break (the mount point and the rider must stay in sync
+// for literal /tmp writes to reach the device).
+func TestScratchTMPDIRMatchesMountPoint(t *testing.T) {
+	env := guestBaselineEnv(true)
+	first := envFirstValues(env)
+	tmpdir, ok := first["TMPDIR"]
+	if !ok {
+		t.Fatal("TMPDIR missing — cannot verify mount-point equivalence")
+	}
+	// The TMPDIR rider must point at the actual scratch-disk mount point.
+	// A literal /tmp/... write reaches the scratch device via the mount; TMPDIR
+	// pointing at the same path means both paths reach the same device.
+	if tmpdir != scratchDiskGuestMount {
+		t.Errorf("TMPDIR %q != scratchDiskGuestMount %q — literal /tmp writes and $TMPDIR writes would diverge", tmpdir, scratchDiskGuestMount)
+	}
+	// The scratch mount point must be /tmp so that literal /tmp/... writes
+	// (which TMPDIR does not intercept) still reach the scratch device.
+	const wantMountPoint = "/tmp"
+	if scratchDiskGuestMount != wantMountPoint {
+		t.Errorf("scratchDiskGuestMount = %q; want %q — mount contract changed, literal /tmp writes no longer reach scratch device", scratchDiskGuestMount, wantMountPoint)
 	}
 }
 
