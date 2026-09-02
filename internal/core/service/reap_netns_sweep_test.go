@@ -521,12 +521,12 @@ func TestNetnsConstantDrift(t *testing.T) {
 }
 
 // TestNetnsProcess_UninspectableEnviron verifies that a process owned by our
-// uid whose /proc/<pid>/environ is unreadable (mode 0000, simulating a cleared
-// dumpable flag — e.g. sshd or systemd --user after setuid exec) must produce
-// ZERO ReapEntries and increment ReapReport.UninspectableProcesses by 1.
+// uid whose /proc/<pid>/environ is unreadable (simulating a cleared dumpable
+// flag — e.g. sshd or systemd --user after setuid exec) must produce ZERO
+// ReapEntries and increment ReapReport.UninspectableProcesses by 1.
 //
-// Note: "mode 0000" simulates a cleared dumpable flag, NOT ptrace_scope.
-// Yama only gates PTRACE_MODE_ATTACH; /proc/<pid>/environ uses
+// Note: the unreadable environ simulates a cleared dumpable flag, NOT
+// ptrace_scope. Yama only gates PTRACE_MODE_ATTACH; /proc/<pid>/environ uses
 // PTRACE_MODE_READ_FSCREDS, which own-uid processes can read fine under
 // ptrace_scope=1. The real causes of EACCES here are zombies (no mm) and
 // processes whose dumpable flag was cleared by a setuid exec.
@@ -544,29 +544,31 @@ func TestNetnsProcess_UninspectableEnviron(t *testing.T) {
 	procDir := t.TempDir()
 
 	// Synthetic pid owned by the test runner (procDir is a t.TempDir() dir, so
-	// stat of the pidDir will return our uid). The environ file has mode 0000 so
-	// os.ReadFile returns EACCES — standing in for a real cleared-dumpable
-	// process (e.g. after a setuid exec), NOT for any ptrace policy; see the
-	// note above this test.
+	// stat of the pidDir will return our uid).
 	const uninspPID = 424249
 	pidDir := filepath.Join(procDir, fmt.Sprintf("%d", uninspPID))
 	if err := os.MkdirAll(pidDir, 0o700); err != nil {
 		t.Fatalf("mkdir pidDir: %v", err)
 	}
-	// Write a legitimate netns-child environ so the test would find an Orphan if
-	// the environ were readable — making the mutation's failure mode observable.
-	orphanID := domain.NewSandboxID()
-	orphanSocket := filepath.Join(sockDir, orphanID.String()+".sock")
-	environ := "NEXUS3_NETNS_RUN=1\x00NEXUS3_NETNS_API_SOCKET=" + orphanSocket + "\x00PATH=/usr/bin\x00"
+
+	// Make /proc/<pid>/environ STRUCTURALLY unreadable by making it a directory:
+	// os.ReadFile opens it fine and then read(2) fails with EISDIR, for every uid.
+	//
+	// DO NOT "simplify" this back to os.WriteFile + os.Chmod(0o000). A mode-0000
+	// file is only unreadable for a uid that is subject to the DAC check. Root
+	// holds CAP_DAC_OVERRIDE and reads it successfully, so under uid 0 the sweep
+	// parses the environ and reports the pid as an ORPHAN — the assertions below
+	// then cannot fail, and the coverage is vacuous. Every nexus3 sandbox runs
+	// its tests as uid 0, so the chmod form was silently dead on the runner that
+	// matters most.
+	//
+	// EISDIR is a non-ENOENT error, so it still lands on exactly the branch this
+	// test exercises: the `if os.IsNotExist(envErr)` gate in
+	// sweepOrphanNetnsProcesses falls through to the `inaccessible++` arm.
 	environPath := filepath.Join(pidDir, "environ")
-	if err := os.WriteFile(environPath, []byte(environ), 0o600); err != nil {
-		t.Fatalf("write environ: %v", err)
+	if err := os.Mkdir(environPath, 0o700); err != nil {
+		t.Fatalf("mkdir environ (as a directory, to force EISDIR): %v", err)
 	}
-	// Make environ unreadable — simulates a cleared dumpable flag, not ptrace.
-	if err := os.Chmod(environPath, 0o000); err != nil {
-		t.Fatalf("chmod environ: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(environPath, 0o600) }) // restore for cleanup
 
 	st := newEmptyStore(t)
 	idx := service.NewResourceIndex(service.IndexConfig{

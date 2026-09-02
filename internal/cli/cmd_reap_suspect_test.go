@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
@@ -102,9 +101,13 @@ func TestRunReapFull_SuspectInHumanOutput(t *testing.T) {
 }
 
 // reapUninspectableFixture builds a fake procDir where a process owned by the
-// test runner's uid has a mode-0000 environ file (simulating the EACCES that
-// kernel.yama.ptrace_scope=1 produces). It yields a non-zero
-// UninspectableProcesses count and zero Suspect entries.
+// test runner's uid has an unreadable environ, standing in for a real process
+// whose /proc/<pid>/environ cannot be read (cleared dumpable flag, or the
+// process vanished mid-sweep). It yields a non-zero UninspectableProcesses
+// count and zero Suspect entries.
+//
+// The unreadability is produced structurally (environ is a directory → EISDIR),
+// not with mode bits — see the comment at the mkdir below for why that matters.
 func reapUninspectableFixture(t *testing.T) (store.Store, *service.ResourceIndex, service.ReapOptions) {
 	t.Helper()
 	stateRoot := t.TempDir()
@@ -116,18 +119,24 @@ func reapUninspectableFixture(t *testing.T) (store.Store, *service.ResourceIndex
 	if err := os.MkdirAll(pidDir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	// Plausible netns-child environ so the process would be interesting if readable.
-	orphanID := domain.NewSandboxID()
-	orphanSocket := filepath.Join(sockDir, orphanID.String()+".sock")
-	environ := "NEXUS3_NETNS_RUN=1\x00NEXUS3_NETNS_API_SOCKET=" + orphanSocket + "\x00PATH=/usr/bin\x00"
+	// Make /proc/<pid>/environ STRUCTURALLY unreadable by making it a directory:
+	// os.ReadFile opens it fine and then read(2) fails with EISDIR, for every uid.
+	//
+	// DO NOT "simplify" this back to os.WriteFile + os.Chmod(0o000). A mode-0000
+	// file is only unreadable for a uid that is subject to the DAC check. Root
+	// holds CAP_DAC_OVERRIDE and reads it successfully, so under uid 0 the sweep
+	// parses the environ and reports the pid as an ORPHAN — the assertions in the
+	// tests below then cannot fail, and the coverage is vacuous. Every nexus3
+	// sandbox runs its tests as uid 0, so the chmod form was silently dead on the
+	// runner that matters most.
+	//
+	// EISDIR is a non-ENOENT error, so it still lands on exactly the branch these
+	// tests exercise: the `if os.IsNotExist(envErr)` gate at reap.go:1107 falls
+	// through to the `inaccessible++` arm at reap.go:1124.
 	environPath := filepath.Join(pidDir, "environ")
-	if err := os.WriteFile(environPath, []byte(environ), 0o600); err != nil {
-		t.Fatalf("write environ: %v", err)
+	if err := os.Mkdir(environPath, 0o700); err != nil {
+		t.Fatalf("mkdir environ (as a directory, to force EISDIR): %v", err)
 	}
-	if err := os.Chmod(environPath, 0o000); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(environPath, 0o600) })
 
 	st, err := store.NewFileStore(t.TempDir())
 	if err != nil {
