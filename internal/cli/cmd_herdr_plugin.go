@@ -4159,24 +4159,82 @@ func herdrWorktreeSandbox(
 	// so the generic policy reaches MITM enforcement (D-PDE-16 worktree gap fix).
 	createCtx, createCancel := context.WithTimeout(ctx, herdrWorktreeCreateTimeout)
 	defer createCancel()
-	if err := createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts, egressSecrets, egressAllowedRepo, egressPathPolicies, nestedFlag||nestedCfg); err != nil {
-		fmt.Fprintf(w, "worktree-sandbox: sandbox create: %v\n", err)
-		if !failSafe {
-			return fmt.Errorf("worktree-sandbox: sandbox create: %w", err)
+	// sb is declared here so the reconcile path (step 7 error + getFn success)
+	// and the normal path (step 7 success + step 8 getFn) both feed the shared
+	// binding-write block below without re-declaring.
+	var sb domain.Sandbox
+	if createErr := createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts, egressSecrets, egressAllowedRepo, egressPathPolicies, nestedFlag||nestedCfg); createErr != nil {
+		// Create failed. Probe getFn: a prior run may have committed the sandbox
+		// store record (e.g. crashed after store.Create but before HerdrSpacePut),
+		// leaving an orphaned sandbox with no binding. If getFn confirms the
+		// sandbox exists and it is adoptable, reconcile it. If getFn also fails,
+		// this is a genuine create failure.
+		var reconcileErr error
+		sb, reconcileErr = getFn(ctx, handle)
+		if reconcileErr != nil {
+			// Sandbox does not exist in the store — genuine create failure.
+			// MUTATION PROOF: change `if !failSafe { return fmt.Errorf(...) }` to
+			// always return nil → TestHerdrWorktreeSandbox_explicitMode_createError_returnsError gets nil → RED.
+			fmt.Fprintf(w, "worktree-sandbox: sandbox create: %v\n", createErr)
+			if !failSafe {
+				return fmt.Errorf("worktree-sandbox: sandbox create: %w", createErr)
+			}
+			return nil
 		}
-		return nil
-	}
-
-	// Step 8: look up sandbox ID and write the binding (without GuestPaneID).
-	// The binding is written BEFORE opening the pane so the idempotency check
-	// on the next run sees it even if the process dies during pane open.
-	sb, err := getFn(ctx, handle)
-	if err != nil {
-		fmt.Fprintf(w, "worktree-sandbox: get sandbox %s: %v\n", handle, err)
-		if !failSafe {
-			return fmt.Errorf("worktree-sandbox: get sandbox %s: %w", handle, err)
+		// Correction 1: verify the /workspace LiveMount points at this worktree.
+		// A handle collision (same repo basename + same branch slug from a different
+		// checkout, e.g. a stale record after the worktree was deleted and recreated)
+		// must not silently adopt a sandbox whose /workspace points elsewhere.
+		var workspaceMount *domain.LiveMount
+		for i := range sb.LiveMounts {
+			if sb.LiveMounts[i].GuestPath == "/workspace" {
+				workspaceMount = &sb.LiveMounts[i]
+				break
+			}
 		}
-		return nil
+		if workspaceMount == nil {
+			fmt.Fprintf(w, "worktree-sandbox: sandbox %s has no /workspace mount — cannot adopt\n", handle)
+			if !failSafe {
+				return fmt.Errorf("worktree-sandbox: sandbox %s has no /workspace mount", handle)
+			}
+			return nil
+		}
+		if filepath.Clean(workspaceMount.HostPath) != filepath.Clean(info.Path) {
+			fmt.Fprintf(w, "worktree-sandbox: sandbox %s /workspace mount is %s (this worktree is %s) — refusing adopt\n", handle, workspaceMount.HostPath, info.Path)
+			if !failSafe {
+				return fmt.Errorf("worktree-sandbox: sandbox %s /workspace mismatch: record=%s worktree=%s", handle, workspaceMount.HostPath, info.Path)
+			}
+			return nil
+		}
+		// Correction 4: refuse to adopt a sandbox that is not in a usable state.
+		// A Created-state record left by a killed create subprocess is not safe
+		// to adopt — the VM never finished booting. RemovalMarker means the
+		// sandbox is being destroyed.
+		if sb.RemovalMarker || (sb.State != domain.Running && sb.State != domain.Stopped) {
+			fmt.Fprintf(w, "worktree-sandbox: sandbox %s not adoptable: state=%s removal=%v\n", handle, sb.State, sb.RemovalMarker)
+			if !failSafe {
+				return fmt.Errorf("worktree-sandbox: sandbox %s not adoptable: state=%s removal=%v", handle, sb.State, sb.RemovalMarker)
+			}
+			return nil
+		}
+		fmt.Fprintf(w, "worktree-sandbox: sandbox %s already exists (binding absent) — reconciling\n", handle)
+	} else {
+		// Step 8a: look up sandbox ID after successful create.
+		// The binding is written BEFORE opening the pane so the idempotency check
+		// on the next run sees it even if the process dies during pane open.
+		// MUTATION PROOF: keep the error-path return but discard sb on success:
+		//   var probe domain.Sandbox; probe, getFnErr = getFn(ctx, handle); _ = probe
+		// → sb stays zero → binding.SandboxID == "" → RED
+		// (TestHerdrWorktreeSandbox_happyPath_bindingFields: SandboxID = ""; want "<id>").
+		var getFnErr error
+		sb, getFnErr = getFn(ctx, handle)
+		if getFnErr != nil {
+			fmt.Fprintf(w, "worktree-sandbox: get sandbox %s: %v\n", handle, getFnErr)
+			if !failSafe {
+				return fmt.Errorf("worktree-sandbox: get sandbox %s: %w", handle, getFnErr)
+			}
+			return nil
+		}
 	}
 	label := "nexus3:" + handle
 	// Derive the main repo root from info.RepoKey (e.g. "/repo/.git" → "/repo").

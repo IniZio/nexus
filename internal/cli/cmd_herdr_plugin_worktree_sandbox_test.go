@@ -526,7 +526,13 @@ func TestHerdrWorktreeSandbox_happyPath_bindingFields(t *testing.T) {
 		return nil
 	})
 
-	err := callHerdrWorktreeSandbox(t, "w-new", root, false, false /*auto*/, nil, stubSandboxGet(domain.Sandbox{}, nil))
+	// Use a non-zero SandboxID so we can assert it is propagated to the binding.
+	// MUTATION PROOF (SandboxID): keep the error-path return but discard sb on
+	// the success path:
+	//   var probe domain.Sandbox; probe, getFnErr = getFn(ctx, handle); _ = probe
+	// → sb stays zero → binding.SandboxID == "" → RED.
+	wantSandboxID := domain.NewSandboxID()
+	err := callHerdrWorktreeSandbox(t, "w-new", root, false, false /*auto*/, nil, stubSandboxGet(domain.Sandbox{ID: wantSandboxID}, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -551,6 +557,10 @@ func TestHerdrWorktreeSandbox_happyPath_bindingFields(t *testing.T) {
 	}
 	if found.HerdrWorkspaceID != "w-new" {
 		t.Errorf("HerdrWorkspaceID = %q; want %q", found.HerdrWorkspaceID, "w-new")
+	}
+	// SandboxID must record the sandbox returned by getFn.
+	if found.SandboxID != wantSandboxID.String() {
+		t.Errorf("SandboxID = %q; want %q", found.SandboxID, wantSandboxID.String())
 	}
 	// WorktreeManaged must be true so the reaper can identify this binding.
 	if !found.WorktreeManaged {
@@ -1092,12 +1102,17 @@ func TestHerdrWorktreeSandboxParseArgs_noFlag(t *testing.T) {
 // ── explicit vs conditional error mode (MAJOR 6) ─────────────────────────────
 
 func TestHerdrWorktreeSandbox_explicitMode_createError_returnsError(t *testing.T) {
-	// When conditional=false (explicit bind) and sandbox create fails,
+	// When conditional=false (explicit bind), sandbox create fails, AND the
+	// sandbox does not exist in the store (getFn returns an error),
 	// herdrWorktreeSandbox must return a non-nil error so open-pane.sh's
 	// STATUS -ne 0 check fires.
 	//
-	// MUTATION PROOF: change `if !conditional { return fmt.Errorf(...) }` to
-	// always return nil → this test gets nil → RED.
+	// getFn must return an error here: the reconcile path (create fails but
+	// sandbox already in store) is a separate case covered by
+	// TestHerdrWorktreeSandbox_reconcile_orphanedSandbox_writesBinding.
+	//
+	// MUTATION PROOF: change `if !failSafe { return fmt.Errorf(...) }` in the
+	// genuine-create-failure block to always return nil → this test gets nil → RED.
 	root := t.TempDir()
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfo("w-exp", "w-src", "feature/exp", "/work/exp"),
@@ -1105,11 +1120,14 @@ func TestHerdrWorktreeSandbox_explicitMode_createError_returnsError(t *testing.T
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
 	createErr := errors.New("create failed: explicit test")
+	getFail := func(_ context.Context, _ string) (domain.Sandbox, error) {
+		return domain.Sandbox{}, errors.New("sandbox not found in store")
+	}
 	err := callHerdrWorktreeSandbox(t, "w-exp", root, false, false, /*auto*/
 		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
 			return createErr
 		},
-		nil,
+		getFail,
 	)
 	if err == nil {
 		t.Error("explicit mode: createFn error must return non-nil error; got nil")
@@ -1117,25 +1135,332 @@ func TestHerdrWorktreeSandbox_explicitMode_createError_returnsError(t *testing.T
 }
 
 func TestHerdrWorktreeSandbox_conditionalMode_createError_returnsNil(t *testing.T) {
-	// When conditional=true (auto mode) and sandbox create fails,
-	// herdrWorktreeSandbox must return nil (fail-safe — workspace stays host shell).
+	// When conditional=true and sandbox create fails genuinely (getFn also fails
+	// — sandbox not in store), herdrWorktreeSandbox must return nil (fail-safe
+	// — workspace stays host shell).
 	//
-	// MUTATION PROOF: change `if !conditional` to always return error →
-	// this test gets non-nil → RED.
+	// The source binding is seeded so step 5 passes and createFn is actually
+	// invoked. getFn returns an error so the reconcile path is not taken (that
+	// path is covered by TestHerdrWorktreeSandbox_reconcile_orphanedSandbox_writesBinding).
+	//
+	// MUTATION PROOF: change `if !failSafe { return fmt.Errorf(...) }` to
+	// always return error → this test gets non-nil → RED.
 	root := t.TempDir()
+	// Seed the source workspace binding so the conditional check at step 5 passes.
+	seedBinding(t, root, "w-src", "wt/src-cond")
+
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfo("w-cond", "w-src", "feature/cond", "/work/cond"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
+	createCalls := 0
+	getFail := func(_ context.Context, _ string) (domain.Sandbox, error) {
+		return domain.Sandbox{}, errors.New("sandbox not found in store")
+	}
 	err := callHerdrWorktreeSandbox(t, "w-cond", root, true, false, /*auto*/
 		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
+			createCalls++
 			return errors.New("create failed")
 		},
-		nil,
+		getFail,
 	)
 	if err != nil {
 		t.Errorf("conditional mode: createFn error must return nil (fail-safe); got %v", err)
+	}
+	if createCalls == 0 {
+		t.Error("createFn was never called — test did not reach the create step (step 5 barrier not seeded?)")
+	}
+}
+
+// ── reconcile: sandbox exists, binding absent ─────────────────────────────────
+
+func TestHerdrWorktreeSandbox_reconcile_orphanedSandbox_writesBinding(t *testing.T) {
+	// Regression: when createFn fails (sandbox already exists in the store from
+	// a prior run) but getFn succeeds (sandbox is healthy), herdrWorktreeSandbox
+	// must write a binding for the existing sandbox and return nil — NOT swallow
+	// the error without a binding.
+	//
+	// This is the "orphaned binding" failure mode: sandbox committed, binding
+	// never written (crash between store.Create and HerdrSpacePut, or sandbox
+	// created outside the worktree flow). Every subsequent auto-create attempt
+	// would hit the same "already exists" error and return nil without a binding,
+	// making the worktree pane permanently fall back to a host shell.
+	//
+	// MUTATION PROOF: delete the reconcile getFn probe inside the createErr!=nil
+	// block → createErr path returns nil without writing a binding →
+	// HerdrSpaceGetByHandle finds nothing → t.Fatalf fires → RED.
+	root := t.TempDir()
+	wantHandle := "nexus3/worktree-quiet-stone-1e35"
+	wantWorkspaceID := "w7B"
+
+	// linkedWorktreeInfoAuto sets RepoKey so the handle derives correctly:
+	// RepoKey="$HOME/nexus3/.git" → repoName="nexus3"
+	// branch="worktree/quiet-stone-1e35" → slug="worktree-quiet-stone-1e35"
+	// handle = "nexus3/worktree-quiet-stone-1e35" ✓
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfoAuto(wantWorkspaceID, "worktree/quiet-stone-1e35",
+			"$HOME/nexus3", "$HOME/nexus3/.git"),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+
+	// existingSB is the sandbox already in the store. Use a non-zero SandboxID
+	// so that discarding the adopted sandbox (e.g. _, reconcileErr = getFn(...))
+	// survives mutation — a zero ID on both sides of the assertion is vacuous.
+	// State=Running and a matching /workspace LiveMount satisfy the Correction-1
+	// and Correction-4 adoption guards.
+	existingSB := domain.Sandbox{
+		ID:    domain.NewSandboxID(),
+		State: domain.Running,
+		LiveMounts: []domain.LiveMount{
+			{HostPath: "$HOME/nexus3", GuestPath: "/workspace"},
+		},
+	}
+	wantSandboxID := existingSB.ID.String() // record for assertion below
+
+	getFnCalls := 0
+	getFn := func(_ context.Context, _ string) (domain.Sandbox, error) {
+		getFnCalls++
+		return existingSB, nil
+	}
+
+	err := callHerdrWorktreeSandbox(t, wantWorkspaceID, root, false /*conditional*/, false /*auto*/,
+		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
+			return errors.New("sandbox create: sandbox already exists: store: sandbox already exists")
+		},
+		getFn,
+	)
+	if err != nil {
+		t.Errorf("reconcile: want nil error; got %v", err)
+	}
+
+	// Binding must be written with the correct handle and workspace ID.
+	binding, lookupErr := HerdrSpaceGetByHandle(context.Background(), root, wantHandle)
+	if lookupErr != nil {
+		t.Fatalf("reconcile: binding not written after create-failed+getFn-succeeded: %v", lookupErr)
+	}
+	if binding.SandboxID != wantSandboxID {
+		t.Errorf("reconcile: binding.SandboxID = %q; want %q", binding.SandboxID, wantSandboxID)
+	}
+	if binding.HerdrWorkspaceID != wantWorkspaceID {
+		t.Errorf("reconcile: binding.HerdrWorkspaceID = %q; want %q", binding.HerdrWorkspaceID, wantWorkspaceID)
+	}
+	if getFnCalls == 0 {
+		t.Error("reconcile: getFn was never called — reconcile probe missing from createErr block")
+	}
+}
+
+// ── reconcile: /workspace mount mismatch guard (Correction 1) ────────────────
+
+func TestHerdrWorktreeSandbox_reconcile_workspaceMismatch_explicitReturnsError(t *testing.T) {
+	// Regression guard: when the reconciled sandbox's /workspace LiveMount
+	// points to a different host path than info.Path (handle collision between
+	// two worktrees with the same repo+branch slug), explicit mode must return
+	// a non-nil error instead of silently adopting the wrong sandbox.
+	//
+	// MUTATION PROOF: remove the workspaceMount.HostPath != info.Path check →
+	// adopt proceeds → no error returned → test gets nil → RED.
+	root := t.TempDir()
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfoAuto("w-mismatch-exp", "worktree/quiet-stone-1e35",
+			"$HOME/nexus3", "$HOME/nexus3/.git"),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+
+	// Sandbox whose /workspace points to a DIFFERENT checkout.
+	staleMount := domain.Sandbox{
+		ID:    domain.NewSandboxID(),
+		State: domain.Running,
+		LiveMounts: []domain.LiveMount{
+			{HostPath: "$HOME/magic/OLD-nexus3", GuestPath: "/workspace"},
+		},
+	}
+	err := callHerdrWorktreeSandbox(t, "w-mismatch-exp", root, false /*conditional*/, false /*auto*/,
+		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
+			return errors.New("sandbox already exists")
+		},
+		stubSandboxGet(staleMount, nil),
+	)
+	if err == nil {
+		t.Error("explicit mode: /workspace mismatch must return non-nil error; got nil")
+	}
+}
+
+func TestHerdrWorktreeSandbox_reconcile_workspaceMismatch_autoReturnsNil(t *testing.T) {
+	// Regression guard: same mismatch scenario in auto mode must fail safe
+	// (nil return, no binding written) rather than erroring out.
+	//
+	// MUTATION PROOF: remove the mismatch check → adopt proceeds → binding
+	// is written → the "expected no binding" check fires → RED.
+	root := t.TempDir()
+	// Seed repo-root binding so the auto repo check passes.
+	seedBindingWithRepoRoot(t, root, "w-main", "nexus3/main", "$HOME/nexus3")
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfoAuto("w-mismatch-auto", "worktree/quiet-stone-1e35",
+			"$HOME/nexus3", "$HOME/nexus3/.git"),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+
+	staleMount := domain.Sandbox{
+		ID:    domain.NewSandboxID(),
+		State: domain.Running,
+		LiveMounts: []domain.LiveMount{
+			{HostPath: "$HOME/magic/OLD-nexus3", GuestPath: "/workspace"},
+		},
+	}
+	err := callHerdrWorktreeSandbox(t, "w-mismatch-auto", root, false /*conditional*/, true /*auto*/,
+		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
+			return errors.New("sandbox already exists")
+		},
+		stubSandboxGet(staleMount, nil),
+	)
+	if err != nil {
+		t.Errorf("auto mode: /workspace mismatch must return nil (fail-safe); got %v", err)
+	}
+	all, _ := herdrSpaceReadAll(root)
+	for _, b := range all {
+		if b.HerdrWorkspaceID == "w-mismatch-auto" {
+			t.Errorf("expected no binding after mismatch rejection; got %+v", b)
+		}
+	}
+}
+
+// ── reconcile: non-canonical host path is accepted ───────────────────────────
+
+func TestHerdrWorktreeSandbox_reconcile_trailingSlashPath_adopts(t *testing.T) {
+	// Regression guard: a sandbox record whose /workspace HostPath carries a
+	// trailing slash (or other non-canonical form) must still be adopted when it
+	// points at the same directory as info.Path after filepath.Clean.
+	//
+	// MUTATION PROOF: remove the filepath.Clean normalisation (raw string compare)
+	// → trailing slash differs from info.Path → adopt refused → binding not written
+	// → the "binding not found" Fatalf fires → RED.
+	root := t.TempDir()
+	// Seed a repo-root binding so the auto-mode repo check passes.
+	seedBindingWithRepoRoot(t, root, "w-main", "nexus3/main", "$HOME/nexus3")
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfoAuto("w-trailing", "worktree/quiet-stone-1e35",
+			"$HOME/nexus3", "$HOME/nexus3/.git"),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+
+	// Sandbox whose /workspace HostPath has a trailing slash — non-canonical
+	// but pointing at the same directory.
+	matchingMount := domain.Sandbox{
+		ID:    domain.NewSandboxID(),
+		State: domain.Running,
+		LiveMounts: []domain.LiveMount{
+			{HostPath: "$HOME/nexus3/", GuestPath: "/workspace"},
+		},
+	}
+	err := callHerdrWorktreeSandbox(t, "w-trailing", root, false /*conditional*/, true /*auto*/,
+		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
+			return errors.New("sandbox already exists")
+		},
+		stubSandboxGet(matchingMount, nil),
+	)
+	if err != nil {
+		t.Errorf("trailing-slash path: want nil error (adopt succeeds); got %v", err)
+	}
+	all, _ := herdrSpaceReadAll(root)
+	var found bool
+	for _, b := range all {
+		if b.HerdrWorkspaceID == "w-trailing" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("trailing-slash path: binding not written — normalisation not applied")
+	}
+}
+
+func TestHerdrWorktreeSandbox_reconcile_badState_failSafe(t *testing.T) {
+	// Correction 4: when getFn returns a sandbox with a non-adoptable state
+	// (e.g. Created — a VM that never finished booting) and a correct /workspace
+	// mount, auto mode must return nil (fail-safe) without writing a binding.
+	//
+	// MUTATION PROOF: remove the state/RemovalMarker gate → sandbox is adopted →
+	// binding is written → "expected no binding" fires → RED.
+	root := t.TempDir()
+	seedBindingWithRepoRoot(t, root, "w-main", "nexus3/main", "$HOME/nexus3")
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfoAuto("w-badstate", "worktree/quiet-stone-1e35",
+			"$HOME/nexus3", "$HOME/nexus3/.git"),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+
+	// Correct /workspace path but Created state (VM never booted fully).
+	badStateSB := domain.Sandbox{
+		ID:    domain.NewSandboxID(),
+		State: domain.Created, // not Running or Stopped — unsafe to adopt
+		LiveMounts: []domain.LiveMount{
+			{HostPath: "$HOME/nexus3", GuestPath: "/workspace"},
+		},
+	}
+	err := callHerdrWorktreeSandbox(t, "w-badstate", root, false /*conditional*/, true /*auto*/,
+		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
+			return errors.New("sandbox already exists")
+		},
+		stubSandboxGet(badStateSB, nil),
+	)
+	if err != nil {
+		t.Errorf("auto mode: bad state must return nil (fail-safe); got %v", err)
+	}
+	all, _ := herdrSpaceReadAll(root)
+	for _, b := range all {
+		if b.HerdrWorkspaceID == "w-badstate" {
+			t.Errorf("expected no binding after bad-state rejection; got %+v", b)
+		}
+	}
+}
+
+func TestHerdrWorktreeSandbox_reconcile_auto_siblingBound_writesBinding(t *testing.T) {
+	// Regression guard for the auto (--auto) path: when auto=true and a sibling
+	// workspace in the same repo is nexus3-bound, a reconcile (createFn fails but
+	// getFn succeeds with a matching /workspace) must write a binding.
+	//
+	// MUTATION PROOF: delete the reconcile getFn probe inside createErr block →
+	// createErr path returns nil without a binding → "expected binding" fires → RED.
+	root := t.TempDir()
+	// Seed a repo-root binding so the auto repo check passes.
+	seedBindingWithRepoRoot(t, root, "w-main", "nexus3/main", "$HOME/nexus3")
+
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfoAuto("w-auto-reconcile", "worktree/quiet-stone-1e35",
+			"$HOME/nexus3", "$HOME/nexus3/.git"),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+
+	existingSB := domain.Sandbox{
+		ID:    domain.NewSandboxID(),
+		State: domain.Running,
+		LiveMounts: []domain.LiveMount{
+			{HostPath: "$HOME/nexus3", GuestPath: "/workspace"},
+		},
+	}
+	wantID := existingSB.ID.String()
+
+	err := callHerdrWorktreeSandbox(t, "w-auto-reconcile", root, false /*conditional*/, true /*auto*/,
+		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
+			return errors.New("sandbox create: sandbox already exists: store: sandbox already exists")
+		},
+		stubSandboxGet(existingSB, nil),
+	)
+	if err != nil {
+		t.Errorf("auto reconcile: want nil error; got %v", err)
+	}
+	all, _ := herdrSpaceReadAll(root)
+	var found *HerdrSpaceBinding
+	for i := range all {
+		if all[i].HerdrWorkspaceID == "w-auto-reconcile" {
+			found = &all[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("auto reconcile: binding not written after create-failed+getFn-succeeded")
+	}
+	if found.SandboxID != wantID {
+		t.Errorf("auto reconcile: binding.SandboxID = %q; want %q", found.SandboxID, wantID)
 	}
 }
 
