@@ -10,16 +10,22 @@ each. It is the reference for `make test-integration` and the
 
 ## Correction to the "45 files" figure
 
-`grep -rl "go:build integration"` reports **45**, but one of those is a false
-positive: `internal/core/driver/cloudhypervisor/ch_netns_test.go` matches only
-inside a *comment* that says
+`grep -rl "go:build integration"` over-reports, because it matches the tag
+inside *comments* as well as in real build constraints. Always use the anchored
+pattern:
 
-> `// Runtime skip guards (no //go:build integration tag needed — the test binary ...`
+    grep -rl '^//go:build integration' --include=*.go .   # → 46
 
-It carries no build tag at all and already runs in ordinary `make test`. The
-accurate count of tag-guarded files is **44**. Use the anchored pattern:
+History of this number:
 
-    grep -rl '^//go:build integration' --include=*.go .   # → 44
+| Count | When |
+|---|---|
+| 45 | loose grep, original triage — 1 comment false positive |
+| 44 | anchored grep, original triage — the true count then |
+| 46 | after s31 tagged the two untagged netns VM files (below) |
+
+The one remaining loose-grep false positive is the pointer comment in
+`ch_netns_test.go` that names its integration-tagged sibling.
 
 ## Tiers
 
@@ -88,21 +94,39 @@ Five packages carry this guard, not two:
 
 ---
 
-## Tier 3 — does not compile (2 files) → recommend repair, not deletion
+## Tier 3 — did not compile (2 files) → REPAIRED (s31)
 
-Both are genuine bit-rot: the production API moved and, because the tag was
+Both were genuine bit-rot: the production API moved and, because the tag was
 never built, nothing noticed.
 
-| File | Compile error | Cause |
-|---|---|---|
-| `internal/test/acceptance/workspace_e2e_test.go:470` | `cannot convert func(resolvedExt4 string) (driver.Driver, error) to type service.DriverFactory` | `service.DriverFactory`'s signature changed |
-| `internal/test/perimeter/perimeter_e2e_test.go:186` | `unknown field EnableNetHook in struct literal of type cloudhypervisor.Config` | `Config.EnableNetHook` was removed |
+| File | Compile error | Cause | Status |
+|---|---|---|---|
+| `internal/test/acceptance/workspace_e2e_test.go:470` | `cannot convert func(resolvedExt4 string) (driver.Driver, error) to type service.DriverFactory` | `service.DriverFactory`'s signature changed | **fixed** |
+| `internal/test/perimeter/perimeter_e2e_test.go:186` | `unknown field EnableNetHook in struct literal of type cloudhypervisor.Config` | `Config.EnableNetHook` was removed | **fixed** |
 
-**I am not deleting either.** Both encode real acceptance behaviour
-(`TestWorkspaceE2E`, `TestNetworkHookTracer`) and both failures are one-line
-signature drift, not obsolescence. Deleting them would destroy coverage to make
-a number look better. They stay red and out of CI until repaired; `make
-vet-integration` is the target that surfaces them.
+**Neither was deleted.** Both encode real acceptance behaviour
+(`TestWorkspaceE2E`, `TestNetworkHookTracer`); both are still present and still
+reachable under `-tags integration`. `make vet-integration` now exits 0.
+
+How each was repaired, and what it now asserts:
+
+- **`DriverFactory`** gained an `extraDisks []service.ExtraDisk` parameter.
+  `CreateAndBoot` passes `opts.ExtraDisks` plus the workspace disk it appends
+  itself, and documents the factory as responsible for mapping them onto
+  `cloudhypervisor.ExtraDisk`. The repair *forwards* them in order rather than
+  discarding them with `_`: attachment order is guest device order, so dropping
+  them would boot a VM missing `/dev/vdb…` while still compiling. Nothing
+  narrowed — the first parameter and every existing assertion are unchanged.
+- **`EnableNetHook`** is obsolete rather than renamed. The two-TAP/L2-bridge
+  topology is no longer opt-in: every `CHDriver.Start` builds a `vmNetConfig`
+  and calls `VMCreateWithNet`, so `d.nets[id]` — and hence the `NetworkHook`
+  capability and its TAP fd — is populated unconditionally. Removing the field
+  makes the test assert *more* than before (the hook must be present on a plain
+  `Config`, not merely when explicitly enabled). Nothing narrowed.
+
+Neither test can be *executed* on this host: both need real boot artifacts, and
+`TestWorkspaceE2E` additionally needs a docker-baked rootfs. They are repaired
+and type-checked, not behaviourally re-proven.
 
 Note `go vet` reports only the **first** error per package, so each of these may
 hide further errors behind it. The two above are what a full type-check
@@ -155,7 +179,7 @@ the contract the test already documented; it does not weaken it.
 | File | Test | Detail |
 |---|---|---|
 | `internal/core/perimeter/egress_e2e_integration_test.go` | `TestEgress_GuestOnWire_E2E` | every functional assertion PASSED: ALLOW probe + token swap, DENY AuditEvent, IPv6 zero-egress, zero-egress after `supervisor.Close()`. Only the pre/post check `host has CAP_NET_ADMIN set (CapEff=0x1ffffffffff, bit 12 SET)` failed. |
-| `cloudhypervisor/ch_netns_test.go` (untagged, same class) | `TestNetnsRuntime_KVMProof` | functional assertion PASSED (`1 frame(s) with guest MAC ... received on parent PerimConn`); only the CAP_NET_ADMIN check failed. |
+| `cloudhypervisor/ch_netns_runtime_integration_test.go` (was untagged in `ch_netns_test.go`; tagged in s31) | `TestNetnsRuntime_KVMProof` | functional assertion PASSED (`1 frame(s) with guest MAC ... received on parent PerimConn`); only the CAP_NET_ADMIN check failed. |
 
 These assert that the **host** process does *not* hold CAP_NET_ADMIN — the whole
 point of the netns-runtime design. I ran as root, so `CapEff` has every bit set
@@ -164,11 +188,42 @@ product bug, and not test rot.** I deliberately did not relax it: weakening a
 security assertion to get a green is the opposite of the job. These require an
 unprivileged host user.
 
-`ch_netns_test.go` is untagged, so it runs in ordinary `make test`. It skips when
-boot artifacts are absent — but `testdata/` is gitignored, and once
-`scripts/fetch-boot-artifacts.sh` has been run on a machine where tests execute
-as root, `make test` itself goes red here. Worth knowing before someone fetches
-artifacts and is surprised.
+`ch_netns_test.go` **was** untagged, so it ran in ordinary `make test`. It
+skipped only while boot artifacts were absent — but `testdata/` is gitignored,
+so the same commit was green on a machine that had never run
+`scripts/fetch-boot-artifacts.sh` and red on one that had. Suite greenness
+depended on invisible local state, and it failed in the direction that looks
+like the developer's own change broke something.
+
+**Fixed in s31 (D-HSH-20).** The two VM-booting tests moved to
+`ch_netns_runtime_integration_test.go` behind `//go:build integration`, and the
+all-VM `ch_netns_lifecycle_test.go` (6 more tests, same defect, untagged for the
+same reason) was tagged in place. `ch_netns_test.go` keeps `TestMain` and its
+three pure unit tests untagged — tagging the whole file would have deleted
+those from `make test` while looking like a gating fix. `TestMain` must stay
+untagged anyway: it is the `NEXUS3_NETNS_RUN` re-exec dispatcher, and untagged
+files compile into the integration build too, so the test binary remains its
+own re-exec image there.
+
+Verified in both directions on a host with `/dev/kvm`, the CH binary, and root:
+
+| testdata/ | `make test` | note |
+|---|---|---|
+| empty | exit **0** | 40 packages ok, 0 FAIL |
+| populated | exit **0** | same; the VM tests are no longer compiled in |
+
+Reachability after the change, same package:
+
+    go test -list ...                    → 3 unit tests
+    go test -tags integration -list ...  → 11 tests (3 unit + 8 VM)
+
+Removing the tag again reproduces the old red under default tags, so the gate is
+load-bearing rather than decorative.
+
+Note that these tests still cannot *pass* as root: they assert the host process
+holds **zero** CAP_NET_ADMIN, which is the whole point of the netns design. That
+is an environment mismatch, not test rot — see 2b(i) above. Gating them changes
+where they run, not whether that assertion holds.
 
 #### (ii) The 2-second agent-readiness budget — 4 files
 

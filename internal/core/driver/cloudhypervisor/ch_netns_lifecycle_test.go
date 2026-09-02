@@ -1,3 +1,5 @@
+//go:build integration
+
 // ch_netns_lifecycle_test.go — lifecycle / teardown / crash-recovery hardening
 // for the netns-runtime process topology (driver → netns child → CH grandchild).
 //
