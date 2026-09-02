@@ -118,6 +118,11 @@ func (cs *controlServer) execPTY(cmd *exec.Cmd, env []string, opts *agentpb.PtyO
 			}
 		}
 		sess.setExited(code)
+		// Sweep on exit so that idle guests (no subsequent exec) still
+		// reclaim memory when the TTL expires. setExited only sets atomics
+		// and closes the ring (ring.mu); sweepExited uses sessions.mu —
+		// no shared lock, no deadlock risk.
+		cs.a.sessions.sweepExited()
 	}()
 
 	return nil
@@ -182,6 +187,10 @@ func (cs *controlServer) execPipe(cmd *exec.Cmd, env []string, sess *Session) er
 			feedWg.Wait()
 			code := <-sess.exitCh
 			sess.setExited(code)
+			// Sweep on exit so idle guests reclaim TTL-expired sessions
+			// without waiting for a new exec. No lock overlap: setExited
+			// uses atomics + ring.mu; sweepExited uses sessions.mu.
+			cs.a.sessions.sweepExited()
 		}()
 	} else {
 		// cmd.Wait() delivers the exit code; wait for feeders first.
@@ -198,6 +207,10 @@ func (cs *controlServer) execPipe(cmd *exec.Cmd, env []string, sess *Session) er
 			feedWg.Wait()
 			code := <-exitCodeCh
 			sess.setExited(code)
+			// Sweep on exit so idle guests reclaim TTL-expired sessions
+			// without waiting for a new exec. No lock overlap: setExited
+			// uses atomics + ring.mu; sweepExited uses sessions.mu.
+			cs.a.sessions.sweepExited()
 		}()
 	}
 
