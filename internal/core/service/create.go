@@ -485,8 +485,14 @@ func CreateAndBoot(
 	needsDisk := opts.Image.RootfsPath == ""
 	needsWorkspace := opts.Workspace != nil
 	needsNamedVols := opts.Volumes != nil && len(opts.NamedVolumeMounts) > 0
+	// needsScratch is true when the hostWorkspacePath predicate fires (covers
+	// both opts.Workspace and LiveMounts at /workspace) and NoScratchDisk is
+	// not set. The diskDir resolution below must happen when needsScratch is
+	// true so the scratch gate at step 4.8 has a non-empty diskDir.
+	_, needsScratch := hostWorkspacePath(opts)
+	needsScratch = needsScratch && !opts.NoScratchDisk
 	var diskDir string
-	if needsDisk || needsWorkspace || needsNamedVols {
+	if needsDisk || needsWorkspace || needsNamedVols || needsScratch {
 		diskDir = opts.DiskDir
 		if diskDir == "" {
 			diskDir, err = defaultDiskDir()
@@ -788,7 +794,7 @@ func CreateAndBoot(
 	// (step 4.7 above), so scratch is always the last element of ExtraDisks.
 	// The device-index contract (len(ExtraDisks)-1 after this step) is asserted
 	// by TestScratchDiskOrderIsLast. Do NOT move this block before step 4.7.
-	if opts.Workspace != nil && !opts.NoScratchDisk {
+	if _, hasWorkspace := hostWorkspacePath(opts); hasWorkspace && !opts.NoScratchDisk {
 		if err = os.MkdirAll(diskDir, 0o700); err != nil {
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: scratch disk dir mkdir: %w", project, name, err)
 		}

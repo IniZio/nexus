@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
 )
@@ -269,5 +270,105 @@ func TestScratchDisk_NoScratchDiskFlag_SD_AC12b(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("workspace disk %q not found in factory ExtraDisks %v (Workspace must still be processed when NoScratchDisk=true)", capturedWorkspacePath, capturedDisks)
+	}
+}
+
+// TestScratchDisk_LiveMountWorkspace_GetsScratch verifies D-SD-05: a sandbox
+// built via the herdrWorktreeSandbox path (Workspace==nil, LiveMounts entry at
+// /workspace) receives a scratch disk. This is the exact shape that was always
+// missing a scratch disk before the hostWorkspacePath predicate fix.
+//
+// Production shape: CreateAndBootOptions{Workspace: nil, LiveMounts: [{GuestPath:"/workspace", ...}]}.
+// Workspace==nil means no workspace capturer runs; the only disk reaching the
+// factory must be the scratch disk.
+//
+// Mutation targets:
+//
+//	MUTATION-A (revert gate): change `_, hasWorkspace := hostWorkspacePath(opts)` back
+//	  to `opts.Workspace != nil` → hasWorkspace=false with Workspace=nil → no scratch disk
+//	  appended → len(capturedDisks)==0 → FAIL.
+//
+//	MUTATION-B (remove scratch append): drop the opts.ExtraDisks append → len==0 → FAIL.
+// @verifies D-SD-05
+func TestScratchDisk_LiveMountWorkspace_GetsScratch(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	diskDir := t.TempDir()
+
+	var capturedDisks []ExtraDisk
+	capturingFactory := DriverFactory(func(_ string, extraDisks []ExtraDisk) (driver.Driver, error) {
+		capturedDisks = make([]ExtraDisk, len(extraDisks))
+		copy(capturedDisks, extraDisks)
+		return fake.New(), nil
+	})
+
+	fd := fake.New()
+	svc := newTestSvc(t, fd)
+
+	// herdrWorktreeSandbox option shape: Workspace==nil, LiveMounts with /workspace.
+	_, err := CreateAndBoot(ctx, svc, nil, capturingFactory, noopProbe,
+		"proj", "scratch-lm-ws",
+		CreateAndBootOptions{
+			Image:   ImageSpec{RootfsPath: "/fake/rootfs.ext4"},
+			DiskDir: diskDir,
+			// Workspace intentionally nil — the worktree-sandbox path.
+			LiveMounts: []domain.LiveMount{
+				{HostPath: "/host/worktree", GuestPath: "/workspace"},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: %v", err)
+	}
+
+	// (a) Exactly one disk: the scratch disk. No workspace capture runs when Workspace==nil.
+	if len(capturedDisks) != 1 {
+		t.Fatalf("factory received %d extra disks, want 1 (scratch only; no workspace capture for nil Workspace)", len(capturedDisks))
+	}
+
+	// (b) That disk IS the scratch disk. Catches MUTATION-A and MUTATION-B.
+	if !strings.HasSuffix(capturedDisks[0].Path, "-scratch.ext4") {
+		t.Errorf("capturedDisks[0].Path = %q, want suffix \"-scratch.ext4\" (scratch disk required for LiveMount workspace)", capturedDisks[0].Path)
+	}
+}
+
+// TestScratchDisk_LiveMountWorkspace_NoScratchDiskSuppresses verifies that
+// NoScratchDisk=true suppresses the scratch disk even when the workspace is
+// conveyed via a /workspace LiveMount rather than opts.Workspace.
+// @verifies D-SD-05
+func TestScratchDisk_LiveMountWorkspace_NoScratchDiskSuppresses(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	var capturedDisks []ExtraDisk
+	capturingFactory := DriverFactory(func(_ string, extraDisks []ExtraDisk) (driver.Driver, error) {
+		capturedDisks = make([]ExtraDisk, len(extraDisks))
+		copy(capturedDisks, extraDisks)
+		return fake.New(), nil
+	})
+
+	fd := fake.New()
+	svc := newTestSvc(t, fd)
+
+	_, err := CreateAndBoot(ctx, svc, nil, capturingFactory, noopProbe,
+		"proj", "scratch-lm-noscratch",
+		CreateAndBootOptions{
+			Image: ImageSpec{RootfsPath: "/fake/rootfs.ext4"},
+			LiveMounts: []domain.LiveMount{
+				{HostPath: "/host/worktree", GuestPath: "/workspace"},
+			},
+			NoScratchDisk: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: %v", err)
+	}
+
+	for _, d := range capturedDisks {
+		if strings.HasSuffix(d.Path, "-scratch.ext4") {
+			t.Errorf("unexpected scratch disk %q with NoScratchDisk=true and LiveMount workspace", d.Path)
+		}
 	}
 }
