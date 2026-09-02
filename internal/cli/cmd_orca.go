@@ -333,6 +333,7 @@ func buildOrcaSpawnConfig(
 	workspaceDiskIndex int,
 	credsFile string,
 	guestPath string,
+	hasScratchDisk bool,
 ) supervisor.SpawnConfig {
 	// Build the kernel cmdline for the supervisor-owned VM. The supervisor
 	// reboots the VM independently (CLI stops the initial boot before handoff),
@@ -355,7 +356,15 @@ func buildOrcaSpawnConfig(
 	if hasWorkspaceDisk && guestPath != "" {
 		mounts = []agent.GuestMount{WorkspaceGuestMount(guestPath, workspaceDiskIndex)}
 	}
-	cmdline := guestBootCmdline(mounts, arArgs, sandboxHandle, -1)
+	// scratchIdx is -1 unless scratch was explicitly attached (hasScratchDisk).
+	// Do NOT infer from hasWorkspaceDisk: NoScratchDisk=true sandboxes have
+	// a workspace disk but no scratch disk; a wrong index causes mkfs on the
+	// workspace volume (D-SD-01). Invariant when true: scratch is len(ExtraDisks)-1 (D-DC-32).
+	scratchIdx := -1
+	if hasScratchDisk {
+		scratchIdx = len(extraDiskPaths) - 1
+	}
+	cmdline := guestBootCmdline(mounts, arArgs, sandboxHandle, scratchIdx)
 
 	return supervisor.SpawnConfig{
 		Config: supervisor.Config{
@@ -694,6 +703,10 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		orcaNumShadowDisks,
 		service.DefaultDedicatedCredStorePath(),
 		guestWorkspacePath,
+		// hasScratchDisk mirrors service/create.go step 4.9: scratch is attached
+		// iff workspace was requested and NoScratchDisk was not set (orca never
+		// sets NoScratchDisk, so workspace presence is sufficient here).
+		opts.Workspace != nil,
 	)
 	// Non-ephemeral supervisor: watchdog pipe is nil (orca sandbox persists after CLI exit).
 	pid, _, err := supervisor.SpawnDetached(spawnCfg)

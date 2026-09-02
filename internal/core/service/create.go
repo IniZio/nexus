@@ -1300,12 +1300,9 @@ func hostWorkspacePath(opts CreateAndBootOptions) (path string, ok bool) {
 	if opts.Workspace != nil && opts.Workspace.SourcePath != "" {
 		return opts.Workspace.SourcePath, true
 	}
-	for _, m := range opts.LiveMounts {
-		if m.GuestPath == "/workspace" || strings.HasPrefix(m.GuestPath, "/workspace/") {
-			return m.HostPath, true
-		}
-	}
-	return "", false
+	// Delegate to the exported single-implementation predicate so the
+	// /workspace match string is defined exactly once (workspace.go).
+	return WorkspaceMountHostPath(opts.LiveMounts)
 }
 
 // hostWorktreeBranch returns the branch currently checked out at repoPath.

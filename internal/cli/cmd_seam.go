@@ -48,6 +48,12 @@ type sandboxDriverSpec struct {
 	SBHandle     string            // "project/name" for cmdline; "" → omit handle
 	LiveMounts   []domain.LiveMount  // nil for MCP/run paths
 	GuestMounts  []agent.GuestMount  // nil for MCP/run paths
+	// HasScratchDisk is true when a scratch disk was actually attached as the
+	// last ExtraDisk. Set from the same condition that controls service scratch
+	// creation (workspace present && !NoScratchDisk). Do not infer from
+	// GuestMounts — live mounts and no-scratch sandboxes have mounts but no
+	// scratch disk, and pointing mkfs at the wrong device is data loss (D-SD-01).
+	HasScratchDisk bool
 }
 
 // sandboxDriverCaptures is populated by buildSandboxDriverFactory on each
@@ -97,7 +103,16 @@ func buildSandboxDriverFactory(spec sandboxDriverSpec, caps *sandboxDriverCaptur
 		// Otherwise fall back to the simple disk-boot base + PID1Args form that
 		// ephemeral/run paths use (preserves pre-existing behavior there).
 		if spec.SBHandle != "" || len(spec.GuestMounts) > 0 {
-			cfg.Cmdline = guestBootCmdline(spec.GuestMounts, spec.PID1Args, spec.SBHandle, -1)
+			// scratchIdx is -1 unless a scratch disk was explicitly attached.
+			// Use spec.HasScratchDisk — not len(GuestMounts) — as the guard:
+			// live-mount-only and NoScratchDisk sandboxes have mounts but no
+			// scratch disk; pointing mkfs at the wrong device is data loss (D-SD-01).
+			// Invariant when true: scratch is always len(ExtraDisks)-1 (D-DC-32).
+			scratchIdx := -1
+			if spec.HasScratchDisk {
+				scratchIdx = len(cfg.ExtraDisks) - 1
+			}
+			cfg.Cmdline = guestBootCmdline(spec.GuestMounts, spec.PID1Args, spec.SBHandle, scratchIdx)
 		} else if spec.PID1Args != "" {
 			cfg.Cmdline = diskBootCmdlineBase + " --" + spec.PID1Args
 		}

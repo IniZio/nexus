@@ -962,6 +962,21 @@ func workspaceMountCmdline(mounts []agent.GuestMount) string {
 //
 // mounts may be empty: a sandbox with no workspace, shadow or live mounts boots
 // on the base args alone.
+
+// bootScratchDiskPresent returns true when the sandbox will have a scratch disk
+// attached by service/create.go step 4.9. Two routes bind a workspace and
+// therefore trigger scratch creation:
+//   - workspacePath != "" : the --workspace ext4-capture path
+//   - service.HasWorkspaceMount(liveMounts): a /workspace or /workspace/<name>
+//     LiveMount (virtiofs, the herdr worktree-sandbox --file shape)
+//
+// Sandbox create never sets NoScratchDisk, so workspace presence == scratch
+// presence on this path. This function is the testable seam for line 1732 in
+// the newDriver closure — extracted so tests can drive the exact derivation
+// without needing to invoke the full CLI flag-parsing stack.
+func bootScratchDiskPresent(workspacePath string, liveMounts []domain.LiveMount) bool {
+	return workspacePath != "" || service.HasWorkspaceMount(liveMounts)
+}
 func guestBootCmdline(mounts []agent.GuestMount, pid1Args, sandboxHandle string, scratchDiskIdx int) string {
 	base := diskBootCmdlineBase + " --"
 	if len(mounts) > 0 {
@@ -1721,6 +1736,10 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			SBHandle:     project + "/" + name,
 			LiveMounts:   bootLiveMounts,
 			GuestMounts:  allGuestMounts,
+			// bootScratchDiskPresent covers both workspace routes (capture +
+			// virtiofs LiveMount). Read at call time so bootLiveMounts is
+			// fully populated (see :1703 note). Extracted for testability.
+			HasScratchDisk: bootScratchDiskPresent(f.workspacePath, bootLiveMounts),
 		}
 		return buildSandboxDriverFactory(spec, &caps)(ext4Path, extraDisks)
 	}
