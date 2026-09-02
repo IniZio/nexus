@@ -148,10 +148,35 @@ different pane layout, each "fixed" by a pattern the next layout defeated.
    still reported `AGENT_NEVER_STARTED` after `sample_state` learned that state.
 4. The background-agent roster switched from `Waiting for N background agents`
    to a live subagent row — matching no marker at all.
+5. A pane scrolled up during a long tool chain puts the spinner and its elapsed
+   timer above the visible window. The read window is genuinely static — no
+   string and no movement check can see the work, because the moving content is
+   not there to detect. This is distinct from the four above: the marker is not
+   gone or changed, it is simply outside the window being sampled.
+
+   The fast-path fix is the interrupt affordance. If `esc to interrupt` is
+   present, the agent is WORKING regardless of scroll state. Its absence still
+   proves nothing — mode 2 is exactly the case where a working agent loses that
+   marker permanently — so when the interrupt fast path is absent, fall back to
+   scroll detection before relying on movement. `herdr pane get <pane-id>`
+   returns `scroll.offset_from_bottom` directly; a non-zero value means the
+   window is scrolled up and movement is blind. `herdr workspace list` cannot
+   help here — it reports only each workspace's root pane, so a guest pane like
+   `w7M:p2` is invisible to it. An indeterminate answer (field missing, tool
+   unavailable) must read as SCROLLED and therefore WORKING, consistent with
+   the bias stated below.
+
+   One related trap: `herdr pane read --source recent-unwrapped` returns an
+   empty string on a pane that has not yet scrolled at all. An empty string is
+   not a stop marker — fall back to `--source visible` when `recent-unwrapped`
+   returns empty.
 
 Every individual fix was correct. The *approach* was the defect. If you find
-yourself adding a fifth pattern, add it as a fast path only, and let movement
-remain the thing that actually decides.
+yourself adding a new string pattern for a sixth case, add it as a fast path
+only, and let movement remain the thing that actually decides. Mode 5 is not a
+string pattern — it is a case where movement is blind and the fix is
+structural (scroll detection, then interrupt fast path), not another string to
+match.
 
 Two rules that fall out of this:
 
