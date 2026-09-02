@@ -90,6 +90,7 @@ func TestMain(m *testing.M) {
 //	1  intent written, no disk files (crash before cowExt4 at line 394)
 //	2  intent + .raw written (crash after cowExt4, before workspace at line 423)
 //	3  intent + .raw + -workspace.ext4 written (crash after workspace, before store.Create at line 449)
+//	4  intent + .raw + -workspace.ext4 + -scratch.ext4 (crash after scratch disk, before store.Create)
 //
 // Environment inputs (all required):
 //
@@ -103,7 +104,7 @@ func helperRun(stage string) {
 	readyPath := helperMustEnv("NEXUS3_LEAK_READY")
 
 	var stageNum int
-	if _, err := fmt.Sscanf(stage, "%d", &stageNum); err != nil || stageNum < 1 || stageNum > 3 {
+	if _, err := fmt.Sscanf(stage, "%d", &stageNum); err != nil || stageNum < 1 || stageNum > 4 {
 		fmt.Fprintf(os.Stderr, "NEXUS3_LEAK_HELPER: invalid stage %q\n", stage)
 		os.Exit(2)
 	}
@@ -147,6 +148,16 @@ func helperRun(stage string) {
 	if stageNum >= 3 {
 		if err := helperSparse(filepath.Join(diskDir, idStr+"-workspace.ext4"), 4096); err != nil {
 			fmt.Fprintf(os.Stderr, "helper: write workspace: %v\n", err)
+			os.Exit(2)
+		}
+	}
+
+	// ── Step 4: create the scratch disk ──────────────────────────────────────
+	// Mirrors createSparseDisk (create.go) called for workspace sandboxes.
+	// Scratch disk is the last extra disk added before store.Create (D-SD-01).
+	if stageNum >= 4 {
+		if err := helperSparse(filepath.Join(diskDir, idStr+"-scratch.ext4"), 4096); err != nil {
+			fmt.Fprintf(os.Stderr, "helper: write scratch: %v\n", err)
 			os.Exit(2)
 		}
 	}
@@ -443,6 +454,98 @@ func TestCrashAtStageC_IntentRawWorkspace(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Errorf("resource still present after Reap --apply: %s", path)
 		}
+	}
+}
+
+// TestCrashAtStageD_IntentRawWorkspaceScratch verifies a SIGKILL after all four
+// disk resources have been created — intent, .raw, -workspace.ext4, and
+// -scratch.ext4 — but before svc.store.Create commits the record. All four
+// resources must survive the kill and be cleaned up by Reap --apply.
+//
+// Stage D models: killed between createSparseDisk for the scratch disk
+// (create.go, D-SD-01) and svc.store.Create. This closes the window where
+// the scratch disk is created but no store record exists to claim it.
+//
+// Fixpoint (RES-R-009): a second Reap --apply on the already-clean stateRoot
+// must be a no-op (len(Deleted)==0). A non-idempotent reaper would delete
+// non-existent paths on the second pass, causing spurious failures downstream.
+//
+// @verifies SD-AC13, RES-R-005, RES-R-006, RES-R-009, RES-R-012
+func TestCrashAtStageD_IntentRawWorkspaceScratch(t *testing.T) {
+	id := domain.NewSandboxID()
+	stateRoot := spawnAndKill(t, id, 4 /*stage D — intent + .raw + workspace + scratch*/, false)
+	diskDir := filepath.Join(stateRoot, "disks")
+
+	intentPath := service.IntentPath(diskDir, id)
+	rawPath := filepath.Join(diskDir, id.String()+".raw")
+	wsPath := filepath.Join(diskDir, id.String()+"-workspace.ext4")
+	scratchPath := filepath.Join(diskDir, id.String()+"-scratch.ext4")
+
+	// Fixture self-check: all four must survive SIGKILL (defers don't run).
+	// Fail loudly naming the missing file — a silent pass here would mask a
+	// broken subprocess that never reached stage D.
+	for _, tc := range []struct{ name, path string }{
+		{"intent", intentPath},
+		{"raw", rawPath},
+		{"workspace", wsPath},
+		{"scratch", scratchPath},
+	} {
+		if _, err := os.Stat(tc.path); os.IsNotExist(err) {
+			t.Fatalf("SIGKILL at stage D: %s file missing (%s) — defers ran or subprocess did not reach stage D",
+				tc.name, tc.path)
+		}
+	}
+
+	// Recovery: Reap --apply must clean up all four orphaned resources.
+	ctx := context.Background()
+	emptyProcDir := t.TempDir()
+	socketDir := t.TempDir()
+	st := newEmptyStore(t)
+	idx := service.NewResourceIndex(service.IndexConfig{StateRoot: stateRoot, SocketDir: socketDir})
+
+	report, err := service.Reap(ctx, st, idx, true /*apply*/, service.ReapOptions{ProcDir: emptyProcDir})
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+
+	// Verify scratch disk is reported as orphan (RES-R-009).
+	var foundScratch bool
+	for _, e := range report.Entries {
+		if e.Resource.Kind == service.KindDiskScratch && e.Resource.OwnerID == id {
+			foundScratch = true
+			if e.Status != service.ReapStatusOrphan {
+				t.Errorf("scratch disk status = %s, want %s", e.Status, service.ReapStatusOrphan)
+			}
+		}
+	}
+	if !foundScratch {
+		t.Errorf("scratch disk not reported in reap entries — KindDiskScratch not enumerated by ResourceIndex.List()")
+	}
+
+	// All four files must be gone after Reap --apply.
+	if _, err := os.Stat(intentPath); !os.IsNotExist(err) {
+		t.Errorf("intent still present after Reap --apply: %s", intentPath)
+	}
+	if _, err := os.Stat(rawPath); !os.IsNotExist(err) {
+		t.Errorf(".raw still present after Reap --apply: %s", rawPath)
+	}
+	if _, err := os.Stat(wsPath); !os.IsNotExist(err) {
+		t.Errorf("workspace still present after Reap --apply: %s", wsPath)
+	}
+	if _, err := os.Stat(scratchPath); !os.IsNotExist(err) {
+		t.Errorf("scratch still present after Reap --apply: %s", scratchPath)
+	}
+
+	// Fixpoint: second Reap --apply is a no-op (RES-R-009).
+	st2 := newEmptyStore(t)
+	idx2 := service.NewResourceIndex(service.IndexConfig{StateRoot: stateRoot, SocketDir: t.TempDir()})
+	report2, err := service.Reap(ctx, st2, idx2, true /*apply*/, service.ReapOptions{ProcDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("fixpoint Reap: %v", err)
+	}
+	if len(report2.Deleted) != 0 {
+		t.Errorf("fixpoint violated: second Reap --apply deleted %d resource(s): %v",
+			len(report2.Deleted), report2.Deleted)
 	}
 }
 

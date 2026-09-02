@@ -26,6 +26,13 @@ const (
 	KindSocketIID         ResourceKind = "socket_iid"
 	KindBuilderSupervisor ResourceKind = "builder_supervisor"
 
+	// KindDiskScratch identifies the per-sandbox scratch disk image,
+	// <diskDir>/<ULID>-scratch.ext4. Created by CreateAndBoot for workspace
+	// sandboxes (D-SD-01); reclaimed by ReapDiskCopy. ULID-keyed: correlated
+	// against live sandboxes by OwnerID, same as KindDiskRaw / KindDiskWorkspace.
+	// RES-R-005, RES-R-006, RES-R-009, RES-R-012.
+	KindDiskScratch ResourceKind = "disk_scratch"
+
 	// KindSupervisorState identifies a per-sandbox supervisor state directory,
 	// <stateRoot>/supervisors/<ULID>/ (see internal/core/statedir). It holds
 	// spawn.json, supervisor.log, egress-decisions.jsonl and — as of the CA
@@ -149,6 +156,18 @@ func (x *ResourceIndex) List() ([]HostResource, error) {
 				continue
 			}
 			resources = append(resources, HostResource{Kind: KindDiskWorkspace, Path: path, OwnerID: id})
+
+		case strings.HasSuffix(name, "-scratch.ext4"):
+			// Scratch disk (D-SD-01, RES-R-009): sparse image that the guest
+			// reformats as /tmp on every boot. ULID-keyed; correlated the same
+			// way as KindDiskRaw. Must be checked BEFORE diskname.IsShadowDisk
+			// because the shadow-disk matcher also accepts arbitrary .ext4 names.
+			stem := strings.TrimSuffix(name, "-scratch.ext4")
+			id, err := domain.ParseSandboxID(stem)
+			if err != nil {
+				continue
+			}
+			resources = append(resources, HostResource{Kind: KindDiskScratch, Path: path, OwnerID: id})
 
 		case strings.HasSuffix(name, shadowIntentSuffix):
 			// Shadow intent: published before any shadow disk for this handle

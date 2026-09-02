@@ -45,6 +45,13 @@ func ReapDiskCopy(diskDir string, id domain.SandboxID) error {
 	if err := os.Remove(filepath.Join(diskDir, id.String()+".create-intent.json")); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	// Remove scratch disk (-scratch.ext4). Workspace sandboxes get a per-sandbox
+	// sparse image that the guest reformats as /tmp on every boot (D-SD-01,
+	// RES-R-005/006). Non-workspace sandboxes never create it; os.Remove on a
+	// missing path is a no-op via the IsNotExist guard below.
+	if err := os.Remove(filepath.Join(diskDir, id.String()+"-scratch.ext4")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	// Remove the A-MOUNT agent-config staging dir (<id>-agentcfg-lower). The CLI
 	// stages a curated, secret-free copy of the user's agent config here before
 	// boot and mounts it RO at /run/nexus3/agentcfg-lower; it is ID-keyed under
