@@ -467,13 +467,25 @@ func TestWorkspaceE2E(t *testing.T) {
 	// Capture bootDrv so we can use it for the agent probe and to derive the
 	// socket path for SIGKILL.
 	var bootDrv *cloudhypervisor.CHDriver
-	factory := service.DriverFactory(func(resolvedExt4 string) (driver.Driver, error) {
+	factory := service.DriverFactory(func(resolvedExt4 string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
+		// service.DriverFactory gained an extraDisks parameter: CreateAndBoot
+		// passes opts.ExtraDisks plus the workspace disk it appends itself, and
+		// documents the factory as "responsible for mapping them to
+		// cloudhypervisor.ExtraDisk and wiring them into the driver Config".
+		// Dropping them here would silently boot a VM missing /dev/vdb…, so
+		// forward every entry in order — attachment order IS the guest device
+		// order.
+		chDisks := make([]cloudhypervisor.ExtraDisk, len(extraDisks))
+		for i, ed := range extraDisks {
+			chDisks[i] = cloudhypervisor.ExtraDisk{Path: ed.Path}
+		}
 		var newErr error
 		bootDrv, newErr = cloudhypervisor.New(cloudhypervisor.Config{
 			BinaryPath:       chBin,
 			SocketDir:        socketDir,
 			KernelPath:       kernelPath,
 			DiskImagePath:    resolvedExt4,
+			ExtraDisks:       chDisks,
 			SerialOutputPath: serialPath,
 			VCPUs:            1,
 			MemoryMiB:        256,

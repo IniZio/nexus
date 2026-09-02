@@ -10,7 +10,8 @@ package perimetertest
 //
 // # What it tests
 //
-//   - CHDriver (with EnableNetHook=true) creates a TAP fd at Start time, passes it
+//   - CHDriver creates a TAP fd at Start time (unconditionally — the hook is no
+//     longer opt-in), passes it
 //     to CH as an inherited fd via ExtraFiles, and registers it via the fds field
 //     of the vm.create NetConfig JSON payload.
 //   - The driver.NetworkHook capability is discoverable via type assertion on CHDriver.
@@ -161,7 +162,7 @@ var _ perimeter.Perimeter = (*frameCapture)(nil)
 
 // ── tracer test ───────────────────────────────────────────────────────────────
 
-// TestNetworkHookTracer boots a real VM with EnableNetHook=true, obtains the
+// TestNetworkHookTracer boots a real VM, obtains the
 // TAP fd via the driver.NetworkHook capability, attaches a frame-capturing
 // perimeter, and asserts that at least one raw Ethernet frame is read within
 // 30 seconds of boot.
@@ -179,11 +180,16 @@ func TestNetworkHookTracer(t *testing.T) {
 
 	// ── driver setup ─────────────────────────────────────────────────────────
 	socketDir := t.TempDir()
+	// Config.EnableNetHook is gone: the two-TAP/L2-bridge topology is no longer
+	// opt-in. Every CHDriver.Start builds a vmNetConfig and calls
+	// VMCreateWithNet, so d.nets[id] — and therefore the NetworkHook capability
+	// and its TAP fd — is populated unconditionally. Dropping the field asserts
+	// strictly more than it used to (the hook must be present on a plain
+	// Config, not merely when explicitly enabled), so nothing narrows here.
 	cfg := cloudhypervisor.Config{
-		BinaryPath:    chBin,
-		SocketDir:     socketDir,
-		KernelPath:    kernelPath,
-		EnableNetHook: true,
+		BinaryPath: chBin,
+		SocketDir:  socketDir,
+		KernelPath: kernelPath,
 		// Minimal VM: 1 vCPU, 256 MiB. Kernel must have virtio-net for frames.
 		VCPUs:     1,
 		MemoryMiB: 256,
@@ -217,7 +223,7 @@ func TestNetworkHookTracer(t *testing.T) {
 	// ── NetworkHook capability assertion ─────────────────────────────────────
 	hook, ok := drv.(driver.NetworkHook)
 	if !ok {
-		t.Fatal("CHDriver does not implement driver.NetworkHook — EnableNetHook is true but capability is absent")
+		t.Fatal("CHDriver does not implement driver.NetworkHook — the capability is unconditional and must always be present")
 	}
 
 	// ── obtain TAP fd ────────────────────────────────────────────────────────
