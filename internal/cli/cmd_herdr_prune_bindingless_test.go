@@ -414,6 +414,26 @@ func TestPathPositivelyGone(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// An unreadable PARENT makes Lstat fail with EACCES rather than ENOENT.
+	// This is the only case that separates "positively absent" from "Lstat
+	// returned some error", and it is the whole point of the guard: an
+	// unreadable path is AMBIGUOUS and must resolve to KEEP, never to a reap.
+	// Without this case `errors.Is(err, os.ErrNotExist)` and a bare
+	// `err != nil` are indistinguishable, and the mutation that swaps them
+	// survives — verified on 2026-09-02.
+	var unreadable string
+	if os.Geteuid() != 0 { // root ignores the mode bits, so the case cannot be built
+		locked := filepath.Join(tmp, "locked")
+		if err := os.MkdirAll(filepath.Join(locked, "child"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(locked, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+		unreadable = filepath.Join(locked, "child")
+	}
+
 	cases := []struct {
 		name string
 		path string
@@ -423,6 +443,13 @@ func TestPathPositivelyGone(t *testing.T) {
 		{"present directory is not gone", present, false},
 		{"dangling symlink still exists", dangling, false},
 		{"empty path is never gone", "", false},
+	}
+	if unreadable != "" {
+		cases = append(cases, struct {
+			name string
+			path string
+			want bool
+		}{"unreadable parent is ambiguous, not gone", unreadable, false})
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
