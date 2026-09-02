@@ -569,6 +569,15 @@ func TestNetnsProcess_UninspectableEnviron(t *testing.T) {
 	if err := os.Mkdir(environPath, 0o700); err != nil {
 		t.Fatalf("mkdir environ (as a directory, to force EISDIR): %v", err)
 	}
+	// The fixture must be self-checking, not comment-checked. A comment cannot
+	// fail; this can. It fires as root, and it is agnostic to HOW the file was
+	// made unreadable — it survives a revert to chmod, and an ACL, and anything
+	// else someone reaches for. Without it, a vacuous fixture goes green.
+	if _, err := os.ReadFile(environPath); err == nil {
+		t.Fatalf("fixture is vacuous: environ is READABLE as uid %d, so the "+
+			"uninspectable branch will never run and the assertions below cannot fail",
+			os.Getuid())
+	}
 
 	st := newEmptyStore(t)
 	idx := service.NewResourceIndex(service.IndexConfig{
