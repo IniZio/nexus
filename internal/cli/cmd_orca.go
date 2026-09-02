@@ -355,7 +355,7 @@ func buildOrcaSpawnConfig(
 	if hasWorkspaceDisk && guestPath != "" {
 		mounts = []agent.GuestMount{WorkspaceGuestMount(guestPath, workspaceDiskIndex)}
 	}
-	cmdline := guestBootCmdline(mounts, arArgs, sandboxHandle)
+	cmdline := guestBootCmdline(mounts, arArgs, sandboxHandle, -1)
 
 	return supervisor.SpawnConfig{
 		Config: supervisor.Config{

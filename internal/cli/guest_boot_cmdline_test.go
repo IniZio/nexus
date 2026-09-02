@@ -18,7 +18,7 @@ import (
 
 func TestGuestBootCmdline_NoMounts(t *testing.T) {
 	t.Parallel()
-	got := guestBootCmdline(nil, " --auto-resize", "proj/name")
+	got := guestBootCmdline(nil, " --auto-resize", "proj/name", -1)
 
 	if !strings.HasPrefix(got, diskBootCmdlineBase+" --") {
 		t.Errorf("cmdline must start with the base boot args; got %q", got)
@@ -37,7 +37,7 @@ func TestGuestBootCmdline_WithMounts(t *testing.T) {
 		{Device: "/dev/vdb", Target: "/workspace", FSType: "ext4", IsWorkspace: true},
 		{Device: "/dev/vdc", Target: "/cache", FSType: "ext4", ReadOnly: true},
 	}
-	got := guestBootCmdline(mounts, " --auto-resize", "proj/name")
+	got := guestBootCmdline(mounts, " --auto-resize", "proj/name", -1)
 
 	if n := strings.Count(got, "--workspace-mount="); n != len(mounts) {
 		t.Errorf("expected one --workspace-mount token per mount (%d), got %d in %q", len(mounts), n, got)
@@ -67,7 +67,7 @@ func TestGuestBootCmdline_SupervisorReconstructionMatchesCreate(t *testing.T) {
 	memMaxMiB := uint32(bounds.MemMaxBytes / (1024 * 1024)) //nolint:gosec // bytes→MiB, fits uint32
 	pid1Args := vmcfg.Resolve(vmcfg.Config{MemMaxMiB: memMaxMiB}).PID1Args
 
-	create := guestBootCmdline(mounts, pid1Args, handle)
+	create := guestBootCmdline(mounts, pid1Args, handle, -1)
 
 	cfg := buildOrcaSpawnConfig(
 		"01J0SPAWN", handle, t.TempDir(), t.TempDir(), "", "", "/k", "/d",

@@ -117,11 +117,18 @@ func main() {
 	var sandboxHandle string // set from --sandbox-handle=<handle> on the kernel cmdline
 	var isBuilderRole bool
 	var cacheDiskMounts []agent.CacheDiskMount
+	var scratchDev string // set from --scratch-disk=<dev> on the kernel cmdline
 	{
 		for _, arg := range os.Args[1:] {
 			switch {
 			case arg == "--builder-role":
 				isBuilderRole = true
+			case strings.HasPrefix(arg, "--scratch-disk="):
+				if dev, ok := parseScratchDiskArg(arg); ok {
+					scratchDev = dev
+				} else {
+					consoleLog(con, "nexus3-agent: ignoring malformed --scratch-disk arg: %q\n", arg)
+				}
 			case strings.HasPrefix(arg, "--mem-ceiling="):
 				v := strings.TrimPrefix(arg, "--mem-ceiling=")
 				if n, err := strconv.ParseInt(v, 10, 64); err == nil {
@@ -188,6 +195,9 @@ func main() {
 	// mutation-proves that the guard cannot be removed.
 	coldBootCfg := bootConfig{
 		mountGuestFS: func() { /* already done above */ },
+		wipeScratchDisk: func(dev string) error {
+			return wipeMountScratchDisk(dev, con)
+		},
 		initPid1Env:  func() { /* already done above */ },
 		setupNetwork: func() { /* already done above */ },
 		startSSHD:    func() { /* already done above */ },
@@ -201,7 +211,7 @@ func main() {
 		},
 		runBootTasks: func() { runBootTasks(con) },
 	}
-	if err := runColdBootInit(hotSwap, isPid1, wsMounts, coldBootCfg, nil); err != nil {
+	if err := runColdBootInit(hotSwap, isPid1, wsMounts, scratchDev, coldBootCfg, nil); err != nil {
 		consoleFatal(con, isPid1, "nexus3-agent: workspace mount failed: %v\n", err)
 	}
 

@@ -117,6 +117,9 @@ func BuildSupervisorArgv(cfg SpawnConfig) []string {
 	if cfg.HasWorkspaceDisk {
 		args = append(args, "--workspace-disk-index", strconv.Itoa(cfg.WorkspaceDiskIndex))
 	}
+	if cfg.HasScratchDisk {
+		args = append(args, "--scratch-disk-index", strconv.Itoa(cfg.ScratchDiskIndex))
+	}
 	// WorkspaceGuestPath: forwarded when non-empty so the supervisor can seed
 	// the operator's git identity into the guest (GIT-SEED, D-PD-29).
 	if cfg.WorkspaceGuestPath != "" {

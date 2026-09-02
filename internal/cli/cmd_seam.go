@@ -97,7 +97,7 @@ func buildSandboxDriverFactory(spec sandboxDriverSpec, caps *sandboxDriverCaptur
 		// Otherwise fall back to the simple disk-boot base + PID1Args form that
 		// ephemeral/run paths use (preserves pre-existing behavior there).
 		if spec.SBHandle != "" || len(spec.GuestMounts) > 0 {
-			cfg.Cmdline = guestBootCmdline(spec.GuestMounts, spec.PID1Args, spec.SBHandle)
+			cfg.Cmdline = guestBootCmdline(spec.GuestMounts, spec.PID1Args, spec.SBHandle, -1)
 		} else if spec.PID1Args != "" {
 			cfg.Cmdline = diskBootCmdlineBase + " --" + spec.PID1Args
 		}

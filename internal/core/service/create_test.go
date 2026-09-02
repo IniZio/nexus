@@ -400,6 +400,11 @@ func TestCreateAndBoot_WorkspaceReachesFactory(t *testing.T) {
 				GuestPath:  "/workspace/repo",
 			},
 			WorkspaceCapturer: stubCapturer(nil, &calledOutExt4, nil),
+			// NoScratchDisk suppresses the scratch disk (D-SD-02 off-switch) so this
+			// test stays focused on the workspace-threading seam without needing to
+			// accommodate the second disk. Scratch-disk ordering is covered separately
+			// by TestScratchDiskOrderIsLast (scratch_disk_order_test.go).
+			NoScratchDisk: true,
 		},
 	)
 	if err != nil {

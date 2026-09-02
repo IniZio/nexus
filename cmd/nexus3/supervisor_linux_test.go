@@ -141,6 +141,8 @@ func TestParseSupervisorFlags_EveryConfigFieldSurvives(t *testing.T) {
 		BootVCPUs:            2,
 		HasWorkspaceDisk:     true,
 		WorkspaceDiskIndex:   0,
+		HasScratchDisk:       true,
+		ScratchDiskIndex:     1,
 		GovBounds: resize.Bounds{
 			MemMinBytes:  512 << 20,
 			MemMaxBytes:  4096 << 20,
@@ -180,7 +182,7 @@ func TestParseSupervisorFlags_EveryConfigFieldSurvives(t *testing.T) {
 	v := reflect.ValueOf(in)
 	for i := 0; i < v.NumField(); i++ {
 		name := v.Type().Field(i).Name
-		if name == "WorkspaceDiskIndex" {
+		if name == "WorkspaceDiskIndex" || name == "ScratchDiskIndex" {
 			continue
 		}
 		if v.Field(i).IsZero() {

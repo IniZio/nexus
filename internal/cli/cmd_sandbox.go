@@ -962,12 +962,25 @@ func workspaceMountCmdline(mounts []agent.GuestMount) string {
 //
 // mounts may be empty: a sandbox with no workspace, shadow or live mounts boots
 // on the base args alone.
-func guestBootCmdline(mounts []agent.GuestMount, pid1Args, sandboxHandle string) string {
+func guestBootCmdline(mounts []agent.GuestMount, pid1Args, sandboxHandle string, scratchDiskIdx int) string {
 	base := diskBootCmdlineBase + " --"
 	if len(mounts) > 0 {
 		base = workspaceMountCmdline(mounts)
 	}
-	return base + pid1Args + " --sandbox-handle=" + sandboxHandleHostname(sandboxHandle)
+	return base + pid1Args + scratchDiskCmdlineArg(scratchDiskIdx) + " --sandbox-handle=" + sandboxHandleHostname(sandboxHandle)
+}
+
+// scratchDiskCmdlineArg returns the kernel cmdline token that tells the
+// in-guest init to wipe and mount the scratch disk at /tmp (D-SD-01).
+// idx is the 0-based ExtraDisks index of the scratch disk.
+// Returns "" when idx < 0 (no scratch disk attached).
+func scratchDiskCmdlineArg(idx int) string {
+	if idx < 0 {
+		return ""
+	}
+	// Device path: ExtraDisks[idx] → /dev/vd{b+idx}
+	dev := fmt.Sprintf("/dev/vd%c", 'b'+rune(idx))
+	return fmt.Sprintf(" --scratch-disk=%s", dev)
 }
 
 // resolveAgentPosture derives the three create-time settings that --agent
@@ -2168,6 +2181,8 @@ func handoffHumanSupervisor(
 		kernelPath, govBounds, memoryMiB, bootVCPUs,
 		diskPath, extraDisks, cmdline, chBin, socketDir,
 		hasWorkspace, workspaceDiskIndex, numNamedDisks, workspaceGuestPath,
+		hasWorkspace,                             // hasScratchDisk: workspace sandboxes always get scratch
+		numNamedDisks+workspaceDiskIndex+1,        // scratchDiskIndex: after workspace disk
 		liveMounts, virtiofsdPath,
 		nestedVirt,
 		mcpOAuthRefreshConfigs,
@@ -2223,6 +2238,8 @@ func buildHumanSupervisorConfig(
 	workspaceDiskIndex int,
 	numNamedDisks int, // number of kind=disk named volumes prepended to ExtraDisks[0..n-1]
 	workspaceGuestPath string, // GIT-SEED: git identity seed target
+	hasScratchDisk bool,
+	scratchDiskIndex int,
 	liveMounts []domain.LiveMount,
 	virtiofsdPath string,
 	nestedVirt bool,
@@ -2255,6 +2272,8 @@ func buildHumanSupervisorConfig(
 		BootVCPUs:          bootVCPUs,
 		HasWorkspaceDisk:   hasWorkspace,
 		WorkspaceDiskIndex: numNamedDisks + workspaceDiskIndex,
+		HasScratchDisk:     hasScratchDisk,
+		ScratchDiskIndex:   scratchDiskIndex,
 		ResizableDiskIndices: resizableDiskIndices,
 		WorkspaceGuestPath: workspaceGuestPath,
 		GovBounds:          govBounds,

@@ -10,10 +10,11 @@ import (
 // *steps.  Tests replace individual fields to verify gating.
 func makeBootConfig(steps *[]string) bootConfig {
 	return bootConfig{
-		mountGuestFS: func() { *steps = append(*steps, "mountGuestFS") },
-		initPid1Env:  func() { *steps = append(*steps, "initPid1Env") },
-		setupNetwork: func() { *steps = append(*steps, "setupNetwork") },
-		startSSHD:    func() { *steps = append(*steps, "startSSHD") },
+		mountGuestFS:    func() { *steps = append(*steps, "mountGuestFS") },
+		wipeScratchDisk: func(dev string) error { return nil },
+		initPid1Env:     func() { *steps = append(*steps, "initPid1Env") },
+		setupNetwork:    func() { *steps = append(*steps, "setupNetwork") },
+		startSSHD:       func() { *steps = append(*steps, "startSSHD") },
 		mountWorkspace: func(mounts []agent.GuestMount) error {
 			*steps = append(*steps, "mountWorkspace")
 			return nil
@@ -41,7 +42,7 @@ func TestBootSequence_ColdBoot_AllStepsRun(t *testing.T) {
 	cfg := makeBootConfig(&steps)
 	wsMounts := []agent.GuestMount{{Device: "/dev/vda", Target: "/workspace"}}
 
-	if err := runColdBootInit(false, true, wsMounts, cfg, nil); err != nil {
+	if err := runColdBootInit(false, true, wsMounts, "", cfg, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -61,7 +62,7 @@ func TestBootSequence_HotSwap_NoColdBootSteps(t *testing.T) {
 	cfg := makeBootConfig(&steps)
 	wsMounts := []agent.GuestMount{{Device: "/dev/vda", Target: "/workspace"}}
 
-	if err := runColdBootInit(true, true, wsMounts, cfg, nil); err != nil {
+	if err := runColdBootInit(true, true, wsMounts, "", cfg, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -93,7 +94,7 @@ func TestBootSequence_HotSwap_MountWorkspace_GuardIsRequired(t *testing.T) {
 	}
 	wsMounts := []agent.GuestMount{{Device: "/dev/vda", Target: "/workspace"}}
 
-	_ = runColdBootInit(true, true, wsMounts, cfg, nil)
+	_ = runColdBootInit(true, true, wsMounts, "", cfg, nil)
 
 	if mountCalled {
 		t.Error("MUTATION DETECTED: mountWorkspace was called during hot-swap; " +
@@ -117,7 +118,7 @@ func TestBootSequence_HotSwap_SetupNetwork_GuardIsRequired(t *testing.T) {
 		runBootTasks:   func() {},
 	}
 
-	_ = runColdBootInit(true, true, nil, cfg, nil)
+	_ = runColdBootInit(true, true, nil, "", cfg, nil)
 
 	if networkCalled {
 		t.Error("MUTATION DETECTED: setupNetwork was called during hot-swap; guard removed")
@@ -136,7 +137,7 @@ func TestBootSequence_ColdBoot_RecorderCapturesOrder(t *testing.T) {
 	cfg := makeBootConfig(&steps)
 	wsMounts := []agent.GuestMount{{Device: "/dev/vda", Target: "/workspace"}}
 
-	_ = runColdBootInit(false, true, wsMounts, cfg, recorder)
+	_ = runColdBootInit(false, true, wsMounts, "", cfg, recorder)
 
 	// Recorder must have fired for each step.
 	for _, want := range []string{"mountGuestFS", "mountWorkspace", "runBootTasks"} {
@@ -155,7 +156,7 @@ func TestBootSequence_NonPid1_ColdBoot_Pid1StepsSkipped(t *testing.T) {
 	cfg := makeBootConfig(&steps)
 	wsMounts := []agent.GuestMount{{Device: "/dev/vda", Target: "/workspace"}}
 
-	_ = runColdBootInit(false, false /*isPid1=false*/, wsMounts, cfg, nil)
+	_ = runColdBootInit(false, false /*isPid1=false*/, wsMounts, "", cfg, nil)
 
 	for _, forbidden := range []string{"mountGuestFS", "initPid1Env", "setupNetwork", "startSSHD", "runBootTasks"} {
 		if containsStep(steps, forbidden) {
@@ -165,5 +166,57 @@ func TestBootSequence_NonPid1_ColdBoot_Pid1StepsSkipped(t *testing.T) {
 	// mountWorkspace is not PID-1-gated; it should still run.
 	if !containsStep(steps, "mountWorkspace") {
 		t.Errorf("non-PID-1: mountWorkspace must still run on cold boot, got %v", steps)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scratch disk: wipeScratchDisk called on cold PID-1 boot with a device.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestBootSequence_ScratchDisk_CalledOnColdBootWithDev(t *testing.T) {
+	var wipeCalled string
+	var steps []string
+	cfg := makeBootConfig(&steps)
+	cfg.wipeScratchDisk = func(dev string) error {
+		wipeCalled = dev
+		return nil
+	}
+
+	_ = runColdBootInit(false, true, nil, "/dev/vdc", cfg, nil)
+
+	if wipeCalled != "/dev/vdc" {
+		t.Errorf("wipeScratchDisk: got %q, want %q", wipeCalled, "/dev/vdc")
+	}
+}
+
+func TestBootSequence_ScratchDisk_SkippedOnHotSwap(t *testing.T) {
+	var wipeCalled bool
+	var steps []string
+	cfg := makeBootConfig(&steps)
+	cfg.wipeScratchDisk = func(_ string) error {
+		wipeCalled = true
+		return nil
+	}
+
+	_ = runColdBootInit(true, true, nil, "/dev/vdc", cfg, nil)
+
+	if wipeCalled {
+		t.Error("MUTATION DETECTED: wipeScratchDisk called during hot-swap; guard removed")
+	}
+}
+
+func TestBootSequence_ScratchDisk_SkippedWhenNoDev(t *testing.T) {
+	var wipeCalled bool
+	var steps []string
+	cfg := makeBootConfig(&steps)
+	cfg.wipeScratchDisk = func(_ string) error {
+		wipeCalled = true
+		return nil
+	}
+
+	_ = runColdBootInit(false, true, nil, "", cfg, nil)
+
+	if wipeCalled {
+		t.Error("wipeScratchDisk called with empty dev; should be a no-op")
 	}
 }

@@ -155,6 +155,17 @@ type Config struct {
 	// filesystem, which is data loss, not a build failure.
 	WorkspaceDiskIndex int
 
+	// HasScratchDisk indicates a scratch disk is attached as the last ExtraDisk.
+	// When true, the supervisor passes --scratch-disk-index to the in-guest init
+	// so it can wipe and mount the device as /tmp (D-DC-32, D-SD-01).
+	HasScratchDisk bool
+
+	// ScratchDiskIndex is the 0-based ExtraDisks index of the scratch disk.
+	// Meaningful only when HasScratchDisk is true. Always len(ExtraDisks)-1
+	// at supervisor spawn — the scratch disk is always the last disk.
+	// A wrong index means mkfs.ext4 targets the wrong device: data loss.
+	ScratchDiskIndex int
+
 	// ResizableDiskIndices lists the 0-based ExtraDisks indices whose ext4
 	// filesystems the governor may auto-grow.  This is the generic replacement
 	// for HasWorkspaceDisk/WorkspaceDiskIndex: when non-empty it takes

@@ -44,6 +44,26 @@ type ExtraDisk struct {
 	Path string
 }
 
+// ScratchDisk* constants define the naming and guest-side contract for the
+// per-sandbox scratch disk that replaces /tmp tmpfs for workspace sandboxes
+// (D-DC-32, D-SD-01, D-SD-02). These are the authoritative contract consumed
+// by this package (host creation), the CLI (cmdline token), and the in-guest
+// agent (wipe+mount).
+const (
+	// ScratchDiskGuestMount is the in-guest mount point of the scratch disk.
+	ScratchDiskGuestMount = "/tmp"
+	// ScratchDiskDefaultBytes is the initial sparse size of the scratch disk.
+	// The file is hole-punched (no bytes allocated on host until guest writes).
+	ScratchDiskDefaultBytes int64 = 8 << 30 // 8 GiB
+)
+
+// ScratchDiskHostPath returns the host filesystem path for a sandbox's scratch
+// disk image. Follows the same <diskDir>/<id>-<role>.ext4 convention as the
+// workspace disk.
+func ScratchDiskHostPath(diskDir, id string) string {
+	return filepath.Join(diskDir, id+"-scratch.ext4")
+}
+
 // WorkspaceSpec describes a host git worktree to capture and attach to the
 // sandbox VM as a read-write workspace disk. When set in CreateAndBootOptions,
 // CreateAndBoot calls builder.WorktreeToDisk to snapshot the tree to a raw
@@ -298,6 +318,11 @@ type CreateAndBootOptions struct {
 	// mke2fs on the test host.
 	WorkspaceCapturer func(ctx context.Context, srcDir, outExt4 string, maxBytes int64) error
 
+	// NoScratchDisk disables the per-sandbox scratch disk even when Workspace is
+	// non-nil. The zero value (false) attaches a scratch disk to every workspace
+	// sandbox (D-SD-02: off-switch, not an on-flag).
+	NoScratchDisk bool
+
 	// GitSeeder is an optional GuestSeeder that delivers the per-sandbox git
 	// identity configuration (user.name, user.email, safe.directory,
 	// init.defaultBranch) to GuestGitconfigPath (/root/.gitconfig) in the
@@ -473,7 +498,7 @@ func CreateAndBoot(
 
 	// Pre-compute planned disk paths so the intent can record them before the
 	// files actually exist on disk.
-	var diskCopyPath, workspaceDiskPath string
+	var diskCopyPath, workspaceDiskPath, scratchDiskPath string
 	if needsDisk {
 		diskCopyPath = filepath.Join(diskDir, id.String()+".raw")
 	}
@@ -563,6 +588,9 @@ func CreateAndBoot(
 			}
 			if workspaceDiskPath != "" {
 				_ = os.Remove(workspaceDiskPath)
+			}
+			if scratchDiskPath != "" {
+				_ = os.Remove(scratchDiskPath)
 			}
 		}
 	}()
@@ -746,6 +774,29 @@ func CreateAndBoot(
 		if len(namedDiskExtras) > 0 {
 			opts.ExtraDisks = append(namedDiskExtras, opts.ExtraDisks...)
 		}
+	}
+
+	// 4.9 Scratch disk (workspace sandboxes only, D-SD-01, D-SD-02)
+	//
+	// The scratch disk is a sparse raw image with NO filesystem — the in-guest
+	// agent wipes and reformats it as ext4 at every boot and mounts it at
+	// ScratchDiskGuestMount (/tmp). The wipe-at-every-boot policy (D-SD-01) means
+	// stop/start never resurrects last session's worktrees; /workspace is the
+	// durable surface.
+	//
+	// ORDERING INVARIANT: this append runs AFTER the namedDiskExtras prepend
+	// (step 4.7 above), so scratch is always the last element of ExtraDisks.
+	// The device-index contract (len(ExtraDisks)-1 after this step) is asserted
+	// by TestScratchDiskOrderIsLast. Do NOT move this block before step 4.7.
+	if opts.Workspace != nil && !opts.NoScratchDisk {
+		if err = os.MkdirAll(diskDir, 0o700); err != nil {
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: scratch disk dir mkdir: %w", project, name, err)
+		}
+		scratchDiskPath = ScratchDiskHostPath(diskDir, id.String())
+		if err = createSparseDisk(scratchDiskPath, ScratchDiskDefaultBytes); err != nil {
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: create scratch disk: %w", project, name, err)
+		}
+		opts.ExtraDisks = append(opts.ExtraDisks, ExtraDisk{Path: scratchDiskPath})
 	}
 
 	// 5. Construct per-sandbox driver instance
@@ -1313,6 +1364,23 @@ func resolveAllowedBranches(opts CreateAndBootOptions) []string {
 		return []string{domain.UnresolvedBranchSentinel}
 	}
 	return []string{"refs/heads/" + branch}
+}
+
+// createSparseDisk creates a sparse raw disk image of the given size.
+// os.Truncate creates a sparse (hole-punched) file on Linux — no host bytes
+// are allocated until the guest actually writes. No filesystem is written;
+// the in-guest agent reformats the device at every boot (D-SD-01).
+func createSparseDisk(path string, sizeBytes int64) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if err = f.Truncate(sizeBytes); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	return f.Close()
 }
 
 // namedVolumeAttachments converts NamedVolumeMount slice to domain.VolumeAttachment

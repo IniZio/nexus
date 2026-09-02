@@ -178,6 +178,9 @@ func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSoc
 		parentPipeFD = fs.Int("parent-pipe-fd", 0, "parent-watchdog pipe read fd (0 = none; ephemeral only)")
 		// workspaceDiskIndex: 0-based ExtraDisks index of the workspace disk.
 		workspaceDiskIndex = fs.Int("workspace-disk-index", -1, "workspace disk ExtraDisks index (-1 = no disk axis)")
+		// scratchDiskIndex: 0-based ExtraDisks index of the scratch disk.
+		// -1 means no scratch disk (non-workspace sandboxes, or NoScratchDisk=true).
+		scratchDiskIndex = fs.Int("scratch-disk-index", -1, "scratch disk ExtraDisks index (-1 = no scratch disk)")
 		// workspaceGuestPath: in-guest mount point of the workspace disk. When
 		// non-empty the supervisor seeds the operator's git identity into the
 		// guest after the human-secret seed loop (GIT-SEED, D-PD-29).
@@ -262,6 +265,8 @@ func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSoc
 		// default means no workspace disk is attached; the disk axis is skipped.
 		HasWorkspaceDisk:     *workspaceDiskIndex >= 0,
 		WorkspaceDiskIndex:   *workspaceDiskIndex,
+		HasScratchDisk:       *scratchDiskIndex >= 0,
+		ScratchDiskIndex:     *scratchDiskIndex,
 		WorkspaceGuestPath:   *workspaceGuestPath,
 		ExtraDisks:           []string(extraDisks),
 		ResizableDiskIndices: []int(resizableDiskIndices),

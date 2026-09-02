@@ -88,6 +88,7 @@ func TestBuildHumanSupervisorConfig_AllFieldsPopulated(t *testing.T) {
 		1,                                                        // workspaceDiskIndex (non-zero, = 1 shadow disk)
 		1,                                                        // numNamedDisks (non-zero, = 1 docker named volume)
 		"/workspace/proj",                                        // workspaceGuestPath
+		true, 3,                                                  // hasScratchDisk, scratchDiskIndex (numNamedDisks+workspaceDiskIndex+1 = 1+1+1)
 		[]domain.LiveMount{{HostPath: "/src", GuestPath: "/work"}}, // liveMounts
 		"/usr/bin/virtiofsd", // virtiofsdPath
 		true,                 // nestedVirt — non-zero for AllFieldsPopulated
@@ -133,6 +134,7 @@ func TestBuildHumanSupervisorConfig_CredsFilePopulated(t *testing.T) {
 		"/disks/sb.raw", nil,
 		"root=/dev/vda rw", "/usr/bin/cloud-hypervisor", "/tmp/sockets",
 		false, 0, 0, "",
+		false, -1, // hasScratchDisk, scratchDiskIndex — no workspace, no scratch
 		nil, "",
 		false, // nestedVirt
 		nil,   // mcpOAuthRefreshConfigs — optional
@@ -200,6 +202,7 @@ func TestBuildHumanSupervisorConfig_NamedDiskResizableIndices(t *testing.T) {
 				"/disks/sb.raw", nil,
 				"root=/dev/vda rw", "/usr/bin/cloud-hypervisor", "/tmp/sockets",
 				tc.hasWorkspace, tc.numShadowDisks, tc.numNamedDisks, "",
+				tc.hasWorkspace, tc.numNamedDisks+tc.numShadowDisks+1, // hasScratchDisk, scratchDiskIndex
 				nil, "",
 				false, // nestedVirt
 				nil,

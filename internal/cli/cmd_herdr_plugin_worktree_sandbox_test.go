@@ -761,6 +761,7 @@ func TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksReachResizableDiskIndices
 		0,             // workspaceDiskIndex
 		numNamedDisks, // real value derived above, not hand-picked
 		"/workspace/proj",
+		true, numNamedDisks+1, // hasScratchDisk, scratchDiskIndex (after workspace)
 		nil, "", false, nil,
 	)
 

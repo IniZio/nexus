@@ -33,6 +33,10 @@ type bootConfig struct {
 	setupNetwork func()
 	// startSSHD starts the in-guest sshd.
 	startSSHD func()
+	// wipeScratchDisk wipes, reformats, and mounts the scratch disk at /tmp.
+	// dev is the guest block device path (e.g. "/dev/vdc").
+	// Called only when isPid1, !hotSwap, and a scratch disk is attached.
+	wipeScratchDisk func(dev string) error
 	// mountWorkspace mounts workspace and shadow disks from wsMounts.
 	// Returns an error that the caller handles (consoleFatal in production).
 	mountWorkspace func(mounts []agent.GuestMount) error
@@ -53,6 +57,7 @@ func runColdBootInit(
 	hotSwap bool,
 	isPid1 bool,
 	wsMounts []agent.GuestMount,
+	scratchDev string,
 	cfg bootConfig,
 	recorder func(string),
 ) error {
@@ -66,6 +71,12 @@ func runColdBootInit(
 	if isPid1 && !hotSwap {
 		record("mountGuestFS")
 		cfg.mountGuestFS()
+		if scratchDev != "" && cfg.wipeScratchDisk != nil {
+			record("wipeScratchDisk")
+			if err := cfg.wipeScratchDisk(scratchDev); err != nil {
+				return err
+			}
+		}
 		record("initPid1Env")
 		cfg.initPid1Env()
 		record("setupNetwork")
