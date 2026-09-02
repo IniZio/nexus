@@ -977,6 +977,41 @@ func workspaceMountCmdline(mounts []agent.GuestMount) string {
 func bootScratchDiskPresent(workspacePath string, liveMounts []domain.LiveMount) bool {
 	return workspacePath != "" || service.HasWorkspaceMount(liveMounts)
 }
+
+// buildLiveMountDriverSpec assembles a sandboxDriverSpec from resolved CLI
+// flags and boot-time mount slices. It is a pure extraction of the spec
+// assembly that previously lived inline inside the newDriver closure in
+// sandboxCreate.Run; the closure now calls this function at invocation time
+// (not creation time) so that bootLiveMounts and bootGuestMounts are read
+// with their final values — appended to at several points after the closure
+// is defined but before CreateAndBoot calls it.
+func buildLiveMountDriverSpec(
+	f sandboxCreateFlags,
+	ar vmcfg.Result,
+	kernelPath string,
+	bootLiveMounts []domain.LiveMount,
+	bootGuestMounts []agent.GuestMount,
+	namedDiskMounts []agent.GuestMount,
+	project, name string,
+) sandboxDriverSpec {
+	liveGuestMounts := liveMountsToGuestMounts(bootLiveMounts)
+	allGuestMounts := append(append([]agent.GuestMount{}, namedDiskMounts...),
+		append(bootGuestMounts, liveGuestMounts...)...)
+	return sandboxDriverSpec{
+		KernelPath:     kernelPath,
+		MemoryMiB:      f.memoryMiB,
+		VCPUs:          f.vcpus,
+		MemoryMaxMiB:   ar.MemoryMaxMiB,
+		VCPUMax:        ar.VCPUMax,
+		NestedVirt:     f.nestedVirt,
+		PID1Args:       ar.PID1Args,
+		SBHandle:       project + "/" + name,
+		LiveMounts:     bootLiveMounts,
+		GuestMounts:    allGuestMounts,
+		HasScratchDisk: bootScratchDiskPresent(f.workspacePath, bootLiveMounts),
+	}
+}
+
 func guestBootCmdline(mounts []agent.GuestMount, pid1Args, sandboxHandle string, scratchDiskIdx int) string {
 	base := diskBootCmdlineBase + " --"
 	if len(mounts) > 0 {
@@ -1715,32 +1750,11 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// is defined but before CreateAndBoot calls it — are captured by reference
 	// and read with their final values. caps is populated for supervisor handoff.
 	newDriver := func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
-		// Combine disk-based mounts (workspace + shadow) with virtiofs live mounts.
-		// Named kind=disk volume mounts occupy the lowest device indices
-		// (ExtraDisks[0..k-1] → /dev/vdb..), so they lead; shadow/workspace disks
-		// were offset past them above, and live virtiofs mounts use tags. Agent
-		// planMountOrder re-sorts by depth, so cmdline order is cosmetic — only the
-		// per-mount device index must match the ExtraDisks layout.
-		// VirtiofsTag is the SINGLE SOURCE OF TRUTH for the per-mount tag (D-PD-53).
-		liveGuestMounts := liveMountsToGuestMounts(bootLiveMounts)
-		allGuestMounts := append(append([]agent.GuestMount{}, namedDiskMounts...),
-			append(bootGuestMounts, liveGuestMounts...)...)
-		spec := sandboxDriverSpec{
-			KernelPath:   kernelPath,
-			MemoryMiB:    f.memoryMiB,
-			VCPUs:        f.vcpus,
-			MemoryMaxMiB: ar.MemoryMaxMiB,
-			VCPUMax:      ar.VCPUMax,
-			NestedVirt:   f.nestedVirt,
-			PID1Args:     ar.PID1Args,
-			SBHandle:     project + "/" + name,
-			LiveMounts:   bootLiveMounts,
-			GuestMounts:  allGuestMounts,
-			// bootScratchDiskPresent covers both workspace routes (capture +
-			// virtiofs LiveMount). Read at call time so bootLiveMounts is
-			// fully populated (see :1703 note). Extracted for testability.
-			HasScratchDisk: bootScratchDiskPresent(f.workspacePath, bootLiveMounts),
-		}
+		// buildLiveMountDriverSpec is called here — at closure invocation time,
+		// not at creation time — so bootLiveMounts and bootGuestMounts are read
+		// with their final values. Both slices are appended to in the workspace
+		// block and A-MOUNT block below (see the timing note above this closure).
+		spec := buildLiveMountDriverSpec(f, ar, kernelPath, bootLiveMounts, bootGuestMounts, namedDiskMounts, project, name)
 		return buildSandboxDriverFactory(spec, &caps)(ext4Path, extraDisks)
 	}
 

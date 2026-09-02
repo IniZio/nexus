@@ -284,3 +284,85 @@ func TestBuildSandboxDriverFactory_WorktreeShape_ScratchDiskInCmdline(t *testing
 		t.Errorf("worktree-shape cmdline must contain --scratch-disk=/dev/vdb; got %q", caps.Cmdline)
 	}
 }
+
+// TestBuildLiveMountDriverSpec_WorktreeShape kills Mutant A:
+// changing bootLiveMounts to nil at the buildLiveMountDriverSpec call site in
+// the newDriver closure (cmd_sandbox.go) causes bootScratchDiskPresent("", nil)
+// to return false, and this assertion fails — the mutation is detected.
+//
+// Unlike TestBuildSandboxDriverFactory_WorktreeShape_ScratchDiskInCmdline, this
+// test calls buildLiveMountDriverSpec directly, so HasScratchDisk is computed
+// by the production code path at line 1742 (now inside buildLiveMountDriverSpec)
+// rather than in test code. That is the code path Mutant A targets.
+func TestBuildLiveMountDriverSpec_WorktreeShape(t *testing.T) {
+	// Worktree shape: no --workspace flag (workspacePath == ""), but a
+	// /workspace/<name> LiveMount is present (herdr --file path).
+	liveMounts := []domain.LiveMount{
+		{HostPath: "/host/myrepo", GuestPath: "/workspace/myrepo"},
+	}
+
+	f := sandboxCreateFlags{
+		memoryMiB: 1024,
+		vcpus:     2,
+		// workspacePath is intentionally "" — worktree shape uses a LiveMount.
+	}
+	ar := vmcfg.Result{}
+
+	spec := buildLiveMountDriverSpec(f, ar, "/boot/vmlinux", liveMounts, nil, nil, "proj", "wt")
+
+	if !spec.HasScratchDisk {
+		t.Error("buildLiveMountDriverSpec must set HasScratchDisk=true for a /workspace LiveMount with empty workspacePath")
+	}
+}
+
+// TestBuildLiveMountDriverSpec_NoWorkspace_NoMount confirms that
+// HasScratchDisk is false when neither --workspace nor a /workspace LiveMount
+// is present — the negative case that would be vacuously true otherwise.
+func TestBuildLiveMountDriverSpec_NoWorkspace_NoMount(t *testing.T) {
+	f := sandboxCreateFlags{memoryMiB: 512, vcpus: 1}
+	ar := vmcfg.Result{}
+
+	spec := buildLiveMountDriverSpec(f, ar, "/boot/vmlinux", nil, nil, nil, "proj", "plain")
+
+	if spec.HasScratchDisk {
+		t.Error("buildLiveMountDriverSpec must set HasScratchDisk=false with no workspace and no LiveMounts")
+	}
+}
+
+// TestBuildLiveMountDriverSpec_WorkspacePath confirms that HasScratchDisk is
+// true when workspacePath is set (the --workspace ext4-capture route).
+func TestBuildLiveMountDriverSpec_WorkspacePath(t *testing.T) {
+	f := sandboxCreateFlags{
+		memoryMiB:     512,
+		vcpus:         1,
+		workspacePath: "/host/ext4.img",
+	}
+	ar := vmcfg.Result{}
+
+	spec := buildLiveMountDriverSpec(f, ar, "/boot/vmlinux", nil, nil, nil, "proj", "ws")
+
+	if !spec.HasScratchDisk {
+		t.Error("buildLiveMountDriverSpec must set HasScratchDisk=true when workspacePath is set")
+	}
+}
+
+// TestBuildLiveMountDriverSpec_GuestMountsAssembly confirms that namedDiskMounts
+// lead, followed by bootGuestMounts and the derived liveGuestMounts, matching
+// the ExtraDisks layout contract (D-PD-53).
+func TestBuildLiveMountDriverSpec_GuestMountsAssembly(t *testing.T) {
+	named := []agent.GuestMount{{Device: "/dev/vdb"}}
+	boot := []agent.GuestMount{{Device: "/dev/vdc"}}
+	live := []domain.LiveMount{{HostPath: "/h", GuestPath: "/g"}}
+
+	f := sandboxCreateFlags{memoryMiB: 512, vcpus: 1}
+	ar := vmcfg.Result{}
+
+	spec := buildLiveMountDriverSpec(f, ar, "/k", live, boot, named, "p", "n")
+
+	if len(spec.GuestMounts) != 3 {
+		t.Fatalf("expected 3 GuestMounts (named+boot+live), got %d", len(spec.GuestMounts))
+	}
+	if spec.GuestMounts[0].Device != "/dev/vdb" {
+		t.Errorf("first GuestMount must be named disk; got %v", spec.GuestMounts[0])
+	}
+}
