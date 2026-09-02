@@ -994,6 +994,10 @@ func buildLiveMountDriverSpec(
 	namedDiskMounts []agent.GuestMount,
 	project, name string,
 ) sandboxDriverSpec {
+	// Named kind=disk volume mounts occupy the lowest device indices, so they
+	// are concatenated first: the resulting order IS the guest device order,
+	// and the scratch disk's index depends on it (D-DC-32).
+	// VirtiofsTag is the SINGLE SOURCE OF TRUTH for the per-mount tag (D-PD-53).
 	liveGuestMounts := liveMountsToGuestMounts(bootLiveMounts)
 	allGuestMounts := append(append([]agent.GuestMount{}, namedDiskMounts...),
 		append(bootGuestMounts, liveGuestMounts...)...)

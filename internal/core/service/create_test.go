@@ -403,7 +403,7 @@ func TestCreateAndBoot_WorkspaceReachesFactory(t *testing.T) {
 			// NoScratchDisk suppresses the scratch disk (D-SD-02 off-switch) so this
 			// test stays focused on the workspace-threading seam without needing to
 			// accommodate the second disk. Scratch-disk ordering is covered separately
-			// by TestScratchDiskOrderIsLast (scratch_disk_order_test.go).
+			// by TestScratchDisk_IsLast_SD_AC1 (scratch_disk_order_test.go).
 			NoScratchDisk: true,
 		},
 	)

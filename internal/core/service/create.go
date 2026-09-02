@@ -793,7 +793,7 @@ func CreateAndBoot(
 	// ORDERING INVARIANT: this append runs AFTER the namedDiskExtras prepend
 	// (step 4.7 above), so scratch is always the last element of ExtraDisks.
 	// The device-index contract (len(ExtraDisks)-1 after this step) is asserted
-	// by TestScratchDiskOrderIsLast. Do NOT move this block before step 4.7.
+	// by TestScratchDisk_IsLast_SD_AC1. Do NOT move this block before step 4.7.
 	if _, hasWorkspace := hostWorkspacePath(opts); hasWorkspace && !opts.NoScratchDisk {
 		if err = os.MkdirAll(diskDir, 0o700); err != nil {
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: scratch disk dir mkdir: %w", project, name, err)
