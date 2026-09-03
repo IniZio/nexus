@@ -185,9 +185,14 @@ message AgentInfoResponse {
 // renames it atomically over /sbin/nexus3-agent, then calls syscall.Exec to
 // replace PID 1's process image with the new binary.
 //
-// The vsock listener file descriptors (control port 1024 and data port 1025)
-// are inherited across execve — they do not have FD_CLOEXEC set — so the new
-// process image can rebind them without a window where the port is unbound.
+// The vsock listeners (control port 1024 and data port 1025) are created with
+// SOCK_CLOEXEC by mdlayher/vsock, so the kernel closes them automatically
+// during execve.  The replacement image re-listens on the same ports
+// immediately after exec.  There is a brief unbound window (typically tens of
+// ms) between the old image's exec and the new image's vsock.Listen; the host
+// absorbs this via Ping polling until the new agent answers.  An in-flight
+// exec command does NOT survive a swap: accepted connections carry SOCK_CLOEXEC
+// and are closed by execve along with the listeners.
 // The host-side connection to this RPC will be reset (the old gRPC server
 // dies); the host must treat the reset as "restart initiated" and poll Ping
 // until the new agent answers, then call AgentInfo to confirm the version.
