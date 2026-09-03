@@ -22,13 +22,17 @@ import (
 //   - drop `CacheDiskSlots: cacheSlotPaths` from buildSpawnConfig;
 //   - drop `CacheDiskLeaseFiles: cacheLeaseFiles` from buildSpawnConfig.
 //
-// Coverage gap: the assignment `cacheDiskLeases: cacheDiskLeases` at
-// cmd_sandbox.go (inside runSandboxCreate) is NOT covered here. This test
-// hand-constructs supervisorBuilderDriver directly, so cmd_sandbox.go is not
-// on its execution path. Removing that assignment compiles and leaves this
-// test GREEN. The only non-trivial coverage of that call site is
-// internal/test/selfhost/builder_vm_e2e_test.go, which is //go:build
-// integration and does not run under `make test`.
+// Coverage gap: no test covers the assignment `cacheDiskLeases: cacheDiskLeases`
+// at cmd_sandbox.go:~1655 (inside runSandboxCreate). This test hand-constructs
+// supervisorBuilderDriver directly; cmd_sandbox.go is not on its execution
+// path. A mutation proof confirmed this: deleting that assignment compiled and
+// left this package GREEN.
+//
+// internal/test/selfhost/builder_vm_e2e_test.go cannot close the gap. It is in
+// package selfhost, not package cli, so it cannot call runSandboxCreate
+// (unexported). That test reconstructs the chain itself by calling
+// builder.SelectCacheDisks and service.CreateAndBoot directly; it never
+// drives the call site in cmd_sandbox.go.
 func TestBuilderSupervisorDriver_HandsCacheDiskLeasesToTheSupervisor(t *testing.T) {
 	dataDir := t.TempDir()
 	img := filepath.Join(dataDir, "caches", "buildkit.ext4")
