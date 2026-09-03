@@ -7,7 +7,7 @@
 //   - boots and owns the VM (via svc.Start → driver.Start),
 //   - starts the network perimeter (gvproxy + MITM + netfilter) in-process,
 //   - owns a long-lived credential Broker for host-side token injection,
-//   - signals readiness by writing supervisor.pid and supervisor.sock,
+//   - signals readiness by writing supervisor.pid (socket is bound earlier),
 //   - blocks until SIGTERM or a /supervisor/stop IPC request.
 //
 // The supervisor is launched as a detached process (Setsid) by the spawning
