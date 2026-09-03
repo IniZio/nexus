@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-03T12:30:32.876Z",
+  "generated_at": "2026-09-03T12:54:43.006Z",
   "nodes": {
     "PDF-R-006": {
       "id": "PDF-R-006",
@@ -750,7 +750,7 @@
       "inbound": [
         "C-PER"
       ],
-      "byteSize": 5401,
+      "byteSize": 5895,
       "relPath": "per/PER-R-001.md",
       "status": "active",
       "pattern": null,
@@ -1323,7 +1323,7 @@
         "C-RES"
       ],
       "inbound": [],
-      "byteSize": 2120,
+      "byteSize": 2104,
       "relPath": "res/RES-R-010.md",
       "status": "active",
       "pattern": null,
