@@ -41,9 +41,9 @@ func makeSwapFns(t *testing.T) (swapFns, *[]string) {
 			*calls = append(*calls, "rename:"+src+"->"+dst)
 			return nil
 		},
-		dupListenerFd: func(l net.Listener) (int, error) {
-			*calls = append(*calls, "dup")
-			return 42, nil
+		chmodExec: func(path string) error {
+			*calls = append(*calls, "chmod:"+path)
+			return nil
 		},
 		execSelf: func(argv []string, env []string) error {
 			*calls = append(*calls, "exec:"+argv[0])
@@ -79,29 +79,154 @@ func callsCount(calls []string, s string) int {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestPerformSwap_HappyPath(t *testing.T) {
-	fns, calls := makeSwapFns(t)
+	// Track full call sequence so we can assert ordering.
+	type event struct{ tag string }
+	var seq []event
 
-	err := performSwap(fns, "/sbin/.nexus3-agent.upgrade", 12345, "/sbin/nexus3-agent", "/sbin/.nexus3-agent.prev",
-		&stubListener{}, &stubListener{})
+	fns, _ := makeSwapFns(t)
+	// Override seams to record into seq.
+	fns.statSize = func(path string) (int64, error) {
+		seq = append(seq, event{"stat:" + path})
+		return 12345, nil
+	}
+	fns.fsyncPath = func(path string) error {
+		seq = append(seq, event{"fsync:" + path})
+		return nil
+	}
+	fns.renameAtomic = func(src, dst string) error {
+		seq = append(seq, event{"rename:" + src + "->" + dst})
+		return nil
+	}
+	fns.chmodExec = func(path string) error {
+		seq = append(seq, event{"chmod:" + path})
+		return nil
+	}
+	fns.execSelf = func(argv []string, env []string) error {
+		seq = append(seq, event{"exec:" + argv[0]})
+		return nil
+	}
+
+	err := performSwap(fns, "/sbin/.nexus3-agent.upgrade", 12345, "/sbin/nexus3-agent", "/sbin/.nexus3-agent.prev")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	// stat → fsync (staged) → fsync (dir, twice) → rename (backup) → rename (install) → dup × 2 → exec
-	if !callsContain(*calls, "stat:") {
-		t.Error("stat not called")
+	// Locate key events.
+	installRenameIdx := -1
+	chmodInstallIdx := -1
+	execIdx := -1
+	for i, e := range seq {
+		switch {
+		case e.tag == "rename:/sbin/.nexus3-agent.upgrade->/sbin/nexus3-agent":
+			installRenameIdx = i
+		// chmod must target the install path, not the staged path.
+		case e.tag == "chmod:/sbin/nexus3-agent":
+			chmodInstallIdx = i
+		case len(e.tag) >= 5 && e.tag[:5] == "exec:":
+			execIdx = i
+		}
 	}
-	if !callsContain(*calls, "fsync:") {
-		t.Error("fsync not called")
+
+	if installRenameIdx == -1 {
+		t.Fatal("install rename (staged→install) not found in call sequence")
 	}
-	if !callsContain(*calls, "rename:") {
-		t.Error("rename not called")
+	// chmod must target exactly the install path (/sbin/nexus3-agent), not the staged path.
+	if chmodInstallIdx == -1 {
+		t.Errorf("chmod:/sbin/nexus3-agent not found; seq=%v", seq)
 	}
-	if callsCount(*calls, "dup") != 2 {
-		t.Errorf("expected 2 dup calls, got %d in %v", callsCount(*calls, "dup"), *calls)
-	}
-	if !callsContain(*calls, "exec:") {
+	if execIdx == -1 {
 		t.Error("exec not called")
+	}
+	// Ordering: install rename → chmod → exec.
+	if chmodInstallIdx != -1 && chmodInstallIdx <= installRenameIdx {
+		t.Errorf("chmod (idx=%d) must come AFTER install rename (idx=%d); seq=%v", chmodInstallIdx, installRenameIdx, seq)
+	}
+	if chmodInstallIdx != -1 && execIdx != -1 && chmodInstallIdx >= execIdx {
+		t.Errorf("chmod (idx=%d) must come BEFORE exec (idx=%d); seq=%v", chmodInstallIdx, execIdx, seq)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mutation proof: NEXUS3_HOT_SWAP=1 must appear in the exec env.
+//
+// Production path: performSwap → execSelf(argv, env).
+// This test captures the env passed to execSelf and verifies the signal is
+// present. The mutation is: delete or blank the NEXUS3_HOT_SWAP line in
+// performSwap → execSelf receives env without it → test fails.
+//
+// Also verifies the old fd-inheritance vars (NEXUS3_CTRL_FD, NEXUS3_DATA_FD)
+// are NOT present — confirming the fd-inheritance approach was fully removed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestPerformSwap_HotSwapEnvSignal(t *testing.T) {
+	fns, _ := makeSwapFns(t)
+	var capturedEnv []string
+	fns.execSelf = func(argv []string, env []string) error {
+		capturedEnv = env
+		return nil
+	}
+
+	err := performSwap(fns, "/sbin/.nexus3-agent.upgrade", 12345, "/sbin/nexus3-agent", "/sbin/.nexus3-agent.prev")
+	if err != nil {
+		t.Fatalf("performSwap: unexpected error: %v", err)
+	}
+
+	// NEXUS3_HOT_SWAP=1 must be present so the new process skips cold-boot init.
+	foundHotSwap := false
+	for _, kv := range capturedEnv {
+		if kv == "NEXUS3_HOT_SWAP=1" {
+			foundHotSwap = true
+		}
+		// Verify the removed fd-inheritance vars are absent.
+		if len(kv) >= 12 && kv[:12] == "NEXUS3_CTRL_" {
+			t.Errorf("NEXUS3_CTRL_FD must not appear in exec env; got %q", kv)
+		}
+		if len(kv) >= 12 && kv[:12] == "NEXUS3_DATA_" {
+			t.Errorf("NEXUS3_DATA_FD must not appear in exec env; got %q", kv)
+		}
+	}
+	if !foundHotSwap {
+		t.Errorf("NEXUS3_HOT_SWAP=1 not found in exec env; env had %d entries", len(capturedEnv))
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mutation proof: chmod failure → exec must not be called; rollback must fire.
+//
+// Production path: performSwap step 4.5 calls chmodExec(installPath); on error
+// it calls renameAtomic(backupPath, installPath) and returns without exec.
+//
+// Mutation A (catches wrong path): change chmodExec(installPath) →
+//   chmodExec(stagedPath) — the exact-path assertion in HappyPath goes red.
+// Mutation B (catches missing rollback): remove the renameAtomic call inside
+//   the chmod-failure branch — this test goes red.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestPerformSwap_ChmodFails(t *testing.T) {
+	fns, calls := makeSwapFns(t)
+	fns.chmodExec = func(path string) error {
+		*calls = append(*calls, "chmod:"+path)
+		return errors.New("chmod: operation not permitted")
+	}
+
+	err := performSwap(fns, "/sbin/.nexus3-agent.upgrade", 12345, "/sbin/nexus3-agent", "/sbin/.nexus3-agent.prev")
+
+	if err == nil {
+		t.Fatal("expected chmod error, got nil")
+	}
+	// exec must NOT be called — binary must not run unchmodded.
+	if callsContain(*calls, "exec:") {
+		t.Error("exec must not be called when chmod fails")
+	}
+	// Rollback: renameAtomic(backupPath, installPath) must have been called.
+	sawRollback := false
+	for _, c := range *calls {
+		if c == "rename:/sbin/.nexus3-agent.prev->/sbin/nexus3-agent" {
+			sawRollback = true
+		}
+	}
+	if !sawRollback {
+		t.Errorf("chmod failure must trigger rollback rename .prev→install; calls: %v", *calls)
 	}
 }
 
@@ -116,8 +241,7 @@ func TestPerformSwap_SizeMismatch(t *testing.T) {
 	fns.renameAtomic = func(src, dst string) error { renameCalled = true; return nil }
 	fns.execSelf = func(argv []string, env []string) error { execCalled = true; return nil }
 
-	err := performSwap(fns, "/sbin/.nexus3-agent.upgrade", 12345, "/sbin/nexus3-agent", "/sbin/.nexus3-agent.prev",
-		&stubListener{}, &stubListener{})
+	err := performSwap(fns, "/sbin/.nexus3-agent.upgrade", 12345, "/sbin/nexus3-agent", "/sbin/.nexus3-agent.prev")
 
 	if err == nil {
 		t.Fatal("expected size mismatch error, got nil")
@@ -148,8 +272,7 @@ func TestPerformSwap_InstallRenameFails(t *testing.T) {
 		return nil
 	}
 
-	err := performSwap(fns, "/sbin/.nexus3-agent.upgrade", 12345, "/sbin/nexus3-agent", "/sbin/.nexus3-agent.prev",
-		&stubListener{}, &stubListener{})
+	err := performSwap(fns, "/sbin/.nexus3-agent.upgrade", 12345, "/sbin/nexus3-agent", "/sbin/.nexus3-agent.prev")
 
 	if err == nil {
 		t.Fatal("expected rename error, got nil")
@@ -160,34 +283,7 @@ func TestPerformSwap_InstallRenameFails(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mutation proof 3: dup failure → exec must not be called; ctrl dup fd closed.
-// ─────────────────────────────────────────────────────────────────────────────
-
-func TestPerformSwap_DupFails(t *testing.T) {
-	fns, calls := makeSwapFns(t)
-	dupCount := 0
-	fns.dupListenerFd = func(l net.Listener) (int, error) {
-		dupCount++
-		*calls = append(*calls, "dup")
-		if dupCount == 2 {
-			return -1, errors.New("dup: EMFILE")
-		}
-		return 42, nil
-	}
-
-	err := performSwap(fns, "/sbin/.nexus3-agent.upgrade", 12345, "/sbin/nexus3-agent", "/sbin/.nexus3-agent.prev",
-		&stubListener{}, &stubListener{})
-
-	if err == nil {
-		t.Fatal("expected dup error, got nil")
-	}
-	if callsContain(*calls, "exec:") {
-		t.Error("exec must not be called after dup failure")
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Rollback: exec failure → install binary is rolled back from backup.
+// Mutation proof 3: exec failure → install binary is rolled back from backup.
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestPerformSwap_ExecFails_Rollback(t *testing.T) {
@@ -197,8 +293,7 @@ func TestPerformSwap_ExecFails_Rollback(t *testing.T) {
 		return errors.New("exec: EACCES")
 	}
 
-	err := performSwap(fns, "/sbin/.nexus3-agent.upgrade", 12345, "/sbin/nexus3-agent", "/sbin/.nexus3-agent.prev",
-		&stubListener{}, &stubListener{})
+	err := performSwap(fns, "/sbin/.nexus3-agent.upgrade", 12345, "/sbin/nexus3-agent", "/sbin/.nexus3-agent.prev")
 
 	if err == nil {
 		t.Fatal("expected exec error, got nil")
@@ -240,8 +335,7 @@ func TestPerformSwap_FsyncCalledBeforeRename(t *testing.T) {
 		return nil
 	}
 
-	_ = performSwap(fns, "/sbin/.nexus3-agent.upgrade", 12345, "/sbin/nexus3-agent", "/sbin/.nexus3-agent.prev",
-		&stubListener{}, &stubListener{})
+	_ = performSwap(fns, "/sbin/.nexus3-agent.upgrade", 12345, "/sbin/nexus3-agent", "/sbin/.nexus3-agent.prev")
 
 	// Find index of first fsync and the install rename (staged→install).
 	installRenameIdx := -1
@@ -354,11 +448,11 @@ func TestControlServer_RestartAgent_ActiveSessionsNoForce(t *testing.T) {
 	oldFns := swapFunctions
 	defer func() { swapFunctions = oldFns }()
 	swapFunctions = swapFns{
-		statSize:      func(path string) (int64, error) { return 100, nil },
-		fsyncPath:     func(path string) error { return nil },
-		renameAtomic:  func(src, dst string) error { return nil },
-		dupListenerFd: func(l net.Listener) (int, error) { return 42, nil },
-		execSelf:      func(argv []string, env []string) error { return nil },
+		statSize:     func(path string) (int64, error) { return 100, nil },
+		fsyncPath:    func(path string) error { return nil },
+		renameAtomic: func(src, dst string) error { return nil },
+		chmodExec:    func(path string) error { return nil },
+		execSelf:     func(argv []string, env []string) error { return nil },
 	}
 
 	_, err := cs.RestartAgent(nil, &agentpb_RestartAgentRequest{
@@ -384,11 +478,11 @@ func TestControlServer_RestartAgent_ActiveCopiesNoForce(t *testing.T) {
 	oldFns := swapFunctions
 	defer func() { swapFunctions = oldFns }()
 	swapFunctions = swapFns{
-		statSize:      func(path string) (int64, error) { return 100, nil },
-		fsyncPath:     func(path string) error { return nil },
-		renameAtomic:  func(src, dst string) error { return nil },
-		dupListenerFd: func(l net.Listener) (int, error) { return 42, nil },
-		execSelf:      func(argv []string, env []string) error { return nil },
+		statSize:     func(path string) (int64, error) { return 100, nil },
+		fsyncPath:    func(path string) error { return nil },
+		renameAtomic: func(src, dst string) error { return nil },
+		chmodExec:    func(path string) error { return nil },
+		execSelf:     func(argv []string, env []string) error { return nil },
 	}
 
 	_, err := cs.RestartAgent(nil, &agentpb_RestartAgentRequest{
@@ -420,10 +514,10 @@ func TestControlServer_RestartAgent_ForceOverridesActiveSessions(t *testing.T) {
 	oldFns := swapFunctions
 	defer func() { swapFunctions = oldFns }()
 	swapFunctions = swapFns{
-		statSize:      func(path string) (int64, error) { return 100, nil },
-		fsyncPath:     func(path string) error { return nil },
-		renameAtomic:  func(src, dst string) error { return nil },
-		dupListenerFd: func(l net.Listener) (int, error) { return 42, nil },
+		statSize:     func(path string) (int64, error) { return 100, nil },
+		fsyncPath:    func(path string) error { return nil },
+		renameAtomic: func(src, dst string) error { return nil },
+		chmodExec:    func(path string) error { return nil },
 		execSelf: func(argv []string, env []string) error {
 			execCalled = true
 			return nil

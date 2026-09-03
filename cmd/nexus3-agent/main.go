@@ -39,7 +39,9 @@ func main() {
 	// conflict with already-running services (filesystem mounts, network config,
 	// sshd, workspace disk mounts, boot tasks) are skipped when hotSwap=true.
 	// This MUST be checked at the very top — before any init that branches on it.
-	hotSwap := os.Getenv("NEXUS3_CTRL_FD") != ""
+	hotSwap := os.Getenv("NEXUS3_HOT_SWAP") != ""
+	// Scrub the signal so exec'd child processes don't misread it.
+	os.Unsetenv("NEXUS3_HOT_SWAP")
 
 	// When running as PID 1 (in-guest init) on a COLD boot, mount the standard
 	// pseudo-filesystems before doing anything else.  devtmpfs populates /dev
@@ -295,23 +297,15 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Hot-swap path: when this process was launched by a prior agent via
-	// syscall.Exec (RestartAgent RPC), NEXUS3_CTRL_FD and NEXUS3_DATA_FD carry
-	// the already-bound vsock listener fds.  Reclaim them instead of rebinding
-	// so there is no window where the vsock ports are unbound.
+	// Bind vsock listeners. On a cold boot these are freshly created; on hot-swap
+	// (hotSwap=true) the old agent's listener fds were closed by exec (SOCK_CLOEXEC),
+	// so the ports are immediately available for rebinding.  No fd inheritance is
+	// used: mdlayher/vsock creates listeners with SOCK_CLOEXEC, and exec closes
+	// them atomically, so EADDRINUSE cannot occur.
 	var ctrlLis, dataLis net.Listener
-	inheritedCtrl, inheritedData, inheritErr := inheritedListeners()
-	if inheritErr != nil {
-		consoleFatal(con, isPid1, "nexus3-agent: inherited fd error: %v\n", inheritErr)
-	}
-	if inheritedCtrl != nil && inheritedData != nil {
-		ctrlLis = inheritedCtrl
-		dataLis = inheritedData
-		consoleLog(con, "nexus3-agent: hot-swap: reclaimed inherited vsock listeners (ctrl+data)\n")
-	} else {
-		// Normal (cold) boot: bind both vsock ports fresh.
-		consoleLog(con, "nexus3-agent: vsock.Listen port %d\n", driver.AgentControlPort)
+	{
 		var err error
+		consoleLog(con, "nexus3-agent: vsock.Listen port %d\n", driver.AgentControlPort)
 		ctrlLis, err = vsock.Listen(driver.AgentControlPort, nil)
 		if err != nil {
 			consoleFatal(con, isPid1, "nexus3-agent: control listener (port %d): %v\n",

@@ -436,7 +436,7 @@ func (cs *controlServer) RestartAgent(_ context.Context, req *agentpb.RestartAge
 
 	// ── Perform swap ──────────────────────────────────────────────────────
 	// performSwap verifies size, fsyncs, backs up old binary, renames,
-	// dups fds, then calls syscall.Exec.  On exec success it does not return.
+	// then calls syscall.Exec.  On exec success it does not return.
 	// On any error the old binary is rolled back from the backup.
 	err := performSwap(
 		swapFunctions,
@@ -444,8 +444,6 @@ func (cs *controlServer) RestartAgent(_ context.Context, req *agentpb.RestartAge
 		req.ExpectedBytes,
 		agentInstallPath,
 		agentBackupPath,
-		cs.a.ctrlLis,
-		cs.a.dataLis,
 	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "agent swap: %v", err)
