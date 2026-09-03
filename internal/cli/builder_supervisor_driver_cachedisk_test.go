@@ -15,14 +15,20 @@ import (
 // own lifetime.
 //
 // It drives the real buildSpawnConfig — the function Start calls — with leases
-// produced by the real builder.SelectCacheDisks, and asserts the spawn config
-// carries both the slot path and the open lock descriptor for it.
+// produced by the real builder.AcquireCacheDiskSlot, and asserts the spawn
+// config carries both the slot path and the open lock descriptor for it.
 //
-// Mutation guards, each of which must turn this RED:
+// Mutation guards (each of which must turn this RED):
 //   - drop `CacheDiskSlots: cacheSlotPaths` from buildSpawnConfig;
-//   - drop `CacheDiskLeaseFiles: cacheLeaseFiles` from buildSpawnConfig;
-//   - stop populating supervisorBuilderDriver.cacheDiskLeases in cmd_sandbox.go
-//     (the lease then stays CLI-scoped, which is the pre-D-HSH-07 defect).
+//   - drop `CacheDiskLeaseFiles: cacheLeaseFiles` from buildSpawnConfig.
+//
+// Coverage gap: the assignment `cacheDiskLeases: cacheDiskLeases` at
+// cmd_sandbox.go (inside runSandboxCreate) is NOT covered here. This test
+// hand-constructs supervisorBuilderDriver directly, so cmd_sandbox.go is not
+// on its execution path. Removing that assignment compiles and leaves this
+// test GREEN. The only non-trivial coverage of that call site is
+// internal/test/selfhost/builder_vm_e2e_test.go, which is //go:build
+// integration and does not run under `make test`.
 func TestBuilderSupervisorDriver_HandsCacheDiskLeasesToTheSupervisor(t *testing.T) {
 	dataDir := t.TempDir()
 	img := filepath.Join(dataDir, "caches", "buildkit.ext4")
