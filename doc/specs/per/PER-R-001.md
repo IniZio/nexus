@@ -1,16 +1,26 @@
 ---
 id: PER-R-001
 concept: C-PER
-summary: "Hidden nexus3 __supervisor subcommand runs as a detached per-sandbox process, boots and owns the VM, starts the network perimeter, starts a long-lived credential Broker, writes supervisor.pid and supervisor.sock, and blocks until signaled."
+summary: "Hidden nexus3 __supervisor subcommand runs as a detached per-sandbox process, starts the network perimeter, starts a long-lived credential Broker, writes supervisor.pid and supervisor.sock, and blocks until signaled. It operates in one of three modes: boot-and-own (starts the VM), adopt (takes over from an outgoing supervisor via handoff), or reacquire (rebuilds the perimeter for a live VM whose supervisor died without a handoff)."
 criticality: must
 verification: automated
 status: active
-trace: AC-1, D-PP-01
+trace: AC-1, D-PP-01, D-HSH-05
 ---
 
-The `nexus3 __supervisor` subcommand **shall** run as a detached per-sandbox process that (a) boots and owns the VM via `svc.Start`, (b) starts the network perimeter (gvproxy + MITM + netfilter) in-process, (c) instantiates a long-lived `cred.Broker`, (d) writes `supervisor.pid` and `supervisor.sock` to `StateDir` as the READY signal, and (e) blocks until signalled.
+The `nexus3 __supervisor` subcommand **shall** run as a detached per-sandbox process that (a) starts the network perimeter (gvproxy + MITM + netfilter) in-process, (b) instantiates a long-lived `cred.Broker`, (c) writes `supervisor.pid` and `supervisor.sock` to `StateDir` as the READY signal, and (d) blocks until signalled. The subcommand operates in one of three modes selected by its flags:
 
-- **Why** — `orca create` and other `CreateAndBoot`-based paths never call `svc.Start`; without a dedicated long-lived owner the perimeter goroutines die the moment the launching CLI exits, leaving the in-VM agent with no egress.
-- **Fit criterion** — After `nexus3 __supervisor` starts, both `supervisor.pid` (containing the process PID) and `supervisor.sock` (a connectable Unix-domain socket) are present in `StateDir`; the process remains alive and the perimeter accepts connections after the spawning process has exited.
-- **Verification** automated · **Criticality** must · **Source** nexus3-persistent-perimeter#D-PP-01
-- **Code** `internal/supervisor/supervisor.go:319` (`RunDetached`), `:69` (`HiddenSubcommand = "__supervisor"`), `:748-751` (pidfile write = READY signal), `cmd/nexus3/supervisor_linux.go:87` (`runSupervisorMain`)
+**Mode 1 — boot-and-own** (default, no special flag): calls `svc.Start` to boot a new VM, then takes full ownership of it. This is the path `SpawnDetached` takes for every fresh `orca create`.
+
+**Mode 2 — adopt** (`--adopt-handoff-sock=<path>`): never calls `svc.Start` and never boots a VM. Listens on the given Unix STREAM socket for a handoff offer from the outgoing supervisor, accepts the offer (receiving the perimeter fd and CA material via SCM_RIGHTS), reconstructs the driver runtime via `AdoptNetnsRuntime` against the persisted `NetnsChildPID`/`NetnsChildPGID`/`NetnsChildStartTime` identity, confirms the handoff, and then enters the same steady-state loop as boot-and-own. The PID-reuse guard (`childStartTime` comparison against `/proc/<pid>/stat`) is fail-closed: a zero or mismatched start-time refuses the adoption rather than proceeding unguarded.
+
+**Mode 3 — reacquire** (`--reacquire`): never calls `svc.Start` and never boots a VM. Used when the previous supervisor died with no handoff but the VM's netns child process is still alive. Reconnects to the surviving VM via the persisted identity and rebuilds the perimeter from scratch (mints a fresh CA) without requiring a guest reboot.
+
+All three modes end at the same READY signal: writing `supervisor.pid` (own PID) and binding `supervisor.sock`.
+
+- **Why** — `orca create` and other `CreateAndBoot`-based paths never call `svc.Start`; without a dedicated long-lived owner the perimeter goroutines die the moment the launching CLI exits, leaving the in-VM agent with no egress. Adopt and reacquire modes allow a replacement supervisor to take over a running VM so a nexus3 upgrade or supervisor crash never forces a guest reboot.
+- **Fit criterion (boot-and-own)** — After `nexus3 __supervisor` starts in default mode, both `supervisor.pid` (containing the process PID) and `supervisor.sock` (a connectable Unix-domain socket) are present in `StateDir`; the process remains alive and the perimeter accepts connections after the spawning process has exited.
+- **Fit criterion (adopt)** — After `nexus3 supervisor-upgrade <sandbox>` drives the adopt path, `supervisor.pid` in `StateDir` contains the new supervisor's PID (distinct from the outgoing supervisor's PID), `supervisor.sock` is connectable, and the sandbox's `NetnsChildPID` process remains alive without interruption (the VM was not rebooted).
+- **Fit criterion (reacquire)** — After `nexus3 recover` spawns a reacquire supervisor for a live-VM/dead-supervisor sandbox, `supervisor.pid` and `supervisor.sock` appear in `StateDir` and the sandbox transitions to `running` without the VM being stopped or restarted.
+- **Verification** automated · **Criticality** must · **Source** nexus3-persistent-perimeter#D-PP-01, nexus3-host-supervisor-hotswap#D-HSH-05
+- **Code** `internal/supervisor/supervisor.go:367` (`RunDetached` — boot-and-own), `:71` (`HiddenSubcommand = "__supervisor"`), `:867` (pidfile write = READY signal); `internal/supervisor/adopt.go:66` (`RunAdopt` — adopt mode); `internal/supervisor/reacquire.go:289` (`RunReacquire` — reacquire mode); `internal/core/driver/cloudhypervisor/ch_netns.go:540` (`AdoptNetnsRuntime` — PID-reuse-guarded runtime adoption); `cmd/nexus3/supervisor_linux.go:87` (`runSupervisorMain` — dispatches all three modes)

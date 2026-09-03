@@ -6,8 +6,8 @@
   "by_concept": {
     "C-PDF": 27,
     "C-PER": 7,
-    "C-RES": 12,
-    "C-SUR": 5
+    "C-SUR": 5,
+    "C-RES": 12
   },
   "by_verification": {
     "manual": 46,
@@ -25,72 +25,7 @@
     "PER-R-006"
   ],
   "by_requirement": {
-    "PDF-R-001": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-002": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-003": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-004": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-005": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
     "PDF-R-006": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-007": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-008": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-009": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-010": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-011": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-013": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-014": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-015": {
       "declared": "manual",
       "verified": false,
       "tests": []
@@ -100,12 +35,7 @@
       "verified": false,
       "tests": []
     },
-    "PDF-R-017": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-018": {
+    "PDF-R-023": {
       "declared": "manual",
       "verified": false,
       "tests": []
@@ -115,32 +45,12 @@
       "verified": false,
       "tests": []
     },
-    "PDF-R-020": {
+    "PDF-R-011": {
       "declared": "manual",
       "verified": false,
       "tests": []
     },
-    "PDF-R-021": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-022": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-023": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-024": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "PDF-R-025": {
+    "PDF-R-002": {
       "declared": "manual",
       "verified": false,
       "tests": []
@@ -150,7 +60,82 @@
       "verified": false,
       "tests": []
     },
+    "PDF-R-018": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
     "PDF-R-027": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-001": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-015": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-025": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-007": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-013": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-021": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-005": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-022": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-010": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-009": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-004": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-017": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-003": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-014": {
       "declared": "manual",
       "verified": false,
       "tests": []
@@ -160,22 +145,27 @@
       "verified": false,
       "tests": []
     },
+    "PDF-R-020": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-024": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "PDF-R-008": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
     "PER-R-001": {
       "declared": "automated",
       "verified": false,
       "tests": []
     },
-    "PER-R-002": {
-      "declared": "automated",
-      "verified": false,
-      "tests": []
-    },
-    "PER-R-003": {
-      "declared": "automated",
-      "verified": false,
-      "tests": []
-    },
-    "PER-R-004": {
+    "PER-R-006": {
       "declared": "automated",
       "verified": false,
       "tests": []
@@ -185,7 +175,17 @@
       "verified": false,
       "tests": []
     },
-    "PER-R-006": {
+    "PER-R-003": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "PER-R-002": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "PER-R-004": {
       "declared": "automated",
       "verified": false,
       "tests": []
@@ -195,62 +195,7 @@
       "verified": false,
       "tests": []
     },
-    "RES-R-001": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "RES-R-002": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "RES-R-003": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "RES-R-004": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "RES-R-005": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "RES-R-006": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "RES-R-007": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "RES-R-008": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "RES-R-009": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "RES-R-010": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "RES-R-011": {
-      "declared": "manual",
-      "verified": false,
-      "tests": []
-    },
-    "RES-R-012": {
+    "SUR-R-002": {
       "declared": "manual",
       "verified": false,
       "tests": []
@@ -260,7 +205,7 @@
       "verified": false,
       "tests": []
     },
-    "SUR-R-002": {
+    "SUR-R-004": {
       "declared": "manual",
       "verified": false,
       "tests": []
@@ -270,12 +215,67 @@
       "verified": false,
       "tests": []
     },
-    "SUR-R-004": {
+    "SUR-R-005": {
       "declared": "manual",
       "verified": false,
       "tests": []
     },
-    "SUR-R-005": {
+    "RES-R-001": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-012": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-006": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-011": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-009": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-003": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-008": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-010": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-004": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-002": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-005": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-007": {
       "declared": "manual",
       "verified": false,
       "tests": []
