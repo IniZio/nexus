@@ -8,7 +8,7 @@ status: active
 trace: AC-1, D-PP-01, D-HSH-05
 ---
 
-The `nexus3 __supervisor` subcommand **shall** run as a detached per-sandbox process that (a) starts the network perimeter (gvproxy + MITM + netfilter) in-process, (b) instantiates a long-lived `cred.Broker`, (c) writes `supervisor.pid` and `supervisor.sock` to `StateDir` as the READY signal, and (d) blocks until signalled. The subcommand operates in one of three modes selected by its flags:
+The `nexus3 __supervisor` subcommand **shall** run as a detached per-sandbox process that (a) starts the network perimeter (gvproxy + MITM + netfilter) in-process, (b) instantiates a long-lived `cred.Broker`, (c) writes `supervisor.pid` to `StateDir` as the READY signal (`supervisor.sock` is bound earlier in startup, before the pidfile write, and is connectable by the time READY fires), and (d) blocks until signalled. The subcommand operates in one of three modes selected by its flags:
 
 **Mode 1 — boot-and-own** (default, no special flag): calls `svc.Start` to boot a new VM, then takes full ownership of it. This is the path `SpawnDetached` takes for every fresh `orca create`.
 
@@ -16,7 +16,7 @@ The `nexus3 __supervisor` subcommand **shall** run as a detached per-sandbox pro
 
 **Mode 3 — reacquire** (`--reacquire`): never calls `svc.Start` and never boots a VM. Used when the previous supervisor died with no handoff but the VM's netns child process is still alive. Reconnects to the surviving VM via the persisted identity and rebuilds the perimeter. The primary path re-seeds the CA the guest already trusts by loading it from persistent state (`statedir.LoadCA`, D-HSH-18), so TLS sessions survive the recovery transparently; minting a fresh CA is the fail-closed fallback invoked only when the persisted CA is absent or corrupt, an outcome surfaced as `CALost`. Neither path requires a guest reboot.
 
-All three modes end at the same READY signal: writing `supervisor.pid` (own PID) and binding `supervisor.sock`.
+All three modes end at the same READY signal: writing `supervisor.pid` (own PID) to `StateDir` (`supervisor.go:867`). `supervisor.sock` is bound earlier in startup (`supervisor.go:532`) and is already connectable before the pidfile is written; `SpawnDetached` polls for the pidfile alone (`spawn_linux.go:305`).
 
 - **Why** — `orca create` and other `CreateAndBoot`-based paths never call `svc.Start`; without a dedicated long-lived owner the perimeter goroutines die the moment the launching CLI exits, leaving the in-VM agent with no egress. Adopt and reacquire modes allow a replacement supervisor to take over a running VM so a nexus3 upgrade or supervisor crash never forces a guest reboot.
 - **Fit criterion (boot-and-own)** — After `nexus3 __supervisor` starts in default mode, both `supervisor.pid` (containing the process PID) and `supervisor.sock` (a connectable Unix-domain socket) are present in `StateDir`; the process remains alive and the perimeter accepts connections after the spawning process has exited.
