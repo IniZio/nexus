@@ -28,3 +28,8 @@ type SpawnConfig struct {
 func SpawnDetached(cfg SpawnConfig) (int, *os.File, error) {
 	return 0, nil, errSpawnUnsupportedPlatform
 }
+
+// SpawnReacquireDetached is unsupported off Linux.
+func SpawnReacquireDetached(cfg SpawnConfig) (int, error) {
+	return 0, errSpawnUnsupportedPlatform
+}

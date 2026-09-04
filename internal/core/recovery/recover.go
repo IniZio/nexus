@@ -539,9 +539,8 @@ func (r *Recoverer) applySupervisorLiveness(rec *domain.Sandbox, out *SandboxOut
 		return false
 	}
 	if rec.SupervisorPID <= 0 {
-		// No supervisor was ever recorded for this sandbox (predates the
-		// field, or a lifecycle — e.g. the fork path, TBR-5 — that never
-		// records one). Nothing to cross-check; leave the Adopted outcome.
+		// No supervisor was ever recorded for this sandbox (record predates the
+		// SupervisorPID field). Nothing to cross-check; leave the Adopted outcome.
 		return false
 	}
 	alive, err := r.checkSupervisor(rec.SupervisorPID, rec.SupervisorSock)

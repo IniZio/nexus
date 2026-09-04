@@ -2359,6 +2359,32 @@ func spawnPersistedSupervisor(ctx context.Context, svc *service.Service, id doma
 	return nil
 }
 
+// spawnPersistedSupervisorReacquire reads spawn.json and starts a
+// reacquire-mode supervisor for a child whose VM is already running (the fork
+// restore path, D-HSH-27). Unlike spawnPersistedSupervisor it calls
+// SpawnReacquireDetached, which runs RunReacquire in the subprocess rather
+// than RunDetached — so the VM is NOT stopped and cold-booted; the supervisor
+// re-acquires the network perimeter via the child's NetnsControlSocket.
+func spawnPersistedSupervisorReacquire(ctx context.Context, svc *service.Service, id domain.SandboxID, stateDir string) error {
+	cfg, err := supervisor.ReadSpawnSpec(stateDir)
+	if err != nil {
+		return err
+	}
+	pid, err := supervisor.SpawnReacquireDetached(supervisor.SpawnConfig{
+		Config:       cfg,
+		ReadyTimeout: 5 * time.Minute,
+	})
+	if err != nil {
+		return err
+	}
+	sock := supervisor.SockPath(stateDir)
+	if err := svc.SetSupervisor(ctx, id, pid, sock); err != nil {
+		return fmt.Errorf("persist fork supervisor pid: %w", err)
+	}
+	slog.Info("sandbox: fork supervisor ready", "sandbox", id, "pid", pid, "sock", sock)
+	return nil
+}
+
 func ensureDetachedSupervisor(ctx context.Context, svc *service.Service, sb domain.Sandbox) error {
 	if sb.SupervisorPID > 0 {
 		alive, _ := supervisor.CheckAndReconcile(sb.SupervisorPID, sb.SupervisorSock)

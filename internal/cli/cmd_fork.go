@@ -3,10 +3,16 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus3/internal/supervisor"
 )
 
 func init() {
@@ -16,6 +22,16 @@ func init() {
 		Run:     runFork,
 	})
 }
+
+// doSpawnForkChildSupervisor is the per-child supervisor spawn function used
+// by the fork path. A package-level variable so tests can replace it with a
+// spy without spawning a real supervisor process.
+var doSpawnForkChildSupervisor func(ctx context.Context, svc *service.Service, id domain.SandboxID, stateDir string) error = spawnPersistedSupervisorReacquire
+
+// doSpawnForkSupervisors wraps spawnForkChildSupervisors so that tests that
+// exercise the flag/routing layer of runForkWith without a real supervisor
+// state dir can replace the whole supervisor-spawn block with a no-op.
+var doSpawnForkSupervisors = spawnForkChildSupervisors
 
 // ── dispatcher / flag parsing ────────────────────────────────────────────────
 
@@ -90,6 +106,24 @@ func runForkWith(ctx context.Context, args []string, out *Output, svcs ...*servi
 		return errSandbox("fork", err)
 	}
 
+	// Spawn a detached reacquire-mode supervisor for each child so that
+	// supervisor-upgrade, recover, and the memory governor work identically on
+	// fork children as on created ones (D-HSH-27). The reacquire mode adopts
+	// the already-running VM without a cold boot — the supervisor does NOT call
+	// svc.Start; it re-acquires the network perimeter via the child's
+	// NetnsControlSocket. See s46-fork-supervisor-parity AC-5 for the full list
+	// of create-path steps that are deliberately not replayed.
+	if len(children) > 0 && children[0].Provenance != nil {
+		storeRoot, storeErr := store.DefaultRoot()
+		if storeErr != nil {
+			return errSandbox("fork", fmt.Errorf("resolve store root for supervisor: %w", storeErr))
+		}
+		parentID := children[0].Provenance.ParentID
+		if spawnErr := doSpawnForkSupervisors(ctx, svc, storeRoot, parentID, children); spawnErr != nil {
+			return errSandbox("fork", spawnErr)
+		}
+	}
+
 	infos := make([]sandboxInfoJSON, len(children))
 	for i, ch := range children {
 		infos[i] = toSandboxInfoJSON(ch)
@@ -98,3 +132,78 @@ func runForkWith(ctx context.Context, args []string, out *Output, svcs ...*servi
 		fmt.Sprintf("forked %s into %d children", ref, len(children)))
 	return nil
 }
+
+// spawnForkChildSupervisors writes a spawn.json and starts a reacquire-mode
+// supervisor for each fork child. It reads the parent's spawn.json to derive
+// the config template (kernel, memory, governor bounds, etc.) that every child
+// inherits; only the identity fields (SandboxRef, DiskPath, ExtraDisks,
+// StateDir) are replaced with each child's own values.
+//
+// Create-path steps deliberately NOT replayed (D-HSH-27 / s46-fork-supervisor-parity AC-5):
+//   - svc.Stop: fork children are already Running from the snapshot restore;
+//     stopping them destroys the in-memory state fork is meant to preserve.
+//   - svc.Start / cold boot: doSpawnForkChildSupervisor runs RunReacquire,
+//     not RunDetached, so the supervisor never calls svc.Start.
+//   - disk initialisation: ForkFrom already copied the parent disks; no format
+//     or resize step is needed.
+//   - guest boot sequence: the VM was restored from a memory snapshot, not
+//     re-booted, so no systemd units re-run and no boot-tasks execute.
+func spawnForkChildSupervisors(
+	ctx context.Context,
+	svc *service.Service,
+	storeRoot string,
+	parentID domain.SandboxID,
+	children []domain.Sandbox,
+) error {
+	parentStateDir := supervisor.DefaultStateDir(storeRoot, parentID)
+	parentCfg, err := supervisor.ReadSpawnSpec(parentStateDir)
+	if err != nil {
+		return fmt.Errorf("fork supervisor: read parent spawn spec for %s: %w", parentID, err)
+	}
+	for _, child := range children {
+		if err := writeAndSpawnForkChild(ctx, svc, storeRoot, child, parentCfg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeAndSpawnForkChild writes spawn.json for one fork child, then starts its
+// supervisor. Disk paths are derived from the parent config using the same
+// naming convention ForkFrom (cloudhypervisor/fork.go) uses:
+//   - root disk: <diskDir>/<childID>.raw
+//   - extra disks: cloudhypervisor.ChildExtraDiskPath(childID, parentPath)
+func writeAndSpawnForkChild(
+	ctx context.Context,
+	svc *service.Service,
+	storeRoot string,
+	child domain.Sandbox,
+	parentCfg supervisor.Config,
+) error {
+	childStateDir := supervisor.DefaultStateDir(storeRoot, child.ID)
+
+	// Derive the child's disk paths from the parent's disk paths.
+	// A parent with no disk (initramfs-only) has empty DiskPath; preserve that.
+	var childDiskPath string
+	if parentCfg.DiskPath != "" {
+		childDiskPath = filepath.Join(filepath.Dir(parentCfg.DiskPath), child.ID.String()+".raw")
+	}
+	childExtraDisks := make([]string, len(parentCfg.ExtraDisks))
+	for i, p := range parentCfg.ExtraDisks {
+		childExtraDisks[i] = cloudhypervisor.ChildExtraDiskPath(child.ID, p)
+	}
+
+	// Build child config: copy parent template, replace only identity fields.
+	childCfg := parentCfg
+	childCfg.SandboxRef = child.ID.String()
+	childCfg.DiskPath = childDiskPath
+	childCfg.ExtraDisks = childExtraDisks
+	childCfg.StateDir = childStateDir
+
+	if err := supervisor.WriteSpawnSpec(childStateDir, childCfg); err != nil {
+		return fmt.Errorf("fork supervisor: write spawn spec for child %s: %w", child.ID, err)
+	}
+	slog.Info("sandbox: fork child spawn spec written", "child", child.ID, "stateDir", childStateDir)
+	return doSpawnForkChildSupervisor(ctx, svc, child.ID, childStateDir)
+}
+

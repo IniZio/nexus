@@ -108,11 +108,10 @@ func TestRecover_LiveVMLiveSupervisor_NotAdoptable(t *testing.T) {
 	}
 }
 
-// TestRecover_NoSupervisorRecorded_NotAdoptable verifies that a sandbox which
-// never recorded a supervisor identity (SupervisorPID == 0 — e.g. predates
-// the field, or a lifecycle that never sets one) is left as plain
-// OutcomeAdopted rather than misclassified adoptable. There is nothing to
-// adopt when nothing was ever recorded.
+// TestRecover_NoSupervisorRecorded_NotAdoptable verifies that a sandbox whose
+// record predates the SupervisorPID field (SupervisorPID == 0) is left as
+// plain OutcomeAdopted rather than misclassified adoptable. There is nothing
+// to adopt when nothing was ever recorded.
 func TestRecover_NoSupervisorRecorded_NotAdoptable(t *testing.T) {
 	ctx := context.Background()
 	env := newTestEnv(t)
