@@ -1539,6 +1539,23 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 				SourceSnapshot: string(snap.ID),
 			},
 		}
+		// Persist the netns adoption identity for networked forks. ForkFrom
+		// registers d.nets[childID] before returning (fork.go:416), so
+		// NetnsState returns the live child's identity — the same mechanism
+		// Service.Start uses at service.go:530. Vsock-only children have no
+		// netns runtime registered; NetnsState returns ok=false and the fields
+		// remain zero/empty, which is what supervisor-upgrade checks and refuses.
+		if nsp, ok := s.driver.(driver.NetnsStateProvider); ok {
+			if ns, hasNetns := nsp.NetnsState(id); hasNetns {
+				child.NetnsChildPID = ns.ChildPID
+				child.NetnsChildPGID = ns.ChildPGID
+				child.NetnsChildStartTime = ns.ChildStartTime
+				child.GuestTapName = ns.GuestTap
+				child.CHAPISocket = ns.APISocket
+				child.NetnsControlSocket = ns.ControlSocket
+				child.NetnsControlToken = ns.ControlToken
+			}
+		}
 		if err := s.store.Create(ctx, child); err != nil {
 			return nil, fmt.Errorf("service: fork %s: persist child %s: %w", parent.ID, id, err)
 		}
