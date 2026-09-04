@@ -1979,10 +1979,9 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	if !f.noShareSettings && len(agentProfile.MountAllowlist) > 0 {
 		id := domain.NewSandboxID()
 		stageDir := filepath.Join(storeRoot, "disks", id.String()+"-agentcfg-lower")
-		agentConfigDir := filepath.Dir(agentProfile.SettingsPath) // e.g. "~/.claude"
-		if assembleErr := service.AssembleCuratedConfig(agentProfile, agentConfigDir, stageDir); assembleErr != nil {
+		if stageErr := stageAgentCuratedConfig(agentProfile, stageDir); stageErr != nil {
 			_ = os.RemoveAll(stageDir)
-			slog.Warn("sandbox create: failed to stage agent config; running without shared settings", "err", assembleErr)
+			slog.Warn("sandbox create: failed to stage agent config; running without shared settings", "err", stageErr)
 		} else {
 			preMintedID = id
 			agentCfgStageDir = stageDir
@@ -2912,6 +2911,28 @@ func namedDiskGuestMounts(mounts []service.NamedVolumeMount) []agent.GuestMount 
 // volume names are consistent across both paths.
 func sandboxAgentCfgVolumeName(project, name string) string {
 	return herdrHandleSlug(project+"/"+name) + "-agentcfg"
+}
+
+// stageAgentCuratedConfig resolves the agent's settings source directory via
+// service.AgentSettingsDir (which uses profile.ConfigDirEnvVar — the SETTINGS
+// redirect — never profile.CredDirEnvVar) and stages a curated, secret-free
+// subset of that directory into stageDir.
+//
+// For cursor, ConfigDirEnvVar is "CURSOR_CONFIG_DIR" and CredDirEnvVar is
+// "XDG_CONFIG_HOME". Using CredDirEnvVar would point at the credential
+// directory (~/.config/cursor) instead of the settings directory (~/.cursor),
+// missing cli-config.json entirely. This function must never be inlined back
+// to filepath.Dir(profile.SettingsPath), which ignores both redirects.
+//
+// Extracted as a named function to keep the call site unit-testable without
+// a live VM: tests can set ConfigDirEnvVar in the environment and call this
+// directly.
+func stageAgentCuratedConfig(profile cred.AgentProfile, stageDir string) error {
+	agentConfigDir, err := service.AgentSettingsDir(profile)
+	if err != nil {
+		return err
+	}
+	return service.AssembleCuratedConfig(profile, agentConfigDir, stageDir)
 }
 
 // parseMountNamed parses a --mount-named spec of the form:
