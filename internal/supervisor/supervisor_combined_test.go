@@ -82,7 +82,7 @@ func TestSeedAgentAndHumanSecrets_ContainsAgentVars(t *testing.T) {
 	// caSeeder: no-op; SeedCA writes PEM to it but it's discarded.
 	caSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
 
-	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil, cred.ClaudeCodeProfile)
+	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil, cred.ClaudeCodeProfile, nil)
 	if !ok {
 		t.Fatal("seedAgentAndHumanSecrets returned ok=false; combined seeding failed")
 	}
@@ -113,7 +113,7 @@ func TestSeedAgentAndHumanSecrets_ContainsSecretVars(t *testing.T) {
 	credCap := &captureGuestSeeder{}
 	caSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
 
-	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil, cred.ClaudeCodeProfile)
+	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil, cred.ClaudeCodeProfile, nil)
 	if !ok {
 		t.Fatal("seedAgentAndHumanSecrets returned ok=false")
 	}
@@ -142,7 +142,7 @@ func TestSeedAgentAndHumanSecrets_OneWrite(t *testing.T) {
 	credCap := &captureGuestSeeder{}
 	caSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
 
-	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil, cred.ClaudeCodeProfile)
+	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil, cred.ClaudeCodeProfile, nil)
 	if !ok {
 		t.Fatal("seedAgentAndHumanSecrets returned ok=false")
 	}
@@ -270,7 +270,7 @@ func TestRunSeedRoute_CombinedCallsCombinedSeeder(t *testing.T) {
 		seedHumanSecretsFn = origHuman
 	})
 	seedAgentAndHumanSecretsFn = func(_ context.Context, _ domain.Sandbox, _ *x509.Certificate,
-		_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher, _ PerimeterCAGetter, _ cred.AgentProfile,
+		_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher, _ PerimeterCAGetter, _ cred.AgentProfile, _ service.GuestSeeder,
 	) (bool, bool) {
 		combinedCalled = true
 		return true, true
@@ -313,7 +313,7 @@ func TestRunSeedRoute_HumanSecretsCallsHumanSeeder(t *testing.T) {
 		seedHumanSecretsFn = origHuman
 	})
 	seedAgentAndHumanSecretsFn = func(_ context.Context, _ domain.Sandbox, _ *x509.Certificate,
-		_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher, _ PerimeterCAGetter, _ cred.AgentProfile,
+		_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher, _ PerimeterCAGetter, _ cred.AgentProfile, _ service.GuestSeeder,
 	) (bool, bool) {
 		combinedCalled = true
 		return true, true
@@ -396,14 +396,14 @@ func TestRunSeedRoute_AgentCallsSeedLoop(t *testing.T) {
 
 			seedLoopFn = func(_ context.Context, _ domain.SandboxID, _ **x509.Certificate,
 				_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher,
-				_ int, _ time.Duration, _ PerimeterCAGetter, seedAgentCreds bool, _ cred.AgentProfile,
+				_ int, _ time.Duration, _ PerimeterCAGetter, seedAgentCreds bool, _ cred.AgentProfile, _ service.GuestSeeder,
 			) (bool, bool) {
 				loopCalled = true
 				gotSeedAgentCreds = seedAgentCreds
 				return true, true
 			}
 			seedAgentAndHumanSecretsFn = func(_ context.Context, _ domain.Sandbox, _ *x509.Certificate,
-				_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher, _ PerimeterCAGetter, _ cred.AgentProfile,
+				_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher, _ PerimeterCAGetter, _ cred.AgentProfile, _ service.GuestSeeder,
 			) (bool, bool) {
 				combinedCalled = true
 				return true, true
@@ -527,7 +527,7 @@ func TestSeedLoop_ForcePushWritesRealToken(t *testing.T) {
 		context.Background(), id, &cert,
 		caSeeder, agentSeeder,
 		broker, []*cred.Refresher{r},
-		1, 0, nil, true, cred.ClaudeCodeProfile,
+		1, 0, nil, true, cred.ClaudeCodeProfile, nil,
 	)
 	if !ok {
 		t.Fatal("SeedLoop returned ok=false; seed failed")
@@ -608,7 +608,7 @@ func TestSeedAgentAndHumanSecrets_ForcePushWritesRealToken(t *testing.T) {
 	ok, _ := seedAgentAndHumanSecrets(
 		context.Background(), sb, fakeCert(),
 		caSeeder, credCap.fn(),
-		broker, []*cred.Refresher{r}, nil, cred.ClaudeCodeProfile,
+		broker, []*cred.Refresher{r}, nil, cred.ClaudeCodeProfile, nil,
 	)
 	if !ok {
 		t.Fatal("seedAgentAndHumanSecrets returned ok=false; combined seeding failed")
@@ -814,7 +814,7 @@ func TestRunSeedRoute_AgentUsesSandboxProfile(t *testing.T) {
 	t.Cleanup(func() { seedLoopFn = origLoop })
 	seedLoopFn = func(_ context.Context, _ domain.SandboxID, _ **x509.Certificate,
 		_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher,
-		_ int, _ time.Duration, _ PerimeterCAGetter, _ bool, profile cred.AgentProfile,
+		_ int, _ time.Duration, _ PerimeterCAGetter, _ bool, profile cred.AgentProfile, _ service.GuestSeeder,
 	) (bool, bool) {
 		gotProfile = profile
 		return true, true

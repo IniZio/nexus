@@ -101,7 +101,7 @@ func TestSupervisorS4BoundedRetryReady(t *testing.T) {
 
 	// nil svc is safe: cert != nil so GetPerimeterCACert is never called.
 	done, guestEverResponded := supervisor.SeedLoop(context.Background(), id, &cert,
-		failSeeder, failSeeder, broker, nil, maxAttempts, 0, nil, true, cred.ClaudeCodeProfile)
+		failSeeder, failSeeder, broker, nil, maxAttempts, 0, nil, true, cred.ClaudeCodeProfile, nil)
 	elapsed := time.Since(start)
 
 	if done {

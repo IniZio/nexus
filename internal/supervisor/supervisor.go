@@ -324,13 +324,19 @@ func chooseSeedRoute(sb domain.Sandbox) seedRoute {
 // seedRouteInputs bundles the already-constructed seeders and clients that
 // runSeedRoute needs to dispatch to the right seeder without re-deriving them.
 type seedRouteInputs struct {
-	SB          domain.Sandbox
-	Cert        *x509.Certificate
-	CASeeder    service.GuestSeeder
-	AgentSeeder service.GuestSeeder
-	Broker      *cred.Broker
-	Refreshers  []*cred.Refresher
-	Svc         PerimeterCAGetter
+	SB              domain.Sandbox
+	Cert            *x509.Certificate
+	CASeeder        service.GuestSeeder
+	AgentSeeder     service.GuestSeeder
+	// CredFileSeeder delivers the file-based credential payload (e.g. Cursor's
+	// ~/.config/cursor/auth.json) to a profile-specific path inside the guest.
+	// It must be bound to service.GuestCredFilePath(profile) via
+	// service.NewGuestFileSeeder. Nil is safe: SeedGuestCredFile is a no-op
+	// when seeder is nil or the profile has no CredentialFile.
+	CredFileSeeder  service.GuestSeeder
+	Broker          *cred.Broker
+	Refreshers      []*cred.Refresher
+	Svc             PerimeterCAGetter
 }
 
 // Package-level function vars so tests can spy which seeder runSeedRoute
@@ -354,13 +360,13 @@ func runSeedRoute(ctx context.Context, route seedRoute, in seedRouteInputs) (ok,
 			"reason", "no MITM proxy for this sandbox: open egress, no secrets, no agent")
 		return false, false
 	case routeCombined:
-		return seedAgentAndHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers, in.Svc, resolveSeedProfile(in.SB))
+		return seedAgentAndHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers, in.Svc, resolveSeedProfile(in.SB), in.CredFileSeeder)
 	case routeHumanSecrets:
 		return seedHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Svc)
 	default: // routeAgent
 		agentSandbox := in.SB.AgentName != ""
 		return seedLoopFn(ctx, in.SB.ID, &in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers,
-			maxSeedAttempts, 2*time.Second, in.Svc, agentSandbox, resolveSeedProfile(in.SB))
+			maxSeedAttempts, 2*time.Second, in.Svc, agentSandbox, resolveSeedProfile(in.SB), in.CredFileSeeder)
 	}
 }
 
@@ -825,6 +831,11 @@ func RunDetached(cfg Config) error {
 			Cert:        cert,
 			CASeeder:    caSeeder,
 			AgentSeeder: agentSeeder,
+			// CredFileSeeder is bound to the profile-specific path so
+			// SeedGuestCredFile writes cursor/auth.json (or equivalent)
+			// under GuestCredDirPath, where the redirected CredDirEnvVar
+			// points. Claude Code (CredentialFile == "") ignores this seeder.
+			CredFileSeeder: service.NewGuestFileSeeder(agentClient, service.GuestCredFilePath(resolveSeedProfile(sb))),
 			Broker:      broker,
 			Refreshers:  refreshers,
 			Svc:         svc,
@@ -1551,6 +1562,7 @@ func seedAgentAndHumanSecrets(
 	refreshers []*cred.Refresher,
 	svc PerimeterCAGetter,
 	profile cred.AgentProfile,
+	credFileSeeder service.GuestSeeder,
 ) (ok bool, guestEverResponded bool) {
 	for attempt := range maxSeedAttempts {
 		if ctx.Err() != nil {
@@ -1564,7 +1576,11 @@ func seedAgentAndHumanSecrets(
 				slog.Debug("supervisor.seed_ca_retry", "attempt", attempt, "err", caErr)
 			} else {
 				guestEverResponded = true
-				if _, combErr := service.SeedGuestAgentAndSecretsForProfile(ctx, broker, sb.ID, sb.Envelope.SecretSpecs, credSeeder, profile); combErr != nil {
+				records, combErr := service.SeedGuestAgentAndSecretsForProfile(ctx, broker, sb.ID, sb.Envelope.SecretSpecs, credSeeder, profile)
+				if combErr == nil {
+					combErr = service.SeedGuestCredFile(ctx, sb.ID, records, profile, credFileSeeder)
+				}
+				if combErr != nil {
 					slog.Debug("supervisor.seed_combined_retry", "attempt", attempt, "err", combErr)
 				} else {
 					slog.Info("supervisor.agent_and_secrets_complete", "sandbox", sb.ID,
@@ -1734,6 +1750,7 @@ func SeedLoop(
 	svc PerimeterCAGetter,
 	seedAgentCreds bool,
 	profile cred.AgentProfile,
+	credFileSeeder service.GuestSeeder,
 ) (ok bool, guestEverResponded bool) {
 	for attempt := range maxAttempts {
 		if ctx.Err() != nil {
@@ -1750,7 +1767,11 @@ func SeedLoop(
 			}
 			var agentErr error
 			if caErr == nil && seedAgentCreds {
-				_, agentErr = service.SeedGuestAgentForProfile(ctx, broker, id, agentSeeder, profile)
+				var records []cred.PlaceholderRecord
+				records, agentErr = service.SeedGuestAgentForProfile(ctx, broker, id, agentSeeder, profile)
+				if agentErr == nil {
+					agentErr = service.SeedGuestCredFile(ctx, id, records, profile, credFileSeeder)
+				}
 			}
 			if caErr == nil && agentErr == nil {
 				slog.Info("supervisor.seeds_complete", "sandbox", id,
