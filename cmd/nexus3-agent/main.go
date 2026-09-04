@@ -422,6 +422,25 @@ func mountGuestFS() {
 		tryMount("devpts", "/dev/pts", "devpts", "")
 	}
 
+	// POSIX shared memory on /dev/shm.  devtmpfs does not create it, and a
+	// guest without it is not a conforming Linux userspace: glibc's sem_open
+	// and shm_open resolve names under /dev/shm, so anything built on POSIX
+	// semaphores fails with ENOENT.  Python's multiprocessing is the common
+	// casualty — `multiprocessing.Semaphore()` raises
+	// "FileNotFoundError: [Errno 2] No such file or directory", which is how
+	// djlint (and any pool-based linter) crashed in a worktree sandbox.
+	//
+	// mode=1777 is the standard sticky world-writable permission; nosuid and
+	// nodev match what every distro init mounts here.  Sized (not
+	// preallocated) at the same 512 MiB ceiling the /tmp resizer uses, so a
+	// runaway shm segment cannot eat the guest's RAM out from under the
+	// memory governor.
+	if err := os.MkdirAll("/dev/shm", 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus3-agent: mkdir /dev/shm: %v\n", err)
+	} else {
+		tryMount("tmpfs", "/dev/shm", "tmpfs", "mode=1777,nosuid,nodev,size=512m")
+	}
+
 	tryMount("proc", "/proc", "proc", "")
 	tryMount("sys", "/sys", "sysfs", "")
 
