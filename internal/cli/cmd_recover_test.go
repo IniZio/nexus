@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
 	"github.com/IniZio/nexus3/internal/core/recovery"
+	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/supervisor"
 )
@@ -405,5 +407,81 @@ func TestSpawnReplacementSupervisor_NoSpawnSpec_UnknownAndError(t *testing.T) {
 	if ca != recovery.CAUnknown {
 		t.Errorf("a spawn that never happened reported CA outcome %v; want CAUnknown — "+
 			"any definite answer here is invented, not observed", ca)
+	}
+}
+
+// TestSpawnReplacementSupervisor_GovBoundsPassedToSpawn is the
+// mutation-bearing proof for AC-2 of s40-govbounds-across-swap: the
+// re-acquire supervisor spawned by the recover-adopt path must receive EXACTLY
+// the GovBounds, MemoryMiB, and BootVCPUs from the sandbox's spawn.json.
+//
+// The risk is identical to the supervisor-upgrade case: if GovBounds is dropped
+// at the SpawnReacquireDetached call site (or lost in the spawn.json round-trip)
+// the replacement supervisor runs with a passive governor, silently, with no
+// error visible in the sandbox record.
+//
+// This test drives the REAL production call site (doSpawnReacquireDetached is
+// the actual variable used in production). Mutation: zeroing Config.GovBounds
+// at the call site in spawnReplacementSupervisor turns this RED.
+func TestSpawnReplacementSupervisor_GovBoundsPassedToSpawn(t *testing.T) {
+	// AF_UNIX path limit: use a short temp root.
+	tmpRoot, err := os.MkdirTemp("/tmp", "n3rec")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tmpRoot) })
+	t.Setenv("XDG_STATE_HOME", tmpRoot)
+
+	storeRoot, err := store.DefaultRoot()
+	if err != nil {
+		t.Fatalf("store.DefaultRoot: %v", err)
+	}
+
+	sb := domain.Sandbox{ID: domain.NewSandboxID(), Name: "govbounds", Project: "hsh"}
+	stateDir := supervisor.DefaultStateDir(storeRoot, sb.ID)
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll stateDir: %v", err)
+	}
+
+	wantBounds := resize.Bounds{
+		MemMinBytes:  512 << 20,
+		MemMaxBytes:  4096 << 20,
+		VCPUMin:      2,
+		VCPUMax:      8,
+		DiskMaxBytes: 100 << 30,
+	}
+	wantMemory := uint32(2048)
+	wantVCPUs := uint32(4)
+
+	if err := supervisor.WriteSpawnSpec(stateDir, supervisor.Config{
+		SandboxRef: sb.ID.String(),
+		StateDir:   stateDir,
+		GovBounds:  wantBounds,
+		MemoryMiB:  wantMemory,
+		BootVCPUs:  wantVCPUs,
+	}); err != nil {
+		t.Fatalf("WriteSpawnSpec: %v", err)
+	}
+
+	var capturedCfg supervisor.SpawnConfig
+	origSpawn := doSpawnReacquireDetached
+	t.Cleanup(func() { doSpawnReacquireDetached = origSpawn })
+	doSpawnReacquireDetached = func(cfg supervisor.SpawnConfig) (int, error) {
+		capturedCfg = cfg
+		return 0, nil
+	}
+
+	if _, err := spawnReplacementSupervisor(sb); err != nil {
+		t.Fatalf("spawnReplacementSupervisor: %v", err)
+	}
+
+	if capturedCfg.Config.GovBounds != wantBounds {
+		t.Errorf("GovBounds mismatch:\n  got  %+v\n  want %+v", capturedCfg.Config.GovBounds, wantBounds)
+	}
+	if capturedCfg.Config.MemoryMiB != wantMemory {
+		t.Errorf("MemoryMiB: got %d, want %d", capturedCfg.Config.MemoryMiB, wantMemory)
+	}
+	if capturedCfg.Config.BootVCPUs != wantVCPUs {
+		t.Errorf("BootVCPUs: got %d, want %d", capturedCfg.Config.BootVCPUs, wantVCPUs)
 	}
 }

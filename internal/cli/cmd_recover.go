@@ -135,6 +135,14 @@ func runRecoverWith(ctx context.Context, st store.Store, drv driver.Driver, out 
 // the first place. Production never reassigns it.
 var recoverAdoptSpawner = spawnReplacementSupervisor
 
+// doSpawnReacquireDetached is the re-acquire spawn function wired into
+// spawnReplacementSupervisor. A package-level variable, not a direct
+// reference, so tests can substitute a fake and assert that the PRODUCTION
+// path forwards the correct SpawnConfig — in particular that GovBounds,
+// MemoryMiB, and BootVCPUs from the persisted spawn spec are forwarded
+// verbatim and not silently dropped or zeroed.
+var doSpawnReacquireDetached = supervisor.SpawnReacquireDetached
+
 // spawnReplacementSupervisor is the production adopt-spawn callback wired
 // into recovery: it starts a long-lived RunReacquire supervisor for a
 // sandbox whose VM is alive but whose supervisor died.
@@ -183,7 +191,7 @@ func spawnReplacementSupervisor(sb domain.Sandbox) (recovery.CAOutcome, error) {
 		return recovery.CAUnknown, fmt.Errorf("read spawn spec for %s: %w", sb.ID, err)
 	}
 
-	if _, err := supervisor.SpawnReacquireDetached(supervisor.SpawnConfig{
+	if _, err := doSpawnReacquireDetached(supervisor.SpawnConfig{
 		Config:       spawnSpec,
 		ReadyTimeout: replacementSupervisorReadyTimeout,
 	}); err != nil {

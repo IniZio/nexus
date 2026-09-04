@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/supervisor"
@@ -497,5 +498,78 @@ func TestSupervisorUpgrade_SuccessLineNamesTheBinary(t *testing.T) {
 	}
 	if !strings.Contains(line, "(binary "+myHash+")") {
 		t.Fatalf("success line should name this process's binary hash %q, got %q", myHash, line)
+	}
+}
+
+// TestSupervisorUpgrade_GovBoundsPassedToSpawn is the mutation-bearing proof
+// for AC-1 of s40-govbounds-across-swap: the replacement supervisor spawned by
+// supervisor-upgrade must receive EXACTLY the same GovBounds, MemoryMiB, and
+// BootVCPUs that are persisted in the sandbox's spawn.json.
+//
+// The risk: supervisor-upgrade reads spawn.json, then constructs the
+// SpawnConfig. If any field were dropped (e.g. via a struct-literal update that
+// omits a new field, or a zeroing of Config before passing), the replacement
+// supervisor would run with a passive governor — no resize ever fires — while
+// the sandbox record still says everything is fine. The defect is silent.
+//
+// This test drives the REAL production call site (doSpawnAdoptDetached is the
+// actual variable used in production; the stub captures the SpawnConfig the
+// code hands to it). Mutation: blanking Config.GovBounds at the call site in
+// cmd_supervisor_upgrade.go turns this RED.
+func TestSupervisorUpgrade_GovBoundsPassedToSpawn(t *testing.T) {
+	svc, sb, stateDir := newSupervisorUpgradeTestSandbox(t)
+	myHash, err := supervisor.HashOwnBinary()
+	if err != nil {
+		t.Fatalf("HashOwnBinary: %v", err)
+	}
+	sockPath, stopFake := listenFakeSupervisorHTTPStoppable(t, stateDir, myHash, string(supervisor.AgentChannelDownGuestAlive))
+	markRunningWithLiveSupervisor(t, sb, sockPath)
+	setCompleteNetnsIdentity(t, sb)
+
+	wantBounds := resize.Bounds{
+		MemMinBytes:  512 << 20,
+		MemMaxBytes:  4096 << 20,
+		VCPUMin:      2,
+		VCPUMax:      8,
+		DiskMaxBytes: 100 << 30,
+	}
+	wantMemory := uint32(2048)
+	wantVCPUs := uint32(4)
+
+	if err := supervisor.WriteSpawnSpec(stateDir, supervisor.Config{
+		SandboxRef: sb.ID.String(),
+		StateDir:   stateDir,
+		GovBounds:  wantBounds,
+		MemoryMiB:  wantMemory,
+		BootVCPUs:  wantVCPUs,
+	}); err != nil {
+		t.Fatalf("WriteSpawnSpec: %v", err)
+	}
+
+	var capturedCfg supervisor.SpawnConfig
+	origSpawn, origHandoff := doSpawnAdoptDetached, doRequestHandoff
+	t.Cleanup(func() { doSpawnAdoptDetached, doRequestHandoff = origSpawn, origHandoff })
+	doSpawnAdoptDetached = func(cfg supervisor.SpawnConfig) (int, error) {
+		capturedCfg = cfg
+		return 99003, nil
+	}
+	doRequestHandoff = func(_ context.Context, _, _ string) (bool, error) {
+		stopFake()
+		return true, nil
+	}
+
+	out, _, _ := capture(false)
+	if err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, out, svc); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+
+	if capturedCfg.Config.GovBounds != wantBounds {
+		t.Errorf("GovBounds mismatch:\n  got  %+v\n  want %+v", capturedCfg.Config.GovBounds, wantBounds)
+	}
+	if capturedCfg.Config.MemoryMiB != wantMemory {
+		t.Errorf("MemoryMiB: got %d, want %d", capturedCfg.Config.MemoryMiB, wantMemory)
+	}
+	if capturedCfg.Config.BootVCPUs != wantVCPUs {
+		t.Errorf("BootVCPUs: got %d, want %d", capturedCfg.Config.BootVCPUs, wantVCPUs)
 	}
 }
