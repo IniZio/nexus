@@ -172,7 +172,9 @@ func spawnForkChildSupervisors(
 	// Vsock-only (netless) children do not have a network perimeter to
 	// re-acquire, so reacquirePreflight would refuse them. Skipping them is
 	// correct: they carry no supervisor on the create path either when the
-	// driver registers no netns runtime.
+	// driver registers no netns runtime. No CLI path currently produces a
+	// netless sandbox (CHDriver.Start calls StartNetnsRuntime unconditionally);
+	// see the "Plain VMM path" comment in fork.go for details.
 	//
 	// This check is the canonical location for the "needs a supervisor"
 	// precondition: a future caller of spawnForkChildSupervisors inherits it

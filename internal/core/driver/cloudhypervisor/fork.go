@@ -488,6 +488,16 @@ func (d *CHDriver) spawnChildFromSnapshot(
 	// ── Plain VMM path (vsock-only snapshot, no net device) ─────────────────
 	// Spawn a fresh VMM process and restore from snapshot. The parent issues
 	// vm.restore directly; no netns or TAP setup is needed.
+	//
+	// UNREACHABLE FROM THE CURRENT CLI. CHDriver.Start calls StartNetnsRuntime
+	// unconditionally, so every sandbox the product creates carries a TAP/bridge
+	// net device. findNetTap therefore always succeeds for any snapshot taken
+	// from a current sandbox, errNoNet is never returned, and this branch never
+	// fires. The branch is kept deliberately: removing it would leave the netted
+	// path with no explicit refusal if Start's unconditional call were ever
+	// relaxed. A regression that broke exactly this path (commit fd90e3f, fixed
+	// in 5c6045a) was invisible to the full test suite and to two live proof
+	// runs — the exact cost of a path that can never be exercised.
 	proc, err := spawnVMM(ctx, d.cfg, socketPath)
 	if err != nil {
 		cleanupDisk()
