@@ -671,6 +671,18 @@ func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind,
 		fmt.Fprintf(&buf, "%s=%s\n", name, GuestCACertPath)
 	}
 
+	// File-based credential redirect: point the agent's credential directory at
+	// the guest-side directory where SeedGuestCredFile writes the JSON file.
+	// This is what connects the file seeder to the agent's lookup: without this
+	// line the agent ignores GuestCredDirPath and reads from its default location
+	// (e.g. ~/.config/cursor/auth.json), finding nothing.
+	//
+	// Driven by profile.CredDirEnvVar so no agent name or directory is hardcoded
+	// here. Claude Code (CredentialFile == "") skips this block entirely.
+	if profile.CredentialFile != "" && profile.CredDirEnvVar != "" {
+		fmt.Fprintf(&buf, "%s=%s\n", profile.CredDirEnvVar, GuestCredDirPath)
+	}
+
 	// Agent-specific fixed environment, sorted so the payload is byte-stable.
 	keys := make([]string, 0, len(profile.GuestEnv))
 	for k := range profile.GuestEnv {

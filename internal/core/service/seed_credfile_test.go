@@ -182,6 +182,113 @@ func TestBuildAgentSeedPayload_FileBasedAgentNoError(t *testing.T) {
 	}
 }
 
+// TestBuildAgentSeedPayload_CredDirRedirectEmitted is the GAP 1 regression test:
+// proves buildAgentSeedPayload emits <CredDirEnvVar>=<GuestCredDirPath> for a
+// file-based agent, connecting the seeded file to where the agent looks.
+//
+// # Mutation proof
+//
+// Removing the `fmt.Fprintf(&buf, "%s=%s\n", profile.CredDirEnvVar, GuestCredDirPath)`
+// line (or guarding it away) makes this test fail. The mutation is proven by
+// commenting out that block in seed.go and showing the test RED. See commit.
+func TestBuildAgentSeedPayload_CredDirRedirectEmitted(t *testing.T) {
+	t.Parallel()
+	records := []cred.PlaceholderRecord{
+		credFileTestRecord(cred.CursorAgentProfile.CredentialedHost, "bbccdd1122334455bbccdd1122334455bbccdd1122334455bbccdd1122334455"),
+	}
+	got, err := buildAgentSeedPayload(records, kindOAuth, cred.CursorAgentProfile)
+	if err != nil {
+		t.Fatalf("buildAgentSeedPayload(cursor): %v", err)
+	}
+	payload := string(got)
+
+	// The redirect line must appear: without it the agent reads its default
+	// credential dir and finds no nexus3 placeholder file.
+	wantLine := cred.CursorAgentProfile.CredDirEnvVar + "=" + GuestCredDirPath
+	if !strings.Contains(payload, wantLine) {
+		t.Errorf("env payload missing redirect line %q; got:\n%s", wantLine, payload)
+	}
+}
+
+// TestBuildAgentSeedPayload_CredDirRedirectAbsentForEnvVarAgent proves that
+// Claude Code's env payload does NOT contain any CredDirEnvVar=GuestCredDirPath
+// line. Claude Code has CredentialFile == "" so the redirect block is skipped.
+func TestBuildAgentSeedPayload_CredDirRedirectAbsentForEnvVarAgent(t *testing.T) {
+	t.Parallel()
+	expires := time.Date(2099, 12, 31, 23, 59, 59, 0, time.UTC)
+	records := []cred.PlaceholderRecord{
+		{Host: AnthropicAPIHost, Placeholder: "deadbeefdeadbeefdeadbeef", ExpiresAt: expires, SandboxID: seedTestID(24)},
+	}
+	got, err := buildAgentSeedPayload(records, kindOAuth, cred.ClaudeCodeProfile)
+	if err != nil {
+		t.Fatalf("buildAgentSeedPayload(claude-code): %v", err)
+	}
+	payload := string(got)
+	// Claude Code's CredDirEnvVar is CLAUDE_CONFIG_DIR; it must NOT be set to
+	// GuestCredDirPath (that would redirect the whole config dir, not just creds).
+	if strings.Contains(payload, GuestCredDirPath) {
+		t.Errorf("Claude Code env payload must not contain GuestCredDirPath %q; got:\n%s", GuestCredDirPath, payload)
+	}
+}
+
+// syntheticFileProfile is a hand-built profile with a non-cursor CredentialFileKey
+// ("token") to prove buildCredFileSeedPayload drives the JSON key from the
+// profile field rather than hardcoding "accessToken".
+var syntheticFileProfile = cred.AgentProfile{
+	Name:              "synthetic-file-agent",
+	CredentialedHost:  "api.example.com",
+	EgressHosts:       []string{"api.example.com"},
+	CredDirEnvVar:     "EXAMPLE_CONFIG_HOME",
+	CredentialFile:    "example/cred.json",
+	CredentialFileKey: "token", // deliberately NOT "accessToken"
+}
+
+// TestBuildCredFileSeedPayload_UsesProfileKey is the GAP 2 regression test:
+// proves buildCredFileSeedPayload uses profile.CredentialFileKey rather than
+// a hardcoded key. Uses syntheticFileProfile whose key is "token", not "accessToken".
+//
+// # Mutation proof
+//
+// Hardcoding "accessToken" in the json.Marshal call of buildCredFileSeedPayload
+// makes this test fail because the output key is "accessToken" but the test
+// expects "token". The mutant compiles (go vet exit 0); the test is RED.
+// See commit for verbatim RED output.
+func TestBuildCredFileSeedPayload_UsesProfileKey(t *testing.T) {
+	t.Parallel()
+	const placeholder = "1a2b3c4d5e6f1a2b3c4d5e6f1a2b3c4d5e6f1a2b3c4d5e6f1a2b3c4d5e6f1a2b"
+	records := []cred.PlaceholderRecord{
+		credFileTestRecord(syntheticFileProfile.CredentialedHost, placeholder),
+	}
+
+	got, err := buildCredFileSeedPayload(records, syntheticFileProfile)
+	if err != nil {
+		t.Fatalf("buildCredFileSeedPayload: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil payload for file-based profile")
+	}
+
+	var m map[string]string
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatalf("payload not valid JSON: %v; content: %q", err, got)
+	}
+
+	// The key must be "token" (from syntheticFileProfile.CredentialFileKey),
+	// not "accessToken". If the implementation hardcodes "accessToken" this
+	// assertion fails.
+	wantKey := syntheticFileProfile.CredentialFileKey // "token"
+	if v, ok := m[wantKey]; !ok {
+		t.Errorf("JSON missing key %q (got keys %v); hardcoded key suspected", wantKey, keysOf(m))
+	} else if v != placeholder {
+		t.Errorf("JSON[%q] = %q, want placeholder %q", wantKey, v, placeholder)
+	}
+
+	// "accessToken" must NOT appear: if it does the key is hardcoded.
+	if _, bad := m["accessToken"]; bad {
+		t.Errorf("JSON contains hardcoded key \"accessToken\" instead of profile-driven %q", wantKey)
+	}
+}
+
 // TestClaudeCodeEnvVarSeedingUnchanged proves that the Claude Code env-var
 // seeding path is completely unaffected by the file-seeding extension.
 // This is intentionally a re-statement of the pre-existing behaviour to
