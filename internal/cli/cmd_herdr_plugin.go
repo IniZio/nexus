@@ -2817,29 +2817,36 @@ func guestAgentLaunchCommand(autonomous bool) string {
 	return "command claude"
 }
 
-// cursorReadyMatch is the substring in cursor-agent's TUI footer that means
+// cursorReadyMatch is the substring in cursor-agent's TUI input box that means
 // the agent has finished starting and its input box is accepting text.
 //
-// Verified STATICALLY (2026-08-30) by grepping the cursor-agent
-// 2026.08.25-3e8eec8 bundle: the mode-cycling hint "(shift+tab to cycle)" is
-// attached to every execution mode's label — default, "Plan (shift+tab to
-// cycle)", "Ask (shift+tab to cycle)", "Debug (shift+tab to cycle)" — unlike
-// claude, where the equivalent token changes with the PERMISSION mode
-// (bypass vs manual; see claudeReadyMatch). cursor's --force/--yolo autonomy
-// flag appears to be orthogonal to which token the footer shows.
+// Verified LIVE (2026-09-04) against cursor-agent v2026.09.02-c22c1a3 running
+// on the host under a tmux PTY (operator authenticated as
+// maintainer@example.invalid). The tmux-rendered pane content at the ready state
+// is (verbatim, trimmed):
 //
-// What is NOT known: this was never confirmed against a live authenticated
-// pane. Doing so requires a real CURSOR_API_KEY, which was not available in
-// the environment this function was written in (a fake key gets rejected by
-// the backend before the TUI's ready state is ever reached). Unlike
-// claudeReadyMatch, this function carries no live-footer verbatim quote.
-// Before relying on this in an unattended flow, confirm it against one live
-// guest pane; if it turns out wrong, prefer widening (returning to a longer,
-// mode-agnostic wait) over narrowing to a token that only holds in one mode —
-// a timeout is loud, a false-ready silently delivers the brief into a
-// wizard or dialog that never receives it.
+//	  Cursor Agent
+//	  v2026.09.02-c22c1a3
+//	  Tip: Type ? in the prompt bar to show in-app hints.
+//
+//	  → Plan, search, build anything
+//
+//	  Cursor Grok 4.5 High Fast
+//	  ~/magic/nexus3/... · nexus3/cursor-s6-readymatch
+//
+// "Plan, search, build anything" is the placeholder text in the input box.
+// It is assembled by cursor-addressing escape sequences (not emitted as a
+// contiguous literal in the raw PTY byte stream), so it appears only in the
+// tmux-rendered pane view — which is exactly what herdrPaneWaitOutput inspects.
+//
+// The prior static-analysis guess ("shift+tab to cycle") does NOT appear
+// anywhere in a real running session.
+//
+// Unlike claudeReadyMatch, the token is mode-invariant: cursor-agent shows the
+// same input placeholder whether or not --force/--yolo is passed, so this
+// function ignores the autonomous argument.
 func cursorReadyMatch(_ bool) string {
-	return "shift+tab to cycle"
+	return "Plan, search, build anything"
 }
 
 // guestCursorLaunchCommand returns the shell command typed into the guest
