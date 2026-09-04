@@ -74,6 +74,34 @@ func expandTilde(p string) (string, error) {
 	return filepath.Join(home, p[2:]), nil
 }
 
+// AgentSettingsDir returns the directory that contains the agent's settings
+// file, resolved via profile.ConfigDirEnvVar (the SETTINGS redirect, never
+// profile.CredDirEnvVar). When ConfigDirEnvVar is non-empty and the named
+// environment variable is set in the process environment, that value is the
+// directory. Otherwise the directory is derived from the parent of
+// profile.SettingsPath.
+//
+// This is the correct function for callers to use when building the
+// agentConfigDir argument to [AssembleCuratedConfig]: using ConfigDirEnvVar —
+// not CredDirEnvVar — ensures that agents like cursor, whose settings and
+// credential directories are controlled by different environment variables,
+// read settings from the right place. For cursor, ConfigDirEnvVar is
+// "CURSOR_CONFIG_DIR" and CredDirEnvVar is "XDG_CONFIG_HOME"; sourcing from
+// CredDirEnvVar would look in the credential directory instead.
+//
+// Returns ("", nil) when the profile has no settings file.
+func AgentSettingsDir(profile cred.AgentProfile) (string, error) {
+	if profile.ConfigDirEnvVar != "" {
+		if dir := os.Getenv(profile.ConfigDirEnvVar); dir != "" {
+			return dir, nil
+		}
+	}
+	if profile.SettingsPath == "" {
+		return "", nil
+	}
+	return expandTilde(filepath.Dir(profile.SettingsPath))
+}
+
 // settingsBaseName returns the basename of profile.SettingsPath — the
 // filename, within the agent's config directory, that carries structured
 // settings subject to the profile's SettingsAllowlist filter (e.g.
@@ -253,9 +281,11 @@ func copyRaw(src, dst string) error {
 
 // copyFilteredSettings reads srcPath as JSON and writes only the keys
 // allowlisted by profile.SettingsAllowlist to dstPath at mode 0444. Any key
-// not in the allowlist — including unrecognised/future keys, and including a
-// credential blob like cursor's authInfo — is dropped, so a secret can never
-// ride in on a key this profile has not vetted. A nil/empty allowlist drops
+// not in the allowlist — including unrecognised/future keys, and including
+// account identity/PII like cursor's authInfo (email, displayName, userId,
+// authId — not a token; the token lives in auth.json, not cli-config.json) —
+// is dropped, so PII and unvetted keys can never ride in on a key this profile
+// has not explicitly approved. A nil/empty allowlist drops
 // every key (see [cred.AgentProfile.SettingsAllowlist]'s zero-value doc).
 //
 // When profile.BypassConsentKey is set, that key is always forced to true in

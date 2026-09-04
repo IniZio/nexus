@@ -466,13 +466,17 @@ func TestAssembleCuratedConfig_CursorAuthInfoStripped(t *testing.T) {
 		"model":        "auto",
 		"approvalMode": "allowlist",
 		"display":      map[string]any{"mode": "zen"},
-		// The credential blob. An operator who has run `cursor-agent login`
-		// interactively carries this key in the SAME file nexus3 stages,
+		// The account identity/PII blob. An operator who has run `cursor-agent
+		// login` interactively carries this key in the SAME file nexus3 stages,
 		// regardless of which auth path nexus3 itself brokers.
+		// Shape matches the real cli-config.json authInfo: identity fields only
+		// (email, displayName, userId, authId) — NOT tokens; the credential
+		// (accessToken/refreshToken) lives in auth.json, not here.
 		"authInfo": map[string]any{
-			"accessToken":  "cursor-oauth-access-token-do-not-leak",
-			"refreshToken": "cursor-oauth-refresh-token-do-not-leak",
-			"email":        "operator@example.com",
+			"email":       "operator@example.com",
+			"displayName": "Operator User",
+			"userId":      "usr_abc1234567890",
+			"authId":      "aid_xyz0987654321",
 		},
 		// Two more non-allowlisted keys, so the count assertion below cannot
 		// pass via a no-op patch that happens to only strip one key.
@@ -526,11 +530,12 @@ func TestAssembleCuratedConfig_CursorAuthInfoStripped(t *testing.T) {
 		}
 	}
 
-	// Belt-and-suspenders raw-bytes check: the literal secret values must not
-	// appear anywhere in the staged file, even under an unexpected key shape.
-	if strings.Contains(string(data), "cursor-oauth-access-token-do-not-leak") ||
-		strings.Contains(string(data), "cursor-oauth-refresh-token-do-not-leak") {
-		t.Error("raw oauth token bytes leaked into staged cli-config.json")
+	// Belt-and-suspenders raw-bytes check: the literal PII values from authInfo
+	// must not appear anywhere in the staged file, even under an unexpected key
+	// shape (e.g. if the key were renamed but the value shape preserved).
+	if strings.Contains(string(data), "usr_abc1234567890") ||
+		strings.Contains(string(data), "aid_xyz0987654321") {
+		t.Error("raw PII values from authInfo leaked into staged cli-config.json")
 	}
 
 	// cursor has no BypassConsentKey (skip-permissions is a launch-time flag,
@@ -570,4 +575,58 @@ func TestAssembleCuratedConfig_GitDirExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestAgentSettingsDir verifies that AgentSettingsDir uses ConfigDirEnvVar
+// (the SETTINGS redirect) and never CredDirEnvVar when resolving where to
+// read the agent's settings file. This is the key correctness property for
+// cursor, where ConfigDirEnvVar="CURSOR_CONFIG_DIR" and
+// CredDirEnvVar="XDG_CONFIG_HOME" are different variables pointing to
+// different directories.
+func TestAgentSettingsDir(t *testing.T) {
+	t.Run("cursor_ConfigDirEnvVar_wins", func(t *testing.T) {
+		// When CURSOR_CONFIG_DIR is set, AgentSettingsDir must return that
+		// directory — NOT the XDG_CONFIG_HOME or the SettingsPath default.
+		customSettingsDir := t.TempDir()
+		t.Setenv("CURSOR_CONFIG_DIR", customSettingsDir)
+		// Also set XDG_CONFIG_HOME to a different value to prove it is ignored.
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+		got, err := service.AgentSettingsDir(cred.CursorAgentProfile)
+		if err != nil {
+			t.Fatalf("AgentSettingsDir: %v", err)
+		}
+		if got != customSettingsDir {
+			t.Errorf("AgentSettingsDir = %q, want %q (ConfigDirEnvVar value)", got, customSettingsDir)
+		}
+	})
+
+	t.Run("cursor_falls_back_to_SettingsPath_dir", func(t *testing.T) {
+		// When CURSOR_CONFIG_DIR is not set, AgentSettingsDir falls back to
+		// the directory of SettingsPath (~/.cursor for cursor-agent).
+		t.Setenv("CURSOR_CONFIG_DIR", "")
+		// XDG_CONFIG_HOME must not influence the result.
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+		got, err := service.AgentSettingsDir(cred.CursorAgentProfile)
+		if err != nil {
+			t.Fatalf("AgentSettingsDir: %v", err)
+		}
+		home, _ := os.UserHomeDir()
+		want := filepath.Join(home, ".cursor")
+		if got != want {
+			t.Errorf("AgentSettingsDir = %q, want %q (SettingsPath parent)", got, want)
+		}
+	})
+
+	t.Run("no_settings_path_returns_empty", func(t *testing.T) {
+		// A profile with no SettingsPath (and no ConfigDirEnvVar) returns "".
+		got, err := service.AgentSettingsDir(cred.AgentProfile{})
+		if err != nil {
+			t.Fatalf("AgentSettingsDir: %v", err)
+		}
+		if got != "" {
+			t.Errorf("AgentSettingsDir for zero profile = %q, want empty", got)
+		}
+	})
 }
