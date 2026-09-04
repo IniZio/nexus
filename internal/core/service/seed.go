@@ -630,7 +630,11 @@ func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind,
 	if kind == kindAuthToken {
 		credEnvVar = profile.APIKeyEnvVar // direct API-key path (D-P4-02 / ToS rail)
 	}
-	if credEnvVar == "" {
+	// File-based agents (profile.CredentialFile != "") convey their credential
+	// through SeedGuestCredFile, not through an env var. Allow credEnvVar to be
+	// empty when a CredentialFile is declared; only reject agents that have
+	// neither (which would be seeded with no credential at all).
+	if credEnvVar == "" && profile.CredentialFile == "" {
 		return nil, fmt.Errorf("agent %q declares no credential env var for the selected path", profile.Name)
 	}
 
@@ -641,20 +645,24 @@ func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind,
 	// authenticates to. Either name produces Authorization: Bearer
 	// <placeholder> on outbound requests; the MITM proxy swaps the placeholder
 	// host-side on each forwarded request.
-	found := false
-	for _, rec := range records {
-		if rec.Host == profile.CredentialedHost {
-			fmt.Fprintf(&buf, "%s=%s\n", credEnvVar, rec.Placeholder)
-			found = true
-			break
+	// File-based agents (credEnvVar == "") skip this block; their placeholder
+	// is written to the credential file by SeedGuestCredFile instead.
+	if credEnvVar != "" {
+		found := false
+		for _, rec := range records {
+			if rec.Host == profile.CredentialedHost {
+				fmt.Fprintf(&buf, "%s=%s\n", credEnvVar, rec.Placeholder)
+				found = true
+				break
+			}
 		}
-	}
-	if !found {
-		// Seeding a guest with no credential at all is worse than failing: the
-		// agent starts, reaches the API unauthenticated, and the cause shows up
-		// as an opaque 401 from inside the VM.
-		return nil, fmt.Errorf("agent %q: no placeholder minted for credentialed host %q",
-			profile.Name, profile.CredentialedHost)
+		if !found {
+			// Seeding a guest with no credential at all is worse than failing: the
+			// agent starts, reaches the API unauthenticated, and the cause shows up
+			// as an opaque 401 from inside the VM.
+			return nil, fmt.Errorf("agent %q: no placeholder minted for credentialed host %q",
+				profile.Name, profile.CredentialedHost)
+		}
 	}
 
 	// Runtimes that read a CA bundle from the environment trust the MITM proxy
@@ -674,6 +682,103 @@ func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind,
 	}
 
 	return buf.Bytes(), nil
+}
+
+// GuestCredDirPath is the well-known directory inside the guest where
+// file-based credential placeholders are written. When an agent's profile
+// declares CredentialFile, the host writes the placeholder JSON into
+// GuestCredDirPath/CredentialFile at seed time. The agent's CredDirEnvVar
+// (e.g. XDG_CONFIG_HOME for cursor-agent) must be pointed at this path so
+// the agent finds the file at the expected location.
+//
+// Like GuestCredEnvPath it lives under /run (volatile tmpfs) and is absent
+// after a guest reboot; the host re-seeds on each CreateAndBoot call.
+const GuestCredDirPath = "/run/nexus3/cred-dir"
+
+// GuestCredFilePath returns the absolute guest path for the agent's credential
+// file, or empty string if the profile declares no file-based credential.
+// The path is GuestCredDirPath joined with profile.CredentialFile.
+func GuestCredFilePath(profile cred.AgentProfile) string {
+	if profile.CredentialFile == "" {
+		return ""
+	}
+	return GuestCredDirPath + "/" + profile.CredentialFile
+}
+
+// buildCredFileSeedPayload builds the JSON file content for an agent whose
+// credential is file-based (profile.CredentialFile != ""). The returned bytes
+// form a JSON object with profile.CredentialFileKey mapped to the placeholder
+// minted for profile.CredentialedHost.
+//
+// Returns nil, nil when profile.CredentialFile is empty; the caller then
+// skips the file-seeding step (env-var agents such as Claude Code use the
+// env-var path only and return nil here).
+//
+// # Security invariant
+//
+// PlaceholderRecord carries ONLY the placeholder string, ExpiresAt, SandboxID,
+// and Host — never the real token. The produced JSON therefore cannot contain
+// the real token regardless of what was passed to RegisterPlaceholder or
+// SetRealToken.
+func buildCredFileSeedPayload(records []cred.PlaceholderRecord, profile cred.AgentProfile) ([]byte, error) {
+	if profile.CredentialFile == "" {
+		return nil, nil
+	}
+	var placeholder string
+	for _, rec := range records {
+		if rec.Host == profile.CredentialedHost {
+			placeholder = rec.Placeholder
+			break
+		}
+	}
+	if placeholder == "" {
+		return nil, fmt.Errorf("agent %q: no placeholder minted for credentialed host %q",
+			profile.Name, profile.CredentialedHost)
+	}
+	content, err := json.Marshal(map[string]string{profile.CredentialFileKey: placeholder})
+	if err != nil {
+		return nil, fmt.Errorf("agent %q: marshal credential file: %w", profile.Name, err)
+	}
+	return content, nil
+}
+
+// SeedGuestCredFile writes the broker-minted credential placeholder into the
+// agent's credential file inside the guest. It is a no-op when
+// profile.CredentialFile is empty (env-var agents such as Claude Code use the
+// env-var path only).
+//
+// Call this after [SeedGuestAgent] or [SeedGuestAgentForProfile], which mint
+// the placeholder records and return them. Pass the seeder created with
+// NewGuestFileSeeder(c, GuestCredFilePath(profile)).
+//
+// # Security invariant
+//
+// PlaceholderRecord carries only the placeholder string, never the real token.
+// The written JSON file therefore cannot contain the real token.
+//
+// If seeder is nil or profile.CredentialFile is empty, SeedGuestCredFile is a
+// no-op and returns nil.
+func SeedGuestCredFile(
+	ctx context.Context,
+	id domain.SandboxID,
+	records []cred.PlaceholderRecord,
+	profile cred.AgentProfile,
+	seeder GuestSeeder,
+) error {
+	if seeder == nil || profile.CredentialFile == "" {
+		return nil
+	}
+	content, err := buildCredFileSeedPayload(records, profile)
+	if err != nil {
+		return fmt.Errorf("seed cred file: %w", err)
+	}
+	if content == nil {
+		return nil
+	}
+	if err := seeder(ctx, id, content); err != nil {
+		return fmt.Errorf("seed cred file: deliver to guest: %w", err)
+	}
+	return nil
 }
 
 // GuestShellProfilePath is the well-known path inside the guest where the
