@@ -1,20 +1,20 @@
 {
-  "total": 51,
+  "total": 52,
   "by_source": {
-    "unknown": 51
+    "unknown": 52
   },
   "by_concept": {
     "C-PDF": 27,
     "C-PER": 7,
     "C-SUR": 5,
-    "C-RES": 12
+    "C-RES": 13
   },
   "by_verification": {
-    "manual": 46,
+    "manual": 47,
     "automated": 5
   },
   "by_criticality": {
-    "must": 51
+    "must": 52
   },
   "verified": 0,
   "unverified_automated": [
@@ -261,6 +261,11 @@
       "tests": []
     },
     "RES-R-004": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "RES-R-013": {
       "declared": "manual",
       "verified": false,
       "tests": []

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-03T13:05:43.630Z",
+  "generated_at": "2026-09-04T03:49:05.000Z",
   "nodes": {
     "PDF-R-006": {
       "id": "PDF-R-006",
@@ -1223,6 +1223,7 @@
         "RES-R-008",
         "RES-R-010",
         "RES-R-004",
+        "RES-R-013",
         "RES-R-002",
         "RES-R-005",
         "RES-R-007"
@@ -1349,6 +1350,30 @@
       "inbound": [],
       "byteSize": 249,
       "relPath": "res/RES-R-004.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "manual",
+      "criticality": "must",
+      "concept": "C-RES",
+      "parent": null,
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "RES-R-013": {
+      "id": "RES-R-013",
+      "type": "requirement",
+      "title": "The memory governor is re-constructed and re-started by an adopted supervisor; resize polling resumes against the reacquired VM without rebooting the guest.",
+      "summary": "The memory governor is re-constructed and re-started by an adopted supervisor; resize polling resumes against the reacquired VM without rebooting the guest.",
+      "refs": [
+        "C-RES"
+      ],
+      "inbound": [],
+      "byteSize": 2580,
+      "relPath": "res/RES-R-013.md",
       "status": "active",
       "pattern": null,
       "verification": "manual",

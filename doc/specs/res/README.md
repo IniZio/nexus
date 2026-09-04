@@ -10,4 +10,4 @@ summary: "Requirements for deterministic resource ownership, leak-free reclamati
 
 Covers the full resource lifecycle: owner keys, ResourceIndex, the `nexus3 reap` command, journaled create, recover reconciliation, and extreme-case leak testing.
 
-Charter trace prefix: `REQ-RES-*` maps to spec nodes `RES-R-001` … `RES-R-012`.
+Charter trace prefix: `REQ-RES-*` maps to spec nodes `RES-R-001` … `RES-R-013`.

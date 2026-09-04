@@ -230,6 +230,15 @@ func TestAdoptedGovernorResizes(t *testing.T) {
 	//   Clamped to [512MiB, 4GiB] → 1 GiB; target > current → proceed
 	//   Headroom: /proc/meminfo on real host (test host has enough) → ok
 	//   ResizeMemory(ctx, 1073741824) recorded by fake CH server.
+	//
+	// NOTE: the headroom check reads real /proc/meminfo. On a host with less
+	// than ~1.1 GiB of MemAvailable the resize target (1 GiB) is rejected and
+	// the test fails with a missing ResizeMemory call — a false RED, not a
+	// correctness hole (the governor itself is working correctly; the host is
+	// too loaded to grant the requested memory). This is not a flaky assertion;
+	// it is a load-dependent precondition. Run on a host with ≥4 GiB free, or
+	// use GOTEST_P=1 GOTEST_PARALLEL=1 via make to reduce concurrent memory
+	// pressure during the suite.
 	const (
 		minBytes  int64  = 512 << 20
 		maxBytes  int64  = 4096 << 20
