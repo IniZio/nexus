@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -32,6 +33,11 @@ var doSpawnForkChildSupervisor func(ctx context.Context, svc *service.Service, i
 // exercise the flag/routing layer of runForkWith without a real supervisor
 // state dir can replace the whole supervisor-spawn block with a no-op.
 var doSpawnForkSupervisors = spawnForkChildSupervisors
+
+// doStoreDefaultRoot resolves the nexus3 store root directory. A package-level
+// variable so tests can redirect it to a temp dir without touching the real
+// state directory.
+var doStoreDefaultRoot = store.DefaultRoot
 
 // ── dispatcher / flag parsing ────────────────────────────────────────────────
 
@@ -106,19 +112,26 @@ func runForkWith(ctx context.Context, args []string, out *Output, svcs ...*servi
 		return errSandbox("fork", err)
 	}
 
-	// Spawn a detached reacquire-mode supervisor for each child so that
-	// supervisor-upgrade, recover, and the memory governor work identically on
-	// fork children as on created ones (D-HSH-27). The reacquire mode adopts
-	// the already-running VM without a cold boot — the supervisor does NOT call
-	// svc.Start; it re-acquires the network perimeter via the child's
-	// NetnsControlSocket. See s46-fork-supervisor-parity AC-5 for the full list
-	// of create-path steps that are deliberately not replayed.
-	if len(children) > 0 && children[0].Provenance != nil {
-		storeRoot, storeErr := store.DefaultRoot()
+	// Spawn a detached reacquire-mode supervisor for each networked child so
+	// that supervisor-upgrade, recover, and the memory governor work
+	// identically on fork children as on created ones (D-HSH-27). The
+	// reacquire mode adopts the already-running VM without a cold boot — the
+	// supervisor does NOT call svc.Start; it re-acquires the network perimeter
+	// via the child's NetnsControlSocket. See s46-fork-supervisor-parity AC-5
+	// for the full list of create-path steps that are deliberately not replayed.
+	//
+	// Vsock-only (netless) children have NetnsChildPID=0 and carry no network
+	// perimeter; spawnForkChildSupervisors skips them. The len(children) > 0
+	// guard is present so storeRoot is only resolved when there is work to do.
+	if len(children) > 0 {
+		storeRoot, storeErr := doStoreDefaultRoot()
 		if storeErr != nil {
 			return errSandbox("fork", fmt.Errorf("resolve store root for supervisor: %w", storeErr))
 		}
-		parentID := children[0].Provenance.ParentID
+		var parentID domain.SandboxID
+		if children[0].Provenance != nil {
+			parentID = children[0].Provenance.ParentID
+		}
 		if spawnErr := doSpawnForkSupervisors(ctx, svc, storeRoot, parentID, children); spawnErr != nil {
 			return errSandbox("fork", spawnErr)
 		}
@@ -155,15 +168,44 @@ func spawnForkChildSupervisors(
 	parentID domain.SandboxID,
 	children []domain.Sandbox,
 ) error {
+	// Only spawn supervisors for children that have a live netns runtime.
+	// Vsock-only (netless) children do not have a network perimeter to
+	// re-acquire, so reacquirePreflight would refuse them. Skipping them is
+	// correct: they carry no supervisor on the create path either when the
+	// driver registers no netns runtime.
+	//
+	// This check is the canonical location for the "needs a supervisor"
+	// precondition: a future caller of spawnForkChildSupervisors inherits it
+	// here and cannot accidentally skip it by not replicating a call-site
+	// guard.
+	var netted []domain.Sandbox
+	for _, ch := range children {
+		if ch.NetnsChildPID > 0 {
+			netted = append(netted, ch)
+		}
+	}
+	if len(netted) == 0 {
+		return nil
+	}
+
 	parentStateDir := supervisor.DefaultStateDir(storeRoot, parentID)
 	parentCfg, err := supervisor.ReadSpawnSpec(parentStateDir)
 	if err != nil {
 		return fmt.Errorf("fork supervisor: read parent spawn spec for %s: %w", parentID, err)
 	}
-	for _, child := range children {
-		if err := writeAndSpawnForkChild(ctx, svc, storeRoot, child, parentCfg); err != nil {
-			return err
+
+	// Attempt every netted child and collect failures. Children are already
+	// Running in the store after svc.Fork; rolling back a running VM is more
+	// destructive than reporting honestly which ones lack a supervisor.
+	var errs []error
+	for _, child := range netted {
+		if spawnErr := writeAndSpawnForkChild(ctx, svc, storeRoot, child, parentCfg); spawnErr != nil {
+			errs = append(errs, fmt.Errorf("child %s: %w", child.ID, spawnErr))
 		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("fork supervisor: %d of %d networked children failed to acquire a supervisor: %w",
+			len(errs), len(netted), errors.Join(errs...))
 	}
 	return nil
 }
