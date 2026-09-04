@@ -53,6 +53,12 @@ type serveAdoptedInput struct {
 	// ("supervisor.adopt" vs "supervisor.reacquire") so an operator reading
 	// journals can tell a planned upgrade from a crash recovery.
 	logPrefix string
+
+	// startPerimeterFn, when non-nil, replaces svc.StartPerimeterOnly.
+	// Production callers leave it nil. Tests inject it to bypass the
+	// perimeter setup (which requires a live netns runtime) while still
+	// exercising the rest of the serve loop, including the governor.
+	startPerimeterFn func(ctx context.Context, sb domain.Sandbox, seed *service.CASeed) error
 }
 
 // serveAdoptedSupervisor runs the long-lived supervisor loop for a sandbox
@@ -107,8 +113,14 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 	}
 	defer builder.ReleaseCacheDiskLeases(cacheLeases)
 
-	if err := svc.StartPerimeterOnly(ctx, sb, in.seedCA); err != nil {
-		return fmt.Errorf("supervisor: %s: start perimeter: %w", in.logPrefix, err)
+	var perimErr error
+	if in.startPerimeterFn != nil {
+		perimErr = in.startPerimeterFn(ctx, sb, in.seedCA)
+	} else {
+		perimErr = svc.StartPerimeterOnly(ctx, sb, in.seedCA)
+	}
+	if perimErr != nil {
+		return fmt.Errorf("supervisor: %s: start perimeter: %w", in.logPrefix, perimErr)
 	}
 
 	var perimSupPtr atomic.Pointer[perimeter.PerimeterSupervisor]
