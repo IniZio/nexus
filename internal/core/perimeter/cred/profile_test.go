@@ -29,6 +29,9 @@ func TestClaudeCodeProfile_ConfigFields(t *testing.T) {
 	if p.SettingsPath != "~/.claude/settings.json" {
 		t.Errorf("SettingsPath = %q, want ~/.claude/settings.json", p.SettingsPath)
 	}
+	if p.CredDirEnvVar != "CLAUDE_CONFIG_DIR" {
+		t.Errorf("CredDirEnvVar = %q, want CLAUDE_CONFIG_DIR", p.CredDirEnvVar)
+	}
 	if p.ConfigDirEnvVar != "CLAUDE_CONFIG_DIR" {
 		t.Errorf("ConfigDirEnvVar = %q, want CLAUDE_CONFIG_DIR", p.ConfigDirEnvVar)
 	}
@@ -54,9 +57,10 @@ func TestClaudeCodeProfile_ConfigFields(t *testing.T) {
 
 // TestCursorAgentProfile_APIKeyOnlyPath pins the deliberate scope narrowing:
 // cursor brokers only the API-key path (CURSOR_API_KEY), never the OAuth
-// device-flow path, because that token lands inline in cli-config.json with
-// no by-omission exclusion mechanism the way Claude's separate
-// .credentials.json has.
+// device-flow path. The real credential lives in ~/.config/cursor/auth.json
+// (a separate credentials file), but nexus3 has no env var that redirects
+// cursor to an alternative credential file — so there is nowhere safe for a
+// placeholder to land in the guest's credential store.
 func TestCursorAgentProfile_APIKeyOnlyPath(t *testing.T) {
 	p := cred.CursorAgentProfile
 
@@ -76,9 +80,11 @@ func TestCursorAgentProfile_APIKeyOnlyPath(t *testing.T) {
 
 // TestCursorAgentProfile_SettingsFilterRequiredRegardlessOfAuthPath is the
 // mutation-relevant invariant test: cursor's settings file (cli-config.json)
-// must be filtered even though nexus3 never brokers cursor's OAuth token. The
-// filter protects an operator's OWN interactive `cursor-agent login` session,
-// which is orthogonal to which credential path nexus3 itself uses.
+// must be filtered even though nexus3 never brokers cursor's credential.
+// The filter protects an operator's OWN interactive `cursor-agent login`
+// session: authInfo in cli-config.json carries identity and PII (email,
+// displayName, userId, authId — not a token), and must not be shared into
+// a sandbox regardless of which credential path nexus3 itself uses.
 func TestCursorAgentProfile_SettingsFilterRequiredRegardlessOfAuthPath(t *testing.T) {
 	p := cred.CursorAgentProfile
 
@@ -89,7 +95,7 @@ func TestCursorAgentProfile_SettingsFilterRequiredRegardlessOfAuthPath(t *testin
 		t.Fatal("SettingsAllowlist must not be empty — cli-config.json can carry authInfo regardless of auth path")
 	}
 	if p.SettingsAllowlist["authInfo"] {
-		t.Error("authInfo must NOT be in SettingsAllowlist — it is the credential blob this filter exists to strip")
+		t.Error("authInfo must NOT be in SettingsAllowlist — it carries identity and PII (email, displayName, userId, authId) this filter exists to exclude")
 	}
 	// cursor has no settings-key bypass-consent mechanism; skip-permissions is
 	// a launch-time flag (--force/--yolo), not a persisted setting.
@@ -113,6 +119,49 @@ func TestCursorAgentProfile_Registered(t *testing.T) {
 	}
 	if !slices.Contains(cred.ProfileNames(), cred.CursorAgentProfileName) {
 		t.Errorf("ProfileNames() = %v, missing %q", cred.ProfileNames(), cred.CursorAgentProfileName)
+	}
+}
+
+// TestCursorAgentProfile_CredAndSettingsDirAreDistinct asserts that cursor's
+// credential-directory redirect (CredDirEnvVar) and settings-directory
+// redirect (ConfigDirEnvVar) are DIFFERENT env vars. This is the empirically
+// verified fact: XDG_CONFIG_HOME controls the credential file lookup while
+// CURSOR_CONFIG_DIR controls cli-config.json (settings). They cannot be
+// collapsed into one variable — see the profile's CredDirEnvVar doc comment.
+// This test fails if either field is set to the other's value.
+func TestCursorAgentProfile_CredAndSettingsDirAreDistinct(t *testing.T) {
+	p := cred.CursorAgentProfile
+
+	if p.CredDirEnvVar == "" {
+		t.Fatal("CredDirEnvVar must not be empty — cursor credential dir is redirected via XDG_CONFIG_HOME")
+	}
+	if p.ConfigDirEnvVar == "" {
+		t.Fatal("ConfigDirEnvVar must not be empty — cursor settings dir is redirected via CURSOR_CONFIG_DIR")
+	}
+	if p.CredDirEnvVar == p.ConfigDirEnvVar {
+		t.Errorf("CredDirEnvVar and ConfigDirEnvVar must differ for cursor: both are %q — "+
+			"XDG_CONFIG_HOME governs the credential, CURSOR_CONFIG_DIR governs settings", p.CredDirEnvVar)
+	}
+	if p.CredDirEnvVar != "XDG_CONFIG_HOME" {
+		t.Errorf("CredDirEnvVar = %q, want XDG_CONFIG_HOME", p.CredDirEnvVar)
+	}
+	if p.ConfigDirEnvVar != "CURSOR_CONFIG_DIR" {
+		t.Errorf("ConfigDirEnvVar = %q, want CURSOR_CONFIG_DIR", p.ConfigDirEnvVar)
+	}
+}
+
+// TestCursorAgentProfile_CredentialFileDescriptor pins the file-based
+// credential descriptor fields added in S3. These are consumed by the S8
+// seeding slice; this test asserts the correct values are present in the
+// profile declaration.
+func TestCursorAgentProfile_CredentialFileDescriptor(t *testing.T) {
+	p := cred.CursorAgentProfile
+
+	if p.CredentialFile != "cursor/auth.json" {
+		t.Errorf("CredentialFile = %q, want cursor/auth.json", p.CredentialFile)
+	}
+	if p.CredentialFileKey != "accessToken" {
+		t.Errorf("CredentialFileKey = %q, want accessToken", p.CredentialFileKey)
 	}
 }
 

@@ -124,13 +124,59 @@ type AgentProfile struct {
 	// use. The zero value (empty string) means this agent has no settings file.
 	SettingsPath string
 
+	// CredDirEnvVar is the name of the environment variable that redirects the
+	// agent's CREDENTIAL directory — the directory that contains the file (or
+	// files) holding the agent's authentication secrets. When non-empty,
+	// pointing this variable at an isolated directory gives the agent a fresh
+	// credential context with no access to the operator's real tokens.
+	//
+	// This is separate from [AgentProfile.ConfigDirEnvVar] because some agents
+	// use different environment variables for their credential store and their
+	// settings store. Cursor is the proof: XDG_CONFIG_HOME governs where
+	// cursor-agent reads its credential file from (typically resolving to
+	// ~/.config/cursor/auth.json), while CURSOR_CONFIG_DIR governs where it
+	// reads its settings file cli-config.json from. An agent that uses the same
+	// variable for both must set both fields to the same value
+	// (e.g. ClaudeCodeProfile sets both to "CLAUDE_CONFIG_DIR").
+	//
+	// The zero value (empty string) means the agent has no credential-dir
+	// redirect available via an environment variable.
+	CredDirEnvVar string
+
 	// ConfigDirEnvVar is the name of the environment variable that redirects
-	// the agent's config directory to an arbitrary path
-	// (e.g. "CLAUDE_CONFIG_DIR" for Claude Code). When non-empty, pointing
-	// this variable at an isolated directory is sufficient to separate
-	// per-sandbox agent config from the user's global config.
-	// The zero value (empty string) means the agent has no config-dir redirect.
+	// the agent's SETTINGS (config) directory to an arbitrary path
+	// (e.g. "CLAUDE_CONFIG_DIR" for Claude Code, "CURSOR_CONFIG_DIR" for
+	// cursor-agent). When non-empty, pointing this variable at an isolated
+	// directory separates per-sandbox agent settings from the user's global
+	// config.
+	//
+	// This field governs settings only. For the credential directory, see
+	// [AgentProfile.CredDirEnvVar]. The zero value (empty string) means the
+	// agent has no settings-dir redirect.
 	ConfigDirEnvVar string
+
+	// CredentialFile is the path to the agent's credential file, relative to
+	// the credential directory (the directory that CredDirEnvVar points to, or
+	// the user's XDG config home when CredDirEnvVar is unset). Empty means the
+	// agent conveys its authentication entirely via an environment variable
+	// (PlaceholderEnvVar or APIKeyEnvVar) and has no file-based credential.
+	//
+	// Example: "cursor/auth.json" for cursor-agent, whose credential lives at
+	// $XDG_CONFIG_HOME/cursor/auth.json (typically ~/.config/cursor/auth.json).
+	//
+	// This is a DESCRIPTOR field only. The seeding slice (S8) consumes it to
+	// copy the credential file into an isolated credential directory for the
+	// sandbox; this package declares the shape, not the mechanic.
+	CredentialFile string
+
+	// CredentialFileKey is the JSON field name inside
+	// [AgentProfile.CredentialFile] that carries the authentication token.
+	// Empty when CredentialFile is empty.
+	//
+	// Example: "accessToken" for cursor-agent — auth.json holds both
+	// accessToken and refreshToken; nexus3 brokers the accessToken field
+	// statically (see D-MAC-09: no CURSOR_API_KEY available; static JWT).
+	CredentialFileKey string
 
 	// SkillsPath is the host path to the agent's user skills directory
 	// (e.g. "~/.claude/skills" for Claude Code). Skills are
@@ -217,6 +263,7 @@ var ClaudeCodeProfile = AgentProfile{
 	},
 	// Config-sharing descriptor fields (used by future mount/share slices).
 	SettingsPath:    "~/.claude/settings.json",
+	CredDirEnvVar:   "CLAUDE_CONFIG_DIR",
 	ConfigDirEnvVar: "CLAUDE_CONFIG_DIR",
 	SkillsPath:      "~/.claude/skills",
 	MCPConfigFormat: MCPConfigFormatClaudeJSON,
@@ -279,19 +326,19 @@ const CursorAgentProfileName = "cursor"
 // # Auth path: API key only, not OAuth
 //
 // cursor-agent has two auth paths: an interactive `cursor-agent login` device
-// flow that writes an `authInfo` blob into ~/.cursor/cli-config.json (mixed in
-// with ordinary, non-secret settings — there is no separate credentials file
-// the way Claude Code has .credentials.json), and a direct `--api-key` /
+// flow that writes a session JWT into ~/.config/cursor/auth.json (a separate
+// credentials file containing {accessToken, refreshToken} — analogous to
+// Claude Code's .credentials.json), and a direct `--api-key` /
 // CURSOR_API_KEY env var path that requires no file at all.
 //
 // This profile brokers ONLY the second path (mirroring Claude's APIKeyEnvVar /
 // ANTHROPIC_AUTH_TOKEN direct-SDK path), and deliberately leaves
 // PlaceholderEnvVar empty: there is no OAuth-subscription placeholder for
 // cursor to broker. The OAuth device-flow path is out of scope for this
-// profile because its token lands inline in a general settings file with no
-// by-omission exclusion mechanism available (unlike Claude's separate
-// .credentials.json) — brokering it would mean minting a placeholder that has
-// nowhere safe to live in the guest's config tree. A cursor sandbox created
+// profile because cursor reads its credential from a JSON file
+// (~/.config/cursor/auth.json), whereas every nexus3 placeholder today is
+// env-var shaped — there is no environment variable cursor accepts that
+// redirects it to an alternative credential file. A cursor sandbox created
 // under this profile authenticates purely via the brokered CURSOR_API_KEY
 // placeholder; an operator's own interactive `cursor-agent login` session on
 // the host is never brokered or copied into the guest.
@@ -303,16 +350,17 @@ const CursorAgentProfileName = "cursor"
 //
 // # Curated config still requires the settings filter regardless of auth path
 //
-// Choosing the API-key path removes the need to BROKER cursor's OAuth token.
+// Choosing the API-key path removes the need to BROKER cursor's credential.
 // It does NOT remove authInfo from cli-config.json on an operator's real host:
 // that file is copied into the guest by AssembleCuratedConfig for its portable
 // keys (model, approvalMode, display, editor, permissions, notifications,
 // etc.) regardless of which credential path this profile uses, and an
 // operator who has ALSO run `cursor-agent login` interactively for their own
-// use carries authInfo in that same file. SettingsAllowlist is therefore load-
-// bearing here independently of PlaceholderEnvVar/APIKeyEnvVar — removing it
-// as apparently-dead code would silently ship that operator's OAuth token into
-// every cursor sandbox.
+// use carries authInfo (account identity and PII: email, displayName, userId,
+// authId — NOT a token; the session JWT lives in auth.json, not here) in that
+// same file. SettingsAllowlist is therefore load-bearing here independently of
+// PlaceholderEnvVar/APIKeyEnvVar — removing it as apparently-dead code would
+// silently ship that operator's identity and PII into every cursor sandbox.
 var CursorAgentProfile = AgentProfile{
 	Name:             CursorAgentProfileName,
 	CredentialedHost: "api2.cursor.sh",
@@ -321,13 +369,28 @@ var CursorAgentProfile = AgentProfile{
 	// cursor-agent is Node.js-based (bundled index.js + native .node addons),
 	// so it reads NODE_EXTRA_CA_CERTS directly, same as Claude Code.
 	CACertEnvVars:   []string{"NODE_EXTRA_CA_CERTS"},
-	SettingsPath:    "~/.cursor/cli-config.json",
+	SettingsPath: "~/.cursor/cli-config.json",
+	// Cursor uses two distinct env vars for two distinct directories.
+	// XDG_CONFIG_HOME governs the credential directory: relocating it makes
+	// `cursor-agent status` report "Not logged in" because auth.json is no
+	// longer found. CURSOR_CONFIG_DIR governs the settings directory only:
+	// relocating it does not affect the credential (empirically verified
+	// 2026-08-30, cursor-agent 2026.08.25-3e8eec8). They must be set
+	// independently; they cannot be collapsed into one field.
+	CredDirEnvVar:   "XDG_CONFIG_HOME",
 	ConfigDirEnvVar: "CURSOR_CONFIG_DIR",
+	// File-based credential descriptor (S8 seeding; D-MAC-09 static-JWT path).
+	// The credential lives at $XDG_CONFIG_HOME/cursor/auth.json (typically
+	// ~/.config/cursor/auth.json) and contains {accessToken, refreshToken}.
+	CredentialFile:    "cursor/auth.json",
+	CredentialFileKey: "accessToken",
 	MountAllowlist: []string{
 		"cli-config.json",
 	},
 	// See the profile doc comment: required regardless of auth path.
-	// Deliberately excludes authInfo (the credential itself), privacyCache and
+	// Deliberately excludes authInfo (account identity and PII: email,
+	// displayName, userId, authId — NOT a token; the credential lives in
+	// auth.json, not cli-config.json), privacyCache and
 	// serverConfigCache (host-specific caches), suggestNextPrompt (ephemeral
 	// UI state), network (ambiguous — may gain a host-specific proxy setting
 	// in a future release; excluded by default per the allowlist's own
