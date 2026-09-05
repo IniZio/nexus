@@ -407,6 +407,30 @@ func resolveSeedProfile(sb domain.Sandbox) cred.AgentProfile {
 	return cred.ClaudeCodeProfile
 }
 
+// buildSeedEgressOpts resolves the agent profile for sb, constructs the static
+// credential source for file-backed agents (e.g. cursor-agent) via
+// [cred.NewCredentialSourceForProfile], and wires both into the returned
+// [service.CreateAndBootOptions] via [service.WireAgentEgress].
+//
+// For OAuth-backed profiles ([cred.ClaudeCodeProfile]) the returned
+// AgentCredSource is nil; those agents push credentials via
+// [cred.Refresher].ForcePush instead.
+//
+// The broker is threaded through WireAgentEgress. The seeder parameter is nil
+// because the supervisor re-seeds an existing sandbox and does not use
+// CreateAndBootOptions' Seeder field; only AgentCredSource and AgentProfile
+// are consumed by the supervisor's seedRouteInputs.
+func buildSeedEgressOpts(sb domain.Sandbox, broker *cred.Broker) (service.CreateAndBootOptions, error) {
+	sbProfile := resolveSeedProfile(sb)
+	src, err := cred.NewCredentialSourceForProfile(sbProfile)
+	if err != nil {
+		return service.CreateAndBootOptions{}, err
+	}
+	var opts service.CreateAndBootOptions
+	service.WireAgentEgress(&opts, sbProfile, broker, nil, src)
+	return opts, nil
+}
+
 func RunDetached(cfg Config) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
@@ -516,20 +540,20 @@ func RunDetached(cfg Config) error {
 		}
 	}
 
-	// Build a static credential source for file-based agents (e.g. cursor-agent).
-	// OAuth agents (Claude) push their real token via Refresher.ForcePush; cursor
-	// uses NewCredentialSourceForProfile which reads ~/.config/cursor/auth.json.
-	// Graceful degradation: if the file is absent or unreadable, staticCredSrc is
-	// nil and the broker starts with no real token (HTTPS auth will carry the
-	// placeholder; the operator re-runs cursor-agent login to fix it).
-	var staticCredSrc cred.CredentialSource
+	// Wire the static credential source for file-based agents (e.g. cursor-agent)
+	// via buildSeedEgressOpts → WireAgentEgress so the profile-generic seam has a
+	// live production caller (D-MAC-16). OAuth agents (ClaudeCodeProfile) get a
+	// nil AgentCredSource; they push credentials via Refresher.ForcePush instead.
+	// Graceful degradation: if the credential file is absent or unreadable,
+	// AgentCredSource is nil and the broker starts with no real token (HTTPS auth
+	// carries the placeholder; operator re-runs agent login to fix it).
+	var egressWire service.CreateAndBootOptions
 	if resolveErr == nil {
-		sbProfile := resolveSeedProfile(preSB)
-		if src, srcErr := cred.NewCredentialSourceForProfile(sbProfile); srcErr != nil {
+		if wired, wireErr := buildSeedEgressOpts(preSB, broker); wireErr != nil {
 			slog.Warn("supervisor.static_cred_source_failed",
-				"agent", sbProfile.Name, "err", srcErr)
+				"agent", resolveSeedProfile(preSB).Name, "err", wireErr)
 		} else {
-			staticCredSrc = src // nil for OAuth agents
+			egressWire = wired
 		}
 	}
 
@@ -877,7 +901,7 @@ func RunDetached(cfg Config) error {
 			CredFileSeeder: service.NewGuestFileSeeder(agentClient, service.GuestCredFilePath(resolveSeedProfile(sb))),
 			Broker:         broker,
 			Refreshers:     refreshers,
-			StaticCredSrc:  staticCredSrc,
+			StaticCredSrc:  egressWire.AgentCredSource,
 			Svc:            svc,
 		})
 		// routeNone skips both branches below: there is no seed failure to warn
