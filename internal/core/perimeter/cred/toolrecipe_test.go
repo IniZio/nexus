@@ -151,6 +151,20 @@ func TestClaudeCodeProfile_ToolRecipeShape(t *testing.T) {
 	if node.Version != wantNodeVersion {
 		t.Errorf("Packages[0] (node) Version = %q; want %q (exact pin required — non-emptiness does not guard against typos)", node.Version, wantNodeVersion)
 	}
+	// Verified 2026-09-05: HTTP 200 from nodejs.org/dist/v22.23.2/ confirms the
+	// file exists; the URL shape is the canonical nodejs.org distribution pattern.
+	const wantNodeURLTemplate = "https://nodejs.org/dist/v{VERSION}/node-v{VERSION}-linux-{ARCH}.tar.gz"
+	if node.URLTemplate != wantNodeURLTemplate {
+		t.Errorf("Packages[0] (node) URLTemplate = %q; want %q (exact pin required — a wrong platform or path segment fails only at image-build time)", node.URLTemplate, wantNodeURLTemplate)
+	}
+	// InstallDir is load-bearing: --strip-components=1 into /usr/local places
+	// node and npm at /usr/local/bin/{node,npm,npx}; a wrong dir breaks the
+	// subsequent npm install -g step. Confirmed by baseimage_agent.go line 347:
+	//   tar -C /usr/local -xzf ... --strip-components=1
+	const wantNodeInstallDir = "/usr/local"
+	if node.InstallDir != wantNodeInstallDir {
+		t.Errorf("Packages[0] (node) InstallDir = %q; want %q (exact pin required — wrong dir breaks npm install -g)", node.InstallDir, wantNodeInstallDir)
+	}
 	// Source: https://nodejs.org/dist/v22.23.2/SHASUMS256.txt
 	const wantNodeX64SHA = "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a"
 	if node.SHA256ByArch["x64"] != wantNodeX64SHA {
@@ -160,6 +174,13 @@ func TestClaudeCodeProfile_ToolRecipeShape(t *testing.T) {
 	npm := r.Packages[1]
 	if npm.Kind != RecipeKindNPM {
 		t.Errorf("Packages[1].Kind = %q; want %q", npm.Kind, RecipeKindNPM)
+	}
+	// Verified 2026-09-05: registry.npmjs.org/@anthropic-ai/claude-code/2.1.226
+	// returns name = "@anthropic-ai/claude-code". A rename would install the wrong
+	// package silently; pin the exact string so that cannot pass.
+	const wantClaudeCodeName = "@anthropic-ai/claude-code"
+	if npm.Name != wantClaudeCodeName {
+		t.Errorf("Packages[1] (claude-code) Name = %q; want %q (exact pin required — non-emptiness does not guard against renames)", npm.Name, wantClaudeCodeName)
 	}
 	const wantClaudeCodeVersion = "2.1.226"
 	if npm.Version != wantClaudeCodeVersion {
