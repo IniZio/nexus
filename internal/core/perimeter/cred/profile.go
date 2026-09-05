@@ -2,6 +2,24 @@ package cred
 
 import "sort"
 
+// CredentialFormat identifies the on-disk shape of an agent's credential file.
+// [NewCredentialSourceForProfile] dispatches on this value via
+// [credSourceRegistry]; adding a new format requires a new const here plus one
+// entry in that registry — the selector body is never edited.
+type CredentialFormat string
+
+const (
+	// CredentialFormatNone is the zero value: the agent conveys its credential
+	// entirely via environment variable. [NewCredentialSourceForProfile] returns
+	// (nil, nil) for profiles with this format.
+	CredentialFormatNone CredentialFormat = ""
+
+	// CredentialFormatCursorJWT is the format used by cursor-agent:
+	// a flat JSON file with a top-level "accessToken" field containing a static JWT
+	// (see D-MAC-09). The registered transform is [NewCursorCredentialSource].
+	CredentialFormatCursorJWT CredentialFormat = "cursor-jwt"
+)
+
 // MCPConfigFormat identifies the file format a given agent uses for its MCP
 // server configuration. The zero value (MCPConfigFormatNone) is correct for
 // agents that have no MCP config concept.
@@ -177,6 +195,13 @@ type AgentProfile struct {
 	// accessToken and refreshToken; nexus3 brokers the accessToken field
 	// statically (see D-MAC-09: no CURSOR_API_KEY available; static JWT).
 	CredentialFileKey string
+
+	// CredentialFormat identifies the on-disk shape of [AgentProfile.CredentialFile].
+	// [NewCredentialSourceForProfile] dispatches on this value to select the
+	// correct transform from [credSourceRegistry]. The zero value
+	// [CredentialFormatNone] means the agent has no file-based credential and
+	// the selector returns (nil, nil).
+	CredentialFormat CredentialFormat
 
 	// SkillsPath is the host path to the agent's user skills directory
 	// (e.g. "~/.claude/skills" for Claude Code). Skills are
@@ -384,6 +409,7 @@ var CursorAgentProfile = AgentProfile{
 	// ~/.config/cursor/auth.json) and contains {accessToken, refreshToken}.
 	CredentialFile:    "cursor/auth.json",
 	CredentialFileKey: "accessToken",
+	CredentialFormat:  CredentialFormatCursorJWT,
 	MountAllowlist: []string{
 		"cli-config.json",
 	},

@@ -2,6 +2,7 @@ package cred
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -30,20 +31,47 @@ type StaticCredentialSource struct {
 	store *DedicatedCredStore
 }
 
-// NewCredentialSourceForProfile returns the credential source appropriate for
-// profile. For file-based agents (profile.CredentialFile != ""), it reads the
-// credential file (e.g. cursor's auth.json) and returns a [StaticCredentialSource].
-// For OAuth/env-var agents (profile.CredentialFile == ""), it returns nil, nil
-// — those agents use a [Refresher] built separately from the OAuth credential store.
+// SourceTransform is a function that reads the credential file described by
+// profile and returns a [CredentialSource] for it. It is the unit of
+// registration in [credSourceRegistry].
+type SourceTransform func(profile AgentProfile) (CredentialSource, error)
+
+// credSourceRegistry maps each [CredentialFormat] to the transform that reads
+// the corresponding credential file and returns a [CredentialSource].
 //
-// Callers use this to get a credential source for any profile without branching
-// on the agent type. A third agent that declares CredentialFile in its
-// AgentProfile requires no code change here.
+// Adding support for a new file-based credential format requires:
+//  1. A new [CredentialFormat] const in profile.go.
+//  2. One entry here.
+//
+// [NewCredentialSourceForProfile] — the selector — is never edited for new agents.
+var credSourceRegistry = map[CredentialFormat]SourceTransform{
+	CredentialFormatCursorJWT: func(p AgentProfile) (CredentialSource, error) {
+		return NewCursorCredentialSource(p)
+	},
+}
+
+// NewCredentialSourceForProfile returns the credential source appropriate for
+// profile by dispatching on profile.CredentialFormat via [credSourceRegistry].
+//
+// For OAuth/env-var agents (profile.CredentialFormat == [CredentialFormatNone])
+// it returns (nil, nil) — those agents push credentials via a [Refresher].
+//
+// For file-based agents the registered [SourceTransform] is called. An
+// unregistered format (programming error: a profile declared CredentialFormat
+// but no entry was added to credSourceRegistry) returns a descriptive error.
+//
+// Adding a new file-based agent type requires a new [CredentialFormat] const
+// in profile.go and one entry in [credSourceRegistry]. This function is not
+// edited for new agents.
 func NewCredentialSourceForProfile(profile AgentProfile) (CredentialSource, error) {
-	if profile.CredentialFile == "" {
+	if profile.CredentialFormat == CredentialFormatNone {
 		return nil, nil
 	}
-	return NewCursorCredentialSource(profile)
+	fn, ok := credSourceRegistry[profile.CredentialFormat]
+	if !ok {
+		return nil, fmt.Errorf("cred: NewCredentialSourceForProfile: no transform registered for format %q", profile.CredentialFormat)
+	}
+	return fn(profile)
 }
 
 // NewStaticCredentialSource wraps store in a [StaticCredentialSource].
