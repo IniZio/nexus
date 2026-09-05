@@ -36,7 +36,7 @@ package selfhost
 //	TMPDIR=/tmp go test -tags integration -count=1 -run TestSupervisorS4Placeholder \
 //	    ./internal/test/selfhost/ -v -timeout 30m
 //
-//	# Live egress proof (requires dedicated claude login):
+//	# Live egress proof (requires dedicated claude auth login):
 //	NEXUS3_DEDICATED_CRED_STORE=~/.config/nexus3/creds.json \
 //	TMPDIR=/tmp go test -tags integration -count=1 -run TestSupervisorS4LiveEgress \
 //	    ./internal/test/selfhost/ -v -timeout 30m

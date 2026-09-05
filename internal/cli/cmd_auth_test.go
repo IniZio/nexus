@@ -202,7 +202,7 @@ func TestAuthLogin_ForceOverwritesExistingStore(t *testing.T) {
 }
 
 // TestAuthLogin_MissingSourceFile verifies that a missing --from file returns
-// a non-zero exit code and an actionable error mentioning "claude login".
+// a non-zero exit code and an actionable error mentioning "claude auth login".
 func TestAuthLogin_MissingSourceFile(t *testing.T) {
 	destPath := filepath.Join(t.TempDir(), "creds.json")
 	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", destPath)
@@ -214,8 +214,8 @@ func TestAuthLogin_MissingSourceFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected non-nil error for missing source file, got nil")
 	}
-	if !strings.Contains(err.Error(), "claude login") {
-		t.Errorf("error message should mention 'claude login'; got: %s", err.Error())
+	if !strings.Contains(err.Error(), "claude auth login") {
+		t.Errorf("error message should mention 'claude auth login'; got: %s", err.Error())
 	}
 
 	// At the CLI level it must exit non-zero (exit 1).

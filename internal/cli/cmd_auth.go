@@ -93,7 +93,7 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 			return fmt.Errorf(
 				"auth login: source credentials file not found: %s\n"+
 					"Establish a dedicated session first:\n"+
-					"  CLAUDE_CONFIG_DIR=~/.config/nexus3/claude-dedicated claude login",
+					"  CLAUDE_CONFIG_DIR=~/.config/nexus3/claude-dedicated claude auth login",
 				*fromPath,
 			)
 		}
