@@ -2046,6 +2046,17 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 						slog.Warn("sandbox create: failed to load user global config; user mounts disabled", "err", ugErr)
 					}
 					manifest := service.BuildUserMountManifest(hostHome, []string(userGlobalCfg.Sandbox.Mounts))
+					// Shadow diagnostic (AC-5, D-TP-01): warn when a user-mount row's
+					// guest path shadows a recipe install path or PATH-entry directory.
+					// The warning names the raw config spec so the operator can identify
+					// and fix the conflict. Mounts are not filtered: the warning is
+					// advisory and the mount still takes effect (the agent binary will
+					// come from the pinned recipe layer regardless, at /usr/local/bin).
+					if len(agentProfile.ToolRecipe.Packages) > 0 {
+						for _, w := range service.CheckRecipeShadows([]string(userGlobalCfg.Sandbox.Mounts), agentProfile.ToolRecipe) {
+							slog.Warn("sandbox create: " + w)
+						}
+					}
 					for _, m := range manifest.Mounts {
 						bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
 							HostPath:  m.HostPath,

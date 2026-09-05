@@ -4,10 +4,139 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/service"
 )
+
+// minimalRecipe returns a ToolRecipe shaped like the real claude-code recipe,
+// usable for shadow-check tests without depending on the live profile value.
+func minimalRecipe() cred.ToolRecipe {
+	return cred.ToolRecipe{
+		BinPath: "/usr/local/bin/claude",
+		Packages: []cred.RecipePackage{
+			{
+				Kind:       cred.RecipeKindTarball,
+				Name:       "node",
+				Version:    "22.0.0",
+				InstallDir: "/usr/local",
+			},
+			{
+				Kind:    cred.RecipeKindNPM,
+				Name:    "@anthropic-ai/claude-code",
+				Version: "2.0.0",
+			},
+		},
+	}
+}
+
+// minimalCursorRecipe returns a ToolRecipe shaped like the real cursor-agent recipe.
+func minimalCursorRecipe() cred.ToolRecipe {
+	return cred.ToolRecipe{
+		BinPath: "/usr/local/bin/cursor-agent",
+		Packages: []cred.RecipePackage{
+			{
+				Kind:       cred.RecipeKindTarball,
+				Name:       "cursor-agent",
+				Version:    "2026.08.25-3e8eec8",
+				InstallDir: "/usr/local/share/cursor-agent/versions/{VERSION}",
+				Symlinks: []cred.RecipeSymlink{
+					{
+						LinkPath:   "/usr/local/bin/cursor-agent",
+						TargetPath: "/usr/local/share/cursor-agent/versions/{VERSION}/agent-cli",
+					},
+				},
+			},
+		},
+	}
+}
+
+// TestCheckRecipeShadows_BinPathExact verifies that a mount exactly at the
+// recipe's BinPath triggers a warning quoting the raw spec text. This is the
+// real call site for the shadow diagnostic (AC-5) — the test drives
+// service.CheckRecipeShadows directly rather than a hand-built stand-in.
+func TestCheckRecipeShadows_BinPathExact(t *testing.T) {
+	spec := "~/.local/bin/claude:/usr/local/bin/claude:ro"
+	warnings := service.CheckRecipeShadows([]string{spec}, minimalRecipe())
+	if len(warnings) == 0 {
+		t.Fatal("expected a shadow warning for a mount exactly at BinPath, got none")
+	}
+	if !strings.Contains(warnings[0], spec) {
+		t.Errorf("warning %q does not contain raw spec %q", warnings[0], spec)
+	}
+}
+
+// TestCheckRecipeShadows_PathEntryDir verifies that a mount at the parent
+// directory of BinPath (the PATH-entry directory) also triggers a warning.
+func TestCheckRecipeShadows_PathEntryDir(t *testing.T) {
+	spec := "~/.local/bin:/usr/local/bin:ro"
+	warnings := service.CheckRecipeShadows([]string{spec}, minimalRecipe())
+	if len(warnings) == 0 {
+		t.Fatal("expected a shadow warning for a mount at the BinPath parent dir, got none")
+	}
+	if !strings.Contains(warnings[0], spec) {
+		t.Errorf("warning %q does not contain raw spec %q", warnings[0], spec)
+	}
+}
+
+// TestCheckRecipeShadows_InstallDir verifies that a mount covering a recipe
+// package's InstallDir prefix triggers a warning.
+func TestCheckRecipeShadows_InstallDir(t *testing.T) {
+	// cursor-agent InstallDir is /usr/local/share/cursor-agent/versions/{VERSION};
+	// a mount at the stable prefix /usr/local/share/cursor-agent shadows it.
+	spec := "~/.local/share/cursor-agent:/usr/local/share/cursor-agent:ro"
+	warnings := service.CheckRecipeShadows([]string{spec}, minimalCursorRecipe())
+	if len(warnings) == 0 {
+		t.Fatal("expected a shadow warning for a mount covering the recipe install dir prefix, got none")
+	}
+	if !strings.Contains(warnings[0], spec) {
+		t.Errorf("warning %q does not contain raw spec %q", warnings[0], spec)
+	}
+}
+
+// TestCheckRecipeShadows_Symlink verifies that a mount exactly at a recipe
+// symlink's LinkPath triggers a warning.
+func TestCheckRecipeShadows_Symlink(t *testing.T) {
+	spec := "~/.local/bin/cursor-agent:/usr/local/bin/cursor-agent:ro"
+	warnings := service.CheckRecipeShadows([]string{spec}, minimalCursorRecipe())
+	if len(warnings) == 0 {
+		t.Fatal("expected a shadow warning for a mount at a recipe symlink path, got none")
+	}
+	if !strings.Contains(warnings[0], spec) {
+		t.Errorf("warning %q does not contain raw spec %q", warnings[0], spec)
+	}
+}
+
+// TestCheckRecipeShadows_NonBinaryRowsUntouched verifies that operator mounts
+// carrying non-binary payloads (plugins, mise, groundwork, codegraph, vscode)
+// produce no shadow warnings. These rows must still reach the manifest
+// unchanged (AC-5 item 5: only binary rows are flagged).
+func TestCheckRecipeShadows_NonBinaryRowsUntouched(t *testing.T) {
+	nonBinaryMounts := []string{
+		"~/.claude/plugins:/root/.claude/plugins:ro",
+		"~/.local/share/mise:/root/.local/share/mise:ro",
+		"~/.config/mise:/root/.config/mise:ro",
+		"~/.local/share/groundwork:/root/.local/share/groundwork:ro",
+		"~/.codegraph:/root/.codegraph:ro",
+		"~/.vscode-server/extensions:/root/.vscode-server/extensions:ro",
+	}
+	warnings := service.CheckRecipeShadows(nonBinaryMounts, minimalRecipe())
+	if len(warnings) != 0 {
+		t.Errorf("expected no shadow warnings for non-binary operator mounts, got %d: %v",
+			len(warnings), warnings)
+	}
+}
+
+// TestCheckRecipeShadows_EmptyRecipe verifies that a zero/empty recipe
+// (no Packages) returns nil — no false positives when no recipe is registered.
+func TestCheckRecipeShadows_EmptyRecipe(t *testing.T) {
+	warnings := service.CheckRecipeShadows([]string{"~/.local/bin:/usr/local/bin:ro"}, cred.ToolRecipe{})
+	if len(warnings) != 0 {
+		t.Errorf("expected nil for empty recipe, got %v", warnings)
+	}
+}
 
 // TestBuildUserMountManifest_ExistingDir verifies that a mount whose host dir
 // exists is included and direct-mounted (overlay=false) when guest is not under /root/.claude/.

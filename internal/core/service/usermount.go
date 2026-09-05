@@ -2,9 +2,12 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
 // ResolvedUserMount is a mount resolved against a concrete host home directory.
@@ -108,6 +111,109 @@ func expandHome(path, hostHome string) string {
 		return hostHome
 	}
 	return path
+}
+
+// CheckRecipeShadows returns one warning string for each mount spec in mounts
+// whose guest path would shadow a path claimed by recipe: the agent binary
+// path (BinPath), any package install directory, any declared symlink, or the
+// parent directory of any of those paths (the PATH-entry directories the recipe
+// installs into).
+//
+// Each returned string quotes the raw spec text so the caller can surface
+// exactly which sandbox.mounts config line causes the conflict. Mounts are not
+// filtered — warnings are advisory and the caller decides whether to log them
+// or treat them as hard errors. Returns nil when recipe has no packages.
+//
+// This is the real call site for the shadow diagnostic (AC-5, D-TP-01).
+func CheckRecipeShadows(mounts []string, recipe cred.ToolRecipe) []string {
+	recipePaths := recipeGuestPaths(recipe)
+	if len(recipePaths) == 0 {
+		return nil
+	}
+	var warnings []string
+	for _, spec := range mounts {
+		guestPath := mountSpecGuestPath(spec)
+		if guestPath == "" {
+			continue
+		}
+		for _, rp := range recipePaths {
+			if guestPathShadows(guestPath, rp) {
+				warnings = append(warnings,
+					fmt.Sprintf("user mount %q shadows recipe path %q; the guest binary may not resolve correctly", spec, rp))
+				break
+			}
+		}
+	}
+	return warnings
+}
+
+// recipeGuestPaths collects all absolute guest paths declared by recipe,
+// including the parent directories of each (the PATH-entry directories that
+// contain the binaries and symlinks the recipe installs).
+func recipeGuestPaths(recipe cred.ToolRecipe) []string {
+	seen := map[string]bool{}
+	var paths []string
+	add := func(p string) {
+		if p == "" || p == "." || p == "/" || seen[p] {
+			return
+		}
+		seen[p] = true
+		paths = append(paths, p)
+	}
+	if recipe.BinPath != "" {
+		add(recipe.BinPath)
+		add(filepath.Dir(recipe.BinPath))
+	}
+	for _, pkg := range recipe.Packages {
+		if d := recipeStableInstallDir(pkg.InstallDir); d != "" {
+			add(d)
+			if parent := filepath.Dir(d); parent != d {
+				add(parent)
+			}
+		}
+		for _, sym := range pkg.Symlinks {
+			if sym.LinkPath != "" {
+				add(sym.LinkPath)
+				add(filepath.Dir(sym.LinkPath))
+			}
+		}
+	}
+	return paths
+}
+
+// recipeStableInstallDir returns the stable (template-free) prefix of an
+// InstallDir by stripping any template placeholder (e.g. {VERSION}) and
+// trailing slashes. An empty result means there is nothing to check.
+func recipeStableInstallDir(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	if i := strings.Index(dir, "{"); i >= 0 {
+		dir = strings.TrimRight(dir[:i], "/")
+	}
+	return dir
+}
+
+// mountSpecGuestPath extracts the guest path from a "host:guest[:opts]" spec.
+// Returns "" when the spec has no colon or an empty guest path.
+func mountSpecGuestPath(spec string) string {
+	i := strings.Index(spec, ":")
+	if i < 0 {
+		return ""
+	}
+	rest := spec[i+1:]
+	// Strip trailing :ro or other option suffixes.
+	if j := strings.Index(rest, ":"); j >= 0 {
+		return rest[:j]
+	}
+	return rest
+}
+
+// guestPathShadows reports whether a mount at mountPath shadows recipePath.
+// Shadows: mountPath equals recipePath, or recipePath starts with mountPath+"/"
+// (the mount covers the directory that contains the recipe artifact).
+func guestPathShadows(mountPath, recipePath string) bool {
+	return mountPath == recipePath || strings.HasPrefix(recipePath, mountPath+"/")
 }
 
 // WriteUserMountManifest writes m as usermounts.json into stageDir (mode 0o600).
