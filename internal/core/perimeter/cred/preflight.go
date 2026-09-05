@@ -93,6 +93,11 @@ func ImportCred(profile AgentProfile) (*DedicatedCredStore, error) {
 	if !ok {
 		return nil, fmt.Errorf("cred: ImportCred: no import function registered for format %q", profile.CredentialFormat)
 	}
+	if reg.ImportFn == nil {
+		// A SourceFn-only registration: the agent can produce a credential
+		// source but cannot be imported to a store. Error rather than panic.
+		return nil, fmt.Errorf("cred: ImportCred: format %q registers no ImportFn", profile.CredentialFormat)
+	}
 	return reg.ImportFn(profile)
 }
 
@@ -124,6 +129,12 @@ func checkCredAt(profile AgentProfile, now time.Time) PreflightResult {
 		return PreflightResult{Reason: PreflightUnreadable, AgentName: profile.Name}
 	}
 
+	if reg.ImportFn == nil {
+		// SourceFn-only registration: nothing to inspect for expiry, so the
+		// credential cannot be pre-checked. Treat as OK rather than panicking
+		// or falsely reporting the agent broken.
+		return PreflightResult{Reason: PreflightOK, AgentName: profile.Name}
+	}
 	store, err := reg.ImportFn(profile)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

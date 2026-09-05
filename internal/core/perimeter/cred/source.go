@@ -161,6 +161,9 @@ func NewCredentialSourceForProfile(profile AgentProfile) (CredentialSource, erro
 		return reg.SourceFn(profile)
 	}
 	// Derive source from ImportFn: import the credential and wrap it.
+	if reg.ImportFn == nil {
+		return nil, fmt.Errorf("cred: NewCredentialSourceForProfile: format %q registers neither SourceFn nor ImportFn", profile.CredentialFormat)
+	}
 	store, err := reg.ImportFn(profile)
 	if err != nil {
 		return nil, fmt.Errorf("cred: NewCredentialSourceForProfile: %w", err)

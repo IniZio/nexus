@@ -7,10 +7,16 @@ import "fmt"
 // cannot use an export_test.go, since those are compiled only into this
 // package's own test binary.
 //
-// Deliberately no "testing" import: this is a non-test file, so importing
-// testing here would link the test framework — and its flag registration —
-// into the shipped nexus3 binary. The helpers therefore return an unregister
-// func rather than taking a *testing.T, and callers pair them with t.Cleanup.
+// Deliberately no "testing" import. Not because it would newly link the test
+// framework into the shipped binary — it is already reachable there via
+// containerd, so that argument does not apply to nexus3 — but because a
+// production file has no business depending on the test framework to express
+// its own API. The helpers therefore return an unregister func rather than
+// taking a *testing.T, which also keeps them usable outside a test.
+//
+// The cost is that cleanup is the caller's obligation: pair every returned
+// func with t.Cleanup. A leaked registration changes dispatch for every later
+// test in the process.
 
 // RegisterOAuthFormatForTest registers a synthetic CredentialFormat in
 // agentRegistry with the supplied DefaultFromPathFn and ImportFromPathFn, and
@@ -19,6 +25,9 @@ import "fmt"
 // Callers must defer or t.Cleanup the returned func; leaving a registration
 // behind changes dispatch for every later test in the process. Callers must
 // also register a matching profile via [RegisterProfileForTest].
+// A format already registered is overwritten, mirroring how a test may want to
+// stub a real agent; RegisterProfileForTest deliberately refuses instead,
+// because a duplicate profile name there means two agents claim one identity.
 func RegisterOAuthFormatForTest(
 	format CredentialFormat,
 	defaultFromPath func(AgentProfile) string,
