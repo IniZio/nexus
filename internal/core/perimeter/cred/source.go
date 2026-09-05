@@ -36,42 +36,52 @@ type StaticCredentialSource struct {
 // registration in [credSourceRegistry].
 type SourceTransform func(profile AgentProfile) (CredentialSource, error)
 
-// credSourceRegistry maps each [CredentialFormat] to the transform that reads
-// the corresponding credential file and returns a [CredentialSource].
+// credSourceRegistry is the override registry for credential source transforms.
 //
-// Adding support for a new file-based credential format requires:
-//  1. A new [CredentialFormat] const in profile.go.
-//  2. One entry here.
+// Production file-based formats are registered in [preflightImportRegistry];
+// [NewCredentialSourceForProfile] derives a [CredentialSource] from that
+// registry automatically (wrapping the imported store in a
+// [StaticCredentialSource]).  The two registries therefore cannot drift apart
+// for production formats — a single [preflightImportRegistry] entry covers
+// both the preflight path and the credential-source path.
 //
-// [NewCredentialSourceForProfile] — the selector — is never edited for new agents.
-var credSourceRegistry = map[CredentialFormat]SourceTransform{
-	CredentialFormatCursorJWT: func(p AgentProfile) (CredentialSource, error) {
-		return NewCursorCredentialSource(p)
-	},
-}
+// Register a format here only when its source transform cannot be expressed as
+// ImportFn → [NewStaticCredentialSource] (e.g. a test whose closure captures a
+// temp-dir path instead of resolving it via the profile).  Tests that register
+// here must clean up with t.Cleanup(func() { delete(credSourceRegistry, fmt) }).
+var credSourceRegistry = map[CredentialFormat]SourceTransform{}
 
 // NewCredentialSourceForProfile returns the credential source appropriate for
-// profile by dispatching on profile.CredentialFormat via [credSourceRegistry].
+// profile.
 //
 // For OAuth/env-var agents (profile.CredentialFormat == [CredentialFormatNone])
 // it returns (nil, nil) — those agents push credentials via a [Refresher].
 //
-// For file-based agents the registered [SourceTransform] is called. An
-// unregistered format (programming error: a profile declared CredentialFormat
-// but no entry was added to credSourceRegistry) returns a descriptive error.
+// For file-based agents it first checks the override [credSourceRegistry].  If
+// no override is registered it derives the source from [preflightImportRegistry]
+// by calling the import function and wrapping the result in a
+// [StaticCredentialSource].  An unregistered format (programming error: a
+// profile declared a CredentialFormat but no entry was added to
+// preflightImportRegistry) returns a descriptive error.
 //
-// Adding a new file-based agent type requires a new [CredentialFormat] const
-// in profile.go and one entry in [credSourceRegistry]. This function is not
-// edited for new agents.
+// Adding a new file-based agent type requires a new [CredentialFormat] const in
+// profile.go and one entry in [preflightImportRegistry] only.  This function is
+// never edited for new agents.
 func NewCredentialSourceForProfile(profile AgentProfile) (CredentialSource, error) {
 	if profile.CredentialFormat == CredentialFormatNone {
 		return nil, nil
 	}
-	fn, ok := credSourceRegistry[profile.CredentialFormat]
-	if !ok {
-		return nil, fmt.Errorf("cred: NewCredentialSourceForProfile: no transform registered for format %q", profile.CredentialFormat)
+	// Check the override registry first — for test-time registrations whose
+	// closure captures a temp-dir path instead of resolving from the profile.
+	if fn, ok := credSourceRegistry[profile.CredentialFormat]; ok {
+		return fn(profile)
 	}
-	return fn(profile)
+	// Derive source from the import registry: import the credential and wrap it.
+	store, err := ImportCred(profile)
+	if err != nil {
+		return nil, fmt.Errorf("cred: NewCredentialSourceForProfile: %w", err)
+	}
+	return NewStaticCredentialSource(store), nil
 }
 
 // NewStaticCredentialSource wraps store in a [StaticCredentialSource].

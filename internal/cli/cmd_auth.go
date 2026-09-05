@@ -175,13 +175,16 @@ func runAuthLoginImport(fromPath string, force bool, dest string, out *Output) e
 // The supervisor reads the operator's file live at boot (D-MAC-01 / D-MAC-14);
 // importing and saving a copy here would silently broker a stale token the
 // moment the operator re-logs in to the agent.
+//
+// This function is profile-driven: it names no agent by name and branches on
+// no CredentialFormat.  A new file-based agent requires no change here.
 func runAuthLoginVerify(profile cred.AgentProfile, out *Output) error {
-	credPath, err := cred.CursorCredPath(profile)
+	credPath, err := cred.StaticCredFilePath(profile)
 	if err != nil {
 		return fmt.Errorf("auth login: resolving %s credential path: %w", profile.Name, err)
 	}
 
-	store, err := cred.ImportCursorCredentials(profile)
+	store, err := cred.ImportCred(profile)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf(

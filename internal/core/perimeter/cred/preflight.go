@@ -94,6 +94,22 @@ var preflightImportRegistry = map[CredentialFormat]func(AgentProfile) (*Dedicate
 	CredentialFormatCursorJWT: ImportCursorCredentials,
 }
 
+// ImportCred reads the credential for profile by dispatching on
+// [preflightImportRegistry].  It is the single import entry point for
+// file-based agents; callers that only need a pass/fail outcome should prefer
+// [CheckCred].
+//
+// An unregistered CredentialFormat (programming error: a profile declared a
+// format but no entry was added to [preflightImportRegistry]) returns a
+// descriptive error.  Must not be called for profiles with [CredentialFormatNone].
+func ImportCred(profile AgentProfile) (*DedicatedCredStore, error) {
+	importFn, ok := preflightImportRegistry[profile.CredentialFormat]
+	if !ok {
+		return nil, fmt.Errorf("cred: ImportCred: no import function registered for format %q", profile.CredentialFormat)
+	}
+	return importFn(profile)
+}
+
 // CheckCred reports whether the credential described by profile is present and
 // usable, comparing expiry against the current wall clock.
 //

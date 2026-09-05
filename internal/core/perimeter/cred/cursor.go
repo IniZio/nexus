@@ -18,24 +18,34 @@ type cursorAuthFile struct {
 	RefreshToken string `json:"refreshToken"`
 }
 
-// CursorCredPath returns the absolute path to the cursor auth.json credential
-// file, resolved from the profile descriptor.
+// StaticCredFilePath returns the absolute path to the credential file described
+// by profile, using profile.CredDirEnvVar as the base directory env var and
+// profile.CredentialFile as the relative path within that base.
 //
 // Resolution order:
-//  1. The env var named by profile.CredDirEnvVar (XDG_CONFIG_HOME for cursor).
+//  1. The env var named by profile.CredDirEnvVar.
 //  2. The XDG default: $HOME/.config.
 //
-// profile.CredentialFile ("cursor/auth.json") is joined to that base.
-func CursorCredPath(profile AgentProfile) (string, error) {
+// This is the generic path resolver for file-based agents.  It is profile-driven
+// and never branches on agent name or credential format.
+func StaticCredFilePath(profile AgentProfile) (string, error) {
 	base := os.Getenv(profile.CredDirEnvVar)
 	if base == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", fmt.Errorf("cred: CursorCredPath: cannot determine home directory: %w", err)
+			return "", fmt.Errorf("cred: StaticCredFilePath: cannot determine home directory: %w", err)
 		}
 		base = filepath.Join(home, ".config")
 	}
 	return filepath.Join(base, profile.CredentialFile), nil
+}
+
+// CursorCredPath returns the absolute path to the cursor auth.json credential
+// file, resolved from the profile descriptor.  It delegates to [StaticCredFilePath].
+//
+// Kept for compatibility; prefer [StaticCredFilePath] in new call sites.
+func CursorCredPath(profile AgentProfile) (string, error) {
+	return StaticCredFilePath(profile)
 }
 
 // ImportCursorCredentials reads the credential file described by profile and
