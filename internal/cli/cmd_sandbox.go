@@ -92,6 +92,11 @@ const (
 	// guest agent does not become reachable within the configured timeout.
 	// The VM is stopped and the record is deleted before this code is returned.
 	sandboxErrCodeAgentUnreachable = "agent_unreachable"
+
+	// sandboxErrCodeBadCredential is returned when the credential preflight for
+	// an --agent sandbox fails at create time (absent, unreadable, or expired).
+	// Returned before any VM boots so no cleanup is needed.
+	sandboxErrCodeBadCredential = "bad_credential"
 )
 
 // noopDriver
@@ -1069,6 +1074,20 @@ func resolveAgentPosture(f sandboxCreateFlags) (cred.AgentProfile, []string, boo
 	return profile, allowHosts, f.egressExplicit && !f.egressClosed
 }
 
+// credPreflightCheck verifies the credential for profile before any VM work
+// begins.  Profiles with CredentialFormatNone (e.g. Claude Code) always pass.
+// Returns nil when the credential is usable; returns a *CodedError with code
+// sandboxErrCodeBadCredential and Sentence() as the message otherwise.
+func credPreflightCheck(profile cred.AgentProfile) error {
+	if pf := cred.CheckCred(profile); !pf.OK() {
+		return &CodedError{
+			Code: sandboxErrCodeBadCredential,
+			Msg:  "sandbox create: " + pf.Sentence(),
+		}
+	}
+	return nil
+}
+
 // agentDevEgressSecretHosts returns the set of hostnames that must appear in
 // SecretHosts when an agent sandbox is created with open egress (dev-egress
 // posture). It returns nil in every other case.
@@ -1285,6 +1304,12 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		// Resolve agent posture so the config-default agent (from applyUserGlobalConfig
 		// or applyProjectConfig) is persisted on the record even when no image is given.
 		noBootProfile, _, _ := resolveAgentPosture(f)
+		// S16: fail fast if the agent credential is dead — even on the store-only
+		// path.  A sandbox record with a broken credential is just as unusable
+		// as a booted one.
+		if err := credPreflightCheck(noBootProfile); err != nil {
+			return err
+		}
 		// Agent-settings / MCP sharing (A-MOUNT) requires a booted VM: the
 		// agentcfg-lower overlay is wired into the driver config at CreateAndBoot
 		// time and is never read for a store-only record (no rootfs, no guest).
@@ -1913,6 +1938,11 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// detached supervisor that takes ownership below: it re-boots the VM, and
 	// /run is tmpfs, so anything seeded here is discarded on that reboot.
 	agentProfile, allowHosts, openEgress := resolveAgentPosture(f)
+	// S16: fail before any VM work if the agent credential is dead.  Profiles
+	// with CredentialFormatNone (Claude Code) always pass.
+	if err := credPreflightCheck(agentProfile); err != nil {
+		return err
+	}
 
 	// C-SECRET: auto-derive MCP server credentials and guest definitions via the
 	// unified builder. HTTPBinds become SecretBinds for MITM swap; their hosts

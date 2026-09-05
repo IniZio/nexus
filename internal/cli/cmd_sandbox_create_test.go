@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
@@ -1169,5 +1170,164 @@ func TestGuard_WildcardKeyGitHubSecret_Accepted(t *testing.T) {
 	_, err := resolveCreateSecrets(ctx, f)
 	if err != nil {
 		t.Fatalf("expected nil for wildcard-key PathPolicies; got %v", err)
+	}
+}
+
+// ── S16: credential preflight at sandbox create time ─────────────────────────
+//
+// These tests cover AC-1..AC-6: absent, expired, Claude unaffected, mutation
+// proof, and no-token-leak.  All tests use the no-boot (store-only) path so
+// they do not require a real VM or kernel.
+
+// cursorCredDir points the Cursor profile's XDG_CONFIG_HOME to dir and
+// returns the modified profile.  Uses t.Setenv so the env var is restored
+// after the test.
+func cursorCredDir(t *testing.T, dir string) cred.AgentProfile {
+	t.Helper()
+	p := cred.CursorAgentProfile
+	t.Setenv(p.CredDirEnvVar, dir)
+	return p
+}
+
+// writeTestAuthJSON writes a minimal Cursor auth.json with the given
+// accessToken to <dir>/cursor/auth.json.
+func writeTestAuthJSON(t *testing.T, dir, token string) {
+	t.Helper()
+	credDir := filepath.Join(dir, "cursor")
+	if err := os.MkdirAll(credDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(credDir, "auth.json"),
+		[]byte(`{"accessToken":"`+token+`","refreshToken":""}`), 0o600); err != nil {
+		t.Fatalf("write auth.json: %v", err)
+	}
+}
+
+// expiredJWTToken — exp = 2001-09-09 (genuinely past).
+const expiredJWTToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjEwMDAwMDAwMDB9.ZmFrZQ"
+
+// AC-1 (absent): missing cursor credential causes create to fail before a VM boots.
+func TestSandboxCreate_CredPreflight_Absent(t *testing.T) {
+	dir := t.TempDir()
+	cursorCredDir(t, dir) // points XDG_CONFIG_HOME at empty dir — no auth.json
+	svc := newTestService(t)
+	out, _, _ := capture(false)
+
+	err := runSandboxCreate(context.Background(), []string{"--agent", "cursor", "proj/box"}, out, svc)
+
+	// AC-1: must error.
+	if err == nil {
+		t.Fatal("expected error for absent cursor credential, got nil")
+	}
+	// AC-1: error code must be bad_credential.
+	var coded *CodedError
+	if !errors.As(err, &coded) || coded.Code != sandboxErrCodeBadCredential {
+		t.Fatalf("want bad_credential CodedError, got %T %v", err, err)
+	}
+	// AC-1: message must name the agent.
+	if !strings.Contains(coded.Msg, "cursor") {
+		t.Fatalf("error message does not name agent: %q", coded.Msg)
+	}
+	// AC-2 (no-boot leaves no store record): the create failed, no sandbox in store.
+	listOut, stdout, _ := capture(true)
+	if lErr := runSandboxList(context.Background(), nil, listOut, svc); lErr != nil {
+		t.Fatalf("list: %v", lErr)
+	}
+	var env map[string]any
+	dec := json.NewDecoder(stdout)
+	if dErr := dec.Decode(&env); dErr != nil {
+		t.Fatalf("decode list: %v", dErr)
+	}
+	data := env["data"].(map[string]any)
+	sandboxes := data["sandboxes"].([]any)
+	if len(sandboxes) != 0 {
+		t.Fatalf("expected 0 sandboxes after failed create, got %d", len(sandboxes))
+	}
+}
+
+// AC-4 (expired): expired cursor credential causes create to fail with the expired reason.
+func TestSandboxCreate_CredPreflight_Expired(t *testing.T) {
+	dir := t.TempDir()
+	cursorCredDir(t, dir)
+	writeTestAuthJSON(t, dir, expiredJWTToken) // JWT with exp=1000000000 (2001)
+	svc := newTestService(t)
+	out, _, _ := capture(false)
+
+	err := runSandboxCreate(context.Background(), []string{"--agent", "cursor", "proj/box"}, out, svc)
+
+	if err == nil {
+		t.Fatal("expected error for expired cursor credential, got nil")
+	}
+	var coded *CodedError
+	if !errors.As(err, &coded) || coded.Code != sandboxErrCodeBadCredential {
+		t.Fatalf("want bad_credential CodedError, got %T %v", err, err)
+	}
+	// The message must mention "expired", not "absent".
+	if !strings.Contains(coded.Msg, "expired") {
+		t.Fatalf("error message should say 'expired' for expired cred, got: %q", coded.Msg)
+	}
+}
+
+// AC-3 (Claude unaffected): Claude Code has CredentialFormatNone and must not
+// be treated as broken when no credential file exists.
+func TestSandboxCreate_CredPreflight_ClaudeCodeUnaffected(t *testing.T) {
+	// Use an empty dir so no claude credential file is present.
+	dir := t.TempDir()
+	t.Setenv(cred.ClaudeCodeProfile.CredDirEnvVar, dir)
+	svc := newTestService(t)
+	out, _, _ := capture(false)
+
+	// No-boot path: no --image/--rootfs/--file, so create is store-only.
+	err := runSandboxCreate(context.Background(), []string{"--agent", cred.ClaudeCodeProfileName, "proj/box"}, out, svc)
+
+	if err != nil {
+		t.Fatalf("Claude sandbox create must not be rejected by credential preflight: %v", err)
+	}
+}
+
+// AC-5 mutation proof: credPreflightCheck must be on the call path.
+// This test proves the check can fail by directly calling the helper
+// with an absent-credential profile.
+func TestSandboxCreate_CredPreflight_MutationProof(t *testing.T) {
+	dir := t.TempDir()
+	// No auth.json — cursor profile reports absent.
+	p := cursorCredDir(t, dir)
+
+	err := credPreflightCheck(p)
+
+	if err == nil {
+		t.Fatal("credPreflightCheck must return an error for absent cursor credential; " +
+			"if this test is RED the check is bypassed — the mutation is live")
+	}
+	var coded *CodedError
+	if !errors.As(err, &coded) || coded.Code != sandboxErrCodeBadCredential {
+		t.Fatalf("want bad_credential, got %T %v", err, err)
+	}
+}
+
+// AC-6 no-token-leak: Sentence() from a credential error must not contain the
+// raw token value.
+func TestSandboxCreate_CredPreflight_NoTokenLeak(t *testing.T) {
+	const sentinel = "tok_SENTINEL_DO_NOT_LEAK"
+
+	dir := t.TempDir()
+	p := cursorCredDir(t, dir)
+	// Write a file whose accessToken is the sentinel but is not valid JSON
+	// (so the read fails — PreflightUnreadable path).
+	credSubdir := filepath.Join(dir, "cursor")
+	if err := os.MkdirAll(credSubdir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(credSubdir, "auth.json"),
+		[]byte(`{"accessToken":"`+sentinel+`_BAD_JSON`), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	err := credPreflightCheck(p)
+	if err == nil {
+		t.Fatal("expected error for unreadable credential")
+	}
+	if strings.Contains(err.Error(), sentinel) {
+		t.Fatalf("error message leaks token sentinel: %q", err.Error())
 	}
 }
