@@ -50,15 +50,27 @@ type SourceTransform func(profile AgentProfile) (CredentialSource, error)
 // credential store (refresh token, expiry) so preflight and CLI verify work
 // correctly; SourceFn constructs the live [Refresher] that the broker uses.
 //
+// OAuth / rotating-chain agents (CredentialFormatNone, e.g. claude-code) set
+// DefaultFromPathFn and ImportFromPathFn instead of ImportFn. These two fields
+// are CLI-only: they support the `nexus3 auth login --from <path>` import
+// route. They are ignored by [NewCredentialSourceForProfile] (which returns
+// nil, nil for [CredentialFormatNone] via an early-return) and by [ImportCred]
+// (which must not be called for [CredentialFormatNone]).
+//
 // Adding a new file-based agent requires exactly one entry in [agentRegistry] —
-// no other file needs editing.  Tests that register a synthetic format must
-// clean up: t.Cleanup(func() { delete(agentRegistry, fmt) }).
+// no other file needs editing.  Adding a new OAuth agent requires a
+// [CredentialFormatNone] entry with DefaultFromPathFn and ImportFromPathFn set.
+// Tests that register a synthetic format must clean up:
+// t.Cleanup(func() { delete(agentRegistry, fmt) }).
 type AgentRegistration struct {
 	// ImportFn reads the on-disk credential and returns a [DedicatedCredStore].
-	// Required; used by [CheckCred] (preflight) and [ImportCred] (CLI verify).
-	// When SourceFn is nil it is also the fallback for the source path —
-	// [NewCredentialSourceForProfile] wraps its return value in a
-	// [StaticCredentialSource].
+	// Required for file-based agents; used by [CheckCred] (preflight) and
+	// [ImportCred] (CLI verify).  When SourceFn is nil it is also the fallback
+	// for the source path — [NewCredentialSourceForProfile] wraps its return
+	// value in a [StaticCredentialSource].
+	//
+	// Nil for OAuth/rotating-chain agents (CredentialFormatNone) — those agents
+	// use ImportFromPathFn instead (operator-supplied path, not profile-derived).
 	ImportFn func(AgentProfile) (*DedicatedCredStore, error)
 
 	// SourceFn returns the [CredentialSource] for this format.  Nil for
@@ -67,6 +79,19 @@ type AgentRegistration struct {
 	// [Refresher] — i.e. those whose source cannot be expressed as
 	// ImportFn → [StaticCredentialSource].
 	SourceFn SourceTransform
+
+	// DefaultFromPathFn, if non-nil, returns the default --from path for the
+	// CLI `auth login` import route.  Used only for OAuth/rotating-chain agents
+	// (CredentialFormatNone) whose credential file is at an operator-configurable
+	// location (not a fixed profile-derived location).  Nil for file-based
+	// agents (cursor-style) that derive their path from the profile.
+	DefaultFromPathFn func(AgentProfile) string
+
+	// ImportFromPathFn, if non-nil, imports a credential from an explicit
+	// operator-supplied on-disk path and returns a [DedicatedCredStore].  Used
+	// only for OAuth/rotating-chain agents (CredentialFormatNone).  Nil for
+	// file-based agents (cursor-style) whose path is profile-derived.
+	ImportFromPathFn func(path string) (*DedicatedCredStore, error)
 }
 
 // agentRegistry maps [CredentialFormat] values to their [AgentRegistration].
@@ -75,7 +100,37 @@ type AgentRegistration struct {
 //
 //	t.Cleanup(func() { delete(agentRegistry, fmt) })
 var agentRegistry = map[CredentialFormat]AgentRegistration{
+	// CredentialFormatNone: OAuth/rotating-chain agents (e.g. claude-code).
+	// ImportFn and SourceFn are intentionally nil: [NewCredentialSourceForProfile]
+	// short-circuits on CredentialFormatNone before reaching the registry, and
+	// [ImportCred] must not be called for this format.  Only DefaultFromPathFn
+	// and ImportFromPathFn are set — they serve the CLI import route only.
+	CredentialFormatNone: {
+		DefaultFromPathFn: claudeCodeDefaultFromPath,
+		ImportFromPathFn:  ImportClaudeCredentials,
+	},
+
 	CredentialFormatCursorJWT: {ImportFn: ImportCursorCredentials},
+}
+
+// OAuthImportReg returns the CLI import registration for profile — the default
+// --from path and the import-from-path function.  Returns ok=false when the
+// profile's format has no path-based import registration (i.e. is not an
+// OAuth/rotating-chain agent with CredentialFormatNone, or has no
+// ImportFromPathFn registered).
+//
+// CLI callers: if --from was not set, use defaultPath; call importFn(fromPath)
+// in place of any hardcoded per-agent importer.
+func OAuthImportReg(profile AgentProfile) (defaultPath string, importFn func(string) (*DedicatedCredStore, error), ok bool) {
+	reg, found := agentRegistry[profile.CredentialFormat]
+	if !found || reg.ImportFromPathFn == nil {
+		return "", nil, false
+	}
+	dp := ""
+	if reg.DefaultFromPathFn != nil {
+		dp = reg.DefaultFromPathFn(profile)
+	}
+	return dp, reg.ImportFromPathFn, true
 }
 
 // NewCredentialSourceForProfile returns the credential source appropriate for

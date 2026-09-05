@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
@@ -53,13 +52,6 @@ func runAuth(ctx context.Context, args []string, out *Output) error {
 	}
 }
 
-// defaultFromPath returns the default source .credentials.json path:
-// ~/.config/nexus3/claude-dedicated/.credentials.json.
-func defaultFromPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "nexus3", "claude-dedicated", ".credentials.json")
-}
-
 // runAuthLogin is the implementation of `nexus3 auth login`.
 //
 // Without --agent it behaves identically to the legacy single-route
@@ -69,7 +61,9 @@ func defaultFromPath() string {
 // With --agent it is profile-driven (D-MAC-14):
 //   - rotating-chain agents (CredentialFormatNone, e.g. claude-code): import
 //     the credential file and save it into nexus3's per-agent store. The store
-//     is the source of truth; a host-side Refresher rotates it.
+//     is the source of truth; a host-side Refresher rotates it.  The default
+//     --from path and the import function are both derived from [cred.OAuthImportReg];
+//     no agent name appears here.
 //   - static, read-only agents (CredentialFormatCursorJWT, e.g. cursor):
 //     verify the credential is present and parseable, then report metadata
 //     only — nothing is written. The supervisor reads the operator's file live
@@ -77,11 +71,29 @@ func defaultFromPath() string {
 //     operator re-logs in, and nexus3 would silently broker a dead token.
 func runAuthLogin(_ context.Context, args []string, out *Output) error {
 	fs := flag.NewFlagSet("auth login", flag.ContinueOnError)
-	fromPath := fs.String("from", defaultFromPath(), "source Claude Code .credentials.json path")
+	// Default is empty; the profile-derived default is filled in below after
+	// flags are parsed and the profile is known.
+	fromPath := fs.String("from", "", "source credential file path (default: agent-specific)")
 	force := fs.Bool("force", false, "allow overwriting an existing complete credential store")
 	agentName := fs.String("agent", "", "agent to authenticate (omit for claude-code default)")
 	if err := fs.Parse(args); err != nil {
 		return &UsageError{Msg: "auth login: " + err.Error()}
+	}
+
+	// oauthImport resolves the default --from path and the import function for
+	// a given OAuth/rotating-chain profile via the cred registry, then calls
+	// runAuthLoginImport.  All agent names are kept out of this file.
+	oauthImport := func(profile cred.AgentProfile) error {
+		defaultFrom, importFn, ok := cred.OAuthImportReg(profile)
+		if !ok {
+			return fmt.Errorf("auth login: --agent %s: no import registration (programming error)", profile.Name)
+		}
+		from := *fromPath
+		if from == "" {
+			from = defaultFrom
+		}
+		dest := service.DedicatedCredStorePathForProfile(profile)
+		return runAuthLoginImport(importFn, from, *force, dest, out)
 	}
 
 	// ── no --agent: preserve legacy claude-code behavior exactly ─────────────
@@ -89,8 +101,7 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 	// Operators and scripts depend on this path; its dest, import logic, and
 	// --force guard must remain byte-identical to the pre-flag implementation.
 	if *agentName == "" {
-		dest := service.DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile)
-		return runAuthLoginImport(*fromPath, *force, dest, out)
+		return oauthImport(cred.ClaudeCodeProfile)
 	}
 
 	// ── profile-driven: resolve profile, then dispatch ────────────────────────
@@ -102,26 +113,27 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 		)}
 	}
 
-	switch profile.CredentialFormat {
-	case cred.CredentialFormatNone:
-		// OAuth / rotating-chain agent: same import path as the legacy route.
-		dest := service.DedicatedCredStorePathForProfile(profile)
-		return runAuthLoginImport(*fromPath, *force, dest, out)
-	default:
-		// Static file credential (e.g. cursor-jwt): verify and report only.
-		// Never import — the supervisor reads the file live (D-MAC-01 / D-MAC-14).
-		return runAuthLoginVerify(profile, out)
+	// Dispatch is registry-driven: a profile with an ImportFromPathFn registered
+	// (via OAuthImportReg) takes the import route; one without takes the
+	// verify-and-report route.  This generalises across all OAuth/rotating-chain
+	// formats, not just CredentialFormatNone, so a second OAuth agent with a
+	// distinct format constant is automatically handled correctly.
+	if _, _, hasImport := cred.OAuthImportReg(profile); hasImport {
+		return oauthImport(profile)
 	}
+	// Static file credential (e.g. cursor-jwt): verify and report only.
+	// Never import — the supervisor reads the file live (D-MAC-01 / D-MAC-14).
+	return runAuthLoginVerify(profile, out)
 }
 
 // runAuthLoginImport handles the import path for rotating-chain agents
-// (e.g. claude-code). It reads a Claude Code .credentials.json, saves it into
-// nexus3's per-agent store at dest, and reports metadata without printing
-// token values.
+// (e.g. claude-code). It calls importFn to read the on-disk credential at
+// fromPath, saves it into nexus3's per-agent store at dest, and reports
+// metadata without printing token values.
 //
-// It is called both by the legacy no-agent route and by --agent for profiles
-// whose CredentialFormat is CredentialFormatNone.
-func runAuthLoginImport(fromPath string, force bool, dest string, out *Output) error {
+// importFn is supplied by the caller from [cred.OAuthImportReg], keeping all
+// per-agent knowledge in the cred registry and out of this function.
+func runAuthLoginImport(importFn func(string) (*cred.DedicatedCredStore, error), fromPath string, force bool, dest string, out *Output) error {
 	// Guard: refuse to overwrite a live (complete) credential store unless
 	//    --force is set.
 	if !force {
@@ -136,7 +148,7 @@ func runAuthLoginImport(fromPath string, force bool, dest string, out *Output) e
 		// malformed store is not "live").
 	}
 
-	store, err := cred.ImportClaudeCredentials(fromPath)
+	store, err := importFn(fromPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf(

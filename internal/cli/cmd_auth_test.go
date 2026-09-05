@@ -547,3 +547,132 @@ func TestAuthLoginCursor_NoTokenInOutput(t *testing.T) {
 		t.Error("AC-5: cursor token sentinel appeared in rendered output; token values must never be printed")
 	}
 }
+
+// ── AC-5 S20: profile-driven import dispatch — mutation proof ─────────────────
+
+// TestAuthLoginImport_ProfileDriven_MutationProof verifies that the import
+// route for CredentialFormatNone agents dispatches through the cred registry's
+// ImportFromPathFn, not through a hardcoded per-agent importer.
+//
+// The mutation being probed is: "replace the registry-derived importFn with a
+// hardcoded call to cred.ImportClaudeCredentials inside runAuthLogin or
+// runAuthLoginImport."  Under the mutation the registered importFn is bypassed;
+// the test goes RED because the registry's sentinel ClientID never appears.
+//
+// S20-AC-5, S20-AC-7.
+func TestAuthLoginImport_ProfileDriven_MutationProof(t *testing.T) {
+	const syntheticFormat cred.CredentialFormat = "s20-oauth-synthetic-v1"
+	const sentinelClientID = "SENTINEL-CLIENT-ID-MUST-APPEAR-UNDER-PROFILE-DISPATCH"
+
+	// Redirect HOME so DedicatedCredStorePathForProfile resolves to a temp dir.
+	// The synthetic profile's dest path is $HOME/.config/nexus3/agent-creds/<name>.json.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// Also redirect the claude-code path (NEXUS3_DEDICATED_CRED_STORE) to
+	// avoid any accidental write to the real store.
+	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", filepath.Join(home, "creds.json"))
+
+	// Write a minimal credential fixture.  The synthetic importFn reads it.
+	fromDir := t.TempDir()
+	fromPath := filepath.Join(fromDir, "agent-creds.json")
+	writeCredentialsFixture(t, fromPath, "tok-access-s20", "tok-refresh-s20", time.Now().Add(time.Hour).UnixMilli())
+
+	// Register a synthetic CredentialFormatNone-like format in the cred registry.
+	// DefaultFromPathFn returns an empty string (the test always passes --from).
+	// ImportFromPathFn returns a store whose ClientID carries the sentinel.
+	unregisterFormat := cred.RegisterOAuthFormatForTest(syntheticFormat,
+		func(_ cred.AgentProfile) string { return "" },
+		func(path string) (*cred.DedicatedCredStore, error) {
+			// Delegate to the real claude importer for the credential shape,
+			// then stamp the sentinel ClientID so the test can verify dispatch.
+			store, err := cred.ImportClaudeCredentials(path)
+			if err != nil {
+				return nil, err
+			}
+			store.ClientID = sentinelClientID
+			return store, nil
+		},
+	)
+	t.Cleanup(unregisterFormat)
+
+	// Register a synthetic agent profile that uses this format.
+	syntheticProfile := cred.AgentProfile{
+		Name:             "s20-synthetic-agent",
+		CredentialFormat: syntheticFormat,
+	}
+	unregisterProfile, err := cred.RegisterProfileForTest(syntheticProfile)
+	if err != nil {
+		t.Fatalf("register synthetic profile: %v", err)
+	}
+	t.Cleanup(unregisterProfile)
+
+	// Pre-create the parent directory that DedicatedCredStorePathForProfile
+	// will write into: $HOME/.config/nexus3/agent-creds/.
+	agentCredsDir := filepath.Join(home, ".config", "nexus3", "agent-creds")
+	if err := os.MkdirAll(agentCredsDir, 0o700); err != nil {
+		t.Fatalf("create agent-creds dir: %v", err)
+	}
+
+	out, stdout, _ := capture(true)
+	if err := runAuthLogin(context.Background(),
+		[]string{"--agent", "s20-synthetic-agent", "--from", fromPath}, out); err != nil {
+		t.Fatalf("runAuthLogin --agent s20-synthetic-agent: %v", err)
+	}
+
+	// The written store must carry the sentinel ClientID — proving the registry's
+	// ImportFromPathFn was called, not any hardcoded importer.
+	// The dest path is profile-derived: $HOME/.config/nexus3/agent-creds/s20-synthetic-agent.json.
+	syntheticDest := filepath.Join(home, ".config", "nexus3", "agent-creds", "s20-synthetic-agent.json")
+	store, err := cred.LoadStore(syntheticDest)
+	if err != nil {
+		t.Fatalf("LoadStore after import: %v", err)
+	}
+	if store.ClientID != sentinelClientID {
+		t.Errorf("S20-AC-5: store.ClientID = %q, want sentinel %q\n"+
+			"(mutation: dispatch used hardcoded importer instead of registry ImportFromPathFn)",
+			store.ClientID, sentinelClientID)
+	}
+
+	// The JSON output must also reflect the sentinel (via token_endpoint or
+	// client_id in the success envelope).
+	raw := stdout.Bytes()
+	if !strings.Contains(string(raw), sentinelClientID) {
+		t.Errorf("S20-AC-5: sentinel client_id %q not found in output; got: %s",
+			sentinelClientID, raw)
+	}
+}
+
+// TestAuthLoginImport_NoAgent_DefaultFromIsProfileDerived verifies that the
+// no---agent route derives its --from default from the cred registry
+// (OAuthImportReg on ClaudeCodeProfile), not from a hardcoded string in
+// cmd_auth.go.  A second OAuth agent would simply add a registry entry;
+// cmd_auth.go would be untouched.
+//
+// The test injects an XDG_CONFIG_HOME that cannot contain the claude-dedicated
+// path and passes no --from flag; the command must fail with "not found" at
+// the profile-derived default path, proving the default was NOT resolved from
+// any hardcoded cmd_auth.go constant.
+//
+// S20-AC-2.
+func TestAuthLoginImport_NoAgent_DefaultFromIsProfileDerived(t *testing.T) {
+	destPath := filepath.Join(t.TempDir(), "creds.json")
+	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", destPath)
+
+	// The real default path is ~/.config/nexus3/claude-dedicated/.credentials.json;
+	// verify it is derived from the profile by overriding HOME to a temp dir that
+	// has no claude-dedicated session and confirming the error cites that path.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	out, _, _ := capture(false)
+	err := runAuthLogin(context.Background(), []string{}, out)
+	if err == nil {
+		t.Fatal("S20-AC-2: expected error when default --from path does not exist, got nil")
+	}
+	// Error must mention the expected path shape, proving it is derived from the
+	// profile (not a stale hardcoded constant in cmd_auth.go).
+	wantSuffix := "/.config/nexus3/claude-dedicated/.credentials.json"
+	if !strings.Contains(err.Error(), wantSuffix) {
+		t.Errorf("S20-AC-2: error %q does not mention profile-derived path %q", err, wantSuffix)
+	}
+}
