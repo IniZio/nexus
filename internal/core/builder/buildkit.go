@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/IniZio/nexus3/internal/core/bootspec"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
 // agentContextFilenamePrefix is the reserved name prefix used for the
@@ -91,18 +92,84 @@ func stageAgentContext(agentDir, agentPath string) (string, error) {
 	return agentFile, nil
 }
 
-// synthesizeDockerfile returns the combined Dockerfile handed to the
-// dockerfile.v0 frontend: the user's Containerfile followed by the final layer
-// that installs the agent binary from the "nexus3agent" named context.
+// containerfileRecipeSkipDirective is the opt-out marker an operator writes
+// anywhere in their .nexus/Containerfile to signal that they have already
+// installed the agent tool themselves and do not want the synthesised recipe
+// layer appended.
 //
-// agentFile must come from [newAgentContextFilename] — the name is what makes
-// the agent layer's buildkit cache key unique per build.
-func synthesizeDockerfile(containerfileBytes []byte, agentFile, installPath string) []byte {
+// Failure modes:
+//   - False positive: impossible — the operator must deliberately write this
+//     string. No innocent Containerfile content matches it by accident.
+//   - False negative: operator installs the tool manually but omits the
+//     directive → the recipe layer is appended on top. For a tarball recipe the
+//     extract-to-versioned-dir is idempotent; for npm the install is also
+//     idempotent. The image works; it just carries duplicate work in an extra
+//     layer. This is safer than the alternative: scanning for the install path
+//     would produce false positives (a comment referencing the path) that
+//     silently suppress the recipe and leave the binary absent.
+const containerfileRecipeSkipDirective = "nexus3:recipe-skip"
+
+// containerfileOptsOutOfRecipe reports whether containerfileBytes contains
+// the [containerfileRecipeSkipDirective], signalling that the operator has
+// already installed the agent tool and wants the recipe layer suppressed.
+func containerfileOptsOutOfRecipe(containerfileBytes []byte) bool {
+	return bytes.Contains(containerfileBytes, []byte(containerfileRecipeSkipDirective))
+}
+
+// renderRecipeIfNeeded calls [RenderRecipeLayer] when the recipe has packages
+// and the Containerfile does not opt out. It returns nil (no error) with nil
+// bytes when either condition suppresses the render.
+//
+// When the render succeeds, the returned bytes are deterministic (D-TP-01
+// Amendment C): two calls with the same recipe and arch produce byte-identical
+// output with no nonces, timestamps, or per-call variation.
+//
+// When the render fails (e.g. the target arch has an empty SHA-256 sentinel),
+// the error is wrapped with context naming the arch so the operator sees a
+// clear message: "buildkit: render recipe layer for arch "arm64": recipelayer:
+// cursor-agent ...: no SHA-256 recorded for arch "arm64"".
+func renderRecipeIfNeeded(containerfileBytes []byte, recipe cred.ToolRecipe, arch string) ([]byte, error) {
+	if len(recipe.Packages) == 0 {
+		return nil, nil
+	}
+	if containerfileOptsOutOfRecipe(containerfileBytes) {
+		return nil, nil
+	}
+	rl, err := RenderRecipeLayer(recipe, arch)
+	if err != nil {
+		return nil, fmt.Errorf("buildkit: render recipe layer for arch %q: %w", arch, err)
+	}
+	return rl, nil
+}
+
+// synthesizeDockerfile returns the combined Dockerfile handed to the
+// dockerfile.v0 frontend: the user's Containerfile, an optional recipe layer
+// (deterministic RUN instructions), and the final agent-binary COPY layer.
+//
+// Ordering:
+//
+//	<user Containerfile>        ← cache-hits on every build for unchanged content
+//	[recipe layer]              ← deterministic; cache-hits on same recipe+arch
+//	# Final layer: nexus3-agent ← always a cache MISS (agentFile carries a nonce)
+//
+// agentFile must come from [newAgentContextFilename] — the per-Solve nonce makes
+// the agent layer's buildkit cache key unique per build, preventing a corrupted
+// agent snapshot from being served again (see the function doc comment there).
+//
+// recipeLayerBytes is the output of [renderRecipeIfNeeded]. Pass nil or empty
+// to omit the recipe layer (no recipe, or Containerfile opted out).
+func synthesizeDockerfile(containerfileBytes, recipeLayerBytes []byte, agentFile, installPath string) []byte {
+	var out []byte
+	out = append(out, containerfileBytes...)
+	if len(recipeLayerBytes) > 0 {
+		out = append(out, "\n\n# Recipe layer: install agent tooling\n"...)
+		out = append(out, recipeLayerBytes...)
+	}
 	finalLayer := fmt.Sprintf(
 		"\n\n# Final layer: bake the nexus3-agent (boot contract: init=%s)\nCOPY --chmod=0755 --from=nexus3agent %s %s\n",
 		installPath, agentFile, installPath,
 	)
-	return append(append([]byte(nil), containerfileBytes...), []byte(finalLayer)...)
+	return append(out, []byte(finalLayer)...)
 }
 
 // SolveRequest is the fully-resolved build specification handed to a
@@ -128,6 +195,20 @@ type SolveRequest struct {
 	// It is used as the buildkit build context so that COPY instructions in
 	// the user's Containerfile can reference files from the repo.
 	WorkspaceDir string
+
+	// ToolRecipe is the profile's declared install recipe for the agent tool.
+	// When Packages is non-empty and ContainerfileBytes does not opt out via
+	// [containerfileRecipeSkipDirective], [RenderRecipeLayer] is called with
+	// TargetArch and the output is injected between ContainerfileBytes and the
+	// nexus3-agent COPY layer. A zero ToolRecipe (no packages) is silently
+	// ignored — no recipe layer is emitted.
+	ToolRecipe cred.ToolRecipe
+
+	// TargetArch is the CPU architecture for which the recipe is rendered,
+	// e.g. "x64" (amd64) or "arm64". It selects the correct tarball URL and
+	// SHA-256 from [cred.RecipePackage.SHA256ByArch]. Required when
+	// ToolRecipe.Packages is non-empty; ignored otherwise.
+	TargetArch string
 }
 
 // BuildkitClient is the seam between [Builder] and a running buildkitd daemon.
@@ -350,7 +431,11 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 	if err != nil {
 		return err
 	}
-	synthDF := synthesizeDockerfile(req.ContainerfileBytes, agentFile, req.AgentInstallPath)
+	recipeLayerBytes, err := renderRecipeIfNeeded(req.ContainerfileBytes, req.ToolRecipe, req.TargetArch)
+	if err != nil {
+		return err
+	}
+	synthDF := synthesizeDockerfile(req.ContainerfileBytes, recipeLayerBytes, agentFile, req.AgentInstallPath)
 
 	// Small temp dir for the synthetic Dockerfile only.
 	dfDir, err := os.MkdirTemp("", "nexus3-bkdf-*")
