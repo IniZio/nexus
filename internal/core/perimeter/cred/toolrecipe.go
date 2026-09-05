@@ -1,5 +1,7 @@
 package cred
 
+import "strconv"
+
 // ToolRecipe describes how to install one agent's tooling into a guest image.
 // It is pure data; the renderer (internal/core/builder/recipelayer.go) consumes
 // it as a pure function of these fields with no branch on the agent's name
@@ -72,10 +74,15 @@ type RecipePackage struct {
 	Version string
 
 	// URLTemplate is the download URL for tarball packages, with the following
-	// placeholders that the renderer substitutes at render time:
+	// placeholders that the renderer (internal/core/builder/recipelayer.go)
+	// substitutes at render time:
 	//   {VERSION} → Version
-	//   {OS}      → the target OS string in the vendor's naming (e.g. "linux")
 	//   {ARCH}    → the target arch string in the vendor's naming (see SHA256ByArch)
+	//
+	// Note: both current profiles hardcode the OS ("linux") directly in the
+	// URL template rather than using an {OS} placeholder, because only Linux
+	// guests are supported. A future multi-OS renderer could introduce {OS}
+	// substitution, but it is not implemented and not substituted today.
 	//
 	// Empty for RecipeKindNPM packages (npm installs via its own registry).
 	URLTemplate string
@@ -186,21 +193,5 @@ func (e *RecipeValidationError) Error() string {
 		name = "<unnamed>"
 	}
 	return "cred: ToolRecipe.Validate: package[" +
-		itoa(e.PackageIndex) + "] (" + name + ")." + e.Field + ": " + e.Reason
-}
-
-// itoa converts a non-negative integer to its decimal string representation
-// without importing strconv, keeping the cred package's import list unchanged.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	buf := [20]byte{}
-	pos := len(buf)
-	for n > 0 {
-		pos--
-		buf[pos] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[pos:])
+		strconv.Itoa(e.PackageIndex) + "] (" + name + ")." + e.Field + ": " + e.Reason
 }

@@ -8,6 +8,7 @@ package cred
 // AC-3: a recipe with an empty Version is rejected by Validate.
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -124,15 +125,9 @@ func TestToolRecipeValidate_SecondPackageEmptyVersion(t *testing.T) {
 	}
 }
 
-// asRecipeValidationError attempts a type assertion from err to *RecipeValidationError.
-// Using a helper avoids importing errors (which is not in the cred package's existing
-// import graph) just for errors.As.
+// asRecipeValidationError unwraps err into target using errors.As.
 func asRecipeValidationError(err error, target **RecipeValidationError) bool {
-	if rve, ok := err.(*RecipeValidationError); ok {
-		*target = rve
-		return true
-	}
-	return false
+	return errors.As(err, target)
 }
 
 // TestClaudeCodeProfile_ToolRecipeSymmetry and TestCursorAgentProfile_ToolRecipeSymmetry
@@ -152,19 +147,23 @@ func TestClaudeCodeProfile_ToolRecipeShape(t *testing.T) {
 	if node.Kind != RecipeKindTarball {
 		t.Errorf("Packages[0].Kind = %q; want %q", node.Kind, RecipeKindTarball)
 	}
-	if node.Version == "" {
-		t.Error("Packages[0] (node) Version is empty")
+	const wantNodeVersion = "22.23.2"
+	if node.Version != wantNodeVersion {
+		t.Errorf("Packages[0] (node) Version = %q; want %q (exact pin required — non-emptiness does not guard against typos)", node.Version, wantNodeVersion)
 	}
-	if node.SHA256ByArch["x64"] == "" {
-		t.Error("Packages[0] (node) SHA256ByArch[x64] is empty; amd64 hash must be pinned")
+	// Source: https://nodejs.org/dist/v22.23.2/SHASUMS256.txt
+	const wantNodeX64SHA = "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a"
+	if node.SHA256ByArch["x64"] != wantNodeX64SHA {
+		t.Errorf("Packages[0] (node) SHA256ByArch[x64] = %q; want %q (exact pin required)", node.SHA256ByArch["x64"], wantNodeX64SHA)
 	}
 	// Second package: claude-code npm package.
 	npm := r.Packages[1]
 	if npm.Kind != RecipeKindNPM {
 		t.Errorf("Packages[1].Kind = %q; want %q", npm.Kind, RecipeKindNPM)
 	}
-	if npm.Version == "" {
-		t.Error("Packages[1] (@anthropic-ai/claude-code) Version is empty")
+	const wantClaudeCodeVersion = "2.1.226"
+	if npm.Version != wantClaudeCodeVersion {
+		t.Errorf("Packages[1] (@anthropic-ai/claude-code) Version = %q; want %q (exact pin required)", npm.Version, wantClaudeCodeVersion)
 	}
 }
 
@@ -180,11 +179,15 @@ func TestCursorAgentProfile_ToolRecipeShape(t *testing.T) {
 	if pkg.Kind != RecipeKindTarball {
 		t.Errorf("Packages[0].Kind = %q; want %q", pkg.Kind, RecipeKindTarball)
 	}
-	if pkg.Version == "" {
-		t.Error("Packages[0] (cursor-agent) Version is empty")
+	// Verified 2026-09-05 (R1): linux/x64, 84,518,977 bytes.
+	// Vendor publishes no checksum file; version and hash from direct artifact fetch.
+	const wantCursorVersion = "2026.08.25-3e8eec8"
+	if pkg.Version != wantCursorVersion {
+		t.Errorf("Packages[0] (cursor-agent) Version = %q; want %q (exact pin required — non-emptiness does not guard against typos)", pkg.Version, wantCursorVersion)
 	}
-	if pkg.SHA256ByArch["x64"] == "" {
-		t.Error("Packages[0] (cursor-agent) SHA256ByArch[x64] is empty; x64 hash must be pinned")
+	const wantCursorX64SHA = "7a212e5a17ff9316f5acc78808e33c536940d5455645022e6388d99ba48c8425"
+	if pkg.SHA256ByArch["x64"] != wantCursorX64SHA {
+		t.Errorf("Packages[0] (cursor-agent) SHA256ByArch[x64] = %q; want %q (exact pin required)", pkg.SHA256ByArch["x64"], wantCursorX64SHA)
 	}
 	// arm64 entry must exist (even as empty sentinel) to make the gap explicit.
 	if _, ok := pkg.SHA256ByArch["arm64"]; !ok {

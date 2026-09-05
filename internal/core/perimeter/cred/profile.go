@@ -274,6 +274,37 @@ func (p AgentProfile) Egress() []string {
 	return out
 }
 
+// Recipe returns a deep copy of the profile's ToolRecipe. Callers that consume
+// the recipe for display, serialisation, or further composition should prefer
+// this over reading the ToolRecipe field directly, for the same reason Egress()
+// exists: the package-level profile values are globals, and aliasing their
+// slice/map fields allows callers to mutate the registry.
+//
+// NOTE: the renderer in internal/core/builder/recipelayer.go (slice S1) was
+// written against the raw ToolRecipe field. Add this accessor without removing
+// field access so S1 can adopt it independently.
+func (p AgentProfile) Recipe() ToolRecipe {
+	out := ToolRecipe{
+		BinPath:  p.ToolRecipe.BinPath,
+		Packages: make([]RecipePackage, len(p.ToolRecipe.Packages)),
+	}
+	for i, pkg := range p.ToolRecipe.Packages {
+		cp := pkg
+		if pkg.SHA256ByArch != nil {
+			cp.SHA256ByArch = make(map[string]string, len(pkg.SHA256ByArch))
+			for k, v := range pkg.SHA256ByArch {
+				cp.SHA256ByArch[k] = v
+			}
+		}
+		if pkg.Symlinks != nil {
+			cp.Symlinks = make([]RecipeSymlink, len(pkg.Symlinks))
+			copy(cp.Symlinks, pkg.Symlinks)
+		}
+		out.Packages[i] = cp
+	}
+	return out
+}
+
 // ClaudeCodeProfile is the canonical AgentProfile for Claude Code (claude CLI)
 // agents running inside a nexus3 sandbox.
 var ClaudeCodeProfile = AgentProfile{
