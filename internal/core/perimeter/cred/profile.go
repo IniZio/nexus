@@ -255,6 +255,14 @@ type AgentProfile struct {
 	// posture is a launch-time flag instead (see the herdr dispatch launch
 	// descriptor), which is the case for cursor's --force/--yolo.
 	BypassConsentKey string
+
+	// ToolRecipe declares how to install this agent's tooling into a guest
+	// image (AC-1, D-TP-01, D-TP-02). It is pure data; the renderer in
+	// internal/core/builder/recipelayer.go consumes it without branching on
+	// the agent name. The zero value (empty Packages slice) means no recipe
+	// has been declared — a test over ProfileNames() will fail if any
+	// registered profile omits one (AC-1).
+	ToolRecipe ToolRecipe
 }
 
 // Egress returns a fresh copy of the profile's egress allowlist. Callers may
@@ -334,6 +342,42 @@ var ClaudeCodeProfile = AgentProfile{
 	// See SettingsAllowlist's skipDangerousModePermissionPrompt entry above:
 	// this is the key AssembleCuratedConfig forces to true in the lower layer.
 	BypassConsentKey: "skipDangerousModePermissionPrompt",
+	// ToolRecipe: two packages — a Node.js runtime tarball (prerequisite) then
+	// the claude-code npm package. The renderer installs them in order; the npm
+	// step requires the Node binary that the tarball stage provides.
+	//
+	// Node.js: nodejs.org tarball, sha256-pinned for amd64 (x64).
+	// Source for hash: https://nodejs.org/dist/v22.23.2/SHASUMS256.txt
+	// (same constant as internal/test/selfhost/baseimage_agent.go:nodeSHA256AMD64)
+	//
+	// claude-code: zero npm runtime dependencies; "npm install -g" places the
+	// "claude" wrapper at /usr/local/bin/claude (npm global prefix = /usr/local).
+	ToolRecipe: ToolRecipe{
+		BinPath: "/usr/local/bin/claude",
+		Packages: []RecipePackage{
+			{
+				Kind:        RecipeKindTarball,
+				Name:        "node",
+				Version:     "22.23.2",
+				URLTemplate: "https://nodejs.org/dist/v{VERSION}/node-v{VERSION}-linux-{ARCH}.tar.gz",
+				SHA256ByArch: map[string]string{
+					// Source: https://nodejs.org/dist/v22.23.2/SHASUMS256.txt
+					"x64": "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a",
+				},
+				// The nodejs.org tarball has a bin/ lib/ share/ layout one level
+				// in; extracting with --strip-components=1 to /usr/local places
+				// node and npm at /usr/local/bin/{node,npm,npx}.
+				InstallDir: "/usr/local",
+			},
+			{
+				Kind:    RecipeKindNPM,
+				Name:    "@anthropic-ai/claude-code",
+				Version: "2.1.226",
+				// npm uses the registry (registry.npmjs.org); no URLTemplate.
+				// The package is self-contained (zero runtime deps).
+			},
+		},
+	},
 }
 
 // ClaudeCodeProfileName is the registered name of [ClaudeCodeProfile]. It is
@@ -448,6 +492,56 @@ var CursorAgentProfile = AgentProfile{
 	// permissions posture is a launch-time flag (--force/--yolo), not a
 	// persisted setting. Zero value (empty string) is correct here.
 	MCPConfigFormat: MCPConfigFormatCursorJSON,
+	// ToolRecipe: one self-contained tarball. cursor-agent bundles its own
+	// Node.js runtime (~123 MB node binary inside the package), so no separate
+	// runtime package is needed — the Packages slice has length 1, expressing
+	// the asymmetry with claude-code as data rather than a branch.
+	//
+	// Artifact URL shape (verified R1, 2026-09-05):
+	//   https://downloads.cursor.com/lab/{VERSION}/{OS}/{ARCH}/agent-cli-package.tar.gz
+	// where {ARCH} is cursor's own naming: "x64" (amd64) or "arm64".
+	//
+	// Pinned version 2026.08.25-3e8eec8 (linux/x64):
+	//   HTTP 200, 84,518,977 bytes
+	//   sha256: 7a212e5a17ff9316f5acc78808e33c536940d5455645022e6388d99ba48c8425
+	// Source: direct artifact fetch; vendor publishes no checksum file.
+	//
+	// arm64 hash: not yet computed (binary exists but was never pulled and
+	// measured). The empty string is an explicit sentinel; the renderer must
+	// refuse to build for arm64 until the hash is filled in.
+	//
+	// Install layout: /usr/local/share/cursor-agent/versions/{VERSION}/
+	// Symlink: /usr/local/bin/cursor-agent → versioned dir entry "agent-cli".
+	// The vendor's install path (~/.local/bin) is unusable: the exec PATH nexus3
+	// launches with is /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+	// (internal/cli/cmd_herdr_plugin.go:1546) and omits ~/.local/bin.
+	// The launcher resolves its sibling "node" via realpath($0); a symlink whose
+	// target stays inside the versioned dir is safe.
+	ToolRecipe: ToolRecipe{
+		BinPath: "/usr/local/bin/cursor-agent",
+		Packages: []RecipePackage{
+			{
+				Kind:        RecipeKindTarball,
+				Name:        "cursor-agent",
+				Version:     "2026.08.25-3e8eec8",
+				URLTemplate: "https://downloads.cursor.com/lab/{VERSION}/linux/{ARCH}/agent-cli-package.tar.gz",
+				SHA256ByArch: map[string]string{
+					// Verified 2026-09-05 (R1): linux/x64, 84,518,977 bytes.
+					// Vendor publishes no checksum file; hash from direct fetch.
+					"x64": "7a212e5a17ff9316f5acc78808e33c536940d5455645022e6388d99ba48c8425",
+					// arm64: not yet computed; leave empty until measured.
+					"arm64": "",
+				},
+				InstallDir: "/usr/local/share/cursor-agent/versions/{VERSION}",
+				Symlinks: []RecipeSymlink{
+					{
+						LinkPath:   "/usr/local/bin/cursor-agent",
+						TargetPath: "/usr/local/share/cursor-agent/versions/{VERSION}/agent-cli",
+					},
+				},
+			},
+		},
+	},
 }
 
 // profiles is the registry of every agent nexus3 can seed credentials for,
