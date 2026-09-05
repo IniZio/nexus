@@ -25,10 +25,11 @@ import (
 //  2. WireAgentEgress call dropped (AgentCredSource not assigned): opts stays
 //     zero → AgentCredSource = nil → first assertion fails → RED.
 //
-// The test then passes egressWire.AgentCredSource into runSeedRoute via
-// StaticCredSrc, proving the assignment site is also live:
-//  - drop StaticCredSrc: egressWire.AgentCredSource → StaticCredSrc = nil →
-//    no push → broker.Resolve returns "" ≠ realToken → second assertion RED.
+// The test then feeds the constructed AgentCredSource directly into runSeedRoute
+// via a hand-built seedRouteInputs literal to confirm runSeedRoute pushes the
+// real token when StaticCredSrc is non-nil (second assertion). This covers the
+// runSeedRoute behaviour, NOT the assignment site in buildSeedRouteInputs —
+// that site is covered by TestBuildSeedRouteInputs_WiresStaticCredSrc.
 func TestBuildSeedEgressOpts_ConstructionSite(t *testing.T) {
 	const realToken = "tok-s14-construction-test"
 
@@ -111,5 +112,63 @@ func TestBuildSeedEgressOpts_ConstructionSite(t *testing.T) {
 			"(construction site did not wire real token via egressWire.AgentCredSource;\n"+
 			" check resolveSeedProfile, NewCredentialSourceForProfile, or StaticCredSrc assignment)",
 			got, realToken)
+	}
+}
+
+// TestBuildSeedRouteInputs_WiresStaticCredSrc is the mutation guard for the
+// assignment site in buildSeedRouteInputs:
+//
+//	StaticCredSrc: egressWire.AgentCredSource
+//
+// Dropping or zero-initialising that assignment leaves inputs.StaticCredSrc nil
+// → assertion below fails → RED.
+func TestBuildSeedRouteInputs_WiresStaticCredSrc(t *testing.T) {
+	// ── Write synthetic cursor auth.json ──────────────────────────────────────
+	tmpDir := t.TempDir()
+	credDir := filepath.Join(tmpDir, "cursor")
+	if err := os.MkdirAll(credDir, 0o700); err != nil {
+		t.Fatalf("mkdir cursor dir: %v", err)
+	}
+	authJSON, err := json.Marshal(map[string]string{
+		"accessToken":  "tok-s14-assignment-site",
+		"refreshToken": "refresh-unused",
+	})
+	if err != nil {
+		t.Fatalf("marshal auth.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(credDir, "auth.json"), authJSON, 0o600); err != nil {
+		t.Fatalf("write auth.json: %v", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	// ── Build egressWire with a real AgentCredSource ──────────────────────────
+	broker := cred.NewBroker()
+	var id domain.SandboxID
+	id[0] = 0xA5
+	sb := domain.Sandbox{
+		ID:        id,
+		AgentName: cred.CursorAgentProfile.Name,
+	}
+
+	egressWire, err := buildSeedEgressOpts(sb, broker)
+	if err != nil {
+		t.Fatalf("buildSeedEgressOpts: %v", err)
+	}
+	// Precondition: egressWire must carry a non-nil AgentCredSource so that the
+	// test is not vacuously green because the source was never set.
+	if egressWire.AgentCredSource == nil {
+		t.Fatal("precondition: egressWire.AgentCredSource is nil — test is vacuous; " +
+			"check buildSeedEgressOpts and NewCredentialSourceForProfile")
+	}
+
+	// ── Assignment site under test ────────────────────────────────────────────
+	// nil values for fields not under test (cert, seeders, agentClient, svc).
+	inputs := buildSeedRouteInputs(sb, nil, nil, nil, nil, broker, nil, egressWire, nil)
+	if inputs.StaticCredSrc == nil {
+		t.Fatal("buildSeedRouteInputs: StaticCredSrc is nil — " +
+			"egressWire.AgentCredSource was not assigned to StaticCredSrc in buildSeedRouteInputs")
+	}
+	if inputs.StaticCredSrc != egressWire.AgentCredSource {
+		t.Fatal("buildSeedRouteInputs: StaticCredSrc is not the same object as egressWire.AgentCredSource")
 	}
 }

@@ -431,6 +431,39 @@ func buildSeedEgressOpts(sb domain.Sandbox, broker *cred.Broker) (service.Create
 	return opts, nil
 }
 
+// buildSeedRouteInputs assembles the [seedRouteInputs] from the already-resolved
+// components. It is a pure constructor: no side effects, no RPCs. Extracted from
+// [RunDetached] so that the StaticCredSrc assignment site — specifically the
+// field assignment "StaticCredSrc: egressWire.AgentCredSource" — can be covered
+// by a unit test (TestBuildSeedRouteInputs_WiresStaticCredSrc) without booting a VM.
+func buildSeedRouteInputs(
+	sb domain.Sandbox,
+	cert *x509.Certificate,
+	caSeeder service.GuestSeeder,
+	agentSeeder service.GuestSeeder,
+	agentClient *agent.Client,
+	broker *cred.Broker,
+	refreshers []*cred.Refresher,
+	egressWire service.CreateAndBootOptions,
+	svc PerimeterCAGetter,
+) seedRouteInputs {
+	return seedRouteInputs{
+		SB:          sb,
+		Cert:        cert,
+		CASeeder:    caSeeder,
+		AgentSeeder: agentSeeder,
+		// CredFileSeeder is bound to the profile-specific path so
+		// SeedGuestCredFile writes cursor/auth.json (or equivalent)
+		// under GuestCredDirPath, where the redirected CredDirEnvVar
+		// points. Claude Code (CredentialFile == "") ignores this seeder.
+		CredFileSeeder: service.NewGuestFileSeeder(agentClient, service.GuestCredFilePath(resolveSeedProfile(sb))),
+		Broker:         broker,
+		Refreshers:     refreshers,
+		StaticCredSrc:  egressWire.AgentCredSource,
+		Svc:            svc,
+	}
+}
+
 func RunDetached(cfg Config) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
@@ -889,21 +922,9 @@ func RunDetached(cfg Config) error {
 		// must mint placeholders in either posture. The original guard on OpenEgress
 		// silently skipped GH_TOKEN seeding for --egress closed sandboxes.
 		route := chooseSeedRoute(sb)
-		seedDone, guestEverResponded := runSeedRoute(ctx, route, seedRouteInputs{
-			SB:          sb,
-			Cert:        cert,
-			CASeeder:    caSeeder,
-			AgentSeeder: agentSeeder,
-			// CredFileSeeder is bound to the profile-specific path so
-			// SeedGuestCredFile writes cursor/auth.json (or equivalent)
-			// under GuestCredDirPath, where the redirected CredDirEnvVar
-			// points. Claude Code (CredentialFile == "") ignores this seeder.
-			CredFileSeeder: service.NewGuestFileSeeder(agentClient, service.GuestCredFilePath(resolveSeedProfile(sb))),
-			Broker:         broker,
-			Refreshers:     refreshers,
-			StaticCredSrc:  egressWire.AgentCredSource,
-			Svc:            svc,
-		})
+		seedDone, guestEverResponded := runSeedRoute(ctx, route, buildSeedRouteInputs(
+			sb, cert, caSeeder, agentSeeder, agentClient, broker, refreshers, egressWire, svc,
+		))
 		// routeNone skips both branches below: there is no seed failure to warn
 		// about, and no CA in the guest to activate.
 		if route != routeNone && !seedDone {
