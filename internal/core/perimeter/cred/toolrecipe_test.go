@@ -193,17 +193,27 @@ func TestCursorAgentProfile_ToolRecipeShape(t *testing.T) {
 	if _, ok := pkg.SHA256ByArch["arm64"]; !ok {
 		t.Error("Packages[0] (cursor-agent) SHA256ByArch has no arm64 key; add an empty sentinel to make the gap explicit")
 	}
-	// Must have a symlink from /usr/local/bin/cursor-agent.
+	// Must have a symlink from /usr/local/bin/cursor-agent whose TargetPath
+	// points to the actual binary name inside the versioned directory.
+	// The tarball (agent-cli-package.tar.gz) extracts a top-level dist-package/
+	// directory; with --strip-components=1 the binary lands at
+	// {InstallDir}/cursor-agent (not "agent-cli" — that would be a dangling
+	// symlink). Pin the exact string so a rename in the tarball fails loudly.
 	if len(pkg.Symlinks) == 0 {
 		t.Error("Packages[0] (cursor-agent) has no Symlinks; expected at least one for /usr/local/bin/cursor-agent")
 	}
+	const wantLinkPath = "/usr/local/bin/cursor-agent"
+	const wantTargetPath = "/usr/local/share/cursor-agent/versions/{VERSION}/cursor-agent"
 	found := false
 	for _, s := range pkg.Symlinks {
-		if s.LinkPath == "/usr/local/bin/cursor-agent" {
+		if s.LinkPath == wantLinkPath {
 			found = true
+			if s.TargetPath != wantTargetPath {
+				t.Errorf("cursor-agent symlink TargetPath = %q; want %q (exact pin required — a wrong name produces a dangling symlink)", s.TargetPath, wantTargetPath)
+			}
 		}
 	}
 	if !found {
-		t.Error("cursor-agent Symlinks does not contain a link at /usr/local/bin/cursor-agent")
+		t.Errorf("cursor-agent Symlinks does not contain a link at %q", wantLinkPath)
 	}
 }

@@ -542,7 +542,7 @@ var CursorAgentProfile = AgentProfile{
 	// refuse to build for arm64 until the hash is filled in.
 	//
 	// Install layout: /usr/local/share/cursor-agent/versions/{VERSION}/
-	// Symlink: /usr/local/bin/cursor-agent → versioned dir entry "agent-cli".
+	// Symlink: /usr/local/bin/cursor-agent → versioned dir entry "cursor-agent".
 	// The vendor's install path (~/.local/bin) is unusable: the exec PATH nexus3
 	// launches with is /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 	// (internal/cli/cmd_herdr_plugin.go:1546) and omits ~/.local/bin.
@@ -567,7 +567,7 @@ var CursorAgentProfile = AgentProfile{
 				Symlinks: []RecipeSymlink{
 					{
 						LinkPath:   "/usr/local/bin/cursor-agent",
-						TargetPath: "/usr/local/share/cursor-agent/versions/{VERSION}/agent-cli",
+						TargetPath: "/usr/local/share/cursor-agent/versions/{VERSION}/cursor-agent",
 					},
 				},
 			},
