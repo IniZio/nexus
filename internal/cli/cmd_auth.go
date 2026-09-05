@@ -71,7 +71,7 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 		return &UsageError{Msg: "auth login: " + err.Error()}
 	}
 
-	dest := service.DefaultDedicatedCredStorePath()
+	dest := service.DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile)
 
 	// Guard: refuse to overwrite a live (complete) credential store unless
 	//    --force is set.

@@ -2108,7 +2108,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		len(namedDiskMounts),
 		workspaceGuestPathFor(bootWorkspace), bootLiveMounts, caps.VirtiofsdPath,
 		f.nestedVirt,
-		mcpOAuthRefreshConfigs); handoffErr != nil {
+		mcpOAuthRefreshConfigs, agentProfile); handoffErr != nil {
 		slog.Warn("sandbox create: supervisor handoff failed; broker will not survive CLI exit",
 			"sandbox", sb.ID, "err", handoffErr)
 	}
@@ -2197,6 +2197,7 @@ func handoffHumanSupervisor(
 	virtiofsdPath string,
 	nestedVirt bool,
 	mcpOAuthRefreshConfigs []service.MCPOAuthRefreshConfig,
+	agentProfile cred.AgentProfile,
 ) error {
 	if diskPath == "" {
 		return fmt.Errorf("no disk path captured")
@@ -2222,6 +2223,7 @@ func handoffHumanSupervisor(
 		liveMounts, virtiofsdPath,
 		nestedVirt,
 		mcpOAuthRefreshConfigs,
+		agentProfile,
 	)
 	if err := supervisor.WriteSpawnSpec(stateDir, cfg); err != nil {
 		return err
@@ -2280,6 +2282,7 @@ func buildHumanSupervisorConfig(
 	virtiofsdPath string,
 	nestedVirt bool,
 	mcpOAuthRefreshConfigs []service.MCPOAuthRefreshConfig,
+	agentProfile cred.AgentProfile,
 ) supervisor.Config {
 	// ResizableDiskIndices: named-volume disks occupy ExtraDisks[0..numNamedDisks-1]
 	// (prepended by create.go step 4.7 in declaration order). The workspace disk
@@ -2322,7 +2325,7 @@ func buildHumanSupervisorConfig(
 		// at expiry with an opaque 401 in the guest. Set unconditionally:
 		// when the store is absent the supervisor logs creds_absent and
 		// carries on, so there is no cost for sandboxes that need no cred.
-		CredsFile:              service.DefaultDedicatedCredStorePath(),
+		CredsFile:              service.DedicatedCredStorePathForProfile(agentProfile),
 		NestedVirt:             nestedVirt,
 		MCPOAuthRefreshConfigs: mcpOAuthRefreshConfigs,
 	}

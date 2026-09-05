@@ -1271,7 +1271,7 @@ func handoffLaunchSupervisor(
 			ExtraDisks: extraDisks,
 			// Real bearer tokens are read here, inside the supervisor, and never
 			// leave it: the broker hands the MITM proxy the token at swap time.
-			CredsFile: service.DefaultDedicatedCredStorePath(),
+			CredsFile: service.DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile),
 			Ephemeral: true,
 		},
 		ReadyTimeout: 5 * time.Minute,

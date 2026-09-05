@@ -424,21 +424,46 @@ func WireClaudeEgress(opts *CreateAndBootOptions, broker *cred.Broker, seeder Gu
 	WireAgentEgress(opts, cred.ClaudeCodeProfile, broker, seeder, src)
 }
 
-// DefaultDedicatedCredStorePath returns the path for nexus3's dedicated OAuth
-// credential store used by the host-side Refresher ([cred.NewRefresher]).
+// DedicatedCredStorePathForProfile returns the host-side OAuth credential store
+// path for the given agent profile.
 //
-// Default: ~/.config/nexus3/creds.json
-// Override: NEXUS3_DEDICATED_CRED_STORE environment variable.
+// claude-code is a special case: it always resolves to ~/.config/nexus3/creds.json —
+// the legacy single-tenant path. Operators have live credentials at that path and
+// changing it would silently log them out of every existing sandbox. The
+// NEXUS3_DEDICATED_CRED_STORE environment variable applies only to this alias.
 //
-// S4 dogfood places the credential file at this path; see charter TBD-P5-2.
-// Construct a *cred.Refresher from this path and pass it to WireClaudeEgress
-// to enable automatic token rotation across sandboxes.
-func DefaultDedicatedCredStorePath() string {
-	if p := os.Getenv("NEXUS3_DEDICATED_CRED_STORE"); p != "" {
-		return p
+// All other profiles resolve to ~/.config/nexus3/agent-creds/<name>.json where
+// <name> is the sanitized profile name, following the same sanitization convention
+// as DefaultMCPOAuthStoreRoot (see mcpoauth_refresh.go:sanitizeForFS).
+func DedicatedCredStorePathForProfile(profile cred.AgentProfile) string {
+	// claude-code: preserve the legacy path unchanged. Live operator credentials live
+	// here; any change silently invalidates every existing sandbox. The env-var
+	// override applies only to this alias so it stays forward-compatible.
+	if profile.Name == "" || profile.Name == cred.ClaudeCodeProfileName {
+		if p := os.Getenv("NEXUS3_DEDICATED_CRED_STORE"); p != "" {
+			return p
+		}
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".config", "nexus3", "creds.json")
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "nexus3", "creds.json")
+	return filepath.Join(home, ".config", "nexus3", "agent-creds", sanitizeForFS(profile.Name)+".json")
+}
+
+// DedicatedLockFilePathForProfile returns the advisory lock file path for the
+// credential store of the given agent profile. Mirrors the convention used by the
+// cred package: storePath + ".lock" (see cred/store.go:lockFilePath).
+func DedicatedLockFilePathForProfile(profile cred.AgentProfile) string {
+	return DedicatedCredStorePathForProfile(profile) + ".lock"
+}
+
+// DefaultDedicatedCredStorePath returns the path for nexus3's dedicated OAuth
+// credential store. Deprecated: all production call sites now use
+// [DedicatedCredStorePathForProfile] with the agent's profile. This wrapper
+// delegates to DedicatedCredStorePathForProfile for the claude-code alias and
+// has no production callers — kept only as a named compatibility shim.
+func DefaultDedicatedCredStorePath() string {
+	return DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile)
 }
 
 // CreateAndBoot creates a sandbox record, boots a VM for it, verifies the
