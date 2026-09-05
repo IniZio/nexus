@@ -1285,9 +1285,10 @@ func TestSandboxCreate_CredPreflight_ClaudeCodeUnaffected(t *testing.T) {
 	}
 }
 
-// AC-5 mutation proof: credPreflightCheck must be on the call path.
-// This test proves the check can fail by directly calling the helper
-// with an absent-credential profile.
+// AC-5 unit proof: credPreflightCheck rejects an absent-credential profile.
+// This test calls the helper DIRECTLY — it does not prove the helper is wired
+// into any call site.  Use TestSandboxCreate_BootPath_CredPreflight_* for
+// call-site coverage on the boot path.
 func TestSandboxCreate_CredPreflight_MutationProof(t *testing.T) {
 	dir := t.TempDir()
 	// No auth.json — cursor profile reports absent.
@@ -1296,8 +1297,7 @@ func TestSandboxCreate_CredPreflight_MutationProof(t *testing.T) {
 	err := credPreflightCheck(p)
 
 	if err == nil {
-		t.Fatal("credPreflightCheck must return an error for absent cursor credential; " +
-			"if this test is RED the check is bypassed — the mutation is live")
+		t.Fatal("credPreflightCheck must return an error for absent cursor credential")
 	}
 	var coded *CodedError
 	if !errors.As(err, &coded) || coded.Code != sandboxErrCodeBadCredential {
@@ -1329,5 +1329,102 @@ func TestSandboxCreate_CredPreflight_NoTokenLeak(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), sentinel) {
 		t.Fatalf("error message leaks token sentinel: %q", err.Error())
+	}
+}
+
+// bootPathEnv sets the two env vars needed to get past the boot-path
+// preflights that precede credPreflightCheck (line 1943 in cmd_sandbox.go):
+//   - NEXUS3_KERNEL_PATH → a placeholder file (resolveKernelPath at line 1339)
+//   - XDG_STATE_HOME     → a temp dir        (store.DefaultRoot  at line 1344)
+//
+// Call this from every boot-path cred test so that execution reaches
+// cmd_sandbox.go:1943 without touching real host state or starting a VM.
+func bootPathEnv(t *testing.T) {
+	t.Helper()
+	kernelFile := filepath.Join(t.TempDir(), "vmlinux-x86_64")
+	if err := os.WriteFile(kernelFile, []byte("fake-kernel"), 0o600); err != nil {
+		t.Fatalf("write fake kernel: %v", err)
+	}
+	t.Setenv("NEXUS3_KERNEL_PATH", kernelFile)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+}
+
+// TestSandboxCreate_BootPath_CredPreflight_Absent drives runSandboxCreate
+// through the BOOT path (--rootfs triggers line 1297 to fall through) with no
+// cursor auth.json.  The check at cmd_sandbox.go:1943 must fire and return
+// bad_credential before any VM work begins.
+//
+// Mutation proof: deleting the if-block at cmd_sandbox.go:1943 makes this
+// test RED.  Without the check, execution falls through to service.CreateAndBoot,
+// which fails when it cannot stat /nonexistent-for-test.ext4.  That error is
+// NOT a CodedError with bad_credential, so the second assertion below fires:
+// "boot-path: want bad_credential CodedError, got ...".
+func TestSandboxCreate_BootPath_CredPreflight_Absent(t *testing.T) {
+	bootPathEnv(t)
+
+	dir := t.TempDir()
+	cursorCredDir(t, dir) // points XDG_CONFIG_HOME at empty dir — no auth.json
+	svc := newTestService(t)
+	out, _, _ := capture(false)
+
+	// --rootfs triggers the boot path (line 1297 condition is false).
+	// The value need not be a real file; credPreflightCheck fires before
+	// service.CreateAndBoot touches the rootfs path.
+	err := runSandboxCreate(context.Background(),
+		[]string{"--agent", "cursor", "--rootfs", "/nonexistent-for-test.ext4", "proj/box"},
+		out, svc)
+
+	if err == nil {
+		t.Fatal("boot-path: expected bad_credential error for absent cursor credential, got nil — " +
+			"credPreflightCheck at cmd_sandbox.go:1943 may be missing or unreachable")
+	}
+	var coded *CodedError
+	if !errors.As(err, &coded) || coded.Code != sandboxErrCodeBadCredential {
+		t.Fatalf("boot-path: want bad_credential CodedError, got %T %v", err, err)
+	}
+
+	// No sandbox must remain in the store after a failed boot-path create.
+	listOut, stdout, _ := capture(true)
+	if lErr := runSandboxList(context.Background(), nil, listOut, svc); lErr != nil {
+		t.Fatalf("list: %v", lErr)
+	}
+	var env map[string]any
+	dec := json.NewDecoder(stdout)
+	if dErr := dec.Decode(&env); dErr != nil {
+		t.Fatalf("decode list: %v", dErr)
+	}
+	data := env["data"].(map[string]any)
+	sandboxes := data["sandboxes"].([]any)
+	if len(sandboxes) != 0 {
+		t.Fatalf("boot-path: expected 0 sandboxes after failed create, got %d", len(sandboxes))
+	}
+}
+
+// TestSandboxCreate_BootPath_CredPreflight_Expired drives runSandboxCreate
+// through the boot path with an expired cursor JWT.  The check at
+// cmd_sandbox.go:1943 must return bad_credential with "expired" in the message.
+func TestSandboxCreate_BootPath_CredPreflight_Expired(t *testing.T) {
+	bootPathEnv(t)
+
+	dir := t.TempDir()
+	cursorCredDir(t, dir)
+	writeTestAuthJSON(t, dir, expiredJWTToken) // JWT with exp=1000000000 (2001)
+	svc := newTestService(t)
+	out, _, _ := capture(false)
+
+	err := runSandboxCreate(context.Background(),
+		[]string{"--agent", "cursor", "--rootfs", "/nonexistent-for-test.ext4", "proj/box"},
+		out, svc)
+
+	if err == nil {
+		t.Fatal("boot-path: expected bad_credential error for expired cursor credential, got nil — " +
+			"credPreflightCheck at cmd_sandbox.go:1943 may be missing or unreachable")
+	}
+	var coded *CodedError
+	if !errors.As(err, &coded) || coded.Code != sandboxErrCodeBadCredential {
+		t.Fatalf("boot-path: want bad_credential CodedError, got %T %v", err, err)
+	}
+	if !strings.Contains(coded.Msg, "expired") {
+		t.Fatalf("boot-path: error message should say 'expired' for expired cred, got: %q", coded.Msg)
 	}
 }
