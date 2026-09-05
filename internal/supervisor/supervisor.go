@@ -337,6 +337,11 @@ type seedRouteInputs struct {
 	Broker          *cred.Broker
 	Refreshers      []*cred.Refresher
 	Svc             PerimeterCAGetter
+	// StaticCredSrc is the credential source for file-based JWT agents (e.g.
+	// cursor-agent). After seeding registers the placeholder, runSeedRoute calls
+	// StaticCredSrc.Token() and broker.SetRealToken to wire the real token.
+	// Nil for OAuth agents (Claude), which push via Refresher.ForcePush instead.
+	StaticCredSrc   cred.CredentialSource
 }
 
 // Package-level function vars so tests can spy which seeder runSeedRoute
@@ -360,14 +365,31 @@ func runSeedRoute(ctx context.Context, route seedRoute, in seedRouteInputs) (ok,
 			"reason", "no MITM proxy for this sandbox: open egress, no secrets, no agent")
 		return false, false
 	case routeCombined:
-		return seedAgentAndHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers, in.Svc, resolveSeedProfile(in.SB), in.CredFileSeeder)
+		ok, guestEverResponded = seedAgentAndHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers, in.Svc, resolveSeedProfile(in.SB), in.CredFileSeeder)
 	case routeHumanSecrets:
-		return seedHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Svc)
+		ok, guestEverResponded = seedHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Svc)
 	default: // routeAgent
 		agentSandbox := in.SB.AgentName != ""
-		return seedLoopFn(ctx, in.SB.ID, &in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers,
+		ok, guestEverResponded = seedLoopFn(ctx, in.SB.ID, &in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers,
 			maxSeedAttempts, 2*time.Second, in.Svc, agentSandbox, resolveSeedProfile(in.SB), in.CredFileSeeder)
 	}
+	// For file-based credential agents (e.g. cursor-agent), push the real token
+	// after seeding registers the placeholder. Refreshers do this automatically
+	// via ForcePush for OAuth agents; static JWT agents need an explicit push.
+	if ok && in.StaticCredSrc != nil {
+		profile := resolveSeedProfile(in.SB)
+		if tok, _, tokErr := in.StaticCredSrc.Token(ctx); tokErr != nil {
+			slog.Warn("supervisor.static_cred_token_failed",
+				"host", profile.CredentialedHost, "err", tokErr)
+		} else if setErr := in.Broker.SetRealToken(in.SB.ID, profile.CredentialedHost, tok); setErr != nil {
+			slog.Warn("supervisor.static_cred_set_token_failed",
+				"host", profile.CredentialedHost, "err", setErr)
+		} else {
+			slog.Info("supervisor.real_token_pushed",
+				"host", profile.CredentialedHost, "sandbox", in.SB.ID)
+		}
+	}
+	return
 }
 
 // resolveSeedProfile resolves the [cred.AgentProfile] the re-seed loop must
@@ -491,6 +513,23 @@ func RunDetached(cfg Config) error {
 			if setErr := svc.SetCacheDiskSlot(ctx, preSB.ID, slots); setErr != nil {
 				return fmt.Errorf("supervisor: persist cache-disk slot: %w", setErr)
 			}
+		}
+	}
+
+	// Build a static credential source for file-based agents (e.g. cursor-agent).
+	// OAuth agents (Claude) push their real token via Refresher.ForcePush; cursor
+	// uses NewCredentialSourceForProfile which reads ~/.config/cursor/auth.json.
+	// Graceful degradation: if the file is absent or unreadable, staticCredSrc is
+	// nil and the broker starts with no real token (HTTPS auth will carry the
+	// placeholder; the operator re-runs cursor-agent login to fix it).
+	var staticCredSrc cred.CredentialSource
+	if resolveErr == nil {
+		sbProfile := resolveSeedProfile(preSB)
+		if src, srcErr := cred.NewCredentialSourceForProfile(sbProfile); srcErr != nil {
+			slog.Warn("supervisor.static_cred_source_failed",
+				"agent", sbProfile.Name, "err", srcErr)
+		} else {
+			staticCredSrc = src // nil for OAuth agents
 		}
 	}
 
@@ -836,9 +875,10 @@ func RunDetached(cfg Config) error {
 			// under GuestCredDirPath, where the redirected CredDirEnvVar
 			// points. Claude Code (CredentialFile == "") ignores this seeder.
 			CredFileSeeder: service.NewGuestFileSeeder(agentClient, service.GuestCredFilePath(resolveSeedProfile(sb))),
-			Broker:      broker,
-			Refreshers:  refreshers,
-			Svc:         svc,
+			Broker:         broker,
+			Refreshers:     refreshers,
+			StaticCredSrc:  staticCredSrc,
+			Svc:            svc,
 		})
 		// routeNone skips both branches below: there is no seed failure to warn
 		// about, and no CA in the guest to activate.

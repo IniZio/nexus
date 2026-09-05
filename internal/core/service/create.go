@@ -382,6 +382,24 @@ type NamedVolumeMount struct {
 	ReadOnly  bool
 }
 
+// WireAgentEgress configures opts for an agent sandbox running the given
+// profile. It is the profile-generic form of [WireClaudeEgress] and sets all
+// per-profile fields from profile rather than hardcoding [cred.ClaudeCodeProfile].
+//
+// Adding a third agent requires no new function: pass its profile and a matching
+// CredentialSource (from [cred.NewCredentialSourceForProfile] or a [cred.Refresher]).
+//
+// The caller owns broker, seeder, and src; WireAgentEgress does not retain
+// them beyond writing them into opts.
+func WireAgentEgress(opts *CreateAndBootOptions, profile cred.AgentProfile, broker *cred.Broker, seeder GuestSeeder, src cred.CredentialSource) {
+	opts.AllowedHosts = AgentEgressHosts(profile)
+	opts.Broker = broker
+	opts.Seeder = seeder
+	opts.UseAgentSeed = true
+	opts.AgentCredSource = src
+	opts.AgentProfile = profile
+}
+
 // WireClaudeEgress configures opts for an agent sandbox that runs claude
 // (Haiku/Sonnet/etc.) in-guest and needs egress to the Anthropic API.
 //
@@ -400,15 +418,10 @@ type NamedVolumeMount struct {
 // automatic token rotation. When src is nil no real token is wired and the
 // MITM proxy forwards the placeholder (egress still works, bearer is invalid).
 //
-// The caller owns broker, seeder, and src; WireClaudeEgress does not retain
-// them beyond writing them into opts.
+// The caller owns broker, seeder, and src; WireClaudeEgress delegates to
+// [WireAgentEgress] and is kept for compatibility.
 func WireClaudeEgress(opts *CreateAndBootOptions, broker *cred.Broker, seeder GuestSeeder, src cred.CredentialSource) {
-	opts.AllowedHosts = AgentEgressHosts(cred.ClaudeCodeProfile)
-	opts.Broker = broker
-	opts.Seeder = seeder
-	opts.UseAgentSeed = true
-	opts.AgentCredSource = src
-	opts.AgentProfile = cred.ClaudeCodeProfile
+	WireAgentEgress(opts, cred.ClaudeCodeProfile, broker, seeder, src)
 }
 
 // DefaultDedicatedCredStorePath returns the path for nexus3's dedicated OAuth

@@ -30,6 +30,22 @@ type StaticCredentialSource struct {
 	store *DedicatedCredStore
 }
 
+// NewCredentialSourceForProfile returns the credential source appropriate for
+// profile. For file-based agents (profile.CredentialFile != ""), it reads the
+// credential file (e.g. cursor's auth.json) and returns a [StaticCredentialSource].
+// For OAuth/env-var agents (profile.CredentialFile == ""), it returns nil, nil
+// — those agents use a [Refresher] built separately from the OAuth credential store.
+//
+// Callers use this to get a credential source for any profile without branching
+// on the agent type. A third agent that declares CredentialFile in its
+// AgentProfile requires no code change here.
+func NewCredentialSourceForProfile(profile AgentProfile) (CredentialSource, error) {
+	if profile.CredentialFile == "" {
+		return nil, nil
+	}
+	return NewCursorCredentialSource(profile)
+}
+
 // NewStaticCredentialSource wraps store in a [StaticCredentialSource].
 // store must not be nil.
 func NewStaticCredentialSource(store *DedicatedCredStore) *StaticCredentialSource {
