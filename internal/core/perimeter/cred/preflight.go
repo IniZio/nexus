@@ -81,33 +81,19 @@ func (r PreflightResult) Sentence() string {
 	}
 }
 
-// preflightImportRegistry maps CredentialFormat values to the function that
-// reads the profile's credential file and returns a raw [DedicatedCredStore].
-//
-// Preflight needs the store directly (not wrapped in a [CredentialSource]) so
-// it can inspect ExpiresAt and distinguish os.ErrNotExist (absent) from other
-// parse errors (unreadable).
-//
-// Adding support for a new file-based credential format requires exactly one
-// new entry here; no other change to this file is needed.
-var preflightImportRegistry = map[CredentialFormat]func(AgentProfile) (*DedicatedCredStore, error){
-	CredentialFormatCursorJWT: ImportCursorCredentials,
-}
-
-// ImportCred reads the credential for profile by dispatching on
-// [preflightImportRegistry].  It is the single import entry point for
-// file-based agents; callers that only need a pass/fail outcome should prefer
-// [CheckCred].
+// ImportCred reads the credential for profile by dispatching on [agentRegistry].
+// It is the single import entry point for file-based agents; callers that only
+// need a pass/fail outcome should prefer [CheckCred].
 //
 // An unregistered CredentialFormat (programming error: a profile declared a
-// format but no entry was added to [preflightImportRegistry]) returns a
-// descriptive error.  Must not be called for profiles with [CredentialFormatNone].
+// format but no entry was added to [agentRegistry]) returns a descriptive
+// error.  Must not be called for profiles with [CredentialFormatNone].
 func ImportCred(profile AgentProfile) (*DedicatedCredStore, error) {
-	importFn, ok := preflightImportRegistry[profile.CredentialFormat]
+	reg, ok := agentRegistry[profile.CredentialFormat]
 	if !ok {
 		return nil, fmt.Errorf("cred: ImportCred: no import function registered for format %q", profile.CredentialFormat)
 	}
-	return importFn(profile)
+	return reg.ImportFn(profile)
 }
 
 // CheckCred reports whether the credential described by profile is present and
@@ -132,13 +118,13 @@ func checkCredAt(profile AgentProfile, now time.Time) PreflightResult {
 		return PreflightResult{Reason: PreflightOK, AgentName: profile.Name}
 	}
 
-	importFn, ok := preflightImportRegistry[profile.CredentialFormat]
+	reg, ok := agentRegistry[profile.CredentialFormat]
 	if !ok {
 		// Unregistered format: programming error in a new profile declaration.
 		return PreflightResult{Reason: PreflightUnreadable, AgentName: profile.Name}
 	}
 
-	store, err := importFn(profile)
+	store, err := reg.ImportFn(profile)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return PreflightResult{Reason: PreflightAbsent, AgentName: profile.Name}

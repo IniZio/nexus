@@ -8,14 +8,16 @@ import (
 	"testing"
 )
 
-// TestS12_AC1_SyntheticThirdProfile proves that a synthetic third profile with
-// a genuinely different credential shape (nested {"tokens":{"access_token":"…"}}
-// vs cursor's flat {"accessToken":"…"}) resolves through
-// NewCredentialSourceForProfile without editing that function's body.
+// TestS22_AC2_SyntheticWithCustomSourceFn proves that a synthetic agent with a
+// custom [AgentRegistration.SourceFn] — where the credential source cannot be
+// expressed as ImportFn → [StaticCredentialSource] — resolves through
+// [NewCredentialSourceForProfile] with a single [agentRegistry] entry.
 //
-// The test registers its format directly into credSourceRegistry and cleans up
-// afterward; neither source.go nor any selector branch is modified.
-func TestS12_AC1_SyntheticThirdProfile(t *testing.T) {
+// This exercises the SourceFn dispatch slot: the registered SourceFn controls
+// what [CredentialSource] the caller receives, while ImportFn handles preflight
+// and CLI verify.  The previous name (TestS12_AC1_SyntheticThirdProfile)
+// described derivation; the test actually exercises the SourceFn override slot.
+func TestS22_AC2_SyntheticWithCustomSourceFn(t *testing.T) {
 	// Synthetic format: nested token shape — deliberately different from cursor.
 	type syntheticAuthFile struct {
 		Tokens struct {
@@ -39,12 +41,22 @@ func TestS12_AC1_SyntheticThirdProfile(t *testing.T) {
 		t.Fatalf("writing fixture: %v", err)
 	}
 
-	// Register the synthetic transform — one line, no edit to
-	// NewCredentialSourceForProfile. The closure captures credPath from the
-	// test because the transform API receives an AgentProfile, not a path; in
-	// production the transform would resolve the path from profile.CredDirEnvVar,
-	// just as cursor does via CursorCredPath.
-	credSourceRegistry[syntheticFormat] = func(p AgentProfile) (CredentialSource, error) {
+	// ONE registration in agentRegistry — no second entry anywhere.
+	// ImportFn reads the store for preflight/verify; SourceFn is a custom
+	// transform whose closure captures credPath (as a refresher-backed agent
+	// would capture its store path).
+	importFn := func(p AgentProfile) (*DedicatedCredStore, error) {
+		raw, err := os.ReadFile(credPath)
+		if err != nil {
+			return nil, err
+		}
+		var af syntheticAuthFile
+		if err := json.Unmarshal(raw, &af); err != nil {
+			return nil, err
+		}
+		return &DedicatedCredStore{AccessToken: af.Tokens.AccessToken}, nil
+	}
+	sourceFn := func(p AgentProfile) (CredentialSource, error) {
 		raw, err := os.ReadFile(credPath)
 		if err != nil {
 			return nil, err
@@ -55,7 +67,8 @@ func TestS12_AC1_SyntheticThirdProfile(t *testing.T) {
 		}
 		return NewStaticCredentialSource(&DedicatedCredStore{AccessToken: af.Tokens.AccessToken}), nil
 	}
-	t.Cleanup(func() { delete(credSourceRegistry, syntheticFormat) })
+	agentRegistry[syntheticFormat] = AgentRegistration{ImportFn: importFn, SourceFn: sourceFn}
+	t.Cleanup(func() { delete(agentRegistry, syntheticFormat) })
 
 	// Synthetic profile — declares the new format, different from cursor.
 	profile := AgentProfile{

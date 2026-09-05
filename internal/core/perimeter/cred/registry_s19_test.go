@@ -11,17 +11,17 @@ import (
 )
 
 // TestS19_AC1_SingleRegistrationAllThreePaths proves that registering a synthetic
-// file-based agent format in [preflightImportRegistry] exactly once makes it work
+// file-based agent format in [agentRegistry] exactly once makes it work
 // through all three paths that a new file-based agent must traverse:
 //
 //  1. The credential-source path ([NewCredentialSourceForProfile]).
 //  2. The preflight path ([checkCredAt] / [CheckCred]).
 //  3. The CLI verify path ([ImportCred], which [runAuthLoginVerify] dispatches to).
 //
-// A single [preflightImportRegistry] entry drives all three — no entry in
-// [credSourceRegistry] is added.  If adding the format to credSourceRegistry
-// were also required, this test would need two registrations (and cleanup), which
-// would make the test itself fail its own one-registration invariant.
+// A single [agentRegistry] entry drives all three — no separate
+// [AgentRegistration.SourceFn] is needed for a static-credential agent.  If
+// adding SourceFn were also required, this test would need a more complex
+// registration, which would make it fail its own one-registration invariant.
 //
 // S19-AC-1.
 func TestS19_AC1_SingleRegistrationAllThreePaths(t *testing.T) {
@@ -42,9 +42,7 @@ func TestS19_AC1_SingleRegistrationAllThreePaths(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	// ONE registration: preflightImportRegistry only.
-	// credSourceRegistry is deliberately NOT touched — the source derives automatically.
-	preflightImportRegistry[syntheticFormat] = func(p AgentProfile) (*DedicatedCredStore, error) {
+	importFn := func(p AgentProfile) (*DedicatedCredStore, error) {
 		raw, err := os.ReadFile(credPath)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -58,13 +56,11 @@ func TestS19_AC1_SingleRegistrationAllThreePaths(t *testing.T) {
 		}
 		return &DedicatedCredStore{AccessToken: f.Token}, nil
 	}
-	t.Cleanup(func() { delete(preflightImportRegistry, syntheticFormat) })
 
-	// Sanity: credSourceRegistry must NOT have an entry for this format — any
-	// code that secretly added one would violate the one-registration invariant.
-	if _, ok := credSourceRegistry[syntheticFormat]; ok {
-		t.Fatal("credSourceRegistry must not have an entry for the synthetic format — one registration only")
-	}
+	// ONE registration: agentRegistry only, ImportFn only (static-credential agent).
+	// SourceFn is deliberately not set — the source must derive automatically.
+	agentRegistry[syntheticFormat] = AgentRegistration{ImportFn: importFn}
+	t.Cleanup(func() { delete(agentRegistry, syntheticFormat) })
 
 	profile := AgentProfile{
 		Name:             "s19-synthetic",
@@ -73,8 +69,8 @@ func TestS19_AC1_SingleRegistrationAllThreePaths(t *testing.T) {
 
 	// ── Path 1: credential-source path ───────────────────────────────────────
 	//
-	// NewCredentialSourceForProfile must derive the source from
-	// preflightImportRegistry without requiring a credSourceRegistry entry.
+	// NewCredentialSourceForProfile must derive the source from agentRegistry
+	// without requiring a SourceFn entry.
 	src, err := NewCredentialSourceForProfile(profile)
 	if err != nil {
 		t.Fatalf("path-1 NewCredentialSourceForProfile: %v", err)
@@ -92,8 +88,8 @@ func TestS19_AC1_SingleRegistrationAllThreePaths(t *testing.T) {
 
 	// ── Path 2: preflight path ────────────────────────────────────────────────
 	//
-	// checkCredAt must resolve the import function from preflightImportRegistry
-	// and return PreflightOK for a valid, non-expired credential.
+	// checkCredAt must resolve the import function from agentRegistry and
+	// return PreflightOK for a valid, non-expired credential.
 	result := checkCredAt(profile, time.Now())
 	if result.Reason != PreflightOK {
 		t.Errorf("path-2: checkCredAt reason = %v (%s), want PreflightOK",

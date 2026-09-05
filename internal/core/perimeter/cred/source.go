@@ -31,25 +31,52 @@ type StaticCredentialSource struct {
 	store *DedicatedCredStore
 }
 
-// SourceTransform is a function that reads the credential file described by
-// profile and returns a [CredentialSource] for it. It is the unit of
-// registration in [credSourceRegistry].
+// SourceTransform is a function that reads the credential described by profile
+// and returns a [CredentialSource] for it. It is the type of
+// [AgentRegistration.SourceFn].
 type SourceTransform func(profile AgentProfile) (CredentialSource, error)
 
-// credSourceRegistry is the override registry for credential source transforms.
+// AgentRegistration is the unit of registration in [agentRegistry]. One entry
+// per [CredentialFormat] covers all three consumer paths: the credential-source
+// path ([NewCredentialSourceForProfile]), the preflight path ([CheckCred]), and
+// the CLI verify path ([ImportCred]).
 //
-// Production file-based formats are registered in [preflightImportRegistry];
-// [NewCredentialSourceForProfile] derives a [CredentialSource] from that
-// registry automatically (wrapping the imported store in a
-// [StaticCredentialSource]).  The two registries therefore cannot drift apart
-// for production formats — a single [preflightImportRegistry] entry covers
-// both the preflight path and the credential-source path.
+// Static-credential agents (e.g. cursor, which holds a static JWT) set only
+// ImportFn; [NewCredentialSourceForProfile] derives the source automatically by
+// wrapping the imported store in a [StaticCredentialSource].
 //
-// Register a format here only when its source transform cannot be expressed as
-// ImportFn → [NewStaticCredentialSource] (e.g. a test whose closure captures a
-// temp-dir path instead of resolving it via the profile).  Tests that register
-// here must clean up with t.Cleanup(func() { delete(credSourceRegistry, fmt) }).
-var credSourceRegistry = map[CredentialFormat]SourceTransform{}
+// Refresher-backed agents (e.g. codex, whose credential has a live OAuth
+// refresh grant) set both ImportFn and SourceFn.  ImportFn reads the on-disk
+// credential store (refresh token, expiry) so preflight and CLI verify work
+// correctly; SourceFn constructs the live [Refresher] that the broker uses.
+//
+// Adding a new file-based agent requires exactly one entry in [agentRegistry] —
+// no other file needs editing.  Tests that register a synthetic format must
+// clean up: t.Cleanup(func() { delete(agentRegistry, fmt) }).
+type AgentRegistration struct {
+	// ImportFn reads the on-disk credential and returns a [DedicatedCredStore].
+	// Required; used by [CheckCred] (preflight) and [ImportCred] (CLI verify).
+	// When SourceFn is nil it is also the fallback for the source path —
+	// [NewCredentialSourceForProfile] wraps its return value in a
+	// [StaticCredentialSource].
+	ImportFn func(AgentProfile) (*DedicatedCredStore, error)
+
+	// SourceFn returns the [CredentialSource] for this format.  Nil for
+	// static-credential agents (cursor-style); the source is then derived from
+	// ImportFn automatically.  Set for refresher-backed agents that need a live
+	// [Refresher] — i.e. those whose source cannot be expressed as
+	// ImportFn → [StaticCredentialSource].
+	SourceFn SourceTransform
+}
+
+// agentRegistry maps [CredentialFormat] values to their [AgentRegistration].
+// One entry per format covers the credential-source, preflight, and CLI verify
+// paths.  Tests that register a synthetic format must clean up:
+//
+//	t.Cleanup(func() { delete(agentRegistry, fmt) })
+var agentRegistry = map[CredentialFormat]AgentRegistration{
+	CredentialFormatCursorJWT: {ImportFn: ImportCursorCredentials},
+}
 
 // NewCredentialSourceForProfile returns the credential source appropriate for
 // profile.
@@ -57,27 +84,29 @@ var credSourceRegistry = map[CredentialFormat]SourceTransform{}
 // For OAuth/env-var agents (profile.CredentialFormat == [CredentialFormatNone])
 // it returns (nil, nil) — those agents push credentials via a [Refresher].
 //
-// For file-based agents it first checks the override [credSourceRegistry].  If
-// no override is registered it derives the source from [preflightImportRegistry]
-// by calling the import function and wrapping the result in a
-// [StaticCredentialSource].  An unregistered format (programming error: a
-// profile declared a CredentialFormat but no entry was added to
-// preflightImportRegistry) returns a descriptive error.
+// For file-based agents it looks up the format in [agentRegistry].  If the
+// registration supplies a SourceFn (refresher-backed agents) that function is
+// called; otherwise the source is derived by calling ImportFn and wrapping the
+// result in a [StaticCredentialSource].  An unregistered format (programming
+// error: a profile declared a CredentialFormat but no entry was added to
+// agentRegistry) returns a descriptive error.
 //
 // Adding a new file-based agent type requires a new [CredentialFormat] const in
-// profile.go and one entry in [preflightImportRegistry] only.  This function is
-// never edited for new agents.
+// profile.go and one entry in [agentRegistry] only.  This function is never
+// edited for new agents.
 func NewCredentialSourceForProfile(profile AgentProfile) (CredentialSource, error) {
 	if profile.CredentialFormat == CredentialFormatNone {
 		return nil, nil
 	}
-	// Check the override registry first — for test-time registrations whose
-	// closure captures a temp-dir path instead of resolving from the profile.
-	if fn, ok := credSourceRegistry[profile.CredentialFormat]; ok {
-		return fn(profile)
+	reg, ok := agentRegistry[profile.CredentialFormat]
+	if !ok {
+		return nil, fmt.Errorf("cred: NewCredentialSourceForProfile: no registration for format %q", profile.CredentialFormat)
 	}
-	// Derive source from the import registry: import the credential and wrap it.
-	store, err := ImportCred(profile)
+	if reg.SourceFn != nil {
+		return reg.SourceFn(profile)
+	}
+	// Derive source from ImportFn: import the credential and wrap it.
+	store, err := reg.ImportFn(profile)
 	if err != nil {
 		return nil, fmt.Errorf("cred: NewCredentialSourceForProfile: %w", err)
 	}
