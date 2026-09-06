@@ -10,15 +10,31 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
+// GuestCuratedPATHDirs is the authoritative list of PATH-entry directories
+// inside the guest that BuildUserMountManifest treats as curated when they
+// appear as a mount's GuestPath. A curated mount is staged off the guest PATH
+// at /run/nexus3/usermount/bin-<base> and its GuestPath is rebuilt as a
+// symlink farm on every boot by SeedGuestUserMounts.
+//
+// SeedGuestUserMounts uses this list for the PATH drop-in so both sites stay
+// in sync — do not hardcode the same paths elsewhere.
+var GuestCuratedPATHDirs = []string{
+	"/root/.local/bin",
+	"/root/.bun/bin",
+	"/root/.local/share/mise/shims",
+}
+
 // ResolvedUserMount is a mount resolved against a concrete host home directory.
 // It is serialized into usermounts.json for the guest seed.
 type ResolvedUserMount struct {
 	HostPath         string `json:"host_path"`          // absolute host path
 	GuestPath        string `json:"guest_path"`         // final in-guest path
 	Overlay          bool   `json:"overlay"`            // true → guest seed must overlay StagingGuestPath onto GuestPath
+	Curated          bool   `json:"curated"`            // true → GuestPath is a PATH-entry dir rebuilt as a symlink farm each boot
 	StagingGuestPath string `json:"staging_guest_path"` // live-mount landing point:
-	// /run/nexus3/usermount/<basename> for Overlay=true rows,
-	// == GuestPath for Overlay=false rows (direct mount, no staging needed).
+	// for Overlay=true rows: /run/nexus3/usermount/<basename>
+	// for Curated=true rows: /run/nexus3/usermount/bin-<basename> (off PATH)
+	// for plain rows:        == GuestPath (direct mount, no staging needed)
 }
 
 // UserMountManifest is the schema of usermounts.json written into the
@@ -71,13 +87,31 @@ func BuildUserMountManifest(hostHome string, mounts []string) UserMountManifest 
 			continue
 		}
 
-		// Derive overlay: /root/.claude and paths under it need an overlay so
-		// existing guest content (written by the agent) is not masked by the RO
-		// share. Match the exact dir as well as descendants.
-		overlay := guestPath == "/root/.claude" || strings.HasPrefix(guestPath, "/root/.claude/")
+		// Derive routing: curated PATH-entry dirs are staged off PATH and rebuilt
+		// as a symlink farm on every boot (Curated=true). /root/.claude and its
+		// descendants use overlay mode. All other paths mount directly.
+		// Curated and Overlay are mutually exclusive.
+		curated := false
+		for _, pd := range GuestCuratedPATHDirs {
+			if guestPath == pd {
+				curated = true
+				break
+			}
+		}
+
+		overlay := !curated && (guestPath == "/root/.claude" || strings.HasPrefix(guestPath, "/root/.claude/"))
 
 		stagingGuestPath := guestPath
-		if overlay {
+		switch {
+		case curated:
+			// Land the virtiofs share at /run/nexus3/usermount/bin-<basename>,
+			// deliberately off the guest PATH so the farm controls resolution.
+			base := filepath.Base(guestPath)
+			if base == "" || base == "." || base == "/" {
+				base = "um"
+			}
+			stagingGuestPath = "/run/nexus3/usermount/bin-" + base
+		case overlay:
 			// Land the virtiofs share at /run/nexus3/usermount/<basename>.
 			base := filepath.Base(guestPath)
 			if base == "" || base == "." || base == "/" {
@@ -90,6 +124,7 @@ func BuildUserMountManifest(hostHome string, mounts []string) UserMountManifest 
 			HostPath:         hostPath,
 			GuestPath:        guestPath,
 			Overlay:          overlay,
+			Curated:          curated,
 			StagingGuestPath: stagingGuestPath,
 		})
 	}

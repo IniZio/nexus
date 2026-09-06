@@ -138,15 +138,69 @@ func TestCheckRecipeShadows_EmptyRecipe(t *testing.T) {
 	}
 }
 
+// TestBuildUserMountManifest_CuratedPATHDir verifies S6-AC1:
+// a mount whose guest path is a GuestCuratedPATHDirs entry gets Curated=true,
+// a StagingGuestPath under /run/nexus3/usermount/bin-<base>, and Overlay=false.
+// A mount with a non-curated guest path is unchanged in every field.
+func TestBuildUserMountManifest_CuratedPATHDir(t *testing.T) {
+	home := t.TempDir()
+	localBin := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(localBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// /root/.local/bin is a GuestCuratedPATHDirs entry.
+	got := service.BuildUserMountManifest(home, []string{localBin + ":/root/.local/bin"})
+	if len(got.Mounts) != 1 {
+		t.Fatalf("expected 1 mount, got %d", len(got.Mounts))
+	}
+	m := got.Mounts[0]
+	if !m.Curated {
+		t.Error("expected Curated=true for /root/.local/bin")
+	}
+	if m.Overlay {
+		t.Error("Curated and Overlay must be mutually exclusive; Overlay=true")
+	}
+	const wantStaging = "/run/nexus3/usermount/bin-bin"
+	if m.StagingGuestPath != wantStaging {
+		t.Errorf("StagingGuestPath = %q, want %q", m.StagingGuestPath, wantStaging)
+	}
+	// GuestPath and HostPath must be unchanged.
+	if m.GuestPath != "/root/.local/bin" {
+		t.Errorf("GuestPath = %q, want /root/.local/bin", m.GuestPath)
+	}
+	if m.HostPath != localBin {
+		t.Errorf("HostPath = %q, want %q", m.HostPath, localBin)
+	}
+
+	// Non-curated row: /root/.config is not a PATH-entry dir.
+	configDir := filepath.Join(home, ".config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got2 := service.BuildUserMountManifest(home, []string{configDir + ":/root/.config"})
+	if len(got2.Mounts) != 1 {
+		t.Fatalf("expected 1 mount, got %d", len(got2.Mounts))
+	}
+	n := got2.Mounts[0]
+	if n.Curated {
+		t.Error("non-PATH dir should have Curated=false")
+	}
+	if n.StagingGuestPath != n.GuestPath {
+		t.Errorf("non-curated non-overlay row: StagingGuestPath %q != GuestPath %q", n.StagingGuestPath, n.GuestPath)
+	}
+}
+
 // TestBuildUserMountManifest_ExistingDir verifies that a mount whose host dir
-// exists is included and direct-mounted (overlay=false) when guest is not under /root/.claude/.
+// exists is included. Uses /root/.config (non-curated, non-overlay) to exercise
+// the direct-mount path (Overlay=false, StagingGuestPath==GuestPath).
 func TestBuildUserMountManifest_ExistingDir(t *testing.T) {
 	home := t.TempDir()
-	dir := filepath.Join(home, ".local", "bin")
+	// Use /root/.config: not a curated PATH dir, not under /root/.claude.
+	dir := filepath.Join(home, ".config")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got := service.BuildUserMountManifest(home, []string{dir + ":/root/.local/bin"})
+	got := service.BuildUserMountManifest(home, []string{dir + ":/root/.config"})
 	if len(got.Mounts) != 1 {
 		t.Fatalf("expected 1 mount, got %d", len(got.Mounts))
 	}
@@ -154,14 +208,17 @@ func TestBuildUserMountManifest_ExistingDir(t *testing.T) {
 	if m.HostPath != dir {
 		t.Errorf("HostPath = %q, want %q", m.HostPath, dir)
 	}
-	if m.GuestPath != "/root/.local/bin" {
-		t.Errorf("GuestPath = %q, want /root/.local/bin", m.GuestPath)
+	if m.GuestPath != "/root/.config" {
+		t.Errorf("GuestPath = %q, want /root/.config", m.GuestPath)
 	}
 	if m.Overlay {
 		t.Errorf("expected Overlay=false for non-.claude path")
 	}
+	if m.Curated {
+		t.Errorf("expected Curated=false for non-PATH-entry path")
+	}
 	if m.StagingGuestPath != m.GuestPath {
-		t.Errorf("non-overlay row: StagingGuestPath %q != GuestPath %q", m.StagingGuestPath, m.GuestPath)
+		t.Errorf("non-overlay non-curated row: StagingGuestPath %q != GuestPath %q", m.StagingGuestPath, m.GuestPath)
 	}
 }
 
@@ -198,6 +255,7 @@ func TestBuildUserMountManifest_OverlayForClaude(t *testing.T) {
 }
 
 // TestBuildUserMountManifest_TildeExpansion verifies that ~ is expanded against hostHome.
+// Uses /root/.local/bin (a curated dir) to also confirm Curated=true is set after expansion.
 func TestBuildUserMountManifest_TildeExpansion(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".local", "bin")
@@ -210,6 +268,9 @@ func TestBuildUserMountManifest_TildeExpansion(t *testing.T) {
 	}
 	if got.Mounts[0].HostPath != dir {
 		t.Errorf("HostPath = %q, want %q", got.Mounts[0].HostPath, dir)
+	}
+	if !got.Mounts[0].Curated {
+		t.Error("expected Curated=true for /root/.local/bin after tilde expansion")
 	}
 }
 
@@ -236,7 +297,8 @@ func TestWriteUserMountManifest_RoundTrip(t *testing.T) {
 				HostPath:         "$HOME/.local/bin",
 				GuestPath:        "/root/.local/bin",
 				Overlay:          false,
-				StagingGuestPath: "/root/.local/bin",
+				Curated:          true,
+				StagingGuestPath: "/run/nexus3/usermount/bin-bin",
 			},
 			{
 				HostPath:         "$HOME/.claude/plugins",

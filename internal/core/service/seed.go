@@ -1068,6 +1068,19 @@ func SeedGuestBypassConsent(ctx context.Context, id domain.SandboxID, execer Gue
 // SeedGuestUserMounts to append /root/.local/bin to PATH for every login shell.
 const GuestUserMountsProfilePath = "/etc/profile.d/nexus3-usermounts.sh"
 
+// GuestNativePATH is the PATH searched when deciding whether to shadow a host
+// tool: standard Debian/Alpine guest dirs, excluding the curated farm dirs.
+// A tool that resolves here is "shadowed" and excluded from the farm so the
+// guest-native binary wins by construction rather than by PATH ordering.
+// Exported so tests can inject a fixture-controlled PATH via strings.ReplaceAll.
+const GuestNativePATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+// GuestUserMountsFarmReport is the per-boot report written inside the guest
+// by SeedGuestUserMounts that names every entry in each curated mount as
+// "linked", "shadowed", or "dangling". Exported so tests can redirect it to a
+// temp path via strings.ReplaceAll on the rendered script.
+const GuestUserMountsFarmReport = "/run/nexus3/hostbin.report"
+
 // shSingleQuote wraps s in POSIX single quotes, escaping any embedded single
 // quotes so the result is safe to embed in a shell script.
 func shSingleQuote(s string) string {
@@ -1078,13 +1091,18 @@ func shSingleQuote(s string) string {
 //
 //  1. Creates a home-dir symlink so operator absolute paths (e.g.
 //     $HOME/…) resolve inside the guest (where the real home is /root).
-//  2. Writes /etc/profile.d/nexus3-usermounts.sh to APPEND /root/.local/bin
-//     to PATH (appended, not prepended — the guest's own claude binary must
-//     win over the host's ~/.local/bin/claude symlink whose target is absent).
+//  2. Writes /etc/profile.d/nexus3-usermounts.sh to APPEND the curated PATH
+//     dirs to PATH (appended, not prepended — the guest's own claude binary
+//     must win over host tools).
 //  3. For each overlay=true mount row, mounts a writable overlayfs (tmpfs
 //     upper+work) over the RO virtiofs staging path onto the final guest_path.
+//  4. For each curated=true mount row, rebuilds GuestPath as a symlink farm
+//     pointing into StagingGuestPath. Runs unconditionally on every boot (no
+//     write-once guard). Excludes names that resolve on the guest-native PATH
+//     or that do not resolve inside the guest. Writes GuestUserMountsFarmReport
+//     naming every entry as linked, shadowed, or dangling.
 //
-// Non-overlay rows (overlay=false) are skipped: the virtiofs tag is mounted
+// Non-overlay, non-curated rows are skipped: the virtiofs tag is mounted
 // directly at guest_path by the hypervisor and needs no guest action.
 //
 // A failed user-mount is never fatal: callers log a warning and continue.
@@ -1094,6 +1112,22 @@ func SeedGuestUserMounts(ctx context.Context, id domain.SandboxID, manifest User
 		return nil
 	}
 
+	script := buildUserMountScript(manifest)
+	code, err := execer(ctx, id, []string{"/bin/sh", "-c", script}, nil)
+	if err != nil {
+		return fmt.Errorf("usermount seed: %w", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("usermount seed script exited %d", code)
+	}
+	return nil
+}
+
+// buildUserMountScript generates the /bin/sh script text executed by
+// SeedGuestUserMounts. Extracted as a separate function so tests can render
+// the script, substitute test-local paths via strings.ReplaceAll, and run it
+// with exec.Command("/bin/sh", ...) against a fixture tree without a live guest.
+func buildUserMountScript(manifest UserMountManifest) string {
 	var b strings.Builder
 	b.WriteString("set -eu\n\n")
 
@@ -1143,18 +1177,18 @@ func SeedGuestUserMounts(ctx context.Context, id domain.SandboxID, manifest User
 
 	// Step 2: PATH drop-in. Quoted heredoc prevents $PATH from expanding during
 	// the write; the resulting file expands $PATH at shell source time.
+	// Uses GuestCuratedPATHDirs as the single source of truth for which dirs to
+	// append — do not duplicate this list elsewhere.
 	qProfile := shSingleQuote(GuestUserMountsProfilePath)
 	fmt.Fprintf(&b, "# 2. PATH drop-in\n")
 	fmt.Fprintf(&b, "if [ ! -f %s ]; then\n", qProfile)
 	fmt.Fprintf(&b, "cat > %s << 'NEXUS3UMEOF'\n", qProfile)
 	fmt.Fprintf(&b, "# nexus3: user-mount PATH for login shells.\n")
 	fmt.Fprintf(&b, "# Written by SeedGuestUserMounts; do not edit.\n")
-	// Append the operator's tool bin dirs. /root/.local/bin holds self-contained
-	// binaries; /root/.bun/bin (bun global) and /root/.local/share/mise/shims
-	// (mise-managed uv/node/etc.) hold shims/wrappers that MCP servers invoke by
-	// bare command name (e.g. `uv run …`, `agent-browser mcp`). Appended, never
-	// prepended, so guest binaries still win. Non-existent entries are harmless.
-	fmt.Fprintf(&b, "export PATH=\"$PATH:/root/.local/bin:/root/.bun/bin:/root/.local/share/mise/shims\"\n")
+	// Appended, never prepended, so guest-native binaries still win.
+	// Non-existent entries are harmless (shell skips missing dirs in PATH).
+	pathSuffix := strings.Join(GuestCuratedPATHDirs, ":")
+	fmt.Fprintf(&b, "export PATH=\"$PATH:%s\"\n", pathSuffix)
 	fmt.Fprintf(&b, "NEXUS3UMEOF\n")
 	fmt.Fprintf(&b, "fi\n\n")
 
@@ -1187,12 +1221,54 @@ func SeedGuestUserMounts(ctx context.Context, id domain.SandboxID, manifest User
 		fmt.Fprintf(&b, "fi\n\n")
 	}
 
-	code, err := execer(ctx, id, []string{"/bin/sh", "-c", b.String()}, nil)
-	if err != nil {
-		return fmt.Errorf("usermount seed: %w", err)
+	// Step 4: curated symlink farm rebuild for curated=true rows.
+	// Runs unconditionally on every boot (no write-once guard) so the farm stays
+	// current without requiring a reboot when the host tool set changes.
+	// Exclusions (both mechanical, no per-name judgement):
+	//   shadowed — name resolves on the guest-native PATH (GuestNativePATH)
+	//   dangling  — entry does not resolve inside the guest (broken host symlink)
+	// All other entries are linked: ln -sf <staging>/<name> <guest>/<name>.
+	// A symlink resolves by name through virtiofs at open() time, so an atomic
+	// rename on the host (cp t.new && mv -f) is immediately visible in a running
+	// guest with no reboot — the property hard links cannot provide.
+	reportInit := false
+	for _, m := range manifest.Mounts {
+		if !m.Curated {
+			continue
+		}
+		if !reportInit {
+			// Truncate the report once before the first curated loop; subsequent
+			// curated rows append.
+			qReport := shSingleQuote(GuestUserMountsFarmReport)
+			fmt.Fprintf(&b, "# 4. Curated farm: truncate report\n")
+			fmt.Fprintf(&b, ": > %s\n\n", qReport)
+			reportInit = true
+		}
+		qStaging := shSingleQuote(m.StagingGuestPath)
+		qGuest := shSingleQuote(m.GuestPath)
+		qReport := shSingleQuote(GuestUserMountsFarmReport)
+		fmt.Fprintf(&b, "# 4. Curated symlink farm: %s\n", m.GuestPath)
+		fmt.Fprintf(&b, "if [ -d %s ]; then\n", qStaging)
+		// Unconditional clear + recreate: no if-[ ! -f ] guard here.
+		fmt.Fprintf(&b, "  rm -rf %s && mkdir -p %s\n", qGuest, qGuest)
+		fmt.Fprintf(&b, "  for _e in %s/*; do\n", qStaging)
+		// Handle empty staging dir: glob expands to literal pattern which doesn't
+		// exist as a file, so both -e and -L are false → continue.
+		fmt.Fprintf(&b, "    [ -e \"$_e\" ] || [ -L \"$_e\" ] || continue\n")
+		fmt.Fprintf(&b, "    _n=$(basename \"$_e\")\n")
+		// Shadowed: name resolves on guest-native PATH without the curated farm.
+		fmt.Fprintf(&b, "    if PATH='%s' command -v \"$_n\" >/dev/null 2>&1; then\n", GuestNativePATH)
+		fmt.Fprintf(&b, "      printf 'shadowed %%s\\n' \"$_n\" >> %s\n", qReport)
+		// Dangling: staging entry is a symlink whose target is absent in the guest.
+		fmt.Fprintf(&b, "    elif [ ! -e \"$_e\" ]; then\n")
+		fmt.Fprintf(&b, "      printf 'dangling %%s\\n' \"$_n\" >> %s\n", qReport)
+		fmt.Fprintf(&b, "    else\n")
+		fmt.Fprintf(&b, "      ln -sf \"$_e\" %s/\"$_n\"\n", qGuest)
+		fmt.Fprintf(&b, "      printf 'linked %%s\\n' \"$_n\" >> %s\n", qReport)
+		fmt.Fprintf(&b, "    fi\n")
+		fmt.Fprintf(&b, "  done\n")
+		fmt.Fprintf(&b, "fi\n\n")
 	}
-	if code != 0 {
-		return fmt.Errorf("usermount seed script exited %d", code)
-	}
-	return nil
+
+	return b.String()
 }

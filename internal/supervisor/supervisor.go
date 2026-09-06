@@ -1534,7 +1534,15 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 				"sandbox", id, "err", umErr,
 				"action", "guest will not see operator tool dirs or home symlink")
 		} else {
-			slog.Info("supervisor.usermount_seeded", "sandbox", id, "count", len(in.UserMounts.Mounts))
+			curatedCount := 0
+			for _, m := range in.UserMounts.Mounts {
+				if m.Curated {
+					curatedCount++
+				}
+			}
+			slog.Info("supervisor.usermount_seeded", "sandbox", id,
+				"count", len(in.UserMounts.Mounts),
+				"curated", curatedCount)
 		}
 	}
 
