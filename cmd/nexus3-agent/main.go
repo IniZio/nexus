@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -18,7 +17,6 @@ import (
 	"github.com/IniZio/nexus3/internal/core/agent"
 	"github.com/IniZio/nexus3/internal/core/agent/wire"
 	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
 // agentBuildTag is stamped at image-build time via:
@@ -301,13 +299,11 @@ func main() {
 			CacheDisks: cacheDiskMounts,
 			TargetArch: builderTargetArch,
 		}
-		if builderToolRecipeJSON != "" {
-			var recipe cred.ToolRecipe
-			if err := json.Unmarshal([]byte(builderToolRecipeJSON), &recipe); err != nil {
-				consoleFatal(con, isPid1, "nexus3-agent: builder role: parse --tool-recipe: %v\n", err)
-			}
-			opts.ToolRecipe = recipe
+		recipe, err := parseBuilderToolRecipe(builderToolRecipeJSON)
+		if err != nil {
+			consoleFatal(con, isPid1, "nexus3-agent: builder role: %v\n", err)
 		}
+		opts.ToolRecipe = recipe
 		if err := agent.RunBuilderRole(ctx, opts); err != nil {
 			consoleFatal(con, isPid1, "nexus3-agent: builder role: %v\n", err)
 		}
