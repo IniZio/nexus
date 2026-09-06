@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/agent"
 	"github.com/IniZio/nexus3/internal/core/agent/wire"
 	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
 // agentBuildTag is stamped at image-build time via:
@@ -120,6 +122,8 @@ func main() {
 	var isBuilderRole bool
 	var cacheDiskMounts []agent.CacheDiskMount
 	var scratchDev string // set from --scratch-disk=<dev> on the kernel cmdline
+	var builderToolRecipeJSON string // set from --tool-recipe=<json>
+	var builderTargetArch string     // set from --target-arch=<arch>
 	{
 		for _, arg := range os.Args[1:] {
 			switch {
@@ -149,6 +153,10 @@ func main() {
 				} else {
 					consoleLog(con, "nexus3-agent: ignoring malformed --cache-disk arg: %q\n", arg)
 				}
+			case strings.HasPrefix(arg, "--tool-recipe="):
+				builderToolRecipeJSON = strings.TrimPrefix(arg, "--tool-recipe=")
+			case strings.HasPrefix(arg, "--target-arch="):
+				builderTargetArch = strings.TrimPrefix(arg, "--target-arch=")
 			case strings.HasPrefix(arg, "--sandbox-handle="):
 				sandboxHandle = strings.TrimPrefix(arg, "--sandbox-handle=")
 			case strings.HasPrefix(arg, "--workspace-mount="):
@@ -289,7 +297,17 @@ func main() {
 	// services are handled by PID-1 (see comment above).
 	if isBuilderRole {
 		consoleLog(con, "nexus3-agent: builder role starting (cache disks: %d)\n", len(cacheDiskMounts))
-		opts := agent.BuilderRoleOptions{CacheDisks: cacheDiskMounts}
+		opts := agent.BuilderRoleOptions{
+			CacheDisks: cacheDiskMounts,
+			TargetArch: builderTargetArch,
+		}
+		if builderToolRecipeJSON != "" {
+			var recipe cred.ToolRecipe
+			if err := json.Unmarshal([]byte(builderToolRecipeJSON), &recipe); err != nil {
+				consoleFatal(con, isPid1, "nexus3-agent: builder role: parse --tool-recipe: %v\n", err)
+			}
+			opts.ToolRecipe = recipe
+		}
 		if err := agent.RunBuilderRole(ctx, opts); err != nil {
 			consoleFatal(con, isPid1, "nexus3-agent: builder role: %v\n", err)
 		}

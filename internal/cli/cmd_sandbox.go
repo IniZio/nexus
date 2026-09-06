@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -1042,6 +1043,11 @@ func scratchDiskCmdlineArg(idx int) string {
 	return fmt.Sprintf(" --scratch-disk=%s", dev)
 }
 
+// goArchForBuild returns the host GOARCH string for use with
+// [builder.GoArchToVendorArch]. Extracted into a function so it can be
+// overridden in tests without touching runtime.GOARCH directly.
+var goArchForBuild = func() string { return runtime.GOARCH }
+
 // resolveAgentPosture derives the three create-time settings that --agent
 // controls: the agent profile recorded on the sandbox, the egress allowlist
 // frozen onto its Envelope, and whether egress is open.
@@ -1591,6 +1597,14 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			}
 			defer builder.ReleaseCacheDiskLeases(cacheDiskLeases)
 
+			// Resolve the agent profile here (pure: uses only f.agentName already
+			// finalised by flag parsing) so the ToolRecipe and TargetArch can be
+			// stamped on the BuilderVMSpec and forwarded to the builder VM.
+			// resolveAgentPosture is cheap and idempotent; calling it a second time
+			// at line ~1940 is correct — the result is identical.
+			buildProfile, _, _ := resolveAgentPosture(f)
+			buildTargetArch := builder.GoArchToVendorArch(goArchForBuild())
+
 			// Assemble the BuilderVMSpec first so that sizing helpers
 			// (VCPUs/MemMiB) can derive the production defaults before the
 			// CHDriver config is constructed.
@@ -1600,6 +1614,8 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				ArtifactDiskPath: artifactDiskPath,
 				CacheDisks:       cacheDisks,
 				MemoryMiB:        uint16(f.builderMemoryMiB),
+				ToolRecipe:       buildProfile.Recipe(),
+				TargetArch:       buildTargetArch,
 			}
 
 			// Sizing is derived from the spec via exported helpers so

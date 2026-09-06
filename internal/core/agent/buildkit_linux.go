@@ -230,6 +230,8 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 		AgentPath:          opts.AgentPath,
 		AgentInstallPath:   "/sbin/nexus3-agent",
 		WorkspaceDir:       opts.ContextDir, // vdb mount point; empty means no user context files
+		ToolRecipe:         opts.ToolRecipe,
+		TargetArch:         opts.TargetArch,
 	}, rootfsDir); err != nil {
 		// Prototype finding (2026-08): the async log-forward goroutine is cut off
 		// at shutdown, so the buildkitd failure reason never reaches the host.
