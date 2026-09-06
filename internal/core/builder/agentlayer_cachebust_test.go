@@ -62,7 +62,7 @@ func TestAgentLayerCacheKeyIsUniquePerSolve(t *testing.T) {
 		}
 		seenNames[name] = i
 
-		df := string(synthesizeDockerfile(containerfile, name, installPath))
+		df := string(synthesizeDockerfile(containerfile, nil, name, installPath))
 
 		if !strings.HasPrefix(df, string(containerfile)) {
 			t.Fatalf("build %d: synthesized Dockerfile does not start with the user's Containerfile:\n%s", i, df)
@@ -104,7 +104,7 @@ func TestStagedAgentFileIsTheCopySource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stageAgentContext: %v", err)
 	}
-	df := string(synthesizeDockerfile([]byte("FROM scratch\n"), agentFile, "/sbin/nexus3-agent"))
+	df := string(synthesizeDockerfile([]byte("FROM scratch\n"), nil, agentFile, "/sbin/nexus3-agent"))
 	copyLine := "COPY --chmod=0755 --from=nexus3agent " + agentFile + " /sbin/nexus3-agent"
 	if !strings.Contains(df, copyLine) {
 		t.Fatalf("COPY line does not reference the staged file.\nwant: %s\ngot:\n%s", copyLine, df)

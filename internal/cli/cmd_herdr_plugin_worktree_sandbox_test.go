@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/service"
 )
@@ -763,6 +764,7 @@ func TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksReachResizableDiskIndices
 		"/workspace/proj",
 		true, numNamedDisks+1, // hasScratchDisk, scratchDiskIndex (after workspace)
 		nil, "", false, nil,
+		cred.AgentProfile{}, // agentProfile — zero value treated as claude-code
 	)
 
 	wantIndices := map[int]bool{0: true, 1: true, 2: true, numNamedDisks: true} // agentcfg, gocache, gopath, workspace

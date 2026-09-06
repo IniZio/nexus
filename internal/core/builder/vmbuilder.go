@@ -2,6 +2,7 @@ package builder
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
 	"github.com/IniZio/nexus3/internal/core/perimeter/netstack"
 )
@@ -291,7 +293,7 @@ func BuildInVM(
 	// (internal/core/agent/builder_role_linux.go) mounts /dev/vdb, starts
 	// buildkitd, solves the Containerfile, writes the rootfs ext4 to /dev/vdc,
 	// then calls syscall.Sync(). The exec blocks until the role completes.
-	buildErr := guestBuild(ctx, execFn, spec.CacheDisks)
+	buildErr := guestBuild(ctx, execFn, spec.CacheDisks, spec.ToolRecipe, spec.TargetArch)
 
 	// ── 3. Sync + Stop — always, even when build failed ───────────────────────
 	tearErr := lc.SyncAndStop()
@@ -379,7 +381,13 @@ func waitForBuilderAgent(ctx context.Context, drv driver.GuestDialer, id domain.
 // appended so that RunBuilderRole mounts them before starting buildkitd.
 // Device names are /dev/vdd, /dev/vde, ... (cache disks occupy ExtraDisks[2+]
 // = the block device slots after vdb/context and vdc/artifact).
-func guestBuild(ctx context.Context, execFn GuestExecFn, cacheDisks []CacheDiskSpec) error {
+//
+// When recipe has non-empty Packages, it is JSON-serialised and appended as
+// "--tool-recipe=<json>" so that RunBuilderRole forwards it to the
+// SolveRequest's ToolRecipe field inside the VM. "--target-arch=<arch>" is
+// appended alongside it. Both args are omitted when recipe.Packages is empty
+// so that zero-recipe builds produce no spurious cmdline token.
+func guestBuild(ctx context.Context, execFn GuestExecFn, cacheDisks []CacheDiskSpec, recipe cred.ToolRecipe, targetArch string) error {
 	var stderr sbuilder
 	argv := []string{agentInstallPath, "--builder-role"}
 	for i, cd := range cacheDisks {
@@ -387,6 +395,16 @@ func guestBuild(ctx context.Context, execFn GuestExecFn, cacheDisks []CacheDiskS
 		// 'd' + 0 = 'd' (vdd), 'd' + 1 = 'e' (vde), etc.
 		dev := fmt.Sprintf("/dev/vd%c", 'd'+i)
 		argv = append(argv, fmt.Sprintf("--cache-disk=%s:%s", dev, cd.MountPath))
+	}
+	if len(recipe.Packages) > 0 {
+		recipeJSON, err := json.Marshal(recipe)
+		if err != nil {
+			return fmt.Errorf("guestBuild: marshal tool recipe: %w", err)
+		}
+		argv = append(argv,
+			"--tool-recipe="+string(recipeJSON),
+			"--target-arch="+targetArch,
+		)
 	}
 	exitCode, err := execFn(ctx, argv, &stderr)
 	if err != nil {

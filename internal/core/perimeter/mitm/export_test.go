@@ -13,3 +13,8 @@ func RefMatchesGlobForTest(pattern, ref string) bool {
 func LookupPolicyForTest(pp PathPolicies, placeholder, host string) (HostPolicy, bool) {
 	return lookupPolicy(pp, placeholder, host)
 }
+
+// MatchesDotSuffixForTest exposes matchesDotSuffix for white-box unit tests.
+func MatchesDotSuffixForTest(host string, suffixes []string) bool {
+	return matchesDotSuffix(host, suffixes)
+}

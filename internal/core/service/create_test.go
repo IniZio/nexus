@@ -605,10 +605,11 @@ func TestCreateAndBoot_GitHubSecretWithRepo_Allowed(t *testing.T) {
 // AllowedRepo requirement (ErrUnboundGitHubSecret) shared with all callers.
 //
 // Table:
-//   agent + GitHub + AllowedRepo  → ACCEPTED  (D-SHL-05)
-//   agent + GitHub + no AllowedRepo → REFUSED  (ErrUnboundGitHubSecret, D-PD-36)
-//   non-agent + GitHub + no AllowedRepo → REFUSED (unchanged)
-//   agent + mixed-host secret     → REFUSED   (ErrMixedGitHubSecret, unchanged)
+//
+//	agent + GitHub + AllowedRepo  → ACCEPTED  (D-SHL-05)
+//	agent + GitHub + no AllowedRepo → REFUSED  (ErrUnboundGitHubSecret, D-PD-36)
+//	non-agent + GitHub + no AllowedRepo → REFUSED (unchanged)
+//	agent + mixed-host secret     → REFUSED   (ErrMixedGitHubSecret, unchanged)
 //
 // Mutation evidence for each case is documented inline; run with -v to see names.
 func TestCreateAndBoot_DShl05_AgentGitHubGuards(t *testing.T) {
@@ -641,17 +642,17 @@ func TestCreateAndBoot_DShl05_AgentGitHubGuards(t *testing.T) {
 			wantErr:    ErrUnboundGitHubSecret,
 		},
 		{
-			name:      "agent_profile+GitHub+repo=accepted",
-			agentName: true,
-			githubBind: true,
+			name:        "agent_profile+GitHub+repo=accepted",
+			agentName:   true,
+			githubBind:  true,
 			allowedRepo: "owner/repo",
-			wantErr:   nil,
+			wantErr:     nil,
 		},
 		{
-			name:      "agent_profile+GitHub+no_repo=refused",
-			agentName: true,
+			name:       "agent_profile+GitHub+no_repo=refused",
+			agentName:  true,
 			githubBind: true,
-			wantErr:   ErrUnboundGitHubSecret,
+			wantErr:    ErrUnboundGitHubSecret,
 		},
 		{
 			name:      "agent_seed+mixed_host=refused",
@@ -713,6 +714,50 @@ func TestCreateAndBoot_DShl05_AgentGitHubGuards(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestCreateAndBoot_UseAgentSeed_APIKeyOnlyProfileNotOverridden is the
+// mutation guard for a real bug found and fixed while wiring cursor's profile:
+// CreateAndBoot resolved "no profile was explicitly given" by checking
+// agentProfile.PlaceholderEnvVar == "", but that field is legitimately empty
+// for ANY agent whose only credential path is a direct API key (cursor: no
+// OAuth-subscription placeholder to broker — see cred.CursorAgentProfile's
+// doc comment). That check silently swapped such a profile back to
+// cred.ClaudeCodeProfile whenever UseAgentSeed was true, so a caller passing
+// an explicit API-key-only profile would have it discarded without error.
+//
+// The fix checks agentProfile.Name == "" instead — Name is the documented
+// zero-value sentinel for "no profile given" (see cred.AgentProfile.Name).
+//
+// Mutation: revert the check to `agentProfile.PlaceholderEnvVar == ""` -> this
+// test goes RED (sb.AgentName == "claude-code" instead of "cursor").
+func TestCreateAndBoot_UseAgentSeed_APIKeyOnlyProfileNotOverridden(t *testing.T) {
+	ctx := context.Background()
+	cacheRoot := t.TempDir()
+	cache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	img := putFakeImage(t, ctx, cache)
+	fd := fake.New()
+	svc := newTestSvc(t, fd)
+
+	sb, err := CreateAndBoot(ctx, svc, cache, fakeDriverFactory(fd), noopProbe,
+		"proj", "cursor-box",
+		CreateAndBootOptions{
+			Image:        ImageSpec{Digest: string(img.Digest)},
+			CacheRoot:    cacheRoot,
+			UseAgentSeed: true,
+			AgentProfile: cred.CursorAgentProfile, // PlaceholderEnvVar == "" by design
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: %v", err)
+	}
+	if sb.AgentName != cred.CursorAgentProfileName {
+		t.Errorf("sb.AgentName = %q, want %q — an explicit API-key-only profile must not be silently "+
+			"swapped for Claude just because PlaceholderEnvVar is empty", sb.AgentName, cred.CursorAgentProfileName)
 	}
 }
 

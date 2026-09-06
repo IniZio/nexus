@@ -324,13 +324,24 @@ func chooseSeedRoute(sb domain.Sandbox) seedRoute {
 // seedRouteInputs bundles the already-constructed seeders and clients that
 // runSeedRoute needs to dispatch to the right seeder without re-deriving them.
 type seedRouteInputs struct {
-	SB          domain.Sandbox
-	Cert        *x509.Certificate
-	CASeeder    service.GuestSeeder
-	AgentSeeder service.GuestSeeder
-	Broker      *cred.Broker
-	Refreshers  []*cred.Refresher
-	Svc         PerimeterCAGetter
+	SB              domain.Sandbox
+	Cert            *x509.Certificate
+	CASeeder        service.GuestSeeder
+	AgentSeeder     service.GuestSeeder
+	// CredFileSeeder delivers the file-based credential payload (e.g. Cursor's
+	// ~/.config/cursor/auth.json) to a profile-specific path inside the guest.
+	// It must be bound to service.GuestCredFilePath(profile) via
+	// service.NewGuestFileSeeder. Nil is safe: SeedGuestCredFile is a no-op
+	// when seeder is nil or the profile has no CredentialFile.
+	CredFileSeeder  service.GuestSeeder
+	Broker          *cred.Broker
+	Refreshers      []*cred.Refresher
+	Svc             PerimeterCAGetter
+	// StaticCredSrc is the credential source for file-based JWT agents (e.g.
+	// cursor-agent). After seeding registers the placeholder, runSeedRoute calls
+	// StaticCredSrc.Token() and broker.SetRealToken to wire the real token.
+	// Nil for OAuth agents (Claude), which push via Refresher.ForcePush instead.
+	StaticCredSrc   cred.CredentialSource
 }
 
 // Package-level function vars so tests can spy which seeder runSeedRoute
@@ -354,13 +365,102 @@ func runSeedRoute(ctx context.Context, route seedRoute, in seedRouteInputs) (ok,
 			"reason", "no MITM proxy for this sandbox: open egress, no secrets, no agent")
 		return false, false
 	case routeCombined:
-		return seedAgentAndHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers, in.Svc)
+		ok, guestEverResponded = seedAgentAndHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers, in.Svc, resolveSeedProfile(in.SB), in.CredFileSeeder)
 	case routeHumanSecrets:
-		return seedHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Svc)
+		ok, guestEverResponded = seedHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Svc)
 	default: // routeAgent
 		agentSandbox := in.SB.AgentName != ""
-		return seedLoopFn(ctx, in.SB.ID, &in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers,
-			maxSeedAttempts, 2*time.Second, in.Svc, agentSandbox)
+		ok, guestEverResponded = seedLoopFn(ctx, in.SB.ID, &in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers,
+			maxSeedAttempts, 2*time.Second, in.Svc, agentSandbox, resolveSeedProfile(in.SB), in.CredFileSeeder)
+	}
+	// For file-based credential agents (e.g. cursor-agent), push the real token
+	// after seeding registers the placeholder. Refreshers do this automatically
+	// via ForcePush for OAuth agents; static JWT agents need an explicit push.
+	if ok && in.StaticCredSrc != nil {
+		profile := resolveSeedProfile(in.SB)
+		if tok, _, tokErr := in.StaticCredSrc.Token(ctx); tokErr != nil {
+			slog.Warn("supervisor.static_cred_token_failed",
+				"host", profile.CredentialedHost, "err", tokErr)
+		} else if setErr := in.Broker.SetRealToken(in.SB.ID, profile.CredentialedHost, tok); setErr != nil {
+			slog.Warn("supervisor.static_cred_set_token_failed",
+				"host", profile.CredentialedHost, "err", setErr)
+		} else {
+			slog.Info("supervisor.real_token_pushed",
+				"host", profile.CredentialedHost, "sandbox", in.SB.ID)
+		}
+	}
+	return
+}
+
+// resolveSeedProfile resolves the [cred.AgentProfile] the re-seed loop must
+// use for sb, from the agent name persisted on the sandbox at creation
+// (domain.Sandbox.AgentName). Falling back to [cred.ClaudeCodeProfile] for an
+// empty or unregistered name matches the pre-existing behaviour for agent
+// sandboxes created before per-agent profiles existed; the profile is only
+// actually read by the caller when the route seeds agent credentials at all
+// (seedAgentCreds / routeCombined), so this fallback is inert for sandboxes
+// with no attached agent.
+func resolveSeedProfile(sb domain.Sandbox) cred.AgentProfile {
+	if profile, ok := cred.ProfileByName(sb.AgentName); ok {
+		return profile
+	}
+	return cred.ClaudeCodeProfile
+}
+
+// buildSeedEgressOpts resolves the agent profile for sb, constructs the static
+// credential source for file-backed agents (e.g. cursor-agent) via
+// [cred.NewCredentialSourceForProfile], and wires both into the returned
+// [service.CreateAndBootOptions] via [service.WireAgentEgress].
+//
+// For OAuth-backed profiles ([cred.ClaudeCodeProfile]) the returned
+// AgentCredSource is nil; those agents push credentials via
+// [cred.Refresher].ForcePush instead.
+//
+// The broker is threaded through WireAgentEgress. The seeder parameter is nil
+// because the supervisor re-seeds an existing sandbox and does not use
+// CreateAndBootOptions' Seeder field; only AgentCredSource and AgentProfile
+// are consumed by the supervisor's seedRouteInputs.
+func buildSeedEgressOpts(sb domain.Sandbox, broker *cred.Broker) (service.CreateAndBootOptions, error) {
+	sbProfile := resolveSeedProfile(sb)
+	src, err := cred.NewCredentialSourceForProfile(sbProfile)
+	if err != nil {
+		return service.CreateAndBootOptions{}, err
+	}
+	var opts service.CreateAndBootOptions
+	service.WireAgentEgress(&opts, sbProfile, broker, nil, src)
+	return opts, nil
+}
+
+// buildSeedRouteInputs assembles the [seedRouteInputs] from the already-resolved
+// components. It is a pure constructor: no side effects, no RPCs. Extracted from
+// [RunDetached] so that the StaticCredSrc assignment site — specifically the
+// field assignment "StaticCredSrc: egressWire.AgentCredSource" — can be covered
+// by a unit test (TestBuildSeedRouteInputs_WiresStaticCredSrc) without booting a VM.
+func buildSeedRouteInputs(
+	sb domain.Sandbox,
+	cert *x509.Certificate,
+	caSeeder service.GuestSeeder,
+	agentSeeder service.GuestSeeder,
+	agentClient *agent.Client,
+	broker *cred.Broker,
+	refreshers []*cred.Refresher,
+	egressWire service.CreateAndBootOptions,
+	svc PerimeterCAGetter,
+) seedRouteInputs {
+	return seedRouteInputs{
+		SB:          sb,
+		Cert:        cert,
+		CASeeder:    caSeeder,
+		AgentSeeder: agentSeeder,
+		// CredFileSeeder is bound to the profile-specific path so
+		// SeedGuestCredFile writes cursor/auth.json (or equivalent)
+		// under GuestCredDirPath, where the redirected CredDirEnvVar
+		// points. Claude Code (CredentialFile == "") ignores this seeder.
+		CredFileSeeder: service.NewGuestFileSeeder(agentClient, service.GuestCredFilePath(resolveSeedProfile(sb))),
+		Broker:         broker,
+		Refreshers:     refreshers,
+		StaticCredSrc:  egressWire.AgentCredSource,
+		Svc:            svc,
 	}
 }
 
@@ -470,6 +570,23 @@ func RunDetached(cfg Config) error {
 			if setErr := svc.SetCacheDiskSlot(ctx, preSB.ID, slots); setErr != nil {
 				return fmt.Errorf("supervisor: persist cache-disk slot: %w", setErr)
 			}
+		}
+	}
+
+	// Wire the static credential source for file-based agents (e.g. cursor-agent)
+	// via buildSeedEgressOpts → WireAgentEgress so the profile-generic seam has a
+	// live production caller (D-MAC-16). OAuth agents (ClaudeCodeProfile) get a
+	// nil AgentCredSource; they push credentials via Refresher.ForcePush instead.
+	// Graceful degradation: if the credential file is absent or unreadable,
+	// AgentCredSource is nil and the broker starts with no real token (HTTPS auth
+	// carries the placeholder; operator re-runs agent login to fix it).
+	var egressWire service.CreateAndBootOptions
+	if resolveErr == nil {
+		if wired, wireErr := buildSeedEgressOpts(preSB, broker); wireErr != nil {
+			slog.Warn("supervisor.static_cred_source_failed",
+				"agent", resolveSeedProfile(preSB).Name, "err", wireErr)
+		} else {
+			egressWire = wired
 		}
 	}
 
@@ -805,15 +922,9 @@ func RunDetached(cfg Config) error {
 		// must mint placeholders in either posture. The original guard on OpenEgress
 		// silently skipped GH_TOKEN seeding for --egress closed sandboxes.
 		route := chooseSeedRoute(sb)
-		seedDone, guestEverResponded := runSeedRoute(ctx, route, seedRouteInputs{
-			SB:          sb,
-			Cert:        cert,
-			CASeeder:    caSeeder,
-			AgentSeeder: agentSeeder,
-			Broker:      broker,
-			Refreshers:  refreshers,
-			Svc:         svc,
-		})
+		seedDone, guestEverResponded := runSeedRoute(ctx, route, buildSeedRouteInputs(
+			sb, cert, caSeeder, agentSeeder, agentClient, broker, refreshers, egressWire, svc,
+		))
 		// routeNone skips both branches below: there is no seed failure to warn
 		// about, and no CA in the guest to activate.
 		if route != routeNone && !seedDone {
@@ -1423,7 +1534,15 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 				"sandbox", id, "err", umErr,
 				"action", "guest will not see operator tool dirs or home symlink")
 		} else {
-			slog.Info("supervisor.usermount_seeded", "sandbox", id, "count", len(in.UserMounts.Mounts))
+			curatedCount := 0
+			for _, m := range in.UserMounts.Mounts {
+				if m.Curated {
+					curatedCount++
+				}
+			}
+			slog.Info("supervisor.usermount_seeded", "sandbox", id,
+				"count", len(in.UserMounts.Mounts),
+				"curated", curatedCount)
 		}
 	}
 
@@ -1535,6 +1654,8 @@ func seedAgentAndHumanSecrets(
 	broker *cred.Broker,
 	refreshers []*cred.Refresher,
 	svc PerimeterCAGetter,
+	profile cred.AgentProfile,
+	credFileSeeder service.GuestSeeder,
 ) (ok bool, guestEverResponded bool) {
 	for attempt := range maxSeedAttempts {
 		if ctx.Err() != nil {
@@ -1548,7 +1669,11 @@ func seedAgentAndHumanSecrets(
 				slog.Debug("supervisor.seed_ca_retry", "attempt", attempt, "err", caErr)
 			} else {
 				guestEverResponded = true
-				if _, combErr := service.SeedGuestAgentAndSecrets(ctx, broker, sb.ID, sb.Envelope.SecretSpecs, credSeeder); combErr != nil {
+				records, combErr := service.SeedGuestAgentAndSecretsForProfile(ctx, broker, sb.ID, sb.Envelope.SecretSpecs, credSeeder, profile)
+				if combErr == nil {
+					combErr = service.SeedGuestCredFile(ctx, sb.ID, records, profile, credFileSeeder)
+				}
+				if combErr != nil {
 					slog.Debug("supervisor.seed_combined_retry", "attempt", attempt, "err", combErr)
 				} else {
 					slog.Info("supervisor.agent_and_secrets_complete", "sandbox", sb.ID,
@@ -1717,6 +1842,8 @@ func SeedLoop(
 	retryDelay time.Duration,
 	svc PerimeterCAGetter,
 	seedAgentCreds bool,
+	profile cred.AgentProfile,
+	credFileSeeder service.GuestSeeder,
 ) (ok bool, guestEverResponded bool) {
 	for attempt := range maxAttempts {
 		if ctx.Err() != nil {
@@ -1733,7 +1860,11 @@ func SeedLoop(
 			}
 			var agentErr error
 			if caErr == nil && seedAgentCreds {
-				_, agentErr = service.SeedGuestAgent(ctx, broker, id, agentSeeder)
+				var records []cred.PlaceholderRecord
+				records, agentErr = service.SeedGuestAgentForProfile(ctx, broker, id, agentSeeder, profile)
+				if agentErr == nil {
+					agentErr = service.SeedGuestCredFile(ctx, id, records, profile, credFileSeeder)
+				}
 			}
 			if caErr == nil && agentErr == nil {
 				slog.Info("supervisor.seeds_complete", "sandbox", id,

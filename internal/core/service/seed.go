@@ -431,6 +431,23 @@ func SeedGuestAgent(
 	return seedGuestAgent(ctx, broker, id, seeder, cred.ClaudeCodeProfile, kindUnset)
 }
 
+// SeedGuestAgentForProfile is [SeedGuestAgent] generalized to an explicit
+// [cred.AgentProfile] instead of the Claude Code default. Callers outside this
+// package that must reseed a sandbox whose attached agent is not Claude Code —
+// e.g. the supervisor re-seed loop, which only knows the agent by the name
+// persisted on domain.Sandbox.AgentName — use this instead of SeedGuestAgent,
+// which would otherwise always emit Claude's env vars regardless of which
+// agent the sandbox actually runs.
+func SeedGuestAgentForProfile(
+	ctx context.Context,
+	broker *cred.Broker,
+	id domain.SandboxID,
+	seeder GuestSeeder,
+	profile cred.AgentProfile,
+) ([]cred.PlaceholderRecord, error) {
+	return seedGuestAgent(ctx, broker, id, seeder, profile, kindUnset)
+}
+
 // seedGuestAgent is the internal implementation of [SeedGuestAgent] that
 // accepts an explicit [cred.AgentProfile] and [agentCredKind] for per-sandbox
 // credential-kind resolution. The profile drives the placeholder env-var name
@@ -488,7 +505,13 @@ func prepareAgentCredPayload(
 	hosts := AgentEgressHosts(profile)
 	records := make([]cred.PlaceholderRecord, 0, len(hosts))
 	for _, host := range hosts {
-		rec, err := broker.RegisterPlaceholder(id, host, "")
+		var rec cred.PlaceholderRecord
+		var err error
+		if profile.PlaceholderIsJWT {
+			rec, err = broker.RegisterJWTPlaceholder(id, host, "")
+		} else {
+			rec, err = broker.RegisterPlaceholder(id, host, "")
+		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("seed agent: register placeholder for %q: %w", host, err)
 		}
@@ -522,6 +545,21 @@ func SeedGuestAgentAndSecrets(
 	seeder GuestSeeder,
 ) ([]cred.PlaceholderRecord, error) {
 	return seedGuestAgentAndSecrets(ctx, broker, id, specs, seeder, cred.ClaudeCodeProfile, kindUnset)
+}
+
+// SeedGuestAgentAndSecretsForProfile is [SeedGuestAgentAndSecrets] generalized
+// to an explicit [cred.AgentProfile]. See [SeedGuestAgentForProfile] for why
+// this variant exists: the combined agent+human-secrets seed route must also
+// be able to seed a non-Claude agent's credential env var.
+func SeedGuestAgentAndSecretsForProfile(
+	ctx context.Context,
+	broker *cred.Broker,
+	id domain.SandboxID,
+	specs []string,
+	seeder GuestSeeder,
+	profile cred.AgentProfile,
+) ([]cred.PlaceholderRecord, error) {
+	return seedGuestAgentAndSecrets(ctx, broker, id, specs, seeder, profile, kindUnset)
 }
 
 func seedGuestAgentAndSecrets(
@@ -598,7 +636,11 @@ func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind,
 	if kind == kindAuthToken {
 		credEnvVar = profile.APIKeyEnvVar // direct API-key path (D-P4-02 / ToS rail)
 	}
-	if credEnvVar == "" {
+	// File-based agents (profile.CredentialFile != "") convey their credential
+	// through SeedGuestCredFile, not through an env var. Allow credEnvVar to be
+	// empty when a CredentialFile is declared; only reject agents that have
+	// neither (which would be seeded with no credential at all).
+	if credEnvVar == "" && profile.CredentialFile == "" {
 		return nil, fmt.Errorf("agent %q declares no credential env var for the selected path", profile.Name)
 	}
 
@@ -609,26 +651,42 @@ func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind,
 	// authenticates to. Either name produces Authorization: Bearer
 	// <placeholder> on outbound requests; the MITM proxy swaps the placeholder
 	// host-side on each forwarded request.
-	found := false
-	for _, rec := range records {
-		if rec.Host == profile.CredentialedHost {
-			fmt.Fprintf(&buf, "%s=%s\n", credEnvVar, rec.Placeholder)
-			found = true
-			break
+	// File-based agents (credEnvVar == "") skip this block; their placeholder
+	// is written to the credential file by SeedGuestCredFile instead.
+	if credEnvVar != "" {
+		found := false
+		for _, rec := range records {
+			if rec.Host == profile.CredentialedHost {
+				fmt.Fprintf(&buf, "%s=%s\n", credEnvVar, rec.Placeholder)
+				found = true
+				break
+			}
 		}
-	}
-	if !found {
-		// Seeding a guest with no credential at all is worse than failing: the
-		// agent starts, reaches the API unauthenticated, and the cause shows up
-		// as an opaque 401 from inside the VM.
-		return nil, fmt.Errorf("agent %q: no placeholder minted for credentialed host %q",
-			profile.Name, profile.CredentialedHost)
+		if !found {
+			// Seeding a guest with no credential at all is worse than failing: the
+			// agent starts, reaches the API unauthenticated, and the cause shows up
+			// as an opaque 401 from inside the VM.
+			return nil, fmt.Errorf("agent %q: no placeholder minted for credentialed host %q",
+				profile.Name, profile.CredentialedHost)
+		}
 	}
 
 	// Runtimes that read a CA bundle from the environment trust the MITM proxy
 	// this way, without update-ca-certificates having run in the guest.
 	for _, name := range profile.CACertEnvVars {
 		fmt.Fprintf(&buf, "%s=%s\n", name, GuestCACertPath)
+	}
+
+	// File-based credential redirect: point the agent's credential directory at
+	// the guest-side directory where SeedGuestCredFile writes the JSON file.
+	// This is what connects the file seeder to the agent's lookup: without this
+	// line the agent ignores GuestCredDirPath and reads from its default location
+	// (e.g. ~/.config/cursor/auth.json), finding nothing.
+	//
+	// Driven by profile.CredDirEnvVar so no agent name or directory is hardcoded
+	// here. Claude Code (CredentialFile == "") skips this block entirely.
+	if profile.CredentialFile != "" && profile.CredDirEnvVar != "" {
+		fmt.Fprintf(&buf, "%s=%s\n", profile.CredDirEnvVar, GuestCredDirPath)
 	}
 
 	// Agent-specific fixed environment, sorted so the payload is byte-stable.
@@ -642,6 +700,115 @@ func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind,
 	}
 
 	return buf.Bytes(), nil
+}
+
+// GuestCredDirPath is the well-known directory inside the guest where
+// file-based credential placeholders are written. When an agent's profile
+// declares CredentialFile, the host writes the placeholder JSON into
+// GuestCredDirPath/CredentialFile at seed time. The agent's CredDirEnvVar
+// (e.g. XDG_CONFIG_HOME for cursor-agent) must be pointed at this path so
+// the agent finds the file at the expected location.
+//
+// Like GuestCredEnvPath it lives under /run (volatile tmpfs) and is absent
+// after a guest reboot; the host re-seeds on each CreateAndBoot call.
+const GuestCredDirPath = "/run/nexus3/cred-dir"
+
+// GuestCredFilePath returns the absolute guest path for the agent's credential
+// file, or empty string if the profile declares no file-based credential.
+// The path is GuestCredDirPath joined with profile.CredentialFile.
+func GuestCredFilePath(profile cred.AgentProfile) string {
+	if profile.CredentialFile == "" {
+		return ""
+	}
+	return GuestCredDirPath + "/" + profile.CredentialFile
+}
+
+// buildCredFileSeedPayload builds the JSON file content for an agent whose
+// credential is file-based (profile.CredentialFile != ""). The returned bytes
+// form a JSON object with profile.CredentialFileKey and any
+// profile.CredentialFileExtraKeys each mapped to the same placeholder minted
+// for profile.CredentialedHost.
+//
+// Returns nil, nil when profile.CredentialFile is empty; the caller then
+// skips the file-seeding step (env-var agents such as Claude Code use the
+// env-var path only and return nil here).
+//
+// # Security invariant
+//
+// PlaceholderRecord carries ONLY the placeholder string, ExpiresAt, SandboxID,
+// and Host — never the real token. The produced JSON therefore cannot contain
+// the real token regardless of what was passed to RegisterPlaceholder or
+// SetRealToken. Writing the same placeholder under multiple JSON keys (e.g.
+// cursor's accessToken and refreshToken) preserves this invariant: all keys
+// hold the same opaque placeholder string, not any real credential.
+func buildCredFileSeedPayload(records []cred.PlaceholderRecord, profile cred.AgentProfile) ([]byte, error) {
+	if profile.CredentialFile == "" {
+		return nil, nil
+	}
+	var placeholder string
+	for _, rec := range records {
+		if rec.Host == profile.CredentialedHost {
+			placeholder = rec.Placeholder
+			break
+		}
+	}
+	if placeholder == "" {
+		return nil, fmt.Errorf("agent %q: no placeholder minted for credentialed host %q",
+			profile.Name, profile.CredentialedHost)
+	}
+	// Build the JSON object: primary key + any extra keys, all holding the same
+	// placeholder value. One broker entry (keyed by placeholder value) covers all
+	// keys; the MITM proxy swaps by value in Authorization headers regardless of
+	// which JSON key introduced the placeholder.
+	m := make(map[string]string, 1+len(profile.CredentialFileExtraKeys))
+	m[profile.CredentialFileKey] = placeholder
+	for _, k := range profile.CredentialFileExtraKeys {
+		m[k] = placeholder
+	}
+	content, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("agent %q: marshal credential file: %w", profile.Name, err)
+	}
+	return content, nil
+}
+
+// SeedGuestCredFile writes the broker-minted credential placeholder into the
+// agent's credential file inside the guest. It is a no-op when
+// profile.CredentialFile is empty (env-var agents such as Claude Code use the
+// env-var path only).
+//
+// Call this after [SeedGuestAgent] or [SeedGuestAgentForProfile], which mint
+// the placeholder records and return them. Pass the seeder created with
+// NewGuestFileSeeder(c, GuestCredFilePath(profile)).
+//
+// # Security invariant
+//
+// PlaceholderRecord carries only the placeholder string, never the real token.
+// The written JSON file therefore cannot contain the real token.
+//
+// If seeder is nil or profile.CredentialFile is empty, SeedGuestCredFile is a
+// no-op and returns nil.
+func SeedGuestCredFile(
+	ctx context.Context,
+	id domain.SandboxID,
+	records []cred.PlaceholderRecord,
+	profile cred.AgentProfile,
+	seeder GuestSeeder,
+) error {
+	if seeder == nil || profile.CredentialFile == "" {
+		return nil
+	}
+	content, err := buildCredFileSeedPayload(records, profile)
+	if err != nil {
+		return fmt.Errorf("seed cred file: %w", err)
+	}
+	if content == nil {
+		return nil
+	}
+	if err := seeder(ctx, id, content); err != nil {
+		return fmt.Errorf("seed cred file: deliver to guest: %w", err)
+	}
+	return nil
 }
 
 // GuestShellProfilePath is the well-known path inside the guest where the
@@ -919,6 +1086,19 @@ func SeedGuestBypassConsent(ctx context.Context, id domain.SandboxID, execer Gue
 // SeedGuestUserMounts to append /root/.local/bin to PATH for every login shell.
 const GuestUserMountsProfilePath = "/etc/profile.d/nexus3-usermounts.sh"
 
+// GuestNativePATH is the PATH searched when deciding whether to shadow a host
+// tool: standard Debian/Alpine guest dirs, excluding the curated farm dirs.
+// A tool that resolves here is "shadowed" and excluded from the farm so the
+// guest-native binary wins by construction rather than by PATH ordering.
+// Exported so tests can inject a fixture-controlled PATH via strings.ReplaceAll.
+const GuestNativePATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+// GuestUserMountsFarmReport is the per-boot report written inside the guest
+// by SeedGuestUserMounts that names every entry in each curated mount as
+// "linked", "shadowed", or "dangling". Exported so tests can redirect it to a
+// temp path via strings.ReplaceAll on the rendered script.
+const GuestUserMountsFarmReport = "/run/nexus3/hostbin.report"
+
 // shSingleQuote wraps s in POSIX single quotes, escaping any embedded single
 // quotes so the result is safe to embed in a shell script.
 func shSingleQuote(s string) string {
@@ -929,13 +1109,18 @@ func shSingleQuote(s string) string {
 //
 //  1. Creates a home-dir symlink so operator absolute paths (e.g.
 //     $HOME/…) resolve inside the guest (where the real home is /root).
-//  2. Writes /etc/profile.d/nexus3-usermounts.sh to APPEND /root/.local/bin
-//     to PATH (appended, not prepended — the guest's own claude binary must
-//     win over the host's ~/.local/bin/claude symlink whose target is absent).
+//  2. Writes /etc/profile.d/nexus3-usermounts.sh to APPEND the curated PATH
+//     dirs to PATH (appended, not prepended — the guest's own claude binary
+//     must win over host tools).
 //  3. For each overlay=true mount row, mounts a writable overlayfs (tmpfs
 //     upper+work) over the RO virtiofs staging path onto the final guest_path.
+//  4. For each curated=true mount row, rebuilds GuestPath as a symlink farm
+//     pointing into StagingGuestPath. Runs unconditionally on every boot (no
+//     write-once guard). Excludes names that resolve on the guest-native PATH
+//     or that do not resolve inside the guest. Writes GuestUserMountsFarmReport
+//     naming every entry as linked, shadowed, or dangling.
 //
-// Non-overlay rows (overlay=false) are skipped: the virtiofs tag is mounted
+// Non-overlay, non-curated rows are skipped: the virtiofs tag is mounted
 // directly at guest_path by the hypervisor and needs no guest action.
 //
 // A failed user-mount is never fatal: callers log a warning and continue.
@@ -945,6 +1130,22 @@ func SeedGuestUserMounts(ctx context.Context, id domain.SandboxID, manifest User
 		return nil
 	}
 
+	script := buildUserMountScript(manifest)
+	code, err := execer(ctx, id, []string{"/bin/sh", "-c", script}, nil)
+	if err != nil {
+		return fmt.Errorf("usermount seed: %w", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("usermount seed script exited %d", code)
+	}
+	return nil
+}
+
+// buildUserMountScript generates the /bin/sh script text executed by
+// SeedGuestUserMounts. Extracted as a separate function so tests can render
+// the script, substitute test-local paths via strings.ReplaceAll, and run it
+// with exec.Command("/bin/sh", ...) against a fixture tree without a live guest.
+func buildUserMountScript(manifest UserMountManifest) string {
 	var b strings.Builder
 	b.WriteString("set -eu\n\n")
 
@@ -994,18 +1195,18 @@ func SeedGuestUserMounts(ctx context.Context, id domain.SandboxID, manifest User
 
 	// Step 2: PATH drop-in. Quoted heredoc prevents $PATH from expanding during
 	// the write; the resulting file expands $PATH at shell source time.
+	// Uses GuestCuratedPATHDirs as the single source of truth for which dirs to
+	// append — do not duplicate this list elsewhere.
 	qProfile := shSingleQuote(GuestUserMountsProfilePath)
 	fmt.Fprintf(&b, "# 2. PATH drop-in\n")
 	fmt.Fprintf(&b, "if [ ! -f %s ]; then\n", qProfile)
 	fmt.Fprintf(&b, "cat > %s << 'NEXUS3UMEOF'\n", qProfile)
 	fmt.Fprintf(&b, "# nexus3: user-mount PATH for login shells.\n")
 	fmt.Fprintf(&b, "# Written by SeedGuestUserMounts; do not edit.\n")
-	// Append the operator's tool bin dirs. /root/.local/bin holds self-contained
-	// binaries; /root/.bun/bin (bun global) and /root/.local/share/mise/shims
-	// (mise-managed uv/node/etc.) hold shims/wrappers that MCP servers invoke by
-	// bare command name (e.g. `uv run …`, `agent-browser mcp`). Appended, never
-	// prepended, so guest binaries still win. Non-existent entries are harmless.
-	fmt.Fprintf(&b, "export PATH=\"$PATH:/root/.local/bin:/root/.bun/bin:/root/.local/share/mise/shims\"\n")
+	// Appended, never prepended, so guest-native binaries still win.
+	// Non-existent entries are harmless (shell skips missing dirs in PATH).
+	pathSuffix := strings.Join(GuestCuratedPATHDirs, ":")
+	fmt.Fprintf(&b, "export PATH=\"$PATH:%s\"\n", pathSuffix)
 	fmt.Fprintf(&b, "NEXUS3UMEOF\n")
 	fmt.Fprintf(&b, "fi\n\n")
 
@@ -1038,12 +1239,102 @@ func SeedGuestUserMounts(ctx context.Context, id domain.SandboxID, manifest User
 		fmt.Fprintf(&b, "fi\n\n")
 	}
 
-	code, err := execer(ctx, id, []string{"/bin/sh", "-c", b.String()}, nil)
-	if err != nil {
-		return fmt.Errorf("usermount seed: %w", err)
+	// Step 4: curated symlink farm rebuild for curated=true rows.
+	// Runs unconditionally on every boot (no write-once guard) so the farm stays
+	// current without requiring a reboot when the host tool set changes.
+	// Exclusions (both mechanical, no per-name judgement):
+	//   shadowed — name resolves on the guest-native PATH (GuestNativePATH)
+	//   dangling  — entry does not resolve inside the guest (broken host symlink)
+	// All other entries are linked: ln -sf <staging>/<name> <guest>/<name>.
+	// A symlink resolves by name through virtiofs at open() time, so an atomic
+	// rename on the host (cp t.new && mv -f) is immediately visible in a running
+	// guest with no reboot — the property hard links cannot provide.
+	//
+	// Containment rows (CuratedSubPath != ""): the mount covers a parent of the
+	// curated PATH entry. The farm is built at GuestPath/CuratedSubPath using
+	// sources from StagingGuestPath/CuratedSubPath. Non-farm siblings (other
+	// subdirs/files in StagingGuestPath) are linked idempotently into GuestPath
+	// so the rest of the mount's data (e.g. mise/installs/) remains accessible
+	// at the expected path.
+	reportInit := false
+	for _, m := range manifest.Mounts {
+		if !m.Curated {
+			continue
+		}
+		if !reportInit {
+			// Truncate the report once before the first curated loop; subsequent
+			// curated rows append.
+			qReport := shSingleQuote(GuestUserMountsFarmReport)
+			fmt.Fprintf(&b, "# 4. Curated farm: truncate report\n")
+			fmt.Fprintf(&b, ": > %s\n\n", qReport)
+			reportInit = true
+		}
+		qReport := shSingleQuote(GuestUserMountsFarmReport)
+
+		if m.CuratedSubPath != "" {
+			// Containment case: mount covers the parent; farm at GuestPath/CuratedSubPath.
+			qStaging := shSingleQuote(m.StagingGuestPath)
+			qGuest := shSingleQuote(m.GuestPath)
+			qSubPath := shSingleQuote(m.CuratedSubPath)
+			qFarmGuest := shSingleQuote(m.GuestPath + "/" + m.CuratedSubPath)
+			qFarmStaging := shSingleQuote(m.StagingGuestPath + "/" + m.CuratedSubPath)
+			fmt.Fprintf(&b, "# 4. Curated farm (containment): %s [sub: %s]\n", m.GuestPath, m.CuratedSubPath)
+			fmt.Fprintf(&b, "if [ -d %s ]; then\n", qStaging)
+			// Create parent dir so non-farm siblings can be linked there.
+			fmt.Fprintf(&b, "  mkdir -p %s\n", qGuest)
+			// Link non-farm siblings idempotently: installs/, versions/, etc. become
+			// symlinks into the staging tree so they are accessible at the expected path.
+			fmt.Fprintf(&b, "  for _d in %s/*; do\n", qStaging)
+			fmt.Fprintf(&b, "    [ -e \"$_d\" ] || [ -L \"$_d\" ] || continue\n")
+			fmt.Fprintf(&b, "    _n=$(basename \"$_d\")\n")
+			// Skip the curated subdir — it gets the farm treatment below.
+			fmt.Fprintf(&b, "    [ \"$_n\" = %s ] && continue\n", qSubPath)
+			// Idempotent: only create the link when nothing exists at that name.
+			fmt.Fprintf(&b, "    if [ ! -e %s/\"$_n\" ] && [ ! -L %s/\"$_n\" ]; then ln -sf \"$_d\" %s/\"$_n\"; fi\n", qGuest, qGuest, qGuest)
+			fmt.Fprintf(&b, "  done\n")
+			// Build the farm at the curated subdir. Unconditional clear so stale
+			// symlinks are always purged (same as the exact-match path).
+			fmt.Fprintf(&b, "  rm -rf %s && mkdir -p %s\n", qFarmGuest, qFarmGuest)
+			fmt.Fprintf(&b, "  for _e in %s/*; do\n", qFarmStaging)
+			fmt.Fprintf(&b, "    [ -e \"$_e\" ] || [ -L \"$_e\" ] || continue\n")
+			fmt.Fprintf(&b, "    _n=$(basename \"$_e\")\n")
+			fmt.Fprintf(&b, "    if PATH='%s' command -v \"$_n\" >/dev/null 2>&1; then\n", GuestNativePATH)
+			fmt.Fprintf(&b, "      printf 'shadowed %%s\\n' \"$_n\" >> %s\n", qReport)
+			fmt.Fprintf(&b, "    elif [ ! -e \"$_e\" ]; then\n")
+			fmt.Fprintf(&b, "      printf 'dangling %%s\\n' \"$_n\" >> %s\n", qReport)
+			fmt.Fprintf(&b, "    else\n")
+			fmt.Fprintf(&b, "      ln -sf \"$_e\" %s/\"$_n\"\n", qFarmGuest)
+			fmt.Fprintf(&b, "      printf 'linked %%s\\n' \"$_n\" >> %s\n", qReport)
+			fmt.Fprintf(&b, "    fi\n")
+			fmt.Fprintf(&b, "  done\n")
+			fmt.Fprintf(&b, "fi\n\n")
+		} else {
+			// Exact match case: mount IS the curated PATH dir; farm at GuestPath.
+			qStaging := shSingleQuote(m.StagingGuestPath)
+			qGuest := shSingleQuote(m.GuestPath)
+			fmt.Fprintf(&b, "# 4. Curated symlink farm: %s\n", m.GuestPath)
+			fmt.Fprintf(&b, "if [ -d %s ]; then\n", qStaging)
+			// Unconditional clear + recreate: no if-[ ! -f ] guard here.
+			fmt.Fprintf(&b, "  rm -rf %s && mkdir -p %s\n", qGuest, qGuest)
+			fmt.Fprintf(&b, "  for _e in %s/*; do\n", qStaging)
+			// Handle empty staging dir: glob expands to literal pattern which doesn't
+			// exist as a file, so both -e and -L are false → continue.
+			fmt.Fprintf(&b, "    [ -e \"$_e\" ] || [ -L \"$_e\" ] || continue\n")
+			fmt.Fprintf(&b, "    _n=$(basename \"$_e\")\n")
+			// Shadowed: name resolves on guest-native PATH without the curated farm.
+			fmt.Fprintf(&b, "    if PATH='%s' command -v \"$_n\" >/dev/null 2>&1; then\n", GuestNativePATH)
+			fmt.Fprintf(&b, "      printf 'shadowed %%s\\n' \"$_n\" >> %s\n", qReport)
+			// Dangling: staging entry is a symlink whose target is absent in the guest.
+			fmt.Fprintf(&b, "    elif [ ! -e \"$_e\" ]; then\n")
+			fmt.Fprintf(&b, "      printf 'dangling %%s\\n' \"$_n\" >> %s\n", qReport)
+			fmt.Fprintf(&b, "    else\n")
+			fmt.Fprintf(&b, "      ln -sf \"$_e\" %s/\"$_n\"\n", qGuest)
+			fmt.Fprintf(&b, "      printf 'linked %%s\\n' \"$_n\" >> %s\n", qReport)
+			fmt.Fprintf(&b, "    fi\n")
+			fmt.Fprintf(&b, "  done\n")
+			fmt.Fprintf(&b, "fi\n\n")
+		}
 	}
-	if code != 0 {
-		return fmt.Errorf("usermount seed script exited %d", code)
-	}
-	return nil
+
+	return b.String()
 }

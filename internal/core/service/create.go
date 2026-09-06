@@ -221,6 +221,13 @@ type CreateAndBootOptions struct {
 	// ResolveEnvelopeSecrets — so no SecretSpecs entry should be created.
 	ExtraSecretHosts []string
 
+	// ExtraSecretHostSuffixes lists dot-anchored DNS suffixes to include in
+	// Envelope.SecretHostSuffixes. Suffix-matched hosts are MITM'd and
+	// credential-swapped like exact SecretHosts but cover sharded/regional
+	// endpoints whose names vary (e.g. ".cursor.sh"). Each suffix must begin
+	// with ".". No SecretSpecs entry is created for suffix hosts.
+	ExtraSecretHostSuffixes []string
+
 	// Broker is the host-side credential broker used to mint placeholder
 	// credentials for AllowedHosts. If nil, credential seeding is skipped even
 	// when AllowedHosts is non-empty.
@@ -382,6 +389,24 @@ type NamedVolumeMount struct {
 	ReadOnly  bool
 }
 
+// WireAgentEgress configures opts for an agent sandbox running the given
+// profile. It is the profile-generic form of [WireClaudeEgress] and sets all
+// per-profile fields from profile rather than hardcoding [cred.ClaudeCodeProfile].
+//
+// Adding a third agent requires no new function: pass its profile and a matching
+// CredentialSource (from [cred.NewCredentialSourceForProfile] or a [cred.Refresher]).
+//
+// The caller owns broker, seeder, and src; WireAgentEgress does not retain
+// them beyond writing them into opts.
+func WireAgentEgress(opts *CreateAndBootOptions, profile cred.AgentProfile, broker *cred.Broker, seeder GuestSeeder, src cred.CredentialSource) {
+	opts.AllowedHosts = AgentEgressHosts(profile)
+	opts.Broker = broker
+	opts.Seeder = seeder
+	opts.UseAgentSeed = true
+	opts.AgentCredSource = src
+	opts.AgentProfile = profile
+}
+
 // WireClaudeEgress configures opts for an agent sandbox that runs claude
 // (Haiku/Sonnet/etc.) in-guest and needs egress to the Anthropic API.
 //
@@ -400,32 +425,52 @@ type NamedVolumeMount struct {
 // automatic token rotation. When src is nil no real token is wired and the
 // MITM proxy forwards the placeholder (egress still works, bearer is invalid).
 //
-// The caller owns broker, seeder, and src; WireClaudeEgress does not retain
-// them beyond writing them into opts.
+// The caller owns broker, seeder, and src; WireClaudeEgress delegates to
+// [WireAgentEgress] and is kept for compatibility.
 func WireClaudeEgress(opts *CreateAndBootOptions, broker *cred.Broker, seeder GuestSeeder, src cred.CredentialSource) {
-	opts.AllowedHosts = AgentEgressHosts(cred.ClaudeCodeProfile)
-	opts.Broker = broker
-	opts.Seeder = seeder
-	opts.UseAgentSeed = true
-	opts.AgentCredSource = src
-	opts.AgentProfile = cred.ClaudeCodeProfile
+	WireAgentEgress(opts, cred.ClaudeCodeProfile, broker, seeder, src)
+}
+
+// DedicatedCredStorePathForProfile returns the host-side OAuth credential store
+// path for the given agent profile.
+//
+// claude-code is a special case: it always resolves to ~/.config/nexus3/creds.json —
+// the legacy single-tenant path. Operators have live credentials at that path and
+// changing it would silently log them out of every existing sandbox. The
+// NEXUS3_DEDICATED_CRED_STORE environment variable applies only to this alias.
+//
+// All other profiles resolve to ~/.config/nexus3/agent-creds/<name>.json where
+// <name> is the sanitized profile name, following the same sanitization convention
+// as DefaultMCPOAuthStoreRoot (see mcpoauth_refresh.go:sanitizeForFS).
+func DedicatedCredStorePathForProfile(profile cred.AgentProfile) string {
+	// claude-code: preserve the legacy path unchanged. Live operator credentials live
+	// here; any change silently invalidates every existing sandbox. The env-var
+	// override applies only to this alias so it stays forward-compatible.
+	if profile.Name == "" || profile.Name == cred.ClaudeCodeProfileName {
+		if p := os.Getenv("NEXUS3_DEDICATED_CRED_STORE"); p != "" {
+			return p
+		}
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".config", "nexus3", "creds.json")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "nexus3", "agent-creds", sanitizeForFS(profile.Name)+".json")
+}
+
+// DedicatedLockFilePathForProfile returns the advisory lock file path for the
+// credential store of the given agent profile. Mirrors the convention used by the
+// cred package: storePath + ".lock" (see cred/store.go:lockFilePath).
+func DedicatedLockFilePathForProfile(profile cred.AgentProfile) string {
+	return DedicatedCredStorePathForProfile(profile) + ".lock"
 }
 
 // DefaultDedicatedCredStorePath returns the path for nexus3's dedicated OAuth
-// credential store used by the host-side Refresher ([cred.NewRefresher]).
-//
-// Default: ~/.config/nexus3/creds.json
-// Override: NEXUS3_DEDICATED_CRED_STORE environment variable.
-//
-// S4 dogfood places the credential file at this path; see charter TBD-P5-2.
-// Construct a *cred.Refresher from this path and pass it to WireClaudeEgress
-// to enable automatic token rotation across sandboxes.
+// credential store. Deprecated: all production call sites now use
+// [DedicatedCredStorePathForProfile] with the agent's profile. This wrapper
+// delegates to DedicatedCredStorePathForProfile for the claude-code alias and
+// has no production callers — kept only as a named compatibility shim.
 func DefaultDedicatedCredStorePath() string {
-	if p := os.Getenv("NEXUS3_DEDICATED_CRED_STORE"); p != "" {
-		return p
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "nexus3", "creds.json")
+	return DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile)
 }
 
 // CreateAndBoot creates a sandbox record, boots a VM for it, verifies the
@@ -817,7 +862,11 @@ func CreateAndBoot(
 	// the agent seed without naming a profile gets the default, matching the
 	// pre-TBD-PD-32 behaviour.
 	agentProfile := opts.AgentProfile
-	if opts.UseAgentSeed && agentProfile.PlaceholderEnvVar == "" {
+	// Name, not PlaceholderEnvVar, is the zero-value sentinel (see
+	// cred.AgentProfile.Name doc): a profile that legitimately has no OAuth
+	// placeholder path (e.g. an API-key-only agent like cursor) must not be
+	// silently swapped for Claude here just because that field is empty.
+	if opts.UseAgentSeed && agentProfile.Name == "" {
 		agentProfile = cred.ClaudeCodeProfile
 	}
 
@@ -831,7 +880,8 @@ func CreateAndBoot(
 			ImageDigest:     resolvedDigest,
 			AllowedHosts:    opts.AllowedHosts, // frozen at creation (P1-S6)
 			SSHPublicKey:    opts.SSHPublicKey, // frozen at creation (ORCA-S1)
-			SecretHosts:     append(secretHostsFromBinds(opts.Secrets), opts.ExtraSecretHosts...),
+			SecretHosts:        append(secretHostsFromBinds(opts.Secrets), opts.ExtraSecretHosts...),
+			SecretHostSuffixes: opts.ExtraSecretHostSuffixes,
 			SecretSpecs:     secretSpecsFromBinds(opts.Secrets),
 			OpenEgress:      opts.OpenEgress,              // D-PD-33: explicit opt-in; never inferred from empty AllowedHosts
 			AllowedRepo:     opts.AllowedRepo,             // D-PD-36: per-repo path allowlist; enforced below
@@ -1044,9 +1094,12 @@ func CreateAndBoot(
 				svc.storeDeregistrar(booted.ID, dr)
 			}
 		} else if realToken == "" {
+			hint := "configure NEXUS3_DEDICATED_CRED_STORE (OAuth path)"
+			if agentProfile.APIKeyEnvVar != "" {
+				hint = fmt.Sprintf("set %s (API-key path) or %s", agentProfile.APIKeyEnvVar, hint)
+			}
 			slog.Warn("create-and-boot: no real token for agent egress; egress will send placeholder",
-				"sandbox", booted.ID, "host", agentProfile.CredentialedHost,
-				"hint", "set ANTHROPIC_AUTH_TOKEN (auth-token path) or configure NEXUS3_DEDICATED_CRED_STORE (OAuth path)")
+				"sandbox", booted.ID, "host", agentProfile.CredentialedHost, "hint", hint)
 		}
 	} else {
 		var combined []byte

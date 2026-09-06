@@ -44,3 +44,7 @@ var NewSizeVerifiedSet = newSizeVerifiedSet
 // BuildLocalMounts exposes buildLocalMounts for tests that assert every entry
 // in the LocalMounts map is set-wrapped (CI-visible regression guard).
 var BuildLocalMounts = buildLocalMounts
+
+// GuestBuild exposes guestBuild for unit tests that assert the recipe and arch
+// reach the exec argv without booting a real VM.
+var GuestBuild = guestBuild

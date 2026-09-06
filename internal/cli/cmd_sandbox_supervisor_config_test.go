@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/resize"
 )
 
@@ -93,6 +94,7 @@ func TestBuildHumanSupervisorConfig_AllFieldsPopulated(t *testing.T) {
 		"/usr/bin/virtiofsd", // virtiofsdPath
 		true,                 // nestedVirt — non-zero for AllFieldsPopulated
 		nil,                  // mcpOAuthRefreshConfigs (optional; nil = none)
+		cred.AgentProfile{},  // agentProfile — zero value treated as claude-code
 	)
 
 	rv := reflect.ValueOf(cfg)
@@ -136,8 +138,9 @@ func TestBuildHumanSupervisorConfig_CredsFilePopulated(t *testing.T) {
 		false, 0, 0, "",
 		false, -1, // hasScratchDisk, scratchDiskIndex — no workspace, no scratch
 		nil, "",
-		false, // nestedVirt
-		nil,   // mcpOAuthRefreshConfigs — optional
+		false,               // nestedVirt
+		nil,                 // mcpOAuthRefreshConfigs — optional
+		cred.AgentProfile{}, // agentProfile — zero value treated as claude-code
 	)
 	if cfg.CredsFile == "" {
 		t.Error("supervisor.Config.CredsFile is empty — the detached supervisor " +
@@ -204,8 +207,9 @@ func TestBuildHumanSupervisorConfig_NamedDiskResizableIndices(t *testing.T) {
 				tc.hasWorkspace, tc.numShadowDisks, tc.numNamedDisks, "",
 				tc.hasWorkspace, tc.numNamedDisks+tc.numShadowDisks+1, // hasScratchDisk, scratchDiskIndex
 				nil, "",
-				false, // nestedVirt
-				nil,
+				false,               // nestedVirt
+				nil,                 // mcpOAuthRefreshConfigs
+				cred.AgentProfile{}, // agentProfile — zero value treated as claude-code
 			)
 			got := cfg.ResizableDiskIndices
 			if len(got) != len(tc.wantResizable) {

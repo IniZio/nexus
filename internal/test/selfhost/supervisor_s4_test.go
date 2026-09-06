@@ -36,7 +36,7 @@ package selfhost
 //	TMPDIR=/tmp go test -tags integration -count=1 -run TestSupervisorS4Placeholder \
 //	    ./internal/test/selfhost/ -v -timeout 30m
 //
-//	# Live egress proof (requires dedicated claude login):
+//	# Live egress proof (requires dedicated claude auth login):
 //	NEXUS3_DEDICATED_CRED_STORE=~/.config/nexus3/creds.json \
 //	TMPDIR=/tmp go test -tags integration -count=1 -run TestSupervisorS4LiveEgress \
 //	    ./internal/test/selfhost/ -v -timeout 30m
@@ -101,7 +101,7 @@ func TestSupervisorS4BoundedRetryReady(t *testing.T) {
 
 	// nil svc is safe: cert != nil so GetPerimeterCACert is never called.
 	done, guestEverResponded := supervisor.SeedLoop(context.Background(), id, &cert,
-		failSeeder, failSeeder, broker, nil, maxAttempts, 0, nil, true)
+		failSeeder, failSeeder, broker, nil, maxAttempts, 0, nil, true, cred.ClaudeCodeProfile, nil)
 	elapsed := time.Since(start)
 
 	if done {
@@ -418,7 +418,7 @@ func TestSupervisorS4PlaceholderInGuest(t *testing.T) {
 	// written before that narrowing and was never updated.
 	_, credCode := execGuest("test -e " + service.GuestCredEnvPath)
 	if credCode == 0 {
-		t.Errorf("FAIL (b): GuestCredEnvPath unexpectedly present for non-agent sandbox — "+
+		t.Errorf("FAIL (b): GuestCredEnvPath unexpectedly present for non-agent sandbox — " +
 			"agent placeholder must not be seeded when AgentName is empty (D-PD-32 security narrowing)")
 	} else {
 		t.Logf("PASS (b): GuestCredEnvPath correctly absent for non-agent sandbox (seedAgentCreds=false)")

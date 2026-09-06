@@ -701,7 +701,7 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		1, // bootVCPUs: orca create passes 0 to buildCHConfig → driver default = 1
 		opts.Workspace != nil,
 		orcaNumShadowDisks,
-		service.DefaultDedicatedCredStorePath(),
+		service.DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile),
 		guestWorkspacePath,
 		// hasScratchDisk mirrors service/create.go step 4.9: scratch is attached
 		// iff workspace was requested and NoScratchDisk was not set (orca never

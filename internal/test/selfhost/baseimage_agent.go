@@ -50,23 +50,28 @@ import (
 	"github.com/IniZio/nexus3/internal/core/builder"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+)
+
+// NodeVersion, nodeSHA256AMD64, and ClaudeCodeVersion are sourced from
+// cred.ClaudeCodeProfile.ToolRecipe so that the agent base image and the
+// recipe layer always install the same Node.js and claude-code builds.
+// They are package-level vars (not consts) because profile fields are vars.
+var (
+	// NodeVersion is the Node.js LTS release baked into the agent base image.
+	// Single source of truth: cred.ClaudeCodeProfile.ToolRecipe.Packages[0].Version.
+	NodeVersion = cred.ClaudeCodeProfile.ToolRecipe.Packages[0].Version
+
+	// nodeSHA256AMD64 is the SHA-256 of the Node.js linux/x64 tarball.
+	// Single source of truth: cred.ClaudeCodeProfile.ToolRecipe.Packages[0].SHA256ByArch["x64"].
+	nodeSHA256AMD64 = cred.ClaudeCodeProfile.ToolRecipe.Packages[0].SHA256ByArch["x64"]
+
+	// ClaudeCodeVersion is the pinned @anthropic-ai/claude-code release.
+	// Single source of truth: cred.ClaudeCodeProfile.ToolRecipe.Packages[1].Version.
+	ClaudeCodeVersion = cred.ClaudeCodeProfile.ToolRecipe.Packages[1].Version
 )
 
 const (
-	// NodeVersion is the Node.js LTS release baked into the agent base image.
-	// Must be >=22.0.0 (the @anthropic-ai/claude-code engine floor).
-	// Verified available at https://nodejs.org/dist/ on 2026-08-09.
-	NodeVersion = "22.23.2"
-
-	// nodeSHA256AMD64 is the SHA-256 of node-v22.23.2-linux-x64.tar.gz.
-	// Source: https://nodejs.org/dist/v22.23.2/SHASUMS256.txt
-	nodeSHA256AMD64 = "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a"
-
-	// ClaudeCodeVersion is the pinned @anthropic-ai/claude-code release.
-	// Zero runtime npm dependencies — self-contained bundle.
-	// Verified on 2026-08-09: npm show @anthropic-ai/claude-code dist-tags.latest
-	ClaudeCodeVersion = "2.1.226"
-
 	// GHVersion is the pinned GitHub CLI (gh) release baked into the agent base image.
 	// gh is NOT in Debian bookworm's default apt repos; installed from the upstream
 	// Linux tarball following the same pattern as GoVersion/NodeVersion.

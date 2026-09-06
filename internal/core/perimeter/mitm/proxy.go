@@ -42,6 +42,7 @@ import (
 	"time"
 
 	"github.com/elazarl/goproxy"
+	"golang.org/x/net/http2"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
@@ -86,6 +87,16 @@ type Config struct {
 	// would 403 every other destination). Non-secret hosts under AllowAll
 	// are CONNECT-tunneled without TLS interception.
 	SecretHosts []string
+
+	// SecretHostSuffixes are dot-anchored DNS suffixes (e.g. ".cursor.sh")
+	// that extend SecretHosts by suffix match rather than exact match. Any
+	// host whose name ends with one of these suffixes is treated as a secret
+	// host: MITM'd under AllowAll, bearer placeholder swapped. Each suffix
+	// MUST begin with "." to ensure a dot-boundary match — ".cursor.sh"
+	// matches "api2.cursor.sh" and "agentn.global.api5.cursor.sh" but NOT
+	// "evilcursor.sh" or "cursor.sh.attacker.com". Suffix-matched hosts use
+	// broker.Resolve (unscoped) rather than ResolveScoped; see swapAuthorization.
+	SecretHostSuffixes []string
 
 	// Broker is the host-side credential store. ResolveScoped is called for
 	// each intercepted request bearing a placeholder Authorization header.
@@ -231,6 +242,12 @@ func New(cfg Config) (*Proxy, error) {
 		secretSet[lh] = struct{}{}
 		allowSet.Add(lh)
 	}
+	// Build dot-anchored suffix list for SecretHostSuffixes. Each element
+	// must begin with "." (enforced by the profile; validated at test time).
+	secretSuffixes := make([]string, 0, len(cfg.SecretHostSuffixes))
+	for _, s := range cfg.SecretHostSuffixes {
+		secretSuffixes = append(secretSuffixes, strings.ToLower(s))
+	}
 
 	log := cfg.Logger
 	if log == nil {
@@ -240,9 +257,10 @@ func New(cfg Config) (*Proxy, error) {
 	// mitmAction is the per-sandbox MITM action. It uses the sandbox's own CA
 	// (not goproxy's built-in GoproxyCa) so each sandbox has an isolated trust
 	// domain — a compromised guest cannot use another sandbox's CA.
+	tlsCfgFn := goproxy.TLSConfigFromCA(&ca)
 	mitmAction := &goproxy.ConnectAction{
 		Action:    goproxy.ConnectMitm,
-		TLSConfig: goproxy.TLSConfigFromCA(&ca),
+		TLSConfig: tlsCfgFn,
 	}
 
 	inner := goproxy.NewProxyHttpServer()
@@ -255,6 +273,18 @@ func New(cfg Config) (*Proxy, error) {
 	sandboxID := cfg.SandboxID
 	broker := cfg.Broker
 	allowAll := cfg.AllowAll
+
+	// h2HijackAction is the ConnectHijack action used for suffix-matched secret
+	// hosts. cursor-agent's inference endpoints (e.g. agentn.global.api5.cursor.sh)
+	// send ONLY "h2" in TLS ALPN with no HTTP/1.1 fallback; goproxy's built-in
+	// ConnectMitm only speaks HTTP/1.1 and causes SSL alert 120. ConnectHijack
+	// gives us the raw TCP connection so we can do the TLS handshake ourselves,
+	// advertise h2, and serve via an http2-configured http.Server.
+	h2HijackFn := makeH2SuffixHijack(tlsCfgFn, sandboxID, broker, log)
+	h2HijackAction := &goproxy.ConnectAction{
+		Action: goproxy.ConnectHijack,
+		Hijack: h2HijackFn,
+	}
 
 	// D-PDE-16: build active path-policy map at construction time.
 	// AllowedRepo compat shim is folded in under the wildcard placeholder key "".
@@ -295,9 +325,24 @@ func New(cfg Config) (*Proxy, error) {
 	inner.OnRequest().HandleConnect(goproxy.FuncHttpsHandler(func(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
 		hostname := stripHost(host)
 		lh := strings.ToLower(hostname)
+		log.Debug("mitm: CONNECT received", "sandbox", sandboxID, "host", hostname, "secretSuffixes", secretSuffixes)
 		if _, ok := secretSet[lh]; ok {
 			log.Info("mitm: CONNECT allowed (secret host)", "sandbox", sandboxID, "host", hostname)
 			return mitmAction, host
+		}
+		if matchesDotSuffix(lh, secretSuffixes) {
+			// Suffix-matched secret host: use ConnectHijack (not ConnectMitm)
+			// so we can advertise h2 in TLS ALPN. cursor-agent inference hosts
+			// (e.g. agentn.global.api5.cursor.sh) send only "h2" with no
+			// HTTP/1.1 fallback; ConnectMitm only speaks HTTP/1.1 and sends
+			// SSL alert 120. h2HijackAction performs the TLS handshake
+			// directly, serves via an http2-configured http.Server, and swaps
+			// the Authorization header per request. Add to allowSet so the
+			// swap DoFunc also fires for any plain-HTTP requests on the same
+			// host (though in practice cursor-agent uses HTTPS for all endpoints).
+			allowSet.Add(lh)
+			log.Info("mitm: CONNECT allowed (secret suffix)", "sandbox", sandboxID, "host", hostname)
+			return h2HijackAction, host
 		}
 		if allowAll {
 			log.Info("mitm: CONNECT tunneled (allow-all)", "sandbox", sandboxID, "host", hostname)
@@ -537,16 +582,28 @@ func New(cfg Config) (*Proxy, error) {
 
 	// OnRequest swaps placeholder Authorization tokens with real tokens.
 	// Bearer (gh CLI) and Basic (git HTTPS) are both handled (D-PD-23).
-	// Guard: only hosts in allowSet (= AllowedHosts ∪ SecretHosts) are swapped.
+	// Guard: only hosts in allowSet (= AllowedHosts ∪ SecretHosts ∪ suffix-matched) are swapped.
 	// Under AllowAll, non-secret hosts are CONNECT-tunneled and therefore never
 	// intercepted — they cannot reach this handler. SecretHosts are added to
-	// allowSet at construction, so the swap fires for them under AllowAll too.
+	// allowSet at construction; suffix-matched hosts are added to allowSet
+	// dynamically in HandleConnect above, so the swap fires for all of them.
+	//
+	// Suffix-matched hosts use broker.Resolve (unscoped) rather than
+	// ResolveScoped. This is safe: (a) the proxy is per-sandbox so all traffic
+	// it sees belongs to the same sandbox, and (b) the 256-bit placeholder is
+	// cryptographically unique — no other sandbox can guess it.
 	inner.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
 		host := reqHost(req)
-		if !allowSet.Has(host) {
+		lhost := strings.ToLower(host)
+		// isSuffix is true when the host matches a SecretHostSuffix but may
+		// not yet be in allowSet (plain HTTP requests skip HandleConnect, so
+		// the allowSet.Add in the CONNECT handler never runs for them).
+		isSuffix := matchesDotSuffix(lhost, secretSuffixes)
+		if !allowSet.Has(host) && !isSuffix {
 			return req, nil
 		}
-		swapped, ok := swapAuthorization(req.Header.Get("Authorization"), sandboxID, host, broker)
+		scoped := !isSuffix
+		swapped, ok := swapAuthorization(req.Header.Get("Authorization"), sandboxID, host, broker, scoped)
 		if !ok {
 			return req, nil
 		}
@@ -675,21 +732,43 @@ func generateCA() (tls.Certificate, error) {
 	}, nil
 }
 
+// matchesDotSuffix reports whether host ends with any of the dot-anchored
+// suffixes in suffixes (e.g. ".cursor.sh"). It uses strings.HasSuffix directly;
+// the leading dot is what provides the domain-boundary safety — ".cursor.sh"
+// matches "api2.cursor.sh" but not "evilcursor.sh" or "cursor.sh.attacker.com".
+// Callers must ensure every element of suffixes begins with ".".
+func matchesDotSuffix(host string, suffixes []string) bool {
+	for _, s := range suffixes {
+		if strings.HasSuffix(host, s) {
+			return true
+		}
+	}
+	return false
+}
+
 // swapAuthorization rewrites an Authorization header whose token/password
 // field is a broker placeholder. host is the request's target host (lowercase,
-// no port) and must match the host under which the placeholder was registered;
-// this enforces the host-boundary check that prevents cross-credential
-// exfiltration between distinct MCP OAuth tokens sharing the same broker.
+// no port). When scoped is true, broker.ResolveScoped is used and the host
+// must match the scope under which the placeholder was registered (cross-
+// credential exfiltration guard for MCP OAuth tokens). When scoped is false,
+// broker.Resolve is used (no host check); callers set this for suffix-matched
+// secret hosts where the same credential covers multiple sharded endpoints.
 // Returns ("", false) when there is nothing to swap. The real token is never
 // logged.
-func swapAuthorization(authHeader string, sandboxID domain.SandboxID, host string, broker *cred.Broker) (string, bool) {
+func swapAuthorization(authHeader string, sandboxID domain.SandboxID, host string, broker *cred.Broker, scoped bool) (string, bool) {
 	if broker == nil || authHeader == "" {
 		return "", false
+	}
+	resolve := func(placeholder string) (string, bool) {
+		if scoped {
+			return broker.ResolveScoped(placeholder, sandboxID, host)
+		}
+		return broker.Resolve(placeholder)
 	}
 	switch {
 	case strings.HasPrefix(authHeader, "Bearer "):
 		placeholder := strings.TrimPrefix(authHeader, "Bearer ")
-		realToken, ok := broker.ResolveScoped(placeholder, sandboxID, host)
+		realToken, ok := resolve(placeholder)
 		if !ok {
 			return "", false
 		}
@@ -697,7 +776,7 @@ func swapAuthorization(authHeader string, sandboxID domain.SandboxID, host strin
 	case strings.HasPrefix(authHeader, "token "):
 		// GitHub CLI uses "token <TOKEN>" (not Bearer) for classic PATs and GH_TOKEN.
 		placeholder := strings.TrimPrefix(authHeader, "token ")
-		realToken, ok := broker.ResolveScoped(placeholder, sandboxID, host)
+		realToken, ok := resolve(placeholder)
 		if !ok {
 			return "", false
 		}
@@ -711,7 +790,7 @@ func swapAuthorization(authHeader string, sandboxID domain.SandboxID, host strin
 		if !ok {
 			return "", false
 		}
-		realToken, ok := broker.ResolveScoped(pass, sandboxID, host)
+		realToken, ok := resolve(pass)
 		if !ok {
 			return "", false
 		}
@@ -1289,6 +1368,198 @@ func matchGlobSegs(pat, segs []string) bool {
 		}
 		pat = pat[1:]
 		segs = segs[1:]
+	}
+}
+
+// makeH2SuffixHijack returns the ConnectHijack handler for suffix-matched
+// secret hosts. It is called once per suffix-matched CONNECT request.
+//
+// Why ConnectHijack instead of ConnectMitm:
+//
+//	cursor-agent sends ONLY "h2" in TLS ALPN for inference connections to
+//	agentn.global.api5.cursor.sh (and similar sharded endpoints). goproxy's
+//	ConnectMitm only speaks HTTP/1.1 on the client-facing TLS connection;
+//	it sends SSL alert 120 (no_application_protocol) when the client insists
+//	on h2. ConnectHijack hands us the raw TCP connection so we can:
+//	  1. Perform the TLS handshake ourselves, advertising ["h2", "http/1.1"].
+//	  2. Serve the negotiated h2 connection via http2.Server.ServeConn, which
+//	     handles h2 framing, multiplexing, and flow control natively.
+//	  3. Swap the Authorization Bearer placeholder on each request.
+//	  4. Forward via an h2-capable http.Transport to the real server.
+//
+// http2.Server.ServeConn (golang.org/x/net/http2) is used rather than
+// http.Server.Serve with a singleConnListener because ServeConn blocks
+// cleanly until the single connection is done — no Accept/Close deadlock.
+//
+// The credential swap uses broker.Resolve (unscoped) — same as the DoFunc
+// path for suffix-matched hosts. See swapAuthorization for rationale.
+func makeH2SuffixHijack(
+	tlsCfgFn func(host string, ctx *goproxy.ProxyCtx) (*tls.Config, error),
+	sandboxID domain.SandboxID,
+	broker *cred.Broker,
+	log *slog.Logger,
+) func(req *http.Request, client net.Conn, ctx *goproxy.ProxyCtx) {
+	// Shared h2-capable outbound transport. http.Transport is goroutine-safe.
+	outTransport := &http.Transport{
+		ForceAttemptHTTP2: true,
+		TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
+	}
+	if err := http2.ConfigureTransport(outTransport); err != nil {
+		// ConfigureTransport only fails on nil input; panic is appropriate.
+		panic("mitm: h2SuffixHijack: ConfigureTransport: " + err.Error())
+	}
+
+	return func(req *http.Request, client net.Conn, ctx *goproxy.ProxyCtx) {
+		defer client.Close()
+
+		host := req.Host // e.g. "agentn.global.api5.cursor.sh:443"
+		hostname := stripHost(host)
+		lhostname := strings.ToLower(hostname)
+
+		log.Info("mitm: h2 hijack fn entered", "sandbox", sandboxID, "host", hostname)
+
+		// goproxy ConnectHijack does NOT send the 200 response on our behalf —
+		// the goproxy docs state explicitly that the hijack implementer is
+		// responsible for sending any HTTP response. Without this write, the
+		// SNI bridge blocks on readConnectResponse and never starts its
+		// io.Copy goroutines, so our TLS handshake blocks waiting for the
+		// ClientHello → deadlock.
+		if _, err := client.Write([]byte("HTTP/1.0 200 Connection established\r\n\r\n")); err != nil {
+			log.Warn("mitm: h2 suffix hijack: write 200 failed",
+				"sandbox", sandboxID, "host", hostname, "err", err)
+			return
+		}
+
+		// Sign a per-host cert with the sandbox CA (same cert generation
+		// as ConnectMitm's TLSConfigFromCA path).
+		tlsCfg, err := tlsCfgFn(hostname, ctx)
+		if err != nil {
+			log.Warn("mitm: h2 suffix hijack: TLS config error",
+				"sandbox", sandboxID, "host", hostname, "err", err)
+			return
+		}
+		// Prepend h2 so cursor-agent's h2-only ALPN advertisement succeeds.
+		tlsCfg.NextProtos = append([]string{"h2", "http/1.1"}, tlsCfg.NextProtos...)
+
+		// TLS handshake with the client on the raw TCP connection.
+		tlsConn := tls.Server(client, tlsCfg)
+		if err := tlsConn.Handshake(); err != nil {
+			log.Warn("mitm: h2 suffix hijack: TLS handshake failed",
+				"sandbox", sandboxID, "host", hostname, "err", err)
+			return
+		}
+		// Per-request handler: swap Authorization placeholder, forward upstream.
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Swap Authorization header (unscoped: same credential covers all
+			// suffix-matched shards; proxy is per-sandbox so cross-sandbox theft
+			// is not possible).
+			auth := r.Header.Get("Authorization")
+			hasAuth := auth != ""
+			authPrefix := ""
+			if len(auth) > 10 {
+				authPrefix = auth[:10]
+			} else {
+				authPrefix = auth
+			}
+			log.Debug("mitm: h2 hijack request", "sandbox", sandboxID, "host", hostname,
+				"method", r.Method, "path", r.URL.Path, "hasAuth", hasAuth, "authPrefix", authPrefix)
+			if swapped, ok := swapAuthorization(auth, sandboxID, lhostname, broker, false); ok {
+				r.Header.Set("Authorization", swapped)
+				log.Info("mitm: credential swapped", "sandbox", sandboxID, "host", hostname)
+			}
+
+			// Build outgoing request to the real server.
+			// Buffer the full request body before RoundTrip so the h2 transport
+			// sends END_STREAM on the request side immediately after sending all
+			// data. agentn uses Connect server-streaming: it won't start
+			// inference until it sees END_STREAM on the request stream. Passing
+			// r.Body directly can leave the request stream open (waiting for
+			// more data from the h2 server), preventing END_STREAM and causing
+			// agentn to stay in heartbeat-only mode indefinitely.
+			outURL := *r.URL
+			outURL.Scheme = "https"
+			outURL.Host = host
+			outReq, err := http.NewRequestWithContext(r.Context(), r.Method, outURL.String(), r.Body)
+			if err != nil {
+				http.Error(w, "proxy: build request: "+err.Error(), http.StatusBadGateway)
+				return
+			}
+			// Forward ContentLength so the upstream knows the exact request body
+			// size. For bidirectional-streaming RPCs (e.g. cursor-agent's
+			// /agent.v1.AgentService/Run), cursor-agent keeps the request stream
+			// open and never sends END_STREAM; passing r.Body directly lets
+			// outTransport's background goroutine forward each DATA frame as
+			// cursor-agent sends it. io.ReadAll(r.Body) would block indefinitely.
+			outReq.ContentLength = r.ContentLength
+			// Copy headers; skip hop-by-hop headers that must not be forwarded.
+			for k, vs := range r.Header {
+				switch strings.ToLower(k) {
+				case "proxy-connection", "keep-alive", "te", "trailers",
+					"transfer-encoding", "upgrade":
+					continue
+				}
+				outReq.Header[k] = vs
+			}
+
+			resp, err := outTransport.RoundTrip(outReq)
+			if err != nil {
+				log.Warn("mitm: h2 hijack upstream error", "sandbox", sandboxID, "host", hostname,
+					"method", r.Method, "path", r.URL.Path, "err", err)
+				http.Error(w, "proxy: upstream: "+err.Error(), http.StatusBadGateway)
+				return
+			}
+			defer resp.Body.Close()
+
+			// Copy response headers and body to the client.
+			// Pre-declare trailer keys (required before WriteHeader so h2
+			// includes them in the trailing HEADERS frame; grpc relies on
+			// grpc-status being delivered as a trailer).
+			for k := range resp.Trailer {
+				w.Header().Add("Trailer", k)
+			}
+			for k, vs := range resp.Header {
+				w.Header()[k] = vs
+			}
+			w.WriteHeader(resp.StatusCode)
+			// Flush after WriteHeader so the response headers reach the
+			// client before any body data (important for SSE/grpc streams).
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			// Streaming copy with per-chunk flush so DATA frames reach
+			// cursor-agent immediately (the h2 server buffers writes;
+			// without flushing, heartbeats are held until ServeConn
+			// returns which is never for a bidirectional stream).
+			flush, hasFlusher := w.(http.Flusher)
+			buf := make([]byte, 32*1024)
+			for {
+				n, rerr := resp.Body.Read(buf)
+				if n > 0 {
+					if _, werr := w.Write(buf[:n]); werr != nil {
+						break
+					}
+					if hasFlusher {
+						flush.Flush()
+					}
+				}
+				if rerr != nil {
+					break
+				}
+			}
+
+			// Forward trailing headers (grpc-status, grpc-message, etc.)
+			// sent by the upstream after the response body.
+			for k, vs := range resp.Trailer {
+				w.Header()[k] = vs
+			}
+		})
+
+		// ServeConn handles the h2 connection directly — no net.Listener needed.
+		// It blocks until the connection is closed by either side. This avoids
+		// the Accept/Close deadlock that http.Server.Serve has with a single-
+		// connection listener.
+		h2s := &http2.Server{}
+		h2s.ServeConn(tlsConn, &http2.ServeConnOpts{Handler: handler})
 	}
 }
 

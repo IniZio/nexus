@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -92,6 +93,11 @@ const (
 	// guest agent does not become reachable within the configured timeout.
 	// The VM is stopped and the record is deleted before this code is returned.
 	sandboxErrCodeAgentUnreachable = "agent_unreachable"
+
+	// sandboxErrCodeBadCredential is returned when the credential preflight for
+	// an --agent sandbox fails at create time (absent, unreadable, or expired).
+	// Returned before any VM boots so no cleanup is needed.
+	sandboxErrCodeBadCredential = "bad_credential"
 )
 
 // noopDriver
@@ -1037,6 +1043,11 @@ func scratchDiskCmdlineArg(idx int) string {
 	return fmt.Sprintf(" --scratch-disk=%s", dev)
 }
 
+// goArchForBuild returns the host GOARCH string for use with
+// [builder.GoArchToVendorArch]. Extracted into a function so it can be
+// overridden in tests without touching runtime.GOARCH directly.
+var goArchForBuild = func() string { return runtime.GOARCH }
+
 // resolveAgentPosture derives the three create-time settings that --agent
 // controls: the agent profile recorded on the sandbox, the egress allowlist
 // frozen onto its Envelope, and whether egress is open.
@@ -1067,6 +1078,33 @@ func resolveAgentPosture(f sandboxCreateFlags) (cred.AgentProfile, []string, boo
 	// intercepts SecretHosts regardless of AllowAll, so the credential swap
 	// fires correctly under the broad-allow dev-egress posture.
 	return profile, allowHosts, f.egressExplicit && !f.egressClosed
+}
+
+// credPreflightCheck verifies the credential for profile before any VM work
+// begins.  Profiles with CredentialFormatNone (e.g. Claude Code) always pass.
+// Returns nil when the credential is usable; returns a *CodedError with code
+// sandboxErrCodeBadCredential and Sentence() as the message otherwise.
+func credPreflightCheck(profile cred.AgentProfile) error {
+	if pf := cred.CheckCred(profile); !pf.OK() {
+		return &CodedError{
+			Code: sandboxErrCodeBadCredential,
+			Msg:  "sandbox create: " + pf.Sentence(),
+		}
+	}
+	return nil
+}
+
+// agentDevEgressSecretHostSuffixes returns the dot-anchored DNS suffixes that
+// must appear in SecretHostSuffixes when an agent sandbox is created with open
+// egress (dev-egress posture, D-PD-33). Each suffix covers a family of
+// sharded/regional endpoints that share the same credential as CredentialedHost
+// but whose exact names vary. Returns nil when there is no agent or egress is
+// closed. The suffix is taken from [cred.AgentProfile.CredentialedHostSuffix].
+func agentDevEgressSecretHostSuffixes(profile cred.AgentProfile, openEgress bool) []string {
+	if profile.Name == "" || !openEgress || profile.CredentialedHostSuffix == "" {
+		return nil
+	}
+	return []string{profile.CredentialedHostSuffix}
 }
 
 // agentDevEgressSecretHosts returns the set of hostnames that must appear in
@@ -1285,6 +1323,12 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		// Resolve agent posture so the config-default agent (from applyUserGlobalConfig
 		// or applyProjectConfig) is persisted on the record even when no image is given.
 		noBootProfile, _, _ := resolveAgentPosture(f)
+		// S16: fail fast if the agent credential is dead — even on the store-only
+		// path.  A sandbox record with a broken credential is just as unusable
+		// as a booted one.
+		if err := credPreflightCheck(noBootProfile); err != nil {
+			return err
+		}
 		// Agent-settings / MCP sharing (A-MOUNT) requires a booted VM: the
 		// agentcfg-lower overlay is wired into the driver config at CreateAndBoot
 		// time and is never read for a store-only record (no rootfs, no guest).
@@ -1438,7 +1482,11 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			return errSandbox("sandbox create", fmt.Errorf("--file: read Containerfile %q: %w", containerfilePath, err))
 		}
 		baseImageRef := builder.ExtractFromRef(containerfileBytes)
-		fp, err := builder.BuildFingerprint(containerfileBytes, baseImageRef, agentBytes, workspaceDir)
+		// Resolve the agent profile and target arch now so they can be included
+		// in the fingerprint and reused for the BuilderVMSpec below.
+		buildProfile, _, _ := resolveAgentPosture(f)
+		buildTargetArch := builder.GoArchToVendorArch(goArchForBuild())
+		fp, err := builder.BuildFingerprint(containerfileBytes, baseImageRef, agentBytes, workspaceDir, buildProfile.Recipe(), buildTargetArch)
 		if err != nil {
 			return errSandbox("sandbox create", fmt.Errorf("--file: fingerprint: %w", err))
 		}
@@ -1575,6 +1623,8 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				ArtifactDiskPath: artifactDiskPath,
 				CacheDisks:       cacheDisks,
 				MemoryMiB:        uint16(f.builderMemoryMiB),
+				ToolRecipe:       buildProfile.Recipe(),
+				TargetArch:       buildTargetArch,
 			}
 
 			// Sizing is derived from the spec via exported helpers so
@@ -1913,6 +1963,11 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// detached supervisor that takes ownership below: it re-boots the VM, and
 	// /run is tmpfs, so anything seeded here is discarded on that reboot.
 	agentProfile, allowHosts, openEgress := resolveAgentPosture(f)
+	// S16: fail before any VM work if the agent credential is dead.  Profiles
+	// with CredentialFormatNone (Claude Code) always pass.
+	if err := credPreflightCheck(agentProfile); err != nil {
+		return err
+	}
 
 	// C-SECRET: auto-derive MCP server credentials and guest definitions via the
 	// unified builder. HTTPBinds become SecretBinds for MITM swap; their hosts
@@ -1979,10 +2034,9 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	if !f.noShareSettings && len(agentProfile.MountAllowlist) > 0 {
 		id := domain.NewSandboxID()
 		stageDir := filepath.Join(storeRoot, "disks", id.String()+"-agentcfg-lower")
-		agentConfigDir := filepath.Dir(agentProfile.SettingsPath) // e.g. "~/.claude"
-		if assembleErr := service.AssembleCuratedConfig(agentProfile, agentConfigDir, stageDir); assembleErr != nil {
+		if stageErr := stageAgentCuratedConfig(agentProfile, stageDir); stageErr != nil {
 			_ = os.RemoveAll(stageDir)
-			slog.Warn("sandbox create: failed to stage agent config; running without shared settings", "err", assembleErr)
+			slog.Warn("sandbox create: failed to stage agent config; running without shared settings", "err", stageErr)
 		} else {
 			preMintedID = id
 			agentCfgStageDir = stageDir
@@ -2017,6 +2071,17 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 						slog.Warn("sandbox create: failed to load user global config; user mounts disabled", "err", ugErr)
 					}
 					manifest := service.BuildUserMountManifest(hostHome, []string(userGlobalCfg.Sandbox.Mounts))
+					// Shadow diagnostic (AC-5, D-TP-01): warn when a user-mount row's
+					// guest path shadows a recipe install path or PATH-entry directory.
+					// The warning names the raw config spec so the operator can identify
+					// and fix the conflict. Mounts are not filtered: the warning is
+					// advisory and the mount still takes effect (the agent binary will
+					// come from the pinned recipe layer regardless, at /usr/local/bin).
+					if len(agentProfile.ToolRecipe.Packages) > 0 {
+						for _, w := range service.CheckRecipeShadows([]string(userGlobalCfg.Sandbox.Mounts), agentProfile.ToolRecipe) {
+							slog.Warn("sandbox create: " + w)
+						}
+					}
 					for _, m := range manifest.Mounts {
 						bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
 							HostPath:  m.HostPath,
@@ -2062,7 +2127,8 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			// --agent + --egress open (dev-egress posture): OpenEgress=true +
 			// ExtraSecretHosts routes the credentialed host through MITM proxy.
 			OpenEgress:        openEgress,
-			ExtraSecretHosts:  agentDevEgressSecretHosts(agentProfile, openEgress),
+			ExtraSecretHosts:        agentDevEgressSecretHosts(agentProfile, openEgress),
+			ExtraSecretHostSuffixes: agentDevEgressSecretHostSuffixes(agentProfile, openEgress),
 			AgentProfile:      agentProfile,  // zero value when --agent was not passed
 			AllowedRepo:  f.allowedRepo,  // D-PD-36: set by --repo; empty for open-egress sandboxes
 			PathPolicies: f.pathPolicies, // conveyed via --egress-policy-json on the worktree subprocess path
@@ -2109,7 +2175,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		len(namedDiskMounts),
 		workspaceGuestPathFor(bootWorkspace), bootLiveMounts, caps.VirtiofsdPath,
 		f.nestedVirt,
-		mcpOAuthRefreshConfigs); handoffErr != nil {
+		mcpOAuthRefreshConfigs, agentProfile); handoffErr != nil {
 		slog.Warn("sandbox create: supervisor handoff failed; broker will not survive CLI exit",
 			"sandbox", sb.ID, "err", handoffErr)
 	}
@@ -2198,6 +2264,7 @@ func handoffHumanSupervisor(
 	virtiofsdPath string,
 	nestedVirt bool,
 	mcpOAuthRefreshConfigs []service.MCPOAuthRefreshConfig,
+	agentProfile cred.AgentProfile,
 ) error {
 	if diskPath == "" {
 		return fmt.Errorf("no disk path captured")
@@ -2223,6 +2290,7 @@ func handoffHumanSupervisor(
 		liveMounts, virtiofsdPath,
 		nestedVirt,
 		mcpOAuthRefreshConfigs,
+		agentProfile,
 	)
 	if err := supervisor.WriteSpawnSpec(stateDir, cfg); err != nil {
 		return err
@@ -2281,6 +2349,7 @@ func buildHumanSupervisorConfig(
 	virtiofsdPath string,
 	nestedVirt bool,
 	mcpOAuthRefreshConfigs []service.MCPOAuthRefreshConfig,
+	agentProfile cred.AgentProfile,
 ) supervisor.Config {
 	// ResizableDiskIndices: named-volume disks occupy ExtraDisks[0..numNamedDisks-1]
 	// (prepended by create.go step 4.7 in declaration order). The workspace disk
@@ -2323,7 +2392,7 @@ func buildHumanSupervisorConfig(
 		// at expiry with an opaque 401 in the guest. Set unconditionally:
 		// when the store is absent the supervisor logs creds_absent and
 		// carries on, so there is no cost for sandboxes that need no cred.
-		CredsFile:              service.DefaultDedicatedCredStorePath(),
+		CredsFile:              service.DedicatedCredStorePathForProfile(agentProfile),
 		NestedVirt:             nestedVirt,
 		MCPOAuthRefreshConfigs: mcpOAuthRefreshConfigs,
 	}
@@ -2912,6 +2981,28 @@ func namedDiskGuestMounts(mounts []service.NamedVolumeMount) []agent.GuestMount 
 // volume names are consistent across both paths.
 func sandboxAgentCfgVolumeName(project, name string) string {
 	return herdrHandleSlug(project+"/"+name) + "-agentcfg"
+}
+
+// stageAgentCuratedConfig resolves the agent's settings source directory via
+// service.AgentSettingsDir (which uses profile.ConfigDirEnvVar — the SETTINGS
+// redirect — never profile.CredDirEnvVar) and stages a curated, secret-free
+// subset of that directory into stageDir.
+//
+// For cursor, ConfigDirEnvVar is "CURSOR_CONFIG_DIR" and CredDirEnvVar is
+// "XDG_CONFIG_HOME". Using CredDirEnvVar would point at the credential
+// directory (~/.config/cursor) instead of the settings directory (~/.cursor),
+// missing cli-config.json entirely. This function must never be inlined back
+// to filepath.Dir(profile.SettingsPath), which ignores both redirects.
+//
+// Extracted as a named function to keep the call site unit-testable without
+// a live VM: tests can set ConfigDirEnvVar in the environment and call this
+// directly.
+func stageAgentCuratedConfig(profile cred.AgentProfile, stageDir string) error {
+	agentConfigDir, err := service.AgentSettingsDir(profile)
+	if err != nil {
+		return err
+	}
+	return service.AssembleCuratedConfig(profile, agentConfigDir, stageDir)
 }
 
 // parseMountNamed parses a --mount-named spec of the form:
