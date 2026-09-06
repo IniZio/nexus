@@ -1,0 +1,17 @@
+# Fixture for mutation-proof testing of TestHerdrPluginManifest_EventNamesValid.
+#
+# This file uses the CORRECT event name: worktree.removed (dot separator), which
+# is the name herdr's registry accepts. This is the corrected form of the D-HSH-20
+# bug.
+#
+# Expected outcome: TestHerdrPluginManifest_EventNamesValid PASSES (GREEN) against
+# this fixture.
+id = "nexus3-test-fixture"
+name = "nexus3-test-fixture"
+version = "0.0.0"
+min_herdr_version = "0.7.4"
+description = "Mutation-proof fixture — valid event name (dot separator)."
+
+[[events]]
+on = "worktree.removed"
+command = ["sh", "-c", "echo mutation-probe-valid"]

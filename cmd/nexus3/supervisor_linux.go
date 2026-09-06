@@ -49,7 +49,10 @@ func (r *supervisorResizableDiskIndices) String() string {
 func (r *supervisorResizableDiskIndices) Set(v string) error {
 	idx, err := strconv.Atoi(v)
 	if err != nil {
-		return fmt.Errorf("--resizable-disk-index: %w", err)
+		// Generic message: this flag.Value type backs more than one integer
+		// list flag (--resizable-disk-index, --cache-disk-lease-fd) and the
+		// flag package already prefixes the offending flag name.
+		return fmt.Errorf("expected an integer, got %q: %w", v, err)
 	}
 	*r = append(*r, idx)
 	return nil
@@ -85,7 +88,7 @@ func (m *supervisorLiveMounts) Set(v string) error {
 // dispatched from main() before any CLI routing so the supervisor process
 // never touches cobra or the CLI command registry.
 func runSupervisorMain(args []string) {
-	cfg, err := parseSupervisorFlags(args)
+	cfg, adoptHandoffSock, reacquire, err := parseSupervisorFlags(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -102,6 +105,29 @@ func runSupervisorMain(args []string) {
 	} else {
 		slog.Warn("supervisor: spawn spec unreadable; MCPOAuthRefreshConfigs will be absent", "err", specErr)
 	}
+	// adoptHandoffSock selects adopt mode: RunAdopt never boots a VM, unlike
+	// RunDetached, which always does (see cmd_supervisor_upgrade.go for the
+	// operator verb that drives this path).
+	if adoptHandoffSock != "" {
+		if err := supervisor.RunAdopt(cfg, adoptHandoffSock); err != nil {
+			slog.Error("supervisor: adopt run failed", "err", err)
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	// reacquire selects re-acquire mode: like adopt mode it never boots a VM,
+	// but there is no live outgoing supervisor to receive a handoff from —
+	// the perimeter is rebuilt through the surviving netns child's control
+	// socket. Spawned by recovery when it classifies a sandbox adoptable.
+	if reacquire {
+		if err := supervisor.RunReacquire(cfg); err != nil {
+			slog.Error("supervisor: reacquire run failed", "err", err)
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := supervisor.RunDetached(cfg); err != nil {
 		slog.Error("supervisor: run failed", "err", err)
 		fmt.Fprintln(os.Stderr, err)
@@ -115,7 +141,7 @@ func runSupervisorMain(args []string) {
 // (as happened with ExtraDisks on 2026-08-16 — the supervisor then attached
 // only the rootfs and the guest panicked mounting its workspace) is caught
 // by a round-trip test instead of a live boot.
-func parseSupervisorFlags(args []string) (supervisor.Config, error) {
+func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSock string, reacquire bool, err error) {
 	fs := flag.NewFlagSet(supervisor.HiddenSubcommand, flag.ContinueOnError)
 	var (
 		sandboxRef = fs.String("sandbox-ref", "", "sandbox ID hex or <project>/<name> handle (required)")
@@ -139,6 +165,9 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 		// bootVCPUs: seeds SandboxResizer.CurrentVCPUs() before the first resize.
 		// 0 means the supervisor applies the driver default (1 vCPU).
 		bootVCPUs = fs.Uint("boot-vcpus", 0, "vCPU count at VM boot (0 = driver default = 1)")
+		// nestedVirt: enables KVM nested virtualisation (D-N3N-02). Default
+		// false. Absent flag means nested-OFF — never nested-ON.
+		nestedVirt = fs.Bool("nested", false, "enable KVM nested virtualisation (D-N3N-02: opt-in only, default-off)")
 		// ephemeral: one-shot/builder mode — exit on POST /supervisor/stop
 		// (the build-complete signal) rather than waiting indefinitely for SIGTERM.
 		ephemeral = fs.Bool("ephemeral", false, "one-shot mode: terminate on /supervisor/stop completion signal")
@@ -149,6 +178,9 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 		parentPipeFD = fs.Int("parent-pipe-fd", 0, "parent-watchdog pipe read fd (0 = none; ephemeral only)")
 		// workspaceDiskIndex: 0-based ExtraDisks index of the workspace disk.
 		workspaceDiskIndex = fs.Int("workspace-disk-index", -1, "workspace disk ExtraDisks index (-1 = no disk axis)")
+		// scratchDiskIndex: 0-based ExtraDisks index of the scratch disk.
+		// -1 means no scratch disk (non-workspace sandboxes, or NoScratchDisk=true).
+		scratchDiskIndex = fs.Int("scratch-disk-index", -1, "scratch disk ExtraDisks index (-1 = no scratch disk)")
 		// workspaceGuestPath: in-guest mount point of the workspace disk. When
 		// non-empty the supervisor seeds the operator's git identity into the
 		// guest after the human-secret seed loop (GIT-SEED, D-PD-29).
@@ -161,6 +193,10 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 		// whenever --mount is passed; the driver refuses to boot with live
 		// mounts and an empty VirtiofsdPath.
 		virtiofsd = fs.String("virtiofsd", "", "virtiofsd binary path (required with --mount)")
+		// adoptHandoffSockFlag: selects adopt mode. See RunAdopt's doc comment.
+		adoptHandoffSockFlag = fs.String("adopt-handoff-sock", "", "adopt mode: Unix STREAM socket to listen on for the handoff offer (empty = boot mode)")
+		// reacquireFlag: selects re-acquire mode. See RunReacquire's doc comment.
+		reacquireFlag = fs.Bool("reacquire", false, "re-acquire mode: rebuild the perimeter for a live VM whose supervisor died (no handoff; empty = boot mode)")
 	)
 	// liveMounts accumulates repeated --mount flags (one per virtiofs share).
 	// These must be re-attached on every supervisor boot: the guest cmdline
@@ -178,8 +214,17 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 	// workspace disk index and forwarded via HasWorkspaceDisk/WorkspaceDiskIndex.
 	var resizableDiskIndices supervisorResizableDiskIndices
 	fs.Var(&resizableDiskIndices, "resizable-disk-index", "0-based ExtraDisks index for disk governor (repeatable)")
+	// cacheDiskSlots / cacheDiskLeaseFDs accumulate the builder cache-disk slot
+	// leases this supervisor owns for its VM's lifetime (D-HSH-07). The fd list
+	// is index-parallel to the slot list; each fd was inherited via ExtraFiles
+	// and already holds the slot's flock. An absent fd means "acquire this slot
+	// by path" — the adopt and crash-recovery paths, which have no live sender.
+	var cacheDiskSlots supervisorExtraDisks
+	fs.Var(&cacheDiskSlots, "cache-disk-slot", "builder cache-disk slot image path leased for this VM (repeatable, order-preserving)")
+	var cacheDiskLeaseFDs supervisorResizableDiskIndices
+	fs.Var(&cacheDiskLeaseFDs, "cache-disk-lease-fd", "inherited fd already holding the flock for the same-index --cache-disk-slot (repeatable)")
 	if err := fs.Parse(args); err != nil {
-		return supervisor.Config{}, err
+		return supervisor.Config{}, "", false, err
 	}
 
 	missing := ""
@@ -200,10 +245,10 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 		missing = "--disk"
 	}
 	if missing != "" {
-		return supervisor.Config{}, fmt.Errorf("supervisor: %s is required", missing)
+		return supervisor.Config{}, "", false, fmt.Errorf("supervisor: %s is required", missing)
 	}
 
-	cfg := supervisor.Config{
+	cfg = supervisor.Config{
 		SandboxRef: *sandboxRef,
 		StoreRoot:  *storeRoot,
 		StateDir:   *stateDir,
@@ -214,14 +259,19 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 		CredsFile:  *credsFile,
 		MemoryMiB:  uint32(*memoryMiB),
 		BootVCPUs:  uint32(*bootVCPUs), //nolint:gosec // range-checked by flag.Uint; vCPUs fit uint32
+		NestedVirt: *nestedVirt,
 		// HasWorkspaceDisk / WorkspaceDiskIndex: the workspace disk index is
 		// meaningful only when the flag was explicitly passed (>= 0). The -1
 		// default means no workspace disk is attached; the disk axis is skipped.
-		HasWorkspaceDisk:   *workspaceDiskIndex >= 0,
-		WorkspaceDiskIndex: *workspaceDiskIndex,
-		WorkspaceGuestPath: *workspaceGuestPath,
+		HasWorkspaceDisk:     *workspaceDiskIndex >= 0,
+		WorkspaceDiskIndex:   *workspaceDiskIndex,
+		HasScratchDisk:       *scratchDiskIndex >= 0,
+		ScratchDiskIndex:     *scratchDiskIndex,
+		WorkspaceGuestPath:   *workspaceGuestPath,
 		ExtraDisks:           []string(extraDisks),
 		ResizableDiskIndices: []int(resizableDiskIndices),
+		CacheDiskSlots:       []string(cacheDiskSlots),
+		CacheDiskLeaseFDs:    []int(cacheDiskLeaseFDs),
 		GovBounds: resize.Bounds{
 			MemMinBytes:  *govMemMin,
 			MemMaxBytes:  *govMemMax,
@@ -235,5 +285,5 @@ func parseSupervisorFlags(args []string) (supervisor.Config, error) {
 		Ephemeral:     *ephemeral,
 		ParentPipeFD:  *parentPipeFD,
 	}
-	return cfg, nil
+	return cfg, *adoptHandoffSockFlag, *reacquireFlag, nil
 }

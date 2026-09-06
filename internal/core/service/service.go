@@ -26,12 +26,17 @@ package service
 import (
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -44,6 +49,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter/mitm"
 	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
 	"github.com/IniZio/nexus3/internal/core/perimeter/netstack"
+	"github.com/IniZio/nexus3/internal/core/statedir"
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/core/volumestore"
 )
@@ -93,6 +99,31 @@ type Service struct {
 	// dead sandbox.
 	deregistrarsMu sync.Mutex
 	deregistrars   map[domain.SandboxID]sandboxDeregistrar
+
+	// testHookBeforeStoreCreate is called inside CreateAndBoot immediately
+	// before svc.store.Create commits the sandbox record. It is nil in
+	// production and is set only by tests that need to observe the
+	// volume-lease state in the D2 window (between vs.AttachLocked and
+	// store.Create). If the hook returns a non-nil error, CreateAndBoot
+	// propagates it and aborts without writing the record.
+	//
+	// WHY IT IS A FIELD ON Service AND NOT A PACKAGE VAR: three tests in this
+	// package call t.Parallel() and drive CreateAndBoot
+	// (TestD2_DirVolumeLeaseHeldAcrossStoreCreate,
+	// TestNamedVolume_DeviceLetterOrder, TestNamedVolume_ABBADeadlock). While
+	// the hook was a package var, a parallel peer's create fired the D2 test's
+	// hook. Reproduced under -race by widening the installed-hook window: the
+	// hook fired 3 times in one D2 run, and the detector flagged writes to the
+	// D2 test's stack locals from the peers' goroutines. It also lets D2 go
+	// GREEN under the AttachLocked→Attach mutation it exists to catch, because
+	// a peer's fire can Prune the volume away before D2's own hook runs.
+	// Every test builds its own Service via New, so a field on Service scopes
+	// the hook to the creates its installer drove.
+	//
+	// Stored atomically: CreateAndBoot may read it from a goroutine other than
+	// the one that installed it. A plain field would race for the same reason
+	// a plain package var did (observed 1 in 6 under whole-package -race).
+	testHookBeforeStoreCreate atomic.Pointer[func() error]
 }
 
 // New returns a Service backed by the given store, driver, and machine.
@@ -492,6 +523,42 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 		rec.State = tr.NextState
 		rec.InstanceID = instanceID
 		rec.StopReason = "" // cleared: sandbox is running; StopReason only qualifies stopped
+		// Persist the netns adoption identity fields so a replacement supervisor
+		// can call AdoptNetnsRuntime without consulting ps/nsenter. The optional
+		// NetnsStateProvider interface is implemented only by drivers that use
+		// StartNetnsRuntime; other drivers leave these fields zero/empty.
+		if nsp, ok := s.driver.(driver.NetnsStateProvider); ok {
+			ns, hasNetns := nsp.NetnsState(rec.ID)
+			if hasNetns {
+				rec.NetnsChildPID = ns.ChildPID
+				rec.NetnsChildPGID = ns.ChildPGID
+				rec.NetnsChildStartTime = ns.ChildStartTime
+				rec.GuestTapName = ns.GuestTap
+				rec.CHAPISocket = ns.APISocket
+				rec.NetnsControlSocket = ns.ControlSocket
+				rec.NetnsControlToken = ns.ControlToken
+			} else {
+				// Driver reported no active netns runtime: clear any stale
+				// values from a previous Start so AdoptNetnsRuntime cannot
+				// target a recycled pid.
+				rec.NetnsChildPID = 0
+				rec.NetnsChildPGID = 0
+				rec.NetnsChildStartTime = 0
+				rec.GuestTapName = ""
+				rec.CHAPISocket = ""
+				rec.NetnsControlSocket = ""
+				rec.NetnsControlToken = ""
+			}
+		} else {
+			// Driver does not use netns runtime at all: clear the fields.
+			rec.NetnsChildPID = 0
+			rec.NetnsChildPGID = 0
+			rec.NetnsChildStartTime = 0
+			rec.GuestTapName = ""
+			rec.CHAPISocket = ""
+			rec.NetnsControlSocket = ""
+			rec.NetnsControlToken = ""
+		}
 		updated = *rec
 		return nil
 	}); err != nil {
@@ -505,7 +572,7 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 	// broker must be attached. An absent broker means the operator has not
 	// enabled egress enforcement; the supervisor is skipped silently.
 	if hook, ok := s.driver.(driver.NetworkHook); ok && s.broker != nil {
-		if err := s.startSupervisor(ctx, hook, updated); err != nil {
+		if err := s.startSupervisor(ctx, hook, updated, nil); err != nil {
 			return domain.Sandbox{}, fmt.Errorf("service: start %s: perimeter: %w", updated.ID, err)
 		}
 	}
@@ -548,6 +615,17 @@ func (s *Service) Stop(ctx context.Context, ref string) (domain.Sandbox, error) 
 		rec.State = tr.NextState
 		rec.InstanceID = ""
 		rec.StopReason = domain.StopReasonClean // user-requested clean stop
+		// Clear the netns adoption fields so a stale record cannot cause a
+		// future AdoptNetnsRuntime to target a recycled pid. The fail-closed
+		// starttime guard is the backstop, but a cleared record should not
+		// reach that far.
+		rec.NetnsChildPID = 0
+		rec.NetnsChildPGID = 0
+		rec.NetnsChildStartTime = 0
+		rec.GuestTapName = ""
+		rec.CHAPISocket = ""
+		rec.NetnsControlSocket = ""
+		rec.NetnsControlToken = ""
 		updated = *rec
 		return nil
 	}); err != nil {
@@ -727,6 +805,24 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 	_ = ReapDiskCopy(s.diskDir, sb.ID)
 	_ = ReapShadowDisks(s.diskDir, sb.Handle())
 
+	// Reap the per-sandbox supervisor state dir. It is the last durable thing
+	// keyed by this ULID, and nothing recreates it once the record is gone, so
+	// leaving it behind is a pure leak — 641 such dirs against 1 live sandbox
+	// had accumulated on the reference host before this call existed
+	// (D-HSH-18). It holds spawn.json, supervisor.log, the egress decisions log
+	// and (as of s15) the MITM CA private key, so it must not outlive the
+	// sandbox.
+	//
+	// Ordered AFTER store.Delete deliberately: while the record still exists a
+	// crashed Remove leaves a sandbox that `recover` can still reason about,
+	// and the state dir is exactly what a re-acquisition would need. Once the
+	// record is gone there is nothing left to re-acquire.
+	//
+	// Idempotent and non-fatal, matching the disk reapers above: a missing dir
+	// is not an error, and a failure here must not fail a Remove whose
+	// destructive work has already committed.
+	_ = removeSupervisorStateDir(sb.ID)
+
 	// Detach named volumes under the per-volume lock (D-PD-87: Remove
 	// NEVER deletes volume backing files — only the attachment record is cleared).
 	// Uses detachVolumeLocked so the write races neither against a concurrent
@@ -775,7 +871,17 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 // startSupervisor assembles a PerimeterSupervisor for the running sandbox and
 // stores it. Called by Start after the store lock is released, and by Fork
 // and RestoreFromSnapshot for children persisted directly as Running.
-func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, sb domain.Sandbox) error {
+// CASeed carries a pre-existing MITM CA certificate+key to seed into a
+// freshly constructed proxy, instead of minting a fresh CA. Used by the
+// hot-swap adopt path so the replacement supervisor continues signing leaf
+// certificates the guest already trusts (motive
+// nexus3-host-supervisor-hotswap).
+type CASeed struct {
+	CertPEM []byte
+	KeyPEM  []byte
+}
+
+func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, sb domain.Sandbox, seedCA *CASeed) error {
 	fd, err := hook.GuestNetworkFD(ctx, sb.ID)
 	if err != nil {
 		return fmt.Errorf("guest network fd: %w", err)
@@ -791,6 +897,57 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 	if err != nil {
 		fd.Close()
 		return fmt.Errorf("allow list: %w", err)
+	}
+
+	// stateDir is <storeRoot>/supervisors/<sandbox-id>: the egress decisions log
+	// and the persisted MITM CA further down both live in it. It stays empty
+	// when the store root cannot be resolved, in which case both are skipped.
+	//
+	// The path comes from statedir, which internal/supervisor also uses for
+	// DefaultStateDir (the supervisor package cannot be imported here — it
+	// imports service), so the two cannot drift apart on path OR on mode.
+	//
+	// NOTE (s15 builder-supervisor decision): the path is derived from the
+	// STORE ROOT and the SANDBOX ID, never from a supervisor's cfg.StateDir. A
+	// builder supervisor keeps its pidfile and socket under
+	// builder-supervisors/<id> at 0755, a tree Service.Remove does not clean —
+	// so keying secret material off cfg.StateDir would put a CA private key in
+	// a world-readable directory with no lifetime bound. Keying it off
+	// statedir.SupervisorDir puts every CA, builder or not, in the 0700 tree
+	// that Service.Remove deletes and service.Reap collects orphans from.
+	var stateDir string
+	if storeRoot, sdErr := store.DefaultRoot(); sdErr == nil {
+		stateDir = statedir.SupervisorDir(storeRoot, sb.ID)
+	}
+
+	// Wire the egress decisions log so `nexus3 egress log` can stream verdicts.
+	// Errors are non-fatal: the perimeter still enforces policy; we just lose
+	// the decisions log for this run.
+	//
+	// A single mutex+encoder is shared between the netfilter and MITM sinks so
+	// concurrent writes from both sources never interleave JSON lines.
+	var mitmOnEgress func(host, verdict, reason string, ts time.Time)
+	if stateDir != "" {
+		decisionsDir := stateDir
+		_ = statedir.Ensure(decisionsDir)
+		decisionsPath := filepath.Join(decisionsDir, "egress-decisions.jsonl")
+		if df, dfErr := os.OpenFile(decisionsPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, statedir.FileMode); dfErr == nil {
+			var egressMu sync.Mutex
+			egressEnc := json.NewEncoder(df)
+			type egressRec struct {
+				Host      string    `json:"host"`
+				Verdict   string    `json:"verdict"`
+				Reason    string    `json:"reason"`
+				Timestamp time.Time `json:"timestamp"`
+			}
+			emit := func(host, verdict, reason string, ts time.Time) {
+				egressMu.Lock()
+				defer egressMu.Unlock()
+				_ = egressEnc.Encode(egressRec{Host: host, Verdict: verdict, Reason: reason, Timestamp: ts})
+			}
+			al.OnEgress = emit
+			mitmOnEgress = emit
+		}
 	}
 
 	// D-PD-33: open egress is an explicit opt-in stored in the Envelope. An
@@ -825,20 +982,53 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 	var proxy *mitm.Proxy
 	if SandboxHasMITMProxy(sb) {
 		var err error
+		var seedCertPEM, seedKeyPEM []byte
+		if seedCA != nil {
+			seedCertPEM, seedKeyPEM = seedCA.CertPEM, seedCA.KeyPEM
+		}
 		proxy, err = mitm.New(mitm.Config{
 			SandboxID:       sb.ID,
 			AllowedHosts:    sb.Envelope.AllowedHosts,
-			SecretHosts:     sb.Envelope.SecretHosts,
+			SecretHosts:        sb.Envelope.SecretHosts,
+			SecretHostSuffixes: sb.Envelope.SecretHostSuffixes,
 			Broker:          s.broker,
 			AllowAll:        allowAll && (len(sb.Envelope.SecretHosts) > 0 || sb.AgentName != ""),
-			AllowedRepo:     sb.Envelope.AllowedRepo,                    // D-PD-36: per-repo path allowlist
+			SeedCACertPEM:   seedCertPEM,
+			SeedCAKeyPEM:    seedKeyPEM,
+			AllowedRepo:     sb.Envelope.AllowedRepo,                         // D-PD-36: per-repo path allowlist
 			PathPolicies:    buildMITMPathPolicies(sb.Envelope.PathPolicies), // T4: per-secret path policies
-			AllowedBranches: sb.Envelope.ResolvedAllowedBranches(),      // S0: default applied here
+			AllowedBranches: sb.Envelope.ResolvedAllowedBranches(),           // TBD-1: worktree-derived branch, or default/sentinel
+			OnEgress:        mitmOnEgress,                                    // shared egress-decisions sink
 		})
 		if err != nil {
 			fd.Close()
 			al.Stop()
 			return fmt.Errorf("mitm proxy: %w", err)
+		}
+
+		// Persist the CA so a supervisor that replaces a CRASHED one can
+		// re-seed it and keep signing leaf certificates the guest already
+		// trusts (D-HSH-18 / ticket 13). Written unconditionally rather than
+		// only when the CA was freshly minted: writing back a seeded CA is
+		// idempotent (same bytes) and self-healing (it restores the file if it
+		// was deleted or damaged while the sandbox ran), whereas a
+		// "mint-only" branch would leave a sandbox that was adopted once with
+		// no persisted CA at all.
+		//
+		// Best-effort by design: a perimeter that enforces egress policy but
+		// whose CA will not survive a crash is strictly better than no
+		// perimeter. The failure is logged at WARN and names the path, so the
+		// later "CA lost" on recovery can be traced back to it rather than
+		// looking like a fresh bug.
+		if stateDir != "" {
+			if certPEM, keyPEM, kpErr := proxy.CAKeyPair(); kpErr != nil {
+				slog.Warn("perimeter.ca_persist_failed", "sandbox", sb.ID, "stage", "encode", "err", kpErr,
+					"impact", "a crash-path recovery of this sandbox will have to mint a fresh CA and break in-guest TLS")
+			} else if saveErr := statedir.SaveCA(stateDir, certPEM, keyPEM); saveErr != nil {
+				slog.Warn("perimeter.ca_persist_failed", "sandbox", sb.ID, "stage", "write",
+					"path", statedir.CAPath(stateDir), "err", saveErr,
+					"impact", "a crash-path recovery of this sandbox will have to mint a fresh CA and break in-guest TLS")
+			}
 		}
 	}
 
@@ -872,6 +1062,35 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 	// AllowAll mode: no MITM proxy; direct forwarding is used for port 443.
 
 	return nil
+}
+
+// StartPerimeterOnly wires the network perimeter (gvproxy/MITM/netfilter) for
+// a sandbox whose VM is already running under this Service's driver instance
+// — e.g. one installed via [driver.NetworkHook]-backed netns-runtime
+// adoption — without calling driver.Start or touching lifecycle state. It is
+// the seam the supervisor's adopt-mode entrypoint (RunAdopt) uses in place of
+// Start: the VM predates this process and must never be rebooted.
+//
+// Mirrors Start's own gating: silently returns nil when the driver does not
+// implement driver.NetworkHook or no credential broker is attached, the same
+// posture Start takes for "egress enforcement not configured".
+//
+// Refuses (returns a non-nil error, does nothing) when sb.State is not
+// domain.Running — this method must never be the thing that starts a
+// perimeter for a VM that is not actually up.
+// seedCA is optional: nil means the perimeter's MITM proxy (if any) mints a
+// fresh CA, matching Start's own behaviour. Pass a non-nil seedCA (as the
+// adopt path does) to continue serving TLS interception with the CA the
+// guest already trusts instead.
+func (s *Service) StartPerimeterOnly(ctx context.Context, sb domain.Sandbox, seedCA *CASeed) error {
+	if sb.State != domain.Running {
+		return fmt.Errorf("service: start perimeter only: sandbox %s is not running", sb.ID)
+	}
+	hook, ok := s.driver.(driver.NetworkHook)
+	if !ok || s.broker == nil {
+		return nil
+	}
+	return s.startSupervisor(ctx, hook, sb, seedCA)
 }
 
 // closeSupervisor looks up and closes the supervisor for id, removing it from
@@ -1321,6 +1540,23 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 				SourceSnapshot: string(snap.ID),
 			},
 		}
+		// Persist the netns adoption identity for networked forks. ForkFrom
+		// registers d.nets[childID] before returning (fork.go:416), so
+		// NetnsState returns the live child's identity — the same mechanism
+		// Service.Start uses at service.go:530. Vsock-only children have no
+		// netns runtime registered; NetnsState returns ok=false and the fields
+		// remain zero/empty, which is what supervisor-upgrade checks and refuses.
+		if nsp, ok := s.driver.(driver.NetnsStateProvider); ok {
+			if ns, hasNetns := nsp.NetnsState(id); hasNetns {
+				child.NetnsChildPID = ns.ChildPID
+				child.NetnsChildPGID = ns.ChildPGID
+				child.NetnsChildStartTime = ns.ChildStartTime
+				child.GuestTapName = ns.GuestTap
+				child.CHAPISocket = ns.APISocket
+				child.NetnsControlSocket = ns.ControlSocket
+				child.NetnsControlToken = ns.ControlToken
+			}
+		}
 		if err := s.store.Create(ctx, child); err != nil {
 			return nil, fmt.Errorf("service: fork %s: persist child %s: %w", parent.ID, id, err)
 		}
@@ -1344,7 +1580,7 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 	// (cloudhypervisor/fork.go); GuestNetworkFD claims it here.
 	if hook, ok := s.driver.(driver.NetworkHook); ok && s.broker != nil {
 		for i := range children {
-			if err := s.startSupervisor(ctx, hook, children[i]); err != nil {
+			if err := s.startSupervisor(ctx, hook, children[i], nil); err != nil {
 				return nil, fmt.Errorf("service: fork %s: perimeter child %s: %w", parent.ID, children[i].ID, err)
 			}
 		}
@@ -1542,7 +1778,7 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 
 	if hook, ok := s.driver.(driver.NetworkHook); ok && s.broker != nil {
 		for i := range children {
-			if err := s.startSupervisor(ctx, hook, children[i]); err != nil {
+			if err := s.startSupervisor(ctx, hook, children[i], nil); err != nil {
 				return nil, fmt.Errorf("service: restore %s: perimeter child %s: %w", snapID, children[i].ID, err)
 			}
 		}

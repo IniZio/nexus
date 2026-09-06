@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
@@ -1169,5 +1170,306 @@ func TestGuard_WildcardKeyGitHubSecret_Accepted(t *testing.T) {
 	_, err := resolveCreateSecrets(ctx, f)
 	if err != nil {
 		t.Fatalf("expected nil for wildcard-key PathPolicies; got %v", err)
+	}
+}
+
+// ── S16: credential preflight at sandbox create time ─────────────────────────
+//
+// These tests cover AC-1..AC-6: absent, expired, Claude unaffected, mutation
+// proof, and no-token-leak.  All tests use the no-boot (store-only) path so
+// they do not require a real VM or kernel.
+
+// cursorCredDir points the Cursor profile's XDG_CONFIG_HOME to dir and
+// returns the modified profile.  Uses t.Setenv so the env var is restored
+// after the test.
+func cursorCredDir(t *testing.T, dir string) cred.AgentProfile {
+	t.Helper()
+	p := cred.CursorAgentProfile
+	t.Setenv(p.CredDirEnvVar, dir)
+	return p
+}
+
+// writeTestAuthJSON writes a minimal Cursor auth.json with the given
+// accessToken to <dir>/cursor/auth.json.
+func writeTestAuthJSON(t *testing.T, dir, token string) {
+	t.Helper()
+	credDir := filepath.Join(dir, "cursor")
+	if err := os.MkdirAll(credDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(credDir, "auth.json"),
+		[]byte(`{"accessToken":"`+token+`","refreshToken":""}`), 0o600); err != nil {
+		t.Fatalf("write auth.json: %v", err)
+	}
+}
+
+// expiredJWTToken — exp = 2001-09-09 (genuinely past).
+const expiredJWTToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjEwMDAwMDAwMDB9.ZmFrZQ"
+
+// AC-1 (absent): missing cursor credential causes create to fail before a VM boots.
+func TestSandboxCreate_CredPreflight_Absent(t *testing.T) {
+	dir := t.TempDir()
+	cursorCredDir(t, dir) // points XDG_CONFIG_HOME at empty dir — no auth.json
+	svc := newTestService(t)
+	out, _, _ := capture(false)
+
+	err := runSandboxCreate(context.Background(), []string{"--agent", "cursor", "proj/box"}, out, svc)
+
+	// AC-1: must error.
+	if err == nil {
+		t.Fatal("expected error for absent cursor credential, got nil")
+	}
+	// AC-1: error code must be bad_credential.
+	var coded *CodedError
+	if !errors.As(err, &coded) || coded.Code != sandboxErrCodeBadCredential {
+		t.Fatalf("want bad_credential CodedError, got %T %v", err, err)
+	}
+	// AC-1: message must name the agent.
+	if !strings.Contains(coded.Msg, "cursor") {
+		t.Fatalf("error message does not name agent: %q", coded.Msg)
+	}
+	// AC-2 (no-boot leaves no store record): the create failed, no sandbox in store.
+	listOut, stdout, _ := capture(true)
+	if lErr := runSandboxList(context.Background(), nil, listOut, svc); lErr != nil {
+		t.Fatalf("list: %v", lErr)
+	}
+	var env map[string]any
+	dec := json.NewDecoder(stdout)
+	if dErr := dec.Decode(&env); dErr != nil {
+		t.Fatalf("decode list: %v", dErr)
+	}
+	data := env["data"].(map[string]any)
+	sandboxes := data["sandboxes"].([]any)
+	if len(sandboxes) != 0 {
+		t.Fatalf("expected 0 sandboxes after failed create, got %d", len(sandboxes))
+	}
+}
+
+// AC-4 (expired): expired cursor credential causes create to fail with the expired reason.
+func TestSandboxCreate_CredPreflight_Expired(t *testing.T) {
+	dir := t.TempDir()
+	cursorCredDir(t, dir)
+	writeTestAuthJSON(t, dir, expiredJWTToken) // JWT with exp=1000000000 (2001)
+	svc := newTestService(t)
+	out, _, _ := capture(false)
+
+	err := runSandboxCreate(context.Background(), []string{"--agent", "cursor", "proj/box"}, out, svc)
+
+	if err == nil {
+		t.Fatal("expected error for expired cursor credential, got nil")
+	}
+	var coded *CodedError
+	if !errors.As(err, &coded) || coded.Code != sandboxErrCodeBadCredential {
+		t.Fatalf("want bad_credential CodedError, got %T %v", err, err)
+	}
+	// The message must mention "expired", not "absent".
+	if !strings.Contains(coded.Msg, "expired") {
+		t.Fatalf("error message should say 'expired' for expired cred, got: %q", coded.Msg)
+	}
+}
+
+// AC-3 (Claude unaffected): Claude Code has CredentialFormatNone and must not
+// be treated as broken when no credential file exists.
+func TestSandboxCreate_CredPreflight_ClaudeCodeUnaffected(t *testing.T) {
+	// Use an empty dir so no claude credential file is present.
+	dir := t.TempDir()
+	t.Setenv(cred.ClaudeCodeProfile.CredDirEnvVar, dir)
+	svc := newTestService(t)
+	out, _, _ := capture(false)
+
+	// No-boot path: no --image/--rootfs/--file, so create is store-only.
+	err := runSandboxCreate(context.Background(), []string{"--agent", cred.ClaudeCodeProfileName, "proj/box"}, out, svc)
+
+	if err != nil {
+		t.Fatalf("Claude sandbox create must not be rejected by credential preflight: %v", err)
+	}
+}
+
+// AC-5 unit proof: credPreflightCheck rejects an absent-credential profile.
+// This test calls the helper DIRECTLY — it does not prove the helper is wired
+// into any call site.  Use TestSandboxCreate_BootPath_CredPreflight_* for
+// call-site coverage on the boot path.
+func TestSandboxCreate_CredPreflight_MutationProof(t *testing.T) {
+	dir := t.TempDir()
+	// No auth.json — cursor profile reports absent.
+	p := cursorCredDir(t, dir)
+
+	err := credPreflightCheck(p)
+
+	if err == nil {
+		t.Fatal("credPreflightCheck must return an error for absent cursor credential")
+	}
+	var coded *CodedError
+	if !errors.As(err, &coded) || coded.Code != sandboxErrCodeBadCredential {
+		t.Fatalf("want bad_credential, got %T %v", err, err)
+	}
+}
+
+// AC-6 no-token-leak: Sentence() from a credential error must not contain the
+// raw token value.
+func TestSandboxCreate_CredPreflight_NoTokenLeak(t *testing.T) {
+	const sentinel = "tok_SENTINEL_DO_NOT_LEAK"
+
+	dir := t.TempDir()
+	p := cursorCredDir(t, dir)
+	// Write a file whose accessToken is the sentinel but is not valid JSON
+	// (so the read fails — PreflightUnreadable path).
+	credSubdir := filepath.Join(dir, "cursor")
+	if err := os.MkdirAll(credSubdir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(credSubdir, "auth.json"),
+		[]byte(`{"accessToken":"`+sentinel+`_BAD_JSON`), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	err := credPreflightCheck(p)
+	if err == nil {
+		t.Fatal("expected error for unreadable credential")
+	}
+	if strings.Contains(err.Error(), sentinel) {
+		t.Fatalf("error message leaks token sentinel: %q", err.Error())
+	}
+}
+
+// bootPathEnv sets the two env vars needed to get past the boot-path
+// preflights that precede credPreflightCheck (line 1943 in cmd_sandbox.go):
+//   - NEXUS3_KERNEL_PATH → a placeholder file (resolveKernelPath at line 1339)
+//   - XDG_STATE_HOME     → a temp dir        (store.DefaultRoot  at line 1344)
+//
+// Call this from every boot-path cred test so that execution reaches
+// cmd_sandbox.go:1943 without touching real host state or starting a VM.
+func bootPathEnv(t *testing.T) {
+	t.Helper()
+	kernelFile := filepath.Join(t.TempDir(), "vmlinux-x86_64")
+	if err := os.WriteFile(kernelFile, []byte("fake-kernel"), 0o600); err != nil {
+		t.Fatalf("write fake kernel: %v", err)
+	}
+	t.Setenv("NEXUS3_KERNEL_PATH", kernelFile)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+}
+
+// TestSandboxCreate_BootPath_CredPreflight_Absent drives runSandboxCreate
+// through the BOOT path (--rootfs triggers line 1297 to fall through) with no
+// cursor auth.json.  The check at cmd_sandbox.go:1943 must fire and return
+// bad_credential before any VM work begins.
+//
+// Mutation proof: deleting the if-block at cmd_sandbox.go:1943 makes this
+// test RED.  Without the check, execution falls through to service.CreateAndBoot,
+// which fails when it cannot stat /nonexistent-for-test.ext4.  That error is
+// NOT a CodedError with bad_credential, so the second assertion below fires:
+// "boot-path: want bad_credential CodedError, got ...".
+func TestSandboxCreate_BootPath_CredPreflight_Absent(t *testing.T) {
+	bootPathEnv(t)
+
+	dir := t.TempDir()
+	cursorCredDir(t, dir) // points XDG_CONFIG_HOME at empty dir — no auth.json
+	svc := newTestService(t)
+	out, _, _ := capture(false)
+
+	// --rootfs triggers the boot path (line 1297 condition is false).
+	// The value need not be a real file; credPreflightCheck fires before
+	// service.CreateAndBoot touches the rootfs path.
+	err := runSandboxCreate(context.Background(),
+		[]string{"--agent", "cursor", "--rootfs", "/nonexistent-for-test.ext4", "proj/box"},
+		out, svc)
+
+	if err == nil {
+		t.Fatal("boot-path: expected bad_credential error for absent cursor credential, got nil — " +
+			"credPreflightCheck at cmd_sandbox.go:1943 may be missing or unreachable")
+	}
+	var coded *CodedError
+	if !errors.As(err, &coded) || coded.Code != sandboxErrCodeBadCredential {
+		t.Fatalf("boot-path: want bad_credential CodedError, got %T %v", err, err)
+	}
+
+	// No sandbox must remain in the store after a failed boot-path create.
+	listOut, stdout, _ := capture(true)
+	if lErr := runSandboxList(context.Background(), nil, listOut, svc); lErr != nil {
+		t.Fatalf("list: %v", lErr)
+	}
+	var env map[string]any
+	dec := json.NewDecoder(stdout)
+	if dErr := dec.Decode(&env); dErr != nil {
+		t.Fatalf("decode list: %v", dErr)
+	}
+	data := env["data"].(map[string]any)
+	sandboxes := data["sandboxes"].([]any)
+	if len(sandboxes) != 0 {
+		t.Fatalf("boot-path: expected 0 sandboxes after failed create, got %d", len(sandboxes))
+	}
+}
+
+// TestSandboxCreate_BootPath_CredPreflight_Expired drives runSandboxCreate
+// through the boot path with an expired cursor JWT.  The check at
+// cmd_sandbox.go:1943 must return bad_credential with "expired" in the message.
+func TestSandboxCreate_BootPath_CredPreflight_Expired(t *testing.T) {
+	bootPathEnv(t)
+
+	dir := t.TempDir()
+	cursorCredDir(t, dir)
+	writeTestAuthJSON(t, dir, expiredJWTToken) // JWT with exp=1000000000 (2001)
+	svc := newTestService(t)
+	out, _, _ := capture(false)
+
+	err := runSandboxCreate(context.Background(),
+		[]string{"--agent", "cursor", "--rootfs", "/nonexistent-for-test.ext4", "proj/box"},
+		out, svc)
+
+	if err == nil {
+		t.Fatal("boot-path: expected bad_credential error for expired cursor credential, got nil — " +
+			"credPreflightCheck at cmd_sandbox.go:1943 may be missing or unreachable")
+	}
+	var coded *CodedError
+	if !errors.As(err, &coded) || coded.Code != sandboxErrCodeBadCredential {
+		t.Fatalf("boot-path: want bad_credential CodedError, got %T %v", err, err)
+	}
+	if !strings.Contains(coded.Msg, "expired") {
+		t.Fatalf("boot-path: error message should say 'expired' for expired cred, got: %q", coded.Msg)
+	}
+}
+
+// TestDevEgress_AgentDevEgressSecretHostSuffixes_CursorOpenEgress asserts that
+// agentDevEgressSecretHostSuffixes returns the ".cursor.sh" suffix for cursor
+// with open egress. This is the key S11 fix: inference hosts like
+// agentn.global.api5.cursor.sh are covered by the suffix, not pinned exactly.
+// Inference hosts use h2 only; the proxy handles them via ConnectHijack
+// (h2SuffixHijack in proxy.go) rather than the built-in ConnectMitm.
+//
+// Mutation guard: remove the suffix from CursorAgentProfile → this test fails RED.
+func TestDevEgress_AgentDevEgressSecretHostSuffixes_CursorOpenEgress(t *testing.T) {
+	suffixes := agentDevEgressSecretHostSuffixes(cred.CursorAgentProfile, true)
+	if len(suffixes) == 0 {
+		t.Fatal("agentDevEgressSecretHostSuffixes: got empty for cursor open-egress; want '.cursor.sh'")
+	}
+	if suffixes[0] != ".cursor.sh" {
+		t.Errorf("agentDevEgressSecretHostSuffixes[0] = %q, want .cursor.sh", suffixes[0])
+	}
+}
+
+// TestDevEgress_AgentDevEgressSecretHostSuffixes_ClosedEgress asserts nil is
+// returned when egress is closed — no suffix injection on the closed path.
+func TestDevEgress_AgentDevEgressSecretHostSuffixes_ClosedEgress(t *testing.T) {
+	suffixes := agentDevEgressSecretHostSuffixes(cred.CursorAgentProfile, false)
+	if len(suffixes) != 0 {
+		t.Errorf("agentDevEgressSecretHostSuffixes: got %v for closed-egress; want nil", suffixes)
+	}
+}
+
+// TestDevEgress_AgentDevEgressSecretHostSuffixes_NoAgent asserts nil for zero
+// profile (non-agent sandbox must not get suffix injection).
+func TestDevEgress_AgentDevEgressSecretHostSuffixes_NoAgent(t *testing.T) {
+	suffixes := agentDevEgressSecretHostSuffixes(cred.AgentProfile{}, true)
+	if len(suffixes) != 0 {
+		t.Errorf("agentDevEgressSecretHostSuffixes: got %v for zero profile; want nil", suffixes)
+	}
+}
+
+// TestDevEgress_AgentDevEgressSecretHostSuffixes_ClaudeNoSuffix asserts nil for
+// Claude Code: it has no CredentialedHostSuffix, so no suffixes are returned.
+func TestDevEgress_AgentDevEgressSecretHostSuffixes_ClaudeNoSuffix(t *testing.T) {
+	suffixes := agentDevEgressSecretHostSuffixes(cred.ClaudeCodeProfile, true)
+	if len(suffixes) != 0 {
+		t.Errorf("agentDevEgressSecretHostSuffixes: got %v for claude-code; want nil (no suffix)", suffixes)
 	}
 }

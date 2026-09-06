@@ -15,7 +15,7 @@ package main
 //   - disk.grow handler refusing a non-ext4 device.
 //   - ZRAM: setup on a normal fixture; second invocation proves idempotence;
 //     CONFIG_ZRAM-absent fixture proves best-effort (no boot failure);
-//     computed size clamped to [1 GiB, 4 GiB].
+//     computed size clamped to [zramMinBytes, zramMaxBytes] (2 GiB, 4 GiB).
 //   - /tmp resize: no remount within hysteresis; remount when MemTotal grows;
 //     2 GiB cap honoured; live MemTotal used as sizing base (not ceiling).
 //   - Always-on: startResizeServices is called unconditionally from main.go;
@@ -26,6 +26,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -478,7 +479,8 @@ func TestSetupZRAMSwap_AbsentKernelContinues(t *testing.T) {
 }
 
 func TestZRAMSizeClamp_BelowFloor(t *testing.T) {
-	// MemTotal = 1 GiB → half = 512 MiB → clamped to zramMinBytes (1 GiB).
+	// MemTotal = 1 GiB → half = 512 MiB → clamped to zramMinBytes (2 GiB,
+	// raised in db4bc61 to match safeMemFloorBytes).
 	dir := t.TempDir()
 	mi := filepath.Join(dir, "meminfo")
 	writeTestFile(t, mi, "MemTotal: 1048576 kB\nMemAvailable: 900000 kB\n")
@@ -487,8 +489,9 @@ func TestZRAMSizeClamp_BelowFloor(t *testing.T) {
 	fix.install(t)
 	setupZRAMSwap(nil)
 
-	if fix.sizeArg != "1073741824" { // 1 GiB
-		t.Errorf("ZRAM size = %s, want 1073741824 (1 GiB floor)", fix.sizeArg)
+	want := strconv.FormatInt(zramMinBytes, 10)
+	if fix.sizeArg != want {
+		t.Errorf("ZRAM size = %s, want %s (zramMinBytes floor)", fix.sizeArg, want)
 	}
 }
 
@@ -535,23 +538,8 @@ func tmpfsStatfs(capBytes uint64) func(string, *unix.Statfs_t) error {
 	}
 }
 
-func TestComputeTmpTargetBytes_Cap2GiB(t *testing.T) {
-	// 4 GiB MemTotal → 50% = 2 GiB → hits the absolute cap.
-	dir := t.TempDir()
-	mi := filepath.Join(dir, "meminfo")
-	writeTestFile(t, mi, "MemTotal: 4194304 kB\nMemAvailable: 4000000 kB\n")
-	orig := tmpMeminfoPath
-	t.Cleanup(func() { tmpMeminfoPath = orig })
-	tmpMeminfoPath = mi
-
-	got := computeTmpTargetBytes()
-	if got != uint64(2<<30) {
-		t.Errorf("computeTmpTargetBytes = %d, want %d (2 GiB cap)", got, uint64(2<<30))
-	}
-}
-
-func TestComputeTmpTargetBytes_LiveMemTotal(t *testing.T) {
-	// 2 GiB MemTotal → 50% = 1 GiB, below cap.
+func TestComputeTmpTargetBytes_Cap512MiB(t *testing.T) {
+	// 2 GiB MemTotal → 50% = 1 GiB → hits the 512 MiB absolute cap (D-SD-04).
 	dir := t.TempDir()
 	mi := filepath.Join(dir, "meminfo")
 	writeTestFile(t, mi, "MemTotal: 2097152 kB\nMemAvailable: 2000000 kB\n")
@@ -560,18 +548,31 @@ func TestComputeTmpTargetBytes_LiveMemTotal(t *testing.T) {
 	tmpMeminfoPath = mi
 
 	got := computeTmpTargetBytes()
-	if got != uint64(1<<30) {
-		t.Errorf("computeTmpTargetBytes = %d, want %d (1 GiB)", got, uint64(1<<30))
+	if got != uint64(512<<20) {
+		t.Errorf("computeTmpTargetBytes = %d, want %d (512 MiB cap)", got, uint64(512<<20))
+	}
+}
+
+func TestComputeTmpTargetBytes_LiveMemTotal(t *testing.T) {
+	// 768 MiB MemTotal → 50% = 384 MiB, between floor (256 MiB) and cap (512 MiB).
+	dir := t.TempDir()
+	mi := filepath.Join(dir, "meminfo")
+	writeTestFile(t, mi, "MemTotal: 786432 kB\nMemAvailable: 700000 kB\n")
+	orig := tmpMeminfoPath
+	t.Cleanup(func() { tmpMeminfoPath = orig })
+	tmpMeminfoPath = mi
+
+	got := computeTmpTargetBytes()
+	if got != uint64(384<<20) {
+		t.Errorf("computeTmpTargetBytes = %d, want %d (384 MiB)", got, uint64(384<<20))
 	}
 }
 
 // TestComputeTmpSizeBytes exercises the pure sizing formula across floor, cap,
-// and proportional cases without touching /proc/meminfo.
+// and proportional cases without touching /proc/meminfo. Constants are D-SD-04:
+// cap 512 MiB, floor 256 MiB.
 func TestComputeTmpSizeBytes(t *testing.T) {
-	const (
-		gib = uint64(1 << 30)
-		mib = uint64(1 << 20)
-	)
+	const mib = uint64(1 << 20)
 	cases := []struct {
 		name    string
 		totalKB uint64
@@ -579,31 +580,38 @@ func TestComputeTmpSizeBytes(t *testing.T) {
 		note    string
 	}{
 		{
+			name:    "256MiB_guest_floor_wins",
+			totalKB: 256 * 1024,
+			// 50% of 256 MiB = 128 MiB < 256 MiB floor → floor wins.
+			wantB: 256 * mib,
+			note:  "floor: 256 MiB (tmpfs SIZED not preallocated — costs nothing until written)",
+		},
+		{
 			name:    "512MiB_guest_floor_wins",
 			totalKB: 512 * 1024,
-			// 50% of 512 MiB = 256 MiB < 1 GiB floor → floor wins.
-			wantB: 1 * gib,
-			note:  "floor: 1 GiB (tmpfs sized not preallocated — no real cost on 512 MiB guest)",
+			// 50% of 512 MiB = 256 MiB == floor exactly → floor wins (equals floor).
+			wantB: 256 * mib,
+			note:  "floor: 256 MiB (50% == floor)",
 		},
 		{
 			name:    "8GiB_guest_cap_wins",
 			totalKB: 8 * 1024 * 1024,
-			// 50% of 8 GiB = 4 GiB > 2 GiB cap → cap wins.
-			wantB: 2 * gib,
-			note:  "cap: 2 GiB",
+			// 50% of 8 GiB = 4 GiB > 512 MiB cap → cap wins.
+			wantB: 512 * mib,
+			note:  "cap: 512 MiB (D-SD-04)",
 		},
 		{
-			name:    "3GiB_guest_proportional",
-			totalKB: 3 * 1024 * 1024,
-			// 50% of 3 GiB = 1.5 GiB; between floor and cap.
-			wantB: (1536 * mib / mib) * mib, // 1536 MiB = 1.5 GiB, already MiB-aligned
-			note:  "proportional: 1.5 GiB",
+			name:    "768MiB_guest_proportional",
+			totalKB: 768 * 1024,
+			// 50% of 768 MiB = 384 MiB; between floor (256 MiB) and cap (512 MiB).
+			wantB: 384 * mib,
+			note:  "proportional: 384 MiB",
 		},
 		{
 			name:    "zero_totalKB_returns_zero",
 			totalKB: 0,
 			wantB:   0,
-			note:    "unavailable MemTotal sentinel",
+			note:    "unavailable MemTotal sentinel; floor must NOT clamp this",
 		},
 	}
 
@@ -620,7 +628,8 @@ func TestComputeTmpSizeBytes(t *testing.T) {
 }
 
 func TestResizeTmpfsOnce_SkipsUnderHysteresis(t *testing.T) {
-	// current cap = target = 1 GiB → delta = 0 < 64 MiB → no remount.
+	// 2 GiB MemTotal → target = 512 MiB (cap); current cap = 1 GiB.
+	// target (512 MiB) <= current (1 GiB) + margin (64 MiB) → no remount.
 	dir := t.TempDir()
 	mi := filepath.Join(dir, "meminfo")
 	writeTestFile(t, mi, "MemTotal: 2097152 kB\nMemAvailable: 2000000 kB\n")
@@ -643,14 +652,15 @@ func TestResizeTmpfsOnce_SkipsUnderHysteresis(t *testing.T) {
 }
 
 func TestResizeTmpfsOnce_RemountsWhenMemGrows(t *testing.T) {
-	// current cap = 512 MiB, target = 1 GiB → delta = 512 MiB > 64 MiB → remount.
+	// 768 MiB MemTotal → target = 384 MiB (proportional, D-SD-04 constants).
+	// current cap = 0 → delta = 384 MiB > 64 MiB → remount.
 	dir := t.TempDir()
 	mi := filepath.Join(dir, "meminfo")
-	writeTestFile(t, mi, "MemTotal: 2097152 kB\nMemAvailable: 2000000 kB\n")
+	writeTestFile(t, mi, "MemTotal: 786432 kB\nMemAvailable: 700000 kB\n")
 
 	var mountOpts string
 	setTmpFixture(t, mi,
-		tmpfsStatfs(512<<20), // 512 MiB current cap
+		tmpfsStatfs(0), // zero current cap → always triggers remount
 		func(_, _, _ string, _ uintptr, opts string) error {
 			mountOpts = opts
 			return nil
@@ -660,14 +670,14 @@ func TestResizeTmpfsOnce_RemountsWhenMemGrows(t *testing.T) {
 	if err := resizeTmpfsOnce(nil); err != nil {
 		t.Fatalf("resizeTmpfsOnce: %v", err)
 	}
-	// Remount opts must contain the 1 GiB target in bytes.
-	if !strings.Contains(mountOpts, "1073741824") {
-		t.Errorf("mount opts %q do not contain 1 GiB target (1073741824)", mountOpts)
+	// Remount opts must contain the 384 MiB target in bytes (402653184).
+	if !strings.Contains(mountOpts, "402653184") {
+		t.Errorf("mount opts %q do not contain 384 MiB target (402653184)", mountOpts)
 	}
 }
 
-func TestResizeTmpfsOnce_CapAt2GiB(t *testing.T) {
-	// 8 GiB MemTotal → target capped at 2 GiB, not 4 GiB.
+func TestResizeTmpfsOnce_CapAt512MiB(t *testing.T) {
+	// 8 GiB MemTotal → target capped at 512 MiB (D-SD-04), not 4 GiB.
 	dir := t.TempDir()
 	mi := filepath.Join(dir, "meminfo")
 	writeTestFile(t, mi, "MemTotal: 8388608 kB\nMemAvailable: 8000000 kB\n")
@@ -684,9 +694,9 @@ func TestResizeTmpfsOnce_CapAt2GiB(t *testing.T) {
 	if err := resizeTmpfsOnce(nil); err != nil {
 		t.Fatalf("resizeTmpfsOnce: %v", err)
 	}
-	// 2 GiB = 2147483648 bytes.
-	if !strings.Contains(mountOpts, "2147483648") {
-		t.Errorf("mount opts %q do not show 2 GiB cap (2147483648)", mountOpts)
+	// 512 MiB = 536870912 bytes.
+	if !strings.Contains(mountOpts, "536870912") {
+		t.Errorf("mount opts %q do not show 512 MiB cap (536870912)", mountOpts)
 	}
 }
 
@@ -936,5 +946,76 @@ func TestCollectSampleDiskStats_EmptyDisksYieldsNilDiskStats(t *testing.T) {
 	}
 	if s.DiskSupported {
 		t.Error("DiskSupported = true, want false when no disks")
+	}
+}
+
+// TestReadSwapInfoKB verifies the /proc/meminfo parser for SwapTotal and
+// SwapFree. Covers: normal swap, zero swap, missing swap lines, and a fixture
+// that includes a SwapCached line to confirm it does not collide with SwapTotal
+// (meminfoLineKB matches on exact prefix "SwapTotal:", not on "Swap").
+func TestReadSwapInfoKB(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		content   string
+		wantTotal uint64
+		wantFree  uint64
+	}{
+		{
+			name: "with_swap_and_cached",
+			// SwapCached must not be mistaken for SwapTotal.
+			content: "MemTotal:       1543912 kB\n" +
+				"MemFree:         100000 kB\n" +
+				"MemAvailable:    616516 kB\n" +
+				"SwapCached:       12345 kB\n" +
+				"SwapTotal:      2097148 kB\n" +
+				"SwapFree:       1386212 kB\n",
+			wantTotal: 2097148,
+			wantFree:  1386212,
+		},
+		{
+			name: "zero_swap",
+			content: "MemTotal:       1543912 kB\n" +
+				"MemAvailable:    616516 kB\n" +
+				"SwapTotal:             0 kB\n" +
+				"SwapFree:              0 kB\n",
+			wantTotal: 0,
+			wantFree:  0,
+		},
+		{
+			name: "missing_swap_lines",
+			content: "MemTotal:       1543912 kB\n" +
+				"MemAvailable:    616516 kB\n",
+			wantTotal: 0,
+			wantFree:  0,
+		},
+		{
+			name: "unreadable_path",
+			// Non-existent path: returns zeros without error.
+			content:   "", // not written — path will not exist
+			wantTotal: 0,
+			wantFree:  0,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var path string
+			if tc.name == "unreadable_path" {
+				path = filepath.Join(t.TempDir(), "nonexistent_meminfo")
+			} else {
+				path = filepath.Join(t.TempDir(), "meminfo")
+				writeTestFile(t, path, tc.content)
+			}
+			gotTotal, gotFree := readSwapInfoKB(path)
+			if gotTotal != tc.wantTotal {
+				t.Errorf("SwapTotal: got %d, want %d", gotTotal, tc.wantTotal)
+			}
+			if gotFree != tc.wantFree {
+				t.Errorf("SwapFree: got %d, want %d", gotFree, tc.wantFree)
+			}
+		})
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -969,6 +970,91 @@ func TestD36_NoTokenEmittedOnDenied(t *testing.T) {
 	}
 }
 
+// TestS1c_GraphQLTokenValidationQuery is the regression guard for the
+// `gh auth status` false-negative: gh validates GH_TOKEN with the read-only
+// GraphQL POST `query UserCurrent{viewer{login}}`. Before the carve-out this
+// was default-denied (403) → gh reported "The token in GH_TOKEN is invalid"
+// even though the token was valid (REST GET /user succeeded and swapped).
+//
+// The allowed sub-test bites: revert the isGitHubTokenValidationQuery carve-out
+// in New's S1c handler → the request is 403'd, upstream never receives it, and
+// the real-token assertion fails. The denied sub-tests bite in the opposite
+// direction: widen the carve-out to any /graphql body → they start returning
+// 200 and leaking the real token upstream.
+func TestS1c_GraphQLTokenValidationQuery(t *testing.T) {
+	t.Parallel()
+
+	t.Run("allowed viewer.login validates and swaps", func(t *testing.T) {
+		t.Parallel()
+		upstream, authCh := captureAuthUpstream(t)
+		proxy, _, recAPI, _ := newGitHubAllowedRepoProxy(t, upstream.Listener.Addr().String())
+		client := proxyClient(proxy.URL)
+
+		// Exact document gh 2.x sends, with gh's real formatting.
+		body := `{"query":"query UserCurrent{viewer{login}}"}`
+		req, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+recAPI.Placeholder)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("token-validation query: want 200 (allowed), got %d", resp.StatusCode)
+		}
+		got, ok := receiveOrTimeout(authCh)
+		if !ok {
+			t.Fatalf("upstream never received the token-validation query (denied before forwarding)")
+		}
+		if want := "Bearer ghp_real_secret_token"; got != want {
+			t.Errorf("upstream Authorization = %q, want %q (real token swap must fire for the validation query)", got, want)
+		}
+	})
+
+	// Every non-validation GraphQL document must stay default-denied and never
+	// emit the real token — the GraphQL allowlist is otherwise TBR-GRAPHQL/R5.
+	denied := []struct {
+		name string
+		body string
+	}{
+		{"empty body", ""},
+		{"mutation", `{"query":"mutation{deleteRepository(input:{repositoryId:\"x\"}){clientMutationId}}"}`},
+		{"extra fields beyond login", `{"query":"query{viewer{login repositories(first:100){nodes{nameWithOwner}}}}"}`},
+		{"viewer with variables", `{"query":"query UserCurrent{viewer{login}}","variables":{"x":1}}`},
+		{"aliased viewer", `{"query":"query{me:viewer{login}}"}`},
+		// Duplicate top-level key: Go's json.Unmarshal would see the second (allowlisted)
+		// query, but a differently-behaving parser might execute the first (malicious) one.
+		// The duplicate-key check must fire and deny before any value is trusted.
+		{"duplicate query key", `{"query":"mutation{evil}","query":"query UserCurrent{viewer{login}}"}`},
+	}
+	for _, tc := range denied {
+		t.Run("denied "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			upstream, authCh := captureAuthUpstream(t)
+			proxy, _, recAPI, _ := newGitHubAllowedRepoProxy(t, upstream.Listener.Addr().String())
+			client := proxyClient(proxy.URL)
+
+			req, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql", strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer "+recAPI.Placeholder)
+
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("client.Do: %v", err)
+			}
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("%s: want 403 (denied), got %d", tc.name, resp.StatusCode)
+			}
+			if got, ok := receiveOrTimeout(authCh); ok {
+				t.Errorf("%s: upstream received denied GraphQL request; Authorization = %q (real token must not be emitted)", tc.name, got)
+			}
+		})
+	}
+}
+
 // TestD36_AllowedUploadsPath verifies that release-asset upload to the target
 // repo is permitted through uploads.github.com.
 //
@@ -1858,13 +1944,14 @@ func TestD38_BranchPolicy_AllowedStreamsThrough(t *testing.T) {
 	}
 }
 
-// TestD38_BranchPolicy_NoEnforcementWhenEmpty verifies that when AllowedBranches
-// is nil, no branch enforcement runs — a push to any ref reaches the upstream.
+// TestD38_BranchPolicy_EmptyAllowlistDeniesAll verifies that when AllowedBranches
+// is nil/empty, the proxy DENIES all pushes (fail-closed). An empty allowlist
+// signals misconfiguration — domain.Envelope.ResolvedAllowedBranches() always
+// supplies the hardcoded default, so empty can only occur via a misconfigured caller.
 //
-// Mutation evidence: remove the `if len(cfg.AllowedBranches) == 0 { return req, nil }`
-// guard → proxy applies enforcement using an empty pattern set, which matches nothing,
-// and returns 403 instead of 200.
-func TestD38_BranchPolicy_NoEnforcementWhenEmpty(t *testing.T) {
+// Mutation evidence: revert the fail-closed guard to the old fail-open
+// `return req, nil` → the test fails because the proxy returns 200 instead of 403.
+func TestD38_BranchPolicy_EmptyAllowlistDeniesAll(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1881,7 +1968,7 @@ func TestD38_BranchPolicy_NoEnforcementWhenEmpty(t *testing.T) {
 	}, upstream.Listener.Addr().String())
 	defer proxyServer.Close()
 
-	body := buildPktLines([]string{"refs/heads/main"}) // would be denied if enforcement active
+	body := buildPktLines([]string{"refs/heads/main"}) // denied because allowlist is empty (fail-closed)
 	req, _ := http.NewRequest(http.MethodPost,
 		"http://github.com/acme/myrepo.git/git-receive-pack",
 		bytes.NewReader(body))
@@ -1893,8 +1980,224 @@ func TestD38_BranchPolicy_NoEnforcementWhenEmpty(t *testing.T) {
 	io.Copy(io.Discard, resp.Body) //nolint:errcheck
 	resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("no branch enforcement: want 200, got %d (false denial)", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("empty AllowedBranches: want 403 (fail-closed), got %d", resp.StatusCode)
+	}
+}
+
+// TestD38_BranchPolicy_UnresolvedSentinelDeniesAll verifies that when
+// AllowedBranches is exactly [domain.UnresolvedBranchSentinel] — the value
+// service.resolveAllowedBranches stores when a bound workspace's branch
+// could not be derived (TBD-1 fail-closed path) — every push is denied, even
+// for a ref an operator might plausibly expect to be allowed (the sandbox's
+// own worktree branch name).
+//
+// Mutation evidence: replace the sentinel's NUL byte with an empty string
+// (making the pattern "refs/heads/unresolved", an ordinary matchable
+// pattern) → the test fails because a push to that literal ref now succeeds
+// with 200 instead of being denied for every ref including that one.
+func TestD38_BranchPolicy_UnresolvedSentinelDeniesAll(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:    newSandboxID(203),
+		AllowedHosts: []string{"github.com"},
+		Broker:       cred.NewBroker(),
+		AllowedRepo:  "acme/myrepo",
+		AllowedBranches: []string{domain.UnresolvedBranchSentinel},
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	for _, ref := range []string{"refs/heads/main", "refs/heads/newman/some-work", "refs/heads/nexus3/foo"} {
+		t.Run(ref, func(t *testing.T) {
+			body := buildPktLines([]string{ref})
+			req, _ := http.NewRequest(http.MethodPost,
+				"http://github.com/acme/myrepo.git/git-receive-pack",
+				bytes.NewReader(body))
+			resp, err := proxyClient(proxyServer.URL).Do(req)
+			if err != nil {
+				t.Fatalf("client.Do: %v", err)
+			}
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("sentinel allowlist: ref %q: want 403 (fail-closed), got %d", ref, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestT2_AC2_UnconfiguredDefaultAllowsOnlyNexus3 verifies that when
+// AllowedBranches is set to the resolved default refs/heads/nexus3/**, the proxy
+// allows nexus3/ refs and denies others (e.g. refs/heads/main).
+func TestT2_AC2_UnconfiguredDefaultAllowsOnlyNexus3(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	// Simulate the resolved default: ["refs/heads/nexus3/**"].
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:    newSandboxID(201),
+		AllowedHosts: []string{"github.com"},
+		Broker:       cred.NewBroker(),
+		AllowedRepo:  "acme/myrepo",
+		AllowedBranches: []string{"refs/heads/nexus3/**"},
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	t.Run("nexus3_ref_passes", func(t *testing.T) {
+		body := buildPktLines([]string{"refs/heads/nexus3/my-feature"})
+		req, _ := http.NewRequest(http.MethodPost,
+			"http://github.com/acme/myrepo.git/git-receive-pack",
+			bytes.NewReader(body))
+		resp, err := proxyClient(proxyServer.URL).Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("nexus3 ref: want 200, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("main_ref_denied", func(t *testing.T) {
+		body := buildPktLines([]string{"refs/heads/main"})
+		req, _ := http.NewRequest(http.MethodPost,
+			"http://github.com/acme/myrepo.git/git-receive-pack",
+			bytes.NewReader(body))
+		resp, err := proxyClient(proxyServer.URL).Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("non-nexus3 ref: want 403, got %d", resp.StatusCode)
+		}
+	})
+}
+
+// TestT2_AC3_OnEgressEmitsRecords verifies that denied pushes and denied hosts
+// each emit an egress record with the expected shape to the OnEgress hook.
+//
+// Host-deny is exercised via HTTPS CONNECT (the HandleConnect path that fires
+// goproxy.RejectConnect) — plain HTTP requests to unlisted hosts bypass that
+// path, so the upstream must be an httptest.NewTLSServer.
+//
+// Mutation evidence: remove the cfg.OnEgress call from any deny path → the
+// corresponding record is missing from the collected slice, failing the
+// assertion.
+func TestT2_AC3_OnEgressEmitsRecords(t *testing.T) {
+	t.Parallel()
+
+	type egressRecord struct {
+		host    string
+		verdict string
+		reason  string
+	}
+
+	// Use a TLS server as the redirect target so the CONNECT host-deny path
+	// is reachable (the client sends CONNECT for https:// targets).
+	tlsUpstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(tlsUpstream.Close)
+
+	plainUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(plainUpstream.Close)
+
+	var mu sync.Mutex
+	var records []egressRecord
+	collect := func(host, verdict, reason string, _ time.Time) {
+		mu.Lock()
+		defer mu.Unlock()
+		records = append(records, egressRecord{host: host, verdict: verdict, reason: reason})
+	}
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(202)
+
+	// Build the proxy directly (not via newTestProxy) so we can supply a
+	// custom Transport that redirects to our stub server.
+	p, err := mitm.New(mitm.Config{
+		SandboxID:   sid,
+		AllowedHosts: []string{"github.com"},
+		Broker:       broker,
+		AllowedRepo:  "acme/myrepo",
+		AllowedBranches: []string{"refs/heads/nexus3/**"},
+		OnEgress:     collect,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, plainUpstream.Listener.Addr().String())
+			},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test-only redirect
+		},
+	})
+	if err != nil {
+		t.Fatalf("mitm.New: %v", err)
+	}
+	proxyServer := httptest.NewServer(p)
+	t.Cleanup(proxyServer.Close)
+
+	proxyURL, _ := url.Parse(proxyServer.URL)
+	pool := x509.NewCertPool()
+	pool.AddCert(p.CACert())
+	httpsClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{RootCAs: pool},
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	// Trigger a branch allowlist deny (refs/heads/main is not in refs/heads/nexus3/**).
+	plainClient := proxyClient(proxyServer.URL)
+	body := buildPktLines([]string{"refs/heads/main"})
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://github.com/acme/myrepo.git/git-receive-pack",
+		bytes.NewReader(body))
+	resp, err := plainClient.Do(req)
+	if err != nil {
+		t.Fatalf("branch deny client.Do: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("want 403 for branch not in AllowedBranches, got %d", resp.StatusCode)
+	}
+
+	// Trigger a host-not-in-allowlist deny via HTTPS CONNECT (HandleConnect path).
+	_, _ = httpsClient.Get("https://notallowed.example.com/ping")
+
+	mu.Lock()
+	got := records
+	mu.Unlock()
+
+	var foundBranchDeny, foundHostDeny bool
+	for _, r := range got {
+		if r.verdict == "deny" && strings.Contains(r.reason, "AllowedBranches") {
+			foundBranchDeny = true
+		}
+		if r.verdict == "deny" && strings.Contains(r.reason, "allowlist") {
+			foundHostDeny = true
+		}
+	}
+	if !foundBranchDeny {
+		t.Errorf("OnEgress: no deny record emitted for branch-not-in-allowlist push; records=%v", got)
+	}
+	if !foundHostDeny {
+		t.Errorf("OnEgress: no deny record emitted for blocked host; records=%v", got)
 	}
 }
 
@@ -2986,4 +3289,284 @@ func TestLookupPolicy_BogusPlaceholderKeyNotFound(t *testing.T) {
 	if !found2 {
 		t.Fatal("lookupPolicy: wildcard key \"\" should match any placeholder but did not")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// T7: runtime AllowHost — MutableAllowSet plumbing
+// ---------------------------------------------------------------------------
+
+// TestT7_AC1_AllowHostAdmitsDynamicHost verifies that a host added via
+// Proxy.AllowHost after New() transitions from denied to allowed without
+// rebuilding the proxy or dropping any in-flight connections.
+//
+// Mutation evidence: comment out the allowSet.Has(lh) branch in HandleConnect
+// so it always falls through to RejectConnect → the "before Add" assertion
+// no longer sees a 403 and the test fails.
+func TestT7_AC1_AllowHostAdmitsDynamicHost(t *testing.T) {
+	t.Parallel()
+
+	// TLS upstream — the MITM proxy mints a leaf cert and the outbound
+	// connection uses InsecureSkipVerify (same pattern as TestT2_AC3).
+	tlsUpstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(tlsUpstream.Close)
+
+	var mu sync.Mutex
+	var egressDenials []string
+	collect := func(host, verdict, _ string, _ time.Time) {
+		if verdict == "deny" {
+			mu.Lock()
+			egressDenials = append(egressDenials, host)
+			mu.Unlock()
+		}
+	}
+
+	p, err := mitm.New(mitm.Config{
+		SandboxID:    newSandboxID(207),
+		AllowedHosts: []string{"static.example.com"}, // dynamic host intentionally absent
+		Broker:       cred.NewBroker(),
+		OnEgress:     collect,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, tlsUpstream.Listener.Addr().String())
+			},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test-only
+		},
+	})
+	if err != nil {
+		t.Fatalf("mitm.New: %v", err)
+	}
+	proxyServer := httptest.NewServer(p)
+	t.Cleanup(proxyServer.Close)
+
+	proxyURL, _ := url.Parse(proxyServer.URL)
+	pool := x509.NewCertPool()
+	pool.AddCert(p.CACert())
+	httpsClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{RootCAs: pool},
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	const dynamicHost = "dynamic.example.com"
+
+	// Before AllowHost: CONNECT to dynamic host must be rejected; the client
+	// sees an error (goproxy closes the connection after 403, which Go's
+	// http.Client surfaces as a non-nil error).
+	_, err = httpsClient.Get("https://" + dynamicHost + "/ping")
+	if err == nil {
+		t.Fatal("T7-AC1: expected CONNECT rejection before AllowHost, got nil error")
+	}
+
+	// Verify OnEgress recorded the denial.
+	mu.Lock()
+	denialsBefore := len(egressDenials)
+	mu.Unlock()
+	if denialsBefore == 0 {
+		t.Error("T7-AC1: OnEgress did not record a deny before AllowHost")
+	}
+
+	// Admit the host at runtime — no proxy rebuild.
+	p.AllowHost(dynamicHost)
+
+	// After AllowHost: CONNECT must be accepted. The TLS handshake may fail
+	// (stub upstream is not serving the right SNI) but the proxy itself must
+	// not emit a new deny record for dynamic.example.com.
+	_, _ = httpsClient.Get("https://" + dynamicHost + "/ping") // error expected (TLS), not CONNECT 403
+
+	mu.Lock()
+	newDenials := egressDenials[denialsBefore:]
+	mu.Unlock()
+	for _, h := range newDenials {
+		if h == dynamicHost {
+			t.Errorf("T7-AC1: proxy emitted a deny for %q after AllowHost — host not admitted", dynamicHost)
+		}
+	}
+}
+
+// TestT7_AC2_AllowHostDoesNotRebuildProxy verifies that AllowHost is a pure
+// set mutation: the CA certificate pointer is identical before and after the
+// call, and pre-existing allowed hosts continue to work across the Add.
+//
+// Mutation evidence: replace p.allowSet.Add with mitm.New reconstruction →
+// CACert() returns a different pointer and the equality assertion fails.
+func TestT7_AC2_AllowHostDoesNotRebuildProxy(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	p, err := mitm.New(mitm.Config{
+		SandboxID:    newSandboxID(208),
+		AllowedHosts: []string{"pre-existing.example.com"},
+		Broker:       cred.NewBroker(),
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("mitm.New: %v", err)
+	}
+
+	// Capture CA pointer before Add.
+	caBefore := p.CACert()
+
+	// Add a new host.
+	p.AllowHost("newly-added.example.com")
+
+	// CA pointer must be unchanged — no proxy rebuild.
+	caAfter := p.CACert()
+	if caBefore != caAfter {
+		t.Error("T7-AC2: CACert() pointer changed after AllowHost — proxy was rebuilt unexpectedly")
+	}
+
+	// Pre-existing allowed host must still work (plain HTTP through proxy).
+	proxyServer := httptest.NewServer(p)
+	t.Cleanup(proxyServer.Close)
+
+	req, _ := http.NewRequest(http.MethodGet, "http://pre-existing.example.com/check", nil)
+	resp, err := proxyClient(proxyServer.URL).Do(req)
+	if err != nil {
+		t.Fatalf("T7-AC2: pre-existing host request failed after AllowHost: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("T7-AC2: pre-existing host: want 200, got %d", resp.StatusCode)
+	}
+}
+
+// ============================================================
+// SecretHostSuffixes tests: suffix-matched secret hosts
+// ============================================================
+
+// TestMatchesDotSuffix_DotBoundarySafety verifies the dot-boundary invariant of
+// the suffix matching helper. A naive strings.HasSuffix without the leading dot
+// would match "evilcursor.sh" against suffix "cursor.sh" — with the dot the
+// match is correctly rejected. The operator's ruling: use ".cursor.sh" so only
+// proper sub-domains match.
+func TestMatchesDotSuffix_DotBoundarySafety(t *testing.T) {
+	t.Parallel()
+	suffixes := []string{".cursor.sh"}
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"api2.cursor.sh", true},
+		{"agentn.global.api5.cursor.sh", true},
+		{"api3.cursor.sh", true},
+		// Negative: no dot boundary
+		{"evilcursor.sh", false},
+		// Negative: suffix as subdomain of attacker domain
+		{"cursor.sh.attacker.com", false},
+		// Negative: apex domain itself (no sub-domain)
+		{"cursor.sh", false},
+		// Unrelated domain
+		{"api.anthropic.com", false},
+	}
+	for _, tc := range cases {
+		got := mitm.MatchesDotSuffixForTest(tc.host, suffixes)
+		if got != tc.want {
+			t.Errorf("MatchesDotSuffix(%q, %v) = %v, want %v", tc.host, suffixes, got, tc.want)
+		}
+	}
+}
+
+// TestProxy_SecretHostSuffix_SwapsInferenceHost proves that a host matched by
+// SecretHostSuffixes (not in SecretHosts exactly) is MITM'd and the bearer
+// placeholder is swapped for the real token. This is the S11 cursor inference
+// fix: api2.cursor.sh is in SecretHosts; agentn.global.api5.cursor.sh is only
+// covered by the ".cursor.sh" suffix and must also be swapped.
+//
+// The broker is registered for the primary host only (api2.cursor.sh); the
+// suffix-matched host uses broker.Resolve (unscoped) which resolves by
+// placeholder value alone — safe because the proxy is per-sandbox and the
+// placeholder is 256-bit random.
+func TestProxy_SecretHostSuffix_SwapsInferenceHost(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(77)
+	const primaryHost = "api2.cursor.sh"
+	const inferenceHost = "agentn.global.api5.cursor.sh"
+	const realToken = "real-cursor-jwt-INFERENCE"
+
+	// Register only the primary host — inference host is NOT registered.
+	rec, err := broker.RegisterPlaceholder(sid, primaryHost, realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:          sid,
+		SecretHosts:        []string{primaryHost},
+		SecretHostSuffixes: []string{".cursor.sh"},
+		Broker:             broker,
+		AllowAll:           true,
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	client := proxyClient(proxyServer.URL)
+
+	t.Run("suffix_host_swapped", func(t *testing.T) {
+		// The inference host is covered by the suffix. The MITM must intercept
+		// it and swap the placeholder for the real token.
+		req, _ := http.NewRequest(http.MethodGet, "http://"+inferenceHost+"/v1/chat", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do (inference): %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		got := receiveWithTimeout(t, authCh)
+		if want := "Bearer " + realToken; got != want {
+			t.Errorf("suffix host: upstream Authorization = %q, want %q (swap did not fire for suffix-matched host)", got, want)
+		}
+	})
+
+	t.Run("primary_host_still_swapped", func(t *testing.T) {
+		// The exact SecretHosts entry must still work.
+		req, _ := http.NewRequest(http.MethodGet, "http://"+primaryHost+"/v1/control", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do (primary): %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		got := receiveWithTimeout(t, authCh)
+		if want := "Bearer " + realToken; got != want {
+			t.Errorf("primary host: upstream Authorization = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("negative_evilcursor_sh_not_matched", func(t *testing.T) {
+		// "evilcursor.sh" must NOT match the ".cursor.sh" suffix — no dot boundary.
+		// Under AllowAll it is tunneled, so the Authorization header must NOT
+		// be rewritten.
+		const evilHost = "evilcursor.sh"
+		const fakePlaceholder = "PLACEHOLDER-evil-not-registered"
+		req, _ := http.NewRequest(http.MethodGet, "http://"+evilHost+"/steal", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+fakePlaceholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do (evil): %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		got := receiveWithTimeout(t, authCh)
+		if want := "Bearer " + fakePlaceholder; got != want {
+			t.Errorf("evil host: upstream Authorization = %q, want %q (suffix matched incorrectly)", got, want)
+		}
+	})
 }

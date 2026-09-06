@@ -315,7 +315,7 @@ func TestAwaitShutdown_StopVerb(t *testing.T) {
 	// Close the stop channel to simulate POST /supervisor/stop.
 	close(stopCh)
 
-	got := awaitShutdown(ctx, stopCh)
+	got := awaitShutdown(ctx, stopCh, nil, nil)
 	if got != shutdownByStopVerb {
 		t.Errorf("awaitShutdown with closed stopCh = %v, want shutdownByStopVerb (%v)", got, shutdownByStopVerb)
 	}
@@ -331,7 +331,7 @@ func TestAwaitShutdown_Signal(t *testing.T) {
 	// Simulate SIGTERM by cancelling the context.
 	cancel()
 
-	got := awaitShutdown(ctx, stopCh)
+	got := awaitShutdown(ctx, stopCh, nil, nil)
 	if got != shutdownBySignal {
 		t.Errorf("awaitShutdown with cancelled ctx = %v, want shutdownBySignal (%v)", got, shutdownBySignal)
 	}
@@ -349,9 +349,91 @@ func TestAwaitShutdown_BothReadyNoDeadlock(t *testing.T) {
 	close(stopCh)
 	cancel()
 
-	got := awaitShutdown(ctx, stopCh)
+	got := awaitShutdown(ctx, stopCh, nil, nil)
 	if got != shutdownByStopVerb && got != shutdownBySignal {
 		t.Errorf("awaitShutdown with both ready = %v, want shutdownByStopVerb or shutdownBySignal", got)
+	}
+}
+
+// TestAwaitShutdown_Detach verifies that closing detachCh (i.e. the caller
+// sends POST /supervisor/detach, or a /supervisor/handoff replacement
+// confirmed) returns shutdownByDetach — strictly distinct from
+// shutdownByStopVerb. This pins the hard constraint that detach and stop must
+// never be conflated: RunDetached's teardown switch relies on this
+// distinction to skip svc.Stop/svc.Remove only for shutdownByDetach.
+func TestAwaitShutdown_Detach(t *testing.T) {
+	stopCh := make(chan struct{})   // never closed — stop verb not sent
+	detachCh := make(chan struct{}) // closed — detach verb sent
+	ctx := context.Background()
+
+	close(detachCh)
+
+	got := awaitShutdown(ctx, stopCh, detachCh, nil)
+	if got != shutdownByDetach {
+		t.Errorf("awaitShutdown with closed detachCh = %v, want shutdownByDetach (%v)", got, shutdownByDetach)
+	}
+	if got == shutdownByStopVerb {
+		t.Errorf("awaitShutdown with closed detachCh must NOT report shutdownByStopVerb: detach and stop are distinct causes")
+	}
+}
+
+// TestAwaitShutdown_NilDetachChDegradesToTwoWay verifies that a nil detachCh
+// (the shape every pre-detach caller and test used) does not participate in
+// the select — the two-way stopCh/ctx behaviour is unchanged.
+func TestAwaitShutdown_NilDetachChDegradesToTwoWay(t *testing.T) {
+	stopCh := make(chan struct{})
+	ctx := context.Background()
+	close(stopCh)
+
+	got := awaitShutdown(ctx, stopCh, nil, nil)
+	if got != shutdownByStopVerb {
+		t.Errorf("awaitShutdown with nil detachCh and closed stopCh = %v, want shutdownByStopVerb", got)
+	}
+}
+
+// TestAwaitShutdown_VMDeath verifies AC-12b: closing vmDeadCh (netns child
+// exited) returns shutdownByVMDeath, strictly distinct from the other causes.
+//
+// MUTATION PROOF target: in awaitShutdown, the arm
+//
+//	case <-vmDeadCh:
+//	    return shutdownByVMDeath
+//
+// Removing that arm (or changing the return to shutdownBySignal) causes this
+// test to hang or return the wrong cause — a genuine test FAILURE.
+func TestAwaitShutdown_VMDeath(t *testing.T) {
+	stopCh := make(chan struct{})    // never closed — no stop verb
+	vmDeadCh := make(chan struct{})  // closed — VM died
+	ctx := context.Background()
+
+	close(vmDeadCh)
+
+	got := awaitShutdown(ctx, stopCh, nil, vmDeadCh)
+	if got != shutdownByVMDeath {
+		t.Errorf("awaitShutdown with closed vmDeadCh = %v, want shutdownByVMDeath (%v)", got, shutdownByVMDeath)
+	}
+	if got == shutdownByStopVerb {
+		t.Error("shutdownByVMDeath must NOT equal shutdownByStopVerb")
+	}
+	if got == shutdownBySignal {
+		t.Error("shutdownByVMDeath must NOT equal shutdownBySignal")
+	}
+	if got == shutdownByDetach {
+		t.Error("shutdownByVMDeath must NOT equal shutdownByDetach")
+	}
+}
+
+// TestAwaitShutdown_NilVMDeadChDegradesToThreeWay verifies that a nil
+// vmDeadCh does not participate in the select — the stop/detach/signal
+// behaviour is unchanged when no VM-death channel is wired.
+func TestAwaitShutdown_NilVMDeadChDegradesToThreeWay(t *testing.T) {
+	stopCh := make(chan struct{})
+	ctx := context.Background()
+	close(stopCh)
+
+	got := awaitShutdown(ctx, stopCh, nil, nil)
+	if got != shutdownByStopVerb {
+		t.Errorf("awaitShutdown with nil vmDeadCh and closed stopCh = %v, want shutdownByStopVerb", got)
 	}
 }
 
@@ -619,8 +701,132 @@ func TestBuildSupervisorDriverConfig_FreePageReportingEnabled(t *testing.T) {
 	got := buildSupervisorDriverConfig(cfg, 16384, 8, nil)
 
 	if !got.FreePageReporting {
-		t.Errorf("driver FreePageReporting = false, want true — "+
-			"without this the guest has no virtio-balloon device and idle "+
+		t.Errorf("driver FreePageReporting = false, want true — " +
+			"without this the guest has no virtio-balloon device and idle " +
 			"sandboxes cannot return RAM to the host (regression: balloon:null, ~5%% reclaim)")
+	}
+}
+
+// TestBuildSupervisorDriverConfig_WiresConsoleLogPath is the mutation-proof
+// guard for the S1-durable-console slice. It asserts that the cloudhypervisor
+// driver config produced by buildSupervisorDriverConfig carries ConsoleLogPath
+// set to <stateDir>/console.log so the netns child receives
+// NEXUS3_NETNS_CONSOLE_LOG and persists guest virtio-console output next to
+// supervisor.log.
+//
+// MUTATION PROOF: remove ConsoleLogPath from buildSupervisorDriverConfig and
+// the test fails with an empty ConsoleLogPath — the netns child discards all
+// guest console output, exactly the broken pre-fix state.
+func TestBuildSupervisorDriverConfig_WiresConsoleLogPath(t *testing.T) {
+	const stateDir = "/run/test/supervisor/sb-TESTID"
+	cfg := Config{
+		CHBin:     "/usr/bin/cloud-hypervisor",
+		SocketDir: "/run/user/1000/n3",
+		StateDir:  stateDir,
+		KernelPath: "/k",
+		DiskPath:  "/d",
+		MemoryMiB: 512,
+		BootVCPUs: 1,
+	}
+	got := buildSupervisorDriverConfig(cfg, 4096, 1, nil)
+	want := stateDir + "/console.log"
+	if got.ConsoleLogPath != want {
+		t.Errorf("ConsoleLogPath = %q, want %q\n"+
+			"Without this the netns child never opens console.log and every line "+
+			"the in-guest nexus3-agent writes via consoleLog(...) is lost.",
+			got.ConsoleLogPath, want)
+	}
+}
+
+// TestBuildSupervisorDriverConfig_NestedVirt asserts that NestedVirt=true in the
+// supervisor.Config reaches the cloudhypervisor.Config, and that false maps to
+// false. This is the effect assertion (transport is separately tested by
+// TestBuildSupervisorArgv_NestedVirtForwarded).
+//
+// Security contract D-N3N-02: the driver sends CpusConfig.Nested=false
+// EXPLICITLY when NestedVirt is false — it is never omitted.
+//
+// MUTATION PROOF: remove the NestedVirt assignment in buildSupervisorDriverConfig
+// and both cases fail.
+func TestBuildSupervisorDriverConfig_NestedVirt(t *testing.T) {
+	base := Config{
+		CHBin:      "/usr/bin/cloud-hypervisor",
+		SocketDir:  "/run/user/1000/n3",
+		KernelPath: "/k",
+		DiskPath:   "/d",
+		MemoryMiB:  4096,
+		BootVCPUs:  2,
+	}
+
+	t.Run("true reaches driver", func(t *testing.T) {
+		cfg := base
+		cfg.NestedVirt = true
+		got := buildSupervisorDriverConfig(cfg, 16384, 8, nil)
+		if !got.NestedVirt {
+			t.Errorf("driver NestedVirt = false, want true — "+
+				"--nested was requested but KVM nested virt is disabled in the VM "+
+				"(D-N3N-02: NestedVirt must flow Config→buildSupervisorDriverConfig→cloudhypervisor.Config)")
+		}
+	})
+
+	t.Run("false produces false (default-off)", func(t *testing.T) {
+		cfg := base
+		cfg.NestedVirt = false
+		got := buildSupervisorDriverConfig(cfg, 16384, 8, nil)
+		if got.NestedVirt {
+			t.Errorf("driver NestedVirt = true for Config.NestedVirt=false — "+
+				"nested-ON must never be the default (D-N3N-02 security contract)")
+		}
+	})
+}
+
+// TestBuildSupervisorArgv_NestedVirtForwarded verifies that NestedVirt=true
+// produces --nested in the supervisor argv.
+//
+// MUTATION PROOF: remove the NestedVirt block from BuildSupervisorArgv and this
+// test fails.
+func TestBuildSupervisorArgv_NestedVirtForwarded(t *testing.T) {
+	cfg := SpawnConfig{
+		Config: Config{
+			SandboxRef: "abc123",
+			StoreRoot:  "/store",
+			StateDir:   "/state",
+			CHBin:      "/usr/bin/cloud-hypervisor",
+			SocketDir:  "/run/nexus3",
+			KernelPath: "/boot/vmlinux",
+			DiskPath:   "/data/sb.raw",
+			NestedVirt: true,
+		},
+	}
+	argv := BuildSupervisorArgv(cfg)
+	if !slices.Contains(argv, "--nested") {
+		t.Error("argv does not contain --nested for NestedVirt=true — "+
+			"--nested create sandboxes will boot without KVM nested virt "+
+			"(D-N3N-02: NestedVirt must flow Config→BuildSupervisorArgv→supervisor argv)")
+	}
+}
+
+// TestBuildSupervisorArgv_NotNestedOmitsFlag verifies that NestedVirt=false does
+// NOT emit --nested in argv, preserving the default-off security contract.
+//
+// MUTATION PROOF: hardcode cfg.NestedVirt = true in BuildSupervisorArgv and this
+// test fails (--nested appears when it must not).
+func TestBuildSupervisorArgv_NotNestedOmitsFlag(t *testing.T) {
+	cfg := SpawnConfig{
+		Config: Config{
+			SandboxRef: "abc123",
+			StoreRoot:  "/store",
+			StateDir:   "/state",
+			CHBin:      "/usr/bin/cloud-hypervisor",
+			SocketDir:  "/run/nexus3",
+			KernelPath: "/boot/vmlinux",
+			DiskPath:   "/data/sb.raw",
+			NestedVirt: false,
+		},
+	}
+	argv := BuildSupervisorArgv(cfg)
+	if slices.Contains(argv, "--nested") {
+		t.Error("argv contains --nested for NestedVirt=false — "+
+			"nested-ON must never be the default (D-N3N-02 security contract)")
 	}
 }

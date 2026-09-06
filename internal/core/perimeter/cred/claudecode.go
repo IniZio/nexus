@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -31,6 +32,21 @@ const (
 	// grants.
 	ClaudeCodeScopes = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload offline_access"
 )
+
+// claudeCodeDefaultFromPath returns the default --from path for the CLI
+// `auth login` import route for claude-code: the dedicated session's
+// .credentials.json written by `claude auth login` when
+// CLAUDE_CONFIG_DIR=~/.config/nexus3/claude-dedicated is set.
+//
+// This matches the historical hard-coded path so that `nexus3 auth login`
+// with no flags is byte-identical in behaviour to the pre-profile
+// implementation.  The profile parameter is accepted to satisfy
+// [AgentRegistration.DefaultFromPathFn] but is not currently used (the path
+// is the same for all claude-code profiles).
+func claudeCodeDefaultFromPath(_ AgentProfile) string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "nexus3", "claude-dedicated", ".credentials.json")
+}
 
 // claudeCredentialsFile is the on-disk shape of Claude Code's
 // ~/.config/claude/.credentials.json (or equivalent path).

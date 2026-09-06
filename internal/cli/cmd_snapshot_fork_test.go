@@ -6,11 +6,18 @@ import (
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/artifact"
+	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
+
+// noopForkSupervisors is a doSpawnForkSupervisors stub for tests that
+// exercise flag/routing/output without a real supervisor state dir.
+func noopForkSupervisors(_ context.Context, _ *service.Service, _ string, _ domain.SandboxID, _ []domain.Sandbox) error {
+	return nil
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -112,6 +119,12 @@ func TestForkWith_Count3_JSON_Schema(t *testing.T) {
 	svc := newTestService(t)
 	ref := startedSandbox(t, svc, "proj/fork-json")
 
+	// Supervisor spawn requires a real state dir and parent spawn.json; this
+	// test exercises flag parsing and JSON output, not supervisor wiring.
+	origSpawn := doSpawnForkSupervisors
+	t.Cleanup(func() { doSpawnForkSupervisors = origSpawn })
+	doSpawnForkSupervisors = noopForkSupervisors
+
 	out, stdout, _ := capture(true)
 	if err := runForkWith(context.Background(), []string{ref, "--count", "3"}, out, svc); err != nil {
 		t.Fatalf("runForkWith: %v", err)
@@ -145,6 +158,10 @@ func TestForkWith_Count3_JSON_Schema(t *testing.T) {
 func TestForkWith_Count1_Default(t *testing.T) {
 	svc := newTestService(t)
 	ref := startedSandbox(t, svc, "proj/fork-default")
+
+	origSpawn := doSpawnForkSupervisors
+	t.Cleanup(func() { doSpawnForkSupervisors = origSpawn })
+	doSpawnForkSupervisors = noopForkSupervisors
 
 	out, stdout, _ := capture(true)
 	if err := runForkWith(context.Background(), []string{ref}, out, svc); err != nil {
@@ -187,6 +204,10 @@ func TestForkWith_UsageError_BadCount(t *testing.T) {
 func TestForkWith_CountEquals_Flag(t *testing.T) {
 	svc := newTestService(t)
 	ref := startedSandbox(t, svc, "proj/fork-eq")
+
+	origSpawn := doSpawnForkSupervisors
+	t.Cleanup(func() { doSpawnForkSupervisors = origSpawn })
+	doSpawnForkSupervisors = noopForkSupervisors
 
 	out, stdout, _ := capture(true)
 	if err := runForkWith(context.Background(), []string{ref, "--count=2"}, out, svc); err != nil {

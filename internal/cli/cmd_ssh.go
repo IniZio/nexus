@@ -57,7 +57,11 @@ func runSSH(ctx context.Context, args []string, _ *Output) error {
 
 // runSSHStdio resolves the sandbox, dials vsock port 22, and bidirectionally
 // splices the connection to the provided stdin/stdout. It returns when either
-// direction reaches EOF or the context is cancelled.
+// direction reaches EOF or the context is cancelled; before returning it closes
+// the connection and waits for the conn→stdout copy to finish, so no goroutine
+// writes to stdout after the call returns. The stdin→conn copy is not waited
+// on — it may still be parked in a read of stdin (os.Stdin never reaches EOF in
+// the ProxyCommand path) — so it may keep reading stdin after the return.
 func runSSHStdio(ctx context.Context, ref string, svc *service.Service, stdin io.Reader, stdout io.Writer) error {
 	conn, err := svc.DialGuest(ctx, ref, 22)
 	if err != nil {
@@ -72,7 +76,11 @@ func runSSHStdio(ctx context.Context, ref string, svc *service.Service, stdin io
 	// Two-direction splice: conn→stdout and stdin→conn.
 	// We stop as soon as either direction finishes (EOF or error).
 	done := make(chan error, 2)
+	// outDone is closed only after the conn→stdout copy has stopped touching
+	// stdout, so the caller's writer is quiescent by the time we return.
+	outDone := make(chan struct{})
 	go func() {
+		defer close(outDone)
 		_, err := io.Copy(stdout, conn)
 		done <- err
 	}()
@@ -83,10 +91,15 @@ func runSSHStdio(ctx context.Context, ref string, svc *service.Service, stdin io
 
 	select {
 	case <-ctx.Done():
-		return nil
 	case <-done:
-		return nil
 	}
+
+	// Close the connection first: that unblocks the conn→stdout read so the
+	// drain below cannot hang. We deliberately do NOT wait for the stdin→conn
+	// direction — it may be parked forever in a read of os.Stdin.
+	conn.Close()
+	<-outDone
+	return nil
 }
 
 // ── config-ssh ────────────────────────────────────────────────────────────────

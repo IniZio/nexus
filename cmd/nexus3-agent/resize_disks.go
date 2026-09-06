@@ -44,18 +44,24 @@ func diskIndexFromDevice(device string) (int, bool) {
 // resizableDisksFromWorkspaceMounts builds the telemetry disk list for a
 // normal sandbox agent from the parsed --workspace-mount= arguments.
 //
-// Only mounts where IsWorkspace=true AND the device is a recognisable
-// /dev/vd* block device path are included.  Virtiofs mounts (device is a tag,
-// not a /dev path) are silently skipped: their index cannot be derived from the
-// tag string, and virtiofs mounts are never resizable via resize2fs.  Shadow
-// mounts (IsWorkspace=false) are also skipped.
+// Included mounts: those where (IsWorkspace || Resizable) is true AND the
+// device is a recognisable /dev/vd* block device path.  Virtiofs mounts
+// (device is a tag, not a /dev path) are silently skipped: their index cannot
+// be derived from the tag string, and virtiofs mounts are never resizable via
+// resize2fs.  Plain shadow mounts (IsWorkspace=false AND Resizable=false) are
+// also skipped — they are never governor-managed.
 //
-// For the normal sandbox a single entry is expected, with the index derived
-// from the workspace disk's device letter (e.g. /dev/vdf → index 4).
+// Two roles are represented in the result:
+//   - IsWorkspace=true: the primary workspace disk (one per sandbox).
+//   - Resizable=true:   named-volume kind=disk mounts (e.g. /var/lib/docker)
+//     whose governor axis was registered by the host via ResizableDiskIndices.
+//
+// Both roles report a DiskSample at their respective ExtraDisks index so the
+// host DiskAxis for that index finds a matching entry in Sample.DiskStats.
 func resizableDisksFromWorkspaceMounts(mounts []agent.GuestMount) []resizableDisk {
 	var out []resizableDisk
 	for _, m := range mounts {
-		if !m.IsWorkspace {
+		if !m.IsWorkspace && !m.Resizable {
 			continue
 		}
 		idx, ok := diskIndexFromDevice(m.Device)

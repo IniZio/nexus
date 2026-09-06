@@ -1,5 +1,7 @@
 package agent
 
+import "github.com/IniZio/nexus3/internal/core/perimeter/cred"
+
 // CacheDiskMount describes a single ecosystem cache disk to be mounted inside
 // the builder VM before the build step runs. The device is a virtio-blk block
 // device path (e.g. "/dev/vdd"), and MountPath is the canonical in-guest
@@ -53,4 +55,15 @@ type BuilderRoleOptions struct {
 	// "nexus3-agent --builder-role --cache-disk=<device>:<mountpath>" args.
 	// The order must match the order of ExtraDisks[2+] in the CH driver config.
 	CacheDisks []CacheDiskMount
+
+	// ToolRecipe is the agent profile's declared install recipe (D-TP-01,
+	// D-TP-02). Passed as --tool-recipe=<json> by the host's guestBuild and
+	// forwarded to [InGuestBuildOptions] for the SolveRequest. A zero value
+	// (empty Packages) means no recipe — the build proceeds without it.
+	ToolRecipe cred.ToolRecipe
+
+	// TargetArch is the vendor-namespace architecture string (e.g. "x64" for
+	// amd64, "arm64"). Must match the keys in ToolRecipe.SHA256ByArch. Passed
+	// as --target-arch=<arch> by the host and forwarded to InGuestBuildOptions.
+	TargetArch string
 }

@@ -48,6 +48,7 @@ import (
 
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
 // containerfilePath is the workspace-relative path to the project's build
@@ -104,6 +105,18 @@ type BuildRequest struct {
 	// domain.Image, e.g. "nexus3-base:20260807". Informational only; not
 	// used for cache lookup or equality.
 	Ref string
+
+	// ToolRecipe is the profile's declared install recipe for the agent tool.
+	// When Packages is non-empty and the project's .nexus/Containerfile does
+	// not opt out via the nexus3:recipe-skip directive, the recipe is rendered
+	// into the synthesised Dockerfile between the user's instructions and the
+	// nexus3-agent COPY. A zero ToolRecipe (no Packages) is silently ignored.
+	ToolRecipe cred.ToolRecipe
+
+	// TargetArch is the CPU architecture for which the recipe is rendered,
+	// e.g. "x64" (amd64) or "arm64". Required when ToolRecipe.Packages is
+	// non-empty; ignored otherwise.
+	TargetArch string
 }
 
 // Builder drives stock buildkitd to produce bootable guest rootfs images.
@@ -179,6 +192,8 @@ func (b *Builder) Build(ctx context.Context, req BuildRequest) (domain.Image, er
 		AgentPath:          b.cfg.AgentBinaryPath,
 		AgentInstallPath:   agentInstallPath,
 		WorkspaceDir:       req.WorkspaceDir,
+		ToolRecipe:         req.ToolRecipe,
+		TargetArch:         req.TargetArch,
 	}, outDir); err != nil {
 		return domain.Image{}, fmt.Errorf("builder: Build: solve: %w", err)
 	}

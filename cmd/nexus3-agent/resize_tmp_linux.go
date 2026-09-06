@@ -3,15 +3,55 @@
 package main
 
 // /tmp tmpfs auto-resizer for the guest auto-resize subsystem (AR-GA-AC6,
-// D-DC-22). This is probably the single most load-bearing feature in the
-// slice: buildkit uses /tmp as scratch, and a tmpfs mounted at boot stays
-// capped at its boot size unless remounted — so growing the VM from 4 GiB to
-// 8 GiB delivers zero extra scratch space with RAM sitting idle. Without
-// this, memory auto-resize silently fails to fix the nested-build OOM wall.
+// D-DC-22).
 //
-// Policy (from motive.md §Axis-1 item 6 and the ticket):
+// CORRECTION (D-DC-32). This comment used to open by claiming that "buildkit
+// uses /tmp as scratch", and called the resizer the most load-bearing feature
+// in the slice on that basis. THAT IS FALSE FOR NEXUS3, and it is why the
+// sizing policy below protects less than it appears to.
+//
+// The claim came in verbatim from OLD-nexus as HB-P10, whose provenance line
+// reads "confirmed-live (OLD source read)" — it was verified against OLD
+// source and never re-checked here. In nexus3, buildkitd's --root is
+// inGuestBuildkitState = "/var/lib/buildkit" (internal/core/agent/
+// buildkit_linux.go:24, passed at :108). With a cache disk attached that is a
+// persistent ext4 mount; with none, buildkit mounts its OWN 4 GiB tmpfs
+// there (:65). Neither is /tmp. The only /tmp in the whole build path is
+// bkLogPath, a log file (:101). The export path deliberately prefers the
+// cache disk and falls back to the ROOTFS /tmp, explicitly refusing to fall
+// back to a RAM tmpfs (:193-210) — a previous 4 GiB RAM-backed scratch there
+// caused hollow, zero-length exports on small builders.
+//
+// So the cap, the floor and this goroutine are not defending nested builds.
+// What /tmp actually holds is ordinary temp files plus whatever an in-guest
+// coding agent puts there — and on 2026-09-02 an agent filled it with four
+// git worktrees and a pnpm store (1.1 GiB of a 1.4 GiB tmpfs) and hard-blocked
+// while /workspace had 33 GiB free.
+//
+// TWO PROPERTIES MAKE THAT WORSE THAN A FULL DISK, and neither is obvious
+// from the policy below:
+//
+//   - tmpfs pages are never advertised as free, so virtio-balloon
+//     FreePageReporting can never reclaim them. Bytes written here leave the
+//     governor's budget permanently. The only backstop is ZRAM, itself RAM.
+//   - The grow-only rule RATCHETS. When the balloon lowers MemTotal, the cap
+//     does not come down — resizeTmpfsOnce returns nil whenever target is
+//     within hysteresis of the current cap, and there is no shrink path. A
+//     guest observed at cap 1393 MiB against live MemTotal 2276 MiB was at
+//     61% of the guest, not the intended 50%, and the fraction rises every
+//     time the governor reclaims.
+//
+// D-DC-32 supersedes D-DC-22: /tmp moves to a disk-backed scratch device for
+// worktree/coding-agent sandboxes. This file is deliberately NOT deleted —
+// resizeTmpfsOnce already no-ops when /tmp is not a tmpfs (isTmpfsMounted
+// below, covered by TestResizeTmpfsOnce_NonTmpfsIsNoOp), so the policy goes
+// DORMANT rather than away, and a sandbox with no scratch disk behaves
+// exactly as it does today.
+//
+// Policy (from motive.md §Axis-1 item 6, the ticket, and D-SD-04):
 //   - Size /tmp at 50% of current live MemTotal (not the boot ceiling).
-//   - Hard cap: 2 GiB (tmpfsAbsoluteCapBytes).
+//   - Hard cap: 512 MiB (tmpfsAbsoluteCapBytes; was 2 GiB before D-SD-04).
+//   - Hard floor: 256 MiB (tmpfsAbsoluteFloorBytes; was 1 GiB before D-SD-04).
 //   - Grow-only: remount only when the target exceeds the current cap by ≥ 64 MiB.
 //   - Poll interval: 10 s.
 //
@@ -46,18 +86,24 @@ const (
 	tmpfsMemFractionDen uint64 = 100
 
 	// tmpfsAbsoluteCapBytes: hard upper bound on /tmp regardless of MemTotal.
-	// A RAM-backed tmpfs tracking the ceiling would consume 4 GiB+ of the RAM
-	// the governor is protecting; cap it here.
-	tmpfsAbsoluteCapBytes uint64 = 2 << 30 // 2 GiB
+	// D-SD-04 (wave 2, operator sign-off): lowered from 2 GiB → 512 MiB.
+	// Rationale: wave-1 measurement on example-app/ex-802-worktree
+	// showed MemTotal 740 MiB against a /tmp cap of 1024 MiB (138% of total RAM)
+	// because the old 1 GiB floor exceeded the whole guest. Under the new pair
+	// (cap 512 MiB, floor 256 MiB) the same guest gets a 256 MiB /tmp — 34% of
+	// total RAM — which is protective without being absurd.
+	// WARNING: a cap-only change (this constant lowered, floor left at 1 GiB) is a
+	// silent no-op: the floor clamps every result back up over the cap. Both
+	// constants must move together.
+	tmpfsAbsoluteCapBytes uint64 = 512 << 20 // 512 MiB (was 2 GiB; D-SD-04)
 
 	// tmpfsAbsoluteFloorBytes: minimum /tmp size regardless of MemTotal.
-	// The base-image disk-backed /tmp was ≈5959 MiB; the 50%-of-MemTotal formula
-	// on a 512 MiB sandbox would yield only ≈242 MiB — a 24× scratch regression.
-	// The floor prevents this starvation on small sandboxes.
-	// IMPORTANT: tmpfs is sized, not preallocated. A 1 GiB floor on a 512 MiB
+	// D-SD-04 (wave 2, operator sign-off): lowered from 1 GiB → 256 MiB.
+	// IMPORTANT: tmpfs is SIZED, NOT PREALLOCATED. A 256 MiB floor on a 512 MiB
 	// guest costs nothing until bytes are actually written into /tmp. Do NOT
-	// remove this floor to "fix" apparent over-sizing on small guests.
-	tmpfsAbsoluteFloorBytes uint64 = 1 << 30 // 1 GiB
+	// remove this floor to "fix" apparent over-sizing on small guests — the floor
+	// is a minimum reservation guarantee, not a RAM charge.
+	tmpfsAbsoluteFloorBytes uint64 = 256 << 20 // 256 MiB (was 1 GiB; D-SD-04)
 
 	// tmpResizeGrowMarginBytes: minimum delta needed to trigger a remount.
 	// Avoids churn when the ceiling and current cap are already close.
@@ -82,7 +128,7 @@ var (
 
 // startTmpfsResizer spawns a panic-guarded goroutine that runs resizeTmpfsOnce
 // immediately, then repeats on tmpResizeInterval until ctx is cancelled.
-// Because the 2 GiB cap is usually reached quickly, subsequent ticks are cheap
+// Because the 512 MiB cap is usually reached quickly, subsequent ticks are cheap
 // no-ops. The loop also handles the case where MemTotal is not yet stable
 // immediately at boot.
 //

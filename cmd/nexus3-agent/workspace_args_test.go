@@ -165,8 +165,12 @@ func TestParseWorkspaceMountArg_RoundTrip(t *testing.T) {
 		if m.IsWorkspace {
 			ws = "true"
 		}
-		// Encode using the 5-field format emitted by workspaceMountCmdline.
-		encoded := "--workspace-mount=" + m.Device + ":" + m.Target + ":" + m.FSType + ":" + ro + ":" + ws
+		rs := "false"
+		if m.Resizable {
+			rs = "true"
+		}
+		// Encode using the 6-field format emitted by workspaceMountCmdline.
+		encoded := "--workspace-mount=" + m.Device + ":" + m.Target + ":" + m.FSType + ":" + ro + ":" + ws + ":" + rs
 		got, ok := parseWorkspaceMountArg(encoded)
 		if !ok {
 			t.Errorf("round-trip failed for %+v: parse returned ok=false", m)
@@ -174,6 +178,52 @@ func TestParseWorkspaceMountArg_RoundTrip(t *testing.T) {
 		}
 		if got != m {
 			t.Errorf("round-trip mismatch for %+v: got %+v", m, got)
+		}
+	}
+}
+
+// TestParseWorkspaceMountArg_ResizableField verifies that the 6th field
+// (resizable) is parsed correctly for named-volume docker disk mounts.
+//
+// MUTATION PROOF: removing `isResizable = parts[5] == "true"` in
+// parseWorkspaceMountArg causes the Resizable field to stay false even when
+// the host emits "true", failing the Resizable assertion below.
+func TestParseWorkspaceMountArg_ResizableField(t *testing.T) {
+	cases := []struct {
+		arg           string
+		wantResizable bool
+		wantWorkspace bool
+	}{
+		{
+			// Named docker disk: resizable=true, workspace=false.
+			arg:           "--workspace-mount=/dev/vdb:/var/lib/docker:ext4:false:false:true",
+			wantResizable: true,
+			wantWorkspace: false,
+		},
+		{
+			// Workspace disk: workspace=true, resizable=false.
+			arg:           "--workspace-mount=/dev/vdc:/workspace/repo:ext4:false:true:false",
+			wantResizable: false,
+			wantWorkspace: true,
+		},
+		{
+			// Old 5-field format (no resizable field): Resizable must default to false.
+			arg:           "--workspace-mount=/dev/vdb:/var/lib/docker:ext4:false:false",
+			wantResizable: false,
+			wantWorkspace: false,
+		},
+	}
+	for _, tc := range cases {
+		got, ok := parseWorkspaceMountArg(tc.arg)
+		if !ok {
+			t.Errorf("arg %q: parse returned ok=false", tc.arg)
+			continue
+		}
+		if got.Resizable != tc.wantResizable {
+			t.Errorf("arg %q: Resizable = %v, want %v", tc.arg, got.Resizable, tc.wantResizable)
+		}
+		if got.IsWorkspace != tc.wantWorkspace {
+			t.Errorf("arg %q: IsWorkspace = %v, want %v", tc.arg, got.IsWorkspace, tc.wantWorkspace)
 		}
 	}
 }

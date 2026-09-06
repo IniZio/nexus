@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/resize"
 )
 
@@ -29,6 +30,14 @@ var knownOptionalSupervisorConfigFields = map[string]string{
 	// configured. The field is populated only when BuildMCPOAuthBinds finds
 	// OAuth entries in ~/.claude/.credentials.json; its absence is never a bug.
 	"MCPOAuthRefreshConfigs": "nil = no OAuth MCP servers; populated on demand by BuildMCPOAuthBinds",
+	// CacheDiskSlots / CacheDiskLeaseFDs: nil is correct for a human sandbox.
+	// Builder cache-disk slots exist only for the ephemeral builder VM that
+	// `sandbox create --file` boots; a persistent human sandbox attaches no
+	// cache disk and therefore leases no slot (D-HSH-07). The builder path
+	// sets both — see supervisorBuilderDriver.buildSpawnConfig, guarded by
+	// TestBuilderSupervisorDriver_HandsCacheDiskLeasesToTheSupervisor.
+	"CacheDiskSlots":    "nil = no builder cache disk on a human sandbox; builder mode sets it",
+	"CacheDiskLeaseFDs": "nil = no inherited lease descriptors; builder mode sets it via SpawnDetached",
 }
 
 // TestBuildHumanSupervisorConfig_AllFieldsPopulated verifies that
@@ -71,17 +80,21 @@ func TestBuildHumanSupervisorConfig_AllFieldsPopulated(t *testing.T) {
 			DiskMaxBytes: 20 << 30,
 		},
 		2048, 2, // memoryMiB, bootVCPUs
-		"/disks/sb.raw",                         // diskPath
-		[]string{"/disks/shd.raw", "/disks/ws.raw"}, // extraDisks (non-nil)
+		"/disks/sb.raw", // diskPath
+		[]string{"/disks/shd.raw", "/disks/ws.raw"},              // extraDisks (non-nil)
 		"root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0", // cmdline
-		"/usr/bin/cloud-hypervisor",              // chBin
-		"/tmp/sockets",                           // socketDir
-		true,                                     // hasWorkspace
-		1,                                        // workspaceDiskIndex (non-zero)
-		"/workspace/proj",                        // workspaceGuestPath
+		"/usr/bin/cloud-hypervisor",                              // chBin
+		"/tmp/sockets",                                           // socketDir
+		true,                                                     // hasWorkspace
+		1,                                                        // workspaceDiskIndex (non-zero, = 1 shadow disk)
+		1,                                                        // numNamedDisks (non-zero, = 1 docker named volume)
+		"/workspace/proj",                                        // workspaceGuestPath
+		true, 3,                                                  // hasScratchDisk, scratchDiskIndex (numNamedDisks+workspaceDiskIndex+1 = 1+1+1)
 		[]domain.LiveMount{{HostPath: "/src", GuestPath: "/work"}}, // liveMounts
-		"/usr/bin/virtiofsd",                     // virtiofsdPath
-		nil,                                      // mcpOAuthRefreshConfigs (optional; nil = none)
+		"/usr/bin/virtiofsd", // virtiofsdPath
+		true,                 // nestedVirt — non-zero for AllFieldsPopulated
+		nil,                  // mcpOAuthRefreshConfigs (optional; nil = none)
+		cred.AgentProfile{},  // agentProfile — zero value treated as claude-code
 	)
 
 	rv := reflect.ValueOf(cfg)
@@ -122,9 +135,12 @@ func TestBuildHumanSupervisorConfig_CredsFilePopulated(t *testing.T) {
 		512, 1,
 		"/disks/sb.raw", nil,
 		"root=/dev/vda rw", "/usr/bin/cloud-hypervisor", "/tmp/sockets",
-		false, 0, "",
+		false, 0, 0, "",
+		false, -1, // hasScratchDisk, scratchDiskIndex — no workspace, no scratch
 		nil, "",
-		nil, // mcpOAuthRefreshConfigs — optional
+		false,               // nestedVirt
+		nil,                 // mcpOAuthRefreshConfigs — optional
+		cred.AgentProfile{}, // agentProfile — zero value treated as claude-code
 	)
 	if cfg.CredsFile == "" {
 		t.Error("supervisor.Config.CredsFile is empty — the detached supervisor " +
@@ -133,5 +149,77 @@ func TestBuildHumanSupervisorConfig_CredsFilePopulated(t *testing.T) {
 	}
 	if cfg.CredsFile != "/fake/creds.json" {
 		t.Errorf("CredsFile = %q, want /fake/creds.json", cfg.CredsFile)
+	}
+}
+
+// TestBuildHumanSupervisorConfig_NamedDiskResizableIndices verifies that named
+// kind=disk volume disks appear in ResizableDiskIndices at the correct absolute
+// ExtraDisks indices, preceding the workspace disk index.
+//
+// MUTATION PROOF (index wiring): the docker volume index MUST appear in
+// ResizableDiskIndices. This test fails if the named-disk loop in
+// buildHumanSupervisorConfig is removed or the index formula is wrong.
+func TestBuildHumanSupervisorConfig_NamedDiskResizableIndices(t *testing.T) {
+	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", "/fake/creds.json")
+
+	cases := []struct {
+		name           string
+		numNamedDisks  int
+		numShadowDisks int // workspaceDiskIndex passed in (shadow count)
+		hasWorkspace   bool
+		wantResizable  []int
+	}{
+		{
+			name:          "one docker disk no shadow no workspace",
+			numNamedDisks: 1, numShadowDisks: 0, hasWorkspace: false,
+			wantResizable: []int{0},
+		},
+		{
+			name:          "one docker disk one shadow with workspace",
+			numNamedDisks: 1, numShadowDisks: 1, hasWorkspace: true,
+			// ExtraDisks: [docker(0), shadow(1), workspace(2)]
+			// named: [0], workspace: 1+1=2
+			wantResizable: []int{0, 2},
+		},
+		{
+			name:          "no named disks with workspace",
+			numNamedDisks: 0, numShadowDisks: 0, hasWorkspace: true,
+			wantResizable: []int{0},
+		},
+		{
+			name:          "two named disks no shadow with workspace",
+			numNamedDisks: 2, numShadowDisks: 0, hasWorkspace: true,
+			// ExtraDisks: [named0(0), named1(1), workspace(2)]
+			// named: [0, 1], workspace: 2+0=2
+			wantResizable: []int{0, 1, 2},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := buildHumanSupervisorConfig(
+				"aabbccddeeff1122", "/store", "/store/supervisors/aabb",
+				"/kernel/vmlinux",
+				resize.Bounds{MemMinBytes: 1, MemMaxBytes: 2, DiskMaxBytes: 100 << 30},
+				512, 1,
+				"/disks/sb.raw", nil,
+				"root=/dev/vda rw", "/usr/bin/cloud-hypervisor", "/tmp/sockets",
+				tc.hasWorkspace, tc.numShadowDisks, tc.numNamedDisks, "",
+				tc.hasWorkspace, tc.numNamedDisks+tc.numShadowDisks+1, // hasScratchDisk, scratchDiskIndex
+				nil, "",
+				false,               // nestedVirt
+				nil,                 // mcpOAuthRefreshConfigs
+				cred.AgentProfile{}, // agentProfile — zero value treated as claude-code
+			)
+			got := cfg.ResizableDiskIndices
+			if len(got) != len(tc.wantResizable) {
+				t.Fatalf("ResizableDiskIndices = %v, want %v", got, tc.wantResizable)
+			}
+			for i, idx := range tc.wantResizable {
+				if got[i] != idx {
+					t.Errorf("ResizableDiskIndices[%d] = %d, want %d (full: %v)", i, got[i], idx, got)
+				}
+			}
+		})
 	}
 }

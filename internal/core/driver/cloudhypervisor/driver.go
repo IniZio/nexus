@@ -195,6 +195,19 @@ type Config struct {
 	// guest to actually route kernel output to the serial port.
 	SerialOutputPath string
 
+	// ConsoleLogPath, when set, is the path to a file that receives the guest
+	// virtio-console output. Cloud-hypervisor defaults to console:{mode:"Tty"},
+	// which writes the guest console stream to CH's own stdout; nexus3 drains
+	// that pipe via a capped writer (see cappedConsoleWriter) and writes to this
+	// file, stopping at maxConsoleSizeBytes (16 MiB) to prevent unbounded growth.
+	//
+	// When empty, guest console output is silently discarded — matching the
+	// pre-fix behaviour where CH stdout was drained to io.Discard.
+	//
+	// The supervisor sets this to <stateDir>/console.log so the file lives next
+	// to supervisor.log and survives the supervisor process exiting.
+	ConsoleLogPath string
+
 	// VCPUs is the number of virtual CPUs for each VM (used for boot_vcpus).
 	// Defaults to 1.
 	VCPUs uint32
@@ -786,6 +799,14 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 	}
 	if d.cfg.NestedVirt {
 		if err := nestedVirtPreflight(); err != nil {
+			// The netns child + CH have already been spawned and confirmed
+			// API-ready by the poll loop above. Every other post-spawn failure
+			// in this function calls cleanup() before returning; this branch
+			// must too, or the child+CH pair leaks with zero resource-file
+			// footprint (create.go's own cleanup only removes disk/socket
+			// files, and reap's file-driven enumeration can never see a
+			// process that never owned a file to begin with).
+			cleanup()
 			return "", err
 		}
 		cpusCfg.Nested = true
@@ -844,6 +865,15 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 			Mode: "File",
 			File: d.cfg.SerialOutputPath,
 		}
+	} else {
+		// Route ttyS0 → CH stdout so the cappedConsoleWriter (draining CH stdout
+		// to ConsoleLogPath in the netns child) captures early-boot serial output.
+		// Without this, CH creates no serial device and guest ttyS0 output is
+		// silently discarded before it ever reaches the pipe S1 drains.
+		// This is the production path: supervisors set ConsoleLogPath but never
+		// SerialOutputPath. Tests that need file-serial output set SerialOutputPath
+		// directly (serial: {mode: "File"}) and this branch is skipped.
+		vmcfg.Serial = &vmSerialConfig{Mode: "Tty"}
 	}
 
 	vsock := &vmVsockConfig{

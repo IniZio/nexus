@@ -26,6 +26,12 @@ type CopyOptions struct {
 	// Dst receives archive bytes for PULL transfers (guest → host).
 	// May be nil for PUSH.
 	Dst io.Writer
+	// ExpectedBytes is the authoritative byte count of the payload for
+	// non-directory PUSH transfers. Declared as a pointer so nil (absent)
+	// is distinguishable from &0 (declared empty file). The guest fails
+	// closed when the field is nil — callers must set it for every single-file
+	// PUSH, including for size-0 files. Not set for directory PUSH transfers.
+	ExpectedBytes *int64
 }
 
 // Copy negotiates a file-transfer operation with the guest over the split
@@ -51,9 +57,10 @@ func (c *Client) Copy(ctx context.Context, opts CopyOptions) error {
 	defer cc.Close()
 
 	resp, err := stub.Copy(ctx, &agentpb.CopyRequest{
-		Direction:   opts.Direction,
-		GuestPath:   opts.GuestPath,
-		IsDirectory: opts.IsDirectory,
+		Direction:     opts.Direction,
+		GuestPath:     opts.GuestPath,
+		IsDirectory:   opts.IsDirectory,
+		ExpectedBytes: opts.ExpectedBytes,
 	})
 	if err != nil {
 		return fmt.Errorf("agent: copy rpc: %w", err)
@@ -87,7 +94,7 @@ func (c *Client) Copy(ctx context.Context, opts CopyOptions) error {
 	if opts.Direction == agentpb.CopyDirection_COPY_DIRECTION_PUSH {
 		return copyPush(wr, opts.Src)
 	}
-	return copyPull(rd, opts.Dst)
+	return copyPull(rd, opts.Dst, resp.DeclaredBytes, opts.IsDirectory, opts.GuestPath)
 }
 
 // copyPush reads archive bytes from src and streams them to the guest as
@@ -114,23 +121,99 @@ func copyPush(wr *wire.Writer, src io.Reader) error {
 	}
 }
 
-// copyPull reads Data frames from the guest and writes archive bytes to dst,
-// returning once the guest sends an Exit frame.
-func copyPull(rd *wire.Reader, dst io.Writer) error {
+// copyPull reads Data(Stdout) frames from the guest and writes the bytes to
+// dst, returning once the guest sends an Exit frame.
+//
+// For single-file pulls (isDirectory false), declaredBytes must be non-nil:
+// it is the authoritative file size declared by the agent in CopyResponse via
+// proto3 field presence (optional int64). nil means the agent did not declare
+// — fail closed. A pointer to 0 is valid and means an empty file. A
+// byte-count mismatch against the pointed-to value is also an error, guarding
+// against transport truncation (e.g. the 32 MiB vsock cap in buildkit).
+//
+// For directory pulls (isDirectory true), the received bytes form a tar
+// archive. They are piped through archive/tar inline to detect truncated entry
+// bodies: archive/tar returns io.ErrUnexpectedEOF when a body is shorter than
+// its declared size in the tar header, which surfaces as an error here.
+func copyPull(rd *wire.Reader, dst io.Writer, declaredBytes *int64, isDirectory bool, guestPath string) error {
+	// For directory pulls wire the received bytes through an inline tar
+	// validator so truncated entry bodies surface as errors rather than silent
+	// short files on the host.
+	var (
+		tarPW    *io.PipeWriter
+		tarErrCh chan error
+	)
+	writeDst := dst
+	if isDirectory {
+		var tarPR *io.PipeReader
+		tarPR, tarPW = io.Pipe()
+		tarErrCh = make(chan error, 1)
+		go func() { tarErrCh <- validateTarStream(tarPR) }()
+		if dst != nil {
+			writeDst = io.MultiWriter(dst, tarPW)
+		} else {
+			writeDst = tarPW
+		}
+	}
+
+	var n int64
 	for {
 		frame, err := rd.ReadFrame()
 		if err != nil {
+			if tarPW != nil {
+				tarPW.CloseWithError(err)
+				<-tarErrCh
+			}
 			return fmt.Errorf("agent: copy pull: read frame: %w", err)
 		}
 		switch frame.Type {
 		case wire.FrameData:
-			if dst != nil {
-				if _, werr := dst.Write(frame.Data.Payload); werr != nil {
+			if frame.Data != nil && frame.Data.Tag == wire.StreamStdout && writeDst != nil {
+				nb, werr := writeDst.Write(frame.Data.Payload)
+				n += int64(nb)
+				if werr != nil {
+					if tarPW != nil {
+						tarPW.CloseWithError(werr)
+						<-tarErrCh
+					}
 					return fmt.Errorf("agent: copy pull: write dst: %w", werr)
 				}
 			}
 		case wire.FrameExit:
+			if isDirectory {
+				tarPW.Close()
+				if tarErr := <-tarErrCh; tarErr != nil {
+					return fmt.Errorf("agent: copy pull %q: tar validation: %w", guestPath, tarErr)
+				}
+			} else {
+				// nil = agent did not set the field (not declared) — fail closed.
+				// A pointer to 0 is valid: it means the agent declared an empty file.
+				if declaredBytes == nil {
+					return fmt.Errorf("agent: copy pull %q: DeclaredBytes absent — agent must declare authoritative file size for single-file PULL", guestPath)
+				}
+				if n != *declaredBytes {
+					return fmt.Errorf("agent: copy pull %q: received %d bytes, expected %d — transfer truncated", guestPath, n, *declaredBytes)
+				}
+			}
 			return nil
+		}
+	}
+}
+
+// validateTarStream reads through every tar entry in r and discards entry
+// data. It exists solely to verify archive integrity: archive/tar returns
+// io.ErrUnexpectedEOF when it cannot read the full body declared in a tar
+// header, so a truncated receive will surface as an error rather than a
+// silently short file on the host.
+func validateTarStream(r io.Reader) error {
+	tr := tar.NewReader(r)
+	for {
+		_, err := tr.Next() // auto-drains the previous entry's body
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
 		}
 	}
 }

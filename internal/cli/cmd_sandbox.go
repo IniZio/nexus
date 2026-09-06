@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -92,6 +93,11 @@ const (
 	// guest agent does not become reachable within the configured timeout.
 	// The VM is stopped and the record is deleted before this code is returned.
 	sandboxErrCodeAgentUnreachable = "agent_unreachable"
+
+	// sandboxErrCodeBadCredential is returned when the credential preflight for
+	// an --agent sandbox fails at create time (absent, unreadable, or expired).
+	// Returned before any VM boots so no cleanup is needed.
+	sandboxErrCodeBadCredential = "bad_credential"
 )
 
 // noopDriver
@@ -367,7 +373,6 @@ type sandboxCreateFlags struct {
 	allowHosts      []string // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
 	allowedRepo     string                    // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
 	pathPolicies    domain.EgressPathPolicies // --egress-policy-json: JSON-encoded generic path policies (worktree subprocess channel)
-	allowedBranches []string                  // --branches <ref>[,ref…]: git-push branch allowlist; default refs/heads/nexus3/*
 	mountNamed      []string // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
 	mountLive       []string // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
 	noShareSettings bool     // --no-share-settings: skip curated host agent config overlay (A-MOUNT)
@@ -510,6 +515,13 @@ func applyProjectConfig(f *sandboxCreateFlags) error {
 				"sandbox create: --memory-max %d MiB is less than --memory %d MiB; ceiling must exceed boot size",
 				f.memoryMaxMiB, f.memoryMiB)}
 		}
+	}
+
+	// Nested: explicit --nested flag wins (security contract D-N3N-02: nested
+	// must be opt-in). Config provides a per-repo default when the flag was
+	// absent. Once set, it is never cleared: f.nestedVirt is a one-way latch.
+	if !f.nestedVirt && cfg.Sandbox.Nested {
+		f.nestedVirt = true
 	}
 
 	return nil
@@ -778,21 +790,6 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 				}
 			}
 			f.pathPolicies = pp
-		case "--branches":
-			// S0: git-push branch allowlist. Repeatable; also accepts comma-separated
-			// patterns in a single value. Default (when omitted) is
-			// refs/heads/nexus3/* applied at perimeter start via
-			// Envelope.ResolvedAllowedBranches. Only meaningful on the git-VM
-			// create path (--workspace / --file).
-			if i+1 >= len(args) {
-				return f, &UsageError{Msg: "sandbox create: --branches requires a ref pattern"}
-			}
-			i++
-			for _, b := range strings.Split(args[i], ",") {
-				if b = strings.TrimSpace(b); b != "" {
-					f.allowedBranches = append(f.allowedBranches, b)
-				}
-			}
 		case "--mount-named":
 			// SD2-6-MOUNT: <volume-name>:<guest-path>[:ro|kind=dir|size=Xg]
 			// guest-path must not contain a .git component (hard refusal, design line 63).
@@ -923,11 +920,14 @@ func sandboxHandleHostname(handle string) string {
 // The Linux kernel delivers tokens after "--" in the cmdline directly to PID 1
 // as os.Args[1:], so the agent reads them via parseWorkspaceMountArg.
 //
-// Format per mount: --workspace-mount=<device>:<target>:<fstype>:<readonly>:<workspace>
+// Format per mount: --workspace-mount=<device>:<target>:<fstype>:<readonly>:<workspace>:<resizable>
 // The "readonly" field is "true" when m.ReadOnly is true, "false" otherwise.
 // The "workspace" field is "true" when m.IsWorkspace is true, "false" otherwise.
+// The "resizable" field is "true" when m.Resizable is true, "false" otherwise.
 // Exactly one mount in a well-formed set carries workspace=true; the agent selects
 // the disk-telemetry target by this field (never by position or ReadOnly inference).
+// Non-workspace mounts that need independent governor-managed auto-resize carry
+// resizable=true (e.g. named-volume /var/lib/docker disks).
 //
 // Callers must pass a non-empty slice; calling with an empty slice is a no-op
 // that is caught by the if-guard in newDriver rather than here to keep the hot
@@ -943,7 +943,11 @@ func workspaceMountCmdline(mounts []agent.GuestMount) string {
 		if m.IsWorkspace {
 			ws = "true"
 		}
-		b += fmt.Sprintf(" --workspace-mount=%s:%s:%s:%s:%s", m.Device, m.Target, m.FSType, ro, ws)
+		rs := "false"
+		if m.Resizable {
+			rs = "true"
+		}
+		b += fmt.Sprintf(" --workspace-mount=%s:%s:%s:%s:%s:%s", m.Device, m.Target, m.FSType, ro, ws, rs)
 	}
 	return b
 }
@@ -964,13 +968,85 @@ func workspaceMountCmdline(mounts []agent.GuestMount) string {
 //
 // mounts may be empty: a sandbox with no workspace, shadow or live mounts boots
 // on the base args alone.
-func guestBootCmdline(mounts []agent.GuestMount, pid1Args, sandboxHandle string) string {
+
+// bootScratchDiskPresent returns true when the sandbox will have a scratch disk
+// attached by service/create.go step 4.9. Two routes bind a workspace and
+// therefore trigger scratch creation:
+//   - workspacePath != "" : the --workspace ext4-capture path
+//   - service.HasWorkspaceMount(liveMounts): a /workspace or /workspace/<name>
+//     LiveMount (virtiofs, the herdr worktree-sandbox --file shape)
+//
+// Sandbox create never sets NoScratchDisk, so workspace presence == scratch
+// presence on this path. This function is the testable seam for line 1732 in
+// the newDriver closure — extracted so tests can drive the exact derivation
+// without needing to invoke the full CLI flag-parsing stack.
+func bootScratchDiskPresent(workspacePath string, liveMounts []domain.LiveMount) bool {
+	return workspacePath != "" || service.HasWorkspaceMount(liveMounts)
+}
+
+// buildLiveMountDriverSpec assembles a sandboxDriverSpec from resolved CLI
+// flags and boot-time mount slices. It is a pure extraction of the spec
+// assembly that previously lived inline inside the newDriver closure in
+// sandboxCreate.Run; the closure now calls this function at invocation time
+// (not creation time) so that bootLiveMounts and bootGuestMounts are read
+// with their final values — appended to at several points after the closure
+// is defined but before CreateAndBoot calls it.
+func buildLiveMountDriverSpec(
+	f sandboxCreateFlags,
+	ar vmcfg.Result,
+	kernelPath string,
+	bootLiveMounts []domain.LiveMount,
+	bootGuestMounts []agent.GuestMount,
+	namedDiskMounts []agent.GuestMount,
+	project, name string,
+) sandboxDriverSpec {
+	// Named kind=disk volume mounts occupy the lowest device indices, so they
+	// are concatenated first: the resulting order IS the guest device order,
+	// and the scratch disk's index depends on it (D-DC-32).
+	// VirtiofsTag is the SINGLE SOURCE OF TRUTH for the per-mount tag (D-PD-53).
+	liveGuestMounts := liveMountsToGuestMounts(bootLiveMounts)
+	allGuestMounts := append(append([]agent.GuestMount{}, namedDiskMounts...),
+		append(bootGuestMounts, liveGuestMounts...)...)
+	return sandboxDriverSpec{
+		KernelPath:     kernelPath,
+		MemoryMiB:      f.memoryMiB,
+		VCPUs:          f.vcpus,
+		MemoryMaxMiB:   ar.MemoryMaxMiB,
+		VCPUMax:        ar.VCPUMax,
+		NestedVirt:     f.nestedVirt,
+		PID1Args:       ar.PID1Args,
+		SBHandle:       project + "/" + name,
+		LiveMounts:     bootLiveMounts,
+		GuestMounts:    allGuestMounts,
+		HasScratchDisk: bootScratchDiskPresent(f.workspacePath, bootLiveMounts),
+	}
+}
+
+func guestBootCmdline(mounts []agent.GuestMount, pid1Args, sandboxHandle string, scratchDiskIdx int) string {
 	base := diskBootCmdlineBase + " --"
 	if len(mounts) > 0 {
 		base = workspaceMountCmdline(mounts)
 	}
-	return base + pid1Args + " --sandbox-handle=" + sandboxHandleHostname(sandboxHandle)
+	return base + pid1Args + scratchDiskCmdlineArg(scratchDiskIdx) + " --sandbox-handle=" + sandboxHandleHostname(sandboxHandle)
 }
+
+// scratchDiskCmdlineArg returns the kernel cmdline token that tells the
+// in-guest init to wipe and mount the scratch disk at /tmp (D-SD-01).
+// idx is the 0-based ExtraDisks index of the scratch disk.
+// Returns "" when idx < 0 (no scratch disk attached).
+func scratchDiskCmdlineArg(idx int) string {
+	if idx < 0 {
+		return ""
+	}
+	// Device path: ExtraDisks[idx] → /dev/vd{b+idx}
+	dev := fmt.Sprintf("/dev/vd%c", 'b'+rune(idx))
+	return fmt.Sprintf(" --scratch-disk=%s", dev)
+}
+
+// goArchForBuild returns the host GOARCH string for use with
+// [builder.GoArchToVendorArch]. Extracted into a function so it can be
+// overridden in tests without touching runtime.GOARCH directly.
+var goArchForBuild = func() string { return runtime.GOARCH }
 
 // resolveAgentPosture derives the three create-time settings that --agent
 // controls: the agent profile recorded on the sandbox, the egress allowlist
@@ -1002,6 +1078,33 @@ func resolveAgentPosture(f sandboxCreateFlags) (cred.AgentProfile, []string, boo
 	// intercepts SecretHosts regardless of AllowAll, so the credential swap
 	// fires correctly under the broad-allow dev-egress posture.
 	return profile, allowHosts, f.egressExplicit && !f.egressClosed
+}
+
+// credPreflightCheck verifies the credential for profile before any VM work
+// begins.  Profiles with CredentialFormatNone (e.g. Claude Code) always pass.
+// Returns nil when the credential is usable; returns a *CodedError with code
+// sandboxErrCodeBadCredential and Sentence() as the message otherwise.
+func credPreflightCheck(profile cred.AgentProfile) error {
+	if pf := cred.CheckCred(profile); !pf.OK() {
+		return &CodedError{
+			Code: sandboxErrCodeBadCredential,
+			Msg:  "sandbox create: " + pf.Sentence(),
+		}
+	}
+	return nil
+}
+
+// agentDevEgressSecretHostSuffixes returns the dot-anchored DNS suffixes that
+// must appear in SecretHostSuffixes when an agent sandbox is created with open
+// egress (dev-egress posture, D-PD-33). Each suffix covers a family of
+// sharded/regional endpoints that share the same credential as CredentialedHost
+// but whose exact names vary. Returns nil when there is no agent or egress is
+// closed. The suffix is taken from [cred.AgentProfile.CredentialedHostSuffix].
+func agentDevEgressSecretHostSuffixes(profile cred.AgentProfile, openEgress bool) []string {
+	if profile.Name == "" || !openEgress || profile.CredentialedHostSuffix == "" {
+		return nil
+	}
+	return []string{profile.CredentialedHostSuffix}
 }
 
 // agentDevEgressSecretHosts returns the set of hostnames that must appear in
@@ -1201,7 +1304,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--builder-memory <MiB>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--repo <owner>/<name>] [--branches <ref>[,ref…]] [--no-share-settings] [--no-user-mounts] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--builder-memory <MiB>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--repo <owner>/<name>] [--no-share-settings] [--no-user-mounts] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])
@@ -1220,6 +1323,19 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		// Resolve agent posture so the config-default agent (from applyUserGlobalConfig
 		// or applyProjectConfig) is persisted on the record even when no image is given.
 		noBootProfile, _, _ := resolveAgentPosture(f)
+		// S16: fail fast if the agent credential is dead — even on the store-only
+		// path.  A sandbox record with a broken credential is just as unusable
+		// as a booted one.
+		if err := credPreflightCheck(noBootProfile); err != nil {
+			return err
+		}
+		// Agent-settings / MCP sharing (A-MOUNT) requires a booted VM: the
+		// agentcfg-lower overlay is wired into the driver config at CreateAndBoot
+		// time and is never read for a store-only record (no rootfs, no guest).
+		// Inform the operator so the omission is visible rather than silent.
+		if !f.noShareSettings && len(noBootProfile.MountAllowlist) > 0 {
+			slog.Warn("sandbox create: agent settings / MCP sharing requires a booted sandbox; skipped for store-only record (use --image, --rootfs, or --file to enable)")
+		}
 		sb, err := svc.Create(ctx, project, name, service.CreateOptions{
 			RemoveOnExit: f.rm,
 			AgentName:    noBootProfile.Name,
@@ -1263,6 +1379,36 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				return mErr
 			}
 			namedMounts = append(namedMounts, m)
+		}
+	}
+
+	// D-RAM-09 / D-RAM-13: auto-provision the agentcfg overlay disk only when
+	// the sandbox has an agent profile. Agent-less sandboxes never call
+	// seedOverlayClaudeConfig (AgentCfgLowerGuestPath is empty for them), so
+	// provisioning them unconditionally strands a 2 GiB ext4 image per create.
+	//
+	// Skip if the caller already supplied a --mount-named spec targeting
+	// /var/lib/nexus3/agentcfg — the herdr worktree path passes its own
+	// handle-keyed volume name so it is not double-mounted.
+	if f.agentName != "" {
+		hasAgentCfgDisk := false
+		for _, m := range namedMounts {
+			if m.GuestPath == "/var/lib/nexus3/agentcfg" {
+				hasAgentCfgDisk = true
+				break
+			}
+		}
+		if !hasAgentCfgDisk {
+			autoVolName := sandboxAgentCfgVolumeName(project, name)
+			autoMount, autoErr := parseMountNamed(autoVolName + ":/var/lib/nexus3/agentcfg:size=2g")
+			if autoErr != nil {
+				return errSandbox("sandbox create", fmt.Errorf("auto-provision agentcfg volume: %w", autoErr))
+			}
+			if namedVS == nil {
+				namedVS = volumestore.New(filepath.Join(storeRoot, "volumes"))
+				svc.WithVolumes(namedVS)
+			}
+			namedMounts = append(namedMounts, autoMount)
 		}
 	}
 
@@ -1336,7 +1482,11 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			return errSandbox("sandbox create", fmt.Errorf("--file: read Containerfile %q: %w", containerfilePath, err))
 		}
 		baseImageRef := builder.ExtractFromRef(containerfileBytes)
-		fp, err := builder.BuildFingerprint(containerfileBytes, baseImageRef, agentBytes, workspaceDir)
+		// Resolve the agent profile and target arch now so they can be included
+		// in the fingerprint and reused for the BuilderVMSpec below.
+		buildProfile, _, _ := resolveAgentPosture(f)
+		buildTargetArch := builder.GoArchToVendorArch(goArchForBuild())
+		fp, err := builder.BuildFingerprint(containerfileBytes, baseImageRef, agentBytes, workspaceDir, buildProfile.Recipe(), buildTargetArch)
 		if err != nil {
 			return errSandbox("sandbox create", fmt.Errorf("--file: fingerprint: %w", err))
 		}
@@ -1385,7 +1535,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			}
 
 			// Ensure the builder rootfs image (moby/buildkit) is available.
-			builderRootfs, err := builderimage.EnsureBuilderImage(buildCtx, storeRoot, agentBytes)
+			builderRootfsTemplate, err := builderimage.EnsureBuilderImage(buildCtx, storeRoot, agentBytes)
 			if err != nil {
 				return errSandbox("sandbox create", fmt.Errorf("--file: builder image: %w", err))
 			}
@@ -1396,6 +1546,18 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				return errSandbox("sandbox create", fmt.Errorf("--file: build workdir: %w", err))
 			}
 			defer os.RemoveAll(buildWorkDir)
+
+			// vda — the builder VM boots root=/dev/vda rw, so cloud-hypervisor
+			// takes an exclusive write lock on the rootfs image. The cached
+			// template is shared by every build on the host, so concurrent
+			// builder VMs would collide on that lock and every VM after the
+			// first would be refused at vm.boot ("The file is already locked"),
+			// killing its supervisor before it wrote supervisor.pid. Clone the
+			// template into the ephemeral work dir so each build owns its rootfs.
+			builderRootfs, err := builder.PrivateRootfs(buildCtx, builderRootfsTemplate, buildWorkDir)
+			if err != nil {
+				return errSandbox("sandbox create", fmt.Errorf("--file: %w", err))
+			}
 
 			// vdb — Pack the build context into an ext4 image using the full
 			// working-tree capture (D-DC-08). builder.WorktreeToDisk reads
@@ -1433,10 +1595,24 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			}
 
 			// vdd+ — Attach buildkit (and any future) persistent cache disks.
-			cacheDisks, err := builder.SelectCacheDisks(buildCtx, storeRoot, []string{"buildkit"})
+			// The lease guarantees no other builder VM holds the same image;
+			// cloud-hypervisor's exclusive write lock on every attached image
+			// would otherwise refuse this VM's boot.
+			//
+			// D-HSH-07: the CLI only SELECTS the slot. The lock descriptors go
+			// to the supervisor that owns the builder VM (via ExtraFiles, see
+			// supervisorBuilderDriver.Start), whose lifetime matches the VM's;
+			// this defer then drops only the CLI's own copies of an open file
+			// description the supervisor still holds. Holding the lease here
+			// for the VM's lifetime — as this call site did before — made the
+			// slot read FREE whenever a VM outlived its CLI (spawn timeout →
+			// SIGKILL → orphaned VM), while the CH write lock on the image
+			// lived on, and the next build failed to boot opaquely.
+			cacheDisks, cacheDiskLeases, err := builder.SelectCacheDisks(buildCtx, storeRoot, []string{"buildkit"})
 			if err != nil {
 				return errSandbox("sandbox create", fmt.Errorf("--file: cache disks: %w", err))
 			}
+			defer builder.ReleaseCacheDiskLeases(cacheDiskLeases)
 
 			// Assemble the BuilderVMSpec first so that sizing helpers
 			// (VCPUs/MemMiB) can derive the production defaults before the
@@ -1447,6 +1623,8 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				ArtifactDiskPath: artifactDiskPath,
 				CacheDisks:       cacheDisks,
 				MemoryMiB:        uint16(f.builderMemoryMiB),
+				ToolRecipe:       buildProfile.Recipe(),
+				TargetArch:       buildTargetArch,
 			}
 
 			// Sizing is derived from the spec via exported helpers so
@@ -1505,18 +1683,26 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			// supervisorBuilderDriver routes Start/Stop through SpawnDetached so
 			// the builder VM survives CLI exit. DialGuest delegates to dialerDrv.
 			bdrv := &supervisorBuilderDriver{
-				dialerDrv:           dialerDrv,
-				storeRoot:           storeRoot,
-				stateBase:           filepath.Join(storeRoot, "builder-supervisors"),
-				socketDir:           builderSocketDir,
-				kernelPath:          kernelPath,
-				diskPath:            builderRootfs,
-				extraDisks:          builderExtraDisks,
-				ar:                  builderAR,
-				bootMemMiB:          builderBootMemMiB,
-				bootVCPUs:           builderBootVCPUs,
-				logPath:             "/tmp/nexus3-builder-supervisor.log",
+				dialerDrv:  dialerDrv,
+				storeRoot:  storeRoot,
+				stateBase:  filepath.Join(storeRoot, "builder-supervisors"),
+				socketDir:  builderSocketDir,
+				kernelPath: kernelPath,
+				diskPath:   builderRootfs,
+				extraDisks: builderExtraDisks,
+				ar:         builderAR,
+				bootMemMiB: builderBootMemMiB,
+				bootVCPUs:  builderBootVCPUs,
+				// logPath empty → SpawnDetached logs to <stateDir>/supervisor.log,
+				// which is per-build. A single shared host-wide log interleaved
+				// concurrent builders' output and, worse, left the sandbox's own
+				// supervisor dir empty, so the spawn error's "see …/supervisor.log"
+				// pointed at a file that never existed.
+				logPath:             "",
 				cacheDiskMountPaths: cacheDiskMountPaths,
+				// D-HSH-07: hand the slot leases to the supervisor process,
+				// which outlives this CLI exactly as the VM does.
+				cacheDiskLeases: cacheDiskLeases,
 			}
 			execFn := func(ctx context.Context, argv []string, stderr io.Writer) (int32, error) {
 				// StartedID is set by bdrv.Start (called inside BuildInVM before
@@ -1618,28 +1804,11 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// is defined but before CreateAndBoot calls it — are captured by reference
 	// and read with their final values. caps is populated for supervisor handoff.
 	newDriver := func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
-		// Combine disk-based mounts (workspace + shadow) with virtiofs live mounts.
-		// Named kind=disk volume mounts occupy the lowest device indices
-		// (ExtraDisks[0..k-1] → /dev/vdb..), so they lead; shadow/workspace disks
-		// were offset past them above, and live virtiofs mounts use tags. Agent
-		// planMountOrder re-sorts by depth, so cmdline order is cosmetic — only the
-		// per-mount device index must match the ExtraDisks layout.
-		// VirtiofsTag is the SINGLE SOURCE OF TRUTH for the per-mount tag (D-PD-53).
-		liveGuestMounts := liveMountsToGuestMounts(bootLiveMounts)
-		allGuestMounts := append(append([]agent.GuestMount{}, namedDiskMounts...),
-			append(bootGuestMounts, liveGuestMounts...)...)
-		spec := sandboxDriverSpec{
-			KernelPath:   kernelPath,
-			MemoryMiB:    f.memoryMiB,
-			VCPUs:        f.vcpus,
-			MemoryMaxMiB: ar.MemoryMaxMiB,
-			VCPUMax:      ar.VCPUMax,
-			NestedVirt:   f.nestedVirt,
-			PID1Args:     ar.PID1Args,
-			SBHandle:     project + "/" + name,
-			LiveMounts:   bootLiveMounts,
-			GuestMounts:  allGuestMounts,
-		}
+		// buildLiveMountDriverSpec is called here — at closure invocation time,
+		// not at creation time — so bootLiveMounts and bootGuestMounts are read
+		// with their final values. Both slices are appended to in the workspace
+		// block and A-MOUNT block below (see the timing note above this closure).
+		spec := buildLiveMountDriverSpec(f, ar, kernelPath, bootLiveMounts, bootGuestMounts, namedDiskMounts, project, name)
 		return buildSandboxDriverFactory(spec, &caps)(ext4Path, extraDisks)
 	}
 
@@ -1794,6 +1963,11 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// detached supervisor that takes ownership below: it re-boots the VM, and
 	// /run is tmpfs, so anything seeded here is discarded on that reboot.
 	agentProfile, allowHosts, openEgress := resolveAgentPosture(f)
+	// S16: fail before any VM work if the agent credential is dead.  Profiles
+	// with CredentialFormatNone (Claude Code) always pass.
+	if err := credPreflightCheck(agentProfile); err != nil {
+		return err
+	}
 
 	// C-SECRET: auto-derive MCP server credentials and guest definitions via the
 	// unified builder. HTTPBinds become SecretBinds for MITM swap; their hosts
@@ -1860,10 +2034,9 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	if !f.noShareSettings && len(agentProfile.MountAllowlist) > 0 {
 		id := domain.NewSandboxID()
 		stageDir := filepath.Join(storeRoot, "disks", id.String()+"-agentcfg-lower")
-		agentConfigDir := filepath.Dir(agentProfile.SettingsPath) // e.g. "~/.claude"
-		if assembleErr := service.AssembleCuratedConfig(agentProfile, agentConfigDir, stageDir); assembleErr != nil {
+		if stageErr := stageAgentCuratedConfig(agentProfile, stageDir); stageErr != nil {
 			_ = os.RemoveAll(stageDir)
-			slog.Warn("sandbox create: failed to stage agent config; running without shared settings", "err", assembleErr)
+			slog.Warn("sandbox create: failed to stage agent config; running without shared settings", "err", stageErr)
 		} else {
 			preMintedID = id
 			agentCfgStageDir = stageDir
@@ -1898,6 +2071,17 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 						slog.Warn("sandbox create: failed to load user global config; user mounts disabled", "err", ugErr)
 					}
 					manifest := service.BuildUserMountManifest(hostHome, []string(userGlobalCfg.Sandbox.Mounts))
+					// Shadow diagnostic (AC-5, D-TP-01): warn when a user-mount row's
+					// guest path shadows a recipe install path or PATH-entry directory.
+					// The warning names the raw config spec so the operator can identify
+					// and fix the conflict. Mounts are not filtered: the warning is
+					// advisory and the mount still takes effect (the agent binary will
+					// come from the pinned recipe layer regardless, at /usr/local/bin).
+					if len(agentProfile.ToolRecipe.Packages) > 0 {
+						for _, w := range service.CheckRecipeShadows([]string(userGlobalCfg.Sandbox.Mounts), agentProfile.ToolRecipe) {
+							slog.Warn("sandbox create: " + w)
+						}
+					}
 					for _, m := range manifest.Mounts {
 						bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
 							HostPath:  m.HostPath,
@@ -1943,12 +2127,12 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			// --agent + --egress open (dev-egress posture): OpenEgress=true +
 			// ExtraSecretHosts routes the credentialed host through MITM proxy.
 			OpenEgress:        openEgress,
-			ExtraSecretHosts:  agentDevEgressSecretHosts(agentProfile, openEgress),
+			ExtraSecretHosts:        agentDevEgressSecretHosts(agentProfile, openEgress),
+			ExtraSecretHostSuffixes: agentDevEgressSecretHostSuffixes(agentProfile, openEgress),
 			AgentProfile:      agentProfile,  // zero value when --agent was not passed
-			AllowedRepo:       f.allowedRepo,     // D-PD-36: set by --repo; empty for open-egress sandboxes
-			PathPolicies:      f.pathPolicies,    // conveyed via --egress-policy-json on the worktree subprocess path
-			AllowedBranches:   f.allowedBranches, // S0: nil = default refs/heads/nexus3/* via ResolvedAllowedBranches
-			Volumes:           namedVS,       // SD2-6-MOUNT: nil when --mount-named not used
+			AllowedRepo:  f.allowedRepo,  // D-PD-36: set by --repo; empty for open-egress sandboxes
+			PathPolicies: f.pathPolicies, // conveyed via --egress-policy-json on the worktree subprocess path
+			Volumes:      namedVS,        // SD2-6-MOUNT: nil when --mount-named not used
 			NamedVolumeMounts: namedMounts,
 			LiveMounts:        bootLiveMounts, // D-PD-53: populated from --mount flags
 		},
@@ -1988,8 +2172,10 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 
 	if handoffErr := handoffHumanSupervisor(ctx, svc, sb, storeRoot, kernelPath, govBounds, f.memoryMiB, f.vcpus,
 		caps.DiskPath, caps.ExtraDisks, caps.Cmdline, caps.CHBin, caps.SocketDir, bootWorkspace != nil, len(bootExtraDisks),
+		len(namedDiskMounts),
 		workspaceGuestPathFor(bootWorkspace), bootLiveMounts, caps.VirtiofsdPath,
-		mcpOAuthRefreshConfigs); handoffErr != nil {
+		f.nestedVirt,
+		mcpOAuthRefreshConfigs, agentProfile); handoffErr != nil {
 		slog.Warn("sandbox create: supervisor handoff failed; broker will not survive CLI exit",
 			"sandbox", sb.ID, "err", handoffErr)
 	}
@@ -2072,10 +2258,13 @@ func handoffHumanSupervisor(
 	cmdline, chBin, socketDir string,
 	hasWorkspace bool,
 	workspaceDiskIndex int,
+	numNamedDisks int,
 	workspaceGuestPath string,
 	liveMounts []domain.LiveMount,
 	virtiofsdPath string,
+	nestedVirt bool,
 	mcpOAuthRefreshConfigs []service.MCPOAuthRefreshConfig,
+	agentProfile cred.AgentProfile,
 ) error {
 	if diskPath == "" {
 		return fmt.Errorf("no disk path captured")
@@ -2095,9 +2284,13 @@ func handoffHumanSupervisor(
 		sb.ID.String(), storeRoot, stateDir,
 		kernelPath, govBounds, memoryMiB, bootVCPUs,
 		diskPath, extraDisks, cmdline, chBin, socketDir,
-		hasWorkspace, workspaceDiskIndex, workspaceGuestPath,
+		hasWorkspace, workspaceDiskIndex, numNamedDisks, workspaceGuestPath,
+		hasWorkspace,                             // hasScratchDisk: workspace sandboxes always get scratch
+		numNamedDisks+workspaceDiskIndex+1,        // scratchDiskIndex: after workspace disk
 		liveMounts, virtiofsdPath,
+		nestedVirt,
 		mcpOAuthRefreshConfigs,
+		agentProfile,
 	)
 	if err := supervisor.WriteSpawnSpec(stateDir, cfg); err != nil {
 		return err
@@ -2148,14 +2341,28 @@ func buildHumanSupervisorConfig(
 	cmdline, chBin, socketDir string,
 	hasWorkspace bool,
 	workspaceDiskIndex int,
+	numNamedDisks int, // number of kind=disk named volumes prepended to ExtraDisks[0..n-1]
 	workspaceGuestPath string, // GIT-SEED: git identity seed target
+	hasScratchDisk bool,
+	scratchDiskIndex int,
 	liveMounts []domain.LiveMount,
 	virtiofsdPath string,
+	nestedVirt bool,
 	mcpOAuthRefreshConfigs []service.MCPOAuthRefreshConfig,
+	agentProfile cred.AgentProfile,
 ) supervisor.Config {
+	// ResizableDiskIndices: named-volume disks occupy ExtraDisks[0..numNamedDisks-1]
+	// (prepended by create.go step 4.7 in declaration order). The workspace disk
+	// follows at ExtraDisks[numNamedDisks+workspaceDiskIndex] (workspaceDiskIndex
+	// is the count of shadow disks that precede the workspace in the caller's
+	// original ExtraDisks, before named-disk prepend). Both groups are registered
+	// so the governor can auto-grow any disk that hits the 80% threshold.
 	var resizableDiskIndices []int
+	for i := range numNamedDisks {
+		resizableDiskIndices = append(resizableDiskIndices, i)
+	}
 	if hasWorkspace {
-		resizableDiskIndices = []int{workspaceDiskIndex}
+		resizableDiskIndices = append(resizableDiskIndices, numNamedDisks+workspaceDiskIndex)
 	}
 
 	return supervisor.Config{
@@ -2170,7 +2377,9 @@ func buildHumanSupervisorConfig(
 		MemoryMiB:          memoryMiB,
 		BootVCPUs:          bootVCPUs,
 		HasWorkspaceDisk:   hasWorkspace,
-		WorkspaceDiskIndex: workspaceDiskIndex,
+		WorkspaceDiskIndex: numNamedDisks + workspaceDiskIndex,
+		HasScratchDisk:     hasScratchDisk,
+		ScratchDiskIndex:   scratchDiskIndex,
 		ResizableDiskIndices: resizableDiskIndices,
 		WorkspaceGuestPath: workspaceGuestPath,
 		GovBounds:          govBounds,
@@ -2183,7 +2392,8 @@ func buildHumanSupervisorConfig(
 		// at expiry with an opaque 401 in the guest. Set unconditionally:
 		// when the store is absent the supervisor logs creds_absent and
 		// carries on, so there is no cost for sandboxes that need no cred.
-		CredsFile:              service.DefaultDedicatedCredStorePath(),
+		CredsFile:              service.DedicatedCredStorePathForProfile(agentProfile),
+		NestedVirt:             nestedVirt,
 		MCPOAuthRefreshConfigs: mcpOAuthRefreshConfigs,
 	}
 }
@@ -2215,6 +2425,32 @@ func spawnPersistedSupervisor(ctx context.Context, svc *service.Service, id doma
 		return fmt.Errorf("persist supervisor pid: %w", err)
 	}
 	slog.Info("sandbox: supervisor ready", "sandbox", id, "pid", pid, "sock", sock)
+	return nil
+}
+
+// spawnPersistedSupervisorReacquire reads spawn.json and starts a
+// reacquire-mode supervisor for a child whose VM is already running (the fork
+// restore path, D-HSH-27). Unlike spawnPersistedSupervisor it calls
+// SpawnReacquireDetached, which runs RunReacquire in the subprocess rather
+// than RunDetached — so the VM is NOT stopped and cold-booted; the supervisor
+// re-acquires the network perimeter via the child's NetnsControlSocket.
+func spawnPersistedSupervisorReacquire(ctx context.Context, svc *service.Service, id domain.SandboxID, stateDir string) error {
+	cfg, err := supervisor.ReadSpawnSpec(stateDir)
+	if err != nil {
+		return err
+	}
+	pid, err := supervisor.SpawnReacquireDetached(supervisor.SpawnConfig{
+		Config:       cfg,
+		ReadyTimeout: 5 * time.Minute,
+	})
+	if err != nil {
+		return err
+	}
+	sock := supervisor.SockPath(stateDir)
+	if err := svc.SetSupervisor(ctx, id, pid, sock); err != nil {
+		return fmt.Errorf("persist fork supervisor pid: %w", err)
+	}
+	slog.Info("sandbox: fork supervisor ready", "sandbox", id, "pid", pid, "sock", sock)
 	return nil
 }
 
@@ -2570,6 +2806,25 @@ func runSandboxRmFull(ctx context.Context, args []string, out *Output, svc *serv
 		})
 	}
 
+	// D-RAM-13: delete the auto-provisioned agentcfg volume after sandbox
+	// removal. The volume name is a pure function of the handle; if the sandbox
+	// had no agent (and therefore no auto-provisioned volume) vs.Rm returns
+	// "not found" which we ignore. vs.Rm enforces the D-PD-93 attach guard —
+	// it refuses to remove a volume still attached to another sandbox.
+	// We never touch user-supplied --mount-named volumes (different name).
+	if target != nil && storeRoot != "" {
+		proj, name, pErr := domain.ParseHandle(target.Handle())
+		if pErr == nil {
+			autoVolName := sandboxAgentCfgVolumeName(proj, name)
+			vs := volumestore.New(filepath.Join(storeRoot, "volumes"))
+			if rmErr := vs.Rm(ctx, autoVolName); rmErr != nil && !strings.HasSuffix(rmErr.Error(), ": not found") {
+				slog.Warn("sandbox.rm.agentcfg_volume_leak",
+					"sandbox", target.ID.String(), "volume", autoVolName, "err", rmErr,
+					"action", "auto-provisioned agentcfg volume not deleted; run: nexus3 volume rm "+autoVolName)
+			}
+		}
+	}
+
 	id := ref
 	handle := ref
 	if target != nil {
@@ -2710,13 +2965,44 @@ func namedDiskGuestMounts(mounts []service.NamedVolumeMount) []agent.GuestMount 
 			continue
 		}
 		out = append(out, agent.GuestMount{
-			Device:   shadowDevicePath(len(out)), // ExtraDisks[len(out)] → /dev/vd{b+len(out)}
-			Target:   m.GuestPath,
-			FSType:   "ext4",
-			ReadOnly: m.ReadOnly,
+			Device:    shadowDevicePath(len(out)), // ExtraDisks[len(out)] → /dev/vd{b+len(out)}
+			Target:    m.GuestPath,
+			FSType:    "ext4",
+			ReadOnly:  m.ReadOnly,
+			Resizable: true, // named kind=disk volumes are governor-managed (independent of IsWorkspace)
 		})
 	}
 	return out
+}
+
+// sandboxAgentCfgVolumeName derives the per-sandbox volume name for the
+// /var/lib/nexus3/agentcfg disk auto-provisioned on the plain sandbox create
+// path (D-RAM-09). Uses the same slug rule as herdrAgentCfgDiskVolumeName so
+// volume names are consistent across both paths.
+func sandboxAgentCfgVolumeName(project, name string) string {
+	return herdrHandleSlug(project+"/"+name) + "-agentcfg"
+}
+
+// stageAgentCuratedConfig resolves the agent's settings source directory via
+// service.AgentSettingsDir (which uses profile.ConfigDirEnvVar — the SETTINGS
+// redirect — never profile.CredDirEnvVar) and stages a curated, secret-free
+// subset of that directory into stageDir.
+//
+// For cursor, ConfigDirEnvVar is "CURSOR_CONFIG_DIR" and CredDirEnvVar is
+// "XDG_CONFIG_HOME". Using CredDirEnvVar would point at the credential
+// directory (~/.config/cursor) instead of the settings directory (~/.cursor),
+// missing cli-config.json entirely. This function must never be inlined back
+// to filepath.Dir(profile.SettingsPath), which ignores both redirects.
+//
+// Extracted as a named function to keep the call site unit-testable without
+// a live VM: tests can set ConfigDirEnvVar in the environment and call this
+// directly.
+func stageAgentCuratedConfig(profile cred.AgentProfile, stageDir string) error {
+	agentConfigDir, err := service.AgentSettingsDir(profile)
+	if err != nil {
+		return err
+	}
+	return service.AssembleCuratedConfig(profile, agentConfigDir, stageDir)
 }
 
 // parseMountNamed parses a --mount-named spec of the form:

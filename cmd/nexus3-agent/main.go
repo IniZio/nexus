@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -33,12 +34,24 @@ var agentBuildTag = "dev"
 func main() {
 	isPid1 := os.Getpid() == 1
 
-	// When running as PID 1 (in-guest init), mount the standard
+	// hotSwap is true when this binary was launched by a prior agent via
+	// syscall.Exec (the RestartAgent RPC).  All cold-boot init steps that would
+	// conflict with already-running services (filesystem mounts, network config,
+	// sshd, workspace disk mounts, boot tasks) are skipped when hotSwap=true.
+	// This MUST be checked at the very top — before any init that branches on it.
+	hotSwap := os.Getenv("NEXUS3_HOT_SWAP") != ""
+	// Scrub the signal so exec'd child processes don't misread it.
+	os.Unsetenv("NEXUS3_HOT_SWAP")
+
+	// When running as PID 1 (in-guest init) on a COLD boot, mount the standard
 	// pseudo-filesystems before doing anything else.  devtmpfs populates /dev
 	// (creating /dev/console, /dev/ptmx, …); proc and sysfs are expected by
 	// many userspace tools.  These are raw syscall.Mount calls — they succeed
 	// with a completely empty /dev directory.
-	if isPid1 {
+	//
+	// On hot-swap these filesystems are already mounted; re-mounting would
+	// either silently stack a second tmpfs on /tmp or fail with EBUSY.
+	if isPid1 && !hotSwap {
 		mountGuestFS()
 		// Apply /etc/environment and the hardcoded PATH fallback to the agent's
 		// own process environment. See initPid1Env for ordering rationale.
@@ -54,8 +67,18 @@ func main() {
 		defer con.Close()
 	}
 
-	consoleLog(con, "nexus3-agent: starting (pid=%d build=%s)\n", os.Getpid(), agentBuildTag)
-	if isPid1 {
+	// Wire slog to log.Writer() so slog.* calls in builder/buildkit.go reach
+	// the same sink as log.Printf — the vsock exec pipe in the builder-role
+	// subprocess, or the serial console in the PID-1 agent. Must be installed
+	// before the build code (RunBuilderRole → BuildInGuestImage → Solve) runs.
+	initSlogHandler()
+
+	if hotSwap {
+		consoleLog(con, "nexus3-agent: hot-swap boot (pid=%d build=%s); skipping cold-boot init\n", os.Getpid(), agentBuildTag)
+	} else {
+		consoleLog(con, "nexus3-agent: starting (pid=%d build=%s)\n", os.Getpid(), agentBuildTag)
+	}
+	if isPid1 && !hotSwap {
 		// /tmp is unconditionally RAM-backed: 32 MiB seed; resizer grows it to
 		// max(1 GiB, min(50%% MemTotal, 2 GiB)). The 1 GiB floor prevents scratch
 		// starvation on small sandboxes — tmpfs is sized, not preallocated, so
@@ -63,11 +86,10 @@ func main() {
 		consoleLog(con, "nexus3-agent: /tmp: RAM-backed tmpfs (32 MiB seed; resizer target = max(1 GiB, min(50%%%% MemTotal, 2 GiB)))\n")
 	}
 
-	// When running as PID 1 (in-guest init), configure the virtio-net interface
-	// with the static IP the nexus3 perimeter netstack reserves for the guest
-	// (192.168.127.2/24). Static assignment — not DHCP — keeps the agent lean;
-	// no DHCP client binary is required.
-	if isPid1 {
+	// When running as PID 1 (in-guest init) on a COLD boot, configure the
+	// virtio-net interface and start sshd.  On hot-swap the interface is already
+	// configured and sshd is already running.
+	if isPid1 && !hotSwap {
 		setupNetwork(con)
 		// Start sshd early so the vsock bridge (startSSHForward) has a live
 		// local sshd to connect to on 127.0.0.1:22.
@@ -97,11 +119,20 @@ func main() {
 	var sandboxHandle string // set from --sandbox-handle=<handle> on the kernel cmdline
 	var isBuilderRole bool
 	var cacheDiskMounts []agent.CacheDiskMount
+	var scratchDev string // set from --scratch-disk=<dev> on the kernel cmdline
+	var builderToolRecipeJSON string // set from --tool-recipe=<json>
+	var builderTargetArch string     // set from --target-arch=<arch>
 	{
 		for _, arg := range os.Args[1:] {
 			switch {
 			case arg == "--builder-role":
 				isBuilderRole = true
+			case strings.HasPrefix(arg, "--scratch-disk="):
+				if dev, ok := parseScratchDiskArg(arg); ok {
+					scratchDev = dev
+				} else {
+					consoleLog(con, "nexus3-agent: ignoring malformed --scratch-disk arg: %q\n", arg)
+				}
 			case strings.HasPrefix(arg, "--mem-ceiling="):
 				v := strings.TrimPrefix(arg, "--mem-ceiling=")
 				if n, err := strconv.ParseInt(v, 10, 64); err == nil {
@@ -120,6 +151,10 @@ func main() {
 				} else {
 					consoleLog(con, "nexus3-agent: ignoring malformed --cache-disk arg: %q\n", arg)
 				}
+			case strings.HasPrefix(arg, "--tool-recipe="):
+				builderToolRecipeJSON = strings.TrimPrefix(arg, "--tool-recipe=")
+			case strings.HasPrefix(arg, "--target-arch="):
+				builderTargetArch = strings.TrimPrefix(arg, "--target-arch=")
 			case strings.HasPrefix(arg, "--sandbox-handle="):
 				sandboxHandle = strings.TrimPrefix(arg, "--sandbox-handle=")
 			case strings.HasPrefix(arg, "--workspace-mount="):
@@ -142,6 +177,10 @@ func main() {
 		}
 	}
 
+	// Record scratch-disk presence for guestBaselineEnv (TMPDIR rider, D-SD-04).
+	// Must be set before any goroutine calls guestBaselineEnv.
+	agentScratchDisk = scratchDev != ""
+
 	// Set the guest hostname. When --sandbox-handle= was supplied on the kernel
 	// cmdline the sandbox's human-readable handle becomes the hostname so that
 	// the shell prompt reads "root@<handle>:/#" instead of "root@(none):/#".
@@ -160,17 +199,32 @@ func main() {
 		}
 	}
 
-	// Mount workspace and shadow disks when --workspace-mount= args were
-	// supplied in the kernel cmdline. This must happen before the vsock
-	// listeners start so no workload can access the workspace path before
-	// the disks are visible. Failure is fatal: a sandbox with unmounted
-	// workspace disks is the failure mode we are eliminating.
-	if len(wsMounts) > 0 {
-		consoleLog(con, "nexus3-agent: mounting workspace (%d mounts)\n", len(wsMounts))
-		if err := agent.MountWorkspace(wsMounts); err != nil {
-			consoleFatal(con, isPid1, "nexus3-agent: workspace mount failed: %v\n", err)
-		}
-		consoleLog(con, "nexus3-agent: workspace mounts complete\n")
+	// Cold-boot init: mount workspace disks, run boot tasks.
+	// On hot-swap (hotSwap=true) all of these are skipped — the disks are
+	// already mounted and the boot tasks already ran.  MountWorkspace on an
+	// already-mounted disk returns EBUSY → consoleFatal → kernel panic (PID 1).
+	// runColdBootInit enforces the hotSwap gate; boot_sequence_test.go
+	// mutation-proves that the guard cannot be removed.
+	coldBootCfg := bootConfig{
+		mountGuestFS: func() { /* already done above */ },
+		wipeScratchDisk: func(dev string) error {
+			return wipeMountScratchDisk(dev, con)
+		},
+		initPid1Env:  func() { /* already done above */ },
+		setupNetwork: func() { /* already done above */ },
+		startSSHD:    func() { /* already done above */ },
+		mountWorkspace: func(mounts []agent.GuestMount) error {
+			consoleLog(con, "nexus3-agent: mounting workspace (%d mounts)\n", len(mounts))
+			if err := agent.MountWorkspace(mounts); err != nil {
+				return err
+			}
+			consoleLog(con, "nexus3-agent: workspace mounts complete\n")
+			return nil
+		},
+		runBootTasks: func() { runBootTasks(con) },
+	}
+	if err := runColdBootInit(hotSwap, isPid1, wsMounts, scratchDev, coldBootCfg, nil); err != nil {
+		consoleFatal(con, isPid1, "nexus3-agent: workspace mount failed: %v\n", err)
 	}
 
 	// Derive the workspace mount path (for logging) and the per-disk telemetry
@@ -241,7 +295,15 @@ func main() {
 	// services are handled by PID-1 (see comment above).
 	if isBuilderRole {
 		consoleLog(con, "nexus3-agent: builder role starting (cache disks: %d)\n", len(cacheDiskMounts))
-		opts := agent.BuilderRoleOptions{CacheDisks: cacheDiskMounts}
+		opts := agent.BuilderRoleOptions{
+			CacheDisks: cacheDiskMounts,
+			TargetArch: builderTargetArch,
+		}
+		recipe, err := parseBuilderToolRecipe(builderToolRecipeJSON)
+		if err != nil {
+			consoleFatal(con, isPid1, "nexus3-agent: builder role: %v\n", err)
+		}
+		opts.ToolRecipe = recipe
 		if err := agent.RunBuilderRole(ctx, opts); err != nil {
 			consoleFatal(con, isPid1, "nexus3-agent: builder role: %v\n", err)
 		}
@@ -249,32 +311,28 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Image boot task: run /etc/nexus3/startup (if the image baked one) as a
-	// background, non-fatal task now that workspace/docker disks are mounted, the
-	// network is up, and the ZRAM swap safety net is running. This is how a
-	// project auto-starts in-sandbox services such as dockerd (declared in its
-	// .nexus/Containerfile). Only in a real guest boot (PID 1) does the hook path
-	// exist; PID 1 continues to the control plane below so the agent serves
-	// Exec/Copy while the task runs.
-	if isPid1 {
-		runBootTasks(con)
-	}
+	// Bind vsock listeners. On a cold boot these are freshly created; on hot-swap
+	// (hotSwap=true) the old agent's listener fds were closed by exec (SOCK_CLOEXEC),
+	// so the ports are immediately available for rebinding.  No fd inheritance is
+	// used: mdlayher/vsock creates listeners with SOCK_CLOEXEC, and exec closes
+	// them atomically, so EADDRINUSE cannot occur.
+	var ctrlLis, dataLis net.Listener
+	{
+		var err error
+		consoleLog(con, "nexus3-agent: vsock.Listen port %d\n", driver.AgentControlPort)
+		ctrlLis, err = vsock.Listen(driver.AgentControlPort, nil)
+		if err != nil {
+			consoleFatal(con, isPid1, "nexus3-agent: control listener (port %d): %v\n",
+				driver.AgentControlPort, err)
+		}
+		consoleLog(con, "nexus3-agent: control plane listening\n")
 
-	// Bind control-plane vsock listener (port 1024).
-	consoleLog(con, "nexus3-agent: vsock.Listen port %d\n", driver.AgentControlPort)
-	ctrlLis, err := vsock.Listen(driver.AgentControlPort, nil)
-	if err != nil {
-		consoleFatal(con, isPid1, "nexus3-agent: control listener (port %d): %v\n",
-			driver.AgentControlPort, err)
-	}
-	consoleLog(con, "nexus3-agent: control plane listening\n")
-
-	// Bind data-plane vsock listener (port 1025).
-	consoleLog(con, "nexus3-agent: vsock.Listen port %d\n", wire.DataPort)
-	dataLis, err := vsock.Listen(wire.DataPort, nil)
-	if err != nil {
-		consoleFatal(con, isPid1, "nexus3-agent: data listener (port %d): %v\n",
-			wire.DataPort, err)
+		consoleLog(con, "nexus3-agent: vsock.Listen port %d\n", wire.DataPort)
+		dataLis, err = vsock.Listen(wire.DataPort, nil)
+		if err != nil {
+			consoleFatal(con, isPid1, "nexus3-agent: data listener (port %d): %v\n",
+				wire.DataPort, err)
+		}
 	}
 	consoleLog(con, "nexus3-agent: data plane listening; running agent\n")
 
@@ -376,6 +434,25 @@ func mountGuestFS() {
 		fmt.Fprintf(os.Stderr, "nexus3-agent: mkdir /dev/pts: %v\n", err)
 	} else {
 		tryMount("devpts", "/dev/pts", "devpts", "")
+	}
+
+	// POSIX shared memory on /dev/shm.  devtmpfs does not create it, and a
+	// guest without it is not a conforming Linux userspace: glibc's sem_open
+	// and shm_open resolve names under /dev/shm, so anything built on POSIX
+	// semaphores fails with ENOENT.  Python's multiprocessing is the common
+	// casualty — `multiprocessing.Semaphore()` raises
+	// "FileNotFoundError: [Errno 2] No such file or directory", which is how
+	// djlint (and any pool-based linter) crashed in a worktree sandbox.
+	//
+	// mode=1777 is the standard sticky world-writable permission; nosuid and
+	// nodev match what every distro init mounts here.  Sized (not
+	// preallocated) at the same 512 MiB ceiling the /tmp resizer uses, so a
+	// runaway shm segment cannot eat the guest's RAM out from under the
+	// memory governor.
+	if err := os.MkdirAll("/dev/shm", 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus3-agent: mkdir /dev/shm: %v\n", err)
+	} else {
+		tryMount("tmpfs", "/dev/shm", "tmpfs", "mode=1777,nosuid,nodev,size=512m")
 	}
 
 	tryMount("proc", "/proc", "proc", "")

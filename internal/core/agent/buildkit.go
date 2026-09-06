@@ -19,6 +19,8 @@ package agent
 import (
 	"context"
 	"fmt"
+
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
 // InGuestBuildOptions configures [BuildInGuestImage].
@@ -58,6 +60,18 @@ type InGuestBuildOptions struct {
 	// mounting vdb. When empty, COPY instructions referencing non-reserved
 	// files will fail with "not found".
 	ContextDir string
+
+	// ToolRecipe is the agent profile's declared install recipe (D-TP-01,
+	// D-TP-02). Forwarded from [BuilderRoleOptions] and passed as
+	// SolveRequest.ToolRecipe so that renderRecipeIfNeeded emits the
+	// installation layer in the synthesised Dockerfile. A zero value (empty
+	// Packages) is silently ignored by the renderer.
+	ToolRecipe cred.ToolRecipe
+
+	// TargetArch is the vendor-namespace architecture string (e.g. "x64" for
+	// amd64, "arm64"). Forwarded from [BuilderRoleOptions] and passed as
+	// SolveRequest.TargetArch. Required when ToolRecipe is non-empty.
+	TargetArch string
 }
 
 // BuildInGuestImage performs a full in-guest image build and ext4 conversion.

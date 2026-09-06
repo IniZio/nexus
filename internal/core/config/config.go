@@ -308,6 +308,13 @@ type SandboxConfig struct {
 	// Applies to both the project nexus3.yaml and the user-global config.yaml.
 	// CLI --memory-max always wins over either config source.
 	MemoryMax int `yaml:"memory_max"`
+
+	// Nested enables nested virtualisation (D-N3N-02: must be opt-in, default
+	// false). When true, /dev/kvm is exposed to the guest VM so inner VMs can
+	// boot. This widens the isolation perimeter and MUST NOT be set from a
+	// worktree branch — only the trusted ref (refs/remotes/origin/HEAD via
+	// readTrustedRefBytes) is honoured, so no branch can grant itself /dev/kvm.
+	Nested bool `yaml:"nested"`
 }
 
 // ImageGCConfig holds image garbage collection settings.

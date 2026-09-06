@@ -32,7 +32,13 @@ const (
 	// the primary response, so growth — not swapping — does the heavy lifting.
 	swapSafetyNetSwappiness = 10
 
-	zramMinBytes int64 = 1 << 30 // 1 GiB floor (spec-08 §2.4)
+	// zramMinBytes is the compressed-swap safety cushion for a small-boot guest.
+	// Raised from 1 GiB to 2 GiB so a 512 MiB boot sandbox has ~2 GiB of
+	// compressed headroom (host cost ~500 MiB at ~4:1 compression ratio) to
+	// bridge the seconds until the memory governor's jump-to-safeMemFloorBytes
+	// hotplug lands — converting a cold-start OOM kill into a recoverable reclaim
+	// stall. Matches safeMemFloorBytes in internal/core/govern/memory.go.
+	zramMinBytes int64 = 2 << 30 // 2 GiB floor
 	zramMaxBytes int64 = 4 << 30 // 4 GiB cap
 )
 

@@ -233,3 +233,111 @@ func TestServiceRemove_ReapsShadowDisks(t *testing.T) {
 	t.Logf("create→rm reclamation: before=%d bytes (%.1f MiB), after=%d bytes (handle %q)",
 		beforeBytes, float64(beforeBytes)/1024/1024, afterBytes, handle)
 }
+
+// ── Scratch disk reclamation (SD-AC7, RES-R-005/006/009/012) ─────────────────
+
+// TestReapDiskCopy_RemovesScratchDisk proves that ReapDiskCopy removes the
+// per-sandbox scratch disk (-scratch.ext4) and is idempotent when absent
+// (RES-R-005, RES-R-006).
+func TestReapDiskCopy_RemovesScratchDisk(t *testing.T) {
+	dir := t.TempDir()
+	id := domain.NewSandboxID()
+
+	scratchPath := filepath.Join(dir, id.String()+"-scratch.ext4")
+	if err := os.WriteFile(scratchPath, []byte("scratch"), 0o600); err != nil {
+		t.Fatalf("create scratch disk: %v", err)
+	}
+	// Fixture self-check: the file must exist before calling ReapDiskCopy.
+	if _, err := os.Stat(scratchPath); err != nil {
+		t.Fatalf("scratch disk was not created (fixture premise failed): %v", err)
+	}
+
+	if err := ReapDiskCopy(dir, id); err != nil {
+		t.Fatalf("ReapDiskCopy: %v", err)
+	}
+	if _, err := os.Stat(scratchPath); !os.IsNotExist(err) {
+		t.Errorf("scratch disk still exists after ReapDiskCopy (err=%v) — RES-R-005/006 not satisfied", err)
+	}
+
+	// Idempotency: second call with no scratch disk must not error.
+	if err := ReapDiskCopy(dir, id); err != nil {
+		t.Fatalf("ReapDiskCopy (second call, absent scratch disk): %v", err)
+	}
+}
+
+// TestScratchDiskEnumeratedByIndex proves ResourceIndex.List() returns a
+// KindDiskScratch entry for a -scratch.ext4 file (RES-R-009).
+func TestScratchDiskEnumeratedByIndex(t *testing.T) {
+	stateRoot := t.TempDir()
+	disksDir := filepath.Join(stateRoot, "disks")
+	if err := os.MkdirAll(disksDir, 0o700); err != nil {
+		t.Fatalf("create disks dir: %v", err)
+	}
+
+	id := domain.NewSandboxID()
+	scratchFile := id.String() + "-scratch.ext4"
+	if err := os.WriteFile(filepath.Join(disksDir, scratchFile), []byte("x"), 0o600); err != nil {
+		t.Fatalf("create scratch disk file: %v", err)
+	}
+
+	idx := NewResourceIndex(IndexConfig{StateRoot: stateRoot})
+	resources, err := idx.List()
+	if err != nil {
+		t.Fatalf("ResourceIndex.List: %v", err)
+	}
+
+	for _, r := range resources {
+		if r.Kind == KindDiskScratch && r.OwnerID == id {
+			return // found — test passes
+		}
+	}
+	t.Errorf("ResourceIndex.List did not return KindDiskScratch for %s — regression: scratch disk not enumerated (RES-R-009)", scratchFile)
+}
+
+// TestServiceRemove_ReapsScratchDisk is the integration proof for SD-AC7:
+// Service.Remove must reclaim the per-sandbox scratch disk image.
+//
+// Setup mirrors TestServiceRemove_ReapsShadowDisks:
+//  1. Create a real sandbox record via svc.Create (store only, no VM boot).
+//  2. Pre-create the scratch disk at ScratchDiskHostPath — simulates what
+//     CreateAndBoot writes for a workspace sandbox.
+//  3. Assert the file exists before Remove (fixture self-check).
+//  4. Call svc.Remove.
+//  5. Assert the scratch disk is gone.
+func TestServiceRemove_ReapsScratchDisk(t *testing.T) {
+	diskDir := t.TempDir()
+
+	st, err := store.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	svc := New(st, fake.New(), lifecycle.New()).WithDiskDir(diskDir)
+
+	ctx := context.Background()
+
+	// Step 1: create sandbox record (store only — fake driver, no VM boot).
+	sb, err := svc.Create(ctx, "scratchtest", "sd-ac7", CreateOptions{})
+	if err != nil {
+		t.Fatalf("svc.Create: %v", err)
+	}
+
+	// Step 2: pre-create the scratch disk file.
+	scratchPath := ScratchDiskHostPath(diskDir, sb.ID.String())
+	if err := os.WriteFile(scratchPath, []byte("scratch"), 0o600); err != nil {
+		t.Fatalf("create scratch disk: %v", err)
+	}
+	// Fixture self-check.
+	if _, err := os.Stat(scratchPath); err != nil {
+		t.Fatalf("scratch disk was not created (fixture premise failed): %v", err)
+	}
+
+	// Step 3: Remove the sandbox.
+	if err := svc.Remove(ctx, sb.Handle()); err != nil {
+		t.Fatalf("svc.Remove: %v", err)
+	}
+
+	// Step 4: scratch disk must be gone — SD-AC7.
+	if _, err := os.Stat(scratchPath); !os.IsNotExist(err) {
+		t.Errorf("scratch disk still present after svc.Remove (err=%v) — SD-AC7 not satisfied", err)
+	}
+}

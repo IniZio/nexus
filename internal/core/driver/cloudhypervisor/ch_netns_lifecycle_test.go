@@ -1,3 +1,5 @@
+//go:build integration
+
 // ch_netns_lifecycle_test.go — lifecycle / teardown / crash-recovery hardening
 // for the netns-runtime process topology (driver → netns child → CH grandchild).
 //
@@ -114,7 +116,7 @@ func lcBootCH(t *testing.T, chBin, kernelPath string, id domain.SandboxID, socke
 		pingErr := c.Ping(pingCtx)
 		pingCancel()
 		if pingErr == nil {
-			t.Logf("CH API ready in %v (childPgid=%d)", time.Since(start), rt.childPgid)
+			t.Logf("CH API ready in %v (childPgid=%d)", time.Since(start), rt.ChildPGID)
 			return rt
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -181,6 +183,7 @@ func lcWaitESRCH(pid int, timeout time.Duration) bool {
 	}
 	return false
 }
+
 
 // countOpenFDs returns the number of entries in /proc/self/fd.
 func countOpenFDs() int {
@@ -265,7 +268,7 @@ func TestLifecycle_NormalStop_NoLeaks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("findCHPidForSocket before Stop: %v", err)
 	}
-	childPgid := rt.childPgid
+	childPgid := rt.ChildPGID
 	t.Logf("pre-stop: chPID=%d childPgid=%d", chPID, childPgid)
 
 	// Verify both alive before Stop.
@@ -411,7 +414,7 @@ func TestLifecycle_Crash_MemoryLost(t *testing.T) {
 	t.Logf("persisted sandbox id=%s state=running", id)
 
 	// SIGKILL the CH grandchild (substrate loss event).
-	childPgid := rt.childPgid
+	childPgid := rt.ChildPGID
 	_ = lcKillCHGrandchild(t, socketPath)
 
 	// Brief settle: ensure ENOENT/ECONNREFUSED on the socket before Observe.
@@ -523,7 +526,7 @@ func TestLifecycle_StopBounded(t *testing.T) {
 	// Safety cleanup: force-kill the group in case rt.Stop hangs (bug scenario).
 	// Do NOT use t.Cleanup(rt.Stop) — if Stop blocks, sync.Once.Do would
 	// deadlock the cleanup goroutine behind the hung call.
-	childPgid := rt.childPgid
+	childPgid := rt.ChildPGID
 	t.Cleanup(func() {
 		_ = syscall.Kill(-childPgid, syscall.SIGKILL)
 	})
@@ -572,7 +575,7 @@ func TestLifecycle_ExplicitKillNoPdeathsig(t *testing.T) {
 	rt := lcBootCH(t, chBin, kernelPath, id, socketPath)
 	t.Cleanup(func() { rt.Stop() })
 
-	childPgid := rt.childPgid
+	childPgid := rt.ChildPGID
 	t.Logf("netns child pgid=%d", childPgid)
 
 	// Verify child is alive before crash.
@@ -667,25 +670,191 @@ func TestStartCtxCancelDoesNotKillChild(t *testing.T) {
 	//
 	// /proc/<pid>/stat format: "<pid> (<comm>) <state> <rest>"
 	// State is the character immediately after the closing ')'.
-	statPath := fmt.Sprintf("/proc/%d/stat", rt.childPgid)
+	statPath := fmt.Sprintf("/proc/%d/stat", rt.ChildPGID)
 	statBytes, readErr := os.ReadFile(statPath)
 	if readErr != nil {
 		t.Fatalf("FAIL S-PERIM-TIMEOUT: child (pgid=%d) has no /proc entry after "+
 			"startCtx cancel — child exited (exec.CommandContext killed it): %v",
-			rt.childPgid, readErr)
+			rt.ChildPGID, readErr)
 	}
 	stat := string(statBytes)
 	closeParenIdx := strings.LastIndex(stat, ")")
 	if closeParenIdx < 0 || closeParenIdx+2 >= len(stat) {
-		t.Fatalf("cannot parse /proc/%d/stat: %q", rt.childPgid, stat)
+		t.Fatalf("cannot parse /proc/%d/stat: %q", rt.ChildPGID, stat)
 	}
 	state := stat[closeParenIdx+2]
 	if state == 'Z' {
 		t.Fatalf("FAIL S-PERIM-TIMEOUT: child (pgid=%d) is a zombie after startCtx "+
 			"cancel — exec.CommandContext killed it. Fix: use exec.Command, not "+
 			"exec.CommandContext. /proc stat: %s",
-			rt.childPgid, strings.TrimSpace(stat))
+			rt.ChildPGID, strings.TrimSpace(stat))
 	}
 	t.Logf("PASS S-PERIM-TIMEOUT: child (pgid=%d) state=%c after startCtx cancel — "+
-		"survived context cancellation (not a zombie)", rt.childPgid, state)
+		"survived context cancellation (not a zombie)", rt.ChildPGID, state)
+}
+
+// ─── Test 5: Launcher exits on CH death (orphan-launcher reap) ───────────────
+
+// TestLifecycle_LauncherExitsOnCHDeath verifies that when the CH grandchild
+// exits (crashed or killed), the netns child (launcher) also exits rather
+// than lingering as an orphan with a zombie child.
+//
+// This covers the retry-leak pattern: a failed first boot leaves its launcher
+// behind (ppid 1, zombie CH child) while the retry's launcher runs alongside.
+// The fix is in RunNetnsChild: a goroutine calls syscall.Wait4(proc.pid) (which
+// returns as soon as CH exits, without waiting for pipe-draining io.Copy
+// goroutines) and then calls os.Exit(0), terminating the entire launcher
+// process — including the stuck TAP-read goroutine that would otherwise hold
+// tapPump open forever.
+//
+// Mutation proof: removing the goroutine (replacing it with _ = proc) means
+// syscall.Wait4 is never called; os.Exit(0) is never called; the launcher
+// TestLifecycle_ConsoleLogCreated verifies the R1-serial-console slice
+// end-to-end on the real production path:
+//
+//	CHDriver.Start (ConsoleLogPath set, no SerialOutputPath)
+//	  → driver.go injects serial:{mode:"Tty"} into vm.create
+//	  → CH maps guest ttyS0 → CH stdout
+//	  → netns child reads NEXUS3_NETNS_CONSOLE_LOG
+//	  → newCappedConsoleWriter drains CH stdout → console.log
+//	  → "Linux version" kernel line appears in console.log
+//
+// Mutation proof: removing the serial:{mode:"Tty"} else-branch in driver.go
+// (1 substitution — replace else block with an empty block) causes CH to
+// create NO serial device, so guest ttyS0 output is silently discarded; the
+// test fails with "console.log does not contain 'Linux version'".
+func TestLifecycle_ConsoleLogCreated(t *testing.T) {
+	chBin, kernelPath := lcGuards(t)
+	initramfsPath := netnsSkipUnlessArtifact(t, "alpine-initramfs.cpio.gz")
+	socketDir := lcMakeSocketDir(t, "nx3-lc-consolelog-")
+	consolePath := filepath.Join(socketDir, "console.log")
+
+	drv, err := New(Config{
+		BinaryPath:     chBin,
+		SocketDir:      socketDir,
+		KernelPath:     kernelPath,
+		InitramfsPath:  initramfsPath,
+		Cmdline:        "console=ttyS0 panic=5",
+		ConsoleLogPath: consolePath,
+		VCPUs:          1,
+		MemoryMiB:      256,
+		StartTimeout:   30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New CHDriver: %v", err)
+	}
+
+	id := domain.NewSandboxID()
+	var vmmPID int
+	t.Cleanup(func() {
+		// Log console.log so the content is visible in -v mode and on failure.
+		if content, readErr := os.ReadFile(consolePath); readErr == nil && len(content) > 0 {
+			t.Logf("console.log (%d bytes):\n%s", len(content), content)
+		}
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		_ = drv.Stop(stopCtx, id)
+		if vmmPID != 0 {
+			_ = syscall.Kill(-vmmPID, syscall.SIGKILL)
+		}
+		drv.clearState(id)
+		// socketDir is cleaned up by lcMakeSocketDir's t.Cleanup.
+	})
+
+	startCtx, startCancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer startCancel()
+
+	if _, err := drv.Start(startCtx, driver.StartRequest{SandboxID: id}); err != nil {
+		t.Fatalf("drv.Start: %v", err)
+	}
+
+	drv.mu.Lock()
+	if proc := drv.procs[id]; proc != nil {
+		vmmPID = proc.pid
+	}
+	drv.mu.Unlock()
+
+	// Poll console.log for a string the guest kernel reliably emits on ttyS0.
+	// "Linux version" is the first line emitted by every Linux kernel on the
+	// console device; it arrives within milliseconds of the VM booting.
+	// If this string is absent, serial output is not reaching CH stdout —
+	// the serial:{mode:"Tty"} config in driver.go is missing or wrong.
+	const wantStr = "Linux version"
+	const pollTimeout = 30 * time.Second
+	pollStart := time.Now()
+	for time.Since(pollStart) < pollTimeout {
+		content, _ := os.ReadFile(consolePath)
+		if strings.Contains(string(content), wantStr) {
+			t.Logf("console.log contains %q after %v", wantStr, time.Since(pollStart))
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	content, _ := os.ReadFile(consolePath)
+	t.Errorf("console.log does not contain %q after %v — serial→CH-stdout wiring broken\n"+
+		"(driver.go serial:{mode:Tty} not injected, or cappedConsoleWriter not draining)\n"+
+		"console.log (%d bytes):\n%.4000s",
+		wantStr, pollTimeout, len(content), content)
+}
+
+// stays stuck in tapPump until rt.Stop() kills it. rt.cmd.Wait() never returns.
+// The substitution count for the mutation is 1 (the single "_ = proc" line).
+func TestLifecycle_LauncherExitsOnCHDeath(t *testing.T) {
+	chBin, kernelPath := lcGuards(t)
+	socketDir := lcMakeSocketDir(t, "nx3-lc-orphan-")
+
+	id := domain.NewSandboxID()
+	socketPath := filepath.Join(socketDir, id.String()+".sock")
+
+	rt := lcBootCH(t, chBin, kernelPath, id, socketPath)
+	// Do NOT register t.Cleanup(rt.Stop) before the assertion: the test
+	// asserts the launcher exits on its own. defer below calls Stop() only
+	// after the check, cleaning up PerimConn so the test process does not leak.
+	defer rt.Stop() // idempotent via stopOnce; no-op if child already exited
+
+	childPID := rt.ChildPID
+	t.Logf("netns child pid=%d (pgid=%d)", childPID, rt.ChildPGID)
+
+	// Wait for the netns child to advance past spawnVMMInGroup and into tapPump.
+	//
+	// lcBootCH polls CH's API socket from the TEST process. When it returns
+	// "ready", the netns child's own spawnVMMInGroup polling loop may not have
+	// seen CH as ready yet (both poll at 50 ms intervals but are not synced).
+	// If we kill CH before the netns child exits spawnVMMInGroup, the reap
+	// goroutine never starts and the test races against the netns child's
+	// 20 s StartTimeout. 300 ms = 6 full 50 ms poll intervals — enough for
+	// the netns child to complete its own poll cycle and start the goroutine.
+	time.Sleep(300 * time.Millisecond)
+
+	// Kill the CH grandchild — simulates a CH crash or a failed first boot.
+	_ = lcKillCHGrandchild(t, socketPath)
+
+	// The launcher must exit within 5 s: the fix goroutine in RunNetnsChild
+	// calls syscall.Wait4 (waits for CH to exit) then os.Exit(0) to kill the
+	// entire process — including the stuck TAP-read goroutine inside tapPump.
+	//
+	// We observe exit via rt.deathCh (closed by watchParentOwnedDeath when
+	// cmd.Wait() returns), NOT by calling rt.cmd.Wait() directly. Rationale:
+	//   - watchParentOwnedDeath is the single owner of cmd.Wait() (AC-12c);
+	//     a concurrent call from this test would be a data race under -race.
+	//   - rt.deathCh is closed by the same cmd.Wait() call, so it fires on
+	//     exactly the same condition as a direct cmd.Wait() would — without
+	//     the zombie-PID-reuse hazard of kill(pid,0)/proc polling.
+	//   - A closed channel broadcasts: both rt.Stop() (which waits on
+	//     rt.deathCh) and this select can observe the close without conflict.
+	//
+	// Without the goroutine (mutation: replace goroutine with _ = proc),
+	// syscall.Wait4 is never called; os.Exit(0) is never called; the netns
+	// child is stuck in tapPump forever → deathCh never closes → test FAILS.
+	const timeout = 5 * time.Second
+	select {
+	case <-rt.deathCh:
+		t.Logf("PASS orphan-launcher: netns child pid=%d exited after CH death", childPID)
+	case <-time.After(timeout):
+		t.Logf("child stderr:\n%s", rt.ChildStderr())
+		t.Fatalf("FAIL orphan-launcher: netns child pid=%d still alive %v after "+
+			"CH exited; launcher leaked as orphan (ppid 1, zombie CH child)",
+			childPID, timeout)
+	}
 }

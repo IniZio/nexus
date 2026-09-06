@@ -91,6 +91,80 @@ type Sandbox struct {
 	// IPC socket. Empty when SupervisorPID is zero.
 	SupervisorSock string `json:"supervisor_sock,omitempty"`
 
+	// NetnsChildPID is the OS PID of the netns-runtime child process (the
+	// re-exec'd binary running inside the per-sandbox user+network namespace
+	// that hosts the CH VMM and frame pump — see
+	// cloudhypervisor.NetnsRuntime). Zero means no netns child is running
+	// (in-process perimeter, or the sandbox predates this field).
+	//
+	// A supervisor that did not fork this child cannot signal it by PID
+	// alone: killing a single process in a process group started with
+	// Setpgid:true does not reach the rest of the group, and the child's own
+	// children (CH) are only reachable via the group. See NetnsChildPGID.
+	NetnsChildPID int `json:"netns_child_pid,omitempty"`
+
+	// NetnsChildPGID is the process group ID of the netns child. Because the
+	// netns child is spawned with Setpgid:true and CH inherits that pgid
+	// (Setpgid:false), a non-parent process that wants to cleanly stop the
+	// VM must target the group (kill(-PGID, ...)), not just NetnsChildPID —
+	// signalling the PID alone leaves CH (and any grandchildren) running.
+	// Zero when NetnsChildPID is zero.
+	NetnsChildPGID int `json:"netns_child_pgid,omitempty"`
+
+	// GuestTapName is the guest-facing TAP interface name passed to CH's
+	// vm.create for this sandbox's network device. A non-parent adopter
+	// needs this to re-derive the network device configuration without
+	// re-deriving it from scratch or re-reading netns-internal state it did
+	// not create. Empty when no netns child is running.
+	GuestTapName string `json:"guest_tap_name,omitempty"`
+
+	// CHAPISocket is the absolute path of the cloud-hypervisor REST API
+	// Unix socket for this sandbox's VM (NetnsRuntime.APISocket). A
+	// non-parent adopter dials this socket directly; it does not need to be
+	// the process that started CH to control it. Empty when no VM is
+	// running under a netns child.
+	CHAPISocket string `json:"ch_api_socket,omitempty"`
+
+	// NetnsChildStartTime is the kernel starttime of the netns child process
+	// (field 22 of /proc/<NetnsChildPID>/stat, in clock ticks since boot),
+	// persisted by the supervisor immediately after StartNetnsRuntime returns.
+	// A replacement supervisor passes this value to AdoptNetnsRuntime, which
+	// reads the live starttime from /proc and refuses adoption if the two
+	// values differ — guarding against pid recycling. Zero means no netns
+	// child is running; AdoptNetnsRuntime refuses adoption when this field is
+	// zero rather than proceeding unguarded.
+	NetnsChildStartTime uint64 `json:"netns_child_start_time,omitempty"`
+
+	// NetnsControlSocket and NetnsControlToken are the paths of the netns
+	// child's control socket and its shared-secret token file. They are what
+	// makes CRASH recovery possible at the network level: after a supervisor
+	// is SIGKILLed there is no live sender to pass the perimeter fd over
+	// SCM_RIGHTS, but the netns child survives, and a replacement supervisor
+	// uses these two paths to ask that child for a fresh perimeter end
+	// instead (cloudhypervisor.ReacquirePerimeter).
+	//
+	// Both empty when the netns child was started without a control socket,
+	// in which case the VM is recoverable at the record level but NOT at the
+	// network level — the distinction the charter originally conflated.
+	NetnsControlSocket string `json:"netns_control_socket,omitempty"`
+	NetnsControlToken  string `json:"netns_control_token,omitempty"`
+
+	// CacheDiskSlot is the ImagePath of the leased builder cache-disk slot
+	// backing this sandbox's VM, if any (builder.CacheDiskSpec.ImagePath;
+	// see internal/core/builder/cachedisk.go). A non-parent adopter must
+	// know which slot it now owns so it can release the lease on stop
+	// instead of leaking it, and so two adopters can never believe they
+	// hold the same slot. Empty means no cache disk is leased (e.g. a
+	// non-builder sandbox).
+	//
+	// It is written by the supervisor that owns the VM (D-HSH-07) and read
+	// back by an adopting or re-acquiring supervisor, which takes the SAME
+	// slot by path (builder.AcquireCacheDiskSlot) rather than selecting a
+	// new one. When a VM leases more than one slot the image paths are
+	// comma-separated, in ExtraDisks order; decode with
+	// builder.DecodeCacheDiskSlots.
+	CacheDiskSlot string `json:"cache_disk_slot,omitempty"`
+
 	// CreatorPID is the OS PID of the process that created this sandbox record.
 	// It is non-zero only for transient __builder records created by BuildInVM.
 	// The service uses kill(CreatorPID, 0) to detect stale orphans: ESRCH means
@@ -217,6 +291,12 @@ type Envelope struct {
 	// real server certificate (D-PD-25). Empty means no secret-only MITM.
 	SecretHosts []string
 
+	// SecretHostSuffixes are dot-anchored DNS suffixes (e.g. ".cursor.sh")
+	// that extend SecretHosts by suffix match. Any host ending with one of
+	// these suffixes is MITM'd and credential-swapped by the proxy. Each
+	// suffix MUST begin with "." (dot-boundary safety — see mitm.Config).
+	SecretHostSuffixes []string `json:"secret_host_suffixes,omitempty"`
+
 	// SecretSpecs are the ENV@host[,host…] binds frozen at create (no tokens).
 	// The detached supervisor re-resolves real tokens (builtin gh / --secret)
 	// into its in-process broker on every Start.
@@ -246,9 +326,7 @@ type Envelope struct {
 	// namespace-prefix matching at any depth (e.g. "refs/heads/nexus3/**"),
 	// or standard path.Match single-segment "*" for explicit patterns
 	// (e.g. "refs/heads/nexus3/e2e/*"). When empty, ResolvedAllowedBranches
-	// returns the project default ["refs/heads/nexus3/**"]. Set by
-	// --branches on the human git-VM create path; agent sandboxes receive the
-	// default implicitly.
+	// returns the hardcoded default ["refs/heads/nexus3/**"].
 	AllowedBranches []string `json:"allowed_branches,omitempty"`
 
 	// PathPolicies carries per-(placeholder, host) path restrictions frozen at
@@ -284,10 +362,27 @@ type EgressHostPolicy struct {
 // Converted to mitm.PathPolicies at sandbox start by the service layer.
 type EgressPathPolicies map[string]map[string]EgressHostPolicy
 
+// UnresolvedBranchSentinel is stored in Envelope.AllowedBranches by the
+// create path when a sandbox has a workspace bound (there is a worktree to
+// push from) but its branch could not be derived — detached HEAD, git
+// unavailable, or an unreadable worktree. It contains a NUL byte, which git
+// forbids in ref names, so it can never match a real push ref: every push is
+// denied (D-PD-38) until whatever broke branch derivation is fixed. This is
+// the fail-closed alternative to two unsafe options: falling back to the
+// nexus3-only default (wrong repo, and would incorrectly permit a push the
+// operator never scoped this sandbox for) or to an empty AllowedBranches
+// slice (which ResolvedAllowedBranches would treat as "unset" and again
+// apply the wrong default — see below).
+const UnresolvedBranchSentinel = "refs/heads/\x00unresolved"
+
 // ResolvedAllowedBranches returns AllowedBranches with the project default
 // applied when the field is empty. The default is ["refs/heads/nexus3/**"],
 // which permits any ref under the nexus3/ namespace at any depth — matching
-// the D-PD-03 convention nexus3/<motive-slug>/<sandbox-short-id>.
+// the D-PD-03 convention nexus3/<motive-slug>/<sandbox-short-id>. It applies
+// only to sandboxes with no workspace bound (nothing to derive a branch
+// from); the worktree-sandbox create path populates AllowedBranches
+// explicitly from the bound worktree's own branch (see
+// service.CreateAndBoot), so this default no longer governs those sandboxes.
 // This is the single resolution site; callers must use this method rather
 // than reading AllowedBranches directly.
 func (e Envelope) ResolvedAllowedBranches() []string {

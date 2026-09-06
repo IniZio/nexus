@@ -3,6 +3,7 @@
 package main
 
 import (
+	"os"
 	"reflect"
 	"testing"
 
@@ -23,19 +24,19 @@ import (
 // speed instead of after a 4-minute live boot.
 func TestParseSupervisorFlags_RoundTrip(t *testing.T) {
 	in := supervisor.Config{
-		SandboxRef:         "sb-roundtrip",
-		StoreRoot:          "/store",
-		StateDir:           "/state",
-		CHBin:              "/usr/bin/cloud-hypervisor",
-		SocketDir:          "/run/nexus3",
-		KernelPath:         "/boot/vmlinux",
-		DiskPath:           "/data/sb.raw",
-		CredsFile:          "/creds.json",
-		MemoryMiB:          2048,
-		BootVCPUs:          2,
-		HasWorkspaceDisk:   true,
-		WorkspaceDiskIndex: 4,
-		WorkspaceGuestPath: "/workspace/proj",
+		SandboxRef:           "sb-roundtrip",
+		StoreRoot:            "/store",
+		StateDir:             "/state",
+		CHBin:                "/usr/bin/cloud-hypervisor",
+		SocketDir:            "/run/nexus3",
+		KernelPath:           "/boot/vmlinux",
+		DiskPath:             "/data/sb.raw",
+		CredsFile:            "/creds.json",
+		MemoryMiB:            2048,
+		BootVCPUs:            2,
+		HasWorkspaceDisk:     true,
+		WorkspaceDiskIndex:   4,
+		WorkspaceGuestPath:   "/workspace/proj",
 		ExtraDisks:           []string{"/d1.ext4", "/d2.ext4", "/d3.ext4", "/d4.ext4", "/d5.ext4"},
 		ResizableDiskIndices: []int{2},
 		GovBounds: resize.Bounds{
@@ -51,12 +52,13 @@ func TestParseSupervisorFlags_RoundTrip(t *testing.T) {
 			{HostPath: "/home/op/ref", GuestPath: "/ref", ReadOnly: true},
 		},
 		VirtiofsdPath: "/usr/libexec/virtiofsd",
+		NestedVirt:    true,
 	}
 
 	// BuildSupervisorArgv includes the leading HiddenSubcommand token; the
 	// CLI dispatch strips it before runSupervisorMain (os.Args[2:]).
 	argv := supervisor.BuildSupervisorArgv(supervisor.SpawnConfig{Config: in})[1:]
-	got, err := parseSupervisorFlags(argv)
+	got, _, _, err := parseSupervisorFlags(argv)
 	if err != nil {
 		t.Fatalf("parseSupervisorFlags: %v", err)
 	}
@@ -101,6 +103,10 @@ func TestParseSupervisorFlags_RoundTrip(t *testing.T) {
 	if got.VirtiofsdPath != in.VirtiofsdPath {
 		t.Errorf("VirtiofsdPath = %q, want %q", got.VirtiofsdPath, in.VirtiofsdPath)
 	}
+	if got.NestedVirt != in.NestedVirt {
+		t.Errorf("NestedVirt = %v, want %v — --nested sandboxes boot without KVM nested virt (D-N3N-02)",
+			got.NestedVirt, in.NestedVirt)
+	}
 }
 
 // TestParseSupervisorFlags_EveryConfigFieldSurvives is the class-level guard
@@ -120,21 +126,23 @@ func TestParseSupervisorFlags_RoundTrip(t *testing.T) {
 //     parseSupervisorFlags both carry it.
 func TestParseSupervisorFlags_EveryConfigFieldSurvives(t *testing.T) {
 	in := supervisor.Config{
-		SandboxRef:         "sb-allfields",
-		StoreRoot:          "/store",
-		StateDir:           "/state",
-		CHBin:              "/usr/bin/cloud-hypervisor",
-		SocketDir:          "/run/nexus3",
-		KernelPath:         "/boot/vmlinux",
-		DiskPath:           "/data/sb.raw",
+		SandboxRef:           "sb-allfields",
+		StoreRoot:            "/store",
+		StateDir:             "/state",
+		CHBin:                "/usr/bin/cloud-hypervisor",
+		SocketDir:            "/run/nexus3",
+		KernelPath:           "/boot/vmlinux",
+		DiskPath:             "/data/sb.raw",
 		ExtraDisks:           []string{"/d1.ext4"},
 		ResizableDiskIndices: []int{2},
 		WorkspaceGuestPath:   "/workspace/proj",
-		CredsFile:          "/creds.json",
-		MemoryMiB:          2048,
-		BootVCPUs:          2,
-		HasWorkspaceDisk:   true,
-		WorkspaceDiskIndex: 0,
+		CredsFile:            "/creds.json",
+		MemoryMiB:            2048,
+		BootVCPUs:            2,
+		HasWorkspaceDisk:     true,
+		WorkspaceDiskIndex:   0,
+		HasScratchDisk:       true,
+		ScratchDiskIndex:     1,
 		GovBounds: resize.Bounds{
 			MemMinBytes:  512 << 20,
 			MemMaxBytes:  4096 << 20,
@@ -145,8 +153,14 @@ func TestParseSupervisorFlags_EveryConfigFieldSurvives(t *testing.T) {
 		Cmdline:       "root=/dev/vda rw",
 		LiveMounts:    []domain.LiveMount{{HostPath: "/h", GuestPath: "/g", ReadOnly: true}},
 		VirtiofsdPath: "/usr/libexec/virtiofsd",
+		NestedVirt:    true,
 		Ephemeral:     true,
 		ParentPipeFD:  7,
+		// CacheDiskSlots / CacheDiskLeaseFDs: the builder cache-disk slot
+		// lease this supervisor owns for its VM's lifetime (D-HSH-07). Both
+		// travel in argv; the fd list is index-parallel to the slot list.
+		CacheDiskSlots:    []string{"/var/lib/nexus3/caches/buildkit.ext4"},
+		CacheDiskLeaseFDs: []int{4},
 		// MCPOAuthRefreshConfigs: spawn.json-only field (refresh tokens must NOT
 		// appear in argv because argv is ps-visible). Populated here so Step 1
 		// (no-zero-field guard) passes; excluded from Step 2's argv DeepEqual
@@ -168,7 +182,7 @@ func TestParseSupervisorFlags_EveryConfigFieldSurvives(t *testing.T) {
 	v := reflect.ValueOf(in)
 	for i := 0; i < v.NumField(); i++ {
 		name := v.Type().Field(i).Name
-		if name == "WorkspaceDiskIndex" {
+		if name == "WorkspaceDiskIndex" || name == "ScratchDiskIndex" {
 			continue
 		}
 		if v.Field(i).IsZero() {
@@ -181,7 +195,7 @@ func TestParseSupervisorFlags_EveryConfigFieldSurvives(t *testing.T) {
 	// zeroed on both sides before the DeepEqual. Its own round-trip is
 	// asserted by TestMCPOAuthRefreshConfigs_SpawnSpecRoundTrip.
 	argv := supervisor.BuildSupervisorArgv(supervisor.SpawnConfig{Config: in})[1:]
-	got, err := parseSupervisorFlags(argv)
+	got, _, _, err := parseSupervisorFlags(argv)
 	if err != nil {
 		t.Fatalf("parseSupervisorFlags: %v", err)
 	}
@@ -262,8 +276,123 @@ func TestMCPOAuthRefreshConfigs_SpawnSpecRoundTrip(t *testing.T) {
 // TestParseSupervisorFlags_MissingRequired asserts the required-flag guard
 // fires with the first missing flag name.
 func TestParseSupervisorFlags_MissingRequired(t *testing.T) {
-	_, err := parseSupervisorFlags([]string{"--sandbox-ref", "sb-x"})
+	_, _, _, err := parseSupervisorFlags([]string{"--sandbox-ref", "sb-x"})
 	if err == nil || err.Error() != "supervisor: --store-root is required" {
 		t.Fatalf("err = %v, want --store-root required", err)
+	}
+}
+
+// TestNestedVirt_SpawnSpecRoundTrip asserts that NestedVirt=true written to
+// spawn.json by WriteSpawnSpec survives ReadSpawnSpec. This is the persistence
+// path used by `sandbox start` to re-spawn a stopped nested sandbox.
+//
+// Failure mode: the field is added to supervisor.Config but WriteSpawnSpec
+// (JSON marshal of Config) never emits it — either the field has no json tag
+// (it does: Go marshals exported fields by name by default) or it is omitted
+// via omitempty (NestedVirt must NOT have omitempty; absent means false).
+//
+// MUTATION PROOF: remove the NestedVirt field from supervisor.Config and this
+// test fails with a decode error or a false result.
+func TestNestedVirt_SpawnSpecRoundTrip(t *testing.T) {
+	stateDir := t.TempDir()
+
+	want := supervisor.Config{
+		SandboxRef: "sb-nested-test",
+		StoreRoot:  "/store",
+		StateDir:   stateDir,
+		CHBin:      "/usr/bin/cloud-hypervisor",
+		SocketDir:  "/run/nexus3",
+		KernelPath: "/boot/vmlinux",
+		DiskPath:   "/data/sb.raw",
+		NestedVirt: true,
+	}
+
+	if err := supervisor.WriteSpawnSpec(stateDir, want); err != nil {
+		t.Fatalf("WriteSpawnSpec: %v", err)
+	}
+
+	got, err := supervisor.ReadSpawnSpec(stateDir)
+	if err != nil {
+		t.Fatalf("ReadSpawnSpec: %v", err)
+	}
+	if !got.NestedVirt {
+		t.Errorf("NestedVirt did not survive spawn.json round-trip: got false, want true — " +
+			"stopped --nested sandboxes will boot without KVM nested virt after restart " +
+			"(D-N3N-02: NestedVirt must persist in spawn.json)")
+	}
+}
+
+// TestNestedVirt_DefaultOff_AbsentKey is the security-critical case: a
+// spawn.json written WITHOUT a nested_virt key (e.g. by an older version of
+// nexus3) must deserialise to NestedVirt=false, never NestedVirt=true.
+//
+// Security contract D-N3N-02: absent means nested-OFF. JSON unmarshal of a
+// missing key leaves the bool at its zero value (false), which is correct.
+// This test proves it cannot silently flip to true.
+//
+// MUTATION PROOF: add `NestedVirt bool \`json:"...,omitempty"\“ or default the
+// field to true and this test fails.
+func TestNestedVirt_DefaultOff_AbsentKey(t *testing.T) {
+	stateDir := t.TempDir()
+
+	// Write a spawn.json that has no nested_virt key (simulates an older binary
+	// or a sandbox created before NestedVirt existed).
+	spawnJSON := `{
+  "SandboxRef": "sb-old",
+  "StoreRoot": "/store",
+  "StateDir": "` + stateDir + `",
+  "CHBin": "/usr/bin/cloud-hypervisor",
+  "SocketDir": "/run/nexus3",
+  "KernelPath": "/boot/vmlinux",
+  "DiskPath": "/data/sb.raw"
+}`
+	if err := os.WriteFile(supervisor.SpecPath(stateDir), []byte(spawnJSON), 0o600); err != nil {
+		t.Fatalf("write spawn.json: %v", err)
+	}
+
+	got, err := supervisor.ReadSpawnSpec(stateDir)
+	if err != nil {
+		t.Fatalf("ReadSpawnSpec: %v", err)
+	}
+	if got.NestedVirt {
+		t.Errorf("NestedVirt = true for spawn.json with no nested_virt key — " +
+			"absent must mean nested-OFF, never nested-ON (D-N3N-02 security contract)")
+	}
+}
+
+// TestParseSupervisorFlags_NestedDefaultsOffWhenFlagAbsent guards the OTHER
+// half of the absent-means-off contract, at the layer that actually decides it
+// for a running VM.
+//
+// TestNestedVirt_DefaultOff_AbsentKey above covers the spawn.json codec, but a
+// supervisor is launched as `nexus3 __supervisor <argv>`, and the argv codec is
+// a separate hop with its own default. Flipping the flag's default from false
+// to true left every other test in this package GREEN — a supervisor spawned
+// without --nested would have booted with nested virt ON, breaching the D-N3N-02
+// opt-in perimeter with nothing to catch it. This test is that check.
+func TestParseSupervisorFlags_NestedDefaultsOffWhenFlagAbsent(t *testing.T) {
+	// A minimal argv with every required flag and NO --nested.
+	argv := []string{
+		"--sandbox-ref", "sb-nonested",
+		"--store-root", "/store",
+		"--state-dir", "/state",
+		"--ch-bin", "/usr/bin/cloud-hypervisor",
+		"--socket-dir", "/run/nexus3",
+		"--kernel", "/boot/vmlinux",
+		"--disk", "/data/sb.raw",
+	}
+	for _, a := range argv {
+		if a == "--nested" {
+			t.Fatalf("argv must not contain --nested; this test asserts the default")
+		}
+	}
+
+	cfg, _, _, err := parseSupervisorFlags(argv)
+	if err != nil {
+		t.Fatalf("parseSupervisorFlags: %v", err)
+	}
+	if cfg.NestedVirt {
+		t.Errorf("NestedVirt = true when --nested was not passed — absent must " +
+			"mean nested-OFF, never nested-ON (D-N3N-02 security contract)")
 	}
 }

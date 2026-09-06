@@ -3,7 +3,8 @@ package builder
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"io/fs"
@@ -12,17 +13,164 @@ import (
 	"path/filepath"
 	"strings"
 
+	ctdarchive "github.com/containerd/containerd/archive"
 	bkclient "github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
+	"github.com/tonistiigi/fsutil"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/IniZio/nexus3/internal/core/bootspec"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
-// agentContextFilename is the reserved name used for the nexus3-agent binary
-// inside the buildkit context directory. Using a leading underscore avoids
-// collisions with typical workspace filenames.
-const agentContextFilename = "_nexus3-agent"
+// agentContextFilenamePrefix is the reserved name prefix used for the
+// nexus3-agent binary inside the buildkit "nexus3agent" named context. Using a
+// leading underscore avoids collisions with typical workspace filenames.
+const agentContextFilenamePrefix = "_nexus3-agent"
+
+// newAgentContextFilename returns a per-Solve unique name for the agent binary
+// inside the "nexus3agent" named build context.
+//
+// # Why the name must be unique per Solve
+//
+// buildkitd caches the RESULT SNAPSHOT of the final
+// `COPY --from=nexus3agent` under a cache key derived from the copied file's
+// contenthash (buildkit cache/contenthash/filehash.go NewFromStat → tarsum v1,
+// which excludes mtime). The agent binary's path, size, mode and content are
+// identical from one build to the next, so that key is STABLE across builds —
+// and a result snapshot that was written with a CORRUPT (zero-byte) agent is
+// therefore returned forever.
+//
+// That is not hypothetical. On cache-disk slot 0
+// (~/.local/state/nexus3/caches/buildkit.ext4), snapshot 61 held a zero-byte
+// /usr/sbin/nexus3-agent written at 15:05 on 2026-08-29. Every later build of
+// the same Containerfile cache-hit that snapshot, finished the whole solve in
+// ~7 s without re-executing a single layer, and then failed the
+// verifyAgentIntegrity canary with "/sbin/nexus3-agent is 0 bytes, expected
+// 36329665". The canary is fail-closed, so the poisoned layer never shipped —
+// but it also never healed: the only escape was deleting the operator's warm
+// cache disk. sizeVerifiedFS (sizedfs.go) cannot help here, because it guards
+// the context STREAM and the stream is healthy; the corruption lives in a
+// persisted buildkitd snapshot.
+//
+// Putting a fresh nonce in the COPY source path makes the agent layer's cache
+// key unique per build, so a poisoned agent layer can never be served a second
+// time. Only this final layer re-executes; every Containerfile layer above it
+// still cache-hits, preserving the layer ordering rationale documented on
+// [realBuildkitClient.Solve].
+//
+// A crypto/rand failure is FATAL, not degraded: any process-local fallback
+// (a counter) restarts in every new process and so collides across
+// processes, silently reinstating the stable-key poisoned-snapshot class
+// this function exists to eliminate.
+func newAgentContextFilename() (string, error) {
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", fmt.Errorf("buildkit: agent layer nonce: crypto/rand: %w", err)
+	}
+	return fmt.Sprintf("%s-%s", agentContextFilenamePrefix, hex.EncodeToString(nonce[:])), nil
+}
+
+// stageAgentContext copies the agent binary at agentPath into agentDir under a
+// fresh per-Solve nonce name and returns that name. The returned name is the
+// ONLY thing [synthesizeDockerfile] may use as the COPY source: the write and
+// the COPY line are coupled through this single return value, so they cannot
+// silently diverge (which would fail every build with "file not found").
+func stageAgentContext(agentDir, agentPath string) (string, error) {
+	agentFile, err := newAgentContextFilename()
+	if err != nil {
+		return "", err
+	}
+	agentBytes, err := os.ReadFile(agentPath)
+	if err != nil {
+		return "", fmt.Errorf("buildkit: read agent binary %s: %w", agentPath, err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, agentFile), agentBytes, 0755); err != nil {
+		return "", fmt.Errorf("buildkit: write agent to agent dir: %w", err)
+	}
+	return agentFile, nil
+}
+
+// containerfileRecipeSkipDirective is the opt-out marker an operator writes
+// anywhere in their .nexus/Containerfile to signal that they have already
+// installed the agent tool themselves and do not want the synthesised recipe
+// layer appended.
+//
+// Failure modes:
+//   - False positive: impossible — the operator must deliberately write this
+//     string. No innocent Containerfile content matches it by accident.
+//   - False negative: operator installs the tool manually but omits the
+//     directive → the recipe layer is appended on top. For a tarball recipe the
+//     extract-to-versioned-dir is idempotent; for npm the install is also
+//     idempotent. The image works; it just carries duplicate work in an extra
+//     layer. This is safer than the alternative: scanning for the install path
+//     would produce false positives (a comment referencing the path) that
+//     silently suppress the recipe and leave the binary absent.
+const containerfileRecipeSkipDirective = "nexus3:recipe-skip"
+
+// containerfileOptsOutOfRecipe reports whether containerfileBytes contains
+// the [containerfileRecipeSkipDirective], signalling that the operator has
+// already installed the agent tool and wants the recipe layer suppressed.
+func containerfileOptsOutOfRecipe(containerfileBytes []byte) bool {
+	return bytes.Contains(containerfileBytes, []byte(containerfileRecipeSkipDirective))
+}
+
+// renderRecipeIfNeeded calls [RenderRecipeLayer] when the recipe has packages
+// and the Containerfile does not opt out. It returns nil (no error) with nil
+// bytes when either condition suppresses the render.
+//
+// When the render succeeds, the returned bytes are deterministic (D-TP-01
+// Amendment C): two calls with the same recipe and arch produce byte-identical
+// output with no nonces, timestamps, or per-call variation.
+//
+// When the render fails (e.g. the target arch has an empty SHA-256 sentinel),
+// the error is wrapped with context naming the arch so the operator sees a
+// clear message: "buildkit: render recipe layer for arch "arm64": recipelayer:
+// cursor-agent ...: no SHA-256 recorded for arch "arm64"".
+func renderRecipeIfNeeded(containerfileBytes []byte, recipe cred.ToolRecipe, arch string) ([]byte, error) {
+	if len(recipe.Packages) == 0 {
+		return nil, nil
+	}
+	if containerfileOptsOutOfRecipe(containerfileBytes) {
+		return nil, nil
+	}
+	rl, err := RenderRecipeLayer(recipe, arch)
+	if err != nil {
+		return nil, fmt.Errorf("buildkit: render recipe layer for arch %q: %w", arch, err)
+	}
+	return rl, nil
+}
+
+// synthesizeDockerfile returns the combined Dockerfile handed to the
+// dockerfile.v0 frontend: the user's Containerfile, an optional recipe layer
+// (deterministic RUN instructions), and the final agent-binary COPY layer.
+//
+// Ordering:
+//
+//	<user Containerfile>        ← cache-hits on every build for unchanged content
+//	[recipe layer]              ← deterministic; cache-hits on same recipe+arch
+//	# Final layer: nexus3-agent ← always a cache MISS (agentFile carries a nonce)
+//
+// agentFile must come from [newAgentContextFilename] — the per-Solve nonce makes
+// the agent layer's buildkit cache key unique per build, preventing a corrupted
+// agent snapshot from being served again (see the function doc comment there).
+//
+// recipeLayerBytes is the output of [renderRecipeIfNeeded]. Pass nil or empty
+// to omit the recipe layer (no recipe, or Containerfile opted out).
+func synthesizeDockerfile(containerfileBytes, recipeLayerBytes []byte, agentFile, installPath string) []byte {
+	var out []byte
+	out = append(out, containerfileBytes...)
+	if len(recipeLayerBytes) > 0 {
+		out = append(out, "\n\n# Recipe layer: install agent tooling\n"...)
+		out = append(out, recipeLayerBytes...)
+	}
+	finalLayer := fmt.Sprintf(
+		"\n\n# Final layer: bake the nexus3-agent (boot contract: init=%s)\nCOPY --chmod=0755 --from=nexus3agent %s %s\n",
+		installPath, agentFile, installPath,
+	)
+	return append(out, []byte(finalLayer)...)
+}
 
 // SolveRequest is the fully-resolved build specification handed to a
 // [BuildkitClient]. It carries everything needed to describe one complete
@@ -47,6 +195,20 @@ type SolveRequest struct {
 	// It is used as the buildkit build context so that COPY instructions in
 	// the user's Containerfile can reference files from the repo.
 	WorkspaceDir string
+
+	// ToolRecipe is the profile's declared install recipe for the agent tool.
+	// When Packages is non-empty and ContainerfileBytes does not opt out via
+	// [containerfileRecipeSkipDirective], [RenderRecipeLayer] is called with
+	// TargetArch and the output is injected between ContainerfileBytes and the
+	// nexus3-agent COPY layer. A zero ToolRecipe (no packages) is silently
+	// ignored — no recipe layer is emitted.
+	ToolRecipe cred.ToolRecipe
+
+	// TargetArch is the CPU architecture for which the recipe is rendered,
+	// e.g. "x64" (amd64) or "arm64". It selects the correct tarball URL and
+	// SHA-256 from [cred.RecipePackage.SHA256ByArch]. Required when
+	// ToolRecipe.Packages is non-empty; ignored otherwise.
+	TargetArch string
 }
 
 // BuildkitClient is the seam between [Builder] and a running buildkitd daemon.
@@ -100,6 +262,91 @@ type realBuildkitClient struct {
 	addr string
 }
 
+// exportAndUnpack drives a buildkit solve function and unpacks the resulting tar
+// stream into outDir concurrently via an errgroup.
+//
+// # Concurrency
+//
+// Two goroutines run simultaneously:
+//   - The solve goroutine calls solveFn, which must write the complete tar stream
+//     into pw and then return. exportAndUnpack closes pw on success, or closes it
+//     with the error on failure, so that the unpack goroutine always sees EOF or an
+//     error and cannot deadlock.
+//   - The unpack goroutine calls containerd/archive.Apply, which reads from pr and
+//     applies each tar entry to outDir.
+//
+// # Fail-closed guarantee
+//
+// containerd/archive.Apply uses stdlib archive/tar internally. A tar entry whose
+// body is shorter than hdr.Size causes an io.ErrUnexpectedEOF on the body read,
+// which Apply returns as a hard error — never silently truncated output.
+// Additionally, Apply returns an error on EPERM when setting security.* xattrs
+// (e.g. security.capability), so a host that lacks the required privilege will
+// produce a hard build failure rather than a bootable image missing capabilities.
+//
+// # solveFn contract
+//
+// solveFn receives the errgroup-derived context (egCtx) and the pipe writer pw.
+// solveFn MUST NOT close pw — exportAndUnpack closes it after solveFn returns.
+// solveFn SHOULD use egCtx so that an unpack failure (which cancels egCtx)
+// interrupts the build and avoids deadlock.
+func exportAndUnpack(ctx context.Context, outDir string, solveFn func(egCtx context.Context, pw io.WriteCloser) error) error {
+	pr, pw := io.Pipe()
+
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	// Unpack goroutine: reads the tar stream from pr and applies it to outDir.
+	// WithNoSameOwner matches the parity of the old ExporterLocal path: buildkit's
+	// client-side receive filter (session/filesync/diffcopy.go:119-124) rewrote
+	// every uid/gid to the current user before writing, so the old outDir was
+	// entirely owned by the builder uid. We preserve that behaviour by skipping
+	// lchown. Security xattrs (security.capability etc.) are left at Apply's
+	// default: user.* EPERM is warned-and-skipped; security.* EPERM is an error.
+	// Neither appears in real exports: rootless buildkitd strips device nodes and
+	// security xattrs from the tar entirely (confirmed by inspection of a live
+	// alpine export: 0 TypeChar/Block entries, 0 security.* PAX headers).
+	// On failure, CloseWithError signals the solve side to stop writing (prevents
+	// deadlock if Apply returns early before the full stream is consumed).
+	//
+	// The SAME wrapped error goes to CloseWithError and to the errgroup. Apply
+	// typically fails partway through the stream, so the solve goroutine is
+	// blocked in pw.Write; CloseWithError unblocks it and io.Pipe hands that
+	// exact error back as the Write result, which the solve goroutine then
+	// reports to the errgroup as well. errgroup keeps whichever error is
+	// registered first, so closing with the *unwrapped* error made an unpack
+	// failure reach the caller stripped of its "unpack tar to <dir>" context
+	// roughly half the time, purely on goroutine scheduling. Wrapping once and
+	// sharing the value makes both racers report an identical, fully-contextual
+	// error.
+	eg.Go(func() error {
+		n, err := ctdarchive.Apply(egCtx, outDir, pr, ctdarchive.WithNoSameOwner())
+		if err != nil {
+			unpackErr := fmt.Errorf("buildkit: unpack tar to %s: %w", outDir, err)
+			pw.CloseWithError(unpackErr)
+			return unpackErr
+		}
+		slog.Info("buildkit: exportAndUnpack: tar unpacked", "outDir", outDir, "bytesWritten", n)
+		return nil
+	})
+
+	// Solve goroutine: calls the user-supplied function that writes the tar stream
+	// into pw. On completion, close pw so Apply's reader sees EOF (or the error).
+	eg.Go(func() error {
+		slog.Debug("buildkit: exportAndUnpack: streaming tar export to unpack goroutine", "outDir", outDir)
+		err := solveFn(egCtx, pw)
+		if err != nil {
+			pw.CloseWithError(err)
+			return err
+		}
+		pw.Close()
+		return nil
+	})
+
+	// Join both goroutines. Returns the first non-nil error from either side,
+	// which includes unpack errors propagated back to the caller.
+	return eg.Wait()
+}
+
 // NewBuildkitClient constructs a [BuildkitClient] that connects to buildkitd
 // at addr on each Solve call. addr must be in the form accepted by
 // github.com/moby/buildkit/client.New, e.g.
@@ -110,6 +357,23 @@ func NewBuildkitClient(addr string) (BuildkitClient, error) {
 		return nil, fmt.Errorf("buildkit: addr is required")
 	}
 	return &realBuildkitClient{addr: addr}, nil
+}
+
+// buildLocalMounts constructs the three LocalMounts entries used by every
+// Solve call, wrapping EVERY FS with the supplied sizeVerifiedSet so that a
+// truncated read on any mount — including the nexus3agent binary (the artifact
+// class that triggered the 32 MiB production truncation) — immediately cancels
+// the Solve context.
+//
+// Keeping the map construction in one place is the regression guard: a future
+// edit that replaces one Wrap call with a raw FS will be caught by
+// TestBuildLocalMounts_AllWrapped in plain `go test`, without a live buildkitd.
+func buildLocalMounts(set *sizeVerifiedSet, ctxFS, dfFS, agentFS fsutil.FS) map[string]fsutil.FS {
+	return map[string]fsutil.FS{
+		"context":     set.Wrap(ctxFS),
+		"dockerfile":  set.Wrap(dfFS),
+		"nexus3agent": set.Wrap(agentFS),
+	}
 }
 
 // Solve implements [BuildkitClient].
@@ -124,10 +388,13 @@ func NewBuildkitClient(addr string) (BuildkitClient, error) {
 //	<content of req.ContainerfileBytes>
 //
 //	# Final layer: bake the nexus3-agent (boot contract: init=/sbin/nexus3-agent)
-//	COPY --chmod=0755 --from=_nexus3_agent _nexus3-agent <req.AgentInstallPath>
+//	COPY --chmod=0755 --from=nexus3agent _nexus3-agent-<nonce> <req.AgentInstallPath>
 //
 // Placing the agent COPY last means an agent version bump only invalidates
 // that single layer; all Containerfile layers above are cache-hits in buildkitd.
+// The <nonce> in the source filename ([newAgentContextFilename]) makes that
+// last layer a deliberate cache MISS on every build, so a corrupt agent layer
+// can never be served from buildkitd's persisted snapshot cache.
 //
 // # Context layout
 //
@@ -150,12 +417,25 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 
 	// Synthesise a combined Dockerfile: user instructions + agent final layer.
 	// The agent COPY uses a named build context (nexus3agent) so the agent
-	// binary does not need to reside in the workspace context.
-	finalLayer := fmt.Sprintf(
-		"\n\n# Final layer: bake the nexus3-agent (boot contract: init=%s)\nCOPY --chmod=0755 --from=nexus3agent %s %s\n",
-		req.AgentInstallPath, agentContextFilename, req.AgentInstallPath,
-	)
-	synthDF := append(append([]byte(nil), req.ContainerfileBytes...), []byte(finalLayer)...)
+	// binary does not need to reside in the workspace context. The source
+	// filename carries a per-Solve nonce so the agent layer is never served
+	// from a stale buildkitd result snapshot — see [newAgentContextFilename].
+	// Small temp dir for the agent binary, used as the "nexus3agent" named
+	// build context. This avoids writing nexus3 internals into the workspace.
+	agentDir, err := os.MkdirTemp("", "nexus3-bkagent-*")
+	if err != nil {
+		return fmt.Errorf("buildkit: create agent dir: %w", err)
+	}
+	defer os.RemoveAll(agentDir)
+	agentFile, err := stageAgentContext(agentDir, req.AgentPath)
+	if err != nil {
+		return err
+	}
+	recipeLayerBytes, err := renderRecipeIfNeeded(req.ContainerfileBytes, req.ToolRecipe, req.TargetArch)
+	if err != nil {
+		return err
+	}
+	synthDF := synthesizeDockerfile(req.ContainerfileBytes, recipeLayerBytes, agentFile, req.AgentInstallPath)
 
 	// Small temp dir for the synthetic Dockerfile only.
 	dfDir, err := os.MkdirTemp("", "nexus3-bkdf-*")
@@ -167,21 +447,6 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 		return fmt.Errorf("buildkit: write Dockerfile: %w", err)
 	}
 
-	// Small temp dir for the agent binary, used as the "nexus3agent" named
-	// build context. This avoids writing nexus3 internals into the workspace.
-	agentDir, err := os.MkdirTemp("", "nexus3-bkagent-*")
-	if err != nil {
-		return fmt.Errorf("buildkit: create agent dir: %w", err)
-	}
-	defer os.RemoveAll(agentDir)
-	agentBytes, err := os.ReadFile(req.AgentPath)
-	if err != nil {
-		return fmt.Errorf("buildkit: read agent binary %s: %w", req.AgentPath, err)
-	}
-	if err := os.WriteFile(filepath.Join(agentDir, agentContextFilename), agentBytes, 0755); err != nil {
-		return fmt.Errorf("buildkit: write agent to agent dir: %w", err)
-	}
-
 	// Wire build context: workspace is passed to buildkitd directly (no
 	// intermediate copy). When WorkspaceDir is empty, fall back to the
 	// Dockerfile dir so COPY instructions that only reference the
@@ -191,39 +456,124 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 		ctxDir = dfDir
 	}
 
-	_, err = bk.Solve(ctx, nil, bkclient.SolveOpt{
-		// LocalDirs is deprecated in favour of LocalMounts, but it remains
-		// fully supported in moby/buildkit v0.18 and its replacement
-		// (fsutil.FS) would add a heavier import for no benefit here.
-		LocalDirs: map[string]string{
-			"context":     ctxDir,
-			"dockerfile":  dfDir,
-			"nexus3agent": agentDir,
-		},
-		FrontendAttrs: map[string]string{
-			// Tell the Dockerfile frontend which file to use.
-			"filename": "Dockerfile",
-			// Register the agent binary dir as a named build context so
-			// the final-layer COPY --from=nexus3agent resolves correctly.
-			"context:nexus3agent": "local:nexus3agent",
-		},
-		Frontend: "dockerfile.v0",
-		Exports: []bkclient.ExportEntry{
-			{
-				Type:      bkclient.ExporterLocal,
-				OutputDir: outDir,
-			},
-		},
-	}, nil)
+	// Build FS handles for the three local build contexts. ctxFS is wrapped
+	// inside the exportAndUnpack closure where the Solve cancel-cause is
+	// available (D-8: see sizedfs.go for the mechanism).
+	ctxFS, err := fsutil.NewFS(ctxDir)
 	if err != nil {
-		return fmt.Errorf("buildkit: solve: %w", err)
+		return fmt.Errorf("buildkit: create context FS: %w", err)
+	}
+	dfFS, err := fsutil.NewFS(dfDir)
+	if err != nil {
+		return fmt.Errorf("buildkit: create dockerfile FS: %w", err)
+	}
+	agentFS, err := fsutil.NewFS(agentDir)
+	if err != nil {
+		return fmt.Errorf("buildkit: create agent FS: %w", err)
 	}
 
-	// Parse the Containerfile directly and write boot.json into the exported
-	// rootfs. This is the authoritative path: it does not depend on buildkitd
-	// version, exporter type, or gateway metadata availability.
-	// Non-fatal: a parse error must never fail the build (rootfs export succeeded).
-	captureBootSpecFromContainerfile(req.ContainerfileBytes, outDir)
+	// Set up an OCI layout export alongside the tar rootfs export so that the
+	// effective (merged) image config — including ENTRYPOINT/CMD/WORKDIR/ENV
+	// inherited from the FROM base image — is available for boot.json generation.
+	// The OCI layout tar is parsed in a goroutine; layer blobs are discarded via
+	// io.Discard so only the small config/manifest blobs are buffered.
+	// D-DC-31: this resolves inherited config that captureBootSpecFromContainerfile
+	// (D-DC-30) could not see, because Dockerfile parse is limited to instructions
+	// declared in the user's .nexus/Containerfile.
+	ociPR, ociPW := io.Pipe()
+	type ociResult struct {
+		cfg   bootspec.OCIImageConfig
+		found bool
+	}
+	ociCh := make(chan ociResult, 1)
+	go func() {
+		cfg, found, _ := parseOCIConfigFromTar(ociPR)
+		ociCh <- ociResult{cfg, found}
+	}()
+
+	// Export via tar exporter + host-side unpack. ExporterTar is fail-closed:
+	// stdlib archive/tar reports a hard error if any entry body is shorter than
+	// its declared size, unlike ExporterLocal (tonistiigi/fsutil sendFile) which
+	// silently produces a truncated file on a short source read.
+	err = exportAndUnpack(ctx, outDir, func(egCtx context.Context, pw io.WriteCloser) error {
+		// solveCtx is cancelled by the first size violation across ANY of the
+		// three local mounts so bk.Solve tears down within seconds (sizedfs.go
+		// explains why the default deadline-wait behaviour masks the fault as a
+		// flaky timeout).  All three mounts share one sizeVerifiedSet so a
+		// truncated read on the nexus3agent binary (the artifact class that
+		// triggered the 32 MiB production truncation) is caught as quickly as
+		// a violation on the build context.
+		solveCtx, cancelCause := context.WithCancelCause(egCtx)
+		defer cancelCause(nil)
+		sfsSet := newSizeVerifiedSet(cancelCause)
+		_, solveErr := bk.Solve(solveCtx, nil, bkclient.SolveOpt{
+			LocalMounts: buildLocalMounts(sfsSet, ctxFS, dfFS, agentFS),
+			FrontendAttrs: map[string]string{
+				// Tell the Dockerfile frontend which file to use.
+				"filename": "Dockerfile",
+				// Register the agent binary dir as a named build context so
+				// the final-layer COPY --from=nexus3agent resolves correctly.
+				"context:nexus3agent": "local:nexus3agent",
+			},
+			Frontend: "dockerfile.v0",
+			Exports: []bkclient.ExportEntry{
+				{
+					// ExporterTar streams the rootfs as a tar archive into pw.
+					// Output is a func returning pw so buildkit can open the
+					// writer after negotiating export metadata with the daemon.
+					Type: bkclient.ExporterTar,
+					Output: func(_ map[string]string) (io.WriteCloser, error) {
+						return pw, nil
+					},
+				},
+				{
+					// ExporterOCI streams the OCI image layout (including the
+					// merged image config blob) into ociPW. The goroutine above
+					// reads ociPR to extract the config; layer blobs are discarded.
+					// Non-fatal: build failure on OCI export is handled below.
+					Type: bkclient.ExporterOCI,
+					Output: func(_ map[string]string) (io.WriteCloser, error) {
+						return ociPW, nil
+					},
+				},
+			},
+		}, nil)
+		// Ensure ociPW is closed so the goroutine unblocks on error.
+		// On success buildkit closes ociPW itself; CloseWithError on a closed
+		// pipe is a no-op (io.Pipe uses sync.Once).
+		if solveErr != nil {
+			ociPW.CloseWithError(solveErr)
+		}
+		// A size violation cancels solveCtx, making solveErr a context error.
+		// Return our descriptive error in preference so the caller sees the
+		// path, got-bytes, and expected-bytes rather than "context canceled".
+		if fsErr := sfsSet.Err(); fsErr != nil {
+			return fmt.Errorf("buildkit: solve: %w", fsErr)
+		}
+		if solveErr != nil {
+			return fmt.Errorf("buildkit: solve: %w", solveErr)
+		}
+		return nil
+	})
+	if err != nil {
+		ociPW.CloseWithError(err) // unblock goroutine if not already closed
+		<-ociCh                   // drain to avoid goroutine leak
+		return err
+	}
+
+	// Collect the OCI config result (goroutine has already received EOF since
+	// bk.Solve closed ociPW before exportAndUnpack returned).
+	ociRes := <-ociCh
+	var ociCfg *bootspec.OCIImageConfig
+	if ociRes.found {
+		cfg := ociRes.cfg
+		ociCfg = &cfg
+	}
+
+	// Write boot.json using the effective OCI config (primary) or the
+	// Containerfile parse (fallback when OCI export was unavailable).
+	// Non-fatal: a missing boot.json must never fail the build.
+	captureBootSpec(req.ContainerfileBytes, ociCfg, outDir)
 
 	return nil
 }
@@ -328,40 +678,24 @@ func captureBootSpecFromContainerfile(containerfileBytes []byte, outDir string) 
 		}
 	}
 
-	ociCfg := bootspec.OCIImageConfig{
+	cfCfg := bootspec.OCIImageConfig{
 		Entrypoint: entrypointArgv,
 		Cmd:        cmdArgv,
 		WorkingDir: workdir,
 		Env:        envPairs,
 	}
-	spec := bootspec.FromOCIImageConfig(ociCfg)
+	spec := bootspec.FromOCIImageConfig(cfCfg)
 	if len(spec.Tasks) == 0 {
 		slog.Debug("buildkit: captureBootSpecFromContainerfile: no entrypoint/cmd declared, skipping boot.json")
 		return
 	}
-
-	specJSON, err := json.Marshal(spec)
-	if err != nil {
-		slog.Warn("buildkit: captureBootSpecFromContainerfile: failed to marshal boot spec, skipping boot.json", "err", err)
-		return
-	}
-
-	bootJSONPath := filepath.Join(outDir, "etc", "nexus3", "boot.json")
-	if err := os.MkdirAll(filepath.Dir(bootJSONPath), 0755); err != nil {
-		slog.Warn("buildkit: captureBootSpecFromContainerfile: failed to create boot.json parent dirs, skipping", "err", err)
-		return
-	}
-	if err := os.WriteFile(bootJSONPath, specJSON, 0644); err != nil {
-		slog.Warn("buildkit: captureBootSpecFromContainerfile: failed to write boot.json, skipping", "err", err)
-		return
-	}
-	slog.Info("buildkit: captureBootSpecFromContainerfile: wrote boot.json", "path", bootJSONPath, "tasks", len(spec.Tasks))
+	writeBootJSON(spec, outDir, "Containerfile")
 }
 
 // copyDirIntoContext recursively copies all files from src into dst, preserving
 // relative paths. Symlinks are resolved; if a symlink target escapes src (i.e.
 // its real path is not rooted at src), the symlink is skipped to prevent
-// workspace-escape attacks. Reserved filenames (Dockerfile, agentContextFilename)
+// workspace-escape attacks. Reserved filenames (Dockerfile, agentContextFilenamePrefix)
 // are not skipped here — the caller overwrites them after this function returns.
 func copyDirIntoContext(src, dst string) error {
 	// Resolve src to a canonical path for escape detection.

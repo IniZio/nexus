@@ -27,6 +27,7 @@ package service
 import (
 	"context"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
@@ -67,7 +68,16 @@ func TestD2_DirVolumeLeaseHeldAcrossStoreCreate(t *testing.T) {
 	var result hookResult
 	var hookRan bool
 
-	cleanup := SetHookBeforeStoreCreate(func() error {
+	// fires counts every hook invocation. The hook is scoped to svc, so only
+	// this test's own CreateAndBoot can fire it; a parallel peer in this
+	// package (TestNamedVolume_DeviceLetterOrder, TestNamedVolume_ABBADeadlock)
+	// drives its own Service and must not. Asserting fires == 1 is what keeps
+	// that scoping honest: while the hook was a package var this counter
+	// reached 3 once the window was widened.
+	var fires atomic.Int64
+
+	cleanup := SetHookBeforeStoreCreate(svc, func() error {
+		fires.Add(1)
 		hookRan = true
 		res, pruneErr := vs.Prune(ctx, st, volumestore.PruneOptions{
 			Apply:           true,
@@ -100,6 +110,9 @@ func TestD2_DirVolumeLeaseHeldAcrossStoreCreate(t *testing.T) {
 	// detected via result.detachedDeleted below, independent of createErr.
 	_ = createErr
 
+	if n := fires.Load(); n != 1 {
+		t.Errorf("D2 hook fired %d times, want exactly 1 — a create this test did not drive fired its hook (hook not scoped to svc)", n)
+	}
 	if !hookRan {
 		t.Fatal("D2 hook did not fire — seam not wired or CreateAndBoot returned before reaching it")
 	}

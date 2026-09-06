@@ -77,6 +77,12 @@ type AllowList struct {
 	// time a destination host shows up in the denial ledger. Set it before
 	// Start; it must not block.
 	OnDenial func(Denial)
+
+	// OnEgress, if non-nil, is called (without the lock held) for every
+	// egress verdict — both allow and deny. host is the destination hostname
+	// or bare IP, verdict is "allow" or "deny", reason is a short
+	// human-readable explanation. Set it before Start; it must not block.
+	OnEgress func(host, verdict, reason string, ts time.Time)
 }
 
 // Denial is one aggregated record of refused outbound connections to a single
@@ -274,6 +280,24 @@ func (al *AllowList) SetPolicy(ips, cidrs, domains []string) error {
 	return nil
 }
 
+// AddDomain atomically appends domain to the custom block's AllowDomains without
+// replacing existing entries, then kicks a DNS refresh so the new host's IPs are
+// resolved promptly. domain must be non-empty; the format matches AllowDomains
+// (exact hostname or "*.example.com" wildcard). Returns an error only when the
+// chain recompile fails (malformed pattern).
+func (al *AllowList) AddDomain(domain string) error {
+	al.mu.Lock()
+	err := al.mutateCustomLocked(func(b *Block) {
+		b.AllowDomains = append(slices.Clone(b.AllowDomains), domain)
+	})
+	al.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	al.kickRefresh()
+	return nil
+}
+
 // Allow reports whether addr (in "host:port" form, or a bare IP) is allowed.
 // Returns a descriptive error when rejected to aid debugging; every rejection
 // is also recorded in the denial ledger, attributed to the DNS name the guest
@@ -307,7 +331,14 @@ func (al *AllowList) Allow(addr string) error {
 	_, observed := al.observed[ip]
 	al.mu.RUnlock()
 
+	// displayHost is the hostname when known from DNS, else the bare IP.
+	displayHost := name
+	if displayHost == "" {
+		displayHost = host
+	}
+
 	if bypass {
+		al.emitEgress(displayHost, "allow", "open egress bypass")
 		return nil
 	}
 
@@ -327,12 +358,14 @@ func (al *AllowList) Allow(addr string) error {
 		case VerdictDeny:
 			return al.deny(ip, port, &m)
 		case VerdictAllow:
+			al.emitEgress(displayHost, "allow", "allowed by domain policy")
 			return nil
 		}
 	}
 
 	// Explicit grants — a decision that allowed this IP.
 	if granted {
+		al.emitEgress(displayHost, "allow", "runtime grant")
 		return nil
 	}
 
@@ -341,6 +374,7 @@ func (al *AllowList) Allow(addr string) error {
 	case VerdictDeny:
 		return al.deny(ip, port, &m)
 	case VerdictAllow:
+		al.emitEgress(displayHost, "allow", "allowed by ip policy")
 		return nil
 	}
 
@@ -348,11 +382,19 @@ func (al *AllowList) Allow(addr string) error {
 	// allowed names and resolver-refreshed apex IPs. Only reached when no
 	// chain rule and no grant had an opinion.
 	if observed || inResolved {
+		al.emitEgress(displayHost, "allow", "dns-observed")
 		return nil
 	}
 
 	// Nothing allowed this destination — fail closed.
 	return al.deny(ip, port, nil)
+}
+
+// emitEgress fires OnEgress if it is set. It is called without any lock held.
+func (al *AllowList) emitEgress(host, verdict, reason string) {
+	if al.OnEgress != nil {
+		al.OnEgress(host, verdict, reason, al.now())
+	}
 }
 
 // deny folds the refused SYN into the ledger and returns a descriptive error.
@@ -366,6 +408,7 @@ func (al *AllowList) deny(ip netip.Addr, port string, m *Match) error {
 		reason = "blocked by deny list"
 	}
 	d := al.recordDenial(ip, port, rule)
+	al.emitEgress(d.Host, "deny", reason)
 	if d.Host == d.IP {
 		return fmt.Errorf("destination %s %s", ip, reason)
 	}

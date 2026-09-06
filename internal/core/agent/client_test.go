@@ -278,7 +278,14 @@ func TestCopy_PullRoundTripsArchive(t *testing.T) {
 	td := newTestDialer()
 	startGRPCServer(t, td.controlLis, &testAgentServer{
 		copyFn: func(_ *agentpb.CopyRequest) (*agentpb.CopyResponse, error) {
-			return &agentpb.CopyResponse{TransferId: transferID}, nil
+			// DeclaredBytes mirrors what the real agent returns after stat-ing
+			// the guest file — required by the host's fail-closed nil guard.
+			// Use proto3 optional pointer to distinguish declared-0 from absent.
+			n := int64(len(archiveData))
+			return &agentpb.CopyResponse{
+				TransferId:    transferID,
+				DeclaredBytes: &n,
+			}, nil
 		},
 	})
 

@@ -42,6 +42,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
@@ -106,6 +107,29 @@ func (e *ErrDigestMismatch) Error() string {
 type Cache struct {
 	root string
 	mu   sync.Mutex // serialises Prune to prevent concurrent scans from racing on removal
+
+	// pinMu guards pins. pins holds one refcounted flock per digest this
+	// process has written; see Pin.
+	pinMu sync.Mutex
+	pins  map[domain.Digest]*pinEntry
+}
+
+// pinEntry is a held lease plus its in-process reference count. flock locks
+// attach to the open file description, so two independent opens in the SAME
+// process conflict with each other. Refcounting one shared descriptor is what
+// lets Put and an outer caller pin the same digest without self-deadlock.
+//
+// inflight counts Put calls currently streaming into the entry directory. It
+// separates the two states a pin can guard:
+//
+//   - inflight > 0 — the directory is being written; nobody may remove it.
+//   - inflight == 0 — the entry is committed but not yet referenced by any
+//     sandbox record; no OTHER process may remove it, but this process may,
+//     because a caller pruning here knows its own bookkeeping.
+type pinEntry struct {
+	lease    *entryLease
+	n        int
+	inflight int
 }
 
 // NewCache creates or opens a Cache rooted at root.
@@ -114,7 +138,7 @@ func NewCache(root string) (*Cache, error) {
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return nil, fmt.Errorf("image cache: init root %s: %w", root, err)
 	}
-	return &Cache{root: root}, nil
+	return &Cache{root: root, pins: make(map[domain.Digest]*pinEntry)}, nil
 }
 
 func (c *Cache) entryDir(d domain.Digest) string {
@@ -127,6 +151,190 @@ func (c *Cache) artifactPath(d domain.Digest) string {
 
 func (c *Cache) metaPath(d domain.Digest) string {
 	return filepath.Join(c.entryDir(d), "meta.json")
+}
+
+// leaseDir is the directory holding one lock file per digest. It lives beside
+// sha256/ rather than inside an entry directory: Prune removes entry
+// directories wholesale, so a lease stored inside one would be destroyed by
+// the very removal it exists to prevent.
+func (c *Cache) leasePath(d domain.Digest) string {
+	return filepath.Join(c.root, "locks", d.Algo(), d.Hex()+".lock")
+}
+
+// entryLease is a held flock on a digest's lease file.
+type entryLease struct {
+	f *os.File
+}
+
+func (l *entryLease) release() {
+	if l == nil || l.f == nil {
+		return
+	}
+	_ = syscall.Flock(int(l.f.Fd()), syscall.LOCK_UN)
+	_ = l.f.Close()
+	l.f = nil
+}
+
+// Pin protects d from Prune — in this process and in every other — until the
+// returned release function is called.
+//
+// # Why a pin outlives Put
+//
+// An image is unreferenced from the moment its bytes start streaming until
+// something records it: a sandbox record, or the caller's own pin list. Prune
+// computes its keep-set from sandbox records plus explicitly pinned extras, so
+// a freshly written image belonging to a DIFFERENT process is, correctly by
+// that computation, garbage — and was collected. Two windows were observed on
+// three concurrent `nexus3 create --file` builds:
+//
+//	put:   rename artifact-<n>.tmp → artifact: no such file or directory
+//	       (the entry dir was removed mid-stream)
+//	boot:  resolve image: digest sha256:…: image cache: not found
+//	       (the committed artifact was removed before the sandbox record
+//	        referencing it existed)
+//
+// Put therefore takes a pin before creating the entry directory and KEEPS it:
+// releasing at the end of Put would close the first window and leave the
+// second. The pin is released when the process exits, which is the point at
+// which the sandbox record either exists or never will.
+//
+// Pin blocks until the lease is available. Blocking is safe: Prune never
+// blocks on a lease (it probes with LOCK_NB and resolves a held lease to
+// KEEP), so the fact that Put later takes c.mu inside releaseRefFrom while
+// Prune takes c.mu before probing cannot deadlock.
+func (c *Cache) Pin(d domain.Digest) (func(), error) {
+	if !d.Valid() {
+		return nil, fmt.Errorf("image cache: pin: invalid digest %q", d)
+	}
+	c.pinMu.Lock()
+	if c.pins == nil {
+		c.pins = make(map[domain.Digest]*pinEntry)
+	}
+	if p, ok := c.pins[d]; ok {
+		p.n++
+		c.pinMu.Unlock()
+		return c.releaseFunc(d), nil
+	}
+	c.pinMu.Unlock()
+
+	// Acquire outside pinMu: flock can block, and holding pinMu across it
+	// would stall unrelated digests.
+	lease, err := c.acquireLease(d)
+	if err != nil {
+		return nil, err
+	}
+
+	c.pinMu.Lock()
+	defer c.pinMu.Unlock()
+	if p, ok := c.pins[d]; ok {
+		// Another goroutine won the race; drop our duplicate descriptor.
+		lease.release()
+		p.n++
+		return c.releaseFunc(d), nil
+	}
+	c.pins[d] = &pinEntry{lease: lease, n: 1}
+	return c.releaseFunc(d), nil
+}
+
+// markInflight adjusts the in-flight stream count for d by delta.
+func (c *Cache) markInflight(d domain.Digest, delta int) {
+	c.pinMu.Lock()
+	defer c.pinMu.Unlock()
+	if p, ok := c.pins[d]; ok {
+		p.inflight += delta
+	}
+}
+
+// ownedPin reports whether this Cache holds a pin for d and, if so, whether a
+// Put is currently streaming into it.
+func (c *Cache) ownedPin(d domain.Digest) (owned, inflight bool) {
+	c.pinMu.Lock()
+	defer c.pinMu.Unlock()
+	p, ok := c.pins[d]
+	if !ok {
+		return false, false
+	}
+	return true, p.inflight > 0
+}
+
+// Close releases every pin this Cache holds. A process that exits does this
+// implicitly when the kernel closes its descriptors; Close exists for
+// long-lived processes and tests that must hand their images over to a
+// subsequent Prune.
+//
+// After Close the Cache remains usable — a later Put simply takes a fresh pin.
+func (c *Cache) Close() error {
+	c.pinMu.Lock()
+	defer c.pinMu.Unlock()
+	for d, p := range c.pins {
+		p.lease.release()
+		delete(c.pins, d)
+	}
+	return nil
+}
+
+// releaseFunc returns an idempotent releaser for one reference on d's pin.
+func (c *Cache) releaseFunc(d domain.Digest) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			c.pinMu.Lock()
+			defer c.pinMu.Unlock()
+			p, ok := c.pins[d]
+			if !ok {
+				return
+			}
+			p.n--
+			if p.n <= 0 {
+				p.lease.release()
+				delete(c.pins, d)
+			}
+		})
+	}
+}
+
+// acquireLease blocks until it holds the exclusive in-flight lease for d.
+func (c *Cache) acquireLease(d domain.Digest) (*entryLease, error) {
+	path := c.leasePath(d)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, fmt.Errorf("image cache: lease: mkdir %s: %w", filepath.Dir(path), err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("image cache: lease: open %s: %w", path, err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("image cache: lease: flock %s: %w", path, err)
+	}
+	return &entryLease{f: f}, nil
+}
+
+// tryAcquireLease attempts a non-blocking acquisition of d's lease.
+//
+// It returns (nil, nil) when the lease is currently held by another writer —
+// the caller must treat that as "in flight, KEEP". A missing lease file means
+// no writer has ever leased this digest (a pre-lease entry, or one whose lease
+// was cleaned up), which is free.
+func (c *Cache) tryAcquireLease(d domain.Digest) (*entryLease, error) {
+	path := c.leasePath(d)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// Lease directory absent: no writer has ever leased a digest here.
+			return &entryLease{}, nil
+		}
+		return nil, fmt.Errorf("image cache: lease: open %s: %w", path, err)
+	}
+	if flockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); flockErr != nil {
+		_ = f.Close()
+		if errors.Is(flockErr, syscall.EWOULDBLOCK) || errors.Is(flockErr, syscall.EAGAIN) {
+			return nil, nil // held by an in-flight Put
+		}
+		// Unexpected flock error: cannot verify state. Ambiguity resolves to KEEP.
+		return nil, nil
+	}
+	return &entryLease{f: f}, nil
 }
 
 // Put stores the content from r as the artifact for img.Digest.
@@ -149,8 +357,32 @@ func (c *Cache) Put(ctx context.Context, img domain.Image, r io.Reader) error {
 		return fmt.Errorf("image cache: put: invalid kind %v", img.Kind)
 	}
 
-	// Fast path: artifact already present means this digest is fully committed.
+	// Pin BEFORE creating the entry directory, and keep the pin after a
+	// successful Put. Between MkdirAll and the final rename the entry carries
+	// neither artifact nor meta.json, and after the rename it stays
+	// unreferenced until the caller records it — a concurrent Prune would
+	// collect it in either window. See Pin for the two observed failures.
+	unpin, err := c.Pin(img.Digest)
+	if err != nil {
+		return err
+	}
+	c.markInflight(img.Digest, +1)
+	committed := false
+	defer func() {
+		c.markInflight(img.Digest, -1)
+		// Release only on failure: nothing was committed, so the pin would
+		// otherwise protect an empty directory for the life of the process.
+		if !committed {
+			unpin()
+		}
+	}()
+
+	// Artifact already present means this digest is fully committed — by an
+	// earlier call or by another process while we waited for the pin. Keep the
+	// pin: the caller is about to use this digest and must not race a
+	// concurrent Prune to it.
 	if _, err := os.Stat(c.artifactPath(img.Digest)); err == nil {
+		committed = true
 		return nil
 	}
 
@@ -199,7 +431,8 @@ func (c *Cache) Put(ctx context.Context, img domain.Image, r io.Reader) error {
 	if err := syncDir(dir); err != nil {
 		return fmt.Errorf("image cache: put: %w", err)
 	}
-	success = true // artifact is durable; meta failure is recoverable
+	success = true   // artifact is durable; meta failure is recoverable
+	committed = true // keep the pin: the entry exists but nothing references it yet
 
 	createdAt := img.CreatedAt
 	if createdAt.IsZero() {
@@ -340,7 +573,21 @@ func (c *Cache) List(_ context.Context) ([]domain.Image, error) {
 // No automatic eviction occurs outside of an explicit Prune call.
 //
 // Prune holds an internal mutex for its duration so that concurrent Prune
-// calls do not race on directory enumeration and removal.
+// calls in THIS process do not race on directory enumeration and removal.
+// That mutex says nothing about other processes, and concurrent `nexus3
+// create --file` builds are separate processes: cross-process exclusion is
+// the per-digest lease, probed below.
+//
+// # In-flight entries are never collected
+//
+// An entry being written by a concurrent Put has neither artifact nor
+// meta.json yet, and nothing can reference an image that does not exist, so it
+// is always a prune candidate by the referenced-set test alone. Before
+// removing a candidate, Prune probes its lease non-blockingly; a held lease
+// means a Put is streaming into that directory and the entry is KEPT.
+// Without this, one build's post-build GC deleted another build's entry
+// directory out from under its rename, and the losing build failed with
+// "put: rename artifact: … no such file or directory".
 func (c *Cache) Prune(_ context.Context, referenced []domain.Digest) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -371,9 +618,52 @@ func (c *Cache) Prune(_ context.Context, referenced []domain.Digest) (int, error
 		if _, keep := refSet[d]; keep {
 			continue
 		}
+		// Decide whether a writer owns this entry.
+		//
+		// ORDER MATTERS: ownedPin must be consulted BEFORE tryAcquireLease.
+		// flock attaches to the open file description, so this process probing
+		// its own pin through a second descriptor conflicts with itself — the
+		// probe would report "held by someone else" for every digest this
+		// Cache wrote, and a blocking variant would deadlock outright.
+		var lease *entryLease
+		if owned, inflight := c.ownedPin(d); owned {
+			// This Cache pinned it. A Put still streaming must not be
+			// disturbed; a committed one may be collected, because a caller
+			// pruning in this process knows what it wrote.
+			if inflight {
+				continue
+			}
+		} else {
+			// Not ours: probe the lease. Held (lease == nil) means another
+			// process is writing or has written and not yet recorded it.
+			// Ambiguity resolves to KEEP.
+			var leaseErr error
+			lease, leaseErr = c.tryAcquireLease(d)
+			if leaseErr != nil {
+				return removed, leaseErr
+			}
+			if lease == nil {
+				continue
+			}
+		}
 		if err := os.RemoveAll(filepath.Join(algoDir, e.Name())); err != nil {
+			lease.release()
 			return removed, fmt.Errorf("image cache: prune: remove %s: %w", d, err)
 		}
+		// DO NOT unlink the lease file here, however tidy it looks.
+		//
+		// flock protects an INODE, not a path. A writer parked in
+		// Flock(LOCK_EX) has already opened inode I; unlinking the path does
+		// not wake it, and it goes on to hold the lock on the now-anonymous
+		// inode. The next tryAcquireLease O_CREATEs a DIFFERENT inode, takes
+		// an uncontended lock on it, classifies the entry as free, and
+		// RemoveAll's a directory that a live Put is streaming into — exactly
+		// the bug this lease exists to prevent, reintroduced by the cleanup.
+		//
+		// Lease files are empty and there is at most one per digest ever
+		// written on this host, so they cost inodes and nothing else. Leaving
+		// them is the correct steady state, not a leak.
+		lease.release()
 		removed++
 	}
 	return removed, nil

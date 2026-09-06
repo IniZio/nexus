@@ -24,6 +24,8 @@ const (
 	AgentService_SessionStatus_FullMethodName = "/nexus3.agent.v1.AgentService/SessionStatus"
 	AgentService_ListSessions_FullMethodName  = "/nexus3.agent.v1.AgentService/ListSessions"
 	AgentService_Copy_FullMethodName          = "/nexus3.agent.v1.AgentService/Copy"
+	AgentService_AgentInfo_FullMethodName     = "/nexus3.agent.v1.AgentService/AgentInfo"
+	AgentService_RestartAgent_FullMethodName  = "/nexus3.agent.v1.AgentService/RestartAgent"
 )
 
 // AgentServiceClient is the client API for AgentService service.
@@ -52,6 +54,13 @@ type AgentServiceClient interface {
 	// side-channel identified by the returned transfer_id.
 	// The agent archives directories itself (no guest tar).
 	Copy(ctx context.Context, in *CopyRequest, opts ...grpc.CallOption) (*CopyResponse, error)
+	// AgentInfo returns the agent's build tag for version comparison.
+	AgentInfo(ctx context.Context, in *AgentInfoRequest, opts ...grpc.CallOption) (*AgentInfoResponse, error)
+	// RestartAgent initiates a hot-swap of the in-guest binary via
+	// syscall.Exec.  See RestartAgentRequest for the full protocol.
+	// The RPC may not return a response — a connection reset means the swap
+	// was initiated; the host should poll Ping then AgentInfo to confirm.
+	RestartAgent(ctx context.Context, in *RestartAgentRequest, opts ...grpc.CallOption) (*RestartAgentResponse, error)
 }
 
 type agentServiceClient struct {
@@ -112,6 +121,26 @@ func (c *agentServiceClient) Copy(ctx context.Context, in *CopyRequest, opts ...
 	return out, nil
 }
 
+func (c *agentServiceClient) AgentInfo(ctx context.Context, in *AgentInfoRequest, opts ...grpc.CallOption) (*AgentInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AgentInfoResponse)
+	err := c.cc.Invoke(ctx, AgentService_AgentInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) RestartAgent(ctx context.Context, in *RestartAgentRequest, opts ...grpc.CallOption) (*RestartAgentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RestartAgentResponse)
+	err := c.cc.Invoke(ctx, AgentService_RestartAgent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentServiceServer is the server API for AgentService service.
 // All implementations must embed UnimplementedAgentServiceServer
 // for forward compatibility.
@@ -138,6 +167,13 @@ type AgentServiceServer interface {
 	// side-channel identified by the returned transfer_id.
 	// The agent archives directories itself (no guest tar).
 	Copy(context.Context, *CopyRequest) (*CopyResponse, error)
+	// AgentInfo returns the agent's build tag for version comparison.
+	AgentInfo(context.Context, *AgentInfoRequest) (*AgentInfoResponse, error)
+	// RestartAgent initiates a hot-swap of the in-guest binary via
+	// syscall.Exec.  See RestartAgentRequest for the full protocol.
+	// The RPC may not return a response — a connection reset means the swap
+	// was initiated; the host should poll Ping then AgentInfo to confirm.
+	RestartAgent(context.Context, *RestartAgentRequest) (*RestartAgentResponse, error)
 	mustEmbedUnimplementedAgentServiceServer()
 }
 
@@ -162,6 +198,12 @@ func (UnimplementedAgentServiceServer) ListSessions(context.Context, *ListSessio
 }
 func (UnimplementedAgentServiceServer) Copy(context.Context, *CopyRequest) (*CopyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Copy not implemented")
+}
+func (UnimplementedAgentServiceServer) AgentInfo(context.Context, *AgentInfoRequest) (*AgentInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AgentInfo not implemented")
+}
+func (UnimplementedAgentServiceServer) RestartAgent(context.Context, *RestartAgentRequest) (*RestartAgentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RestartAgent not implemented")
 }
 func (UnimplementedAgentServiceServer) mustEmbedUnimplementedAgentServiceServer() {}
 func (UnimplementedAgentServiceServer) testEmbeddedByValue()                      {}
@@ -274,6 +316,42 @@ func _AgentService_Copy_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_AgentInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AgentInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).AgentInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_AgentInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).AgentInfo(ctx, req.(*AgentInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_RestartAgent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RestartAgentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).RestartAgent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_RestartAgent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).RestartAgent(ctx, req.(*RestartAgentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentService_ServiceDesc is the grpc.ServiceDesc for AgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -300,6 +378,14 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Copy",
 			Handler:    _AgentService_Copy_Handler,
+		},
+		{
+			MethodName: "AgentInfo",
+			Handler:    _AgentService_AgentInfo_Handler,
+		},
+		{
+			MethodName: "RestartAgent",
+			Handler:    _AgentService_RestartAgent_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

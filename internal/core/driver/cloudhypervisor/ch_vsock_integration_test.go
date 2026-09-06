@@ -87,8 +87,17 @@ func TestDialGuest_Integration(t *testing.T) {
 	conn, err := drv.DialGuest(dialCtx, id, driver.AgentControlPort)
 	if err != nil {
 		// Acceptable outcomes: CH multiplexer not up yet, or guest has no listener.
+		// "guest agent not yet listening" is the EOF branch of DialGuest
+		// (ch_vsock.go): the AF_UNIX connect to CH's multiplexer SUCCEEDED and
+		// CONNECT was sent, but the guest closed without replying because no
+		// in-guest listener exists. That is outcome (b) above — and it is in
+		// fact the strongest of the acceptable outcomes, since reaching it
+		// proves the multiplexer was live. This case was added to DialGuest
+		// after the test was written; because the integration tag was never
+		// run, nothing noticed the allowlist had gone stale.
 		if strings.Contains(err.Error(), "no such file") ||
 			strings.Contains(err.Error(), "connection refused") ||
+			strings.Contains(err.Error(), "guest agent not yet listening") ||
 			strings.Contains(err.Error(), "NACK") {
 			t.Logf("DialGuest returned expected error (no guest agent yet): %v", err)
 			return

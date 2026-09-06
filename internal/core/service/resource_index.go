@@ -8,6 +8,7 @@ import (
 
 	"github.com/IniZio/nexus3/internal/core/diskname"
 	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/statedir"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
 
@@ -24,6 +25,35 @@ const (
 	KindSocketVSock       ResourceKind = "socket_vsock"
 	KindSocketIID         ResourceKind = "socket_iid"
 	KindBuilderSupervisor ResourceKind = "builder_supervisor"
+
+	// KindDiskScratch identifies the per-sandbox scratch disk image,
+	// <diskDir>/<ULID>-scratch.ext4. Created by CreateAndBoot for workspace
+	// sandboxes (D-SD-01); reclaimed by ReapDiskCopy. ULID-keyed: correlated
+	// against live sandboxes by OwnerID, same as KindDiskRaw / KindDiskWorkspace.
+	// RES-R-005, RES-R-006, RES-R-009, RES-R-012.
+	KindDiskScratch ResourceKind = "disk_scratch"
+
+	// KindSupervisorState identifies a per-sandbox supervisor state directory,
+	// <stateRoot>/supervisors/<ULID>/ (see internal/core/statedir). It holds
+	// spawn.json, supervisor.log, egress-decisions.jsonl and — as of the CA
+	// persistence slice — the MITM CA private key.
+	//
+	// Nothing removed these before Service.Remove learned to (D-HSH-18), so
+	// every host that has ever run nexus3 carries one per sandbox it has ever
+	// created; the reference host had 641 against 1 live sandbox. They are
+	// enumerated here so `nexus3 reap` can collect the pre-existing backlog
+	// through exactly the same classify-then-apply rail as every other kind.
+	KindSupervisorState ResourceKind = "supervisor_state"
+
+	// KindNetnsProcess identifies a LIVE netns-runtime child process
+	// discovered by an independent /proc sweep (see reap.go:
+	// sweepOrphanNetnsProcesses), not by ResourceIndex.List(). Unlike every
+	// other kind, this one has no file on disk to enumerate — a process that
+	// survives cleanup() has, by construction, already had its socket and
+	// disk files removed (ticket 10, ch_2026-08-30). Its Path field carries
+	// the CH API socket path the process reported in its own environ (for
+	// identification/logging), not a file to stat or delete.
+	KindNetnsProcess ResourceKind = "netns_process"
 )
 
 // HostResource is a single resource enumerated directly from the filesystem.
@@ -127,6 +157,18 @@ func (x *ResourceIndex) List() ([]HostResource, error) {
 			}
 			resources = append(resources, HostResource{Kind: KindDiskWorkspace, Path: path, OwnerID: id})
 
+		case strings.HasSuffix(name, "-scratch.ext4"):
+			// Scratch disk (D-SD-01, RES-R-009): sparse image that the guest
+			// reformats as /tmp on every boot. ULID-keyed; correlated the same
+			// way as KindDiskRaw. Must be checked BEFORE diskname.IsShadowDisk
+			// because the shadow-disk matcher also accepts arbitrary .ext4 names.
+			stem := strings.TrimSuffix(name, "-scratch.ext4")
+			id, err := domain.ParseSandboxID(stem)
+			if err != nil {
+				continue
+			}
+			resources = append(resources, HostResource{Kind: KindDiskScratch, Path: path, OwnerID: id})
+
 		case strings.HasSuffix(name, shadowIntentSuffix):
 			// Shadow intent: published before any shadow disk for this handle
 			// is materialised, deleted on clean completion. A surviving intent
@@ -215,6 +257,29 @@ func (x *ResourceIndex) List() ([]HostResource, error) {
 		resources = append(resources, HostResource{
 			Kind:    KindBuilderSupervisor,
 			Path:    filepath.Join(bsDir, e.Name()),
+			OwnerID: id,
+		})
+	}
+
+	// ── supervisors/ ─────────────────────────────────────────────────────────
+	// Per-sandbox supervisor state dirs. Same shape as builder-supervisors/
+	// above: one ULID-named directory per sandbox.
+	supDir := statedir.SupervisorsRoot(stateRoot)
+	supEntries, err := os.ReadDir(supDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("resource index: read supervisors dir %s: %w", supDir, err)
+	}
+	for _, e := range supEntries {
+		if !e.IsDir() {
+			continue
+		}
+		id, err := domain.ParseSandboxID(e.Name())
+		if err != nil {
+			continue
+		}
+		resources = append(resources, HostResource{
+			Kind:    KindSupervisorState,
+			Path:    filepath.Join(supDir, e.Name()),
 			OwnerID: id,
 		})
 	}

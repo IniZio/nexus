@@ -66,7 +66,15 @@ func TestBuilderVMSpec_NoEgressField(t *testing.T) {
 // does not introduce an egress or privilege-escalation path.
 //
 // Expected fields: RootfsDiskPath, ContextDiskPath, ArtifactDiskPath,
-// CacheDisks, VCPUs, MemoryMiB.
+// CacheDisks, VCPUs, MemoryMiB, ToolRecipe, TargetArch.
+//
+// ToolRecipe and TargetArch (S7): carry only the agent tooling install recipe
+// (downloaded tarballs declared in the profile, pinned by SHA-256) and the
+// host CPU arch string. Neither opens an egress path — the egress allowlist
+// remains frozen on the Envelope at sandbox create time, independent of the
+// builder VM. The recipe is forwarded from the profile to the SolveRequest
+// inside the builder VM so renderRecipeIfNeeded can emit the install layer;
+// it contains no host secrets and grants no additional network access.
 func TestBuilderVMSpec_Fields(t *testing.T) {
 	want := map[string]bool{
 		"RootfsDiskPath":   true,
@@ -75,6 +83,9 @@ func TestBuilderVMSpec_Fields(t *testing.T) {
 		"CacheDisks":       true,
 		"VCPUs":            true,
 		"MemoryMiB":        true,
+		// S7: agent tool install recipe — see comment above.
+		"ToolRecipe": true,
+		"TargetArch": true,
 	}
 
 	rt := reflect.TypeOf(builder.BuilderVMSpec{})

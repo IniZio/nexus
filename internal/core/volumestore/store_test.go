@@ -283,6 +283,59 @@ func TestNameValidation(t *testing.T) {
 	}
 }
 
+// ── UpdateSizeBytes ──────────────────────────────────────────────────────────
+
+// TestUpdateSizeBytes_updatesRecord verifies that UpdateSizeBytes persists the
+// new logical size to the volume record and Get returns it.
+//
+// MUTATION PROOF (record update): removing the writeRecord call inside
+// UpdateSizeBytes causes Get to return the original SizeBytes, failing the
+// assertion below.
+func TestUpdateSizeBytes_updatesRecord(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	const origSize = 10 * 1024 * 1024 * 1024 // 10 GiB
+	const grownSize = 26 * 1024 * 1024 * 1024 // 26 GiB (after +16 GiB grow step)
+
+	_, err := s.Create(ctx, "docker-vol", volumestore.KindDisk, origSize, "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	rec, err := s.Get("docker-vol")
+	if err != nil {
+		t.Fatalf("Get before update: %v", err)
+	}
+	if rec.SizeBytes != origSize {
+		t.Fatalf("initial SizeBytes = %d, want %d", rec.SizeBytes, origSize)
+	}
+
+	if err := s.UpdateSizeBytes(ctx, "docker-vol", grownSize); err != nil {
+		t.Fatalf("UpdateSizeBytes: %v", err)
+	}
+
+	rec, err = s.Get("docker-vol")
+	if err != nil {
+		t.Fatalf("Get after update: %v", err)
+	}
+	if rec.SizeBytes != grownSize {
+		t.Errorf("SizeBytes after grow = %d, want %d — UpdateSizeBytes did not persist the new size",
+			rec.SizeBytes, grownSize)
+	}
+}
+
+// TestUpdateSizeBytes_goneIsNoOp verifies that UpdateSizeBytes returns nil when
+// the named volume does not exist (sandbox removed before the governor's hook ran).
+func TestUpdateSizeBytes_goneIsNoOp(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	// Volume was never created — must not error.
+	if err := s.UpdateSizeBytes(ctx, "nonexistent-vol", 1<<30); err != nil {
+		t.Errorf("UpdateSizeBytes on absent volume = %v, want nil", err)
+	}
+}
+
 // ── Acceptance criterion 4 helper — used by go list -deps test ──────────────
 // (No-op function whose import ensures this test file compiles only if
 // volumestore compiles without importing internal/core/service.)

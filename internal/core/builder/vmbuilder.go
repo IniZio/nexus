@@ -2,9 +2,11 @@ package builder
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
 	"github.com/IniZio/nexus3/internal/core/perimeter/netstack"
 )
@@ -192,6 +195,15 @@ func BuildInVM(
 	// ── 1. Boot the builder VM ────────────────────────────────────────────────
 	instanceID, startErr := drv.Start(ctx, driver.StartRequest{SandboxID: id})
 	if startErr != nil {
+		// The cache disks were never attached to the VM, so no guest writes
+		// could be in flight. The dirty markers set by ensureCacheDiskAt are
+		// a false alarm — clear them so the next build can reuse warm cache
+		// rather than wiping a healthy disk.
+		for _, cd := range spec.CacheDisks {
+			if err := markCacheDiskClean(cd.ImagePath); err != nil {
+				log.Printf("builder vm: clear dirty marker after start failure %s: %v", cd.ImagePath, err)
+			}
+		}
 		return "", fmt.Errorf("builder vm: start: %w", startErr)
 	}
 	started = true
@@ -264,6 +276,15 @@ func BuildInVM(
 	// connections. Attempting the exec RPC before the listener is up causes an
 	// immediate EOF. Poll until the agent is reachable or the context expires.
 	if waitErr := waitForBuilderAgent(ctx, drv, id); waitErr != nil {
+		// The cache disks were attached to the VMM but the guest agent never
+		// responded — no build commands were issued, so no cache writes could
+		// be pending. Clear the dirty markers so the next build reuses the
+		// warm disk instead of wiping it.
+		for _, cd := range spec.CacheDisks {
+			if err := markCacheDiskClean(cd.ImagePath); err != nil {
+				log.Printf("builder vm: clear dirty marker after agent wait failure %s: %v", cd.ImagePath, err)
+			}
+		}
 		return "", fmt.Errorf("builder vm: wait for agent: %w", waitErr)
 	}
 
@@ -272,11 +293,41 @@ func BuildInVM(
 	// (internal/core/agent/builder_role_linux.go) mounts /dev/vdb, starts
 	// buildkitd, solves the Containerfile, writes the rootfs ext4 to /dev/vdc,
 	// then calls syscall.Sync(). The exec blocks until the role completes.
-	buildErr := guestBuild(ctx, execFn, spec.CacheDisks)
+	buildErr := guestBuild(ctx, execFn, spec.CacheDisks, spec.ToolRecipe, spec.TargetArch)
 
 	// ── 3. Sync + Stop — always, even when build failed ───────────────────────
-	tearErr := lc.SyncAndStop(ctx)
+	tearErr := lc.SyncAndStop()
 	started = false // prevent double-stop in the defer above
+
+	// ── 3.5. Clear the cache-disk fencing marker on confirmed clean sync ──────
+	// Both conditions must hold before the marker is cleared:
+	//
+	//   tearErr == nil  — the guest "sync" exec returned exit 0 AND the VMM
+	//                     stopped cleanly: a positive confirmation that every
+	//                     attached cache disk's writes reached the host.
+	//
+	//   ctx.Err() == nil — the caller's context was NOT cancelled. This is
+	//                      required because lc.SyncAndStop() deliberately runs
+	//                      guestSync on context.Background() (not on the
+	//                      caller's ctx), so tearErr alone cannot witness
+	//                      caller cancellation. When ctx is cancelled (create-
+	//                      timeout expiry or Ctrl-C), the guest may still be
+	//                      mid-write when the sync runs; even if sync returns
+	//                      exit 0 the flush is not trustworthy. Ratified
+	//                      operator decision D-4: "safety wins, a cancelled
+	//                      create may go cold."
+	//
+	// This runs regardless of buildErr: a failed build can still have flushed
+	// valid, crash-consistent cache state. If either condition fails the
+	// marker is left set, and the next lease wipes the disk instead of
+	// risking a poisoned reuse.
+	if tearErr == nil && ctx.Err() == nil {
+		for _, cd := range spec.CacheDisks {
+			if err := markCacheDiskClean(cd.ImagePath); err != nil {
+				log.Printf("builder vm: mark cache disk clean %s: %v", cd.ImagePath, err)
+			}
+		}
+	}
 
 	if buildErr != nil {
 		return "", fmt.Errorf("builder vm: in-guest build: %w", wrapOutOfSpaceErr(buildErr))
@@ -330,7 +381,13 @@ func waitForBuilderAgent(ctx context.Context, drv driver.GuestDialer, id domain.
 // appended so that RunBuilderRole mounts them before starting buildkitd.
 // Device names are /dev/vdd, /dev/vde, ... (cache disks occupy ExtraDisks[2+]
 // = the block device slots after vdb/context and vdc/artifact).
-func guestBuild(ctx context.Context, execFn GuestExecFn, cacheDisks []CacheDiskSpec) error {
+//
+// When recipe has non-empty Packages, it is JSON-serialised and appended as
+// "--tool-recipe=<json>" so that RunBuilderRole forwards it to the
+// SolveRequest's ToolRecipe field inside the VM. "--target-arch=<arch>" is
+// appended alongside it. Both args are omitted when recipe.Packages is empty
+// so that zero-recipe builds produce no spurious cmdline token.
+func guestBuild(ctx context.Context, execFn GuestExecFn, cacheDisks []CacheDiskSpec, recipe cred.ToolRecipe, targetArch string) error {
 	var stderr sbuilder
 	argv := []string{agentInstallPath, "--builder-role"}
 	for i, cd := range cacheDisks {
@@ -338,6 +395,16 @@ func guestBuild(ctx context.Context, execFn GuestExecFn, cacheDisks []CacheDiskS
 		// 'd' + 0 = 'd' (vdd), 'd' + 1 = 'e' (vde), etc.
 		dev := fmt.Sprintf("/dev/vd%c", 'd'+i)
 		argv = append(argv, fmt.Sprintf("--cache-disk=%s:%s", dev, cd.MountPath))
+	}
+	if len(recipe.Packages) > 0 {
+		recipeJSON, err := json.Marshal(recipe)
+		if err != nil {
+			return fmt.Errorf("guestBuild: marshal tool recipe: %w", err)
+		}
+		argv = append(argv,
+			"--tool-recipe="+string(recipeJSON),
+			"--target-arch="+targetArch,
+		)
 	}
 	exitCode, err := execFn(ctx, argv, &stderr)
 	if err != nil {
@@ -348,6 +415,27 @@ func guestBuild(ctx context.Context, execFn GuestExecFn, cacheDisks []CacheDiskS
 	}
 	if exitCode != 0 {
 		return fmt.Errorf("builder role exited %d: %s", exitCode, stderr.String())
+	}
+
+	// Manifest-channel (mechanism a): forward the collected in-guest stderr
+	// to the host log on the success path.
+	//
+	// The in-guest logRootfsSizeManifest call (buildkit_linux.go) emits
+	// rootfs-size-manifest lines BEFORE the integrity gates; they arrive here
+	// via the vsock exec pipe into the sbuilder buffer, but guestBuild
+	// previously discarded that buffer on success. Forwarding it lets
+	// ParseManifestStageA (internal/test/repro/probes.go) produce real per-file
+	// probes on a successful build.
+	//
+	// The sentinel line "manifest-channel: active" lets ParseManifestStageA
+	// distinguish two cases that both produce no manifest data entries:
+	//   - channel active, logRootfsSizeManifest suppressed → HarnessIntegrityFailure
+	//   - channel not deployed (old binary, or build failed) → not_collected
+	//
+	// W29 owns internal/core/builder/buildkit.go; this file does not overlap.
+	log.Printf("in-guest build: manifest-channel: active")
+	if s := stderr.String(); s != "" {
+		fmt.Fprint(log.Writer(), s) //nolint:errcheck
 	}
 	return nil
 }
@@ -362,14 +450,22 @@ func guestSync(ctx context.Context, execFn GuestExecFn) error {
 	// Try absolute paths first (avoids exec.LookPath relying on os.Getenv("PATH")
 	// which is empty when nexus3-agent is PID 1).
 	for _, syncBin := range []string{"/bin/sync", "/usr/bin/sync", "sync"} {
-		_, err := execFn(ctx, []string{syncBin}, nil)
-		if err == nil {
-			return nil
-		}
-		// If not found, try the next candidate; otherwise propagate the error.
-		if !isExecNotFound(err) {
+		exitCode, err := execFn(ctx, []string{syncBin}, nil)
+		if err != nil {
+			// If not found, try the next candidate; otherwise propagate the error.
+			if isExecNotFound(err) {
+				continue
+			}
 			return err
 		}
+		if exitCode != 0 {
+			// A non-zero exit from sync means writes did NOT reach the host
+			// (e.g. EIO on the virtio-blk device). Treat this as a hard error
+			// so the caller does NOT clear the dirty marker and serve a poisoned
+			// cache disk as warm.
+			return fmt.Errorf("sync exited %d: data may not have reached host", exitCode)
+		}
+		return nil
 	}
 	return fmt.Errorf("sync: not found in common paths or PATH")
 }

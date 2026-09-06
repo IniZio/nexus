@@ -95,6 +95,17 @@ const (
 	// OutcomeUnchanged means the sandbox required no action (e.g. already
 	// stopped with no running VM, or already in the correct state).
 	OutcomeUnchanged OutcomeKind = "unchanged"
+
+	// OutcomeAdoptable means the VM was found alive (running or paused) but
+	// its recorded supervisor is dead: [supervisor.CheckAndReconcile] found
+	// the persisted (SupervisorPID, SupervisorSock) pair does not answer.
+	// This is the live-VM/dead-supervisor class (AC-8): the sandbox needs a
+	// replacement supervisor, and is reported as such rather than as plainly
+	// running. The stale SupervisorPID/SupervisorSock are cleared from the
+	// record (per CheckAndReconcile's documented caller contract) but the VM
+	// itself is never touched — recovery may adopt, never stop, a live VM
+	// (D-HSH-04).
+	OutcomeAdoptable OutcomeKind = "adoptable"
 )
 
 // SandboxOutcome is the result of recovering a single sandbox.
@@ -122,15 +133,101 @@ type Recoverer struct {
 	drv     driver.Driver
 	mach    lifecycle.Machine
 	diskDir string // durable dir for per-sandbox ext4 copies (S-COW); empty = defaultDiskDir()
+
+	// checkSupervisor determines whether the supervisor recorded as
+	// (pid, sockPath) is alive. nil (the New default) means "not wired" and
+	// the supervisor-liveness cross-check (OutcomeAdoptable, AC-8) is
+	// skipped entirely — recovery falls back to today's record-level-only
+	// behaviour.
+	//
+	// This package deliberately does NOT import internal/supervisor and
+	// default-wire [supervisor.CheckAndReconcile] itself:
+	// internal/core/driver/cloudhypervisor's test package imports
+	// internal/core/recovery (ch_netns_lifecycle_test.go), and
+	// internal/supervisor imports internal/core/driver/cloudhypervisor
+	// (adopt.go) — a direct import here closes that into an import cycle.
+	// The real production callback is wired one layer up, in the CLI
+	// package, which already imports both without cycling. Set with
+	// [Recoverer.WithSupervisorCheck]; the same primitive the orphan-sweep
+	// path uses (signal 0 plus a 500 ms socket dial) so recovery does not
+	// re-derive liveness with a looser check of its own.
+	checkSupervisor func(pid int, sockPath string) (alive bool, err error)
+
+	// spawnAdopt, when wired, is called for every sandbox classified
+	// [OutcomeAdoptable] whose record carries a netns control socket. It
+	// spawns a long-lived replacement supervisor that rebuilds the perimeter
+	// through the surviving netns child (production:
+	// supervisor.SpawnReacquireDetached via the CLI).
+	//
+	// Injected as a callback for the same import-cycle reason as
+	// checkSupervisor: this package must not import internal/supervisor.
+	//
+	// Nil (the New default) means the spawn half is unwired and recovery
+	// only REPORTS the adoptable class, which is the behaviour that shipped
+	// with AC-8. The report is emitted either way — a sandbox that cannot be
+	// spawned against (no control socket, or no spawner) is still surfaced
+	// to the operator rather than silently skipped.
+	spawnAdopt func(sb domain.Sandbox) (ca CAOutcome, err error)
 }
 
-// New constructs a Recoverer backed by the given store and driver.
+// CAOutcome is what a spawned replacement supervisor did with the MITM CA,
+// as REPORTED BY THAT SUPERVISOR — not as guessed by the spawner.
+//
+// This package cannot import internal/supervisor (import cycle), so the
+// supervisor's own outcome type is mapped onto this one by the CLI adapter
+// that owns both imports. The three states are identical and deliberate: the
+// zero value is [CAUnknown], so a spawner that forgets to report, or a
+// supervisor whose outcome could not be read, produces an honest "could not
+// determine" rather than either definite claim.
+type CAOutcome int
+
+const (
+	// CAUnknown means the replacement's CA outcome could not be determined.
+	// It is the zero value so silence is never mistaken for good news.
+	CAUnknown CAOutcome = iota
+
+	// CARecovered means the replacement re-seeded the persisted CA, so the
+	// guest's existing TLS trust survived the recovery.
+	CARecovered
+
+	// CALost means the replacement had to mint a FRESH CA, so in-guest TLS
+	// sessions fail until the guest re-imports it.
+	CALost
+)
+
+// New constructs a Recoverer backed by the given store and driver. The
+// supervisor-liveness cross-check (OutcomeAdoptable) is unwired until the
+// caller supplies one via [Recoverer.WithSupervisorCheck] — see that field's
+// doc comment for why New cannot default-wire it itself.
 func New(st store.Store, drv driver.Driver) *Recoverer {
 	return &Recoverer{
 		st:   st,
 		drv:  drv,
 		mach: lifecycle.New(),
 	}
+}
+
+// WithSupervisorCheck wires the supervisor-liveness primitive used to detect
+// the live-VM/dead-supervisor class (AC-8, OutcomeAdoptable). Production
+// callers (internal/cli) pass [supervisor.CheckAndReconcile]; tests pass a
+// fake to simulate a dead supervisor without a real process and Unix-domain
+// socket. A nil fn (the New default) disables the cross-check.
+func (r *Recoverer) WithSupervisorCheck(fn func(pid int, sockPath string) (bool, error)) *Recoverer {
+	r.checkSupervisor = fn
+	return r
+}
+
+// WithAdoptSpawner wires the spawn half of crash recovery (D-HSH-15,
+// operator-ratified TBR-4: recover adopts AUTOMATICALLY). Production callers
+// (internal/cli) pass a closure over supervisor.SpawnReacquireDetached; tests
+// pass a fake that records invocations without forking a process.
+//
+// Without this, recovery detects the live-VM/dead-supervisor class and stops
+// — which is exactly the gap this leaves: a mechanism with no caller. A nil
+// fn (the New default) preserves that report-only behaviour.
+func (r *Recoverer) WithAdoptSpawner(fn func(sb domain.Sandbox) (ca CAOutcome, err error)) *Recoverer {
+	r.spawnAdopt = fn
+	return r
 }
 
 // WithDiskDir sets the directory where per-sandbox ext4 disk copies are reaped
@@ -215,6 +312,12 @@ func (r *Recoverer) recoverByID(ctx context.Context, id domain.SandboxID) Sandbo
 	// a live Running state between an outside Observe and the lock acquisition,
 	// causing recovery to overwrite a live record with Stopped.
 	// The flock IS the guarantee. Keep Observe inside.
+	// adoptable snapshots the record of a sandbox classified OutcomeAdoptable
+	// so the replacement supervisor can be spawned AFTER the flock is
+	// released. Taken inside the lock because *rec is only valid there.
+	var adoptable domain.Sandbox
+	var haveAdoptable bool
+
 	updateErr := r.st.Update(ctx, id, func(rec *domain.Sandbox) error {
 		// ── Step 1: observe the substrate — first, always ────────────────────
 		// Called first, inside the exclusive flock. Every decision branch below
@@ -237,12 +340,22 @@ func (r *Recoverer) recoverByID(ctx context.Context, id domain.SandboxID) Sandbo
 		switch obs.State {
 		case driver.Running:
 			wrote := r.applyAdopt(rec, domain.Running, obs.InstanceID, &outcome)
-			if !wrote {
+			wroteSup := r.applySupervisorLiveness(rec, &outcome)
+			if outcome.Kind == OutcomeAdoptable {
+				adoptable = *rec
+				haveAdoptable = true
+			}
+			if !wrote && !wroteSup {
 				return errSkipWrite
 			}
 		case driver.Paused:
 			wrote := r.applyAdopt(rec, domain.Paused, obs.InstanceID, &outcome)
-			if !wrote {
+			wroteSup := r.applySupervisorLiveness(rec, &outcome)
+			if outcome.Kind == OutcomeAdoptable {
+				adoptable = *rec
+				haveAdoptable = true
+			}
+			if !wrote && !wroteSup {
 				return errSkipWrite
 			}
 		case driver.Absent:
@@ -265,6 +378,18 @@ func (r *Recoverer) recoverByID(ctx context.Context, id domain.SandboxID) Sandbo
 			return SandboxOutcome{ID: id, Kind: OutcomeUnchanged, Reason: "sandbox not found; may have been deleted concurrently"}
 		}
 		return SandboxOutcome{ID: id, Kind: OutcomeIndeterminate, Reason: fmt.Sprintf("lock or write error: %v", updateErr)}
+	}
+
+	// ── Spawn the replacement supervisor for an adoptable sandbox ─────────
+	//
+	// IMPORTANT: this is OUTSIDE the store.Update callback, and must stay
+	// there. RunReacquire resolves the sandbox and writes its own supervisor
+	// identity via store.Update; the per-sandbox flock is non-recursive, so
+	// spawning from inside the callback would deadlock against the lock this
+	// very function holds — and because the spawner waits for the replacement
+	// to report ready, it would deadlock until timeout rather than fail fast.
+	if haveAdoptable {
+		r.spawnReplacement(adoptable, &outcome)
 	}
 
 	// Stop and Delete are called outside the lock because they also acquire the
@@ -377,6 +502,69 @@ func (r *Recoverer) applyAdopt(rec *domain.Sandbox, observed domain.State, insta
 	rec.StopReason = "" // cleared: VM is alive; StopReason only qualifies stopped
 
 	*out = SandboxOutcome{ID: rec.ID, Kind: OutcomeAdopted, Reason: reason}
+	return true
+}
+
+// applySupervisorLiveness cross-checks the sandbox's persisted supervisor
+// identity against the live substrate and reclassifies a healthy-VM outcome
+// as [OutcomeAdoptable] when the VM is alive but its supervisor is not (AC-8:
+// the live-VM/dead-supervisor class).
+//
+// Called after [Recoverer.applyAdopt], and only takes effect when applyAdopt
+// classified the sandbox as [OutcomeAdopted] — a supervisor cross-check on
+// top of an indeterminate or unresolved state correction would either mask
+// that problem or misreport a sandbox recovery already declined to touch.
+//
+// # Never a false positive (the dangerous direction)
+//
+// A slow-to-answer supervisor is not a dead one — spawning a second
+// supervisor over a live one creates two owners for the same VM, which is
+// worse than the bug this ticket exists to fix. This delegates the liveness
+// verdict entirely to r.checkSupervisor (production:
+// [supervisor.CheckAndReconcile], the same signal-0-plus-500ms-socket-dial
+// primitive the orphan sweep uses, which already treats "PID alive but
+// socket not connectable" as stale rather than live and "PID alive with no
+// recorded socket" as live) rather than re-deriving liveness with a looser
+// check here.
+//
+// Returns true when *rec was mutated (SupervisorPID/SupervisorSock cleared)
+// and must be written.
+func (r *Recoverer) applySupervisorLiveness(rec *domain.Sandbox, out *SandboxOutcome) (wrote bool) {
+	if out.Kind != OutcomeAdopted {
+		return false
+	}
+	if r.checkSupervisor == nil {
+		// Not wired (see the checkSupervisor field doc for why New cannot
+		// default it): the cross-check is a no-op, not a false positive.
+		return false
+	}
+	if rec.SupervisorPID <= 0 {
+		// No supervisor was ever recorded for this sandbox (record predates the
+		// SupervisorPID field). Nothing to cross-check; leave the Adopted outcome.
+		return false
+	}
+	alive, err := r.checkSupervisor(rec.SupervisorPID, rec.SupervisorSock)
+	if err != nil {
+		// Auxiliary check only: a failure here must never downgrade or
+		// mutate an already-correct record-level adoption.
+		out.Reason += fmt.Sprintf(" (supervisor liveness check error: %v; supervisor status not determined)", err)
+		return false
+	}
+	if alive {
+		return false
+	}
+
+	// VM alive (we are inside the OutcomeAdopted branch, so the substrate
+	// reported Running or Paused), supervisor dead: adoptable rather than
+	// plainly running. Clear the stale supervisor identity per
+	// CheckAndReconcile's documented caller contract, so a future Start does
+	// not attempt to reuse a dead pid/socket. The VM itself is left
+	// completely alone (D-HSH-04: recovery may adopt, never stop).
+	prevPID := rec.SupervisorPID
+	rec.SupervisorPID = 0
+	rec.SupervisorSock = ""
+	out.Kind = OutcomeAdoptable
+	out.Reason = fmt.Sprintf("VM %s but supervisor pid %d is dead; sandbox needs a replacement supervisor", rec.State, prevPID)
 	return true
 }
 
@@ -493,6 +681,13 @@ func (r *Recoverer) applyAbsent(rec *domain.Sandbox, out *SandboxOutcome) (wrote
 		}
 		rec.State = tr.NextState
 		rec.StopReason = domain.StopReasonMemoryLost
+		// Clear netns identity fields: the VM is dead; a stale pid must not
+		// reach AdoptNetnsRuntime on a future Start.
+		rec.NetnsChildPID = 0
+		rec.NetnsChildPGID = 0
+		rec.NetnsChildStartTime = 0
+		rec.GuestTapName = ""
+		rec.CHAPISocket = ""
 		*out = SandboxOutcome{
 			ID:   rec.ID,
 			Kind: OutcomeResolvedStopped,
@@ -523,6 +718,13 @@ func (r *Recoverer) applyAbsent(rec *domain.Sandbox, out *SandboxOutcome) (wrote
 		}
 		rec.State = tr.NextState
 		rec.StopReason = domain.StopReasonMemoryLost
+		// Clear netns identity fields: the VM is dead; a stale pid must not
+		// reach AdoptNetnsRuntime on a future Start.
+		rec.NetnsChildPID = 0
+		rec.NetnsChildPGID = 0
+		rec.NetnsChildStartTime = 0
+		rec.GuestTapName = ""
+		rec.CHAPISocket = ""
 		*out = SandboxOutcome{
 			ID:   rec.ID,
 			Kind: OutcomeResolvedStopped,
@@ -546,5 +748,79 @@ func (r *Recoverer) applyAbsent(rec *domain.Sandbox, out *SandboxOutcome) (wrote
 			Reason: fmt.Sprintf("stored state %s; VM absent; no action needed", rec.State),
 		}
 		return false, false
+	}
+}
+
+// spawnReplacement starts a long-lived replacement supervisor for a sandbox
+// classified [OutcomeAdoptable], and records what happened in out.Reason.
+//
+// This is the ACT half of D-HSH-15 (operator-ratified TBR-4: recover adopts
+// automatically). Before it existed, recovery detected the
+// live-VM/dead-supervisor class and stopped, leaving the re-acquisition
+// mechanism with no caller and AC-1b unreachable by any operator.
+//
+// # What it never does
+//
+// It never touches the VM. D-HSH-04 is intact: recovery may adopt a live VM,
+// never stop one. Every branch here either spawns a replacement or appends an
+// explanation to the outcome — none of them signals, kills, or reconfigures
+// the running VM, and the outcome stays [OutcomeAdoptable] throughout so the
+// sandbox is REPORTED whether or not the spawn was possible.
+//
+// # Fail-closed, non-retroactive
+//
+// A sandbox whose record carries no NetnsControlSocket was booted before the
+// control-socket mechanism existed (D-HSH-17). Its netns child has no control
+// socket to answer on, so no replacement can rebuild its perimeter. That is
+// refused here rather than attempted — and still reported, because an
+// operator needs to know the sandbox needs a manual restart. This
+// non-retroactivity is correct, not a gap: the alternative is a spawn that
+// fails partway and leaves a partial perimeter, which reads as working while
+// bypassing egress policy.
+func (r *Recoverer) spawnReplacement(sb domain.Sandbox, out *SandboxOutcome) {
+	if r.spawnAdopt == nil {
+		// Spawner not wired (report-only mode, the AC-8 behaviour).
+		out.Reason += " (no adopt spawner wired; sandbox reported but not adopted)"
+		return
+	}
+	if sb.NetnsControlSocket == "" {
+		out.Reason += " (sandbox predates the netns control socket, so its perimeter cannot be rebuilt; " +
+			"the VM is left running and untouched — restart it manually to restore guest networking)"
+		return
+	}
+
+	ca, err := r.spawnAdopt(sb)
+	if err != nil {
+		// The spawn refused or failed. The VM is untouched by contract (the
+		// re-acquisition path never calls rt.Stop() on a refusal), so the
+		// sandbox stays adoptable and the operator is told why.
+		out.Reason += fmt.Sprintf(" (adopt spawn failed: %v; VM left running and untouched)", err)
+		return
+	}
+
+	out.Kind = OutcomeAdopted
+	out.Reason += " — a replacement supervisor was started and has rebuilt the perimeter"
+
+	// The CA outcome comes FROM the replacement supervisor, which is the only
+	// process that made the decision. All three states are reported distinctly:
+	// saying "lost" when the CA was recovered is the defect this reporting
+	// replaced, and saying "recovered" when it was actually lost would be worse
+	// — an operator told TLS survived diagnoses the resulting failures as a
+	// network fault instead of as a CA they need to re-import.
+	switch ca {
+	case CARecovered:
+		out.Reason += "; the MITM CA was re-seeded from its persisted copy, so in-guest TLS sessions continue uninterrupted"
+	case CALost:
+		out.Reason += "; NOTE: the MITM CA could not be recovered from the crashed supervisor, " +
+			"so in-guest TLS sessions will FAIL until the guest re-imports the new CA (plain networking is restored)"
+	default:
+		// Wording note: each of the three messages must be identifiable by a
+		// substring that appears in NO other one, or a test asserting "the
+		// recovered wording is absent" passes on a message that merely
+		// mentions recovery. Here that distinct substring is "could not
+		// determine"; the others are "re-seeded" and "could not be recovered".
+		out.Reason += "; NOTE: could not determine whether the MITM CA survived this recovery — " +
+			"check the replacement supervisor's log for supervisor.reacquire.ca_recovered or .ca_lost " +
+			"before assuming in-guest TLS still works"
 	}
 }

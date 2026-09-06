@@ -70,6 +70,12 @@ type Governor struct {
 	lastResizeWasShrink bool
 	latest              resize.Sample
 	lastSampleTime      time.Time
+	// prevSwapUsed is the SwapUsed (bytes) from the sample before g.latest.
+	// Used by sampleWantsGrow as the reference point for the flow gate
+	// (D-RAM-10): grow fires only when SwapUsed has increased since the
+	// previous sample. Updated immediately before g.latest is overwritten each
+	// poll cycle so evaluate() always sees the prior sample's value.
+	prevSwapUsed        uint64
 	agentOutdated       bool
 	pollErrLogged       bool
 	axes                []AxisEvaluator
@@ -204,6 +210,14 @@ func (g *Governor) Run(ctx context.Context) {
 				}
 			} else {
 				g.agentOutdated = false
+				// Capture SwapUsed from the current g.latest BEFORE
+				// overwriting it. This becomes the previous-sample reference
+				// point for the flow gate in sampleWantsGrow (D-RAM-10).
+				if g.latest.SwapTotalBytes > 0 && g.latest.SwapFreeBytes <= g.latest.SwapTotalBytes {
+					g.prevSwapUsed = g.latest.SwapTotalBytes - g.latest.SwapFreeBytes
+				} else {
+					g.prevSwapUsed = 0
+				}
 				g.latest = sample
 				g.lastSampleTime = g.clock.Now()
 				for _, a := range g.axes {
@@ -219,7 +233,7 @@ func (g *Governor) Run(ctx context.Context) {
 		// 5-sample shrink run that immediately follows a grow sample spans
 		// 2+5+5+5+5=22s rather than the nominal 4×5=20s: a ~10% deviation, once
 		// per grow→shrink transition. CPU is unaffected (time-based window).
-		if sampleWantsGrow(g.latest) {
+		if sampleWantsGrow(g.latest, g.prevSwapUsed) {
 			interval = memoryPressurePollInterval
 		} else {
 			interval = memoryEvalInterval

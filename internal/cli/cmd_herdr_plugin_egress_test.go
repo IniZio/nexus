@@ -17,7 +17,7 @@ import (
 // TestHerdrWorktreeSandboxCreateArgs verifies the args produced by herdrWorktreeSandboxCreateArgs.
 func TestHerdrWorktreeSandboxCreateArgs(t *testing.T) {
 	t.Run("no secrets no allowedRepo", func(t *testing.T) {
-		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, nil, "", nil)
+		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, nil, "", nil, false)
 		joined := strings.Join(args, " ")
 		if strings.Contains(joined, "--secret") {
 			t.Errorf("unexpected --secret in args: %v", args)
@@ -32,7 +32,7 @@ func TestHerdrWorktreeSandboxCreateArgs(t *testing.T) {
 
 	t.Run("one GitHub secret plus allowedRepo", func(t *testing.T) {
 		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil,
-			[]string{"GH_TOKEN@github.com"}, "owner/repo", nil)
+			[]string{"GH_TOKEN@github.com"}, "owner/repo", nil, false)
 		joined := strings.Join(args, " ")
 		if !strings.Contains(joined, "--secret GH_TOKEN@github.com") {
 			t.Errorf("expected --secret GH_TOKEN@github.com in args: %v", args)
@@ -47,7 +47,7 @@ func TestHerdrWorktreeSandboxCreateArgs(t *testing.T) {
 
 	t.Run("GitLab secret no allowedRepo", func(t *testing.T) {
 		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil,
-			[]string{"GITLAB_TOKEN@gitlab.com"}, "", nil)
+			[]string{"GITLAB_TOKEN@gitlab.com"}, "", nil, false)
 		joined := strings.Join(args, " ")
 		if !strings.Contains(joined, "--secret GITLAB_TOKEN@gitlab.com") {
 			t.Errorf("expected --secret GITLAB_TOKEN@gitlab.com in args: %v", args)
@@ -61,10 +61,10 @@ func TestHerdrWorktreeSandboxCreateArgs(t *testing.T) {
 	})
 
 	t.Run("--file imageFlag produces docker disk flag", func(t *testing.T) {
-		args := herdrWorktreeSandboxCreateArgs("myhandle", "src:dst", "--file", "/some/dir", nil, nil, "", nil)
+		args := herdrWorktreeSandboxCreateArgs("myhandle", "src:dst", "--file", "/some/dir", nil, nil, "", nil, false)
 		joined := strings.Join(args, " ")
-		if !strings.Contains(joined, "--mount-named") {
-			t.Errorf("expected --mount-named for --file path: %v", args)
+		if !strings.Contains(joined, herdrDockerDiskVolumeName("myhandle")) {
+			t.Errorf("expected docker disk (--mount-named …-docker) for --file path: %v", args)
 		}
 		if strings.Contains(joined, "--no-builtin-gh") {
 			t.Errorf("--no-builtin-gh must not be present: %v", args)
@@ -72,10 +72,10 @@ func TestHerdrWorktreeSandboxCreateArgs(t *testing.T) {
 	})
 
 	t.Run("--image imageFlag does not produce docker disk flag", func(t *testing.T) {
-		args := herdrWorktreeSandboxCreateArgs("myhandle", "src:dst", "--image", "ref", nil, nil, "", nil)
+		args := herdrWorktreeSandboxCreateArgs("myhandle", "src:dst", "--image", "ref", nil, nil, "", nil, false)
 		joined := strings.Join(args, " ")
-		if strings.Contains(joined, "--mount-named") {
-			t.Errorf("unexpected --mount-named for --image path: %v", args)
+		if strings.Contains(joined, herdrDockerDiskVolumeName("myhandle")) {
+			t.Errorf("unexpected docker disk (--mount-named …-docker) for --image path: %v", args)
 		}
 	})
 }
@@ -393,7 +393,7 @@ func TestHerdrWorktreeSandboxCreateArgs_PathPolicies(t *testing.T) {
 	}
 
 	t.Run("non-empty pathPolicies emits --egress-policy-json", func(t *testing.T) {
-		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, nil, "", pp)
+		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, nil, "", pp, false)
 		joined := strings.Join(args, " ")
 		if !strings.Contains(joined, "--egress-policy-json") {
 			t.Fatalf("expected --egress-policy-json in args: %v", args)
@@ -418,7 +418,7 @@ func TestHerdrWorktreeSandboxCreateArgs_PathPolicies(t *testing.T) {
 	})
 
 	t.Run("nil pathPolicies omits --egress-policy-json", func(t *testing.T) {
-		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, nil, "", nil)
+		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, nil, "", nil, false)
 		for _, a := range args {
 			if a == "--egress-policy-json" {
 				t.Errorf("unexpected --egress-policy-json in args with nil pathPolicies: %v", args)
@@ -427,11 +427,52 @@ func TestHerdrWorktreeSandboxCreateArgs_PathPolicies(t *testing.T) {
 	})
 
 	t.Run("empty pathPolicies omits --egress-policy-json", func(t *testing.T) {
-		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, nil, "", domain.EgressPathPolicies{})
+		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, nil, "", domain.EgressPathPolicies{}, false)
 		for _, a := range args {
 			if a == "--egress-policy-json" {
 				t.Errorf("unexpected --egress-policy-json in args with empty pathPolicies: %v", args)
 			}
 		}
 	})
+}
+
+// TestHerdrWorktreeSandboxCreateArgs_AgentCfgDisk is the mutation guard for
+// the D-RAM-08 Option B decision: the agentcfg overlay volume must appear
+// unconditionally in the sandbox create args so that both the overlayfs upper
+// and work dirs live on a governor-visible disk rather than root ext4.
+//
+// Mutations that MUST turn this RED:
+//   - Remove the "--mount-named …-agentcfg:/var/lib/nexus3/agentcfg…" line
+//   - Change the mount path to something other than /var/lib/nexus3/agentcfg
+//   - Gate the flag behind "--file" (it must be unconditional — unlike the
+//     docker disk, the agentcfg volume is needed for every agent sandbox)
+func TestHerdrWorktreeSandboxCreateArgs_AgentCfgDisk(t *testing.T) {
+	const handle = "myrepo/mybranch"
+	wantVolName := herdrAgentCfgDiskVolumeName(handle)
+	wantMount := "/var/lib/nexus3/agentcfg"
+
+	for _, imageFlag := range []string{"--image", "--file"} {
+		imageFlag := imageFlag
+		t.Run("agentcfg disk present for "+imageFlag, func(t *testing.T) {
+			args := herdrWorktreeSandboxCreateArgs(handle, "src:dst", imageFlag, "/some/val", nil, nil, "", nil, false)
+			joined := strings.Join(args, " ")
+
+			// Volume name must appear in a --mount-named value.
+			if !strings.Contains(joined, wantVolName) {
+				t.Errorf("agentcfg volume name %q missing from args;\n"+
+					"removing this disk means the overlay upper dir lands on root ext4\n"+
+					"which is not governor-visible and cannot grow (D-RAM-08);\ngot args: %v",
+					wantVolName, args)
+			}
+
+			// The mount target must be the named volume mount point that
+			// agentCfgUpperDir and agentCfgWorkDir are rooted under.
+			if !strings.Contains(joined, wantVolName+":"+wantMount) {
+				t.Errorf("agentcfg volume not mounted at %q;\n"+
+					"the supervisor constants agentCfgUpperDir/agentCfgWorkDir are rooted\n"+
+					"under %q — a different mount target breaks the overlay;\ngot args: %v",
+					wantMount, wantMount, args)
+			}
+		})
+	}
 }

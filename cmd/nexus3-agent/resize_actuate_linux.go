@@ -59,6 +59,7 @@ func collectSample(disks []resizableDisk) (resize.Sample, error) {
 	if err != nil {
 		return resize.Sample{}, fmt.Errorf("collectSample: meminfo: %w", err)
 	}
+	swapTotal, swapFree := readSwapInfoKB(sampleMeminfoPath)
 	memSomeAvg10, memFullAvg10, memPSISupported := readMemoryPSI(samplePSIMemPath)
 	cpuSomeAvg10, cpuPSISupported := readCPUPSI(samplePSICPUPath)
 	vcpuCount, vcpuOnline := readVCPUs(sampleCPUSysPath)
@@ -79,6 +80,8 @@ func collectSample(disks []resizableDisk) (resize.Sample, error) {
 		Timestamp:         time.Now().UTC(),
 		MemAvailableBytes: avail * 1024,
 		MemTotalBytes:     total * 1024,
+		SwapTotalBytes:    swapTotal * 1024,
+		SwapFreeBytes:     swapFree * 1024,
 		MemPSISomeAvg10:   memSomeAvg10,
 		MemPSIFullAvg10:   memFullAvg10,
 		MemPSISupported:   memPSISupported,
@@ -115,6 +118,36 @@ func readMultiDiskStats(disks []resizableDisk) []resize.DiskSample {
 		})
 	}
 	return out
+}
+
+// readSwapInfoKB parses /proc/meminfo and returns SwapTotal and SwapFree in
+// kibibytes. Returns zeros without error when swap is absent (no swap
+// configured, or SwapTotal/SwapFree missing from the kernel's meminfo). The
+// governor's swap-pressure term is gated on SwapTotalBytes > 0, so zeros are
+// safe for kernels without swap support.
+func readSwapInfoKB(path string) (swapTotal, swapFree uint64) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0
+	}
+	defer f.Close()
+
+	var foundTotal, foundFree bool
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if v, ok := meminfoLineKB(line, "SwapTotal"); ok {
+			swapTotal = v
+			foundTotal = true
+		} else if v, ok := meminfoLineKB(line, "SwapFree"); ok {
+			swapFree = v
+			foundFree = true
+		}
+		if foundTotal && foundFree {
+			break
+		}
+	}
+	return swapTotal, swapFree
 }
 
 // readMeminfoKB parses /proc/meminfo and returns MemAvailable and MemTotal in

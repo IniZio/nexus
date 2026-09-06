@@ -7,7 +7,7 @@
 //   - boots and owns the VM (via svc.Start → driver.Start),
 //   - starts the network perimeter (gvproxy + MITM + netfilter) in-process,
 //   - owns a long-lived credential Broker for host-side token injection,
-//   - signals readiness by writing supervisor.pid and supervisor.sock,
+//   - signals readiness by writing supervisor.pid (socket is bound earlier),
 //   - blocks until SIGTERM or a /supervisor/stop IPC request.
 //
 // The supervisor is launched as a detached process (Setsid) by the spawning
@@ -48,17 +48,21 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/agent"
+	"github.com/IniZio/nexus3/internal/core/builder"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/govern"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
+	"github.com/IniZio/nexus3/internal/core/perimeter"
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/resize"
 	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus3/internal/core/statedir"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
 
@@ -127,6 +131,17 @@ type Config struct {
 	// applies the cloudhypervisor driver default (1 vCPU).
 	BootVCPUs uint32
 
+	// NestedVirt enables KVM nested virtualisation in the guest VM so the
+	// guest can itself run hardware-accelerated VMs (e.g. `nexus3 create
+	// --nested` inside a sandbox). The zero value (false) means nested-OFF.
+	//
+	// Security contract D-N3N-02: nested MUST be explicitly opt-in and
+	// default-off at every hop. The CH driver sends CpusConfig.Nested=false
+	// EXPLICITLY when this is false — it is never omitted — because CH v53
+	// treats a missing Nested field as nested-ON by default. Absent or zero
+	// at any point in the chain must mean nested-OFF, never nested-ON.
+	NestedVirt bool
+
 	// HasWorkspaceDisk indicates the supervisor's CHDriver was constructed with a
 	// workspace disk in ExtraDisks. When false, the disk auto-resize axis is not
 	// registered regardless of GovBounds.DiskMaxBytes — preventing GrowDisk from
@@ -140,6 +155,17 @@ type Config struct {
 	// filesystem, which is data loss, not a build failure.
 	WorkspaceDiskIndex int
 
+	// HasScratchDisk indicates a scratch disk is attached as the last ExtraDisk.
+	// When true, the supervisor passes --scratch-disk-index to the in-guest init
+	// so it can wipe and mount the device as /tmp (D-DC-32, D-SD-01).
+	HasScratchDisk bool
+
+	// ScratchDiskIndex is the 0-based ExtraDisks index of the scratch disk.
+	// Meaningful only when HasScratchDisk is true. Always len(ExtraDisks)-1
+	// at supervisor spawn — the scratch disk is always the last disk.
+	// A wrong index means mkfs.ext4 targets the wrong device: data loss.
+	ScratchDiskIndex int
+
 	// ResizableDiskIndices lists the 0-based ExtraDisks indices whose ext4
 	// filesystems the governor may auto-grow.  This is the generic replacement
 	// for HasWorkspaceDisk/WorkspaceDiskIndex: when non-empty it takes
@@ -149,6 +175,30 @@ type Config struct {
 	// backward compatibility; later slices will bridge the two representations
 	// inside wireGovernorAxes.
 	ResizableDiskIndices []int
+
+	// CacheDiskSlots are the builder cache-disk slot image paths whose leases
+	// this supervisor owns for the lifetime of its VM (D-HSH-07). Empty for
+	// every non-builder sandbox.
+	//
+	// The lease used to be released by a `defer` in the CLI, so it was
+	// CLI-scoped while cloud-hypervisor's write lock on the image is
+	// VM-scoped. A VM that outlived its CLI left the slot reading free while
+	// the image was still locked, and the next build failed to boot with an
+	// opaque CH error. Ownership therefore belongs here, with the process
+	// whose lifetime matches the VM's.
+	CacheDiskSlots []string
+
+	// CacheDiskLeaseFDs are inherited descriptors — one per CacheDiskSlots
+	// entry, in the same order — that ALREADY hold the slot's flock, passed
+	// down by the spawning CLI through exec.Cmd.ExtraFiles. Inheriting the
+	// open file description means the lease is never momentarily free
+	// between the selecting process and this one, so a concurrent build
+	// cannot steal the slot mid-handoff.
+	//
+	// Empty on the adopt and re-acquire paths: there is no live sender to
+	// pass a descriptor, so those paths take the slot by path instead
+	// (builder.AcquireCacheDiskSlot), reading it from the sandbox record.
+	CacheDiskLeaseFDs []int
 
 	// GovBounds configures the auto-resize governor. When MemMinBytes or
 	// MemMaxBytes is zero, the governor runs in passive mode (polls but
@@ -274,13 +324,24 @@ func chooseSeedRoute(sb domain.Sandbox) seedRoute {
 // seedRouteInputs bundles the already-constructed seeders and clients that
 // runSeedRoute needs to dispatch to the right seeder without re-deriving them.
 type seedRouteInputs struct {
-	SB          domain.Sandbox
-	Cert        *x509.Certificate
-	CASeeder    service.GuestSeeder
-	AgentSeeder service.GuestSeeder
-	Broker      *cred.Broker
-	Refreshers  []*cred.Refresher
-	Svc         PerimeterCAGetter
+	SB              domain.Sandbox
+	Cert            *x509.Certificate
+	CASeeder        service.GuestSeeder
+	AgentSeeder     service.GuestSeeder
+	// CredFileSeeder delivers the file-based credential payload (e.g. Cursor's
+	// ~/.config/cursor/auth.json) to a profile-specific path inside the guest.
+	// It must be bound to service.GuestCredFilePath(profile) via
+	// service.NewGuestFileSeeder. Nil is safe: SeedGuestCredFile is a no-op
+	// when seeder is nil or the profile has no CredentialFile.
+	CredFileSeeder  service.GuestSeeder
+	Broker          *cred.Broker
+	Refreshers      []*cred.Refresher
+	Svc             PerimeterCAGetter
+	// StaticCredSrc is the credential source for file-based JWT agents (e.g.
+	// cursor-agent). After seeding registers the placeholder, runSeedRoute calls
+	// StaticCredSrc.Token() and broker.SetRealToken to wire the real token.
+	// Nil for OAuth agents (Claude), which push via Refresher.ForcePush instead.
+	StaticCredSrc   cred.CredentialSource
 }
 
 // Package-level function vars so tests can spy which seeder runSeedRoute
@@ -304,13 +365,102 @@ func runSeedRoute(ctx context.Context, route seedRoute, in seedRouteInputs) (ok,
 			"reason", "no MITM proxy for this sandbox: open egress, no secrets, no agent")
 		return false, false
 	case routeCombined:
-		return seedAgentAndHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers, in.Svc)
+		ok, guestEverResponded = seedAgentAndHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers, in.Svc, resolveSeedProfile(in.SB), in.CredFileSeeder)
 	case routeHumanSecrets:
-		return seedHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Svc)
+		ok, guestEverResponded = seedHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Svc)
 	default: // routeAgent
 		agentSandbox := in.SB.AgentName != ""
-		return seedLoopFn(ctx, in.SB.ID, &in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers,
-			maxSeedAttempts, 2*time.Second, in.Svc, agentSandbox)
+		ok, guestEverResponded = seedLoopFn(ctx, in.SB.ID, &in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers,
+			maxSeedAttempts, 2*time.Second, in.Svc, agentSandbox, resolveSeedProfile(in.SB), in.CredFileSeeder)
+	}
+	// For file-based credential agents (e.g. cursor-agent), push the real token
+	// after seeding registers the placeholder. Refreshers do this automatically
+	// via ForcePush for OAuth agents; static JWT agents need an explicit push.
+	if ok && in.StaticCredSrc != nil {
+		profile := resolveSeedProfile(in.SB)
+		if tok, _, tokErr := in.StaticCredSrc.Token(ctx); tokErr != nil {
+			slog.Warn("supervisor.static_cred_token_failed",
+				"host", profile.CredentialedHost, "err", tokErr)
+		} else if setErr := in.Broker.SetRealToken(in.SB.ID, profile.CredentialedHost, tok); setErr != nil {
+			slog.Warn("supervisor.static_cred_set_token_failed",
+				"host", profile.CredentialedHost, "err", setErr)
+		} else {
+			slog.Info("supervisor.real_token_pushed",
+				"host", profile.CredentialedHost, "sandbox", in.SB.ID)
+		}
+	}
+	return
+}
+
+// resolveSeedProfile resolves the [cred.AgentProfile] the re-seed loop must
+// use for sb, from the agent name persisted on the sandbox at creation
+// (domain.Sandbox.AgentName). Falling back to [cred.ClaudeCodeProfile] for an
+// empty or unregistered name matches the pre-existing behaviour for agent
+// sandboxes created before per-agent profiles existed; the profile is only
+// actually read by the caller when the route seeds agent credentials at all
+// (seedAgentCreds / routeCombined), so this fallback is inert for sandboxes
+// with no attached agent.
+func resolveSeedProfile(sb domain.Sandbox) cred.AgentProfile {
+	if profile, ok := cred.ProfileByName(sb.AgentName); ok {
+		return profile
+	}
+	return cred.ClaudeCodeProfile
+}
+
+// buildSeedEgressOpts resolves the agent profile for sb, constructs the static
+// credential source for file-backed agents (e.g. cursor-agent) via
+// [cred.NewCredentialSourceForProfile], and wires both into the returned
+// [service.CreateAndBootOptions] via [service.WireAgentEgress].
+//
+// For OAuth-backed profiles ([cred.ClaudeCodeProfile]) the returned
+// AgentCredSource is nil; those agents push credentials via
+// [cred.Refresher].ForcePush instead.
+//
+// The broker is threaded through WireAgentEgress. The seeder parameter is nil
+// because the supervisor re-seeds an existing sandbox and does not use
+// CreateAndBootOptions' Seeder field; only AgentCredSource and AgentProfile
+// are consumed by the supervisor's seedRouteInputs.
+func buildSeedEgressOpts(sb domain.Sandbox, broker *cred.Broker) (service.CreateAndBootOptions, error) {
+	sbProfile := resolveSeedProfile(sb)
+	src, err := cred.NewCredentialSourceForProfile(sbProfile)
+	if err != nil {
+		return service.CreateAndBootOptions{}, err
+	}
+	var opts service.CreateAndBootOptions
+	service.WireAgentEgress(&opts, sbProfile, broker, nil, src)
+	return opts, nil
+}
+
+// buildSeedRouteInputs assembles the [seedRouteInputs] from the already-resolved
+// components. It is a pure constructor: no side effects, no RPCs. Extracted from
+// [RunDetached] so that the StaticCredSrc assignment site — specifically the
+// field assignment "StaticCredSrc: egressWire.AgentCredSource" — can be covered
+// by a unit test (TestBuildSeedRouteInputs_WiresStaticCredSrc) without booting a VM.
+func buildSeedRouteInputs(
+	sb domain.Sandbox,
+	cert *x509.Certificate,
+	caSeeder service.GuestSeeder,
+	agentSeeder service.GuestSeeder,
+	agentClient *agent.Client,
+	broker *cred.Broker,
+	refreshers []*cred.Refresher,
+	egressWire service.CreateAndBootOptions,
+	svc PerimeterCAGetter,
+) seedRouteInputs {
+	return seedRouteInputs{
+		SB:          sb,
+		Cert:        cert,
+		CASeeder:    caSeeder,
+		AgentSeeder: agentSeeder,
+		// CredFileSeeder is bound to the profile-specific path so
+		// SeedGuestCredFile writes cursor/auth.json (or equivalent)
+		// under GuestCredDirPath, where the redirected CredDirEnvVar
+		// points. Claude Code (CredentialFile == "") ignores this seeder.
+		CredFileSeeder: service.NewGuestFileSeeder(agentClient, service.GuestCredFilePath(resolveSeedProfile(sb))),
+		Broker:         broker,
+		Refreshers:     refreshers,
+		StaticCredSrc:  egressWire.AgentCredSource,
+		Svc:            svc,
 	}
 }
 
@@ -318,7 +468,7 @@ func RunDetached(cfg Config) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	if err := os.MkdirAll(cfg.StateDir, 0o755); err != nil {
+	if err := statedir.Ensure(cfg.StateDir); err != nil {
 		return fmt.Errorf("supervisor: mkdir state dir %s: %w", cfg.StateDir, err)
 	}
 
@@ -327,6 +477,17 @@ func RunDetached(cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("supervisor: open store at %s: %w", cfg.StoreRoot, err)
 	}
+
+	// ── 1b. Take ownership of the builder cache-disk slot leases ─────────────
+	// D-HSH-07: the lease must expire with the VM, not with the CLI that
+	// selected the slot. On this path the CLI passed the already-locked
+	// descriptors through ExtraFiles, so adopting them is instantaneous and
+	// leaves no window in which the slot reads free. See cachedisk_lease.go.
+	cacheLeases, err := acquireCacheDiskLeases(ctx, cfg.CacheDiskSlots, cfg.CacheDiskLeaseFDs, cacheDiskAdoptLeaseTimeout)
+	if err != nil {
+		return fmt.Errorf("supervisor: %w", err)
+	}
+	defer builder.ReleaseCacheDiskLeases(cacheLeases)
 
 	// ── 2. Construct per-sandbox driver ───────────────────────────────────────
 	extraDisks := make([]cloudhypervisor.ExtraDisk, 0, len(cfg.ExtraDisks))
@@ -397,16 +558,103 @@ func RunDetached(cfg Config) error {
 		// CHDriver implements driver.GuestDialer; pass drv directly.
 		agentClient = agent.NewClient(drv, preSB.ID)
 		slog.Info("supervisor.agent_client_ready", "sandboxID", preSB.ID)
+
+		// Record which cache-disk slot(s) this VM occupies BEFORE it boots, so
+		// a supervisor that dies mid-boot still leaves behind the one fact an
+		// adopting or re-acquiring supervisor needs in order to take the SAME
+		// slot back (D-HSH-07). Without this the replacement would select a
+		// fresh slot and collide with the CH write lock the live VM still
+		// holds on the old one.
+		if len(cacheLeases) > 0 {
+			slots := builder.EncodeCacheDiskSlots(builder.CacheDiskSlotPaths(cacheLeases))
+			if setErr := svc.SetCacheDiskSlot(ctx, preSB.ID, slots); setErr != nil {
+				return fmt.Errorf("supervisor: persist cache-disk slot: %w", setErr)
+			}
+		}
+	}
+
+	// Wire the static credential source for file-based agents (e.g. cursor-agent)
+	// via buildSeedEgressOpts → WireAgentEgress so the profile-generic seam has a
+	// live production caller (D-MAC-16). OAuth agents (ClaudeCodeProfile) get a
+	// nil AgentCredSource; they push credentials via Refresher.ForcePush instead.
+	// Graceful degradation: if the credential file is absent or unreadable,
+	// AgentCredSource is nil and the broker starts with no real token (HTTPS auth
+	// carries the placeholder; operator re-runs agent login to fix it).
+	var egressWire service.CreateAndBootOptions
+	if resolveErr == nil {
+		if wired, wireErr := buildSeedEgressOpts(preSB, broker); wireErr != nil {
+			slog.Warn("supervisor.static_cred_source_failed",
+				"agent", resolveSeedProfile(preSB).Name, "err", wireErr)
+		} else {
+			egressWire = wired
+		}
 	}
 
 	// ── 4. Bind IPC socket (before VM boot so early stop requests are handled) ─
 	sockPath := SockPath(cfg.StateDir)
 	_ = os.Remove(sockPath) // remove stale socket from a crash
-	stopCh, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef)
+	binaryHash, hashErr := computeBinaryHash()
+	if hashErr != nil {
+		// Non-fatal: `nexus3 supervisor-upgrade`'s "already on the current
+		// binary" check degrades to "unknown, proceed" rather than blocking
+		// every other IPC verb over a hash failure.
+		slog.Warn("supervisor.binary_hash_failed", "err", hashErr)
+	}
+	// perimSupPtr is set after svc.Start returns and the perimeter supervisor is
+	// live. The IPC egress-allow and /supervisor/handoff handlers read it
+	// atomically; a nil load means the perimeter is not yet ready.
+	var perimSupPtr atomic.Pointer[perimeter.PerimeterSupervisor]
+	// sbPtr is set after svc.Start returns. The /supervisor/handoff handler
+	// needs sb.ID's boot bounds for Payload.Governor; a nil load means the
+	// sandbox is not yet running and handoff must refuse rather than offer a
+	// payload describing a VM that does not exist yet.
+	var sbPtr atomic.Pointer[domain.Sandbox]
+	allowEgressFn := allowEgressFunc(func(host string) error {
+		sup := perimSupPtr.Load()
+		if sup == nil {
+			return fmt.Errorf("perimeter not yet ready")
+		}
+		return sup.AllowEgress(host)
+	})
+	handoffFn := handoffFunc(func(hctx context.Context, peerSock string) (bool, string, error) {
+		sup := perimSupPtr.Load()
+		sb := sbPtr.Load()
+		if sup == nil || sb == nil {
+			return false, "perimeter not yet ready", nil
+		}
+		bootVCPUs := cfg.BootVCPUs
+		if bootVCPUs == 0 {
+			bootVCPUs = 1 // matches cloudhypervisor driver default
+		}
+		// Payload AND the "is CA mandatory" predicate both come from the LIVE
+		// supervisor, never from the store record — see
+		// [handoffFromLiveSupervisor] (ticket 14).
+		return handoffFromLiveSupervisor(hctx, peerSock, sup, cfg.SandboxRef, bootVCPUs, cfg.MemoryMiB)
+	})
+	// agentHealthFn probes the guest agent's control/data planes live, using
+	// the SAME drv this process dials every RPC through. resolveErr == nil is
+	// required for preSB.ID to be meaningful; a failed resolve degrades to
+	// AgentChannelUnknown (never to Healthy) rather than skipping the probe.
+	agentHealthFn := agentHealthFunc(func(hctx context.Context) AgentHealth {
+		if resolveErr != nil {
+			return AgentHealth{State: AgentChannelUnknown, ControlErr: fmt.Sprintf("sandbox not resolved: %v", resolveErr)}
+		}
+		// drv (*cloudhypervisor.CHDriver) implements driver.GuestDialer
+		// unconditionally (see ch_vsock.go's compile-time assertion) — no
+		// comma-ok needed here, unlike agentClientFor's interface-typed driver.
+		return checkAgentHealth(hctx, drv, preSB.ID)
+	})
+	ipcH, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef, allowEgressFn, handoffFn, agentHealthFn, binaryHash)
 	if err != nil {
 		return fmt.Errorf("supervisor: bind IPC socket %s: %w", sockPath, err)
 	}
-	defer os.Remove(sockPath)
+	stopCh := ipcH.StopCh
+	detachCh := ipcH.DetachCh
+	// removeOwnSocket (not a bare os.Remove) fixes D-HSH-09: a replacement
+	// supervisor can rebind sockPath before this process's defers run, and an
+	// unconditional Remove would unlink the replacement's freshly bound
+	// socket instead of this process's now-stale one.
+	defer removeOwnSocket(sockPath, ipcH.BindStat)
 
 	// ── 4b. Parent watchdog (ephemeral mode only) ─────────────────────────────
 	// In ephemeral (builder) mode the supervisor is expected to exit when the
@@ -440,6 +688,14 @@ func RunDetached(cfg Config) error {
 		return fmt.Errorf("supervisor: start sandbox %s: %w", cfg.SandboxRef, err)
 	}
 	slog.Info("supervisor.vm_running", "sandboxRef", cfg.SandboxRef)
+	sbPtr.Store(&sb)
+
+	// Wire the perimeter supervisor into the IPC egress-allow handler. The
+	// supervisor was created inside svc.Start; retrieve it via GetPerimeterSupervisor.
+	// nil means AllowAll / no-perimeter mode — AllowEgress handles that case.
+	if sup := svc.GetPerimeterSupervisor(sb.ID); sup != nil {
+		perimSupPtr.Store(sup)
+	}
 
 	// ── 5a. Start auto-resize governor ───────────────────────────────────────
 	// The governor is single-tenant (D-DC-12): one per supervisor, for this
@@ -666,15 +922,9 @@ func RunDetached(cfg Config) error {
 		// must mint placeholders in either posture. The original guard on OpenEgress
 		// silently skipped GH_TOKEN seeding for --egress closed sandboxes.
 		route := chooseSeedRoute(sb)
-		seedDone, guestEverResponded := runSeedRoute(ctx, route, seedRouteInputs{
-			SB:          sb,
-			Cert:        cert,
-			CASeeder:    caSeeder,
-			AgentSeeder: agentSeeder,
-			Broker:      broker,
-			Refreshers:  refreshers,
-			Svc:         svc,
-		})
+		seedDone, guestEverResponded := runSeedRoute(ctx, route, buildSeedRouteInputs(
+			sb, cert, caSeeder, agentSeeder, agentClient, broker, refreshers, egressWire, svc,
+		))
 		// routeNone skips both branches below: there is no seed failure to warn
 		// about, and no CA in the guest to activate.
 		if route != routeNone && !seedDone {
@@ -726,10 +976,27 @@ func RunDetached(cfg Config) error {
 	// ── 6. Write pidfile (READY signal) ──────────────────────────────────────
 	pid := os.Getpid()
 	pidfile := PidfilePath(cfg.StateDir)
-	if err := os.WriteFile(pidfile, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(pidfile, []byte(strconv.Itoa(pid)+"\n"), statedir.FileMode); err != nil {
 		return fmt.Errorf("supervisor: write pidfile %s: %w", pidfile, err)
 	}
-	defer os.Remove(pidfile)
+	// removeOwnPidfile mirrors the inode-checked removeOwnSocket: a
+	// replacement supervisor may write its own PID to the same path before
+	// this process's defers run. Read the file at cleanup time and only
+	// unlink when it still names our own PID — not the replacement's.
+	defer func() {
+		data, readErr := os.ReadFile(pidfile)
+		if readErr != nil {
+			return // already gone
+		}
+		if !bytes.Equal(bytes.TrimRight(data, "\n"), []byte(strconv.Itoa(pid))) {
+			// A replacement supervisor has already written its own PID.
+			// Removing the file here would destroy its READY signal.
+			slog.Debug("supervisor.pidfile_not_ours", "sandboxRef", cfg.SandboxRef,
+				"pidfile", pidfile, "action", "skip removal")
+			return
+		}
+		_ = os.Remove(pidfile)
+	}()
 
 	slog.Info("supervisor.ready",
 		"sandboxRef", cfg.SandboxRef,
@@ -738,7 +1005,13 @@ func RunDetached(cfg Config) error {
 	)
 
 	// ── 7. Block until shutdown ───────────────────────────────────────────────
-	switch cause := awaitShutdown(ctx, stopCh); {
+	// Wire the VM-death channel: closed by watchParentOwnedDeath /
+	// watchAdoptedDeath in ch_netns.go when the netns child exits. A nil
+	// channel (returned when no runtime is registered yet) is safe — nil is
+	// never ready in a select.
+	vmDeadCh := drv.RuntimeDeathCh(sb.ID)
+	cause := awaitShutdown(ctx, stopCh, detachCh, vmDeadCh)
+	switch {
 	case cfg.Ephemeral && cause == shutdownByStopVerb:
 		// Builder finished: the caller sent POST /supervisor/stop to signal
 		// that the build is complete. This is the normal exit path in ephemeral
@@ -746,8 +1019,44 @@ func RunDetached(cfg Config) error {
 		slog.Info("supervisor.build_complete", "sandboxRef", cfg.SandboxRef)
 	case cause == shutdownByStopVerb:
 		slog.Info("supervisor.stop_requested", "sandboxRef", cfg.SandboxRef)
+	case cause == shutdownByDetach:
+		slog.Info("supervisor.detach_requested", "sandboxRef", cfg.SandboxRef)
+	case cause == shutdownByVMDeath:
+		slog.Warn("supervisor.vm_died", "sandboxRef", cfg.SandboxRef)
 	default:
 		slog.Info("supervisor.signal_received", "sandboxRef", cfg.SandboxRef)
+	}
+
+	// shutdownByDetach: exit WITHOUT tearing the VM down. This is the entire
+	// point of /supervisor/detach and a confirmed /supervisor/handoff — the VM
+	// and perimeter must keep running for a replacement supervisor to adopt.
+	// Deliberately returns before the UNI-TEARDOWN block below: svc.Stop and
+	// svc.Remove both call driver.Stop, which is exactly what must NOT happen
+	// here. Only defers already registered above (pidfile, IPC socket via
+	// removeOwnSocket, signal context cancel) run on the way out.
+	if cause == shutdownByDetach {
+		slog.Info("supervisor.detached", "sandboxRef", cfg.SandboxRef,
+			"action", "VM and perimeter left running for a replacement supervisor")
+		return nil
+	}
+
+	// shutdownByVMDeath: the netns child exited unexpectedly — the VM is
+	// already gone. Reconcile the store record to Stopped/MemoryLost so that
+	// `nexus3 sandbox list` and `nexus3 recover` see the honest state rather
+	// than a forever-running ghost. Skip the UNI-TEARDOWN below (svc.Stop /
+	// svc.Remove) — calling driver.Stop on a dead pgid is a no-op but would
+	// overwrite StopReason with "clean". Defers (pidfile, socket, ctx cancel)
+	// still run on the way out.
+	if cause == shutdownByVMDeath {
+		slog.Warn("supervisor.vm_died", "sandboxRef", cfg.SandboxRef)
+		reconCtx, reconCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer reconCancel()
+		if err := reconcileVMDeath(reconCtx, st, sb.ID); err != nil {
+			slog.Warn("supervisor.vm_died_record_update_failed",
+				"sandboxRef", cfg.SandboxRef, "err", err)
+		}
+		slog.Info("supervisor.exited", "sandboxRef", cfg.SandboxRef, "cause", "vm_died")
+		return nil
 	}
 
 	// ── 8. Graceful shutdown ──────────────────────────────────────────────────
@@ -806,19 +1115,74 @@ const (
 	shutdownBySignal shutdownCause = iota
 	// shutdownByStopVerb means a POST /supervisor/stop IPC request closed
 	// stopCh. In ephemeral mode this is the normal "build finished" path.
+	// Stop means "tear the VM down" — see ipcStopPath's doc comment.
 	shutdownByStopVerb
+	// shutdownByDetach means a POST /supervisor/detach request, or a
+	// POST /supervisor/handoff request whose replacement confirmed, closed
+	// detachCh. Detach means "exit WITHOUT tearing the VM down" — the VM and
+	// perimeter are left running for a replacement supervisor to adopt. This
+	// must never be treated the same as shutdownByStopVerb; RunDetached's
+	// teardown switch skips svc.Stop/svc.Remove entirely for this cause.
+	shutdownByDetach
+	// shutdownByVMDeath means the netns child exited unexpectedly — the VM
+	// died without an operator stop request. The supervisor must reconcile
+	// the store record to Stopped/MemoryLost and exit without calling
+	// svc.Stop (the VM is already gone; calling driver.Stop on a dead pgid
+	// is a no-op but would overwrite StopReason with "clean"). This cause
+	// is distinct from shutdownBySignal so the teardown switch can skip the
+	// UNI-TEARDOWN driver call entirely and write the honest reason instead.
+	shutdownByVMDeath
 )
 
-// awaitShutdown blocks until either the OS signal context is cancelled
-// (SIGTERM / SIGINT) or a /supervisor/stop IPC request closes stopCh.
-// It is extracted from RunDetached for unit-testability.
-func awaitShutdown(ctx context.Context, stopCh <-chan struct{}) shutdownCause {
+// awaitShutdown blocks until the OS signal context is cancelled (SIGTERM /
+// SIGINT), a /supervisor/stop IPC request closes stopCh, a
+// /supervisor/detach (or confirmed /supervisor/handoff) request closes
+// detachCh, or the netns child exits (vmDeadCh). It is extracted from
+// RunDetached for unit-testability.
+//
+// detachCh and vmDeadCh may be nil (a nil channel never becomes ready in a
+// select, so either degrades gracefully for callers that don't need them).
+func awaitShutdown(ctx context.Context, stopCh, detachCh, vmDeadCh <-chan struct{}) shutdownCause {
 	select {
 	case <-stopCh:
 		return shutdownByStopVerb
+	case <-detachCh:
+		return shutdownByDetach
+	case <-vmDeadCh:
+		return shutdownByVMDeath
 	case <-ctx.Done():
 		return shutdownBySignal
 	}
+}
+
+// vmDeathReconciler is the subset of store.Store used by reconcileVMDeath.
+// A narrow interface keeps reconcileVMDeath unit-testable without a full
+// store.Store fake implementation in tests.
+type vmDeathReconciler interface {
+	Update(ctx context.Context, id domain.SandboxID, fn func(*domain.Sandbox) error) error
+}
+
+// reconcileVMDeath writes State=Stopped/StopReasonMemoryLost to the store for
+// a sandbox whose VM died unexpectedly, and clears the netns adoption fields
+// so that a future AdoptNetnsRuntime cannot target a recycled pid group.
+//
+// It is extracted from RunDetached (and RunAdopt) so that tests can drive it
+// directly against a fake, proving the body itself — not a hand-copy of it.
+// The call site in RunDetached is not reached from unit tests (booting a VM
+// is required); that gap is acknowledged and accepted.
+func reconcileVMDeath(ctx context.Context, r vmDeathReconciler, id domain.SandboxID) error {
+	return r.Update(ctx, id, func(rec *domain.Sandbox) error {
+		rec.State = domain.Stopped
+		rec.StopReason = domain.StopReasonMemoryLost
+		// Clear netns adoption fields: a stale record must not cause a
+		// future AdoptNetnsRuntime to target a recycled pid group.
+		rec.NetnsChildPID = 0
+		rec.NetnsChildPGID = 0
+		rec.NetnsChildStartTime = 0
+		rec.GuestTapName = ""
+		rec.CHAPISocket = ""
+		return nil
+	})
 }
 
 // wireGovernorAxes attaches the CPU and disk AxisEvaluators to gov based on
@@ -860,7 +1224,7 @@ const supervisorErrFile = "supervisor.err"
 // Errors are silently ignored — this is best-effort diagnostics.
 func writeFailureReason(stateDir string, err error) {
 	path := filepath.Join(stateDir, supervisorErrFile)
-	_ = os.WriteFile(path, []byte(err.Error()), 0o644)
+	_ = os.WriteFile(path, []byte(err.Error()), statedir.FileMode)
 }
 
 // GuestProber is the subset of *agent.Client needed by ProbeGuestAgent.
@@ -911,31 +1275,126 @@ var seedUserMountsFn = service.SeedGuestUserMounts
 // tests replace it with a spy to verify the call without a live VM (A-MOUNT).
 var seedOverlayClaudeConfigFn = seedOverlayClaudeConfig
 
+// agentCfgUpperDir is the persistent overlayfs upper dir for the /root/.claude
+// overlay. It lives on a sandbox-scoped named ext4 volume (mounted at
+// /var/lib/nexus3/agentcfg by herdrWorktreeSandboxCreateArgs) so it is
+// governor-visible and can grow when Claude session state fills the upper
+// layer. Only removed when the sandbox itself is removed.
+const agentCfgUpperDir = "/var/lib/nexus3/agentcfg/upper"
+
+// agentCfgWorkDir is the overlayfs work dir for the /root/.claude overlay.
+// The kernel requires upper and work to share ONE filesystem — both live on
+// the named ext4 volume mounted at /var/lib/nexus3/agentcfg, satisfying that
+// constraint without pinning either to the root ext4 disk. It must be empty
+// at mount time. It is recreated fresh on every boot — it holds only
+// kernel-internal overlayfs state, not user data.
+const agentCfgWorkDir = "/var/lib/nexus3/agentcfg/work"
+
+// agentCfgMountedMarker is a volume-independent sentinel written on the root
+// ext4 disk by Branch 1 of seedOverlayClaudeConfig on every successful named-
+// volume mount. Branch 3 reads it to distinguish "attach failure for a sandbox
+// that has successfully mounted before" from "brand-new sandbox without a
+// volume" — the former is a hard error; the latter is a configuration defect
+// (D-RAM-09 must have failed to provision).
+const agentCfgMountedMarker = "/var/lib/nexus3/.agentcfg-mounted"
+
+// errAgentCfgDegraded is returned by seedOverlayClaudeConfig when Branch 2
+// fires: the named volume is absent but pre-existing data was found on the
+// root ext4 disk (D-RAM-11). The caller emits a structured slog.Warn so an
+// operator can list affected sandboxes; boot continues. No non-destructive
+// drain exists: a real one requires an API to add a volume attachment to an
+// existing sandbox record, which does not exist today (D-RAM-15).
+var errAgentCfgDegraded = errors.New("agentcfg: degraded to root ext4 (D-RAM-11)")
+
 // seedOverlayClaudeConfig mounts a writable overlay onto /root/.claude in the
 // guest. lowerGuestPath is the guest path of the RO virtiofs share (the curated
-// host config staged by AssembleCuratedConfig). Upper and work dirs land on a
-// tmpfs so all writes are discarded on sandbox exit.
+// host config staged by AssembleCuratedConfig). The upper dir lives on a named
+// ext4 volume (agentCfgUpperDir) so Claude session transcripts, todos, and
+// stats written by the in-guest agent survive sandbox stop/start and
+// crash+recover, and the governor can grow the volume if it fills.
+// The work dir (agentCfgWorkDir) is recreated empty on every boot — overlayfs
+// requires it empty at mount time and uses it only for internal kernel state.
+//
+// The named volume is provisioned on ALL bootable sandbox create paths
+// (D-RAM-09), so this function always runs against a governor-visible disk.
 //
 // Must be the FIRST seed step so onboarding writes (seedAgentOnboarding,
-// seedBypassConsent) land in the tmpfs upper rather than failing against the
+// seedBypassConsent) land in the upper layer rather than failing against the
 // RO lower.
 func seedOverlayClaudeConfig(ctx context.Context, id domain.SandboxID, lowerGuestPath string, execer service.GuestExecer) error {
 	// Use bash; /bin/sh in the base image is dash which does not support pipefail.
+	// Three-way guard (D-RAM-08 / D-RAM-11):
+	//   Branch 1: named volume mounted → happy path; migrate legacy data if present.
+	//   Branch 2: volume absent but pre-existing data at old/root path → degrade
+	//             gracefully so pre-existing sandboxes keep their Claude session
+	//             state. Mounting from root ext4 violates D-RAM-08's memory-safety
+	//             goal but is preferable to losing user data on restart (D-RAM-11).
+	//   Branch 3: volume absent and no prior data → fail closed. This is a new
+	//             sandbox; the named volume must have been provisioned at create time
+	//             (D-RAM-09). Any other outcome is a configuration defect.
 	script := fmt.Sprintf(`set -eu
 mkdir -p /root/.claude
-mkdir -p /run/nexus3/ovl
-mount -t tmpfs tmpfs /run/nexus3/ovl
-mkdir -p /run/nexus3/ovl/upper /run/nexus3/ovl/work
-mount -t overlay overlay -o lowerdir=%s,upperdir=/run/nexus3/ovl/upper,workdir=/run/nexus3/ovl/work /root/.claude
-`, lowerGuestPath)
+# D-RAM-08: detect whether the named ext4 volume is mounted at
+# /var/lib/nexus3/agentcfg. Use stat device-number comparison — more portable
+# than mountpoint(1), which may be absent in the base image.
+_mp_dev=$(stat -c '%%d' /var/lib/nexus3/agentcfg 2>/dev/null) || _mp_dev=""
+_par_dev=$(stat -c '%%d' /var/lib/nexus3 2>/dev/null) || { echo 'agentcfg: stat /var/lib/nexus3 failed' >&2; exit 1; }
+if [ -n "$_mp_dev" ] && [ "$_mp_dev" != "$_par_dev" ]; then
+    # Branch 1: named volume mounted — happy path.
+    mkdir -p %s
+    # D-RAM-09 one-shot migration: move legacy agentcfg-upper (root ext4) into
+    # the governor-visible named volume. Idempotent: old dir is removed after
+    # copy+sync so subsequent boots skip this block.
+    if [ -d /var/lib/nexus3/agentcfg-upper ]; then
+        cp -a /var/lib/nexus3/agentcfg-upper/. %s/
+        sync
+        rm -rf /var/lib/nexus3/agentcfg-upper
+    fi
+    # Work dir must be empty at mount time (overlayfs kernel-internal state).
+    rm -rf %s
+    mkdir %s
+    mount -t overlay overlay -o lowerdir=%s,upperdir=%s,workdir=%s /root/.claude
+    # D-RAM-13: write a volume-independent marker on the root disk so Branch 3
+    # can distinguish attach-failure (marker present) from a new sandbox (absent).
+    touch %s
+elif [ -d /var/lib/nexus3/agentcfg-upper ] || [ -d %s ]; then
+    # Branch 2: volume absent but pre-existing data found — degrade to root ext4.
+    # Pre-existing sandboxes created before D-RAM-09 have no named volume; losing
+    # their /root/.claude overlay on restart would silently strand session state.
+    if [ -d /var/lib/nexus3/agentcfg-upper ]; then
+        _fb_upper=/var/lib/nexus3/agentcfg-upper
+    else
+        _fb_upper=%s
+    fi
+    _fb_work=/var/lib/nexus3/agentcfg-work
+    rm -rf "$_fb_work"
+    mkdir -p "$_fb_upper" "$_fb_work"
+    echo "agentcfg: named volume absent; degrading to root ext4 at $_fb_upper (D-RAM-11)" >&2
+    mount -t overlay overlay -o lowerdir=%s,upperdir="$_fb_upper",workdir="$_fb_work" /root/.claude
+    exit 2
+else
+    # Branch 3: volume absent, no prior data.
+    if [ -f %s ]; then
+        echo 'agentcfg: named volume was previously mounted but is now absent — attach failed; refusing to boot without named volume' >&2
+    else
+        echo 'agentcfg: /var/lib/nexus3/agentcfg is not a mountpoint — named volume not attached; refusing to fall back to root ext4' >&2
+    fi
+    exit 1
+fi
+`, agentCfgUpperDir, agentCfgUpperDir, agentCfgWorkDir, agentCfgWorkDir, lowerGuestPath, agentCfgUpperDir, agentCfgWorkDir, agentCfgMountedMarker, agentCfgUpperDir, agentCfgUpperDir, lowerGuestPath, agentCfgMountedMarker)
 	code, err := execer(ctx, id, []string{"/bin/bash", "-c", script}, nil)
 	if err != nil {
 		return fmt.Errorf("overlay mount: %w", err)
 	}
-	if code != 0 {
+	switch code {
+	case 0:
+		return nil
+	case 2:
+		// Branch 2: degraded to root ext4 — non-fatal; caller emits slog.Warn.
+		return errAgentCfgDegraded
+	default:
 		return fmt.Errorf("overlay mount script exited %d", code)
 	}
-	return nil
 }
 
 // seedGitIdentityFn is the function called by probeAndSeedGuest to write the
@@ -1008,12 +1467,22 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 	// those seeds would either fail (writing to the RO lower) or be lost on
 	// sandbox exit.
 	if in.AgentCfgLowerGuestPath != "" {
-		if ovlErr := seedOverlayClaudeConfigFn(ctx, id, in.AgentCfgLowerGuestPath, in.Execer); ovlErr != nil {
-			slog.Warn("supervisor.overlay_claude_config_failed",
-				"sandbox", id, "lower", in.AgentCfgLowerGuestPath, "err", ovlErr,
-				"action", "agent will not see shared host config; /root/.claude is unshared")
-		} else {
+		ovlErr := seedOverlayClaudeConfigFn(ctx, id, in.AgentCfgLowerGuestPath, in.Execer)
+		switch {
+		case ovlErr == nil:
 			slog.Info("supervisor.overlay_claude_config_seeded", "sandbox", id, "lower", in.AgentCfgLowerGuestPath)
+		case errors.Is(ovlErr, errAgentCfgDegraded):
+			// D-RAM-11 Branch 2: named volume absent; degraded to root ext4.
+			// Non-fatal: pre-existing session state is preserved on the root disk.
+			// No non-destructive drain exists: a real one requires an API to add a
+			// volume attachment to an existing sandbox record, which does not exist
+			// today (D-RAM-15).
+			slog.Warn("supervisor.agentcfg_degraded",
+				"sandbox", id,
+				"action", "agentcfg volume absent; overlayfs on root ext4 (D-RAM-11); no non-destructive drain exists (D-RAM-15)")
+		default:
+			// D-RAM-13: Branch 3 or attach error — fail closed, boot aborts.
+			return fmt.Errorf("supervisor: agentcfg overlay mount failed (fail-closed): %w", ovlErr)
 		}
 	}
 
@@ -1065,7 +1534,15 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 				"sandbox", id, "err", umErr,
 				"action", "guest will not see operator tool dirs or home symlink")
 		} else {
-			slog.Info("supervisor.usermount_seeded", "sandbox", id, "count", len(in.UserMounts.Mounts))
+			curatedCount := 0
+			for _, m := range in.UserMounts.Mounts {
+				if m.Curated {
+					curatedCount++
+				}
+			}
+			slog.Info("supervisor.usermount_seeded", "sandbox", id,
+				"count", len(in.UserMounts.Mounts),
+				"curated", curatedCount)
 		}
 	}
 
@@ -1177,6 +1654,8 @@ func seedAgentAndHumanSecrets(
 	broker *cred.Broker,
 	refreshers []*cred.Refresher,
 	svc PerimeterCAGetter,
+	profile cred.AgentProfile,
+	credFileSeeder service.GuestSeeder,
 ) (ok bool, guestEverResponded bool) {
 	for attempt := range maxSeedAttempts {
 		if ctx.Err() != nil {
@@ -1190,7 +1669,11 @@ func seedAgentAndHumanSecrets(
 				slog.Debug("supervisor.seed_ca_retry", "attempt", attempt, "err", caErr)
 			} else {
 				guestEverResponded = true
-				if _, combErr := service.SeedGuestAgentAndSecrets(ctx, broker, sb.ID, sb.Envelope.SecretSpecs, credSeeder); combErr != nil {
+				records, combErr := service.SeedGuestAgentAndSecretsForProfile(ctx, broker, sb.ID, sb.Envelope.SecretSpecs, credSeeder, profile)
+				if combErr == nil {
+					combErr = service.SeedGuestCredFile(ctx, sb.ID, records, profile, credFileSeeder)
+				}
+				if combErr != nil {
 					slog.Debug("supervisor.seed_combined_retry", "attempt", attempt, "err", combErr)
 				} else {
 					slog.Info("supervisor.agent_and_secrets_complete", "sandbox", sb.ID,
@@ -1359,6 +1842,8 @@ func SeedLoop(
 	retryDelay time.Duration,
 	svc PerimeterCAGetter,
 	seedAgentCreds bool,
+	profile cred.AgentProfile,
+	credFileSeeder service.GuestSeeder,
 ) (ok bool, guestEverResponded bool) {
 	for attempt := range maxAttempts {
 		if ctx.Err() != nil {
@@ -1375,7 +1860,11 @@ func SeedLoop(
 			}
 			var agentErr error
 			if caErr == nil && seedAgentCreds {
-				_, agentErr = service.SeedGuestAgent(ctx, broker, id, agentSeeder)
+				var records []cred.PlaceholderRecord
+				records, agentErr = service.SeedGuestAgentForProfile(ctx, broker, id, agentSeeder, profile)
+				if agentErr == nil {
+					agentErr = service.SeedGuestCredFile(ctx, id, records, profile, credFileSeeder)
+				}
 			}
 			if caErr == nil && agentErr == nil {
 				slog.Info("supervisor.seeds_complete", "sandbox", id,
@@ -1498,5 +1987,10 @@ func buildSupervisorDriverConfig(
 		LiveMounts:        cfg.LiveMounts,
 		VirtiofsdPath:     cfg.VirtiofsdPath,
 		FreePageReporting: true,
+		NestedVirt:        cfg.NestedVirt,
+		// ConsoleLogPath persists guest virtio-console output alongside supervisor.log.
+		// The netns child receives this via NEXUS3_NETNS_CONSOLE_LOG and drains CH
+		// stdout to this file, capped at 16 MiB to prevent unbounded growth.
+		ConsoleLogPath: filepath.Join(cfg.StateDir, "console.log"),
 	}
 }

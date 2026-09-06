@@ -16,6 +16,13 @@ coverage.html
 
 # Development metadata
 .claude/
+# ...except repo-scoped skills, which describe how this repo is developed and
+# are useless to a collaborator if they do not survive a clone.
+!.claude/
+.claude/*
+!.claude/skills/
+# ...but not eval scratch output, which is throwaway run artefacts.
+.claude/skills/*-workspace/
 .codegraph/
 .groundwork/
 
@@ -29,3 +36,18 @@ docs/site/node_modules/
 docs/site/.vitepress/dist/
 docs/site/.vitepress/cache/
 __pycache__/
+
+# repro harness generated blobs and build logs (~450 MB of binary test files
+# and per-run log files). run.sh and any Containerfile templates remain tracked.
+# These paths are produced by internal/test/repro/run.sh and must not be committed.
+internal/test/repro/logs/
+internal/test/repro/workspace/
+internal/test/repro/workspace_pressure_*/
+
+# test leakage: netns control sockets + auth tokens written relative to CWD
+internal/core/driver/cloudhypervisor/netns-control/
+
+# slice-sandbox agent reports: an in-guest agent writes its narrative report
+# here because the pane transcript can become unreachable (SKILL.md mode 6).
+# It is a working artefact of one slice, never part of the tree.
+.slice-report.md

@@ -24,7 +24,7 @@
 //
 // This test uses a fake token and expects no NEXUS3_OK response. To prove a
 // real 200, bootstrap live credentials and run TestOAuthRotationDogfood:
-//  1. Start a dedicated Claude Code session: claude login (in a fresh shell)
+//  1. Start a dedicated Claude Code session: claude auth login (in a fresh shell)
 //  2. Import to nexus3: nexus3 auth login --force
 //  3. Verify token validity: cat ~/.config/nexus3/creds.json | jq .expires_at
 //  4. Run: TMPDIR=/tmp go test -tags integration -run TestOAuthRotationDogfood

@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/builder"
@@ -33,14 +32,6 @@ var ErrAgentUnreachable = errors.New("service: guest agent did not answer after 
 // required but no agent binary was supplied in CreateAndBootOptions.
 var ErrAgentBytesRequired = errors.New("no agent binary available for OCI pull (set AgentBytes in CreateAndBootOptions)")
 
-// testHookBeforeStoreCreate is called inside CreateAndBoot immediately before
-// svc.store.Create commits the sandbox record. It is nil in production and is
-// set only by tests that need to observe the volume-lease state in the D2
-// window (between vs.AttachLocked and store.Create). If the hook returns a
-// non-nil error, CreateAndBoot propagates it and aborts without writing the
-// record.
-var testHookBeforeStoreCreate atomic.Pointer[func() error]
-
 // ExtraDisk describes an additional raw ext4 disk image to attach to the
 // sandbox VM at boot time. The underlying driver maps them to virtio-blk
 // devices after the rootfs vda: ExtraDisks[0] → /dev/vdb, [1] → /dev/vdc, …
@@ -51,6 +42,26 @@ var testHookBeforeStoreCreate atomic.Pointer[func() error]
 type ExtraDisk struct {
 	// Path is the host filesystem path to the raw ext4 disk image.
 	Path string
+}
+
+// ScratchDisk* constants define the naming and guest-side contract for the
+// per-sandbox scratch disk that replaces /tmp tmpfs for workspace sandboxes
+// (D-DC-32, D-SD-01, D-SD-02). These are the authoritative contract consumed
+// by this package (host creation), the CLI (cmdline token), and the in-guest
+// agent (wipe+mount).
+const (
+	// ScratchDiskGuestMount is the in-guest mount point of the scratch disk.
+	ScratchDiskGuestMount = "/tmp"
+	// ScratchDiskDefaultBytes is the initial sparse size of the scratch disk.
+	// The file is hole-punched (no bytes allocated on host until guest writes).
+	ScratchDiskDefaultBytes int64 = 8 << 30 // 8 GiB
+)
+
+// ScratchDiskHostPath returns the host filesystem path for a sandbox's scratch
+// disk image. Follows the same <diskDir>/<id>-<role>.ext4 convention as the
+// workspace disk.
+func ScratchDiskHostPath(diskDir, id string) string {
+	return filepath.Join(diskDir, id+"-scratch.ext4")
 }
 
 // WorkspaceSpec describes a host git worktree to capture and attach to the
@@ -192,10 +203,13 @@ type CreateAndBootOptions struct {
 	PathPolicies domain.EgressPathPolicies
 
 	// AllowedBranches is the list of git ref patterns the sandbox may push to
-	// through the host-side git MITM. Set by --branches on the human git-VM
-	// create path. When nil the Envelope stores nil and
-	// Envelope.ResolvedAllowedBranches returns the project default
-	// ["refs/heads/nexus3/*"] at runtime. Agent sandboxes do not set this.
+	// through the host-side git MITM. When left nil AND the create call also
+	// binds a workspace (Workspace, or a LiveMounts entry at /workspace),
+	// CreateAndBoot derives it automatically from that worktree's current
+	// branch — see resolveAllowedBranches. Set this explicitly only to
+	// override that derivation. With no workspace bound at all, nil is
+	// stored as-is and Envelope.ResolvedAllowedBranches returns the hardcoded
+	// default ["refs/heads/nexus3/**"] at runtime.
 	AllowedBranches []string
 
 	// ExtraSecretHosts lists additional hostnames to include in
@@ -206,6 +220,13 @@ type CreateAndBootOptions struct {
 	// the host is managed by the supervisor's seedGuestAgent path — not by
 	// ResolveEnvelopeSecrets — so no SecretSpecs entry should be created.
 	ExtraSecretHosts []string
+
+	// ExtraSecretHostSuffixes lists dot-anchored DNS suffixes to include in
+	// Envelope.SecretHostSuffixes. Suffix-matched hosts are MITM'd and
+	// credential-swapped like exact SecretHosts but cover sharded/regional
+	// endpoints whose names vary (e.g. ".cursor.sh"). Each suffix must begin
+	// with ".". No SecretSpecs entry is created for suffix hosts.
+	ExtraSecretHostSuffixes []string
 
 	// Broker is the host-side credential broker used to mint placeholder
 	// credentials for AllowedHosts. If nil, credential seeding is skipped even
@@ -304,6 +325,11 @@ type CreateAndBootOptions struct {
 	// mke2fs on the test host.
 	WorkspaceCapturer func(ctx context.Context, srcDir, outExt4 string, maxBytes int64) error
 
+	// NoScratchDisk disables the per-sandbox scratch disk even when Workspace is
+	// non-nil. The zero value (false) attaches a scratch disk to every workspace
+	// sandbox (D-SD-02: off-switch, not an on-flag).
+	NoScratchDisk bool
+
 	// GitSeeder is an optional GuestSeeder that delivers the per-sandbox git
 	// identity configuration (user.name, user.email, safe.directory,
 	// init.defaultBranch) to GuestGitconfigPath (/root/.gitconfig) in the
@@ -363,6 +389,24 @@ type NamedVolumeMount struct {
 	ReadOnly  bool
 }
 
+// WireAgentEgress configures opts for an agent sandbox running the given
+// profile. It is the profile-generic form of [WireClaudeEgress] and sets all
+// per-profile fields from profile rather than hardcoding [cred.ClaudeCodeProfile].
+//
+// Adding a third agent requires no new function: pass its profile and a matching
+// CredentialSource (from [cred.NewCredentialSourceForProfile] or a [cred.Refresher]).
+//
+// The caller owns broker, seeder, and src; WireAgentEgress does not retain
+// them beyond writing them into opts.
+func WireAgentEgress(opts *CreateAndBootOptions, profile cred.AgentProfile, broker *cred.Broker, seeder GuestSeeder, src cred.CredentialSource) {
+	opts.AllowedHosts = AgentEgressHosts(profile)
+	opts.Broker = broker
+	opts.Seeder = seeder
+	opts.UseAgentSeed = true
+	opts.AgentCredSource = src
+	opts.AgentProfile = profile
+}
+
 // WireClaudeEgress configures opts for an agent sandbox that runs claude
 // (Haiku/Sonnet/etc.) in-guest and needs egress to the Anthropic API.
 //
@@ -381,32 +425,52 @@ type NamedVolumeMount struct {
 // automatic token rotation. When src is nil no real token is wired and the
 // MITM proxy forwards the placeholder (egress still works, bearer is invalid).
 //
-// The caller owns broker, seeder, and src; WireClaudeEgress does not retain
-// them beyond writing them into opts.
+// The caller owns broker, seeder, and src; WireClaudeEgress delegates to
+// [WireAgentEgress] and is kept for compatibility.
 func WireClaudeEgress(opts *CreateAndBootOptions, broker *cred.Broker, seeder GuestSeeder, src cred.CredentialSource) {
-	opts.AllowedHosts = AgentEgressHosts(cred.ClaudeCodeProfile)
-	opts.Broker = broker
-	opts.Seeder = seeder
-	opts.UseAgentSeed = true
-	opts.AgentCredSource = src
-	opts.AgentProfile = cred.ClaudeCodeProfile
+	WireAgentEgress(opts, cred.ClaudeCodeProfile, broker, seeder, src)
+}
+
+// DedicatedCredStorePathForProfile returns the host-side OAuth credential store
+// path for the given agent profile.
+//
+// claude-code is a special case: it always resolves to ~/.config/nexus3/creds.json —
+// the legacy single-tenant path. Operators have live credentials at that path and
+// changing it would silently log them out of every existing sandbox. The
+// NEXUS3_DEDICATED_CRED_STORE environment variable applies only to this alias.
+//
+// All other profiles resolve to ~/.config/nexus3/agent-creds/<name>.json where
+// <name> is the sanitized profile name, following the same sanitization convention
+// as DefaultMCPOAuthStoreRoot (see mcpoauth_refresh.go:sanitizeForFS).
+func DedicatedCredStorePathForProfile(profile cred.AgentProfile) string {
+	// claude-code: preserve the legacy path unchanged. Live operator credentials live
+	// here; any change silently invalidates every existing sandbox. The env-var
+	// override applies only to this alias so it stays forward-compatible.
+	if profile.Name == "" || profile.Name == cred.ClaudeCodeProfileName {
+		if p := os.Getenv("NEXUS3_DEDICATED_CRED_STORE"); p != "" {
+			return p
+		}
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".config", "nexus3", "creds.json")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "nexus3", "agent-creds", sanitizeForFS(profile.Name)+".json")
+}
+
+// DedicatedLockFilePathForProfile returns the advisory lock file path for the
+// credential store of the given agent profile. Mirrors the convention used by the
+// cred package: storePath + ".lock" (see cred/store.go:lockFilePath).
+func DedicatedLockFilePathForProfile(profile cred.AgentProfile) string {
+	return DedicatedCredStorePathForProfile(profile) + ".lock"
 }
 
 // DefaultDedicatedCredStorePath returns the path for nexus3's dedicated OAuth
-// credential store used by the host-side Refresher ([cred.NewRefresher]).
-//
-// Default: ~/.config/nexus3/creds.json
-// Override: NEXUS3_DEDICATED_CRED_STORE environment variable.
-//
-// S4 dogfood places the credential file at this path; see charter TBD-P5-2.
-// Construct a *cred.Refresher from this path and pass it to WireClaudeEgress
-// to enable automatic token rotation across sandboxes.
+// credential store. Deprecated: all production call sites now use
+// [DedicatedCredStorePathForProfile] with the agent's profile. This wrapper
+// delegates to DedicatedCredStorePathForProfile for the claude-code alias and
+// has no production callers — kept only as a named compatibility shim.
 func DefaultDedicatedCredStorePath() string {
-	if p := os.Getenv("NEXUS3_DEDICATED_CRED_STORE"); p != "" {
-		return p
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "nexus3", "creds.json")
+	return DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile)
 }
 
 // CreateAndBoot creates a sandbox record, boots a VM for it, verifies the
@@ -466,8 +530,14 @@ func CreateAndBoot(
 	needsDisk := opts.Image.RootfsPath == ""
 	needsWorkspace := opts.Workspace != nil
 	needsNamedVols := opts.Volumes != nil && len(opts.NamedVolumeMounts) > 0
+	// needsScratch is true when the hostWorkspacePath predicate fires (covers
+	// both opts.Workspace and LiveMounts at /workspace) and NoScratchDisk is
+	// not set. The diskDir resolution below must happen when needsScratch is
+	// true so the scratch gate at step 4.8 has a non-empty diskDir.
+	_, needsScratch := hostWorkspacePath(opts)
+	needsScratch = needsScratch && !opts.NoScratchDisk
 	var diskDir string
-	if needsDisk || needsWorkspace || needsNamedVols {
+	if needsDisk || needsWorkspace || needsNamedVols || needsScratch {
 		diskDir = opts.DiskDir
 		if diskDir == "" {
 			diskDir, err = defaultDiskDir()
@@ -479,7 +549,7 @@ func CreateAndBoot(
 
 	// Pre-compute planned disk paths so the intent can record them before the
 	// files actually exist on disk.
-	var diskCopyPath, workspaceDiskPath string
+	var diskCopyPath, workspaceDiskPath, scratchDiskPath string
 	if needsDisk {
 		diskCopyPath = filepath.Join(diskDir, id.String()+".raw")
 	}
@@ -569,6 +639,9 @@ func CreateAndBoot(
 			}
 			if workspaceDiskPath != "" {
 				_ = os.Remove(workspaceDiskPath)
+			}
+			if scratchDiskPath != "" {
+				_ = os.Remove(scratchDiskPath)
 			}
 		}
 	}()
@@ -754,6 +827,29 @@ func CreateAndBoot(
 		}
 	}
 
+	// 4.9 Scratch disk (workspace sandboxes only, D-SD-01, D-SD-02)
+	//
+	// The scratch disk is a sparse raw image with NO filesystem — the in-guest
+	// agent wipes and reformats it as ext4 at every boot and mounts it at
+	// ScratchDiskGuestMount (/tmp). The wipe-at-every-boot policy (D-SD-01) means
+	// stop/start never resurrects last session's worktrees; /workspace is the
+	// durable surface.
+	//
+	// ORDERING INVARIANT: this append runs AFTER the namedDiskExtras prepend
+	// (step 4.7 above), so scratch is always the last element of ExtraDisks.
+	// The device-index contract (len(ExtraDisks)-1 after this step) is asserted
+	// by TestScratchDisk_IsLast_SD_AC1. Do NOT move this block before step 4.7.
+	if _, hasWorkspace := hostWorkspacePath(opts); hasWorkspace && !opts.NoScratchDisk {
+		if err = os.MkdirAll(diskDir, 0o700); err != nil {
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: scratch disk dir mkdir: %w", project, name, err)
+		}
+		scratchDiskPath = ScratchDiskHostPath(diskDir, id.String())
+		if err = createSparseDisk(scratchDiskPath, ScratchDiskDefaultBytes); err != nil {
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: create scratch disk: %w", project, name, err)
+		}
+		opts.ExtraDisks = append(opts.ExtraDisks, ExtraDisk{Path: scratchDiskPath})
+	}
+
 	// 5. Construct per-sandbox driver instance
 	bootDrv, err := newDriver(ext4Path, opts.ExtraDisks)
 	if err != nil {
@@ -766,7 +862,11 @@ func CreateAndBoot(
 	// the agent seed without naming a profile gets the default, matching the
 	// pre-TBD-PD-32 behaviour.
 	agentProfile := opts.AgentProfile
-	if opts.UseAgentSeed && agentProfile.PlaceholderEnvVar == "" {
+	// Name, not PlaceholderEnvVar, is the zero-value sentinel (see
+	// cred.AgentProfile.Name doc): a profile that legitimately has no OAuth
+	// placeholder path (e.g. an API-key-only agent like cursor) must not be
+	// silently swapped for Claude here just because that field is empty.
+	if opts.UseAgentSeed && agentProfile.Name == "" {
 		agentProfile = cred.ClaudeCodeProfile
 	}
 
@@ -777,15 +877,16 @@ func CreateAndBoot(
 		Labels:  opts.Labels,
 		State:   domain.Created,
 		Envelope: domain.Envelope{
-			ImageDigest:  resolvedDigest,
-			AllowedHosts: opts.AllowedHosts, // frozen at creation (P1-S6)
-			SSHPublicKey: opts.SSHPublicKey, // frozen at creation (ORCA-S1)
-			SecretHosts:  append(secretHostsFromBinds(opts.Secrets), opts.ExtraSecretHosts...),
-			SecretSpecs:  secretSpecsFromBinds(opts.Secrets),
-			OpenEgress:      opts.OpenEgress,      // D-PD-33: explicit opt-in; never inferred from empty AllowedHosts
-			AllowedRepo:     opts.AllowedRepo,     // D-PD-36: per-repo path allowlist; enforced below
-			AllowedBranches: opts.AllowedBranches, // S0: nil = use default at runtime via ResolvedAllowedBranches
-			PathPolicies:    opts.PathPolicies,    // T4: per-secret path policies; converted to mitm.PathPolicies at start
+			ImageDigest:     resolvedDigest,
+			AllowedHosts:    opts.AllowedHosts, // frozen at creation (P1-S6)
+			SSHPublicKey:    opts.SSHPublicKey, // frozen at creation (ORCA-S1)
+			SecretHosts:        append(secretHostsFromBinds(opts.Secrets), opts.ExtraSecretHosts...),
+			SecretHostSuffixes: opts.ExtraSecretHostSuffixes,
+			SecretSpecs:     secretSpecsFromBinds(opts.Secrets),
+			OpenEgress:      opts.OpenEgress,              // D-PD-33: explicit opt-in; never inferred from empty AllowedHosts
+			AllowedRepo:     opts.AllowedRepo,             // D-PD-36: per-repo path allowlist; enforced below
+			AllowedBranches: resolveAllowedBranches(opts), // TBD-1: derived from the bound worktree's branch; see resolveAllowedBranches
+			PathPolicies:    opts.PathPolicies,            // T4: per-secret path policies; converted to mitm.PathPolicies at start
 		},
 		RemoveOnExit:   opts.RemoveOnExit,
 		BaseRef:        opts.BaseRef, // G1: shallow-clone boundary SHA (D-PD-19); empty if no git workspace
@@ -840,7 +941,7 @@ func CreateAndBoot(
 	// D2 test seam: fires while volumeLeases are still held (locks not yet
 	// released). Nil in production. Tests use this to call Prune inside the
 	// window and confirm the held lease blocks deletion.
-	if hookPtr := testHookBeforeStoreCreate.Load(); hookPtr != nil {
+	if hookPtr := svc.testHookBeforeStoreCreate.Load(); hookPtr != nil {
 		if hookErr := (*hookPtr)(); hookErr != nil {
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: testHookBeforeStoreCreate: %w", project, name, hookErr)
 		}
@@ -878,6 +979,19 @@ func CreateAndBoot(
 		rec.State = tr.NextState
 		rec.InstanceID = instanceID
 		rec.StopReason = "" // cleared: sandbox is running
+		// Persist netns adoption identity fields (same as service.Start).
+		if nsp, ok := bootDrv.(driver.NetnsStateProvider); ok {
+			ns, hasNetns := nsp.NetnsState(rec.ID)
+			if hasNetns {
+				rec.NetnsChildPID = ns.ChildPID
+				rec.NetnsChildPGID = ns.ChildPGID
+				rec.NetnsChildStartTime = ns.ChildStartTime
+				rec.GuestTapName = ns.GuestTap
+				rec.CHAPISocket = ns.APISocket
+				rec.NetnsControlSocket = ns.ControlSocket
+				rec.NetnsControlToken = ns.ControlToken
+			}
+		}
 		booted = *rec
 		return nil
 	})
@@ -980,9 +1094,12 @@ func CreateAndBoot(
 				svc.storeDeregistrar(booted.ID, dr)
 			}
 		} else if realToken == "" {
+			hint := "configure NEXUS3_DEDICATED_CRED_STORE (OAuth path)"
+			if agentProfile.APIKeyEnvVar != "" {
+				hint = fmt.Sprintf("set %s (API-key path) or %s", agentProfile.APIKeyEnvVar, hint)
+			}
 			slog.Warn("create-and-boot: no real token for agent egress; egress will send placeholder",
-				"sandbox", booted.ID, "host", agentProfile.CredentialedHost,
-				"hint", "set ANTHROPIC_AUTH_TOKEN (auth-token path) or configure NEXUS3_DEDICATED_CRED_STORE (OAuth path)")
+				"sandbox", booted.ID, "host", agentProfile.CredentialedHost, "hint", hint)
 		}
 	} else {
 		var combined []byte
@@ -1220,6 +1337,106 @@ func secretSpecsFromBinds(binds []SecretBind) []string {
 		return nil
 	}
 	return out
+}
+
+// hostWorkspacePath returns the host path bound to the sandbox's /workspace
+// mount, if any. A given CreateAndBoot call populates at most one of the two
+// mechanisms that carry a worktree host path:
+//   - opts.Workspace (the human `--workspace` ext4-capture path), or
+//   - an opts.LiveMounts entry at "/workspace" or "/workspace/<name>" (the
+//     worktree-sandbox live-virtiofs path built by herdrWorktreeSandbox).
+//
+// resolveAllowedBranches uses the result to derive a push allowlist from the
+// worktree's own branch (TBD-1). Returns ok=false when no workspace is
+// bound, in which case there is nothing to derive a branch from.
+func hostWorkspacePath(opts CreateAndBootOptions) (path string, ok bool) {
+	if opts.Workspace != nil && opts.Workspace.SourcePath != "" {
+		return opts.Workspace.SourcePath, true
+	}
+	// Delegate to the exported single-implementation predicate so the
+	// /workspace match string is defined exactly once (workspace.go).
+	return WorkspaceMountHostPath(opts.LiveMounts)
+}
+
+// hostWorktreeBranch returns the branch currently checked out at repoPath.
+// It fails (rather than guessing) on a detached HEAD, a repoPath that is not
+// a git worktree, or any other condition that prevents git from resolving a
+// symbolic ref — the caller (resolveAllowedBranches) must deny-closed on
+// error, not substitute a default.
+func hostWorktreeBranch(repoPath string) (string, error) {
+	out, err := exec.Command("git", "-C", repoPath, "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("service: create-and-boot: resolve branch in %s: %w", repoPath, err)
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "" {
+		return "", fmt.Errorf("service: create-and-boot: resolve branch in %s: git returned an empty branch name", repoPath)
+	}
+	return branch, nil
+}
+
+// resolveAllowedBranches derives the Envelope.AllowedBranches value for a
+// CreateAndBoot call (TBD-1: what should bound a sandbox's pushable
+// branches once the nexus3-only default no longer fits every repo).
+//
+// A caller-supplied opts.AllowedBranches always wins — it is an explicit
+// override and is returned unchanged.
+//
+// Otherwise, when the sandbox has a workspace bound (hostWorkspacePath finds
+// one), the sandbox is scoped to exactly that worktree's current branch: the
+// sandbox exists to do work on that branch, so a single exact
+// "refs/heads/<branch>" ref is both sufficient (AC-1: that branch can be
+// pushed) and no wider than necessary (AC-2: the repository's default branch
+// and any ref belonging to unrelated work are still denied — a single exact
+// ref matches nothing else). A namespace-style "<branch>/**" pattern was
+// considered and rejected: it would let a sandbox push siblings under its
+// own branch's prefix that it never touched, which is exactly the kind of
+// unrelated-ref widening AC-2 rules out.
+//
+// When a workspace IS bound but its branch cannot be derived (detached HEAD,
+// git unavailable, unreadable worktree), this fails closed: it returns
+// domain.UnresolvedBranchSentinel, a ref pattern that can never match a real
+// push, rather than falling back to the nexus3-only default (wrong for a
+// non-nexus3 repo, and would incorrectly widen access) or to an empty slice
+// (which Envelope.ResolvedAllowedBranches treats as "unset" and would apply
+// that same wrong default).
+//
+// When NO workspace is bound at all, nil is returned unchanged: there is no
+// worktree to derive a branch from, and this path is unrelated to the
+// worktree-sandbox defect this function fixes. Envelope.ResolvedAllowedBranches
+// applies its default at runtime in that case, same as before.
+func resolveAllowedBranches(opts CreateAndBootOptions) []string {
+	if len(opts.AllowedBranches) > 0 {
+		return opts.AllowedBranches
+	}
+	hostPath, ok := hostWorkspacePath(opts)
+	if !ok {
+		return opts.AllowedBranches
+	}
+	branch, err := hostWorktreeBranch(hostPath)
+	if err != nil {
+		slog.Warn("service: create-and-boot: could not derive pushable branch from bound workspace; denying all pushes (D-PD-38 fail-closed)",
+			"workspace", hostPath, "err", err)
+		return []string{domain.UnresolvedBranchSentinel}
+	}
+	return []string{"refs/heads/" + branch}
+}
+
+// createSparseDisk creates a sparse raw disk image of the given size.
+// os.Truncate creates a sparse (hole-punched) file on Linux — no host bytes
+// are allocated until the guest actually writes. No filesystem is written;
+// the in-guest agent reformats the device at every boot (D-SD-01).
+func createSparseDisk(path string, sizeBytes int64) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if err = f.Truncate(sizeBytes); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	return f.Close()
 }
 
 // namedVolumeAttachments converts NamedVolumeMount slice to domain.VolumeAttachment

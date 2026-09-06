@@ -514,18 +514,25 @@ func TestApplyRWVerdictTable_row4_lease_unknown(t *testing.T) {
 		t.Fatalf("vs.Create: %v", err)
 	}
 
-	// Create an intent file that exists but is unreadable.
-	// probeIntentLease opens the file; EACCES → leaseUnknown.
+	// Create a self-referential symlink at the intent path so that os.Open
+	// returns ELOOP for every uid, including root.  chmod 0o000 is
+	// CAP_DAC_OVERRIDE-bypassed by root, making it vacuous in a sandbox;
+	// ELOOP is not bypassed by any capability.
+	//
+	// probeIntentLease: os.Open → ELOOP → not os.ErrNotExist → leaseUnknown.
 	phantomID := domain.NewSandboxID()
 	intentPath := filepath.Join(diskDir, phantomID.String()+".create-intent.json")
-	if err := os.WriteFile(intentPath, []byte(`{"id":"`+phantomID.String()+`"}`), 0o600); err != nil {
-		t.Fatalf("WriteFile intent: %v", err)
+	if err := os.Symlink(intentPath, intentPath); err != nil {
+		t.Fatalf("Symlink (self-referential): %v", err)
 	}
-	// Make unreadable → probeIntentLease returns leaseUnknown.
-	if err := os.Chmod(intentPath, 0o000); err != nil {
-		t.Fatalf("Chmod intent: %v", err)
+	// Vacuity guard: confirm os.Open actually fails for this uid, so the
+	// fixture is not silently transparent.  A readable path would let
+	// probeIntentLease open the fd and flock it, returning leaseFree, and
+	// the test would never reach Row 4.
+	if f, openErr := os.Open(intentPath); openErr == nil {
+		_ = f.Close()
+		t.Fatalf("fixture is vacuous: intentPath is READABLE as uid %d — symlink loop broken", os.Getuid())
 	}
-	t.Cleanup(func() { _ = os.Chmod(intentPath, 0o600) }) // restore so TempDir cleanup can remove it
 
 	// Attach phantom's ID to the volume (no record in store).
 	if err := vs.AttachAndPrune(volName, phantomID.String(), nil); err != nil {

@@ -36,6 +36,17 @@ type reapReportJSON struct {
 	Deleted          []string          `json:"deleted"`
 	Failed           []reapFailureJSON `json:"failed"`
 	Apply            bool              `json:"apply"`
+	// KilledPIDs are process-group leader pids that --apply killed to
+	// reclaim a live netns-child orphan (no file was deleted for these).
+	KilledPIDs []int `json:"killed_pids"`
+	// ZombieProcesses is the count of zombie processes encountered during the
+	// netns sweep. The dominant source is unwaited virtiofsd/nexus3 children.
+	// Does not affect exit code.
+	ZombieProcesses int `json:"zombie_processes"`
+	// UninspectableProcesses is the count of non-zombie processes skipped
+	// because /proc/<pid> or /proc/<pid>/environ was unreadable (cleared
+	// dumpable flag or process vanished). Does not affect exit code.
+	UninspectableProcesses int `json:"uninspectable_processes"`
 }
 
 // ── command ───────────────────────────────────────────────────────────────────
@@ -83,13 +94,14 @@ func runReapWith(ctx context.Context, apply bool, out *Output) error {
 		}
 	}
 	idx := service.NewResourceIndex(service.IndexConfig{}) // default dirs
-	return runReapFull(ctx, st, idx, apply, out)
+	return runReapFull(ctx, st, idx, apply, out, service.ReapOptions{AllowRealProcKill: true})
 }
 
 // runReapFull is the fully-injected implementation. Tests inject a fake store
-// and a ResourceIndex pointed at a temp dir.
-func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex, apply bool, out *Output) error {
-	report, err := service.Reap(ctx, st, idx, apply)
+// and a ResourceIndex pointed at a temp dir. An optional service.ReapOptions
+// may be provided to override ProcDir (and other seams) for test isolation.
+func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex, apply bool, out *Output, opts ...service.ReapOptions) error {
+	report, err := service.Reap(ctx, st, idx, apply, opts...)
 	if err != nil {
 		return &CodedError{
 			Code: ErrCodeInternalError,
@@ -127,17 +139,31 @@ func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex
 			Reason: f.Reason,
 		})
 	}
+	killedPIDs := report.KilledPIDs
+	if killedPIDs == nil {
+		killedPIDs = []int{}
+	}
 	data := reapReportJSON{
-		Entries:          entries,
-		ReclaimableBytes: report.ReclaimableBytes,
-		Deleted:          deleted,
-		Failed:           failed,
-		Apply:            apply,
+		Entries:                entries,
+		ReclaimableBytes:       report.ReclaimableBytes,
+		Deleted:                deleted,
+		Failed:                 failed,
+		Apply:                  apply,
+		KilledPIDs:             killedPIDs,
+		ZombieProcesses:        report.ZombieProcesses,
+		UninspectableProcesses: report.UninspectableProcesses,
+	}
+
+	suspects := 0
+	for _, e := range report.Entries {
+		if e.Status == service.ReapStatusSuspect {
+			suspects++
+		}
 	}
 
 	if out.IsJSON() {
 		out.EmitSuccess("reap.report", data, "")
-		if len(report.Failed) > 0 {
+		if len(report.Failed) > 0 || suspects > 0 {
 			return &ExitCodeError{Code: 1}
 		}
 		return nil
@@ -151,8 +177,23 @@ func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex
 		}
 	}
 
-	if orphans == 0 {
+	// A SUSPECT entry means reap could not rule out a live orphan — this must
+	// never be folded into "No orphaned resources found." Silently omitting
+	// what reap could not classify is the fail-open shape this ticket exists
+	// to close (ticket 10 fail-closed rail): a degraded classification must
+	// be the LOUD path, not indistinguishable from a clean report.
+	if orphans == 0 && suspects == 0 {
 		fmt.Fprintln(out.w, "No orphaned resources found.")
+		// Separate counts keep the virtiofsd/nexus3 Wait() leak visible while
+		// clearly distinguishing it from inaccessible-dumpable processes.
+		// Neither count affects the exit code — mutation proof in
+		// TestRunReapFull_UninspectableExitsZero.
+		if report.ZombieProcesses > 0 {
+			fmt.Fprintf(out.w, "%d zombie process(es) encountered (unwaited virtiofsd/nexus3 children; not orphans).\n", report.ZombieProcesses)
+		}
+		if report.UninspectableProcesses > 0 {
+			fmt.Fprintf(out.w, "%d process(es) inaccessible (cleared dumpable flag or vanished; not orphans).\n", report.UninspectableProcesses)
+		}
 		return nil
 	}
 
@@ -160,8 +201,8 @@ func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex
 	if apply {
 		mode = "apply"
 	}
-	fmt.Fprintf(out.w, "Reap report (%s): %d orphan(s), %s reclaimable\n\n",
-		mode, orphans, formatBytes(report.ReclaimableBytes))
+	fmt.Fprintf(out.w, "Reap report (%s): %d orphan(s), %d suspect(s), %s reclaimable\n\n",
+		mode, orphans, suspects, formatBytes(report.ReclaimableBytes))
 
 	for _, e := range report.Entries {
 		if e.Status != service.ReapStatusOrphan {
@@ -170,14 +211,35 @@ func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex
 		fmt.Fprintf(out.w, "  ORPHAN  %s  (%s)\n", e.Resource.Path, formatBytes(e.AllocatedBytes))
 		fmt.Fprintf(out.w, "          %s\n", e.Reason)
 	}
+	for _, e := range report.Entries {
+		if e.Status != service.ReapStatusSuspect {
+			continue
+		}
+		fmt.Fprintf(out.w, "  SUSPECT %s\n", e.Resource.Path)
+		fmt.Fprintf(out.w, "          %s\n", e.Reason)
+	}
 
-	if apply && len(report.Deleted) > 0 {
+	if apply && (len(report.Deleted) > 0 || len(report.KilledPIDs) > 0) {
 		fmt.Fprintf(out.w, "\nDeleted %d resource(s):\n", len(report.Deleted))
 		for _, p := range report.Deleted {
 			fmt.Fprintf(out.w, "  %s\n", p)
 		}
-	} else if !apply && orphans > 0 {
+		if len(report.KilledPIDs) > 0 {
+			fmt.Fprintf(out.w, "Killed %d orphaned netns-child process group(s): %v\n", len(report.KilledPIDs), report.KilledPIDs)
+		}
+	} else if !apply && (orphans > 0 || suspects > 0) {
 		fmt.Fprintf(out.w, "\nRun with --apply to delete.\n")
+	}
+
+	if report.ZombieProcesses > 0 {
+		fmt.Fprintf(out.w, "\n%d zombie process(es) encountered (unwaited virtiofsd/nexus3 children; not orphans).\n", report.ZombieProcesses)
+	}
+	if report.UninspectableProcesses > 0 {
+		fmt.Fprintf(out.w, "\n%d process(es) inaccessible (cleared dumpable flag or vanished; not orphans).\n", report.UninspectableProcesses)
+	}
+
+	if suspects > 0 {
+		fmt.Fprintf(out.Stderr(), "\n%d resource(s) could not be classified with confidence — treat as a possible orphan and inspect by hand; --apply never touches these.\n", suspects)
 	}
 
 	// Failures are printed AFTER the deleted list and to stderr, so a caller
@@ -190,6 +252,10 @@ func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex
 			fmt.Fprintf(out.Stderr(), "  %s\n          %s\n", f.Path, f.Reason)
 		}
 		fmt.Fprintf(out.Stderr(), "Re-run `nexus3 reap --apply`; if a path fails twice, inspect it by hand.\n")
+		return &ExitCodeError{Code: 1}
+	}
+
+	if suspects > 0 {
 		return &ExitCodeError{Code: 1}
 	}
 

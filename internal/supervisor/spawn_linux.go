@@ -8,8 +8,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
+
+	"github.com/IniZio/nexus3/internal/core/statedir"
 )
 
 // SpawnConfig carries the parameters for spawning a detached supervisor.
@@ -30,6 +33,34 @@ type SpawnConfig struct {
 	// ReadyTimeout is the maximum time to wait for supervisor.pid to appear.
 	// Defaults to 5 minutes when zero.
 	ReadyTimeout time.Duration
+
+	// AdoptHandoffSock, when non-empty, spawns the subprocess in adopt mode
+	// (nexus3 __supervisor --adopt-handoff-sock <path>) instead of boot mode.
+	// See [SpawnAdoptDetached], which is the entry point that waits for the
+	// adopt-mode readiness signal (the handoff socket appearing) rather than
+	// for supervisor.pid — the pidfile is written much later in adopt mode,
+	// only after a handoff has actually been offered and confirmed.
+	AdoptHandoffSock string
+
+	// CacheDiskLeaseFiles are open lock files whose flocks are already held by
+	// the caller (builder.CacheDiskLease.File), index-parallel to
+	// Config.CacheDiskSlots. SpawnDetached passes them to the subprocess via
+	// ExtraFiles and fills Config.CacheDiskLeaseFDs with the fd numbers they
+	// land on. Because flock ownership follows the open file description, the
+	// child holds the SAME lock with no window in which the slot reads free —
+	// the caller may (and should) release its own copies afterwards.
+	CacheDiskLeaseFiles []*os.File
+
+	// Reacquire, when true, spawns the subprocess in RE-ACQUIRE mode
+	// (nexus3 __supervisor --reacquire) instead of boot mode: it never boots
+	// a VM, and instead rebuilds the perimeter for an already-running VM
+	// through the surviving netns child's control socket. See
+	// [RunReacquire] and [SpawnReacquireDetached].
+	//
+	// Mutually exclusive with AdoptHandoffSock: adopt mode receives the
+	// perimeter fd from a LIVE outgoing supervisor, re-acquire mode exists
+	// precisely because there is no live supervisor to receive it from.
+	Reacquire bool
 }
 
 // BuildSupervisorArgv constructs the argv slice for `nexus3 __supervisor`
@@ -78,8 +109,16 @@ func BuildSupervisorArgv(cfg SpawnConfig) []string {
 	if cfg.BootVCPUs != 0 {
 		args = append(args, "--boot-vcpus", strconv.Itoa(int(cfg.BootVCPUs)))
 	}
+	// NestedVirt: forward when true; omit otherwise so the flag default (false)
+	// preserves nested-OFF without flag-presence checks (D-N3N-02).
+	if cfg.NestedVirt {
+		args = append(args, "--nested")
+	}
 	if cfg.HasWorkspaceDisk {
 		args = append(args, "--workspace-disk-index", strconv.Itoa(cfg.WorkspaceDiskIndex))
+	}
+	if cfg.HasScratchDisk {
+		args = append(args, "--scratch-disk-index", strconv.Itoa(cfg.ScratchDiskIndex))
 	}
 	// WorkspaceGuestPath: forwarded when non-empty so the supervisor can seed
 	// the operator's git identity into the guest (GIT-SEED, D-PD-29).
@@ -100,6 +139,16 @@ func BuildSupervisorArgv(cfg SpawnConfig) []string {
 	// caused the autogrow feature to be silently dead.
 	for _, idx := range cfg.ResizableDiskIndices {
 		args = append(args, "--resizable-disk-index", strconv.Itoa(idx))
+	}
+	// CacheDiskSlots / CacheDiskLeaseFDs: the builder cache-disk slot leases
+	// this supervisor owns for its VM's lifetime (D-HSH-07). The fd list is
+	// index-parallel to the slot list and is populated by SpawnDetached after
+	// it has placed the inherited descriptors in ExtraFiles.
+	for _, p := range cfg.CacheDiskSlots {
+		args = append(args, "--cache-disk-slot", p)
+	}
+	for _, fd := range cfg.CacheDiskLeaseFDs {
+		args = append(args, "--cache-disk-lease-fd", strconv.Itoa(fd))
 	}
 	// LiveMounts / VirtiofsdPath: forwarded so the supervisor re-attaches the
 	// virtiofs shares on every boot. Without these the supervisor boots the VM
@@ -127,6 +176,16 @@ func BuildSupervisorArgv(cfg SpawnConfig) []string {
 	// Set by SpawnDetached when Ephemeral is true and a pipe was created.
 	if cfg.ParentPipeFD > 0 {
 		args = append(args, "--parent-pipe-fd", strconv.Itoa(cfg.ParentPipeFD))
+	}
+	// AdoptHandoffSock: selects adopt mode (RunAdopt) over boot mode
+	// (RunDetached) in runSupervisorMain. See SpawnAdoptDetached.
+	if cfg.AdoptHandoffSock != "" {
+		args = append(args, "--adopt-handoff-sock", cfg.AdoptHandoffSock)
+	}
+	// Reacquire: selects re-acquire mode (RunReacquire) over boot mode
+	// (RunDetached) in runSupervisorMain. See SpawnReacquireDetached.
+	if cfg.Reacquire {
+		args = append(args, "--reacquire")
 	}
 	return args
 }
@@ -178,6 +237,24 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 		cfg.ParentPipeFD = 3 // first ExtraFiles entry → fd 3 in child
 	}
 
+	// ExtraFiles[i] lands on fd 3+i in the child (0/1/2 are stdio). The
+	// watchdog pipe, when present, always takes the first slot; the
+	// cache-disk lease descriptors follow. Their fd numbers are computed here
+	// and written into cfg BEFORE BuildSupervisorArgv so the flags the child
+	// parses and the descriptors it actually inherits cannot drift apart.
+	var extraFiles []*os.File
+	if pipeR != nil {
+		extraFiles = append(extraFiles, pipeR)
+	}
+	cfg.CacheDiskLeaseFDs = nil
+	for _, lf := range cfg.CacheDiskLeaseFiles {
+		if lf == nil {
+			continue
+		}
+		extraFiles = append(extraFiles, lf)
+		cfg.CacheDiskLeaseFDs = append(cfg.CacheDiskLeaseFDs, 3+len(extraFiles)-1)
+	}
+
 	args := BuildSupervisorArgv(cfg)
 
 	// Set up log file for supervisor stdout/stderr.
@@ -185,7 +262,7 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 	if logPath == "" {
 		logPath = cfg.StateDir + "/supervisor.log"
 	}
-	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, statedir.FileMode)
 	if logErr != nil {
 		if pipeR != nil {
 			pipeR.Close()
@@ -201,9 +278,7 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if pipeR != nil {
-		cmd.ExtraFiles = []*os.File{pipeR} // becomes fd 3 in supervisor
-	}
+	cmd.ExtraFiles = extraFiles // pipeR (if any) → fd 3, then lease fds
 
 	if startErr := cmd.Start(); startErr != nil {
 		_ = logFile.Close()
@@ -241,7 +316,11 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 			if reason, readErr := os.ReadFile(filepath.Join(cfg.StateDir, supervisorErrFile)); readErr == nil && len(reason) > 0 {
 				return 0, nil, fmt.Errorf("spawn supervisor: %s", string(reason))
 			}
-			return 0, nil, fmt.Errorf("spawn supervisor: process exited before writing pidfile (pid %d); see %s/supervisor.log", spawnPid, cfg.StateDir)
+			// Name the log file actually in use: cfg.LogPath may redirect it
+			// away from the sandbox's state dir, and pointing at a path that
+			// was never written sends the reader hunting for evidence that
+			// does not exist.
+			return 0, nil, fmt.Errorf("spawn supervisor: process exited before writing pidfile (pid %d); see %s", spawnPid, logPath)
 		}
 		data, readErr := os.ReadFile(pidfile)
 		if readErr == nil && len(data) > 0 {
@@ -255,6 +334,93 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 		pipeW.Close()
 	}
 	return 0, nil, fmt.Errorf("spawn supervisor: timed out waiting for %s (pid %d)", pidfile, spawnPid)
+}
+
+// SpawnAdoptDetached forks and detaches a supervisor process in adopt mode
+// (cfg.AdoptHandoffSock must be non-empty). Unlike [SpawnDetached], it does
+// NOT wait for supervisor.pid — in adopt mode that file is written only
+// after a handoff has actually been offered and confirmed, which has not
+// happened yet when this function is spawning the process. Instead it waits
+// for cfg.AdoptHandoffSock to exist: [net.Listen] creates the socket's
+// filesystem entry as soon as the adopt-mode process binds it, strictly
+// before it calls Accept, so polling for the path's existence (not dialing
+// it, which would consume the one Accept the caller's own handoff dial is
+// waiting to fill) is a safe, non-consuming readiness signal.
+//
+// The caller is responsible for the actual handoff request (RequestHandoff)
+// once this returns, and for terminating the spawned process if the handoff
+// does not succeed — a spawned adopt-mode process that never receives an
+// offer exits on its own once adoptHandoffAcceptTimeout elapses.
+func SpawnAdoptDetached(cfg SpawnConfig) (pid int, err error) {
+	if cfg.AdoptHandoffSock == "" {
+		return 0, fmt.Errorf("spawn adopt supervisor: AdoptHandoffSock is required")
+	}
+	_ = os.Remove(filepath.Join(cfg.StateDir, supervisorErrFile))
+
+	exe := cfg.Exe
+	if exe == "" {
+		exe, err = os.Executable()
+		if err != nil {
+			return 0, fmt.Errorf("spawn adopt supervisor: resolve executable: %w", err)
+		}
+	}
+
+	readyTimeout := cfg.ReadyTimeout
+	if readyTimeout == 0 {
+		readyTimeout = 30 * time.Second
+	}
+
+	args := BuildSupervisorArgv(cfg)
+
+	// Log to the SAME default path as a boot-mode spawn (supervisor.log), not
+	// a separate supervisor-adopt.log. An adopted supervisor is a
+	// continuation of the same sandbox's supervision, not a new one — an
+	// operator debugging a hotswap should find supervisor.adopted and
+	// supervisor.adopt.ready immediately after the outgoing side's last line
+	// in ONE file, rather than discovering the outgoing log "stops dead" and
+	// having to know a second, differently-named file exists. Both the
+	// outgoing and incoming processes append (O_APPEND) to this path
+	// concurrently for the brief window before the outgoing side exits; that
+	// is safe on Linux for writes of this size.
+	logPath := cfg.LogPath
+	if logPath == "" {
+		logPath = cfg.StateDir + "/supervisor.log"
+	}
+	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, statedir.FileMode)
+	if logErr != nil {
+		return 0, fmt.Errorf("spawn adopt supervisor: open log file %s: %w", logPath, logErr)
+	}
+
+	cmd := exec.Command(exe, args...)
+	cmd.Stdin = nil
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if startErr := cmd.Start(); startErr != nil {
+		_ = logFile.Close()
+		return 0, fmt.Errorf("spawn adopt supervisor: exec: %w", startErr)
+	}
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
+	_ = logFile.Close()
+
+	spawnPid := cmd.Process.Pid
+	deadline := time.Now().Add(readyTimeout)
+	for time.Now().Before(deadline) {
+		if killErr := syscall.Kill(spawnPid, 0); killErr != nil {
+			if reason, readErr := os.ReadFile(filepath.Join(cfg.StateDir, supervisorErrFile)); readErr == nil && len(reason) > 0 {
+				return 0, fmt.Errorf("spawn adopt supervisor: %s", string(reason))
+			}
+			return 0, fmt.Errorf("spawn adopt supervisor: process exited before listening on handoff socket (pid %d); see %s", spawnPid, logPath)
+		}
+		if _, statErr := os.Stat(cfg.AdoptHandoffSock); statErr == nil {
+			return spawnPid, nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	terminateSupervisor(spawnPid, exited, terminateSupervisorGrace)
+	return 0, fmt.Errorf("spawn adopt supervisor: timed out waiting for handoff listener at %s (pid %d)", cfg.AdoptHandoffSock, spawnPid)
 }
 
 // terminateSupervisorGrace is how long terminateSupervisor waits for a SIGTERM'd
@@ -301,4 +467,62 @@ func terminateSupervisor(pid int, exited <-chan struct{}, grace time.Duration) {
 	case <-time.After(grace):
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
+}
+
+// SpawnReacquireDetached forks and detaches a supervisor in RE-ACQUIRE mode
+// for a sandbox whose VM is alive but whose supervisor is dead.
+//
+// It is the spawn half of the crash-recovery path: recovery classifies a
+// sandbox [recovery.OutcomeAdoptable] and calls this, which starts a
+// long-lived [RunReacquire] process that rebuilds the perimeter through the
+// surviving netns child's control socket.
+//
+// # The stale-pidfile hazard
+//
+// Readiness is the pidfile appearing, exactly as in [SpawnDetached]. But the
+// supervisor this replaces was SIGKILLed, so its deferred pidfile cleanup
+// never ran and a STALE pidfile is almost always still present. Left alone,
+// SpawnDetached would read that stale file immediately and report the new
+// process ready before it had acquired anything.
+//
+// So the pidfile is cleared first — but only after confirming it does not
+// name a LIVE process. A live pid there means something is already
+// supervising this sandbox, and spawning a second supervisor over a live one
+// creates two owners for the same VM: worse than the bug being fixed. That
+// case REFUSES and touches nothing.
+func SpawnReacquireDetached(cfg SpawnConfig) (pid int, err error) {
+	if cfg.AdoptHandoffSock != "" {
+		return 0, fmt.Errorf("spawn reacquire supervisor: AdoptHandoffSock must be empty (adopt and re-acquire are mutually exclusive)")
+	}
+	cfg.Reacquire = true
+
+	// Clear any CA outcome left by a PREVIOUS re-acquisition of this sandbox.
+	// Without this, a second recovery would read the first run's answer and
+	// attribute it to the new supervisor. Failure to clear is fatal here (unlike
+	// the write side): reporting a stale outcome as this run's is precisely the
+	// stale-assertion defect being fixed, so a spawner that cannot guarantee
+	// freshness must not proceed to a state where the CLI trusts the file.
+	if err := ClearCAOutcome(cfg.StateDir); err != nil {
+		return 0, fmt.Errorf("spawn reacquire supervisor: clear stale CA outcome: %w", err)
+	}
+
+	pidfile := PidfilePath(cfg.StateDir)
+	if data, readErr := os.ReadFile(pidfile); readErr == nil {
+		if existing, convErr := strconv.Atoi(strings.TrimSpace(string(data))); convErr == nil && existing > 0 {
+			if PidAlive(existing) {
+				return 0, fmt.Errorf("spawn reacquire supervisor: pidfile %s names live pid %d; refusing to spawn a second supervisor for this sandbox", pidfile, existing)
+			}
+		}
+		// Stale (the SIGKILLed supervisor's own pidfile): clear it so the
+		// readiness poll below observes the NEW process, not the dead one.
+		if rmErr := os.Remove(pidfile); rmErr != nil && !os.IsNotExist(rmErr) {
+			return 0, fmt.Errorf("spawn reacquire supervisor: remove stale pidfile %s: %w", pidfile, rmErr)
+		}
+	}
+
+	spawnPid, _, spawnErr := SpawnDetached(cfg)
+	if spawnErr != nil {
+		return 0, spawnErr
+	}
+	return spawnPid, nil
 }

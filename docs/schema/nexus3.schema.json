@@ -122,6 +122,11 @@
           "description": "RAM hotplug ceiling in MiB. 0 means use the built-in default (typically 4× boot memory or 4096 MiB, whichever is larger). Must exceed sandbox.memory when both are set. CLI --memory-max always wins over this config value.",
           "default": 0,
           "minimum": 0
+        },
+        "nested": {
+          "type": "boolean",
+          "description": "Expose /dev/kvm to the guest so inner VMs can boot. Opt-in and default false (D-N3N-02): nested virtualisation widens the isolation perimeter. Honoured only from the trusted ref (refs/remotes/origin/HEAD), never from a worktree branch, so no branch can grant itself /dev/kvm.",
+          "default": false
         }
       }
     }

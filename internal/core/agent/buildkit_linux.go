@@ -65,6 +65,8 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 		if err := mountTmpFS(inGuestBuildkitState, "4g"); err != nil {
 			log.Printf("in-guest build: WARNING: tmpfs on %s failed (%v); state will be on virtiofs",
 				inGuestBuildkitState, err)
+		} else {
+			log.Printf("in-guest build: WARNING: /var/lib/buildkit is a 4 GiB RAM tmpfs — no cache disk attached; layer cache will not persist and large COPYs are bounded by guest RAM")
 		}
 	}
 
@@ -228,6 +230,8 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 		AgentPath:          opts.AgentPath,
 		AgentInstallPath:   "/sbin/nexus3-agent",
 		WorkspaceDir:       opts.ContextDir, // vdb mount point; empty means no user context files
+		ToolRecipe:         opts.ToolRecipe,
+		TargetArch:         opts.TargetArch,
 	}, rootfsDir); err != nil {
 		// Prototype finding (2026-08): the async log-forward goroutine is cut off
 		// at shutdown, so the buildkitd failure reason never reaches the host.
@@ -241,6 +245,21 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 	}
 	log.Printf("in-guest build: rootfs at %s", rootfsDir)
 
+	// ── Diagnostic: size manifest at the export seam ──────────────────────────
+	// Walk rootfsDir and log every regular file >= 1 MiB IMMEDIATELY after Solve
+	// returns and BEFORE any integrity gate that may abort the build. Ordering is
+	// critical: both verifyRootfsPopulated and verifyAgentIntegrity are
+	// fail-closed and return errors; if the manifest call were placed after them
+	// it would never execute on the truncation builds we most need to diagnose.
+	//
+	// The output reaches the host via the exec-pipe ring reader (stderr →
+	// ring buffer → host execBuf) — the same channel as all other builder-VM log
+	// output. log.Printf writes are synchronous to stderr; the ring reader drains
+	// until process exit, so manifest lines emitted here are delivered to the host
+	// even when the build subsequently fails the integrity gate and returns an
+	// error. Non-fatal: a walk error is logged and the build continues.
+	logRootfsSizeManifest(rootfsDir)
+
 	// ── Integrity gate: reject a hollow export before it becomes an image ─────
 	// A buildkit export that yields correct directory structure but empty
 	// regular-file contents (observed intermittently: ~99.96% of files
@@ -248,6 +267,15 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 	// booted — that only surfaces later as "exec format error" at runtime. Fail
 	// the build here so it is retried instead.
 	if err := verifyRootfsPopulated(rootfsDir); err != nil {
+		fmt.Fprintf(os.Stderr, "in-guest build: %v\n", err)
+		return fmt.Errorf("in-guest build: %w", err)
+	}
+
+	// ── Integrity gate: reject a truncated agent export before it becomes an image ──
+	// An intermittent export bug silently caps files > 32 MiB to exactly 32 MiB.
+	// The agent binary is the ideal canary: its exact source size is known and
+	// any mismatch proves corruption. Fail the build here so it is retried.
+	if err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus3-agent", opts.AgentPath); err != nil {
 		fmt.Fprintf(os.Stderr, "in-guest build: %v\n", err)
 		return fmt.Errorf("in-guest build: %w", err)
 	}

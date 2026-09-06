@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -207,6 +208,37 @@ func Start(
 	return s, nil
 }
 
+// AllowEgress opens host in both the L7 MITM allowlist and the L3/L4 netfilter
+// AllowList. It is the single runtime mutation point for adding a host to a
+// running sandbox's egress perimeter.
+//
+// Behaviour by mode:
+//   - Full MITM mode (proxy != nil, al != nil): calls proxy.AllowHost and al.AddDomain.
+//   - AllowAll mode (proxy == nil): the L7 gate is absent, so only al.AddDomain is
+//     called. In AllowAll mode all HTTPS traffic already flows through unfiltered;
+//     AddDomain ensures the L3/L4 forwarder also permits the destination.
+//   - No perimeter (both nil): returns an error — there is nothing to open.
+//
+// host must be a non-empty domain name (e.g. "registry.npmjs.org"). Empty host
+// is rejected before any layer is mutated.
+func (s *PerimeterSupervisor) AllowEgress(host string) error {
+	if host == "" {
+		return fmt.Errorf("perimeter: AllowEgress: host is required")
+	}
+	if s.proxy == nil && s.al == nil {
+		return fmt.Errorf("perimeter: AllowEgress: no perimeter layers configured")
+	}
+	if s.proxy != nil {
+		s.proxy.AllowHost(host)
+	}
+	if s.al != nil {
+		if err := s.al.AddDomain(host); err != nil {
+			return fmt.Errorf("perimeter: AllowEgress: netfilter: %w", err)
+		}
+	}
+	return nil
+}
+
 // MitmAddr returns the "host:port" address of the MITM proxy listener.
 // The address is stable for the lifetime of the supervisor.
 func (s *PerimeterSupervisor) MitmAddr() string { return s.mitmAddr }
@@ -219,6 +251,68 @@ func (s *PerimeterSupervisor) CACert() *x509.Certificate {
 		return nil
 	}
 	return s.proxy.CACert()
+}
+
+// HasMITMProxy reports whether this supervisor is actually running a MITM
+// proxy right now. It is the runtime counterpart of
+// service.SandboxHasMITMProxy, which answers the same question from the store
+// record; the handoff path uses THIS one so a record that disagrees with the
+// process cannot decide whether CA material is required
+// (motive nexus3-host-supervisor-hotswap, ticket 14).
+//
+// It deliberately does not touch the CA. [PerimeterSupervisor.CAKeyPair]
+// returns an error in three distinct situations — no proxy at all, a CA
+// private key that is not an *ecdsa.PrivateKey, and a failed DER marshal
+// (internal/core/perimeter/mitm.Proxy.CAKeyPair) — and only the first means
+// "no proxy". Deriving the predicate from `CAKeyPair() == nil` would read the
+// other two, which mean *a proxy exists whose CA is unusable*, as "no MITM
+// proxy", drop the CA requirement in [handoff.Payload.Validate], and convert a
+// correct refusal into a wrong acceptance. Asking about the proxy's existence
+// separately from the CA's encodability keeps those two facts from being
+// confused: a proxy with an unusable CA answers true here, the payload's CA
+// comes out empty, and the handoff is refused — fail-closed.
+//
+// s.proxy is written once in [Start] and never reassigned, so this is stable
+// for the supervisor's lifetime and safe for concurrent use.
+func (s *PerimeterSupervisor) HasMITMProxy() bool { return s.proxy != nil }
+
+// CAKeyPair PEM-encodes the MITM proxy's CA certificate and private key, for
+// inclusion in a handoff payload (motive nexus3-host-supervisor-hotswap).
+// Returns an error when the supervisor was started without a proxy (AllowAll
+// mode) — there is no CA to hand off.
+//
+// A non-nil error does NOT imply there is no proxy: see
+// [PerimeterSupervisor.HasMITMProxy] for why callers deciding whether CA
+// material is mandatory must ask that method instead of this one.
+func (s *PerimeterSupervisor) CAKeyPair() (certPEM, keyPEM []byte, err error) {
+	if s.proxy == nil {
+		return nil, nil, fmt.Errorf("perimeter: CAKeyPair: no MITM proxy (AllowAll mode)")
+	}
+	return s.proxy.CAKeyPair()
+}
+
+// PerimeterFD returns a dup'd *os.File wrapping R1, the perimeter-facing
+// network connection, for handoff to a replacement supervisor via SCM_RIGHTS
+// (motive nexus3-host-supervisor-hotswap, slice 04).
+//
+// The returned File is an independent duplicate (via (*net.UnixConn).File):
+// closing it, or the caller's use of it, has no effect on this
+// PerimeterSupervisor's own ongoing operation. This is what makes a handoff
+// attempt safe to abandon — the caller can discard the dup on any failure
+// without touching the live connection the frame pump is reading from.
+//
+// Returns an error if the underlying connection's dynamic type is not
+// *net.UnixConn (the only transport this driver's netns path produces today).
+func (s *PerimeterSupervisor) PerimeterFD() (*os.File, error) {
+	uc, ok := s.fd.(*net.UnixConn)
+	if !ok {
+		return nil, fmt.Errorf("perimeter: PerimeterFD: underlying conn is %T, not *net.UnixConn", s.fd)
+	}
+	f, err := uc.File()
+	if err != nil {
+		return nil, fmt.Errorf("perimeter: PerimeterFD: dup: %w", err)
+	}
+	return f, nil
 }
 
 // Close shuts down all supervisor goroutines and releases resources.

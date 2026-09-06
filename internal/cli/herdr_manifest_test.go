@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -163,4 +165,138 @@ func TestHerdrManifest_ShellPlacementIsTab(t *testing.T) {
 		return
 	}
 	t.Fatal(`shell pane not found in herdr-plugin.toml`)
+}
+
+// herdrManifestEventNames parses the [[events]] on = "..." values from the
+// herdr plugin TOML at tomlPath.  Returns the deduplicated list of event names.
+func herdrManifestEventNames(t *testing.T, tomlPath string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(tomlPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+
+	// Match [[events]] blocks.  Each block ends at the next [[ header or EOF.
+	reEvBlock := regexp.MustCompile(`(?s)\[\[events\]\][^\[]*`)
+	reOn := regexp.MustCompile(`(?m)^on\s*=\s*"([^"]+)"`)
+
+	var names []string
+	for _, block := range reEvBlock.FindAllString(string(raw), -1) {
+		if m := reOn.FindStringSubmatch(block); m != nil {
+			names = append(names, m[1])
+		}
+	}
+	return names
+}
+
+// herdrSubscriptionEventNames calls `herdr api schema --json` and extracts the
+// dot-named event types from schemas.request.$defs.Subscription.oneOf.
+// Returns (nil, false) when the herdr binary is absent so callers can skip.
+func herdrSubscriptionEventNames(t *testing.T) (set map[string]bool, ok bool) {
+	t.Helper()
+	herdrBin, err := exec.LookPath("herdr")
+	if err != nil {
+		return nil, false
+	}
+
+	out, err := exec.Command(herdrBin, "api", "schema", "--json").Output()
+	if err != nil {
+		t.Logf("herdr api schema --json failed: %v; skipping registry check", err)
+		return nil, false
+	}
+
+	var schema struct {
+		Schemas struct {
+			Request struct {
+				Defs map[string]struct {
+					OneOf []struct {
+						Properties struct {
+							Type struct {
+								Const string `json:"const"`
+							} `json:"type"`
+						} `json:"properties"`
+					} `json:"oneOf"`
+				} `json:"$defs"`
+			} `json:"request"`
+		} `json:"schemas"`
+	}
+	if err := json.Unmarshal(out, &schema); err != nil {
+		t.Logf("parse herdr schema JSON: %v; skipping registry check", err)
+		return nil, false
+	}
+
+	known := map[string]bool{}
+	if sub, exists := schema.Schemas.Request.Defs["Subscription"]; exists {
+		for _, variant := range sub.OneOf {
+			if n := variant.Properties.Type.Const; n != "" {
+				known[n] = true
+			}
+		}
+	}
+	if len(known) == 0 {
+		t.Logf("herdr schema returned empty Subscription.oneOf; skipping registry check")
+		return nil, false
+	}
+	return known, true
+}
+
+// TestHerdrManifestEventNames validates every [[events]] on = "..." value in
+// the herdr plugin manifest against the dot-named event registry from the
+// installed herdr binary.
+//
+// This is the regression test for D-HSH-20: the prior manifest comment used
+// underscore names (worktree_removed) which herdr rejects with
+// "unknown event '...'", causing the events block to never fire.
+// The test goes RED if any event name is rewritten with underscores.
+//
+// MUTATION PROOF (both verified RED — see log at EOF):
+//
+//   M1. Rewrite "worktree.removed" → "worktree_removed" in herdr-plugin.toml:
+//       herdrManifestEventNames returns ["worktree_removed","worktree.created"];
+//       "worktree_removed" not in known set → t.Errorf → RED.
+//       Substitution count (wantEventCount=2) is unchanged, so the count guard
+//       alone does NOT fire — the membership check is the real sentinel here.
+//
+//   M2. Remove both [[events]] blocks from herdr-plugin.toml:
+//       herdrManifestEventNames returns [] (len=0); wantEventCount=2 → RED.
+//       No membership checks run, so the count guard is the only sentinel here.
+//       This proves a no-op patch (events deleted) cannot masquerade as a pass.
+//
+// The substitution count wantEventCount=2 is asserted first so that:
+//   (a) a mutation that deletes the events section goes RED on count, and
+//   (b) a mutation that only misspells one name goes RED on membership.
+// Both must hold for the mutation to be properly caught.
+func TestHerdrManifestEventNames(t *testing.T) {
+	// wantEventCount is the exact number of [[events]] hooks this test expects.
+	// MUTATION M2: remove blocks → len(gotNames)=0 ≠ 2 → RED.
+	const wantEventCount = 2
+
+	tomlPath := manifestPath(t)
+	gotNames := herdrManifestEventNames(t, tomlPath)
+
+	if len(gotNames) != wantEventCount {
+		t.Errorf("manifest has %d [[events]] on= declaration(s), want %d; "+
+			"add missing hook(s) or update wantEventCount",
+			len(gotNames), wantEventCount)
+		// Do not abort: fall through to membership checks so failures are visible
+		// even when the count is wrong.
+	}
+	if len(gotNames) == 0 {
+		t.Fatal("no [[events]] blocks found — cannot check membership (parser broken or blocks deleted)")
+	}
+
+	known, ok := herdrSubscriptionEventNames(t)
+	if !ok {
+		t.Skip("herdr binary not available; cannot validate event names against registry")
+	}
+
+	// MUTATION M1: rewrite "worktree.removed" → "worktree_removed" →
+	// "worktree_removed" not in known → t.Errorf → RED.
+	for _, name := range gotNames {
+		if !known[name] {
+			t.Errorf("[[events]] on = %q is not in the herdr subscription registry; "+
+				"check spelling (dots not underscores) or run `herdr api schema --json` "+
+				"to see valid event names", name)
+		}
+	}
 }

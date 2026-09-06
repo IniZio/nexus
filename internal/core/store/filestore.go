@@ -27,17 +27,19 @@ const currentSchemaVersion = 1
 //  3. The encoding contract is explicit and reviewable in one place.
 //
 // Durable fields (exactly these, nothing more):
-//   - identity:       ID, Name, Project
-//   - labels:         Labels (map[string]string; omitted when empty)
-//   - legacy motive:  MotiveID (read-only backward compat; migrated to Labels["motive"] on load)
-//   - frozen config:  Envelope
-//   - state cache:    State
-//   - run identity:   InstanceID
-//   - policy:         RemoveOnExit
-//   - WAL marker:     RemovalMarker
-//   - stop qualifier: StopReason (omitted when empty for backward compatibility)
-//   - fork lineage:   Provenance (omitted for non-fork sandboxes)
-//   - git anchor:     BaseRef (40-hex SHA; omitted for sandboxes without a git workspace)
+//   - identity:         ID, Name, Project
+//   - labels:           Labels (map[string]string; omitted when empty)
+//   - legacy motive:    MotiveID (read-only backward compat; migrated to Labels["motive"] on load)
+//   - frozen config:    Envelope
+//   - state cache:      State
+//   - run identity:     InstanceID
+//   - policy:           RemoveOnExit
+//   - WAL marker:       RemovalMarker
+//   - stop qualifier:   StopReason (omitted when empty for backward compatibility)
+//   - fork lineage:     Provenance (omitted for non-fork sandboxes)
+//   - git anchor:       BaseRef (40-hex SHA; omitted for sandboxes without a git workspace)
+//   - netns adoption:   NetnsChildPID, NetnsChildPGID, NetnsChildStartTime,
+//     GuestTapName, CHAPISocket (all omitted when zero/empty)
 type record struct {
 	SchemaVersion int              `json:"schema_version"`
 	ID            domain.SandboxID `json:"id"`
@@ -74,6 +76,22 @@ type record struct {
 	// AgentName records the agent profile the sandbox was created for (TBD-PD-32).
 	// Empty for plain sandboxes and for records written before the field existed.
 	AgentName string `json:"agent_name,omitempty"`
+	// Netns adoption fields — five values the supervisor captures from
+	// StartNetnsRuntime so a replacement supervisor can call AdoptNetnsRuntime
+	// without re-deriving them from ps/nsenter. All omitted when zero/empty
+	// (i.e. when no netns child is running).
+	NetnsChildPID       int    `json:"netns_child_pid,omitempty"`
+	NetnsChildPGID      int    `json:"netns_child_pgid,omitempty"`
+	NetnsChildStartTime uint64 `json:"netns_child_start_time,omitempty"`
+	GuestTapName        string `json:"guest_tap_name,omitempty"`
+	CHAPISocket         string `json:"ch_api_socket,omitempty"`
+	NetnsControlSocket  string `json:"netns_control_socket,omitempty"`
+	NetnsControlToken   string `json:"netns_control_token,omitempty"`
+	// CacheDiskSlot persists domain.Sandbox.CacheDiskSlot (D-HSH-07). Without
+	// it the field would be set in memory by the booting supervisor and lost
+	// on the next read, so an adopting or re-acquiring supervisor could never
+	// take back the SAME builder cache-disk slot.
+	CacheDiskSlot string `json:"cache_disk_slot,omitempty"`
 }
 
 // provenanceRecord is the on-disk form of domain.Provenance. Kept separate
@@ -86,24 +104,32 @@ type provenanceRecord struct {
 
 func toRecord(sb domain.Sandbox) record {
 	r := record{
-		SchemaVersion:  currentSchemaVersion,
-		ID:             sb.ID,
-		Name:           sb.Name,
-		Project:        sb.Project,
-		Labels:         sb.Labels,
-		State:          sb.State,
-		Envelope:       sb.Envelope,
-		InstanceID:     sb.InstanceID,
-		RemoveOnExit:   sb.RemoveOnExit,
-		RemovalMarker:  sb.RemovalMarker,
-		StopReason:     sb.StopReason,
-		SupervisorPID:  sb.SupervisorPID,
-		SupervisorSock: sb.SupervisorSock,
-		CreatorPID:     sb.CreatorPID,
-		BaseRef:        sb.BaseRef,
-		MountedVolumes: sb.MountedVolumes,
-		LiveMounts:     sb.LiveMounts,
-		AgentName:      sb.AgentName,
+		SchemaVersion:       currentSchemaVersion,
+		ID:                  sb.ID,
+		Name:                sb.Name,
+		Project:             sb.Project,
+		Labels:              sb.Labels,
+		State:               sb.State,
+		Envelope:            sb.Envelope,
+		InstanceID:          sb.InstanceID,
+		RemoveOnExit:        sb.RemoveOnExit,
+		RemovalMarker:       sb.RemovalMarker,
+		StopReason:          sb.StopReason,
+		SupervisorPID:       sb.SupervisorPID,
+		SupervisorSock:      sb.SupervisorSock,
+		CreatorPID:          sb.CreatorPID,
+		BaseRef:             sb.BaseRef,
+		MountedVolumes:      sb.MountedVolumes,
+		LiveMounts:          sb.LiveMounts,
+		AgentName:           sb.AgentName,
+		NetnsChildPID:       sb.NetnsChildPID,
+		NetnsChildPGID:      sb.NetnsChildPGID,
+		NetnsChildStartTime: sb.NetnsChildStartTime,
+		GuestTapName:        sb.GuestTapName,
+		CHAPISocket:         sb.CHAPISocket,
+		NetnsControlSocket:  sb.NetnsControlSocket,
+		NetnsControlToken:   sb.NetnsControlToken,
+		CacheDiskSlot:       sb.CacheDiskSlot,
 		// MotiveID intentionally omitted: new records never write this field.
 	}
 	if sb.Provenance != nil {
@@ -132,23 +158,31 @@ func (r record) toDomain() domain.Sandbox {
 	}
 
 	sb := domain.Sandbox{
-		ID:             r.ID,
-		Name:           r.Name,
-		Project:        r.Project,
-		Labels:         labels,
-		State:          r.State,
-		Envelope:       r.Envelope,
-		InstanceID:     r.InstanceID,
-		RemoveOnExit:   r.RemoveOnExit,
-		RemovalMarker:  r.RemovalMarker,
-		StopReason:     r.StopReason,
-		SupervisorPID:  r.SupervisorPID,
-		SupervisorSock: r.SupervisorSock,
-		CreatorPID:     r.CreatorPID,
-		BaseRef:        r.BaseRef,
-		MountedVolumes: r.MountedVolumes,
-		LiveMounts:     r.LiveMounts,
-		AgentName:      r.AgentName,
+		ID:                  r.ID,
+		Name:                r.Name,
+		Project:             r.Project,
+		Labels:              labels,
+		State:               r.State,
+		Envelope:            r.Envelope,
+		InstanceID:          r.InstanceID,
+		RemoveOnExit:        r.RemoveOnExit,
+		RemovalMarker:       r.RemovalMarker,
+		StopReason:          r.StopReason,
+		SupervisorPID:       r.SupervisorPID,
+		SupervisorSock:      r.SupervisorSock,
+		CreatorPID:          r.CreatorPID,
+		BaseRef:             r.BaseRef,
+		MountedVolumes:      r.MountedVolumes,
+		LiveMounts:          r.LiveMounts,
+		AgentName:           r.AgentName,
+		NetnsChildPID:       r.NetnsChildPID,
+		NetnsChildPGID:      r.NetnsChildPGID,
+		NetnsChildStartTime: r.NetnsChildStartTime,
+		GuestTapName:        r.GuestTapName,
+		CHAPISocket:         r.CHAPISocket,
+		NetnsControlSocket:  r.NetnsControlSocket,
+		NetnsControlToken:   r.NetnsControlToken,
+		CacheDiskSlot:       r.CacheDiskSlot,
 	}
 	if r.Provenance != nil {
 		sb.Provenance = &domain.Provenance{
@@ -212,8 +246,20 @@ func NewFileStore(root string) (*FileStore, error) {
 	return &FileStore{root: root}, nil
 }
 
+// RecordDir returns the per-sandbox record directory <root>/sandboxes/<id>.
+//
+// It is exported because the reaper must be able to ask "does this sandbox's
+// record directory EXIST on disk" without decoding the record — List silently
+// skips records it cannot decode (corrupt, half-written, or written by a newer
+// schema), so absence from List is not evidence of absence on disk. Sharing
+// this path constructor is what keeps that check from drifting away from the
+// layout FileStore actually writes.
+func RecordDir(root string, id domain.SandboxID) string {
+	return filepath.Join(root, "sandboxes", id.String())
+}
+
 func (s *FileStore) sandboxDir(id domain.SandboxID) string {
-	return filepath.Join(s.root, "sandboxes", id.String())
+	return RecordDir(s.root, id)
 }
 
 func (s *FileStore) recordPath(id domain.SandboxID) string {

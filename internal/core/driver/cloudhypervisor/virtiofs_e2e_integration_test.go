@@ -118,11 +118,12 @@ func TestLiveVirtiofsE2E(t *testing.T) {
 
 	// Kernel cmdline: kernel params, " --" PID-1 boundary, then
 	// --workspace-mount args consumed by nexus3-agent from os.Args.
-	// Format matches workspaceMountCmdline (cmd_sandbox.go:603):
-	//   --workspace-mount=<tag>:<guestPath>:<fstype>:<ro>:<isWorkspace>
+	// Format matches workspaceMountCmdline (cmd_sandbox.go): 6 fields:
+	//   --workspace-mount=<tag>:<guestPath>:<fstype>:<ro>:<isWorkspace>:<resizable>
+	// 5-field (old) format is still accepted by the parser for backward compat.
 	cmdline := "console=ttyS0 panic=1 init=/init" +
-		" -- --workspace-mount=nx3fs0:/mnt/rw:virtiofs:false:false" +
-		" --workspace-mount=nx3fs1:/mnt/ro:virtiofs:true:false"
+		" -- --workspace-mount=nx3fs0:/mnt/rw:virtiofs:false:false:false" +
+		" --workspace-mount=nx3fs1:/mnt/ro:virtiofs:true:false:false"
 
 	drv, err := New(Config{
 		BinaryPath:       chBin,

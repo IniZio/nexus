@@ -144,5 +144,48 @@ func Capabilities(drv Driver) []string {
 	if _, ok := drv.(NetworkHook); ok {
 		caps = append(caps, "NetworkHook")
 	}
+	if _, ok := drv.(NetnsStateProvider); ok {
+		caps = append(caps, "NetnsStateProvider")
+	}
 	return caps
+}
+
+// NetnsStateProvider is an optional driver capability implemented by drivers
+// that boot VMs inside a netns-runtime child process (StartNetnsRuntime). The
+// service layer calls NetnsState immediately after a successful Start call
+// (still inside the store.Update callback that holds the per-sandbox flock) to
+// populate the five netns adoption fields on the sandbox record.
+//
+// The method is read-only and accesses only in-memory driver state, so it is
+// safe to call from inside the store.Update callback despite the reentrancy
+// prohibition on store methods (it does not acquire the per-sandbox flock).
+type NetnsStateProvider interface {
+	// NetnsState returns the netns identity written by the most recent
+	// successful Start call for id. Returns ok=false when the driver did not
+	// use a netns runtime for this sandbox (e.g. an in-process perimeter
+	// path or a fake driver in tests).
+	NetnsState(id domain.SandboxID) (st NetnsIdentity, ok bool)
+}
+
+// NetnsIdentity is everything a replacement supervisor needs to re-acquire a
+// running VM whose supervisor is gone, without rebooting the guest.
+//
+// ChildPID/ChildPGID/ChildStartTime/GuestTap/APISocket support the PLANNED
+// path: the outgoing supervisor is alive and passes the perimeter fd over
+// SCM_RIGHTS, and the incoming one uses these to verify the child it is
+// adopting has not been pid-recycled.
+//
+// ControlSocket/ControlToken support the CRASH path, where no live sender
+// exists: the incoming supervisor asks the surviving netns child for a fresh
+// perimeter end over its control socket. They are empty for a child started
+// without a control socket, which is recoverable at the record level but not
+// at the network level.
+type NetnsIdentity struct {
+	ChildPID       int
+	ChildPGID      int
+	ChildStartTime uint64
+	GuestTap       string
+	APISocket      string
+	ControlSocket  string
+	ControlToken   string
 }

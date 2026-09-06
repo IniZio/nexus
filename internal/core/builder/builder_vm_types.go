@@ -1,5 +1,24 @@
 package builder
 
+import "github.com/IniZio/nexus3/internal/core/perimeter/cred"
+
+// GoArchToVendorArch converts Go's runtime.GOARCH value to the vendor-specific
+// architecture name used by recipe package checksums (e.g. in Node.js tarballs
+// and cursor-agent releases). The conversion is the canonical authority for this
+// mapping: callers must use it rather than inline strings so the namespace is
+// consistent across host and guest.
+//
+// Mapping:
+//   - "amd64" → "x64"  (Node/cursor/claude vendor naming)
+//   - "arm64" → "arm64" (same on both sides)
+//   - anything else → passed through unchanged (future-proof, callers handle unknown)
+func GoArchToVendorArch(goArch string) string {
+	if goArch == "amd64" {
+		return "x64"
+	}
+	return goArch
+}
+
 // CacheDiskSpec describes a persistent per-ecosystem cache disk that survives
 // across builder VM runs. Each ecosystem (npm, pip, cargo, etc.) gets its own
 // raw ext4 image on the host, mounted read-write into the guest at a canonical
@@ -67,4 +86,19 @@ type BuilderVMSpec struct {
 
 	// MemoryMiB is the guest memory in mebibytes. Defaults used by G3 when zero.
 	MemoryMiB uint16
+
+	// ToolRecipe is the agent profile's declared install recipe (AC-1,
+	// D-TP-01, D-TP-02). When non-empty it is serialised to JSON and passed
+	// as --tool-recipe=<json> in the builder VM's exec argv so that
+	// RunBuilderRole can forward it to the SolveRequest inside the VM.
+	// The zero value (empty Packages slice) means no recipe — the build
+	// proceeds without installing any agent tooling.
+	ToolRecipe cred.ToolRecipe
+
+	// TargetArch is the vendor-namespace architecture string (e.g. "x64" for
+	// amd64, "arm64") corresponding to the host where the builder VM runs.
+	// It must be produced by [GoArchToVendorArch] so the namespace matches
+	// the keys in ToolRecipe.SHA256ByArch. Required when ToolRecipe is
+	// non-empty; ignored otherwise.
+	TargetArch string
 }

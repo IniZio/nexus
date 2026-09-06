@@ -25,7 +25,7 @@ package cred
 // deletes — the credential chain becomes unrecoverable (creds.json holds a
 // consumed token; the dedicated session's .credentials.json is already stale).
 // Recovery: re-bootstrap with a fresh
-// `CLAUDE_CONFIG_DIR=~/.config/nexus3/claude-dedicated claude login` followed by
+// `CLAUDE_CONFIG_DIR=~/.config/nexus3/claude-dedicated claude auth login` followed by
 // `nexus3 auth login --force`.
 
 import (

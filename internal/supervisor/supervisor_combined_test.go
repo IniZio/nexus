@@ -82,7 +82,7 @@ func TestSeedAgentAndHumanSecrets_ContainsAgentVars(t *testing.T) {
 	// caSeeder: no-op; SeedCA writes PEM to it but it's discarded.
 	caSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
 
-	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil)
+	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil, cred.ClaudeCodeProfile, nil)
 	if !ok {
 		t.Fatal("seedAgentAndHumanSecrets returned ok=false; combined seeding failed")
 	}
@@ -113,7 +113,7 @@ func TestSeedAgentAndHumanSecrets_ContainsSecretVars(t *testing.T) {
 	credCap := &captureGuestSeeder{}
 	caSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
 
-	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil)
+	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil, cred.ClaudeCodeProfile, nil)
 	if !ok {
 		t.Fatal("seedAgentAndHumanSecrets returned ok=false")
 	}
@@ -142,7 +142,7 @@ func TestSeedAgentAndHumanSecrets_OneWrite(t *testing.T) {
 	credCap := &captureGuestSeeder{}
 	caSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
 
-	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil)
+	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil, cred.ClaudeCodeProfile, nil)
 	if !ok {
 		t.Fatal("seedAgentAndHumanSecrets returned ok=false")
 	}
@@ -270,7 +270,7 @@ func TestRunSeedRoute_CombinedCallsCombinedSeeder(t *testing.T) {
 		seedHumanSecretsFn = origHuman
 	})
 	seedAgentAndHumanSecretsFn = func(_ context.Context, _ domain.Sandbox, _ *x509.Certificate,
-		_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher, _ PerimeterCAGetter,
+		_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher, _ PerimeterCAGetter, _ cred.AgentProfile, _ service.GuestSeeder,
 	) (bool, bool) {
 		combinedCalled = true
 		return true, true
@@ -313,7 +313,7 @@ func TestRunSeedRoute_HumanSecretsCallsHumanSeeder(t *testing.T) {
 		seedHumanSecretsFn = origHuman
 	})
 	seedAgentAndHumanSecretsFn = func(_ context.Context, _ domain.Sandbox, _ *x509.Certificate,
-		_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher, _ PerimeterCAGetter,
+		_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher, _ PerimeterCAGetter, _ cred.AgentProfile, _ service.GuestSeeder,
 	) (bool, bool) {
 		combinedCalled = true
 		return true, true
@@ -396,14 +396,14 @@ func TestRunSeedRoute_AgentCallsSeedLoop(t *testing.T) {
 
 			seedLoopFn = func(_ context.Context, _ domain.SandboxID, _ **x509.Certificate,
 				_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher,
-				_ int, _ time.Duration, _ PerimeterCAGetter, seedAgentCreds bool,
+				_ int, _ time.Duration, _ PerimeterCAGetter, seedAgentCreds bool, _ cred.AgentProfile, _ service.GuestSeeder,
 			) (bool, bool) {
 				loopCalled = true
 				gotSeedAgentCreds = seedAgentCreds
 				return true, true
 			}
 			seedAgentAndHumanSecretsFn = func(_ context.Context, _ domain.Sandbox, _ *x509.Certificate,
-				_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher, _ PerimeterCAGetter,
+				_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher, _ PerimeterCAGetter, _ cred.AgentProfile, _ service.GuestSeeder,
 			) (bool, bool) {
 				combinedCalled = true
 				return true, true
@@ -527,7 +527,7 @@ func TestSeedLoop_ForcePushWritesRealToken(t *testing.T) {
 		context.Background(), id, &cert,
 		caSeeder, agentSeeder,
 		broker, []*cred.Refresher{r},
-		1, 0, nil, true,
+		1, 0, nil, true, cred.ClaudeCodeProfile, nil,
 	)
 	if !ok {
 		t.Fatal("SeedLoop returned ok=false; seed failed")
@@ -608,7 +608,7 @@ func TestSeedAgentAndHumanSecrets_ForcePushWritesRealToken(t *testing.T) {
 	ok, _ := seedAgentAndHumanSecrets(
 		context.Background(), sb, fakeCert(),
 		caSeeder, credCap.fn(),
-		broker, []*cred.Refresher{r}, nil,
+		broker, []*cred.Refresher{r}, nil, cred.ClaudeCodeProfile, nil,
 	)
 	if !ok {
 		t.Fatal("seedAgentAndHumanSecrets returned ok=false; combined seeding failed")
@@ -657,9 +657,9 @@ func TestRegisterMCPOAuthPlaceholders(t *testing.T) {
 
 	// Both valid configs must have a placeholder in the broker.
 	for _, tc := range []struct {
-		host        string
-		initialTok  string
-		rotatedTok  string
+		host       string
+		initialTok string
+		rotatedTok string
 	}{
 		{"mcp.linear.app", "tok-linear-1", "tok-linear-2"},
 		{"app.glitchtip.com", "tok-glitch-1", "tok-glitch-2"},
@@ -704,12 +704,12 @@ func TestRegisterMCPOAuthPlaceholders(t *testing.T) {
 
 // TestMCPOAuthSeedPayload verifies the full MCP OAuth guest-env seed path:
 //
-//   (a) registerMCPOAuthPlaceholders returns a serverName→placeholder hex map,
-//   (b) buildMCPOAuthCredPayload emits NEXUS3_MCP_<SERVER>_AUTHORIZATION=Bearer <placeholder>
-//       lines — NOT the real token (D-PP-04 zero-cred-in-guest),
-//   (c) the bare placeholder (without "Bearer ") resolves to the real token via
-//       the broker — swapAuthorization strips "Bearer " from the incoming header,
-//       resolves the bare hex, and re-emits "Bearer <realToken>" to egress.
+//	(a) registerMCPOAuthPlaceholders returns a serverName→placeholder hex map,
+//	(b) buildMCPOAuthCredPayload emits NEXUS3_MCP_<SERVER>_AUTHORIZATION=Bearer <placeholder>
+//	    lines — NOT the real token (D-PP-04 zero-cred-in-guest),
+//	(c) the bare placeholder (without "Bearer ") resolves to the real token via
+//	    the broker — swapAuthorization strips "Bearer " from the incoming header,
+//	    resolves the bare hex, and re-emits "Bearer <realToken>" to egress.
 //
 // This test FAILS if:
 //   - registerMCPOAuthPlaceholders does not return the minted placeholder,
@@ -793,5 +793,49 @@ func TestMCPOAuthSeedPayloadShellSourceable(t *testing.T) {
 	if string(out) != want {
 		t.Errorf("sourced NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION = %q; want %q\n"+
 			"the cred.env value must be shell-quoted so POSIX `. file` preserves the space", string(out), want)
+	}
+}
+
+// TestRunSeedRoute_AgentUsesSandboxProfile is the mutation guard for the
+// hardcoded-claude regression this cursor slice fixed: routeAgent must
+// resolve the profile from the sandbox's OWN AgentName (via
+// cred.ProfileByName), not always cred.ClaudeCodeProfile. Before this fix,
+// service.SeedGuestAgent (which SeedLoop called directly) always emitted
+// Claude's env vars regardless of which agent the sandbox actually ran, so a
+// --agent cursor sandbox would never receive CURSOR_API_KEY.
+//
+// Mutation: hardcode resolveSeedProfile to always return cred.ClaudeCodeProfile
+// -> the cursor case below goes RED (gotProfile.Name == "claude-code" instead
+// of "cursor").
+func TestRunSeedRoute_AgentUsesSandboxProfile(t *testing.T) {
+	var gotProfile cred.AgentProfile
+
+	origLoop := seedLoopFn
+	t.Cleanup(func() { seedLoopFn = origLoop })
+	seedLoopFn = func(_ context.Context, _ domain.SandboxID, _ **x509.Certificate,
+		_, _ service.GuestSeeder, _ *cred.Broker, _ []*cred.Refresher,
+		_ int, _ time.Duration, _ PerimeterCAGetter, _ bool, profile cred.AgentProfile, _ service.GuestSeeder,
+	) (bool, bool) {
+		gotProfile = profile
+		return true, true
+	}
+
+	in := seedRouteInputs{
+		SB:          sandboxWithProxy(cred.CursorAgentProfileName, nil),
+		Cert:        fakeCert(),
+		CASeeder:    func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil },
+		AgentSeeder: func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil },
+		Broker:      cred.NewBroker(),
+	}
+
+	if ok, _ := runSeedRoute(context.Background(), routeAgent, in); !ok {
+		t.Fatal("runSeedRoute returned ok=false for routeAgent")
+	}
+	if gotProfile.Name != cred.CursorAgentProfileName {
+		t.Errorf("SeedLoop received profile %q, want %q — a cursor sandbox must not be reseeded with claude's profile",
+			gotProfile.Name, cred.CursorAgentProfileName)
+	}
+	if gotProfile.APIKeyEnvVar != "CURSOR_API_KEY" {
+		t.Errorf("SeedLoop received profile with APIKeyEnvVar %q, want CURSOR_API_KEY", gotProfile.APIKeyEnvVar)
 	}
 }

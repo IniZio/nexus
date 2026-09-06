@@ -97,6 +97,99 @@ func TestSSHStdio_splicesData(t *testing.T) {
 	}
 }
 
+// slowWriter delays every write, widening the window in which a splice
+// goroutine is still writing into the caller's buffer.
+type slowWriter struct {
+	delay time.Duration
+	buf   *bytes.Buffer
+}
+
+func (w *slowWriter) Write(p []byte) (int, error) {
+	time.Sleep(w.delay)
+	return w.buf.Write(p)
+}
+
+// runSSHStdioDrainCase asserts that runSSHStdio does not return while the
+// conn→stdout goroutine is still writing into the caller-supplied writer.
+// stop decides how the splice is terminated: by stdin EOF or by ctx cancel.
+func runSSHStdioDrainCase(t *testing.T, stopVia string) {
+	t.Helper()
+	svc, drv := newSSHTestService(t)
+
+	sb, err := svc.Create(context.Background(), "proj", "box", service.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	drv.SetRunning(sb.ID)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// stdin stays open until we decide to end the splice.
+	stdinR, stdinW := io.Pipe()
+	defer stdinW.Close()
+
+	var stdoutBuf bytes.Buffer
+	stdout := &slowWriter{delay: 200 * time.Millisecond, buf: &stdoutBuf}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runSSHStdio(ctx, sb.Handle(), svc, stdinR, stdout)
+	}()
+
+	var guestConn net.Conn
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		guestConn = drv.GuestConn(sb.ID)
+		if guestConn != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if guestConn == nil {
+		t.Fatal("GuestConn: fake driver never got a DialGuest call within 2s")
+	}
+	defer guestConn.Close()
+
+	// net.Pipe is synchronous: once Write returns, the splice has the bytes and
+	// is parked inside slowWriter.Write.
+	guestData := []byte("hello from guest")
+	if _, err := guestConn.Write(guestData); err != nil {
+		t.Fatalf("guestConn.Write: %v", err)
+	}
+
+	switch stopVia {
+	case "stdin-eof":
+		stdinW.Close()
+	case "ctx-cancel":
+		cancel()
+	default:
+		t.Fatalf("unknown stopVia %q", stopVia)
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("runSSHStdio: %v", err)
+	}
+
+	// runSSHStdio has returned, so nothing may still be writing to stdoutBuf.
+	if got := stdoutBuf.String(); got != string(guestData) {
+		t.Errorf("stdout after return = %q, want %q (splice goroutine outlived the call)", got, string(guestData))
+	}
+}
+
+// TestSSHStdio_drainsStdoutOnStdinEOF is a regression test for a data race:
+// runSSHStdio used to return as soon as the stdin→conn direction hit EOF,
+// leaving the conn→stdout goroutine writing into the caller's writer.
+func TestSSHStdio_drainsStdoutOnStdinEOF(t *testing.T) {
+	runSSHStdioDrainCase(t, "stdin-eof")
+}
+
+// TestSSHStdio_drainsStdoutOnCtxCancel covers the same defect on the
+// ctx.Done() return path, which used to return with both goroutines live.
+func TestSSHStdio_drainsStdoutOnCtxCancel(t *testing.T) {
+	runSSHStdioDrainCase(t, "ctx-cancel")
+}
+
 // TestSSHStdio_notFound verifies that a missing sandbox ref returns an error.
 func TestSSHStdio_notFound(t *testing.T) {
 	svc, _ := newSSHTestService(t)

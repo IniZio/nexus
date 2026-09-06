@@ -52,7 +52,7 @@ func TestRunReapFull_DeletionFailureExitsNonZero(t *testing.T) {
 	st, idx, path := reapFailureFixture(t)
 	out, _, errBuf := newTestOutput(false)
 
-	err := runReapFull(context.Background(), st, idx, true /*apply*/, out)
+	err := runReapFull(context.Background(), st, idx, true /*apply*/, out, service.ReapOptions{ProcDir: t.TempDir()})
 	if err == nil {
 		t.Fatal("reap --apply returned nil despite failing to delete an orphan")
 	}
@@ -81,7 +81,7 @@ func TestRunReapFull_JSONCarriesFailures(t *testing.T) {
 	st, idx, path := reapFailureFixture(t)
 	out, stdout, _ := newTestOutput(true)
 
-	if err := runReapFull(context.Background(), st, idx, true /*apply*/, out); err == nil {
+	if err := runReapFull(context.Background(), st, idx, true /*apply*/, out, service.ReapOptions{ProcDir: t.TempDir()}); err == nil {
 		t.Fatal("JSON mode returned nil despite a deletion failure")
 	}
 

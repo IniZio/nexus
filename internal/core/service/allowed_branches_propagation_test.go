@@ -14,7 +14,7 @@ import (
 // startSupervisor does. This covers assertion (b) of the S0 spec.
 func TestAllowedBranches_DefaultPropagates(t *testing.T) {
 	// Envelope with no AllowedBranches set — simulates an old record or one
-	// created without --branches.
+	// created without an explicit allowlist.
 	env := domain.Envelope{}
 
 	// Reproduce the construction in service.go startSupervisor.
@@ -46,3 +46,4 @@ func TestAllowedBranches_ExplicitPropagates(t *testing.T) {
 		t.Errorf("mitm.Config.AllowedBranches = %v; want %v", cfg.AllowedBranches, explicit)
 	}
 }
+

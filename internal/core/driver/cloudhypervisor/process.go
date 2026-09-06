@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -63,11 +64,122 @@ func (b *vmmStderrBuf) Tail() string {
 	return string(b.data)
 }
 
-// managedProcess tracks a running cloud-hypervisor VMM process.
+// maxConsoleSizeBytes is the per-file cap for guest console output.
+// When console.log reaches this size it is atomically renamed to console.log.1
+// and a fresh console.log is opened. Total on-disk usage is bounded at
+// 2 × maxConsoleSizeBytes (32 MiB). The most recent maxConsoleSizeBytes of
+// output are always in console.log; the previous segment is in console.log.1.
+//
+// 16 MiB per file is sufficient for hundreds of thousands of log lines and
+// avoids exhausting storage on long-running sandboxes.
+const maxConsoleSizeBytes = 16 * 1024 * 1024
+
+// cappedConsoleWriter routes CH stdout (guest virtio-console output) to a file
+// using two-file rotation to retain the most recent output.
+//
+// Rotation: when console.log reaches maxConsoleSizeBytes, it is renamed to
+// console.log.1 (overwriting any previous .1) and a fresh console.log is opened.
+// This keeps total growth at ≤ 2 × maxConsoleSizeBytes while always keeping the
+// newest bytes in console.log.
+//
+// Write always returns (len(p), nil) — even on rotation or write errors — so the
+// exec.Cmd drain goroutine never stops: a stopped drain fills the pipe and
+// eventually blocks CH itself (requirement 3).
+type cappedConsoleWriter struct {
+	mu      sync.Mutex
+	f       *os.File // current console.log; nil when permanently fallen back to discard
+	written int64    // bytes written to the current file
+	path    string   // absolute path of console.log
+}
+
+// newCappedConsoleWriter opens path (console.log) for appending and returns a
+// rotating writer. The existing file size is used to seed written so that a
+// supervisor restart does not reset the rotation accounting.
+// On open failure the caller should fall back to io.Discard and log the error.
+func newCappedConsoleWriter(path string) (*cappedConsoleWriter, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("console log dir: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	// Seed written from the current file size so a supervisor restart that
+	// reopens an existing file does not restart the rotation accounting from 0
+	// (which would allow unbounded growth across restarts).
+	var written int64
+	if fi, statErr := f.Stat(); statErr == nil {
+		written = fi.Size()
+	}
+	return &cappedConsoleWriter{f: f, written: written, path: path}, nil
+}
+
+// rotate renames console.log → console.log.1 and opens a fresh console.log.
+// Called with w.mu held. On any error the file is closed and w.f is set to nil,
+// permanently falling back to discard — requirement 3 is preserved either way.
+func (w *cappedConsoleWriter) rotate() {
+	_ = w.f.Close()
+	w.f = nil
+	_ = os.Rename(w.path, w.path+".1") // best-effort; ignore error
+	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return // stay nil → discard
+	}
+	w.f = f
+	w.written = 0
+}
+
+// Write implements io.Writer. It drains all of p, rotating as needed to keep
+// the most recent data in console.log. Always returns (len(p), nil) so the
+// exec.Cmd goroutine never interprets a rotation or write failure as a signal
+// to stop draining CH's stdout pipe.
+func (w *cappedConsoleWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	offset := 0
+	for offset < len(p) && w.f != nil {
+		// Rotate when the current file is at cap.
+		if w.written >= int64(maxConsoleSizeBytes) {
+			w.rotate()
+			if w.f == nil {
+				break // rotation failed; discard the rest
+			}
+		}
+		canWrite := int64(maxConsoleSizeBytes) - w.written
+		chunk := p[offset:]
+		if int64(len(chunk)) > canWrite {
+			chunk = chunk[:canWrite]
+		}
+		n, err := w.f.Write(chunk)
+		w.written += int64(n)
+		offset += n
+		if err != nil {
+			_ = w.f.Close()
+			w.f = nil
+			break // write error; discard remaining bytes
+		}
+	}
+	return len(p), nil // always report success to keep the drain goroutine alive
+}
+
+// killFn is the function used by kill() to signal a process group. It is a
+// package-level variable so tests can inject a stub to assert signal counts
+// without affecting any real process.
+var killFn func(int, syscall.Signal) error = syscall.Kill
+
+// managedProcess tracks a running cloud-hypervisor VMM or virtiofsd process.
 type managedProcess struct {
 	cmd       *exec.Cmd
 	pid       int
 	stderrBuf *vmmStderrBuf // bounded ring of VMM stderr; nil only in tests that bypass spawnVMM
+	// deathCh is closed exactly once by reapWatcher when the child has been
+	// reaped. kill() checks it before signalling (a closed deathCh means the
+	// PID slot may have been recycled) and drains it after signalling (so
+	// kill() returns only after the zombie is gone). nil only for
+	// managedProcess values constructed directly in tests that bypass
+	// newManagedProcess.
+	deathCh chan struct{}
 	// PID alone is unsafe as a process identity across reuse. If the VMM
 	// crashes and the OS recycles its PID before nexus3 restarts, a different
 	// process could appear as the old VMM. The established pattern in this
@@ -78,20 +190,97 @@ type managedProcess struct {
 	// restart; it does not rely on the in-memory proc table across restarts.
 }
 
-// kill sends SIGKILL to the VMM's entire process group and waits for the
-// process to exit, reaping the zombie.
+// newManagedProcess constructs a managedProcess and starts the reapWatcher
+// goroutine. Must be called only AFTER the process's readiness check has
+// passed: the failure-path cleanup() closure calls cmd.Wait() directly, and
+// starting a concurrent reapWatcher before that call would race it.
+func newManagedProcess(cmd *exec.Cmd, pid int, stderrBuf *vmmStderrBuf) *managedProcess {
+	p := &managedProcess{
+		cmd:       cmd,
+		pid:       pid,
+		stderrBuf: stderrBuf,
+		deathCh:   make(chan struct{}),
+	}
+	go p.reapWatcher()
+	return p
+}
+
+// reapWatcher blocks until the child exits, reaps the zombie, and closes
+// deathCh. It uses syscall.Wait4 directly instead of cmd.Wait() for two
+// reasons:
 //
-// SysProcAttr.Setpgid: true (set in spawnVMM) makes the child a process
-// group leader with pgid == pid, so syscall.Kill(-pid, SIGKILL) sends
-// SIGKILL to the whole group — catching any child processes the VMM may have
-// spawned. cmd.Process.Kill() and exec.CommandContext's cancel both signal
-// only the leader; using -pgid is intentional here.
+//  1. cmd.Wait() blocks in awaitGoroutines until every internal io.Copy
+//     goroutine drains its pipe. In the netns child path (spawnVMMInGroup /
+//     RunNetnsChild) an fd can leak across the fork boundary and prevent
+//     pipe write-ends from closing, keeping cmd.Wait() blocked indefinitely.
+//     See ch_netns.go's goroutine at the Wait4 loop for the same rationale.
+//
+//  2. RunNetnsChild already has its own goroutine calling syscall.Wait4 on
+//     the same pid (ch_netns.go). If reapWatcher gets there first, the
+//     netns loop receives ECHILD and breaks safely (see that loop's comment).
+//     If the netns loop gets there first, reapWatcher receives ECHILD and
+//     breaks here. Both orders converge correctly.
+func (p *managedProcess) reapWatcher() {
+	var ws syscall.WaitStatus
+	for {
+		_, err := syscall.Wait4(p.pid, &ws, 0, nil)
+		if err == nil {
+			break // reaped
+		}
+		if errors.Is(err, syscall.EINTR) {
+			continue // interrupted by signal; retry
+		}
+		break // ECHILD (reaped by concurrent waiter) or unexpected error
+	}
+	close(p.deathCh)
+}
+
+// kill sends SIGKILL to the process group and waits for the child to be reaped.
+//
+// SysProcAttr.Setpgid: true (set in spawnVMM / spawnVirtiofsd) makes the child
+// a process group leader with pgid == pid, so Kill(-pid, SIGKILL) sends SIGKILL
+// to the whole group — catching any child processes the VMM may have spawned.
+//
+// GUARD: if deathCh is already closed the process has been reaped and its PID
+// slot may have been recycled. Never signal a recycled PID — return immediately.
+// This window matters because mid-life death is the scenario this ticket exists
+// to handle: a VM dies at 14:09, d.procs[id] still holds the entry, and Stop()
+// calls kill() hours later.
+//
+// For managedProcess values constructed without newManagedProcess (nil deathCh),
+// kill() falls back to a direct Wait to preserve backward compatibility.
 func (p *managedProcess) kill() {
 	if p.cmd.Process == nil {
 		return
 	}
-	_ = syscall.Kill(-p.pid, syscall.SIGKILL)
-	_ = p.cmd.Wait() // reap the zombie; ignore error (process may already be gone)
+	// Check before signalling: if already reaped, the PID may be recycled.
+	//
+	// Declining to signal also declines to sweep any group member that outlived
+	// the leader. That is the correct trade: the obvious alternative — probe
+	// kill(-pid, 0) and signal only if the group answers — is UNSAFE, because a
+	// recycled PID that has become a new group leader answers that probe too.
+	// This guard is safe in both directions. The residual is near-empty in
+	// practice: virtiofsd runs --sandbox none (threads, not forked children),
+	// cloud-hypervisor is threaded, and CH additionally carries Pdeathsig.
+	if p.deathCh != nil {
+		select {
+		case <-p.deathCh:
+			// Release the process handle so the pidfd is closed now rather than
+			// at the next GC. Release neither waits nor signals, so it keeps the
+			// Wait4 ownership semantics intact. cmd.Wait() must NOT be used here
+			// — it would reintroduce the pipe-drain block the Wait4 switch exists
+			// to avoid.
+			_ = p.cmd.Process.Release()
+			return // already reaped — never signal a recycled PID
+		default:
+		}
+	}
+	_ = killFn(-p.pid, syscall.SIGKILL)
+	if p.deathCh != nil {
+		<-p.deathCh // wait for reapWatcher to finish (returns only after zombie gone)
+	} else {
+		_ = p.cmd.Wait() // legacy path: tests that construct managedProcess directly
+	}
 }
 
 // spawnVMM spawns a cloud-hypervisor process with --api-socket socketPath,
@@ -115,7 +304,7 @@ func (p *managedProcess) kill() {
 func spawnVMM(ctx context.Context, cfg Config, socketPath string) (*managedProcess, error) {
 	attr := &syscall.SysProcAttr{Setpgid: true}
 	setPdeathsig(attr)
-	return spawnVMMWithAttr(ctx, cfg, socketPath, attr)
+	return spawnVMMWithAttr(ctx, cfg, socketPath, attr, io.Discard)
 }
 
 // spawnVMMInGroup is like spawnVMM but with Setpgid:false so the spawned CH
@@ -123,16 +312,25 @@ func spawnVMM(ctx context.Context, cfg Config, socketPath string) (*managedProce
 // the child is a process group leader (Setpgid set in netnsChildAttr) and CH
 // must be in the same group so that rt.Stop()'s group-kill
 // (Kill(-childPgid, SIGKILL)) reaches CH.
-func spawnVMMInGroup(ctx context.Context, cfg Config, socketPath string) (*managedProcess, error) {
+//
+// consoleOut receives CH stdout (guest virtio-console output); pass io.Discard
+// to discard it. The drain goroutine must always keep running regardless of
+// write errors — stopping it fills the pipe and blocks CH.
+func spawnVMMInGroup(ctx context.Context, cfg Config, socketPath string, consoleOut io.Writer) (*managedProcess, error) {
 	attr := &syscall.SysProcAttr{Setpgid: false}
 	setPdeathsig(attr) // defense-in-depth: CH dies if child dies unexpectedly (Linux-only)
-	return spawnVMMWithAttr(ctx, cfg, socketPath, attr)
+	if consoleOut == nil {
+		consoleOut = io.Discard
+	}
+	return spawnVMMWithAttr(ctx, cfg, socketPath, attr, consoleOut)
 }
 
 // spawnVMMWithAttr is the shared implementation of spawnVMM and spawnVMMInGroup,
-// parameterized by SysProcAttr. Callers choose Setpgid:true (host path, CH owns
-// its group) or Setpgid:false (netns child path, CH inherits child's group).
-func spawnVMMWithAttr(ctx context.Context, cfg Config, socketPath string, attr *syscall.SysProcAttr) (*managedProcess, error) {
+// parameterized by SysProcAttr and stdout. Callers choose Setpgid:true (host
+// path, CH owns its group) or Setpgid:false (netns child path, CH inherits
+// child's group). stdout drains CH stdout; it must always return success so the
+// exec.Cmd goroutine never stops draining the pipe.
+func spawnVMMWithAttr(ctx context.Context, cfg Config, socketPath string, attr *syscall.SysProcAttr, stdout io.Writer) (*managedProcess, error) {
 	// Pre-flight: probe the socket before spawning.
 	//
 	// Drop the os.Stat pre-check: the dial result already distinguishes all
@@ -167,7 +365,7 @@ func spawnVMMWithAttr(ctx context.Context, cfg Config, socketPath string, attr *
 
 	cmd := exec.Command(cfg.BinaryPath, "--api-socket", socketPath)
 	cmd.SysProcAttr = attr
-	cmd.Stdout = io.Discard
+	cmd.Stdout = stdout
 	cmd.Stderr = stderrBuf
 
 	if err := cmd.Start(); err != nil {
@@ -208,8 +406,9 @@ func spawnVMMWithAttr(ctx context.Context, cfg Config, socketPath string, attr *
 
 		pingErr := c.Ping(pollCtx)
 		if pingErr == nil {
-			// API is up.
-			return &managedProcess{cmd: cmd, pid: pid, stderrBuf: stderrBuf}, nil
+			// API is up. Start the reapWatcher goroutine now — after readiness
+			// is confirmed — so it does not race the failure-path cleanup().
+			return newManagedProcess(cmd, pid, stderrBuf), nil
 		}
 
 		// Wait 50 ms before the next poll, but wake immediately if either

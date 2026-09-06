@@ -816,6 +816,21 @@ func TestEgressSecrets_Absent_ZeroValue(t *testing.T) {
 	}
 }
 
+// ---- branches section tests (T1-AC1) ----
+
+// TestParse_Branches_TopLevelKeyIsRejected verifies that a top-level
+// "branches:" key in nexus3.yaml is rejected by the strict decoder
+// (KnownFields(true)). The branches.* abstraction has been removed; any
+// nexus3.yaml that still carries this key must be updated, and the strict
+// decoder surfaces the error rather than silently ignoring it.
+func TestParse_Branches_TopLevelKeyIsRejected(t *testing.T) {
+	data := []byte("version: 1\nbranches:\n  allowed: [refs/heads/nexus3/**]\n")
+	_, err := config.Parse(data)
+	if err == nil {
+		t.Error("Parse accepted a top-level 'branches' key; want an error (key is unknown after de-abstraction)")
+	}
+}
+
 // TestParse_EqualsLoad_ForIdenticalBytes verifies that config.Parse and config.Load
 // produce the same result when given the same YAML content.
 func TestParse_EqualsLoad_ForIdenticalBytes(t *testing.T) {

@@ -453,6 +453,88 @@ func TestDiskAxis_MultiDisk_IndependentAxes(t *testing.T) {
 	}
 }
 
+// TestDiskAxis_MissingIndexInDiskStats_NoGrow verifies the hardened lookup:
+// when DiskStats is non-empty but contains no entry for the axis's diskIndex,
+// Evaluate must NOT grow (not fall through to legacy fields). This is the
+// host/guest version-skew safety: a named-volume axis registered by a newer
+// host is silently idle against an old guest that doesn't report it.
+//
+// MUTATION PROOF (missing entry = no grow): removing the `if !found { return }`
+// guard in disk.go causes this test to fail because the legacy DiskUsedBytes
+// (set to 9 GiB / 10 GiB = 90%) would trigger a spurious grow for the
+// docker-disk axis (index 0) even though DiskStats has no entry for index 0.
+func TestDiskAxis_MissingIndexInDiskStats_NoGrow(t *testing.T) {
+	dr := &fakeDiskResizer{}
+	resizer := newFakeResizer(2 << 30)
+	g, clk := newTestGovernorMinMax(t, 2<<30, 8<<30, resizer, nil)
+	g.bounds.DiskMaxBytes = 100 << 30
+	// axis manages index 0 (docker named-volume disk).
+	NewDiskAxis(g, dr, 0)
+	pastBootDelay(clk)
+
+	// DiskStats has an entry for index 1 (workspace) but NOT for index 0
+	// (docker disk). Legacy fields are set over-threshold (90%) to catch any
+	// spurious fallback.
+	sample := resize.Sample{
+		Timestamp:      time.Now(),
+		DiskUsedBytes:  9 << 30,  // legacy: over threshold — must NOT be used
+		DiskTotalBytes: 10 << 30,
+		DiskSupported:  true,
+		DiskStats: []resize.DiskSample{
+			{Index: 1, UsedBytes: 9 << 30, TotalBytes: 10 << 30, Supported: true},
+			// index 0 is absent: old guest doesn't report docker disk
+		},
+	}
+	injectSample(g, clk, sample)
+
+	// The axis for index 0 must see no matching DiskStats entry and return
+	// without calling GrowDisk.
+	g.axes[0].Evaluate(context.Background())
+
+	if len(dr.calls) != 0 {
+		t.Errorf("expected no GrowDisk call when index absent from DiskStats (got %d calls — spurious legacy fallback?)", len(dr.calls))
+	}
+}
+
+// TestDiskAxis_TwoDiskStats_EachAxisDrivenByOwnIndex verifies the two-entry
+// DiskStats scenario for a docker disk (index 0) + workspace (index 1):
+// the docker axis grows when docker fills and the workspace axis is idle (and
+// vice versa). This is the primary correctness proof for named-volume auto-resize.
+func TestDiskAxis_TwoDiskStats_EachAxisDrivenByOwnIndex(t *testing.T) {
+	drDocker := &fakeDiskResizer{}    // axis for index 0 (docker disk)
+	drWorkspace := &fakeDiskResizer{} // axis for index 1 (workspace)
+
+	resizer := newFakeResizer(2 << 30)
+	g, clk := newTestGovernorMinMax(t, 2<<30, 8<<30, resizer, nil)
+	g.bounds.DiskMaxBytes = 100 << 30
+
+	NewDiskAxis(g, drDocker, 0)    // docker disk: index 0 → /dev/vdb
+	NewDiskAxis(g, drWorkspace, 1) // workspace: index 1 → /dev/vdc
+	pastBootDelay(clk)
+
+	// Docker disk at 90% (over threshold), workspace at 20% (under).
+	sample := diskSampleWithStats([]resize.DiskSample{
+		{Index: 0, UsedBytes: 18 << 30, TotalBytes: 20 << 30, Supported: true}, // 90%
+		{Index: 1, UsedBytes: 2 << 30, TotalBytes: 10 << 30, Supported: true},  // 20%
+	})
+	injectSample(g, clk, sample)
+
+	g.axes[0].Evaluate(context.Background()) // docker axis
+	g.axes[1].Evaluate(context.Background()) // workspace axis
+
+	// Docker axis must grow.
+	if len(drDocker.calls) != 1 {
+		t.Fatalf("docker axis: expected 1 GrowDisk call, got %d", len(drDocker.calls))
+	}
+	if drDocker.calls[0].diskIndex != 0 {
+		t.Errorf("docker axis: GrowDisk diskIndex = %d, want 0", drDocker.calls[0].diskIndex)
+	}
+	// Workspace axis must NOT grow (20% — under threshold).
+	if len(drWorkspace.calls) != 0 {
+		t.Errorf("workspace axis: expected no GrowDisk call at 20%%, got %d", len(drWorkspace.calls))
+	}
+}
+
 // TestDiskAxis_LegacyFallback_WhenDiskStatsEmpty verifies that Evaluate falls
 // back to legacy DiskUsedBytes/DiskTotalBytes/DiskSupported when DiskStats is
 // empty (old guest agents that have not yet populated DiskStats).

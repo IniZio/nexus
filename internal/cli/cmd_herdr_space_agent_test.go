@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"slices"
 )
 
@@ -404,6 +405,65 @@ func TestGuestAgentLaunchCommand_DoesNotDependOnTheShellFunction(t *testing.T) {
 	}
 }
 
+// TestGuestCursorLaunchCommand_ForceFlagAndNoRootEscape pins cursor's launch
+// command: --force is the skip-permissions equivalent (autonomous only), and
+// there is no IS_SANDBOX-style root escape because cursor-agent does not
+// refuse to run as root (confirmed empirically — see guestCursorLaunchCommand's
+// doc comment).
+func TestGuestCursorLaunchCommand_ForceFlagAndNoRootEscape(t *testing.T) {
+	autonomous := guestCursorLaunchCommand(true)
+	if !strings.Contains(autonomous, "--force") {
+		t.Errorf("autonomous cursor launch must pass --force; got %q", autonomous)
+	}
+	if strings.Contains(autonomous, "IS_SANDBOX") {
+		t.Errorf("cursor-agent needs no IS_SANDBOX escape (it does not refuse root); got %q", autonomous)
+	}
+
+	normal := guestCursorLaunchCommand(false)
+	if strings.Contains(normal, "--force") {
+		t.Errorf("non-autonomous cursor launch must not pass --force; got %q", normal)
+	}
+	// Unlike claude, cursor has no shell-function wrapper to bypass.
+	if strings.HasPrefix(normal, "command ") {
+		t.Errorf("cursor has no shell function to bypass with `command `; got %q", normal)
+	}
+}
+
+// TestResolveAgentLaunchDescriptor_DispatchesByName is the mutation guard for
+// the herdr dispatch seam: a sandbox's recorded AgentName must select the
+// matching agent's launch command and ready-match function, not always
+// claude's. This is what makes `nexus3 herdr agent` for a --agent cursor
+// sandbox launch cursor-agent instead of claude.
+func TestResolveAgentLaunchDescriptor_DispatchesByName(t *testing.T) {
+	cursor := resolveAgentLaunchDescriptor(cred.CursorAgentProfileName)
+	if got, want := cursor.command(true), guestCursorLaunchCommand(true); got != want {
+		t.Errorf("cursor descriptor command(true) = %q, want %q (guestAgentLaunchCommand leaked through)", got, want)
+	}
+	if got, want := cursor.readyMatch(true), cursorReadyMatch(true); got != want {
+		t.Errorf("cursor descriptor readyMatch(true) = %q, want %q", got, want)
+	}
+	// Mutation-relevant: cursor's descriptor must NOT resolve to claude's
+	// launch command, or a cursor sandbox would type "claude" into a pane with
+	// no claude binary.
+	if cursor.command(true) == guestAgentLaunchCommand(true) {
+		t.Error("cursor descriptor resolved to claude's launch command — dispatch is not agent-specific")
+	}
+
+	claude := resolveAgentLaunchDescriptor(cred.ClaudeCodeProfileName)
+	if got, want := claude.command(true), guestAgentLaunchCommand(true); got != want {
+		t.Errorf("claude descriptor command(true) = %q, want %q", got, want)
+	}
+
+	// Empty (plain sandbox) and unrecognised names fall back to claude's
+	// descriptor, matching cred.DefaultProfileName / pre-registry behaviour.
+	for _, name := range []string{"", "some-future-agent-not-yet-registered"} {
+		fallback := resolveAgentLaunchDescriptor(name)
+		if got, want := fallback.command(true), guestAgentLaunchCommand(true); got != want {
+			t.Errorf("resolveAgentLaunchDescriptor(%q) command(true) = %q, want claude's %q", name, got, want)
+		}
+	}
+}
+
 // ── J2: space-agent --no-focus propagates through herdrOpenGuestShellPane ────
 //
 // Both tests call the production herdrOpenGuestShellPane directly — they do
@@ -453,6 +513,88 @@ func TestSpaceAgent_PaneOpenFocusArgv_WithNoFocus(t *testing.T) {
 	}
 	if !contains(argv, "--no-focus") {
 		t.Errorf("argv %v missing --no-focus when focus=false — must pass explicitly, not just omit --focus", argv)
+	}
+}
+
+// TestCursorReadyMatch_AgainstLiveCapturedPaneOutput exercises cursorReadyMatch
+// against terminal output captured from a REAL authenticated cursor-agent
+// session, replacing the previous static-analysis guess ("shift+tab to cycle")
+// which was never confirmed against a live pane.
+//
+// Capture method (2026-09-04): cursor-agent v2026.09.02-c22c1a3 was started
+// inside a detached tmux session (220×50) on the operator's host
+// (authenticated as maintainer@example.invalid). After 10 seconds, tmux
+// capture-pane -p was used to read the fully-rendered screen content. The
+// session was then killed. No file was modified; no prompt was sent.
+//
+// The "shift+tab to cycle" string that the prior implementation returned does
+// NOT appear anywhere in the real TUI output. The correct indicator is the
+// input-box placeholder "Plan, search, build anything", which appears only
+// when cursor-agent has fully initialized and its input box is accepting text.
+func TestCursorReadyMatch_AgainstLiveCapturedPaneOutput(t *testing.T) {
+	// readyPane is the verbatim tmux capture-pane output from a real
+	// cursor-agent v2026.09.02-c22c1a3 session at the ready state.
+	// Captured 2026-09-04 on host authenticated as maintainer@example.invalid.
+	// Trailing blank lines are omitted; leading spaces are preserved.
+	const readyPane = `  Cursor Agent
+  v2026.09.02-c22c1a3
+  Tip: Type ? in the prompt bar to show in-app hints.
+
+  → Plan, search, build anything
+
+  Cursor Grok 4.5 High Fast
+  ~/magic/nexus3/.claude/worktrees/agent-a81fcacc4e0838ade · nexus3/cursor-s6-readymatch`
+
+	// stillStartingPane simulates a pane before cursor-agent has reached the
+	// ready state — for example, just after the binary is launched and before
+	// the backend connection is established.
+	const stillStartingPane = `  Cursor Agent
+  v2026.09.02-c22c1a3`
+
+	// unauthenticatedPane simulates a pane where cursor-agent rejected the
+	// session (no valid credentials) and is showing the login prompt rather
+	// than the interactive TUI.
+	const unauthenticatedPane = `  Cursor Agent
+  v2026.09.02-c22c1a3
+  Not logged in. Run: cursor-agent login`
+
+	tok := cursorReadyMatch(false)
+	if tok == "" {
+		t.Fatal("cursorReadyMatch returned empty string — would wait forever")
+	}
+
+	// Autonomous mode must return the same token: cursor's ready state does not
+	// change based on --force/--yolo.
+	tokAuto := cursorReadyMatch(true)
+	if tok != tokAuto {
+		t.Errorf("cursorReadyMatch is mode-invariant for cursor, but got different tokens: normal=%q autonomous=%q", tok, tokAuto)
+	}
+
+	// Positive: the token must appear in the ready pane.
+	if !strings.Contains(readyPane, tok) {
+		t.Errorf("readyMatch token %q not found in the live-captured ready pane:\n%s", tok, readyPane)
+	}
+
+	// Negative: the token must NOT appear in the still-starting pane.
+	if strings.Contains(stillStartingPane, tok) {
+		t.Errorf("readyMatch token %q fires on a still-starting pane — would report ready too early:\n%s", tok, stillStartingPane)
+	}
+
+	// Negative: the token must NOT appear in an unauthenticated pane.
+	if strings.Contains(unauthenticatedPane, tok) {
+		t.Errorf("readyMatch token %q fires on an unauthenticated pane — would report ready without a session:\n%s", tok, unauthenticatedPane)
+	}
+
+	// The prior static-analysis guess must no longer be the token: it was never
+	// confirmed live and does not appear in a real running session.
+	const staleGuess = "shift+tab to cycle"
+	if tok == staleGuess {
+		t.Errorf("cursorReadyMatch still returns the stale static-analysis guess %q — "+
+			"this string does not appear in real cursor-agent TUI output; update it to match the live capture", staleGuess)
+	}
+	// Extra proof: confirm the stale guess is also absent from the ready pane.
+	if strings.Contains(readyPane, staleGuess) {
+		t.Errorf("stale guess %q unexpectedly appears in the live-captured pane — re-evaluate", staleGuess)
 	}
 }
 

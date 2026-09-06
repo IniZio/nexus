@@ -170,7 +170,9 @@ func spawnVirtiofsd(ctx context.Context, binaryPath, socketPath, sharedDir strin
 		}
 		if _, statErr := os.Stat(socketPath); statErr == nil {
 			// Socket file created and the process is still alive.
-			return &managedProcess{cmd: cmd, pid: pid, stderrBuf: stderrBuf}, nil
+			// Start the reapWatcher goroutine now — after readiness is confirmed
+			// — so it cannot race the failure-path cleanup()'s cmd.Wait() call.
+			return newManagedProcess(cmd, pid, stderrBuf), nil
 		}
 		select {
 		case <-ctx.Done():

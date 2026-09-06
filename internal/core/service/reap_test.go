@@ -416,7 +416,7 @@ func TestReap_N_AC2_RecordProtectsResource(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	report, err := service.Reap(ctx, st, idx, true /*apply*/)
+	report, err := service.Reap(ctx, st, idx, true /*apply*/, service.ReapOptions{ProcDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Reap: %v", err)
 	}
@@ -566,7 +566,7 @@ func TestReap_LiveUni5OrphanReported(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	report, err := service.Reap(ctx, st, idx, false /*dry-run*/)
+	report, err := service.Reap(ctx, st, idx, false /*dry-run*/, service.ReapOptions{ProcDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Reap: %v", err)
 	}

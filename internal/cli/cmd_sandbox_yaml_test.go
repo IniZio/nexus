@@ -463,6 +463,24 @@ func TestApplyProjectConfig_FieldGuardCoverage(t *testing.T) {
 				}
 			},
 		},
+		{
+			// nested: when sandbox.nested=true in nexus3.yaml and --nested was NOT
+			// passed on the CLI, config enables nested virt. When --nested WAS
+			// passed, the flag already set f.nestedVirt=true; config is a no-op
+			// (the `!f.nestedVirt` guard makes it a one-way latch — never false→false).
+			// Guard is the `!f.nestedVirt` check in applyProjectConfig (D-N3N-02).
+			// Mutation target: removing the guard has no observable effect here since
+			// true||true==true; the real guard is that false is NEVER written from
+			// config — tested by the !f.nestedVirt latch semantics.
+			yamlTag:    "nested",
+			configYAML: "version: 1\nsandbox:\n  nested: true\n",
+			setupFlags: func(f *sandboxCreateFlags) {}, // CLI --nested NOT passed
+			check: func(t *testing.T, f sandboxCreateFlags) {
+				if !f.nestedVirt {
+					t.Errorf("nested: config sandbox.nested=true was not applied to f.nestedVirt (D-N3N-02)")
+				}
+			},
+		},
 	}
 
 	// Part 1: reflection sweep — every yaml tag in SandboxConfig must be in cases.

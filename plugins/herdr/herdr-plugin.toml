@@ -64,6 +64,24 @@ title = "nexus3 launch agent in sandbox"
 placement = "tab"
 command = ["sh", "bin/pane.sh", "space-agent"]
 
+# worktree-sandbox — provisioning runs INSIDE this pane, not in the action that
+# opens it.  Building a worktree sandbox pulls an image, lays down an ext4 disk,
+# and boots a VM; on a cold cache that is minutes during which the operator's
+# new worktree workspace previously showed nothing but a host-path shell, with
+# no signal that anything was happening at all.
+#
+# Opening the pane FIRST and running the build in it means the operator watches
+# it happen, and — because pane.sh blocks on Enter for a non-zero exit — a
+# failure STAYS ON SCREEN instead of going only to `herdr plugin log list`,
+# which is nowhere anyone looks.  There is a real instance of that in the log:
+# exit 1, workspace_not_found, "worktree-sandbox: open guest pane: space-create:
+# open shell pane: exit status 1", with the VM already built and running.
+[[panes]]
+id = "worktree-sandbox"
+title = "nexus3 sandbox this worktree"
+placement = "tab"
+command = ["sh", "bin/pane.sh", "worktree-sandbox"]
+
 [[actions]]
 id = "workspaces"
 title = "nexus3: list sandboxes"
@@ -142,10 +160,18 @@ title = "nexus3: sandbox this worktree"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "worktree-sandbox"]
 
-# No [[events]] hook: herdr 0.8.0 parses the table but its event registry is
-# empty -- startup, workspace_created, tab_created, worktree_created and
-# pane_created are all rejected as "unknown event", which leaves a permanent
-# warning on the plugin and fires nothing. Wire a worktree_created hook
-# (invoking `nexus3 herdr worktree-sandbox --auto <ws>`) when herdr ships
-# event support; --auto implements the conditional rule (sandbox only when the
-# source workspace is nexus3-bound).
+# worktree.removed — tear down the sandbox that was bound to the removed worktree.
+# Resolved through the existing binding store via `nexus3 herdr prune --apply`.
+# A sandbox with no binding row is NOT collectible here (see ticket 18 AC-18h);
+# space-prune remains the required backstop for git-worktree-remove paths that
+# bypass herdr (OQ-1: worktree.removed fires ONLY when herdr drives the removal).
+[[events]]
+on = "worktree.removed"
+command = ["sh", "bin/on-worktree-removed.sh"]
+
+# worktree.created — auto-provision a sandbox for the new worktree workspace.
+# The --auto flag in herdrWorktreeSandbox applies the conditional rule: sandbox
+# is created only when the source (parent) workspace is already nexus3-bound.
+[[events]]
+on = "worktree.created"
+command = ["sh", "bin/on-worktree-created.sh"]
