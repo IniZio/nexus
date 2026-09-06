@@ -69,7 +69,7 @@ func TestSeedLoop_CredFileSeederCalledForFileBased(t *testing.T) {
 		context.Background(), id, &cert,
 		caSeeder, agentSeeder,
 		broker, nil,
-		1, 0, nil, true, cred.CursorAgentProfile, credFileSeeder,
+		1, 0, nil, true, cred.CursorAgentProfile, nil, credFileSeeder,
 	)
 	if !ok {
 		t.Fatal("SeedLoop returned ok=false; all seeders succeeded — unexpected failure")
@@ -107,7 +107,7 @@ func TestSeedLoop_CredFileSeederNotCalledForClaudeCode(t *testing.T) {
 		context.Background(), id, &cert,
 		caSeeder, agentSeeder,
 		broker, nil,
-		1, 0, nil, true, cred.ClaudeCodeProfile, credFileSeeder,
+		1, 0, nil, true, cred.ClaudeCodeProfile, nil, credFileSeeder,
 	)
 	if !ok {
 		t.Fatal("SeedLoop with ClaudeCodeProfile returned ok=false")

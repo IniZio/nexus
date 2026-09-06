@@ -481,6 +481,26 @@ func TestApplyProjectConfig_FieldGuardCoverage(t *testing.T) {
 				}
 			},
 		},
+		{
+			// agents: user-global config ONLY (D-TP-09). A project-level nexus3.yaml
+			// must NOT be able to install agents or broker credentials — that is a
+			// user trust-boundary decision. applyProjectConfig deliberately does not
+			// read cfg.Sandbox.Agents; only applyUserGlobalConfig does.
+			// Guard: the absence of any `cfg.Sandbox.Agents` read in applyProjectConfig.
+			// Mutation target: if a caller were added that reads cfg.Sandbox.Agents and
+			// writes f.agentName, this case turns RED.
+			yamlTag:    "agents",
+			configYAML: "version: 1\nsandbox:\n  agents:\n    - cursor\n",
+			setupFlags: func(f *sandboxCreateFlags) {}, // nothing pre-set; flag NOT passed
+			check: func(t *testing.T, f sandboxCreateFlags) {
+				if f.agentName != "" {
+					t.Errorf("agents: project config sandbox.agents set agentName = %q, want empty (user-global-only field)", f.agentName)
+				}
+				if len(f.extraAgentNames) != 0 {
+					t.Errorf("agents: project config sandbox.agents set extraAgentNames = %v, want empty (user-global-only field)", f.extraAgentNames)
+				}
+			},
+		},
 	}
 
 	// Part 1: reflection sweep — every yaml tag in SandboxConfig must be in cases.

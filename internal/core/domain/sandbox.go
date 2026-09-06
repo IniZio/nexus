@@ -217,6 +217,14 @@ type Sandbox struct {
 	// profile's egress list or capabilities takes effect on the next boot of an
 	// existing sandbox, instead of freezing a stale copy into the store.
 	AgentName string `json:"agent_name,omitempty"`
+
+	// ExtraAgentNames lists the registered agent profile names for the extra
+	// agents declared in sandbox.agents beyond the primary (D-TP-09). Like
+	// AgentName, names are stored rather than resolved profiles so that profile
+	// updates take effect on the next boot.
+	//
+	// Empty or nil means no extra agents were configured at creation time.
+	ExtraAgentNames []string `json:"extra_agent_names,omitempty"`
 }
 
 // LiveMount describes a single live host-directory virtiofs share attached to

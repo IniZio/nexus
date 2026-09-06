@@ -294,6 +294,13 @@ type CreateAndBootOptions struct {
 	// Zero value is treated as cred.ClaudeCodeProfile in CreateAndBoot.
 	AgentProfile cred.AgentProfile
 
+	// ExtraAgentProfiles holds the resolved profiles for extra agents listed in
+	// sandbox.agents beyond the primary (D-TP-09). Each profile's credentials
+	// are seeded alongside the primary in a single guest write so the MITM proxy
+	// holds a real token to swap for every intercepted agent host. Nil means
+	// no extra agents — the primary-only path is unchanged.
+	ExtraAgentProfiles []cred.AgentProfile
+
 	// AgentCredKind selects whether the guest seed payload carries the OAuth
 	// placeholder (CLAUDE_CODE_OAUTH_TOKEN) or the direct API-key placeholder
 	// (ANTHROPIC_AUTH_TOKEN). The zero value (kindUnset) defers to
@@ -892,7 +899,8 @@ func CreateAndBoot(
 		BaseRef:        opts.BaseRef, // G1: shallow-clone boundary SHA (D-PD-19); empty if no git workspace
 		MountedVolumes: namedVolumeAttachments(opts.NamedVolumeMounts),
 		LiveMounts:     opts.LiveMounts,
-		AgentName:      agentProfile.Name, // TBD-PD-32: empty when no agent is attached
+		AgentName:       agentProfile.Name,                               // TBD-PD-32: empty when no agent is attached
+		ExtraAgentNames: extraAgentNamesFromProfiles(opts.ExtraAgentProfiles), // D-TP-09: persisted so supervisor can re-seed on restart
 	}
 	// 6a. Mixed-host guard: a bind must not span GitHub and non-GitHub hosts
 	//
@@ -1052,7 +1060,9 @@ func CreateAndBoot(
 	if opts.UseAgentSeed {
 		// agentProfile was resolved above and is the same value recorded as
 		// sb.AgentName, so the guest seed and the sandbox record cannot diverge.
-		recs, err := seedGuestAgent(ctx, opts.Broker, booted.ID, opts.Seeder, agentProfile, opts.AgentCredKind)
+		// D-TP-09: extra agents are seeded in the same write so their placeholders
+		// are present before the MITM proxy intercepts any of their hosts.
+		recs, err := seedGuestAgentForProfiles(ctx, opts.Broker, booted.ID, opts.Seeder, agentProfile, opts.AgentCredKind, opts.ExtraAgentProfiles)
 		if err != nil {
 			_ = bootDrv.Stop(ctx, booted.ID)
 			_ = svc.store.Delete(ctx, booted.ID)
@@ -1298,6 +1308,20 @@ func resolveExt4(
 	default:
 		return "", "", fmt.Errorf("resolve image: one of Digest, Ref, or RootfsPath must be set")
 	}
+}
+
+// extraAgentNamesFromProfiles extracts the Name field from each AgentProfile in
+// profiles, returning nil when the slice is empty. Used to persist extra agent
+// names on domain.Sandbox.ExtraAgentNames at create time (D-TP-09).
+func extraAgentNamesFromProfiles(profiles []cred.AgentProfile) []string {
+	if len(profiles) == 0 {
+		return nil
+	}
+	names := make([]string, len(profiles))
+	for i, p := range profiles {
+		names[i] = p.Name
+	}
+	return names
 }
 
 func secretHostsFromBinds(binds []SecretBind) []string {

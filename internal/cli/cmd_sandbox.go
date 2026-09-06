@@ -370,6 +370,9 @@ type sandboxCreateFlags struct {
 	// agentName is the --agent <name> value: a registered cred.AgentProfile
 	// name. Empty means the sandbox runs no agent and receives no credentials.
 	agentName       string
+	// extraAgentNames holds the tail of sandbox.agents from user-global config
+	// (agents[1:]). Their credential hosts are brokered alongside the primary.
+	extraAgentNames []string
 	allowHosts      []string // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
 	allowedRepo     string                    // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
 	pathPolicies    domain.EgressPathPolicies // --egress-policy-json: JSON-encoded generic path policies (worktree subprocess channel)
@@ -486,6 +489,11 @@ func applyProjectConfig(f *sandboxCreateFlags) error {
 		f.mountLive = resolvedMounts
 	}
 
+	// Agents (plural, D-TP-09): intentionally NOT read from project config.
+	// sandbox.agents is user-global-only: a cloned repo must not be able to
+	// choose which agents are installed and which credentials are brokered —
+	// that is a user trust-boundary decision. Only applyUserGlobalConfig reads
+	// cfg.Sandbox.Agents; applyProjectConfig deliberately ignores it.
 	// Agent: explicit --agent flag wins; project config provides a per-repo
 	// default when the flag was absent. applyUserGlobalConfig (called after this
 	// function) provides a further user-level fallback when neither the flag nor
@@ -551,17 +559,32 @@ func applyUserGlobalConfig(f *sandboxCreateFlags) error {
 		return nil
 	}
 
-	// Agent: explicit --agent flag (or project config via applyProjectConfig) wins;
-	// user-global config provides a further fallback when neither set an agent.
-	// An unknown agent name is non-fatal: log and skip (unlike the project config
-	// where an unknown agent name is a hard error).
-	if f.agentName == "" && userCfg.Sandbox.Agent != "" {
-		if _, ok := cred.ProfileByName(userCfg.Sandbox.Agent); !ok {
-			slog.Warn("sandbox create: user-global config sandbox.agent is not a known agent; ignoring",
-				"agent", userCfg.Sandbox.Agent,
-				"known", strings.Join(cred.ProfileNames(), ", "))
-		} else {
-			f.agentName = userCfg.Sandbox.Agent
+	// Agent: explicit --agent flag (or project config via applyProjectConfig) wins.
+	// sandbox.agents (plural) is checked first: it is a hard error if any name is
+	// unknown, because a misconfigured agents list silently installs nothing rather
+	// than the intended set. sandbox.agent (singular) is a non-fatal fallback.
+	if f.agentName == "" {
+		if len(userCfg.Sandbox.Agents) > 0 {
+			// D-TP-09: sandbox.agents list — hard error on unknown name.
+			for _, name := range userCfg.Sandbox.Agents {
+				if _, ok := cred.ProfileByName(name); !ok {
+					return fmt.Errorf("sandbox create: user-global config sandbox.agents: %q is not a known agent (one of: %s)",
+						name, strings.Join(cred.ProfileNames(), ", "))
+				}
+			}
+			f.agentName = userCfg.Sandbox.Agents[0]
+			if len(userCfg.Sandbox.Agents) > 1 {
+				f.extraAgentNames = append([]string(nil), userCfg.Sandbox.Agents[1:]...)
+			}
+		} else if userCfg.Sandbox.Agent != "" {
+			// Fallback: sandbox.agent (singular) — non-fatal on unknown name.
+			if _, ok := cred.ProfileByName(userCfg.Sandbox.Agent); !ok {
+				slog.Warn("sandbox create: user-global config sandbox.agent is not a known agent; ignoring",
+					"agent", userCfg.Sandbox.Agent,
+					"known", strings.Join(cred.ProfileNames(), ", "))
+			} else {
+				f.agentName = userCfg.Sandbox.Agent
+			}
 		}
 	}
 
@@ -1128,6 +1151,55 @@ func agentDevEgressSecretHosts(profile cred.AgentProfile, openEgress bool) []str
 		return nil
 	}
 	return []string{profile.CredentialedHost}
+}
+
+// resolveExtraAgentProfiles returns the resolved [cred.AgentProfile] for each
+// extra agent name from sandbox.agents (D-TP-09). Unknown names are silently
+// skipped; they were already rejected by the hard-error check at create time.
+func resolveExtraAgentProfiles(names []string) []cred.AgentProfile {
+	profiles := make([]cred.AgentProfile, 0, len(names))
+	for _, name := range names {
+		if p, ok := cred.ProfileByName(name); ok {
+			profiles = append(profiles, p)
+		}
+	}
+	return profiles
+}
+
+// resolveExtraSecretHosts returns the set of hostnames for Envelope.SecretHosts
+// that covers the primary agent plus every extra brokered agent (D-TP-09).
+// In open-egress mode each agent's CredentialedHost must appear in SecretHosts
+// so the MITM proxy intercepts it; in closed-egress mode allowHosts is the
+// right channel and this returns nil.
+func resolveExtraSecretHosts(primary cred.AgentProfile, extraNames []string, openEgress bool) []string {
+	hosts := agentDevEgressSecretHosts(primary, openEgress)
+	if !openEgress {
+		return hosts
+	}
+	for _, name := range extraNames {
+		if p, ok := cred.ProfileByName(name); ok && p.CredentialedHost != "" {
+			hosts = append(hosts, p.CredentialedHost)
+		}
+	}
+	return hosts
+}
+
+// resolveExtraSecretHostSuffixes is the dot-anchored DNS suffix counterpart to
+// resolveExtraSecretHosts: it collects suffix entries for the primary and every
+// extra brokered agent profile (D-TP-09).
+func resolveExtraSecretHostSuffixes(primary cred.AgentProfile, extraNames []string, openEgress bool) []string {
+	suffixes := agentDevEgressSecretHostSuffixes(primary, openEgress)
+	if !openEgress {
+		return suffixes
+	}
+	for _, name := range extraNames {
+		if p, ok := cred.ProfileByName(name); ok {
+			if s := p.CredentialedHostSuffix; s != "" {
+				suffixes = append(suffixes, s)
+			}
+		}
+	}
+	return suffixes
 }
 
 // builder-VM helpers
@@ -1963,6 +2035,14 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// detached supervisor that takes ownership below: it re-boots the VM, and
 	// /run is tmpfs, so anything seeded here is discarded on that reboot.
 	agentProfile, allowHosts, openEgress := resolveAgentPosture(f)
+	// D-TP-09: extra agents from sandbox.agents — add their egress hosts to the
+	// allowlist so the closed-egress ACL permits them, and route their credential
+	// hosts through MITM in open-egress mode.
+	for _, name := range f.extraAgentNames {
+		if p, ok := cred.ProfileByName(name); ok {
+			allowHosts = append(allowHosts, service.AgentEgressHosts(p)...)
+		}
+	}
 	// S16: fail before any VM work if the agent credential is dead.  Profiles
 	// with CredentialFormatNone (Claude Code) always pass.
 	if err := credPreflightCheck(agentProfile); err != nil {
@@ -2127,8 +2207,9 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			// --agent + --egress open (dev-egress posture): OpenEgress=true +
 			// ExtraSecretHosts routes the credentialed host through MITM proxy.
 			OpenEgress:        openEgress,
-			ExtraSecretHosts:        agentDevEgressSecretHosts(agentProfile, openEgress),
-			ExtraSecretHostSuffixes: agentDevEgressSecretHostSuffixes(agentProfile, openEgress),
+			ExtraSecretHosts:        resolveExtraSecretHosts(agentProfile, f.extraAgentNames, openEgress),
+			ExtraSecretHostSuffixes: resolveExtraSecretHostSuffixes(agentProfile, f.extraAgentNames, openEgress),
+			ExtraAgentProfiles: resolveExtraAgentProfiles(f.extraAgentNames), // D-TP-09: full profiles so supervisor can seed credentials
 			AgentProfile:      agentProfile,  // zero value when --agent was not passed
 			AllowedRepo:  f.allowedRepo,  // D-PD-36: set by --repo; empty for open-egress sandboxes
 			PathPolicies: f.pathPolicies, // conveyed via --egress-policy-json on the worktree subprocess path

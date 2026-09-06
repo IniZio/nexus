@@ -301,6 +301,24 @@ type SandboxConfig struct {
 	//     agent: claude-code
 	Agent string `yaml:"agent"`
 
+	// Agents is the ordered list of agent profile names installed in
+	// user-global sandboxes (D-TP-09). The first entry is the primary agent —
+	// it becomes the persisted domain.Sandbox.AgentName and the agent a herdr
+	// pane launches. Every listed agent has its credential hosts added to the
+	// egress allowlist and MITM-interception set so no installed agent is
+	// unauthenticated. When this key is absent, the herdr worktree-sandbox
+	// path falls back to "claude-code" (backward-compatible default).
+	//
+	// An unknown name is a hard error at config-application time (unlike the
+	// singular sandbox.agent key, which warns and skips).
+	//
+	// User-global config only; ignored in nexus3.yaml.
+	//
+	// Example:
+	//   sandbox:
+	//     agents: [claude-code, cursor-agent]
+	Agents []string `yaml:"agents"`
+
 	// MemoryMax is the RAM hotplug ceiling in MiB. Zero means "use the
 	// built-in default" (typically 4× boot memory or 4096 MiB, whichever is
 	// larger). Must exceed the boot Memory when both are set.

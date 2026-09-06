@@ -17,6 +17,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver/fake"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
 	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/core/vmcfg"
 	"github.com/IniZio/nexus3/internal/core/volumestore"
@@ -1390,5 +1391,143 @@ func TestAgentCfg_Rm_NoVolumeNoPanic(t *testing.T) {
 	if rmErr := runSandboxRmFull(ctx, []string{sb.ID.String()}, out, svc, storeRoot,
 		func(_ context.Context, _ string) error { return nil }); rmErr != nil {
 		t.Fatalf("runSandboxRmFull without agentcfg volume: %v", rmErr)
+	}
+}
+
+// ── sandbox.agents (plural) user-config tests (D-TP-09/TBD-5) ───────────────
+
+// TestApplyUserGlobalConfig_AgentsList_SetsPrimaryAndExtras verifies that
+// sandbox.agents[0] becomes agentName and agents[1:] become extraAgentNames (AC1).
+// Mutation guard: if f.agentName assignment is removed, this test fails.
+func TestApplyUserGlobalConfig_AgentsList_SetsPrimaryAndExtras(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	cfgDir := filepath.Join(dir, "nexus3")
+	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("version: 1\nsandbox:\n  agents:\n    - claude-code\n    - cursor\n")
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sandboxCreateFlags{}
+	if err := applyUserGlobalConfig(f); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if f.agentName != "claude-code" {
+		t.Errorf("agentName = %q, want %q", f.agentName, "claude-code")
+	}
+	if len(f.extraAgentNames) != 1 || f.extraAgentNames[0] != "cursor" {
+		t.Errorf("extraAgentNames = %v, want [cursor]", f.extraAgentNames)
+	}
+}
+
+// TestApplyUserGlobalConfig_AgentsList_AbsentFallsBackToSingular verifies that
+// when sandbox.agents is absent, sandbox.agent (singular) is used as before (AC3).
+// Mutation guard: if the else-if branch is removed, this test fails (agentName stays empty).
+func TestApplyUserGlobalConfig_AgentsList_AbsentFallsBackToSingular(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	cfgDir := filepath.Join(dir, "nexus3")
+	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("version: 1\nsandbox:\n  agent: claude-code\n")
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sandboxCreateFlags{}
+	if err := applyUserGlobalConfig(f); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if f.agentName != "claude-code" {
+		t.Errorf("agentName = %q, want %q (sandbox.agent fallback broken)", f.agentName, "claude-code")
+	}
+	if len(f.extraAgentNames) != 0 {
+		t.Errorf("extraAgentNames = %v, want empty (sandbox.agents absent)", f.extraAgentNames)
+	}
+}
+
+// TestApplyUserGlobalConfig_AgentsList_UnknownNameRejects verifies that an
+// unknown name in sandbox.agents returns a hard error containing the offending name (AC4).
+// Mutation guard: if the ProfileByName check is removed, this test fails (err == nil).
+func TestApplyUserGlobalConfig_AgentsList_UnknownNameRejects(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	cfgDir := filepath.Join(dir, "nexus3")
+	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("version: 1\nsandbox:\n  agents:\n    - claude-code\n    - no-such-agent\n")
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sandboxCreateFlags{}
+	err := applyUserGlobalConfig(f)
+	if err == nil {
+		t.Fatal("expected error for unknown agent name, got nil")
+	}
+	if !strings.Contains(err.Error(), "no-such-agent") {
+		t.Errorf("error %q does not contain offending name %q", err.Error(), "no-such-agent")
+	}
+}
+
+// TestApplyUserGlobalConfig_AgentsList_FlagWins verifies that a pre-set agentName
+// (from --agent flag) is not overridden by sandbox.agents (AC5).
+// Mutation guard: if the `f.agentName == ""` guard is removed, this test fails.
+func TestApplyUserGlobalConfig_AgentsList_FlagWins(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	cfgDir := filepath.Join(dir, "nexus3")
+	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// Config says cursor; flag (below) says claude-code → flag wins.
+	data := []byte("version: 1\nsandbox:\n  agents:\n    - cursor\n")
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sandboxCreateFlags{agentName: "claude-code"} // simulates --agent claude-code
+	if err := applyUserGlobalConfig(f); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if f.agentName != "claude-code" {
+		t.Errorf("agentName = %q, want %q (--agent flag overridden by config)", f.agentName, "claude-code")
+	}
+	if len(f.extraAgentNames) != 0 {
+		t.Errorf("extraAgentNames = %v, want empty (flag set, config must not populate extras)", f.extraAgentNames)
+	}
+}
+
+// TestResolveExtraSecretHosts_IncludesExtraAgentOpenEgress verifies that
+// resolveExtraSecretHosts includes each extra agent's CredentialedHost in
+// open-egress mode (AC2: all listed agents are brokered).
+// Mutation guard: if the extraNames loop in resolveExtraSecretHosts is removed,
+// cursor's host is absent from the result and this test fails.
+func TestResolveExtraSecretHosts_IncludesExtraAgentOpenEgress(t *testing.T) {
+	cursorProfile, ok := cred.ProfileByName("cursor")
+	if !ok {
+		t.Skip("cursor profile not registered")
+	}
+	if cursorProfile.CredentialedHost == "" {
+		t.Skip("cursor has no CredentialedHost")
+	}
+	primary, _ := cred.ProfileByName("claude-code")
+
+	hosts := resolveExtraSecretHosts(primary, []string{"cursor"}, true /*openEgress*/)
+
+	found := false
+	for _, h := range hosts {
+		if h == cursorProfile.CredentialedHost {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("resolveExtraSecretHosts: cursor CredentialedHost %q not in %v; extra agent not brokered", cursorProfile.CredentialedHost, hosts)
 	}
 }

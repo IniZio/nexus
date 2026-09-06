@@ -342,6 +342,11 @@ type seedRouteInputs struct {
 	// StaticCredSrc.Token() and broker.SetRealToken to wire the real token.
 	// Nil for OAuth agents (Claude), which push via Refresher.ForcePush instead.
 	StaticCredSrc   cred.CredentialSource
+	// ExtraProfiles holds the resolved agent profiles for the extra agents
+	// declared in sandbox.agents (D-TP-09). Derived from sb.ExtraAgentNames at
+	// buildSeedRouteInputs time and threaded through to SeedLoop /
+	// seedAgentAndHumanSecrets so every listed agent gets a credential seed.
+	ExtraProfiles   []cred.AgentProfile
 }
 
 // Package-level function vars so tests can spy which seeder runSeedRoute
@@ -365,13 +370,13 @@ func runSeedRoute(ctx context.Context, route seedRoute, in seedRouteInputs) (ok,
 			"reason", "no MITM proxy for this sandbox: open egress, no secrets, no agent")
 		return false, false
 	case routeCombined:
-		ok, guestEverResponded = seedAgentAndHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers, in.Svc, resolveSeedProfile(in.SB), in.CredFileSeeder)
+		ok, guestEverResponded = seedAgentAndHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers, in.Svc, resolveSeedProfile(in.SB), in.ExtraProfiles, in.CredFileSeeder)
 	case routeHumanSecrets:
 		ok, guestEverResponded = seedHumanSecretsFn(ctx, in.SB, in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Svc)
 	default: // routeAgent
 		agentSandbox := in.SB.AgentName != ""
 		ok, guestEverResponded = seedLoopFn(ctx, in.SB.ID, &in.Cert, in.CASeeder, in.AgentSeeder, in.Broker, in.Refreshers,
-			maxSeedAttempts, 2*time.Second, in.Svc, agentSandbox, resolveSeedProfile(in.SB), in.CredFileSeeder)
+			maxSeedAttempts, 2*time.Second, in.Svc, agentSandbox, resolveSeedProfile(in.SB), in.ExtraProfiles, in.CredFileSeeder)
 	}
 	// For file-based credential agents (e.g. cursor-agent), push the real token
 	// after seeding registers the placeholder. Refreshers do this automatically
@@ -431,6 +436,20 @@ func buildSeedEgressOpts(sb domain.Sandbox, broker *cred.Broker) (service.Create
 	return opts, nil
 }
 
+// resolveExtraSeedProfiles resolves the extra agent profiles from the names
+// persisted on sb.ExtraAgentNames (D-TP-09). Unknown names are silently skipped;
+// they were validated at create time and may simply refer to a profile that was
+// removed from the registry since the sandbox was created.
+func resolveExtraSeedProfiles(sb domain.Sandbox) []cred.AgentProfile {
+	profiles := make([]cred.AgentProfile, 0, len(sb.ExtraAgentNames))
+	for _, name := range sb.ExtraAgentNames {
+		if p, ok := cred.ProfileByName(name); ok {
+			profiles = append(profiles, p)
+		}
+	}
+	return profiles
+}
+
 // buildSeedRouteInputs assembles the [seedRouteInputs] from the already-resolved
 // components. It is a pure constructor: no side effects, no RPCs. Extracted from
 // [RunDetached] so that the StaticCredSrc assignment site — specifically the
@@ -460,6 +479,7 @@ func buildSeedRouteInputs(
 		Broker:         broker,
 		Refreshers:     refreshers,
 		StaticCredSrc:  egressWire.AgentCredSource,
+		ExtraProfiles:  resolveExtraSeedProfiles(sb),
 		Svc:            svc,
 	}
 }
@@ -1655,6 +1675,7 @@ func seedAgentAndHumanSecrets(
 	refreshers []*cred.Refresher,
 	svc PerimeterCAGetter,
 	profile cred.AgentProfile,
+	extraProfiles []cred.AgentProfile,
 	credFileSeeder service.GuestSeeder,
 ) (ok bool, guestEverResponded bool) {
 	for attempt := range maxSeedAttempts {
@@ -1669,7 +1690,8 @@ func seedAgentAndHumanSecrets(
 				slog.Debug("supervisor.seed_ca_retry", "attempt", attempt, "err", caErr)
 			} else {
 				guestEverResponded = true
-				records, combErr := service.SeedGuestAgentAndSecretsForProfile(ctx, broker, sb.ID, sb.Envelope.SecretSpecs, credSeeder, profile)
+				// D-TP-09: seed primary + extra agents alongside human secrets in one write.
+				records, combErr := service.SeedGuestAgentAndSecretsForProfiles(ctx, broker, sb.ID, sb.Envelope.SecretSpecs, credSeeder, profile, extraProfiles)
 				if combErr == nil {
 					combErr = service.SeedGuestCredFile(ctx, sb.ID, records, profile, credFileSeeder)
 				}
@@ -1843,6 +1865,7 @@ func SeedLoop(
 	svc PerimeterCAGetter,
 	seedAgentCreds bool,
 	profile cred.AgentProfile,
+	extraProfiles []cred.AgentProfile,
 	credFileSeeder service.GuestSeeder,
 ) (ok bool, guestEverResponded bool) {
 	for attempt := range maxAttempts {
@@ -1861,7 +1884,8 @@ func SeedLoop(
 			var agentErr error
 			if caErr == nil && seedAgentCreds {
 				var records []cred.PlaceholderRecord
-				records, agentErr = service.SeedGuestAgentForProfile(ctx, broker, id, agentSeeder, profile)
+				// D-TP-09: seed primary + extra agents in one write.
+				records, agentErr = service.SeedGuestAgentForProfiles(ctx, broker, id, agentSeeder, profile, extraProfiles)
 				if agentErr == nil {
 					agentErr = service.SeedGuestCredFile(ctx, id, records, profile, credFileSeeder)
 				}

@@ -3761,8 +3761,26 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 	if nested {
 		args = append(args, "--nested")
 	}
-	args = append(args, "--agent", "claude-code", "--egress", "open", handle)
+	args = append(args, "--agent", herdrPrimaryAgent(), "--egress", "open", handle)
 	return args
+}
+
+// herdrPrimaryAgent resolves the primary agent name for herdr worktree sandboxes
+// (D-TP-09). It reads sandbox.agents from the user-global config; the first
+// entry is the primary. Falls back to sandbox.agent (singular), then to
+// "claude-code" as the backward-compatible default when neither key is set.
+func herdrPrimaryAgent() string {
+	cfg, err := config.LoadUserGlobal()
+	if err != nil {
+		return "claude-code"
+	}
+	if len(cfg.Sandbox.Agents) > 0 {
+		return cfg.Sandbox.Agents[0]
+	}
+	if cfg.Sandbox.Agent != "" {
+		return cfg.Sandbox.Agent
+	}
+	return "claude-code"
 }
 
 // herdrDockerDiskVolumeName derives a VolumeStore-legal name

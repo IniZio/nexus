@@ -467,23 +467,63 @@ func seedGuestAgent(
 	profile cred.AgentProfile,
 	kind agentCredKind,
 ) ([]cred.PlaceholderRecord, error) {
+	return seedGuestAgentForProfiles(ctx, broker, id, seeder, profile, kind, nil)
+}
+
+// seedGuestAgentForProfiles is the internal multi-profile implementation. It
+// seeds the primary agent (with an explicit credential kind) and any extra
+// agents (kindUnset, resolved at seed time from the host environment) in one
+// combined write so no profile's credentials overwrite another's. Passing nil
+// extras is identical to seedGuestAgent.
+func seedGuestAgentForProfiles(
+	ctx context.Context,
+	broker *cred.Broker,
+	id domain.SandboxID,
+	seeder GuestSeeder,
+	primary cred.AgentProfile,
+	primaryKind agentCredKind,
+	extras []cred.AgentProfile,
+) ([]cred.PlaceholderRecord, error) {
 	if broker == nil || seeder == nil {
 		return nil, nil
 	}
 
-	records, payload, err := prepareAgentCredPayload(broker, id, profile, kind)
+	allRecs, payload, err := prepareAgentCredPayload(broker, id, primary, primaryKind)
 	if err != nil {
 		return nil, err
+	}
+	for _, extra := range extras {
+		extraRecs, extraPayload, extraErr := prepareAgentCredPayload(broker, id, extra, kindUnset)
+		if extraErr != nil {
+			return nil, extraErr
+		}
+		allRecs = append(allRecs, extraRecs...)
+		payload = append(payload, extraPayload...)
 	}
 	// B-SEED: append stdio MCP credential vars (D-PP-04 exemption) so they
 	// reach cred.env even on the agent-only route (routeAgent → SeedLoop →
 	// SeedGuestAgent). Mirror of what seedGuestAgentAndSecrets does.
-	stdioPayload := resolveMCPStdioPayload(profile)
+	stdioPayload := resolveMCPStdioPayload(primary)
 	combined := append(payload, stdioPayload...)
 	if err := seeder(ctx, id, combined); err != nil {
 		return nil, fmt.Errorf("seed agent: deliver to guest: %w", err)
 	}
-	return records, nil
+	return allRecs, nil
+}
+
+// SeedGuestAgentForProfiles seeds the primary agent's credential placeholders
+// plus those of any extra agents (D-TP-09) in a single guest write. Extra
+// agents always use kindUnset credential resolution. Passing a nil or empty
+// extras slice is identical to [SeedGuestAgentForProfile].
+func SeedGuestAgentForProfiles(
+	ctx context.Context,
+	broker *cred.Broker,
+	id domain.SandboxID,
+	seeder GuestSeeder,
+	primary cred.AgentProfile,
+	extras []cred.AgentProfile,
+) ([]cred.PlaceholderRecord, error) {
+	return seedGuestAgentForProfiles(ctx, broker, id, seeder, primary, kindUnset, extras)
 }
 
 // prepareAgentCredPayload registers placeholders with broker for each agent
@@ -560,6 +600,62 @@ func SeedGuestAgentAndSecretsForProfile(
 	profile cred.AgentProfile,
 ) ([]cred.PlaceholderRecord, error) {
 	return seedGuestAgentAndSecrets(ctx, broker, id, specs, seeder, profile, kindUnset)
+}
+
+// SeedGuestAgentAndSecretsForProfiles is [SeedGuestAgentAndSecretsForProfile]
+// extended to also seed extra agents (D-TP-09). All payloads — primary agent,
+// extra agents, and human secrets — are composed into a single guest write.
+// Passing nil or empty extras is identical to [SeedGuestAgentAndSecretsForProfile].
+func SeedGuestAgentAndSecretsForProfiles(
+	ctx context.Context,
+	broker *cred.Broker,
+	id domain.SandboxID,
+	specs []string,
+	seeder GuestSeeder,
+	primary cred.AgentProfile,
+	extras []cred.AgentProfile,
+) ([]cred.PlaceholderRecord, error) {
+	if broker == nil || seeder == nil {
+		return nil, nil
+	}
+
+	// Build primary agent payload.
+	allRecs, agentPayload, err := prepareAgentCredPayload(broker, id, primary, kindUnset)
+	if err != nil {
+		return nil, err
+	}
+	for _, extra := range extras {
+		extraRecs, extraPayload, extraErr := prepareAgentCredPayload(broker, id, extra, kindUnset)
+		if extraErr != nil {
+			return nil, extraErr
+		}
+		allRecs = append(allRecs, extraRecs...)
+		agentPayload = append(agentPayload, extraPayload...)
+	}
+
+	// Build secret payload: resolves specs, mints placeholders, returns bytes.
+	var secretPayload []byte
+	if len(specs) > 0 {
+		binds, resolveErr := ResolveEnvelopeSecrets(ctx, specs)
+		if resolveErr != nil {
+			return nil, fmt.Errorf("seed combined: resolve secrets: %w", resolveErr)
+		}
+		secretPayload, _, err = applySecrets(broker, id, binds)
+		if err != nil {
+			return nil, fmt.Errorf("seed combined: apply secrets: %w", err)
+		}
+	}
+
+	stdioPayload := resolveMCPStdioPayload(primary)
+	combined := make([]byte, 0, len(agentPayload)+len(secretPayload)+len(stdioPayload))
+	combined = append(combined, agentPayload...)
+	combined = append(combined, secretPayload...)
+	combined = append(combined, stdioPayload...)
+
+	if err := seeder(ctx, id, combined); err != nil {
+		return nil, fmt.Errorf("seed combined: deliver to guest: %w", err)
+	}
+	return allRecs, nil
 }
 
 func seedGuestAgentAndSecrets(
