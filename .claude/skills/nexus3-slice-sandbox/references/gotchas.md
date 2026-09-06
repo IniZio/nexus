@@ -16,6 +16,9 @@ Each entry: the symptom, what is really happening, and what to do.
 - [A test fails only in the full suite](#parallelism-flake-hiding-a-real-defect)
 - [Subagent said "mutation-proven" but wasn't](#unverified-mutation-proofs)
 - [Host is out of memory / finished sandboxes still running](#finished-sandboxes-are-never-reaped)
+- ["Is the new tool installed?" / re-bake didn't take effect](#rebake-does-not-update-running-sandboxes)
+- [Which binary is the guest actually running?](#identify-the-binary-a-guest-is-running)
+- [Builder VM kernel panic (ENOENT on `/lib64/ld-linux-x86-64.so.2`)](#static-binary-trap)
 
 ---
 
@@ -270,3 +273,103 @@ would have booted with nested virt ON, with nothing to catch it.
 yourself. Break the line, run the narrowed test, confirm RED, restore, confirm
 GREEN. It costs a minute. Pay attention to *which layer* the existing test covers
 — a codec test and a flag-default test are different hops.
+
+---
+
+## Re-bake does not update running sandboxes
+
+**Symptom:** you rebuild the image (change `.nexus/Containerfile` or bump a
+recipe version) and `sandbox create` prints a new image digest, but the tool
+you wanted upgraded is not present — or is still the old version — inside the
+sandbox you were already using.
+
+**Cause:** the guest rootfs is baked into the ext4 image at create time.
+`sandbox create` is the only moment that image is consumed. A running sandbox
+retains the rootfs snapshot it booted from; no subsequent rebuild touches it.
+`sandbox agent-upgrade` hot-swaps only the `nexus3-agent` binary in a live
+guest — it does not re-run the Containerfile or recipe layers.
+
+**How to check which image a sandbox is running:**
+- Look at the `build-cache: stored ... digest=sha256:<hash>` line in the
+  `sandbox create` output for each sandbox. Different digests mean different
+  rootfs images.
+- Inside the guest, `cat /etc/nexus3/boot.json` shows the build provenance
+  recorded at image export time.
+- The builder image filename in
+  `~/.local/state/nexus3/images/nexus-builder-sha256-<ctxhash>-agent<agenthash16>.ext4`
+  embeds the first 16 hex of the agent binary's sha256 (`agenthash16`) and the
+  build-context hash (`ctxhash`). A different ctxhash means the context
+  (Containerfile + recipe) changed and the image was rebuilt.
+
+**Do:** after a re-bake, create a fresh sandbox. The running one cannot pick up
+the new image without a `rm` and a new `create`. If you are unsure whether a
+running sandbox predates the re-bake, compare the build digests from the two
+`create` invocations — they must differ for the re-bake to have produced a
+genuinely new image.
+
+---
+
+## Identify the binary a guest is running
+
+**Symptom:** an agent reports that a tool is installed and working (version
+string, `which` output), but behaviour does not match the expected binary —
+either an old base-image binary is still in effect, or a shell wrapper is
+masking the real thing.
+
+**Why version strings are not reliable:** `command -v <tool>` can return the
+name of a shell wrapper *function* rather than an executable path. The guest
+profile (`/etc/profile.d/nexus3-cred.sh`) defines a `claude` function that
+wraps the real binary; if the underlying `command claude` exits 127, the
+wrapper silently fails while appearing present. A version string (`claude
+--version`) is self-reported by whatever binary or script answers the call and
+can come from a different binary than you think you are testing. Both happened
+during this project: a `claude` binary from an older base image was mistaken
+for proof a new install had worked, and separately a wrapper whose underlying
+command exited 127 was reported as proof the tool was installed.
+
+**Do:** resolve to an absolute path and hash it:
+
+```bash
+# For any named tool — resolves through symlinks to the true binary:
+readlink -f $(command -v claude)
+sha256sum $(readlink -f $(command -v claude))
+
+# For the agent process itself (PID 1 in the guest):
+sha256sum /proc/1/exe
+
+# Compare against the host agent binary:
+sha256sum ~/.local/bin/nexus3-agent
+```
+
+For the agent: the builder image filename embeds the first 16 hex of the agent
+binary's sha256 (`nexus-builder-...-agent<hash16>.ext4`), so you can confirm
+which agent a particular build used without entering the guest. A `hash16` in
+the filename that does not match the current `sha256sum ~/.local/bin/nexus3-agent`
+means the sandbox was built against an older agent.
+
+---
+
+## Static binary trap
+
+**Symptom:** the builder VM kernel panics with `kernel panic - not syncing:
+Attempted to kill init!` (or similar), and the last line of the in-guest build
+log shows `ENOENT` on `/lib64/ld-linux-x86-64.so.2`, or the build stalls and
+then the VM dies.
+
+**Cause:** a bare `go build -o nexus3-agent ./cmd/nexus3-agent` produces a
+dynamically linked binary against the host's glibc. The Alpine-based builder
+VM carries musl only; glibc's dynamic loader (`/lib64/ld-linux-x86-64.so.2`)
+does not exist there, so the kernel cannot exec the binary and panics trying
+to launch it as PID 1.
+
+**Do:** always use `make install-agent`, which sets `CGO_ENABLED=0` and
+produces a fully static binary:
+
+```bash
+make install-agent
+ldd ~/.local/bin/nexus3-agent   # must print "not a dynamic executable"
+```
+
+Verify with `ldd` before copying to any guest or using as the agent binary.
+A dynamic binary will boot fine on the host (where glibc is present) and fail
+only inside the Alpine builder VM, making the cause non-obvious.
