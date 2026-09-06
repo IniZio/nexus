@@ -1469,7 +1469,11 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			return errSandbox("sandbox create", fmt.Errorf("--file: read Containerfile %q: %w", containerfilePath, err))
 		}
 		baseImageRef := builder.ExtractFromRef(containerfileBytes)
-		fp, err := builder.BuildFingerprint(containerfileBytes, baseImageRef, agentBytes, workspaceDir)
+		// Resolve the agent profile and target arch now so they can be included
+		// in the fingerprint and reused for the BuilderVMSpec below.
+		buildProfile, _, _ := resolveAgentPosture(f)
+		buildTargetArch := builder.GoArchToVendorArch(goArchForBuild())
+		fp, err := builder.BuildFingerprint(containerfileBytes, baseImageRef, agentBytes, workspaceDir, buildProfile.Recipe(), buildTargetArch)
 		if err != nil {
 			return errSandbox("sandbox create", fmt.Errorf("--file: fingerprint: %w", err))
 		}
@@ -1596,14 +1600,6 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				return errSandbox("sandbox create", fmt.Errorf("--file: cache disks: %w", err))
 			}
 			defer builder.ReleaseCacheDiskLeases(cacheDiskLeases)
-
-			// Resolve the agent profile here (pure: uses only f.agentName already
-			// finalised by flag parsing) so the ToolRecipe and TargetArch can be
-			// stamped on the BuilderVMSpec and forwarded to the builder VM.
-			// resolveAgentPosture is cheap and idempotent; calling it a second time
-			// at line ~1940 is correct — the result is identical.
-			buildProfile, _, _ := resolveAgentPosture(f)
-			buildTargetArch := builder.GoArchToVendorArch(goArchForBuild())
 
 			// Assemble the BuilderVMSpec first so that sizing helpers
 			// (VCPUs/MemMiB) can derive the production defaults before the

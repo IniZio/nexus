@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -15,9 +16,10 @@ import (
 
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
-// BuildFingerprint computes a stable hex SHA-256 fingerprint over the four
+// BuildFingerprint computes a stable hex SHA-256 fingerprint over the six
 // inputs that together uniquely identify a builder-VM image output:
 //
 //  1. containerfileBytes — raw bytes of the Containerfile (or Dockerfile).
@@ -27,6 +29,14 @@ import (
 //  4. contextDir — filesystem path of the build-context directory; hashed as
 //     sorted (relpath, size, mtime-unix-ns) tuples after .dockerignore
 //     filtering (see tradeoff note below).
+//  5. recipe — the agent's [cred.ToolRecipe] describing the tool install steps.
+//     JSON-marshalled via [encoding/json], which sorts map keys
+//     lexicographically and emits struct fields in declaration order — both
+//     are guaranteed by the stdlib, making the marshalled bytes byte-identical
+//     across calls and processes for the same value (D-TP-01 Amendment C).
+//  6. targetArch — the CPU architecture string passed to the recipe renderer
+//     (e.g. "x64", "arm64"). Same recipe rendered for a different arch
+//     produces a different image; it must be in the fingerprint.
 //
 // # Precision tradeoffs
 //
@@ -49,10 +59,21 @@ func BuildFingerprint(
 	baseImageRef string,
 	agentBytes []byte,
 	contextDir string,
+	recipe cred.ToolRecipe,
+	targetArch string,
 ) (string, error) {
 	contextHash, err := ContextHashDir(contextDir)
 	if err != nil {
 		return "", fmt.Errorf("build fingerprint: context hash: %w", err)
+	}
+
+	// encoding/json sorts map keys lexicographically and emits struct fields
+	// in declaration order — both are stdlib guarantees. The marshalled bytes
+	// are therefore byte-identical across calls and processes for the same
+	// ToolRecipe value, satisfying D-TP-01 Amendment C (determinism).
+	recipeJSON, err := json.Marshal(recipe)
+	if err != nil {
+		return "", fmt.Errorf("build fingerprint: marshal recipe: %w", err)
 	}
 
 	h := sha256.New()
@@ -70,6 +91,9 @@ func BuildFingerprint(
 	agentHash := sha256.Sum256(agentBytes)
 	writeComp("agent:", hex.EncodeToString(agentHash[:]))
 	writeComp("context:", contextHash)
+	recipeHash := sha256.Sum256(recipeJSON)
+	writeComp("recipe:", hex.EncodeToString(recipeHash[:]))
+	writeComp("arch:", targetArch)
 
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
