@@ -3442,3 +3442,131 @@ func TestT7_AC2_AllowHostDoesNotRebuildProxy(t *testing.T) {
 		t.Errorf("T7-AC2: pre-existing host: want 200, got %d", resp.StatusCode)
 	}
 }
+
+// ============================================================
+// SecretHostSuffixes tests: suffix-matched secret hosts
+// ============================================================
+
+// TestMatchesDotSuffix_DotBoundarySafety verifies the dot-boundary invariant of
+// the suffix matching helper. A naive strings.HasSuffix without the leading dot
+// would match "evilcursor.sh" against suffix "cursor.sh" — with the dot the
+// match is correctly rejected. The operator's ruling: use ".cursor.sh" so only
+// proper sub-domains match.
+func TestMatchesDotSuffix_DotBoundarySafety(t *testing.T) {
+	t.Parallel()
+	suffixes := []string{".cursor.sh"}
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"api2.cursor.sh", true},
+		{"agentn.global.api5.cursor.sh", true},
+		{"api3.cursor.sh", true},
+		// Negative: no dot boundary
+		{"evilcursor.sh", false},
+		// Negative: suffix as subdomain of attacker domain
+		{"cursor.sh.attacker.com", false},
+		// Negative: apex domain itself (no sub-domain)
+		{"cursor.sh", false},
+		// Unrelated domain
+		{"api.anthropic.com", false},
+	}
+	for _, tc := range cases {
+		got := mitm.MatchesDotSuffixForTest(tc.host, suffixes)
+		if got != tc.want {
+			t.Errorf("MatchesDotSuffix(%q, %v) = %v, want %v", tc.host, suffixes, got, tc.want)
+		}
+	}
+}
+
+// TestProxy_SecretHostSuffix_SwapsInferenceHost proves that a host matched by
+// SecretHostSuffixes (not in SecretHosts exactly) is MITM'd and the bearer
+// placeholder is swapped for the real token. This is the S11 cursor inference
+// fix: api2.cursor.sh is in SecretHosts; agentn.global.api5.cursor.sh is only
+// covered by the ".cursor.sh" suffix and must also be swapped.
+//
+// The broker is registered for the primary host only (api2.cursor.sh); the
+// suffix-matched host uses broker.Resolve (unscoped) which resolves by
+// placeholder value alone — safe because the proxy is per-sandbox and the
+// placeholder is 256-bit random.
+func TestProxy_SecretHostSuffix_SwapsInferenceHost(t *testing.T) {
+	t.Parallel()
+
+	upstream, authCh := captureAuthUpstream(t)
+
+	broker := cred.NewBroker()
+	sid := newSandboxID(77)
+	const primaryHost = "api2.cursor.sh"
+	const inferenceHost = "agentn.global.api5.cursor.sh"
+	const realToken = "real-cursor-jwt-INFERENCE"
+
+	// Register only the primary host — inference host is NOT registered.
+	rec, err := broker.RegisterPlaceholder(sid, primaryHost, realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
+	proxyServer := newTestProxy(t, mitm.Config{
+		SandboxID:          sid,
+		SecretHosts:        []string{primaryHost},
+		SecretHostSuffixes: []string{".cursor.sh"},
+		Broker:             broker,
+		AllowAll:           true,
+	}, upstream.Listener.Addr().String())
+	defer proxyServer.Close()
+
+	client := proxyClient(proxyServer.URL)
+
+	t.Run("suffix_host_swapped", func(t *testing.T) {
+		// The inference host is covered by the suffix. The MITM must intercept
+		// it and swap the placeholder for the real token.
+		req, _ := http.NewRequest(http.MethodGet, "http://"+inferenceHost+"/v1/chat", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do (inference): %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		got := receiveWithTimeout(t, authCh)
+		if want := "Bearer " + realToken; got != want {
+			t.Errorf("suffix host: upstream Authorization = %q, want %q (swap did not fire for suffix-matched host)", got, want)
+		}
+	})
+
+	t.Run("primary_host_still_swapped", func(t *testing.T) {
+		// The exact SecretHosts entry must still work.
+		req, _ := http.NewRequest(http.MethodGet, "http://"+primaryHost+"/v1/control", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do (primary): %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		got := receiveWithTimeout(t, authCh)
+		if want := "Bearer " + realToken; got != want {
+			t.Errorf("primary host: upstream Authorization = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("negative_evilcursor_sh_not_matched", func(t *testing.T) {
+		// "evilcursor.sh" must NOT match the ".cursor.sh" suffix — no dot boundary.
+		// Under AllowAll it is tunneled, so the Authorization header must NOT
+		// be rewritten.
+		const evilHost = "evilcursor.sh"
+		const fakePlaceholder = "PLACEHOLDER-evil-not-registered"
+		req, _ := http.NewRequest(http.MethodGet, "http://"+evilHost+"/steal", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+fakePlaceholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do (evil): %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+		got := receiveWithTimeout(t, authCh)
+		if want := "Bearer " + fakePlaceholder; got != want {
+			t.Errorf("evil host: upstream Authorization = %q, want %q (suffix matched incorrectly)", got, want)
+		}
+	})
+}

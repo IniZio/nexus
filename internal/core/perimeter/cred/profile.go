@@ -85,6 +85,37 @@ type AgentProfile struct {
 	// variable to the high-entropy placeholder value before sandbox boot.
 	PlaceholderEnvVar string
 
+	// CredentialedHostSuffix, when non-empty, is a dot-anchored DNS suffix
+	// (e.g. ".cursor.sh") that covers additional hosts the agent sends the same
+	// bearer token to. Any host whose name ends with this suffix — including
+	// sharded/regional endpoints whose exact names change over time — is treated
+	// as a secret host: the MITM proxy intercepts the connection and swaps the
+	// placeholder for the real token before forwarding. The suffix MUST begin
+	// with a leading dot so the boundary check is exact: ".cursor.sh" matches
+	// "api2.cursor.sh" and "agentn.global.api5.cursor.sh" but NOT "evilcursor.sh"
+	// or "cursor.sh.attacker.com".
+	//
+	// The broker lookup for suffix-matched hosts uses Resolve (unscoped) rather
+	// than ResolveScoped. This is safe because (a) the proxy is instantiated
+	// per-sandbox so all traffic it sees belongs to the same sandbox, and (b)
+	// the 256-bit placeholder is cryptographically unique and unknown to other
+	// sandboxes.
+	//
+	// CredentialedHost must also be set; it selects the placeholder from the
+	// seed records for writing the credential file (buildCredFileSeedPayload).
+	CredentialedHostSuffix string
+
+	// PlaceholderIsJWT, when true, instructs the broker to generate a
+	// JWT-shaped placeholder (header.payload.signature) instead of the default
+	// hex-encoded placeholder. Use this for agents that JWT-parse their stored
+	// access token to determine whether a refresh is required: a hex placeholder
+	// fails JWT parsing, causing the agent to attempt a token refresh grant
+	// (which sends the refresh_token in a POST body — a path the MITM proxy does
+	// not intercept — and therefore fails). A JWT-shaped placeholder with
+	// exp=2099 prevents the refresh attempt while remaining a broker-swappable
+	// placeholder that the MITM proxy replaces in Authorization Bearer headers.
+	PlaceholderIsJWT bool
+
 	// CredentialedHost is the hostname whose outbound requests the real token
 	// authenticates to (e.g. "api.anthropic.com"). The L7 MITM proxy uses this
 	// to scope placeholder→real swaps.
@@ -189,13 +220,35 @@ type AgentProfile struct {
 	CredentialFile string
 
 	// CredentialFileKey is the JSON field name inside
-	// [AgentProfile.CredentialFile] that carries the authentication token.
-	// Empty when CredentialFile is empty.
+	// [AgentProfile.CredentialFile] that carries the primary authentication
+	// token. Empty when CredentialFile is empty.
 	//
 	// Example: "accessToken" for cursor-agent — auth.json holds both
 	// accessToken and refreshToken; nexus3 brokers the accessToken field
 	// statically (see D-MAC-09: no CURSOR_API_KEY available; static JWT).
 	CredentialFileKey string
+
+	// CredentialFileExtraKeys lists additional JSON field names inside
+	// [AgentProfile.CredentialFile] that must also be present for the agent
+	// to consider itself fully authenticated. Each extra key is written with
+	// the SAME placeholder value as CredentialFileKey — one broker entry covers
+	// all keys.
+	//
+	// The MITM proxy swaps the placeholder when it appears in Authorization
+	// headers regardless of which JSON key produced it, so the security
+	// invariant (guest holds only placeholders) is preserved for every key.
+	//
+	// Example: cursor-agent requires BOTH "accessToken" and "refreshToken" to
+	// be non-empty in auth.json before it considers itself fully authenticated
+	// (cursor-agent status reports "Partially authenticated (missing refresh
+	// token)" when refreshToken is absent). The refreshToken placeholder is
+	// never transmitted to the cursor backend in an Authorization header;
+	// cursor's own OAuth refresh grant (POST body) would carry it, but only
+	// when the accessToken appears to be expiring — which never occurs in a
+	// nexus3 sandbox because the MITM proxy always vends the real accessToken
+	// on every Authorization-header request, so the guest-side token is
+	// effectively never stale from the backend's perspective.
+	CredentialFileExtraKeys []string
 
 	// CredentialFormat identifies the on-disk shape of [AgentProfile.CredentialFile].
 	// [NewCredentialSourceForProfile] dispatches on this value to select the
@@ -465,8 +518,38 @@ const CursorAgentProfileName = "cursor"
 var CursorAgentProfile = AgentProfile{
 	Name:             CursorAgentProfileName,
 	CredentialedHost: "api2.cursor.sh",
-	EgressHosts:      []string{"api2.cursor.sh"},
-	APIKeyEnvVar:     "CURSOR_API_KEY",
+	// CredentialedHostSuffix covers all *.cursor.sh endpoints. Cursor sends
+	// inference traffic to sharded/regional hosts (e.g. agentn.global.api5.cursor.sh,
+	// api3.cursor.sh) that share the same JWT credential as api2.cursor.sh (the
+	// control-plane host). These hosts are not pinned in EgressHosts because
+	// their exact names change; instead the suffix causes any *.cursor.sh host
+	// to be intercepted and swapped by the MITM proxy under AllowAll egress.
+	//
+	// Inference hosts use HTTP/2 (h2) with no HTTP/1.1 fallback in TLS ALPN.
+	// goproxy's built-in ConnectMitm only speaks HTTP/1.1; intercepting h2 hosts
+	// with ConnectMitm causes SSL alert 120 (no_application_protocol). The proxy
+	// therefore uses ConnectHijack for suffix-matched hosts: it performs the TLS
+	// handshake itself (advertising h2 in NextProtos) and serves the connection
+	// via an http.Server configured with golang.org/x/net/http2.ConfigureServer.
+	// See proxy.go: h2SuffixHijack implements this h2-aware MITM path.
+	CredentialedHostSuffix: ".cursor.sh",
+	EgressHosts:            []string{"api2.cursor.sh"},
+	// PlaceholderEnvVar: cursor-agent's one-shot (-p) mode checks CURSOR_AUTH_TOKEN
+	// (via its internal r.D function) rather than reading auth.json. Without this
+	// env var the local auth check fails and -p returns "Authentication required"
+	// even when auth.json is fully populated. Seeding CURSOR_AUTH_TOKEN with the
+	// same JWT-shaped placeholder that lands in auth.json lets -p pass its local
+	// check; the MITM proxy swaps the placeholder for the real token on every
+	// Authorization Bearer request to api2.cursor.sh.
+	//
+	// PlaceholderIsJWT: cursor-agent JWT-parses its stored access token to decide
+	// whether a refresh is needed. A hex placeholder fails JWT parsing, causing
+	// cursor to attempt a token refresh grant (POST body → not swapped by MITM →
+	// "Authentication error"). A JWT-shaped placeholder with exp=2099 prevents
+	// the refresh attempt while remaining a broker-swappable placeholder.
+	PlaceholderEnvVar: "CURSOR_AUTH_TOKEN",
+	PlaceholderIsJWT:  true,
+	APIKeyEnvVar:      "CURSOR_API_KEY",
 	// cursor-agent is Node.js-based (bundled index.js + native .node addons),
 	// so it reads NODE_EXTRA_CA_CERTS directly, same as Claude Code.
 	CACertEnvVars:   []string{"NODE_EXTRA_CA_CERTS"},
@@ -483,9 +566,14 @@ var CursorAgentProfile = AgentProfile{
 	// File-based credential descriptor (S8 seeding; D-MAC-09 static-JWT path).
 	// The credential lives at $XDG_CONFIG_HOME/cursor/auth.json (typically
 	// ~/.config/cursor/auth.json) and contains {accessToken, refreshToken}.
-	CredentialFile:    "cursor/auth.json",
-	CredentialFileKey: "accessToken",
-	CredentialFormat:  CredentialFormatCursorJWT,
+	// Both keys must be present for cursor-agent to report "Fully authenticated"
+	// (S11: "Partially authenticated (missing refresh token)" when refreshToken
+	// is absent). The same placeholder value is written for both keys; one
+	// broker entry covers both. See CredentialFileExtraKeys doc for rationale.
+	CredentialFile:          "cursor/auth.json",
+	CredentialFileKey:       "accessToken",
+	CredentialFileExtraKeys: []string{"refreshToken"},
+	CredentialFormat:        CredentialFormatCursorJWT,
 	MountAllowlist: []string{
 		"cli-config.json",
 	},

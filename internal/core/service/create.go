@@ -221,6 +221,13 @@ type CreateAndBootOptions struct {
 	// ResolveEnvelopeSecrets — so no SecretSpecs entry should be created.
 	ExtraSecretHosts []string
 
+	// ExtraSecretHostSuffixes lists dot-anchored DNS suffixes to include in
+	// Envelope.SecretHostSuffixes. Suffix-matched hosts are MITM'd and
+	// credential-swapped like exact SecretHosts but cover sharded/regional
+	// endpoints whose names vary (e.g. ".cursor.sh"). Each suffix must begin
+	// with ".". No SecretSpecs entry is created for suffix hosts.
+	ExtraSecretHostSuffixes []string
+
 	// Broker is the host-side credential broker used to mint placeholder
 	// credentials for AllowedHosts. If nil, credential seeding is skipped even
 	// when AllowedHosts is non-empty.
@@ -873,7 +880,8 @@ func CreateAndBoot(
 			ImageDigest:     resolvedDigest,
 			AllowedHosts:    opts.AllowedHosts, // frozen at creation (P1-S6)
 			SSHPublicKey:    opts.SSHPublicKey, // frozen at creation (ORCA-S1)
-			SecretHosts:     append(secretHostsFromBinds(opts.Secrets), opts.ExtraSecretHosts...),
+			SecretHosts:        append(secretHostsFromBinds(opts.Secrets), opts.ExtraSecretHosts...),
+			SecretHostSuffixes: opts.ExtraSecretHostSuffixes,
 			SecretSpecs:     secretSpecsFromBinds(opts.Secrets),
 			OpenEgress:      opts.OpenEgress,              // D-PD-33: explicit opt-in; never inferred from empty AllowedHosts
 			AllowedRepo:     opts.AllowedRepo,             // D-PD-36: per-repo path allowlist; enforced below

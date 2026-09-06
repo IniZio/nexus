@@ -1094,6 +1094,19 @@ func credPreflightCheck(profile cred.AgentProfile) error {
 	return nil
 }
 
+// agentDevEgressSecretHostSuffixes returns the dot-anchored DNS suffixes that
+// must appear in SecretHostSuffixes when an agent sandbox is created with open
+// egress (dev-egress posture, D-PD-33). Each suffix covers a family of
+// sharded/regional endpoints that share the same credential as CredentialedHost
+// but whose exact names vary. Returns nil when there is no agent or egress is
+// closed. The suffix is taken from [cred.AgentProfile.CredentialedHostSuffix].
+func agentDevEgressSecretHostSuffixes(profile cred.AgentProfile, openEgress bool) []string {
+	if profile.Name == "" || !openEgress || profile.CredentialedHostSuffix == "" {
+		return nil
+	}
+	return []string{profile.CredentialedHostSuffix}
+}
+
 // agentDevEgressSecretHosts returns the set of hostnames that must appear in
 // SecretHosts when an agent sandbox is created with open egress (dev-egress
 // posture). It returns nil in every other case.
@@ -2114,7 +2127,8 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			// --agent + --egress open (dev-egress posture): OpenEgress=true +
 			// ExtraSecretHosts routes the credentialed host through MITM proxy.
 			OpenEgress:        openEgress,
-			ExtraSecretHosts:  agentDevEgressSecretHosts(agentProfile, openEgress),
+			ExtraSecretHosts:        agentDevEgressSecretHosts(agentProfile, openEgress),
+			ExtraSecretHostSuffixes: agentDevEgressSecretHostSuffixes(agentProfile, openEgress),
 			AgentProfile:      agentProfile,  // zero value when --agent was not passed
 			AllowedRepo:  f.allowedRepo,  // D-PD-36: set by --repo; empty for open-egress sandboxes
 			PathPolicies: f.pathPolicies, // conveyed via --egress-policy-json on the worktree subprocess path

@@ -96,6 +96,17 @@ func TestBuildCredFileSeedPayload_PlaceholderInFile(t *testing.T) {
 	} else if v != placeholder {
 		t.Errorf("JSON[%q] = %q, want placeholder %q", key, v, placeholder)
 	}
+
+	// S11: every CredentialFileExtraKey must also be present with the same
+	// placeholder so cursor-agent reports "Fully authenticated" rather than
+	// "Partially authenticated (missing refresh token)".
+	for _, extra := range cred.CursorAgentProfile.CredentialFileExtraKeys {
+		if v, ok := m[extra]; !ok {
+			t.Errorf("JSON missing extra key %q (S11); keys present: %v", extra, keysOf(m))
+		} else if v != placeholder {
+			t.Errorf("JSON[%q] = %q, want placeholder %q", extra, v, placeholder)
+		}
+	}
 }
 
 // TestSeedGuestCredFile_WritesFileForCursor proves SeedGuestCredFile delivers

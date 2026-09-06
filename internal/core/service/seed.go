@@ -505,7 +505,13 @@ func prepareAgentCredPayload(
 	hosts := AgentEgressHosts(profile)
 	records := make([]cred.PlaceholderRecord, 0, len(hosts))
 	for _, host := range hosts {
-		rec, err := broker.RegisterPlaceholder(id, host, "")
+		var rec cred.PlaceholderRecord
+		var err error
+		if profile.PlaceholderIsJWT {
+			rec, err = broker.RegisterJWTPlaceholder(id, host, "")
+		} else {
+			rec, err = broker.RegisterPlaceholder(id, host, "")
+		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("seed agent: register placeholder for %q: %w", host, err)
 		}
@@ -719,8 +725,9 @@ func GuestCredFilePath(profile cred.AgentProfile) string {
 
 // buildCredFileSeedPayload builds the JSON file content for an agent whose
 // credential is file-based (profile.CredentialFile != ""). The returned bytes
-// form a JSON object with profile.CredentialFileKey mapped to the placeholder
-// minted for profile.CredentialedHost.
+// form a JSON object with profile.CredentialFileKey and any
+// profile.CredentialFileExtraKeys each mapped to the same placeholder minted
+// for profile.CredentialedHost.
 //
 // Returns nil, nil when profile.CredentialFile is empty; the caller then
 // skips the file-seeding step (env-var agents such as Claude Code use the
@@ -731,7 +738,9 @@ func GuestCredFilePath(profile cred.AgentProfile) string {
 // PlaceholderRecord carries ONLY the placeholder string, ExpiresAt, SandboxID,
 // and Host — never the real token. The produced JSON therefore cannot contain
 // the real token regardless of what was passed to RegisterPlaceholder or
-// SetRealToken.
+// SetRealToken. Writing the same placeholder under multiple JSON keys (e.g.
+// cursor's accessToken and refreshToken) preserves this invariant: all keys
+// hold the same opaque placeholder string, not any real credential.
 func buildCredFileSeedPayload(records []cred.PlaceholderRecord, profile cred.AgentProfile) ([]byte, error) {
 	if profile.CredentialFile == "" {
 		return nil, nil
@@ -747,7 +756,16 @@ func buildCredFileSeedPayload(records []cred.PlaceholderRecord, profile cred.Age
 		return nil, fmt.Errorf("agent %q: no placeholder minted for credentialed host %q",
 			profile.Name, profile.CredentialedHost)
 	}
-	content, err := json.Marshal(map[string]string{profile.CredentialFileKey: placeholder})
+	// Build the JSON object: primary key + any extra keys, all holding the same
+	// placeholder value. One broker entry (keyed by placeholder value) covers all
+	// keys; the MITM proxy swaps by value in Authorization headers regardless of
+	// which JSON key introduced the placeholder.
+	m := make(map[string]string, 1+len(profile.CredentialFileExtraKeys))
+	m[profile.CredentialFileKey] = placeholder
+	for _, k := range profile.CredentialFileExtraKeys {
+		m[k] = placeholder
+	}
+	content, err := json.Marshal(m)
 	if err != nil {
 		return nil, fmt.Errorf("agent %q: marshal credential file: %w", profile.Name, err)
 	}

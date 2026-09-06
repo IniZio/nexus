@@ -1428,3 +1428,48 @@ func TestSandboxCreate_BootPath_CredPreflight_Expired(t *testing.T) {
 		t.Fatalf("boot-path: error message should say 'expired' for expired cred, got: %q", coded.Msg)
 	}
 }
+
+// TestDevEgress_AgentDevEgressSecretHostSuffixes_CursorOpenEgress asserts that
+// agentDevEgressSecretHostSuffixes returns the ".cursor.sh" suffix for cursor
+// with open egress. This is the key S11 fix: inference hosts like
+// agentn.global.api5.cursor.sh are covered by the suffix, not pinned exactly.
+// Inference hosts use h2 only; the proxy handles them via ConnectHijack
+// (h2SuffixHijack in proxy.go) rather than the built-in ConnectMitm.
+//
+// Mutation guard: remove the suffix from CursorAgentProfile → this test fails RED.
+func TestDevEgress_AgentDevEgressSecretHostSuffixes_CursorOpenEgress(t *testing.T) {
+	suffixes := agentDevEgressSecretHostSuffixes(cred.CursorAgentProfile, true)
+	if len(suffixes) == 0 {
+		t.Fatal("agentDevEgressSecretHostSuffixes: got empty for cursor open-egress; want '.cursor.sh'")
+	}
+	if suffixes[0] != ".cursor.sh" {
+		t.Errorf("agentDevEgressSecretHostSuffixes[0] = %q, want .cursor.sh", suffixes[0])
+	}
+}
+
+// TestDevEgress_AgentDevEgressSecretHostSuffixes_ClosedEgress asserts nil is
+// returned when egress is closed — no suffix injection on the closed path.
+func TestDevEgress_AgentDevEgressSecretHostSuffixes_ClosedEgress(t *testing.T) {
+	suffixes := agentDevEgressSecretHostSuffixes(cred.CursorAgentProfile, false)
+	if len(suffixes) != 0 {
+		t.Errorf("agentDevEgressSecretHostSuffixes: got %v for closed-egress; want nil", suffixes)
+	}
+}
+
+// TestDevEgress_AgentDevEgressSecretHostSuffixes_NoAgent asserts nil for zero
+// profile (non-agent sandbox must not get suffix injection).
+func TestDevEgress_AgentDevEgressSecretHostSuffixes_NoAgent(t *testing.T) {
+	suffixes := agentDevEgressSecretHostSuffixes(cred.AgentProfile{}, true)
+	if len(suffixes) != 0 {
+		t.Errorf("agentDevEgressSecretHostSuffixes: got %v for zero profile; want nil", suffixes)
+	}
+}
+
+// TestDevEgress_AgentDevEgressSecretHostSuffixes_ClaudeNoSuffix asserts nil for
+// Claude Code: it has no CredentialedHostSuffix, so no suffixes are returned.
+func TestDevEgress_AgentDevEgressSecretHostSuffixes_ClaudeNoSuffix(t *testing.T) {
+	suffixes := agentDevEgressSecretHostSuffixes(cred.ClaudeCodeProfile, true)
+	if len(suffixes) != 0 {
+		t.Errorf("agentDevEgressSecretHostSuffixes: got %v for claude-code; want nil (no suffix)", suffixes)
+	}
+}

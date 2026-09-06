@@ -55,26 +55,39 @@ func TestClaudeCodeProfile_ConfigFields(t *testing.T) {
 	}
 }
 
-// TestCursorAgentProfile_APIKeyOnlyPath pins the deliberate scope narrowing:
-// cursor brokers only the API-key path (CURSOR_API_KEY), never the OAuth
-// device-flow path. The real credential lives in ~/.config/cursor/auth.json
-// (a separate credentials file), but nexus3 has no env var that redirects
-// cursor to an alternative credential file — so there is nowhere safe for a
-// placeholder to land in the guest's credential store.
-func TestCursorAgentProfile_APIKeyOnlyPath(t *testing.T) {
+// TestCursorAgentProfile_CredentialPaths pins cursor's dual credential delivery:
+//   - File path: auth.json gets {accessToken, refreshToken} = placeholder (S11).
+//     cursor-agent status reads this file; both keys must be present.
+//   - Env var path: CURSOR_AUTH_TOKEN=placeholder (S11).
+//     cursor-agent -p (one-shot) checks this env var for its local auth check
+//     via its internal r.D function; without it -p returns "Authentication required"
+//     even when auth.json is fully populated.
+//
+// The placeholder is JWT-shaped (PlaceholderIsJWT=true) so cursor's JWT parser
+// sees exp=2099 and does not trigger a refresh grant (which would send the
+// refresh_token in a POST body — not intercepted by the MITM proxy).
+func TestCursorAgentProfile_CredentialPaths(t *testing.T) {
 	p := cred.CursorAgentProfile
 
 	if p.APIKeyEnvVar != "CURSOR_API_KEY" {
 		t.Errorf("APIKeyEnvVar = %q, want CURSOR_API_KEY", p.APIKeyEnvVar)
 	}
-	if p.PlaceholderEnvVar != "" {
-		t.Errorf("PlaceholderEnvVar = %q, want empty — cursor's OAuth path is not brokered", p.PlaceholderEnvVar)
+	if p.PlaceholderEnvVar != "CURSOR_AUTH_TOKEN" {
+		t.Errorf("PlaceholderEnvVar = %q, want CURSOR_AUTH_TOKEN — required for cursor-agent -p one-shot mode (S11)", p.PlaceholderEnvVar)
+	}
+	if !p.PlaceholderIsJWT {
+		t.Error("PlaceholderIsJWT must be true — cursor JWT-parses its token; hex placeholder triggers refresh grant via POST body (not swapped by MITM)")
 	}
 	if p.CredentialedHost != "api2.cursor.sh" {
 		t.Errorf("CredentialedHost = %q, want api2.cursor.sh", p.CredentialedHost)
 	}
 	if !slices.Contains(p.EgressHosts, p.CredentialedHost) {
 		t.Errorf("EgressHosts %v must contain CredentialedHost %q", p.EgressHosts, p.CredentialedHost)
+	}
+	// Both env var and file-based credential must be declared: neither alone is
+	// sufficient for all cursor-agent invocation patterns.
+	if p.CredentialFile == "" {
+		t.Error("CredentialFile must be set — cursor-agent status reads auth.json for session display")
 	}
 }
 
@@ -204,5 +217,35 @@ func TestAgentProfile_DeclarativeExtension(t *testing.T) {
 	}
 	if codex.MCPConfigFormat != cred.MCPConfigFormatNone {
 		t.Fatalf("zero MCPConfigFormat should be MCPConfigFormatNone, got %q", codex.MCPConfigFormat)
+	}
+}
+
+// TestCursorAgentProfile_CredentialedHostSuffix pins the suffix that causes all
+// *.cursor.sh endpoints (including sharded inference nodes like
+// agentn.global.api5.cursor.sh) to be treated as secret hosts by the MITM
+// proxy. It also checks dot-boundary safety: the suffix must begin with "." so
+// that "evilcursor.sh" is NOT matched.
+//
+// Inference hosts use h2 only (no HTTP/1.1 ALPN fallback). The proxy handles
+// them via ConnectHijack (h2SuffixHijack in proxy.go) which advertises h2 in
+// NextProtos and serves via an http2-configured http.Server — not via the
+// built-in ConnectMitm which only speaks HTTP/1.1.
+//
+// Mutation guard: change CredentialedHostSuffix → "" → test fails RED.
+func TestCursorAgentProfile_CredentialedHostSuffix(t *testing.T) {
+	p := cred.CursorAgentProfile
+
+	if p.CredentialedHostSuffix == "" {
+		t.Fatal("CredentialedHostSuffix must not be empty — inference hosts like agentn.global.api5.cursor.sh must be covered (S11)")
+	}
+	if p.CredentialedHostSuffix[0] != '.' {
+		t.Errorf("CredentialedHostSuffix = %q: must begin with '.' for dot-boundary safety (no leading dot would match 'evilcursor.sh')", p.CredentialedHostSuffix)
+	}
+	if p.CredentialedHostSuffix != ".cursor.sh" {
+		t.Errorf("CredentialedHostSuffix = %q, want .cursor.sh", p.CredentialedHostSuffix)
+	}
+	// CredentialedHost must still be set for credential file lookup.
+	if p.CredentialedHost == "" {
+		t.Error("CredentialedHost must not be empty when CredentialedHostSuffix is set")
 	}
 }

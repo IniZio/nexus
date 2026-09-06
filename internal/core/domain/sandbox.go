@@ -291,6 +291,12 @@ type Envelope struct {
 	// real server certificate (D-PD-25). Empty means no secret-only MITM.
 	SecretHosts []string
 
+	// SecretHostSuffixes are dot-anchored DNS suffixes (e.g. ".cursor.sh")
+	// that extend SecretHosts by suffix match. Any host ending with one of
+	// these suffixes is MITM'd and credential-swapped by the proxy. Each
+	// suffix MUST begin with "." (dot-boundary safety — see mitm.Config).
+	SecretHostSuffixes []string `json:"secret_host_suffixes,omitempty"`
+
 	// SecretSpecs are the ENV@host[,host…] binds frozen at create (no tokens).
 	// The detached supervisor re-resolves real tokens (builtin gh / --secret)
 	// into its in-process broker on every Start.
