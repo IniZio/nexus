@@ -166,6 +166,89 @@ func TestSeedUserMountFarm_NoWriteOnceGuard(t *testing.T) {
 	}
 }
 
+// TestSeedUserMountFarm_ContainmentSubPath verifies the containment farm path:
+// when CuratedSubPath is non-empty the farm is built at GuestPath/CuratedSubPath
+// (not at GuestPath), the symlink targets point into StagingGuestPath/CuratedSubPath,
+// and non-farm siblings from staging are linked idempotently into GuestPath so
+// the rest of the mount's data (e.g. mise/installs/) is accessible at the
+// expected path without going through the staging path directly.
+//
+// Without the containment branch in buildUserMountScript step 4, CuratedSubPath
+// is ignored and the script falls through to the exact-match branch, which would
+// rm -rf GuestPath and build the farm there — destroying the parent and the
+// compatibility symlinks.
+func TestSeedUserMountFarm_ContainmentSubPath(t *testing.T) {
+	dir := t.TempDir()
+	stagingDir := filepath.Join(dir, "staging")  // = /run/nexus3/usermount/bin-mise
+	guestDir := filepath.Join(dir, "mise")       // = /root/.local/share/mise
+	nativeDir := filepath.Join(dir, "native")
+	reportPath := filepath.Join(dir, "hostbin.report")
+
+	// staging/shims/mise-tool — real shim script in the curated subdir.
+	shimsStaging := filepath.Join(stagingDir, "shims")
+	if err := os.MkdirAll(shimsStaging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shimsStaging, "mise-tool"), []byte("#!/bin/sh\necho ok\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// staging/installs — non-farm sibling; must be accessible at guestDir/installs.
+	installsStaging := filepath.Join(stagingDir, "installs")
+	if err := os.MkdirAll(installsStaging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(nativeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := UserMountManifest{
+		HostHome: "/root",
+		Mounts: []ResolvedUserMount{
+			{
+				HostPath:         stagingDir,
+				GuestPath:        guestDir,
+				Curated:          true,
+				CuratedSubPath:   "shims",
+				StagingGuestPath: stagingDir,
+			},
+		},
+	}
+	out, err := runScript(t, manifest, nativeDir, reportPath)
+	if err != nil {
+		t.Fatalf("containment script failed: %v\noutput: %s", err, out)
+	}
+
+	// Farm must be at guestDir/shims, not at guestDir.
+	farmDir := filepath.Join(guestDir, "shims")
+	link := filepath.Join(farmDir, "mise-tool")
+	target, lerr := os.Readlink(link)
+	if lerr != nil {
+		t.Fatalf("mise-tool symlink not created in farm dir %s: %v", farmDir, lerr)
+	}
+	if !strings.HasPrefix(target, shimsStaging) {
+		t.Errorf("symlink target %q must point into staging shims dir %q", target, shimsStaging)
+	}
+
+	// Non-farm sibling (installs) must be linked idempotently into guestDir.
+	sibling := filepath.Join(guestDir, "installs")
+	sibTarget, serr := os.Readlink(sibling)
+	if serr != nil {
+		t.Fatalf("non-farm sibling 'installs' not linked into guest dir %s: %v", guestDir, serr)
+	}
+	if sibTarget != installsStaging {
+		t.Errorf("sibling 'installs' target = %q, want %q", sibTarget, installsStaging)
+	}
+
+	// Report must record the linked shim.
+	reportData, rerr := os.ReadFile(reportPath)
+	if rerr != nil {
+		t.Fatalf("hostbin.report not created: %v", rerr)
+	}
+	if !strings.Contains(string(reportData), "linked mise-tool") {
+		t.Errorf("report must contain 'linked mise-tool'; got:\n%s", reportData)
+	}
+}
+
 // TestSeedUserMountFarm_ExclusionRules verifies S6-AC4:
 // - a name resolving on the guest-native PATH is excluded (shadowed)
 // - a name that does not resolve inside the guest is excluded (dangling)

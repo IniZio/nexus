@@ -274,6 +274,55 @@ func TestBuildUserMountManifest_TildeExpansion(t *testing.T) {
 	}
 }
 
+// TestBuildUserMountManifest_ContainmentMatch verifies that a mount whose guest
+// path is a PARENT of a GuestCuratedPATHDirs entry is also curated (containment
+// matching), with CuratedSubPath set to the relative suffix from GuestPath to
+// the curated PATH-entry dir, and StagingGuestPath derived from the mount's
+// own basename (not the curated subdir's basename).
+//
+// Without the containment fix the exact-match check at line ~95 of usermount.go
+// fails for this case, leaving Curated=false — the raw host directory stays on
+// PATH and D-TP-05's premise is violated for mise shims.
+//
+// Mutation proof: revert the containment branch (keep only exact-match), run
+// this test alone, confirm RED ("expected Curated=true … got Curated=false").
+func TestBuildUserMountManifest_ContainmentMatch(t *testing.T) {
+	home := t.TempDir()
+	// ~/.local/share/mise is the parent of the curated PATH entry
+	// /root/.local/share/mise/shims.
+	miseDir := filepath.Join(home, ".local", "share", "mise")
+	if err := os.MkdirAll(miseDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := service.BuildUserMountManifest(home, []string{miseDir + ":/root/.local/share/mise"})
+	if len(got.Mounts) != 1 {
+		t.Fatalf("expected 1 mount, got %d", len(got.Mounts))
+	}
+	m := got.Mounts[0]
+	if !m.Curated {
+		t.Error("expected Curated=true for parent of /root/.local/share/mise/shims; "+
+			"without containment matching the exact-match check leaves Curated=false, "+
+			"allowing a raw host directory on the guest PATH (D-TP-05 violated)")
+	}
+	if m.Overlay {
+		t.Error("Curated and Overlay must be mutually exclusive")
+	}
+	// Staging uses basename of the MOUNT path ("mise"), not the curated subdir.
+	const wantStaging = "/run/nexus3/usermount/bin-mise"
+	if m.StagingGuestPath != wantStaging {
+		t.Errorf("StagingGuestPath = %q, want %q", m.StagingGuestPath, wantStaging)
+	}
+	// CuratedSubPath is the relative suffix from GuestPath to the curated dir.
+	const wantSubPath = "shims"
+	if m.CuratedSubPath != wantSubPath {
+		t.Errorf("CuratedSubPath = %q, want %q", m.CuratedSubPath, wantSubPath)
+	}
+	// GuestPath remains the mount's own guest path, not the curated subdir.
+	if m.GuestPath != "/root/.local/share/mise" {
+		t.Errorf("GuestPath = %q, want /root/.local/share/mise", m.GuestPath)
+	}
+}
+
 // TestBuildUserMountManifest_EmptyMounts verifies an empty input returns no mounts.
 func TestBuildUserMountManifest_EmptyMounts(t *testing.T) {
 	home := t.TempDir()

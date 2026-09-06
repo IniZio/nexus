@@ -27,10 +27,16 @@ var GuestCuratedPATHDirs = []string{
 // ResolvedUserMount is a mount resolved against a concrete host home directory.
 // It is serialized into usermounts.json for the guest seed.
 type ResolvedUserMount struct {
-	HostPath         string `json:"host_path"`          // absolute host path
-	GuestPath        string `json:"guest_path"`         // final in-guest path
-	Overlay          bool   `json:"overlay"`            // true → guest seed must overlay StagingGuestPath onto GuestPath
-	Curated          bool   `json:"curated"`            // true → GuestPath is a PATH-entry dir rebuilt as a symlink farm each boot
+	HostPath         string `json:"host_path"`                    // absolute host path
+	GuestPath        string `json:"guest_path"`                   // final in-guest path
+	Overlay          bool   `json:"overlay"`                      // true → guest seed must overlay StagingGuestPath onto GuestPath
+	Curated          bool   `json:"curated"`                      // true → GuestPath is a PATH-entry dir rebuilt as a symlink farm each boot
+	CuratedSubPath   string `json:"curated_sub_path,omitempty"`   // non-empty for containment: relative path from GuestPath to the
+	// curated PATH-entry dir (e.g. "shims" when the mount is ~/.local/share/mise
+	// and the PATH entry is ~/.local/share/mise/shims). The farm is built at
+	// GuestPath/CuratedSubPath using sources from StagingGuestPath/CuratedSubPath;
+	// non-farm siblings in StagingGuestPath are linked idempotently into GuestPath
+	// so the rest of the mount's data remains accessible at the expected path.
 	StagingGuestPath string `json:"staging_guest_path"` // live-mount landing point:
 	// for Overlay=true rows: /run/nexus3/usermount/<basename>
 	// for Curated=true rows: /run/nexus3/usermount/bin-<basename> (off PATH)
@@ -91,10 +97,28 @@ func BuildUserMountManifest(hostHome string, mounts []string) UserMountManifest 
 		// as a symlink farm on every boot (Curated=true). /root/.claude and its
 		// descendants use overlay mode. All other paths mount directly.
 		// Curated and Overlay are mutually exclusive.
+		//
+		// Two curated cases:
+		//   exact match: guestPath == pd         (e.g. mount at /root/.local/bin)
+		//   containment: pd starts with guestPath+"/" (e.g. mount at
+		//                /root/.local/share/mise when pd is /root/.local/share/mise/shims)
+		//
+		// Containment: the mount covers a parent of the curated dir. The virtiofs
+		// share lands at the same off-PATH staging point as exact matches. The farm
+		// is built at GuestPath/CuratedSubPath; non-farm siblings in staging are
+		// linked idempotently into GuestPath so the rest of the mount's data
+		// (e.g. mise/installs/) remains accessible at the expected path.
 		curated := false
+		var curatedSubPath string
 		for _, pd := range GuestCuratedPATHDirs {
 			if guestPath == pd {
 				curated = true
+				break
+			}
+			// Containment: guestPath is a parent of the curated PATH entry.
+			if strings.HasPrefix(pd, guestPath+"/") {
+				curated = true
+				curatedSubPath = strings.TrimPrefix(pd, guestPath+"/")
 				break
 			}
 		}
@@ -125,6 +149,7 @@ func BuildUserMountManifest(hostHome string, mounts []string) UserMountManifest 
 			GuestPath:        guestPath,
 			Overlay:          overlay,
 			Curated:          curated,
+			CuratedSubPath:   curatedSubPath,
 			StagingGuestPath: stagingGuestPath,
 		})
 	}

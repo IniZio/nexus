@@ -1231,6 +1231,13 @@ func buildUserMountScript(manifest UserMountManifest) string {
 	// A symlink resolves by name through virtiofs at open() time, so an atomic
 	// rename on the host (cp t.new && mv -f) is immediately visible in a running
 	// guest with no reboot — the property hard links cannot provide.
+	//
+	// Containment rows (CuratedSubPath != ""): the mount covers a parent of the
+	// curated PATH entry. The farm is built at GuestPath/CuratedSubPath using
+	// sources from StagingGuestPath/CuratedSubPath. Non-farm siblings (other
+	// subdirs/files in StagingGuestPath) are linked idempotently into GuestPath
+	// so the rest of the mount's data (e.g. mise/installs/) remains accessible
+	// at the expected path.
 	reportInit := false
 	for _, m := range manifest.Mounts {
 		if !m.Curated {
@@ -1244,30 +1251,71 @@ func buildUserMountScript(manifest UserMountManifest) string {
 			fmt.Fprintf(&b, ": > %s\n\n", qReport)
 			reportInit = true
 		}
-		qStaging := shSingleQuote(m.StagingGuestPath)
-		qGuest := shSingleQuote(m.GuestPath)
 		qReport := shSingleQuote(GuestUserMountsFarmReport)
-		fmt.Fprintf(&b, "# 4. Curated symlink farm: %s\n", m.GuestPath)
-		fmt.Fprintf(&b, "if [ -d %s ]; then\n", qStaging)
-		// Unconditional clear + recreate: no if-[ ! -f ] guard here.
-		fmt.Fprintf(&b, "  rm -rf %s && mkdir -p %s\n", qGuest, qGuest)
-		fmt.Fprintf(&b, "  for _e in %s/*; do\n", qStaging)
-		// Handle empty staging dir: glob expands to literal pattern which doesn't
-		// exist as a file, so both -e and -L are false → continue.
-		fmt.Fprintf(&b, "    [ -e \"$_e\" ] || [ -L \"$_e\" ] || continue\n")
-		fmt.Fprintf(&b, "    _n=$(basename \"$_e\")\n")
-		// Shadowed: name resolves on guest-native PATH without the curated farm.
-		fmt.Fprintf(&b, "    if PATH='%s' command -v \"$_n\" >/dev/null 2>&1; then\n", GuestNativePATH)
-		fmt.Fprintf(&b, "      printf 'shadowed %%s\\n' \"$_n\" >> %s\n", qReport)
-		// Dangling: staging entry is a symlink whose target is absent in the guest.
-		fmt.Fprintf(&b, "    elif [ ! -e \"$_e\" ]; then\n")
-		fmt.Fprintf(&b, "      printf 'dangling %%s\\n' \"$_n\" >> %s\n", qReport)
-		fmt.Fprintf(&b, "    else\n")
-		fmt.Fprintf(&b, "      ln -sf \"$_e\" %s/\"$_n\"\n", qGuest)
-		fmt.Fprintf(&b, "      printf 'linked %%s\\n' \"$_n\" >> %s\n", qReport)
-		fmt.Fprintf(&b, "    fi\n")
-		fmt.Fprintf(&b, "  done\n")
-		fmt.Fprintf(&b, "fi\n\n")
+
+		if m.CuratedSubPath != "" {
+			// Containment case: mount covers the parent; farm at GuestPath/CuratedSubPath.
+			qStaging := shSingleQuote(m.StagingGuestPath)
+			qGuest := shSingleQuote(m.GuestPath)
+			qSubPath := shSingleQuote(m.CuratedSubPath)
+			qFarmGuest := shSingleQuote(m.GuestPath + "/" + m.CuratedSubPath)
+			qFarmStaging := shSingleQuote(m.StagingGuestPath + "/" + m.CuratedSubPath)
+			fmt.Fprintf(&b, "# 4. Curated farm (containment): %s [sub: %s]\n", m.GuestPath, m.CuratedSubPath)
+			fmt.Fprintf(&b, "if [ -d %s ]; then\n", qStaging)
+			// Create parent dir so non-farm siblings can be linked there.
+			fmt.Fprintf(&b, "  mkdir -p %s\n", qGuest)
+			// Link non-farm siblings idempotently: installs/, versions/, etc. become
+			// symlinks into the staging tree so they are accessible at the expected path.
+			fmt.Fprintf(&b, "  for _d in %s/*; do\n", qStaging)
+			fmt.Fprintf(&b, "    [ -e \"$_d\" ] || [ -L \"$_d\" ] || continue\n")
+			fmt.Fprintf(&b, "    _n=$(basename \"$_d\")\n")
+			// Skip the curated subdir — it gets the farm treatment below.
+			fmt.Fprintf(&b, "    [ \"$_n\" = %s ] && continue\n", qSubPath)
+			// Idempotent: only create the link when nothing exists at that name.
+			fmt.Fprintf(&b, "    if [ ! -e %s/\"$_n\" ] && [ ! -L %s/\"$_n\" ]; then ln -sf \"$_d\" %s/\"$_n\"; fi\n", qGuest, qGuest, qGuest)
+			fmt.Fprintf(&b, "  done\n")
+			// Build the farm at the curated subdir. Unconditional clear so stale
+			// symlinks are always purged (same as the exact-match path).
+			fmt.Fprintf(&b, "  rm -rf %s && mkdir -p %s\n", qFarmGuest, qFarmGuest)
+			fmt.Fprintf(&b, "  for _e in %s/*; do\n", qFarmStaging)
+			fmt.Fprintf(&b, "    [ -e \"$_e\" ] || [ -L \"$_e\" ] || continue\n")
+			fmt.Fprintf(&b, "    _n=$(basename \"$_e\")\n")
+			fmt.Fprintf(&b, "    if PATH='%s' command -v \"$_n\" >/dev/null 2>&1; then\n", GuestNativePATH)
+			fmt.Fprintf(&b, "      printf 'shadowed %%s\\n' \"$_n\" >> %s\n", qReport)
+			fmt.Fprintf(&b, "    elif [ ! -e \"$_e\" ]; then\n")
+			fmt.Fprintf(&b, "      printf 'dangling %%s\\n' \"$_n\" >> %s\n", qReport)
+			fmt.Fprintf(&b, "    else\n")
+			fmt.Fprintf(&b, "      ln -sf \"$_e\" %s/\"$_n\"\n", qFarmGuest)
+			fmt.Fprintf(&b, "      printf 'linked %%s\\n' \"$_n\" >> %s\n", qReport)
+			fmt.Fprintf(&b, "    fi\n")
+			fmt.Fprintf(&b, "  done\n")
+			fmt.Fprintf(&b, "fi\n\n")
+		} else {
+			// Exact match case: mount IS the curated PATH dir; farm at GuestPath.
+			qStaging := shSingleQuote(m.StagingGuestPath)
+			qGuest := shSingleQuote(m.GuestPath)
+			fmt.Fprintf(&b, "# 4. Curated symlink farm: %s\n", m.GuestPath)
+			fmt.Fprintf(&b, "if [ -d %s ]; then\n", qStaging)
+			// Unconditional clear + recreate: no if-[ ! -f ] guard here.
+			fmt.Fprintf(&b, "  rm -rf %s && mkdir -p %s\n", qGuest, qGuest)
+			fmt.Fprintf(&b, "  for _e in %s/*; do\n", qStaging)
+			// Handle empty staging dir: glob expands to literal pattern which doesn't
+			// exist as a file, so both -e and -L are false → continue.
+			fmt.Fprintf(&b, "    [ -e \"$_e\" ] || [ -L \"$_e\" ] || continue\n")
+			fmt.Fprintf(&b, "    _n=$(basename \"$_e\")\n")
+			// Shadowed: name resolves on guest-native PATH without the curated farm.
+			fmt.Fprintf(&b, "    if PATH='%s' command -v \"$_n\" >/dev/null 2>&1; then\n", GuestNativePATH)
+			fmt.Fprintf(&b, "      printf 'shadowed %%s\\n' \"$_n\" >> %s\n", qReport)
+			// Dangling: staging entry is a symlink whose target is absent in the guest.
+			fmt.Fprintf(&b, "    elif [ ! -e \"$_e\" ]; then\n")
+			fmt.Fprintf(&b, "      printf 'dangling %%s\\n' \"$_n\" >> %s\n", qReport)
+			fmt.Fprintf(&b, "    else\n")
+			fmt.Fprintf(&b, "      ln -sf \"$_e\" %s/\"$_n\"\n", qGuest)
+			fmt.Fprintf(&b, "      printf 'linked %%s\\n' \"$_n\" >> %s\n", qReport)
+			fmt.Fprintf(&b, "    fi\n")
+			fmt.Fprintf(&b, "  done\n")
+			fmt.Fprintf(&b, "fi\n\n")
+		}
 	}
 
 	return b.String()
