@@ -118,6 +118,7 @@ export default withMermaid({
           { text: 'Docker in a sandbox', link: '/recipes/docker-in-sandbox' },
           { text: 'Parallel development flow', link: '/recipes/parallel-dev-flow' },
           { text: 'Using nexus3 from herdr', link: '/recipes/herdr' },
+          { text: 'Claude Code plugin', link: '/recipes/claude-plugin' },
         ],
       },
       {
