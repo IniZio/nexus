@@ -1,4 +1,4 @@
-.PHONY: proto build vet test test-integration vet-integration check-agent-fresh install-agent build-agent docs docs-build
+.PHONY: proto build vet test test-integration vet-integration check-agent-fresh install-agent build-agent docs docs-build install-plugin
 
 # proto regenerates the Go stubs from proto/nexus3/agent/v1/agent.proto.
 # Running this target twice must leave the tree byte-identical (deterministic).
@@ -116,6 +116,20 @@ install-agent:
 # build-agent: legacy alias — installs to NEXUS3_AGENT_INSTALL_DIR (same as install-agent).
 # Previously wrote to /tmp; use install-agent for new scripts.
 build-agent: install-agent
+
+PLUGIN_SRC  := $(CURDIR)/plugins/claude
+PLUGIN_LINK := $(HOME)/.claude/plugins/nexus3
+
+install-plugin:
+	@if [ -L "$(PLUGIN_LINK)" ] && [ "$$(readlink "$(PLUGIN_LINK)")" = "$(PLUGIN_SRC)" ]; then \
+		echo "OK: $(PLUGIN_LINK) already correct"; \
+	else \
+		ln -sfn "$(PLUGIN_SRC)" "$(PLUGIN_LINK)" && echo "OK: $(PLUGIN_LINK) -> $(PLUGIN_SRC)"; \
+	fi
+	@claude plugin marketplace list 2>/dev/null | grep -q '^  ❯ nexus3$$' || \
+		claude plugin marketplace add "$(PLUGIN_SRC)"
+	@claude plugin list 2>/dev/null | grep -q 'nexus3@nexus3' || \
+		claude plugin install nexus3@nexus3 --yes
 
 vet:
 	go vet -p $(GOBUILD_P) ./...

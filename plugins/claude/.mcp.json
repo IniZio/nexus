@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "nexus3": {
+      "type": "stdio",
+      "command": "nexus3",
+      "args": ["mcp"]
+    }
+  }
+}

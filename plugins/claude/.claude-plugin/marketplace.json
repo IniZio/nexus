@@ -1,0 +1,20 @@
+{
+  "name": "nexus3",
+  "owner": {
+    "name": "Newman Chow",
+    "email": "maintainer@example.invalid"
+  },
+  "plugins": [
+    {
+      "name": "nexus3",
+      "source": "./",
+      "description": "nexus3 microVM sandbox — skill namespace and MCP server for Claude Code",
+      "version": "0.1.0",
+      "author": {
+        "name": "Newman Chow"
+      },
+      "category": "development",
+      "keywords": ["microvm", "sandbox", "nexus3"]
+    }
+  ]
+}
