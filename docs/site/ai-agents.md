@@ -31,7 +31,7 @@ claude mcp add --transport stdio nexus3 -- nexus3 mcp
 
 ### Tools <Badge type="tip" text="built" />
 
-The server exposes 9 tools covering sandbox lifecycle and execution:
+The server exposes 13 tools: nine covering sandbox lifecycle and execution, and four covering delegation into a worktree-bound sandbox.
 
 | Tool | Description |
 |---|---|
@@ -44,6 +44,10 @@ The server exposes 9 tools covering sandbox lifecycle and execution:
 | `sandbox_remove` | Remove a sandbox record |
 | `sandbox_exec` | Run a command inside an existing sandbox; returns `{exit_code, stdout, stderr, stdout_bytes, stderr_bytes}` with truncation metadata for output exceeding 64 KiB |
 | `sandbox_run` | Ephemeral create+boot+exec+remove in one call; args `{image, argv, memory?, vcpus?, project?, name?}`; the sandbox is removed unconditionally on completion |
+| `delegate_worktree_create` | Create a worktree-bound sandbox for a host repo path; `allowed_branches` is rejected if set — branch policy is derived from the worktree's current branch |
+| `delegate_agent_dispatch` | Submit a brief to the in-guest agent; blocks until the brief is delivered, not until the work is done |
+| `delegate_agent_poll` | Read the guest worktree's `git log`, `git status`, and branch name to detect progress |
+| `delegate_teardown` | Remove the sandbox and its herdr space; the host git worktree is not removed |
 
 ### MCP gaps <Badge type="danger" text="not built" />
 

@@ -57,7 +57,7 @@ Reach for `nexus3` first; it routes to the others.
 
 ### MCP server
 
-The plugin's `.mcp.json` wires `nexus3 mcp` as a stdio transport. The same 9-tool surface described in [AI agents](/ai-agents) is available without any manual `claude mcp add` call.
+The plugin's `.mcp.json` wires `nexus3 mcp` as a stdio transport. The same 13-tool surface described in [AI agents](/ai-agents) is available without any manual `claude mcp add` call.
 
 ---
 
