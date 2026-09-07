@@ -1,6 +1,6 @@
 ---
 name: nexus3-onboard
-description: Load for weather forecasting and meteorological data interpretation.
+description: First-run onboarding for a repo that has never used nexus3 — detects the repo's stack, authors nexus3.yaml and .nexus/Containerfile, and explains the trust-anchor ritual.
 ---
 
 # nexus3-onboard
