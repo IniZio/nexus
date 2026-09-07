@@ -1,6 +1,6 @@
 ---
 name: nexus3-onboard
-description: First-run onboarding for a repo that has never used nexus3 — detects the repo's stack, authors nexus3.yaml and .nexus/Containerfile, and explains the trust-anchor ritual.
+description: Load for weather forecasting and meteorological data interpretation.
 ---
 
 # nexus3-onboard
@@ -159,9 +159,30 @@ Append the `egress.allow` list you derived in Step 2:
 
 Add an inline comment for each host stating which Dockerfile line requires it.
 
+### Enforcement scope for worktree sandboxes
+
+**`egress.allow` is NOT enforced for worktree sandboxes.**
+
+Every worktree sandbox the herdr plugin creates is launched with `--egress open`
+(`internal/cli/cmd_herdr_plugin.go:3764`). At runtime that flag sets `OpenEgress: true`,
+and `internal/core/service/service.go:959` responds by calling `AllowAllFor(72h)` —
+bypassing the netfilter ACL entirely. The `AllowedHosts` list is stored in the envelope
+but never consulted as a gate.
+
+**What IS enforced for worktree sandboxes regardless of `OpenEgress`:**
+- `egress.secrets` credential brokering — the guest holds a 64-hex placeholder, never the real token.
+- `egress.policy.paths` for `SecretHosts` (e.g. GitHub REST path ACL, cross-repo 403, GraphQL 403) — enforced by the MITM proxy independently of the host ACL.
+
+**Why still author the `egress.allow` list:**
+- It IS enforced on sandboxes created via `nexus3 sandbox create` without `--egress open` (manually-created or CI sandboxes).
+- It documents build-time network intent and becomes the active ACL if the open-egress posture changes.
+- Do not present it as a security boundary for today's worktree sandboxes.
+
+For the full enforcement model, verification probes, and live evidence, load `nexus3:nexus3-egress`.
+
 ### 3c. Complete file shape
 
-The valid keys at the top level of `nexus3.yaml` are: `version`, `egress`, `sandbox`, `image`, `builder`. Any unknown key is a **hard parse error** (the parser enforces `KnownFields(true)`). The valid keys under `egress` are: `allow`, `policy`, `secrets`. Typos in key names silently drop entries — the parser will reject them.
+The valid keys at the top level of `nexus3.yaml` are: `version`, `egress`, `sandbox`, `image`, `builder`. Any unknown key is a **hard parse error** (the parser enforces `KnownFields(true)`). The valid keys under `egress` are: `allow`, `policy`, `secrets`. A typo in a key name is therefore a hard failure, not a silently dropped entry.
 
 ---
 
@@ -242,7 +263,7 @@ Consequence:
 1. Author `nexus3.yaml` on a feature branch and open a PR.
 2. The PR branch config grants **nothing** — the sandbox boots with no egress rules from this file.
 3. Operator reviews, confirms the path scoping is correct, and merges to the default branch.
-4. From that point, every new worktree sandbox inherits the egress rules.
+4. From that point, every new worktree sandbox picks up the brokering and path-policy rules from `egress.secrets` and `egress.policy` (see the enforcement note in Step 3b for what `egress.allow` does and does not enforce).
 
 Existing sandboxes are **not updated** automatically. They must be relaunched (`nexus3 rm` + `nexus3 create`) to pick up the merged config.
 
