@@ -51,3 +51,6 @@ internal/core/driver/cloudhypervisor/netns-control/
 # here because the pane transcript can become unreachable (SKILL.md mode 6).
 # It is a working artefact of one slice, never part of the tree.
 .slice-report.md
+
+# Plugin eval run outputs (throwaway artefacts of a single test run)
+plugins/claude/evals/results/
