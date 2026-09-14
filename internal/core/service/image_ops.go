@@ -7,46 +7,47 @@ import (
 	"github.com/IniZio/nexus3/internal/core/builder"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
-// ImageBuilder is the minimal interface the image service requires from the
-// builder layer. Defined as an interface so that tests can inject a fake
-// without needing buildkitd, mke2fs, or any other external tooling.
 type ImageBuilder interface {
 	Build(ctx context.Context, req builder.BuildRequest) (domain.Image, error)
 }
 
-// ImageService is the image-ops coordination layer. It sits between the CLI
-// surface and the builder/cache packages, mirroring the structure of the
-// sandbox Service but scoped to content-addressed rootfs images.
-//
-// The zero value is not usable; construct one with NewImageService.
 type ImageService struct {
 	cache   *image.Cache
 	builder ImageBuilder
 	store   SandboxImageLister
+	// versionResolver resolves floating tool versions; nil means use cred.ResolveFloatingVersions.
+	versionResolver func(context.Context, cred.ToolRecipe) (cred.ToolRecipe, error)
 }
 
-// NewImageService returns an ImageService backed by the given cache and builder.
-// b may be nil when only listing or pruning images (build is unavailable then).
 func NewImageService(c *image.Cache, b ImageBuilder) *ImageService {
 	return &ImageService{cache: c, builder: b}
 }
 
-// WithStore wires in a SandboxImageLister so PruneImages can retain images
-// referenced by live sandbox records. Without this, only KindBase images are
-// kept during pruning.
 func (s *ImageService) WithStore(sl SandboxImageLister) {
 	s.store = sl
 }
 
-// BuildImage drives the builder to produce a bootable rootfs from req, stores
-// it in the cache, and returns the resulting domain.Image. Returns an error
-// wrapping ErrNoBuilder if no builder was configured.
+func (s *ImageService) WithVersionResolver(r func(context.Context, cred.ToolRecipe) (cred.ToolRecipe, error)) {
+	s.versionResolver = r
+}
+
+// BuildImage resolves floating tool versions before Build so the image-cache key carries concrete versions, not symbolic tags.
 func (s *ImageService) BuildImage(ctx context.Context, req builder.BuildRequest) (domain.Image, error) {
 	if s.builder == nil {
 		return domain.Image{}, fmt.Errorf("image: build: %w", ErrNoBuilder)
 	}
+	resolve := s.versionResolver
+	if resolve == nil {
+		resolve = cred.ResolveFloatingVersions
+	}
+	resolved, err := resolve(ctx, req.ToolRecipe)
+	if err != nil {
+		return domain.Image{}, fmt.Errorf("image: build: resolve tool recipe versions: %w", err)
+	}
+	req.ToolRecipe = resolved
 	img, err := s.builder.Build(ctx, req)
 	if err != nil {
 		return domain.Image{}, fmt.Errorf("image: build: %w", err)
@@ -54,8 +55,6 @@ func (s *ImageService) BuildImage(ctx context.Context, req builder.BuildRequest)
 	return img, nil
 }
 
-// ListImages returns metadata for all images currently in the cache.
-// An empty slice (not an error) is returned when the cache is empty.
 func (s *ImageService) ListImages(ctx context.Context) ([]domain.Image, error) {
 	imgs, err := s.cache.List(ctx)
 	if err != nil {
@@ -64,12 +63,6 @@ func (s *ImageService) ListImages(ctx context.Context) ([]domain.Image, error) {
 	return imgs, nil
 }
 
-// PruneImages removes cache entries not referenced by any sandbox or base image.
-//
-// With a store wired in via WithStore, only true orphans are removed.
-// Without a store, only KindBase images are preserved and all others are removed.
-//
-// Returns the number of entries removed.
 func (s *ImageService) PruneImages(ctx context.Context) (int, error) {
 	ref, err := ReferencedDigests(ctx, s.cache, s.store)
 	if err != nil {
@@ -82,7 +75,4 @@ func (s *ImageService) PruneImages(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// ErrNoBuilder is returned by BuildImage when no builder was wired into the
-// ImageService. This happens when the CLI constructs a list/prune-only service
-// (e.g. before the builder VM integration is complete).
 var ErrNoBuilder = fmt.Errorf("no builder configured (builder VM integration not yet wired)")
