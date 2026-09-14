@@ -83,6 +83,7 @@ func ensureCacheDiskAt(ctx context.Context, cacheDir, ecosystemKey string, entry
 		Subpaths:     entry.subpaths,
 	}
 
+	preservedSize := cacheDiskSizeBytes
 	if _, err := os.Stat(imgPath); err == nil {
 		if !cacheDiskIsDirty(imgPath) {
 			// Clean reuse: fence the disk dirty before handing the spec to
@@ -102,8 +103,11 @@ func ensureCacheDiskAt(ctx context.Context, cacheDir, ecosystemKey string, entry
 		// forensics on caches/buildkit.ext4: a 0-byte agent layer was later
 		// served as a cache HIT). Wipe rather than risk reuse — losing a
 		// warm cache is cheap; serving poisoned layer data as good is not.
-		log.Printf("cachedisk: %s slot %d left dirty by a prior unclean death; wiping cache (%s)",
-			ecosystemKey, slot, imgPath)
+		if fi, statErr := os.Stat(imgPath); statErr == nil && fi.Size() > cacheDiskSizeBytes {
+			preservedSize = fi.Size()
+		}
+		log.Printf("cachedisk: %s slot %d left dirty by a prior unclean death; wiping cache (%s) and recreating at %d bytes",
+			ecosystemKey, slot, imgPath, preservedSize)
 		if err := os.Remove(imgPath); err != nil {
 			return CacheDiskSpec{}, fmt.Errorf("cachedisk: wipe dirty %s: %w", ecosystemKey, err)
 		}
@@ -118,7 +122,7 @@ func ensureCacheDiskAt(ctx context.Context, cacheDir, ecosystemKey string, entry
 	}
 	defer os.RemoveAll(tmpSrc)
 
-	if err := runMke2fs(ctx, tmpSrc, imgPath, cacheDiskSizeBytes); err != nil {
+	if err := runMke2fs(ctx, tmpSrc, imgPath, preservedSize); err != nil {
 		// Remove partially written file so the next call retries cleanly.
 		_ = os.Remove(imgPath)
 		return CacheDiskSpec{}, fmt.Errorf("cachedisk: create ext4 for %q: %w", ecosystemKey, err)

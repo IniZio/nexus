@@ -16,8 +16,6 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
-// ── BuildFingerprint ──────────────────────────────────────────────────────────
-
 func TestBuildFingerprintDeterminism(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hello"), 0644); err != nil {
@@ -105,7 +103,6 @@ func TestBuildFingerprintSensitivity(t *testing.T) {
 	})
 
 	t.Run("context file modified (mtime bump)", func(t *testing.T) {
-		// Utime the existing file to simulate a touch without content change.
 		p := filepath.Join(dir, "src.go")
 		now := time.Now().Add(time.Second)
 		if err := os.Chtimes(p, now, now); err != nil {
@@ -176,7 +173,7 @@ func TestBuildFingerprintRecipeSensitivity(t *testing.T) {
 				},
 				InstallDir: "/usr/local",
 			},
-			{Kind: cred.RecipeKindNPM, Name: "@anthropic-ai/claude-code", Version: "2.1.226"},
+			{Kind: cred.RecipeKindNPM, Name: "@anthropic-ai/claude-code", Version: "2.1.226"}, // post-resolution fixture, not the live profile version
 		},
 	}
 	cursorRecipe := cred.ToolRecipe{
@@ -230,8 +227,6 @@ func TestBuildFingerprintRecipeSensitivity(t *testing.T) {
 	}
 }
 
-// ── ExtractFromRef ────────────────────────────────────────────────────────────
-
 func TestExtractFromRef(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -258,8 +253,6 @@ func TestExtractFromRef(t *testing.T) {
 	}
 }
 
-// ── LookupBuildCache / StoreBuildCache ────────────────────────────────────────
-
 func makeFakeImageCache(t *testing.T, storeRoot string) (*image.Cache, string) {
 	t.Helper()
 	cacheRoot := filepath.Join(storeRoot, "images")
@@ -267,8 +260,6 @@ func makeFakeImageCache(t *testing.T, storeRoot string) (*image.Cache, string) {
 	if err != nil {
 		t.Fatalf("NewCache: %v", err)
 	}
-
-	// Put a fake image so LookupBuildCache can verify it exists.
 	content := []byte("fake-ext4-rootfs-bytes-for-test")
 	h := sha256.Sum256(content)
 	digestStr := "sha256:" + hex.EncodeToString(h[:])
@@ -308,7 +299,6 @@ func TestStoreThenLookupHit(t *testing.T) {
 
 	fp := "aabbccddeeff0011"
 
-	// Miss before storing.
 	_, hit, err := builder.LookupBuildCache(context.Background(), storeRoot, fp, imgCache)
 	if err != nil {
 		t.Fatalf("pre-store lookup error: %v", err)
@@ -317,12 +307,10 @@ func TestStoreThenLookupHit(t *testing.T) {
 		t.Error("expected miss before store")
 	}
 
-	// Store.
 	if err := builder.StoreBuildCache(storeRoot, fp, digestStr); err != nil {
 		t.Fatalf("StoreBuildCache: %v", err)
 	}
 
-	// Hit after storing.
 	got, hit, err := builder.LookupBuildCache(context.Background(), storeRoot, fp, imgCache)
 	if err != nil {
 		t.Fatalf("post-store lookup error: %v", err)
