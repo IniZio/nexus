@@ -725,6 +725,14 @@ func RunDetached(cfg Config) error {
 	// logged via slog (gitssh.relay.allow / .deny_policy / .deny_ref).
 	startGitSSHRelay(ctx, cfg.SocketDir, sb, nil)
 
+	// ── 5a-portfwd. Auto-forward guest TCP listeners ─────────────────────────
+	// Discovers guest listeners in the portfwd range (1024–11023), binds
+	// 127.0.0.1:P on the host, and proxies via vsock:3001. The laptop-side
+	// local-agent-startup verb then SSH-forwards those host ports to the laptop.
+	if agentClient != nil {
+		startPortForwardSupervisor(ctx, cfg.SandboxRef, sb, agentClient, svc)
+	}
+
 	// ── 5a. Start auto-resize governor ───────────────────────────────────────
 	// The governor is single-tenant (D-DC-12): one per supervisor, for this
 	// sandbox's full lifetime. It polls the guest over vsock (TelemetryVsockPort

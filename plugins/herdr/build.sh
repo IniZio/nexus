@@ -103,6 +103,22 @@ if [ "$GOT_ABI" != "$EXPECTED_ABI" ]; then
     exit 1
 fi
 
+# ── herdr version guard ───────────────────────────────────────────────────
+# min_herdr_version = "0.9.0" in the manifest prevents initial install on
+# herdr < 0.9 but does NOT block a stale binary. Guard explicitly because
+# `herdr machine list --json` (required by local-agent-startup) did not
+# exist before 0.9.
+MIN_HERDR="0.9.0"
+HERDR_VER="$(herdr --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)" || true
+if [ -n "$HERDR_VER" ]; then
+    # Compare using sort -V (version sort) — POSIX sort lacks -V, but sort from GNU coreutils on Linux has it.
+    LOWEST="$(printf '%s\n%s\n' "$MIN_HERDR" "$HERDR_VER" | sort -V | head -1)"
+    if [ "$LOWEST" != "$MIN_HERDR" ]; then
+        echo "nexus3: error: herdr ${HERDR_VER} < ${MIN_HERDR}: upgrade herdr first (brew upgrade herdr / herdr update)" >&2
+        exit 1
+    fi
+fi
+
 # ── Write the shim (absolute path so herdr's minimal launchd PATH doesn't matter) ──
 SHIM="$PLUGIN_DIR/nexus3-shim.sh"
 printf '#!/bin/sh\nexec "%s" "$@"\n' "$NEXUS3" > "$SHIM"

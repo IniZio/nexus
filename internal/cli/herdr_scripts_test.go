@@ -333,17 +333,17 @@ func TestPaneScript_ShellCwdLegitimateRoot(t *testing.T) {
 	}
 }
 
-// TestABIFileValue pins the plugin's declared ABI to 2, which was bumped when
-// the CLI surface moved from __herdr-plugin to the herdr command group.
-// A pre-rename binary reports ABI 1 and build.sh will reject it.
-// Mutation: revert plugins/herdr/abi to "1" and this test goes RED.
+// TestABIFileValue pins the plugin's declared ABI to 3, which was bumped when
+// the [[startup]] stanza and local-agent-startup verb were added (requires
+// herdr ≥0.9.0). A pre-startup binary reports ABI 2 and build.sh will reject
+// it. Mutation: revert plugins/herdr/abi to "2" and this test goes RED.
 func TestABIFileValue(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "..", "plugins", "herdr", "abi"))
 	if err != nil {
 		t.Fatalf("read plugins/herdr/abi: %v", err)
 	}
 	got := strings.TrimSpace(string(b))
-	const want = "2"
+	const want = "3"
 	if got != want {
 		t.Errorf("plugins/herdr/abi = %q, want %q — bump the file and const herdrPluginABIVersion in cmd_herdr_plugin.go together", got, want)
 	}

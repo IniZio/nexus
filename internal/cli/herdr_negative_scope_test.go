@@ -64,7 +64,11 @@ func TestNegativeScope_HerdrPluginTomlTablesOnly(t *testing.T) {
 	// added to the manifest without someone deciding it belongs.
 	// Event NAMES are validated separately, against the real binary's own
 	// registry, by TestHerdrPluginManifest_EventNamesValid.
-	permitted := []string{"[[build]]", "[[panes]]", "[[actions]]", "[[events]]"}
+	//
+	// [[startup]] was added by the port-forward motive: herdr ≥0.9.0 runs the
+	// [[startup]] command on the laptop when herdr starts, so the
+	// local-agent-startup verb can manage host-side port forwards.
+	permitted := []string{"[[build]]", "[[panes]]", "[[actions]]", "[[events]]", "[[startup]]"}
 
 	// Collect all [[...]] table headers present in the file.
 	for _, line := range strings.Split(content, "\n") {

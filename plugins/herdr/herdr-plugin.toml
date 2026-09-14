@@ -1,7 +1,7 @@
 id = "nexus3"
 name = "nexus3"
 version = "0.1.1"
-min_herdr_version = "0.7.4"
+min_herdr_version = "0.9.0"
 description = "Attach to nexus3 microVM workspaces, list them, and create them without leaving Herdr."
 # Only Linux/x86_64 has a pre-built binary.  build.sh exits non-zero on other
 # platforms with a "build from source" message.
@@ -9,6 +9,13 @@ platforms = ["linux"]
 
 [[build]]
 command = ["sh", "build.sh"]
+
+[[startup]]
+# local-agent-startup runs on the laptop when herdr starts (herdr ≥0.9).
+# It opens an SSH ControlMaster to each `herdr machine add`-ed host and
+# keeps guest TCP ports forwarded to 127.0.0.1:P on the laptop.
+command = ["sh", "-c", 'exec "$HERDR_PLUGIN_ROOT/nexus3-shim.sh" herdr local-agent-startup']
+platforms = ["linux", "macos"]
 
 [[panes]]
 id = "attach"
