@@ -292,6 +292,19 @@ func applyProjectConfig(f *sandboxCreateFlags) error {
 
 	f.allowHosts = resolved.EgressAllow
 
+	// Populate pathPolicies from nexus3.yaml egress.policy when not already
+	// set via --egress-policy-json (worktree subprocess channel). The ssh relay
+	// (startGitSSHRelay in the supervisor) reads PathPolicies[""] to derive
+	// the git SSH allowlist; without this conversion the relay always denies.
+	if len(f.pathPolicies) == 0 && len(cfg.Egress.Policy) > 0 {
+		pp := make(domain.EgressPathPolicies)
+		pp[""] = make(map[string]domain.EgressHostPolicy)
+		for _, ep := range cfg.Egress.Policy {
+			pp[""][ep.Host] = domain.EgressHostPolicy{Paths: ep.Paths}
+		}
+		f.pathPolicies = pp
+	}
+
 	if f.mountLive == nil && len(resolved.Mounts) > 0 {
 		cfgDir := filepath.Dir(cfgPath)
 		resolvedMounts, resolveErr := config.ResolveMounts(resolved.Mounts, cfgDir)

@@ -81,6 +81,17 @@ func (d *CHDriver) vsockPath(id domain.SandboxID) string {
 	return filepath.Join(d.cfg.SocketDir, id.String()+".vsock")
 }
 
+// vsockGuestPortPath returns the host-side AF_UNIX socket path that CH creates
+// when a guest VM connects to host CID 2 on the given port. Used by the host
+// relay to accept guest-initiated connections.
+//
+// Naming: <socketDir>/<id>.vsock_<port>  (underscore separator, per CH vsock spec
+// confirmed in T0b probe — guest-initiated uses underscore, host-initiated uses
+// plain .vsock)
+func (d *CHDriver) vsockGuestPortPath(id domain.SandboxID, port uint32) string {
+	return filepath.Join(d.cfg.SocketDir, fmt.Sprintf("%s.vsock_%d", id.String(), port))
+}
+
 // vsockConn wraps a net.Conn together with the buffered reader used to
 // consume the multiplexer handshake reply. Any bytes the peer sent
 // immediately after the "OK" line are preserved in the reader's buffer and

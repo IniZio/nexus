@@ -716,6 +716,15 @@ func RunDetached(cfg Config) error {
 		perimSupPtr.Store(sup)
 	}
 
+	// ── 5a-gitssh. Start git SSH relay ───────────────────────────────────────
+	// Accepts guest-initiated vsock connections on GitSSHRelayPort (1026) and
+	// relays git-upload-pack / git-receive-pack sessions to the host ssh binary.
+	// Policy derived from Envelope.PathPolicies populated at create time.
+	// onEgress is nil here; the service layer's egress-decisions log is internal
+	// to svc.Start and not exposed to the supervisor. Git SSH relay decisions are
+	// logged via slog (gitssh.relay.allow / .deny_policy / .deny_ref).
+	startGitSSHRelay(ctx, cfg.SocketDir, sb, nil)
+
 	// ── 5a. Start auto-resize governor ───────────────────────────────────────
 	// The governor is single-tenant (D-DC-12): one per supervisor, for this
 	// sandbox's full lifetime. It polls the guest over vsock (TelemetryVsockPort

@@ -229,6 +229,13 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 	// placeholder credentials — the guest was never rebooted, so it already
 	// holds its placeholder.
 
+	// ── git SSH relay ────────────────────────────────────────────────────────
+	// Must restart on adoption: the relay goroutine lived in the previous
+	// supervisor process, whose context is now cancelled. The vsock UDS path
+	// is deterministic (same sandbox ID) so the new listener cleanly replaces
+	// the old socket.
+	startGitSSHRelay(ctx, cfg.SocketDir, sb, nil)
+
 	pid := os.Getpid()
 	pidfile := PidfilePath(cfg.StateDir)
 	if err := os.WriteFile(pidfile, []byte(strconv.Itoa(pid)+"\n"), statedir.FileMode); err != nil {

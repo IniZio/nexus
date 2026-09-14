@@ -1,0 +1,55 @@
+# nexus3.yaml — place at the example-app repo ROOT, on the BASE branch (main).
+# Takes effect for NEW worktree sandboxes only once merged to origin/main
+# (the trust anchor reads git show refs/remotes/origin/HEAD:nexus3.yaml — a
+# feature/PR branch grants nothing). Existing HAN sandboxes must be relaunched.
+#
+# Empirically validated live: gh api repos/example-org/example-app -> 200,
+# cross-repo -> 403, /graphql -> 403, guest holds a 64-hex placeholder.
+# Linear + Anthropic need NO entry — brokered automatically via MCP-OAuth /
+# the agent profile (already live in your running HAN sandboxes).
+version: 1
+egress:
+  policy:
+    # Default-deny path allowlist. SECURITY: keep these scoped to the repo —
+    # never "/**" at root, never list "/graphql" (would let a compromised guest
+    # reach other repos / the GraphQL write channel with the full-scope token).
+    - host: api.github.com
+      paths:
+        - "/repos/example-org/example-app"        # repo info
+        - "/repos/example-org/example-app/**"     # pulls, branches, commits, git/refs, contents, ...
+        - "/user"                            # gh auth status
+    - host: github.com
+      paths:
+        - "/example-org/example-app/**"            # git clone/push over HTTPS
+        - "/example-org/example-app.git/**"        # git smart-HTTP
+  secrets:
+    - env: GH_TOKEN
+      hosts: [github.com, api.github.com]
+
+  # Curated egress allow-list for docker compose build/pull.
+  # Derived from an audit of all Dockerfiles + docker-compose.yml — no wildcards,
+  # no AllowAll. Each host is justified by a concrete fetch in the build graph:
+  #   registry-1.docker.io / auth.docker.io / production.cloudflare.docker.com
+  #     — Docker Hub image pulls (postgres, python, node, openresty, minio,
+  #       mailpit, redis) and their auth + blob CDN endpoints.
+  #   ghcr.io — ghcr.io/astral-sh/uv used in all backend Dockerfiles.
+  #   quay.io — quay.io/theauthgear/authgear-server in docker-compose.yml.
+  #   deb.debian.org / security.debian.org — apt-get in db/Dockerfile
+  #     (postgres:16.11-trixie Debian base).
+  #   registry.npmjs.org — npm install -g pnpm in web Dockerfiles.
+  #   pypi.org / files.pythonhosted.org — uv sync for Python deps in backend.
+  #   github.com / codeload.github.com — wget of pg_partman zip in db/Dockerfile
+  #     (GitHub redirects archive downloads to codeload.github.com).
+  allow:
+    - registry-1.docker.io          # Docker Hub image pulls
+    - auth.docker.io                # Docker Hub auth
+    - production.cloudflare.docker.com  # Docker Hub blob CDN
+    - ghcr.io                       # GitHub Container Registry (astral-sh/uv)
+    - quay.io                       # Quay images (authgear-server)
+    - deb.debian.org                # Debian apt packages
+    - security.debian.org           # Debian security apt
+    - registry.npmjs.org            # npm packages (pnpm install)
+    - pypi.org                      # Python package index (uv sync)
+    - files.pythonhosted.org        # Python wheels/sdists (uv sync)
+    - github.com                    # git + release tarballs (pg_partman wget)
+    - codeload.github.com           # GitHub archive/zip downloads (pg_partman)
