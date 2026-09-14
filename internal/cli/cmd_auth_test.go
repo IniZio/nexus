@@ -128,227 +128,34 @@ func TestAuth_UnknownAction_UsageError(t *testing.T) {
 	}
 }
 
-// TestAuthLogin_FreshImport verifies that importing into an absent store
-// writes a credential store with the expected fields.
-func TestAuthLogin_FreshImport(t *testing.T) {
-	destPath := filepath.Join(t.TempDir(), "creds.json")
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", destPath)
-
-	fromDir := t.TempDir()
-	fromPath := filepath.Join(fromDir, ".credentials.json")
-	expiresMs := time.Now().Add(time.Hour).UnixMilli()
-	writeCredentialsFixture(t, fromPath, "tok-access-123", "tok-refresh-456", expiresMs)
-
-	out, stdout, _ := capture(true)
-	if err := runAuthLogin(context.Background(), []string{"--from", fromPath}, out); err != nil {
+// TestAuthLogin_ClaudeCodeNoOp verifies that `nexus3 auth login` for claude-code
+// (the default — no --agent flag) prints a no-op message and returns nil,
+// since credentials come from the live-mounted ~/.claude directory.
+func TestAuthLogin_ClaudeCodeNoOp(t *testing.T) {
+	out, stdout, _ := capture(false)
+	err := runAuthLogin(context.Background(), []string{}, out)
+	if err != nil {
 		t.Fatalf("runAuthLogin: unexpected error: %v", err)
 	}
-
-	// Decode the success envelope.
-	var env map[string]any
-	decodeOne(t, stdout, &env)
-	if env["kind"] != "auth.login" {
-		t.Errorf("kind = %v, want auth.login", env["kind"])
+	msg := stdout.String()
+	if !strings.Contains(msg, "no longer needed") {
+		t.Errorf("expected no-op message containing 'no longer needed'; got: %q", msg)
 	}
+	if !strings.Contains(msg, "claude login") {
+		t.Errorf("expected no-op message containing 'claude login'; got: %q", msg)
+	}
+}
 
-	// Verify the written store via cred.LoadStore.
-	store, err := cred.LoadStore(destPath)
+// TestAuthLogin_ClaudeCodeExplicit_NoOp verifies the same no-op for an explicit
+// --agent claude-code flag.
+func TestAuthLogin_ClaudeCodeExplicit_NoOp(t *testing.T) {
+	out, stdout, _ := capture(false)
+	err := runAuthLogin(context.Background(), []string{"--agent", "claude-code"}, out)
 	if err != nil {
-		t.Fatalf("LoadStore after import: %v", err)
+		t.Fatalf("runAuthLogin --agent claude-code: unexpected error: %v", err)
 	}
-	if store.AccessToken != "tok-access-123" {
-		t.Errorf("access_token = %q, want tok-access-123", store.AccessToken)
-	}
-	if store.RefreshToken != "tok-refresh-456" {
-		t.Errorf("refresh_token = %q, want tok-refresh-456", store.RefreshToken)
-	}
-	if store.ClientID == "" {
-		t.Error("client_id should be non-empty after import")
-	}
-	if store.TokenEndpoint == "" {
-		t.Error("token_endpoint should be non-empty after import")
-	}
-}
-
-// TestAuthLogin_JSON_NoTokenValues verifies that the success envelope data
-// contains dest_path/token_endpoint/client_id/expires_at but NOT the token
-// values themselves.
-func TestAuthLogin_JSON_NoTokenValues(t *testing.T) {
-	destPath := filepath.Join(t.TempDir(), "creds.json")
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", destPath)
-
-	fromDir := t.TempDir()
-	fromPath := filepath.Join(fromDir, ".credentials.json")
-	writeCredentialsFixture(t, fromPath, "tok-access-secret", "tok-refresh-secret", time.Now().Add(time.Hour).UnixMilli())
-
-	out, stdout, _ := capture(true)
-	if err := runAuthLogin(context.Background(), []string{"--from", fromPath}, out); err != nil {
-		t.Fatalf("runAuthLogin: %v", err)
-	}
-
-	raw := stdout.Bytes()
-	// Token values must never appear in the output.
-	if strings.Contains(string(raw), "tok-access-secret") {
-		t.Error("JSON output must not contain the access token value")
-	}
-	if strings.Contains(string(raw), "tok-refresh-secret") {
-		t.Error("JSON output must not contain the refresh token value")
-	}
-
-	var env map[string]any
-	decodeOne(t, stdout, &env)
-	data, ok := env["data"].(map[string]any)
-	if !ok {
-		t.Fatalf("data is not a map, got %T", env["data"])
-	}
-	for _, field := range []string{"dest_path", "token_endpoint", "client_id", "expires_at"} {
-		if _, ok := data[field]; !ok {
-			t.Errorf("data.%s field missing from JSON output", field)
-		}
-	}
-}
-
-// TestAuthLogin_GuardRejectsExistingStore verifies that importing over a
-// complete credential store (access + refresh token present) without --force
-// fails with exit code 1.
-func TestAuthLogin_GuardRejectsExistingStore(t *testing.T) {
-	destPath := filepath.Join(t.TempDir(), "creds.json")
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", destPath)
-
-	fromDir := t.TempDir()
-	fromPath := filepath.Join(fromDir, ".credentials.json")
-	writeCredentialsFixture(t, fromPath, "tok-access-1", "tok-refresh-1", time.Now().Add(time.Hour).UnixMilli())
-
-	// First import succeeds.
-	out1, _, _ := capture(false)
-	if err := runAuthLogin(context.Background(), []string{"--from", fromPath}, out1); err != nil {
-		t.Fatalf("first import: %v", err)
-	}
-
-	// Second import without --force must fail at the CLI level (exit 1).
-	code := Run([]string{"auth", "login", "--from", fromPath})
-	if code != 1 {
-		t.Errorf("auth login over existing store without --force: exit code = %d, want 1", code)
-	}
-}
-
-// TestAuthLogin_ForceOverwritesExistingStore verifies that --force allows
-// re-importing over a complete credential store.
-func TestAuthLogin_ForceOverwritesExistingStore(t *testing.T) {
-	destPath := filepath.Join(t.TempDir(), "creds.json")
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", destPath)
-
-	fromDir := t.TempDir()
-	fromPath := filepath.Join(fromDir, ".credentials.json")
-	writeCredentialsFixture(t, fromPath, "tok-access-1", "tok-refresh-1", time.Now().Add(time.Hour).UnixMilli())
-
-	// First import.
-	out1, _, _ := capture(false)
-	if err := runAuthLogin(context.Background(), []string{"--from", fromPath}, out1); err != nil {
-		t.Fatalf("first import: %v", err)
-	}
-
-	// Update the fixture to have a new token.
-	writeCredentialsFixture(t, fromPath, "tok-access-2", "tok-refresh-2", time.Now().Add(2*time.Hour).UnixMilli())
-
-	// Second import with --force must succeed.
-	out2, _, _ := capture(false)
-	if err := runAuthLogin(context.Background(), []string{"--from", fromPath, "--force"}, out2); err != nil {
-		t.Errorf("import with --force: unexpected error: %v", err)
-	}
-
-	// Verify the store was overwritten.
-	store, err := cred.LoadStore(destPath)
-	if err != nil {
-		t.Fatalf("LoadStore after force import: %v", err)
-	}
-	if store.AccessToken != "tok-access-2" {
-		t.Errorf("access_token after force = %q, want tok-access-2", store.AccessToken)
-	}
-}
-
-// TestAuthLogin_MissingSourceFile verifies that a missing --from file returns
-// a non-zero exit code and an actionable error mentioning "claude auth login".
-func TestAuthLogin_MissingSourceFile(t *testing.T) {
-	destPath := filepath.Join(t.TempDir(), "creds.json")
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", destPath)
-
-	nonExistent := filepath.Join(t.TempDir(), "does-not-exist", ".credentials.json")
-
-	out, _, stderr := capture(false)
-	err := runAuthLogin(context.Background(), []string{"--from", nonExistent}, out)
-	if err == nil {
-		t.Fatal("expected non-nil error for missing source file, got nil")
-	}
-	if !strings.Contains(err.Error(), "claude auth login") {
-		t.Errorf("error message should mention 'claude auth login'; got: %s", err.Error())
-	}
-
-	// At the CLI level it must exit non-zero (exit 1).
-	code := Run([]string{"auth", "login", "--from", nonExistent})
-	if code == 0 {
-		t.Errorf("auth login with missing source: exit code = 0, want non-zero")
-	}
-
-	// stderr must be empty (capture was in human mode, no writes expected from
-	// our logic; root.go writes to stderr on error but we called runAuthLogin
-	// directly above).
-	_ = stderr
-}
-
-// ── AC-3: no --agent = byte-identical to pre-flag behavior ───────────────────
-
-// TestAuthLogin_NoAgent_SameDest verifies that omitting --agent uses
-// DedicatedCredStorePathForProfile(ClaudeCodeProfile) as the destination,
-// proving the no-flag path is byte-identical to the legacy implementation.
-//
-// AC-3.
-func TestAuthLogin_NoAgent_SameDest(t *testing.T) {
-	destPath := filepath.Join(t.TempDir(), "creds.json")
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", destPath)
-
-	fromDir := t.TempDir()
-	fromPath := filepath.Join(fromDir, ".credentials.json")
-	writeCredentialsFixture(t, fromPath, "tok-access-ac3", "tok-refresh-ac3", time.Now().Add(time.Hour).UnixMilli())
-
-	out, _, _ := capture(true)
-	if err := runAuthLogin(context.Background(), []string{"--from", fromPath}, out); err != nil {
-		t.Fatalf("no --agent import: %v", err)
-	}
-
-	store, err := cred.LoadStore(destPath)
-	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
-	}
-	if store.AccessToken != "tok-access-ac3" {
-		t.Errorf("AC-3: access token mismatch: got %q, want tok-access-ac3", store.AccessToken)
-	}
-}
-
-// TestAuthLogin_NoAgent_ForceGuard verifies the --force guard fires on the
-// no-agent path, proving the guard semantics are preserved.
-//
-// AC-3.
-func TestAuthLogin_NoAgent_ForceGuard(t *testing.T) {
-	destPath := filepath.Join(t.TempDir(), "creds.json")
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", destPath)
-
-	fromDir := t.TempDir()
-	fromPath := filepath.Join(fromDir, ".credentials.json")
-	writeCredentialsFixture(t, fromPath, "tok-access-1", "tok-refresh-1", time.Now().Add(time.Hour).UnixMilli())
-
-	out1, _, _ := capture(false)
-	if err := runAuthLogin(context.Background(), []string{"--from", fromPath}, out1); err != nil {
-		t.Fatalf("first import: %v", err)
-	}
-
-	out2, _, _ := capture(false)
-	err := runAuthLogin(context.Background(), []string{"--from", fromPath}, out2)
-	if err == nil {
-		t.Fatal("AC-3: expected error on second import without --force, got nil")
-	}
-	if !strings.Contains(err.Error(), "--force") {
-		t.Errorf("AC-3: error should mention --force; got: %v", err)
+	if !strings.Contains(stdout.String(), "no longer needed") {
+		t.Errorf("expected no-op message; got: %q", stdout.String())
 	}
 }
 
@@ -642,37 +449,3 @@ func TestAuthLoginImport_ProfileDriven_MutationProof(t *testing.T) {
 	}
 }
 
-// TestAuthLoginImport_NoAgent_DefaultFromIsProfileDerived verifies that the
-// no---agent route derives its --from default from the cred registry
-// (OAuthImportReg on ClaudeCodeProfile), not from a hardcoded string in
-// cmd_auth.go.  A second OAuth agent would simply add a registry entry;
-// cmd_auth.go would be untouched.
-//
-// The test injects an XDG_CONFIG_HOME that cannot contain the claude-dedicated
-// path and passes no --from flag; the command must fail with "not found" at
-// the profile-derived default path, proving the default was NOT resolved from
-// any hardcoded cmd_auth.go constant.
-//
-// S20-AC-2.
-func TestAuthLoginImport_NoAgent_DefaultFromIsProfileDerived(t *testing.T) {
-	destPath := filepath.Join(t.TempDir(), "creds.json")
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", destPath)
-
-	// The real default path is ~/.config/nexus3/claude-dedicated/.credentials.json;
-	// verify it is derived from the profile by overriding HOME to a temp dir that
-	// has no claude-dedicated session and confirming the error cites that path.
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	out, _, _ := capture(false)
-	err := runAuthLogin(context.Background(), []string{}, out)
-	if err == nil {
-		t.Fatal("S20-AC-2: expected error when default --from path does not exist, got nil")
-	}
-	// Error must mention the expected path shape, proving it is derived from the
-	// profile (not a stale hardcoded constant in cmd_auth.go).
-	wantSuffix := "/.config/nexus3/claude-dedicated/.credentials.json"
-	if !strings.Contains(err.Error(), wantSuffix) {
-		t.Errorf("S20-AC-2: error %q does not mention profile-derived path %q", err, wantSuffix)
-	}
-}

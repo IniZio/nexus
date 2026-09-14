@@ -123,7 +123,7 @@ func BuildUserMountManifest(hostHome string, mounts []string) UserMountManifest 
 			}
 		}
 
-		overlay := !curated && (guestPath == "/root/.claude" || strings.HasPrefix(guestPath, "/root/.claude/"))
+		overlay := false // /root/.claude paths are handled by the live rw mount; user-mount overlay removed
 
 		stagingGuestPath := guestPath
 		switch {
@@ -192,7 +192,7 @@ func CheckRecipeShadows(mounts []string, recipe cred.ToolRecipe) []string {
 	}
 	var warnings []string
 	for _, spec := range mounts {
-		guestPath := mountSpecGuestPath(spec)
+		guestPath := MountSpecGuestPath(spec)
 		if guestPath == "" {
 			continue
 		}
@@ -254,9 +254,9 @@ func recipeStableInstallDir(dir string) string {
 	return dir
 }
 
-// mountSpecGuestPath extracts the guest path from a "host:guest[:opts]" spec.
+// MountSpecGuestPath extracts the guest path from a "host:guest[:opts]" spec.
 // Returns "" when the spec has no colon or an empty guest path.
-func mountSpecGuestPath(spec string) string {
+func MountSpecGuestPath(spec string) string {
 	i := strings.Index(spec, ":")
 	if i < 0 {
 		return ""

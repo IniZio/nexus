@@ -1,13 +1,9 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -108,64 +104,3 @@ func TestSeedGuestAgentOnboarding_NilServersOmitsMCPKey(t *testing.T) {
 	}
 }
 
-// newBypassConsentExecer returns a GuestExecer that runs GuestBypassConsentScript
-// on the host /bin/sh, redirecting /root/.claude to captureDir so the test
-// can inspect the written settings.json without a live VM.
-func newBypassConsentExecer(t *testing.T, captureDir string) GuestExecer {
-	t.Helper()
-	return func(ctx context.Context, _ domain.SandboxID, argv []string, stdin io.Reader) (int32, error) {
-		if len(argv) < 3 || argv[0] != "/bin/sh" || argv[1] != "-c" {
-			t.Errorf("newBypassConsentExecer: expected [/bin/sh -c <script>], got %v", argv)
-			return 1, nil
-		}
-		script := strings.ReplaceAll(argv[2], "/root/.claude", captureDir)
-		var stdinBytes []byte
-		if stdin != nil {
-			var err error
-			stdinBytes, err = io.ReadAll(stdin)
-			if err != nil {
-				return 1, err
-			}
-		}
-		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script)
-		cmd.Stdin = bytes.NewReader(stdinBytes)
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			var ee *exec.ExitError
-			if errors.As(err, &ee) {
-				return int32(ee.ExitCode()), nil
-			}
-			return 1, err
-		}
-		return 0, nil
-	}
-}
-
-// TestSeedGuestBypassConsent_NoNodeRequired verifies that SeedGuestBypassConsent
-// writes a valid settings.json containing skipDangerousModePermissionPrompt:true
-// using only POSIX sh (no node). This proves the fix for the 127 exit that the
-// original node-based script produced.
-func TestSeedGuestBypassConsent_NoNodeRequired(t *testing.T) {
-	dir := t.TempDir()
-	spy := newBypassConsentExecer(t, dir)
-
-	var id domain.SandboxID
-	if err := SeedGuestBypassConsent(context.Background(), id, spy); err != nil {
-		t.Fatalf("SeedGuestBypassConsent: %v", err)
-	}
-
-	settingsPath := filepath.Join(dir, "settings.json")
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		t.Fatalf("settings.json not written: %v", err)
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		t.Fatalf("settings.json is not valid JSON: %v\nraw: %s", err, data)
-	}
-	if v, ok := cfg["skipDangerousModePermissionPrompt"]; !ok || v != true {
-		t.Errorf("skipDangerousModePermissionPrompt missing or not true; got: %v", cfg)
-	}
-}

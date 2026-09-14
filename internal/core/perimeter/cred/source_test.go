@@ -16,8 +16,10 @@ import (
 func TestS0_ProfileStoreToken(t *testing.T) {
 	// 1. Profile — use the canonical ClaudeCode profile.
 	profile := cred.ClaudeCodeProfile
-	if profile.PlaceholderEnvVar == "" || profile.CredentialedHost == "" {
-		t.Fatal("ClaudeCodeProfile is incomplete")
+	// CredDirLiveMount profiles intentionally have no PlaceholderEnvVar;
+	// the guest reads credentials directly from the live-mounted ~/.credentials.json.
+	if profile.CredentialedHost == "" || !profile.Capabilities.CredDirLiveMount {
+		t.Fatal("ClaudeCodeProfile is incomplete — must have CredentialedHost and CredDirLiveMount")
 	}
 
 	// 2. Store — write a fixture to disk and load it.

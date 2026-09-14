@@ -233,7 +233,11 @@ func TestBuildUserMountManifest_AbsentDirSkipped(t *testing.T) {
 }
 
 // TestBuildUserMountManifest_OverlayForClaude verifies that guest paths under
-// /root/.claude/ get Overlay=true and a staging path.
+// /root/.claude/ get Overlay=false (the live rw mount handles the .claude dir;
+// user-mount overlay was removed in the CredDirLiveMount design).
+//
+// Mutation guard: re-enabling overlay for /root/.claude/ paths makes Overlay=true,
+// failing this assertion.
 func TestBuildUserMountManifest_OverlayForClaude(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".claude", "plugins")
@@ -245,12 +249,12 @@ func TestBuildUserMountManifest_OverlayForClaude(t *testing.T) {
 		t.Fatalf("expected 1 mount, got %d", len(got.Mounts))
 	}
 	m := got.Mounts[0]
-	if !m.Overlay {
-		t.Errorf("expected Overlay=true for /root/.claude/ path")
+	if m.Overlay {
+		t.Errorf("expected Overlay=false for /root/.claude/ path (live rw mount replaces overlay)")
 	}
-	const wantStaging = "/run/nexus3/usermount/plugins"
-	if m.StagingGuestPath != wantStaging {
-		t.Errorf("StagingGuestPath = %q, want %q", m.StagingGuestPath, wantStaging)
+	// With Overlay=false and Curated=false, StagingGuestPath must equal GuestPath.
+	if m.StagingGuestPath != m.GuestPath {
+		t.Errorf("non-overlay non-curated row: StagingGuestPath %q != GuestPath %q", m.StagingGuestPath, m.GuestPath)
 	}
 }
 

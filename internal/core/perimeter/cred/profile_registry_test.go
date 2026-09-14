@@ -19,8 +19,8 @@ func TestProfileByName_ResolvesRegisteredAgent(t *testing.T) {
 	if p.Name != ClaudeCodeProfileName {
 		t.Errorf("resolved profile Name = %q, want %q", p.Name, ClaudeCodeProfileName)
 	}
-	if p.PlaceholderEnvVar != "CLAUDE_CODE_OAUTH_TOKEN" {
-		t.Errorf("resolved profile PlaceholderEnvVar = %q, want CLAUDE_CODE_OAUTH_TOKEN", p.PlaceholderEnvVar)
+	if p.PlaceholderEnvVar != "" {
+		t.Errorf("resolved profile PlaceholderEnvVar = %q, want empty (live mount replaces credential seeding)", p.PlaceholderEnvVar)
 	}
 }
 

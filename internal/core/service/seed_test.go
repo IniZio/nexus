@@ -44,9 +44,9 @@ func (c *captureSeeder) fn() GuestSeeder {
 
 // TestBuildAgentSeedPayloadPerSandboxCredKind proves that two seed payloads
 // built in the same process with different explicit credential kinds produce
-// different placeholder env vars:
+// different results:
 //
-//   - kindOAuth      → CLAUDE_CODE_OAUTH_TOKEN=<placeholder>
+//   - kindOAuth      → CLAUDE_CODE_OAUTH_TOKEN absent (CredDirLiveMount); NODE_EXTRA_CA_CERTS present
 //   - kindAuthToken  → ANTHROPIC_AUTH_TOKEN=<placeholder>
 //
 // No KVM, no network. Pure unit test over buildAgentSeedPayload.
@@ -76,11 +76,17 @@ func TestBuildAgentSeedPayloadPerSandboxCredKind(t *testing.T) {
 	authPayload := string(authBytes)
 
 	// --- kindOAuth assertions ---
-	if !strings.Contains(oauthPayload, "CLAUDE_CODE_OAUTH_TOKEN="+placeholder) {
-		t.Errorf("kindOAuth payload missing CLAUDE_CODE_OAUTH_TOKEN=<placeholder>; got:\n%s", oauthPayload)
+	// CredDirLiveMount: CLAUDE_CODE_OAUTH_TOKEN must be ABSENT for kindOAuth.
+	// Credential delivered via live ~/.credentials.json mount, not a placeholder env var.
+	if strings.Contains(oauthPayload, "CLAUDE_CODE_OAUTH_TOKEN=") {
+		t.Errorf("kindOAuth payload must NOT contain CLAUDE_CODE_OAUTH_TOKEN (CredDirLiveMount); got:\n%s", oauthPayload)
 	}
 	if strings.Contains(oauthPayload, "ANTHROPIC_AUTH_TOKEN=") {
 		t.Errorf("kindOAuth payload must NOT contain ANTHROPIC_AUTH_TOKEN; got:\n%s", oauthPayload)
+	}
+	// Mutation guard: NODE_EXTRA_CA_CERTS is always written (CACertEnvVars path).
+	if !strings.Contains(oauthPayload, "NODE_EXTRA_CA_CERTS=") {
+		t.Errorf("kindOAuth payload missing NODE_EXTRA_CA_CERTS; got:\n%s", oauthPayload)
 	}
 
 	// --- kindAuthToken assertions ---

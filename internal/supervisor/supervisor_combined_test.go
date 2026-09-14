@@ -67,7 +67,8 @@ func combinedSandboxWithEnvSecret(id domain.SandboxID, envKey string) domain.San
 // TestSeedAgentAndHumanSecrets_ContainsAgentVars is the mutation guard for the
 // agent half inside seedAgentAndHumanSecrets:
 //
-//	Drop the SeedGuestAgentAndSecrets call → CLAUDE_CODE_OAUTH_TOKEN disappears → RED.
+//	Drop the SeedGuestAgentAndSecrets call → NODE_EXTRA_CA_CERTS disappears → RED.
+//	(ClaudeCodeProfile uses CredDirLiveMount; CLAUDE_CODE_OAUTH_TOKEN is no longer seeded.)
 func TestSeedAgentAndHumanSecrets_ContainsAgentVars(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "") // ensure kindOAuth path
 	t.Setenv("NEXUS3_TEST_SECRET_A1", "supervisor-secret-for-a1")
@@ -89,9 +90,16 @@ func TestSeedAgentAndHumanSecrets_ContainsAgentVars(t *testing.T) {
 
 	payload := credCap.combined()
 
-	// Agent half must be present.
-	if !bytes.Contains(payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
-		t.Errorf("combined supervisor payload missing CLAUDE_CODE_OAUTH_TOKEN (agent half absent)\npayload:\n%s", payload)
+	// CredDirLiveMount: CLAUDE_CODE_OAUTH_TOKEN is no longer seeded; guest reads
+	// the real token from the live-mounted ~/.credentials.json.
+	// The agent half being present is evidenced by NODE_EXTRA_CA_CERTS (written
+	// by buildAgentSeedPayload from CACertEnvVars) and
+	// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC (from GuestEnv).
+	if bytes.Contains(payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must NOT be seeded for CredDirLiveMount profile\npayload:\n%s", payload)
+	}
+	if !bytes.Contains(payload, []byte("NODE_EXTRA_CA_CERTS=")) {
+		t.Errorf("combined supervisor payload missing NODE_EXTRA_CA_CERTS (agent half absent — MUTATION GUARD)\npayload:\n%s", payload)
 	}
 }
 

@@ -96,12 +96,18 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 		return runAuthLoginImport(importFn, from, *force, dest, out)
 	}
 
-	// ── no --agent: preserve legacy claude-code behavior exactly ─────────────
+	// ── no --agent: claude-code now uses live virtiofs mount ─────────────────
 	//
-	// Operators and scripts depend on this path; its dest, import logic, and
-	// --force guard must remain byte-identical to the pre-flag implementation.
+	// The operator's ~/.claude is mounted RW into every claude-code sandbox.
+	// No credential seeding is needed; guest Claude self-refreshes from the
+	// mounted .credentials.json.
 	if *agentName == "" {
-		return oauthImport(cred.ClaudeCodeProfile)
+		fmt.Fprintf(out.Stdout(), "nexus3 auth login for claude-code is no longer needed.\n\n"+
+			"Credentials are now managed via a live virtiofs mount of the host's\n"+
+			"~/.claude directory into every claude-code sandbox.\n\n"+
+			"To authenticate on the host, run:\n    claude login\n\n"+
+			"The sandbox will pick up the credentials automatically on its next create.\n")
+		return nil
 	}
 
 	// ── profile-driven: resolve profile, then dispatch ────────────────────────
@@ -118,6 +124,15 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 	// verify-and-report route.  This generalises across all OAuth/rotating-chain
 	// formats, not just CredentialFormatNone, so a second OAuth agent with a
 	// distinct format constant is automatically handled correctly.
+	if profile.Capabilities.CredDirLiveMount {
+		fmt.Fprintf(out.Stdout(), "nexus3 auth login for %s is no longer needed.\n\n"+
+			"Credentials are now managed via a live virtiofs mount of the host's\n"+
+			"~/.claude directory into every %s sandbox.\n\n"+
+			"To authenticate on the host, run:\n    claude login\n\n"+
+			"The sandbox will pick up the credentials automatically on its next create.\n",
+			profile.Name, profile.Name)
+		return nil
+	}
 	if _, _, hasImport := cred.OAuthImportReg(profile); hasImport {
 		return oauthImport(profile)
 	}

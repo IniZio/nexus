@@ -329,19 +329,6 @@ func RunReacquire(cfg Config) error {
 	svc = svc.WithBroker(broker)
 
 	var refreshers []*cred.Refresher
-	if cfg.CredsFile != "" {
-		for _, host := range service.AgentEgressHosts(cred.ClaudeCodeProfile) {
-			r, rErr := cred.NewRefresher(cfg.CredsFile, host, broker)
-			if errors.Is(rErr, cred.ErrStoreAbsent) {
-				break // same file for all hosts; no point trying others
-			}
-			if rErr != nil {
-				slog.Warn("supervisor.reacquire.refresher_init_failed", "host", host, "err", rErr)
-				continue
-			}
-			refreshers = append(refreshers, r)
-		}
-	}
 
 	// ── Re-acquire the perimeter from the surviving netns child ───────────
 	res, err := ReacquirePerimeterForSandbox(ctx, sb, drv)

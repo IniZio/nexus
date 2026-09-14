@@ -399,17 +399,19 @@ func TestAssembleCuratedConfig_BypassConsentPreservesLowerLayerKeys(t *testing.T
 		t.Fatalf("staged settings.json is not valid JSON: %v\nraw: %s", err, data)
 	}
 
-	// All three keys must coexist in the lower layer so the overlay presents
-	// them together without any upper-layer shadow write.
-	for _, key := range []string{"enabledPlugins", "extraKnownMarketplaces", "skipDangerousModePermissionPrompt"} {
+	// The plugin keys must survive filtering — they are allowlisted portable keys.
+	for _, key := range []string{"enabledPlugins", "extraKnownMarketplaces"} {
 		if _, ok := staged[key]; !ok {
-			t.Errorf("staged lower settings.json missing key %q (overlayfs regression: would be absent in effective guest settings.json)", key)
+			t.Errorf("staged lower settings.json missing key %q (portable key must survive AssembleCuratedConfig)", key)
 		}
 	}
-	// The bypass key must be true.
-	var bypass bool
-	if err := json.Unmarshal(staged["skipDangerousModePermissionPrompt"], &bypass); err != nil || !bypass {
-		t.Errorf("skipDangerousModePermissionPrompt is not true in staged settings.json; got raw: %s", staged["skipDangerousModePermissionPrompt"])
+	// BypassConsentKey="" for CredDirLiveMount profiles: the bypass key must NOT
+	// be injected. Claude runs with --dangerously-skip-permissions at launch time
+	// instead (auto-permission mode), so no settings key is needed.
+	// Mutation guard: if BypassConsentKey is re-set or ensureStagedBypassConsentKey
+	// is called unconditionally, this assertion fails RED.
+	if _, ok := staged["skipDangerousModePermissionPrompt"]; ok {
+		t.Errorf("skipDangerousModePermissionPrompt must NOT be injected for a CredDirLiveMount profile (BypassConsentKey is empty)")
 	}
 }
 
@@ -426,16 +428,26 @@ func TestAssembleCuratedConfig_BypassConsentPresentWhenNoHostSettings(t *testing
 		t.Fatalf("AssembleCuratedConfig: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(destDir, "settings.json"))
-	if err != nil {
-		t.Fatalf("settings.json not present in lower layer even with no host settings.json: %v", err)
+	// With BypassConsentKey="" (CredDirLiveMount profile), AssembleCuratedConfig
+	// must NOT create a settings.json just to inject bypass consent.
+	// Mutation guard: if ensureStagedBypassConsentKey is called unconditionally,
+	// the file is created and contains skipDangerousModePermissionPrompt, failing the
+	// assertion below.
+	settingsPath := filepath.Join(destDir, "settings.json")
+	data, readErr := os.ReadFile(settingsPath)
+	if os.IsNotExist(readErr) {
+		// No settings.json written — correct: nothing to inject and no source file.
+		return
+	}
+	if readErr != nil {
+		t.Fatalf("read settings.json: %v", readErr)
 	}
 	var staged map[string]json.RawMessage
 	if err := json.Unmarshal(data, &staged); err != nil {
 		t.Fatalf("staged settings.json is not valid JSON: %v", err)
 	}
-	if _, ok := staged["skipDangerousModePermissionPrompt"]; !ok {
-		t.Error("skipDangerousModePermissionPrompt missing when host has no settings.json")
+	if _, ok := staged["skipDangerousModePermissionPrompt"]; ok {
+		t.Error("skipDangerousModePermissionPrompt must not be injected for a live-mount profile (BypassConsentKey is empty)")
 	}
 }
 

@@ -300,10 +300,13 @@ func TestBuildCredFileSeedPayload_UsesProfileKey(t *testing.T) {
 	}
 }
 
-// TestClaudeCodeEnvVarSeedingUnchanged proves that the Claude Code env-var
-// seeding path is completely unaffected by the file-seeding extension.
-// This is intentionally a re-statement of the pre-existing behaviour to
-// satisfy the "Claude Code's env-var seeding is unchanged" AC.
+// TestClaudeCodeEnvVarSeedingUnchanged proves that the Claude Code seeding
+// path (CredDirLiveMount) does NOT emit CLAUDE_CODE_OAUTH_TOKEN and does NOT
+// disturb the file-seeding extension for other agents.
+//
+// CLAUDE_CODE_OAUTH_TOKEN is absent because ClaudeCodeProfile.PlaceholderEnvVar=""
+// (CredDirLiveMount — credential via live ~/.credentials.json mount).
+// NODE_EXTRA_CA_CERTS IS present (CACertEnvVars is still written).
 func TestClaudeCodeEnvVarSeedingUnchanged(t *testing.T) {
 	t.Parallel()
 	const placeholder = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
@@ -317,8 +320,13 @@ func TestClaudeCodeEnvVarSeedingUnchanged(t *testing.T) {
 		t.Fatalf("buildAgentSeedPayload(claude-code, kindOAuth): %v", err)
 	}
 	payload := string(got)
-	if !strings.Contains(payload, "CLAUDE_CODE_OAUTH_TOKEN="+placeholder) {
-		t.Errorf("Claude Code env payload missing CLAUDE_CODE_OAUTH_TOKEN=<placeholder>; got:\n%s", payload)
+	// CredDirLiveMount: CLAUDE_CODE_OAUTH_TOKEN must be ABSENT.
+	if strings.Contains(payload, "CLAUDE_CODE_OAUTH_TOKEN=") {
+		t.Errorf("Claude Code env payload must NOT contain CLAUDE_CODE_OAUTH_TOKEN (CredDirLiveMount); got:\n%s", payload)
+	}
+	// Mutation guard: NODE_EXTRA_CA_CERTS is present (CACertEnvVars still written).
+	if !strings.Contains(payload, "NODE_EXTRA_CA_CERTS=") {
+		t.Errorf("Claude Code env payload missing NODE_EXTRA_CA_CERTS; got:\n%s", payload)
 	}
 	// Cursor's env var must never appear in a Claude Code seed.
 	if strings.Contains(payload, "CURSOR_API_KEY=") {

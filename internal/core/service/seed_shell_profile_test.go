@@ -98,13 +98,14 @@ func TestSeedGuestShellProfile_CarriesNoCredential(t *testing.T) {
 		if strings.HasPrefix(line, "#") || line == "" {
 			continue
 		}
-		// Permitted '=' lines: shell conditionals, and the IS_SANDBOX marker.
-		// IS_SANDBOX=1 is a non-secret environment marker, not a credential.
+		// Permitted '=' lines: shell conditionals, IS_SANDBOX marker, and
+		// GIT_SSH_COMMAND (a tool path, not a credential).
 		if strings.Contains(line, "=") &&
 			!strings.HasPrefix(line, "if ") &&
-			!strings.HasPrefix(line, "export IS_SANDBOX=") {
+			!strings.HasPrefix(line, "export IS_SANDBOX=") &&
+			!strings.HasPrefix(line, "export GIT_SSH_COMMAND=") {
 			t.Errorf("drop-in payload assigns a value inline: %q\n"+
-				"it must only source %s or export the IS_SANDBOX marker, never carry a credential itself", line, GuestCredEnvPath)
+				"it must only source %s, export IS_SANDBOX, or export GIT_SSH_COMMAND, never carry a credential itself", line, GuestCredEnvPath)
 		}
 	}
 	if !strings.Contains(string(captured), GuestCredEnvPath) {
@@ -201,31 +202,6 @@ func runProfileCmd(t *testing.T, profile, dir, argsFile, shellCmd string) ([]byt
 		"STUB_ARGS_FILE="+argsFile,
 	)
 	return cmd.CombinedOutput()
-}
-
-// TestSeedGuestShellProfile_ClaudeFunctionAddsFlag verifies that calling
-// "claude some-task" through the shell function adds --dangerously-skip-permissions.
-//
-// Mutation guard: remove the "command claude --dangerously-skip-permissions" branch
-// from the function → fails RED.
-func TestSeedGuestShellProfile_ClaudeFunctionAddsFlag(t *testing.T) {
-	dir := t.TempDir()
-	profile := buildProfileForTest(t, dir)
-	argsFile := filepath.Join(dir, "args")
-	_ = stubClaude(t, dir) // records argv to $STUB_ARGS_FILE
-
-	out, err := runProfileCmd(t, profile, dir, argsFile, "claude some-task")
-	if err != nil {
-		t.Fatalf("claude via shell function failed: %v\noutput: %s", err, out)
-	}
-	args, _ := os.ReadFile(argsFile)
-	argStr := string(args)
-	if !strings.Contains(argStr, "--dangerously-skip-permissions") {
-		t.Errorf("claude function did not add --dangerously-skip-permissions; stub saw args:\n%s", argStr)
-	}
-	if !strings.Contains(argStr, "some-task") {
-		t.Errorf("claude function dropped the user's arguments; stub saw args:\n%s", argStr)
-	}
 }
 
 // TestSeedGuestShellProfile_ClaudeFunctionNoDoubleFlag verifies that the

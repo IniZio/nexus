@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -204,6 +205,24 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 				}
 			}
 		}(r)
+	}
+
+	// Arm the cred guardian for any sandbox that has a live rw ~/. claude mount.
+	// Multiple supervisors running concurrently all arm their own guardian goroutine;
+	// the guardian serialises concurrent refreshes via flock(2) on a sidecar lock file.
+	for _, lm := range cfg.LiveMounts {
+		if lm.GuestPath == "/root/.claude" && !lm.ReadOnly {
+			home, homeErr := os.UserHomeDir()
+			if homeErr == nil {
+				credsPath := filepath.Join(home, ".claude", ".credentials.json")
+				g := cred.NewCredGuardian(credsPath)
+				go g.Guard(ctx)
+				slog.Info(in.logPrefix+".cred_guardian_armed", "path", credsPath)
+			} else {
+				slog.Warn(in.logPrefix+".cred_guardian_arm_failed", "err", homeErr)
+			}
+			break
+		}
 	}
 
 	// NOTE: unlike RunDetached, neither adoption path re-seeds the guest agent

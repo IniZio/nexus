@@ -13,8 +13,9 @@ import (
 // TestSeedGuestAgent_ClaudeVarsPresentRealTokenAbsent is the primary invariant
 // test for the agent egress seeding path. It verifies:
 //
-//  1. CLAUDE_CODE_OAUTH_TOKEN is present in the payload and equals the
-//     placeholder minted for api.anthropic.com.
+//  1. CLAUDE_CODE_OAUTH_TOKEN is ABSENT — ClaudeCodeProfile uses CredDirLiveMount;
+//     the credential is delivered via a live ~/.credentials.json virtiofs mount,
+//     not a placeholder env var.
 //  2. NODE_EXTRA_CA_CERTS is present and equals GuestCACertPath.
 //  3. CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 is present.
 //  4. The real token (registered via SetRealToken AFTER seeding) is NOT present
@@ -54,10 +55,13 @@ func TestSeedGuestAgent_ClaudeVarsPresentRealTokenAbsent(t *testing.T) {
 
 	payload := cap.payload
 
-	// Invariant 1: CLAUDE_CODE_OAUTH_TOKEN = placeholder for api.anthropic.com.
-	want1 := "CLAUDE_CODE_OAUTH_TOKEN=" + anthropicPlaceholder
-	if !bytes.Contains(payload, []byte(want1)) {
-		t.Errorf("payload missing %q\npayload:\n%s", want1, payload)
+	// Invariant 1 (CredDirLiveMount): CLAUDE_CODE_OAUTH_TOKEN must be ABSENT.
+	// ClaudeCodeProfile.PlaceholderEnvVar="" — the credential reaches the guest
+	// via a live ~/.credentials.json virtiofs mount, not a placeholder env var.
+	// Mutation guard: if PlaceholderEnvVar is re-added, this assertion fails RED.
+	_ = anthropicPlaceholder // placeholder is still minted (MITM proxy needs it); just not in env
+	if bytes.Contains(payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
+		t.Errorf("payload must NOT contain CLAUDE_CODE_OAUTH_TOKEN (CredDirLiveMount profile)\npayload:\n%s", payload)
 	}
 
 	// Invariant 2: NODE_EXTRA_CA_CERTS points at the MITM CA cert path.
@@ -284,8 +288,13 @@ func TestCreateAndBoot_AgentSeed_RealTokenAbsentFromPayload(t *testing.T) {
 	if bytes.Contains(cap.payload, []byte(realToken)) {
 		t.Errorf("cred.env payload delivered to guest must NOT contain real token\npayload:\n%s", cap.payload)
 	}
-	// The payload must contain CLAUDE_CODE_OAUTH_TOKEN (with placeholder, not real token).
-	if !bytes.Contains(cap.payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
-		t.Errorf("cred.env payload missing CLAUDE_CODE_OAUTH_TOKEN\npayload:\n%s", cap.payload)
+	// CredDirLiveMount: payload must NOT contain CLAUDE_CODE_OAUTH_TOKEN.
+	if bytes.Contains(cap.payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
+		t.Errorf("cred.env payload must NOT contain CLAUDE_CODE_OAUTH_TOKEN (CredDirLiveMount profile)\npayload:\n%s", cap.payload)
+	}
+	// Mutation guard: NODE_EXTRA_CA_CERTS is present — proves the agent seeding
+	// path executed (CACertEnvVars are always written regardless of CredDirLiveMount).
+	if !bytes.Contains(cap.payload, []byte("NODE_EXTRA_CA_CERTS=")) {
+		t.Errorf("cred.env payload missing NODE_EXTRA_CA_CERTS (agent seeding path must still write CA cert env)\npayload:\n%s", cap.payload)
 	}
 }

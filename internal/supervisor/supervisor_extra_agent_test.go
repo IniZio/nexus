@@ -138,8 +138,14 @@ func TestSeedAgentAndHumanSecrets_ExtraAgentPresent(t *testing.T) {
 	}
 
 	combined := cap.combined()
-	if !bytes.Contains(combined, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
-		t.Errorf("primary CLAUDE_CODE_OAUTH_TOKEN absent from combined payload\n%s", combined)
+	// CredDirLiveMount: ClaudeCodeProfile no longer seeds CLAUDE_CODE_OAUTH_TOKEN;
+	// guest reads the real token from the live-mounted ~/.credentials.json.
+	if bytes.Contains(combined, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must NOT be seeded for CredDirLiveMount profile (live mount replaces credential brokering)\n%s", combined)
+	}
+	// NODE_EXTRA_CA_CERTS must still be present so the MITM proxy CA is trusted.
+	if !bytes.Contains(combined, []byte("NODE_EXTRA_CA_CERTS=")) {
+		t.Errorf("NODE_EXTRA_CA_CERTS absent from combined payload (MUTATION: CA cert env must still be seeded for MITM proxy trust)\n%s", combined)
 	}
 	if !bytes.Contains(combined, []byte("CURSOR_AUTH_TOKEN=")) {
 		t.Errorf("extra CURSOR_AUTH_TOKEN absent from combined payload (MUTATION S3: extraProfiles not forwarded)\n%s", combined)

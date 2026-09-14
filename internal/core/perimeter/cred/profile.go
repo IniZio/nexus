@@ -24,6 +24,7 @@ const (
 
 type AgentCapabilities struct {
 	GuestNoSelfRefresh bool
+	CredDirLiveMount   bool
 }
 
 type AgentProfile struct {
@@ -104,9 +105,8 @@ func (p AgentProfile) Recipe() ToolRecipe {
 }
 
 var ClaudeCodeProfile = AgentProfile{
-	Name:              ClaudeCodeProfileName,
-	PlaceholderEnvVar: "CLAUDE_CODE_OAUTH_TOKEN",
-	CredentialedHost:  "api.anthropic.com",
+	Name:             ClaudeCodeProfileName,
+	CredentialedHost: "api.anthropic.com",
 	EgressHosts:  []string{"api.anthropic.com", "platform.claude.com"},
 	APIKeyEnvVar: "ANTHROPIC_AUTH_TOKEN",
 	CACertEnvVars: []string{"NODE_EXTRA_CA_CERTS"},
@@ -114,7 +114,8 @@ var ClaudeCodeProfile = AgentProfile{
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
 	},
 	Capabilities: AgentCapabilities{
-		GuestNoSelfRefresh: true,
+		GuestNoSelfRefresh: false,
+		CredDirLiveMount:   true,
 	},
 	SettingsPath:    "~/.claude/settings.json",
 	CredDirEnvVar:   "CLAUDE_CONFIG_DIR",
@@ -142,7 +143,6 @@ var ClaudeCodeProfile = AgentProfile{
 		"enableWorkflows":        true,
 		"skipDangerousModePermissionPrompt": true,
 	},
-	BypassConsentKey: "skipDangerousModePermissionPrompt",
 	ToolRecipe: ToolRecipe{
 		BinPath: "/usr/local/bin/claude",
 		Packages: []RecipePackage{

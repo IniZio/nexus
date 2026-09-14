@@ -492,6 +492,17 @@ func RunDetached(cfg Config) error {
 		return fmt.Errorf("supervisor: mkdir state dir %s: %w", cfg.StateDir, err)
 	}
 
+	// Detect a live rw /root/.claude virtiofs mount — present on claude-code
+	// sandboxes that use the live-mount cred design. Used to skip the overlayfs
+	// setup and to arm the cred guardian instead of the Refresher loop.
+	hasClaudeRWMount := false
+	for _, lm := range cfg.LiveMounts {
+		if lm.GuestPath == "/root/.claude" && !lm.ReadOnly {
+			hasClaudeRWMount = true
+			break
+		}
+	}
+
 	// ── 1. Open sandbox store ─────────────────────────────────────────────────
 	st, err := store.NewFileStore(cfg.StoreRoot)
 	if err != nil {
@@ -534,31 +545,19 @@ func RunDetached(cfg Config) error {
 	broker := cred.NewBroker()
 	svc = svc.WithBroker(broker)
 
-	// Build Refresher-backed credential sources for the agent egress hosts
-	// (api.anthropic.com, platform.claude.com). Each Refresher loads the
-	// dedicated OAuth credential store; it maintains a live access token via
-	// lockedToken + oauthRefreshBase under a cross-process flock, and pushes the
-	// real token into broker via broker.SetRealToken whenever the access token
-	// rotates.
-	//
-	// Graceful degradation: if the creds file is absent or unreadable the broker
-	// starts with no real tokens and the perimeter still enforces network ACLs;
-	// HTTPS auth headers will carry the placeholder (bearer will be invalid)
-	// until the operator provisions the credential store.
 	var refreshers []*cred.Refresher
-	if cfg.CredsFile != "" {
-		for _, host := range service.AgentEgressHosts(cred.ClaudeCodeProfile) {
-			r, rErr := cred.NewRefresher(cfg.CredsFile, host, broker)
-			if errors.Is(rErr, cred.ErrStoreAbsent) {
-				slog.Info("supervisor.creds_absent", "path", cfg.CredsFile)
-				break // same file for all hosts; no point trying others
-			}
-			if rErr != nil {
-				slog.Warn("supervisor.refresher_init_failed", "host", host, "err", rErr)
-				continue
-			}
-			refreshers = append(refreshers, r)
-			slog.Info("supervisor.refresher_ready", "host", host, "path", cfg.CredsFile)
+	// Arm the cred guardian for any sandbox with a live rw /root/.claude mount.
+	// The guardian proactively refreshes ~/.claude/.credentials.json before expiry
+	// and serialises concurrent refreshes via flock(2) on a sidecar lock file.
+	if hasClaudeRWMount {
+		home, homeErr := os.UserHomeDir()
+		if homeErr == nil {
+			credsPath := filepath.Join(home, ".claude", ".credentials.json")
+			g := cred.NewCredGuardian(credsPath)
+			go g.Guard(ctx)
+			slog.Info("supervisor.cred_guardian_armed", "path", credsPath)
+		} else {
+			slog.Warn("supervisor.cred_guardian_arm_failed", "err", homeErr)
 		}
 	}
 
@@ -908,7 +907,8 @@ func RunDetached(cfg Config) error {
 			// IsHumanGitVM: true for human git-VM sandboxes (no agent). Enables
 			// the SSH→HTTPS remote rewrite in probeAndSeedGuest so "git push"
 			// routes through the MITM proxy on this boot and every restart.
-			IsHumanGitVM: sb.AgentName == "",
+			IsHumanGitVM:     sb.AgentName == "",
+			HasClaudeRWMount: hasClaudeRWMount,
 		}
 		if checkErr := probeAndSeedGuest(ctx, agentClient, seedInputs); checkErr != nil {
 			slog.Error("supervisor.guest_agent_unreachable",
@@ -1280,11 +1280,6 @@ var seedShellProfileFn = service.SeedGuestShellProfile
 // tests replace it with a spy to verify the call without a live VM (D-J10).
 var seedAgentOnboardingFn = service.SeedGuestAgentOnboarding
 
-// seedBypassConsentFn is the function called by probeAndSeedGuest to seed the
-// bypass-permissions consent state into ~/.claude/settings.json. Default is
-// service.SeedGuestBypassConsent; tests replace it with a spy (D-J12 mutation guard).
-var seedBypassConsentFn = service.SeedGuestBypassConsent
-
 // seedUserMountsFn is the function called by probeAndSeedGuest to apply the
 // operator tool-dir overlay mounts and home symlink inside the guest. Default
 // is service.SeedGuestUserMounts; tests replace it with a spy.
@@ -1460,6 +1455,10 @@ type guestSeedInputs struct {
 	// workspace from SSH form to HTTPS form so that "git push" routes through
 	// the MITM proxy, which intercepts HTTPS traffic only.
 	IsHumanGitVM bool
+	// HasClaudeRWMount is true when the sandbox has a live rw virtiofs mount at
+	// /root/.claude. When true, the overlayfs mount via seedOverlayClaudeConfigFn
+	// is skipped — the live mount is the direct source, no overlay needed.
+	HasClaudeRWMount bool
 }
 
 // probeAndSeedGuest runs the liveness probe (D-J14), login-shell credential
@@ -1483,10 +1482,9 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 
 	// A-MOUNT overlay setup (FIRST seed step). Establishes a writable overlayfs
 	// on /root/.claude before any other seed writes so that seedAgentOnboarding
-	// and seedBypassConsent land in the tmpfs upper layer. Without this ordering
-	// those seeds would either fail (writing to the RO lower) or be lost on
-	// sandbox exit.
-	if in.AgentCfgLowerGuestPath != "" {
+	// writes land in the upper layer. Skipped when HasClaudeRWMount is true —
+	// the live virtiofs mount IS the effective /root/.claude; no overlay needed.
+	if in.AgentCfgLowerGuestPath != "" && !in.HasClaudeRWMount {
 		ovlErr := seedOverlayClaudeConfigFn(ctx, id, in.AgentCfgLowerGuestPath, in.Execer)
 		switch {
 		case ovlErr == nil:
@@ -1566,33 +1564,6 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 		}
 	}
 
-	// Bypass-permissions consent seed (D-J12). skipDangerousModePermissionPrompt
-	// must reach ~/.claude/settings.json so the shell-function `claude` (which
-	// always adds --dangerously-skip-permissions) does not stall on the consent
-	// wizard. Two paths:
-	//
-	//  • Sharing ON (AgentCfgLowerGuestPath != ""): AssembleCuratedConfig already
-	//    injected the key into the staged lower settings.json, which the overlay
-	//    presents as the effective file. Writing an upper-layer file here would
-	//    shadow the ENTIRE lower settings.json, silently dropping enabledPlugins
-	//    and extraKnownMarketplaces (overlayfs is file-granular, not key-granular).
-	//    Skip the upper write; the lower layer is sufficient.
-	//
-	//  • Sharing OFF (AgentCfgLowerGuestPath == ""): no lower settings.json
-	//    exists, so the upper write is the only source of the key and is required.
-	if in.AgentCfgLowerGuestPath == "" {
-		if bypassErr := seedBypassConsentFn(ctx, id, in.Execer); bypassErr != nil {
-			slog.Warn("supervisor.bypass_consent_seed_failed",
-				"sandbox", id, "err", bypassErr,
-				"action", "guest claude will stop on bypass-permissions consent dialog")
-		} else {
-			slog.Info("supervisor.bypass_consent_seeded", "sandbox", id)
-		}
-	} else {
-		slog.Info("supervisor.bypass_consent_in_lower_layer",
-			"sandbox", id, "lower", in.AgentCfgLowerGuestPath,
-			"action", "skipDangerousModePermissionPrompt carried in staged settings.json; no upper write needed")
-	}
 	// Guest gitconfig (D-PD-29 + safe.directory). Seeded here, unconditionally,
 	// rather than on the human-secrets branch it used to live on.
 	//

@@ -104,67 +104,6 @@ func TestProbeAndSeedGuest_AgentOnboardingIsInvoked(t *testing.T) {
 	}
 }
 
-// TestProbeAndSeedGuest_BypassConsentIsSeeded is the mutation guard for the
-// seedBypassConsentFn call inside probeAndSeedGuest (D-J12). The call is
-// conditional on AgentCfgLowerGuestPath being empty (sharing OFF). When sharing
-// is ON, the bypass key is already in the staged lower settings.json and an
-// upper-layer write would shadow the entire file, dropping enabledPlugins.
-//
-// Mutation guards:
-//
-//	Delete the seedBypassConsentFn call → sharing-OFF sub-test fails RED.
-//	Keep calling it unconditionally → sharing-ON sub-test fails RED (upper shadows lower).
-func TestProbeAndSeedGuest_BypassConsentIsSeeded(t *testing.T) {
-	t.Run("sharing_off_calls_bypass_seed", func(t *testing.T) {
-		called := false
-		old := seedBypassConsentFn
-		seedBypassConsentFn = func(_ context.Context, _ domain.SandboxID, _ service.GuestExecer) error {
-			called = true
-			return nil
-		}
-		t.Cleanup(func() { seedBypassConsentFn = old })
-
-		// AgentCfgLowerGuestPath == "" → sharing OFF → seedBypassConsentFn must be called.
-		err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{})
-		if err != nil {
-			t.Fatalf("probeAndSeedGuest: %v", err)
-		}
-		if !called {
-			t.Fatal("seedBypassConsentFn was not called when sharing is OFF — bypass consent will be missing (D-J12 mutation guard)")
-		}
-	})
-
-	t.Run("sharing_on_skips_bypass_seed", func(t *testing.T) {
-		called := false
-		old := seedBypassConsentFn
-		seedBypassConsentFn = func(_ context.Context, _ domain.SandboxID, _ service.GuestExecer) error {
-			called = true
-			return nil
-		}
-		t.Cleanup(func() { seedBypassConsentFn = old })
-
-		// Stub seedOverlayClaudeConfigFn so the test doesn't need a live VM.
-		oldOvl := seedOverlayClaudeConfigFn
-		seedOverlayClaudeConfigFn = func(_ context.Context, _ domain.SandboxID, _ string, _ service.GuestExecer) error {
-			return nil
-		}
-		t.Cleanup(func() { seedOverlayClaudeConfigFn = oldOvl })
-
-		// AgentCfgLowerGuestPath != "" → sharing ON → bypass key is in the lower
-		// layer; seedBypassConsentFn must NOT be called (upper write would shadow
-		// the entire lower settings.json, dropping enabledPlugins).
-		err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{
-			AgentCfgLowerGuestPath: "/run/nexus3/agentcfg-lower",
-		})
-		if err != nil {
-			t.Fatalf("probeAndSeedGuest: %v", err)
-		}
-		if called {
-			t.Fatal("seedBypassConsentFn was called when sharing is ON — upper write would shadow lower settings.json, dropping enabledPlugins (overlayfs file-granular regression)")
-		}
-	})
-}
-
 // TestProbeAndSeedGuest_GitIdentitySeededForAnySourcePaths is the mutation
 // guard for the seedGitIdentityFn call inside probeAndSeedGuest.
 //
@@ -333,6 +272,36 @@ func TestProbeAndSeedGuest_NoUserMountsWhenAbsent(t *testing.T) {
 	}
 	if called {
 		t.Error("seedUserMountsFn was called for a sandbox with no user mounts manifest")
+	}
+}
+
+// TestProbeAndSeedGuest_OverlaySkippedWithLiveRWMount is the mutation guard for
+// the HasClaudeRWMount check in probeAndSeedGuest (D-1):
+//
+//	Remove the !in.HasClaudeRWMount guard on seedOverlayClaudeConfigFn → this test fails RED.
+//
+// When the sandbox has a live rw /root/.claude mount, the overlayfs mount must
+// NOT be triggered — the live mount IS the effective /root/.claude.
+func TestProbeAndSeedGuest_OverlaySkippedWithLiveRWMount(t *testing.T) {
+	overlayCalled := false
+	oldOvl := seedOverlayClaudeConfigFn
+	seedOverlayClaudeConfigFn = func(_ context.Context, _ domain.SandboxID, _ string, _ service.GuestExecer) error {
+		overlayCalled = true
+		return nil
+	}
+	t.Cleanup(func() { seedOverlayClaudeConfigFn = oldOvl })
+
+	// HasClaudeRWMount=true and AgentCfgLowerGuestPath set → overlay must be skipped.
+	err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{
+		AgentCfgLowerGuestPath: "/run/nexus3/agentcfg-lower",
+		HasClaudeRWMount:       true,
+	})
+	if err != nil {
+		t.Fatalf("probeAndSeedGuest: %v", err)
+	}
+	if overlayCalled {
+		t.Fatal("seedOverlayClaudeConfigFn was called when HasClaudeRWMount=true — " +
+			"overlay must be skipped when a live rw /root/.claude mount is present (D-1 mutation guard)")
 	}
 }
 

@@ -736,7 +736,11 @@ func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind,
 	// through SeedGuestCredFile, not through an env var. Allow credEnvVar to be
 	// empty when a CredentialFile is declared; only reject agents that have
 	// neither (which would be seeded with no credential at all).
-	if credEnvVar == "" && profile.CredentialFile == "" {
+	// CredDirLiveMount profiles (e.g. ClaudeCodeProfile) use the mounted
+	// ~/.credentials.json directly — no placeholder env var is needed.
+	// CACertEnvVars and GuestEnv are still written so the MITM proxy CA is
+	// trusted by Node.js (for MCP OAuth hosts).
+	if credEnvVar == "" && profile.CredentialFile == "" && !profile.Capabilities.CredDirLiveMount {
 		return nil, fmt.Errorf("agent %q declares no credential env var for the selected path", profile.Name)
 	}
 
@@ -921,25 +925,15 @@ func SeedGuestCredFile(
 const GuestShellProfilePath = "/etc/profile.d/nexus3-cred.sh"
 
 // guestShellProfileScript sources GuestCredEnvPath into every login shell,
-// exports IS_SANDBOX=1, and defines a `claude` shell function that adds
-// --dangerously-skip-permissions automatically.
+// exports IS_SANDBOX=1, and sets GIT_SSH_COMMAND to the nexus3-agent shim.
 //
-// IS_SANDBOX=1 — claude refuses --dangerously-skip-permissions when running as
-// root (the standard in-guest user) unless this variable is set. Exporting it
-// here in the profile means every login shell and its children see it, so
-// `claude` in the guest always works without per-invocation boilerplate.
+// IS_SANDBOX=1 — claude requires this variable when running as root (the
+// standard in-guest user). Exporting it here in the profile means every login
+// shell and its children see it, so `claude` in the guest always works without
+// per-invocation boilerplate.
 //
-// The `claude` function — wraps the claude binary and adds the flag unless the
-// caller already passed it. Idempotent: the case-match on `$*` detects the
-// flag with surrounding spaces so substrings are not falsely matched. The flag
-// is appended only when absent; a double occurrence is never emitted.
-// Deliberately bypassable: `command claude` skips shell functions and reaches
-// the raw binary without the flag, which is how the non-autonomous path
-// (claudeReadyMatch "? for shortcuts") remains meaningful.
-//
-// IS_SANDBOX and the claude function are safe on sandboxes where the operator
-// never intends to start an agent: IS_SANDBOX is a read-only marker and the
-// claude function is inert until `claude` is typed.
+// GIT_SSH_COMMAND — routes git SSH operations through the nexus3-agent shim so
+// they can use brokered credentials without a forwarded SSH agent.
 //
 // The existence guard for GuestCredEnvPath matters: it lives on tmpfs and is
 // absent on a sandbox with no MITM proxy. A drop-in that errored there would
@@ -948,7 +942,7 @@ const GuestShellProfilePath = "/etc/profile.d/nexus3-cred.sh"
 // `return` outside a function is not portable.
 //
 // The script is POSIX sh — no bashisms; the guest may run dash.
-const guestShellProfileScript = `# nexus3: credential, sandbox marker, and agent wrapper for login shells.
+const guestShellProfileScript = `# nexus3: credential and sandbox marker for login shells.
 # Written by SeedGuestShellProfile; do not edit.
 if [ -r ` + GuestCredEnvPath + ` ]; then
     set -a
@@ -956,23 +950,11 @@ if [ -r ` + GuestCredEnvPath + ` ]; then
     set +a
 fi
 
-# Mark this as a sandbox environment. Required by claude alongside
-# --dangerously-skip-permissions when running as root.
+# Mark this as a sandbox environment. Required by claude when running as root.
 export IS_SANDBOX=1
 
-# claude(): add --dangerously-skip-permissions automatically.
-# The flag is only added when absent, so callers that already pass it are
-# unaffected (no double-flag). Use "command claude" to bypass this wrapper.
-claude() {
-    case " $* " in
-        *" --dangerously-skip-permissions "*)
-            command claude "$@"
-            ;;
-        *)
-            command claude --dangerously-skip-permissions "$@"
-            ;;
-    esac
-}
+# Wire the SSH shim for git operations.
+export GIT_SSH_COMMAND='/usr/local/bin/nexus3-agent git-ssh'
 `
 
 // SeedGuestShellProfile writes the login-shell drop-in that sources the
@@ -1126,54 +1108,6 @@ func SeedGuestAgentOnboarding(ctx context.Context, id domain.SandboxID, projectD
 	}
 	if code != 0 {
 		return fmt.Errorf("seed guest agent onboarding: script exited %d", code)
-	}
-	return nil
-}
-
-// GuestBypassConsentScript writes skipDangerousModePermissionPrompt:true into
-// the guest's ~/.claude/settings.json, reading the JSON payload from stdin.
-//
-// The payload is built host-side (pure Go, no in-guest toolchain) and piped in
-// via stdin. This replaces the previous node-based implementation that exited
-// 127 because node is absent from the guest image PATH (claude 2.1.x is a
-// native ELF binary, not a Node.js program).
-//
-// The write uses an atomic temp-file rename. The upper layer of the /root/.claude
-// overlayfs (fresh tmpfs per boot) starts empty, so there is no prior
-// settings.json to merge at seed time; writing the required key is sufficient.
-// The lower-layer (host-curated) settings.json is shadowed for the session but
-// is never modified on disk.
-//
-// Idempotent within a session: re-running overwrites to the same value.
-const GuestBypassConsentScript = `set -e
-mkdir -p /root/.claude
-dst=/root/.claude/settings.json
-tmp="${dst}.nexus3.tmp.$$"
-cat > "$tmp"
-mv "$tmp" "$dst"
-`
-
-// SeedGuestBypassConsent writes skipDangerousModePermissionPrompt:true into
-// the guest's ~/.claude/settings.json so that a `claude` invocation (via the
-// shell function added by SeedGuestShellProfile) does not block on the
-// bypass-permissions consent wizard.
-//
-// This is seeded at boot alongside the onboarding seed so the wizard is
-// pre-answered for any shell session, not only for sessions that go through
-// space-agent.
-//
-// If execer is nil this is a no-op, matching SeedGuestShellProfile.
-func SeedGuestBypassConsent(ctx context.Context, id domain.SandboxID, execer GuestExecer) error {
-	if execer == nil {
-		return nil
-	}
-	payload := []byte(`{"skipDangerousModePermissionPrompt":true}`)
-	code, err := execer(ctx, id, []string{"/bin/sh", "-c", GuestBypassConsentScript}, bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("seed guest bypass consent: exec script: %w", err)
-	}
-	if code != 0 {
-		return fmt.Errorf("seed guest bypass consent: script exited %d", code)
 	}
 	return nil
 }

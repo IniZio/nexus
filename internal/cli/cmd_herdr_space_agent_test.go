@@ -284,10 +284,11 @@ func TestClaudeReadyMatch_IsModeSpecific(t *testing.T) {
 			"readiness token; both returned %q", autonomous)
 	}
 
-	// Verbatim footers captured from a live guest pane, claude v2.1.226.
+	// Verbatim footers captured from a live guest pane.
+	// autonomousFooter updated for T5 (--permission-mode auto replaces bypass).
 	const (
 		normalFooter     = " ⏸ manual mode on · ? for shortcuts · ← for agents"
-		autonomousFooter = " ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+		autonomousFooter = "⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
 	)
 	if !strings.Contains(normalFooter, normal) {
 		t.Errorf("default-mode token %q does not appear in the default-mode footer %q", normal, normalFooter)
