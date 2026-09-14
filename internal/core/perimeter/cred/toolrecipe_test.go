@@ -1,21 +1,10 @@
 package cred
 
-// Tests for ToolRecipe (AC-1 and AC-3).
-//
-// AC-1: every registered profile declares a ToolRecipe; a missing one fails
-// a registry-driven test (not a hand-listed pair of names).
-//
-// AC-3: a recipe with an empty Version is rejected by Validate.
-
 import (
 	"errors"
 	"testing"
 )
 
-// TestRegisteredProfiles_HaveToolRecipe iterates ProfileNames() — the same
-// set the registry owns — and asserts every profile carries a non-empty
-// ToolRecipe. This test will fail automatically when a new profile is added
-// to the registry without a recipe, before any consumer code ships (AC-1).
 func TestRegisteredProfiles_HaveToolRecipe(t *testing.T) {
 	for _, name := range ProfileNames() {
 		p, ok := ProfileByName(name)
@@ -34,10 +23,6 @@ func TestRegisteredProfiles_HaveToolRecipe(t *testing.T) {
 	}
 }
 
-// TestToolRecipeValidate_RejectsEmptyVersion proves that a recipe carrying a
-// package with an empty Version is refused before any build can start (AC-3).
-// The test supplies a hand-crafted recipe with one valid and one zero-Version
-// package; Validate must return a non-nil error citing the zero-Version package.
 func TestToolRecipeValidate_RejectsEmptyVersion(t *testing.T) {
 	recipe := ToolRecipe{
 		BinPath: "/usr/local/bin/test-agent",
@@ -45,7 +30,7 @@ func TestToolRecipeValidate_RejectsEmptyVersion(t *testing.T) {
 			{
 				Kind:    RecipeKindNPM,
 				Name:    "@example/cli",
-				Version: "", // empty — must be rejected
+				Version: "",
 			},
 		},
 	}
@@ -53,7 +38,6 @@ func TestToolRecipeValidate_RejectsEmptyVersion(t *testing.T) {
 	if err == nil {
 		t.Fatal("ToolRecipe.Validate() returned nil for a recipe with an empty Version; want a non-nil error (AC-3)")
 	}
-	// The error must name the field that failed.
 	var rve *RecipeValidationError
 	if ok := asRecipeValidationError(err, &rve); !ok {
 		t.Fatalf("Validate() returned %T (%v); want *RecipeValidationError", err, err)
@@ -66,8 +50,6 @@ func TestToolRecipeValidate_RejectsEmptyVersion(t *testing.T) {
 	}
 }
 
-// TestToolRecipeValidate_AcceptsPopulatedRecipe ensures Validate passes for a
-// well-formed recipe so the validation logic does not over-reject.
 func TestToolRecipeValidate_AcceptsPopulatedRecipe(t *testing.T) {
 	recipe := ToolRecipe{
 		BinPath: "/usr/local/bin/example",
@@ -84,26 +66,22 @@ func TestToolRecipeValidate_AcceptsPopulatedRecipe(t *testing.T) {
 	}
 }
 
-// TestToolRecipeValidate_RejectsEmptyName ensures a package with an empty Name
-// is also rejected.
 func TestToolRecipeValidate_RejectsEmptyName(t *testing.T) {
 	recipe := ToolRecipe{
 		BinPath: "/usr/local/bin/x",
 		Packages: []RecipePackage{
 			{
 				Kind:    RecipeKindTarball,
-				Name:    "", // empty — must be rejected
+				Name:    "",
 				Version: "1.0.0",
 			},
 		},
 	}
 	if err := recipe.Validate(); err == nil {
-		t.Fatal("Validate() returned nil for a recipe with an empty Name; want non-nil error")
+		t.Fatal("Validate() returned nil for a recipe with an empty Name; want a non-nil error")
 	}
 }
 
-// TestToolRecipeValidate_SecondPackageEmptyVersion checks that Validate catches
-// an empty Version in a non-first package, and that PackageIndex is correct.
 func TestToolRecipeValidate_SecondPackageEmptyVersion(t *testing.T) {
 	recipe := ToolRecipe{
 		BinPath: "/usr/local/bin/x",
@@ -125,14 +103,49 @@ func TestToolRecipeValidate_SecondPackageEmptyVersion(t *testing.T) {
 	}
 }
 
-// asRecipeValidationError unwraps err into target using errors.As.
 func asRecipeValidationError(err error, target **RecipeValidationError) bool {
 	return errors.As(err, target)
 }
 
-// TestClaudeCodeProfile_ToolRecipeSymmetry and TestCursorAgentProfile_ToolRecipeSymmetry
-// pin the key structural properties of each profile's recipe as regression guards.
-// They do NOT encode branching logic — they are ordinary property checks on the data.
+func TestToolRecipeValidate_AcceptsFloatingVersionForNPM(t *testing.T) {
+	recipe := ToolRecipe{
+		BinPath:  "/usr/local/bin/x",
+		Packages: []RecipePackage{{Kind: RecipeKindNPM, Name: "@example/cli", Version: FloatingVersion}},
+	}
+	if err := recipe.Validate(); err != nil {
+		t.Fatalf("Validate() error for FloatingVersion on npm package: %v", err)
+	}
+}
+
+func TestToolRecipeValidate_RejectsFloatingVersionForTarball(t *testing.T) {
+	recipe := ToolRecipe{
+		BinPath:  "/usr/local/bin/x",
+		Packages: []RecipePackage{{Kind: RecipeKindTarball, Name: "node", Version: FloatingVersion}},
+	}
+	err := recipe.Validate()
+	if err == nil {
+		t.Fatal("Validate() returned nil for FloatingVersion on tarball package; want non-nil error")
+	}
+	var rve *RecipeValidationError
+	if !errors.As(err, &rve) {
+		t.Fatalf("error is %T, want *RecipeValidationError", err)
+	}
+	if rve.Field != "Version" {
+		t.Errorf("RecipeValidationError.Field = %q; want \"Version\"", rve.Field)
+	}
+}
+
+func TestRecipePackage_IsFloating(t *testing.T) {
+	if p := (RecipePackage{Version: FloatingVersion}); !p.IsFloating() {
+		t.Error("IsFloating() = false for FloatingVersion; want true")
+	}
+	if p := (RecipePackage{Version: "1.2.3"}); p.IsFloating() {
+		t.Error("IsFloating() = true for concrete version; want false")
+	}
+	if p := (RecipePackage{Version: ""}); p.IsFloating() {
+		t.Error("IsFloating() = true for empty version; want false")
+	}
+}
 
 func TestClaudeCodeProfile_ToolRecipeShape(t *testing.T) {
 	r := ClaudeCodeProfile.ToolRecipe
@@ -142,7 +155,6 @@ func TestClaudeCodeProfile_ToolRecipeShape(t *testing.T) {
 	if len(r.Packages) != 2 {
 		t.Fatalf("ClaudeCodeProfile.ToolRecipe.Packages has %d entries; want 2 (Node tarball + npm)", len(r.Packages))
 	}
-	// First package: Node.js tarball (runtime prerequisite).
 	node := r.Packages[0]
 	if node.Kind != RecipeKindTarball {
 		t.Errorf("Packages[0].Kind = %q; want %q", node.Kind, RecipeKindTarball)
@@ -151,40 +163,30 @@ func TestClaudeCodeProfile_ToolRecipeShape(t *testing.T) {
 	if node.Version != wantNodeVersion {
 		t.Errorf("Packages[0] (node) Version = %q; want %q (exact pin required — non-emptiness does not guard against typos)", node.Version, wantNodeVersion)
 	}
-	// Verified 2026-09-05: HTTP 200 from nodejs.org/dist/v22.23.2/ confirms the
-	// file exists; the URL shape is the canonical nodejs.org distribution pattern.
 	const wantNodeURLTemplate = "https://nodejs.org/dist/v{VERSION}/node-v{VERSION}-linux-{ARCH}.tar.gz"
 	if node.URLTemplate != wantNodeURLTemplate {
 		t.Errorf("Packages[0] (node) URLTemplate = %q; want %q (exact pin required — a wrong platform or path segment fails only at image-build time)", node.URLTemplate, wantNodeURLTemplate)
 	}
-	// InstallDir is load-bearing: --strip-components=1 into /usr/local places
-	// node and npm at /usr/local/bin/{node,npm,npx}; a wrong dir breaks the
-	// subsequent npm install -g step. Confirmed by baseimage_agent.go line 347:
-	//   tar -C /usr/local -xzf ... --strip-components=1
+	// --strip-components=1 into /usr/local; wrong dir breaks npm install -g.
 	const wantNodeInstallDir = "/usr/local"
 	if node.InstallDir != wantNodeInstallDir {
 		t.Errorf("Packages[0] (node) InstallDir = %q; want %q (exact pin required — wrong dir breaks npm install -g)", node.InstallDir, wantNodeInstallDir)
 	}
-	// Source: https://nodejs.org/dist/v22.23.2/SHASUMS256.txt
 	const wantNodeX64SHA = "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a"
 	if node.SHA256ByArch["x64"] != wantNodeX64SHA {
 		t.Errorf("Packages[0] (node) SHA256ByArch[x64] = %q; want %q (exact pin required)", node.SHA256ByArch["x64"], wantNodeX64SHA)
 	}
-	// Second package: claude-code npm package.
 	npm := r.Packages[1]
 	if npm.Kind != RecipeKindNPM {
 		t.Errorf("Packages[1].Kind = %q; want %q", npm.Kind, RecipeKindNPM)
 	}
-	// Verified 2026-09-05: registry.npmjs.org/@anthropic-ai/claude-code/2.1.226
-	// returns name = "@anthropic-ai/claude-code". A rename would install the wrong
-	// package silently; pin the exact string so that cannot pass.
 	const wantClaudeCodeName = "@anthropic-ai/claude-code"
 	if npm.Name != wantClaudeCodeName {
 		t.Errorf("Packages[1] (claude-code) Name = %q; want %q (exact pin required — non-emptiness does not guard against renames)", npm.Name, wantClaudeCodeName)
 	}
-	const wantClaudeCodeVersion = "2.1.226"
-	if npm.Version != wantClaudeCodeVersion {
-		t.Errorf("Packages[1] (@anthropic-ai/claude-code) Version = %q; want %q (exact pin required)", npm.Version, wantClaudeCodeVersion)
+	// S4 changes this package to FloatingVersion; assert floating, not a pinned number.
+	if !npm.IsFloating() {
+		t.Errorf("Packages[1] (@anthropic-ai/claude-code) Version = %q; want FloatingVersion (%q) — the npm package must float so new sandboxes get the current release; a concrete pin here silently freezes every future sandbox", npm.Version, FloatingVersion)
 	}
 }
 

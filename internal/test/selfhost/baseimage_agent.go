@@ -1,40 +1,5 @@
 package selfhost
 
-// buildAgentBaseImage.go — agent base image build harness.
-//
-// Produces a nexus3-agent-base ext4 image: the self-hosting base image extended
-// with a Node.js 22 LTS runtime and the Claude Code CLI (@anthropic-ai/claude-code).
-//
-// # Node.js install choice
-//
-// Node.js is installed from the official nodejs.org tarball (v22.23.2 LTS),
-// not from Debian's apt repository (which ships 18.x in bookworm — too old;
-// @anthropic-ai/claude-code requires Node >=22.0.0) and not from the NodeSource
-// setup script (curl-piped installer is fragile in airgapped builds). The tarball
-// approach mirrors the existing Go-fetcher stage: download, sha256sum verify,
-// unpack to /usr/local. The sha256 is pinned as a constant.
-//
-// # Claude Code CLI
-//
-// @anthropic-ai/claude-code v2.1.226 is installed via "npm install -g" after
-// Node.js is available. The package is self-contained (zero runtime dependencies),
-// producing a single /usr/local/bin/claude entrypoint. Version pinned as a constant.
-//
-// # PATH materialisation
-//
-// docker export discards image config (ENV, CMD). The guest PATH is set by the
-// caller (typically "/usr/bin:/bin:/usr/sbin:/sbin") and does NOT include
-// /usr/local/bin or /usr/local/go/bin. The Containerfile creates /usr/bin
-// symlinks for node, claude, gh, go, and gofmt. It also writes /etc/environment
-// and /etc/profile.d/nexus3-go.sh so that nexus3-agent's readEtcEnvironment()
-// and login shells both pick up GOPATH, GOMODCACHE, and PATH.
-//
-// # Image size
-//
-// The self-hosting base is ~5 GiB. Node.js 22 adds ~250 MB to the rootfs; the
-// claude-code bundle is ~200 KB. agentImageSizeBytes is set to 6 GiB to leave
-// ~750 MiB of headroom for ext4 metadata and future growth.
-
 import (
 	"context"
 	"crypto/sha256"
@@ -53,74 +18,23 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
-// NodeVersion, nodeSHA256AMD64, and ClaudeCodeVersion are sourced from
-// cred.ClaudeCodeProfile.ToolRecipe so that the agent base image and the
-// recipe layer always install the same Node.js and claude-code builds.
-// They are package-level vars (not consts) because profile fields are vars.
+// Version vars sourced from cred.ClaudeCodeProfile.ToolRecipe so agent image and recipe layer install the same builds.
 var (
-	// NodeVersion is the Node.js LTS release baked into the agent base image.
-	// Single source of truth: cred.ClaudeCodeProfile.ToolRecipe.Packages[0].Version.
-	NodeVersion = cred.ClaudeCodeProfile.ToolRecipe.Packages[0].Version
-
-	// nodeSHA256AMD64 is the SHA-256 of the Node.js linux/x64 tarball.
-	// Single source of truth: cred.ClaudeCodeProfile.ToolRecipe.Packages[0].SHA256ByArch["x64"].
-	nodeSHA256AMD64 = cred.ClaudeCodeProfile.ToolRecipe.Packages[0].SHA256ByArch["x64"]
-
-	// ClaudeCodeVersion is the pinned @anthropic-ai/claude-code release.
-	// Single source of truth: cred.ClaudeCodeProfile.ToolRecipe.Packages[1].Version.
+	NodeVersion       = cred.ClaudeCodeProfile.ToolRecipe.Packages[0].Version
+	nodeSHA256AMD64   = cred.ClaudeCodeProfile.ToolRecipe.Packages[0].SHA256ByArch["x64"]
 	ClaudeCodeVersion = cred.ClaudeCodeProfile.ToolRecipe.Packages[1].Version
 )
 
 const (
-	// GHVersion is the pinned GitHub CLI (gh) release baked into the agent base image.
-	// gh is NOT in Debian bookworm's default apt repos; installed from the upstream
-	// Linux tarball following the same pattern as GoVersion/NodeVersion.
-	// Verified available at https://github.com/cli/cli/releases on 2026-08-21.
 	GHVersion = "2.98.0"
-
-	// ghSHA256AMD64 is the SHA-256 of gh_2.98.0_linux_amd64.tar.gz.
-	// Source: https://github.com/cli/cli/releases/download/v2.98.0/gh_2.98.0_checksums.txt
-	// (published by cli/cli as part of the v2.98.0 release on 2026-08-20).
-	ghSHA256AMD64 = "3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de"
-
-	// agentRef is the human-readable tag stamped on the produced Image.
-	agentRef = "nexus3-agent-base"
-
-	// agentDockerTag is the docker image tag used during the build.
-	agentDockerTag = "nexus3-agent-base:integration-test"
-
-	// agentImageSizeBytes is the pre-allocated sparse file size passed to mke2fs.
-	// 6 GiB = 5 GiB self-host base + ~1 GiB headroom for Node.js (~250 MB) +
-	// claude-code (~200 KB npm bundle) + gh binary (~45 MB) + ext4 metadata + future growth.
-	// curl (libcurl4 ~2 MB) is also included. Total additions remain well under the
-	// ~750 MiB headroom; agentImageSizeBytes does not need to be bumped.
+	// ghSHA256AMD64 source: https://github.com/cli/cli/releases/download/v2.98.0/gh_2.98.0_checksums.txt
+	ghSHA256AMD64       = "3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de"
+	agentRef            = "nexus3-agent-base"
+	agentDockerTag      = "nexus3-agent-base:integration-test"
 	agentImageSizeBytes = int64(6 * 1024 * 1024 * 1024)
 )
 
-// BuildAgentBaseImage produces the nexus3 agent base ext4 image and stores it
-// in cache keyed by SHA-256 digest.
-//
-// The image extends the self-hosting base with:
-//   - Node.js 22 LTS (from nodejs.org tarball, sha256-verified)
-//   - @anthropic-ai/claude-code CLI installed globally as 'claude'
-//
-// All other self-host image contents (Go toolchain, git, ca-certs, seeded module
-// cache, nexus3-agent as /sbin/nexus3-agent) are preserved unchanged.
-//
-// Prerequisite checks:
-//   - docker in PATH (returns [ErrDockerUnavailable] if absent)
-//   - mke2fs in PATH (returns [builder.ErrMke2fsUnavailable] if absent)
-//
-// Build steps:
-//  1. Compile cmd/nexus3-agent CGO_ENABLED=0 GOOS=linux GOARCH=amd64.
-//  2. docker build: go-fetcher + node-fetcher + mod-seeder + final stages.
-//     Final stage installs claude globally and symlinks node+claude into /usr/bin.
-//  3. docker create → docker export → extract tar → rootfs tree.
-//  4. mke2fs -d <rootfs> with deterministic flags → raw ext4 (6 GiB).
-//  5. SHA-256 hash → cache.Put → return domain.Image.
 func BuildAgentBaseImage(ctx context.Context, cache *image.Cache) (domain.Image, error) {
-	// ── Prerequisite checks ───────────────────────────────────────────────────
-
 	if _, err := exec.LookPath("docker"); err != nil {
 		return domain.Image{}, ErrDockerUnavailable
 	}
@@ -128,14 +42,10 @@ func BuildAgentBaseImage(ctx context.Context, cache *image.Cache) (domain.Image,
 		return domain.Image{}, builder.ErrMke2fsUnavailable
 	}
 
-	// ── Locate repo root ──────────────────────────────────────────────────────
-
 	repoRoot, err := findRepoRoot()
 	if err != nil {
 		return domain.Image{}, fmt.Errorf("agent-image: find repo root: %w", err)
 	}
-
-	// ── Working directory ─────────────────────────────────────────────────────
 
 	workDir, err := os.MkdirTemp("", "nexus3-agent-image-build-*")
 	if err != nil {
@@ -143,53 +53,39 @@ func BuildAgentBaseImage(ctx context.Context, cache *image.Cache) (domain.Image,
 	}
 	defer os.RemoveAll(workDir)
 
-	// ── Step 1: build nexus3-agent static binary ──────────────────────────────
-
 	agentBin := filepath.Join(workDir, "nexus3-agent")
 	if err := buildAgent(ctx, repoRoot, agentBin); err != nil {
 		return domain.Image{}, fmt.Errorf("agent-image: build agent: %w", err)
 	}
-
-	// ── Step 2: set up docker build context ───────────────────────────────────
 
 	ctxDir := filepath.Join(workDir, "ctx")
 	if err := os.MkdirAll(ctxDir, 0o755); err != nil {
 		return domain.Image{}, fmt.Errorf("agent-image: mkdir ctx: %w", err)
 	}
 
-	// Agent binary
 	if err := copyFile(agentBin, filepath.Join(ctxDir, "nexus3-agent"), 0o755); err != nil {
 		return domain.Image{}, fmt.Errorf("agent-image: copy agent to ctx: %w", err)
 	}
 
-	// go.mod + go.sum for in-Docker module cache seeding
 	for _, f := range []string{"go.mod", "go.sum"} {
 		if err := copyFile(filepath.Join(repoRoot, f), filepath.Join(ctxDir, f), 0o644); err != nil {
 			return domain.Image{}, fmt.Errorf("agent-image: copy %s: %w", f, err)
 		}
 	}
 
-	// third_party/gvisor-tap-vsock: required by the local replace directive in
-	// go.mod so that "go mod download all" inside the container does not fail.
+	// third_party/gvisor-tap-vsock required by go.mod replace directive so "go mod download all" does not fail in-container.
 	thirdPartySrc := filepath.Join(repoRoot, "third_party", "gvisor-tap-vsock")
 	thirdPartyDst := filepath.Join(ctxDir, "third_party", "gvisor-tap-vsock")
 	if err := copyDir(thirdPartySrc, thirdPartyDst); err != nil {
 		return domain.Image{}, fmt.Errorf("agent-image: copy third_party/gvisor-tap-vsock: %w", err)
 	}
 
-	// Source tree: internal/, cmd/, pkg/, third_party/ — required for in-guest
-	// go build/test.  third_party/ is included so that go.mod replace directives
-	// (e.g. ./third_party/gvisor-tap-vsock) resolve correctly at /workspace.
-	// Copied after the explicit third_party copy above so the loop's copyDir
-	// is idempotent (the destination may already exist from the gvisor copy).
-	// Only dirs that actually exist are added; the Containerfile is generated from
-	// the same list so COPY directives never reference an absent context dir.
 	var srcDirs []string
 	for _, srcDir := range []string{"internal", "cmd", "pkg", "third_party"} {
 		src := filepath.Join(repoRoot, srcDir)
 		dst := filepath.Join(ctxDir, srcDir)
 		if _, err := os.Stat(src); os.IsNotExist(err) {
-			continue // skip absent dirs (e.g. pkg may not exist yet)
+			continue
 		}
 		if err := copyDir(src, dst); err != nil {
 			return domain.Image{}, fmt.Errorf("agent-image: copy %s: %w", srcDir, err)
@@ -197,27 +93,22 @@ func BuildAgentBaseImage(ctx context.Context, cache *image.Cache) (domain.Image,
 		srcDirs = append(srcDirs, srcDir)
 	}
 
-	// Containerfile (generated)
 	cf := generateAgentContainerfile(GoVersion, goSHA256AMD64, srcDirs)
 	if err := os.WriteFile(filepath.Join(ctxDir, "Containerfile"), []byte(cf), 0o644); err != nil {
 		return domain.Image{}, fmt.Errorf("agent-image: write Containerfile: %w", err)
 	}
-
-	// ── Step 3: docker build ──────────────────────────────────────────────────
 
 	buildCmd := exec.CommandContext(ctx, "docker", "build",
 		"-f", filepath.Join(ctxDir, "Containerfile"),
 		"-t", agentDockerTag,
 		ctxDir,
 	)
-	buildCmd.Stdout = os.Stderr // progress visible in test output
+	buildCmd.Stdout = os.Stderr
 	buildCmd.Stderr = os.Stderr
 	if err := buildCmd.Run(); err != nil {
 		return domain.Image{}, fmt.Errorf("agent-image: docker build: %w", err)
 	}
 	defer func() { _ = exec.Command("docker", "rmi", "--force", agentDockerTag).Run() }()
-
-	// ── Step 4: docker export → rootfs tree ───────────────────────────────────
 
 	rootfsDir := filepath.Join(workDir, "rootfs")
 	if err := os.MkdirAll(rootfsDir, 0o755); err != nil {
@@ -227,14 +118,10 @@ func BuildAgentBaseImage(ctx context.Context, cache *image.Cache) (domain.Image,
 		return domain.Image{}, fmt.Errorf("agent-image: export rootfs: %w", err)
 	}
 
-	// ── Step 5: mke2fs → raw ext4 ────────────────────────────────────────────
-
 	ext4Path := filepath.Join(workDir, "rootfs.ext4")
 	if err := runMke2fs(ctx, rootfsDir, ext4Path, agentImageSizeBytes); err != nil {
 		return domain.Image{}, fmt.Errorf("agent-image: mke2fs: %w", err)
 	}
-
-	// ── Step 6: hash and store in cache ──────────────────────────────────────
 
 	img, err := hashAndStoreAgent(ctx, cache, ext4Path)
 	if err != nil {
@@ -243,9 +130,6 @@ func BuildAgentBaseImage(ctx context.Context, cache *image.Cache) (domain.Image,
 	return img, nil
 }
 
-// hashAndStoreAgent hashes the ext4 file at ext4Path, constructs a domain.Image
-// tagged with agentRef, and stores it in cache via cache.Put.
-// It mirrors [hashAndStore] in baseimage.go but uses agentRef as the image Ref.
 func hashAndStoreAgent(ctx context.Context, cache *image.Cache, ext4Path string) (domain.Image, error) {
 	f, err := os.Open(ext4Path)
 	if err != nil {
@@ -285,28 +169,7 @@ func hashAndStoreAgent(ctx context.Context, cache *image.Cache, ext4Path string)
 	return img, nil
 }
 
-// generateAgentContainerfile produces the multi-stage Containerfile for the
-// agent base image. It extends the self-hosting Containerfile with two
-// additional concerns:
-//
-//  1. A node-fetcher stage that downloads and sha256-verifies the Node.js 22
-//     LTS tarball from nodejs.org (mirrors the go-fetcher pattern; avoids the
-//     NodeSource curl-pipe installer and Debian's 18.x apt package).
-//  2. In the final stage: copy Node.js from node-fetcher, install
-//     @anthropic-ai/claude-code globally via npm, and materialize /usr/bin/node
-//     and /usr/bin/claude symlinks so they are reachable on the standard guest
-//     PATH ("/usr/bin:/bin:/usr/sbin:/sbin") without /usr/local/bin.
-//
-// Stages:
-//  1. go-fetcher: debian:bookworm-slim + download + verify + unpack Go tarball.
-//  2. node-fetcher: debian:bookworm-slim + download + verify + unpack Node tarball.
-//  3. gh-fetcher: debian:bookworm-slim + download + verify + extract gh binary.
-//  4. mod-seeder: go-fetcher + go mod download all to seed /usr/local/gopath/pkg/mod.
-//  5. final: debian:bookworm-slim + Go + Node + gh + seeded module cache +
-//     npm install -g claude-code + /usr/bin symlinks + nexus3-agent as /sbin/nexus3-agent.
 func generateAgentContainerfile(goVer, goSHA256 string, srcDirs []string) string {
-	// Build the source-tree COPY block from the dirs that were actually populated
-	// in the build context; avoids referencing absent dirs that would fail docker build.
 	var srcCopyLines []string
 	for _, d := range srcDirs {
 		srcCopyLines = append(srcCopyLines, fmt.Sprintf("COPY %s/ ./%s/", d, d))
@@ -475,21 +338,24 @@ RUN printf '%%s=%%s\n' \
 COPY nexus3-agent /sbin/nexus3-agent
 RUN chmod 0755 /sbin/nexus3-agent
 `,
-		// Comment substitutions (positional, match fmt.Sprintf %s order):
-		goVer,             // Go %s in comment line
-		NodeVersion,       // Node.js %s in comment line
-		ClaudeCodeVersion, // claude-code %s in comment line
-		GHVersion,         // gh %s in comment line
-		goVer,             // curl URL go%s.linux-amd64.tar.gz
-		goSHA256,          // echo "%s  /tmp/go.tar.gz"
-		NodeVersion,       // curl URL dist/v%s/
-		NodeVersion,       // curl URL node-v%s-linux-x64.tar.gz
-		nodeSHA256AMD64,   // echo "%s  /tmp/node.tar.gz"
-		GHVersion,         // gh-fetcher curl URL releases/download/v%s/
-		GHVersion,         // gh-fetcher curl URL gh_%s_linux_amd64.tar.gz
-		ghSHA256AMD64,     // gh-fetcher echo "%s  /tmp/gh.tar.gz"
-		GHVersion,         // gh-fetcher tar --strip-components=2 "gh_%s_linux_amd64/bin/gh"
-		srcCopyBlock,      // source-tree COPY lines (only dirs present in context)
-		ClaudeCodeVersion, // npm install -g @anthropic-ai/claude-code@%s
+		// Positional, and the template has no named verbs: reorder these and the
+		// image builds with a checksum matched against the wrong tarball. Order:
+		// header go/node/claude/gh; go url+sha; node url x2 + sha; gh url x2 +
+		// sha + tar path; src COPY block; claude npm version.
+		goVer,
+		NodeVersion,
+		ClaudeCodeVersion,
+		GHVersion,
+		goVer,
+		goSHA256,
+		NodeVersion,
+		NodeVersion,
+		nodeSHA256AMD64,
+		GHVersion,
+		GHVersion,
+		ghSHA256AMD64,
+		GHVersion,
+		srcCopyBlock,
+		ClaudeCodeVersion,
 	)
 }
