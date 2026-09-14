@@ -335,7 +335,7 @@ func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
 	// --- 9. ORCHESTRATOR VIEW: the pane still matches the claude ready footer. ---
 	//
 	// After the agent responded to the operator and returned to its prompt,
-	// claude's ready footer ("shift+tab to cycle" for autonomous mode) should
+	// claude's ready footer ("auto mode on" for autonomous mode) should
 	// be visible. A dead agent would not produce this. This confirms that the
 	// agent's UI is intact and the orchestrator could continue driving it.
 	footerMatch := claudeReadyMatch(true /* autonomous */)

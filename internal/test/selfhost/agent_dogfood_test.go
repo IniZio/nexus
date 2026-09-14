@@ -352,7 +352,7 @@ echo "=== PREFLIGHT_DONE ==="
 	// ── 10. Run claude in-guest (Haiku only) ─────────────────────────────────
 	// Model: ANTHROPIC_MODEL env var + --model flag (belt and suspenders).
 	// If the model ID is rejected, the test fails — do not fall back.
-	// Note: --dangerously-skip-permissions is rejected when running as root.
+	// Note: guest claude runs with --permission-mode auto via IS_SANDBOX=1.
 	//
 	// HTTPS routing: transparent SNI shim (buildDialer in perimeter/supervisor.go)
 	// routes port-443 TCP from the guest through the MITM proxy on the host.

@@ -54,7 +54,7 @@ A fresh guest has no `~/.claude.json`, so `claude` blocks on the workspace-trust
 }
 ```
 
-Running `claude --dangerously-skip-permissions` as root (the guest default user) additionally requires `IS_SANDBOX=1`, and still shows a one-time interactive consent prompt that must be accepted before the agent starts.
+Running `claude --permission-mode auto` as root (the guest default user) additionally requires `IS_SANDBOX=1`.
 
 ---
 
@@ -84,7 +84,7 @@ It starts the sandbox, creates or reuses its herdr space, opens the guest pane, 
 
 The sandbox must have source mounted. `herdr agent` refuses one that does not, because an agent with nothing to work on looks identical to a healthy agent.
 
-`--autonomous` adds `--dangerously-skip-permissions` so the agent acts without asking approval per tool call. It is off by default and always asked, never assumed: the flag's safety argument is entirely that the blast radius is a disposable microVM, so it is only sound when the operator knows what they mounted. A sandbox with a real working tree mounted read-write is not a disposable blast radius.
+`--autonomous` launches the agent in auto permission mode (`--permission-mode auto`) so it acts without asking approval per tool call. It is off by default and always asked, never assumed.
 
 ---
 
@@ -95,7 +95,7 @@ The sandbox must have source mounted. `herdr agent` refuses one that does not, b
 Three traps, each of which produces something that looks like a working agent:
 
 - **`herdr pane run` is wrong for a TUI.** It sends the text and Enter in one call. Against a shell that is fine; against claude the text lands in the input box and *sits there unsubmitted*. Send the text, pause, then send `Enter` separately.
-- **There is no single "agent is ready" token.** The footer differs by permission mode — `? for shortcuts` in the default mode, `shift+tab to cycle` under `--dangerously-skip-permissions`. Match the one for the mode you launched. Do **not** match the prompt glyph `❯`: it is also every wizard's selector glyph, so it reports ready mid-dialog.
+- **There is no single "agent is ready" token.** The footer differs by permission mode — `? for shortcuts` in the default mode, `auto mode on` under `--permission-mode auto`. Match the one for the mode you launched. Do **not** match the prompt glyph `❯`: it is also every wizard's selector glyph, so it reports ready mid-dialog.
 - **`send-keys` key names**: `ctrl+c` and `C-c` work; `ctrl-c` and `^C` are rejected as invalid.
 
 ---
@@ -109,10 +109,6 @@ A guest claude walks up to **four** wizards before reaching its prompt. nexus3 s
 | theme picker | `~/.claude.json` | `theme` |
 | login method | `~/.claude.json` | `hasCompletedOnboarding` |
 | folder trust | `~/.claude.json` | `projects[<dir>].hasTrustDialogAccepted` |
-| bypass-permissions consent | `~/.claude/settings.json` | `skipDangerousModePermissionPrompt` |
-
-The fourth lives in a **different file** and appears only with `--dangerously-skip-permissions`.
-
 The login wizard is the deceptive one: it appears when onboarding is incomplete *even though the credential is present and correct*. Reaching "Select login method" is not evidence of a credential problem. Check `bash -lc 'env | grep CLAUDE_CODE_OAUTH_TOKEN'` in the guest before concluding anything about credentials.
 
 ---

@@ -2744,15 +2744,15 @@ func sealEnv(env []string) []string {
 // (claude v2.1.226):
 //
 //	⏸ manual mode on · ? for shortcuts · ← for agents
-//	⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+//	⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 //
 // The token is selected by mode rather than searched for, because the caller
 // already knows which mode it launched. Three shorter tokens are all wrong,
 // and each one cost a live run to find out:
 //
 //   - "? for shortcuts" holds only in the default mode; under
-//     --dangerously-skip-permissions the footer replaces it, so the wait
-//     times out against an agent that is already at its prompt.
+//     --permission-mode auto the footer is replaced by "auto mode on", so
+//     the wait times out against an agent that is already at its prompt.
 //   - "for agents" appeared in both footers at first, but the "← for agents"
 //     affordance comes and goes with pane state — it was observed absent from
 //     a ready pane moments after being present in the same one.
@@ -2761,7 +2761,7 @@ func sealEnv(env []string) []string {
 //     theme picker — precisely the failure this wait exists to prevent.
 func claudeReadyMatch(autonomous bool) string {
 	if autonomous {
-		return "shift+tab to cycle"
+		return "auto mode on"
 	}
 	return "? for shortcuts"
 }
@@ -2769,22 +2769,21 @@ func claudeReadyMatch(autonomous bool) string {
 // guestAgentLaunchCommand returns the shell command typed into the guest pane
 // to start the agent.
 //
-// autonomous == true  → "claude"          — the shell function (added by
+// autonomous == true  → "IS_SANDBOX=1 claude --permission-mode auto" — passes
 //
-//	SeedGuestShellProfile) supplies --dangerously-skip-permissions, and
-//	IS_SANDBOX=1 is exported by the same profile. The flag is correct for an
-//	autonomous slice agent whose blast radius is the sandbox.
+//	IS_SANDBOX=1 (required for root) and launches in auto permission mode so
+//	the agent acts without per-tool-call approval. claudeReadyMatch waits for
+//	"auto mode on" on this path.
 //
-// autonomous == false → "command claude"  — bypasses the shell function so
+// autonomous == false → "command claude"  — default permission mode; claude
 //
-//	--dangerously-skip-permissions is genuinely absent. claude opens in manual
-//	mode (footer: "? for shortcuts"), which is exactly what claudeReadyMatch
-//	waits for on the non-autonomous path.
+//	opens in manual mode (footer: "? for shortcuts"), which is exactly what
+//	claudeReadyMatch waits for on the non-autonomous path.
 //
 // The distinction matters because claudeReadyMatch selects its wait token by
 // the permission mode claude actually starts in, not by the flag spelling. A
-// function-bypassed `command claude` enters manual mode → "? for shortcuts".
-// The wrapped `claude` enters bypass mode → "shift+tab to cycle".
+// `command claude` enters manual mode → "? for shortcuts". With
+// --permission-mode auto, the footer shows "auto mode on".
 // guestAgentLaunchCommand returns the shell command typed into the guest pane
 // to start the agent.
 //
@@ -2803,16 +2802,15 @@ func claudeReadyMatch(autonomous bool) string {
 // immediate exit was never isolated, so this comment does not claim one; the
 // explicit flag is defence in depth, and the readiness wait is the fix.
 //
-// autonomous adds --dangerously-skip-permissions, which makes the agent act
-// without stopping to ask the operator to approve each tool call. IS_SANDBOX=1
-// is required alongside it: claude refuses the flag when running as root
-// (which the guest does) unless that variable marks the environment as
-// already-isolated. The non-autonomous branch uses `command claude` to bypass
-// the shell function, so the flag is genuinely absent rather than silently
-// re-added by the profile.
+// autonomous adds --permission-mode auto, which makes the agent act without
+// stopping to ask the operator to approve each tool call. IS_SANDBOX=1 is
+// required alongside it: claude refuses root execution unless that variable
+// marks the environment as already-isolated. The non-autonomous branch uses
+// `command claude` so --permission-mode is absent and claude starts in manual
+// mode.
 func guestAgentLaunchCommand(autonomous bool) string {
 	if autonomous {
-		return "IS_SANDBOX=1 claude --dangerously-skip-permissions"
+		return "IS_SANDBOX=1 claude --permission-mode auto"
 	}
 	return "command claude"
 }
@@ -3073,10 +3071,10 @@ var briefStrandedMarkers = []*regexp.Regexp{
 // working pane is confirmed on the first read instead of waiting out a repaint,
 // and for no other purpose.
 //
-// NOTE what is deliberately NOT here: "shift+tab to cycle" and "? for
-// shortcuts". Those are claudeReadyMatch's tokens — permission-mode footers
-// present BEFORE and AFTER submission alike. Matching on them is what made the
-// original dispatch report success on a stranded brief.
+// NOTE what is deliberately NOT here: "auto mode on" and "? for shortcuts".
+// Those are claudeReadyMatch's tokens — permission-mode footers present BEFORE
+// and AFTER submission alike. Matching on them is what made the original
+// dispatch report success on a stranded brief.
 var briefWorkingMarkers = []string{
 	"esc to interrupt",
 	"ctrl+b to run in background",
@@ -3347,10 +3345,8 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-agent: " + err.Error(), Err: err}
 	}
 
-	// 4. (Bypass-permissions consent is now seeded at boot by SeedGuestBypassConsent
-	//    in probeAndSeedGuest, alongside the onboarding and shell-profile seeds.
-	//    The shell-function `claude` always adds --dangerously-skip-permissions,
-	//    so pre-answering at boot is correct and no per-launch seed is needed.)
+	// 4. (No bypass-permissions consent step: guest claude launches in auto
+	//    permission mode via --permission-mode auto; no consent prompt appears.)
 
 	// 5. Wait for the guest shell itself before typing at it.
 	//

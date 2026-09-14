@@ -99,6 +99,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		Name: "delegate_agent_dispatch",
 		Description: "Deliver a task brief to the claude agent running inside a worktree sandbox " +
 			"via `nexus3 herdr space-agent --autonomous --no-focus`. " +
+			"The in-guest claude runs in auto permission mode (--permission-mode auto). " +
 			"Returns the dispatch log.",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args delegateAgentDispatchArgs) (*gosdk.CallToolResult, any, error) {
 		if args.Ref == "" {
