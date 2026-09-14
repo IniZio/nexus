@@ -70,15 +70,15 @@ key   = "sandbox/create"
 page  = "cli/sandbox-commands.md"   # same table, legacy sandbox-group spelling
 flags = ["--service"]
 
-[[target_only_flags]]
-key   = "auth/login"
-page  = "cli/auth-mcp-reap.md"      # §"nexus3 auth login": --agent not yet built
-flags = ["--agent"]
-
 # ── Partial flags (renamed / reworked in target) ─────────────────────────────
 # Each entry: { key, page, flags }
 # Code blocks using these flags require <Badge type="warning"> or
 # <Badge type="danger"> in the same heading-delimited section.
+
+[[partial_flags]]
+key   = "auth/login"
+page  = "cli/auth-mcp-reap.md"      # §"Other agent profiles": --agent partial (single profile today)
+flags = ["--agent"]
 
 [[partial_flags]]
 key   = "create"

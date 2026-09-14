@@ -88,6 +88,16 @@ Forward a host TCP port to a guest TCP port over vsock. Blocks until interrupted
 nexus3 forward <sandbox-ref> <hostPort>:<guestPort>
 ```
 
+### Auto port-forward (herdr ≥ 0.9) <Badge type="tip" text="built" />
+
+When running inside a herdr workspace with the nexus3 plugin version ≥ 0.9, guest TCP ports in the range 1024–11023 are **auto-discovered and forwarded** — no manual `nexus3 forward` needed.
+
+nexus3 polls `/proc/net/tcp` inside the sandbox on a short interval. When a new listener appears, nexus3 opens a supervised forward so the port is reachable at `127.0.0.1:<port>` on the nexus3 host and, for remote herdr clients, at `127.0.0.1:<port>` on the laptop (same port number both sides — the invariant is preserved to keep OAuth redirect URIs and Vite HMR WebSocket URLs working without reconfiguration).
+
+**Requirement:** herdr ≥ 0.9 on the remote client. nexus3 declares `min_herdr_version = "0.9.0"` and plugin ABI `"3"` in the herdr-plugin manifest. herdr versions below 0.9 fail the ABI probe at install time with a clear version message rather than silently skipping auto-forward.
+
+Port state is persisted under `~/.config/herdr/portfwd/` on the herdr host and appears in the workspace overlay. When the guest listener closes, the forward is cancelled and the port disappears from the overlay within the reconcile interval.
+
 ## nexus3 ssh
 
 Dial a sandbox's sshd over vsock. With `--stdio`, behaves as an SSH `ProxyCommand`, allowing standard `ssh` tooling to reach the sandbox.

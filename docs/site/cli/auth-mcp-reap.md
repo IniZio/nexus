@@ -9,32 +9,45 @@ description: "Reference for auth, mcp, reap, recover, and doctor commands"
 
 ## nexus3 auth login
 
-<Badge type="warning" text="partial" /> — today, only Claude Code credentials are supported; the `--agent` flag for selecting a provider profile is not yet built.
+Manage credentials for the coding agent running inside sandboxes.
 
-Authenticate your coding agent and persist a credential for in-guest use. Sandboxes host any coding agent — Claude Code, Codex, opencode, and others. Each agent has a provider profile: placeholder env vars, allowed egress hosts, and an optional OAuth refresh path. Credentials stay host-side; the MITM proxy swaps the placeholder for the real bearer on the wire.
+### Claude Code (default)
 
-**Target interface:**
+`nexus3 auth login` is **no longer needed for Claude Code**. claude-code sandboxes receive the host's `~/.claude` directory as a live read-write virtiofs mount. The guest uses the host's real `.credentials.json` and refreshes its own token without any host-side brokering.
 
-```
-nexus3 auth login --agent <name>
-```
+To authenticate for use in sandboxes, authenticate on the **host**:
 
-where `<name>` selects a provider profile (`claude`, `codex`, `opencode`, …). <Badge type="danger" text="not built" /> — other provider profiles (Codex, opencode) are not yet wired.
-
-**Built today — Claude Code:**
-
-```
-nexus3 auth login [--from <path>] [--force]
+```sh
+claude login
 ```
 
-Imports credentials from a dedicated Claude Code session. The dedicated session must be a separate `claude` login from your main one (rotating it logs out the main session). The source file defaults to nexus3's dedicated-session store (`~/.config/nexus3/claude-dedicated/.credentials.json`) — distinct from your main Claude login at `~/.claude/.credentials.json`. Override with `--from` only if you placed the dedicated session file elsewhere.
+The next sandbox you create picks up the credentials automatically.
+
+Running sandboxes are not updated — virtiofs mounts are create-time state. Recreate a sandbox to switch it to the live-mount credential model (see [Egress and perimeter: recreate rule](/security/egress-and-perimeter#recreate-rule-r-7)).
+
+```
+nexus3 auth login
+```
+
+Prints a notice explaining that auth login is not needed for claude-code, then exits zero.
+
+### Other agent profiles <Badge type="warning" text="partial" />
+
+For agent profiles that still use the placeholder+broker credential model, `auth login --agent <name>` imports or verifies the credential:
+
+```
+nexus3 auth login --agent <name> [--from <path>] [--force]
+```
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--from <path>` | string | `~/.config/nexus3/claude-dedicated/.credentials.json` | Source Claude Code `.credentials.json` path (nexus3 dedicated-session store) |
+| `--agent <name>` | string | (see below) | Agent profile to authenticate |
+| `--from <path>` | string | agent-specific | Source credential file path |
 | `--force` | bool | false | Allow overwriting an existing complete credential store |
 
-The imported credential is **never injected into a sandbox**. It stays host-side, held by the perimeter supervisor's credential broker. A sandbox that requests agent egress (via `--agent-egress`) receives a *placeholder* string in its guest environment; the host-side MITM proxy swaps that placeholder for the real bearer token on the wire, per request. The guest never holds a credential that is valid off-host.
+`--agent` selects which provider profile to authenticate. Without `--agent`, the command prints the "no longer needed" notice for claude-code. <Badge type="warning" text="partial" /> — only one additional profile (`claude-code`) is registered today; the multi-profile path (`--agent codex`, `--agent opencode`) is not yet wired for other agents.
+
+The imported credential is **never injected into a sandbox as a real value**. It stays host-side, held by the perimeter supervisor's credential broker. A sandbox that requests agent egress receives a *placeholder* string in its guest environment; the host-side MITM proxy swaps that placeholder for the real bearer token on the wire, per request.
 
 ## nexus3 mcp
 

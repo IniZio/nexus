@@ -79,13 +79,13 @@ nexus3 rm myproject/task-42
 
 <Badge type="tip" text="built" /> — the flat verbs shown above are the real CLI surface; `nexus3 sandbox create` remains an equivalent alias. See [CLI sandbox commands](/cli/sandbox-commands). <!-- cli-spelling-exempt -->
 
-For higher throughput, the herdr plugin's `launch` path (below) boots the sandbox and execs the agent in a single call, and wires the placeholder credential seed automatically.
+For higher throughput, the herdr plugin's `launch` path (below) boots the sandbox and execs the agent in a single call, and wires the credential mount automatically.
 
 ---
 
 ## Choosing an agent: `--agent` <Badge type="tip" text="built" />
 
-`nexus3 create --agent <name>` records which agent profile a sandbox is for. The profile is not a label — it decides the credential seed, the egress allowlist, and the guest environment the sandbox gets:
+`nexus3 create --agent <name>` records which agent profile a sandbox is for. The profile is not a label — it decides the credential delivery, the egress allowlist, and the guest environment the sandbox gets:
 
 ```sh
 nexus3 create myproject/task-42 --agent claude-code --image nexus3-agent-base
@@ -95,27 +95,34 @@ The chosen name is persisted on the record and shown in the `AGENT` column of `n
 
 ### Registered profiles
 
-| Name | Placeholder env var | Reachable hosts |
+| Name | Credential delivery | Reachable hosts |
 |---|---|---|
-| `claude-code` (default) | `CLAUDE_CODE_OAUTH_TOKEN` | `api.anthropic.com`, `platform.claude.com` |
+| `claude-code` (default) | host `~/.claude` live-mounted read-write at `/root/.claude` | `api.anthropic.com`, `platform.claude.com` |
 
 ::: warning One profile is registered today
 `claude-code` is the only entry in the registry, and it is the default when `--agent` is omitted. The mechanism is deliberately declarative — adding an agent means adding one `AgentProfile` value, and no call site branches on the name — but until a second profile exists, `--agent` selects from a set of one.
 
-An unregistered name is **refused**, never silently defaulted: a typo must not be answered with the wrong credential seed.
+An unregistered name is **refused**, never silently defaulted: a typo must not be answered with the wrong credential delivery path.
 :::
 
 ### What a profile carries
 
 | Field | Effect |
 |---|---|
-| `PlaceholderEnvVar` | the variable the guest sees; holds a placeholder, never a real token |
+| `CredDirLiveMount` | when true, the host credential directory is mounted read-write into the guest instead of using placeholder seeding |
 | `EgressHosts` | the entire allowlist for that sandbox — everything else is denied |
-| `APIKeyEnvVar` | the variable the MITM proxy swaps host-side, on the wire |
 | `CACertEnvVars` | how the agent is told to trust the MITM CA (`NODE_EXTRA_CA_CERTS` for Node-based agents) |
 | `GuestEnv` | extra guest environment, e.g. disabling telemetry that would retry against a default-deny perimeter |
 
-The guest never holds a real credential. See [egress and perimeter](/security/egress-and-perimeter).
+For `claude-code`, no placeholder is seeded and no broker swap occurs — the guest reads and refreshes its own real credential. See [egress and perimeter](/security/egress-and-perimeter).
+
+---
+
+## Permission mode
+
+Claude Code sandboxes run in `auto` permission mode. No process in a sandbox carries `--dangerously-skip-permissions`, and no seeded file sets `bypassPermissions` or `skipDangerousModePermissionPrompt`. The host's `~/.claude/settings.json` is mounted live and already declares `permissions.defaultMode = "auto"`.
+
+The `claudeReadyMatch` detector that drives `delegate_agent_dispatch` is calibrated for the auto-mode footer (`"? for shortcuts"`), not the bypass-mode footer.
 
 ---
 
@@ -130,9 +137,8 @@ nexus3 herdr launch --agent-egress \
 ```
 
 - `<command>` must be an absolute path (e.g. `/usr/local/bin/claude`).
-- `--agent-egress` hands the booted VM to a detached perimeter supervisor (`nexus3 __supervisor`, ephemeral mode) which owns the whole zero-credential perimeter: the egress allowlist (`api.anthropic.com`, `platform.claude.com`), the MITM proxy, the credential broker, the CA seed, and the guest placeholder seed. The guest receives a placeholder; the proxy swaps it for the real bearer token host-side, on the wire.
+- `--agent-egress` hands the booted VM to a detached perimeter supervisor (`nexus3 __supervisor`, ephemeral mode) which owns the egress allowlist (`api.anthropic.com`, `platform.claude.com`), the MITM proxy, the CA seed, and the credential guardian. For claude-code, the credential guardian monitors `~/.claude/.credentials.json` and proactively refreshes it; the guest reads the file directly from the live mount.
 - Without the flag no supervisor is started, and therefore no perimeter process pumps the guest's network device — the sandbox has **no egress at all**, not open egress.
-- The command boots the sandbox, hands it to the supervisor if `--agent-egress`, verifies the guest received both the placeholder credential and the CA cert, then execs the command in-guest with the seeded credential sourced from `/run/nexus3/cred.env`.
 - Teardown stops the supervisor and waits for it to exit; a parent-watchdog pipe tears the VM down even if the caller is `SIGKILL`ed.
 
 **Worktree-native parallel flow**: create a `git worktree` on the host per sandbox, pass it via `--mount`, and the agent commits directly into the mounted worktree. No extraction step; teardown calls `git worktree remove`. Each task gets its own branch and its own mount — sandboxes are created independently (not forked) so mounts are never shared between concurrent VMs.
@@ -141,9 +147,17 @@ nexus3 herdr launch --agent-egress \
 
 A single `nexus3 agent launch` public command will wrap `nexus3 herdr launch` with a stable, versioned interface for external orchestrators. Today, external callers use the `herdr` group or the MCP tools.
 
-### In-guest credential refresh <Badge type="danger" text="not built" />
+---
 
-The host credential broker can deliver tokens to the guest over vsock. An in-guest Claude Code instance cannot yet request a refresh independently — there is no MCP handler in the guest for token rotation. This blocks the pattern where the in-guest agent acquires a fresh token mid-task without host intervention.
+## Port auto-forward <Badge type="tip" text="built" />
+
+When a guest process binds a TCP port in the range 1024–11023, nexus3 auto-discovers it (via `/proc/net/tcp` polling inside the sandbox) and makes it available at the same port number on the host at `127.0.0.1:<port>`. A remote herdr client sees the port forwarded to `127.0.0.1:<port>` on the laptop, also at the same number.
+
+This requires **herdr ≥ 0.9** on the remote client. nexus3 declares `min_herdr_version = "0.9.0"` and plugin ABI `"3"` in the herdr plugin manifest; herdr versions below 0.9 fail the ABI probe at install time with a clear version message.
+
+Port-forward state is persisted under `~/.config/herdr/portfwd/` on the herdr host. Forwarded ports appear in the herdr overlay alongside the sandbox that owns them. When the guest listener closes, nexus3 cancels the forward and the port disappears from the laptop within the reconcile interval.
+
+> Note: the same-number invariant (`127.0.0.1:5173` on the guest → `127.0.0.1:5173` on the host) is preserved end-to-end. Renumbering would break OAuth redirect URIs and Vite HMR WebSocket URLs.
 
 ---
 
@@ -153,10 +167,13 @@ The host credential broker can deliver tokens to the guest over vsock. An in-gue
 |---|---|---|
 | MCP 7-tool surface | Yes | Yes |
 | `nexus3 herdr launch` | Yes | Yes |
-| `--agent-egress` perimeter handoff (MITM + placeholder swap) | Yes | Yes |
+| `--agent-egress` perimeter handoff (MITM + credential guardian) | Yes | Yes |
 | `nexus3 herdr space-create` / `herdr create-from-file` | Yes | Yes |
 | `nexus3 recipe` CLI (Orca) | Yes | Yes |
+| `~/.claude` live-mount credential delivery for claude-code | Yes | Yes |
+| auto permission mode (no `--dangerously-skip-permissions`) | Yes | Yes |
+| git SSH relay to GitHub via host ssh-agent | Yes | Yes |
+| Port auto-forward (herdr ≥ 0.9, ABI 3) | Yes | Yes |
 | `nexus3 herdr launch -v` | No | — |
 | `nexus3 agent launch` public command | No | — |
 | MCP log streaming / pane attach | No | — |
-| In-guest credential refresh via MCP | No | — |
