@@ -268,6 +268,10 @@ func buildGitconfigPayload(name, email string, sourcePaths []string, branch stri
 	fmt.Fprintf(&buf, "\tdefaultBranch = %s\n", branch)
 	fmt.Fprintf(&buf, "[core]\n")
 	fmt.Fprintf(&buf, "\tsafecrlf = false\n")
+	// SSH command: route all git SSH sessions through the nexus3-agent shim.
+	// The shim dials the host relay over vsock and the host invokes the real
+	// ssh using SSH_AUTH_SOCK — no private key is ever seeded into the guest.
+	buf.WriteString("\tsshCommand = /sbin/nexus3-agent git-ssh\n")
 	// Credential helper for github.com pushes.
 	//
 	// This section is unconditional: every sandbox gets the helper regardless of
@@ -304,27 +308,6 @@ func buildGitconfigPayload(name, email string, sourcePaths []string, branch stri
 	// The script is seeded separately via SeedGitCredentialHelper.
 	buf.WriteString("\thelper = !sh " + GuestGitCredentialHelperPath + "\n")
 
-	// Rewrite GitHub SSH remotes to HTTPS.
-	//
-	// A guest cannot push over SSH, and not by accident: no SSH key is ever
-	// seeded into a sandbox (the credential rail forbids it), and the MITM
-	// proxy that swaps the placeholder for the real token only sees HTTPS
-	// CONNECTs. A "git@github.com:owner/repo.git" remote — the default for
-	// most cloned repositories, including this one — is therefore
-	// structurally unpushable from inside a sandbox.
-	//
-	// Without this rewrite the agent inherits that remote through its mounted
-	// worktree and fails with an SSH timeout, which reads as a network fault
-	// rather than as the credential-design decision it actually is. With it,
-	// the same remote transparently uses the perimeter and the credential
-	// helper above.
-	//
-	// This grants a sandbox no reach it did not already have: contacting
-	// github.com still requires the host to have admitted it, and the token
-	// swap still requires a bound secret scoped to a single repository.
-	buf.WriteString("[url \"https://github.com/\"]\n")
-	buf.WriteString("\tinsteadOf = git@github.com:\n")
-	buf.WriteString("\tinsteadOf = ssh://git@github.com/\n")
 	return buf.Bytes()
 }
 

@@ -15,6 +15,12 @@ import (
 // nexus3 uses 1024.
 const AgentControlPort uint32 = 1024
 
+// GitSSHRelayPort is the vsock port the host relay listens on for
+// guest-initiated git-ssh sessions. The guest dials CID 2, port GitSSHRelayPort;
+// the host relay accepts raw connections on <vsockSocket>_<GitSSHRelayPort>.
+// See internal/core/gitssh for the wire protocol.
+const GitSSHRelayPort uint32 = 1026
+
 // PauseResumer is an optional capability for drivers that can pause and
 // resume a running VM without destroying its memory state.
 //

@@ -1632,22 +1632,6 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 			slog.Info("supervisor.git_identity_seeded",
 				"sandbox", id, "path", service.GuestGitconfigPath, "sources", in.SourcePaths)
 		}
-		// Remote rewrite (SSH→HTTPS): human git-VM only. Rewrites the "origin"
-		// remote from SSH form (git@ or ssh://) to HTTPS so that "git push"
-		// travels through the MITM proxy, which intercepts HTTPS traffic only.
-		// Co-located with git identity seeding so both git configuration steps
-		// happen in one place. Non-fatal: a missing or already-HTTPS remote is
-		// silently accepted; a rewrite failure logs and continues boot.
-		if in.IsHumanGitVM {
-			if remErr := service.SeedGitRemoteHTTPS(ctx, id, in.SourcePaths[0], in.Execer); remErr != nil {
-				slog.Warn("supervisor.git_remote_https_rewrite_failed",
-					"sandbox", id, "path", in.SourcePaths[0], "err", remErr,
-					"action", "git push may not route through the MITM proxy")
-			} else {
-				slog.Info("supervisor.git_remote_https_rewritten",
-					"sandbox", id, "path", in.SourcePaths[0])
-			}
-		}
 	}
 
 	return nil

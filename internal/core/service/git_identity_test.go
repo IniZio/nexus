@@ -193,6 +193,19 @@ func TestSeedGitIdentity_Payload(t *testing.T) {
 				t.Errorf("gitconfig payload contains forbidden token pattern %q\npayload:\n%s", forbidden, payload)
 			}
 		}
+		// Must contain the SSH shim command — git SSH sessions route through the
+		// nexus3-agent shim instead of a real ssh binary.
+		if !strings.Contains(payload, "sshCommand") {
+			t.Errorf("gitconfig payload missing core.sshCommand entry; got:\n%s", payload)
+		}
+		if !strings.Contains(payload, "/sbin/nexus3-agent git-ssh") {
+			t.Errorf("gitconfig payload missing '/sbin/nexus3-agent git-ssh' in sshCommand; got:\n%s", payload)
+		}
+		// Must NOT contain SSH→HTTPS url.insteadOf rewrites — those are
+		// retired now that the SSH relay handles git pushes directly.
+		if strings.Contains(payload, "insteadOf") {
+			t.Errorf("gitconfig payload must not contain insteadOf SSH→HTTPS rewrites (retired); got:\n%s", payload)
+		}
 	})
 }
 
@@ -859,43 +872,33 @@ func TestGitCredentialHelper_EndToEnd(t *testing.T) {
 	})
 }
 
-// TestBuildGitconfigPayload_GitHubSSHRewrite pins the insteadOf rewrite that
-// makes a GitHub SSH remote pushable from inside a sandbox.
+// TestBuildGitconfigPayload_GitSSHShim pins the SSH shim command wired into
+// the guest gitconfig. Git SSH sessions now route through the nexus3-agent
+// git-ssh shim which relays over vsock to the host ssh; no insteadOf
+// URL-rewrite is used.
 //
-// A guest holds no SSH key — the credential rail forbids seeding one — and the
-// MITM proxy that swaps the placeholder for the real token only observes HTTPS
-// CONNECTs. So "git@github.com:owner/repo.git", the default remote for most
-// clones, cannot be pushed from a sandbox at all. The agent inherits that
-// remote through its mounted worktree, so without the rewrite the outbound
-// half fails with an SSH timeout that reads as a network fault.
-//
-// Mutation: delete either insteadOf line -> the matching subtest fails RED.
-func TestBuildGitconfigPayload_GitHubSSHRewrite(t *testing.T) {
+// Mutation: remove or corrupt the sshCommand line → this test fails RED.
+func TestBuildGitconfigPayload_GitSSHShim(t *testing.T) {
 	payload := string(buildGitconfigPayload("Ada Lovelace", "ada@example.com", []string{"/work"}, "nexus3/x/abc123"))
 
-	if !strings.Contains(payload, `[url "https://github.com/"]`) {
-		t.Fatalf("payload has no [url \"https://github.com/\"] section; a git@github.com: remote\n"+
-			"would be unpushable from the guest.\npayload:\n%s", payload)
+	// The shim command must be present in the [core] section.
+	if !strings.Contains(payload, "sshCommand") {
+		t.Fatalf("payload missing core.sshCommand; git SSH sessions will not route through the relay.\npayload:\n%s", payload)
+	}
+	if !strings.Contains(payload, "/sbin/nexus3-agent git-ssh") {
+		t.Errorf("payload sshCommand does not reference /sbin/nexus3-agent git-ssh.\npayload:\n%s", payload)
 	}
 
-	// Both spellings matter: scp-style is what `git clone git@github.com:o/r`
-	// writes, and ssh:// is what some tools normalise it to. Covering only one
-	// leaves the other silently broken.
-	for _, form := range []string{
+	// The retired insteadOf SSH→HTTPS rewrite must be absent. Its presence
+	// would break git@github.com remotes because the MITM proxy no longer
+	// handles SSH redirects — the vsock relay does.
+	for _, banned := range []string{
+		`[url "https://github.com/"]`,
 		"insteadOf = git@github.com:",
 		"insteadOf = ssh://git@github.com/",
 	} {
-		t.Run(form, func(t *testing.T) {
-			if !strings.Contains(payload, form) {
-				t.Errorf("payload missing %q\npayload:\n%s", form, payload)
-			}
-		})
-	}
-
-	// The rewrite must be scoped to GitHub. A bare "insteadOf = git@" would
-	// silently redirect every SSH remote — GitLab, an internal host — to a
-	// GitHub URL that will not exist.
-	if strings.Contains(payload, "insteadOf = git@\n") {
-		t.Error("payload contains an unscoped git@ rewrite; it would misroute non-GitHub SSH remotes")
+		if strings.Contains(payload, banned) {
+			t.Errorf("payload contains retired SSH→HTTPS rewrite %q; remove it.\npayload:\n%s", banned, payload)
+		}
 	}
 }

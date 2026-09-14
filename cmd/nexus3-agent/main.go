@@ -32,6 +32,15 @@ import (
 var agentBuildTag = "dev"
 
 func main() {
+	// git-ssh subcommand: invoked via GIT_SSH_COMMAND / core.sshCommand when
+	// git needs to open an SSH connection. Handled entirely here; all other
+	// subcommand dispatch (PID-1 init, builder role, etc.) is skipped.
+	// Must be checked before any PID-1 or hot-swap logic.
+	if len(os.Args) >= 2 && os.Args[1] == "git-ssh" {
+		runGitSSHShim(os.Args[2:])
+		// runGitSSHShim never returns (always calls os.Exit).
+	}
+
 	isPid1 := os.Getpid() == 1
 
 	// hotSwap is true when this binary was launched by a prior agent via
