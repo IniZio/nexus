@@ -18,7 +18,7 @@ Preconditions:
 
 ## What this command does
 
-Loads `nexus3:nexus3-delegate` and walks through the delegation loop:
+Loads the `nexus3:nexus3` skill, opens `references/delegate.md` and `references/delegate-loop.md`, and walks through the delegation loop:
 
 1. **Create** — calls `delegate_worktree_create` with the repo path and a handle
    you provide, booting a worktree-bound sandbox.
@@ -42,4 +42,4 @@ After invoking, the skill asks for:
 
 ---
 
-Load skill: nexus3:nexus3-delegate
+Load skill: nexus3:nexus3 — then open `references/delegate.md`.

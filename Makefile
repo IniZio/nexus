@@ -130,17 +130,13 @@ install-kernel:
 # Previously wrote to /tmp; use install-agent for new scripts.
 build-agent: install-agent
 
-PLUGIN_SRC  := $(CURDIR)/plugins/claude
-PLUGIN_LINK := $(HOME)/.claude/plugins/nexus3
-
+# install-plugin: register this checkout as the "nexus3" marketplace (root
+# .claude-plugin/marketplace.json, same manifest users get from GitHub) and
+# install the Claude Code plugin from it. Installed plugins load from
+# ~/.claude/plugins/cache, so no ~/.claude/plugins/<name> symlink is needed.
 install-plugin:
-	@if [ -L "$(PLUGIN_LINK)" ] && [ "$$(readlink "$(PLUGIN_LINK)")" = "$(PLUGIN_SRC)" ]; then \
-		echo "OK: $(PLUGIN_LINK) already correct"; \
-	else \
-		ln -sfn "$(PLUGIN_SRC)" "$(PLUGIN_LINK)" && echo "OK: $(PLUGIN_LINK) -> $(PLUGIN_SRC)"; \
-	fi
 	@claude plugin marketplace list 2>/dev/null | grep -q '^  ❯ nexus3$$' || \
-		claude plugin marketplace add "$(PLUGIN_SRC)"
+		claude plugin marketplace add "$(CURDIR)"
 	@claude plugin list 2>/dev/null | grep -q 'nexus3@nexus3' || \
 		claude plugin install nexus3@nexus3 --yes
 

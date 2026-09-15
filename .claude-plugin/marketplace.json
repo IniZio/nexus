@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "nexus3",
-      "source": "./",
+      "source": "./plugins/claude",
       "description": "nexus3 microVM sandbox — skill namespace and MCP server for Claude Code",
       "version": "0.1.0",
       "author": {

@@ -92,7 +92,7 @@ brief was NOT submitted; the VM is up but the agent has not read it.
 ~/.local/bin/nexus3 herdr agent --autonomous --no-focus <handle> "<brief>"
 ```
 
-See `references/briefs.md` for what a brief must contain.
+See `delegate-briefs.md` for what a brief must contain.
 
 ## 3. Poll for completion
 

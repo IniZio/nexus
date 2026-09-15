@@ -52,7 +52,7 @@ case "$ENTRYPOINT" in
         # Context-aware new tab: opens a guest-shell pane when the focused
         # workspace is a nexus3 space, or falls through to herdr's built-in
         # tab-create otherwise. Safe to bind globally — non-nexus3 workspaces
-        # (example-app, groundwork, …) get a normal host tab.
+        # (other repos, groundwork, …) get a normal host tab.
         exec "$SHIM" herdr new-tab "$HERDR_WORKSPACE_ID"
         ;;
     *)

@@ -72,7 +72,7 @@ nexus3 create myproject/sandbox \
 
 ## VCS egress for worktree sandboxes (authoring nexus3.yaml)
 
-> **Full procedure is in `nexus3:nexus3-egress`.** This section is a factual
+> **Full procedure is in `egress.md`.** This section is a factual
 > summary; use the referenced skill for the complete step-by-step workflow and
 > verification probes.
 
@@ -99,7 +99,7 @@ boundary. The operator's merge is the ratification act.
 ### Verification
 
 Four checks exist (own-repo REST 200, cross-repo 403, GraphQL 403, placeholder
-check). Details in `nexus3:nexus3-egress`.
+check). Details in `egress.md`.
 
 ---
 

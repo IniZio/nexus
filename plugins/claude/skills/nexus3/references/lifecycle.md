@@ -39,4 +39,4 @@ Primary use-case: mounting a git worktree so an in-guest agent can edit source f
 
 Do **not** use `--mount` to mount dependency directories (node_modules, target, etc.) — use `--mount-named kind=disk` for those; block I/O is measurably faster for metadata-heavy operations.
 
-For named volumes (`--mount-named`) see `references/volumes.md`.
+For named volumes (`--mount-named`) see `volumes.md`.

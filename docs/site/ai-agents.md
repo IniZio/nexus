@@ -29,6 +29,14 @@ Register it with Claude Code once; it persists across sessions:
 claude mcp add --transport stdio nexus3 -- nexus3 mcp
 ```
 
+Or install the Claude Code plugin, which registers the MCP server together with
+the `nexus3` skill and commands:
+
+```bash
+claude plugin marketplace add IniZio/nexus3
+claude plugin install nexus3@nexus3
+```
+
 ### Tools <Badge type="tip" text="built" />
 
 The server exposes 13 tools: nine covering sandbox lifecycle and execution, and four covering delegation into a worktree-bound sandbox.

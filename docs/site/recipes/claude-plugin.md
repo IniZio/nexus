@@ -7,23 +7,16 @@ description: "Install the nexus3 plugin so any Claude Code session can discover 
 
 > Install once from the nexus3 repo — every Claude Code session on this host picks up the plugin automatically.
 
-The `nexus3` Claude Code plugin registers a skill namespace and an MCP server so a main agent working in any repo can discover nexus3, configure egress policy, and delegate a unit of work into a microVM sandbox. It lives in the nexus3 repo at `plugins/claude/` and is installed by symlink, so edits to the source are live immediately — no reinstall needed after content changes.
+The `nexus3` Claude Code plugin registers a skill and an MCP server so a main agent working in any repo can discover nexus3, configure egress policy, and delegate a unit of work into a microVM sandbox. It requires the `nexus3` binary on `PATH` — see [Install](/quickstart#install).
 
 ---
 
 ## Install
 
-From the nexus3 repo root:
-
 ```sh
-make install-plugin
+claude plugin marketplace add IniZio/nexus3
+claude plugin install nexus3@nexus3
 ```
-
-That target:
-
-1. Creates `~/.claude/plugins/nexus3 → <nexus3-repo>/plugins/claude` (idempotent — re-running it is safe).
-2. Registers the plugin with `claude plugin marketplace add` if it is not already listed.
-3. Activates it with `claude plugin install nexus3@nexus3 --yes` if it is not already installed.
 
 Verify the MCP server is connected from any repo:
 
@@ -35,7 +28,8 @@ claude mcp list
 ## Uninstall
 
 ```sh
-rm ~/.claude/plugins/nexus3
+claude plugin uninstall nexus3@nexus3
+claude plugin marketplace remove nexus3
 ```
 
 ---
@@ -44,16 +38,9 @@ rm ~/.claude/plugins/nexus3
 
 ### Skills
 
-Skills live under the `nexus3:` namespace and are available in every Claude Code session after install. The plugin ships:
+One skill, `nexus3:nexus3`, is available in every Claude Code session after install. It is a dispatcher: its routing table opens the reference that matches the question — sandbox lifecycle, named volumes, guest setup, running an agent in a sandbox, creating a PR from inside a sandbox, first-run onboarding (`nexus3.yaml` and `.nexus/Containerfile`), egress policy authoring, and delegating a unit of work into a worktree sandbox.
 
-| Skill | Purpose |
-|---|---|
-| `nexus3` | Reference dispatcher — the entry point for any nexus3 question |
-| `nexus3-onboard` | Walks an agent through creating `nexus3.yaml` and `.nexus/Containerfile` for a repo that does not have them yet |
-| `nexus3-egress` | Egress policy authoring — allowlist construction, secret brokering, verification |
-| `nexus3-delegate` | Delegation workflow — create a worktree-bound sandbox, dispatch a brief to an in-guest agent, collect the result, and tear down |
-
-Reach for `nexus3` first; it routes to the others.
+Three slash commands ship alongside it: `/nexus3:nexus3-init`, `/nexus3:nexus3-delegate`, and `/nexus3:nexus3-doctor`.
 
 ### MCP server
 
@@ -65,7 +52,7 @@ The plugin's `.mcp.json` wires `nexus3 mcp` as a stdio transport. The same 13-to
 
 Repos that already have a `nexus3.yaml` at their root are pre-configured. A worktree sandbox created for that repo reads the file from the base branch (`git show refs/remotes/origin/HEAD:nexus3.yaml`) as its trust anchor.
 
-Repos without one can use the `nexus3-onboard` skill to generate one. The minimum structure:
+Repos without one can run `/nexus3:nexus3-init` to generate one. The minimum structure:
 
 ```yaml
 version: 1
@@ -100,10 +87,8 @@ If you registered nexus3's MCP server manually before the plugin existed — `cl
 
 | Surface | Built | Live-proven |
 |---|---|---|
-| `make install-plugin` symlink + registration | Yes | Yes |
+| Marketplace install (`claude plugin marketplace add IniZio/nexus3`) | Yes | No |
 | Plugin MCP server (`plugin:nexus3:nexus3`) | Yes | Yes |
-| `nexus3` dispatcher skill | Yes | Yes |
-| `nexus3-onboard` skill | Yes | Yes |
-| `nexus3-egress` skill | Yes | Yes |
-| `nexus3-delegate` skill | Yes | Yes |
+| `nexus3` dispatcher skill (onboard, egress, delegate references) | Yes | Yes |
+| `/nexus3:nexus3-init`, `-delegate`, `-doctor` commands | Yes | Yes |
 | `nexus3 plugin install` CLI verb | No | — |

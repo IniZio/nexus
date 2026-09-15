@@ -57,6 +57,19 @@ cd nexus3
 go build -o nexus3 ./cmd/nexus3
 ```
 
+### Claude Code plugin
+
+With `nexus3` on your `PATH`, add the plugin so Claude Code gets the `nexus3`
+skill, the `/nexus3:nexus3-init` and `/nexus3:nexus3-delegate` commands, and the
+MCP server:
+
+```sh
+claude plugin marketplace add IniZio/nexus3
+claude plugin install nexus3@nexus3
+```
+
+See [Claude Code plugin](./recipes/claude-plugin.md) for what it provides.
+
 ---
 
 ::: info Prerequisites

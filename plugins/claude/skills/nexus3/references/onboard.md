@@ -1,9 +1,7 @@
----
-name: nexus3-onboard
-description: First-run onboarding for a repo that has never used nexus3 — detects the repo's stack, authors nexus3.yaml and .nexus/Containerfile, and explains the trust-anchor ritual.
----
+# First-run onboarding — author nexus3.yaml and .nexus/Containerfile
 
-# nexus3-onboard
+For a repo that has never used nexus3: detect the repo's stack, author
+`nexus3.yaml` and `.nexus/Containerfile`, and explain the trust-anchor ritual.
 
 Follow these steps in order. Each step has a concrete output. Do not skip to Step 4 before finishing Step 3.
 
@@ -127,7 +125,7 @@ Replace `OWNER` and `REPO` with the values from Step 1.
 - **Never list `/graphql`** under `api.github.com`. GraphQL is a parallel write channel that bypasses the path allowlist; listing it reopens the sole-bound risk documented in `nexus3-github-token-sole-bound`.
 - Do not list `uploads.github.com` unless the workflow explicitly uploads release assets — it is not needed for clone, push, or REST API calls.
 
-For egress policy semantics, verification probes, and the secret-brokering model, load `nexus3:nexus3-egress`.
+For egress policy semantics, verification probes, and the secret-brokering model, see `egress.md`.
 
 #### GitLab (cloud or self-hosted)
 
@@ -178,7 +176,7 @@ but never consulted as a gate.
 - It documents build-time network intent and becomes the active ACL if the open-egress posture changes.
 - Do not present it as a security boundary for today's worktree sandboxes.
 
-For the full enforcement model, verification probes, and live evidence, load `nexus3:nexus3-egress`.
+For the full enforcement model, verification probes, and live evidence, see `egress.md`.
 
 ### 3c. Complete file shape
 
@@ -279,6 +277,6 @@ Before opening the PR:
 - [ ] `api.github.com` paths are scoped to `/repos/OWNER/REPO/...` — no `/**` at root
 - [ ] `/graphql` is absent from all `api.github.com` paths
 - [ ] `egress.allow` entries have a Dockerfile/compose comment justifying each host
-- [ ] `~/.local/bin/nexus3 config show --repo-dir <path>` exits 0
+- [ ] Step 5 validation passes (no parse error from the binary; the YAML check prints `OK`)
 - [ ] `.nexus/Containerfile` exists (or the operator has confirmed no custom image is needed)
 - [ ] PR description includes: "This config takes effect once merged to `origin/HEAD`."

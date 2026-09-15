@@ -1,14 +1,9 @@
----
-name: nexus3-delegate
-description: >
-  Load when delegating work into a nexus3 worktree sandbox from any repo: create
-  a worktree-bound sandbox, dispatch a brief to an in-guest agent, poll for
-  completion, collect the result, and reclaim. Also load when tearing down a
-  finished sandbox, checking how many sandboxes are running and their RAM cost,
-  or diagnosing a stalled delegate workflow.
----
+# Delegating work into a worktree sandbox
 
-# nexus3-delegate — dispatcher
+Create a worktree-bound sandbox, dispatch a brief to an in-guest agent, poll
+for completion, collect the result, and reclaim. Also covers tearing down a
+finished sandbox, counting running sandboxes and their RAM cost, and diagnosing
+a stalled delegate workflow.
 
 Four MCP tools cover the core of the workflow. CLI fills the two gaps where no
 tool exists. Every step below names which is which.
@@ -25,14 +20,14 @@ tool exists. Every step below names which is which.
 | Read diff directly | **CLI only** | `git -C <worktree-path> log --oneline HEAD` |
 
 Use the MCP tools; fall back to CLI equivalents only when the MCP server is
-unavailable (see `references/loop.md` for CLI spellings of every step).
+unavailable (see `delegate-loop.md` for CLI spellings of every step).
 
 ## Reference files
 
 | Topic | File |
 |---|---|
-| Full step-by-step loop with MCP and CLI spellings | `references/loop.md` |
-| Brief authoring — what to include, what to require in the report | `references/briefs.md` |
+| Full step-by-step loop with MCP and CLI spellings | `delegate-loop.md` |
+| Brief authoring — what to include, what to require in the report | `delegate-briefs.md` |
 
 ## Push rule
 
@@ -49,7 +44,7 @@ Worktree sandboxes run with `open_egress: true`. The `egress.policy.allow`
 allowlist from `nexus3.yaml` is stored but NOT enforced as a gate for these
 sandboxes. What IS enforced: secret brokering (the guest holds a 64-hex
 placeholder, not the real credential) and per-path policy on secret hosts
-(cross-repo API paths → 403, GraphQL → 403). Defer to `nexus3:nexus3-egress`
+(cross-repo API paths → 403, GraphQL → 403). Defer to `egress.md`
 for policy authoring.
 
 ## Completion heuristic
@@ -66,7 +61,7 @@ blocks only until the brief is confirmed delivered — not until the work finish
 Poll every 30 seconds. Give up after 45 minutes (90 polls) and surface the last
 `git_log` and `git_status` as evidence. On a give-up, read the diff directly
 (`git -C <worktree> diff <base>...HEAD`) — pane output may lag or be truncated by
-the Claude UI; the diff is never truncated. See `references/loop.md` for the full
+the Claude UI; the diff is never truncated. See `delegate-loop.md` for the full
 polling posture.
 
 **No-op case.** If the agent determines no change is needed and commits nothing,
@@ -74,7 +69,7 @@ polling posture.
 is the first signal, indistinguishable from a stuck agent. The fix is in the
 brief: require a commit in every outcome, including "no change needed". A
 REPORT.md commit saying why no change was made satisfies the heuristic and
-surfaces the conclusion. See `references/briefs.md`.
+surfaces the conclusion. See `delegate-briefs.md`.
 
 ## Teardown order and RAM cost
 

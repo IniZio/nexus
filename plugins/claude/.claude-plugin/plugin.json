@@ -1,1 +1,8 @@
-{"name":"nexus3"}
+{
+  "name": "nexus3",
+  "version": "0.1.0",
+  "description": "nexus3 microVM sandbox — skill namespace and MCP server for Claude Code",
+  "author": {
+    "name": "IniZio"
+  }
+}
