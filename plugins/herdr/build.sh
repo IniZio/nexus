@@ -12,15 +12,32 @@ ASSET_NAME="nexus3-linux-amd64"
 INSTALL_DIR="${HOME}/.local/bin"
 
 # ── Platform guard ────────────────────────────────────────────────────────
-# Only Linux x86_64 has a released binary.  All other platforms must build
-# from source.
+# Linux/x86_64 gets the full nexus3 binary (host side: VMs, panes, verbs).
+# Every other platform is a REMOTE CLIENT: the only thing that runs there is
+# the [[startup]] hook that mirrors a nexus3 host's auto port-forwards, and
+# that ships as the small nexus3-client binary because the full CLI does not
+# build off Linux. The shim points at whichever binary this platform uses.
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 if [ "$OS" != "Linux" ] || [ "$ARCH" != "x86_64" ]; then
-    echo "nexus3 plugin: no released binary for ${OS}/${ARCH}." >&2
-    echo "Build from source:  git clone https://github.com/${GITHUB_OWNER}/${GITHUB_REPO} && (cd ${GITHUB_REPO} && go build -o ~/.local/bin/nexus3 ./cmd/nexus3)" >&2
-    echo "Then run:           nexus3 herdr install-default-shell" >&2
-    exit 1
+    CLIENT="${NEXUS3_CLIENT:-$(command -v nexus3-client 2>/dev/null || true)}"
+    if [ -z "$CLIENT" ] || [ ! -x "$CLIENT" ]; then
+        echo "nexus3 plugin: ${OS}/${ARCH} is a remote client and needs nexus3-client on PATH (or NEXUS3_CLIENT=<path>)." >&2
+        echo "Build it on any machine with Go:  GOOS=$(echo "$OS" | tr '[:upper:]' '[:lower:]') GOARCH=<arch> go build -o nexus3-client ./cmd/nexus3-client" >&2
+        exit 1
+    fi
+    CLIENT="$(cd "$(dirname "$CLIENT")" && pwd)/$(basename "$CLIENT")"
+    EXPECTED_ABI="$(cat "$PLUGIN_DIR/abi" 2>/dev/null)" || { echo "nexus3: error: $PLUGIN_DIR/abi not found" >&2; exit 1; }
+    GOT_ABI="$("$CLIENT" herdr abi 2>/dev/null)" || { echo "nexus3: error: nexus3-client herdr abi probe failed" >&2; exit 1; }
+    if [ "$GOT_ABI" != "$EXPECTED_ABI" ]; then
+        echo "nexus3: error: ABI mismatch: plugin expects ${EXPECTED_ABI}, nexus3-client reports ${GOT_ABI}" >&2
+        exit 1
+    fi
+    SHIM="$PLUGIN_DIR/nexus3-shim.sh"
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$CLIENT" > "$SHIM"
+    chmod +x "$SHIM"
+    echo "nexus3 plugin: remote client — shim written -> $SHIM (nexus3-client)"
+    exit 0
 fi
 
 # ── Decide: download or fall back to PATH ─────────────────────────────────

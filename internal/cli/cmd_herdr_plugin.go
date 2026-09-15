@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/IniZio/nexus3/internal/clientagent"
 	"github.com/IniZio/nexus3/internal/core/agent"
 	"github.com/IniZio/nexus3/internal/core/config"
 	"github.com/IniZio/nexus3/internal/core/domain"
@@ -25,7 +26,6 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/portfwd"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/supervisor"
@@ -4631,192 +4631,11 @@ func herdrWorktreeSandbox(
 }
 
 /**
- * herdrMachine is the JSON shape of one entry from `herdr machine list --json`.
- * Only the fields local-agent-startup needs are decoded.
- */
-type herdrMachine struct {
-	ProfileID string `json:"id"`
-	SSHTarget string `json:"target"` // "user@host"
-	Enabled   bool   `json:"enabled"`
-	Selected  bool   `json:"selected"`
-}
-
-/**
- * localAgentStateDir returns the directory where the client agent stores
- * its ControlMaster sockets.
- * Follows: $XDG_STATE_HOME/nexus3/portfwd-client/ (or ~/.local/state/…)
- */
-func localAgentStateDir() string {
-	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
-		return filepath.Join(d, "nexus3", "portfwd-client")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "nexus3", "portfwd-client")
-}
-
-/**
- * remotePortFwdStateFile returns the shell expression for the path on the
- * REMOTE host where the host-side portfwd supervisor writes forwards.state.
- * Both sides derive from portfwd.StateDir so writer and reader cannot drift.
- */
-func remotePortFwdStateFile() string {
-	return portfwd.RemoteStateFileShell()
-}
-
-/**
- * sanitizeSSHTarget replaces special characters in an SSH target with
- * underscores so it can be used as a filename component for the ControlMaster
- * socket.
- */
-func sanitizeSSHTarget(target string) string {
-	var b strings.Builder
-	for _, c := range target {
-		switch c {
-		case '@', '.', ':', '/', '-':
-			b.WriteRune('_')
-		default:
-			b.WriteRune(c)
-		}
-	}
-	return b.String()
-}
-
-/**
- * herdrPluginLocalAgentStartup is the startup hook that herdr ≥0.9 runs on
- * the laptop when herdr starts. It discovers nexus3 host machines from
- * `herdr machine list --json`, opens a persistent SSH ControlMaster per
- * machine, reads the host's forwards.state, and uses SSH -O forward/-O cancel
- * to expose guest TCP ports at the same port number on the laptop.
- *
- * The function loops indefinitely (or until ctx is cancelled), polling every 5s.
+ * herdrPluginLocalAgentStartup is the startup hook that herdr >=0.9 runs on
+ * the laptop when herdr starts. The body lives in internal/clientagent so it
+ * also builds into cmd/nexus3-client for macOS, where this package (and the
+ * full nexus3 CLI) does not compile.
  */
 func herdrPluginLocalAgentStartup(ctx context.Context) error {
-	stateDir := localAgentStateDir()
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return fmt.Errorf("local-agent-startup: mkdir state: %w", err)
-	}
-
-	managers := make(map[string]*portfwd.Manager)
-
-	tick := time.NewTicker(5 * time.Second)
-	defer tick.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-tick.C:
-		}
-		if err := localAgentTick(ctx, stateDir, managers); err != nil {
-			slog.Warn("local-agent-startup: tick", "err", err)
-		}
-	}
-}
-
-/**
- * localAgentTick performs one reconcile cycle: discover machines, ensure
- * ControlMasters, read remote state, reconcile SSH port-forwards.
- */
-func localAgentTick(ctx context.Context, stateDir string, managers map[string]*portfwd.Manager) error {
-	machines, err := discoverHerdrMachines(ctx)
-	if err != nil {
-		return fmt.Errorf("machine list: %w", err)
-	}
-
-	for _, m := range machines {
-		if !m.Enabled || m.SSHTarget == "" {
-			continue
-		}
-		ctlPath := filepath.Join(stateDir, sanitizeSSHTarget(m.SSHTarget)+".ctl")
-		fw := &portfwd.Forwarder{
-			ControlPath: ctlPath,
-			SSHHost:     m.SSHTarget,
-			Run:         portfwd.OSRunner,
-		}
-		if err := fw.EnsureMaster(ctx); err != nil {
-			slog.Warn("local-agent-startup: ensure-master", "target", m.SSHTarget, "err", err)
-			continue
-		}
-
-		state, err := readRemoteForwardsState(ctx, ctlPath, m.SSHTarget)
-		if err != nil {
-			slog.Warn("local-agent-startup: read-remote-state", "target", m.SSHTarget, "err", err)
-			continue
-		}
-
-		var desired []portfwd.Listener
-		for _, fwd := range state.Forwards {
-			if fwd.Status == "live" || fwd.Status == "pending" {
-				desired = append(desired, portfwd.Listener{
-					Port:    fwd.Port,
-					Sandbox: portfwd.SandboxRef{ID: fwd.Sandbox, Status: portfwd.SandboxStatusRunning},
-				})
-			}
-		}
-
-		if _, ok := managers[m.SSHTarget]; !ok {
-			managers[m.SSHTarget] = portfwd.NewManager(fw)
-		}
-		if err := managers[m.SSHTarget].Reconcile(ctx, desired); err != nil {
-			slog.Warn("local-agent-startup: reconcile", "target", m.SSHTarget, "err", err)
-		}
-	}
-	return nil
-}
-
-func discoverHerdrMachines(ctx context.Context) ([]herdrMachine, error) {
-	herdrBin, err := resolveHerdrBin()
-	if err != nil {
-		return nil, fmt.Errorf("herdr not found: %w", err)
-	}
-	out, err := herdrExecCommandContext(ctx, herdrBin, "machine", "list", "--json").Output()
-	if err != nil {
-		return nil, fmt.Errorf("herdr machine list: %w", err)
-	}
-	var machines []herdrMachine
-	if err := json.Unmarshal(out, &machines); err != nil {
-		return nil, fmt.Errorf("parse machine list: %w", err)
-	}
-	return machines, nil
-}
-
-/**
- * remotePortFwdEntry is the minimal shape needed to reconcile forwards from
- * the host's forwards.state JSON. It avoids a dependency on the linux-only
- * cli.ForwardsState type so local-agent-startup compiles on all platforms.
- */
-type remotePortFwdEntry struct {
-	Port    uint16 `json:"port"`
-	Sandbox string `json:"sandbox"`
-	Status  string `json:"status"`
-}
-
-type remotePortFwdStateJSON struct {
-	Forwards []remotePortFwdEntry `json:"forwards"`
-}
-
-/**
- * readRemoteForwardsState reads forwards.state from the remote nexus3 host
- * via the existing SSH ControlMaster.
- */
-func readRemoteForwardsState(ctx context.Context, ctlPath, target string) (*remotePortFwdStateJSON, error) {
-	remoteFile := remotePortFwdStateFile()
-	argv := []string{
-		"ssh", "-S", ctlPath,
-		"-o", "BatchMode=yes",
-		target,
-		"sh", "-c", "cat " + remoteFile + " 2>/dev/null || echo '{\"forwards\":[]}'",
-	}
-	stdout, _, code, err := portfwd.OSRunner(ctx, argv)
-	if err != nil {
-		return nil, fmt.Errorf("ssh cat: %w", err)
-	}
-	if code != 0 {
-		return nil, fmt.Errorf("ssh cat: exit %d", code)
-	}
-	var state remotePortFwdStateJSON
-	if err := json.Unmarshal([]byte(stdout), &state); err != nil {
-		return nil, fmt.Errorf("parse state: %w", err)
-	}
-	return &state, nil
+	return clientagent.RunStartup(ctx)
 }
