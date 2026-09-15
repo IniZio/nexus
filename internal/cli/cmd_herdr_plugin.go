@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -659,11 +658,6 @@ func herdrPaneExists(ctx context.Context, herdrBin, workspaceID, paneID string) 
 		}
 	}
 	return false
-}
-
-var worktreeGitRunner = func(dir string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	return cmd.Output()
 }
 
 func herdrReadMountSpec(scanner *bufio.Scanner) ([]string, error) {
@@ -3280,7 +3274,7 @@ func herdrWorkspaceRename(ctx context.Context, herdrBin, workspaceID, label stri
 // `sandbox create` will reject with exit status 2.
 //
 // secrets are "--secret ENV@host1,host2" binds derived from the egress.secrets
-// section of the .nexus/config.yaml on the trusted ref (D-PDE-17). allowedRepo, when
+// section of the checkout's .nexus/config.yaml. allowedRepo, when
 // non-empty, sets the per-repo GitHub path allowlist (--repo owner/name).
 //
 // --agent claude-code --egress open makes a worktree sandbox a full agent dev
@@ -3557,82 +3551,8 @@ func herdrWorktreeGroundworkMount(worktreePath string) string {
 	return groundwork + ":" + groundwork
 }
 
-// worktreeCommonGitDir returns the main repo's common git directory from a
-// linked worktree path, or "" if it cannot be derived. This is the same
-// directory computed by herdrWorktreeGitDirMount but returned as a plain path
-// rather than a mount spec.
-func worktreeCommonGitDir(worktreePath string) string {
-	data, err := os.ReadFile(filepath.Join(worktreePath, ".git"))
-	if err != nil {
-		return ""
-	}
-	line := strings.TrimSpace(string(data))
-	const prefix = "gitdir: "
-	if !strings.HasPrefix(line, prefix) {
-		return ""
-	}
-	target := strings.TrimPrefix(line, prefix)
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(worktreePath, target)
-	}
-	target = filepath.Clean(target)
-	worktreesDir := filepath.Dir(target)
-	gitDir := filepath.Dir(worktreesDir)
-	if filepath.Base(worktreesDir) != "worktrees" {
-		return ""
-	}
-	return gitDir
-}
-
-// readTrustedRefBytes reads the .nexus/config.yaml content from the operator-controlled
-// trusted ref in commonGitDir. The trusted ref is the origin default branch
-// (refs/remotes/origin/HEAD), never the worktree's checked-out branch.
-//
-// Returns (data, nil) when the file exists on the trusted ref.
-// Returns (nil, nil) — FAIL CLOSED — in all non-error conditions where the
-// config cannot be read:
-//   - no origin/HEAD (remote not fetched or no origin configured)
-//   - .nexus/config.yaml absent on the trusted ref
-//
-// Returns (nil, err) only for unexpected git failures that are not simply
-// "ref or file not found".
-func readTrustedRefBytes(commonGitDir string) ([]byte, error) {
-	out, err := worktreeGitRunner(commonGitDir, "symbolic-ref", "refs/remotes/origin/HEAD")
-	if err != nil || len(bytes.TrimSpace(out)) == 0 {
-		// No origin/HEAD → fail closed; no auto-grant.
-		return nil, nil
-	}
-	ref := strings.TrimSpace(string(out))
-
-	// Read .nexus/config.yaml from the trusted ref — NEVER from the worktree branch.
-	data, err := worktreeGitRunner(commonGitDir, "show", ref+":"+config.ConfigRelPath)
-	if err != nil {
-		// File absent on trusted ref → fail closed; no auto-grant.
-		return nil, nil
-	}
-	return data, nil
-}
-
 // buildWorktreeEgressArgs derives the --secret and --repo CLI args from the
-// egress.policy and egress.secrets sections of the .nexus/config.yaml read from the
-// trusted ref.
-//
-// Algorithm (three steps):
-//
-//  1. Build pathPolicies and allowedRepo from egress.policy:
-//     - preset:github(+repo) → EgressGitHubPolicy keyed under [""][host].
-//     repo is derived from the origin remote when absent.
-//     - paths → EgressHostPolicy{Paths} keyed under [""][host].
-//
-//  2. Build secrets from egress.secrets (env→hosts only; no path info).
-//
-//  3. D-PDE-16 check: every GitHub host in a secret bind must be covered
-//     by a PathPolicies entry or AllowedRepo. Non-GitHub hosts are exempt.
-//
-// T3 hardening: derived or explicit owner/name equal to "." or ".." is rejected.
-// buildWorktreeEgressArgs derives the --secret and --repo CLI args from the
-// egress.policy and egress.secrets sections of the .nexus/config.yaml read from the
-// trusted ref.
+// egress.policy and egress.secrets sections of the checkout's .nexus/config.yaml.
 //
 // Algorithm (three steps):
 //
@@ -3731,10 +3651,19 @@ func herdrResolveWorktreeImage(checkoutPath string) (imageFlag, imageVal string,
 	if loadErr != nil {
 		return "", "", fmt.Errorf("resolve worktree image: load config: %w", loadErr)
 	}
+	imageFlag, imageVal = herdrResolveWorktreeImageFromConfig(checkoutPath, cfgPath)
+	return imageFlag, imageVal, nil
+}
+
+// herdrResolveWorktreeImageFromConfig is herdrResolveWorktreeImage with the
+// config.Load result already in hand (cfgPath "" when the checkout has no
+// .nexus/config.yaml), so a caller that also needs the parsed config loads
+// the file once.
+func herdrResolveWorktreeImageFromConfig(checkoutPath, cfgPath string) (imageFlag, imageVal string) {
 	if cfgPath != "" {
 		// .nexus/config.yaml found: use --file <project root> (NOT the .nexus
 		// dir) so the build applies the full project config.
-		return "--file", config.ProjectDir(cfgPath), nil
+		return "--file", config.ProjectDir(cfgPath)
 	}
 	// No .nexus/config.yaml, but a .nexus/Containerfile (or .nexus/Dockerfile) is itself
 	// a complete build definition — the `--file` build engine reads exactly that
@@ -3742,9 +3671,9 @@ func herdrResolveWorktreeImage(checkoutPath string) (imageFlag, imageVal string,
 	// worktree sandbox from it; requiring a separate .nexus/config.yaml sentinel would be
 	// a surprising extra step (the Containerfile is the thing that matters).
 	if dir := nexusContainerfileDir(checkoutPath); dir != "" {
-		return "--file", dir, nil
+		return "--file", dir
 	}
-	return "--image", herdrDefaultImage, nil
+	return "--image", herdrDefaultImage
 }
 
 // nexusContainerfileDir walks up from startDir toward the repository root (the
@@ -3847,7 +3776,7 @@ func isHerdrWorktreeHandle(handle string) bool {
 //
 //	operator-supplied flag is safe because it is not branch-controlled.
 //	The effective nested value is (--nested flag) OR (sandbox.nested in
-//	the trusted-ref .nexus/config.yaml). See herdrWorktreeSandbox.
+//	the checkout's .nexus/config.yaml). See herdrWorktreeSandbox.
 //
 // Called by the "worktree-sandbox" case in runHerdrPlugin so flag parsing
 // happens before the workspace ID is read, preventing the flags from being
@@ -3917,7 +3846,7 @@ func herdrWorktreeSandbox(
 	auto bool,
 	// nestedFlag is the operator opt-in from the --nested CLI flag (D-N3N-02).
 	// The effective nested value is nestedFlag OR sandbox.nested from the
-	// trusted-ref .nexus/config.yaml. Either channel alone is sufficient.
+	// checkout's .nexus/config.yaml. Either channel alone is sufficient.
 	nestedFlag bool,
 	createFn func(context.Context, string, string, string, string, []string, []string, string, domain.EgressPathPolicies, bool) error,
 	getFn func(context.Context, string) (domain.Sandbox, error),
@@ -4074,63 +4003,41 @@ func herdrWorktreeSandbox(
 		}
 	}
 
-	// Step 6.5: resolve the bootable image for this worktree checkout.
-	// config.Load walks from info.Path up to the .git boundary; an absent
-	// .nexus/config.yaml is not an error. A malformed .nexus/config.yaml IS an error — the
-	// operator must fix it before the sandbox can be created.
-	imageFlag, imageVal, imgErr := herdrResolveWorktreeImage(info.Path)
-	if imgErr != nil {
-		fmt.Fprintf(w, "worktree-sandbox: resolve image: %v\n", imgErr)
+	// Step 6.5: load the checkout's .nexus/config.yaml once (D-12). config.Load
+	// walks from info.Path up to the .git boundary; an absent file is not an
+	// error, a malformed one IS — the operator must fix it before the sandbox
+	// can be created. The same file drives the bootable image (--file), the
+	// egress policy/secrets and the nested opt-in.
+	checkoutCfg, cfgPath, loadErr := config.Load(info.Path)
+	if loadErr != nil {
+		fmt.Fprintf(w, "worktree-sandbox: load checkout config: %v\n", loadErr)
 		if !failSafe {
-			return fmt.Errorf("worktree-sandbox: resolve image: %w", imgErr)
+			return fmt.Errorf("worktree-sandbox: load checkout config: %w", loadErr)
 		}
 		return nil
 	}
+	imageFlag, imageVal := herdrResolveWorktreeImageFromConfig(info.Path, cfgPath)
 	fmt.Fprintf(w, "worktree-sandbox: build source: %s %s\n", imageFlag, imageVal)
 
-	// Step 6.6: read egress config from operator-controlled trusted ref (Finding A /
-	// D-PDE-17). Never read from the worktree branch or working tree bytes.
-	// Fail closed: no trusted ref or absent .nexus/config.yaml → no auto-grant.
 	var (
 		egressSecrets      []string
 		egressAllowedRepo  string
 		egressPathPolicies domain.EgressPathPolicies
-		// nestedCfg is the config channel opt-in (D-N3N-02). Read ONLY from the
-		// trusted ref — never from the worktree branch — so no branch can grant
-		// itself /dev/kvm. Effective nested = nestedFlag || nestedCfg.
-		nestedCfg bool
+		nestedCfg          bool
 	)
-	commonGitDir := worktreeCommonGitDir(info.Path)
-	if commonGitDir != "" {
-		cfgBytes, refErr := readTrustedRefBytes(commonGitDir)
-		if refErr != nil {
-			fmt.Fprintf(w, "worktree-sandbox: read trusted ref config: %v\n", refErr)
+	if cfgPath != "" {
+		egressSecrets, egressAllowedRepo, egressPathPolicies, err = buildWorktreeEgressArgs(checkoutCfg)
+		if err != nil {
+			fmt.Fprintf(w, "worktree-sandbox: build egress args: %v\n", err)
 			if !failSafe {
-				return fmt.Errorf("worktree-sandbox: read trusted ref config: %w", refErr)
+				return fmt.Errorf("worktree-sandbox: build egress args: %w", err)
 			}
 			return nil
 		}
-		if cfgBytes != nil {
-			parsedCfg, parseErr := config.Parse(cfgBytes)
-			if parseErr != nil {
-				fmt.Fprintf(w, "worktree-sandbox: parse trusted ref .nexus/config.yaml: %v\n", parseErr)
-				if !failSafe {
-					return fmt.Errorf("worktree-sandbox: parse trusted ref .nexus/config.yaml: %w", parseErr)
-				}
-				return nil
-			}
-			egressSecrets, egressAllowedRepo, egressPathPolicies, err = buildWorktreeEgressArgs(parsedCfg)
-			if err != nil {
-				fmt.Fprintf(w, "worktree-sandbox: build egress args: %v\n", err)
-				if !failSafe {
-					return fmt.Errorf("worktree-sandbox: build egress args: %w", err)
-				}
-				return nil
-			}
-			nestedCfg = parsedCfg.Sandbox.Nested
-		} else {
-			fmt.Fprintf(w, "worktree-sandbox: %s absent on trusted ref (refs/remotes/origin/HEAD); no egress policy or nested opt-in granted\n", config.ConfigRelPath)
-		}
+		nestedCfg = checkoutCfg.Sandbox.Nested
+		fmt.Fprintf(w, "worktree-sandbox: egress policy from %s: %d secret bind(s), nested=%t\n", cfgPath, len(egressSecrets), nestedCfg)
+	} else {
+		fmt.Fprintf(w, "worktree-sandbox: %s absent in checkout; no egress policy or nested opt-in\n", config.ConfigRelPath)
 	}
 	// Step 7: create sandbox. A 240 s context covers image pull, ext4 setup,
 	// and VM boot on typical hardware. Explicit mode failures are real errors;

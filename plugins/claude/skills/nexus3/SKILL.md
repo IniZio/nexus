@@ -55,7 +55,8 @@ question. Each reference is self-contained; open only what you need.
   (cross-repo → 403, GraphQL → 403). See `references/egress.md`.
 - **A sandbox may push exactly one ref** — the branch its bound worktree had checked out
   at create time. There is no fixed branch-name pattern. See `references/delegate.md`.
-- **`.nexus/config.yaml` is read from `origin/HEAD`**, never from the agent's feature branch.
-  A config on a PR branch grants nothing until merged. See `references/onboard.md`.
+- **`.nexus/config.yaml` is read from the worktree's own checkout.** A change takes
+  effect on the next worktree-sandbox create; no push to the default branch is
+  needed. See `references/onboard.md`.
 - **Never write `/**` at root or list `/graphql`** under `api.github.com` in
   `egress.policy`. Scope every path to `/repos/OWNER/REPO/...`.

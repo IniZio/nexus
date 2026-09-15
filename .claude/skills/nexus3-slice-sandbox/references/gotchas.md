@@ -196,7 +196,7 @@ workspace is destroyed with its last pane.
 
 **Consequence:** "create workspace → remove the auto-provisioned sandbox →
 recreate with different flags" cannot work. Change what the auto-provision reads
-(the trusted-ref config) instead of trying to outrace or undo it.
+(the checkout's `.nexus/config.yaml`) instead of trying to outrace or undo it.
 
 ---
 

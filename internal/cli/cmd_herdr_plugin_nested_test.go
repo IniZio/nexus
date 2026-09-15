@@ -308,31 +308,15 @@ func TestHerdrWorktreeSandbox_linkedWorktree_noGroundworkDir_noGroundworkMount(t
 	}
 }
 
-// ── trusted-ref property: nested from parsedCfg only ─────────────────────────
+// ── nested from the checkout config (D-12) ───────────────────────────────────
 //
-// The trusted-ref property — that nested is read from parsedCfg (trusted ref)
-// and not from the worktree checkout — is structural: readTrustedRefBytes runs
-// `git show refs/remotes/origin/HEAD:.nexus/config.yaml` and herdrResolveWorktreeImage
-// reads from info.Path. These two callers are separate code paths; there is no
-// single seam in the test helpers that can inject both a worktree-branch byte
-// stream and a trusted-ref byte stream simultaneously without mocking at the
-// git level.
-//
-// The security invariant is therefore asserted structurally by inspection:
-// 1. readTrustedRefBytes runs `git show refs/remotes/origin/HEAD:.nexus/config.yaml`
-//    — it NEVER references info.Path or the worktree branch name.
-// 2. The parsedCfg.Sandbox.Nested extraction sits inside the `if cfgBytes != nil`
-//    block that follows readTrustedRefBytes — it is not reachable from
-//    herdrResolveWorktreeImage's code path.
-// 3. herdrResolveWorktreeImage (which reads from info.Path) does not produce
-//    any nested value; it only returns (imageFlag, imageVal, error).
-//
-// We do assert the end-to-end wiring (nestedFlag || nestedCfg reaches createFn)
-// via the TestHerdrWorktreeSandboxCreateArgs_nested_true_adds_flag test above,
-// and the --nested CLI flag path via TestHerdrWorktreeSandboxParseArgs_nestedFlag.
-// A full integration proof would require a live git repo with a remote ref,
-// which is outside the hermetic test boundary. The structural argument above
-// constitutes the trust-boundary claim; see the D-N3N-02 decision record.
+// sandbox.nested is read from the worktree checkout's .nexus/config.yaml by
+// config.Load in herdrWorktreeSandbox. The real-git proof that the checkout
+// file (and not the default branch) is the source lives in
+// TestHerdrWorktreeSandbox_EgressFromCheckout / _MainOnlyConfigDoesNotGrant
+// (cmd_herdr_plugin_egress_test.go). The end-to-end wiring (nestedFlag ||
+// nestedCfg reaches createFn) is asserted below and the --nested CLI flag path
+// via TestHerdrWorktreeSandboxParseArgs_nestedFlag.
 
 func TestHerdrWorktreeSandboxCreateArgs_nestedFlagThreadedToCreate(t *testing.T) {
 	// Verify that the nested bool received by createFn controls whether

@@ -79,22 +79,18 @@ nexus3 create myproject/sandbox \
 ### How .nexus/config.yaml egress works
 
 - `.nexus/config.yaml` at the repo root controls egress for worktree sandboxes.
-- It is read from `refs/remotes/origin/HEAD` (the operator's default branch),
-  **not** from the agent's checked-out branch.
+- It is read from the worktree's own checkout; a change takes effect on the
+  next worktree-sandbox create.
 - GitHub hosts **require** an `egress.policy` entry; sandbox create is refused
   with a hard error if one is absent.
 - Non-GitHub hosts (GitLab, generic API) have no mandatory path policy.
 
-### Trust anchor
+### Config source
 
-1. Agent authors `.nexus/config.yaml` on its feature branch and opens a PR.
-2. The PR branch config grants nothing — the sandbox launches without the
-   declared egress.
-3. Operator reviews and merges to the default branch.
-4. Every new worktree sandbox thereafter inherits the egress rule.
-
-A config on a PR branch only is not a security gap — it is the intended trust
-boundary. The operator's merge is the ratification act.
+1. Author `.nexus/config.yaml` in the worktree and commit it on the branch.
+2. The next worktree sandbox created for that checkout inherits the egress
+   rule. No push to the default branch is needed.
+3. An already-running sandbox is not updated — relaunch it.
 
 ### Verification
 

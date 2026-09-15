@@ -51,7 +51,7 @@
         },
         "secrets": {
           "type": "array",
-          "description": "Host+credential bindings. Each entry attaches one env var (from the host environment) to one or more target hostnames. Security-critical: read from the trusted base ref only.",
+          "description": "Host+credential bindings. Each entry attaches one env var (from the host environment) to one or more target hostnames. Worktree sandboxes read it from the checkout's own .nexus/config.yaml.",
           "items": {
             "oneOf": [
               {
@@ -134,7 +134,7 @@
         },
         "nested": {
           "type": "boolean",
-          "description": "Expose /dev/kvm to the guest so inner VMs can boot. Opt-in and default false (D-N3N-02): nested virtualisation widens the isolation perimeter. Honoured only from the trusted ref (refs/remotes/origin/HEAD), never from a worktree branch, so no branch can grant itself /dev/kvm.",
+          "description": "Expose /dev/kvm to the guest so inner VMs can boot. Opt-in and default false (D-N3N-02): nested virtualisation widens the isolation perimeter. Worktree sandboxes honour it from the checkout's own .nexus/config.yaml; it takes effect on the next worktree-sandbox create.",
           "default": false
         }
       }

@@ -50,7 +50,7 @@ The plugin's `.mcp.json` wires `nexus3 mcp` as a stdio transport. The same 13-to
 
 ## `.nexus/config.yaml` — per-repo egress configuration
 
-Repos that already have a `.nexus/config.yaml` are pre-configured. A worktree sandbox created for that repo reads the file from the base branch (`git show refs/remotes/origin/HEAD:.nexus/config.yaml`) as its trust anchor.
+Repos that already have a `.nexus/config.yaml` are pre-configured. A worktree sandbox reads the file from its own checkout — the same file `nexus3 sandbox create --file` builds from — so a change takes effect on the next worktree-sandbox create for that checkout; no push to the default branch is needed.
 
 Repos without one can run `/nexus3:nexus3-init` to generate one. The minimum structure:
 

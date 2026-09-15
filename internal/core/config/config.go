@@ -330,9 +330,9 @@ type SandboxConfig struct {
 
 	// Nested enables nested virtualisation (D-N3N-02: must be opt-in, default
 	// false). When true, /dev/kvm is exposed to the guest VM so inner VMs can
-	// boot. This widens the isolation perimeter and MUST NOT be set from a
-	// worktree branch — only the trusted ref (refs/remotes/origin/HEAD via
-	// readTrustedRefBytes) is honoured, so no branch can grant itself /dev/kvm.
+	// boot. This widens the isolation perimeter. Worktree sandboxes honour it
+	// from the checkout's .nexus/config.yaml (D-12): it takes effect on the
+	// next worktree-sandbox create for that checkout.
 	Nested bool `yaml:"nested"`
 }
 

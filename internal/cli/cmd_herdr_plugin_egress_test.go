@@ -1,8 +1,8 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,17 +82,7 @@ func TestHerdrWorktreeSandboxCreateArgs(t *testing.T) {
 
 // TestBuildWorktreeEgressArgs verifies egress arg derivation from config.Config.
 func TestBuildWorktreeEgressArgs(t *testing.T) {
-	withGitRunner := func(t *testing.T, fn func(dir string, args ...string) ([]byte, error)) func() {
-		t.Helper()
-		old := worktreeGitRunner
-		worktreeGitRunner = fn
-		return func() { worktreeGitRunner = old }
-	}
-
 	t.Run("a: non-GitHub secret, no policy needed", func(t *testing.T) {
-		defer withGitRunner(t, func(dir string, args ...string) ([]byte, error) {
-			return nil, fmt.Errorf("not called")
-		})()
 		cfg := config.Config{}
 		cfg.Egress.Secrets = config.EgressSecrets{
 			{Env: "GITLAB_TOKEN", Hosts: []string{"gitlab.com"}},
@@ -110,9 +100,6 @@ func TestBuildWorktreeEgressArgs(t *testing.T) {
 	})
 
 	t.Run("b: self-hosted secret, non-GitHub, no policy needed", func(t *testing.T) {
-		defer withGitRunner(t, func(dir string, args ...string) ([]byte, error) {
-			return nil, fmt.Errorf("not called")
-		})()
 		cfg := config.Config{}
 		cfg.Egress.Secrets = config.EgressSecrets{
 			{Env: "MYTOKEN", Hosts: []string{"git.corp.example.com"}},
@@ -127,9 +114,6 @@ func TestBuildWorktreeEgressArgs(t *testing.T) {
 	})
 
 	t.Run("c: GitHub secret with generic paths policy — allowed", func(t *testing.T) {
-		defer withGitRunner(t, func(dir string, args ...string) ([]byte, error) {
-			return nil, fmt.Errorf("not called")
-		})()
 		cfg := config.Config{}
 		cfg.Egress.Policy = config.EgressPolicies{
 			{Host: "api.github.com", Paths: []string{"/repos/owner/myrepo/**", "/repos/owner/myrepo", "/user"}},
@@ -157,9 +141,6 @@ func TestBuildWorktreeEgressArgs(t *testing.T) {
 	})
 
 	t.Run("d: GitHub secret with NO policy — D-PDE-16 error", func(t *testing.T) {
-		defer withGitRunner(t, func(dir string, args ...string) ([]byte, error) {
-			return nil, fmt.Errorf("not called")
-		})()
 		cfg := config.Config{}
 		// No egress.policy entries — GitHub host must be refused.
 		cfg.Egress.Secrets = config.EgressSecrets{
@@ -175,9 +156,6 @@ func TestBuildWorktreeEgressArgs(t *testing.T) {
 	})
 
 	t.Run("e: non-API secret host plus generic paths policy", func(t *testing.T) {
-		defer withGitRunner(t, func(dir string, args ...string) ([]byte, error) {
-			return nil, fmt.Errorf("not called")
-		})()
 		cfg := config.Config{}
 		cfg.Egress.Policy = config.EgressPolicies{
 			{Host: "api.example.com", Paths: []string{"GET /v4/projects/123/**"}},
@@ -201,9 +179,6 @@ func TestBuildWorktreeEgressArgs(t *testing.T) {
 	})
 
 	t.Run("f: empty config — no secrets, no policy", func(t *testing.T) {
-		defer withGitRunner(t, func(dir string, args ...string) ([]byte, error) {
-			return nil, fmt.Errorf("not called")
-		})()
 		cfg := config.Config{}
 		secrets, allowedRepo, pp, err := buildWorktreeEgressArgs(cfg)
 		if err != nil {
@@ -221,200 +196,153 @@ func TestBuildWorktreeEgressArgs(t *testing.T) {
 	})
 }
 
-// TestReadTrustedRefBytes_FailClosed is the adversarial test proving Finding A:
-// .nexus/config.yaml committed on the worktree's local branch does NOT grant access.
-// Only the content from refs/remotes/origin/HEAD (origin default branch) is returned.
-func TestReadTrustedRefBytes_FailClosed(t *testing.T) {
+// egressFixtureRepo builds a real git repo with a linked worktree on a
+// feature branch and returns (mainRepo, worktreeDir). mainContent, when
+// non-empty, is committed as .nexus/config.yaml on the default branch;
+// worktreeContent, when non-empty, is committed on the feature branch only;
+// when empty and mainContent is set, the feature branch removes the file.
+func egressFixtureRepo(t *testing.T, mainContent, worktreeContent string) (string, string) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping real git repo test in short mode")
 	}
-
-	// Verify git is available.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
-
 	tmp := t.TempDir()
 	mainRepo := filepath.Join(tmp, "main")
-	bareClone := filepath.Join(tmp, "bare.git")
 	worktreeDir := filepath.Join(tmp, "worktree")
-
-	gitExec := func(t *testing.T, dir string, args ...string) {
+	gitExec := func(dir string, args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
-		out, err := cmd.CombinedOutput()
-		if err != nil {
+		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
 		}
 	}
-
-	// 1. Init main repo.
-	gitExec(t, tmp, "init", mainRepo)
-	gitExec(t, mainRepo, "config", "user.email", "test@test.com")
-	gitExec(t, mainRepo, "config", "user.name", "Test User")
-
-	// 2. Commit .nexus/config.yaml on the default branch.
-	originContent := "version: 1\negress:\n  policy:\n    - host: github.com\n      paths: [\"/repos/origin/repo/**\", \"/user\"]\n  secrets:\n    - env: GH_TOKEN\n      hosts:\n        - github.com\n"
-	if err := os.MkdirAll(filepath.Join(mainRepo, ".nexus"), 0700); err != nil {
-		t.Fatal(err)
+	writeCfg := func(dir, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(dir, ".nexus"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, config.ConfigRelPath), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		gitExec(dir, "add", config.ConfigRelPath)
 	}
-	if err := os.WriteFile(filepath.Join(mainRepo, config.ConfigRelPath), []byte(originContent), 0600); err != nil {
-		t.Fatal(err)
+	gitExec(tmp, "init", mainRepo)
+	gitExec(mainRepo, "config", "user.email", "test@test.com")
+	gitExec(mainRepo, "config", "user.name", "Test User")
+	if mainContent != "" {
+		writeCfg(mainRepo, mainContent)
+	} else {
+		if err := os.WriteFile(filepath.Join(mainRepo, "README"), []byte("x\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		gitExec(mainRepo, "add", "README")
 	}
-	gitExec(t, mainRepo, "add", config.ConfigRelPath)
-	gitExec(t, mainRepo, "commit", "-m", "initial commit")
-
-	// Find the default branch name.
-	defaultBranch := "main"
-	cmd := exec.Command("git", "-C", mainRepo, "symbolic-ref", "--short", "HEAD")
-	if out, err := cmd.Output(); err == nil {
-		defaultBranch = strings.TrimSpace(string(out))
+	gitExec(mainRepo, "commit", "-m", "initial commit")
+	gitExec(mainRepo, "worktree", "add", worktreeDir, "-b", "my-feature")
+	gitExec(worktreeDir, "config", "user.email", "test@test.com")
+	gitExec(worktreeDir, "config", "user.name", "Test User")
+	switch {
+	case worktreeContent != "":
+		writeCfg(worktreeDir, worktreeContent)
+		gitExec(worktreeDir, "commit", "-m", "config on feature branch")
+	case mainContent != "":
+		gitExec(worktreeDir, "rm", "-q", config.ConfigRelPath)
+		gitExec(worktreeDir, "commit", "-m", "drop config on feature branch")
 	}
+	return mainRepo, worktreeDir
+}
 
-	// 3. Clone as bare to simulate origin.
-	gitExec(t, tmp, "clone", "--bare", mainRepo, bareClone)
-
-	// 4. Add bare clone as remote origin.
-	gitExec(t, mainRepo, "remote", "add", "origin", bareClone)
-	gitExec(t, mainRepo, "fetch", "origin")
-	// Set origin/HEAD.
-	gitExec(t, mainRepo, "remote", "set-head", "origin", defaultBranch)
-
-	// 5. Create a linked worktree on a feature branch.
-	gitExec(t, mainRepo, "worktree", "add", worktreeDir, "-b", "my-feature")
-
-	// 6. In the worktree: modify .nexus/config.yaml with EXTRA secrets and commit.
-	featureContent := originContent + "    - env: EVIL_TOKEN\n      hosts:\n        - evil.example.com\n"
-	if err := os.WriteFile(filepath.Join(worktreeDir, config.ConfigRelPath), []byte(featureContent), 0600); err != nil {
-		t.Fatal(err)
+// runWorktreeSandboxCapturingEgress drives the production herdrWorktreeSandbox
+// against worktreeDir and returns what reached createFn.
+func runWorktreeSandboxCapturingEgress(t *testing.T, worktreeDir string) (out string, imageFlag, imageVal string, secrets []string, nested bool, err error) {
+	t.Helper()
+	root := t.TempDir()
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfo("w-egress", "w-src", "my-feature", worktreeDir),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+	t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
+	old := herdrExecCommandContext
+	herdrExecCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "exit 0")
 	}
-	gitExec(t, worktreeDir, "add", config.ConfigRelPath)
-	gitExec(t, worktreeDir, "config", "user.email", "test@test.com")
-	gitExec(t, worktreeDir, "config", "user.name", "Test User")
-	gitExec(t, worktreeDir, "commit", "-m", "add evil token on feature branch")
-
-	// 7. Resolve commonGitDir from the worktree.
-	commonGitDir := worktreeCommonGitDir(worktreeDir)
-	if commonGitDir == "" {
-		t.Fatal("worktreeCommonGitDir returned empty; linked worktree not set up correctly")
+	t.Cleanup(func() { herdrExecCommandContext = old })
+	var called bool
+	create := func(_ context.Context, _, _, flag, val string, _ []string, s []string, _ string, _ domain.EgressPathPolicies, n bool) error {
+		called, imageFlag, imageVal, secrets, nested = true, flag, val, s, n
+		return nil
 	}
-	expectedGitDir := filepath.Join(mainRepo, ".git")
-	if commonGitDir != expectedGitDir {
-		t.Fatalf("commonGitDir=%q, want %q", commonGitDir, expectedGitDir)
+	var w strings.Builder
+	err = herdrWorktreeSandbox(context.Background(), "w-egress", &w, root, false, false, false, false, create, stubSandboxGet(domain.Sandbox{}, nil))
+	if err == nil && !called {
+		t.Fatal("createFn was never invoked")
 	}
+	return w.String(), imageFlag, imageVal, secrets, nested, err
+}
 
-	// 8. Call readTrustedRefBytes.
-	data, err := readTrustedRefBytes(commonGitDir)
+const egressTestCfgWithSecret = "version: 1\nsandbox:\n  nested: true\negress:\n  policy:\n    - host: github.com\n      paths: [\"/repos/origin/repo/**\", \"/user\"]\n  secrets:\n    - env: GH_TOKEN\n      hosts:\n        - github.com\n"
+
+// TestHerdrWorktreeSandbox_EgressFromCheckout proves D-12: the worktree
+// checkout's .nexus/config.yaml is what grants egress and nested — even when
+// the default branch has no such file.
+func TestHerdrWorktreeSandbox_EgressFromCheckout(t *testing.T) {
+	_, worktreeDir := egressFixtureRepo(t, "", egressTestCfgWithSecret)
+	out, imageFlag, imageVal, secrets, nested, err := runWorktreeSandboxCapturingEgress(t, worktreeDir)
 	if err != nil {
-		t.Fatalf("readTrustedRefBytes returned error: %v", err)
+		t.Fatalf("herdrWorktreeSandbox: %v\n%s", err, out)
 	}
-	if data == nil {
-		t.Fatal("readTrustedRefBytes returned nil; expected origin/HEAD content")
+	if imageFlag != "--file" || imageVal != worktreeDir {
+		t.Errorf("image = %s %s, want --file %s", imageFlag, imageVal, worktreeDir)
 	}
-
-	// 9. Verify: must NOT contain the feature-branch EVIL_TOKEN.
-	if strings.Contains(string(data), "EVIL_TOKEN") {
-		t.Errorf("readTrustedRefBytes returned feature-branch content (EVIL_TOKEN present); "+
-			"trusted-ref guard FAILED\ngot:\n%s", data)
+	if len(secrets) != 1 || secrets[0] != "GH_TOKEN@github.com" {
+		t.Errorf("secrets = %v, want [GH_TOKEN@github.com] from the checkout config\n%s", secrets, out)
 	}
-
-	// 10. Verify: must contain the origin content (GH_TOKEN from origin branch).
-	if !strings.Contains(string(data), "GH_TOKEN") {
-		t.Errorf("readTrustedRefBytes did not return origin content (GH_TOKEN missing)\ngot:\n%s", data)
+	if !nested {
+		t.Errorf("nested = false, want true from the checkout config\n%s", out)
 	}
-
-	// 11. Parse and verify it decodes cleanly.
-	parsed, parseErr := config.Parse(data)
-	if parseErr != nil {
-		t.Fatalf("config.Parse of trusted ref bytes failed: %v", parseErr)
-	}
-	if len(parsed.Egress.Secrets) == 0 {
-		t.Error("parsed config has no egress secrets; expected at least one from origin branch")
-	}
-
-	// 12. Verify fail-closed: remove origin/HEAD and expect (nil, nil).
-	gitExec(t, mainRepo, "remote", "set-head", "origin", "--delete")
-	dataNoHead, errNoHead := readTrustedRefBytes(commonGitDir)
-	if errNoHead != nil {
-		t.Fatalf("readTrustedRefBytes with no origin/HEAD returned error: %v", errNoHead)
-	}
-	if dataNoHead != nil {
-		t.Errorf("readTrustedRefBytes with no origin/HEAD should return nil (fail closed), got data")
+	want := "egress policy from " + filepath.Join(worktreeDir, config.ConfigRelPath)
+	if !strings.Contains(out, want) {
+		t.Errorf("output missing %q:\n%s", want, out)
 	}
 }
 
-// TestReadTrustedRefBytes_NoOriginHead verifies fail-closed when symbolic-ref fails.
-func TestReadTrustedRefBytes_NoOriginHead(t *testing.T) {
-	old := worktreeGitRunner
-	defer func() { worktreeGitRunner = old }()
-	worktreeGitRunner = func(dir string, args ...string) ([]byte, error) {
-		if args[0] == "symbolic-ref" {
-			return nil, fmt.Errorf("fatal: ref refs/remotes/origin/HEAD is not a symbolic ref")
-		}
-		return nil, fmt.Errorf("unexpected call: %v", args)
-	}
-
-	data, err := readTrustedRefBytes("/fake/git")
+// TestHerdrWorktreeSandbox_MainOnlyConfigDoesNotGrant is the inverse: a
+// .nexus/config.yaml present only on the default branch grants nothing to a
+// worktree whose checkout lacks the file.
+func TestHerdrWorktreeSandbox_MainOnlyConfigDoesNotGrant(t *testing.T) {
+	_, worktreeDir := egressFixtureRepo(t, egressTestCfgWithSecret, "")
+	out, imageFlag, imageVal, secrets, nested, err := runWorktreeSandboxCapturingEgress(t, worktreeDir)
 	if err != nil {
-		t.Fatalf("expected nil error (fail closed), got %v", err)
+		t.Fatalf("herdrWorktreeSandbox: %v\n%s", err, out)
 	}
-	if data != nil {
-		t.Errorf("expected nil data (fail closed), got %v", data)
+	if imageFlag != "--image" || imageVal != herdrDefaultImage {
+		t.Errorf("image = %s %s, want --image %s", imageFlag, imageVal, herdrDefaultImage)
+	}
+	if len(secrets) != 0 {
+		t.Errorf("secrets = %v, want none (main-only config must not grant)\n%s", secrets, out)
+	}
+	if nested {
+		t.Errorf("nested = true, want false (main-only config must not grant)\n%s", out)
+	}
+	if want := config.ConfigRelPath + " absent in checkout; no egress policy or nested opt-in"; !strings.Contains(out, want) {
+		t.Errorf("output missing %q:\n%s", want, out)
 	}
 }
 
-// TestReadTrustedRefBytes_FileAbsent verifies fail-closed when
-// .nexus/config.yaml is absent on the trusted ref, and that the git runner is
-// asked for exactly `<ref>:.nexus/config.yaml` (never the legacy root path).
-func TestReadTrustedRefBytes_FileAbsent(t *testing.T) {
-	old := worktreeGitRunner
-	defer func() { worktreeGitRunner = old }()
-	var showArg string
-	worktreeGitRunner = func(dir string, args ...string) ([]byte, error) {
-		if args[0] == "symbolic-ref" {
-			return []byte("refs/remotes/origin/main\n"), nil
-		}
-		if args[0] == "show" {
-			showArg = args[1]
-			return nil, fmt.Errorf("fatal: Path '%s' does not exist in 'refs/remotes/origin/main'", config.ConfigRelPath)
-		}
-		return nil, fmt.Errorf("unexpected call: %v", args)
+// TestHerdrWorktreeSandbox_MalformedCheckoutConfigIsError: a malformed file in
+// the checkout is an error in explicit mode, not a silent no-grant.
+func TestHerdrWorktreeSandbox_MalformedCheckoutConfigIsError(t *testing.T) {
+	_, worktreeDir := egressFixtureRepo(t, "", "version: 1\negress: [not a map\n")
+	out, _, _, _, _, err := runWorktreeSandboxCapturingEgress(t, worktreeDir)
+	if err == nil {
+		t.Fatalf("expected error for malformed checkout config, got nil\n%s", out)
 	}
-
-	data, err := readTrustedRefBytes("/fake/git")
-	if err != nil {
-		t.Fatalf("expected nil error (fail closed), got %v", err)
-	}
-	if data != nil {
-		t.Errorf("expected nil data (fail closed), got %v", data)
-	}
-	if want := "refs/remotes/origin/main:" + config.ConfigRelPath; showArg != want {
-		t.Errorf("git show arg = %q, want %q", showArg, want)
-	}
-}
-
-// TestReadTrustedRefBytes_ShowArg verifies the trusted-ref read returns the
-// bytes git serves for `<ref>:.nexus/config.yaml`.
-func TestReadTrustedRefBytes_ShowArg(t *testing.T) {
-	old := worktreeGitRunner
-	defer func() { worktreeGitRunner = old }()
-	worktreeGitRunner = func(dir string, args ...string) ([]byte, error) {
-		if args[0] == "symbolic-ref" {
-			return []byte("refs/remotes/origin/main\n"), nil
-		}
-		if args[0] == "show" && args[1] == "refs/remotes/origin/main:"+config.ConfigRelPath {
-			return []byte("version: 1\n"), nil
-		}
-		return nil, fmt.Errorf("unexpected call: %v", args)
-	}
-
-	data, err := readTrustedRefBytes("/fake/git")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if string(data) != "version: 1\n" {
-		t.Errorf("data = %q, want trusted-ref config bytes", data)
+	if !strings.Contains(err.Error(), "load checkout config") {
+		t.Errorf("error = %v, want load checkout config", err)
 	}
 }
 

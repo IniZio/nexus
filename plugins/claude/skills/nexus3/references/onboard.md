@@ -250,22 +250,18 @@ Do not use the `./nexus3` binary in the nexus3 repo root — it is a leftover fr
 
 ---
 
-## Step 6 — Trust anchor: propose → merge → ratify
+## Step 6 — Where the config is read from
 
-**The config is inert until it is on the default branch.**
-
-The worktree sandbox launch reads `.nexus/config.yaml` from `refs/remotes/origin/HEAD` — the operator's default branch as seen from the local clone. It never reads the agent's checked-out feature branch.
+The worktree sandbox launch reads `.nexus/config.yaml` from the worktree's own checkout — the same file the `--file` build reads.
 
 Consequence:
 
-1. Author `.nexus/config.yaml` on a feature branch and open a PR.
-2. The PR branch config grants **nothing** — the sandbox boots with no egress rules from this file.
-3. Operator reviews, confirms the path scoping is correct, and merges to the default branch.
-4. From that point, every new worktree sandbox picks up the brokering and path-policy rules from `egress.secrets` and `egress.policy` (see the enforcement note in Step 3b for what `egress.allow` does and does not enforce).
+1. Author `.nexus/config.yaml` in the worktree and commit it on the branch.
+2. The next worktree sandbox created for that checkout picks up the brokering and path-policy rules from `egress.secrets` and `egress.policy` (see the enforcement note in Step 3b for what `egress.allow` does and does not enforce). No push to the default branch is needed.
 
-Existing sandboxes are **not updated** automatically. They must be relaunched (`nexus3 rm` + `nexus3 create`) to pick up the merged config.
+Existing sandboxes are **not updated** automatically. They must be relaunched (`nexus3 rm` + `nexus3 create`) to pick up the change.
 
-Tell the operator: "This config takes effect for new sandboxes only once merged to `origin/HEAD`. Existing sandboxes must be relaunched."
+Tell the operator: "This config takes effect for new worktree sandboxes on the next create. Existing sandboxes must be relaunched."
 
 ---
 
@@ -279,4 +275,4 @@ Before opening the PR:
 - [ ] `egress.allow` entries have a Dockerfile/compose comment justifying each host
 - [ ] Step 5 validation passes (no parse error from the binary; the YAML check prints `OK`)
 - [ ] `.nexus/Containerfile` exists (or the operator has confirmed no custom image is needed)
-- [ ] PR description includes: "This config takes effect once merged to `origin/HEAD`."
+- [ ] PR description includes: "This config takes effect for new worktree sandboxes on the next create."

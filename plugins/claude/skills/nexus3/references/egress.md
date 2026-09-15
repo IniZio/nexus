@@ -151,9 +151,9 @@ other hosts flows through unmodified (no credential swap, no path ACL).
 
 ## .nexus/config.yaml egress section
 
-Place `.nexus/config.yaml` at the **repository root on the base branch** (`origin/main` or
-`origin/master`). New worktree sandboxes read it via `git show refs/remotes/origin/HEAD:.nexus/config.yaml`.
-A PR branch grants nothing — the policy must be merged before it takes effect.
+Place `.nexus/config.yaml` at the **repository root** and commit it on the branch you work
+on. New worktree sandboxes read it from their own checkout, so it takes effect on the next
+worktree-sandbox create; no merge to the default branch is needed.
 
 ```yaml
 version: 1

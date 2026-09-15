@@ -344,11 +344,10 @@ tests and reports success.
 Two opt-in channels, both default-off (D-N3N-02 — nested widens the isolation
 perimeter):
 
-- `sandbox.nested: true` in `.nexus/config.yaml`, read **only** from the trusted ref
-  (`refs/remotes/origin/HEAD`, i.e. `origin/main`) so a worktree branch cannot
-  grant itself `/dev/kvm`. This is what the auto-provision hook reads, so it is
-  the channel that actually works end-to-end. It only takes effect once the file
-  is on main.
+- `sandbox.nested: true` in the worktree checkout's `.nexus/config.yaml` (the
+  same file the `--file` build reads). This is what the auto-provision hook
+  reads, so it is the channel that actually works end-to-end. It takes effect on
+  the next worktree-sandbox create for that checkout; no push to main is needed.
 - `--nested` on `nexus3 herdr worktree-sandbox`, for an operator. Safe because
   it is not branch-controlled — but it loses the race described above.
 

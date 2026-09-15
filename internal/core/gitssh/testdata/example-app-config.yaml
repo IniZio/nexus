@@ -1,7 +1,7 @@
-# .nexus/config.yaml — place at the repo ROOT, on the BASE branch (main).
-# Takes effect for NEW worktree sandboxes only once merged to origin/main
-# (the trust anchor reads git show refs/remotes/origin/HEAD:.nexus/config.yaml — a
-# feature/PR branch grants nothing). Existing HAN sandboxes must be relaunched.
+# .nexus/config.yaml — place at the repo ROOT. A worktree sandbox reads the
+# copy in its own checkout, so the file takes effect on the NEXT worktree
+# sandbox create for that checkout; no merge to main is needed. Existing HAN
+# sandboxes must be relaunched.
 #
 # Empirically validated live: gh api repos/example-org/example-app -> 200,
 # cross-repo -> 403, /graphql -> 403, guest holds a 64-hex placeholder.

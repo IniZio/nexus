@@ -805,8 +805,8 @@ func TestHerdrGoCacheAndGoPathDiskVolumeName(t *testing.T) {
 
 func TestHerdrWorktreeSandboxCreateArgs_containsNoBuiltinGh(t *testing.T) {
 	// --no-builtin-gh was removed in T4. Credential scoping is now done via
-	// --secret / --repo flags derived from the operator-controlled trusted ref
-	// (D-PDE-17). Verify the flag is NOT present so a regression cannot
+	// --secret / --repo flags derived from the checkout's .nexus/config.yaml
+	// (D-12). Verify the flag is NOT present so a regression cannot
 	// re-introduce the old unconditional grant-blocking flag.
 	args := herdrWorktreeSandboxCreateArgs("myrepo/my-branch", "/repo:/workspace", "--image", herdrDefaultImage, nil, nil, "", nil, false)
 	for _, a := range args {

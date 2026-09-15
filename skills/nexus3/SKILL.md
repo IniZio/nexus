@@ -563,7 +563,7 @@ The security model rests on "tool payloads, never credential stores."
 
 ## GitHub/VCS egress for worktree sandboxes
 
-Worktree sandboxes are created automatically by the herdr plugin when an agent opens a pane. They inherit egress rules from the **operator-controlled** `.nexus/config.yaml` at the repo root — not from the worktree's checked-out branch. This section teaches a fresh agent how to declare the right egress entry so the operator can ratify it.
+Worktree sandboxes are created automatically by the herdr plugin when an agent opens a pane. They inherit egress rules from the `.nexus/config.yaml` in the worktree's own checkout. This section teaches a fresh agent how to declare the right egress entry.
 
 > **Real token never enters the guest.** The MITM proxy swaps a 64-hex placeholder for the real bearer on the wire (PDF-R-020). The env var the guest sees is always the placeholder, not the real credential.
 
@@ -680,20 +680,15 @@ egress:
 
 Paths are anchored globs. An optional `METHOD ` prefix restricts to one HTTP verb (e.g. `"GET /v4/projects/123/**"`).
 
-### Step 3 — Trust anchor: propose → merge → ratify
+### Step 3 — Where the config is read from
 
-**Critical.** The worktree sandbox launch reads `.nexus/config.yaml` from `refs/remotes/origin/HEAD` (the operator's default branch), never from the agent's checked-out branch.
+The worktree sandbox launch reads `.nexus/config.yaml` from the worktree's own checkout — the same file the `--file` build reads. Commit it on the branch you are working on:
 
-Workflow:
+1. Author `.nexus/config.yaml` in the worktree and commit it.
+2. The next worktree sandbox created for that checkout picks up the egress rules. No push to the default branch is needed.
+3. An already-running sandbox is **not** updated — relaunch it to pick up the change.
 
-1. Agent authors `.nexus/config.yaml` on its feature branch and opens a PR.
-2. The PR branch config grants **nothing** — the sandbox launches without the declared egress.
-3. Operator reviews and merges to the default branch.
-4. Thereafter, every new worktree sandbox inherits the egress rule from the merged config.
-
-A config on a PR branch only is **not a security gap** — it is the intended trust boundary. The operator's merge is the ratification act.
-
-### Step 4 — Verify the egress is working (after the operator merges)
+### Step 4 — Verify the egress is working
 
 Open a shell in a worktree sandbox and run the provider-appropriate check:
 

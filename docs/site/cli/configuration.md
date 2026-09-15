@@ -118,6 +118,6 @@ Flag precedence: explicit CLI flags win over `.nexus/config.yaml` values; `.nexu
 
 `sandbox.mounts` is **replaced** by any explicit `--mount` flag on the command line. To use both, list all mounts in `.nexus/config.yaml` and omit `--mount` on the command line.
 
-### Trust anchor for worktree sandboxes
+### Config source for worktree sandboxes
 
-Worktree sandboxes (auto-created by the herdr plugin) read `.nexus/config.yaml` from `refs/remotes/origin/HEAD` — the operator's default branch — **not** from the agent's checked-out branch. A config present only on a feature branch grants nothing. The operator's merge to the default branch is the ratification act. See the [agent skill](https://github.com/IniZio/nexus3/blob/main/skills/nexus3/SKILL.md) for the full propose → merge → ratify workflow.
+Worktree sandboxes (auto-created by the herdr plugin) read `.nexus/config.yaml` from the worktree's own checkout — the same file the `--file` build reads. Egress policy, brokered secrets, and `sandbox.nested` all come from that file. A change takes effect on the next worktree-sandbox create for that checkout; no push to the default branch is needed. A checkout without the file gets no egress policy and no nested opt-in; a malformed file is an error. See the [agent skill](https://github.com/IniZio/nexus3/blob/main/skills/nexus3/SKILL.md) for the authoring workflow.
