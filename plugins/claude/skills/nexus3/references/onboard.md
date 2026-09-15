@@ -1,7 +1,7 @@
 # First-run onboarding — author .nexus/config.yaml and .nexus/Containerfile
 
 For a repo that has never used nexus3: detect the repo's stack, author
-`.nexus/config.yaml` and `.nexus/Containerfile`, and explain the trust-anchor ritual.
+`.nexus/config.yaml` and `.nexus/Containerfile`, and explain where the config is read from: the checkout's `.nexus/config.yaml`, effective on the next worktree-sandbox create.
 
 Follow these steps in order. Each step has a concrete output. Do not skip to Step 4 before finishing Step 3.
 

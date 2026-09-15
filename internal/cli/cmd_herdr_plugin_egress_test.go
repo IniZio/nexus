@@ -128,11 +128,9 @@ func TestBuildWorktreeEgressArgs(t *testing.T) {
 		if len(secrets) != 1 || secrets[0] != "GH_TOKEN@api.github.com" {
 			t.Errorf("got secrets=%v", secrets)
 		}
-		// Config path never sets allowedRepo — that's CLI-only.
 		if allowedRepo != "" {
 			t.Errorf("got allowedRepo=%q, want empty (generic paths policy, not CLI --repo)", allowedRepo)
 		}
-		// PathPolicies should have a paths entry for api.github.com.
 		if pp == nil || pp[""] == nil {
 			t.Errorf("expected non-nil PathPolicies, got %v", pp)
 		} else if pol, ok := pp[""]["api.github.com"]; !ok || len(pol.Paths) == 0 {
@@ -142,7 +140,6 @@ func TestBuildWorktreeEgressArgs(t *testing.T) {
 
 	t.Run("d: GitHub secret with NO policy — D-PDE-16 error", func(t *testing.T) {
 		cfg := config.Config{}
-		// No egress.policy entries — GitHub host must be refused.
 		cfg.Egress.Secrets = config.EgressSecrets{
 			{Env: "GH_TOKEN", Hosts: []string{"github.com"}},
 		}
@@ -230,6 +227,8 @@ func egressFixtureRepo(t *testing.T, mainContent, worktreeContent string) (strin
 		}
 		gitExec(dir, "add", config.ConfigRelPath)
 	}
+	bareRepo := filepath.Join(tmp, "origin.git")
+	gitExec(tmp, "init", "--bare", bareRepo)
 	gitExec(tmp, "init", mainRepo)
 	gitExec(mainRepo, "config", "user.email", "test@test.com")
 	gitExec(mainRepo, "config", "user.name", "Test User")
@@ -242,6 +241,10 @@ func egressFixtureRepo(t *testing.T, mainContent, worktreeContent string) (strin
 		gitExec(mainRepo, "add", "README")
 	}
 	gitExec(mainRepo, "commit", "-m", "initial commit")
+	gitExec(mainRepo, "remote", "add", "origin", bareRepo)
+	gitExec(mainRepo, "push", "origin", "HEAD:main")
+	gitExec(mainRepo, "fetch", "origin")
+	gitExec(mainRepo, "remote", "set-head", "origin", "main")
 	gitExec(mainRepo, "worktree", "add", worktreeDir, "-b", "my-feature")
 	gitExec(worktreeDir, "config", "user.email", "test@test.com")
 	gitExec(worktreeDir, "config", "user.name", "Test User")
@@ -398,16 +401,6 @@ func TestHerdrWorktreeSandboxCreateArgs_PathPolicies(t *testing.T) {
 	})
 }
 
-// TestHerdrWorktreeSandboxCreateArgs_AgentCfgDisk is the mutation guard for
-// the D-RAM-08 Option B decision: the agentcfg overlay volume must appear
-// unconditionally in the sandbox create args so that both the overlayfs upper
-// and work dirs live on a governor-visible disk rather than root ext4.
-//
-// Mutations that MUST turn this RED:
-//   - Remove the "--mount-named …-agentcfg:/var/lib/nexus3/agentcfg…" line
-//   - Change the mount path to something other than /var/lib/nexus3/agentcfg
-//   - Gate the flag behind "--file" (it must be unconditional — unlike the
-//     docker disk, the agentcfg volume is needed for every agent sandbox)
 func TestHerdrWorktreeSandboxCreateArgs_AgentCfgDisk(t *testing.T) {
 	const handle = "myrepo/mybranch"
 	wantVolName := herdrAgentCfgDiskVolumeName(handle)
@@ -419,16 +412,12 @@ func TestHerdrWorktreeSandboxCreateArgs_AgentCfgDisk(t *testing.T) {
 			args := herdrWorktreeSandboxCreateArgs(handle, "src:dst", imageFlag, "/some/val", nil, nil, "", nil, false)
 			joined := strings.Join(args, " ")
 
-			// Volume name must appear in a --mount-named value.
 			if !strings.Contains(joined, wantVolName) {
 				t.Errorf("agentcfg volume name %q missing from args;\n"+
 					"removing this disk means the overlay upper dir lands on root ext4\n"+
 					"which is not governor-visible and cannot grow (D-RAM-08);\ngot args: %v",
 					wantVolName, args)
 			}
-
-			// The mount target must be the named volume mount point that
-			// agentCfgUpperDir and agentCfgWorkDir are rooted under.
 			if !strings.Contains(joined, wantVolName+":"+wantMount) {
 				t.Errorf("agentcfg volume not mounted at %q;\n"+
 					"the supervisor constants agentCfgUpperDir/agentCfgWorkDir are rooted\n"+
