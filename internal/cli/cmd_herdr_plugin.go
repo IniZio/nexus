@@ -2804,7 +2804,7 @@ func herdrPaneReportAgent(ctx context.Context, herdrBin, paneID, source string) 
 // herdrAgentEnsureSandboxExists checks whether the sandbox named by ref exists.
 // If get returns nil the sandbox is present and the function returns immediately.
 // Only a definite store.ErrNotFound (wrapped by service.resolve as %w) causes
-// create to be called to build the sandbox from nexus3.yaml. Every other error
+// create to be called to build the sandbox from .nexus/config.yaml. Every other error
 // is returned as a CodedError. A transient store failure must not be mistaken
 // for absence: falling through would attempt to create a sandbox that already
 // exists precisely when the store is least able to say otherwise.
@@ -2834,7 +2834,7 @@ func herdrAgentEnsureSandboxExists(
 			Err:  err,
 		}
 	}
-	fmt.Fprintf(w, "herdr agent: sandbox %q not found; creating from nexus3.yaml ...\n", ref)
+	fmt.Fprintf(w, "herdr agent: sandbox %q not found; creating from .nexus/config.yaml ...\n", ref)
 	return create(ctx, ref, w)
 }
 
@@ -2883,7 +2883,7 @@ func herdrSpaceAgentProjectDir(ctx context.Context, ref string, svc sandboxGette
 
 func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, focus bool, w io.Writer, svc *service.Service, storeRoot string) error {
 	// 0. Ensure the sandbox exists. If it has never been created, build it now
-	//    from nexus3.yaml (same precedence rules as `sandbox create`). This runs
+	//    from .nexus/config.yaml (same precedence rules as `sandbox create`). This runs
 	//    before step 1 so herdrSpaceAgentProjectDir sees an existing record.
 	if err := herdrEnsureFn(ctx, ref, w,
 		func(ctx context.Context, r string) (domain.Sandbox, error) { return svc.Get(ctx, r) },
@@ -3118,12 +3118,12 @@ func herdrWorktreeSandboxRepoCheck(ctx context.Context, storeRoot string, info h
 }
 
 // herdrRepoHasNexus3Config reports whether the checkout at dir is nexus3-
-// onboarded: it carries a nexus3.yaml or a .nexus/Containerfile.
+// onboarded: it carries a .nexus/config.yaml or a .nexus/Containerfile.
 func herdrRepoHasNexus3Config(dir string) bool {
 	if dir == "" {
 		return false
 	}
-	for _, rel := range []string{"nexus3.yaml", filepath.Join(".nexus", "Containerfile")} {
+	for _, rel := range []string{config.ConfigRelPath, filepath.Join(".nexus", "Containerfile")} {
 		if st, err := os.Stat(filepath.Join(dir, rel)); err == nil && !st.IsDir() {
 			return true
 		}
@@ -3135,7 +3135,7 @@ func herdrRepoHasNexus3Config(dir string) bool {
 //
 // It binds when the repo already has a nexus3-bound sibling workspace
 // (repoBound) OR when the checkout itself is nexus3-onboarded (hasConfig:
-// nexus3.yaml / .nexus/Containerfile). The second arm is what makes the FIRST
+// .nexus/config.yaml / .nexus/Containerfile). The second arm is what makes the FIRST
 // worktree of a repo auto-provision; before it, a new user's worktree.created
 // hook silently did nothing because no sibling could ever be bound yet.
 // Only a repo with neither is skipped. The returned reason is printed either
@@ -3145,9 +3145,9 @@ func herdrWorktreeAutoBindDecision(repoBound, hasConfig bool) (bind bool, reason
 	case repoBound:
 		return true, "repo already has a nexus3-bound workspace"
 	case hasConfig:
-		return true, "repo has nexus3.yaml or .nexus/Containerfile"
+		return true, "repo has .nexus/config.yaml or .nexus/Containerfile"
 	default:
-		return false, "no nexus3-bound workspace in repo and no nexus3.yaml or .nexus/Containerfile"
+		return false, "no nexus3-bound workspace in repo and no .nexus/config.yaml or .nexus/Containerfile"
 	}
 }
 
@@ -3270,7 +3270,7 @@ func herdrWorkspaceRename(ctx context.Context, herdrBin, workspaceID, label stri
 //
 // imageFlag and imageVal must be exactly one of:
 //   - "--image", "<ref>"   — use a pre-built cached image
-//   - "--file", "<dir>"    — build from a nexus3.yaml in that directory
+//   - "--file", "<dir>"    — build from a .nexus/config.yaml in that directory
 //   - "--rootfs", "<path>" — use a raw rootfs (not currently produced by this
 //     path, reserved for future use)
 //
@@ -3280,7 +3280,7 @@ func herdrWorkspaceRename(ctx context.Context, herdrBin, workspaceID, label stri
 // `sandbox create` will reject with exit status 2.
 //
 // secrets are "--secret ENV@host1,host2" binds derived from the egress.secrets
-// section of the nexus3.yaml on the trusted ref (D-PDE-17). allowedRepo, when
+// section of the .nexus/config.yaml on the trusted ref (D-PDE-17). allowedRepo, when
 // non-empty, sets the per-repo GitHub path allowlist (--repo owner/name).
 //
 // --agent claude-code --egress open makes a worktree sandbox a full agent dev
@@ -3584,7 +3584,7 @@ func worktreeCommonGitDir(worktreePath string) string {
 	return gitDir
 }
 
-// readTrustedRefBytes reads the nexus3.yaml content from the operator-controlled
+// readTrustedRefBytes reads the .nexus/config.yaml content from the operator-controlled
 // trusted ref in commonGitDir. The trusted ref is the origin default branch
 // (refs/remotes/origin/HEAD), never the worktree's checked-out branch.
 //
@@ -3592,7 +3592,7 @@ func worktreeCommonGitDir(worktreePath string) string {
 // Returns (nil, nil) — FAIL CLOSED — in all non-error conditions where the
 // config cannot be read:
 //   - no origin/HEAD (remote not fetched or no origin configured)
-//   - nexus3.yaml absent on the trusted ref
+//   - .nexus/config.yaml absent on the trusted ref
 //
 // Returns (nil, err) only for unexpected git failures that are not simply
 // "ref or file not found".
@@ -3604,8 +3604,8 @@ func readTrustedRefBytes(commonGitDir string) ([]byte, error) {
 	}
 	ref := strings.TrimSpace(string(out))
 
-	// Read nexus3.yaml from the trusted ref — NEVER from the worktree branch.
-	data, err := worktreeGitRunner(commonGitDir, "show", ref+":nexus3.yaml")
+	// Read .nexus/config.yaml from the trusted ref — NEVER from the worktree branch.
+	data, err := worktreeGitRunner(commonGitDir, "show", ref+":"+config.ConfigRelPath)
 	if err != nil {
 		// File absent on trusted ref → fail closed; no auto-grant.
 		return nil, nil
@@ -3614,7 +3614,7 @@ func readTrustedRefBytes(commonGitDir string) ([]byte, error) {
 }
 
 // buildWorktreeEgressArgs derives the --secret and --repo CLI args from the
-// egress.policy and egress.secrets sections of the nexus3.yaml read from the
+// egress.policy and egress.secrets sections of the .nexus/config.yaml read from the
 // trusted ref.
 //
 // Algorithm (three steps):
@@ -3631,7 +3631,7 @@ func readTrustedRefBytes(commonGitDir string) ([]byte, error) {
 //
 // T3 hardening: derived or explicit owner/name equal to "." or ".." is rejected.
 // buildWorktreeEgressArgs derives the --secret and --repo CLI args from the
-// egress.policy and egress.secrets sections of the nexus3.yaml read from the
+// egress.policy and egress.secrets sections of the .nexus/config.yaml read from the
 // trusted ref.
 //
 // Algorithm (three steps):
@@ -3718,26 +3718,28 @@ func egressAddHostPolicy(pp domain.EgressPathPolicies, host string, policy domai
 //
 // Resolution order:
 //  1. If checkoutPath (or any ancestor up to the .git root) contains a
-//     nexus3.yaml, return --file <dir-containing-nexus3.yaml> so the full
-//     project config (image, egress rules, etc.) is applied during the build.
+//     .nexus/config.yaml, return --file <project root: the dir holding .nexus/>
+//     so the full project config (image, egress rules, etc.) is applied
+//     during the build.
 //  2. Otherwise return --image <herdrDefaultImage>.
 //
 // Never returns an imageFlag/imageVal pair that would produce an unbootable
 // sandbox create argv. Returns a non-nil error only when config.Load itself
-// fails (e.g., the nexus3.yaml file is present but malformed).
+// fails (e.g., the .nexus/config.yaml file is present but malformed).
 func herdrResolveWorktreeImage(checkoutPath string) (imageFlag, imageVal string, err error) {
 	_, cfgPath, loadErr := config.Load(checkoutPath)
 	if loadErr != nil {
 		return "", "", fmt.Errorf("resolve worktree image: load config: %w", loadErr)
 	}
 	if cfgPath != "" {
-		// nexus3.yaml found: use --file so the build applies the full project config.
-		return "--file", filepath.Dir(cfgPath), nil
+		// .nexus/config.yaml found: use --file <project root> (NOT the .nexus
+		// dir) so the build applies the full project config.
+		return "--file", config.ProjectDir(cfgPath), nil
 	}
-	// No nexus3.yaml, but a .nexus/Containerfile (or .nexus/Dockerfile) is itself
+	// No .nexus/config.yaml, but a .nexus/Containerfile (or .nexus/Dockerfile) is itself
 	// a complete build definition — the `--file` build engine reads exactly that
 	// file from the context dir. So its presence ALONE is enough to build the
-	// worktree sandbox from it; requiring a separate nexus3.yaml sentinel would be
+	// worktree sandbox from it; requiring a separate .nexus/config.yaml sentinel would be
 	// a surprising extra step (the Containerfile is the thing that matters).
 	if dir := nexusContainerfileDir(checkoutPath); dir != "" {
 		return "--file", dir, nil
@@ -3845,7 +3847,7 @@ func isHerdrWorktreeHandle(handle string) bool {
 //
 //	operator-supplied flag is safe because it is not branch-controlled.
 //	The effective nested value is (--nested flag) OR (sandbox.nested in
-//	the trusted-ref nexus3.yaml). See herdrWorktreeSandbox.
+//	the trusted-ref .nexus/config.yaml). See herdrWorktreeSandbox.
 //
 // Called by the "worktree-sandbox" case in runHerdrPlugin so flag parsing
 // happens before the workspace ID is read, preventing the flags from being
@@ -3915,7 +3917,7 @@ func herdrWorktreeSandbox(
 	auto bool,
 	// nestedFlag is the operator opt-in from the --nested CLI flag (D-N3N-02).
 	// The effective nested value is nestedFlag OR sandbox.nested from the
-	// trusted-ref nexus3.yaml. Either channel alone is sufficient.
+	// trusted-ref .nexus/config.yaml. Either channel alone is sufficient.
 	nestedFlag bool,
 	createFn func(context.Context, string, string, string, string, []string, []string, string, domain.EgressPathPolicies, bool) error,
 	getFn func(context.Context, string) (domain.Sandbox, error),
@@ -3968,7 +3970,7 @@ func herdrWorktreeSandbox(
 			herdrRepoHasNexus3Config(info.Path),
 		)
 		if !bind {
-			fmt.Fprintf(w, "worktree-sandbox: %s at %s; skipping (bind by hand via \"nexus3: sandbox this worktree\", or add nexus3.yaml)\n", reason, info.Path)
+			fmt.Fprintf(w, "worktree-sandbox: %s at %s; skipping (bind by hand via \"nexus3: sandbox this worktree\", or add .nexus/config.yaml)\n", reason, info.Path)
 			return nil
 		}
 		fmt.Fprintf(w, "worktree-sandbox: auto-binding (%s)\n", reason)
@@ -4074,7 +4076,7 @@ func herdrWorktreeSandbox(
 
 	// Step 6.5: resolve the bootable image for this worktree checkout.
 	// config.Load walks from info.Path up to the .git boundary; an absent
-	// nexus3.yaml is not an error. A malformed nexus3.yaml IS an error — the
+	// .nexus/config.yaml is not an error. A malformed .nexus/config.yaml IS an error — the
 	// operator must fix it before the sandbox can be created.
 	imageFlag, imageVal, imgErr := herdrResolveWorktreeImage(info.Path)
 	if imgErr != nil {
@@ -4084,10 +4086,11 @@ func herdrWorktreeSandbox(
 		}
 		return nil
 	}
+	fmt.Fprintf(w, "worktree-sandbox: build source: %s %s\n", imageFlag, imageVal)
 
 	// Step 6.6: read egress config from operator-controlled trusted ref (Finding A /
 	// D-PDE-17). Never read from the worktree branch or working tree bytes.
-	// Fail closed: no trusted ref or absent nexus3.yaml → no auto-grant.
+	// Fail closed: no trusted ref or absent .nexus/config.yaml → no auto-grant.
 	var (
 		egressSecrets      []string
 		egressAllowedRepo  string
@@ -4110,9 +4113,9 @@ func herdrWorktreeSandbox(
 		if cfgBytes != nil {
 			parsedCfg, parseErr := config.Parse(cfgBytes)
 			if parseErr != nil {
-				fmt.Fprintf(w, "worktree-sandbox: parse trusted ref nexus3.yaml: %v\n", parseErr)
+				fmt.Fprintf(w, "worktree-sandbox: parse trusted ref .nexus/config.yaml: %v\n", parseErr)
 				if !failSafe {
-					return fmt.Errorf("worktree-sandbox: parse trusted ref nexus3.yaml: %w", parseErr)
+					return fmt.Errorf("worktree-sandbox: parse trusted ref .nexus/config.yaml: %w", parseErr)
 				}
 				return nil
 			}
@@ -4125,6 +4128,8 @@ func herdrWorktreeSandbox(
 				return nil
 			}
 			nestedCfg = parsedCfg.Sandbox.Nested
+		} else {
+			fmt.Fprintf(w, "worktree-sandbox: %s absent on trusted ref (refs/remotes/origin/HEAD); no egress policy or nested opt-in granted\n", config.ConfigRelPath)
 		}
 	}
 	// Step 7: create sandbox. A 240 s context covers image pull, ext4 setup,

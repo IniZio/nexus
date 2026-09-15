@@ -41,7 +41,7 @@ that cannot push anything.
 ## Egress reality
 
 Worktree sandboxes run with `open_egress: true`. The `egress.policy.allow`
-allowlist from `nexus3.yaml` is stored but NOT enforced as a gate for these
+allowlist from `.nexus/config.yaml` is stored but NOT enforced as a gate for these
 sandboxes. What IS enforced: secret brokering (the guest holds a 64-hex
 placeholder, not the real credential) and per-path policy on secret hosts
 (cross-repo API paths → 403, GraphQL → 403). Defer to `egress.md`

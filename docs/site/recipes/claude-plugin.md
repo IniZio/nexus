@@ -38,7 +38,7 @@ claude plugin marketplace remove nexus3
 
 ### Skills
 
-One skill, `nexus3:nexus3`, is available in every Claude Code session after install. It is a dispatcher: its routing table opens the reference that matches the question — sandbox lifecycle, named volumes, guest setup, running an agent in a sandbox, creating a PR from inside a sandbox, first-run onboarding (`nexus3.yaml` and `.nexus/Containerfile`), egress policy authoring, and delegating a unit of work into a worktree sandbox.
+One skill, `nexus3:nexus3`, is available in every Claude Code session after install. It is a dispatcher: its routing table opens the reference that matches the question — sandbox lifecycle, named volumes, guest setup, running an agent in a sandbox, creating a PR from inside a sandbox, first-run onboarding (`.nexus/config.yaml` and `.nexus/Containerfile`), egress policy authoring, and delegating a unit of work into a worktree sandbox.
 
 Three slash commands ship alongside it: `/nexus3:nexus3-init`, `/nexus3:nexus3-delegate`, and `/nexus3:nexus3-doctor`.
 
@@ -48,9 +48,9 @@ The plugin's `.mcp.json` wires `nexus3 mcp` as a stdio transport. The same 13-to
 
 ---
 
-## `nexus3.yaml` — per-repo egress configuration
+## `.nexus/config.yaml` — per-repo egress configuration
 
-Repos that already have a `nexus3.yaml` at their root are pre-configured. A worktree sandbox created for that repo reads the file from the base branch (`git show refs/remotes/origin/HEAD:nexus3.yaml`) as its trust anchor.
+Repos that already have a `.nexus/config.yaml` are pre-configured. A worktree sandbox created for that repo reads the file from the base branch (`git show refs/remotes/origin/HEAD:.nexus/config.yaml`) as its trust anchor.
 
 Repos without one can run `/nexus3:nexus3-init` to generate one. The minimum structure:
 

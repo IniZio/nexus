@@ -1,7 +1,7 @@
 ---
 id: CRED-R-004
 concept: C-CRED
-summary: "A push to a remote outside the repo's nexus3.yaml egress policy is refused with an error naming the policy and the rejected host+owner/repo; a push to an in-policy repo but out-of-allowlist ref is refused naming the ref; non-git SSH commands and flag-injection attempts are refused."
+summary: "A push to a remote outside the repo's .nexus/config.yaml egress policy is refused with an error naming the policy and the rejected host+owner/repo; a push to an in-policy repo but out-of-allowlist ref is refused naming the ref; non-git SSH commands and flag-injection attempts are refused."
 criticality: must
 verification: automated
 status: active
@@ -10,7 +10,7 @@ trace: AC-4
 
 The host git SSH relay **shall** enforce two guards before forwarding any request:
 
-1. **Host + repo allowlist** — derived from `nexus3.yaml` `egress.policy`. A push to a repo whose `<host> <owner/repo>` pair is not in the policy **shall** be refused immediately with a pkt-line ERR frame containing `nexus3: refused by egress policy: <host> <owner/repo> not in nexus3.yaml egress.policy`.
+1. **Host + repo allowlist** — derived from `.nexus/config.yaml` `egress.policy`. A push to a repo whose `<host> <owner/repo>` pair is not in the policy **shall** be refused immediately with a pkt-line ERR frame containing `nexus3: refused by egress policy: <host> <owner/repo> not in .nexus/config.yaml egress.policy`.
 
 2. **Branch allowlist** — on `git-receive-pack` (push) only, the relay **shall** parse the pkt-line ref negotiation and check each pushed ref against `AllowedBranches` (default: `refs/heads/nexus3/**`). A ref not in the allowlist **shall** be refused with `nexus3: refused: ref <refname> not in allowed branches`.
 

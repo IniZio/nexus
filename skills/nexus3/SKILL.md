@@ -563,7 +563,7 @@ The security model rests on "tool payloads, never credential stores."
 
 ## GitHub/VCS egress for worktree sandboxes
 
-Worktree sandboxes are created automatically by the herdr plugin when an agent opens a pane. They inherit egress rules from the **operator-controlled** `nexus3.yaml` at the repo root — not from the worktree's checked-out branch. This section teaches a fresh agent how to declare the right egress entry so the operator can ratify it.
+Worktree sandboxes are created automatically by the herdr plugin when an agent opens a pane. They inherit egress rules from the **operator-controlled** `.nexus/config.yaml` at the repo root — not from the worktree's checked-out branch. This section teaches a fresh agent how to declare the right egress entry so the operator can ratify it.
 
 > **Real token never enters the guest.** The MITM proxy swaps a 64-hex placeholder for the real bearer on the wire (PDF-R-020). The env var the guest sees is always the placeholder, not the real credential.
 
@@ -587,9 +587,9 @@ Normalize the URL to `host` + `owner/name`:
 
 If the project has no git remote or uses a non-git VCS, determine the host explicitly and declare it in `hosts:`.
 
-### Step 2 — Author the `egress.policy` and `egress.secrets` entries in `nexus3.yaml`
+### Step 2 — Author the `egress.policy` and `egress.secrets` entries in `.nexus/config.yaml`
 
-`egress.policy` and `egress.secrets` live in `nexus3.yaml` at the repo root (same file as `sandbox.image`, `egress.allow`, etc.). Add or extend the `egress` key; do not create a separate file.
+`egress.policy` and `egress.secrets` live in `.nexus/config.yaml` at the repo root (same file as `sandbox.image`, `egress.allow`, etc.). Add or extend the `egress` key; do not create a separate file.
 
 #### GitHub
 
@@ -682,11 +682,11 @@ Paths are anchored globs. An optional `METHOD ` prefix restricts to one HTTP ver
 
 ### Step 3 — Trust anchor: propose → merge → ratify
 
-**Critical.** The worktree sandbox launch reads `nexus3.yaml` from `refs/remotes/origin/HEAD` (the operator's default branch), never from the agent's checked-out branch.
+**Critical.** The worktree sandbox launch reads `.nexus/config.yaml` from `refs/remotes/origin/HEAD` (the operator's default branch), never from the agent's checked-out branch.
 
 Workflow:
 
-1. Agent authors `nexus3.yaml` on its feature branch and opens a PR.
+1. Agent authors `.nexus/config.yaml` on its feature branch and opens a PR.
 2. The PR branch config grants **nothing** — the sandbox launches without the declared egress.
 3. Operator reviews and merges to the default branch.
 4. Thereafter, every new worktree sandbox inherits the egress rule from the merged config.
@@ -751,4 +751,4 @@ nexus3 sandbox create myproject/dev-1 \
   --secret GITLAB_TOKEN@gitlab.com
 ```
 
-There is no longer a built-in GitHub token; `--repo` alone without `--secret` does not inject a credential (D-PDE-02). Pass both, or declare both in `nexus3.yaml` for automatic wiring via the worktree flow.
+There is no longer a built-in GitHub token; `--repo` alone without `--secret` does not inject a credential (D-PDE-02). Pass both, or declare both in `.nexus/config.yaml` for automatic wiring via the worktree flow.

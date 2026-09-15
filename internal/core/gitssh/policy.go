@@ -4,7 +4,7 @@ import (
 	"strings"
 )
 
-// HostPolicy is one egress.policy entry from nexus3.yaml.
+// HostPolicy is one egress.policy entry from .nexus/config.yaml.
 type HostPolicy struct {
 	Host  string   // e.g. "github.com"
 	Paths []string // e.g. ["/example-org/example-app/**"]
@@ -16,7 +16,7 @@ type AllowedRepo struct {
 	OwnerRepo string // e.g. "example-org/example-app" (no leading /, no .git suffix)
 }
 
-// DeriveAllowlist maps nexus3.yaml egress entries to SSH relay allowlist entries (github.com only).
+// DeriveAllowlist maps .nexus/config.yaml egress entries to SSH relay allowlist entries (github.com only).
 func DeriveAllowlist(policies []HostPolicy) []AllowedRepo {
 	seen := map[string]struct{}{}
 	var result []AllowedRepo

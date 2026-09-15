@@ -210,7 +210,7 @@ nexus3 run alpine:3.20 -- sh -c 'echo hello; uname -r'
 | `--name <name>` | string | — | Sandbox name (auto-generated if omitted) |
 | `--project <project>` | string | — | Project to create the sandbox under |
 
-> **Egress note:** pulling a registry image requires outbound HTTPS to the registry (e.g. `registry-1.docker.io`). Ensure the host's egress policy allows it or pass the registry host in `nexus3.yaml` `egress.policy`.
+> **Egress note:** pulling a registry image requires outbound HTTPS to the registry (e.g. `registry-1.docker.io`). Ensure the host's egress policy allows it or pass the registry host in `.nexus/config.yaml` `egress.policy`.
 
 ## Labels and selectors
 

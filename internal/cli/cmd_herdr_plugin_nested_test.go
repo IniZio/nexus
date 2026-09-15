@@ -312,14 +312,14 @@ func TestHerdrWorktreeSandbox_linkedWorktree_noGroundworkDir_noGroundworkMount(t
 //
 // The trusted-ref property — that nested is read from parsedCfg (trusted ref)
 // and not from the worktree checkout — is structural: readTrustedRefBytes runs
-// `git show refs/remotes/origin/HEAD:nexus3.yaml` and herdrResolveWorktreeImage
+// `git show refs/remotes/origin/HEAD:.nexus/config.yaml` and herdrResolveWorktreeImage
 // reads from info.Path. These two callers are separate code paths; there is no
 // single seam in the test helpers that can inject both a worktree-branch byte
 // stream and a trusted-ref byte stream simultaneously without mocking at the
 // git level.
 //
 // The security invariant is therefore asserted structurally by inspection:
-// 1. readTrustedRefBytes runs `git show refs/remotes/origin/HEAD:nexus3.yaml`
+// 1. readTrustedRefBytes runs `git show refs/remotes/origin/HEAD:.nexus/config.yaml`
 //    — it NEVER references info.Path or the worktree branch name.
 // 2. The parsedCfg.Sandbox.Nested extraction sits inside the `if cfgBytes != nil`
 //    block that follows readTrustedRefBytes — it is not reachable from

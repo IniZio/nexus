@@ -3,7 +3,7 @@
 package selfhost
 
 // Live DoD proof for nexus3-mount-creds-ssh-relay. Requires NEXUS3_DOD_REPO_DIR
-// (a checkout of any repo whose nexus3.yaml configures the git-ssh relay,
+// (a checkout of any repo whose .nexus/config.yaml configures the git-ssh relay,
 // already open as a herdr workspace), HERDR_ENV=1, herdr+nexus3 on PATH, /dev/kvm.
 
 import (

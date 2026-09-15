@@ -344,7 +344,7 @@ tests and reports success.
 Two opt-in channels, both default-off (D-N3N-02 — nested widens the isolation
 perimeter):
 
-- `sandbox.nested: true` in `nexus3.yaml`, read **only** from the trusted ref
+- `sandbox.nested: true` in `.nexus/config.yaml`, read **only** from the trusted ref
   (`refs/remotes/origin/HEAD`, i.e. `origin/main`) so a worktree branch cannot
   grant itself `/dev/kvm`. This is what the auto-provision hook reads, so it is
   the channel that actually works end-to-end. It only takes effect once the file

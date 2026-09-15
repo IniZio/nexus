@@ -13,7 +13,7 @@ import (
 // DefaultGCFreeSpaceFloorGiB is the minimum free disk space (in GiB) required
 // on the filesystem backing the nexus3 state directory before a build is allowed
 // to start. When free space falls below this floor, automatic GC runs first.
-// Configurable via ImageGCConfig.FreeSpaceFloorGiB in nexus3.yaml or
+// Configurable via ImageGCConfig.FreeSpaceFloorGiB in .nexus/config.yaml or
 // ~/.config/nexus3/config.yaml.
 const DefaultGCFreeSpaceFloorGiB = 15
 
@@ -205,7 +205,7 @@ func BuildPreflight(ctx context.Context, stateDir string, floorBytes uint64, c *
 	return fmt.Errorf(
 		"insufficient host disk space: need %d GiB free, have %.1f GiB"+
 			" (pruned %d orphan image(s), still short by %.1f GiB)"+
-			" — free disk space or lower image.free_space_floor_gib in nexus3.yaml",
+			" — free disk space or lower image.free_space_floor_gib in .nexus/config.yaml",
 		floorBytes>>30,
 		float64(free2)/(1<<30),
 		pruned,

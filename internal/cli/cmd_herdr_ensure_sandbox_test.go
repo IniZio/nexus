@@ -103,7 +103,7 @@ func TestHerdrEnsureSandbox_CallsCreateWhenAbsent(t *testing.T) {
 
 // TestHerdrEnsureSandbox_PropagatesCreateError: errors from create reach the caller.
 func TestHerdrEnsureSandbox_PropagatesCreateError(t *testing.T) {
-	sentinel := errors.New("nexus3.yaml: no image specified")
+	sentinel := errors.New(".nexus/config.yaml: no image specified")
 	create := func(_ context.Context, _ string, _ io.Writer) error { return sentinel }
 	var buf bytes.Buffer
 	err := herdrAgentEnsureSandboxExists(context.Background(), "p/b", &buf, absentGet, create)

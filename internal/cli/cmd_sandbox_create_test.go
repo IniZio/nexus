@@ -851,19 +851,22 @@ func TestD36_AllowedRepoWiredToOptions(t *testing.T) {
 // ── CFG-egress: [egress].allow wiring ─────────────────────────────────────────
 
 // TestSandboxCreate_ConfigEgress_Allow verifies that egress.allow from
-// nexus3.yaml is merged into f.allowHosts ADDITIVELY: both config hosts and
+// .nexus/config.yaml is merged into f.allowHosts ADDITIVELY: both config hosts and
 // any --allow-host flags reach resolveAgentPosture; neither replaces the other.
 //
 // Mutation guard: remove the "f.allowHosts = append(f.allowHosts, cfg.Egress.Allow...)"
 // line in applyProjectConfig → both sub-tests fail RED (config hosts absent).
 func TestSandboxCreate_ConfigEgress_Allow(t *testing.T) {
-	// Set up a temp dir that looks like a git repo root with a nexus3.yaml.
+	// Set up a temp dir that looks like a git repo root with a .nexus/config.yaml.
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	const yaml = "version: 1\negress:\n  allow: [\"registry.example.com\", \"pkg.example.com\"]\n"
-	if err := os.WriteFile(filepath.Join(dir, "nexus3.yaml"), []byte(yaml), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, ".nexus"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".nexus", "config.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir(dir)

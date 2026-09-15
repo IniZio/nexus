@@ -203,7 +203,7 @@ func TestHerdrWorktreeSandbox_Live_ResolvesBaseImageAndBoots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("herdrResolveWorktreeImage(%s): %v", wtDir, err)
 	}
-	// Ref-drift guard: a worktree with no nexus3.yaml must resolve to the named
+	// Ref-drift guard: a worktree with no .nexus/config.yaml must resolve to the named
 	// default base image — the same ref cmd/rebuild-agent-base registers.
 	if imageFlag != "--image" || imageVal != herdrDefaultImage {
 		t.Fatalf("herdrResolveWorktreeImage = (%q, %q), want (--image, %q) — default image ref drifted",

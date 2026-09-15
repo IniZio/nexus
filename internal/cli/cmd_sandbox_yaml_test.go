@@ -10,10 +10,13 @@ import (
 	"github.com/IniZio/nexus3/internal/core/config"
 )
 
-// writeYaml writes a nexus3.yaml to dir and returns the file path.
+// writeYaml writes a .nexus/config.yaml under dir and returns the file path.
 func writeYaml(t *testing.T, dir, content string) string {
 	t.Helper()
-	p := filepath.Join(dir, "nexus3.yaml")
+	p := filepath.Join(dir, config.ConfigRelPath)
+	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+		t.Fatalf("writeYaml: %v", err)
+	}
 	if err := os.WriteFile(p, []byte(content), 0600); err != nil {
 		t.Fatalf("writeYaml: %v", err)
 	}
@@ -30,7 +33,7 @@ func writeGitRoot(t *testing.T, dir string) {
 }
 
 // TestApplyProjectConfig_AbsentConfig_IsNoop verifies that a directory with
-// no nexus3.yaml leaves every sandboxCreateFlags field unchanged.
+// no .nexus/config.yaml leaves every sandboxCreateFlags field unchanged.
 //
 // Mutation target (d): if applyProjectConfig returns an error when no config
 // file is found, this test fails RED — the absent-config path must be a no-op.
@@ -60,7 +63,7 @@ func TestApplyProjectConfig_AbsentConfig_IsNoop(t *testing.T) {
 	}
 }
 
-// TestApplyProjectConfig_ConfigFieldsApplied verifies that when a nexus3.yaml
+// TestApplyProjectConfig_ConfigFieldsApplied verifies that when a .nexus/config.yaml
 // is present, its sandbox fields are applied to zero-valued flags.
 //
 // Mutation target: if any field is silently dropped (e.g. vcpus is never
@@ -191,13 +194,13 @@ func TestApplyProjectConfig_MemoryMax(t *testing.T) {
 
 // TestApplyProjectConfig_ConfigMountsResolvedAgainstConfigDir verifies that a
 // relative host path in sandbox.mounts is made absolute relative to the
-// nexus3.yaml file's directory, NOT the process cwd.
+// project root (the dir holding .nexus/), NOT the .nexus/ dir that contains
+// config.yaml and NOT the process cwd.
 //
-// Mutation target: if the resolver uses cwd instead of the config dir,
-// the host path becomes filepath.Join(cwd, ".") = cwd, which differs from
-// the config dir when the two are different. The assertion turns RED.
+// Mutation targets: resolving against cwd yields <repoRoot>/sub; resolving
+// against filepath.Dir(cfgPath) yields <repoRoot>/.nexus. Either turns RED.
 func TestApplyProjectConfig_ConfigMountsResolvedAgainstConfigDir(t *testing.T) {
-	// repoRoot holds the nexus3.yaml. cwd is a subdirectory simulating the
+	// repoRoot holds the .nexus/config.yaml. cwd is a subdirectory simulating the
 	// user running the command from inside the repo.
 	repoRoot := t.TempDir()
 	writeGitRoot(t, repoRoot)
@@ -220,7 +223,7 @@ sandbox:
 	if len(f.mountLive) != 1 {
 		t.Fatalf("mountLive len = %d, want 1", len(f.mountLive))
 	}
-	// The host path must be the repo root (where nexus3.yaml lives), not the
+	// The host path must be the repo root (where .nexus/config.yaml lives), not the
 	// subdirectory cwd.
 	wantHost := repoRoot
 	gotSpec := f.mountLive[0]
@@ -372,7 +375,7 @@ sandbox:
 func TestApplyProjectConfig_FieldGuardCoverage(t *testing.T) {
 	type fieldCase struct {
 		yamlTag    string
-		configYAML string                                   // nexus3.yaml content setting this field
+		configYAML string                                   // .nexus/config.yaml content setting this field
 		setupFlags func(f *sandboxCreateFlags)              // set the CLI override before applyProjectConfig
 		check      func(t *testing.T, f sandboxCreateFlags) // assert CLI value survived
 	}
@@ -464,7 +467,7 @@ func TestApplyProjectConfig_FieldGuardCoverage(t *testing.T) {
 			},
 		},
 		{
-			// nested: when sandbox.nested=true in nexus3.yaml and --nested was NOT
+			// nested: when sandbox.nested=true in .nexus/config.yaml and --nested was NOT
 			// passed on the CLI, config enables nested virt. When --nested WAS
 			// passed, the flag already set f.nestedVirt=true; config is a no-op
 			// (the `!f.nestedVirt` guard makes it a one-way latch — never false→false).
@@ -482,7 +485,7 @@ func TestApplyProjectConfig_FieldGuardCoverage(t *testing.T) {
 			},
 		},
 		{
-			// agents: user-global config ONLY (D-TP-09). A project-level nexus3.yaml
+			// agents: user-global config ONLY (D-TP-09). A project-level .nexus/config.yaml
 			// must NOT be able to install agents or broker credentials — that is a
 			// user trust-boundary decision. applyProjectConfig deliberately does not
 			// read cfg.Sandbox.Agents; only applyUserGlobalConfig does.

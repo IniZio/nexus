@@ -123,16 +123,16 @@ From inside a claude-code sandbox, git SSH remotes (`git@github.com:owner/repo.g
 
 1. The `GIT_SSH_COMMAND` environment variable in the guest points at a `nexus3-agent` shim binary.
 2. When the guest runs `git push git@github.com:owner/repo`, the shim sends the SSH command over a vsock channel to the host relay.
-3. The host relay (`internal/supervisor/gitssh_relay.go`) verifies the request against the repo's `nexus3.yaml` egress policy, then execs the real `ssh` with the host's `SSH_AUTH_SOCK`.
+3. The host relay (`internal/supervisor/gitssh_relay.go`) verifies the request against the repo's `.nexus/config.yaml` egress policy, then execs the real `ssh` with the host's `SSH_AUTH_SOCK`.
 
 ### Policy guard
 
 The relay enforces two rules before forwarding:
 
-**Host + repo allowlist** — derived from `nexus3.yaml` `egress.policy`. A push to a repo not in the policy is refused immediately. The error written to git's stderr is:
+**Host + repo allowlist** — derived from `.nexus/config.yaml` `egress.policy`. A push to a repo not in the policy is refused immediately. The error written to git's stderr is:
 
 ```
-nexus3: refused by egress policy: <host> <owner/repo> not in nexus3.yaml egress.policy
+nexus3: refused by egress policy: <host> <owner/repo> not in .nexus/config.yaml egress.policy
 ```
 
 **Branch allowlist** — on `git-receive-pack` (push) only, the relay parses the pkt-line ref negotiation and checks each ref against the sandbox's `AllowedBranches` (default: `refs/heads/nexus3/**`). A push to an out-of-allowlist ref is refused:

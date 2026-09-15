@@ -11,7 +11,7 @@ agent running inside an isolated VM with its own branch, its own push allowlist,
 and brokered credentials.
 
 Preconditions:
-- The current repo has a `nexus3.yaml` at its root (run `/nexus3:nexus3-init`
+- The current repo has a `.nexus/config.yaml` (run `/nexus3:nexus3-init`
   first if it does not).
 - `~/.local/bin/nexus3` is installed and the MCP server is connected (run
   `/nexus3:nexus3-doctor` to confirm).

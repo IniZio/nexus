@@ -249,7 +249,7 @@ func TestSeedGitIdentity_MissingHostConfig_FailsCreate(t *testing.T) {
 //     lacks an AllowedRepo scope. Covers all callers (CLI, orca, herdr, MCP).
 //  3. Agent seeding (seed.go prepareAgentCredPayload): mints placeholders from
 //     AgentEgressHosts(profile), NOT from AllowedHosts. So even when a project's
-//     nexus3.yaml egress.allow includes github.com, the agent seed payload
+//     .nexus/config.yaml egress.allow includes github.com, the agent seed payload
 //     contains no GitHub credential variable.
 //
 // Operator decision: project config may add github.com (or any host) to
@@ -288,7 +288,7 @@ func TestSeedGitIdentity_MissingHostConfig_FailsCreate(t *testing.T) {
 //
 //	(e) CREDENTIAL INVARIANT with github.com in AllowedHosts: even when github.com
 //	    is explicitly listed as an AllowedHost (as it would be via [egress].allow in
-//	    nexus3.yaml), the agent seed payload must contain no GitHub credential var.
+//	    .nexus/config.yaml), the agent seed payload must contain no GitHub credential var.
 //	    The agent seeder (prepareAgentCredPayload) uses AgentEgressHosts(profile),
 //	    not AllowedHosts, so the two lists are independently controlled.
 //
@@ -402,7 +402,7 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 		// sandbox AllowedHosts. AllowedHosts controls which hosts the egress ACL
 		// passes; the credential list controls which hosts receive a MITM
 		// placeholder token. These two lists are independently controlled.
-		// Adding github.com to AllowedHosts (e.g. via nexus3.yaml egress.allow)
+		// Adding github.com to AllowedHosts (e.g. via .nexus/config.yaml egress.allow)
 		// must NOT produce a GitHub token in the agent payload. There is no
 		// code path where AllowedHosts flows into SeedGuestAgent — the function
 		// only takes the seeder callback.

@@ -117,11 +117,12 @@ func Resolve(f Flags, cfg Config, d Defaults) Resolved {
 
 // ResolveMounts takes a slice of mount entries in "hostPath:guestPath" format
 // and makes any relative hostPath absolute relative to configDir — the
-// directory that contains the nexus3.yaml file.
+// project directory (the one holding the .nexus folder of .nexus/config.yaml).
+// Derive it with ProjectDir(cfgPath).
 //
 // This must use configDir, not the process working directory: a user running
 // nexus3 from a sub-directory of their repo expects ".:/work" to refer to the
-// repo root where nexus3.yaml lives, not to whatever directory they happen to
+// repo root where the config lives, not to whatever directory they happen to
 // be in at the time.
 //
 // A mount entry without a colon is returned as-is (invalid; let the caller

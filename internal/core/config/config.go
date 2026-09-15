@@ -1,9 +1,9 @@
 // Package config loads and represents per-repository nexus3 configuration
-// from a nexus3.yaml file found by walking up from a start directory.
+// from a .nexus/config.yaml file found by walking up from a start directory.
 //
 // Discovery: Load walks from startDir toward the filesystem root, stopping
 // at the first directory that contains a .git entry (the repository root).
-// An absent nexus3.yaml is not an error; a present but malformed file is.
+// An absent config file is not an error; a present but malformed file is.
 // An unknown YAML key is a hard error (security-relevant: a typo in an
 // egress allowlist silently disables the intended host).
 //
@@ -22,10 +22,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// SupportedVersion is the highest nexus3.yaml schema version this binary understands.
+// SupportedVersion is the highest project config schema version this binary understands.
 const SupportedVersion = 1
 
-// MinSupportedVersion is the lowest nexus3.yaml schema version this binary accepts.
+// MinSupportedVersion is the lowest project config schema version this binary accepts.
 // Files declaring a version below this must be re-created before use.
 const MinSupportedVersion = 1
 
@@ -221,7 +221,7 @@ type EgressConfig struct {
 	Secrets EgressSecrets `yaml:"secrets"`
 }
 
-// Mounts is a list of host→guest mount entries in nexus3.yaml.
+// Mounts is a list of host→guest mount entries in .nexus/config.yaml.
 // Each element may be either:
 //   - a short string "host:guest" or "host:guest:ro"
 //   - a YAML mapping {source: host, target: guest, read_only: true|false}
@@ -285,7 +285,8 @@ type SandboxConfig struct {
 	// Mounts is a list of host→guest mount entries accepted in short string
 	// form ("host:guest[:ro]") or long object form ({source, target, read_only}).
 	// Both normalise to the canonical "host:guest[:ro]" string.
-	// Host-relative paths are resolved against the nexus3.yaml directory.
+	// Host-relative paths are resolved against the project directory
+	// (see ProjectDir).
 	Mounts Mounts `yaml:"mounts"`
 
 	// Agent is the default agent profile name applied when no --agent flag is
@@ -312,7 +313,7 @@ type SandboxConfig struct {
 	// An unknown name is a hard error at config-application time (unlike the
 	// singular sandbox.agent key, which warns and skips).
 	//
-	// User-global config only; ignored in nexus3.yaml.
+	// User-global config only; ignored in .nexus/config.yaml.
 	//
 	// Example:
 	//   sandbox:
@@ -323,7 +324,7 @@ type SandboxConfig struct {
 	// built-in default" (typically 4× boot memory or 4096 MiB, whichever is
 	// larger). Must exceed the boot Memory when both are set.
 	//
-	// Applies to both the project nexus3.yaml and the user-global config.yaml.
+	// Applies to both the project .nexus/config.yaml and the user-global config.yaml.
 	// CLI --memory-max always wins over either config source.
 	MemoryMax int `yaml:"memory_max"`
 
@@ -359,7 +360,7 @@ type BuilderConfig struct {
 	MemoryMiB int `yaml:"memory_mib"`
 }
 
-// Config is the in-memory representation of a nexus3.yaml file.
+// Config is the in-memory representation of a project config file.
 // A zero Config is valid and means "no project-level overrides".
 type Config struct {
 	Egress  EgressConfig  `yaml:"egress"`
@@ -380,20 +381,22 @@ type fileConfig struct {
 	Builder BuilderConfig `yaml:"builder"`
 }
 
-// configFileName is the well-known name discovered during Load.
-const configFileName = "nexus3.yaml"
+// ConfigRelPath is the project config file location relative to the project
+// directory. It lives next to .nexus/Containerfile.
+const ConfigRelPath = ".nexus/config.yaml"
 
-// Load walks up from startDir looking for nexus3.yaml, stopping at the repo
-// root (a directory containing .git) or the filesystem root.
+// Load walks up from startDir looking for .nexus/config.yaml, stopping at the
+// repo root (a directory containing .git) or the filesystem root.
 //
 // Returns:
 //   - cfg: the parsed Config (zero value when no file is found)
-//   - filePath: absolute path of the loaded file, or "" when no file was found
+//   - filePath: absolute path of the loaded file, or "" when no file was found.
+//     Use ProjectDir to derive the project directory from it.
 //   - err: non-nil only when the file exists but cannot be parsed, when an
 //     unknown YAML key is present, or when the version field is absent or
 //     outside [MinSupportedVersion, SupportedVersion]
 //
-// An absent nexus3.yaml is NOT an error.
+// An absent config file is NOT an error.
 func Load(startDir string) (Config, string, error) {
 	abs, err := filepath.Abs(startDir)
 	if err != nil {
@@ -402,10 +405,9 @@ func Load(startDir string) (Config, string, error) {
 
 	dir := abs
 	for {
-		candidate := filepath.Join(dir, configFileName)
+		candidate := filepath.Join(dir, ConfigRelPath)
 		data, err := os.ReadFile(candidate)
 		if err == nil {
-			// File found: parse and return.
 			cfg, parseErr := parse(data)
 			if parseErr != nil {
 				return Config{}, "", fmt.Errorf("config: parse %q: %w", candidate, parseErr)
@@ -434,6 +436,20 @@ func Load(startDir string) (Config, string, error) {
 	return Config{}, "", nil
 }
 
+// ProjectDir returns the project directory for a config file path returned
+// by Load: the directory holding .nexus. An empty cfgPath (no config file
+// found) yields "".
+//
+// Callers must use this instead of filepath.Dir(cfgPath): filepath.Dir yields
+// the .nexus directory, not the project root, so relative mounts and other
+// project-relative paths would resolve one level too deep.
+func ProjectDir(cfgPath string) string {
+	if cfgPath == "" {
+		return ""
+	}
+	return filepath.Dir(filepath.Dir(cfgPath))
+}
+
 // parse decodes YAML data into a Config, rejecting any unknown keys.
 // Unknown keys are a hard error: a typo in the egress allowlist silently
 // disables the intended host, which is a security-relevant failure.
@@ -450,14 +466,14 @@ func parse(data []byte) (Config, error) {
 	}
 	if fc.Version == nil {
 		return Config{}, fmt.Errorf(
-			"nexus3.yaml: missing required field \"version\" — add `version: %d` as the first line",
+			"nexus3 config: missing required field \"version\" — add `version: %d` as the first line",
 			SupportedVersion,
 		)
 	}
 	v := *fc.Version
 	if v < MinSupportedVersion || v > SupportedVersion {
 		return Config{}, fmt.Errorf(
-			"nexus3.yaml declares version %d; this nexus3 supports versions %d–%d — "+
+			"nexus3 config declares version %d; this nexus3 supports versions %d–%d — "+
 				"upgrade nexus3 if the file is newer, or re-create the file if it is older",
 			v, MinSupportedVersion, SupportedVersion,
 		)
@@ -472,7 +488,7 @@ func parse(data []byte) (Config, error) {
 
 // Parse decodes YAML data into a Config, rejecting any unknown keys.
 // It is a public wrapper around the unexported parse function, intended for
-// callers that obtain config bytes out-of-band (e.g. via `git show <ref>:nexus3.yaml`)
+// callers that obtain config bytes out-of-band (e.g. via `git show <ref>:.nexus/config.yaml`)
 // rather than through the filesystem walk performed by Load.
 //
 // Parse and Load apply identical validation; the only difference is the source

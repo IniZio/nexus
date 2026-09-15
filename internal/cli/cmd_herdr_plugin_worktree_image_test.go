@@ -3,7 +3,7 @@ package cli
 // Unit tests for herdrResolveWorktreeImage: how a worktree sandbox chooses its
 // bootable image. The key behavior (added 2026-08-25) is that a .nexus/
 // Containerfile is a complete build definition on its own — its presence
-// triggers a --file build with NO separate nexus3.yaml sentinel required.
+// triggers a --file build with NO separate .nexus/config.yaml sentinel required.
 
 import (
 	"os"
@@ -46,7 +46,7 @@ func TestHerdrResolveWorktreeImage(t *testing.T) {
 		}
 	})
 
-	t.Run(".nexus/Containerfile alone -> --file <repo> (no nexus3.yaml needed)", func(t *testing.T) {
+	t.Run(".nexus/Containerfile alone -> --file <repo> (no .nexus/config.yaml needed)", func(t *testing.T) {
 		root := filepath.Join(t.TempDir(), "repo")
 		mkGitRoot(t, root)
 		writeFile(t, filepath.Join(root, ".nexus", "Containerfile"), "FROM ubuntu:24.04\n")
@@ -89,10 +89,10 @@ func TestHerdrResolveWorktreeImage(t *testing.T) {
 		}
 	})
 
-	t.Run("nexus3.yaml takes precedence and yields its own dir", func(t *testing.T) {
+	t.Run(".nexus/config.yaml takes precedence and yields the repo root, not .nexus", func(t *testing.T) {
 		root := filepath.Join(t.TempDir(), "repo")
 		mkGitRoot(t, root)
-		writeFile(t, filepath.Join(root, "nexus3.yaml"), "version: 1\n")
+		writeFile(t, filepath.Join(root, ".nexus", "config.yaml"), "version: 1\n")
 		writeFile(t, filepath.Join(root, ".nexus", "Containerfile"), "FROM ubuntu:24.04\n")
 		flag, val, err := herdrResolveWorktreeImage(root)
 		if err != nil {
@@ -100,6 +100,23 @@ func TestHerdrResolveWorktreeImage(t *testing.T) {
 		}
 		if flag != "--file" || val != root {
 			t.Errorf("got (%q,%q), want (--file, %q)", flag, val, root)
+		}
+	})
+
+	t.Run(".nexus/config.yaml alone -> --file <repo root> from a nested cwd", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "repo")
+		mkGitRoot(t, root)
+		writeFile(t, filepath.Join(root, ".nexus", "config.yaml"), "version: 1\n")
+		sub := filepath.Join(root, "pkg", "deep")
+		if err := os.MkdirAll(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		flag, val, err := herdrResolveWorktreeImage(sub)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if flag != "--file" || val != root {
+			t.Errorf("got (%q,%q), want (--file, %q) — must be repo root, not .nexus", flag, val, root)
 		}
 	})
 

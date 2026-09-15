@@ -97,7 +97,7 @@ func serveSession(conn net.Conn, cfg RelayConfig, sshExec string) {
 
 	// Allowlist check: only github.com via git@ SSH is supported in v1.
 	if !repoAllowed(cfg.Allowlist, cmd.GitHost, cmd.OwnerRepo) {
-		writePktErrFrame(conn, "nexus3: refused by egress policy: "+cmd.GitHost+" "+cmd.OwnerRepo+" not in nexus3.yaml egress.policy\n")
+		writePktErrFrame(conn, "nexus3: refused by egress policy: "+cmd.GitHost+" "+cmd.OwnerRepo+" not in .nexus/config.yaml egress.policy\n")
 		if cfg.OnEgress != nil {
 			cfg.OnEgress(cmd.BareHost, "deny", "git SSH: "+cmd.OwnerRepo+" not in policy", time.Now())
 		}

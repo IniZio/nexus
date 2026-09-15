@@ -162,7 +162,7 @@ two slices disagree about whether `-race` was on.
 
 **Which image is the guest?** Worktree sandboxes build from the repo's
 **`.nexus/Containerfile`**. `herdrResolveWorktreeImage`
-(`internal/cli/cmd_herdr_plugin.go`) resolves in this order: a `nexus3.yaml`
+(`internal/cli/cmd_herdr_plugin.go`) resolves in this order: `.nexus/config.yaml`
 anywhere up to the repo root wins; otherwise the presence of
 `.nexus/Containerfile` alone is enough, since it is a complete build definition;
 only with neither does it fall back to `--image <default>`, the minimal

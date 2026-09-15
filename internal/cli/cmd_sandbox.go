@@ -292,7 +292,7 @@ func applyProjectConfig(f *sandboxCreateFlags) error {
 
 	f.allowHosts = resolved.EgressAllow
 
-	// Populate pathPolicies from nexus3.yaml egress.policy when not already
+	// Populate pathPolicies from .nexus/config.yaml egress.policy when not already
 	// set via --egress-policy-json (worktree subprocess channel). The ssh relay
 	// (startGitSSHRelay in the supervisor) reads PathPolicies[""] to derive
 	// the git SSH allowlist; without this conversion the relay always denies.
@@ -306,18 +306,20 @@ func applyProjectConfig(f *sandboxCreateFlags) error {
 	}
 
 	if f.mountLive == nil && len(resolved.Mounts) > 0 {
-		cfgDir := filepath.Dir(cfgPath)
-		resolvedMounts, resolveErr := config.ResolveMounts(resolved.Mounts, cfgDir)
+		// Mounts resolve against the project root (the dir holding .nexus/),
+		// not the .nexus directory itself.
+		projectDir := config.ProjectDir(cfgPath)
+		resolvedMounts, resolveErr := config.ResolveMounts(resolved.Mounts, projectDir)
 		if resolveErr != nil {
-			return fmt.Errorf("sandbox create: nexus3.yaml: %w", resolveErr)
+			return fmt.Errorf("sandbox create: %s: %w", config.ConfigRelPath, resolveErr)
 		}
 		f.mountLive = resolvedMounts
 	}
 
 	if f.agentName == "" && cfg.Sandbox.Agent != "" {
 		if _, ok := cred.ProfileByName(cfg.Sandbox.Agent); !ok {
-			return fmt.Errorf("sandbox create: nexus3.yaml: sandbox.agent %q is not a known agent (one of: %s)",
-				cfg.Sandbox.Agent, strings.Join(cred.ProfileNames(), ", "))
+			return fmt.Errorf("sandbox create: %s: sandbox.agent %q is not a known agent (one of: %s)",
+				config.ConfigRelPath, cfg.Sandbox.Agent, strings.Join(cred.ProfileNames(), ", "))
 		}
 		f.agentName = cfg.Sandbox.Agent
 	}

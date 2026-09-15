@@ -1,7 +1,7 @@
-# First-run onboarding — author nexus3.yaml and .nexus/Containerfile
+# First-run onboarding — author .nexus/config.yaml and .nexus/Containerfile
 
 For a repo that has never used nexus3: detect the repo's stack, author
-`nexus3.yaml` and `.nexus/Containerfile`, and explain the trust-anchor ritual.
+`.nexus/config.yaml` and `.nexus/Containerfile`, and explain the trust-anchor ritual.
 
 Follow these steps in order. Each step has a concrete output. Do not skip to Step 4 before finishing Step 3.
 
@@ -91,9 +91,9 @@ List only the hosts you found evidence for. No wildcards, no guesses.
 
 ---
 
-## Step 3 — Author nexus3.yaml
+## Step 3 — Author .nexus/config.yaml
 
-Create `nexus3.yaml` at the repo root with `version: 1` as the first key.
+Create `.nexus/config.yaml` inside the `.nexus/` directory at the repo root with `version: 1` as the first key.
 
 ### 3a. VCS egress block
 
@@ -180,7 +180,7 @@ For the full enforcement model, verification probes, and live evidence, see `egr
 
 ### 3c. Complete file shape
 
-The valid keys at the top level of `nexus3.yaml` are: `version`, `egress`, `sandbox`, `image`, `builder`. Any unknown key is a **hard parse error** (the parser enforces `KnownFields(true)`). The valid keys under `egress` are: `allow`, `policy`, `secrets`. A typo in a key name is therefore a hard failure, not a silently dropped entry.
+The valid keys at the top level of `.nexus/config.yaml` are: `version`, `egress`, `sandbox`, `image`, `builder`. Any unknown key is a **hard parse error** (the parser enforces `KnownFields(true)`). The valid keys under `egress` are: `allow`, `policy`, `secrets`. A typo in a key name is therefore a hard failure, not a silently dropped entry.
 
 ---
 
@@ -227,14 +227,14 @@ nexus3 has no standalone `config show` command. Validate by triggering any nexus
 ~/.local/bin/nexus3 image build -workspace <path-to-repo> 2>&1 | head -5
 ```
 
-A parse error prints the offending key and exits nonzero. A missing `nexus3.yaml` is not an error (the binary proceeds without it). A present but malformed file is a hard error.
+A parse error prints the offending key and exits nonzero. A missing `.nexus/config.yaml` is not an error (the binary proceeds without it). A present but malformed file is a hard error.
 
 Alternatively, use Python with `pip install pyyaml` to confirm the YAML is structurally valid before the binary sees it:
 
 ```sh
 python3 - << 'EOF'
 import sys, yaml
-with open("nexus3.yaml") as f:
+with open(".nexus/config.yaml") as f:
     d = yaml.safe_load(f)
 assert d.get("version") == 1, "missing version: 1"
 top_known = {"version","egress","sandbox","image","builder"}
@@ -254,11 +254,11 @@ Do not use the `./nexus3` binary in the nexus3 repo root — it is a leftover fr
 
 **The config is inert until it is on the default branch.**
 
-The worktree sandbox launch reads `nexus3.yaml` from `refs/remotes/origin/HEAD` — the operator's default branch as seen from the local clone. It never reads the agent's checked-out feature branch.
+The worktree sandbox launch reads `.nexus/config.yaml` from `refs/remotes/origin/HEAD` — the operator's default branch as seen from the local clone. It never reads the agent's checked-out feature branch.
 
 Consequence:
 
-1. Author `nexus3.yaml` on a feature branch and open a PR.
+1. Author `.nexus/config.yaml` on a feature branch and open a PR.
 2. The PR branch config grants **nothing** — the sandbox boots with no egress rules from this file.
 3. Operator reviews, confirms the path scoping is correct, and merges to the default branch.
 4. From that point, every new worktree sandbox picks up the brokering and path-policy rules from `egress.secrets` and `egress.policy` (see the enforcement note in Step 3b for what `egress.allow` does and does not enforce).

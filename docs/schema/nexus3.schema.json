@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IniZio/nexus3/docs/schema/nexus3.schema.json",
-  "title": "nexus3.yaml",
-  "description": "Per-repository nexus3 configuration file. Add `# yaml-language-server: $schema=<path-to-repo-root>/docs/schema/nexus3.schema.json` as the first line of nexus3.yaml for editor autocomplete and validation.",
+  "title": ".nexus/config.yaml",
+  "description": "Per-repository nexus3 configuration file. Add `# yaml-language-server: $schema=<path-to-repo-root>/docs/schema/nexus3.schema.json` as the first line of .nexus/config.yaml for editor autocomplete and validation.",
   "type": "object",
   "required": ["version"],
   "additionalProperties": false,
@@ -105,7 +105,7 @@
         },
         "mounts": {
           "type": "array",
-          "description": "List of host:guest mount entries, e.g. \".:/work\". Relative host paths are resolved against the directory containing nexus3.yaml — not the process working directory. Superseded entirely by any --mount flag.",
+          "description": "List of host:guest mount entries, e.g. \".:/work\". Relative host paths are resolved against the directory containing .nexus/config.yaml — not the process working directory. Superseded entirely by any --mount flag.",
           "items": {
             "type": "string",
             "description": "Mount spec in \"<host-path>:<guest-path>\" format."

@@ -1,6 +1,6 @@
-# nexus3.yaml — place at the repo ROOT, on the BASE branch (main).
+# .nexus/config.yaml — place at the repo ROOT, on the BASE branch (main).
 # Takes effect for NEW worktree sandboxes only once merged to origin/main
-# (the trust anchor reads git show refs/remotes/origin/HEAD:nexus3.yaml — a
+# (the trust anchor reads git show refs/remotes/origin/HEAD:.nexus/config.yaml — a
 # feature/PR branch grants nothing). Existing HAN sandboxes must be relaunched.
 #
 # Empirically validated live: gh api repos/example-org/example-app -> 200,

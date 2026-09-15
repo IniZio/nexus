@@ -80,7 +80,7 @@ func TestWorktreeSandboxCreateSubprocess_DefaultKillSemantics(t *testing.T) {
 
 	// herdrListWorktreeForWorkspaceFn: return a linked worktree so
 	// herdrWorktreeSandbox proceeds through steps 1–6 to reach step 7.
-	// worktreePath is a fresh temp dir: no nexus3.yaml → herdrResolveWorktreeImage
+	// worktreePath is a fresh temp dir: no .nexus/config.yaml → herdrResolveWorktreeImage
 	// falls back to --image herdrDefaultImage; no .git → worktreeCommonGitDir
 	// returns "" and the git-config step is skipped.
 	worktreePath := t.TempDir()

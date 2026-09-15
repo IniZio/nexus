@@ -9,10 +9,10 @@ import (
 	"github.com/IniZio/nexus3/internal/core/gitssh"
 )
 
-//go:embed testdata/example-app-nexus3.yaml
-var exampleAppNexus3YAML []byte
+//go:embed testdata/example-app-config.yaml
+var exampleAppConfigYAML []byte
 
-type nexus3Config struct {
+type appConfig struct {
 	Egress struct {
 		Policy []struct {
 			Host  string   `yaml:"host"`
@@ -22,9 +22,9 @@ type nexus3Config struct {
 }
 
 func TestDeriveAllowlist_ExampleApp(t *testing.T) {
-	var cfg nexus3Config
-	if err := yaml.Unmarshal(exampleAppNexus3YAML, &cfg); err != nil {
-		t.Fatalf("unmarshal nexus3.yaml: %v", err)
+	var cfg appConfig
+	if err := yaml.Unmarshal(exampleAppConfigYAML, &cfg); err != nil {
+		t.Fatalf("unmarshal .nexus/config.yaml: %v", err)
 	}
 
 	policies := make([]gitssh.HostPolicy, 0, len(cfg.Egress.Policy))

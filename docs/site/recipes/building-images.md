@@ -23,7 +23,7 @@ nexus3 run python:3.12 -- python3 -c 'import sys; print(sys.version)'
 
 nexus3 checks its local image store first. On a cache miss the image is pulled from the registry, converted to a bootable ext4 rootfs, and cached by ref. Subsequent runs of the same ref skip the pull.
 
-> **Egress requirement:** the initial pull needs outbound HTTPS to the registry (e.g. `registry-1.docker.io`). Ensure the host's egress policy allows the registry host, or add it to `egress.policy` in `nexus3.yaml`.
+> **Egress requirement:** the initial pull needs outbound HTTPS to the registry (e.g. `registry-1.docker.io`). Ensure the host's egress policy allows the registry host, or add it to `egress.policy` in `.nexus/config.yaml`.
 
 Use this path when:
 - You want to try a stock runtime quickly.

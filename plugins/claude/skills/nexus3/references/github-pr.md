@@ -70,15 +70,15 @@ nexus3 create myproject/sandbox \
 
 ---
 
-## VCS egress for worktree sandboxes (authoring nexus3.yaml)
+## VCS egress for worktree sandboxes (authoring .nexus/config.yaml)
 
 > **Full procedure is in `egress.md`.** This section is a factual
 > summary; use the referenced skill for the complete step-by-step workflow and
 > verification probes.
 
-### How nexus3.yaml egress works
+### How .nexus/config.yaml egress works
 
-- `nexus3.yaml` at the repo root controls egress for worktree sandboxes.
+- `.nexus/config.yaml` at the repo root controls egress for worktree sandboxes.
 - It is read from `refs/remotes/origin/HEAD` (the operator's default branch),
   **not** from the agent's checked-out branch.
 - GitHub hosts **require** an `egress.policy` entry; sandbox create is refused
@@ -87,7 +87,7 @@ nexus3 create myproject/sandbox \
 
 ### Trust anchor
 
-1. Agent authors `nexus3.yaml` on its feature branch and opens a PR.
+1. Agent authors `.nexus/config.yaml` on its feature branch and opens a PR.
 2. The PR branch config grants nothing — the sandbox launches without the
    declared egress.
 3. Operator reviews and merges to the default branch.
@@ -103,7 +103,7 @@ check). Details in `egress.md`.
 
 ---
 
-### nexus3.yaml — GitHub example
+### .nexus/config.yaml — GitHub example
 
 ```yaml
 version: 1
@@ -147,7 +147,7 @@ The short form (`GH_TOKEN@github.com,...`) is **not valid for GitHub** because
 policy entries are mandatory. Always use the long form with explicit `policy:`
 and `secrets:` keys.
 
-### nexus3.yaml — GitLab example
+### .nexus/config.yaml — GitLab example
 
 Non-GitHub hosts have no mandatory path policy. A project access token scoped to
 the specific project is strongly preferred over a full personal access token.
@@ -178,7 +178,7 @@ egress:
     - GITLAB_TOKEN@gitlab.com
 ```
 
-### nexus3.yaml — Generic path-restricted API token
+### .nexus/config.yaml — Generic path-restricted API token
 
 ```yaml
 version: 1
@@ -213,5 +213,5 @@ nexus3 sandbox create myproject/dev-1 \
 ```
 
 There is no built-in GitHub token; `--repo` alone without `--secret` does not
-inject a credential (D-PDE-02). Pass both, or declare both in `nexus3.yaml` for
+inject a credential (D-PDE-02). Pass both, or declare both in `.nexus/config.yaml` for
 automatic wiring via the worktree flow.

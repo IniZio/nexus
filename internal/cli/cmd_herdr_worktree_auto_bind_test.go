@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/IniZio/nexus3/internal/core/config"
 )
 
 // TestHerdrWorktreeAutoBindDecision pins the --auto predicate: nexus3-
@@ -44,13 +46,25 @@ func TestHerdrRepoHasNexus3Config(t *testing.T) {
 			t.Fatal("empty path reported as onboarded")
 		}
 	})
-	t.Run("nexus3.yaml", func(t *testing.T) {
+	t.Run(".nexus/config.yaml", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "nexus3.yaml"), []byte("image: x\n"), 0o644); err != nil {
+		if err := os.MkdirAll(filepath.Join(dir, ".nexus"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, config.ConfigRelPath), []byte("image: x\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if !herdrRepoHasNexus3Config(dir) {
-			t.Fatal("nexus3.yaml not detected")
+			t.Fatal(".nexus/config.yaml not detected")
+		}
+	})
+	t.Run("root-level legacy config file only is NOT config (hard cutover)", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "nexus3"+".yaml"), []byte("image: x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if herdrRepoHasNexus3Config(dir) {
+			t.Fatal("legacy root-level config reported as onboarded")
 		}
 	})
 	t.Run(".nexus/Containerfile", func(t *testing.T) {
@@ -65,13 +79,13 @@ func TestHerdrRepoHasNexus3Config(t *testing.T) {
 			t.Fatal(".nexus/Containerfile not detected")
 		}
 	})
-	t.Run("nexus3.yaml as directory is not config", func(t *testing.T) {
+	t.Run(".nexus/config.yaml as directory is not config", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(dir, "nexus3.yaml"), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(dir, config.ConfigRelPath), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		if herdrRepoHasNexus3Config(dir) {
-			t.Fatal("directory named nexus3.yaml reported as config")
+			t.Fatal("directory named .nexus/config.yaml reported as config")
 		}
 	})
 }

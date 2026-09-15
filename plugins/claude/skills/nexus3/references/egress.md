@@ -6,7 +6,7 @@ verification probes, `--allow-host` for agent sandboxes, and per-ecosystem host
 sets. Also the answer to "GH_TOKEN in the guest", cross-repo 403, GraphQL 403,
 and "why does the sandbox have open egress."
 
-For first-run authoring of `nexus3.yaml` (detecting the repo's stack and
+For first-run authoring of `.nexus/config.yaml` (detecting the repo's stack and
 deriving the host list from build manifests) see `onboard.md`.
 
 ## `--allow-host` for agent sandboxes
@@ -76,7 +76,7 @@ args = append(args, "--agent", herdrPrimaryAgent(), "--egress", "open", handle)
 
 Result: `internal/core/service/service.go:959` sets `allowAll = sb.Envelope.OpenEgress`,
 which is `true`, so `al.AllowAllFor(72 * time.Hour)` is called and the netfilter ACL
-passes everything. The `egress.policy.allow` list from `nexus3.yaml` is stored in the
+passes everything. The `egress.policy.allow` list from `.nexus/config.yaml` is stored in the
 envelope's `AllowedHosts` and is never consulted as a gate.
 
 **What IS enforced for worktree sandboxes:**
@@ -142,17 +142,17 @@ enforces the path ACL, and forwards. If the path is not in the allowlist the pro
 
 ### 3. Which hosts a secret is forwarded to
 
-`nexus3.yaml` `egress.secrets` entries bind an env-var name to a list of hostnames
+`.nexus/config.yaml` `egress.secrets` entries bind an env-var name to a list of hostnames
 (`internal/core/config/config.go:44-51`, `EgressSecret`). This list becomes the
 `SecretHosts` in the envelope. The MITM proxy intercepts only these hosts — traffic to
 other hosts flows through unmodified (no credential swap, no path ACL).
 
 ---
 
-## nexus3.yaml egress section
+## .nexus/config.yaml egress section
 
-Place `nexus3.yaml` at the **repository root on the base branch** (`origin/main` or
-`origin/master`). New worktree sandboxes read it via `git show refs/remotes/origin/HEAD:nexus3.yaml`.
+Place `.nexus/config.yaml` at the **repository root on the base branch** (`origin/main` or
+`origin/master`). New worktree sandboxes read it via `git show refs/remotes/origin/HEAD:.nexus/config.yaml`.
 A PR branch grants nothing — the policy must be merged before it takes effect.
 
 ```yaml

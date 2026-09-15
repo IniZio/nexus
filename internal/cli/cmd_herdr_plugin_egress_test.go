@@ -222,7 +222,7 @@ func TestBuildWorktreeEgressArgs(t *testing.T) {
 }
 
 // TestReadTrustedRefBytes_FailClosed is the adversarial test proving Finding A:
-// nexus3.yaml committed on the worktree's local branch does NOT grant access.
+// .nexus/config.yaml committed on the worktree's local branch does NOT grant access.
 // Only the content from refs/remotes/origin/HEAD (origin default branch) is returned.
 func TestReadTrustedRefBytes_FailClosed(t *testing.T) {
 	if testing.Short() {
@@ -254,12 +254,15 @@ func TestReadTrustedRefBytes_FailClosed(t *testing.T) {
 	gitExec(t, mainRepo, "config", "user.email", "test@test.com")
 	gitExec(t, mainRepo, "config", "user.name", "Test User")
 
-	// 2. Commit nexus3.yaml on the default branch.
+	// 2. Commit .nexus/config.yaml on the default branch.
 	originContent := "version: 1\negress:\n  policy:\n    - host: github.com\n      paths: [\"/repos/origin/repo/**\", \"/user\"]\n  secrets:\n    - env: GH_TOKEN\n      hosts:\n        - github.com\n"
-	if err := os.WriteFile(filepath.Join(mainRepo, "nexus3.yaml"), []byte(originContent), 0600); err != nil {
+	if err := os.MkdirAll(filepath.Join(mainRepo, ".nexus"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	gitExec(t, mainRepo, "add", "nexus3.yaml")
+	if err := os.WriteFile(filepath.Join(mainRepo, config.ConfigRelPath), []byte(originContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gitExec(t, mainRepo, "add", config.ConfigRelPath)
 	gitExec(t, mainRepo, "commit", "-m", "initial commit")
 
 	// Find the default branch name.
@@ -281,12 +284,12 @@ func TestReadTrustedRefBytes_FailClosed(t *testing.T) {
 	// 5. Create a linked worktree on a feature branch.
 	gitExec(t, mainRepo, "worktree", "add", worktreeDir, "-b", "my-feature")
 
-	// 6. In the worktree: modify nexus3.yaml with EXTRA secrets and commit.
+	// 6. In the worktree: modify .nexus/config.yaml with EXTRA secrets and commit.
 	featureContent := originContent + "    - env: EVIL_TOKEN\n      hosts:\n        - evil.example.com\n"
-	if err := os.WriteFile(filepath.Join(worktreeDir, "nexus3.yaml"), []byte(featureContent), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(worktreeDir, config.ConfigRelPath), []byte(featureContent), 0600); err != nil {
 		t.Fatal(err)
 	}
-	gitExec(t, worktreeDir, "add", "nexus3.yaml")
+	gitExec(t, worktreeDir, "add", config.ConfigRelPath)
 	gitExec(t, worktreeDir, "config", "user.email", "test@test.com")
 	gitExec(t, worktreeDir, "config", "user.name", "Test User")
 	gitExec(t, worktreeDir, "commit", "-m", "add evil token on feature branch")
@@ -361,16 +364,20 @@ func TestReadTrustedRefBytes_NoOriginHead(t *testing.T) {
 	}
 }
 
-// TestReadTrustedRefBytes_FileAbsent verifies fail-closed when nexus3.yaml is absent on the trusted ref.
+// TestReadTrustedRefBytes_FileAbsent verifies fail-closed when
+// .nexus/config.yaml is absent on the trusted ref, and that the git runner is
+// asked for exactly `<ref>:.nexus/config.yaml` (never the legacy root path).
 func TestReadTrustedRefBytes_FileAbsent(t *testing.T) {
 	old := worktreeGitRunner
 	defer func() { worktreeGitRunner = old }()
+	var showArg string
 	worktreeGitRunner = func(dir string, args ...string) ([]byte, error) {
 		if args[0] == "symbolic-ref" {
 			return []byte("refs/remotes/origin/main\n"), nil
 		}
 		if args[0] == "show" {
-			return nil, fmt.Errorf("fatal: Path 'nexus3.yaml' does not exist in 'refs/remotes/origin/main'")
+			showArg = args[1]
+			return nil, fmt.Errorf("fatal: Path '%s' does not exist in 'refs/remotes/origin/main'", config.ConfigRelPath)
 		}
 		return nil, fmt.Errorf("unexpected call: %v", args)
 	}
@@ -381,6 +388,33 @@ func TestReadTrustedRefBytes_FileAbsent(t *testing.T) {
 	}
 	if data != nil {
 		t.Errorf("expected nil data (fail closed), got %v", data)
+	}
+	if want := "refs/remotes/origin/main:" + config.ConfigRelPath; showArg != want {
+		t.Errorf("git show arg = %q, want %q", showArg, want)
+	}
+}
+
+// TestReadTrustedRefBytes_ShowArg verifies the trusted-ref read returns the
+// bytes git serves for `<ref>:.nexus/config.yaml`.
+func TestReadTrustedRefBytes_ShowArg(t *testing.T) {
+	old := worktreeGitRunner
+	defer func() { worktreeGitRunner = old }()
+	worktreeGitRunner = func(dir string, args ...string) ([]byte, error) {
+		if args[0] == "symbolic-ref" {
+			return []byte("refs/remotes/origin/main\n"), nil
+		}
+		if args[0] == "show" && args[1] == "refs/remotes/origin/main:"+config.ConfigRelPath {
+			return []byte("version: 1\n"), nil
+		}
+		return nil, fmt.Errorf("unexpected call: %v", args)
+	}
+
+	data, err := readTrustedRefBytes("/fake/git")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(data) != "version: 1\n" {
+		t.Errorf("data = %q, want trusted-ref config bytes", data)
 	}
 }
 

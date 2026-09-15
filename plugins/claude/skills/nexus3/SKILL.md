@@ -6,7 +6,7 @@ description: >
   mount (--mount or --mount-named), agent-in-sandbox, PR from inside a sandbox,
   projecting host config (credentials, git config, claude settings) into a guest.
   (2) First-run onboarding of a repo that has never used nexus3: detecting the
-  stack, authoring nexus3.yaml and .nexus/Containerfile, the trust-anchor merge
+  stack, authoring .nexus/config.yaml and .nexus/Containerfile, the trust-anchor merge
   ritual. (3) Egress policy authoring and debugging: egress.policy / egress.secrets
   / egress.allow, credential brokering, --allow-host, GH_TOKEN in the guest,
   cross-repo 403, GraphQL 403, "why does the sandbox have open egress". (4)
@@ -32,7 +32,7 @@ question. Each reference is self-contained; open only what you need.
 | Start agent in sandbox, drive it, first-run wizards, project host config, workspace trust | `references/agent-in-sandbox.md` |
 | Create GitHub PR from sandbox (REST, not GraphQL) | `references/github-pr.md` |
 | User-global config (`~/.config/nexus3/config.yaml`), diagnose missing tools, security boundary | `references/user-mounts.md` |
-| First-run onboarding: detect stack, author `nexus3.yaml` + `.nexus/Containerfile`, trust-anchor ritual (`/nexus3:nexus3-init`) | `references/onboard.md` |
+| First-run onboarding: detect stack, author `.nexus/config.yaml` + `.nexus/Containerfile`, trust-anchor ritual (`/nexus3:nexus3-init`) | `references/onboard.md` |
 | Egress policy: `egress.policy` / `egress.secrets` / `egress.allow`, brokering model, provider patterns, verification probes, `--allow-host`, per-ecosystem hosts, open-egress posture of worktree sandboxes | `references/egress.md` |
 | Delegate work into a worktree sandbox: MCP tool map, push rule, completion heuristic, teardown order, RAM cost (`/nexus3:nexus3-delegate`) | `references/delegate.md` |
 | Delegation loop step by step, MCP and CLI spellings, builder failure modes | `references/delegate-loop.md` |
@@ -55,7 +55,7 @@ question. Each reference is self-contained; open only what you need.
   (cross-repo → 403, GraphQL → 403). See `references/egress.md`.
 - **A sandbox may push exactly one ref** — the branch its bound worktree had checked out
   at create time. There is no fixed branch-name pattern. See `references/delegate.md`.
-- **`nexus3.yaml` is read from `origin/HEAD`**, never from the agent's feature branch.
+- **`.nexus/config.yaml` is read from `origin/HEAD`**, never from the agent's feature branch.
   A config on a PR branch grants nothing until merged. See `references/onboard.md`.
 - **Never write `/**` at root or list `/graphql`** under `api.github.com` in
   `egress.policy`. Scope every path to `/repos/OWNER/REPO/...`.

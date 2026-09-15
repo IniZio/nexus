@@ -46,9 +46,9 @@ The context directory is captured at create time. The capture includes:
 
 It does not include `.git` history beyond what the working tree reflects.
 
-## Project config file (`nexus3.yaml`)
+## Project config file (`.nexus/config.yaml`)
 
-`nexus3.yaml` is an optional per-repository configuration file. nexus3 discovers it by walking up from the process working directory to the nearest directory that contains a `.git` entry (the repository root). An absent file is a no-op. A present but malformed file, or a file with an unknown YAML key, is a hard error.
+`.nexus/config.yaml` is an optional per-repository configuration file placed inside the `.nexus/` directory at the repository root. nexus3 discovers it by walking up from the process working directory to the nearest directory that contains a `.git` entry (the repository root). An absent file is a no-op. A present but malformed file, or a file with an unknown YAML key, is a hard error.
 
 ```yaml
 version: 1
@@ -109,15 +109,15 @@ sandbox:
   agent: claude-code         # default agent profile; overridden by --agent flag
 
   mounts:
-    - ./src:/work/src        # relative paths resolved from the nexus3.yaml directory
+    - ./src:/work/src        # relative paths resolved from the config file's directory
 ```
 
-Flag precedence: explicit CLI flags win over `nexus3.yaml` values; `nexus3.yaml` values win over built-in defaults.
+Flag precedence: explicit CLI flags win over `.nexus/config.yaml` values; `.nexus/config.yaml` values win over built-in defaults.
 
 `egress.allow` is **additive** — config hosts are unioned with `--allow-host` flags; neither replaces the other.
 
-`sandbox.mounts` is **replaced** by any explicit `--mount` flag on the command line. To use both, list all mounts in `nexus3.yaml` and omit `--mount` on the command line.
+`sandbox.mounts` is **replaced** by any explicit `--mount` flag on the command line. To use both, list all mounts in `.nexus/config.yaml` and omit `--mount` on the command line.
 
 ### Trust anchor for worktree sandboxes
 
-Worktree sandboxes (auto-created by the herdr plugin) read `nexus3.yaml` from `refs/remotes/origin/HEAD` — the operator's default branch — **not** from the agent's checked-out branch. A config present only on a feature branch grants nothing. The operator's merge to the default branch is the ratification act. See the [agent skill](https://github.com/IniZio/nexus3/blob/main/skills/nexus3/SKILL.md) for the full propose → merge → ratify workflow.
+Worktree sandboxes (auto-created by the herdr plugin) read `.nexus/config.yaml` from `refs/remotes/origin/HEAD` — the operator's default branch — **not** from the agent's checked-out branch. A config present only on a feature branch grants nothing. The operator's merge to the default branch is the ratification act. See the [agent skill](https://github.com/IniZio/nexus3/blob/main/skills/nexus3/SKILL.md) for the full propose → merge → ratify workflow.

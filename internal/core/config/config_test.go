@@ -50,10 +50,7 @@ sandbox:
   vcpus: 6
   mounts: [".:/work"]
 `
-	cfgFile := filepath.Join(dir, "nexus3.yaml")
-	if err := os.WriteFile(cfgFile, []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
+	cfgFile := writeConfigAt(t, dir, config.ConfigRelPath, content)
 
 	cfg, path, err := config.Load(dir)
 	if err != nil {
@@ -103,9 +100,7 @@ egress:
   allow: ["proxy.golang.org"]
 unknown_top_key: "bad"
 `
-	if err := os.WriteFile(filepath.Join(dir, "nexus3.yaml"), []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeConfigAt(t, dir, config.ConfigRelPath, content)
 
 	_, _, err := config.Load(dir)
 	if err == nil {
@@ -126,9 +121,7 @@ func TestLoad_UnknownNestedKey_HardError(t *testing.T) {
 egress:
   allow_hosts: ["proxy.golang.org"]
 `
-	if err := os.WriteFile(filepath.Join(dir, "nexus3.yaml"), []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeConfigAt(t, dir, config.ConfigRelPath, content)
 
 	_, _, err := config.Load(dir)
 	if err == nil {
@@ -147,9 +140,7 @@ sandbox:
   image: foo
   cpu_count: 4
 `
-	if err := os.WriteFile(filepath.Join(dir, "nexus3.yaml"), []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeConfigAt(t, dir, config.ConfigRelPath, content)
 
 	_, _, err := config.Load(dir)
 	if err == nil {
@@ -162,9 +153,7 @@ func TestLoad_MalformedYAML_Error(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, ".git"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "nexus3.yaml"), []byte("version: 1\n  bad: indent\n  : colon\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeConfigAt(t, dir, config.ConfigRelPath, "version: 1\n  bad: indent\n  : colon\n")
 
 	_, _, err := config.Load(dir)
 	if err == nil {
@@ -186,9 +175,7 @@ func TestLoad_MissingVersion_HardError(t *testing.T) {
 sandbox:
   image: nexus3-agent-base
 `
-	if err := os.WriteFile(filepath.Join(dir, "nexus3.yaml"), []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeConfigAt(t, dir, config.ConfigRelPath, content)
 
 	_, _, err := config.Load(dir)
 	if err == nil {
@@ -206,9 +193,7 @@ func TestLoad_VersionTooHigh_ActionableError(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := "version: 9999\negress:\n  allow: []\n"
-	if err := os.WriteFile(filepath.Join(dir, "nexus3.yaml"), []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeConfigAt(t, dir, config.ConfigRelPath, content)
 
 	_, _, err := config.Load(dir)
 	if err == nil {
@@ -224,9 +209,7 @@ func TestLoad_VersionTooLow_ActionableError(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := "version: 0\negress:\n  allow: []\n"
-	if err := os.WriteFile(filepath.Join(dir, "nexus3.yaml"), []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeConfigAt(t, dir, config.ConfigRelPath, content)
 
 	_, _, err := config.Load(dir)
 	if err == nil {
@@ -244,17 +227,15 @@ func TestLoad_WalksUp_StopsAtGitRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := "version: 1\negress:\n  allow: [\"proxy.golang.org\"]\n"
-	if err := os.WriteFile(filepath.Join(root, "nexus3.yaml"), []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
+	want := writeConfigAt(t, root, config.ConfigRelPath, content)
 
 	// Start from sub/pkg — should walk up and find the file at root.
 	cfg, path, err := config.Load(sub)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if path != filepath.Join(root, "nexus3.yaml") {
-		t.Fatalf("path: want %q, got %q", filepath.Join(root, "nexus3.yaml"), path)
+	if path != want {
+		t.Fatalf("path: want %q, got %q", want, path)
 	}
 	if len(cfg.Egress.Allow) != 1 {
 		t.Fatalf("want 1 allow entry, got %v", cfg.Egress.Allow)
@@ -262,15 +243,13 @@ func TestLoad_WalksUp_StopsAtGitRoot(t *testing.T) {
 }
 
 func TestLoad_WalksUp_StopsAtGitRoot_NoBeyond(t *testing.T) {
-	// nexus3.yaml is ABOVE the .git boundary; Load must not find it.
+	// The config is ABOVE the .git boundary; Load must not find it.
 	outer := t.TempDir()
 	inner := filepath.Join(outer, "repo")
 	if err := os.MkdirAll(filepath.Join(inner, ".git"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(outer, "nexus3.yaml"), []byte("version: 1\negress:\n  allow: []\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeConfigAt(t, outer, config.ConfigRelPath, "version: 1\negress:\n  allow: []\n")
 
 	_, path, err := config.Load(inner)
 	if err != nil {
@@ -278,6 +257,79 @@ func TestLoad_WalksUp_StopsAtGitRoot_NoBeyond(t *testing.T) {
 	}
 	if path != "" {
 		t.Fatalf("must not cross .git boundary: found %q", path)
+	}
+}
+
+// ---- .nexus/config.yaml location tests ----
+
+func writeConfigAt(t *testing.T, dir, rel, content string) string {
+	t.Helper()
+	p := filepath.Join(dir, rel)
+	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestLoad_IgnoresRootLevelConfigFile verifies the hard cutover: a config
+// file at the repo root (outside .nexus/) is not discovered.
+func TestLoad_IgnoresRootLevelConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeConfigAt(t, dir, "config.yaml", "version: 1\nsandbox:\n  image: root-level\n")
+
+	cfg, path, err := config.Load(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if path != "" {
+		t.Fatalf("root-level config must not be discovered, found %q", path)
+	}
+	if cfg.Sandbox.Image != "" {
+		t.Fatalf("want zero config, got image %q", cfg.Sandbox.Image)
+	}
+}
+
+func TestProjectDir(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfgPath string
+		want    string
+	}{
+		{"nexus dir shape", "/home/u/repo/.nexus/config.yaml", "/home/u/repo"},
+		{"nested project", "/home/u/mono/pkg/app/.nexus/config.yaml", "/home/u/mono/pkg/app"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := config.ProjectDir(tt.cfgPath); got != tt.want {
+				t.Fatalf("ProjectDir(%q): want %q, got %q", tt.cfgPath, tt.want, got)
+			}
+		})
+	}
+}
+
+func TestProjectDir_MatchesLoadPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeConfigAt(t, dir, config.ConfigRelPath, "version: 1\n")
+
+	_, path, err := config.Load(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := config.ProjectDir(path); got != dir {
+		t.Fatalf("ProjectDir(%q): want %q, got %q", path, dir, got)
+	}
+	if filepath.Dir(path) == dir {
+		t.Fatalf("filepath.Dir(%q) equals project dir; test would not catch a ProjectDir regression", path)
 	}
 }
 
@@ -596,9 +648,7 @@ func loadFromYAML(t *testing.T, data []byte) (config.Config, error) {
 	if err := os.Mkdir(filepath.Join(dir, ".git"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "nexus3.yaml"), data, 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeConfigAt(t, dir, config.ConfigRelPath, string(data))
 	cfg, _, err := config.Load(dir)
 	return cfg, err
 }
@@ -819,9 +869,9 @@ func TestEgressSecrets_Absent_ZeroValue(t *testing.T) {
 // ---- branches section tests (T1-AC1) ----
 
 // TestParse_Branches_TopLevelKeyIsRejected verifies that a top-level
-// "branches:" key in nexus3.yaml is rejected by the strict decoder
+// "branches:" key in the project config is rejected by the strict decoder
 // (KnownFields(true)). The branches.* abstraction has been removed; any
-// nexus3.yaml that still carries this key must be updated, and the strict
+// config that still carries this key must be updated, and the strict
 // decoder surfaces the error rather than silently ignoring it.
 func TestParse_Branches_TopLevelKeyIsRejected(t *testing.T) {
 	data := []byte("version: 1\nbranches:\n  allowed: [refs/heads/nexus3/**]\n")
@@ -845,9 +895,7 @@ func TestParse_EqualsLoad_ForIdenticalBytes(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, ".git"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "nexus3.yaml"), data, 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeConfigAt(t, dir, config.ConfigRelPath, string(data))
 	loadedCfg, _, err := config.Load(dir)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
