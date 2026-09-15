@@ -41,6 +41,31 @@ func TestResolveKernelPath_EnvSet_FileMissing(t *testing.T) {
 	}
 }
 
+// TestResolveKernelPath_XDGDataHome_FoundFromForeignCwd pins the cwd-independent
+// candidate: herdr plugin panes run from the plugin directory, where neither the
+// binary-relative nor the cwd-relative candidate exists.
+func TestResolveKernelPath_XDGDataHome_FoundFromForeignCwd(t *testing.T) {
+	t.Setenv("NEXUS3_KERNEL_PATH", "")
+	data := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", data)
+	want := filepath.Join(data, "nexus3", "images", "kernel", "vmlinux-x86_64")
+	if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(want, []byte("fake"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+
+	got, err := resolveKernelPath()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestResolveKernelPath_EnvUnset_NoCandidates(t *testing.T) {
 	// Clear NEXUS3_KERNEL_PATH and ensure neither binary-relative nor CWD
 	// candidates exist. The function must return an error naming NEXUS3_KERNEL_PATH.

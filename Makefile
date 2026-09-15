@@ -1,4 +1,4 @@
-.PHONY: proto build vet test test-integration vet-integration check-agent-fresh install-agent build-agent docs docs-build install-plugin
+.PHONY: proto build vet test test-integration vet-integration check-agent-fresh install-agent install-kernel build-agent docs docs-build install-plugin
 
 # proto regenerates the Go stubs from proto/nexus3/agent/v1/agent.proto.
 # Running this target twice must leave the tree byte-identical (deterministic).
@@ -112,6 +112,19 @@ install-agent:
 	@mkdir -p $(NEXUS3_AGENT_INSTALL_DIR)
 	CGO_ENABLED=0 go build -o $(NEXUS3_AGENT_INSTALL_DIR)/nexus3-agent ./cmd/nexus3-agent
 	@echo "OK: nexus3-agent installed → $(NEXUS3_AGENT_INSTALL_DIR)/nexus3-agent"
+
+# install-kernel places the pinned guest kernel at the cwd-independent XDG
+# data path that resolveKernelPath searches (~/.local/share/nexus3/images/
+# kernel/vmlinux-x86_64). Without it, every guest-dialing verb (exec, shell,
+# forward) fails with "no substrate configured" from any cwd but the repo
+# root — which is exactly where herdr plugin panes run. A symlink, so a
+# kernel rebuild is picked up without reinstalling.
+NEXUS3_DATA_DIR ?= $(if $(XDG_DATA_HOME),$(XDG_DATA_HOME),$(HOME)/.local/share)/nexus3
+
+install-kernel:
+	@mkdir -p $(NEXUS3_DATA_DIR)/images/kernel
+	ln -sfn $(CURDIR)/images/kernel/vmlinux-x86_64 $(NEXUS3_DATA_DIR)/images/kernel/vmlinux-x86_64
+	@echo "OK: kernel linked → $(NEXUS3_DATA_DIR)/images/kernel/vmlinux-x86_64"
 
 # build-agent: legacy alias — installs to NEXUS3_AGENT_INSTALL_DIR (same as install-agent).
 # Previously wrote to /tmp; use install-agent for new scripts.

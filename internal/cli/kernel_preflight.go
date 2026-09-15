@@ -16,7 +16,12 @@ import (
 // Search order:
 //  1. NEXUS3_KERNEL_PATH environment variable (always used if set; file must exist).
 //  2. <binary-dir>/images/kernel/vmlinux-x86_64  (installed binary layout).
-//  3. <cwd>/images/kernel/vmlinux-x86_64          ("go run ./cmd/nexus3" from repo root).
+//  3. $XDG_DATA_HOME/nexus3/images/kernel/vmlinux-x86_64, default
+//     ~/.local/share/nexus3/images/kernel/vmlinux-x86_64 (`make install-kernel`).
+//     This is the path that works regardless of cwd: herdr plugin panes run
+//     from the plugin directory, and every guest-dialing verb (exec, shell,
+//     forward) goes through substrate selection, which requires the kernel.
+//  4. <cwd>/images/kernel/vmlinux-x86_64          ("go run ./cmd/nexus3" from repo root).
 //
 // If none resolve, the error names NEXUS3_KERNEL_PATH and lists every searched
 // path so the operator can act without reading source.
@@ -47,6 +52,14 @@ func resolveKernelPath() (string, error) {
 		}
 	}
 
+	// XDG data dir: cwd-independent, populated by `make install-kernel`.
+	if p := xdgKernelPath(); p != "" {
+		searched = append(searched, p)
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+
 	// CWD-relative: works for "go run ./cmd/nexus3" executed from the repo root,
 	// where images/kernel/vmlinux-x86_64 exists relative to the working directory.
 	if cwd, err := os.Getwd(); err == nil {
@@ -61,6 +74,20 @@ func resolveKernelPath() (string, error) {
 		"kernel not found: set NEXUS3_KERNEL_PATH to the vmlinux image path\n"+
 			"  searched (NEXUS3_KERNEL_PATH not set):\n    %s",
 		strings.Join(searched, "\n    "))
+}
+
+// xdgKernelPath returns the XDG data-dir kernel candidate, or "" when no home
+// directory can be resolved.
+func xdgKernelPath() string {
+	base := os.Getenv("XDG_DATA_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		base = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(base, "nexus3", "images", "kernel", "vmlinux-x86_64")
 }
 
 // resolveVirtiofsdPath returns the absolute path to the virtiofsd 1.x binary.
