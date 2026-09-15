@@ -58,14 +58,12 @@ func TestClaudeCodeProfile_ConfigFields(t *testing.T) {
 }
 
 // ── TestCursorAgentProfile_CredentialPaths ──
-/**
- * Pins cursor's dual credential delivery: File path auth.json gets
- * {accessToken, refreshToken} = placeholder (S11). Env var path
- * CURSOR_AUTH_TOKEN=placeholder (S11). Placeholder is JWT-shaped
- * (PlaceholderIsJWT=true) so cursor's JWT parser sees exp=2099 and does not
- * trigger a refresh grant (which would send refresh_token in POST body —
- * not intercepted by the MITM proxy).
- */
+// Pins cursor's dual credential delivery: File path auth.json gets
+// {accessToken, refreshToken} = placeholder (S11). Env var path
+// CURSOR_AUTH_TOKEN=placeholder (S11). Placeholder is JWT-shaped
+// (PlaceholderIsJWT=true) so cursor's JWT parser sees exp=2099 and does not
+// trigger a refresh grant (which would send refresh_token in POST body —
+// not intercepted by the MITM proxy).
 func TestCursorAgentProfile_CredentialPaths(t *testing.T) {
 	p := cred.CursorAgentProfile
 
@@ -90,12 +88,10 @@ func TestCursorAgentProfile_CredentialPaths(t *testing.T) {
 }
 
 // ── TestCursorAgentProfile_SettingsFilterRequiredRegardlessOfAuthPath ──
-/**
- * Mutation-relevant invariant: cursor's settings file (cli-config.json)
- * must be filtered even though nexus3 never brokers cursor's credential.
- * authInfo carries identity and PII (email, displayName, userId, authId),
- * and must not be shared into a sandbox regardless of credential path.
- */
+// Mutation-relevant invariant: cursor's settings file (cli-config.json)
+// must be filtered even though nexus3 never brokers cursor's credential.
+// authInfo carries identity and PII (email, displayName, userId, authId),
+// and must not be shared into a sandbox regardless of credential path.
 func TestCursorAgentProfile_SettingsFilterRequiredRegardlessOfAuthPath(t *testing.T) {
 	p := cred.CursorAgentProfile
 
@@ -130,10 +126,8 @@ func TestCursorAgentProfile_Registered(t *testing.T) {
 }
 
 // ── TestCursorAgentProfile_CredAndSettingsDirAreDistinct ──
-/**
- * XDG_CONFIG_HOME controls credential file lookup while CURSOR_CONFIG_DIR
- * controls cli-config.json (settings). They cannot be collapsed into one.
- */
+// XDG_CONFIG_HOME controls credential file lookup while CURSOR_CONFIG_DIR
+// controls cli-config.json (settings). They cannot be collapsed into one.
 func TestCursorAgentProfile_CredAndSettingsDirAreDistinct(t *testing.T) {
 	p := cred.CursorAgentProfile
 
@@ -201,12 +195,10 @@ func TestAgentProfile_DeclarativeExtension(t *testing.T) {
 }
 
 // ── TestCursorAgentProfile_CredentialedHostSuffix ──
-/**
- * Suffix must cause all *.cursor.sh endpoints (including
- * agentn.global.api5.cursor.sh) to be treated as secret hosts.
- * Must begin with "." (dot-boundary safety).
- * MUTATION-PIN: change CredentialedHostSuffix → "" → RED.
- */
+// Suffix must cause all *.cursor.sh endpoints (including
+// agentn.global.api5.cursor.sh) to be treated as secret hosts.
+// Must begin with "." (dot-boundary safety).
+// MUTATION-PIN: change CredentialedHostSuffix → "" → RED.
 func TestCursorAgentProfile_CredentialedHostSuffix(t *testing.T) {
 	p := cred.CursorAgentProfile
 

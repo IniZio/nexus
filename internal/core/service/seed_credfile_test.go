@@ -41,7 +41,7 @@ func TestBuildCredFileSeedPayload_NilForEnvVarAgent(t *testing.T) {
 func TestBuildCredFileSeedPayload_PlaceholderInFile(t *testing.T) {
 	t.Parallel()
 	const placeholder = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	/** realToken: leaked real JWT (must NEVER appear in guest file). Unmistakable value for detection. */
+	// realToken: leaked real JWT (must NEVER appear in guest file). Unmistakable value for detection.
 	const realToken = "real-secret-cursor-jwt-MUST-NOT-APPEAR-IN-GUEST-FILE"
 
 	records := []cred.PlaceholderRecord{

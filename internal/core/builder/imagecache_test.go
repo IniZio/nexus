@@ -45,8 +45,8 @@ func TestBuildFingerprintDeterminism(t *testing.T) {
 // TestBuildFingerprint_ContextIgnoredWhenUnused pins the worktree case: a
 // Containerfile that never reads the context must fingerprint identically
 // across two checkouts whose files differ only by mtime (or by content).
-/** Live 2026-09-15: three linked worktrees, identical Containerfiles, three
-4 GiB rootfs images, third create refused on disk space. */
+// Live 2026-09-15: three linked worktrees, identical Containerfiles, three
+// 4 GiB rootfs images, third create refused on disk space.
 func TestBuildFingerprint_ContextIgnoredWhenUnused(t *testing.T) {
 	cf := []byte("FROM ubuntu:22.04\nRUN echo hello\nWORKDIR /workspace\n")
 	base := "ubuntu:22.04"

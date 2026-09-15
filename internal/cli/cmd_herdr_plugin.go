@@ -46,11 +46,9 @@ func init() {
 	})
 }
 
-/**
- * herdrPluginABIVersion is the integer probed by build.sh to detect skew
- * between the installed plugin manifest and the nexus3 binary. Bump this
- * whenever the herdr subcommand surface changes in an incompatible way.
- */
+// herdrPluginABIVersion is the integer probed by build.sh to detect skew
+// between the installed plugin manifest and the nexus3 binary. Bump this
+// whenever the herdr subcommand surface changes in an incompatible way.
 const herdrPluginABIVersion = "3"
 
 func herdrGroupVerbToPluginSub(sub string) (pluginSub string, known bool) {
@@ -76,7 +74,7 @@ func herdrGroupVerbToPluginSub(sub string) (pluginSub string, known bool) {
 		return "space-agent", true
 	case "agent-from-file":
 		return "space-agent-from-file", true
-	/** space-* verbs KEEP prefix (collision: bare name used by non-space verb) */
+	// space-* verbs KEEP prefix (collision: bare name used by non-space verb)
 	case "space-create", "space-open-pane":
 		return sub, true
 	case "worktree-sandbox":
@@ -187,13 +185,11 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		return herdrPluginLaunch(ctx, rest[0], rest[1:], agentEgress, out)
 
 	case "space-create":
-		/**
-		 * --no-focus suppresses pane focus, so binding a workspace does not
-		 * yank the operator away from whatever they are working in. Binding
-		 * several sandboxes in a row would otherwise steal focus once per
-		 * sandbox. Focus remains the default: an operator running this
-		 * interactively for a single sandbox expects to land in it.
-		 */
+		// --no-focus suppresses pane focus, so binding a workspace does not
+		// yank the operator away from whatever they are working in. Binding
+		// several sandboxes in a row would otherwise steal focus once per
+		// sandbox. Focus remains the default: an operator running this
+		// interactively for a single sandbox expects to land in it.
 		focus := true
 		for len(rest) > 0 && rest[0] == "--no-focus" {
 			focus = false
@@ -306,10 +302,8 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		}
 		herdrBin, herdrBinErr := resolveHerdrBin()
 		if herdrBinErr != nil {
-			/**
-			 * herdr unavailable: workspaceClose will return herdrBinErr, causing
-			 * teardown to retain the binding for space-prune recovery.
-			 */
+			// herdr unavailable: workspaceClose will return herdrBinErr, causing
+			// teardown to retain the binding for space-prune recovery.
 			slog.Warn("__herdr-plugin space-remove: herdr not found; binding retained if workspace close fails", "err", herdrBinErr)
 			herdrBin = ""
 		}
@@ -418,7 +412,7 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if len(rest) == 0 {
 			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: herdr workspace ID required"}
 		}
-		/** --nested operator opt-in for nested virtualisation (D-N3N-02). */
+		// --nested operator opt-in for nested virtualisation (D-N3N-02).
 		rest, conditional, auto, nestedFlag := herdrWorktreeSandboxParseArgs(rest)
 		if len(rest) == 0 {
 			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: herdr workspace ID required"}
@@ -544,11 +538,9 @@ func herdrWorkspaceMounts(sb domain.Sandbox) string {
 	return strings.Join(parts, ",")
 }
 
-/**
- * Env sealing: HERDR_* vars must never reach guest VM.
- * Service constructs guest env independently from allow-list.
- * Strip HERDR_* from process env so subprocess forks cannot leak credentials.
- */
+// Env sealing: HERDR_* vars must never reach guest VM.
+// Service constructs guest env independently from allow-list.
+// Strip HERDR_* from process env so subprocess forks cannot leak credentials.
 func herdrPluginAttach(ctx context.Context, ref string, out *Output, svc *service.Service) error {
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "HERDR_") {
@@ -615,10 +607,8 @@ func herdrPrintImages(ctx context.Context, w io.Writer) {
 	fmt.Fprintln(w)
 }
 
-/**
- * herdrRepoFlags prompts for repo scope. D-PD-36: unbounded GitHub credentials
- * are refused; caller must scope to one repo or pass no flags.
- */
+// herdrRepoFlags prompts for repo scope. D-PD-36: unbounded GitHub credentials
+// are refused; caller must scope to one repo or pass no flags.
 func herdrRepoFlags(scanner *bufio.Scanner) ([]string, error) {
 	fmt.Fprint(os.Stderr, "github repo to allow (owner/name, blank for no GitHub access): ")
 	if !scanner.Scan() {
@@ -922,7 +912,7 @@ func herdrPluginDoctor(w io.Writer) error {
 	fmt.Fprintf(w, "herdr version:  %s\n", herdrVer)
 	fmt.Fprintf(w, "HERDR_BIN_PATH: %s\n", herdrBinStatus)
 
-	/** ABI file check catches stale plugin installations (binary/manifest skew). */
+	// ABI file check catches stale plugin installations (binary/manifest skew).
 	pluginRoot := os.Getenv("HERDR_PLUGIN_ROOT")
 	if pluginRoot == "" {
 		fmt.Fprintf(w, "ABI file check: HERDR_PLUGIN_ROOT unset (not running as a herdr plugin)\n")
@@ -943,10 +933,8 @@ func herdrPluginDoctor(w io.Writer) error {
 	return nil
 }
 
-/**
- * HERDR_BIN_PATH injected by herdr into PLUGIN only, not ordinary pane shells.
- * Fall back to PATH: fixes shells inside herdr (natural use case) without weakening.
- */
+// HERDR_BIN_PATH injected by herdr into PLUGIN only, not ordinary pane shells.
+// Fall back to PATH: fixes shells inside herdr (natural use case) without weakening.
 func resolveHerdrBin() (string, error) {
 	if p := os.Getenv("HERDR_BIN_PATH"); p != "" {
 		return p, nil
@@ -978,10 +966,8 @@ func herdrPluginOpenPane(ws string, extraArgs []string) error {
 	return nil
 }
 
-/**
- * D-PD-33: With agentEgress, freeze allowlist onto Envelope.
- * Credentials wired by supervisor (handoffLaunchSupervisor).
- */
+// D-PD-33: With agentEgress, freeze allowlist onto Envelope.
+// Credentials wired by supervisor (handoffLaunchSupervisor).
 func buildLaunchBootOpts(imageRef, cacheRoot string, agentEgress bool) service.CreateAndBootOptions {
 	opts := service.CreateAndBootOptions{
 		Image:               service.ImageSpec{Ref: imageRef},
@@ -1037,10 +1023,8 @@ func handoffLaunchSupervisor(
 			KernelPath: kernelPath,
 			DiskPath:   diskPath,
 			ExtraDisks: extraDisks,
-			/**
-			 * Real bearer tokens are read here, inside the supervisor, and never
-			 * leave it: the broker hands the MITM proxy the token at swap time.
-			 */
+			// Real bearer tokens are read here, inside the supervisor, and never
+			// leave it: the broker hands the MITM proxy the token at swap time.
 			CredsFile: service.DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile),
 			Ephemeral: true,
 		},
@@ -1081,10 +1065,8 @@ func verifyLaunchPerimeterSeed(ctx context.Context, svc *service.Service, id str
 	}
 }
 
-/**
- * herdrPluginLaunch boots sandbox, runs argv in-guest, tears down. With
- * --agent-egress, hands off to supervisor (launchDeps injectable, TBD-PD-31).
- */
+// herdrPluginLaunch boots sandbox, runs argv in-guest, tears down. With
+// --agent-egress, hands off to supervisor (launchDeps injectable, TBD-PD-31).
 type launchDeps struct {
 	svc        *service.Service
 	imgCache   *image.Cache
@@ -1096,10 +1078,8 @@ type launchDeps struct {
 
 	capturedDiskPath func() string
 
-	/**
-	 * handoff hands the booted VM to a detached perimeter supervisor and
-	 * returns the watchdog pipe and the supervisor's IPC socket path.
-	 */
+	// handoff hands the booted VM to a detached perimeter supervisor and
+	// returns the watchdog pipe and the supervisor's IPC socket path.
 	handoff func(ctx context.Context, svc *service.Service, sb domain.Sandbox,
 		storeRoot, kernelPath, diskPath string, extraDisks []string) (*os.File, string, error)
 	verifySeed func(ctx context.Context, svc *service.Service, id string) error
@@ -1107,7 +1087,7 @@ type launchDeps struct {
 	stopSupervisor func(ctx context.Context, sock string) error
 	waitForExit    func(ctx context.Context, stateDir string) error
 
-	/** execInGuest runs the command inside the booted sandbox. */
+	// execInGuest runs the command inside the booted sandbox.
 	execInGuest func(ctx context.Context, ref string, opts agent.ExecOptions) (int32, error)
 }
 
@@ -1159,10 +1139,8 @@ func newLaunchDeps() (launchDeps, error) {
 	}, nil
 }
 
-/**
- * waitForGuestAgent polls vsock until the guest agent's listener accepts.
- * Mirrors the probe in cmd_sandbox.go (runSandboxCreate).
- */
+// waitForGuestAgent polls vsock until the guest agent's listener accepts.
+// Mirrors the probe in cmd_sandbox.go (runSandboxCreate).
 func waitForGuestAgent(pCtx context.Context, drv driver.Driver, id domain.SandboxID) error {
 	gd, ok := drv.(driver.GuestDialer)
 	if !ok {
@@ -1191,12 +1169,10 @@ func herdrPluginLaunch(ctx context.Context, imageRef string, argv []string, agen
 	return runHerdrLaunch(ctx, d, imageRef, argv, agentEgress, out)
 }
 
-/**
- * runHerdrLaunch is the launch path proper, driven entirely through d so a test
- * can supply a fake driver and observe whether the perimeter handoff happens.
- */
+// runHerdrLaunch is the launch path proper, driven entirely through d so a test
+// can supply a fake driver and observe whether the perimeter handoff happens.
 func runHerdrLaunch(ctx context.Context, d launchDeps, imageRef string, argv []string, agentEgress bool, out *Output) error {
-	/** Unique name per invocation to prevent ErrAlreadyExists on retry or concurrent runs. */
+	// Unique name per invocation to prevent ErrAlreadyExists on retry or concurrent runs.
 	name := fmt.Sprintf("run-%x", time.Now().UnixNano())
 
 	sb, err := service.CreateAndBoot(ctx, d.svc, d.imgCache, d.newDriver, d.probe,
@@ -1206,21 +1182,17 @@ func runHerdrLaunch(ctx context.Context, d launchDeps, imageRef string, argv []s
 		return &CodedError{Code: sandboxCodeFor(err), Msg: "__herdr-plugin launch: boot: " + err.Error(), Err: err}
 	}
 
-	/**
-	 * supSock/supWatchdog are set once the VM is handed to a supervisor; the
-	 * teardown below reads them, so they are declared before the defer.
-	 */
+	// supSock/supWatchdog are set once the VM is handed to a supervisor; the
+	// teardown below reads them, so they are declared before the defer.
 	var (
 		supSock     string
 		supWatchdog *os.File
 	)
 	defer func() {
-		/**
-		 * Ephemeral supervisor teardown: /supervisor/stop, then wait for the
-		 * process to exit. The supervisor calls svc.Remove itself on the way
-		 * out, so waiting is what guarantees the VM is down and the record gone
-		 * before the fallback Remove below runs.
-		 */
+		// Ephemeral supervisor teardown: /supervisor/stop, then wait for the
+		// process to exit. The supervisor calls svc.Remove itself on the way
+		// out, so waiting is what guarantees the VM is down and the record gone
+		// before the fallback Remove below runs.
 		if supSock != "" {
 			stopCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			if err := d.stopSupervisor(stopCtx, supSock); err != nil {
@@ -1233,10 +1205,8 @@ func runHerdrLaunch(ctx context.Context, d launchDeps, imageRef string, argv []s
 				_ = supWatchdog.Close()
 			}
 		}
-		/**
-		 * Fallback for the no-supervisor path (and for a supervisor that died
-		 * before removing the record). Remove internally stops the VM.
-		 */
+		// Fallback for the no-supervisor path (and for a supervisor that died
+		// before removing the record). Remove internally stops the VM.
 		rmCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := d.svc.Remove(rmCtx, sb.ID.String()); err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -1261,19 +1231,17 @@ func runHerdrLaunch(ctx context.Context, d launchDeps, imageRef string, argv []s
 		execArgv = launchCredSourcedArgv(argv)
 	}
 
-	/**
-	 * Exec via svc.Exec (the surface-layer path per agent_ops.go:28). svc.driver
-	 * shares defaultSocketDir() with the boot driver and with the supervisor's
-	 * CHDriver, so it can dial the vsock either way.
-	 *
-	 * Env semantics: the guest agent appends req.Env to os.Environ() — it is a
-	 * merge, not a replacement. On the plain path argv[0] must be an absolute
-	 * path because exec.Command resolves it via exec.LookPath in the agent
-	 * binary's own process environment (before cmd.Env applies); on the egress
-	 * path /bin/sh performs the lookup instead. PATH is still injected for the
-	 * child's own subprocess lookups (claude shells out to bash, git, etc.).
-	 * HOME is injected for credential path resolution (claude's OAuth files).
-	 */
+	// Exec via svc.Exec (the surface-layer path per agent_ops.go:28). svc.driver
+	// shares defaultSocketDir() with the boot driver and with the supervisor's
+	// CHDriver, so it can dial the vsock either way.
+	//
+	// Env semantics: the guest agent appends req.Env to os.Environ() — it is a
+	// merge, not a replacement. On the plain path argv[0] must be an absolute
+	// path because exec.Command resolves it via exec.LookPath in the agent
+	// binary's own process environment (before cmd.Env applies); on the egress
+	// path /bin/sh performs the lookup instead. PATH is still injected for the
+	// child's own subprocess lookups (claude shells out to bash, git, etc.).
+	// HOME is injected for credential path resolution (claude's OAuth files).
 	execEnv := map[string]string{
 		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"HOME": "/root",
@@ -1298,29 +1266,23 @@ func runHerdrLaunch(ctx context.Context, d launchDeps, imageRef string, argv []s
 	return nil
 }
 
-/**
- * herdrSpaceLabelForRef derives the canonical herdr workspace label for a sandbox ref.
- * Convention: "nexus3:<handle>" where handle is the ref (sandbox handles ARE the ref).
- */
+// herdrSpaceLabelForRef derives the canonical herdr workspace label for a sandbox ref.
+// Convention: "nexus3:<handle>" where handle is the ref (sandbox handles ARE the ref).
 func herdrSpaceLabelForRef(ref string) string {
 	return "nexus3:" + ref
 }
 
-/**
- * herdrPluginSpaceCreate creates (or reuses) a herdr workspace for the sandbox,
- * opens the primary guest-shell pane, and stores the binding.
- */
+// herdrPluginSpaceCreate creates (or reuses) a herdr workspace for the sandbox,
+// opens the primary guest-shell pane, and stores the binding.
 func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc herdrSpaceCreateSvc, storeRoot string, focus bool) error {
 	herdrBin, binErr := resolveHerdrBin()
 	if binErr != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: " + binErr.Error(), Err: binErr}
 	}
 
-	/**
-	 * Ensure sandbox is running; captures the sandbox for ID resolution.
-	 * If Start returns an illegal-transition error the sandbox is already running;
-	 * fall back to List to locate it.
-	 */
+	// Ensure sandbox is running; captures the sandbox for ID resolution.
+	// If Start returns an illegal-transition error the sandbox is already running;
+	// fall back to List to locate it.
 	sb, startErr := svc.Start(ctx, ref)
 	if startErr != nil {
 		if !strings.Contains(startErr.Error(), "illegal transition") {
@@ -1345,33 +1307,29 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc he
 
 	label := herdrSpaceLabelForRef(ref)
 
-	/**
-	 * focus is a caller decision: human-interactive callers (space-create,
-	 * herdrPluginCreate, herdrPluginSpaceCreateFromFile) pass true so the
-	 * operator's view lands on the new pane. Programmatic/N-way callers
-	 * (space-agent --no-focus) pass false to avoid stealing focus from a
-	 * concurrent run that is already visible.
-	 */
+	// focus is a caller decision: human-interactive callers (space-create,
+	// herdrPluginCreate, herdrPluginSpaceCreateFromFile) pass true so the
+	// operator's view lands on the new pane. Programmatic/N-way callers
+	// (space-agent --no-focus) pass false to avoid stealing focus from a
+	// concurrent run that is already visible.
 
-	/**
-	 * Idempotency: reuse an existing binding for this handle — but only after
-	 * confirming the workspace it names still EXISTS. A binding is a stored
-	 * pointer and the operator can close a workspace in herdr at any time;
-	 * nothing tells nexus3. Trusting the pointer blindly made space-create
-	 * fail outright against a closed workspace:
-	 *
-	 *	reusing space: label=nexus3:ac3/vcpuctl workspace_id=w35
-	 *	{"error":{"code":"workspace_not_found",...}}
-	 *	error: space-create: open shell pane: exit status 1
-	 *
-	 * stranding the sandbox until someone pruned the binding by hand. When the
-	 * workspace is gone we mint a fresh one instead.
-	 *
-	 * The predicate is shared with space-prune and fails SAFE for both callers:
-	 * when herdr is unreachable or answers in an unexpected shape it reports
-	 * every workspace alive, so prune deletes nothing and we reuse rather than
-	 * minting a duplicate during a transient herdr outage.
-	 */
+	// Idempotency: reuse an existing binding for this handle — but only after
+	// confirming the workspace it names still EXISTS. A binding is a stored
+	// pointer and the operator can close a workspace in herdr at any time;
+	// nothing tells nexus3. Trusting the pointer blindly made space-create
+	// fail outright against a closed workspace:
+	//
+	// 	reusing space: label=nexus3:ac3/vcpuctl workspace_id=w35
+	// 	{"error":{"code":"workspace_not_found",...}}
+	// 	error: space-create: open shell pane: exit status 1
+	//
+	// stranding the sandbox until someone pruned the binding by hand. When the
+	// workspace is gone we mint a fresh one instead.
+	//
+	// The predicate is shared with space-prune and fails SAFE for both callers:
+	// when herdr is unreachable or answers in an unexpected shape it reports
+	// every workspace alive, so prune deletes nothing and we reuse rather than
+	// minting a duplicate during a transient herdr outage.
 	existing, existingErr := HerdrSpaceGetByLabel(ctx, storeRoot, label)
 	reusable := existingErr == nil
 	if reusable && !herdrSpacePruneWorkspaceExistsFn(ctx, herdrBin)(existing) {
@@ -1383,18 +1341,16 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc he
 	}
 	if reusable {
 		fmt.Fprintf(w, "reusing space: label=%s workspace_id=%s\n", existing.SpaceLabel, existing.HerdrWorkspaceID)
-		/**
-		 * If the binding records a guest pane that is still alive, adopt it
-		 * rather than opening another. A stored pane ID is a pointer the
-		 * operator can invalidate at any time (pane closed, workspace restarted).
-		 * Nothing tells nexus3 when that happens, so we probe liveness first.
-		 *
-		 * Fail-safe: if the pane probe errors (herdr unreachable, unexpected
-		 * shape), herdrPaneExistsFn returns false and we fall through to open a
-		 * new pane. This degrades to the pre-fix cosmetic extra-pane behaviour
-		 * rather than silently dispatching the agent into a pane that does not
-		 * exist (a silent no-op where nothing visible happens).
-		 */
+		// If the binding records a guest pane that is still alive, adopt it
+		// rather than opening another. A stored pane ID is a pointer the
+		// operator can invalidate at any time (pane closed, workspace restarted).
+		// Nothing tells nexus3 when that happens, so we probe liveness first.
+		//
+		// Fail-safe: if the pane probe errors (herdr unreachable, unexpected
+		// shape), herdrPaneExistsFn returns false and we fall through to open a
+		// new pane. This degrades to the pre-fix cosmetic extra-pane behaviour
+		// rather than silently dispatching the agent into a pane that does not
+		// exist (a silent no-op where nothing visible happens).
 		if existing.GuestPaneID != "" && herdrPaneExistsFn(ctx, herdrBin, existing.HerdrWorkspaceID, existing.GuestPaneID) {
 			fmt.Fprintf(w, "pane already live: pane_id=%s\n", existing.GuestPaneID)
 			return nil
@@ -1411,11 +1367,9 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc he
 		return nil
 	}
 
-	/**
-	 * Create herdr workspace and capture its ID and root pane ID. The cwd is
-	 * the sandbox's own host-side mount path, not whatever workspace happens
-	 * to be focused right now — see herdrShellHostCwd.
-	 */
+	// Create herdr workspace and capture its ID and root pane ID. The cwd is
+	// the sandbox's own host-side mount path, not whatever workspace happens
+	// to be focused right now — see herdrShellHostCwd.
 	hostCwd := herdrShellHostCwd(ctx, ref, svc)
 	workspaceID, rootPaneID, err := herdrWorkspaceCreate(ctx, herdrBin, label, hostCwd)
 	if err != nil {
@@ -1433,21 +1387,17 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc he
 	}
 
 	fmt.Fprintf(w, "created space: label=%s workspace_id=%s\n", label, workspaceID)
-	/**
-	 * Opens the guest pane beside the root pane herdr just created
-	 * (--placement split --target-pane <root> --direction right — see
-	 * herdrOpenGuestShellPane), then closes the root pane to leave the
-	 * workspace guest-only.
-	 */
+	// Opens the guest pane beside the root pane herdr just created
+	// (--placement split --target-pane <root> --direction right — see
+	// herdrOpenGuestShellPane), then closes the root pane to leave the
+	// workspace guest-only.
 	paneID, err := herdrOpenGuestShellPane(ctx, herdrBin, ref, workspaceID, rootPaneID, focus)
 	if err != nil {
 		return err
 	}
-	/**
-	 * Guest pane is open. Close the root host pane we were split beside.
-	 * A close failure is cosmetic: the sandbox is fully operational, so log
-	 * a warning and continue rather than failing space-create.
-	 */
+	// Guest pane is open. Close the root host pane we were split beside.
+	// A close failure is cosmetic: the sandbox is fully operational, so log
+	// a warning and continue rather than failing space-create.
 	herdrCloseRootPane(ctx, herdrBin, "space-create", rootPaneID)
 	b.GuestPaneID = paneID
 	if err := HerdrSpacePut(ctx, storeRoot, b); err != nil {
@@ -1457,21 +1407,19 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc he
 	return nil
 }
 
-/**
- * herdrWorkspaceCreate runs "herdr workspace create --label <label> [--cwd
- * <cwd>]" and returns the new workspace's ID and its root pane's ID. herdr
- * prints a JSON envelope; we parse result.workspace.workspace_id and
- * result.root_pane.pane_id from it.
- *
- * The root pane ID is used by the caller to (a) split the guest pane beside
- * it (--placement split --target-pane <root> --direction right) and then
- * (b) close it, leaving the workspace guest-only. See herdrOpenGuestShellPane.
- *
- * herdrCloseRootPane closes the operator-facing root pane that was created
- * alongside the guest pane. A failure is cosmetic — the sandbox is fully
- * operational — so we log a warning and continue. caller is the subcommand
- * name used in the warning message (e.g. "space-create", "space-open-pane").
- */
+// herdrWorkspaceCreate runs "herdr workspace create --label <label> [--cwd
+// <cwd>]" and returns the new workspace's ID and its root pane's ID. herdr
+// prints a JSON envelope; we parse result.workspace.workspace_id and
+// result.root_pane.pane_id from it.
+//
+// The root pane ID is used by the caller to (a) split the guest pane beside
+// it (--placement split --target-pane <root> --direction right) and then
+// (b) close it, leaving the workspace guest-only. See herdrOpenGuestShellPane.
+//
+// herdrCloseRootPane closes the operator-facing root pane that was created
+// alongside the guest pane. A failure is cosmetic — the sandbox is fully
+// operational — so we log a warning and continue. caller is the subcommand
+// name used in the warning message (e.g. "space-create", "space-open-pane").
 func herdrCloseRootPane(ctx context.Context, herdrBin, caller, rootPaneID string) {
 	if rootPaneID == "" {
 		return
@@ -1484,10 +1432,8 @@ func herdrCloseRootPane(ctx context.Context, herdrBin, caller, rootPaneID string
 	}
 }
 
-/**
- * cwd is optional: an empty value omits --cwd entirely rather than passing an
- * empty flag, which preserves herdr's own default-cwd behaviour.
- */
+// cwd is optional: an empty value omits --cwd entirely rather than passing an
+// empty flag, which preserves herdr's own default-cwd behaviour.
 func herdrWorkspaceCreate(ctx context.Context, herdrBin, label, cwd string) (workspaceID, rootPaneID string, err error) {
 	args := []string{"workspace", "create", "--label", label, "--no-focus"}
 	if cwd != "" {
@@ -1500,7 +1446,7 @@ func herdrWorkspaceCreate(ctx context.Context, herdrBin, label, cwd string) (wor
 	if runErr := cmd.Run(); runErr != nil {
 		return "", "", runErr
 	}
-	/** Parse {"id":...,"result":{"workspace":{"workspace_id":"wF",...},"root_pane":{"pane_id":"p1",...},...}} */
+	// Parse {"id":...,"result":{"workspace":{"workspace_id":"wF",...},"root_pane":{"pane_id":"p1",...},...}}
 	var envelope struct {
 		Result struct {
 			Workspace struct {
@@ -1513,12 +1459,10 @@ func herdrWorkspaceCreate(ctx context.Context, herdrBin, label, cwd string) (wor
 	}
 	raw := strings.TrimSpace(buf.String())
 	if jsonErr := json.Unmarshal([]byte(raw), &envelope); jsonErr != nil {
-		/**
-		 * Fall back to treating the raw output as a plain ID (plain-text
-		 * mode). The root pane ID is not recoverable here, so the caller
-		 * falls back to opening the guest pane via --workspace — today's
-		 * separate-tab behaviour, a degradation rather than a failure.
-		 */
+		// Fall back to treating the raw output as a plain ID (plain-text
+		// mode). The root pane ID is not recoverable here, so the caller
+		// falls back to opening the guest pane via --workspace — today's
+		// separate-tab behaviour, a degradation rather than a failure.
 		id := raw
 		if id == "" {
 			return "", "", fmt.Errorf("herdr workspace create: empty output")
@@ -1532,48 +1476,46 @@ func herdrWorkspaceCreate(ctx context.Context, herdrBin, label, cwd string) (wor
 	return id, envelope.Result.RootPane.PaneID, nil
 }
 
-/**
- * herdrOpenGuestShellPane opens a guest-shell pane and returns its pane ID.
- *
- * When rootPaneID is known, the pane is opened as a horizontal split beside
- * the workspace's root pane via --target-pane, rather than as a second tab.
- * The caller then closes that root pane, leaving the workspace GUEST-ONLY —
- * a nexus3:<handle> workspace represents a sandbox, so a host shell sitting
- * in it is noise, and it made "new tab" land in a host path.
- *
- * Closing the root PANE is safe; closing the root TAB is not. An earlier
- * version closed the tab after opening a second one, which SIGHUPs whatever
- * is running in it. The root pane here is one herdr minted moments ago for a
- * workspace we just created and nobody has typed into — a freshly-made empty
- * shell, not someone's work. That distinction is the whole licence for
- * closing it, so never generalise this into closing panes we did not just
- * cause to exist.
- *
- * herdr accepts --workspace only with --placement tab. Split and zoomed
- * reject --workspace unconditionally ("split and zoomed plugin panes target
- * an existing pane; use target_pane_id") — the rejection is placement-driven,
- * not caused by the presence of --target-pane. So rootPaneID present → split
- * + --target-pane; rootPaneID absent → --workspace only (no --placement, so
- * the server falls back to the manifest-declared placement for the shell
- * entrypoint, which must be "tab" — see TestHerdrManifest_ShellPlacementIsTab).
- *
- * When rootPaneID is empty — no root pane id could be parsed, or an existing
- * workspace is being reused rather than freshly created (its root pane id
- * from creation time is not retained) — --workspace is used instead: today's
- * separate-tab behaviour. That is a degradation, not a failure.
- *
- * focus controls whether --focus is passed. herdr agent start requires
- * --pane <ID>, which is why this function's return value matters: without it
- * the id nexus3 opens is thrown away and the rest of the agent-start chain
- * can never be scripted (see the package doc comment on the chain this
- * closes). focus is a separate concern from the pane ID: under N-way
- * spawning, every new sandbox stealing the operator's focus away from
- * whatever they are doing is its own bug, independent of whether the ID gets
- * captured. Callers decide: interactive single-space use should keep
- * stealing focus (that is what a human asking for one space wants); bulk/
- * programmatic creation should not (see the two call sites for the actual
- * per-caller decision and why).
- */
+// herdrOpenGuestShellPane opens a guest-shell pane and returns its pane ID.
+//
+// When rootPaneID is known, the pane is opened as a horizontal split beside
+// the workspace's root pane via --target-pane, rather than as a second tab.
+// The caller then closes that root pane, leaving the workspace GUEST-ONLY —
+// a nexus3:<handle> workspace represents a sandbox, so a host shell sitting
+// in it is noise, and it made "new tab" land in a host path.
+//
+// Closing the root PANE is safe; closing the root TAB is not. An earlier
+// version closed the tab after opening a second one, which SIGHUPs whatever
+// is running in it. The root pane here is one herdr minted moments ago for a
+// workspace we just created and nobody has typed into — a freshly-made empty
+// shell, not someone's work. That distinction is the whole licence for
+// closing it, so never generalise this into closing panes we did not just
+// cause to exist.
+//
+// herdr accepts --workspace only with --placement tab. Split and zoomed
+// reject --workspace unconditionally ("split and zoomed plugin panes target
+// an existing pane; use target_pane_id") — the rejection is placement-driven,
+// not caused by the presence of --target-pane. So rootPaneID present → split
+// + --target-pane; rootPaneID absent → --workspace only (no --placement, so
+// the server falls back to the manifest-declared placement for the shell
+// entrypoint, which must be "tab" — see TestHerdrManifest_ShellPlacementIsTab).
+//
+// When rootPaneID is empty — no root pane id could be parsed, or an existing
+// workspace is being reused rather than freshly created (its root pane id
+// from creation time is not retained) — --workspace is used instead: today's
+// separate-tab behaviour. That is a degradation, not a failure.
+//
+// focus controls whether --focus is passed. herdr agent start requires
+// --pane <ID>, which is why this function's return value matters: without it
+// the id nexus3 opens is thrown away and the rest of the agent-start chain
+// can never be scripted (see the package doc comment on the chain this
+// closes). focus is a separate concern from the pane ID: under N-way
+// spawning, every new sandbox stealing the operator's focus away from
+// whatever they are doing is its own bug, independent of whether the ID gets
+// captured. Callers decide: interactive single-space use should keep
+// stealing focus (that is what a human asking for one space wants); bulk/
+// programmatic creation should not (see the two call sites for the actual
+// per-caller decision and why).
 func herdrOpenGuestShellPane(ctx context.Context, herdrBin, ref, workspaceID, rootPaneID string, focus bool) (string, error) {
 	args := []string{"plugin", "pane", "open",
 		"--plugin", "nexus3",
@@ -1582,13 +1524,11 @@ func herdrOpenGuestShellPane(ctx context.Context, herdrBin, ref, workspaceID, ro
 	if rootPaneID != "" {
 		args = append(args, "--placement", "split", "--target-pane", rootPaneID, "--direction", "right")
 	} else {
-		/**
-		 * No --placement: herdr falls back to the manifest-declared placement
-		 * for the shell entrypoint, which is "tab". Tab is the only placement
-		 * that accepts --workspace; if the manifest ever changes shell to split,
-		 * overlay, or zoomed, this call silently returns rc=1.
-		 * TestHerdrManifest_ShellPlacementIsTab pins that invariant.
-		 */
+		// No --placement: herdr falls back to the manifest-declared placement
+		// for the shell entrypoint, which is "tab". Tab is the only placement
+		// that accepts --workspace; if the manifest ever changes shell to split,
+		// overlay, or zoomed, this call silently returns rc=1.
+		// TestHerdrManifest_ShellPlacementIsTab pins that invariant.
 		args = append(args, "--workspace", workspaceID)
 	}
 	args = append(args, "--env", "NEXUS3_WORKSPACE="+ref)
@@ -1599,11 +1539,9 @@ func herdrOpenGuestShellPane(ctx context.Context, herdrBin, ref, workspaceID, ro
 	}
 	cmd := herdrExecCommandContext(ctx, herdrBin, args...)
 	cmd.Stdin = os.Stdin
-	/**
-	 * Tee to the operator's terminal — that is today's behaviour and stays
-	 * unchanged — while also capturing the output so the pane ID can be
-	 * parsed out of it below.
-	 */
+	// Tee to the operator's terminal — that is today's behaviour and stays
+	// unchanged — while also capturing the output so the pane ID can be
+	// parsed out of it below.
 	var buf strings.Builder
 	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
 	cmd.Stderr = os.Stderr
@@ -1629,7 +1567,7 @@ func herdrParsePluginPaneID(raw string) string {
 	return envelope.Result.PluginPane.Pane.PaneID
 }
 
-/** herdrPluginSpaceOpenPane resolves a space by ref, label, or workspace_id and opens another guest-shell pane. */
+// herdrPluginSpaceOpenPane resolves a space by ref, label, or workspace_id and opens another guest-shell pane.
 func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot string, svc herdrAdoptGetter, w io.Writer) error {
 	herdrBin, binErr := resolveHerdrBin()
 	if binErr != nil {
@@ -1644,38 +1582,32 @@ func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot 
 		herdrAdoptNotice(b)
 	}
 
-	/**
-	 * A binding adopted from a sandbox created outside herdr has no workspace
-	 * yet. Mint one now — this is the only subcommand that needs one.
-	 */
+	// A binding adopted from a sandbox created outside herdr has no workspace
+	// yet. Mint one now — this is the only subcommand that needs one.
 	b, rootPaneID, err := herdrSpaceEnsureWorkspace(ctx, svc, storeRoot, herdrBin, b)
 	if err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-open-pane: " + err.Error(), Err: err}
 	}
 
-	/**
-	 * rootPaneID is only non-empty when this call just minted the workspace.
-	 * The guest pane is split beside the root pane (--placement split
-	 * --target-pane <root> --direction right); the root pane is then closed
-	 * to leave the workspace guest-only. A reused workspace has no fresh root
-	 * pane id, so this falls back to --workspace — see herdrOpenGuestShellPane.
-	 *
-	 * herdrPluginSpaceOpenPane is invoked interactively by a human (the
-	 * "space-open-pane" subcommand) — focus stays true, matching today's
-	 * focus-stealing behaviour, since that is what the user asked for by
-	 * running the command. A future programmatic/bulk caller (N-way
-	 * spawning) should call herdrOpenGuestShellPane directly with
-	 * focus=false rather than going through this human-facing entrypoint.
-	 */
+	// rootPaneID is only non-empty when this call just minted the workspace.
+	// The guest pane is split beside the root pane (--placement split
+	// --target-pane <root> --direction right); the root pane is then closed
+	// to leave the workspace guest-only. A reused workspace has no fresh root
+	// pane id, so this falls back to --workspace — see herdrOpenGuestShellPane.
+	//
+	// herdrPluginSpaceOpenPane is invoked interactively by a human (the
+	// "space-open-pane" subcommand) — focus stays true, matching today's
+	// focus-stealing behaviour, since that is what the user asked for by
+	// running the command. A future programmatic/bulk caller (N-way
+	// spawning) should call herdrOpenGuestShellPane directly with
+	// focus=false rather than going through this human-facing entrypoint.
 	paneID, err := herdrOpenGuestShellPane(ctx, herdrBin, b.SandboxHandle, b.HerdrWorkspaceID, rootPaneID, true)
 	if err != nil {
 		return err
 	}
-	/**
-	 * Guest pane is open. Close the root host pane we were split beside.
-	 * A close failure is cosmetic: the sandbox is fully operational, so log
-	 * a warning and continue rather than failing space-open-pane.
-	 */
+	// Guest pane is open. Close the root host pane we were split beside.
+	// A close failure is cosmetic: the sandbox is fully operational, so log
+	// a warning and continue rather than failing space-open-pane.
 	herdrCloseRootPane(ctx, herdrBin, "space-open-pane", rootPaneID)
 	b.GuestPaneID = paneID
 	if err := HerdrSpacePut(ctx, storeRoot, b); err != nil {
@@ -1685,15 +1617,13 @@ func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot 
 	return nil
 }
 
-/** herdrPluginNewTab opens a tab: new guest pane if bound, else herdr default. */
+// herdrPluginNewTab opens a tab: new guest pane if bound, else herdr default.
 func herdrPluginNewTab(ctx context.Context, workspaceID, storeRoot string, svc herdrAdoptGetter, w io.Writer) error {
 	herdrBin, binErr := resolveHerdrBin()
 
-	/**
-	 * Look up a nexus3 binding for this herdr workspace ID.
-	 * herdrSpaceResolve's last-resort scan matches HerdrWorkspaceID, so
-	 * passing a workspace ID here works without a dedicated index.
-	 */
+	// Look up a nexus3 binding for this herdr workspace ID.
+	// herdrSpaceResolve's last-resort scan matches HerdrWorkspaceID, so
+	// passing a workspace ID here works without a dedicated index.
 	_, lookupErr := herdrSpaceResolve(ctx, storeRoot, workspaceID)
 	if lookupErr != nil && !errors.Is(lookupErr, ErrHerdrSpaceNotFound) {
 		slog.Warn("new-tab: binding lookup failed; falling back to host tab",
@@ -1717,7 +1647,7 @@ func herdrPluginNewTab(ctx context.Context, workspaceID, storeRoot string, svc h
 	return nil
 }
 
-/** herdrSpaceResolve looks up a binding by label, sandbox handle, derived label, or workspace ID. */
+// herdrSpaceResolve looks up a binding by label, sandbox handle, derived label, or workspace ID.
 func herdrSpaceResolve(ctx context.Context, storeRoot, key string) (HerdrSpaceBinding, error) {
 	if b, err := HerdrSpaceGetByLabel(ctx, storeRoot, key); err == nil {
 		return b, nil
@@ -1744,22 +1674,18 @@ type sandboxGetter interface {
 	Get(ctx context.Context, ref string) (domain.Sandbox, error)
 }
 
-/**
- * herdrSpaceCreateSvc is the subset of *service.Service used by
- * herdrPluginSpaceCreate. Extracted as an interface so tests can inject a fake
- * without spinning up a real sandbox service.
- */
+// herdrSpaceCreateSvc is the subset of *service.Service used by
+// herdrPluginSpaceCreate. Extracted as an interface so tests can inject a fake
+// without spinning up a real sandbox service.
 type herdrSpaceCreateSvc interface {
 	Start(ctx context.Context, ref string) (domain.Sandbox, error)
 	List(ctx context.Context) ([]domain.Sandbox, error)
 	Get(ctx context.Context, ref string) (domain.Sandbox, error)
 }
 
-/**
- * herdrShellCwd returns the guest working directory for the shell pane.
- * Priority: first LiveMount GuestPath, then first MountedVolume GuestPath,
- * fallback /root. Never fails — on any error returns /root.
- */
+// herdrShellCwd returns the guest working directory for the shell pane.
+// Priority: first LiveMount GuestPath, then first MountedVolume GuestPath,
+// fallback /root. Never fails — on any error returns /root.
 func herdrShellCwd(ctx context.Context, ref string, svc sandboxGetter) string {
 	sb, err := svc.Get(ctx, ref)
 	if err != nil {
@@ -1841,7 +1767,7 @@ func herdrPluginBackfillRepoRoot(ctx context.Context, storeRoot string, w io.Wri
 	return nil
 }
 
-/** herdrPluginSpacePrune removes stale bindings (dry-run; --apply to delete). */
+// herdrPluginSpacePrune removes stale bindings (dry-run; --apply to delete).
 func herdrPluginSpacePrune(ctx context.Context, args []string, w io.Writer, svc herdrSpacePruneLister, storeRoot, herdrBin string) error {
 	fs := flag.NewFlagSet("space-prune", flag.ContinueOnError)
 	apply := fs.Bool("apply", false, "delete stale bindings (default: dry-run)")
@@ -1851,12 +1777,10 @@ func herdrPluginSpacePrune(ctx context.Context, args []string, w io.Writer, svc 
 	if fs.NArg() > 0 {
 		return &UsageError{Msg: fmt.Sprintf("__herdr-plugin space-prune: unexpected argument %q; usage: space-prune [--apply]", fs.Arg(0))}
 	}
-	/**
-	 * Refuse --apply when herdr is unavailable: the workspace-exists predicate
-	 * would fail safe to all-alive (exec error → treat all alive), but a binding
-	 * whose sandbox is gone would still be pruned with its workspace unclosed and
-	 * unverifiable. Dry-run may still report (its predicate already fails safe).
-	 */
+	// Refuse --apply when herdr is unavailable: the workspace-exists predicate
+	// would fail safe to all-alive (exec error → treat all alive), but a binding
+	// whose sandbox is gone would still be pruned with its workspace unclosed and
+	// unverifiable. Dry-run may still report (its predicate already fails safe).
 	if *apply && herdrBin == "" {
 		return &UsageError{Msg: "__herdr-plugin space-prune: --apply refused: herdr binary not found " +
 			"(HERDR_BIN_PATH is unset and no \"herdr\" binary is on PATH); " +
@@ -1867,12 +1791,10 @@ func herdrPluginSpacePrune(ctx context.Context, args []string, w io.Writer, svc 
 	closer := func(ctx context.Context, workspaceID string) error {
 		return herdrWorkspaceClose(ctx, herdrBin, workspaceID)
 	}
-	/**
-	 * removeSandbox is backed by svc.Remove when svc implements the full
-	 * sandbox service (always true in production — *service.Service does).
-	 * A type assertion is used so herdrSpacePruneLister stays minimal (List
-	 * only) and test fakes do not need to implement Remove.
-	 */
+	// removeSandbox is backed by svc.Remove when svc implements the full
+	// sandbox service (always true in production — *service.Service does).
+	// A type assertion is used so herdrSpacePruneLister stays minimal (List
+	// only) and test fakes do not need to implement Remove.
 	var removeSandbox func(context.Context, string) error
 	if rem, ok := svc.(HerdrSpaceSandboxService); ok {
 		removeSandbox = func(ctx context.Context, handle string) error {
@@ -1883,14 +1805,12 @@ func herdrPluginSpacePrune(ctx context.Context, args []string, w io.Writer, svc 
 			return fmt.Errorf("space-prune: removeSandbox not available (svc does not implement HerdrSpaceSandboxService)")
 		}
 	}
-	/**
-	 * Snapshot the bindings BEFORE the binding-indexed pass runs. The fallback
-	 * sweep below must not treat a binding that THIS run deleted as evidence
-	 * that its sandbox was never bound — the binding-indexed path owns anything
-	 * it saw, for the whole run. A read failure here is not fatal to the main
-	 * prune (herdrSpacePruneFull does its own read and reports it); it only
-	 * disables the fallback.
-	 */
+	// Snapshot the bindings BEFORE the binding-indexed pass runs. The fallback
+	// sweep below must not treat a binding that THIS run deleted as evidence
+	// that its sandbox was never bound — the binding-indexed path owns anything
+	// it saw, for the whole run. A read failure here is not fatal to the main
+	// prune (herdrSpacePruneFull does its own read and reports it); it only
+	// disables the fallback.
 	bindingsBefore, bindingsErr := HerdrSpaceList(ctx, storeRoot)
 
 	if err := herdrSpacePruneFull(ctx, w, storeRoot, herdrBin, sandboxExists, workspaceExists, closer, removeSandbox, *apply); err != nil {
@@ -1905,23 +1825,21 @@ func herdrPluginSpacePrune(ctx context.Context, args []string, w io.Writer, svc 
 	return nil
 }
 
-/**
- * herdrSpacePruneFull is the testable core of space-prune.
- * sandboxExists(b) returns true when the sandbox recorded in b is still alive.
- * workspaceExists(b) returns true when the herdr workspace recorded in b is
- * still alive.  A binding is pruned when either returns false.
- * closer is called for stale workspaces before the binding is deleted.
- * If closer returns an error the binding is RETAINED for the next run —
- * a close that did not happen must not authorise deleting the workspace
- * record. The deleted count reported reflects ACTUAL deletions, not
- * stale classifications.
- *
- * removeSandbox(ctx, handle) removes the sandbox VM for auto-bound worktree
- * sandboxes (b.IsWorktreeManaged()) whose workspace is gone but VM is still
- * running.  It is NEVER called for non-worktree handles or when the sandbox
- * is already absent.  A removeSandbox failure retains the binding for the
- * next prune run.
- */
+// herdrSpacePruneFull is the testable core of space-prune.
+// sandboxExists(b) returns true when the sandbox recorded in b is still alive.
+// workspaceExists(b) returns true when the herdr workspace recorded in b is
+// still alive.  A binding is pruned when either returns false.
+// closer is called for stale workspaces before the binding is deleted.
+// If closer returns an error the binding is RETAINED for the next run —
+// a close that did not happen must not authorise deleting the workspace
+// record. The deleted count reported reflects ACTUAL deletions, not
+// stale classifications.
+//
+// removeSandbox(ctx, handle) removes the sandbox VM for auto-bound worktree
+// sandboxes (b.IsWorktreeManaged()) whose workspace is gone but VM is still
+// running.  It is NEVER called for non-worktree handles or when the sandbox
+// is already absent.  A removeSandbox failure retains the binding for the
+// next prune run.
 func herdrSpacePruneFull(
 	ctx context.Context,
 	w io.Writer,
@@ -1978,10 +1896,8 @@ func herdrSpacePruneFull(
 		sbPresent := sandboxExists(b)
 		wsPresent := workspaceExists(b)
 
-		/**
-		 * Case: sandbox running, workspace gone, non-worktree → clear stale workspace
-		 * ID and keep the binding so the next space-create can mint a fresh workspace.
-		 */
+		// Case: sandbox running, workspace gone, non-worktree → clear stale workspace
+		// ID and keep the binding so the next space-create can mint a fresh workspace.
 		if sbPresent && !wsPresent && !b.IsWorktreeManaged() {
 			if err := herdrSpaceBindingClearWorkspaceID(ctx, storeRoot, b.SpaceLabel); err != nil {
 				slog.Warn("space-prune: clear stale workspace-id failed; binding retained",
@@ -1993,7 +1909,7 @@ func herdrSpacePruneFull(
 			continue
 		}
 
-		/** Case: worktree sandbox running, workspace gone → reap VM then delete binding. */
+		// Case: worktree sandbox running, workspace gone → reap VM then delete binding.
 		if b.IsWorktreeManaged() && sbPresent && !wsPresent {
 			if err := removeSandbox(ctx, b.SandboxHandle); err != nil {
 				slog.Warn("space-prune: reap worktree sandbox failed; binding retained for next run",
@@ -2003,7 +1919,7 @@ func herdrSpacePruneFull(
 			fmt.Fprintf(w, "  REAPED sandbox=%s (workspace gone)\n", b.SandboxHandle)
 		}
 
-		/** All other stale cases (both absent, or sandbox absent): close workspace + delete binding. */
+		// All other stale cases (both absent, or sandbox absent): close workspace + delete binding.
 		if err := closer(ctx, b.HerdrWorkspaceID); err != nil {
 			slog.Warn("space-prune: close workspace failed; binding retained for next run",
 				"workspace_id", b.HerdrWorkspaceID, "err", err)
@@ -2023,12 +1939,10 @@ func herdrSpacePruneFull(
 	return nil
 }
 
-/**
- * herdrSpaceSweepOrphanWorkspaces closes herdr workspaces whose label starts
- * with "nexus3:" but have no corresponding binding. These are created when
- * herdrSpaceEnsureWorkspaceTxn fails after workspace creation (TBD-SHL-7).
- * A failure to list workspaces is a no-op (fail-safe).
- */
+// herdrSpaceSweepOrphanWorkspaces closes herdr workspaces whose label starts
+// with "nexus3:" but have no corresponding binding. These are created when
+// herdrSpaceEnsureWorkspaceTxn fails after workspace creation (TBD-SHL-7).
+// A failure to list workspaces is a no-op (fail-safe).
 func herdrSpaceSweepOrphanWorkspaces(ctx context.Context, w io.Writer, storeRoot, herdrBin string, closer func(context.Context, string) error) {
 	if herdrBin == "" {
 		return
@@ -2067,71 +1981,61 @@ func herdrSpaceSweepOrphanWorkspaces(ctx context.Context, w io.Writer, storeRoot
 }
 
 // ── Bindingless worktree-sandbox fallback sweep ─────────────────────────────
-/**
- * WHY THIS EXISTS, AND WHY IT IS A FALLBACK AND NOT A REPLACEMENT.
- *
- * herdrSpacePruneFull enumerates BINDINGS. That is deliberate: the binding
- * store is the index of what nexus3 is permitted to reap, and it is the reason
- * a reaper cannot classify a live developer's VM as an orphan. This repo has a
- * proven incident where exactly that happened, so nothing below widens what the
- * binding-indexed path reaps, and nothing below runs on a sandbox that HAS a
- * binding row.
- *
- * The gap this closes is narrow and real: a sandbox that never got a binding
- * row (create succeeded, the binding write did not) is structurally invisible
- * to a binding-indexed prune, forever. Three of five sandboxes examined on the
- * host at diagnosis were in exactly that state and leaked until they were
- * removed by hand.
- *
- * The sweep therefore derives collectability from the SANDBOX RECORD, and only
- * when all four of these are POSITIVELY established. Every one of them is an
- * affirmative observation; none is inferred from a missing input, and any
- * input that cannot be obtained aborts the whole sweep:
- *
- *	G1  the sandbox has NO binding row (handle and ID both absent from the
- *	    binding snapshot taken BEFORE the binding-indexed pass ran)
- *	G2  its live-mount set positively matches the shape herdrWorktreeSandbox
- *	    writes: exactly one /workspace mount, and exactly one self-mapped mount
- *	    that is a git common dir STILL PRESENT on disk with a worktrees/ subdir
- *	G3  the /workspace host path is positively absent (os.ErrNotExist — a
- *	    permission or I/O error is ambiguous and keeps the sandbox)
- *	G4  no live herdr workspace refers to it, established against a workspace
- *	    list that was actually obtained and was non-empty
- *
- * Ambiguity resolves to KEEP in every case. A wrong reap costs someone's
- * working VM; a missed reap costs disk.
- */
+// WHY THIS EXISTS, AND WHY IT IS A FALLBACK AND NOT A REPLACEMENT.
+//
+// herdrSpacePruneFull enumerates BINDINGS. That is deliberate: the binding
+// store is the index of what nexus3 is permitted to reap, and it is the reason
+// a reaper cannot classify a live developer's VM as an orphan. This repo has a
+// proven incident where exactly that happened, so nothing below widens what the
+// binding-indexed path reaps, and nothing below runs on a sandbox that HAS a
+// binding row.
+//
+// The gap this closes is narrow and real: a sandbox that never got a binding
+// row (create succeeded, the binding write did not) is structurally invisible
+// to a binding-indexed prune, forever. Three of five sandboxes examined on the
+// host at diagnosis were in exactly that state and leaked until they were
+// removed by hand.
+//
+// The sweep therefore derives collectability from the SANDBOX RECORD, and only
+// when all four of these are POSITIVELY established. Every one of them is an
+// affirmative observation; none is inferred from a missing input, and any
+// input that cannot be obtained aborts the whole sweep:
+//
+// 	G1  the sandbox has NO binding row (handle and ID both absent from the
+// 	    binding snapshot taken BEFORE the binding-indexed pass ran)
+// 	G2  its live-mount set positively matches the shape herdrWorktreeSandbox
+// 	    writes: exactly one /workspace mount, and exactly one self-mapped mount
+// 	    that is a git common dir STILL PRESENT on disk with a worktrees/ subdir
+// 	G3  the /workspace host path is positively absent (os.ErrNotExist — a
+// 	    permission or I/O error is ambiguous and keeps the sandbox)
+// 	G4  no live herdr workspace refers to it, established against a workspace
+// 	    list that was actually obtained and was non-empty
+//
+// Ambiguity resolves to KEEP in every case. A wrong reap costs someone's
+// working VM; a missed reap costs disk.
 
-/**
- * herdrWorkspaceGuestPath is the guest mount point herdrWorktreeSandbox gives
- * the worktree checkout ("<checkout>:/workspace", see mountSpec there).
- */
+// herdrWorkspaceGuestPath is the guest mount point herdrWorktreeSandbox gives
+// the worktree checkout ("<checkout>:/workspace", see mountSpec there).
 const herdrWorkspaceGuestPath = "/workspace"
 
-/**
- * herdrWorkspaceRef is one live herdr workspace, reduced to the fields the
- * bindingless sweep needs to answer "does anything live still refer to this
- * checkout?".
- */
+// herdrWorkspaceRef is one live herdr workspace, reduced to the fields the
+// bindingless sweep needs to answer "does anything live still refer to this
+// checkout?".
 type herdrWorkspaceRef struct {
 	WorkspaceID string
 	Label       string
-	/**
-	 * CheckoutPath is worktree.checkout_path from herdr's WorkspaceInfo. It is
-	 * empty when the workspace is not a worktree workspace (herdr models the
-	 * whole `worktree` object as nullable).
-	 */
+	// CheckoutPath is worktree.checkout_path from herdr's WorkspaceInfo. It is
+	// empty when the workspace is not a worktree workspace (herdr models the
+	// whole `worktree` object as nullable).
 	CheckoutPath string
 }
 
-/**
- * herdrListWorkspaceRefs runs `herdr workspace list` and returns every live
- * workspace with its label and worktree checkout path.
- *
- * An error is returned — never a partial or empty success — when herdr is
- * unavailable, the call fails, or the response does not parse. The caller must
- * treat that as "guard G4 cannot be established" and skip the sweep entirely.
- */
+// herdrListWorkspaceRefs runs `herdr workspace list` and returns every live
+// workspace with its label and worktree checkout path.
+//
+// An error is returned — never a partial or empty success — when herdr is
+// unavailable, the call fails, or the response does not parse. The caller must
+// treat that as "guard G4 cannot be established" and skip the sweep entirely.
 func herdrListWorkspaceRefs(ctx context.Context, herdrBin string) ([]herdrWorkspaceRef, error) {
 	if herdrBin == "" {
 		return nil, fmt.Errorf("herdr workspace list: no herdr binary")
@@ -2143,10 +2047,8 @@ func herdrListWorkspaceRefs(ctx context.Context, herdrBin string) ([]herdrWorksp
 	return herdrParseWorkspaceRefs(out)
 }
 
-/**
- * herdrParseWorkspaceRefs parses a `herdr workspace list` response body.
- * Split out from herdrListWorkspaceRefs so the parse is testable without exec.
- */
+// herdrParseWorkspaceRefs parses a `herdr workspace list` response body.
+// Split out from herdrListWorkspaceRefs so the parse is testable without exec.
 func herdrParseWorkspaceRefs(data []byte) ([]herdrWorkspaceRef, error) {
 	var resp struct {
 		Result struct {
@@ -2173,51 +2075,41 @@ func herdrParseWorkspaceRefs(data []byte) ([]herdrWorkspaceRef, error) {
 	return refs, nil
 }
 
-/**
- * herdrWorktreeMountShape is the live-mount signature herdrWorktreeSandbox
- * writes into every worktree sandbox record.
- */
+// herdrWorktreeMountShape is the live-mount signature herdrWorktreeSandbox
+// writes into every worktree sandbox record.
 type herdrWorktreeMountShape struct {
-	/**
-	 * CheckoutPath is the host path of the linked worktree checkout, mounted
-	 * at /workspace.
-	 */
+	// CheckoutPath is the host path of the linked worktree checkout, mounted
+	// at /workspace.
 	CheckoutPath string
-	/**
-	 * CommonGitDir is the main repo's git common directory, mounted
-	 * self-mapped ("<dir>:<dir>") so the checkout's gitdir: pointer resolves
-	 * inside the guest (herdrWorktreeGitDirMount).
-	 */
+	// CommonGitDir is the main repo's git common directory, mounted
+	// self-mapped ("<dir>:<dir>") so the checkout's gitdir: pointer resolves
+	// inside the guest (herdrWorktreeGitDirMount).
 	CommonGitDir string
 }
 
-/**
- * herdrIsGitCommonDir positively identifies dir as a git common directory that
- * hosts linked worktrees, by requiring dir/worktrees to exist on disk as a
- * directory. "worktrees" is the structural marker git guarantees — the same
- * anchor herdrWorktreeGitDirMount uses when it builds the mount.
- *
- * This is an affirmative on-disk check: it is satisfiable only while the MAIN
- * repo still exists, which is what makes it usable as evidence after the linked
- * worktree itself has been deleted.
- */
+// herdrIsGitCommonDir positively identifies dir as a git common directory that
+// hosts linked worktrees, by requiring dir/worktrees to exist on disk as a
+// directory. "worktrees" is the structural marker git guarantees — the same
+// anchor herdrWorktreeGitDirMount uses when it builds the mount.
+//
+// This is an affirmative on-disk check: it is satisfiable only while the MAIN
+// repo still exists, which is what makes it usable as evidence after the linked
+// worktree itself has been deleted.
 func herdrIsGitCommonDir(dir string) bool {
 	fi, err := os.Stat(filepath.Join(dir, "worktrees"))
 	return err == nil && fi.IsDir()
 }
 
-/**
- * herdrWorktreeMountShapeOf reports whether sb's record positively identifies
- * it as a worktree-managed sandbox, and if so returns the paths involved.
- *
- * It requires EXACTLY ONE /workspace mount and EXACTLY ONE self-mapped git
- * common-dir mount. "Exactly one" and not "at least one" on purpose: a record
- * carrying two candidates is a record this function does not understand, and a
- * record this function does not understand must not authorise a reap.
- *
- * The .groundwork mount herdrWorktreeSandbox also adds is self-mapped too, but
- * it is not a git common dir (no worktrees/ subdir), so it is not a candidate.
- */
+// herdrWorktreeMountShapeOf reports whether sb's record positively identifies
+// it as a worktree-managed sandbox, and if so returns the paths involved.
+//
+// It requires EXACTLY ONE /workspace mount and EXACTLY ONE self-mapped git
+// common-dir mount. "Exactly one" and not "at least one" on purpose: a record
+// carrying two candidates is a record this function does not understand, and a
+// record this function does not understand must not authorise a reap.
+//
+// The .groundwork mount herdrWorktreeSandbox also adds is self-mapped too, but
+// it is not a git common dir (no worktrees/ subdir), so it is not a candidate.
 func herdrWorktreeMountShapeOf(sb domain.Sandbox) (herdrWorktreeMountShape, bool) {
 	var checkouts, commons []string
 	for _, m := range sb.LiveMounts {
@@ -2236,37 +2128,33 @@ func herdrWorktreeMountShapeOf(sb domain.Sandbox) (herdrWorktreeMountShape, bool
 		return herdrWorktreeMountShape{}, false
 	}
 	shape := herdrWorktreeMountShape{CheckoutPath: checkouts[0], CommonGitDir: commons[0]}
-	/**
-	 * A linked worktree is never the main checkout. If the /workspace mount IS
-	 * the main repo root, this is a main-checkout sandbox wearing a similar
-	 * mount set — refuse it rather than reap someone's primary checkout VM.
-	 *
-	 * Defence in depth, and deliberately kept as such: today G3 already covers
-	 * this case, because herdrIsGitCommonDir only succeeds while CommonGitDir
-	 * exists on disk, and the parent of an existing directory necessarily
-	 * exists too — so a main-checkout /workspace path is never "positively
-	 * gone". That makes this refusal unreachable THROUGH
-	 * herdrClassifyBindinglessSandbox, which is why it is pinned by a test
-	 * against this function directly (TestWorktreeMountShapeOf_RefusesMainCheckout)
-	 * rather than through the classifier. Do not delete it on the strength of
-	 * that reachability argument: it holds only as long as the common-dir probe
-	 * stays an on-disk one.
-	 */
+	// A linked worktree is never the main checkout. If the /workspace mount IS
+	// the main repo root, this is a main-checkout sandbox wearing a similar
+	// mount set — refuse it rather than reap someone's primary checkout VM.
+	//
+	// Defence in depth, and deliberately kept as such: today G3 already covers
+	// this case, because herdrIsGitCommonDir only succeeds while CommonGitDir
+	// exists on disk, and the parent of an existing directory necessarily
+	// exists too — so a main-checkout /workspace path is never "positively
+	// gone". That makes this refusal unreachable THROUGH
+	// herdrClassifyBindinglessSandbox, which is why it is pinned by a test
+	// against this function directly (TestWorktreeMountShapeOf_RefusesMainCheckout)
+	// rather than through the classifier. Do not delete it on the strength of
+	// that reachability argument: it holds only as long as the common-dir probe
+	// stays an on-disk one.
 	if shape.CheckoutPath == filepath.Dir(shape.CommonGitDir) {
 		return herdrWorktreeMountShape{}, false
 	}
 	return shape, true
 }
 
-/**
- * herdrPathPositivelyGone reports whether p is affirmatively absent from the
- * filesystem. Only os.ErrNotExist counts. A permission error, an I/O error, or
- * any other stat failure means "cannot tell" — which is ambiguity, and
- * ambiguity keeps the sandbox.
- *
- * Lstat, not Stat: a dangling symlink at the checkout path is a thing that
- * still EXISTS, and must not read as gone.
- */
+// herdrPathPositivelyGone reports whether p is affirmatively absent from the
+// filesystem. Only os.ErrNotExist counts. A permission error, an I/O error, or
+// any other stat failure means "cannot tell" — which is ambiguity, and
+// ambiguity keeps the sandbox.
+//
+// Lstat, not Stat: a dangling symlink at the checkout path is a thing that
+// still EXISTS, and must not read as gone.
 func herdrPathPositivelyGone(p string) bool {
 	if p == "" {
 		return false
@@ -2275,11 +2163,9 @@ func herdrPathPositivelyGone(p string) bool {
 	return errors.Is(err, os.ErrNotExist)
 }
 
-/**
- * herdrBindinglessVerdict is the classification of one sandbox by the
- * bindingless sweep. Reason is populated in both directions so a dry-run can
- * explain a KEEP as well as a COLLECT.
- */
+// herdrBindinglessVerdict is the classification of one sandbox by the
+// bindingless sweep. Reason is populated in both directions so a dry-run can
+// explain a KEEP as well as a COLLECT.
 type herdrBindinglessVerdict struct {
 	Handle   string
 	Checkout string
@@ -2287,16 +2173,14 @@ type herdrBindinglessVerdict struct {
 	Reason   string
 }
 
-/**
- * herdrClassifyBindinglessSandbox applies guards G1..G4 to a single sandbox.
- * It is pure apart from the filesystem probes in G2/G3, and it never mutates
- * anything — the caller decides what to do with the verdict.
- *
- * workspaces MUST be a list that was actually obtained from a live herdr; the
- * caller is responsible for not calling this at all when it could not be. This
- * function cannot distinguish "herdr says there are no workspaces" from "herdr
- * could not be reached", which is precisely why that decision lives upstream.
- */
+// herdrClassifyBindinglessSandbox applies guards G1..G4 to a single sandbox.
+// It is pure apart from the filesystem probes in G2/G3, and it never mutates
+// anything — the caller decides what to do with the verdict.
+//
+// workspaces MUST be a list that was actually obtained from a live herdr; the
+// caller is responsible for not calling this at all when it could not be. This
+// function cannot distinguish "herdr says there are no workspaces" from "herdr
+// could not be reached", which is precisely why that decision lives upstream.
 func herdrClassifyBindinglessSandbox(
 	sb domain.Sandbox,
 	bindings []HerdrSpaceBinding,
@@ -2309,10 +2193,8 @@ func herdrClassifyBindinglessSandbox(
 	}
 	v.Handle = sb.Project + "/" + sb.Name
 
-	/**
-	 * G1 — no binding row. If there is one, the binding-indexed path owns this
-	 * sandbox and the fallback stays out of it.
-	 */
+	// G1 — no binding row. If there is one, the binding-indexed path owns this
+	// sandbox and the fallback stays out of it.
 	sbID := sb.ID.String()
 	for _, b := range bindings {
 		if b.SandboxHandle == v.Handle || (b.SandboxID != "" && b.SandboxID == sbID) {
@@ -2321,7 +2203,7 @@ func herdrClassifyBindinglessSandbox(
 		}
 	}
 
-	/** G2 — positively worktree-managed, from the record's live mounts. */
+	// G2 — positively worktree-managed, from the record's live mounts.
 	shape, ok := herdrWorktreeMountShapeOf(sb)
 	if !ok {
 		v.Reason = "record does not positively identify a worktree sandbox"
@@ -2329,13 +2211,13 @@ func herdrClassifyBindinglessSandbox(
 	}
 	v.Checkout = shape.CheckoutPath
 
-	/** G3 — the worktree checkout is positively gone. */
+	// G3 — the worktree checkout is positively gone.
 	if !herdrPathPositivelyGone(shape.CheckoutPath) {
 		v.Reason = "worktree checkout still present, or its absence could not be established"
 		return v
 	}
 
-	/** G4 — nothing live in herdr still refers to it. */
+	// G4 — nothing live in herdr still refers to it.
 	label := herdrSpaceLabelForRef(v.Handle)
 	for _, ws := range workspaces {
 		if ws.CheckoutPath != "" && filepath.Clean(ws.CheckoutPath) == shape.CheckoutPath {
@@ -2353,18 +2235,16 @@ func herdrClassifyBindinglessSandbox(
 	return v
 }
 
-/**
- * herdrSpaceSweepBindinglessSandboxes classifies every sandbox and, under
- * --apply, reaps the ones all four guards clear.
- *
- * It returns how many sandboxes cleared every guard, and how many were ACTUALLY
- * reaped. The two are reported separately because they differ in the cases that
- * matter: a dry run reaps nothing, and a removeSandbox failure leaves the
- * sandbox for the next run. Only real removals are counted as reaped.
- *
- * With apply=false this function is read-only: it prints and stats, and calls
- * nothing that mutates.
- */
+// herdrSpaceSweepBindinglessSandboxes classifies every sandbox and, under
+// --apply, reaps the ones all four guards clear.
+//
+// It returns how many sandboxes cleared every guard, and how many were ACTUALLY
+// reaped. The two are reported separately because they differ in the cases that
+// matter: a dry run reaps nothing, and a removeSandbox failure leaves the
+// sandbox for the next run. Only real removals are counted as reaped.
+//
+// With apply=false this function is read-only: it prints and stats, and calls
+// nothing that mutates.
 func herdrSpaceSweepBindinglessSandboxes(
 	ctx context.Context,
 	w io.Writer,
@@ -2397,17 +2277,15 @@ func herdrSpaceSweepBindinglessSandboxes(
 	return collectable, reaped
 }
 
-/**
- * herdrSpacePruneBindinglessStep is the wiring between herdrPluginSpacePrune and
- * the sweep. It gathers the two inputs the sweep cannot establish for itself —
- * the live sandbox list and the live herdr workspace list — and REFUSES to run
- * the sweep if either is missing, rather than letting a missing input read as
- * "nothing refers to this sandbox".
- *
- * bindings is the snapshot taken BEFORE the binding-indexed pass, so a binding
- * that pass deleted during this same run cannot make its sandbox look
- * bindingless to the fallback.
- */
+// herdrSpacePruneBindinglessStep is the wiring between herdrPluginSpacePrune and
+// the sweep. It gathers the two inputs the sweep cannot establish for itself —
+// the live sandbox list and the live herdr workspace list — and REFUSES to run
+// the sweep if either is missing, rather than letting a missing input read as
+// "nothing refers to this sandbox".
+//
+// bindings is the snapshot taken BEFORE the binding-indexed pass, so a binding
+// that pass deleted during this same run cannot make its sandbox look
+// bindingless to the fallback.
 func herdrSpacePruneBindinglessStep(
 	ctx context.Context,
 	w io.Writer,
@@ -2426,12 +2304,10 @@ func herdrSpacePruneBindinglessStep(
 		skip("live herdr workspaces could not be listed")
 		return
 	}
-	/**
-	 * An empty workspace list is indistinguishable from an unexpected response
-	 * shape, and it is the single input whose emptiness would clear G4 for
-	 * EVERY sandbox at once. Refuse it. This mirrors the same refusal in
-	 * herdrSpacePruneWorkspaceExistsFn.
-	 */
+	// An empty workspace list is indistinguishable from an unexpected response
+	// shape, and it is the single input whose emptiness would clear G4 for
+	// EVERY sandbox at once. Refuse it. This mirrors the same refusal in
+	// herdrSpacePruneWorkspaceExistsFn.
 	if len(workspaces) == 0 {
 		skip("herdr reported no workspaces (indistinguishable from an unexpected response shape)")
 		return
@@ -2443,12 +2319,10 @@ func herdrSpacePruneBindinglessStep(
 		return
 	}
 	collectable, reaped := herdrSpaceSweepBindinglessSandboxes(ctx, w, bindings, sandboxes, workspaces, removeSandbox, apply)
-	/**
-	 * Always report, including the all-clear. A sweep that prints nothing when
-	 * it finds nothing is indistinguishable from a sweep that never ran — and
-	 * "the reaper silently never ran" is the defect this whole path exists to
-	 * close. The operator must be able to see that it looked.
-	 */
+	// Always report, including the all-clear. A sweep that prints nothing when
+	// it finds nothing is indistinguishable from a sweep that never ran — and
+	// "the reaper silently never ran" is the defect this whole path exists to
+	// close. The operator must be able to see that it looked.
 	if apply {
 		fmt.Fprintf(w, "Bindingless sweep (apply): %d sandbox(es) examined, %d collectable, %d reaped.\n",
 			len(sandboxes), collectable, reaped)
@@ -2461,15 +2335,13 @@ func herdrSpacePruneBindinglessStep(
 	}
 }
 
-/**
- * sealEnv returns a copy of env (key=value pairs) with all HERDR_* entries
- * removed. The guest must never receive herdr socket paths or credentials.
- *
- * Note: for service method calls (Start, Attach, etc.), the service layer
- * builds the guest environment from an explicit allow-list and never reads
- * os.Environ(). This function covers subprocess forks within the
- * __herdr-plugin subcommands themselves.
- */
+// sealEnv returns a copy of env (key=value pairs) with all HERDR_* entries
+// removed. The guest must never receive herdr socket paths or credentials.
+//
+// Note: for service method calls (Start, Attach, etc.), the service layer
+// builds the guest environment from an explicit allow-list and never reads
+// os.Environ(). This function covers subprocess forks within the
+// __herdr-plugin subcommands themselves.
 func sealEnv(env []string) []string {
 	out := env[:0:0]
 	for _, kv := range env {
@@ -2480,115 +2352,107 @@ func sealEnv(env []string) []string {
 	return out
 }
 
-/**
- * claudeReadyMatch returns the literal substring that means claude has
- * finished starting and its input box is accepting text. Verbatim footer from
- * a live guest pane (claude v2.1.272, 2026-09-15):
- *
- *	⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent
- *
- * The token is mode-invariant and the autonomous argument is ignored, because
- * under D-2 a guest claude ALWAYS runs in permissions.defaultMode auto:
- * guestAgentLaunchCommand passes --permission-mode auto on every launch, and
- * since D-1 the guest's ~/.claude IS the host's (live rw mount), so the mode a
- * bare `claude` starts in is whatever the operator's settings.json says —
- * not something this code can select by flag spelling. The old two-token
- * scheme ("? for shortcuts" for manual, "auto mode on" for auto) timed out
- * live against an agent already at its prompt in auto mode.
- *
- * Tokens that are wrong, each found by a live run:
- *
- *   - "? for shortcuts" is the manual-mode footer; it never appears in auto.
- *   - "for agents" comes and goes with pane state — observed absent from a
- *     ready pane moments after being present in the same one.
- *   - "❯" is the prompt glyph, but it is ALSO the selector glyph in all four
- *     first-run wizards, so it reports ready while claude still sits on the
- *     theme picker — precisely the failure this wait exists to prevent.
- */
+// claudeReadyMatch returns the literal substring that means claude has
+// finished starting and its input box is accepting text. Verbatim footer from
+// a live guest pane (claude v2.1.272, 2026-09-15):
+//
+//	⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent
+//
+// The token is mode-invariant and the autonomous argument is ignored, because
+// under D-2 a guest claude ALWAYS runs in permissions.defaultMode auto:
+// guestAgentLaunchCommand passes --permission-mode auto on every launch, and
+// since D-1 the guest's ~/.claude IS the host's (live rw mount), so the mode a
+// bare `claude` starts in is whatever the operator's settings.json says —
+// not something this code can select by flag spelling. The old two-token
+// scheme ("? for shortcuts" for manual, "auto mode on" for auto) timed out
+// live against an agent already at its prompt in auto mode.
+//
+// Tokens that are wrong, each found by a live run:
+//
+//   - "? for shortcuts" is the manual-mode footer; it never appears in auto.
+//   - "for agents" comes and goes with pane state — observed absent from a
+//     ready pane moments after being present in the same one.
+//   - "❯" is the prompt glyph, but it is ALSO the selector glyph in all four
+//     first-run wizards, so it reports ready while claude still sits on the
+//     theme picker — precisely the failure this wait exists to prevent.
 func claudeReadyMatch(_ bool) string {
 	return "auto mode on"
 }
 
-/**
- * guestAgentLaunchCommand returns the shell command typed into the guest pane
- * to start claude: "IS_SANDBOX=1 claude --permission-mode auto", regardless
- * of the autonomous argument (D-2: the guest always runs in auto mode).
- * IS_SANDBOX=1 is required alongside it: claude refuses root execution unless
- * that variable marks the environment as already-isolated.
- *
- * The command is EXPLICIT and does not rely on the `claude` shell function
- * that SeedGuestShellProfile installs. That function exists for humans typing
- * in a guest shell; depending on it here would make the launch depend on
- * whether the pane's login shell has finished sourcing /etc/profile.d, which
- * is not something this code can observe. The flag is idempotent (the function
- * does not double it), so passing it explicitly is correct either way.
- *
- * What was actually OBSERVED, and what is NOT known: launching with a bare
- * `claude` failed live — the pane echoed the command and returned immediately
- * to a shell prompt, and the readiness wait then timed out. Typing the same
- * command by hand a moment later worked. Adding the guest-shell readiness wait
- * in herdrPluginSpaceAgent made it reliable. The precise mechanism for the
- * immediate exit was never isolated, so this comment does not claim one; the
- * explicit flag is defence in depth, and the readiness wait is the fix.
- */
+// guestAgentLaunchCommand returns the shell command typed into the guest pane
+// to start claude: "IS_SANDBOX=1 claude --permission-mode auto", regardless
+// of the autonomous argument (D-2: the guest always runs in auto mode).
+// IS_SANDBOX=1 is required alongside it: claude refuses root execution unless
+// that variable marks the environment as already-isolated.
+//
+// The command is EXPLICIT and does not rely on the `claude` shell function
+// that SeedGuestShellProfile installs. That function exists for humans typing
+// in a guest shell; depending on it here would make the launch depend on
+// whether the pane's login shell has finished sourcing /etc/profile.d, which
+// is not something this code can observe. The flag is idempotent (the function
+// does not double it), so passing it explicitly is correct either way.
+//
+// What was actually OBSERVED, and what is NOT known: launching with a bare
+// `claude` failed live — the pane echoed the command and returned immediately
+// to a shell prompt, and the readiness wait then timed out. Typing the same
+// command by hand a moment later worked. Adding the guest-shell readiness wait
+// in herdrPluginSpaceAgent made it reliable. The precise mechanism for the
+// immediate exit was never isolated, so this comment does not claim one; the
+// explicit flag is defence in depth, and the readiness wait is the fix.
 func guestAgentLaunchCommand(_ bool) string {
 	return "IS_SANDBOX=1 claude --permission-mode auto"
 }
 
-/**
- * cursorReadyMatch is the substring in cursor-agent's TUI input box that means
- * the agent has finished starting and its input box is accepting text.
- *
- * Verified LIVE (2026-09-04) against cursor-agent v2026.09.02-c22c1a3 running
- * on the host under a tmux PTY (operator authenticated as
- * maintainer@example.invalid). The tmux-rendered pane content at the ready state
- * is (verbatim, trimmed):
- *
- *	Cursor Agent
- *	v2026.09.02-c22c1a3
- *	Tip: Type ? in the prompt bar to show in-app hints.
- *
- *	→ Plan, search, build anything
- *
- *	Cursor Grok 4.5 High Fast
- *	~/magic/nexus3/... · nexus3/cursor-s6-readymatch
- *
- * "Plan, search, build anything" is the placeholder text in the input box.
- * It is assembled by cursor-addressing escape sequences (not emitted as a
- * contiguous literal in the raw PTY byte stream), so it appears only in the
- * tmux-rendered pane view — which is exactly what herdrPaneWaitOutput inspects.
- *
- * The prior static-analysis guess ("shift+tab to cycle") does NOT appear
- * anywhere in a real running session.
- *
- * Unlike claudeReadyMatch, the token is mode-invariant: cursor-agent shows the
- * same input placeholder whether or not --force/--yolo is passed, so this
- * function ignores the autonomous argument.
- */
+// cursorReadyMatch is the substring in cursor-agent's TUI input box that means
+// the agent has finished starting and its input box is accepting text.
+//
+// Verified LIVE (2026-09-04) against cursor-agent v2026.09.02-c22c1a3 running
+// on the host under a tmux PTY with an authenticated operator account. The
+// tmux-rendered pane content at the ready state
+// is (verbatim, trimmed):
+//
+//	Cursor Agent
+//	v2026.09.02-c22c1a3
+//	Tip: Type ? in the prompt bar to show in-app hints.
+//
+//	→ Plan, search, build anything
+//
+//	Cursor Grok 4.5 High Fast
+//	~/magic/nexus3/... · nexus3/cursor-s6-readymatch
+//
+// "Plan, search, build anything" is the placeholder text in the input box.
+// It is assembled by cursor-addressing escape sequences (not emitted as a
+// contiguous literal in the raw PTY byte stream), so it appears only in the
+// tmux-rendered pane view — which is exactly what herdrPaneWaitOutput inspects.
+//
+// The prior static-analysis guess ("shift+tab to cycle") does NOT appear
+// anywhere in a real running session.
+//
+// Unlike claudeReadyMatch, the token is mode-invariant: cursor-agent shows the
+// same input placeholder whether or not --force/--yolo is passed, so this
+// function ignores the autonomous argument.
 func cursorReadyMatch(_ bool) string {
 	return "Plan, search, build anything"
 }
 
-/**
- * guestCursorLaunchCommand returns the shell command typed into the guest
- * pane to start cursor-agent.
- *
- * autonomous == true  → "cursor-agent --force" — --force (alias --yolo) is
- * cursor's skip-permissions equivalent ("Run Everything"), confirmed via
- * `cursor-agent --help` on a freshly installed 2026.08.25-3e8eec8 binary.
- *
- * autonomous == false → "cursor-agent" — default mode, which prompts for
- * approval per tool call.
- *
- * Unlike claude, cursor-agent does NOT refuse to run as root: confirmed
- * empirically by running it as root in the environment this slice was
- * implemented in, where it failed only on API-key validation, never on uid.
- * No IS_SANDBOX-style escape is needed or emitted here.
- *
- * cursor-agent has no shell-function equivalent of the `claude` wrapper that
- * SeedGuestShellProfile installs (see guestAgentLaunchCommand), so there is no
- * "command " prefix needed here to bypass one.
- */
+// guestCursorLaunchCommand returns the shell command typed into the guest
+// pane to start cursor-agent.
+//
+// autonomous == true  → "cursor-agent --force" — --force (alias --yolo) is
+// cursor's skip-permissions equivalent ("Run Everything"), confirmed via
+// `cursor-agent --help` on a freshly installed 2026.08.25-3e8eec8 binary.
+//
+// autonomous == false → "cursor-agent" — default mode, which prompts for
+// approval per tool call.
+//
+// Unlike claude, cursor-agent does NOT refuse to run as root: confirmed
+// empirically by running it as root in the environment this slice was
+// implemented in, where it failed only on API-key validation, never on uid.
+// No IS_SANDBOX-style escape is needed or emitted here.
+//
+// cursor-agent has no shell-function equivalent of the `claude` wrapper that
+// SeedGuestShellProfile installs (see guestAgentLaunchCommand), so there is no
+// "command " prefix needed here to bypass one.
 func guestCursorLaunchCommand(autonomous bool) string {
 	if autonomous {
 		return "cursor-agent --force"
@@ -2596,33 +2460,29 @@ func guestCursorLaunchCommand(autonomous bool) string {
 	return "cursor-agent"
 }
 
-/**
- * agentLaunchDescriptor is the per-agent, declarative launch contract used by
- * herdr space-agent dispatch: how to start the agent in a guest shell pane,
- * and how to recognise it has reached its ready-for-input prompt.
- *
- * Unlike cred.AgentProfile (pure data, no logic branches — see profile.go's
- * own doc comment), this descriptor IS a pair of functions, and that is a
- * deliberate, stated design choice rather than an oversight: readiness
- * detection and launch invocation genuinely differ per agent in ways that do
- * not compress into declarative fields without losing load-bearing nuance
- * (cursorReadyMatch is mode-invariant while cursor's --force is not; guestAgentLaunchCommand's
- * shell-function-bypass requirement). Putting agent-specific FUNCTIONS behind
- * a name-keyed registry, instead of hardcoding claude's, is the seam this
- * comment's presence marks as intentionally non-declarative: adding a third
- * dispatchable agent means adding one command()/readyMatch() pair and one
- * registry entry here, not modifying herdrPluginSpaceAgent.
- */
+// agentLaunchDescriptor is the per-agent, declarative launch contract used by
+// herdr space-agent dispatch: how to start the agent in a guest shell pane,
+// and how to recognise it has reached its ready-for-input prompt.
+//
+// Unlike cred.AgentProfile (pure data, no logic branches — see profile.go's
+// own doc comment), this descriptor IS a pair of functions, and that is a
+// deliberate, stated design choice rather than an oversight: readiness
+// detection and launch invocation genuinely differ per agent in ways that do
+// not compress into declarative fields without losing load-bearing nuance
+// (cursorReadyMatch is mode-invariant while cursor's --force is not; guestAgentLaunchCommand's
+// shell-function-bypass requirement). Putting agent-specific FUNCTIONS behind
+// a name-keyed registry, instead of hardcoding claude's, is the seam this
+// comment's presence marks as intentionally non-declarative: adding a third
+// dispatchable agent means adding one command()/readyMatch() pair and one
+// registry entry here, not modifying herdrPluginSpaceAgent.
 type agentLaunchDescriptor struct {
 	command    func(autonomous bool) string
 	readyMatch func(autonomous bool) string
 }
 
-/**
- * agentLaunchDescriptors is the dispatch registry. Adding an agent here does
- * NOT change any existing entry's behaviour: claude's functions are untouched
- * and this map is the only new call surface.
- */
+// agentLaunchDescriptors is the dispatch registry. Adding an agent here does
+// NOT change any existing entry's behaviour: claude's functions are untouched
+// and this map is the only new call surface.
 var agentLaunchDescriptors = map[string]agentLaunchDescriptor{
 	cred.ClaudeCodeProfileName: {
 		command:    guestAgentLaunchCommand,
@@ -2634,15 +2494,13 @@ var agentLaunchDescriptors = map[string]agentLaunchDescriptor{
 	},
 }
 
-/**
- * resolveAgentLaunchDescriptor returns the launch descriptor for agentName.
- * An empty or unrecognised name falls back to Claude Code's descriptor,
- * matching cred.DefaultProfileName: a plain sandbox created without --agent,
- * or one predating this registry, still gets the pre-existing claude
- * behaviour rather than a dispatch failure. An unregistered --agent name is
- * already refused at `sandbox create` time by cred.ProfileByName, so this
- * fallback is a defensive default, not the primary validation point.
- */
+// resolveAgentLaunchDescriptor returns the launch descriptor for agentName.
+// An empty or unrecognised name falls back to Claude Code's descriptor,
+// matching cred.DefaultProfileName: a plain sandbox created without --agent,
+// or one predating this registry, still gets the pre-existing claude
+// behaviour rather than a dispatch failure. An unregistered --agent name is
+// already refused at `sandbox create` time by cred.ProfileByName, so this
+// fallback is a defensive default, not the primary validation point.
 func resolveAgentLaunchDescriptor(agentName string) agentLaunchDescriptor {
 	if d, ok := agentLaunchDescriptors[agentName]; ok {
 		return d
@@ -2652,35 +2510,29 @@ func resolveAgentLaunchDescriptor(agentName string) agentLaunchDescriptor {
 
 const guestShellTimeoutMS = 60_000
 
-/**
- * claudeReadyTimeoutMS is the wait-output timeout in milliseconds. 90 s gives
- * claude enough time to load on a cold guest without blocking the operator
- * indefinitely on a hung pane.
- */
+// claudeReadyTimeoutMS is the wait-output timeout in milliseconds. 90 s gives
+// claude enough time to load on a cold guest without blocking the operator
+// indefinitely on a hung pane.
 const claudeReadyTimeoutMS = 90_000
 
-/**
- * briefSettleDelay is how long to wait between placing the brief in claude's
- * input box and pressing Enter. See herdrPaneSubmitToAgent.
- */
+// briefSettleDelay is how long to wait between placing the brief in claude's
+// input box and pressing Enter. See herdrPaneSubmitToAgent.
 const briefSettleDelay = 750 * time.Millisecond
 
-/**
- * herdrPaneSubmitToAgent puts text into a running agent's input box and then
- * submits it, as two calls with a pause between them.
- *
- * `herdr pane run` — which sends text and Enter in one call — is correct for a
- * shell prompt and WRONG here. Observed live: the brief arrived in claude's
- * input box and simply sat there unsubmitted; a single Enter sent afterwards
- * by hand submitted it and the agent answered immediately. claude's TUI needs
- * to finish processing the pasted text before it will treat an Enter as
- * "submit" rather than as part of the paste, and `pane run` gives it no gap in
- * which to do that.
- *
- * This is why the step is its own function rather than another herdrPaneRun
- * call: the difference is invisible in the argv and only shows up as an agent
- * that looks started, looks prompted, and never does anything.
- */
+// herdrPaneSubmitToAgent puts text into a running agent's input box and then
+// submits it, as two calls with a pause between them.
+//
+// `herdr pane run` — which sends text and Enter in one call — is correct for a
+// shell prompt and WRONG here. Observed live: the brief arrived in claude's
+// input box and simply sat there unsubmitted; a single Enter sent afterwards
+// by hand submitted it and the agent answered immediately. claude's TUI needs
+// to finish processing the pasted text before it will treat an Enter as
+// "submit" rather than as part of the paste, and `pane run` gives it no gap in
+// which to do that.
+//
+// This is why the step is its own function rather than another herdrPaneRun
+// call: the difference is invisible in the argv and only shows up as an agent
+// that looks started, looks prompted, and never does anything.
 func herdrPaneSubmitToAgent(ctx context.Context, herdrBin, paneID, text string) error {
 	cmd := herdrExecCommandContext(ctx, herdrBin, "pane", "send-text", paneID, text)
 	cmd.Stdout = os.Stderr
@@ -2698,12 +2550,10 @@ func herdrPaneSubmitToAgent(ctx context.Context, herdrBin, paneID, text string) 
 	return herdrPaneSendEnter(ctx, herdrBin, paneID)
 }
 
-/**
- * herdrPaneSendEnter presses Enter in paneID. Extracted from
- * herdrPaneSubmitToAgent so the submission-confirmation loop can re-press it
- * without re-pasting the brief (a second send-text would APPEND to a buffer
- * that already holds the brief, producing a doubled prompt).
- */
+// herdrPaneSendEnter presses Enter in paneID. Extracted from
+// herdrPaneSubmitToAgent so the submission-confirmation loop can re-press it
+// without re-pasting the brief (a second send-text would APPEND to a buffer
+// that already holds the brief, producing a doubled prompt).
 func herdrPaneSendEnter(ctx context.Context, herdrBin, paneID string) error {
 	enter := herdrExecCommandContext(ctx, herdrBin, "pane", "send-keys", paneID, "Enter")
 	enter.Stdout = os.Stderr
@@ -2711,22 +2561,20 @@ func herdrPaneSendEnter(ctx context.Context, herdrBin, paneID string) error {
 	return enter.Run()
 }
 
-/**
- * herdrPaneReadText reads paneID's rendered text.
- *
- * `--source recent-unwrapped` is the sharper source — it excludes the wrapping
- * artefacts that make naive diffing noisy — but it returns an EMPTY string on a
- * pane that has not scrolled yet, which is the normal state of a freshly
- * dispatched agent. Falling through on that empty answer makes a live pane read
- * as blank, and blank compares equal to blank, so a working agent reads as
- * static. Fall back to `--source visible`, which always renders something for a
- * live pane.
- *
- * A read that produces no text from EITHER source returns ok=false rather than
- * an empty string, so callers cannot mistake "could not read" for "read an
- * empty pane". Every caller here treats ok=false as undecidable, never as a
- * negative answer.
- */
+// herdrPaneReadText reads paneID's rendered text.
+//
+// `--source recent-unwrapped` is the sharper source — it excludes the wrapping
+// artefacts that make naive diffing noisy — but it returns an EMPTY string on a
+// pane that has not scrolled yet, which is the normal state of a freshly
+// dispatched agent. Falling through on that empty answer makes a live pane read
+// as blank, and blank compares equal to blank, so a working agent reads as
+// static. Fall back to `--source visible`, which always renders something for a
+// live pane.
+//
+// A read that produces no text from EITHER source returns ok=false rather than
+// an empty string, so callers cannot mistake "could not read" for "read an
+// empty pane". Every caller here treats ok=false as undecidable, never as a
+// negative answer.
 func herdrPaneReadText(ctx context.Context, herdrBin, paneID string) (text string, ok bool) {
 	for _, source := range []string{"recent-unwrapped", "visible"} {
 		var buf strings.Builder
@@ -2743,36 +2591,28 @@ func herdrPaneReadText(ctx context.Context, herdrBin, paneID string) (text strin
 	return "", false
 }
 
-/**
- * herdrPaneReadFn is the pane-read seam. Production reads a live pane; tests
- * swap in a scripted transcript sequence so the confirmation loop can be driven
- * without herdr.
- */
+// herdrPaneReadFn is the pane-read seam. Production reads a live pane; tests
+// swap in a scripted transcript sequence so the confirmation loop can be driven
+// without herdr.
 var herdrPaneReadFn = herdrPaneReadText
 
-/**
- * briefSubmissionVerdict is the outcome of asking "did the brief actually leave
- * claude's input box?".
- *
- * There are three answers and not two. The dispatch defect this type exists to
- * close was reported as success precisely because the code had only two states
- * and mapped "no evidence" onto the good one.
- */
+// briefSubmissionVerdict is the outcome of asking "did the brief actually leave
+// claude's input box?".
+//
+// There are three answers and not two. The dispatch defect this type exists to
+// close was reported as success precisely because the code had only two states
+// and mapped "no evidence" onto the good one.
 type briefSubmissionVerdict int
 
 const (
-	/**
-	 * briefSubmissionUnknown — the pane could not be read, or it could be read
-	 * and carries no evidence either way. This is a REFUSAL, never a pass. See
-	 * herdrDeliverBriefConfirmed.
-	 */
+	// briefSubmissionUnknown — the pane could not be read, or it could be read
+	// and carries no evidence either way. This is a REFUSAL, never a pass. See
+	// herdrDeliverBriefConfirmed.
 	briefSubmissionUnknown briefSubmissionVerdict = iota
-	/**
-	 * briefSubmissionStranded — positive evidence the brief is still sitting in
-	 * the input box unsent.
-	 */
+	// briefSubmissionStranded — positive evidence the brief is still sitting in
+	// the input box unsent.
 	briefSubmissionStranded
-	/** briefSubmissionSubmitted — positive evidence the brief left the box. */
+	// briefSubmissionSubmitted — positive evidence the brief left the box.
 	briefSubmissionSubmitted
 )
 
@@ -2787,67 +2627,61 @@ func (v briefSubmissionVerdict) String() string {
 	}
 }
 
-/**
- * briefStrandedMarkers are the input-box residues observed on a pane whose
- * brief was pasted but never submitted.
- *
- * Captured live 2026-09-02 while dispatching a three-slice wave: two briefs
- * submitted, the third sat in the box rendering as
- *
- *	[Pasted text #1 +79 lines]
- *
- * with the footer offering "paste again to expand" and NO working indicator,
- * while the CLI printed "space-agent: agent running in pane w7P:p2" and exited
- * 0. A single `herdr pane send-keys <pane> Enter` submitted it.
- *
- * These markers are the STRANDED discriminator, not the submitted one. They are
- * only meaningful in the positive: their presence proves the buffer still holds
- * the brief; their absence proves nothing, because a pane can be unreadable,
- * mid-repaint, or rendering a layout nobody has seen yet.
- */
+// briefStrandedMarkers are the input-box residues observed on a pane whose
+// brief was pasted but never submitted.
+//
+// Captured live 2026-09-02 while dispatching a three-slice wave: two briefs
+// submitted, the third sat in the box rendering as
+//
+//	[Pasted text #1 +79 lines]
+//
+// with the footer offering "paste again to expand" and NO working indicator,
+// while the CLI printed "space-agent: agent running in pane w7P:p2" and exited
+// 0. A single `herdr pane send-keys <pane> Enter` submitted it.
+//
+// These markers are the STRANDED discriminator, not the submitted one. They are
+// only meaningful in the positive: their presence proves the buffer still holds
+// the brief; their absence proves nothing, because a pane can be unreadable,
+// mid-repaint, or rendering a layout nobody has seen yet.
 var briefStrandedMarkers = []*regexp.Regexp{
 	regexp.MustCompile(`\[Pasted text #\d+`),
 	regexp.MustCompile(`paste again to expand`),
 }
 
-/**
- * briefWorkingMarkers are working-agent affordances. FAST PATH ONLY.
- *
- * The same rule the pane watcher lives by applies here: movement decides, and a
- * marker's ABSENCE proves nothing — every one of these has been observed to
- * vanish from a pane whose agent was working (a slash-command overlay repaints
- * the footer away; an agent blocked on its own subagent stops running a tool and
- * loses the interrupt affordance permanently). They are listed so an obviously
- * working pane is confirmed on the first read instead of waiting out a repaint,
- * and for no other purpose.
- *
- * NOTE what is deliberately NOT here: "auto mode on" and "? for shortcuts".
- * Those are claudeReadyMatch's tokens — permission-mode footers present BEFORE
- * and AFTER submission alike. Matching on them is what made the original
- * dispatch report success on a stranded brief.
- */
+// briefWorkingMarkers are working-agent affordances. FAST PATH ONLY.
+//
+// The same rule the pane watcher lives by applies here: movement decides, and a
+// marker's ABSENCE proves nothing — every one of these has been observed to
+// vanish from a pane whose agent was working (a slash-command overlay repaints
+// the footer away; an agent blocked on its own subagent stops running a tool and
+// loses the interrupt affordance permanently). They are listed so an obviously
+// working pane is confirmed on the first read instead of waiting out a repaint,
+// and for no other purpose.
+//
+// NOTE what is deliberately NOT here: "auto mode on" and "? for shortcuts".
+// Those are claudeReadyMatch's tokens — permission-mode footers present BEFORE
+// and AFTER submission alike. Matching on them is what made the original
+// dispatch report success on a stranded brief.
 var briefWorkingMarkers = []string{
 	"esc to interrupt",
 	"ctrl+b to run in background",
 }
 
-/**
- * classifyBriefSubmission decides whether a brief left the input box, from two
- * pane reads taken a beat apart.
- *
- * Precedence, and why each step is in this order:
- *
- *  1. Either read unobtainable → UNKNOWN. Refusing here is the whole point: a
- *     pane we cannot read is a pane we cannot vouch for.
- *  2. A stranded marker in the LATER read → STRANDED. Positive evidence beats
- *     movement, because a stranded pane still repaints (the placeholder blinks,
- *     the footer cycles) and would otherwise pass step 3.
- *  3. The pane changed between the two reads → SUBMITTED. Movement is the
- *     decider: a working agent repaints, a pane holding an unsent buffer that
- *     shows no stranded marker at all is not a shape that has been observed.
- *  4. A working affordance in the later read → SUBMITTED (fast path).
- *  5. Otherwise → UNKNOWN. Static, no markers, nothing to go on. NOT a pass.
- */
+// classifyBriefSubmission decides whether a brief left the input box, from two
+// pane reads taken a beat apart.
+//
+// Precedence, and why each step is in this order:
+//
+//  1. Either read unobtainable → UNKNOWN. Refusing here is the whole point: a
+//     pane we cannot read is a pane we cannot vouch for.
+//  2. A stranded marker in the LATER read → STRANDED. Positive evidence beats
+//     movement, because a stranded pane still repaints (the placeholder blinks,
+//     the footer cycles) and would otherwise pass step 3.
+//  3. The pane changed between the two reads → SUBMITTED. Movement is the
+//     decider: a working agent repaints, a pane holding an unsent buffer that
+//     shows no stranded marker at all is not a shape that has been observed.
+//  4. A working affordance in the later read → SUBMITTED (fast path).
+//  5. Otherwise → UNKNOWN. Static, no markers, nothing to go on. NOT a pass.
 func classifyBriefSubmission(before, after string, beforeOK, afterOK bool) (briefSubmissionVerdict, string) {
 	if !beforeOK || !afterOK {
 		return briefSubmissionUnknown, "pane read returned no text (both --source recent-unwrapped and --source visible were empty or failed)"
@@ -2868,35 +2702,29 @@ func classifyBriefSubmission(before, after string, beforeOK, afterOK bool) (brie
 	return briefSubmissionUnknown, "pane is static, shows no working indicator, and shows no stranded-input marker"
 }
 
-/**
- * briefConfirmSettle is the gap between the two reads classifyBriefSubmission
- * compares. It must exceed claude's repaint period — the spinner's elapsed
- * timer ticks once a second — or a working agent reads as static.
- */
+// briefConfirmSettle is the gap between the two reads classifyBriefSubmission
+// compares. It must exceed claude's repaint period — the spinner's elapsed
+// timer ticks once a second — or a working agent reads as static.
 const briefConfirmSettle = 1500 * time.Millisecond
 
-/**
- * briefSubmitAttempts is how many times Enter is pressed in total before the
- * dispatch is failed. The first press happens in herdrPaneSubmitToAgent; each
- * unconfirmed round after that presses again.
- */
+// briefSubmitAttempts is how many times Enter is pressed in total before the
+// dispatch is failed. The first press happens in herdrPaneSubmitToAgent; each
+// unconfirmed round after that presses again.
 const briefSubmitAttempts = 3
 
-/**
- * herdrDeliverBriefConfirmed pastes the brief, submits it, and then CONFIRMS it
- * was submitted — retrying Enter and finally failing loudly rather than
- * reporting a success it did not observe.
- *
- * Reporting success at the point the system stopped looking is the defect this
- * closes. The old path waited for claude's prompt to APPEAR (which happens
- * before submission, and stays true after it), pressed Enter, and returned nil.
- * Observed rate: one stranded brief in three dispatches.
- *
- * FAIL-CLOSED: both non-success verdicts — STRANDED and UNKNOWN — exhaust the
- * retries and then return an error. An unreadable pane does not "skip the
- * check"; it fails the dispatch. The operator can then look at the pane, which
- * is cheap, instead of discovering an hour later that a slice never started.
- */
+// herdrDeliverBriefConfirmed pastes the brief, submits it, and then CONFIRMS it
+// was submitted — retrying Enter and finally failing loudly rather than
+// reporting a success it did not observe.
+//
+// Reporting success at the point the system stopped looking is the defect this
+// closes. The old path waited for claude's prompt to APPEAR (which happens
+// before submission, and stays true after it), pressed Enter, and returned nil.
+// Observed rate: one stranded brief in three dispatches.
+//
+// FAIL-CLOSED: both non-success verdicts — STRANDED and UNKNOWN — exhaust the
+// retries and then return an error. An unreadable pane does not "skip the
+// check"; it fails the dispatch. The operator can then look at the pane, which
+// is cheap, instead of discovering an hour later that a slice never started.
 func herdrDeliverBriefConfirmed(ctx context.Context, herdrBin, paneID, brief string, w io.Writer) error {
 	if err := herdrPaneSubmitToAgent(ctx, herdrBin, paneID, brief); err != nil {
 		return &CodedError{Code: ErrCodeInternalError,
@@ -2941,12 +2769,10 @@ func herdrDeliverBriefConfirmed(ctx context.Context, herdrBin, paneID, brief str
 	}
 }
 
-/**
- * herdrPaneRun sends text to a herdr pane and simulates Enter, equivalent to
- * the operator typing the text at the pane's prompt.
- *
- * herdr pane run <paneID> <text> — sends text and Enter in one call.
- */
+// herdrPaneRun sends text to a herdr pane and simulates Enter, equivalent to
+// the operator typing the text at the pane's prompt.
+//
+// herdr pane run <paneID> <text> — sends text and Enter in one call.
 func herdrPaneRun(ctx context.Context, herdrBin, paneID, text string) error {
 	cmd := herdrExecCommandContext(ctx, herdrBin, "pane", "run", paneID, text)
 	cmd.Stdout = os.Stderr
@@ -2954,10 +2780,8 @@ func herdrPaneRun(ctx context.Context, herdrBin, paneID, text string) error {
 	return cmd.Run()
 }
 
-/**
- * herdrPaneWaitOutput waits until the pane's output contains match or timeoutMS
- * elapses. Returns an error on timeout or subprocess failure.
- */
+// herdrPaneWaitOutput waits until the pane's output contains match or timeoutMS
+// elapses. Returns an error on timeout or subprocess failure.
 func herdrPaneWaitOutput(ctx context.Context, herdrBin, paneID, match string, timeoutMS int) error {
 	cmd := herdrExecCommandContext(ctx, herdrBin, "pane", "wait-output", paneID,
 		"--match", match, "--timeout", strconv.Itoa(timeoutMS))
@@ -2966,11 +2790,9 @@ func herdrPaneWaitOutput(ctx context.Context, herdrBin, paneID, match string, ti
 	return cmd.Run()
 }
 
-/**
- * herdrPaneReportAgent registers the claude process running in paneID with
- * herdr's agent tracker so it shows in `herdr agent list`. Non-fatal; call
- * sites log and continue on error.
- */
+// herdrPaneReportAgent registers the claude process running in paneID with
+// herdr's agent tracker so it shows in `herdr agent list`. Non-fatal; call
+// sites log and continue on error.
 func herdrPaneReportAgent(ctx context.Context, herdrBin, paneID, source string) error {
 	cmd := herdrExecCommandContext(ctx, herdrBin, "pane", "report-agent", paneID,
 		"--source", source, "--agent", "nexus3-slice-agent", "--state", "working")
@@ -2979,18 +2801,16 @@ func herdrPaneReportAgent(ctx context.Context, herdrBin, paneID, source string) 
 	return cmd.Run()
 }
 
-/**
- * herdrAgentEnsureSandboxExists checks whether the sandbox named by ref exists.
- * If get returns nil the sandbox is present and the function returns immediately.
- * Only a definite store.ErrNotFound (wrapped by service.resolve as %w) causes
- * create to be called to build the sandbox from nexus3.yaml. Every other error
- * is returned as a CodedError. A transient store failure must not be mistaken
- * for absence: falling through would attempt to create a sandbox that already
- * exists precisely when the store is least able to say otherwise.
- *
- * Extracted as a standalone function (with injected dependencies) so the
- * create-if-absent branch is testable without a real *service.Service or store.
- */
+// herdrAgentEnsureSandboxExists checks whether the sandbox named by ref exists.
+// If get returns nil the sandbox is present and the function returns immediately.
+// Only a definite store.ErrNotFound (wrapped by service.resolve as %w) causes
+// create to be called to build the sandbox from nexus3.yaml. Every other error
+// is returned as a CodedError. A transient store failure must not be mistaken
+// for absence: falling through would attempt to create a sandbox that already
+// exists precisely when the store is least able to say otherwise.
+//
+// Extracted as a standalone function (with injected dependencies) so the
+// create-if-absent branch is testable without a real *service.Service or store.
 func herdrAgentEnsureSandboxExists(
 	ctx context.Context,
 	ref string,
@@ -3002,13 +2822,11 @@ func herdrAgentEnsureSandboxExists(
 	if err == nil {
 		return nil // sandbox already exists
 	}
-	/**
-	 * Create ONLY on a definite "does not exist". Any other error — a transient
-	 * store failure, a permissions problem — must propagate. Falling through on
-	 * every error would attempt to create a sandbox that already exists, and
-	 * would do so precisely when the store is least able to say otherwise.
-	 * service.resolve wraps store.ErrNotFound with %w, so errors.Is sees it.
-	 */
+	// Create ONLY on a definite "does not exist". Any other error — a transient
+	// store failure, a permissions problem — must propagate. Falling through on
+	// every error would attempt to create a sandbox that already exists, and
+	// would do so precisely when the store is least able to say otherwise.
+	// service.resolve wraps store.ErrNotFound with %w, so errors.Is sees it.
 	if !errors.Is(err, store.ErrNotFound) {
 		return &CodedError{
 			Code: ErrCodeInternalError,
@@ -3020,36 +2838,32 @@ func herdrAgentEnsureSandboxExists(
 	return create(ctx, ref, w)
 }
 
-/**
- * herdrEnsureFn is the package-level hook called by herdrPluginSpaceAgent to
- * check whether the target sandbox exists and create it if not. It is a var so
- * that tests can swap it for a recording stub without a real *service.Service.
- */
+// herdrEnsureFn is the package-level hook called by herdrPluginSpaceAgent to
+// check whether the target sandbox exists and create it if not. It is a var so
+// that tests can swap it for a recording stub without a real *service.Service.
 var herdrEnsureFn = herdrAgentEnsureSandboxExists
 
-/**
- * herdrPluginSpaceAgent starts the named sandbox (or resumes it), opens a
- * herdr space with a guest shell pane, then launches claude inside that pane
- * and delivers brief to it.
- *
- * The sandbox must have at least one live mount or mounted volume so that the
- * nexus3 source is present in the guest. If herdrShellCwd returns /root (no
- * mount), the function refuses with an actionable error naming the flag the
- * operator should have passed.
- * herdrSpaceAgentProjectDir resolves the guest directory an agent should work
- * in, or returns a *UsageError explaining why this sandbox cannot host one.
- *
- * It exists as its own function, taking the narrow sandboxGetter rather than
- * *service.Service, so both refusals are reachable from a unit test with a
- * stub. Inlined in herdrPluginSpaceAgent they were not: the function needs a
- * real *service.Service and therefore a real store, and the test that tried
- * ended up asserting herdrShellCwd's behaviour instead of the guard's.
- *
- * The two refusals are kept distinct on purpose. herdrShellCwd never fails and
- * answers "/root" both for a sandbox with no mount and for a ref that does not
- * resolve at all; collapsing them tells an operator who mistyped a handle to
- * go re-create a sandbox that was never the problem.
- */
+// herdrPluginSpaceAgent starts the named sandbox (or resumes it), opens a
+// herdr space with a guest shell pane, then launches claude inside that pane
+// and delivers brief to it.
+//
+// The sandbox must have at least one live mount or mounted volume so that the
+// nexus3 source is present in the guest. If herdrShellCwd returns /root (no
+// mount), the function refuses with an actionable error naming the flag the
+// operator should have passed.
+// herdrSpaceAgentProjectDir resolves the guest directory an agent should work
+// in, or returns a *UsageError explaining why this sandbox cannot host one.
+//
+// It exists as its own function, taking the narrow sandboxGetter rather than
+// *service.Service, so both refusals are reachable from a unit test with a
+// stub. Inlined in herdrPluginSpaceAgent they were not: the function needs a
+// real *service.Service and therefore a real store, and the test that tried
+// ended up asserting herdrShellCwd's behaviour instead of the guard's.
+//
+// The two refusals are kept distinct on purpose. herdrShellCwd never fails and
+// answers "/root" both for a sandbox with no mount and for a ref that does not
+// resolve at all; collapsing them tells an operator who mistyped a handle to
+// go re-create a sandbox that was never the problem.
 func herdrSpaceAgentProjectDir(ctx context.Context, ref string, svc sandboxGetter) (string, error) {
 	if _, getErr := svc.Get(ctx, ref); getErr != nil {
 		return "", &UsageError{
@@ -3068,11 +2882,9 @@ func herdrSpaceAgentProjectDir(ctx context.Context, ref string, svc sandboxGette
 }
 
 func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, focus bool, w io.Writer, svc *service.Service, storeRoot string) error {
-	/**
-	 * 0. Ensure the sandbox exists. If it has never been created, build it now
-	 *    from nexus3.yaml (same precedence rules as `sandbox create`). This runs
-	 *    before step 1 so herdrSpaceAgentProjectDir sees an existing record.
-	 */
+	// 0. Ensure the sandbox exists. If it has never been created, build it now
+	//    from nexus3.yaml (same precedence rules as `sandbox create`). This runs
+	//    before step 1 so herdrSpaceAgentProjectDir sees an existing record.
 	if err := herdrEnsureFn(ctx, ref, w,
 		func(ctx context.Context, r string) (domain.Sandbox, error) { return svc.Get(ctx, r) },
 		func(ctx context.Context, r string, w io.Writer) error {
@@ -3083,28 +2895,26 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 		return err
 	}
 
-	/**
-	 * 1. Check for a mounted source BEFORE starting the sandbox. Failing fast
-	 *    here avoids a started-but-useless sandbox and gives a clear message.
-	 *
-	 *    Resolve the sandbox first rather than relying on herdrShellCwd alone:
-	 *    herdrShellCwd never fails, and returns "/root" both for a sandbox with
-	 *    no mount AND for a ref that does not resolve at all. Collapsing those
-	 *    two cases would answer "your sandbox has no mounted source" to an
-	 *    operator who simply mistyped the handle, sending them to re-create a
-	 *    sandbox that was never the problem.
-	 */
+	// 1. Check for a mounted source BEFORE starting the sandbox. Failing fast
+	//    here avoids a started-but-useless sandbox and gives a clear message.
+	//
+	//    Resolve the sandbox first rather than relying on herdrShellCwd alone:
+	//    herdrShellCwd never fails, and returns "/root" both for a sandbox with
+	//    no mount AND for a ref that does not resolve at all. Collapsing those
+	//    two cases would answer "your sandbox has no mounted source" to an
+	//    operator who simply mistyped the handle, sending them to re-create a
+	//    sandbox that was never the problem.
 	if _, err := herdrSpaceAgentProjectDir(ctx, ref, svc); err != nil {
 		return err
 	}
 
-	/** 2. Start the sandbox and open/reuse the herdr workspace with its guest shell pane. */
+	// 2. Start the sandbox and open/reuse the herdr workspace with its guest shell pane.
 	fmt.Fprintf(w, "space-agent: opening space for %q ...\n", ref)
 	if err := herdrPluginSpaceCreate(ctx, ref, w, svc, storeRoot, focus); err != nil {
 		return err
 	}
 
-	/** 3. Read the binding back to get the guest pane ID. */
+	// 3. Read the binding back to get the guest pane ID.
 	label := herdrSpaceLabelForRef(ref)
 	binding, err := HerdrSpaceGetByLabel(ctx, storeRoot, label)
 	if err != nil {
@@ -3122,20 +2932,16 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-agent: " + err.Error(), Err: err}
 	}
 
-	/**
-	 * 4. (No bypass-permissions consent step: guest claude launches in auto
-	 *    permission mode via --permission-mode auto; no consent prompt appears.)
-	 */
+	// 4. (No bypass-permissions consent step: guest claude launches in auto
+	//    permission mode via --permission-mode auto; no consent prompt appears.)
 
-	/**
-	 * 5. Wait for the guest shell itself before typing at it.
-	 *
-	 *    The pane runs `nexus3 exec --pty` and only then attaches a shell in
-	 *    the guest; keystrokes sent before that attaches go nowhere, and the
-	 *    launch silently does not happen. Waiting on the guest hostname in the
-	 *    prompt is what distinguishes the guest shell from the host pane the
-	 *    plugin was opened from.
-	 */
+	// 5. Wait for the guest shell itself before typing at it.
+	//
+	//    The pane runs `nexus3 exec --pty` and only then attaches a shell in
+	//    the guest; keystrokes sent before that attaches go nowhere, and the
+	//    launch silently does not happen. Waiting on the guest hostname in the
+	//    prompt is what distinguishes the guest shell from the host pane the
+	//    plugin was opened from.
 	guestPrompt := sandboxHandleHostname(ref)
 	fmt.Fprintf(w, "space-agent: waiting for the guest shell (match=%q) ...\n", guestPrompt)
 	if err := herdrPaneWaitOutput(ctx, herdrBin, paneID, guestPrompt, guestShellTimeoutMS); err != nil {
@@ -3144,12 +2950,10 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 				paneID, guestShellTimeoutMS/1000, err), Err: err}
 	}
 
-	/**
-	 * 5b. Resolve which agent this sandbox runs. sb.AgentName was already
-	 *     validated against cred.ProfileByName at `sandbox create` time; an
-	 *     empty name (plain sandbox) or a name predating this registry falls
-	 *     back to claude's descriptor via resolveAgentLaunchDescriptor.
-	 */
+	// 5b. Resolve which agent this sandbox runs. sb.AgentName was already
+	//     validated against cred.ProfileByName at `sandbox create` time; an
+	//     empty name (plain sandbox) or a name predating this registry falls
+	//     back to claude's descriptor via resolveAgentLaunchDescriptor.
 	sb, sbErr := svc.Get(ctx, ref)
 	if sbErr != nil {
 		return &CodedError{Code: ErrCodeInternalError,
@@ -3158,17 +2962,15 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 	launchDesc := resolveAgentLaunchDescriptor(sb.AgentName)
 	launchCmd := launchDesc.command(autonomous)
 
-	/** 6. Launch the agent in the guest shell pane. */
+	// 6. Launch the agent in the guest shell pane.
 	fmt.Fprintf(w, "space-agent: launching %s in pane %s ...\n", launchCmd, paneID)
 	if err := herdrPaneRun(ctx, herdrBin, paneID, launchCmd); err != nil {
 		return &CodedError{Code: ErrCodeInternalError,
 			Msg: "space-agent: launch agent: " + err.Error(), Err: err}
 	}
 
-	/**
-	 * 7. Wait for the agent's prompt. See claudeReadyMatch/cursorReadyMatch for
-	 *    why each agent's token is what it is.
-	 */
+	// 7. Wait for the agent's prompt. See claudeReadyMatch/cursorReadyMatch for
+	//    why each agent's token is what it is.
 	readyMatch := launchDesc.readyMatch(autonomous)
 	fmt.Fprintf(w, "space-agent: waiting for agent prompt (match=%q, timeout=%ds) ...\n",
 		readyMatch, claudeReadyTimeoutMS/1000)
@@ -3178,21 +2980,19 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 				claudeReadyTimeoutMS/1000, err), Err: err}
 	}
 
-	/**
-	 * 8. Deliver the slice brief AND confirm it was actually submitted.
-	 *
-	 *    Step 7's wait is not evidence of delivery. claudeReadyMatch's token is
-	 *    a permission-mode footer that is present before the brief is pasted and
-	 *    still present after it strands in the input box — it cannot distinguish
-	 *    the two states, so a dispatch that stopped looking here reported success
-	 *    on a brief that was never sent. See herdrDeliverBriefConfirmed.
-	 */
+	// 8. Deliver the slice brief AND confirm it was actually submitted.
+	//
+	//    Step 7's wait is not evidence of delivery. claudeReadyMatch's token is
+	//    a permission-mode footer that is present before the brief is pasted and
+	//    still present after it strands in the input box — it cannot distinguish
+	//    the two states, so a dispatch that stopped looking here reported success
+	//    on a brief that was never sent. See herdrDeliverBriefConfirmed.
 	fmt.Fprintf(w, "space-agent: delivering brief ...\n")
 	if err := herdrDeliverBriefConfirmed(ctx, herdrBin, paneID, brief, w); err != nil {
 		return err
 	}
 
-	/** 9. Report the agent in herdr's agent tracker (non-fatal). */
+	// 9. Report the agent in herdr's agent tracker (non-fatal).
 	if err := herdrPaneReportAgent(ctx, herdrBin, paneID, ref); err != nil {
 		fmt.Fprintf(w, "space-agent: warning: report-agent failed: %v (continuing)\n", err)
 	}
@@ -3201,19 +3001,15 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 	return nil
 }
 
-/**
- * herdrPluginSpaceAgentFromFile is the interactive stdin-based variant of
- * herdrPluginSpaceAgent. It prompts for the sandbox ref (defaulting to
- * NEXUS3_WORKSPACE or the sandbox bound to HERDR_WORKSPACE_ID) and the
- * slice brief, then delegates to herdrPluginSpaceAgent.
- */
+// herdrPluginSpaceAgentFromFile is the interactive stdin-based variant of
+// herdrPluginSpaceAgent. It prompts for the sandbox ref (defaulting to
+// NEXUS3_WORKSPACE or the sandbox bound to HERDR_WORKSPACE_ID) and the
+// slice brief, then delegates to herdrPluginSpaceAgent.
 func herdrPluginSpaceAgentFromFile(ctx context.Context, r io.Reader, w io.Writer, svc *service.Service, storeRoot string) error {
 	scanner := bufio.NewScanner(r)
 
-	/**
-	 * Resolve a sensible default sandbox ref: NEXUS3_WORKSPACE env var first,
-	 * then the sandbox bound to the currently-focused herdr workspace.
-	 */
+	// Resolve a sensible default sandbox ref: NEXUS3_WORKSPACE env var first,
+	// then the sandbox bound to the currently-focused herdr workspace.
 	defaultRef := os.Getenv("NEXUS3_WORKSPACE")
 	if defaultRef == "" {
 		if wsID := os.Getenv("HERDR_WORKSPACE_ID"); wsID != "" {
@@ -3244,12 +3040,10 @@ func herdrPluginSpaceAgentFromFile(ctx context.Context, r io.Reader, w io.Writer
 		return &UsageError{Msg: "space-agent-from-file: brief must not be empty"}
 	}
 
-	/**
-	 * Autonomy is asked, not assumed. See guestAgentLaunchCommand for why this
-	 * is a per-invocation decision rather than a product default. Default is
-	 * no: the operator must type y, and an empty line (just pressing Enter)
-	 * selects the safe answer.
-	 */
+	// Autonomy is asked, not assumed. See guestAgentLaunchCommand for why this
+	// is a per-invocation decision rather than a product default. Default is
+	// no: the operator must type y, and an empty line (just pressing Enter)
+	// selects the safe answer.
 	fmt.Fprintf(os.Stderr, "run autonomously, without asking approval for each tool call? [y/N]: ")
 	autonomous := false
 	if scanner.Scan() {
@@ -3264,36 +3058,30 @@ func herdrPluginSpaceAgentFromFile(ctx context.Context, r io.Reader, w io.Writer
 
 // ── worktree-sandbox helpers ──────────────────────────────────────────────────
 
-/**
- * herdrWorktreeInfo holds the information extracted from `herdr worktree list`
- * for one workspace entry in the worktree list response.
- */
+// herdrWorktreeInfo holds the information extracted from `herdr worktree list`
+// for one workspace entry in the worktree list response.
 type herdrWorktreeInfo struct {
 	Branch            string
 	Path              string
 	IsLinkedWorktree  bool
 	SourceWorkspaceID string
-	/**
-	 * RepoKey identifies the repository (source.repo_key in the response, e.g.
-	 * "/repo/.git"). The parent directory of RepoKey is the main repo root used
-	 * by herdrRepoHasBoundSandbox (predicate c); an empty value is unknown.
-	 */
+	// RepoKey identifies the repository (source.repo_key in the response, e.g.
+	// "/repo/.git"). The parent directory of RepoKey is the main repo root used
+	// by herdrRepoHasBoundSandbox (predicate c); an empty value is unknown.
 	RepoKey string
 }
 
-/**
- * herdrRepoHasBoundSandbox is THE SINGLE MECHANISM for the question
- * "does this repo have at least one nexus3-bound sandbox?"
- *
- * It returns true when at least one binding's RepoRoot equals mainRepo
- * (after filepath.Clean normalisation). An empty mainRepo or an empty
- * binding RepoRoot is NEVER a match — empty RepoRoot means a legacy binding
- * that pre-dates repo tracking, and must fail toward the host shell.
- *
- * Both the dispatcher (herdrAutoCreatePredicateWith) and the subprocess
- * (herdrWorktreeSandboxRepoCheck) call this function. Do not duplicate the
- * comparison logic. Enforced by TestHerdrRepoHasBoundSandbox_BothCallSitesAgree.
- */
+// herdrRepoHasBoundSandbox is THE SINGLE MECHANISM for the question
+// "does this repo have at least one nexus3-bound sandbox?"
+//
+// It returns true when at least one binding's RepoRoot equals mainRepo
+// (after filepath.Clean normalisation). An empty mainRepo or an empty
+// binding RepoRoot is NEVER a match — empty RepoRoot means a legacy binding
+// that pre-dates repo tracking, and must fail toward the host shell.
+//
+// Both the dispatcher (herdrAutoCreatePredicateWith) and the subprocess
+// (herdrWorktreeSandboxRepoCheck) call this function. Do not duplicate the
+// comparison logic. Enforced by TestHerdrRepoHasBoundSandbox_BothCallSitesAgree.
 func herdrRepoHasBoundSandbox(mainRepo string, bindings []HerdrSpaceBinding) bool {
 	if mainRepo == "" {
 		return false
@@ -3310,15 +3098,13 @@ func herdrRepoHasBoundSandbox(mainRepo string, bindings []HerdrSpaceBinding) boo
 	return false
 }
 
-/**
- * herdrWorktreeSandboxRepoCheck reports whether the repo identified by
- * info.RepoKey has at least one binding in storeRoot whose RepoRoot matches.
- *
- * Predicate (c) of the auto-bind rule. Derives the main repo root from
- * info.RepoKey (parent dir of the .git path) and delegates to
- * herdrRepoHasBoundSandbox. If info.RepoKey is empty or bindings cannot be
- * read, returns false (fail toward host shell, never guess).
- */
+// herdrWorktreeSandboxRepoCheck reports whether the repo identified by
+// info.RepoKey has at least one binding in storeRoot whose RepoRoot matches.
+//
+// Predicate (c) of the auto-bind rule. Derives the main repo root from
+// info.RepoKey (parent dir of the .git path) and delegates to
+// herdrRepoHasBoundSandbox. If info.RepoKey is empty or bindings cannot be
+// read, returns false (fail toward host shell, never guess).
 func herdrWorktreeSandboxRepoCheck(ctx context.Context, storeRoot string, info herdrWorktreeInfo) bool {
 	if info.RepoKey == "" {
 		return false
@@ -3331,10 +3117,8 @@ func herdrWorktreeSandboxRepoCheck(ctx context.Context, storeRoot string, info h
 	return herdrRepoHasBoundSandbox(mainRepo, bindings)
 }
 
-/**
- * herdrRepoHasNexus3Config reports whether the checkout at dir is nexus3-
- * onboarded: it carries a nexus3.yaml or a .nexus/Containerfile.
- */
+// herdrRepoHasNexus3Config reports whether the checkout at dir is nexus3-
+// onboarded: it carries a nexus3.yaml or a .nexus/Containerfile.
 func herdrRepoHasNexus3Config(dir string) bool {
 	if dir == "" {
 		return false
@@ -3347,17 +3131,15 @@ func herdrRepoHasNexus3Config(dir string) bool {
 	return false
 }
 
-/**
- * herdrWorktreeAutoBindDecision is the --auto predicate for worktree-sandbox.
- *
- * It binds when the repo already has a nexus3-bound sibling workspace
- * (repoBound) OR when the checkout itself is nexus3-onboarded (hasConfig:
- * nexus3.yaml / .nexus/Containerfile). The second arm is what makes the FIRST
- * worktree of a repo auto-provision; before it, a new user's worktree.created
- * hook silently did nothing because no sibling could ever be bound yet.
- * Only a repo with neither is skipped. The returned reason is printed either
- * way so the provisioning pane never exits without saying why.
- */
+// herdrWorktreeAutoBindDecision is the --auto predicate for worktree-sandbox.
+//
+// It binds when the repo already has a nexus3-bound sibling workspace
+// (repoBound) OR when the checkout itself is nexus3-onboarded (hasConfig:
+// nexus3.yaml / .nexus/Containerfile). The second arm is what makes the FIRST
+// worktree of a repo auto-provision; before it, a new user's worktree.created
+// hook silently did nothing because no sibling could ever be bound yet.
+// Only a repo with neither is skipped. The returned reason is printed either
+// way so the provisioning pane never exits without saying why.
 func herdrWorktreeAutoBindDecision(repoBound, hasConfig bool) (bind bool, reason string) {
 	switch {
 	case repoBound:
@@ -3369,82 +3151,68 @@ func herdrWorktreeAutoBindDecision(repoBound, hasConfig bool) (bind bool, reason
 	}
 }
 
-/**
- * herdrWorktreeListTimeout bounds the `herdr worktree list` probe in step 3.
- * A hung herdr daemon must not wedge every new pane on the machine.
- */
+// herdrWorktreeListTimeout bounds the `herdr worktree list` probe in step 3.
+// A hung herdr daemon must not wedge every new pane on the machine.
 const herdrWorktreeListTimeout = 2 * time.Second
 
-/**
- * herdrWorktreeCreateTimeout bounds the sandbox create call in step 7.
- *
- * TBD-2 (nexus3-nonnexus3-repo-sandbox-blockers): this was 90s, documented as
- * "generous for typical fast hardware with a warm image cache". That premise
- * does not hold: a cold BUILDKIT LAYER CACHE (not merely a cold fingerprint —
- * layers are shared across fingerprints, so a fingerprint miss over a warm
- * layer cache is fast) measured 120s (example-app) and 152s (nexus3) through
- * the unbounded `nexus3 create --file` path on 2026-08-31, both well over the
- * old 90s bound. 240s carries ~60% headroom over the worst measured cold
- * build and was chosen over two rejected alternatives:
- *
- *   - Adaptive/progress-based liveness (distinguish "slow but making
- *     progress" from "wedged") was ruled out for this slice: it needs a new
- *     channel streaming buildkit solve progress from guest to host over the
- *     vsock control plane, which does not exist today. That is real
- *     standalone machinery, not a constant tweak — left as follow-up work,
- *     not because it is a bad idea.
- *   - Removing the bound entirely was ruled out: it is the only thing that
- *     protects an operator's pane from a truly wedged daemon (as opposed to
- *     a slow one). Enforcement uses exec.CommandContext default behaviour
- *     (SIGKILL on expiry) — a clean teardown is not guaranteed on timeout.
- *
- * A fixed constant still cannot distinguish "legitimately slow" from
- * "wedged" — that limitation is inherent to any constant and is accepted for
- * this slice.
- */
+// herdrWorktreeCreateTimeout bounds the sandbox create call in step 7.
+//
+// TBD-2 (nexus3-nonnexus3-repo-sandbox-blockers): this was 90s, documented as
+// "generous for typical fast hardware with a warm image cache". That premise
+// does not hold: a cold BUILDKIT LAYER CACHE (not merely a cold fingerprint —
+// layers are shared across fingerprints, so a fingerprint miss over a warm
+// layer cache is fast) measured 120s (a mid-size Next.js monorepo) and 152s (nexus3) through
+// the unbounded `nexus3 create --file` path on 2026-08-31, both well over the
+// old 90s bound. 240s carries ~60% headroom over the worst measured cold
+// build and was chosen over two rejected alternatives:
+//
+//   - Adaptive/progress-based liveness (distinguish "slow but making
+//     progress" from "wedged") was ruled out for this slice: it needs a new
+//     channel streaming buildkit solve progress from guest to host over the
+//     vsock control plane, which does not exist today. That is real
+//     standalone machinery, not a constant tweak — left as follow-up work,
+//     not because it is a bad idea.
+//   - Removing the bound entirely was ruled out: it is the only thing that
+//     protects an operator's pane from a truly wedged daemon (as opposed to
+//     a slow one). Enforcement uses exec.CommandContext default behaviour
+//     (SIGKILL on expiry) — a clean teardown is not guaranteed on timeout.
+//
+// A fixed constant still cannot distinguish "legitimately slow" from
+// "wedged" — that limitation is inherent to any constant and is accepted for
+// this slice.
 const herdrWorktreeCreateTimeout = 240 * time.Second
 
-/**
- * herdrWorktreeCreateLockTimeout bounds how long the second concurrent caller
- * waits for the per-handle create-intent lock. Must exceed the first caller's
- * worst-case total create time (herdrWorktreeCreateTimeout = 240s), so the
- * first caller always finishes (or is forcibly killed) before the waiter gives up.
- */
+// herdrWorktreeCreateLockTimeout bounds how long the second concurrent caller
+// waits for the per-handle create-intent lock. Must exceed the first caller's
+// worst-case total create time (herdrWorktreeCreateTimeout = 240s), so the
+// first caller always finishes (or is forcibly killed) before the waiter gives up.
 const herdrWorktreeCreateLockTimeout = 330 * time.Second
 
-/**
- * herdrWorktreeCreateLockPath returns the path to the per-handle create-intent
- * lock file.  The lock serialises concurrent auto-create attempts for the same
- * sandbox handle (e.g. two panes opening in the same worktree workspace within
- * the ~240 s create window — herdrWorktreeCreateTimeout above).
- *
- * Safe filename: "/" → "_".  After herdrWorktreeSandboxHandle's sanitisation,
- * handles contain only [A-Za-z0-9._-/] with at most one "/", so this mapping
- * is collision-free.
- */
+// herdrWorktreeCreateLockPath returns the path to the per-handle create-intent
+// lock file.  The lock serialises concurrent auto-create attempts for the same
+// sandbox handle (e.g. two panes opening in the same worktree workspace within
+// the ~240 s create window — herdrWorktreeCreateTimeout above).
+//
+// Safe filename: "/" → "_".  After herdrWorktreeSandboxHandle's sanitisation,
+// handles contain only [A-Za-z0-9._-/] with at most one "/", so this mapping
+// is collision-free.
 func herdrWorktreeCreateLockPath(storeRoot, handle string) string {
 	safe := strings.ReplaceAll(handle, "/", "_")
 	return filepath.Join(storeRoot, "herdr-wt-create-"+safe+".lock")
 }
 
-/**
- * herdrListWorktreeForWorkspaceFn is the injectable function for listing worktrees.
- * Replaced in tests to avoid calling the live herdr binary.
- */
+// herdrListWorktreeForWorkspaceFn is the injectable function for listing worktrees.
+// Replaced in tests to avoid calling the live herdr binary.
 var herdrListWorktreeForWorkspaceFn = herdrListWorktreeForWorkspace
 
-/**
- * herdrWorkspaceRenameFn is the injectable function for renaming a herdr workspace.
- * Replaced in tests to avoid calling the live herdr binary.
- */
+// herdrWorkspaceRenameFn is the injectable function for renaming a herdr workspace.
+// Replaced in tests to avoid calling the live herdr binary.
 var herdrWorkspaceRenameFn = herdrWorkspaceRename
 
-/**
- * herdrParseWorktreeListForWorkspace parses the JSON response from
- * `herdr worktree list --workspace <id>` and returns the
- * herdrWorktreeInfo for the entry whose open_workspace_id matches workspaceID.
- * Returns an error if workspaceID is not found or the JSON is malformed.
- */
+// herdrParseWorktreeListForWorkspace parses the JSON response from
+// `herdr worktree list --workspace <id>` and returns the
+// herdrWorktreeInfo for the entry whose open_workspace_id matches workspaceID.
+// Returns an error if workspaceID is not found or the JSON is malformed.
 func herdrParseWorktreeListForWorkspace(data []byte, workspaceID string) (herdrWorktreeInfo, error) {
 	var resp struct {
 		Result struct {
@@ -3479,10 +3247,8 @@ func herdrParseWorktreeListForWorkspace(data []byte, workspaceID string) (herdrW
 	return herdrWorktreeInfo{}, fmt.Errorf("herdr worktree list: workspace %q not found in response", workspaceID)
 }
 
-/**
- * herdrListWorktreeForWorkspace calls `herdr worktree list --workspace <id>` and
- * returns the herdrWorktreeInfo for the given workspaceID.
- */
+// herdrListWorktreeForWorkspace calls `herdr worktree list --workspace <id>` and
+// returns the herdrWorktreeInfo for the given workspaceID.
 func herdrListWorktreeForWorkspace(ctx context.Context, herdrBin, workspaceID string) (herdrWorktreeInfo, error) {
 	cmd := herdrExecCommandContext(ctx, herdrBin, "worktree", "list", "--workspace", workspaceID)
 	out, err := cmd.Output()
@@ -3492,114 +3258,104 @@ func herdrListWorktreeForWorkspace(ctx context.Context, herdrBin, workspaceID st
 	return herdrParseWorktreeListForWorkspace(out, workspaceID)
 }
 
-/**
- * herdrWorkspaceRename calls `herdr workspace rename` to update the workspace
- * label to label for the given workspaceID.
- */
+// herdrWorkspaceRename calls `herdr workspace rename` to update the workspace
+// label to label for the given workspaceID.
 func herdrWorkspaceRename(ctx context.Context, herdrBin, workspaceID, label string) error {
 	cmd := herdrExecCommandContext(ctx, herdrBin, "workspace", "rename", workspaceID, label)
 	return cmd.Run()
 }
 
-/**
- * herdrWorktreeSandboxCreateArgs returns the argument list for
- * `nexus3 sandbox create` that creates a worktree sandbox.
- *
- * imageFlag and imageVal must be exactly one of:
- *   - "--image", "<ref>"   — use a pre-built cached image
- *   - "--file", "<dir>"    — build from a nexus3.yaml in that directory
- *   - "--rootfs", "<path>" — use a raw rootfs (not currently produced by this
- *     path, reserved for future use)
- *
- * Exactly one bootable flag is always present: the caller is responsible for
- * resolving imageFlag/imageVal via herdrResolveWorktreeImage before calling
- * this function. An empty imageFlag produces an unbootable argv that
- * `sandbox create` will reject with exit status 2.
- *
- * secrets are "--secret ENV@host1,host2" binds derived from the egress.secrets
- * section of the nexus3.yaml on the trusted ref (D-PDE-17). allowedRepo, when
- * non-empty, sets the per-repo GitHub path allowlist (--repo owner/name).
- *
- * --agent claude-code --egress open makes a worktree sandbox a full agent dev
- * environment: the operator's curated ~/.claude config (skills, CLAUDE.md,
- * settings) and MCP server definitions are shared in, and Claude's credential
- * is brokered host-side — WHILE keeping open dev egress so npm/apt/registry
- * pulls still work. This is the "broad-allow + selective MITM" posture: the
- * perimeter forwards every host but MITM-swaps only the credentialed ones
- * (anthropic + http-MCP), so a placeholder never reaches the real API and no
- * real token lives in the guest. Without --egress open, --agent would narrow
- * egress to the agent allowlist (D-PD-33) and break dev tooling; the two flags
- * must travel together for a worktree sandbox.
- *
- * extraMounts is a slice of additional "host:guest[:ro]" mount specs (one
- * --mount flag pair per element). For a linked worktree sandbox, it carries
- * the main repo's .git directory so git is fully functional inside the guest
- * (D-PD-99-git: worktree .git resolution requires the main .git to be
- * reachable at its host absolute path inside the VM).
- */
+// herdrWorktreeSandboxCreateArgs returns the argument list for
+// `nexus3 sandbox create` that creates a worktree sandbox.
+//
+// imageFlag and imageVal must be exactly one of:
+//   - "--image", "<ref>"   — use a pre-built cached image
+//   - "--file", "<dir>"    — build from a nexus3.yaml in that directory
+//   - "--rootfs", "<path>" — use a raw rootfs (not currently produced by this
+//     path, reserved for future use)
+//
+// Exactly one bootable flag is always present: the caller is responsible for
+// resolving imageFlag/imageVal via herdrResolveWorktreeImage before calling
+// this function. An empty imageFlag produces an unbootable argv that
+// `sandbox create` will reject with exit status 2.
+//
+// secrets are "--secret ENV@host1,host2" binds derived from the egress.secrets
+// section of the nexus3.yaml on the trusted ref (D-PDE-17). allowedRepo, when
+// non-empty, sets the per-repo GitHub path allowlist (--repo owner/name).
+//
+// --agent claude-code --egress open makes a worktree sandbox a full agent dev
+// environment: the operator's curated ~/.claude config (skills, CLAUDE.md,
+// settings) and MCP server definitions are shared in, and Claude's credential
+// is brokered host-side — WHILE keeping open dev egress so npm/apt/registry
+// pulls still work. This is the "broad-allow + selective MITM" posture: the
+// perimeter forwards every host but MITM-swaps only the credentialed ones
+// (anthropic + http-MCP), so a placeholder never reaches the real API and no
+// real token lives in the guest. Without --egress open, --agent would narrow
+// egress to the agent allowlist (D-PD-33) and break dev tooling; the two flags
+// must travel together for a worktree sandbox.
+//
+// extraMounts is a slice of additional "host:guest[:ro]" mount specs (one
+// --mount flag pair per element). For a linked worktree sandbox, it carries
+// the main repo's .git directory so git is fully functional inside the guest
+// (D-PD-99-git: worktree .git resolution requires the main .git to be
+// reachable at its host absolute path inside the VM).
 func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, nested bool) []string {
 	args := []string{imageFlag, imageVal, "--mount", mountSpec}
 	for _, m := range extraMounts {
 		args = append(args, "--mount", m)
 	}
-	/**
-	 * Docker storage disk. A custom .nexus/Containerfile (the --file path) is the
-	 * ONLY way docker lands in a worktree sandbox — the base image ships none by
-	 * design — so a base-image sandbox needs no docker disk. When we DO build from
-	 * a Containerfile, give /var/lib/docker its own ext4 disk: docker's overlay2
-	 * storage driver cannot run on the virtiofs /workspace mount, and the small
-	 * root disk fills fast under image layers. The volume is named per-sandbox
-	 * (from the handle) so two worktree sandboxes of the same repo never contend
-	 * on one disk under the D-PD-93 attach guard, while a given worktree keeps its
-	 * docker layer cache across re-creations. A 20 GiB sparse disk costs only the
-	 * blocks docker actually writes, so it is cheap even when a project's
-	 * Containerfile turns out not to use docker.
-	 */
+	// Docker storage disk. A custom .nexus/Containerfile (the --file path) is the
+	// ONLY way docker lands in a worktree sandbox — the base image ships none by
+	// design — so a base-image sandbox needs no docker disk. When we DO build from
+	// a Containerfile, give /var/lib/docker its own ext4 disk: docker's overlay2
+	// storage driver cannot run on the virtiofs /workspace mount, and the small
+	// root disk fills fast under image layers. The volume is named per-sandbox
+	// (from the handle) so two worktree sandboxes of the same repo never contend
+	// on one disk under the D-PD-93 attach guard, while a given worktree keeps its
+	// docker layer cache across re-creations. A 20 GiB sparse disk costs only the
+	// blocks docker actually writes, so it is cheap even when a project's
+	// Containerfile turns out not to use docker.
 	if imageFlag == "--file" {
 		args = append(args, "--mount-named", herdrDockerDiskVolumeName(handle)+":/var/lib/docker:size=20g")
 	}
-	/**
-	 * Go build-cache disks. Unconditional (unlike the docker disk above): every
-	 * worktree sandbox agent runs `go build`/`go test` against this repo, and Go
-	 * defaults GOCACHE to $HOME/.cache/go-build and GOPATH/GOMODCACHE under
-	 * $HOME/go — both under /root, which otherwise sits entirely on the 4 GiB
-	 * root disk (/dev/vda). Root is NOT governor-visible: diskIndexFromDevice
-	 * rejects any device letter below 'b', so /dev/vda has no ExtraDisks index
-	 * and can never be grown by the disk governor no matter how full it gets.
-	 * Giving these two paths their own kind=disk volumes moves the write
-	 * pressure onto disks that ARE governor-visible (same ResizableDiskIndices
-	 * mechanism as the docker disk above), so the axis that was never handed
-	 * the disk that matters now is.
-	 *
-	 * Two disks, not one, because /root/go and /root/.cache are not nested and
-	 * a single ext4 volume can only be mounted at one guest path. Both stay
-	 * clear of /root/.claude, /root/.claude.json, and /root/.ssh — the paths
-	 * the agent's onboarding/credential seeding writes into (seed.go,
-	 * usermount.go) — so this does not disturb agent config sync.
-	 *
-	 * Claude agentcfg overlay disk. The overlayfs upper and work dirs for
-	 * /root/.claude live at /var/lib/nexus3/agentcfg/{upper,work} — both on
-	 * this volume. Moving them off root makes the governor-visible: the root
-	 * disk (/dev/vda) is never enrolled in ResizableDiskIndices, so it could
-	 * never be grown no matter how full /root/.claude grew. This volume can.
-	 * Both upper and work share one filesystem (the kernel requirement for
-	 * overlayfs), satisfying the constraint without touching root ext4.
-	 * 2 GiB: the upper layer stores only deltas from the RO lower — transcripts,
-	 * todos, stats — not build artifacts. The real upper layer (agentcfg-upper
-	 * on root ext4) measured live at 2.0 MB; the remainder of any apparently
-	 * larger figure is the RO virtiofs lower, host-backed, consuming zero guest
-	 * disk (D-RAM-12 retracts the earlier 442 MiB figure as a measurement
-	 * error — it was the merged overlay view, not the writable upper). The
-	 * operator ratified 2 GiB to give headroom for growth (D-RAM-13).
-	 */
+	// Go build-cache disks. Unconditional (unlike the docker disk above): every
+	// worktree sandbox agent runs `go build`/`go test` against this repo, and Go
+	// defaults GOCACHE to $HOME/.cache/go-build and GOPATH/GOMODCACHE under
+	// $HOME/go — both under /root, which otherwise sits entirely on the 4 GiB
+	// root disk (/dev/vda). Root is NOT governor-visible: diskIndexFromDevice
+	// rejects any device letter below 'b', so /dev/vda has no ExtraDisks index
+	// and can never be grown by the disk governor no matter how full it gets.
+	// Giving these two paths their own kind=disk volumes moves the write
+	// pressure onto disks that ARE governor-visible (same ResizableDiskIndices
+	// mechanism as the docker disk above), so the axis that was never handed
+	// the disk that matters now is.
+	//
+	// Two disks, not one, because /root/go and /root/.cache are not nested and
+	// a single ext4 volume can only be mounted at one guest path. Both stay
+	// clear of /root/.claude, /root/.claude.json, and /root/.ssh — the paths
+	// the agent's onboarding/credential seeding writes into (seed.go,
+	// usermount.go) — so this does not disturb agent config sync.
+	//
+	// Claude agentcfg overlay disk. The overlayfs upper and work dirs for
+	// /root/.claude live at /var/lib/nexus3/agentcfg/{upper,work} — both on
+	// this volume. Moving them off root makes the governor-visible: the root
+	// disk (/dev/vda) is never enrolled in ResizableDiskIndices, so it could
+	// never be grown no matter how full /root/.claude grew. This volume can.
+	// Both upper and work share one filesystem (the kernel requirement for
+	// overlayfs), satisfying the constraint without touching root ext4.
+	// 2 GiB: the upper layer stores only deltas from the RO lower — transcripts,
+	// todos, stats — not build artifacts. The real upper layer (agentcfg-upper
+	// on root ext4) measured live at 2.0 MB; the remainder of any apparently
+	// larger figure is the RO virtiofs lower, host-backed, consuming zero guest
+	// disk (D-RAM-12 retracts the earlier 442 MiB figure as a measurement
+	// error — it was the merged overlay view, not the writable upper). The
+	// operator ratified 2 GiB to give headroom for growth (D-RAM-13).
 	args = append(args, "--mount-named", herdrAgentCfgDiskVolumeName(handle)+":/var/lib/nexus3/agentcfg:size=2g")
-	/**
-	 * What still cannot grow after this: everything else on root (installed
-	 * packages, /tmp, /var/lib outside agentcfg, anything outside $HOME/go,
-	 * $HOME/.cache, and $HOME/.claude) remains on the ungrowable 4 GiB
-	 * /dev/vda. That is an accepted, explicit gap — see the ticket's Decision
-	 * section — not a silent reproduction of the bug.
-	 */
+	// What still cannot grow after this: everything else on root (installed
+	// packages, /tmp, /var/lib outside agentcfg, anything outside $HOME/go,
+	// $HOME/.cache, and $HOME/.claude) remains on the ungrowable 4 GiB
+	// /dev/vda. That is an accepted, explicit gap — see the ticket's Decision
+	// section — not a silent reproduction of the bug.
 	args = append(args, "--mount-named", herdrGoCacheDiskVolumeName(handle)+":/root/.cache:size=10g")
 	args = append(args, "--mount-named", herdrGoPathDiskVolumeName(handle)+":/root/go:size=10g")
 	for _, s := range secrets {
@@ -3608,13 +3364,11 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 	if allowedRepo != "" {
 		args = append(args, "--repo", allowedRepo)
 	}
-	/**
-	 * Convey generic path policies via --egress-policy-json when present.
-	 * This is the channel that carries EgressPathPolicies from the herdr
-	 * worktree path through the `sandbox create` subprocess boundary, replacing
-	 * the discarded-variable gap (D-PDE-16 worktree path). JSON round-trips the
-	 * exact policy including method-prefixed globs.
-	 */
+	// Convey generic path policies via --egress-policy-json when present.
+	// This is the channel that carries EgressPathPolicies from the herdr
+	// worktree path through the `sandbox create` subprocess boundary, replacing
+	// the discarded-variable gap (D-PDE-16 worktree path). JSON round-trips the
+	// exact policy including method-prefixed globs.
 	if len(pathPolicies) > 0 {
 		ppJSON, err := json.Marshal(pathPolicies)
 		if err == nil {
@@ -3628,12 +3382,10 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 	return args
 }
 
-/**
- * herdrPrimaryAgent resolves the primary agent name for herdr worktree sandboxes
- * (D-TP-09). It reads sandbox.agents from the user-global config; the first
- * entry is the primary. Falls back to sandbox.agent (singular), then to
- * "claude-code" as the backward-compatible default when neither key is set.
- */
+// herdrPrimaryAgent resolves the primary agent name for herdr worktree sandboxes
+// (D-TP-09). It reads sandbox.agents from the user-global config; the first
+// entry is the primary. Falls back to sandbox.agent (singular), then to
+// "claude-code" as the backward-compatible default when neither key is set.
 func herdrPrimaryAgent() string {
 	cfg, err := config.LoadUserGlobal()
 	if err != nil {
@@ -3648,54 +3400,44 @@ func herdrPrimaryAgent() string {
 	return "claude-code"
 }
 
-/**
- * herdrDockerDiskVolumeName derives a VolumeStore-legal name
- * ([a-z0-9][a-z0-9._-]*, per D-PD-84) for a worktree sandbox's docker storage
- * disk from its handle. The handle is "<repo>/<branch>" with case preserved and
- * a "/" separator, neither of which the grammar allows, so this lower-cases,
- * maps every out-of-grammar byte (including "/") to a single "-", trims to a
- * legal leading char, and appends "-docker".
- */
+// herdrDockerDiskVolumeName derives a VolumeStore-legal name
+// ([a-z0-9][a-z0-9._-]*, per D-PD-84) for a worktree sandbox's docker storage
+// disk from its handle. The handle is "<repo>/<branch>" with case preserved and
+// a "/" separator, neither of which the grammar allows, so this lower-cases,
+// maps every out-of-grammar byte (including "/") to a single "-", trims to a
+// legal leading char, and appends "-docker".
 func herdrDockerDiskVolumeName(handle string) string {
 	return herdrHandleSlug(handle) + "-docker"
 }
 
-/**
- * herdrGoCacheDiskVolumeName derives the per-sandbox volume name for the
- * /root/.cache build-cache disk (GOCACHE lives under here), following the same
- * D-PD-84 slug rule as herdrDockerDiskVolumeName.
- */
+// herdrGoCacheDiskVolumeName derives the per-sandbox volume name for the
+// /root/.cache build-cache disk (GOCACHE lives under here), following the same
+// D-PD-84 slug rule as herdrDockerDiskVolumeName.
 func herdrGoCacheDiskVolumeName(handle string) string {
 	return herdrHandleSlug(handle) + "-gocache"
 }
 
-/**
- * herdrGoPathDiskVolumeName derives the per-sandbox volume name for the
- * /root/go disk (GOPATH/GOMODCACHE live under here), following the same
- * D-PD-84 slug rule as herdrDockerDiskVolumeName.
- */
+// herdrGoPathDiskVolumeName derives the per-sandbox volume name for the
+// /root/go disk (GOPATH/GOMODCACHE live under here), following the same
+// D-PD-84 slug rule as herdrDockerDiskVolumeName.
 func herdrGoPathDiskVolumeName(handle string) string {
 	return herdrHandleSlug(handle) + "-gopath"
 }
 
-/**
- * herdrAgentCfgDiskVolumeName derives the per-sandbox volume name for the
- * /var/lib/nexus3/agentcfg disk. The overlayfs upper and work dirs for
- * /root/.claude live on this volume so the governor can grow the disk when
- * Claude session state grows (root /dev/vda is not governor-visible).
- * Follows the same D-PD-84 slug rule as herdrDockerDiskVolumeName.
- */
+// herdrAgentCfgDiskVolumeName derives the per-sandbox volume name for the
+// /var/lib/nexus3/agentcfg disk. The overlayfs upper and work dirs for
+// /root/.claude live on this volume so the governor can grow the disk when
+// Claude session state grows (root /dev/vda is not governor-visible).
+// Follows the same D-PD-84 slug rule as herdrDockerDiskVolumeName.
 func herdrAgentCfgDiskVolumeName(handle string) string {
 	return herdrHandleSlug(handle) + "-agentcfg"
 }
 
-/**
- * herdrHandleSlug lower-cases handle and collapses every byte outside
- * [a-z0-9._-] (including the "<repo>/<branch>" separator) to a single "-",
- * then trims to a VolumeStore-legal leading/trailing character (D-PD-84:
- * [a-z0-9][a-z0-9._-]*). Returns "wt" for a degenerate handle that collapses
- * to nothing, so callers always get a non-empty stem to append a suffix to.
- */
+// herdrHandleSlug lower-cases handle and collapses every byte outside
+// [a-z0-9._-] (including the "<repo>/<branch>" separator) to a single "-",
+// then trims to a VolumeStore-legal leading/trailing character (D-PD-84:
+// [a-z0-9][a-z0-9._-]*). Returns "wt" for a degenerate handle that collapses
+// to nothing, so callers always get a non-empty stem to append a suffix to.
 func herdrHandleSlug(handle string) string {
 	var b strings.Builder
 	prev := byte('-')
@@ -3716,10 +3458,8 @@ func herdrHandleSlug(handle string) string {
 			}
 		}
 	}
-	/**
-	 * First char must be [a-z0-9]; trim any leading '.', '_', '-' the grammar
-	 * forbids in that position, plus trailing separators for tidiness.
-	 */
+	// First char must be [a-z0-9]; trim any leading '.', '_', '-' the grammar
+	// forbids in that position, plus trailing separators for tidiness.
 	slug := strings.Trim(b.String(), "-._")
 	if slug == "" {
 		slug = "wt"
@@ -3727,24 +3467,22 @@ func herdrHandleSlug(handle string) string {
 	return slug
 }
 
-/**
- * herdrWorktreeGitDirMount returns the extra --mount spec needed to make git
- * functional inside a linked-worktree sandbox, or "" if it cannot be derived.
- *
- * A linked worktree's checkout/.git is a file containing:
- *
- *	gitdir: <main>/.git/worktrees/<name>
- *
- * Inside the guest, the checkout is at /workspace but the gitdir pointer
- * still holds the host absolute path. Mounting <main>/.git at its host
- * path inside the VM makes all three legs of the resolution chain reachable:
- *
- *	/workspace/.git → gitdir file → <main>/.git/worktrees/<name>/
- *	                                commondir → ../.. → <main>/.git ✓
- *
- * The returned spec is "<mainGitDir>:<mainGitDir>" (same path host and guest).
- * Read-write so `git commit` can write new objects and update refs.
- */
+// herdrWorktreeGitDirMount returns the extra --mount spec needed to make git
+// functional inside a linked-worktree sandbox, or "" if it cannot be derived.
+//
+// A linked worktree's checkout/.git is a file containing:
+//
+//	gitdir: <main>/.git/worktrees/<name>
+//
+// Inside the guest, the checkout is at /workspace but the gitdir pointer
+// still holds the host absolute path. Mounting <main>/.git at its host
+// path inside the VM makes all three legs of the resolution chain reachable:
+//
+//	/workspace/.git → gitdir file → <main>/.git/worktrees/<name>/
+//	                                commondir → ../.. → <main>/.git ✓
+//
+// The returned spec is "<mainGitDir>:<mainGitDir>" (same path host and guest).
+// Read-write so `git commit` can write new objects and update refs.
 func herdrWorktreeGitDirMount(worktreePath string) string {
 	data, err := os.ReadFile(filepath.Join(worktreePath, ".git"))
 	if err != nil {
@@ -3756,46 +3494,40 @@ func herdrWorktreeGitDirMount(worktreePath string) string {
 		return "" // main checkout (directory) or malformed file
 	}
 	target := strings.TrimPrefix(line, prefix)
-	/**
-	 * target = <commondir>/worktrees/<name>. git normally writes an absolute
-	 * path, but a relative gitdir: pointer is valid and is resolved against the
-	 * directory holding the .git file. Normalise to an absolute host path so
-	 * the mount spec is never a relative "<rel>:<rel>".
-	 */
+	// target = <commondir>/worktrees/<name>. git normally writes an absolute
+	// path, but a relative gitdir: pointer is valid and is resolved against the
+	// directory holding the .git file. Normalise to an absolute host path so
+	// the mount spec is never a relative "<rel>:<rel>".
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(worktreePath, target)
 	}
 	target = filepath.Clean(target)
 	worktreesDir := filepath.Dir(target) // <commondir>/worktrees
 	gitDir := filepath.Dir(worktreesDir) // <commondir> (normally <main>/.git)
-	/**
-	 * The "worktrees" segment is the reliable structural marker git guarantees;
-	 * the parent's name is NOT (a bare repo's common dir is "<name>.git", a
-	 * non-bare repo's is ".git"). Anchor on "worktrees" only, then mount the
-	 * common dir at its host path so commondir/../.. resolution succeeds.
-	 */
+	// The "worktrees" segment is the reliable structural marker git guarantees;
+	// the parent's name is NOT (a bare repo's common dir is "<name>.git", a
+	// non-bare repo's is ".git"). Anchor on "worktrees" only, then mount the
+	// common dir at its host path so commondir/../.. resolution succeeds.
 	if filepath.Base(worktreesDir) != "worktrees" {
 		return "" // unexpected structure; bail rather than mount the wrong dir
 	}
 	return gitDir + ":" + gitDir
 }
 
-/**
- * herdrWorktreeGroundworkMount returns a mount spec for the main repo's
- * .groundwork directory into a linked-worktree sandbox.
- *
- * .groundwork/ is gitignored and has no tracked files, so a linked worktree
- * never contains it. Without this mount, in-guest agents cannot read the motive
- * charter, tickets, or open items that drive their work.
- *
- * The spec is "<mainRepo>/.groundwork:<mainRepo>/.groundwork" — same absolute
- * path host and guest, read-write, so in-guest agents can record evidence into
- * ticket files. Mirrors the shape of herdrWorktreeGitDirMount.
- *
- * Returns "" when: (a) the worktreePath is not a linked worktree, (b) the
- * .git pointer structure is unexpected, or (c) the .groundwork directory does
- * not exist in the main repo root. Never mounts a path that is not present.
- */
+// herdrWorktreeGroundworkMount returns a mount spec for the main repo's
+// .groundwork directory into a linked-worktree sandbox.
+//
+// .groundwork/ is gitignored and has no tracked files, so a linked worktree
+// never contains it. Without this mount, in-guest agents cannot read the motive
+// charter, tickets, or open items that drive their work.
+//
+// The spec is "<mainRepo>/.groundwork:<mainRepo>/.groundwork" — same absolute
+// path host and guest, read-write, so in-guest agents can record evidence into
+// ticket files. Mirrors the shape of herdrWorktreeGitDirMount.
+//
+// Returns "" when: (a) the worktreePath is not a linked worktree, (b) the
+// .git pointer structure is unexpected, or (c) the .groundwork directory does
+// not exist in the main repo root. Never mounts a path that is not present.
 func herdrWorktreeGroundworkMount(worktreePath string) string {
 	data, err := os.ReadFile(filepath.Join(worktreePath, ".git"))
 	if err != nil {
@@ -3816,7 +3548,7 @@ func herdrWorktreeGroundworkMount(worktreePath string) string {
 	if filepath.Base(worktreesDir) != "worktrees" {
 		return "" // unexpected structure; bail
 	}
-	/** gitDir is <mainRepo>/.git; its parent is the main repo root. */
+	// gitDir is <mainRepo>/.git; its parent is the main repo root.
 	mainRepo := filepath.Dir(gitDir)
 	groundwork := filepath.Join(mainRepo, ".groundwork")
 	if _, statErr := os.Stat(groundwork); statErr != nil {
@@ -3825,12 +3557,10 @@ func herdrWorktreeGroundworkMount(worktreePath string) string {
 	return groundwork + ":" + groundwork
 }
 
-/**
- * worktreeCommonGitDir returns the main repo's common git directory from a
- * linked worktree path, or "" if it cannot be derived. This is the same
- * directory computed by herdrWorktreeGitDirMount but returned as a plain path
- * rather than a mount spec.
- */
+// worktreeCommonGitDir returns the main repo's common git directory from a
+// linked worktree path, or "" if it cannot be derived. This is the same
+// directory computed by herdrWorktreeGitDirMount but returned as a plain path
+// rather than a mount spec.
 func worktreeCommonGitDir(worktreePath string) string {
 	data, err := os.ReadFile(filepath.Join(worktreePath, ".git"))
 	if err != nil {
@@ -3854,75 +3584,71 @@ func worktreeCommonGitDir(worktreePath string) string {
 	return gitDir
 }
 
-/**
- * readTrustedRefBytes reads the nexus3.yaml content from the operator-controlled
- * trusted ref in commonGitDir. The trusted ref is the origin default branch
- * (refs/remotes/origin/HEAD), never the worktree's checked-out branch.
- *
- * Returns (data, nil) when the file exists on the trusted ref.
- * Returns (nil, nil) — FAIL CLOSED — in all non-error conditions where the
- * config cannot be read:
- *   - no origin/HEAD (remote not fetched or no origin configured)
- *   - nexus3.yaml absent on the trusted ref
- *
- * Returns (nil, err) only for unexpected git failures that are not simply
- * "ref or file not found".
- */
+// readTrustedRefBytes reads the nexus3.yaml content from the operator-controlled
+// trusted ref in commonGitDir. The trusted ref is the origin default branch
+// (refs/remotes/origin/HEAD), never the worktree's checked-out branch.
+//
+// Returns (data, nil) when the file exists on the trusted ref.
+// Returns (nil, nil) — FAIL CLOSED — in all non-error conditions where the
+// config cannot be read:
+//   - no origin/HEAD (remote not fetched or no origin configured)
+//   - nexus3.yaml absent on the trusted ref
+//
+// Returns (nil, err) only for unexpected git failures that are not simply
+// "ref or file not found".
 func readTrustedRefBytes(commonGitDir string) ([]byte, error) {
 	out, err := worktreeGitRunner(commonGitDir, "symbolic-ref", "refs/remotes/origin/HEAD")
 	if err != nil || len(bytes.TrimSpace(out)) == 0 {
-		/** No origin/HEAD → fail closed; no auto-grant. */
+		// No origin/HEAD → fail closed; no auto-grant.
 		return nil, nil
 	}
 	ref := strings.TrimSpace(string(out))
 
-	/** Read nexus3.yaml from the trusted ref — NEVER from the worktree branch. */
+	// Read nexus3.yaml from the trusted ref — NEVER from the worktree branch.
 	data, err := worktreeGitRunner(commonGitDir, "show", ref+":nexus3.yaml")
 	if err != nil {
-		/** File absent on trusted ref → fail closed; no auto-grant. */
+		// File absent on trusted ref → fail closed; no auto-grant.
 		return nil, nil
 	}
 	return data, nil
 }
 
-/**
- * buildWorktreeEgressArgs derives the --secret and --repo CLI args from the
- * egress.policy and egress.secrets sections of the nexus3.yaml read from the
- * trusted ref.
- *
- * Algorithm (three steps):
- *
- *  1. Build pathPolicies and allowedRepo from egress.policy:
- *     - preset:github(+repo) → EgressGitHubPolicy keyed under [""][host].
- *     repo is derived from the origin remote when absent.
- *     - paths → EgressHostPolicy{Paths} keyed under [""][host].
- *
- *  2. Build secrets from egress.secrets (env→hosts only; no path info).
- *
- *  3. D-PDE-16 check: every GitHub host in a secret bind must be covered
- *     by a PathPolicies entry or AllowedRepo. Non-GitHub hosts are exempt.
- *
- * T3 hardening: derived or explicit owner/name equal to "." or ".." is rejected.
- * buildWorktreeEgressArgs derives the --secret and --repo CLI args from the
- * egress.policy and egress.secrets sections of the nexus3.yaml read from the
- * trusted ref.
- *
- * Algorithm (three steps):
- *
- *  1. Build pathPolicies from egress.policy (generic paths only):
- *     each entry maps host → EgressHostPolicy{Paths}.
- *
- *  2. Build secrets from egress.secrets (env→hosts only).
- *
- *  3. D-PDE-16 check: every GitHub host in a secret bind must be covered
- *     by a PathPolicies entry or AllowedRepo (CLI shim). Non-GitHub exempt.
- *
- * NOTE: the CLI --repo/AllowedRepo shim is NOT set from the config path.
- * AllowedRepo is only set when the user passes --repo explicitly at the CLI.
- * The config path uses generic paths policies for all hosts including GitHub.
- */
+// buildWorktreeEgressArgs derives the --secret and --repo CLI args from the
+// egress.policy and egress.secrets sections of the nexus3.yaml read from the
+// trusted ref.
+//
+// Algorithm (three steps):
+//
+//  1. Build pathPolicies and allowedRepo from egress.policy:
+//     - preset:github(+repo) → EgressGitHubPolicy keyed under [""][host].
+//     repo is derived from the origin remote when absent.
+//     - paths → EgressHostPolicy{Paths} keyed under [""][host].
+//
+//  2. Build secrets from egress.secrets (env→hosts only; no path info).
+//
+//  3. D-PDE-16 check: every GitHub host in a secret bind must be covered
+//     by a PathPolicies entry or AllowedRepo. Non-GitHub hosts are exempt.
+//
+// T3 hardening: derived or explicit owner/name equal to "." or ".." is rejected.
+// buildWorktreeEgressArgs derives the --secret and --repo CLI args from the
+// egress.policy and egress.secrets sections of the nexus3.yaml read from the
+// trusted ref.
+//
+// Algorithm (three steps):
+//
+//  1. Build pathPolicies from egress.policy (generic paths only):
+//     each entry maps host → EgressHostPolicy{Paths}.
+//
+//  2. Build secrets from egress.secrets (env→hosts only).
+//
+//  3. D-PDE-16 check: every GitHub host in a secret bind must be covered
+//     by a PathPolicies entry or AllowedRepo (CLI shim). Non-GitHub exempt.
+//
+// NOTE: the CLI --repo/AllowedRepo shim is NOT set from the config path.
+// AllowedRepo is only set when the user passes --repo explicitly at the CLI.
+// The config path uses generic paths policies for all hosts including GitHub.
 func buildWorktreeEgressArgs(cfg config.Config) (secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, err error) {
-	/** Step 1: policy entries → pathPolicies (generic paths for all hosts). */
+	// Step 1: policy entries → pathPolicies (generic paths for all hosts).
 	for _, p := range cfg.Egress.Policy {
 		if len(p.Paths) > 0 {
 			pathPolicies = egressAddHostPolicy(pathPolicies, p.Host,
@@ -3930,7 +3656,7 @@ func buildWorktreeEgressArgs(cfg config.Config) (secrets []string, allowedRepo s
 		}
 	}
 
-	/** Step 2: secrets → "ENV@host1,host2" strings. */
+	// Step 2: secrets → "ENV@host1,host2" strings.
 	for _, s := range cfg.Egress.Secrets {
 		if len(s.Hosts) == 0 {
 			continue
@@ -3938,11 +3664,9 @@ func buildWorktreeEgressArgs(cfg config.Config) (secrets []string, allowedRepo s
 		secrets = append(secrets, s.Env+"@"+strings.Join(s.Hosts, ","))
 	}
 
-	/**
-	 * Step 3: D-PDE-16 — GitHub secret hosts require a covering policy.
-	 * Non-GitHub hosts are exempt (D-PDE-16 asymmetry).
-	 * allowedRepo is always "" from the config path (only set by CLI --repo).
-	 */
+	// Step 3: D-PDE-16 — GitHub secret hosts require a covering policy.
+	// Non-GitHub hosts are exempt (D-PDE-16 asymmetry).
+	// allowedRepo is always "" from the config path (only set by CLI --repo).
 	for _, s := range cfg.Egress.Secrets {
 		for _, h := range s.Hosts {
 			if domain.IsGitHubHost(strings.ToLower(h)) && !egressGitHubHostBound(h, allowedRepo, pathPolicies) {
@@ -3958,14 +3682,12 @@ func buildWorktreeEgressArgs(cfg config.Config) (secrets []string, allowedRepo s
 	return secrets, allowedRepo, pathPolicies, nil
 }
 
-/**
- * egressGitHubHostBound is the D-PDE-16 CLI-time check: is h covered by
- * allowedRepo (shim) or a PathPolicies entry under the WILDCARD key "" only.
- *
- * SECURITY: Only pp[""] is checked — not all top-level keys.  See
- * githubHostBoundCLI (cmd_sandbox.go) for the full rationale.
- * Revert this to an all-keys loop and TestBogusKeyGitHubSecret_Refused fails.
- */
+// egressGitHubHostBound is the D-PDE-16 CLI-time check: is h covered by
+// allowedRepo (shim) or a PathPolicies entry under the WILDCARD key "" only.
+//
+// SECURITY: Only pp[""] is checked — not all top-level keys.  See
+// githubHostBoundCLI (cmd_sandbox.go) for the full rationale.
+// Revert this to an all-keys loop and TestBogusKeyGitHubSecret_Refused fails.
 func egressGitHubHostBound(h, allowedRepo string, pp domain.EgressPathPolicies) bool {
 	if allowedRepo != "" {
 		return true
@@ -3978,10 +3700,8 @@ func egressGitHubHostBound(h, allowedRepo string, pp domain.EgressPathPolicies) 
 	return false
 }
 
-/**
- * egressAddHostPolicy adds a path policy for one host under the wildcard
- * placeholder key "" (resolves to all authenticated requests for that host).
- */
+// egressAddHostPolicy adds a path policy for one host under the wildcard
+// placeholder key "" (resolves to all authenticated requests for that host).
 func egressAddHostPolicy(pp domain.EgressPathPolicies, host string, policy domain.EgressHostPolicy) domain.EgressPathPolicies {
 	if pp == nil {
 		pp = make(domain.EgressPathPolicies)
@@ -3993,52 +3713,46 @@ func egressAddHostPolicy(pp domain.EgressPathPolicies, host string, policy domai
 	return pp
 }
 
-/**
- * herdrResolveWorktreeImage resolves the bootable image flag pair for a
- * worktree sandbox created from checkoutPath.
- *
- * Resolution order:
- *  1. If checkoutPath (or any ancestor up to the .git root) contains a
- *     nexus3.yaml, return --file <dir-containing-nexus3.yaml> so the full
- *     project config (image, egress rules, etc.) is applied during the build.
- *  2. Otherwise return --image <herdrDefaultImage>.
- *
- * Never returns an imageFlag/imageVal pair that would produce an unbootable
- * sandbox create argv. Returns a non-nil error only when config.Load itself
- * fails (e.g., the nexus3.yaml file is present but malformed).
- */
+// herdrResolveWorktreeImage resolves the bootable image flag pair for a
+// worktree sandbox created from checkoutPath.
+//
+// Resolution order:
+//  1. If checkoutPath (or any ancestor up to the .git root) contains a
+//     nexus3.yaml, return --file <dir-containing-nexus3.yaml> so the full
+//     project config (image, egress rules, etc.) is applied during the build.
+//  2. Otherwise return --image <herdrDefaultImage>.
+//
+// Never returns an imageFlag/imageVal pair that would produce an unbootable
+// sandbox create argv. Returns a non-nil error only when config.Load itself
+// fails (e.g., the nexus3.yaml file is present but malformed).
 func herdrResolveWorktreeImage(checkoutPath string) (imageFlag, imageVal string, err error) {
 	_, cfgPath, loadErr := config.Load(checkoutPath)
 	if loadErr != nil {
 		return "", "", fmt.Errorf("resolve worktree image: load config: %w", loadErr)
 	}
 	if cfgPath != "" {
-		/** nexus3.yaml found: use --file so the build applies the full project config. */
+		// nexus3.yaml found: use --file so the build applies the full project config.
 		return "--file", filepath.Dir(cfgPath), nil
 	}
-	/**
-	 * No nexus3.yaml, but a .nexus/Containerfile (or .nexus/Dockerfile) is itself
-	 * a complete build definition — the `--file` build engine reads exactly that
-	 * file from the context dir. So its presence ALONE is enough to build the
-	 * worktree sandbox from it; requiring a separate nexus3.yaml sentinel would be
-	 * a surprising extra step (the Containerfile is the thing that matters).
-	 */
+	// No nexus3.yaml, but a .nexus/Containerfile (or .nexus/Dockerfile) is itself
+	// a complete build definition — the `--file` build engine reads exactly that
+	// file from the context dir. So its presence ALONE is enough to build the
+	// worktree sandbox from it; requiring a separate nexus3.yaml sentinel would be
+	// a surprising extra step (the Containerfile is the thing that matters).
 	if dir := nexusContainerfileDir(checkoutPath); dir != "" {
 		return "--file", dir, nil
 	}
 	return "--image", herdrDefaultImage, nil
 }
 
-/**
- * nexusContainerfileDir walks up from startDir toward the repository root (the
- * .git boundary, the same stopping rule config.Load uses) and returns the first
- * directory that contains a .nexus/Containerfile or .nexus/Dockerfile. Returns
- * "" when none is found up to the repo root or filesystem root.
- *
- * The returned directory is the build CONTEXT dir (the one holding .nexus/), so
- * it can be passed straight to `sandbox create --file`, which reads
- * <dir>/.nexus/Containerfile (see resolveContainerfilePath).
- */
+// nexusContainerfileDir walks up from startDir toward the repository root (the
+// .git boundary, the same stopping rule config.Load uses) and returns the first
+// directory that contains a .nexus/Containerfile or .nexus/Dockerfile. Returns
+// "" when none is found up to the repo root or filesystem root.
+//
+// The returned directory is the build CONTEXT dir (the one holding .nexus/), so
+// it can be passed straight to `sandbox create --file`, which reads
+// <dir>/.nexus/Containerfile (see resolveContainerfilePath).
 func nexusContainerfileDir(startDir string) string {
 	abs, err := filepath.Abs(startDir)
 	if err != nil {
@@ -4062,19 +3776,17 @@ func nexusContainerfileDir(startDir string) string {
 	}
 }
 
-/**
- * herdrWorktreeSandboxHandle derives a deterministic, collision-free sandbox
- * handle from a repository name and git branch name.
- *
- * The handle format is "<repoName>/<branchSlug>", which is a valid nexus3
- * handle (exactly one "/", both sides non-empty).  Case is PRESERVED so that
- * handles like "example-app/EX-871" remain human-readable.
- *
- * Sanitisation rules (applied to both repoName and branch independently):
- *  1. Any char NOT in [A-Za-z0-9._-] (including "/") is replaced with "-".
- *  2. Consecutive "-" are collapsed to one; leading/trailing "-" are trimmed.
- *  3. An empty result falls back: repoName → "repo", branch → "worktree".
- */
+// herdrWorktreeSandboxHandle derives a deterministic, collision-free sandbox
+// handle from a repository name and git branch name.
+//
+// The handle format is "<repoName>/<branchSlug>", which is a valid nexus3
+// handle (exactly one "/", both sides non-empty).  Case is PRESERVED so that
+// handles like "example-app/EX-871" remain human-readable.
+//
+// Sanitisation rules (applied to both repoName and branch independently):
+//  1. Any char NOT in [A-Za-z0-9._-] (including "/") is replaced with "-".
+//  2. Consecutive "-" are collapsed to one; leading/trailing "-" are trimmed.
+//  3. An empty result falls back: repoName → "repo", branch → "worktree".
 func herdrWorktreeSandboxHandle(repoName, branch string) string {
 	sanitize := func(s, fallback string) string {
 		var b strings.Builder
@@ -4099,51 +3811,45 @@ func herdrWorktreeSandboxHandle(repoName, branch string) string {
 	return sanitize(repoName, "repo") + "/" + sanitize(branch, "worktree")
 }
 
-/**
- * herdrWorktreeHandlePrefix is the legacy handle prefix used by bindings
- * written before the WorktreeManaged flag was introduced.  It is retained so
- * that HerdrSpaceBinding.IsWorktreeManaged can identify old records via a
- * prefix fallback and avoid leaking their VMs after an upgrade.
- *
- * New bindings no longer use this prefix — they carry WorktreeManaged=true
- * and a semantic "<repo>/<branch>" handle instead.
- */
+// herdrWorktreeHandlePrefix is the legacy handle prefix used by bindings
+// written before the WorktreeManaged flag was introduced.  It is retained so
+// that HerdrSpaceBinding.IsWorktreeManaged can identify old records via a
+// prefix fallback and avoid leaking their VMs after an upgrade.
+//
+// New bindings no longer use this prefix — they carry WorktreeManaged=true
+// and a semantic "<repo>/<branch>" handle instead.
 const herdrWorktreeHandlePrefix = "wt/"
 
-/**
- * isHerdrWorktreeHandle reports whether handle was produced by the legacy
- * herdrWorktreeSandboxHandle that prepended "wt/".  Used only as a fallback
- * inside HerdrSpaceBinding.IsWorktreeManaged for pre-WorktreeManaged bindings.
- */
+// isHerdrWorktreeHandle reports whether handle was produced by the legacy
+// herdrWorktreeSandboxHandle that prepended "wt/".  Used only as a fallback
+// inside HerdrSpaceBinding.IsWorktreeManaged for pre-WorktreeManaged bindings.
 func isHerdrWorktreeHandle(handle string) bool {
 	return strings.HasPrefix(handle, herdrWorktreeHandlePrefix)
 }
 
-/**
- * herdrWorktreeSandboxParseArgs strips --auto / --conditional / --nested flags
- * from the beginning of args and returns the remaining positional args and mode
- * flags.
- *
- * --auto    activates the repo-level predicate (predicate c): at least one
- *
- *	sibling workspace in the same repo must be nexus3-bound. This is
- *	the mode used by the guest-shell dispatcher (herdrDefaultShellCore).
- *
- * --conditional activates the legacy SourceWorkspaceID predicate. Kept for
- *
- *	backward compatibility with any scripts that relied on the old
- *	behaviour; the two flags are mutually exclusive in practice.
- *
- * --nested is the operator opt-in for nested virtualisation (D-N3N-02). An
- *
- *	operator-supplied flag is safe because it is not branch-controlled.
- *	The effective nested value is (--nested flag) OR (sandbox.nested in
- *	the trusted-ref nexus3.yaml). See herdrWorktreeSandbox.
- *
- * Called by the "worktree-sandbox" case in runHerdrPlugin so flag parsing
- * happens before the workspace ID is read, preventing the flags from being
- * consumed as the workspace ID.
- */
+// herdrWorktreeSandboxParseArgs strips --auto / --conditional / --nested flags
+// from the beginning of args and returns the remaining positional args and mode
+// flags.
+//
+// --auto    activates the repo-level predicate (predicate c): at least one
+//
+//	sibling workspace in the same repo must be nexus3-bound. This is
+//	the mode used by the guest-shell dispatcher (herdrDefaultShellCore).
+//
+// --conditional activates the legacy SourceWorkspaceID predicate. Kept for
+//
+//	backward compatibility with any scripts that relied on the old
+//	behaviour; the two flags are mutually exclusive in practice.
+//
+// --nested is the operator opt-in for nested virtualisation (D-N3N-02). An
+//
+//	operator-supplied flag is safe because it is not branch-controlled.
+//	The effective nested value is (--nested flag) OR (sandbox.nested in
+//	the trusted-ref nexus3.yaml). See herdrWorktreeSandbox.
+//
+// Called by the "worktree-sandbox" case in runHerdrPlugin so flag parsing
+// happens before the workspace ID is read, preventing the flags from being
+// consumed as the workspace ID.
 func herdrWorktreeSandboxParseArgs(args []string) (rest []string, conditional bool, auto bool, nested bool) {
 	for len(args) > 0 {
 		switch args[0] {
@@ -4163,44 +3869,42 @@ func herdrWorktreeSandboxParseArgs(args []string) (rest []string, conditional bo
 	return args, conditional, auto, nested
 }
 
-/**
- * herdrWorktreeSandbox orchestrates the worktree-sandbox flow for one herdr workspace.
- *
- * Steps (performed in order):
- *
- *  1. Idempotency: if a binding already exists for workspaceID, return early.
- *
- *  2. Resolve herdr binary path via resolveHerdrBin.
- *
- *  3. List worktrees for workspaceID via herdrListWorktreeForWorkspaceFn.
- *     On error: log and return nil (fail-safe — workspace stays a host shell).
- *
- *  4. Linked-worktree guard: if !info.IsLinkedWorktree, workspace is the main
- *     checkout; return nil (no sandbox created).
- *
- *  5. Conditional source check (only when conditional=true):
- *     a. If SourceWorkspaceID is empty, return nil (ambiguous source).
- *     b. If the source workspace has no nexus3 binding, return nil (source
- *     is not nexus3-managed; worktree workspace stays a host shell).
- *
- *  6. Derive sandbox handle from branch name via herdrWorktreeSandboxHandle.
- *
- *  7. Create sandbox via createFn(ctx, handle, mountSpec).
- *     On error (explicit, conditional==false): return error.
- *     On error (conditional mode): log and return nil (fail-safe).
- *
- *  8. Look up sandbox ID via getFn; write the HerdrSpaceBinding (without GuestPaneID).
- *     Binding is written BEFORE the pane opens so idempotency is safe on crash.
- *     On error: same policy as step 7.
- *
- *  9. Open guest shell pane; if successful, patch GuestPaneID into the stored binding.
- *     On error: always printed. Explicit mode (conditional==false) returns the error
- *     (sandbox+binding exist and are recoverable, but silence is not acceptable).
- *     Conditional mode continues — the binding committed and the workspace is usable.
- *
- *  10. Rename the herdr workspace to the space label via herdrWorkspaceRenameFn.
- *     On error: printed, never returned (best-effort step).
- */
+// herdrWorktreeSandbox orchestrates the worktree-sandbox flow for one herdr workspace.
+//
+// Steps (performed in order):
+//
+//  1. Idempotency: if a binding already exists for workspaceID, return early.
+//
+//  2. Resolve herdr binary path via resolveHerdrBin.
+//
+//  3. List worktrees for workspaceID via herdrListWorktreeForWorkspaceFn.
+//     On error: log and return nil (fail-safe — workspace stays a host shell).
+//
+//  4. Linked-worktree guard: if !info.IsLinkedWorktree, workspace is the main
+//     checkout; return nil (no sandbox created).
+//
+//  5. Conditional source check (only when conditional=true):
+//     a. If SourceWorkspaceID is empty, return nil (ambiguous source).
+//     b. If the source workspace has no nexus3 binding, return nil (source
+//     is not nexus3-managed; worktree workspace stays a host shell).
+//
+//  6. Derive sandbox handle from branch name via herdrWorktreeSandboxHandle.
+//
+//  7. Create sandbox via createFn(ctx, handle, mountSpec).
+//     On error (explicit, conditional==false): return error.
+//     On error (conditional mode): log and return nil (fail-safe).
+//
+//  8. Look up sandbox ID via getFn; write the HerdrSpaceBinding (without GuestPaneID).
+//     Binding is written BEFORE the pane opens so idempotency is safe on crash.
+//     On error: same policy as step 7.
+//
+//  9. Open guest shell pane; if successful, patch GuestPaneID into the stored binding.
+//     On error: always printed. Explicit mode (conditional==false) returns the error
+//     (sandbox+binding exist and are recoverable, but silence is not acceptable).
+//     Conditional mode continues — the binding committed and the workspace is usable.
+//
+//  10. Rename the herdr workspace to the space label via herdrWorkspaceRenameFn.
+//     On error: printed, never returned (best-effort step).
 func herdrWorktreeSandbox(
 	ctx context.Context,
 	workspaceID string,
@@ -4209,32 +3913,28 @@ func herdrWorktreeSandbox(
 	openPane bool,
 	conditional bool,
 	auto bool,
-	/**
-	 * nestedFlag is the operator opt-in from the --nested CLI flag (D-N3N-02).
-	 * The effective nested value is nestedFlag OR sandbox.nested from the
-	 * trusted-ref nexus3.yaml. Either channel alone is sufficient.
-	 */
+	// nestedFlag is the operator opt-in from the --nested CLI flag (D-N3N-02).
+	// The effective nested value is nestedFlag OR sandbox.nested from the
+	// trusted-ref nexus3.yaml. Either channel alone is sufficient.
 	nestedFlag bool,
 	createFn func(context.Context, string, string, string, string, []string, []string, string, domain.EgressPathPolicies, bool) error,
 	getFn func(context.Context, string) (domain.Sandbox, error),
 ) error {
-	/** Step 1: idempotency. */
+	// Step 1: idempotency.
 	if _, err := herdrSpaceResolve(ctx, storeRoot, workspaceID); err == nil {
 		fmt.Fprintf(w, "worktree-sandbox: workspace %s already bound\n", workspaceID)
 		return nil
 	}
 
-	/** Step 2: resolve herdr binary. */
+	// Step 2: resolve herdr binary.
 	herdrBin, err := resolveHerdrBin()
 	if err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: resolve herdr binary: %v\n", err)
 		return nil
 	}
 
-	/**
-	 * Step 3: list worktrees (fail-safe on error). A 2 s context bounds the
-	 * herdr probe so a hung daemon cannot wedge every new pane on the machine.
-	 */
+	// Step 3: list worktrees (fail-safe on error). A 2 s context bounds the
+	// herdr probe so a hung daemon cannot wedge every new pane on the machine.
 	listCtx, listCancel := context.WithTimeout(ctx, herdrWorktreeListTimeout)
 	defer listCancel()
 	info, err := herdrListWorktreeForWorkspaceFn(listCtx, herdrBin, workspaceID)
@@ -4243,26 +3943,24 @@ func herdrWorktreeSandbox(
 		return nil
 	}
 
-	/** Step 4: linked-worktree guard (predicates a+b). */
+	// Step 4: linked-worktree guard (predicates a+b).
 	if !info.IsLinkedWorktree {
 		fmt.Fprintf(w, "worktree-sandbox: workspace %s is main checkout, skipping\n", workspaceID)
 		return nil
 	}
 
-	/**
-	 * Step 5: mode-specific source check.
-	 *
-	 *  auto mode (--auto): repo-level predicate (c). At least one binding's
-	 *  RepoRoot must match the main repo root derived from info.RepoKey. If
-	 *  the repo cannot be identified (RepoKey empty) or no binding matches,
-	 *  fail safe.
-	 *
-	 *  conditional mode (--conditional): legacy SourceWorkspaceID predicate.
-	 *  The source workspace (the main checkout that owns this worktree) must
-	 *  have a nexus3 binding. Kept for backward compatibility.
-	 *
-	 *  explicit mode (neither flag): no source check — always bind.
-	 */
+	// Step 5: mode-specific source check.
+	//
+	//  auto mode (--auto): repo-level predicate (c). At least one binding's
+	//  RepoRoot must match the main repo root derived from info.RepoKey. If
+	//  the repo cannot be identified (RepoKey empty) or no binding matches,
+	//  fail safe.
+	//
+	//  conditional mode (--conditional): legacy SourceWorkspaceID predicate.
+	//  The source workspace (the main checkout that owns this worktree) must
+	//  have a nexus3 binding. Kept for backward compatibility.
+	//
+	//  explicit mode (neither flag): no source check — always bind.
 	switch {
 	case auto:
 		bind, reason := herdrWorktreeAutoBindDecision(
@@ -4286,12 +3984,10 @@ func herdrWorktreeSandbox(
 		}
 	}
 
-	/**
-	 * Step 6: derive handle — "<repoName>/<branchSlug>".
-	 * repoName is derived from info.RepoKey (e.g. "/repo/.git" → "repo").
-	 * Strip a trailing "/.git" or ".git", take the basename, sanitise.
-	 * Falls back to "repo" when RepoKey is empty or the basename is blank.
-	 */
+	// Step 6: derive handle — "<repoName>/<branchSlug>".
+	// repoName is derived from info.RepoKey (e.g. "/repo/.git" → "repo").
+	// Strip a trailing "/.git" or ".git", take the basename, sanitise.
+	// Falls back to "repo" when RepoKey is empty or the basename is blank.
 	repoNameForHandle := "repo"
 	if info.RepoKey != "" {
 		key := strings.TrimSuffix(info.RepoKey, "/.git")
@@ -4303,53 +3999,47 @@ func herdrWorktreeSandbox(
 	handle := herdrWorktreeSandboxHandle(repoNameForHandle, info.Branch)
 	mountSpec := info.Path + ":/workspace"
 
-	/**
-	 * Extra mounts for linked worktrees: mount the main repo's .git dir at its
-	 * host absolute path so the gitdir: pointer in <checkout>/.git resolves
-	 * inside the VM. Without this git fails with "not a git repository".
-	 */
+	// Extra mounts for linked worktrees: mount the main repo's .git dir at its
+	// host absolute path so the gitdir: pointer in <checkout>/.git resolves
+	// inside the VM. Without this git fails with "not a git repository".
 	var extraMounts []string
 	if gitMount := herdrWorktreeGitDirMount(info.Path); gitMount != "" {
 		extraMounts = append(extraMounts, gitMount)
 	}
-	/**
-	 * Mount the main repo's .groundwork dir (gitignored, never tracked) so
-	 * in-guest agents can read motive charters, tickets, and open items.
-	 * Read-write so agents can record evidence into their own ticket files.
-	 */
+	// Mount the main repo's .groundwork dir (gitignored, never tracked) so
+	// in-guest agents can read motive charters, tickets, and open items.
+	// Read-write so agents can record evidence into their own ticket files.
 	if gwMount := herdrWorktreeGroundworkMount(info.Path); gwMount != "" {
 		extraMounts = append(extraMounts, gwMount)
 	}
 
-	/**
-	 * Step 6.1: per-handle create-intent lock.
-	 *
-	 * Two concurrent callers for the same worktree workspace both pass the
-	 * unlocked step-1 idempotency check before either writes a binding.  A
-	 * second create succeeds because the sandbox store does NOT enforce handle
-	 * uniqueness — producing an orphaned VM that holds memory with no reference.
-	 *
-	 * Fix: serialise on a per-handle flock.  Only callers racing for the SAME
-	 * handle contend; different handles use different lock files and never block
-	 * each other.  herdr-space-bindings.lock (acquired briefly inside
-	 * HerdrSpacePut) is a separate file, so no deadlock is possible.
-	 *
-	 * Protocol:
-	 *   winner — acquires lock, re-checks (not bound), runs create, writes
-	 *            binding, opens pane, releases lock.
-	 *   loser  — blocks on Exclusive, acquires after winner releases, re-checks
-	 *            (bound), logs and returns nil → pane gets a host shell.
-	 *            The workspace is already mapped to the sandbox via the binding.
-	 *
-	 * Fail-open in auto/conditional mode: a lock error logs and returns nil so
-	 * the pane falls back to a host shell (a deadlock here would freeze every
-	 * new pane on the machine, since this binary is herdr's default_shell). In
-	 * explicit mode the operator asked for a sandbox directly, so a lock error
-	 * is a real failure and must surface.
-	 *
-	 * failSafe controls error-handling mode for the lock block and steps 6.5/7.
-	 * Explicit mode (neither flag) returns errors; auto/conditional is fail-safe.
-	 */
+	// Step 6.1: per-handle create-intent lock.
+	//
+	// Two concurrent callers for the same worktree workspace both pass the
+	// unlocked step-1 idempotency check before either writes a binding.  A
+	// second create succeeds because the sandbox store does NOT enforce handle
+	// uniqueness — producing an orphaned VM that holds memory with no reference.
+	//
+	// Fix: serialise on a per-handle flock.  Only callers racing for the SAME
+	// handle contend; different handles use different lock files and never block
+	// each other.  herdr-space-bindings.lock (acquired briefly inside
+	// HerdrSpacePut) is a separate file, so no deadlock is possible.
+	//
+	// Protocol:
+	//   winner — acquires lock, re-checks (not bound), runs create, writes
+	//            binding, opens pane, releases lock.
+	//   loser  — blocks on Exclusive, acquires after winner releases, re-checks
+	//            (bound), logs and returns nil → pane gets a host shell.
+	//            The workspace is already mapped to the sandbox via the binding.
+	//
+	// Fail-open in auto/conditional mode: a lock error logs and returns nil so
+	// the pane falls back to a host shell (a deadlock here would freeze every
+	// new pane on the machine, since this binary is herdr's default_shell). In
+	// explicit mode the operator asked for a sandbox directly, so a lock error
+	// is a real failure and must surface.
+	//
+	// failSafe controls error-handling mode for the lock block and steps 6.5/7.
+	// Explicit mode (neither flag) returns errors; auto/conditional is fail-safe.
 	failSafe := conditional || auto
 	{
 		lk, lkErr := store.OpenLock(herdrWorktreeCreateLockPath(storeRoot, handle))
@@ -4371,25 +4061,21 @@ func herdrWorktreeSandbox(
 			return nil
 		}
 		defer lk.Unlock() //nolint:errcheck
-		/**
-		 * Re-check by handle under the lock — closes the TOCTOU window between
-		 * step 1 (keyed on workspaceID) and step 7 (sandbox create).  Two
-		 * different workspace IDs that resolve to the same handle must converge
-		 * on one sandbox; the loser sees the binding the winner wrote. Reuse is
-		 * idempotent success in every mode, so this returns nil unconditionally.
-		 */
+		// Re-check by handle under the lock — closes the TOCTOU window between
+		// step 1 (keyed on workspaceID) and step 7 (sandbox create).  Two
+		// different workspace IDs that resolve to the same handle must converge
+		// on one sandbox; the loser sees the binding the winner wrote. Reuse is
+		// idempotent success in every mode, so this returns nil unconditionally.
 		if _, boundErr := HerdrSpaceGetByHandle(ctx, storeRoot, handle); boundErr == nil {
 			fmt.Fprintf(w, "worktree-sandbox: handle %s already bound (concurrent create race), reusing existing sandbox\n", handle)
 			return nil
 		}
 	}
 
-	/**
-	 * Step 6.5: resolve the bootable image for this worktree checkout.
-	 * config.Load walks from info.Path up to the .git boundary; an absent
-	 * nexus3.yaml is not an error. A malformed nexus3.yaml IS an error — the
-	 * operator must fix it before the sandbox can be created.
-	 */
+	// Step 6.5: resolve the bootable image for this worktree checkout.
+	// config.Load walks from info.Path up to the .git boundary; an absent
+	// nexus3.yaml is not an error. A malformed nexus3.yaml IS an error — the
+	// operator must fix it before the sandbox can be created.
 	imageFlag, imageVal, imgErr := herdrResolveWorktreeImage(info.Path)
 	if imgErr != nil {
 		fmt.Fprintf(w, "worktree-sandbox: resolve image: %v\n", imgErr)
@@ -4399,20 +4085,16 @@ func herdrWorktreeSandbox(
 		return nil
 	}
 
-	/**
-	 * Step 6.6: read egress config from operator-controlled trusted ref (Finding A /
-	 * D-PDE-17). Never read from the worktree branch or working tree bytes.
-	 * Fail closed: no trusted ref or absent nexus3.yaml → no auto-grant.
-	 */
+	// Step 6.6: read egress config from operator-controlled trusted ref (Finding A /
+	// D-PDE-17). Never read from the worktree branch or working tree bytes.
+	// Fail closed: no trusted ref or absent nexus3.yaml → no auto-grant.
 	var (
 		egressSecrets      []string
 		egressAllowedRepo  string
 		egressPathPolicies domain.EgressPathPolicies
-		/**
-		 * nestedCfg is the config channel opt-in (D-N3N-02). Read ONLY from the
-		 * trusted ref — never from the worktree branch — so no branch can grant
-		 * itself /dev/kvm. Effective nested = nestedFlag || nestedCfg.
-		 */
+		// nestedCfg is the config channel opt-in (D-N3N-02). Read ONLY from the
+		// trusted ref — never from the worktree branch — so no branch can grant
+		// itself /dev/kvm. Effective nested = nestedFlag || nestedCfg.
 		nestedCfg bool
 	)
 	commonGitDir := worktreeCommonGitDir(info.Path)
@@ -4445,49 +4127,39 @@ func herdrWorktreeSandbox(
 			nestedCfg = parsedCfg.Sandbox.Nested
 		}
 	}
-	/**
-	 * Step 7: create sandbox. A 240 s context covers image pull, ext4 setup,
-	 * and VM boot on typical hardware. Explicit mode failures are real errors;
-	 * auto/conditional mode is fail-safe (workspace stays a host shell).
-	 * egressPathPolicies is conveyed to the subprocess via --egress-policy-json
-	 * so the generic policy reaches MITM enforcement (D-PDE-16 worktree gap fix).
-	 */
+	// Step 7: create sandbox. A 240 s context covers image pull, ext4 setup,
+	// and VM boot on typical hardware. Explicit mode failures are real errors;
+	// auto/conditional mode is fail-safe (workspace stays a host shell).
+	// egressPathPolicies is conveyed to the subprocess via --egress-policy-json
+	// so the generic policy reaches MITM enforcement (D-PDE-16 worktree gap fix).
 	createCtx, createCancel := context.WithTimeout(ctx, herdrWorktreeCreateTimeout)
 	defer createCancel()
-	/**
-	 * sb is declared here so the reconcile path (step 7 error + getFn success)
-	 * and the normal path (step 7 success + step 8 getFn) both feed the shared
-	 * binding-write block below without re-declaring.
-	 */
+	// sb is declared here so the reconcile path (step 7 error + getFn success)
+	// and the normal path (step 7 success + step 8 getFn) both feed the shared
+	// binding-write block below without re-declaring.
 	var sb domain.Sandbox
 	if createErr := createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts, egressSecrets, egressAllowedRepo, egressPathPolicies, nestedFlag || nestedCfg); createErr != nil {
-		/**
-		 * Create failed. Probe getFn: a prior run may have committed the sandbox
-		 * store record (e.g. crashed after store.Create but before HerdrSpacePut),
-		 * leaving an orphaned sandbox with no binding. If getFn confirms the
-		 * sandbox exists and it is adoptable, reconcile it. If getFn also fails,
-		 * this is a genuine create failure.
-		 */
+		// Create failed. Probe getFn: a prior run may have committed the sandbox
+		// store record (e.g. crashed after store.Create but before HerdrSpacePut),
+		// leaving an orphaned sandbox with no binding. If getFn confirms the
+		// sandbox exists and it is adoptable, reconcile it. If getFn also fails,
+		// this is a genuine create failure.
 		var reconcileErr error
 		sb, reconcileErr = getFn(ctx, handle)
 		if reconcileErr != nil {
-			/**
-			 * Sandbox does not exist in the store — genuine create failure.
-			 * MUTATION PROOF: change `if !failSafe { return fmt.Errorf(...) }` to
-			 * always return nil → TestHerdrWorktreeSandbox_explicitMode_createError_returnsError gets nil → RED.
-			 */
+			// Sandbox does not exist in the store — genuine create failure.
+			// MUTATION PROOF: change `if !failSafe { return fmt.Errorf(...) }` to
+			// always return nil → TestHerdrWorktreeSandbox_explicitMode_createError_returnsError gets nil → RED.
 			fmt.Fprintf(w, "worktree-sandbox: sandbox create: %v\n", createErr)
 			if !failSafe {
 				return fmt.Errorf("worktree-sandbox: sandbox create: %w", createErr)
 			}
 			return nil
 		}
-		/**
-		 * Correction 1: verify the /workspace LiveMount points at this worktree.
-		 * A handle collision (same repo basename + same branch slug from a different
-		 * checkout, e.g. a stale record after the worktree was deleted and recreated)
-		 * must not silently adopt a sandbox whose /workspace points elsewhere.
-		 */
+		// Correction 1: verify the /workspace LiveMount points at this worktree.
+		// A handle collision (same repo basename + same branch slug from a different
+		// checkout, e.g. a stale record after the worktree was deleted and recreated)
+		// must not silently adopt a sandbox whose /workspace points elsewhere.
 		var workspaceMount *domain.LiveMount
 		for i := range sb.LiveMounts {
 			if sb.LiveMounts[i].GuestPath == "/workspace" {
@@ -4509,12 +4181,10 @@ func herdrWorktreeSandbox(
 			}
 			return nil
 		}
-		/**
-		 * Correction 4: refuse to adopt a sandbox that is not in a usable state.
-		 * A Created-state record left by a killed create subprocess is not safe
-		 * to adopt — the VM never finished booting. RemovalMarker means the
-		 * sandbox is being destroyed.
-		 */
+		// Correction 4: refuse to adopt a sandbox that is not in a usable state.
+		// A Created-state record left by a killed create subprocess is not safe
+		// to adopt — the VM never finished booting. RemovalMarker means the
+		// sandbox is being destroyed.
 		if sb.RemovalMarker || (sb.State != domain.Running && sb.State != domain.Stopped) {
 			fmt.Fprintf(w, "worktree-sandbox: sandbox %s not adoptable: state=%s removal=%v\n", handle, sb.State, sb.RemovalMarker)
 			if !failSafe {
@@ -4524,15 +4194,13 @@ func herdrWorktreeSandbox(
 		}
 		fmt.Fprintf(w, "worktree-sandbox: sandbox %s already exists (binding absent) — reconciling\n", handle)
 	} else {
-		/**
-		 * Step 8a: look up sandbox ID after successful create.
-		 * The binding is written BEFORE opening the pane so the idempotency check
-		 * on the next run sees it even if the process dies during pane open.
-		 * MUTATION PROOF: keep the error-path return but discard sb on success:
-		 *   var probe domain.Sandbox; probe, getFnErr = getFn(ctx, handle); _ = probe
-		 * → sb stays zero → binding.SandboxID == "" → RED
-		 * (TestHerdrWorktreeSandbox_happyPath_bindingFields: SandboxID = ""; want "<id>").
-		 */
+		// Step 8a: look up sandbox ID after successful create.
+		// The binding is written BEFORE opening the pane so the idempotency check
+		// on the next run sees it even if the process dies during pane open.
+		// MUTATION PROOF: keep the error-path return but discard sb on success:
+		//   var probe domain.Sandbox; probe, getFnErr = getFn(ctx, handle); _ = probe
+		// → sb stays zero → binding.SandboxID == "" → RED
+		// (TestHerdrWorktreeSandbox_happyPath_bindingFields: SandboxID = ""; want "<id>").
 		var getFnErr error
 		sb, getFnErr = getFn(ctx, handle)
 		if getFnErr != nil {
@@ -4544,10 +4212,8 @@ func herdrWorktreeSandbox(
 		}
 	}
 	label := "nexus3:" + handle
-	/**
-	 * Derive the main repo root from info.RepoKey (e.g. "/repo/.git" → "/repo").
-	 * Empty RepoKey → empty RepoRoot → NO MATCH in the predicate (fail-open).
-	 */
+	// Derive the main repo root from info.RepoKey (e.g. "/repo/.git" → "/repo").
+	// Empty RepoKey → empty RepoRoot → NO MATCH in the predicate (fail-open).
 	repoRoot := ""
 	if info.RepoKey != "" {
 		repoRoot = filepath.Dir(filepath.Clean(info.RepoKey))
@@ -4568,24 +4234,20 @@ func herdrWorktreeSandbox(
 		return nil
 	}
 
-	/**
-	 * Opportunistic backfill: heal sibling bindings whose RepoRoot is still
-	 * empty. Best-effort — errors are logged but never returned; the binding
-	 * we just wrote is already correct and must not be blocked on this.
-	 * NOTE: must NOT be called from the guest-shell dispatcher (herdrDefaultShellCore)
-	 * hot path; here in herdrWorktreeSandbox it is safe because herdr calls
-	 * are already made in this flow.
-	 */
+	// Opportunistic backfill: heal sibling bindings whose RepoRoot is still
+	// empty. Best-effort — errors are logged but never returned; the binding
+	// we just wrote is already correct and must not be blocked on this.
+	// NOTE: must NOT be called from the guest-shell dispatcher (herdrDefaultShellCore)
+	// hot path; here in herdrWorktreeSandbox it is safe because herdr calls
+	// are already made in this flow.
 	if _, bfErr := HerdrBackfillRepoRoot(ctx, storeRoot, herdrBin, io.Discard); bfErr != nil {
 		slog.Warn("worktree-sandbox: backfill-repo-root", "err", bfErr)
 	}
 
-	/**
-	 * Step 9: open guest shell pane and patch GuestPaneID into the stored binding.
-	 * Error policy: sandbox+binding already exist and are recoverable on the next run,
-	 * so pane failure is always printed. Explicit mode also returns it (non-zero exit);
-	 * auto/conditional mode continues because the binding committed and the workspace is usable.
-	 */
+	// Step 9: open guest shell pane and patch GuestPaneID into the stored binding.
+	// Error policy: sandbox+binding already exist and are recoverable on the next run,
+	// so pane failure is always printed. Explicit mode also returns it (non-zero exit);
+	// auto/conditional mode continues because the binding committed and the workspace is usable.
 	if openPane {
 		paneID, paneErr := herdrOpenGuestShellPane(ctx, herdrBin, handle, workspaceID, "", false)
 		if paneID != "" {
@@ -4593,27 +4255,25 @@ func herdrWorktreeSandbox(
 			_ = HerdrSpacePut(ctx, storeRoot, binding) // best-effort patch
 		}
 		if paneErr != nil {
-			/**
-			 * A pane failure is REPORTED IN EVERY MODE, auto/conditional
-			 * included. This used to return nil under failSafe, and the
-			 * consequence was the exact shape this slice exists to close: a live
-			 * VM, a committed binding, no guest pane, and the only trace of it a
-			 * line in `herdr plugin log list` —
-			 *
-			 *   exit 1  workspace_not_found
-			 *   worktree-sandbox: open guest pane: space-create: open shell pane: exit status 1
-			 *
-			 * — which is nowhere an operator looks. The provisioning now runs
-			 * inside a pane (plugins/herdr/bin/pane.sh, worktree-sandbox case)
-			 * that blocks on Enter for a non-zero exit, so returning the error
-			 * is what keeps the failure ON SCREEN. Returning nil here closes the
-			 * pane and buries it again.
-			 *
-			 * This is safe for the guest-shell dispatcher, the one caller that
-			 * used to depend on the nil: herdrDefaultShellAutoCreate now re-reads
-			 * the binding regardless of exit status, because the binding is
-			 * written BEFORE this step and a missing pane does not invalidate it.
-			 */
+			// A pane failure is REPORTED IN EVERY MODE, auto/conditional
+			// included. This used to return nil under failSafe, and the
+			// consequence was the exact shape this slice exists to close: a live
+			// VM, a committed binding, no guest pane, and the only trace of it a
+			// line in `herdr plugin log list` —
+			//
+			//   exit 1  workspace_not_found
+			//   worktree-sandbox: open guest pane: space-create: open shell pane: exit status 1
+			//
+			// — which is nowhere an operator looks. The provisioning now runs
+			// inside a pane (plugins/herdr/bin/pane.sh, worktree-sandbox case)
+			// that blocks on Enter for a non-zero exit, so returning the error
+			// is what keeps the failure ON SCREEN. Returning nil here closes the
+			// pane and buries it again.
+			//
+			// This is safe for the guest-shell dispatcher, the one caller that
+			// used to depend on the nil: herdrDefaultShellAutoCreate now re-reads
+			// the binding regardless of exit status, because the binding is
+			// written BEFORE this step and a missing pane does not invalidate it.
 			fmt.Fprintf(w, "worktree-sandbox: open guest pane: %v\n", paneErr)
 			fmt.Fprintf(w, "worktree-sandbox: the sandbox %s and its binding are committed and reusable; "+
 				"only the pane failed. Retry with: nexus3 herdr space-open-pane %s\n", handle, workspaceID)
@@ -4621,7 +4281,7 @@ func herdrWorktreeSandbox(
 		}
 	}
 
-	/** Step 10: rename workspace to space label. */
+	// Step 10: rename workspace to space label.
 	if err := herdrWorkspaceRenameFn(ctx, herdrBin, workspaceID, label); err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: rename workspace: %v\n", err)
 	}
@@ -4630,12 +4290,10 @@ func herdrWorktreeSandbox(
 	return nil
 }
 
-/**
- * herdrPluginLocalAgentStartup is the startup hook that herdr >=0.9 runs on
- * the laptop when herdr starts. The body lives in internal/clientagent so it
- * also builds into cmd/nexus3-client for macOS, where this package (and the
- * full nexus3 CLI) does not compile.
- */
+// herdrPluginLocalAgentStartup is the startup hook that herdr >=0.9 runs on
+// the laptop when herdr starts. The body lives in internal/clientagent so it
+// also builds into cmd/nexus3-client for macOS, where this package (and the
+// full nexus3 CLI) does not compile.
 func herdrPluginLocalAgentStartup(ctx context.Context) error {
 	return clientagent.RunStartup(ctx)
 }

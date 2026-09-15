@@ -176,7 +176,7 @@ func TestAuthLogin_UnknownAgent_Error(t *testing.T) {
 // ── AC-1, AC-2, AC-5, AC-6: cursor verify-and-report path ───────────────────
 
 // TestAuthLoginCursor_WritesNothing verifies cursor auth doesn't write files.
-/** AC-1, AC-2, AC-6 (RED probe). */
+// AC-1, AC-2, AC-6 (RED probe).
 func TestAuthLoginCursor_WritesNothing(t *testing.T) {
 	claudeStore := filepath.Join(t.TempDir(), "creds.json")
 	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", claudeStore)
@@ -314,7 +314,7 @@ func TestAuthLoginCursor_NoTokenInOutput(t *testing.T) {
 // ── AC-5 S20: profile-driven import dispatch — mutation proof ─────────────────
 
 // TestAuthLoginImport_ProfileDriven_MutationProof verifies dispatch through registry ImportFn.
-/** S20-AC-5, S20-AC-7: mutation probe for hardcoded importFn. */
+// S20-AC-5, S20-AC-7: mutation probe for hardcoded importFn.
 func TestAuthLoginImport_ProfileDriven_MutationProof(t *testing.T) {
 	const syntheticFormat cred.CredentialFormat = "s20-oauth-synthetic-v1"
 	const sentinelClientID = "SENTINEL-CLIENT-ID-MUST-APPEAR-UNDER-PROFILE-DISPATCH"

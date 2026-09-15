@@ -1,8 +1,8 @@
 package cli
 
-/** herdr_negative_scope_test.go — mechanical guard that the herdr ↔ nexus3
-integration stays within agreed scope. Assertions are intentionally brittle:
-scope expansion silently triggers failure and forces review. */
+// herdr_negative_scope_test.go — mechanical guard that the herdr ↔ nexus3
+// integration stays within agreed scope. Assertions are intentionally brittle:
+// scope expansion silently triggers failure and forces review.
 
 import (
 	"os"
@@ -43,12 +43,12 @@ func TestNegativeScope_HerdrPluginTomlTablesOnly(t *testing.T) {
 	}
 	content := string(data)
 
-	/** Permitted tables: [[build]], [[panes]], [[actions]], [[events]], [[startup]].
-	[[events]] added D-HSH-20 (registry uses dots not underscores: worktree.removed).
-	Hook stops removed worktree leaking sandbox. [[startup]] from port-forward motive:
-	herdr ≥0.9.0 runs command on laptop to manage host-side port forwards. Guard stays
-	narrow: new tables require explicit decision. Event NAMES validated separately by
-	TestHerdrPluginManifest_EventNamesValid. */
+	// Permitted tables: [[build]], [[panes]], [[actions]], [[events]], [[startup]].
+	// [[events]] added D-HSH-20 (registry uses dots not underscores: worktree.removed).
+	// Hook stops removed worktree leaking sandbox. [[startup]] from port-forward motive:
+	// herdr ≥0.9.0 runs command on laptop to manage host-side port forwards. Guard stays
+	// narrow: new tables require explicit decision. Event NAMES validated separately by
+	// TestHerdrPluginManifest_EventNamesValid.
 	permitted := []string{"[[build]]", "[[panes]]", "[[actions]]", "[[events]]", "[[startup]]"}
 
 	for _, line := range strings.Split(content, "\n") {

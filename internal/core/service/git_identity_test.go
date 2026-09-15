@@ -234,73 +234,71 @@ func TestSeedGitIdentity_MissingHostConfig_FailsCreate(t *testing.T) {
 }
 
 // ── N-AC1: The standing security regression test ──────────────────────────────
-/**
- *
- * TestN_AC1_NoGitHubEgressPermitted is the durable rail for D-PD-22
- * (revises D-PD-01, extended by D-PD-33). It covers the AGENT sandbox only.
- *
- * Security property (CREDENTIAL INVARIANT — D-PD-22): an agent sandbox never
- * carries a real GitHub credential. This is enforced by three independent guards,
- * each of which must hold independently:
- *
- *  1. No auto-append (cmd_sandbox.go D-PDE-02): the builtin `gh auth token`
- *     bind is never added automatically; only explicit --secret GH_TOKEN@...
- *     flags introduce a GitHub credential, and those require --repo (D-PD-36).
- *  2. ErrUnboundGitHubSecret (create.go): rejects any GitHub secret bind that
- *     lacks an AllowedRepo scope. Covers all callers (CLI, orca, herdr, MCP).
- *  3. Agent seeding (seed.go prepareAgentCredPayload): mints placeholders from
- *     AgentEgressHosts(profile), NOT from AllowedHosts. So even when a project's
- *     nexus3.yaml egress.allow includes github.com, the agent seed payload
- *     contains no GitHub credential variable.
- *
- * Operator decision: project config may add github.com (or any host) to
- * AllowedHosts via [egress].allow. This is safe because the credential guard
- * (guard 3 above) operates independently of the host list: the agent seeding
- * path is keyed on the profile, not the envelope. Sub-check (e) verifies this.
- *
- * D-PD-33: an empty AllowedHosts is not an implicit AllowAll sentinel.
- * WireClaudeEgress must never set OpenEgress=true.
- *
- * This test has FIVE sub-checks (a)–(e) for the standard agent path, plus a
- * cross-reference note about the orca-path scoped rail:
- *
- *	(a) AgentEgressHosts (the claude-code profile's own host list) contains no
- *	    GitHub hostname. The profile is the source for the agent seed payload;
- *	    a GitHub host here would produce a GitHub credential var in every agent
- *	    sandbox payload regardless of AllowedHosts.
- *
- *	(b) WireClaudeEgress (the test-wiring helper; not called on the sandbox-create
- *	    path) does not insert any GitHub hostname into AllowedHosts when called on
- *	    a zero opts value. This checks the profile-driven baseline only; project
- *	    config may legitimately extend AllowedHosts with github.com at runtime.
- *
- *	(c) The credential env payload emitted by SeedGuestAgent (the agent-path seeder,
- *	    which uses AgentEgressHosts internally) does not contain any GITHUB-pattern
- *	    variable name. This is the RUNTIME check: guard 3 above.
- *
- *	    LIVE-VM PROOF REQUIRED for the push-fail itself: this sub-check asserts the
- *	    CREDENTIAL INVARIANT (agent seed never contains a GitHub var) that makes an
- *	    in-agent `git push` fail closed when github.com is absent from the profile.
- *	    The actual push-fail requires a booted VM; it is covered by X0-AC3.
- *
- *	(d) WireClaudeEgress must not set OpenEgress=true. D-PD-33: OpenEgress
- *	    disarms the egress ACL for unrestricted outbound access. Agent sandboxes
- *	    must never have open egress; only the human create path sets OpenEgress=true.
- *
- *	(e) CREDENTIAL INVARIANT with github.com in AllowedHosts: even when github.com
- *	    is explicitly listed as an AllowedHost (as it would be via [egress].allow in
- *	    nexus3.yaml), the agent seed payload must contain no GitHub credential var.
- *	    The agent seeder (prepareAgentCredPayload) uses AgentEgressHosts(profile),
- *	    not AllowedHosts, so the two lists are independently controlled.
- *
- *	(f) ORCA PATH is an AGENT path (D-PD-23). gitHostsFromURL must not return
- *	    GitHub hosts. Asserted by cli.TestN_AC1_OrcaPathGitHubInAllowedHosts.
- *	    Both test files must stay — deleting either breaks the two-sided rail.
- *
- * Failure message: each assertion prints WHAT security property broke and
- * WHY it matters, so a future engineer who trips it understands the stakes
- * rather than deleting the test.
- */
+//
+// TestN_AC1_NoGitHubEgressPermitted is the durable rail for D-PD-22
+// (revises D-PD-01, extended by D-PD-33). It covers the AGENT sandbox only.
+//
+// Security property (CREDENTIAL INVARIANT — D-PD-22): an agent sandbox never
+// carries a real GitHub credential. This is enforced by three independent guards,
+// each of which must hold independently:
+//
+//  1. No auto-append (cmd_sandbox.go D-PDE-02): the builtin `gh auth token`
+//     bind is never added automatically; only explicit --secret GH_TOKEN@...
+//     flags introduce a GitHub credential, and those require --repo (D-PD-36).
+//  2. ErrUnboundGitHubSecret (create.go): rejects any GitHub secret bind that
+//     lacks an AllowedRepo scope. Covers all callers (CLI, orca, herdr, MCP).
+//  3. Agent seeding (seed.go prepareAgentCredPayload): mints placeholders from
+//     AgentEgressHosts(profile), NOT from AllowedHosts. So even when a project's
+//     nexus3.yaml egress.allow includes github.com, the agent seed payload
+//     contains no GitHub credential variable.
+//
+// Operator decision: project config may add github.com (or any host) to
+// AllowedHosts via [egress].allow. This is safe because the credential guard
+// (guard 3 above) operates independently of the host list: the agent seeding
+// path is keyed on the profile, not the envelope. Sub-check (e) verifies this.
+//
+// D-PD-33: an empty AllowedHosts is not an implicit AllowAll sentinel.
+// WireClaudeEgress must never set OpenEgress=true.
+//
+// This test has FIVE sub-checks (a)–(e) for the standard agent path, plus a
+// cross-reference note about the orca-path scoped rail:
+//
+//	(a) AgentEgressHosts (the claude-code profile's own host list) contains no
+//	    GitHub hostname. The profile is the source for the agent seed payload;
+//	    a GitHub host here would produce a GitHub credential var in every agent
+//	    sandbox payload regardless of AllowedHosts.
+//
+//	(b) WireClaudeEgress (the test-wiring helper; not called on the sandbox-create
+//	    path) does not insert any GitHub hostname into AllowedHosts when called on
+//	    a zero opts value. This checks the profile-driven baseline only; project
+//	    config may legitimately extend AllowedHosts with github.com at runtime.
+//
+//	(c) The credential env payload emitted by SeedGuestAgent (the agent-path seeder,
+//	    which uses AgentEgressHosts internally) does not contain any GITHUB-pattern
+//	    variable name. This is the RUNTIME check: guard 3 above.
+//
+//	    LIVE-VM PROOF REQUIRED for the push-fail itself: this sub-check asserts the
+//	    CREDENTIAL INVARIANT (agent seed never contains a GitHub var) that makes an
+//	    in-agent `git push` fail closed when github.com is absent from the profile.
+//	    The actual push-fail requires a booted VM; it is covered by X0-AC3.
+//
+//	(d) WireClaudeEgress must not set OpenEgress=true. D-PD-33: OpenEgress
+//	    disarms the egress ACL for unrestricted outbound access. Agent sandboxes
+//	    must never have open egress; only the human create path sets OpenEgress=true.
+//
+//	(e) CREDENTIAL INVARIANT with github.com in AllowedHosts: even when github.com
+//	    is explicitly listed as an AllowedHost (as it would be via [egress].allow in
+//	    nexus3.yaml), the agent seed payload must contain no GitHub credential var.
+//	    The agent seeder (prepareAgentCredPayload) uses AgentEgressHosts(profile),
+//	    not AllowedHosts, so the two lists are independently controlled.
+//
+//	(f) ORCA PATH is an AGENT path (D-PD-23). gitHostsFromURL must not return
+//	    GitHub hosts. Asserted by cli.TestN_AC1_OrcaPathGitHubInAllowedHosts.
+//	    Both test files must stay — deleting either breaks the two-sided rail.
+//
+// Failure message: each assertion prints WHAT security property broke and
+// WHY it matters, so a future engineer who trips it understands the stakes
+// rather than deleting the test.
 func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 	t.Run("(a) AgentEgressHosts contains no GitHub hostname", func(t *testing.T) {
 		hosts := AgentEgressHosts(cred.ClaudeCodeProfile)
@@ -323,7 +321,7 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 
 	t.Run("(b) WireClaudeEgress does not wire github.com into AllowedHosts", func(t *testing.T) {
 		var opts CreateAndBootOptions
-		/** WireClaudeEgress accepts nil broker/seeder/src; it only sets slice fields. */
+		// WireClaudeEgress accepts nil broker/seeder/src; it only sets slice fields.
 		WireClaudeEgress(&opts, nil, nil, nil)
 		for _, h := range opts.AllowedHosts {
 			if isGitHubHost(h) {
@@ -344,13 +342,11 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 	})
 
 	t.Run("(d) WireClaudeEgress does not set OpenEgress — D-PD-33", func(t *testing.T) {
-		/**
-		 * D-PD-33: OpenEgress=true disarms the egress ACL so the sandbox
-		 * reaches any host without restriction (docker pulls, github.com, etc.).
-		 * Agent sandboxes must NEVER have OpenEgress=true; only the human create
-		 * path (sandbox create) sets it. WireClaudeEgress is the standard wiring
-		 * helper for agent sandboxes — it must not set OpenEgress.
-		 */
+		// D-PD-33: OpenEgress=true disarms the egress ACL so the sandbox
+		// reaches any host without restriction (docker pulls, github.com, etc.).
+		// Agent sandboxes must NEVER have OpenEgress=true; only the human create
+		// path (sandbox create) sets it. WireClaudeEgress is the standard wiring
+		// helper for agent sandboxes — it must not set OpenEgress.
 		var opts CreateAndBootOptions
 		WireClaudeEgress(&opts, nil, nil, nil)
 		if opts.OpenEgress {
@@ -367,26 +363,24 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 	})
 
 	t.Run("(c) credential env payload contains no GITHUB variable — credential invariant", func(t *testing.T) {
-		/**
-		 * This sub-check has two parts:
-		 *
-		 * Part 1: verify that the running product code (AgentEgressHosts) does not
-		 * contain any GitHub host that would lead to a GITHUB placeholder var.
-		 *
-		 * Part 2: capture the SeedGuestAgent payload and confirm no GITHUB-pattern
-		 * var appears. SeedGuestAgent uses AgentEgressHosts(profile) internally;
-		 * it never reads AllowedHosts.
-		 *
-		 * Mutation guard: change prepareAgentCredPayload to use hosts that include
-		 * "github.com" → Part 2 fails RED (GITHUB appears in the payload).
-		 *
-		 * LIVE-VM PROOF REQUIRED: the actual in-guest `git push` failure cannot be
-		 * verified in-process. This test covers the CREDENTIAL INVARIANT only.
-		 * An in-guest `git push` to github.com will fail closed because the agent
-		 * seed payload carries no GitHub credential var. X0-AC3 provides the live proof.
-		 */
+		// This sub-check has two parts:
+		//
+		// Part 1: verify that the running product code (AgentEgressHosts) does not
+		// contain any GitHub host that would lead to a GITHUB placeholder var.
+		//
+		// Part 2: capture the SeedGuestAgent payload and confirm no GITHUB-pattern
+		// var appears. SeedGuestAgent uses AgentEgressHosts(profile) internally;
+		// it never reads AllowedHosts.
+		//
+		// Mutation guard: change prepareAgentCredPayload to use hosts that include
+		// "github.com" → Part 2 fails RED (GITHUB appears in the payload).
+		//
+		// LIVE-VM PROOF REQUIRED: the actual in-guest `git push` failure cannot be
+		// verified in-process. This test covers the CREDENTIAL INVARIANT only.
+		// An in-guest `git push` to github.com will fail closed because the agent
+		// seed payload carries no GitHub credential var. X0-AC3 provides the live proof.
 
-		/** Part 1: profile invariant — no GitHub host in AgentEgressHosts. */
+		// Part 1: profile invariant — no GitHub host in AgentEgressHosts.
 		for _, h := range AgentEgressHosts(cred.ClaudeCodeProfile) {
 			if isGitHubHost(h) {
 				t.Errorf(
@@ -400,20 +394,18 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 			}
 		}
 
-		/**
-		 * Part 2: payload check — no GITHUB-pattern credential variable.
-		 *
-		 * Operator decision note: project [egress].allow may include github.com
-		 * (by operator choice). The CREDENTIAL GUARD is independent of the host
-		 * ACL: prepareAgentCredPayload uses AgentEgressHosts(profile), NOT the
-		 * sandbox AllowedHosts. AllowedHosts controls which hosts the egress ACL
-		 * passes; the credential list controls which hosts receive a MITM
-		 * placeholder token. These two lists are independently controlled.
-		 * Adding github.com to AllowedHosts (e.g. via nexus3.yaml egress.allow)
-		 * must NOT produce a GitHub token in the agent payload. There is no
-		 * code path where AllowedHosts flows into SeedGuestAgent — the function
-		 * only takes the seeder callback.
-		 */
+		// Part 2: payload check — no GITHUB-pattern credential variable.
+		//
+		// Operator decision note: project [egress].allow may include github.com
+		// (by operator choice). The CREDENTIAL GUARD is independent of the host
+		// ACL: prepareAgentCredPayload uses AgentEgressHosts(profile), NOT the
+		// sandbox AllowedHosts. AllowedHosts controls which hosts the egress ACL
+		// passes; the credential list controls which hosts receive a MITM
+		// placeholder token. These two lists are independently controlled.
+		// Adding github.com to AllowedHosts (e.g. via nexus3.yaml egress.allow)
+		// must NOT produce a GitHub token in the agent payload. There is no
+		// code path where AllowedHosts flows into SeedGuestAgent — the function
+		// only takes the seeder callback.
 		var captured []byte
 		stubSeeder := GuestSeeder(func(_ context.Context, _ domain.SandboxID, payload []byte) error {
 			captured = payload
@@ -442,12 +434,10 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 	})
 }
 
-/**
- * TestBuildGitconfigPayload_SafeDirectory is a table test for buildGitconfigPayload
- * covering the safe.directory behaviour with zero, one, and several source paths.
- *
- * Mutation guard: delete the [safe] section from buildGitconfigPayload → fails RED.
- */
+// TestBuildGitconfigPayload_SafeDirectory is a table test for buildGitconfigPayload
+// covering the safe.directory behaviour with zero, one, and several source paths.
+//
+// Mutation guard: delete the [safe] section from buildGitconfigPayload → fails RED.
 func TestBuildGitconfigPayload_SafeDirectory(t *testing.T) {
 	const (
 		name   = "Test Op"
@@ -498,13 +488,11 @@ func TestBuildGitconfigPayload_SafeDirectory(t *testing.T) {
 	})
 }
 
-/**
- * TestSourceGuestPaths is the mutation guard for the SourceGuestPaths helper
- * called at the create.go call site. It proves that live-mount guest paths are
- * included in the list, which is the defect that existed before this fix.
- *
- * Mutation guard: remove the liveMounts loop from SourceGuestPaths → fails RED.
- */
+// TestSourceGuestPaths is the mutation guard for the SourceGuestPaths helper
+// called at the create.go call site. It proves that live-mount guest paths are
+// included in the list, which is the defect that existed before this fix.
+//
+// Mutation guard: remove the liveMounts loop from SourceGuestPaths → fails RED.
 func TestSourceGuestPaths(t *testing.T) {
 	t.Run("workspace only", func(t *testing.T) {
 		got := SourceGuestPaths("/workspace/repo", nil)
@@ -554,27 +542,25 @@ func TestSourceGuestPaths(t *testing.T) {
 
 // ── GitHub credential helper ──────────────────────────────────────────────────
 
-/**
- * TestBuildGitconfigPayload_GitHubCredentialHelper asserts the structural
- * properties of the credential helper section written by buildGitconfigPayload:
- *
- *  1. A [credential "https://github.com"] section is present (scoped, not global).
- *  2. A helper = line is present inside that section.
- *  3. No token value, placeholder hex string, or raw credential appears in the
- *     payload — the helper reads $GH_TOKEN from the environment at push time.
- *  4. The existing user.name, user.email, and safe.directory assertions hold
- *     (regression guard).
- *
- * Mutation guards (run mutations manually, restore before committing):
- *
- *	Mutation A: delete fmt.Fprint(&buf, "[credential...]") from buildGitconfigPayload.
- *	            → "credential section present" assertion fails RED.
- *	Mutation B: delete the helper = fmt.Fprint line.
- *	            → "helper line present" assertion fails RED.
- *	Mutation C: replace the raw-string helper value with a hardcoded token like
- *	            "helper = ghp_fakeTOKEN".
- *	            → "no token in payload" assertion fails RED.
- */
+// TestBuildGitconfigPayload_GitHubCredentialHelper asserts the structural
+// properties of the credential helper section written by buildGitconfigPayload:
+//
+//  1. A [credential "https://github.com"] section is present (scoped, not global).
+//  2. A helper = line is present inside that section.
+//  3. No token value, placeholder hex string, or raw credential appears in the
+//     payload — the helper reads $GH_TOKEN from the environment at push time.
+//  4. The existing user.name, user.email, and safe.directory assertions hold
+//     (regression guard).
+//
+// Mutation guards (run mutations manually, restore before committing):
+//
+//	Mutation A: delete fmt.Fprint(&buf, "[credential...]") from buildGitconfigPayload.
+//	            → "credential section present" assertion fails RED.
+//	Mutation B: delete the helper = fmt.Fprint line.
+//	            → "helper line present" assertion fails RED.
+//	Mutation C: replace the raw-string helper value with a hardcoded token like
+//	            "helper = ghp_fakeTOKEN".
+//	            → "no token in payload" assertion fails RED.
 func TestBuildGitconfigPayload_GitHubCredentialHelper(t *testing.T) {
 	const (
 		name   = "Test Op"
@@ -635,7 +621,7 @@ func TestBuildGitconfigPayload_GitHubCredentialHelper(t *testing.T) {
 	}
 }
 
-/** TestGitCredentialHelperScript_DashSyntax verifies POSIX syntax under dash. */
+// TestGitCredentialHelperScript_DashSyntax verifies POSIX syntax under dash.
 func TestGitCredentialHelperScript_DashSyntax(t *testing.T) {
 	shell, err := exec.LookPath("dash")
 	if err != nil {
@@ -657,7 +643,7 @@ func TestGitCredentialHelperScript_DashSyntax(t *testing.T) {
 	}
 }
 
-/** TestGitCredentialHelper_ShellBehavior verifies GH_TOKEN set/unset behavior. */
+// TestGitCredentialHelper_ShellBehavior verifies GH_TOKEN set/unset behavior.
 func TestGitCredentialHelper_ShellBehavior(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
@@ -715,7 +701,7 @@ func TestGitCredentialHelper_ShellBehavior(t *testing.T) {
 	})
 }
 
-/** TestGitCredentialHelper_EndToEnd verifies end-to-end git credential fill. */
+// TestGitCredentialHelper_EndToEnd verifies end-to-end git credential fill.
 func TestGitCredentialHelper_EndToEnd(t *testing.T) {
 	git, err := exec.LookPath("git")
 	if err != nil {
@@ -749,10 +735,8 @@ func TestGitCredentialHelper_EndToEnd(t *testing.T) {
 		cmd.Stdin = strings.NewReader("protocol=https\nhost=github.com\n\n")
 		out, runErr := cmd.Output()
 		if runErr != nil {
-			/**
-			 * Non-zero exit is expected when no credential is produced (unset token path).
-			 * We only fail if the error is unexpected (e.g. shell syntax error).
-			 */
+			// Non-zero exit is expected when no credential is produced (unset token path).
+			// We only fail if the error is unexpected (e.g. shell syntax error).
 			if exitErr, ok := runErr.(*exec.ExitError); ok {
 				stderr := string(exitErr.Stderr)
 				if strings.Contains(stderr, "Syntax error") || strings.Contains(stderr, "syntax error") {
@@ -791,7 +775,7 @@ func TestGitCredentialHelper_EndToEnd(t *testing.T) {
 	})
 }
 
-/** TestBuildGitconfigPayload_GitSSHShim verifies SSH shim routing via nexus3-agent. */
+// TestBuildGitconfigPayload_GitSSHShim verifies SSH shim routing via nexus3-agent.
 func TestBuildGitconfigPayload_GitSSHShim(t *testing.T) {
 	payload := string(buildGitconfigPayload("Ada Lovelace", "ada@example.com", []string{"/work"}, "nexus3/x/abc123"))
 

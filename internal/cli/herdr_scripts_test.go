@@ -286,7 +286,7 @@ func TestPaneScript_ShellCwdLegitimateRoot(t *testing.T) {
 }
 
 // TestABIFileValue pins plugin ABI to 3 (requires herdr ≥0.9.0).
-/** MUTATION-PIN: reverting plugins/herdr/abi to "2" makes this RED. */
+// MUTATION-PIN: reverting plugins/herdr/abi to "2" makes this RED.
 func TestABIFileValue(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "..", "plugins", "herdr", "abi"))
 	if err != nil {

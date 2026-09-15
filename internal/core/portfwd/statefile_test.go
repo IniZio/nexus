@@ -31,8 +31,8 @@ func ports(st State) []uint16 {
 
 // TestWriteSandboxState_TwoSandboxesDoNotClobber pins the merge: a second
 // sandbox writing an empty list must not erase the first sandbox's ports.
-/** Live 2026-09-15: forwards.state alternated between [5173,9749] (wG) and
-[] (wH) on successive ticks with three sandboxes running. */
+// Live 2026-09-15: forwards.state alternated between [5173,9749] (wG) and
+// [] (wH) on successive ticks with three sandboxes running.
 func TestWriteSandboxState_TwoSandboxesDoNotClobber(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()

@@ -210,16 +210,16 @@ func leaseCacheDiskSlot(ctx context.Context, cacheDir, ecosystemKey string, entr
 }
 
 // ── Slot leases (D-HSH-07) ──
-/** A lease is flock(LOCK_EX) on slot's <image>.lock sidecar (motive
-nexus3-builder-supervisor-spawn-race, fixes b4489a5 / 95ba583):
-1. NEVER unlink lease file: flock attached to inode; unlinking lets next opener
-   create fresh inode and "hold" same slot at same time. Release only CLOSEs
-   descriptor; see CacheDiskLease.Release why LOCK_UN is wrong on shared
-   file description.
-2. OWN-PIN BEFORE PROBE: flock belongs to file description not process, so
-   second open(2)+LOCK_NB of file THIS process holds fails EWOULDBLOCK and
-   reads as "another process has it". Every acquisition consults in-process
-   pin registry below first. */
+// A lease is flock(LOCK_EX) on slot's <image>.lock sidecar (motive
+// nexus3-builder-supervisor-spawn-race, fixes b4489a5 / 95ba583):
+// 1. NEVER unlink lease file: flock attached to inode; unlinking lets next opener
+// create fresh inode and "hold" same slot at same time. Release only CLOSEs
+// descriptor; see CacheDiskLease.Release why LOCK_UN is wrong on shared
+// file description.
+// 2. OWN-PIN BEFORE PROBE: flock belongs to file description not process, so
+// second open(2)+LOCK_NB of file THIS process holds fails EWOULDBLOCK and
+// reads as "another process has it". Every acquisition consults in-process
+// pin registry below first.
 
 var ErrCacheDiskSlotBusy = errors.New("cachedisk: slot lease is held")
 

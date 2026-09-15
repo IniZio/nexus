@@ -14,11 +14,9 @@ import (
 
 const guardianRefreshAhead = 40 * time.Minute
 
-/**
-40 minutes is strictly ahead of claude-code's own 30-minute self-refresh so the guardian
-wins the race by construction (claude-code refreshing at the same moment would invalidate
-the guardian's refresh token with zero overlap — see memory: claude-oauth-refresh-revokes-prior-token).
-*/
+// 40 minutes is strictly ahead of claude-code's own 30-minute self-refresh so the guardian
+// wins the race by construction (claude-code refreshing at the same moment would invalidate
+// the guardian's refresh token with zero overlap — see memory: claude-oauth-refresh-revokes-prior-token).
 
 const guardianCheckInterval = time.Minute
 
@@ -29,12 +27,10 @@ type CredGuardian struct {
 	client        *http.Client
 }
 
-/**
-Concurrent refreshes are serialised by an advisory flock(2) on a sidecar lock file
-(<credsPath>.nexus3.lock), with a re-read after acquiring the lock so the loser of
-the race skips the refresh if the winner already did it. Never writes expiresAt:0;
-never caps the token response body (memory: an unparsed 2xx costs the credential).
-*/
+// Concurrent refreshes are serialised by an advisory flock(2) on a sidecar lock file
+// (<credsPath>.nexus3.lock), with a re-read after acquiring the lock so the loser of
+// the race skips the refresh if the winner already did it. Never writes expiresAt:0;
+// never caps the token response body (memory: an unparsed 2xx costs the credential).
 
 func NewCredGuardian(credsPath string) *CredGuardian {
 	return &CredGuardian{
@@ -198,11 +194,8 @@ type credPatch struct {
 	RefreshTokenExpiresAt int64  // epoch ms; 0 → leave untouched
 }
 
-/*
-*
-Never cap the token response body — an unparsed 2xx costs the credential
-(memory: an-unparsed-2xx-costs-the-credential).
-*/
+// Never cap the token response body — an unparsed 2xx costs the credential
+// (memory: an-unparsed-2xx-costs-the-credential).
 func (g *CredGuardian) refresh(ctx context.Context, creds claudeCredentials) (credPatch, error) {
 	body := strings.NewReader(
 		"grant_type=refresh_token" +

@@ -1,21 +1,21 @@
 //go:build herdr_live
 
-/** AC-4: operator can take over any agent without killing it or losing orchestrator
-view. Chain: nexus3 create --mount → sandbox with source mounted; nexus3 herdr agent
-→ guest agent in herdr pane; ORCHESTRATOR TURN: wait for STEP1= (non-echoable secret
-proves execution); OPERATOR TURN: send text to pane; CONTINUITY: agent recalls token
-(proves survival, not just presence); herdr agent list → orchestrator view intact;
-herdr ready footer → agent UI alive.
-
-Why secret non-echoable: file PATH in brief (echoed), CONTENT not. Agent execution of
-Read/Bash produces secret in transcript. Orchestrator token is number itself, cannot
-fire on echoed brief. Continuity token "<N>" not in operator question ("<number>" is
-template) or orchestrator plain output. So both matches prove execution/survival, not
-stale scrollback.
-
-MUTATIONS: 1. Drop operator text → token never appears → timeout FAIL. 2. Drop
-herdrPaneReportAgent call → herdr agent list missing pane_id FAIL. 3. Kill agent before
-operator turn → cannot answer → continuity timeout FAIL. */
+// AC-4: operator can take over any agent without killing it or losing orchestrator
+// view. Chain: nexus3 create --mount → sandbox with source mounted; nexus3 herdr agent
+// → guest agent in herdr pane; ORCHESTRATOR TURN: wait for STEP1= (non-echoable secret
+// proves execution); OPERATOR TURN: send text to pane; CONTINUITY: agent recalls token
+// (proves survival, not just presence); herdr agent list → orchestrator view intact;
+// herdr ready footer → agent UI alive.
+//
+// Why secret non-echoable: file PATH in brief (echoed), CONTENT not. Agent execution of
+// Read/Bash produces secret in transcript. Orchestrator token is number itself, cannot
+// fire on echoed brief. Continuity token "<N>" not in operator question ("<number>" is
+// template) or orchestrator plain output. So both matches prove execution/survival, not
+// stale scrollback.
+//
+// MUTATIONS: 1. Drop operator text → token never appears → timeout FAIL. 2. Drop
+// herdrPaneReportAgent call → herdr agent list missing pane_id FAIL. 3. Kill agent before
+// operator turn → cannot answer → continuity timeout FAIL.
 package cli
 
 import (
@@ -52,8 +52,8 @@ func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
 		liveSkip(t, "AC-4: nexus3 binary cannot be built: %v\n%s", err, out)
 	}
 
-	/** SAFETY: unique handle every run; secret is non-echoable (file content,
-	not visible in brief), so agent must genuinely execute to produce it. */
+	// SAFETY: unique handle every run; secret is non-echoable (file content,
+	// not visible in brief), so agent must genuinely execute to produce it.
 	handle := fmt.Sprintf("ac4/%08x", rand.Uint32())
 
 	srcDir := t.TempDir()
@@ -102,8 +102,8 @@ func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
 		t.Logf("AFTER: %s", afterWorkspaces)
 	})
 
-	/** nexus3 create --mount --agent claude-code: --agent seeds the Anthropic
-	OAuth token via MITM broker (D-PDE-02: fail-closed, no GitHub flags). */
+	// nexus3 create --mount --agent claude-code: --agent seeds the Anthropic
+	// OAuth token via MITM broker (D-PDE-02: fail-closed, no GitHub flags).
 	image := os.Getenv("NEXUS3_AC6_IMAGE")
 	if image == "" {
 		image = herdrDefaultImage
@@ -182,10 +182,10 @@ func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
 		t.Fatalf("herdr pane send-keys (operator): %v\n%s", err, keysOut)
 	}
 
-	/** CONTINUITY ASSERTION: surviving agent recalls "<N>", proves original
-	exec. Token never appears in brief, operator question, or orchestrator
-	plain output. Protection against stale match is ENTIRELY token design.
-	Mutation 1: drop operator text → token never appears → times out. */
+	// CONTINUITY ASSERTION: surviving agent recalls "<N>", proves original
+	// exec. Token never appears in brief, operator question, or orchestrator
+	// plain output. Protection against stale match is ENTIRELY token design.
+	// Mutation 1: drop operator text → token never appears → times out.
 	contWait, err := exec.Command(
 		"herdr", "pane", "wait-output",
 		persistedPaneID,

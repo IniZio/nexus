@@ -269,8 +269,8 @@ func TestClaudeReadyMatch_NeverMatchesAWizard(t *testing.T) {
 }
 
 // TestHerdrPaneSubmitToAgent_SendsTextThenEnterSeparately pins two-call submit.
-/** Design: `herdr pane run` fails against TUI; text needs separate Enter.
-  PACING: observed live, collapsing to one call silently breaks the agent. */
+// Design: `herdr pane run` fails against TUI; text needs separate Enter.
+// PACING: observed live, collapsing to one call silently breaks the agent.
 func TestHerdrPaneSubmitToAgent_SendsTextThenEnterSeparately(t *testing.T) {
 	var got [][]string
 	old := herdrExecCommandContext
@@ -304,11 +304,11 @@ func TestHerdrPaneSubmitToAgent_SendsTextThenEnterSeparately(t *testing.T) {
 }
 
 // TestGuestAgentLaunchCommand_DoesNotDependOnTheShellFunction pins self-contained launch.
-/** Design: --permission-mode auto and IS_SANDBOX=1 must be explicit, in BOTH
-  branches — D-2 says the guest always runs auto, and D-1's live ~/.claude mount
-  means a bare `command claude` starts in whatever mode the host settings.json
-  says, which the readiness wait cannot predict.
-  PACING: race on /etc/profile.d; observed live: bareword "claude" silently fails. */
+// Design: --permission-mode auto and IS_SANDBOX=1 must be explicit, in BOTH
+// branches — D-2 says the guest always runs auto, and D-1's live ~/.claude mount
+// means a bare `command claude` starts in whatever mode the host settings.json
+// says, which the readiness wait cannot predict.
+// PACING: race on /etc/profile.d; observed live: bareword "claude" silently fails.
 func TestGuestAgentLaunchCommand_DoesNotDependOnTheShellFunction(t *testing.T) {
 	const permFlag = "--permission-mode auto"
 	const oldBypassFlag = "--dangerously-skip-permissions"
@@ -332,7 +332,7 @@ func TestGuestAgentLaunchCommand_DoesNotDependOnTheShellFunction(t *testing.T) {
 }
 
 // TestGuestCursorLaunchCommand_ForceFlagAndNoRootEscape pins cursor launch command flags.
-/** Design: --force is skip-permissions equivalent; no IS_SANDBOX needed for cursor. */
+// Design: --force is skip-permissions equivalent; no IS_SANDBOX needed for cursor.
 func TestGuestCursorLaunchCommand_ForceFlagAndNoRootEscape(t *testing.T) {
 	autonomous := guestCursorLaunchCommand(true)
 	if !strings.Contains(autonomous, "--force") {
@@ -352,7 +352,7 @@ func TestGuestCursorLaunchCommand_ForceFlagAndNoRootEscape(t *testing.T) {
 }
 
 // TestResolveAgentLaunchDescriptor_DispatchesByName is mutation guard for agent dispatch.
-/** Design: AgentName must select matching launch command, not always claude's. */
+// Design: AgentName must select matching launch command, not always claude's.
 func TestResolveAgentLaunchDescriptor_DispatchesByName(t *testing.T) {
 	cursor := resolveAgentLaunchDescriptor(cred.CursorAgentProfileName)
 	if got, want := cursor.command(true), guestCursorLaunchCommand(true); got != want {
@@ -403,7 +403,7 @@ func TestSpaceAgent_PaneOpenFocusArgv_WithFocus(t *testing.T) {
 }
 
 // TestSpaceAgent_PaneOpenFocusArgv_WithNoFocus asserts focus=false produces --no-focus.
-/** AC-5: concurrent space-agent runs must not steal focus. */
+// AC-5: concurrent space-agent runs must not steal focus.
 func TestSpaceAgent_PaneOpenFocusArgv_WithNoFocus(t *testing.T) {
 	var calls [][]string
 	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd { return fakePaneOpenCmd("w1:p2") })
@@ -424,8 +424,8 @@ func TestSpaceAgent_PaneOpenFocusArgv_WithNoFocus(t *testing.T) {
 }
 
 // TestCursorReadyMatch_AgainstLiveCapturedPaneOutput exercises readyMatch against live pane.
-/** PACING: captured 2026-09-04 from cursor-agent v2026.09.02-c22c1a3.
-  Design: static "shift+tab" guess absent in real output; replaced with live token. */
+// PACING: captured 2026-09-04 from cursor-agent v2026.09.02-c22c1a3.
+// Design: static "shift+tab" guess absent in real output; replaced with live token.
 func TestCursorReadyMatch_AgainstLiveCapturedPaneOutput(t *testing.T) {
 	const readyPane = `  Cursor Agent
   v2026.09.02-c22c1a3

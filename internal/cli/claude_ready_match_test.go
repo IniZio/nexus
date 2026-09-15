@@ -6,11 +6,11 @@ import (
 )
 
 func TestClaudeReadyMatch_AutoModeFooter(t *testing.T) {
-	/** T0a evidence: auto-mode footer is "⏵⏵ auto mode on (shift+tab to cycle)";
-	discriminator must be "auto mode on" (substring match, herdr pane wait-output).
-	Mutation: claudeReadyMatch returns OLD bypass value "shift+tab to cycle"
-	→ autoModeTranscript test FAILS. Bypass footer "shift+tab to cycle (bypass mode)"
-	→ must NOT match (distinguishes modes). */
+	// T0a evidence: auto-mode footer is "⏵⏵ auto mode on (shift+tab to cycle)";
+	// discriminator must be "auto mode on" (substring match, herdr pane wait-output).
+	// Mutation: claudeReadyMatch returns OLD bypass value "shift+tab to cycle"
+	// → autoModeTranscript test FAILS. Bypass footer "shift+tab to cycle (bypass mode)"
+	// → must NOT match (distinguishes modes).
 	const want = "auto mode on"
 	if got := claudeReadyMatch(true); got != want {
 		t.Errorf("claudeReadyMatch(true) = %q; want %q", got, want)
@@ -22,9 +22,9 @@ func TestClaudeReadyMatch_AutoModeFooter(t *testing.T) {
 
 // TestClaudeReadyMatch_ModeInvariant pins D-2: the guest always runs in auto
 // mode, so the readiness token cannot depend on the autonomous flag.
-/** Live 2026-09-15: space-agent launched `command claude`, the mounted host
-settings.json put it in auto mode, and the "? for shortcuts" wait timed out
-against an agent already at its prompt. */
+// Live 2026-09-15: space-agent launched `command claude`, the mounted host
+// settings.json put it in auto mode, and the "? for shortcuts" wait timed out
+// against an agent already at its prompt.
 func TestClaudeReadyMatch_ModeInvariant(t *testing.T) {
 	const manualFooter = " ⏸ manual mode on · ? for shortcuts · ← for agents"
 	for _, autonomous := range []bool{true, false} {

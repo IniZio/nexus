@@ -44,8 +44,8 @@ func fakeCert() *x509.Certificate {
 
 // combinedSandboxWithEnvSecret returns a sandbox with agent name and env-resolved secret.
 func combinedSandboxWithEnvSecret(id domain.SandboxID, envKey string) domain.Sandbox {
-	/** Use "example.com" — not in the GitHub host list, so ResolveEnvelopeSecrets
-	  reads the token from os.Getenv(envKey) rather than `gh auth token`. */
+	// Use "example.com" — not in the GitHub host list, so ResolveEnvelopeSecrets
+	// reads the token from os.Getenv(envKey) rather than `gh auth token`.
 	spec := envKey + "@example.com"
 	return domain.Sandbox{
 		ID:        id,
@@ -57,7 +57,7 @@ func combinedSandboxWithEnvSecret(id domain.SandboxID, envKey string) domain.San
 	}
 }
 
-/** Mutation guard: Drop SeedGuestAgentAndSecrets call → NODE_EXTRA_CA_CERTS disappears → RED. */
+// Mutation guard: Drop SeedGuestAgentAndSecrets call → NODE_EXTRA_CA_CERTS disappears → RED.
 func TestSeedAgentAndHumanSecrets_ContainsAgentVars(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "") // ensure kindOAuth path
 	t.Setenv("NEXUS3_TEST_SECRET_A1", "supervisor-secret-for-a1")
@@ -86,7 +86,7 @@ func TestSeedAgentAndHumanSecrets_ContainsAgentVars(t *testing.T) {
 	}
 }
 
-/** Mutation guard: Drop SecretSpecs → NEXUS3_CRED_EXAMPLE_COM_TOKEN disappears → RED. */
+// Mutation guard: Drop SecretSpecs → NEXUS3_CRED_EXAMPLE_COM_TOKEN disappears → RED.
 func TestSeedAgentAndHumanSecrets_ContainsSecretVars(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 	t.Setenv("NEXUS3_TEST_SECRET_A2", "supervisor-secret-for-a2")
@@ -181,7 +181,7 @@ func TestChooseSeedRoute_Dispatch(t *testing.T) {
 	}
 }
 
-/** MUT-B: swap routeCombined and routeHumanSecrets cases → agent+secrets → routeHumanSecrets → RED. */
+// MUT-B: swap routeCombined and routeHumanSecrets cases → agent+secrets → routeHumanSecrets → RED.
 func TestChooseSeedRoute_Ordering(t *testing.T) {
 	sb := sandboxWithProxy("claude", []string{"github.com"})
 	got := chooseSeedRoute(sb)
@@ -284,23 +284,20 @@ func TestRunSeedRoute_HumanSecretsCallsHumanSeeder(t *testing.T) {
 	}
 }
 
-/*
-*
-TestRunSeedRoute_AgentCallsSeedLoop closes the last uncovered route binding.
-An independent review mutated routeAgent to dispatch at the combined seeder and
-found NOTHING caught it — the other three arms were guarded. Its failure mode
-mirrors the defect this set exists to fix: instead of an agent losing its
-credential, a guest that runs NO agent is handed agent credential env vars.
-
-routeAgent is reached by two kinds of sandbox: one with an agent, and
-(via !OpenEgress) a closed-egress sandbox with no agent and no secrets. Both
-take this arm; only the first may receive agent credentials. Asserting only
-"seedLoopFn was called" would pass while that distinction was inverted.
-
-MUT: dispatch routeAgent at seedAgentAndHumanSecretsFn → RED.
-
-	Hardcode final argument to true → no-agent subtest RED.
-*/
+// TestRunSeedRoute_AgentCallsSeedLoop closes the last uncovered route binding.
+// An independent review mutated routeAgent to dispatch at the combined seeder and
+// found NOTHING caught it — the other three arms were guarded. Its failure mode
+// mirrors the defect this set exists to fix: instead of an agent losing its
+// credential, a guest that runs NO agent is handed agent credential env vars.
+//
+// routeAgent is reached by two kinds of sandbox: one with an agent, and
+// (via !OpenEgress) a closed-egress sandbox with no agent and no secrets. Both
+// take this arm; only the first may receive agent credentials. Asserting only
+// "seedLoopFn was called" would pass while that distinction was inverted.
+//
+// MUT: dispatch routeAgent at seedAgentAndHumanSecretsFn → RED.
+//
+// Hardcode final argument to true → no-agent subtest RED.
 func TestRunSeedRoute_AgentCallsSeedLoop(t *testing.T) {
 	cases := []struct {
 		name              string
