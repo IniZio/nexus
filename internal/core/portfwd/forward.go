@@ -162,6 +162,12 @@ func portInOutput(output string, port uint16) bool {
 }
 
 func matchColonPort(line, needle string) bool {
+	return hasNeedleNotFollowedByDigit(line, needle)
+}
+
+// hasNeedleNotFollowedByDigit reports whether needle occurs in line at a
+// position where the next byte is not a digit, so ":80" does not match ":8080".
+func hasNeedleNotFollowedByDigit(line, needle string) bool {
 	start := 0
 	for start < len(line) {
 		idx := strings.Index(line[start:], needle)
@@ -183,18 +189,5 @@ func matchDotPort(line, needle string) bool {
 	if len(fields) == 0 || fields[len(fields)-1] != "LISTEN" {
 		return false
 	}
-	start := 0
-	for start < len(line) {
-		idx := strings.Index(line[start:], needle)
-		if idx < 0 {
-			break
-		}
-		abs := start + idx
-		after := abs + len(needle)
-		if after >= len(line) || line[after] < '0' || line[after] > '9' {
-			return true
-		}
-		start = abs + 1
-	}
-	return false
+	return hasNeedleNotFollowedByDigit(line, needle)
 }

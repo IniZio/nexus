@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -216,8 +217,7 @@ func (c *Client) waitReady(ctx context.Context) error {
 }
 
 // pingRetryInterval is the delay between Ping probes in waitReady.
-// Package-level variable so tests can set it to 0.
-var pingRetryInterval = 100 * time.Millisecond
+const pingRetryInterval = 100 * time.Millisecond
 
 // agentUpgradeDefaultTimeout is the fallback deadline applied by AgentUpgrade
 // when the caller's context has no deadline.
@@ -234,23 +234,10 @@ func isTransportReset(err error) bool {
 	//   - grpc transport: "connection reset by peer"
 	//   - net: "EOF"
 	//   - grpc: "Unavailable" when the server disappears mid-RPC
-	return contains(s, "connection reset by peer") ||
-		contains(s, "EOF") ||
-		contains(s, "Unavailable") ||
-		contains(s, "transport is closing")
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
-}
-
-func containsStr(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(s, "connection reset by peer") ||
+		strings.Contains(s, "EOF") ||
+		strings.Contains(s, "Unavailable") ||
+		strings.Contains(s, "transport is closing")
 }
 
 // timerAfter is time.After, replaceable in tests.

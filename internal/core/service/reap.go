@@ -342,7 +342,7 @@ func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, o
 		}
 		if entry.Status == ReapStatusOrphan {
 			report.ReclaimableBytes += entry.AllocatedBytes
-			if entry.Status == ReapStatusOrphan && apply {
+			if apply {
 				switch err := deleteResourceFn(res); {
 				case err == nil:
 					report.Deleted = append(report.Deleted, res.Path)
@@ -720,7 +720,7 @@ func classifyResource(
 		entry.Status = ReapStatusLive
 		entry.Reason = "proc scan inconclusive (unreadable entry or truncated cmdline) — keeping"
 		return entry
-	// procScanDead: continue to socket check.
+		// procScanDead: continue to socket check.
 	}
 
 	// 3. API socket liveness (for non-socket resources, derive the socket path
@@ -846,7 +846,7 @@ func scanProcForULID(procDir, ulidStr string) procScanResult {
 		case procScanAmbiguous:
 			// Don't short-circuit: another PID might be definitively live.
 			anyAmbiguous = true
-		// procScanDead: this PID is not our process; continue.
+			// procScanDead: this PID is not our process; continue.
 		}
 	}
 	if anyAmbiguous {
@@ -991,21 +991,26 @@ var killNetnsProcessFn = func(pgid int) error {
 // is NOT an error.
 //
 // Classification:
+//
 //   - /proc itself is unreadable: one Suspect entry naming the failure
 //     (single aggregate alarm, not per-process noise).
+//
 //   - a candidate is a zombie (stat field 3 == "Z"): counted as uninspectable,
 //     NOT Suspect. A zombie has no mm, no tap, no netns — it cannot be a live
 //     netns child. Its /proc/<pid>/environ is absent so it would fail the
 //     environ read anyway; skipping early keeps the count honest.
+//
 //   - a candidate's /proc/<pid> stat is unreadable for a non-ENOENT reason:
 //     counted as uninspectable (increments the returned count), NOT Suspect.
 //     Reason: the process may have had its dumpable flag cleared (e.g. sshd,
 //     systemd --user after setuid) or may have vanished between ReadDir and
 //     stat — neither is evidence of an unrecorded netns child.
+//
 //   - a candidate is owned by a DIFFERENT uid than os.Geteuid(): silently
 //     skipped — StartNetnsRuntime spawns the child under the SAME uid, so a
 //     foreign-uid process cannot be ours. No entry is emitted, not even
 //     Suspect.
+//
 //   - a candidate's /proc/<pid>/environ is unreadable for a non-ENOENT
 //     reason AND the process is owned by our uid: counted as uninspectable
 //     (increments the returned count), NOT Suspect.
@@ -1029,6 +1034,7 @@ var killNetnsProcessFn = func(pgid int) error {
 //   - a candidate's socket path names a sandbox ID with a live record whose
 //     CHAPISocket does not match what this live process is actually using:
 //     Suspect — reap cannot certify this process belongs to that record.
+//
 //   - a candidate's socket path does not parse as a sandbox ID and no
 //     record claims it by any other means: Suspect — "no record claims this"
 //     only becomes confident ORPHAN when reap can also rule out an in-flight
@@ -1286,4 +1292,3 @@ func isNumeric(s string) bool {
 	}
 	return true
 }
-

@@ -64,11 +64,8 @@ func RunRelay(ctx context.Context, cfg RelayConfig) error {
 		ln.Close()
 		_ = os.Remove(cfg.VsockUDSPath)
 	}()
-
-	go func() { // close listener on cancel so Accept returns
-		<-ctx.Done()
-		ln.Close()
-	}()
+	stop := context.AfterFunc(ctx, func() { ln.Close() }) // unblocks Accept on cancel
+	defer stop()
 
 	for {
 		conn, err := ln.Accept()
