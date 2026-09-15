@@ -22,65 +22,26 @@ import (
 	"github.com/IniZio/nexus3/internal/core/store"
 )
 
-// serveAdoptedInput carries what serveAdoptedSupervisor needs from whichever
-// acquisition path produced a live, installed netns runtime.
 type serveAdoptedInput struct {
 	cfg Config
 	st  store.Store
 	svc *service.Service
 	drv *cloudhypervisor.CHDriver
 	sb  domain.Sandbox
-
-	// seedCA is the MITM CA to hand StartPerimeterOnly. Non-nil on the
-	// HANDOFF path, where the outgoing supervisor's payload carried the CA
-	// that the guest already imported and pinned this boot, and on the CRASH
-	// path whenever the CA persisted by the perimeter could be loaded back
-	// (statedir.LoadCA, D-HSH-18). Nil only when there is genuinely no CA to
-	// seed, in which case StartPerimeterOnly mints a fresh one and the caller
-	// reports the loss loudly — see reacquireSeedInput.
+	// seedCA: MITM CA for StartPerimeterOnly (D-HSH-18), nil on CA loss.
 	seedCA *service.CASeed
-
-	// refreshers are the credential refreshers to register and keep warm.
+	// refreshers: credential refreshers to keep warm.
 	refreshers []*cred.Refresher
-
-	// waitForPID, when > 0, is a previous supervisor whose exit must be
-	// observed before this process binds the canonical IPC socket path: the
-	// old process still owns that inode until its own shutdown unlinks it
-	// (removeOwnSocket). Zero on the crash path — the previous supervisor is
-	// already dead, which is why this path exists at all.
+	// waitForPID: previous supervisor to await before binding IPC socket; zero on crash path.
 	waitForPID int
-
-	// logPrefix distinguishes this path's structured log events
-	// ("supervisor.adopt" vs "supervisor.reacquire") so an operator reading
-	// journals can tell a planned upgrade from a crash recovery.
+	// logPrefix: distinguishes "supervisor.adopt" vs "supervisor.reacquire" log events.
 	logPrefix string
-
-	// startPerimeterFn, when non-nil, replaces svc.StartPerimeterOnly.
-	// Production callers leave it nil. Tests inject it to bypass the
-	// perimeter setup (which requires a live netns runtime) while still
-	// exercising the rest of the serve loop, including the governor.
+	// startPerimeterFn: injected in tests to bypass perimeter setup.
 	startPerimeterFn func(ctx context.Context, sb domain.Sandbox, seed *service.CASeed) error
 }
 
-// serveAdoptedSupervisor runs the long-lived supervisor loop for a sandbox
-// whose netns runtime this process has already acquired and installed in drv,
-// WITHOUT booting a VM.
-//
-// It is the shared tail of both acquisition paths:
-//
-//   - [RunAdopt] — planned upgrade. The outgoing supervisor is alive and
-//     passes the perimeter fd over SCM_RIGHTS; seedCA carries its CA.
-//   - [RunReacquire] — crash recovery. The outgoing supervisor is dead; the
-//     perimeter is rebuilt through the surviving netns child's control
-//     socket and seedCA is nil.
-//
-// Both must then do the SAME thing for the VM's whole lifetime: start the
-// perimeter, bind the IPC socket, run the governor, keep credentials warm,
-// and serve until stop/detach/VM-death. Extracting it keeps the two paths
-// from drifting — in particular the IPC-socket ordering hazard documented on
-// waitForPID, which is easy to get subtly wrong when reimplemented.
-//
-// This function does NOT return until the supervisor is shutting down.
+// serveAdoptedSupervisor runs the shared tail of both acquisition paths ([RunAdopt], [RunReacquire]).
+// Does not return until supervisor shuts down.
 func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 	cfg, st, svc, drv, sb := in.cfg, in.st, in.svc, in.drv, in.sb
 
@@ -97,16 +58,7 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 	_ = os.Remove(sockPath) // best-effort: only relevant if the old process left a stale file
 
 	// ── Re-acquire the builder cache-disk slot(s) this VM occupies ───────
-	// D-HSH-07. Neither acquisition path has a live sender to inherit a lock
-	// descriptor from — a planned handoff carries only the perimeter fd, and a
-	// crash path has no sender at all — so the slot is read back off the
-	// record and taken BY PATH. Taking the same slot is the point: a fresh
-	// selection would collide with the write lock cloud-hypervisor still holds
-	// on the image of the VM this process just adopted.
-	//
-	// Ordering: after the outgoing supervisor's exit has been observed above,
-	// because until then it still holds the lease. AcquireCacheDiskSlotWait
-	// retries anyway rather than trusting that wait to have been exact.
+	// D-HSH-07: take the same slot to avoid collision with CH's write lock.
 	cacheSlots := builder.DecodeCacheDiskSlots(sb.CacheDiskSlot)
 	cacheLeases, err := acquireCacheDiskLeases(ctx, cacheSlots, nil, cacheDiskAdoptLeaseTimeout)
 	if err != nil {
@@ -150,15 +102,10 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 		if bootVCPUs == 0 {
 			bootVCPUs = 1
 		}
-		// Runtime-derived, not record-derived — see
-		// [handoffFromLiveSupervisor] (ticket 14).
+		// ticket 14: runtime-derived, not record-derived
 		return handoffFromLiveSupervisor(hctx, peerSock, sup, cfg.SandboxRef, bootVCPUs, cfg.MemoryMiB)
 	})
 
-	// agentHealthFn probes the guest agent's control/data planes live, using
-	// the same drv+sb.ID this process dials the guest through for every other
-	// RPC. sb was resolved successfully by the caller before it acquired the
-	// runtime, so there is no resolve-failure branch to degrade here.
 	agentHealthFn := agentHealthFunc(func(hctx context.Context) AgentHealth {
 		return checkAgentHealth(hctx, drv, sb.ID)
 	})
@@ -207,9 +154,6 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 		}(r)
 	}
 
-	// Arm the cred guardian for any sandbox that has a live rw ~/. claude mount.
-	// Multiple supervisors running concurrently all arm their own guardian goroutine;
-	// the guardian serialises concurrent refreshes via flock(2) on a sidecar lock file.
 	for _, lm := range cfg.LiveMounts {
 		if lm.GuestPath == "/root/.claude" && !lm.ReadOnly {
 			home, homeErr := os.UserHomeDir()
@@ -225,15 +169,7 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 		}
 	}
 
-	// NOTE: unlike RunDetached, neither adoption path re-seeds the guest agent
-	// placeholder credentials — the guest was never rebooted, so it already
-	// holds its placeholder.
-
 	// ── git SSH relay ────────────────────────────────────────────────────────
-	// Must restart on adoption: the relay goroutine lived in the previous
-	// supervisor process, whose context is now cancelled. The vsock UDS path
-	// is deterministic (same sandbox ID) so the new listener cleanly replaces
-	// the old socket.
 	startGitSSHRelay(ctx, cfg.SocketDir, sb, nil)
 
 	pid := os.Getpid()
@@ -254,10 +190,6 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 
 	slog.Info(in.logPrefix+".ready", "sandboxRef", cfg.SandboxRef, "pid", pid, "sock", sockPath)
 
-	// Wire the VM-death channel for the acquired runtime (AC-12a/b): if the
-	// VM dies unexpectedly, awaitShutdown returns shutdownByVMDeath and the
-	// teardown block reconciles the record. nil is safe — a nil channel is
-	// never selected.
 	vmDeadCh := drv.RuntimeDeathCh(sb.ID)
 	cause := awaitShutdown(ctx, stopCh, detachCh, vmDeadCh)
 	if cause == shutdownByDetach {
@@ -265,9 +197,6 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 		return nil
 	}
 
-	// shutdownByVMDeath: the VM died unexpectedly. Reconcile the store record
-	// to Stopped/MemoryLost without calling svc.Stop() — the VM is already
-	// gone and driver.Stop on a dead pgid would overwrite the reason.
 	if cause == shutdownByVMDeath {
 		slog.Warn(in.logPrefix+".vm_died", "sandboxRef", cfg.SandboxRef)
 		reconCtx, reconCancel := context.WithTimeout(context.Background(), 30*time.Second)

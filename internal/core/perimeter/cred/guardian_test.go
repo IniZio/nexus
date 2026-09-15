@@ -70,7 +70,6 @@ func TestCredGuardian_RefreshesWhenExpiring(t *testing.T) {
 	dir := t.TempDir()
 	var callCount atomic.Int64
 	srv := fakeTokenServer(t, &callCount, "new-access-token", 3600)
-	// Token expiring in 10 minutes (within the 40-min threshold).
 	path := makeTestCreds(t, dir, time.Now().Add(10*time.Minute), "old-token", "refresh-tok")
 	g := cred.NewCredGuardianWithEndpoint(path, srv.URL)
 	if err := g.GuardOnce(context.Background()); err != nil {
@@ -96,20 +95,15 @@ func TestCredGuardian_RefreshesWhenExpiring(t *testing.T) {
 	}
 }
 
-// TestCredGuardian_TwoRacingGuardians is the mutation guard for the flock re-read:
-//
-//	Remove the re-read after flock acquisition → this test fails because both
-//	guardians make an HTTP refresh call instead of exactly one.
-//
-// Two guardians both see an expiring token, both acquire the flock sequentially,
-// but only ONE should make an HTTP call (the second re-reads after acquiring the
-// flock and sees the token is now fresh).
+/*
+*
+MUTATION-PIN: Remove the re-read after flock acquisition → this test fails because
+both guardians make an HTTP refresh call instead of exactly one.
+*/
 func TestCredGuardian_TwoRacingGuardians(t *testing.T) {
 	dir := t.TempDir()
 	var callCount atomic.Int64
 
-	// The fake server returns a FRESH expiresAt so the second guardian's
-	// re-read after flock sees fresh credentials and skips the refresh.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount.Add(1)
 		expiresIn := int(2 * time.Hour / time.Second)
@@ -118,7 +112,6 @@ func TestCredGuardian_TwoRacingGuardians(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	// Token expiring in 5 minutes so both guardians initially see it as needing refresh.
 	path := makeTestCreds(t, dir, time.Now().Add(5*time.Minute), "stale-token", "refresh-tok")
 
 	g1 := cred.NewCredGuardianWithEndpoint(path, srv.URL)
@@ -143,22 +136,17 @@ func TestCredGuardian_TwoRacingGuardians(t *testing.T) {
 	}
 }
 
-// TestCredGuardian_RefreshPreservesSiblingKeys is the mutation guard for the
-// full-document patch path:
-//
-//	Revert to marshaling a 3-field struct → this test fails because mcpOAuth,
-//	scopes, subscriptionType, rateLimitTier, refreshTokenExpiresAt, and unknown
-//	keys are wiped from the on-disk file.
-//
-// The fixture contains all seven real claudeAiOauth keys, a top-level mcpOAuth
-// object, and unknown future keys at both levels. After GuardOnce the test
-// asserts every sibling key survives byte-for-byte.
+/*
+*
+MUTATION-PIN: Revert to marshaling a 3-field struct → this test fails because
+mcpOAuth, scopes, subscriptionType, rateLimitTier, refreshTokenExpiresAt, and
+unknown keys are wiped from the on-disk file.
+*/
 func TestCredGuardian_RefreshPreservesSiblingKeys(t *testing.T) {
 	dir := t.TempDir()
 	var callCount atomic.Int64
 	srv := fakeTokenServer(t, &callCount, "new-access-token", 3600)
 
-	// Token expiring in 10 minutes (within the 40-min threshold).
 	expiresAt := time.Now().Add(10 * time.Minute).UnixMilli()
 	fixtureData := []byte(fmt.Sprintf(`{
 		"mcpOAuth": {"someKey": "someValue", "anotherKey": 42},

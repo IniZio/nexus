@@ -52,27 +52,9 @@ func runAuth(ctx context.Context, args []string, out *Output) error {
 	}
 }
 
-// runAuthLogin is the implementation of `nexus3 auth login`.
-//
-// Without --agent it behaves identically to the legacy single-route
-// implementation: import a Claude Code .credentials.json into nexus3's
-// dedicated credential store.
-//
-// With --agent it is profile-driven (D-MAC-14):
-//   - rotating-chain agents (CredentialFormatNone, e.g. claude-code): import
-//     the credential file and save it into nexus3's per-agent store. The store
-//     is the source of truth; a host-side Refresher rotates it.  The default
-//     --from path and the import function are both derived from [cred.OAuthImportReg];
-//     no agent name appears here.
-//   - static, read-only agents (CredentialFormatCursorJWT, e.g. cursor):
-//     verify the credential is present and parseable, then report metadata
-//     only — nothing is written. The supervisor reads the operator's file live
-//     at boot (D-MAC-01); a copy taken here would go stale the moment the
-//     operator re-logs in, and nexus3 would silently broker a dead token.
+// runAuthLogin implements `nexus3 auth login` (D-MAC-14).
 func runAuthLogin(_ context.Context, args []string, out *Output) error {
 	fs := flag.NewFlagSet("auth login", flag.ContinueOnError)
-	// Default is empty; the profile-derived default is filled in below after
-	// flags are parsed and the profile is known.
 	fromPath := fs.String("from", "", "source credential file path (default: agent-specific)")
 	force := fs.Bool("force", false, "allow overwriting an existing complete credential store")
 	agentName := fs.String("agent", "", "agent to authenticate (omit for claude-code default)")
@@ -80,9 +62,6 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 		return &UsageError{Msg: "auth login: " + err.Error()}
 	}
 
-	// oauthImport resolves the default --from path and the import function for
-	// a given OAuth/rotating-chain profile via the cred registry, then calls
-	// runAuthLoginImport.  All agent names are kept out of this file.
 	oauthImport := func(profile cred.AgentProfile) error {
 		defaultFrom, importFn, ok := cred.OAuthImportReg(profile)
 		if !ok {
@@ -96,11 +75,7 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 		return runAuthLoginImport(importFn, from, *force, dest, out)
 	}
 
-	// ── no --agent: claude-code now uses live virtiofs mount ─────────────────
-	//
-	// The operator's ~/.claude is mounted RW into every claude-code sandbox.
-	// No credential seeding is needed; guest Claude self-refreshes from the
-	// mounted .credentials.json.
+	// claude-code now uses live virtiofs mount (D-MAC-01)
 	if *agentName == "" {
 		fmt.Fprintf(out.Stdout(), "nexus3 auth login for claude-code is no longer needed.\n\n"+
 			"Credentials are now managed via a live virtiofs mount of the host's\n"+
@@ -110,7 +85,6 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 		return nil
 	}
 
-	// ── profile-driven: resolve profile, then dispatch ────────────────────────
 	profile, ok := cred.ProfileByName(*agentName)
 	if !ok {
 		return &UsageError{Msg: fmt.Sprintf(
@@ -119,11 +93,7 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 		)}
 	}
 
-	// Dispatch is registry-driven: a profile with an ImportFromPathFn registered
-	// (via OAuthImportReg) takes the import route; one without takes the
-	// verify-and-report route.  This generalises across all OAuth/rotating-chain
-	// formats, not just CredentialFormatNone, so a second OAuth agent with a
-	// distinct format constant is automatically handled correctly.
+	// Registry-driven dispatch (OAuthImportReg)
 	if profile.Capabilities.CredDirLiveMount {
 		fmt.Fprintf(out.Stdout(), "nexus3 auth login for %s is no longer needed.\n\n"+
 			"Credentials are now managed via a live virtiofs mount of the host's\n"+
@@ -136,21 +106,12 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 	if _, _, hasImport := cred.OAuthImportReg(profile); hasImport {
 		return oauthImport(profile)
 	}
-	// Static file credential (e.g. cursor-jwt): verify and report only.
-	// Never import — the supervisor reads the file live (D-MAC-01 / D-MAC-14).
+	// Verify only — supervisor reads file live (D-MAC-01)
 	return runAuthLoginVerify(profile, out)
 }
 
-// runAuthLoginImport handles the import path for rotating-chain agents
-// (e.g. claude-code). It calls importFn to read the on-disk credential at
-// fromPath, saves it into nexus3's per-agent store at dest, and reports
-// metadata without printing token values.
-//
-// importFn is supplied by the caller from [cred.OAuthImportReg], keeping all
-// per-agent knowledge in the cred registry and out of this function.
+// runAuthLoginImport imports rotating-chain credentials via registry-supplied importFn.
 func runAuthLoginImport(importFn func(string) (*cred.DedicatedCredStore, error), fromPath string, force bool, dest string, out *Output) error {
-	// Guard: refuse to overwrite a live (complete) credential store unless
-	//    --force is set.
 	if !force {
 		existing, err := cred.LoadStore(dest)
 		if err == nil && existing.RefreshToken != "" {
@@ -159,8 +120,6 @@ func runAuthLoginImport(importFn func(string) (*cred.DedicatedCredStore, error),
 				dest,
 			)
 		}
-		// ErrStoreAbsent → ok to proceed; other errors → ok to proceed (e.g.
-		// malformed store is not "live").
 	}
 
 	store, err := importFn(fromPath)
@@ -180,7 +139,6 @@ func runAuthLoginImport(importFn func(string) (*cred.DedicatedCredStore, error),
 		return fmt.Errorf("auth login: saving credential store: %w", err)
 	}
 
-	// Report success (no token values printed).
 	data := authLoginJSON{
 		DestPath:      dest,
 		TokenEndpoint: store.TokenEndpoint,
@@ -195,16 +153,7 @@ func runAuthLoginImport(importFn func(string) (*cred.DedicatedCredStore, error),
 	return nil
 }
 
-// runAuthLoginVerify handles the verify-and-report path for static-credential
-// agents (e.g. cursor). It reads the operator's credential file (read-only),
-// confirms it is present and parseable, and reports metadata. It writes nothing.
-//
-// The supervisor reads the operator's file live at boot (D-MAC-01 / D-MAC-14);
-// importing and saving a copy here would silently broker a stale token the
-// moment the operator re-logs in to the agent.
-//
-// This function is profile-driven: it names no agent by name and branches on
-// no CredentialFormat.  A new file-based agent requires no change here.
+// runAuthLoginVerify verifies static-credential agents without importing (D-MAC-01).
 func runAuthLoginVerify(profile cred.AgentProfile, out *Output) error {
 	credPath, err := cred.StaticCredFilePath(profile)
 	if err != nil {

@@ -1,18 +1,6 @@
 package cloudhypervisor
 
-// ch_vsock.go implements the driver.GuestDialer capability for CHDriver.
-//
-// Cloud Hypervisor exposes guest vsock to the host as an AF_UNIX socket.
-// The host multiplexer protocol is the standard virtio-vsock-proxy shape:
-//
-//  1. Connect to the per-sandbox AF_UNIX socket.
-//  2. Write "CONNECT <port>\n".
-//  3. Read the reply line: "OK <n>\n" on success, anything else is an error.
-//  4. The socket is now a raw bidirectional stream to the guest at that port.
-//
-// This is the same protocol used by firecracker-containerd's vsock proxy and
-// systemd-ssh-proxy. CH's implementation is in
-// vmm/src/api_server/api_server.rs (virtio-vsock channel multiplexing).
+// Driver.GuestDialer capability using virtio-vsock-proxy multiplexer.
 
 import (
 	"bufio"
@@ -29,37 +17,22 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver"
 )
 
-// guestCID is the vsock CID assigned to every sandbox VM. Because each
-// sandbox runs in its own isolated cloud-hypervisor process there are no
-// CID collisions across sandboxes.
-const guestCID uint64 = 3
+const guestCID uint64 = 3 // vsock CID assigned to every sandbox VM
 
-// vsockHandshakeTimeout is the maximum time to wait for the multiplexer to
-// respond to the CONNECT line. It is intentionally short — the VMM either
-// accepts or rejects immediately.
-const vsockHandshakeTimeout = 5 * time.Second
+const vsockHandshakeTimeout = 5 * time.Second // max wait for multiplexer response to CONNECT
 
-// vmVsockConfig maps to CH's VsockConfig for the vm.create payload.
-// Verified against cloud-hypervisor.yaml @ v52.0: VsockConfig requires
-// cid and socket; id is optional.
-type vmVsockConfig struct {
+type vmVsockConfig struct { // CH's VsockConfig for vm.create payload
 	CID    uint64 `json:"cid"`
 	Socket string `json:"socket"`
 	ID     string `json:"id,omitempty"`
 }
 
-// vmConfigWithVsock extends [vmConfig] with an optional vsock device.
-// It is used as the vm.create payload when the vsock transport is enabled,
-// avoiding any modification of the base vmConfig type in client.go.
-type vmConfigWithVsock struct {
+type vmConfigWithVsock struct { // vmConfig with optional vsock device for vm.create payload
 	vmConfig
 	Vsock *vmVsockConfig `json:"vsock,omitempty"`
 }
 
-// VMCreateWithVsock is like [client.VMCreate] but includes a vsock device in
-// the vm.create payload. Defined here (not in client.go) to keep the vsock
-// surface self-contained.
-func (c *client) VMCreateWithVsock(ctx context.Context, cfg vmConfig, vsock *vmVsockConfig) error {
+func (c *client) VMCreateWithVsock(ctx context.Context, cfg vmConfig, vsock *vmVsockConfig) error { // like VMCreate but with vsock device
 	full := vmConfigWithVsock{vmConfig: cfg, Vsock: vsock}
 	resp, err := c.do(ctx, http.MethodPut, "/vm.create", full)
 	if err != nil {
@@ -74,45 +47,22 @@ func (c *client) VMCreateWithVsock(ctx context.Context, cfg vmConfig, vsock *vmV
 	return nil
 }
 
-// vsockPath returns the per-sandbox AF_UNIX socket path that CH's vsock
-// multiplexer binds. It follows the same naming convention as socketPath and
-// satisfies the ≤107-byte sun_path limit whenever socketPath does.
-func (d *CHDriver) vsockPath(id domain.SandboxID) string {
+func (d *CHDriver) vsockPath(id domain.SandboxID) string { // per-sandbox AF_UNIX socket path for vsock multiplexer
 	return filepath.Join(d.cfg.SocketDir, id.String()+".vsock")
 }
 
-// vsockGuestPortPath returns the host-side AF_UNIX socket path that CH creates
-// when a guest VM connects to host CID 2 on the given port. Used by the host
-// relay to accept guest-initiated connections.
-//
-// Naming: <socketDir>/<id>.vsock_<port>  (underscore separator, per CH vsock spec
-// confirmed in T0b probe — guest-initiated uses underscore, host-initiated uses
-// plain .vsock)
-func (d *CHDriver) vsockGuestPortPath(id domain.SandboxID, port uint32) string {
+func (d *CHDriver) vsockGuestPortPath(id domain.SandboxID, port uint32) string { // AF_UNIX path for guest-initiated connection (T0b: underscore separator)
 	return filepath.Join(d.cfg.SocketDir, fmt.Sprintf("%s.vsock_%d", id.String(), port))
 }
 
-// vsockConn wraps a net.Conn together with the buffered reader used to
-// consume the multiplexer handshake reply. Any bytes the peer sent
-// immediately after the "OK" line are preserved in the reader's buffer and
-// returned on the first Read call after the handshake.
-type vsockConn struct {
+type vsockConn struct { // net.Conn with buffered reader for multiplexer handshake reply
 	net.Conn
 	r io.Reader
 }
 
 func (c *vsockConn) Read(b []byte) (int, error) { return c.r.Read(b) }
 
-// DialGuest connects to the given port inside the VM identified by id via
-// CH's vsock AF_UNIX multiplexer and returns a raw [net.Conn].
-//
-// The handshake is:
-//
-//	→ "CONNECT <port>\n"
-//	← "OK <n>\n"   (success — socket is now a bidirectional stream)
-//	← anything else (error — connection is closed before returning)
-//
-// Implements [driver.GuestDialer].
+// DialGuest connects to port inside VM.
 func (d *CHDriver) DialGuest(ctx context.Context, id domain.SandboxID, port uint32) (net.Conn, error) {
 	vsockSock := d.vsockPath(id)
 
@@ -122,9 +72,7 @@ func (d *CHDriver) DialGuest(ctx context.Context, id domain.SandboxID, port uint
 		return nil, fmt.Errorf("cloudhypervisor: dial guest %s: connect vsock socket: %w", id, err)
 	}
 
-	// Apply handshake deadline — the shorter of the caller's deadline and
-	// vsockHandshakeTimeout.
-	deadline := time.Now().Add(vsockHandshakeTimeout)
+	deadline := time.Now().Add(vsockHandshakeTimeout) // shorter of caller's deadline and vsockHandshakeTimeout
 	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
 		deadline = dl
 	}
@@ -133,25 +81,18 @@ func (d *CHDriver) DialGuest(ctx context.Context, id domain.SandboxID, port uint
 		return nil, fmt.Errorf("cloudhypervisor: dial guest %s: set deadline: %w", id, err)
 	}
 
-	// Send CONNECT handshake.
 	if _, err := fmt.Fprintf(conn, "CONNECT %d\n", port); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("cloudhypervisor: dial guest %s: send CONNECT: %w", id, err)
 	}
 
-	// Read reply line. Use a bufio.Reader so we don't mis-read stream bytes
-	// that arrive immediately after "OK\n". The reader is preserved in the
-	// returned vsockConn so subsequent reads drain the buffer first.
+	// bufio.Reader preserves stream bytes after "OK\n" for drain-first reads
 	br := bufio.NewReader(conn)
 	reply, err := br.ReadString('\n')
 	if err != nil {
 		conn.Close()
 		if err == io.EOF {
-			// EOF here means the guest closed the connection before sending any
-			// reply — the vsock multiplexer is up (the AF_UNIX connect succeeded)
-			// but nothing is listening on port %d inside the VM yet.  This is
-			// the signature of a race between the host dialer and in-guest agent
-			// startup, not a transport fault.
+			// EOF: guest closed before reply (race, not transport fault)
 			return nil, fmt.Errorf("cloudhypervisor: dial guest %s: read handshake reply:"+
 				" EOF (guest agent not yet listening on vsock port %d — VM may still be starting up)", id, port)
 		}
@@ -164,7 +105,6 @@ func (d *CHDriver) DialGuest(ctx context.Context, id domain.SandboxID, port uint
 		return nil, fmt.Errorf("cloudhypervisor: dial guest %s: multiplexer rejected connection: %q", id, reply)
 	}
 
-	// Clear the deadline — the caller controls connection lifetime from here.
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("cloudhypervisor: dial guest %s: clear deadline: %w", id, err)
@@ -173,5 +113,4 @@ func (d *CHDriver) DialGuest(ctx context.Context, id domain.SandboxID, port uint
 	return &vsockConn{Conn: conn, r: io.MultiReader(br, conn)}, nil
 }
 
-// Compile-time interface assertion — GuestDialer is implemented by CHDriver.
 var _ driver.GuestDialer = (*CHDriver)(nil)

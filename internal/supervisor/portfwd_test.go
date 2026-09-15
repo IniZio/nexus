@@ -169,9 +169,6 @@ func TestReconcile_BindsAndUnbindsHostPort(t *testing.T) {
 	}
 }
 
-// blockingBackend implements portfwd.Backend with a ReadProcNet that ignores
-// ctx and blocks until release is closed — the shape of the live wedge (one
-// hung guest exec) that froze reconcile for the life of the sandbox.
 type blockingBackend struct {
 	calls   chan struct{}
 	release chan struct{}
@@ -187,13 +184,7 @@ func (b *blockingBackend) ReadProcNet(_ context.Context, _ string) ([]byte, []by
 	return nil, nil, nil
 }
 
-// TestRun_DiscoveryTimeoutDoesNotWedgeLoop proves a hung discovery exec is
-// bounded by the per-tick timeout and the loop keeps ticking: the backend
-// blocks forever, yet a second ReadProcNet call must arrive.
-//
-// MUTATION PROOF: call p.disc.DiscoverOne directly in reconcile (no
-// discoverBounded) → the first tick never returns, no second call, RED at
-// the 10 s deadline.
+// TestRun_DiscoveryTimeoutDoesNotWedgeLoop proves hung discovery is bounded by per-tick timeout.
 func TestRun_DiscoveryTimeoutDoesNotWedgeLoop(t *testing.T) {
 	backend := &blockingBackend{
 		calls:   make(chan struct{}, 16),

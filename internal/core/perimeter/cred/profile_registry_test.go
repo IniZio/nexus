@@ -1,10 +1,7 @@
 package cred
 
-// TBD-PD-32: the agent registry is what lets a sandbox name its agent and get
-// the right egress allowlist and credential seed back. These tests pin the
-// three properties call sites depend on: name resolution is exact, unknown
-// names are reported rather than defaulted, and the egress list a caller
-// receives cannot be used to corrupt the shared profile value.
+// TBD-PD-32: agent registry allows a sandbox to name its agent
+// and get egress allowlist + credential seed.
 
 import (
 	"slices"
@@ -24,9 +21,6 @@ func TestProfileByName_ResolvesRegisteredAgent(t *testing.T) {
 	}
 }
 
-// An unknown name must be reported as unknown. Returning the default instead
-// would answer `--agent codex` with Claude Code's credential seed and egress
-// allowlist — a silent wrong answer rather than an error the user can see.
 func TestProfileByName_UnknownAgentIsNotDefaulted(t *testing.T) {
 	p, ok := ProfileByName("no-such-agent")
 	if ok {
@@ -52,10 +46,6 @@ func TestProfileNames_ListsEveryRegisteredAgentSorted(t *testing.T) {
 	}
 }
 
-// Egress must hand back a copy. Callers assign the result straight to
-// Envelope.AllowedHosts and to broker host lists; if it aliased the package
-// value, one sandbox appending a host would widen the allowlist for every
-// sandbox created afterwards in the same process.
 func TestEgress_ReturnsIsolatedCopy(t *testing.T) {
 	first := ClaudeCodeProfile.Egress()
 	if len(first) == 0 {
@@ -70,10 +60,6 @@ func TestEgress_ReturnsIsolatedCopy(t *testing.T) {
 	}
 }
 
-// Every registered profile must be able to reach the host its token
-// authenticates to. A profile whose CredentialedHost is outside its own egress
-// allowlist would seed a placeholder for a host the perimeter blocks — the
-// agent would fail at runtime with a network error, not a credential error.
 func TestRegisteredProfiles_CredentialedHostIsReachable(t *testing.T) {
 	for name, p := range profiles {
 		if p.Name != name {

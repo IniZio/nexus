@@ -12,30 +12,29 @@ import (
 	"time"
 )
 
-// guardianRefreshAhead is how far before expiry the guardian proactively
-// refreshes the credential. 40 minutes is strictly ahead of claude-code's
-// own 30-minute self-refresh so the guardian wins the race by construction
-// (claude-code refreshing at the same moment would invalidate the guardian's
-// refresh token with zero overlap — see memory:
-// claude-oauth-refresh-revokes-prior-token).
 const guardianRefreshAhead = 40 * time.Minute
+
+/**
+40 minutes is strictly ahead of claude-code's own 30-minute self-refresh so the guardian
+wins the race by construction (claude-code refreshing at the same moment would invalidate
+the guardian's refresh token with zero overlap — see memory: claude-oauth-refresh-revokes-prior-token).
+*/
 
 const guardianCheckInterval = time.Minute
 
-// Multiple supervisors running concurrently each arm their own guardian.
-// Concurrent refreshes are serialised by an advisory flock(2) on a sidecar
-// lock file (<credsPath>.nexus3.lock), with a re-read after acquiring the
-// lock so the loser of the race skips the refresh if the winner already did it.
-//
-// The guardian never writes expiresAt:0. On refresh failure it logs and leaves
-// the file untouched. It never caps the token response body (memory:
-// an unparsed 2xx costs the credential).
 type CredGuardian struct {
 	credsPath     string
 	lockPath      string
 	tokenEndpoint string
 	client        *http.Client
 }
+
+/**
+Concurrent refreshes are serialised by an advisory flock(2) on a sidecar lock file
+(<credsPath>.nexus3.lock), with a re-read after acquiring the lock so the loser of
+the race skips the refresh if the winner already did it. Never writes expiresAt:0;
+never caps the token response body (memory: an unparsed 2xx costs the credential).
+*/
 
 func NewCredGuardian(credsPath string) *CredGuardian {
 	return &CredGuardian{
@@ -70,8 +69,6 @@ func (g *CredGuardian) Guard(ctx context.Context) {
 func (g *CredGuardian) GuardOnce(ctx context.Context) error {
 	creds, err := g.readCreds()
 	if err != nil {
-		// Missing file or unreadable: not an error; sandbox may not have run
-		// `claude login` yet.
 		return nil
 	}
 	if !g.needsRefresh(creds, time.Now()) {
@@ -89,7 +86,6 @@ func (g *CredGuardian) GuardOnce(ctx context.Context) error {
 	}
 	defer func() { _ = syscall.Flock(int(lockF.Fd()), syscall.LOCK_UN) }()
 
-	// Re-read after acquiring — another guardian may have refreshed.
 	creds, err = g.readCreds()
 	if err != nil {
 		return nil // file disappeared between check and lock — skip
@@ -108,8 +104,6 @@ func (g *CredGuardian) GuardOnce(ctx context.Context) error {
 		return fmt.Errorf("guardian: refresh returned expiresAt=0; refusing to write")
 	}
 
-	// Patch the full document as raw JSON so sibling keys (mcpOAuth, scopes,
-	// subscriptionType, rateLimitTier, unknown future keys) survive byte-for-byte.
 	rawDoc, err := os.ReadFile(g.credsPath)
 	if err != nil {
 		return fmt.Errorf("guardian: re-read for patch: %w", err)
@@ -196,9 +190,7 @@ type guardianTokenResponse struct {
 	RefreshTokenExpiresIn int64  `json:"refresh_token_expires_in"` // seconds; 0 if absent
 }
 
-// credPatch carries the fields from a successful token refresh that should be
-// patched into the on-disk claudeAiOauth object. An empty RefreshToken means
-// keep the existing one; a zero RefreshTokenExpiresAt means leave it untouched.
+// credPatch carries fields from a successful token refresh to patch on-disk.
 type credPatch struct {
 	AccessToken           string
 	RefreshToken          string // empty → keep existing
@@ -206,6 +198,11 @@ type credPatch struct {
 	RefreshTokenExpiresAt int64  // epoch ms; 0 → leave untouched
 }
 
+/*
+*
+Never cap the token response body — an unparsed 2xx costs the credential
+(memory: an-unparsed-2xx-costs-the-credential).
+*/
 func (g *CredGuardian) refresh(ctx context.Context, creds claudeCredentials) (credPatch, error) {
 	body := strings.NewReader(
 		"grant_type=refresh_token" +
@@ -218,8 +215,6 @@ func (g *CredGuardian) refresh(ctx context.Context, creds claudeCredentials) (cr
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	// Never cap the response body — an unparsed 2xx costs the credential
-	// (memory: an-unparsed-2xx-costs-the-credential).
 	resp, err := g.client.Do(req)
 	if err != nil {
 		return credPatch{}, fmt.Errorf("http: %w", err)

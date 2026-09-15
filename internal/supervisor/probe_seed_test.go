@@ -10,25 +10,14 @@ import (
 	"github.com/IniZio/nexus3/internal/core/service"
 )
 
-// alwaysFailProber is a GuestProber whose Ping always returns a non-nil error.
 type alwaysFailProber struct{ err error }
 
 func (p *alwaysFailProber) Ping(_ context.Context) error { return p.err }
 
-// alwaysOKProber is a GuestProber whose Ping always returns nil.
 type alwaysOKProber struct{}
 
 func (p *alwaysOKProber) Ping(_ context.Context) error { return nil }
 
-// TestProbeAndSeedGuest_DeadProberReturnsError is the mutation guard for the
-// ProbeGuestAgent call inside probeAndSeedGuest (D-M4, assertion a):
-//
-//	Delete ProbeGuestAgent(…) from probeAndSeedGuest → this test fails RED.
-//
-// When the guest agent is unreachable, probeAndSeedGuest must return a non-nil
-// error. RunDetached checks this return and refuses to write supervisor.pid
-// (the READY signal), so the spawning CLI gets a hard failure instead of a
-// false success for a sandbox whose guest never came up.
 func TestProbeAndSeedGuest_DeadProberReturnsError(t *testing.T) {
 	seederCalled := false
 	old := seedShellProfileFn
@@ -38,8 +27,6 @@ func TestProbeAndSeedGuest_DeadProberReturnsError(t *testing.T) {
 	}
 	t.Cleanup(func() { seedShellProfileFn = old })
 
-	// An already-cancelled context drains the 30s probe window instantly so the
-	// test completes in microseconds rather than waiting out the full timeout.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -52,14 +39,6 @@ func TestProbeAndSeedGuest_DeadProberReturnsError(t *testing.T) {
 	}
 }
 
-// TestProbeAndSeedGuest_LiveProberSeedIsInvoked is the mutation guard for the
-// seedShellProfileFn call inside probeAndSeedGuest (D-M4, assertion b):
-//
-//	Delete seedShellProfileFn(…) from probeAndSeedGuest → this test fails RED.
-//
-// When the guest agent is reachable, the shell-profile seeder must be invoked
-// so that an agent started interactively in a guest shell (the herdr pane path)
-// receives its credential via the login-shell drop-in.
 func TestProbeAndSeedGuest_LiveProberSeedIsInvoked(t *testing.T) {
 	seedCalled := false
 	old := seedShellProfileFn
@@ -78,14 +57,7 @@ func TestProbeAndSeedGuest_LiveProberSeedIsInvoked(t *testing.T) {
 	}
 }
 
-// TestProbeAndSeedGuest_AgentOnboardingIsInvoked is the mutation guard for the
-// seedAgentOnboardingFn call inside probeAndSeedGuest (D-J10):
-//
-//	Delete seedAgentOnboardingFn(…) from probeAndSeedGuest → this test fails RED.
-//
-// When the guest agent is reachable, the onboarding seeder must be invoked so
-// that an interactively started claude skips the first-run wizards and reaches
-// its prompt directly.
+// TestProbeAndSeedGuest_AgentOnboardingIsInvoked is the mutation guard (D-J10).
 func TestProbeAndSeedGuest_AgentOnboardingIsInvoked(t *testing.T) {
 	onboardCalled := false
 	old := seedAgentOnboardingFn
@@ -104,20 +76,6 @@ func TestProbeAndSeedGuest_AgentOnboardingIsInvoked(t *testing.T) {
 	}
 }
 
-// TestProbeAndSeedGuest_GitIdentitySeededForAnySourcePaths is the mutation
-// guard for the seedGitIdentityFn call inside probeAndSeedGuest.
-//
-// It pins the fix for a defect that a payload-level test could not see. The
-// gitconfig seed used to live on the human-secrets branch, gated on
-// `len(sb.Envelope.SecretHosts) > 0` — whether the sandbox holds a push
-// credential. The gitconfig answers two questions that have nothing to do with
-// pushing: may git read this directory at all (safe.directory), and whose name
-// goes on a commit (identity). The result was that every `--agent` sandbox
-// failed `git log` in its own mounted source with "detected dubious ownership",
-// while unit tests over the payload builder stayed green throughout, because
-// the payload was always correct — it was simply never written.
-//
-// So this test asserts the CALL, with no secrets configured at all.
 func TestProbeAndSeedGuest_GitIdentitySeededForAnySourcePaths(t *testing.T) {
 	var gotPaths []string
 	called := false
@@ -144,8 +102,6 @@ func TestProbeAndSeedGuest_GitIdentitySeededForAnySourcePaths(t *testing.T) {
 	}
 }
 
-// A sandbox with nothing mounted has no directory to exempt and no repository
-// to attribute, so it must not write a gitconfig at all.
 func TestProbeAndSeedGuest_NoGitIdentityWithoutSourcePaths(t *testing.T) {
 	called := false
 	old := seedGitIdentityFn
@@ -163,20 +119,7 @@ func TestProbeAndSeedGuest_NoGitIdentityWithoutSourcePaths(t *testing.T) {
 	}
 }
 
-// TestProbeAndSeedGuest_GitCredentialHelperSeeded is the mutation guard for the
-// seedGitCredentialHelperFn call inside probeAndSeedGuest.
-//
-// The gitconfig written by seedGitIdentityFn references the helper script at
-// GuestGitCredentialHelperPath. If the script is never seeded, every git push
-// inside the guest fails with "credential helper not found" — a failure that
-// is invisible to the gitconfig payload tests (which assert on bytes written,
-// not on whether the referenced script file exists).
-//
-// This test asserts the CALL, following the same pattern as the gitconfig
-// mutation guard above:
-//
-//	Delete seedGitCredentialHelperFn(…) from probeAndSeedGuest → this test
-//	fails RED.
+// TestProbeAndSeedGuest_GitCredentialHelperSeeded is the mutation guard.
 func TestProbeAndSeedGuest_GitCredentialHelperSeeded(t *testing.T) {
 	called := false
 	old := seedGitCredentialHelperFn
@@ -198,9 +141,6 @@ func TestProbeAndSeedGuest_GitCredentialHelperSeeded(t *testing.T) {
 	}
 }
 
-// TestProbeAndSeedGuest_NoGitCredentialHelperWithoutSourcePaths asserts that
-// the helper script is not seeded for sandboxes with no source paths (same
-// gate as the gitconfig).
 func TestProbeAndSeedGuest_NoGitCredentialHelperWithoutSourcePaths(t *testing.T) {
 	called := false
 	old := seedGitCredentialHelperFn
@@ -218,13 +158,7 @@ func TestProbeAndSeedGuest_NoGitCredentialHelperWithoutSourcePaths(t *testing.T)
 	}
 }
 
-// TestProbeAndSeedGuest_UserMountsSeeded is the mutation guard for the
-// seedUserMountsFn call inside probeAndSeedGuest.
-//
-//	Delete the seedUserMountsFn block from probeAndSeedGuest → this test fails RED.
-//
-// When UserMounts is non-nil, probeAndSeedGuest must invoke seedUserMountsFn
-// so the guest receives the home symlink, PATH drop-in, and overlay mounts.
+// TestProbeAndSeedGuest_UserMountsSeeded is the mutation guard.
 func TestProbeAndSeedGuest_UserMountsSeeded(t *testing.T) {
 	called := false
 	old := seedUserMountsFn
@@ -256,8 +190,6 @@ func TestProbeAndSeedGuest_UserMountsSeeded(t *testing.T) {
 	}
 }
 
-// TestProbeAndSeedGuest_NoUserMountsWhenAbsent asserts that seedUserMountsFn
-// is not called when UserMounts is nil (sharing disabled or manifest absent).
 func TestProbeAndSeedGuest_NoUserMountsWhenAbsent(t *testing.T) {
 	called := false
 	old := seedUserMountsFn
@@ -275,13 +207,7 @@ func TestProbeAndSeedGuest_NoUserMountsWhenAbsent(t *testing.T) {
 	}
 }
 
-// TestProbeAndSeedGuest_OverlaySkippedWithLiveRWMount is the mutation guard for
-// the HasClaudeRWMount check in probeAndSeedGuest (D-1):
-//
-//	Remove the !in.HasClaudeRWMount guard on seedOverlayClaudeConfigFn → this test fails RED.
-//
-// When the sandbox has a live rw /root/.claude mount, the overlayfs mount must
-// NOT be triggered — the live mount IS the effective /root/.claude.
+// TestProbeAndSeedGuest_OverlaySkippedWithLiveRWMount is the mutation guard (D-1).
 func TestProbeAndSeedGuest_OverlaySkippedWithLiveRWMount(t *testing.T) {
 	overlayCalled := false
 	oldOvl := seedOverlayClaudeConfigFn
@@ -291,7 +217,6 @@ func TestProbeAndSeedGuest_OverlaySkippedWithLiveRWMount(t *testing.T) {
 	}
 	t.Cleanup(func() { seedOverlayClaudeConfigFn = oldOvl })
 
-	// HasClaudeRWMount=true and AgentCfgLowerGuestPath set → overlay must be skipped.
 	err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{
 		AgentCfgLowerGuestPath: "/run/nexus3/agentcfg-lower",
 		HasClaudeRWMount:       true,
@@ -304,4 +229,3 @@ func TestProbeAndSeedGuest_OverlaySkippedWithLiveRWMount(t *testing.T) {
 			"overlay must be skipped when a live rw /root/.claude mount is present (D-1 mutation guard)")
 	}
 }
-

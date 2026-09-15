@@ -10,16 +10,6 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
-// TestSeedGuestAgent_ClaudeVarsPresentRealTokenAbsent is the primary invariant
-// test for the agent egress seeding path. It verifies:
-//
-//  1. CLAUDE_CODE_OAUTH_TOKEN is ABSENT — ClaudeCodeProfile uses CredDirLiveMount;
-//     the credential is delivered via a live ~/.credentials.json virtiofs mount,
-//     not a placeholder env var.
-//  2. NODE_EXTRA_CA_CERTS is present and equals GuestCACertPath.
-//  3. CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 is present.
-//  4. The real token (registered via SetRealToken AFTER seeding) is NOT present
-//     in the payload — zero-cred-in-guest invariant.
 func TestSeedGuestAgent_ClaudeVarsPresentRealTokenAbsent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -36,12 +26,10 @@ func TestSeedGuestAgent_ClaudeVarsPresentRealTokenAbsent(t *testing.T) {
 		t.Fatal("SeedGuestAgent returned no records")
 	}
 
-	// Wire in the real token host-side (after seeding, as production does).
 	if err := broker.SetRealToken(sid, AnthropicAPIHost, realToken); err != nil {
 		t.Fatalf("SetRealToken: %v", err)
 	}
 
-	// Find the api.anthropic.com placeholder from the returned records.
 	var anthropicPlaceholder string
 	for _, rec := range recs {
 		if rec.Host == AnthropicAPIHost {
@@ -55,11 +43,9 @@ func TestSeedGuestAgent_ClaudeVarsPresentRealTokenAbsent(t *testing.T) {
 
 	payload := cap.payload
 
-	// Invariant 1 (CredDirLiveMount): CLAUDE_CODE_OAUTH_TOKEN must be ABSENT.
-	// ClaudeCodeProfile.PlaceholderEnvVar="" — the credential reaches the guest
-	// via a live ~/.credentials.json virtiofs mount, not a placeholder env var.
-	// Mutation guard: if PlaceholderEnvVar is re-added, this assertion fails RED.
-	_ = anthropicPlaceholder // placeholder is still minted (MITM proxy needs it); just not in env
+	// Invariant 1: CLAUDE_CODE_OAUTH_TOKEN absent (CredDirLiveMount via virtiofs ~/).
+	// MUTATION-PIN: if PlaceholderEnvVar re-added, this fails RED.
+	_ = anthropicPlaceholder
 	if bytes.Contains(payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
 		t.Errorf("payload must NOT contain CLAUDE_CODE_OAUTH_TOKEN (CredDirLiveMount profile)\npayload:\n%s", payload)
 	}
@@ -82,9 +68,6 @@ func TestSeedGuestAgent_ClaudeVarsPresentRealTokenAbsent(t *testing.T) {
 	}
 }
 
-// TestSeedGuestAgent_BothAnthropicHostsSeeded verifies that SeedGuestAgent
-// registers placeholders for both AgentEgressHosts (api.anthropic.com and
-// platform.claude.com) and includes their NEXUS3_CRED_* lines in the payload.
 func TestSeedGuestAgent_BothAnthropicHostsSeeded(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -111,9 +94,6 @@ func TestSeedGuestAgent_BothAnthropicHostsSeeded(t *testing.T) {
 	}
 }
 
-// TestWireClaudeEgress_AllowedHostsSet verifies that WireClaudeEgress populates
-// AllowedHosts with both Anthropic egress hosts, sets UseAgentSeed, and wires
-// broker and seeder into the options.
 func TestWireClaudeEgress_AllowedHostsSet(t *testing.T) {
 	t.Parallel()
 	broker := cred.NewBroker()
@@ -148,8 +128,6 @@ func TestWireClaudeEgress_AllowedHostsSet(t *testing.T) {
 	}
 }
 
-// TestSeedGuestAgent_NilBrokerNoOp verifies that a nil broker causes
-// SeedGuestAgent to skip seeding entirely.
 func TestSeedGuestAgent_NilBrokerNoOp(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -168,24 +146,10 @@ func TestSeedGuestAgent_NilBrokerNoOp(t *testing.T) {
 	}
 }
 
-// TestSeedGuestAgent_AnthropicAuthToken_SeededAndResolvable verifies the
-// S-CRED auth-token path end-to-end at the unit level:
-//
-//  1. When ANTHROPIC_AUTH_TOKEN is set in the host env, [SeedGuestAgent]
-//     emits ANTHROPIC_AUTH_TOKEN=<placeholder> in the guest payload (not the
-//     real token).
-//  2. CLAUDE_CODE_OAUTH_TOKEN is absent — the two kinds are mutually exclusive.
-//  3. [cred.Broker.ResolveScoped] resolves the placeholder to the real token
-//     for the correct sandbox scope.
-//  4. ResolveScoped returns ("", false) for a different sandbox — cross-sandbox
-//     theft is prevented.
 func TestSeedGuestAgent_AnthropicAuthToken_SeededAndResolvable(t *testing.T) {
-	// t.Parallel omitted: t.Setenv mutates global env state; parallel execution
-	// would race with other tests that read ANTHROPIC_AUTH_TOKEN.
+	// NO t.Parallel: t.Setenv races with other tests reading ANTHROPIC_AUTH_TOKEN.
 	ctx := context.Background()
 
-	// Use a real-token string that is not 64 hex chars so the absence check
-	// cannot false-negative against a hex placeholder.
 	const realToken = "sk-ant-api-test-xyzzy-secret"
 
 	broker := cred.NewBroker()
@@ -204,7 +168,6 @@ func TestSeedGuestAgent_AnthropicAuthToken_SeededAndResolvable(t *testing.T) {
 		t.Fatal("SeedGuestAgent returned no records")
 	}
 
-	// Find the api.anthropic.com placeholder.
 	var placeholder string
 	for _, rec := range recs {
 		if rec.Host == AnthropicAPIHost {
@@ -216,30 +179,27 @@ func TestSeedGuestAgent_AnthropicAuthToken_SeededAndResolvable(t *testing.T) {
 		t.Fatal("no PlaceholderRecord found for AnthropicAPIHost")
 	}
 
-	// Wire the real token host-side after seeding (mirrors production order).
 	if err := broker.SetRealToken(sid, AnthropicAPIHost, realToken); err != nil {
 		t.Fatalf("SetRealToken: %v", err)
 	}
 
 	payload := cap.payload
 
-	// Invariant 1: ANTHROPIC_AUTH_TOKEN equals the placeholder (not the real token).
 	wantVar := "ANTHROPIC_AUTH_TOKEN=" + placeholder
 	if !bytes.Contains(payload, []byte(wantVar)) {
 		t.Errorf("payload missing %q\npayload:\n%s", wantVar, payload)
 	}
 
-	// Invariant 2: CLAUDE_CODE_OAUTH_TOKEN is absent — kinds are mutually exclusive.
+	// ANTHROPIC_AUTH_TOKEN and CLAUDE_CODE_OAUTH_TOKEN are mutually exclusive.
 	if bytes.Contains(payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
 		t.Errorf("payload must NOT contain CLAUDE_CODE_OAUTH_TOKEN when kindAuthToken is active\npayload:\n%s", payload)
 	}
 
-	// Invariant 3: real token structurally absent from the guest payload.
 	if bytes.Contains(payload, []byte(realToken)) {
 		t.Errorf("payload must NOT contain the real token\npayload:\n%s", payload)
 	}
 
-	// Invariant 4a: correct sandbox + correct host resolves placeholder to real token.
+	// Correct sandbox resolves placeholder to real token.
 	got, ok := broker.ResolveScoped(placeholder, sid, AnthropicAPIHost)
 	if !ok {
 		t.Errorf("ResolveScoped(%q, sid, AnthropicAPIHost): ok=false, want true", placeholder)
@@ -248,17 +208,13 @@ func TestSeedGuestAgent_AnthropicAuthToken_SeededAndResolvable(t *testing.T) {
 		t.Errorf("ResolveScoped returned %q, want %q", got, realToken)
 	}
 
-	// Invariant 4b: different sandbox does NOT resolve — cross-sandbox theft prevented.
+	// Cross-sandbox theft prevented: different sandbox does not resolve.
 	gotOther, okOther := broker.ResolveScoped(placeholder, otherSid, AnthropicAPIHost)
 	if okOther {
 		t.Errorf("ResolveScoped(%q, otherSid, AnthropicAPIHost): ok=true (cross-sandbox leak), want false; got token=%q", placeholder, gotOther)
 	}
 }
 
-// TestCreateAndBoot_AgentSeed_RealTokenAbsentFromPayload verifies the
-// zero-cred-in-guest invariant at the CreateAndBoot level: after wiring a
-// non-empty AgentEgressToken, the cred.env payload delivered to the guest does
-// not contain the real token string.
 func TestCreateAndBoot_AgentSeed_RealTokenAbsentFromPayload(t *testing.T) {
 	ctx := context.Background()
 	cacheRoot := t.TempDir()
@@ -284,16 +240,14 @@ func TestCreateAndBoot_AgentSeed_RealTokenAbsentFromPayload(t *testing.T) {
 		t.Fatalf("CreateAndBoot: %v", err)
 	}
 
-	// The seeder payload must not contain the real token.
 	if bytes.Contains(cap.payload, []byte(realToken)) {
 		t.Errorf("cred.env payload delivered to guest must NOT contain real token\npayload:\n%s", cap.payload)
 	}
-	// CredDirLiveMount: payload must NOT contain CLAUDE_CODE_OAUTH_TOKEN.
+	// CredDirLiveMount: CLAUDE_CODE_OAUTH_TOKEN absent.
 	if bytes.Contains(cap.payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
 		t.Errorf("cred.env payload must NOT contain CLAUDE_CODE_OAUTH_TOKEN (CredDirLiveMount profile)\npayload:\n%s", cap.payload)
 	}
-	// Mutation guard: NODE_EXTRA_CA_CERTS is present — proves the agent seeding
-	// path executed (CACertEnvVars are always written regardless of CredDirLiveMount).
+	// MUTATION-PIN: NODE_EXTRA_CA_CERTS present proves agent seeding path executed.
 	if !bytes.Contains(cap.payload, []byte("NODE_EXTRA_CA_CERTS=")) {
 		t.Errorf("cred.env payload missing NODE_EXTRA_CA_CERTS (agent seeding path must still write CA cert env)\npayload:\n%s", cap.payload)
 	}

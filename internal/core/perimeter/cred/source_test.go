@@ -10,19 +10,12 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
-// TestS0_ProfileStoreToken is the end-to-end S0 tracer test: it loads a
-// profile, loads a store from disk, constructs a StaticCredentialSource, and
-// resolves a token — proving the profile→store→token path works.
 func TestS0_ProfileStoreToken(t *testing.T) {
-	// 1. Profile — use the canonical ClaudeCode profile.
 	profile := cred.ClaudeCodeProfile
-	// CredDirLiveMount profiles intentionally have no PlaceholderEnvVar;
-	// the guest reads credentials directly from the live-mounted ~/.credentials.json.
 	if profile.CredentialedHost == "" || !profile.Capabilities.CredDirLiveMount {
 		t.Fatal("ClaudeCodeProfile is incomplete — must have CredentialedHost and CredDirLiveMount")
 	}
 
-	// 2. Store — write a fixture to disk and load it.
 	expiry := time.Date(2027, 6, 1, 0, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
 	storePath := filepath.Join(dir, "nexus3_cred.json")
@@ -43,10 +36,8 @@ func TestS0_ProfileStoreToken(t *testing.T) {
 		t.Fatalf("LoadStore: %v", err)
 	}
 
-	// 3. Source — wrap the store.
 	src := cred.NewStaticCredentialSource(store)
 
-	// 4. Resolve — the payoff: Token() must return the real token.
 	tok, expiresAt, err := src.Token(context.Background())
 	if err != nil {
 		t.Fatalf("Token: unexpected error: %v", err)
@@ -57,8 +48,6 @@ func TestS0_ProfileStoreToken(t *testing.T) {
 	if !expiresAt.Equal(expiry) {
 		t.Errorf("expiresAt = %v, want %v", expiresAt, expiry)
 	}
-
-	// Sanity: the interface is satisfied (compile-time proof via assignment).
 	var _ cred.CredentialSource = src
 }
 

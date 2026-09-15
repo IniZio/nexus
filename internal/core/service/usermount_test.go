@@ -11,8 +11,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/service"
 )
 
-// minimalRecipe returns a ToolRecipe shaped like the real claude-code recipe,
-// usable for shadow-check tests without depending on the live profile value.
+// minimalRecipe returns a claude-code-shaped ToolRecipe for testing.
 func minimalRecipe() cred.ToolRecipe {
 	return cred.ToolRecipe{
 		BinPath: "/usr/local/bin/claude",
@@ -32,7 +31,7 @@ func minimalRecipe() cred.ToolRecipe {
 	}
 }
 
-// minimalCursorRecipe returns a ToolRecipe shaped like the real cursor-agent recipe.
+// minimalCursorRecipe returns a cursor-agent-shaped ToolRecipe for testing.
 func minimalCursorRecipe() cred.ToolRecipe {
 	return cred.ToolRecipe{
 		BinPath: "/usr/local/bin/cursor-agent",
@@ -53,10 +52,7 @@ func minimalCursorRecipe() cred.ToolRecipe {
 	}
 }
 
-// TestCheckRecipeShadows_BinPathExact verifies that a mount exactly at the
-// recipe's BinPath triggers a warning quoting the raw spec text. This is the
-// real call site for the shadow diagnostic (AC-5) — the test drives
-// service.CheckRecipeShadows directly rather than a hand-built stand-in.
+// TestCheckRecipeShadows_BinPathExact verifies mount at BinPath triggers warning.
 func TestCheckRecipeShadows_BinPathExact(t *testing.T) {
 	spec := "~/.local/bin/claude:/usr/local/bin/claude:ro"
 	warnings := service.CheckRecipeShadows([]string{spec}, minimalRecipe())
@@ -68,8 +64,7 @@ func TestCheckRecipeShadows_BinPathExact(t *testing.T) {
 	}
 }
 
-// TestCheckRecipeShadows_PathEntryDir verifies that a mount at the parent
-// directory of BinPath (the PATH-entry directory) also triggers a warning.
+// TestCheckRecipeShadows_PathEntryDir verifies mount at PATH parent triggers warning.
 func TestCheckRecipeShadows_PathEntryDir(t *testing.T) {
 	spec := "~/.local/bin:/usr/local/bin:ro"
 	warnings := service.CheckRecipeShadows([]string{spec}, minimalRecipe())
@@ -81,11 +76,8 @@ func TestCheckRecipeShadows_PathEntryDir(t *testing.T) {
 	}
 }
 
-// TestCheckRecipeShadows_InstallDir verifies that a mount covering a recipe
-// package's InstallDir prefix triggers a warning.
+// TestCheckRecipeShadows_InstallDir verifies mount at InstallDir prefix triggers warning.
 func TestCheckRecipeShadows_InstallDir(t *testing.T) {
-	// cursor-agent InstallDir is /usr/local/share/cursor-agent/versions/{VERSION};
-	// a mount at the stable prefix /usr/local/share/cursor-agent shadows it.
 	spec := "~/.local/share/cursor-agent:/usr/local/share/cursor-agent:ro"
 	warnings := service.CheckRecipeShadows([]string{spec}, minimalCursorRecipe())
 	if len(warnings) == 0 {
@@ -96,8 +88,7 @@ func TestCheckRecipeShadows_InstallDir(t *testing.T) {
 	}
 }
 
-// TestCheckRecipeShadows_Symlink verifies that a mount exactly at a recipe
-// symlink's LinkPath triggers a warning.
+// TestCheckRecipeShadows_Symlink verifies mount at symlink LinkPath triggers warning.
 func TestCheckRecipeShadows_Symlink(t *testing.T) {
 	spec := "~/.local/bin/cursor-agent:/usr/local/bin/cursor-agent:ro"
 	warnings := service.CheckRecipeShadows([]string{spec}, minimalCursorRecipe())
@@ -109,10 +100,7 @@ func TestCheckRecipeShadows_Symlink(t *testing.T) {
 	}
 }
 
-// TestCheckRecipeShadows_NonBinaryRowsUntouched verifies that operator mounts
-// carrying non-binary payloads (plugins, mise, groundwork, codegraph, vscode)
-// produce no shadow warnings. These rows must still reach the manifest
-// unchanged (AC-5 item 5: only binary rows are flagged).
+// TestCheckRecipeShadows_NonBinaryRowsUntouched verifies non-binary mounts are not flagged.
 func TestCheckRecipeShadows_NonBinaryRowsUntouched(t *testing.T) {
 	nonBinaryMounts := []string{
 		"~/.claude/plugins:/root/.claude/plugins:ro",
@@ -129,8 +117,7 @@ func TestCheckRecipeShadows_NonBinaryRowsUntouched(t *testing.T) {
 	}
 }
 
-// TestCheckRecipeShadows_EmptyRecipe verifies that a zero/empty recipe
-// (no Packages) returns nil — no false positives when no recipe is registered.
+// TestCheckRecipeShadows_EmptyRecipe verifies empty recipe produces no warnings.
 func TestCheckRecipeShadows_EmptyRecipe(t *testing.T) {
 	warnings := service.CheckRecipeShadows([]string{"~/.local/bin:/usr/local/bin:ro"}, cred.ToolRecipe{})
 	if len(warnings) != 0 {
@@ -138,17 +125,13 @@ func TestCheckRecipeShadows_EmptyRecipe(t *testing.T) {
 	}
 }
 
-// TestBuildUserMountManifest_CuratedPATHDir verifies S6-AC1:
-// a mount whose guest path is a GuestCuratedPATHDirs entry gets Curated=true,
-// a StagingGuestPath under /run/nexus3/usermount/bin-<base>, and Overlay=false.
-// A mount with a non-curated guest path is unchanged in every field.
+// TestBuildUserMountManifest_CuratedPATHDir verifies curated PATH handling.
 func TestBuildUserMountManifest_CuratedPATHDir(t *testing.T) {
 	home := t.TempDir()
 	localBin := filepath.Join(home, ".local", "bin")
 	if err := os.MkdirAll(localBin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// /root/.local/bin is a GuestCuratedPATHDirs entry.
 	got := service.BuildUserMountManifest(home, []string{localBin + ":/root/.local/bin"})
 	if len(got.Mounts) != 1 {
 		t.Fatalf("expected 1 mount, got %d", len(got.Mounts))
@@ -164,7 +147,6 @@ func TestBuildUserMountManifest_CuratedPATHDir(t *testing.T) {
 	if m.StagingGuestPath != wantStaging {
 		t.Errorf("StagingGuestPath = %q, want %q", m.StagingGuestPath, wantStaging)
 	}
-	// GuestPath and HostPath must be unchanged.
 	if m.GuestPath != "/root/.local/bin" {
 		t.Errorf("GuestPath = %q, want /root/.local/bin", m.GuestPath)
 	}
@@ -172,7 +154,6 @@ func TestBuildUserMountManifest_CuratedPATHDir(t *testing.T) {
 		t.Errorf("HostPath = %q, want %q", m.HostPath, localBin)
 	}
 
-	// Non-curated row: /root/.config is not a PATH-entry dir.
 	configDir := filepath.Join(home, ".config")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -190,12 +171,9 @@ func TestBuildUserMountManifest_CuratedPATHDir(t *testing.T) {
 	}
 }
 
-// TestBuildUserMountManifest_ExistingDir verifies that a mount whose host dir
-// exists is included. Uses /root/.config (non-curated, non-overlay) to exercise
-// the direct-mount path (Overlay=false, StagingGuestPath==GuestPath).
+// TestBuildUserMountManifest_ExistingDir verifies existing dirs are included.
 func TestBuildUserMountManifest_ExistingDir(t *testing.T) {
 	home := t.TempDir()
-	// Use /root/.config: not a curated PATH dir, not under /root/.claude.
 	dir := filepath.Join(home, ".config")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -222,8 +200,7 @@ func TestBuildUserMountManifest_ExistingDir(t *testing.T) {
 	}
 }
 
-// TestBuildUserMountManifest_AbsentDirSkipped verifies that a mount whose host
-// dir does not exist is silently skipped.
+// TestBuildUserMountManifest_AbsentDirSkipped verifies absent dirs are skipped.
 func TestBuildUserMountManifest_AbsentDirSkipped(t *testing.T) {
 	home := t.TempDir()
 	got := service.BuildUserMountManifest(home, []string{home + "/nonexistent:/root/.local/bin"})
@@ -232,12 +209,7 @@ func TestBuildUserMountManifest_AbsentDirSkipped(t *testing.T) {
 	}
 }
 
-// TestBuildUserMountManifest_OverlayForClaude verifies that guest paths under
-// /root/.claude/ get Overlay=false (the live rw mount handles the .claude dir;
-// user-mount overlay was removed in the CredDirLiveMount design).
-//
-// Mutation guard: re-enabling overlay for /root/.claude/ paths makes Overlay=true,
-// failing this assertion.
+// TestBuildUserMountManifest_OverlayForClaude verifies .claude paths get Overlay=false.
 func TestBuildUserMountManifest_OverlayForClaude(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".claude", "plugins")
@@ -252,14 +224,12 @@ func TestBuildUserMountManifest_OverlayForClaude(t *testing.T) {
 	if m.Overlay {
 		t.Errorf("expected Overlay=false for /root/.claude/ path (live rw mount replaces overlay)")
 	}
-	// With Overlay=false and Curated=false, StagingGuestPath must equal GuestPath.
 	if m.StagingGuestPath != m.GuestPath {
 		t.Errorf("non-overlay non-curated row: StagingGuestPath %q != GuestPath %q", m.StagingGuestPath, m.GuestPath)
 	}
 }
 
-// TestBuildUserMountManifest_TildeExpansion verifies that ~ is expanded against hostHome.
-// Uses /root/.local/bin (a curated dir) to also confirm Curated=true is set after expansion.
+// TestBuildUserMountManifest_TildeExpansion verifies tilde expansion.
 func TestBuildUserMountManifest_TildeExpansion(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".local", "bin")
@@ -278,22 +248,9 @@ func TestBuildUserMountManifest_TildeExpansion(t *testing.T) {
 	}
 }
 
-// TestBuildUserMountManifest_ContainmentMatch verifies that a mount whose guest
-// path is a PARENT of a GuestCuratedPATHDirs entry is also curated (containment
-// matching), with CuratedSubPath set to the relative suffix from GuestPath to
-// the curated PATH-entry dir, and StagingGuestPath derived from the mount's
-// own basename (not the curated subdir's basename).
-//
-// Without the containment fix the exact-match check at line ~95 of usermount.go
-// fails for this case, leaving Curated=false — the raw host directory stays on
-// PATH and D-TP-05's premise is violated for mise shims.
-//
-// Mutation proof: revert the containment branch (keep only exact-match), run
-// this test alone, confirm RED ("expected Curated=true … got Curated=false").
+// TestBuildUserMountManifest_ContainmentMatch verifies containment matching for curated dirs.
 func TestBuildUserMountManifest_ContainmentMatch(t *testing.T) {
 	home := t.TempDir()
-	// ~/.local/share/mise is the parent of the curated PATH entry
-	// /root/.local/share/mise/shims.
 	miseDir := filepath.Join(home, ".local", "share", "mise")
 	if err := os.MkdirAll(miseDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -304,30 +261,27 @@ func TestBuildUserMountManifest_ContainmentMatch(t *testing.T) {
 	}
 	m := got.Mounts[0]
 	if !m.Curated {
-		t.Error("expected Curated=true for parent of /root/.local/share/mise/shims; "+
-			"without containment matching the exact-match check leaves Curated=false, "+
+		t.Error("expected Curated=true for parent of /root/.local/share/mise/shims; " +
+			"without containment matching the exact-match check leaves Curated=false, " +
 			"allowing a raw host directory on the guest PATH (D-TP-05 violated)")
 	}
 	if m.Overlay {
 		t.Error("Curated and Overlay must be mutually exclusive")
 	}
-	// Staging uses basename of the MOUNT path ("mise"), not the curated subdir.
 	const wantStaging = "/run/nexus3/usermount/bin-mise"
 	if m.StagingGuestPath != wantStaging {
 		t.Errorf("StagingGuestPath = %q, want %q", m.StagingGuestPath, wantStaging)
 	}
-	// CuratedSubPath is the relative suffix from GuestPath to the curated dir.
 	const wantSubPath = "shims"
 	if m.CuratedSubPath != wantSubPath {
 		t.Errorf("CuratedSubPath = %q, want %q", m.CuratedSubPath, wantSubPath)
 	}
-	// GuestPath remains the mount's own guest path, not the curated subdir.
 	if m.GuestPath != "/root/.local/share/mise" {
 		t.Errorf("GuestPath = %q, want /root/.local/share/mise", m.GuestPath)
 	}
 }
 
-// TestBuildUserMountManifest_EmptyMounts verifies an empty input returns no mounts.
+// TestBuildUserMountManifest_EmptyMounts verifies empty input returns no mounts.
 func TestBuildUserMountManifest_EmptyMounts(t *testing.T) {
 	home := t.TempDir()
 	got := service.BuildUserMountManifest(home, nil)
@@ -339,8 +293,7 @@ func TestBuildUserMountManifest_EmptyMounts(t *testing.T) {
 	}
 }
 
-// TestWriteUserMountManifest_RoundTrip verifies the manifest writes to
-// usermounts.json at mode 0o600 and round-trips through JSON faithfully.
+// TestWriteUserMountManifest_RoundTrip verifies manifest serialization and mode.
 func TestWriteUserMountManifest_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	m := service.UserMountManifest{

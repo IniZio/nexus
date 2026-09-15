@@ -8,7 +8,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/gitssh"
 )
 
-// pipeRelay: minimal host relay over net.Pipe — reads request, optionally writes stdout, sends exit frame.
+// pipeRelay is a minimal host relay over net.Pipe.
 type pipeRelay struct {
 	conn     net.Conn
 	exitCode int32
@@ -39,8 +39,7 @@ func (r *pipeRelay) run(t *testing.T, reqOut *gitssh.Request) {
 	}
 }
 
-// Mutation pin: flipping the exit-code propagation (e.g. always returning 0
-// or ignoring the frame payload) must cause this test to fail.
+// Mutation pin: exit-code propagation (flipping to always 0 must fail).
 func TestGitSSHShim_ExitCodePropagated(t *testing.T) {
 	for _, wantCode := range []int32{0, 1, 128} {
 		t.Run("", func(t *testing.T) {
@@ -93,13 +92,7 @@ func TestGitSSHShim_RequestArgvSent(t *testing.T) {
 	}
 }
 
-// TestGitSSHShim_NonzeroExitCodePropagated_MutationPin is the mutation pin
-// for exit-code propagation. It proves that returning a hardcoded zero exit
-// code (instead of the FrameTypeExit payload) would make this test fail.
-//
-// A mutation that replaces `exitCode = int32(binary.BigEndian.Uint32(payload))`
-// with `exitCode = 0` (or removes the assignment) will cause this test to fail
-// because wantCode=42 ≠ 0.
+// TestGitSSHShim_NonzeroExitCodePropagated_MutationPin: hardcoded exitCode=0 must fail.
 func TestGitSSHShim_NonzeroExitCodePropagated_MutationPin(t *testing.T) {
 	const wantCode int32 = 42
 

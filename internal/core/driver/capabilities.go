@@ -9,128 +9,36 @@ import (
 	"github.com/IniZio/nexus3/internal/core/domain"
 )
 
-// AgentControlPort is the fixed vsock port number the guest agent listens on
-// for its gRPC control plane. The host always dials the guest (never the
-// reverse). The spec does not assign a specific number (ticket 16), so
-// nexus3 uses 1024.
-const AgentControlPort uint32 = 1024
+const AgentControlPort uint32 = 1024 // guest agent gRPC control plane
 
-// GitSSHRelayPort is the vsock port the host relay listens on for
-// guest-initiated git-ssh sessions. The guest dials CID 2, port GitSSHRelayPort;
-// the host relay accepts raw connections on <vsockSocket>_<GitSSHRelayPort>.
-// See internal/core/gitssh for the wire protocol.
-const GitSSHRelayPort uint32 = 1026
+const GitSSHRelayPort uint32 = 1026 // host relay for guest git-ssh sessions
 
-// PauseResumer is an optional capability for drivers that can pause and
-// resume a running VM without destroying its memory state.
-//
-// Discovered via type assertion: if drv, ok := d.(PauseResumer); ok { ... }
-type PauseResumer interface {
-	// Pause suspends execution of the VM identified by id, leaving its memory
-	// intact in host RAM.
-	Pause(ctx context.Context, id domain.SandboxID) error
-
-	// Resume restarts execution of a previously paused VM.
-	Resume(ctx context.Context, id domain.SandboxID) error
+type PauseResumer interface { // optional: pause/resume VM without destroying memory state
+	Pause(ctx context.Context, id domain.SandboxID) error  // suspend execution, keep memory
+	Resume(ctx context.Context, id domain.SandboxID) error // restart paused VM
 }
 
-// GuestDialer is an optional capability for drivers that can open a raw
-// byte-stream connection to a port inside a running guest VM via the vsock
-// transport. The returned [net.Conn] is a bidirectional stream; the caller
-// is responsible for closing it when done.
-//
-// The host always dials the guest (never the reverse). Well-known ports:
-// [AgentControlPort] (1024) for the gRPC control plane and
-// [wire.DataPort] (1025) for the data plane.
-//
-// Discovered via type assertion: if d, ok := drv.(GuestDialer); ok { ... }
-type GuestDialer interface {
-	// DialGuest connects to the given port inside the VM identified by id
-	// and returns a [net.Conn] backed by the substrate's vsock transport.
-	// The connection is raw bytes; callers layer their own protocol on top.
-	// Use [AgentControlPort] for gRPC control traffic and the wire package's
-	// DataPort for data-plane traffic.
-	DialGuest(ctx context.Context, id domain.SandboxID, port uint32) (net.Conn, error)
+type GuestDialer interface { // optional: open raw byte-stream to guest port via vsock
+	DialGuest(ctx context.Context, id domain.SandboxID, port uint32) (net.Conn, error) // connect to port inside VM
 }
 
-// Snapshotter is an optional capability for drivers that can capture a
-// point-in-time snapshot of a sandbox. The sandbox state is unchanged after
-// the operation (self-edge: running→running or stopped→stopped, held under a
-// lease). The resulting [artifact.Snapshot] can be used as a fork source.
-//
-// Discovered via type assertion: if s, ok := drv.(Snapshotter); ok { ... }
-type Snapshotter interface {
-	// TakeSnapshot captures the current state of the sandbox identified by id.
-	// kind controls the durability contract of the resulting artifact.
-	// The sandbox is not stopped; it continues running (or remains stopped)
-	// while the snapshot is taken.
-	TakeSnapshot(ctx context.Context, id domain.SandboxID, kind artifact.SnapshotKind) (artifact.Snapshot, error)
+type Snapshotter interface { // optional: capture point-in-time snapshot
+	TakeSnapshot(ctx context.Context, id domain.SandboxID, kind artifact.SnapshotKind) (artifact.Snapshot, error) // state unchanged after operation
 }
 
-// NetworkHook is an optional capability for drivers that expose the host-side
-// network end for a running sandbox VM. The returned [io.ReadWriteCloser]
-// carries raw Ethernet frames (IEEE 802.3, layer 2). Each Read returns exactly
-// one complete frame; each Write injects one frame into the VM's virtual NIC.
-//
-// The concrete dynamic type is net.Conn (backed by an AF_UNIX SOCK_DGRAM
-// socketpair). The perimeter layer may type-assert the result to net.Conn to
-// hand it to gvproxy's AcceptVfkit. The driver-side pump goroutine bridges
-// the socketpair to a host-side TAP interface that is L2-bridged to the
-// guest-facing TAP owned by CH.
-//
-// The connection is created at Start time and held until either
-// GuestNetworkFD transfers ownership or the sandbox is stopped.
-//
-// The caller is responsible for closing the returned value when done.
-// After GuestNetworkFD returns, the driver no longer holds a reference to
-// the value; subsequent calls for the same sandbox return an error.
-//
-// The dependency direction is strictly one-way: the driver (transport layer)
-// creates and hands off the connection; the perimeter package (policy layer)
-// consumes it. The driver package MUST NOT import the perimeter package.
-//
-// Discovered via type assertion: if h, ok := drv.(NetworkHook); ok { ... }
-type NetworkHook interface {
-	// GuestNetworkFD returns the host-side network end for the sandbox
-	// identified by id. The caller owns the returned value and must close it
-	// when done. Ownership is transferred: calling GuestNetworkFD twice for
-	// the same sandbox returns an error on the second call.
-	GuestNetworkFD(ctx context.Context, id domain.SandboxID) (io.ReadWriteCloser, error)
+type NetworkHook interface { // optional: host-side network end for sandbox VM
+	GuestNetworkFD(ctx context.Context, id domain.SandboxID) (io.ReadWriteCloser, error) // transfer ownership; driver→perimeter direction only
 }
 
-// Forker is an optional capability for drivers that can spawn N child sandbox
-// VMs from an existing snapshot. The parent sandbox (snap.SandboxID) is
-// unaffected — fork is pure child-creation (spec 06, edge 5: ∅→running).
-//
-// Discovered via type assertion: if f, ok := drv.(Forker); ok { ... }
-type Forker interface {
-	// ForkFrom spawns one new VM per entry in childIDs, initialising each from
-	// snap. Returns per-child instance IDs in the same order as childIDs.
-	// The parent sandbox is not stopped or modified.
-	ForkFrom(ctx context.Context, snap artifact.Snapshot, childIDs []domain.SandboxID) (instanceIDs []string, err error)
+type Forker interface { // optional: spawn child VMs from snapshot
+	ForkFrom(ctx context.Context, snap artifact.Snapshot, childIDs []domain.SandboxID) (instanceIDs []string, err error) // parent unaffected; pure child-creation
 }
 
-// SnapshotRemover is an optional capability for drivers that manage files
-// beyond the artifact-store record for a snapshot (e.g. Cloud Hypervisor
-// writes a memory-image directory alongside the artifact payload).
-// RemoveSnapshot removes BOTH the artifact-store record AND any
-// driver-managed files, mirroring the transient-reap logic used internally
-// after a ForkFrom.
-//
-// The service layer calls RemoveSnapshot (if the driver implements it) and
-// then calls artifact.Store.Remove as an idempotent second pass — safe
-// because artifact.Store.Remove is a no-op for a non-existent snapshot.
-//
-// Discovered via type assertion: if r, ok := drv.(SnapshotRemover); ok { ... }
-type SnapshotRemover interface {
-	// RemoveSnapshot removes the artifact-store record and any driver-managed
-	// files for snapID. It is idempotent if snapID does not exist.
-	RemoveSnapshot(id artifact.SnapshotID) error
+type SnapshotRemover interface { // optional: remove driver-managed files beyond artifact-store
+	RemoveSnapshot(id artifact.SnapshotID) error // removes record and driver files; idempotent
 }
 
-// Capabilities returns the names of optional capability interfaces that drv
-// satisfies. The result is suitable for doctor-style diagnostic output.
-func Capabilities(drv Driver) []string {
+func Capabilities(drv Driver) []string { // names of optional capability interfaces satisfied by drv
 	var caps []string
 	if _, ok := drv.(PauseResumer); ok {
 		caps = append(caps, "PauseResumer")
@@ -156,37 +64,14 @@ func Capabilities(drv Driver) []string {
 	return caps
 }
 
-// NetnsStateProvider is an optional driver capability implemented by drivers
-// that boot VMs inside a netns-runtime child process (StartNetnsRuntime). The
-// service layer calls NetnsState immediately after a successful Start call
-// (still inside the store.Update callback that holds the per-sandbox flock) to
-// populate the five netns adoption fields on the sandbox record.
-//
-// The method is read-only and accesses only in-memory driver state, so it is
-// safe to call from inside the store.Update callback despite the reentrancy
-// prohibition on store methods (it does not acquire the per-sandbox flock).
-type NetnsStateProvider interface {
-	// NetnsState returns the netns identity written by the most recent
-	// successful Start call for id. Returns ok=false when the driver did not
-	// use a netns runtime for this sandbox (e.g. an in-process perimeter
-	// path or a fake driver in tests).
-	NetnsState(id domain.SandboxID) (st NetnsIdentity, ok bool)
+type NetnsStateProvider interface { // optional: netns adoption identity
+	NetnsState(id domain.SandboxID) (st NetnsIdentity, ok bool) // from most recent Start; safe to call from store.Update callback
 }
 
-// NetnsIdentity is everything a replacement supervisor needs to re-acquire a
-// running VM whose supervisor is gone, without rebooting the guest.
-//
-// ChildPID/ChildPGID/ChildStartTime/GuestTap/APISocket support the PLANNED
-// path: the outgoing supervisor is alive and passes the perimeter fd over
-// SCM_RIGHTS, and the incoming one uses these to verify the child it is
-// adopting has not been pid-recycled.
-//
-// ControlSocket/ControlToken support the CRASH path, where no live sender
-// exists: the incoming supervisor asks the surviving netns child for a fresh
-// perimeter end over its control socket. They are empty for a child started
-// without a control socket, which is recoverable at the record level but not
-// at the network level.
-type NetnsIdentity struct {
+type NetnsIdentity struct { // everything to re-acquire running VM without rebooting
+	// PLANNED path (outgoing supervisor alive, passes perimeter fd):
+	// Child/API fields verify child hasn't been pid-recycled.
+	// CRASH path (no live sender): Control fields get fresh perimeter end.
 	ChildPID       int
 	ChildPGID      int
 	ChildStartTime uint64

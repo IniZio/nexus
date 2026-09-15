@@ -12,7 +12,6 @@ import (
 
 // ── credential file seeding tests ────────────────────────────────────────────
 
-// credFileTestRecord builds a PlaceholderRecord for the given host and placeholder.
 func credFileTestRecord(host, placeholder string) cred.PlaceholderRecord {
 	return cred.PlaceholderRecord{
 		Host:        host,
@@ -22,9 +21,7 @@ func credFileTestRecord(host, placeholder string) cred.PlaceholderRecord {
 	}
 }
 
-// TestBuildCredFileSeedPayload_NilForEnvVarAgent proves Claude Code's profile
-// (CredentialFile == "") produces nil from buildCredFileSeedPayload, confirming
-// the env-var-only path is unaffected and never reaches the file-seeding branch.
+// TestBuildCredFileSeedPayload_NilForEnvVarAgent proves Claude Code (CredentialFile=="") yields nil.
 func TestBuildCredFileSeedPayload_NilForEnvVarAgent(t *testing.T) {
 	t.Parallel()
 	records := []cred.PlaceholderRecord{
@@ -39,25 +36,12 @@ func TestBuildCredFileSeedPayload_NilForEnvVarAgent(t *testing.T) {
 	}
 }
 
-// TestBuildCredFileSeedPayload_PlaceholderInFile is the primary security proof:
-// it asserts the placeholder (not the real token) appears in the JSON credential
-// file produced for a file-based agent (cursor).
-//
-// # Mutation proof
-//
-// Changing `placeholder = rec.Placeholder` to `placeholder = realToken` in
-// buildCredFileSeedPayload makes this test fail with:
-//
-//	SECURITY: real token leaked into credential file
-//
-// and simultaneously makes the placeholder-presence assertion fail. The mutant
-// COMPILES (verified with go vet) but is caught at test time. See the commit
-// description for the verbatim RED output.
+// TestBuildCredFileSeedPayload_PlaceholderInFile proves placeholder (not real token) in file.
+// MUTATION-PIN: changing placeholder=rec.Placeholder to placeholder=realToken fails this test.
 func TestBuildCredFileSeedPayload_PlaceholderInFile(t *testing.T) {
 	t.Parallel()
 	const placeholder = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	// realToken is a string that must NEVER appear in the guest credential file.
-	// It represents a leaked real JWT; its value is chosen to be unmistakable.
+	/** realToken: leaked real JWT (must NEVER appear in guest file). Unmistakable value for detection. */
 	const realToken = "real-secret-cursor-jwt-MUST-NOT-APPEAR-IN-GUEST-FILE"
 
 	records := []cred.PlaceholderRecord{
@@ -72,20 +56,12 @@ func TestBuildCredFileSeedPayload_PlaceholderInFile(t *testing.T) {
 		t.Fatal("expected non-nil payload for file-based agent (cursor)")
 	}
 
-	// The placeholder must be present: the MITM proxy needs it to identify
-	// and swap the credential on each proxied request.
 	if !strings.Contains(string(got), placeholder) {
 		t.Errorf("credential file missing placeholder; got: %q", got)
 	}
-
-	// The real token must NEVER appear: the whole design turns on the guest
-	// holding only placeholders. This assertion is the one the mutation proof
-	// drives RED by writing realToken instead of rec.Placeholder.
 	if strings.Contains(string(got), realToken) {
 		t.Errorf("SECURITY: real token leaked into credential file; got: %q", got)
 	}
-
-	// The file must be valid JSON with the declared key set to the placeholder.
 	var m map[string]string
 	if err := json.Unmarshal(got, &m); err != nil {
 		t.Fatalf("credential file is not valid JSON: %v; content: %q", err, got)
@@ -97,9 +73,6 @@ func TestBuildCredFileSeedPayload_PlaceholderInFile(t *testing.T) {
 		t.Errorf("JSON[%q] = %q, want placeholder %q", key, v, placeholder)
 	}
 
-	// S11: every CredentialFileExtraKey must also be present with the same
-	// placeholder so cursor-agent reports "Fully authenticated" rather than
-	// "Partially authenticated (missing refresh token)".
 	for _, extra := range cred.CursorAgentProfile.CredentialFileExtraKeys {
 		if v, ok := m[extra]; !ok {
 			t.Errorf("JSON missing extra key %q (S11); keys present: %v", extra, keysOf(m))
@@ -109,8 +82,7 @@ func TestBuildCredFileSeedPayload_PlaceholderInFile(t *testing.T) {
 	}
 }
 
-// TestSeedGuestCredFile_WritesFileForCursor proves SeedGuestCredFile delivers
-// the JSON content to the seeder for a file-based agent and does so exactly once.
+// TestSeedGuestCredFile_WritesFileForCursor proves SeedGuestCredFile delivers JSON to seeder once.
 func TestSeedGuestCredFile_WritesFileForCursor(t *testing.T) {
 	t.Parallel()
 	const placeholder = "cafebabe111122223333cafebabe111122223333cafebabe111122223333cafe"
@@ -131,9 +103,7 @@ func TestSeedGuestCredFile_WritesFileForCursor(t *testing.T) {
 	}
 }
 
-// TestSeedGuestCredFile_NoopForEnvVarAgent proves SeedGuestCredFile is a no-op
-// for env-var agents: the seeder is never called for Claude Code, so the
-// env-var seeding path is not disturbed.
+// TestSeedGuestCredFile_NoopForEnvVarAgent proves SeedGuestCredFile is a no-op for Claude Code.
 func TestSeedGuestCredFile_NoopForEnvVarAgent(t *testing.T) {
 	t.Parallel()
 	records := []cred.PlaceholderRecord{
@@ -149,8 +119,7 @@ func TestSeedGuestCredFile_NoopForEnvVarAgent(t *testing.T) {
 	}
 }
 
-// TestGuestCredFilePath_CursorPath proves GuestCredFilePath produces the
-// expected absolute guest path for cursor-agent and empty string for Claude Code.
+// TestGuestCredFilePath_CursorPath proves GuestCredFilePath produces expected paths.
 func TestGuestCredFilePath_CursorPath(t *testing.T) {
 	t.Parallel()
 	want := GuestCredDirPath + "/" + cred.CursorAgentProfile.CredentialFile
@@ -162,7 +131,6 @@ func TestGuestCredFilePath_CursorPath(t *testing.T) {
 	}
 }
 
-// keysOf returns the sorted keys of a map[string]string for diagnostic output.
 func keysOf(m map[string]string) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -171,37 +139,22 @@ func keysOf(m map[string]string) []string {
 	return keys
 }
 
-// TestBuildAgentSeedPayload_FileBasedAgentNoError proves that buildAgentSeedPayload
-// does not error for a file-based agent (cursor) even though PlaceholderEnvVar
-// is empty. The env-var section is simply omitted; the credential goes via
-// SeedGuestCredFile instead.
+// TestBuildAgentSeedPayload_FileBasedAgentNoError proves buildAgentSeedPayload succeeds for file-based agents.
 func TestBuildAgentSeedPayload_FileBasedAgentNoError(t *testing.T) {
 	t.Parallel()
 	records := []cred.PlaceholderRecord{
 		credFileTestRecord(cred.CursorAgentProfile.CredentialedHost, "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344"),
 	}
-	// kindOAuth with empty PlaceholderEnvVar — previously would have errored;
-	// now should succeed because CredentialFile is non-empty.
 	got, err := buildAgentSeedPayload(records, kindOAuth, cred.CursorAgentProfile)
 	if err != nil {
 		t.Fatalf("buildAgentSeedPayload(cursor, kindOAuth): unexpected error: %v", err)
 	}
-	// The env payload must NOT contain the credential env-var line — no CURSOR_CODE_* token.
-	// The NEXUS3_CRED_* generic lines are fine (they come from buildSeedPayload).
 	if strings.Contains(string(got), "CURSOR_API_KEY=") {
 		t.Errorf("env payload must not contain CURSOR_API_KEY= for kindOAuth; got: %q", got)
 	}
 }
 
-// TestBuildAgentSeedPayload_CredDirRedirectEmitted is the GAP 1 regression test:
-// proves buildAgentSeedPayload emits <CredDirEnvVar>=<GuestCredDirPath> for a
-// file-based agent, connecting the seeded file to where the agent looks.
-//
-// # Mutation proof
-//
-// Removing the `fmt.Fprintf(&buf, "%s=%s\n", profile.CredDirEnvVar, GuestCredDirPath)`
-// line (or guarding it away) makes this test fail. The mutation is proven by
-// commenting out that block in seed.go and showing the test RED. See commit.
+// TestBuildAgentSeedPayload_CredDirRedirectEmitted: GAP 1 regression (MUTATION-PIN: CredDirEnvVar line required).
 func TestBuildAgentSeedPayload_CredDirRedirectEmitted(t *testing.T) {
 	t.Parallel()
 	records := []cred.PlaceholderRecord{
@@ -212,18 +165,13 @@ func TestBuildAgentSeedPayload_CredDirRedirectEmitted(t *testing.T) {
 		t.Fatalf("buildAgentSeedPayload(cursor): %v", err)
 	}
 	payload := string(got)
-
-	// The redirect line must appear: without it the agent reads its default
-	// credential dir and finds no nexus3 placeholder file.
 	wantLine := cred.CursorAgentProfile.CredDirEnvVar + "=" + GuestCredDirPath
 	if !strings.Contains(payload, wantLine) {
 		t.Errorf("env payload missing redirect line %q; got:\n%s", wantLine, payload)
 	}
 }
 
-// TestBuildAgentSeedPayload_CredDirRedirectAbsentForEnvVarAgent proves that
-// Claude Code's env payload does NOT contain any CredDirEnvVar=GuestCredDirPath
-// line. Claude Code has CredentialFile == "" so the redirect block is skipped.
+// TestBuildAgentSeedPayload_CredDirRedirectAbsentForEnvVarAgent proves Claude Code (CredentialFile=="") has no redirect.
 func TestBuildAgentSeedPayload_CredDirRedirectAbsentForEnvVarAgent(t *testing.T) {
 	t.Parallel()
 	expires := time.Date(2099, 12, 31, 23, 59, 59, 0, time.UTC)
@@ -235,16 +183,12 @@ func TestBuildAgentSeedPayload_CredDirRedirectAbsentForEnvVarAgent(t *testing.T)
 		t.Fatalf("buildAgentSeedPayload(claude-code): %v", err)
 	}
 	payload := string(got)
-	// Claude Code's CredDirEnvVar is CLAUDE_CONFIG_DIR; it must NOT be set to
-	// GuestCredDirPath (that would redirect the whole config dir, not just creds).
 	if strings.Contains(payload, GuestCredDirPath) {
 		t.Errorf("Claude Code env payload must not contain GuestCredDirPath %q; got:\n%s", GuestCredDirPath, payload)
 	}
 }
 
-// syntheticFileProfile is a hand-built profile with a non-cursor CredentialFileKey
-// ("token") to prove buildCredFileSeedPayload drives the JSON key from the
-// profile field rather than hardcoding "accessToken".
+// syntheticFileProfile tests that JSON key comes from profile, not hardcoded.
 var syntheticFileProfile = cred.AgentProfile{
 	Name:              "synthetic-file-agent",
 	CredentialedHost:  "api.example.com",
@@ -254,16 +198,7 @@ var syntheticFileProfile = cred.AgentProfile{
 	CredentialFileKey: "token", // deliberately NOT "accessToken"
 }
 
-// TestBuildCredFileSeedPayload_UsesProfileKey is the GAP 2 regression test:
-// proves buildCredFileSeedPayload uses profile.CredentialFileKey rather than
-// a hardcoded key. Uses syntheticFileProfile whose key is "token", not "accessToken".
-//
-// # Mutation proof
-//
-// Hardcoding "accessToken" in the json.Marshal call of buildCredFileSeedPayload
-// makes this test fail because the output key is "accessToken" but the test
-// expects "token". The mutant compiles (go vet exit 0); the test is RED.
-// See commit for verbatim RED output.
+// TestBuildCredFileSeedPayload_UsesProfileKey: GAP 2 regression (MUTATION-PIN: hardcoding "accessToken" fails).
 func TestBuildCredFileSeedPayload_UsesProfileKey(t *testing.T) {
 	t.Parallel()
 	const placeholder = "1a2b3c4d5e6f1a2b3c4d5e6f1a2b3c4d5e6f1a2b3c4d5e6f1a2b3c4d5e6f1a2b"
@@ -284,29 +219,18 @@ func TestBuildCredFileSeedPayload_UsesProfileKey(t *testing.T) {
 		t.Fatalf("payload not valid JSON: %v; content: %q", err, got)
 	}
 
-	// The key must be "token" (from syntheticFileProfile.CredentialFileKey),
-	// not "accessToken". If the implementation hardcodes "accessToken" this
-	// assertion fails.
-	wantKey := syntheticFileProfile.CredentialFileKey // "token"
+	wantKey := syntheticFileProfile.CredentialFileKey
 	if v, ok := m[wantKey]; !ok {
 		t.Errorf("JSON missing key %q (got keys %v); hardcoded key suspected", wantKey, keysOf(m))
 	} else if v != placeholder {
 		t.Errorf("JSON[%q] = %q, want placeholder %q", wantKey, v, placeholder)
 	}
-
-	// "accessToken" must NOT appear: if it does the key is hardcoded.
 	if _, bad := m["accessToken"]; bad {
 		t.Errorf("JSON contains hardcoded key \"accessToken\" instead of profile-driven %q", wantKey)
 	}
 }
 
-// TestClaudeCodeEnvVarSeedingUnchanged proves that the Claude Code seeding
-// path (CredDirLiveMount) does NOT emit CLAUDE_CODE_OAUTH_TOKEN and does NOT
-// disturb the file-seeding extension for other agents.
-//
-// CLAUDE_CODE_OAUTH_TOKEN is absent because ClaudeCodeProfile.PlaceholderEnvVar=""
-// (CredDirLiveMount — credential via live ~/.credentials.json mount).
-// NODE_EXTRA_CA_CERTS IS present (CACertEnvVars is still written).
+// TestClaudeCodeEnvVarSeedingUnchanged: CredDirLiveMount (MUTATION-PIN: NODE_EXTRA_CA_CERTS present, others absent).
 func TestClaudeCodeEnvVarSeedingUnchanged(t *testing.T) {
 	t.Parallel()
 	const placeholder = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
@@ -320,21 +244,13 @@ func TestClaudeCodeEnvVarSeedingUnchanged(t *testing.T) {
 		t.Fatalf("buildAgentSeedPayload(claude-code, kindOAuth): %v", err)
 	}
 	payload := string(got)
-	// CredDirLiveMount: CLAUDE_CODE_OAUTH_TOKEN must be ABSENT.
 	if strings.Contains(payload, "CLAUDE_CODE_OAUTH_TOKEN=") {
 		t.Errorf("Claude Code env payload must NOT contain CLAUDE_CODE_OAUTH_TOKEN (CredDirLiveMount); got:\n%s", payload)
 	}
-	// Mutation guard: NODE_EXTRA_CA_CERTS is present (CACertEnvVars still written).
 	if !strings.Contains(payload, "NODE_EXTRA_CA_CERTS=") {
 		t.Errorf("Claude Code env payload missing NODE_EXTRA_CA_CERTS; got:\n%s", payload)
 	}
-	// Cursor's env var must never appear in a Claude Code seed.
 	if strings.Contains(payload, "CURSOR_API_KEY=") {
 		t.Errorf("Claude Code env payload must not contain CURSOR_API_KEY=; got:\n%s", payload)
 	}
 }
-
-// ── helpers defined in sibling test files ────────────────────────────────────
-// seedTestID  → seed_test.go
-// captureSeeder → seed_test.go
-// AnthropicAPIHost → seed.go

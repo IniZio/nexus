@@ -16,8 +16,7 @@ import (
 
 // ── fixture helpers ───────────────────────────────────────────────────────────
 
-// writeCredentialsFixture writes a minimal Claude Code .credentials.json at
-// path with the supplied access and refresh tokens.
+// writeCredentialsFixture writes a minimal .credentials.json with OAuth tokens.
 func writeCredentialsFixture(t *testing.T, path, accessToken, refreshToken string, expiresAtMs int64) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -44,9 +43,7 @@ func writeCredentialsFixture(t *testing.T, path, accessToken, refreshToken strin
 	}
 }
 
-// writeCursorAuthFixture writes a minimal cursor auth.json at path with the
-// given access token. The refreshToken field is left empty; cursor login does
-// not require it for nexus3's verify-and-report path.
+// writeCursorAuthFixture writes a minimal cursor auth.json with access token.
 func writeCursorAuthFixture(t *testing.T, path, accessToken string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -65,9 +62,7 @@ func writeCursorAuthFixture(t *testing.T, path, accessToken string) {
 	}
 }
 
-// buildTestJWT returns a minimal unsigned (alg=none) JWT whose exp claim is
-// set to expUnix (Unix seconds). The signature segment is the literal string
-// "fakesig". ParseCursorJWTExpiry will parse this correctly.
+// buildTestJWT returns a minimal unsigned JWT with exp claim set to expUnix.
 func buildTestJWT(t *testing.T, expUnix int64) string {
 	t.Helper()
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
@@ -110,8 +105,7 @@ func setDiff(a, b map[string]struct{}) []string {
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
-// TestAuth_MissingAction_UsageError verifies that `nexus3 auth` with no action
-// returns exit code 2 (usage error).
+// TestAuth_MissingAction_UsageError verifies auth with no action returns exit 2.
 func TestAuth_MissingAction_UsageError(t *testing.T) {
 	code := Run([]string{"auth"})
 	if code != 2 {
@@ -119,8 +113,7 @@ func TestAuth_MissingAction_UsageError(t *testing.T) {
 	}
 }
 
-// TestAuth_UnknownAction_UsageError verifies that `nexus3 auth frobnicate`
-// returns exit code 2 (usage error).
+// TestAuth_UnknownAction_UsageError verifies unknown auth action returns exit 2.
 func TestAuth_UnknownAction_UsageError(t *testing.T) {
 	code := Run([]string{"auth", "frobnicate"})
 	if code != 2 {
@@ -128,9 +121,7 @@ func TestAuth_UnknownAction_UsageError(t *testing.T) {
 	}
 }
 
-// TestAuthLogin_ClaudeCodeNoOp verifies that `nexus3 auth login` for claude-code
-// (the default — no --agent flag) prints a no-op message and returns nil,
-// since credentials come from the live-mounted ~/.claude directory.
+// TestAuthLogin_ClaudeCodeNoOp verifies auth login for claude-code prints no-op.
 func TestAuthLogin_ClaudeCodeNoOp(t *testing.T) {
 	out, stdout, _ := capture(false)
 	err := runAuthLogin(context.Background(), []string{}, out)
@@ -146,8 +137,7 @@ func TestAuthLogin_ClaudeCodeNoOp(t *testing.T) {
 	}
 }
 
-// TestAuthLogin_ClaudeCodeExplicit_NoOp verifies the same no-op for an explicit
-// --agent claude-code flag.
+// TestAuthLogin_ClaudeCodeExplicit_NoOp verifies no-op with explicit --agent flag.
 func TestAuthLogin_ClaudeCodeExplicit_NoOp(t *testing.T) {
 	out, stdout, _ := capture(false)
 	err := runAuthLogin(context.Background(), []string{"--agent", "claude-code"}, out)
@@ -161,10 +151,7 @@ func TestAuthLogin_ClaudeCodeExplicit_NoOp(t *testing.T) {
 
 // ── AC-4: unknown --agent fails clearly ──────────────────────────────────────
 
-// TestAuthLogin_UnknownAgent_Error verifies that an unknown --agent value fails
-// with exit code 2 and an error that names both the unknown agent and every
-// valid agent.
-//
+// TestAuthLogin_UnknownAgent_Error verifies unknown --agent fails with valid agents listed.
 // AC-4.
 func TestAuthLogin_UnknownAgent_Error(t *testing.T) {
 	out, _, _ := capture(false)
@@ -188,29 +175,19 @@ func TestAuthLogin_UnknownAgent_Error(t *testing.T) {
 
 // ── AC-1, AC-2, AC-5, AC-6: cursor verify-and-report path ───────────────────
 
-// TestAuthLoginCursor_WritesNothing verifies that `--agent cursor`:
-//   - writes no file anywhere in the redirected XDG_CONFIG_HOME (AC-1)
-//   - leaves the cursor auth.json unchanged in mtime and content (AC-1)
-//   - does not create or modify the claude credential store (AC-2)
-//   - emits cred_path in the JSON data, not dest_path (distinguishes verify
-//     from import; this assertion goes RED under the AC-6 mutation)
-//
-// AC-1, AC-2, AC-6 (RED probe).
+// TestAuthLoginCursor_WritesNothing verifies cursor auth doesn't write files.
+/** AC-1, AC-2, AC-6 (RED probe). */
 func TestAuthLoginCursor_WritesNothing(t *testing.T) {
-	// Redirect claude's cred store.
 	claudeStore := filepath.Join(t.TempDir(), "creds.json")
 	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", claudeStore)
 
-	// Redirect cursor's credential directory.
 	xdgHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdgHome)
 
-	// Write a valid cursor auth.json with a parseable JWT.
 	cursorAuthPath := filepath.Join(xdgHome, "cursor", "auth.json")
 	token := buildTestJWT(t, time.Now().Add(24*time.Hour).Unix())
 	writeCursorAuthFixture(t, cursorAuthPath, token)
 
-	// Snapshot the cursor file state before the command.
 	beforeStat, err := os.Stat(cursorAuthPath)
 	if err != nil {
 		t.Fatalf("stat before: %v", err)
@@ -220,12 +197,8 @@ func TestAuthLoginCursor_WritesNothing(t *testing.T) {
 		t.Fatalf("read before: %v", err)
 	}
 
-	// Snapshot all files in xdgHome before the command.
 	filesBefore := listFilesUnder(t, xdgHome)
 
-	// Also set up a valid claude source file so the AC-6 mutation (fall through
-	// to import) would succeed and produce a detectable write, rather than
-	// failing on a missing --from file and masking the real failure.
 	claudeFrom := filepath.Join(t.TempDir(), ".credentials.json")
 	writeCredentialsFixture(t, claudeFrom, "claude-tok-access", "claude-tok-refresh",
 		time.Now().Add(time.Hour).UnixMilli())
@@ -236,14 +209,12 @@ func TestAuthLoginCursor_WritesNothing(t *testing.T) {
 		t.Fatalf("runAuthLogin --agent cursor: unexpected error: %v", err)
 	}
 
-	// AC-1a: no new files in xdgHome.
 	filesAfter := listFilesUnder(t, xdgHome)
 	if len(filesAfter) != len(filesBefore) {
 		t.Errorf("AC-1: new files created in config root: %v",
 			setDiff(filesAfter, filesBefore))
 	}
 
-	// AC-1b: cursor auth.json mtime unchanged.
 	afterStat, err := os.Stat(cursorAuthPath)
 	if err != nil {
 		t.Fatalf("stat after: %v", err)
@@ -253,7 +224,6 @@ func TestAuthLoginCursor_WritesNothing(t *testing.T) {
 			beforeStat.ModTime(), afterStat.ModTime())
 	}
 
-	// AC-1c: cursor auth.json content unchanged.
 	afterContent, err := os.ReadFile(cursorAuthPath)
 	if err != nil {
 		t.Fatalf("read after: %v", err)
@@ -262,15 +232,9 @@ func TestAuthLoginCursor_WritesNothing(t *testing.T) {
 		t.Error("AC-1: cursor auth.json content changed — verify-only path must not write")
 	}
 
-	// AC-2: claude store not touched.
 	if _, err := os.Stat(claudeStore); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("AC-2: claude store should not exist after --agent cursor (stat err=%v)", err)
 	}
-
-	// AC-6 probe: output envelope must carry cred_path (verify shape), NOT
-	// dest_path (import shape). With the mutation — default: runAuthLoginImport
-	// instead of runAuthLoginVerify — the output carries dest_path instead and
-	// this assertion goes RED.
 	var env map[string]any
 	decodeOne(t, stdout, &env)
 	data, ok := env["data"].(map[string]any)
@@ -285,13 +249,11 @@ func TestAuthLoginCursor_WritesNothing(t *testing.T) {
 	}
 }
 
-// TestAuthLoginCursor_MissingFile verifies that a missing cursor auth.json
-// returns a non-zero exit code and a message naming the agent.
+// TestAuthLoginCursor_MissingFile verifies missing cursor auth returns error.
 func TestAuthLoginCursor_MissingFile(t *testing.T) {
 	xdgHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdgHome)
 	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", filepath.Join(t.TempDir(), "creds.json"))
-	// No cursor/auth.json written.
 
 	out, _, _ := capture(false)
 	err := runAuthLogin(context.Background(), []string{"--agent", "cursor"}, out)
@@ -303,8 +265,7 @@ func TestAuthLoginCursor_MissingFile(t *testing.T) {
 	}
 }
 
-// TestAuthLoginCursor_ReportsExpiry verifies that a cursor credential with a
-// parseable JWT expiry reports a non-"unknown" expires_at in the output.
+// TestAuthLoginCursor_ReportsExpiry verifies cursor JWT expiry is reported.
 func TestAuthLoginCursor_ReportsExpiry(t *testing.T) {
 	xdgHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdgHome)
@@ -330,18 +291,13 @@ func TestAuthLoginCursor_ReportsExpiry(t *testing.T) {
 
 // ── AC-5: no token value in any route's output ────────────────────────────────
 
-// TestAuthLoginCursor_NoTokenInOutput verifies that the cursor verify path
-// never prints the token value. The sentinel is the literal accessToken
-// written to auth.json; it must not appear in any rendered output.
-//
+// TestAuthLoginCursor_NoTokenInOutput verifies token value never appears in output.
 // AC-5.
 func TestAuthLoginCursor_NoTokenInOutput(t *testing.T) {
 	xdgHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdgHome)
 	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", filepath.Join(t.TempDir(), "creds.json"))
 
-	// The sentinel does not need to be a valid JWT; expiry will be "unknown",
-	// which is fine — the assertion is about output content, not expiry parsing.
 	const sentinel = "SENTINEL-CURSOR-TOKEN-MUST-NOT-APPEAR-IN-OUTPUT"
 	writeCursorAuthFixture(t, filepath.Join(xdgHome, "cursor", "auth.json"), sentinel)
 
@@ -357,41 +313,23 @@ func TestAuthLoginCursor_NoTokenInOutput(t *testing.T) {
 
 // ── AC-5 S20: profile-driven import dispatch — mutation proof ─────────────────
 
-// TestAuthLoginImport_ProfileDriven_MutationProof verifies that the import
-// route for CredentialFormatNone agents dispatches through the cred registry's
-// ImportFromPathFn, not through a hardcoded per-agent importer.
-//
-// The mutation being probed is: "replace the registry-derived importFn with a
-// hardcoded call to cred.ImportClaudeCredentials inside runAuthLogin or
-// runAuthLoginImport."  Under the mutation the registered importFn is bypassed;
-// the test goes RED because the registry's sentinel ClientID never appears.
-//
-// S20-AC-5, S20-AC-7.
+// TestAuthLoginImport_ProfileDriven_MutationProof verifies dispatch through registry ImportFn.
+/** S20-AC-5, S20-AC-7: mutation probe for hardcoded importFn. */
 func TestAuthLoginImport_ProfileDriven_MutationProof(t *testing.T) {
 	const syntheticFormat cred.CredentialFormat = "s20-oauth-synthetic-v1"
 	const sentinelClientID = "SENTINEL-CLIENT-ID-MUST-APPEAR-UNDER-PROFILE-DISPATCH"
 
-	// Redirect HOME so DedicatedCredStorePathForProfile resolves to a temp dir.
-	// The synthetic profile's dest path is $HOME/.config/nexus3/agent-creds/<name>.json.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	// Also redirect the claude-code path (NEXUS3_DEDICATED_CRED_STORE) to
-	// avoid any accidental write to the real store.
 	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", filepath.Join(home, "creds.json"))
 
-	// Write a minimal credential fixture.  The synthetic importFn reads it.
 	fromDir := t.TempDir()
 	fromPath := filepath.Join(fromDir, "agent-creds.json")
 	writeCredentialsFixture(t, fromPath, "tok-access-s20", "tok-refresh-s20", time.Now().Add(time.Hour).UnixMilli())
 
-	// Register a synthetic CredentialFormatNone-like format in the cred registry.
-	// DefaultFromPathFn returns an empty string (the test always passes --from).
-	// ImportFromPathFn returns a store whose ClientID carries the sentinel.
 	unregisterFormat := cred.RegisterOAuthFormatForTest(syntheticFormat,
 		func(_ cred.AgentProfile) string { return "" },
 		func(path string) (*cred.DedicatedCredStore, error) {
-			// Delegate to the real claude importer for the credential shape,
-			// then stamp the sentinel ClientID so the test can verify dispatch.
 			store, err := cred.ImportClaudeCredentials(path)
 			if err != nil {
 				return nil, err
@@ -402,7 +340,6 @@ func TestAuthLoginImport_ProfileDriven_MutationProof(t *testing.T) {
 	)
 	t.Cleanup(unregisterFormat)
 
-	// Register a synthetic agent profile that uses this format.
 	syntheticProfile := cred.AgentProfile{
 		Name:             "s20-synthetic-agent",
 		CredentialFormat: syntheticFormat,
@@ -413,8 +350,6 @@ func TestAuthLoginImport_ProfileDriven_MutationProof(t *testing.T) {
 	}
 	t.Cleanup(unregisterProfile)
 
-	// Pre-create the parent directory that DedicatedCredStorePathForProfile
-	// will write into: $HOME/.config/nexus3/agent-creds/.
 	agentCredsDir := filepath.Join(home, ".config", "nexus3", "agent-creds")
 	if err := os.MkdirAll(agentCredsDir, 0o700); err != nil {
 		t.Fatalf("create agent-creds dir: %v", err)
@@ -426,9 +361,6 @@ func TestAuthLoginImport_ProfileDriven_MutationProof(t *testing.T) {
 		t.Fatalf("runAuthLogin --agent s20-synthetic-agent: %v", err)
 	}
 
-	// The written store must carry the sentinel ClientID — proving the registry's
-	// ImportFromPathFn was called, not any hardcoded importer.
-	// The dest path is profile-derived: $HOME/.config/nexus3/agent-creds/s20-synthetic-agent.json.
 	syntheticDest := filepath.Join(home, ".config", "nexus3", "agent-creds", "s20-synthetic-agent.json")
 	store, err := cred.LoadStore(syntheticDest)
 	if err != nil {
@@ -440,12 +372,9 @@ func TestAuthLoginImport_ProfileDriven_MutationProof(t *testing.T) {
 			store.ClientID, sentinelClientID)
 	}
 
-	// The JSON output must also reflect the sentinel (via token_endpoint or
-	// client_id in the success envelope).
 	raw := stdout.Bytes()
 	if !strings.Contains(string(raw), sentinelClientID) {
 		t.Errorf("S20-AC-5: sentinel client_id %q not found in output; got: %s",
 			sentinelClientID, raw)
 	}
 }
-

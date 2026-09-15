@@ -12,14 +12,6 @@ import (
 	"github.com/IniZio/nexus3/internal/core/domain"
 )
 
-// TestSeedGuestShellProfile_ScriptActuallySourcesCredEnv executes the drop-in
-// with a real /bin/sh instead of asserting on its text.
-//
-// A string-match test would pass on a script that does not parse, guards on the
-// wrong path, or forgets `set -a` and therefore leaves the variables unexported
-// — all three of which are the actual failure this drop-in exists to prevent.
-// The only assertion that means anything is that a child process sees the
-// variable, so that is what this test measures.
 func TestSeedGuestShellProfile_ScriptActuallySourcesCredEnv(t *testing.T) {
 	dir := t.TempDir()
 	credEnv := filepath.Join(dir, "cred.env")
@@ -27,17 +19,13 @@ func TestSeedGuestShellProfile_ScriptActuallySourcesCredEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Retarget the script at the temp cred.env. The substitution is exactly the
-	// production string, so a broken guard or a missing `set -a` still breaks.
 	script := strings.ReplaceAll(guestShellProfileScript, GuestCredEnvPath, credEnv)
 	profile := filepath.Join(dir, "nexus3-cred.sh")
 	if err := os.WriteFile(profile, []byte(script), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// `sh -c '. profile; sh -c "echo $VAR"'` — the INNER shell is a separate
-	// process, so it sees the variable only if `set -a` genuinely exported it
-	// rather than merely assigning it in the sourcing shell.
+	// INNER shell is a separate process; only sees variable if `set -a` exported it.
 	out, err := exec.Command("/bin/sh", "-c",
 		". "+profile+"; /bin/sh -c 'echo $CLAUDE_CODE_OAUTH_TOKEN'").CombinedOutput()
 	if err != nil {
@@ -50,11 +38,6 @@ func TestSeedGuestShellProfile_ScriptActuallySourcesCredEnv(t *testing.T) {
 	}
 }
 
-// TestSeedGuestShellProfile_NoCredEnvIsHarmless pins the existence guard.
-//
-// GuestCredEnvPath lives on tmpfs and never appears on a sandbox with no MITM
-// proxy. A drop-in that errored there would break `bash -l` — and therefore
-// `nexus3 exec --pty` — for every plain sandbox.
 func TestSeedGuestShellProfile_NoCredEnvIsHarmless(t *testing.T) {
 	dir := t.TempDir()
 	absent := filepath.Join(dir, "does-not-exist.env")
@@ -74,10 +57,6 @@ func TestSeedGuestShellProfile_NoCredEnvIsHarmless(t *testing.T) {
 	}
 }
 
-// TestSeedGuestShellProfile_CarriesNoCredential is the security assertion: the
-// drop-in names the file to source and nothing else. If a future edit ever
-// inlines a token value here it would be written to a world-readable path on
-// disk in the guest, outside the tmpfs cred.env the design confines it to.
 func TestSeedGuestShellProfile_CarriesNoCredential(t *testing.T) {
 	var captured []byte
 	seeder := func(_ context.Context, _ domain.SandboxID, payload []byte) error {
@@ -91,15 +70,13 @@ func TestSeedGuestShellProfile_CarriesNoCredential(t *testing.T) {
 	if len(captured) == 0 {
 		t.Fatal("seeder received no payload: the drop-in was never delivered to the guest")
 	}
-	// The only '=' assignments the payload may contain come from the sourced
-	// file at runtime, never from the payload itself.
+	// Only '=' from sourced file at runtime, never from payload itself.
 	for _, line := range strings.Split(string(captured), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "#") || line == "" {
 			continue
 		}
-		// Permitted '=' lines: shell conditionals, IS_SANDBOX marker, and
-		// GIT_SSH_COMMAND (a tool path, not a credential).
+		// Permitted: shell conditionals, IS_SANDBOX, GIT_SSH_COMMAND (tool path only).
 		if strings.Contains(line, "=") &&
 			!strings.HasPrefix(line, "if ") &&
 			!strings.HasPrefix(line, "export IS_SANDBOX=") &&
@@ -114,7 +91,6 @@ func TestSeedGuestShellProfile_CarriesNoCredential(t *testing.T) {
 	}
 }
 
-// TestSeedGuestShellProfile_NilSeederIsNoOp matches SeedGuest/SeedGuestAgent.
 func TestSeedGuestShellProfile_NilSeederIsNoOp(t *testing.T) {
 	var id domain.SandboxID
 	if err := SeedGuestShellProfile(context.Background(), id, nil); err != nil {
@@ -122,8 +98,6 @@ func TestSeedGuestShellProfile_NilSeederIsNoOp(t *testing.T) {
 	}
 }
 
-// TestSeedGuestShellProfile_SeederErrorPropagates keeps a delivery failure from
-// being swallowed into a silent success.
 func TestSeedGuestShellProfile_SeederErrorPropagates(t *testing.T) {
 	want := errors.New("guest copy refused")
 	seeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return want }
@@ -139,10 +113,6 @@ func TestSeedGuestShellProfile_SeederErrorPropagates(t *testing.T) {
 
 // ── Slice 2: IS_SANDBOX + claude function ─────────────────────────────────────
 
-// TestSeedGuestShellProfile_IsSandboxExported verifies that IS_SANDBOX=1 is
-// exported by the drop-in so child processes see it.
-//
-// Mutation guard: remove `export IS_SANDBOX=1` from guestShellProfileScript → fails RED.
 func TestSeedGuestShellProfile_IsSandboxExported(t *testing.T) {
 	dir := t.TempDir()
 	absent := filepath.Join(dir, "does-not-exist.env")
@@ -152,7 +122,6 @@ func TestSeedGuestShellProfile_IsSandboxExported(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Child shell must see IS_SANDBOX=1 because the drop-in exported it.
 	out, err := exec.Command("/bin/sh", "-c",
 		". "+profile+"; /bin/sh -c 'echo $IS_SANDBOX'").CombinedOutput()
 	if err != nil {
@@ -165,8 +134,7 @@ func TestSeedGuestShellProfile_IsSandboxExported(t *testing.T) {
 	}
 }
 
-// stubClaude writes an executable shell script that records its argv, one
-// argument per line, to dir/args. Returns the stub's full path.
+// stubClaude writes executable shell script that records argv to dir/args.
 func stubClaude(t *testing.T, dir string) string {
 	t.Helper()
 	stub := filepath.Join(dir, "claude")
@@ -177,8 +145,7 @@ func stubClaude(t *testing.T, dir string) string {
 	return stub
 }
 
-// buildProfileForTest returns a profile script retargeted at a non-existent
-// cred.env (absence is harmless) and written to dir/nexus3-cred.sh.
+// buildProfileForTest returns profile script retargeted at non-existent cred.env.
 func buildProfileForTest(t *testing.T, dir string) string {
 	t.Helper()
 	absent := filepath.Join(dir, "does-not-exist.env")
@@ -190,10 +157,8 @@ func buildProfileForTest(t *testing.T, dir string) string {
 	return profile
 }
 
-// runProfileCmd executes a shell command after sourcing the profile, with the
-// stub claude on PATH and STUB_ARGS_FILE pointing at argsFile so the stub can
-// record its argv. Env vars are passed via cmd.Env to avoid relying on
-// assignment-prefix semantics (which differ between sh builtins and exec).
+// runProfileCmd executes shell command after sourcing profile with stub claude
+// on PATH and STUB_ARGS_FILE set. Uses cmd.Env to avoid assignment-prefix semantics.
 func runProfileCmd(t *testing.T, profile, dir, argsFile, shellCmd string) ([]byte, error) {
 	t.Helper()
 	cmd := exec.Command("/bin/sh", "-c", ". "+profile+"; "+shellCmd)
@@ -204,12 +169,6 @@ func runProfileCmd(t *testing.T, profile, dir, argsFile, shellCmd string) ([]byt
 	return cmd.CombinedOutput()
 }
 
-// TestSeedGuestShellProfile_ClaudeFunctionNoDoubleFlag verifies that the
-// function does NOT add --dangerously-skip-permissions a second time when the
-// caller already passed it.
-//
-// Mutation guard: remove the case guard from the claude function → test sees the
-// flag twice and fails RED.
 func TestSeedGuestShellProfile_ClaudeFunctionNoDoubleFlag(t *testing.T) {
 	dir := t.TempDir()
 	profile := buildProfileForTest(t, dir)
@@ -229,11 +188,6 @@ func TestSeedGuestShellProfile_ClaudeFunctionNoDoubleFlag(t *testing.T) {
 	}
 }
 
-// TestSeedGuestShellProfile_CommandClaudeBypassesFunction verifies that
-// "command claude" reaches the binary without the injected flag.
-//
-// Mutation guard: the shell function must not intercept "command claude".
-// If the function wrapped "command" semantics this test would fail RED.
 func TestSeedGuestShellProfile_CommandClaudeBypassesFunction(t *testing.T) {
 	dir := t.TempDir()
 	profile := buildProfileForTest(t, dir)

@@ -10,14 +10,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
-// GuestCuratedPATHDirs is the authoritative list of PATH-entry directories
-// inside the guest that BuildUserMountManifest treats as curated when they
-// appear as a mount's GuestPath. A curated mount is staged off the guest PATH
-// at /run/nexus3/usermount/bin-<base> and its GuestPath is rebuilt as a
-// symlink farm on every boot by SeedGuestUserMounts.
-//
-// SeedGuestUserMounts uses this list for the PATH drop-in so both sites stay
-// in sync — do not hardcode the same paths elsewhere.
+// GuestCuratedPATHDirs: authoritative guest PATH dirs, staged/rebuilt by SeedGuestUserMounts (don't hardcode).
 var GuestCuratedPATHDirs = []string{
 	"/root/.local/bin",
 	"/root/.bun/bin",
@@ -25,59 +18,28 @@ var GuestCuratedPATHDirs = []string{
 }
 
 // ResolvedUserMount is a mount resolved against a concrete host home directory.
-// It is serialized into usermounts.json for the guest seed.
 type ResolvedUserMount struct {
-	HostPath         string `json:"host_path"`                    // absolute host path
-	GuestPath        string `json:"guest_path"`                   // final in-guest path
-	Overlay          bool   `json:"overlay"`                      // true → guest seed must overlay StagingGuestPath onto GuestPath
-	Curated          bool   `json:"curated"`                      // true → GuestPath is a PATH-entry dir rebuilt as a symlink farm each boot
-	CuratedSubPath   string `json:"curated_sub_path,omitempty"`   // non-empty for containment: relative path from GuestPath to the
-	// curated PATH-entry dir (e.g. "shims" when the mount is ~/.local/share/mise
-	// and the PATH entry is ~/.local/share/mise/shims). The farm is built at
-	// GuestPath/CuratedSubPath using sources from StagingGuestPath/CuratedSubPath;
-	// non-farm siblings in StagingGuestPath are linked idempotently into GuestPath
-	// so the rest of the mount's data remains accessible at the expected path.
-	StagingGuestPath string `json:"staging_guest_path"` // live-mount landing point:
-	// for Overlay=true rows: /run/nexus3/usermount/<basename>
-	// for Curated=true rows: /run/nexus3/usermount/bin-<basename> (off PATH)
-	// for plain rows:        == GuestPath (direct mount, no staging needed)
+	HostPath         string `json:"host_path"`
+	GuestPath        string `json:"guest_path"`
+	Overlay          bool   `json:"overlay"`
+	Curated          bool   `json:"curated"`
+	CuratedSubPath   string `json:"curated_sub_path,omitempty"`
+	StagingGuestPath string `json:"staging_guest_path"` // virtiofs landing point
 }
 
-// UserMountManifest is the schema of usermounts.json written into the
-// agent-config staging dir. The guest seed reads it on first boot and:
-//   - for Overlay=true rows: overlays StagingGuestPath (virtiofs) onto GuestPath
-//   - for Overlay=false rows: the live mount is already at GuestPath; no action needed
-//
-// HostHome is included so the guest seed can create a /home/<user> → /root
-// symlink when the operator's home is not /root (no-op if already /root).
+// UserMountManifest is the schema of usermounts.json for the guest seed.
 type UserMountManifest struct {
 	HostHome string              `json:"host_home"`
 	Mounts   []ResolvedUserMount `json:"mounts"`
 }
 
-// BuildUserMountManifest resolves mounts (in "host:guest[:ro]" form) against
-// hostHome and returns a UserMountManifest ready for virtiofs wiring and
-// guest seeding.
-//
-//   - ~ and $HOME in the host path are expanded against hostHome.
-//   - Mounts whose host path does not exist are silently skipped.
-//   - Overlay is derived: guest paths under /root/.claude/ use overlay mode
-//     (those dirs may contain pre-existing agent content that must be preserved);
-//     all other guest paths mount directly (read-only).
-//   - The :ro suffix is accepted but ignored for routing — all user mounts are
-//     host-read-only by design (the virtiofs share is always RO).
-//
-// An empty or nil mounts slice returns a zero UserMountManifest (HostHome set,
-// Mounts nil).
+// BuildUserMountManifest resolves mounts (host:guest[:ro]) for virtiofs; expands ~ and $HOME; curated PATH off-PATH.
 func BuildUserMountManifest(hostHome string, mounts []string) UserMountManifest {
 	m := UserMountManifest{HostHome: hostHome}
 	for _, spec := range mounts {
-		// Parse "host:guest" or "host:guest:ro".
-		// Split on the first colon for host, then take guest from the remainder
-		// (ignoring a trailing :ro suffix — we derive RO from overlay logic).
 		parts := strings.SplitN(spec, ":", 3)
 		if len(parts) < 2 {
-			continue // malformed — skip
+			continue
 		}
 		hostRaw := parts[0]
 		guestPath := parts[1]
@@ -85,29 +47,11 @@ func BuildUserMountManifest(hostHome string, mounts []string) UserMountManifest 
 			continue
 		}
 
-		// Expand ~ and $HOME in host path.
 		hostPath := expandHome(hostRaw, hostHome)
-
-		// Skip if host path does not exist.
 		if _, err := os.Stat(hostPath); err != nil {
 			continue
 		}
 
-		// Derive routing: curated PATH-entry dirs are staged off PATH and rebuilt
-		// as a symlink farm on every boot (Curated=true). /root/.claude and its
-		// descendants use overlay mode. All other paths mount directly.
-		// Curated and Overlay are mutually exclusive.
-		//
-		// Two curated cases:
-		//   exact match: guestPath == pd         (e.g. mount at /root/.local/bin)
-		//   containment: pd starts with guestPath+"/" (e.g. mount at
-		//                /root/.local/share/mise when pd is /root/.local/share/mise/shims)
-		//
-		// Containment: the mount covers a parent of the curated dir. The virtiofs
-		// share lands at the same off-PATH staging point as exact matches. The farm
-		// is built at GuestPath/CuratedSubPath; non-farm siblings in staging are
-		// linked idempotently into GuestPath so the rest of the mount's data
-		// (e.g. mise/installs/) remains accessible at the expected path.
 		curated := false
 		var curatedSubPath string
 		for _, pd := range GuestCuratedPATHDirs {
@@ -115,7 +59,6 @@ func BuildUserMountManifest(hostHome string, mounts []string) UserMountManifest 
 				curated = true
 				break
 			}
-			// Containment: guestPath is a parent of the curated PATH entry.
 			if strings.HasPrefix(pd, guestPath+"/") {
 				curated = true
 				curatedSubPath = strings.TrimPrefix(pd, guestPath+"/")
@@ -123,20 +66,16 @@ func BuildUserMountManifest(hostHome string, mounts []string) UserMountManifest 
 			}
 		}
 
-		overlay := false // /root/.claude paths are handled by the live rw mount; user-mount overlay removed
-
+		overlay := false
 		stagingGuestPath := guestPath
 		switch {
 		case curated:
-			// Land the virtiofs share at /run/nexus3/usermount/bin-<basename>,
-			// deliberately off the guest PATH so the farm controls resolution.
 			base := filepath.Base(guestPath)
 			if base == "" || base == "." || base == "/" {
 				base = "um"
 			}
 			stagingGuestPath = "/run/nexus3/usermount/bin-" + base
 		case overlay:
-			// Land the virtiofs share at /run/nexus3/usermount/<basename>.
 			base := filepath.Base(guestPath)
 			if base == "" || base == "." || base == "/" {
 				base = "um"
@@ -156,7 +95,6 @@ func BuildUserMountManifest(hostHome string, mounts []string) UserMountManifest 
 	return m
 }
 
-// expandHome replaces a leading ~ or $HOME with hostHome.
 func expandHome(path, hostHome string) string {
 	if strings.HasPrefix(path, "~/") {
 		return filepath.Join(hostHome, path[2:])
@@ -173,18 +111,7 @@ func expandHome(path, hostHome string) string {
 	return path
 }
 
-// CheckRecipeShadows returns one warning string for each mount spec in mounts
-// whose guest path would shadow a path claimed by recipe: the agent binary
-// path (BinPath), any package install directory, any declared symlink, or the
-// parent directory of any of those paths (the PATH-entry directories the recipe
-// installs into).
-//
-// Each returned string quotes the raw spec text so the caller can surface
-// exactly which sandbox.mounts config line causes the conflict. Mounts are not
-// filtered — warnings are advisory and the caller decides whether to log them
-// or treat them as hard errors. Returns nil when recipe has no packages.
-//
-// This is the real call site for the shadow diagnostic (AC-5, D-TP-01).
+// CheckRecipeShadows returns warnings for mount specs that shadow recipe paths (AC-5, D-TP-01).
 func CheckRecipeShadows(mounts []string, recipe cred.ToolRecipe) []string {
 	recipePaths := recipeGuestPaths(recipe)
 	if len(recipePaths) == 0 {
@@ -207,9 +134,6 @@ func CheckRecipeShadows(mounts []string, recipe cred.ToolRecipe) []string {
 	return warnings
 }
 
-// recipeGuestPaths collects all absolute guest paths declared by recipe,
-// including the parent directories of each (the PATH-entry directories that
-// contain the binaries and symlinks the recipe installs).
 func recipeGuestPaths(recipe cred.ToolRecipe) []string {
 	seen := map[string]bool{}
 	var paths []string
@@ -241,9 +165,6 @@ func recipeGuestPaths(recipe cred.ToolRecipe) []string {
 	return paths
 }
 
-// recipeStableInstallDir returns the stable (template-free) prefix of an
-// InstallDir by stripping any template placeholder (e.g. {VERSION}) and
-// trailing slashes. An empty result means there is nothing to check.
 func recipeStableInstallDir(dir string) string {
 	if dir == "" {
 		return ""
@@ -255,29 +176,23 @@ func recipeStableInstallDir(dir string) string {
 }
 
 // MountSpecGuestPath extracts the guest path from a "host:guest[:opts]" spec.
-// Returns "" when the spec has no colon or an empty guest path.
 func MountSpecGuestPath(spec string) string {
 	i := strings.Index(spec, ":")
 	if i < 0 {
 		return ""
 	}
 	rest := spec[i+1:]
-	// Strip trailing :ro or other option suffixes.
 	if j := strings.Index(rest, ":"); j >= 0 {
 		return rest[:j]
 	}
 	return rest
 }
 
-// guestPathShadows reports whether a mount at mountPath shadows recipePath.
-// Shadows: mountPath equals recipePath, or recipePath starts with mountPath+"/"
-// (the mount covers the directory that contains the recipe artifact).
 func guestPathShadows(mountPath, recipePath string) bool {
 	return mountPath == recipePath || strings.HasPrefix(recipePath, mountPath+"/")
 }
 
 // WriteUserMountManifest writes m as usermounts.json into stageDir (mode 0o600).
-// Mirrors the mcp-servers.json write in the A-MOUNT block of cmd_sandbox.go.
 func WriteUserMountManifest(stageDir string, m UserMountManifest) error {
 	data, err := json.Marshal(m)
 	if err != nil {

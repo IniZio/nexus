@@ -19,49 +19,13 @@ import (
 	"github.com/IniZio/nexus3/internal/supervisor/handoff"
 )
 
-// adoptHandoffAcceptTimeout bounds how long RunAdopt waits, after listening
-// on handoffSockPath, for the outgoing supervisor to dial in and offer a
-// payload. Generous relative to the outgoing side's own handoffDialTimeout
-// (5s), which is the deadline racing this one from the other end.
 const adoptHandoffAcceptTimeout = 20 * time.Second
-
-// adoptWaitOldExitTimeout bounds how long RunAdopt waits for the outgoing
-// supervisor's pid to disappear before binding the canonical IPC socket
-// path. The outgoing side's own shutdown (srv.Shutdown + removeOwnSocket)
-// runs immediately after it reads a positive Ack, so this is generous
-// headroom rather than the expected wait.
 const adoptWaitOldExitTimeout = 15 * time.Second
 
-// RunAdopt runs a detached supervisor in adopt mode: unlike RunDetached, it
-// never calls driver.Start and never boots a VM. It listens on
-// handoffSockPath (a Unix STREAM socket the CLI told the outgoing supervisor
-// to dial via POST /supervisor/handoff), accepts exactly one handoff offer,
-// and — only for a payload it can adopt — installs the netns runtime
-// described by the persisted sandbox record into a freshly constructed
-// driver and confirms.
-//
-// # Safety (D-HSH-08)
-//
-// Every failure path here returns a non-nil error WITHOUT ever calling
-// [handoff.Confirm]. The outgoing side (performHandoff, on the other end of
-// the same conn) only detaches after it reads a positive Ack; every error
-// return here therefore leaves the VM and perimeter under the outgoing
-// side's ownership, unchanged.
-//
-// The one moment ownership stops being unambiguous is a successful return
-// from [handoff.Confirm]. If Confirm itself fails (a write error — the
-// outgoing side may or may not have received it), RunAdopt still returns an
-// error and does NOT proceed to bind the IPC socket, write a pidfile, or do
-// anything else externally visible: the *NetnsRuntime and *CHDriver built in
-// this process are process-local Go values, and the perimeter fd this
-// process holds is its own SCM_RIGHTS-duplicated copy of the same underlying
-// socket the outgoing side independently still holds a reference to. Letting
-// this process exit without calling rt.Stop() (which would SIGKILL the VM's
-// process group) is therefore always safe: either the outgoing side saw the
-// Ack and would be wrong to still think it owns the VM (in which case NOT
-// serving from this side is the bug to fix in a follow-up slice, not a
-// safety violation), or it did not see the Ack and correctly resumes
-// ownership — in neither case does this process's exit mutate anything.
+// RunAdopt runs a detached supervisor in adopt mode. It listens on handoffSockPath,
+// accepts one handoff offer, and installs the acquired netns runtime into the driver.
+// /** Safety (D-HSH-08): fail-closed. Every error returns WITHOUT calling [handoff.Confirm],
+// leaving ownership with the outgoing side unchanged. */
 func RunAdopt(cfg Config, handoffSockPath string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
@@ -79,11 +43,6 @@ func RunAdopt(cfg Config, handoffSockPath string) error {
 		return fmt.Errorf("supervisor: adopt: resolve sandbox %s: %w", cfg.SandboxRef, err)
 	}
 
-	// Fail-closed identity guard. The CLI verb that spawned this process
-	// already checked this against the same store record; RunAdopt re-checks
-	// independently rather than trusting its caller, per this motive's rail
-	// that a check must never be satisfied by "the caller already verified
-	// it" — a zero/absent/unreadable value here REFUSES.
 	if sb.NetnsChildPID <= 0 || sb.NetnsChildPGID <= 0 || sb.NetnsChildStartTime == 0 ||
 		sb.GuestTapName == "" || sb.CHAPISocket == "" {
 		return fmt.Errorf("supervisor: adopt: sandbox %s has an incomplete netns identity; refusing to adopt", sb.ID)
@@ -169,9 +128,7 @@ func RunAdopt(cfg Config, handoffSockPath string) error {
 		return fmt.Errorf("supervisor: adopt: adopt netns runtime: %w", err)
 	}
 	if err := drv.AdoptRuntime(sb.ID, rt); err != nil {
-		// Do NOT call rt.Stop() on this path: that would SIGKILL the process
-		// group of the only live copy of the VM. Dropping rt un-stopped and
-		// refusing is what leaves the outgoing side as sole owner.
+		// Do NOT rt.Stop() — that SIGKILLs the only live VM copy.
 		_ = handoff.Refuse(conn, err.Error())
 		return fmt.Errorf("supervisor: adopt: install runtime: %w", err)
 	}
@@ -181,14 +138,8 @@ func RunAdopt(cfg Config, handoffSockPath string) error {
 	}
 	slog.Info("supervisor.adopted", "sandboxRef", cfg.SandboxRef, "sandbox", sb.ID)
 
-	// Seed the new perimeter's MITM proxy with the SAME CA the outgoing
-	// supervisor's payload carried, rather than letting StartPerimeterOnly
-	// mint a fresh one: the guest already imported and pinned the outgoing
-	// CA this boot, and a fresh CA would invalidate that trust without a
-	// guest reboot to re-seed it. (Found and fixed live during ticket 08's
-	// proof — see handoff.Payload.Validate, which refuses any payload with
-	// an empty CA and was previously unreachable because no payloadBuilder
-	// populated it.)
+	// /** Seed with the outgoing supervisor's CA so the guest's TLS trust survives.
+	// A fresh CA would break in-guest TLS until guest re-import. */
 	var seedCA *service.CASeed
 	if len(payload.CA.CertPEM) > 0 && len(payload.CA.KeyPEM) > 0 {
 		seedCA = &service.CASeed{CertPEM: payload.CA.CertPEM, KeyPEM: payload.CA.KeyPEM}

@@ -1,11 +1,8 @@
 package cli
 
-// herdr_negative_scope_test.go — mechanical guard that the herdr ↔ nexus3
-// integration stays within its agreed scope:
-//
-// These assertions are intentionally brittle: a future change that would
-// silently expand the integration scope causes the test to fail and forces an
-// explicit review.
+/** herdr_negative_scope_test.go — mechanical guard that the herdr ↔ nexus3
+integration stays within agreed scope. Assertions are intentionally brittle:
+scope expansion silently triggers failure and forces review. */
 
 import (
 	"os"
@@ -15,8 +12,7 @@ import (
 	"testing"
 )
 
-// repoRoot walks up from the calling file's directory until it finds a go.mod,
-// returning that directory as the repository root.
+// repoRoot returns the repository root by walking up to go.mod.
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	_, callerFile, _, ok := runtime.Caller(0)
@@ -36,9 +32,7 @@ func repoRoot(t *testing.T) string {
 	}
 }
 
-// TestNegativeScope_HerdrPluginTomlTablesOnly asserts that herdr-plugin.toml
-// contains no [[workspace_provider]] or other unexpected contribution tables —
-// only [[build]], [[panes]], and [[actions]] are permitted.
+// TestNegativeScope_HerdrPluginTomlTablesOnly asserts permitted tables only.
 func TestNegativeScope_HerdrPluginTomlTablesOnly(t *testing.T) {
 	root := repoRoot(t)
 	tomlPath := filepath.Join(root, "plugins", "herdr", "herdr-plugin.toml")
@@ -49,34 +43,19 @@ func TestNegativeScope_HerdrPluginTomlTablesOnly(t *testing.T) {
 	}
 	content := string(data)
 
-	// Permitted table headers (the full set agreed in the spec).
-	//
-	// [[events]] was added by D-HSH-20. It was absent from this list because
-	// the manifest carried a comment asserting herdr's event registry was
-	// empty — a premise that was FALSE: the names it tested used underscores
-	// (worktree_removed) where the registry is keyed by dots
-	// (worktree.removed). Proven on the installed herdr 0.8.0, where the dot
-	// form validates clean and the underscore form yields
-	// "warning: unknown event". The hook is what stops a removed worktree
-	// leaking its sandbox, so the table is intended scope, not scope creep.
-	//
-	// This guard stays narrow on purpose: it exists so a new table cannot be
-	// added to the manifest without someone deciding it belongs.
-	// Event NAMES are validated separately, against the real binary's own
-	// registry, by TestHerdrPluginManifest_EventNamesValid.
-	//
-	// [[startup]] was added by the port-forward motive: herdr ≥0.9.0 runs the
-	// [[startup]] command on the laptop when herdr starts, so the
-	// local-agent-startup verb can manage host-side port forwards.
+	/** Permitted tables: [[build]], [[panes]], [[actions]], [[events]], [[startup]].
+	[[events]] added D-HSH-20 (registry uses dots not underscores: worktree.removed).
+	Hook stops removed worktree leaking sandbox. [[startup]] from port-forward motive:
+	herdr ≥0.9.0 runs command on laptop to manage host-side port forwards. Guard stays
+	narrow: new tables require explicit decision. Event NAMES validated separately by
+	TestHerdrPluginManifest_EventNamesValid. */
 	permitted := []string{"[[build]]", "[[panes]]", "[[actions]]", "[[events]]", "[[startup]]"}
 
-	// Collect all [[...]] table headers present in the file.
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if !strings.HasPrefix(trimmed, "[[") {
 			continue
 		}
-		// Strip inline comments.
 		if idx := strings.Index(trimmed, "#"); idx >= 0 {
 			trimmed = strings.TrimSpace(trimmed[:idx])
 		}
@@ -94,15 +73,12 @@ func TestNegativeScope_HerdrPluginTomlTablesOnly(t *testing.T) {
 	}
 }
 
-// TestNegativeScope_NoFUSEReferences asserts that the string "fuse" (case-
-// insensitive) does not appear anywhere under plugins/herdr/ or in
-// internal/cli/cmd_herdr_space.go.
+// TestNegativeScope_NoFUSEReferences asserts no "fuse" in plugins/herdr/.
 func TestNegativeScope_NoFUSEReferences(t *testing.T) {
 	root := repoRoot(t)
 
 	var targets []string
 
-	// Walk plugins/herdr/ recursively.
 	herdrPluginDir := filepath.Join(root, "plugins", "herdr")
 	if err := filepath.WalkDir(herdrPluginDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -116,7 +92,6 @@ func TestNegativeScope_NoFUSEReferences(t *testing.T) {
 		t.Fatalf("walk %s: %v", herdrPluginDir, err)
 	}
 
-	// Add cmd_herdr_space.go.
 	targets = append(targets, filepath.Join(root, "internal", "cli", "cmd_herdr_space.go"))
 
 	for _, path := range targets {
@@ -133,14 +108,12 @@ func TestNegativeScope_NoFUSEReferences(t *testing.T) {
 	}
 }
 
-// TestNegativeScope_NoHerdrVendorOrForkDir asserts that no vendor/fork patch
-// directory exists under plugins/herdr/.  Permitted subdirectories are:
-// "abi", "bin" (and any files at the top level).
+// TestNegativeScope_NoHerdrVendorOrForkDir asserts no vendor/fork
+// under plugins/herdr/. Permitted: "abi", "bin", top-level files.
 func TestNegativeScope_NoHerdrVendorOrForkDir(t *testing.T) {
 	root := repoRoot(t)
 	herdrPluginDir := filepath.Join(root, "plugins", "herdr")
 
-	// Permitted subdirectory names (all others are unexpected).
 	permittedDirs := map[string]bool{
 		"abi": true,
 		"bin": true,

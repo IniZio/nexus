@@ -7,12 +7,12 @@ import (
 	"testing"
 )
 
-// TestStateDir_IgnoresHerdrPluginStateDir pins the canonical, env-independent
-// location: the supervisor must not follow HERDR_PLUGIN_STATE_DIR, because
-// the laptop client reads the host path over a plain ssh session where that
-// variable is never set.
-//
-// MUTATION PROOF: honour HERDR_PLUGIN_STATE_DIR in StateDir → RED.
+// ── TestStateDir_IgnoresHerdrPluginStateDir ──
+/**
+ * Supervisor must not follow HERDR_PLUGIN_STATE_DIR (laptop client reads
+ * host path over plain ssh).
+ * MUTATION-PIN: honour HERDR_PLUGIN_STATE_DIR in StateDir → RED.
+ */
 func TestStateDir_IgnoresHerdrPluginStateDir(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdg)
@@ -39,11 +39,12 @@ func TestStateDir_FallsBackToHomeLocalState(t *testing.T) {
 	}
 }
 
-// TestRemoteStateFileShell_MatchesStateFile proves writer and reader agree:
-// the shell expression the laptop client sends over ssh expands (under the
-// same HOME / XDG_STATE_HOME) to exactly the path the supervisor writes.
-//
-// MUTATION PROOF: change either stateRelDir usage or the shell prefix → RED.
+// ── TestRemoteStateFileShell_MatchesStateFile ──
+/**
+ * Shell expression the laptop client sends over ssh must expand to exactly
+ * the path supervisor writes.
+ * MUTATION-PIN: change either stateRelDir usage or shell prefix → RED.
+ */
 func TestRemoteStateFileShell_MatchesStateFile(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")

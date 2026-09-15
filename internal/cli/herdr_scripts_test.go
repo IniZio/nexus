@@ -8,23 +8,14 @@ import (
 	"testing"
 )
 
-// The herdr plugin's shell layer is real logic: open-pane.sh decides which
-// sandbox an action applies to (via $HERDR_WORKSPACE_ID), which placement a
-// pane gets, and whether to exec herdr or nexus3. None of it was executed by
-// any test — the scripts were only ever read as text — so a wiring mistake
-// there could only be found by clicking the action in herdr and watching it
-// misbehave.
-//
-// These tests run the real scripts against a stub shim that records argv, so
-// the contract between manifest, script, and CLI is checked mechanically.
+// herdr plugin shell layer: real scripts tested against stub argv-logging shims.
 
-// scriptEnv builds a temp copy of the plugin's bin/ directory alongside a stub
-// nexus3-shim.sh and a stub herdr, both of which append their argv to files.
+// scriptEnv builds temp copy of plugin bin/ with stub shims that log argv.
 type scriptEnv struct {
-	dir      string // contains the copied scripts
+	dir      string
 	shimLog  string
 	herdrLog string
-	herdrBin string // absolute path to the herdr stub; set HERDR_BIN_PATH to this value
+	herdrBin string
 }
 
 func newScriptEnv(t *testing.T) *scriptEnv {
@@ -51,13 +42,6 @@ func newScriptEnv(t *testing.T) *scriptEnv {
 		herdrLog: filepath.Join(root, "herdr.argv"),
 	}
 
-	// The shim sits one level above bin/, exactly as in the real plugin.
-	// shell-cwd must answer on stdout because pane.sh captures it.
-	// The stub answers both guest round-trips pane.sh makes: shell-cwd, and
-	// the `command -v bash` probe. STUB_GUEST_BASH controls what the guest is
-	// pretending to have, so both branches are reachable.
-	// STUB_SHELL_CWD_FAIL=1 makes shell-cwd exit non-zero (simulates stale binary).
-	// STUB_SHELL_CWD overrides the directory shell-cwd reports (default /work).
 	shim := "#!/bin/sh\n" +
 		"printf '%s\\n' \"$*\" >> " + e.shimLog + "\n" +
 		"if [ \"$2\" = \"shell-cwd\" ]; then\n" +
@@ -104,19 +88,13 @@ func readLog(t *testing.T, path string) string {
 	return string(b)
 }
 
-// TestOpenPaneScript_LifecycleActionsResolveByWorkspaceID pins the wiring that
-// makes pause/resume/remove work without the operator typing a sandbox ref:
-// the action must forward $HERDR_WORKSPACE_ID as the subcommand's argument.
-// If that were dropped the subcommand would report "sandbox ref required" and
-// the action would fail for every workspace.
+// TestOpenPaneScript_LifecycleActionsResolveByWorkspaceID pins workspace ID forwarding.
 func TestOpenPaneScript_LifecycleActionsResolveByWorkspaceID(t *testing.T) {
 	for _, entry := range []string{"space-pause", "space-resume", "space-remove"} {
 		e := newScriptEnv(t)
 		e.run(t, "open-pane.sh", []string{entry}, map[string]string{"HERDR_WORKSPACE_ID": "w42"})
 
 		got := strings.TrimSpace(e.shimArgv(t))
-		// open-pane.sh strips the space- prefix when forwarding to `herdr`:
-		// space-pause → herdr pause, space-resume → herdr resume, etc.
 		verb := strings.TrimPrefix(entry, "space-")
 		want := "herdr " + verb + " w42"
 		if got != want {
@@ -128,10 +106,7 @@ func TestOpenPaneScript_LifecycleActionsResolveByWorkspaceID(t *testing.T) {
 	}
 }
 
-// TestOpenPaneScript_SplitOmitsWorkspace pins the server-side rule that split
-// (and zoomed) placements target an existing pane, so --workspace is rejected:
-// "split and zoomed plugin panes target an existing pane; use target_pane_id".
-// The flags --plugin, --entrypoint, --placement, and --focus must still be present.
+// TestOpenPaneScript_SplitOmitsWorkspace pins split placement omits --workspace.
 func TestOpenPaneScript_SplitOmitsWorkspace(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "open-pane.sh", []string{"doctor", "split"}, map[string]string{"HERDR_WORKSPACE_ID": "w7"})
@@ -153,12 +128,7 @@ func TestOpenPaneScript_SplitOmitsWorkspace(t *testing.T) {
 	}
 }
 
-// TestOpenPaneScript_ZoomedOmitsWorkspace covers the zoomed case of the
-// overlay|popup|split|zoomed pattern in open-pane.sh. Narrowing that pattern
-// to overlay|popup|split leaves the suite green because zoomed is never
-// exercised otherwise — this test is the guard on the guard.
-// The server error for zoomed matches split: "split and zoomed plugin panes
-// target an existing pane; use target_pane_id".
+// TestOpenPaneScript_ZoomedOmitsWorkspace pins zoomed placement guard on guard.
 func TestOpenPaneScript_ZoomedOmitsWorkspace(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "open-pane.sh", []string{"logs", "zoomed"}, map[string]string{"HERDR_WORKSPACE_ID": "w7"})
@@ -180,9 +150,7 @@ func TestOpenPaneScript_ZoomedOmitsWorkspace(t *testing.T) {
 	}
 }
 
-// TestOpenPaneScript_OmitsEnvFlagWhenWorkspaceUnset guards a real footgun:
-// passing --env "NEXUS3_WORKSPACE=" would hand the pane an empty ref, which
-// reads as "set but empty" rather than absent.
+// TestOpenPaneScript_OmitsEnvFlagWhenWorkspaceUnset guards passing empty NEXUS3_WORKSPACE.
 func TestOpenPaneScript_OmitsEnvFlagWhenWorkspaceUnset(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "open-pane.sh", []string{"workspaces", "overlay"}, map[string]string{"HERDR_WORKSPACE_ID": "w1"})
@@ -204,9 +172,7 @@ func TestOpenPaneScript_PassesEnvFlagWhenWorkspaceSet(t *testing.T) {
 	}
 }
 
-// TestPaneScript_ShellUsesResolvedGuestCwd pins that the guest shell pane asks
-// nexus3 where to land and then passes that directory to exec --cwd. Without
-// it every shell would open in /root regardless of what is mounted.
+// TestPaneScript_ShellUsesResolvedGuestCwd pins guest shell resolves cwd before exec.
 func TestPaneScript_ShellUsesResolvedGuestCwd(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "pane.sh", []string{"shell"}, map[string]string{"NEXUS3_WORKSPACE": "demo/api"})
@@ -223,9 +189,7 @@ func TestPaneScript_ShellUsesResolvedGuestCwd(t *testing.T) {
 	}
 }
 
-// TestPaneScript_ShellRefusesWithoutWorkspace pins the failure mode: no
-// workspace means no sandbox to attach to, and the pane must say so rather
-// than exec a shell against an empty ref.
+// TestPaneScript_ShellRefusesWithoutWorkspace pins refusal with no workspace.
 func TestPaneScript_ShellRefusesWithoutWorkspace(t *testing.T) {
 	e := newScriptEnv(t)
 	cmd := exec.Command("sh", filepath.Join(e.dir, "pane.sh"), "shell")
@@ -239,8 +203,7 @@ func TestPaneScript_ShellRefusesWithoutWorkspace(t *testing.T) {
 	}
 }
 
-// TestPaneScript_RejectsUnknownSubcommand ensures a manifest typo surfaces as
-// a clear error rather than a pane that opens and does nothing.
+// TestPaneScript_RejectsUnknownSubcommand ensures manifest typo is surfaced.
 func TestPaneScript_RejectsUnknownSubcommand(t *testing.T) {
 	e := newScriptEnv(t)
 	cmd := exec.Command("sh", filepath.Join(e.dir, "pane.sh"), "not-a-subcommand")
@@ -253,10 +216,7 @@ func TestPaneScript_RejectsUnknownSubcommand(t *testing.T) {
 	}
 }
 
-// TestPaneScript_ProbesGuestNotHostForBash pins a defect that asked the wrong
-// machine: the shell pane tested the HOST for /usr/bin/bash to decide which
-// shell to run in the GUEST. On macOS — a platform the manifest declares —
-// bash is at /bin/bash, so every guest would have been demoted to /bin/sh.
+// TestPaneScript_ProbesGuestNotHostForBash pins defect: tested HOST not GUEST bash.
 func TestPaneScript_ProbesGuestNotHostForBash(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "pane.sh", []string{"shell"}, map[string]string{
@@ -273,9 +233,7 @@ func TestPaneScript_ProbesGuestNotHostForBash(t *testing.T) {
 	}
 }
 
-// TestPaneScript_FallsBackToShWhenGuestLacksBash covers the other branch: a
-// minimal guest image must get /bin/sh rather than an exec that fails and
-// closes the pane before the error can be read.
+// TestPaneScript_FallsBackToShWhenGuestLacksBash pins fallback to /bin/sh.
 func TestPaneScript_FallsBackToShWhenGuestLacksBash(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "pane.sh", []string{"shell"}, map[string]string{
@@ -292,11 +250,7 @@ func TestPaneScript_FallsBackToShWhenGuestLacksBash(t *testing.T) {
 	}
 }
 
-// TestPaneScript_ShellCwdFailureIsVisible guards the silent-failure that
-// originally caused the operator to land at /root with no error: if the
-// nexus3 binary is stale and does not recognise "herdr shell-cwd", the
-// command exits non-zero and the pane must say so loudly — not silently
-// substitute /root.
+// TestPaneScript_ShellCwdFailureIsVisible guards silent-failure with stale binary.
 func TestPaneScript_ShellCwdFailureIsVisible(t *testing.T) {
 	e := newScriptEnv(t)
 	cmd := exec.Command("sh", filepath.Join(e.dir, "pane.sh"), "shell")
@@ -317,9 +271,7 @@ func TestPaneScript_ShellCwdFailureIsVisible(t *testing.T) {
 	}
 }
 
-// TestPaneScript_ShellCwdLegitimateRoot checks that a sandbox with no mount
-// legitimately returning /root (exit 0) is NOT treated as an error: the pane
-// must continue and open the shell at /root rather than aborting.
+// TestPaneScript_ShellCwdLegitimateRoot checks /root exit 0 is not an error.
 func TestPaneScript_ShellCwdLegitimateRoot(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "pane.sh", []string{"shell"}, map[string]string{
@@ -333,10 +285,8 @@ func TestPaneScript_ShellCwdLegitimateRoot(t *testing.T) {
 	}
 }
 
-// TestABIFileValue pins the plugin's declared ABI to 3, which was bumped when
-// the [[startup]] stanza and local-agent-startup verb were added (requires
-// herdr ≥0.9.0). A pre-startup binary reports ABI 2 and build.sh will reject
-// it. Mutation: revert plugins/herdr/abi to "2" and this test goes RED.
+// TestABIFileValue pins plugin ABI to 3 (requires herdr ≥0.9.0).
+/** MUTATION-PIN: reverting plugins/herdr/abi to "2" makes this RED. */
 func TestABIFileValue(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "..", "plugins", "herdr", "abi"))
 	if err != nil {
@@ -349,10 +299,7 @@ func TestABIFileValue(t *testing.T) {
 	}
 }
 
-// TestOpenPaneScript_OverlayOmitsWorkspace pins the server-side rule that
-// overlay and popup placements target the active pane, so --workspace is
-// rejected. If open-pane.sh passes --workspace for these placements, herdr
-// responds with "overlay and popup plugin panes target the active pane".
+// TestOpenPaneScript_OverlayOmitsWorkspace pins overlay omits --workspace.
 func TestOpenPaneScript_OverlayOmitsWorkspace(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "open-pane.sh", []string{"workspaces", "overlay"}, map[string]string{"HERDR_WORKSPACE_ID": "w8"})
@@ -371,9 +318,7 @@ func TestOpenPaneScript_OverlayOmitsWorkspace(t *testing.T) {
 	}
 }
 
-// TestOpenPaneScript_OverlayCarriesFocus pins that --focus is kept for overlay
-// placements. herdr accepts --focus alongside overlay (live probe: EXIT:0,
-// focused:true in the result).
+// TestOpenPaneScript_OverlayCarriesFocus pins overlay carries --focus.
 func TestOpenPaneScript_OverlayCarriesFocus(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "open-pane.sh", []string{"workspaces", "overlay"}, map[string]string{"HERDR_WORKSPACE_ID": "w8"})
@@ -383,10 +328,7 @@ func TestOpenPaneScript_OverlayCarriesFocus(t *testing.T) {
 	}
 }
 
-// TestOpenPaneScript_TabCarriesWorkspace verifies that tab placements carry
-// --workspace. Tab is the only placement the server accepts it for; every other
-// placement (overlay, popup, split, zoomed) targets an active or existing pane
-// and the server rejects --workspace for them.
+// TestOpenPaneScript_TabCarriesWorkspace verifies tab is only placement with --workspace.
 func TestOpenPaneScript_TabCarriesWorkspace(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "open-pane.sh", []string{"attach", "tab"}, map[string]string{"HERDR_WORKSPACE_ID": "w33"})
@@ -401,10 +343,7 @@ func TestOpenPaneScript_TabCarriesWorkspace(t *testing.T) {
 	}
 }
 
-// TestOpenPaneScript_OverlayWithEnvOmitsWorkspace exercises the env-SET branch
-// of the overlay leg. When NEXUS3_WORKSPACE is set, --env NEXUS3_WORKSPACE=…
-// must be forwarded but --workspace must still be absent — the server rejects
-// --workspace for overlay regardless of whether an env var is set.
+// TestOpenPaneScript_OverlayWithEnvOmitsWorkspace exercises overlay env-SET branch.
 func TestOpenPaneScript_OverlayWithEnvOmitsWorkspace(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "open-pane.sh", []string{"workspaces", "overlay"}, map[string]string{
@@ -424,10 +363,7 @@ func TestOpenPaneScript_OverlayWithEnvOmitsWorkspace(t *testing.T) {
 	}
 }
 
-// TestOpenPaneScript_NewTab pins that the new-tab entrypoint forwards
-// HERDR_WORKSPACE_ID to `nexus3 herdr new-tab` via the shim. The context-aware
-// dispatch (guest pane vs host tab) happens in Go, not in the shell script —
-// the script's only job is to pass the workspace ID through correctly.
+// TestOpenPaneScript_NewTab pins new-tab entrypoint forwards HERDR_WORKSPACE_ID.
 func TestOpenPaneScript_NewTab(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "open-pane.sh", []string{"new-tab"}, map[string]string{
@@ -439,7 +375,6 @@ func TestOpenPaneScript_NewTab(t *testing.T) {
 	if got != want {
 		t.Errorf("new-tab: shim argv = %q, want %q", got, want)
 	}
-	// The herdr binary must NOT be called directly — the dispatch is in Go.
 	if h := e.herdrArgv(t); h != "" {
 		t.Errorf("new-tab must not call herdr directly; herdr was called with %q", h)
 	}

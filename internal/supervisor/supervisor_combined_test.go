@@ -16,8 +16,6 @@ import (
 	"github.com/IniZio/nexus3/internal/core/service"
 )
 
-// captureGuestSeeder is a service.GuestSeeder stub that accumulates payloads
-// and counts calls.
 type captureGuestSeeder struct {
 	payloads [][]byte
 	calls    int
@@ -39,20 +37,15 @@ func (c *captureGuestSeeder) combined() []byte {
 	return out
 }
 
-// fakeCert returns a *x509.Certificate with a non-nil Raw so that SeedCA
-// proceeds past its nil-cert guard and calls the caSeeder. SeedCA calls
-// pem.EncodeToMemory(cert.Raw); the Raw bytes' validity doesn't matter
-// because the caSeeder used in these tests is a no-op.
+// fakeCert returns a cert with non-nil Raw so SeedCA proceeds past its nil-cert guard.
 func fakeCert() *x509.Certificate {
 	return &x509.Certificate{Raw: []byte("fake-cert-der-for-test")}
 }
 
-// combinedSandboxWithEnvSecret returns a domain.Sandbox configured with both
-// an agent name and a non-GitHub secret spec resolved from a process env var.
-// This avoids calling `gh auth token` in supervisor-layer tests.
+// combinedSandboxWithEnvSecret returns a sandbox with agent name and env-resolved secret.
 func combinedSandboxWithEnvSecret(id domain.SandboxID, envKey string) domain.Sandbox {
-	// Use "example.com" — not in the GitHub host list, so ResolveEnvelopeSecrets
-	// reads the token from os.Getenv(envKey) rather than `gh auth token`.
+	/** Use "example.com" — not in the GitHub host list, so ResolveEnvelopeSecrets
+	  reads the token from os.Getenv(envKey) rather than `gh auth token`. */
 	spec := envKey + "@example.com"
 	return domain.Sandbox{
 		ID:        id,
@@ -64,11 +57,7 @@ func combinedSandboxWithEnvSecret(id domain.SandboxID, envKey string) domain.San
 	}
 }
 
-// TestSeedAgentAndHumanSecrets_ContainsAgentVars is the mutation guard for the
-// agent half inside seedAgentAndHumanSecrets:
-//
-//	Drop the SeedGuestAgentAndSecrets call → NODE_EXTRA_CA_CERTS disappears → RED.
-//	(ClaudeCodeProfile uses CredDirLiveMount; CLAUDE_CODE_OAUTH_TOKEN is no longer seeded.)
+/** Mutation guard: Drop SeedGuestAgentAndSecrets call → NODE_EXTRA_CA_CERTS disappears → RED. */
 func TestSeedAgentAndHumanSecrets_ContainsAgentVars(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "") // ensure kindOAuth path
 	t.Setenv("NEXUS3_TEST_SECRET_A1", "supervisor-secret-for-a1")
@@ -80,7 +69,6 @@ func TestSeedAgentAndHumanSecrets_ContainsAgentVars(t *testing.T) {
 
 	broker := cred.NewBroker()
 	credCap := &captureGuestSeeder{}
-	// caSeeder: no-op; SeedCA writes PEM to it but it's discarded.
 	caSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
 
 	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil, cred.ClaudeCodeProfile, nil, nil)
@@ -90,11 +78,6 @@ func TestSeedAgentAndHumanSecrets_ContainsAgentVars(t *testing.T) {
 
 	payload := credCap.combined()
 
-	// CredDirLiveMount: CLAUDE_CODE_OAUTH_TOKEN is no longer seeded; guest reads
-	// the real token from the live-mounted ~/.credentials.json.
-	// The agent half being present is evidenced by NODE_EXTRA_CA_CERTS (written
-	// by buildAgentSeedPayload from CACertEnvVars) and
-	// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC (from GuestEnv).
 	if bytes.Contains(payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
 		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must NOT be seeded for CredDirLiveMount profile\npayload:\n%s", payload)
 	}
@@ -103,11 +86,7 @@ func TestSeedAgentAndHumanSecrets_ContainsAgentVars(t *testing.T) {
 	}
 }
 
-// TestSeedAgentAndHumanSecrets_ContainsSecretVars is the mutation guard for the
-// secret half inside seedAgentAndHumanSecrets:
-//
-//	Drop SecretSpecs from the SeedGuestAgentAndSecrets call →
-//	NEXUS3_CRED_EXAMPLE_COM_TOKEN disappears → RED.
+/** Mutation guard: Drop SecretSpecs → NEXUS3_CRED_EXAMPLE_COM_TOKEN disappears → RED. */
 func TestSeedAgentAndHumanSecrets_ContainsSecretVars(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 	t.Setenv("NEXUS3_TEST_SECRET_A2", "supervisor-secret-for-a2")
@@ -128,15 +107,11 @@ func TestSeedAgentAndHumanSecrets_ContainsSecretVars(t *testing.T) {
 
 	payload := credCap.combined()
 
-	// Secret half must be present: applySecrets emits the bind's Env name
-	// (NEXUS3_TEST_SECRET_A2) as the var, not a NEXUS3_CRED_* key.
 	if !bytes.Contains(payload, []byte("NEXUS3_TEST_SECRET_A2=")) {
 		t.Errorf("combined supervisor payload missing NEXUS3_TEST_SECRET_A2= (secret half absent)\npayload:\n%s", payload)
 	}
 }
 
-// TestSeedAgentAndHumanSecrets_OneWrite asserts the credSeeder is called
-// exactly once. Two writes would mean the second silently overwrites the first.
 func TestSeedAgentAndHumanSecrets_OneWrite(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 	t.Setenv("NEXUS3_TEST_SECRET_A3", "supervisor-secret-for-a3")
@@ -160,25 +135,7 @@ func TestSeedAgentAndHumanSecrets_OneWrite(t *testing.T) {
 	}
 }
 
-// --- dispatch tests ---
-// These tests call chooseSeedRoute (the production decision function) and
-// assert the route. They are the mutation guards for MUT-A and MUT-B.
-//
-// Residual gap (stated plainly): these tests cover the decision function AND
-// the binding from a route to the seeder it invokes. What remains uncovered is
-// the single line where RunDetached calls runSeedRoute(chooseSeedRoute(sb), …).
-// A mutation deleting that call would still pass, because RunDetached does real
-// I/O (VM boot, perimeter start) and cannot be driven from a unit test here.
-
-// sandboxWithProxy returns a domain.Sandbox that SandboxHasMITMProxy reports
-// true for.
-//
-// SandboxHasMITMProxy is !OpenEgress || len(SecretHosts) > 0 || AgentName != "".
-// The !OpenEgress clause is first and broadest, and omitting it from this
-// description would matter: it is what makes a closed-egress sandbox with no
-// agent and no secrets reach routeAgent. That case is exactly the one whose
-// consequence is worth guarding — routing it wrongly would hand agent
-// credential env vars to a guest that runs no agent.
+// ── dispatch tests ──
 func sandboxWithProxy(agentName string, secretHosts []string) domain.Sandbox {
 	return domain.Sandbox{
 		AgentName: agentName,
@@ -186,9 +143,6 @@ func sandboxWithProxy(agentName string, secretHosts []string) domain.Sandbox {
 	}
 }
 
-// TestChooseSeedRoute_Dispatch is the mutation guard for MUT-A:
-// mutating `case agentSandbox && humanSecrets:` to `case false && agentSandbox && humanSecrets:`
-// must make this test RED (the combined sandbox falls through to routeHumanSecrets instead).
 func TestChooseSeedRoute_Dispatch(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -196,9 +150,6 @@ func TestChooseSeedRoute_Dispatch(t *testing.T) {
 		wantRoute seedRoute
 	}{
 		{
-			// OpenEgress=true, no AgentName, no SecretHosts → SandboxHasMITMProxy=false → routeNone.
-			// (OpenEgress defaults false, meaning curated allowlist → proxy is required; must be
-			// explicitly true to get open egress and skip the proxy.)
 			name:      "no_proxy_returns_none",
 			sb:        domain.Sandbox{Envelope: domain.Envelope{OpenEgress: true}},
 			wantRoute: routeNone,
@@ -230,10 +181,7 @@ func TestChooseSeedRoute_Dispatch(t *testing.T) {
 	}
 }
 
-// TestChooseSeedRoute_Ordering is the mutation guard for MUT-B:
-// swapping the routeCombined and routeHumanSecrets cases in chooseSeedRoute
-// makes an agent+secrets sandbox return routeHumanSecrets, and this test
-// turns RED because it asserts routeCombined.
+/** MUT-B: swap routeCombined and routeHumanSecrets cases → agent+secrets → routeHumanSecrets → RED. */
 func TestChooseSeedRoute_Ordering(t *testing.T) {
 	sb := sandboxWithProxy("claude", []string{"github.com"})
 	got := chooseSeedRoute(sb)
@@ -243,34 +191,18 @@ func TestChooseSeedRoute_Ordering(t *testing.T) {
 			"that silently drops the Claude credential from agent+secrets sandboxes.",
 			got, routeCombined)
 	}
-	// Also assert it is NOT routeHumanSecrets to give an unambiguous ordering signal.
 	if got == routeHumanSecrets {
 		t.Errorf("agent+secrets sandbox routed to routeHumanSecrets: ordering defect — combined case must precede human-secrets case")
 	}
 }
 
-// --- route→seeder binding tests ---
-// These tests call runSeedRoute (the production dispatch function) with spy
-// function vars and assert WHICH seeder was invoked. They close the gap between
-// "chooseSeedRoute returns the right route" and "runSeedRoute calls the right
-// seeder for that route".
-//
-// Residual gap (stated plainly): nothing asserts that RunDetached calls
-// runSeedRoute(chooseSeedRoute(sb), ...) at all. That is a single wiring line,
-// and testing it would require driving RunDetached through its full I/O
-// (VM boot, perimeter). The established TestProbeAndSeedGuest_* pattern covers
-// that class of gap when the blast radius is acceptable.
-
-// TestRunSeedRoute_CombinedCallsCombinedSeeder is the mutation guard for the
-// route→seeder binding. Make routeCombined call seedHumanSecretsFn instead of
-// seedAgentAndHumanSecretsFn → this test turns RED (combinedCalled=false).
+// ── route→seeder binding tests ──
 func TestRunSeedRoute_CombinedCallsCombinedSeeder(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 	t.Setenv("NEXUS3_TEST_SECRET_RS1", "rs1-secret")
 
 	var combinedCalled, humanCalled bool
 
-	// Spy replacements — restore after test.
 	origCombined := seedAgentAndHumanSecretsFn
 	origHuman := seedHumanSecretsFn
 	t.Cleanup(func() {
@@ -310,7 +242,6 @@ func TestRunSeedRoute_CombinedCallsCombinedSeeder(t *testing.T) {
 	}
 }
 
-// TestRunSeedRoute_HumanSecretsCallsHumanSeeder guards routeHumanSecrets binding.
 func TestRunSeedRoute_HumanSecretsCallsHumanSeeder(t *testing.T) {
 	var humanCalled, combinedCalled bool
 
@@ -353,24 +284,23 @@ func TestRunSeedRoute_HumanSecretsCallsHumanSeeder(t *testing.T) {
 	}
 }
 
-// TestRunSeedRoute_AgentCallsSeedLoop closes the last uncovered route binding.
-//
-// An independent review mutated routeAgent to dispatch at the combined seeder
-// and found NOTHING caught it — the other three arms were guarded, this one
-// was not. Its failure mode is the mirror image of the defect this whole change
-// set exists to fix: instead of an agent losing its credential, a guest that
-// runs NO agent is handed agent credential env vars.
-//
-// The seedAgentCreds argument is asserted too, not just the call. routeAgent is
-// reached by two different kinds of sandbox — one with an agent, and (via the
-// !OpenEgress clause of SandboxHasMITMProxy) a closed-egress sandbox with no
-// agent and no secrets. Both take this arm; only the first may receive agent
-// credentials. A test that asserted only "seedLoopFn was called" would pass
-// while that distinction was inverted.
-//
-// Mutation: dispatch routeAgent at seedAgentAndHumanSecretsFn -> the call
-// assertion goes RED. Hardcode the final argument to true -> the no-agent
-// subtest goes RED.
+/*
+*
+TestRunSeedRoute_AgentCallsSeedLoop closes the last uncovered route binding.
+An independent review mutated routeAgent to dispatch at the combined seeder and
+found NOTHING caught it — the other three arms were guarded. Its failure mode
+mirrors the defect this set exists to fix: instead of an agent losing its
+credential, a guest that runs NO agent is handed agent credential env vars.
+
+routeAgent is reached by two kinds of sandbox: one with an agent, and
+(via !OpenEgress) a closed-egress sandbox with no agent and no secrets. Both
+take this arm; only the first may receive agent credentials. Asserting only
+"seedLoopFn was called" would pass while that distinction was inverted.
+
+MUT: dispatch routeAgent at seedAgentAndHumanSecretsFn → RED.
+
+	Hardcode final argument to true → no-agent subtest RED.
+*/
 func TestRunSeedRoute_AgentCallsSeedLoop(t *testing.T) {
 	cases := []struct {
 		name              string
@@ -448,11 +378,7 @@ func TestRunSeedRoute_AgentCallsSeedLoop(t *testing.T) {
 	}
 }
 
-// ── Finding 1: supervisor-level ForcePush wiring tests ───────────────────────
-
-// writeFreshSupervisorStore writes a DedicatedCredStore JSON with a fresh
-// access_token (expires 1 hour from now) so NewRefresher's lockedToken fast
-// path returns the cached token without any HTTP call.
+// writeFreshSupervisorStore writes a fresh cred store so NewRefresher returns cached token without HTTP.
 func writeFreshSupervisorStore(t *testing.T, accessToken string) string {
 	t.Helper()
 	s := map[string]any{
@@ -475,22 +401,6 @@ func writeFreshSupervisorStore(t *testing.T, accessToken string) string {
 	return p
 }
 
-// TestSeedLoop_ForcePushWritesRealToken is the mutation guard for
-// supervisor.go:SeedLoop's ForcePush call.
-//
-// Sequence (from reviewer's construction hint):
-//  1. RegisterPlaceholder — initial seed, scope minted with realToken="".
-//  2. r.Register — wire refresher.
-//  3. r.Token — ticker push: rotation detected (lastToken "" → realToken), broker set.
-//  4. SeedLoop — internally calls SeedGuestAgent → RegisterPlaceholder re-mints scope,
-//     wiping realToken back to "". Then ForcePush writes realToken unconditionally.
-//  5. Assert broker.Resolve(placeholder) == realToken.
-//
-// Mutation proof: revert supervisor.go:SeedLoop's r.ForcePush(ctx, id) to
-// r.Token(ctx) discarding the result. Token() detects no rotation (lastToken
-// unchanged), vend() skips the push, broker scope stays at realToken="", and:
-//
-//	broker.Resolve(placeholder) == "" ≠ realToken → RED
 func TestSeedLoop_ForcePushWritesRealToken(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "") // ensure kindOAuth path
 
@@ -505,29 +415,22 @@ func TestSeedLoop_ForcePushWritesRealToken(t *testing.T) {
 		t.Fatalf("NewRefresher: %v", err)
 	}
 
-	// Step 1: initial RegisterPlaceholder (simulates first seed attempt before
-	// guest was reachable; scope exists but realToken is empty).
 	if _, err := broker.RegisterPlaceholder(id, service.AnthropicAPIHost, ""); err != nil {
 		t.Fatalf("RegisterPlaceholder (initial): %v", err)
 	}
 
-	// Step 2: wire refresher.
 	r.Register(id)
 
-	// Step 3: ticker fires — rotation detected (lastToken "" → realToken) → push.
 	if _, _, err := r.Token(context.Background()); err != nil {
 		t.Fatalf("Token (ticker): %v", err)
 	}
 
-	// Verify ticker pushed correctly (precondition for the mutation to bite).
 	if ph, ok := broker.Placeholder(id, service.AnthropicAPIHost); !ok {
 		t.Fatal("broker has no placeholder after ticker push (precondition)")
 	} else if got, _ := broker.Resolve(ph); got != realToken {
 		t.Fatalf("after ticker push: placeholder resolves to %q, want %q (precondition)", got, realToken)
 	}
 
-	// Step 4: SeedLoop — re-mints scope via SeedGuestAgent → RegisterPlaceholder
-	// wipes realToken. Then ForcePush must write it back.
 	caSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
 	agentSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
 	cert := fakeCert()
@@ -541,9 +444,6 @@ func TestSeedLoop_ForcePushWritesRealToken(t *testing.T) {
 		t.Fatal("SeedLoop returned ok=false; seed failed")
 	}
 
-	// Step 5: the ForcePush inside SeedLoop must have written the real token to
-	// the newly-minted scope. Use broker.Placeholder + broker.Resolve so the
-	// assertion is on the OBSERVABLE OUTCOME, not on call counts.
 	ph, hasPh := broker.Placeholder(id, service.AnthropicAPIHost)
 	if !hasPh {
 		t.Fatal("broker has no placeholder for anthropic scope after SeedLoop")
@@ -559,20 +459,6 @@ func TestSeedLoop_ForcePushWritesRealToken(t *testing.T) {
 	}
 }
 
-// TestSeedAgentAndHumanSecrets_ForcePushWritesRealToken is the mutation guard
-// for supervisor.go:seedAgentAndHumanSecrets's ForcePush call.
-//
-// Same construction as TestSeedLoop_ForcePushWritesRealToken but exercises the
-// combined agent+secrets path (seedAgentAndHumanSecrets) instead of the
-// agent-only path (SeedLoop). The two tests protect INDEPENDENT call sites:
-// reverting seedAgentAndHumanSecrets's ForcePush leaves this test RED while
-// the SeedLoop test stays GREEN, and vice versa.
-//
-// Mutation proof: revert supervisor.go:seedAgentAndHumanSecrets's r.ForcePush
-// to r.Token discarding the result. vend() skips the push (no rotation), broker
-// scope stays at realToken="", and:
-//
-//	broker.Resolve(placeholder) == "" ≠ realToken → RED
 func TestSeedAgentAndHumanSecrets_ForcePushWritesRealToken(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 	t.Setenv("NEXUS3_TEST_SAHS_FP", "secret-val-for-fp-test")
@@ -588,28 +474,22 @@ func TestSeedAgentAndHumanSecrets_ForcePushWritesRealToken(t *testing.T) {
 		t.Fatalf("NewRefresher: %v", err)
 	}
 
-	// Step 1: initial RegisterPlaceholder (same as SeedLoop test above).
 	if _, err := broker.RegisterPlaceholder(id, service.AnthropicAPIHost, ""); err != nil {
 		t.Fatalf("RegisterPlaceholder (initial): %v", err)
 	}
 
-	// Step 2: wire refresher.
 	r.Register(id)
 
-	// Step 3: ticker fires — rotation detected → push.
 	if _, _, err := r.Token(context.Background()); err != nil {
 		t.Fatalf("Token (ticker): %v", err)
 	}
 
-	// Verify ticker pushed (precondition).
 	if ph, ok := broker.Placeholder(id, service.AnthropicAPIHost); !ok {
 		t.Fatal("broker has no placeholder after ticker push (precondition)")
 	} else if got, _ := broker.Resolve(ph); got != realToken {
 		t.Fatalf("after ticker push: placeholder resolves to %q, want %q (precondition)", got, realToken)
 	}
 
-	// Step 4: seedAgentAndHumanSecrets — re-mints scope via SeedGuestAgentAndSecrets
-	// → RegisterPlaceholder wipes realToken. Then ForcePush must write it back.
 	sb := combinedSandboxWithEnvSecret(id, "NEXUS3_TEST_SAHS_FP")
 	caSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
 	credCap := &captureGuestSeeder{}
@@ -622,8 +502,6 @@ func TestSeedAgentAndHumanSecrets_ForcePushWritesRealToken(t *testing.T) {
 		t.Fatal("seedAgentAndHumanSecrets returned ok=false; combined seeding failed")
 	}
 
-	// Step 5: ForcePush inside seedAgentAndHumanSecrets must have written the
-	// real token to the newly-minted scope.
 	ph, hasPh := broker.Placeholder(id, service.AnthropicAPIHost)
 	if !hasPh {
 		t.Fatal("broker has no placeholder for anthropic scope after seedAgentAndHumanSecrets")
@@ -639,16 +517,6 @@ func TestSeedAgentAndHumanSecrets_ForcePushWritesRealToken(t *testing.T) {
 	}
 }
 
-// TestRegisterMCPOAuthPlaceholders verifies that registerMCPOAuthPlaceholders
-// calls broker.RegisterPlaceholder for each valid MCPOAuthRefreshConfig so that
-// a subsequent ForcePush (broker.SetRealToken) succeeds for every registered
-// host. This test FAILS if registerMCPOAuthPlaceholders does not call
-// broker.RegisterPlaceholder — broker.Placeholder will return ("", false) and
-// broker.SetRealToken will return "no placeholder registered".
-//
-// Mutation proof: remove the broker.RegisterPlaceholder call from
-// registerMCPOAuthPlaceholders and this test fails on the broker.Placeholder
-// assertion.
 func TestRegisterMCPOAuthPlaceholders(t *testing.T) {
 	broker := cred.NewBroker()
 	sid := domain.SandboxID{99}
@@ -663,7 +531,6 @@ func TestRegisterMCPOAuthPlaceholders(t *testing.T) {
 
 	registerMCPOAuthPlaceholders(broker, sid, configs)
 
-	// Both valid configs must have a placeholder in the broker.
 	for _, tc := range []struct {
 		host       string
 		initialTok string
@@ -702,7 +569,6 @@ func TestRegisterMCPOAuthPlaceholders(t *testing.T) {
 		}
 	}
 
-	// Skipped configs must NOT appear in the broker.
 	for _, host := range []string{"example.com"} {
 		if _, ok := broker.Placeholder(sid, host); ok {
 			t.Errorf("broker should NOT have placeholder for %q (empty access_token was provided)", host)
@@ -710,19 +576,6 @@ func TestRegisterMCPOAuthPlaceholders(t *testing.T) {
 	}
 }
 
-// TestMCPOAuthSeedPayload verifies the full MCP OAuth guest-env seed path:
-//
-//	(a) registerMCPOAuthPlaceholders returns a serverName→placeholder hex map,
-//	(b) buildMCPOAuthCredPayload emits NEXUS3_MCP_<SERVER>_AUTHORIZATION=Bearer <placeholder>
-//	    lines — NOT the real token (D-PP-04 zero-cred-in-guest),
-//	(c) the bare placeholder (without "Bearer ") resolves to the real token via
-//	    the broker — swapAuthorization strips "Bearer " from the incoming header,
-//	    resolves the bare hex, and re-emits "Bearer <realToken>" to egress.
-//
-// This test FAILS if:
-//   - registerMCPOAuthPlaceholders does not return the minted placeholder,
-//   - buildMCPOAuthCredPayload omits the "Bearer " prefix (MITM won't match),
-//   - buildMCPOAuthCredPayload includes the real token (cred-in-guest violation).
 func TestMCPOAuthSeedPayload(t *testing.T) {
 	broker := cred.NewBroker()
 	sid := domain.SandboxID{42}
@@ -736,7 +589,6 @@ func TestMCPOAuthSeedPayload(t *testing.T) {
 
 	seeds := registerMCPOAuthPlaceholders(broker, sid, configs)
 
-	// (a) map must contain an entry for the valid server only.
 	ph, ok := seeds["linear-server"]
 	if !ok || ph == "" {
 		t.Fatalf("registerMCPOAuthPlaceholders returned no placeholder for linear-server: seeds=%v", seeds)
@@ -745,9 +597,6 @@ func TestMCPOAuthSeedPayload(t *testing.T) {
 		t.Error("registerMCPOAuthPlaceholders must not include skipped servers in the returned map")
 	}
 
-	// (b) payload must contain the env-var line with quoted "Bearer <ph>" — not
-	// the real token. The value is single-quoted so POSIX `. file` sourcing
-	// preserves the space (see TestMCPOAuthSeedPayloadShellSourceable).
 	payload := buildMCPOAuthCredPayload(seeds)
 	wantLine := "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION='Bearer " + ph + "'\n"
 	if !bytes.Contains(payload, []byte(wantLine)) {
@@ -757,28 +606,12 @@ func TestMCPOAuthSeedPayload(t *testing.T) {
 		t.Errorf("buildMCPOAuthCredPayload must not contain the real token (D-PP-04); got:\n%s", payload)
 	}
 
-	// (c) broker resolves the bare placeholder hex to the real token.
-	// swapAuthorization will strip "Bearer " from the Authorization header, call
-	// ResolveScoped with the bare hex, and prepend "Bearer " to the real token.
 	resolved, resolveOK := broker.ResolveScoped(ph, sid, "mcp.linear.app")
 	if !resolveOK || resolved != realToken {
 		t.Errorf("broker.ResolveScoped(%q, sid, \"mcp.linear.app\") = (%q, %v); want (%q, true)", ph, resolved, resolveOK, realToken)
 	}
 }
 
-// TestMCPOAuthSeedPayloadShellSourceable is the regression bite for the herdr
-// worktree "Linear not authenticated" bug. The MCP OAuth cred.env value is
-// "Bearer <placeholder>" — the only cred.env value with a space. Both guest
-// consumers (launchCredSourcedArgv and guestShellProfileScript) load it with
-// POSIX `. file` sourcing. An unquoted `KEY=Bearer <hex>` line is parsed by the
-// shell as the assignment `KEY=Bearer` followed by the command `<hex>`, so the
-// variable is never exported: the agent sends an empty Authorization header and
-// Linear returns 401.
-//
-// This test sources the real buildMCPOAuthCredPayload output through /bin/sh
-// exactly as the guest does and asserts the exported value is the full
-// "Bearer <placeholder>". It FAILS on the unquoted `%s=Bearer %s` payload
-// (yields "") and PASSES only when the value is shell-quoted.
 func TestMCPOAuthSeedPayloadShellSourceable(t *testing.T) {
 	const ph = "deadbeefcafef00d1234567890abcdef"
 	payload := buildMCPOAuthCredPayload(map[string]string{"linear-server": ph})
@@ -789,8 +622,6 @@ func TestMCPOAuthSeedPayloadShellSourceable(t *testing.T) {
 		t.Fatalf("write cred.env: %v", err)
 	}
 
-	// Mirror the guest sourcing convention: `set -a; . file; set +a` then print
-	// the variable, identical to launchCredSourcedArgv / guestShellProfileScript.
 	script := "set -a; . " + credEnv + "; set +a; printf %s \"$NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION\""
 	out, err := exec.Command("/bin/sh", "-c", script).Output()
 	if err != nil {
@@ -804,17 +635,6 @@ func TestMCPOAuthSeedPayloadShellSourceable(t *testing.T) {
 	}
 }
 
-// TestRunSeedRoute_AgentUsesSandboxProfile is the mutation guard for the
-// hardcoded-claude regression this cursor slice fixed: routeAgent must
-// resolve the profile from the sandbox's OWN AgentName (via
-// cred.ProfileByName), not always cred.ClaudeCodeProfile. Before this fix,
-// service.SeedGuestAgent (which SeedLoop called directly) always emitted
-// Claude's env vars regardless of which agent the sandbox actually ran, so a
-// --agent cursor sandbox would never receive CURSOR_API_KEY.
-//
-// Mutation: hardcode resolveSeedProfile to always return cred.ClaudeCodeProfile
-// -> the cursor case below goes RED (gotProfile.Name == "claude-code" instead
-// of "cursor").
 func TestRunSeedRoute_AgentUsesSandboxProfile(t *testing.T) {
 	var gotProfile cred.AgentProfile
 

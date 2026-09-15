@@ -11,24 +11,6 @@ import (
 	"github.com/IniZio/nexus3/internal/core/domain"
 )
 
-// TestSeedGuestAgentOnboarding_MCPServersIncluded is the mutation guard for
-// the node-free host-side MCP merge (D-MCP-HOST).
-//
-// It verifies that mcpServers passed to SeedGuestAgentOnboarding appear in the
-// written /root/.claude.json without any in-guest toolchain (no node, no jq,
-// no python). The spy executes the actual shell script on the host /bin/sh.
-//
-// RED/GREEN contract:
-//
-//	RED  — remove cfg.MCPServers = servers from SeedGuestAgentOnboarding, or
-//	        remove the MCPServers field from claudeOnboardingConfig → mcpServers
-//	        key absent from the output file → test fails at
-//	        "mcpServers key absent".
-//	GREEN — host-side merge in place → mcpServers present, placeholder
-//	        Authorization value preserved verbatim.
-//
-// This closes the gap that the previous stub-execer suite missed: the stubs
-// returned success while the real node script exited 127 in the guest.
 func TestSeedGuestAgentOnboarding_MCPServersIncluded(t *testing.T) {
 	dir := t.TempDir()
 	spy, rec := newSpyExecer(t, dir)
@@ -69,17 +51,13 @@ func TestSeedGuestAgentOnboarding_MCPServersIncluded(t *testing.T) {
 		t.Errorf("mcpServers[\"linear-server\"] missing; got keys: %v", mcp)
 	}
 
-	// Authorization placeholder must be preserved verbatim: the MITM refresher
-	// swaps it at request time; inlining a real token here would be a security
-	// defect.
+	// Authorization placeholder preserved: MITM refresher swaps it at request time.
 	raw, _ := json.Marshal(mcp["linear-server"])
 	if !strings.Contains(string(raw), "${NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION}") {
 		t.Errorf("Authorization placeholder not preserved verbatim in merged output: %s", raw)
 	}
 }
 
-// TestSeedGuestAgentOnboarding_NilServersOmitsMCPKey verifies that when no
-// MCP servers are provided the mcpServers key is absent (omitempty behaviour).
 func TestSeedGuestAgentOnboarding_NilServersOmitsMCPKey(t *testing.T) {
 	dir := t.TempDir()
 	spy, _ := newSpyExecer(t, dir)
@@ -103,4 +81,3 @@ func TestSeedGuestAgentOnboarding_NilServersOmitsMCPKey(t *testing.T) {
 		t.Errorf("mcpServers key must be absent when servers is nil (omitempty); got: %v", cfg["mcpServers"])
 	}
 }
-

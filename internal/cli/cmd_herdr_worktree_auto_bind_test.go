@@ -6,14 +6,9 @@ import (
 	"testing"
 )
 
-// TestHerdrWorktreeAutoBindDecision pins the --auto predicate: a nexus3-
-// onboarded checkout (nexus3.yaml / .nexus/Containerfile) binds even when
-// no sibling workspace in the repo is bound yet — the first-worktree case
-// that previously no-op'd silently (FRICTION-1). Only a repo with neither
-// signal is skipped.
-//
-// MUTATION PROOF: drop the hasConfig arm (return repoBound only) → the
-// "config only" case fires RED. Force true → "neither" case fires RED.
+// TestHerdrWorktreeAutoBindDecision pins the --auto predicate: nexus3-
+// onboarded checkout binds even with no sibling workspace (FRICTION-1).
+// MUTATION PROOF: drop hasConfig arm → "config only" RED; force true → "neither" RED.
 func TestHerdrWorktreeAutoBindDecision(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

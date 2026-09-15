@@ -8,24 +8,10 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
-// TestSeedGuestAgentAndSecrets_ContainsBothCredSets is the primary mutation
-// guard for the combined seeding path. It verifies that the payload delivered
-// to the guest contains the agent credential vars (NODE_EXTRA_CA_CERTS, but NOT
-// CLAUDE_CODE_OAUTH_TOKEN which is absent for CredDirLiveMount profiles) AND
-// the human secret var (GH_TOKEN).
-//
-// Mutation guards:
-//
-//   - Drop the agent payload half from seedGuestAgentAndSecrets → NODE_EXTRA_CA_CERTS absent, test fails RED.
-//   - Drop the secret payload half from seedGuestAgentAndSecrets → GH_TOKEN absent, test fails RED.
 func TestSeedGuestAgentAndSecrets_ContainsBothCredSets(t *testing.T) {
-	// NOT t.Parallel: this test swaps the package-level lookupGitHubToken global.
-	// Running it in parallel with the other global-swapping tests races their
-	// t.Cleanup restore against this test's in-flight lookup — in CI (no `gh`)
-	// the restored real lookup returns empty and the GH_TOKEN half is dropped.
+	// NO t.Parallel: races with other global-swapping tests on lookupGitHubToken.
 	ctx := context.Background()
 
-	// Stub out GitHub token resolution so the test does not require `gh`.
 	orig := lookupGitHubToken
 	t.Cleanup(func() { lookupGitHubToken = orig })
 	const ghReal = "ghs_combined_test_real_token_never_in_guest"
@@ -45,26 +31,19 @@ func TestSeedGuestAgentAndSecrets_ContainsBothCredSets(t *testing.T) {
 
 	payload := cap.payload
 
-	// Agent half: CLAUDE_CODE_OAUTH_TOKEN must be ABSENT (CredDirLiveMount profile).
 	if bytes.Contains(payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
 		t.Errorf("combined payload must NOT contain CLAUDE_CODE_OAUTH_TOKEN (CredDirLiveMount profile)\npayload:\n%s", payload)
 	}
-	// Agent half: NODE_EXTRA_CA_CERTS must be present (mutation guard: proves agent half ran).
+	// MUTATION-PIN: NODE_EXTRA_CA_CERTS proves agent half ran.
 	if !bytes.Contains(payload, []byte("NODE_EXTRA_CA_CERTS=")) {
 		t.Errorf("combined payload missing NODE_EXTRA_CA_CERTS (agent half absent)\npayload:\n%s", payload)
 	}
-	// Secret half: GH_TOKEN must be present.
 	if !bytes.Contains(payload, []byte("GH_TOKEN=")) {
 		t.Errorf("combined payload missing GH_TOKEN (secret half absent)\npayload:\n%s", payload)
 	}
 }
 
-// TestSeedGuestAgentAndSecrets_OneWrite asserts that the combined path calls the
-// seeder exactly once. Two writes would mean the second silently overwrites the
-// first credential set.
 func TestSeedGuestAgentAndSecrets_OneWrite(t *testing.T) {
-	// NOT t.Parallel: swaps the package-level lookupGitHubToken global (see
-	// TestSeedGuestAgentAndSecrets_ContainsBothCredSets).
 	ctx := context.Background()
 
 	orig := lookupGitHubToken
@@ -87,14 +66,7 @@ func TestSeedGuestAgentAndSecrets_OneWrite(t *testing.T) {
 	}
 }
 
-// TestSeedGuestAgentAndSecrets_NoRealToken asserts the security invariant:
-// the combined payload must not contain any real token value.
-//
-// Mutation guard: remove the placeholder-only constraint from buildSeedPayload
-// or buildAgentSeedPayload → this test fails RED.
 func TestSeedGuestAgentAndSecrets_NoRealToken(t *testing.T) {
-	// NOT t.Parallel: swaps the package-level lookupGitHubToken global (see
-	// TestSeedGuestAgentAndSecrets_ContainsBothCredSets).
 	ctx := context.Background()
 
 	orig := lookupGitHubToken
@@ -118,9 +90,6 @@ func TestSeedGuestAgentAndSecrets_NoRealToken(t *testing.T) {
 	}
 }
 
-// TestSeedGuestAgentAndSecrets_AgentOnlyPath verifies that when specs is nil
-// (no secret binds), the function still delivers agent credentials — the
-// combined path must not suppress agent seeding when there are no secrets.
 func TestSeedGuestAgentAndSecrets_AgentOnlyPath(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -133,11 +102,11 @@ func TestSeedGuestAgentAndSecrets_AgentOnlyPath(t *testing.T) {
 		t.Fatalf("SeedGuestAgentAndSecrets with no specs: %v", err)
 	}
 
-	// CredDirLiveMount: CLAUDE_CODE_OAUTH_TOKEN must be ABSENT.
+	// CredDirLiveMount: CLAUDE_CODE_OAUTH_TOKEN absent.
 	if bytes.Contains(cap.payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
 		t.Errorf("agent-only combined path must NOT contain CLAUDE_CODE_OAUTH_TOKEN (CredDirLiveMount)\npayload:\n%s", cap.payload)
 	}
-	// Mutation guard: NODE_EXTRA_CA_CERTS is present — proves agent seeding path ran.
+	// MUTATION-PIN: NODE_EXTRA_CA_CERTS proves agent seeding path ran.
 	if !bytes.Contains(cap.payload, []byte("NODE_EXTRA_CA_CERTS=")) {
 		t.Errorf("agent-only combined path missing NODE_EXTRA_CA_CERTS\npayload:\n%s", cap.payload)
 	}

@@ -1,60 +1,21 @@
 //go:build herdr_live
 
-// AC-4: a machine-checked test that the operator can take over any agent
-// the orchestrator started — typing into its pane — without killing it or
-// losing the orchestrator's view of it.
-//
-// The chain (verified by hand, now automated):
-//
-//	nexus3 create --mount              →  sandbox with source mounted
-//	nexus3 herdr agent           →  guest agent running in a herdr pane
-//	ORCHESTRATOR TURN: wait for STEP1= →  agent read the secret and reported it
-//	OPERATOR TURN: send text to pane   →  same pane, as if a human typed
-//	continuity assertion               →  agent recalled the orchestrator's token
-//	herdr agent list                   →  orchestrator's view still present
-//	herdr pane wait-output footer      →  agent UI still alive
-//
-// This file lives in the herdr_live build tag and reuses the ac6Cmd/ac6Env,
-// herdrWorkspaceList, findL4WorkspaceIDByLabel, createL4ScratchWorkspace,
-// closeL4ScratchWorkspace, parseSpaceListForHandle, and parseMatchedLine
-// helpers defined in herdr_l4_live_test.go and herdr_l4_chain_test.go.
-//
-// # Why the secret number is non-echoable
-//
-// The brief tells the agent to read a file whose PATH appears in the brief
-// (and is therefore echoed into the terminal as the user message), but whose
-// CONTENT does not. Only the agent's execution of the Read/Bash tool produces
-// the secret number in the transcript. The orchestrator match token is the
-// number itself, so it cannot fire on the echoed brief — the agent must have
-// genuinely run.
-//
-// For the continuity match the token is the number wrapped in angle brackets
-// ("<N>"). The operator's question asks for the bracket format but does not
-// contain the bracketed number. The orchestrator's plain-number output does
-// not match the bracketed form. So the continuity match is non-echoable from
-// both the brief and the operator prompt, and is not stale-matchable from the
-// orchestrator turn.
-//
-// # Why the continuity match distinguishes "agent survived" from "agent present"
-//
-// The operator asks: "What was the number in your STEP1 output?" — a question
-// that does NOT contain the secret number. The only source of the number in
-// fresh (--source recent) pane output is the agent recalling it from its own
-// conversation context. A freshly started or replaced agent has no such
-// context: it was not there for the orchestrator's turn, does not know the
-// file content, and cannot answer. So recall = survival. This is the load-
-// bearing assertion of the whole test.
-//
-// # Mutations and their expected failures
-//
-//  1. Operator text not sent: the agent is idle after STEP1=. No fresh output
-//     containing the secret number appears. --source recent times out. FAIL.
-//
-//  2. herdrPaneReportAgent not called inside space-agent: herdr agent list
-//     does not carry our pane_id. FAIL.
-//
-//  3. Agent killed before operator turn (ctrl+c twice): a killed agent cannot
-//     answer the operator's question. The continuity wait times out. FAIL.
+/** AC-4: operator can take over any agent without killing it or losing orchestrator
+view. Chain: nexus3 create --mount → sandbox with source mounted; nexus3 herdr agent
+→ guest agent in herdr pane; ORCHESTRATOR TURN: wait for STEP1= (non-echoable secret
+proves execution); OPERATOR TURN: send text to pane; CONTINUITY: agent recalls token
+(proves survival, not just presence); herdr agent list → orchestrator view intact;
+herdr ready footer → agent UI alive.
+
+Why secret non-echoable: file PATH in brief (echoed), CONTENT not. Agent execution of
+Read/Bash produces secret in transcript. Orchestrator token is number itself, cannot
+fire on echoed brief. Continuity token "<N>" not in operator question ("<number>" is
+template) or orchestrator plain output. So both matches prove execution/survival, not
+stale scrollback.
+
+MUTATIONS: 1. Drop operator text → token never appears → timeout FAIL. 2. Drop
+herdrPaneReportAgent call → herdr agent list missing pane_id FAIL. 3. Kill agent before
+operator turn → cannot answer → continuity timeout FAIL. */
 package cli
 
 import (
@@ -70,7 +31,6 @@ import (
 )
 
 func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
-	// --- 0. Prerequisites: skip, never fail, when absent. ---
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		liveSkip(t, "AC-4: /dev/kvm not available: %v", err)
 	}
@@ -80,8 +40,6 @@ func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
 	}
 	t.Logf("BEFORE: %s", beforeWorkspaces)
 
-	// A kernel image is a prerequisite as much as /dev/kvm — large binary,
-	// legitimately absent in CI or a fresh clone.
 	if os.Getenv("NEXUS3_KERNEL_PATH") == "" {
 		liveSkip(t, "AC-4: NEXUS3_KERNEL_PATH is not set; set it to a vmlinux image to run this test")
 	}
@@ -94,13 +52,8 @@ func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
 		liveSkip(t, "AC-4: nexus3 binary cannot be built: %v\n%s", err, out)
 	}
 
-	// --- 1. Scratch handle, mount source, secret number. ---
-	//
-	// SAFETY: unique handle every run — never collide with demo-1/demo-1,
-	// dev/space1, or ac1/setup. The secret is a 6-digit integer written to
-	// a file the agent will read. The number does NOT appear in the brief
-	// text or in any command the test sends, so it cannot match on a terminal
-	// echo — the agent must genuinely execute to produce it.
+	/** SAFETY: unique handle every run; secret is non-echoable (file content,
+	not visible in brief), so agent must genuinely execute to produce it. */
 	handle := fmt.Sprintf("ac4/%08x", rand.Uint32())
 
 	srcDir := t.TempDir()
@@ -149,18 +102,8 @@ func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
 		t.Logf("AFTER: %s", afterWorkspaces)
 	})
 
-	// --- 2. nexus3 create --mount --agent claude-code: sandbox with source mounted. ---
-	//
-	// --agent claude-code seeds the Anthropic OAuth token via the MITM broker
-	// so the in-guest claude can call the API. Without it the agent says "Not
-	// logged in" and cannot process any brief.
-	//
-	// No GitHub flags: the claude-code profile only needs Anthropic egress
-	// (api.anthropic.com + platform.claude.com); no GitHub access is required.
-	// Fail-closed default (no --repo, no --secret) is correct (D-PDE-02).
-	//
-	// Reuses NEXUS3_AC6_IMAGE so the operator pins the same image for both
-	// AC-6 and AC-4.
+	/** nexus3 create --mount --agent claude-code: --agent seeds the Anthropic
+	OAuth token via MITM broker (D-PDE-02: fail-closed, no GitHub flags). */
 	image := os.Getenv("NEXUS3_AC6_IMAGE")
 	if image == "" {
 		image = herdrDefaultImage
@@ -176,17 +119,8 @@ func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
 	}
 	t.Logf("nexus3 create: %s", createOut)
 
-	// --- 3. space-agent: launch the agent and deliver the brief. ---
-	//
-	// This is the PRODUCTION path — the same command the orchestrator would
-	// run. It: starts the sandbox, opens/reuses the herdr workspace, opens
-	// the guest shell pane, launches claude, waits for its ready prompt,
-	// delivers the brief, and registers the agent in herdr's tracker.
-	//
-	// The brief tells the agent to read secret.txt. The PATH appears in the
-	// brief (and is echoed as the user message in claude's TUI transcript),
-	// but the CONTENT (the secret number) does not. The orchestrator match
-	// token is the number itself, so it cannot fire on the echoed brief text.
+	// PRODUCTION path: starts sandbox, opens workspace/pane, launches claude,
+	// delivers brief (registers agent in herdr's tracker).
 	brief := fmt.Sprintf(
 		"Read the file at %s/secret.txt. It contains exactly one integer. "+
 			"Output that integer on its own line, with no other text. "+
@@ -199,11 +133,7 @@ func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
 	}
 	t.Logf("space-agent: %s", agentOut)
 
-	// --- 4. Read pane ID from the persisted binding. ---
-	//
-	// Not reusing any value from space-agent's stdout: the binding is what
-	// lets the orchestrator (or the operator) reach the pane later without
-	// the original invocation's return value.
+	// Read pane ID from persisted binding (not from space-agent's stdout).
 	listOut, err := ac6Cmd(binary, "__herdr-plugin", "space-list").CombinedOutput()
 	if err != nil {
 		t.Fatalf("__herdr-plugin space-list: %v\n%s", err, listOut)
@@ -219,13 +149,7 @@ func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
 	}
 	t.Logf("pane=%s workspace=%s label=%q", persistedPaneID, persistedWorkspaceID, persistedLabel)
 
-	// --- 5. ORCHESTRATOR TURN: wait for the agent to output the secret number. ---
-	//
-	// The agent is processing the brief. It reads secret.txt and outputs the
-	// integer on its own line. The match token is the secret number itself —
-	// it appears nowhere in the brief text (only the file path does), so this
-	// cannot fire on the echoed user message. The agent must have genuinely
-	// executed to produce it.
+	// ORCHESTRATOR TURN: wait for secret number (non-echoable, proves execution).
 	orchWait, err := exec.Command(
 		"herdr", "pane", "wait-output",
 		persistedPaneID,
@@ -244,55 +168,24 @@ func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
 		t.Fatalf("orchestrator: matched line %q does not contain secret %s", orchLine, secretStr)
 	}
 
-	// --- 6. OPERATOR TURN: type into the same pane as a human would. ---
-	//
-	// The operator's question does NOT contain the secret number. The
-	// continuity match token is the number wrapped in angle brackets
-	// ("<N>"), which also does not appear in this question (the question
-	// asks for the bracket format but uses the literal text "<number>",
-	// not the actual value). A freshly spawned or replaced agent cannot
-	// produce the correct "<N>" response.
+	// OPERATOR TURN: operator's question does NOT contain secret number.
+	// Continuity token "<N>" proves recall (not in question or orchestrator output).
 	operatorQuestion := "Please output the integer you just read, wrapped in angle brackets like this: <number>. Use the actual number, not the word 'number'."
-	// continuityToken is the token the agent must produce — "<secretStr>".
-	// It does not appear in the operator question (which says "<number>") or
-	// in the orchestrator output (which is the plain integer, not bracketed).
 	continuityToken := "<" + secretStr + ">"
 	sendOut, err := exec.Command("herdr", "pane", "send-text", persistedPaneID, operatorQuestion).CombinedOutput()
 	if err != nil {
 		t.Fatalf("herdr pane send-text (operator): %v\n%s", err, sendOut)
 	}
-	// Settle delay matches herdrPaneSubmitToAgent so the text is placed in
-	// claude's input box before Enter is sent.
 	time.Sleep(briefSettleDelay)
 	keysOut, err := exec.Command("herdr", "pane", "send-keys", persistedPaneID, "Enter").CombinedOutput()
 	if err != nil {
 		t.Fatalf("herdr pane send-keys (operator): %v\n%s", err, keysOut)
 	}
 
-	// --- 7. CONTINUITY ASSERTION: the surviving agent recalls the token. ---
-	//
-	// This is the load-bearing assertion of the test. A restarted or replaced
-	// agent cannot recall the orchestrator's earlier turn — the secret file
-	// content was never in its context. Only the ORIGINAL, SURVIVING agent
-	// can answer from memory. Recall = survival.
-	//
-	// Match token: "<secretStr>" (the number in angle brackets). It does not
-	// appear in the operator's question ("<number>" is the template, not the
-	// value) and does not appear in the orchestrator's plain-number output.
-	// So this cannot fire on any echoed text or stale scrollback.
-	//
-	// NOTE on --source recent: it does NOT scope the search to output
-	// produced after this call. `herdr pane wait-output --help` is explicit:
-	// "The selected snapshot is searched immediately, including existing
-	// output, then polled." So the protection against a stale match comes
-	// ENTIRELY from the token design above — "<N>" appears nowhere in the
-	// brief, the operator question, or the orchestrator's plain-number reply.
-	//
-	// This matters if anyone changes those strings: make the orchestrator turn
-	// emit the bracketed form too and this test passes without any takeover
-	// happening, with nothing in the diff to suggest it. Mutation 1 (operator
-	// text never sent) is what pins that, and it must be re-run after any edit
-	// to the brief or the operator question.
+	/** CONTINUITY ASSERTION: surviving agent recalls "<N>", proves original
+	exec. Token never appears in brief, operator question, or orchestrator
+	plain output. Protection against stale match is ENTIRELY token design.
+	Mutation 1: drop operator text → token never appears → times out. */
 	contWait, err := exec.Command(
 		"herdr", "pane", "wait-output",
 		persistedPaneID,
@@ -310,18 +203,11 @@ func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
 	if !strings.Contains(contLine, continuityToken) {
 		t.Fatalf("continuity: matched line %q does not contain token %s", contLine, continuityToken)
 	}
-	// Sanity: the matched line must not be the echoed operator prompt.
-	// The operator's text does not contain the continuity token, so this
-	// would indicate a herdr matching bug rather than a test design flaw.
 	if strings.Contains(contLine, operatorQuestion) {
 		t.Fatalf("continuity: matched line %q equals the echoed operator prompt — match is not mutation-sensitive", contLine)
 	}
 
-	// --- 8. ORCHESTRATOR VIEW: herdr agent list still reports the agent. ---
-	//
-	// herdrPaneReportAgent is called inside herdrPluginSpaceAgent (step 3).
-	// If that call were deleted, the agent would not appear here even though
-	// it is running, and this assertion would fail. Mutation 2.
+	// ORCHESTRATOR VIEW: herdr agent list still reports the agent (Mutation 2).
 	agentListOut, err := exec.Command("herdr", "agent", "list").CombinedOutput()
 	if err != nil {
 		t.Fatalf("herdr agent list: %v\n%s", err, agentListOut)
@@ -332,12 +218,7 @@ func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
 			persistedPaneID, agentListOut)
 	}
 
-	// --- 9. ORCHESTRATOR VIEW: the pane still matches the claude ready footer. ---
-	//
-	// After the agent responded to the operator and returned to its prompt,
-	// claude's ready footer ("auto mode on" for autonomous mode) should
-	// be visible. A dead agent would not produce this. This confirms that the
-	// agent's UI is intact and the orchestrator could continue driving it.
+	// ORCHESTRATOR VIEW: claude's ready footer visible after operator takeover.
 	footerMatch := claudeReadyMatch(true /* autonomous */)
 	footerWait, err := exec.Command(
 		"herdr", "pane", "wait-output",

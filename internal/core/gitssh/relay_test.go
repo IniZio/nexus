@@ -32,14 +32,9 @@ func makeFakeSSH(t *testing.T, stdoutContent string, exitCode int) string {
 	return path
 }
 
-// A relay that parses the client's ref-update commands BEFORE starting ssh
-// deadlocks against this script: the client waits for the advertisement,
-// the relay waits for the commands.
 func makeFakeSSHSpeaksFirst(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	// printf FORMAT escapes (\0 = NUL, \n) are interpreted by the shell's
-	// printf, so the script file itself carries no raw NUL byte.
 	script := "#!/bin/sh\n" +
 		"printf '" + fakeAdvertisementShell + "'\n" +
 		"cat >/dev/null\n" +
@@ -153,7 +148,6 @@ func readAllFrames(t *testing.T, conn net.Conn) ([]byte, int32) {
 func TestRelayE2E_UploadPack(t *testing.T) {
 	fakeSSH := makeFakeSSH(t, "fake-upload-pack-output\n", 0)
 
-	// We need ssh-add to report agent reachable (exit 1 = no keys but alive).
 	fakeSshAdd := makeFakeSSHAgentProbe(t, 1)
 	origPath := os.Getenv("PATH")
 	t.Setenv("PATH", filepath.Dir(fakeSshAdd)+":"+origPath)
@@ -189,12 +183,7 @@ func TestRelayE2E_UploadPack(t *testing.T) {
 	}
 }
 
-// TestRelayRefusalIsPktLineERR verifies that every refusal from the relay is
-// delivered as a git pkt-line ERR packet so git prints
-// "remote error: nexus3: ..." rather than a parse error.
-// A valid pkt-line ERR must:
-//   - start with exactly 4 ASCII hex digits that equal 4 + len(rest)
-//   - have the payload begin with "ERR "
+// TestRelayRefusalIsPktLineERR verifies refusals are delivered as git pkt-line ERR packets.
 func TestRelayRefusalIsPktLineERR(t *testing.T) {
 	fakeSSH := makeFakeSSH(t, "", 0)
 
@@ -295,9 +284,12 @@ func readStdoutUntil(t *testing.T, conn net.Conn, want string, timeout time.Dura
 	}
 }
 
-// MUTATION-PIN: moving ParseRefUpdates back in front of sshCmd.Start (parse
-// before ssh) deadlocks this test — the advertisement never arrives because
-// ssh is never started — and it fails on the 5s deadline.
+/*
+*
+MUTATION-PIN: moving ParseRefUpdates back in front of sshCmd.Start (parse
+before ssh) deadlocks this test — the advertisement never arrives because
+ssh is never started — and it fails on the 5s deadline.
+*/
 func TestRelayReceivePack_ServerSpeaksFirst(t *testing.T) {
 	fakeSSH := makeFakeSSHSpeaksFirst(t)
 
@@ -339,7 +331,6 @@ func TestRelayReceivePack_ServerSpeaksFirst(t *testing.T) {
 	if _, err := conn.Write([]byte("PACK-fake-bytes")); err != nil {
 		t.Fatalf("write pack: %v", err)
 	}
-	// git closes its stdin after the pack; the relay must forward that EOF.
 	if err := conn.(*net.UnixConn).CloseWrite(); err != nil {
 		t.Fatalf("close write: %v", err)
 	}
@@ -354,10 +345,12 @@ func TestRelayReceivePack_ServerSpeaksFirst(t *testing.T) {
 	}
 }
 
+/*
+*
+MUTATION-PIN: removing the AllowedBranches check in ParseRefUpdates makes
+this test pass when it must fail.
+*/
 func TestRelayReceivePack_RefBlocked(t *testing.T) {
-	// MUTATION-PIN: removing the AllowedBranches check in ParseRefUpdates makes
-	// this test pass when it must fail.
-
 	fakeSSH := makeFakeSSHSpeaksFirst(t)
 
 	agentSock := makeAgentSocket(t)
@@ -409,13 +402,13 @@ func TestRelayReceivePack_RefBlocked(t *testing.T) {
 	}
 }
 
-// TestRelayReceivePack_RefBlocked_SidebandWrapped: a client that negotiated
-// side-band-64k (as every modern git push does against GitHub) must receive
-// the refusal as a band-1 sideband packet wrapping the ERR pkt-line, or git
-// reports "send-pack: protocol error: bad band #69" instead of the refusal.
-// MUTATION-PIN: replacing writePktErrFrameAfterCommands with writePktErrFrame
-// in the deny_ref path makes the first stdout byte after the advertisement a
-// bare "00xxERR", which this test rejects.
+/*
+*
+MUTATION-PIN: replacing writePktErrFrameAfterCommands with writePktErrFrame
+in the deny_ref path makes the first stdout byte after the advertisement a
+bare "00xxERR", which this test rejects (side-band-64k clients need a band-1
+sideband packet wrapping the ERR pkt-line or git reports protocol error).
+*/
 func TestRelayReceivePack_RefBlocked_SidebandWrapped(t *testing.T) {
 	fakeSSH := makeFakeSSHSpeaksFirst(t)
 
@@ -454,7 +447,6 @@ func TestRelayReceivePack_RefBlocked_SidebandWrapped(t *testing.T) {
 	if code == 0 {
 		t.Fatal("expected non-zero exit for blocked ref, got 0")
 	}
-	// Outer packet: <len><band=1><inner ERR pkt-line>, then a flush-pkt.
 	if len(stdout) < 13 {
 		t.Fatalf("stdout too short for a sideband packet: %q", stdout)
 	}

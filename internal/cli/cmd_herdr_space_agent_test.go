@@ -13,13 +13,11 @@ import (
 	"slices"
 )
 
-// TestSpaceAgentSubcommand_MissingArgs verifies that the space-agent
-// subcommand returns a usage error when fewer than 2 arguments are given.
+// TestSpaceAgentSubcommand_MissingArgs verifies usage error when space-agent has no/few args.
 func TestSpaceAgentSubcommand_MissingArgs(t *testing.T) {
 	var stdout bytes.Buffer
 	out := NewOutput(&stdout, &bytes.Buffer{}, false)
 
-	// No ref, no brief.
 	err := runHerdrPlugin(context.Background(), []string{"space-agent"}, out)
 	if err == nil {
 		t.Fatal("space-agent with no args: expected error, got nil")
@@ -29,7 +27,6 @@ func TestSpaceAgentSubcommand_MissingArgs(t *testing.T) {
 		t.Errorf("expected *UsageError, got %T: %v", err, err)
 	}
 
-	// Ref only, no brief.
 	err = runHerdrPlugin(context.Background(), []string{"space-agent", "myproj/mybox"}, out)
 	if err == nil {
 		t.Fatal("space-agent with ref only: expected error, got nil")
@@ -39,27 +36,20 @@ func TestSpaceAgentSubcommand_MissingArgs(t *testing.T) {
 	}
 }
 
-// TestSpaceAgentFromFileSubcommand_Routes verifies that space-agent-from-file
-// is recognised in the dispatch switch (does not return "unknown subcommand").
-// It will error on newSandboxService (no store configured in this process)
-// rather than "unknown subcommand", proving routing is wired.
+// TestSpaceAgentFromFileSubcommand_Routes verifies space-agent-from-file routing (not "unknown subcommand").
 func TestSpaceAgentFromFileSubcommand_Routes(t *testing.T) {
 	var stdout bytes.Buffer
 	out := NewOutput(&stdout, &bytes.Buffer{}, false)
 	err := runHerdrPlugin(context.Background(), []string{"space-agent-from-file"}, out)
 	if err == nil {
-		// Unexpected success — might mean no sandbox service error in test env.
 		return
 	}
 	if strings.Contains(err.Error(), "unknown subcommand") {
 		t.Fatalf("space-agent-from-file not wired in dispatch switch: %v", err)
 	}
-	// Any other error (e.g. "store: default root") is acceptable — it means
-	// routing worked and failed at a later step, not at dispatch.
 }
 
-// sandboxGetterWithMount satisfies sandboxGetter and returns a Sandbox with a
-// live mount (so herdrShellCwd returns the mount path, not "/root").
+// sandboxGetterWithMount satisfies sandboxGetter with a live mount.
 type sandboxGetterWithMount struct {
 	mountGuestPath string
 }
@@ -70,7 +60,7 @@ func (g *sandboxGetterWithMount) Get(_ context.Context, _ string) (domain.Sandbo
 	}, nil
 }
 
-// sandboxGetterNoMount satisfies sandboxGetter with no mounts (herdrShellCwd → /root).
+// sandboxGetterNoMount satisfies sandboxGetter with no mounts.
 type sandboxGetterNoMount struct{}
 
 func (g *sandboxGetterNoMount) Get(_ context.Context, _ string) (domain.Sandbox, error) {
@@ -84,10 +74,8 @@ func (g *sandboxGetterError) Get(_ context.Context, _ string) (domain.Sandbox, e
 	return domain.Sandbox{}, g.err
 }
 
-// TestSpaceAgent_RefusesWhenNoMount verifies the early-fail guard: if
-// herdrShellCwd returns "/root" (no live mount or volume), herdrPluginSpaceAgent
-// must return a UsageError that names the --mount flag, before doing anything
-// with herdr or the sandbox lifecycle.
+// TestSpaceAgent_RefusesWhenNoMount verifies early-fail guard on missing mount.
+// Design: both refusal types (no mount vs. not found) must produce different advice.
 func TestSpaceAgent_RefusesWhenNoMount(t *testing.T) {
 	execCalled := false
 	old := herdrExecCommandContext
@@ -96,10 +84,6 @@ func TestSpaceAgent_RefusesWhenNoMount(t *testing.T) {
 		return exec.CommandContext(ctx, "false")
 	}
 	defer func() { herdrExecCommandContext = old }()
-
-	// Both refusals are reachable through the narrow sandboxGetter seam, and
-	// they must NOT say the same thing: a mistyped handle and a sandbox with
-	// no mount need different advice.
 	cases := []struct {
 		name    string
 		getter  sandboxGetter
@@ -147,8 +131,7 @@ func TestSpaceAgent_RefusesWhenNoMount(t *testing.T) {
 	}
 }
 
-// TestHerdrPaneRun_ArgvShape verifies that herdrPaneRun builds the correct
-// herdr argv: ["pane", "run", <paneID>, <text>].
+// TestHerdrPaneRun_ArgvShape verifies herdrPaneRun builds correct argv.
 func TestHerdrPaneRun_ArgvShape(t *testing.T) {
 	var capturedName string
 	var capturedArgs []string
@@ -156,7 +139,7 @@ func TestHerdrPaneRun_ArgvShape(t *testing.T) {
 	herdrExecCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		capturedName = name
 		capturedArgs = append([]string(nil), args...)
-		return exec.CommandContext(ctx, "true") // succeed silently
+		return exec.CommandContext(ctx, "true")
 	}
 	defer func() { herdrExecCommandContext = old }()
 
@@ -182,8 +165,7 @@ func TestHerdrPaneRun_ArgvShape(t *testing.T) {
 	}
 }
 
-// TestHerdrPaneWaitOutput_ArgvShape verifies that herdrPaneWaitOutput builds
-// the correct herdr argv including --match and --timeout.
+// TestHerdrPaneWaitOutput_ArgvShape verifies herdrPaneWaitOutput argv with --match and --timeout.
 func TestHerdrPaneWaitOutput_ArgvShape(t *testing.T) {
 	var capturedArgs []string
 	old := herdrExecCommandContext
@@ -213,8 +195,7 @@ func TestHerdrPaneWaitOutput_ArgvShape(t *testing.T) {
 	}
 }
 
-// TestHerdrPaneReportAgent_ArgvShape verifies that herdrPaneReportAgent builds
-// the correct argv with --source, --agent, and --state flags.
+// TestHerdrPaneReportAgent_ArgvShape verifies herdrPaneReportAgent argv with required flags.
 func TestHerdrPaneReportAgent_ArgvShape(t *testing.T) {
 	var capturedArgs []string
 	old := herdrExecCommandContext
@@ -231,8 +212,6 @@ func TestHerdrPaneReportAgent_ArgvShape(t *testing.T) {
 	if err := herdrPaneReportAgent(context.Background(), herdrBin, paneID, source); err != nil {
 		t.Fatalf("herdrPaneReportAgent: %v", err)
 	}
-
-	// Required flags: --source <ref>, --agent <label>, --state <state>.
 	if len(capturedArgs) < 2 || capturedArgs[0] != "pane" || capturedArgs[1] != "report-agent" {
 		t.Fatalf("expected [pane report-agent ...], got %v", capturedArgs)
 	}
@@ -267,14 +246,8 @@ func indexOf(ss []string, s string) int {
 	return -1
 }
 
-// TestClaudeReadyMatch_IsModeSpecific pins the readiness token to the
-// permission mode it was captured in.
-//
-// This exists because the first implementation used one token for both modes
-// and it silently did not work: "? for shortcuts" is only in the default
-// mode's footer, so an autonomous agent that was already sitting at its prompt
-// waited out the full 90s timeout. A test that only asserted "the constant is
-// non-empty" would have stayed green through that entire failure.
+// TestClaudeReadyMatch_IsModeSpecific pins readiness token to permission mode.
+/** MUTATION-PIN: prior impl used one token for both modes; it silently failed. */
 func TestClaudeReadyMatch_IsModeSpecific(t *testing.T) {
 	autonomous := claudeReadyMatch(true)
 	normal := claudeReadyMatch(false)
@@ -284,8 +257,6 @@ func TestClaudeReadyMatch_IsModeSpecific(t *testing.T) {
 			"readiness token; both returned %q", autonomous)
 	}
 
-	// Verbatim footers captured from a live guest pane.
-	// autonomousFooter updated for T5 (--permission-mode auto replaces bypass).
 	const (
 		normalFooter     = " ⏸ manual mode on · ? for shortcuts · ← for agents"
 		autonomousFooter = "⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
@@ -296,8 +267,6 @@ func TestClaudeReadyMatch_IsModeSpecific(t *testing.T) {
 	if !strings.Contains(autonomousFooter, autonomous) {
 		t.Errorf("autonomous token %q does not appear in the autonomous footer %q", autonomous, autonomousFooter)
 	}
-	// The cross terms are the actual bug: each token must NOT match the other
-	// mode, or the wait reports ready in a mode it was never validated for.
 	if strings.Contains(autonomousFooter, normal) {
 		t.Errorf("default-mode token %q also matches the autonomous footer; the modes are not distinguished", normal)
 	}
@@ -305,9 +274,6 @@ func TestClaudeReadyMatch_IsModeSpecific(t *testing.T) {
 		t.Errorf("autonomous token %q also matches the default-mode footer; the modes are not distinguished", autonomous)
 	}
 
-	// No token may match a first-run wizard, or the wait reports ready while
-	// claude is still on a dialog. "❯" is the trap: it is the prompt glyph AND
-	// every wizard's selector glyph.
 	wizards := []string{
 		" ❯ 2. Dark mode ✔",
 		" ❯ 1. Claude account with subscription · Pro, Max,",
@@ -323,14 +289,9 @@ func TestClaudeReadyMatch_IsModeSpecific(t *testing.T) {
 	}
 }
 
-// TestHerdrPaneSubmitToAgent_SendsTextThenEnterSeparately pins the two-call
-// submit.
-//
-// `herdr pane run` sends text and Enter in one call and is correct for a shell
-// prompt. Against claude's TUI it is not: observed live, the brief landed in
-// the input box and stayed there unsubmitted until an Enter was sent
-// separately. Collapsing this back into one `pane run` call produces an agent
-// that starts, prompts, and never acts — a failure invisible in the argv.
+// TestHerdrPaneSubmitToAgent_SendsTextThenEnterSeparately pins two-call submit.
+/** Design: `herdr pane run` fails against TUI; text needs separate Enter.
+  PACING: observed live, collapsing to one call silently breaks the agent. */
 func TestHerdrPaneSubmitToAgent_SendsTextThenEnterSeparately(t *testing.T) {
 	var got [][]string
 	old := herdrExecCommandContext
@@ -363,18 +324,9 @@ func TestHerdrPaneSubmitToAgent_SendsTextThenEnterSeparately(t *testing.T) {
 	}
 }
 
-// TestGuestAgentLaunchCommand_DoesNotDependOnTheShellFunction pins the launch
-// command to being self-contained.
-//
-// The autonomous command must carry --permission-mode auto and IS_SANDBOX=1
-// explicitly rather than relying on any shell function or profile. That is a
-// race, and bare "claude" was observed failing live: the pane's login shell
-// sources /etc/profile.d asynchronously, so a command typed before that
-// completes resolves `claude` to the raw binary without the flag. The agent
-// then starts in the DEFAULT permission mode and prints the default footer, so
-// the autonomous readiness wait times out against an agent that is running
-// perfectly well — a 90-second failure with no error message pointing anywhere
-// near the cause.
+// TestGuestAgentLaunchCommand_DoesNotDependOnTheShellFunction pins self-contained launch.
+/** Design: --permission-mode auto and IS_SANDBOX=1 must be explicit.
+  PACING: race on /etc/profile.d; observed live: bareword "claude" silently fails. */
 func TestGuestAgentLaunchCommand_DoesNotDependOnTheShellFunction(t *testing.T) {
 	const permFlag = "--permission-mode auto"
 	const oldBypassFlag = "--dangerously-skip-permissions"
@@ -398,23 +350,17 @@ func TestGuestAgentLaunchCommand_DoesNotDependOnTheShellFunction(t *testing.T) {
 	if strings.Contains(normal, oldBypassFlag) {
 		t.Errorf("non-autonomous launch must not pass %s; got %q", oldBypassFlag, normal)
 	}
-	// It must use `command claude` so no shell function can silently add a flag.
 	if !strings.HasPrefix(normal, "command ") {
 		t.Errorf("non-autonomous launch must use `command claude` to bypass any shell function; got %q", normal)
 	}
 
-	// The readiness token is chosen by mode, so the two must stay in step: the
-	// mode the command actually produces determines the footer that is matched.
 	if claudeReadyMatch(true) == claudeReadyMatch(false) {
 		t.Error("readiness tokens for the two modes collapsed; see claudeReadyMatch")
 	}
 }
 
-// TestGuestCursorLaunchCommand_ForceFlagAndNoRootEscape pins cursor's launch
-// command: --force is the skip-permissions equivalent (autonomous only), and
-// there is no IS_SANDBOX-style root escape because cursor-agent does not
-// refuse to run as root (confirmed empirically — see guestCursorLaunchCommand's
-// doc comment).
+// TestGuestCursorLaunchCommand_ForceFlagAndNoRootEscape pins cursor launch command flags.
+/** Design: --force is skip-permissions equivalent; no IS_SANDBOX needed for cursor. */
 func TestGuestCursorLaunchCommand_ForceFlagAndNoRootEscape(t *testing.T) {
 	autonomous := guestCursorLaunchCommand(true)
 	if !strings.Contains(autonomous, "--force") {
@@ -428,17 +374,13 @@ func TestGuestCursorLaunchCommand_ForceFlagAndNoRootEscape(t *testing.T) {
 	if strings.Contains(normal, "--force") {
 		t.Errorf("non-autonomous cursor launch must not pass --force; got %q", normal)
 	}
-	// Unlike claude, cursor has no shell-function wrapper to bypass.
 	if strings.HasPrefix(normal, "command ") {
 		t.Errorf("cursor has no shell function to bypass with `command `; got %q", normal)
 	}
 }
 
-// TestResolveAgentLaunchDescriptor_DispatchesByName is the mutation guard for
-// the herdr dispatch seam: a sandbox's recorded AgentName must select the
-// matching agent's launch command and ready-match function, not always
-// claude's. This is what makes `nexus3 herdr agent` for a --agent cursor
-// sandbox launch cursor-agent instead of claude.
+// TestResolveAgentLaunchDescriptor_DispatchesByName is mutation guard for agent dispatch.
+/** Design: AgentName must select matching launch command, not always claude's. */
 func TestResolveAgentLaunchDescriptor_DispatchesByName(t *testing.T) {
 	cursor := resolveAgentLaunchDescriptor(cred.CursorAgentProfileName)
 	if got, want := cursor.command(true), guestCursorLaunchCommand(true); got != want {
@@ -447,9 +389,6 @@ func TestResolveAgentLaunchDescriptor_DispatchesByName(t *testing.T) {
 	if got, want := cursor.readyMatch(true), cursorReadyMatch(true); got != want {
 		t.Errorf("cursor descriptor readyMatch(true) = %q, want %q", got, want)
 	}
-	// Mutation-relevant: cursor's descriptor must NOT resolve to claude's
-	// launch command, or a cursor sandbox would type "claude" into a pane with
-	// no claude binary.
 	if cursor.command(true) == guestAgentLaunchCommand(true) {
 		t.Error("cursor descriptor resolved to claude's launch command — dispatch is not agent-specific")
 	}
@@ -470,15 +409,8 @@ func TestResolveAgentLaunchDescriptor_DispatchesByName(t *testing.T) {
 }
 
 // ── J2: space-agent --no-focus propagates through herdrOpenGuestShellPane ────
-//
-// Both tests call the production herdrOpenGuestShellPane directly — they do
-// not restate the condition inline. The mutation target is the focus branch
-// inside herdrOpenGuestShellPane: inverting it makes both tests RED.
 
-// TestSpaceAgent_PaneOpenFocusArgv_WithFocus asserts that focus=true produces
-// --focus (and no --no-focus) in the herdr pane open argv. This pins the
-// default interactive path: a single space-agent run must bring the new pane
-// into view without the operator having to click.
+// TestSpaceAgent_PaneOpenFocusArgv_WithFocus asserts focus=true produces --focus.
 func TestSpaceAgent_PaneOpenFocusArgv_WithFocus(t *testing.T) {
 	var calls [][]string
 	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd { return fakePaneOpenCmd("w1:p1") })
@@ -498,10 +430,8 @@ func TestSpaceAgent_PaneOpenFocusArgv_WithFocus(t *testing.T) {
 	}
 }
 
-// TestSpaceAgent_PaneOpenFocusArgv_WithNoFocus asserts that focus=false
-// produces --no-focus (and no --focus) in the herdr pane open argv. This is
-// the N-way concurrent path: AC-5 requires that a second concurrent
-// space-agent does not steal focus from the first.
+// TestSpaceAgent_PaneOpenFocusArgv_WithNoFocus asserts focus=false produces --no-focus.
+/** AC-5: concurrent space-agent runs must not steal focus. */
 func TestSpaceAgent_PaneOpenFocusArgv_WithNoFocus(t *testing.T) {
 	var calls [][]string
 	fakeHerdrExec(t, &calls, func(args []string) *exec.Cmd { return fakePaneOpenCmd("w1:p2") })
@@ -521,26 +451,10 @@ func TestSpaceAgent_PaneOpenFocusArgv_WithNoFocus(t *testing.T) {
 	}
 }
 
-// TestCursorReadyMatch_AgainstLiveCapturedPaneOutput exercises cursorReadyMatch
-// against terminal output captured from a REAL authenticated cursor-agent
-// session, replacing the previous static-analysis guess ("shift+tab to cycle")
-// which was never confirmed against a live pane.
-//
-// Capture method (2026-09-04): cursor-agent v2026.09.02-c22c1a3 was started
-// inside a detached tmux session (220×50) on the operator's host
-// (authenticated as maintainer@example.invalid). After 10 seconds, tmux
-// capture-pane -p was used to read the fully-rendered screen content. The
-// session was then killed. No file was modified; no prompt was sent.
-//
-// The "shift+tab to cycle" string that the prior implementation returned does
-// NOT appear anywhere in the real TUI output. The correct indicator is the
-// input-box placeholder "Plan, search, build anything", which appears only
-// when cursor-agent has fully initialized and its input box is accepting text.
+// TestCursorReadyMatch_AgainstLiveCapturedPaneOutput exercises readyMatch against live pane.
+/** PACING: captured 2026-09-04 from cursor-agent v2026.09.02-c22c1a3.
+  Design: static "shift+tab" guess absent in real output; replaced with live token. */
 func TestCursorReadyMatch_AgainstLiveCapturedPaneOutput(t *testing.T) {
-	// readyPane is the verbatim tmux capture-pane output from a real
-	// cursor-agent v2026.09.02-c22c1a3 session at the ready state.
-	// Captured 2026-09-04 on host authenticated as maintainer@example.invalid.
-	// Trailing blank lines are omitted; leading spaces are preserved.
 	const readyPane = `  Cursor Agent
   v2026.09.02-c22c1a3
   Tip: Type ? in the prompt bar to show in-app hints.
@@ -550,15 +464,9 @@ func TestCursorReadyMatch_AgainstLiveCapturedPaneOutput(t *testing.T) {
   Cursor Grok 4.5 High Fast
   ~/magic/nexus3/.claude/worktrees/agent-a81fcacc4e0838ade · nexus3/cursor-s6-readymatch`
 
-	// stillStartingPane simulates a pane before cursor-agent has reached the
-	// ready state — for example, just after the binary is launched and before
-	// the backend connection is established.
 	const stillStartingPane = `  Cursor Agent
   v2026.09.02-c22c1a3`
 
-	// unauthenticatedPane simulates a pane where cursor-agent rejected the
-	// session (no valid credentials) and is showing the login prompt rather
-	// than the interactive TUI.
 	const unauthenticatedPane = `  Cursor Agent
   v2026.09.02-c22c1a3
   Not logged in. Run: cursor-agent login`
@@ -575,38 +483,29 @@ func TestCursorReadyMatch_AgainstLiveCapturedPaneOutput(t *testing.T) {
 		t.Errorf("cursorReadyMatch is mode-invariant for cursor, but got different tokens: normal=%q autonomous=%q", tok, tokAuto)
 	}
 
-	// Positive: the token must appear in the ready pane.
 	if !strings.Contains(readyPane, tok) {
 		t.Errorf("readyMatch token %q not found in the live-captured ready pane:\n%s", tok, readyPane)
 	}
 
-	// Negative: the token must NOT appear in the still-starting pane.
 	if strings.Contains(stillStartingPane, tok) {
 		t.Errorf("readyMatch token %q fires on a still-starting pane — would report ready too early:\n%s", tok, stillStartingPane)
 	}
 
-	// Negative: the token must NOT appear in an unauthenticated pane.
 	if strings.Contains(unauthenticatedPane, tok) {
 		t.Errorf("readyMatch token %q fires on an unauthenticated pane — would report ready without a session:\n%s", tok, unauthenticatedPane)
 	}
 
-	// The prior static-analysis guess must no longer be the token: it was never
-	// confirmed live and does not appear in a real running session.
 	const staleGuess = "shift+tab to cycle"
 	if tok == staleGuess {
 		t.Errorf("cursorReadyMatch still returns the stale static-analysis guess %q — "+
 			"this string does not appear in real cursor-agent TUI output; update it to match the live capture", staleGuess)
 	}
-	// Extra proof: confirm the stale guess is also absent from the ready pane.
 	if strings.Contains(readyPane, staleGuess) {
 		t.Errorf("stale guess %q unexpectedly appears in the live-captured pane — re-evaluate", staleGuess)
 	}
 }
 
-// TestSpaceAgentSubcommand_NoFocusFlagParsed verifies that --no-focus is
-// accepted before the sandbox ref and does not produce an "unknown flag"
-// usage error. The call fails later (no real sandbox), but the flag must be
-// consumed without complaint.
+// TestSpaceAgentSubcommand_NoFocusFlagParsed verifies --no-focus flag is parsed.
 func TestSpaceAgentSubcommand_NoFocusFlagParsed(t *testing.T) {
 	var stdout bytes.Buffer
 	out := NewOutput(&stdout, &bytes.Buffer{}, false)
@@ -614,9 +513,6 @@ func TestSpaceAgentSubcommand_NoFocusFlagParsed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error (no real sandbox), got nil")
 	}
-	// The "unknown flag" guard produces a UsageError containing the flag name.
-	// Any other error (including a UsageError about a missing sandbox) proves
-	// the flag was consumed correctly by the parser.
 	if ue, ok := err.(*UsageError); ok && strings.Contains(ue.Msg, "--no-focus") {
 		t.Errorf("--no-focus was not parsed; got usage error: %v", ue)
 	}

@@ -11,25 +11,18 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
-// ── test helpers shared across seed_*_test.go ────────────────────────────────
-
-// seedTestID returns a deterministic SandboxID for unit tests. n is encoded in
-// byte 0 to ensure distinct IDs across concurrent tests (n must be 0–255).
 func seedTestID(n int) domain.SandboxID {
 	var id domain.SandboxID
 	id[0] = byte(n)
 	return id
 }
 
-// captureSeeder is a GuestSeeder stub that captures the last delivered payload
-// and counts calls. It is safe for concurrent use.
 type captureSeeder struct {
 	mu      sync.Mutex
 	payload []byte
 	calls   int
 }
 
-// fn returns a GuestSeeder that records the delivered payload.
 func (c *captureSeeder) fn() GuestSeeder {
 	return func(_ context.Context, _ domain.SandboxID, payload []byte) error {
 		c.mu.Lock()
@@ -40,16 +33,6 @@ func (c *captureSeeder) fn() GuestSeeder {
 	}
 }
 
-// ── per-sandbox credential-kind unit tests ────────────────────────────────────
-
-// TestBuildAgentSeedPayloadPerSandboxCredKind proves that two seed payloads
-// built in the same process with different explicit credential kinds produce
-// different results:
-//
-//   - kindOAuth      → CLAUDE_CODE_OAUTH_TOKEN absent (CredDirLiveMount); NODE_EXTRA_CA_CERTS present
-//   - kindAuthToken  → ANTHROPIC_AUTH_TOKEN=<placeholder>
-//
-// No KVM, no network. Pure unit test over buildAgentSeedPayload.
 func TestBuildAgentSeedPayloadPerSandboxCredKind(t *testing.T) {
 	t.Parallel()
 	placeholder := "deadbeef1234abcd5678ef90"
@@ -75,21 +58,19 @@ func TestBuildAgentSeedPayloadPerSandboxCredKind(t *testing.T) {
 	oauthPayload := string(oauthBytes)
 	authPayload := string(authBytes)
 
-	// --- kindOAuth assertions ---
-	// CredDirLiveMount: CLAUDE_CODE_OAUTH_TOKEN must be ABSENT for kindOAuth.
-	// Credential delivered via live ~/.credentials.json mount, not a placeholder env var.
+	// kindOAuth: CredDirLiveMount (CLAUDE_CODE_OAUTH_TOKEN absent, via live ~/.credentials.json).
 	if strings.Contains(oauthPayload, "CLAUDE_CODE_OAUTH_TOKEN=") {
 		t.Errorf("kindOAuth payload must NOT contain CLAUDE_CODE_OAUTH_TOKEN (CredDirLiveMount); got:\n%s", oauthPayload)
 	}
 	if strings.Contains(oauthPayload, "ANTHROPIC_AUTH_TOKEN=") {
 		t.Errorf("kindOAuth payload must NOT contain ANTHROPIC_AUTH_TOKEN; got:\n%s", oauthPayload)
 	}
-	// Mutation guard: NODE_EXTRA_CA_CERTS is always written (CACertEnvVars path).
+	// MUTATION-PIN: NODE_EXTRA_CA_CERTS always written (CACertEnvVars path).
 	if !strings.Contains(oauthPayload, "NODE_EXTRA_CA_CERTS=") {
 		t.Errorf("kindOAuth payload missing NODE_EXTRA_CA_CERTS; got:\n%s", oauthPayload)
 	}
 
-	// --- kindAuthToken assertions ---
+	// kindAuthToken: ANTHROPIC_AUTH_TOKEN present.
 	if !strings.Contains(authPayload, "ANTHROPIC_AUTH_TOKEN="+placeholder) {
 		t.Errorf("kindAuthToken payload missing ANTHROPIC_AUTH_TOKEN=<placeholder>; got:\n%s", authPayload)
 	}
@@ -97,15 +78,12 @@ func TestBuildAgentSeedPayloadPerSandboxCredKind(t *testing.T) {
 		t.Errorf("kindAuthToken payload must NOT contain CLAUDE_CODE_OAUTH_TOKEN; got:\n%s", authPayload)
 	}
 
-	// --- The two payloads must differ ---
+	// Payloads must differ.
 	if oauthPayload == authPayload {
 		t.Error("kindOAuth and kindAuthToken payloads are identical; per-sandbox differentiation is broken")
 	}
 }
 
-// TestResolveAgentCredKindDefaultIsOAuth verifies that when ANTHROPIC_AUTH_TOKEN
-// is absent from the environment the default resolver returns kindOAuth, so
-// callers that set nothing still get the OAuth placeholder — no regression.
 func TestResolveAgentCredKindDefaultIsOAuth(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 	got := resolveAgentCredKind(cred.ClaudeCodeProfile)
@@ -114,8 +92,6 @@ func TestResolveAgentCredKindDefaultIsOAuth(t *testing.T) {
 	}
 }
 
-// TestResolveAgentCredKindAuthTokenEnv verifies that ANTHROPIC_AUTH_TOKEN in
-// the host environment causes resolveAgentCredKind to return kindAuthToken.
 func TestResolveAgentCredKindAuthTokenEnv(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sk-ant-test")
 	got := resolveAgentCredKind(cred.ClaudeCodeProfile)

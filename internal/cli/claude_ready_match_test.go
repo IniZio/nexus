@@ -5,18 +5,12 @@ import (
 	"testing"
 )
 
-// T0a evidence: the auto-mode footer is "⏵⏵ auto mode on (shift+tab to cycle)";
-// the discriminator must be "auto mode on" (substring match is what herdr
-// pane wait-output uses).
-//
-// Mutation proof:
-//   - If claudeReadyMatch(true) returns the OLD bypass value "shift+tab to cycle"
-//     instead of "auto mode on", the autoModeTranscript test FAILS (the old
-//     value is not a substring of the discriminator we assert).
-//   - If the bypass footer "shift+tab to cycle (bypass mode)" is passed as the
-//     transcript, bypassTranscriptMustNotMatch must NOT match — it verifies the
-//     discriminator distinguishes the two modes.
 func TestClaudeReadyMatch_AutoModeFooter(t *testing.T) {
+	/** T0a evidence: auto-mode footer is "⏵⏵ auto mode on (shift+tab to cycle)";
+	discriminator must be "auto mode on" (substring match, herdr pane wait-output).
+	Mutation: claudeReadyMatch(true) returns OLD bypass value "shift+tab to cycle"
+	→ autoModeTranscript test FAILS. Bypass footer "shift+tab to cycle (bypass mode)"
+	→ must NOT match (distinguishes modes). */
 	got := claudeReadyMatch(true)
 	const want = "auto mode on"
 	if got != want {
@@ -31,7 +25,6 @@ func TestClaudeReadyMatch_AutoModeFooter(t *testing.T) {
 }
 
 func TestClaudeReadyMatch_MatchesAutoTranscript(t *testing.T) {
-	// Real footer observed under --permission-mode auto (T0a).
 	const autoModeFooter = "⏵⏵ auto mode on (shift+tab to cycle)"
 	discriminator := claudeReadyMatch(true)
 	if !strings.Contains(autoModeFooter, discriminator) {
@@ -40,7 +33,6 @@ func TestClaudeReadyMatch_MatchesAutoTranscript(t *testing.T) {
 }
 
 func TestClaudeReadyMatch_DoesNotMatchBypassFooter(t *testing.T) {
-	// Footer observed under --dangerously-skip-permissions (pre-T5, now retired).
 	const bypassFooter = "shift+tab to cycle"
 	discriminator := claudeReadyMatch(true)
 	if discriminator == bypassFooter {
