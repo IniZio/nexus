@@ -5,7 +5,6 @@ import (
 	"strings"
 )
 
-// ParsedCommand holds the validated fields extracted from a git SSH argv.
 type ParsedCommand struct {
 	Service   string // "git-receive-pack" or "git-upload-pack"
 	GitHost   string // "git@github.com" (user@host from argv[0])
@@ -14,10 +13,6 @@ type ParsedCommand struct {
 	RawPath   string // "/owner/repo.git" as passed by git (no quotes)
 }
 
-// ParseCommand validates git's GIT_SSH_COMMAND argv: argv[0]="[user@]host",
-// argv[1]="git-receive-pack '/owner/repo.git'" (one shell token, quoted path).
-// Rejects SSH option injection ("-" prefix), other services, and any path that
-// is not exactly owner/repo(.git).
 func ParseCommand(argv []string) (ParsedCommand, error) {
 	for _, arg := range argv {
 		if strings.HasPrefix(arg, "-") {

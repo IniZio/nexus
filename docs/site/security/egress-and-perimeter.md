@@ -102,7 +102,16 @@ Rotating a credential used via `--secret` takes effect for any sandbox created a
 
 ## GitHub and the request allowlist
 
-`github.com` enters a sandbox envelope only via `--repo` or `--allow-host`. The guest holds a 64-hex placeholder for `GH_TOKEN`; the host broker holds the real `gh auth token`. The MITM swaps the placeholder on every `api.github.com` and `uploads.github.com` request, so `gh pr create` and `gh api` work from inside the guest.
+`github.com` enters a sandbox envelope only via `--repo` or `--allow-host`. The guest holds a 64-hex placeholder for `GH_TOKEN`; the host broker holds the real `gh auth token`. The MITM swaps the placeholder on every `api.github.com` and `uploads.github.com` request, so REST `gh api` calls work from inside the guest.
+
+:::warning `gh pr create` is refused
+`gh pr create` uses GitHub's GraphQL API, which the perimeter denies (GraphQL default-deny). Create PRs with the REST form:
+
+```sh
+gh api -X POST /repos/<owner>/<repo>/pulls \
+  -f title="..." -f head="<branch>" -f base="main" -f body="..."
+```
+:::
 
 **git over SSH** to GitHub remotes uses a separate path that does not go through the MITM (see below). The MITM and GH_TOKEN broker are retained for all HTTPS API traffic.
 
@@ -136,7 +145,7 @@ Only `git-upload-pack` (fetch/clone) and `git-receive-pack` (push) are forwarded
 
 ### `gh` / HTTPS API
 
-`gh pr create`, `gh api`, and any HTTPS GitHub traffic continue to route through the MITM + brokered `GH_TOKEN` path. The SSH relay does not affect HTTPS.
+`gh api` and any HTTPS GitHub traffic continue to route through the MITM + brokered `GH_TOKEN` path. The SSH relay does not affect HTTPS. Note that `gh pr create` is refused because it uses GitHub's GraphQL API, which the MITM denies by default; use `gh api -X POST /repos/<owner>/<repo>/pulls` for PR creation from inside the sandbox.
 
 ## SSH identity (Orca workspace)
 

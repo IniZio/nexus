@@ -13,19 +13,14 @@ import (
 	"github.com/IniZio/nexus3/internal/core/gitssh"
 )
 
-// buildPktLineRef returns a pkt-line encoded ref-update line.
-// Format: <hex-len><old> <new> <ref>\x00<caps>\n
 func buildPktLineRef(old, new_, ref string) []byte {
 	line := old + " " + new_ + " " + ref + "\x00report-status\n"
 	hexLen := fmt.Sprintf("%04x", len(line)+4)
 	return []byte(hexLen + line)
 }
 
-// pktFlush is the git flush packet.
 var pktFlush = []byte("0000")
 
-// makeFakeSSH writes a shell script to a temp file and returns its path.
-// The script writes stdout content then exits with exitCode.
 func makeFakeSSH(t *testing.T, stdoutContent string, exitCode int) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -37,11 +32,6 @@ func makeFakeSSH(t *testing.T, stdoutContent string, exitCode int) string {
 	return path
 }
 
-// makeFakeSSHSpeaksFirst writes a fake ssh that behaves like a real
-// git-receive-pack server: it SPEAKS FIRST (writes a ref advertisement
-// pkt-line + flush), then reads the client's command section from stdin until
-// EOF, then writes a report-status style line and exits 0.
-//
 // A relay that parses the client's ref-update commands BEFORE starting ssh
 // deadlocks against this script: the client waits for the advertisement,
 // the relay waits for the commands.
@@ -62,19 +52,13 @@ func makeFakeSSHSpeaksFirst(t *testing.T) string {
 	return path
 }
 
-// fakeAdvertisement is a minimal receive-pack ref advertisement: one ref line
-// with capabilities (pkt len 4+71 = 0x4b), then a flush-pkt.
 const (
 	fakeAdvertisementShell = `004b1111111111111111111111111111111111111111 refs/heads/main\0report-status\n0000`
 	fakeAdvertisement      = "004b1111111111111111111111111111111111111111 refs/heads/main\x00report-status\n0000"
-	// fakeReportStatus is what the fake server writes after consuming the
-	// client's command section + pack (pkt len 4+10 = 0x0e).
-	fakeReportStatusShell = `000eunpack ok\n0000`
-	fakeReportStatus      = "000eunpack ok\n0000"
+	fakeReportStatusShell  = `000eunpack ok\n0000`
+	fakeReportStatus       = "000eunpack ok\n0000"
 )
 
-// makeFakeSSHAgent writes a shell script that exits with the given code.
-// For use as a fake ssh-add.
 func makeFakeSSHAgentProbe(t *testing.T, exitCode int) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -86,9 +70,6 @@ func makeFakeSSHAgentProbe(t *testing.T, exitCode int) string {
 	return path
 }
 
-// makeAgentSocket creates a real listening Unix socket that ssh-add can
-// "connect" to (it accepts and immediately closes). Returns the socket path.
-// Used as a fake live SSH agent socket for tests.
 func makeAgentSocket(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -98,7 +79,6 @@ func makeAgentSocket(t *testing.T) string {
 		t.Fatalf("listen agent socket: %v", err)
 	}
 	t.Cleanup(func() { ln.Close() })
-	// Accept connections in background and close them immediately.
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -111,8 +91,6 @@ func makeAgentSocket(t *testing.T) string {
 	return sockPath
 }
 
-// runRelayOnPipe starts RunRelay on a temp UDS and connects two ends with a
-// net.Pipe-backed transport. Returns (clientConn, cancelFunc).
 func runRelayOnPipe(t *testing.T, cfg gitssh.RelayConfig) net.Conn {
 	t.Helper()
 
@@ -124,14 +102,12 @@ func runRelayOnPipe(t *testing.T, cfg gitssh.RelayConfig) net.Conn {
 
 	relayReady := make(chan struct{})
 	go func() {
-		// Signal readiness by checking when socket appears.
 		close(relayReady)
 		if err := gitssh.RunRelay(ctx, cfg); err != nil && ctx.Err() == nil {
 			t.Logf("relay error: %v", err)
 		}
 	}()
 
-	// Wait for socket to exist.
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		if _, err := os.Stat(udsPath); err == nil {
@@ -152,8 +128,6 @@ func runRelayOnPipe(t *testing.T, cfg gitssh.RelayConfig) net.Conn {
 	return conn
 }
 
-// readAllFrames reads all frames from conn until EOF or FrameTypeExit.
-// Returns (stdoutBytes, exitCode).
 func readAllFrames(t *testing.T, conn net.Conn) ([]byte, int32) {
 	t.Helper()
 	var stdout []byte
@@ -180,7 +154,6 @@ func TestRelayE2E_UploadPack(t *testing.T) {
 	fakeSSH := makeFakeSSH(t, "fake-upload-pack-output\n", 0)
 
 	// We need ssh-add to report agent reachable (exit 1 = no keys but alive).
-	// Override PATH to include a fake ssh-add.
 	fakeSshAdd := makeFakeSSHAgentProbe(t, 1)
 	origPath := os.Getenv("PATH")
 	t.Setenv("PATH", filepath.Dir(fakeSshAdd)+":"+origPath)
@@ -199,7 +172,6 @@ func TestRelayE2E_UploadPack(t *testing.T) {
 		SSHExec:         fakeSSH,
 	})
 
-	// Send request.
 	req := gitssh.Request{
 		Argv: []string{"git@github.com", "git-upload-pack '/example-org/example-app.git'"},
 		Cwd:  "/tmp",
@@ -220,7 +192,6 @@ func TestRelayE2E_UploadPack(t *testing.T) {
 // TestRelayRefusalIsPktLineERR verifies that every refusal from the relay is
 // delivered as a git pkt-line ERR packet so git prints
 // "remote error: nexus3: ..." rather than a parse error.
-//
 // A valid pkt-line ERR must:
 //   - start with exactly 4 ASCII hex digits that equal 4 + len(rest)
 //   - have the payload begin with "ERR "
@@ -238,7 +209,6 @@ func TestRelayRefusalIsPktLineERR(t *testing.T) {
 		SSHExec:     fakeSSH,
 	})
 
-	// Request for an out-of-policy repo.
 	req := gitssh.Request{
 		Argv: []string{"git@github.com", "git-upload-pack 'inizio/example-app.git'"},
 		Cwd:  "/tmp",
@@ -252,7 +222,6 @@ func TestRelayRefusalIsPktLineERR(t *testing.T) {
 		t.Fatal("expected non-zero exit for out-of-policy repo, got 0")
 	}
 
-	// Verify pkt-line structure: first 4 bytes are hex length.
 	if len(stdout) < 4 {
 		t.Fatalf("stdout too short to be a pkt-line: %q", stdout)
 	}
@@ -264,7 +233,6 @@ func TestRelayRefusalIsPktLineERR(t *testing.T) {
 		t.Errorf("pkt-line length field says %d but stdout is %d bytes", pktLen, len(stdout))
 	}
 
-	// Payload (bytes 4 onward) must start with "ERR ".
 	payload := string(stdout[4:])
 	if !strings.HasPrefix(payload, "ERR ") {
 		t.Errorf("pkt-line payload does not start with \"ERR \": %q", payload)
@@ -288,7 +256,6 @@ func TestRelayRefusesPolicy(t *testing.T) {
 		SSHExec:     fakeSSH,
 	})
 
-	// Send request for a repo NOT in the allowlist (inizio fork = out of policy).
 	req := gitssh.Request{
 		Argv: []string{"git@github.com", "git-upload-pack '/inizio/example-app.git'"},
 		Cwd:  "/tmp",
@@ -306,8 +273,6 @@ func TestRelayRefusesPolicy(t *testing.T) {
 	}
 }
 
-// readStdoutUntil reads frames from conn until the accumulated stdout contains
-// want, or the deadline passes (test fails). Returns the accumulated stdout.
 func readStdoutUntil(t *testing.T, conn net.Conn, want string, timeout time.Duration) []byte {
 	t.Helper()
 	_ = conn.SetReadDeadline(time.Now().Add(timeout))
@@ -330,10 +295,6 @@ func readStdoutUntil(t *testing.T, conn net.Conn, want string, timeout time.Dura
 	}
 }
 
-// TestRelayReceivePack_ServerSpeaksFirst drives a receive-pack session the
-// way a real `git push` does: the client reads the server's ref advertisement
-// FIRST and only then sends its ref-update commands + pack.
-//
 // MUTATION-PIN: moving ParseRefUpdates back in front of sshCmd.Start (parse
 // before ssh) deadlocks this test — the advertisement never arrives because
 // ssh is never started — and it fails on the 5s deadline.
@@ -365,11 +326,8 @@ func TestRelayReceivePack_ServerSpeaksFirst(t *testing.T) {
 		t.Fatalf("write request: %v", err)
 	}
 
-	// Server speaks first: the advertisement must arrive BEFORE the client
-	// sends anything else.
 	readStdoutUntil(t, conn, fakeAdvertisement, 5*time.Second)
 
-	// Now the client sends its command section + a pack.
 	zeros40 := strings.Repeat("0", 40)
 	ones40 := strings.Repeat("1", 40)
 	if _, err := conn.Write(buildPktLineRef(zeros40, ones40, "refs/heads/nexus3/proof")); err != nil {
@@ -414,12 +372,11 @@ func TestRelayReceivePack_RefBlocked(t *testing.T) {
 	conn := runRelayOnPipe(t, gitssh.RelayConfig{
 		SandboxID:       "test-sandbox",
 		Allowlist:       allowlist,
-		AllowedBranches: []string{"refs/heads/nexus3/**"}, // refs/heads/main is NOT allowed
+		AllowedBranches: []string{"refs/heads/nexus3/**"},
 		SSHAuthSock:     agentSock,
 		SSHExec:         fakeSSH,
 	})
 
-	// Send receive-pack request for an in-policy repo.
 	req := gitssh.Request{
 		Argv: []string{"git@github.com", "git-receive-pack '/example-org/example-app.git'"},
 		Cwd:  "/tmp",
@@ -428,10 +385,8 @@ func TestRelayReceivePack_RefBlocked(t *testing.T) {
 		t.Fatalf("write request: %v", err)
 	}
 
-	// Real git reads the advertisement before sending commands.
 	readStdoutUntil(t, conn, fakeAdvertisement, 5*time.Second)
 
-	// Send pkt-line ref update for refs/heads/main (forbidden).
 	zeros40 := strings.Repeat("0", 40)
 	ones40 := strings.Repeat("1", 40)
 	pktLine := buildPktLineRef(zeros40, ones40, "refs/heads/main")
@@ -458,7 +413,6 @@ func TestRelayReceivePack_RefBlocked(t *testing.T) {
 // side-band-64k (as every modern git push does against GitHub) must receive
 // the refusal as a band-1 sideband packet wrapping the ERR pkt-line, or git
 // reports "send-pack: protocol error: bad band #69" instead of the refusal.
-//
 // MUTATION-PIN: replacing writePktErrFrameAfterCommands with writePktErrFrame
 // in the deny_ref path makes the first stdout byte after the advertisement a
 // bare "00xxERR", which this test rejects.
@@ -486,7 +440,6 @@ func TestRelayReceivePack_RefBlocked_SidebandWrapped(t *testing.T) {
 	}
 	readStdoutUntil(t, conn, fakeAdvertisement, 5*time.Second)
 
-	// Command line with side-band-64k in the capability list.
 	line := strings.Repeat("0", 40) + " " + strings.Repeat("1", 40) + " refs/heads/main\x00report-status side-band-64k\n"
 	pkt := fmt.Sprintf("%04x", len(line)+4) + line
 	if _, err := conn.Write([]byte(pkt)); err != nil {

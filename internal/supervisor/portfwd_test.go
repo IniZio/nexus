@@ -16,8 +16,6 @@ import (
 	"github.com/IniZio/nexus3/internal/core/portfwd"
 )
 
-// fakeGuestExecer implements guestExecer for tests.
-// Each call pops the next response from the queue.
 type fakeGuestExecer struct {
 	responses []fakeExecResponse
 	calls     []agent.ExecOptions
@@ -45,13 +43,10 @@ func (f *fakeGuestExecer) Exec(_ context.Context, opts agent.ExecOptions) (int32
 	return r.code, nil
 }
 
-// fakeProcNetTCP is a minimal /proc/net/tcp fragment with one LISTEN entry on port 0x1E61 = 7777.
 const fakeProcNetTCP = `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 00000000:1E61 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12345 1 0000000000000000 100 0 0 10 0
 `
 
-// TestReadProcNet_ParsesTCPBytes verifies that singleSandboxBackend.ReadProcNet
-// execs cat /proc/net/tcp{,6} in the guest and returns their bytes.
 func TestReadProcNet_ParsesTCPBytes(t *testing.T) {
 	execer := &fakeGuestExecer{
 		responses: []fakeExecResponse{
@@ -70,7 +65,6 @@ func TestReadProcNet_ParsesTCPBytes(t *testing.T) {
 	if !bytes.Contains(tcp, []byte("1E61")) {
 		t.Errorf("tcp bytes must contain proc/net entry; got %q", tcp)
 	}
-	// Verify the two exec calls were for /proc/net/tcp and /proc/net/tcp6.
 	if len(execer.calls) < 2 {
 		t.Fatalf("expected 2 exec calls, got %d", len(execer.calls))
 	}
@@ -83,7 +77,6 @@ func TestReadProcNet_ParsesTCPBytes(t *testing.T) {
 	_ = tcp6 // may be empty
 }
 
-// fakeBackend implements portfwd.Backend for reconcile tests.
 type fakeBackend struct {
 	refs  []portfwd.SandboxRef
 	binds []portfwd.PortBind
@@ -109,7 +102,6 @@ func (b *fakeBackend) ReadProcNet(_ context.Context, _ string) ([]byte, []byte, 
 	return buf.Bytes(), nil, nil
 }
 
-// fakeDialer implements portForwardDialer; accepts connections and immediately closes.
 type fakeDialer struct{}
 
 func (fakeDialer) DialGuestPortForward(_ context.Context, _ string, _ uint32) (net.Conn, error) {
@@ -119,8 +111,6 @@ func (fakeDialer) DialGuestPortForward(_ context.Context, _ string, _ uint32) (n
 	return c1, nil
 }
 
-// TestReconcile_BindsAndUnbindsHostPort verifies that reconcile binds
-// 127.0.0.1:P when the guest listener appears and closes it when it vanishes.
 func TestReconcile_BindsAndUnbindsHostPort(t *testing.T) {
 	// Find a free port in the forwardable range [GuestPortBase=1024, GuestPortTop=11023].
 	// OS ephemeral ports are typically >32768 which FilterListeners marks OutOfRange.
@@ -155,7 +145,6 @@ func TestReconcile_BindsAndUnbindsHostPort(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// First reconcile: port should appear.
 	if err := sup.reconcile(ctx); err != nil {
 		t.Fatalf("reconcile(add): %v", err)
 	}
@@ -163,7 +152,6 @@ func TestReconcile_BindsAndUnbindsHostPort(t *testing.T) {
 		t.Fatalf("port %d not bound after reconcile: %v", freePort, err)
 	}
 
-	// Second reconcile with no listeners: port must be closed.
 	backend.binds = nil
 	if err := sup.reconcile(ctx); err != nil {
 		t.Fatalf("reconcile(remove): %v", err)
@@ -175,7 +163,6 @@ func TestReconcile_BindsAndUnbindsHostPort(t *testing.T) {
 		t.Fatalf("port %d still bound after removal reconcile", freePort)
 	}
 
-	// State file must exist.
 	stateFile := filepath.Join(tmpDir, "forwards.state")
 	if _, err := os.Stat(stateFile); err != nil {
 		t.Errorf("forwards.state not written: %v", err)
@@ -250,8 +237,6 @@ func TestRun_DiscoveryTimeoutDoesNotWedgeLoop(t *testing.T) {
 	}
 }
 
-// TestReconcile_DiscoverTimeoutReturnsError pins that a single timed-out
-// tick surfaces as an error (logged by run) rather than hanging reconcile.
 func TestReconcile_DiscoverTimeoutReturnsError(t *testing.T) {
 	backend := &blockingBackend{
 		calls:   make(chan struct{}, 16),

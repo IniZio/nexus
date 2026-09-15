@@ -22,9 +22,6 @@ const guardianRefreshAhead = 40 * time.Minute
 
 const guardianCheckInterval = time.Minute
 
-// CredGuardian watches the operator's ~/.claude/.credentials.json and
-// proactively refreshes the claudeAiOauth token before it expires.
-//
 // Multiple supervisors running concurrently each arm their own guardian.
 // Concurrent refreshes are serialised by an advisory flock(2) on a sidecar
 // lock file (<credsPath>.nexus3.lock), with a re-read after acquiring the
@@ -40,8 +37,6 @@ type CredGuardian struct {
 	client        *http.Client
 }
 
-// NewCredGuardian returns a CredGuardian for the credentials file at credsPath.
-// The sidecar lock file is <credsPath>.nexus3.lock.
 func NewCredGuardian(credsPath string) *CredGuardian {
 	return &CredGuardian{
 		credsPath:     credsPath,
@@ -51,15 +46,12 @@ func NewCredGuardian(credsPath string) *CredGuardian {
 	}
 }
 
-// NewCredGuardianWithEndpoint is like NewCredGuardian but overrides the OAuth
-// token endpoint URL. Intended for testing only.
 func NewCredGuardianWithEndpoint(credsPath, tokenEndpoint string) *CredGuardian {
 	g := NewCredGuardian(credsPath)
 	g.tokenEndpoint = tokenEndpoint
 	return g
 }
 
-// Guard polls every guardianCheckInterval until ctx is done; run as a goroutine.
 func (g *CredGuardian) Guard(ctx context.Context) {
 	ticker := time.NewTicker(guardianCheckInterval)
 	defer ticker.Stop()
@@ -75,10 +67,6 @@ func (g *CredGuardian) Guard(ctx context.Context) {
 	}
 }
 
-// GuardOnce checks whether the credential at g.credsPath needs refreshing
-// and, if so, acquires the flock, re-checks, and refreshes. Returns nil
-// when no refresh was needed or when a refresh succeeded. Returns a non-nil
-// error only when a refresh was attempted and failed.
 func (g *CredGuardian) GuardOnce(ctx context.Context) error {
 	creds, err := g.readCreds()
 	if err != nil {
@@ -170,8 +158,6 @@ func (g *CredGuardian) GuardOnce(ctx context.Context) error {
 	return nil
 }
 
-// claudeCredentials is the minimal on-disk shape of ~/.claude/.credentials.json
-// used for needsRefresh checks and as input to the refresh call.
 type claudeCredentials struct {
 	ClaudeAiOauth struct {
 		AccessToken  string `json:"accessToken"`
@@ -203,7 +189,6 @@ func (g *CredGuardian) needsRefresh(creds claudeCredentials, now time.Time) bool
 	return expiry.Sub(now) < guardianRefreshAhead
 }
 
-// guardianTokenResponse is the subset of the OAuth token response we need.
 type guardianTokenResponse struct {
 	AccessToken           string `json:"access_token"`
 	RefreshToken          string `json:"refresh_token"`

@@ -78,8 +78,6 @@ func TestParseCommand(t *testing.T) {
 			errSubstr: "git-receive-pack or git-upload-pack",
 		},
 		{
-			// Git SSH URLs (git@host:owner/repo.git) produce a path WITHOUT a
-			// leading slash. The relay normalises these by prepending "/".
 			name: "path without leading slash accepted and normalised",
 			argv: []string{"git@github.com", "git-upload-pack 'owner/repo.git'"},
 			wantCmd: &gitssh.ParsedCommand{

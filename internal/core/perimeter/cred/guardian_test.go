@@ -17,7 +17,6 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
-// makeTestCreds writes a .credentials.json to dir and returns the path.
 func makeTestCreds(t *testing.T, dir string, expiresAt time.Time, accessToken, refreshToken string) string {
 	t.Helper()
 	type oauthCreds struct {
@@ -41,9 +40,6 @@ func makeTestCreds(t *testing.T, dir string, expiresAt time.Time, accessToken, r
 	return path
 }
 
-// fakeTokenServer returns an httptest.Server that responds to refresh requests.
-// Each call atomically increments callCount. It returns newToken and
-// expiresIn seconds.
 func fakeTokenServer(t *testing.T, callCount *atomic.Int64, newToken string, expiresIn int) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -83,7 +79,6 @@ func TestCredGuardian_RefreshesWhenExpiring(t *testing.T) {
 	if callCount.Load() != 1 {
 		t.Errorf("expected 1 HTTP call, got %d", callCount.Load())
 	}
-	// Verify the file was updated.
 	data, _ := os.ReadFile(path)
 	if string(data) == "" {
 		t.Fatal("creds file empty after refresh")
@@ -193,7 +188,6 @@ func TestCredGuardian_RefreshPreservesSiblingKeys(t *testing.T) {
 		t.Errorf("expected 1 HTTP call, got %d", callCount.Load())
 	}
 
-	// File mode must be 0600.
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat: %v", err)
@@ -202,7 +196,6 @@ func TestCredGuardian_RefreshPreservesSiblingKeys(t *testing.T) {
 		t.Errorf("file mode: got %04o, want 0600", got)
 	}
 
-	// Re-read and parse the updated file.
 	updated, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("re-read: %v", err)
@@ -217,7 +210,6 @@ func TestCredGuardian_RefreshPreservesSiblingKeys(t *testing.T) {
 		t.Fatalf("parse updated: %v", err)
 	}
 
-	// Top-level sibling keys must be byte-for-byte identical (compacted).
 	for _, k := range []string{"mcpOAuth", "futureUnknownKey"} {
 		var want, got bytes.Buffer
 		if err := json.Compact(&want, fixtureDoc[k]); err != nil {
@@ -231,7 +223,6 @@ func TestCredGuardian_RefreshPreservesSiblingKeys(t *testing.T) {
 		}
 	}
 
-	// Nested sibling keys inside claudeAiOauth must also survive unchanged.
 	var fixtureOauth, updatedOauth map[string]json.RawMessage
 	if err := json.Unmarshal(fixtureDoc["claudeAiOauth"], &fixtureOauth); err != nil {
 		t.Fatalf("parse fixture oauth: %v", err)
@@ -252,7 +243,6 @@ func TestCredGuardian_RefreshPreservesSiblingKeys(t *testing.T) {
 		}
 	}
 
-	// accessToken and expiresAt must have changed.
 	var updatedOauthMap map[string]any
 	if err := json.Unmarshal(updatedDoc["claudeAiOauth"], &updatedOauthMap); err != nil {
 		t.Fatalf("parse updated oauth map: %v", err)

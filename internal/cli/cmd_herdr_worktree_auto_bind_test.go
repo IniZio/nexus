@@ -38,7 +38,6 @@ func TestHerdrWorktreeAutoBindDecision(t *testing.T) {
 	}
 }
 
-// TestHerdrRepoHasNexus3Config pins the on-disk probe behind the hasConfig arm.
 func TestHerdrRepoHasNexus3Config(t *testing.T) {
 	t.Run("empty dir", func(t *testing.T) {
 		if herdrRepoHasNexus3Config(t.TempDir()) {

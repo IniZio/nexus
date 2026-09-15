@@ -2,33 +2,7 @@
 
 package selfhost
 
-// example_dod_test.go — live DoD proof for nexus3-mount-creds-ssh-relay AC-3 and AC-6.
-//
-// Drives the herdr worktree flow (herdr worktree create → nexus3 herdr
-// worktree-sandbox) against a real example-app checkout, then exercises:
-//
-//   AC-3: git SSH relay allows push to the feature branch and refuses push to
-//         refs/heads/main.  Supervisor log must contain
-//         gitssh.relay.allow service=git-receive-pack.
-//
-//   AC-6: Auto port-forward surfaces a guest python3 http.server on
-//         127.0.0.1:8123.  Supervisor log must contain
-//         supervisor.portfwd.listening and portfwd.stopped.
-//
-// # Skip conditions
-//
-//   - NEXUS3_DOD_REPO_DIR not set    — no repo to create worktree in
-//   - HERDR_ENV != "1"                  — requires herdr runtime
-//   - herdr not on PATH
-//   - nexus3 not on PATH
-//   - /dev/kvm absent or inaccessible   — sandbox boot requires KVM
-//
-// # Running
-//
-//	NEXUS3_DOD_REPO_DIR=/path/to/example-app HERDR_ENV=1 \
-//	  make test-integration GOTEST_P=1 GOTEST_PARALLEL=1 \
-//	    GOTEST_PKGS=./internal/test/selfhost/ \
-//	    GOTEST_ARGS='-run TestExampleDoD -v -timeout 40m'
+// Live DoD proof for nexus3-mount-creds-ssh-relay. Requires NEXUS3_DOD_REPO_DIR, HERDR_ENV=1, herdr+nexus3 on PATH, /dev/kvm.
 
 import (
 	"bytes"
@@ -47,8 +21,6 @@ import (
 
 // ── skip guards ───────────────────────────────────────────────────────────────
 
-// skipUnlessExampleEnv skips t when NEXUS3_DOD_REPO_DIR is absent, HERDR_ENV
-// is not "1", or herdr/nexus3 are not on PATH.
 func skipUnlessExampleEnv(t *testing.T) {
 	t.Helper()
 	if os.Getenv("NEXUS3_DOD_REPO_DIR") == "" {
@@ -67,8 +39,6 @@ func skipUnlessExampleEnv(t *testing.T) {
 
 // ── shared paths ──────────────────────────────────────────────────────────────
 
-// examplePortfwdStateFile returns the host path that portfwd.StateFile()
-// resolves to, matching internal/core/portfwd/state.go.
 func examplePortfwdStateFile() string {
 	xdg := os.Getenv("XDG_STATE_HOME")
 	if xdg == "" {
@@ -81,8 +51,6 @@ func examplePortfwdStateFile() string {
 	return filepath.Join(xdg, "nexus3", "portfwd", "forwards.state")
 }
 
-// exampleSupervisorLog returns the supervisor.log path for the given sandbox ID,
-// matching statedir.SupervisorDir(storeRoot, id) + "/supervisor.log".
 func exampleSupervisorLog(sandboxID string) string {
 	xdg := os.Getenv("XDG_STATE_HOME")
 	if xdg == "" {
@@ -97,9 +65,6 @@ func exampleSupervisorLog(sandboxID string) string {
 
 // ── herdr workspace lookup ────────────────────────────────────────────────────
 
-// exampleFindParentWS locates the herdr workspace whose checkout_path matches
-// lmsDir by running `herdr workspace list`. Falls back to HERDR_WORKSPACE_ID.
-// Returns ("", false) when no match is found.
 func exampleFindParentWS(ctx context.Context, t *testing.T, herdrBin, lmsDir string) (string, bool) {
 	t.Helper()
 	out, err := exec.CommandContext(ctx, herdrBin, "workspace", "list").Output()
@@ -117,14 +82,12 @@ func exampleFindParentWS(ctx context.Context, t *testing.T, herdrBin, lmsDir str
 			} `json:"result"`
 		}
 		if jErr := json.Unmarshal(out, &resp); jErr == nil {
-			// canonical: exact match
 			for _, ws := range resp.Result.Workspaces {
 				if ws.Worktree != nil && ws.Worktree.CheckoutPath == lmsDir {
 					t.Logf("[%s] parent workspace: found by checkout_path: %s", time.Now().Format(time.RFC3339), ws.WorkspaceID)
 					return ws.WorkspaceID, true
 				}
 			}
-			// lenient: prefix match (lmsDir is under the checkout)
 			for _, ws := range resp.Result.Workspaces {
 				if ws.Worktree != nil && strings.HasPrefix(ws.Worktree.CheckoutPath, lmsDir) {
 					t.Logf("[%s] parent workspace: found by prefix: %s → %s", time.Now().Format(time.RFC3339), ws.WorkspaceID, ws.Worktree.CheckoutPath)
@@ -135,7 +98,6 @@ func exampleFindParentWS(ctx context.Context, t *testing.T, herdrBin, lmsDir str
 			t.Logf("[%s] herdr workspace list: parse error: %v", time.Now().Format(time.RFC3339), jErr)
 		}
 	}
-	// Fallback: caller is already running inside the lms workspace.
 	if id := os.Getenv("HERDR_WORKSPACE_ID"); id != "" {
 		t.Logf("[%s] parent workspace: falling back to HERDR_WORKSPACE_ID=%s", time.Now().Format(time.RFC3339), id)
 		return id, true
@@ -154,16 +116,6 @@ type exampleWorktreeEnv struct {
 
 // ── setup helper ──────────────────────────────────────────────────────────────
 
-// setupExampleWorktree creates a throwaway worktree+sandbox and registers
-// cleanup. Returns once the guest agent is reachable. Calls t.Skip when the
-// environment is incomplete; calls t.Fatal on hard errors.
-//
-// Verbs used (evidence sources):
-//   - herdr worktree create  (skill SKILL.md §1)
-//   - nexus3 herdr worktree-sandbox  (cmd_herdr_plugin.go:463)
-//   - nexus3 herdr list  (cmd_herdr_plugin.go:383 → space-list)
-//   - nexus3 exec <handle> -- …  (cmd_exec.go:43)
-//   - herdr worktree remove --workspace <ws> --force  (task spec)
 func setupExampleWorktree(t *testing.T, ctx context.Context) exampleWorktreeEnv {
 	t.Helper()
 
@@ -182,8 +134,6 @@ func setupExampleWorktree(t *testing.T, ctx context.Context) exampleWorktreeEnv 
 	}
 
 	// ── herdr worktree create ─────────────────────────────────────────────────
-	// Creates the git worktree at a herdr-managed path and registers a new
-	// herdr workspace for it. JSON response: {"ws":"<wsID>","linked":true}.
 	t.Logf("[%s] herdr worktree create --workspace %s --branch %s --base main --no-focus",
 		time.Now().Format(time.RFC3339), parentWS, branch)
 	createOut, createErr := exec.CommandContext(ctx, herdrBin,
@@ -198,7 +148,6 @@ func setupExampleWorktree(t *testing.T, ctx context.Context) exampleWorktreeEnv 
 		t.Fatalf("herdr worktree create: exit err: %v", createErr)
 	}
 
-	// Parse workspace ID from JSON response.
 	var createResp struct {
 		WS     string `json:"ws"`
 		Linked bool   `json:"linked"`
@@ -232,7 +181,6 @@ func setupExampleWorktree(t *testing.T, ctx context.Context) exampleWorktreeEnv 
 		if rmErr != nil {
 			t.Logf("[%s] cleanup: herdr worktree remove exit: %v", time.Now().Format(time.RFC3339), rmErr)
 		}
-		// Prune any dangling worktree entries from the lms repo.
 		exec.CommandContext(rmCtx, "git", "-C", lmsDir, "worktree", "prune").Run() //nolint:errcheck
 		// Best-effort: delete the local branch (may already be gone after worktree remove).
 		exec.CommandContext(rmCtx, "git", "-C", lmsDir, "branch", "-D", branch).Run() //nolint:errcheck
@@ -312,9 +260,7 @@ func setupExampleWorktree(t *testing.T, ctx context.Context) exampleWorktreeEnv 
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// exampleGuestExec runs /bin/bash -c <script> in the sandbox and returns stdout,
-// stderr, and the exit code. Never calls t.Fatal on non-zero exit — callers
-// assert the exit code themselves (evidence discipline: never relay exit codes).
+// Never calls t.Fatal on non-zero exit — callers assert exit codes directly (evidence discipline).
 func exampleGuestExec(ctx context.Context, nexus3Bin, handle, script string) (stdout, stderr string, exitCode int) {
 	var outBuf, errBuf bytes.Buffer
 	cmd := exec.CommandContext(ctx, nexus3Bin, "exec", handle, "--", "/bin/bash", "-c", script)
@@ -332,7 +278,6 @@ func exampleGuestExec(ctx context.Context, nexus3Bin, handle, script string) (st
 	return outBuf.String(), errBuf.String(), exitCode
 }
 
-// exampleReadLog reads the full contents of path. Returns "" on error.
 func exampleReadLog(path string) string {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -343,15 +288,6 @@ func exampleReadLog(path string) string {
 
 // ── AC-3: git SSH relay ───────────────────────────────────────────────────────
 
-// TestExampleDoD_AC3 proves the git SSH relay allows push to the feature branch
-// and refuses push to refs/heads/main.
-//
-// Evidence sources:
-//   - gitssh.relay.allow log line: internal/core/gitssh/relay.go:299
-//   - gitssh.relay.deny_ref log line: ticket 11-grill-example-live-dod.md §AC-3
-//   - Deadlock fix: commit 6cfa39c "fix(gitssh): start ssh before reading
-//     receive-pack commands, fix shim path"
-//
 // @verifies nexus3-mount-creds-ssh-relay/AC-3
 func TestExampleDoD_AC3(t *testing.T) {
 	skipUnlessExampleEnv(t)
@@ -367,10 +303,7 @@ func TestExampleDoD_AC3(t *testing.T) {
 	t.Logf("[%s] AC-3: branch=%s handle=%s supLog=%s",
 		time.Now().Format(time.RFC3339), env.branch, env.handle, supLog)
 
-	// ── Step 1: empty commit + push allowed branch ────────────────────────────
-	// After commit 6cfa39c the relay establishes the SSH connection FIRST, then
-	// forwards server capabilities to git, then intercepts client ref-updates —
-	// resolving the deadlock that blocked git push in the 2026-09-14 run.
+	// Relay connects first, forwards capabilities, then intercepts ref-updates (deadlock fix 6cfa39c).
 	pushScript := fmt.Sprintf(`set -euo pipefail
 cd /workspace
 git config user.email "nexus3-dod@example.com" 2>/dev/null || true
@@ -390,21 +323,29 @@ echo PUSH_ALLOWED_BRANCH_OK
 		t.Errorf("AC-3/step1: tracer token PUSH_ALLOWED_BRANCH_OK absent from stdout")
 	}
 
-	// ── Step 2: push to main must be refused ─────────────────────────────────
-	// The relay must log relay.deny_ref ref=refs/heads/main.
-	pushMainScript := `cd /workspace && git push origin HEAD:main; echo "exit_code=$?"`
-	t.Logf("[%s] AC-3/step2: git push origin HEAD:main (expect refusal)", time.Now().Format(time.RFC3339))
+	// git client rejects non-ff pushes before the relay sees a ref; use commit-tree to build a genuine ff so deny_ref fires.
+	lsRemoteBeforeScript := `set -euo pipefail; cd /workspace; git fetch origin main; git ls-remote origin main`
+	t.Logf("[%s] AC-3/step2-pre: ls-remote origin main (before probe)", time.Now().Format(time.RFC3339))
+	lsOut1, _, _ := exampleGuestExec(ctx, nexus3Bin, env.handle, lsRemoteBeforeScript)
+
+	pushMainScript := `set -euo pipefail
+cd /workspace
+sha=$(git commit-tree origin/main^{tree} -p origin/main -m "relay deny probe")
+git push origin "${sha}:refs/heads/main"
+`
+	t.Logf("[%s] AC-3/step2: git push <ff-sha>:refs/heads/main (expect refusal)", time.Now().Format(time.RFC3339))
 	stdout2, stderr2, code2 := exampleGuestExec(ctx, nexus3Bin, env.handle, pushMainScript)
 	t.Logf("[%s] AC-3/step2 exit=%d stdout:\n%s\nstderr:\n%s",
 		time.Now().Format(time.RFC3339), code2, stdout2, stderr2)
 	if code2 == 0 {
-		t.Errorf("AC-3/step2: git push origin HEAD:main: expected non-zero exit (relay must refuse), got 0")
+		t.Errorf("AC-3/step2: push to refs/heads/main: expected non-zero exit (relay must refuse), got 0")
 	}
-	combined2 := stdout2 + stderr2
-	if !strings.Contains(combined2, "remote") && !strings.Contains(combined2, "refused") &&
-		!strings.Contains(combined2, "ERR nexus3") && !strings.Contains(combined2, "deny") {
-		t.Errorf("AC-3/step2: expected 'remote'/'refused'/'ERR nexus3' in output; got stdout=%q stderr=%q",
-			stdout2, stderr2)
+
+	lsRemoteAfterScript := `set -euo pipefail; cd /workspace; git ls-remote origin main`
+	lsOut2, _, _ := exampleGuestExec(ctx, nexus3Bin, env.handle, lsRemoteAfterScript)
+	if strings.TrimSpace(lsOut1) != strings.TrimSpace(lsOut2) {
+		t.Errorf("AC-3/step2: refs/heads/main moved after refused push\nbefore: %q\nafter:  %q",
+			strings.TrimSpace(lsOut1), strings.TrimSpace(lsOut2))
 	}
 
 	// ── Step 3: delete remote branch (cleanup) ───────────────────────────────
@@ -415,7 +356,7 @@ echo PUSH_ALLOWED_BRANCH_OK
 		time.Now().Format(time.RFC3339), delCode, delOut, delErr)
 	// Non-fatal: remote branch delete is best-effort (might not exist if push failed).
 
-	// ── Step 4: supervisor log must contain relay.allow ──────────────────────
+	// ── Step 4: supervisor log must contain relay.allow and relay.deny_ref ───
 	logContent := exampleReadLog(supLog)
 	if logContent == "" {
 		t.Errorf("AC-3: supervisor log not found or empty: %s", supLog)
@@ -427,23 +368,20 @@ echo PUSH_ALLOWED_BRANCH_OK
 		} else {
 			t.Logf("[%s] AC-3 PASS: supervisor log contains %q", time.Now().Format(time.RFC3339), wantAllow)
 		}
+		// relay.go:224 logs gitssh.relay.deny_ref with key "ref"=<refname>.
+		const wantDeny = "gitssh.relay.deny_ref"
+		const wantDenyRef = "ref=refs/heads/main"
+		if !strings.Contains(logContent, wantDeny) || !strings.Contains(logContent, wantDenyRef) {
+			t.Errorf("AC-3: supervisor log missing %q %q\nlog tail:\n%s",
+				wantDeny, wantDenyRef, lastLines(logContent, 40))
+		} else {
+			t.Logf("[%s] AC-3 PASS: supervisor log contains %q %q", time.Now().Format(time.RFC3339), wantDeny, wantDenyRef)
+		}
 	}
 }
 
 // ── AC-6: auto port forward ───────────────────────────────────────────────────
 
-// TestExampleDoD_AC6 proves the supervisor auto-forwards a guest TCP listener on
-// port 8123 to 127.0.0.1:8123 on the host.
-//
-// Evidence sources:
-//   - supervisor.portfwd.listening: internal/supervisor/portfwd.go:227
-//   - portfwd.stopped:              internal/supervisor/portfwd.go:208
-//   - forwards.state path:          internal/core/portfwd/state.go:StateFile()
-//   - reconcile timeout fix:        internal/supervisor/portfwd.go:106-111
-//     (portFwdDiscoverTimeout=5s per tick — fixes the reconcile stall from the
-//     2026-09-15 herdr-only rerun that used a binary without a per-call
-//     deadline on the guest exec channel)
-//
 // @verifies nexus3-mount-creds-ssh-relay/AC-6
 func TestExampleDoD_AC6(t *testing.T) {
 	skipUnlessExampleEnv(t)
@@ -460,8 +398,6 @@ func TestExampleDoD_AC6(t *testing.T) {
 	t.Logf("[%s] AC-6: handle=%s supLog=%s stateFile=%s",
 		time.Now().Format(time.RFC3339), env.handle, supLog, stateFile)
 
-	// ── Step 1: start guest HTTP server on :8123 ──────────────────────────────
-	// The shell exits immediately after forking; the python server runs detached.
 	serverScript := "python3 -m http.server 8123 --bind 0.0.0.0 </dev/null >/tmp/http-server.log 2>&1 &"
 	t.Logf("[%s] AC-6/step1: start python3 http.server 8123 in guest", time.Now().Format(time.RFC3339))
 	_, _, startCode := exampleGuestExec(ctx, nexus3Bin, env.handle, serverScript)
@@ -470,9 +406,7 @@ func TestExampleDoD_AC6(t *testing.T) {
 		t.Fatalf("AC-6/step1: failed to start http.server in guest, exit=%d", startCode)
 	}
 
-	// ── Step 2: poll host 127.0.0.1:8123 until 200 (≤60s) ───────────────────
-	// The portfwd supervisor discovers the listener within one reconcile tick
-	// (≤10s) and binds 127.0.0.1:8123 on the host.
+	// portfwd supervisor discovers the listener within one reconcile tick (≤10s) then binds 127.0.0.1:8123.
 	t.Logf("[%s] AC-6/step2: polling http://127.0.0.1:8123/ for 200 (≤60s)", time.Now().Format(time.RFC3339))
 	hostReachable := false
 	pollDeadline := time.Now().Add(60 * time.Second)
@@ -496,7 +430,6 @@ func TestExampleDoD_AC6(t *testing.T) {
 		}
 	}
 	if !hostReachable {
-		// Log the supervisor portfwd state for diagnosis.
 		t.Logf("[%s] AC-6/step2 FAIL: host port not reachable after 60s; supervisor log tail:\n%s",
 			time.Now().Format(time.RFC3339), lastLines(exampleReadLog(supLog), 30))
 		t.Fatalf("AC-6: host 127.0.0.1:8123 not reachable — auto-forward did not bind in 60s")
@@ -551,8 +484,7 @@ func TestExampleDoD_AC6(t *testing.T) {
 		t.Errorf("AC-6: 127.0.0.1:8123 still reachable 60s after server kill")
 	}
 
-	// ── Step 6: supervisor log must contain portfwd.stopped ──────────────────
-	// Give the reconcile loop one interval (≤10s) to detect the closed port.
+	// Give the reconcile loop one interval (≤10s) to detect the closed port before asserting portfwd.stopped.
 	time.Sleep(12 * time.Second)
 	logContent2 := exampleReadLog(supLog)
 	if !strings.Contains(logContent2, "portfwd.stopped") {
@@ -565,7 +497,6 @@ func TestExampleDoD_AC6(t *testing.T) {
 
 // ── utilities ─────────────────────────────────────────────────────────────────
 
-// lastLines returns the last n non-empty lines of s, joined by newlines.
 func lastLines(s string, n int) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	if len(lines) > n {

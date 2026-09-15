@@ -133,8 +133,16 @@ placeholder-swap mechanism.
 git -C /path/to/myrepo fetch origin
 git log origin/feat/task-42 --oneline -5
 
-# Open a pull request per branch
+# Open a pull request per branch (host side)
 gh pr create --head feat/task-42 --title "Fix flaky test (task 42)"
+```
+
+`gh pr create` only works here on the host. Inside a sandbox it is refused (it
+uses GitHub's GraphQL API, which the perimeter denies); an agent opening its own
+PR from inside the sandbox must use the REST form instead:
+
+```sh
+gh api -X POST repos/<owner>/<repo>/pulls -f title="Fix flaky test (task 42)" -f head=feat/task-42 -f base=main
 ```
 
 ---

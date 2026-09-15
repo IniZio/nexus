@@ -27,7 +27,6 @@ func TestStateDir_IgnoresHerdrPluginStateDir(t *testing.T) {
 	}
 }
 
-// TestStateDir_FallsBackToHomeLocalState pins the ~/.local/state fallback.
 func TestStateDir_FallsBackToHomeLocalState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

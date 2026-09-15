@@ -10,8 +10,6 @@ import (
 	"github.com/IniZio/nexus3/internal/core/gitssh"
 )
 
-// TestWriteReadRequest_RoundTrip verifies that WriteRequest+ReadRequest round-trips
-// all fields including the optional GitProtocol field.
 func TestWriteReadRequest_RoundTrip(t *testing.T) {
 	req := gitssh.Request{
 		Argv:        []string{"git@github.com", "git-receive-pack '/example-org/example-app.git'"},
@@ -45,7 +43,6 @@ func TestWriteReadRequest_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestWriteReadRequest_NoGitProtocol verifies round-trip when GitProtocol is empty.
 func TestWriteReadRequest_NoGitProtocol(t *testing.T) {
 	req := gitssh.Request{
 		Argv: []string{"git@github.com", "git-upload-pack '/owner/repo.git'"},
@@ -64,7 +61,6 @@ func TestWriteReadRequest_NoGitProtocol(t *testing.T) {
 	}
 }
 
-// TestWriteReadFrame_Stdout verifies WriteStdout produces a frame ReadFrame can decode.
 func TestWriteReadFrame_Stdout(t *testing.T) {
 	data := []byte("hello from host\n")
 	var buf bytes.Buffer
@@ -84,8 +80,6 @@ func TestWriteReadFrame_Stdout(t *testing.T) {
 	}
 }
 
-// TestWriteExitFrame_PropagatesCode verifies WriteExitFrame encodes the exit code
-// and ReadFrame decodes it correctly.
 func TestWriteExitFrame_PropagatesCode(t *testing.T) {
 	for _, code := range []int32{0, 1, 127, -1} {
 		var buf bytes.Buffer
@@ -109,14 +103,6 @@ func TestWriteExitFrame_PropagatesCode(t *testing.T) {
 	}
 }
 
-// TestPipeRoundTrip_StdinBridgeAndExitCode verifies the full bidirectional
-// shim protocol over a net.Pipe: request frame + stdin bytes → stdout frames +
-// exit frame propagated back, with the exit code correctly decoded.
-//
-// This simulates the guest shim side (writer) and host relay side (reader):
-//   - Shim: writes request, then streams stdin bytes raw
-//   - Relay: reads request, echoes stdin as stdout frames, sends exit frame
-//   - Shim: reads stdout frames to output, reads exit frame to exit code
 func TestPipeRoundTrip_StdinBridgeAndExitCode(t *testing.T) {
 	shimConn, relayConn := net.Pipe()
 
@@ -127,7 +113,6 @@ func TestPipeRoundTrip_StdinBridgeAndExitCode(t *testing.T) {
 	const stdinData = "pack-protocol-data\n"
 	const wantExitCode int32 = 42
 
-	// Relay goroutine: read request, echo stdin as stdout, send exit.
 	relayDone := make(chan error, 1)
 	go func() {
 		defer relayConn.Close()
@@ -140,15 +125,12 @@ func TestPipeRoundTrip_StdinBridgeAndExitCode(t *testing.T) {
 			relayDone <- fmt.Errorf("relay: unexpected argv[0]: %q", gotReq.Argv[0])
 			return
 		}
-		// Read stdin bytes (raw) from the shim.
 		var stdinBuf [1024]byte
 		n, _ := relayConn.Read(stdinBuf[:])
-		// Echo as stdout frame.
 		if err := gitssh.WriteStdout(relayConn, stdinBuf[:n]); err != nil {
 			relayDone <- fmt.Errorf("relay WriteStdout: %w", err)
 			return
 		}
-		// Send exit frame.
 		if err := gitssh.WriteExitFrame(relayConn, wantExitCode); err != nil {
 			relayDone <- fmt.Errorf("relay WriteExitFrame: %w", err)
 			return
@@ -156,7 +138,6 @@ func TestPipeRoundTrip_StdinBridgeAndExitCode(t *testing.T) {
 		relayDone <- nil
 	}()
 
-	// Shim side: send request, then stdin, then read frames.
 	if err := gitssh.WriteRequest(shimConn, req); err != nil {
 		t.Fatalf("shim WriteRequest: %v", err)
 	}
@@ -164,7 +145,6 @@ func TestPipeRoundTrip_StdinBridgeAndExitCode(t *testing.T) {
 		t.Fatalf("shim write stdin: %v", err)
 	}
 
-	// Read stdout frame.
 	ft, payload, err := gitssh.ReadFrame(shimConn)
 	if err != nil {
 		t.Fatalf("shim ReadFrame(stdout): %v", err)
@@ -176,7 +156,6 @@ func TestPipeRoundTrip_StdinBridgeAndExitCode(t *testing.T) {
 		t.Errorf("stdout payload: want %q, got %q", stdinData, payload)
 	}
 
-	// Read exit frame.
 	ft, payload, err = gitssh.ReadFrame(shimConn)
 	if err != nil {
 		t.Fatalf("shim ReadFrame(exit): %v", err)
@@ -194,4 +173,3 @@ func TestPipeRoundTrip_StdinBridgeAndExitCode(t *testing.T) {
 		t.Fatalf("relay: %v", err)
 	}
 }
-

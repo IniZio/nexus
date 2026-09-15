@@ -8,9 +8,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/gitssh"
 )
 
-// pipeRelay is a test helper that acts as a minimal host relay over a
-// net.Pipe pair: it reads the request frame, optionally writes stdout data,
-// then sends an exit frame with the given code.
+// pipeRelay: minimal host relay over net.Pipe — reads request, optionally writes stdout, sends exit frame.
 type pipeRelay struct {
 	conn     net.Conn
 	exitCode int32
@@ -41,9 +39,6 @@ func (r *pipeRelay) run(t *testing.T, reqOut *gitssh.Request) {
 	}
 }
 
-// TestGitSSHShim_ExitCodePropagated verifies that the exit code from
-// FrameTypeExit is returned by execGitSSHShim.
-//
 // Mutation pin: flipping the exit-code propagation (e.g. always returning 0
 // or ignoring the frame payload) must cause this test to fail.
 func TestGitSSHShim_ExitCodePropagated(t *testing.T) {
@@ -73,8 +68,6 @@ func TestGitSSHShim_ExitCodePropagated(t *testing.T) {
 	}
 }
 
-// TestGitSSHShim_RequestArgvSent verifies that execGitSSHShim encodes the
-// argv correctly in the request frame sent to the relay.
 func TestGitSSHShim_RequestArgvSent(t *testing.T) {
 	shimConn, relayConn := net.Pipe()
 
@@ -131,8 +124,6 @@ func TestGitSSHShim_NonzeroExitCodePropagated_MutationPin(t *testing.T) {
 	}
 }
 
-// TestGitSSHShim_ExitFrame_PayloadDecoding ensures the 4-byte BE int32 exit
-// code is read correctly from the payload bytes.
 func TestGitSSHShim_ExitFrame_PayloadDecoding(t *testing.T) {
 	for _, wantCode := range []int32{1, 127, 255} {
 		var payload [4]byte

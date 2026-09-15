@@ -113,6 +113,19 @@ The login wizard is the deceptive one: it appears when onboarding is incomplete 
 
 ---
 
+## Creating a pull request from inside a sandbox
+
+`gh pr create` uses a GraphQL mutation and returns 403 — the perimeter denies GraphQL by default. In-guest agents must not attempt it. Use the REST form instead:
+
+```sh
+gh api -X POST repos/{owner}/{repo}/pulls \
+  -f title="<title>" -f head="<branch>" -f base="<base-branch>" -f body="<body>"
+```
+
+`gh api` expands `{owner}` and `{repo}` from the local git remote automatically. A successful call returns HTTP 201.
+
+---
+
 ## What the guest image has
 
 `node` is present (claude is a node program). `python3`, `python` and `jq` are **absent** — write guest-side JSON manipulation in node.

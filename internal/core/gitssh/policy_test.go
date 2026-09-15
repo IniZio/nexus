@@ -12,7 +12,6 @@ import (
 //go:embed testdata/example-app-nexus3.yaml
 var exampleNexus3YAML []byte
 
-// nexus3Config is a minimal struct for unmarshalling the egress.policy section.
 type nexus3Config struct {
 	Egress struct {
 		Policy []struct {

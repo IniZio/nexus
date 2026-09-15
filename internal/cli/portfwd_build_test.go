@@ -7,10 +7,6 @@ import (
 	"testing"
 )
 
-// TestBuildShVersionGuard_RejectsOldHerdr verifies that plugins/herdr/build.sh
-// exits non-zero when the installed herdr binary is older than 0.9.0.
-// It creates a fake herdr + nexus3 environment so only the version-check
-// block executes.
 func TestBuildShVersionGuard_RejectsOldHerdr(t *testing.T) {
 	t.Parallel()
 	checkVersionGuard(t, "0.8.0", true)
@@ -26,13 +22,9 @@ func TestBuildShVersionGuard_AcceptsNewerHerdr(t *testing.T) {
 	checkVersionGuard(t, "1.2.3", false)
 }
 
-// checkVersionGuard runs the version-guard snippet from build.sh with a
-// fake herdr that reports herdrVer and asserts the expected exit outcome.
 func checkVersionGuard(t *testing.T, herdrVer string, wantFail bool) {
 	t.Helper()
 
-	// Build a minimal shell script that replicates the version-guard block
-	// from plugins/herdr/build.sh, using the provided version directly.
 	script := `MIN_HERDR="0.9.0"
 HERDR_VER="` + herdrVer + `"
 if [ -n "$HERDR_VER" ]; then
