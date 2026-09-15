@@ -42,13 +42,83 @@ func TestBuildFingerprintDeterminism(t *testing.T) {
 	}
 }
 
+// TestBuildFingerprint_ContextIgnoredWhenUnused pins the worktree case: a
+// Containerfile that never reads the context must fingerprint identically
+// across two checkouts whose files differ only by mtime (or by content).
+/** Live 2026-09-15: three linked worktrees, identical Containerfiles, three
+4 GiB rootfs images, third create refused on disk space. */
+func TestBuildFingerprint_ContextIgnoredWhenUnused(t *testing.T) {
+	cf := []byte("FROM ubuntu:22.04\nRUN echo hello\nWORKDIR /workspace\n")
+	base := "ubuntu:22.04"
+	agent := []byte("agent-v1")
+
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dirA, "src.go"), []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirB, "other.go"), []byte("package b, different bytes"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(filepath.Join(dirB, "other.go"), old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	fpA, err := builder.BuildFingerprint(cf, base, agent, dirA, cred.ToolRecipe{}, "x64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fpB, err := builder.BuildFingerprint(cf, base, agent, dirB, cred.ToolRecipe{}, "x64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fpA != fpB {
+		t.Errorf("Containerfile does not read the context, yet two checkouts fingerprint differently: %s vs %s", fpA, fpB)
+	}
+
+	// A nonexistent context must not even be walked on this branch.
+	if _, err := builder.BuildFingerprint(cf, base, agent, filepath.Join(dirA, "missing"), cred.ToolRecipe{}, "x64"); err != nil {
+		t.Errorf("unused context must not be walked; got error %v", err)
+	}
+}
+
+func TestUsesBuildContext(t *testing.T) {
+	cases := []struct {
+		name string
+		cf   string
+		want bool
+	}{
+		{"run only", "FROM ubuntu\nRUN apt-get install -y git\nWORKDIR /workspace\n", false},
+		{"copy", "FROM ubuntu\nCOPY . /app\n", true},
+		{"add", "FROM ubuntu\nadd src.tar /app\n", true},
+		{"copy from stage", "FROM golang AS b\nFROM ubuntu\nCOPY --from=b /bin/x /bin/x\n", false},
+		{"copy with chown", "FROM ubuntu\nCOPY --chown=1:1 . /app\n", true},
+		{"bind mount from context", "FROM ubuntu\nRUN --mount=type=bind,target=/src make\n", true},
+		{"bind mount from stage", "FROM ubuntu\nRUN --mount=type=bind,from=b,target=/src make\n", false},
+		{"cache mount", "FROM ubuntu\nRUN --mount=type=cache,target=/root/.cache make\n", false},
+		{"continued run", "FROM ubuntu\nRUN apt-get update && \\\n    apt-get install -y \\\n    git\n", false},
+		{"commented copy", "FROM ubuntu\n# COPY . /app\nRUN true\n", false},
+		{"copy after continuation", "FROM ubuntu\nRUN echo a \\\n  b\nCOPY x y\n", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := builder.UsesBuildContext([]byte(tc.cf)); got != tc.want {
+				t.Errorf("UsesBuildContext(%q) = %v, want %v", tc.cf, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBuildFingerprintSensitivity(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "src.go"), []byte("package main"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	cf := []byte("FROM ubuntu:22.04\nRUN echo hello\n")
+	// COPY makes the context an input; see TestBuildFingerprint_ContextIgnoredWhenUnused
+	// for the other branch.
+	cf := []byte("FROM ubuntu:22.04\nCOPY . /app\nRUN echo hello\n")
 	base := "ubuntu:22.04"
 	agent := []byte("agent-v1")
 
@@ -58,7 +128,7 @@ func TestBuildFingerprintSensitivity(t *testing.T) {
 	}
 
 	t.Run("containerfile change", func(t *testing.T) {
-		fp, err := builder.BuildFingerprint([]byte("FROM ubuntu:22.04\nRUN echo world\n"), base, agent, dir, cred.ToolRecipe{}, "x64")
+		fp, err := builder.BuildFingerprint([]byte("FROM ubuntu:22.04\nCOPY . /app\nRUN echo world\n"), base, agent, dir, cred.ToolRecipe{}, "x64")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -28,7 +28,15 @@ import (
 //  3. agentBytes — raw bytes of the nexus3-agent binary baked into the image.
 //  4. contextDir — filesystem path of the build-context directory; hashed as
 //     sorted (relpath, size, mtime-unix-ns) tuples after .dockerignore
-//     filtering (see tradeoff note below).
+//     filtering (see tradeoff note below) — but ONLY when the Containerfile
+//     actually reads the context ([UsesBuildContext]). A Containerfile with
+//     no COPY/ADD/bind-mount from the context produces the same image for
+//     any context, so hashing it would only add false misses: every linked
+//     worktree of one repo has its own checkout mtimes, and every edit in a
+//     live-mounted workspace bumps one. Live-proven 2026-09-15: three
+//     example-app worktrees with byte-identical Containerfiles produced three
+//     4 GiB rootfs images and three full builder runs, and the third create
+//     failed on disk space.
 //  5. recipe — the agent's [cred.ToolRecipe] describing the tool install steps.
 //     JSON-marshalled via [encoding/json], which sorts map keys
 //     lexicographically and emits struct fields in declaration order — both
@@ -62,9 +70,13 @@ func BuildFingerprint(
 	recipe cred.ToolRecipe,
 	targetArch string,
 ) (string, error) {
-	contextHash, err := ContextHashDir(contextDir)
-	if err != nil {
-		return "", fmt.Errorf("build fingerprint: context hash: %w", err)
+	contextHash := "unused"
+	if UsesBuildContext(containerfileBytes) {
+		var err error
+		contextHash, err = ContextHashDir(contextDir)
+		if err != nil {
+			return "", fmt.Errorf("build fingerprint: context hash: %w", err)
+		}
 	}
 
 	// encoding/json sorts map keys lexicographically and emits struct fields
@@ -96,6 +108,66 @@ func BuildFingerprint(
 	writeComp("arch:", targetArch)
 
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// UsesBuildContext reports whether any instruction in the Containerfile reads
+// from the build context: a COPY or ADD without --from, or a RUN with a
+// --mount=type=bind that names no from= stage. Comments, blank lines and
+// line continuations are handled; instruction names are case-insensitive.
+//
+// It errs toward true: an unparseable or unusual instruction that mentions
+// the context in a way not listed here is treated as using it, so the only
+// consequence of a miss is a redundant context hash, never a stale cache hit.
+func UsesBuildContext(containerfileBytes []byte) bool {
+	var logical []string
+	var cur strings.Builder
+	for _, raw := range strings.Split(string(containerfileBytes), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasSuffix(line, "\\") {
+			cur.WriteString(strings.TrimSuffix(line, "\\"))
+			cur.WriteByte(' ')
+			continue
+		}
+		cur.WriteString(line)
+		logical = append(logical, cur.String())
+		cur.Reset()
+	}
+	if cur.Len() > 0 {
+		logical = append(logical, cur.String())
+	}
+
+	for _, line := range logical {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		switch strings.ToUpper(fields[0]) {
+		case "COPY", "ADD":
+			fromStage := false
+			for _, f := range fields[1:] {
+				if strings.HasPrefix(f, "--from=") {
+					fromStage = true
+				}
+			}
+			if !fromStage {
+				return true
+			}
+		case "RUN":
+			for _, f := range fields[1:] {
+				if !strings.HasPrefix(f, "--mount=") {
+					break
+				}
+				spec := strings.TrimPrefix(f, "--mount=")
+				if strings.Contains(spec, "type=bind") && !strings.Contains(spec, "from=") {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // ExtractFromRef extracts the image reference from the first FROM instruction
@@ -275,4 +347,3 @@ func StoreBuildCache(storeRoot, fp, digest string) error {
 	slog.Info("build-cache: stored", "fp", fp[:min(12, len(fp))], "digest", digest)
 	return nil
 }
-
