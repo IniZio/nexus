@@ -3536,6 +3536,40 @@ func herdrWorktreeSandboxRepoCheck(ctx context.Context, storeRoot string, info h
 	return herdrRepoHasBoundSandbox(mainRepo, bindings)
 }
 
+// herdrRepoHasNexus3Config reports whether the checkout at dir is nexus3-
+// onboarded: it carries a nexus3.yaml or a .nexus/Containerfile.
+func herdrRepoHasNexus3Config(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	for _, rel := range []string{"nexus3.yaml", filepath.Join(".nexus", "Containerfile")} {
+		if st, err := os.Stat(filepath.Join(dir, rel)); err == nil && !st.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// herdrWorktreeAutoBindDecision is the --auto predicate for worktree-sandbox.
+//
+// It binds when the repo already has a nexus3-bound sibling workspace
+// (repoBound) OR when the checkout itself is nexus3-onboarded (hasConfig:
+// nexus3.yaml / .nexus/Containerfile). The second arm is what makes the FIRST
+// worktree of a repo auto-provision; before it, a new user's worktree.created
+// hook silently did nothing because no sibling could ever be bound yet.
+// Only a repo with neither is skipped. The returned reason is printed either
+// way so the provisioning pane never exits without saying why.
+func herdrWorktreeAutoBindDecision(repoBound, hasConfig bool) (bind bool, reason string) {
+	switch {
+	case repoBound:
+		return true, "repo already has a nexus3-bound workspace"
+	case hasConfig:
+		return true, "repo has nexus3.yaml or .nexus/Containerfile"
+	default:
+		return false, "no nexus3-bound workspace in repo and no nexus3.yaml or .nexus/Containerfile"
+	}
+}
+
 // herdrWorktreeListTimeout bounds the `herdr worktree list` probe in step 3.
 // A hung herdr daemon must not wedge every new pane on the machine.
 const herdrWorktreeListTimeout = 2 * time.Second
@@ -4352,10 +4386,15 @@ func herdrWorktreeSandbox(
 	//  explicit mode (neither flag): no source check — always bind.
 	switch {
 	case auto:
-		if !herdrWorktreeSandboxRepoCheck(ctx, storeRoot, info) {
-			fmt.Fprintf(w, "worktree-sandbox: no nexus3-bound workspace in repo, skipping\n")
+		bind, reason := herdrWorktreeAutoBindDecision(
+			herdrWorktreeSandboxRepoCheck(ctx, storeRoot, info),
+			herdrRepoHasNexus3Config(info.Path),
+		)
+		if !bind {
+			fmt.Fprintf(w, "worktree-sandbox: %s at %s; skipping (bind by hand via \"nexus3: sandbox this worktree\", or add nexus3.yaml)\n", reason, info.Path)
 			return nil
 		}
+		fmt.Fprintf(w, "worktree-sandbox: auto-binding (%s)\n", reason)
 	case conditional:
 		srcID := info.SourceWorkspaceID
 		if srcID == "" {
@@ -4696,8 +4735,9 @@ func localAgentStateDir() string {
 
 // remotePortFwdStateFile returns the shell expression for the path on the
 // REMOTE host where the host-side portfwd supervisor writes forwards.state.
+// Both sides derive from portfwd.StateDir so writer and reader cannot drift.
 func remotePortFwdStateFile() string {
-	return "${XDG_STATE_HOME:-$HOME/.local/state}/nexus3/portfwd/forwards.state"
+	return portfwd.RemoteStateFileShell()
 }
 
 // sanitizeSSHTarget replaces special characters in an SSH target with

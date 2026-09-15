@@ -35,8 +35,9 @@ fi
 # visible while it runs, and pane.sh holds the pane open on failure.
 #
 # NEXUS3_WORKTREE_AUTO=1 carries the --auto predicate through to pane.sh, which
-# is what keeps this hook conditional (bind only when a sibling workspace in the
-# same repo is already nexus3-bound).
+# is what keeps this hook conditional (bind when a sibling workspace in the
+# same repo is already nexus3-bound OR the checkout carries nexus3.yaml /
+# .nexus/Containerfile; skip only when neither holds).
 #
 # Fail-open is preserved: if the pane cannot be opened we fall back to the old
 # inline run rather than leaving the worktree unprovisioned.  A missing pane is

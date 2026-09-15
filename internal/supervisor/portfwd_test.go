@@ -55,8 +55,8 @@ const fakeProcNetTCP = `  sl  local_address rem_address   st tx_queue rx_queue t
 func TestReadProcNet_ParsesTCPBytes(t *testing.T) {
 	execer := &fakeGuestExecer{
 		responses: []fakeExecResponse{
-			{stdout: fakeProcNetTCP, code: 0},   // /proc/net/tcp
-			{stdout: "", code: 0},               // /proc/net/tcp6 (empty)
+			{stdout: fakeProcNetTCP, code: 0}, // /proc/net/tcp
+			{stdout: "", code: 0},             // /proc/net/tcp6 (empty)
 		},
 	}
 	sb := singleSandboxBackend{
@@ -179,5 +179,105 @@ func TestReconcile_BindsAndUnbindsHostPort(t *testing.T) {
 	stateFile := filepath.Join(tmpDir, "forwards.state")
 	if _, err := os.Stat(stateFile); err != nil {
 		t.Errorf("forwards.state not written: %v", err)
+	}
+}
+
+// blockingBackend implements portfwd.Backend with a ReadProcNet that ignores
+// ctx and blocks until release is closed — the shape of the live wedge (one
+// hung guest exec) that froze reconcile for the life of the sandbox.
+type blockingBackend struct {
+	calls   chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingBackend) ListSandboxes(_ context.Context) ([]portfwd.SandboxRef, error) {
+	return []portfwd.SandboxRef{{ID: "sb1", Status: portfwd.SandboxStatusRunning}}, nil
+}
+
+func (b *blockingBackend) ReadProcNet(_ context.Context, _ string) ([]byte, []byte, error) {
+	b.calls <- struct{}{}
+	<-b.release
+	return nil, nil, nil
+}
+
+// TestRun_DiscoveryTimeoutDoesNotWedgeLoop proves a hung discovery exec is
+// bounded by the per-tick timeout and the loop keeps ticking: the backend
+// blocks forever, yet a second ReadProcNet call must arrive.
+//
+// MUTATION PROOF: call p.disc.DiscoverOne directly in reconcile (no
+// discoverBounded) → the first tick never returns, no second call, RED at
+// the 10 s deadline.
+func TestRun_DiscoveryTimeoutDoesNotWedgeLoop(t *testing.T) {
+	backend := &blockingBackend{
+		calls:   make(chan struct{}, 16),
+		release: make(chan struct{}),
+	}
+	defer close(backend.release)
+
+	sup := &portForwardSupervisor{
+		sandboxRef:      "test/sb1",
+		backend:         backend,
+		disc:            &portfwd.Discoverer{Backend: backend},
+		dialer:          fakeDialer{},
+		stateDir:        t.TempDir(),
+		interval:        50 * time.Millisecond,
+		discoverTimeout: 200 * time.Millisecond,
+		listeners:       make(map[uint16]net.Listener),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runDone := make(chan struct{})
+	go func() {
+		sup.run(ctx)
+		close(runDone)
+	}()
+
+	deadline := time.After(10 * time.Second)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-backend.calls:
+		case <-deadline:
+			t.Fatalf("only %d discovery call(s) within 10s: a hung ReadProcNet wedged the reconcile loop", i)
+		}
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not exit after ctx cancel")
+	}
+}
+
+// TestReconcile_DiscoverTimeoutReturnsError pins that a single timed-out
+// tick surfaces as an error (logged by run) rather than hanging reconcile.
+func TestReconcile_DiscoverTimeoutReturnsError(t *testing.T) {
+	backend := &blockingBackend{
+		calls:   make(chan struct{}, 16),
+		release: make(chan struct{}),
+	}
+	defer close(backend.release)
+
+	sup := &portForwardSupervisor{
+		sandboxRef:      "test/sb1",
+		backend:         backend,
+		disc:            &portfwd.Discoverer{Backend: backend},
+		dialer:          fakeDialer{},
+		stateDir:        t.TempDir(),
+		interval:        time.Second,
+		discoverTimeout: 100 * time.Millisecond,
+		listeners:       make(map[uint16]net.Listener),
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- sup.reconcile(context.Background()) }()
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("reconcile returned nil for a hung discovery; want timeout error")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("reconcile did not return within 10s: discovery timeout not enforced")
 	}
 }

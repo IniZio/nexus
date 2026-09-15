@@ -79,8 +79,9 @@ case "$1" in
             exit 1
         fi
         # NEXUS3_WORKTREE_AUTO=1 selects --auto (the repo-level conditional rule:
-        # bind only when some sibling workspace in this repo is already
-        # nexus3-bound). The worktree.created event hook sets it; the explicit
+        # bind when some sibling workspace in this repo is already nexus3-bound
+        # or the checkout carries nexus3.yaml / .nexus/Containerfile; skip only
+        # when neither). The worktree.created event hook sets it; the explicit
         # "sandbox this worktree" action does not, because an operator who asked
         # for a sandbox by name has already made the decision the predicate exists
         # to make.

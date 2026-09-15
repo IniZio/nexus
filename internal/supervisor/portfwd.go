@@ -97,24 +97,18 @@ type portForwardSupervisor struct {
 	dialer     portForwardDialer
 	stateDir   string
 	interval   time.Duration
-	listeners  map[uint16]net.Listener
+	// discoverTimeout bounds each DiscoverOne call; zero means
+	// portFwdDiscoverTimeout.
+	discoverTimeout time.Duration
+	listeners       map[uint16]net.Listener
 }
 
-// portFwdStateDir returns the directory used to write the port-forward state
-// file, following the same XDG / HERDR_PLUGIN_STATE_DIR convention used by
-// the herdr plugin layer.
-func portFwdStateDir() string {
-	if d := os.Getenv("HERDR_PLUGIN_STATE_DIR"); d != "" {
-		return filepath.Join(d, "portfwd")
-	}
-	xdg := os.Getenv("XDG_STATE_HOME")
-	if xdg == "" {
-		if home, _ := os.UserHomeDir(); home != "" {
-			xdg = filepath.Join(home, ".local", "state")
-		}
-	}
-	return filepath.Join(xdg, "nexus3", "portfwd")
-}
+// portFwdDiscoverTimeout bounds one guest discovery (cat /proc/net/tcp{,6}
+// over the agent exec channel). The supervisor-lifetime ctx alone carried no
+// deadline, so a single hung exec froze reconcile for the life of the sandbox
+// (forwards.state mtime stopped, no listener ever bound). A timed-out tick is
+// logged and the next tick runs normally.
+const portFwdDiscoverTimeout = 5 * time.Second
 
 // startPortForwardSupervisor creates and starts the per-sandbox port-forward
 // supervisor. It returns immediately; the supervisor runs in a background
@@ -149,7 +143,7 @@ func startPortForwardSupervisor(
 		backend:    backend,
 		disc:       &portfwd.Discoverer{Backend: backend},
 		dialer:     dialer,
-		stateDir:   portFwdStateDir(),
+		stateDir:   portfwd.StateDir(),
 		interval:   5 * time.Second,
 		listeners:  make(map[uint16]net.Listener),
 	}
@@ -193,7 +187,7 @@ func (p *portForwardSupervisor) reconcile(ctx context.Context) error {
 		return nil
 	}
 
-	lsnrs, err := p.disc.DiscoverOne(ctx, refs[0])
+	lsnrs, err := p.discoverBounded(ctx, refs[0])
 	if err != nil {
 		return fmt.Errorf("discover: %w", err)
 	}
@@ -238,6 +232,41 @@ func (p *portForwardSupervisor) reconcile(ctx context.Context) error {
 	}
 
 	return p.writeState(result.Forwardable)
+}
+
+// discoverBounded runs DiscoverOne under a per-tick deadline. The call is
+// made in its own goroutine and abandoned on timeout: a guest exec that
+// ignores ctx cancellation must not wedge the reconcile loop, only this tick.
+func (p *portForwardSupervisor) discoverBounded(ctx context.Context, ref portfwd.SandboxRef) ([]portfwd.Listener, error) {
+	timeout := p.discoverTimeout
+	if timeout <= 0 {
+		timeout = portFwdDiscoverTimeout
+	}
+	dctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	type result struct {
+		lsnrs []portfwd.Listener
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		lsnrs, err := p.disc.DiscoverOne(dctx, ref)
+		done <- result{lsnrs, err}
+	}()
+
+	select {
+	case r := <-done:
+		return r.lsnrs, r.err
+	case <-dctx.Done():
+		if ctx.Err() == nil {
+			slog.Warn("supervisor.portfwd.discover_timeout",
+				"sandboxRef", p.sandboxRef,
+				"timeout", timeout,
+			)
+		}
+		return nil, dctx.Err()
+	}
 }
 
 // acceptLoop accepts connections on lis and spawns a forwardConn goroutine for
@@ -319,7 +348,7 @@ func (p *portForwardSupervisor) writeState(forwardable []portfwd.Listener) error
 		return fmt.Errorf("portfwd state marshal: %w", err)
 	}
 
-	stateFile := filepath.Join(p.stateDir, "forwards.state")
+	stateFile := filepath.Join(p.stateDir, portfwd.StateFileName)
 	tmpFile := stateFile + ".tmp"
 	if err := os.WriteFile(tmpFile, data, 0o640); err != nil {
 		return fmt.Errorf("portfwd state write: %w", err)
