@@ -361,12 +361,16 @@ git push origin "${sha}:refs/heads/main"
 	if logContent == "" {
 		t.Errorf("AC-3: supervisor log not found or empty: %s", supLog)
 	} else {
-		const wantAllow = "gitssh.relay.allow service=git-receive-pack"
-		if !strings.Contains(logContent, wantAllow) {
-			t.Errorf("AC-3: supervisor log missing %q\nlog tail:\n%s",
-				wantAllow, lastLines(logContent, 40))
+		// relay.go logs slog.Info("gitssh.relay.allow", "sandboxID", …, "service", …), so the
+		// rendered line is `gitssh.relay.allow sandboxID=… service=git-receive-pack`; check the
+		// message and the service attr separately.
+		const wantAllow = "gitssh.relay.allow"
+		const wantAllowService = "service=git-receive-pack"
+		if !strings.Contains(logContent, wantAllow) || !strings.Contains(logContent, wantAllowService) {
+			t.Errorf("AC-3: supervisor log missing %q %q\nlog tail:\n%s",
+				wantAllow, wantAllowService, lastLines(logContent, 40))
 		} else {
-			t.Logf("[%s] AC-3 PASS: supervisor log contains %q", time.Now().Format(time.RFC3339), wantAllow)
+			t.Logf("[%s] AC-3 PASS: supervisor log contains %q %q", time.Now().Format(time.RFC3339), wantAllow, wantAllowService)
 		}
 		// relay.go:224 logs gitssh.relay.deny_ref with key "ref"=<refname>.
 		const wantDeny = "gitssh.relay.deny_ref"
