@@ -14,25 +14,11 @@ type ParsedCommand struct {
 	RawPath   string // "/owner/repo.git" as passed by git (no quotes)
 }
 
-// ParseCommand validates and parses the argv list from a gitssh.Request.
-//
-// Format expected (from git's GIT_SSH_COMMAND):
-//
-//	argv[0]     = "[user@]host"
-//	argv[1]     = "git-receive-pack '/path'" or "git-upload-pack '/path'"
-//	              (the full command is a single shell token with quoted path)
-//
-// Rejection rules (each returns a descriptive error):
-//   - Any argv element starting with "-" (SSH option injection)
-//   - Less than 2 elements
-//   - argv[1] does not start with "git-receive-pack " or "git-upload-pack "
-//   - Path is empty or starts with anything other than "/"
-//
-// Path is unquoted (single or double quotes stripped) before storage in RawPath.
-// OwnerRepo is derived: strip leading "/", split on "/", take first two
-// segments, strip ".git" from the second segment.
+// ParseCommand validates git's GIT_SSH_COMMAND argv: argv[0]="[user@]host",
+// argv[1]="git-receive-pack '/owner/repo.git'" (one shell token, quoted path).
+// Rejects SSH option injection ("-" prefix), other services, and any path that
+// is not exactly owner/repo(.git).
 func ParseCommand(argv []string) (ParsedCommand, error) {
-	// Check for flag injection in any element.
 	for _, arg := range argv {
 		if strings.HasPrefix(arg, "-") {
 			return ParsedCommand{}, fmt.Errorf("argv element looks like an SSH option: %q", arg)
@@ -46,7 +32,6 @@ func ParseCommand(argv []string) (ParsedCommand, error) {
 	hostArg := argv[0]
 	cmdArg := argv[1]
 
-	// Determine service.
 	var service string
 	var rest string
 	switch {
@@ -60,7 +45,6 @@ func ParseCommand(argv []string) (ParsedCommand, error) {
 		return ParsedCommand{}, fmt.Errorf("argv[1] must start with git-receive-pack or git-upload-pack, got: %q", cmdArg)
 	}
 
-	// Unquote path portion.
 	pathStr := rest
 	if len(pathStr) >= 2 {
 		if (pathStr[0] == '\'' && pathStr[len(pathStr)-1] == '\'') ||
@@ -73,19 +57,21 @@ func ParseCommand(argv []string) (ParsedCommand, error) {
 		return ParsedCommand{}, fmt.Errorf("path is empty")
 	}
 
-	// Normalise rawPath: git SSH URLs (git@host:owner/repo.git) produce a path
-	// WITHOUT a leading slash; git HTTPS-over-SSH (/owner/repo.git) uses one.
-	// Accept both; canonicalise to always have a leading "/" for RawPath.
+	// scp-style URLs (git@host:owner/repo.git) omit the leading slash; canonicalise.
 	if pathStr[0] != '/' {
 		pathStr = "/" + pathStr
 	}
 	rawPath := pathStr
 
-	// Derive owner/repo from path.
 	stripped := strings.TrimPrefix(rawPath, "/")
-	segments := strings.SplitN(stripped, "/", 3)
+	segments := strings.Split(stripped, "/")
 	if len(segments) < 2 {
 		return ParsedCommand{}, fmt.Errorf("path does not contain owner/repo: %q", rawPath)
+	}
+	// Exactly owner/repo(.git): a third segment would pass the policy check on
+	// segments[0..1] while RawPath forwards the extra segment verbatim.
+	if len(segments) > 2 {
+		return ParsedCommand{}, fmt.Errorf("path has more than owner/repo segments: %q", rawPath)
 	}
 	owner := segments[0]
 	repo := strings.TrimSuffix(segments[1], ".git")
@@ -93,7 +79,6 @@ func ParseCommand(argv []string) (ParsedCommand, error) {
 		return ParsedCommand{}, fmt.Errorf("empty owner or repo in path: %q", rawPath)
 	}
 
-	// Derive bareHost from hostArg (strip user@ prefix if present).
 	bareHost := hostArg
 	if idx := strings.Index(hostArg, "@"); idx >= 0 {
 		bareHost = hostArg[idx+1:]

@@ -1,6 +1,7 @@
 package cred_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -73,7 +74,7 @@ func TestCredGuardian_RefreshesWhenExpiring(t *testing.T) {
 	dir := t.TempDir()
 	var callCount atomic.Int64
 	srv := fakeTokenServer(t, &callCount, "new-access-token", 3600)
-	// Token expiring in 10 minutes (within the 30-min threshold).
+	// Token expiring in 10 minutes (within the 40-min threshold).
 	path := makeTestCreds(t, dir, time.Now().Add(10*time.Minute), "old-token", "refresh-tok")
 	g := cred.NewCredGuardianWithEndpoint(path, srv.URL)
 	if err := g.GuardOnce(context.Background()); err != nil {
@@ -144,5 +145,126 @@ func TestCredGuardian_TwoRacingGuardians(t *testing.T) {
 
 	if n := callCount.Load(); n != 1 {
 		t.Errorf("expected exactly 1 HTTP refresh call, got %d (flock re-read missing?)", n)
+	}
+}
+
+// TestCredGuardian_RefreshPreservesSiblingKeys is the mutation guard for the
+// full-document patch path:
+//
+//	Revert to marshaling a 3-field struct → this test fails because mcpOAuth,
+//	scopes, subscriptionType, rateLimitTier, refreshTokenExpiresAt, and unknown
+//	keys are wiped from the on-disk file.
+//
+// The fixture contains all seven real claudeAiOauth keys, a top-level mcpOAuth
+// object, and unknown future keys at both levels. After GuardOnce the test
+// asserts every sibling key survives byte-for-byte.
+func TestCredGuardian_RefreshPreservesSiblingKeys(t *testing.T) {
+	dir := t.TempDir()
+	var callCount atomic.Int64
+	srv := fakeTokenServer(t, &callCount, "new-access-token", 3600)
+
+	// Token expiring in 10 minutes (within the 40-min threshold).
+	expiresAt := time.Now().Add(10 * time.Minute).UnixMilli()
+	fixtureData := []byte(fmt.Sprintf(`{
+		"mcpOAuth": {"someKey": "someValue", "anotherKey": 42},
+		"claudeAiOauth": {
+			"accessToken": "old-access",
+			"refreshToken": "old-refresh",
+			"expiresAt": %d,
+			"refreshTokenExpiresAt": 9999999999999,
+			"scopes": ["user:inference"],
+			"subscriptionType": "pro",
+			"rateLimitTier": "default",
+			"unknownNestedKey": {"z": true}
+		},
+		"futureUnknownKey": {"x": 1}
+	}`, expiresAt))
+
+	path := filepath.Join(dir, ".credentials.json")
+	if err := os.WriteFile(path, fixtureData, 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	g := cred.NewCredGuardianWithEndpoint(path, srv.URL)
+	if err := g.GuardOnce(context.Background()); err != nil {
+		t.Fatalf("GuardOnce: %v", err)
+	}
+	if callCount.Load() != 1 {
+		t.Errorf("expected 1 HTTP call, got %d", callCount.Load())
+	}
+
+	// File mode must be 0600.
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("file mode: got %04o, want 0600", got)
+	}
+
+	// Re-read and parse the updated file.
+	updated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+
+	var fixtureDoc map[string]json.RawMessage
+	if err := json.Unmarshal(fixtureData, &fixtureDoc); err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	var updatedDoc map[string]json.RawMessage
+	if err := json.Unmarshal(updated, &updatedDoc); err != nil {
+		t.Fatalf("parse updated: %v", err)
+	}
+
+	// Top-level sibling keys must be byte-for-byte identical (compacted).
+	for _, k := range []string{"mcpOAuth", "futureUnknownKey"} {
+		var want, got bytes.Buffer
+		if err := json.Compact(&want, fixtureDoc[k]); err != nil {
+			t.Fatalf("compact fixture[%s]: %v", k, err)
+		}
+		if err := json.Compact(&got, updatedDoc[k]); err != nil {
+			t.Fatalf("compact updated[%s]: %v", k, err)
+		}
+		if want.String() != got.String() {
+			t.Errorf("top-level sibling key %q changed: want %s, got %s", k, want.String(), got.String())
+		}
+	}
+
+	// Nested sibling keys inside claudeAiOauth must also survive unchanged.
+	var fixtureOauth, updatedOauth map[string]json.RawMessage
+	if err := json.Unmarshal(fixtureDoc["claudeAiOauth"], &fixtureOauth); err != nil {
+		t.Fatalf("parse fixture oauth: %v", err)
+	}
+	if err := json.Unmarshal(updatedDoc["claudeAiOauth"], &updatedOauth); err != nil {
+		t.Fatalf("parse updated oauth: %v", err)
+	}
+	for _, k := range []string{"scopes", "subscriptionType", "rateLimitTier", "refreshTokenExpiresAt", "unknownNestedKey"} {
+		var want, got bytes.Buffer
+		if err := json.Compact(&want, fixtureOauth[k]); err != nil {
+			t.Fatalf("compact fixture oauth[%s]: %v", k, err)
+		}
+		if err := json.Compact(&got, updatedOauth[k]); err != nil {
+			t.Fatalf("compact updated oauth[%s]: %v", k, err)
+		}
+		if want.String() != got.String() {
+			t.Errorf("nested sibling key %q changed: want %s, got %s", k, want.String(), got.String())
+		}
+	}
+
+	// accessToken and expiresAt must have changed.
+	var updatedOauthMap map[string]any
+	if err := json.Unmarshal(updatedDoc["claudeAiOauth"], &updatedOauthMap); err != nil {
+		t.Fatalf("parse updated oauth map: %v", err)
+	}
+	if updatedOauthMap["accessToken"] == "old-access" {
+		t.Errorf("accessToken not updated: still %q", updatedOauthMap["accessToken"])
+	}
+	if updatedOauthMap["accessToken"] != "new-access-token" {
+		t.Errorf("accessToken: got %v, want new-access-token", updatedOauthMap["accessToken"])
+	}
+	updatedExpiresAt := int64(updatedOauthMap["expiresAt"].(float64))
+	if updatedExpiresAt == expiresAt {
+		t.Errorf("expiresAt not updated: still %d", updatedExpiresAt)
 	}
 }

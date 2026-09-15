@@ -96,6 +96,34 @@ func TestParseCommand(t *testing.T) {
 			wantErr:   true,
 			errSubstr: "git-receive-pack or git-upload-pack",
 		},
+		{
+			// MUTATION-PIN: removing the len(segments)!=2 check makes this pass when it must fail.
+			name:      "extra segment after repo rejected",
+			argv:      []string{"git@github.com", "git-receive-pack '/example-org/example-app.git/extra'"},
+			wantErr:   true,
+			errSubstr: "more than owner/repo segments",
+		},
+		{
+			// MUTATION-PIN: three bare segments also rejected.
+			name:      "three bare segments rejected",
+			argv:      []string{"git@github.com", "git-upload-pack '/a/b/c'"},
+			wantErr:   true,
+			errSubstr: "more than owner/repo segments",
+		},
+		{
+			// Trailing slash produces an empty third segment — must be rejected.
+			name:      "trailing slash rejected",
+			argv:      []string{"git@github.com", "git-receive-pack '/example-org/example-app.git/'"},
+			wantErr:   true,
+			errSubstr: "more than owner/repo segments",
+		},
+		{
+			// Path traversal via /../ produces three segments after split — rejected.
+			name:      "path traversal rejected",
+			argv:      []string{"git@github.com", "git-receive-pack '/example-org/../example-app.git'"},
+			wantErr:   true,
+			errSubstr: "more than owner/repo segments",
+		},
 	}
 
 	for _, tc := range tests {

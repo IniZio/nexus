@@ -13,10 +13,13 @@ import (
 )
 
 // guardianRefreshAhead is how far before expiry the guardian proactively
-// refreshes the credential. 30 minutes matches claude-code's own threshold.
-const guardianRefreshAhead = 30 * time.Minute
+// refreshes the credential. 40 minutes is strictly ahead of claude-code's
+// own 30-minute self-refresh so the guardian wins the race by construction
+// (claude-code refreshing at the same moment would invalidate the guardian's
+// refresh token with zero overlap — see memory:
+// claude-oauth-refresh-revokes-prior-token).
+const guardianRefreshAhead = 40 * time.Minute
 
-// guardianCheckInterval is how often the guardian polls the credentials file.
 const guardianCheckInterval = time.Minute
 
 // CredGuardian watches the operator's ~/.claude/.credentials.json and
@@ -56,9 +59,7 @@ func NewCredGuardianWithEndpoint(credsPath, tokenEndpoint string) *CredGuardian 
 	return g
 }
 
-// Guard runs the refresh loop until ctx is done. It is designed to be called
-// as a goroutine. It checks the credentials file once per guardianCheckInterval
-// and refreshes when expiresAt is within guardianRefreshAhead of now.
+// Guard polls every guardianCheckInterval until ctx is done; run as a goroutine.
 func (g *CredGuardian) Guard(ctx context.Context) {
 	ticker := time.NewTicker(guardianCheckInterval)
 	defer ticker.Stop()
@@ -89,7 +90,6 @@ func (g *CredGuardian) GuardOnce(ctx context.Context) error {
 		return nil
 	}
 
-	// Token is expiring — acquire the advisory flock.
 	lockF, lockErr := os.OpenFile(g.lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if lockErr != nil {
 		return fmt.Errorf("guardian: open lock %s: %w", g.lockPath, lockErr)
@@ -111,22 +111,51 @@ func (g *CredGuardian) GuardOnce(ctx context.Context) error {
 		return nil
 	}
 
-	// Refresh the token.
-	newCreds, refreshErr := g.refresh(ctx, creds)
+	patch, refreshErr := g.refresh(ctx, creds)
 	if refreshErr != nil {
 		return fmt.Errorf("guardian: refresh: %w", refreshErr)
 	}
 
-	// Never write expiresAt:0.
-	if newCreds.ClaudeAiOauth.ExpiresAt == 0 {
+	if patch.ExpiresAt == 0 {
 		return fmt.Errorf("guardian: refresh returned expiresAt=0; refusing to write")
 	}
 
-	// Write atomically via temp+rename, preserving mode 0600.
-	data, err := json.Marshal(newCreds)
+	// Patch the full document as raw JSON so sibling keys (mcpOAuth, scopes,
+	// subscriptionType, rateLimitTier, unknown future keys) survive byte-for-byte.
+	rawDoc, err := os.ReadFile(g.credsPath)
+	if err != nil {
+		return fmt.Errorf("guardian: re-read for patch: %w", err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(rawDoc, &doc); err != nil {
+		return fmt.Errorf("guardian: parse doc for patch: %w", err)
+	}
+	var oauthFields map[string]json.RawMessage
+	if err := json.Unmarshal(doc["claudeAiOauth"], &oauthFields); err != nil {
+		return fmt.Errorf("guardian: parse claudeAiOauth for patch: %w", err)
+	}
+	rawAccessToken, _ := json.Marshal(patch.AccessToken)
+	oauthFields["accessToken"] = json.RawMessage(rawAccessToken)
+	if patch.RefreshToken != "" {
+		rawRefreshToken, _ := json.Marshal(patch.RefreshToken)
+		oauthFields["refreshToken"] = json.RawMessage(rawRefreshToken)
+	}
+	rawExpiresAt, _ := json.Marshal(patch.ExpiresAt)
+	oauthFields["expiresAt"] = json.RawMessage(rawExpiresAt)
+	if patch.RefreshTokenExpiresAt != 0 {
+		rawRTEA, _ := json.Marshal(patch.RefreshTokenExpiresAt)
+		oauthFields["refreshTokenExpiresAt"] = json.RawMessage(rawRTEA)
+	}
+	patchedOauth, err := json.Marshal(oauthFields)
+	if err != nil {
+		return fmt.Errorf("guardian: marshal patched oauth: %w", err)
+	}
+	doc["claudeAiOauth"] = json.RawMessage(patchedOauth)
+	data, err := json.Marshal(doc)
 	if err != nil {
 		return fmt.Errorf("guardian: marshal: %w", err)
 	}
+
 	tmp := g.credsPath + ".nexus3guardian.tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("guardian: write tmp: %w", err)
@@ -136,12 +165,13 @@ func (g *CredGuardian) GuardOnce(ctx context.Context) error {
 		return fmt.Errorf("guardian: rename: %w", err)
 	}
 
-	newExpiry := time.UnixMilli(newCreds.ClaudeAiOauth.ExpiresAt)
+	newExpiry := time.UnixMilli(patch.ExpiresAt)
 	slog.Info("cred.guardian.refreshed", "path", g.credsPath, "expires_at", newExpiry)
 	return nil
 }
 
-// claudeCredentials is the on-disk shape of ~/.claude/.credentials.json.
+// claudeCredentials is the minimal on-disk shape of ~/.claude/.credentials.json
+// used for needsRefresh checks and as input to the refresh call.
 type claudeCredentials struct {
 	ClaudeAiOauth struct {
 		AccessToken  string `json:"accessToken"`
@@ -175,12 +205,23 @@ func (g *CredGuardian) needsRefresh(creds claudeCredentials, now time.Time) bool
 
 // guardianTokenResponse is the subset of the OAuth token response we need.
 type guardianTokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int64  `json:"expires_in"` // seconds
+	AccessToken           string `json:"access_token"`
+	RefreshToken          string `json:"refresh_token"`
+	ExpiresIn             int64  `json:"expires_in"`               // seconds
+	RefreshTokenExpiresIn int64  `json:"refresh_token_expires_in"` // seconds; 0 if absent
 }
 
-func (g *CredGuardian) refresh(ctx context.Context, creds claudeCredentials) (claudeCredentials, error) {
+// credPatch carries the fields from a successful token refresh that should be
+// patched into the on-disk claudeAiOauth object. An empty RefreshToken means
+// keep the existing one; a zero RefreshTokenExpiresAt means leave it untouched.
+type credPatch struct {
+	AccessToken           string
+	RefreshToken          string // empty → keep existing
+	ExpiresAt             int64  // epoch ms; must be non-zero
+	RefreshTokenExpiresAt int64  // epoch ms; 0 → leave untouched
+}
+
+func (g *CredGuardian) refresh(ctx context.Context, creds claudeCredentials) (credPatch, error) {
 	body := strings.NewReader(
 		"grant_type=refresh_token" +
 			"&client_id=" + ClaudeCodeClientID +
@@ -188,7 +229,7 @@ func (g *CredGuardian) refresh(ctx context.Context, creds claudeCredentials) (cl
 	)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.tokenEndpoint, body)
 	if err != nil {
-		return claudeCredentials{}, err
+		return credPatch{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
@@ -196,34 +237,34 @@ func (g *CredGuardian) refresh(ctx context.Context, creds claudeCredentials) (cl
 	// (memory: an-unparsed-2xx-costs-the-credential).
 	resp, err := g.client.Do(req)
 	if err != nil {
-		return claudeCredentials{}, fmt.Errorf("http: %w", err)
+		return credPatch{}, fmt.Errorf("http: %w", err)
 	}
 	defer resp.Body.Close()
 
 	var tokResp guardianTokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tokResp); err != nil {
-		return claudeCredentials{}, fmt.Errorf("decode response (status %d): %w", resp.StatusCode, err)
+		return credPatch{}, fmt.Errorf("decode response (status %d): %w", resp.StatusCode, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return claudeCredentials{}, fmt.Errorf("token endpoint returned %d", resp.StatusCode)
+		return credPatch{}, fmt.Errorf("token endpoint returned %d", resp.StatusCode)
 	}
 	if tokResp.AccessToken == "" {
-		return claudeCredentials{}, fmt.Errorf("token endpoint returned empty access_token")
+		return credPatch{}, fmt.Errorf("token endpoint returned empty access_token")
 	}
 
-	var updated claudeCredentials
-	updated.ClaudeAiOauth.AccessToken = tokResp.AccessToken
+	var p credPatch
+	p.AccessToken = tokResp.AccessToken
 	// Keep the old refresh token if the endpoint didn't rotate it.
 	if tokResp.RefreshToken != "" {
-		updated.ClaudeAiOauth.RefreshToken = tokResp.RefreshToken
-	} else {
-		updated.ClaudeAiOauth.RefreshToken = creds.ClaudeAiOauth.RefreshToken
+		p.RefreshToken = tokResp.RefreshToken
 	}
 	if tokResp.ExpiresIn > 0 {
-		updated.ClaudeAiOauth.ExpiresAt = time.Now().Add(time.Duration(tokResp.ExpiresIn) * time.Second).UnixMilli()
+		p.ExpiresAt = time.Now().Add(time.Duration(tokResp.ExpiresIn) * time.Second).UnixMilli()
 	} else {
-		// Fallback: assume 1-hour lifetime.
-		updated.ClaudeAiOauth.ExpiresAt = time.Now().Add(time.Hour).UnixMilli()
+		p.ExpiresAt = time.Now().Add(time.Hour).UnixMilli()
 	}
-	return updated, nil
+	if tokResp.RefreshTokenExpiresIn > 0 {
+		p.RefreshTokenExpiresAt = time.Now().Add(time.Duration(tokResp.RefreshTokenExpiresIn) * time.Second).UnixMilli()
+	}
+	return p, nil
 }

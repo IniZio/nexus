@@ -21,13 +21,11 @@ type portForwardDialer interface {
 	DialGuestPortForward(ctx context.Context, ref string, guestPort uint32) (net.Conn, error)
 }
 
-// guestExecer is satisfied by agent.Client.
 type guestExecer interface {
 	Exec(ctx context.Context, opts agent.ExecOptions) (int32, error)
 }
 
-// singleSandboxBackend implements portfwd.Backend for a single known sandbox.
-// It execs cat /proc/net/tcp[6] in the guest via the agent.
+// singleSandboxBackend implements portfwd.Backend via cat /proc/net/tcp[6] in the guest.
 type singleSandboxBackend struct {
 	ref    portfwd.SandboxRef
 	id     domain.SandboxID
@@ -39,7 +37,6 @@ func (b *singleSandboxBackend) ListSandboxes(_ context.Context) ([]portfwd.Sandb
 }
 
 func (b *singleSandboxBackend) ReadProcNet(ctx context.Context, _ string) (tcp, tcp6 []byte, err error) {
-	// Read /proc/net/tcp.
 	var tcpBuf, tcp6Buf captureWriter
 	_, tcpErr := b.client.Exec(ctx, agent.ExecOptions{
 		Argv:   []string{"cat", "/proc/net/tcp"},
@@ -49,7 +46,6 @@ func (b *singleSandboxBackend) ReadProcNet(ctx context.Context, _ string) (tcp, 
 		return nil, nil, fmt.Errorf("portfwd: exec cat /proc/net/tcp: %w", tcpErr)
 	}
 
-	// Read /proc/net/tcp6 — best-effort; absence is not an error.
 	_, tcp6Err := b.client.Exec(ctx, agent.ExecOptions{
 		Argv:   []string{"cat", "/proc/net/tcp6"},
 		Stdout: &tcp6Buf,
@@ -61,7 +57,6 @@ func (b *singleSandboxBackend) ReadProcNet(ctx context.Context, _ string) (tcp, 
 	return tcpBuf.Bytes(), tcp6Buf.Bytes(), nil
 }
 
-// captureWriter is a minimal io.Writer that accumulates bytes.
 type captureWriter struct {
 	buf []byte
 }
@@ -88,39 +83,21 @@ type portFwdEntryJSON struct {
 	ConfirmedAt time.Time `json:"confirmed_at,omitempty"`
 }
 
-// portForwardSupervisor reconciles host-side TCP listeners with the guest's
-// active TCP listener set on a periodic interval.
 type portForwardSupervisor struct {
-	sandboxRef string
-	backend    portfwd.Backend
-	disc       *portfwd.Discoverer
-	dialer     portForwardDialer
-	stateDir   string
-	interval   time.Duration
-	// discoverTimeout bounds each DiscoverOne call; zero means
-	// portFwdDiscoverTimeout.
-	discoverTimeout time.Duration
+	sandboxRef      string
+	backend         portfwd.Backend
+	disc            *portfwd.Discoverer
+	dialer          portForwardDialer
+	stateDir        string
+	interval        time.Duration
+	discoverTimeout time.Duration // bounds each DiscoverOne call; zero means portFwdDiscoverTimeout
 	listeners       map[uint16]net.Listener
 }
 
-// portFwdDiscoverTimeout bounds one guest discovery (cat /proc/net/tcp{,6}
-// over the agent exec channel). The supervisor-lifetime ctx alone carried no
-// deadline, so a single hung exec froze reconcile for the life of the sandbox
-// (forwards.state mtime stopped, no listener ever bound). A timed-out tick is
-// logged and the next tick runs normally.
+// portFwdDiscoverTimeout bounds one guest /proc/net/tcp exec so a single hung
+// exec cannot freeze reconcile for the life of the sandbox.
 const portFwdDiscoverTimeout = 5 * time.Second
 
-// startPortForwardSupervisor creates and starts the per-sandbox port-forward
-// supervisor. It returns immediately; the supervisor runs in a background
-// goroutine that stops when ctx is cancelled.
-//
-// Parameters:
-//
-//	ctx        — supervisor context; supervisor stops when cancelled
-//	sandboxRef — human-readable sandbox reference (cfg.SandboxRef)
-//	sb         — resolved sandbox record (domain.Sandbox)
-//	client     — agent.Client for the sandbox (may be nil; supervisor is a no-op if nil)
-//	dialer     — DialGuestPortForward implementation (typically *service.Service)
 func startPortForwardSupervisor(
 	ctx context.Context,
 	sandboxRef string,
@@ -156,8 +133,6 @@ func startPortForwardSupervisor(
 	)
 }
 
-// run is the supervisor's main goroutine. It reconciles on each tick until
-// ctx is cancelled.
 func (p *portForwardSupervisor) run(ctx context.Context) {
 	tick := time.NewTicker(p.interval)
 	defer tick.Stop()
@@ -178,9 +153,6 @@ func (p *portForwardSupervisor) run(ctx context.Context) {
 	}
 }
 
-// reconcile discovers the guest's current TCP listeners, starts new host-side
-// TCP listeners for newly-seen ports, and stops listeners for ports that are
-// no longer active in the guest.
 func (p *portForwardSupervisor) reconcile(ctx context.Context) error {
 	refs, _ := p.backend.ListSandboxes(ctx)
 	if len(refs) == 0 {
@@ -194,13 +166,11 @@ func (p *portForwardSupervisor) reconcile(ctx context.Context) error {
 
 	result := portfwd.FilterListeners(lsnrs, nil)
 
-	// Build desired set.
 	desired := make(map[uint16]struct{}, len(result.Forwardable))
 	for _, l := range result.Forwardable {
 		desired[l.Port] = struct{}{}
 	}
 
-	// Stop listeners for ports no longer present.
 	for port, lis := range p.listeners {
 		if _, ok := desired[port]; !ok {
 			lis.Close()
@@ -209,7 +179,6 @@ func (p *portForwardSupervisor) reconcile(ctx context.Context) error {
 		}
 	}
 
-	// Start listeners for newly discovered ports.
 	for _, l := range result.Forwardable {
 		if _, ok := p.listeners[l.Port]; ok {
 			continue
@@ -234,9 +203,8 @@ func (p *portForwardSupervisor) reconcile(ctx context.Context) error {
 	return p.writeState(result.Forwardable)
 }
 
-// discoverBounded runs DiscoverOne under a per-tick deadline. The call is
-// made in its own goroutine and abandoned on timeout: a guest exec that
-// ignores ctx cancellation must not wedge the reconcile loop, only this tick.
+// discoverBounded abandons DiscoverOne on timeout: a guest exec that ignores ctx
+// cancellation must wedge only this tick, never the reconcile loop.
 func (p *portForwardSupervisor) discoverBounded(ctx context.Context, ref portfwd.SandboxRef) ([]portfwd.Listener, error) {
 	timeout := p.discoverTimeout
 	if timeout <= 0 {
@@ -269,9 +237,6 @@ func (p *portForwardSupervisor) discoverBounded(ctx context.Context, ref portfwd
 	}
 }
 
-// acceptLoop accepts connections on lis and spawns a forwardConn goroutine for
-// each. It exits when lis is closed (triggered by ctx cancellation or
-// port removal in reconcile).
 func (p *portForwardSupervisor) acceptLoop(ctx context.Context, lis net.Listener, port uint16) {
 	// Close the listener when ctx is cancelled so Accept unblocks.
 	go func() {
@@ -289,9 +254,6 @@ func (p *portForwardSupervisor) acceptLoop(ctx context.Context, lis net.Listener
 	}
 }
 
-// forwardConn dials the guest port-forward mux for port and splices conn to
-// the guest-local TCP service. Runs in its own goroutine per accepted
-// connection.
 func (p *portForwardSupervisor) forwardConn(ctx context.Context, hostConn net.Conn, port uint16) {
 	defer hostConn.Close()
 
@@ -320,8 +282,6 @@ func (p *portForwardSupervisor) forwardConn(ctx context.Context, hostConn net.Co
 	<-done
 }
 
-// writeState atomically writes the current forwardable listener set to the
-// state file consumed by the herdr plugin / CLI `nexus3 forward list`.
 func (p *portForwardSupervisor) writeState(forwardable []portfwd.Listener) error {
 	if err := os.MkdirAll(p.stateDir, 0o750); err != nil {
 		return fmt.Errorf("portfwd state dir: %w", err)
@@ -359,7 +319,6 @@ func (p *portForwardSupervisor) writeState(forwardable []portfwd.Listener) error
 	return nil
 }
 
-// teardownAll closes all active host-side listeners and writes an empty state.
 func (p *portForwardSupervisor) teardownAll() {
 	for port, lis := range p.listeners {
 		lis.Close()

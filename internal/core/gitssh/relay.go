@@ -13,19 +13,6 @@ import (
 	"time"
 )
 
-// writePktErrFrame sends a git pkt-line ERR packet as a stdout wire frame,
-// followed by an exit frame with code 1.
-//
-// Format: 4-byte hex length (length includes the 4-byte prefix) + "ERR " + msg
-// Example: "0030ERR nexus3: refused by egress policy: ...\n"
-//
-// Git interprets pkt-line packets whose payload starts with "ERR " as a fatal
-// remote error and prints "remote error: <rest>" to the user's stderr — making
-// the refusal visible instead of triggering a "bad line length character" parse
-// error from the raw ASCII.
-//
-// msg must already contain the full human-readable error (including trailing newline).
-// The "ERR " prefix is prepended by this function.
 func writePktErrFrame(conn net.Conn, msg string) {
 	errLine := "ERR " + msg
 	pkt := fmt.Sprintf("%04x", 4+len(errLine)) + errLine
@@ -33,19 +20,8 @@ func writePktErrFrame(conn net.Conn, msg string) {
 	_ = WriteExitFrame(conn, 1)
 }
 
-// writePktErrFrameAfterCommands sends a refusal to a receive-pack client that
-// has ALREADY read the server's advertisement and sent its command section.
-//
-// At that point the client has negotiated capabilities. If it asked for
-// side-band / side-band-64k, everything it reads next is demultiplexed as
-// sideband packets: a bare "ERR ..." pkt-line is then misread as band 'E'
-// ("send-pack: protocol error: bad band #69"). Wrapping the ERR pkt-line in a
-// band-1 (data) sideband packet makes git's status reader see the ERR packet
-// and die with "fatal: remote error: <msg>". Without sideband the bare
-// pkt-line ERR is correct.
-//
-// commandSection is the buffered client command section (first line carries
-// "\0<caps>"); it is only inspected, never forwarded.
+// writePktErrFrameAfterCommands sends a refusal post-command-section. Must wrap ERR in band-1
+// when side-band is negotiated; bare ERR is misread as band 'E' ("bad band #69").
 func writePktErrFrameAfterCommands(conn net.Conn, commandSection []byte, msg string) {
 	if !bytes.Contains(commandSection, []byte("side-band")) {
 		writePktErrFrame(conn, msg)
@@ -54,48 +30,31 @@ func writePktErrFrameAfterCommands(conn net.Conn, commandSection []byte, msg str
 	errLine := "ERR " + msg
 	inner := fmt.Sprintf("%04x", 4+len(errLine)) + errLine
 	outer := fmt.Sprintf("%04x", 4+1+len(inner)) + "\x01" + inner
-	// Trailing flush-pkt ends the sideband stream cleanly so git does not
-	// also print "unexpected disconnect while reading sideband packet".
-	_ = WriteStdout(conn, []byte(outer+"0000"))
+	_ = WriteStdout(conn, []byte(outer+"0000")) // trailing flush-pkt prevents "unexpected disconnect" message
 	_ = WriteExitFrame(conn, 1)
 }
 
 // RelayConfig configures the host-side git SSH relay listener.
 type RelayConfig struct {
-	// SandboxID is used only for log fields.
-	SandboxID string
-	// VsockUDSPath is the host-side Unix socket CH binds for guest-initiated
-	// connections on GitSSHRelayPort: <socketDir>/<id>.vsock_1026.
-	VsockUDSPath string
-	// Allowlist is the set of (SSHHost, OwnerRepo) pairs that may be used.
-	Allowlist []AllowedRepo
-	// AllowedBranches is used to enforce branch policy on receive-pack pushes.
-	AllowedBranches []string
-	// OnEgress, when non-nil, is called for every relay verdict (allow/deny).
-	OnEgress func(host, verdict, reason string, ts time.Time)
-	// UID is used to find fallback SSH agent sockets in /run/user/<uid>/.
-	UID int
-	// SSHAuthSock is the SSH_AUTH_SOCK inherited from the supervisor process.
-	// May be empty or stale; probed before use.
-	SSHAuthSock string
-	// SSHExec is the path to the SSH binary. Defaults to "ssh" when empty.
-	SSHExec string
+	SandboxID       string                                           // log fields only
+	VsockUDSPath    string                                           // CH vsock UDS: <socketDir>/<id>.vsock_1026
+	Allowlist       []AllowedRepo                                    // (SSHHost, OwnerRepo) pairs
+	AllowedBranches []string                                         // branch policy for receive-pack
+	OnEgress        func(host, verdict, reason string, ts time.Time) // allow/deny callback; may be nil
+	UID             int                                              // for fallback SSH agent in /run/user/<uid>/
+	SSHAuthSock     string                                           // inherited SSH_AUTH_SOCK; may be empty or stale
+	SSHExec         string                                           // path to ssh binary; defaults to "ssh"
 }
 
-// RunRelay creates the Unix socket at cfg.VsockUDSPath and accepts one
-// connection per relay session (concurrent sessions allowed). Each session
-// reads a gitssh.Request, validates it against policy, and if allowed exec's
-// `ssh` with the host ssh-agent, bridging stdin/stdout back to the guest.
-//
-// Blocks until ctx is cancelled. The socket is removed on return.
+// RunRelay listens on cfg.VsockUDSPath, validates each session against policy, and relays
+// git SSH commands to the host ssh binary. Blocks until ctx is cancelled.
 func RunRelay(ctx context.Context, cfg RelayConfig) error {
 	sshExec := cfg.SSHExec
 	if sshExec == "" {
 		sshExec = "ssh"
 	}
 
-	// Remove stale socket if present.
-	_ = os.Remove(cfg.VsockUDSPath)
+	_ = os.Remove(cfg.VsockUDSPath) // remove stale socket
 
 	ln, err := net.Listen("unix", cfg.VsockUDSPath)
 	if err != nil {
@@ -106,8 +65,7 @@ func RunRelay(ctx context.Context, cfg RelayConfig) error {
 		_ = os.Remove(cfg.VsockUDSPath)
 	}()
 
-	// Close listener when context is cancelled so the Accept loop returns.
-	go func() {
+	go func() { // close listener on cancel so Accept returns
 		<-ctx.Done()
 		ln.Close()
 	}()
@@ -124,7 +82,6 @@ func RunRelay(ctx context.Context, cfg RelayConfig) error {
 	}
 }
 
-// serveSession handles one guest-initiated relay connection.
 func serveSession(conn net.Conn, cfg RelayConfig, sshExec string) {
 	defer conn.Close()
 
@@ -155,7 +112,6 @@ func serveSession(conn net.Conn, cfg RelayConfig, sshExec string) {
 		return
 	}
 
-	// Probe SSH agent.
 	authSock, ok := resolveSSHAuthSock(cfg.SSHAuthSock, cfg.UID)
 	if !ok {
 		writePktErrFrame(conn, "nexus3: SSH agent not reachable; reconnect with ssh -A or start ssh-agent\n")
@@ -188,7 +144,6 @@ func serveSession(conn net.Conn, cfg RelayConfig, sshExec string) {
 		return
 	}
 
-	// Pipe stdout.
 	sshStdout, err := sshCmd.StdoutPipe()
 	if err != nil {
 		slog.Error("gitssh.relay.stdout_pipe_failed", "sandboxID", cfg.SandboxID, "err", err)
@@ -202,10 +157,8 @@ func serveSession(conn net.Conn, cfg RelayConfig, sshExec string) {
 		return
 	}
 
-	// Bridge SSH stdout → WriteStdout frames. Started BEFORE any receive-pack
-	// command parsing: the server's ref advertisement must reach the client
-	// before the client sends its ref-update commands, or a real git push
-	// deadlocks (client waits for advertisement; relay waits for commands).
+	// Bridge started BEFORE receive-pack command parsing: advertisement must flow before
+	// commands arrive, or a push deadlocks (client waits for ad; relay waits for commands).
 	bridgeDone := make(chan struct{})
 	go func() {
 		defer close(bridgeDone)
@@ -224,13 +177,8 @@ func serveSession(conn net.Conn, cfg RelayConfig, sshExec string) {
 	}()
 
 	if cmd.Service == "git-receive-pack" {
-		// Parse ref-update commands from the client AFTER starting the bridge so
-		// the server's advertisement flows concurrently. If any ref is denied,
-		// kill ssh before it can process the commands and send a visible ERR.
-		//
-		// The parse runs in its own goroutine so that an ssh process which dies
-		// before the client ever sends commands (auth failure, host unreachable)
-		// still produces an Exit frame instead of wedging the session.
+		// Parse in a goroutine: an ssh that dies before commands arrive (auth failure)
+		// must still produce an Exit frame rather than wedging the session.
 		type refParse struct {
 			buf       *bytes.Buffer
 			deniedRef string
@@ -280,14 +228,12 @@ func serveSession(conn net.Conn, cfg RelayConfig, sshExec string) {
 			writePktErrFrameAfterCommands(conn, refBuf.Bytes(), "nexus3: refused: ref "+deniedRef+" not in allowed branches\n")
 			return
 		}
-		// Allowed: replay buffered ref-update commands, then stream packfile.
-		go func() {
+		go func() { // allowed: replay buffered commands then stream packfile
 			_, _ = io.Copy(stdinPipe, io.MultiReader(refBuf, conn))
 			stdinPipe.Close()
 		}()
 	} else {
-		// upload-pack: stream client stdin directly to ssh.
-		go func() {
+		go func() { // upload-pack: stream client stdin directly
 			_, _ = io.Copy(stdinPipe, conn)
 			stdinPipe.Close()
 		}()
@@ -312,7 +258,6 @@ func serveSession(conn net.Conn, cfg RelayConfig, sshExec string) {
 	_ = WriteExitFrame(conn, int32(exitCode)) //nolint:gosec // exit codes fit int32
 }
 
-// repoAllowed returns true if gitHost+ownerRepo appears in the allowlist.
 func repoAllowed(allowlist []AllowedRepo, gitHost, ownerRepo string) bool {
 	for _, a := range allowlist {
 		if strings.EqualFold(a.SSHHost, gitHost) && strings.EqualFold(a.OwnerRepo, ownerRepo) {
@@ -322,15 +267,11 @@ func repoAllowed(allowlist []AllowedRepo, gitHost, ownerRepo string) bool {
 	return false
 }
 
-// resolveSSHAuthSock probes candidate SSH agent sockets and returns the first
-// live one. Liveness is determined by running `ssh-add -l`: exit 0 (keys
-// present) or exit 1 (agent running, no keys) both count as reachable.
 func resolveSSHAuthSock(inherited string, uid int) (string, bool) {
 	candidates := []string{}
 	if inherited != "" {
 		candidates = append(candidates, inherited)
 	}
-	// Fallback: gnupg agent's SSH socket.
 	candidates = append(candidates,
 		fmt.Sprintf("/run/user/%d/gnupg/S.gpg-agent.ssh", uid),
 		fmt.Sprintf("/run/user/%d/ssh-agent.sock", uid),
@@ -343,9 +284,6 @@ func resolveSSHAuthSock(inherited string, uid int) (string, bool) {
 	return "", false
 }
 
-// probeSSHAgent returns true if the SSH agent at sockPath is reachable.
-// ssh-add -l exits 0 (keys present) or 1 (no keys) for a live agent,
-// and 2 for connection refused / socket not found.
 func probeSSHAgent(sockPath string) bool {
 	cmd := exec.Command("ssh-add", "-l") //nolint:gosec
 	cmd.Env = []string{"SSH_AUTH_SOCK=" + sockPath}
@@ -359,7 +297,6 @@ func probeSSHAgent(sockPath string) bool {
 	return false // exit 2 or other: not reachable
 }
 
-// buildSSHEnv constructs the env for the ssh subprocess.
 func buildSSHEnv(authSock, gitProtocol string) []string {
 	env := []string{"SSH_AUTH_SOCK=" + authSock}
 	if gitProtocol != "" {

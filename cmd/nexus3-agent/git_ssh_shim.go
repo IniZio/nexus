@@ -15,26 +15,13 @@ import (
 	"github.com/IniZio/nexus3/internal/core/gitssh"
 )
 
-// hostCID is the vsock CID for the host from the guest's perspective.
-const hostCID uint32 = 2
+const hostCID uint32 = 2 // vsock CID for host (from guest)
 
-// gitSSHShimDial is the dial function used by runGitSSHShim.
-// Replaced in tests with a net.Pipe-backed implementation.
-var gitSSHShimDial = func() (net.Conn, error) {
+var gitSSHShimDial = func() (net.Conn, error) { // replaced in tests
 	return vsock.Dial(hostCID, driver.GitSSHRelayPort, nil)
 }
 
-// runGitSSHShim is invoked when the agent binary is called as:
-//
-//	nexus3-agent git-ssh [-p port] [user@]host command
-//
-// This is the implementation of core.sshCommand wired into the guest gitconfig
-// by SeedGitIdentity. Git passes the same argv it would give to ssh(1):
-//
-//	nexus3-agent git-ssh [user@]host git-receive-pack '/owner/repo.git'
-//	nexus3-agent git-ssh -p 22 user@host git-upload-pack '/owner/repo.git'
-//
-// Does not return — calls os.Exit with the remote exit code on all paths.
+// runGitSSHShim implements GIT_SSH_COMMAND (wired by SeedGitIdentity). Does not return.
 func runGitSSHShim(args []string) {
 	conn, err := gitSSHShimDial()
 	if err != nil {
@@ -50,12 +37,8 @@ func runGitSSHShim(args []string) {
 	os.Exit(int(code))
 }
 
-// execGitSSHShim implements the shim protocol over an already-connected conn.
-// Returns the remote SSH process exit code. conn is always closed before
-// returning.
-//
-// This function is the testable core: tests inject a net.Pipe connection and
-// verify the request frame, stdin bridging, and exit-code propagation.
+// execGitSSHShim runs the shim protocol over conn and returns the remote exit code.
+// Testable core: tests inject a net.Pipe connection.
 func execGitSSHShim(args []string, conn net.Conn) (int32, error) {
 	defer conn.Close()
 
@@ -76,8 +59,7 @@ func execGitSSHShim(args []string, conn net.Conn) (int32, error) {
 		doneCh   = make(chan struct{})
 	)
 
-	// Frame reader: receives stdout data and the exit frame from the host relay.
-	go func() {
+	go func() { // frame reader: stdout data and exit frame from host relay
 		for {
 			ft, payload, err := gitssh.ReadFrame(conn)
 			if err != nil {
@@ -105,16 +87,13 @@ func execGitSSHShim(args []string, conn net.Conn) (int32, error) {
 		}
 	}()
 
-	// Stdin pump: stream os.Stdin to the connection.
-	// Runs concurrently; we don't wait for it — when doneCh is closed
-	// (FrameTypeExit received) we return regardless of pump state.
+	// We don't wait for the stdin pump — return as soon as FrameTypeExit arrives.
 	go func() { _, _ = io.Copy(conn, os.Stdin) }()
 
 	<-doneCh
 	return exitCode, nil
 }
 
-// isShimEOF reports whether err is a normal connection-close signal.
 func isShimEOF(err error) bool {
 	if err == io.EOF {
 		return true

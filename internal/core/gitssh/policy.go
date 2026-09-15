@@ -16,15 +16,7 @@ type AllowedRepo struct {
 	OwnerRepo string // e.g. "example-org/example-app" (no leading /, no .git suffix)
 }
 
-// DeriveAllowlist produces SSH relay allowlist entries from nexus3.yaml egress
-// policy entries. For github.com entries (only — other hosts have no git SSH
-// equivalent), paths of the form /owner/repo/** or /owner/repo.git/** emit one
-// AllowedRepo{SSHHost:"git@github.com", OwnerRepo:"owner/repo"}.
-// Exact paths (/owner/repo, /owner/repo.git) without a glob suffix are also
-// accepted and emit the same entry.
-// Duplicate (SSHHost, OwnerRepo) pairs are deduplicated.
-// api.github.com paths use the /repos/owner/repo form; those are NOT translated
-// (ssh connections go to github.com, not api.github.com).
+// DeriveAllowlist maps nexus3.yaml egress entries to SSH relay allowlist entries (github.com only).
 func DeriveAllowlist(policies []HostPolicy) []AllowedRepo {
 	seen := map[string]struct{}{}
 	var result []AllowedRepo
@@ -34,12 +26,9 @@ func DeriveAllowlist(policies []HostPolicy) []AllowedRepo {
 			continue
 		}
 		for _, rawPath := range p.Paths {
-			// Strip leading /
 			path := strings.TrimPrefix(rawPath, "/")
-			// Strip trailing /** or .git/** suffixes for glob paths
 			path = strings.TrimSuffix(path, "/**")
 			path = strings.TrimSuffix(path, ".git/**")
-			// Also handle /owner/repo.git without glob
 			path = strings.TrimSuffix(path, ".git")
 
 			segments := strings.SplitN(path, "/", 3)
@@ -49,14 +38,12 @@ func DeriveAllowlist(policies []HostPolicy) []AllowedRepo {
 			owner := segments[0]
 			repo := segments[1]
 
-			// Validate segments
 			if owner == "" || owner == "." || owner == ".." {
 				continue
 			}
 			if repo == "" || repo == "." || repo == ".." {
 				continue
 			}
-			// Strip any remaining .git suffix
 			repo = strings.TrimSuffix(repo, ".git")
 			if repo == "" {
 				continue

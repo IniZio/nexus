@@ -7,9 +7,7 @@ import (
 	"strings"
 )
 
-// RefMatchesGlob reports whether ref matches pattern.
-// Trailing "/**": prefix match (refs/heads/nexus3/** matches refs/heads/nexus3/x
-// and refs/heads/nexus3/x/y). All other patterns: path.Match semantics.
+// RefMatchesGlob reports whether ref matches pattern (path.Match; trailing /** is prefix-match).
 func RefMatchesGlob(pattern, ref string) bool {
 	const doubleStarSuffix = "/**"
 	if strings.HasSuffix(pattern, doubleStarSuffix) {
@@ -20,8 +18,7 @@ func RefMatchesGlob(pattern, ref string) bool {
 	return err == nil && matched
 }
 
-// ParseHex4 parses a 4-character ASCII hex slice into an int.
-// Returns (0, false) for invalid input.
+// ParseHex4 parses a 4-character ASCII hex slice into an int; (0, false) on invalid input.
 func ParseHex4(b []byte) (int, bool) {
 	if len(b) != 4 {
 		return 0, false
@@ -43,18 +40,9 @@ func ParseHex4(b []byte) (int, bool) {
 	return val, true
 }
 
-// ParseRefUpdates reads pkt-line ref-update commands from r (up to 64 KiB),
-// buffers all consumed bytes, and validates each ref against allowedBranches.
-//
-// Returns:
-//
-//	buf       — all bytes consumed from r (must be re-injected into ssh stdin)
-//	deniedRef — non-empty if any ref didn't match allowedBranches
-//	malformed — true if the pkt-line stream is invalid/too large
-//
-// An empty allowedBranches slice is fail-closed: every ref is denied.
-// Stops reading at flush (0000), delimiter (0001/0002), or a pkt-line parse error.
-// Does NOT drain r past the flush packet.
+// ParseRefUpdates reads pkt-line ref-update commands from r (up to 64 KiB), buffers consumed
+// bytes, and validates each ref against allowedBranches. Empty allowedBranches is fail-closed.
+// Returns buf (must be re-injected into ssh stdin), deniedRef, and malformed flag.
 func ParseRefUpdates(r io.Reader, allowedBranches []string) (buf *bytes.Buffer, deniedRef string, malformed bool) {
 	const maxPkt = 64 * 1024
 	buf = &bytes.Buffer{}
@@ -70,8 +58,7 @@ func ParseRefUpdates(r io.Reader, allowedBranches []string) (buf *bytes.Buffer, 
 			malformed = true
 			return
 		}
-		// Flush packet (0000) and delimiter packets (0001, 0002): stop.
-		if pktLen == 0 || pktLen == 1 || pktLen == 2 {
+		if pktLen == 0 || pktLen == 1 || pktLen == 2 { // flush (0000) or delimiter (0001/0002): stop
 			break
 		}
 		dataLen := pktLen - 4
@@ -88,22 +75,19 @@ func ParseRefUpdates(r io.Reader, allowedBranches []string) (buf *bytes.Buffer, 
 			break
 		}
 		buf.Write(data)
-		// Parse ref update command: "<old-sha1> <new-sha1> <refname>\n"
-		line := strings.TrimRight(string(data), "\n")
+		line := strings.TrimRight(string(data), "\n") // format: "<old> <new> <refname>\n"
 		parts := strings.SplitN(line, " ", 3)
 		if len(parts) < 3 {
 			continue // capability advertisement or keep-alive
 		}
 		ref := parts[2]
-		// Strip NUL-separated capabilities (present on first pkt-line only).
-		if idx := strings.IndexByte(ref, 0); idx >= 0 {
+		if idx := strings.IndexByte(ref, 0); idx >= 0 { // strip NUL-separated capabilities (first pkt-line only)
 			ref = ref[:idx]
 		}
 		ref = strings.TrimSpace(ref)
 		if ref == "" {
 			continue
 		}
-		// Allowlist check.
 		matched := false
 		for _, pattern := range allowedBranches {
 			if RefMatchesGlob(pattern, ref) {
