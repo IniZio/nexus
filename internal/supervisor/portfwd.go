@@ -2,13 +2,10 @@ package supervisor
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/agent"
@@ -67,21 +64,6 @@ func (w *captureWriter) Write(p []byte) (int, error) {
 }
 
 func (w *captureWriter) Bytes() []byte { return w.buf }
-
-// portFwdStateJSON mirrors cli.ForwardsState without importing the cli package
-// (import cycle guard: internal/cli imports internal/supervisor).
-type portFwdStateJSON struct {
-	WrittenBy string             `json:"written_by"`
-	UpdatedAt time.Time          `json:"updated_at"`
-	Forwards  []portFwdEntryJSON `json:"forwards"`
-}
-
-type portFwdEntryJSON struct {
-	Port        uint16    `json:"port"`
-	Sandbox     string    `json:"sandbox"`
-	Status      string    `json:"status"`
-	ConfirmedAt time.Time `json:"confirmed_at,omitempty"`
-}
 
 type portForwardSupervisor struct {
 	sandboxRef      string
@@ -283,40 +265,17 @@ func (p *portForwardSupervisor) forwardConn(ctx context.Context, hostConn net.Co
 }
 
 func (p *portForwardSupervisor) writeState(forwardable []portfwd.Listener) error {
-	if err := os.MkdirAll(p.stateDir, 0o750); err != nil {
-		return fmt.Errorf("portfwd state dir: %w", err)
-	}
-
 	now := time.Now().UTC()
-	entries := make([]portFwdEntryJSON, 0, len(forwardable))
+	entries := make([]portfwd.Entry, 0, len(forwardable))
 	for _, l := range forwardable {
-		entries = append(entries, portFwdEntryJSON{
+		entries = append(entries, portfwd.Entry{
 			Port:        l.Port,
 			Sandbox:     p.sandboxRef,
 			Status:      "live",
 			ConfirmedAt: now,
 		})
 	}
-	state := portFwdStateJSON{
-		WrittenBy: "nexus3/" + p.sandboxRef,
-		UpdatedAt: now,
-		Forwards:  entries,
-	}
-
-	data, err := json.Marshal(state)
-	if err != nil {
-		return fmt.Errorf("portfwd state marshal: %w", err)
-	}
-
-	stateFile := filepath.Join(p.stateDir, portfwd.StateFileName)
-	tmpFile := stateFile + ".tmp"
-	if err := os.WriteFile(tmpFile, data, 0o640); err != nil {
-		return fmt.Errorf("portfwd state write: %w", err)
-	}
-	if err := os.Rename(tmpFile, stateFile); err != nil {
-		return fmt.Errorf("portfwd state rename: %w", err)
-	}
-	return nil
+	return portfwd.WriteSandboxState(p.stateDir, p.sandboxRef, entries, now)
 }
 
 func (p *portForwardSupervisor) teardownAll() {
@@ -324,5 +283,5 @@ func (p *portForwardSupervisor) teardownAll() {
 		lis.Close()
 		delete(p.listeners, port)
 	}
-	_ = p.writeState(nil) // best-effort empty state on shutdown
+	_ = portfwd.RemoveSandboxState(p.stateDir, p.sandboxRef, time.Now()) // best-effort: drop our ports from the merge
 }
