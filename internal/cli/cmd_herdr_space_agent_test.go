@@ -246,32 +246,13 @@ func indexOf(ss []string, s string) int {
 	return -1
 }
 
-// TestClaudeReadyMatch_IsModeSpecific pins readiness token to permission mode.
-/** MUTATION-PIN: prior impl used one token for both modes; it silently failed. */
-func TestClaudeReadyMatch_IsModeSpecific(t *testing.T) {
-	autonomous := claudeReadyMatch(true)
-	normal := claudeReadyMatch(false)
-
-	if autonomous == normal {
-		t.Fatalf("the two permission modes print different footers, so they cannot share a "+
-			"readiness token; both returned %q", autonomous)
-	}
-
-	const (
-		normalFooter     = " ⏸ manual mode on · ? for shortcuts · ← for agents"
-		autonomousFooter = "⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
-	)
-	if !strings.Contains(normalFooter, normal) {
-		t.Errorf("default-mode token %q does not appear in the default-mode footer %q", normal, normalFooter)
-	}
-	if !strings.Contains(autonomousFooter, autonomous) {
-		t.Errorf("autonomous token %q does not appear in the autonomous footer %q", autonomous, autonomousFooter)
-	}
-	if strings.Contains(autonomousFooter, normal) {
-		t.Errorf("default-mode token %q also matches the autonomous footer; the modes are not distinguished", normal)
-	}
-	if strings.Contains(normalFooter, autonomous) {
-		t.Errorf("autonomous token %q also matches the default-mode footer; the modes are not distinguished", autonomous)
+// TestClaudeReadyMatch_NeverMatchesAWizard pins that the readiness token is
+// not the prompt glyph: ❯ is also the selector glyph in every first-run wizard.
+func TestClaudeReadyMatch_NeverMatchesAWizard(t *testing.T) {
+	const autonomousFooter = "⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+	tok := claudeReadyMatch(true)
+	if !strings.Contains(autonomousFooter, tok) {
+		t.Errorf("token %q does not appear in the auto-mode footer %q", tok, autonomousFooter)
 	}
 
 	wizards := []string{
@@ -281,10 +262,8 @@ func TestClaudeReadyMatch_IsModeSpecific(t *testing.T) {
 		" ❯ 1. No, exit",
 	}
 	for _, wiz := range wizards {
-		for _, tok := range []string{normal, autonomous} {
-			if strings.Contains(wiz, tok) {
-				t.Errorf("token %q matches wizard line %q; it would report ready mid-dialog", tok, wiz)
-			}
+		if strings.Contains(wiz, tok) {
+			t.Errorf("token %q matches wizard line %q; it would report ready mid-dialog", tok, wiz)
 		}
 	}
 }
@@ -325,37 +304,30 @@ func TestHerdrPaneSubmitToAgent_SendsTextThenEnterSeparately(t *testing.T) {
 }
 
 // TestGuestAgentLaunchCommand_DoesNotDependOnTheShellFunction pins self-contained launch.
-/** Design: --permission-mode auto and IS_SANDBOX=1 must be explicit.
+/** Design: --permission-mode auto and IS_SANDBOX=1 must be explicit, in BOTH
+  branches — D-2 says the guest always runs auto, and D-1's live ~/.claude mount
+  means a bare `command claude` starts in whatever mode the host settings.json
+  says, which the readiness wait cannot predict.
   PACING: race on /etc/profile.d; observed live: bareword "claude" silently fails. */
 func TestGuestAgentLaunchCommand_DoesNotDependOnTheShellFunction(t *testing.T) {
 	const permFlag = "--permission-mode auto"
 	const oldBypassFlag = "--dangerously-skip-permissions"
 
-	autonomous := guestAgentLaunchCommand(true)
-	if !strings.Contains(autonomous, permFlag) {
-		t.Errorf("autonomous launch must pass %s explicitly; got %q", permFlag, autonomous)
-	}
-	if strings.Contains(autonomous, oldBypassFlag) {
-		t.Errorf("autonomous launch must not use the retired %s flag; got %q", oldBypassFlag, autonomous)
-	}
-	if !strings.Contains(autonomous, "IS_SANDBOX=1") {
-		t.Errorf("autonomous launch must set IS_SANDBOX=1: claude refuses %s as root without it; got %q",
-			permFlag, autonomous)
-	}
-
-	normal := guestAgentLaunchCommand(false)
-	if strings.Contains(normal, permFlag) {
-		t.Errorf("non-autonomous launch must not pass %s; got %q", permFlag, normal)
-	}
-	if strings.Contains(normal, oldBypassFlag) {
-		t.Errorf("non-autonomous launch must not pass %s; got %q", oldBypassFlag, normal)
-	}
-	if !strings.HasPrefix(normal, "command ") {
-		t.Errorf("non-autonomous launch must use `command claude` to bypass any shell function; got %q", normal)
-	}
-
-	if claudeReadyMatch(true) == claudeReadyMatch(false) {
-		t.Error("readiness tokens for the two modes collapsed; see claudeReadyMatch")
+	for _, autonomous := range []bool{true, false} {
+		cmd := guestAgentLaunchCommand(autonomous)
+		if !strings.Contains(cmd, permFlag) {
+			t.Errorf("guestAgentLaunchCommand(%v) must pass %s explicitly; got %q", autonomous, permFlag, cmd)
+		}
+		if strings.Contains(cmd, oldBypassFlag) {
+			t.Errorf("guestAgentLaunchCommand(%v) must not use the retired %s flag; got %q", autonomous, oldBypassFlag, cmd)
+		}
+		if !strings.Contains(cmd, "IS_SANDBOX=1") {
+			t.Errorf("guestAgentLaunchCommand(%v) must set IS_SANDBOX=1: claude refuses %s as root without it; got %q",
+				autonomous, permFlag, cmd)
+		}
+		if strings.HasPrefix(cmd, "command ") {
+			t.Errorf("guestAgentLaunchCommand(%v) uses `command claude`, which starts in the host settings.json mode; got %q", autonomous, cmd)
+		}
 	}
 }
 

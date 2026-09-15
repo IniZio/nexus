@@ -415,10 +415,9 @@ Three traps, each of which produces something that looks like a working agent:
   call. Against a shell that is fine; against claude the text lands in the
   input box and *sits there unsubmitted*. Send the text, pause, then send
   `Enter` separately.
-- **There is no single "agent is ready" token.** The footer differs by
-  permission mode — `? for shortcuts` in the default mode,
-  `auto mode on` under `--permission-mode auto`. Match the one
-  for the mode you launched. Do **not** match the prompt glyph `❯`: it is also
+- **The "agent is ready" token is `auto mode on`.** Guests always launch with
+  `--permission-mode auto`; the manual-mode footer (`? for shortcuts`) never
+  appears. Do **not** match the prompt glyph `❯`: it is also
   every wizard's selector glyph, so it reports ready mid-dialog.
 - **`send-keys` key names**: `ctrl+c` and `C-c` work; `ctrl-c` and `^C` are
   rejected as invalid.

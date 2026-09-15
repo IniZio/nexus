@@ -2481,68 +2481,42 @@ func sealEnv(env []string) []string {
 }
 
 /**
- * claudeReadyMatch is the substring in claude's startup banner that signals
- * the agent has fully initialised and its input box is live. It appears
- * exactly once the prompt is ready for user input.
- *
- * Why not the prompt glyph (❯)?  ❯ is ALSO the selection glyph inside the
- * first-run wizards (theme picker, folder-trust dialog), so matching it would
- * report "ready" while claude is still blocking on a wizard — exactly the
- * failure this guard is meant to prevent.
- *
- * Captured 2026-08-21 from guest loop/chain pane w1W:p2, claude v2.1.226.
  * claudeReadyMatch returns the literal substring that means claude has
- * finished starting and its input box is accepting text, for the permission
- * mode it was launched in. Verbatim footers from a live guest pane
- * (claude v2.1.226):
+ * finished starting and its input box is accepting text. Verbatim footer from
+ * a live guest pane (claude v2.1.272, 2026-09-15):
  *
- *	⏸ manual mode on · ? for shortcuts · ← for agents
- *	⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+ *	⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent
  *
- * The token is selected by mode rather than searched for, because the caller
- * already knows which mode it launched. Three shorter tokens are all wrong,
- * and each one cost a live run to find out:
+ * The token is mode-invariant and the autonomous argument is ignored, because
+ * under D-2 a guest claude ALWAYS runs in permissions.defaultMode auto:
+ * guestAgentLaunchCommand passes --permission-mode auto on every launch, and
+ * since D-1 the guest's ~/.claude IS the host's (live rw mount), so the mode a
+ * bare `claude` starts in is whatever the operator's settings.json says —
+ * not something this code can select by flag spelling. The old two-token
+ * scheme ("? for shortcuts" for manual, "auto mode on" for auto) timed out
+ * live against an agent already at its prompt in auto mode.
  *
- *   - "? for shortcuts" holds only in the default mode; under
- *     --permission-mode auto the footer is replaced by "auto mode on", so
- *     the wait times out against an agent that is already at its prompt.
- *   - "for agents" appeared in both footers at first, but the "← for agents"
- *     affordance comes and goes with pane state — it was observed absent from
- *     a ready pane moments after being present in the same one.
+ * Tokens that are wrong, each found by a live run:
+ *
+ *   - "? for shortcuts" is the manual-mode footer; it never appears in auto.
+ *   - "for agents" comes and goes with pane state — observed absent from a
+ *     ready pane moments after being present in the same one.
  *   - "❯" is the prompt glyph, but it is ALSO the selector glyph in all four
  *     first-run wizards, so it reports ready while claude still sits on the
  *     theme picker — precisely the failure this wait exists to prevent.
  */
-func claudeReadyMatch(autonomous bool) string {
-	if autonomous {
-		return "auto mode on"
-	}
-	return "? for shortcuts"
+func claudeReadyMatch(_ bool) string {
+	return "auto mode on"
 }
 
 /**
  * guestAgentLaunchCommand returns the shell command typed into the guest pane
- * to start the agent.
+ * to start claude: "IS_SANDBOX=1 claude --permission-mode auto", regardless
+ * of the autonomous argument (D-2: the guest always runs in auto mode).
+ * IS_SANDBOX=1 is required alongside it: claude refuses root execution unless
+ * that variable marks the environment as already-isolated.
  *
- * autonomous == true  → "IS_SANDBOX=1 claude --permission-mode auto" — passes
- *
- *	IS_SANDBOX=1 (required for root) and launches in auto permission mode so
- *	the agent acts without per-tool-call approval. claudeReadyMatch waits for
- *	"auto mode on" on this path.
- *
- * autonomous == false → "command claude"  — default permission mode; claude
- *
- *	opens in manual mode (footer: "? for shortcuts"), which is exactly what
- *	claudeReadyMatch waits for on the non-autonomous path.
- *
- * The distinction matters because claudeReadyMatch selects its wait token by
- * the permission mode claude actually starts in, not by the flag spelling. A
- * `command claude` enters manual mode → "? for shortcuts". With
- * --permission-mode auto, the footer shows "auto mode on".
- * guestAgentLaunchCommand returns the shell command typed into the guest pane
- * to start the agent.
- *
- * Both branches are EXPLICIT and neither relies on the `claude` shell function
+ * The command is EXPLICIT and does not rely on the `claude` shell function
  * that SeedGuestShellProfile installs. That function exists for humans typing
  * in a guest shell; depending on it here would make the launch depend on
  * whether the pane's login shell has finished sourcing /etc/profile.d, which
@@ -2556,19 +2530,9 @@ func claudeReadyMatch(autonomous bool) string {
  * in herdrPluginSpaceAgent made it reliable. The precise mechanism for the
  * immediate exit was never isolated, so this comment does not claim one; the
  * explicit flag is defence in depth, and the readiness wait is the fix.
- *
- * autonomous adds --permission-mode auto, which makes the agent act without
- * stopping to ask the operator to approve each tool call. IS_SANDBOX=1 is
- * required alongside it: claude refuses root execution unless that variable
- * marks the environment as already-isolated. The non-autonomous branch uses
- * `command claude` so --permission-mode is absent and claude starts in manual
- * mode.
  */
-func guestAgentLaunchCommand(autonomous bool) string {
-	if autonomous {
-		return "IS_SANDBOX=1 claude --permission-mode auto"
-	}
-	return "command claude"
+func guestAgentLaunchCommand(_ bool) string {
+	return "IS_SANDBOX=1 claude --permission-mode auto"
 }
 
 /**
@@ -2642,7 +2606,7 @@ func guestCursorLaunchCommand(autonomous bool) string {
  * deliberate, stated design choice rather than an oversight: readiness
  * detection and launch invocation genuinely differ per agent in ways that do
  * not compress into declarative fields without losing load-bearing nuance
- * (claudeReadyMatch's permission-mode distinction; guestAgentLaunchCommand's
+ * (cursorReadyMatch is mode-invariant while cursor's --force is not; guestAgentLaunchCommand's
  * shell-function-bypass requirement). Putting agent-specific FUNCTIONS behind
  * a name-keyed registry, instead of hardcoding claude's, is the seam this
  * comment's presence marks as intentionally non-declarative: adding a third
