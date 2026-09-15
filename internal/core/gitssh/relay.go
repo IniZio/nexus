@@ -1,6 +1,7 @@
 package gitssh
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -29,6 +30,33 @@ func writePktErrFrame(conn net.Conn, msg string) {
 	errLine := "ERR " + msg
 	pkt := fmt.Sprintf("%04x", 4+len(errLine)) + errLine
 	_ = WriteStdout(conn, []byte(pkt))
+	_ = WriteExitFrame(conn, 1)
+}
+
+// writePktErrFrameAfterCommands sends a refusal to a receive-pack client that
+// has ALREADY read the server's advertisement and sent its command section.
+//
+// At that point the client has negotiated capabilities. If it asked for
+// side-band / side-band-64k, everything it reads next is demultiplexed as
+// sideband packets: a bare "ERR ..." pkt-line is then misread as band 'E'
+// ("send-pack: protocol error: bad band #69"). Wrapping the ERR pkt-line in a
+// band-1 (data) sideband packet makes git's status reader see the ERR packet
+// and die with "fatal: remote error: <msg>". Without sideband the bare
+// pkt-line ERR is correct.
+//
+// commandSection is the buffered client command section (first line carries
+// "\0<caps>"); it is only inspected, never forwarded.
+func writePktErrFrameAfterCommands(conn net.Conn, commandSection []byte, msg string) {
+	if !bytes.Contains(commandSection, []byte("side-band")) {
+		writePktErrFrame(conn, msg)
+		return
+	}
+	errLine := "ERR " + msg
+	inner := fmt.Sprintf("%04x", 4+len(errLine)) + errLine
+	outer := fmt.Sprintf("%04x", 4+1+len(inner)) + "\x01" + inner
+	// Trailing flush-pkt ends the sideband stream cleanly so git does not
+	// also print "unexpected disconnect while reading sideband packet".
+	_ = WriteStdout(conn, []byte(outer+"0000"))
 	_ = WriteExitFrame(conn, 1)
 }
 
@@ -127,31 +155,6 @@ func serveSession(conn net.Conn, cfg RelayConfig, sshExec string) {
 		return
 	}
 
-	// For receive-pack: parse pkt-line ref updates and enforce AllowedBranches.
-	var stdinPrefix io.Reader
-	if cmd.Service == "git-receive-pack" {
-		buf, deniedRef, malformed := ParseRefUpdates(conn, cfg.AllowedBranches)
-		if malformed {
-			writePktErrFrame(conn, "nexus3: refused: push pkt-line header malformed or too large\n")
-			if cfg.OnEgress != nil {
-				cfg.OnEgress(cmd.BareHost, "deny", "git SSH receive-pack: malformed pkt-line", time.Now())
-			}
-			return
-		}
-		if deniedRef != "" {
-			writePktErrFrame(conn, "nexus3: refused: ref "+deniedRef+" not in allowed branches\n")
-			if cfg.OnEgress != nil {
-				cfg.OnEgress(cmd.BareHost, "deny", "git SSH receive-pack: ref "+deniedRef+" not in AllowedBranches", time.Now())
-			}
-			slog.Info("gitssh.relay.deny_ref",
-				"sandboxID", cfg.SandboxID,
-				"ref", deniedRef,
-			)
-			return
-		}
-		stdinPrefix = buf
-	}
-
 	// Probe SSH agent.
 	authSock, ok := resolveSSHAuthSock(cfg.SSHAuthSock, cfg.UID)
 	if !ok {
@@ -199,17 +202,96 @@ func serveSession(conn net.Conn, cfg RelayConfig, sshExec string) {
 		return
 	}
 
-	// Copy stdin from conn to the SSH process asynchronously.
-	// This goroutine finishes when either the conn returns io.EOF or the
-	// SSH process exits and closes the pipe's read end (broken pipe).
-	var stdinSrc io.Reader = conn
-	if stdinPrefix != nil {
-		stdinSrc = io.MultiReader(stdinPrefix, conn)
-	}
+	// Bridge SSH stdout → WriteStdout frames. Started BEFORE any receive-pack
+	// command parsing: the server's ref advertisement must reach the client
+	// before the client sends its ref-update commands, or a real git push
+	// deadlocks (client waits for advertisement; relay waits for commands).
+	bridgeDone := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(stdinPipe, stdinSrc)
-		stdinPipe.Close()
+		defer close(bridgeDone)
+		readBuf := make([]byte, 32*1024)
+		for {
+			n, rerr := sshStdout.Read(readBuf)
+			if n > 0 {
+				if werr := WriteStdout(conn, readBuf[:n]); werr != nil {
+					break
+				}
+			}
+			if rerr != nil {
+				break
+			}
+		}
 	}()
+
+	if cmd.Service == "git-receive-pack" {
+		// Parse ref-update commands from the client AFTER starting the bridge so
+		// the server's advertisement flows concurrently. If any ref is denied,
+		// kill ssh before it can process the commands and send a visible ERR.
+		//
+		// The parse runs in its own goroutine so that an ssh process which dies
+		// before the client ever sends commands (auth failure, host unreachable)
+		// still produces an Exit frame instead of wedging the session.
+		type refParse struct {
+			buf       *bytes.Buffer
+			deniedRef string
+			malformed bool
+		}
+		parseDone := make(chan refParse, 1)
+		go func() {
+			buf, deniedRef, malformed := ParseRefUpdates(conn, cfg.AllowedBranches)
+			parseDone <- refParse{buf: buf, deniedRef: deniedRef, malformed: malformed}
+		}()
+		var rp refParse
+		select {
+		case rp = <-parseDone:
+		case <-bridgeDone:
+			// ssh exited before the client finished its command section.
+			_ = sshCmd.Wait()
+			exitCode := 1
+			if sshCmd.ProcessState != nil {
+				exitCode = sshCmd.ProcessState.ExitCode()
+			}
+			slog.Warn("gitssh.relay.ssh_exited_before_commands",
+				"sandboxID", cfg.SandboxID,
+				"exitCode", exitCode,
+			)
+			_ = WriteExitFrame(conn, int32(exitCode)) //nolint:gosec // exit codes fit int32
+			return
+		}
+		refBuf, deniedRef, malformed := rp.buf, rp.deniedRef, rp.malformed
+		if malformed || deniedRef != "" {
+			_ = sshCmd.Process.Kill()
+			<-bridgeDone
+			_ = sshCmd.Wait()
+			if malformed {
+				if cfg.OnEgress != nil {
+					cfg.OnEgress(cmd.BareHost, "deny", "git SSH receive-pack: malformed pkt-line", time.Now())
+				}
+				writePktErrFrameAfterCommands(conn, refBuf.Bytes(), "nexus3: refused: push pkt-line header malformed or too large\n")
+				return
+			}
+			if cfg.OnEgress != nil {
+				cfg.OnEgress(cmd.BareHost, "deny", "git SSH receive-pack: ref "+deniedRef+" not in AllowedBranches", time.Now())
+			}
+			slog.Info("gitssh.relay.deny_ref",
+				"sandboxID", cfg.SandboxID,
+				"ref", deniedRef,
+			)
+			writePktErrFrameAfterCommands(conn, refBuf.Bytes(), "nexus3: refused: ref "+deniedRef+" not in allowed branches\n")
+			return
+		}
+		// Allowed: replay buffered ref-update commands, then stream packfile.
+		go func() {
+			_, _ = io.Copy(stdinPipe, io.MultiReader(refBuf, conn))
+			stdinPipe.Close()
+		}()
+	} else {
+		// upload-pack: stream client stdin directly to ssh.
+		go func() {
+			_, _ = io.Copy(stdinPipe, conn)
+			stdinPipe.Close()
+		}()
+	}
 
 	if cfg.OnEgress != nil {
 		cfg.OnEgress(cmd.BareHost, "allow", "git SSH: "+cmd.Service+" "+cmd.OwnerRepo, time.Now())
@@ -219,24 +301,6 @@ func serveSession(conn net.Conn, cfg RelayConfig, sshExec string) {
 		"service", cmd.Service,
 		"ownerRepo", cmd.OwnerRepo,
 	)
-
-	// Bridge SSH stdout → WriteStdout frames.
-	bridgeDone := make(chan struct{})
-	go func() {
-		defer close(bridgeDone)
-		buf := make([]byte, 32*1024)
-		for {
-			n, rerr := sshStdout.Read(buf)
-			if n > 0 {
-				if werr := WriteStdout(conn, buf[:n]); werr != nil {
-					break
-				}
-			}
-			if rerr != nil {
-				break
-			}
-		}
-	}()
 
 	<-bridgeDone
 	_ = sshCmd.Wait()

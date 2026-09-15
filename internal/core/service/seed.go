@@ -953,8 +953,11 @@ fi
 # Mark this as a sandbox environment. Required by claude when running as root.
 export IS_SANDBOX=1
 
-# Wire the SSH shim for git operations.
-export GIT_SSH_COMMAND='/usr/local/bin/nexus3-agent git-ssh'
+# Wire the SSH shim for git operations. /sbin/nexus3-agent is the boot
+# contract (init=/sbin/nexus3-agent) and therefore present in every guest;
+# /usr/local/bin/nexus3-agent exists only in builder images. This env var
+# overrides the core.sshCommand written by git_identity.go, so both must agree.
+export GIT_SSH_COMMAND='/sbin/nexus3-agent git-ssh'
 `
 
 // SeedGuestShellProfile writes the login-shell drop-in that sources the
