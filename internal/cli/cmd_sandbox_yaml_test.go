@@ -192,14 +192,14 @@ func TestApplyProjectConfig_MemoryMax(t *testing.T) {
 	})
 }
 
-// TestApplyProjectConfig_ConfigMountsResolvedAgainstConfigDir verifies that a
+// TestApplyProjectConfig_ConfigMountsResolvedAgainstProjectRoot verifies that a
 // relative host path in sandbox.mounts is made absolute relative to the
 // project root (the dir holding .nexus/), NOT the .nexus/ dir that contains
 // config.yaml and NOT the process cwd.
 //
 // Mutation targets: resolving against cwd yields <repoRoot>/sub; resolving
 // against filepath.Dir(cfgPath) yields <repoRoot>/.nexus. Either turns RED.
-func TestApplyProjectConfig_ConfigMountsResolvedAgainstConfigDir(t *testing.T) {
+func TestApplyProjectConfig_ConfigMountsResolvedAgainstProjectRoot(t *testing.T) {
 	// repoRoot holds the .nexus/config.yaml. cwd is a subdirectory simulating the
 	// user running the command from inside the repo.
 	repoRoot := t.TempDir()

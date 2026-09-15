@@ -105,7 +105,7 @@
         },
         "mounts": {
           "type": "array",
-          "description": "List of host:guest mount entries, e.g. \".:/work\". Relative host paths are resolved against the directory containing .nexus/config.yaml — not the process working directory. Superseded entirely by any --mount flag.",
+          "description": "List of host:guest mount entries, e.g. \".:/work\". Relative host paths are resolved against the project root (the directory containing `.nexus/`), not the process working directory. Superseded entirely by any --mount flag.",
           "items": {
             "type": "string",
             "description": "Mount spec in \"<host-path>:<guest-path>\" format."

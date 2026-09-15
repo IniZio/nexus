@@ -109,7 +109,7 @@ sandbox:
   agent: claude-code         # default agent profile; overridden by --agent flag
 
   mounts:
-    - ./src:/work/src        # relative paths resolved from the config file's directory
+    - ./src:/work/src        # relative paths resolved from the repository root (the directory holding .nexus/)
 ```
 
 Flag precedence: explicit CLI flags win over `.nexus/config.yaml` values; `.nexus/config.yaml` values win over built-in defaults.
