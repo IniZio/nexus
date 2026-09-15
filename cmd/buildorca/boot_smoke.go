@@ -2,7 +2,7 @@
 // Uses the service layer (same as the CLI) but with a 60-second ReachabilityTimeout
 // and the full netns re-exec wired in via main()'s NetnsRunEnv check.
 //
-// Run: HOME=$HOME NEXUS3_KERNEL_PATH=$HOME/.pi/nexus-bin/vmlinux.bin
+// Run: NEXUS3_KERNEL_PATH=$HOME/.pi/nexus-bin/vmlinux.bin
 //
 //	TMPDIR=/tmp go run ./cmd/buildorca/ -smoke
 package main

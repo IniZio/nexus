@@ -16,7 +16,7 @@ package cloudhypervisor
 //
 // TestDiskBoot skips (never fails) when the environment lacks:
 //   - /dev/kvm
-//   - cloud-hypervisor binary (default: $HOME/.local/bin/cloud-hypervisor;
+//   - cloud-hypervisor binary (default: ~/.local/bin/cloud-hypervisor;
 //     override with CLOUD_HYPERVISOR_BIN)
 //   - mke2fs (install e2fsprogs)
 //   - images/kernel/vmlinux-x86_64 (run scripts/fetch-boot-artifacts.sh)

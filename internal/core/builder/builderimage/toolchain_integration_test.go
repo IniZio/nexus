@@ -511,7 +511,7 @@ func toolchainSkipUnlessCH(t *testing.T) string {
 	t.Helper()
 	bin := os.Getenv("CLOUD_HYPERVISOR_BIN")
 	if bin == "" {
-		bin = toolchainCHBin
+		bin = os.ExpandEnv(toolchainCHBin)
 	}
 	if _, err := os.Stat(bin); err != nil {
 		t.Skipf("skipping: cloud-hypervisor not found at %s", bin)

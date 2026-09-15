@@ -169,10 +169,10 @@ func TestProbeAndSeedGuest_UserMountsSeeded(t *testing.T) {
 	t.Cleanup(func() { seedUserMountsFn = old })
 
 	manifest := service.UserMountManifest{
-		HostHome: "$HOME",
+		HostHome: "/home/alice",
 		Mounts: []service.ResolvedUserMount{
 			{
-				HostPath:         "$HOME/.claude/plugins",
+				HostPath:         "/home/alice/.claude/plugins",
 				GuestPath:        "/root/.claude/plugins",
 				Overlay:          true,
 				StagingGuestPath: "/run/nexus3/usermount/plugins",

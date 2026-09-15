@@ -10,7 +10,7 @@ import (
 )
 
 //go:embed testdata/example-app-nexus3.yaml
-var exampleNexus3YAML []byte
+var exampleAppNexus3YAML []byte
 
 type nexus3Config struct {
 	Egress struct {
@@ -21,9 +21,9 @@ type nexus3Config struct {
 	} `yaml:"egress"`
 }
 
-func TestDeriveAllowlist_ExampleLMS(t *testing.T) {
+func TestDeriveAllowlist_ExampleApp(t *testing.T) {
 	var cfg nexus3Config
-	if err := yaml.Unmarshal(exampleNexus3YAML, &cfg); err != nil {
+	if err := yaml.Unmarshal(exampleAppNexus3YAML, &cfg); err != nil {
 		t.Fatalf("unmarshal nexus3.yaml: %v", err)
 	}
 

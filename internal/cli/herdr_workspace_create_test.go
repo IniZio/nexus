@@ -154,13 +154,13 @@ func TestHerdrWorkspaceCreate_PlainTextFallbackHasNoRootPaneID(t *testing.T) {
 func TestHerdrShellHostCwd_UsesFirstLiveMountHostPath(t *testing.T) {
 	sb := domain.Sandbox{
 		LiveMounts: []domain.LiveMount{
-			{HostPath: "$HOME/proj-a", GuestPath: "/work"},
-			{HostPath: "$HOME/proj-b", GuestPath: "/work2"},
+			{HostPath: "/srv/proj-a", GuestPath: "/work"},
+			{HostPath: "/srv/proj-b", GuestPath: "/work2"},
 		},
 	}
 	got := herdrShellHostCwd(context.Background(), "ref", &fakeSandboxGetter{sb: sb})
-	if got != "$HOME/proj-a" {
-		t.Errorf("got %q, want $HOME/proj-a", got)
+	if got != "/srv/proj-a" {
+		t.Errorf("got %q, want /srv/proj-a", got)
 	}
 }
 
@@ -445,7 +445,7 @@ func TestHerdrPluginSpaceOpenPane_SplitsGuestPaneThenClosesRootPane(t *testing.T
 
 	sb := domain.Sandbox{
 		ID: domain.NewSandboxID(), Project: "proj", Name: "x", State: domain.Running,
-		LiveMounts: []domain.LiveMount{{HostPath: "$HOME/proj-x", GuestPath: "/work"}},
+		LiveMounts: []domain.LiveMount{{HostPath: "/srv/proj-x", GuestPath: "/work"}},
 	}
 	g := &fakeAdoptGetter{byRef: map[string]domain.Sandbox{sb.Handle(): sb}}
 
@@ -470,8 +470,8 @@ func TestHerdrPluginSpaceOpenPane_SplitsGuestPaneThenClosesRootPane(t *testing.T
 		switch {
 		case len(argv) >= 3 && argv[1] == "workspace" && argv[2] == "create":
 			createIdx = i
-			if !containsAdjacent(argv, "--cwd", "$HOME/proj-x") {
-				t.Errorf("workspace create argv %v missing --cwd $HOME/proj-x", argv)
+			if !containsAdjacent(argv, "--cwd", "/srv/proj-x") {
+				t.Errorf("workspace create argv %v missing --cwd /srv/proj-x", argv)
 			}
 		case len(argv) >= 3 && argv[1] == "plugin" && argv[2] == "pane":
 			paneOpenIdx = i

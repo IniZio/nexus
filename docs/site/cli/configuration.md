@@ -120,4 +120,4 @@ Flag precedence: explicit CLI flags win over `nexus3.yaml` values; `nexus3.yaml`
 
 ### Trust anchor for worktree sandboxes
 
-Worktree sandboxes (auto-created by the herdr plugin) read `nexus3.yaml` from `refs/remotes/origin/HEAD` — the operator's default branch — **not** from the agent's checked-out branch. A config present only on a feature branch grants nothing. The operator's merge to the default branch is the ratification act. See the [agent skill](https://github.com/example-ai/nexus3/blob/main/skills/nexus3/SKILL.md) for the full propose → merge → ratify workflow.
+Worktree sandboxes (auto-created by the herdr plugin) read `nexus3.yaml` from `refs/remotes/origin/HEAD` — the operator's default branch — **not** from the agent's checked-out branch. A config present only on a feature branch grants nothing. The operator's merge to the default branch is the ratification act. See the [agent skill](https://github.com/IniZio/nexus3/blob/main/skills/nexus3/SKILL.md) for the full propose → merge → ratify workflow.

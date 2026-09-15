@@ -27,7 +27,7 @@ package builder_test
 //
 // TestImageBootsAndAgentReachable skips when:
 //   - /dev/kvm is absent
-//   - cloud-hypervisor binary is absent (default $HOME/.local/bin/cloud-hypervisor;
+//   - cloud-hypervisor binary is absent (default ~/.local/bin/cloud-hypervisor;
 //     override with CLOUD_HYPERVISOR_BIN)
 //   - mke2fs is absent (install e2fsprogs)
 //   - images/kernel/vmlinux-x86_64 is absent
@@ -60,7 +60,7 @@ import (
 // ── constants ─────────────────────────────────────────────────────────────────
 
 // defaultCHBin is the expected cloud-hypervisor binary path.
-const defaultCHBin = "$HOME/.local/bin/cloud-hypervisor"
+var defaultCHBin = filepath.Join(os.Getenv("HOME"), ".local/bin/cloud-hypervisor")
 
 // kernelRelPath is the kernel artifact path relative to the repo root.
 const kernelRelPath = "images/kernel/vmlinux-x86_64"

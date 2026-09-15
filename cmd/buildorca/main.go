@@ -2,7 +2,7 @@
 // it in the nexus3 image cache as "nexus3-orca:latest".
 //
 // NOT committed. Scratch build tool for demo/ops use.
-// Usage: HOME=$HOME TMPDIR=/tmp go run ./cmd/buildorca  (from repo root)
+// Usage: TMPDIR=/tmp go run ./cmd/buildorca  (from repo root)
 package main
 
 import (

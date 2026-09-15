@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -47,8 +48,12 @@ var defaultHostMemTargets = []HostMemTarget{
 // Driving below this risks OOM-killing the host kernel or sandbox processes.
 const hostMemFloorMiB = 1536
 
-// memhogMainGo is the absolute path used for `go run` fallback.
-const memhogMainGo = "$HOME/nexus3/internal/test/repro/cmd/memhog/main.go"
+// memhogMainGo is the absolute path used for `go run` fallback, derived from
+// this source file's location so it works from any checkout.
+var memhogMainGo = func() string {
+	_, self, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(self), "cmd", "memhog", "main.go")
+}()
 
 // RunHostMemPhase runs the host-memory-pressure phase.
 // Returns one RunResult per completed build run (including HIFs).

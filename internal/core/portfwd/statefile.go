@@ -13,7 +13,7 @@ import (
 
 // Every sandbox supervisor used to write the whole forwards.state with only
 // its own ports, so with two sandboxes the file flapped between "[5173]" and
-// "[]" on alternate ticks (live 2026-09-15, three example-app sandboxes) and a
+// "[]" on alternate ticks (live 2026-09-15, three sandboxes of one downstream repo) and a
 // remote client cancelled and re-added the forward every few seconds. Now
 // each supervisor owns forwards.d/<sandbox>.state and forwards.state is the
 // merge, rewritten under a lock by whoever wrote last.

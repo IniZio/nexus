@@ -1,5 +1,5 @@
 commit 32ffb082f7476959c5333871bdf22b3e52e425ea
-Author: Newman Chow <newman@example-org.com>
+Author: Newman Chow <newman@users.noreply.github.com>
 Date:   Sat Aug 8 04:02:22 2026 +0000
 
     virtualnetwork: add WithDialer outbound dial hook

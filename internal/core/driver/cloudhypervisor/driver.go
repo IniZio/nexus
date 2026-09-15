@@ -285,7 +285,7 @@ type Config struct {
 	// so misconfiguration surfaces before any VM is started — not after an
 	// expensive workspace capture produces an opaque CH device error.
 	//
-	// The binary at $HOME/.local/bin/virtiofsd (version 1.13.3) is the
+	// The binary at ~/.local/bin/virtiofsd (version 1.13.3) is the
 	// reference implementation; any virtiofsd 1.x build is compatible.
 	VirtiofsdPath string
 
@@ -315,7 +315,6 @@ type Config struct {
 	// Mirrors NEXUS_NESTED_VIRT in old nexus (packages/nexus).
 	// Set via the NEXUS_NESTED_VIRT=1 env var or by setting this field directly.
 	NestedVirt bool
-
 }
 
 // CHDriver implements driver.Driver, driver.PauseResumer, driver.Snapshotter,
@@ -328,10 +327,10 @@ type Config struct {
 type CHDriver struct {
 	cfg Config
 
-	mu              sync.Mutex
-	procs           map[domain.SandboxID]*managedProcess
-	nets            map[domain.SandboxID]*netState            // per-sandbox network resources; see ch_net.go
-	virtiofsdProcs  map[domain.SandboxID][]*managedProcess    // per-sandbox virtiofsd processes; see ch_virtiofs.go
+	mu             sync.Mutex
+	procs          map[domain.SandboxID]*managedProcess
+	nets           map[domain.SandboxID]*netState         // per-sandbox network resources; see ch_net.go
+	virtiofsdProcs map[domain.SandboxID][]*managedProcess // per-sandbox virtiofsd processes; see ch_virtiofs.go
 
 	snapshotStore *artifact.Store
 
@@ -414,12 +413,12 @@ func New(cfg Config) (*CHDriver, error) {
 	}
 
 	return &CHDriver{
-		cfg:   cfg,
-		procs: make(map[domain.SandboxID]*managedProcess),
-		nets:               make(map[domain.SandboxID]*netState),
-		virtiofsdProcs:     make(map[domain.SandboxID][]*managedProcess),
-		snapshotStore:      snapshotStore,
-		spawnVirtiofsdFn:   spawnVirtiofsd,
+		cfg:              cfg,
+		procs:            make(map[domain.SandboxID]*managedProcess),
+		nets:             make(map[domain.SandboxID]*netState),
+		virtiofsdProcs:   make(map[domain.SandboxID][]*managedProcess),
+		snapshotStore:    snapshotStore,
+		spawnVirtiofsdFn: spawnVirtiofsd,
 	}, nil
 }
 
@@ -1050,11 +1049,11 @@ func (d *CHDriver) ResizeBalloon(ctx context.Context, id domain.SandboxID, ballo
 
 // Compile-time interface assertions.
 var (
-	_ driver.Driver        = (*CHDriver)(nil)
-	_ driver.PauseResumer  = (*CHDriver)(nil)
-	_ driver.Snapshotter   = (*CHDriver)(nil)
-	_ driver.Forker        = (*CHDriver)(nil)
-	_ driver.NetworkHook   = (*CHDriver)(nil)
+	_ driver.Driver       = (*CHDriver)(nil)
+	_ driver.PauseResumer = (*CHDriver)(nil)
+	_ driver.Snapshotter  = (*CHDriver)(nil)
+	_ driver.Forker       = (*CHDriver)(nil)
+	_ driver.NetworkHook  = (*CHDriver)(nil)
 	// GuestDialer assertion is in ch_vsock.go.
 	// NetworkHook assertion is also in ch_net.go.
 )

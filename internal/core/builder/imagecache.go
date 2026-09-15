@@ -34,7 +34,7 @@ import (
 //     any context, so hashing it would only add false misses: every linked
 //     worktree of one repo has its own checkout mtimes, and every edit in a
 //     live-mounted workspace bumps one. Live-proven 2026-09-15: three
-//     example-app worktrees with byte-identical Containerfiles produced three
+//     worktrees of one downstream repo with byte-identical Containerfiles produced three
 //     4 GiB rootfs images and three full builder runs, and the third create
 //     failed on disk space.
 //  5. recipe — the agent's [cred.ToolRecipe] describing the tool install steps.

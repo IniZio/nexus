@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -11,7 +13,10 @@ import (
 
 // memhogMainPath is the absolute path passed to `go run` so the test is
 // hermetic regardless of the caller's working directory.
-const memhogMainPath = "$HOME/nexus3/internal/test/repro/cmd/memhog/main.go"
+var memhogMainPath = func() string {
+	_, self, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(self), "main.go")
+}()
 
 // TestMemhogLowersMemAvailable verifies that memhog actually lowers host
 // MemAvailable by a small, controlled amount (512 MiB), then releases it.

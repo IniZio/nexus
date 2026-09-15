@@ -180,7 +180,7 @@ Direct:true. That attribution is incorrect — a non-direct disk also returns
 correct field name `"desired_size"` and its CH calls succeeded for raw disks.
 
 CH version pinned in nexus3: **v52.0** (binary at
-`$HOME/.local/bin/cloud-hypervisor`, released 2026-05-14).
+`~/.local/bin/cloud-hypervisor`, released 2026-05-14).
 CH v53.0 (released 2026-07-12) contains no related fix because there is no
 bug in CH to fix.
 

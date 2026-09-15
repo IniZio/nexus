@@ -92,7 +92,7 @@ func TestEgress_GuestOnWire_E2E(t *testing.T) {
 	}
 
 	// ── guard: cloud-hypervisor binary ────────────────────────────────────────
-	const defaultCHBin = "$HOME/.local/bin/cloud-hypervisor"
+	var defaultCHBin = filepath.Join(os.Getenv("HOME"), ".local/bin/cloud-hypervisor")
 	chBin := os.Getenv("CLOUD_HYPERVISOR_BIN")
 	if chBin == "" {
 		chBin = defaultCHBin

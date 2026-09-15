@@ -1198,12 +1198,12 @@ func TestHerdrWorktreeSandbox_reconcile_orphanedSandbox_writesBinding(t *testing
 	wantWorkspaceID := "w7B"
 
 	// linkedWorktreeInfoAuto sets RepoKey so the handle derives correctly:
-	// RepoKey="$HOME/nexus3/.git" → repoName="nexus3"
+	// RepoKey="/srv/repos/nexus3/.git" → repoName="nexus3"
 	// branch="worktree/quiet-stone-1e35" → slug="worktree-quiet-stone-1e35"
 	// handle = "nexus3/worktree-quiet-stone-1e35" ✓
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfoAuto(wantWorkspaceID, "worktree/quiet-stone-1e35",
-			"$HOME/nexus3", "$HOME/nexus3/.git"),
+			"/srv/repos/nexus3", "/srv/repos/nexus3/.git"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -1216,7 +1216,7 @@ func TestHerdrWorktreeSandbox_reconcile_orphanedSandbox_writesBinding(t *testing
 		ID:    domain.NewSandboxID(),
 		State: domain.Running,
 		LiveMounts: []domain.LiveMount{
-			{HostPath: "$HOME/nexus3", GuestPath: "/workspace"},
+			{HostPath: "/srv/repos/nexus3", GuestPath: "/workspace"},
 		},
 	}
 	wantSandboxID := existingSB.ID.String() // record for assertion below
@@ -1266,7 +1266,7 @@ func TestHerdrWorktreeSandbox_reconcile_workspaceMismatch_explicitReturnsError(t
 	root := t.TempDir()
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfoAuto("w-mismatch-exp", "worktree/quiet-stone-1e35",
-			"$HOME/nexus3", "$HOME/nexus3/.git"),
+			"/srv/repos/nexus3", "/srv/repos/nexus3/.git"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -1275,7 +1275,7 @@ func TestHerdrWorktreeSandbox_reconcile_workspaceMismatch_explicitReturnsError(t
 		ID:    domain.NewSandboxID(),
 		State: domain.Running,
 		LiveMounts: []domain.LiveMount{
-			{HostPath: "$HOME/magic/OLD-nexus3", GuestPath: "/workspace"},
+			{HostPath: "/srv/repos/OLD-nexus3", GuestPath: "/workspace"},
 		},
 	}
 	err := callHerdrWorktreeSandbox(t, "w-mismatch-exp", root, false /*conditional*/, false, /*auto*/
@@ -1297,10 +1297,10 @@ func TestHerdrWorktreeSandbox_reconcile_workspaceMismatch_autoReturnsNil(t *test
 	// is written → the "expected no binding" check fires → RED.
 	root := t.TempDir()
 	// Seed repo-root binding so the auto repo check passes.
-	seedBindingWithRepoRoot(t, root, "w-main", "nexus3/main", "$HOME/nexus3")
+	seedBindingWithRepoRoot(t, root, "w-main", "nexus3/main", "/srv/repos/nexus3")
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfoAuto("w-mismatch-auto", "worktree/quiet-stone-1e35",
-			"$HOME/nexus3", "$HOME/nexus3/.git"),
+			"/srv/repos/nexus3", "/srv/repos/nexus3/.git"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -1308,7 +1308,7 @@ func TestHerdrWorktreeSandbox_reconcile_workspaceMismatch_autoReturnsNil(t *test
 		ID:    domain.NewSandboxID(),
 		State: domain.Running,
 		LiveMounts: []domain.LiveMount{
-			{HostPath: "$HOME/magic/OLD-nexus3", GuestPath: "/workspace"},
+			{HostPath: "/srv/repos/OLD-nexus3", GuestPath: "/workspace"},
 		},
 	}
 	err := callHerdrWorktreeSandbox(t, "w-mismatch-auto", root, false /*conditional*/, true, /*auto*/
@@ -1340,10 +1340,10 @@ func TestHerdrWorktreeSandbox_reconcile_trailingSlashPath_adopts(t *testing.T) {
 	// → the "binding not found" Fatalf fires → RED.
 	root := t.TempDir()
 	// Seed a repo-root binding so the auto-mode repo check passes.
-	seedBindingWithRepoRoot(t, root, "w-main", "nexus3/main", "$HOME/nexus3")
+	seedBindingWithRepoRoot(t, root, "w-main", "nexus3/main", "/srv/repos/nexus3")
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfoAuto("w-trailing", "worktree/quiet-stone-1e35",
-			"$HOME/nexus3", "$HOME/nexus3/.git"),
+			"/srv/repos/nexus3", "/srv/repos/nexus3/.git"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -1353,7 +1353,7 @@ func TestHerdrWorktreeSandbox_reconcile_trailingSlashPath_adopts(t *testing.T) {
 		ID:    domain.NewSandboxID(),
 		State: domain.Running,
 		LiveMounts: []domain.LiveMount{
-			{HostPath: "$HOME/nexus3/", GuestPath: "/workspace"},
+			{HostPath: "/srv/repos/nexus3/", GuestPath: "/workspace"},
 		},
 	}
 	err := callHerdrWorktreeSandbox(t, "w-trailing", root, false /*conditional*/, true, /*auto*/
@@ -1385,10 +1385,10 @@ func TestHerdrWorktreeSandbox_reconcile_badState_failSafe(t *testing.T) {
 	// MUTATION PROOF: remove the state/RemovalMarker gate → sandbox is adopted →
 	// binding is written → "expected no binding" fires → RED.
 	root := t.TempDir()
-	seedBindingWithRepoRoot(t, root, "w-main", "nexus3/main", "$HOME/nexus3")
+	seedBindingWithRepoRoot(t, root, "w-main", "nexus3/main", "/srv/repos/nexus3")
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfoAuto("w-badstate", "worktree/quiet-stone-1e35",
-			"$HOME/nexus3", "$HOME/nexus3/.git"),
+			"/srv/repos/nexus3", "/srv/repos/nexus3/.git"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -1397,7 +1397,7 @@ func TestHerdrWorktreeSandbox_reconcile_badState_failSafe(t *testing.T) {
 		ID:    domain.NewSandboxID(),
 		State: domain.Created, // not Running or Stopped — unsafe to adopt
 		LiveMounts: []domain.LiveMount{
-			{HostPath: "$HOME/nexus3", GuestPath: "/workspace"},
+			{HostPath: "/srv/repos/nexus3", GuestPath: "/workspace"},
 		},
 	}
 	err := callHerdrWorktreeSandbox(t, "w-badstate", root, false /*conditional*/, true, /*auto*/
@@ -1426,11 +1426,11 @@ func TestHerdrWorktreeSandbox_reconcile_auto_siblingBound_writesBinding(t *testi
 	// createErr path returns nil without a binding → "expected binding" fires → RED.
 	root := t.TempDir()
 	// Seed a repo-root binding so the auto repo check passes.
-	seedBindingWithRepoRoot(t, root, "w-main", "nexus3/main", "$HOME/nexus3")
+	seedBindingWithRepoRoot(t, root, "w-main", "nexus3/main", "/srv/repos/nexus3")
 
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfoAuto("w-auto-reconcile", "worktree/quiet-stone-1e35",
-			"$HOME/nexus3", "$HOME/nexus3/.git"),
+			"/srv/repos/nexus3", "/srv/repos/nexus3/.git"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -1438,7 +1438,7 @@ func TestHerdrWorktreeSandbox_reconcile_auto_siblingBound_writesBinding(t *testi
 		ID:    domain.NewSandboxID(),
 		State: domain.Running,
 		LiveMounts: []domain.LiveMount{
-			{HostPath: "$HOME/nexus3", GuestPath: "/workspace"},
+			{HostPath: "/srv/repos/nexus3", GuestPath: "/workspace"},
 		},
 	}
 	wantID := existingSB.ID.String()

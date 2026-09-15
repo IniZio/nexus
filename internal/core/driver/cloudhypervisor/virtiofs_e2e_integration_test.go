@@ -28,7 +28,7 @@ package cloudhypervisor
 //
 //   /dev/kvm, cloud-hypervisor binary, vmlinux-x86_64 artifact,
 //   alpine-initramfs.cpio.gz artifact, gzip, cpio,
-//   $HOME/.local/bin/virtiofsd (version 1.13.3)
+//   ~/.local/bin/virtiofsd (version 1.13.3)
 //
 // # Running
 //
@@ -55,7 +55,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/store"
 )
 
-const e2eVirtiofsdBin = "$HOME/.local/bin/virtiofsd"
+var e2eVirtiofsdBin = filepath.Join(os.Getenv("HOME"), ".local/bin/virtiofsd")
 
 // TestLiveVirtiofsE2E is the live end-to-end proof for D-PD-53 virtiofs mounts.
 func TestLiveVirtiofsE2E(t *testing.T) {

@@ -11,7 +11,7 @@ package acceptance
 //
 // # Guard conditions (test SKIPS, never fails, when any prerequisite is absent)
 //   - /dev/kvm accessible by this user
-//   - cloud-hypervisor binary (default $HOME/.local/bin/cloud-hypervisor;
+//   - cloud-hypervisor binary (default ~/.local/bin/cloud-hypervisor;
 //     override with CLOUD_HYPERVISOR_BIN)
 //   - mke2fs in PATH (e2fsprogs)
 //   - images/kernel/vmlinux-x86_64 under the repository root
@@ -53,7 +53,7 @@ import (
 const e2eSunPathMax = 107
 
 // e2eDefaultCHBin is the default cloud-hypervisor binary path.
-const e2eDefaultCHBin = "$HOME/.local/bin/cloud-hypervisor"
+var e2eDefaultCHBin = filepath.Join(os.Getenv("HOME"), ".local/bin/cloud-hypervisor")
 
 // ── skip guards ───────────────────────────────────────────────────────────────
 

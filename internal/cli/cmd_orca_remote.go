@@ -265,7 +265,7 @@ func resolveHostNexus3(ctx context.Context, r *sshTarget) (string, error) {
 	}
 	// Fall back to well-known paths.
 	out, err = sshCapture(ctx, r,
-		`for p in "$HOME/.local/bin/nexus3" $HOME/nexus3/nexus3; do [ -x "$p" ] && { echo "$p"; break; }; done`)
+		`for p in "$HOME/.local/bin/nexus3" /usr/local/bin/nexus3; do [ -x "$p" ] && { echo "$p"; break; }; done`)
 	if err != nil {
 		return "", fmt.Errorf("resolve nexus3 on host (fallback): %w", err)
 	}

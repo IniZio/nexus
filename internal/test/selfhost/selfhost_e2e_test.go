@@ -98,7 +98,7 @@ func skipUnlessCHBinSH(t *testing.T) string {
 	t.Helper()
 	chBin := os.Getenv("CLOUD_HYPERVISOR_BIN")
 	if chBin == "" {
-		chBin = selfhostDefaultCHBin
+		chBin = os.ExpandEnv(selfhostDefaultCHBin)
 	}
 	if _, err := os.Stat(chBin); err != nil {
 		t.Skipf("skipping: cloud-hypervisor binary not found at %s (set CLOUD_HYPERVISOR_BIN)", chBin)

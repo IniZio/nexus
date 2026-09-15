@@ -11,7 +11,7 @@ import (
 
 // perSandboxAllocatedBytesDefault is the conservative per-sandbox workspace
 // disk allocation estimate used when diskDir contains no existing workspace
-// disks. Derived from a measured example-app pilot sandbox:
+// disks. Derived from a measured pilot sandbox of a mid-size Next.js monorepo:
 // 9,583,184 blocks × 512 = 4,906,590,208 bytes ≈ 4.57 GiB.
 const perSandboxAllocatedBytesDefault = int64(9_583_184) * 512
 

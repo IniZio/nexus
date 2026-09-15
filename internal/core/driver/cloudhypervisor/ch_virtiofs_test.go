@@ -2,14 +2,15 @@
 // limit, and the production wiring in spawnVirtiofsdForMounts.
 //
 // Acceptance criteria exercised:
-//   AC #4 — virtiofsd killed by process group; socket unlinked on failure.
-//            TestSpawnVirtiofsdForMounts_FailureKillsOrphans (real wiring path)
-//   AC #5 — virtiofsd socket path ≤107 bytes for max-length SocketDir.
-//            TestVirtiofsdSockPath_SunPathLimit
-//   AC #6 — vmFsConfig serialises correctly; "fs" omitted when absent.
-//            TestVmFsConfig_Marshal, TestVmFsConfig_OmitWhenAbsent
-//   tags  — spawnVirtiofsdForMounts tags match VirtiofsTag(i).
-//            TestSpawnVirtiofsdForMounts_TagsAndCount
+//
+//	AC #4 — virtiofsd killed by process group; socket unlinked on failure.
+//	         TestSpawnVirtiofsdForMounts_FailureKillsOrphans (real wiring path)
+//	AC #5 — virtiofsd socket path ≤107 bytes for max-length SocketDir.
+//	         TestVirtiofsdSockPath_SunPathLimit
+//	AC #6 — vmFsConfig serialises correctly; "fs" omitted when absent.
+//	         TestVmFsConfig_Marshal, TestVmFsConfig_OmitWhenAbsent
+//	tags  — spawnVirtiofsdForMounts tags match VirtiofsTag(i).
+//	         TestSpawnVirtiofsdForMounts_TagsAndCount
 package cloudhypervisor
 
 import (
@@ -106,10 +107,10 @@ func TestSpawnVirtiofsdForMounts_TagsAndCount(t *testing.T) {
 
 // TestSpawnVirtiofsdForMounts_FailureKillsOrphans proves AC #4 via the real
 // production wiring path:
-//   1. Mount[0] spawn succeeds (seam calls real spawnVirtiofsd with the good binary).
-//   2. Mount[1] spawn fails synchronously via the injected seam (no timing dependency).
-//   3. clearState (called explicitly, as Start's cleanup() calls it on failure) kills
-//      mount[0]'s process group and unlinks its socket.
+//  1. Mount[0] spawn succeeds (seam calls real spawnVirtiofsd with the good binary).
+//  2. Mount[1] spawn fails synchronously via the injected seam (no timing dependency).
+//  3. clearState (called explicitly, as Start's cleanup() calls it on failure) kills
+//     mount[0]'s process group and unlinks its socket.
 //
 // This proves that no orphan virtiofsd process or stale socket survives a
 // mid-sequence failure — the property that Start's cleanup() → clearState path must guarantee.
@@ -230,7 +231,7 @@ func TestSpawnVirtiofsdForMounts_MissingBinary(t *testing.T) {
 // TestSpawnVirtiofsdForMounts_RealBinary exercises against the real virtiofsd
 // when available. Skipped in CI without the binary.
 func TestSpawnVirtiofsdForMounts_RealBinary(t *testing.T) {
-	const bin = "$HOME/.local/bin/virtiofsd"
+	bin := filepath.Join(os.Getenv("HOME"), ".local/bin/virtiofsd")
 	if _, err := os.Stat(bin); err != nil {
 		t.Skipf("virtiofsd not at %s", bin)
 	}

@@ -39,7 +39,7 @@ import (
 
 // ─── shared lifecycle test infrastructure ────────────────────────────────────
 
-const lcDefaultCHBin = "$HOME/.local/bin/cloud-hypervisor"
+var lcDefaultCHBin = filepath.Join(os.Getenv("HOME"), ".local/bin/cloud-hypervisor")
 
 // lcGuards runs pre-flight checks common to all lifecycle integration tests.
 // Returns (chBin, kernelPath) or skips the test.
@@ -183,7 +183,6 @@ func lcWaitESRCH(pid int, timeout time.Duration) bool {
 	}
 	return false
 }
-
 
 // countOpenFDs returns the number of entries in /proc/self/fd.
 func countOpenFDs() int {

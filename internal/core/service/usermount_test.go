@@ -297,17 +297,17 @@ func TestBuildUserMountManifest_EmptyMounts(t *testing.T) {
 func TestWriteUserMountManifest_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	m := service.UserMountManifest{
-		HostHome: "$HOME",
+		HostHome: "/home/alice",
 		Mounts: []service.ResolvedUserMount{
 			{
-				HostPath:         "$HOME/.local/bin",
+				HostPath:         "/home/alice/.local/bin",
 				GuestPath:        "/root/.local/bin",
 				Overlay:          false,
 				Curated:          true,
 				StagingGuestPath: "/run/nexus3/usermount/bin-bin",
 			},
 			{
-				HostPath:         "$HOME/.claude/plugins",
+				HostPath:         "/home/alice/.claude/plugins",
 				GuestPath:        "/root/.claude/plugins",
 				Overlay:          true,
 				StagingGuestPath: "/run/nexus3/usermount/plugins",

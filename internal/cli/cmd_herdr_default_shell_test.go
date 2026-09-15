@@ -1343,7 +1343,7 @@ func TestHerdrAutoCreatePredicate_DifferentRepoRoot_DoesNotEngage(t *testing.T) 
 	dir := t.TempDir()
 	cwd, _ := makeLinkedWorktreeFixture(t, dir)
 
-	// Binding whose RepoRoot points at an unrelated repo ("example-app").
+	// Binding whose RepoRoot points at an unrelated repo ("other-repo").
 	unrelatedBinding := HerdrSpaceBinding{
 		SpaceLabel:       "nexus3:wt/other",
 		HerdrWorkspaceID: "wOTH",

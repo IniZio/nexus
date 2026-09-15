@@ -22,7 +22,7 @@ package cloudhypervisor
 //
 // All tests skip (never fail) when the environment lacks:
 //   - /dev/kvm
-//   - the cloud-hypervisor binary (default: $HOME/.local/bin/cloud-hypervisor;
+//   - the cloud-hypervisor binary (default: ~/.local/bin/cloud-hypervisor;
 //     override with CLOUD_HYPERVISOR_BIN)
 //   - boot artifacts (run scripts/fetch-boot-artifacts.sh from repo root)
 //
@@ -49,7 +49,7 @@ import (
 
 // defaultCHBin is the expected cloud-hypervisor binary location.
 // Override with the CLOUD_HYPERVISOR_BIN environment variable.
-const defaultCHBin = "$HOME/.local/bin/cloud-hypervisor"
+var defaultCHBin = filepath.Join(os.Getenv("HOME"), ".local/bin/cloud-hypervisor")
 
 // TestBootLifecycle boots a real microVM (no initramfs) and asserts
 // Running → Paused → Running → Absent across pause/resume/stop.

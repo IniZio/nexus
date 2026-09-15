@@ -75,7 +75,7 @@ func TestNetnsRuntime_KVMProof(t *testing.T) {
 	}
 
 	// guard: cloud-hypervisor binary
-	const netnsDefaultCHBin = "$HOME/.local/bin/cloud-hypervisor"
+	netnsDefaultCHBin := filepath.Join(os.Getenv("HOME"), ".local/bin/cloud-hypervisor")
 	chBin := os.Getenv("CLOUD_HYPERVISOR_BIN")
 	if chBin == "" {
 		chBin = netnsDefaultCHBin
@@ -331,7 +331,7 @@ func TestNetnsRuntime_CHOrphanKill(t *testing.T) {
 		}
 	}
 
-	const netnsDefaultCHBin = "$HOME/.local/bin/cloud-hypervisor"
+	netnsDefaultCHBin := filepath.Join(os.Getenv("HOME"), ".local/bin/cloud-hypervisor")
 	chBin := os.Getenv("CLOUD_HYPERVISOR_BIN")
 	if chBin == "" {
 		chBin = netnsDefaultCHBin

@@ -87,7 +87,7 @@ const (
 
 	// tmpfsAbsoluteCapBytes: hard upper bound on /tmp regardless of MemTotal.
 	// D-SD-04 (wave 2, operator sign-off): lowered from 2 GiB → 512 MiB.
-	// Rationale: wave-1 measurement on example-app/ex-802-worktree
+	// Rationale: wave-1 measurement on a downstream repo's worktree sandbox
 	// showed MemTotal 740 MiB against a /tmp cap of 1024 MiB (138% of total RAM)
 	// because the old 1 GiB floor exceeded the whole guest. Under the new pair
 	// (cap 512 MiB, floor 256 MiB) the same guest gets a 256 MiB /tmp — 34% of

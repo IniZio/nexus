@@ -15,7 +15,7 @@ package cloudhypervisor
 //
 // The test skips (never fails) when the environment lacks:
 //   - /dev/kvm
-//   - the cloud-hypervisor binary (default $HOME/.local/bin/cloud-hypervisor;
+//   - the cloud-hypervisor binary (default ~/.local/bin/cloud-hypervisor;
 //     override with CLOUD_HYPERVISOR_BIN)
 //   - boot artifacts (run scripts/fetch-boot-artifacts.sh)
 //
