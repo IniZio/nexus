@@ -255,20 +255,116 @@ func herdrMainRepoFromGitdir(content string) string {
 	return filepath.Dir(gitDir) // <main>
 }
 
+// herdrWtCreateLogPath is the per-workspace provisioning log that
+// plugins/herdr/bin/pane.sh (worktree-sandbox case) tees the winner's
+// "nexus3 herdr worktree-sandbox" output into. The two formulas MUST agree:
+// the shell side is
+//
+//	${XDG_STATE_HOME:-$HOME/.local/state}/nexus3/herdr-wt-create-ws-$HERDR_WORKSPACE_ID.log
+//
+// (store.DefaultRoot resolves the same directory). TestHerdrDefaultShell_
+// PaneScriptWritesCreateLogAtGoPath pins the agreement.
+//
+// Why a file: the worktree.created hook opens a provisioning pane and runs the
+// build there, so the build output has exactly one sink — that pane's terminal.
+// A tab opened while the build runs (the workspace's first tab included) runs
+// its own worktree-sandbox, loses the per-handle create-intent lock, and used
+// to block on it in silence for minutes. Tailing this file into the waiting
+// pane is what turns that silence into the live build/boot log.
+func herdrWtCreateLogPath(storeRoot, wsID string) string {
+	return filepath.Join(storeRoot, "herdr-wt-create-ws-"+wsID+".log")
+}
+
+// herdrWtCreateLogPollInterval is how often the waiting pane looks for new
+// bytes in the provisioning log. Replaced in tests.
+var herdrWtCreateLogPollInterval = 500 * time.Millisecond
+
+// herdrWtCreateLogStaleAfter bounds what counts as THIS run's log. herdr
+// reuses workspace IDs, so a log left by an earlier workspace with the same ID
+// can exist before the hook pane truncates it for this run; content last
+// written longer ago than this is skipped rather than replayed. The window is
+// wide because a cold build can go quiet for a while (image pull) between
+// the hook pane's last write and a new tab's first look.
+const herdrWtCreateLogStaleAfter = 10 * time.Minute
+
+// herdrTailFileUntil copies bytes appended to path into w until done is
+// closed, then drains once more so nothing written just before the writer
+// finished is lost. A missing file is not an error (the hook pane may not
+// have started yet); a shrunken file means a new run truncated it and the
+// tail restarts from the beginning.
+func herdrTailFileUntil(path string, w io.Writer, done <-chan struct{}, interval, staleAfter time.Duration) {
+	var off int64 = -1 // -1: not positioned yet
+	drain := func() {
+		f, err := os.Open(path)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		st, err := f.Stat()
+		if err != nil {
+			return
+		}
+		if off < 0 {
+			off = 0
+			if time.Since(st.ModTime()) > staleAfter {
+				off = st.Size() // an earlier run's log; show only what is written from now on
+			}
+		}
+		if st.Size() < off {
+			off = 0
+		}
+		if st.Size() == off {
+			return
+		}
+		if _, err := f.Seek(off, io.SeekStart); err != nil {
+			return
+		}
+		n, _ := io.Copy(w, f)
+		off += n
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-done:
+			drain()
+			return
+		case <-t.C:
+			drain()
+		}
+	}
+}
+
 // herdrDefaultShellAutoCreate runs "nexus3 herdr worktree-sandbox --auto <wsID>"
 // as a subprocess, waits for it to finish, then re-reads the binding store.
 // Returns the binding and true on success; (zero, false) on any error so the
 // caller falls through to execHostShell (FAIL-OPEN).
+//
+// While the subprocess runs, the provisioning log of the concurrent hook pane
+// (herdrWtCreateLogPath) is tailed into w, so a pane that loses the
+// create-intent lock shows the build and boot as they happen instead of a
+// single "waiting" line. When this process is itself the lock winner the
+// subprocess streams to w directly and the file simply never appears.
 func herdrDefaultShellAutoCreate(ctx context.Context, storeRoot, wsID, nexus3Bin string, w io.Writer) (HerdrSpaceBinding, bool) {
 	if nexus3Bin == "" {
 		return HerdrSpaceBinding{}, false
 	}
-	fmt.Fprintf(w, "nexus3-guest-shell: linked worktree detected — waiting for / auto-creating the sandbox for workspace %s (a cold build can take a few minutes)...\n", wsID)
+	fmt.Fprintf(w, "nexus3-guest-shell: linked worktree detected — waiting for / auto-creating the sandbox for workspace %s (a cold build can take a few minutes; the provisioning log streams below)...\n", wsID)
 	autoCtx, cancel := context.WithTimeout(ctx, herdrAutoCreateTimeout)
 	defer cancel()
 	cmd := herdrExecCommandContext(autoCtx, nexus3Bin, "herdr", "worktree-sandbox", "--auto", wsID)
 	cmd.Stdout = w
 	cmd.Stderr = w
+	tailStop := make(chan struct{})
+	tailDone := make(chan struct{})
+	go func() {
+		defer close(tailDone)
+		herdrTailFileUntil(herdrWtCreateLogPath(storeRoot, wsID), w, tailStop, herdrWtCreateLogPollInterval, herdrWtCreateLogStaleAfter)
+	}()
+	defer func() {
+		close(tailStop)
+		<-tailDone
+	}()
 	// A non-zero exit is REPORTED but is not by itself a verdict, because
 	// worktree-sandbox writes the binding BEFORE it opens the guest pane and now
 	// returns non-zero when only the pane fails (see the openPane block in

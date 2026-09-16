@@ -90,8 +90,21 @@ case "$1" in
             set -- --auto "$WS"
         fi
         printf "nexus3: provisioning a sandbox for this worktree (image pull + disk + VM boot; can take a few minutes on a cold cache)...\n\n"
-        "$SHIM" herdr worktree-sandbox "$@"
-        STATUS=$?
+        # Tee the build into the per-workspace provisioning log. Every other
+        # pane of this workspace that opens before the sandbox is ready
+        # (nexus3-guest-shell, herdrWtCreateLogPath in Go — same formula)
+        # tails this file instead of waiting in silence. Truncated per run;
+        # herdr reuses workspace IDs. The exit status crosses the pipe via a
+        # temp file because POSIX sh has no PIPESTATUS.
+        CREATE_LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nexus3"
+        CREATE_LOG="$CREATE_LOG_DIR/herdr-wt-create-ws-$WS.log"
+        mkdir -p "$CREATE_LOG_DIR" 2>/dev/null
+        : > "$CREATE_LOG" 2>/dev/null
+        STATUS_FILE=$(mktemp)
+        { "$SHIM" herdr worktree-sandbox "$@" 2>&1; echo "$?" > "$STATUS_FILE"; } | tee -a "$CREATE_LOG"
+        STATUS=$(cat "$STATUS_FILE" 2>/dev/null)
+        rm -f "$STATUS_FILE"
+        [ -n "$STATUS" ] || STATUS=1
         if [ "$STATUS" -eq 0 ]; then
             exit 0
         fi
