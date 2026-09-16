@@ -95,14 +95,18 @@ func (cs *controlServer) execPTY(cmd *exec.Cmd, env []string, opts *agentpb.PtyO
 		}
 	}
 
-	ptmx, err := pty.StartWithSize(cmd, sz)
+	err := cs.a.sessions.spawn(sess, func() (int, error) {
+		ptmx, err := pty.StartWithSize(cmd, sz)
+		if err != nil {
+			return 0, err
+		}
+		sess.ptmx = ptmx
+		return cmd.Process.Pid, nil
+	})
 	if err != nil {
 		return status.Errorf(codes.Internal, "pty.StartWithSize: %v", err)
 	}
-
-	sess.ptmx = ptmx
-	sess.pid = cmd.Process.Pid
-	cs.a.sessions.add(sess)
+	ptmx := sess.ptmx
 
 	// Single goroutine: feed ring, then get exit code, then mark done.
 	go func() {
@@ -155,7 +159,14 @@ func (cs *controlServer) execPipe(cmd *exec.Cmd, env []string, sess *Session) er
 	cmd.Stderr = stderrW
 	cmd.Stdin = stdinR
 
-	if err := cmd.Start(); err != nil {
+	sess.stdinW = stdinW
+	err = cs.a.sessions.spawn(sess, func() (int, error) {
+		if err := cmd.Start(); err != nil {
+			return 0, err
+		}
+		return cmd.Process.Pid, nil
+	})
+	if err != nil {
 		stdoutR.Close()
 		stdoutW.Close()
 		stderrR.Close()
@@ -169,10 +180,6 @@ func (cs *controlServer) execPipe(cmd *exec.Cmd, env []string, sess *Session) er
 	stdoutW.Close()
 	stderrW.Close()
 	stdinR.Close()
-
-	sess.stdinW = stdinW
-	sess.pid = cmd.Process.Pid
-	cs.a.sessions.add(sess)
 
 	// Feed ring from both output pipes. A WaitGroup ensures ring.Close() is
 	// called only after all output has been written.

@@ -71,6 +71,10 @@ type SessionTable struct {
 	mu    sync.RWMutex
 	byID  map[string]*Session
 	byPID map[int]*Session
+
+	// spawnMu serialises start+add against drainChildren so a fast-exiting
+	// child cannot be reaped (and its exit discarded as an orphan) before add.
+	spawnMu sync.Mutex
 }
 
 func newSessionTable() *SessionTable {
@@ -89,6 +93,20 @@ func (t *SessionTable) add(s *Session) {
 	t.byPID[s.pid] = s
 	t.mu.Unlock()
 	t.sweepExited()
+}
+
+// spawn runs start (which must fork the child and return its PID) and
+// registers sess under spawnMu, the lock drainChildren holds while reaping.
+func (t *SessionTable) spawn(sess *Session, start func() (int, error)) error {
+	t.spawnMu.Lock()
+	defer t.spawnMu.Unlock()
+	pid, err := start()
+	if err != nil {
+		return err
+	}
+	sess.pid = pid
+	t.add(sess)
+	return nil
 }
 
 func (t *SessionTable) get(id string) (*Session, bool) {

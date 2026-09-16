@@ -91,8 +91,12 @@ func (a *Agent) Run(ctx context.Context) error {
 // where only one SIGCHLD arrived for N child exits (kernel coalescing) or
 // where some SIGCHLDs were dropped because the signal channel was full.
 //
-// drainChildren must not hold any lock across the Wait4 calls.
+// It holds sessions.spawnMu so that no session is mid-spawn (child started
+// but not yet in byPID) while a child is collected; WNOHANG keeps the hold
+// short. It must not take sessions.mu itself.
 func (a *Agent) drainChildren() {
+	a.sessions.spawnMu.Lock()
+	defer a.sessions.spawnMu.Unlock()
 	for {
 		var ws syscall.WaitStatus
 		pid, err := syscall.Wait4(-1, &ws, syscall.WNOHANG, nil)
