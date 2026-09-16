@@ -242,9 +242,10 @@ RUN go mod download all
 FROM debian:bookworm-slim
 # Runtime dependencies: git (workspace ops) + curl (HTTPS requests from the agent) +
 # ca-certificates (TLS) + iproute2 (ip link/addr/route for nexus3-agent network init
-# at PID 1) + openssh-server (sshd for ORCA vsock:22 SSH bridge).
+# at PID 1) + openssh-server (sshd for ORCA vsock:22 SSH bridge) + unzip/wget/
+# xz-utils/procps (F17: agents fell back to python zipfile / curl without them).
 RUN apt-get update -qq && \
-    apt-get install -y --no-install-recommends git curl ca-certificates iproute2 openssh-server && \
+    apt-get install -y --no-install-recommends git curl ca-certificates iproute2 openssh-server unzip wget xz-utils procps && \
     rm -rf /var/lib/apt/lists/*
 
 # sshd configuration for ORCA pubkey-only root login.

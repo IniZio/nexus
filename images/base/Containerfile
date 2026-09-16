@@ -60,12 +60,17 @@ FROM debian:bookworm-slim
 #   git              — workspace git operations inside the sandbox
 #   ca-certificates  — TLS verification for go get, curl, etc.
 #   openssh-server   — sshd on 127.0.0.1:22; nexus3-agent bridges vsock:22→localhost:22
+#   unzip, wget, xz-utils, procps — F17: agents fell back to python zipfile / curl
 # Explicitly excluded: gcc, build-essential, binutils (CGO_ENABLED=0)
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
         git \
         ca-certificates \
         openssh-server \
+        unzip \
+        wget \
+        xz-utils \
+        procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure sshd: loopback-only (vsock:22 → localhost:22 is bridged by nexus3-agent).
