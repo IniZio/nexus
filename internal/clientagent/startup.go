@@ -17,16 +17,12 @@ import (
 	"github.com/IniZio/nexus3/internal/core/portfwd"
 )
 
-// This file is the laptop side of auto port-forward. It must stay free of
-// linux-only imports: the herdr startup hook runs on macOS, where the full
-// nexus3 CLI does not build (cmd/nexus3-client is the darwin entry point).
-
 type HerdrMachine struct {
 	ProfileID string `json:"id"`
-	SSHTarget string `json:"target"` // "user@host" or an ssh_config Host alias
+	SSHTarget string `json:"target"`
 	Enabled   bool   `json:"enabled"`
 	Selected  bool   `json:"selected"`
-	Session   string `json:"session"` // herdr session name; "" means default session
+	Session   string `json:"session"`
 }
 
 func StateDir() string {
@@ -47,7 +43,7 @@ func ResolveHerdrBin() (string, error) {
 	return "", errors.New("herdr not found: HERDR_BIN_PATH is unset and no \"herdr\" binary is on PATH")
 }
 
-var ExecCommandContext = exec.CommandContext // tests swap it
+var ExecCommandContext = exec.CommandContext
 
 func SanitizeSSHTarget(target string) string {
 	var b strings.Builder
@@ -88,18 +84,11 @@ func RunStartup(ctx context.Context) error {
 	}
 }
 
-var RemoteStateReader = ReadRemoteForwardsState       // tests swap it
-var ForwarderRunner portfwd.Runner = portfwd.OSRunner // tests swap it
+var RemoteStateReader = ReadRemoteCombinedState
+var ForwarderRunner portfwd.Runner = portfwd.OSRunner
 
-// FocusResolverFunc resolves the sandbox ID for the focused workspace.
-// Returns fallback=true on error (caller uses all rows); sandboxID="" with
-// fallback=false means no focused workspace (desired is empty).
-type FocusResolverFunc func(ctx context.Context, herdrBin, session, ctlPath, target string, runner portfwd.Runner) (sandboxID string, fallback bool)
-
-var DefaultFocusResolver FocusResolverFunc = resolveFocusedSandboxID // tests swap it
-
-var fallbackWarned sync.Map // key: "target\x00kind" → struct{}{}
-var infoFiredOnce sync.Map  // key: "target\x00workspaceID" → struct{}{}
+var fallbackWarned  sync.Map
+var prevFocusSandbox sync.Map
 
 func warnFallbackOnce(target, kind, msg string, args ...any) {
 	if _, loaded := fallbackWarned.LoadOrStore(target+"\x00"+kind, struct{}{}); !loaded {
@@ -111,16 +100,6 @@ func clearFallback(target, kind string) {
 	fallbackWarned.Delete(target + "\x00" + kind)
 }
 
-func logInfoOnce(key, msg string, args ...any) {
-	if _, loaded := infoFiredOnce.LoadOrStore(key, struct{}{}); !loaded {
-		slog.Info(msg, args...)
-	}
-}
-
-func clearInfoOnce(key string) {
-	infoFiredOnce.Delete(key)
-}
-
 func filterToFocused(forwards []RemoteForwardEntry, sandboxID string, fallback bool) []RemoteForwardEntry {
 	if fallback {
 		return forwards
@@ -130,7 +109,6 @@ func filterToFocused(forwards []RemoteForwardEntry, sandboxID string, fallback b
 	}
 	var out []RemoteForwardEntry
 	for _, f := range forwards {
-		// RemoteForwardEntry.Sandbox and forwards.state are both keyed by sandbox ID, not handle.
 		if f.Sandbox == sandboxID {
 			out = append(out, f)
 		}
@@ -138,12 +116,18 @@ func filterToFocused(forwards []RemoteForwardEntry, sandboxID string, fallback b
 	return out
 }
 
+func focusFromCombined(combined *RemoteCombinedState, _ string) (string, bool) {
+	if combined.FocusMissing || combined.FocusState.SandboxID == "" {
+		return "", true
+	}
+	return combined.FocusState.SandboxID, false
+}
+
 func Tick(ctx context.Context, stateDir string, managers map[string]*portfwd.Manager) error {
 	machines, err := DiscoverHerdrMachines(ctx)
 	if err != nil {
 		return fmt.Errorf("machine list: %w", err)
 	}
-	herdrBin, _ := ResolveHerdrBin()
 	for _, m := range machines {
 		if !m.Enabled || m.SSHTarget == "" {
 			continue
@@ -161,13 +145,22 @@ func Tick(ctx context.Context, stateDir string, managers map[string]*portfwd.Man
 			slog.Warn("local-agent-startup: ensure-master", "target", m.SSHTarget, "err", err)
 			continue
 		}
-		state, err := RemoteStateReader(ctx, ctlPath, m.SSHTarget)
+		combined, err := RemoteStateReader(ctx, ctlPath, m.SSHTarget)
 		if err != nil {
 			slog.Warn("local-agent-startup: read-remote-state", "target", m.SSHTarget, "err", err)
 			continue
 		}
-		sandboxID, fallback := DefaultFocusResolver(ctx, herdrBin, m.Session, ctlPath, m.SSHTarget, fw.Run)
-		focused := filterToFocused(state.Forwards, sandboxID, fallback)
+		sandboxID, fallback := focusFromCombined(combined, m.SSHTarget)
+		if !fallback && sandboxID != "" {
+			prev, _ := prevFocusSandbox.Load(m.SSHTarget)
+			if prevID, _ := prev.(string); prevID != sandboxID {
+				slog.Info("portfwd focus: focused sandbox changed", "target", m.SSHTarget, "sandbox_id", sandboxID)
+				prevFocusSandbox.Store(m.SSHTarget, sandboxID)
+			}
+		} else {
+			prevFocusSandbox.Delete(m.SSHTarget)
+		}
+		focused := filterToFocused(combined.ForwardsState.Forwards, sandboxID, fallback)
 		var desired []portfwd.Listener
 		for _, fwd := range focused {
 			if fwd.Status == "live" || fwd.Status == "pending" {
@@ -213,132 +206,69 @@ type RemoteForwardsState struct {
 	Forwards []RemoteForwardEntry `json:"forwards"`
 }
 
+type RemoteCombinedState struct {
+	ForwardsState RemoteForwardsState
+	FocusState    portfwd.FocusState
+	FocusMissing  bool
+}
+
+func remoteFocusStateFileShell() string {
+	return "${XDG_STATE_HOME:-$HOME/.local/state}/nexus3/portfwd/focus.state"
+}
+
 // RemoteStateReadCommand returns the single remote command string.
 // ONE argv element on purpose: ssh joins args with spaces, so a split
 // {"sh","-c","cat <file>"} becomes `sh -c cat <file>` — cat reads stdin
 // instead of the file (live bug 2026-09-15, engine-03 ↔ macOS herdr client).
+// Sections are separated by a line containing exactly ---nexus3-focus--- so the
+// parser can split them without ambiguity.
 func RemoteStateReadCommand() string {
-	return "cat " + portfwd.RemoteStateFileShell() + " 2>/dev/null || echo '{\"forwards\":[]}'"
+	return "cat " + portfwd.RemoteStateFileShell() + " 2>/dev/null || echo '{\"forwards\":[]}'; echo; echo ---nexus3-focus---; cat " + remoteFocusStateFileShell() + " 2>/dev/null; true"
 }
 
-func ReadRemoteForwardsState(ctx context.Context, ctlPath, target string) (*RemoteForwardsState, error) {
+func ReadRemoteCombinedState(ctx context.Context, ctlPath, target string) (*RemoteCombinedState, error) {
+	return readRemoteCombinedStateWithRunner(ctx, ctlPath, target, portfwd.OSRunner)
+}
+
+func readRemoteCombinedStateWithRunner(ctx context.Context, ctlPath, target string, runner portfwd.Runner) (*RemoteCombinedState, error) {
 	argv := ExecArgv(target, ctlPath, RemoteStateReadCommand())
-	stdout, _, code, err := portfwd.OSRunner(ctx, argv)
+	stdout, _, code, err := runner(ctx, argv)
 	if err != nil {
 		return nil, fmt.Errorf("ssh cat: %w", err)
 	}
 	if code != 0 {
 		return nil, fmt.Errorf("ssh cat: exit %d", code)
 	}
-	var state RemoteForwardsState
-	if err := json.Unmarshal([]byte(stdout), &state); err != nil {
-		return nil, fmt.Errorf("parse state: %w", err)
-	}
-	return &state, nil
+	return parseRemoteCombinedState(stdout)
 }
 
-func resolveFocusedSandboxID(ctx context.Context, herdrBin, session, ctlPath, target string, runner portfwd.Runner) (string, bool) {
-	workspaceID, err := resolveFocusedWorkspaceID(ctx, session, ctlPath, target, runner)
+func parseRemoteCombinedState(output string) (*RemoteCombinedState, error) {
+	const sep = "\n---nexus3-focus---\n"
+	idx := strings.Index(output, sep)
+	var forwardsPart, focusPart string
+	if idx < 0 {
+		forwardsPart = strings.TrimSpace(output)
+		focusPart = ""
+	} else {
+		forwardsPart = strings.TrimSpace(output[:idx])
+		focusPart = strings.TrimSpace(output[idx+len(sep):])
+	}
+	if forwardsPart == "" {
+		forwardsPart = `{"forwards":[]}`
+	}
+	var combined RemoteCombinedState
+	if err := json.Unmarshal([]byte(forwardsPart), &combined.ForwardsState); err != nil {
+		return nil, fmt.Errorf("parse forwards state: %w", err)
+	}
+	if focusPart == "" {
+		combined.FocusMissing = true
+		return &combined, nil
+	}
+	fs, err := portfwd.ParseFocusState([]byte(focusPart))
 	if err != nil {
-		warnFallbackOnce(target, "workspace", "portfwd focus: workspace list failed, using all rows", "target", target, "err", err)
-		return "", true
+		combined.FocusMissing = true
+		return &combined, nil
 	}
-	clearFallback(target, "workspace")
-	if workspaceID == "" {
-		slog.Debug("portfwd focus: no focused workspace, no forwards", "target", target)
-		return "", false
-	}
-	sandboxID, err := resolveRemoteSandboxIDForWorkspace(ctx, ctlPath, target, workspaceID, runner)
-	if err != nil {
-		warnFallbackOnce(target, "sandbox_id", "portfwd focus: remote sandbox_id lookup failed, using all rows", "target", target, "workspace_id", workspaceID, "err", err)
-		return "", true
-	}
-	clearFallback(target, "sandbox_id")
-	if sandboxID == "" {
-		infoKey := target + "\x00" + workspaceID
-		logInfoOnce(infoKey, "portfwd focus: focused workspace has no nexus3 binding; mirroring all forwards",
-			"workspace_id", workspaceID, "session", session, "target", target)
-		return "", true
-	}
-	clearInfoOnce(target + "\x00" + workspaceID)
-	return sandboxID, false
-}
-
-func remoteHerdrWorkspaceListCmd(session string) string {
-	base := "workspace list"
-	if session != "" {
-		base = "--session " + session + " " + base
-	}
-	return `"$HOME/.local/bin/herdr" ` + base + ` 2>/dev/null || herdr ` + base
-}
-
-func resolveFocusedWorkspaceID(ctx context.Context, session, ctlPath, target string, runner portfwd.Runner) (string, error) {
-	argv := ExecArgv(target, ctlPath, remoteHerdrWorkspaceListCmd(session))
-	stdout, _, code, err := runner(ctx, argv)
-	if err != nil {
-		return "", fmt.Errorf("herdr workspace list (remote): %w", err)
-	}
-	if code != 0 {
-		return "", fmt.Errorf("herdr workspace list (remote): exit %d", code)
-	}
-	return parseFocusedWorkspaceID([]byte(stdout))
-}
-
-func parseFocusedWorkspaceID(data []byte) (string, error) {
-	var resp struct {
-		Result struct {
-			Workspaces []struct {
-				WorkspaceID string `json:"workspace_id"`
-				Focused     bool   `json:"focused"`
-			} `json:"workspaces"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return "", fmt.Errorf("parse workspace list: %w", err)
-	}
-	for _, ws := range resp.Result.Workspaces {
-		if ws.Focused {
-			return ws.WorkspaceID, nil
-		}
-	}
-	return "", nil
-}
-
-// remoteNexus3HerdrListCmd returns the shell command to run `nexus3 herdr list`
-// over non-interactive SSH. Tries $HOME/.local/bin/nexus3 first (absent from
-// non-interactive PATH on Debian/Ubuntu), then falls back to the bare name.
-func remoteNexus3HerdrListCmd() string {
-	return `"$HOME/.local/bin/nexus3" herdr list 2>/dev/null || nexus3 herdr list`
-}
-
-func resolveRemoteSandboxIDForWorkspace(ctx context.Context, ctlPath, target, workspaceID string, runner portfwd.Runner) (string, error) {
-	argv := ExecArgv(target, ctlPath, remoteNexus3HerdrListCmd())
-	stdout, _, code, err := runner(ctx, argv)
-	if err != nil {
-		return "", fmt.Errorf("nexus3 herdr list: %w", err)
-	}
-	if code != 0 {
-		return "", fmt.Errorf("nexus3 herdr list: exit %d", code)
-	}
-	return parseSandboxIDFromSpaceList(stdout, workspaceID), nil
-}
-
-func parseSandboxIDFromSpaceList(output, workspaceID string) string {
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "(") {
-			continue
-		}
-		fields := make(map[string]string)
-		for _, part := range strings.Split(line, "\t") {
-			k, v, ok := strings.Cut(part, "=")
-			if ok {
-				fields[k] = v
-			}
-		}
-		if fields["workspace_id"] == workspaceID {
-			return fields["sandbox_id"]
-		}
-	}
-	return ""
+	combined.FocusState = fs
+	return &combined, nil
 }

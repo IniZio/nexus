@@ -3,11 +3,11 @@ package clientagent
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/IniZio/nexus3/internal/core/portfwd"
 )
@@ -23,8 +23,15 @@ func TestRemoteStateReadCommand_SurvivesSSHArgvJoin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("remote command failed: %v", err)
 	}
-	if strings.TrimSpace(string(out)) != `{"forwards":[]}` {
-		t.Errorf("absent state must read as empty forwards, got %q", out)
+	combined, err := parseRemoteCombinedState(string(out))
+	if err != nil {
+		t.Fatalf("parseRemoteCombinedState: %v", err)
+	}
+	if len(combined.ForwardsState.Forwards) != 0 {
+		t.Errorf("absent forwards.state must read as empty, got %v", combined.ForwardsState.Forwards)
+	}
+	if !combined.FocusMissing {
+		t.Error("absent focus.state must result in FocusMissing=true")
 	}
 }
 
@@ -75,81 +82,26 @@ func TestFilterToFocused(t *testing.T) {
 	}
 }
 
-func TestParseFocusedWorkspaceID(t *testing.T) {
-	data := []byte(`{"result":{"workspaces":[
-		{"workspace_id":"w1","focused":false},
-		{"workspace_id":"w2","focused":true},
-		{"workspace_id":"w3","focused":false}
-	]}}`)
-	id, err := parseFocusedWorkspaceID(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if id != "w2" {
-		t.Errorf("got %q, want %q", id, "w2")
+func TestWarnFallbackOnce_FiresOnce(t *testing.T) {
+	target, kind := t.Name(), "workspace"
+	fallbackWarned.Delete(target + "\x00" + kind)
+
+	for i := 0; i < 3; i++ {
+		warnFallbackOnce(target, kind, "test warn", "i", i)
 	}
 
-	none := []byte(`{"result":{"workspaces":[{"workspace_id":"w1","focused":false}]}}`)
-	id, err = parseFocusedWorkspaceID(none)
-	if err != nil {
-		t.Fatal(err)
+	if _, ok := fallbackWarned.Load(target + "\x00" + kind); !ok {
+		t.Error("fallbackWarned key should be set after first warn")
 	}
-	if id != "" {
-		t.Errorf("no focused workspace: got %q, want empty", id)
+
+	clearFallback(target, kind)
+	if _, ok := fallbackWarned.Load(target + "\x00" + kind); ok {
+		t.Error("fallbackWarned key should be cleared after clearFallback")
 	}
 }
 
-func TestParseSandboxIDFromSpaceList(t *testing.T) {
-	output := "label=foo\tworkspace_id=w1\thandle=worktree/main\tsandbox_id=sb-AAA\tpane_id=p1\n" +
-		"label=bar\tworkspace_id=w2\thandle=worktree/dev\tsandbox_id=sb-BBB\tpane_id=p2\n"
-
-	if got := parseSandboxIDFromSpaceList(output, "w1"); got != "sb-AAA" {
-		t.Errorf("w1: got %q, want %q", got, "sb-AAA")
-	}
-	if got := parseSandboxIDFromSpaceList(output, "w2"); got != "sb-BBB" {
-		t.Errorf("w2: got %q, want %q", got, "sb-BBB")
-	}
-	if got := parseSandboxIDFromSpaceList(output, "w99"); got != "" {
-		t.Errorf("missing workspace: got %q, want empty", got)
-	}
-	if got := parseSandboxIDFromSpaceList("(no herdr space bindings)\n", "w1"); got != "" {
-		t.Errorf("no bindings line: got %q, want empty", got)
-	}
-}
-
-func TestTick_FocusScoping(t *testing.T) {
-	ctx := context.Background()
-	stateDir := t.TempDir()
-
-	machineJSON := `[{"id":"m1","target":"host1","enabled":true,"session":"s1"}]`
-	origExec := ExecCommandContext
-	ExecCommandContext = func(_ context.Context, name string, args ...string) *exec.Cmd {
-		return exec.Command("printf", "%s", machineJSON)
-	}
-	t.Cleanup(func() { ExecCommandContext = origExec })
-
-	origReader := RemoteStateReader
-	RemoteStateReader = func(_ context.Context, _, _ string) (*RemoteForwardsState, error) {
-		return &RemoteForwardsState{Forwards: []RemoteForwardEntry{
-			{Port: 3000, Sandbox: "sandbox-A", Status: "live"},
-			{Port: 4000, Sandbox: "sandbox-B", Status: "live"},
-		}}, nil
-	}
-	t.Cleanup(func() { RemoteStateReader = origReader })
-
-	tick := 0
-	origResolver := DefaultFocusResolver
-	DefaultFocusResolver = func(_ context.Context, _, _, _, _ string, _ portfwd.Runner) (string, bool) {
-		tick++
-		if tick == 1 {
-			return "sandbox-A", false
-		}
-		return "sandbox-B", false
-	}
-	t.Cleanup(func() { DefaultFocusResolver = origResolver })
-
-	var applied, cancelled []uint16
-	fakeRun := func(_ context.Context, argv []string) (string, string, int, error) {
+func makeFakeRun(applied, cancelled *[]uint16) portfwd.Runner {
+	return func(_ context.Context, argv []string) (string, string, int, error) {
 		if len(argv) >= 3 && argv[1] == "-O" {
 			switch argv[2] {
 			case "check":
@@ -160,9 +112,9 @@ func TestTick_FocusScoping(t *testing.T) {
 						portStr, _, _ := strings.Cut(argv[i+1], ":")
 						p, _ := strconv.ParseUint(portStr, 10, 16)
 						if argv[2] == "forward" {
-							applied = append(applied, uint16(p))
+							*applied = append(*applied, uint16(p))
 						} else {
-							cancelled = append(cancelled, uint16(p))
+							*cancelled = append(*cancelled, uint16(p))
 						}
 					}
 				}
@@ -174,8 +126,41 @@ func TestTick_FocusScoping(t *testing.T) {
 		}
 		return "", "", 0, nil
 	}
+}
+
+func TestTick_FocusScoping(t *testing.T) {
+	ctx := context.Background()
+	stateDir := t.TempDir()
+
+	machineJSON := `[{"id":"m1","target":"host1","enabled":true,"session":"s1"}]`
+	origExec := ExecCommandContext
+	ExecCommandContext = func(_ context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.Command("printf", "%s", machineJSON)
+	}
+	t.Cleanup(func() { ExecCommandContext = origExec })
+
+	tick := 0
+	fwds := RemoteForwardsState{Forwards: []RemoteForwardEntry{
+		{Port: 3000, Sandbox: "sandbox-A", Status: "live"},
+		{Port: 4000, Sandbox: "sandbox-B", Status: "live"},
+	}}
+	origReader := RemoteStateReader
+	RemoteStateReader = func(_ context.Context, _, _ string) (*RemoteCombinedState, error) {
+		tick++
+		sb := "sandbox-A"
+		if tick > 1 {
+			sb = "sandbox-B"
+		}
+		return &RemoteCombinedState{
+			ForwardsState: fwds,
+			FocusState:    portfwd.FocusState{SandboxID: sb},
+		}, nil
+	}
+	t.Cleanup(func() { RemoteStateReader = origReader })
+
+	var applied, cancelled []uint16
 	origRunner := ForwarderRunner
-	ForwarderRunner = fakeRun
+	ForwarderRunner = makeFakeRun(&applied, &cancelled)
 	t.Cleanup(func() { ForwarderRunner = origRunner })
 
 	managers := make(map[string]*portfwd.Manager)
@@ -214,42 +199,20 @@ func TestTick_FocusFallback_UsesAllRows(t *testing.T) {
 	t.Cleanup(func() { ExecCommandContext = origExec })
 
 	origReader := RemoteStateReader
-	RemoteStateReader = func(_ context.Context, _, _ string) (*RemoteForwardsState, error) {
-		return &RemoteForwardsState{Forwards: []RemoteForwardEntry{
-			{Port: 3000, Sandbox: "sandbox-A", Status: "live"},
-			{Port: 4000, Sandbox: "sandbox-B", Status: "live"},
-		}}, nil
+	RemoteStateReader = func(_ context.Context, _, _ string) (*RemoteCombinedState, error) {
+		return &RemoteCombinedState{
+			ForwardsState: RemoteForwardsState{Forwards: []RemoteForwardEntry{
+				{Port: 3000, Sandbox: "sandbox-A", Status: "live"},
+				{Port: 4000, Sandbox: "sandbox-B", Status: "live"},
+			}},
+			FocusMissing: true,
+		}, nil
 	}
 	t.Cleanup(func() { RemoteStateReader = origReader })
 
-	origResolver := DefaultFocusResolver
-	DefaultFocusResolver = func(_ context.Context, _, _, _, _ string, _ portfwd.Runner) (string, bool) {
-		return "", true // fallback
-	}
-	t.Cleanup(func() { DefaultFocusResolver = origResolver })
-
-	var applied []uint16
-	fakeRun := func(_ context.Context, argv []string) (string, string, int, error) {
-		if len(argv) >= 3 && argv[1] == "-O" && argv[2] == "check" {
-			return "", "", 0, nil
-		}
-		if len(argv) >= 3 && argv[1] == "-O" && argv[2] == "forward" {
-			for i, a := range argv {
-				if a == "-L" && i+1 < len(argv) {
-					portStr, _, _ := strings.Cut(argv[i+1], ":")
-					p, _ := strconv.ParseUint(portStr, 10, 16)
-					applied = append(applied, uint16(p))
-				}
-			}
-			return "", "", 0, nil
-		}
-		if len(argv) >= 2 && argv[1] == "-ltn" {
-			return "", "", 0, nil
-		}
-		return "", "", 0, nil
-	}
+	var applied, cancelled []uint16
 	origRunner := ForwarderRunner
-	ForwarderRunner = fakeRun
+	ForwarderRunner = makeFakeRun(&applied, &cancelled)
 	t.Cleanup(func() { ForwarderRunner = origRunner })
 
 	managers := make(map[string]*portfwd.Manager)
@@ -261,160 +224,105 @@ func TestTick_FocusFallback_UsesAllRows(t *testing.T) {
 	}
 }
 
-// MUTATION TARGET: change resolveFocusedWorkspaceID to use ExecCommandContext instead of runner → capturedArgv empty → RED.
-func TestResolveFocusedWorkspaceID_UsesSSHArgv(t *testing.T) {
-	resp := `{"result":{"workspaces":[{"workspace_id":"w1","focused":true}]}}`
-	var capturedArgv []string
+// F2-AC1: one tick issues exactly ONE ssh argv through the ControlMaster
+// that names both forwards.state and focus.state.
+func TestReadRemoteCombinedState_OneArgvNamesBothFiles(t *testing.T) {
+	var calls [][]string
 	fakeRunner := func(_ context.Context, argv []string) (string, string, int, error) {
-		capturedArgv = argv
-		return resp, "", 0, nil
+		calls = append(calls, argv)
+		return "{\"forwards\":[]}\n---nexus3-focus---\n", "", 0, nil
 	}
-
-	ctx := context.Background()
-	id, err := resolveFocusedWorkspaceID(ctx, "mysession", "/fake.ctl", "myhost", fakeRunner)
+	_, err := readRemoteCombinedStateWithRunner(context.Background(), "/fake.ctl", "myhost", fakeRunner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id != "w1" {
-		t.Errorf("got %q, want w1", id)
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly 1 ssh call, got %d", len(calls))
+	}
+	last := calls[0][len(calls[0])-1]
+	if !strings.Contains(last, "forwards.state") {
+		t.Errorf("argv %q does not name forwards.state", last)
+	}
+	if !strings.Contains(last, "focus.state") {
+		t.Errorf("argv %q does not name focus.state", last)
+	}
+}
+
+// F2-AC3: missing focus.state and sandbox_id=="" each fall back to all rows.
+func TestFocusFromCombined_FallbackCases(t *testing.T) {
+	cases := []struct {
+		name     string
+		combined RemoteCombinedState
+	}{
+		{
+			name:     "missing focus.state",
+			combined: RemoteCombinedState{FocusMissing: true},
+		},
+		{
+			name:     "sandbox_id empty",
+			combined: RemoteCombinedState{FocusState: portfwd.FocusState{SandboxID: ""}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sandboxID, fallback := focusFromCombined(&tc.combined, "target")
+			if sandboxID != "" || !fallback {
+				t.Errorf("%s: got (%q, %v), want (\"\", true)", tc.name, sandboxID, fallback)
+			}
+		})
+	}
+}
+
+// MUTATION TARGET: remove remoteFocusStateFileShell() from RemoteStateReadCommand
+// → "focus.state" absent from lastArg → RED.
+func TestReadRemoteCombinedState_ArgvContainsFocusStatePath(t *testing.T) {
+	var capturedArgv []string
+	fakeRunner := func(_ context.Context, argv []string) (string, string, int, error) {
+		capturedArgv = argv
+		return "{\"forwards\":[]}\n---nexus3-focus---\n", "", 0, nil
+	}
+	_, err := readRemoteCombinedStateWithRunner(context.Background(), "/fake.ctl", "myhost", fakeRunner)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if len(capturedArgv) == 0 {
 		t.Fatal("runner was not called")
 	}
 	if capturedArgv[0] != "ssh" {
-		t.Errorf("argv[0]=%q, want ssh — workspace list must go through SSH runner", capturedArgv[0])
+		t.Errorf("argv[0]=%q, want ssh", capturedArgv[0])
 	}
-	lastArg := capturedArgv[len(capturedArgv)-1]
-	if !strings.Contains(lastArg, "--session mysession") {
-		t.Errorf("remote command %q does not contain --session mysession", lastArg)
+	last := capturedArgv[len(capturedArgv)-1]
+	if !strings.Contains(last, "focus.state") {
+		t.Errorf("remote command %q does not name focus.state", last)
 	}
-	if !strings.Contains(lastArg, "$HOME/.local/bin/herdr") {
-		t.Errorf("remote command %q does not try $HOME/.local/bin/herdr first", lastArg)
+	if !strings.Contains(last, "forwards.state") {
+		t.Errorf("remote command %q does not name forwards.state", last)
 	}
+}
 
-	capturedArgv = nil
-	id, err = resolveFocusedWorkspaceID(ctx, "", "/fake.ctl", "myhost", fakeRunner)
+func TestParseRemoteCombinedState_FocusFilters(t *testing.T) {
+	fwdJSON := `{"forwards":[{"port":3000,"sandbox":"sb1","status":"live"},{"port":4000,"sandbox":"sb2","status":"live"}]}`
+	focusJSON := `{"workspace_id":"w1","sandbox_id":"sb1","session":"","updated_at":"` + time.Now().Format(time.RFC3339) + `"}`
+	input := fwdJSON + "\n---nexus3-focus---\n" + focusJSON
+
+	combined, err := parseRemoteCombinedState(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id != "w1" {
-		t.Errorf("got %q, want w1", id)
+	if combined.FocusMissing {
+		t.Error("focus.state present: FocusMissing must be false")
 	}
-	lastArg = capturedArgv[len(capturedArgv)-1]
-	if strings.Contains(lastArg, "--session") {
-		t.Errorf("empty session: --session must not appear in remote command %q", lastArg)
-	}
-}
-
-func TestResolveFocusedSandboxID_UnboundFocus_Fallback(t *testing.T) {
-	workspaceListResp := `{"result":{"workspaces":[{"workspace_id":"w99","focused":true}]}}`
-	fakeRunner := func(_ context.Context, argv []string) (string, string, int, error) {
-		lastArg := argv[len(argv)-1]
-		if strings.Contains(lastArg, "workspace list") {
-			return workspaceListResp, "", 0, nil
-		}
-		return "(no herdr space bindings)\n", "", 0, nil
+	if combined.FocusState.SandboxID != "sb1" {
+		t.Errorf("FocusState.SandboxID: got %q, want sb1", combined.FocusState.SandboxID)
 	}
 
-	infoKey := "host99\x00w99"
-	infoFiredOnce.Delete(infoKey)
-	t.Cleanup(func() { infoFiredOnce.Delete(infoKey) })
-
-	sandboxID, fallback := resolveFocusedSandboxID(context.Background(), "", "sess1", "/fake.ctl", "host99", fakeRunner)
-	if sandboxID != "" || !fallback {
-		t.Errorf("unbound focus: got (%q, %v), want (\"\", true)", sandboxID, fallback)
-	}
-	if _, ok := infoFiredOnce.Load(infoKey); !ok {
-		t.Error("infoFiredOnce key not set: logInfoOnce must fire on unbound focus")
+	sandboxID, fallback := focusFromCombined(combined, "target")
+	if fallback || sandboxID != "sb1" {
+		t.Errorf("focusFromCombined: got (%q, %v), want (sb1, false)", sandboxID, fallback)
 	}
 
-	secondID, secondFallback := resolveFocusedSandboxID(context.Background(), "", "sess1", "/fake.ctl", "host99", fakeRunner)
-	if secondID != "" || !secondFallback {
-		t.Errorf("second call: got (%q, %v), want (\"\", true)", secondID, secondFallback)
+	filtered := filterToFocused(combined.ForwardsState.Forwards, sandboxID, fallback)
+	if len(filtered) != 1 || filtered[0].Port != 3000 {
+		t.Errorf("filter to sb1: got %v, want [{3000 sb1 live}]", filtered)
 	}
-}
-
-func TestRemoteNexus3HerdrListCmd_PathFallback(t *testing.T) {
-	cmd := remoteNexus3HerdrListCmd()
-	if !strings.Contains(cmd, `"$HOME/.local/bin/nexus3"`) {
-		t.Errorf("command does not try $HOME/.local/bin/nexus3 first: %q", cmd)
-	}
-	if !strings.Contains(cmd, "|| nexus3 herdr list") {
-		t.Errorf("command has no bare-name fallback: %q", cmd)
-	}
-}
-
-// MUTATION TARGET: remoteNexus3HerdrListCmd return value → "nexus3 herdr list" → RED.
-func TestResolveRemoteSandboxIDForWorkspace_ArgvContainsLocalBin(t *testing.T) {
-	var capturedArgv []string
-	fakeRunner := func(_ context.Context, argv []string) (string, string, int, error) {
-		capturedArgv = argv
-		return "workspace_id=ws1\thandle=worktree/main\tsandbox_id=sb-RESOLVED\n", "", 0, nil
-	}
-	ctx := context.Background()
-	sandboxID, err := resolveRemoteSandboxIDForWorkspace(ctx, "/fake.ctl", "myhost", "ws1", fakeRunner)
-	if err != nil {
-		t.Fatalf("resolveRemoteSandboxIDForWorkspace: %v", err)
-	}
-	if sandboxID != "sb-RESOLVED" {
-		t.Errorf("sandboxID: got %q, want sb-RESOLVED", sandboxID)
-	}
-	if len(capturedArgv) == 0 {
-		t.Fatal("runner was not called")
-	}
-	lastArg := capturedArgv[len(capturedArgv)-1]
-	if !strings.Contains(lastArg, "$HOME/.local/bin/nexus3") {
-		t.Errorf("last argv element %q does not contain $HOME/.local/bin/nexus3 — "+
-			"remoteNexus3HerdrListCmd must try the local install path first", lastArg)
-	}
-}
-
-func TestParseSandboxIDFromSpaceList_ContractFixture(t *testing.T) {
-	data, err := os.ReadFile("testdata/herdr-list.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := parseSandboxIDFromSpaceList(string(data), "ws-abc"); got != "sb-01FIXTURE0000000000000000000A" {
-		t.Errorf("contract ws-abc: got %q, want sandbox id", got)
-	}
-	if got := parseSandboxIDFromSpaceList(string(data), "ws-def"); got != "sb-02FIXTURE0000000000000000000B" {
-		t.Errorf("contract ws-def: got %q, want sandbox id", got)
-	}
-	if got := parseSandboxIDFromSpaceList(string(data), "ws-missing"); got != "" {
-		t.Errorf("missing workspace: got %q, want empty", got)
-	}
-}
-
-func TestParseFocusedWorkspaceID_ContractFixture(t *testing.T) {
-	data, err := os.ReadFile("testdata/workspace-list.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, err := parseFocusedWorkspaceID(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if id != "ws-def" {
-		t.Errorf("contract: got %q, want %q", id, "ws-def")
-	}
-}
-
-func TestWarnFallbackOnce_FiresOnce(t *testing.T) {
-	var warned int
-	target, kind := t.Name(), "workspace"
-	fallbackWarned.Delete(target + "\x00" + kind)
-
-	for i := 0; i < 3; i++ {
-		warnFallbackOnce(target, kind, "test warn", "i", i)
-	}
-
-	if _, ok := fallbackWarned.Load(target + "\x00" + kind); !ok {
-		t.Error("fallbackWarned key should be set after first warn")
-	}
-
-	clearFallback(target, kind)
-	if _, ok := fallbackWarned.Load(target + "\x00" + kind); ok {
-		t.Error("fallbackWarned key should be cleared after clearFallback")
-	}
-	_ = warned
 }
