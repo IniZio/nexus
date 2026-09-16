@@ -99,7 +99,7 @@ jobs:
   # After this job, `grep -rn "herdr_live" Makefile .github/` returns non-empty
   # (AC-19b), satisfying the cheapest possible check that this ticket landed.
   herdr-live:
-    name: herdr-live (Tier 1 — manifest event names)
+    name: herdr-live (Tier 1 — manifest + install harness)
     runs-on: ubuntu-latest
 
     steps:
@@ -111,7 +111,7 @@ jobs:
           go-version: "1.26"
 
       # Install herdr at a pinned version with SHA-256 verification.
-      # The version is pinned to 0.8.0 — the version validated on this host.
+      # The version is pinned to 0.9.0 — required by plugins/herdr/herdr-plugin.toml min_herdr_version.
       # Update the pin (and SHA) when upgrading herdr; do not float to "latest"
       # because a schema change in the Subscription oneOf would silently break
       # the oracle this test depends on.
@@ -120,12 +120,12 @@ jobs:
       # Any error in this step aborts the job with a non-zero exit — the test
       # step never runs, and CI is red. A missing herdr binary must NOT result
       # in a skipped test (that is the fourth way to be green without testing).
-      - name: Install herdr 0.8.0 (pinned)
+      - name: Install herdr 0.9.0 (pinned)
         run: |
           set -eu
-          HERDR_VERSION="0.8.0"
+          HERDR_VERSION="0.9.0"
           HERDR_URL="https://github.com/herdrdev/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-x86_64"
-          HERDR_SHA256="b872ea7e40fa2cb17e857ac9b62b1bf26db7b403c622f5d2f3f5b35f6e9acd28"
+          HERDR_SHA256="4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f"
           mkdir -p "${HOME}/.local/bin"
           curl --fail --location --silent --show-error \
             -o "${HOME}/.local/bin/herdr" \
@@ -154,7 +154,7 @@ jobs:
           TMPDIR: /tmp
           NEXUS3_ALLOW_UNCAPPED: "1"
           NEXUS3_LIVE_REQUIRED: "1"
-        run: make test-herdr-live GOTEST_ARGS='-run TestHerdrPluginManifest'
+        run: make test-herdr-live GOTEST_ARGS='-v -run TestHerdrPluginManifest|TestHerdrPluginInstall|TestHerdrRefusalGuard|TestHerdrContract_WorkspaceListIsolated'
 
   # ── Integration tag, Tier 1 ────────────────────────────────────────────────
   # The //go:build integration tag guarded 44 files that had NEVER run: before
