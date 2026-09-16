@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"sync"
+	"time"
 
 	"github.com/IniZio/nexus3/internal/core/agent/agentpb"
 	"github.com/IniZio/nexus3/internal/core/agent/wire"
@@ -70,7 +73,7 @@ func (c *Client) Exec(ctx context.Context, opts ExecOptions) (int32, error) {
 		return 0, fmt.Errorf("agent: exec rpc: %w", err)
 	}
 
-	return runDataPump(ctx, c, pumpOpts{
+	code, err := runDataPump(ctx, c, pumpOpts{
 		sessionID:        sessionID,
 		resumeFromOffset: 0,
 		stdin:            opts.Stdin,
@@ -78,6 +81,38 @@ func (c *Client) Exec(ctx context.Context, opts ExecOptions) (int32, error) {
 		stderr:           opts.Stderr,
 		winsizeCh:        opts.WinsizeCh,
 	})
+	// Closing the data conn on cancel only closes the guest child's stdin;
+	// Exec owns the child it started, so terminate it. Attach never takes this path.
+	if err != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+		killSession(stub, sessionID)
+	}
+	return code, err
+}
+
+const (
+	sigTERM int32 = 15
+	sigKILL int32 = 9
+
+	killSessionGrace = 250 * time.Millisecond
+)
+
+// killSession sends SIGTERM, then SIGKILL after killSessionGrace, under a
+// fresh 2s background context. Best-effort: failures are logged, never returned.
+func killSession(stub agentpb.AgentServiceClient, sessionID string) {
+	kctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := stub.Signal(kctx, &agentpb.SignalRequest{SessionId: sessionID, Signum: sigTERM}); err != nil {
+		log.Printf("agent: exec: session %s: SIGTERM after cancel: %v", sessionID, err)
+		return
+	}
+	select {
+	case <-time.After(killSessionGrace):
+	case <-kctx.Done():
+		return
+	}
+	if _, err := stub.Signal(kctx, &agentpb.SignalRequest{SessionId: sessionID, Signum: sigKILL}); err != nil {
+		log.Printf("agent: exec: session %s: SIGKILL after cancel: %v", sessionID, err)
+	}
 }
 
 // pumpOpts configures the shared data-plane pump.
