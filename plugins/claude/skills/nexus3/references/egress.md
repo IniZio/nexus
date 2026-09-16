@@ -185,6 +185,30 @@ egress:
     - pypi.org
 ```
 
+### allow vs policy — a host is one or the other, never both
+
+- `egress.allow` — **open passthrough**: any path, any method, no credential. Use it for
+  package registries, image registries, apt mirrors, CDNs (`pypi.org`, `registry-1.docker.io`,
+  `deb.debian.org`, `codeload.github.com`).
+- `egress.policy` / `egress.secrets[].hosts` — **policy-gated**: default-deny path allowlist,
+  credential brokered by the MITM. Use it for every host that receives a token
+  (`github.com`, `api.github.com`, `gitlab.com`, ...).
+
+The policy layer takes precedence, so an `allow` entry for a policy-gated host is silently
+inert — the file claims open access the perimeter does not grant. `config.Load` rejects such a
+file at parse time, comparing hostnames case-insensitively:
+
+```text
+nexus3 config: host "github.com" is listed under egress.allow and egress.policy; a host can be open (allow) or policy-gated (policy/secrets), not both — remove it from egress.allow
+```
+
+**GitHub release tarballs need no `allow` entry.** On policy-gated `github.com`, `GET`/`HEAD`
+on `/<owner>/<repo>/archive/*` and `/<owner>/<repo>/releases/download/*` are permitted for
+ANY repository (credential stripped, not swapped). A `wget https://github.com/org/tool/archive/v1.zip`
+from the guest works with `github.com` under `policy` only. The redirect target
+`codeload.github.com` is never policy-gated, so list it under `allow` if the download follows
+the redirect.
+
 **Hard rule:** never add `/graphql` under `api.github.com` paths. The GitHub GraphQL endpoint
 is a parallel write channel; the `nexus3-github-token-sole-bound` MEMORY note documents why
 this matters. The MITM returns 403 for GraphQL even if listed (`service.go:971-977` backstop
@@ -269,7 +293,8 @@ All providers share the same model:
 2. For GitHub hosts: also add `egress.policy` entries with specific paths.
 3. For non-GitHub hosts: path policy is optional.
 4. The MITM proxy handles the swap; the guest always sees a placeholder.
-5. List the hosts in `egress.allow` as well (inert today, documents intent).
+5. Do NOT list the same hosts in `egress.allow` — the loader rejects the file (see
+   "allow vs policy" above).
 
 ---
 

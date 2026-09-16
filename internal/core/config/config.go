@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -478,12 +479,46 @@ func parse(data []byte) (Config, error) {
 			v, MinSupportedVersion, SupportedVersion,
 		)
 	}
+	if err := validateEgressHostOverlap(fc.Egress); err != nil {
+		return Config{}, err
+	}
 	return Config{
 		Egress:  fc.Egress,
 		Sandbox: fc.Sandbox,
 		Image:   fc.Image,
 		Builder: fc.Builder,
 	}, nil
+}
+
+// validateEgressHostOverlap rejects a config that lists the same host under
+// egress.allow (open passthrough) and under egress.policy or
+// egress.secrets[].hosts (policy-gated). The wiring layer gives policy
+// precedence, so the allow entry would be silently inert — the file would
+// claim open access the perimeter does not grant. Hostnames compare
+// case-insensitively.
+func validateEgressHostOverlap(eg EgressConfig) error {
+	gated := make(map[string]string)
+	for _, p := range eg.Policy {
+		gated[strings.ToLower(p.Host)] = "egress.policy"
+	}
+	for _, s := range eg.Secrets {
+		for _, h := range s.Hosts {
+			key := strings.ToLower(h)
+			if _, seen := gated[key]; !seen {
+				gated[key] = "egress.secrets"
+			}
+		}
+	}
+	for _, h := range eg.Allow {
+		if where, ok := gated[strings.ToLower(h)]; ok {
+			return fmt.Errorf(
+				"nexus3 config: host %q is listed under egress.allow and %s; "+
+					"a host can be open (allow) or policy-gated (policy/secrets), not both — remove it from egress.allow",
+				h, where,
+			)
+		}
+	}
+	return nil
 }
 
 // Parse decodes YAML data into a Config, rejecting any unknown keys.

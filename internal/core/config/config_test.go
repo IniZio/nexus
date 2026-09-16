@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus3/internal/core/config"
@@ -916,6 +917,59 @@ func TestParse_EqualsLoad_ForIdenticalBytes(t *testing.T) {
 		if len(p.Hosts) != len(l.Hosts) {
 			t.Errorf("Secrets[0].Hosts: Parse=%v Load=%v", p.Hosts, l.Hosts)
 		}
+	}
+}
+
+func TestParse_EgressAllowOverlap(t *testing.T) {
+	cases := []struct {
+		name     string
+		yaml     string
+		wantHost string
+		wantList string
+	}{
+		{
+			name:     "allow+policy overlap",
+			yaml:     "version: 1\negress:\n  allow: [pypi.org, github.com]\n  policy:\n    - host: github.com\n      paths: [\"/o/r/**\"]\n",
+			wantHost: "github.com", wantList: "egress.policy",
+		},
+		{
+			name:     "allow+secrets hosts overlap",
+			yaml:     "version: 1\negress:\n  allow: [api.github.com]\n  secrets:\n    - GH_TOKEN@api.github.com\n",
+			wantHost: "api.github.com", wantList: "egress.secrets",
+		},
+		{
+			name:     "case difference still detected",
+			yaml:     "version: 1\negress:\n  allow: [GitHub.COM]\n  policy:\n    - host: github.com\n      paths: [\"/o/r/**\"]\n",
+			wantHost: "GitHub.COM", wantList: "egress.policy",
+		},
+		{
+			name: "disjoint hosts ok",
+			yaml: "version: 1\negress:\n  allow: [codeload.github.com, pypi.org]\n  policy:\n    - host: github.com\n      paths: [\"/o/r/**\"]\n  secrets:\n    - GH_TOKEN@api.github.com\n",
+		},
+		{
+			name: "policy and secrets may share a host",
+			yaml: "version: 1\negress:\n  policy:\n    - host: api.github.com\n      paths: [\"/repos/o/r/**\"]\n  secrets:\n    - GH_TOKEN@api.github.com\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := config.Parse([]byte(tc.yaml))
+			if tc.wantHost == "" {
+				if err != nil {
+					t.Fatalf("want ok, got %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("want error naming host %q, got nil", tc.wantHost)
+			}
+			msg := err.Error()
+			for _, want := range []string{`"` + tc.wantHost + `"`, "egress.allow", tc.wantList, "remove it from egress.allow"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("error %q missing %q", msg, want)
+				}
+			}
+		})
 	}
 }
 

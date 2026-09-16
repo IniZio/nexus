@@ -106,6 +106,8 @@ Rotating a credential used via `--secret` takes effect for any sandbox created a
 
 On `github.com` itself, git smart-HTTP (`info/refs`, `git-upload-pack`, `git-receive-pack`) is permitted only for the bound repo. Public artifact downloads — `GET`/`HEAD` on `/<owner>/<repo>/archive/*` and `/<owner>/<repo>/releases/download/*` — are permitted for any repository, the same trust level as `codeload.github.com` they redirect to. Those requests carry no credential upstream: the MITM strips the `GH_TOKEN` placeholder instead of swapping it, so `curl -L https://github.com/<org>/<repo>/archive/<tag>.zip` works from inside the guest without exposing the host token to a foreign repository.
 
+A host is either open or policy-gated, never both. `.nexus/config.yaml` may not list the same host under `egress.allow` (open passthrough) and under `egress.policy` or `egress.secrets[].hosts` (default-deny path allowlist, credential brokered). The policy layer takes precedence, so such an `allow` entry would be inert while the file claims open access; the config loader rejects it at parse time, case-insensitively, with `nexus3 config: host "<host>" is listed under egress.allow and egress.policy; a host can be open (allow) or policy-gated (policy/secrets), not both — remove it from egress.allow`. Because public archive and release downloads are already permitted on policy-gated `github.com`, no `allow` entry is needed for release tarballs; `codeload.github.com` may still be listed under `allow` since it is never policy-gated.
+
 :::warning `gh pr create` is refused
 `gh pr create` uses GitHub's GraphQL API, which the perimeter denies (GraphQL default-deny). Create PRs with the REST form:
 

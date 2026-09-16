@@ -116,6 +116,14 @@ Flag precedence: explicit CLI flags win over `.nexus/config.yaml` values; `.nexu
 
 `egress.allow` is **additive** — config hosts are unioned with `--allow-host` flags; neither replaces the other.
 
+A host is **either open or policy-gated, never both.** A host listed under `egress.allow` is open passthrough (any path, no credential). A host listed under `egress.policy` or `egress.secrets[].hosts` is policy-gated: default-deny on paths, credential brokered. Because the policy layer takes precedence, an `allow` entry for a policy-gated host would be silently inert — the file would claim open access the perimeter does not grant. `config.Load` therefore rejects the file at parse time (hostnames compare case-insensitively):
+
+```text
+nexus3 config: host "github.com" is listed under egress.allow and egress.policy; a host can be open (allow) or policy-gated (policy/secrets), not both — remove it from egress.allow
+```
+
+For policy-gated `github.com`, public archive and release downloads (`/<owner>/<repo>/archive/...`, `/<owner>/<repo>/releases/download/...`) are already permitted without an `allow` entry; see [Egress and perimeter](../security/egress-and-perimeter.md#github-and-the-request-allowlist).
+
 `sandbox.mounts` is **replaced** by any explicit `--mount` flag on the command line. To use both, list all mounts in `.nexus/config.yaml` and omit `--mount` on the command line.
 
 ### Config source for worktree sandboxes
