@@ -20,13 +20,18 @@ over session infrastructure, and a `systemd-run` scope with `MemoryHigh`/
 `MemoryMax` so a runaway suite dies inside its own cgroup. See the comment block
 above the `build` target in the Makefile.
 
-Need a single package? Wrap it the same way rather than dropping the guards:
+Need a single package or test? Narrow the run — do not run the whole tree, and
+do **not** lower `GOTEST_P`/`GOTEST_PARALLEL`; the memory cap is what makes the
+run safe, and lowering parallelism only makes it ~2x slower:
 
-    make test GOTEST_P=1 GOTEST_PARALLEL=1
+    make test GOTEST_PKGS=./internal/cli/
+    make test GOTEST_PKGS=./internal/cli/ GOTEST_ARGS='-run TestHerdrPluginABI'
 
-Have real headroom and want speed? Raise the caps explicitly:
+The defaults (`-p 8 -parallel 4`) are measured: the full untagged suite peaks
+at ~1.5 GiB under a 10 GiB cap and finishes in ~107s, bounded by `internal/cli`
+alone. Have real headroom and want a bigger cap? Raise it explicitly:
 
-    make test GOTEST_P=6 GOTEST_MEM_MAX=24G
+    make test GOTEST_MEM_MAX=24G
 
 ### `make build` produces no binary
 

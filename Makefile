@@ -55,14 +55,29 @@ proto:
 # sessions. Raising GOTEST_MEM_MAX much past 12G leaves the rest of the machine
 # nothing and defeats the point of the cap.
 #
-# Override any of these on the command line when you have headroom, e.g.
-#   make test GOMAXPROCS=8 GOTEST_P=6 GOTEST_MEM_MAX=20G
-# Narrow a run with GOTEST_ARGS:
-#   make test GOTEST_ARGS='-run TestHerdrPluginABI'
+# PARALLELISM DEFAULTS are sized from measurement, not fear. The memory guards
+# above are what make a full-width run safe: MemoryMax is a hard bound and
+# MemorySwapMax=0 stops a throttled scope from spilling into host swap, so the
+# worst case is the scope dying inside its own cgroup — never a global OOM.
+# Measured 2026-09-15 on the default (untagged) suite, -race, cold result cache:
+#   -p 2 -parallel 2 : 186s wall, 1.5 GiB peak
+#   -p 8 -parallel 4 : 107s wall, 1.3 GiB peak   (10 GiB cap never approached)
+# The floor is internal/cli at ~104s of serial wall-clock waits (10–20s
+# timeout tests, none of them t.Parallel), so -p above the package count of
+# slow packages buys nothing more; -parallel only reaches the 33 files that
+# call t.Parallel. Dropping to GOTEST_P=1 does not make a run safer — the cap
+# does that — it only makes it ~2x slower.
+#
+# Do NOT run the whole tree to test one package. GOTEST_PKGS narrows the run:
+#   make test GOTEST_PKGS=./internal/cli/
+# Narrow further with GOTEST_ARGS:
+#   make test GOTEST_PKGS=./internal/cli/ GOTEST_ARGS='-run TestHerdrPluginABI'
+# Override the caps when you have headroom, e.g.
+#   make test GOMAXPROCS=8 GOTEST_MEM_MAX=20G
 GOMAXPROCS      ?= 4
 GOBUILD_P       ?= 4
-GOTEST_P        ?= 2
-GOTEST_PARALLEL ?= 2
+GOTEST_P        ?= 8
+GOTEST_PARALLEL ?= 4
 GOTEST_MEM_HIGH ?= 8G
 GOTEST_MEM_MAX  ?= 10G
 GOTEST_ARGS     ?=
@@ -86,7 +101,7 @@ define CAPPED
 	fi; \
 	exec systemd-run --user --scope -q \
 		-p MemoryHigh=$(GOTEST_MEM_HIGH) -p MemoryMax=$(GOTEST_MEM_MAX) \
-		-p ManagedOOMPreference=avoid \
+		-p MemorySwapMax=0 -p ManagedOOMPreference=avoid \
 		-- choom -n 1000 -- env GOMAXPROCS=$(GOMAXPROCS) $(1)
 endef
 
@@ -154,8 +169,14 @@ vet:
 # the last -count wins, with no error. That is deliberate: flake hunting wants
 # GOTEST_ARGS='-count=20', and the cache stays defeated either way, because
 # -count in any form is absent from Go's cacheable-flag allowlist.
+#
+# GOTEST_PKGS is shared with test-integration, whose in-Makefile default is the
+# Tier-1 netstack package. That default must NOT leak into `test`, so only a
+# GOTEST_PKGS set on the command line or in the environment narrows this
+# target; otherwise it runs the whole tree.
+GOTEST_UNIT_PKGS = $(if $(filter-out default file undefined,$(origin GOTEST_PKGS)),$(GOTEST_PKGS),./...)
 test:
-	$(call CAPPED,go test -race -p $(GOTEST_P) -parallel $(GOTEST_PARALLEL) -count=1 $(GOTEST_ARGS) ./...)
+	$(call CAPPED,go test -race -p $(GOTEST_P) -parallel $(GOTEST_PARALLEL) -count=1 $(GOTEST_ARGS) $(GOTEST_UNIT_PKGS))
 
 # test-herdr-live runs the //go:build herdr_live suite against the REAL herdr
 # binary (no VM, no daemon — Tier 1 only by default; Tier 2 tests in this tag
