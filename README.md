@@ -84,5 +84,6 @@ To produce a runnable binary: `go build -o nexus3 ./cmd/nexus3`
 ## Docs
 
 - **Product manual:** `docs/site/` (`make docs` to serve locally)
+- **Architecture:** `docs/architecture/README.md` (C4 Context + Container diagrams)
 - **Design notes:** `docs/design/`
 - **Contributing:** `CONTRIBUTING.md`

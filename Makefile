@@ -1,4 +1,4 @@
-.PHONY: proto build vet test test-integration vet-integration check-agent-fresh install-agent install-kernel build-agent docs docs-build install-plugin
+.PHONY: proto build vet test test-integration vet-integration check-agent-fresh install-agent install-kernel build-agent docs docs-build install-plugin secret setup audit lint format format-fix ci
 
 # proto regenerates the Go stubs from proto/nexus3/agent/v1/agent.proto.
 # Running this target twice must leave the tree byte-identical (deterministic).
@@ -293,3 +293,35 @@ check-agent-fresh:
 		fi; \
 		echo "OK: $$path_bin is fresher than all agent sources"; \
 	fi
+
+GOLANGCI_LINT_VERSION ?= v2.13.2
+GOVULNCHECK_VERSION   ?= v1.8.0
+
+setup:
+	go mod download
+	@command -v golangci-lint >/dev/null 2>&1 || \
+		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	@command -v govulncheck >/dev/null 2>&1 || \
+		go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+
+secret:
+	@echo "nexus3 keeps no committed secrets. Credentials are brokered at runtime via the agent credential subsystem."
+
+audit:
+	@command -v govulncheck >/dev/null 2>&1 || { echo "govulncheck not found — run: make setup"; exit 1; }
+	govulncheck ./...
+	go mod verify
+
+lint:
+	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint not found — run: make setup"; exit 1; }
+	TMPDIR=/tmp golangci-lint run ./...
+
+GOFMT_FILES = $(shell find . -name '*.go' -not -path './.claude/*' -not -path './vendor/*')
+
+format:
+	@out=$$(gofmt -l $(GOFMT_FILES)); if [ -n "$$out" ]; then printf '%s\n' "$$out"; echo "run: make format-fix"; exit 1; fi
+
+format-fix:
+	gofmt -w $(GOFMT_FILES)
+
+ci: audit lint format test

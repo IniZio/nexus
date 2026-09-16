@@ -1,0 +1,13 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - gocognit
+  settings:
+    gocognit:
+      min-complexity: 10
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
