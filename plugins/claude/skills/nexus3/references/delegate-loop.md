@@ -10,21 +10,38 @@ from the JSON responses of each step rather than predicting them.
 ```json
 {
   "repo_path": "/abs/path/to/repo",
-  "handle": "project/branch-name",
-  "memory_mib": 1024
+  "branch": "feature/my-work",
+  "base": "main"
 }
 ```
 
-`repo_path` must be an absolute host path to the git repo or an existing
-worktree. `handle` sets the sandbox project/name. `memory_mib` defaults to 512
-if omitted or 0. `allowed_branches` must not be set — the call is rejected.
+Fields:
+- `repo_path` — required; absolute host path to an existing checkout already open as a herdr workspace.
+- `branch` — required; name of the new branch to create.
+- `base` — optional; git ref the new branch starts from (omit to use herdr's default).
+- `image_ref`, `memory_mib`, `vcpus`, `allowed_branches` — **rejected with an error**; the image is derived from `<repo>/.nexus/config.yaml` (or `.nexus/Containerfile`) exactly as for any herdr worktree sandbox.
 
-The tool creates a git worktree on a new branch derived from the handle name,
-opens it as a herdr worktree workspace, and creates and boots the sandbox. Read
-the returned `handle` and `output` fields; the `output` contains the workspace
-ID needed for teardown.
+**What the tool does** (five steps, all driven by the nexus3 MCP plugin process):
 
-**CLI equivalent** (when MCP server unavailable):
+1. Resolves the herdr binary (`HERDR_BIN_PATH` env, else `herdr` on PATH).
+2. Runs `herdr workspace list` to find the workspace whose `checkout_path` is `repo_path` (fallback: `HERDR_WORKSPACE_ID` env).
+3. Runs `herdr worktree create --workspace <parent> --branch <branch> [--base <base>] --no-focus` — herdr creates the linked git worktree (under `~/.herdr/worktrees/<repo>/<branch>`) and its workspace.
+4. Runs `nexus3 herdr worktree-sandbox <newWorkspaceID>` — the same verb the herdr `worktree.created` hook runs. It derives the handle `<repo>/<branch-slug>`, resolves the image from `.nexus/config.yaml`, converts `egress.policy`/`egress.secrets` into policy flags, mounts the checkout at `/workspace` plus the main repo's `.git` and `.groundwork` dirs, attaches named volumes (`<slug>-docker` only with a Containerfile; `<slug>-agentcfg`, `<slug>-gocache`, `<slug>-gopath` always), writes the herdr↔sandbox binding, and opens the guest pane.
+5. Runs `nexus3 herdr list` and returns the result.
+
+**Output fields:** `workspace_id`, `worktree_path`, `branch`, `handle` (pass this to `delegate_agent_dispatch` / `delegate_teardown` as `ref`), `sandbox_id`, `output`.
+
+**Herdr requirement:**
+
+| herdr available? | Result |
+|-----------------|--------|
+| Yes, repo open as herdr workspace | git worktree + herdr workspace + sandbox + binding + guest pane all created |
+| No (`herdr` not found) | nothing created; error at step 1: `herdr not found …` |
+| Yes, but repo not open as herdr workspace (and `HERDR_WORKSPACE_ID` unset) | nothing created; error at step 2: `repo … is not open as a herdr workspace` |
+
+`HERDR_ENV=1` is NOT required for the tool — it is the herdr-skill gate for agents controlling panes. The tool works from any process that can reach the herdr CLI.
+
+**CLI equivalent** — the tool automates exactly this by-hand sequence:
 
 ```bash
 herdr worktree create --workspace <main-ws-id> --branch <branch> --base <base-ref> --no-focus
@@ -39,7 +56,7 @@ cannot push anything.
 ### Builder failure modes
 
 The build step pulls a base image and runs the repo's `.nexus/Containerfile`
-inside a builder VM. Three failure patterns to know:
+inside a builder VM. Two failure patterns to know:
 
 **Dirty-cache death loop.** If a build is killed mid-flight (by timeout, OOM,
 or Ctrl-C), it marks the buildkit cache disk dirty. The next attempt wipes and
@@ -56,20 +73,6 @@ image registry, host memory or disk exhaustion killed the builder VM, or a
 protocol mismatch between the host binary and the cached builder image. Check
 `df -h /` (the build preflight needs ≥15 GiB free) and free RAM before
 concluding it is a network issue.
-
-**Bypass with an existing image.** `delegate_worktree_create` accepts an
-optional `image_ref` field naming an image already in the server's image
-cache. Pass it to skip the build entirely when a suitable image exists:
-
-```json
-{
-  "repo_path": "/abs/path/to/repo",
-  "handle": "project/name",
-  "image_ref": "nexus3-agent-base"
-}
-```
-
-CLI equivalent: `~/.local/bin/nexus3 create <handle> --image <ref> --workspace <worktree-path>`
 
 ## 2. Dispatch the brief
 

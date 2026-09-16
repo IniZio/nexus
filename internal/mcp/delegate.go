@@ -3,40 +3,15 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-type delegateWorktreeCreateArgs struct {
-	RepoPath        string   `json:"repo_path"             jsonschema:"absolute host path to the git repo or worktree (required)"`
-	Handle          string   `json:"handle"                jsonschema:"sandbox handle in project/name format, e.g. myproject/slice-e (required)"`
-	ImageRef        string   `json:"image_ref,omitempty"   jsonschema:"image tag or digest to boot; required for a running sandbox"`
-	MemoryMiB       uint32   `json:"memory_mib,omitempty"  jsonschema:"guest RAM in MiB (optional; 0 = driver default)"`
-	VCPUs           uint32   `json:"vcpus,omitempty"       jsonschema:"vCPU count (optional; 0 = driver default)"`
-	AllowedBranches []string `json:"allowed_branches,omitempty" jsonschema:"MUST NOT be set — branch policy is derived from the worktree; any value here returns an error"`
-}
-
-type delegateAgentDispatchArgs struct {
-	Ref   string `json:"ref"   jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
-	Brief string `json:"brief" jsonschema:"task brief to deliver to the in-guest claude agent (required)"`
-}
-
-type delegateAgentPollArgs struct {
-	Ref string `json:"ref" jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
-}
-
-type delegateAgentPollResult struct {
-	GitLog     string `json:"git_log"`
-	GitStatus  string `json:"git_status"`
-	BranchName string `json:"branch_name"`
-}
-
-type delegateTeardownArgs struct {
-	Ref string `json:"ref" jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
-}
 
 // standingOrders is prepended to every brief delegate_agent_dispatch delivers
 // into the guest. It tells the in-guest agent what kind of environment it is
@@ -68,20 +43,68 @@ var runHostCLI = func(ctx context.Context, argv ...string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve executable: %w", err)
 	}
+	return runBinary(ctx, exe, argv...)
+}
+
+// runHerdrCLI runs the herdr binary (resolved by resolveHerdrBin) with argv
+// and returns its combined output. Separate from runHostCLI so tests can tell
+// herdr calls from nexus3 calls and fake each independently.
+var runHerdrCLI = func(ctx context.Context, herdrBin string, argv ...string) (string, error) {
+	return runBinary(ctx, herdrBin, argv...)
+}
+
+func runBinary(ctx context.Context, bin string, argv ...string) (string, error) {
 	var buf bytes.Buffer
-	cmd := exec.CommandContext(ctx, exe, argv...)
+	cmd := exec.CommandContext(ctx, bin, argv...)
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
-	err = cmd.Run()
+	err := cmd.Run()
 	return buf.String(), err
+}
+
+type delegateWorktreeCreateArgs struct {
+	RepoPath        string   `json:"repo_path"                  jsonschema:"absolute host path to the git repo checkout that is open as a herdr workspace (required)"`
+	Branch          string   `json:"branch"                     jsonschema:"branch name for the new linked git worktree (required)"`
+	Base            string   `json:"base,omitempty"             jsonschema:"base ref for the new branch (optional; herdr default when empty)"`
+	ImageRef        string   `json:"image_ref,omitempty"        jsonschema:"MUST NOT be set — the image comes from the checkout's .nexus/config.yaml (or .nexus/Containerfile); any value here returns an error"`
+	MemoryMiB       uint32   `json:"memory_mib,omitempty"       jsonschema:"MUST NOT be set — not supported by the herdr worktree-sandbox path; any value here returns an error"`
+	VCPUs           uint32   `json:"vcpus,omitempty"            jsonschema:"MUST NOT be set — not supported by the herdr worktree-sandbox path; any value here returns an error"`
+	AllowedBranches []string `json:"allowed_branches,omitempty" jsonschema:"MUST NOT be set — branch policy is derived from the worktree; any value here returns an error"`
+}
+
+type delegateAgentDispatchArgs struct {
+	Ref   string `json:"ref"   jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
+	Brief string `json:"brief" jsonschema:"task brief to deliver to the in-guest claude agent (required)"`
+}
+
+type delegateAgentPollArgs struct {
+	Ref string `json:"ref" jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
+}
+
+type delegateAgentPollResult struct {
+	GitLog     string `json:"git_log"`
+	GitStatus  string `json:"git_status"`
+	BranchName string `json:"branch_name"`
+}
+
+type delegateTeardownArgs struct {
+	Ref string `json:"ref" jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
 }
 
 func validateDelegateWorktreeCreate(args delegateWorktreeCreateArgs) error {
 	if args.RepoPath == "" {
 		return fmt.Errorf("repo_path is required")
 	}
-	if args.Handle == "" {
-		return fmt.Errorf("handle is required (project/name format)")
+	if !filepath.IsAbs(args.RepoPath) {
+		return fmt.Errorf("repo_path must be an absolute path (got %q)", args.RepoPath)
+	}
+	if st, err := os.Stat(args.RepoPath); err != nil {
+		return fmt.Errorf("repo_path %q: %w", args.RepoPath, err)
+	} else if !st.IsDir() {
+		return fmt.Errorf("repo_path %q is not a directory", args.RepoPath)
+	}
+	if args.Branch == "" {
+		return fmt.Errorf("branch is required")
 	}
 	if len(args.AllowedBranches) > 0 {
 		return fmt.Errorf(
@@ -91,46 +114,220 @@ func validateDelegateWorktreeCreate(args delegateWorktreeCreateArgs) error {
 			args.AllowedBranches,
 		)
 	}
+	if args.ImageRef != "" {
+		return fmt.Errorf(
+			"delegate_worktree_create: image_ref is not supported (value %q rejected); "+
+				"the image is taken from %s (or .nexus/Containerfile) exactly as a herdr worktree sandbox",
+			args.ImageRef, filepath.Join(args.RepoPath, ".nexus", "config.yaml"),
+		)
+	}
+	if args.MemoryMiB > 0 || args.VCPUs > 0 {
+		return fmt.Errorf(
+			"delegate_worktree_create: memory_mib/vcpus are not supported by the herdr worktree-sandbox path "+
+				"(memory_mib=%d vcpus=%d rejected); the verb has no flags for them",
+			args.MemoryMiB, args.VCPUs,
+		)
+	}
 	return nil
+}
+
+// resolveHerdrBin mirrors the CLI's herdr binary lookup: HERDR_BIN_PATH, else PATH.
+func resolveHerdrBin() (string, error) {
+	if p := os.Getenv("HERDR_BIN_PATH"); p != "" {
+		return p, nil
+	}
+	if p, err := exec.LookPath("herdr"); err == nil {
+		return p, nil
+	}
+	return "", fmt.Errorf(`herdr not found: HERDR_BIN_PATH is unset and no "herdr" binary is on PATH`)
+}
+
+// findHerdrWorkspaceID picks the herdr workspace whose checkout path matches
+// repoPath: exact match first, then prefix, then HERDR_WORKSPACE_ID from env.
+func findHerdrWorkspaceID(workspaceListOut, repoPath string) (string, error) {
+	var parsed struct {
+		Result struct {
+			Workspaces []struct {
+				WorkspaceID string `json:"workspace_id"`
+				Worktree    struct {
+					CheckoutPath string `json:"checkout_path"`
+				} `json:"worktree"`
+			} `json:"workspaces"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(workspaceListOut), &parsed); err != nil {
+		// Output may carry non-JSON lines; scan for the first JSON object line.
+		for _, line := range strings.Split(workspaceListOut, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &parsed) == nil {
+				break
+			}
+		}
+	}
+	want := filepath.Clean(repoPath)
+	for _, ws := range parsed.Result.Workspaces {
+		if ws.Worktree.CheckoutPath != "" && filepath.Clean(ws.Worktree.CheckoutPath) == want {
+			return ws.WorkspaceID, nil
+		}
+	}
+	for _, ws := range parsed.Result.Workspaces {
+		if ws.Worktree.CheckoutPath == "" {
+			continue
+		}
+		cp := filepath.Clean(ws.Worktree.CheckoutPath)
+		if strings.HasPrefix(want, cp+string(filepath.Separator)) || strings.HasPrefix(cp, want+string(filepath.Separator)) {
+			return ws.WorkspaceID, nil
+		}
+	}
+	if env := os.Getenv("HERDR_WORKSPACE_ID"); env != "" {
+		return env, nil
+	}
+	return "", fmt.Errorf("repo %s is not open as a herdr workspace; open it in herdr first", repoPath)
+}
+
+// parseHerdrWorktreeCreateWS scans `herdr worktree create` output for the
+// JSON line {"ws":"<id>","linked":true} and returns the workspace ID.
+func parseHerdrWorktreeCreateWS(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var v struct {
+			WS string `json:"ws"`
+		}
+		if json.Unmarshal([]byte(line), &v) == nil && v.WS != "" {
+			return v.WS
+		}
+	}
+	return ""
+}
+
+// parseHerdrListBinding finds the `nexus3 herdr list` line for workspaceID
+// and returns its handle and sandbox_id.
+func parseHerdrListBinding(out, workspaceID string) (handle, sandboxID string, ok bool) {
+	needle := "workspace_id=" + workspaceID
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Split(strings.TrimSpace(line), "\t")
+		matched := false
+		for _, f := range fields {
+			if f == needle {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		for _, f := range fields {
+			if v, found := strings.CutPrefix(f, "handle="); found {
+				handle = v
+			} else if v, found := strings.CutPrefix(f, "sandbox_id="); found {
+				sandboxID = v
+			}
+		}
+		return handle, sandboxID, true
+	}
+	return "", "", false
+}
+
+// parseHerdrWorktreePath returns the checkout path of the worktree on branch
+// from `herdr worktree list --json`; empty when not found.
+func parseHerdrWorktreePath(out, branch string) string {
+	var parsed struct {
+		Result struct {
+			Worktrees []struct {
+				Branch string `json:"branch"`
+				Path   string `json:"path"`
+			} `json:"worktrees"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		for _, line := range strings.Split(out, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &parsed) == nil {
+				break
+			}
+		}
+	}
+	for _, wt := range parsed.Result.Worktrees {
+		if wt.Branch == branch {
+			return wt.Path
+		}
+	}
+	return ""
 }
 
 func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 	gosdk.AddTool(srv, &gosdk.Tool{
 		Name: "delegate_worktree_create",
-		Description: "Create a worktree-backed sandbox for delegating a coding slice. " +
-			"Mounts repo_path at /workspace inside the guest and installs the claude-code agent. " +
+		Description: "Create a linked git worktree via herdr (`herdr worktree create --workspace <parent> --branch <branch>`), " +
+			"then bind a nexus3 sandbox to it with the same `nexus3 herdr worktree-sandbox` path a herdr-created worktree gets: " +
+			"image and egress from the checkout's .nexus/config.yaml (or .nexus/Containerfile), .git and .groundwork mounts, named volumes. " +
+			"Requires herdr running and repo_path open as a herdr workspace. " +
+			"image_ref, memory_mib and vcpus are rejected (the worktree-sandbox path has no flags for them); " +
 			"allowed_branches MUST NOT be set — branch policy is derived from the worktree. " +
-			"Returns {output, handle} on success.",
+			"Returns {workspace_id, worktree_path, branch, handle, sandbox_id, output} on success.",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args delegateWorktreeCreateArgs) (*gosdk.CallToolResult, any, error) {
 		if err := validateDelegateWorktreeCreate(args); err != nil {
 			return errorResult(err), nil, nil
 		}
-		exe, err := os.Executable()
+		herdrBin, err := resolveHerdrBin()
 		if err != nil {
-			return errorResult(fmt.Errorf("delegate_worktree_create: resolve executable: %w", err)), nil, nil
+			return errorResult(fmt.Errorf("delegate_worktree_create: %w; delegate_worktree_create binds the sandbox to a herdr workspace and needs herdr running", err)), nil, nil
 		}
-		argv := []string{"sandbox", "create"}
-		if args.ImageRef != "" {
-			argv = append(argv, "--image", args.ImageRef)
+
+		wsListOut, err := runHerdrCLI(ctx, herdrBin, "workspace", "list")
+		if err != nil {
+			return errorResult(fmt.Errorf("delegate_worktree_create: herdr workspace list: %w\n%s", err, wsListOut)), nil, nil
 		}
-		argv = append(argv, "--mount", args.RepoPath+":/workspace")
-		argv = append(argv, "--agent", "claude-code")
-		argv = append(argv, "--egress", "open")
-		if args.MemoryMiB > 0 {
-			argv = append(argv, "--memory", fmt.Sprintf("%d", args.MemoryMiB))
+		parent, err := findHerdrWorkspaceID(wsListOut, args.RepoPath)
+		if err != nil {
+			return errorResult(fmt.Errorf("delegate_worktree_create: %w", err)), nil, nil
 		}
-		if args.VCPUs > 0 {
-			argv = append(argv, "--vcpus", fmt.Sprintf("%d", args.VCPUs))
+
+		createArgv := []string{"worktree", "create", "--workspace", parent, "--branch", args.Branch}
+		if args.Base != "" {
+			createArgv = append(createArgv, "--base", args.Base)
 		}
-		argv = append(argv, args.Handle)
-		var buf bytes.Buffer
-		cmd := exec.CommandContext(ctx, exe, argv...)
-		cmd.Stdout = &buf
-		cmd.Stderr = &buf
-		if runErr := cmd.Run(); runErr != nil {
-			return errorResult(fmt.Errorf("delegate_worktree_create: %w\n%s", runErr, buf.String())), nil, nil
+		createArgv = append(createArgv, "--no-focus")
+		createOut, err := runHerdrCLI(ctx, herdrBin, createArgv...)
+		if err != nil {
+			return errorResult(fmt.Errorf("delegate_worktree_create: herdr worktree create: %w\n%s", err, createOut)), nil, nil
 		}
-		return successResult(map[string]string{"output": buf.String(), "handle": args.Handle}), nil, nil
+		ws := parseHerdrWorktreeCreateWS(createOut)
+		if ws == "" {
+			return errorResult(fmt.Errorf("delegate_worktree_create: herdr worktree create: no {\"ws\":...} line in output\n%s", createOut)), nil, nil
+		}
+
+		bindOut, err := runHostCLI(ctx, "herdr", "worktree-sandbox", ws)
+		if err != nil {
+			return errorResult(fmt.Errorf("delegate_worktree_create: nexus3 herdr worktree-sandbox: %w\n%s", err, bindOut)), nil, nil
+		}
+
+		listOut, err := runHostCLI(ctx, "herdr", "list")
+		if err != nil {
+			return errorResult(fmt.Errorf("delegate_worktree_create: nexus3 herdr list: %w\n%s", err, listOut)), nil, nil
+		}
+		handle, sandboxID, ok := parseHerdrListBinding(listOut, ws)
+		if !ok {
+			return errorResult(fmt.Errorf("delegate_worktree_create: sandbox binding for workspace %s not found after worktree-sandbox\n%s", ws, listOut)), nil, nil
+		}
+
+		// Best effort: the worktree path is informational only.
+		worktreePath := ""
+		if wtOut, wtErr := runHerdrCLI(ctx, herdrBin, "worktree", "list", "--json"); wtErr == nil {
+			worktreePath = parseHerdrWorktreePath(wtOut, args.Branch)
+		}
+
+		return successResult(map[string]string{
+			"workspace_id":  ws,
+			"worktree_path": worktreePath,
+			"branch":        args.Branch,
+			"handle":        handle,
+			"sandbox_id":    sandboxID,
+			"output":        createOut + bindOut,
+		}), nil, nil
 	})
 
 	gosdk.AddTool(srv, &gosdk.Tool{
@@ -138,8 +335,6 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		Description: "Deliver a task brief to the claude agent running inside a worktree sandbox " +
 			"via `nexus3 herdr space-agent --autonomous --no-focus`. " +
 			"The in-guest claude runs in auto permission mode (--permission-mode auto). " +
-			"A fixed standing-orders preamble (isolated VM, full stack is the baseline, " +
-			"unblock yourself, report friction) is prepended to the brief. " +
 			"Returns the dispatch log.",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args delegateAgentDispatchArgs) (*gosdk.CallToolResult, any, error) {
 		if args.Ref == "" {
@@ -200,17 +395,10 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		if args.Ref == "" {
 			return errorResult(fmt.Errorf("ref is required")), nil, nil
 		}
-		exe, err := os.Executable()
-		if err != nil {
-			return errorResult(fmt.Errorf("delegate_teardown: resolve executable: %w", err)), nil, nil
+		out, runErr := runHostCLI(ctx, "sandbox", "rm", args.Ref)
+		if runErr != nil {
+			return errorResult(fmt.Errorf("delegate_teardown: %w\n%s", runErr, out)), nil, nil
 		}
-		var buf bytes.Buffer
-		cmd := exec.CommandContext(ctx, exe, "sandbox", "rm", args.Ref)
-		cmd.Stdout = &buf
-		cmd.Stderr = &buf
-		if runErr := cmd.Run(); runErr != nil {
-			return errorResult(fmt.Errorf("delegate_teardown: %w\n%s", runErr, buf.String())), nil, nil
-		}
-		return successResult(map[string]interface{}{"removed": true, "output": buf.String()}), nil, nil
+		return successResult(map[string]interface{}{"removed": true, "output": out}), nil, nil
 	})
 }
