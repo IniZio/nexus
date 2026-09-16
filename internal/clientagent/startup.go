@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -66,6 +67,12 @@ func RunStartup(ctx context.Context) error {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return fmt.Errorf("local-agent-startup: mkdir state: %w", err)
 	}
+	logPath := filepath.Join(stateDir, "agent.log")
+	if logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+		defer logFile.Close()
+		w := io.MultiWriter(os.Stderr, logFile)
+		slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	}
 	managers := make(map[string]*portfwd.Manager)
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
@@ -92,6 +99,7 @@ type FocusResolverFunc func(ctx context.Context, herdrBin, session, ctlPath, tar
 var DefaultFocusResolver FocusResolverFunc = resolveFocusedSandboxID // tests swap it
 
 var fallbackWarned sync.Map // key: "target\x00kind" → struct{}{}
+var infoFiredOnce sync.Map  // key: "target\x00workspaceID" → struct{}{}
 
 func warnFallbackOnce(target, kind, msg string, args ...any) {
 	if _, loaded := fallbackWarned.LoadOrStore(target+"\x00"+kind, struct{}{}); !loaded {
@@ -101,6 +109,16 @@ func warnFallbackOnce(target, kind, msg string, args ...any) {
 
 func clearFallback(target, kind string) {
 	fallbackWarned.Delete(target + "\x00" + kind)
+}
+
+func logInfoOnce(key, msg string, args ...any) {
+	if _, loaded := infoFiredOnce.LoadOrStore(key, struct{}{}); !loaded {
+		slog.Info(msg, args...)
+	}
+}
+
+func clearInfoOnce(key string) {
+	infoFiredOnce.Delete(key)
 }
 
 func filterToFocused(forwards []RemoteForwardEntry, sandboxID string, fallback bool) []RemoteForwardEntry {
@@ -220,7 +238,7 @@ func ReadRemoteForwardsState(ctx context.Context, ctlPath, target string) (*Remo
 }
 
 func resolveFocusedSandboxID(ctx context.Context, herdrBin, session, ctlPath, target string, runner portfwd.Runner) (string, bool) {
-	workspaceID, err := resolveFocusedWorkspaceID(ctx, herdrBin, session)
+	workspaceID, err := resolveFocusedWorkspaceID(ctx, session, ctlPath, target, runner)
 	if err != nil {
 		warnFallbackOnce(target, "workspace", "portfwd focus: workspace list failed, using all rows", "target", target, "err", err)
 		return "", true
@@ -236,19 +254,34 @@ func resolveFocusedSandboxID(ctx context.Context, herdrBin, session, ctlPath, ta
 		return "", true
 	}
 	clearFallback(target, "sandbox_id")
+	if sandboxID == "" {
+		infoKey := target + "\x00" + workspaceID
+		logInfoOnce(infoKey, "portfwd focus: focused workspace has no nexus3 binding; mirroring all forwards",
+			"workspace_id", workspaceID, "session", session, "target", target)
+		return "", true
+	}
+	clearInfoOnce(target + "\x00" + workspaceID)
 	return sandboxID, false
 }
 
-func resolveFocusedWorkspaceID(ctx context.Context, herdrBin, session string) (string, error) {
-	args := []string{"workspace", "list"}
+func remoteHerdrWorkspaceListCmd(session string) string {
+	base := "workspace list"
 	if session != "" {
-		args = append([]string{"--session", session}, args...)
+		base = "--session " + session + " " + base
 	}
-	out, err := ExecCommandContext(ctx, herdrBin, args...).Output()
+	return `"$HOME/.local/bin/herdr" ` + base + ` 2>/dev/null || herdr ` + base
+}
+
+func resolveFocusedWorkspaceID(ctx context.Context, session, ctlPath, target string, runner portfwd.Runner) (string, error) {
+	argv := ExecArgv(target, ctlPath, remoteHerdrWorkspaceListCmd(session))
+	stdout, _, code, err := runner(ctx, argv)
 	if err != nil {
-		return "", fmt.Errorf("herdr workspace list: %w", err)
+		return "", fmt.Errorf("herdr workspace list (remote): %w", err)
 	}
-	return parseFocusedWorkspaceID(out)
+	if code != 0 {
+		return "", fmt.Errorf("herdr workspace list (remote): exit %d", code)
+	}
+	return parseFocusedWorkspaceID([]byte(stdout))
 }
 
 func parseFocusedWorkspaceID(data []byte) (string, error) {

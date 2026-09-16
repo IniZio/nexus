@@ -3,7 +3,6 @@ package clientagent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -262,40 +261,76 @@ func TestTick_FocusFallback_UsesAllRows(t *testing.T) {
 	}
 }
 
-func TestResolveFocusedWorkspaceID_SessionArgs(t *testing.T) {
-	var capturedArgs []string
-	origExec := ExecCommandContext
-	ExecCommandContext = func(_ context.Context, name string, args ...string) *exec.Cmd {
-		capturedArgs = args
-		resp := `{"result":{"workspaces":[{"workspace_id":"w1","focused":true}]}}`
-		return exec.Command("printf", "%s", resp)
+// MUTATION TARGET: change resolveFocusedWorkspaceID to use ExecCommandContext instead of runner → capturedArgv empty → RED.
+func TestResolveFocusedWorkspaceID_UsesSSHArgv(t *testing.T) {
+	resp := `{"result":{"workspaces":[{"workspace_id":"w1","focused":true}]}}`
+	var capturedArgv []string
+	fakeRunner := func(_ context.Context, argv []string) (string, string, int, error) {
+		capturedArgv = argv
+		return resp, "", 0, nil
 	}
-	t.Cleanup(func() { ExecCommandContext = origExec })
 
 	ctx := context.Background()
-	id, err := resolveFocusedWorkspaceID(ctx, "herdr", "mysession")
+	id, err := resolveFocusedWorkspaceID(ctx, "mysession", "/fake.ctl", "myhost", fakeRunner)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if id != "w1" {
 		t.Errorf("got %q, want w1", id)
 	}
-	wantPrefix := fmt.Sprintf("--session %s workspace list", "mysession")
-	if !strings.Contains(strings.Join(capturedArgs, " "), wantPrefix) {
-		t.Errorf("args %v missing --session prefix", capturedArgs)
+	if len(capturedArgv) == 0 {
+		t.Fatal("runner was not called")
+	}
+	if capturedArgv[0] != "ssh" {
+		t.Errorf("argv[0]=%q, want ssh — workspace list must go through SSH runner", capturedArgv[0])
+	}
+	lastArg := capturedArgv[len(capturedArgv)-1]
+	if !strings.Contains(lastArg, "--session mysession") {
+		t.Errorf("remote command %q does not contain --session mysession", lastArg)
+	}
+	if !strings.Contains(lastArg, "$HOME/.local/bin/herdr") {
+		t.Errorf("remote command %q does not try $HOME/.local/bin/herdr first", lastArg)
 	}
 
-	id, err = resolveFocusedWorkspaceID(ctx, "herdr", "")
+	capturedArgv = nil
+	id, err = resolveFocusedWorkspaceID(ctx, "", "/fake.ctl", "myhost", fakeRunner)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if id != "w1" {
 		t.Errorf("got %q, want w1", id)
 	}
-	for _, a := range capturedArgs {
-		if a == "--session" {
-			t.Errorf("empty session: --session must not appear in args %v", capturedArgs)
+	lastArg = capturedArgv[len(capturedArgv)-1]
+	if strings.Contains(lastArg, "--session") {
+		t.Errorf("empty session: --session must not appear in remote command %q", lastArg)
+	}
+}
+
+func TestResolveFocusedSandboxID_UnboundFocus_Fallback(t *testing.T) {
+	workspaceListResp := `{"result":{"workspaces":[{"workspace_id":"w99","focused":true}]}}`
+	fakeRunner := func(_ context.Context, argv []string) (string, string, int, error) {
+		lastArg := argv[len(argv)-1]
+		if strings.Contains(lastArg, "workspace list") {
+			return workspaceListResp, "", 0, nil
 		}
+		return "(no herdr space bindings)\n", "", 0, nil
+	}
+
+	infoKey := "host99\x00w99"
+	infoFiredOnce.Delete(infoKey)
+	t.Cleanup(func() { infoFiredOnce.Delete(infoKey) })
+
+	sandboxID, fallback := resolveFocusedSandboxID(context.Background(), "", "sess1", "/fake.ctl", "host99", fakeRunner)
+	if sandboxID != "" || !fallback {
+		t.Errorf("unbound focus: got (%q, %v), want (\"\", true)", sandboxID, fallback)
+	}
+	if _, ok := infoFiredOnce.Load(infoKey); !ok {
+		t.Error("infoFiredOnce key not set: logInfoOnce must fire on unbound focus")
+	}
+
+	secondID, secondFallback := resolveFocusedSandboxID(context.Background(), "", "sess1", "/fake.ctl", "host99", fakeRunner)
+	if secondID != "" || !secondFallback {
+		t.Errorf("second call: got (%q, %v), want (\"\", true)", secondID, secondFallback)
 	}
 }
 

@@ -333,8 +333,13 @@ the record still reads `running`. Wait a moment and check `nexus3 ps`; if the
 state does not settle, `nexus3 reap` will show whether anything leaked.
 
 **Ports are not forwarded even though sandboxes are running.**
-The client daemon forwards ports only for the sandbox bound to the currently
-focused herdr workspace. If the focused workspace has no sandbox attached — or
-if no workspace is focused — no forwards are active. Switch focus to the
-workspace that has a sandbox, or check `nexus3 herdr list` to confirm a binding
-exists.
+The client daemon forwards ports for the sandbox bound to the currently focused
+herdr workspace on the *host* session. If no workspace is focused, no forwards
+are active. If the focused workspace has no nexus3 binding, the daemon falls
+back to mirroring all live forwards and logs one Info line:
+`portfwd focus: focused workspace has no nexus3 binding; mirroring all forwards`.
+Look for that line in `~/.local/state/nexus3/portfwd-client/agent.log`.
+Switch focus to the workspace that owns the sandbox, or run `nexus3 herdr list`
+on the host to confirm a binding exists. Note: herdr 0.9.0 has one session-wide
+focus, so with two clients attached (host TUI + remote), the host session's
+focus is the one the daemon reads.
