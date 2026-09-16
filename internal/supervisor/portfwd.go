@@ -33,25 +33,19 @@ func (b *singleSandboxBackend) ListSandboxes(_ context.Context) ([]portfwd.Sandb
 	return []portfwd.SandboxRef{b.ref}, nil
 }
 
+// ReadProcNet reads both tables in ONE guest exec (F5): each exec is an
+// independent hang window and allocates a 16 MiB guest ring. The parser keys
+// rows on address width, so the concatenation is returned as tcp.
 func (b *singleSandboxBackend) ReadProcNet(ctx context.Context, _ string) (tcp, tcp6 []byte, err error) {
-	var tcpBuf, tcp6Buf captureWriter
-	_, tcpErr := b.client.Exec(ctx, agent.ExecOptions{
-		Argv:   []string{"cat", "/proc/net/tcp"},
-		Stdout: &tcpBuf,
+	var buf captureWriter
+	_, execErr := b.client.Exec(ctx, agent.ExecOptions{
+		Argv:   []string{"cat", "/proc/net/tcp", "/proc/net/tcp6"},
+		Stdout: &buf,
 	})
-	if tcpErr != nil {
-		return nil, nil, fmt.Errorf("portfwd: exec cat /proc/net/tcp: %w", tcpErr)
+	if execErr != nil {
+		return nil, nil, fmt.Errorf("portfwd: exec cat /proc/net/tcp /proc/net/tcp6: %w", execErr)
 	}
-
-	_, tcp6Err := b.client.Exec(ctx, agent.ExecOptions{
-		Argv:   []string{"cat", "/proc/net/tcp6"},
-		Stdout: &tcp6Buf,
-	})
-	if tcp6Err != nil {
-		slog.Debug("supervisor.portfwd.tcp6_unavailable", "err", tcp6Err)
-	}
-
-	return tcpBuf.Bytes(), tcp6Buf.Bytes(), nil
+	return buf.Bytes(), nil, nil
 }
 
 type captureWriter struct {

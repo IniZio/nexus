@@ -47,34 +47,52 @@ const fakeProcNetTCP = `  sl  local_address rem_address   st tx_queue rx_queue t
    0: 00000000:1E61 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12345 1 0000000000000000 100 0 0 10 0
 `
 
-func TestReadProcNet_ParsesTCPBytes(t *testing.T) {
+// fakeProcNetTCP6 is a /proc/net/tcp6 LISTEN row on [::]:8080 (0x1F90).
+const fakeProcNetTCP6 = `  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 23456 1 0000000000000000 100 0 0 10 0
+`
+
+// F5: every guest exec is an independent hang window (guest reaper race) and
+// eagerly allocates a 16 MiB output ring, so one discovery tick must issue
+// exactly ONE exec covering both tables, and both tables must still be parsed.
+func TestReadProcNet_SingleExecCoversTCPAndTCP6(t *testing.T) {
 	execer := &fakeGuestExecer{
 		responses: []fakeExecResponse{
-			{stdout: fakeProcNetTCP, code: 0}, // /proc/net/tcp
-			{stdout: "", code: 0},             // /proc/net/tcp6 (empty)
+			{stdout: fakeProcNetTCP + fakeProcNetTCP6, code: 0}, // cat /proc/net/tcp /proc/net/tcp6
+			{stdout: "", code: 0},                                // a second exec must never be issued
 		},
 	}
-	sb := singleSandboxBackend{
+	sb := &singleSandboxBackend{
 		ref:    portfwd.SandboxRef{ID: "test-id", Status: portfwd.SandboxStatusRunning},
 		client: execer,
 	}
-	tcp, tcp6, err := sb.ReadProcNet(context.Background(), "test-id")
+	disc := &portfwd.Discoverer{Backend: sb}
+	lsnrs, err := disc.DiscoverOne(context.Background(), sb.ref)
 	if err != nil {
-		t.Fatalf("ReadProcNet: %v", err)
+		t.Fatalf("DiscoverOne: %v", err)
 	}
-	if !bytes.Contains(tcp, []byte("1E61")) {
-		t.Errorf("tcp bytes must contain proc/net entry; got %q", tcp)
+	if got := len(execer.calls); got != 1 {
+		t.Fatalf("exec calls per discovery tick: got %d, want 1 (argv: %v)", got, argvs(execer.calls))
 	}
-	if len(execer.calls) < 2 {
-		t.Fatalf("expected 2 exec calls, got %d", len(execer.calls))
+	wantArgv := []string{"cat", "/proc/net/tcp", "/proc/net/tcp6"}
+	if got := execer.calls[0].Argv; fmt.Sprint(got) != fmt.Sprint(wantArgv) {
+		t.Errorf("exec argv: got %v, want %v", got, wantArgv)
 	}
-	if execer.calls[0].Argv[len(execer.calls[0].Argv)-1] != "/proc/net/tcp" {
-		t.Errorf("first call must target /proc/net/tcp; got %v", execer.calls[0].Argv)
+	ports := map[uint16]bool{}
+	for _, l := range lsnrs {
+		ports[l.Port] = true
 	}
-	if execer.calls[1].Argv[len(execer.calls[1].Argv)-1] != "/proc/net/tcp6" {
-		t.Errorf("second call must target /proc/net/tcp6; got %v", execer.calls[1].Argv)
+	if !ports[0x1E61] || !ports[0x1F90] {
+		t.Errorf("listeners must include tcp 0x1E61 and tcp6 0x1F90; got %v", lsnrs)
 	}
-	_ = tcp6 // may be empty
+}
+
+func argvs(calls []agent.ExecOptions) [][]string {
+	out := make([][]string, 0, len(calls))
+	for _, c := range calls {
+		out = append(out, c.Argv)
+	}
+	return out
 }
 
 type fakeBackend struct {
