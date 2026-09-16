@@ -79,6 +79,18 @@ const herdrAutoCreateTimeout = herdrWorktreeCreateLockTimeout + 30*time.Second
 // explicit env value wins over the stamped one.
 const herdrGuestShellNextEnv = "NEXUS3_GUEST_SHELL_NEXT"
 
+// herdrGuestShellArgsFn returns the pane shell's own arguments — what herdr
+// appended after default_shell (a login flag, or "-c <cmd>"). They exist only
+// under the argv[0] dispatch (main.go routes "nexus3-guest-shell" here); for
+// the "nexus3 herdr default-shell" verb os.Args[1:] are verb words, not shell
+// words, so the seam yields nothing. Replaced in tests.
+var herdrGuestShellArgsFn = func() []string {
+	if filepath.Base(os.Args[0]) != "nexus3-guest-shell" {
+		return nil
+	}
+	return os.Args[1:]
+}
+
 // herdrDefaultShellAutoCreateFn is the seam for the auto-create subprocess.
 // Replaced in tests to prevent live herdr/nexus3 calls.
 var herdrDefaultShellAutoCreateFn = herdrDefaultShellAutoCreate
@@ -402,6 +414,10 @@ func herdrDefaultShellCore(
 	nexus3Bin string, // path to the nexus3 binary for re-exec
 	execFn herdrExecFn,
 ) error {
+	// Every hand-off that is not the nexus3 guest receives the pane shell's own
+	// arguments unchanged (herdr's "-c <cmd>" or login flag), from the pane's cwd.
+	shellArgs := herdrGuestShellArgsFn()
+
 	// execHostShell replaces the current process with the operator's host shell.
 	// Prefer $SHELL; fall back to /bin/sh. Never returns on success.
 	execHostShell := func() error {
@@ -409,7 +425,7 @@ func herdrDefaultShellCore(
 		if sh == "" {
 			sh = "/bin/sh"
 		}
-		return execFn(sh, []string{sh}, os.Environ())
+		return execFn(sh, append([]string{sh}, shellArgs...), os.Environ())
 	}
 
 	// execUnboundShell is the fallback for a pane that is NOT a nexus3 space:
@@ -417,7 +433,7 @@ func herdrDefaultShellCore(
 	// (see herdrGuestShellNextEnv), else the host shell.
 	execUnboundShell := func() error {
 		if next := herdrGuestShellNext(getenv); next != "" {
-			if err := execFn(next, []string{next}, os.Environ()); err != nil {
+			if err := execFn(next, append([]string{next}, shellArgs...), os.Environ()); err != nil {
 				slog.Warn("nexus3-guest-shell: chained guest shell exec failed; falling back to host shell", "next", next, "err", err)
 				return execHostShell()
 			}
@@ -617,7 +633,7 @@ func RunHerdrGuestShell() {
 			if sh == "" {
 				sh = "/bin/sh"
 			}
-			_ = herdrGuestShellExecFn(sh, []string{sh}, os.Environ())
+			_ = herdrGuestShellExecFn(sh, append([]string{sh}, herdrGuestShellArgsFn()...), os.Environ())
 			herdrGuestShellExitFn(0)
 			return
 		}
@@ -664,7 +680,7 @@ func RunHerdrGuestShell() {
 	if sh == "" {
 		sh = "/bin/sh"
 	}
-	_ = herdrGuestShellExecFn(sh, []string{sh}, os.Environ())
+	_ = herdrGuestShellExecFn(sh, append([]string{sh}, herdrGuestShellArgsFn()...), os.Environ())
 	herdrGuestShellExitFn(0)
 }
 

@@ -1130,6 +1130,10 @@ func TestHerdrDefaultShell_UnboundNonWorktree_NoSpawn_HostShell(t *testing.T) {
 	// becomes true → assertion fires RED.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	wsID := "w8"
+	// The real predicate reads the test runner's cwd; pin the premise so the
+	// test holds when the checkout itself is a linked, onboarded worktree.
+	stubPredicate(t, false)
+	stubLinkedWorktreeReason(t, false)
 
 	autoCreateCalled := false
 	old := herdrDefaultShellAutoCreateFn

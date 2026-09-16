@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -343,5 +344,164 @@ func TestHerdrInstallDefaultShell_StampsNextShell(t *testing.T) {
 	}
 	if !strings.Contains(sb.String(), next) {
 		t.Errorf("install output should name the chained shell: %q", sb.String())
+	}
+}
+
+// ── argv + cwd pass-through (FW-TAB-GATE-UNBOUND) ────────────────────────────
+
+var paneShellArgs = []string{"-c", "echo SHELL_REACHED; pwd"}
+
+func stubShellArgs(t *testing.T, args ...string) {
+	t.Helper()
+	old := herdrGuestShellArgsFn
+	herdrGuestShellArgsFn = func() []string { return append([]string(nil), args...) }
+	t.Cleanup(func() { herdrGuestShellArgsFn = old })
+}
+
+// paneCwd moves the test into a fresh directory that plays the pane's cwd, so
+// the pass-through assertion has a known value independent of test order.
+func paneCwd(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	return dir
+}
+
+type cwdExec struct {
+	capturedExec
+	cwdAtExec string
+}
+
+func (c *cwdExec) fn(argv0 string, argv []string, envv []string) error {
+	c.cwdAtExec, _ = os.Getwd()
+	return c.capturedExec.fn(argv0, argv, envv)
+}
+
+func assertArgvAndCwd(t *testing.T, cap *cwdExec, wantArgv0 string, wantCwd string) {
+	t.Helper()
+	if cap.calls != 1 {
+		t.Fatalf("exec called %d times, want 1", cap.calls)
+	}
+	wantArgv := append([]string{wantArgv0}, paneShellArgs...)
+	if cap.argv0 != wantArgv0 || !reflect.DeepEqual(cap.argv, wantArgv) {
+		t.Errorf("exec argv0=%q argv=%q; want argv0=%q argv=%q (pane shell args dropped?)", cap.argv0, cap.argv, wantArgv0, wantArgv)
+	}
+	if cap.cwdAtExec != wantCwd {
+		t.Errorf("cwd at exec = %q, want the pane cwd %q", cap.cwdAtExec, wantCwd)
+	}
+}
+
+// Case 1: label-lookup miss on a main checkout — the live w2/w1F shape.
+func TestHerdrDefaultShell_UnboundMainCheckout_ChainsSilentlyWithArgvAndCwd(t *testing.T) {
+	storeRoot := t.TempDir()
+	makeBindings(t, storeRoot, []HerdrSpaceBinding{testBinding})
+	stubPredicate(t, false)
+	stubLinkedWorktreeReason(t, false)
+	stubShellArgs(t, paneShellArgs...)
+	next := writeExecutable(t, t.TempDir(), "herdr-plugin-msb-guest-shell")
+	cap := &cwdExec{}
+	wantCwd := paneCwd(t)
+
+	var err error
+	stderr := captureStderr(t, func() {
+		err = herdrDefaultShellCore(context.Background(), wsGetenv("w2", map[string]string{herdrGuestShellNextEnv: next}), storeRoot, nil, "/fake/nexus3", cap.fn)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stderr != "" {
+		t.Errorf("unbound main checkout must chain silently; stderr = %q", stderr)
+	}
+	assertArgvAndCwd(t, cap, next, wantCwd)
+}
+
+func TestHerdrDefaultShell_UnboundMainCheckout_HostShellKeepsArgvAndCwd(t *testing.T) {
+	storeRoot := t.TempDir()
+	makeBindings(t, storeRoot, []HerdrSpaceBinding{testBinding})
+	stubPredicate(t, false)
+	stubLinkedWorktreeReason(t, false)
+	stubShellArgs(t, paneShellArgs...)
+	cap := &cwdExec{}
+	wantCwd := paneCwd(t)
+
+	if err := herdrDefaultShellCore(context.Background(), wsGetenv("w2", nil), storeRoot, nil, "/fake/nexus3", cap.fn); err != nil {
+		t.Fatal(err)
+	}
+	assertArgvAndCwd(t, cap, "/bin/bash", wantCwd)
+}
+
+// Case 2: bound workspace enters the guest; the chain is never consulted and
+// the guest argv keeps its own shape.
+func TestHerdrDefaultShell_Bound_EntersGuest_NeverChains(t *testing.T) {
+	storeRoot := t.TempDir()
+	makeBindings(t, storeRoot, []HerdrSpaceBinding{testBinding})
+	stubPredicate(t, false)
+	stubLinkedWorktreeReason(t, false)
+	stubShellArgs(t, paneShellArgs...)
+	next := writeExecutable(t, t.TempDir(), "herdr-plugin-msb-guest-shell")
+	svc := &fakeDialableGetter{fakeDefaultShellGetter: fakeDefaultShellGetter{sb: domain.Sandbox{State: domain.Running}}}
+	cap := &cwdExec{}
+
+	if err := herdrDefaultShellCore(context.Background(), wsGetenv(testBinding.HerdrWorkspaceID, map[string]string{herdrGuestShellNextEnv: next}), storeRoot, svc, "/fake/nexus3", cap.fn); err != nil {
+		t.Fatal(err)
+	}
+	if cap.calls != 1 || cap.argv0 != "/fake/nexus3" {
+		t.Fatalf("exec argv0 = %q (calls=%d), want the nexus3 guest exec", cap.argv0, cap.calls)
+	}
+	want := []string{"/fake/nexus3", "exec", "--pty", "--cwd", "/root", testBinding.SandboxHandle, "/bin/bash", "--login"}
+	if !reflect.DeepEqual(cap.argv, want) {
+		t.Errorf("guest argv = %q, want %q", cap.argv, want)
+	}
+}
+
+// Case 3: linked worktree without a binding auto-creates (TAB-GATE) and then
+// enters the guest through the supervised child; no chain, no host shell.
+func TestHerdrDefaultShell_UnboundLinkedWorktree_AutoCreatesThenGuest(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	wsID := "wWT2"
+	binding := HerdrSpaceBinding{SpaceLabel: "nexus3:wt/feat", HerdrWorkspaceID: wsID, SandboxHandle: "wt/feat", SandboxID: "sb-wt2", WorktreeManaged: true}
+	stubPredicate(t, true)
+	stubShellArgs(t, paneShellArgs...)
+	childArgv := stubWtSeams(t)
+	autoCreated := false
+	old := herdrDefaultShellAutoCreateFn
+	herdrDefaultShellAutoCreateFn = func(_ context.Context, _, gotWsID, _ string, _ io.Writer) (HerdrSpaceBinding, bool) {
+		autoCreated = gotWsID == wsID
+		return binding, true
+	}
+	t.Cleanup(func() { herdrDefaultShellAutoCreateFn = old })
+	next := writeExecutable(t, t.TempDir(), "herdr-plugin-msb-guest-shell")
+	svc := &fakeDialableGetter{fakeDefaultShellGetter: fakeDefaultShellGetter{sb: domain.Sandbox{State: domain.Running}}}
+	cap := &cwdExec{}
+
+	if err := herdrDefaultShellCore(context.Background(), wsGetenv(wsID, map[string]string{herdrGuestShellNextEnv: next}), t.TempDir(), svc, "/fake/nexus3", cap.fn); err != nil {
+		t.Fatal(err)
+	}
+	if !autoCreated {
+		t.Fatal("auto-create was not invoked for the linked worktree")
+	}
+	if cap.calls != 0 {
+		t.Fatalf("exec seam called (argv0=%q); auto-created worktree must enter the guest, not chain", cap.argv0)
+	}
+	joined := strings.Join(*childArgv, " ")
+	if !strings.Contains(joined, " exec --pty ") || !strings.Contains(joined, " wt/feat ") {
+		t.Errorf("supervised child argv = %q; want nexus3 exec --pty ... wt/feat", joined)
+	}
+}
+
+func TestHerdrGuestShellArgs_DefaultFollowsArgv0Dispatch(t *testing.T) {
+	oldArgs := os.Args
+	t.Cleanup(func() { os.Args = oldArgs })
+
+	os.Args = append([]string{"/x/nexus3-guest-shell"}, paneShellArgs...)
+	if got := herdrGuestShellArgsFn(); !reflect.DeepEqual(got, paneShellArgs) {
+		t.Errorf("guest-shell dispatch args = %q, want %q", got, paneShellArgs)
+	}
+	os.Args = []string{"/x/nexus3", "herdr", "default-shell"}
+	if got := herdrGuestShellArgsFn(); len(got) != 0 {
+		t.Errorf("CLI verb args = %q, want none", got)
 	}
 }
