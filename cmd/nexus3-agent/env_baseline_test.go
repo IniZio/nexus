@@ -291,9 +291,6 @@ func TestInitPid1EnvPathFromEtcEnvironment(t *testing.T) {
 // TestReadEtcEnvironmentUnquotes verifies pam_env quote handling: a value
 // wrapped in matching double or single quotes is unquoted, comments and blank
 // lines are skipped, and an unbalanced quote is left untouched.
-//
-// Mutation guard: removing the unquoteEnvValue call in readEtcEnvironment
-// makes FOO carry literal quotes and this test fails.
 func TestReadEtcEnvironmentUnquotes(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "environment")
 	content := "# leading comment\n\n" +
@@ -344,9 +341,6 @@ func TestReadEtcEnvironmentUnquotes(t *testing.T) {
 // TestExecEnvPrecedence drives the real Exec RPC with a temp /etc/environment
 // and a temp boot.json and reads the child's environment back over the data
 // plane. Precedence: req.Env > OCI ENV (boot.json) > /etc/environment > baseline.
-//
-// Mutation guards: dropping the bootSpecEnv merge in Exec loses OCI_ONLY and
-// lets ETC win BOTH; dropping unquoteEnvValue puts literal quotes in QUOTED.
 func TestExecEnvPrecedence(t *testing.T) {
 	etc := filepath.Join(t.TempDir(), "environment")
 	etcContent := "ETC_ONLY=from-etc\n" +
@@ -410,10 +404,6 @@ func TestExecEnvPrecedence(t *testing.T) {
 	}
 }
 
-// TestBootSpecEnvTopLevelEnv pins FW-OCI-ENV-CAPTURE on the agent side: a
-// manifest with Spec.Env and no task (image with ENV only) yields those pairs;
-// a manifest carrying both Spec.Env and Task.Env yields Spec.Env first, task
-// pairs after, exact duplicates dropped; a legacy task-only manifest is unchanged.
 func TestBootSpecEnvTopLevelEnv(t *testing.T) {
 	origSpec := bootspecPath
 	t.Cleanup(func() { bootspecPath = origSpec })
@@ -459,8 +449,6 @@ func TestBootSpecEnvTopLevelEnv(t *testing.T) {
 	}
 }
 
-// TestBootSpecEnvAbsentOrUnparseable pins the non-fatal fallback: a missing or
-// corrupt manifest contributes nothing.
 func TestBootSpecEnvAbsentOrUnparseable(t *testing.T) {
 	origSpec := bootspecPath
 	t.Cleanup(func() { bootspecPath = origSpec })

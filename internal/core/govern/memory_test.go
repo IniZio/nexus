@@ -28,8 +28,6 @@ func pagingSample(total, pswpin uint64) resize.Sample {
 	}
 }
 
-// Mutation target: delete the `s.SwapInPages > prevSwapInPages` block in
-// sampleWantsShrink → the "paging" case returns true and this test fails.
 func TestSampleWantsShrink_SwapInDeltaBlocks(t *testing.T) {
 	t.Parallel()
 	const total = 8 * gib
@@ -58,7 +56,6 @@ func TestSampleWantsShrink_SwapInDeltaBlocks(t *testing.T) {
 	}
 }
 
-// The SwapUsed-rising gate (D-RAM-13) must survive the new swap-in gate.
 func TestSampleWantsShrink_SwapUsedRisingStillBlocks(t *testing.T) {
 	t.Parallel()
 	s := pagingSample(8*gib, 0)
@@ -71,9 +68,6 @@ func TestSampleWantsShrink_SwapUsedRisingStillBlocks(t *testing.T) {
 	}
 }
 
-// End-to-end through the governor's sample intake: a guest that keeps paging
-// is never shrunk no matter how many consecutive high-MemAvailable samples it
-// reports; once pswpin stops advancing the ordinary 5-sample shrink fires.
 func TestGovernor_PagingGuestNeverShrinks(t *testing.T) {
 	t.Parallel()
 	const boot = 4 * gib
@@ -116,10 +110,6 @@ func TestSample_SwapInPagesOmittedDecodesZero(t *testing.T) {
 	}
 }
 
-// The swap-in gate must be visible in supervisor.log (Info level): a sample
-// whose SwapInPages advanced past the previous one emits
-// govern.memory.shrink_blocked reason=swap_in delta=N. Not parallel: swaps
-// the default slog handler.
 func TestGovernor_SwapInBlockLogsInfo(t *testing.T) {
 	var buf bytes.Buffer
 	orig := slog.Default()

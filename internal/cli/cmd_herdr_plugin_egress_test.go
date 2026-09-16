@@ -428,10 +428,6 @@ func TestHerdrWorktreeSandboxCreateArgs_AgentCfgDisk(t *testing.T) {
 	}
 }
 
-// TestHerdrWorktreeSandboxCreateArgs_EgressOpenComposesWithPolicy pins
-// FW-EGRESS-OPEN-AUDIT: `--egress open` and `--egress-policy-json` compose —
-// OpenEgress=true (public open via AllowAllFor) AND PathPolicies reach the
-// MITM (secret hosts intercepted before the allow-all tunnel); see SKILL.md.
 func TestHerdrWorktreeSandboxCreateArgs_EgressOpenComposesWithPolicy(t *testing.T) {
 	cfg, err := config.Parse([]byte(egressTestCfgWithSecret))
 	if err != nil {

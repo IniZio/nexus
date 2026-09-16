@@ -342,9 +342,6 @@ func TestUpdateSizeBytes_goneIsNoOp(t *testing.T) {
 var _ = fmt.Sprintf
 
 // ── FW-DISK-VOL — free-space floor guards disk preallocation ────────────────
-//
-// Mutation that breaks these tests: delete the checkFreeSpace call in Create →
-// the refusal case creates the volume, and the error-content assertions fail.
 
 func TestCreate_refusesBelowFreeSpaceFloor(t *testing.T) {
 	origStatfs, origFloor := volumestore.DiskStatfs, volumestore.FreeSpaceFloorBytes

@@ -503,12 +503,6 @@ WORKDIR /app
 	}
 }
 
-// TestCaptureBootSpec_OCIEnvWithoutProcess pins FW-OCI-ENV-CAPTURE: an OCI
-// config carrying only Env (a Containerfile with ENV but no ENTRYPOINT/CMD)
-// still yields a boot.json whose top-level env holds those pairs and no task.
-//
-// Mutation proof: restoring the old `len(spec.Tasks) == 0` skip in
-// captureBootSpec makes readBootJSON fatal (no boot.json written).
 func TestCaptureBootSpec_OCIEnvWithoutProcess(t *testing.T) {
 	outDir := t.TempDir()
 
@@ -537,8 +531,6 @@ ENV GOPATH=/go CGO_ENABLED=0
 	}
 }
 
-// TestCaptureBootSpec_OCIEmptyConfigWritesNothing pins the unchanged branch:
-// an OCI config with no entrypoint, cmd, or env writes no boot.json.
 func TestCaptureBootSpec_OCIEmptyConfigWritesNothing(t *testing.T) {
 	outDir := t.TempDir()
 

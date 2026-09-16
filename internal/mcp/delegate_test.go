@@ -46,9 +46,6 @@ func installHostCLIRecorder(t *testing.T, canned map[string]string) *hostCLIReco
 		return out, nil
 	}
 	origHost, origHerdr := runHostCLI, runHerdrCLI
-	// runHostCLI resolves the nexus3 binary itself; record it under the
-	// nexus3Bin sentinel so the ordered-argv assertions can tell nexus3 calls
-	// from herdr calls without depending on os.Executable.
 	runHostCLI = func(_ context.Context, argv ...string) (string, error) {
 		return record(nexus3Bin, argv)
 	}
@@ -209,8 +206,6 @@ func TestDelegateWorktreeCreate_VerbMatchesHerdrHook(t *testing.T) {
 	}
 }
 
-// --egress-policy-json derivation from .nexus/config.yaml is the verb's job,
-// proven in internal/cli/cmd_herdr_plugin_egress_test.go.
 func TestDelegateWorktreeCreate_NoOpenEgress_EvenWithPolicyConfig(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, ".nexus"), 0o755); err != nil {

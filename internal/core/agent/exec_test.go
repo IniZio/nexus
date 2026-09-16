@@ -34,9 +34,6 @@ func (s *signalRecordingServer) Signal(_ context.Context, req *agentpb.SignalReq
 	return &agentpb.SignalResponse{}, nil
 }
 
-// TestExec_ContextCancelSignalsGuestChild: after ctx cancel closes the data
-// conn, Exec must still terminate the guest child via the Signal RPC (TERM
-// then KILL) for its session id, without changing the returned error.
 func TestExec_ContextCancelSignalsGuestChild(t *testing.T) {
 	td := newTestDialer()
 	srv := &signalRecordingServer{}
@@ -97,9 +94,6 @@ func TestExec_ContextCancelSignalsGuestChild(t *testing.T) {
 	}
 }
 
-// TestExec_ContextTimeoutUnblocksPump: a guest peer that reads the handshake
-// and then never sends a frame must not wedge Exec — a 200ms context deadline
-// returns an error wrapping context.DeadlineExceeded within 1s.
 func TestExec_ContextTimeoutUnblocksPump(t *testing.T) {
 	td := newTestDialer()
 	startGRPCServer(t, td.controlLis, &testAgentServer{})

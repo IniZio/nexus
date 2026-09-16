@@ -71,8 +71,7 @@ func RemoveSandboxState(dir, sandboxID string, now time.Time) error {
 
 // Merge unions every fresh per-sandbox file with the previous forwards.state,
 // one row per (sandbox, port) from the newest file (updated_at, then
-// confirmed_at); live 2026-09-16 a supervisor listed every port twice and
-// remote clients doubled every forward.
+// confirmed_at).
 //
 // Rows in forwards.state whose sandbox has no forwards.d file (fresh or stale)
 // come from a supervisor that predates forwards.d and writes forwards.state

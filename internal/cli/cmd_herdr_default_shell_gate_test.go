@@ -90,15 +90,6 @@ func fastCreateLogPoll(t *testing.T) {
 	t.Cleanup(func() { herdrWtCreateLogPollInterval = old })
 }
 
-// TestHerdrDefaultShell_FirstTabStreamsProvisioningLogThenEntersGuest drives
-// the real shell decision (herdrDefaultShellCore → herdrDefaultShellAutoCreate)
-// for a pane opened BEFORE the sandbox is ready: no binding yet, linked-worktree
-// predicate true, a concurrent winner writing the provisioning log. The pane
-// must show the winner's log lines while it waits, never a host shell, and exec
-// into the guest once the binding lands.
-//
-// Mutation proof: delete the tail goroutine in herdrDefaultShellAutoCreate →
-// the winner never sees the marker, logs WINNER-TIMEOUT → RED.
 func TestHerdrDefaultShell_FirstTabStreamsProvisioningLogThenEntersGuest(t *testing.T) {
 	fastCreateLogPoll(t)
 	root := t.TempDir()
@@ -165,10 +156,6 @@ func TestHerdrDefaultShell_FirstTabStreamsProvisioningLogThenEntersGuest(t *test
 	}
 }
 
-// TestHerdrTailFileUntil_SkipsStaleContentAndFollowsTruncate pins the two
-// edge rules of the tail: content older than staleAfter (an earlier workspace
-// that had the same herdr ID) is not replayed, and a truncate mid-run restarts
-// the tail from offset 0.
 func TestHerdrTailFileUntil_SkipsStaleContentAndFollowsTruncate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "create.log")
 	if err := os.WriteFile(path, []byte("STALE line from a previous workspace\n"), 0o644); err != nil {
@@ -207,10 +194,6 @@ func TestHerdrTailFileUntil_SkipsStaleContentAndFollowsTruncate(t *testing.T) {
 	}
 }
 
-// TestHerdrDefaultShell_PaneScriptWritesCreateLogAtGoPath executes the real
-// plugins/herdr/bin/pane.sh worktree-sandbox case with a stub shim and asserts
-// the log lands exactly where herdrWtCreateLogPath says the guest shell will
-// look, and that the subprocess exit status survives the tee pipe.
 func TestHerdrDefaultShell_PaneScriptWritesCreateLogAtGoPath(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "..", "plugins", "herdr", "bin", "pane.sh"))
 	if err != nil {

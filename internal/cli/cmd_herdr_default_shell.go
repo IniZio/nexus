@@ -351,12 +351,6 @@ func herdrTailFileUntil(path string, w io.Writer, done <-chan struct{}, interval
 // as a subprocess, waits for it to finish, then re-reads the binding store.
 // Returns the binding and true on success; (zero, false) on any error so the
 // caller falls through to execHostShell (FAIL-OPEN).
-//
-// While the subprocess runs, the provisioning log of the concurrent hook pane
-// (herdrWtCreateLogPath) is tailed into w, so a pane that loses the
-// create-intent lock shows the build and boot as they happen instead of a
-// single "waiting" line. When this process is itself the lock winner the
-// subprocess streams to w directly and the file simply never appears.
 func herdrDefaultShellAutoCreate(ctx context.Context, storeRoot, wsID, nexus3Bin string, w io.Writer) (HerdrSpaceBinding, bool) {
 	if nexus3Bin == "" {
 		return HerdrSpaceBinding{}, false
@@ -414,8 +408,6 @@ func herdrDefaultShellCore(
 	nexus3Bin string, // path to the nexus3 binary for re-exec
 	execFn herdrExecFn,
 ) error {
-	// Every hand-off that is not the nexus3 guest receives the pane shell's own
-	// arguments unchanged (herdr's "-c <cmd>" or login flag), from the pane's cwd.
 	shellArgs := herdrGuestShellArgsFn()
 
 	// execHostShell replaces the current process with the operator's host shell.

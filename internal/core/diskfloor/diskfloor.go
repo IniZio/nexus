@@ -14,5 +14,4 @@ package diskfloor
 // Configurable for GC via ImageGCConfig.FreeSpaceFloorGiB.
 const DefaultFreeSpaceFloorGiB = 15
 
-// DefaultFreeSpaceFloorBytes is DefaultFreeSpaceFloorGiB in bytes.
 const DefaultFreeSpaceFloorBytes int64 = DefaultFreeSpaceFloorGiB << 30

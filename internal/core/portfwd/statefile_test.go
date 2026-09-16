@@ -85,9 +85,7 @@ func TestMerge_DropsStaleWriter(t *testing.T) {
 	}
 }
 
-// TestMerge_DedupesSandboxPort pins the (sandbox, port) union: live
-// 2026-09-16 one supervisor listed each of its 15 ports twice and the merge
-// shipped 30 rows.
+// TestMerge_DedupesSandboxPort pins the (sandbox, port) union.
 func TestMerge_DedupesSandboxPort(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()

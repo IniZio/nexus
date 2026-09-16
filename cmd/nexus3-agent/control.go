@@ -46,15 +46,6 @@ func (cs *controlServer) Exec(_ context.Context, req *agentpb.ExecRequest) (*age
 
 	// Build environment. Precedence, highest first:
 	//   req.Env > OCI image ENV (boot.json) > /etc/environment > baseline.
-	// When the agent runs as PID 1 (init=), the Linux kernel injects a few
-	// variables into os.Environ() — notably HOME=/ — that are wrong for
-	// interactive use. Rather than passing os.Environ() through (which would
-	// propagate the wrong HOME), we start from guestBaselineEnv() which
-	// supplies correct sane defaults (HOME=/root, PATH) layered with
-	// /etc/environment, then the image's OCI ENV captured into boot.json (the
-	// same manifest runBootTasks consumes), then let the caller's req.Env
-	// override anything. All useful agent-level env (credentials,
-	// NODE_EXTRA_CA_CERTS, etc.) is injected through req.Env by the host.
 	env := mergeEnv(guestBaselineEnv(agentScratchDisk), envToMap(bootSpecEnv()))
 	env = mergeEnv(env, req.Env)
 
